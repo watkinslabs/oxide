@@ -16,8 +16,82 @@ use crate::palette::{xterm_256_rgb, VGA_PALETTE};
 /// # C: const.
 pub const N_VT: usize = 63;
 
-/// Tab stop width (Linux fixed 8-column hardware tabs).
+/// Default tab stop width (DEC/VT100 hardware tabs every 8 columns).
 pub const TAB_WIDTH: u16 = 8;
+
+/// Selected character set for a G0/G1 slot. VT100/VT102 support ASCII
+/// (DEC `B`) and the DEC Special Graphics line-drawing set (DEC `0`).
+/// # C: const enum.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Charset {
+    /// US ASCII (`ESC ( B`). Codepoints pass through unchanged.
+    Ascii,
+    /// DEC Special Graphics + line drawing (`ESC ( 0`). Codepoints
+    /// 0x60..0x7e map to Unicode box-drawing/symbol glyphs.
+    DecSpecial,
+}
+
+impl Default for Charset {
+    fn default() -> Self {
+        Charset::Ascii
+    }
+}
+
+/// DEC Special Graphics map: input byte `0x60 + i` → Unicode codepoint.
+/// Indexed `[byte - 0x60]` for bytes in `0x60..=0x7e`. Matches the VT100
+/// special-graphics ROM (DEC STD 070) as adopted by xterm/Linux `vt.c`.
+/// `0x00` entries fall through to the literal byte (no special glyph).
+/// # C: const table.
+pub const DEC_SPECIAL_GRAPHICS: [u32; 0x1f] = [
+    0x0020, // 0x60 ` blank (DEC: no glyph; xterm: space)
+    0x25c6, // 0x61 a ◆ diamond
+    0x2592, // 0x62 b ▒ checkerboard (medium shade)
+    0x2409, // 0x63 c ␉ HT symbol
+    0x240c, // 0x64 d ␌ FF symbol
+    0x240d, // 0x65 e ␍ CR symbol
+    0x240a, // 0x66 f ␊ LF symbol
+    0x00b0, // 0x67 g ° degree
+    0x00b1, // 0x68 h ± plus/minus
+    0x2424, // 0x69 i ␤ NL symbol
+    0x2518, // 0x6a j ┘ lower-right corner
+    0x2510, // 0x6b k ┐ upper-right corner
+    0x250c, // 0x6c l ┌ upper-left corner
+    0x2514, // 0x6d m └ lower-left corner
+    0x253c, // 0x6e n ┼ crossing
+    0x23ba, // 0x6f o ⎺ scan line 1 (top)
+    0x23bb, // 0x70 p ⎻ scan line 3
+    0x2500, // 0x71 q ─ horizontal line (scan line 5, middle)
+    0x23bc, // 0x72 r ⎼ scan line 7
+    0x23bd, // 0x73 s ⎽ scan line 9 (bottom)
+    0x251c, // 0x74 t ├ left tee
+    0x2524, // 0x75 u ┤ right tee
+    0x2534, // 0x76 v ┴ bottom tee
+    0x252c, // 0x77 w ┬ top tee
+    0x2502, // 0x78 x │ vertical line
+    0x2264, // 0x79 y ≤ less-than-or-equal
+    0x2265, // 0x7a z ≥ greater-than-or-equal
+    0x03c0, // 0x7b { π pi
+    0x2260, // 0x7c | ≠ not-equal
+    0x00a3, // 0x7d } £ sterling
+    0x00b7, // 0x7e ~ · middle dot
+];
+
+/// Map one codepoint through the active GL charset. ASCII passes through;
+/// DEC Special Graphics translates 0x60..0x7e per `DEC_SPECIAL_GRAPHICS`.
+/// # C: O(1).
+#[inline]
+pub fn map_charset(cp: u32, set: Charset) -> u32 {
+    match set {
+        Charset::Ascii => cp,
+        Charset::DecSpecial => {
+            if (0x60..=0x7e).contains(&cp) {
+                DEC_SPECIAL_GRAPHICS[(cp - 0x60) as usize]
+            } else {
+                cp
+            }
+        }
+    }
+}
 
 /// Default foreground SGR color index (light grey, VGA 7).
 pub const DEFAULT_FG: u8 = 7;
@@ -174,10 +248,32 @@ pub struct Vc {
     pub y: u16,
     /// Current SGR attribute applied to printed glyphs.
     pub attr: Attr,
-    /// Saved cursor (DECSC / ESC 7).
+    /// Saved cursor state (DECSC / ESC 7): position + SGR attr + both
+    /// charset slots + GL selector + origin mode + pending-wrap. A VT100
+    /// DECSC saves the FULL graphic rendition + character-set state, not
+    /// just the position (DEC STD 070 / VT100 user guide).
     pub saved_x: u16,
     pub saved_y: u16,
     pub saved_attr: Attr,
+    saved_g0: Charset,
+    saved_g1: Charset,
+    saved_gl: u8,
+    saved_origin: bool,
+    saved_wrap_pending: bool,
+    /// G0 charset slot (`ESC ( B` / `ESC ( 0`). Default ASCII.
+    pub g0: Charset,
+    /// G1 charset slot (`ESC ) B` / `ESC ) 0`). Default ASCII.
+    pub g1: Charset,
+    /// GL selector: 0 = G0 (after SI `\x0f`), 1 = G1 (after SO `\x0e`).
+    pub gl: u8,
+    /// DECOM origin mode (`?6h/l`): cursor addressing relative to the
+    /// scroll region and confined to it when set. Default off (absolute).
+    pub origin_mode: bool,
+    /// DECTCEM cursor-visible flag (`?25h/l`). Renderer-only; default on.
+    pub cursor_visible: bool,
+    /// Tab-stop bitmap, one bool per column (true = stop set). HTS/TBC
+    /// edit it; HT advances to the next set stop. Default every 8 cols.
+    tab_stops: Vec<bool>,
     /// DECAWM autowrap mode (default on, Linux/xterm default).
     pub autowrap: bool,
     /// Deferred-wrap latch: set after printing into the last column with
@@ -204,6 +300,18 @@ pub struct Vc {
     view_offset: usize,
 }
 
+/// Default tab-stop bitmap: a stop every `TAB_WIDTH` columns (col 0 has
+/// no stop; HT always moves at least one column). # C: O(cols).
+fn default_tab_stops(cols: u16) -> Vec<bool> {
+    let mut v = vec![false; cols as usize];
+    let mut c = TAB_WIDTH;
+    while (c as usize) < v.len() {
+        v[c as usize] = true;
+        c += TAB_WIDTH;
+    }
+    v
+}
+
 impl Vc {
     /// Allocate a `cols`×`rows` VT, cleared to blanks, cursor at (0,0).
     /// # C: O(cols*rows) — grid zero-fill.
@@ -220,6 +328,17 @@ impl Vc {
             saved_x: 0,
             saved_y: 0,
             saved_attr: Attr::default(),
+            saved_g0: Charset::Ascii,
+            saved_g1: Charset::Ascii,
+            saved_gl: 0,
+            saved_origin: false,
+            saved_wrap_pending: false,
+            g0: Charset::Ascii,
+            g1: Charset::Ascii,
+            gl: 0,
+            origin_mode: false,
+            cursor_visible: true,
+            tab_stops: default_tab_stops(cols),
             autowrap: true,
             wrap_pending: false,
             scroll_top: 0,
@@ -412,13 +531,113 @@ impl Vc {
         s
     }
 
-    /// Write a glyph at the cursor with the current attr (no advance).
+    /// Active GL charset (G0 when `gl==0`, else G1). # C: O(1).
+    #[inline]
+    pub fn active_charset(&self) -> Charset {
+        if self.gl == 1 {
+            self.g1
+        } else {
+            self.g0
+        }
+    }
+
+    /// Write a glyph at the cursor with the current attr (no advance). The
+    /// codepoint is mapped through the active GL charset first, so a DEC
+    /// Special Graphics byte (e.g. `q`) lands as its box-drawing glyph.
     /// # C: O(1).
     pub fn put_glyph(&mut self, cp: u32) {
         self.snap_to_bottom();
+        let mapped = map_charset(cp, self.active_charset());
         let i = self.idx(self.x, self.y);
-        self.cells[i] = Cell::glyph(cp, self.attr);
+        self.cells[i] = Cell::glyph(mapped, self.attr);
         self.mark_row_dirty(self.y);
+    }
+
+    // ---- tab stops --------------------------------------------------
+
+    /// Set a tab stop at the cursor column (HTS / `ESC H`). # C: O(1).
+    pub fn set_tab(&mut self) {
+        if let Some(s) = self.tab_stops.get_mut(self.x as usize) {
+            *s = true;
+        }
+    }
+
+    /// Clear the tab stop at the cursor column (TBC 0 / `CSI g`).
+    /// # C: O(1).
+    pub fn clear_tab(&mut self) {
+        if let Some(s) = self.tab_stops.get_mut(self.x as usize) {
+            *s = false;
+        }
+    }
+
+    /// Clear all tab stops (TBC 3 / `CSI 3 g`). # C: O(cols).
+    pub fn clear_all_tabs(&mut self) {
+        for s in self.tab_stops.iter_mut() {
+            *s = false;
+        }
+    }
+
+    /// Reset tab stops to the default (every `TAB_WIDTH`). # C: O(cols).
+    pub fn reset_tabs(&mut self) {
+        self.tab_stops = default_tab_stops(self.cols);
+    }
+
+    /// Column of the next set tab stop strictly right of the cursor, or
+    /// the last column if none (HT clamps at the right margin, VT100).
+    /// # C: O(cols).
+    pub fn next_tab(&self) -> u16 {
+        let mut c = self.x + 1;
+        while c < self.cols {
+            if self.tab_stops.get(c as usize).copied().unwrap_or(false) {
+                return c;
+            }
+            c += 1;
+        }
+        self.cols - 1
+    }
+
+    /// Is a tab stop set at `col`? Test helper. # C: O(1).
+    #[cfg(test)]
+    pub fn tab_set(&self, col: u16) -> bool {
+        self.tab_stops.get(col as usize).copied().unwrap_or(false)
+    }
+
+    // ---- origin mode + DECALN --------------------------------------
+
+    /// Move the cursor to a CUP/HVP target (0-based row,col). Under origin
+    /// mode the row is relative to `scroll_top` and clamped to the region;
+    /// the column is always absolute. Clears pending-wrap. # C: O(1).
+    pub fn move_to(&mut self, row: u16, col: u16) {
+        if self.origin_mode {
+            let top = self.scroll_top;
+            let bot = self.scroll_bot;
+            self.y = (top + row).min(bot);
+            self.x = col.min(self.cols - 1);
+        } else {
+            self.y = row.min(self.rows - 1);
+            self.x = col.min(self.cols - 1);
+        }
+        self.wrap_pending = false;
+    }
+
+    /// Home the cursor honoring origin mode (region-top under DECOM).
+    /// # C: O(1).
+    pub fn home(&mut self) {
+        self.move_to(0, 0);
+    }
+
+    /// DECALN (`ESC # 8`): fill the whole screen with uppercase `E` using
+    /// the DEFAULT attr, home the cursor. Screen-alignment test pattern.
+    /// # C: O(cols*rows).
+    pub fn decaln(&mut self) {
+        let cell = Cell::glyph('E' as u32, Attr::default());
+        for c in self.cells.iter_mut() {
+            *c = cell;
+        }
+        self.x = 0;
+        self.y = 0;
+        self.wrap_pending = false;
+        self.mark_all_dirty();
     }
 
     /// Overwrite the cell at (col,row) with `cell` (in-bounds only).
@@ -491,7 +710,13 @@ impl Vc {
         match mode {
             0 => self.fill(cur, total),
             1 => self.fill(0, cur + 1),
-            2 | 3 => self.fill(0, total),
+            2 => self.fill(0, total),
+            // ED 3 (xterm): erase the screen AND the scrollback history.
+            3 => {
+                self.fill(0, total);
+                self.history.clear();
+                self.view_offset = 0;
+            }
             _ => {}
         }
     }
@@ -587,6 +812,7 @@ impl Vc {
         self.cells = next;
         self.cols = cols;
         self.rows = rows;
+        self.tab_stops = default_tab_stops(cols);
         self.x = self.x.min(cols - 1);
         self.y = self.y.min(rows - 1);
         self.scroll_top = 0;
@@ -599,19 +825,33 @@ impl Vc {
         self.view_offset = 0;
     }
 
-    /// Save cursor + attr (DECSC / ESC 7). # C: O(1).
+    /// Save cursor state (DECSC / ESC 7): position, SGR attr, both charset
+    /// slots, GL selector, origin mode, pending-wrap — the full VT100 saved
+    /// rendition + charset state. # C: O(1).
     pub fn save_cursor(&mut self) {
         self.saved_x = self.x;
         self.saved_y = self.y;
         self.saved_attr = self.attr;
+        self.saved_g0 = self.g0;
+        self.saved_g1 = self.g1;
+        self.saved_gl = self.gl;
+        self.saved_origin = self.origin_mode;
+        self.saved_wrap_pending = self.wrap_pending;
     }
 
-    /// Restore cursor + attr (DECRC / ESC 8). # C: O(1).
+    /// Restore the full saved cursor state (DECRC / ESC 8). # C: O(1).
     pub fn restore_cursor(&mut self) {
-        self.x = self.saved_x.min(self.cols - 1);
-        self.y = self.saved_y.min(self.rows - 1);
         self.attr = self.saved_attr;
-        self.wrap_pending = false;
+        self.g0 = self.saved_g0;
+        self.g1 = self.saved_g1;
+        self.gl = self.saved_gl;
+        self.origin_mode = self.saved_origin;
+        // Position clamps; under origin mode the saved row is already an
+        // absolute screen row (DECSC saved it absolute), so restore as-is
+        // then clamp to the grid.
+        self.y = self.saved_y.min(self.rows - 1);
+        self.x = self.saved_x.min(self.cols - 1);
+        self.wrap_pending = self.saved_wrap_pending;
         self.cursor_dirty = true;
     }
 }

@@ -11,7 +11,7 @@
 // (?7h/?7l), scroll region (CSI r), IL/DL/ICH/DCH, SU/SD. Unknown
 // sequences are tolerated (consumed, no panic).
 
-use crate::vc::{Attr, Vc, TAB_WIDTH};
+use crate::vc::{Attr, Charset, Vc};
 
 /// Parser superstate (mirrors fbcon `CsiState`).
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -20,6 +20,10 @@ pub enum CsiState {
     Esc,
     CsiParam,
     CsiInter,
+    /// `ESC (` / `)` / `*` / `+` — awaiting the charset designator byte.
+    Charset,
+    /// `ESC #` — awaiting the DEC private byte (e.g. `8` = DECALN).
+    Hash,
     Osc,
     OscString,
     DcsString,
@@ -46,6 +50,10 @@ pub struct Emulator {
     intermediate: [u8; MAX_INTER],
     inter_count: u8,
     private: bool,
+    /// Which Gn slot an `ESC ( / ) / * / +` designator targets: the raw
+    /// intermediate byte (`(`=G0, `)`=G1, `*`=G2, `+`=G3). VT100/VT102
+    /// only render via G0/G1 (GL), but we accept all four designators.
+    charset_slot: u8,
     utf8_pending: [u8; 4],
     utf8_len: u8,
 }
@@ -60,6 +68,7 @@ impl Default for Emulator {
             intermediate: [0; MAX_INTER],
             inter_count: 0,
             private: false,
+            charset_slot: 0,
             utf8_pending: [0; 4],
             utf8_len: 0,
         }
@@ -95,11 +104,20 @@ impl Emulator {
         // flag it so `consw::render` repaints the cursor cell. Cheap
         // and correct — over-marking only costs one extra cell blit.
         vc.mark_cursor_dirty();
+        // CAN (0x18) / SUB (0x1a) abort any escape/control sequence and
+        // return to ground without executing it (ECMA-48 / vt102). SUB in
+        // some terminals prints a substitution glyph; Linux just aborts.
+        if (byte == 0x18 || byte == 0x1a) && self.state != CsiState::Ground {
+            self.state = CsiState::Ground;
+            return;
+        }
         match self.state {
             CsiState::Ground => self.ground(vc, byte),
             CsiState::Esc => self.esc(vc, byte),
             CsiState::CsiParam => self.csi_param(vc, byte),
             CsiState::CsiInter => self.csi_inter(vc, byte),
+            CsiState::Charset => self.charset_designate(vc, byte),
+            CsiState::Hash => self.hash(vc, byte),
             CsiState::Osc => {
                 // OSC opening byte (e.g. the parameter digit); discard
                 // and enter the string-collection state.
@@ -133,6 +151,8 @@ impl Emulator {
                 vc.x = 0;
                 vc.wrap_pending = false;
             }
+            0x0e => vc.gl = 1, // SO — invoke G1 into GL
+            0x0f => vc.gl = 0, // SI — invoke G0 into GL
             b if (0x20..0x7f).contains(&b) => self.print(vc, b as u32),
             // UTF-8 lead byte
             b if (0xc2..0xf5).contains(&b) => {
@@ -188,21 +208,67 @@ impl Emulator {
                 self.reverse_index(vc);
                 self.state = CsiState::Ground;
             }
+            b'E' => {
+                // NEL: next line = CR + LF (IND semantics, then col 0).
+                self.line_feed(vc);
+                vc.x = 0;
+                vc.wrap_pending = false;
+                self.state = CsiState::Ground;
+            }
+            b'H' => {
+                // HTS: set a tab stop at the cursor column.
+                vc.set_tab();
+                self.state = CsiState::Ground;
+            }
             b'c' => {
                 self.full_reset(vc);
                 self.state = CsiState::Ground;
             }
-            // ESC ( / ESC ) charset designators — consume one more byte.
+            // ESC ( / ) / * / + — charset designator; next byte selects.
             b'(' | b')' | b'*' | b'+' => {
-                self.intermediate[0] = byte;
-                self.inter_count = 1;
-                self.state = CsiState::CsiInter; // reuse to swallow next
+                self.charset_slot = byte;
+                self.state = CsiState::Charset;
             }
+            // ESC # — DEC private; next byte (e.g. `8` = DECALN).
+            b'#' => self.state = CsiState::Hash,
             _ => self.state = CsiState::Ground,
         }
     }
 
+    /// `ESC ( / ) / * / +` final byte: designate Gn = ASCII (`B`) or DEC
+    /// Special Graphics (`0`). Other designators (UK `A`, etc.) fall back
+    /// to ASCII — VT100/VT102 render only ASCII + special graphics.
+    fn charset_designate(&mut self, vc: &mut Vc, byte: u8) {
+        let set = match byte {
+            b'0' => Charset::DecSpecial,
+            _ => Charset::Ascii, // B (ASCII), A (UK), etc.
+        };
+        match self.charset_slot {
+            b'(' => vc.g0 = set,
+            b')' => vc.g1 = set,
+            // G2/G3 (`*`/`+`): accepted but unused by GL on a vt102.
+            _ => {}
+        }
+        self.state = CsiState::Ground;
+    }
+
+    /// `ESC #` final byte. `8` = DECALN screen-alignment fill. Others are
+    /// DEC double-width/height line attrs — tolerated (no cell effect on a
+    /// single-width emulator).
+    fn hash(&mut self, vc: &mut Vc, byte: u8) {
+        if byte == b'8' {
+            vc.decaln();
+        }
+        self.state = CsiState::Ground;
+    }
+
     fn csi_param(&mut self, vc: &mut Vc, byte: u8) {
+        // C0 controls embedded in a CSI execute immediately, then parsing
+        // resumes in the same state (ECMA-48 / vt102 do_con_trol).
+        if byte < 0x20 {
+            self.exec_c0(vc, byte);
+            return;
+        }
         match byte {
             b'0'..=b'9' => {
                 let i = self.param_count as usize;
@@ -245,10 +311,14 @@ impl Emulator {
         }
     }
 
-    fn csi_inter(&mut self, _vc: &mut Vc, byte: u8) {
-        // Either a CSI with intermediates, or an ESC-designator swallow.
-        // In both cases the next final/letter ends the sequence; we do
-        // not act on charset designators (kept ASCII-only).
+    fn csi_inter(&mut self, vc: &mut Vc, byte: u8) {
+        // CSI with intermediate bytes. C0 controls execute in place; a
+        // final byte (0x40..0x7e) dispatches the (intermediate-bearing)
+        // sequence; another intermediate accumulates.
+        if byte < 0x20 {
+            self.exec_c0(vc, byte);
+            return;
+        }
         match byte {
             0x20..=0x2f => {
                 let i = self.inter_count as usize;
@@ -257,7 +327,29 @@ impl Emulator {
                     self.inter_count += 1;
                 }
             }
+            0x40..=0x7e => {
+                self.csi_final(vc, byte);
+                self.state = CsiState::Ground;
+            }
             _ => self.state = CsiState::Ground,
+        }
+    }
+
+    /// Execute a C0 control encountered mid-CSI (BS/HT/LF/VT/FF/CR/SO/SI/
+    /// BEL). Mirrors the ground-state handling so embedded controls have
+    /// their normal effect without aborting the sequence. # parse-helper.
+    fn exec_c0(&mut self, vc: &mut Vc, byte: u8) {
+        match byte {
+            0x08 => self.backspace(vc),
+            0x09 => self.tab(vc),
+            0x0a | 0x0b | 0x0c => self.line_feed(vc),
+            0x0d => {
+                vc.x = 0;
+                vc.wrap_pending = false;
+            }
+            0x0e => vc.gl = 1,
+            0x0f => vc.gl = 0,
+            _ => {} // BEL / others: no screen effect
         }
     }
 
@@ -299,9 +391,10 @@ impl Emulator {
     }
 
     fn tab(&mut self, vc: &mut Vc) {
+        // HT advances to the next SET tab stop (TBC/HTS-editable bitmap),
+        // clamped at the right margin (VT100). Pending-wrap is cleared.
         vc.wrap_pending = false;
-        let next = ((vc.x / TAB_WIDTH) + 1) * TAB_WIDTH;
-        vc.x = next.min(vc.cols - 1);
+        vc.x = vc.next_tab();
     }
 
     fn line_feed(&mut self, vc: &mut Vc) {
@@ -330,10 +423,18 @@ impl Emulator {
     }
 
     fn full_reset(&mut self, vc: &mut Vc) {
+        // RIS (`ESC c`): default attrs, all modes/charsets/tabs reset,
+        // scroll region full, cursor home, screen cleared (DEC STD 070).
         vc.attr = Attr::default();
         vc.autowrap = true;
+        vc.origin_mode = false;
+        vc.cursor_visible = true;
+        vc.g0 = Charset::Ascii;
+        vc.g1 = Charset::Ascii;
+        vc.gl = 0;
         vc.scroll_top = 0;
         vc.scroll_bot = vc.rows - 1;
+        vc.reset_tabs();
         vc.clear();
         *self = Emulator::new();
     }
@@ -363,9 +464,22 @@ impl Emulator {
 
     fn csi_final(&mut self, vc: &mut Vc, byte: u8) {
         match byte {
-            b'A' => vc.y = vc.y.saturating_sub(self.count_param(0)).max(vc.scroll_top),
+            b'A' => {
+                // CUU: up n, no scroll. If the cursor starts at/above the
+                // region top, clamp at row 0; else clamp at the region top
+                // (VT100 confines cursor moves to the region from inside).
+                let n = self.count_param(0);
+                let floor = if vc.y >= vc.scroll_top { vc.scroll_top } else { 0 };
+                vc.y = vc.y.saturating_sub(n).max(floor);
+                vc.wrap_pending = false;
+            }
             b'B' => {
-                vc.y = (vc.y + self.count_param(0)).min(vc.rows - 1);
+                // CUD: down n, no scroll. Clamp at the region bottom when
+                // starting inside the region, else at the last row.
+                let n = self.count_param(0);
+                let ceil = if vc.y <= vc.scroll_bot { vc.scroll_bot } else { vc.rows - 1 };
+                vc.y = (vc.y + n).min(ceil);
+                vc.wrap_pending = false;
             }
             b'C' => {
                 vc.x = (vc.x + self.count_param(0)).min(vc.cols - 1);
@@ -400,14 +514,21 @@ impl Emulator {
                 vc.wrap_pending = false;
             }
             b'H' | b'f' => {
+                // CUP / HVP: 1-based (row,col). Origin mode makes the row
+                // relative to the scroll region (Vc::move_to handles it).
                 let r = self.count_param(0).saturating_sub(1);
                 let c = self.count_param(1).saturating_sub(1);
-                vc.y = r.min(vc.rows - 1);
-                vc.x = c.min(vc.cols - 1);
-                vc.wrap_pending = false;
+                vc.move_to(r, c);
             }
             b'J' => vc.erase_display(self.param(0, 0)),
             b'K' => vc.erase_line(self.param(0, 0)),
+            b'g' => {
+                // TBC: 0 = clear stop at cursor, 3 = clear all stops.
+                match self.param(0, 0) {
+                    3 => vc.clear_all_tabs(),
+                    _ => vc.clear_tab(),
+                }
+            }
             b'L' => self.insert_lines(vc, self.count_param(0)),
             b'M' => self.delete_lines(vc, self.count_param(0)),
             b'@' => self.insert_blanks(vc, self.count_param(0)),
@@ -425,12 +546,23 @@ impl Emulator {
 
     fn set_mode(&mut self, vc: &mut Vc, set: bool) {
         if !self.private {
-            return; // only DEC private modes acted on (e.g. ?7)
+            return; // only DEC private modes acted on (?6/?7/?25)
         }
-        let m = self.param(0, 0);
-        if m == 7 {
-            vc.autowrap = set;
-            vc.wrap_pending = false;
+        match self.param(0, 0) {
+            // DECOM origin mode: cursor confined to + addressed relative to
+            // the scroll region. Per DEC, toggling DECOM homes the cursor.
+            6 => {
+                vc.origin_mode = set;
+                vc.home();
+            }
+            // DECAWM autowrap.
+            7 => {
+                vc.autowrap = set;
+                vc.wrap_pending = false;
+            }
+            // DECTCEM cursor visibility (renderer-only flag).
+            25 => vc.cursor_visible = set,
+            _ => {}
         }
     }
 
@@ -445,9 +577,9 @@ impl Emulator {
             vc.scroll_top = 0;
             vc.scroll_bot = vc.rows - 1;
         }
-        vc.x = 0;
-        vc.y = vc.scroll_top;
-        vc.wrap_pending = false;
+        // DECSTBM moves the cursor to home (region-top under origin mode,
+        // absolute (0,0) otherwise).
+        vc.home();
     }
 
     fn insert_lines(&mut self, vc: &mut Vc, n: u16) {
