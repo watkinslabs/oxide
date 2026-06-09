@@ -1,8 +1,9 @@
 // fbcon `consw` renderer (T2): blits a `vtdata::Vc` cell grid to a
-// framebuffer, mapping each cell's `Attr` (fg/bg/bold/underline/reverse)
-// to pixels via the built-in 8x16 font + the VGA/xterm-256 palette
-// (reused from `crate`). This is the cell-based renderer that replaces
-// the lossy byte-stream mirror; the legacy `Console` byte path stays.
+// framebuffer. Each cell carries fully-resolved fg/bg 0x00RRGGBB
+// (vtdata's SGR emulator resolved index/256/truecolor + bold-brighten at
+// set-time), so the blit reads `cell.fg`/`cell.bg` directly — no palette
+// lookup here. reverse swaps fg/bg; underline forces the bottom row to
+// fg. The legacy `Console` byte path stays.
 //
 // The per-cell blit math (`blit_cell`) is a pure fn over a `&mut [u32]`
 // pixel slice + dims, so it is host-testable against a fake framebuffer
@@ -12,54 +13,34 @@ extern crate alloc;
 
 use alloc::vec;
 use alloc::vec::Vec;
-use vtdata::{Attr, Consw, Vc};
+use vtdata::{Attr, Consw, Vc, ATTR_REVERSE, ATTR_UNDERLINE};
 
 /// Glyph cell width (built-in font).
 pub const CELL_W: u32 = 8;
 /// Glyph cell height (built-in font).
 pub const CELL_H: u32 = 16;
 
-/// Pack an [r,g,b] palette entry into a 0x00RRGGBB pixel.
-/// # C: O(1).
-#[inline]
-pub fn rgb_pixel(c: [u8; 3]) -> u32 {
-    ((c[0] as u32) << 16) | ((c[1] as u32) << 8) | (c[2] as u32)
-}
-
-/// Resolve a cell `Attr` to (fg_rgb, bg_rgb) palette colors, applying
-/// bold→bright (indices <8 gain +8) and reverse→swap. Underline is a
-/// glyph-row effect handled by `blit_cell`, not a color.
-/// # C: O(1).
-pub fn attr_colors(attr: Attr) -> ([u8; 3], [u8; 3]) {
-    let fg_idx = if attr.bold && (attr.fg as u32) < 8 {
-        attr.fg as u32 + 8
-    } else {
-        attr.fg as u32
-    };
-    let mut fg = crate::xterm_256(fg_idx);
-    let mut bg = crate::xterm_256(attr.bg as u32);
-    if attr.reverse {
-        core::mem::swap(&mut fg, &mut bg);
-    }
-    (fg, bg)
-}
-
 /// Blit one cell into `px` (a row-major `cols*CELL_W` × `rows*CELL_H`
 /// pixel buffer with stride `stride_px` pixels per scanline) at text
-/// position `(col,row)`. Renders the glyph for `glyph` with `attr`'s
-/// colors; underline forces the bottom glyph row to fg. Out-of-range
-/// pixels are skipped. # C: O(CELL_W*CELL_H).
+/// position `(col,row)`. `fg`/`bg` are resolved 0x00RRGGBB; `flags`
+/// carries `ATTR_REVERSE` (swap fg/bg) and `ATTR_UNDERLINE` (force the
+/// bottom glyph row to fg). Out-of-range pixels are skipped.
+/// # C: O(CELL_W*CELL_H).
 pub fn blit_cell(
     px: &mut [u32],
     stride_px: usize,
     col: u32,
     row: u32,
     glyph: u32,
-    attr: Attr,
+    fg: u32,
+    bg: u32,
+    flags: u16,
 ) {
-    let (fg, bg) = attr_colors(attr);
-    let fg_px = rgb_pixel(fg);
-    let bg_px = rgb_pixel(bg);
+    let underline_flag = flags & ATTR_UNDERLINE != 0;
+    let (mut fg_px, mut bg_px) = (fg, bg);
+    if flags & ATTR_REVERSE != 0 {
+        core::mem::swap(&mut fg_px, &mut bg_px);
+    }
     // ASCII-only built-in font (0x20..0x7e); others map to '?'.
     let g = if (0x20..0x7f).contains(&glyph) {
         (glyph - 0x20) as usize
@@ -72,7 +53,7 @@ pub fn blit_cell(
     let cell_y = row as usize * ch;
     for py in 0..ch {
         let bits = crate::BUILTIN_FONT[g * ch + py];
-        let underline = attr.underline && py == ch - 1;
+        let underline = underline_flag && py == ch - 1;
         let base = (cell_y + py) * stride_px + cell_x;
         for pxn in 0..cw {
             let on = ((bits >> (7 - pxn)) & 1) == 1 || underline;
@@ -144,13 +125,14 @@ impl Consw for VcRenderer {
         let blank = Attr::default();
         for r in y..(y + h).min(self.rows) {
             for c in x..(x + w).min(self.cols) {
-                blit_cell(&mut self.px, stride, c, r, ' ' as u32, blank);
+                blit_cell(&mut self.px, stride, c, r, ' ' as u32, blank.fg, blank.bg, blank.flags());
             }
         }
         let _ = vc;
     }
 
-    /// # C: O(n*CELL_W*CELL_H).
+    /// Blit the visible window (honors `Vc::view_offset` — history rows
+    /// when scrolled back). # C: O(n*CELL_W*CELL_H).
     fn con_putcs(&mut self, vc: &Vc, row: u32, col: u32, n: u32) {
         if row >= self.rows {
             return;
@@ -161,9 +143,9 @@ impl Consw for VcRenderer {
             if c >= self.cols {
                 break;
             }
-            let glyph = vc.glyph_at(c as u16, row as u16);
-            let attr = vc.attr_at(c as u16, row as u16).unwrap_or_default();
-            blit_cell(&mut self.px, stride, c, row, glyph, attr);
+            let glyph = vc.visible_glyph_at(c as u16, row as u16);
+            let a = vc.visible_attr_at(c as u16, row as u16).unwrap_or_default();
+            blit_cell(&mut self.px, stride, c, row, glyph, a.fg, a.bg, a.flags());
         }
     }
 
@@ -175,33 +157,34 @@ impl Consw for VcRenderer {
         }
         let stride = self.stride();
         let glyph = vc.glyph_at(cx as u16, cy as u16);
-        let mut attr = vc.attr_at(cx as u16, cy as u16).unwrap_or_default();
+        let mut a = vc.attr_at(cx as u16, cy as u16).unwrap_or_default();
         if visible {
-            attr.reverse = !attr.reverse;
+            a.reverse = !a.reverse;
         }
-        blit_cell(&mut self.px, stride, cx, cy, glyph, attr);
+        blit_cell(&mut self.px, stride, cx, cy, glyph, a.fg, a.bg, a.flags());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vtdata::{Emulator, Vc};
+    use vtdata::{rgb, xterm_256_rgb, Emulator, Vc, ATTR_UNDERLINE};
+
+    // Resolved RGB shorthands (cells now carry RGB, not indices).
+    const WHITE: u32 = 0xffffff;
+    const BLACK: u32 = 0x000000;
 
     #[test]
     fn blit_known_glyph_pixels() {
-        // 1 cell wide, 1 row: blit 'X' fg=white(15) bg=black(0).
+        // 1 cell wide, 1 row: blit 'X' fg=white bg=black.
         let stride = CELL_W as usize;
         let mut px = vec![0u32; (CELL_W * CELL_H) as usize];
-        let attr = Attr { fg: 15, bg: 0, bold: false, underline: false, reverse: false };
-        blit_cell(&mut px, stride, 0, 0, 'X' as u32, attr);
-        let white = rgb_pixel([0xff, 0xff, 0xff]);
-        let black = rgb_pixel([0x00, 0x00, 0x00]);
+        blit_cell(&mut px, stride, 0, 0, 'X' as u32, WHITE, BLACK, 0);
         let (mut fg, mut bg) = (0, 0);
         for &p in &px {
-            if p == white {
+            if p == WHITE {
                 fg += 1;
-            } else if p == black {
+            } else if p == BLACK {
                 bg += 1;
             }
         }
@@ -212,25 +195,22 @@ mod tests {
     #[test]
     fn reverse_swaps_fg_bg() {
         let stride = CELL_W as usize;
+        let red = xterm_256_rgb(1);
         let normal = {
             let mut px = vec![0u32; (CELL_W * CELL_H) as usize];
-            let a = Attr { fg: 15, bg: 1, bold: false, underline: false, reverse: false };
-            blit_cell(&mut px, stride, 0, 0, 'A' as u32, a);
+            blit_cell(&mut px, stride, 0, 0, 'A' as u32, WHITE, red, 0);
             px
         };
         let reversed = {
             let mut px = vec![0u32; (CELL_W * CELL_H) as usize];
-            let a = Attr { fg: 15, bg: 1, bold: false, underline: false, reverse: true };
-            blit_cell(&mut px, stride, 0, 0, 'A' as u32, a);
+            blit_cell(&mut px, stride, 0, 0, 'A' as u32, WHITE, red, vtdata::ATTR_REVERSE);
             px
         };
         // Reverse must produce a different pixel pattern (fg/bg swapped).
         assert_ne!(normal, reversed);
         // Where normal has fg(white), reversed must have bg(red=VGA1).
-        let white = rgb_pixel(crate::xterm_256(15));
-        let red = rgb_pixel(crate::xterm_256(1));
         for i in 0..normal.len() {
-            if normal[i] == white {
+            if normal[i] == WHITE {
                 assert_eq!(reversed[i], red, "reverse should swap fg→bg at {i}");
             }
         }
@@ -241,15 +221,28 @@ mod tests {
         let stride = CELL_W as usize;
         let mut px = vec![0u32; (CELL_W * CELL_H) as usize];
         // space glyph (no glyph bits) + underline → only bottom row is fg.
-        let a = Attr { fg: 15, bg: 0, bold: false, underline: true, reverse: false };
-        blit_cell(&mut px, stride, 0, 0, ' ' as u32, a);
-        let white = rgb_pixel([0xff, 0xff, 0xff]);
+        blit_cell(&mut px, stride, 0, 0, ' ' as u32, WHITE, BLACK, ATTR_UNDERLINE);
         let last = (CELL_H as usize - 1) * stride;
         for c in 0..CELL_W as usize {
-            assert_eq!(px[last + c], white, "underline bottom row must be fg");
+            assert_eq!(px[last + c], WHITE, "underline bottom row must be fg");
         }
         // a non-bottom row stays bg for a blank glyph.
-        assert_ne!(px[0], white);
+        assert_ne!(px[0], WHITE);
+        let _ = rgb([0, 0, 0]);
+    }
+
+    #[test]
+    fn truecolor_cell_blits_exact_rgb() {
+        // A cell carrying 38;2 truecolor RGB blits that exact pixel.
+        let mut vc = Vc::new(1, 1);
+        let mut em = Emulator::new();
+        em.feed_bytes(&mut vc, b"\x1b[38;2;10;20;30mZ");
+        let a = vc.attr_at(0, 0).unwrap();
+        assert_eq!(a.fg, rgb([10, 20, 30]));
+        let stride = CELL_W as usize;
+        let mut px = vec![0u32; (CELL_W * CELL_H) as usize];
+        blit_cell(&mut px, stride, 0, 0, 'Z' as u32, a.fg, a.bg, a.flags());
+        assert!(px.iter().any(|&p| p == rgb([10, 20, 30])), "truecolor fg pixel missing");
     }
 
     #[test]

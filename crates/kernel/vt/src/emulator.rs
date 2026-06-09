@@ -519,29 +519,38 @@ impl Emulator {
                 22 => vc.attr.bold = false,
                 24 => vc.attr.underline = false,
                 27 => vc.attr.reverse = false,
-                30..=37 => vc.attr.fg = (p - 30) as u8,
-                90..=97 => vc.attr.fg = (p - 90 + 8) as u8,
-                40..=47 => vc.attr.bg = (p - 40) as u8,
-                100..=107 => vc.attr.bg = (p - 100 + 8) as u8,
-                39 => vc.attr.fg = crate::vc::DEFAULT_FG,
-                49 => vc.attr.bg = crate::vc::DEFAULT_BG,
+                // 16-color fg/bg: resolve index→RGB now (bold brightens a
+                // basic 0..7 fg at resolve time, VGA convention).
+                30..=37 => vc.attr.set_fg_index(p - 30),
+                90..=97 => vc.attr.set_fg_index(p - 90 + 8),
+                40..=47 => vc.attr.set_bg_index(p - 40),
+                100..=107 => vc.attr.set_bg_index(p - 100 + 8),
+                39 => vc.attr.fg = crate::vc::DEFAULT_FG_RGB,
+                49 => vc.attr.bg = crate::vc::DEFAULT_BG_RGB,
                 38 => {
                     if i + 2 < n && self.params[i + 1] == 5 {
-                        vc.attr.fg = self.params[i + 2].min(255) as u8;
+                        vc.attr.set_fg_index(self.params[i + 2].min(255));
                         i += 2;
                     } else if i + 4 < n && self.params[i + 1] == 2 {
-                        // truecolor → nearest is out of scope; keep index
-                        // path simple: store the red channel byte.
-                        vc.attr.fg = self.params[i + 2].min(255) as u8;
+                        // 38;2;r;g;b truecolor → store RGB verbatim.
+                        vc.attr.fg = crate::palette::rgb([
+                            self.params[i + 2].min(255) as u8,
+                            self.params[i + 3].min(255) as u8,
+                            self.params[i + 4].min(255) as u8,
+                        ]);
                         i += 4;
                     }
                 }
                 48 => {
                     if i + 2 < n && self.params[i + 1] == 5 {
-                        vc.attr.bg = self.params[i + 2].min(255) as u8;
+                        vc.attr.set_bg_index(self.params[i + 2].min(255));
                         i += 2;
                     } else if i + 4 < n && self.params[i + 1] == 2 {
-                        vc.attr.bg = self.params[i + 2].min(255) as u8;
+                        vc.attr.bg = crate::palette::rgb([
+                            self.params[i + 2].min(255) as u8,
+                            self.params[i + 3].min(255) as u8,
+                            self.params[i + 4].min(255) as u8,
+                        ]);
                         i += 4;
                     }
                 }

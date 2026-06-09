@@ -184,11 +184,12 @@ fn csi_sgr_red_carries_attr_through_full_stack() {
     let (tty, _consw, _sig) = build(20, 3);
     // ESC[31m red fg, "ERR", ESC[0m reset.
     tty.write(b"\x1b[31mERR\x1b[0m");
-    // Cells E,R,R carry fg = 1 (red).
+    // Cells E,R,R carry red fg (resolved to VGA-red RGB).
+    let red = vtdata::xterm_256_rgb(1);
     let a0 = tty.with_driver(|d| d.active().attr_at(0, 0)).unwrap();
     let a2 = tty.with_driver(|d| d.active().attr_at(2, 0)).unwrap();
-    assert_eq!(a0.fg, 1, "ERR first cell fg should be red(1): {:?}", a0);
-    assert_eq!(a2.fg, 1);
+    assert_eq!(a0.fg, red, "ERR first cell fg should be red: {:?}", a0);
+    assert_eq!(a2.fg, red);
     assert_eq!(row(&tty, 0).trim_end(), "ERR");
 }
 
