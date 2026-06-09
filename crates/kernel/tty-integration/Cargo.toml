@@ -1,0 +1,28 @@
+# TTY full-stack hosted integration net (T9 of tty-rebuild-plan §3-T9 +
+# §4 "Hosted integration"). A test-ONLY crate: it drives the FULLY
+# assembled VT stack (`vtconsole::assemble`) AND serial stack
+# (`serialtty::assemble`) end-to-end and asserts ALL observable surfaces
+# at once — the program-visible `read()` stream, the `Vc` cell grid (what
+# the screen shows), the consw render ops, and the UART TX bytes — for
+# realistic terminal sequences (login, password echo-off, line editing,
+# CSI/SGR, ^C, ^D). It also cross-checks that the SHARED N_TTY ldisc
+# produces the SAME cooked read() stream on both the VT and serial stacks.
+#
+# Nothing here is compiled into the kernel: the lib is empty `#![no_std]`
+# and every dependency is a `[dev-dependencies]` entry behind the test
+# harness, so `make x86`/`make arm` (which build only kmain/boot/bin)
+# never pull this crate in. Run via `cargo test -p tty-integration`.
+[package]
+name = "tty-integration"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+tty       = { path = "../tty", features = ["hosted"] }
+vtconsole = { path = "../vtconsole", features = ["hosted"] }
+serialtty = { path = "../serialtty", features = ["hosted"] }
+vtdata    = { path = "../vt" }
