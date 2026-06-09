@@ -694,9 +694,11 @@ session    required   pam_unix.so\n")?,
     put(&stage("pam_login",
         b"# B18: console login PAM stack - mirrors the sshd stack so
 # the same pam_unix.so + /etc/shadow flow drives both login paths.
-auth       required   pam_unix.so
+# nullok: accept the empty root password (root::... in /etc/shadow) so
+# the console behaves like a normal dev box -- `root` + Enter -> shell.
+auth       required   pam_unix.so nullok
 account    required   pam_unix.so
-password   required   pam_unix.so
+password   required   pam_unix.so nullok
 session    required   pam_unix.so
 ")?,
         "/etc/pam.d/login")?;
