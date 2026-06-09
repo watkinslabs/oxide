@@ -107,12 +107,28 @@ Cooperative-only (tick_pick_next removed) boots to login (verified), proving
 boot doesn't need IRQ-tail preemption — but the new resched path can't land
 until the handoff exists. So Phase A MUST start with:
 
-0. **`finish_task_switch` (Linux `schedule_tail`)**: a step that runs on the
-   INCOMING task's side immediately post-switch and balances `preempt_count`
-   (Phase B: also releases the prev rq->lock). Route the first-run scaffold
-   THROUGH it (scaffold `ret` → `finish_task_switch` → resume_user) instead of
-   bypassing it. Pin the preempt_count invariant (==0 when a task runs in user)
-   in a hosted test. Only then is "one engine via schedule()" correct.
+0. **`finish_task_switch` (Linux `schedule_tail`) — handoff protocol.**
+   `preempt_count` is PER-CPU. Rule: `schedule()` does `preempt_disable` at
+   entry (+1); the INCOMING task runs `finish_task_switch` (−1) after the
+   switch. Each switch = one +1 (switcher entry) / one −1 (switched-to finish),
+   net 0 per-CPU. The "owed" −1 of a frozen switcher is paid by whoever it
+   switched to; when the switcher later resumes, IT pays the −1 for whoever
+   switches to it. Chain stays balanced.
+   - schedule() resumed path: after `oxide_context_switch` returns, call
+     `finish_task_switch()` (does `preempt_enable`; Phase B: release prev
+     rq-lock). Early-return paths (next==prev / no rq) must `preempt_enable`
+     before returning (they did +1 but didn't switch).
+   - first-run path: scaffold bakes `rsp[0] = oxide_finish_switch_tramp`
+     (asm: `call finish_task_switch; jmp oxide_irq_resume_user`) INSTEAD of
+     `resume_user` directly, so a new task also pays the −1.
+   - **COUPLING (verified by analysis):** `schedule_from_irq` does NO +1, so a
+     scaffold routed through `finish_task_switch` while that engine still
+     exists would UNDERFLOW. Therefore `finish_task_switch` + the engine
+     collapse (delete `schedule_from_irq`/staging, route IRQ exit through
+     `schedule()`) must land in ONE coordinated change, not separate steps.
+   - Pin in hosted tests: balanced +1/−1 across a simulated switch; underflow
+     guard; "after finish, count returns to pre-schedule value". Then boot→
+     login→shell→fork repeated, both arches.
 
 Steps (each: hosted test where possible → build both arches → boot→login→
 shell→fork, repeated):
