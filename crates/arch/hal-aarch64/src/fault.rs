@@ -64,7 +64,11 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) ->
     // resolve and we're about to halt.
     let handled = (current_handler())(esr, far, elr);
     if !handled {
-        debug_irq! {
+        // Default-ON oops (see hal-x86_64 fault.rs): never halt silently.
+        // debug-watchdog is default-on via the boot crates; zero bytes on a
+        // healthy boot since this only runs when the abort is unrecoverable.
+        #[cfg(any(feature = "debug-irq", feature = "debug-watchdog"))]
+        {
             let ec = ((esr >> 26) & 0x3f) as u32;        // ESR_EL1.EC bits 26..31
             let iss = esr & 0xff_ffff;                   // ESR_EL1.ISS bits 0..24
             klog::write_raw(b"[FAULT] esr=");
@@ -89,7 +93,7 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) ->
             }
             klog::write_raw(b"\n");
         }
-        #[cfg(not(feature = "debug-irq"))]
+        #[cfg(not(any(feature = "debug-irq", feature = "debug-watchdog")))]
         { let _ = (esr, far, elr); }
     }
     handled
