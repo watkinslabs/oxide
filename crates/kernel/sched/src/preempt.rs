@@ -85,6 +85,14 @@ pub fn set_need_resched() { need_resched_slot().store(true, Ordering::Release); 
 /// # C: O(1)
 pub fn take_need_resched() -> bool { need_resched_slot().swap(false, Ordering::AcqRel) }
 
+/// The single resched decision: a reschedule was requested AND this is a
+/// safe point to take it (`preempt_count == 0`). Both the return-to-user
+/// slow path (`smp-arch.md` Phase A) and `preempt_enable` consult this — one
+/// owner of "consume need_resched". Pure read; the caller clears the flag
+/// (via `take_need_resched`) only when it actually schedules.
+/// # C: O(1)
+pub fn should_resched() -> bool { preempt_count() == 0 && need_resched() }
+
 /// Bump the preempt count. Pairs with `preempt_enable` /
 /// `preempt_enable_no_check`. Prefer the `PreemptGuard` RAII form
 /// to keep pairs balanced.
