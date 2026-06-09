@@ -199,6 +199,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // (slab) wires in.
     if let Ok(p) = pmm {
         debug_pmm! { smoke::pmm::run(p); }
+        // In-guest full-RAM memtest (opt-in): drains all free pages, sweeps
+        // moving-inversions over the real HHDM mapping, frees, conserves.
+        #[cfg(feature = "debug-memtest")]
+        smoke::memtest::run(p);
 
         // Wire MmuOps for this arch: stash HHDM + bare-fn frame
         // allocator. After this point the trait surface is live.
