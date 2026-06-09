@@ -1,49 +1,59 @@
-# Session hand-off — B66 is the CONFIRMED-GOOD baseline (login works); my signal/IRQ work caused chaos
+# Session hand-off — Linux-exact TTY/VT/console rebuild (T1–T8 LANDED), T9/T7b remain
 
-## CONFIRMED THIS SESSION (user-verified)
-- **main == B66 tree (PR #1635). Login + boot work reliably ("works perfect" — user-tested).**
-- My session's kernel-BEHAVIOR changes (B67→F412) made login CHAOTIC/intermittent (a race)
-  and the keymap boot-wedge intermittent. Reset to the exact B66 tree fixed it.
-- Suspect ranking for the race: **F410** (rewrote the EVERY-TICK IRQ entry/exit asm — added
-  6 callee-saved saves + new fork scaffold + frame-offset shift; a subtle bug there corrupts
-  preempted/forked tasks intermittently) > B67 futex parking > F411 rt_sigframe > B68 timerfd.
-- The pre-push smoke did NOT catch it: it only checks `oxide login:` APPEARS, not that login
-  → shell SUCCEEDS, and not repeatedly (the race is intermittent). **Any future scheduler/
-  signal/IRQ change MUST be verified by repeated actual login→shell, not the smoke.**
+## Headline
+Rebuilding the TTY/VT/console the **real Linux way** per `tty-rebuild-plan.md`
+(5 layers: vc_data+emulator / consw+fbcon / N_TTY ldisc / tty_struct+driver /
+console+serial drivers + printk-console split). The intermittent **login race
+is FIXED and LIVE on main**, verified login→shell on BOTH arches (smoke PASS;
+manual `T7OK_0_/dev/console` + `ARM_T7OK_0_/dev/console`).
 
-## What B66 has (kept, working)
-HHDM full direct map (>4GB RAM), disk-based rootfs (virtio-blk ext4, root+home imgs),
-virtio-blk multi-sector perf, CI stub-blobs, 38 vendored tools, x86_64-musl-g++.
+## Landed to main (all merged, tested both arches)
+- T1 #1640 `vtdata` crate: `Vc` screen buffer + ECMA-48 `Emulator` (32 tests).
+- T2 #1641 `Consw` trait + fbcon renders `Vc` (per-cell attrs; real lock).
+- T3 #1643 N_TTY ldisc (`tty/src/ldisc/`): OPOST/ICANON/ECHO/ISIG (91 tty tests).
+- T4 #1644 TTY core (`tty/src/core.rs`,`wait.rs`): tty_struct/driver/port +
+  **lost-wakeup-free blocking read** (port-lock serializes enqueue-waiter vs
+  queue+wake; proven by a 2000-iter race test that hangs if reverted). 108 tests.
+- T5 #1645 `vtconsole` crate: VtConsoleDriver (full VT stack end-to-end, 8 tests).
+- T6 #1646 `serialtty` crate: ttyS0 SerialTtyDriver (8 tests).
+- T7 #1647 **CUTOVER**: `/dev/console` → serial `TtyStruct`
+  (`console/src/static_console.rs`); UART RX → N_TTY; console write → OPOST →
+  UART (not the kmsg ring). 016_ioctl console TCGETS/TCSETS/TIOC*PGRP/SCTTY for
+  vt<=1 → static_console. **QEMU-verified login→shell both arches, smoke PASS.**
+- T8 #1648 console TIOCSWINSZ fix (was dead no-op) + `/dev` fd-link contract
+  locked (vfs `dup_fd_target`/`parse_proc_fd`, 48 vfs tests). Audit confirmed
+  /dev/std*, /dev/fd, /proc/self/fd/N, isatty/ttyname already correct post-T7.
 
-## What was DROPPED in the reset (redo carefully, one at a time, login-verified)
-- futex WAIT_BITSET/WAKE_BITSET (B67) — made starship launch; **redo first, ALONE, verify
-  repeated login still works** (it changed futex parking → could be the race, or innocent).
-- timerfd ABSTIME (B68) — Go netpoller timer.
-- rt_sigframe types/build/restore + IRQ full-GP save + async delivery (F409-F412) — the
-  Go async-preemption mechanism. F410 (IRQ asm) is the prime chaos suspect — redo it LAST
-  and most carefully, with repeated login + fork stress, in an env that can DRIVE qemu.
+## Remaining (tasks #9, #10)
+- **T9 (#9) integration + QEMU acceptance** — run on BOTH arches: the /dev/fd
+  userspace script (below), bash interactive (history/^C/^D/pipes), repeatability
+  ×N (no nudge/wedge), dmesg≠shell-output. Add a hosted full-stack
+  serial+console integration test. (vtconsole T5 already does VT end-to-end.)
+- **T7b (#10)** — the remaining "exactly Linux" output arch: real printk
+  `struct console` registry in klog (register_console; fan-out), fbcon renders
+  the VT via vc_data as a printk console (lossless, replace klog aux byte-sink),
+  migrate numbered VTs /dev/tty1..N to vtconsole. QEMU-verify fbcon screen.
 
-## Go-tools goal status: NOT achieved
-duf/glow/micro (Go) need async signal delivery (SIGURG to a userspace-spinning thread). The
-mechanism was built (F409-F412) but destabilized login → reverted. Redo requires a verify
-loop that actually logs in + runs the tool repeatedly. starship (Rust, futex-only) DID work
-under B67 — re-landing futex alone may restore starship without the IRQ-asm risk.
+## T9 QEMU /dev/fd acceptance script (paste into serial as root; expected → )
+```
+echo hi > /dev/stdout            # hi
+echo via_fd > /dev/fd/1          # via_fd
+readlink /proc/self/fd/0         # /dev/console
+readlink /dev/stdin              # /proc/self/fd/0
+readlink /dev/stdout             # /proc/self/fd/1
+readlink /dev/fd                 # /proc/self/fd
+tty                              # /dev/console
+[ -t 0 ] && echo ISATTY0         # ISATTY0
+stat -c %F /dev/console          # character special file
+stty size                        # 24 80
+```
 
-## HARD-LEARNED: this sandbox CANNOT drive/observe QEMU (root of tonight's thrash)
-- QEMU works ONLY: foreground, short (<~30s), direct, NO stdin redirect:
-  `timeout 30 qemu ... -serial stdio > /tmp/x.log 2>&1`, read the file SEPARATELY.
-- FAILS: backgrounded qemu (reaped→empty), stdin pipe/`<file`/unix-socket/python-subprocess,
-  cmds >~120s (tool kills+discards output). So I cannot drive interactive login. AGENTS can
-  (different harness); or the USER runs `make qemu-x86` + login + pastes. USE THAT to verify.
-- klog debug traces FLOOD serial + WEDGE boot — earlier "0 switches" readings were artifacts.
-  Use TARGETED (arm-on-execve) traces only. Bash: foreground `sleep` BLOCKED; `set -e` aborts
-  on any non-zero (guard `|| true`). SKIP_SMOKE=1 only when logically boot-safe (e.g. exact
-  prior-passed tree).
+## Login for testing: `root` + Enter (nullok, B72). B73 autologin branch OPEN
+(unmerged, band-aid). qemu MCP: x86 KVM; arm; drive via qemu_run_until +
+qemu_send_serial. NOTE qemu-mcp prompt-timing differs from `make smoke`
+(smoke is the truth for "login: appears").
 
-## Known separate intermittent bug: keymap boot-wedge
-Kernel stalls right after `keymap loaded: US QWERTY` (kmain.rs:649, before userspace), in
-B66 too. Likely tty-write yield-point / CAT-smoke wedge class. Retry boot gets past it.
+## Other open (pre-rebuild, parked): sched unified-engine WIP is stash@{0}
+(`WIP-unified-sched-step1`) — return AFTER tty is 100%. sched-anal.md is its plan.
 
-## Minor: /etc/machine-id EIO at boot; merged-/usr cosmetic taint.
-
-## Counters: F=412, B=71, C=09, D=92. Author Chris Watkins <chris@watkinslabs.com>.
+## Counters: F=420, B=73, C=10, D=92. Author Chris Watkins <chris@watkinslabs.com>.
