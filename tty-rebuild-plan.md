@@ -193,7 +193,15 @@ tty-core+drivers → printk-console-split → /dev-node correctness → acceptan
   Tests: printk → both consoles; a tty write does NOT appear in the kmsg ring;
   kmsg ring only contains kernel/`/dev/kmsg` records.
 
-- **T8 ☐ /dev node + fd/symlink correctness.** `/dev/console` = the system console
+- **T8 ◐ /dev node + fd/symlink correctness.** Audit: items 1-4 already
+  Linux-correct (ConsoleInode=CharDev; `/proc/self/fd/N`→open path symlink;
+  `/dev/std*`+`/dev/fd` symlinks→`/proc/self/fd/*`; fd-link dup-open/readlink;
+  isatty/ttyname via fstat S_IFCHR + readlink). Fixed item 5: console
+  TIOCGWINSZ/TIOCSWINSZ now hit the `TtyStruct` winsize (`static_console::
+  winsize_{get,set}`) + raise SIGWINCH on the live fg pgrp — was the dead
+  fixed-default pty path. fd-link parsing moved to hosted-tested
+  `vfs::path::{dup_fd_target,parse_proc_fd}` (4 new vfs tests). Builds + tty
+  (108) + vfs (48) green; spec-lint clean. QEMU userspace acceptance pending. `/dev/console` = the system console
   (boot console / fg VT). `/dev/tty` = the **caller's controlling tty** (per-task
   ctty), NOT always fg. `/dev/tty0` = current fg VT. `/dev/ttyN` = VT N. `/dev/ttyS0`
   = serial tty. `/dev/pts/*` via ptmx. Verify: `/dev/std{in,out,err}` →

@@ -28,7 +28,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use serialtty::{KernelUart, SerialOut, SerialTtyDriver};
 use tty::ldisc::Sig;
-use tty::pty::{default_termios, TERMIOS_BYTES};
+use tty::pty::{default_termios, Winsize, TERMIOS_BYTES};
 use tty::wait::kernel::KernelWait;
 use tty::{TtyDriver, TtyStruct};
 
@@ -196,6 +196,22 @@ pub fn set_foreground_pgid(pgid: u32) {
     if let Some(tty) = console() {
         serialtty::set_fg_pgrp(tty, pgid);
     }
+}
+
+/// TIOCGWINSZ: read the console's window size off the `TtyStruct`
+/// (T8 — was the fixed `Winsize::default_pty` on the dead pty path).
+/// Falls back to the 24×80 default before `install`.
+/// # C: O(1)
+pub fn winsize_get() -> Winsize {
+    console().map(|t| t.winsize()).unwrap_or_else(Winsize::default_pty)
+}
+
+/// TIOCSWINSZ: store a new window size on the console `TtyStruct`.
+/// Returns true when it changed (caller raises SIGWINCH on the fg
+/// pgrp). No-op (returns false) before `install`.
+/// # C: O(1)
+pub fn winsize_set(ws: Winsize) -> bool {
+    console().map(|t| t.set_winsize(ws)).unwrap_or(false)
 }
 
 /// TIOCGSID: controlling session id (0 = unset).
