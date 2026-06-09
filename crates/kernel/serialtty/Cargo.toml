@@ -23,6 +23,11 @@ tty = { path = "../tty" }
 
 [target.'cfg(target_os = "oxide-kernel")'.dependencies]
 drv-serial = { path = "../../drivers/drv-serial" }
+# Mirror console output to the foreground framebuffer VT so /dev/console
+# (getty/login/shell) shows on the display, not just the UART — the
+# multi-console behavior (Linux `console=tty0 console=ttyS0`). No cycle:
+# fbcon depends only on vtdata.
+fbcon = { path = "../../drivers/fbcon" }
 
 [dev-dependencies]
 tty = { path = "../tty", features = ["hosted"] }
