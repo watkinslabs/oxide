@@ -333,6 +333,20 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                                 VIRTIO_NET_MSI_ID
                                     .store(id, core::sync::atomic::Ordering::Release);
                             }
+                            // virtio-blk: register the queue-completion MSI
+                            // handler now (device-agnostic — wakes the global
+                            // blk sleeper list). Immediate wake vs the timer
+                            // tick backstop. transitional 0x1001 / modern 0x1042.
+                            let is_virtio_blk = d.vendor_id == 0x1AF4
+                                && (d.device_id == 0x1001 || d.device_id == 0x1042);
+                            if is_virtio_blk {
+                                #[cfg(target_arch = "x86_64")]
+                                let _ = arch_irq::register_msi_handler(
+                                    id as u8, drv_virtio_blk::modern::wake_completions);
+                                #[cfg(target_arch = "aarch64")]
+                                let _ = arch_irq::register_msi_handler(
+                                    id, drv_virtio_blk::modern::wake_completions);
+                            }
                             let entry_va = tbl_va; // entry 0
                             // SAFETY: entry_va is the freshly Device-attr-mapped MSI-X table base; aligned u32 stores within the 16-byte entry.
                             unsafe {
