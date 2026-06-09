@@ -10,6 +10,11 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+// Cell-based `consw` renderer (T2): blits a `vtdata::Vc` to a
+// framebuffer. Additive — the legacy `Console` byte path above is
+// unchanged and still serves the live boot console until T7.
+pub mod vcrender;
+
 // ============================================================
 // PSF font header (per linux/include/uapi/linux/kd.h notes +
 // kernel `pcscreen_font.h`)
@@ -759,6 +764,53 @@ pub mod kernel {
     use super::Console;
 
     static CONSOLE: Spinlock<Option<Console>, TtyClass> = Spinlock::new(None);
+
+    // ---- T2 cell-based renderer (additive; not yet wired to boot) ----
+    //
+    // The new consw renderer state. Uses a REAL `lock()` (never
+    // `try_lock`→drop) so VT cell output is never silently lost — that
+    // is the bug T2 removes from the byte path. Not yet driven by the
+    // live console; T7 flips boot from `CONSOLE`/`klog_sink` onto this.
+    use super::vcrender::VcRenderer;
+    use vtdata::Vc;
+
+    static VC_RENDER: Spinlock<Option<VcRenderer>, TtyClass> = Spinlock::new(None);
+
+    /// Bind the cell renderer to a `cols`×`rows` text grid.
+    /// # C: O(cols*rows*cell) — allocates + clears the surface.
+    pub fn vc_init(cols: u32, rows: u32) {
+        let mut r = VcRenderer::new();
+        use vtdata::Consw;
+        r.con_init(cols, rows);
+        *VC_RENDER.lock() = Some(r);
+    }
+
+    /// Render `vc` (its dirty rows + cursor) onto the cell renderer via
+    /// `consw`, then push the pixels through the installed flush thunk.
+    /// Real lock: blocks rather than dropping output.
+    /// # C: O(dirty_rows*cols*cell) + O(pixels) flush.
+    pub fn render_vc(vc: &mut Vc) {
+        let mut guard = VC_RENDER.lock();
+        let Some(r) = guard.as_mut() else { return };
+        vtdata::render(vc, r);
+        let raw = FLUSH_FN.load(Ordering::Acquire);
+        if raw.is_null() {
+            return;
+        }
+        // SAFETY: FLUSH_FN is only populated via kernel_init with a non-null FlushFn cast through `as *mut ()`; reverse-cast restores the original signature.
+        let f: FlushFn = unsafe { core::mem::transmute(raw) };
+        f(pixels_as_bytes(r.pixels()));
+    }
+
+    /// Reinterpret a 0x00RRGGBB pixel slice as a BGRA32 byte slice for
+    /// the flush thunk. The renderer stores RRGGBB in native u32; on a
+    /// little-endian target the byte order is B,G,R,0 which matches the
+    /// BGRA32 framebuffer the flush thunk expects.
+    /// # C: O(1).
+    fn pixels_as_bytes(px: &[u32]) -> &[u8] {
+        // SAFETY: u32 slice reinterpreted as a 4x-longer u8 slice of the same allocation; pixels are plain data with no padding and the lifetime is tied to `px`.
+        unsafe { core::slice::from_raw_parts(px.as_ptr() as *const u8, px.len() * 4) }
+    }
 
     /// Flush thunk: copies fbcon's pixel buffer to the live FB and
     /// pokes the GPU to repaint. Provided by drv-virtio-gpu at boot.
