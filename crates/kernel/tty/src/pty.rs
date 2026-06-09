@@ -27,6 +27,7 @@ pub mod lflag {
     pub const ECHOK:   u32 = 0o000040; // VKILL echoes "\r\n"
     pub const ECHONL:  u32 = 0o000100; // echo NL even when ECHO off
     pub const ECHOCTL: u32 = 0o001000; // echo control chars as ^X
+    pub const IEXTEN:  u32 = 0o100000; // enable VWERASE/VLNEXT/VEOL2 (impl-defined input)
 }
 
 /// Linux c_iflag bits — input processing on master_write.
@@ -49,7 +50,7 @@ pub mod oflag {
 /// Default c_lflag at pair creation: matches Linux `stty sane`
 /// — ICANON | ECHO | ISIG | ECHOE | ECHOK | ECHOCTL.
 pub const DEFAULT_LFLAG: u32 = lflag::ICANON | lflag::ECHO | lflag::ISIG
-    | lflag::ECHOE | lflag::ECHOK | lflag::ECHOCTL;
+    | lflag::ECHOE | lflag::ECHOK | lflag::ECHOCTL | lflag::IEXTEN;
 /// Default c_iflag at pair creation: ICRNL (Enter sends \r → \n).
 pub const DEFAULT_IFLAG: u32 = iflag::ICRNL;
 /// Default c_oflag at pair creation: OPOST | ONLCR (\n → \r\n on output).
@@ -120,6 +121,8 @@ pub const DEFAULT_VSUSP:  u8 = 0x1A;
 pub const DEFAULT_VSTART: u8 = 0x11;
 /// Default c_cc[VSTOP]  = 0x13 (^S).
 pub const DEFAULT_VSTOP:  u8 = 0x13;
+/// Default c_cc[VWERASE] = 0x17 (^W).
+pub const DEFAULT_VWERASE: u8 = 0x17;
 
 /// Build a default termios byte image. Matches Linux pty defaults:
 /// c_lflag = ICANON|ECHO|ISIG, c_iflag = ICRNL, c_oflag = OPOST|ONLCR,
@@ -150,6 +153,7 @@ pub const fn default_termios() -> [u8; TERMIOS_BYTES] {
     t[TERMIOS_OFF_CC + cc::VSUSP ] = DEFAULT_VSUSP;
     t[TERMIOS_OFF_CC + cc::VSTART] = DEFAULT_VSTART;
     t[TERMIOS_OFF_CC + cc::VSTOP ] = DEFAULT_VSTOP;
+    t[TERMIOS_OFF_CC + cc::VWERASE] = DEFAULT_VWERASE;
     t
 }
 
