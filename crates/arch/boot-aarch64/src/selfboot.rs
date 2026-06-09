@@ -57,6 +57,20 @@ pub static SB_LOAD_BASE: AtomicU64 = AtomicU64::new(0);
 #[no_mangle]
 pub static EFI_RSDP_PA: AtomicU64 = AtomicU64::new(0);
 
+/// Max `EfiConventionalMemory` regions captured from the EFI memory map by
+/// `efi_stub_setup` for the no-DTB PMM memmap (QEMU EDK2 in ACPI mode hands
+/// no FDT, so the DTB `/memory` extent is unavailable — without this the
+/// kernel fell back to a hardcoded 1 GiB and ignored the rest of guest RAM).
+pub const EFI_RAM_MAX: usize = 16;
+/// Count of valid entries in `EFI_RAM_BASE`/`EFI_RAM_PAGES`.
+pub static EFI_RAM_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Per-region base PA of each captured `EfiConventionalMemory` block.
+pub static EFI_RAM_BASE: [AtomicU64; EFI_RAM_MAX] =
+    [const { AtomicU64::new(0) }; EFI_RAM_MAX];
+/// Per-region page count (4 KiB) of each captured block.
+pub static EFI_RAM_PAGES: [AtomicU64; EFI_RAM_MAX] =
+    [const { AtomicU64::new(0) }; EFI_RAM_MAX];
+
 /// True when we entered via the self-bootstrap Image trampoline.
 /// # C: O(1)
 pub fn is_selfboot() -> bool { SB_SELFBOOT_FLAG.load(Ordering::Acquire) != 0 }
@@ -149,6 +163,29 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
                 &mut map_size, buf.as_mut_ptr(),
                 &mut map_key, &mut desc_size, &mut desc_ver,
             );
+            // Capture EfiConventionalMemory (type 7 = genuinely-free DRAM,
+            // excludes the kernel image, ACPI tables, reserved + MMIO) so
+            // build_selfboot_memmap can size the PMM from the real map when
+            // the firmware exposes no FDT. Descriptor layout (UEFI 2.x):
+            // Type u32 @0, PhysicalStart u64 @8, NumberOfPages u64 @24;
+            // stride is the firmware-reported desc_size (>= 40).
+            if desc_size >= 40 {
+                let mut n = 0usize;
+                let mut off: u64 = 0;
+                while off + desc_size <= map_size && n < EFI_RAM_MAX {
+                    let d = buf.as_ptr().add(off as usize);
+                    let ty = *(d as *const u32);
+                    let phys = *(d.add(8) as *const u64);
+                    let pages = *(d.add(24) as *const u64);
+                    if ty == 7 && pages != 0 {
+                        EFI_RAM_BASE[n].store(phys, core::sync::atomic::Ordering::Release);
+                        EFI_RAM_PAGES[n].store(pages, core::sync::atomic::Ordering::Release);
+                        n += 1;
+                    }
+                    off += desc_size;
+                }
+                EFI_RAM_COUNT.store(n as u64, core::sync::atomic::Ordering::Release);
+            }
             // ExitBootServices must immediately follow GetMemoryMap with
             // the fresh key; on EFI_INVALID_PARAMETER the map changed —
             // re-fetch and retry.

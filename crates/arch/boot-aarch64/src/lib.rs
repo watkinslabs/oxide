@@ -270,11 +270,36 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
     let kp = selfboot::SB_LOAD_BASE.load(core::sync::atomic::Ordering::Acquire);
 
     let pa = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
-    // RAM extent from the DTB /memory reg; fall back to a conservative
-    // 1 GiB at the QEMU virt base if the DTB is unreadable.
+
+    // Usable RAM regions, in priority order:
+    //   1. DTB `/memory` extent (U-Boot `booti` / `-kernel`, or any EFI
+    //      firmware that publishes an FDT) — one contiguous block.
+    //   2. EFI `EfiConventionalMemory` regions captured by `efi_stub_setup`
+    //      (QEMU EDK2 in ACPI mode exposes NO FDT, so the DTB read fails).
+    //      Type-7 memory is genuinely-free DRAM — it already excludes the
+    //      kernel image, ACPI tables, reserved + MMIO — so no carve-out is
+    //      needed and ACPI pages are never marked usable.
+    //   3. Last resort: a conservative 1 GiB at the QEMU virt base.
+    let mut regions: [(u64, u64); selfboot::EFI_RAM_MAX] = [(0, 0); selfboot::EFI_RAM_MAX];
+    let mut nregions = 0usize;
     // SAFETY: pa is the bootloader DTB pointer; helper bounds reads by header.
-    let (base, size) = unsafe { read_dtb_memory(pa) }.unwrap_or((0x4000_0000, 0x4000_0000));
-    let ram_end = base.saturating_add(size);
+    match unsafe { read_dtb_memory(pa) } {
+        Some((base, size)) => { regions[0] = (base, size); nregions = 1; }
+        None => {
+            let nr = selfboot::EFI_RAM_COUNT.load(core::sync::atomic::Ordering::Acquire) as usize;
+            if nr > 0 {
+                while nregions < nr && nregions < selfboot::EFI_RAM_MAX {
+                    let b = selfboot::EFI_RAM_BASE[nregions].load(core::sync::atomic::Ordering::Acquire);
+                    let pages = selfboot::EFI_RAM_PAGES[nregions].load(core::sync::atomic::Ordering::Acquire);
+                    regions[nregions] = (b, pages.saturating_mul(0x1000));
+                    nregions += 1;
+                }
+            } else {
+                regions[0] = (0x4000_0000, 0x4000_0000);
+                nregions = 1;
+            }
+        }
+    }
 
     // Kernel image physical extent (page-rounded): VMA - KB + load_base.
     let kstart = (core::ptr::addr_of!(__kernel_start) as u64 - KB + kp) & !0xFFF;
@@ -286,8 +311,9 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
         ((pa & !0xFFF), ((pa + ts + 0xFFF) & !0xFFF))
     } else { (0, 0) };
 
-    // Two reserved blocks (kernel, DTB), sorted by start. Walk RAM and
-    // emit Usable for the gaps, the reserved kind for each block.
+    // Two reserved blocks (kernel, DTB), sorted by start. Defensive even on
+    // the EFI path (type-7 already excludes them) — a block not inside a
+    // region is simply skipped.
     let mut blocks: [(u64, u64, boot_info::BootMemKind); 2] = [
         (kstart, kend, boot_info::BootMemKind::KernelImage),
         (dstart, dend, boot_info::BootMemKind::Reserved),
@@ -303,16 +329,23 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
             *n += 1;
         }
     };
-    let mut cur = base;
-    for &(bs, be, bk) in blocks.iter() {
-        if be == 0 || be <= base || bs >= ram_end { continue; }
-        let bs = bs.max(base);
-        let be = be.min(ram_end);
-        if bs > cur { push(cur, bs, boot_info::BootMemKind::Usable, &mut n); }
-        push(bs, be, bk, &mut n);
-        cur = cur.max(be);
+    // Walk each usable region, emitting Usable for the gaps and the carve
+    // kind where a reserved block overlaps it.
+    for ri in 0..nregions {
+        let (base, size) = regions[ri];
+        if size == 0 { continue; }
+        let ram_end = base.saturating_add(size);
+        let mut cur = base;
+        for &(bs, be, bk) in blocks.iter() {
+            if be == 0 || be <= base || bs >= ram_end { continue; }
+            let bs = bs.max(base);
+            let be = be.min(ram_end);
+            if bs > cur { push(cur, bs, boot_info::BootMemKind::Usable, &mut n); }
+            push(bs, be, bk, &mut n);
+            cur = cur.max(be);
+        }
+        if cur < ram_end { push(cur, ram_end, boot_info::BootMemKind::Usable, &mut n); }
     }
-    if cur < ram_end { push(cur, ram_end, boot_info::BootMemKind::Usable, &mut n); }
 
     info.memmap_count = n as u32;
     info.memmap_ptr = storage.as_ptr();
