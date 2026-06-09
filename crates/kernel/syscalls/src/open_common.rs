@@ -21,30 +21,17 @@ pub(crate) const O_TMPFILE:   u32 = 0o20000000;
 /// Map a path that resolves by **duplicating an existing open file
 /// description** → `(tid_opt, fd)`: `/dev/std{in,out,err}`, `/dev/fd/<n>`,
 /// `/proc/<pid|self>/fd/<n>` (Linux magic fd-link open semantics).
+/// Delegates to the hosted-tested `vfs::path::dup_fd_target` so the
+/// parsing contract is locked by `vfs` unit tests (T8).
 /// # C: O(N_path)
 pub(crate) fn dup_fd_target(path: &str) -> Option<(Option<u32>, i32)> {
-    match path {
-        "/dev/stdin"  => return Some((None, 0)),
-        "/dev/stdout" => return Some((None, 1)),
-        "/dev/stderr" => return Some((None, 2)),
-        _ => {}
-    }
-    if let Some(rest) = path.strip_prefix("/dev/fd/") {
-        return rest.parse::<i32>().ok().map(|n| (None, n));
-    }
-    parse_proc_fd(path)
+    vfs::path::dup_fd_target(path)
 }
 
 /// Parse `/proc/{self|<pid>}/fd/<n>` → `(tid_opt, fd)` (`self` ⇒ `None`).
 /// # C: O(N_path)
 pub(crate) fn parse_proc_fd(path: &str) -> Option<(Option<u32>, i32)> {
-    let rest = path.strip_prefix("/proc/")?;
-    let mut it = rest.splitn(3, '/');
-    let who = it.next()?;
-    if it.next()? != "fd" { return None; }
-    let fd: i32 = it.next()?.parse().ok()?;
-    let tid = if who == "self" { None } else { Some(who.parse::<u32>().ok()?) };
-    Some((tid, fd))
+    vfs::path::parse_proc_fd(path)
 }
 
 /// Open `/proc/<pid>/fd/<n>` by duplicating the target fd's open file
