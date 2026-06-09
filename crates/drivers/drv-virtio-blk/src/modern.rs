@@ -3,8 +3,20 @@
 // program, and DRIVER_OK; once that finishes it hands the persistent
 // kernel-side addresses + device-cfg here via `init_blk`. This module
 // owns the synchronous request engine: build the 3-descriptor chain
-// (header IN + data + status WRITE), kick the notify register, poll
-// used.idx. No IRQ needed for Stage 1 (the probe already spins).
+// (header IN + data + status WRITE), kick the notify register, wait for
+// completion.
+//
+// Completion wait is ADAPTIVE: a short bounded spin catches the common
+// near-instant completion with zero added latency (keeps the boot read
+// storm fast), then — only if it hasn't completed — the requesting task
+// SLEEPS on `BLK_COMPL` instead of pegging a core. Sleepers are woken
+// from the timer tick (`tick_wake_completions`, called by kmain's
+// `tick_poll_combined`, mirroring virtio-net's rx poll); a real
+// per-queue completion MSI is a future latency optimisation. A
+// wall-clock deadline bounds a genuinely-lost completion to `EIO`.
+// Single in-flight is serialised by `RingShadow.busy` + the same wait
+// list; the inflight spinlock is NEVER held across a sleep, so the
+// completion path can take it.
 //
 // Arch-neutral because every post-bring-up op is MMIO (notify_cap
 // window) + HHDM (ring + bounce frames). HHDM offset comes from the
@@ -18,8 +30,29 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
 
+#[cfg(target_os = "oxide-kernel")]
+use sched::live::wait_list::WaitList;
+
 use block::{BlockDevice, BlockRequest, BlockError, BlockOp, KResult};
 use virtio::blk;
+
+/// Global wait list every blk sleeper parks on. One shared list (rather
+/// than per-device) keeps the tick waker trivial: a wake re-runs all
+/// sleepers, each re-checks its own used.idx / busy condition and
+/// re-parks if not satisfied (spurious wakes are harmless). Covers both
+/// completion waits and the single-in-flight gate.
+#[cfg(target_os = "oxide-kernel")]
+static BLK_COMPL: WaitList = WaitList::new();
+
+/// Wake every parked blk waiter so it re-checks used.idx. Driven by BOTH
+/// the per-queue completion MSI (registered in pci-boot — immediate wake)
+/// AND the timer tick (kmain `tick_poll_combined` — backstop if an MSI
+/// edge is missed/coalesced). Cheap when no one is parked.
+/// # C: O(N_waiters)
+#[cfg(target_os = "oxide-kernel")]
+pub fn wake_completions() {
+    BLK_COMPL.wake_all();
+}
 
 /// HHDM base for the running arch.
 /// # C: O(1)
@@ -32,6 +65,73 @@ fn hhdm() -> u64 {
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     { 0 }
 }
+
+/// Monotonic wall-clock ns for the running arch (0 if unsupported).
+/// Bounds the completion poll by real time instead of a spin count.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+#[inline]
+fn now_ns() -> u64 {
+    use hal::TimerOps;
+    #[cfg(target_arch = "x86_64")]
+    { hal_x86_64::X86TimerOps::monotonic_ns().0 }
+    #[cfg(target_arch = "aarch64")]
+    { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    { 0 }
+}
+
+/// True only when the current context may sleep: the runqueue is installed
+/// AND `current` is a real schedulable task — NOT the per-CPU idle task.
+/// Boot-smoke block reads run on the idle/boot context (where `current` is
+/// the idle task); parking it is illegal (`enqueue` rejects Idle), so those
+/// callers spin instead. Real syscall/exec/page-fault tasks park.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+#[inline]
+fn can_sleep() -> bool {
+    if sched::live::global().is_none() { return false; }
+    match sched::live::current() {
+        Some(t) => !matches!(t.sched_class(), sched::SchedClass::Idle),
+        None => false,
+    }
+}
+
+/// Sleep the current task on `BLK_COMPL` for one wake cycle (woken by the
+/// timer tick via `tick_wake_completions` or by `release_turn`). Falls
+/// back to a CPU relax before the scheduler exists. The caller re-checks
+/// its condition after this returns.
+/// # C: O(1) park
+#[cfg(target_os = "oxide-kernel")]
+#[inline]
+fn park_blk() {
+    if can_sleep() {
+        // SAFETY: running task on this CPU, preempt-off; park bumps the Arc
+        // + marks Sleeping before schedule; tick/release_turn wakes us and
+        // the caller re-checks used.idx. No spinlock held across the park.
+        unsafe {
+            BLK_COMPL.park();
+            sched::live::schedule::schedule();
+        }
+    } else {
+        core::hint::spin_loop();
+    }
+}
+
+/// Completion timeout. Real wall-clock replaces the old magic spin count:
+/// a genuinely-lost completion fails `EIO` after a bounded time instead of
+/// after an arbitrary, CPU-speed-dependent number of spins.
+#[cfg(target_os = "oxide-kernel")]
+const IO_TIMEOUT_NS: u64 = 5_000_000_000; // 5 s
+/// Fast-path spin budget before falling back to sleeping. The common
+/// completion lands within a few thousand spins (sub-µs on KVM), so this
+/// catches it with zero scheduler overhead; only a slow/stuck completion
+/// pays the sleep. Tuned well above typical KVM completion latency.
+#[cfg(target_os = "oxide-kernel")]
+const IO_SPIN_BUDGET: u64 = 200_000;
+/// Hosted-fallback re-check budget (no clock, no sleeping). Named, not magic.
+#[cfg(not(target_os = "oxide-kernel"))]
+const IO_FALLBACK_SPINS: u64 = 50_000_000;
 
 /// Bounce-frame layout. Three disjoint regions inside one contiguous
 /// PMM allocation so the device's separate descriptors never alias and
@@ -79,13 +179,18 @@ pub struct BlkState {
     /// Contiguous bounce-region base PA (header + status + 128 KiB
     /// data), allocated once at init via the buddy at `BOUNCE_ORDER`.
     bounce_pa:    u64,
-    /// Driver-side avail.idx shadow + used.idx last-seen, under lock.
+    /// Driver-side avail.idx shadow + used.idx last-seen + the single
+    /// in-flight `busy` gate, under lock. Held only for brief shadow
+    /// mutations — never across a sleep.
     inflight:     Spinlock<RingShadow, DriverLockClass>,
 }
 
 struct RingShadow {
     avail_idx: u16,
     used_seen: u16,
+    /// True while a request owns the single in-flight slot. Other
+    /// submitters spin/sleep on `BLK_COMPL` until it clears.
+    busy:      bool,
 }
 
 // SAFETY justification: BlkState holds raw PAs/VAs into HHDM/MMIO that
@@ -106,7 +211,7 @@ impl BlkState {
     /// device-writable transfers (T_IN, T_GET_ID) the device fills the
     /// bounce frame, copied back into `data`. `data.len()` is the
     /// transfer length (must fit the data region; 0 for FLUSH).
-    /// # C: O(spin until used.idx advances)
+    /// # C: O(wait until used.idx advances; sleeps after a short spin)
     fn submit(&self, type_: u32, sector: u64, data: &mut [u8]) -> KResult<()> {
         let h = hhdm();
         if h == 0 || self.q0_desc_pa == 0 || self.bounce_pa == 0 {
@@ -124,8 +229,24 @@ impl BlkState {
             return Err(BlockError::Einval);
         }
 
-        let mut g = self.inflight.lock();
+        // Claim the single in-flight slot (spins then sleeps until free),
+        // run the request, then release the slot + wake the next submitter
+        // on EVERY path so an error never strands the device busy.
+        self.acquire_turn();
+        let r = self.do_request(h, type_, sector, data, is_in, is_flush, data_len);
+        self.release_turn();
+        r
+    }
 
+    /// Build + publish + kick the request, wait for completion, copy
+    /// results back. Runs while this task owns the in-flight slot
+    /// (`acquire_turn`), so the ring is exclusively ours; the `inflight`
+    /// spinlock is taken only for the brief shadow-index mutation and is
+    /// never held across the wait (so the completion waker can take it).
+    /// # C: O(wait until used.idx advances)
+    #[allow(clippy::too_many_arguments)]
+    fn do_request(&self, h: u64, type_: u32, sector: u64, data: &mut [u8],
+                  is_in: bool, is_flush: bool, data_len: u32) -> KResult<()> {
         let bounce = h.wrapping_add(self.bounce_pa) as *mut u8;
         // Encode the 16-byte header at HDR_OFF.
         let mut hdr = [0u8; 16];
@@ -133,7 +254,7 @@ impl BlkState {
         // SAFETY: HHDM-mapped bounce frame owned by this device for its
         // lifetime; writes stay within the BOUNCE_BYTES contiguous region
         // (header at 0, status at 0x10, data_len-bounded run at 0x1000);
-        // single in-flight request held under the inflight lock.
+        // we exclusively own the in-flight slot via acquire_turn.
         unsafe {
             for (i, b) in hdr.iter().enumerate() {
                 core::ptr::write_volatile(bounce.add(HDR_OFF + i), *b);
@@ -145,7 +266,7 @@ impl BlkState {
                     core::ptr::write_volatile(bounce.add(DATA_OFF + i), *b);
                 }
             }
-            // Sentinel status so a no-completion poll fails closed.
+            // Sentinel status so a no-completion wait fails closed.
             core::ptr::write_volatile(bounce.add(STATUS_OFF), 0xFFu8);
         }
 
@@ -159,7 +280,7 @@ impl BlkState {
         // SAFETY: HHDM-mapped queue-0 descriptor table programmed by
         // the boot probe; `n ≤ 3` descriptors written as the two
         // little-endian words `pack_desc` defines; chain indices 0..n
-        // are within the device-declared q0_size; held under lock.
+        // are within the device-declared q0_size; we own the in-flight slot.
         unsafe {
             for (i, d) in descs.iter().take(n).enumerate() {
                 let (w0, w1) = blk::pack_desc(d);
@@ -168,20 +289,26 @@ impl BlkState {
             }
         }
 
-        // avail.ring[next] = 0 (chain head desc index); bump avail.idx.
+        // Publish the chain to the avail ring and capture our completion
+        // target (the bumped avail.idx). Hold the inflight lock only for
+        // this brief shadow mutation.
         let avail = h.wrapping_add(self.q0_avail_pa) as *mut u16;
         let qsz = if self.q0_size == 0 { 1 } else { self.q0_size };
-        let slot = g.avail_idx % qsz;
-        // SAFETY: HHDM-mapped queue-0 avail ring; u16 stores at the
-        // flags(0)/idx(1)/ring(2+slot) offsets within the frame; slot
-        // bounded by q0_size; the Release fence publishes the chain
-        // before idx so the device observes a fully-built request.
-        unsafe {
-            core::ptr::write_volatile(avail.add(2 + slot as usize), 0u16);
-            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-            g.avail_idx = g.avail_idx.wrapping_add(1);
-            core::ptr::write_volatile(avail.add(1), g.avail_idx);
-        }
+        let target = {
+            let mut g = self.inflight.lock();
+            let slot = g.avail_idx % qsz;
+            // SAFETY: HHDM-mapped queue-0 avail ring; u16 stores at the
+            // flags(0)/idx(1)/ring(2+slot) offsets within the frame; slot
+            // bounded by q0_size; the Release fence publishes the chain
+            // before idx so the device observes a fully-built request.
+            unsafe {
+                core::ptr::write_volatile(avail.add(2 + slot as usize), 0u16);
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+                g.avail_idx = g.avail_idx.wrapping_add(1);
+                core::ptr::write_volatile(avail.add(1), g.avail_idx);
+            }
+            g.avail_idx
+        };
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
 
         // Kick the device via the notify register.
@@ -192,19 +319,8 @@ impl BlkState {
             unsafe { core::ptr::write_volatile(self.q0_notify_va as *mut u16, 0u16); }
         }
 
-        // Poll used.idx until it reaches our published avail.idx.
-        let used = h.wrapping_add(self.q0_used_pa) as *const u16;
-        let target = g.avail_idx;
-        let mut spins: u64 = 0;
-        loop {
-            // SAFETY: HHDM-mapped queue-0 used ring; aligned u16 load of
-            // the used.idx field at u16 offset 1 within the frame.
-            let uidx = unsafe { core::ptr::read_volatile(used.add(1)) };
-            if uidx == target { g.used_seen = uidx; break; }
-            spins += 1;
-            if spins > 50_000_000 { return Err(BlockError::Eio); }
-            core::hint::spin_loop();
-        }
+        // Wait for the device to consume our chain (used.idx == target).
+        self.wait_for_completion(h, target)?;
 
         // Decode status; copy device-filled data back for reads.
         // SAFETY: HHDM-mapped bounce frame; aligned u8 read of the
@@ -221,6 +337,68 @@ impl BlkState {
             }
         }
         Ok(())
+    }
+
+    /// Wait until the device advances used.idx to `target`. Adaptive: a
+    /// short bounded spin catches the common near-instant completion with
+    /// zero scheduler overhead; only then does the task SLEEP on
+    /// `BLK_COMPL` (woken from the timer tick), avoiding a CPU peg on a
+    /// slow/stuck completion. A wall-clock deadline bounds a genuinely-lost
+    /// completion to `EIO`. Re-checks used.idx after every wake.
+    /// # C: O(wait until used.idx advances)
+    fn wait_for_completion(&self, h: u64, target: u16) -> KResult<()> {
+        let used = h.wrapping_add(self.q0_used_pa) as *const u16;
+        #[cfg(target_os = "oxide-kernel")]
+        let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
+        let mut spun: u64 = 0;
+        loop {
+            // SAFETY: HHDM-mapped queue-0 used ring; aligned u16 load of
+            // the used.idx field at u16 offset 1 within the frame.
+            let uidx = unsafe { core::ptr::read_volatile(used.add(1)) };
+            if uidx == target {
+                self.inflight.lock().used_seen = uidx;
+                return Ok(());
+            }
+            #[cfg(target_os = "oxide-kernel")]
+            {
+                if now_ns() >= deadline { return Err(BlockError::Eio); }
+                if spun < IO_SPIN_BUDGET { spun += 1; core::hint::spin_loop(); }
+                else { park_blk(); }
+            }
+            #[cfg(not(target_os = "oxide-kernel"))]
+            {
+                spun += 1;
+                if spun > IO_FALLBACK_SPINS { return Err(BlockError::Eio); }
+                core::hint::spin_loop();
+            }
+        }
+    }
+
+    /// Claim the single in-flight slot, spinning then sleeping on
+    /// `BLK_COMPL` until it is free. Sets `busy` under the lock.
+    /// # C: O(wait until the slot frees)
+    fn acquire_turn(&self) {
+        #[cfg(target_os = "oxide-kernel")]
+        let mut spun: u64 = 0;
+        loop {
+            {
+                let mut g = self.inflight.lock();
+                if !g.busy { g.busy = true; return; }
+            }
+            #[cfg(target_os = "oxide-kernel")]
+            { if spun < IO_SPIN_BUDGET { spun += 1; core::hint::spin_loop(); } else { park_blk(); } }
+            #[cfg(not(target_os = "oxide-kernel"))]
+            { core::hint::spin_loop(); }
+        }
+    }
+
+    /// Release the in-flight slot and wake waiters (next submitter + any
+    /// completion sleeper re-checks; tick also wakes, this is just prompt).
+    /// # C: O(N_waiters)
+    fn release_turn(&self) {
+        self.inflight.lock().busy = false;
+        #[cfg(target_os = "oxide-kernel")]
+        BLK_COMPL.wake_all();
     }
 
     /// Issue one `VIRTIO_BLK_T_GET_ID` request (spec §5.2.6): a 20-byte
@@ -377,7 +555,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
         blk_size,
         serial:       [0u8; blk::BLK_SERIAL_LEN],
         bounce_pa,
-        inflight:     Spinlock::new(RingShadow { avail_idx: seed, used_seen: seed }),
+        inflight:     Spinlock::new(RingShadow { avail_idx: seed, used_seen: seed, busy: false }),
     };
 
     // Read the real serial via GET_ID (device-writable 20-byte buffer).

@@ -24,4 +24,7 @@ default   = []
 # silently on a fault. Mirrors `kernel`'s `debug-irq` so xtask
 # `--features debug-irq` enables both.
 debug-irq = []
-debug-all = ["debug-irq"]
+# Gates the default-on fault/oops printer (esr/far/elr) — forwarded
+# default-on via boot-aarch64 so an unrecoverable abort never halts silently.
+debug-watchdog = []
+debug-all = ["debug-irq", "debug-watchdog"]

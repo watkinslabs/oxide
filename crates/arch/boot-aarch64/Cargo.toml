@@ -35,5 +35,5 @@ debug-boot = []
 # debug-irq has to ride through this chain to take effect.
 debug-irq  = ["hal-aarch64/debug-irq"]
 # Liveness watchdog + serial-sysrq task dump (`05`/`27`); rides kmain.
-debug-watchdog = ["kmain/debug-watchdog"]
+debug-watchdog = ["kmain/debug-watchdog", "hal-aarch64/debug-watchdog"]
 debug-all  = ["debug-boot", "debug-irq", "debug-watchdog"]

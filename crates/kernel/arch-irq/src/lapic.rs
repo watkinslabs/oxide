@@ -98,6 +98,9 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
     match vec_tag {
         hal_x86_64::VEC_TIMER => {
             TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+            // Per-CPU heartbeat + cross-CPU hard-lockup scan (runs on every
+            // CPU that ticks, so a frozen CPU is observed by another).
+            sched::diag::percpu::tick();
             sched::live::preempt::set_need_resched();
             // UART poll + softirq drain are BSP-only: only the boot CPU
             // owns the UART, and the shared softirq queue must be drained
@@ -243,6 +246,44 @@ pub unsafe fn send_resched_ipi(target_apic_id: u32) -> bool {
         unsafe { wait_icr_idle(); }
     }
     ok
+}
+
+/// Send a diagnostic NMI IPI to `apic_id`. Delivery mode 0b100 (NMI) so
+/// it lands through IF=0 — a CPU spinning in a spinlock deadlock with
+/// interrupts masked still takes it. The NMI handler (fault.rs, vector 2)
+/// prints RIP/regs + current task then iretq-resumes, so a poke at a CPU
+/// that wasn't actually wedged is harmless.
+/// # SAFETY: LAPIC enabled on this CPU; ICR write serialised by wait_icr_idle.
+/// # C: O(spin) bounded by delivery latency
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn send_nmi_ipi(apic_id: u32) -> bool {
+    // SAFETY: LAPIC enabled per fn contract; serialise prior ICR write.
+    unsafe { wait_icr_idle(); }
+    let lo = build_icr_lo(0, 0b100, true, false); // vector ignored for NMI delivery
+    // SAFETY: ICR write triggers NMI delivery to the target APIC.
+    let ok = unsafe { write_icr(apic_id, lo) };
+    if ok {
+        // SAFETY: ensure ICR settled before the caller assumes delivery.
+        unsafe { wait_icr_idle(); }
+    }
+    ok
+}
+
+/// Poke hook (`sched::diag::nmi`): the heartbeat indexes CPUs by
+/// `current_cpu()` which on x86 is the APIC id, so the logical id passed
+/// here IS the target APIC id — send the NMI directly.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+fn diag_nmi_poke(apic_id: u32) {
+    // SAFETY: boot enabled the LAPIC before diag hooks are installed.
+    unsafe { let _ = send_nmi_ipi(apic_id); }
+}
+
+/// Install the cross-CPU backtrace poke hook. Called once at boot.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub fn install_diag_hooks() {
+    sched::diag::nmi::set_poke_hook(diag_nmi_poke);
 }
 
 /// Enable the LAPIC on this AP. Same software-enable + APIC-base

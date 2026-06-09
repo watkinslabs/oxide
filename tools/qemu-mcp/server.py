@@ -206,22 +206,38 @@ def _kernel_elf(arch: str) -> Path:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def qemu_start(arch: str, features: str = "debug-boot") -> str:
+def qemu_start(arch: str, features: str = "debug-boot", smp: int = 1,
+               accel: str = "kvm", mem: str = "2G", cpu: str = "",
+               paused: bool = True, ssh_fwd: bool = False,
+               extra_args: list[str] | None = None) -> str:
     """Build the kernel image for `arch` (x86_64 or aarch64), spawn
-    QEMU paused at start with the gdb-stub on :1234, and attach a
-    GDB/MI session targeting the kernel ELF for symbols.
+    QEMU with the gdb-stub on :1234, and attach a GDB/MI session
+    targeting the kernel ELF for symbols.
 
-    `features` selects the kernel Cargo features (default "debug-boot"
-    matches `make qemu-x86`/`qemu-arm` — boot pulse + UART sink, no
-    per-syscall trace flood). Pass "debug-all" for the full firehose
-    when debugging kernel internals.
+    Flags (control the run precisely):
+      arch       "x86_64" | "aarch64"
+      features   kernel Cargo features (default "debug-boot"; "debug-all"
+                 = full trace firehose; "debug-watchdog" already default-on
+                 in the boot crates so the liveness diag is always present).
+      smp        vCPU count (`-smp N`, default 1). Use 2 to exercise AP
+                 bring-up + the SMP=2-timing-sensitive flaky paths.
+      accel      "kvm" (default, fast, x86 only) or "tcg" (pure emulation).
+                 IMPORTANT: some timing-dependent bugs reproduce ONLY under
+                 tcg — e.g. the x86 SMP=2 flaky-login race surfaces with
+                 `accel="tcg", smp=2` but never under kvm. aarch64 on an
+                 x86 host is always tcg regardless of this flag.
+      mem        guest RAM (`-m`, default "2G").
+      cpu        override the -cpu model (default: kvm→"host",
+                 x86 tcg→"Haswell-v4", arm→"cortex-a72").
+      paused     start halted under the gdb stub (`-S`) so you can set
+                 breakpoints before the first instruction (default True).
+                 False = run immediately (still gdb-attachable via :1234).
+      ssh_fwd    add host:2222→guest:22 forward (default False).
+      extra_args list of raw extra QEMU args appended verbatim, for full
+                 control (e.g. ["-d","int,guest_errors","-D","/tmp/q.log"]).
 
-    Re-uses the same QEMU args as `xtask grub --arch <arch>`
-    (q35 + Haswell-v4 + OVMF on x86; virt + cortex-a72 + OVMF on
-    arm) plus `-s -S` for the gdb-stub-paused mode.
-
-    Returns a short status line. Subsequent calls require
-    `qemu_stop` first.
+    Returns a short status line incl. the effective config. Subsequent
+    calls require `qemu_stop` first.
     """
     global _SESSION
     with _SESSION_LOCK:
@@ -233,6 +249,17 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
         qemu_bin = f"qemu-system-{arch}"
         if not shutil.which(qemu_bin):
             raise RuntimeError(f"`{qemu_bin}` not on PATH — install QEMU")
+        if smp < 1:
+            raise RuntimeError(f"smp must be >= 1 (got {smp})")
+        if accel not in ("kvm", "tcg"):
+            raise RuntimeError(f"accel must be 'kvm' or 'tcg' (got {accel!r})")
+        extra_args = list(extra_args or [])
+        smp_args = ["-smp", str(int(smp))]
+        # aarch64 on a non-arm host can't use kvm; force tcg there.
+        eff_accel = "tcg" if arch == "aarch64" else accel
+        netdev = ("user,id=net0,hostfwd=tcp::2222-:22" if ssh_fwd
+                  else "user,id=net0")
+        pause_args = ["-s", "-S"] if paused else ["-s"]
 
         img = _build_image(arch, features)
         elf = _kernel_elf(arch)
@@ -255,12 +282,15 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
             # ran, so qemu_screen never captured the virtio-gpu fbcon scanout.
             # `img` is the GRUB ISO (-cdrom + -boot d); the rootfs is a
             # separate modern virtio-blk-pci drive (lockstep with aarch64).
+            x86_cpu = cpu or ("host" if eff_accel == "kvm" else "Haswell-v4")
+            x86_accel = ["-enable-kvm"] if eff_accel == "kvm" else ["-accel", "tcg"]
             qemu_cmd = [
                 qemu_bin,
                 "-machine", "q35",
-                "-cpu", "host",
-                "-enable-kvm",
-                "-m", "2G",
+                "-cpu", x86_cpu,
+                *x86_accel,
+                "-m", mem,
+                *smp_args,
                 "-cdrom", str(img),
                 "-boot", "d",
                 # Disk-based rootfs (F405): root + home virtio-blk drives with
@@ -276,7 +306,7 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
                 # transitional 0x1000) and can DHCP/ARP through
                 # SLIRP. `-nic none` suppresses the default e1000.
                 "-nic", "none",
-                "-netdev", "user,id=net0",
+                "-netdev", netdev,
                 "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
                 # F59-09: dump every frame on/off net0 to pcap so we can
                 # see whether the guest's TX kicks reach SLIRP at all.
@@ -300,15 +330,18 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
                 "-display", "none",
                 "-no-reboot",
                 "-no-shutdown",
-                "-s", "-S",
+                *pause_args,
+                *extra_args,
             ]
         else:
             ovmf = REPO_ROOT / "vendor/firmware/ovmf-aarch64.fd"
+            arm_cpu = cpu or "cortex-a72"
             qemu_cmd = [
                 qemu_bin,
                 "-machine", "virt,gic-version=3,its=on",
-                "-cpu", "cortex-a72",
-                "-m", "2G",
+                "-cpu", arm_cpu,
+                "-m", mem,
+                *smp_args,
                 "-bios", str(ovmf),
                 # Limine-free: `img` is the GRUB EFI-stub ISO. OVMF→GRUB→
                 # `linux` boots our arm64 Image. Disk-based rootfs (F405):
@@ -323,7 +356,7 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
                 # Phase 8 prep: explicit modern virtio-net (0x1041)
                 # symmetric with x86; aarch64 virt has no
                 # default-NIC so `-nic none` is unnecessary.
-                "-netdev", "user,id=net0",
+                "-netdev", netdev,
                 "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
                 # F59-09: dump every frame on/off net0 to pcap so we can
                 # see whether the guest's TX kicks reach SLIRP at all.
@@ -345,7 +378,8 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
                 "-display", "none",
                 "-no-reboot",
                 "-semihosting-config", "enable=on,target=native",
-                "-s", "-S",
+                *pause_args,
+                *extra_args,
             ]
 
         qemu_proc = subprocess.Popen(
@@ -441,8 +475,10 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
         _gdb_wait_prompt(s, timeout=10.0)
         attach = _gdb_cmd(s, f"-target-select extended-remote localhost:{GDB_PORT}", timeout=10.0)
 
+        state = "paused at entry" if paused else "running"
         return (
-            f"qemu-mcp: started arch={arch}; QEMU paused at entry; "
+            f"qemu-mcp: started arch={arch} smp={smp} accel={eff_accel} "
+            f"mem={mem} features={features}; QEMU {state}; "
             f"GDB attached to localhost:{GDB_PORT}.\n"
             f"image={img}\nelf={elf}\n"
             f"attach response:\n" + "\n".join(attach[-10:])

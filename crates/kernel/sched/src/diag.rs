@@ -29,6 +29,13 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::{Task, TaskState};
 
+/// Per-CPU heartbeat + cross-CPU hard-lockup detector (sees a frozen
+/// CPU from a different CPU, which the BSP-tick watchdog cannot).
+pub mod percpu;
+/// NMI/FIQ backtrace: poke a (possibly IRQ-masked) CPU into dumping its
+/// own register state.
+pub mod nmi;
+
 /// Borrow the running task. Kernel-only (`live` is gated to the kernel
 /// target); on the hosted test target there is no live runqueue, so it
 /// is `None` — the pure watchdog/formatting logic is exercised through
@@ -60,6 +67,74 @@ pub fn note_switch() {
 /// # C: O(1)
 pub fn switches() -> u64 {
     SWITCHES.load(Ordering::Relaxed)
+}
+
+// ---- recent-syscall ring (why did a task exit?) ----
+//
+// A global lock-free ring of the last RING_N (tid, nr, ret) tuples,
+// recorded at syscall-return. Dumped on INIT-DEATH so a PID-1 exit shows
+// the syscall(s) that preceded it — e.g. an `execve = -ENOENT` right
+// before `exit_group(127)` pins a flaky exec/loader failure that the
+// single last_syscall field (which only shows the exit itself) can't.
+// Recording is always-on + klog-free (1 fetch_add + 3 relaxed stores);
+// only the dump rides `debug-watchdog`.
+
+const RING_N: usize = 512;
+static RING_TID: [AtomicU32; RING_N] = [const { AtomicU32::new(0) }; RING_N];
+static RING_NR: [AtomicU32; RING_N] = [const { AtomicU32::new(u32::MAX) }; RING_N];
+static RING_RET: [core::sync::atomic::AtomicI64; RING_N] =
+    [const { core::sync::atomic::AtomicI64::new(0) }; RING_N];
+static RING_POS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Record a completed syscall `(current tid, nr, ret)` into the ring.
+/// Called at syscall-return. No-op off the kernel target.
+/// # C: O(1)
+pub fn record_syscall(nr: u32, ret: i64) {
+    let tid = match current_task() {
+        Some(t) => t.tid,
+        None => return,
+    };
+    let i = RING_POS.fetch_add(1, Ordering::Relaxed) % RING_N;
+    RING_TID[i].store(tid, Ordering::Relaxed);
+    RING_NR[i].store(nr, Ordering::Relaxed);
+    RING_RET[i].store(ret, Ordering::Relaxed);
+}
+
+/// Dump the most recent ring entries for `tid` (newest first). Used by
+/// the INIT-DEATH report to show what PID 1 did right before it exited.
+/// # C: O(RING_N)
+#[cfg(feature = "debug-watchdog")]
+fn dump_recent_for(tid: u32) {
+    klog::write_raw(b"  recent syscalls (newest first):\n");
+    let pos = RING_POS.load(Ordering::Relaxed);
+    let mut shown = 0u32;
+    let mut k = 0usize;
+    while k < RING_N && shown < 16 {
+        // newest is at (pos-1); walk backwards.
+        let i = (pos + RING_N - 1 - k) % RING_N;
+        k += 1;
+        if RING_NR[i].load(Ordering::Relaxed) == u32::MAX {
+            continue;
+        }
+        if RING_TID[i].load(Ordering::Relaxed) != tid {
+            continue;
+        }
+        klog::write_raw(b"    ");
+        emit_syscall(RING_NR[i].load(Ordering::Relaxed));
+        klog::write_raw(b" = ");
+        let r = RING_RET[i].load(Ordering::Relaxed);
+        if r < 0 {
+            klog::write_raw(b"-");
+            klog::write_dec_u64((-r) as u64);
+        } else {
+            klog::write_dec_u64(r as u64);
+        }
+        klog::write_raw(b"\n");
+        shown += 1;
+    }
+    if shown == 0 {
+        klog::write_raw(b"    <none recorded>\n");
+    }
 }
 
 impl Task {
@@ -267,6 +342,30 @@ fn dump_tasks_emit() {
     }
 }
 
+/// Announce that PID 1 (init) has exited. This is fatal: with no init
+/// there is nothing left to run, so the box idles forever and presents
+/// as a silent hang (the flaky-login failure mode — systemd exits ~25%
+/// of SMP=2 boots right after keymap load instead of spawning getty).
+/// Linux panics here ("Attempted to kill init!"); we at minimum make it
+/// loud + dump the final task table so the cause is never again silent.
+/// # C: O(N_tasks)
+pub fn note_init_exit(code: i32) {
+    #[cfg(feature = "debug-watchdog")]
+    {
+        klog::write_raw(b"\n[INIT-DEATH] PID 1 (init) exited code=");
+        klog::write_dec_u64(code as u64);
+        klog::write_raw(b" - no init, system will hang (Linux would panic)\n");
+        // The syscalls PID 1 made right before exiting — an `execve =
+        // -<errno>` here pins a flaky exec/loader failure (code 127).
+        if let Some(t) = current_task() {
+            dump_recent_for(t.tid);
+        }
+        dump_tasks();
+    }
+    #[cfg(not(feature = "debug-watchdog"))]
+    let _ = code;
+}
+
 // ---- serial sysrq ----
 
 /// Magic prefix byte that arms sysrq. NUL is never produced by a
@@ -318,7 +417,9 @@ fn sysrq_cmd(b: u8) {
             }
             klog::write_raw(b"\n");
         }
-        _ => klog::write_raw(b"[sysrq] keys: t=tasks w=watchdog\n"),
+        b'c' => percpu::dump_cpus(),
+        b'b' => nmi::backtrace_all(),
+        _ => klog::write_raw(b"[sysrq] keys: t=tasks w=watchdog c=per-cpu b=backtrace-all\n"),
     }
 }
 
