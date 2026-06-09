@@ -3,7 +3,8 @@
 // proptest invariant suite: never panic, cursor always in bounds, no OOB.
 
 use crate::emulator::Emulator;
-use crate::vc::{Attr, Vc, DEFAULT_BG, DEFAULT_FG};
+use crate::palette::{rgb, xterm_256_rgb};
+use crate::vc::{Attr, Vc, DEFAULT_BG, DEFAULT_BG_RGB, DEFAULT_FG, DEFAULT_FG_RGB};
 use proptest::prelude::*;
 
 /// Build a Vc, feed bytes, return it.
@@ -162,23 +163,24 @@ fn el_erase_line_modes() {
 
 #[test]
 fn sgr_sets_color_attr() {
-    // SGR 31 (red fg) then 'A'; SGR 0 reset then 'B'.
+    // SGR 31 (red fg) then 'A'; SGR 0 reset then 'B'. fg resolves to the
+    // VGA red RGB; reset returns to the default-fg RGB.
     let vc = run(20, 2, b"\x1b[31mA\x1b[0mB");
     let a = vc.attr_at(0, 0).unwrap();
-    assert_eq!(a.fg, 1); // red index
+    assert_eq!(a.fg, xterm_256_rgb(1)); // VGA red RGB
     let b = vc.attr_at(1, 0).unwrap();
-    assert_eq!(b.fg, DEFAULT_FG);
+    assert_eq!(b.fg, DEFAULT_FG_RGB);
 }
 
 #[test]
 fn sgr_bright_and_bg() {
-    // 91 = bright red fg (index 9), 42 = green bg (index 2).
+    // 91 = bright red fg (index 9), 42 = green bg (index 2) → resolved RGB.
     let mut vc = Vc::new(20, 2);
     let mut em = Emulator::new();
     em.feed_bytes(&mut vc, b"\x1b[91;42mX");
     let a = vc.attr_at(0, 0).unwrap();
-    assert_eq!(a.fg, 9);
-    assert_eq!(a.bg, 2);
+    assert_eq!(a.fg, xterm_256_rgb(9));
+    assert_eq!(a.bg, xterm_256_rgb(2));
     // live attr also carries flags
     em.feed_bytes(&mut vc, b"\x1b[1mY");
     assert!(vc.attr.bold);
@@ -189,7 +191,30 @@ fn sgr_256_color() {
     let mut vc = Vc::new(20, 2);
     let mut em = Emulator::new();
     em.feed_bytes(&mut vc, b"\x1b[38;5;200mZ");
-    assert_eq!(vc.attr_at(0, 0).unwrap().fg, 200);
+    assert_eq!(vc.attr_at(0, 0).unwrap().fg, xterm_256_rgb(200));
+}
+
+#[test]
+fn sgr_truecolor_stored_verbatim() {
+    // 38;2;r;g;b stores the exact RGB (no palette collapse).
+    let mut vc = Vc::new(20, 2);
+    let mut em = Emulator::new();
+    em.feed_bytes(&mut vc, b"\x1b[38;2;12;34;56;48;2;200;100;50mT");
+    let a = vc.attr_at(0, 0).unwrap();
+    assert_eq!(a.fg, rgb([12, 34, 56]));
+    assert_eq!(a.bg, rgb([200, 100, 50]));
+}
+
+#[test]
+fn sgr_bold_brightens_basic_color_at_resolve() {
+    // bold THEN red (1;31): the cell stores bright-red RGB (index 9).
+    let vc = run(20, 2, b"\x1b[1;31mA");
+    let a = vc.attr_at(0, 0).unwrap();
+    assert!(a.bold);
+    assert_eq!(a.fg, xterm_256_rgb(9), "bold+basic-red must store bright-red RGB");
+    // bold + truecolor leaves the RGB unchanged.
+    let vc2 = run(20, 2, b"\x1b[1;38;2;5;6;7mB");
+    assert_eq!(vc2.attr_at(0, 0).unwrap().fg, rgb([5, 6, 7]));
 }
 
 #[test]
@@ -211,7 +236,7 @@ fn decsc_restores_attr() {
     let mut em = Emulator::new();
     em.feed_bytes(&mut vc, b"\x1b[31m\x1b7\x1b[0m\x1b8X");
     // restored attr was red.
-    assert_eq!(vc.attr_at(0, 0).unwrap().fg, 1);
+    assert_eq!(vc.attr_at(0, 0).unwrap().fg, xterm_256_rgb(1));
     let _ = DEFAULT_BG;
 }
 
@@ -280,7 +305,7 @@ fn osc_title_swallowed() {
 fn full_reset_clears() {
     let vc = run(10, 3, b"junk\x1b[31m\x1bcZ");
     assert_eq!(vc.glyph_at(0, 0), 'Z' as u32);
-    assert_eq!(vc.attr_at(0, 0).unwrap().fg, DEFAULT_FG);
+    assert_eq!(vc.attr_at(0, 0).unwrap().fg, DEFAULT_FG_RGB);
     assert!(vc.autowrap);
 }
 
@@ -293,12 +318,13 @@ fn per_cell_flags_survive_bold_underline_reverse() {
     assert!(a.bold, "bold must round-trip into the cell");
     assert!(a.underline, "underline must round-trip into the cell");
     assert!(a.reverse, "reverse must round-trip into the cell");
-    assert_eq!(a.fg, 3); // yellow
-    assert_eq!(a.bg, 4); // blue
+    // 1;33 = bold+yellow → bright-yellow RGB (index 11); 44 = blue bg.
+    assert_eq!(a.fg, xterm_256_rgb(11));
+    assert_eq!(a.bg, xterm_256_rgb(4));
     let b = vc.attr_at(1, 0).unwrap();
     assert!(!b.bold && !b.underline && !b.reverse);
-    assert_eq!(b.fg, DEFAULT_FG);
-    assert_eq!(b.bg, DEFAULT_BG);
+    assert_eq!(b.fg, DEFAULT_FG_RGB);
+    assert_eq!(b.bg, DEFAULT_BG_RGB);
 }
 
 #[test]
@@ -312,18 +338,98 @@ fn per_cell_flags_toggle_off_midline() {
 }
 
 #[test]
-fn attr_pack_unpack_lossless_with_flags() {
-    let a = Attr { fg: 200, bg: 17, bold: true, underline: false, reverse: true };
-    assert_eq!(Attr::unpack(a.pack()), a);
+fn cell_roundtrips_attr_rgb_and_flags() {
+    use crate::vc::Cell;
+    let a = Attr { fg: 0x123456, bg: 0xabcdef, bold: true, underline: false, reverse: true };
+    let c = Cell::glyph('Q' as u32, a);
+    assert_eq!(c.glyph, 'Q' as u32);
+    assert_eq!(c.fg, 0x123456);
+    assert_eq!(c.bg, 0xabcdef);
+    assert_eq!(Attr::from_cell(c), a);
 }
 
 #[test]
-fn default_attr_pack_roundtrip() {
+fn default_attr_resolves_to_canonical_rgb() {
     let a = Attr::default();
-    assert_eq!(a.fg, DEFAULT_FG);
-    assert_eq!(a.bg, DEFAULT_BG);
-    let p = a.pack();
-    assert_eq!((p & 0xff) as u8, DEFAULT_FG);
+    assert_eq!(a.fg, DEFAULT_FG_RGB);
+    assert_eq!(a.bg, DEFAULT_BG_RGB);
+    assert_eq!(a.fg, xterm_256_rgb(DEFAULT_FG as u32));
+    assert_eq!(a.bg, xterm_256_rgb(DEFAULT_BG as u32));
+}
+
+// ---- scrollback ring (P2) -------------------------------------------
+
+#[test]
+fn scrolled_off_rows_enter_history_in_order() {
+    // 3-row screen, print 6 labelled lines → 3 evicted to history.
+    let vc = run(10, 3, b"r0\r\nr1\r\nr2\r\nr3\r\nr4\r\nr5");
+    // live screen shows the last 3.
+    assert_eq!(trimmed(&vc, 0), "r3");
+    assert_eq!(trimmed(&vc, 2), "r5");
+    // history holds r0,r1,r2 oldest-first.
+    assert_eq!(vc.history_len(), 3);
+}
+
+#[test]
+fn scroll_view_up_shows_history_rows() {
+    let mut vc = run(10, 3, b"r0\r\nr1\r\nr2\r\nr3\r\nr4\r\nr5");
+    vc.scroll_view_up(2);
+    assert_eq!(vc.view_offset(), 2);
+    // Window is now 2 lines back: top two rows come from history (r1,r2),
+    // bottom from the live screen (r3).
+    let vrow = |r: u16| -> alloc::string::String {
+        (0..vc.cols)
+            .map(|c| char::from_u32(vc.visible_glyph_at(c, r)).unwrap_or('?'))
+            .collect::<alloc::string::String>()
+            .trim_end()
+            .into()
+    };
+    assert_eq!(vrow(0), "r1");
+    assert_eq!(vrow(1), "r2");
+    assert_eq!(vrow(2), "r3");
+}
+
+#[test]
+fn scroll_view_clamps_to_history_len() {
+    let mut vc = run(10, 3, b"r0\r\nr1\r\nr2\r\nr3");
+    // only 1 row in history; asking for 50 clamps to 1.
+    vc.scroll_view_up(50);
+    assert_eq!(vc.view_offset(), 1);
+    assert_eq!(vc.view_offset(), vc.history_len());
+    vc.scroll_view_down(50);
+    assert_eq!(vc.view_offset(), 0);
+}
+
+#[test]
+fn new_output_snaps_view_to_bottom() {
+    let mut vc = run(10, 3, b"r0\r\nr1\r\nr2\r\nr3");
+    vc.scroll_view_up(1);
+    assert_eq!(vc.view_offset(), 1);
+    let mut em = Emulator::new();
+    em.feed_bytes(&mut vc, b"x"); // any output snaps to bottom
+    assert_eq!(vc.view_offset(), 0);
+}
+
+#[test]
+fn history_ring_bounded_evicts_oldest() {
+    use crate::vc::SCROLLBACK_LINES;
+    let mut vc = Vc::new(4, 2);
+    let mut em = Emulator::new();
+    // Scroll far more than the cap; history must saturate at the cap.
+    for _ in 0..(SCROLLBACK_LINES + 50) {
+        em.feed_bytes(&mut vc, b"\n");
+    }
+    assert_eq!(vc.history_len(), SCROLLBACK_LINES);
+}
+
+#[test]
+fn view_offset_change_marks_all_rows_dirty() {
+    let mut vc = run(10, 3, b"r0\r\nr1\r\nr2\r\nr3");
+    vc.clear_dirty();
+    vc.scroll_view_up(1);
+    for r in 0..vc.rows {
+        assert!(vc.is_row_dirty(r), "row {r} must be dirty after view change");
+    }
 }
 
 proptest! {

@@ -64,11 +64,12 @@ fn vt_program_output_csi_red_and_onlcr() {
     let n = tty.write(b"\x1b[31mERR\x1b[0m\n");
     assert_eq!(n, 13, "all 13 input bytes accepted (ESC[31m + ERR + ESC[0m + \\n)");
 
-    // Cells E,R,R carry fg = 1 (red).
+    // Cells E,R,R carry red fg (resolved to VGA-red RGB).
+    let red = vtdata::xterm_256_rgb(1);
     let a0 = tty.with_driver(|d| d.active().attr_at(0, 0)).unwrap();
     let a2 = tty.with_driver(|d| d.active().attr_at(2, 0)).unwrap();
-    assert_eq!(a0.fg, 1, "first cell red: {:?}", a0);
-    assert_eq!(a2.fg, 1, "third cell red: {:?}", a2);
+    assert_eq!(a0.fg, red, "first cell red: {:?}", a0);
+    assert_eq!(a2.fg, red, "third cell red: {:?}", a2);
     assert_eq!(vt_row(&tty, 0).trim_end(), "ERR");
 
     // ONLCR: the "\n" became CR+LF → cursor home col, advanced to row 1.

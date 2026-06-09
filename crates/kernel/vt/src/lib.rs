@@ -15,6 +15,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod palette;
 pub mod vc;
 pub mod emulator;
 pub mod consw;
@@ -26,4 +27,8 @@ mod consw_tests;
 
 pub use consw::{render, switch, Consw, ScrollDir};
 pub use emulator::{CsiState, Emulator};
-pub use vc::{Attr, Cell, Vc, ATTR_BOLD, ATTR_REVERSE, ATTR_UNDERLINE, N_VT};
+pub use palette::{rgb, xterm_256, xterm_256_rgb, VGA_PALETTE};
+pub use vc::{
+    Attr, Cell, Vc, ATTR_BOLD, ATTR_REVERSE, ATTR_UNDERLINE, DEFAULT_BG_RGB, DEFAULT_FG_RGB, N_VT,
+    SCROLLBACK_LINES,
+};
