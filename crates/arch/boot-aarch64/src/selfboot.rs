@@ -61,7 +61,7 @@ pub static EFI_RSDP_PA: AtomicU64 = AtomicU64::new(0);
 /// `efi_stub_setup` for the no-DTB PMM memmap (QEMU EDK2 in ACPI mode hands
 /// no FDT, so the DTB `/memory` extent is unavailable — without this the
 /// kernel fell back to a hardcoded 1 GiB and ignored the rest of guest RAM).
-pub const EFI_RAM_MAX: usize = 16;
+pub const EFI_RAM_MAX: usize = 64;
 /// Count of valid entries in `EFI_RAM_BASE`/`EFI_RAM_PAGES`.
 pub static EFI_RAM_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Per-region base PA of each captured `EfiConventionalMemory` block.
@@ -69,6 +69,16 @@ pub static EFI_RAM_BASE: [AtomicU64; EFI_RAM_MAX] =
     [const { AtomicU64::new(0) }; EFI_RAM_MAX];
 /// Per-region page count (4 KiB) of each captured block.
 pub static EFI_RAM_PAGES: [AtomicU64; EFI_RAM_MAX] =
+    [const { AtomicU64::new(0) }; EFI_RAM_MAX];
+/// BootServices Code/Data (types 3/4) regions — reclaimable after
+/// ExitBootServices, BUT this EDK2 stashes the live ACPI tables in type4.
+/// They are added to the usable map ONLY once `build_selfboot_memmap` has
+/// pinned the ACPI table extent as Reserved (else they corrupt ACPI →
+/// pci devices=0). Captured separately from `EFI_RAM_*` for that gating.
+pub static EFI_BS_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static EFI_BS_BASE: [AtomicU64; EFI_RAM_MAX] =
+    [const { AtomicU64::new(0) }; EFI_RAM_MAX];
+pub static EFI_BS_PAGES: [AtomicU64; EFI_RAM_MAX] =
     [const { AtomicU64::new(0) }; EFI_RAM_MAX];
 /// Total pages per EFI memory type (0..=14), summed across the EFI memory
 /// map by `efi_stub_setup`. Diagnostic: shows exactly where guest RAM goes
@@ -176,6 +186,7 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
             // stride is the firmware-reported desc_size (>= 40).
             if desc_size >= 40 {
                 let mut n = 0usize;
+                let mut nb = 0usize;
                 let mut off: u64 = 0;
                 // Reset per-type tallies (loop may re-run on a stale map_key).
                 let mut k = 0usize;
@@ -189,22 +200,25 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
                         EFI_TYPE_PAGES[ty as usize]
                             .fetch_add(pages, core::sync::atomic::Ordering::Release);
                     }
-                    // Usable DRAM: EfiConventionalMemory (7) ONLY. NOT the
-                    // BootServices types (3/4): this EDK2 keeps the live ACPI
-                    // tables (XSDT/MCFG/MADT) in EfiBootServicesData (type9
-                    // EfiACPIReclaim is empty here), and the kernel reads them
-                    // post-ExitBootServices to enumerate PCI — reclaiming type4
-                    // corrupted them (pci devices=0, no disk). LoaderCode/Data
-                    // (1/2 = kernel image), runtime (5/6), reserved (0) and
-                    // MMIO (11/12) are likewise excluded.
+                    // type 7 = EfiConventionalMemory → unconditionally usable.
                     if ty == 7 && pages != 0 && n < EFI_RAM_MAX {
                         EFI_RAM_BASE[n].store(phys, core::sync::atomic::Ordering::Release);
                         EFI_RAM_PAGES[n].store(pages, core::sync::atomic::Ordering::Release);
                         n += 1;
                     }
+                    // types 3/4 = BootServices Code/Data → reclaimable, but
+                    // gated on ACPI being pinned (this EDK2 stores the live
+                    // ACPI tables in type4; build_selfboot_memmap reserves the
+                    // ACPI extent before adding these).
+                    if (ty == 3 || ty == 4) && pages != 0 && nb < EFI_RAM_MAX {
+                        EFI_BS_BASE[nb].store(phys, core::sync::atomic::Ordering::Release);
+                        EFI_BS_PAGES[nb].store(pages, core::sync::atomic::Ordering::Release);
+                        nb += 1;
+                    }
                     off += desc_size;
                 }
                 EFI_RAM_COUNT.store(n as u64, core::sync::atomic::Ordering::Release);
+                EFI_BS_COUNT.store(nb as u64, core::sync::atomic::Ordering::Release);
             }
             // ExitBootServices must immediately follow GetMemoryMap with
             // the fresh key; on EFI_INVALID_PARAMETER the map changed —

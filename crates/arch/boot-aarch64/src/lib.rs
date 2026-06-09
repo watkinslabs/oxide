@@ -283,6 +283,8 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
     //   3. Last resort: a conservative 1 GiB at the QEMU virt base.
     let mut regions: [(u64, u64); selfboot::EFI_RAM_MAX] = [(0, 0); selfboot::EFI_RAM_MAX];
     let mut nregions = 0usize;
+    // ACPI table extent to pin Reserved when reclaiming boot-services; (0,0)=none.
+    let mut acpi_blk: (u64, u64) = (0, 0);
     // SAFETY: pa is the bootloader DTB pointer; helper bounds reads by header.
     match unsafe { read_dtb_memory(pa) } {
         Some((base, size)) => { regions[0] = (base, size); nregions = 1; }
@@ -294,6 +296,23 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
                     let pages = selfboot::EFI_RAM_PAGES[nregions].load(core::sync::atomic::Ordering::Acquire);
                     regions[nregions] = (b, pages.saturating_mul(0x1000));
                     nregions += 1;
+                }
+                // Reclaim BootServices Code/Data (3/4) too — but ONLY once we
+                // can pin the ACPI tables the kernel reads in place (this EDK2
+                // stashes the live ACPI in type4; reclaiming it raw → pci
+                // devices=0). acpi_extent() bounds the RSDP+XSDT+listed tables.
+                // SAFETY: reads the HHDM-mapped RSDP/XSDT; each table bounded by its header.
+                if let Some(ext) = unsafe { acpi_extent() } {
+                    acpi_blk = ext;
+                    let nbs = selfboot::EFI_BS_COUNT.load(core::sync::atomic::Ordering::Acquire) as usize;
+                    let mut j = 0usize;
+                    while j < nbs && nregions < selfboot::EFI_RAM_MAX {
+                        let b = selfboot::EFI_BS_BASE[j].load(core::sync::atomic::Ordering::Acquire);
+                        let pages = selfboot::EFI_BS_PAGES[j].load(core::sync::atomic::Ordering::Acquire);
+                        regions[nregions] = (b, pages.saturating_mul(0x1000));
+                        nregions += 1;
+                        j += 1;
+                    }
                 }
             } else {
                 regions[0] = (0x4000_0000, 0x4000_0000);
@@ -312,14 +331,20 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
         ((pa & !0xFFF), ((pa + ts + 0xFFF) & !0xFFF))
     } else { (0, 0) };
 
-    // Two reserved blocks (kernel, DTB), sorted by start. Defensive even on
-    // the EFI path (type-7 already excludes them) — a block not inside a
-    // region is simply skipped.
-    let mut blocks: [(u64, u64, boot_info::BootMemKind); 2] = [
+    // Reserved blocks (kernel image, DTB blob, ACPI tables), sorted by start
+    // for the per-region gap walk. An absent block is (0,0) and skipped; a
+    // block not inside a given region is skipped too.
+    let mut blocks: [(u64, u64, boot_info::BootMemKind); 3] = [
         (kstart, kend, boot_info::BootMemKind::KernelImage),
         (dstart, dend, boot_info::BootMemKind::Reserved),
+        (acpi_blk.0, acpi_blk.1, boot_info::BootMemKind::Reserved),
     ];
-    if blocks[0].0 > blocks[1].0 { blocks.swap(0, 1); }
+    let mut a = 1usize;
+    while a < 3 {
+        let mut b = a;
+        while b > 0 && blocks[b - 1].0 > blocks[b].0 { blocks.swap(b - 1, b); b -= 1; }
+        a += 1;
+    }
 
     // SAFETY: boot-only single-writer of the 'static MEMMAP_STORAGE.
     let storage = unsafe { &mut *MEMMAP_STORAGE.0.get() };
@@ -369,6 +394,44 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
 
     info.memmap_count = n as u32;
     info.memmap_ptr = storage.as_ptr();
+}
+
+/// Page-aligned `[lo, hi)` physical extent of the ACPI tables the kernel
+/// reads in place: RSDP + XSDT + every XSDT-listed table. `firmware::acpi`
+/// walks the XSDT and never chases FADT→DSDT, so this is exactly the set
+/// that must stay valid; pinning it Reserved lets the rest of boot-services
+/// be reclaimed. `None` when there is no RSDP (DTB / `-kernel` path).
+/// # SAFETY: reads the HHDM-mapped RSDP/XSDT; each table is bounded by the
+/// length in its own header and the entry count by the XSDT length.
+/// # C: O(n_tables)
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn acpi_extent() -> Option<(u64, u64)> {
+    let h = selfboot::ARM_SELFBOOT_HHDM;
+    let rsdp_pa = selfboot::EFI_RSDP_PA.load(core::sync::atomic::Ordering::Acquire);
+    if rsdp_pa == 0 { return None; }
+    // SAFETY: HHDM covers all RAM; ACPI fields are not guaranteed aligned.
+    let rd32 = |pa: u64| -> u32 { unsafe { core::ptr::read_unaligned((h + pa) as *const u32) } };
+    // SAFETY: HHDM covers all RAM; ACPI fields are not guaranteed aligned.
+    let rd64 = |pa: u64| -> u64 { unsafe { core::ptr::read_unaligned((h + pa) as *const u64) } };
+    let xsdt_pa = rd64(rsdp_pa + 24); // ACPI 2.0 XsdtAddress @ offset 24
+    if xsdt_pa == 0 { return None; }
+    let xsdt_len = rd32(xsdt_pa + 4) as u64; // SDT header Length @ offset 4
+    if xsdt_len < 36 || xsdt_len > 4096 { return None; }
+    let mut lo = rsdp_pa.min(xsdt_pa);
+    let mut hi = (rsdp_pa + 36).max(xsdt_pa + xsdt_len);
+    let n = ((xsdt_len - 36) / 8).min(64);
+    let mut i = 0u64;
+    while i < n {
+        let tpa = rd64(xsdt_pa + 36 + i * 8);
+        i += 1;
+        if tpa == 0 { continue; }
+        let mut tlen = rd32(tpa + 4) as u64;
+        if tlen < 36 { tlen = 36; }
+        if tlen > 0x10_0000 { tlen = 0x10_0000; }
+        if tpa < lo { lo = tpa; }
+        if tpa + tlen > hi { hi = tpa + tlen; }
+    }
+    Some((lo & !0xFFF, (hi + 0xFFF) & !0xFFF))
 }
 
 /// DTB `/memory` reg → `(base, size)`. Reads the blob at phys `pa`

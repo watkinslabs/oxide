@@ -43,8 +43,10 @@ pub enum SetupError {
 }
 
 /// Maximum number of Usable regions we propagate into PMM. QEMU
-/// virtual machines emit ≤ 8; bump if a real platform overshoots.
-pub const MAX_REGIONS: usize = 32;
+/// virtual machines emit ≤ 8 normally, but the aarch64 EFI path reclaims
+/// fragmented EfiBootServices regions (each a separate Usable block), so
+/// allow well above that.
+pub const MAX_REGIONS: usize = 128;
 
 // ---------------------------------------------------------------------------
 // HhdmBacking — `PageBacking` impl for the kernel direct-map.
