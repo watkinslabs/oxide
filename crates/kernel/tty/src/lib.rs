@@ -11,7 +11,6 @@ extern crate alloc;
 extern crate std;
 
 pub mod pty;
-pub mod vtquery;
 pub use pty::{Pair, Ring, PTY_BUF_BYTES};
 
 /// Subsystem-level error per `38`.
