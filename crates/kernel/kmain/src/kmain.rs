@@ -347,7 +347,16 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // else legacy 8250 scratch-probe on x86) and only registers as the
     // console (TX via klog sink + RX IRQ) if one responds — a machine
     // with no serial keeps the framebuffer/VT console.
-    drv_serial::set_rx_sink(tty::live::push_and_wake_fg);
+    // T7 core cutover (tty-rebuild-plan §3-T7): the serial login path
+    // (/dev/console, /dev/tty, /dev/tty0, /dev/ttyS0) is now ONE global
+    // serial `TtyStruct` on the new tty stack. `install` assembles it
+    // (N_TTY: ICANON|ECHO|ISIG, OPOST|ONLCR) and wires UART RX → its flip
+    // path → N_TTY (lost-wakeup-free `TtyStruct::read`), REPLACING the old
+    // `set_rx_sink(tty::live::push_and_wake_fg)` input-only ring + the
+    // racy `ConsoleInode::read` park loop. printk stays separate (klog →
+    // UART sink below + fbcon aux sink); a tty write goes TtyStruct → UART
+    // and NOT into the kmsg ring (dmesg/shell split).
+    console::static_console::install();
     // SAFETY: post-ACPI/LAPIC + MmuOps live; single-CPU, IRQs masked. init probes the UART; on detection serial becomes the primary console (klog sink + RX IRQ). No serial → the fb/VT console (set_aux_sink below) is the default active console.
     if unsafe { drv_serial::init(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE) } { klog::set_byte_sink(drv_serial::emit); }
 
