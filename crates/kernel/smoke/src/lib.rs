@@ -6,6 +6,8 @@
 extern crate alloc;
 #[cfg(feature = "debug-pmm")]
 pub mod pmm;
+#[cfg(feature = "debug-memtest")]
+pub mod memtest;
 
 #[cfg(feature = "debug-sched")]
 pub mod canary;
