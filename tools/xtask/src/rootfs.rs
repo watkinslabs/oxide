@@ -756,6 +756,23 @@ session    required   pam_unix.so
             dbg(&format!("sif {tgt} mode 0100644"))?;
         }
     }
+    // Deterministic dev/test console: autologin root. The vendored
+    // console-getty.service runs `getty ... console`, which execs
+    // login(1) — that prompts, waits on a password, and has a 60s idle
+    // timeout, all of which make console login flaky to drive under the
+    // cooperative scheduler. A drop-in overrides ExecStart so agetty
+    // `--autologin root` execs `login -f root` (no prompt, no auth, no
+    // timeout) → straight to a root shell every boot. `--noclear` keeps
+    // the serial transcript intact. Overlays the vendored unit without
+    // editing vendor/.
+    dbg("mkdir /etc/systemd/system/console-getty.service.d")?;
+    put(&stage("console-autologin",
+b"[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear -L 115200 console vt100
+")?,
+        "/etc/systemd/system/console-getty.service.d/autologin.conf")?;
+    dbg("sif /etc/systemd/system/console-getty.service.d/autologin.conf mode 0100644")?;
     // /etc/inittab — legacy sysv format (systemd is PID1; kept informational).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS
