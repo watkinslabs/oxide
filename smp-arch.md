@@ -95,6 +95,25 @@ route through the one `schedule()`; the switch primitive + scaffold are
 untouched. This also fixes the fs_base-on-preempt save (preempt now goes
 through the wrapper).
 
+**Prerequisite found while prototyping A2 (verified, then reverted): there is
+no `finish_task_switch`.** `schedule()` bumps `preempt_count` via `PreemptGuard`
+for the pick+switch, expecting to drop it on return. But when it switches TO a
+first-run task, the scaffold `ret`s straight to `oxide_irq_resume_user`,
+BYPASSING the guard drop — so `preempt_count` stays 1, "owned" by the launcher's
+stack until it next runs. The old IRQ path sidesteps this by using
+`schedule_from_irq` (no guard). Routing first-run through `schedule()` at IRQ
+exit therefore leaves the new task with `preempt_count==1` (resched wedged).
+Cooperative-only (tick_pick_next removed) boots to login (verified), proving
+boot doesn't need IRQ-tail preemption — but the new resched path can't land
+until the handoff exists. So Phase A MUST start with:
+
+0. **`finish_task_switch` (Linux `schedule_tail`)**: a step that runs on the
+   INCOMING task's side immediately post-switch and balances `preempt_count`
+   (Phase B: also releases the prev rq->lock). Route the first-run scaffold
+   THROUGH it (scaffold `ret` → `finish_task_switch` → resume_user) instead of
+   bypassing it. Pin the preempt_count invariant (==0 when a task runs in user)
+   in a hosted test. Only then is "one engine via schedule()" correct.
+
 Steps (each: hosted test where possible → build both arches → boot→login→
 shell→fork, repeated):
 1. Add a Rust epilogue helper `irq_exit_to_user(frame)` called from
