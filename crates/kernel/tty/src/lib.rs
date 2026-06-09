@@ -16,6 +16,17 @@ pub use pty::{Pair, Ring, PTY_BUF_BYTES};
 pub mod ldisc;
 pub use ldisc::{LdiscOps, NTty, Sig, TtyDriverHooks};
 
+pub mod wait;
+pub use wait::TtyWait;
+
+pub mod core;
+pub use core::{TtyDriver, TtyStruct};
+
+pub mod ioctl;
+
+pub mod registry;
+pub use registry::{DevId, TtyRegistry};
+
 /// Subsystem-level error per `38`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -25,7 +36,7 @@ pub enum Error {
     Io,
 }
 
-pub type KResult<T> = core::result::Result<T, Error>;
+pub type KResult<T> = ::core::result::Result<T, Error>;
 
 /// Initialization entry; called by the kernel boot phase per `00§3` /
 /// `boot-flow.md`. v1 returns `NotImplemented`; bodies in P1-N.
