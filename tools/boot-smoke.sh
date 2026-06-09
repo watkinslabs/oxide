@@ -91,11 +91,38 @@ case "$ARCH" in
     *)   OXIDE_SMP="${OXIDE_SMP:-2}" ;;
 esac
 
+# On timeout, ask the wedged kernel to self-report before we kill it:
+# feed the serial-sysrq sequence (`<NUL> t` = task dump, `<NUL> w` =
+# current/switch summary) into qemu's stdin FIFO. The guest's timer tick
+# polls the UART RX even in a parked late-boot wedge, so the drv-serial
+# prefilter fires and the (default-on) `debug-watchdog` dump lands in the
+# log — turning an opaque "did not reach login" into a task-state dump
+# (who's Runnable/Sleeping, last syscall) for the SMP late-boot race.
+inject_sysrq() {
+    [ -n "${SYSRQ_WFD:-}" ] || return 0
+    echo "boot-smoke: timeout — injecting serial-sysrq task dump (<NUL>t,<NUL>w)" >&2
+    printf '\000t' >&"$SYSRQ_WFD" 2>/dev/null || true
+    sleep 3
+    printf '\000w' >&"$SYSRQ_WFD" 2>/dev/null || true
+    sleep 2
+}
+
 # Run one boot; return 0 if `oxide login:` appears within TIMEOUT.
 attempt_boot() {
     LOG="$(mktemp /tmp/oxide-boot-smoke-${ARCH}-XXXXXX.log)"
     echo "boot-smoke: arch=$ARCH attempt=$1/$ATTEMPTS timeout=${TIMEOUT}s log=$LOG"
-    OXIDE_QEMU_HEADLESS=1 setsid bash -c "exec make SMP='$OXIDE_SMP' '$MAKE_TARGET' > '$LOG' 2>&1 < /dev/null" &
+    # Writable stdin: a FIFO held open by our own RDWR fd ($SYSRQ_WFD) so
+    # it never EOFs and we can inject sysrq on timeout. Equivalent to the
+    # old `< /dev/null` for a clean boot (no bytes sent until timeout).
+    SYSRQ_FIFO="$(mktemp -u /tmp/oxide-smoke-sysrq-${ARCH}-XXXXXX.fifo)"
+    mkfifo "$SYSRQ_FIFO" 2>/dev/null || SYSRQ_FIFO=""
+    if [ -n "$SYSRQ_FIFO" ]; then
+        exec {SYSRQ_WFD}<>"$SYSRQ_FIFO"
+        OXIDE_QEMU_HEADLESS=1 setsid bash -c "exec make SMP='$OXIDE_SMP' '$MAKE_TARGET' > '$LOG' 2>&1 < '$SYSRQ_FIFO'" &
+    else
+        SYSRQ_WFD=""
+        OXIDE_QEMU_HEADLESS=1 setsid bash -c "exec make SMP='$OXIDE_SMP' '$MAKE_TARGET' > '$LOG' 2>&1 < /dev/null" &
+    fi
     echo $! > "$PIDFILE"
     local deadline
     deadline=$(( $(date +%s) + TIMEOUT ))
@@ -106,19 +133,30 @@ attempt_boot() {
             echo "boot-smoke: attempt $1 — qemu exited before login marker" >&2
             echo "------ last 60 lines of log ------" >&2
             tail -n 60 "$LOG" >&2
+            close_sysrq
             return 1
         fi
         if grep -qF "$MARKER" "$LOG" 2>/dev/null; then
             local elapsed=$(( $(date +%s) - (deadline - TIMEOUT) ))
             echo "boot-smoke: PASS — $ARCH reached marker '$MARKER' in ${elapsed}s (attempt $1)"
+            close_sysrq
             return 0
         fi
         sleep 2
     done
     echo "boot-smoke: attempt $1 — timeout after ${TIMEOUT}s without login marker" >&2
-    echo "------ last 80 lines of log ------" >&2
+    inject_sysrq
+    echo "------ last 80 lines of log (incl. sysrq dump if it landed) ------" >&2
     tail -n 80 "$LOG" >&2
+    close_sysrq
     return 1
+}
+
+# Close + remove the sysrq FIFO between attempts.
+close_sysrq() {
+    if [ -n "${SYSRQ_WFD:-}" ]; then exec {SYSRQ_WFD}>&- 2>/dev/null || true; SYSRQ_WFD=""; fi
+    [ -n "${SYSRQ_FIFO:-}" ] && rm -f "$SYSRQ_FIFO" 2>/dev/null || true
+    SYSRQ_FIFO=""
 }
 
 a=1

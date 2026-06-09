@@ -52,6 +52,18 @@ pub fn lookup_in_ns(ns: u64, vpid: u32) -> Option<Arc<Task>> {
                   || t.vtid.load(Ordering::Acquire) == vpid))
 }
 
+/// Best-effort snapshot of all live tasks for diagnostics (sysrq /
+/// liveness-watchdog dump). Uses `try_lock` so a hung holder of `REG`
+/// cannot deadlock the dump path itself — returns `None` if the lock
+/// is contended (the dumper then reports "registry busy" rather than
+/// wedging the whole machine while trying to diagnose a wedge).
+/// # C: O(N_tasks)
+/// # Lk: REG.try_lock (non-blocking)
+pub fn try_snapshot() -> Option<Vec<Arc<Task>>> {
+    let g = REG.try_lock()?;
+    Some(g.iter().filter_map(|(_, w)| w.upgrade()).collect())
+}
+
 /// Snapshot live tids for procfs readdir. Skips entries whose
 /// `Weak<Task>` has decayed; opportunistically prunes them.
 /// # C: O(N_tasks)

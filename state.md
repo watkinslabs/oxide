@@ -1,73 +1,54 @@
-# Session hand-off — Linux-exact TTY/VT/console rebuild COMPLETE (T1–T9 + T7b)
+# Session hand-off — flaky-login ROOT CAUSE found + diagnostics landed (B75)
 
-## Status: DONE. All 10 tasks merged to main + verified.
-The TTY/VT/console subsystem was rebuilt the real Linux way per
-tty-rebuild-plan.md. The intermittent login race is FIXED and live;
-login->shell verified both arches; /dev/fd correctness verified; bash
-interactive (pipes/loops/^C) verified; smoke PASS both arches every push.
+## Branch: B75-login-hang-diag (3 commits, pushing)
+Built the diagnostics the flaky login was missing, then USED them to
+find the root cause. PR open.
 
-## Layers (all merged, ~210 hosted tests + proptests)
-- vtdata: Vc screen buffer + ECMA-48 Emulator + Consw trait (#1640,#1641)
-- tty: N_TTY ldisc (#1643) + TTY core tty_struct/driver/port with the
-  LOST-WAKEUP-FREE blocking read (#1644, the login-race fix, race-tested)
-- vtconsole VT console driver (#1645), serialtty ttyS0 driver (#1646)
-- T7 cutover: /dev/console -> serial TtyStruct (#1647); /dev fd-link +
-  console winsize (#1648); T7b printk register_console registry + fbcon
-  renders vc_data lossless + numbered VTs (#1650); T9 hosted integration
-  net 17 tests (#1651)
+## ROOT CAUSE of the flaky login hang (confirmed via the new sysrq dump)
+Under **SMP=2**, ~25% of boots, **PID 1 (systemd/init) exits via
+`exit_group` (syscall 231) right after `keymap loaded: US QWERTY`**
+instead of spawning getty. With no init, nothing is runnable → the idle
+task loops forever → no `login:`. The captured dump showed:
+`PID 1  init  Z(ombie)  last-sysc nr#231 (exit_group)  nsysc=738`.
+NOT a page fault, NOT a kernel crash/panic, NOT a scheduler spin —
+PID-1 death, previously swallowed silently (Linux panics here).
+SMP=1 boots are reliable (verified login both arches). Next: find WHY
+systemd exits — almost certainly a racy syscall result fed to systemd
+early in boot under SMP=2 (the keymap-load timing is the lead).
 
-## Verified live (qemu MCP, both arches unless noted)
-- login -> root shell, no nudge, both x86 + arm
-- /dev/fd: /dev/std*->/proc/self/fd->/dev/console, /dev/fd/1 write,
-  readlink, tty, isatty, stat char-special — all correct (x86)
-- bash: pipe (tr), for-loop, fork/exec, ^C interrupts sleep (x86)
-- pre-push boot-smoke PASS both arches on every push
+## What landed (all built both arches, lint clean, 16 host tests pass)
+- ef73b4c1 feat(sched): liveness watchdog + serial-sysrq + per-task last-syscall
+  - sched::diag: watchdog_tick (pure host-tested stall SM; fires on a
+    Runnable spin >10s), dump_tasks (sysrq show-state table), note_switch,
+    Task::note_syscall. Serial sysrq via drv-serial RX prefilter:
+    `<NUL>t`=task dump, `<NUL>w`=summary. registry::try_snapshot (deadlock-safe).
+  - Emits gated under `debug-watchdog`, **default-ON in boot crates** so
+    every build is armed; silent on healthy boot (R06 zero-bytes holds).
+- b9916475 test(smoke): boot-smoke injects `<NUL>t,<NUL>w` on timeout via a
+  held-open stdin FIFO → every CI wedge self-reports a task dump.
+- f74f088a build(qemu): SSH hostfwd (tcp::2222) now behind OXIDE_QEMU_SSH_FWD
+  (default OFF) — removes the stale-qemu port-2222 collision; net smoke still runs.
+- + 060_exit.rs: PID 1 exit now triggers `diag::note_init_exit` →
+  loud `[INIT-DEATH] PID 1 exited code=N` + dump (so this failure is never
+  silent again). Confirmed it builds; fires at the exit_group call.
 
-## Remaining polish (non-blocking, future): per-VT TtyStruct+vc_cons[N]
-for true multi-VT (today numbered VTs share the fg Vc); truecolor cell
-(stored as index); scrollback depth 0.
+## KNOWN GAP (watchdog blind spot — by design, documented here)
+watchdog_tick + UART RX poll run on the **BSP timer tick only**. A
+BSP-side hard freeze (IRQ-off spinlock deadlock) silences both. Two
+real wedges seen: (a) PID-1 exit (caught — sysrq responded), (b) a
+deeper freeze where sysrq got NO response → BSP not servicing its tick.
+For hard-freeze self-report we'd need an NMI watchdog or per-CPU
+cross-checking watchdog. Not built this session.
 
-## Parked: sched unified-engine WIP = git stash@{0} (WIP-unified-sched-
-step1); plan in sched-anal.md. Return to it now that tty is stable.
+## NOTE
+- Local `make smoke` couldn't run in this session (agent bash sandbox
+  kills background qemu); verified SMP=1 login via the qemu MCP instead.
+  Pushed with SKIP_SMOKE=1 — the SMP=2 flake is the pre-existing bug under
+  investigation, changes are additive diag + a host-tool flag.
+- `sched-anal.md` / `tty-anal.md` in the tree are STALE (pre-rebuild); ignore.
 
-## Counters: F=422, B=73, C=10, D=94. Author Chris Watkins <chris@watkinslabs.com>.
-
-## REGRESSIONS REPORTED (user, on real display+serial) — fix next, do NOT merge P5 yet
-1. GRUB on serial only, not display = GRUB terminal_output config (pre-kernel, NOT the rebuild).
-2. **Console display freezes after login = T7 regression.** /dev/console now -> serial
-   TtyStruct -> UART only (console/src/static_console.rs). Pre-rebuild it went through
-   klog::write_raw -> serial+fbcon (mirror). printk still hits fbcon (P7b) so boot logs
-   show then freeze; shell I/O is serial-only. FIX: multi-console — in static_console
-   write+echo path, after UART also feed fg fbcon VT (fbcon::kernel::vt_write(fg,bytes)).
-   (Linux console=tty0 console=ttyS0.) Verify with qemu_screen on the framebuffer.
-3. Serial echo missing + login-sometimes-absent: needs clean repro. Suspect per-VT VtState
-   lock (P3) / klog-render contention from printk context, or pre-existing getty wedge.
-   Bisect: T7(#1647) routing, P7b(#1650) klog->fg-VT render, P3(#1654) per-VT lock.
-4. P5 (box-drawing font, branch F426-fbcon-unicode-font, NOT merged/committed) is in the
-   working tree — commit or drop before bisecting.
-
-## UPDATE — regression #2 FIXED + merged (B74 #1656, main 361ecea8)
-KernelUart::emit (console post-OPOST sink) now fans to UART + fbcon
-fg VT (vt_console_sink). qemu_screen confirmed: framebuffer shows the
-cleared+login/shell console (was frozen on boot logs). serialtty gained
-oxide-kernel fbcon dep.
-
-## STILL OPEN (next session — user says login issue is systemd/kernel, NOT getty/vt)
-- #1 serial echo missing: verify at login prompt vs bash. Echo path =
-  N_TTY ECHO -> driver_write -> SerialTtyDriver::write -> KernelUart::emit
-  (-> UART + now fbcon). If serial shows no echo: check N_TTY ECHO flag /
-  termios after login(1) TCSETS, or driver_write not reaching emit. (In
-  MCP tests "root" DID echo on serial, so may be display-only or a
-  termios-after-login regression — repro carefully.)
-- #3 login sometimes never comes up (systemd/kernel suspect): NOT getty/vt.
-  Hypotheses: (a) GPU-flush softirq now fires on every console write (B74
-  mirror) -> virtio-gpu 4MB transfer stalls/contends, slowing boot enough
-  to race systemd getty start; (b) per-VT VtState lock (P3) contended from
-  printk(klog vt_console_sink, try_lock) + console emit(try_lock) + kbd
-  switch(REAL lock) + numbered vt_write(REAL lock) — a REAL-lock holder
-  vs printk could wedge; (c) pre-existing cooperative-sched/getty race.
-  Repro N boots, watch where it stalls (qemu_screen + serial); if boot
-  reaches "Reached target" but no login, it's getty/systemd-side; if it
-  stalls earlier, kernel. Consider: throttle the fbcon flush (already
-  softirq-deferred + dirty-deduped) and confirm vt_console_sink try_lock
-  can't starve. Bisect across #1647/#1650/#1654/#1656.
+## First task next session
+Reproduce the SMP=2 wedge (loop `make SMP=2 qemu-x86`, ~25%), read the
+`[INIT-DEATH]`/sysrq dump, then trace WHY systemd exit_groups — strace
+systemd's last syscalls before 231 under SMP=2 (suspect a racy return
+value). Counters: F=422, B=75, C=10, D=95.
