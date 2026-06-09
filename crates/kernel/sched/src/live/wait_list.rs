@@ -141,18 +141,7 @@ impl WaitList {
     /// systemic guard against enqueuing a dead task (corrupt context
     /// switch) or double-enqueuing an already-runnable one.
     fn enqueue_runnable(t: Arc<Task>) -> bool {
-        // Route to the woken task's OWNER-CPU runqueue (its last-run CPU,
-        // stamped by swap_current), not the waker's `global()`. A remote wake
-        // must enqueue on the sleeper's own CPU; falling back to local for a
-        // never-run task (cpu still u16::MAX) or unknown owner.
-        let owner = t.cpu.load(Ordering::Acquire);
-        let rq = match if owner != u16::MAX {
-            // SAFETY: global_for indexes the per-CPU runqueue table; owner was
-            // stamped from a live runqueue's cpu field.
-            unsafe { super::runqueue::global_for(owner as u32) }.or_else(super::runqueue::global)
-        } else { super::runqueue::global() } {
-            Some(r) => r, None => return false,
-        };
+        let rq = match super::runqueue::global() { Some(r) => r, None => return false };
         let mut inner = rq.inner.lock();
         if t.state() != TaskState::Sleeping { return false; }
         t.set_state(TaskState::Runnable);

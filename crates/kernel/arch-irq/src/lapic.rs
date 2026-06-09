@@ -130,18 +130,6 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
                     }
                 }
             }
-            // F412 Stage E: async signal delivery on IRQ-return-to-user.
-            // MUST run BEFORE tick_pick_next — that may swap `current()`
-            // + CR3 to the NEXT task and resume IT via the asm tail (not
-            // through this IRQ frame). Here `current()` is still the
-            // interrupted task, CR3 is its AS, and the IRQ frame matches:
-            // we rewrite that frame in place so the task enters the
-            // handler whenever it next resumes (this iretq if no switch,
-            // or its saved IRQ frame after a later context switch).
-            // Gated on user-mode (cs&3==3) inside the helper.
-            // SAFETY: dispatch context; OXIDE_IRQ_FRAME live + matches
-            // current(); interrupted user task holds no kernel lock.
-            unsafe { fs::sig_dispatch::try_deliver_async_irq(); }
             // SAFETY: tick_pick_next runs in IRQ context with IRQs masked.
             unsafe { sched::live::preempt::tick_pick_next(); }
         }
@@ -152,13 +140,6 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // IRQ-tail asm stages oxide_preempt_next_ctx for switch
             // on iretq.
             sched::live::preempt::set_need_resched();
-            // F412 Stage E: async signal delivery — see VEC_TIMER arm.
-            // The cross-thread SIGURG nudge (Stage G) targets THIS path:
-            // a sender on another CPU IPIs us; we deliver to the
-            // interrupted user thread before any switch.
-            // SAFETY: dispatch context; OXIDE_IRQ_FRAME live + matches
-            // current(); interrupted user task holds no kernel lock.
-            unsafe { fs::sig_dispatch::try_deliver_async_irq(); }
             // SAFETY: cross-CPU IPI handler runs in IRQ context with IRQs masked; tick_pick_next reads/writes per-CPU sched state.
             unsafe { sched::live::preempt::tick_pick_next(); }
         }
