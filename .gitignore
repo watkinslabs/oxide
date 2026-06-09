@@ -113,9 +113,11 @@ docker-compose.override.yml
 *.rpm
 *.apk
 
-# Crash dumps
-core
-core.*
+# Crash dumps (anchored to repo root so they never match source modules
+# named `core` — e.g. crates/kernel/tty/src/core.rs / core/ — which the
+# un-anchored `core` / `core.*` patterns silently un-tracked, breaking CI).
+/core
+/core.*
 *.core
 vmcore*
 
