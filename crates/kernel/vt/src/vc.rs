@@ -21,15 +21,22 @@ pub const DEFAULT_FG: u8 = 7;
 /// Default background SGR color index (black, VGA 0).
 pub const DEFAULT_BG: u8 = 0;
 
-// Cell.attr is a u16 color-only fast path: low 8 bits = fg index, high 8
-// bits = bg index (both xterm-256 space). bold/underline/reverse don't
-// fit alongside two 8-bit color bytes, so they live only on the live
-// `Vc.attr` (an `Attr`), not per cell — the renderer reads color per
-// cell and current flags from `Vc.attr`. `attr_at` decodes the u16 back
-// to an `Attr` (flags default false).
+// Cell.attr is a u32 packing the FULL per-cell attribute (Linux cells
+// carry per-cell intensity/underline/reverse, not just color): bits
+// 0..7 = fg index, bits 8..15 = bg index (both xterm-256 space), bits
+// 16..23 = flags (bold/underline/reverse). `attr_at` round-trips the
+// u32 back to an `Attr` losslessly, so the renderer reads complete
+// per-cell attributes — no reliance on the live `Vc.attr` for flags.
+
+/// Flag bit: bold/bright intensity (SGR 1).
+pub const ATTR_BOLD: u32 = 1;
+/// Flag bit: underline (SGR 4).
+pub const ATTR_UNDERLINE: u32 = 2;
+/// Flag bit: reverse video (SGR 7).
+pub const ATTR_REVERSE: u32 = 4;
 
 /// Cell/cursor attribute: fg/bg color indices (0..255) + bold/underline/
-/// reverse flags. Packs to a u16 (color only) for per-cell storage.
+/// reverse flags. Packs losslessly to a u32 for per-cell storage.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Attr {
     pub fg: u8,
@@ -46,14 +53,35 @@ impl Default for Attr {
 }
 
 impl Attr {
-    /// Pack into the u16 stored on each `Cell`. Layout: bits 0..7 = fg,
-    /// bits 8..15 = bg. Flags (bold/underline/reverse) are NOT packed
-    /// into the u16 (they would collide with 8-bit bg); callers needing
-    /// flags read the `Attr` returned by `Vc::attr_at`. The u16 is the
-    /// renderer's color-only fast path.
+    /// Pack into the u32 stored on each `Cell`. Layout: bits 0..7 = fg,
+    /// bits 8..15 = bg, bits 16..23 = flags (`ATTR_BOLD|UNDERLINE|
+    /// REVERSE`). Lossless: `unpack` reverses it exactly.
     /// # C: O(1).
-    pub fn pack(self) -> u16 {
-        (self.fg as u16) | ((self.bg as u16) << 8)
+    pub fn pack(self) -> u32 {
+        let mut flags = 0u32;
+        if self.bold {
+            flags |= ATTR_BOLD;
+        }
+        if self.underline {
+            flags |= ATTR_UNDERLINE;
+        }
+        if self.reverse {
+            flags |= ATTR_REVERSE;
+        }
+        (self.fg as u32) | ((self.bg as u32) << 8) | (flags << 16)
+    }
+
+    /// Decode a packed u32 (see `pack`) back to an `Attr`.
+    /// # C: O(1).
+    pub fn unpack(v: u32) -> Self {
+        let flags = (v >> 16) & 0xff;
+        Attr {
+            fg: (v & 0xff) as u8,
+            bg: ((v >> 8) & 0xff) as u8,
+            bold: flags & ATTR_BOLD != 0,
+            underline: flags & ATTR_UNDERLINE != 0,
+            reverse: flags & ATTR_REVERSE != 0,
+        }
     }
 
     /// Reset to SGR defaults (SGR 0).
@@ -63,12 +91,12 @@ impl Attr {
     }
 }
 
-/// One screen cell: a glyph codepoint and a packed color attr. A blank
-/// cell is `glyph == ' '` with the prevailing attr.
+/// One screen cell: a glyph codepoint and a packed full attr (fg/bg +
+/// flags). A blank cell is `glyph == ' '` with the prevailing attr.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Cell {
     pub glyph: u32,
-    pub attr: u16,
+    pub attr: u32,
 }
 
 impl Default for Cell {
@@ -111,6 +139,14 @@ pub struct Vc {
     pub scroll_top: u16,
     /// Bottom of the scroll region (inclusive), 0-based. Default rows-1.
     pub scroll_bot: u16,
+    /// Per-row dirty flags (len == rows). A row is marked when any cell
+    /// in it changes; the renderer (`consw::render`) blits dirty rows
+    /// then clears the marks. Bridges the emulator (data) to consw
+    /// (pixels) without the emulator depending on a concrete renderer.
+    dirty: Vec<bool>,
+    /// Set when the cursor moves or its row changes; the renderer
+    /// repaints the cursor cell and clears it.
+    cursor_dirty: bool,
 }
 
 impl Vc {
@@ -133,7 +169,55 @@ impl Vc {
             wrap_pending: false,
             scroll_top: 0,
             scroll_bot: rows - 1,
+            dirty: vec![true; rows as usize],
+            cursor_dirty: true,
         }
+    }
+
+    /// Mark row `row` dirty (needs repaint). Out-of-range is ignored.
+    /// # C: O(1).
+    #[inline]
+    pub fn mark_row_dirty(&mut self, row: u16) {
+        if let Some(d) = self.dirty.get_mut(row as usize) {
+            *d = true;
+        }
+    }
+
+    /// Mark all rows dirty (full-screen repaint; used on VT switch).
+    /// # C: O(rows).
+    pub fn mark_all_dirty(&mut self) {
+        for d in self.dirty.iter_mut() {
+            *d = true;
+        }
+        self.cursor_dirty = true;
+    }
+
+    /// Mark the cursor cell as needing repaint.
+    /// # C: O(1).
+    #[inline]
+    pub fn mark_cursor_dirty(&mut self) {
+        self.cursor_dirty = true;
+    }
+
+    /// Is row `row` dirty? # C: O(1).
+    #[inline]
+    pub fn is_row_dirty(&self, row: u16) -> bool {
+        self.dirty.get(row as usize).copied().unwrap_or(false)
+    }
+
+    /// Is the cursor cell dirty? # C: O(1).
+    #[inline]
+    pub fn is_cursor_dirty(&self) -> bool {
+        self.cursor_dirty
+    }
+
+    /// Clear all dirty marks (called by the renderer after a pass).
+    /// # C: O(rows).
+    pub fn clear_dirty(&mut self) {
+        for d in self.dirty.iter_mut() {
+            *d = false;
+        }
+        self.cursor_dirty = false;
     }
 
     /// Linear index of (col,row). Caller guarantees in-bounds.
@@ -159,16 +243,11 @@ impl Vc {
         self.cell_at(col, row).map(|c| c.glyph).unwrap_or(' ' as u32)
     }
 
-    /// Decoded `Attr` at (col,row) (color only; flags are not stored per
-    /// cell). `None` if out of bounds.
+    /// Full decoded `Attr` at (col,row) including bold/underline/reverse
+    /// flags. `None` if out of bounds.
     /// # C: O(1).
     pub fn attr_at(&self, col: u16, row: u16) -> Option<Attr> {
-        self.cell_at(col, row).map(|c| {
-            let mut a = Attr::default();
-            a.fg = (c.attr & 0xff) as u8;
-            a.bg = (c.attr >> 8) as u8;
-            a
-        })
+        self.cell_at(col, row).map(|c| Attr::unpack(c.attr))
     }
 
     /// Row `row` as a String (glyphs decoded to chars; trailing blanks
@@ -192,6 +271,7 @@ impl Vc {
     pub fn put_glyph(&mut self, cp: u32) {
         let i = self.idx(self.x, self.y);
         self.cells[i] = Cell { glyph: cp, attr: self.attr.pack() };
+        self.mark_row_dirty(self.y);
     }
 
     /// Overwrite the cell at (col,row) with `cell` (in-bounds only).
@@ -200,6 +280,7 @@ impl Vc {
         if col < self.cols && row < self.rows {
             let i = self.idx(col, row);
             self.cells[i] = cell;
+            self.mark_row_dirty(row);
         }
     }
 
@@ -219,6 +300,7 @@ impl Vc {
         self.x = 0;
         self.y = 0;
         self.wrap_pending = false;
+        self.mark_all_dirty();
     }
 
     /// Fill a half-open cell range [start,end) with blanks (current attr).
@@ -226,8 +308,17 @@ impl Vc {
     fn fill(&mut self, start: usize, end: usize) {
         let blank = Cell::blank(self.attr);
         let end = end.min(self.cells.len());
-        for c in &mut self.cells[start.min(end)..end] {
+        let start = start.min(end);
+        for c in &mut self.cells[start..end] {
             *c = blank;
+        }
+        if start < end {
+            let cols = self.cols as usize;
+            let first_row = (start / cols) as u16;
+            let last_row = ((end - 1) / cols) as u16;
+            for r in first_row..=last_row {
+                self.mark_row_dirty(r);
+            }
         }
     }
 
@@ -285,6 +376,9 @@ impl Vc {
                 self.cells[base + c] = blank;
             }
         }
+        for r in top..=bot {
+            self.mark_row_dirty(r as u16);
+        }
     }
 
     /// Scroll the scroll region down by `n` rows; vacated top rows are
@@ -313,6 +407,9 @@ impl Vc {
                 self.cells[base + c] = blank;
             }
         }
+        for r in top..=bot {
+            self.mark_row_dirty(r as u16);
+        }
     }
 
     /// Resize the grid to `cols`×`rows`, preserving overlapping content
@@ -337,6 +434,8 @@ impl Vc {
         self.scroll_top = 0;
         self.scroll_bot = rows - 1;
         self.wrap_pending = false;
+        self.dirty = vec![true; rows as usize];
+        self.cursor_dirty = true;
     }
 
     /// Save cursor + attr (DECSC / ESC 7). # C: O(1).
@@ -352,5 +451,6 @@ impl Vc {
         self.y = self.saved_y.min(self.rows - 1);
         self.attr = self.saved_attr;
         self.wrap_pending = false;
+        self.cursor_dirty = true;
     }
 }
