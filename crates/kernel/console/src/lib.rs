@@ -146,27 +146,29 @@ impl Inode for ConsoleInode {
         // emulator itself treats `\n` as a raw linefeed (no column reset),
         // so ONLCR-expanded `\r\n` is what moves to col 0 + next row.
         //
-        // DEFERRED: per-VT TtyStruct instantiation + N_TTY ldisc + a
-        // dedicated `Vc` per VT (vc_cons[N]). Today there is ONE active
-        // fbcon screen buffer (fg only), so every numbered VT renders onto
-        // the same fg `Vc` (inert multi-VT until kbd VT-switch lands).
-        // Input (read/poll) still uses the per-VT `tty::live` ring above.
+        // Per-VT framebuffer consoles (tty-rebuild-plan §3-P3): each
+        // numbered `/dev/ttyN` feeds its OWN `vc_cons[vt]` screen buffer
+        // (lazily allocated). Only the foreground VT is blitted to the
+        // physical FB; a write to an offscreen VT updates its `Vc` only.
+        // Ctrl-Alt-Fn (kbd) calls `fbcon::kernel::switch_vt` to bring a
+        // VT forward. Input (read/poll) uses the per-VT `tty::live` ring
+        // above.
         let oflag = tty::live::output_oflag(self.vt);
         let post = (oflag & tty::pty::oflag::OPOST) != 0;
         let onlcr = post && (oflag & tty::pty::oflag::ONLCR) != 0;
         if !onlcr {
-            fbcon::kernel::vt_write(buf);
+            fbcon::kernel::vt_write(self.vt, buf);
             return Ok(buf.len());
         }
         let mut start = 0;
         for (i, &b) in buf.iter().enumerate() {
             if b == b'\n' {
-                if i > start { fbcon::kernel::vt_write(&buf[start..i]); }
-                fbcon::kernel::vt_write(b"\r\n");
+                if i > start { fbcon::kernel::vt_write(self.vt, &buf[start..i]); }
+                fbcon::kernel::vt_write(self.vt, b"\r\n");
                 start = i + 1;
             }
         }
-        if start < buf.len() { fbcon::kernel::vt_write(&buf[start..]); }
+        if start < buf.len() { fbcon::kernel::vt_write(self.vt, &buf[start..]); }
         Ok(buf.len())
     }
 }
