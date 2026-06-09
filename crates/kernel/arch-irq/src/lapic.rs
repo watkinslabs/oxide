@@ -141,11 +141,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // Gated on user-mode (cs&3==3) inside the helper.
             // SAFETY: dispatch context; OXIDE_IRQ_FRAME live + matches
             // current(); interrupted user task holds no kernel lock.
-            // DISABLED (B69): async IRQ-exit delivery corrupts a user frame
-            // during login → crash back to getty. The rt_sigframe-from-IRQ
-            // build/restore needs fixing before re-enabling; the syscall-tail
-            // delivery (F411) is unaffected. Re-enable once verified.
-            // unsafe { fs::sig_dispatch::try_deliver_async_irq(); }
+            unsafe { fs::sig_dispatch::try_deliver_async_irq(); }
             // SAFETY: tick_pick_next runs in IRQ context with IRQs masked.
             unsafe { sched::live::preempt::tick_pick_next(); }
         }
@@ -162,11 +158,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // interrupted user thread before any switch.
             // SAFETY: dispatch context; OXIDE_IRQ_FRAME live + matches
             // current(); interrupted user task holds no kernel lock.
-            // DISABLED (B69): async IRQ-exit delivery corrupts a user frame
-            // during login → crash back to getty. The rt_sigframe-from-IRQ
-            // build/restore needs fixing before re-enabling; the syscall-tail
-            // delivery (F411) is unaffected. Re-enable once verified.
-            // unsafe { fs::sig_dispatch::try_deliver_async_irq(); }
+            unsafe { fs::sig_dispatch::try_deliver_async_irq(); }
             // SAFETY: cross-CPU IPI handler runs in IRQ context with IRQs masked; tick_pick_next reads/writes per-CPU sched state.
             unsafe { sched::live::preempt::tick_pick_next(); }
         }
