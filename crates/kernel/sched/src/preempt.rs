@@ -93,6 +93,18 @@ pub fn take_need_resched() -> bool { need_resched_slot().swap(false, Ordering::A
 /// # C: O(1)
 pub fn should_resched() -> bool { preempt_count() == 0 && need_resched() }
 
+/// VOLUNTARY-preempt policy for the IRQ/syscall return-to-user epilogue
+/// (`smp-arch.md` Phase A): reschedule on the way back to user iff the
+/// interrupted context was user mode AND `should_resched()`. Kernel-
+/// interrupted ticks do NOT preempt under VOLUNTARY (kthreads yield
+/// cooperatively); flipping this to also cover kernel returns is the
+/// Phase-C PREEMPT_FULL step. Arch-neutral: caller passes the decoded
+/// "interrupted user mode" bit (x86 `CS&3==3`, arm `SPSR.M==EL0t`).
+/// # C: O(1)
+pub fn should_resched_to_user(interrupted_user: bool) -> bool {
+    interrupted_user && should_resched()
+}
+
 /// Bump the preempt count. Pairs with `preempt_enable` /
 /// `preempt_enable_no_check`. Prefer the `PreemptGuard` RAII form
 /// to keep pairs balanced.
