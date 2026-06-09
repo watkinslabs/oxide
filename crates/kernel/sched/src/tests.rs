@@ -763,6 +763,19 @@ fn should_resched_only_when_requested_and_safe() {
 }
 
 #[test]
+fn should_resched_to_user_is_voluntary() {
+    // VOLUNTARY: only reschedule when returning to USER and a resched is
+    // pending+safe. Kernel-interrupted (interrupted_user=false) never
+    // preempts, even with need_resched set.
+    crate::preempt::_test_reset();
+    crate::preempt::set_need_resched();
+    assert!(crate::preempt::should_resched_to_user(true),  "user + pending ⇒ resched");
+    assert!(!crate::preempt::should_resched_to_user(false), "kernel ⇒ never (VOLUNTARY)");
+    crate::preempt::_test_reset();
+    assert!(!crate::preempt::should_resched_to_user(true),  "no request ⇒ false even from user");
+}
+
+#[test]
 fn cfs_rotation_is_round_robin_for_equal_weight() {
     // Simulates the schedule() cycle the engine-collapse must preserve:
     // pick leftmost → charge a fixed slice to its vruntime (equal weight ⇒
