@@ -73,14 +73,36 @@ also uses — no throwaway work.
 
 ### Phase A — UP-correct, one engine (= sched-anal.md)
 
-1. Timer/IPI tail: `set_need_resched` + wakeups ONLY. Delete `schedule_from_irq`,
-   `stage_switch`, `tick_pick_next`, and the 12 asm staging blocks → epilogue
-   just `jmp oxide_irq_resume_user`.
-2. Add the per-arch return-to-user slow path: `if need_resched && preempt_count==0
-   { schedule() }` → reload current → deliver signal frame → return to user.
-3. Unify signal delivery onto that slow path (move it off the syscall tail).
-4. `preempt_enable` consumes `need_resched` via the one `schedule()`.
-5. Result: VOLUNTARY preempt, single engine, SMP-ready frame contract.
+**Grounded root cause (verified in `live/schedule.rs`):** the two engines are
+not just two functions — they use **two different switch primitives with
+coupled-but-separate frame contracts**, which is the corruption source:
+- `schedule()` calls `ArchCtx::switch(prev_ctx, next_ctx)` INLINE (saves
+  callee-saved+rsp into prev's `arch_ctx`; resumes into the Rust frame).
+- `schedule_from_irq()` STAGES `(prev,next)`; the asm epilogue calls a
+  DIFFERENT primitive `oxide_context_switch`, whose `ret` lands in
+  `oxide_irq_resume_user` (pop IRQ frame → iretq). This same path is the
+  FIRST-RUN scaffold: `new_kernel_with_irq_frame` bakes a fake IRQ frame so a
+  new task "returns" to user through the epilogue.
+So A2 must **unify the switch primitive + first-run scaffold onto ONE
+contract**, then route both voluntary and IRQ-return through it. Deleting the
+staging calls without unifying the first-run path would break task creation.
+
+Steps (each: pin contract in hosted test → build both arches → boot→login→
+shell→fork, repeated):
+1. **Pin the frame contracts in hosted tests FIRST**: `ArchCtx::switch` saved
+   layout, `oxide_context_switch` saved layout, `new_kernel_with_irq_frame`
+   scaffold image. These do not exist yet and are the prerequisite (sched-anal
+   rule 3). Reconcile the two layouts → define the ONE canonical saved frame.
+2. Make first-run use the canonical primitive (so new tasks don't depend on the
+   IRQ-staging path).
+3. Add the per-arch return-to-user slow path: `if should_resched() {
+   take_need_resched(); schedule() }` → reload current → (step 4) signal → user.
+4. Unify signal delivery onto that slow path (off the syscall tail).
+5. Delete the IRQ-tail engine: `schedule_from_irq`, `stage_switch`,
+   `tick_pick_next`, `PERCPU_*_CTX_OFF`, and the ~12 asm staging blocks →
+   epilogue just `jmp oxide_irq_resume_user`.
+6. `preempt_enable` already consumes `need_resched` via the one hook; keep.
+7. Result: VOLUNTARY preempt, single switch primitive + first-run contract.
 
 ### Phase B — SMP
 
