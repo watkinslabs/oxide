@@ -25,11 +25,6 @@ pub mod static_console;
 use alloc::string::ToString;
 use alloc::sync::Arc;
 
-// Use-aliased import per R06 carve-out (same pattern as
-// `crates/syscall::dispatch::sys_write`): the numbered-VT device byte-emit
-// path is intentionally not gated under a `debug-<sub>` feature because
-// writing user TTY output is the device's purpose, not diagnostic logging.
-use klog::write_raw as console_emit;
 use vfs::{Dentry, FdTable, File, FileType, Ino, Inode, InodeRef, KResult, OpenFlags, VfsError};
 
 /// `/dev/console` + `/dev/tty<N>` inode. `vt == 0` means
@@ -143,23 +138,35 @@ impl Inode for ConsoleInode {
             dtrace!(b"CW_OUT", n as u64);
             return Ok(n);
         }
-        // Numbered VT path (unchanged): per-VT c_oflag ONLCR → UART.
+        // Numbered VT path (tty-rebuild-plan §3-T7b Piece 3): route the
+        // write through the fbcon VT console — emulator → vc_data → consw
+        // cell-blit (the real Linux VT console driver path), NOT the old
+        // klog/kmsg-ring funnel. OPOST/ONLCR is applied here (the ldisc's
+        // output-processing job) before the emulator sees the bytes; the
+        // emulator itself treats `\n` as a raw linefeed (no column reset),
+        // so ONLCR-expanded `\r\n` is what moves to col 0 + next row.
+        //
+        // DEFERRED: per-VT TtyStruct instantiation + N_TTY ldisc + a
+        // dedicated `Vc` per VT (vc_cons[N]). Today there is ONE active
+        // fbcon screen buffer (fg only), so every numbered VT renders onto
+        // the same fg `Vc` (inert multi-VT until kbd VT-switch lands).
+        // Input (read/poll) still uses the per-VT `tty::live` ring above.
         let oflag = tty::live::output_oflag(self.vt);
         let post = (oflag & tty::pty::oflag::OPOST) != 0;
         let onlcr = post && (oflag & tty::pty::oflag::ONLCR) != 0;
         if !onlcr {
-            console_emit(buf);
+            fbcon::kernel::vt_write(buf);
             return Ok(buf.len());
         }
         let mut start = 0;
         for (i, &b) in buf.iter().enumerate() {
             if b == b'\n' {
-                if i > start { console_emit(&buf[start..i]); }
-                console_emit(b"\r\n");
+                if i > start { fbcon::kernel::vt_write(&buf[start..i]); }
+                fbcon::kernel::vt_write(b"\r\n");
                 start = i + 1;
             }
         }
-        if start < buf.len() { console_emit(&buf[start..]); }
+        if start < buf.len() { fbcon::kernel::vt_write(&buf[start..]); }
         Ok(buf.len())
     }
 }

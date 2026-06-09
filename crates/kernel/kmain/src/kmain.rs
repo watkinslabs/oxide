@@ -640,10 +640,12 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     if let Some((w, h)) = drv_virtio_gpu::post_init::dimensions() {
         fbcon::kernel::kernel_init(w, h, drv_virtio_gpu::post_init::fbcon_flush_pixels);
-        // Mirror every klog::write_raw byte — kernel log AND /dev/console
-        // writes (getty/shell output: console_emit IS write_raw) — to the
-        // framebuffer (fbcon renders + defers the GPU flush to a softirq).
-        klog::set_aux_sink(fbcon::kernel::klog_sink);
+        // Register the fbcon VT console as a printk console (Linux
+        // vt_console_driver): kernel logs now render through the ECMA-48
+        // emulator → vc_data → fbcon cell-blit (lossless), not the old
+        // lossy byte-stream try_lock→drop sink. The serial console
+        // (drv_serial::emit, SLOT_BYTE) stays the durable copy.
+        klog::set_aux_sink(fbcon::kernel::vt_console_sink);
         let _ = w; let _ = h;
     }
     // Load the rootfs-resident keyboard layout. Linux pattern:
