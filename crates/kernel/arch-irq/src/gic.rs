@@ -278,6 +278,21 @@ pub unsafe fn send_resched_ipi(cpu: u32) -> bool {
     true
 }
 
+/// Install arm diag hooks. The cross-CPU heartbeat detector
+/// (`sched::diag::percpu`) already names a frozen CPU + its last
+/// task/syscall from another CPU — that is the primary arm visibility
+/// and needs no hook. The FIQ-SGI register-dump *poke* (Group-0
+/// pseudo-NMI to make the wedged CPU print its own regs) is NOT yet
+/// wired: it needs the FIQ vector entries (vbar 0x300/0x500, today
+/// halting) routed to a print+eret handler plus Group-0 SGI config, and
+/// can't be SMP-verified in the current harness. Left uninstalled so the
+/// sysrq backtrace honestly reports "no FIQ sender" rather than lying.
+/// # C: O(1)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub fn install_diag_hooks() {
+    // intentionally no set_poke_hook — see doc comment.
+}
+
 /// Enable an SGI/PPI/SPI INTID. SGIs/PPIs (INTID < 32) live in the
 /// per-CPU Redistributor (SGI frame); SPIs (INTID >= 32) live in
 /// the Distributor and additionally need GICD_IROUTER set so the
@@ -606,6 +621,10 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             unsafe {
                 core::arch::asm!("msr cntv_tval_el0, {v:x}", v = in(reg) p, options(nomem, nostack, preserves_flags));
             }
+            // Per-CPU heartbeat + cross-CPU hard-lockup scan, every CPU's
+            // virtual-timer tick (APs tick on INTID 27 too) — so a frozen
+            // BSP is observed by an AP and vice-versa.
+            sched::diag::percpu::tick();
         }
         if intid == 33 {
             // F47: PL011 RX/RT IRQ — drain FIFO via tick_poll_uart

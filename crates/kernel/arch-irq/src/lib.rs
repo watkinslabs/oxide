@@ -215,6 +215,18 @@ pub fn set_tick_poll_hook(f: TickPollFn) {
     TICK_POLL_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
 }
 
+/// Install the cross-CPU backtrace poke hook (NMI on x86, FIQ SGI on
+/// arm) into `sched::diag::nmi`. Called once at boot so the hard-lockup
+/// detector + sysrq backtrace can make a wedged CPU dump its own state.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn install_diag_nmi_hook() {
+    #[cfg(target_arch = "x86_64")]
+    lapic::install_diag_hooks();
+    #[cfg(target_arch = "aarch64")]
+    gic::install_diag_hooks();
+}
+
 /// # SAFETY: caller is timer-ISR ctx; hook installed by kernel boot.
 /// # C: O(1) — atomic load + indirect call.
 pub unsafe fn tick_poll() {

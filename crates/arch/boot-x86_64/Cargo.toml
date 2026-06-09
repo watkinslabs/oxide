@@ -49,5 +49,5 @@ debug-irq  = ["hal-x86_64/debug-irq"]
 debug-trace = ["kmain/debug-trace"]
 # Liveness watchdog + serial-sysrq task dump (`05`/`27`). Rides the
 # kmain feature graph so xtask `--features debug-watchdog` reaches sched.
-debug-watchdog = ["kmain/debug-watchdog"]
+debug-watchdog = ["kmain/debug-watchdog", "hal-x86_64/debug-watchdog"]
 debug-all  = ["debug-boot", "debug-irq", "debug-trace", "debug-watchdog"]
