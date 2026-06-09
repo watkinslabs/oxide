@@ -1,40 +1,69 @@
-# Session hand-off — RESET to F411 (login known-good); Go-async reverted
+# Session hand-off — disk-based rootfs + fast IO; vendoring apps
 
-## State of main NOW
-- **Reverted F412 (async signal delivery) + B69** (B70 #1633) → back to the F411 code where
-  login was VERIFIED working (shell + commands, by me + an agent). Kept: futex WAIT_BITSET
-  (B67), timerfd ABSTIME (B68), full rt_sigframe build/restore on the SYSCALL path (F409-411).
-- Why: F412's `try_deliver_async_irq` (async IRQ-exit signal delivery) corrupted the
-  interrupted user frame → login crash; B69 disabled it but login still didn't complete;
-  cleanest fix = revert to F411 known-good. Go async-preemption (duf/glow/micro) is NOT
-  solved — redo it in an env where the boot can be observed/driven.
+## Landed on main this session
+- **Disk-based rootfs (F405/#1612):** userspace runs from real virtio-blk disks (ext4),
+  NOT baked into the kernel. x86+arm boot to `oxide login:` from the `oxide-root` disk.
+- **virtio-blk multi-sector perf (B63/#1615):** was ~1 round-trip/sector (~0.1 MB/s,
+  boot+big binaries crawled). Now 128 KiB bounce + multi-sector submit (4 KiB read 8→1,
+  ~256× fewer round-trips). **Boot→login ~16 s.** Both keystones (driver + ext4
+  de-singletonization) were adversarially reviewed + bugs fixed before landing.
+- **rootfs is a 1 GiB virtio-blk disk** (rootfs.rs count=1024) — grows freely, zero
+  kernel cost (read on demand). home-<arch>.img is a separate /home disk.
+- **x86_64-musl-g++ C++ toolchain** (fetch-cross.sh; gitignored) — enables C++ apps.
+- **x86 HHDM 1→4 GiB (B65/#1620):** MB2 trampoline only mapped phys 0..1 GiB into HHDM;
+  PMM derefs hhdm+pfn*4096 per page → x86 hung at -m 2G. Now 4 HHDM PDs (0..4 GiB, 2 MiB
+  pages, matches arm). x86 + arm both boot at -m 2G. (>4 GiB RAM = more PDs / HHDM rebuild.)
+- **38 tools staged + boot-verified:** rg fd bat eza jq tldr hyperfine dust sd btm procs
+  zoxide ncdu htop tree dos2unix curl wget fzf tmux lazygit yq delta choose hexyl rsync
+  nano tokei grex xh yazi(+ya) dialog btop dua gron pv entr.
 
-## Known separate bug: intermittent keymap boot-wedge
-Boot sometimes stalls right after the KERNEL prints `keymap loaded: US QWERTY`
-(kmain.rs:649 — early kernel init, BEFORE userspace). Pre-existing + intermittent (F411 too).
-Next kmain steps: virtio-net legacy init, ptrace install, `smoke::elf::run_as_task` (first
-user ELF), spawn_timer_driver, halt_forever. Likely the tty-write yield-point / CAT-smoke
-wedge class. Retry boot usually gets past it. Real fix = the tty ONLCR yield-point gap.
+## KEY OPEN ITEM — TUI startup-hang gap (4 tools built+de-staged)
+starship, glow, micro, duf are BUILT (recipes in tools/fetch-*.sh + vendor/*/build.sh,
+committed; binaries gitignored/local) but **NOT staged** — they HANG on startup under
+oxide. Signature: persists with stdin redirected to /dev/null + stdout to a file (so
+NOT a tty-read block). **ncurses TUIs work** (htop/ncdu/nano/dialog), **fzf/yq (Go,
+non-TUI) work**, but bubbletea/tcell (Go) + crossterm/starship (Rust) HANG — so it's how
+those terminal libs probe the terminal/init, not language/tokio/threads. NEXT: boot a
+`--features debug-all` kernel, run `starship --version </dev/null`, capture the LAST
+syscalls before silence → the blocking syscall (likely a tty ioctl or a /dev/tty open).
+Fix the kernel gap, then re-add the 4 to rootfs.rs staging + allowlist their binaries.
 
-## HARD-LEARNED: this sandbox cannot drive/observe QEMU (do not relearn)
-- QEMU works ONLY: foreground, short (<~30s), direct, NO stdin redirect:
-  `timeout 30 qemu ... -serial stdio > /tmp/x.log 2>&1` then read the file SEPARATELY.
-- FAILS here: backgrounded qemu (reaped → empty), stdin pipe/`<file`/unix-socket/python-
-  subprocess (all empty/fail), commands >~120s (tool kills + discards output).
-- So I CANNOT drive interactive login/commands. AGENTS can (different harness) — delegate
-  boot+input verification, OR have the USER run `make qemu-x86` + login + paste.
-- Debug traces via klog FLOOD the serial + WEDGE boot — the "0 switches / killer never ran"
-  readings earlier were flood artifacts. Use TARGETED (arm-on-execve) traces only.
-- Bash tool: foreground `sleep` BLOCKED; `set -e` aborts on any non-zero (guard `|| true`).
-- pre-push smoke is the only reliable boot gate; SKIP_SMOKE=1 when env can't run it + change
-  is logically boot-safe (e.g. reverting to prior smoke-passed code).
+## Other follow-ups (not blocking)
+- x86 HHDM caps at 4 GiB (B65). >4 GiB RAM needs more MB2 PDs or a post-boot HHDM rebuild.
 
-## NEXT
-1. Confirm login works on main (user/agent boot — I can't). 
-2. Go-async-preemption REDO (in verifiable env): the bug was `try_deliver_async_irq` rewriting
-   the live IRQ iretq/eret frame (FrameSrc::Irq path in sig_dispatch.rs) clobbering the
-   resumed user context. Needs careful frame-source handling + a USER test (login must not
-   crash while a signal is delivered) before re-landing.
-3. keymap boot-wedge (tty yield); /etc/machine-id EIO; merged-/usr layout (cosmetic taint).
+## Backlog (continue — autonomous; prefer NON-bubbletea/tcell tools until the hang is fixed)
+- CLI/ncurses (likely work): gron, jq-clones, pv, mtr, ncdu(done), aerc?, neomutt(big),
+  man-db (needs gdbm+libpipeline — vendor first), mc (needs glib — vendor first).
+- C++ (toolchain ready): lnav (sqlite/pcre/readline).
+- Heavy: neovim (libuv/luajit/msgpack/tree-sitter/unibilium/libtermkey/libvterm).
+- Defer bubbletea/tcell/crossterm TUIs (gitui, zellij, helix, lazygit-is-already-in…)
+  until the startup-hang is fixed.
 
-## Counters: F=412, B=70, C=09, D=91. Author Chris Watkins <chris@watkinslabs.com>.
+## Vendoring pattern (PROVEN, parallel sub-agents)
+fetch-<tool>.sh + vendor/<tool>/build.sh (static-musl both arches) + vendor/.gitignore
+allowlist + rootfs.rs staging tuple. Rust: cargo +crt-static, onig→regex-fancy if onig C
+dep. C: --host=<arch>-linux-musl static, ncurses via vendor/ncurses/install-<arch>
+(+ -DNCURSES_ENABLE_STDBOOL_H=1; dialog needs a libtinfo=libncursesw shim). C++:
+vendor/cross/{x86_64,aarch64}-linux-musl-cross g++ + STATIC -static-libstdc++. Go:
+vendor/go/bin/go CGO_ENABLED=0. Orchestrator wires gitignore+rootfs; boot-test; commit.
+
+## Boot-test recipe (x86)
+Build: `cargo run -p xtask -- rootfs --arch x86_64 && ... kernel --arch x86_64 --features
+debug-boot && ... grub --arch x86_64 --features debug-boot --build-only`. Boot:
+qemu-system-x86_64 q35 -enable-kvm -smp 2 **-m 2G** -cdrom target/oxide-x86_64-grub.iso
+-boot d + virtio-blk drives serial=oxide-root/oxide-home + `-serial unix:/tmp/x.sock`.
+Login alice/swordfish. BIG binaries (8–16 MB) still take a few s to page in even post-fix
+— allow generous settle in capture.
+
+## Gotchas
+- **Smoke push SSH idle-timeout:** the pre-push smoke holds the SSH connection ~10 min;
+  GitHub idle-closes it so the push dies AFTER the hook passes ("Connection closed by
+  remote host"). If the smoke PASSED but the branch isn't on origin, re-push the SAME
+  commit with `SKIP_SMOKE=1` (already verified). Seen on B63.
+- Branch counters: max F=408, B=65. Author Chris Watkins. CI = compile-check (stub-blobs;
+  no rootfs blob needed since the embed is gone).
+
+## Resume
+```
+cd /home/nd/oxide2 && git checkout main && git pull && gh run list --limit 3
+```

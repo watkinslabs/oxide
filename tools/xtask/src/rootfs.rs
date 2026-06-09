@@ -424,15 +424,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("gron", "gron", "/usr/bin/gron"),
         ("pv", "pv", "/usr/bin/pv"),
         ("entr", "entr", "/usr/bin/entr"),
-        // starship (crossterm) — unblocked by the futex WAIT_BITSET fix (its
-        // pthread startup handshake) + the console DSR/DA responder. Verified
-        // launching. glow/micro/duf still hang on SEPARATE gaps (tcell/bubbletea
-        // init + /proc mounts for duf) — staged back as each is traced + fixed.
-        ("starship", "starship", "/usr/bin/starship"),
-        // glow/micro/duf (Go) still hang at a deeper layer: main goroutine
-        // parks on futex + is never handed a CPU (Go M:N scheduler / futex-wake
-        // gap), even with the timerfd ABSTIME + epoll fixes. Re-staged once the
-        // Go-scheduler hang is closed.
+        // starship/glow/micro/duf built (recipes vendored) but NOT staged: they
+        // hang on startup under oxide (not a tty-read block — persists with stdin
+        // redirected). Likely an async-runtime/thread or syscall gap. Re-add here
+        // once that startup-hang is diagnosed (debug-all syscall trace).
     ] {
         let b = repo.join(format!("vendor/{}/{}-{}", dir, file, arch));
         if b.is_file() { put(&b, dest)?; }
