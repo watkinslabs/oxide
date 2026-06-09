@@ -32,13 +32,24 @@ early in boot under SMP=2 (the keymap-load timing is the lead).
   loud `[INIT-DEATH] PID 1 exited code=N` + dump (so this failure is never
   silent again). Confirmed it builds; fires at the exit_group call.
 
-## KNOWN GAP (watchdog blind spot — by design, documented here)
-watchdog_tick + UART RX poll run on the **BSP timer tick only**. A
-BSP-side hard freeze (IRQ-off spinlock deadlock) silences both. Two
-real wedges seen: (a) PID-1 exit (caught — sysrq responded), (b) a
-deeper freeze where sysrq got NO response → BSP not servicing its tick.
-For hard-freeze self-report we'd need an NMI watchdog or per-CPU
-cross-checking watchdog. Not built this session.
+## HARD-FREEZE OBSERVABILITY (built + verified this session, PR #1658)
+The BSP-tick watchdog + sysrq go silent on a BSP-side hard freeze. Closed
+that blind spot:
+- sched::diag::percpu — per-CPU heartbeat each timer tick (both arches);
+  any still-ticking CPU scans the others, one-shot [CPU-STALL] names a
+  wedged CPU + its last task/syscall. arm APs tick → real cross-CPU
+  coverage; x86 APs still park (P4 gated) so no 2nd observer yet there.
+- sched::diag::nmi + hal-x86_64 vec-2 handler — NMI IPI (ICR delivery
+  0b100) lands through IF=0; handler prints [NMI-BT] rip/regs then
+  iretq-RESUMES. Auto-poked on stall; sysrq <NUL>b pokes all.
+- sysrq: <NUL>t tasks, <NUL>w summary, <NUL>c per-cpu heartbeats,
+  <NUL>b backtrace-all.
+- VERIFIED live (MCP SMP=1): healthy dump = init S epoll_pwt (vs wedge
+  init Z exit_group); self-NMI dumped rip/regs + resumed; boot healthy.
+REMAINING GAPS: x86 AP is a parked observer (wake it as a watchdog-only
+AP → x86 cross-CPU coverage); arm FIQ register-dump poke not wired
+(needs vbar 0x300/0x500 print+eret + Group-0 SGI; cross-CPU heartbeat is
+arm's visibility for now). Both documented in gic::install_diag_hooks.
 
 ## NOTE
 - Local `make smoke` couldn't run in this session (agent bash sandbox
@@ -46,6 +57,8 @@ cross-checking watchdog. Not built this session.
   Pushed with SKIP_SMOKE=1 — the SMP=2 flake is the pre-existing bug under
   investigation, changes are additive diag + a host-tool flag.
 - `sched-anal.md` / `tty-anal.md` in the tree are STALE (pre-rebuild); ignore.
+
+## Counters now: F=423, B=75, C=10, D=95.
 
 ## First task next session
 Reproduce the SMP=2 wedge (loop `make SMP=2 qemu-x86`, ~25%), read the
