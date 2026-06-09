@@ -63,9 +63,16 @@ pub struct KernelUart;
 
 #[cfg(target_os = "oxide-kernel")]
 impl SerialOut for KernelUart {
-    /// # C: O(N) bytes
+    /// # C: O(N) bytes + fg-VT cell render
     fn emit(&mut self, bytes: &[u8]) {
         drv_serial::emit(bytes);
+        // Multi-console: also mirror to the foreground framebuffer VT so
+        // /dev/console output (getty/login/shell + echo) shows on the
+        // display, not just the serial UART. These are post-OPOST bytes
+        // (N_TTY already applied ONLCR), so the VT emulator gets proper
+        // CRLF. Best-effort (skips its own blit under lock contention);
+        // the durable serial copy above is never affected.
+        fbcon::kernel::vt_console_sink(bytes);
     }
 }
 
