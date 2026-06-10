@@ -172,6 +172,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // SAFETY: kernel_main fn-contract; single-CPU, IRQs off, info
     // outlives the call.
     let pmm = unsafe { pmm::setup::init_from_boot_info(info) };
+    // F428: reserve the x86 AP trampoline page (TRAMP_PA) from the PMM
+    // BEFORE the first allocation, so `bring_up_aps_x86`'s blob copy can't
+    // clobber a handed-out page. Must precede the grow hook + page_meta.
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    if pmm.is_ok() {
+        arch_irq::smp_x86::reserve_trampoline_page();
+    }
     // F247 (T16): wire the kalloc grow hook FIRST, so allocations that
     // overflow the static heap route through PMM-allocated pages (HHDM).
     #[cfg(target_os = "oxide-kernel")]
