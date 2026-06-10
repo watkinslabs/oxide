@@ -149,6 +149,22 @@ impl<T, C: LockClass> Spinlock<T, C> {
         }
     }
 
+    /// Release a lock acquired via `lock()` whose `Guard` was
+    /// `core::mem::forget`-ed, so the release happens somewhere the guard
+    /// cannot reach — the scheduler's rq-lock is held across a context
+    /// switch and released by the INCOMING task on a different stack
+    /// (Linux `finish_lock_switch`). After this the lock is free; any
+    /// `&T`/`&mut T` obtained from the forgotten guard must not be used.
+    /// # SAFETY: caller asserts this lock is currently held by exactly one
+    /// forgotten guard (the matching `lock()` + `mem::forget`); calling on
+    /// an unheld lock, or twice, breaks mutual exclusion (UB on the
+    /// protected data). Must pair 1:1 with the forgotten acquisition.
+    /// # C: O(1)
+    /// # Lk: this lock released
+    pub unsafe fn raw_unlock(&self) {
+        self.locked.store(false, Ordering::Release);
+    }
+
     /// IRQ-safe lock per `06§3.1`. Disables IRQs via `IrqGate`, then
     /// spins for the lock. Restores on `Drop`.
     /// # C: O(contention)

@@ -119,8 +119,12 @@ unsafe fn irq_restore(flags: u64) {
     { let _ = flags; }
 }
 
-/// Linux `finish_task_switch` / `schedule_tail`: drops the `preempt_count`
-/// the switcher bumped at its `schedule()` entry, so the per-CPU count
+/// Linux `finish_task_switch` / `schedule_tail`: the INCOMING task runs this
+/// after the switch. It (1) RELEASES the rq-lock the switcher held across the
+/// switch (B1, Linux `finish_lock_switch`), (2) drains the deferred-reap slot
+/// — moving a task that died in `schedule()` to ZOMBIES now that the rq-lock
+/// is released (so `TaskList`=100 is never taken under `Runqueue`=110), and
+/// (3) drops the `preempt_count` the switcher bumped, so the per-CPU count
 /// returns to its pre-schedule value (net 0 per switch). Reached two ways:
 ///   - resumed existing task: `schedule()` calls this after `ArchCtx::
 ///     switch` returns, THEN `irq_restore`s the task's own saved IRQ state.
@@ -128,7 +132,6 @@ unsafe fn irq_restore(flags: u64) {
 ///     does `call oxide_finish_task_switch` before `jmp oxide_irq_resume_user`
 ///     — IRQ state for a fresh task is set by the trailing `iretq`/`eret`
 ///     (the synthetic frame's RFLAGS/SPSR), so no irq_restore is needed.
-/// Phase B extends this to release the PREV task's rq-lock here.
 ///
 /// IMPORTANT: this does NOT touch the IRQ mask. Per-task IRQ state is owned
 /// by `irq_save_disable`/`irq_restore` in `schedule()` (see their note on
@@ -137,14 +140,34 @@ unsafe fn irq_restore(flags: u64) {
 /// let a blocked syscall resume with IF=1 and deadlock the timer ISR
 /// spinning on a process-context lock (ZOMBIES) the syscall still held.
 ///
-/// # SAFETY: called exactly once by the task being switched TO, with the
-/// switcher's `preempt_disable` (+1) still owed; must not run twice.
+/// # SAFETY: called exactly once by the task being switched TO, on the same
+/// CPU as the switcher, with the switcher's `preempt_disable` (+1) still owed
+/// and the rq-lock still held (forgotten guard). Must not run twice. Runs
+/// IRQ-masked (the whole switch is), so the ZOMBIES take is timer-safe.
 /// # C: O(1)
 #[no_mangle]
 pub unsafe extern "C" fn oxide_finish_task_switch() {
-    // preempt_enable_no_check (not the checked variant) so a need_resched
-    // arriving mid-switch is consumed at the next return-to-user /
-    // preempt_enable rather than recursing into schedule() from this tail.
+    if let Some(rq) = global() {
+        // 1. Release the rq-lock the resumer/switcher held across the switch
+        //    to us (Linux finish_lock_switch). On UP this is this CPU's rq;
+        //    on SMP each CPU releases its own (the switch ran on one CPU).
+        // SAFETY: the switcher acquired rq.inner via lock() and mem::forget'd
+        // the guard; this is the matching 1:1 release on the incoming stack.
+        unsafe { rq.inner.raw_unlock(); }
+        // 2. Drain the deferred-reap slot. The rq-lock is now RELEASED, so
+        //    taking ZOMBIES (TaskList=100) here does not nest under Runqueue
+        //    (110) — the rank order is respected (would deadlock on SMP).
+        let raw = rq.reap_pending.swap(core::ptr::null_mut(), Ordering::AcqRel);
+        if !raw.is_null() {
+            // SAFETY: `raw` came from `Arc::into_raw` in schedule()'s zombie
+            // path; reclaim it and hand ownership to ZOMBIES.
+            let dying = unsafe { Arc::from_raw(raw) };
+            super::zombies::enqueue_zombie(dying);
+        }
+    }
+    // 3. preempt_enable_no_check (not the checked variant) so a need_resched
+    //    arriving mid-switch is consumed at the next return-to-user /
+    //    preempt_enable rather than recursing into schedule() from this tail.
     crate::preempt::preempt_enable_no_check();
 }
 
@@ -315,9 +338,14 @@ pub unsafe fn schedule() {
     let flags = unsafe { irq_save_disable() };
     let now = now_ns();
 
-    // Pick next under the lock.
-    let next_arc = {
-        let mut inner = rq.inner.lock();
+    // Pick next under the rq lock. B1 (SMP): the lock is HELD across the
+    // switch — not dropped after the pick — so no concurrent CPU observes a
+    // half-updated rq (current swapped but the task not yet switched). The
+    // INCOMING task releases it in `finish_task_switch` (Linux `rq_lock`→
+    // `finish_lock_switch`). `inner` is kept alive and `mem::forget`-ed just
+    // before the switch; the no-switch early return drops it normally.
+    let mut inner = rq.inner.lock();
+    {
         // SAFETY: rq.current is non-null after install_global.
         let prev_ref = unsafe { rq.current_ref() };
         // F144: bump prev's vruntime BEFORE re-enqueue so the CFS
@@ -326,8 +354,6 @@ pub unsafe fn schedule() {
         // same (vruntime, tid) key it had on entry — and the BTreeMap
         // tiebreak (lower tid wins) re-selects prev indefinitely,
         // starving a freshly-spawned child whose tid is higher.
-        // Schedule_from_irq already does this; voluntary schedule
-        // had been skipping it.
         update_curr(prev_ref, &inner, now);
         // Re-enqueue the current runnable task (unless it's idle
         // or marked done) so the picker can return to it later.
@@ -347,16 +373,16 @@ pub unsafe fn schedule() {
             let cloned = unsafe { Arc::from_raw(raw) };
             inner.enqueue(cloned);
         }
-        let n = inner.pick_next_task();
-        rq.nr_running.store(inner.nr_running(), Ordering::Release);
-        n
-    };
+    }
+    let next_arc = inner.pick_next_task();
+    rq.nr_running.store(inner.nr_running(), Ordering::Release);
 
-    // No-op if we picked the same task back. No switch ⇒ no handoff: undo
-    // our own entry bump + restore our saved IRQ state.
+    // No-op if we picked the same task back. No switch ⇒ no handoff: drop
+    // the rq lock normally, undo our own entry bump, restore our IRQ state.
     let next_raw = Arc::as_ptr(&next_arc) as *mut Task;
     let prev_raw = rq.current.load(Ordering::Acquire);
     if next_raw == prev_raw {
+        drop(inner);
         crate::preempt::preempt_enable_no_check();
         // SAFETY: restores the IRQ state this fn saved at entry; no switch.
         unsafe { irq_restore(flags); }
@@ -394,13 +420,21 @@ pub unsafe fn schedule() {
     unsafe { rq.current_ref() }.exec_start_ns.store(now, Ordering::Release);
     // If prev is heading to Zombie, the local `prev_arc` would be
     // permanently stranded on its kernel stack: the asm switch never
-    // returns into this frame again. Transfer ownership into ZOMBIES
-    // up front so the dying task's Arc lives in a real data structure
-    // and reap_one can drop it. Wrapping in Option lets us conditionally
-    // skip the trailing drop without touching dead memory.
+    // returns into this frame again. We must hand it off — but NOT into
+    // ZOMBIES here: we still hold `inner` (Runqueue=110), and ZOMBIES is
+    // TaskList=100, so taking it now inverts the `06§3.6` rank order (an
+    // SMP deadlock vs the wake path's TaskList→Runqueue). Instead stash it
+    // in the per-CPU `reap_pending` slot; the INCOMING task's
+    // `finish_task_switch` drains it into ZOMBIES AFTER releasing the
+    // rq-lock (Linux `finish_task_switch(prev)`→`put_task_struct`). For a
+    // non-Zombie prev, `prev_arc_opt` stays Some and is dropped on resume.
     let mut prev_arc_opt = Some(prev_arc);
     if matches!(prev_arc_opt.as_ref().expect("just set").state(), TaskState::Zombie) {
-        super::zombies::enqueue_zombie(prev_arc_opt.take().expect("just set"));
+        let dying = prev_arc_opt.take().expect("just set");
+        // Hand ownership to the per-CPU slot (into_raw); finish_task_switch
+        // reclaims it via from_raw. Slot is empty here (each switch drains
+        // it before the next on this CPU).
+        rq.reap_pending.store(Arc::into_raw(dying) as *mut Task, Ordering::Release);
     }
     VOLUNTARY.fetch_add(1, Ordering::Relaxed);
     crate::diag::note_switch();
@@ -421,27 +455,28 @@ pub unsafe fn schedule() {
         }
     }
 
+    // Hold the rq-lock across the switch (B1): forget the guard so it stays
+    // locked; the INCOMING task's `finish_task_switch` releases it via
+    // `raw_unlock`. Everything between here and that release runs IRQ-masked
+    // and takes no lock ranked below Runqueue (the zombie-reap was deferred
+    // to reap_pending above), so the rank order holds.
+    core::mem::forget(inner);
+
     // Perform the actual register dance.
     // SAFETY: prev_ctx_ptr aliases prev's arch_ctx buffer (kept alive by `prev_arc` until after switch returns); next_ctx_ptr aliases next's arch_ctx (kept alive by the new `current` Arc); both buffers were init'd via `new_kernel_with_irq_frame`. switch saves prev's regs, loads next's, returns on prev's stack when control comes back.
     unsafe { ArchCtx::switch(prev_ctx_ptr, next_ctx_ptr); }
 
-    // Control resumes here when something switches back to prev. At this
-    // point IRQs are still masked and preempt_count still bears the +1 the
-    // RESUMER bumped at its schedule() entry (UP: no nesting between) — so
-    // the drop below runs preempt-off + IRQ-off, exactly as the old
-    // PreemptGuard era did. Drop prev_arc: by now it's already been
-    // re-enqueued (above) OR is the idle task (boot frame's idle), so
-    // dropping our local strong ref is safe. For Zombie prev this is None
-    // (ownership moved to ZOMBIES above) and drop is a no-op.
-    drop(prev_arc_opt);
-
-    // Pay the preempt-count handoff for whoever switched back to us (drops
-    // the resumer's +1), THEN restore OUR OWN saved IRQ state — a blocked
-    // syscall keeps IF=0, an idle/kthread voluntary yield keeps IF=1. The
-    // IRQ restore is per-task (our `flags`), NOT part of the cross-task
-    // preempt handoff.
-    // SAFETY: reached exactly once per resume; resumer owed one preempt-dec.
+    // Control resumes here when something switches back to prev. IRQs are
+    // still masked and preempt_count still bears the +1 the RESUMER bumped,
+    // and the RESUMER's rq-lock is still held — finish_task_switch releases
+    // it. Pay the preempt-count handoff + release the rq-lock + drain the
+    // resumer's deferred reap, THEN drop our local prev ref (now outside the
+    // lock; non-Zombie prev only — Zombie went to reap_pending), THEN
+    // restore OUR OWN saved IRQ state (a blocked syscall keeps IF=0).
+    // SAFETY: reached exactly once per resume; resumer owed one preempt-dec
+    // + one rq-lock release.
     unsafe { oxide_finish_task_switch(); }
+    drop(prev_arc_opt);
     // SAFETY: restores the IRQ state saved by THIS task's irq_save_disable.
     unsafe { irq_restore(flags); }
 }
