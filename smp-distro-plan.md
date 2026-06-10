@@ -179,17 +179,16 @@ Group small/related tools per PR; verify each runs.
       in boot-smoke-login.sh; staged in rootfs.rs). REMAINING: duf loops in its
       own filesystem-scan path (920 statx; duf-specific, NOT the epoll bug) →
       §E below.
-- [~] **Phase 15 rtnetlink ip-dump** — `ip link` FIXED (NLMSG_DONE now
-      carries the 4-byte err=0 payload Linux/iproute2 expect; header-only DONE
-      → "Dump terminated"). `ip -o link` lists lo+eth0. REMAINING: `ip -o addr`
-      still shows "DONE truncated" — the addr reply is 216 B with 2 valid
-      NEWADDR (addr_snapshot has 2 rows; framing 4-aligned, nlmsg_len correct)
-      + the 20-B DONE, yet iproute2 sees a truncated DONE. recv/recvmsg/read
-      paths inspect as correct (MSG_PEEK|TRUNC returns full len; scatter copies
-      min(iov,dgram)). Subtle: byte-level trace of what `ip` actually recvmsg's
-      for the LARGER addr reply (vs the smaller working link reply) — maybe an
-      iproute2 buffer-sizing / peek-vs-consume interaction. Substantive net
-      (sockets/loopback/DNS) works.
+- [x] **Phase 15 rtnetlink ip-dump FIXED** — NLMSG_DONE now carries the
+      4-byte err=0 payload Linux/iproute2 expect (header-only DONE → "Dump
+      terminated"). done_multi() used by ALL three dump handlers (getlink +
+      getaddr + getroute — getaddr/getroute had a different statement order
+      that the first replace_all missed). `ip -o link` lists lo+eth0,
+      `ip -o addr` lists 127.0.0.1 + 10.0.2.15; gated IPDUMP_L=2_A=2. MINOR
+      follow-up (separate, not a dump bug): the lo address shows label "eth0"
+      + "dynamic" — handle_getaddr/seed_defaults ifindex→name for lo resolves
+      to eth0's index, and ifa_flags lacks IFA_F_PERMANENT (so iproute2 prints
+      "dynamic"). Substantive net (sockets/loopback/DNS) works.
 - [ ] **Phase 16 real namespace isolation** (large subsystem; moved from §C):
       real UTS/mount/pid/net/ipc/user/cgroup isolation + global ns-id registry
       + listns(470). Doesn't block vendor apps; do after the Box D buildout.
