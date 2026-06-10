@@ -106,6 +106,12 @@ wait_for '123454321' "python3 (encodings/stdlib zip)" "$deadline"
 # Box C: stty (coreutils applet) is staged + works — queries the tty winsize.
 printf 'stty size\n' >&9
 wait_for '24 80' "stty (coreutils applet)" "$deadline"
+# Box D: vendor base-set apps actually run (real cross-built upstream
+# binaries). Count version-line matches across 5 reps; the marker "BASEAPPS=5"
+# appears only in OUTPUT (the echoed command shows the literal $N), so this
+# gates on real execution, not the command echo.
+printf 'N=$( { rg --version|head -1; jq --version|head -1; curl --version|head -1; tmux -V|head -1; bat --version|head -1; } 2>&1 | grep -cE "ripgrep|jq-|curl [0-9]|tmux [0-9]|bat [0-9]" ); echo BASEAPPS=$N\n' >&9
+wait_for 'BASEAPPS=5' "vendor base-set apps (rg/jq/curl/tmux/bat run)" "$deadline"
 
 # Optional logout → getty-respawn check (CHECK_LOGOUT=1): exit the
 # shell and confirm a fresh `oxide login:` prompt reappears (systemd
