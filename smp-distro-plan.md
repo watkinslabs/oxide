@@ -179,12 +179,17 @@ Group small/related tools per PR; verify each runs.
       in boot-smoke-login.sh; staged in rootfs.rs). REMAINING: duf loops in its
       own filesystem-scan path (920 statx; duf-specific, NOT the epoll bug) →
       §E below.
-- [ ] **Phase 15 rtnetlink ip-dump truncation** (isolated to ip/ss tooling):
-      ip -o addr/link → "Dump terminated". recv/recvmsg/read + handle_get*
-      build paths all INSPECT as correct (NLM_F_MULTI + NLMSG_DONE; recvmsg
-      scatters w/ MSG_TRUNC). Bug is subtle — needs a raw-netlink-byte klog
-      trace or guest strace of iproute2 (strict-check/ext_ack/attr compat),
-      NOT more blind boots. Substantive net (sockets/loopback/DNS) works.
+- [~] **Phase 15 rtnetlink ip-dump** — `ip link` FIXED (NLMSG_DONE now
+      carries the 4-byte err=0 payload Linux/iproute2 expect; header-only DONE
+      → "Dump terminated"). `ip -o link` lists lo+eth0. REMAINING: `ip -o addr`
+      still shows "DONE truncated" — the addr reply is 216 B with 2 valid
+      NEWADDR (addr_snapshot has 2 rows; framing 4-aligned, nlmsg_len correct)
+      + the 20-B DONE, yet iproute2 sees a truncated DONE. recv/recvmsg/read
+      paths inspect as correct (MSG_PEEK|TRUNC returns full len; scatter copies
+      min(iov,dgram)). Subtle: byte-level trace of what `ip` actually recvmsg's
+      for the LARGER addr reply (vs the smaller working link reply) — maybe an
+      iproute2 buffer-sizing / peek-vs-consume interaction. Substantive net
+      (sockets/loopback/DNS) works.
 - [ ] **Phase 16 real namespace isolation** (large subsystem; moved from §C):
       real UTS/mount/pid/net/ipc/user/cgroup isolation + global ns-id registry
       + listns(470). Doesn't block vendor apps; do after the Box D buildout.
