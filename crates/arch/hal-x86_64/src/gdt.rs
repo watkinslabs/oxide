@@ -23,7 +23,8 @@
 
 use core::cell::UnsafeCell;
 
-/// 12 × 8 B = 96 B. Layout (P2-02 sysretq-compatible):
+/// 10 base slots + `tss::NR_TSS` × 2 per-CPU TSS descriptors.
+/// Layout (P2-02 sysretq-compatible):
 ///
 ///   sel 0x00       null
 ///   sel 0x08..0x20 reserved
@@ -32,11 +33,14 @@ use core::cell::UnsafeCell;
 ///   sel 0x38       user CS32   (DPL=3, L=0, D=1)   — STAR[63:48] base
 ///   sel 0x40       user DS     (DPL=3)             — sysret SS = base+8
 ///   sel 0x48       user CS64   (DPL=3, L=1)        — sysret CS = base+16
-///   sel 0x50..0x58 TSS (16-byte system descriptor) — `tss::TSS_SEL`
+///   sel 0x50 + cpu*0x10  per-CPU TSS (16-byte system descriptor) —
+///                        CPU `i` ltr's `TSS_SEL + i*0x10` (`tss::NR_TSS`
+///                        slots) so each AP scheduling user tasks has its
+///                        own RSP0 in its own TSS.
 ///
 /// MSR_STAR with STAR[63:48] = 0x38 satisfies the sysretq selector
 /// triple. STAR[47:32] = 0x28 keeps kernel CS for syscall entry.
-pub const GDT_LEN: usize = 12;
+pub const GDT_LEN: usize = 10 + crate::tss::NR_TSS * 2;
 
 /// User CS64 selector (DPL=3, L=1). Used by `iretq` to ring 3 and
 /// returned by `sysretq` (CS = STAR[63:48]+16 with RPL forced 3).
@@ -186,10 +190,17 @@ pub unsafe fn install_kernel_gdt() {
     gdt[7] = segment(ACCESS_USER_CS,   FLAGS_CODE32); // 0x38 (user CS32)
     gdt[8] = segment(ACCESS_USER_DS,   FLAGS_DATA);   // 0x40
     gdt[9] = segment(ACCESS_USER_CS,   FLAGS_CODE64); // 0x48 (user CS64)
-    let tss_base = crate::tss::tss_base_addr();
+    // Per-CPU TSS descriptors: CPU `i` at GDT[10 + i*2] (selector
+    // 0x50 + i*0x10). Each points at that CPU's own TSS so `set_rsp0`
+    // (indexed by current_cpu) never clobbers another CPU's RSP0.
     let tss_limit = (core::mem::size_of::<crate::tss::Tss64>() - 1) as u32;
-    gdt[10] = tss_low(tss_base, tss_limit);           // 0x50 (low half)
-    gdt[11] = tss_high(tss_base);                     // 0x50 (high half)
+    let mut i = 0usize;
+    while i < crate::tss::NR_TSS {
+        let base = crate::tss::tss_base_addr(i);
+        gdt[10 + i * 2] = tss_low(base, tss_limit);   // low half
+        gdt[11 + i * 2] = tss_high(base);             // high half
+        i += 1;
+    }
 
     let pointer = GdtPointer {
         limit: (core::mem::size_of::<[u64; GDT_LEN]>() - 1) as u16,
@@ -278,9 +289,13 @@ mod tests {
     }
 
     #[test]
-    fn gdt_static_size_is_96() {
-        // 12 × 8 = 96 bytes; last 16 bytes form the TSS descriptor.
-        assert_eq!(core::mem::size_of::<[u64; GDT_LEN]>(), 96);
+    fn gdt_size_holds_base_plus_percpu_tss() {
+        // 10 base slots + NR_TSS × 2 (one 16-byte TSS descriptor per CPU).
+        assert_eq!(GDT_LEN, 10 + crate::tss::NR_TSS * 2);
+        assert_eq!(core::mem::size_of::<[u64; GDT_LEN]>(), GDT_LEN * 8);
+        // CPU i's TSS selector = 0x50 + i*0x10 = GDT index (10 + i*2) * 8.
+        assert_eq!((10 + 0 * 2) * 8, 0x50);
+        assert_eq!((10 + 1 * 2) * 8, 0x60);
     }
 
     #[test]
