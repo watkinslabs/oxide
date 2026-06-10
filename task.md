@@ -16,7 +16,8 @@ Living work list. See state.md for the session hand-off + boot-verify recipes.
       incremental echo** in our env. NOT a kernel bug. Next: strace/debug-bash
       to confirm no per-char write(), or inspect the vendored bash/readline build
       config (vendor/bash/build.sh) — readline incremental-redisplay path. Also
-      noticed: `stty` is missing from the rootfs (coreutils applet not staged).
+      noticed: `stty` is missing — NOW FIXED: symlinked from coreutils +
+      gated in boot-smoke-login.sh (`stty size` → 24 80).
       LEAD RULED OUT: compiled ALL lib/readline/*.c under -std=gnu89 with
       warnings ON → ZERO implicit-declaration warnings. So readline has no
       pointer-truncation hazard and a bash rebuild would NOT fix the echo
