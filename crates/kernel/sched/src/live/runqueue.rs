@@ -47,6 +47,16 @@ pub struct Runqueue {
 
     /// Class-list state. Lock per `13§6` / `06§3.6`.
     pub inner: Spinlock<RunqueueInner, RunqueueClass>,
+
+    /// B1 deferred-reap slot (Linux `finish_task_switch(prev)`): a task that
+    /// became Zombie in `schedule()` is stashed here (as `Arc::into_raw`)
+    /// while the rq-lock is held across the switch, then drained + moved to
+    /// ZOMBIES by the INCOMING task's `finish_task_switch` AFTER it releases
+    /// the rq-lock — so ZOMBIES (`TaskList`=100) is never taken under
+    /// `inner` (`Runqueue`=110), respecting the `06§3.6` rank order. Per-CPU
+    /// (one rq per CPU); the switcher and the drainer run on the same CPU,
+    /// and each switch drains before the next, so it holds at most one.
+    pub reap_pending: AtomicPtr<Task>,
 }
 
 impl Runqueue {
@@ -64,6 +74,7 @@ impl Runqueue {
             preempt_count: AtomicU32::new(0),
             need_resched: AtomicBool::new(false),
             inner: Spinlock::new(RunqueueInner::new(cpu, idle)),
+            reap_pending: AtomicPtr::new(core::ptr::null_mut()),
         }
     }
 
@@ -112,6 +123,14 @@ impl Drop for Runqueue {
             // never freed; reclaim the strong ref so the Task is
             // dropped.
             let _ = unsafe { Arc::from_raw(p) };
+        }
+        // Reclaim any un-drained deferred-reap Arc (normally null — each
+        // switch drains it in finish_task_switch before the next).
+        let r = self.reap_pending.swap(core::ptr::null_mut(), Ordering::AcqRel);
+        if !r.is_null() {
+            // SAFETY: `r` came from `Arc::into_raw` in schedule()'s zombie
+            // path and was never drained; reclaim the strong ref.
+            let _ = unsafe { Arc::from_raw(r) };
         }
     }
 }
