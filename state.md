@@ -20,13 +20,9 @@ Phase C remaining (irqsave legacy-lock conversion + loom model-checks) is
 DEFERRED to plan §E "Deferred robustness" — no active bug (SMP stable across
 all stress); sequenced after the distro/vendor work per user priority.
 
-## NEXT (first unchecked box): Box B — syscall completeness + cleanups
-1. **Syscall audit + coverage checker** (plan §B): build a checker
-   enumerating implemented dispatch (syscall::nrs + per-arch dispatch.rs) vs
-   the full Linux set (drive off syscal_anal.md / syscall_anal.md if present);
-   flag every missing / ENOSYS / stub / strawman / wrong slot. Then
-   implement/fix each to FULL Linux semantics (only the 17 docs/15 OBSOLETE
-   keep ENOSYS). One-syscall-one-file (docs/53).
+## NEXT (first unchecked box): Box B items 2-3 (cleanups) then Box C/D
+Box B item 1 DONE (#1676): syscall coverage checker green (383/384 routed,
+0 hard-fail; listns→Box C tracked). Remaining Box B:
 2. Drop "Tier 1/2/3" vocab from docs/53 + CLAUDE.md (keep structure).
 3. Scrub busybox mentions repo-wide (zero outside vendor/.git).
 Then Box C (distro: login-shell, python3 encodings, bash serial echo, Phase
