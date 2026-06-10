@@ -1,52 +1,46 @@
-# Session hand-off — SMP Phase B in progress (autonomous /loop)
+# Session hand-off — SMP core DONE; starting Box B (autonomous /loop)
 
-Driving `smp-distro-plan.md` (the ordered SMP→distro plan) as a self-paced
-/loop. Merge on local-green (= CI-green for this repo: build both arches +
-hosted tests + spec-lint, all run locally; pre-push hook runs SMP=2 smoke).
+Driving `smp-distro-plan.md` as a self-paced /loop. Merge on local-green
+(= CI-green here: build both arches + hosted tests + spec-lint, all local;
+pre-push hook runs SMP=2 smoke). Merge with `--admin` (no CI wait).
 
-## Merged this session (SMP scheduler rework, F425 Phase A/B)
-- #1670 B2: ttwu wake-time placement (select_task_rq idlest/affinity +
-  resched_curr +IPI); WaitList wakes routed through it. UP=local.
-- #1671 B3.5: arm AP scheduling participation (AP runs halt_forever schedule
-  loop via AP_IDLE_HOOK, not wfi park). arm SVC frame already per-CPU (TPIDR).
-- #1662 Phase A: one switch engine + finish_task_switch + per-task IRQ fix
-  (found+fixed a ~15% intermittent ZOMBIES-lock deadlock via hypervisor
-  info-registers; the fix is per-task IRQ-state save/restore in schedule()).
-- #1664 B1: rq-lock held across switch + deferred zombie-reap (lock-order:
-  ZOMBIES TaskList=100 reaped AFTER rq-lock release, never under Runqueue=110).
-- #1666 B3.1: x86 AP comes ONLINE (reserve TRAMP_PA + un-gate bring-up).
-- #1667 B3.2: per-CPU TSS (per-CPU RSP0). Gotcha: install_tss must NOT read
-  current_cpu() (runs pre-gs); ltr 0x50 for BSP, install_tss_for_cpu for AP.
-- #1668 B3.3: per-CPU syscall slots (gs:[8] kstack + gs:[16] user-RSP);
-  BSP seeded after set_percpu_base.
-- #1669 B3.4: **AP runs the scheduler** (per-CPU rq+TSS+timer+idle loop,
-  not cli;hlt). Root cause of the old "AP wedges BSP": AP was on the SIPI
-  trampoline's 4-entry GDT → ltr of per-CPU TSS sel #GP'd → triple fault.
-  Fix: `load_kernel_gdt_for_ap` (lgdt the shared kernel GDT) BEFORE GS_BASE
-  setup. Verified 5/5 SMP=2 boots login + online=2, AP scheduling.
+## SMP scheduler rework COMPLETE (F425 Phase A/B + Phase C core)
+Both arches boot SMP=2 to login with online=2 and APs running real migrated
+user tasks. Merged: #1662 Phase A (one switch engine + per-task IRQ fix),
+#1664 B1 (rq-lock-across-switch + deferred reap), #1666 B3.1 (x86 AP online),
+#1667 B3.2 (per-CPU TSS), #1668 B3.3 (per-CPU syscall slots gs:[8]/[16]),
+#1669 B3.4 (x86 AP runs scheduler; root cause was AP on trampoline GDT →
+ltr #GP → triple fault; fix load_kernel_gdt_for_ap), #1670 B2 (ttwu
+wake-time placement select_task_rq + resched IPI), #1671 B3.5 (arm AP runs
+scheduler via AP_IDLE_HOOK), #1672 B4 (affinity relocate on setaffinity),
+#1673 B5 (newidle balance + cache-hot guard), #1674 Phase C on_cpu handshake
+(closes ttwu-vs-switch-off race). sched miri-clean (89 tests, no UB).
 
-## NEXT (first unchecked box): B4 affinity
-SMP scheduling now WORKS both arches (AP runs migrated tasks via ttwu +
-balance.rs load balancer; both honor cpus_allowed). Remaining:
-- B4 affinity: sched_setaffinity/getaffinity (slots 203/204) FULL Linux
-  semantics (the cpus_allowed mask substrate + ttwu/balancer checks exist;
-  wire the syscalls + forced migration if the running task is moved off its
-  current cpu). Check current 203/204 impl first.
-- B5 load balance: balance.rs exists (busiest→idlest periodic); refine
-  (sched_domains, newidle balance, can_migrate cache-hot) for completeness.
-- Phase C concurrency hardening; then task.md syscall/distro/vendor-app backlog.
+Phase C remaining (irqsave legacy-lock conversion + loom model-checks) is
+DEFERRED to plan §E "Deferred robustness" — no active bug (SMP stable across
+all stress); sequenced after the distro/vendor work per user priority.
 
+## NEXT (first unchecked box): Box B — syscall completeness + cleanups
+1. **Syscall audit + coverage checker** (plan §B): build a checker
+   enumerating implemented dispatch (syscall::nrs + per-arch dispatch.rs) vs
+   the full Linux set (drive off syscal_anal.md / syscall_anal.md if present);
+   flag every missing / ENOSYS / stub / strawman / wrong slot. Then
+   implement/fix each to FULL Linux semantics (only the 17 docs/15 OBSOLETE
+   keep ENOSYS). One-syscall-one-file (docs/53).
+2. Drop "Tier 1/2/3" vocab from docs/53 + CLAUDE.md (keep structure).
+3. Scrub busybox mentions repo-wide (zero outside vendor/.git).
+Then Box C (distro: login-shell, python3 encodings, bash serial echo, Phase
+15/16) and Box D (vendor apps — tmux/htop/ripgrep/fd/jq/curl/… via real
+vendor cross-builds, staged + verified running). See smp-distro-plan.md.
 
 ## DEBUG RECIPES (carry forward)
-- SMP=2 boot wedge/crash: `OXIDE_SMP=2 ./tools/boot-smoke.sh x86 300`.
-  Crash (qemu exits) = triple fault; hypervisor `info registers -a` (boot
-  qemu with `-monitor unix:...`, per the diag-hang-mon.py pattern) shows
-  RIP/RFLAGS per cpu. `-d int` via OXIDE_QEMU_DINT=<file> logs the exception
-  cascade but is finicky under the bash tool — prefer info-registers.
-- Stress: /tmp/diag-hang-mon.py (rebuilds ISO, N hypervisor-monitored boots,
-  dumps regs on hang). ~12 boots is enough for deterministic changes.
-- `addr2line -e target/x86_64-unknown-oxide-kernel/release/oxide-x86_64 <rip>`.
-- ENV: `pkill ... || true` STILL aborts compound lines under the snapshot
-  shell — run boot/make as a BARE single command, no pkill prefix. Multi-line
-  git commit → `-F file`. Stale qemu holds the disk lock → flaky boots; the
-  smp2rep.sh / boot-smoke retry covers it.
+- SMP=2 boot: `OXIDE_SMP=2 ./tools/boot-smoke.sh x86 300` (BARE command — no
+  pkill prefix; it aborts the shell line under set -e). arm: `... arm 400`.
+- 5×SMP=2 rep: `bash /tmp/smp2rep.sh` (checks login + online=2).
+- Hot-path stress: `MAXBOOTS=12 python3 /tmp/diag-hang-mon.py` (rebuilds ISO,
+  hypervisor-monitored boots, dumps regs on hang). SMP=1.
+- Crash (qemu exits) = triple fault → hypervisor `info registers -a`
+  (-monitor unix:..., diag-hang-mon.py pattern); addr2line against
+  target/x86_64-unknown-oxide-kernel/release/oxide-x86_64.
+- ISO must be rebuilt: `xtask grub --arch x86_64 --build-only`.
+- Multi-line git commit → `-F file`. Merge on local-green via `--admin`.
