@@ -163,15 +163,19 @@ Group small/related tools per PR; verify each runs.
   resource, destructive op needing confirmation).
 
 ## E. Deferred robustness (revisit after distro/vendor; no active bug)
-- [ ] **Go/Rust app startup hang — 2 of 3 bugs FIXED**: traced via the
-      debug-syscall [SYS] log. FIXED (B40): (1) timerfd_settime ignored
-      TFD_TIMER_ABSTIME → timers never fired; (2) sys_exit clear_child_tid
-      write #PF-crashed the kernel on a freed thread stack. REMAINING (3): the
-      app still spins on a NESTED watcher epoll (epfd) holding an fsnotify
-      pipe read-end (fd ~13) that polls always-ready → epoll_pwait returns
-      immediately in a loop. Next: trace that fd's origin (pipe2) + check the
-      pipe read-end poll() (should be 0 when empty / writer-open). Then
-      re-stage duf/glow/micro/starship + verify.
+- [ ] **Go/Rust app startup hang — bug 3 of 3** (2 FIXED in #1684: timerfd
+      ABSTIME + sys_exit clear_child_tid #PF). Affects ALL of duf/glow/micro
+      (Go) + starship (Rust) — a shared async-runtime path, not duf-specific.
+      The app spins on a NESTED watcher epoll (1038 epoll_pwait on epfd 10)
+      watching an always-ready fd → epoll_pwait returns immediately forever.
+      RULED OUT: timerfd (fixed; Go reads it 200×), clear_child_tid (fixed),
+      dup writer-accounting (sys_dup shares the File). The always-ready fd is
+      read ~36× but the [SYS] trace's a0 is ambiguous (fd vs signal/count
+      across syscalls). NEEDS dedicated instrumentation: a klog in each fd
+      type's poll() (pipe/inotify/eventfd/timerfd) logging (ino, mask) so the
+      ONE returning POLL_IN spuriously is identified, then fix its poll/event
+      generation. A focused debug session, not a loop iteration. Then re-stage
+      duf/glow/micro/starship + verify.
 - [ ] **Phase 15 rtnetlink ip-dump truncation** (isolated to ip/ss tooling):
       ip -o addr/link → "Dump terminated". recv/recvmsg/read + handle_get*
       build paths all INSPECT as correct (NLM_F_MULTI + NLMSG_DONE; recvmsg
