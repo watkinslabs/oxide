@@ -100,6 +100,12 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             core::arch::asm!("mov cr4, {cr4}", cr4 = in(reg) cr4, options(nomem, nostack, preserves_flags));
             // SAFETY: per fn contract — boot path; per-CPU page allocated above with cpu_id=0 at offset 0; called once before any current_cpu read.
             hal_x86_64::X86CpuOps::set_percpu_base(p);
+            // B3.3: now that gs points at the BSP per-CPU area, seed its
+            // syscall-kstack slot (gs:[8]). install_syscall_msrs ran in early
+            // boot before gs was set, so it could not. Per-task tops overwrite
+            // this on the first switch-to-user.
+            // SAFETY: gs base just set to this CPU's per-CPU area.
+            hal_x86_64::init_percpu_syscall_kstack(hal_x86_64::boot_syscall_kstack_top());
         }
         #[cfg(target_arch = "aarch64")]
         // SAFETY: same — boot path single writer; per-CPU page initialised with cpu_id=0 at offset 0; called before any TPIDR_EL1 read.

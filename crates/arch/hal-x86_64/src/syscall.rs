@@ -22,7 +22,6 @@
 // hazards mid-shuffle. a5 is discarded for the v1 smoke.
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 
 const IA32_EFER:  u32 = 0xC000_0080;
@@ -49,21 +48,44 @@ unsafe impl Sync for SyscallKStack {}
 
 static SYSCALL_KSTACK: SyscallKStack = SyscallKStack(UnsafeCell::new([0u8; 4096]));
 
-/// Top-of-stack pointer the entry asm loads into RSP. Set once at
-/// boot by `install_syscall_msrs`; unchanged afterward.
-#[no_mangle]
-static OXIDE_SYSCALL_KSTACK: AtomicU64 = AtomicU64::new(0);
+// B3.3 per-CPU syscall slots. The syscall entry/exit asm + the Rust frame
+// readers reach these through the per-CPU area (gs base = kernel per-CPU,
+// the no-swapgs model the rest of the kernel already relies on for
+// `current_cpu`/percpu_base). Offsets within the 4 KiB per-CPU page; 0 is
+// `cpu_id`, 8/16 were freed when Phase A removed the IRQ-tail ctx staging.
+//   gs:[8]  — this CPU's per-task syscall kstack top (set by
+//             `set_syscall_kstack` on every switch; was OXIDE_SYSCALL_KSTACK)
+//   gs:[16] — transient user-RSP scratch within entry (was
+//             OXIDE_SYSCALL_USER_RSP_SAVE)
+const PERCPU_SYSCALL_KSTACK_OFF: usize = 8;
+const PERCPU_SYSCALL_USER_RSP_OFF: usize = 16;
+// The global_asm entry stub hardcodes `gs:[8]`/`gs:[16]` (it can't reference
+// a Rust const); this pins the coupling so a layout change fails to compile.
+const _: () = assert!(PERCPU_SYSCALL_KSTACK_OFF == 8 && PERCPU_SYSCALL_USER_RSP_OFF == 16);
 
-/// Per-CPU (UP v1: single slot) scratch for user RSP across the
-/// kernel-stack switch in `oxide_syscall_entry`. Pre-P5-10 the asm
-/// stashed user RSP in `r12`, clobbering user's r12 — broke any
-/// user code that kept locals in r12 across a syscall (GCC freely
-/// uses r12 as a callee-saved general). Now the asm writes user
-/// RSP to this slot, then pushes it from memory onto the kernel
-/// stack. SMP rides the swap to per-CPU `gs:0` once gsbase is
-/// per-CPU.
-#[no_mangle]
-static OXIDE_SYSCALL_USER_RSP_SAVE: AtomicU64 = AtomicU64::new(0);
+/// Read this CPU's syscall kstack top (gs:[8]). Host build → 0.
+/// # C: O(1)
+#[inline]
+fn percpu_syscall_kstack() -> u64 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        let v: u64;
+        // SAFETY: gs base is the kernel per-CPU area (no-swapgs model);
+        // offset 8 is the per-task kstack slot. Read-only.
+        unsafe { core::arch::asm!("mov {v}, gs:[8]", v = out(reg) v, options(nostack, preserves_flags, readonly)); }
+        v
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { 0 }
+}
+
+/// Top of the boot CPU's syscall scratch stack — the defensive initial
+/// value for the BSP's `gs:[8]`, set after `set_percpu_base` (kmain). Real
+/// per-task tops overwrite it on the first switch-to-user.
+/// # C: O(1)
+pub fn boot_syscall_kstack_top() -> u64 {
+    SYSCALL_KSTACK.0.get() as u64 + 4096
+}
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 unsafe fn wrmsr(msr: u32, val: u64) {
@@ -105,10 +127,14 @@ core::arch::global_asm!(
     ".globl oxide_syscall_entry",
     ".type  oxide_syscall_entry, @function",
     "oxide_syscall_entry:",
-    // P5-10: stash user RSP via memory (per-CPU UP slot) instead of
-    // r12 — the prior `mov r12, rsp` clobbered user r12 unrecoverably.
-    "    mov  [rip + OXIDE_SYSCALL_USER_RSP_SAVE], rsp",
-    "    mov  rsp, [rip + OXIDE_SYSCALL_KSTACK]",     // switch to kernel scratch stack
+    // P5-10: stash user RSP via a PER-CPU slot (gs:[16]) instead of r12
+    // (the prior `mov r12, rsp` clobbered user r12). B3.3: per-CPU via the
+    // gs-relative per-CPU area (gs base = kernel per-CPU, no-swapgs model)
+    // so an AP syscalling concurrently with the BSP never clobbers the
+    // shared scratch. gs:[8] = this CPU's per-task syscall kstack top
+    // (set by set_syscall_kstack on every switch); gs:[16] = user-RSP scratch.
+    "    mov  gs:[16], rsp",
+    "    mov  rsp, gs:[8]",                           // switch to this CPU's kernel syscall stack
     // Save user callee-saved regs first (rbx/rbp/r13/r14/r15) so
     // sys_fork can read them out of the saved frame to
     // build the child's iretq state. Pushed BEFORE the existing
@@ -132,7 +158,7 @@ core::arch::global_asm!(
     //   [rsp+0x38] rcx (user RIP)
     //   [rsp+0x40] r11 (user RFLAGS)
     //   [rsp+0x48] r12 (user RSP)
-    "    push qword ptr [rip + OXIDE_SYSCALL_USER_RSP_SAVE]",   // [rsp+0x48] user RSP (was `push r12`; P5-10 r12-preservation)
+    "    push qword ptr gs:[16]",                     // [rsp+0x48] user RSP (per-CPU scratch saved above)
     "    push r11",                                    // [rsp+0x40] user RFLAGS
     "    push rcx",                                    // [rsp+0x38] user RIP
     "    push r9",                                     // [rsp+0x30] a5
@@ -242,7 +268,7 @@ extern "C" {
 /// v1 -- per-CPU pointer once SMP lands.
 /// # C: O(1)
 pub fn current_user_frame() -> *mut [u64; 3] {
-    let top = OXIDE_SYSCALL_KSTACK.load(core::sync::atomic::Ordering::Acquire);
+    let top = percpu_syscall_kstack();
     // B04: 16 pushes total (P5-10's 5 + the original 10 + a new r12
     // slot at top-0x08). RIP/RFLAGS/USER_RSP triple is at base+0x38
     // where base = top-0x80, so [top-0x48..top-0x30].
@@ -264,7 +290,7 @@ pub fn current_user_frame() -> *mut [u64; 3] {
 /// # SAFETY: same as `current_user_frame` — caller is dispatch ctx.
 /// # C: O(1)
 pub fn current_user_full_frame() -> *mut u64 {
-    let top = OXIDE_SYSCALL_KSTACK.load(core::sync::atomic::Ordering::Acquire);
+    let top = percpu_syscall_kstack();
     // 16 saves total (B04 r12 slot at +0x78). Base = top - 0x80.
     (top - 0x80) as *mut u64
 }
@@ -276,7 +302,7 @@ pub fn current_user_full_frame() -> *mut u64 {
 /// `top - 0x70` so sysretq leaves rdi = sig (post-P5-10 layout).
 /// # C: O(1)
 pub fn current_kstack_top() -> u64 {
-    OXIDE_SYSCALL_KSTACK.load(core::sync::atomic::Ordering::Acquire)
+    percpu_syscall_kstack()
 }
 
 // `oxide_syscall_dispatch` is defined in the kernel crate; the asm
@@ -294,7 +320,27 @@ pub fn current_kstack_top() -> u64 {
 /// owning this stack; preempt-off; single-CPU UP.
 /// # C: O(1)
 pub unsafe fn set_syscall_kstack(top: u64) {
-    OXIDE_SYSCALL_KSTACK.store(top, core::sync::atomic::Ordering::Release);
+    // Write THIS CPU's per-task kstack slot (gs:[8]). Called from schedule()
+    // on every switch (after set_percpu_base, so gs is valid). The next
+    // syscall on this CPU loads it via the entry stub.
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    // SAFETY: gs base = kernel per-CPU area (no-swapgs); offset 8 is the
+    // per-task syscall-kstack slot within the 4 KiB per-CPU page.
+    unsafe { core::arch::asm!("mov gs:[8], {v}", v = in(reg) top, options(nostack, preserves_flags)); }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { let _ = top; }
+}
+
+/// Initialise THIS CPU's syscall-kstack slot (gs:[8]) to a known stack —
+/// called from kmain right AFTER `set_percpu_base` (gs valid). Defensive:
+/// the first switch-to-user overwrites it via `set_syscall_kstack`, but
+/// this guards against any syscall before the first schedule. The BSP
+/// passes `boot_syscall_kstack_top()`; an AP passes its own scratch top.
+/// # SAFETY: gs must already point at this CPU's per-CPU area.
+/// # C: O(1)
+pub unsafe fn init_percpu_syscall_kstack(top: u64) {
+    // SAFETY: per fn contract — gs is the per-CPU area; same slot as set_syscall_kstack.
+    unsafe { set_syscall_kstack(top); }
 }
 
 /// Set IA32_LSTAR / IA32_STAR / IA32_FMASK + EFER.SCE for `syscall`
@@ -309,8 +355,10 @@ pub unsafe fn set_syscall_kstack(top: u64) {
 pub unsafe fn install_syscall_msrs() {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     {
-        let top = SYSCALL_KSTACK.0.get() as u64 + 4096;
-        OXIDE_SYSCALL_KSTACK.store(top, Ordering::Release);
+        // NOTE: do NOT init gs:[8] here — install_syscall_msrs runs in EARLY
+        // boot (before set_percpu_base sets gs). kmain calls
+        // init_percpu_syscall_kstack after gs is up; per-task tops then come
+        // from set_syscall_kstack on each switch.
 
         // SAFETY: privileged MSR writes at CPL=0; values constructed
         // from kernel-controlled constants matching the GDT.
