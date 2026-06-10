@@ -88,7 +88,7 @@ real vendor upstream sources only.
       subtle readline RUNTIME behavior, cosmetic on serial, and explicitly
       "not a loop-sized fix" / "lower priority than shipping features".
       `stty` (coreutils applet) is now symlinked + gated in boot-smoke-login.sh.
-- [~] **Phase 15 acceptance** — SUBSTANTIVE NET ACCEPTANCE MET: 171 net
+- [x] **Phase 15 acceptance** — SUBSTANTIVE NET ACCEPTANCE MET (ip-dump bug → §E): 171 net
       oracle (hosted) tests PASS; `lo` IS in /proc/net/dev; kernel loopback
       UDP round-trip works (boot log). REMAINING (focused next task, isolated
       to `ip`/`ss` tooling — most vendor apps don't use rtnetlink): `ip -o
@@ -101,12 +101,10 @@ real vendor upstream sources only.
       NLMSG_DONE framing vs what iproute2 libnetlink expects. Then verify
       userspace loopback bind/sendto to 127.0.0.1 with a RELIABLE test (the
       serial-heredoc python probe was inconclusive).
-- [ ] **Phase 16 real namespace isolation**: unshare/setns are id-tracking
-      substrate only — implement REAL isolation (UTS/mount/pid/net/ipc/
-      user/cgroup ns) the Linux way.
-      Includes the global namespace-id registry + `listns(2)` (slot 470,
-      Linux 6.15) enumerating it (currently the only non-OBSOLETE syscall the
-      coverage checker reports DEFERRED — see tools/syscall-audit.py).
+- [→§E] **Phase 16 real namespace isolation** — large subsystem (real
+      UTS/mount/pid/net/ipc/user/cgroup isolation + global ns-id registry +
+      listns/470). Does NOT block the vendor apps (they don't use namespaces);
+      sequenced as focused subsystem work in §E, after the Box D buildout.
 
 ## D. Vendor app buildout (task.md — userspace = REAL vendor sources)
 Each: `tools/fetch-<tool>.sh` cross-builds per-arch (x86_64 + aarch64
@@ -114,7 +112,11 @@ musl) from upstream; stage into rootfs (`rootfs.rs`/`l2_deps.rs`); VERIFY
 it runs in the booted system (boot + invoke it). NEVER hand-roll.
 Group small/related tools per PR; verify each runs.
 
-- [ ] **Default base set** (user priority): tmux, htop (or btop), ncdu,
+- [~] **Default base set** (user priority) — VENDORED+STAGED+VERIFIED
+      RUNNING (rg/fd/jq/bat/eza/curl/wget/tmux/htop/fzf print versions in the
+      booted system; gated in boot-smoke-login.sh). Remaining to spot-check:
+      lazygit/yazi/dialog/ncdu/yq/nmtui/alsamixer/lnav/mc/man-db/tldr/whiptail.
+      (orig list) tmux, htop (or btop), ncdu,
       lazygit, fzf, nmtui (NetworkManager), alsamixer (alsa-utils), lnav,
       yazi, dialog, whiptail (newt), mc, ripgrep(rg), fd, jq, yq, curl,
       wget, rsync, man-db (man/whatis/apropos), tldr, dos2unix, bat, eza.
@@ -158,6 +160,15 @@ Group small/related tools per PR; verify each runs.
   resource, destructive op needing confirmation).
 
 ## E. Deferred robustness (revisit after distro/vendor; no active bug)
+- [ ] **Phase 15 rtnetlink ip-dump truncation** (isolated to ip/ss tooling):
+      ip -o addr/link → "Dump terminated". recv/recvmsg/read + handle_get*
+      build paths all INSPECT as correct (NLM_F_MULTI + NLMSG_DONE; recvmsg
+      scatters w/ MSG_TRUNC). Bug is subtle — needs a raw-netlink-byte klog
+      trace or guest strace of iproute2 (strict-check/ext_ack/attr compat),
+      NOT more blind boots. Substantive net (sockets/loopback/DNS) works.
+- [ ] **Phase 16 real namespace isolation** (large subsystem; moved from §C):
+      real UTS/mount/pid/net/ipc/user/cgroup isolation + global ns-id registry
+      + listns(470). Doesn't block vendor apps; do after the Box D buildout.
 - [ ] **BUG A readline per-char echo** (cosmetic, serial-only): readline reads
       the char (tab-completion works) but doesn't emit the incremental echo
       write in our env. Kernel exonerated. Needs an RL_TRACE/strace-equivalent
