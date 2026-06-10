@@ -12,8 +12,7 @@ use sync::{Spinlock, TaskList as TaskListClass};
 
 use crate::{Task, TaskState};
 
-static REG: Spinlock<Vec<(u32, Weak<Task>)>, TaskListClass>
-    = Spinlock::new(Vec::new());
+static REG: Spinlock<Vec<(u32, Weak<Task>)>, TaskListClass> = Spinlock::new(Vec::new());
 
 /// Insert a new entry. Idempotent on `tid` (overwrites stale slot).
 /// # C: O(N_tasks)
@@ -32,7 +31,9 @@ pub fn insert(task: &Arc<Task>) {
 /// # C: O(N_tasks)
 pub fn lookup(tid: u32) -> Option<Arc<Task>> {
     let g = REG.lock();
-    g.iter().find(|(t, _)| *t == tid).and_then(|(_, w)| w.upgrade())
+    g.iter()
+        .find(|(t, _)| *t == tid)
+        .and_then(|(_, w)| w.upgrade())
 }
 
 /// Resolve `(ns, vpid)` → live `Arc<Task>`. F109: pid-NS-aware
@@ -43,13 +44,14 @@ pub fn lookup(tid: u32) -> Option<Arc<Task>> {
 /// # C: O(N_tasks)
 pub fn lookup_in_ns(ns: u64, vpid: u32) -> Option<Arc<Task>> {
     use core::sync::atomic::Ordering;
-    if ns == 0 { return lookup(vpid); }
+    if ns == 0 {
+        return lookup(vpid);
+    }
     let g = REG.lock();
-    g.iter()
-        .filter_map(|(_, w)| w.upgrade())
-        .find(|t| t.pid_ns.load(Ordering::Acquire) == ns
-              && (t.vtgid.load(Ordering::Acquire) == vpid
-                  || t.vtid.load(Ordering::Acquire) == vpid))
+    g.iter().filter_map(|(_, w)| w.upgrade()).find(|t| {
+        t.pid_ns.load(Ordering::Acquire) == ns
+            && (t.vtgid.load(Ordering::Acquire) == vpid || t.vtid.load(Ordering::Acquire) == vpid)
+    })
 }
 
 /// Best-effort snapshot of all live tasks for diagnostics (sysrq /
@@ -80,11 +82,14 @@ pub fn live_tids() -> Vec<u32> {
 pub fn live_counts() -> (u64, u64) {
     let mut g = REG.lock();
     g.retain(|(_, w)| w.strong_count() > 0);
-    let mut total = 0u64; let mut runnable = 0u64;
+    let mut total = 0u64;
+    let mut runnable = 0u64;
     for (_, w) in g.iter() {
         if let Some(t) = w.upgrade() {
             total += 1;
-            if matches!(t.state(), TaskState::Runnable) { runnable += 1; }
+            if matches!(t.state(), TaskState::Runnable) {
+                runnable += 1;
+            }
         }
     }
     (total, runnable)
@@ -99,7 +104,8 @@ pub fn live_vpids() -> Vec<u32> {
     use core::sync::atomic::Ordering;
     let mut g = REG.lock();
     g.retain(|(_, w)| w.strong_count() > 0);
-    let mut out: Vec<u32> = g.iter()
+    let mut out: Vec<u32> = g
+        .iter()
         .filter_map(|(_, w)| w.upgrade())
         .map(|t| t.vtgid.load(Ordering::Acquire))
         .filter(|&v| v != 0)
@@ -129,7 +135,33 @@ pub fn lookup_by_vpid(vpid: u32) -> Option<Arc<Task>> {
 pub fn display_vpid(tid: u32) -> u64 {
     use core::sync::atomic::Ordering;
     match lookup(tid) {
-        Some(t) => { let v = t.vtgid.load(Ordering::Acquire); if v != 0 { v as u64 } else { tid as u64 } }
+        Some(t) => {
+            let v = t.vtgid.load(Ordering::Acquire);
+            if v != 0 {
+                v as u64
+            } else {
+                tid as u64
+            }
+        }
+        None => tid as u64,
+    }
+}
+
+/// Namespace thread id to display for the task with internal `tid`:
+/// its `vtid`, falling back to the internal tid for init-NS tasks.
+/// `/proc/<pid>/task/<tid>` must expose thread ids, not process ids.
+/// # C: O(1) hash-free vec scan via `lookup`.
+pub fn display_vtid(tid: u32) -> u64 {
+    use core::sync::atomic::Ordering;
+    match lookup(tid) {
+        Some(t) => {
+            let v = t.vtid.load(Ordering::Acquire);
+            if v != 0 {
+                v as u64
+            } else {
+                tid as u64
+            }
+        }
         None => tid as u64,
     }
 }
@@ -140,7 +172,10 @@ pub fn display_vpid(tid: u32) -> u64 {
 /// # C: O(N_tasks) — two registry lookups.
 pub fn parent_vpid(tid: u32) -> u64 {
     use core::sync::atomic::Ordering;
-    let ptid = match lookup(tid) { Some(t) => t.parent_tid.load(Ordering::Acquire), None => return 0 };
+    let ptid = match lookup(tid) {
+        Some(t) => t.parent_tid.load(Ordering::Acquire),
+        None => return 0,
+    };
     lookup(ptid)
         .map(|p| p.vtgid.load(Ordering::Acquire))
         .filter(|&v| v != 0)
@@ -155,8 +190,11 @@ pub fn parent_vpid(tid: u32) -> u64 {
 /// half lives in kernel-side `wake_if_stopped`.
 /// # C: O(1)
 pub fn try_wake_stopped(task: &Task) -> bool {
-    if task.state() != TaskState::Stopped { return false; }
-    task.cont_pending.store(true, core::sync::atomic::Ordering::Release);
+    if task.state() != TaskState::Stopped {
+        return false;
+    }
+    task.cont_pending
+        .store(true, core::sync::atomic::Ordering::Release);
     task.set_state(TaskState::Runnable);
     // Per `13§9` wakeup→resched: a newly-runnable task may outrank
     // current; flag a reschedule so the next preempt-enable or
@@ -172,18 +210,31 @@ pub fn try_wake_stopped(task: &Task) -> bool {
 /// where kind: 1 = stopped, 2 = continued.
 /// # C: O(N_tasks)
 /// # Lk: REG.lock
-pub fn take_child_stop_event(parent: u32, pid: i32, want_stop: bool, want_cont: bool) -> Option<(u32, u8, u32)> {
+pub fn take_child_stop_event(
+    parent: u32,
+    pid: i32,
+    want_stop: bool,
+    want_cont: bool,
+) -> Option<(u32, u8, u32)> {
     use core::sync::atomic::Ordering;
     let g = REG.lock();
     for (_, w) in g.iter() {
         let Some(t) = w.upgrade() else { continue };
-        if t.parent_tid.load(Ordering::Acquire) != parent { continue }
+        if t.parent_tid.load(Ordering::Acquire) != parent {
+            continue;
+        }
         let vpid = t.vtgid.load(Ordering::Acquire) as i32;
         let pgid = t.pgid.load(Ordering::Acquire) as i32;
-        let matches = if pid == -1 || pid == 0 { true }
-                      else if pid > 0 { vpid == pid }
-                      else { pgid == -pid };
-        if !matches { continue }
+        let matches = if pid == -1 || pid == 0 {
+            true
+        } else if pid > 0 {
+            vpid == pid
+        } else {
+            pgid == -pid
+        };
+        if !matches {
+            continue;
+        }
         if want_stop && t.stop_pending.swap(false, Ordering::AcqRel) {
             let sig = t.stop_signal.load(Ordering::Acquire);
             return Some((t.tid, 1, sig as u32));
@@ -216,6 +267,27 @@ pub fn tasks_in_pgrp(pgid: u32) -> Vec<Arc<Task>> {
         .filter_map(|(_, w)| w.upgrade())
         .filter(|t| t.pgid.load(Ordering::Acquire) == pgid)
         .collect()
+}
+
+/// Snapshot live threads in the real thread-group `tgid`. Returns
+/// `(visible_tid, real_tid)` pairs sorted by visible tid so
+/// `/proc/<pid>/task` enumeration is stable and Linux-like.
+/// # C: O(N_tasks log N_tasks)
+pub fn thread_entries(tgid: u32) -> Vec<(u32, u32)> {
+    use core::sync::atomic::Ordering;
+    let g = REG.lock();
+    let mut out: Vec<(u32, u32)> = g
+        .iter()
+        .filter_map(|(_, w)| w.upgrade())
+        .filter(|t| t.tgid.load(Ordering::Acquire) == tgid)
+        .map(|t| {
+            let vtid = t.vtid.load(Ordering::Acquire);
+            (if vtid != 0 { vtid } else { t.tid }, t.tid)
+        })
+        .collect();
+    out.sort_unstable_by_key(|(vtid, _)| *vtid);
+    out.dedup_by_key(|(vtid, _)| *vtid);
+    out
 }
 
 /// Test-only: drop every registered entry. Hosted tests share the

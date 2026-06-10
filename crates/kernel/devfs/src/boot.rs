@@ -50,6 +50,13 @@ pub fn populate_defaults() {
         ("/etc", 0x5000_0004), ("/bin", 0x5000_0005), ("/usr", 0x5000_0006),
         ("/usr/bin", 0x5000_0007), ("/proc/sys", 0x5000_0008),
         ("/sys/fs", 0x5000_0009), ("/sys/kernel", 0x5000_000a),
+        // /sys/devices/system/cpu topology dirs — htop/libc count online CPUs
+        // by readdir'ing /sys/devices/system/cpu for cpuN entries. Without the
+        // intermediate synthetic dirs the leaf files (cpu/online, cpu0/online)
+        // resolve by exact-path lookup but the dirs enumerate empty → 0 CPUs.
+        ("/sys/devices", 0x5000_000b), ("/sys/devices/system", 0x5000_000c),
+        ("/sys/devices/system/cpu", 0x5000_000d),
+        ("/sys/devices/system/cpu/cpu0", 0x5000_000e),
     ] { register(p, Arc::new(PrefixDirInode { prefix: p, ino }) as InodeRef); }
 }
 
