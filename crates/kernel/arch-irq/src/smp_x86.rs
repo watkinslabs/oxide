@@ -234,6 +234,23 @@ extern "C" {
     static oxide_ap_tramp_lapic: u8;
 }
 
+/// Reserve the AP real-mode trampoline page (`TRAMP_PA`) from the PMM so
+/// the buddy allocator never hands it out — `bring_up_aps_x86` copies the
+/// 16→32→64 trampoline blob there at SMP bring-up. MUST be called right
+/// after PMM init, BEFORE the first allocation: `reserve_early` silently
+/// skips an already-allocated page (would re-introduce the corruption).
+/// No-op at SMP=1 too (harmless — the page just stays reserved). No-op if
+/// `TRAMP_PA` is outside seeded RAM (then the PMM never managed it).
+/// # C: O(1)
+/// # Ctx: pre-init, single-CPU, right after PMM init
+pub fn reserve_trampoline_page() {
+    if let Some(p) = pmm::setup::pmm_static() {
+        // pfn = TRAMP_PA >> 12 = 8. One 4 KiB page covers the blob + its
+        // GDT/data block (all within [TRAMP_PA, TRAMP_PA+0x1000)).
+        let _ = p.reserve_early(hal::Pfn(TRAMP_PA >> 12), 1);
+    }
+}
+
 /// Boot-CPU AP startup via LAPIC INIT/SIPI per Intel SDM Vol 3 §8.4.
 /// Copies the trampoline to TRAMP_PA, identity-maps it, then for each
 /// enabled MADT CPU (skipping the BSP) patches the per-AP data block
@@ -247,20 +264,14 @@ extern "C" {
 #[allow(unreachable_code, unused_variables, unused_unsafe, unused_mut)]
 pub unsafe fn bring_up_aps_x86(_info: &BootInfo) -> usize {
     use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
-    // GATED OFF (see below). The INIT/SIPI bring-up below is implemented and
-    // proven to bring the AP to long mode + online (LAPIC enabled), replacing
-    // the dead Limine `goto_address` path. Two integration issues remain
-    // before it can run by default without wedging the boot:
-    //   (1) the trampoline lands at a fixed low phys page (TRAMP_PA=0x8000)
-    //       that is NOT reserved from the PMM — the copy corrupts live RAM
-    //       handed out elsewhere; needs a reserved/boot-carved low page.
-    //   (2) AP scheduling participation (per-CPU runqueue + LAPIC-timer
-    //       preempt + sti idle) wedges the BSP boot — x86 AP scheduling
-    //       integration, distinct from (and after) the bring-up itself.
-    // Until both land, return 0 (x86 runs UP, as before). Flip this to enable
-    // development of the bring-up path.
-    if true { return 0; }
-    #[allow(unreachable_code)]
+    // ENABLED (F428): INIT/SIPI bring-up brings each AP to long mode +
+    // online (LAPIC). Blocker (1) — TRAMP_PA not reserved from the PMM —
+    // is fixed by `reserve_trampoline_page()` (called from kmain right
+    // after PMM init). The AP then PARKS quiescent in `ap_main_x86`
+    // (cli;hlt): online + counted, but NOT yet a scheduling target —
+    // blocker (2), AP scheduling participation, lands next (per-CPU TSS +
+    // syscall slots + runqueue/timer/idle integration). So an un-gated AP
+    // here does NOT schedule and cannot wedge the BSP via blocker (2).
     let hhdm = pmm::user_as::hhdm_offset();
     if hhdm == 0 { return 0; }
 
