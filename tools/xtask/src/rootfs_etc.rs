@@ -36,10 +36,11 @@ LANG=C.UTF-8
     put(&stage("motd", b"Welcome to oxide Linux.\n")?, "/etc/motd")?;
 
     // /etc/bash.bashrc — system-wide interactive bash rc (aliases, prompt,
-    // locale). util-linux login launches the user shell non-login here, so
-    // this (sourced by ~/.bashrc) is where interactive-session env lives —
-    // pam_env.so isn't vendored and /etc/profile isn't sourced. Mirrors
-    // Debian's /etc/bash.bashrc role.
+    // locale), for interactive NON-login shells (sub-shells), sourced via
+    // ~/.bashrc. Mirrors Debian's /etc/bash.bashrc role. NOTE: util-linux
+    // login DOES exec a login shell (argv[0]="-sh"; verified `shopt
+    // login_shell` == on), so /etc/profile + /etc/profile.d/*.sh ARE sourced
+    // at login — that path owns login-session env; this owns sub-shell env.
     put(&stage("bash.bashrc",
 b"# system-wide bashrc for interactive shells
 [ -z \"$PS1\" ] && return
