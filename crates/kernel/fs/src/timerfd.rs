@@ -143,8 +143,9 @@ pub fn sys_timerfd_create(args: &syscall::SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
+    const TFD_TIMER_ABSTIME: u64 = 1;
     let fd = args.a0 as i32;
-    let _flags = args.a1;
+    let flags = args.a1;
     let new = args.a2;
     let old = args.a3;
     let cur = match sched::current() {
@@ -187,7 +188,20 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
         let interval = is.saturating_mul(1_000_000_000).saturating_add(ins);
         let value    = vs.saturating_mul(1_000_000_000).saturating_add(vns);
         inode.interval_ns.store(interval, Ordering::Release);
-        inode.expiry_ns.store(if value == 0 { 0 } else { now.saturating_add(value) }, Ordering::Release);
+        // TFD_TIMER_ABSTIME (flags bit 0): it_value is an ABSOLUTE time against
+        // the timerfd's clock (our monotonic). Without honoring it, `now+value`
+        // pushes the expiry ~uptime into the future → it never fires. Go's
+        // runtime timers (newer Go) + systemd arm timerfds this way, so the
+        // bug livelocked every Go app (duf/glow/micro) in epoll_pwait. Relative
+        // mode (flags clear) keeps `now + value`.
+        let expiry = if value == 0 {
+            0
+        } else if (flags & TFD_TIMER_ABSTIME) != 0 {
+            value
+        } else {
+            now.saturating_add(value)
+        };
+        inode.expiry_ns.store(expiry, Ordering::Release);
     }
     0
 }
