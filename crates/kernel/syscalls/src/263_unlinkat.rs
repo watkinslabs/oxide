@@ -35,5 +35,9 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
         return crate::s084_rmdir::do_rmdir(&p);
     }
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
-    match pino.unlink_child(&name) { Ok(())  => 0, Err(e)  => errno_from_vfs(e) }
+    match pino.unlink_child(&name) {
+        // d_delete: invalidate the cached dentry (see pathresolve::forget_path).
+        Ok(())  => { crate::pathresolve::forget_path(&p); 0 }
+        Err(e)  => errno_from_vfs(e),
+    }
 }
