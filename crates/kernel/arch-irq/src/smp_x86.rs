@@ -75,6 +75,17 @@ unsafe fn ap_main_x86(percpu_base: u64, lapic_id: u32) -> ! {
     let ctx = ApContext { percpu_base };
     let ctx = &ctx;
 
+    // B3.4: load the shared kernel GDT FIRST. The SIPI trampoline left this
+    // AP on its own minimal 4-entry GDT (CS=0x18); kernel CS/DS (0x28/0x30)
+    // and the per-CPU TSS selectors (0x50+cpu*0x10) only exist in the kernel
+    // GDT. MUST precede the GS_BASE setup below: the reload writes GS=0x30
+    // (→ GS base 0), so the wrgsbase that follows re-establishes the per-CPU
+    // base correctly. Without this, `ltr` of the AP's TSS selector #GP's →
+    // triple fault (the old "AP scheduling wedges the boot").
+    // SAFETY: AP at CPL=0, long mode, kernel master CR3; BSP completed
+    // install_kernel_gdt; we only reload to descriptors present in it.
+    unsafe { hal_x86_64::load_kernel_gdt_for_ap(); }
+
     // Enable CR4.FSGSBASE on this AP (Limine leaves it off per-AP).
     // SAFETY: AP runs CPL=0 here; CR4 write is legal; bit 16 enables rd/wrgsbase which we use immediately below.
     unsafe {
@@ -111,24 +122,35 @@ unsafe fn ap_main_x86(percpu_base: u64, lapic_id: u32) -> ! {
     // SVR + IA32_APIC_BASE MSR.
     let _ = unsafe { crate::lapic::enable_for_ap() };
 
-    // Install this AP's per-CPU runqueue + idle task per `13§6`.
-    // The AP's `this_cpu()` (gs:0) now returns lapic_id; the per-CPU
-    // runqueue array indexes by that, so install_default_runqueue
-    // populates the AP's slot specifically.
-    // Mark ourselves online (online_count→2). The AP is brought up via
-    // INIT/SIPI and reaches long mode + LAPIC; full scheduling participation
-    // (per-CPU runqueue + LAPIC-timer preemption + sti) is gated as a
-    // follow-up — enabling it currently wedges the boot (x86 AP scheduling
-    // integration, distinct from the bring-up which works). For now the AP
-    // parks quiescent: online + IPI-reachable, no runqueue migration target.
+    // Mark ourselves online (online_count→2).
     let _ = ::cpu::smp::ap_arrived();
-    loop {
-        // SAFETY: cli;hlt parks the AP with IRQs masked until scheduling
-        // integration lands. The AP is in long mode on the kernel master CR3.
-        unsafe {
-            core::arch::asm!("cli; hlt", options(nomem, nostack, preserves_flags));
-        }
+
+    // B3.4: AP scheduling participation. The per-CPU foundation is in place
+    // (per-CPU TSS RSP0 = B3.2, per-CPU syscall slots = B3.3), so the AP can
+    // schedule without clobbering the BSP's kernel-stack pointers.
+    // SAFETY: AP at CPL=0, long mode, kernel master CR3, gs = this AP's
+    // per-CPU area (cpu_id = lapic_id at offset 0); sole owner of its state.
+    unsafe {
+        // 1. Per-CPU runqueue + idle task. `this_cpu()` (gs:0) = lapic_id, so
+        //    install_default_runqueue populates GLOBALS[lapic_id] — the AP's
+        //    own slot (register_timers + schedule-hook are idempotent).
+        sched::live::install_default_runqueue();
+        // 2. Load THIS AP's TSS (selector TSS_SEL + lapic_id*0x10) so a user
+        //    task scheduled here lands ring3→ring0 on this CPU's RSP0.
+        hal_x86_64::install_tss_for_cpu(lapic_id as u16);
+        // 3. Seed this AP's syscall-kstack slot (gs:[8]); per-task tops then
+        //    come from set_syscall_kstack on each switch. Use this AP's stack
+        //    top as the pre-first-switch scratch.
+        hal_x86_64::init_percpu_syscall_kstack(hal_x86_64::boot_syscall_kstack_top());
+        // 4. Arm this AP's LAPIC timer (same period as the BSP's elf path) so
+        //    it preempts + wakes from idle. The LAPIC MMIO VA aliases per-CPU.
+        let _ = crate::lapic::timer_periodic(1_000_000);
+        // 5. Enter the idle→schedule loop with IRQs on (sti) — replaces the
+        //    cli;hlt park. The AP runs its idle task until ttwu (B2) migrates
+        //    a task onto its runqueue and IPIs it.
+        core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
     }
+    sched::halt_forever()
 }
 
 const AP_PERCPU_BYTES: usize = 4096;
