@@ -424,10 +424,14 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("gron", "gron", "/usr/bin/gron"),
         ("pv", "pv", "/usr/bin/pv"),
         ("entr", "entr", "/usr/bin/entr"),
-        // starship/glow/micro/duf built (recipes vendored) but NOT staged: they
-        // hang on startup under oxide (not a tty-read block — persists with stdin
-        // redirected). Likely an async-runtime/thread or syscall gap. Re-add here
-        // once that startup-hang is diagnosed (debug-all syscall trace).
+        // duf/glow/micro (Go) + starship (Rust): build recipes vendored +
+        // binaries built, but NOT staged — they HANG on startup, UNKILLABLY
+        // (verified post-F425-SMP: `timeout 6 duf --version` never returns,
+        // SIGTERM/SIGKILL don't terminate it ⇒ stuck in an uninterruptible
+        // kernel syscall during Go/Rust runtime init — a real syscall gap, NOT
+        // an SMP/threading issue). Other Go apps (lazygit, fzf) run fine, so
+        // it's a specific syscall these call at startup. Needs a hypervisor
+        // RIP/syscall trace of the hung process (smp-distro-plan.md §E).
     ] {
         let b = repo.join(format!("vendor/{}/{}-{}", dir, file, arch));
         if b.is_file() { put(&b, dest)?; }

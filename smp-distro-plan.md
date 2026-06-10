@@ -139,7 +139,10 @@ Group small/related tools per PR; verify each runs.
 - [ ] **CLI — find**: fd, locate(plocate)
 - [ ] **CLI — diff**: sdiff, colordiff
 - [ ] **CLI — structured**: jq, yq, xq, xmlstarlet, dasel, fx
-- [ ] **CLI — modern**: bat, eza, dust, duf, procs, bottom, zoxide,
+- [~] **CLI — modern** — VERIFIED ON PATH (booted): bat, eza, dust, procs,
+      bottom(btm), zoxide, sd, hexyl, hyperfine, tokei, delta, choose, grex,
+      gron, xh, tldr, less, tree, nano, vim, yq, dialog, lazygit, ncdu, yazi
+      (24 apps run). duf hangs → §E. (orig) bat, eza, dust, duf, procs, bottom, zoxide,
       hyperfine, sd, choose
 - [ ] **CLI — archive**: zip, unzip, cpio
 - [ ] **CLI — encoding**: iconv, recode, dos2unix, unix2dos
@@ -160,6 +163,13 @@ Group small/related tools per PR; verify each runs.
   resource, destructive op needing confirmation).
 
 ## E. Deferred robustness (revisit after distro/vendor; no active bug)
+- [ ] **duf/glow/micro (Go) + starship (Rust) UNKILLABLE startup hang**:
+      binaries BUILT (recipes vendored) but hang on startup — `timeout 6 duf
+      --version` never returns + SIGTERM/SIGKILL don't kill it ⇒ stuck in an
+      uninterruptible kernel syscall during runtime init (NOT SMP/threading;
+      lazygit/fzf Go apps run fine). Focused fix: boot with one staged, attach
+      hypervisor, dump the hung RIP/syscall → find + fix the blocking syscall
+      (likely unblocks many Go/Rust apps). Then re-stage in rootfs.rs.
 - [ ] **Phase 15 rtnetlink ip-dump truncation** (isolated to ip/ss tooling):
       ip -o addr/link → "Dump terminated". recv/recvmsg/read + handle_get*
       build paths all INSPECT as correct (NLM_F_MULTI + NLMSG_DONE; recvmsg
