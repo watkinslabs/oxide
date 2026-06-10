@@ -487,11 +487,7 @@ pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
         );
         reply.extend_from_slice(&one);
     }
-    let mut done = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
-    done.nlmsg_flags = flags::NLM_F_MULTI;
-    let mut done_buf = [0u8; Nlmsghdr::SIZE];
-    done.write_to(&mut done_buf);
-    reply.extend_from_slice(&done_buf);
+    reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));
     reply
 }
 
@@ -670,11 +666,7 @@ pub fn handle_getroute(req: &Nlmsghdr) -> Vec<u8> {
             true,
         ));
     }
-    let mut done = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
-    done.nlmsg_flags = flags::NLM_F_MULTI;
-    let mut done_buf = [0u8; Nlmsghdr::SIZE];
-    done.write_to(&mut done_buf);
-    reply.extend_from_slice(&done_buf);
+    reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));
     reply
 }
 
