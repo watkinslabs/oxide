@@ -80,7 +80,7 @@ real vendor upstream sources only.
       (argv[0]="-bash") so /etc/profile + profile.d source. (Note: state.md
       says RESOLVED — re-verify on current build; if still
       non-login, fix in util-linux login source, not a shim.)
-- [ ] **python3 encodings**: "No module named 'encodings'" — stage the
+- [x] **python3 encodings**: "No module named 'encodings'" — stage the
       stdlib path / zip correctly (real CPython layout, no shim).
 - [ ] **bash serial echo (BUG A)**: deep readline runtime trace (RL_TRACE /
       strace-equivalent) — kernel verified correct; find why rl_redisplay
