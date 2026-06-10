@@ -163,6 +163,9 @@ Group small/related tools per PR; verify each runs.
   resource, destructive op needing confirmation).
 
 ## E. Deferred robustness (revisit after distro/vendor; no active bug)
+- [x] **unzip** (Info-ZIP UnZip 6.0) vendored + staged — real zip
+      extraction VERIFIED both arches (x86 `unzip -v`; arm extracted a test
+      .zip → correct contents). tools/fetch-unzip.sh + vendor/unzip/build.sh.
 - [x] **lo-address label** FIXED (#B46): loopback now registers before PCI
       enumeration → lo=ifindex 1 (Linux invariant), eth0=2; IFA_F_PERMANENT set.
       `ip -o addr` shows "1: lo ... 127.0.0.1/8 scope host lo" + "2: eth0 ...
