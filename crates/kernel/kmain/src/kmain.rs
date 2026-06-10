@@ -678,6 +678,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // lossy byte-stream try_lock→drop sink. The serial console
         // (drv_serial::emit, SLOT_BYTE) stays the durable copy.
         klog::set_aux_sink(fbcon::kernel::vt_console_sink);
+        // Seed /dev/console's winsize from the real fbcon grid (yres/CELL_H ×
+        // xres/CELL_W) so full-screen apps (htop/btop) get the actual console
+        // size, not the 24×80 default. The serial tty keeps its own winsize.
+        if let Some((rows, cols)) = fbcon::kernel::console_dims() {
+            console::static_console::winsize_set(
+                tty::pty::Winsize { rows, cols, xpixel: w as u16, ypixel: h as u16 });
+        }
         let _ = w; let _ = h;
     }
     // Load the rootfs-resident keyboard layout. Linux pattern:
