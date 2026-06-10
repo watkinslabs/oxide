@@ -528,6 +528,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // the ext4 root mount below can bind the real `oxide-root` disk. The
     // root mount used to run ~100 lines before enumeration and consumed
     // a 256 MiB embedded blob; now the disk comes from virtio-blk.
+    // Register loopback BEFORE PCI enumeration so `lo` claims ifindex 1 — the
+    // Linux invariant. Enumeration registers eth0 (→ ifindex 2) and seeds the
+    // netlink addr table, which needs `lo` already present to put 127.0.0.1 on
+    // lo (not eth0). Idempotent (the later net::sock::init() is then a no-op).
+    // SAFETY: post-allocator-up; no other CPU has run AF_INET syscalls yet.
+    #[cfg(target_os = "oxide-kernel")]
+    unsafe { net::sock::init(); }
     #[cfg(target_os = "oxide-kernel")]
     { crate::pci_boot::enumerate_and_log(); }
 

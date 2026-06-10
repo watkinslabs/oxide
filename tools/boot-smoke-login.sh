@@ -111,18 +111,18 @@ wait_for '24 80' "stty (coreutils applet)" "$deadline"
 # chain intermittently stalled under TCG — one slow/SIGPIPE'd app blocked the
 # whole pipe and the marker never printed). Computed marker BASEAPPS=$M is
 # output-only (no echo false-match); gates on real execution.
-printf 'for a in "rg --version" "jq --version" "curl --version" "tmux -V" "bat --version"; do ($a >/tmp/ba_${a%% *} 2>&1 &); done; sleep 10; M=0; for x in rg jq curl tmux bat; do [ -s /tmp/ba_$x ] && M=$((M+1)); done; echo BASEAPPS=$M\n' >&9
+printf 'for a in "rg --version" "jq --version" "curl --version" "tmux -V" "bat --version"; do ($a >/tmp/ba_${a%% *} 2>&1 &); done; sleep 20; M=0; for x in rg jq curl tmux bat; do [ -s /tmp/ba_$x ] && M=$((M+1)); done; echo BASEAPPS=$M\n' >&9
 wait_for 'BASEAPPS=5' "vendor base-set apps (rg/jq/curl/tmux/bat run)" "$deadline"
 # Box D / B42: Go (micro) + Rust (starship) apps run — no nested-epoll spin.
 # BACKGROUND them (an unkillable-spin app would block a foreground `timeout`,
 # and arm TCG is slow), then count which produced output. Computed marker
 # GOAPPS=$M is output-only (no echo false-match).
-printf 'micro --version >/tmp/mv 2>&1 & starship --version >/tmp/sv 2>&1 & sleep 12; M=0; [ -s /tmp/mv ] && M=$((M+1)); [ -s /tmp/sv ] && M=$((M+1)); echo GOAPPS=$M\n' >&9
+printf 'micro --version >/tmp/mv 2>&1 & starship --version >/tmp/sv 2>&1 & sleep 20; M=0; [ -s /tmp/mv ] && M=$((M+1)); [ -s /tmp/sv ] && M=$((M+1)); echo GOAPPS=$M\n' >&9
 wait_for 'GOAPPS=2' "go/rust apps (micro+starship run)" "$deadline"
 # Box C / B45: iproute2 `ip link` + `ip addr` dump cleanly (rtnetlink NLMSG_DONE
 # carries the 4-byte err payload; header-only DONE → "Dump terminated"). Counts
 # lo/eth0 links + the two seeded addrs; marker output-only (no echo false-match).
-printf 'L=$(ip -o link 2>&1 | grep -cE ": (lo|eth0):"); A=$(ip -o addr 2>&1 | grep -cE "127.0.0.1|10.0.2.15"); echo IPDUMP_L=${L}_A=${A}\n' >&9
+printf 'L=$(ip -o link 2>&1 | grep -cE ": (lo|eth0):"); A=$(ip -o addr 2>&1 | grep -cE "127.0.0.1/8 scope host lo|10.0.2.15/24 brd 10.0.2.255 scope global eth0"); echo IPDUMP_L=${L}_A=${A}\n' >&9
 wait_for 'IPDUMP_L=2_A=2' "ip link + ip addr dump (rtnetlink)" "$deadline"
 
 # Optional logout → getty-respawn check (CHECK_LOGOUT=1): exit the
