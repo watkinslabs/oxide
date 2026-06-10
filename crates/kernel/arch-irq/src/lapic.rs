@@ -127,18 +127,16 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
                     }
                 }
             }
-            // SAFETY: tick_pick_next runs in IRQ context with IRQs masked.
-            unsafe { sched::live::preempt::tick_pick_next(); }
+            // The actual switch happens at IRQ exit via
+            // `oxide_irq_resched_on_exit` → `schedule()` (one engine); the
+            // tick only requested it by setting need_resched above.
         }
         hal_x86_64::VEC_RESCHED => {
             RESCHED_IPI_COUNT.fetch_add(1, Ordering::Relaxed);
-            // Cross-CPU resched IPI: another CPU asked us to pick
-            // a new task. Set need_resched + run the picker; the
-            // IRQ-tail asm stages oxide_preempt_next_ctx for switch
-            // on iretq.
+            // Cross-CPU resched IPI: another CPU asked us to pick a new
+            // task. Set need_resched; the IRQ-exit slow path
+            // (`oxide_irq_resched_on_exit` → `schedule()`) does the switch.
             sched::live::preempt::set_need_resched();
-            // SAFETY: cross-CPU IPI handler runs in IRQ context with IRQs masked; tick_pick_next reads/writes per-CPU sched state.
-            unsafe { sched::live::preempt::tick_pick_next(); }
         }
         v if v >= hal_x86_64::VEC_MSI_POOL_FIRST
           && v <= hal_x86_64::VEC_MSI_POOL_LAST => {
@@ -171,6 +169,37 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             }
         }
         _ => { /* unknown vector -- EOI'd, fall through */ }
+    }
+}
+
+/// IRQ-exit return-to-user reschedule slow path (`14§R07` / `smp-arch.md`
+/// Phase A). Every IRQ stub calls this after the dispatcher returns,
+/// passing the interrupted frame's saved CS. VOLUNTARY preempt: switch
+/// only when returning to user mode (`CS&3==3`) AND a resched was
+/// requested at a safe point (`preempt_count==0`, via
+/// `should_resched_to_user`). The one `schedule()` performs the switch —
+/// there is no IRQ-tail staging engine. `schedule()` preserves the IRQ
+/// state of its caller (here the IRQ-exit context's IF=0), so on return
+/// IRQs are still masked and the stub's pop+`iretq` tail is atomic (the
+/// `iretq` restores the user IF from the frame).
+///
+/// # SAFETY: invoked only from the IRQ-exit asm with IRQs masked; the
+/// interrupted scratch + iretq image live on the current kernel stack and
+/// are restored by `oxide_irq_resume_user` after this returns (across the
+/// `schedule()` switch, the stack is preserved by the saved Context).
+/// # C: O(log N) when it schedules; O(1) otherwise
+/// # Ctx: IRQ-exit
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+#[no_mangle]
+unsafe extern "C" fn oxide_irq_resched_on_exit(saved_cs: u64) {
+    let from_user = (saved_cs & 3) == 3;
+    if sched::preempt::should_resched_to_user(from_user) {
+        sched::preempt::take_need_resched();
+        // SAFETY: IRQ-exit safe point — should_resched_to_user confirmed
+        // preempt_count==0 and user-return; the interrupted frame is on the
+        // stack and restored after schedule() returns. schedule() preserves
+        // this context's IF=0, so IRQs stay masked through the iretq tail.
+        unsafe { sched::live::schedule(); }
     }
 }
 

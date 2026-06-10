@@ -17,9 +17,9 @@
 //   `runqueue` — kernel `Runqueue` outer struct + global static.
 //   `spawn`    — `spawn_kernel_thread`: alloc stack, build ctx,
 //                 `Arc<Task>`, enqueue.
-//   `schedule` — `schedule()` voluntary path (`13§8`),
-//                `schedule_from_irq()` IRQ-exit path (`14§R07`),
-//                `tick()` periodic timer hook, `current()`.
+//   `schedule` — the one `schedule()` switch primitive (`13§8`) +
+//                `finish_task_switch` handoff; IRQ-exit routes through
+//                it via `oxide_irq_resched_on_exit` (`14§R07`).
 //
 // Replaces the `kernel/src/ksched.rs` Vec-shim per the P2-13b
 // branch in state.md.
@@ -37,7 +37,8 @@ pub mod tick_deadline;
 
 pub use runqueue::{global, Runqueue};
 pub use schedule::{
-    current, current_mount_ns, current_chroot_root, mark_done, schedule, schedule_from_irq, tick_yield,
+    current, current_mount_ns, current_chroot_root, mark_done, schedule,
+    oxide_finish_task_switch, tick_yield,
     install_default_runqueue, runqueue_active, RunStats,
 };
 pub use spawn::{next_tid, spawn_kernel_thread, spawn_user_thread, spawn_user_thread_for_fork, spawn_user_thread_with_vpid};
