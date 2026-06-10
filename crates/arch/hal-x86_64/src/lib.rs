@@ -52,7 +52,7 @@ pub use irq::{
 pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateX86_64, FPU_OWNER, FPU_STATE_BYTES};
 pub use gdt::{install_kernel_gdt, GdtPointer, GDT_LEN, USER_CS, USER_DS};
 pub use tss::{install_tss, install_tss_for_cpu, set_rsp0, tss_base_addr, Tss64, TSS_SEL};
-pub use syscall::{install_syscall_msrs, current_user_frame, current_user_full_frame, current_kstack_top, set_syscall_kstack};
+pub use syscall::{install_syscall_msrs, current_user_frame, current_user_full_frame, current_kstack_top, set_syscall_kstack, init_percpu_syscall_kstack, boot_syscall_kstack_top};
 pub use idt::{install_default as install_default_idt, load_idtr_for_ap, IdtEntry, IdtPointer, GATE_INT64_KERNEL, IDT_LEN, KERNEL_CS};
 pub use context::{ContextX86_64, ForkRegs};
 pub use mmu::{
