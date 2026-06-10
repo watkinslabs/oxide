@@ -34,6 +34,7 @@ When user says `<doc>§<sec>`, **read that section first** before responding.
 
 ## Code style hard rules (`docs/07§5`)
 
+- **NEVER run `cargo fmt` / `rustfmt`.** rustfmt is disabled repo-wide via `rustfmt.toml` (`disable_all_formatting = true`) — the codebase uses a deliberate compact / AI-density style (single-line `if/else`+`for`, aligned columns) that default rustfmt destroys. A stray `cargo fmt` once reformatted 679 files; the guard makes `cargo fmt` (and `--check`) a no-op. Do not delete `rustfmt.toml`, do not hand-run formatters, do not "tidy" with rustfmt.
 - `panic = "abort"` every kernel profile.
 - `kassert!(cond, "literal")` only — no `panic!(fmt)`.
 - No `static mut` outside `#[cfg(test)]`.
