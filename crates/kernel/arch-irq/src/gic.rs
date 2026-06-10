@@ -650,8 +650,17 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             hal_aarch64::ArmCpuOps::current_cpu() == ::cpu::smp::boot_cpu_id()
         };
         if is_bsp && (intid == 33 || intid == 27) {
+            // /proc/stat CPU accounting: was the timer taken from EL0 (user)?
+            // SPSR_EL1 holds the interrupted PSTATE; mode bits 3:0 == 0 (EL0t)
+            // means user code was running.
+            // SAFETY: SPSR_EL1 holds the interrupted PSTATE until eret; reading it in the IRQ handler returns that state.
+            let from_user = unsafe {
+                let spsr: u64;
+                core::arch::asm!("mrs {}, spsr_el1", out(reg) spsr, options(nomem, nostack, preserves_flags));
+                (spsr & 0xf) == 0
+            };
             // SAFETY: IRQ dispatcher context, IRQs masked; BSP owns the UART.
-            unsafe { crate::tick_poll(); }
+            unsafe { crate::tick_poll(from_user); }
         }
         sched::live::preempt::set_need_resched();
         // Linux-style softirq bottom-half (BSP-only): see lapic.rs comment.
