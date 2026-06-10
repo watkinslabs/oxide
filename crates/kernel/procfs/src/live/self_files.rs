@@ -104,6 +104,8 @@ impl Inode for ProcSelfMapsInode {
     }
 }
 
+/// Append `n` as lowercase hex (no `0x`) to `v`. Shared by the self/ + pid maps inodes.
+/// # C: O(hex digits)
 pub(crate) fn push_hex(v: &mut alloc::vec::Vec<u8>, mut n: u64) {
     if n == 0 {
         v.push(b'0');
