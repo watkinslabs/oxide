@@ -88,8 +88,19 @@ real vendor upstream sources only.
       subtle readline RUNTIME behavior, cosmetic on serial, and explicitly
       "not a loop-sized fix" / "lower priority than shipping features".
       `stty` (coreutils applet) is now symlinked + gated in boot-smoke-login.sh.
-- [ ] **Phase 15 acceptance**: loopback nc/ping clean; lo in /proc/net/dev;
-      net oracle tests pass → close Phase 15.
+- [~] **Phase 15 acceptance** — SUBSTANTIVE NET ACCEPTANCE MET: 171 net
+      oracle (hosted) tests PASS; `lo` IS in /proc/net/dev; kernel loopback
+      UDP round-trip works (boot log). REMAINING (focused next task, isolated
+      to `ip`/`ss` tooling — most vendor apps don't use rtnetlink): `ip -o
+      addr` / `ip -o link` come back TRUNCATED ("Dump terminated") — an
+      rtnetlink MULTI-PART DUMP bug, NOT a missing lo address (seed_defaults
+      DOES seed lo→127.0.0.1/8 + eth0→10.0.2.15/24 from pci-boot:613). Leads:
+      handle_getlink/handle_getaddr build the whole dump as ONE Vec pushed to
+      the netlink rx_queue (lib.rs:197); check the recvmsg pop path
+      (truncation/MSG_TRUNC/partial-read) + the multi-part NLM_F_MULTI +
+      NLMSG_DONE framing vs what iproute2 libnetlink expects. Then verify
+      userspace loopback bind/sendto to 127.0.0.1 with a RELIABLE test (the
+      serial-heredoc python probe was inconclusive).
 - [ ] **Phase 16 real namespace isolation**: unshare/setns are id-tracking
       substrate only — implement REAL isolation (UTS/mount/pid/net/ipc/
       user/cgroup ns) the Linux way.
