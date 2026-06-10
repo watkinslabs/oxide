@@ -206,7 +206,7 @@ pub fn alloc_arm_spi() -> Option<u32> {
 /// installs this from `kernel/src/tty.rs::tick_poll_uart` at boot.
 /// gic / lapic call through here instead of hard-linking to tty —
 /// keeps arch-irq free of kernel-side tty integration.
-pub type TickPollFn = unsafe fn();
+pub type TickPollFn = unsafe fn(from_user: bool);
 static TICK_POLL_HOOK: core::sync::atomic::AtomicPtr<()> =
     core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 
@@ -229,13 +229,13 @@ pub fn install_diag_nmi_hook() {
 
 /// # SAFETY: caller is timer-ISR ctx; hook installed by kernel boot.
 /// # C: O(1) — atomic load + indirect call.
-pub unsafe fn tick_poll() {
+pub unsafe fn tick_poll(from_user: bool) {
     let p = TICK_POLL_HOOK.load(core::sync::atomic::Ordering::Acquire);
     if p.is_null() { return; }
     // SAFETY: hook ptr installed at boot from a fn matching TickPollFn ABI; load Acquire-paired with Release store in set_tick_poll_hook.
     unsafe {
         let f: TickPollFn = core::mem::transmute(p);
-        f()
+        f(from_user)
     }
 }
 

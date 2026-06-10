@@ -113,8 +113,13 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             if is_bsp {
                 // TTY input poll per docs/28: scrape pending UART RX into
                 // the ringbuffer + wake stdin waiters before the picker.
+                // /proc/stat CPU accounting: was the timer interrupt taken in
+                // user mode? Saved CS sits at frame+96 (r11@0..vec@72, err@80,
+                // rip@88, cs@96); ring 3 (CS&3==3) = user code was running.
+                // SAFETY: `frame` is the per-vector IRQ scaffold pushed by the stub; +96 is the CPU-pushed CS slot, within the saved frame.
+                let from_user = unsafe { (core::ptr::read_volatile(frame.add(96) as *const u64) & 3) == 3 };
                 // SAFETY: timer ISR ctx with IRQs masked; BSP owns the UART.
-                unsafe { crate::tick_poll(); }
+                unsafe { crate::tick_poll(from_user); }
                 // Linux-style softirq bottom-half (fbcon flush, virtio-input
                 // drain, ...) with IRQs locally enabled so device-ack waits
                 // make progress. run_pending guards re-entry.
