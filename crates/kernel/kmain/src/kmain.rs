@@ -755,7 +755,14 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
 /// # SAFETY: timer-ISR context per the hook contract.
 /// # C: O(1) typical; O(xres*yres) on dirty fbcon repaint.
 #[cfg(target_os = "oxide-kernel")]
-unsafe fn tick_poll_combined() {
+unsafe fn tick_poll_combined(from_user: bool) {
+    // /proc/stat CPU accounting (htop/btop %CPU): the cooperative scheduler
+    // SPINS when waiting (the idle task never parks), so the running task's
+    // class can't distinguish idle from busy — but the privilege level the
+    // timer interrupted can. A user-mode tick = real user code was running;
+    // kernel-mode = a syscall or the idle spin loop, counted as idle.
+    sched::cpustat::account(
+        if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
     // SAFETY: deferred to the underlying hooks; drv_serial::poll owns the UART RX drain invariants; fbcon::kernel::tick_drain is a no-op when no GPU flush is pending.
     unsafe { drv_serial::poll(); }
     fbcon::kernel::tick_drain();

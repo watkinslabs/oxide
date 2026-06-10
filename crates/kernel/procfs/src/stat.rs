@@ -26,10 +26,13 @@ impl ProcStatInode {
     fn body() -> Vec<u8> {
         let (total, running) = sched::live::registry::live_counts();
         let btime = crate::hooks::boot_unix_seconds();
+        // CPU time (user nice system idle ...) in raw timer ticks — htop/btop
+        // compute %CPU from deltas, so the unit cancels. UP: cpu == cpu0.
+        let (cu, cs, ci) = sched::cpustat::snapshot();
         let mut out: Vec<u8> = Vec::with_capacity(192);
         let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut out), format_args!(
-            "cpu  0 0 0 0 0 0 0 0 0 0\n\
-             cpu0 0 0 0 0 0 0 0 0 0 0\n\
+            "cpu  {cu} 0 {cs} {ci} 0 0 0 0 0 0\n\
+             cpu0 {cu} 0 {cs} {ci} 0 0 0 0 0 0\n\
              intr 0\n\
              ctxt 0\n\
              btime {btime}\n\
