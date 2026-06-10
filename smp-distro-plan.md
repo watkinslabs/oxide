@@ -166,13 +166,17 @@ Group small/related tools per PR; verify each runs.
 - [x] **zip** (Info-ZIP Zip 3.0) vendored + staged — real zip→unzip
       round-trip VERIFIED both arches on ext4 (`zip` then `unzip -p` → correct
       contents). tools/fetch-zip.sh + vendor/zip/build.sh (zips target).
-- [ ] **tmpfs temp-file creation quirk**: Info-ZIP `zip` (and likely any app
-      using O_CREAT|O_EXCL temp-name retry, e.g. some editors' atomic-save)
-      FAILS to create its tempfile on /tmp (tmpfs) — zip retries the temp name
-      ~3180× then exits 15 (ZE_CREAT). Works fine on ext4 (home). rename()
-      itself works on tmpfs (mv verified). Investigate tmpfs openat with
-      O_CREAT|O_EXCL / the errno returned on a name collision (zip keys its
-      retry loop on it). Real but isolated to /tmp; zip is functional on ext4.
+- [x] **tmpfs unlink stale-dentry bug FIXED (d_delete)**: root cause was the
+      dcache never being invalidated on unlink/rmdir/rename (forget_child had
+      ZERO callers) — `stat` after `unlink` resolved the dead inode through a
+      stale POSITIVE dentry, so Info-ZIP `zip`'s replace() LSTAT'd its
+      just-unlinked output, thought it still existed, failed to re-unlink it,
+      and exited 15 (ZE_CREAT). Affected ANY unlink-then-stat, not just zip.
+      Fix: pathresolve::forget_path() (Linux d_delete) called from unlink /
+      unlinkat / rmdir / rename. zip round-trip on /tmp now works both arches.
+- [ ] **open O_EXCL not enforced** (separate, latent): the open path ignores
+      O_EXCL — O_CREAT|O_EXCL on an EXISTING file opens it instead of EEXIST.
+      Add the EEXIST check in 002_open/257_openat. Not what zip hit, but wrong.
 - [x] **unzip** (Info-ZIP UnZip 6.0) vendored + staged — real zip
       extraction VERIFIED both arches (x86 `unzip -v`; arm extracted a test
       .zip → correct contents). tools/fetch-unzip.sh + vendor/unzip/build.sh.
