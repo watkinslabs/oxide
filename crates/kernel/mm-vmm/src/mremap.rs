@@ -12,7 +12,7 @@ use crate::vma::{VmaBacking, VmaFlags, VmaProt};
 use crate::{Error, KResult};
 
 impl AddressSpace {
-    /// `mremap` per `mremap(2)`. Tier-2 work fn per `docs/53§3`.
+    /// `mremap` per `mremap(2)`. work fn per `docs/53§3`.
     /// Returns the new mapping address. Behaviour:
     ///   new_size < old_size  → shrink in place, drop tail
     ///   new_size == old_size → no-op, return old

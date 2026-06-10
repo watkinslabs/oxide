@@ -12,7 +12,7 @@ Pre-code. 46 specs in `docs/`, all DRAFT. Spec-lint tool (`tools/spec-lint/`) an
 2. **No cool-off / no soak**: a spec freezes the moment its text is correct. Code merges the moment tests are green and spec-lint is clean. Duration-gated waits and 24h/48h/168h soaks are forbidden discipline-theater. Reject them in PR review.
 3. **No deferrals — there is no v2**: every spec describes the full Linux-equivalent surface. No "rides v2.x", no "deferred to v2", no "subset" framing. If a feature is part of the Linux contract for that subsystem, it is in scope for v1 and gets implemented before the spec freezes. Old `v2-arch-plan.md` and `docs/v2/` directory are dead history.
    - **Syscalls (HARD RULE):** every syscall is `IMPL` (full Linux semantics) per `docs/15` — build all the Linux syscalls we can so real programs work. **Never** stub/`ENOSYS`/strawman a syscall citing a "tier" or "version" — those labels (`V1/V2/NEVER`) are abolished (`15` R06). The ONLY syscalls that return `ENOSYS` are the 17 `docs/15` OBSOLETE numbers (modern Linux itself ENOSYS's them). If asked for a syscall, implement it fully or say honestly it's not done — never silently stub.
-   - **Kernel = hollow shell (`docs/53`):** `kernel/src/syscalls/` (Tier 3) is an ABI shim ONLY — parse/validate/fetch/call-one-Tier-2-fn/encode, **zero** work logic. Real work lives in a Tier-2 crate (`crates/kernel/<sub>`), in exactly one place — never written directly in the kernel, never duplicated kernel+crate.
+   - **Kernel = hollow shell (`docs/53`):** `kernel/src/syscalls/` is the ABI shim ONLY — parse/validate/fetch/call-one-work-fn/encode, **zero** work logic. Real work lives in a subsystem work-fn crate (`crates/kernel/<sub>`), in exactly one place — never written directly in the kernel, never duplicated kernel+crate.
 4. **AI-density** (`docs/08`): docs and code optimized for AI re-reading. Drop articles, prose intros, restated section titles, redundant doc-comments. Keep frozen invariants, ABI tables, test contracts, OQ at full fidelity.
 5. **MANIFEST authoritative** (`docs/MANIFEST.md`): every spec listed; status matches file's status line.
 6. **Structure contract** (`docs/52`): new layout and ownership changes must follow `52` and update it in the same PR when boundaries change.
@@ -95,7 +95,7 @@ When user says `<doc>§<sec>`, **read that section first** before responding.
 | Bootloader handoff, observability, error handling | `36`–`38` |
 | Build+image, CI, debug catalog, tests, acceptance | `39`–`43` |
 | Repo layout + crate ownership boundaries | `52` |
-| Syscall layering tiers | `53` |
+| Syscall layering (ABI crate / work fns / shim) | `53` |
 | **Assembly + low-level ABI correctness checklist (x86_64 AND aarch64)** | **`54`** ← read BEFORE touching `crates/arch/hal-{x86_64,aarch64}` asm OR signal/syscall paths |
 | Boot flow Mermaid | `boot-flow.md` |
 
