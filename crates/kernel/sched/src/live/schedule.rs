@@ -164,6 +164,16 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
             let dying = unsafe { Arc::from_raw(raw) };
             super::zombies::enqueue_zombie(dying);
         }
+        // 2b. SMP on_cpu: the task we switched away from has now had its
+        //     registers saved (we're past the switch) — clear its on_cpu so a
+        //     remote ttwu may place it. Raw borrow; the task is alive (held by
+        //     the runqueue / its frozen frame / ZOMBIES).
+        let from = rq.switched_from.swap(core::ptr::null_mut(), Ordering::AcqRel);
+        if !from.is_null() {
+            // SAFETY: `from` is the outgoing task ptr stored by schedule()
+            // pre-switch; alive across the switch; on_cpu is a plain atomic.
+            unsafe { (*from).on_cpu.store(false, Ordering::Release); }
+        }
     }
     // 3. preempt_enable_no_check (not the checked variant) so a need_resched
     //    arriving mid-switch is consumed at the next return-to-user /
@@ -418,6 +428,14 @@ pub unsafe fn schedule() {
     // charges from this instant (not from whenever it last ran).
     // SAFETY: rq.current was just set to the new Arc by swap_current.
     unsafe { rq.current_ref() }.exec_start_ns.store(now, Ordering::Release);
+    // SMP on_cpu handoff: the incoming task is now running (set on_cpu); stash
+    // the task we switched AWAY from so the incoming task's finish_task_switch
+    // clears ITS on_cpu only AFTER the register save completes. A remote ttwu
+    // spins on on_cpu so a still-switching-off task is never run on two CPUs.
+    // SAFETY: rq.current was just set to next; prev_raw is the outgoing task,
+    // kept alive by `prev_arc`/the runqueue across the switch.
+    unsafe { rq.current_ref() }.on_cpu.store(true, Ordering::Release);
+    rq.switched_from.store(prev_raw, Ordering::Release);
     // If prev is heading to Zombie, the local `prev_arc` would be
     // permanently stranded on its kernel stack: the asm switch never
     // returns into this frame again. We must hand it off — but NOT into
