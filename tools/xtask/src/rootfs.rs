@@ -264,6 +264,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     }
     put(&user("hello_dyn"), "/bin/hello_dyn")?;
     put(&user("hello_dyn_libc"), "/bin/hello_dyn_libc")?;
+    put(&user("sigframe_probe"), "/bin/sigframe_probe")?;
     for (_, probe, _) in l2_deps::L2_PROBES {
         put(&user(probe), &format!("/bin/{probe}"))?;
     }
