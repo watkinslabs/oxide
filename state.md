@@ -22,7 +22,7 @@ all stress); sequenced after the distro/vendor work per user priority.
 
 ## NEXT (first unchecked box): Box C — distro correctness
 Box B DONE: syscall coverage (#1676) + Tier vocab dropped + busybox scrubbed.
-Box C items (plan §C): [done #1678 login-shell, this-PR python3] bash serial echo
+Box C: [done] login-shell #1678, python3 #1679, stty staged (echo deep-dive→§E). NEXT: Phase 15 net acceptance
 ("No module named 'encodings'"), bash serial echo (BUG A — readline redisplay),
 Phase 15 net acceptance, Phase 16 real namespace isolation (+ listns/470).
 Then Box D vendor apps (tmux/htop/ripgrep/fd/jq/curl/… real vendor cross-builds).
