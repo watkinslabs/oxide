@@ -5,7 +5,7 @@
 //! `Arc<dyn FileSystem>` per mount point and routes path lookup to
 //! the longest-prefix-match instance.
 //!
-//! Tier-2 work fns per `docs/53§3`: no `SyscallArgs`, no
+//! work fns per `docs/53§3`: no `SyscallArgs`, no
 //! `sched::current()`, returns `KResult<T>` with typed `T`.
 
 extern crate alloc;

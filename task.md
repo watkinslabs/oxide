@@ -61,9 +61,10 @@ Living work list. See state.md for the session hand-off + boot-verify recipes.
       dispatch.rs; shared helpers in userbuf.rs + per-family `*_common.rs`.
       Single-handler files renamed to the numeric convention via #[path].
       PRs #1593-#1602. Both arches boot; spec-lint clean; 381/385 routed.
-- [ ] **Drop "Tier 1/2/3" vocabulary** from docs/53 + CLAUDE.md (user: "there are
-      no tiers"). Keep the real structure (ABI types crate / subsystem work fns /
-      per-syscall handler files), just remove the tier labels/jargon.
+- [x] **Drop "Tier 1/2/3" vocabulary** — docs/53 §1-4 + CLAUDE.md + docs/15 +
+      12 code-file doc-comments renamed to roles (ABI crate / work fns / shim);
+      structure + dep direction kept. "tier" now means only the abolished
+      V1/V2/NEVER version-gating (CLAUDE.md rule 3 still says don't cite it).
 
 ## Policy (user, this session)
 - Missing SYSTEMS get built **kernel-side, Linux-style** (real subsystem, not a
@@ -71,14 +72,14 @@ Living work list. See state.md for the session hand-off + boot-verify recipes.
 - All USERSPACE comes from **real vendor sources** (bash, coreutils, util-linux,
   systemd, …) — never custom/hand-rolled replacements.
 
-## ACTIVE — busybox removal (in progress)
+## DONE — busybox removal
 - [x] busybox functionally gone (vendor binary deleted; rootfs uses real
       coreutils/bash/util-linux/systemd; /bin/busybox absent from image).
 - [x] rootfs.rs: deleted the dead busybox install block (was skipped anyway).
-- [ ] Scrub ALL remaining "busybox" mentions repo-wide (docs/*.md, kernel
-      comments, tools/*.sh, research, CHANGELOG; delete tests/acceptance/busybox/).
-      Background agent running; verify ZERO mentions remain outside vendor/.git,
-      build + spec-lint clean, then commit. CLAUDE.md handled separately.
+- [x] ZERO busybox mentions in code/tools/.c/.sh/active-docs; tests/acceptance/
+      busybox/ already removed. CHANGELOG entries KEPT — they are accurate
+      historical records (busybox WAS used during bring-up, then removed);
+      rewriting them would falsify history ("git history is the archaeology").
 
 ## Done — this SMP + distro session (merged)
 - [x] **arm SMP=2 FIXED** (#1564): root cause was vmm.rs `ATTR1=1<<3` (AttrIdx 2)
@@ -138,10 +139,10 @@ stage into the rootfs (`rootfs.rs`/`l2_deps.rs`). NEVER hand-roll a replacement.
 
 ### TUI apps (full list)
 - [ ] File managers: mc, nnn, ranger, lf, yazi
-- [ ] Monitors: htop, btop, atop, iotop, bottom(btm), k9s, lazydocker
+- [ ] Monitors: htop, btop, atop, iotop, bottom(btm), nvtop, k9s, lazydocker
 - [ ] Disk: ncdu, dua-cli, dust, duf
-- [ ] Network: nethogs, iftop, bmon, nmtui
-- [ ] Git: lazygit, tig
+- [ ] Network: nethogs, iftop, bmon, bandwhich, gping, trippy, nmtui
+- [ ] Git: lazygit, gitui, tig
 - [ ] Editors: vim✓, neovim, micro, ed/ex
 - [ ] Multiplexers: tmux, screen, zellij
 - [ ] Sysadmin: alsamixer, systemd-analyze, visudo (sudo), passwd✓
@@ -159,11 +160,11 @@ stage into the rootfs (`rootfs.rs`/`l2_deps.rs`). NEVER hand-roll a replacement.
 - [ ] Diff: sdiff, colordiff
 - [ ] Editors: ed, ex
 - [ ] Term utils: script✓, scriptreplay, watch✓, tput✓
-- [ ] Structured: jq, yq, xq, xmlstarlet, dasel
+- [ ] Structured: jq, yq, xq, xmlstarlet, dasel, fx
 - [ ] Modern: bat, eza, dust, duf, procs, bottom, zoxide, hyperfine, sd, choose
 - [ ] Archive: zip, unzip, cpio (tar/gzip/bzip2/xz/zstd ✓)
 - [ ] Encoding: iconv, recode, dos2unix, unix2dos, hexdump✓ (base64/od/xxd ✓)
-- [ ] Docs: man-db, texinfo(info), tldr
+- [ ] Docs: man-db, texinfo(info), tldr, glow
 - [ ] Build: cmake, pkg-config, gettext, m4 (make✓)
 - [ ] Shells: dash, zsh, fish (bash✓); which, whereis
 - [ ] Net: curl, wget, socat, nc (ssh/scp ✓ via openssh); rsync

@@ -672,7 +672,7 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
 // F164: blocking-I/O helpers moved to sock_io.rs (1000-line cap).
 
 
-// ─── Tier-2 work fns per `docs/53§3` ───
+// ─── work fns per `docs/53§3` ───
 // Typed bind/connect/sendto/recv operating on already-parsed
 // `BoundAddr` / `RemoteAddr` enums. ABI shims in
 // `kernel/src/syscalls/net.rs` translate user sockaddr buffers
@@ -697,7 +697,7 @@ pub enum BoundAddr {
     Inet6 { ip: crate::Ipv6Addr, port: u16 },
 }
 
-/// Bind a socket to an address per `bind(2)`. Tier-2 work fn:
+/// Bind a socket to an address per `bind(2)`. work fn:
 /// takes typed args, returns typed result, no `&SyscallArgs`.
 /// # C: O(1) for inet, O(N_unix_listeners) for unix
 pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), NetError> {
@@ -745,7 +745,7 @@ pub enum RemoteAddr {
     Inet6 { ip: crate::Ipv6Addr, port: u16 },
 }
 
-/// Connect a socket to a remote per `connect(2)`. Tier-2 work fn.
+/// Connect a socket to a remote per `connect(2)`. work fn.
 /// Handles AF_UNIX path-lookup, AF_INET UDP peer-stash, AF_INET TCP
 /// active open + 3WHS drain.
 /// # C: O(1) for UDP/UNIX, O(drain_iterations) for TCP.
@@ -863,7 +863,7 @@ pub struct Accepted {
 }
 
 /// `accept` per `accept(2)`. Non-blocking: returns Err(Eagain) when
-/// no connection is ready. Tier-2 work fn — caller (Tier-3 shim)
+/// no connection is ready. work fn — caller (ABI shim)
 /// wraps the returned `InetSocket` in a vfs::File and allocates a fd.
 /// # C: O(1) + drain
 pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError> {
@@ -912,7 +912,7 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
 }
 
 
-/// Sender credentials for AF_UNIX SCM_CREDENTIALS. Caller (Tier-3
+/// Sender credentials for AF_UNIX SCM_CREDENTIALS. Caller (shim
 /// shim) fetches from `sched::current()` and passes here.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct SenderCreds {
@@ -921,7 +921,7 @@ pub struct SenderCreds {
     pub gid: u32,
 }
 
-/// `sendto`/`send` per `sendto(2)`. Tier-2 work fn — Tier-3 shim
+/// `sendto`/`send` per `sendto(2)`. work fn — ABI shim
 /// supplies the payload as a slice, the optional destination as a
 /// typed RemoteAddr, and the sender's creds for AF_UNIX SCM.
 ///

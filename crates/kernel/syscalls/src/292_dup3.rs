@@ -5,7 +5,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-/// `sys_dup3(oldfd, newfd, flags)` — slot 292. Tier-3 shim.
+/// `sys_dup3(oldfd, newfd, flags)` — slot 292. ABI shim.
 /// Like dup2 but rejects oldfd==newfd; accepts O_CLOEXEC (ignored in v1).
 /// # C: O(1) + close
 pub fn sys_dup3(args: &SyscallArgs) -> i64 {

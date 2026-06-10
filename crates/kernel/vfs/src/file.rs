@@ -324,7 +324,7 @@ pub enum SeekFrom {
 
 
 /// Create a `File` from an inode + path, install into the supplied
-/// `FdTable`. Per `docs/53§3` Tier-2 work fn. Handles the common
+/// `FdTable`. Per `docs/53§3` work fn. Handles the common
 /// post-lookup sequence: O_DIRECTORY check, O_TRUNC, Dentry wrap,
 /// File construction, fd allocation.
 /// # C: O(1) + fd_table alloc
