@@ -52,7 +52,16 @@ pub unsafe fn ap_init(aff0: u32) {
 /// # C: O(1)
 pub fn install_hooks() {
     hal_aarch64::smp::set_ap_init_hook(ap_init);
+    hal_aarch64::smp::set_ap_idle_hook(ap_idle_loop);
     sched::live::set_send_resched_ipi_hook(crate::gic::send_resched_ipi);
+}
+
+/// AP idle→schedule loop (B3.5). Bridges hal-aarch64's AP_IDLE_HOOK to
+/// `sched::halt_forever` (hal can't depend on sched). Never returns.
+/// # SAFETY: called on the AP after its per-CPU runqueue + GIC + timer are
+/// up and IRQs unmasked; halt_forever runs the idle→schedule loop forever.
+unsafe fn ap_idle_loop() -> ! {
+    sched::halt_forever()
 }
 
 /// Feed the ACPI-MADT GICC MPIDRs (already in `cpu` from the ACPI walk)
