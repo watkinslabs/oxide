@@ -125,6 +125,12 @@ pub fn relocate_for_affinity(task: &Arc<Task>, allowed: u64) {
 /// # C: O(N_cpus + log N)
 pub unsafe fn try_to_wake_up(task: Arc<Task>) -> bool {
     if task.state() != TaskState::Sleeping { return false; }
+    // SMP on_cpu handshake (Linux `while (p->on_cpu) cpu_relax()`): the task
+    // may still be finishing its switch-OFF on another CPU (its registers not
+    // yet saved). Wait until it has truly stopped before we place it on a
+    // runqueue, or it could be picked + run on two CPUs at once. On UP this is
+    // already false (this CPU cleared it when it switched off the task).
+    while task.on_cpu.load(Ordering::Acquire) { core::hint::spin_loop(); }
     let target = select_task_rq(&task);
     // SAFETY: global_for(target) reads the per-CPU runqueue slot; sound for any
     // index, returns None unless that CPU installed its rq (online + scheduling).

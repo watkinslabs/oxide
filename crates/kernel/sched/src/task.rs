@@ -133,17 +133,17 @@ pub struct Task {
 
     pub state:    AtomicU8,
     pub on_rq:    AtomicBool,
-    /// cgroup v2 freezer: when true the task is held off every runqueue
-    /// (enqueue is a no-op) until thawed — `cgroup.freeze`.
+    /// SMP `on_cpu` (Linux): true while executing on a CPU; set on switch-to,
+    /// cleared in finish_task_switch after register save; remote ttwu spins on it.
+    pub on_cpu:   AtomicBool,
+    /// cgroup v2 freezer: held off every runqueue (enqueue no-op) until thawed.
     pub frozen:   AtomicBool,
     pub cpu:      AtomicU16,
     pub vruntime: AtomicU64,
-    /// Monotonic ns at which this task last (re)started running on a CPU.
-    /// `update_curr` charges `now - exec_start` to runtime + vruntime,
-    /// then re-stamps. Set on every switch-in. 0 = never-run sentinel.
+    /// Monotonic ns this task last (re)started running; update_curr charges
+    /// `now - exec_start` to runtime+vruntime then re-stamps. 0 = never-run.
     pub exec_start_ns: AtomicU64,
-    /// Total CPU time (ns) this task has consumed — feeds
-    /// /proc/<pid>/stat utime + the cgroup cpu controller (`13§3`).
+    /// Total CPU time (ns) consumed — /proc/<pid>/stat utime + cgroup cpu (`13§3`).
     pub sum_exec_runtime_ns: AtomicU64,
     pub last_syscall_nr: AtomicU32, // diag: last syscall nr entered (u32::MAX=none); stamped in diag::note_syscall
     pub nsyscalls: AtomicU64,        // diag: monotonic syscall-entry count (sysrq/watchdog dump)
@@ -151,10 +151,9 @@ pub struct Task {
     /// seed). `update_curr` divides by this; `setpriority`/nice and
     /// cgroup `cpu.weight` rewrite it. Seeded from `class` at creation.
     pub load_weight: AtomicU32,
-    /// CPU-affinity mask (bit N = may run on CPU N), per
-    /// `sched_setaffinity(2)` + cgroup `cpuset.cpus`. The load balancer
-    /// won't migrate a task to a CPU outside this mask. Default all-ones
-    /// (any CPU); inherited on fork.
+    /// CPU-affinity mask (bit N = may run on CPU N); `sched_setaffinity(2)` +
+    /// cgroup `cpuset.cpus`. Balancer/ttwu won't place outside it. Default
+    /// all-ones; inherited on fork.
     pub cpus_allowed: AtomicU64,
     /// Encoded `SchedClass` (lock-free; read via `sched_class()`, mutated via
     /// `set_sched_class()` so sched_setattr/setparam can change policy at runtime).
@@ -811,6 +810,7 @@ impl Task {
             name,
             state:    AtomicU8::new(TaskState::Runnable as u8),
             on_rq:    AtomicBool::new(false),
+            on_cpu:   AtomicBool::new(false),
             frozen:   AtomicBool::new(false),
             cpu:      AtomicU16::new(u16::MAX),
             vruntime: AtomicU64::new(0),

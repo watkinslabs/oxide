@@ -57,6 +57,12 @@ pub struct Runqueue {
     /// (one rq per CPU); the switcher and the drainer run on the same CPU,
     /// and each switch drains before the next, so it holds at most one.
     pub reap_pending: AtomicPtr<Task>,
+
+    /// SMP `on_cpu` handoff slot: `schedule()` stores the task it switched
+    /// AWAY from here (raw borrow — kept alive by the switcher's frame); the
+    /// INCOMING task's `finish_task_switch` clears that task's `on_cpu` AFTER
+    /// the register save completed (it has truly stopped running). Per-CPU.
+    pub switched_from: AtomicPtr<Task>,
 }
 
 impl Runqueue {
@@ -75,6 +81,7 @@ impl Runqueue {
             need_resched: AtomicBool::new(false),
             inner: Spinlock::new(RunqueueInner::new(cpu, idle)),
             reap_pending: AtomicPtr::new(core::ptr::null_mut()),
+            switched_from: AtomicPtr::new(core::ptr::null_mut()),
         }
     }
 

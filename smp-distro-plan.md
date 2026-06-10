@@ -61,7 +61,7 @@ real vendor upstream sources only.
 - [x] **B5 load balancing**: sched_domains/groups; periodic `load_balance`
       on tick + newidle balance; `can_migrate_task` (cache-hot/affinity/
       running checks). Verify load spreads across cpus.
-- [ ] (from B4) full forced-migration of a RUNNING task off a disallowed
+- [x] (from B4) on_cpu handshake DONE (ttwu spin-wait; switched_from slot
       CPU — needs the on_cpu handshake (target waits until the task stops
       running on the source). Builds on the cross-CPU sync below.
 - [ ] **Phase C concurrency hardening**: audit EVERY shared Spinlock
