@@ -35,7 +35,7 @@ real vendor upstream sources only.
       freed; 4 KiB per-CPU area), `set_syscall_kstack` + the Rust frame
       readers use `gs:[8]`. Init the BSP's `gs:[8]` = boot scratch in
       install_syscall_msrs. UP-inert; 30-boot stress (hot path).
-- [ ] **B3.4 AP scheduling participation (x86)**: `ap_main_x86` →
+- [x] **B3.4 AP scheduling participation (x86)**: `ap_main_x86` →
       `install_default_runqueue()` (per-CPU GLOBALS slot) +
       `install_tss_for_cpu(cpu)` + per-CPU syscall-slot init + arm its LAPIC
       timer (`timer_periodic`) + enter `halt_forever` (idle→schedule loop)
