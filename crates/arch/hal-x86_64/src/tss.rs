@@ -27,7 +27,6 @@
 //   bits 96..127 reserved zero
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Selector for the kernel TSS in the GDT (offset 0x50, post-P2-02).
 pub const TSS_SEL: u16 = 0x50;
@@ -75,42 +74,43 @@ impl Tss64 {
 #[repr(C, align(16))]
 struct TssCell(UnsafeCell<Tss64>);
 
-// SAFETY: cross-thread mutation mediated by single-threaded boot
-// install + later `set_rsp0` writes which are u64-aligned and atomic
-// from the CPU's perspective. The CPU itself reads RSP0 on CPL3→CPL0
-// transition (rare; serialized by the transition itself).
+// SAFETY: each CPU mutates only its OWN slot (`TSS[current_cpu()]`) via
+// `set_rsp0`; the 8-byte RSP0 store is a single mov, and the CPU re-reads
+// RSP0 only on its own CPL3→CPL0 transition (serialized by the transition).
+// No cross-CPU sharing of a slot, so no data race.
 unsafe impl Sync for TssCell {}
 
-static TSS: TssCell = TssCell(UnsafeCell::new(Tss64::empty()));
+/// Per-CPU TSS count. Matches `cpu::MAX_CPUS` (64): one TSS per possible
+/// CPU so each AP scheduling user tasks has its own RSP0 (a shared TSS
+/// would clobber across CPUs on every switch). GDT carries one 16-byte
+/// TSS descriptor per slot at selector `TSS_SEL + cpu*0x10`.
+pub const NR_TSS: usize = 64;
 
-/// Cached base address of the TSS, exposed to GDT install so it can
-/// stamp the descriptor's split base fields. Set on first call to
-/// `tss_base_addr()`; same on every subsequent boot iteration.
-static TSS_BASE: AtomicU64 = AtomicU64::new(0);
+/// Per-CPU TSS array. CPU `i` uses `TSS[i]`, loaded via `ltr(TSS_SEL +
+/// i*0x10)` and updated via `set_rsp0` (indexed by `current_cpu()`).
+static TSS: [TssCell; NR_TSS] =
+    [const { TssCell(UnsafeCell::new(Tss64::empty())) }; NR_TSS];
 
-/// Linear address of the kernel-wide TSS. Used by `gdt::write_tss_descriptor`.
+/// Linear address of CPU `cpu`'s TSS. Used by `gdt::install_kernel_gdt`
+/// to stamp the per-CPU TSS descriptors' split base fields.
 /// # C: O(1)
-pub fn tss_base_addr() -> u64 {
-    let cached = TSS_BASE.load(Ordering::Relaxed);
-    if cached != 0 { return cached; }
-    let base = TSS.0.get() as u64;
-    TSS_BASE.store(base, Ordering::Relaxed);
-    base
+pub fn tss_base_addr(cpu: usize) -> u64 {
+    TSS[cpu.min(NR_TSS - 1)].0.get() as u64
 }
 
-/// Update RSP0 (kernel stack pointer used on ring3→ring0 transition).
-/// Called by per-task switch-in once the userspace path lands.
-/// # SAFETY: caller asserts `rsp0` is the high end of a writable
-/// kernel stack belonging to the about-to-run task; runs on the
-/// owning CPU (single-CPU v1).
+/// Update THIS CPU's RSP0 (kernel stack used on ring3→ring0 transition).
+/// Called by the context-switch path (per-task kernel stack). Indexes the
+/// per-CPU TSS by `current_cpu()` so an AP never clobbers the BSP's RSP0.
+/// # SAFETY: caller asserts `rsp0` is the high end of a writable kernel
+/// stack belonging to the about-to-run task on THIS CPU; runs preempt-off
+/// on the owning CPU.
 /// # C: O(1)
 /// # Ctx: process|context-switch path
 pub unsafe fn set_rsp0(rsp0: u64) {
-    // SAFETY: TSS is a single-CPU shared static; per fn contract, the
-    // caller serialises calls (context-switch path holds preempt off).
-    // The 8-byte RSP0 store is a single mov; the CPU only re-reads
-    // on CPL3→CPL0, which is far in the future relative to this write.
-    let tss = unsafe { &mut *TSS.0.get() };
+    use hal::CpuOps;
+    let cpu = (crate::X86CpuOps::current_cpu() as usize).min(NR_TSS - 1);
+    // SAFETY: this CPU is the sole writer of its own slot; single mov store.
+    let tss = unsafe { &mut *TSS[cpu].0.get() };
     tss.rsp0 = rsp0;
 }
 
@@ -142,15 +142,32 @@ extern "C" {
 /// # C: O(1)
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn install_tss() {
+    // Boot CPU is always cpu 0 here, and this runs in EARLY boot
+    // (boot-x86_64 GDT/TSS install) BEFORE `set_percpu_base` sets gs — so
+    // it must NOT read `current_cpu()` (gs:0 would be garbage → wrong
+    // selector → bad TSS → first user task's ring3→ring0 wedges). The
+    // BSP's TSS is slot 0 → `TSS_SEL` (0x50). An AP loads its own via
+    // `install_tss_for_cpu` after its gs is established.
+    // SAFETY: ltr 0x50 with the GDT slot-0 descriptor TYPE=0x9 (avail).
+    unsafe { install_tss_for_cpu(0); }
+}
+
+/// Load CPU `cpu`'s task register with its own per-CPU TSS selector
+/// (`TSS_SEL + cpu*0x10`). Called from AP bring-up AFTER the AP's gs /
+/// per-CPU area is established. Each CPU ltr's a DISTINCT descriptor, so
+/// the busy bit is per-descriptor (no cross-CPU #GP on the same selector).
+/// # SAFETY: caller is the owning CPU's bring-up, CPL=0, IRQs masked; the
+/// GDT descriptor at `TSS_SEL + cpu*0x10` is present + TYPE=0x9 (available).
+/// # C: O(1)
+pub unsafe fn install_tss_for_cpu(cpu: u16) {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     {
-        // SAFETY: oxide_load_tr is a single `ltr` instruction; legal
-        // at CPL=0 with the GDT descriptor at TSS_SEL satisfying
-        // TYPE=0x9 (the GDT install populates it that way).
-        unsafe { oxide_load_tr(TSS_SEL); }
+        let sel = TSS_SEL + cpu * 0x10;
+        // SAFETY: single `ltr`; legal at CPL=0; descriptor available per fn contract.
+        unsafe { oxide_load_tr(sel); }
     }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-    { /* host: no-op */ }
+    { let _ = cpu; }
 }
 
 #[cfg(test)]
@@ -190,18 +207,21 @@ mod tests {
 
     #[test]
     fn tss_base_addr_stable() {
-        let a = tss_base_addr();
-        let b = tss_base_addr();
+        let a = tss_base_addr(0);
+        let b = tss_base_addr(0);
         assert_eq!(a, b, "TSS base is a static; must be stable across calls");
         assert_ne!(a, 0, "must point at the actual TSS static");
+        // Distinct CPUs get distinct TSS slots (per-CPU RSP0, no clobber).
+        assert_ne!(tss_base_addr(0), tss_base_addr(1), "per-CPU TSS slots distinct");
     }
 
     #[test]
     fn set_rsp0_round_trip() {
+        // On host, current_cpu() == 0, so set_rsp0 writes TSS[0].
         // SAFETY: hosted test entry; single-threaded with no concurrent writers; defers to set_rsp0 whose contract requires single-CPU serialisation.
         unsafe { set_rsp0(0xDEAD_BEEF_CAFE_BABE); }
         // SAFETY: hosted test; only this thread accesses TSS, so a raw read of the UnsafeCell payload races nothing.
-        let read = unsafe { (*TSS.0.get()).rsp0 };
+        let read = unsafe { (*TSS[0].0.get()).rsp0 };
         assert_eq!(read, 0xDEAD_BEEF_CAFE_BABE);
         // SAFETY: hosted test reset; same single-thread justification as the prior set_rsp0 call above.
         unsafe { set_rsp0(0); }
