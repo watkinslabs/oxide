@@ -7,7 +7,7 @@ use crate::net_common::{errno_from_neterr, socket_from_fd};
 
 /// `listen(fd, backlog)` slot 50.
 /// # C: O(1)
-/// `listen(fd, backlog)` slot 50. Tier-3 shim per `docs/53§4`.
+/// `listen(fd, backlog)` slot 50. ABI shim per `docs/53§4`.
 /// # C: O(1)
 pub fn sys_listen(args: &SyscallArgs) -> i64 {
     let fd      = args.a0;

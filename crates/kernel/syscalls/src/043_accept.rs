@@ -9,7 +9,7 @@ use crate::net_common::{errno_from_neterr, file_is_nonblock, socket_from_fd};
 
 /// `accept(fd, sockaddr, addrlen)` slot 43 / `accept4` slot 288.
 /// Blocking unless fd has O_NONBLOCK (then Eagain on empty backlog);
-/// honors SO_RCVTIMEO. Tier-3 shim per `docs/53§4`.
+/// honors SO_RCVTIMEO. ABI shim per `docs/53§4`.
 /// # C: O(1)
 pub fn sys_accept(args: &SyscallArgs) -> i64 {
     use hal::TimerOps;

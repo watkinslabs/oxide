@@ -5,7 +5,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-/// `sys_dup2(oldfd, newfd)` — slot 33. Tier-3 shim per `docs/53§4`.
+/// `sys_dup2(oldfd, newfd)` — slot 33. ABI shim per `docs/53§4`.
 /// Work fn: `vfs::FdTable::dup2`. oldfd==newfd returns newfd unchanged.
 /// # C: O(1) + close
 pub fn sys_dup2(args: &SyscallArgs) -> i64 {
