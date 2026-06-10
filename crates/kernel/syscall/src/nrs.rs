@@ -377,9 +377,10 @@ pub const NR_SET_THREAD_AREA:     u64 = 205;
 pub const NR_GET_THREAD_AREA:     u64 = 211;
 pub const NR_EPOLL_CTL_OLD:       u64 = 214;
 pub const NR_EPOLL_WAIT_OLD:      u64 = 215;
-// IMPL (to be implemented per the completeness sweep):
 pub const NR_URETPROBE:           u64 = 335;
-pub const NR_UPROBE:              u64 = 336;
+// NOTE: x86_64 336..=423 are UNASSIGNED in mainline Linux (the gap between
+// uretprobe=335 and pidfd_send_signal=424). The former NR_UPROBE=336 was
+// spurious — there is no `uprobe` syscall in Linux — and was removed.
 pub const NR_FCHMODAT2:           u64 = 452;
 pub const NR_MAP_SHADOW_STACK:    u64 = 453;
 pub const NR_FUTEX_WAKE:          u64 = 454;

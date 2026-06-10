@@ -418,6 +418,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_SCHED_SETATTR    => crate::s314_sched_setattr::sys_sched_setattr(&args),
         syscall::nrs::NR_OPEN_TREE_ATTR   => crate::s467_open_tree_attr::sys_open_tree_attr(&args),
         syscall::nrs::NR_SYSLOG          => syscall::dmesg::sys_syslog(&args),
+        syscall::nrs::NR_URETPROBE        => crate::s335_uretprobe::sys_uretprobe(&args),
+        syscall::nrs::NR_MAP_SHADOW_STACK => crate::s453_map_shadow_stack::sys_map_shadow_stack(&args),
         // OBSOLETE (docs/15 §2): Linux x86_64 itself ENOSYS's these reserved numbers — deliberate enosys, not accidental fall-through.
         n if crate::misc::is_obsolete(n) => -(syscall::errno::Errno::Enosys.as_i32() as i64),
         // SAFETY: dispatch tail runs on cur's per-task syscall/SVC stack; the per-arch saved frame is live; ::fs::sig_dispatch::rt_sigreturn dispatches to the matching x86/arm helper which only reads/writes saved-frame slots and user-stack frame the dispatcher previously installed via `deliver`.
