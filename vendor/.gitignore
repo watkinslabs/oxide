@@ -810,3 +810,11 @@ entr/entr-5.6.tar.gz.sha256
 !unzip/unzip-aarch64
 unzip/unzip60/
 unzip/unzip60.tar.gz
+# Info-ZIP Zip 3.0 — zip compressor (companion to UnZip). C, static-musl via
+# the `zips` target (no configure). /usr/bin/zip.
+!zip/
+!zip/build.sh
+!zip/zip-x86_64
+!zip/zip-aarch64
+zip/zip30/
+zip/zip30.tar.gz
