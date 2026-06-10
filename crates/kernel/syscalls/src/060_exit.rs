@@ -57,8 +57,16 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
             // pthread_join uses this exact mechanism; without it,
             // joining threads hang forever.
             let ctid = task.clear_child_tid.load(Ordering::Acquire);
-            if ctid != 0 && ctid < hal::USER_VA_END {
-                // SAFETY: ctid validated < USER_VA_END; CPL=0 write through caller's AS.
+            // Best-effort, like Linux do_exit's `put_user(0, tidptr)`: the write
+            // must NOT fault the kernel if the page is unmapped. A range check
+            // (< USER_VA_END) is insufficient — a threaded runtime (Go/musl)
+            // can free a thread's stack/TLS before exit, leaving clear_child_tid
+            // pointing at an UNMAPPED page → a raw write there #PF'd the kernel
+            // (crashed every threaded app on exit). Validate the writable VMA
+            // first; skip silently if gone (Linux's put_user fault is ignored).
+            if ctid != 0 && crate::userbuf::validate_user_buf_writable(ctid, 4, 4).is_ok() {
+                // SAFETY: validated as a mapped, writable 4-byte user slot;
+                // demand-paging resolves a not-present page on this CPL=0 write.
                 unsafe { core::ptr::write_volatile(ctid as *mut i32, 0); }
                 let _ = ipc::live::futex::dispatch(ctid, 1 /* FUTEX_WAKE */, 1);
                 task.clear_child_tid.store(0, Ordering::Release);
