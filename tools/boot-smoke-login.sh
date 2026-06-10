@@ -97,6 +97,12 @@ wait_for 'uid=1000(alice)' "id output" "$deadline"
 # /etc/profile + /etc/profile.d/*.sh sourced. `shopt login_shell` == on proves it.
 printf 'shopt login_shell\n' >&9
 wait_for 'login_shell[[:space:]]\+on' "login-shell (shopt login_shell on)" "$deadline"
+# Box C: python3 (CPython 3.13 static-musl) actually runs — the interpreter
+# loads the `encodings` module at init from /usr/lib/python313.zip, so a
+# successful print proves stdlib-zip on sys.path (no "No module named
+# 'encodings'"). Distinctive palindrome avoids false log matches.
+printf 'python3 -c "print(123454321)"\n' >&9
+wait_for '123454321' "python3 (encodings/stdlib zip)" "$deadline"
 
 # Optional logout → getty-respawn check (CHECK_LOGOUT=1): exit the
 # shell and confirm a fresh `oxide login:` prompt reappears (systemd
