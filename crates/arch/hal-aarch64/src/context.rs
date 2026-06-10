@@ -74,10 +74,42 @@ core::arch::global_asm!(
     ".size oxide_trampoline_kernel, . - oxide_trampoline_kernel",
 );
 
+// First-run `finish_task_switch` trampoline (`smp-arch.md` Phase A step 0).
+// Baked as `Context.lr` in every `new_*_with_irq_frame` scaffold (replacing
+// the bare `oxide_irq_resume_user`): when `oxide_context_switch`'s `ret`
+// lands here on a fresh task's first run, it pays the switch handoff
+// (`oxide_finish_task_switch` = preempt-enable + IRQ-enable, defined in the
+// sched crate) before branching into the shared epilogue's `eret`. Resumed
+// existing tasks pay the same −1 inline from `schedule()`. `sp` is the
+// 208-byte scaffold base (16-byte aligned), so `bl` is ABI-correct.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+core::arch::global_asm!(
+    ".section .text",
+    ".globl oxide_finish_switch_tramp",
+    ".type  oxide_finish_switch_tramp, %function",
+    "oxide_finish_switch_tramp:",
+    "    bl  oxide_finish_task_switch",
+    "    b   oxide_irq_resume_user",
+    ".size oxide_finish_switch_tramp, . - oxide_finish_switch_tramp",
+);
+
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 extern "C" {
     fn oxide_context_switch(prev: *mut ContextAArch64, next: *const ContextAArch64);
     fn oxide_trampoline_kernel() -> !;
+    fn oxide_finish_switch_tramp() -> !;
+}
+
+/// Address of `oxide_finish_switch_tramp` — the `Context.lr` value baked in
+/// every `new_*_with_irq_frame` scaffold so a first-run task pays the
+/// `finish_task_switch` handoff before its first EL0 return. Host build
+/// returns 0 (asm symbol absent).
+/// # C: O(1)
+fn finish_switch_tramp_addr() -> u64 {
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    { oxide_finish_switch_tramp as *const () as usize as u64 }
+    #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+    { 0 }
 }
 
 fn trampoline_kernel_addr() -> u64 {
@@ -117,9 +149,10 @@ impl Context for ContextAArch64 {
     ///   [sp+0x0c0]         saved sp_el0   = 0 (kthreads at EL1; sp_el0 unused)
     ///   [sp+0x0c8]         pad
     ///
-    /// `Context.lr` = `oxide_irq_resume_user` so
-    /// `oxide_context_switch`'s `ret` lands in the shared IRQ
-    /// epilogue. `x19 = entry`, `x20 = arg` per the trampoline ABI;
+    /// `Context.lr` = `oxide_finish_switch_tramp` so
+    /// `oxide_context_switch`'s `ret` first pays the `finish_task_switch`
+    /// handoff, then branches the shared IRQ epilogue's `eret`.
+    /// `x19 = entry`, `x20 = arg` per the trampoline ABI;
     /// the GP epilogue restores x0..x18 + x29 + x30 (zeros) but
     /// leaves x19/x20 as `Context::switch` set them, so the
     /// trampoline reads them correctly post-eret.
@@ -152,7 +185,7 @@ impl Context for ContextAArch64 {
             x21: 0, x22: 0, x23: 0, x24: 0,
             x25: 0, x26: 0, x27: 0, x28: 0,
             x29: 0,
-            lr:    crate::vbar::irq_resume_user_addr(),
+            lr:    finish_switch_tramp_addr(),
             tpidr: 0,
         }
     }
@@ -243,7 +276,7 @@ impl ContextAArch64 {
             x19: 0, x20: 0, x21: 0, x22: 0, x23: 0, x24: 0,
             x25: 0, x26: 0, x27: 0, x28: 0,
             x29: 0,
-            lr:    crate::vbar::irq_resume_user_addr(),
+            lr:    finish_switch_tramp_addr(),
             tpidr: live_tpidr,
         }
     }
@@ -335,7 +368,7 @@ impl ContextAArch64 {
             x27: regs.x[27],
             x28: regs.x[28],
             x29: regs.x[29],
-            lr:    crate::vbar::irq_resume_user_addr(),
+            lr:    finish_switch_tramp_addr(),
             tpidr: parent_tpidr,
         }
     }
@@ -412,7 +445,7 @@ mod tests {
         assert_eq!(ctx.x19, dummy_entry as *const () as usize as u64);
         assert_eq!(ctx.x20, 0xC0FFEE);
         assert_eq!(ctx.sp as usize, (top as usize) - 208);
-        assert_eq!(ctx.lr,  crate::vbar::irq_resume_user_addr());
+        assert_eq!(ctx.lr,  finish_switch_tramp_addr());
         // SAFETY: we own `stack`; sp..sp+208 lies inside the buffer.
         let read = |off: usize| -> u64 { unsafe { *((ctx.sp as usize + off) as *const u64) } };
         for i in 0..22 { assert_eq!(read(i * 8), 0, "GP slot {} non-zero", i); }

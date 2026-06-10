@@ -2,16 +2,18 @@
 // per `14§R07`.
 //
 // Distinct from the fault stubs (`fault.rs`): IRQ stubs save the
-// scratch registers, call the Rust dispatcher, optionally switch
-// tasks at the tail, then `iretq` back to whatever task we end up
-// resuming. The dispatcher does the EOI dance.
+// scratch registers, call the Rust dispatcher, then call
+// `oxide_irq_resched_on_exit` (one engine — it calls the single
+// `schedule()` iff returning to user with a pending resched), then
+// `iretq` back to whatever task we end up resuming. The dispatcher
+// does the EOI dance; there is no IRQ-tail staging / second switch.
 //
 // The IRQ epilogue (pop scratch + drop synthetic vec/err + iretq)
-// is factored into a dedicated symbol `oxide_irq_resume_user` so a
-// freshly-built task built via `Context::new_kernel_with_irq_frame`
-// can store its address as the saved-RIP at the bottom of the
-// scaffold; `oxide_context_switch`'s `ret` then lands in the
-// epilogue continuation.
+// is factored into a dedicated symbol `oxide_irq_resume_user`. A
+// freshly-built task (`Context::new_*_with_irq_frame`) stores
+// `oxide_finish_switch_tramp` as the saved-RIP at the bottom of the
+// scaffold so `oxide_context_switch`'s `ret` pays the
+// `finish_task_switch` handoff, then drops into this epilogue.
 //
 // Phase-1 scope: a single timer vector (0x40). Wider IRQ table
 // rides alongside scheduler bring-up.
@@ -32,20 +34,13 @@ core::arch::global_asm!(
     "    cld",
     "    mov rdi, rsp",            // arg 0 = pointer to saved frame
     "    call oxide_irq_dispatch",
-    // -- schedule-on-exit per `14§R07`. Rust dispatcher writes
-    //    `oxide_preempt_next_ctx` if a switch is wanted; null = stay.
-    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
-    "    test rax, rax",
-    "    jz   2f",
-    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
-    "    mov  rsi, rax",
-    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
-    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
-    "    call oxide_context_switch",
-    // -- shared resume label. Both the no-switch path (jz 2f) and
-    //    the post-switch path (oxide_context_switch's `ret` land
-    //    here on the new task's stack) drop into the epilogue.
-    "2:  jmp oxide_irq_resume_user",
+    // -- resched-on-exit (`14§R07` / smp-arch.md Phase A). One engine:
+    //    pass the interrupted frame's saved CS to the Rust slow path,
+    //    which calls the single `schedule()` iff returning to user with a
+    //    pending resched. No IRQ-tail staging / second switch engine.
+    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
+    "    call oxide_irq_resched_on_exit",
+    "    jmp  oxide_irq_resume_user",
     ".size oxide_irq_vec_40, . - oxide_irq_vec_40",
 
     // ----- vec 0x41 -- cross-CPU resched IPI per `13§9`. Same shape
@@ -62,15 +57,9 @@ core::arch::global_asm!(
     "    cld",
     "    mov rdi, rsp",
     "    call oxide_irq_dispatch",
-    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
-    "    test rax, rax",
-    "    jz   3f",
-    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
-    "    mov  rsi, rax",
-    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
-    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
-    "    call oxide_context_switch",
-    "3:  jmp oxide_irq_resume_user",
+    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
+    "    call oxide_irq_resched_on_exit",
+    "    jmp  oxide_irq_resume_user",
     ".size oxide_irq_vec_41, . - oxide_irq_vec_41",
 
     // ----- vec 0x50 -- MSI vector (F57). Same shape as the timer
@@ -87,15 +76,9 @@ core::arch::global_asm!(
     "    cld",
     "    mov rdi, rsp",
     "    call oxide_irq_dispatch",
-    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
-    "    test rax, rax",
-    "    jz   4f",
-    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
-    "    mov  rsi, rax",
-    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
-    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
-    "    call oxide_context_switch",
-    "4:  jmp oxide_irq_resume_user",
+    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
+    "    call oxide_irq_resched_on_exit",
+    "    jmp  oxide_irq_resume_user",
     ".size oxide_irq_vec_50, . - oxide_irq_vec_50",
 
     // ----- vec 0x51..0x57 -- MSI pool (F58). Same shape as 0x50.
@@ -110,14 +93,9 @@ core::arch::global_asm!(
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
     "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
-    "    test rax, rax", "    jz 51f",
-    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
-    "    mov  rsi, rax",
-    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
-    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
-    "    call oxide_context_switch",
-    "51: jmp oxide_irq_resume_user",
+    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
+    "    call oxide_irq_resched_on_exit",
+    "    jmp  oxide_irq_resume_user",
     ".size oxide_irq_vec_51, . - oxide_irq_vec_51",
 
     ".globl oxide_irq_vec_52",
@@ -128,14 +106,9 @@ core::arch::global_asm!(
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
     "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
-    "    test rax, rax", "    jz 52f",
-    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
-    "    mov  rsi, rax",
-    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
-    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
-    "    call oxide_context_switch",
-    "52: jmp oxide_irq_resume_user",
+    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
+    "    call oxide_irq_resched_on_exit",
+    "    jmp  oxide_irq_resume_user",
     ".size oxide_irq_vec_52, . - oxide_irq_vec_52",
 
     ".globl oxide_irq_vec_53",
@@ -146,14 +119,9 @@ core::arch::global_asm!(
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
     "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
-    "    test rax, rax", "    jz 53f",
-    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
-    "    mov  rsi, rax",
-    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
-    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
-    "    call oxide_context_switch",
-    "53: jmp oxide_irq_resume_user",
+    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
+    "    call oxide_irq_resched_on_exit",
+    "    jmp  oxide_irq_resume_user",
     ".size oxide_irq_vec_53, . - oxide_irq_vec_53",
 
     ".globl oxide_irq_vec_54",
@@ -164,14 +132,9 @@ core::arch::global_asm!(
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
     "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
-    "    test rax, rax", "    jz 54f",
-    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
-    "    mov  rsi, rax",
-    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
-    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
-    "    call oxide_context_switch",
-    "54: jmp oxide_irq_resume_user",
+    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
+    "    call oxide_irq_resched_on_exit",
+    "    jmp  oxide_irq_resume_user",
     ".size oxide_irq_vec_54, . - oxide_irq_vec_54",
 
     ".globl oxide_irq_vec_55",
@@ -182,14 +145,9 @@ core::arch::global_asm!(
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
     "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
-    "    test rax, rax", "    jz 55f",
-    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
-    "    mov  rsi, rax",
-    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
-    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
-    "    call oxide_context_switch",
-    "55: jmp oxide_irq_resume_user",
+    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
+    "    call oxide_irq_resched_on_exit",
+    "    jmp  oxide_irq_resume_user",
     ".size oxide_irq_vec_55, . - oxide_irq_vec_55",
 
     ".globl oxide_irq_vec_56",
@@ -200,14 +158,9 @@ core::arch::global_asm!(
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
     "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
-    "    test rax, rax", "    jz 56f",
-    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
-    "    mov  rsi, rax",
-    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
-    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
-    "    call oxide_context_switch",
-    "56: jmp oxide_irq_resume_user",
+    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
+    "    call oxide_irq_resched_on_exit",
+    "    jmp  oxide_irq_resume_user",
     ".size oxide_irq_vec_56, . - oxide_irq_vec_56",
 
     ".globl oxide_irq_vec_57",
@@ -218,14 +171,9 @@ core::arch::global_asm!(
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
     "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
-    "    test rax, rax", "    jz 57f",
-    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
-    "    mov  rsi, rax",
-    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
-    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
-    "    call oxide_context_switch",
-    "57: jmp oxide_irq_resume_user",
+    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
+    "    call oxide_irq_resched_on_exit",
+    "    jmp  oxide_irq_resume_user",
     ".size oxide_irq_vec_57, . - oxide_irq_vec_57",
 
     // ----- shared IRQ epilogue --------------------------------------------

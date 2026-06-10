@@ -776,6 +776,35 @@ fn should_resched_to_user_is_voluntary() {
 }
 
 #[test]
+fn switch_handoff_balances_preempt_count() {
+    // The switch handoff (smp-arch.md Phase A step 0): `schedule()` entry
+    // bumps preempt_count (+1); the INCOMING task's `finish_task_switch`
+    // pays it back via `preempt_enable_no_check` (−1), so the per-CPU count
+    // returns to its pre-schedule value — net 0 per switch. (`live::
+    // oxide_finish_task_switch` IS exactly this preempt-accounting half;
+    // per-task IRQ state is saved/restored separately in schedule() via
+    // irq_save_disable/irq_restore, exercised on boot, not hosted.)
+    crate::preempt::_test_reset();
+    assert_eq!(crate::preempt::preempt_count(), 0);
+    crate::preempt::preempt_disable();              // schedule() entry +1
+    assert_eq!(crate::preempt::preempt_count(), 1);
+    crate::preempt::preempt_enable_no_check();      // incoming finish −1
+    assert_eq!(crate::preempt::preempt_count(), 0, "handoff net 0 per switch");
+}
+
+#[test]
+#[should_panic(expected = "underflow")]
+fn switch_handoff_underflow_guarded() {
+    // A `finish_task_switch` (−1) with no matching `schedule()` entry bump
+    // would drop the count below zero — the debug-build guard in
+    // `preempt_enable_no_check` (which finish_task_switch calls) must catch
+    // it so a double-pay / an engine that skipped its +1 fails loud rather
+    // than silently wedging the scheduler. Self-contained: reset → −1 at 0.
+    crate::preempt::_test_reset();
+    crate::preempt::preempt_enable_no_check();
+}
+
+#[test]
 fn cfs_rotation_is_round_robin_for_equal_weight() {
     // Simulates the schedule() cycle the engine-collapse must preserve:
     // pick leftmost → charge a fixed slice to its vruntime (equal weight ⇒

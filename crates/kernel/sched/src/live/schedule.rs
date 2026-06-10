@@ -1,27 +1,29 @@
-// `schedule()` per `13§8` + IRQ-exit preempt path per `14§R07`.
+// `schedule()` — the ONE task-switch primitive per `13§8` +
+// `sched-anal.md`/`smp-arch.md` Phase A. There is no second engine:
+// the timer/IPI IRQ path only sets `need_resched`; the actual switch
+// happens through `schedule()` at the return-to-user slow path
+// (`oxide_irq_resched_on_exit` → `schedule()`), at `preempt_enable`
+// drop-to-zero, and at voluntary yields (`tick_yield`, kthread exit).
 //
-// Two switch entry points:
+// Preempt/IRQ handoff (Linux `context_switch`/`finish_task_switch`):
+//   - `schedule()` entry: `preempt_disable` (+1) then `irq_disable`,
+//     so the pick + ctx-switch is atomic vs timer/IPI and the rq lock
+//     is never held with IRQs on (the UP-only assumption smp-arch.md
+//     flags as fatal under SMP).
+//   - the INCOMING task runs `finish_task_switch` after the switch:
+//     `irq_enable` (Linux `finish_lock_switch` = `raw_spin_unlock_irq`)
+//     + `preempt_enable_no_check` (−1). Net 0 per switch; the +1/IRQ
+//     state of a frozen switcher is paid by whoever it switched to.
+//   - first-run tasks reach `finish_task_switch` via the scaffold
+//     trampoline `oxide_finish_switch_tramp` baked at the bottom of
+//     `new_*_with_irq_frame` (asm: `call oxide_finish_task_switch;
+//     jmp oxide_irq_resume_user`), so a fresh task also pays the −1
+//     and re-enables IRQs before its first `iretq`/`eret` to user.
 //
-//   `schedule()`           — voluntary (`yield_to_scheduler`,
-//                            `tick_yield`, kthread exit). Picks
-//                            next, performs `Context::switch`
-//                            in-place. Equivalent to Linux
-//                            `schedule()` from process context.
-//
-//   `schedule_from_irq()`  — IRQ-exit picker. Picks next + stages
-//                            `(prev, next)` in
-//                            `oxide_preempt_{cur,next}_ctx` for
-//                            the asm tail to perform via
-//                            `oxide_context_switch` before iretq /
-//                            eret. `13§9` "preempt-on-IRQ-exit".
-//
-// Both paths share the same `pick_next_task` algorithm and the
-// same `if next.mm != prev.mm: switch_address_space(...)` AS-swap
-// hook (`13§8`). With v1's single global user AS + kthreads
-// having `mm=None`, the AS-swap branch is currently exercised
-// only when a kthread→user-task pair shares the runqueue. The
-// hook itself is wired via `MmuOps::activate(next.mm.root_pa)`
-// landed in P2-19.
+// `pick_next_task` + the `if next.mm != prev.mm: switch_address_space`
+// AS-swap hook (`13§8`) are unchanged. With v1's single global user AS
+// + kthreads (`mm=None`), the AS-swap branch fires only on a
+// kthread→user pair; wired via `MmuOps::activate(next.mm.root_pa)`.
 
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
@@ -66,6 +68,84 @@ fn now_ns() -> u64 {
     { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
     #[cfg(not(target_os = "oxide-kernel"))]
     { 0 }
+}
+
+/// Save this CPU's current IRQ-enable state, then mask IRQs for the pick +
+/// context switch. Returns an opaque token restored by `irq_restore` when
+/// THIS task resumes. Unlike Linux (whose `__schedule` always returns
+/// IRQs-enabled because its process-context locks shared with IRQs use
+/// `spin_lock_irqsave`), our kernel runs syscalls with IF=0 (SFMASK) and
+/// takes process-context locks (ZOMBIES, registry, wait lists) that the
+/// timer ISR also takes WITHOUT irqsave — so a switch MUST preserve each
+/// task's own IRQ state, or a syscall that blocked with IF=0 would resume
+/// with IF=1 and a timer firing while it holds such a lock would deadlock
+/// the ISR spinning on it. Host builds no-op (token 0). # C: O(1)
+#[inline]
+unsafe fn irq_save_disable() -> u64 {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    {
+        let f: u64;
+        // SAFETY: pushfq/pop reads RFLAGS (IF in bit 9); cli clears IF at
+        // CPL=0. Paired with irq_restore on this task's resume.
+        unsafe { core::arch::asm!("pushfq", "pop {f}", "cli", f = out(reg) f, options(nomem, preserves_flags)); }
+        f
+    }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    {
+        let f: u64;
+        // SAFETY: mrs DAIF snapshots the mask bits; daifset #2 masks IRQ at
+        // EL1. Paired with irq_restore (msr daif) on this task's resume.
+        unsafe { core::arch::asm!("mrs {f}, daif", "msr daifset, #2", f = out(reg) f, options(nomem, nostack, preserves_flags)); }
+        f
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
+}
+
+/// Restore the IRQ-enable state captured by `irq_save_disable`. Run when
+/// THIS task resumes from its own switch (so a blocked syscall keeps IF=0,
+/// a voluntarily-yielding idle/kthread keeps IF=1). Host no-op. # C: O(1)
+#[inline]
+unsafe fn irq_restore(flags: u64) {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    // SAFETY: push/popfq restores RFLAGS (incl. IF) from the token saved by
+    // this task's own irq_save_disable; legal at CPL=0.
+    unsafe { core::arch::asm!("push {f}", "popfq", f = in(reg) flags, options(nomem)); }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    // SAFETY: msr DAIF restores the mask bits saved by this task's own
+    // irq_save_disable; EL1-legal.
+    unsafe { core::arch::asm!("msr daif, {f}", f = in(reg) flags, options(nomem, nostack, preserves_flags)); }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { let _ = flags; }
+}
+
+/// Linux `finish_task_switch` / `schedule_tail`: drops the `preempt_count`
+/// the switcher bumped at its `schedule()` entry, so the per-CPU count
+/// returns to its pre-schedule value (net 0 per switch). Reached two ways:
+///   - resumed existing task: `schedule()` calls this after `ArchCtx::
+///     switch` returns, THEN `irq_restore`s the task's own saved IRQ state.
+///   - first-run task: the scaffold trampoline `oxide_finish_switch_tramp`
+///     does `call oxide_finish_task_switch` before `jmp oxide_irq_resume_user`
+///     — IRQ state for a fresh task is set by the trailing `iretq`/`eret`
+///     (the synthetic frame's RFLAGS/SPSR), so no irq_restore is needed.
+/// Phase B extends this to release the PREV task's rq-lock here.
+///
+/// IMPORTANT: this does NOT touch the IRQ mask. Per-task IRQ state is owned
+/// by `irq_save_disable`/`irq_restore` in `schedule()` (see their note on
+/// why our non-irqsave process locks require preserving each task's IF) and
+/// by the first-run `iretq`/`eret`. An earlier version `sti`'d here, which
+/// let a blocked syscall resume with IF=1 and deadlock the timer ISR
+/// spinning on a process-context lock (ZOMBIES) the syscall still held.
+///
+/// # SAFETY: called exactly once by the task being switched TO, with the
+/// switcher's `preempt_disable` (+1) still owed; must not run twice.
+/// # C: O(1)
+#[no_mangle]
+pub unsafe extern "C" fn oxide_finish_task_switch() {
+    // preempt_enable_no_check (not the checked variant) so a need_resched
+    // arriving mid-switch is consumed at the next return-to-user /
+    // preempt_enable rather than recursing into schedule() from this tail.
+    crate::preempt::preempt_enable_no_check();
 }
 
 /// `update_curr(prev)` per `13§3`/`13§8`: charge the CPU time the prev
@@ -189,33 +269,50 @@ pub fn current_chroot_root() -> Option<alloc::string::String> {
 /// Counters incremented by the schedule paths. Hosted-test access
 /// via the `RunStats` snapshot returned from teardown.
 static VOLUNTARY: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-static IRQ_SW:    core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
-/// Voluntary `schedule()` per `13§8`. Saves the current task's
-/// context, picks next, performs the AS-swap if `next.mm !=
-/// prev.mm`, runs `Context::switch`. Returns to the caller (via
-/// the saved RIP/LR) when something else schedules us back.
+/// The ONE task-switch primitive `schedule()` per `13§8`. Saves the
+/// current task's context, picks next, performs the AS-swap if `next.mm
+/// != prev.mm`, runs `Context::switch`. Returns to the caller (via the
+/// saved RIP/LR) when something else schedules us back.
 ///
-/// Lock-held-across-switch (`13§8`): we acquire the inner spinlock
-/// to do the pick + class-list fixup, drop it before `Context::
-/// switch` (UP v1 — no concurrent CPU could observe a stale
-/// runqueue state). SMP wraps this in the lock-cross-switch
-/// primitive per `13§12` later.
+/// Entered from three safe points, all routing here (no second engine):
+/// voluntary yields (`tick_yield`, kthread exit), `preempt_enable`
+/// drop-to-zero, and the IRQ-exit return-to-user slow path
+/// (`oxide_irq_resched_on_exit`). The IRQ-exit caller is a SAFE point
+/// (preempt_count==0, about to return to user) — distinct from running
+/// inside an IRQ handler, which never calls this.
 ///
-/// # SAFETY: caller is in process / kthread context (NOT IRQ);
-/// preempt-off discipline (`13§9`); single-CPU.
+/// Lock-held-across-switch (`13§8`): we mask IRQs (above) then acquire
+/// the inner spinlock for the pick + class-list fixup, drop it before
+/// `Context::switch` (UP v1 — no concurrent CPU observes stale runqueue
+/// state). SMP wraps this in the lock-cross-switch primitive per `13§12`.
+///
+/// # SAFETY: caller is at a safe schedule point per `13§9` (process /
+/// kthread context OR the IRQ-exit-to-user slow path), preempt_count==0
+/// on entry; single-CPU. NOT callable from inside an IRQ handler body.
 /// # C: O(log N) CFS pick + O(1) ctx switch
-/// # Ctx: process|kthread; preempt-off
+/// # Ctx: process|kthread|irq-exit-to-user; enters preempt-off
 pub unsafe fn schedule() {
-    // Bump preempt_count for the duration of the pick + ctxsw per
-    // `13§9`: while we are choosing & switching, no recursive
-    // schedule may run (e.g. via `preempt_enable` firing inside a
-    // wakeup path called from the picker). The guard pairs at
-    // function exit; the spec's `kassert!(preempt_count > 0)` at
-    // `13§8` is satisfied by-construction once inside this scope.
-    let _pg = crate::preempt::PreemptGuard::new();
+    // Disable preemption for the pick + ctxsw per `13§9`: while choosing &
+    // switching, no recursive schedule may run. This +1 is paid by the
+    // INCOMING task's `finish_task_switch` (−1), not by a guard-drop here —
+    // a first-run task `ret`s into the scaffold trampoline, bypassing any
+    // RAII drop, so the handoff lives in `finish_task_switch` instead.
+    crate::preempt::preempt_disable();
 
-    let rq = match global() { Some(r) => r, None => return };
+    let rq = match global() {
+        Some(r) => r,
+        // Pre-runqueue boot phase: undo the bump; no switch, no handoff.
+        None => { crate::preempt::preempt_enable_no_check(); return }
+    };
+    // Save THIS task's IRQ state, then mask IRQs for the locked pick + the
+    // switch (Linux `rq_lock_irq`): the rq lock is never held with IRQs on
+    // (a wake-from-IRQ would deadlock on it), and the timer/IPI can't
+    // re-enter the switch. `flags` lives on this task's stack and is
+    // restored by THIS task on resume — preserving e.g. a syscall's IF=0,
+    // see `irq_save_disable`.
+    // SAFETY: single-CPU here; restored by irq_restore on this task's resume.
+    let flags = unsafe { irq_save_disable() };
     let now = now_ns();
 
     // Pick next under the lock.
@@ -255,10 +352,14 @@ pub unsafe fn schedule() {
         n
     };
 
-    // No-op if we picked the same task back.
+    // No-op if we picked the same task back. No switch ⇒ no handoff: undo
+    // our own entry bump + restore our saved IRQ state.
     let next_raw = Arc::as_ptr(&next_arc) as *mut Task;
     let prev_raw = rq.current.load(Ordering::Acquire);
     if next_raw == prev_raw {
+        crate::preempt::preempt_enable_no_check();
+        // SAFETY: restores the IRQ state this fn saved at entry; no switch.
+        unsafe { irq_restore(flags); }
         return;
     }
 
@@ -324,107 +425,25 @@ pub unsafe fn schedule() {
     // SAFETY: prev_ctx_ptr aliases prev's arch_ctx buffer (kept alive by `prev_arc` until after switch returns); next_ctx_ptr aliases next's arch_ctx (kept alive by the new `current` Arc); both buffers were init'd via `new_kernel_with_irq_frame`. switch saves prev's regs, loads next's, returns on prev's stack when control comes back.
     unsafe { ArchCtx::switch(prev_ctx_ptr, next_ctx_ptr); }
 
-    // Control resumes here when something switches back to prev.
-    // Drop prev_arc: by now it's already been re-enqueued (above)
-    // OR is the idle task (boot frame's idle), so dropping our
-    // local strong ref is safe. For Zombie prev this is None
+    // Control resumes here when something switches back to prev. At this
+    // point IRQs are still masked and preempt_count still bears the +1 the
+    // RESUMER bumped at its schedule() entry (UP: no nesting between) — so
+    // the drop below runs preempt-off + IRQ-off, exactly as the old
+    // PreemptGuard era did. Drop prev_arc: by now it's already been
+    // re-enqueued (above) OR is the idle task (boot frame's idle), so
+    // dropping our local strong ref is safe. For Zombie prev this is None
     // (ownership moved to ZOMBIES above) and drop is a no-op.
     drop(prev_arc_opt);
-}
 
-/// IRQ-exit preempt picker per `14§R07`. Called from the per-arch
-/// IRQ dispatcher (`lapic` / `gic`) after EOI. If a switch is
-/// warranted, stages the `(prev_ctx, next_ctx)` pointer pair in
-/// `oxide_preempt_{cur,next}_ctx` so the asm tail performs
-/// `oxide_context_switch` before `iretq` / `eret`.
-///
-/// # SAFETY: caller is the IRQ dispatcher running with IRQs masked;
-/// single-CPU pre-init; runqueue may or may not be installed.
-/// # C: O(log N) CFS pick when active; O(1) early-exit otherwise
-/// # Ctx: IRQ
-pub unsafe fn schedule_from_irq() {
-    let rq = match global() { Some(r) => r, None => return };
-    let tnow = now_ns();
-
-    let next_arc = {
-        let mut inner = rq.inner.lock();
-        // SAFETY: holding the inner lock serialises against any other writer; current ptr is stable for this critical section per `13§2` invariant 2.
-        let prev_ref = unsafe { rq.current_ref() };
-        // `update_curr(prev)` per `13§8` so the next CFS pick rotates
-        // rather than re-selecting `prev`, charging real CPU time.
-        update_curr(prev_ref, &inner, tnow);
-        if !matches!(prev_ref.sched_class(), SchedClass::Idle)
-            && prev_ref.state() == TaskState::Runnable
-        {
-            let raw = rq.current.load(Ordering::Acquire);
-            // SAFETY: raw came from Arc::into_raw via swap_current / install_global; bumping the strong count is sound.
-            unsafe { Arc::increment_strong_count(raw); }
-            // SAFETY: matching from_raw reclaims the bumped count.
-            let cloned = unsafe { Arc::from_raw(raw) };
-            inner.enqueue(cloned);
-        }
-        let n = inner.pick_next_task();
-        rq.nr_running.store(inner.nr_running(), Ordering::Release);
-        n
-    };
-
-    let next_raw = Arc::as_ptr(&next_arc) as *mut Task;
-    let prev_raw = rq.current.load(Ordering::Acquire);
-    if next_raw == prev_raw {
-        return;
-    }
-
-    // AS-swap hook per `13§8`. Same logic as voluntary path; the
-    // CR3/TTBR write happens before the asm tail's
-    // `oxide_context_switch`.
-    // SAFETY: prev_raw came from rq.current AtomicPtr (non-null after install_global); strong ref held by current AtomicPtr keeps the pointee alive for this critical section.
-    let prev_ref = unsafe { &*prev_raw };
-    // SAFETY: schedule path holds the runqueue invariant for both prev and next; preempt-off + single-CPU; no concurrent execve.
-    let prev_root = unsafe { prev_ref.mm_ref() }.map(|a| a.root_pa()).unwrap_or(0);
-    // SAFETY: next_arc is owned by this schedule scope; the runqueue invariant for the picked task; no concurrent execve writer on this CPU.
-    let next_root = unsafe { next_arc.mm_ref() }.map(|a| a.root_pa()).unwrap_or(0);
-    if next_root != 0 && next_root != prev_root {
-        // SAFETY: root_pa is the AS-private root populated with kernel-half mappings per P2-19; activate writes CR3/TTBR0 + flushes user TLB; IRQs masked + single-CPU.
-        unsafe { ActiveMmu::activate(next_root); }
-    }
-
-    // SAFETY: prev_ref aliases prev Task's arch_ctx; per `13§5` single-mutator-per-active-CPU invariant; we are mid-IRQ-exit so no other reader exists.
-    let prev_ctx_ptr: *mut u8 = unsafe { prev_ref.arch_ctx_ptr::<ArchCtx>() } as *mut u8;
-    // SAFETY: next_arc aliases next Task's arch_ctx; once installed via swap_current it becomes the active-CPU's mutator.
-    let next_ctx_ptr: *mut u8 = unsafe { next_arc.arch_ctx_ptr::<ArchCtx>() } as *mut u8;
-
-    // Commit `current` swap; drop returned Arc on the next
-    // `schedule_from_irq` callback (held by re-enqueue).
-    // SAFETY: per fn contract; runqueue serial under IRQs-masked single-CPU.
-    let prev_arc = unsafe { rq.swap_current(next_arc) };
-    // Stamp the now-running task's exec_start (see voluntary path).
-    // SAFETY: rq.current was just set to the new Arc by swap_current.
-    unsafe { rq.current_ref() }.exec_start_ns.store(tnow, Ordering::Release);
-    drop(prev_arc);
-    IRQ_SW.fetch_add(1, Ordering::Relaxed);
-    crate::diag::note_switch();
-
-    // Update TSS RSP0 for the new task so future ring-3 traps
-    // land on its kernel stack.
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: rq.current was updated to the new Arc<Task> by swap_current; strong ref held in AtomicPtr.
-        let now = unsafe { rq.current_ref() };
-        let top = now.kernel_stack.load(Ordering::Acquire);
-        if !top.is_null() {
-            // SAFETY: top is the next task's top-of-stack; set_rsp0 writes RSP0 of the live TSS used by ring-3→ring-0 transitions per `14§3`; set_syscall_kstack updates the per-task syscall scratch stack so the next `syscall` instruction lands here.
-            unsafe {
-                hal_x86_64::set_rsp0(top as u64);
-                hal_x86_64::set_syscall_kstack(top as u64);
-            }
-        }
-    }
-
-    // Stage the pointer pair in THIS CPU's per-CPU area for the asm IRQ
-    // epilogue (SMP-safe — no shared global the other CPU could clobber).
-    // SAFETY: IRQ context, IRQs masked; ptrs alias this CPU's prev/next
-    // Context buffers, kept alive by the runqueue + swap_current above.
-    unsafe { super::preempt::stage_switch(prev_ctx_ptr, next_ctx_ptr); }
+    // Pay the preempt-count handoff for whoever switched back to us (drops
+    // the resumer's +1), THEN restore OUR OWN saved IRQ state — a blocked
+    // syscall keeps IF=0, an idle/kthread voluntary yield keeps IF=1. The
+    // IRQ restore is per-task (our `flags`), NOT part of the cross-task
+    // preempt handoff.
+    // SAFETY: reached exactly once per resume; resumer owed one preempt-dec.
+    unsafe { oxide_finish_task_switch(); }
+    // SAFETY: restores the IRQ state saved by THIS task's irq_save_disable.
+    unsafe { irq_restore(flags); }
 }
 
 /// Cooperative voluntary yield. Calls `schedule()` then parks the
@@ -477,9 +496,9 @@ pub unsafe fn tick_yield() {
     }
 }
 
-/// Mark a task `done` (Zombie state). Subsequent `schedule()` /
-/// `schedule_from_irq()` won't return to it because the
-/// re-enqueue gate (`state() == Runnable`) becomes false.
+/// Mark a task `done` (Zombie state). A subsequent `schedule()` won't
+/// return to it because the re-enqueue gate (`state() == Runnable`)
+/// becomes false.
 /// # C: O(1)
 pub fn mark_done(task: &Task) {
     task.set_state(TaskState::Zombie);
@@ -496,7 +515,9 @@ pub unsafe fn uninstall_global_with_stats() -> Option<RunStats> {
     let stats = RunStats {
         yields_total:       VOLUNTARY.swap(0, Ordering::AcqRel),
         voluntary_switches: 0, // populated below
-        irq_switches:       IRQ_SW.swap(0, Ordering::AcqRel),
+        // One engine now: every switch goes through `schedule()`, counted in
+        // VOLUNTARY. Kept for the smoke harness's RunStats shape.
+        irq_switches:       0,
     };
     let mut s = stats;
     s.voluntary_switches = s.yields_total;
