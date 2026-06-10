@@ -367,6 +367,22 @@ fn build_newlink_reply(
     out
 }
 
+/// NLMSG_DONE terminator for a multi-part dump: 16-byte header (nlmsg_len=20,
+/// NLM_F_MULTI) followed by a 4-byte error code (0 = success). Modern Linux
+/// puts the error int in the DONE payload and iproute2's `rtnl_dump_done`
+/// reads it; a HEADER-ONLY DONE left `ip`/`ss` reading garbage past the
+/// header → "Dump terminated" / empty `ip addr`/`ip link`.
+/// # C: O(1)
+pub fn done_multi(seq: u32, pid: u32) -> alloc::vec::Vec<u8> {
+    let mut v = alloc::vec![0u8; Nlmsghdr::SIZE + 4];
+    let mut done = Nlmsghdr::done(seq, pid);
+    done.nlmsg_len = (Nlmsghdr::SIZE + 4) as u32;
+    done.nlmsg_flags = flags::NLM_F_MULTI;
+    done.write_to(&mut v[..Nlmsghdr::SIZE]);
+    // Trailing 4 bytes already zero = err 0 (success).
+    v
+}
+
 /// Handle a single RTM_GETLINK request. Returns the reply byte
 /// stream containing one RTM_NEWLINK per registered iface, then a
 /// trailing NLMSG_DONE. The caller (NetlinkSocket::write) pushes the
@@ -389,11 +405,7 @@ pub fn handle_getlink(req: &Nlmsghdr) -> Vec<u8> {
         reply.extend_from_slice(&one);
     }
     // NLMSG_DONE terminator.
-    let mut done_buf = [0u8; Nlmsghdr::SIZE];
-    let mut done = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
-    done.nlmsg_flags = flags::NLM_F_MULTI;
-    done.write_to(&mut done_buf);
-    reply.extend_from_slice(&done_buf);
+    reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));
     reply
 }
 
