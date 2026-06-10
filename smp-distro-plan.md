@@ -163,6 +163,16 @@ Group small/related tools per PR; verify each runs.
   resource, destructive op needing confirmation).
 
 ## E. Deferred robustness (revisit after distro/vendor; no active bug)
+- [x] **zip** (Info-ZIP Zip 3.0) vendored + staged — real zip→unzip
+      round-trip VERIFIED both arches on ext4 (`zip` then `unzip -p` → correct
+      contents). tools/fetch-zip.sh + vendor/zip/build.sh (zips target).
+- [ ] **tmpfs temp-file creation quirk**: Info-ZIP `zip` (and likely any app
+      using O_CREAT|O_EXCL temp-name retry, e.g. some editors' atomic-save)
+      FAILS to create its tempfile on /tmp (tmpfs) — zip retries the temp name
+      ~3180× then exits 15 (ZE_CREAT). Works fine on ext4 (home). rename()
+      itself works on tmpfs (mv verified). Investigate tmpfs openat with
+      O_CREAT|O_EXCL / the errno returned on a name collision (zip keys its
+      retry loop on it). Real but isolated to /tmp; zip is functional on ext4.
 - [x] **unzip** (Info-ZIP UnZip 6.0) vendored + staged — real zip
       extraction VERIFIED both arches (x86 `unzip -v`; arm extracted a test
       .zip → correct contents). tools/fetch-unzip.sh + vendor/unzip/build.sh.

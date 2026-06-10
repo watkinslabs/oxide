@@ -425,6 +425,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("pv", "pv", "/usr/bin/pv"),
         ("entr", "entr", "/usr/bin/entr"),
         ("unzip", "unzip", "/usr/bin/unzip"),
+        ("zip", "zip", "/usr/bin/zip"),
         ("glow", "glow", "/usr/bin/glow"),
         ("micro", "micro", "/usr/bin/micro"),
         ("starship", "starship", "/usr/bin/starship"),
