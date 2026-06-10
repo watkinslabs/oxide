@@ -587,6 +587,16 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 let _ = vfs::mount::register("/home", home_fs);
             }
         }
+        // Re-wire dentry-identity crossings for EVERY table mount now that
+        // the resolver is installed AND `/sys` is mounted (so the walk can
+        // cross `/sys` into devfs to reach the `/sys/fs/cgroup` dentry).
+        // The boot cgroupfs mounted at line ~500 — before the resolver
+        // existed — so its crossing never got stamped; without this its
+        // mkdir-able root stays hidden behind the read-only devfs DevDir
+        // and systemd's `mkdir("/sys/fs/cgroup/init.scope")` hits EROFS.
+        // General mechanism: any early mount is wired here, not a cgroup
+        // special-case (`docs/16§3`).
+        vfs::mount::rewire_all_crossings();
         // cgroup v2 self-test runs here — after /proc + /sys/fs/cgroup
         // are in the mount table so `/proc/self/cgroup` resolves.
         debug_cgroup! { cgroup::selftest::run(); }

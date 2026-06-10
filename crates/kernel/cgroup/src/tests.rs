@@ -3,6 +3,7 @@
 // pin the pure hierarchy + controller semantics per `26§4,§8`.
 
 use crate::tree::*;
+use alloc::string::ToString;
 
 fn s(v: &[u8]) -> &str { core::str::from_utf8(v).unwrap() }
 
@@ -15,6 +16,41 @@ fn root_mounts_with_all_controllers() {
         "cpu cpuset io memory pids\n");
     assert_eq!(s(&t.read_file(ROOT, "cgroup.subtree_control").unwrap()), "\n");
     assert_eq!(t.path_of(ROOT), "/");
+}
+
+// Inode-synthesis surface: node_files / has_file / child_id / child_names
+// are what CgroupFs::lookup + CgDir::readdir resolve against (replacing the
+// old devfs registry). Pin the EXACT file set for root vs a non-root child.
+#[test]
+fn node_files_and_children_drive_synthesis() {
+    let mut t = Tree::new();
+    t.mount_root();
+    // Root: CORE_FILES only (no kill/freeze; root has no controller files
+    // until subtree_control delegates — root's own avail is ALL but its
+    // interface files are the controller files of ALL since avail==ALL).
+    let rf = t.node_files(ROOT);
+    for f in CORE_FILES { assert!(rf.contains(f), "root missing {f}"); }
+    assert!(!rf.contains(&"cgroup.kill"));   // root has no kill/freeze
+    assert!(!rf.contains(&"cgroup.freeze"));
+    // root avail == ALL, so all controller files are present.
+    assert!(rf.contains(&"pids.max"));
+    assert!(rf.contains(&"cpu.max"));
+    assert!(t.has_file(ROOT, "cgroup.procs"));
+    assert!(!t.has_file(ROOT, "cgroup.kill"));
+
+    // Non-root child with pids delegated: CORE + kill/freeze + pids files.
+    t.write_subtree_control(ROOT, "+pids").unwrap();
+    let (c, _) = t.create(ROOT, "svc").unwrap();
+    assert_eq!(t.child_id(ROOT, "svc"), Some(c));
+    assert_eq!(t.child_names(ROOT), alloc::vec!["svc".to_string()]);
+    let cf = t.node_files(c);
+    assert!(cf.contains(&"cgroup.kill"));    // non-root gets kill/freeze
+    assert!(cf.contains(&"cgroup.freeze"));
+    assert!(cf.contains(&"pids.max"));       // pids delegated
+    assert!(!cf.contains(&"cpu.max"));        // cpu NOT delegated
+    assert!(t.has_file(c, "pids.max"));
+    assert!(!t.has_file(c, "cpu.max"));
+    assert!(t.child_id(ROOT, "nope").is_none());
 }
 
 #[test]

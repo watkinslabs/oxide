@@ -27,10 +27,10 @@ use vfs::{InodeRef, KResult, VfsError};
 use tree::Tree;
 
 /// cgroup2 filesystem for the unified mount table (`16§7`). Mounted
-/// at `/sys/fs/cgroup`; `vfs::mount::lookup` routes paths here. v1
-/// backends key by full absolute path, so `lookup` delegates to the
-/// devfs registry where `mount_root`/`mkdir_child` register the
-/// CgDir/CgFile inodes.
+/// at `/sys/fs/cgroup`; `vfs::mount::lookup` routes paths here. cgroupfs
+/// OWNS its inodes: `lookup` strips the mount prefix, resolves the
+/// relative cgroup path through the hierarchy (`tree.rs`), and SYNTHESIZES
+/// a `CgDir`/`CgFile` inode — no registry, ZERO devfs dependency.
 pub struct CgroupFs;
 
 impl FileSystem for CgroupFs {
@@ -40,8 +40,12 @@ impl FileSystem for CgroupFs {
     /// detects the unified hierarchy by this `statfs` f_type.
     /// # C: O(1)
     fn magic(&self) -> u64 { 0x6367_7270 }
-    /// # C: O(N devfs registry)
-    fn lookup(&self, path: &str) -> Option<InodeRef> { devfs::lookup(path) }
+    /// Resolve a `/sys/fs/cgroup/...` path by synthesizing from the
+    /// hierarchy: strip the mount prefix → relative cgroup path; the
+    /// last component may be a child cgroup (→ `CgDir`) or a control
+    /// file of its parent cgroup (→ `CgFile`).
+    /// # C: O(components · log n)
+    fn lookup(&self, path: &str) -> Option<InodeRef> { resolve_path(path) }
     /// # C: O(1)
     fn mounts_line(&self, mp: &str) -> alloc::string::String {
         let mut s = alloc::string::String::from("cgroup2 ");
@@ -229,21 +233,65 @@ fn resolve_pid(vpid: u64) -> u64 {
     match *PID_RESOLVE_HOOK.lock() { Some(f) => f(vpid), None => vpid }
 }
 
-/// Mount the unified hierarchy: create the root node and register its
-/// directory + core control files in devfs. Idempotent (re-mount is a
-/// no-op success). Returns true on the first mount.
+/// Mount the unified hierarchy: seed the root cgroup in `tree.rs` and
+/// register `CgroupFs` in the unified mount table. cgroupfs synthesizes
+/// every inode on lookup, so there is nothing to register into a registry.
+/// Idempotent (re-mount is a no-op success). Returns true on first mount.
 /// # C: O(1)
 pub fn mount_root() -> bool {
     let first = TREE.lock().mount_root();
     if first {
-        let rows = inode::build_inodes(tree::ROOT, MOUNT, tree::ALL, true);
-        for (p, ino) in rows { devfs::register_owned(p, ino); }
         // Route /sys/fs/cgroup/* through CgroupFs in the unified mount
-        // table so open()/read/write reach these inodes (`16§7`).
+        // table so open()/read/write reach the synthesized inodes (`16§7`).
         let _ = vfs::mount::register(MOUNT, Arc::new(CgroupFs));
     }
     first
 }
+
+/// Resolve a full `/sys/fs/cgroup/...` path to a synthesized inode.
+/// Returns `None` if unmounted or the path names nothing. The mount root
+/// itself (`/sys/fs/cgroup`) → the root `CgDir`.
+/// # C: O(components · log n)
+fn resolve_path(path: &str) -> Option<InodeRef> {
+    if !is_mounted() { return None; }
+    // Strip the mount prefix → relative cgroup path ("" for the root).
+    let rel = if path == MOUNT { "" }
+        else { path.strip_prefix(MOUNT)?.strip_prefix('/')? };
+    if rel.is_empty() {
+        return Some(Arc::new(inode::CgDir::new(tree::ROOT)) as InodeRef);
+    }
+    // Split into the parent-cgroup path + the last component.
+    let (dir, last) = match rel.rfind('/') {
+        Some(i) => (&rel[..i], &rel[i + 1..]),
+        None => ("", rel),
+    };
+    let t = TREE.lock();
+    let parent = t.resolve(dir)?;
+    // Last component is either a child cgroup or a control file.
+    if let Some(child) = t.child_id(parent, last) {
+        return Some(Arc::new(inode::CgDir::new(child)) as InodeRef);
+    }
+    if t.has_file(parent, last) {
+        return Some(Arc::new(inode::CgFile::new(parent, last)) as InodeRef);
+    }
+    None
+}
+
+/// True iff cgroup `cgid` has a control file named `name`.
+/// # C: O(controllers)
+pub fn node_has_file(cgid: u64, name: &str) -> bool { TREE.lock().has_file(cgid, name) }
+
+/// Child cgroup id for `name` under `cgid`, if any.
+/// # C: O(log n)
+pub fn node_child_id(cgid: u64, name: &str) -> Option<u64> { TREE.lock().child_id(cgid, name) }
+
+/// Ordered control-file names of cgroup `cgid` (for readdir).
+/// # C: O(controllers)
+pub fn node_file_names(cgid: u64) -> Vec<&'static str> { TREE.lock().node_files(cgid) }
+
+/// Ordered child-cgroup names of `cgid` (for readdir).
+/// # C: O(children)
+pub fn node_child_names(cgid: u64) -> Vec<String> { TREE.lock().child_names(cgid) }
 
 /// True once `/sys/fs/cgroup` is mounted.
 /// # C: O(1)
@@ -276,13 +324,11 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
             Ok(())
         }
         "cgroup.subtree_control" => {
-            let (old, new) = {
-                let mut t = TREE.lock();
-                let old = t.node(cgid).map(|n| n.subtree_control).unwrap_or(0);
-                let new = t.write_subtree_control(cgid, buf)?;
-                (old, new)
-            };
-            if old != new { sync_children_controller_files(cgid, old, new); }
+            // Children's available-controller set (and thus their visible
+            // interface files) is recomputed live on every readdir/lookup
+            // from `tree.rs`, so enabling/disabling a controller needs no
+            // registry sync — just apply the write to the hierarchy.
+            TREE.lock().write_subtree_control(cgid, buf)?;
             Ok(())
         }
         "cgroup.kill" => {
@@ -329,11 +375,9 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
     }
 }
 
-/// `mkdir(2)` on a cgroup directory: create the child node and
-/// register its dir + control files. Returns the new dir inode.
-/// Full devfs path of a cgroup node: `MOUNT` + the hierarchy path
-/// (`tree::path_of` yields `/a/b`, the devfs registry keys on the
-/// mount-prefixed `/sys/fs/cgroup/a/b`). Root maps to `MOUNT`.
+/// Full `cgroup.events` fs path of a cgroup node (`MOUNT` + hierarchy
+/// path): root → `MOUNT`, else `/sys/fs/cgroup/a/b`. Used only to address
+/// the inotify watch target; cgroupfs no longer keys inodes by path.
 /// # C: O(depth)
 fn fs_path(t: &Tree, cgid: u64) -> String {
     let hp = t.path_of(cgid);
@@ -343,62 +387,25 @@ fn fs_path(t: &Tree, cgid: u64) -> String {
     s
 }
 
-/// # C: O(files)
-pub fn mkdir_child(parent_cgid: u64, parent_path: &str, name: &str) -> KResult<InodeRef> {
-    let (id, avail) = TREE.lock().create(parent_cgid, name)?;
-    let mut path = String::from(parent_path);
-    if !path.ends_with('/') { path.push('/'); }
-    path.push_str(name);
-    let rows = inode::build_inodes(id, &path, avail, false);
-    let dir = rows.first().map(|(_, i)| i.clone());
-    for (p, ino) in rows { devfs::register_owned(p, ino); }
-    dir.ok_or(VfsError::Eio)
+/// `mkdir(2)` on a cgroup directory: create the child node in `tree.rs`.
+/// Its inodes are synthesized on lookup, so nothing is registered.
+/// Returns the new child's cgid.
+/// # C: O(log n)
+pub fn mkdir_child(parent_cgid: u64, name: &str) -> KResult<u64> {
+    let (id, _avail) = TREE.lock().create(parent_cgid, name)?;
+    Ok(id)
 }
 
-/// `rmdir(2)` on a cgroup directory: remove the (empty) child node and
-/// unregister its dir + files from devfs.
-/// # C: O(registry)
+/// `rmdir(2)` on a cgroup directory: remove the (empty) child node from
+/// `tree.rs`. No registry to clean up — inodes were synthesized.
+/// # C: O(log n)
 pub fn rmdir_child(parent_cgid: u64, name: &str) -> KResult<()> {
-    let (id, path) = {
+    let id = {
         let t = TREE.lock();
-        let cid = *t.node(parent_cgid).ok_or(VfsError::Enoent)?
-            .children.get(name).ok_or(VfsError::Enoent)?;
-        (cid, fs_path(&t, cid))
+        *t.node(parent_cgid).ok_or(VfsError::Enoent)?
+            .children.get(name).ok_or(VfsError::Enoent)?
     };
-    TREE.lock().remove(id)?;
-    devfs::unregister_subtree(0, &path);
-    Ok(())
-}
-
-/// Add/remove controller interface files on a node's existing children
-/// when the parent's subtree_control changes availability.
-fn sync_children_controller_files(parent: u64, old: u8, new: u8) {
-    let kids: Vec<(u64, String)> = {
-        let t = TREE.lock();
-        match t.node(parent) {
-            Some(n) => n.children.values().map(|&c| (c, fs_path(&t, c))).collect(),
-            None => return,
-        }
-    };
-    let added = new & !old;
-    let removed = old & !new;
-    for (cid, cpath) in kids {
-        if removed != 0 {
-            for f in tree::controller_files(removed) {
-                let mut fp = cpath.clone(); fp.push('/'); fp.push_str(f);
-                devfs::unregister_subtree(0, &fp);
-            }
-        }
-        if added != 0 {
-            let mut seq = (cid << 8) + 0x80;
-            for f in tree::controller_files(added) {
-                let mut fp = cpath.clone(); fp.push('/'); fp.push_str(f);
-                devfs::register_owned(fp, alloc::sync::Arc::new(
-                    inode::CgFile::new(cid, f, seq)) as InodeRef);
-                seq += 1;
-            }
-        }
-    }
+    TREE.lock().remove(id)
 }
 
 // --- sched glue ----------------------------------------------------

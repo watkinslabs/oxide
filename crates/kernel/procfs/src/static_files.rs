@@ -5,6 +5,7 @@
 
 use alloc::sync::Arc;
 use vfs::InodeRef;
+use sync::{Spinlock, MountTable as RootClass};
 
 use crate::{
     ProcHostnameInode, ProcLoadavgInode, ProcMeminfoInode, ProcRootInode, ProcSelfCmdlineInode,
@@ -50,12 +51,26 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
     c
 }
 
+/// The singleton `/proc` root inode (built once from `build_proc_root`). procfs
+/// OWNS /proc and resolves through THIS — a mounted filesystem must not live in
+/// the devfs registry (that conflicts with the devfs tree auto-creating a /proc
+/// dir for `/proc/net/*` etc).
+static PROC_ROOT: Spinlock<Option<Arc<ProcRootInode>>, RootClass> = Spinlock::new(None);
+
+/// The `/proc` root directory inode (cached). `ProcfsFs::lookup` resolves the
+/// static-file children + `self` + pid dirs through this.
+/// # C: O(1) cached; O(N files) on first build
+pub fn proc_root() -> Arc<ProcRootInode> {
+    let mut g = PROC_ROOT.lock();
+    if let Some(r) = g.as_ref() { return Arc::clone(r); }
+    let r = Arc::new(ProcRootInode::new(build_proc_root()));
+    *g = Some(Arc::clone(&r));
+    r
+}
+
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(N_files)
 pub fn register_static_files() {
-    // /proc root: a real directory inode owning its static children (the Linux
-    // proc_dir_entry subdir tree). lookup+readdir walk it; pids synthesized.
-    devfs::register("/proc", Arc::new(ProcRootInode::new(build_proc_root())) as InodeRef);
     // /proc/self/cgroup resolves the calling task's real cgroup path at read time.
     devfs::register(
         "/proc/self/cgroup",

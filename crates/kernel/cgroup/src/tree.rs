@@ -624,6 +624,44 @@ pub const CORE_FILES: &[&str] = &[
 /// Extra core files present only in non-root cgroups.
 pub const NONROOT_FILES: &[&str] = &["cgroup.kill", "cgroup.freeze"];
 
+impl Tree {
+    /// Full ordered control-file set for an existing node: core files +
+    /// (non-root only) kill/freeze + the available-controller files. This
+    /// is the EXACT set the old devfs registration produced (CORE_FILES,
+    /// then NONROOT_FILES when not root, then `controller_files(avail)`),
+    /// so the synthesized inode surface matches byte-for-byte.
+    /// # C: O(controllers)
+    pub fn node_files(&self, id: u64) -> Vec<&'static str> {
+        let n = match self.nodes.get(&id) { Some(n) => n, None => return Vec::new() };
+        let mut v: Vec<&'static str> = Vec::new();
+        v.extend_from_slice(CORE_FILES);
+        if id != ROOT { v.extend_from_slice(NONROOT_FILES); }
+        v.extend(controller_files(n.avail));
+        v
+    }
+
+    /// True iff `name` is one of this node's control files.
+    /// # C: O(controllers)
+    pub fn has_file(&self, id: u64, name: &str) -> bool {
+        self.node_files(id).iter().any(|f| *f == name)
+    }
+
+    /// Child node id for `name` under `id`, if it exists.
+    /// # C: O(log n)
+    pub fn child_id(&self, id: u64, name: &str) -> Option<u64> {
+        self.nodes.get(&id)?.children.get(name).copied()
+    }
+
+    /// Ordered child-cgroup names of `id`.
+    /// # C: O(children)
+    pub fn child_names(&self, id: u64) -> Vec<String> {
+        match self.nodes.get(&id) {
+            Some(n) => n.children.keys().cloned().collect(),
+            None => Vec::new(),
+        }
+    }
+}
+
 /// Per-controller interface files, gated on the controller being
 /// available (enabled in the parent's subtree_control).
 /// # C: O(controllers)
