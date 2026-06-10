@@ -20,11 +20,12 @@ Phase C remaining (irqsave legacy-lock conversion + loom model-checks) is
 DEFERRED to plan §E "Deferred robustness" — no active bug (SMP stable across
 all stress); sequenced after the distro/vendor work per user priority.
 
-## NEXT (first unchecked box): Box B items 2-3 (cleanups) then Box C/D
-Box B item 1 DONE (#1676): syscall coverage checker green (383/384 routed,
-0 hard-fail; listns→Box C tracked). Remaining Box B:
-2. Drop "Tier 1/2/3" vocab from docs/53 + CLAUDE.md (keep structure).
-3. Scrub busybox mentions repo-wide (zero outside vendor/.git).
+## NEXT (first unchecked box): Box C — distro correctness
+Box B DONE: syscall coverage (#1676) + Tier vocab dropped + busybox scrubbed.
+Box C items (plan §C): login-shell sourcing (re-verify), python3 encodings
+("No module named 'encodings'"), bash serial echo (BUG A — readline redisplay),
+Phase 15 net acceptance, Phase 16 real namespace isolation (+ listns/470).
+Then Box D vendor apps (tmux/htop/ripgrep/fd/jq/curl/… real vendor cross-builds).
 Then Box C (distro: login-shell, python3 encodings, bash serial echo, Phase
 15/16) and Box D (vendor apps — tmux/htop/ripgrep/fd/jq/curl/… via real
 vendor cross-builds, staged + verified running). See smp-distro-plan.md.

@@ -12,8 +12,8 @@ use syscall::errno::Errno;
 ///
 /// oxide does not implement CET user shadow-stack hardware enforcement, so
 /// the feature is never enabled — making `-ENOSYS` the EXACT mainline
-/// response on such a kernel. This is the complete, correct behavior (not a
-/// tier dodge): the glibc/loader CET probe reads this `-ENOSYS` and disables
+/// response on such a kernel. This is the complete, correct behavior (not a coverage
+/// dodge): the glibc/loader CET probe reads this `-ENOSYS` and disables
 /// shadow stacks for the process, so a real program never relies on a
 /// successful return here.
 /// # C: O(1)

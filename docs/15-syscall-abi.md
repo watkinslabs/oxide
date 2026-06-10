@@ -29,7 +29,7 @@ FROZEN 2026-05-02. Dep:`01`,`03`,`06`,`08`,`09`.
   `file_setattr` (468-469), `listns`(470) — all `IMPL`. Numbers added to
   `crates/kernel/syscall/src/nrs.rs`.
 - Code follow-up tracked in `syscal_anal.md` (directed completeness sweep) and
-  `53` (Tier-3 shim holds zero work logic).
+  `53` (ABI shim holds zero work logic).
 
 ## Revision 2026-05-09 (R05)
 

@@ -70,9 +70,9 @@ real vendor upstream sources only.
       strawman / semantically-wrong slot. Then implement/fix EVERY flagged
       syscall to FULL Linux semantics (only the 17 docs/15 OBSOLETE keep
       ENOSYS). One-syscall-one-file (docs/53).
-- [ ] **Drop "Tier 1/2/3" vocabulary** from docs/53 + CLAUDE.md (keep the
+- [x] **Drop "Tier 1/2/3" vocabulary** from docs/53 + CLAUDE.md (keep the
       real structure; remove the tier labels).
-- [ ] **Scrub busybox mentions** repo-wide (docs, comments, tools, tests/
+- [x] **Scrub busybox mentions** repo-wide (docs, comments, tools, tests/
       acceptance/busybox/); ZERO outside vendor/.git.
 
 ## C. Distro correctness (task.md)

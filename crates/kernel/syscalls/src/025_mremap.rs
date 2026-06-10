@@ -14,7 +14,7 @@ use syscall::SyscallArgs;
 /// MREMAP_MAYMOVE = 1; MREMAP_FIXED = 2; MREMAP_DONTUNMAP = 4.
 /// # C: O(K + log N) per VMA-tree op
 /// `sys_mremap(old, old_size, new_size, flags, new_addr)` slot 25.
-/// Tier-3 shim per `docs/53§4`. Work fn: `vmm::AddressSpace::mremap_full`.
+/// ABI shim per `docs/53§4`. Work fn: `vmm::AddressSpace::mremap_full`.
 /// # C: O(min(old,new))
 pub fn sys_mremap(args: &SyscallArgs) -> i64 {
     use hal::UserVirtAddr;

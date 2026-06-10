@@ -284,7 +284,7 @@ pub fn compute_deadline_ns(timeo_ns: i64) -> u64 {
 
 // F180/P5-01: recvfrom work fn + Received result. Moved from
 // sock.rs to stay under the 1000-line cap (docs/08§7).
-/// `recvfrom` result. Caller (Tier-3 shim) copies payload into user
+/// `recvfrom` result. Caller (ABI shim) copies payload into user
 /// buf, optionally writes peer sockaddr. `peer` carries the IPv4
 /// source; `peer6` the IPv6 source — exactly one is `Some` for a
 /// datagram socket, both `None` when there's no stored peer.
@@ -294,7 +294,7 @@ pub struct Received {
     pub peer6: Option<(crate::Ipv6Addr, u16)>,
 }
 
-/// `recvfrom` per `recvfrom(2)`. Tier-2 work fn. Returns the payload
+/// `recvfrom` per `recvfrom(2)`. work fn. Returns the payload
 /// and an optional peer address (None for AF_UNIX SOCK_DGRAM and
 /// for sockets without a stored peer).
 /// # C: O(payload bytes)
