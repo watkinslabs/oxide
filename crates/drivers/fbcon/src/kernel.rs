@@ -144,6 +144,15 @@ pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
     repaint();
 }
 
+/// System-console grid `(rows, cols)` derived from the framebuffer geometry
+/// (yres/CELL_H × xres/CELL_W), or `None` pre-init. Boot seeds `/dev/console`'s
+/// winsize from this so full-screen apps (htop/btop) see the real fbcon size
+/// instead of the 24×80 `default_pty` fallback.
+/// # C: O(1)
+pub fn console_dims() -> Option<(u16, u16)> {
+    VT_STATE.lock().as_ref().map(|st| (st.rows, st.cols))
+}
+
 /// `klog::ConsoleSink` registered as the fbcon printk console. Linux
 /// `vt_console_print` writes to **`fg_console`** — so feed `bytes`
 /// through the CURRENT foreground VT's emulator into its `Vc`, render
@@ -163,7 +172,20 @@ pub fn vt_console_sink(bytes: &[u8]) {
         if let Some(st) = g.as_mut() {
             let i = st.ensure(st.fg);
             if let Some(cell) = st.vc_cons[i].as_mut() {
-                cell.em.feed_bytes(&mut cell.vc, bytes);
+                // printk emits bare LF; the emulator's Linefeed moves down but
+                // (correctly, xterm LNM-off) does NOT reset the column, so raw
+                // printk output staircases. Like Linux `vt_console_print`, the
+                // printk console path emits CR+LF for each LF. The tty device
+                // path (`vt_write`) is separate and already ONLCR-processed.
+                let mut start = 0;
+                for k in 0..bytes.len() {
+                    if bytes[k] == b'\n' {
+                        cell.em.feed_bytes(&mut cell.vc, &bytes[start..k]);
+                        cell.em.feed_bytes(&mut cell.vc, b"\r\n");
+                        start = k + 1;
+                    }
+                }
+                if start < bytes.len() { cell.em.feed_bytes(&mut cell.vc, &bytes[start..]); }
                 vtdata::render(&mut cell.vc, &mut st.renderer);
                 DIRTY.store(true, Ordering::Release);
             }
