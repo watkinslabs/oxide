@@ -112,6 +112,12 @@ wait_for '24 80' "stty (coreutils applet)" "$deadline"
 # gates on real execution, not the command echo.
 printf 'N=$( { rg --version|head -1; jq --version|head -1; curl --version|head -1; tmux -V|head -1; bat --version|head -1; } 2>&1 | grep -cE "ripgrep|jq-|curl [0-9]|tmux [0-9]|bat [0-9]" ); echo BASEAPPS=$N\n' >&9
 wait_for 'BASEAPPS=5' "vendor base-set apps (rg/jq/curl/tmux/bat run)" "$deadline"
+# Box D / B42: Go (micro) + Rust (starship) apps run — no nested-epoll spin.
+# BACKGROUND them (an unkillable-spin app would block a foreground `timeout`,
+# and arm TCG is slow), then count which produced output. Computed marker
+# GOAPPS=$M is output-only (no echo false-match).
+printf 'micro --version >/tmp/mv 2>&1 & starship --version >/tmp/sv 2>&1 & sleep 12; M=0; [ -s /tmp/mv ] && M=$((M+1)); [ -s /tmp/sv ] && M=$((M+1)); echo GOAPPS=$M\n' >&9
+wait_for 'GOAPPS=2' "go/rust apps (micro+starship run)" "$deadline"
 
 # Optional logout → getty-respawn check (CHECK_LOGOUT=1): exit the
 # shell and confirm a fresh `oxide login:` prompt reappears (systemd

@@ -163,19 +163,20 @@ Group small/related tools per PR; verify each runs.
   resource, destructive op needing confirmation).
 
 ## E. Deferred robustness (revisit after distro/vendor; no active bug)
-- [ ] **Go/Rust app startup hang — bug 3 of 3** (2 FIXED in #1684: timerfd
-      ABSTIME + sys_exit clear_child_tid #PF). Affects ALL of duf/glow/micro
-      (Go) + starship (Rust) — a shared async-runtime path, not duf-specific.
-      The app spins on a NESTED watcher epoll (1038 epoll_pwait on epfd 10)
-      watching an always-ready fd → epoll_pwait returns immediately forever.
-      RULED OUT: timerfd (fixed; Go reads it 200×), clear_child_tid (fixed),
-      dup writer-accounting (sys_dup shares the File). The always-ready fd is
-      read ~36× but the [SYS] trace's a0 is ambiguous (fd vs signal/count
-      across syscalls). NEEDS dedicated instrumentation: a klog in each fd
-      type's poll() (pipe/inotify/eventfd/timerfd) logging (ino, mask) so the
-      ONE returning POLL_IN spuriously is identified, then fix its poll/event
-      generation. A focused debug session, not a loop iteration. Then re-stage
-      duf/glow/micro/starship + verify.
+- [ ] **duf filesystem-scan loop** (duf-specific; the shared Go/Rust hang is
+      fixed): `duf`/`duf --json` loops doing ~920 statx during its mount scan
+      (other Go apps run fine). Trace duf's statx/mountinfo reads; likely a
+      statx-on-a-mount or /proc/self/mountinfo parse that never terminates.
+      Then stage duf + verify.
+- [x] **Go/Rust app startup hang — ALL 3 BUGS FIXED**. (1) timerfd ABSTIME,
+      (2) sys_exit clear_child_tid #PF (#1684), (3) EpollInode had no poll() →
+      default always-ready → a parent epoll watching a nested epoll (Go
+      netpoller over an fsnotify watcher epoll) spun forever; fixed with a real
+      EpollInode::poll() scanning entries (nested epoll ready 1014→0). micro +
+      glow (Go) + starship (Rust) now RUN both arches (verified; gated GOAPPS=2
+      in boot-smoke-login.sh; staged in rootfs.rs). REMAINING: duf loops in its
+      own filesystem-scan path (920 statx; duf-specific, NOT the epoll bug) →
+      §E below.
 - [ ] **Phase 15 rtnetlink ip-dump truncation** (isolated to ip/ss tooling):
       ip -o addr/link → "Dump terminated". recv/recvmsg/read + handle_get*
       build paths all INSPECT as correct (NLM_F_MULTI + NLMSG_DONE; recvmsg
