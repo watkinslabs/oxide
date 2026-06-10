@@ -17,7 +17,22 @@ use crate::StaticFileInode;
 mod self_files;
 pub use self_files::*;
 
-pub struct ProcRootInode;
+/// The `/proc` root directory — a real directory inode that OWNS its static
+/// children (the Linux `proc_dir_entry` `subdir` tree: cpuinfo/meminfo/stat/…),
+/// built once at boot via `new()` (the `proc_create` equivalent) and immutable
+/// thereafter. `self` and the per-pid `/proc/<pid>` dirs are synthesized, like
+/// Linux. No flat string registry — lookup/readdir walk THIS directory's tree.
+pub struct ProcRootInode {
+    children: alloc::collections::BTreeMap<alloc::string::String, InodeRef>,
+}
+
+impl ProcRootInode {
+    /// Build the root with its static children (Linux `proc_create` set).
+    /// # C: O(1)
+    pub fn new(children: alloc::collections::BTreeMap<alloc::string::String, InodeRef>) -> Self {
+        Self { children }
+    }
+}
 
 impl Inode for ProcRootInode {
     fn ino(&self) -> Ino {
@@ -30,6 +45,8 @@ impl Inode for ProcRootInode {
         0
     }
     fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        // The directory's own static children first (the subdir tree).
+        if let Some(i) = self.children.get(name) { return Ok(i.clone()); }
         if name == "self" {
             return Ok(Arc::new(ProcPidDirInode {
                 tid: 0,
@@ -47,16 +64,25 @@ impl Inode for ProcRootInode {
         }) as InodeRef)
     }
     fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+        // Order: static children (sorted, the subdir tree) → self → live pids.
         let mut idx = off as usize;
+        let nstat = self.children.len();
+        while idx < nstat {
+            let (name, inode) = self.children.iter().nth(idx).unwrap();
+            let next = idx as u64 + 1;
+            if !f(next, name.as_str(), inode.file_type()) { return Ok(next); }
+            idx += 1;
+        }
         let vpids = sched::live::registry::live_vpids();
-        let total = vpids.len() + 1; // +1 for "self"
+        let total = nstat + 1 + vpids.len(); // +1 for "self"
         while idx < total {
+            let dyn_idx = idx - nstat; // 0 = self, 1.. = pids
             let next = idx as u64 + 1;
             let mut buf = [0u8; 11];
-            let s: &str = if idx == 0 {
+            let s: &str = if dyn_idx == 0 {
                 "self"
             } else {
-                let mut t = vpids[idx - 1];
+                let mut t = vpids[dyn_idx - 1];
                 let mut n = 0;
                 if t == 0 {
                     buf[0] = b'0';
@@ -639,7 +665,9 @@ pub fn smoke_test() {
         ("/etc/os-release", b"NAME=oxide"),
     ];
     for (path, prefix) in entries {
-        let inode = devfs::lookup(path).expect("procfs lookup");
+        // Resolve through the procfs filesystem (the /proc dir tree owns its
+        // static children now; /sys + /etc still fall to devfs inside it).
+        let inode = crate::fs_impl::instance().lookup(path).expect("procfs lookup");
         let mut buf = [0u8; 32];
         let n = inode.read(0, &mut buf).expect("procfs read");
         kassert!(n >= prefix.len(), "procfs read short");
