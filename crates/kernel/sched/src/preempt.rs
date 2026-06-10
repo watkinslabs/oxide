@@ -79,6 +79,17 @@ pub fn need_resched() -> bool { need_resched_slot().load(Ordering::Acquire) }
 /// # C: O(1)
 pub fn set_need_resched() { need_resched_slot().store(true, Ordering::Release); }
 
+/// Set `need_resched` for a SPECIFIC CPU (the wake target in `resched_curr`,
+/// B2 ttwu). The target observes it on its next return-to-user / idle-loop
+/// schedule; the caller pairs this with a reschedule IPI when the target is
+/// remote. Out-of-range CPU is a no-op.
+/// # C: O(1)
+pub fn set_need_resched_on(cpu: usize) {
+    if let Some(slot) = NEED_RESCHED.get(cpu) {
+        slot.0.store(true, Ordering::Release);
+    }
+}
+
 /// Atomically take + clear `need_resched`. Returns the prior value.
 /// Used by the schedule path so a single tick→wake→schedule cycle
 /// doesn't loop on a stuck flag.

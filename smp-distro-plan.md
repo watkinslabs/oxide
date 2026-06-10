@@ -43,7 +43,7 @@ real vendor upstream sources only.
       `info registers -a` on BOTH cpus. Likely causes already de-risked
       (per-CPU TSS done; timer-driver kthread is single-threaded; lock
       order fixed in B1). Verify: SMP=2, AP runs the idle loop, BSP boots.
-- [ ] **B2 ttwu + reschedule IPI**: `try_to_wake_up(task)` →
+- [x] **B2 ttwu + reschedule IPI**: `try_to_wake_up(task)` →
       `select_task_rq(task)` (UP=local; SMP=idlest/wake-affine under
       affinity) → enqueue on the TARGET cpu's rq under its lock →
       `resched_curr(rq)` → if remote, `send_resched_ipi` (vec 0x41 stub

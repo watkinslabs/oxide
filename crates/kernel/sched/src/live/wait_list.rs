@@ -141,19 +141,13 @@ impl WaitList {
     /// systemic guard against enqueuing a dead task (corrupt context
     /// switch) or double-enqueuing an already-runnable one.
     fn enqueue_runnable(t: Arc<Task>) -> bool {
-        let rq = match super::runqueue::global() { Some(r) => r, None => return false };
-        let mut inner = rq.inner.lock();
-        if t.state() != TaskState::Sleeping { return false; }
-        t.set_state(TaskState::Runnable);
-        // F169: explicit wake — the deadline scanner shouldn't
-        // also re-rouse this task. Clear before enqueue.
-        t.wakeup_deadline_ns.store(0, Ordering::Release);
-        // F211: sleeper credit on wake. See Task::set_vruntime_to_floor.
-        t.set_vruntime_to_floor(inner.cfs.min_vruntime());
-        inner.enqueue(t);
-        rq.nr_running.store(inner.nr_running(), Ordering::Release);
-        crate::preempt::set_need_resched();
-        true
+        // B2: route through try_to_wake_up so the wake picks the idlest
+        // allowed CPU (select_task_rq) and IPIs it if remote — instead of
+        // always waking local + waiting for the load balancer. ttwu does the
+        // Sleeping→Runnable transition + sleeper credit + enqueue under the
+        // TARGET rq's lock + resched_curr.
+        // SAFETY: wake-site context; the Arc keeps `t` alive across the call.
+        unsafe { super::try_to_wake_up(t) }
     }
 }
 
