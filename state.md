@@ -1,71 +1,63 @@
-# Session hand-off — SMP scheduler rework in progress (F425)
+# Session hand-off — F425 SMP scheduler: Phase A DONE, Phase B next
 
-## MERGED to main this session (all CI-green)
-- PR #1659 B75: virtio-blk busy-poll → adaptive spin-then-sleep + real MSI
-  completion IRQ (fixes the x86 SMP=2 residual login freeze).
-- (in #1659) fix(ci): tty `core` module was gitignored (`core`/`core.*`
-  patterns) → broke all kernel CI; anchored patterns to root, tracked the file.
-- PR #1660 F424: in-guest full-RAM memtest (`debug-memtest`).
-- PR #1661 B76: aarch64 used only 1 GiB of `-m 2G` — no FDT on the EDK2/ACPI
-  path → 1 GiB fallback. Now sizes RAM from the EFI memory map
-  (EfiConventionalMemory + reclaimed BootServices, ACPI pinned in place);
-  PMM MAX_REGIONS 32→128. → ~1.90 GiB. Per-EFI-type RAM log added.
+## BRANCH: F425-smp-scheduler — Phase A keystone landed + verified
+Commit d2c4cec9 `feat(sched): collapse to one switch engine +
+finish_task_switch handoff (F425 Phase A)`. PR open (see `gh pr list`).
+Design docs at repo root: `smp-arch.md` (authoritative) + `sched-anal.md`.
 
-## ACTIVE BRANCH: F425-smp-scheduler (NOT a PR yet, do NOT merge)
-Goal: real SMP + preemption the Linux way, 100% compliant, no hacks.
-Plan docs at repo root: `sched-anal.md` (UP preempt/signal shape) +
-`smp-arch.md` (full Phase A/B/C, the authoritative design — READ IT FIRST).
+### What Phase A did (one coordinated change, the keystone)
+- ONE switch engine: deleted `schedule_from_irq`, `stage_switch`,
+  `tick_pick_next`, `PERCPU_*_CTX_OFF`, the per-CPU ctx staging slots, the
+  ~12 gs:/tpidr: staging asm blocks (x86 irq.rs + arm vbar.rs). IRQ-exit
+  now calls `oxide_irq_resched_on_exit(saved CS/SPSR)` → the one
+  `schedule()` iff returning to user with `should_resched_to_user`
+  (VOLUNTARY preempt). Dispatchers (lapic/gic) only `set_need_resched`.
+- preempt_count handoff: `schedule()` entry `preempt_disable` (+1); the
+  INCOMING task pays −1 in `oxide_finish_task_switch`. First-run tasks
+  reach it via scaffold trampoline `oxide_finish_switch_tramp` baked into
+  `new_*_with_irq_frame` (both arches).
+- **Per-task IRQ-state preservation** (`irq_save_disable`/`irq_restore` in
+  schedule()): our syscalls run IF=0 (SFMASK) and take non-irqsave
+  process locks (ZOMBIES, registry, wait lists) the timer ISR also takes
+  — so a switch MUST preserve each task's own IF. (An early version
+  `sti`'d unconditionally in finish → blocked syscall resumed IF=1 →
+  timer fired while it held ZOMBIES → `tick_poll`/`reap_orphans` spun on
+  ZOMBIES with IRQs masked → timer dead → permanent post-login wedge,
+  ~15% of boots. Diagnosed via hypervisor `info registers`: RIP in the
+  ZOMBIES cmpxchg spin, RFL IF=0.)
 
-### Committed on the branch (clean, builds, two-engine state STILL INTACT,
-### x86 login-verified; nothing half-applied):
-- smp-arch.md: plan, twice-corrected vs real code. Key facts: ONE switch
-  primitive `oxide_context_switch` (`ArchCtx::switch` wraps it +fs_base);
-  frame/scaffold contract tests ALREADY exist (context.rs:389-473); preempt
-  model = VOLUNTARY first → FULL (Phase C).
-- Phase-A seam: `should_resched()` + `should_resched_to_user(user)` in
-  sched/preempt.rs + tests; CFS rotation contract test. 87 sched tests green.
-- **Keystone design DONE (smp-arch.md Phase A step 0):** `finish_task_switch`
-  handoff. preempt_count is PER-CPU; rule = schedule() entry +1, INCOMING
-  task's finish_task_switch −1 (net 0/switch). first-run scaffold must route
-  `ret → oxide_finish_switch_tramp(call finish_task_switch; jmp resume_user)`.
-  COUPLING: schedule_from_irq does no +1 → finish would underflow if it lands
-  first → finish_task_switch + engine-collapse MUST be ONE coordinated change.
+### Verified (both arches, this session)
+- 30/30 hypervisor-monitored x86 boots login→shell→id, 0 wedge (was ~15%).
+- x86 + arm `make smoke-login-{x86,arm}` (real bash+coreutils fork/exec).
+- x86 + arm `make smoke` (SMP=2 boot→login).
+- sched hosted: 89 green (+switch_handoff_balances/underflow tests).
+- spec-lint clean.
 
-### Verified-then-REVERTED probes (findings only, code reverted):
-- Removing `tick_pick_next` (cooperative-only, no IRQ preempt) still boots to
-  login (12.6s) → boot doesn't depend on IRQ-tail switching.
-- Routing IRQ-exit through schedule() naively leaves preempt_count==1 on
-  first-run (the PreemptGuard the scaffold bypasses) → that's WHY step 0 exists.
+## FIRST TASK next session — Phase B (SMP), per smp-arch.md §B, in order:
+1. **B1 rq->lock handoff**: extend `finish_task_switch` to release the PREV
+   task's rq-lock after the switch (Linux context_switch→finish_lock_switch).
+   Removes the UP "lock held across switch by one CPU" assumption.
+2. **B2 ttwu**: `try_to_wake_up`→`select_task_rq` (affinity + idlest/
+   wake-affine)→enqueue on target rq under its lock→`resched_curr`→
+   reschedule IPI (vec 0x41 stub already exists). Add `smp_mb__after_spinlock`.
+3. **B3 AP bring-up into the scheduler**: per-CPU init (GS/TPIDR, TSS/idle,
+   lapic timer), AP enters its idle→schedule() loop; un-gate `smp_x86.rs`.
+4. **B4 affinity**: per-task cpumask, sched_setaffinity/getaffinity, forced
+   migration. 5. **B5 load balance**: sched_domains + periodic/newidle.
+Each step: hosted test where possible → build both arches → `make smoke`
+(SMP=2 must exercise BOTH cpus online) → boot→login→shell→fork repeated.
 
-## FIRST TASK next session — the coordinated keystone (Phase A, one change):
-1. Add `finish_task_switch()` (Rust: preempt_enable; Phase B: release prev
-   rq-lock) + `oxide_finish_switch_tramp` asm (both arches).
-2. schedule(): replace PreemptGuard with explicit preempt_disable at entry +
-   finish_task_switch() after oxide_context_switch returns; balance early-return.
-3. Scaffolds (new_kernel_with_irq_frame / new_user_with_irq_frame /
-   new_user_for_fork, x86 + arm): bake rsp[0]=finish_switch_tramp.
-4. IRQ exit → resched via the one schedule(): at `oxide_irq_resume_user` top,
-   `mov rdi,[rsp+0x60]` (saved CS) `; call oxide_irq_resched_on_exit` (Rust:
-   if should_resched_to_user(cs&3==3) { take_need_resched(); schedule() }).
-   CS is at rsp+0x60, rsp 16-aligned, in BOTH entry paths (verified).
-5. DELETE schedule_from_irq, stage_switch, tick_pick_next, PERCPU_*_CTX_OFF,
-   and the ~12 gs:[8]/gs:[16] staging blocks (x86 irq.rs + arm vbar.rs).
-6. Hosted tests: +1/−1 balance, underflow guard. Then build BOTH arches →
-   boot→login→**shell→fork/exec, REPEATED** (not just `login:`); fail-fast on
-   any intermittent login/shell/fork-corruption sign (sched-anal.md §6).
-Do it as ONE coordinated commit per the coupling; verify hard before Phase B
-(rq-lock handoff, ttwu+IPI, AP bring-up, affinity, balance).
-
-## Deferred follow-ups (noted, not started)
-- 64 MiB `kalloc::STATIC_HEAP` → dynamic (biggest RAM win, both arches).
-- pre-session uncommitted (NOT mine): server.py, 060_exit.rs — git stash list.
+## GOTCHA learned this session (important)
+- The hypervisor register dump is the ONLY way to see an IRQs-masked wedge:
+  serial-sysrq needs the timer-tick UART poll, which is dead when IRQs are
+  masked. Boot qemu directly with `-monitor unix:...`, query `info
+  registers` (RIP + RFL IF bit), symbolize with
+  `addr2line -e target/x86_64-unknown-oxide-kernel/release/oxide-x86_64`.
+- Booting `-cdrom oxide-x86_64-grub.iso` directly does NOT rebuild the ISO;
+  rebuild with `xtask grub --arch x86_64 --build-only` or a stale ISO
+  silently tests old code.
 
 ## ENV QUIRKS
-- Long builds/boots: Bash run_in_background + Monitor until-loop on the output
-  file. `pkill ... || true` (set -e aborts on pkill no-match).
-- Multi-line `git commit -m` mangles under the snapshot shell → use `-F file`.
-- ALWAYS `pkill -9 -f qemu-system; sleep 3` before a boot (disk-lock contention
-  incl. the grub build's own smoke qemu).
-- `xtask grub --arch <a>` builds THEN boots interactively (grep output for
-  `oxide login:`); doesn't self-exit. `make smoke`/pre-push hook is separate +
-  self-terminating.
+- `pkill ... || true` (set -e aborts the whole line on pkill no-match).
+- Multi-line `git commit -m` mangles under the snapshot shell → `-F file`.
+- ALWAYS `pkill -9 -f qemu-system; sleep 2-3` before a boot (disk-lock).
