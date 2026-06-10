@@ -3,12 +3,15 @@
 // down by hosted tests; this module keeps the kernel-side path
 // `crate::registry::*` stable for existing call sites.
 
+pub use crate::registry::{
+    display_vpid, display_vtid, has_children, insert, live_counts, live_tids, live_vpids, lookup,
+    lookup_by_vpid, lookup_in_ns, parent_vpid, take_child_stop_event, tasks_in_pgrp,
+    thread_entries, try_wake_stopped,
+};
 
-pub use crate::registry::{display_vpid, has_children, insert, live_counts, live_tids, live_vpids, lookup, lookup_by_vpid, lookup_in_ns, parent_vpid, take_child_stop_event, tasks_in_pgrp, try_wake_stopped};
-
+use crate::Task;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
-use crate::Task;
 
 /// If `task` is currently `Stopped`, transition to `Runnable` and
 /// re-enqueue into the global runqueue. Used by SIGCONT delivery.
@@ -19,7 +22,9 @@ use crate::Task;
 /// own lock plus the runqueue's inner lock serialize the wake.
 /// # C: O(log N)
 pub fn wake_if_stopped(task: &Arc<Task>) {
-    if !try_wake_stopped(task) { return; }
+    if !try_wake_stopped(task) {
+        return;
+    }
     if let Some(rq) = super::runqueue::global() {
         let mut inner = rq.inner.lock();
         inner.enqueue(Arc::clone(task));
