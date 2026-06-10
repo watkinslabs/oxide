@@ -76,7 +76,7 @@ real vendor upstream sources only.
       acceptance/busybox/); ZERO outside vendor/.git.
 
 ## C. Distro correctness (task.md)
-- [ ] **Login-shell sourcing**: getty/util-linux login exec a LOGIN shell
+- [x] **Login-shell sourcing**: getty/util-linux login exec a LOGIN shell
       (argv[0]="-bash") so /etc/profile + profile.d source. (Note: state.md
       says RESOLVED — re-verify on current build; if still
       non-login, fix in util-linux login source, not a shim.)
