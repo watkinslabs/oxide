@@ -390,13 +390,12 @@ core::arch::global_asm!(
     // ELR/SPSR currently held — wrong as soon as the dispatcher
     // swapped tasks. They sit at [sp+0xb0..0xc0] now.
     //
-    // After the dispatcher returns, the asm reads
-    // `oxide_preempt_next_ctx`. If non-null, calls
-    // `oxide_context_switch(cur, next)`; the `ret` lands either at
-    // the `1:` label below (no-switch / fall-through) or at
-    // `oxide_irq_resume_user` on the new task's stack (the new
-    // task's `Context.lr` is set to that address by
-    // `Context::new_kernel_with_irq_frame` or by a prior preemption).
+    // After the dispatcher returns, the asm hands the saved SPSR_EL1 to
+    // `oxide_irq_resched_on_exit`, which calls the one `schedule()` iff
+    // returning to EL0 with a pending resched (VOLUNTARY preempt). The
+    // switch itself happens inside `schedule()`; on a fresh task the
+    // saved `Context.lr` is `oxide_finish_switch_tramp` (pays the
+    // `finish_task_switch` handoff) which then reaches this epilogue.
     ".balign 4",
     ".globl oxide_irq_vector_handler",
     ".type  oxide_irq_vector_handler, %function",
@@ -419,20 +418,13 @@ core::arch::global_asm!(
     "    mrs  x9,  sp_el0",
     "    str  x9,       [sp, #192]",
     "    bl   oxide_arm_irq_dispatch",
-    // -- schedule-on-exit per `14§R07`. The dispatcher staged this CPU's
-    //    (cur,next) in its per-CPU area; read base-relative (SMP-safe — no
-    //    shared global the other CPU could clobber). NEXT@8, CUR@16 must
-    //    match PERCPU_{NEXT,CUR}_CTX_OFF in sched/live/preempt.rs.
-    "    mrs  x9,  tpidr_el1",              // per-CPU area base
-    "    ldr  x10, [x9, #8]",               // NEXT-ctx staging slot
-    "    cbz  x10, 1f",
-    "    ldr  x0,  [x9, #16]",              // CUR-ctx staging slot (prev)
-    "    mov  x1,  x10",
-    "    str  x10, [x9, #16]",              // CUR := NEXT (commit)
-    "    str  xzr, [x9, #8]",               // clear NEXT slot
-    "    bl   oxide_context_switch",
-    "    b    oxide_irq_resume_user",      // shared epilogue
-    "1:  b    oxide_irq_resume_user",
+    // -- resched-on-exit (`14§R07` / smp-arch.md Phase A). One engine:
+    //    pass the interrupted SPSR_EL1 (saved at [sp+184]) to the Rust slow
+    //    path, which calls the single `schedule()` iff returning to EL0 with
+    //    a pending resched. No IRQ-tail staging / second switch engine.
+    "    ldr  x0,  [sp, #184]",             // saved SPSR_EL1
+    "    bl   oxide_irq_resched_on_exit",
+    "    b    oxide_irq_resume_user",
     ".size oxide_irq_vector_handler, . - oxide_irq_vector_handler",
 
     // Shared IRQ epilogue. Address parked as `Context.lr` on every

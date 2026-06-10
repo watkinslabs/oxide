@@ -69,10 +69,44 @@ core::arch::global_asm!(
     ".size oxide_trampoline_kernel, . - oxide_trampoline_kernel",
 );
 
+// First-run `finish_task_switch` trampoline (`smp-arch.md` Phase A step 0).
+// Baked as the saved-RIP at the bottom of every `new_*_with_irq_frame`
+// scaffold (replacing the bare `oxide_irq_resume_user`): when
+// `oxide_context_switch`'s `ret` lands here on a fresh task's first run, it
+// pays the switch handoff (`oxide_finish_task_switch` = preempt-enable +
+// IRQ-enable, defined in the sched crate) before dropping into the shared
+// epilogue's `iretq` to user/kernel. Resumed existing tasks pay the same −1
+// inline from `schedule()`; both reach `finish_task_switch` exactly once.
+// Stack alignment at entry: `oxide_context_switch`'s `ret` left rsp 16-byte
+// aligned (scaffold base + 8), so `call` is ABI-correct.
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+core::arch::global_asm!(
+    ".section .text",
+    ".globl oxide_finish_switch_tramp",
+    ".type  oxide_finish_switch_tramp, @function",
+    "oxide_finish_switch_tramp:",
+    "    call oxide_finish_task_switch",
+    "    jmp  oxide_irq_resume_user",
+    ".size oxide_finish_switch_tramp, . - oxide_finish_switch_tramp",
+);
+
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 extern "C" {
     fn oxide_context_switch(prev: *mut ContextX86_64, next: *const ContextX86_64);
     fn oxide_trampoline_kernel() -> !;
+    fn oxide_finish_switch_tramp() -> !;
+}
+
+/// Address of `oxide_finish_switch_tramp` — the saved-RIP value baked at
+/// the bottom of every `new_*_with_irq_frame` scaffold so a first-run task
+/// pays the `finish_task_switch` handoff before its first user return.
+/// Host build returns 0 (asm symbol absent).
+/// # C: O(1)
+fn finish_switch_tramp_addr() -> u64 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    { oxide_finish_switch_tramp as *const () as usize as u64 }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { 0 }
 }
 
 /// Kernel-target trampoline address; host build returns 0 since
@@ -160,8 +194,9 @@ impl Context for ContextX86_64 {
             p.sub(7).write(0);                           // err
             // 9 scratch slots r11..rax — values irrelevant (popped + discarded).
             for i in 8..=16 { p.sub(i).write(0); }
-            // saved RIP for oxide_context_switch's `ret`.
-            p.sub(17).write(crate::irq::irq_resume_user_addr());
+            // saved RIP for oxide_context_switch's `ret`: the finish_switch
+            // trampoline pays the switch handoff, then jmps the epilogue.
+            p.sub(17).write(finish_switch_tramp_addr());
             p.sub(17)
         };
         Self {
@@ -292,9 +327,10 @@ impl ContextX86_64 {
             p.sub(7).write(0);                               // err
             // 9 scratch slots r11..rax — values irrelevant.
             for i in 8..=16 { p.sub(i).write(0); }
-            // saved RIP for oxide_context_switch's `ret`. Lands at
-            // the shared epilogue which iretq's the frame above.
-            p.sub(17).write(crate::irq::irq_resume_user_addr());
+            // saved RIP for oxide_context_switch's `ret`: finish_switch
+            // trampoline pays the handoff, then the shared epilogue iretq's
+            // the frame above.
+            p.sub(17).write(finish_switch_tramp_addr());
             p.sub(17)
         };
         Self {
@@ -358,7 +394,7 @@ impl ContextX86_64 {
             p.sub(10).write(regs.rdx);
             p.sub(9).write(regs.rcx);
             p.sub(8).write(0);                               // rax = 0 (child's fork return)
-            p.sub(17).write(crate::irq::irq_resume_user_addr());
+            p.sub(17).write(finish_switch_tramp_addr());
             p.sub(17)
         };
         Self {
@@ -451,7 +487,7 @@ mod tests {
         // Read the scaffold quadwords.
         // SAFETY: we own `stack`; rsp..rsp+136 lies inside the buffer.
         let read = |off: usize| -> u64 { unsafe { *((ctx.rsp as usize + off) as *const u64) } };
-        assert_eq!(read(0x00), crate::irq::irq_resume_user_addr());
+        assert_eq!(read(0x00), finish_switch_tramp_addr());
         for i in 0..9 { assert_eq!(read(0x08 + i * 8), 0, "scratch slot {} non-zero", i); }
         assert_eq!(read(0x50), 0,    "err pad");
         assert_eq!(read(0x58), 0x40, "vec pad");
