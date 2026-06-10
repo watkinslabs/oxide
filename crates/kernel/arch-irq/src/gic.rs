@@ -663,8 +663,37 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
                 core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags));
             }
         }
-        // SAFETY: tick_pick_next runs in IRQ context with IRQs masked; per-CPU SCHED state is single-CPU at this point in v1.
-        unsafe { sched::live::preempt::tick_pick_next(); }
+        // The actual switch happens at IRQ exit via
+        // `oxide_irq_resched_on_exit` → `schedule()` (one engine); the tick
+        // only requested it by setting need_resched above.
+    }
+}
+
+/// IRQ-exit return-to-user reschedule slow path (`14§R07` / `smp-arch.md`
+/// Phase A) — arm mirror of x86's. Called by the IRQ vector handler after
+/// the dispatcher returns, with the interrupted frame's saved SPSR_EL1.
+/// VOLUNTARY preempt: switch only when returning to EL0 (SPSR.M[3:0]==0,
+/// i.e. EL0t) AND a resched was requested at a safe point. The one
+/// `schedule()` performs the switch; it preserves the caller's DAIF (here
+/// the IRQ-exit context's IRQ-masked state), so IRQs stay masked through
+/// the `eret` tail (the `eret` restores the user DAIF from the saved SPSR).
+///
+/// # SAFETY: invoked only from the IRQ-exit asm with IRQs masked; the
+/// interrupted GP + ELR/SPSR/SP_EL0 frame lives on the current kernel
+/// stack and is restored by `oxide_irq_resume_user` after this returns.
+/// # C: O(log N) when it schedules; O(1) otherwise
+/// # Ctx: IRQ-exit
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+#[no_mangle]
+unsafe extern "C" fn oxide_irq_resched_on_exit(saved_spsr: u64) {
+    let from_user = (saved_spsr & 0xf) == 0; // EL0t
+    if sched::preempt::should_resched_to_user(from_user) {
+        sched::preempt::take_need_resched();
+        // SAFETY: IRQ-exit safe point — should_resched_to_user confirmed
+        // preempt_count==0 and EL0-return; the interrupted frame is on the
+        // stack and restored after schedule() returns. schedule() preserves
+        // this context's masked DAIF, so IRQs stay masked through the eret.
+        unsafe { sched::live::schedule(); }
     }
 }
 

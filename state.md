@@ -1,76 +1,63 @@
-# Session hand-off — virtio-blk busy-poll → adaptive spin-then-sleep (B75)
+# Session hand-off — F425 SMP scheduler: Phase A DONE, Phase B next
 
-## Branch B75-login-hang-diag → PR #1658 (open). Author Chris Watkins
-## <chris@watkinslabs.com>. Counters: F=423 B=75 C=11 D=95.
+## BRANCH: F425-smp-scheduler — Phase A keystone landed + verified
+Commit d2c4cec9 `feat(sched): collapse to one switch engine +
+finish_task_switch handoff (F425 Phase A)`. PR open (see `gh pr list`).
+Design docs at repo root: `smp-arch.md` (authoritative) + `sched-anal.md`.
 
-## HEADLINE: residual x86 SMP=2 freeze ROOT-CAUSED + FIXED. virtio-blk
-## completion is no longer a 50M busy-poll that pegs a core; it now spins
-## briefly then SLEEPS, woken from the timer tick. Verified BOTH arches.
+### What Phase A did (one coordinated change, the keystone)
+- ONE switch engine: deleted `schedule_from_irq`, `stage_switch`,
+  `tick_pick_next`, `PERCPU_*_CTX_OFF`, the per-CPU ctx staging slots, the
+  ~12 gs:/tpidr: staging asm blocks (x86 irq.rs + arm vbar.rs). IRQ-exit
+  now calls `oxide_irq_resched_on_exit(saved CS/SPSR)` → the one
+  `schedule()` iff returning to user with `should_resched_to_user`
+  (VOLUNTARY preempt). Dispatchers (lapic/gic) only `set_need_resched`.
+- preempt_count handoff: `schedule()` entry `preempt_disable` (+1); the
+  INCOMING task pays −1 in `oxide_finish_task_switch`. First-run tasks
+  reach it via scaffold trampoline `oxide_finish_switch_tramp` baked into
+  `new_*_with_irq_frame` (both arches).
+- **Per-task IRQ-state preservation** (`irq_save_disable`/`irq_restore` in
+  schedule()): our syscalls run IF=0 (SFMASK) and take non-irqsave
+  process locks (ZOMBIES, registry, wait lists) the timer ISR also takes
+  — so a switch MUST preserve each task's own IF. (An early version
+  `sti`'d unconditionally in finish → blocked syscall resumed IF=1 →
+  timer fired while it held ZOMBIES → `tick_poll`/`reap_orphans` spun on
+  ZOMBIES with IRQs masked → timer dead → permanent post-login wedge,
+  ~15% of boots. Diagnosed via hypervisor `info registers`: RIP in the
+  ZOMBIES cmpxchg spin, RFL IF=0.)
 
-## COMMITTED + PUSHED this session (branch B75, pre-push smoke PASS both arches)
-- f462f485 fix(blk): adaptive spin-then-sleep virtio-blk completion
-- 991c4201 doc(state): hand-off + blk-poll-anal.md
-- 101f8340 feat(blk): real per-queue MSI-X completion IRQ wakes blk sleepers
-PR #1658 open — ready to merge once CI green (user decision; don't auto-merge).
-Still-uncommitted (NOT mine, pre-session): 060_exit.rs, server.py, sched-anal.md,
-tty-anal.md — left untouched.
+### Verified (both arches, this session)
+- 30/30 hypervisor-monitored x86 boots login→shell→id, 0 wedge (was ~15%).
+- x86 + arm `make smoke-login-{x86,arm}` (real bash+coreutils fork/exec).
+- x86 + arm `make smoke` (SMP=2 boot→login).
+- sched hosted: 89 green (+switch_handoff_balances/underflow tests).
+- spec-lint clean.
 
-## What the fix does (see commits above for detail)
-- `crates/drivers/drv-virtio-blk/src/modern.rs` (+ Cargo.toml: +hal +sched):
-  `submit` restructured → busy-gate (RingShadow.busy) + `do_request` +
-  adaptive `wait_for_completion`. Spin `IO_SPIN_BUDGET`=200k (catches the
-  fast common completion, zero added latency, boot stays fast) → then park
-  on global `BLK_COMPL` WaitList. Magic `50_000_000` → `IO_TIMEOUT_NS`=5s
-  wall-clock EIO backstop. inflight spinlock NEVER held across a sleep.
-  `can_sleep()` gates parking: excludes `SchedClass::Idle` (boot-smoke reads
-  run on the idle task — parking it panics `enqueue: idle`) and pre-sched.
-- `crates/kernel/kmain/{Cargo.toml,src/kmain.rs}`: +drv-virtio-blk dep;
-  `tick_poll_combined` calls `drv_virtio_blk::modern::tick_wake_completions()`
-  (wakes BLK_COMPL every tick — the completion waker; mirrors net rx poll).
-- Also touched (pre-existing, NOT mine): 060_exit.rs, server.py, sched-anal.md,
-  tty-anal.md. blk-poll-anal.md (??) = this session's full analysis + plan.
+## FIRST TASK next session — Phase B (SMP), per smp-arch.md §B, in order:
+1. **B1 rq->lock handoff**: extend `finish_task_switch` to release the PREV
+   task's rq-lock after the switch (Linux context_switch→finish_lock_switch).
+   Removes the UP "lock held across switch by one CPU" assumption.
+2. **B2 ttwu**: `try_to_wake_up`→`select_task_rq` (affinity + idlest/
+   wake-affine)→enqueue on target rq under its lock→`resched_curr`→
+   reschedule IPI (vec 0x41 stub already exists). Add `smp_mb__after_spinlock`.
+3. **B3 AP bring-up into the scheduler**: per-CPU init (GS/TPIDR, TSS/idle,
+   lapic timer), AP enters its idle→schedule() loop; un-gate `smp_x86.rs`.
+4. **B4 affinity**: per-task cpumask, sched_setaffinity/getaffinity, forced
+   migration. 5. **B5 load balance**: sched_domains + periodic/newidle.
+Each step: hosted test where possible → build both arches → `make smoke`
+(SMP=2 must exercise BOTH cpus online) → boot→login→shell→fork repeated.
 
-## Diagnosis recap (how the wedge was found)
-- Wedge = guest busy-loop in TCG (host-gdb `gdb -p <qemu> thread apply all bt`
-  showed cpu_exec spinning; main loop healthy). All our guest-side diagnostics
-  (serial sysrq, NMI, watchdog) are blind to it: single CPU (aps_started=0, no
-  peer to NMI) + the spinning CPU never services the tick. host-gdb (ptrace,
-  bypasses BQL/chained-TCG) is the tool — recipe in blk-poll-anal.md.
-- Root: blk `submit` busy-polled 50M then EIO; on a slow/lost completion the
-  caller retry-storm pegged the core → looks like a hard freeze.
+## GOTCHA learned this session (important)
+- The hypervisor register dump is the ONLY way to see an IRQs-masked wedge:
+  serial-sysrq needs the timer-tick UART poll, which is dead when IRQs are
+  masked. Boot qemu directly with `-monitor unix:...`, query `info
+  registers` (RIP + RFL IF bit), symbolize with
+  `addr2line -e target/x86_64-unknown-oxide-kernel/release/oxide-x86_64`.
+- Booting `-cdrom oxide-x86_64-grub.iso` directly does NOT rebuild the ISO;
+  rebuild with `xtask grub --arch x86_64 --build-only` or a stale ISO
+  silently tests old code.
 
-## VERIFY RESULTS (full rebuilds, real boots — no shortcuts)
-- x86 KVM/smp1: `oxide login:` @9s.
-- x86 tcg+smp2 (the wedge repro): 5/5 boots → login @14-15s. (was ~10% wedge)
-- aarch64 (tcg): login, startup 15.6s. Lockstep gate met.
-- spec-lint clean; 16 hosted tests pass; modern.rs 598 lines (<1000 cap).
-
-## DEFERRED (noted, NOT done — separate future branches)
-- Real per-queue MSI-X completion IRQ: set queue_msix_vector (currently
-  COMMENTED OUT at pci-boot/src/virtio_drv.rs:243 → boot log msi_fires=0) +
-  register_msi_handler → wake BLK_COMPL. Pure latency optimization; tick-wake
-  + adaptive spin are correct + fast without it.
-- x86 AP bring-up (smp cpus=0 aps_started=0) so the cross-CPU hard-lockup
-  detector has a peer. Separate sizable feature.
-- In-guest full-RAM memtest (prior session request): crates/kernel/smoke/src/
-  memtest.rs + debug-memtest feature. Not started.
-
-## FIRST TASK next session
-1. Core blk freeze fix is DONE + committed + pushed (3 commits above), both
-   arches verified, PR #1658. If CI green → merge (gh pr merge --merge
-   --delete-branch). Don't auto-merge without user.
-2. Optional follow-ups (own branches): x86 AP bring-up (aps_started=0, so the
-   cross-CPU hard-lockup detector has a peer); in-guest full-RAM memtest
-   (crates/kernel/smoke/src/memtest.rs + debug-memtest). Both noted below.
-
-## ENV QUIRKS (this agent sandbox)
-- Foreground qemu / long builds: Bash run_in_background:true + Monitor
-  until-loop on the output file (foreground sleep blocked).
-- Background bash with an INNER `timeout`/long redirect sometimes gets
-  SIGTERM'd early (exit 144) with empty output — just re-run (cargo is
-  incremental). Don't redirect to a /tmp file inside; let the task file capture.
-- Boot verify: ALWAYS `pkill -9 -f qemu-system-x86; sleep 3` first — a
-  lingering qemu (incl. the grub build's own smoke boot) sharing root-x86_64.img
-  causes disk-contention false "wedge" (bit me once on the KVM check).
-- `xtask grub --arch <a>` BUILDS then BOOTS (prints serial, exits at login) —
-  grep its output for `oxide login:` instead of a separate boot step.
+## ENV QUIRKS
+- `pkill ... || true` (set -e aborts the whole line on pkill no-match).
+- Multi-line `git commit -m` mangles under the snapshot shell → `-F file`.
+- ALWAYS `pkill -9 -f qemu-system; sleep 2-3` before a boot (disk-lock).
