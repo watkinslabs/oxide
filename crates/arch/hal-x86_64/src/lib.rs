@@ -34,6 +34,7 @@ pub mod mmu_ops;
 pub mod pci;
 mod pt_regs;
 mod regs;
+mod signal;
 pub mod vmm;
 pub use cpuid::{brand as cpuid_brand, vendor as cpuid_vendor};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -53,6 +54,7 @@ pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateX86_64, FP
 pub use gdt::{install_kernel_gdt, load_kernel_gdt_for_ap, GdtPointer, GDT_LEN, USER_CS, USER_DS};
 pub use tss::{install_tss, install_tss_for_cpu, set_rsp0, tss_base_addr, Tss64, TSS_SEL};
 pub use syscall::{install_syscall_msrs, current_user_frame, current_user_full_frame, current_kstack_top, set_syscall_kstack, init_percpu_syscall_kstack, boot_syscall_kstack_top};
+pub use signal::{build_signal_frame, restore_signal_frame};
 pub use idt::{install_default as install_default_idt, load_idtr_for_ap, IdtEntry, IdtPointer, GATE_INT64_KERNEL, IDT_LEN, KERNEL_CS};
 pub use context::{ContextX86_64, ForkRegs};
 pub use mmu::{
