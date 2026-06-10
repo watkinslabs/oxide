@@ -10,20 +10,24 @@
         assert_eq!(RTM_GETROUTE, 26);
     }
 
-    // K4: an RTM_GETLINK dump must end with a well-formed NLMSG_DONE
-    // (len=16, type=3, NLM_F_MULTI, echoing seq/pid) — absent/malformed is
-    // the "EOF on netlink" mode that breaks `ip link`. Host snapshot is
-    // empty so the whole reply IS the terminator.
+    // K4: an RTM_GETLINK dump must end with a well-formed NLMSG_DONE.
+    // Modern Linux + iproute2 require the DONE to carry a 4-byte error code
+    // (0=success) in its payload, so nlmsg_len = SIZE+4 = 20; a header-only
+    // DONE made iproute2 print "Dump terminated". The DONE is the last 20
+    // bytes (16-byte header + 4-byte err); its header sits at [len-20..len-4].
     #[test]
     fn getlink_dump_ends_with_nlmsg_done() {
+        const DONE_LEN: usize = crate::Nlmsghdr::SIZE + 4;
         let req = crate::Nlmsghdr { nlmsg_len: 32, nlmsg_type: RTM_GETLINK,
             nlmsg_flags: crate::flags::NLM_F_DUMP, nlmsg_seq: 7, nlmsg_pid: 42 };
         let reply = handle_getlink(&req);
-        let done = crate::Nlmsghdr::parse(&reply[reply.len() - crate::Nlmsghdr::SIZE..]).unwrap();
+        let done = crate::Nlmsghdr::parse(&reply[reply.len() - DONE_LEN..]).unwrap();
         assert_eq!(done.nlmsg_type, crate::msg::NLMSG_DONE);
-        assert_eq!(done.nlmsg_len, crate::Nlmsghdr::SIZE as u32);
+        assert_eq!(done.nlmsg_len, DONE_LEN as u32);
         assert!(done.nlmsg_flags & crate::flags::NLM_F_MULTI != 0);
         assert_eq!((done.nlmsg_seq, done.nlmsg_pid), (7, 42), "DONE echoes seq/pid");
+        // The 4-byte trailing error code is 0 (success).
+        assert_eq!(&reply[reply.len() - 4..], &[0u8; 4], "DONE err=0");
     }
 
     #[test]
