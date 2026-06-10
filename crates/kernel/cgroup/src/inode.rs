@@ -1,39 +1,35 @@
-// VFS bridge for cgroup v2 per `26§4` + `16§2`. Each cgroup directory
-// and each control file is a devfs-registered inode at its full path
-// under `/sys/fs/cgroup`; path resolution + readdir reuse the devfs
-// registry (`19§3`). mkdir/rmdir dispatch through the `Inode` trait
-// into the hierarchy logic in `lib.rs`.
+// VFS bridge for cgroup v2 per `26§4` + `16§2`. cgroupfs SYNTHESIZES
+// its inodes on lookup from the hierarchy in `tree.rs` — it owns no
+// registry and has ZERO dependency on devfs. A `CgDir` is a cgroup
+// directory inode identified by its node id (`cgid`); `lookup`/`readdir`
+// resolve its control files + child cgroups straight from the tree, and
+// mkdir/rmdir mutate the tree. Control files are `CgFile` inodes whose
+// read/write route to the tree keyed by `(cgid, file)`.
 
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
 const DIR_INO_BASE: u64 = 0x6000_0000;
 const FILE_INO_BASE: u64 = 0x6100_0000;
 
-/// A cgroup directory. Holds its node id + absolute fs path so it can
-/// build child paths for lookup/readdir against the devfs registry.
+/// A cgroup directory, identified by its node id. lookup/readdir resolve
+/// against the live hierarchy (`tree.rs`) via the accessors in `lib.rs`.
 pub struct CgDir {
     pub cgid: u64,
-    pub path: String,
-}
-
-impl CgDir {
-    fn child_path(&self, name: &str) -> String {
-        let mut p = String::with_capacity(self.path.len() + 1 + name.len());
-        p.push_str(&self.path);
-        if !self.path.ends_with('/') { p.push('/'); }
-        p.push_str(name);
-        p
-    }
 }
 
 /// cgroup2 superblock magic (`linux/magic.h` CGROUP2_SUPER_MAGIC) — the
 /// distinct `fsid` for the unified hierarchy so mount-point detection sees
 /// the `/sys/fs/cgroup` boundary.
 const CGROUP2_FSID: u64 = 0x6367_7270;
+
+impl CgDir {
+    /// Construct a directory inode for `cgid`.
+    /// # C: O(1)
+    pub fn new(cgid: u64) -> Self { Self { cgid } }
+}
 
 impl Inode for CgDir {
     fn ino(&self) -> Ino { (DIR_INO_BASE + self.cgid) as Ino }
@@ -43,7 +39,15 @@ impl Inode for CgDir {
     fn perm(&self) -> Option<u16> { Some(0o555) }
 
     fn lookup(&self, name: &str) -> KResult<InodeRef> {
-        devfs::lookup(&self.child_path(name)).ok_or(VfsError::Enoent)
+        // A control file of this cgroup → CgFile inode.
+        if crate::node_has_file(self.cgid, name) {
+            return Ok(Arc::new(CgFile::new(self.cgid, name)) as InodeRef);
+        }
+        // A child cgroup → CgDir inode.
+        if let Some(child) = crate::node_child_id(self.cgid, name) {
+            return Ok(Arc::new(CgDir::new(child)) as InodeRef);
+        }
+        Err(VfsError::Enoent)
     }
 
     fn readdir(
@@ -51,21 +55,28 @@ impl Inode for CgDir {
         off: u64,
         f: &mut dyn FnMut(u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
-        let snap = devfs::snapshot_visible_to_current();
+        // Stable order: control files first, then child cgroups. The
+        // offset is an index into that concatenated sequence.
+        let files = crate::node_file_names(self.cgid);
+        let kids = crate::node_child_names(self.cgid);
+        let total = files.len() + kids.len();
         let mut idx = off as usize;
-        while idx < snap.len() {
-            let (path, inode) = &snap[idx];
-            if let Some(name) = child_under(&self.path, path) {
-                let next = idx as u64 + 1;
-                if !f(next, name, inode.file_type()) { return Ok(next); }
+        while idx < total {
+            let next = idx as u64 + 1;
+            if idx < files.len() {
+                if !f(next, files[idx], FileType::Regular) { return Ok(next); }
+            } else {
+                let name = &kids[idx - files.len()];
+                if !f(next, name, FileType::Directory) { return Ok(next); }
             }
             idx += 1;
         }
-        Ok(snap.len() as u64)
+        Ok(total as u64)
     }
 
     fn mkdir(&self, name: &str, _mode: u32) -> KResult<InodeRef> {
-        crate::mkdir_child(self.cgid, &self.path, name)
+        let id = crate::mkdir_child(self.cgid, name)?;
+        Ok(Arc::new(CgDir::new(id)) as InodeRef)
     }
 
     fn rmdir(&self, name: &str) -> KResult<()> {
@@ -74,23 +85,32 @@ impl Inode for CgDir {
 }
 
 /// A cgroup control file (`cgroup.procs`, `memory.max`, …). Reads and
-/// writes route to the hierarchy keyed by `(cgid, file)`.
+/// writes route to the hierarchy keyed by `(cgid, file)`. Synthesized on
+/// lookup — never registered.
 pub struct CgFile {
     pub cgid: u64,
     pub file: String,
-    ino: Ino,
 }
 
 impl CgFile {
     /// Construct a control-file inode bound to `(cgid, file)`.
     /// # C: O(1)
-    pub fn new(cgid: u64, file: &str, seq: u64) -> Self {
-        Self { cgid, file: file.to_string(), ino: (FILE_INO_BASE + seq) as Ino }
+    pub fn new(cgid: u64, file: &str) -> Self {
+        Self { cgid, file: file.to_string() }
+    }
+    /// Stable inode number — derived from `(cgid, file)` so the same
+    /// control file keeps one identity across lookups. cgid in the high
+    /// bits, a hash of the file name in the low bits.
+    /// # C: O(name)
+    fn file_ino(cgid: u64, file: &str) -> Ino {
+        let mut h: u64 = 0;
+        for b in file.bytes() { h = h.wrapping_mul(31).wrapping_add(b as u64); }
+        (FILE_INO_BASE + ((cgid << 8) ^ (h & 0xff))) as Ino
     }
 }
 
 impl Inode for CgFile {
-    fn ino(&self) -> Ino { self.ino }
+    fn ino(&self) -> Ino { Self::file_ino(self.cgid, &self.file) }
     fn fsid(&self) -> u64 { CGROUP2_FSID }
     fn file_type(&self) -> FileType { FileType::Regular }
     /// Current content length. The read path bounds reads by `size()`,
@@ -136,36 +156,4 @@ impl Inode for CgFile {
         crate::write_file(self.cgid, &self.file, s)?;
         Ok(buf.len())
     }
-}
-
-/// Direct-child component of `path` under `prefix`, or `None` if
-/// `path` is not an immediate child (`<prefix>/<name>`, no deeper).
-fn child_under<'a>(prefix: &str, path: &'a str) -> Option<&'a str> {
-    let rest = path.strip_prefix(prefix)?;
-    let rest = rest.strip_prefix('/')?;
-    if rest.is_empty() || rest.contains('/') { return None; }
-    Some(rest)
-}
-
-/// Build the full inode set for a cgroup directory at `path` with
-/// node id `cgid` and available-controller set `avail`. Returns
-/// `(child_path, inode)` rows for the dir + every control file.
-/// # C: O(controllers)
-pub fn build_inodes(cgid: u64, path: &str, avail: u8, is_root: bool) -> Vec<(String, InodeRef)> {
-    let mut rows: Vec<(String, InodeRef)> = Vec::new();
-    rows.push((path.to_string(), Arc::new(CgDir { cgid, path: path.to_string() }) as InodeRef));
-    let mut seq = cgid << 8;
-    let push_file = |file: &str, rows: &mut Vec<(String, InodeRef)>, seq: &mut u64| {
-        let mut fp = String::from(path);
-        if !path.ends_with('/') { fp.push('/'); }
-        fp.push_str(file);
-        rows.push((fp, Arc::new(CgFile::new(cgid, file, *seq)) as InodeRef));
-        *seq += 1;
-    };
-    for f in crate::tree::CORE_FILES { push_file(f, &mut rows, &mut seq); }
-    if !is_root {
-        for f in crate::tree::NONROOT_FILES { push_file(f, &mut rows, &mut seq); }
-    }
-    for f in crate::tree::controller_files(avail) { push_file(f, &mut rows, &mut seq); }
-    rows
 }

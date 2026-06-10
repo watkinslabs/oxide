@@ -3,6 +3,7 @@
 //! kernel's per-pid inode table.
 
 use crate::live::lookup_dynamic;
+use vfs::Inode;
 
 /// FileSystem trait impl. Read-only.
 ///
@@ -21,19 +22,20 @@ impl vfs::fs::FileSystem for ProcfsFs {
     fn magic(&self) -> u64 { 0x9fa0 }
     /// # C: O(1) for static entries, O(N_tasks) for /proc/<pid>/*.
     fn lookup(&self, path: &str) -> Option<vfs::InodeRef> {
-        // /proc is a real directory tree: ProcRootInode owns its static children
-        // (cpuinfo/meminfo/…). A single-component /proc/<name> resolves through
-        // the root's own lookup (static files + self + pid dirs). Multi-component
-        // (/proc/<pid>/<leaf>, /proc/self/<leaf>, /proc/sys/*) falls to devfs +
-        // per-pid synthesis.
-        if path == "/proc" { return devfs::lookup("/proc"); }
+        // procfs OWNS /proc: resolve through the real root singleton (the dir
+        // inode that owns the static-file children), NOT the devfs registry — a
+        // mounted filesystem must not live in devfs (the old devfs::register
+        // "/proc" conflicted with the devfs tree auto-creating a /proc dir for
+        // /proc/net/* etc). Single-component /proc/<name> → root's own lookup.
+        let root = crate::static_files::proc_root();
+        if path == "/proc" { return Some(root as vfs::InodeRef); }
         if let Some(rest) = path.strip_prefix("/proc/") {
             if !rest.is_empty() && !rest.contains('/') {
-                if let Some(root) = devfs::lookup("/proc") {
-                    if let Ok(child) = root.lookup(rest) { return Some(child); }
-                }
+                if let Ok(child) = root.lookup(rest) { return Some(child); }
             }
         }
+        // Multi-component: /proc/<pid>/<leaf> + /proc/self/<leaf> synthesized;
+        // /proc/net/* + /sys/* + /etc/* resolve via the devfs tree fallback.
         if let Some(i) = devfs::lookup(path) { return Some(i); }
         lookup_dynamic(path)
     }

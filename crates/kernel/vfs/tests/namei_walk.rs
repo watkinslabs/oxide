@@ -194,6 +194,49 @@ fn delegates_whole_path_for_procfs_style_fs() {
     assert_eq!(i.ino(), 301, "whole-path delegate resolved /proc/123/stat");
 }
 
+// Regression (B53): a mount on a TREE-BACKED directory reached only by
+// FIRST crossing an outer mount — the `/sys` (devfs sub-tree) → then
+// `/sys/fs/cgroup` (cgroupfs) shape. The inner mountpoint dentry is
+// produced lazily during the walk (cached under the crossed-into
+// sub-tree's dentry), so marking it via `set_mounted_root` must be
+// visible to a SUBSEQUENT walk of a CHILD path — proving the dcache is
+// canonical: one dentry per (parent,name) shared by the marking walk and
+// the child-resolving walk. This is exactly what the boot cgroupfs
+// (mounted before the resolver) needs once `rewire_all_crossings` runs.
+#[test]
+fn crosses_mount_on_tree_backed_subtree() {
+    // Inner mounted fs (cgroupfs analogue): root holds `init.scope`.
+    let cg_scope = dir(0x301, &[]);
+    let cg_root: InodeRef = dir(0x300, &[("init.scope", cg_scope)]);
+
+    // The crossed-into sub-tree (devfs `/sys` analogue): a tree-backed
+    // directory whose own children are produced per-component by lookup.
+    // `/sys` underlay dir on the ext4 root, mounted over by `sys_tree`.
+    let sys_tree_fs: InodeRef = dir(0x200, &[("fs", dir(0x201, &[("cgroup", dir(0x202, &[]))]))]);
+    let sys_underlay = dir(0x100, &[]);
+    let root_inode = dir(2, &[("sys", sys_underlay)]);
+    let root = Dentry::new_root(root_inode);
+
+    // Mount the sub-tree fs ON `/sys` by dentry identity (outer mount).
+    let (_, sys_d) = vfs::path_lookup(root.clone(), root.clone(), "/sys", LookupFlags::default())
+        .expect("resolve /sys");
+    sys_d.set_mounted_root(Some(sys_tree_fs));
+
+    // Now resolve the INNER mountpoint dentry the way the late
+    // rewire does — a full walk that crosses `/sys` then descends the
+    // sub-tree. The landed dentry is the canonical one cached under the
+    // sub-tree's `fs` dentry.
+    let (_, cg_mp) = vfs::path_lookup(root.clone(), root.clone(), "/sys/fs/cgroup", LookupFlags::default())
+        .expect("resolve /sys/fs/cgroup mountpoint");
+    cg_mp.set_mounted_root(Some(cg_root));
+
+    // A SUBSEQUENT child-path walk must cross into cgroupfs by hitting the
+    // SAME cached dentry — proving the mark is canonical / visible.
+    let (i, _) = vfs::path_lookup(root.clone(), root, "/sys/fs/cgroup/init.scope", LookupFlags::default())
+        .expect("cross into cgroupfs and resolve init.scope");
+    assert_eq!(i.ino(), 0x301, "resolved init.scope inside the cgroupfs mount, not the underlay");
+}
+
 // chroot confinement (the mechanism pathresolve::resolution_root uses):
 // with a sub-dentry as the resolution root + RESOLVE_BENEATH, absolute
 // paths restart at that root and `..` cannot ascend above it.
