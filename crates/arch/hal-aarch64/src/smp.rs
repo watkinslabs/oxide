@@ -242,6 +242,19 @@ core::arch::global_asm!(
 #[cfg(target_os = "oxide-kernel")]
 static AP_INIT_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
+/// AP idle/schedule-loop hook (B3.5). Installed by the kernel to
+/// `sched::halt_forever` so the AP runs the idle→schedule() loop (picking up
+/// migrated tasks) instead of a bare `wfi` park. hal-aarch64 can't call
+/// `sched` (layering), so it's a fn-ptr like AP_INIT_HOOK. Never returns.
+static AP_IDLE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Install the AP idle-loop hook (kernel side, before `cpu_on`).
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn set_ap_idle_hook(f: unsafe fn() -> !) {
+    AP_IDLE_HOOK.store(f as *mut (), Ordering::Release);
+}
+
 /// Install the AP per-CPU bring-up hook. Boot path, before `cpu_on`.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
@@ -301,11 +314,29 @@ pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
         klog::write_dec_u64(aff0 as u64);
         klog::write_raw(b"\n");
     }
-    // Unmask IRQs (clear DAIF.I) so resched SGIs are delivered.
+    // Unmask IRQs (clear DAIF.I) so resched SGIs + timer ticks are delivered.
     // SAFETY: VBAR + GIC CPU interface installed above; daifclr #2 clears the IRQ mask at EL1.
     unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags)); }
+    // B3.5: enter the idle→schedule() loop (halt_forever) so this AP picks up
+    // tasks placed on its runqueue (ttwu / load balancer) — a bare wfi park
+    // never calls schedule(), and post-Phase-A the IRQ-exit picker only runs
+    // on return-to-user, so a parked AP would never run kernel-context work.
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        let p = AP_IDLE_HOOK.load(Ordering::Acquire);
+        if !p.is_null() {
+            // SAFETY: hook installed at boot with the exact `unsafe fn() -> !`
+            // ABI (sched::halt_forever); it runs this AP's idle→schedule loop
+            // and never returns.
+            unsafe {
+                let f: unsafe fn() -> ! = core::mem::transmute(p);
+                f();
+            }
+        }
+    }
+    // Fallback (hook unset / non-kernel build): bare wfi park.
     loop {
-        // SAFETY: WFI is legal at EL1; parks until an IRQ (resched SGI / timer) wakes us; the IRQ-exit picker then runs whatever this CPU's runqueue holds.
+        // SAFETY: WFI is legal at EL1; parks until an IRQ wakes us.
         unsafe { core::arch::asm!("wfi"); }
     }
 }

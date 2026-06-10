@@ -51,7 +51,7 @@ real vendor upstream sources only.
       (WaitList, zombies, futex, ipc, tty) through it. Verify: a task
       migrates to the AP and runs there (SMP=2; observe online=2 doing
       work, e.g. a spinner on the AP preempted).
-- [ ] **B3.5 arm AP scheduling parity**: smp_arm (PSCI CPU_ON) AP →
+- [x] **B3.5 arm AP scheduling parity**: smp_arm (PSCI CPU_ON) AP →
       per-CPU runqueue + sp_el0/TPIDR + CNTV timer + idle→schedule loop.
       `make smoke` arm SMP=2 with the AP scheduling.
 - [ ] **B4 affinity**: per-task `cpus_allowed` cpumask;
