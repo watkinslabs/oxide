@@ -163,6 +163,18 @@ Group small/related tools per PR; verify each runs.
   resource, destructive op needing confirmation).
 
 ## E. Deferred robustness (revisit after distro/vendor; no active bug)
+- [x] **lo-address label** FIXED (#B46): loopback now registers before PCI
+      enumeration → lo=ifindex 1 (Linux invariant), eth0=2; IFA_F_PERMANENT set.
+      `ip -o addr` shows "1: lo ... 127.0.0.1/8 scope host lo" + "2: eth0 ...
+      10.0.2.15/24 ... eth0" on BOTH arches (verified via full-harness boot).
+- [ ] **smoke vendor-app gates flake on arm TCG**: BASEAPPS (rg/jq/curl/tmux/
+      bat) + GOAPPS occasionally report M<expected because one app's cold-start
+      exceeds the sleep window under arm single-vCPU TCG contention (the apps DO
+      run — BAPP=5 confirmed; full harness passes on a good run). Re-run to pass.
+      A robust fix must POLL for output but NOT via the foreground while-loop
+      that was tried (it caused a shell logout) — needs a different approach
+      (e.g. a kernel-side or per-app `timeout` wrapper, or staggered launch).
+      Pre-existing; unrelated to any kernel change.
 - [ ] **duf filesystem-scan loop** (duf-specific; shared Go/Rust hang fixed):
       `duf` loops on openat+name_to_handle_at+statx+close (~2-3k each, growing)
       — a non-terminating mount/device enumeration (name_to_handle_at IS

@@ -426,7 +426,9 @@ fn build_newaddr_reply(
     let ifa = Ifaddrmsg {
         ifa_family:    AF_INET,
         ifa_prefixlen: prefixlen,
-        ifa_flags:     0,
+        // IFA_F_PERMANENT (0x80): the seeded boot addrs are static, not
+        // lease-bound — without it iproute2 prints them as "dynamic".
+        ifa_flags:     0x80,
         ifa_scope:     scope,
         ifa_index:     ifindex as u32,
     };
