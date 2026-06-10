@@ -5,6 +5,10 @@ Driving `smp-distro-plan.md` (the ordered SMP→distro plan) as a self-paced
 hosted tests + spec-lint, all run locally; pre-push hook runs SMP=2 smoke).
 
 ## Merged this session (SMP scheduler rework, F425 Phase A/B)
+- #1670 B2: ttwu wake-time placement (select_task_rq idlest/affinity +
+  resched_curr +IPI); WaitList wakes routed through it. UP=local.
+- #1671 B3.5: arm AP scheduling participation (AP runs halt_forever schedule
+  loop via AP_IDLE_HOOK, not wfi park). arm SVC frame already per-CPU (TPIDR).
 - #1662 Phase A: one switch engine + finish_task_switch + per-task IRQ fix
   (found+fixed a ~15% intermittent ZOMBIES-lock deadlock via hypervisor
   info-registers; the fix is per-task IRQ-state save/restore in schedule()).
@@ -21,21 +25,17 @@ hosted tests + spec-lint, all run locally; pre-push hook runs SMP=2 smoke).
   Fix: `load_kernel_gdt_for_ap` (lgdt the shared kernel GDT) BEFORE GS_BASE
   setup. Verified 5/5 SMP=2 boots login + online=2, AP scheduling.
 
-## NEXT (first unchecked box in smp-distro-plan.md): B2 ttwu + resched IPI
-The AP now runs its idle loop but has NO runnable tasks (its rq has only
-idle). B2 makes it a migration target:
-- `try_to_wake_up(task)` → `select_task_rq(task)` (UP=local; SMP=idlest /
-  wake-affine, honoring affinity) → enqueue on the TARGET cpu's rq under its
-  lock → `resched_curr(rq)` → if remote, `send_resched_ipi(target_apic)`
-  (vec 0x41 stub + lapic::send_resched_ipi already exist). Add the
-  smp_mb__after_spinlock wake barrier. Route the wake sites (WaitList,
-  zombies, futex, ipc, tty) through it.
-- Verify: a task actually runs on the AP at SMP=2 (e.g. spawn N spinners,
-  observe work on online=2; or instrument a per-cpu run counter). Use the
-  hypervisor info-registers -a to confirm both cpus executing user/kernel.
-- Then B3.5 (arm AP scheduling parity via PSCI), B4 affinity, B5 balance,
-  Phase C concurrency hardening. Then the task.md syscall/distro/vendor-app
-  backlog (see smp-distro-plan.md sections B/C/D).
+## NEXT (first unchecked box): B4 affinity
+SMP scheduling now WORKS both arches (AP runs migrated tasks via ttwu +
+balance.rs load balancer; both honor cpus_allowed). Remaining:
+- B4 affinity: sched_setaffinity/getaffinity (slots 203/204) FULL Linux
+  semantics (the cpus_allowed mask substrate + ttwu/balancer checks exist;
+  wire the syscalls + forced migration if the running task is moved off its
+  current cpu). Check current 203/204 impl first.
+- B5 load balance: balance.rs exists (busiest→idlest periodic); refine
+  (sched_domains, newidle balance, can_migrate cache-hot) for completeness.
+- Phase C concurrency hardening; then task.md syscall/distro/vendor-app backlog.
+
 
 ## DEBUG RECIPES (carry forward)
 - SMP=2 boot wedge/crash: `OXIDE_SMP=2 ./tools/boot-smoke.sh x86 300`.
