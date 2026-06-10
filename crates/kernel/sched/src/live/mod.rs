@@ -30,10 +30,13 @@ pub mod registry;
 pub mod runqueue;
 pub mod schedule;
 pub mod spawn;
+pub mod ttwu;
 pub mod wait_list;
 pub mod zombies;
 pub mod sigpend;
 pub mod tick_deadline;
+
+pub use ttwu::{try_to_wake_up, select_task_rq, resched_curr};
 
 pub use runqueue::{global, Runqueue};
 pub use schedule::{
