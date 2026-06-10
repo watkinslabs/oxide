@@ -217,6 +217,35 @@ pub unsafe fn install_kernel_gdt() {
     let _ = pointer;
 }
 
+/// Load the (already-populated) kernel GDT on an AP and reload its segment
+/// registers to the kernel selectors. The BSP ran `install_kernel_gdt`
+/// (which both builds AND loads); an AP comes out of the SIPI trampoline on
+/// the trampoline's minimal 4-entry GDT (CS=0x18), so it must `lgdt` the
+/// shared kernel GDT before it can use kernel CS/DS (0x28/0x30) or load its
+/// per-CPU TSS selector (`TSS_SEL + cpu*0x10`). Reads the GDT static
+/// read-only (already built by the BSP).
+/// # SAFETY: caller is an AP at CPL=0, long mode, kernel master CR3 active,
+/// IRQs masked; the BSP has completed `install_kernel_gdt`.
+/// # C: O(1)
+/// # Ctx: AP bring-up, IRQ-off
+pub unsafe fn load_kernel_gdt_for_ap() {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        // SAFETY: the GDT static was populated by the BSP's install_kernel_gdt
+        // and is read-only thereafter; we only take its address + size.
+        let gdt = unsafe { &*GDT.0.get() };
+        let pointer = GdtPointer {
+            limit: (core::mem::size_of::<[u64; GDT_LEN]>() - 1) as u16,
+            base:  gdt.as_ptr() as u64,
+        };
+        // SAFETY: same contract as install_kernel_gdt's reload — lgdt + CS
+        // far-return + DS/SS/FS/GS reload to kernel selectors present in the
+        // shared GDT. Note: this clobbers GS — the AP MUST re-set its per-CPU
+        // GS_BASE (set_percpu_base) AFTER this call.
+        unsafe { oxide_gdt_load_and_reload(&pointer); }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
