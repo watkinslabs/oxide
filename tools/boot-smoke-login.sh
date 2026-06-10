@@ -93,6 +93,10 @@ printf 'swordfish\n' >&9
 wait_for 'oxide:~\$' "shell prompt" "$deadline"
 printf 'id\n' >&9
 wait_for 'uid=1000(alice)' "id output" "$deadline"
+# Box C: assert util-linux login exec'd a LOGIN shell (argv[0]="-sh"), so
+# /etc/profile + /etc/profile.d/*.sh sourced. `shopt login_shell` == on proves it.
+printf 'shopt login_shell\n' >&9
+wait_for 'login_shell[[:space:]]\+on' "login-shell (shopt login_shell on)" "$deadline"
 
 # Optional logout → getty-respawn check (CHECK_LOGOUT=1): exit the
 # shell and confirm a fresh `oxide login:` prompt reappears (systemd
