@@ -13,105 +13,54 @@ use crate::{
     LIMITS_BODY, VERSION_BODY,
 };
 
+/// Build the `/proc` root directory's static children — the Linux `proc_create`
+/// set (cpuinfo/meminfo/stat/…). Each is a real child inode the directory OWNS
+/// (`ProcRootInode::new` takes this map; lookup+readdir walk it). NOT a registry.
+/// # C: O(N files)
+pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, InodeRef> {
+    use alloc::string::ToString;
+    let mut c: alloc::collections::BTreeMap<alloc::string::String, InodeRef> = Default::default();
+    c.insert("version".to_string(),     StaticFileInode::new(VERSION_BODY) as InodeRef);
+    c.insert("cpuinfo".to_string(),     StaticFileInode::new(CPUINFO_BODY) as InodeRef);
+    c.insert("meminfo".to_string(),     Arc::new(ProcMeminfoInode) as InodeRef);
+    c.insert("uptime".to_string(),      Arc::new(ProcUptimeInode) as InodeRef);
+    c.insert("loadavg".to_string(),     Arc::new(ProcLoadavgInode) as InodeRef);
+    c.insert("stat".to_string(),        Arc::new(crate::stat::ProcStatInode) as InodeRef);
+    c.insert("filesystems".to_string(), StaticFileInode::new(FILESYSTEMS) as InodeRef);
+    c.insert("cmdline".to_string(),     Arc::new(crate::ProcCmdlineInode) as InodeRef);
+    c.insert("devices".to_string(),     StaticFileInode::new(b"Character devices:\n  1 mem\n  4 /dev/vc/0\n  5 /dev/tty\n136 pts\nBlock devices:\n") as InodeRef);
+    c.insert("modules".to_string(),     StaticFileInode::new(b"") as InodeRef);
+    c.insert("swaps".to_string(),       StaticFileInode::new(b"Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n") as InodeRef);
+    c.insert("diskstats".to_string(),   StaticFileInode::new(b"") as InodeRef);
+    c.insert("partitions".to_string(),  StaticFileInode::new(b"major minor  #blocks  name\n") as InodeRef);
+    c.insert("misc".to_string(),        StaticFileInode::new(b"") as InodeRef);
+    c.insert("buddyinfo".to_string(),   StaticFileInode::new(b"Node 0, zone Normal      0 0 0 0 0 0 0 0 0 0 0\n") as InodeRef);
+    c.insert("zoneinfo".to_string(),    StaticFileInode::new(b"Node 0, zone Normal\n  pages free 1024\n") as InodeRef);
+    c.insert("vmstat".to_string(),      StaticFileInode::new(b"nr_free_pages 1024\nnr_zone_inactive_anon 0\nnr_zone_active_anon 0\n") as InodeRef);
+    c.insert("interrupts".to_string(),  StaticFileInode::new(b"           CPU0       \nLOC: 1234   Local timer interrupts\n") as InodeRef);
+    c.insert("softirqs".to_string(),    StaticFileInode::new(b"                CPU0       \n      HI:          0\n   TIMER:       1234\n") as InodeRef);
+    c.insert("kallsyms".to_string(),    StaticFileInode::new(b"") as InodeRef);
+    c.insert("key-users".to_string(),   StaticFileInode::new(b"") as InodeRef);
+    c.insert("keys".to_string(),        StaticFileInode::new(b"") as InodeRef);
+    c.insert("locks".to_string(),       StaticFileInode::new(b"") as InodeRef);
+    c.insert("crypto".to_string(),      StaticFileInode::new(b"") as InodeRef);
+    c.insert("execdomains".to_string(), StaticFileInode::new(b"0-0\tLinux           \t[kernel]\n") as InodeRef);
+    c.insert("cgroups".to_string(),     StaticFileInode::new(b"#subsys_name\thierarchy\tnum_cgroups\tenabled\ncpuset\t0\t1\t1\ncpu\t0\t1\t1\nio\t0\t1\t1\nmemory\t0\t1\t1\npids\t0\t1\t1\n") as InodeRef);
+    c.insert("mounts".to_string(),      Arc::new(crate::mounts::ProcMountsInode) as InodeRef);
+    c
+}
+
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(N_files)
 pub fn register_static_files() {
-    devfs::register(
-        "/proc/version",
-        StaticFileInode::new(VERSION_BODY) as InodeRef,
-    );
-    devfs::register(
-        "/proc/cpuinfo",
-        StaticFileInode::new(CPUINFO_BODY) as InodeRef,
-    );
-    devfs::register("/proc/meminfo", Arc::new(ProcMeminfoInode) as InodeRef);
-    devfs::register("/proc/uptime", Arc::new(ProcUptimeInode) as InodeRef);
-    devfs::register("/proc/loadavg", Arc::new(ProcLoadavgInode) as InodeRef);
-    devfs::register(
-        "/proc/stat",
-        Arc::new(crate::stat::ProcStatInode) as InodeRef,
-    );
-    devfs::register(
-        "/proc/filesystems",
-        StaticFileInode::new(FILESYSTEMS) as InodeRef,
-    );
-    devfs::register(
-        "/proc/cmdline",
-        Arc::new(crate::ProcCmdlineInode) as InodeRef,
-    );
-    devfs::register(
-        "/proc/devices",
-        StaticFileInode::new(
-            b"\
-Character devices:\n  1 mem\n  4 /dev/vc/0\n  5 /dev/tty\n136 pts\nBlock devices:\n",
-        ) as InodeRef,
-    );
-    devfs::register("/proc/modules", StaticFileInode::new(b"") as InodeRef);
-    devfs::register(
-        "/proc/swaps",
-        StaticFileInode::new(b"Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n") as InodeRef,
-    );
-    devfs::register("/proc/diskstats", StaticFileInode::new(b"") as InodeRef);
-    devfs::register(
-        "/proc/partitions",
-        StaticFileInode::new(b"major minor  #blocks  name\n") as InodeRef,
-    );
-    devfs::register("/proc/misc", StaticFileInode::new(b"") as InodeRef);
-    devfs::register(
-        "/proc/buddyinfo",
-        StaticFileInode::new(b"Node 0, zone Normal      0 0 0 0 0 0 0 0 0 0 0\n") as InodeRef,
-    );
-    devfs::register(
-        "/proc/zoneinfo",
-        StaticFileInode::new(b"Node 0, zone Normal\n  pages free 1024\n") as InodeRef,
-    );
-    devfs::register(
-        "/proc/vmstat",
-        StaticFileInode::new(
-            b"nr_free_pages 1024\nnr_zone_inactive_anon 0\nnr_zone_active_anon 0\n",
-        ) as InodeRef,
-    );
-    devfs::register(
-        "/proc/interrupts",
-        StaticFileInode::new(b"           CPU0       \nLOC: 1234   Local timer interrupts\n")
-            as InodeRef,
-    );
-    devfs::register(
-        "/proc/softirqs",
-        StaticFileInode::new(
-            b"                CPU0       \n      HI:          0\n   TIMER:       1234\n",
-        ) as InodeRef,
-    );
-    devfs::register("/proc/kallsyms", StaticFileInode::new(b"") as InodeRef);
-    devfs::register("/proc/key-users", StaticFileInode::new(b"") as InodeRef);
-    devfs::register("/proc/keys", StaticFileInode::new(b"") as InodeRef);
-    devfs::register("/proc/locks", StaticFileInode::new(b"") as InodeRef);
-    devfs::register("/proc/crypto", StaticFileInode::new(b"") as InodeRef);
-    devfs::register(
-        "/proc/execdomains",
-        StaticFileInode::new(b"0-0\tLinux           \t[kernel]\n") as InodeRef,
-    );
-    // cgroup v2 unified hierarchy per `26§4`. /proc/cgroups lists the
-    // v2-bound controllers (hierarchy 0); /proc/self/cgroup resolves
-    // the calling task's real cgroup path at read time.
-    devfs::register(
-        "/proc/cgroups",
-        StaticFileInode::new(
-            b"#subsys_name\thierarchy\tnum_cgroups\tenabled\n\
-          cpuset\t0\t1\t1\ncpu\t0\t1\t1\nio\t0\t1\t1\n\
-          memory\t0\t1\t1\npids\t0\t1\t1\n",
-        ) as InodeRef,
-    );
+    // /proc root: a real directory inode owning its static children (the Linux
+    // proc_dir_entry subdir tree). lookup+readdir walk it; pids synthesized.
+    devfs::register("/proc", Arc::new(ProcRootInode::new(build_proc_root())) as InodeRef);
+    // /proc/self/cgroup resolves the calling task's real cgroup path at read time.
     devfs::register(
         "/proc/self/cgroup",
         alloc::sync::Arc::new(crate::ProcCgroupInode { tid: None }) as InodeRef,
     );
-    devfs::register(
-        "/proc/mounts",
-        Arc::new(crate::mounts::ProcMountsInode) as InodeRef,
-    );
-    // /proc root inode for getdents64 enumeration of live tids.
-    devfs::register("/proc", Arc::new(ProcRootInode) as InodeRef);
     devfs::register(
         "/proc/self/status",
         Arc::new(ProcSelfStatusInode) as InodeRef,
