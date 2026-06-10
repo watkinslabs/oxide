@@ -19,6 +19,32 @@ use crate::Task;
 
 use super::runqueue::{global_for, Runqueue};
 
+/// Cache-hot window (Linux `sysctl_sched_migration_cost`, 0.5 ms): a task
+/// that last ran within this of now is likely still warm in its CPU's cache,
+/// so the periodic balancer leaves it put unless the imbalance is large.
+const MIGRATION_COST_NS: u64 = 500_000;
+
+/// This CPU's index. Host build → 0.
+#[inline]
+fn this_cpu() -> u32 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    { use hal::CpuOps; hal_x86_64::X86CpuOps::current_cpu() }
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    { use hal::CpuOps; hal_aarch64::ArmCpuOps::current_cpu() }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
+}
+
+#[inline]
+fn now_ns() -> u64 {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
+}
+
 /// Snapshot of one CPU's load. Captured under the runqueue's
 /// inner lock, then released before the migration decision.
 #[derive(Copy, Clone)]
@@ -117,6 +143,18 @@ pub unsafe fn balance_once() -> u32 {
         push_to(busy_rq, task);
         return 0;
     }
+    // can_migrate_task cache-hot guard (Linux): a task that ran within
+    // MIGRATION_COST_NS is likely cache-warm on `busy_cpu`; leave it unless
+    // the imbalance is large (delta >= 4) where spreading wins over locality.
+    if delta < 4 {
+        let last = task.exec_start_ns.load(Ordering::Acquire);
+        let now = now_ns();
+        if last != 0 && now.saturating_sub(last) < MIGRATION_COST_NS {
+            push_to(busy_rq, task);
+            return 0;
+        }
+    }
+    task.cpu.store(idle_cpu as u16, Ordering::Release);
     push_to(idle_rq, task);
 
     // Wake the destination so its idle loop picks up the new task. The
@@ -137,4 +175,49 @@ pub fn balance_tick(_now_ns: u64) {
         // SAFETY: timer-driver kthread (process ctx), not under any runqueue lock; balance_once takes the per-CPU inner locks in cpu-id order so no pair deadlocks.
         if unsafe { balance_once() } == 0 { break; }
     }
+}
+
+/// Newidle balance (Linux `sched_balance_newidle`): a CPU whose runqueue just
+/// went empty pulls ONE runnable CFS task from the busiest remote CPU rather
+/// than idling while another CPU is overloaded. Called from the idle loop
+/// (`halt_forever`) before parking. Honors affinity; ignores cache-hot (an
+/// idle CPU pulling overloaded work is a net win — it has no warm cache for
+/// the task anyway). Returns 1 if it pulled a task, else 0.
+/// # SAFETY: idle context, not holding any runqueue lock; takes one per-CPU
+/// inner lock at a time (no nesting).
+/// # C: O(N_cpus + log N)
+pub unsafe fn newidle_balance() -> u32 {
+    if cpu::smp::online_count() < 2 { return 0; }
+    let me = this_cpu();
+    // SAFETY: this CPU's runqueue is installed (we're in its idle loop).
+    let my_rq = match unsafe { global_for(me) } { Some(r) => r, None => return 0 };
+    // Only pull if WE have nothing runnable.
+    if my_rq.nr_running.load(Ordering::Acquire) > 0 { return 0; }
+    // Find the busiest remote CPU (>1 runnable so pulling actually unloads it).
+    let mut busy_cpu: Option<u32> = None;
+    let mut busy_load = 1u32;
+    let n = cpu::count();
+    for i in 0..n {
+        if let Some((id, _)) = cpu::get(i as usize) {
+            if id == me { continue; }
+            // SAFETY: enumerated CPU; global_for None unless it's scheduling.
+            if let Some(rq) = unsafe { global_for(id) } {
+                let l = rq.nr_running.load(Ordering::Acquire);
+                if l > busy_load { busy_load = l; busy_cpu = Some(id); }
+            }
+        }
+    }
+    let busy_cpu = match busy_cpu { Some(c) => c, None => return 0 };
+    // SAFETY: busy_cpu was just enumerated with a live runqueue.
+    let busy_rq = match unsafe { global_for(busy_cpu) } { Some(r) => r, None => return 0 };
+    let task = pop_one_cfs(busy_rq);
+    let task = match task { Some(t) => t, None => return 0 };
+    // Affinity: if pinned away from us, put it back and skip.
+    if me < 64 && task.cpus_allowed.load(Ordering::Acquire) & (1u64 << me) == 0 {
+        push_to(busy_rq, task);
+        return 0;
+    }
+    task.cpu.store(me as u16, Ordering::Release);
+    push_to(my_rq, task);
+    1
 }
