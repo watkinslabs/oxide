@@ -62,6 +62,28 @@ fn wire_crossing(mount_point: &str, root: Option<InodeRef>) {
     }
 }
 
+/// (Re)wire dentry-identity crossing for EVERY mount in the table.
+/// `wire_crossing` is a one-shot eager stamp that silently no-ops when
+/// the dentry resolver isn't installed yet (`resolve_dentry` → `None`),
+/// so any filesystem registered before `set_dentry_resolver` runs (the
+/// boot cgroupfs mounts at `/sys/fs/cgroup` before the syscall layer
+/// installs the resolver) never gets its mount-crossing dentry marked
+/// and `path_lookup` lands on the read-only underlay instead of the
+/// mounted fs. The kernel calls this once, right after installing the
+/// resolver, so those early mounts are wired exactly as a late mount
+/// would be — the general dcache mechanism, not a per-path fixup. The
+/// crossing root inode is recomputed the same way `register` does
+/// (bind-clone `root`, else `fs.root()`, else `fs.lookup(mount_point)`).
+/// Idempotent: re-marking a dentry already carrying its root is a no-op.
+/// # C: O(N_mounts × path)
+pub fn rewire_all_crossings() {
+    let mounts = TABLE.lock().clone();
+    for m in mounts.iter() {
+        let root = m.root.clone().or_else(|| m.fs.root()).or_else(|| m.fs.lookup(&m.mount_point));
+        wire_crossing(&m.mount_point, root);
+    }
+}
+
 /// Clear the mount link on `mount_point`'s canonical dentry (umount).
 /// # C: O(path)
 fn unwire_crossing(mount_point: &str) {
