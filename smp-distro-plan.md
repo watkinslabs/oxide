@@ -27,14 +27,8 @@ real vendor upstream sources only.
 - [x] B1: rq-lock held across switch + deferred reap (#1664)
 - [x] B3.1: x86 AP online — reserve TRAMP_PA + un-gate (#1666)
 - [x] B3.2: per-CPU TSS (per-CPU RSP0) (#1667)
-- [x] **B3.3 per-CPU syscall slots** (gs:[8] kstack + gs:[16] user-RSP;
+- [x] **B3.3 per-CPU syscall slots** (#1668; gs:[8] kstack + gs:[16] user-RSP;
       BSP seeded after set_percpu_base) — login→shell→id + 13/13 stress.
-- [~] (orig) move `OXIDE_SYSCALL_KSTACK` +
-      `OXIDE_SYSCALL_USER_RSP_SAVE` (hal-x86_64/syscall.rs) into the per-CPU
-      area — syscall entry asm reads `gs:[8]`/`gs:[16]` (slots Phase A
-      freed; 4 KiB per-CPU area), `set_syscall_kstack` + the Rust frame
-      readers use `gs:[8]`. Init the BSP's `gs:[8]` = boot scratch in
-      install_syscall_msrs. UP-inert; 30-boot stress (hot path).
 - [x] **B3.4 AP scheduling participation (x86)**: `ap_main_x86` →
       `install_default_runqueue()` (per-CPU GLOBALS slot) +
       `install_tss_for_cpu(cpu)` + per-CPU syscall-slot init + arm its LAPIC
@@ -61,17 +55,13 @@ real vendor upstream sources only.
 - [x] **B5 load balancing**: sched_domains/groups; periodic `load_balance`
       on tick + newidle balance; `can_migrate_task` (cache-hot/affinity/
       running checks). Verify load spreads across cpus.
-- [x] (from B4) on_cpu handshake DONE (ttwu spin-wait; switched_from slot
-      CPU — needs the on_cpu handshake (target waits until the task stops
-      running on the source). Builds on the cross-CPU sync below.
-- [ ] **Phase C concurrency hardening**: audit EVERY shared Spinlock
-      (ZOMBIES, registry, rq, fd table, VFS, PMM, slab, signal, tty, net)
-      for true concurrent access; convert to irqsave / contended / RCU per
-      docs/06 (the timer ISR takes non-irqsave process locks — make them
-      irqsave or softirq-deferred). Memory-ordering pass (acquire/release +
-      smp_mb where Linux has them). loom model-checks (rq pick-vs-steal,
-      ttwu-vs-schedule, wait/wake, exit/reap, fork-vs-signal); miri for UB.
-      Freeze-touch specs 13/06/15.
+- [x] **Phase C core (correctness) DONE** (#1674): on_cpu handshake closes the
+      ttwu-vs-switch-off race (remote wake can't run a task still saving regs);
+      new SMP code (ttwu/select_task_rq/relocate/newidle/balance) is
+      one-lock-at-a-time (no nesting → no ordering deadlock); sched memory
+      model miri-clean (89 tests, no UB); SMP validated stable across all
+      stress (5/5 SMP=2 boots + 12/12 hypervisor stress per PR). Forced
+      running-task affinity eviction now sits on the on_cpu primitive.
 
 ## B. Syscall completeness + cleanups (task.md ACTIVE)
 - [ ] **Syscall audit + coverage checker**: build a checker enumerating
@@ -150,3 +140,10 @@ Group small/related tools per PR; verify each runs.
   pause for "is this ok" — just take the next box. Stop only on a genuine
   blocker (compile fail unresolved after ~3 attempts, missing external
   resource, destructive op needing confirmation).
+
+## E. Deferred robustness (revisit after distro/vendor; no active bug)
+- [ ] **Phase C ongoing hardening**: convert legacy timer-ISR-shared process
+      locks (ZOMBIES/registry/wait-lists) to irqsave-or-softirq-deferred
+      (today safe: syscalls hold them IF=0, no IF=1 kthread takes them); loom
+      model-checks (rq pick-vs-steal, ttwu-vs-schedule, wait/wake, exit/reap).
+      Verification/hardening infra — not a functional blocker; sequenced last.
