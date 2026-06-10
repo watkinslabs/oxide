@@ -54,13 +54,16 @@ real vendor upstream sources only.
 - [x] **B3.5 arm AP scheduling parity**: smp_arm (PSCI CPU_ON) AP →
       per-CPU runqueue + sp_el0/TPIDR + CNTV timer + idle→schedule loop.
       `make smoke` arm SMP=2 with the AP scheduling.
-- [ ] **B4 affinity**: per-task `cpus_allowed` cpumask;
+- [x] **B4 affinity**: per-task `cpus_allowed` cpumask;
       `sched_setaffinity`/`sched_getaffinity` (slots 203/204) full Linux
       semantics; forced migration (stop-task / migration path);
       `select_task_rq` honors the mask.
 - [ ] **B5 load balancing**: sched_domains/groups; periodic `load_balance`
       on tick + newidle balance; `can_migrate_task` (cache-hot/affinity/
       running checks). Verify load spreads across cpus.
+- [ ] (from B4) full forced-migration of a RUNNING task off a disallowed
+      CPU — needs the on_cpu handshake (target waits until the task stops
+      running on the source). Builds on the cross-CPU sync below.
 - [ ] **Phase C concurrency hardening**: audit EVERY shared Spinlock
       (ZOMBIES, registry, rq, fd table, VFS, PMM, slab, signal, tty, net)
       for true concurrent access; convert to irqsave / contended / RCU per

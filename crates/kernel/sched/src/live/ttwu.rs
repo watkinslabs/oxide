@@ -65,6 +65,55 @@ pub fn resched_curr(cpu: u32) {
     }
 }
 
+/// Honor a changed `cpus_allowed` (sched_setaffinity / cpuset): move `task`
+/// off any disallowed CPU. A task QUEUED (on_rq, not currently running) on a
+/// now-disallowed CPU is safely dequeued and re-placed via `select_task_rq`
+/// (it isn't executing, so no cross-CPU race). A task RUNNING (rq.current) on
+/// a disallowed CPU is nudged with need_resched + a reschedule IPI; fully
+/// evicting a running task needs the `on_cpu` migration handshake (the target
+/// must wait until it stops running on the source) — that lands with the
+/// Phase C cross-CPU hardening. UP / single CPU: no-op (allowed == local).
+/// # C: O(N_cpus · log N)
+pub fn relocate_for_affinity(task: &Arc<Task>, allowed: u64) {
+    let tid = task.tid;
+    for cpu in 0..cpu::MAX_CPUS as u32 {
+        // Skip CPUs the task is allowed on.
+        if cpu < 64 && (allowed & (1u64 << cpu)) != 0 { continue; }
+        // SAFETY: global_for is sound for any index; None unless that CPU is scheduling.
+        let rq = match unsafe { global_for(cpu) } { Some(r) => r, None => continue };
+        // Try to dequeue it from this disallowed CPU's runqueue (queued, not
+        // running). One rq lock at a time — no nesting, no ordering hazard.
+        let removed = {
+            let mut inner = rq.inner.lock();
+            let r = inner.remove(tid);
+            if r.is_some() { rq.nr_running.store(inner.nr_running(), Ordering::Release); }
+            r
+        };
+        if let Some(moved) = removed {
+            moved.on_rq.store(false, Ordering::Release);
+            // Re-place on an allowed CPU (select_task_rq filters by the mask).
+            let target = select_task_rq(&moved);
+            // SAFETY: target came from select_task_rq over installed runqueues.
+            if let Some(trq) = unsafe { global_for(target) } {
+                let mut ti = trq.inner.lock();
+                ti.enqueue(moved);
+                trq.nr_running.store(ti.nr_running(), Ordering::Release);
+            }
+            resched_curr(target);
+        } else {
+            // Not queued here — is it the RUNNING task on this disallowed CPU?
+            // Nudge it to reschedule (it re-enqueues elsewhere on its next
+            // sleep/yield). Synchronous eviction = Phase C on_cpu handshake.
+            let cur = rq.current.load(Ordering::Acquire);
+            // SAFETY: rq.current is non-null after install; the pointee is kept
+            // alive by the rq's strong ref; reading the tid field is sound.
+            if !cur.is_null() && unsafe { (*cur).tid } == tid {
+                resched_curr(cpu);
+            }
+        }
+    }
+}
+
 /// Linux `try_to_wake_up`: place a Sleeping `task` Runnable on its selected
 /// CPU's runqueue and make that CPU reschedule. Returns true on a genuine
 /// Sleeping→Runnable transition; false if the task was already runnable /

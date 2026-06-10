@@ -21,5 +21,9 @@ pub fn sys_sched_setaffinity(args: &SyscallArgs) -> i64 {
     if eff == 0 { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
     let t = match affinity_target(pid) { Some(t) => t, None => return -(syscall::errno::Errno::Esrch.as_i32() as i64) };
     t.cpus_allowed.store(eff, Ordering::Release);
+    // Honor the new mask now: relocate the task off any disallowed CPU — a
+    // queued task moves immediately; a running one is nudged to reschedule
+    // (full running-task eviction is the Phase C on_cpu handshake).
+    sched::live::relocate_for_affinity(&t, eff);
     0
 }
