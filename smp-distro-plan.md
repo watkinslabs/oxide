@@ -58,7 +58,7 @@ real vendor upstream sources only.
       `sched_setaffinity`/`sched_getaffinity` (slots 203/204) full Linux
       semantics; forced migration (stop-task / migration path);
       `select_task_rq` honors the mask.
-- [ ] **B5 load balancing**: sched_domains/groups; periodic `load_balance`
+- [x] **B5 load balancing**: sched_domains/groups; periodic `load_balance`
       on tick + newidle balance; `can_migrate_task` (cache-hot/affinity/
       running checks). Verify load spreads across cpus.
 - [ ] (from B4) full forced-migration of a RUNNING task off a disallowed

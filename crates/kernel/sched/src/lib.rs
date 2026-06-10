@@ -154,6 +154,14 @@ pub fn halt_forever() -> ! {
         if live::global().is_some() {
             // SAFETY: boot-anchor / idle context; runqueue installed; preempt-off.
             unsafe { live::schedule(); }
+            // B5 newidle balance: schedule() returned ⇒ this CPU has nothing
+            // runnable (idle was picked). Before parking, pull a task from a
+            // busier CPU so we don't idle while another CPU is overloaded
+            // (lower latency than the periodic balance tick). No-op on UP.
+            // SAFETY: idle context, no runqueue lock held; one rq lock at a time.
+            if unsafe { live::balance::newidle_balance() } > 0 {
+                continue; // pulled work — loop back so schedule() runs it
+            }
         }
         #[cfg(target_arch = "x86_64")] hal_x86_64::halt();
         #[cfg(target_arch = "aarch64")] hal_aarch64::halt();
