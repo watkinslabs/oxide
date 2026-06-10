@@ -16,5 +16,10 @@ pub fn sys_unlink(args: &SyscallArgs) -> i64 {
     if let Err(rv) = crate::landlock::check(&p,
         ::security::landlock::access::REMOVE_FILE) { return rv; }
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
-    match pino.unlink_child(&name) { Ok(()) => 0, Err(e) => errno_from_vfs(e) }
+    match pino.unlink_child(&name) {
+        // d_delete: drop the cached dentry so a stale positive isn't reused
+        // (stat/open after unlink must miss). See pathresolve::forget_path.
+        Ok(())  => { crate::pathresolve::forget_path(&p); 0 }
+        Err(e)  => errno_from_vfs(e),
+    }
 }

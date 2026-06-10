@@ -78,6 +78,28 @@ pub fn resolve_dentry(abs: &str) -> Option<Arc<vfs::Dentry>> {
     vfs::path_lookup(root.clone(), root, abs, flags).ok().map(|(_, d)| d)
 }
 
+/// Invalidate the cached dentry for absolute `abs` (Linux `d_delete`).
+/// MUST be called after a successful unlink / rmdir / rename so a stale
+/// POSITIVE dentry isn't reused: without it, `stat`/`open` after `unlink`
+/// resolve the dead inode through the dcache (reporting the file still
+/// exists), e.g. Info-ZIP's `replace()` LSTATs the just-unlinked output
+/// and then fails to re-unlink it. Splits `abs` into parent + final
+/// component and drops the child from the parent dentry's cache.
+/// # C: O(components)
+pub fn forget_path(abs: &str) {
+    let trimmed = abs.trim_end_matches('/');
+    if trimmed.is_empty() { return; }
+    let (parent, name) = match trimmed.rfind('/') {
+        Some(0) => ("/", &trimmed[1..]),
+        Some(i) => (&trimmed[..i], &trimmed[i + 1..]),
+        None    => return,
+    };
+    if name.is_empty() { return; }
+    if let Some(pd) = resolve_dentry(parent) {
+        pd.forget_child(name);
+    }
+}
+
 /// Read an executable's full bytes by resolving `path` through the
 /// dentry walk (`resolve`, follows symlinks + crosses mounts), then
 /// pulling the regular-file contents via the inode's `read`. THE exec
