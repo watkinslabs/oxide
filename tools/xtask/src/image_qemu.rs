@@ -84,7 +84,15 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
         return Err(2);
     }
     let smp: u32 = parse_arg(rest, "--smp").and_then(|s| s.parse().ok()).unwrap_or(1);
-    crate::cmd_rootfs(rest)?;
+    // OXIDE_SKIP_ROOTFS=1 reuses the cached rootfs disk instead of restaging
+    // ~50 vendor apps + rebuilding the ext4 image every boot. Kernel-only
+    // changes don't touch the rootfs, so this turns a multi-minute rebuild
+    // into a no-op. Unset (default) = always rebuild, for correctness/CI.
+    if std::env::var("OXIDE_SKIP_ROOTFS").is_ok() {
+        eprintln!("xtask grub: OXIDE_SKIP_ROOTFS set — reusing cached rootfs (no restage)");
+    } else {
+        crate::cmd_rootfs(rest)?;
+    }
     // `debug-boot` by default — installs the UART klog sink without the
     // debug-sched/debug-vmm bring-up smokes. Those smokes (e.g. ksched RR)
     // `sti; hlt` on a deliberately-disarmed timer and deadlock — a
@@ -121,7 +129,15 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
 /// PCI (virtio-net/gpu).
 fn cmd_grub_aarch64(rest: &[String]) -> Result<(), u8> {
     let smp: u32 = parse_arg(rest, "--smp").and_then(|s| s.parse().ok()).unwrap_or(1);
-    crate::cmd_rootfs(rest)?;
+    // OXIDE_SKIP_ROOTFS=1 reuses the cached rootfs disk instead of restaging
+    // ~50 vendor apps + rebuilding the ext4 image every boot. Kernel-only
+    // changes don't touch the rootfs, so this turns a multi-minute rebuild
+    // into a no-op. Unset (default) = always rebuild, for correctness/CI.
+    if std::env::var("OXIDE_SKIP_ROOTFS").is_ok() {
+        eprintln!("xtask grub: OXIDE_SKIP_ROOTFS set — reusing cached rootfs (no restage)");
+    } else {
+        crate::cmd_rootfs(rest)?;
+    }
     // debug-boot by default — UART klog sink, no bring-up smokes (parity
     // with the x86 grub path). Override with --features debug-all.
     let mut kr: Vec<String>;
@@ -186,7 +202,7 @@ fn build_grub_arm_iso(
     // GRUB's arm64 serial console differs from x86; use the firmware
     // console (OVMF routes it to the PL011 → -serial). `linux` boots our
     // PE Image as an EFI application.
-    let cfg = "set timeout=1\nset default=0\nterminal_input console\nterminal_output console\n\n\
+    let cfg = "set timeout=0\nset default=0\nterminal_input console\nterminal_output console\n\n\
                menuentry \"oxide (EFI-stub)\" {\n    \
                linux /boot/oxide-aarch64.Image\n    \
                boot\n}\n";
@@ -279,7 +295,7 @@ fn build_grub_iso(
     fs::create_dir_all(stage.join("boot/grub")).map_err(|_| 1u8)?;
     fs::copy(kernel_elf, stage.join(format!("boot/oxide-{arch}"))).map_err(|_| 1u8)?;
     let cfg = format!(
-        "set timeout=3\nset default=0\nserial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console\n\n\
+        "set timeout=0\nset default=0\nserial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console\n\n\
          menuentry \"oxide (multiboot2)\" {{\n    \
          multiboot2 /boot/oxide-{arch} BOOT_IMAGE=/boot/oxide-{arch} root=/dev/oxide0 ro quiet console=ttyS0,115200\n    \
          boot\n}}\n");
