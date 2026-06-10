@@ -36,7 +36,7 @@ pub mod zombies;
 pub mod sigpend;
 pub mod tick_deadline;
 
-pub use ttwu::{try_to_wake_up, select_task_rq, resched_curr};
+pub use ttwu::{try_to_wake_up, select_task_rq, resched_curr, relocate_for_affinity};
 
 pub use runqueue::{global, Runqueue};
 pub use schedule::{
