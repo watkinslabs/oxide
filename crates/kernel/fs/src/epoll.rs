@@ -38,7 +38,7 @@ const EPOLL_DATA_OFF: usize = 4;
 #[cfg(target_arch = "aarch64")]
 const EPOLL_DATA_OFF: usize = 8;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct EpollEntry {
     pub fd: i32,
     pub events: u32,
@@ -49,6 +49,13 @@ pub struct EpollEntry {
     /// once — not every scan. Without this, systemd's sd-event (which uses
     /// EPOLLET) busy-looped epoll_pwait forever on always-ready fds.
     pub et_seen: u32,
+    /// Weak ref to the watched inode, captured at ADD, so EpollInode::poll()
+    /// (nested-epoll readiness) can scan entries WITHOUT an fd_table — a
+    /// nested epoll fd is POLLIN-readable only when one of its entries would
+    /// fire. Without poll(), EpollInode used the default always-ready poll →
+    /// any parent epoll (e.g. Go's netpoller watching a fsnotify watcher
+    /// epoll) spun forever.
+    pub inode: Option<alloc::sync::Weak<dyn vfs::Inode>>,
 }
 
 /// EPOLLET — edge-triggered (Linux `EPOLLET` = 1<<31).
@@ -112,6 +119,26 @@ impl Inode for EpollInode {
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Err(VfsError::Einval) }
     fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+    /// A nested epoll fd is POLLIN-readable iff one of its entries WOULD fire
+    /// (mirrors scan_once, read-only). Without this the default always-ready
+    /// poll made any PARENT epoll watching this one (e.g. Go's netpoller over
+    /// an fsnotify watcher epoll) spin in epoll_pwait forever. # C: O(N_entries)
+    fn poll(&self) -> u32 {
+        let list = self.entries.lock();
+        for e in list.iter() {
+            let inode = match e.inode.as_ref().and_then(|w| w.upgrade()) {
+                Some(i) => i, None => continue,
+            };
+            let ready = inode.poll() & e.events;
+            let fires = if e.events & EPOLLET != 0 {
+                (ready & !e.et_seen) != 0
+            } else {
+                ready != 0
+            };
+            if fires { return vfs::POLL_IN; }
+        }
+        0
+    }
 }
 
 /// F181: EpollInode is the wake-callback recipient registered by
@@ -200,7 +227,8 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             if list.iter().any(|e| e.fd == fd) {
                 return -(Errno::Eexist.as_i32() as i64);
             }
-            list.push(EpollEntry { fd, events, data, et_seen: 0 });
+            list.push(EpollEntry { fd, events, data, et_seen: 0,
+                inode: target_inode.as_ref().map(Arc::downgrade) });
             // F181: targeted-wake subscribe if the inode supports it.
             #[cfg(target_os = "oxide-kernel")]
             if let Some(inode) = target_inode.as_ref() {

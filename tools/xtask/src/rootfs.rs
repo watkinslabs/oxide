@@ -424,6 +424,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("gron", "gron", "/usr/bin/gron"),
         ("pv", "pv", "/usr/bin/pv"),
         ("entr", "entr", "/usr/bin/entr"),
+        ("glow", "glow", "/usr/bin/glow"),
+        ("micro", "micro", "/usr/bin/micro"),
+        ("starship", "starship", "/usr/bin/starship"),
         // duf/glow/micro (Go) + starship (Rust): build recipes vendored +
         // binaries built, but NOT staged — they HANG on startup, UNKILLABLY
         // (verified post-F425-SMP: `timeout 6 duf --version` never returns,
