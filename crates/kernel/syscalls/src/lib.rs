@@ -14,6 +14,7 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 #[path = "315_sched_getattr.rs"] pub mod s315_sched_getattr; #[path = "459_lsm_get_self_attr.rs"] pub mod s459_lsm_get; #[path = "460_lsm_set_self_attr.rs"] pub mod s460_lsm_set;
 #[path = "465_listxattrat.rs"] pub mod s465_listxattrat; #[path = "466_removexattrat.rs"] pub mod s466_removexattrat; #[path = "456_futex_requeue.rs"] pub mod s456_futex_requeue;
 #[path = "468_file_getattr.rs"] pub mod s468_file_getattr; #[path = "469_file_setattr.rs"] pub mod s469_file_setattr; #[path = "471_rseq_slice_yield.rs"] pub mod s471_rseq_slice_yield;
+#[path = "335_uretprobe.rs"] pub mod s335_uretprobe; #[path = "453_map_shadow_stack.rs"] pub mod s453_map_shadow_stack;
 #[path = "142_sched_setparam.rs"] pub mod s142_sched_setparam; #[path = "467_open_tree_attr.rs"] pub mod s467_open_tree_attr; #[path = "013_rt_sigaction.rs"] pub mod s013_rt_sigaction;
 #[path = "014_rt_sigprocmask.rs"] pub mod s014_rt_sigprocmask; #[path = "062_kill.rs"] pub mod s062_kill; #[path = "127_rt_sigpending.rs"] pub mod s127_rt_sigpending;
 #[path = "128_rt_sigtimedwait.rs"] pub mod s128_rt_sigtimedwait; #[path = "129_rt_sigqueueinfo.rs"] pub mod s129_rt_sigqueueinfo; #[path = "130_rt_sigsuspend.rs"] pub mod s130_rt_sigsuspend;
