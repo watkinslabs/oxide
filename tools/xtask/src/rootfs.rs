@@ -527,7 +527,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             "nohup", "env", "printf", "printenv", "pwd",
             "expr", "factor", "expand", "unexpand", "fold", "fmt",
             "split", "csplit", "comm", "join", "paste", "shuf", "shred",
-            "df", "du", "sync", "kill", "nice", "timeout", "tty",
+            "df", "du", "sync", "kill", "nice", "timeout", "tty", "stty",
             "md5sum", "sha1sum", "sha256sum", "sha512sum", "cksum",
             "base32", "base64", "basenc", "od",
             "nl", "pr", "ptx", "tsort", "truncate", "link", "unlink",
