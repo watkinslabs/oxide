@@ -163,11 +163,13 @@ Group small/related tools per PR; verify each runs.
   resource, destructive op needing confirmation).
 
 ## E. Deferred robustness (revisit after distro/vendor; no active bug)
-- [ ] **duf filesystem-scan loop** (duf-specific; the shared Go/Rust hang is
-      fixed): `duf`/`duf --json` loops doing ~920 statx during its mount scan
-      (other Go apps run fine). Trace duf's statx/mountinfo reads; likely a
-      statx-on-a-mount or /proc/self/mountinfo parse that never terminates.
-      Then stage duf + verify.
+- [ ] **duf filesystem-scan loop** (duf-specific; shared Go/Rust hang fixed):
+      `duf` loops on openat+name_to_handle_at+statx+close (~2-3k each, growing)
+      — a non-terminating mount/device enumeration (name_to_handle_at IS
+      implemented, not a stub). Likely a directory readdir/getdents that never
+      returns EOF (duf walks /dev or /sys/block) OR a mountinfo re-scan. Trace
+      the openat PATHS (add path logging) / getdents on the scanned dir. One
+      niche app; lower priority than the broader buildout. Then stage + verify.
 - [x] **Go/Rust app startup hang — ALL 3 BUGS FIXED**. (1) timerfd ABSTIME,
       (2) sys_exit clear_child_tid #PF (#1684), (3) EpollInode had no poll() →
       default always-ready → a parent epoll watching a nested epoll (Go

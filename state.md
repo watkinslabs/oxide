@@ -1,43 +1,53 @@
-# Session hand-off — SMP core DONE; starting Box B (autonomous /loop)
+# Session hand-off — SMP done; vendor-app buildout in progress (autonomous /loop)
 
 Driving `smp-distro-plan.md` as a self-paced /loop. Merge on local-green
 (= CI-green here: build both arches + hosted tests + spec-lint, all local;
 pre-push hook runs SMP=2 smoke). Merge with `--admin` (no CI wait).
 
-## SMP scheduler rework COMPLETE (F425 Phase A/B + Phase C core)
-Both arches boot SMP=2 to login with online=2 and APs running real migrated
-user tasks. Merged: #1662 Phase A (one switch engine + per-task IRQ fix),
-#1664 B1 (rq-lock-across-switch + deferred reap), #1666 B3.1 (x86 AP online),
-#1667 B3.2 (per-CPU TSS), #1668 B3.3 (per-CPU syscall slots gs:[8]/[16]),
-#1669 B3.4 (x86 AP runs scheduler; root cause was AP on trampoline GDT →
-ltr #GP → triple fault; fix load_kernel_gdt_for_ap), #1670 B2 (ttwu
-wake-time placement select_task_rq + resched IPI), #1671 B3.5 (arm AP runs
-scheduler via AP_IDLE_HOOK), #1672 B4 (affinity relocate on setaffinity),
-#1673 B5 (newidle balance + cache-hot guard), #1674 Phase C on_cpu handshake
-(closes ttwu-vs-switch-off race). sched miri-clean (89 tests, no UB).
+## DONE this session (PRs #1662–#1686, ~20 PRs)
+- **SMP scheduler rework COMPLETE** (Phase A/B + Phase C core): both arches
+  boot SMP=2 to login, online=2, APs run migrated user tasks. One switch
+  engine + per-task IRQ, rq-lock-across-switch + deferred reap, x86+arm AP
+  scheduling, ttwu wake-placement + resched IPI, affinity relocate, newidle +
+  cache-hot balance, on_cpu handshake. sched miri-clean. (Phase C remaining
+  irqsave/loom = §E, no active bug.)
+- **Syscall coverage**: tools/syscall-audit.py green (383/384 routed);
+  uretprobe→SIGILL, map_shadow_stack→ENOSYS(no-CET), removed bogus NR_UPROBE;
+  listns→§E (ns registry).
+- **Box B cleanups**: dropped "Tier 1/2/3" jargon → roles; busybox scrubbed.
+- **Box C distro**: login-shell sourcing, python3 encodings, stty — all
+  VERIFIED + gated in boot-smoke-login.sh. Phase 15 net substantively met
+  (oracle/lo/loopback); rtnetlink ip-dump → §E. Phase 16 real-ns → §E.
+- **Box D vendor apps**: base set + 24 broader apps VERIFIED running both
+  arches (rg/fd/jq/bat/eza/curl/wget/tmux/htop/btop/dust/procs/sd/delta/…),
+  gated (BASEAPPS=5).
+- **3 KERNEL BUGS fixed (Go/Rust app-hang thread)**: (1) timerfd ignored
+  TFD_TIMER_ABSTIME (#1684), (2) sys_exit clear_child_tid #PF crashed the
+  kernel on threaded exit (#1684), (3) EpollInode had no poll() → nested epoll
+  always-ready → parent epoll spun (#1686). micro/glow/starship now RUN both
+  arches, gated GOAPPS=2. Likely unblocks a CLASS of epoll-nesting/async apps.
 
-Phase C remaining (irqsave legacy-lock conversion + loom model-checks) is
-DEFERRED to plan §E "Deferred robustness" — no active bug (SMP stable across
-all stress); sequenced after the distro/vendor work per user priority.
-
-## NEXT (first unchecked box): Box C — distro correctness
-Box B DONE: syscall coverage (#1676) + Tier vocab dropped + busybox scrubbed.
-Box C: [done] login-shell #1678, python3 #1679, stty staged (echo deep-dive→§E). NEXT: Phase 15 net acceptance
-("No module named 'encodings'"), bash serial echo (BUG A — readline redisplay),
-Phase 15 net acceptance, Phase 16 real namespace isolation (+ listns/470).
-Then Box D vendor apps (tmux/htop/ripgrep/fd/jq/curl/… real vendor cross-builds).
-Then Box C (distro: login-shell, python3 encodings, bash serial echo, Phase
-15/16) and Box D (vendor apps — tmux/htop/ripgrep/fd/jq/curl/… via real
-vendor cross-builds, staged + verified running). See smp-distro-plan.md.
+## NEXT — highest-value remaining (all substantial/focused)
+- More vendor apps: NEW ones (zip/unzip/dash/zsh/fish/neovim/tig/…) need
+  fetch+build infra written (no fetch scripts yet; all easy ones vendored).
+  Re-verify vendored TUI/async apps now that epoll-nesting works.
+- §E rtnetlink ip-dump fix (`ip`/`ss` truncate — "Dump terminated"; recv/build
+  paths look correct; needs raw-netlink-byte trace).
+- §E duf scan loop (duf-specific; openat+name_to_handle_at+statx never
+  terminates — readdir-no-EOF or mountinfo re-scan).
+- §E Phase 16 real namespaces; Phase C irqsave/loom hardening.
 
 ## DEBUG RECIPES (carry forward)
-- SMP=2 boot: `OXIDE_SMP=2 ./tools/boot-smoke.sh x86 300` (BARE command — no
-  pkill prefix; it aborts the shell line under set -e). arm: `... arm 400`.
-- 5×SMP=2 rep: `bash /tmp/smp2rep.sh` (checks login + online=2).
-- Hot-path stress: `MAXBOOTS=12 python3 /tmp/diag-hang-mon.py` (rebuilds ISO,
-  hypervisor-monitored boots, dumps regs on hang). SMP=1.
-- Crash (qemu exits) = triple fault → hypervisor `info registers -a`
-  (-monitor unix:..., diag-hang-mon.py pattern); addr2line against
-  target/x86_64-unknown-oxide-kernel/release/oxide-x86_64.
-- ISO must be rebuilt: `xtask grub --arch x86_64 --build-only`.
-- Multi-line git commit → `-F file`. Merge on local-green via `--admin`.
+- SMP=2 boot: `OXIDE_SMP=2 ./tools/boot-smoke.sh x86 300` (BARE command —
+  pkill prefixes abort the line under set -e). arm: `... arm 400`.
+- Stress: `MAXBOOTS=12 python3 /tmp/diag-hang-mon.py` (rebuilds ISO,
+  hypervisor-monitored boots). Run stress + smoke SEQUENTIALLY (qemu contends).
+- Syscall trace: build/boot FEATURES=debug-syscall → `[SYS] pid=.. nr=.. a0..a2`
+  per entry (a0 ambiguous across syscalls — fd vs signal/count).
+- epoll readiness trace: klog in epoll.rs scan_once logging the reported fd's
+  ino (high byte = type: 0x10 pipe, 0x40 eventfd, 0x71 inotify, 0x72 signalfd,
+  0x73 timerfd, 0x74 epoll).
+- App-run gate: BACKGROUND the app + file-check + computed marker (VAR=$N,
+  expands only in OUTPUT) — NEVER a foreground `timeout` (unkillable spin
+  blocks it) or a literal marker (the wait_for echo false-matches it).
+- ISO rebuild: `xtask grub --arch x86_64 --build-only`. Multi-line commit: -F.
