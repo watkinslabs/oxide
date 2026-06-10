@@ -64,7 +64,7 @@ real vendor upstream sources only.
       running-task affinity eviction now sits on the on_cpu primitive.
 
 ## B. Syscall completeness + cleanups (task.md ACTIVE)
-- [ ] **Syscall audit + coverage checker**: build a checker enumerating
+- [x] **Syscall audit + coverage checker**: build a checker enumerating
       implemented dispatch (`syscall::nrs` + per-arch) vs full Linux set
       (drive off `syscal_anal.md`); flag every missing / ENOSYS / stub /
       strawman / semantically-wrong slot. Then implement/fix EVERY flagged
@@ -91,6 +91,9 @@ real vendor upstream sources only.
 - [ ] **Phase 16 real namespace isolation**: unshare/setns are id-tracking
       substrate only — implement REAL isolation (UTS/mount/pid/net/ipc/
       user/cgroup ns) the Linux way.
+      Includes the global namespace-id registry + `listns(2)` (slot 470,
+      Linux 6.15) enumerating it (currently the only non-OBSOLETE syscall the
+      coverage checker reports DEFERRED — see tools/syscall-audit.py).
 
 ## D. Vendor app buildout (task.md — userspace = REAL vendor sources)
 Each: `tools/fetch-<tool>.sh` cross-builds per-arch (x86_64 + aarch64

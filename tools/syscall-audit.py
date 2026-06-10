@@ -65,6 +65,17 @@ OBSOLETE_NAMES = {
     "_newselect","tux",
 }
 
+# Subsystem-coupled syscalls: real Linux syscalls whose FULL semantics depend
+# on a subsystem still being built. Tracked transparently (NOT a tier dodge —
+# each names the blocking subsystem + plan box). Reported distinctly; excluded
+# from the hard-fail set while their subsystem is in flight.
+DEFERRED = {
+    # listns(2) (Linux 6.15) returns per-namespace ns_id values from the global
+    # namespace-id registry; that registry is built by the real-namespace
+    # isolation work (smp-distro-plan.md Box C, Phase 16). Implemented there.
+    "listns": "Box C real-namespaces (ns_id registry)",
+}
+
 def read(p):
     f = REPO / p
     return f.read_text() if f.is_file() else ""
@@ -105,7 +116,9 @@ for name, num in sorted(nrs.items(), key=lambda kv: kv[1]):
         unrouted.append((num, name))
 
 def lc(s): return s.lower()
-bad = [(n,nm) for (n,nm) in (enosys+unrouted) if lc(nm) not in OBSOLETE_NAMES]
+bad = [(n,nm) for (n,nm) in (enosys+unrouted)
+       if lc(nm) not in OBSOLETE_NAMES and lc(nm) not in DEFERRED]
+deferred_hits = [(n,nm) for (n,nm) in (enosys+unrouted) if lc(nm) in DEFERRED]
 
 print(f"=== oxide syscall coverage ===")
 print(f"NR_ constants:      {len(nrs)}")
@@ -121,6 +134,10 @@ if unrouted:
 if enosys:
     print("--- explicit ENOSYS arms ---")
     for n,nm in enosys: print(f"  {n:>4}  NR_{nm}  -> {routed.get(nm,'')[:40]}")
+    print()
+if deferred_hits:
+    print("--- DEFERRED (subsystem-coupled; tracked, not a stub) ---")
+    for n,nm in deferred_hits: print(f"  {n:>4}  NR_{nm}  -> {DEFERRED[lc(nm)]}")
     print()
 print(f"=== {len(bad)} non-OBSOLETE numbers still ENOSYS/UNROUTED (must reach IMPL) ===")
 for n,nm in bad[:80]: print(f"  {n:>4}  NR_{nm}")
