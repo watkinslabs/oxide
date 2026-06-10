@@ -82,10 +82,12 @@ real vendor upstream sources only.
       non-login, fix in util-linux login source, not a shim.)
 - [x] **python3 encodings**: "No module named 'encodings'" — stage the
       stdlib path / zip correctly (real CPython layout, no shim).
-- [ ] **bash serial echo (BUG A)**: deep readline runtime trace (RL_TRACE /
-      strace-equivalent) — kernel verified correct; find why rl_redisplay
-      doesn't flush the per-char echo on our terminal. Stage `stty`
-      (coreutils applet missing from rootfs) as part of this.
+- [x] **bash serial echo (BUG A) — stty staged + gated**; the readline
+      per-char-echo deep-dive is DEFERRED to §E. Per task.md: KERNEL EXONERATED
+      (os.write/cat echo per-char; select correct; winsize 80x24), it is a
+      subtle readline RUNTIME behavior, cosmetic on serial, and explicitly
+      "not a loop-sized fix" / "lower priority than shipping features".
+      `stty` (coreutils applet) is now symlinked + gated in boot-smoke-login.sh.
 - [ ] **Phase 15 acceptance**: loopback nc/ping clean; lo in /proc/net/dev;
       net oracle tests pass → close Phase 15.
 - [ ] **Phase 16 real namespace isolation**: unshare/setns are id-tracking
@@ -145,6 +147,11 @@ Group small/related tools per PR; verify each runs.
   resource, destructive op needing confirmation).
 
 ## E. Deferred robustness (revisit after distro/vendor; no active bug)
+- [ ] **BUG A readline per-char echo** (cosmetic, serial-only): readline reads
+      the char (tab-completion works) but doesn't emit the incremental echo
+      write in our env. Kernel exonerated. Needs an RL_TRACE/strace-equivalent
+      runtime trace of bash/readline — a focused deep-dive (task.md item 6).
+
 - [ ] **Phase C ongoing hardening**: convert legacy timer-ISR-shared process
       locks (ZOMBIES/registry/wait-lists) to irqsave-or-softirq-deferred
       (today safe: syscalls hold them IF=0, no IF=1 kthread takes them); loom

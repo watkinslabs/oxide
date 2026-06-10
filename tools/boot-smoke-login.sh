@@ -103,6 +103,9 @@ wait_for 'login_shell[[:space:]]\+on' "login-shell (shopt login_shell on)" "$dea
 # 'encodings'"). Distinctive palindrome avoids false log matches.
 printf 'python3 -c "print(123454321)"\n' >&9
 wait_for '123454321' "python3 (encodings/stdlib zip)" "$deadline"
+# Box C: stty (coreutils applet) is staged + works — queries the tty winsize.
+printf 'stty size\n' >&9
+wait_for '24 80' "stty (coreutils applet)" "$deadline"
 
 # Optional logout → getty-respawn check (CHECK_LOGOUT=1): exit the
 # shell and confirm a fresh `oxide login:` prompt reappears (systemd
