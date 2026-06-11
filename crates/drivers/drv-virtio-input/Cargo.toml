@@ -18,7 +18,7 @@ syscall = { path = "../../kernel/syscall" }
 vfs     = { path = "../../kernel/vfs" }
 softirq = { path = "../../kernel/softirq" }
 tty     = { path = "../../kernel/tty" }
-fbcon   = { path = "../../drivers/fbcon" }
+vt      = { path = "../../drivers/vt" }
 pmm     = { path = "../../kernel/mm-pmm" }
 sched   = { path = "../../kernel/sched" }
 

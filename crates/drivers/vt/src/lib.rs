@@ -216,10 +216,16 @@ pub fn openqry() -> KResult<u8> {
     Err(Error::Busy)
 }
 
-/// VT_ACTIVATE: switch foreground to VT `n` (1..63).
-/// Allocates the slot if currently unallocated. Returns `Err(Inval)`
-/// out of range, `Err(Busy)` if the source VT has VT_LOCKSWITCH set.
-/// # C: O(1)
+/// VT_ACTIVATE / Ctrl-Alt-F<n>: switch foreground to VT `n` (1..63) — the
+/// ONE switch path (Linux `change_console`): it updates the administrative
+/// active VT, redraws the framebuffer through the consw (`fbcon::switch_vt`),
+/// AND retargets keyboard input (`tty::live::set_foreground`) — so the ioctl
+/// and the keyboard can never diverge into separate foreground notions. The
+/// 1-based VT number is consistent across all three layers (fbcon vc_cons[N]
+/// = ttyN for N≥1). Allocates the slot if unallocated. `Err(Inval)` out of
+/// range; `Err(Busy)` if the source VT has VT_LOCKSWITCH set (the switch is
+/// refused — both ioctl and keyboard honour the lock).
+/// # C: O(cols*rows) — full-screen repaint on the switch.
 pub fn activate(n: u8) -> KResult<()> {
     if n < 1 || n as usize > MAX_NR_CONSOLES { return Err(Error::Inval); }
     let mut g = SLOTS.lock();
@@ -227,7 +233,15 @@ pub fn activate(n: u8) -> KResult<()> {
     if cur > 0 && g[(cur - 1) as usize].locked { return Err(Error::Busy); }
     g[(n - 1) as usize].allocated = true;
     drop(g);
-    ACTIVE_VT.store(n, Ordering::Release);
+    ACTIVE_VT.store(n, Ordering::Release);  // administrative active VT
+    // The display + input retarget are kernel-only (fbcon::kernel and the
+    // tty live ring don't exist on the host build, where the unit tests
+    // exercise the tracking/allocation logic above).
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        fbcon::kernel::switch_vt(n);        // FB view: consw full repaint
+        tty::live::set_foreground(n);       // keyboard input target
+    }
     Ok(())
 }
 
