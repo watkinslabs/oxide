@@ -153,6 +153,14 @@ impl Inode for ConsoleInode {
         vt_tty::vt_tty(vt).poll()
     }
 
+    /// The per-VT tty's poll/select/epoll wait queue — poll/select/epoll
+    /// subscribe here and the VT's RX/hangup `notify()`s it (Linux
+    /// `->poll` wait queue). # C: O(1)
+    fn poll_subscribers(&self) -> Option<&vfs::PollSubscribers> {
+        let vt = if self.vt == 0 { foreground_vt() } else { self.vt };
+        Some(vt_tty::vt_tty(vt).poll_subs())
+    }
+
     /// Write `buf` to the video VT. The per-VT `TtyStruct` owns OPOST: its
     /// N_TTY runs ONLCR, then `VtConsoleDriver::write` feeds the post-OPOST
     /// bytes to the fbcon emulator (→ vc_data → consw cell-blit) — rendered
@@ -195,6 +203,9 @@ impl Inode for SerialInode {
         Ok(n)
     }
     fn poll(&self) -> u32 { static_console::poll() }
+    fn poll_subscribers(&self) -> Option<&vfs::PollSubscribers> {
+        static_console::poll_subscribers()
+    }
     fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
         Ok(static_console::write(buf))
     }

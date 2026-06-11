@@ -63,7 +63,20 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
         if wr || ww || we { wanted.push((fd, wr, ww)); }
         let _ = we;
     }
-    loop {
+    // Linux `->poll`: register this call's waiter on each selected fd's OWN
+    // wait queue (PollSubscribers). The fd's readiness transition `notify()`s
+    // only its subscribers — no global broadcast.
+    let waiter = crate::poll::poll_common::PollWaiter::new();
+    let mut subbed: alloc::vec::Vec<vfs::InodeRef> = alloc::vec::Vec::new();
+    for &(fd, _, _) in &wanted {
+        if let Ok(file) = fdt.get(fd as i32) {
+            if let Some(s) = file.inode().poll_subscribers() {
+                waiter.subscribe(s);
+                subbed.push(file.inode().clone());
+            }
+        }
+    }
+    let rv: i64 = loop {
         // Zero user fd_sets so we can write ready bits in.
         for &p in &[readfds_p, writefds_p, exceptfds_p] {
             if p != 0 && p < USER_VA_END {
@@ -96,7 +109,7 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
                 klog::write_dec_u64(ready as u64);
                 klog::write_raw(b"\n");
             }
-            return ready;
+            break ready;
         }
         // F205: signal-pending check. Without this the loop sits in
         // tick_yield forever when the only thing about to break the
@@ -116,7 +129,7 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
                 klog::write_hex_u64(mask);
                 klog::write_raw(b"\n");
             }
-            return -(Errno::Eintr.as_i32() as i64);
+            break -(Errno::Eintr.as_i32() as i64);
         }
         // Deadline / non-block check + Linux-way block.
         #[cfg(target_arch = "x86_64")]
@@ -126,26 +139,26 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
         if let Some(dl) = deadline_ns {
             if now >= dl {
                 debug_ssh! { klog::write_raw(b"[INFO]  ssh-trace: select timeout\n"); }
-                return 0;
+                break 0;
             }
         }
-        // B57: sleep on the poll wait queue (zero CPU) instead of the old
-        // busy-yield re-poll. A data-ready site (`notify_poll_waiters`)
-        // wakes us; the bounded re-scan deadline caps worst-case latency
-        // for fd types whose ready-site doesn't post a wake yet. Matches
-        // the epoll_wait blocking model.
+        // Park until a subscribed fd's `notify()` wakes us, or the caller's
+        // timeout. Bounded safety-net rescan only covers polled fds with no
+        // event source (timerfd) + the scan→park window (same as epoll_wait).
         const RESCAN_NS: u64 = 20_000_000;
         let rescan_at = now.saturating_add(RESCAN_NS);
         let park_dl = match deadline_ns {
             Some(d) => core::cmp::min(d, rescan_at),
             None    => rescan_at,
         };
-        // SAFETY: process ctx; preempt-off across the syscall; park_with_deadline bumps Arc + marks Sleeping + stamps the wake deadline; tick_yield yields into the scheduler. Re-scan on the next loop after wake.
-        unsafe {
-            sched::live::POLL_WAIT.park_with_deadline(park_dl);
-            sched::live::tick_yield();
-        }
+        // SAFETY: process ctx; preempt-off across the syscall; park+yield per `13§8`.
+        unsafe { waiter.park_until(park_dl); }
+    };
+    // Drop our registration from every fd we subscribed to.
+    for ino in &subbed {
+        if let Some(s) = ino.poll_subscribers() { waiter.unsubscribe(s); }
     }
+    rv
 }
 
 #[inline]
