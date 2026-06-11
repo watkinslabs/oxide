@@ -120,6 +120,42 @@ fn password_echo_off_reads_line_nothing_on_uart() {
     assert!(out.tx().is_empty(), "uart should be silent, got {:?}", out.tx());
 }
 
+// --- TCFLSH input flush (the getty-respawn login bug) -------------------
+
+// Reproduces the serial-login failure: a stale terminal-query answerback
+// (`ESC[50;160R`, injected by the kernel's DSR responder during boot) sits
+// in the canonical line buffer. Without TCFLSH, agetty's next read returns
+// the stale bytes PREPENDED to the username → invalid user → login fails →
+// getty respawns. `tcflush(TCIFLUSH)` must discard it so the username reads
+// clean.
+#[test]
+fn tcflush_iflush_drops_stale_answerback_before_username() {
+    let (tty, _out, _sig) = build();
+    // Boot-time DSR answerback lands in the console input (no newline → it
+    // sits in the unfinished canonical line).
+    tty.receive_from_driver(b"\x1b[50;160R");
+    // agetty drops stale type-ahead before prompting (TCFLSH TCIFLUSH).
+    tty.flush(tty::TtyFlush::Input);
+    // User now types the username.
+    tty.receive_from_driver(b"root\n");
+    let mut buf = [0u8; 64];
+    let n = tty.read(&mut buf).bytes_or_zero();
+    assert_eq!(&buf[..n], b"root\n", "username must read clean after TCIFLUSH");
+}
+
+// Without the flush the bug manifests: the stale answerback contaminates
+// the line (documents the failure mode the fix prevents).
+#[test]
+fn without_flush_answerback_contaminates_username() {
+    let (tty, _out, _sig) = build();
+    tty.receive_from_driver(b"\x1b[50;160R");
+    tty.receive_from_driver(b"root\n");
+    let mut buf = [0u8; 64];
+    let n = tty.read(&mut buf).bytes_or_zero();
+    assert_eq!(&buf[..n], b"\x1b[50;160Rroot\n",
+        "without TCIFLUSH the stale answerback prepends to the username");
+}
+
 // --- ctrl-C → SIGINT ----------------------------------------------------
 
 #[test]

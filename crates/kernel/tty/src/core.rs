@@ -50,6 +50,32 @@ use crate::ldisc::{vmin_vtime_decision, LdiscOps, NTty, Sig, TtyDriverHooks, Vmt
 use crate::pty::{Winsize, TERMIOS_BYTES};
 use crate::wait::TtyWait;
 
+/// TCFLSH queue selector (the ioctl arg). Linux uapi: TCIFLUSH=0 (input),
+/// TCOFLUSH=1 (output), TCIOFLUSH=2 (both). Typed so the ioctl shim never
+/// passes a bare literal (07§5).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TtyFlush {
+    /// TCIFLUSH — discard unread input.
+    Input,
+    /// TCOFLUSH — discard untransmitted output.
+    Output,
+    /// TCIOFLUSH — discard both.
+    Both,
+}
+
+impl TtyFlush {
+    /// Decode the TCFLSH ioctl arg (0/1/2). Unknown values map to `Both`
+    /// (conservative — Linux rejects with EINVAL, but flushing more is
+    /// harmless and keeps the shim total). # C: O(1)
+    pub fn from_arg(arg: u64) -> Self {
+        match arg { 0 => Self::Input, 1 => Self::Output, _ => Self::Both }
+    }
+    /// True when input should be flushed. # C: O(1)
+    pub fn input(self) -> bool { matches!(self, Self::Input | Self::Both) }
+    /// True when output should be flushed. # C: O(1)
+    pub fn output(self) -> bool { matches!(self, Self::Output | Self::Both) }
+}
+
 /// Outcome of a blocking `TtyStruct::read`. The syscall layer maps these:
 /// `Bytes(n)` → `n`, `Eof` → `0`, `Interrupted` → `-EINTR`. Returning an
 /// explicit enum (vs overloading `usize`) keeps the EINTR signal honest
@@ -387,6 +413,15 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         let mut g = self.inner.lock();
         g.ldisc.set_termios(new);
         g.driver.set_termios(new);
+    }
+
+    /// TCFLSH: discard queued I/O. `qsel` is the ioctl arg — TCIFLUSH(0)
+    /// drops unread input, TCOFLUSH(1) drops untransmitted output,
+    /// TCIOFLUSH(2) both. Also the input-flush half of TCSETSF. # C: O(1)
+    pub fn flush(&self, qsel: TtyFlush) {
+        let mut g = self.inner.lock();
+        if qsel.input() { g.ldisc.flush_input(); }
+        if qsel.output() { g.ldisc.flush_output(); }
     }
 
     // --- winsize -------------------------------------------------------
