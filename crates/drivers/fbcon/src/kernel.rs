@@ -173,10 +173,15 @@ pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
     // Paint the blank system console once (full repaint).
     vtdata::switch(&mut sys.vc, &mut renderer);
     let mut vc_cons: [Option<Box<VcCell>>; N_SLOTS] = [const { None }; N_SLOTS];
-    vc_cons[0] = Some(sys);
+    // Linux device parity: fbcon slot N == /dev/ttyN (1-based). Slot 1 is
+    // the default foreground VT (`tty1`) — what `/dev/console` aliases, where
+    // boot/printk render, and what the keyboard targets. (Slot 0 is unused;
+    // there is no `/dev/tty0` VT, only the fg alias.) This keeps ONE notion of
+    // "foreground": fbcon fg == vt_tty foreground == keyboard target == 1.
+    vc_cons[1] = Some(sys);
     *VT_STATE.lock() = Some(VtState {
         vc_cons,
-        fg: 0,
+        fg: 1,
         renderer,
         cols,
         rows,

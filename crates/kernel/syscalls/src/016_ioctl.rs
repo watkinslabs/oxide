@@ -121,8 +121,12 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             // 24×80 default until the per-VT screen buffers land.
             let ws = match &pty_pair {
                 Some(pair) => pair.with_pair(|p| p.winsize),
-                None if (ino & 0xff) as u8 <= 1 => console::static_console::winsize_get(),
-                None       => console::vt_tty::vt_tty((ino & 0xff) as u8).winsize(),
+                None => match console::route(ino) {
+                    // Serial line: its own winsize (80×24 until the remote
+                    // resizes). Video VT: the framebuffer cell grid.
+                    console::TtyTarget::Serial => console::static_console::winsize_get(),
+                    console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).winsize(),
+                },
             };
             let bytes = ws.to_le_bytes();
             // SAFETY: arg validated 8-byte aligned; CPL=0 writes through caller's AS.
@@ -150,18 +154,18 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                     if fired { p.pending_sigwinch = false; }
                     (fired, p.foreground_pgid)
                 }),
-                // Serial system console (vt<=1): store on the TtyStruct and
-                // raise SIGWINCH on the live fg pgrp when it changed (T8).
-                None if (ino & 0xff) as u8 <= 1 => {
-                    let ch = console::static_console::winsize_set(ws);
-                    (ch, console::static_console::foreground_pgid())
-                }
-                // Numbered VT (B4a): store on the per-VT TtyStruct + raise
-                // SIGWINCH on its live fg pgrp when it changed.
-                None => {
-                    let tty = console::vt_tty::vt_tty((ino & 0xff) as u8);
-                    (tty.set_winsize(ws), tty.fg_pgrp())
-                }
+                // Store on the resolved tty + raise SIGWINCH on its live fg
+                // pgrp when it changed. Serial and video VT are independent.
+                None => match console::route(ino) {
+                    console::TtyTarget::Serial => {
+                        let ch = console::static_console::winsize_set(ws);
+                        (ch, console::static_console::foreground_pgid())
+                    }
+                    console::TtyTarget::Vt(vt) => {
+                        let tty = console::vt_tty::vt_tty(vt);
+                        (tty.set_winsize(ws), tty.fg_pgrp())
+                    }
+                },
             };
             if changed && fg != 0 {
                 // SIGWINCH = 28; bit (28-1) = 27.
@@ -181,14 +185,10 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             // /dev/ttyN, matching `ConsoleInode::new(vt)` in dev_console.rs.
             let snap = match &pty_pair {
                 Some(pair) => pair.with_pair(|p| p.termios),
-                None       => {
-                    let vt = (ino & 0xff) as u8;
-                    // T7: the serial system console (vt=0 alias, ino<=1)
-                    // owns its termios on the new TtyStruct; numbered VTs
-                    // keep the per-VT image.
-                    if vt <= 1 { console::static_console::termios_get() }
-                    else       { console::vt_tty::vt_tty(vt).termios() }
-                }
+                None => match console::route(ino) {
+                    console::TtyTarget::Serial => console::static_console::termios_get(),
+                    console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).termios(),
+                },
             };
             // SAFETY: arg validated 60-byte aligned; CPL=0 writes through caller's AS.
             unsafe {
@@ -214,14 +214,17 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                 // drop any type-ahead/answerback before the login prompt.
                 if req == TCSETSF { pair.with_pair(|p| p.flush_slave(true, false)); }
             } else {
-                let vt = (ino & 0xff) as u8;
-                // T7: login ECHO-off + bash raw mode must reach the
-                // serial console's N_TTY ldisc, not a dead side table.
-                if vt <= 1 { console::static_console::termios_set(&buf); }
-                else       { console::vt_tty::vt_tty(vt).set_termios(&buf); }
-                if req == TCSETSF {
-                    if vt <= 1 { console::static_console::flush(tty::TtyFlush::Input); }
-                    else       { console::vt_tty::vt_tty(vt).flush(tty::TtyFlush::Input); }
+                // login ECHO-off + bash raw mode must reach the resolved
+                // tty's N_TTY ldisc. TCSETSF also flushes input.
+                match console::route(ino) {
+                    console::TtyTarget::Serial => {
+                        console::static_console::termios_set(&buf);
+                        if req == TCSETSF { console::static_console::flush(tty::TtyFlush::Input); }
+                    }
+                    console::TtyTarget::Vt(vt) => {
+                        console::vt_tty::vt_tty(vt).set_termios(&buf);
+                        if req == TCSETSF { console::vt_tty::vt_tty(vt).flush(tty::TtyFlush::Input); }
+                    }
                 }
             }
             0
@@ -235,9 +238,10 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             if let Some(pair) = &pty_pair {
                 pair.with_pair(|p| p.flush_slave(sel.input(), sel.output()));
             } else {
-                let vt = (ino & 0xff) as u8;
-                if vt <= 1 { console::static_console::flush(sel); }
-                else       { console::vt_tty::vt_tty(vt).flush(sel); }
+                match console::route(ino) {
+                    console::TtyTarget::Serial => console::static_console::flush(sel),
+                    console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).flush(sel),
+                }
             }
             0
         }
@@ -268,20 +272,23 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                     pair.with_pair(|p| p.foreground_pgid = pgid);
                 }
             } else {
-                let vt = (ino & 0xff) as u8;
-                let is_console = vt <= 1;
+                let tgt = console::route(ino);
                 if req == TIOCGPGRP {
-                    let pgid = if is_console { console::static_console::foreground_pgid() }
-                               else          { console::vt_tty::vt_tty(vt).fg_pgrp() };
+                    let pgid = match tgt {
+                        console::TtyTarget::Serial => console::static_console::foreground_pgid(),
+                        console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).fg_pgrp(),
+                    };
                     // SAFETY: arg validated 4-byte aligned; CPL=0 writes.
                     unsafe { core::ptr::write_volatile(arg as *mut u32, pgid); }
                 } else {
                     // SAFETY: arg validated 4-byte aligned; CPL=0 reads.
                     let pgid = unsafe { core::ptr::read_volatile(arg as *const u32) };
-                    // T7: on the console, set the fg pgrp on the TtyStruct
-                    // (+ driver shadow) so ISIG (^C) targets the live fg.
-                    if is_console { console::static_console::set_foreground_pgid(pgid); }
-                    else          { console::vt_tty::set_fg_pgrp(vt, pgid); }
+                    // Set the fg pgrp on the TtyStruct (+ driver shadow) so
+                    // ISIG (^C) targets the live fg.
+                    match tgt {
+                        console::TtyTarget::Serial => console::static_console::set_foreground_pgid(pgid),
+                        console::TtyTarget::Vt(vt) => console::vt_tty::set_fg_pgrp(vt, pgid),
+                    }
                 }
             }
             0
@@ -315,7 +322,6 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                 });
                 return 0;
             }
-            let vt = (ino & 0xff) as u8;
             use core::sync::atomic::Ordering;
             let sid  = cur.sid.load(Ordering::Acquire);
             let pgid = cur.pgid.load(Ordering::Acquire);
@@ -325,11 +331,9 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             // shell decides it's a background job, every stdin read trips
             // SIGTTIN, and the shell stops itself right after login's
             // execvp — login passes PAM then respawns getty forever.
-            // T7: on the console, sid + fg pgrp live on the TtyStruct.
-            if vt <= 1 {
-                console::static_console::set_session_and_fg(sid, pgid);
-            } else {
-                console::vt_tty::set_session_and_fg(vt, sid, pgid);
+            match console::route(ino) {
+                console::TtyTarget::Serial => console::static_console::set_session_and_fg(sid, pgid),
+                console::TtyTarget::Vt(vt) => console::vt_tty::set_session_and_fg(vt, sid, pgid),
             }
             0
         }
@@ -345,9 +349,10 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             let sid: u32 = if let Some(pair) = &pty_pair {
                 pair.with_pair(|p| p.session_pid)
             } else {
-                let vt = (ino & 0xff) as u8;
-                if vt <= 1 { console::static_console::session() }
-                else       { console::vt_tty::vt_tty(vt).sid() }
+                match console::route(ino) {
+                    console::TtyTarget::Serial => console::static_console::session(),
+                    console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).sid(),
+                }
             };
             if sid == 0 { return -(Errno::Enotty.as_i32() as i64); }
             // SAFETY: arg validated 4-byte aligned; CPL=0 write through caller's AS.
@@ -361,18 +366,22 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             // to drop inherited ctty before its TIOCSCTTY-steal so a
             // real session leader doesn't already own the line.
             if pty_pair.is_some() { return 0; }
-            let vt = (ino & 0xff) as u8;
             let cur = match sched::live::current() {
                 Some(c) => c, None => return -(Errno::Eperm.as_i32() as i64),
             };
             use core::sync::atomic::Ordering;
             let my_sid = cur.sid.load(Ordering::Acquire);
-            if vt <= 1 {
-                if my_sid != 0 && console::static_console::session() == my_sid {
-                    console::static_console::notty();
+            match console::route(ino) {
+                console::TtyTarget::Serial => {
+                    if my_sid != 0 && console::static_console::session() == my_sid {
+                        console::static_console::notty();
+                    }
                 }
-            } else if my_sid != 0 && console::vt_tty::vt_tty(vt).sid() == my_sid {
-                console::vt_tty::notty(vt);
+                console::TtyTarget::Vt(vt) => {
+                    if my_sid != 0 && console::vt_tty::vt_tty(vt).sid() == my_sid {
+                        console::vt_tty::notty(vt);
+                    }
+                }
             }
             0
         }
@@ -899,8 +908,11 @@ fn handle_font_ioctl(req: u64, arg: u64) -> Option<i64> {
 /// # C: O(P) tasks in the fg pgrp.
 fn vt_apply_winsize(rows: u16, cols: u16) {
     let ws = tty::pty::Winsize { rows, cols, xpixel: 0, ypixel: 0 };
-    let changed = console::static_console::winsize_set(ws);
-    let fg = console::static_console::foreground_pgid();
+    // VT_RESIZE targets the foreground VIDEO console, not the serial line.
+    let fgvt = console::foreground_vt();
+    let tty = console::vt_tty::vt_tty(fgvt);
+    let changed = tty.set_winsize(ws);
+    let fg = tty.fg_pgrp();
     if changed && fg != 0 {
         use core::sync::atomic::Ordering;
         // SIGWINCH = 28; bit (28-1) = 27.

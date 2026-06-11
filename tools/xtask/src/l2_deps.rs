@@ -65,6 +65,7 @@ pub const SYSTEMD_STAGE: &[(&str, &str)] = &[
     ("usr/lib/systemd/system/default.target",       "/usr/lib/systemd/system/default.target"),
     ("usr/lib/systemd/system/console-shell.service", "/usr/lib/systemd/system/console-shell.service"),
     ("usr/lib/systemd/system/console-getty.service", "/usr/lib/systemd/system/console-getty.service"),
+    ("usr/lib/systemd/system/serial-getty-ttyS0.service", "/usr/lib/systemd/system/serial-getty-ttyS0.service"),
     ("usr/lib/systemd/system/sysinit.target",       "/usr/lib/systemd/system/sysinit.target"),
     ("usr/lib/systemd/system/basic.target",         "/usr/lib/systemd/system/basic.target"),
     ("usr/lib/systemd/system/multi-user.target",    "/usr/lib/systemd/system/multi-user.target"),
