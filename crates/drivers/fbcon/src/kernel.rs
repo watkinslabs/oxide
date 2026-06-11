@@ -415,6 +415,46 @@ pub fn screen_dump(with_attr: bool) -> alloc::vec::Vec<u8> {
     out
 }
 
+/// Live-resize VT `vt`'s text grid (Linux `fbcon_resize`). The physical
+/// framebuffer scanout is a FIXED size, so the text grid can only ever be
+/// made SMALLER than (or equal to) the native cell grid computed at
+/// `kernel_init` (`xres/CELL_W` × `yres/CELL_H`, stored in `st.cols/rows`):
+/// a request wider OR taller than native is REJECTED (`false`), exactly as
+/// `fbcon_resize` rejects a var that exceeds the fb's `xres/yres`.
+///
+/// When it fits, `vc_cons[vt]`'s `Vc` is reflowed via `Vc::resize`. The
+/// shared renderer (the scanout) stays at native size — we do NOT shrink
+/// the scanout; the unused fb area beyond the smaller grid simply stays
+/// blank. If `vt` is the foreground VT, a full repaint (`vtdata::switch`)
+/// redraws the resized `Vc` within the native fb. No-op pre-init → `false`.
+/// # C: O(cols*rows) — Vc realloc + (fg) repaint.
+pub fn resize_vt(vt: u8, cols: u16, rows: u16) -> bool {
+    if !READY.load(Ordering::Acquire) { return false; }
+    if cols == 0 || rows == 0 { return false; }
+    let mut blitted = false;
+    {
+        let mut guard = VT_STATE.lock();
+        let st = match guard.as_mut() { Some(s) => s, None => return false };
+        // Fixed scanout: reject anything larger than the native cell grid.
+        if cols > st.cols || rows > st.rows { return false; }
+        let i = st.ensure(vt);
+        let is_fg = i == st.fg as usize;
+        if let Some(cell) = st.vc_cons[i].as_mut() {
+            // The Emulator holds only parser state (no cached geometry); all
+            // rows/cols live in the Vc, so resizing the Vc is sufficient.
+            cell.vc.resize(cols, rows);
+            if is_fg {
+                // Renderer stays native-sized; repaint the resized Vc within it.
+                vtdata::switch(&mut cell.vc, &mut st.renderer);
+                DIRTY.store(true, Ordering::Release);
+                blitted = true;
+            }
+        }
+    }
+    if blitted { softirq::raise(softirq::Slot::FbconFlush); }
+    true
+}
+
 /// Currently-foreground fbcon VT index (0 = system console). Test/diag.
 /// # C: O(1).
 pub fn foreground() -> u8 {

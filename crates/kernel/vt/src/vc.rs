@@ -817,33 +817,79 @@ impl Vc {
         }
     }
 
-    /// Resize the grid to `cols`×`rows`, preserving overlapping content
-    /// (top-left anchored) and clamping the cursor. # C: O(cols*rows).
-    pub fn resize(&mut self, cols: u16, rows: u16) {
-        let cols = cols.max(1);
-        let rows = rows.max(1);
-        let mut next = vec![Cell::blank(self.attr); cols as usize * rows as usize];
-        let copy_rows = rows.min(self.rows);
-        let copy_cols = cols.min(self.cols);
+    /// Resize the grid to `new_cols`×`new_rows`, preserving overlapping
+    /// content + reflowing emulator geometry (Linux `vc_do_resize`).
+    ///
+    /// Row preservation matches Linux: when rows GROW or stay equal, the
+    /// existing rows keep their absolute index (top-anchored). When rows
+    /// SHRINK, Linux drops rows from the TOP so the cursor line stays
+    /// visible — we mirror that by copying the BOTTOM `new_rows` source
+    /// rows up to the new grid (`src_top = old_rows - new_rows`) and
+    /// rebasing the cursor's y by the same shift, so content around the
+    /// cursor is kept rather than the top of the screen. Columns are
+    /// always top-left anchored (col 0..min(old,new)); cells beyond the
+    /// old extent blank with the current attr.
+    ///
+    /// Cursor clamps into the new grid. The scroll region follows Linux:
+    /// a full-screen region (`scroll_bot == old_rows-1`) re-expands to
+    /// `new_rows-1`; otherwise top/bot clamp into the grid and reset to
+    /// full screen if the bounds become invalid. Tab stops rebuild at the
+    /// new width; `view_offset` clamps to the (unchanged) history length.
+    /// No-op if the dimensions are unchanged. # C: O(cols*rows).
+    pub fn resize(&mut self, new_cols: u16, new_rows: u16) {
+        let new_cols = new_cols.max(1);
+        let new_rows = new_rows.max(1);
+        if new_cols == self.cols && new_rows == self.rows {
+            return; // no-op on identical dimensions (Linux vc_do_resize early-out)
+        }
+        let old_rows = self.rows;
+        let old_cols = self.cols;
+        let was_full_region = self.scroll_bot == old_rows.saturating_sub(1);
+
+        let mut next = vec![Cell::blank(self.attr); new_cols as usize * new_rows as usize];
+        let copy_rows = new_rows.min(old_rows);
+        let copy_cols = new_cols.min(old_cols);
+        // When shrinking rows, source from the BOTTOM `new_rows` rows so the
+        // cursor's neighbourhood is kept (Linux drops from the top); when
+        // growing/equal, src_top == 0 (top-anchored).
+        let src_top = old_rows.saturating_sub(new_rows); // 0 unless shrinking
         for r in 0..copy_rows {
+            let src_r = src_top + r;
             for c in 0..copy_cols {
-                next[r as usize * cols as usize + c as usize] =
-                    self.cells[self.idx(c, r)];
+                next[r as usize * new_cols as usize + c as usize] =
+                    self.cells[src_r as usize * old_cols as usize + c as usize];
             }
         }
         self.cells = next;
-        self.cols = cols;
-        self.rows = rows;
-        self.tab_stops = default_tab_stops(cols);
-        self.x = self.x.min(cols - 1);
-        self.y = self.y.min(rows - 1);
-        self.scroll_top = 0;
-        self.scroll_bot = rows - 1;
+        self.cols = new_cols;
+        self.rows = new_rows;
+        self.tab_stops = default_tab_stops(new_cols);
+        // Cursor x clamps to the new width. y rebases by the same `src_top`
+        // shift applied to the content, then clamps to the new grid.
+        self.x = self.x.min(new_cols - 1);
+        self.y = self.y.saturating_sub(src_top).min(new_rows - 1);
+        // Scroll region (Linux vc_do_resize): a previously full-screen region
+        // re-expands; otherwise clamp into the grid, resetting to full screen
+        // when the bounds become invalid (top >= bot or bot out of range).
+        if was_full_region {
+            self.scroll_top = 0;
+            self.scroll_bot = new_rows - 1;
+        } else {
+            self.scroll_top = self.scroll_top.min(new_rows - 1);
+            self.scroll_bot = self.scroll_bot.min(new_rows - 1);
+            if self.scroll_top >= self.scroll_bot {
+                self.scroll_top = 0;
+                self.scroll_bot = new_rows - 1;
+            }
+        }
         self.wrap_pending = false;
-        self.dirty = vec![true; rows as usize];
+        self.dirty = vec![true; new_rows as usize];
         self.cursor_dirty = true;
-        // History rows hold the old column count; snap to live bottom so
-        // the renderer never blits a mismatched-width history row.
+        // History rows hold the OLD column count, so the renderer must not
+        // blit a scrollback row whose width mismatches the new grid: snap the
+        // view to the live bottom (Linux drops the scrollback view on resize).
+        // This trivially satisfies `view_offset <= history_len`, so the offset
+        // is never left stale past the (unchanged) history length.
         self.view_offset = 0;
     }
 
