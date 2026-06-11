@@ -187,6 +187,7 @@ dependencies = [
  "devfs",
  "hal",
  "klog",
+ "pmm",
  "sync",
  "syscall",
  "vfs",

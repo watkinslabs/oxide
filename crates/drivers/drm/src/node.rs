@@ -17,6 +17,9 @@ use crate::{
     DRM_IOCTL_MODE_GETPLANERESOURCES, DRM_IOCTL_MODE_GETPLANE,
     DRM_IOCTL_MODE_GETCRTC, DRM_IOCTL_MODE_GETENCODER,
     DRM_IOCTL_MODE_GETCONNECTOR,
+    DRM_IOCTL_MODE_CREATE_DUMB, DRM_IOCTL_MODE_MAP_DUMB,
+    DRM_IOCTL_MODE_DESTROY_DUMB, DRM_IOCTL_MODE_ADDFB2,
+    DRM_IOCTL_MODE_ADDFB, DRM_IOCTL_MODE_RMFB,
 };
 
 /// `struct drm_version` Linux UAPI (88 bytes on 64-bit).
@@ -98,6 +101,17 @@ H: Handlers=event0\n\
 B: EV=3\n\
 B: KEY=ffffffffffffffff\n\
 ") as vfs::InodeRef);
+}
+
+/// mmap backing for a DRM card inode (offset-keyed). The `offset` is
+/// the cookie returned by MODE_MAP_DUMB; it selects which dumb buffer's
+/// contiguous PA range to map straight into the process (VmaBacking::
+/// PhysRange — same path as /dev/fb0). Returns `None` when `inode` is
+/// not the DRM card, or the cookie/handle is unknown — caller then
+/// falls through to fbdev / file-backing. # C: O(n)
+pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
+    if (inode.ino() & 0xFFFF_FFFF_0000_0000) != 0x4452_4D43_0000_0000 { return None; }
+    crate::dumb::mmap_backing(offset)
 }
 
 /// ioctl on a DRM/evdev fd. Returns Some(rv) when handled; None
@@ -271,6 +285,13 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
             }
             Some(-(Errno::Einval.as_i32() as i64))
         }
+        // ---- D5b-1 dumb buffers + ADDFB2 (offscreen; no scanout) ----
+        DRM_IOCTL_MODE_CREATE_DUMB  => Some(crate::dumb::create_dumb(arg)),
+        DRM_IOCTL_MODE_MAP_DUMB     => Some(crate::dumb::map_dumb(arg)),
+        DRM_IOCTL_MODE_DESTROY_DUMB => Some(crate::dumb::destroy_dumb(arg)),
+        DRM_IOCTL_MODE_ADDFB2       => Some(crate::dumb::addfb2(arg)),
+        DRM_IOCTL_MODE_ADDFB        => Some(crate::dumb::addfb(arg)),
+        DRM_IOCTL_MODE_RMFB         => Some(crate::dumb::rmfb(arg)),
         _ => Some(-(Errno::Enotty.as_i32() as i64)),
     }
 }
