@@ -406,3 +406,36 @@ pub fn scanout_ready() -> bool { CTX.lock().is_some() }
 pub fn dimensions() -> Option<(u32, u32)> {
     CTX.lock().as_ref().map(|c| (c.w, c.h))
 }
+
+/// The scanout framebuffer as `(base_pa, fb_va, bytes, pitch, w, h)` for the
+/// fbdev presenter (`/dev/fb0`): `base_pa` is the contiguous physical backing
+/// userspace mmaps; `fb_va` is its HHDM kernel VA (for read/write); `pitch` =
+/// `w*4` (BGRA32). `None` before scanout setup. # C: O(1)
+pub fn framebuffer() -> Option<(u64, u64, u64, u32, u32, u32)> {
+    let g = CTX.lock();
+    let c = g.as_ref()?;
+    Some((c.fb_va - c.hhdm, c.fb_va, c.fb_bytes, c.w * 4, c.w, c.h))
+}
+
+/// Push the CURRENT framebuffer contents to the host display
+/// (transfer_to_host_2d + resource_flush, no pixel copy). For the fbdev
+/// path: userspace wrote the mmap'd scanout directly (or via write()), this
+/// makes those pixels visible (Linux fb pan/defio flush). No-op pre-setup.
+/// # C: O(1) submits (+ host-side O(w*h) transfer).
+pub fn flush_scanout() {
+    let g = CTX.lock();
+    let ctx = match g.as_ref() { Some(c) => c, None => return };
+    let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
+    let (res_id, w, h) = (ctx.res_id, ctx.w, ctx.h);
+    // SAFETY: same VAs/PAs setup_scanout installed; sole writer under the CTX lock; cmd_buf is HHDM-mapped 4 KiB scratch.
+    unsafe {
+        let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
+            |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
+            ctx.q0_desc_pa, ctx.q0_driver_pa, ctx.q0_device_pa,
+            ctx.q0_notify_va, ctx.hhdm);
+        let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
+            |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
+            ctx.q0_desc_pa, ctx.q0_driver_pa, ctx.q0_device_pa,
+            ctx.q0_notify_va, ctx.hhdm);
+    }
+}
