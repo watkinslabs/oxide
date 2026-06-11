@@ -411,6 +411,19 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         drv::bind(&dev, drv::Driver::name(&SERIAL_DRV));
     }
 
+    // drivers-plan D3.4: real i8042 PS/2 keyboard (x86 only — no i8042 on
+    // the arm boards). Brings up the controller + resets/identifies the
+    // keyboard, then registers a platform-bus device + driver in the D1a
+    // model. Decoded scancodes feed the SAME input pipeline as virtio-input
+    // (drv_virtio_input::drain::handle_key_event). Input is timer-tick
+    // polled in tick_poll_combined. A serial-only box with no PS/2 leaves
+    // it un-detected (poll becomes a no-op).
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: post-LAPIC/MmuOps boot, single-CPU, IRQs masked; init does only bounded CPL=0 i8042 port I/O with no other accessor of 0x60/0x64.
+        unsafe { drv_ps2_keyboard::init(); }
+    }
+
     // SMP bring-up per `13§11`. With -smp 1 (default) the per-arch
     // path is a no-op. With -smp N>=2 the boot CPU starts each AP:
     //   x86_64: Limine SMP request — store our entry into each
@@ -851,6 +864,12 @@ unsafe fn tick_poll_combined(from_user: bool) {
         if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
     // SAFETY: deferred to the underlying hooks; drv_serial::poll owns the UART RX drain invariants; fbcon::kernel::tick_drain drains the per-VT answerback queues into the tty input rings outside any console write lock (our flush_to_ldisc).
     unsafe { drv_serial::poll(); }
+    // D3.4: drain pending i8042 keyboard scancodes (x86 PS/2). No-op until
+    // the controller was detected; bounded ≤64 bytes per tick. Routes
+    // through the shared handle_key_event pipeline (same as virtio-input).
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: timer-ISR/tick context, BSP-only here (gated by the is_bsp check in the dispatcher); drv_ps2_keyboard::poll does only bounded CPL=0 reads of the i8042 status/data ports.
+    unsafe { drv_ps2_keyboard::poll(); }
     fbcon::kernel::tick_drain();
     // F145: poll virtio-net rx from the timer tick as a fallback for
     // missed MSI-X edges. Real MSI handler still calls rx_drain_softirq

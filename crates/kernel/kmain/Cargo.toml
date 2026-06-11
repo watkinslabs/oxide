@@ -59,6 +59,7 @@ drv-virtio-net    = { path = "../../drivers/drv-virtio-net" }
 drv-virtio-blk    = { path = "../../drivers/drv-virtio-blk" }
 drv-virtio-rng    = { path = "../../drivers/drv-virtio-rng" }
 drv-serial        = { path = "../../drivers/drv-serial" }
+drv-ps2-keyboard  = { path = "../../drivers/drv-ps2-keyboard" }
 drm               = { path = "../../drivers/drm" }
 fbdev             = { path = "../../drivers/fbdev" }
 fbcon             = { path = "../../drivers/fbcon" }
@@ -81,7 +82,7 @@ debug-vmm  = ["pmm/debug-vmm", "kmacros/debug-vmm", "smoke/debug-vmm"]  # device
 debug-irq  = ["pmm/debug-irq", "kmacros/debug-irq", "smoke/debug-irq"]  # LAPIC/GIC enable diag + timer-IRQ soak + tick logs
 debug-acpi = ["firmware/debug-acpi", "kmacros/debug-acpi", "smoke/debug-acpi"]  # forwarded; impl in crates/firmware
 debug-sched = ["sched/debug-sched","fs/debug-sched", "kmacros/debug-sched", "smoke/debug-sched"]  # first-kthread coroutine smoke + Context::switch trace
-debug-boot = ["fs/debug-boot", "drv-virtio-gpu/debug-boot", "devfs/debug-boot", "kmacros/debug-boot", "devpts/debug-boot", "smoke/debug-boot", "syscalls/debug-boot", "pci-boot/debug-boot"]  # operational-pulse trace (init started, pmm: ready, …)
+debug-boot = ["fs/debug-boot", "drv-virtio-gpu/debug-boot", "devfs/debug-boot", "kmacros/debug-boot", "devpts/debug-boot", "smoke/debug-boot", "syscalls/debug-boot", "pci-boot/debug-boot", "drv-ps2-keyboard/debug-boot"]  # operational-pulse trace (init started, pmm: ready, …)
 debug-cgroup = ["cgroup/debug-cgroup", "kmacros/debug-cgroup", "syscalls/debug-cgroup"]  # cgroup v2 boot self-test + per-cgroup charge/uncharge trace (26§10)
 debug-modules = []  # kmod thunk write_raw / kassert traces
 debug-syscall = ["sched/debug-syscall", "kmacros/debug-syscall", "syscalls/debug-syscall"]  # per-syscall trace (nr, sys_clone/execve/exit/wait4 lines)
