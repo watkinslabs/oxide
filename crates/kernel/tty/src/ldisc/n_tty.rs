@@ -40,6 +40,79 @@ pub struct NTty {
     eof_consumed: bool,
 }
 
+/// Noncanonical (raw-mode) VMIN/VTIME read decision (Linux `n_tty.c`
+/// `n_tty_read` / `job_control` + the VMIN/VTIME state machine). Pure:
+/// no clock, no lock — the tty core (T4) supplies elapsed values and
+/// acts on the verdict. Host-testable in isolation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VmtDecision {
+    /// Enough is satisfied — drain `n` bytes (`min(available, buf_len)`)
+    /// and return. `n` may be 0 (polling / timeout with nothing queued).
+    ReturnNow(usize),
+    /// Block until an RX wake OR the monotonic clock reaches the carried
+    /// deadline (relative ns from the read-entry base — caller adds its
+    /// `now_ns` base). A VTIME timer.
+    BlockUntil(u64),
+    /// Block until an RX wake, no timer (MIN>0, TIME==0: wait for MIN
+    /// bytes; or MIN>0, TIME>0 before the first byte arrives).
+    BlockNoDeadline,
+}
+
+/// VTIME unit: tenths of a second, in nanoseconds (Linux c_cc[VTIME] is
+/// in 1/10 s). `TIME * VTIME_TENTH_NS` is the timer length.
+pub const VTIME_TENTH_NS: u64 = 100_000_000;
+
+/// Decide a noncanonical read's next action from the 4 Linux VMIN/VTIME
+/// cases. Inputs are all caller-measured so this stays a pure function:
+///   * `min`  = c_cc[VMIN], `time` = c_cc[VTIME] (raw cc bytes)
+///   * `avail` = bytes drainable now, `buf_len` = caller buffer
+///   * `since_start_ns` = ns since read entry (for MIN==0,TIME>0)
+///   * `since_byte_ns`  = ns since the most recent byte arrived, and
+///     `got_any` = at least one byte has arrived this read (interbyte
+///     timer, MIN>0 TIME>0)
+///
+/// The 4 Linux cases:
+///   MIN==0,TIME==0: polling — return immediately (0 if empty).
+///   MIN>0, TIME==0: block until ≥MIN available (no timer).
+///   MIN==0,TIME>0 : read timer — first byte ends it; else BlockUntil
+///                   start+TIME; on expiry return what's there (maybe 0).
+///   MIN>0, TIME>0 : interbyte timer — before any byte: BlockNoDeadline;
+///                   after first byte: return at MIN/buf-full, else
+///                   BlockUntil last-byte+TIME; on interbyte expiry
+///                   return what's there.
+/// # C: O(1)
+pub fn vmin_vtime_decision(
+    min: u8, time: u8, avail: usize, buf_len: usize,
+    since_start_ns: u64, since_byte_ns: u64, got_any: bool,
+) -> VmtDecision {
+    let min = min as usize;
+    let take = avail.min(buf_len);
+    match (min == 0, time == 0) {
+        // MIN==0, TIME==0: pure polling read.
+        (true, true) => VmtDecision::ReturnNow(take),
+        // MIN>0, TIME==0: block until at least MIN bytes (or buf full).
+        (false, true) => {
+            if avail >= min || avail >= buf_len { VmtDecision::ReturnNow(take) }
+            else { VmtDecision::BlockNoDeadline }
+        }
+        // MIN==0, TIME>0: read timer on the FIRST byte.
+        (true, false) => {
+            if avail > 0 { return VmtDecision::ReturnNow(take); }
+            let dl = time as u64 * VTIME_TENTH_NS;
+            if since_start_ns >= dl { VmtDecision::ReturnNow(0) }
+            else { VmtDecision::BlockUntil(dl) }
+        }
+        // MIN>0, TIME>0: interbyte timer (starts after the first byte).
+        (false, false) => {
+            if avail >= min || avail >= buf_len { return VmtDecision::ReturnNow(take); }
+            if !got_any { return VmtDecision::BlockNoDeadline; }
+            let dl = time as u64 * VTIME_TENTH_NS;
+            if since_byte_ns >= dl { VmtDecision::ReturnNow(take) }
+            else { VmtDecision::BlockUntil(dl) }
+        }
+    }
+}
+
 impl Default for NTty {
     fn default() -> Self {
         Self::new()
@@ -92,6 +165,26 @@ impl NTty {
 
     fn cc(&self, idx: usize) -> u8 {
         self.termios[TERMIOS_OFF_CC + idx]
+    }
+
+    /// True when ICANON is set (canonical line reads). The tty core (T4)
+    /// branches on this: canonical reads block until a whole line; raw
+    /// reads run the VMIN/VTIME state machine.
+    /// # C: O(1)
+    pub fn canonical(&self) -> bool {
+        self.is_canon()
+    }
+
+    /// c_cc[VMIN] — noncanonical minimum byte count.
+    /// # C: O(1)
+    pub fn vmin(&self) -> u8 {
+        self.cc(cc::VMIN)
+    }
+
+    /// c_cc[VTIME] — noncanonical read/interbyte timer in 1/10 s.
+    /// # C: O(1)
+    pub fn vtime(&self) -> u8 {
+        self.cc(cc::VTIME)
     }
 
     fn lflag(&self) -> u32 {
@@ -271,6 +364,25 @@ impl NTty {
         if self.canon.len() < CANON_CAP {
             self.canon.push_back(b);
         }
+    }
+
+    /// Drain up to `buf.len()` raw bytes from the read queue, IGNORING
+    /// VMIN (the tty core has already decided the read is satisfied — via
+    /// `vmin_vtime_decision` ReturnNow, e.g. a VTIME timeout that returns
+    /// fewer than VMIN bytes). Returns the count copied. Canonical-mode
+    /// callers use `read` (line semantics); this is the raw drain the
+    /// VMIN/VTIME state machine commits with.
+    /// # C: O(N) bytes copied
+    pub fn read_raw_drain(&mut self, buf: &mut [u8]) -> usize {
+        self.eof_consumed = false;
+        let mut n = 0;
+        while n < buf.len() {
+            match self.readq.pop_front() {
+                Some(b) => { buf[n] = b; n += 1; }
+                None => break,
+            }
+        }
+        n
     }
 
     /// Apply c_iflag CR/NL remapping to one raw byte. Returns None when

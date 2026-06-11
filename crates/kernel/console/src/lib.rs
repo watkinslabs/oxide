@@ -26,6 +26,7 @@ pub mod vt_tty;
 use alloc::string::ToString;
 use alloc::sync::Arc;
 
+use tty::ReadOutcome;
 use vfs::{Dentry, FdTable, File, FileType, Ino, Inode, InodeRef, KResult, OpenFlags, VfsError};
 
 /// `/dev/console` + `/dev/tty<N>` inode. `vt == 0` means
@@ -64,15 +65,20 @@ impl Inode for ConsoleInode {
     /// nodes (vt 1..N) keep their per-VT screen-ring path (T7b territory).
     fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
-        if self.vt == 0 {
-            // TtyStruct::read parks lost-wakeup-free and returns a cooked
-            // line (or 0 on ^D EOF).
-            return Ok(static_console::read(buf));
+        // TtyStruct::read parks lost-wakeup-free and returns a cooked line
+        // (Bytes), 0 on ^D (Eof), or Interrupted when an unblocked signal
+        // lands during the blocking wait → -EINTR (Linux n_tty_read).
+        let outcome = if self.vt == 0 {
+            static_console::read(buf)
+        } else {
+            // Numbered VT (B4a): same N_TTY core as the system console.
+            vt_tty::vt_tty(self.vt).read(buf)
+        };
+        match outcome {
+            ReadOutcome::Bytes(n) => Ok(n),
+            ReadOutcome::Eof => Ok(0),
+            ReadOutcome::Interrupted => Err(VfsError::Eintr),
         }
-        // Numbered VT (B4a): the real per-VT `TtyStruct` parks
-        // lost-wakeup-free and returns a cooked line (or 0 on ^D EOF) —
-        // the same N_TTY core the system console uses.
-        Ok(vt_tty::vt_tty(self.vt).read(buf))
     }
 
     /// Non-blocking read per `15§5` / `28§3`. systemd PID1 opens

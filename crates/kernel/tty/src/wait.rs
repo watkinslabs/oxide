@@ -61,6 +61,37 @@ pub trait TtyWait {
     /// queueing bytes under the port lock, with the port lock released.
     /// # C: O(N) parked readers
     fn wake_all(&self);
+
+    /// Sleep until a `wake_all`, OR until the monotonic clock reaches
+    /// `deadline_ns` (a VTIME timer). Called with NO lock held, after
+    /// the same prepare→recheck dance as `park_commit`. The default
+    /// forwards to `park_commit` (no clock at this layer for hosts that
+    /// do not implement a timer) — the kernel impl stamps a wake
+    /// deadline so the periodic deadline scanner rouses the task.
+    /// # C: O(1) + sleep
+    fn park_commit_deadline(&self, _deadline_ns: u64) {
+        self.park_commit();
+    }
+
+    /// True when the current reader has an unblocked pending signal and a
+    /// blocking read must abort with EINTR (Linux `signal_pending` in
+    /// `n_tty_read`'s wait loop). Checked AFTER each wake, BEFORE
+    /// re-draining. The kernel impl reads `current.sigpending & !sigmask`;
+    /// the host default is `false` (hosted tests have no scheduler /
+    /// signal state — the signal-interrupt path is kernel-only).
+    /// # C: O(1)
+    fn should_interrupt(&self) -> bool {
+        false
+    }
+
+    /// Monotonic nanoseconds (VTIME deadline base). The kernel impl reads
+    /// `hal::TimerOps::monotonic_ns`; the host default returns 0 (hosted
+    /// VMIN/VTIME tests drive the decision fn directly with synthetic
+    /// elapsed values rather than a real clock).
+    /// # C: O(1)
+    fn now_ns(&self) -> u64 {
+        0
+    }
 }
 
 /// Host-test `TtyWait`: a real blocking wait built on a `Mutex`+`Condvar`
@@ -213,6 +244,44 @@ pub mod kernel {
 
         fn wake_all(&self) {
             self.wl.wake_all()
+        }
+
+        fn park_commit_deadline(&self, deadline_ns: u64) {
+            // Stamp a wake deadline so the periodic deadline scanner
+            // (tick_wake_expired) rouses this reader when the VTIME window
+            // expires without an RX wake — the same timed-park primitive
+            // poll/pselect6's SO_*TIMEO use. deadline_ns==0 disables the
+            // timer (degenerate to a bare park).
+            // SAFETY: invoked by TtyStruct::read on the running task of this CPU with no lock held; current task was marked Sleeping by park_prepare; schedule yields and the deadline scanner or an RX wake_all rouses it.
+            unsafe {
+                self.wl.park_with_deadline(deadline_ns);
+                sched::live::schedule();
+            }
+        }
+
+        fn should_interrupt(&self) -> bool {
+            use core::sync::atomic::Ordering;
+            match sched::live::current() {
+                Some(cur) => {
+                    let pending = cur.sigpending.load(Ordering::Acquire);
+                    let mask = cur.sigmask.load(Ordering::Acquire);
+                    pending & !mask != 0
+                }
+                None => false,
+            }
+        }
+
+        fn now_ns(&self) -> u64 {
+            #[cfg(target_arch = "x86_64")]
+            {
+                use hal::TimerOps;
+                hal_x86_64::X86TimerOps::monotonic_ns().0
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                use hal::TimerOps;
+                hal_aarch64::ArmTimerOps::monotonic_ns().0
+            }
         }
     }
 }

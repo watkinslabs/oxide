@@ -30,7 +30,7 @@ use serialtty::{KernelUart, SerialOut, SerialTtyDriver};
 use tty::ldisc::Sig;
 use tty::pty::{default_termios, Winsize, TERMIOS_BYTES};
 use tty::wait::kernel::KernelWait;
-use tty::{TtyDriver, TtyStruct};
+use tty::{ReadOutcome, TtyDriver, TtyStruct};
 
 /// `FgSignal` raising a real signal on the fg pgrp (Linux `isig` →
 /// `kill_pgrp`). Mirrors `tty::live::deliver_signal_to_waiters`: OR the
@@ -114,12 +114,13 @@ pub fn rx_byte(b: u8) {
 // (should never happen for real opens) reads/writes degrade safely.
 
 /// Blocking read — the lost-wakeup-free `TtyStruct::read`. Returns the
-/// cooked bytes (whole line in ICANON) into `buf`.
-/// # C: O(N) bytes + sleeps until input
-pub fn read(buf: &mut [u8]) -> usize {
+/// cooked bytes (whole line in ICANON) or EOF / `Interrupted` (EINTR) so
+/// the inode layer can map a signal-interrupted blocking read to `-EINTR`.
+/// # C: O(N) bytes + sleeps until input / timer / signal
+pub fn read(buf: &mut [u8]) -> ReadOutcome {
     match console() {
         Some(tty) => tty.read(buf),
-        None => 0,
+        None => ReadOutcome::Bytes(0),
     }
 }
 
