@@ -28,6 +28,18 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
         };
         let inode = file.inode();
+        // DRM dumb buffers: the `offset` is a MODE_MAP_DUMB cookie that
+        // selects the buffer (not a within-buffer byte offset). The
+        // PhysRange base must equal the buffer's PA, so pass file_off=0
+        // to glue_mmap. Try DRM first; fall through to fbdev, then to
+        // a page-cache file-backing.
+        if let Some((pa, len)) = drm::node::mmap_backing(inode, offset) {
+            if args.a1 > len { return -(Errno::Einval.as_i32() as i64); }
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd, 0, None, Some(pa)) {
+                Ok(va)  => va as i64,
+                Err(rv) => rv,
+            };
+        }
         match fbdev::devfs::mmap_backing(inode) {
             Some((pa, len)) => {
                 // The mapped window must fit within the device's backing.
