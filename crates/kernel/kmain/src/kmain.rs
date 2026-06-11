@@ -28,6 +28,15 @@ const _: () = assert!(
 #[macro_use]
 extern crate kmacros;
 
+// drivers-plan D1a: the 8250/PL011 console as a drv model driver.
+// `probe` is a no-op — `drv_serial::init` already brought the UART up.
+struct SerialDrv;
+impl drv::Driver for SerialDrv {
+    fn name(&self) -> &'static str { "8250-serial" }
+    fn matches(&self, dev: &drv::Device) -> bool { dev.bus == "platform" && dev.addr == "serial0" }
+}
+static SERIAL_DRV: SerialDrv = SerialDrv;
+
 
 // Per `04§4.0` R06: trace-only modules are cfg-gated at decl.
 // ACPI walker = `crates/firmware` (`33§R01`); ns inodes =
@@ -390,7 +399,17 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // tty. Pairs with the per-tick liveness watchdog (`05`, `27`).
     drv_serial::set_rx_prefilter(sched::diag::sysrq_rx);
     // SAFETY: post-ACPI/LAPIC + MmuOps live; single-CPU, IRQs masked. init probes the UART; on detection serial becomes the primary console (klog sink + RX IRQ). No serial → the fb/VT console (set_aux_sink below) is the default active console.
-    if unsafe { drv_serial::init(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE) } { klog::set_byte_sink(drv_serial::emit); }
+    if unsafe { drv_serial::init(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE) } {
+        klog::set_byte_sink(drv_serial::emit);
+        // drivers-plan D1a: record the 8250/PL011 console in the drv model
+        // as a platform-bus device + driver. No /sys/bus/platform tree is
+        // published in D1a (sysfs publishes pci+virtio); the registry entry
+        // exists for the model + D1b probe-driven bring-up.
+        let dev = drv::register_device(alloc::sync::Arc::new(drv::Device::new(
+            "platform", alloc::string::String::from("serial0"), 0, 0, 0)));
+        drv::register_driver(&SERIAL_DRV);
+        drv::bind(&dev, drv::Driver::name(&SERIAL_DRV));
+    }
 
     // SMP bring-up per `13§11`. With -smp 1 (default) the per-arch
     // path is a no-op. With -smp N>=2 the boot CPU starts each AP:
@@ -516,6 +535,12 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     let _ = unsafe { security::init() };
     // SAFETY: kernel_main runs single-CPU pre-init; drv::init reports ready; per-driver register() happens during PCI enumeration.
     let _ = unsafe { drv::init() };
+    // drivers-plan D1a: wire the drv model's sysfs-publish hooks BEFORE
+    // PCI enumeration so each `drv::register_device` during enumeration
+    // publishes its `/sys/bus/<bus>/devices/<addr>` entry as it lands.
+    drv::set_sysfs_hook(crate::sysfs::bus::publish_device_cb);
+    drv::set_driver_hook(crate::sysfs::bus::publish_driver_cb);
+    drv::set_bind_hook(crate::sysfs::bus::bind_device_cb);
     // Register virtio-gpu wire driver. The matching probe runs from
     // pci_boot::virtio_probe_arch when the device id is found.
     drv_virtio_gpu::register();

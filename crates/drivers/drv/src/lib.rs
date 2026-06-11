@@ -24,6 +24,13 @@
 
 extern crate alloc;
 
+pub mod model;
+pub use model::{
+    bind, Device, Driver, register_device, register_driver, devices, device_count,
+    driver_names, driver_count, match_driver, bind_addr,
+    set_sysfs_hook, set_bind_hook, set_driver_hook,
+};
+
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use sync::{Spinlock, TaskList as DriverListClass};

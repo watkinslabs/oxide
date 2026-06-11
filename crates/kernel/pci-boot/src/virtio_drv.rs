@@ -3,6 +3,43 @@
 
 use super::map_mmio_pages;
 
+// drivers-plan D1a model drivers. Each live virtio driver gets a
+// static `drv::Driver` whose `matches` keys on its PCI device-id.
+// `probe` is a no-op: the inline bring-up below already brought the
+// device up — D1b moves bring-up into `probe`. We `register_driver`
+// + `bind` at the existing success sites; bring-up itself is unchanged.
+macro_rules! model_driver {
+    ($ty:ident, $static:ident, $name:literal, $($id:literal)|+) => {
+        struct $ty;
+        impl drv::Driver for $ty {
+            fn name(&self) -> &'static str { $name }
+            fn matches(&self, dev: &drv::Device) -> bool {
+                dev.bus == "pci" && dev.vendor_id == 0x1AF4 && matches!(dev.device_id, $($id)|+)
+            }
+        }
+        static $static: $ty = $ty;
+    };
+}
+model_driver!(VirtioBlkDrv,   VIRTIO_BLK_DRV,   "virtio-blk",   0x1001 | 0x1042);
+model_driver!(VirtioNetDrv,   VIRTIO_NET_DRV,   "virtio-net",   0x1000 | 0x1041);
+model_driver!(VirtioGpuDrv,   VIRTIO_GPU_DRV,   "virtio-gpu",   0x1050);
+model_driver!(VirtioInputDrv, VIRTIO_INPUT_DRV, "virtio-input", 0x1052);
+
+/// Canonical `0000:bb:dd.f` addr for a BDF (matches enumeration loop).
+/// # C: O(1)
+fn pci_addr(bdf: pci::Bdf) -> alloc::string::String {
+    alloc::format!("{:04x}:{:02x}:{:02x}.{}", 0u16, bdf.bus, bdf.device, bdf.function)
+}
+
+/// Register the model driver `d` once and bind the PCI device at `bdf`
+/// to it (publishes `/sys/bus/pci/drivers/<name>` + the device's
+/// `driver` symlink). Called from a bring-up success site.
+/// # C: O(N_drivers + N_devices)
+fn model_bind(d: &'static dyn drv::Driver, bdf: pci::Bdf) {
+    drv::register_driver(d);
+    drv::bind_addr("pci", &pci_addr(bdf), d.name());
+}
+
 struct VirtioProbe {
     cmd_orig: u16,
     cmd_new:  u16,
@@ -361,11 +398,13 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         debug_boot! { klog::write_raw(b"[INFO]  virtio-gpu installed feat=");
             klog::write_hex_u64(drv_features); klog::write_raw(b" card=");
             klog::write_dec_u64(card_id as u64); klog::write_raw(b"\n"); }
+        model_bind(&VIRTIO_GPU_DRV, d.bdf); // D1a: publish + bind
     }
     if is_virtio_input && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
         let evdev_id = drv_virtio_input::install_default(bdf_word);
         debug_boot! { klog::write_raw(b"[INFO]  virtio-input installed evdev_id=");
             klog::write_dec_u64(evdev_id as u64); klog::write_raw(b"\n"); }
+        model_bind(&VIRTIO_INPUT_DRV, d.bdf); // D1a: publish + bind
     }
     // Stage 1: the persistent virtio-blk engine (drv-virtio-blk) owns
     // all blk reads now — the boot probe no longer issues a throwaway
@@ -870,6 +909,7 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
                 tx0_buf_pa:    p.tx0_buf_pa,
             },
         );
+        model_bind(&VIRTIO_NET_DRV, bdf); // D1a: publish + bind
     }
 
     // Stage 1: register the virtio-blk device as a `BlockDevice` so
@@ -889,6 +929,7 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
             p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa,
             p.q0_notify_va, p.q0_size, p.blk_capacity, p.blk_blk_size,
         );
+        model_bind(&VIRTIO_BLK_DRV, bdf); // D1a: publish + bind
     }
 
     // F01: virtio-input event-queue drain. Pre-fill q0 + install softirq.
