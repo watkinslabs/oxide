@@ -9,6 +9,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
 // ============================================================
@@ -60,9 +61,48 @@ pub const FB_ACTIVATE_ALL:              u32 = 0x40;
 pub const FB_ACTIVATE_FORCE:            u32 = 0x80;
 pub const FB_ACTIVATE_INV_MODE:         u32 = 0x100;
 
+// fb_vblank.flags (per linux/include/uapi/linux/fb.h)
+pub const FB_VBLANK_VBLANKING:  u32 = 0x001;
+pub const FB_VBLANK_HBLANKING:  u32 = 0x002;
+pub const FB_VBLANK_HAVE_VBLANK:u32 = 0x004;
+pub const FB_VBLANK_HAVE_HBLANK:u32 = 0x008;
+pub const FB_VBLANK_HAVE_COUNT: u32 = 0x010;
+pub const FB_VBLANK_HAVE_VCOUNT:u32 = 0x020;
+pub const FB_VBLANK_HAVE_HCOUNT:u32 = 0x040;
+pub const FB_VBLANK_VSYNCING:   u32 = 0x080;
+pub const FB_VBLANK_HAVE_VSYNC: u32 = 0x100;
+
 // ============================================================
 // Wire structs (verbatim from linux/include/uapi/linux/fb.h)
 // ============================================================
+
+/// `struct fb_vblank` — FBIOGET_VBLANK result (32 B). count/vcount/hcount
+/// are the running vblank/scanline counters; `flags` declares which fields
+/// are valid.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct FbVblank {
+    pub flags:    u32,
+    pub count:    u32,
+    pub vcount:   u32,
+    pub hcount:   u32,
+    pub reserved: [u32; 4],
+}
+
+/// `struct fb_cmap` (per linux/include/uapi/linux/fb.h) — palette transfer
+/// descriptor. `red`/`green`/`blue`/`transp` are USER pointers to arrays of
+/// `len` u16 entries each (`transp` may be NULL). On a truecolor visual the
+/// driver maps these into a 16-entry pseudo-palette.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct FbCmap {
+    pub start:  u32,
+    pub len:    u32,
+    pub red:    u64, // __u16 *
+    pub green:  u64, // __u16 *
+    pub blue:   u64, // __u16 *
+    pub transp: u64, // __u16 *
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug)]
@@ -166,6 +206,14 @@ pub struct FbDev {
     pub crtc_id:      u32,
     pub fb_id:        u32,
     pub dumb_handle:  u32,
+    /// Current FB_BLANK_* level (0 = unblanked). Stored so FBIOBLANK is a
+    /// real, observable state change (the image is cleared/restored), not a
+    /// silent no-op.
+    pub blank:        u32,
+    /// 16-entry truecolor pseudo-palette (packed pixels in the visual's
+    /// format). Linux fbcon writes these via FBIOPUTCMAP to recolour the 16
+    /// console colours on a truecolor fb.
+    pub pseudo_palette: [u32; 16],
 }
 
 static FBS: Spinlock<Vec<FbDev>, DriverLockClass> = Spinlock::new(Vec::new());
@@ -182,6 +230,119 @@ pub fn set_flush_hook(f: fn()) { *FLUSH_HOOK.lock() = Some(f); }
 /// Push written pixels to the display via the registered flush hook.
 /// # C: O(1) + host transfer.
 pub fn flush() { if let Some(f) = *FLUSH_HOOK.lock() { f(); } }
+
+// ============================================================
+// Pseudo-vblank source + WAITFORVSYNC wait plumbing
+//
+// The virtio-gpu has no scanout vblank IRQ, so the honest virtual-GPU
+// vsync cadence is the kernel timer tick: `vblank_tick()` (called from
+// the timer-ISR tick path) advances VBLANK_SEQ at the tick rate. That is
+// a REAL, monotonically advancing counter — FBIO_WAITFORVSYNC blocks on
+// it rather than returning a fake immediate success, and FBIOGET_VBLANK
+// reports it as the running frame count.
+// ============================================================
+
+/// Pseudo-vblank sequence counter. Bumped once per timer tick by
+/// `vblank_tick()`; the virtual-GPU's vsync cadence.
+static VBLANK_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Yield hook (cooperative reschedule) used by FBIO_WAITFORVSYNC's wait
+/// loop so the waiter doesn't hot-spin the CPU. `None` ⇒ busy `spin_loop`.
+static YIELD_HOOK: Spinlock<Option<fn()>, DriverLockClass> = Spinlock::new(None);
+
+/// Monotonic-now hook (ns) for the WAITFORVSYNC bounded deadline. `None` ⇒
+/// fall back to a fixed spin-count bound.
+static NOW_HOOK: Spinlock<Option<fn() -> u64>, DriverLockClass> = Spinlock::new(None);
+
+/// Advance the pseudo-vblank counter. Called once per timer tick from the
+/// kernel tick path (`tick_poll_combined`); this IS the virtual-GPU vsync.
+/// # C: O(1)
+pub fn vblank_tick() { VBLANK_SEQ.fetch_add(1, Ordering::Relaxed); }
+
+/// Read the current pseudo-vblank sequence. # C: O(1)
+pub fn vblank_seq() -> u64 { VBLANK_SEQ.load(Ordering::Relaxed) }
+
+/// Register the cooperative-yield hook for the WAITFORVSYNC wait loop
+/// (boot wiring, once). # C: O(1)
+pub fn set_yield_hook(f: fn()) { *YIELD_HOOK.lock() = Some(f); }
+
+/// Register the monotonic-clock hook (ns) used for the WAITFORVSYNC
+/// deadline (boot wiring, once). # C: O(1)
+pub fn set_now_hook(f: fn() -> u64) { *NOW_HOOK.lock() = Some(f); }
+
+/// Default WAITFORVSYNC deadline: 100 ms. One tick is the vsync cadence;
+/// 100 ms is a generous upper bound that survives a slow tick rate without
+/// hanging a misbehaving caller forever.
+pub const VSYNC_DEADLINE_NS: u64 = 100_000_000;
+
+/// Block until the pseudo-vblank counter advances past `start_seq`, bounded
+/// by `VSYNC_DEADLINE_NS`. Returns the new sequence once it advances (or the
+/// current value at the deadline). Yields via the registered hook each spin.
+/// This is the real wait FBIO_WAITFORVSYNC performs — it returns only after a
+/// tick (vsync) actually happened, or after the bounded deadline. # C: O(ticks)
+pub fn wait_vblank(start_seq: u64) -> u64 {
+    let now = *NOW_HOOK.lock();
+    let yield_f = *YIELD_HOOK.lock();
+    let deadline = now.map(|f| f().wrapping_add(VSYNC_DEADLINE_NS));
+    let mut spins: u32 = 0;
+    loop {
+        let cur = VBLANK_SEQ.load(Ordering::Relaxed);
+        if cur != start_seq { return cur; }
+        match (deadline, now) {
+            (Some(d), Some(f)) => if f() >= d { return VBLANK_SEQ.load(Ordering::Relaxed); },
+            // No clock hook: bound by a fixed spin budget so we never hang.
+            _ => { spins += 1; if spins >= 1_000_000 { return VBLANK_SEQ.load(Ordering::Relaxed); } }
+        }
+        match yield_f { Some(y) => y(), None => core::hint::spin_loop() }
+    }
+}
+
+/// Decide a FBIOPAN_DISPLAY result: validate `(xoffset,yoffset)` against the
+/// allocated virtual canvas. `Ok(())` if the panned window fits, `Err` (→
+/// EINVAL) otherwise. Pure for host test.
+/// # C: O(1)
+pub fn pan_check(v: &FbVarScreeninfo, xoffset: u32, yoffset: u32) -> KResult<()> {
+    let xr = xoffset.checked_add(v.xres).ok_or(Error::Inval)?;
+    let yr = yoffset.checked_add(v.yres).ok_or(Error::Inval)?;
+    if xr <= v.xres_virtual && yr <= v.yres_virtual { Ok(()) } else { Err(Error::Inval) }
+}
+
+/// Pack an (r,g,b) cmap entry (Linux passes 16-bit-per-channel values) into a
+/// pixel in the fb's truecolor visual using its `red`/`green`/`blue`
+/// bitfields. Mirrors fbcon's `setcolreg` pseudo-palette write. Pure for host
+/// test. # C: O(1)
+pub fn pack_pseudo(v: &FbVarScreeninfo, r16: u16, g16: u16, b16: u16) -> u32 {
+    let chan = |val16: u16, bf: &FbBitfield| -> u32 {
+        if bf.length == 0 { return 0; }
+        // Linux cmap entries are 16-bit; downshift to the field width.
+        let v = (val16 as u32) >> (16 - bf.length);
+        (v & ((1u32 << bf.length) - 1)) << bf.offset
+    };
+    chan(r16, &v.red) | chan(g16, &v.green) | chan(b16, &v.blue)
+}
+
+/// Unpack a stored pseudo-palette pixel back into Linux 16-bit-per-channel
+/// (r,g,b) for FBIOGETCMAP readback. Inverse of `pack_pseudo`. Pure for host
+/// test. # C: O(1)
+pub fn unpack_pseudo(v: &FbVarScreeninfo, px: u32) -> (u16, u16, u16) {
+    let chan = |bf: &FbBitfield| -> u16 {
+        if bf.length == 0 { return 0; }
+        let raw = (px >> bf.offset) & ((1u32 << bf.length) - 1);
+        // Up-scale the field-width value back to 16 bits by bit-replication
+        // (Linux fb cmap convention): fill the 16-bit channel with the field
+        // value repeated, so e.g. an 8-bit 0xAB → 0xABAB. Exact inverse of
+        // `pack_pseudo` for inputs of the form 0xVVVV (low byte == high byte).
+        let mut out = 0u32;
+        let mut filled = 0u32;
+        while filled < 16 {
+            let shift = 16i32 - filled as i32 - bf.length as i32;
+            if shift >= 0 { out |= raw << shift; } else { out |= raw >> (-shift); }
+            filled += bf.length;
+        }
+        (out & 0xFFFF) as u16
+    };
+    (chan(&v.red), chan(&v.green), chan(&v.blue))
+}
 
 /// Register `/dev/fb0` backed by the real scanout: `base_pa`/`fb_va` =
 /// physical + HHDM-kernel address of the contiguous BGRA32 framebuffer,
@@ -200,6 +361,7 @@ pub fn init_scanout(base_pa: u64, fb_va: u64, fb_bytes: u64, pitch: u32, w: u32,
     g.push(FbDev {
         idx, var, fix, base_pa, fb_va, fb_bytes,
         card_id: 0, crtc_id: 0, fb_id: 0, dumb_handle: 0,
+        blank: FB_BLANK_UNBLANK, pseudo_palette: [0; 16],
     });
     idx
 }
@@ -225,6 +387,7 @@ pub fn register(card_id: u32, crtc_id: u32, var: FbVarScreeninfo, fix: FbFixScre
     g.push(FbDev {
         idx, var, fix, base_pa: 0, fb_va: 0, fb_bytes: 0,
         card_id, crtc_id, fb_id: 0, dumb_handle: 0,
+        blank: FB_BLANK_UNBLANK, pseudo_palette: [0; 16],
     });
     idx
 }
@@ -237,6 +400,12 @@ pub fn count() -> usize { FBS.lock().len() }
 /// # C: O(N)
 pub fn var_of(idx: u32) -> Option<FbVarScreeninfo> {
     FBS.lock().iter().find(|f| f.idx == idx).map(|f| f.var)
+}
+
+/// Replace the var screeninfo for `/dev/fb<idx>` (PUT_VSCREENINFO virtual-res
+/// / PAN_DISPLAY offset updates). # C: O(N)
+pub fn set_var(idx: u32, var: FbVarScreeninfo) {
+    if let Some(f) = FBS.lock().iter_mut().find(|f| f.idx == idx) { f.var = var; }
 }
 
 /// Snapshot the fix screeninfo for `/dev/fb<idx>`.
@@ -257,6 +426,58 @@ pub fn line_length(xres: u32, bpp: u32) -> u32 {
 /// Validate an `FBIOBLANK` level argument.
 /// # C: O(1)
 pub fn is_blank_level(level: u32) -> bool { level <= FB_BLANK_POWERDOWN }
+
+/// Current FB_BLANK_* level of `/dev/fb<idx>`. # C: O(N)
+pub fn blank_of(idx: u32) -> Option<u32> {
+    FBS.lock().iter().find(|f| f.idx == idx).map(|f| f.blank)
+}
+
+/// Store the FB_BLANK_* level for `/dev/fb<idx>`. # C: O(N)
+pub fn set_blank(idx: u32, level: u32) {
+    if let Some(f) = FBS.lock().iter_mut().find(|f| f.idx == idx) { f.blank = level; }
+}
+
+/// Store `entry` into the pseudo-palette slot `i` (0..16). # C: O(N)
+pub fn set_palette(idx: u32, i: usize, entry: u32) {
+    if i >= 16 { return; }
+    if let Some(f) = FBS.lock().iter_mut().find(|f| f.idx == idx) { f.pseudo_palette[i] = entry; }
+}
+
+/// Read pseudo-palette slot `i` (0..16) of `/dev/fb<idx>`. # C: O(N)
+pub fn palette_at(idx: u32, i: usize) -> Option<u32> {
+    if i >= 16 { return None; }
+    FBS.lock().iter().find(|f| f.idx == idx).map(|f| f.pseudo_palette[i])
+}
+
+// ============================================================
+// Blank action hooks (clear scanout to black / restore the console).
+// We have no DPMS hardware power path, but we CAN make blanking
+// observable by clearing the displayed image to black and re-painting
+// it on unblank — the real user-visible effect. Registered at boot.
+// ============================================================
+
+/// Clear the displayed scanout to black (blank). `None` ⇒ no GPU path.
+static BLANK_HOOK: Spinlock<Option<fn()>, DriverLockClass> = Spinlock::new(None);
+/// Repaint the live console (unblank). `None` ⇒ no GPU path.
+static UNBLANK_HOOK: Spinlock<Option<fn()>, DriverLockClass> = Spinlock::new(None);
+
+/// Register the blank/unblank display hooks (boot wiring, once). # C: O(1)
+pub fn set_blank_hooks(blank: fn(), unblank: fn()) {
+    *BLANK_HOOK.lock() = Some(blank);
+    *UNBLANK_HOOK.lock() = Some(unblank);
+}
+
+/// Apply a blank-level transition for `/dev/fb<idx>`: store the level, then
+/// (level ≥ NORMAL) clear the displayed image to black, or (UNBLANK) repaint
+/// the console. Returns the prior level. Honest: no real DPMS power-down — the
+/// image is blanked, documented as such. # C: O(1) + flush.
+pub fn apply_blank(idx: u32, level: u32) {
+    let prev = blank_of(idx).unwrap_or(FB_BLANK_UNBLANK);
+    set_blank(idx, level);
+    if level == FB_BLANK_UNBLANK {
+        if prev != FB_BLANK_UNBLANK { if let Some(f) = *UNBLANK_HOOK.lock() { f(); } }
+    } else if let Some(f) = *BLANK_HOOK.lock() { f(); }
+}
 
 #[cfg(test)]
 mod tests {
@@ -286,6 +507,78 @@ mod tests {
         // (matches `man 5 framebuffer.h`).
         let sz = core::mem::size_of::<FbVarScreeninfo>();
         assert_eq!(sz, 160);
+    }
+
+    #[test]
+    fn fb_vblank_layout() {
+        assert_eq!(core::mem::size_of::<FbVblank>(), 32);
+    }
+
+    #[test]
+    fn fb_cmap_layout() {
+        // start u32, len u32, then 4 pointers (8 B each on LP64): 8 + 32 = 40.
+        assert_eq!(core::mem::size_of::<FbCmap>(), 40);
+    }
+
+    #[test]
+    fn cmap_pack_unpack_roundtrip_bgra32() {
+        // Default truecolor BGRA32 visual: 8-bit channels. Roundtrip holds for
+        // entries of the form 0xVVVV (Linux cmap convention: low byte == high).
+        let v = FbVarScreeninfo::default();
+        for &(r, g, b) in &[(0xFFFFu16, 0x0000u16, 0x0000u16),
+                             (0x0000, 0xFFFF, 0x0000),
+                             (0xABAB, 0xCDCD, 0xEFEF),
+                             (0x1212, 0x3434, 0x5656)] {
+            let px = pack_pseudo(&v, r, g, b);
+            assert_eq!(unpack_pseudo(&v, px), (r, g, b), "px={px:#010x}");
+        }
+    }
+
+    #[test]
+    fn cmap_pack_places_channels_in_bgra_fields() {
+        let v = FbVarScreeninfo::default(); // R@16 G@8 B@0, 8 bits each
+        // Pure red 0xFFFF → 0xFF in the red field (bits 16..24).
+        assert_eq!(pack_pseudo(&v, 0xFFFF, 0, 0), 0x00FF_0000);
+        assert_eq!(pack_pseudo(&v, 0, 0xFFFF, 0), 0x0000_FF00);
+        assert_eq!(pack_pseudo(&v, 0, 0, 0xFFFF), 0x0000_00FF);
+    }
+
+    #[test]
+    fn pan_check_validates_against_virtual() {
+        let mut v = FbVarScreeninfo::default();
+        v.xres = 800; v.yres = 600;
+        // Single-buffer: virtual == visible → only (0,0) fits.
+        v.xres_virtual = 800; v.yres_virtual = 600;
+        assert!(pan_check(&v, 0, 0).is_ok());
+        assert!(pan_check(&v, 0, 1).is_err());
+        assert!(pan_check(&v, 1, 0).is_err());
+        // Double-height virtual canvas → panning down by yres fits, +1 doesn't.
+        v.yres_virtual = 1200;
+        assert!(pan_check(&v, 0, 600).is_ok());
+        assert!(pan_check(&v, 0, 601).is_err());
+        assert!(pan_check(&v, 0, 0).is_ok());
+    }
+
+    #[test]
+    fn vblank_wait_returns_when_seq_advances() {
+        // No clock/yield hook registered → falls back to the spin-budget bound.
+        // Pre-advance the counter so the wait sees seq != start immediately.
+        let start = VBLANK_SEQ.load(Ordering::Relaxed);
+        vblank_tick();
+        let got = wait_vblank(start);
+        assert_ne!(got, start);
+        assert!(got >= start + 1);
+    }
+
+    #[test]
+    fn vblank_wait_bounded_when_no_advance() {
+        // Counter does NOT advance from THIS thread and no clock hook → the
+        // wait must TERMINATE (at the spin budget) rather than hang forever —
+        // the honest bounded deadline. (VBLANK_SEQ is a shared static across
+        // tests, so we only assert termination + monotonicity, not equality.)
+        let start = VBLANK_SEQ.load(Ordering::Relaxed);
+        let got = wait_vblank(start);
+        assert!(got >= start);
     }
 
     #[test]
