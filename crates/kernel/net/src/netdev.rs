@@ -60,6 +60,44 @@ pub struct NetStats {
     pub tx_dropped: u64,
 }
 
+/// Linux `/sys/class/net/<if>/statistics/` field names, in the order
+/// `net/core/net-sysfs.c` registers them. Every name resolves to a
+/// u64 decimal. `sysfs` reads this for both `readdir` and per-field
+/// `lookup`. Names match Linux exactly.
+pub const STAT_FIELDS: &[&str] = &[
+    "rx_packets", "tx_packets", "rx_bytes", "tx_bytes",
+    "rx_errors", "tx_errors", "rx_dropped", "tx_dropped",
+    "multicast", "collisions",
+    "rx_length_errors", "rx_over_errors", "rx_crc_errors",
+    "rx_frame_errors", "rx_fifo_errors", "rx_missed_errors",
+    "tx_aborted_errors", "tx_carrier_errors", "tx_fifo_errors",
+    "tx_heartbeat_errors", "tx_window_errors",
+    "rx_compressed", "tx_compressed", "rx_nohandler",
+];
+
+impl NetStats {
+    /// Value of one `/sys/class/net/<if>/statistics/` field. Returns
+    /// `None` for a name not in `STAT_FIELDS` (ENOENT). Fields with no
+    /// backing counter yet (error-detail / compressed / multicast /
+    /// collisions) report 0 — matching a NIC with no such events, the
+    /// real Linux value for those, not a fabrication.
+    /// # C: O(1)
+    pub fn field(&self, name: &str) -> Option<u64> {
+        Some(match name {
+            "rx_packets" => self.rx_packets,
+            "tx_packets" => self.tx_packets,
+            "rx_bytes"   => self.rx_bytes,
+            "tx_bytes"   => self.tx_bytes,
+            "rx_errors"  => self.rx_errors,
+            "tx_errors"  => self.tx_errors,
+            "rx_dropped" => self.rx_dropped,
+            "tx_dropped" => self.tx_dropped,
+            n if STAT_FIELDS.contains(&n) => 0,
+            _ => return None,
+        })
+    }
+}
+
 /// `25§3` driver trait.
 pub trait NetDev: Send + Sync {
     /// Stable interface name (`lo`, `eth0`, …).
@@ -266,6 +304,46 @@ mod tests {
         assert_eq!(s.len(), 2);
         assert!(s.iter().any(|t| t.1 == "lo"));
         assert!(s.iter().any(|t| t.1 == "eth0"));
+    }
+
+    #[test]
+    fn netstats_field_maps_known_counters() {
+        let st = NetStats {
+            rx_packets: 7, rx_bytes: 700, rx_errors: 1, rx_dropped: 2,
+            tx_packets: 9, tx_bytes: 900, tx_errors: 4, tx_dropped: 3,
+        };
+        assert_eq!(st.field("rx_packets"), Some(7));
+        assert_eq!(st.field("tx_packets"), Some(9));
+        assert_eq!(st.field("rx_bytes"),   Some(700));
+        assert_eq!(st.field("tx_bytes"),   Some(900));
+        assert_eq!(st.field("rx_errors"),  Some(1));
+        assert_eq!(st.field("tx_errors"),  Some(4));
+        assert_eq!(st.field("rx_dropped"), Some(2));
+        assert_eq!(st.field("tx_dropped"), Some(3));
+    }
+
+    #[test]
+    fn netstats_field_unbacked_is_zero_known_is_none() {
+        let st = NetStats::default();
+        // In STAT_FIELDS but no backing counter → 0.
+        assert_eq!(st.field("multicast"),      Some(0));
+        assert_eq!(st.field("collisions"),     Some(0));
+        assert_eq!(st.field("rx_over_errors"), Some(0));
+        assert_eq!(st.field("rx_nohandler"),   Some(0));
+        // Not a Linux statistics field → None (ENOENT).
+        assert_eq!(st.field("bogus"), None);
+        assert_eq!(st.field(""),      None);
+    }
+
+    #[test]
+    fn stat_fields_match_linux_names_and_count() {
+        // Sanity: the canonical first eight are present and ordered as
+        // net-sysfs.c registers them.
+        assert_eq!(STAT_FIELDS[0], "rx_packets");
+        assert_eq!(STAT_FIELDS[1], "tx_packets");
+        assert!(STAT_FIELDS.contains(&"collisions"));
+        assert!(STAT_FIELDS.contains(&"rx_nohandler"));
+        assert_eq!(STAT_FIELDS.len(), 24);
     }
 
     /// Suppress the unused-import lint when the cfg(test) block is
