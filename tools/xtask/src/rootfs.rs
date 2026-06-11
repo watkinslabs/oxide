@@ -241,7 +241,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "mtmalloc_smoke", "sigmalloc_smoke", "mremap_alias_smoke", "rawecho_smoke", "termios_rt_smoke", "isatty_smoke", "pollecho_smoke",
         "usleep_smoke", "af_packet_smoke", "online_smoke",
         "tcp_smoke", "exit_test", "pthread_socketpair_probe",
-        "socketpair_fork_probe", "tty_reset_probe", "dsr_probe", "vtswitch_probe", "vtmode_probe", "vtresize_probe", "kdfont_probe", "fbdev_probe", "vcs_probe", "ptyhup_probe", "hwrng_probe",
+        "socketpair_fork_probe", "tty_reset_probe", "dsr_probe", "vtswitch_probe", "vtmode_probe", "vtresize_probe", "kdfont_probe", "fbdev_probe", "vcs_probe", "ptyhup_probe", "hwrng_probe", "vsock_probe",
     ] {
         put(&user(b), &format!("/bin/{b}"))?;
     }
@@ -626,6 +626,13 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // F149-3: present → init runs kernel-acceptance smokes (set 0 to skip).
     if std::env::var("OXIDE_INIT_SMOKES").as_deref() != Ok("0") {
         put(&stage("oxide-init-smokes", b"1\n")?, "/etc/oxide-init-smokes")?;
+    }
+    // D3.3: present → rcS smoke runs /bin/vsock_probe against the host
+    // echo peer (boot-smoke-vsock.sh sets OXIDE_VSOCK_SMOKE=1 + starts
+    // the host socat/python AF_VSOCK server). Absent on normal boots so
+    // the guarded probe is skipped (no host peer → would false-fail).
+    if std::env::var("OXIDE_VSOCK_SMOKE").as_deref() == Ok("1") {
+        put(&stage("oxide-vsock-smoke", b"1\n")?, "/etc/oxide-vsock-smoke")?;
     }
     // F211: arch marker — rcS picks sshd daemonize mode by this file.
     if arch == "aarch64" {

@@ -60,6 +60,8 @@ pub(crate) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
 // file (cap_dump_arch reads `virtio::is_modern`, etc.).
 mod virtio_drv;
 mod virtio_blk_cfg;
+mod virtio_vsock_cfg;
+mod virtio_trace;
 use virtio_drv::virtio_probe_arch;
 
 /// Monotonic virtio-bus sequence (`virtioN` naming) assigned in

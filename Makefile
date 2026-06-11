@@ -195,6 +195,18 @@ smoke-ssh-arm: arm
 	./tools/boot-smoke-ssh.sh arm $(SSH_SMOKE_TIMEOUT) $(SSH_SMOKE_CONNECTIONS)
 smoke-ssh: smoke-ssh-x86 smoke-ssh-arm
 
+# D3.3 virtio-vsock host↔guest round-trip smoke. Starts a host AF_VSOCK
+# echo server, rebuilds the rootfs with OXIDE_VSOCK_SMOKE=1 so rcS runs
+# /bin/vsock_probe, boots, and checks for `vsock_probe: PASS` +
+# `virtio-vsock installed cid=3` on serial. Needs /dev/vhost-vsock on
+# the host (skips cleanly otherwise).
+VSOCK_SMOKE_TIMEOUT ?= 600
+smoke-vsock-x86: x86
+	./tools/boot-smoke-vsock.sh x86 $(VSOCK_SMOKE_TIMEOUT)
+smoke-vsock-arm: arm
+	./tools/boot-smoke-vsock.sh arm $(VSOCK_SMOKE_TIMEOUT)
+smoke-vsock: smoke-vsock-x86
+
 # Rebuild kernel/blobs/rootfs.img from userspace/ sources. Run after
 # editing any userspace/<name>/<name>.c so include_bytes! picks up
 # the new bytes on the next kernel build.
