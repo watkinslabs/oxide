@@ -35,6 +35,23 @@ const PSF2_HAS_UNICODE_TABLE: u32 = 0x01;
 const PSF2_SEPARATOR: u8 = 0xff;
 const PSF2_STARTSEQ: u8 = 0xfe;
 
+/// Glyph bitmap storage: borrowed from the embedded built-in font, or owned
+/// when a font is loaded at runtime via KDFONTOP (`setfont`).
+enum GlyphData {
+    Static(&'static [u8]),
+    Owned(Vec<u8>),
+}
+
+impl GlyphData {
+    #[inline]
+    fn bytes(&self) -> &[u8] {
+        match self {
+            GlyphData::Static(s) => s,
+            GlyphData::Owned(v) => v,
+        }
+    }
+}
+
 /// A parsed console font: glyph bitmaps + the unicode→glyph-index map.
 /// `glyphs` borrows the embedded (or, later, the loaded) blob; `uni` is
 /// the sorted `conv_uni_to_pc` table.
@@ -50,7 +67,8 @@ pub struct Font {
     /// Number of glyphs in the font.
     count: usize,
     /// Glyph bitmap region: `count * charsize` bytes, MSB = leftmost pixel.
-    glyphs: &'static [u8],
+    /// Borrowed from the embedded blob (built-in) or owned (KDFONTOP-loaded).
+    glyphs: GlyphData,
     /// `conv_uni_to_pc`: (codepoint, glyph-index) sorted by codepoint.
     uni: Vec<(u32, u16)>,
     /// Resolved glyph index for U+FFFD/`?` — the fallback for an unmapped
@@ -79,8 +97,12 @@ impl Font {
             return 0;
         }
         // First byte of the scanline (width ≤ 8 → 1 byte/row).
-        self.glyphs[idx * self.charsize + py * self.row_bytes]
+        self.glyphs.bytes()[idx * self.charsize + py * self.row_bytes]
     }
+
+    /// Glyph count / cell dimensions — for KD_FONT_OP_GET.
+    /// # C: O(1).
+    pub fn dims(&self) -> (u32, u32, u32) { (self.width, self.height, self.count as u32) }
 }
 
 /// Parse a PSF2 font blob into a `Font`. Returns `None` on a bad magic,
@@ -131,7 +153,10 @@ pub fn parse_psf2(data: &'static [u8]) -> Option<Font> {
         Err(_) => 0,
     };
 
-    Some(Font { width, height, charsize, row_bytes, count, glyphs, uni, fallback })
+    Some(Font {
+        width, height, charsize, row_bytes, count,
+        glyphs: GlyphData::Static(glyphs), uni, fallback,
+    })
 }
 
 /// Parse the PSF2 unicode description table: for each glyph `0..count`, a
@@ -221,6 +246,113 @@ pub fn active() -> &'static Font {
     }
 }
 
+/// Publish `font` as the active console font (lock-free swap of the ACTIVE
+/// pointer). The previous font leaks — font swaps (`setfont`) are rare and
+/// a glyph blit may still be reading the old one; leaking keeps it valid for
+/// the kernel lifetime. # C: O(1).
+fn install(font: Font) {
+    let _ = active(); // ensure the default is parsed first (race-free init)
+    let raw = Box::into_raw(Box::new(font));
+    ACTIVE.store(raw, Ordering::Release);
+}
+
+/// KD_FONT_OP_SET: load `count` glyph bitmaps (each `stride` bytes in the
+/// KDFONTOP buffer — Linux uses 32; the first `height` bytes are the
+/// scanlines) as the new console font, sized `width`×`height`. The current
+/// unicode map is carried over (KDFONTOP carries no map — `setfont` sets it
+/// separately via PIO_UNIMAP). Rejects width>8 / height>32 / count==0 / a
+/// short buffer. # C: O(count*height).
+pub fn set_font(width: u32, height: u32, count: u32, stride: usize, data: &[u8]) -> Result<(), ()> {
+    let cur = active();
+    let font = build_font(width, height, count, stride, data, cur.uni.clone(), cur.fallback)?;
+    install(font);
+    Ok(())
+}
+
+/// Build a runtime (owned-glyph) `Font` from a KDFONTOP buffer + a unicode
+/// map — the pure core of `set_font`, testable without the global. Rejects
+/// width>8 / height>32 / count==0 / a short buffer. # C: O(count*height).
+fn build_font(
+    width: u32, height: u32, count: u32, stride: usize, data: &[u8],
+    uni: Vec<(u32, u16)>, fallback: u16,
+) -> Result<Font, ()> {
+    if width == 0 || width > 8 || height == 0 || height > 32 || count == 0 || count > 512 {
+        return Err(());
+    }
+    let count = count as usize;
+    if data.len() < count * stride { return Err(()); }
+    let row_bytes = 1usize; // width<=8 → 1 byte/scanline
+    let charsize = row_bytes * height as usize;
+    let mut glyphs = Vec::with_capacity(count * charsize);
+    for i in 0..count {
+        let base = i * stride;
+        glyphs.extend_from_slice(&data[base..base + charsize]);
+    }
+    Ok(Font {
+        width, height, charsize, row_bytes, count,
+        glyphs: GlyphData::Owned(glyphs),
+        uni,
+        fallback: fallback.min(count as u16 - 1),
+    })
+}
+
+/// KD_FONT_OP_GET: serialize the active font into the KDFONTOP buffer layout
+/// — returns (width, height, count, data) with `stride` bytes per glyph (the
+/// first `height` bytes are scanlines, rest zero-padded). # C: O(count*stride).
+pub fn get_font(stride: usize) -> (u32, u32, u32, Vec<u8>) {
+    serialize(active(), stride)
+}
+
+/// Serialize `f` to the KDFONTOP buffer layout (`stride` bytes/glyph, first
+/// `height` rows then zero pad) — the pure core of `get_font`.
+/// # C: O(count*stride).
+fn serialize(f: &Font, stride: usize) -> (u32, u32, u32, Vec<u8>) {
+    let mut out = alloc::vec![0u8; f.count * stride];
+    let h = f.height as usize;
+    for i in 0..f.count {
+        for py in 0..h {
+            out[i * stride + py] = f.glyph_row(i, py);
+        }
+    }
+    (f.width, f.height, f.count as u32, out)
+}
+
+/// KD_FONT_OP_SET_DEFAULT: restore the embedded built-in font + its unimap.
+/// # C: O(font parse).
+pub fn set_default() {
+    if let Some(f) = parse_psf2(DEFAULT_PSF) { install(f); }
+}
+
+/// PIO_UNIMAP: replace the `conv_uni_to_pc` map with `pairs`
+/// (codepoint→glyph-index). Keeps the current glyph bitmaps. # C: O(N log N).
+pub fn set_unimap(pairs: &[(u32, u16)]) {
+    let cur = active();
+    let mut uni: Vec<(u32, u16)> = pairs.to_vec();
+    uni.sort_by_key(|&(c, _)| c);
+    uni.dedup_by_key(|&mut (c, _)| c);
+    let fallback = match uni.binary_search_by_key(&0x3f, |&(c, _)| c) {
+        Ok(i) => uni[i].1,
+        Err(_) => 0,
+    };
+    let glyphs = match &cur.glyphs {
+        GlyphData::Static(s) => GlyphData::Static(s),
+        GlyphData::Owned(v) => GlyphData::Owned(v.clone()),
+    };
+    install(Font {
+        width: cur.width, height: cur.height, charsize: cur.charsize,
+        row_bytes: cur.row_bytes, count: cur.count, glyphs, uni, fallback,
+    });
+}
+
+/// PIO_UNIMAPCLR: empty the unicode map (everything falls back to glyph 0
+/// until PIO_UNIMAP repopulates it — the `setfont` clear-then-load sequence).
+/// # C: O(1).
+pub fn clear_unimap() { set_unimap(&[]); }
+
+/// GIO_UNIMAP: the active `conv_uni_to_pc` map as (codepoint, glyph-index)
+/// pairs (sorted by codepoint). # C: O(N).
+pub fn unimap() -> Vec<(u32, u16)> { active().uni.clone() }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,6 +404,38 @@ mod tests {
         // U+25C6 (◆) is not in CP437 → fallback to '?' (glyph 63).
         assert_eq!(f.glyph_index(0x25c6), 63);
         assert_eq!(f.glyph_index(0x1f600), 63); // emoji → '?'
+    }
+
+    #[test]
+    fn build_font_extracts_glyphs_and_get_roundtrips() {
+        // Two 8x8 glyphs in a 32-byte/glyph KDFONTOP buffer (Linux stride).
+        let stride = 32usize;
+        let mut data = alloc::vec![0u8; 2 * stride];
+        // glyph 0 row 0 = 0xAA, glyph 1 row 3 = 0x0F.
+        data[0] = 0xAA;
+        data[stride + 3] = 0x0F;
+        let uni = alloc::vec![(0x41u32, 0u16), (0x42u32, 1u16)];
+        let f = build_font(8, 8, 2, stride, &data, uni, 0).unwrap();
+        assert_eq!(f.dims(), (8, 8, 2));
+        assert_eq!(f.glyph_row(0, 0), 0xAA);
+        assert_eq!(f.glyph_row(1, 3), 0x0F);
+        assert_eq!(f.glyph_index('A' as u32), 0);
+        assert_eq!(f.glyph_index('B' as u32), 1);
+        // GET serializes back to the 32-byte stride with the rows intact.
+        let (w, h, c, out) = serialize(&f, stride);
+        assert_eq!((w, h, c), (8, 8, 2));
+        assert_eq!(out[0], 0xAA);
+        assert_eq!(out[stride + 3], 0x0F);
+    }
+
+    #[test]
+    fn build_font_rejects_bad_geometry() {
+        let data = alloc::vec![0u8; 32];
+        assert!(build_font(0, 8, 1, 32, &data, Vec::new(), 0).is_err());   // width 0
+        assert!(build_font(16, 8, 1, 32, &data, Vec::new(), 0).is_err());  // width>8
+        assert!(build_font(8, 64, 1, 32, &data, Vec::new(), 0).is_err());  // height>32
+        assert!(build_font(8, 8, 0, 32, &data, Vec::new(), 0).is_err());   // count 0
+        assert!(build_font(8, 8, 5, 32, &data, Vec::new(), 0).is_err());   // short buffer
     }
 
     #[test]
