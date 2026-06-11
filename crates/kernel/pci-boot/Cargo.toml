@@ -15,6 +15,7 @@ hal     = { path = "../../arch/hal" }
 pmm     = { path = "../mm-pmm" }
 pci     = { path = "../../drivers/pci" }
 virtio  = { path = "../../drivers/virtio" }
+drv     = { path = "../../drivers/drv" }
 arch-irq = { path = "../arch-irq" }
 softirq = { path = "../softirq" }
 net     = { path = "../net" }

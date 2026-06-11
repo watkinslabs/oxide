@@ -62,6 +62,12 @@ mod virtio_drv;
 mod virtio_blk_cfg;
 use virtio_drv::virtio_probe_arch;
 
+/// Monotonic virtio-bus sequence (`virtioN` naming) assigned in
+/// enumeration order, mirroring Linux's virtio-pci registration.
+static VIRTIO_SEQ: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Next virtio bus index. # C: O(1)
+fn virtio_seq() -> u32 { VIRTIO_SEQ.fetch_add(1, core::sync::atomic::Ordering::Relaxed) }
+
 /// Enable PCI command reg bits 1 (Memory Space) + 2 (Bus Master) on
 /// `bdf`. UEFI on QEMU virt leaves Memory OFF; without this any BAR
 /// MMIO read returns 0xFFFFFFFF and any write is silently dropped.
@@ -533,6 +539,26 @@ pub fn enumerate_and_log() {
             // for upcoming MSI-X routing + virtio modern-transport work.
             bar_dump_arch(d.bdf);
             cap_dump_arch(d);
+            // drivers-plan D1a: publish every enumerated PCI function in
+            // the drv device model (→ /sys/bus/pci/devices/<addr> +
+            // /sys/devices/pci0000:00/<addr>). Done AFTER cap/MSI dump so
+            // the device's PCI state is settled. ADDITIVE: bring-up below
+            // is unchanged; a device whose driver fails bring-up still
+            // appears here, unbound (no `driver` symlink).
+            let class24 = ((d.class_code as u32) << 16)
+                | ((d.subclass as u32) << 8) | (d.prog_if as u32);
+            let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
+                0u16, d.bdf.bus, d.bdf.device, d.bdf.function);
+            drv::register_device(alloc::sync::Arc::new(drv::Device::new(
+                "pci", addr, d.vendor_id, d.device_id, class24)));
+            // virtio bus alias: a modern virtio-pci function also exists on
+            // the synthetic virtio bus as virtioN (N = enumeration order).
+            if virtio::is_modern(d.vendor_id, d.device_id) {
+                let vaddr = alloc::format!("virtio{}", virtio_seq());
+                let vdev_id = d.device_id.wrapping_sub(0x1040);
+                drv::register_device(alloc::sync::Arc::new(drv::Device::new(
+                    "virtio", vaddr, d.vendor_id, vdev_id, 0)));
+            }
             virtio_probe_arch(d);
         }
         // F40 + F57: brief IRQ unmask window so any MSIs queued
