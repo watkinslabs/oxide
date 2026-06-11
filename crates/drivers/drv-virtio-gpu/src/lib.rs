@@ -259,32 +259,10 @@ impl VirtioGpuDev {
 // Crate-level entry points (probe / init)
 // ============================================================
 
-/// Boot-time registration with the driver-model registry per
-/// `35§3`. The kernel calls this during `drv` bring-up; the
-/// per-device probe lands when `drv::probe_all(bdf)` walks PCI
-/// and matches our vendor/device pair.
-/// # C: O(1)
-pub fn register() {
-    drv::register(drv::DriverEntry { name: "virtio-gpu", probe });
-}
-
-/// Boot-time probe + bring-up (`45§7`). Validates PCI vendor /
-/// device, runs the virtio init dance, queries display info +
-/// EDID, then surrenders the device to `47` DRM via
-/// `drm::register(...)`.
-///
-/// Real bring-up touches per-CPU MMIO + virtqueue DMA — those
-/// stay in the kernel-side glue (`pci_boot/virtio_drv.rs`)
-/// because the modern transport plumbing lives there.  This
-/// stub validates the wire-side decisions (feature mask,
-/// resource id alloc, format math) so the host-test contract
-/// in `45§10` is satisfiable today; the live kernel-side wiring
-/// follows in the matching kernel PR.
-/// # C: O(1)
-pub fn probe(bdf: u32) -> drv::KResult<()> {
-    let _ = bdf;
-    Err(drv::Error::NoMatch)
-}
+// virtio-gpu binds via the real driver-model Driver registered + bound at its
+// bring-up site (pci_boot/virtio_drv.rs → drv::bind), not a probe stub. The
+// old NoMatch DriverEntry (legacy drv::probe_all path, never called) was
+// removed in drivers-plan D2.
 
 /// Compute the negotiated feature mask given a host-advertised
 /// feature word + the driver's preferred bits. Pure function so
