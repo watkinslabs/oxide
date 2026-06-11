@@ -64,12 +64,13 @@ pub fn read_cr4() -> u64 {
 /// to #UD/#NM, and sets CR0.MP (bit 1 — task-switched FPU is
 /// monitored). musl's libc startup uses `movq %rbx, %xmm0` and
 /// similar SSE2 instructions; without this they raise #UD.
-/// # SAFETY: privileged CR0/CR4 writes legal at CPL=0; called
-/// once at boot before any user code runs.
+/// # SAFETY: privileged CR0/CR4 writes legal at CPL=0; called once
+/// per CPU at boot (BSP `_start_rust` + each AP `ap_main_x86`) before
+/// that CPU runs user code. CR0/CR4 are per-CPU registers.
 /// # C: O(1)
 pub unsafe fn enable_sse() {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    // SAFETY: per fn-level contract — privileged CR0/CR4 reads/writes legal at CPL=0; called once at boot pre-userspace; no concurrent CPU modifies CR4 in v1 single-CPU UP.
+    // SAFETY: per fn-level contract — privileged CR0/CR4 reads/writes legal at CPL=0; called once per CPU pre-userspace; CR0/CR4 are per-CPU so each CPU is the sole writer of its own.
     unsafe {
         let mut cr0: u64;
         asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
