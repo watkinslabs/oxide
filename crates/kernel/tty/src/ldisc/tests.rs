@@ -467,3 +467,77 @@ proptest! {
         prop_assert_eq!(w, input.len());
     }
 }
+
+// ---------------------------------------------------------------------
+// VMIN/VTIME noncanonical read-decision state machine (the 4 Linux
+// cases). Pure fn — no clock, no lock — so every case + boundary is a
+// direct unit test. The signal-interrupt path is kernel-only (it reads
+// the running task's sigpending&!sigmask via KernelWait::should_interrupt)
+// and is exercised by the boot smoke, not here.
+// ---------------------------------------------------------------------
+use super::{vmin_vtime_decision, VmtDecision, n_tty::VTIME_TENTH_NS};
+
+/// MIN==0,TIME==0: polling read — return immediately with whatever is
+/// available (0 if none), never block.
+#[test]
+fn vmt_poll_min0_time0() {
+    assert_eq!(vmin_vtime_decision(0, 0, 0, 8, 0, 0, false), VmtDecision::ReturnNow(0));
+    assert_eq!(vmin_vtime_decision(0, 0, 3, 8, 0, 0, true), VmtDecision::ReturnNow(3));
+    // Available exceeds buf → clamp to buf_len.
+    assert_eq!(vmin_vtime_decision(0, 0, 9, 8, 0, 0, true), VmtDecision::ReturnNow(8));
+}
+
+/// MIN>0,TIME==0: block until ≥MIN bytes (no timer); return up to buf.len().
+#[test]
+fn vmt_block_min_no_timer() {
+    // Below MIN → block, no deadline.
+    assert_eq!(vmin_vtime_decision(3, 0, 2, 8, 0, 0, true), VmtDecision::BlockNoDeadline);
+    assert_eq!(vmin_vtime_decision(3, 0, 0, 8, 0, 0, false), VmtDecision::BlockNoDeadline);
+    // MIN reached → return.
+    assert_eq!(vmin_vtime_decision(3, 0, 3, 8, 0, 0, true), VmtDecision::ReturnNow(3));
+    // More than MIN → take min(avail, buf).
+    assert_eq!(vmin_vtime_decision(3, 0, 5, 8, 0, 0, true), VmtDecision::ReturnNow(5));
+    // Buf full before MIN (buf_len < MIN) still returns.
+    assert_eq!(vmin_vtime_decision(8, 0, 2, 2, 0, 0, true), VmtDecision::ReturnNow(2));
+}
+
+/// MIN==0,TIME>0: read timer — block up to TIME*100ms for the FIRST byte;
+/// return what arrived (0 on timeout). Timer is start-relative.
+#[test]
+fn vmt_read_timer_min0_time() {
+    // Nothing yet, timer not expired → BlockUntil TIME*tenth.
+    assert_eq!(
+        vmin_vtime_decision(0, 2, 0, 8, 0, 0, false),
+        VmtDecision::BlockUntil(2 * VTIME_TENTH_NS)
+    );
+    // First byte arrived → return it (timer ends on first byte).
+    assert_eq!(vmin_vtime_decision(0, 2, 1, 8, 50_000_000, 0, true), VmtDecision::ReturnNow(1));
+    // Timer expired with nothing → ReturnNow(0).
+    assert_eq!(
+        vmin_vtime_decision(0, 2, 0, 8, 2 * VTIME_TENTH_NS, 0, false),
+        VmtDecision::ReturnNow(0)
+    );
+}
+
+/// MIN>0,TIME>0: interbyte timer — wait for the first byte with no overall
+/// timeout; after a byte, return at MIN/buf-full or when the interbyte gap
+/// exceeds TIME.
+#[test]
+fn vmt_interbyte_min_time() {
+    // No byte yet → block with NO deadline (wait for first byte).
+    assert_eq!(vmin_vtime_decision(3, 2, 0, 8, 0, 0, false), VmtDecision::BlockNoDeadline);
+    // First byte arrived, below MIN, gap not exceeded → BlockUntil interbyte.
+    assert_eq!(
+        vmin_vtime_decision(3, 2, 1, 8, 10_000_000, 10_000_000, true),
+        VmtDecision::BlockUntil(2 * VTIME_TENTH_NS)
+    );
+    // MIN reached → return regardless of timers.
+    assert_eq!(vmin_vtime_decision(3, 2, 3, 8, 0, 0, true), VmtDecision::ReturnNow(3));
+    // Buf full before MIN → return.
+    assert_eq!(vmin_vtime_decision(8, 2, 2, 2, 0, 0, true), VmtDecision::ReturnNow(2));
+    // Interbyte gap exceeded with partial data → return what's there.
+    assert_eq!(
+        vmin_vtime_decision(3, 2, 2, 8, 999_000_000, 2 * VTIME_TENTH_NS, true),
+        VmtDecision::ReturnNow(2)
+    );
+}
