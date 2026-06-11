@@ -42,22 +42,6 @@ impl WaitList {
     unsafe fn park(&self) { unreachable!("park under hosted"); }
 }
 
-/// Wake tasks parked in poll/select/ppoll + epoll_wait after a pipe
-/// readability/writability transition. The per-direction `*_waiters`
-/// lists only wake blocking read()/write(); poll/select/epoll park on
-/// the GLOBAL POLL_WAIT/EPOLL_GLOBAL_WAIT lists, which nothing notified
-/// for pipes — so a `poll`/`epoll_wait` on a pipe only re-scanned on the
-/// ~100 ms fallback. Call after each `*_waiters.wake_all()`. Host build
-/// (no `sched::live`) is a no-op. Level-triggered; spurious wakes safe.
-/// # C: O(N_pollers)
-#[cfg(target_os = "oxide-kernel")]
-fn notify_pollers() {
-    sched::live::notify_poll_waiters();
-    sched::live::notify_epoll_waiters();
-}
-#[cfg(not(target_os = "oxide-kernel"))]
-fn notify_pollers() {}
-
 const PIPE_CAP: usize = 4096;
 
 struct PipeBuf {
@@ -146,6 +130,9 @@ pub fn smoke_test() {
 pub struct EventfdInode {
     counter: core::sync::atomic::AtomicU64,
     ino:     vfs::Ino,
+    /// Per-fd poll/select/epoll wait queue. `notify()`d when the
+    /// counter goes nonzero (POLLIN). See PipeInode::subs.
+    subs:    vfs::PollSubscribers,
 }
 
 static NEXT_EVENTFD_INO: core::sync::atomic::AtomicU64
@@ -158,6 +145,7 @@ impl EventfdInode {
         alloc::sync::Arc::new(Self {
             counter: core::sync::atomic::AtomicU64::new(initial),
             ino,
+            subs: vfs::PollSubscribers::new(),
         })
     }
 }
@@ -181,6 +169,7 @@ impl vfs::Inode for EventfdInode {
         if v < u64::MAX - 1 { m |= vfs::POLL_OUT; }
         m
     }
+    fn poll_subscribers(&self) -> Option<&vfs::PollSubscribers> { Some(&self.subs) }
     fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         if buf.len() < 8 { return Err(vfs::VfsError::Einval); }
         let v = self.counter.swap(0, Ordering::AcqRel);
@@ -199,7 +188,7 @@ impl vfs::Inode for EventfdInode {
         // Counter went nonzero → POLLIN readable. Wake poll/epoll waiters
         // (sd-event drives eventfds via epoll_wait); without this they only
         // re-scanned on the ~100 ms fallback.
-        notify_pollers();
+        self.subs.notify();
         Ok(8)
     }
 }
@@ -224,6 +213,11 @@ pub struct PipeInode {
     /// Tasks parked on a write that found the buffer full. Woken
     /// when a read drains bytes or when the last reader closes.
     write_waiters: WaitList,
+    /// Per-fd poll/select/epoll wait queue (the Linux `->poll` wait
+    /// queue). poll/select/epoll subscribe here; every readability/
+    /// writability transition calls `subs.notify()` to wake ONLY the
+    /// tasks polling THIS pipe — no global broadcast.
+    subs: vfs::PollSubscribers,
 }
 
 static NEXT_PIPE_INO: core::sync::atomic::AtomicU64
@@ -240,6 +234,7 @@ impl PipeInode {
             readers: core::sync::atomic::AtomicUsize::new(0),
             read_waiters:  WaitList::new(),
             write_waiters: WaitList::new(),
+            subs: vfs::PollSubscribers::new(),
         })
     }
 
@@ -288,7 +283,7 @@ impl Inode for PipeInode {
             let n = self.try_drain(buf);
             if n > 0 {
                 self.write_waiters.wake_all();
-                notify_pollers();
+                self.subs.notify();
                 return Ok(n);
             }
             if self.writers.load(Ordering::Acquire) == 0 {
@@ -327,7 +322,7 @@ impl Inode for PipeInode {
             let n = self.try_fill(buf);
             if n > 0 {
                 self.read_waiters.wake_all();
-                notify_pollers();
+                self.subs.notify();
                 return Ok(n);
             }
             // Signal-interruptible per pipe(7): a blocked write with a
@@ -356,7 +351,7 @@ impl Inode for PipeInode {
         let n = self.try_drain(buf);
         if n > 0 {
             self.write_waiters.wake_all();
-            notify_pollers();
+            self.subs.notify();
             return Ok(n);
         }
         if self.writers.load(Ordering::Acquire) == 0 { Ok(0) }
@@ -379,6 +374,8 @@ impl Inode for PipeInode {
         mask
     }
 
+    fn poll_subscribers(&self) -> Option<&vfs::PollSubscribers> { Some(&self.subs) }
+
     /// Non-blocking pipe write per Linux O_NONBLOCK semantics.
     fn write_nonblock(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
@@ -388,7 +385,7 @@ impl Inode for PipeInode {
         let n = self.try_fill(buf);
         if n > 0 {
             self.read_waiters.wake_all();
-            notify_pollers();
+            self.subs.notify();
             return Ok(n);
         }
         Err(VfsError::Eagain)
@@ -439,7 +436,7 @@ fn pipe_close_hook(inode: &InodeRef, was_writable: bool) {
             klog::write_dec_u64(prev as u64);
             klog::write_raw(b"\n");
         }
-        if prev <= 1 { pipe.read_waiters.wake_all(); notify_pollers(); }
+        if prev <= 1 { pipe.read_waiters.wake_all(); pipe.subs.notify(); }
     } else {
         let prev = pipe.readers.fetch_sub(1, Ordering::AcqRel);
         if prev == 0 {
@@ -455,7 +452,7 @@ fn pipe_close_hook(inode: &InodeRef, was_writable: bool) {
             klog::write_dec_u64(pipe.writers.load(Ordering::Acquire) as u64);
             klog::write_raw(b"\n");
         }
-        if prev <= 1 { pipe.write_waiters.wake_all(); notify_pollers(); }
+        if prev <= 1 { pipe.write_waiters.wake_all(); pipe.subs.notify(); }
     }
 }
 
