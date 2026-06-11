@@ -50,6 +50,18 @@ use crate::ldisc::{vmin_vtime_decision, LdiscOps, NTty, Sig, TtyDriverHooks, Vmt
 use crate::pty::{Winsize, TERMIOS_BYTES};
 use crate::wait::TtyWait;
 
+/// Wake tasks parked in poll/select/ppoll + epoll_wait after a tty
+/// readability transition (RX byte queued, hangup). `sched::live` is
+/// kernel-only, so the host-test build gets a no-op.
+/// # C: O(N_pollers)
+#[cfg(target_os = "oxide-kernel")]
+fn notify_pollers() {
+    sched::live::notify_poll_waiters();
+    sched::live::notify_epoll_waiters();
+}
+#[cfg(not(target_os = "oxide-kernel"))]
+fn notify_pollers() {}
+
 /// TCFLSH queue selector (the ioctl arg). Linux uapi: TCIFLUSH=0 (input),
 /// TCOFLUSH=1 (output), TCIOFLUSH=2 (both). Typed so the ioctl shim never
 /// passes a bare literal (07§5).
@@ -235,6 +247,14 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         // wake_all here, because its enqueue serialized with our queue
         // above on the same port lock.
         self.wait.wake_all();
+        // The RX byte queue just flipped POLLIN readable: wake tasks parked in
+        // poll/select/ppoll (POLL_WAIT) and epoll_wait (EPOLL_GLOBAL_WAIT) on
+        // this tty's fd. Without this they only re-scanned on the bounded
+        // ~100 ms fallback deadline — input on a polled console lagged up to
+        // that long. `notify_poll_waiters` had ZERO callers; this is its
+        // intended tty-RX wire (mod.rs POLL_WAIT doc). Outside the port lock
+        // (same as the reader wake); spurious wakes are level-triggered-safe.
+        notify_pollers();
     }
 
     /// Blocking read — THE lost-wakeup-free read. Returns a whole cooked
@@ -545,6 +565,9 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         self.sid.store(0, Ordering::Release);
         self.fg_pgrp.store(0, Ordering::Release);
         self.wait.wake_all();
+        // Hangup flips POLLHUP + read→EOF: wake poll/select/epoll waiters too
+        // (same rationale as receive_from_driver).
+        notify_pollers();
     }
 
     /// True once `hangup` has dropped the ldisc into its EOF/EIO state.
