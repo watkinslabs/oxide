@@ -19,8 +19,8 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
     let options = args.a2;
     let _rusage = args.a3;
 
-    let parent_tid = match sched::live::current() {
-        Some(c) => c.tid,
+    let (parent_tid, parent_pgid) = match sched::live::current() {
+        Some(c) => (c.tid, c.pgid.load(core::sync::atomic::Ordering::Acquire)),
         None    => return -(Errno::Einval.as_i32() as i64),
     };
     let want_stop = (options & WUNTRACED)  != 0;
@@ -28,14 +28,14 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
     loop {
         if want_stop || want_cont {
             if let Some((tid, kind, sig)) = sched::live::registry::take_child_stop_event(
-                parent_tid, pid, want_stop, want_cont)
+                parent_tid, pid, parent_pgid, want_stop, want_cont)
             {
                 let wstat: i32 = if kind == 1 { ((sig as i32) << 8) | 0x7f } else { 0xffff };
                 write_wstatus(wstatus, wstat);
                 return tid as i64;
             }
         }
-        if let Some((tid, code)) = sched::live::reap_one(parent_tid, pid) {
+        if let Some((tid, code)) = sched::live::reap_one(parent_tid, pid, parent_pgid) {
             let wstat: i32 = if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 };
             write_wstatus(wstatus, wstat);
             // F237: if no more zombies for this parent, clear the
@@ -77,7 +77,7 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
         // park_for_wait4 fires wake_wait4_parent while WAITERS is
         // empty — losing the wake. If the child has Zombied since,
         // unpark + return its status without going through schedule().
-        if let Some((tid, code)) = sched::live::reap_one(parent_tid, pid) {
+        if let Some((tid, code)) = sched::live::reap_one(parent_tid, pid, parent_pgid) {
             sched::live::unpark_self_from_wait4();
             let wstat: i32 = if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 };
             write_wstatus(wstatus, wstat);

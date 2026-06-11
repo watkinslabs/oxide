@@ -239,13 +239,10 @@ fn wake_task_for_signal(task: &Arc<Task>) {
     crate::preempt::set_need_resched();
 }
 
-/// Reap one Zombie child whose `parent_tid == parent`. Returns
-/// `Some((tid, exit_code))` and drops the strong-ref so the Task
-/// is freed. `None` if no matching Zombie is queued.
-///
-/// Filter shape mirrors `wait4` per docs/15§5: `pid == -1`
-/// matches any child; `pid > 0` matches that specific TID; other
-/// values not yet supported.
+/// Reap one Zombie child matching the `wait4` filter
+/// (`wait_pid_matches`). Returns `Some((tid, exit_code))` and drops
+/// the strong-ref so the Task is freed. `None` if no matching Zombie
+/// is queued.
 /// # C: O(N_zombies)
 /// True iff any queued zombie has `parent_tid == parent`. Used
 /// by `sys_wait4` to decide whether to clear the SIGCHLD pending
@@ -258,29 +255,26 @@ pub fn has_zombies(parent: u32) -> bool {
     ZOMBIES.lock().iter().any(|t| t.parent_tid.load(Ordering::Acquire) == parent)
 }
 
-/// Peek one Zombie child whose `parent_tid == parent` WITHOUT removing
+use crate::registry::wait_pid_matches;
+
+/// Peek one Zombie child matching the `wait4` filter WITHOUT removing
 /// it — the `waitid(2)` `WNOWAIT` contract (leave the child in a
-/// waitable state). Same filter shape as `reap_one`. systemd's SIGCHLD
+/// waitable state). Same filter as `reap_one`. systemd's SIGCHLD
 /// handler peeks with `WEXITED|WNOHANG|WNOWAIT` to learn which unit a
 /// pid belongs to, then reaps separately; if the peek reaped, that
 /// second wait would get ECHILD and systemd mis-supervises the service.
 /// # C: O(N_zombies)
-pub fn peek_one(parent: u32, pid: i32) -> Option<(u32, i32)> {
+pub fn peek_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(u32, i32)> {
     use core::sync::atomic::Ordering;
     let q = ZOMBIES.lock();
-    let t = q.iter().find(|t| {
-        if t.parent_tid.load(Ordering::Acquire) != parent { return false; }
-        match pid {
-            -1         => true,
-            p if p > 0 => t.tid == p as u32,
-            _          => false,
-        }
-    })?;
+    let t = q.iter().find(|t| wait_pid_matches(
+        t.parent_tid.load(Ordering::Acquire), t.tid, t.pgid.load(Ordering::Acquire),
+        parent, pid, parent_pgid))?;
     Some((t.tid, t.exit_status.load(Ordering::Acquire)))
 }
 
 /// # C: O(N_zombies)
-pub fn reap_one(parent: u32, pid: i32) -> Option<(u32, i32)> {
+pub fn reap_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(u32, i32)> {
     use core::sync::atomic::Ordering;
     let mut q = ZOMBIES.lock();
     #[cfg(feature = "debug-ssh")]
@@ -305,14 +299,9 @@ pub fn reap_one(parent: u32, pid: i32) -> Option<(u32, i32)> {
             klog::write_raw(b"\n");
         }
     }
-    let pos = q.iter().position(|t| {
-        if t.parent_tid.load(Ordering::Acquire) != parent { return false; }
-        match pid {
-            -1            => true,
-            p if p > 0    => t.tid == p as u32,
-            _             => false,
-        }
-    })?;
+    let pos = q.iter().position(|t| wait_pid_matches(
+        t.parent_tid.load(Ordering::Acquire), t.tid, t.pgid.load(Ordering::Acquire),
+        parent, pid, parent_pgid))?;
     let t = q.remove(pos);
     let tid = t.tid;
     let code = t.exit_status.load(Ordering::Acquire);

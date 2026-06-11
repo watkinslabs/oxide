@@ -36,8 +36,11 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
     // restart loop). Delegating to wait4 here would reap — so handle
     // WNOWAIT without touching the zombie queue.
     let rv = if options & WNOWAIT != 0 {
-        let parent_tid = match sched::live::current() { Some(c) => c.tid, None => 0 };
-        match sched::live::peek_one(parent_tid, pid_for_wait4) {
+        let (parent_tid, parent_pgid) = match sched::live::current() {
+            Some(c) => (c.tid, c.pgid.load(core::sync::atomic::Ordering::Acquire)),
+            None    => (0, 0),
+        };
+        match sched::live::peek_one(parent_tid, pid_for_wait4, parent_pgid) {
             Some((tid, code)) => {
                 local_wstat = if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 };
                 tid as i64
@@ -53,7 +56,7 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
                     // so this path is rare but POSIX-correct.
                     // SAFETY: process ctx; runqueue installed; preempt-off; park+reschedule per `13§8`.
                     unsafe { sched::live::park_for_wait4(); sched::live::schedule(); }
-                    match sched::live::peek_one(parent_tid, pid_for_wait4) {
+                    match sched::live::peek_one(parent_tid, pid_for_wait4, parent_pgid) {
                         Some((tid, code)) => {
                             local_wstat = if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 };
                             tid as i64

@@ -1,74 +1,87 @@
 # state — session hand-off
 
-Branch: main @ f0b0e75b. Active work: **console zombie bug** (reap path).
-Roadmap: vty-plan.md. MCP note: drive qemu via the qemu MCP (it dropped mid last
-session; restart reconnects it). debug builds are flood-free now — use debug-reap.
+Branch: B92-reap-pgid-wait-semantics (PR open). Investigated the "console
+zombie" bug with the debug-reap trace. **Result overturns the prior framing.**
+Roadmap: vty-plan.md.
 
-## FIRST THING NEXT SESSION
-Reproduce the zombie + capture the reap_one trace, which pins the bug:
-    make qemu-x86 FEATURES=debug-reap        # (MCP: qemu_start, or boot-smoke)
-    # log in on the CONSOLE (graphical window), run `ls`, let it return
-    # grep serial for: signal_child_exit | wake_wait4_parent | reap_one | zombie tid
-The `reap_one` line shows the ZOMBIES list at reap time → answers the open question.
+## Landed this session (B92)
+Reaping is PROVEN correct (trace + exhaustive case analysis + host tests) — the
+prior "zombie on every console exit" framing was a mis-diagnosis from a trace
+captured *before* the reap_one dump existed. B92 hardens + completes the path:
+- Single source of truth `registry::wait_pid_matches` for all four POSIX wait4
+  pid forms (-1/0/+tid/-pgid); used by reap_one/peek_one AND take_child_stop_event.
+- Fixes real gaps: reap_one/peek_one silently dropped pid==0 and pid<-1 (so
+  `waitid(P_PGID)` never reaped); take_child_stop_event matched pid>0 by VPID
+  (wrong — clone returns the kernel tid; init-NS children have vtgid=0 so a
+  specific-pid WUNTRACED wait never matched).
+- 5 host unit tests (registry::wait_match_tests). spec-lint clean, both arches build.
 
-## The bug (console: every program exit leaves a Z zombie; serial reaps fine)
-Reproducible EVERY exit on the framebuffer console. Captured trace (console, real):
-    signal_child_exit child=4102 parent_tid=4100 parent_upgrade=1
-    wake_wait4_parent  parent_tid=4100 wait4_waiters_found=1
-So the WAKE path WORKS: parent found (Weak upgrade ok → SIGCHLD sent), parent WAS
-parked in wait4 (waiters_found=1 → woken). Yet the zombie persists → the **reap
-itself** fails after the wake. The `reap_one` trace (added this session, #1744)
-will show whether the zombie is even IN the ZOMBIES list, or a parent/pid mismatch.
+## Headline
+The state.md "every program exit leaves a Z zombie on the console" bug does
+**NOT reproduce on the current tree at SMP=1**. With the new `reap_one` trace
+(#1744) we can finally see the ZOMBIES list at reap time, and reaping is
+CORRECT. The prior hypotheses were drawn from a trace captured *before*
+reap_one tracing existed.
 
-### Ruled out (by code reading)
-- clone returns child_tid (kernel tid); reap_one matches t.tid==pid → consistent
-  (NOT a vpid/tid mismatch in the basic path).
-- exit_group(231) routes to sys_exit (060_exit.rs) which DOES call
-  signal_child_exit (line 85). So the exit path isn't bypassing SIGCHLD.
-- Zombie enqueue: sys_exit → schedule() → prev is Zombie → stashed in per-CPU
-  `reap_pending` (schedule.rs:455) → INCOMING task's oxide_finish_task_switch
-  (schedule.rs:160-165) drains it → enqueue_zombie into ZOMBIES. Looks correct.
+A *different*, real SMP=2 regression surfaced instead (below).
 
-### Leading hypotheses (the reap_one trace decides)
-1. Zombie marked Z (shows in ps) but NOT in ZOMBIES list when parent's reap_one
-   runs (reap_pending drain race / wrong task drains it) → reap_one finds nothing.
-2. Parent 4100's wait4 is for a DIFFERENT pid than 4102 (shell has >1 child;
-   wake_wait4_parent wakes ALL waiters for the parent regardless of pid, but
-   reap_one(4100, specific_pid) won't match 4102) → 4102 never reaped.
-Key files: 061_wait4.rs (loop), zombies.rs (reap_one:274 w/ trace, signal_child_exit:86,
-wake_wait4_parent:176), schedule.rs (149 finish_task_switch, 450 zombie stash).
+## How it was reproduced (harness — reusable)
+Boot is driven by `make qemu-x86` (the qemu-MCP can't: it omits the root
+virtio-blk disk → panics at kmain.rs:627). x86 serial = stdio; console = fb.
+- `OXIDE_QEMU_QMP_SOCK=/tmp/oxide-qmp.sock` exposes QMP → inject **framebuffer**
+  keystrokes into tty1 via `send-key` (helper: `/tmp/qmp_type.py line "ls"`).
+- Serial driven via a FIFO kept open by a `sleep infinity` writer.
+- Launch (headless, KVM):
+    OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_KVM=1 OXIDE_QEMU_QMP_SOCK=/tmp/oxide-qmp.sock \
+      setsid bash -c "exec make qemu-x86 SMP=N FEATURES=debug-reap > LOG 2>&1 < /tmp/oxide-qin" &
+- klog/traces go to **serial** regardless of which tty triggered them.
+- QMP `screendump`→PPM→ascii to read the fb console headless.
 
-## Diagnostics in place (cfg-gated, zero default cost)
-- **debug-pmm** (#1741): PMM double-free culprit ring (free Location). For the
-  crash-teardown double-free (latent; only on a crashing process; arrow fix
-  removed the htop-crash trigger so it stopped recurring).
-- **debug-ssh** (#1742): exit/wait4/signal-child trace — BUT also enables the
-  per-syscall flood → unusable (floods serial, blocks login).
-- **debug-reap** (#1743, #1744): ONLY the reap traces (signal_child_exit +
-  wake_wait4_parent + reap_one zombie-list dump), NO syscall flood. USE THIS.
+## SMP=1 findings (clean)
+- Logged into BOTH ttyS0 (serial, via FIFO) and tty1 (console, via QMP send-key).
+- Ran `ls`, `id`, `pwd`, `true`, `ls /`, `ps` on the console (~10 cmds).
+- **Every** child reaped: `reap_one` finds the zombie (parent_tid match, bash
+  uses pid=-1) → removed → next reap_one shows zombies_total=0. `ps`: no Z.
+- Specific-pid reaps (login/PAM, parent=4096 pid=4104/05/06) also reap fine —
+  so the "wait4 specific-pid mismatch" hypothesis is also dead.
+- console-getty Started and NEVER Deactivated (stayed up the whole session).
 
-## Landed this session (console/tty)
-- #1736 tcflush (TCFLSH/TCSETSF input flush) — stale-answerback login fix.
-- #1738 serial/fb console SPLIT (P17-05): /dev/ttyS0 serial-only; /dev/console &
-  tty1..N = video VTs (vt_tty), rendered once; keyboard→fg VT; fbcon fg slot 1;
-  serial-getty@ttyS0 + console-getty both run. Verified both arches.
-- #1740 arrows/nav/F keys → escape sequences on the fb console (keymap). NOTE:
-  this also stopped htop crashing → stopped the double-free panic recurring.
+## SMP=2 findings (THE real lead)
+- System boots fully ("Reached target Oxide Default Target", startup 4.5s).
+- **console-getty Started then Deactivated IMMEDIATELY** (dies right after start)
+  → no fb-console login possible. Under SMP=1 it stays alive. This is the real
+  regression behind "console broken under more CPUs".
+- Its corpse is the zombie (tid=4096, parent_tid=0xC0DE0002 = systemd/PID1).
+  systemd DID reap it via the signalfd/SIGCHLD path, but there's a transient
+  race: cgroup-destroy ran before the reap → "Failed to destroy cgroup
+  /system.slice/console-getty.service: Directory not empty" (line ~1537).
+- serial-getty (ttyS0) separately wedges in its DSR `[6n` handshake loop and
+  never prints "oxide login:" (worked under SMP=1). Couldn't get an SMP=2 shell.
 
-## Still open (from user testing the console)
-- **Zombies** (above) — THE active bug.
-- **100% CPU when ≥2 htops** — poll-spin: sys_poll (007_poll.rs:106) parks with a
-  20ms RESCAN_NS fallback (poll wait-queue not woken by all ready-sites); 2
-  non-sleeping pollers peg a core under the cooperative scheduler. Likely same
-  root as zombies (video-VT wake path). Fix candidate: wire vt_tty input →
-  notify_poll_waiters so poll sleeps the full timeout.
-- Rendering (line-draw/blocks): per the screenshot it actually renders fine now;
-  not a priority.
-- "Only 1 CPU" = default SMP=1; use `make qemu-x86 SMP=2`. Not a bug.
+## FIRST THING NEXT SESSION (after B92 merges)
+Find why **console-getty exits immediately under SMP=2** (the actual bug).
+Boot `make qemu-x86 SMP=2 FEATURES=debug-reap` (+ maybe debug for tty/vt) and
+trace console-getty's exit: what syscall/path makes it exit ~0 right after
+start. Suspect the fb console / vt_tty open/lock/ioctl path is not SMP-safe
+(console-getty runs on /dev/console = fb). NOT a reaping bug — reaping is fine.
+Second: serial-getty DSR-loop wedge under SMP=2 (separate getty/console issue).
+
+## Code map (confirmed correct on SMP=1)
+- Normal exit: 060_exit.rs:77/85 mark_done+signal_child_exit → schedule().
+- Crash exit (SIGSEGV): mm-pmm/src/user_as/signal.rs:241-250 — SAME shape.
+- zombies.rs: signal_child_exit:86 wakes parent on the LOCAL rq (no cross-CPU
+  migration at wake → parent picked same CPU → its finish_task_switch drains
+  reap_pending BEFORE its reap_one; this is why SMP=1/2 reaping is robust).
+- reap_one:283 (pid=-1 any, pid>0 == kernel tid). clone returns kernel tid, so
+  parent waitpid(kernel-tid) matches — no vpid/tid mismatch.
+- reap_pending is per-CPU (runqueue.rs GLOBALS[cpu]); drained in
+  oxide_finish_task_switch (schedule.rs:160), incl. first-run trampoline
+  (hal-x86_64 context.rs:88). Only the boot-anchor idle skips it.
 
 ## Discipline
-- THE LINUX WAY, real subsystem, no blind MM patches (don't mask the double-free).
-- spec-lint clean + both arches every PR. Kill stale qemu-system before smoke
-  (vsock CID conflict false-fails). Don't `pkill -f qemu` (matches own shell).
-- Memories: project_pmm_double_free_teardown, project_tty_vt_remediation,
+- THE LINUX WAY, real subsystem, no blind sched/MM patches.
+- spec-lint clean + both arches every PR. Kill stale qemu (pgrep -f, comm is
+  truncated >15 chars) before smoke. Dev shell is set -e → guard kill chains
+  with `|| true` or they abort the rest of the script.
+- Memories: project_tty_vt_remediation, project_pmm_double_free_teardown,
   feedback_linux_way_no_design_questions.
