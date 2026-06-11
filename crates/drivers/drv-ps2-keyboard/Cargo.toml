@@ -1,0 +1,22 @@
+[package]
+name = "drv-ps2-keyboard"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# x86-only device. On aarch64 the crate compiles to an empty no-op (every
+# pub fn is a stub) so the workspace builds without touching the arm boot.
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+klog             = { path = "../../shared/klog" }
+kmacros          = { path = "../../shared/kmacros" }
+drv              = { path = "../drv" }
+drv-virtio-input = { path = "../drv-virtio-input" }
+
+[features]
+default = []
+# Forwards the boot-pulse trace gate to kmacros so `debug_boot!` expands
+# to a real klog line under `--features debug-boot` (else it's compiled out).
+debug-boot = ["kmacros/debug-boot"]
