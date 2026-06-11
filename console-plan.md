@@ -1,125 +1,134 @@
-# Console / VT / fbdev — 100% Linux-compat plan (no hacks)
+# Console / VT / fbdev / TTY — 100% Linux-compat plan (integrated)
 
-Goal: the framebuffer console stack matches Linux's architecture exactly, so
-real apps (btop, vim, less, mc, fbterm, X-less GUIs) behave identically.
+Single source of truth. Synthesizes **fix.md** (original 10-item audit),
+this plan's first pass (fix.md items 1–7), and **fixtty2.md** (post-impl audit
+of remaining ownership/integration/architecture debt).
 
-## Validation status of the in-flight B54 work
-- **Cursor (fix.md #3):** logic + unit tests correct (con_cursor honours
-  `cursor_visible`, prior cell erased on move). NOT boot-verified visually.
-- **DSR/CPR (fix.md #5):** logic correct (`ESC[6n`→`ESC[r;cR`, `ESC[5n`→`ESC[0n`,
-  clamp→geometry) BUT the **reply-injection HANGS THE BOOT** — agetty/systemd's
-  size probe + the injection wedges the tty before login. Must be redone the
-  Linux way (below). B54 stays on its branch, not merged.
+MANDATE (unchanged): BE Linux, not "like" Linux. Where the code deviates (a
+hack, a fake no-op, an oxide-only shortcut, a home-grown path where Linux uses
+a flip buffer / one tty object), RIP IT OUT and reimplement it the way
+`drivers/tty/{vt,n_tty,pty,vc_screen}.c`, `drivers/video/fbdev/core/*` do.
 
-## MANDATE: be Linux, not "like" Linux
-No oxide approach. No mixing an oxide approximation with a Linux veneer. The
-console stack must BE the Linux design — the same data structures, the same
-algorithms, the same ioctl semantics as `drivers/tty/vt/{vt.c,vt_ioctl.c}`,
-`drivers/tty/n_tty.c`, `drivers/video/fbdev/core/{fbcon.c,fbmem.c}`. Where the
-current code deviates (a hack, a fake no-op, an oxide-only shortcut, a
-home-grown ring where Linux uses a flip buffer), **RIP IT OUT and reimplement
-it exactly the way Linux does**. The Rust crate names stay (`vtdata`, `fbcon`,
-`fbdev`, `tty`) but their internals become the Linux structures:
-- `vtdata::Vc` → `struct vc_data` (the real fields + the real con_ops contract).
-- `fbcon` → the Linux fbcon (the `consw` it registers, the real soft-cursor /
-  font / unicode-map path).
-- `fbdev` → `fb_info` + `fb_ops` + `fbmem.c` ioctl/mmap surface.
-- `tty` → `n_tty` line discipline + the **flip-buffer** RX path (answerback,
-  keyboard, serial all go through `tty_insert_flip_string` → `receive_buf`).
-
-The Linux console stack:
+The Linux stack:
 ```
-app ── /dev/ttyN | /dev/console ── n_tty (ldisc) ── con_ops (vt.c)
-                                                      │  vc_data[N]
-                                                      │  consw (console_switch)
-                                              fbcon (drivers/video/fbdev/core)
-                                                      │  fb_ops
-                                              fb_info  ←──  /dev/fbN (fbmem.c)
+app ─ /dev/{ttyN,console,pts/*,ttyS*} ─ ONE TtyStruct ─ N_TTY ldisc ─ driver
+                                                          │            ├ vt.c (con_ops) ─ vc_data[N] ─ fbcon ─ fb_info ─ /dev/fbN
+                                                          │            └ uart / pty
+                                              keyboard ───┘ (→ fg vc's tty input)
 ```
-Each item below = audit the current code vs the Linux source, rip the deviation,
-reimplement to match. No "oxide approach" survives.
 
 ---
-## Item 5 — DSR/CPR replies (REDO the Linux way; fixes the boot hang + btop)
-Linux: the VT driver's `respond_string()` writes the answerback into the
-**tty's input flip buffer** via `tty_insert_flip_string()` + `tty_flip_buffer_push()`,
-on the SAME tty the query arrived on, then n_tty delivers it to the reader. No
-new lock taken in the write path; the flip buffer is the decoupling point.
-- Plan: the emulator produces reply bytes (already done). The console driver
-  must push them into the EXACT tty the writer wrote to (the controlling
-  vc's tty), through the normal RX flip path, **never** holding the
-  render/VT_STATE lock across the tty push, and **never** echoing the reply
-  back out (answerback is input-only). The current hang is from injecting on
-  the wrong tty and/or re-entering under a held lock.
-- Accept: boot reaches login (no wedge); a probe (`printf '\033[999;999H\033[6n'; read -d R`)
-  returns `ESC[<rows>;<cols>` = the fbcon geometry; btop sizes to the console.
 
-## Item 3 — cursor visibility + repaint (finish + boot-verify)
-Linux fbcon: `fbcon_cursor()` draws/erases the cursor by redrawing the cell;
-`vc->vc_deccm` gates visibility; soft-cursor erases the prior position. B54's
-logic matches — just needs the boot/visual gate (less/htop hide-show, no trail).
+## Part A — surface items (fix.md 1–7): DONE, with caveats
 
-## Item 2 — real glyphs (Unicode + box-drawing + DEC)
-Linux: each glyph is a font index; chars map via the font's **unicode map**
-(`consolemap`/`conv_uni_to_pc`), with the VT's G0/G1 charset (DEC special
-graphics) selected by SI/SO + `ESC(0`. fbcon blits the font bitmap for the
-mapped index. oxide currently collapses non-ASCII to `?`.
-- Plan: (a) load a real console font with a unicode map (PSF2 with its unicode
-  table — the PSF structs are already present but unused); (b) implement
-  `conv_uni_to_pc` (unicode→font-index, with the box-drawing/DEC ranges mapped
-  to the font's line-drawing glyphs); (c) the emulator already stores unicode +
-  DEC-special-graphics correctly — wire the renderer to map through the table
-  instead of the ASCII-only path. No transliteration hacks.
-- Accept: `ls --color`, `tree`, mc, vim box-drawing render real glyphs, not `?`.
+Shipped as PRs #1701–#1708 (both arches boot, host-tested, spec-lint clean).
+fixtty2.md confirms these are real; the per-item caveats below are the residue
+that Part B closes.
 
-## Item 1 — real fbdev (/dev/fbN)
-Linux fbmem.c: `/dev/fbN` backed by `fb_info`; `FBIOGET_VSCREENINFO`/
-`FBIOGET_FSCREENINFO` report real geometry; `FBIOPUTCMAP`/`FBIOGETCMAP` for
-palette; `FBIOPAN_DISPLAY` pans; `FBIOBLANK` blanks; **mmap** maps the real
-framebuffer so userspace draws directly.
-- Plan: back `/dev/fb0` with the real virtio-gpu/efifb framebuffer memory;
-  implement mmap (map the fb pages into the process AS); implement the missing
-  ioctls (`FBIOGETCMAP`,`FBIOPUTCMAP`,`FBIOGET_VBLANK`,`FBIO_WAITFORVSYNC`)
-  for real; make `FBIOPUT_VSCREENINFO`/`FBIOPAN_DISPLAY`/`FBIOBLANK` actually
-  act (or return EINVAL for unsupported modes) instead of silent no-op success;
-  expose `/dev/fb1..N` per CRTC/scanout. No fake EOF/success.
-- Accept: a raw fbdev drawer (e.g. `fbtest`/`con2fbmap`/a small mmap blit)
-  draws to the screen; `fbset` reads correct geometry.
-
-## Item 4 — unify VT switching
-Linux: `vt_ioctl(VT_ACTIVATE)` → `set_console()` → `change_console()` → one path
-that does `redraw_screen()` (the consw switch) AND `complete_change_console()`
-(input/fg + signals). oxide splits the FB view switch (consw) from the input
-foreground (keyboard path).
-- Plan: one `switch_vt(n)` that updates the active vc, the consw framebuffer
-  view, AND the input foreground/`fg_console`, called by BOTH `VT_ACTIVATE`
-  (ioctl) and the keyboard (Alt+Fn). Single source of truth for `fg_console`.
-- Accept: `chvt N` (ioctl) and Alt+Fn both switch screen + input together.
-
-## Item 6 — VT/KD ioctl surface
-Implement, per `vt_ioctl`/`kd` semantics (drivers/tty/vt/vt_ioctl.c):
-`VT_GETMODE`/`VT_SETMODE`/`VT_RELDISP` (process-controlled VT switching +
-acquire/release signals), `VT_SENDSIG`, `VT_RESIZE`/`VT_RESIZEX` (with the
-winsize + SIGWINCH), `TIOCLINUX` (subfunctions: screen dump, selection),
-`KDFONTOP` (font get/set — ties to item 2), `KDSETLED`/`KDGETLED`/`KDSKBLED`.
-- Accept: `kbd_mode`, `setfont`, `loadkeys`, `openvt`/`vlock` paths work.
-
-## Item 7 — scrollback to userspace
-Linux: scrollback via the keyboard (Shift+PgUp → `scrollfront()`) and `/dev/vcsa`
-(the screen+attr snapshot device). The `Vc` already holds scrollback.
-- Plan: wire Shift+PgUp/PgDn to the existing scrollback in `Vc`
-  (consw `con_scrolldelta`), and expose `/dev/vcs`/`/dev/vcsa` reading the live
-  screen + scrollback. No internal-only buffer.
-- Accept: Shift+PgUp scrolls; `cat /dev/vcs0` dumps the screen.
+| # | Item | PR | Status / caveat (fixtty2) |
+|---|------|----|---------------------------|
+| 5 | DSR/CPR answerback (deferred flip-buffer) | #1701 | DONE |
+| — | /dev/console → vc_data output + fb render | #1701 | output/echo tees to fbcon; **input still split** (see B0) |
+| 3 | cursor visibility + repaint | #1701 | DONE |
+| 2 | real glyphs (PSF2 + conv_uni_to_pc) | #1702 | DONE; **width>8 fonts rejected** (B6) |
+| 4 | unify VT switching (one `vt::activate`) | #1703 | DONE; still calls `tty::live::set_foreground` (B4) |
+| 6 | VT/KD ioctls (mode/leds/resize/TIOCLINUX) | #1704 | partial: **VT_SENDSIG missing, TIOCLINUX only subfn 6** (B2); resize is metadata+signal only (B3) |
+| 6 | KDFONTOP + PIO/GIO_UNIMAP (setfont) | #1705 | DONE (width≤8) |
+| 6 | VT_PROCESS handshake (relsig/acqsig/RELDISP) | #1706 | partial: **WAITACTIVE stale, RELDISP no owner check, ownership = bare pid** (B1) |
+| 1 | real /dev/fb0 (geometry, mmap, ioctls) | #1707 | DONE |
+| 7 | scrollback (Shift+PgUp) + /dev/vcs,vcsa | #1708 | DONE |
 
 ---
+
+## Part B — architecture + correctness debt (fix.md 8–10, fixtty2 1–10)
+
+This is the work that was NOT in the first plan pass and is the real remaining
+road to Linux-compat. Ordered by user impact + dependency.
+
+### B0 — framebuffer + keyboard login [DONE — PR pending merge]
+Fixed: keyboard → `tty::live::set_kbd_sink` → `console::static_console::rx_byte`
+(the system console's N_TTY RX; echo already mirrors to fb). Plus a timer-tick
+`InputDrain` fallback (arm GICv3/ITS input MSI doesn't reliably fire — same
+pattern as the net-rx/blk tick fallbacks). Verified on BOTH arches with REAL
+virtio-keyboard `send-key` injection via QMP (`tools/boot-smoke-kbd-login.sh`):
+typed `alice`/`swordfish`/`id` → `uid=1000(alice)`. Original analysis below.
+
+
+Symptom: at the physical screen you cannot type into `oxide login:` — getty
+never sees keystrokes. (Serial login works; the login smoke passes over serial.)
+Root cause = the split (B4): keyboard → `tty::live::push_and_wake_fg` →
+`FOREGROUND_VT` numbered ring (vt 1..63), but `console-getty` reads
+`/dev/console` = `static_console` (a serial `TtyStruct` fed ONLY by
+`drv_serial` UART RX). Two input sinks; getty's isn't the one the keyboard
+feeds. Output/echo already reaches fbcon (`KernelUart::emit` → `vt_console_sink`).
+- **Immediate fix:** route the keyboard to the system console's input —
+  feed `console::static_console::rx_byte` (the same N_TTY RX path the UART
+  uses) so getty gets cooked, echoed line input on the framebuffer.
+- **Real fix:** B4 (one console tty; keyboard → the fg console's single input).
+- **Accept:** boot graphical, type `alice`/`swordfish` at the screen → shell;
+  echo visible on the fb. Add a keyboard-input integration test/probe.
+
+### B1 — VT_PROCESS correctness (fixtty2 1,2,3)
+- **VT_WAITACTIVE** must block until the (possibly deferred) switch completes,
+  not return a stale bookkeeping compare. Needs a waitqueue keyed on the target.
+- **VT_RELDISP** must validate the caller IS the foreground VT's registered
+  process-mode owner before completing/refusing the handoff (trust model).
+- **Ownership** must be a task handle/reference (revalidated against live task +
+  generation), not a bare pid — survives task exit + pid reuse.
+
+### B2 — finish the VT/KD ioctl surface (fixtty2 4)
+- **VT_SENDSIG**, the rest of **TIOCLINUX** subfunctions (selection, screen
+  dump, cursor, blank-interval, etc.), VT_GETHIFONTMASK. "Implemented enough
+  to look real" → actually Linux-compatible.
+
+### B3 — real live VT resize (fixtty2 5)
+- **VT_RESIZE/VT_RESIZEX** must resize the actual per-VT `Vc` (cells, history,
+  scroll region) + fbcon backing + winsize + SIGWINCH **together**, not just
+  store rows/cols metadata. Reflow the live screen.
+
+### B4 — collapse onto ONE tty stack (fix.md 9, fixtty2 6,7) — BIGGEST
+The structural bug. Two sources of truth (`tty::live` per-VT rings vs
+`TtyStruct`/`NTty` core) → termios/signal/blocking/EOF/pgrp/winsize semantics
+drift by path. Target: ONE `TtyStruct` model for console + serial + pty.
+- Numbered VTs (`/dev/ttyN`) get a real `TtyStruct` (N_TTY ldisc) whose driver
+  is the vt console (con_ops → vc_data → fbcon), replacing the `tty::live` ring
+  + ad-hoc line editing + termios store + pgrp/session store + wake queues +
+  answerback injection + poll.
+- The system console (`/dev/console`) = the foreground vc's tty (one input, one
+  output, one emulator) — subsumes B0.
+- `TtyStruct::ioctl()` owns the behavior (B-7) instead of syscall-side decode glue.
+- One authoritative store for termios / winsize / sid / fg pgrp.
+- Delete `tty::live` and its `'\0'`-EOF sentinel + best-effort pgrp shortcuts.
+- `tty::init()` (currently returns NotImplemented) wired as the real entry.
+- Sequencing: foundation-first (give numbered VTs a real TtyStruct) BEFORE
+  retiring `tty::live` callers — never a legacy+fallback bolt-on.
+
+### B5 — finish Linux tty semantics in the unified core (fix.md 10, fixtty2 8,9)
+- Blocking reads **signal-interruptible** (EINTR/restart) the Linux way, not
+  just input/EOF wakeups.
+- Noncanonical **VMIN+VTIME** timing (VTIME is currently simplified away).
+- Driver lifecycle **open/close/hangup** with real call sites + ownership.
+- **PTY** hangup, stopped-output flow control, canonical-edit edge cases — stop
+  being approximations (matters once job control + tmux/screen run).
+
+### B6 — font widths > 8 (fixtty2 10)
+- The PSF/conv_uni_to_pc path hard-restricts width≤8 (1 byte/scanline). Support
+  wider cells (Terminus etc.): multi-byte rows in `glyph_row` + the renderer.
+
+---
+
 ## Order (dependency-aware)
-1. **#5 redo** (DSR via tty flip buffer) — unblocks the boot + btop. SMALL.
-2. **#3 finish** (cursor) — boot-verify the B54 logic. SMALL.
-3. **#2 glyphs** (PSF unicode map + conv_uni_to_pc) — high user-visible value. MED.
-4. **#4 VT switch unify** + **#6 VT/KD ioctls** (share the switch path). MED.
-5. **#1 fbdev** (mmap + ioctls) — largest; needed for any fb userspace. LARGE.
-6. **#7 scrollback** (Shift+PgUp + /dev/vcs). MED.
+1. **B0** keyboard→console input — unblocks framebuffer login NOW (small; the
+   first slice of B4's input unification).
+2. **B1** VT_PROCESS correctness (WAITACTIVE/RELDISP-owner/ownership) — closes
+   the trust + lifetime holes in shipped #1706.
+3. **B2** VT_SENDSIG + TIOCLINUX rest; **B6** font width>8 (independent, small).
+4. **B3** real live resize.
+5. **B4** collapse onto one tty stack — the big foundation; do it properly
+   (numbered-VT TtyStruct first, then retire tty::live, then delete).
+6. **B5** finish tty semantics (VMIN/VTIME, signal-interruptible, hangup, PTY).
 
 Each lands as its own branch+PR, Linux-correct, both-arch boot-verified (no
-merge without `oxide login:` on x86 AND aarch64), spec-lint clean, hosted tests.
+merge without `oxide login:` on x86 AND aarch64 — AND for B0, a real keyboard
+login), spec-lint clean, hosted tests. Boot reaching the login PROMPT ≠ login
+works — gate on actual login (serial AND framebuffer keyboard).

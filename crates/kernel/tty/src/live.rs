@@ -30,7 +30,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, Ordering};
 
 use sched::{Task, TaskState};
 use sync::{Spinlock, Tty as TtyClass};
@@ -486,12 +486,38 @@ pub fn inject_for_smoke_vt(vt: u8, bytes: &[u8]) {
 /// # C: O(N)
 pub fn inject_for_smoke(bytes: &[u8]) { inject_for_smoke_vt(0, bytes); }
 
-/// Public input entry point. Used by virtio-input (keyboard) — the
-/// device's softirq handler translates each EV_KEY press into an
-/// ASCII byte and calls here so it lands on the foreground VT's
-/// line discipline the same as a UART RX byte.
+/// Keyboard → system-console input sink. The interactive console (where
+/// `console-getty` runs) is `/dev/console` — a real `TtyStruct`/N_TTY, fed
+/// from the UART RX. The physical keyboard is just a SECOND input source for
+/// that same console (Linux: the VT keyboard driver feeds the foreground
+/// console tty's flip buffer). Registered at boot to
+/// `console::static_console::rx_byte`; until then the keyboard falls back to
+/// the legacy per-VT ring. `null` = unset.
+static KBD_SINK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Register the keyboard → system-console RX sink (boot wiring, once).
+/// # C: O(1)
+pub fn set_kbd_sink(f: fn(u8)) {
+    KBD_SINK.store(f as *mut (), Ordering::Release);
+}
+
+/// Public input entry point. Used by virtio-input (keyboard): each EV_KEY
+/// press is translated to an ASCII byte and delivered to the FOREGROUND
+/// console's line discipline — the same N_TTY RX path a UART byte takes — so
+/// getty/login/shell on `/dev/console` see keystrokes (cooked + echoed) on
+/// the framebuffer. Falls back to the legacy per-VT ring before the sink is
+/// installed.
 /// # C: O(W) waiter wake — bounded by the small set of stdin readers
-pub fn input_push_byte(b: u8) { push_and_wake_fg(b); }
+pub fn input_push_byte(b: u8) {
+    let raw = KBD_SINK.load(Ordering::Acquire);
+    if !raw.is_null() {
+        // SAFETY: KBD_SINK is only set via set_kbd_sink with a non-null fn(u8) cast through `as *mut ()`; the reverse cast restores the identical signature.
+        let f: fn(u8) = unsafe { core::mem::transmute::<*mut (), fn(u8)>(raw) };
+        f(b);
+        return;
+    }
+    push_and_wake_fg(b);
+}
 
 /// Park the current task on `vt`'s TTY input wait queue.
 /// Caller is responsible for marking state=Sleeping + invoking
