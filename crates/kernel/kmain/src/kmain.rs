@@ -879,6 +879,16 @@ unsafe fn tick_poll_combined(from_user: bool) {
     // kernel-mode = a syscall or the idle spin loop, counted as idle.
     sched::cpustat::account(
         if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
+    // Load average (1/5/15 min EWMA, resampled ~every 5s — self-gated on the
+    // monotonic clock, so the per-tick cost is one compare).
+    {
+        use hal::TimerOps;
+        #[cfg(target_arch = "x86_64")]
+        let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
+        #[cfg(target_arch = "aarch64")]
+        let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+        sched::loadavg::tick(now);
+    }
     // SAFETY: deferred to the underlying hooks; drv_serial::poll owns the UART RX drain invariants; fbcon::kernel::tick_drain drains the per-VT answerback queues into the tty input rings outside any console write lock (our flush_to_ldisc).
     unsafe { drv_serial::poll(); }
     // D3.4: drain pending i8042 keyboard scancodes (x86 PS/2). No-op until
