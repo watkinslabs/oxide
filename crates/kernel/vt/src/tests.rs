@@ -340,7 +340,8 @@ fn per_cell_flags_toggle_off_midline() {
 #[test]
 fn cell_roundtrips_attr_rgb_and_flags() {
     use crate::vc::Cell;
-    let a = Attr { fg: 0x123456, bg: 0xabcdef, bold: true, underline: false, reverse: true };
+    let a = Attr { fg: 0x123456, bg: 0xabcdef, bold: true, underline: false, reverse: true,
+        ..Attr::default() };
     let c = Cell::glyph('Q' as u32, a);
     assert_eq!(c.glyph, 'Q' as u32);
     assert_eq!(c.fg, 0x123456);
