@@ -941,6 +941,7 @@ dependencies = [
 name = "procfs"
 version = "0.1.0"
 dependencies = [
+ "arch-irq",
  "block",
  "cgroup",
  "cpu",
