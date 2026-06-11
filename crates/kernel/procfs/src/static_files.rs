@@ -58,7 +58,7 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
     c.insert("modules".to_string(),     StaticFileInode::new(b"") as InodeRef);
     c.insert("swaps".to_string(),       StaticFileInode::new(b"Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n") as InodeRef);
     c.insert("diskstats".to_string(),   StaticFileInode::new(b"") as InodeRef);
-    c.insert("partitions".to_string(),  StaticFileInode::new(b"major minor  #blocks  name\n") as InodeRef);
+    c.insert("partitions".to_string(),  Arc::new(crate::partitions::ProcPartitionsInode) as InodeRef);
     c.insert("misc".to_string(),        StaticFileInode::new(b"") as InodeRef);
     c.insert("buddyinfo".to_string(),   StaticFileInode::new(b"Node 0, zone Normal      0 0 0 0 0 0 0 0 0 0 0\n") as InodeRef);
     c.insert("zoneinfo".to_string(),    StaticFileInode::new(b"Node 0, zone Normal\n  pages free 1024\n") as InodeRef);
