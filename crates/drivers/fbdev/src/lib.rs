@@ -155,6 +155,12 @@ pub struct FbDev {
     pub idx:          u32,
     pub var:          FbVarScreeninfo,
     pub fix:          FbFixScreeninfo,
+    /// Contiguous physical base of the scanout backing (smem_start) —
+    /// what `/dev/fbN` mmaps into userspace. 0 ⇒ no real backing yet.
+    pub base_pa:      u64,
+    /// HHDM kernel VA of the same backing — for the read()/write() path.
+    pub fb_va:        u64,
+    pub fb_bytes:     u64,
     /// Backing DRM `MODE_CREATE_DUMB` handle on `card_id`. 0 ⇒ none yet.
     pub card_id:      u32,
     pub crtc_id:      u32,
@@ -164,6 +170,52 @@ pub struct FbDev {
 
 static FBS: Spinlock<Vec<FbDev>, DriverLockClass> = Spinlock::new(Vec::new());
 
+/// Display-flush hook (`transfer_to_host_2d + resource_flush`) provided by
+/// the GPU driver — makes pixels written to the mmap'd/written scanout
+/// visible. Registered at boot; `None` keeps writes invisible (no panic).
+static FLUSH_HOOK: Spinlock<Option<fn()>, DriverLockClass> = Spinlock::new(None);
+
+/// Register the display-flush hook (boot wiring, once).
+/// # C: O(1)
+pub fn set_flush_hook(f: fn()) { *FLUSH_HOOK.lock() = Some(f); }
+
+/// Push written pixels to the display via the registered flush hook.
+/// # C: O(1) + host transfer.
+pub fn flush() { if let Some(f) = *FLUSH_HOOK.lock() { f(); } }
+
+/// Register `/dev/fb0` backed by the real scanout: `base_pa`/`fb_va` =
+/// physical + HHDM-kernel address of the contiguous BGRA32 framebuffer,
+/// `pitch` = bytes/line, `w`×`h` = resolution. Builds var/fix (smem_start =
+/// base_pa, line_length = pitch, 32bpp BGRA truecolor) and registers it.
+/// Idempotent-ish: appends one fb. # C: O(1)
+pub fn init_scanout(base_pa: u64, fb_va: u64, fb_bytes: u64, pitch: u32, w: u32, h: u32) -> u32 {
+    let mut var = FbVarScreeninfo::default();
+    var.xres = w; var.yres = h; var.xres_virtual = w; var.yres_virtual = h;
+    let mut fix = FbFixScreeninfo::default();
+    fix.smem_start = base_pa;
+    fix.smem_len = fb_bytes as u32;
+    fix.line_length = pitch;
+    let mut g = FBS.lock();
+    let idx = g.len() as u32;
+    g.push(FbDev {
+        idx, var, fix, base_pa, fb_va, fb_bytes,
+        card_id: 0, crtc_id: 0, fb_id: 0, dumb_handle: 0,
+    });
+    idx
+}
+
+/// `(base_pa, fb_bytes)` of `/dev/fb<idx>` for mmap (Linux remap_pfn_range).
+/// `None` if the fb has no real backing. # C: O(N)
+pub fn backing_of(idx: u32) -> Option<(u64, u64)> {
+    FBS.lock().iter().find(|f| f.idx == idx && f.base_pa != 0).map(|f| (f.base_pa, f.fb_bytes))
+}
+
+/// `(fb_va, fb_bytes)` of `/dev/fb<idx>` for the read()/write() path.
+/// # C: O(N)
+pub fn kva_of(idx: u32) -> Option<(u64, u64)> {
+    FBS.lock().iter().find(|f| f.idx == idx && f.fb_va != 0).map(|f| (f.fb_va, f.fb_bytes))
+}
+
 /// Register a per-CRTC fbdev backed by a DRM card. Returns the fb
 /// index (0 ⇒ /dev/fb0).
 /// # C: O(1)
@@ -171,7 +223,8 @@ pub fn register(card_id: u32, crtc_id: u32, var: FbVarScreeninfo, fix: FbFixScre
     let mut g = FBS.lock();
     let idx = g.len() as u32;
     g.push(FbDev {
-        idx, var, fix, card_id, crtc_id, fb_id: 0, dumb_handle: 0,
+        idx, var, fix, base_pa: 0, fb_va: 0, fb_bytes: 0,
+        card_id, crtc_id, fb_id: 0, dumb_handle: 0,
     });
     idx
 }
@@ -250,6 +303,33 @@ mod tests {
         assert!(is_blank_level(FB_BLANK_UNBLANK));
         assert!(is_blank_level(FB_BLANK_POWERDOWN));
         assert!(!is_blank_level(99));
+    }
+
+    #[test]
+    fn init_scanout_populates_geometry_and_backing() {
+        FBS.lock().clear();
+        let bytes = 800u64 * 600 * 4;
+        let idx = init_scanout(0xdead_0000, 0xffff_8000_dead_0000, bytes, 800 * 4, 800, 600);
+        assert_eq!(idx, 0);
+        let v = var_of(0).unwrap();
+        assert_eq!((v.xres, v.yres, v.bits_per_pixel), (800, 600, 32));
+        let f = fix_of(0).unwrap();
+        assert_eq!(f.smem_start, 0xdead_0000);
+        assert_eq!(f.smem_len, bytes as u32);
+        assert_eq!(f.line_length, 800 * 4);
+        assert_eq!(backing_of(0), Some((0xdead_0000, bytes)));
+        assert_eq!(kva_of(0), Some((0xffff_8000_dead_0000, bytes)));
+        FBS.lock().clear();
+    }
+
+    #[test]
+    fn backing_none_without_real_fb() {
+        FBS.lock().clear();
+        // A plain register() (no scanout) has base_pa=0 → not mmap-able.
+        register(0, 1, FbVarScreeninfo::default(), FbFixScreeninfo::default());
+        assert_eq!(backing_of(0), None);
+        assert_eq!(kva_of(0), None);
+        FBS.lock().clear();
     }
 
     #[test]
