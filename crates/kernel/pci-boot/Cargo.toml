@@ -26,6 +26,8 @@ drv-virtio-blk   = { path = "../../drivers/drv-virtio-blk" }
 drv-virtio-gpu   = { path = "../../drivers/drv-virtio-gpu" }
 drv-virtio-input = { path = "../../drivers/drv-virtio-input" }
 drv-virtio-rng   = { path = "../../drivers/drv-virtio-rng" }
+drv-nvme         = { path = "../../drivers/drv-nvme" }
+block            = { path = "../block" }
 devfs   = { path = "../devfs" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
@@ -35,5 +37,5 @@ hal-x86_64 = { path = "../../arch/hal-x86_64" }
 hal-aarch64 = { path = "../../arch/hal-aarch64" }
 
 [features]
-debug-boot  = ["kmacros/debug-boot"]
+debug-boot  = ["kmacros/debug-boot", "drv-nvme/debug-boot"]
 debug-trace = ["kmacros/debug-trace"]

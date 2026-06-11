@@ -27,6 +27,21 @@ fn ssh_fwd_netdev() -> String {
     }
 }
 
+/// D3.5: ensure a small raw NVMe scratch disk exists at
+/// `kernel/blobs/nvme-<arch>.img` (16 MiB, zeroed). Created if missing so the
+/// `nvme` QEMU device always has a backing file. Returns its path. # C: O(1)
+fn ensure_nvme_img(repo: &std::path::Path, arch: &str) -> std::path::PathBuf {
+    let img = repo.join(format!("kernel/blobs/nvme-{arch}.img"));
+    if !img.exists() {
+        if let Some(parent) = img.parent() { let _ = std::fs::create_dir_all(parent); }
+        if let Ok(f) = std::fs::File::create(&img) {
+            // 16 MiB zeroed scratch volume (sparse where supported).
+            let _ = f.set_len(16 * 1024 * 1024);
+        }
+    }
+    img
+}
+
 /// `xtask image --arch <arch>` — build the bootable artifact
 /// (`target/oxide-<arch>-grub.iso`) without launching qemu. Limine is
 /// gone, so this is a thin alias for `grub --arch <arch> --build-only`:
@@ -235,6 +250,9 @@ fn qemu_run_aarch64_grub(
     let ovmf = repo.join("vendor/firmware/ovmf-aarch64.fd");
     let root_img = repo.join("kernel/blobs/root-aarch64.img");
     let home_img = repo.join("kernel/blobs/home-aarch64.img");
+    // D3.5: NVMe scratch disk for the drv-nvme bring-up (lockstep with x86).
+    let nvme_img = ensure_nvme_img(repo, "aarch64");
+    let nvme_drive = format!("id=nvm0,if=none,format=raw,file={}", nvme_img.display());
     let smp_str = smp.to_string();
     let headless = std::env::var("OXIDE_QEMU_HEADLESS").is_ok();
     // Same OXIDE_QEMU_UART_SOCK plumbing as the x86 launcher.
@@ -283,6 +301,9 @@ fn qemu_run_aarch64_grub(
         // D3.1: virtio-rng entropy source. The kernel seeds its RNG from
         // this at boot and backs /dev/hwrng with it.
         "-device", "virtio-rng-pci,bus=pcie.0,disable-legacy=on",
+        // D3.5: NVMe controller + scratch backing disk (lockstep with x86).
+        "-drive", nvme_drive.as_str(),
+        "-device", "nvme,serial=oxnvme,drive=nvm0,bus=pcie.0",
         "-chardev", uart_chardev.as_str(),
         "-serial", "chardev:ser0",
         "-display", if headless { "none" } else { "gtk" },
@@ -329,6 +350,9 @@ fn qemu_run_grub_x86_64(
 ) -> Result<(), u8> {
     let root_img = repo.join("kernel/blobs/root-x86_64.img");
     let home_img = repo.join("kernel/blobs/home-x86_64.img");
+    // D3.5: NVMe scratch disk for the drv-nvme bring-up.
+    let nvme_img = ensure_nvme_img(repo, "x86_64");
+    let nvme_drive = format!("id=nvm0,if=none,format=raw,file={}", nvme_img.display());
     let smp_str = smp.to_string();
     let accel = if std::env::var("OXIDE_QEMU_KVM").is_ok()
         && std::path::Path::new("/dev/kvm").exists()
@@ -394,6 +418,10 @@ fn qemu_run_grub_x86_64(
         // D3.1: virtio-rng entropy source. The kernel seeds its RNG from
         // this at boot and backs /dev/hwrng with it.
         "-device", "virtio-rng-pci,bus=pcie.0,disable-legacy=on",
+        // D3.5: NVMe controller + its scratch backing disk (drv-nvme brings
+        // it up, registers nvme0n1, self-tests an LBA-0 read).
+        "-drive", nvme_drive.as_str(),
+        "-device", "nvme,serial=oxnvme,drive=nvm0,bus=pcie.0",
         "-chardev", uart_chardev,
         "-serial", "chardev:ser0",
         // GTK window by default so the virtio-gpu console is visible +
