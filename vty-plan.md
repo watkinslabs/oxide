@@ -42,6 +42,11 @@ rx_byte`), ignores `foreground()`. Real Linux: console getty runs on tty1, a
 numbered VT that IS the default foreground.
 
 ### RC3 — VT emulator incomplete: garbage rendering  [HIGH]
+Command set now specced in **docs/57** (ECMA-48/VT100/VT220/xterm interpreter +
+cell model). ECH + alt-screen + truecolor since landed; remaining vs docs/57:
+- **Wide chars (East-Asian width)** — `Vc::put_glyph` assumes width 1, advances 1
+  (`vc.rs:620`). CJK/emoji/double-width box-drawing misalign. Need the
+  primary+spacer cell model + EAW table per docs/57§9.2.
 Single live parser `vt/src/emulator.rs`. Missing/broken vs real terminal:
 - **ECH `CSI X`** — absent (no `b'X'` arm). ncurses/systemd use it constantly →
   stale glyphs.
