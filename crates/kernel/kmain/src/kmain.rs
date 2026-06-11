@@ -877,6 +877,10 @@ unsafe fn tick_poll_combined(from_user: bool) {
     // delivered even if the device's interrupt-coalesce or our MSI
     // routing dropped the edge.
     drv_virtio_net::modern::rx_drain_softirq();
+    // D3.3: drain virtio-vsock RX each tick (host→guest packets) into
+    // net::vsock. No-op until a 0x1053 device installed. Bounded by the
+    // RX ring depth per call; the protocol engine dispatches each packet.
+    if drv_virtio_vsock::present() { let _ = drv_virtio_vsock::rx_drain(); }
     // Same MSI-X-fallback for virtio-input (keyboard): raise the InputDrain
     // softirq each tick so queued EV_KEY events get walked even if the
     // device's MSI edge was missed/coalesced (notably aarch64 GICv3/ITS,

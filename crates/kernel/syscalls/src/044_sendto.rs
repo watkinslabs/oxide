@@ -27,6 +27,19 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
         if len > 65507 { return -(Errno::Emsgsize.as_i32() as i64); }
         return crate::netlink_fd::sendto(fd, bufp, len);
     }
+    // D3.3: AF_VSOCK send/sendto → OP_RW via the socket inode write
+    // path (STREAM, dest ignored — already connected).
+    if let Some(vs) = crate::net_common::vsock_from_fd(fd) {
+        if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+        // SAFETY: ptr range validated; user page mapped under caller's AS.
+        let payload: alloc::vec::Vec<u8> = unsafe {
+            core::slice::from_raw_parts(bufp as *const u8, len).to_vec()
+        };
+        let nb = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
+        use vfs::Inode;
+        let r = if nb { vs.write_nonblock(0, &payload) } else { vs.write(0, &payload) };
+        return match r { Ok(n) => n as i64, Err(e) => -(e as i64) };
+    }
     let sock   = match socket_from_fd(fd) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"sendto"); return -(Errno::Enotsock.as_i32() as i64); }
     };

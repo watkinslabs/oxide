@@ -9,6 +9,14 @@ for s in /bin/bare3 /bin/vim_smoke /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \
          /bin/af_packet_smoke /bin/hello_dyn ; do
     [ -x "$s" ] && "$s"
 done
+# D3.3: AF_VSOCK round-trip — only when the host echo peer is present
+# (boot-smoke-vsock.sh drops the marker before QEMU). A normal boot has
+# no host peer, so connect would fail; guard so we don't false-FAIL.
+if [ -e /etc/oxide-vsock-smoke ] && [ -x /bin/vsock_probe ]; then
+    echo pre-vsock_probe
+    /bin/vsock_probe
+    echo post-vsock_probe rv=$?
+fi
 echo pre-exit_test
 /bin/exit_test
 echo post-exit_test rv=$?

@@ -22,7 +22,14 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
     const AF_UNIX_DOM: u32 = 1;
     const AF_NETLINK_DOM: u32 = ::netlink::AF_NETLINK as u32;
     const AF_PACKET_DOM: u32 = 17;
-    let inode: vfs::InodeRef = if domain == AF_NETLINK_DOM {
+    const AF_VSOCK_DOM: u32 = 40;
+    let inode: vfs::InodeRef = if domain == AF_VSOCK_DOM {
+        // D3.3: AF_VSOCK only supports SOCK_STREAM in this transport.
+        if typ != SOCK_STREAM {
+            return -(Errno::Esocktnosupport.as_i32() as i64);
+        }
+        Arc::new(net::vsock_socket::VsockSocket::new()) as _
+    } else if domain == AF_NETLINK_DOM {
         // Linux accepts SOCK_DGRAM and SOCK_RAW for netlink (Linux's
         // own libnl uses SOCK_RAW). Other types → EPROTOTYPE.
         if typ != SOCK_DGRAM && typ != SOCK_RAW {

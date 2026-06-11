@@ -102,6 +102,8 @@ pub enum VfsError {
     Enosys  = 38,
     Eloop   = 40,
     Enametoolong = 36,
+    /// ENOTCONN — read/write on a stream socket with no connection.
+    Enotconn = 107,
 }
 
 pub type KResult<T> = core::result::Result<T, VfsError>;
