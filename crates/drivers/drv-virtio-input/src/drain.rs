@@ -47,6 +47,8 @@ const KEY_RIGHTMETA:   u16 = 126;
 
 /// Linux KEY_F1 (first VT-switch key). F1..F12 = 59..=88 (non-contiguous
 /// after F10); only F1..F12's leading run is contiguous 59..=70.
+const KEY_PAGEUP:      u16 = 104;     // Shift+PgUp = scroll back
+const KEY_PAGEDOWN:    u16 = 109;     // Shift+PgDn = scroll forward
 const KEY_F1:          u16 = 59;
 /// Highest VT-switch key we map (Ctrl-Alt-F12 → VT 12).
 const KEY_F12:         u16 = 88;
@@ -76,6 +78,23 @@ fn handle_vt_switch(keycode: u16, pressed: bool) -> bool {
         _ => return false,
     };
     let _ = vt::activate(vt); // honours VT_LOCKSWITCH; Err = switch refused
+    true
+}
+
+/// Shift+PgUp / Shift+PgDn → scroll the foreground VT's scrollback (Linux
+/// `con_scrolldelta`). Scrolls a half-screen per press (the Vc clamps to its
+/// history). Returns `true` when the chord is consumed (so no byte is
+/// emitted), including the key RELEASE while Shift is held.
+/// # C: O(cols*rows) on a scroll (full repaint), else O(1).
+fn handle_scroll(keycode: u16, pressed: bool) -> bool {
+    if keycode != KEY_PAGEUP && keycode != KEY_PAGEDOWN { return false; }
+    if !keymap::mods().contains(Mods::SHIFT) { return false; }
+    if pressed {
+        // Half-screen step, matching Linux's SHIFT-PageUp default.
+        let step = 12isize;
+        let delta = if keycode == KEY_PAGEUP { step } else { -step };
+        vt::scrolldelta(delta);
+    }
     true
 }
 
@@ -264,6 +283,8 @@ fn drain_one(ctx: &mut QueueCtx) {
                 // consumed by the modifier state machine
             } else if handle_vt_switch(evt.code, pressed) {
                 // Ctrl-Alt-F<n>: switched the foreground VT, no byte.
+            } else if handle_scroll(evt.code, pressed) {
+                // Shift+PgUp/PgDn: scrolled the VT scrollback, no byte.
             } else if pressed {
                 let out = keymap::translate(evt.code);
                 out.for_each(|b| {
