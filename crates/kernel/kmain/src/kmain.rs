@@ -589,6 +589,17 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     { crate::pci_boot::enumerate_and_log(); }
 
+    // D3.1: if PCI enumeration brought up a virtio-rng device, route
+    // /dev/hwrng reads to its `fill` engine and publish the node. Absent a
+    // device, /dev/hwrng is not created (no fabricated entropy source).
+    #[cfg(target_os = "oxide-kernel")]
+    if drv_virtio_rng::present() {
+        devfs::misc::set_hwrng_source(drv_virtio_rng::fill);
+        devfs::register("/dev/hwrng",
+            alloc::sync::Arc::new(devfs::misc::HwRngInode) as vfs::InodeRef);
+        debug_boot! { klog::write_raw(b"[INFO]  /dev/hwrng registered (virtio-rng)\n"); }
+    }
+
     // Mount the ext4 root fs from the virtio-blk disk (serial
     // `oxide-root`). Linux's CONFIG_EXT4_FS=y equivalent: real driver
     // from crates/ext4 built into the kernel, backed by a real disk.

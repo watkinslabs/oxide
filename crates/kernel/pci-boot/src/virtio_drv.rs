@@ -24,6 +24,7 @@ model_driver!(VirtioBlkDrv,   VIRTIO_BLK_DRV,   "virtio-blk",   0x1001 | 0x1042)
 model_driver!(VirtioNetDrv,   VIRTIO_NET_DRV,   "virtio-net",   0x1000 | 0x1041);
 model_driver!(VirtioGpuDrv,   VIRTIO_GPU_DRV,   "virtio-gpu",   0x1050);
 model_driver!(VirtioInputDrv, VIRTIO_INPUT_DRV, "virtio-input", 0x1052);
+model_driver!(VirtioRngDrv,   VIRTIO_RNG_DRV,   "virtio-rng",   0x1044);
 
 /// Canonical `0000:bb:dd.f` addr for a BDF (matches enumeration loop).
 /// # C: O(1)
@@ -930,6 +931,38 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
             p.q0_notify_va, p.q0_size, p.blk_capacity, p.blk_blk_size,
         );
         model_bind(&VIRTIO_BLK_DRV, bdf); // D1a: publish + bind
+    }
+
+    // D3.1: virtio-rng (entropy). Generic q0 setup above already gave this
+    // device a programmed requestq + DRIVER_OK. Hand the persistent ring
+    // addresses to drv-virtio-rng, then immediately pull ~32 bytes and mix
+    // them into the kernel RNG so boot starts with real hardware entropy.
+    // The /dev/hwrng source hook is wired in kmain after enumeration.
+    if d.vendor_id == 0x1AF4 && d.device_id == 0x1044
+        && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
+        && p.q0_desc_pa != 0 && p.q0_notify_va != 0
+    {
+        let hhdm = {
+            #[cfg(target_arch = "x86_64")]
+            { hal_x86_64::mmu_ops::hhdm_offset() }
+            #[cfg(target_arch = "aarch64")]
+            { hal_aarch64::mmu_ops::hhdm_offset() }
+        };
+        if drv_virtio_rng::install(
+            p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa,
+            p.q0_notify_va, p.q0_size, hhdm,
+        ) {
+            // Seed the kernel RNG with real entropy at bring-up.
+            let mut seed = [0u8; 32];
+            let n = drv_virtio_rng::fill(&mut seed);
+            if n > 0 { devfs::misc::add_entropy(&seed[..n]); }
+            model_bind(&VIRTIO_RNG_DRV, bdf); // D1a: publish + bind
+            debug_boot! {
+                klog::write_raw(b"[INFO]  virtio-rng installed seeded=");
+                klog::write_dec_u64(n as u64);
+                klog::write_raw(b" bytes\n");
+            }
+        }
     }
 
     // F01: virtio-input event-queue drain. Pre-fill q0 + install softirq.
