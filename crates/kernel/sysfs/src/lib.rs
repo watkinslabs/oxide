@@ -16,6 +16,7 @@ use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
 pub mod block;
 pub mod bus;
+pub mod net_stats;
 
 const ARPHRD_LOOPBACK: u16 = 772;
 const ARPHRD_ETHER:    u16 =   1;
@@ -240,6 +241,13 @@ impl Inode for SysClassNetIfaceInode {
         if name == "uevent" {
             return Ok(Arc::new(UeventTriggerInode { name: self.name.clone() }) as InodeRef);
         }
+        // `statistics` is a subdirectory, not a leaf attribute file.
+        if name == "statistics" {
+            return Ok(Arc::new(net_stats::SysNetStatsInode {
+                name: self.name.clone(),
+                dev:  Arc::clone(&self.dev),
+            }) as InodeRef);
+        }
         if !IFACE_ENTRIES.contains(&name) { return Err(VfsError::Enoent); }
         let body = self.body(name).unwrap_or_default();
         Ok(Arc::new(BodyInode { body, ino: 0x5100_2000 }) as InodeRef)
@@ -250,9 +258,18 @@ impl Inode for SysClassNetIfaceInode {
         f: &mut dyn FnMut(u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         let mut idx = off as usize;
-        while idx < IFACE_ENTRIES.len() {
+        // `statistics` (a subdir) is emitted as the final entry, after
+        // the regular attribute files. Treat the offset space as
+        // IFACE_ENTRIES.len() files followed by the one stats dir.
+        let nfiles = IFACE_ENTRIES.len();
+        while idx < nfiles {
             let next = idx as u64 + 1;
             if !f(next, IFACE_ENTRIES[idx], FileType::Regular) { return Ok(next); }
+            idx += 1;
+        }
+        if idx == nfiles {
+            let next = idx as u64 + 1;
+            if !f(next, "statistics", FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -284,7 +301,7 @@ impl Inode for BodyInode {
     fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
 }
 
-struct VecFmt<'a>(&'a mut Vec<u8>);
+pub(crate) struct VecFmt<'a>(pub(crate) &'a mut Vec<u8>);
 impl<'a> core::fmt::Write for VecFmt<'a> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.0.extend_from_slice(s.as_bytes());
