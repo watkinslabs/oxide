@@ -23,6 +23,10 @@ pub struct Disk {
     pub index: u32,
     pub serial: Option<String>,
     pub dev: Arc<dyn BlockDevice>,
+    /// Per-disk I/O counters (Linux `disk_stats`). Shared with the `StatsDev`
+    /// wrapper that `dev` points at, so every I/O is counted; `/proc/diskstats`
+    /// reads this.
+    pub stats: alloc::sync::Arc<crate::stats::DiskStats>,
 }
 
 static TABLE: Spinlock<Vec<Arc<Disk>>, DevicesClass> = Spinlock::new(Vec::new());
@@ -45,11 +49,15 @@ pub fn register_with_serial(name: &str, serial: Option<&str>, dev: Arc<dyn Block
         return d.index;
     }
     let index = (t.len() as u32) + 1;
+    // Wrap the driver device in the stats-counting decorator so every I/O
+    // through the registry is accounted at one central point (Linux blk-stat).
+    let (dev, stats) = crate::stats::StatsDev::wrap(dev);
     t.push(Arc::new(Disk {
         name: name.to_string(),
         index,
         serial: serial.filter(|s| !s.is_empty()).map(|s| s.to_string()),
         dev,
+        stats,
     }));
     index
 }

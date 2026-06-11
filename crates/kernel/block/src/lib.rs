@@ -19,6 +19,7 @@ extern crate std;
 pub mod blockdev;
 pub mod pagecache;
 pub mod registry;
+pub mod stats;
 pub mod types;
 
 pub use blockdev::{BlockDevice, BlockRequest, MemDisk};
