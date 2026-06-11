@@ -50,6 +50,7 @@ pub(crate) const CRT_BINS: &[(&str, &str)] = &[
     ("userspace/dsr_probe/dsr_probe",             "userspace/dsr_probe/dsr_probe.c"),
     ("userspace/vtswitch_probe/vtswitch_probe",   "userspace/vtswitch_probe/vtswitch_probe.c"),
     ("userspace/vtmode_probe/vtmode_probe",       "userspace/vtmode_probe/vtmode_probe.c"),
+    ("userspace/vtresize_probe/vtresize_probe",   "userspace/vtresize_probe/vtresize_probe.c"),
     ("userspace/kdfont_probe/kdfont_probe",       "userspace/kdfont_probe/kdfont_probe.c"),
     ("userspace/fbdev_probe/fbdev_probe",         "userspace/fbdev_probe/fbdev_probe.c"),
     ("userspace/vcs_probe/vcs_probe",             "userspace/vcs_probe/vcs_probe.c"),
