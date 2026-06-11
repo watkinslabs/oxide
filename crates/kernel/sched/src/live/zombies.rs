@@ -283,6 +283,28 @@ pub fn peek_one(parent: u32, pid: i32) -> Option<(u32, i32)> {
 pub fn reap_one(parent: u32, pid: i32) -> Option<(u32, i32)> {
     use core::sync::atomic::Ordering;
     let mut q = ZOMBIES.lock();
+    #[cfg(feature = "debug-ssh")]
+    {
+        let total = q.len();
+        let mine = q.iter().filter(|t| t.parent_tid.load(Ordering::Acquire) == parent).count();
+        klog::write_raw(b"[INFO]  ssh-trace: reap_one parent=");
+        klog::write_dec_u64(parent as u64);
+        klog::write_raw(b" pid=");
+        klog::write_dec_u64(pid as i64 as u64);
+        klog::write_raw(b" zombies_total=");
+        klog::write_dec_u64(total as u64);
+        klog::write_raw(b" zombies_for_parent=");
+        klog::write_dec_u64(mine as u64);
+        klog::write_raw(b"\n");
+        // Show each zombie's (tid, parent_tid) so a parent/pid mismatch is visible.
+        for t in q.iter() {
+            klog::write_raw(b"[INFO]  ssh-trace:   zombie tid=");
+            klog::write_dec_u64(t.tid as u64);
+            klog::write_raw(b" parent_tid=");
+            klog::write_dec_u64(t.parent_tid.load(Ordering::Acquire) as u64);
+            klog::write_raw(b"\n");
+        }
+    }
     let pos = q.iter().position(|t| {
         if t.parent_tid.load(Ordering::Acquire) != parent { return false; }
         match pid {
