@@ -942,6 +942,7 @@ name = "procfs"
 version = "0.1.0"
 dependencies = [
  "cgroup",
+ "cpu",
  "devfs",
  "hal",
  "hal-aarch64",

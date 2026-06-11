@@ -36,7 +36,7 @@ mod pt_regs;
 mod regs;
 mod signal;
 pub mod vmm;
-pub use cpuid::{brand as cpuid_brand, vendor as cpuid_vendor};
+pub use cpuid::{brand as cpuid_brand, vendor as cpuid_vendor, family_model as cpuid_family_model};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub use cpuid::tsc_khz_from_cpuid;
 pub use regs::{enable_sse, read_cr0, read_cr3, read_cr4, read_efer};
