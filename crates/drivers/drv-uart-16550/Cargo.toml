@@ -1,0 +1,17 @@
+[package]
+name = "drv-uart-16550"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+drv = { path = "../drv" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal        = { path = "../../arch/hal" }
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+arch-irq   = { path = "../../kernel/arch-irq" }
+firmware   = { path = "../../kernel/firmware" }

@@ -243,11 +243,28 @@ dependencies = [
 name = "drv-serial"
 version = "0.1.0"
 dependencies = [
+ "drv",
+ "drv-uart-16550",
+ "drv-uart-pl011",
+]
+
+[[package]]
+name = "drv-uart-16550"
+version = "0.1.0"
+dependencies = [
  "arch-irq",
+ "drv",
  "firmware",
  "hal",
- "hal-aarch64",
  "hal-x86_64",
+]
+
+[[package]]
+name = "drv-uart-pl011"
+version = "0.1.0"
+dependencies = [
+ "drv",
+ "hal-aarch64",
 ]
 
 [[package]]
