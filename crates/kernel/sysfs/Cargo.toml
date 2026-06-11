@@ -10,3 +10,4 @@ vfs   = { path = "../vfs" }
 devfs = { path = "../devfs" }
 net   = { path = "../net" }
 netlink = { path = "../netlink" }
+drv   = { path = "../../drivers/drv" }

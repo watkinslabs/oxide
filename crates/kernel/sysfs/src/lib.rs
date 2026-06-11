@@ -14,6 +14,8 @@ use alloc::vec::Vec;
 
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
+pub mod bus;
+
 const ARPHRD_LOOPBACK: u16 = 772;
 const ARPHRD_ETHER:    u16 =   1;
 
@@ -258,7 +260,12 @@ impl Inode for SysClassNetIfaceInode {
 
 /// Owned-byte regular-file inode. Body is built at lookup time so
 /// it reflects current iface state; read() serves windowed slices.
-struct BodyInode { body: Vec<u8>, ino: Ino }
+pub struct BodyInode { body: Vec<u8>, ino: Ino }
+
+impl BodyInode {
+    /// Build a read-only attribute inode serving `body`. # C: O(1)
+    pub fn new(body: Vec<u8>, ino: Ino) -> Self { Self { body, ino } }
+}
 
 impl Inode for BodyInode {
     fn ino(&self) -> Ino { self.ino }
@@ -294,6 +301,7 @@ pub fn init() {
         Arc::new(SysClassNetInode) as InodeRef);
     devfs::register("/sys/devices/virtual/net",
         Arc::new(SysDevicesVirtualNetInode) as InodeRef);
+    bus::init();
 }
 
 /// `vfs::fs::FileSystem` impl mounted at `/sys`. Lookups consult the
