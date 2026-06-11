@@ -95,6 +95,51 @@ fn enable_pci_mem_bm(bdf: pci::Bdf) {
     } }
 }
 
+/// drivers-plan D3.5: bring up an NVMe controller. Matches PCI class
+/// 0x010802 (mass-storage / NVM / NVMe; QEMU vendor 0x1b36 device 0x0010).
+/// BAR0 is a 64-bit memory BAR holding the controller register file; map 2
+/// pages (CAP/CC/AQA/ASQ/ACQ + doorbells) and hand the VA to `drv_nvme::init`,
+/// which resets the controller, runs IDENTIFY, creates one I/O queue pair, and
+/// registers `nvme0n1` as a `BlockDevice`. On success publish the D1a model
+/// driver + bind (`/sys/bus/pci/drivers/nvme` + the device's `driver` symlink).
+/// # SAFETY: boot path; PMM ready; single-CPU; IRQs masked. BAR0 PA owned by
+/// the device; map_mmio_pages splices a private Device-attr window.
+/// # C: O(BAR map + controller bring-up)
+fn nvme_probe(d: &pci::PciDevice) {
+    let class24 = ((d.class_code as u32) << 16)
+        | ((d.subclass as u32) << 8) | (d.prog_if as u32);
+    if class24 != drv_nvme::NVME_CLASS24 { return; }
+    let bdf = d.bdf;
+    // Decode BARs; BAR0 is the NVMe register file (64-bit mem BAR).
+    let bars = {
+        #[cfg(target_arch = "x86_64")]
+        { let r = hal_x86_64::pci::LegacyPci; pci::decode_bars(&r, bdf) }
+        #[cfg(target_arch = "aarch64")]
+        { match hal_aarch64::pci::EcamPci::from_published() {
+            Some(r) => pci::decode_bars(&r, bdf),
+            None    => [pci::Bar::None; 6],
+        } }
+    };
+    let bar0_pa = match bars[0] {
+        pci::Bar::Mem64 { base, .. } => base,
+        pci::Bar::Mem32 { base, .. } => base as u64,
+        _ => 0,
+    };
+    if bar0_pa == 0 { return; }
+    // SAFETY: bar0_pa decoded from the device's programmed BAR0; PMM ready +
+    // single-CPU + IRQs masked at the boot probe; 2 pages cover the register
+    // file + the doorbell array (DSTRD ≤ small on QEMU).
+    let bar0_va = unsafe { map_mmio_pages(bar0_pa & !0xFFF, 2) }
+        + (bar0_pa & 0xFFF);
+    let idx = drv_nvme::init(bar0_va);
+    if idx != 0 {
+        drv::register_driver(&drv_nvme::NVME_DRIVER);
+        let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
+            0u16, bdf.bus, bdf.device, bdf.function);
+        drv::bind_addr("pci", &addr, "nvme");
+    }
+}
+
 /// Emit one `[INFO] pci-bar <bdf> N <kind>=...` line per programmed BAR.
 /// # C: O(1) — at most 6 BARs.
 fn bar_dump_arch(bdf: pci::Bdf) {
@@ -560,6 +605,7 @@ pub fn enumerate_and_log() {
                     "virtio", vaddr, d.vendor_id, vdev_id, 0)));
             }
             virtio_probe_arch(d);
+            nvme_probe(d);
         }
         // F40 + F57: brief IRQ unmask window so any MSIs queued
         // during the closed-loop drain through the per-arch IRQ
