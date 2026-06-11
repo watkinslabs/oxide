@@ -761,6 +761,7 @@ name = "pci-boot"
 version = "0.1.0"
 dependencies = [
  "arch-irq",
+ "drv",
  "drv-virtio-blk",
  "drv-virtio-gpu",
  "drv-virtio-input",
@@ -1201,6 +1202,7 @@ name = "sysfs"
 version = "0.1.0"
 dependencies = [
  "devfs",
+ "drv",
  "net",
  "netlink",
  "vfs",
