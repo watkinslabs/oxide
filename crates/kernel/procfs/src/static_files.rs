@@ -10,9 +10,34 @@ use sync::{Spinlock, MountTable as RootClass};
 use crate::{
     ProcHostnameInode, ProcLoadavgInode, ProcMeminfoInode, ProcRootInode, ProcSelfCmdlineInode,
     ProcSelfCommInode, ProcSelfEnvironInode, ProcSelfFdInode, ProcSelfMapsInode, ProcSelfStatInode,
-    ProcSelfStatusInode, ProcUptimeInode, StaticFileInode, CPUINFO_BODY, FILESYSTEMS, IO_BODY,
+    ProcSelfStatusInode, ProcUptimeInode, StaticFileInode, FILESYSTEMS, IO_BODY,
     LIMITS_BODY, VERSION_BODY,
 };
+
+/// `/sys/devices/system/cpu/{online,present,possible}` — the online CPU mask,
+/// computed at read time from `cpu::smp::online_count()` (Linux cpumask
+/// bitmap-list form: `0` for 1 CPU, `0-N` for N+1). nproc / sched_getaffinity
+/// / libnuma / systemd parse these.
+struct SysCpuRangeInode;
+impl vfs::Inode for SysCpuRangeInode {
+    fn ino(&self) -> vfs::Ino { 0x3000_1C01 }
+    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(vfs::VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        let n = (cpu::smp::online_count() as usize).clamp(1, cpu::MAX_CPUS);
+        let mut s = alloc::string::String::new();
+        if n <= 1 { s.push_str("0\n"); }
+        else { let _ = core::fmt::Write::write_fmt(&mut s, format_args!("0-{}\n", n - 1)); }
+        let b = s.as_bytes();
+        let off = off as usize;
+        if off >= b.len() { return Ok(0); }
+        let k = (b.len() - off).min(buf.len());
+        buf[..k].copy_from_slice(&b[off..off + k]);
+        Ok(k)
+    }
+    fn write(&self, _o: u64, _b: &[u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Erofs) }
+}
 
 /// Build the `/proc` root directory's static children — the Linux `proc_create`
 /// set (cpuinfo/meminfo/stat/…). Each is a real child inode the directory OWNS
@@ -22,7 +47,7 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
     use alloc::string::ToString;
     let mut c: alloc::collections::BTreeMap<alloc::string::String, InodeRef> = Default::default();
     c.insert("version".to_string(),     StaticFileInode::new(VERSION_BODY) as InodeRef);
-    c.insert("cpuinfo".to_string(),     StaticFileInode::new(CPUINFO_BODY) as InodeRef);
+    c.insert("cpuinfo".to_string(),     Arc::new(crate::cpuinfo::ProcCpuinfoInode) as InodeRef);
     c.insert("meminfo".to_string(),     Arc::new(ProcMeminfoInode) as InodeRef);
     c.insert("uptime".to_string(),      Arc::new(ProcUptimeInode) as InodeRef);
     c.insert("loadavg".to_string(),     Arc::new(ProcLoadavgInode) as InodeRef);
@@ -131,20 +156,20 @@ pub fn register_static_files() {
         "/sys/kernel/random/entropy_avail",
         StaticFileInode::new(b"4096\n") as InodeRef,
     );
-    // /sys/devices/system/cpu/* — v1 is UP, so the CPU mask is "0".
-    // `offline` is empty (no CPUs ever taken offline). Same shape Linux
-    // uses; libnuma / sched_getaffinity / systemd parse these.
+    // /sys/devices/system/cpu/* — online/present/possible are the live CPU
+    // mask, computed at read time from online_count() (Linux cpumask list).
+    // `offline` is empty (no CPUs ever taken offline).
     devfs::register(
         "/sys/devices/system/cpu/online",
-        StaticFileInode::new(b"0\n") as InodeRef,
+        Arc::new(SysCpuRangeInode) as InodeRef,
     );
     devfs::register(
         "/sys/devices/system/cpu/possible",
-        StaticFileInode::new(b"0\n") as InodeRef,
+        Arc::new(SysCpuRangeInode) as InodeRef,
     );
     devfs::register(
         "/sys/devices/system/cpu/present",
-        StaticFileInode::new(b"0\n") as InodeRef,
+        Arc::new(SysCpuRangeInode) as InodeRef,
     );
     devfs::register(
         "/sys/devices/system/cpu/offline",
@@ -154,12 +179,13 @@ pub fn register_static_files() {
         "/sys/devices/system/cpu/kernel_max",
         StaticFileInode::new(b"0\n") as InodeRef,
     );
-    // htop/get_nprocs_conf enumerate cpuN directories here; registering a
-    // leaf under cpu0 forces the directory to exist in readdir output.
-    devfs::register(
-        "/sys/devices/system/cpu/cpu0/online",
-        StaticFileInode::new(b"1\n") as InodeRef,
-    );
+    // htop/get_nprocs_conf enumerate cpuN directories here; register a leaf
+    // under each online cpuN so the directories exist in readdir output.
+    let ncpu = (cpu::smp::online_count() as usize).clamp(1, cpu::MAX_CPUS);
+    for c in 0..ncpu {
+        let path = alloc::format!("/sys/devices/system/cpu/cpu{c}/online");
+        devfs::register_owned(path, StaticFileInode::new(b"1\n") as InodeRef);
+    }
     // /sys/class/net dynamic — readdir walks the live netdev registry,
     // lookup synthesises per-iface attribute files from the NetDev trait
     // (address/mtu/operstate/type/flags/carrier/speed/duplex/ifindex/...).
