@@ -281,6 +281,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-virtio-rng"
+version = "0.1.0"
+dependencies = [
+ "drv",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "pmm",
+ "sync",
+ "virtio",
+]
+
+[[package]]
 name = "elf"
 version = "0.1.0"
 dependencies = [
@@ -579,6 +593,7 @@ dependencies = [
  "drv-virtio-gpu",
  "drv-virtio-input",
  "drv-virtio-net",
+ "drv-virtio-rng",
  "elf",
  "elf-load",
  "ext4",
@@ -761,11 +776,13 @@ name = "pci-boot"
 version = "0.1.0"
 dependencies = [
  "arch-irq",
+ "devfs",
  "drv",
  "drv-virtio-blk",
  "drv-virtio-gpu",
  "drv-virtio-input",
  "drv-virtio-net",
+ "drv-virtio-rng",
  "firmware",
  "hal",
  "hal-aarch64",
