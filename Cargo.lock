@@ -249,7 +249,6 @@ version = "0.1.0"
 dependencies = [
  "devfs",
  "drv",
- "fbcon",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
@@ -262,6 +261,7 @@ dependencies = [
  "tty",
  "vfs",
  "virtio",
+ "vt",
 ]
 
 [[package]]
@@ -1310,6 +1310,7 @@ dependencies = [
  "hal",
  "klog",
  "sync",
+ "tty",
 ]
 
 [[package]]
