@@ -411,6 +411,16 @@ fn qemu_run_grub_x86_64(
             c.args(["-d", "int,guest_errors", "-D", p.as_str()]);
         }
     }
+    // OXIDE_QEMU_GDB=1 exposes a gdb stub on tcp::1234 (no pause) so a
+    // wedged/idle SMP boot can be inspected per-CPU (rip/backtrace) when the
+    // in-kernel serial-sysrq path can't run. OXIDE_QEMU_GDB=wait also passes
+    // -S (start halted) to set breakpoints before the first instruction.
+    if let Ok(g) = std::env::var("OXIDE_QEMU_GDB") {
+        if !g.is_empty() {
+            c.args(["-gdb", "tcp::1234"]);
+            if g == "wait" { c.arg("-S"); }
+        }
+    }
     // OXIDE_QEMU_QMP_SOCK=<path>: expose a QMP control socket so the
     // keyboard-login smoke can inject real virtio-keyboard events
     // (`send-key`) — testing framebuffer keystroke input end-to-end, not
