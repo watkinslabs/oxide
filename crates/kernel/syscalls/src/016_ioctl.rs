@@ -487,7 +487,20 @@ fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64> {
                     frsig:  core::ptr::read_volatile((arg + 6) as *const u16),
                 }
             };
-            match vt::set_vt_mode(vt_target, m) {
+            // Record the calling process as the VT's controlling owner (Linux
+            // vc->vt_pid) so the switch handshake can signal it.
+            let pid = sched::live::current()
+                .map(|t| t.vtgid.load(core::sync::atomic::Ordering::Acquire))
+                .unwrap_or(0);
+            match vt::set_vt_mode(vt_target, m, pid) {
+                Ok(()) => Some(0),
+                Err(_) => Some(errno(Errno::Einval)),
+            }
+        }
+        vt::VT_RELDISP => {
+            // The foreground VT_PROCESS owner answers a release request: arg>=1
+            // allows a pending switch to complete, arg==0 refuses it.
+            match vt::reldisp(arg as i32) {
                 Ok(()) => Some(0),
                 Err(_) => Some(errno(Errno::Einval)),
             }

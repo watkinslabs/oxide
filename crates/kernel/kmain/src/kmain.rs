@@ -515,6 +515,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     drv_virtio_input::register();
     // SAFETY: kernel_main runs single-CPU pre-init; vt::init allocates VT 1 + sets ACTIVE_VT.
     let _ = unsafe { vt::init() };
+    // VT_PROCESS switch handshake (console-plan #6c): the vt layer signals a
+    // VT's controlling owner (relsig on switch-away, acqsig on switch-to) via
+    // this hook — keeps the vt crate free of a sched dependency.
+    vt::set_signal_hook(|pid, signo| {
+        if signo == 0 || signo > 64 { return; }
+        if let Some(t) = sched::live::registry::lookup_by_vpid(pid) {
+            t.sigpending.fetch_or(1u64 << (signo - 1), core::sync::atomic::Ordering::Release);
+        }
+    });
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
 
     // ELF-loaded userspace via real Task on the runqueue (P2-13c).
