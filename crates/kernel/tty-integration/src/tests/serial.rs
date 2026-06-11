@@ -30,8 +30,8 @@ fn ser_rx_reads_and_echoes_to_uart() {
     tty.receive_from_driver(b"cmd\n");
 
     let mut buf = [0u8; 32];
-    let got = tty.read(&mut buf);
-    assert_eq!(&buf[..got], b"cmd\n", "cooked line to program");
+    let n = tty.read(&mut buf).bytes_or_zero();
+    assert_eq!(&buf[..n], b"cmd\n", "cooked line to program");
     // Echo (the typed bytes) reaches the wire.
     assert_eq!(out.tx(), b"cmd\n", "echo on the UART");
 }
@@ -44,8 +44,8 @@ fn ser_password_echo_off_uart_silent() {
     tty.receive_from_driver(b"secret\n");
 
     let mut buf = [0u8; 32];
-    let got = tty.read(&mut buf);
-    assert_eq!(&buf[..got], b"secret\n", "program still sees the line");
+    let n = tty.read(&mut buf).bytes_or_zero();
+    assert_eq!(&buf[..n], b"secret\n", "program still sees the line");
     assert!(out.tx().is_empty(), "UART must be silent, got {:?}", out.tx());
 }
 
@@ -69,5 +69,5 @@ fn ser_ctrl_d_at_line_start_is_eof() {
 
     let mut buf = [0u8; 32];
     let got = tty.read(&mut buf);
-    assert_eq!(got, 0, "^D → EOF over serial");
+    assert_eq!(got, tty::ReadOutcome::Eof, "^D → EOF over serial (read returns 0 to userspace)");
 }
