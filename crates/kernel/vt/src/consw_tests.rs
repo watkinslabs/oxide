@@ -164,6 +164,52 @@ fn offscreen_write_does_not_blit_until_switch() {
 }
 
 #[test]
+fn cursor_hide_draws_normal_cell_not_reverse() {
+    // ?25l hides the cursor: con_cursor must be called with visible=false
+    // so the renderer draws the cell normally (block erased), and no
+    // cursor block position is retained.
+    let mut vc = Vc::new(10, 3);
+    let mut prime = RecordingConsw::default();
+    render(&mut vc, &mut prime); // initial all-dirty paint, cursor on
+    assert_eq!(vc.last_cursor(), Some((0, 0)));
+    let mut em = Emulator::new();
+    let mut cw = RecordingConsw::default();
+    em.feed_bytes(&mut vc, b"\x1b[?25l"); // hide cursor
+    render(&mut vc, &mut cw);
+    // The cursor was repainted as NOT visible (block erased).
+    assert_eq!(cw.cursor, alloc::vec![false]);
+    // No live cursor block recorded while hidden.
+    assert_eq!(vc.last_cursor(), None);
+}
+
+#[test]
+fn moved_cursor_erases_prior_cell() {
+    // With the cursor on a CLEAN row, moving it must erase the old cell
+    // (con_putcs of width 1 at the old position) before drawing the new
+    // block — so the reverse-video block leaves no artifact behind.
+    let mut vc = Vc::new(10, 3);
+    let mut prime = RecordingConsw::default();
+    // Put the cursor at (3,1) and settle (last_cursor = (3,1)).
+    let mut em = Emulator::new();
+    em.feed_bytes(&mut vc, b"\x1b[2;4H");
+    render(&mut vc, &mut prime);
+    assert_eq!(vc.last_cursor(), Some((3, 1)));
+    // Now move the cursor only (CUP to (1,1)=row0,col0). Row 1 (old) and
+    // row 0 (new) carry no glyph change — only the cursor moved, so the
+    // old cell must be explicitly erased via a width-1 putcs.
+    let mut cw = RecordingConsw::default();
+    em.feed_bytes(&mut vc, b"\x1b[1;1H");
+    render(&mut vc, &mut cw);
+    assert!(
+        cw.putcs.contains(&(1, 3, 1)),
+        "old cursor cell (row1,col3) must be erased with a width-1 putcs, got {:?}",
+        cw.putcs
+    );
+    assert_eq!(cw.cursor, alloc::vec![true]);
+    assert_eq!(vc.last_cursor(), Some((0, 0)));
+}
+
+#[test]
 fn default_con_switch_putcs_every_row() {
     // A renderer that doesn't override con_switch falls back to per-row
     // putcs + a cursor draw.
