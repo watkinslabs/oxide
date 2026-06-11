@@ -337,6 +337,28 @@ pub fn switch_vt(n: u8) {
     softirq::raise(softirq::Slot::FbconFlush);
 }
 
+/// Force a full repaint of the foreground VT (Linux `do_unblank_screen` →
+/// `update_screen` / `redraw_screen`). Marks the surface dirty and raises the
+/// flush softirq so the next tick reblits every cell from the fg `Vc`. Used by
+/// TIOCL_UNBLANKSCREEN to bring the console back after a blank request. No-op
+/// pre-init. NOTE: this does NOT implement pixel-level screen blanking (we have
+/// no blank/DPMS hardware path) — it only re-asserts the live screen content.
+/// # C: O(cols*rows) — full-screen repaint.
+pub fn force_repaint() {
+    if !READY.load(Ordering::Acquire) { return; }
+    {
+        let mut guard = VT_STATE.lock();
+        if let Some(st) = guard.as_mut() {
+            let fg = st.fg as usize;
+            if let Some(cell) = st.vc_cons[fg].as_mut() {
+                vtdata::switch(&mut cell.vc, &mut st.renderer);
+                DIRTY.store(true, Ordering::Release);
+            }
+        }
+    }
+    softirq::raise(softirq::Slot::FbconFlush);
+}
+
 /// Scroll the FOREGROUND VT's view by `lines` (Linux `con_scrolldelta` /
 /// Shift+PgUp/PgDn): positive scrolls UP into scrollback history, negative
 /// scrolls back DOWN toward the live bottom. The `Vc` already holds the
