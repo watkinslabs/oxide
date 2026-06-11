@@ -37,7 +37,7 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use sync::{Spinlock, Tty as TtyClass};
 use vtdata::{Consw, Emulator, Vc, N_VT};
 
-use crate::vcrender::{VcRenderer, CELL_H, CELL_W};
+use crate::vcrender::VcRenderer;
 
 /// One virtual console: screen buffer (`Vc`) + ECMA-48 emulator. The
 /// shared `VcRenderer` lives in `VtState`, not here, since only the fg
@@ -158,8 +158,12 @@ fn flush_softirq() {
 /// # C: O(cols*rows) — renderer surface alloc + clear.
 pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
     softirq::set_handler(softirq::Slot::FbconFlush, flush_softirq);
-    let cols = (xres / CELL_W).max(1) as u16;
-    let rows = (yres / CELL_H).max(1) as u16;
+    // Cell dims are font-driven: default 8×16 → same grid as before; a wider
+    // font loaded at boot grids correctly. (CELL_W/CELL_H are the fallback.)
+    let font = crate::font::active();
+    let (cell_w, cell_h) = (font.width.max(1), font.height.max(1));
+    let cols = (xres / cell_w).max(1) as u16;
+    let rows = (yres / cell_h).max(1) as u16;
     let mut renderer = VcRenderer::new();
     renderer.con_init(cols as u32, rows as u32);
     let mut sys = Box::new(VcCell {
