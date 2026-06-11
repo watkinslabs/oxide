@@ -1,40 +1,64 @@
 # state — session hand-off
 
-Branch: main (clean). All work below merged.
+Branch: main (clean, all merged @ eb737d8d). No work mid-flight.
 
-## Landed this session
-- **#1695** full Linux rt_sigframe (siginfo+ucontext, full GP save/restore); fixes
-  lazygit ^C SIGSEGV + all SA_SIGINFO apps. Arch frame logic in
-  `crates/arch/hal-{x86_64,aarch64}/src/signal.rs` (offset-asserted vs Linux);
-  `fs/sig_dispatch.rs` thin/arch-neutral. Live-verified both arches via
-  `/bin/sigframe_probe` (tty ^C → SIGFRAME_OK).
-- **#1695** build speed: `OXIDE_SKIP_ROOTFS=1` reuses cached rootfs (kernel-only
-  changes); GRUB timeout 3s/1s→0. Fast loop: `OXIDE_QEMU_KVM=1 OXIDE_SKIP_ROOTFS=1
-  make qemu-x86` (~26s vs ~8min).
-- **#1696** fbcon: printk CR+LF (kernel logs no longer staircase on the graphical
-  console); `/dev/console` winsize seeded from fb grid (`fbcon::console_dims()`),
-  was 24×80 → now reports real geometry (50×160 on 1280×800). Serial keeps its own.
-- **#1697** htop: `/proc/<pid>/task/<tid>/{stat,status,statm,cmdline,comm}` + TID
-  readdir; `/sys/devices/system/cpu` topology dir enumeration (PrefixDirInodes for
-  the intermediate dirs). Split the 1464-line live.rs → live/{mod,self_files}.rs.
+## Headline
+The **console-plan.md + drivers.md program is COMPLETE** — 35 PRs (#1701–#1735),
+every functional change runtime-proven on BOTH x86_64 and aarch64 (real login /
+real device I/O), no stubs/fakes. Full per-PR record in CHANGELOG.md → "Console +
+Drivers program". Working scratch + deferral detail in state2.md.
 
-## Open / latent
-- **fb resolution**: `/dev/console` winsize now tracks the fb geometry (#1696);
-  a *bigger* console (more rows) needs a larger virtio-gpu mode — separate
-  config change, not a bug. Offer if the user wants a taller console.
-- **/proc/stat user-vs-system split**: kernel-mode ticks fold into `idle` (can't
-  distinguish a real syscall from the idle spin-loop without per-context
-  tracking). User-compute %CPU is accurate; syscall-heavy procs under-report.
+## What landed
+- **Part B — console/tty/fbdev/VT (#1701–#1718):** ONE TtyStruct/NTty stack
+  (legacy tty::live retired); real tty semantics (EINTR, VMIN/VTIME, IXON,
+  hangup, pty master-close→slave-EOF); VT (DSR/CPR, PSF2 glyphs + fonts>8,
+  VT_PROCESS owner-checked, live resize, scrollback, /dev/vcs); /dev/console =
+  real vc_data + **framebuffer keyboard login**; real /dev/fb0 + mmap.
+- **Part C — drivers.md (#1719–#1734):** D1a driver model + /sys/bus; D2 stub
+  removal; D3 missing drivers (virtio-rng, ps2-keyboard, nvme, ahci, virtio-vsock
+  — real I/O); D4 UART crate split; D5 full DRM/KMS (info + dumb buffers +
+  SETCRTC/flip, console-safe); D6 full fbdev (cmap/vsync/blank); D7a /sys/block;
+  D7b net statistics; D7c blk single-in-flight documented.
+- **Cleanup (#1734–#1735):** make-test ReadOutcome fix (CI test gate green);
+  CHANGELOG + memory closeout.
 
-## Resolved this session (PRs)
-- #1695 full rt_sigframe · #1696 fbcon CR+LF + console winsize · #1697 htop
-  /proc task dirs + /sys cpu · #1698 /proc/stat CPU accounting (htop %CPU).
-- self-signal delivery: NOT a bug (verified — bash kill -USR1 $$ + trap works).
+## 5 latent bugs caught by the runtime-proof discipline
+empty-DRM-card (#1727), ADDFB2 ioctl size 68→104 (#1728), AHCI FRE-before-BSY +
+PxSIG-before-FRE (#1724), rng legacy-id needs disable-legacy=on (#1721),
+fbdev↔pidfd inode collision 0x7001→0xFB00 (#1730).
 
-## Background autonomous task
-`smp-distro-plan.md` (vendor-app buildout) — paused while addressing the above
-user-reported fixes. Resume per the plan when ready.
+## Honest deferrals (correct as-is, diagnosed — NOT façades)
+- D1b probe-driven bring-up + linkme — boot-risky, no consumer (static devices).
+- virtio-console (D3.2) — virtio_init_arch returns None for virtio-serial-pci
+  (cap walk can't locate COMMON_CFG); written but NOT merged; needs focused work.
+- drv remove/shutdown — dead code (no hotplug/unbind path); trait hooks exist.
+- net RX-ring depth 1→N — depth-1 works; throughput-only.
+- blk multiple-in-flight — single-in-flight is correct+real; no consumer + root
+  risk → phase-17 block layer. Documented in drv-virtio-blk modern.rs.
 
-## Fast iteration
-`OXIDE_QEMU_KVM=1 OXIDE_SKIP_ROOTFS=1` for x86 (~26s). aarch64 = TCG (~min);
-don't iterate on arm boots — compile asserts + arch-neutral review + x86 mirror.
+## Known pre-existing issue (surfaced, not caused by this program)
+- **real DHCP gets no lease** — eth0's 10.0.2.15 is a STATIC rtnetlink seed
+  (rtnetlink.rs:470), not DHCP; `make smoke-dhcp-x86` times out (clean main fails
+  identically). AF_PACKET TX + RX-to-socket delivery are sound; exact break needs
+  an instrumented boot (single-RX-buffer / poll-cadence / iface-race suspects).
+  Phase-8 net territory. See memory project_dhcp_static_seed.
+
+## Verification gates (reusable)
+- tools/boot-smoke-kbd-login.sh <arch>   — framebuffer keyboard login (QMP send-key)
+- tools/boot-smoke-login.sh <arch>       — serial login + full app run
+- tools/boot-smoke-probe.sh <arch> <probe> [t] — login + run /bin/<probe> + assert PASS
+
+## First task next session
+The console+drivers program is done; the next genuine items are OUT of that scope:
+1. **Real DHCP (phase-8 net):** instrument a smoke-dhcp boot — confirm DHCPDISCOVER
+   TX, then whether the OFFER is RX'd + delivered to udhcpc's AF_PACKET socket;
+   likely the single RX buffer (drv-virtio-net rx0) drops the OFFER → deepen the
+   RX ring; then drop the static 10.0.2.15 seed once real DHCP works.
+2. **virtio-console:** focused virtio-serial cap-walk investigation (why
+   virtio_init_arch returns None for device 0x1043).
+Otherwise audit "what phase are we actually in" per 00§3 and pick the lowest
+unfinished phase.
+
+
+
+
