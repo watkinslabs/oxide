@@ -202,6 +202,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-ahci"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "drv",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "pmm",
+ "sync",
+]
+
+[[package]]
 name = "drv-nvme"
 version = "0.1.0"
 dependencies = [
@@ -804,6 +818,7 @@ dependencies = [
  "block",
  "devfs",
  "drv",
+ "drv-ahci",
  "drv-nvme",
  "drv-virtio-blk",
  "drv-virtio-gpu",
