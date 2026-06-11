@@ -89,15 +89,35 @@ impl Font {
     }
 
     /// One scanline (`py < height`) of glyph `idx` as a left-justified byte
-    /// (MSB = leftmost pixel) — width ≤ 8 fonts use bit `7-x`. Out-of-range
-    /// returns 0 (blank). # C: O(1).
+    /// (MSB = leftmost pixel) — the FIRST byte of the row. For width ≤ 8 this
+    /// is the whole row; for wider fonts use `glyph_bit` to read columns past
+    /// pixel 7. Out-of-range returns 0 (blank). # C: O(1).
     #[inline]
     pub fn glyph_row(&self, idx: usize, py: usize) -> u8 {
         if idx >= self.count || py >= self.height as usize {
             return 0;
         }
-        // First byte of the scanline (width ≤ 8 → 1 byte/row).
+        // First byte of the scanline (width ≤ 8 → the whole row).
         self.glyphs.bytes()[idx * self.charsize + py * self.row_bytes]
+    }
+
+    /// Pixel at column `x` of scanline `py` of glyph `idx` (true = lit).
+    /// PSF packs each scanline MSB-left into `row_bytes` (`ceil(width/8)`)
+    /// bytes, so the pixel lives in byte `x/8`, bit `7-(x%8)`. This is the
+    /// width-correct read for fonts WIDER than 8px (12/16/24/32). Bounds:
+    /// `idx<count`, `py<height`, `x<width` → out of range is `false` (blank).
+    /// # C: O(1).
+    #[inline]
+    pub fn glyph_bit(&self, idx: usize, py: usize, x: usize) -> bool {
+        if idx >= self.count || py >= self.height as usize || x >= self.width as usize {
+            return false;
+        }
+        let off = idx * self.charsize + py * self.row_bytes + x / 8;
+        let bytes = self.glyphs.bytes();
+        if off >= bytes.len() {
+            return false;
+        }
+        (bytes[off] >> (7 - (x % 8))) & 1 == 1
     }
 
     /// Glyph count / cell dimensions — for KD_FONT_OP_GET.
@@ -257,11 +277,11 @@ fn install(font: Font) {
 }
 
 /// KD_FONT_OP_SET: load `count` glyph bitmaps (each `stride` bytes in the
-/// KDFONTOP buffer — Linux uses 32; the first `height` bytes are the
-/// scanlines) as the new console font, sized `width`×`height`. The current
-/// unicode map is carried over (KDFONTOP carries no map — `setfont` sets it
-/// separately via PIO_UNIMAP). Rejects width>8 / height>32 / count==0 / a
-/// short buffer. # C: O(count*height).
+/// KDFONTOP buffer — Linux uses 32; the first `row_bytes*height` bytes are
+/// the scanlines, `row_bytes = ceil(width/8)`) as the new console font, sized
+/// `width`×`height`. The current unicode map is carried over (KDFONTOP carries
+/// no map — `setfont` sets it separately via PIO_UNIMAP). Rejects width>32 /
+/// height>32 / count==0 / a short buffer. # C: O(count*row_bytes*height).
 pub fn set_font(width: u32, height: u32, count: u32, stride: usize, data: &[u8]) -> Result<(), ()> {
     let cur = active();
     let font = build_font(width, height, count, stride, data, cur.uni.clone(), cur.fallback)?;
@@ -269,20 +289,36 @@ pub fn set_font(width: u32, height: u32, count: u32, stride: usize, data: &[u8])
     Ok(())
 }
 
+/// Install a font with an explicit unicode map + fallback glyph — used by
+/// fbcon host tests that need a known wide font + map without depending on
+/// the carried-over map. # C: O(count*row_bytes*height + N log N).
+#[cfg(test)]
+pub fn set_font_with_map(
+    width: u32, height: u32, count: u32, stride: usize, data: &[u8],
+    mut uni: Vec<(u32, u16)>, fallback: u16,
+) {
+    uni.sort_by_key(|&(c, _)| c);
+    uni.dedup_by_key(|&mut (c, _)| c);
+    if let Ok(font) = build_font(width, height, count, stride, data, uni, fallback) {
+        install(font);
+    }
+}
+
 /// Build a runtime (owned-glyph) `Font` from a KDFONTOP buffer + a unicode
 /// map — the pure core of `set_font`, testable without the global. Rejects
-/// width>8 / height>32 / count==0 / a short buffer. # C: O(count*height).
+/// width>32 / height>32 / count==0 / a short buffer (`stride` must hold the
+/// glyph's `row_bytes*height` scanline bytes). # C: O(count*row_bytes*height).
 fn build_font(
     width: u32, height: u32, count: u32, stride: usize, data: &[u8],
     uni: Vec<(u32, u16)>, fallback: u16,
 ) -> Result<Font, ()> {
-    if width == 0 || width > 8 || height == 0 || height > 32 || count == 0 || count > 512 {
+    if width == 0 || width > 32 || height == 0 || height > 32 || count == 0 || count > 512 {
         return Err(());
     }
     let count = count as usize;
-    if data.len() < count * stride { return Err(()); }
-    let row_bytes = 1usize; // width<=8 → 1 byte/scanline
+    let row_bytes = ((width + 7) / 8) as usize; // ceil(width/8) bytes/scanline
     let charsize = row_bytes * height as usize;
+    if stride < charsize || data.len() < count * stride { return Err(()); }
     let mut glyphs = Vec::with_capacity(count * charsize);
     for i in 0..count {
         let base = i * stride;
@@ -309,9 +345,14 @@ pub fn get_font(stride: usize) -> (u32, u32, u32, Vec<u8>) {
 fn serialize(f: &Font, stride: usize) -> (u32, u32, u32, Vec<u8>) {
     let mut out = alloc::vec![0u8; f.count * stride];
     let h = f.height as usize;
+    let rb = f.row_bytes;
+    let src = f.glyphs.bytes();
     for i in 0..f.count {
+        // Copy all `row_bytes` per scanline (width>8 fonts need >1 byte/row).
         for py in 0..h {
-            out[i * stride + py] = f.glyph_row(i, py);
+            for b in 0..rb {
+                out[i * stride + py * rb + b] = src[i * f.charsize + py * rb + b];
+            }
         }
     }
     (f.width, f.height, f.count as u32, out)
@@ -432,10 +473,61 @@ mod tests {
     fn build_font_rejects_bad_geometry() {
         let data = alloc::vec![0u8; 32];
         assert!(build_font(0, 8, 1, 32, &data, Vec::new(), 0).is_err());   // width 0
-        assert!(build_font(16, 8, 1, 32, &data, Vec::new(), 0).is_err());  // width>8
+        assert!(build_font(33, 8, 1, 32, &data, Vec::new(), 0).is_err());  // width>32
         assert!(build_font(8, 64, 1, 32, &data, Vec::new(), 0).is_err());  // height>32
         assert!(build_font(8, 8, 0, 32, &data, Vec::new(), 0).is_err());   // count 0
         assert!(build_font(8, 8, 5, 32, &data, Vec::new(), 0).is_err());   // short buffer
+        // width 16 is now allowed, but stride must hold row_bytes*height.
+        assert!(build_font(16, 16, 1, 8, &data, Vec::new(), 0).is_err());  // stride<charsize(32)
+    }
+
+    #[test]
+    fn glyph_bit_wide_12px_font() {
+        // Synthetic 12px-wide font → row_bytes=2, charsize=2*height. Set
+        // known bits straddling the byte boundary (cols 0..11) and assert
+        // glyph_bit reads them MSB-left across both bytes.
+        let stride = 32usize;
+        let height = 2u32;
+        let mut data = alloc::vec![0u8; 1 * stride];
+        // Row 0: byte0 = 0b1000_0001 (cols 0 and 7 set),
+        //        byte1 = 0b1001_0000 (cols 8 and 11 set; cols 12..15 unused).
+        data[0] = 0b1000_0001;
+        data[1] = 0b1001_0000;
+        // Row 1: byte0 = 0b0100_0000 (col 1 set), byte1 = 0 (no high cols).
+        data[2] = 0b0100_0000;
+        data[3] = 0b0000_0000;
+        let f = build_font(12, height, 1, stride, &data, Vec::new(), 0).unwrap();
+        assert_eq!(f.dims(), (12, 2, 1));
+        // Row 0 expected lit columns: 0, 7, 8, 11.
+        let lit0: alloc::vec::Vec<usize> = (0..12).filter(|&x| f.glyph_bit(0, 0, x)).collect();
+        assert_eq!(lit0, alloc::vec![0usize, 7, 8, 11]);
+        // Spot-check unlit cols across the boundary.
+        assert!(!f.glyph_bit(0, 0, 1));
+        assert!(!f.glyph_bit(0, 0, 9));
+        assert!(!f.glyph_bit(0, 0, 10));
+        // Row 1 expected lit columns: just 1.
+        let lit1: alloc::vec::Vec<usize> = (0..12).filter(|&x| f.glyph_bit(0, 1, x)).collect();
+        assert_eq!(lit1, alloc::vec![1usize]);
+        // Out-of-range column/row/glyph are blank.
+        assert!(!f.glyph_bit(0, 0, 12));
+        assert!(!f.glyph_bit(0, 2, 0));
+        assert!(!f.glyph_bit(1, 0, 0));
+    }
+
+    #[test]
+    fn glyph_bit_matches_glyph_row_for_default_8x16() {
+        // For the default 8px font, glyph_bit(idx,py,x) must equal bit 7-x of
+        // glyph_row(idx,py) for every glyph/row/col — proves no pixel drift.
+        let f = parse_psf2(DEFAULT_PSF).unwrap();
+        for idx in [0usize, 32, 65, 219, 255] {
+            for py in 0..16usize {
+                let row = f.glyph_row(idx, py);
+                for x in 0..8usize {
+                    let expect = (row >> (7 - x)) & 1 == 1;
+                    assert_eq!(f.glyph_bit(idx, py, x), expect, "glyph {idx} row {py} col {x}");
+                }
+            }
+        }
     }
 
     #[test]
