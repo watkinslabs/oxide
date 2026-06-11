@@ -1033,3 +1033,43 @@ Open for next session 48 (with restarted qemu-mcp):
 3. **Move virtio init out of `pci_boot/virtio_drv.rs`** into a real `kernel/drivers/virtio/` module once IRQ-driven completion lands. Currently 842 lines, well under the 1000 cap but that's the right time to refactor.
 4. **`/bin/sh` interactive — TTY-input wakeup** (orthogonal): replace timer-tick polling in `tty::tick_poll_uart` with UART RX IRQ. Quality-of-life win.
 5. **`PTRACE_SINGLESTEP` real trap** (orthogonal): toggle per-arch TF/SS bit on resume.
+
+---
+
+## Console + Drivers program (PRs #1701 – #1734)
+
+**Subject**: console-plan.md (Part A+B) + drivers.md (Part C) both fully addressed. Every functional change runtime-proven on BOTH x86_64 and aarch64 (real login / real device I/O), never stubbed.
+
+### Part B — console/tty/fbdev/VT (console-plan.md, #1701–#1718)
+One unified `TtyStruct`/`NTty` stack for system console + numbered VTs + pty (legacy `tty::live` retired). Real Linux tty semantics: signal-interruptible reads (EINTR), VMIN/VTIME, IXON flow control, hangup/SIGHUP, pty master-close→slave-EOF. VT layer: DSR/CPR answerback, cursor, PSF2 glyphs + conv_uni_to_pc + font width>8, VT-switch unify, VT_PROCESS handshake (WAITACTIVE/RELDISP owner-checked), full VT/KD ioctls, live resize, scrollback + /dev/vcs. `/dev/console` = real vc_data with framebuffer keyboard login (verified via QMP send-key on both arches). Real `/dev/fb0` with mmap (VmaBacking::PhysRange).
+
+### Part C — drivers.md (#1719–#1734)
+| Item | PRs | Lands |
+|---|---|---|
+| D1a driver model | #1719 | real `Driver`/`Device` + per-bus registry + `/sys/bus/{pci,virtio}` + `/sys/devices/pci0000:00/*` (vendor/device/class/uevent + driver symlinks) |
+| D2 probe stubs | #1720 | removed the vestigial `NoMatch` DriverEntry stubs (gpu/input bind via the model + inline bring-up) |
+| D3 missing drivers | #1721–#1725 | virtio-rng (/dev/hwrng + RNG seed), ps2-keyboard (i8042, x86), nvme (block), ahci (SATA block), virtio-vsock (AF_VSOCK) — each real I/O, runtime-proven |
+| D4 UART split | #1726 | drv-uart-16550 + drv-uart-pl011 own crates; drv-serial = shared core |
+| D5 DRM/KMS | #1727–#1729 | real GETRESOURCES/CRTC/CONNECTOR/ENCODER/PLANE + dumb buffers + mmap + ADDFB2 + SETCRTC/PAGE_FLIP (console-safe) |
+| D6 fbdev | #1730 | real cmap pseudo-palette, tick-driven WAITFORVSYNC, image-level FBIOBLANK, honest EINVAL pan/mode |
+| D7a /sys/block | #1731 | dynamic block sysfs tree (size in 512-sectors, ro, dev, queue/) |
+| D7b net statistics | #1732 | RX counters + /sys/class/net/*/statistics/ (24 fields) |
+| D7c blk single-in-flight | #1733 | documented as deliberate correct-serial (not a façade) |
+| make-test fix | #1734 | serialtty/tty-integration tests updated for the ReadOutcome read API |
+
+### Latent bugs caught by the runtime-proof discipline (would have survived stubs)
+1. **empty DRM card** — gpu bring-up double-registered a `DisplayInfo::default()` card as card0 (0 crtcs) → GETRESOURCES saw nothing. (#1727)
+2. **ADDFB2 ioctl size** — the constant encoded the pre-modifier 68-byte struct, not the modern 104 → dispatch missed → ENOTTY. (#1728)
+3. **AHCI FRE ordering** — start_port waited for BSY/DRQ clear BEFORE enabling FRE (the status-clearing FIS needs FIS-receive on); + PxSIG read before FRE. x86 QEMU masked both; arm exposed them. (#1724)
+4. **rng legacy id** — QEMU virtio devices default to legacy PCI ids; the driver matched modern → no bind until `disable-legacy=on`. (#1721)
+5. **fbdev↔pidfd inode collision** — FB0_INO_BASE 0x7001_0000 fell inside pidfd's 0x70xx namespace (pidfd handler runs first) → every /dev/fb0 ioctl + mmap silently stolen since the fbdev #1707 work. Moved to 0xFB00_0000. (#1730)
+
+### Honest deferrals (correct as-is, no façade — each diagnosed)
+- **D1b** probe-driven bring-up + linkme — boot-risky rework, no consumer (static device set); the explicit register_driver+bind at each bring-up site stands in.
+- **virtio-console** (D3.2) — `virtio_init_arch` returns None for virtio-serial-pci (cap walk doesn't locate COMMON_CFG); the driver was written but NOT merged (no façade) and discarded; needs a focused virtio-serial cap-walk investigation.
+- **drv remove/shutdown** — dead code (oxide has no hotplug/unbind path); the trait hooks exist (default no-op).
+- **net RX-ring depth 1→N** — depth-1 works; deepening is throughput-only + touches live cursor invariants.
+- **blk multiple-in-flight** — single-in-flight is correct + real (genuine 3-desc chains); no concurrent-I/O consumer (pagecache + syscalls serialize above; no async I/O until io_uring phase 30) + high ext4-root boot risk → phase-17 block-layer work.
+
+### Known pre-existing issues (NOT from this program; surfaced during it)
+- **real DHCP (udhcpc) gets no lease** — `make smoke-dhcp-x86` times out (clean main fails identically). eth0's 10.0.2.15 is a STATIC rtnetlink seed (rtnetlink.rs:470), so the systemd boot never actually DHCPs and the static seed masks an incomplete DHCP-client path. Audit: AF_PACKET TX (DHCPDISCOVER → xmit_raw → tx_frame) is sound; RX delivery to AF_PACKET sockets is unconditional (deliver_packet_rx before IP filter); the exact break (single-RX-buffer dropping the OFFER vs poll cadence vs iface race) needs an instrumented boot. A net-stack/DHCP-client gap (phase-8 territory), orthogonal to console+drivers.
