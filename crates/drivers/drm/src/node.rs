@@ -171,54 +171,61 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
         DRM_IOCTL_GET_UNIQUE => Some(0),
         DRM_IOCTL_SET_VERSION => Some(0),
         DRM_IOCTL_MODE_GETRESOURCES => {
-            // drm_mode_card_res: 4 ptrs (32 B) + count_fbs/crtcs/
-            // connectors/encoders (4×u32) + min/max width/height
-            // (4×u32). Total 64 B.
+            // Real 2-pass enumeration when a card is registered;
+            // empty counts (no objects) when none. drm_mode_card_res
+            // is 64 B; validated < USER_VA_END above.
             let cards = crate::cards();
-            let (count_fbs, count_crtcs, count_conns, count_encs) = match cards.first() {
-                Some(d) => d.resource_counts(),
-                None    => (0, 0, 0, 0),
-            };
-            let (min_w, max_w, min_h, max_h) = match cards.first() {
-                Some(d) => d.dim_bounds(),
-                None    => (0, 0, 0, 0),
-            };
-            // SAFETY: arg validated; struct ≥ 64 B; aligned u32 stores.
-            unsafe {
-                core::ptr::write_volatile((arg + 32) as *mut u32, count_fbs);
-                core::ptr::write_volatile((arg + 36) as *mut u32, count_crtcs);
-                core::ptr::write_volatile((arg + 40) as *mut u32, count_conns);
-                core::ptr::write_volatile((arg + 44) as *mut u32, count_encs);
-                core::ptr::write_volatile((arg + 48) as *mut u32, min_w);
-                core::ptr::write_volatile((arg + 52) as *mut u32, max_w);
-                core::ptr::write_volatile((arg + 56) as *mut u32, min_h);
-                core::ptr::write_volatile((arg + 60) as *mut u32, max_h);
+            match cards.first() {
+                Some(d) => Some(crate::modeset::get_resources(d, arg)),
+                None => {
+                    // SAFETY: arg validated; struct ≥ 64 B; zero counts + dims.
+                    unsafe {
+                        for off in [32u64, 36, 40, 44, 48, 52, 56, 60] {
+                            core::ptr::write_volatile((arg + off) as *mut u32, 0);
+                        }
+                    }
+                    Some(0)
+                }
             }
-            Some(0)
         }
         DRM_IOCTL_MODE_GETPLANERESOURCES => {
-            // drm_mode_get_plane_res: plane_id_ptr u64, count_planes u32.
-            // Tell userspace there are 0 planes available — matches
-            // GETRESOURCES which already returns count_crtcs=0 when
-            // no driver registered. Mesa accepts that and skips the
-            // per-plane enumeration loop.
-            // SAFETY: arg validated; field at +8 is the count u32.
-            unsafe { core::ptr::write_volatile((arg + 8) as *mut u32, 0); }
-            Some(0)
+            let cards = crate::cards();
+            match cards.first() {
+                Some(d) => Some(crate::modeset::get_plane_res(d, arg)),
+                None => {
+                    // SAFETY: arg validated; field at +8 is the count u32.
+                    unsafe { core::ptr::write_volatile((arg + 8) as *mut u32, 0); }
+                    Some(0)
+                }
+            }
         }
         DRM_IOCTL_MODE_GETPLANE => {
-            // Userspace shouldn't issue this when count_planes == 0,
-            // but be defensive: return EINVAL on any plane lookup
-            // until a driver enumerates planes.
-            Some(-(Errno::Einval.as_i32() as i64))
+            let cards = crate::cards();
+            match cards.first() {
+                Some(d) => Some(crate::modeset::get_plane(d, arg)),
+                None    => Some(-(Errno::Einval.as_i32() as i64)),
+            }
         }
-        DRM_IOCTL_MODE_GETCRTC | DRM_IOCTL_MODE_GETENCODER
-        | DRM_IOCTL_MODE_GETCONNECTOR => {
-            // Same story: GETRESOURCES reports 0 of each. If the
-            // compositor ignores that count and asks anyway, fail
-            // with EINVAL so it falls back gracefully instead of
-            // wedging waiting for a connector that doesn't exist.
-            Some(-(Errno::Einval.as_i32() as i64))
+        DRM_IOCTL_MODE_GETCRTC => {
+            let cards = crate::cards();
+            match cards.first() {
+                Some(d) => Some(crate::modeset::get_crtc(d, arg)),
+                None    => Some(-(Errno::Einval.as_i32() as i64)),
+            }
+        }
+        DRM_IOCTL_MODE_GETENCODER => {
+            let cards = crate::cards();
+            match cards.first() {
+                Some(d) => Some(crate::modeset::get_encoder(d, arg)),
+                None    => Some(-(Errno::Einval.as_i32() as i64)),
+            }
+        }
+        DRM_IOCTL_MODE_GETCONNECTOR => {
+            let cards = crate::cards();
+            match cards.first() {
+                Some(d) => Some(crate::modeset::get_connector(d, arg)),
+                None    => Some(-(Errno::Einval.as_i32() as i64)),
+            }
         }
         DRM_IOCTL_SET_CLIENT_CAP => {
             // struct drm_set_client_cap { capability u64; value u64; }
