@@ -602,6 +602,9 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         // GICv2m SPI range or the GICv3 LPI range (≥ 8192).
         if crate::intid_is_v2m(intid) || intid >= LPI_BASE {
             crate::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
+            // /proc/interrupts per-CPU line count: SPI intid 32.. → device
+            // line idx = intid-32 (LPIs ≥8192 exceed NLINES → skipped).
+            crate::irqstat::hit_line((intid as usize).saturating_sub(32));
             // F58: route to the per-SPI handler if a driver
             // registered one. Falls back to the shared softirq
             // raise so devices that haven't moved to per-vector
@@ -615,6 +618,7 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         // so the level-triggered line drops and re-arms for the next
         // period; otherwise the IRQ would re-fire immediately on
         // eret. Period is published by `arm_timer::timer_periodic`.
+        if intid == 27 { crate::irqstat::hit_timer(); }
         if intid == 27 {
             let p = hal_aarch64::timer::PERIOD.load(Ordering::Relaxed) as u64;
             // SAFETY: CNTV_TVAL_EL0 is an unprivileged sysreg; writing it advances CVAL past the current count, deasserting the line.

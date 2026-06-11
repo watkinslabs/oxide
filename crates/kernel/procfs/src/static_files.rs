@@ -63,7 +63,7 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
     c.insert("buddyinfo".to_string(),   StaticFileInode::new(b"Node 0, zone Normal      0 0 0 0 0 0 0 0 0 0 0\n") as InodeRef);
     c.insert("zoneinfo".to_string(),    StaticFileInode::new(b"Node 0, zone Normal\n  pages free 1024\n") as InodeRef);
     c.insert("vmstat".to_string(),       Arc::new(crate::vmstat::ProcVmstatInode) as InodeRef);
-    c.insert("interrupts".to_string(),  StaticFileInode::new(b"           CPU0       \nLOC: 1234   Local timer interrupts\n") as InodeRef);
+    c.insert("interrupts".to_string(),  Arc::new(crate::interrupts::ProcInterruptsInode) as InodeRef);
     c.insert("softirqs".to_string(),    StaticFileInode::new(b"                CPU0       \n      HI:          0\n   TIMER:       1234\n") as InodeRef);
     c.insert("kallsyms".to_string(),    StaticFileInode::new(b"") as InodeRef);
     c.insert("key-users".to_string(),   StaticFileInode::new(b"") as InodeRef);
