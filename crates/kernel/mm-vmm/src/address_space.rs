@@ -935,6 +935,18 @@ impl AddressSpace {
                 inc_ref(*pa);
                 Ok(())
             }
+            VmaBacking::PhysRange { base_pa } => {
+                // Device physical range (Linux remap_pfn_range): map the page
+                // at VMA offset O straight to base_pa + O. No PMM frame, no
+                // copy, no refcount — the backing (the GPU scanout) outlives
+                // every user mapping. A user write lands in the real fb.
+                let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
+                let off = va_page - vma.start.as_u64();
+                let pte_flags = vma.prot.to_page_flags();
+                // SAFETY: base_pa+off is device fb memory owned by the GPU driver for the kernel lifetime; va_page is page-aligned per find_containing; flags carry USER per `11§5`.
+                unsafe { M::map(Va(va_page), Pa(*base_pa + off), pte_flags, PageSize::P4K); }
+                Ok(())
+            }
             VmaBacking::Special => Err(Error::NotImplemented),
         }
     }
