@@ -531,6 +531,17 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             t.sigpending.fetch_or(1u64 << (signo - 1), core::sync::atomic::Ordering::Release);
         }
     });
+    // Owner-liveness hook (console-plan #6c): a VT_PROCESS owner is alive iff
+    // the live task with this vpid still carries the recorded internal tid —
+    // vpid is reusable, tid (monotonic NEXT_TID) is not. A dead owner must not
+    // wedge VT switching, so the handshake switches immediately when this is
+    // false.
+    vt::set_owner_alive_hook(|vpid, tid| {
+        sched::live::registry::lookup_by_vpid(vpid).map(|t| t.tid == tid).unwrap_or(false)
+    });
+    // Switch-completion hook (console-plan #6a): wake tasks blocked in
+    // VT_WAITACTIVE once a (possibly deferred) switch lands.
+    vt::set_switch_hook(|_n| syscalls::ioctl::vt_switch_wake());
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
 
     // ELF-loaded userspace via real Task on the runqueue (P2-13c).
