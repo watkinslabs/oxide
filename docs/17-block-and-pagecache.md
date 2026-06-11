@@ -2,6 +2,12 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`10`,`11`,`12`,`16`. Provides: every FS; backed by `drv-virtio-blk`,`drv-nvme`,`drv-ahci`.
 
+## Revision 2026-06-11 (R01)
+
+§3a added: per-disk I/O accounting (`disk_stats`). Every device registered in the block registry is wrapped at registration in a stats-counting `BlockDevice` decorator that, on each completed `submit_sync`, increments per-disk counters: completed reads/writes/discards, 512-byte sectors read/written/discarded, flushes, and in-flight depth. `block::registry::Disk` exposes the live counters; `/proc/diskstats` (`19`) reads them (Linux `disk_stats` / `blk_account_io_done`). Per-request latency (`ms_*`) and request merging are not yet tracked — those fields report 0.
+
+---
+
 Two coupled subsystems:
 - Block layer: dispatch I/O to block devices, batch+merge, async completion.
 - Page cache: cache file-backed pages, serve VFS read/write, async writeback.
@@ -47,6 +53,10 @@ Single-queue MQ-style. Per-device: submission ring (per-CPU SPSC where device su
 Merge: adjacent reads same inode within 32-req window before submit.
 
 Sched: `none` (FIFO) default; `mq-deadline`-equivalent feature-gated for spinning rust. NVMe+virtio-blk=none; AHCI=mq-deadline.
+
+## 3a Per-disk I/O accounting (`disk_stats`)
+
+`registry::register*` wraps each driver `BlockDevice` in a `StatsDev` decorator holding a shared `DiskStats`; the wrapper is what consumers receive (`by_serial`/`by_name`/`Disk.dev`), so ALL registry-routed I/O is counted at one point. Per completed `submit_sync`: `reads`/`writes`/`discards` (+ their 512-byte `sectors_*`), `flushes`, and `in_flight` (bumped on submit, dropped on completion). Counters are monotonic atomics; readers compute deltas. `Disk.stats` exposes them for `/proc/diskstats` (`19`). Latency (`ms_*`) + merge counters are 0 until the async completion path lands.
 
 ## 4 Page cache
 
