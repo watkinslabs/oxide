@@ -1,64 +1,61 @@
 # state — session hand-off
 
-Branch: main (clean, all merged @ eb737d8d). No work mid-flight.
+Branch: main. Last merged: #1736 (P17-01-tcflush). Active roadmap: **vty-plan.md**.
 
 ## Headline
-The **console-plan.md + drivers.md program is COMPLETE** — 35 PRs (#1701–#1735),
-every functional change runtime-proven on BOTH x86_64 and aarch64 (real login /
-real device I/O), no stubs/fakes. Full per-PR record in CHANGELOG.md → "Console +
-Drivers program". Working scratch + deferral detail in state2.md.
+User reported: can't log in (serial AND graphical), console "renders like
+garbage, nowhere near vt100." Drove the live VM (qemu MCP) + a 5-agent code
+audit; the changelog over-claimed (console+drivers "done"). Corrected the
+diagnosis and started the TTY/VT remediation program (vty-plan.md, P17-01..06).
 
-## What landed
-- **Part B — console/tty/fbdev/VT (#1701–#1718):** ONE TtyStruct/NTty stack
-  (legacy tty::live retired); real tty semantics (EINTR, VMIN/VTIME, IXON,
-  hangup, pty master-close→slave-EOF); VT (DSR/CPR, PSF2 glyphs + fonts>8,
-  VT_PROCESS owner-checked, live resize, scrollback, /dev/vcs); /dev/console =
-  real vc_data + **framebuffer keyboard login**; real /dev/fb0 + mmap.
-- **Part C — drivers.md (#1719–#1734):** D1a driver model + /sys/bus; D2 stub
-  removal; D3 missing drivers (virtio-rng, ps2-keyboard, nvme, ahci, virtio-vsock
-  — real I/O); D4 UART crate split; D5 full DRM/KMS (info + dumb buffers +
-  SETCRTC/flip, console-safe); D6 full fbdev (cmap/vsync/blank); D7a /sys/block;
-  D7b net statistics; D7c blk single-in-flight documented.
-- **Cleanup (#1734–#1735):** make-test ReadOutcome fix (CI test gate green);
-  CHANGELOG + memory closeout.
+## What's PROVEN (live, both KVM+TCG)
+- Kernel/login/shell are functionally sound: `root` → shell → `id` → `uid=0`;
+  `sleep 2; echo X` flushes on its own → timer ticks + idle output flush WORK.
+- Default termios has **IXON off** → ldisc write is synchronous. The "prompt
+  appears only on input" seen over the qemu-MCP serial bridge is a BRIDGE
+  artifact, not a kernel stall. (Refuted the "LAPIC timer dead" theory.)
 
-## 5 latent bugs caught by the runtime-proof discipline
-empty-DRM-card (#1727), ADDFB2 ioctl size 68→104 (#1728), AHCI FRE-before-BSY +
-PxSIG-before-FRE (#1724), rng legacy-id needs disable-legacy=on (#1721),
-fbdev↔pidfd inode collision 0x7001→0xFB00 (#1730).
+## Root causes (vty-plan.md has full file:line detail)
+- **RC1 serial login** = missing `tcflush` → stale terminal-query answerback
+  (`ESC[r;cR`, kernel-injected during boot) + type-ahead contaminate the
+  username read → login fails → getty respawns ("it resets"). **FIXED in
+  #1736** (TCFLSH/TCSETSF input flush). NOTE: the qemu-MCP can't reproduce the
+  contamination (it doesn't auto-reply to `ESC[6n`), so the *live* end-to-end
+  serial-login fix needs confirmation on a REAL terminal / boot-smoke-login.sh.
+- **RC2 graphical login (black screen)** = VT-identity split: getty runs on
+  fbcon vc0 but VT switching + keyboard target vc1..N; keyboard hard-pinned to
+  vc0 ignoring foreground(). CONFIRMED, not yet fixed. (P17-05)
+- **RC3 emulator gaps** (garbage render): no ECH `CSI X`, no alt-screen
+  `?1049/?47`, no DA `CSI c`/DECID reply, missing SGR dim/italic/blink/strike,
+  no bracketed-paste/keypad, OSC/DCS parse bugs. CONFIRMED. (P17-03/04)
+- **RC4 job-control signals**: `Sig` enum only has Hup/Int/Quit/Tstp — MISSING
+  SIGTTIN/SIGTTOU/TOSTOP, broken pty SIGHUP drain, no SIGCONT-on-hangup, no
+  orphan-pgrp, TIOCNOTTY-on-pty no-op, no auto-ctty. CONFIRMED. (P17-02)
+- **RC5 tty::live not retired** (changelog lied) — survives as buggy kbd router.
+  Retire after RC2. (P17-05)
+- **RC6 docs lie** — fix CHANGELOG/state.md/docs/28 + delete dead scratch md.
 
-## Honest deferrals (correct as-is, diagnosed — NOT façades)
-- D1b probe-driven bring-up + linkme — boot-risky, no consumer (static devices).
-- virtio-console (D3.2) — virtio_init_arch returns None for virtio-serial-pci
-  (cap walk can't locate COMMON_CFG); written but NOT merged; needs focused work.
-- drv remove/shutdown — dead code (no hotplug/unbind path); trait hooks exist.
-- net RX-ring depth 1→N — depth-1 works; throughput-only.
-- blk multiple-in-flight — single-in-flight is correct+real; no consumer + root
-  risk → phase-17 block layer. Documented in drv-virtio-blk modern.rs.
+## Open / next (autonomous: "both, serial first; don't stop")
+1. **Confirm RC1 end-to-end** on a real terminal (boot-smoke-login.sh x86/arm)
+   — the MCP can't show the contamination fix. If serial login still flakes,
+   the answerback-timing (deferred tick-drain delivering CPR after agetty's
+   size-read times out) needs addressing too.
+2. **P17-02 job-control signals** (RC4) — pure, hosted-testable, directly
+   serves the user's "support ALL SIGNALS" demand. Add Sig::Ttin/Ttou/Cont +
+   the read/write gates + pty SIGHUP drain.
+3. **P17-05 fbcon VT-unify** (RC2) — the graphical-login fix (vc1 default fg,
+   /dev/console→foreground VT, foreground-aware keyboard, getty on tty1).
+4. **P17-03/04 emulator** (RC3) — ECH, alt-screen, DA, SGR attrs, brkt paste.
+5. **P17-06 docs**.
 
-## Known pre-existing issue (surfaced, not caused by this program)
-- **real DHCP gets no lease** — eth0's 10.0.2.15 is a STATIC rtnetlink seed
-  (rtnetlink.rs:470), not DHCP; `make smoke-dhcp-x86` times out (clean main fails
-  identically). AF_PACKET TX + RX-to-socket delivery are sound; exact break needs
-  an instrumented boot (single-RX-buffer / poll-cadence / iface-race suspects).
-  Phase-8 net territory. See memory project_dhcp_static_seed.
+## First command next session
+    ./tools/boot-smoke-login.sh x86 600   # confirm #1736 fixed serial login
+    git checkout -b P17-02-jobctl-signals
+    grep -n "pub enum Sig" crates/kernel/tty/src/ldisc/mod.rs
 
-## Verification gates (reusable)
-- tools/boot-smoke-kbd-login.sh <arch>   — framebuffer keyboard login (QMP send-key)
-- tools/boot-smoke-login.sh <arch>       — serial login + full app run
-- tools/boot-smoke-probe.sh <arch> <probe> [t] — login + run /bin/<probe> + assert PASS
-
-## First task next session
-The console+drivers program is done; the next genuine items are OUT of that scope:
-1. **Real DHCP (phase-8 net):** instrument a smoke-dhcp boot — confirm DHCPDISCOVER
-   TX, then whether the OFFER is RX'd + delivered to udhcpc's AF_PACKET socket;
-   likely the single RX buffer (drv-virtio-net rx0) drops the OFFER → deepen the
-   RX ring; then drop the static 10.0.2.15 seed once real DHCP works.
-2. **virtio-console:** focused virtio-serial cap-walk investigation (why
-   virtio_init_arch returns None for device 0x1043).
-Otherwise audit "what phase are we actually in" per 00§3 and pick the lowest
-unfinished phase.
-
-
-
-
+## Discipline reminders
+- spec-before-code OK (docs/28 FROZEN). spec-lint clean every commit/PR.
+- Lockstep BOTH arches every PR. Verify-left: hosted cargo test is the dev loop,
+  qemu MCP for live gates. qemu-MCP serial bridge buffers — verify real login
+  via boot-smoke-login.sh, not MCP keystrokes.
+- Don't `git add -A` blindly (it swept scratch md into #1736; D03 cleaned up).
