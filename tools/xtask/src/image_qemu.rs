@@ -42,6 +42,22 @@ fn ensure_nvme_img(repo: &std::path::Path, arch: &str) -> std::path::PathBuf {
     img
 }
 
+/// D3.6: ensure a small raw AHCI/SATA scratch disk exists at
+/// `kernel/blobs/ahci-<arch>.img` (16 MiB, zeroed). Created if missing so the
+/// `ich9-ahci` + `ide-hd` QEMU devices always have a backing file. Returns its
+/// path. # C: O(1)
+fn ensure_ahci_img(repo: &std::path::Path, arch: &str) -> std::path::PathBuf {
+    let img = repo.join(format!("kernel/blobs/ahci-{arch}.img"));
+    if !img.exists() {
+        if let Some(parent) = img.parent() { let _ = std::fs::create_dir_all(parent); }
+        if let Ok(f) = std::fs::File::create(&img) {
+            // 16 MiB zeroed scratch volume (sparse where supported).
+            let _ = f.set_len(16 * 1024 * 1024);
+        }
+    }
+    img
+}
+
 /// `xtask image --arch <arch>` — build the bootable artifact
 /// (`target/oxide-<arch>-grub.iso`) without launching qemu. Limine is
 /// gone, so this is a thin alias for `grub --arch <arch> --build-only`:
@@ -253,6 +269,9 @@ fn qemu_run_aarch64_grub(
     // D3.5: NVMe scratch disk for the drv-nvme bring-up (lockstep with x86).
     let nvme_img = ensure_nvme_img(repo, "aarch64");
     let nvme_drive = format!("id=nvm0,if=none,format=raw,file={}", nvme_img.display());
+    // D3.6: AHCI/SATA scratch disk for the drv-ahci bring-up (lockstep w/ x86).
+    let ahci_img = ensure_ahci_img(repo, "aarch64");
+    let ahci_drive = format!("id=sata0,if=none,format=raw,file={}", ahci_img.display());
     let smp_str = smp.to_string();
     let headless = std::env::var("OXIDE_QEMU_HEADLESS").is_ok();
     // Same OXIDE_QEMU_UART_SOCK plumbing as the x86 launcher.
@@ -304,6 +323,12 @@ fn qemu_run_aarch64_grub(
         // D3.5: NVMe controller + scratch backing disk (lockstep with x86).
         "-drive", nvme_drive.as_str(),
         "-device", "nvme,serial=oxnvme,drive=nvm0,bus=pcie.0",
+        // D3.6: AHCI HBA + a SATA disk on it (lockstep with x86). drv-ahci
+        // enumerates the ich9-ahci controller, brings up port 0, registers
+        // sata0, and self-tests an LBA-0 read.
+        "-device", "ich9-ahci,id=ahci,bus=pcie.0",
+        "-drive", ahci_drive.as_str(),
+        "-device", "ide-hd,drive=sata0,bus=ahci.0",
         "-chardev", uart_chardev.as_str(),
         "-serial", "chardev:ser0",
         "-display", if headless { "none" } else { "gtk" },
@@ -353,6 +378,9 @@ fn qemu_run_grub_x86_64(
     // D3.5: NVMe scratch disk for the drv-nvme bring-up.
     let nvme_img = ensure_nvme_img(repo, "x86_64");
     let nvme_drive = format!("id=nvm0,if=none,format=raw,file={}", nvme_img.display());
+    // D3.6: AHCI/SATA scratch disk for the drv-ahci bring-up.
+    let ahci_img = ensure_ahci_img(repo, "x86_64");
+    let ahci_drive = format!("id=sata0,if=none,format=raw,file={}", ahci_img.display());
     let smp_str = smp.to_string();
     let accel = if std::env::var("OXIDE_QEMU_KVM").is_ok()
         && std::path::Path::new("/dev/kvm").exists()
@@ -422,6 +450,12 @@ fn qemu_run_grub_x86_64(
         // it up, registers nvme0n1, self-tests an LBA-0 read).
         "-drive", nvme_drive.as_str(),
         "-device", "nvme,serial=oxnvme,drive=nvm0,bus=pcie.0",
+        // D3.6: AHCI HBA + a SATA disk on it. drv-ahci enumerates the
+        // ich9-ahci controller (class 0x010601), brings up port 0, registers
+        // sata0, and self-tests an LBA-0 read.
+        "-device", "ich9-ahci,id=ahci,bus=pcie.0",
+        "-drive", ahci_drive.as_str(),
+        "-device", "ide-hd,drive=sata0,bus=ahci.0",
         "-chardev", uart_chardev,
         "-serial", "chardev:ser0",
         // GTK window by default so the virtio-gpu console is visible +
