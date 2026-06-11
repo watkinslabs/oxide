@@ -96,8 +96,8 @@ fn rx_line_reads_and_echoes_to_uart() {
     tty.receive_from_driver(b"cmd\n");
     // Program read returns the cooked line (with trailing \n).
     let mut buf = [0u8; 32];
-    let got = tty.read(&mut buf);
-    assert_eq!(&buf[..got], b"cmd\n");
+    let n = tty.read(&mut buf).bytes_or_zero();
+    assert_eq!(&buf[..n], b"cmd\n");
     // Echo went out driver_write → UART. N_TTY echoes the typed bytes
     // (the newline echoes as the canonical line terminator); OPOST is the
     // output-write path, not the echo path, so the echo is "cmd\n".
@@ -114,8 +114,8 @@ fn password_echo_off_reads_line_nothing_on_uart() {
 
     tty.receive_from_driver(b"secret\n");
     let mut buf = [0u8; 32];
-    let got = tty.read(&mut buf);
-    assert_eq!(&buf[..got], b"secret\n");
+    let n = tty.read(&mut buf).bytes_or_zero();
+    assert_eq!(&buf[..n], b"secret\n");
     // ECHO off → nothing reached the UART.
     assert!(out.tx().is_empty(), "uart should be silent, got {:?}", out.tx());
 }
@@ -191,8 +191,8 @@ fn completed_line_always_drains() {
     tty.receive_from_driver(b"alpha\n");
     tty.receive_from_driver(b"beta\n");
     let mut buf = [0u8; 16];
-    let n1 = tty.read(&mut buf);
+    let n1 = tty.read(&mut buf).bytes_or_zero();
     assert_eq!(&buf[..n1], b"alpha\n");
-    let n2 = tty.read(&mut buf);
+    let n2 = tty.read(&mut buf).bytes_or_zero();
     assert_eq!(&buf[..n2], b"beta\n");
 }
