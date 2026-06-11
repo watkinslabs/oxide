@@ -28,16 +28,6 @@ const _: () = assert!(
 #[macro_use]
 extern crate kmacros;
 
-// drivers-plan D1a: the 8250/PL011 console as a drv model driver.
-// `probe` is a no-op — `drv_serial::init` already brought the UART up.
-struct SerialDrv;
-impl drv::Driver for SerialDrv {
-    fn name(&self) -> &'static str { "8250-serial" }
-    fn matches(&self, dev: &drv::Device) -> bool { dev.bus == "platform" && dev.addr == "serial0" }
-}
-static SERIAL_DRV: SerialDrv = SerialDrv;
-
-
 // Per `04§4.0` R06: trace-only modules are cfg-gated at decl.
 // ACPI walker = `crates/firmware` (`33§R01`); ns inodes =
 // `crates/nscg` (`26§R01`). Re-exports keep call sites stable.
@@ -405,10 +395,14 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // as a platform-bus device + driver. No /sys/bus/platform tree is
         // published in D1a (sysfs publishes pci+virtio); the registry entry
         // exists for the model + D1b probe-driven bring-up.
+        // drivers-plan D4: the UART driver-model handle lives in the
+        // per-arch UART crate now (8250-serial / pl011-serial); drv-serial
+        // re-exposes the active one via uart_driver().
+        let uart_drv = drv_serial::uart_driver();
         let dev = drv::register_device(alloc::sync::Arc::new(drv::Device::new(
             "platform", alloc::string::String::from("serial0"), 0, 0, 0)));
-        drv::register_driver(&SERIAL_DRV);
-        drv::bind(&dev, drv::Driver::name(&SERIAL_DRV));
+        drv::register_driver(uart_drv);
+        drv::bind(&dev, drv::Driver::name(uart_drv));
     }
 
     // drivers-plan D3.4: real i8042 PS/2 keyboard (x86 only — no i8042 on
