@@ -1,6 +1,11 @@
 # 19 dev/proc/sysfs
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`16`,`18`,`35`. Provides:every userspace tool that introspects (`ps`,`top`,`free`,`udev`,`mount`,`lsmod`,...).
+
+## Revision 2026-06-11 (R01)
+
+§60 global-file table gains `/proc/diskstats` (per-disk I/O counters from `17§3a`, Linux `diskstats_show`). The `stat`/`partitions`/`cpuinfo`/`loadavg`/`vmstat` rows are now backed by live kernel state (per-CPU `kcpustat`, the block registry, the PMM, the load-average EWMA); the static stubs are gone.
+
 ## 1 Purpose
 
 Three pseudo-FSes that present kernel state as a tree of files. Surface defined by Linux compatibility (per `03§5.1–5.3`).
@@ -69,6 +74,7 @@ Global (`/proc/`):
 | `version` | one line |
 | `cmdline` | kernel cmdline |
 | `mounts`,`filesystems`,`partitions`,`devices`,`modules` | as named |
+| `diskstats` | per-disk I/O counters from `17§3a` (Linux `diskstats_show`) |
 | `kallsyms` | sym table; gated by `kptr_restrict` |
 | `interrupts`,`softirqs` | per-cpu counters |
 | `self`,`thread-self` | symlinks |
