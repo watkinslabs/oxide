@@ -649,18 +649,23 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             use hal::CpuOps;
             hal_aarch64::ArmCpuOps::current_cpu() == ::cpu::smp::boot_cpu_id()
         };
-        if is_bsp && (intid == 33 || intid == 27) {
-            // /proc/stat CPU accounting: was the timer taken from EL0 (user)?
-            // SPSR_EL1 holds the interrupted PSTATE; mode bits 3:0 == 0 (EL0t)
-            // means user code was running.
+        if intid == 33 || intid == 27 {
+            // /proc/stat per-CPU cputime accounting runs on EVERY CPU when its
+            // own CNTV timer fires (Linux per-CPU kcpustat). Was the timer
+            // taken from EL0 (user)? SPSR_EL1 mode bits 3:0 == 0 (EL0t) = user.
             // SAFETY: SPSR_EL1 holds the interrupted PSTATE until eret; reading it in the IRQ handler returns that state.
             let from_user = unsafe {
                 let spsr: u64;
                 core::arch::asm!("mrs {}, spsr_el1", out(reg) spsr, options(nomem, nostack, preserves_flags));
                 (spsr & 0xf) == 0
             };
-            // SAFETY: IRQ dispatcher context, IRQs masked; BSP owns the UART.
-            unsafe { crate::tick_poll(from_user); }
+            sched::cpustat::account(
+                if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
+            // Device poll (PL011 UART) is BSP-only.
+            if is_bsp {
+                // SAFETY: IRQ dispatcher context, IRQs masked; BSP owns the UART.
+                unsafe { crate::tick_poll(from_user); }
+            }
         }
         sched::live::preempt::set_need_resched();
         // Linux-style softirq bottom-half (BSP-only): see lapic.rs comment.
