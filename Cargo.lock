@@ -202,6 +202,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-nvme"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "drv",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "pmm",
+ "sync",
+]
+
+[[package]]
 name = "drv-ps2-keyboard"
 version = "0.1.0"
 dependencies = [
@@ -787,8 +801,10 @@ name = "pci-boot"
 version = "0.1.0"
 dependencies = [
  "arch-irq",
+ "block",
  "devfs",
  "drv",
+ "drv-nvme",
  "drv-virtio-blk",
  "drv-virtio-gpu",
  "drv-virtio-input",
