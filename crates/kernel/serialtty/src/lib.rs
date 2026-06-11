@@ -65,14 +65,13 @@ pub struct KernelUart;
 impl SerialOut for KernelUart {
     /// # C: O(N) bytes + fg-VT cell render
     fn emit(&mut self, bytes: &[u8]) {
+        // SERIAL-ONLY. The serial line (`/dev/ttyS0`) is a SEPARATE device
+        // from the video console — it does NOT mirror to the framebuffer
+        // (that double-rendered every /dev/console byte). The video VTs
+        // render through their own `VtConsoleDriver`; kernel printk reaches
+        // the framebuffer via klog's separate fbcon sink. Linux keeps serial
+        // and VT consoles independent.
         drv_serial::emit(bytes);
-        // Multi-console: also mirror to the foreground framebuffer VT so
-        // /dev/console output (getty/login/shell + echo) shows on the
-        // display, not just the serial UART. These are post-OPOST bytes
-        // (N_TTY already applied ONLCR), so the VT emulator gets proper
-        // CRLF. Best-effort (skips its own blit under lock contention);
-        // the durable serial copy above is never affected.
-        fbcon::kernel::vt_console_sink(bytes);
     }
 }
 

@@ -29,9 +29,52 @@ use alloc::sync::Arc;
 use tty::ReadOutcome;
 use vfs::{Dentry, FdTable, File, FileType, Ino, Inode, InodeRef, KResult, OpenFlags, VfsError};
 
-/// `/dev/console` + `/dev/tty<N>` inode. `vt == 0` means
-/// "foreground alias" and resolves at read-time; vt 1..=N_VT
-/// pin to a specific slot.
+// --- device routing (Linux serial-vs-VT split) -------------------------
+//
+// Linux keeps the serial line and the video VTs as SEPARATE tty devices —
+// they are NOT one console mirrored to two sinks. The char-device inode's
+// low byte selects the backing tty:
+//   0xFE  → the serial tty (`/dev/ttyS0`) — serial UART only.
+//   0xFD  → the FOREGROUND video VT (`/dev/console`,`/dev/tty`,`/dev/tty0`).
+//   1..63 → that numbered VT (`/dev/ttyN`).
+// High bits 0x7400 keep these clear of the pty (0x6000_0000), vcs
+// (0x7600/0x7700), fbdev (0xFB00) and pidfd (0xFF00_0000) ino ranges.
+
+/// Console char-device ino base (low byte = device selector).
+pub const TTY_INO_BASE: Ino = 0x7400;
+/// Low-byte selector for the serial tty (`/dev/ttyS0`).
+pub const SERIAL_INO_LB: u8 = 0xFE;
+/// Low-byte selector for the foreground video VT (`/dev/console`/tty0).
+pub const FG_VT_INO_LB: u8 = 0xFD;
+
+/// Which backing tty a console char-device ino maps to.
+pub enum TtyTarget {
+    /// The serial UART tty (`static_console`).
+    Serial,
+    /// Video VT `n` (1-based) — `vt_tty(n)`.
+    Vt(u8),
+}
+
+/// Resolve a console char-device ino to its backing tty (the Linux device
+/// split). `0xFE` → serial; `0xFD` → foreground video VT; `1..63` → VT n.
+/// # C: O(1)
+pub fn route(ino: u64) -> TtyTarget {
+    match (ino & 0xff) as u8 {
+        SERIAL_INO_LB => TtyTarget::Serial,
+        FG_VT_INO_LB  => TtyTarget::Vt(tty::live::foreground().max(1)),
+        n             => TtyTarget::Vt(n),
+    }
+}
+
+/// The current foreground video VT (1-based). `/dev/console` + the keyboard
+/// follow this. # C: O(1)
+pub fn foreground_vt() -> u8 { tty::live::foreground().max(1) }
+
+/// `/dev/tty<N>` + foreground-VT inode. `vt == 0` = foreground video VT
+/// (`/dev/console`,`/dev/tty`,`/dev/tty0`), resolved at I/O time; vt 1..=N_VT
+/// pin a specific VT. The serial line is a SEPARATE device — see
+/// [`SerialInode`]. Output renders to the framebuffer via the VT console
+/// driver; it does NOT touch the serial UART (no mirroring).
 pub struct ConsoleInode {
     vt: u8,
 }
@@ -49,7 +92,11 @@ impl Inode for ConsoleInode {
     /// (`stat` / `getdents` ino fields) reflects the underlying
     /// device. vt=0 keeps ino=1 for backwards compatibility with
     /// existing /dev/console callers.
-    fn ino(&self) -> Ino { (self.vt as Ino).max(1) }
+    fn ino(&self) -> Ino {
+        // vt 0 = foreground-VT alias (low byte 0xFD); vt N = that VT (low byte N).
+        if self.vt == 0 { TTY_INO_BASE | FG_VT_INO_LB as Ino }
+        else { TTY_INO_BASE | self.vt as Ino }
+    }
     fn file_type(&self) -> FileType { FileType::CharDev }
     fn size(&self) -> u64 { 0 }
 
@@ -68,12 +115,10 @@ impl Inode for ConsoleInode {
         // TtyStruct::read parks lost-wakeup-free and returns a cooked line
         // (Bytes), 0 on ^D (Eof), or Interrupted when an unblocked signal
         // lands during the blocking wait → -EINTR (Linux n_tty_read).
-        let outcome = if self.vt == 0 {
-            static_console::read(buf)
-        } else {
-            // Numbered VT (B4a): same N_TTY core as the system console.
-            vt_tty::vt_tty(self.vt).read(buf)
-        };
+        // vt 0 = foreground video VT; vt N = that VT. The serial line is a
+        // separate device (SerialInode) — never reached here.
+        let vt = if self.vt == 0 { foreground_vt() } else { self.vt };
+        let outcome = vt_tty::vt_tty(vt).read(buf);
         match outcome {
             ReadOutcome::Bytes(n) => Ok(n),
             ReadOutcome::Eof => Ok(0),
@@ -90,11 +135,8 @@ impl Inode for ConsoleInode {
     /// # C: O(buf.len())
     fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
-        let n = if self.vt == 0 {
-            static_console::read_nonblock(buf)
-        } else {
-            vt_tty::vt_tty(self.vt).read_nonblock(buf)
-        };
+        let vt = if self.vt == 0 { foreground_vt() } else { self.vt };
+        let n = vt_tty::vt_tty(vt).read_nonblock(buf);
         if n == 0 { return Err(VfsError::Eagain); }
         Ok(n)
     }
@@ -105,100 +147,76 @@ impl Inode for ConsoleInode {
     /// DSR terminal-size probe does exactly that). Always writable.
     /// # C: O(1)
     fn poll(&self) -> u32 {
-        if self.vt == 0 {
-            return static_console::poll();
-        }
-        // Numbered VT (B4a): the per-VT TtyStruct owns readiness. The
-        // ldisc pollmask bits (POLLIN=1, POLLOUT=4) match vfs::POLL_IN /
-        // POLL_OUT (Linux uapi), so the mask passes through unchanged.
-        vt_tty::vt_tty(self.vt).poll()
+        // vt 0 = foreground video VT; vt N = that VT. The per-VT TtyStruct
+        // owns readiness; pollmask bits (POLLIN=1, POLLOUT=4) match Linux uapi.
+        let vt = if self.vt == 0 { foreground_vt() } else { self.vt };
+        vt_tty::vt_tty(vt).poll()
     }
 
-    /// Write `buf`. vt==0 (the system console) goes through the serial
-    /// `TtyStruct`'s N_TTY output processing (OPOST/ONLCR) → UART, and
-    /// does NOT touch the kmsg ring (the dmesg/shell-output split). The
-    /// numbered VTs still emit through the old per-VT ONLCR path to the
-    /// UART (T7b moves them onto the VT console driver).
+    /// Write `buf` to the video VT. The per-VT `TtyStruct` owns OPOST: its
+    /// N_TTY runs ONLCR, then `VtConsoleDriver::write` feeds the post-OPOST
+    /// bytes to the fbcon emulator (→ vc_data → consw cell-blit) — rendered
+    /// ONCE. This device does NOT touch the serial UART; `/dev/ttyS0` is a
+    /// separate device (no mirroring → no double-print). printk still reaches
+    /// the framebuffer via its own klog sink, independent of this path.
     fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
         dtrace!(b"CW_IN", buf.len() as u64);
-        if self.vt == 0 {
-            // System console. The serial line is the SECONDARY console (the
-            // durable log + the boot/login path): cooked OPOST/ONLCR → UART
-            // via the serial `TtyStruct`. The PRIMARY console is the
-            // framebuffer VT `vc_cons[0]` — feed the SAME bytes through its
-            // `vc_data` emulator (the Linux fb-console contract, the same
-            // path the numbered VTs use). That is what renders /dev/console
-            // on the framebuffer AND answers DSR/CPR (`ESC[6n`) LOCALLY with
-            // the real fbcon geometry: the emulator queues the reply and the
-            // tick drain injects it back into THIS tty's input ring
-            // (`vt_reply_sink(0)` → `static_console::rx_byte`), so a probe
-            // (`printf '\033[6n'; read -d R`) on /dev/console reads oxide's
-            // geometry, not the serial host terminal's. `vt_write` no-ops
-            // before fbcon init, so a serial-only machine keeps a pure-serial
-            // /dev/console (the remote terminal answers, as Linux serial does).
-            let n = static_console::write(buf);
-            let oflag = tty::pty::read_oflag(&static_console::termios_get());
-            let onlcr = (oflag & tty::pty::oflag::OPOST) != 0
-                && (oflag & tty::pty::oflag::ONLCR) != 0;
-            fbcon_feed(0, buf, onlcr);
-            dtrace!(b"CW_OUT", n as u64);
-            return Ok(n);
-        }
-        // Numbered VT (B4a): the per-VT `TtyStruct` owns OPOST. Its N_TTY
-        // runs ONLCR, then `VtConsoleDriver::write` feeds the post-OPOST
-        // bytes to the fbcon emulator (→ vc_data → consw cell-blit). The
-        // ldisc owns OPOST now — NO manual fbcon_feed/ONLCR here.
-        Ok(vt_tty::vt_tty(self.vt).write(buf))
+        let vt = if self.vt == 0 { foreground_vt() } else { self.vt };
+        let n = vt_tty::vt_tty(vt).write(buf);
+        dtrace!(b"CW_OUT", n as u64);
+        Ok(n)
     }
 }
 
-/// Feed `buf` to fbcon VT `vt`'s `vc_data` emulator (the Linux VT console
-/// device write: emulator → `vc_data` → consw cell-blit + DSR/CPR
-/// answerback). Applies ONLCR output translation (`\n` → `\r\n`) when
-/// `onlcr` is set — the ldisc's OPOST job; the emulator itself treats `\n`
-/// as a bare linefeed (no column reset). Shared by the system console
-/// (vt 0) and the numbered VTs.
-/// # C: O(N) bytes + dirty-cell blit on the fg VT.
-fn fbcon_feed(vt: u8, buf: &[u8], onlcr: bool) {
-    if !onlcr {
-        fbcon::kernel::vt_write(vt, buf);
-        return;
-    }
-    let mut start = 0;
-    for (i, &b) in buf.iter().enumerate() {
-        if b == b'\n' {
-            if i > start { fbcon::kernel::vt_write(vt, &buf[start..i]); }
-            fbcon::kernel::vt_write(vt, b"\r\n");
-            start = i + 1;
+/// `/dev/ttyS0` — the serial UART tty, a SEPARATE device from the video
+/// console. Serial-only: never renders to the framebuffer. Its winsize is
+/// the serial-terminal default (80×24 until the remote sends SIGWINCH),
+/// independent of the framebuffer geometry.
+pub struct SerialInode;
+
+impl Inode for SerialInode {
+    fn ino(&self) -> Ino { TTY_INO_BASE | SERIAL_INO_LB as Ino }
+    fn file_type(&self) -> FileType { FileType::CharDev }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+
+    fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        if buf.is_empty() { return Ok(0); }
+        match static_console::read(buf) {
+            ReadOutcome::Bytes(n) => Ok(n),
+            ReadOutcome::Eof => Ok(0),
+            ReadOutcome::Interrupted => Err(VfsError::Eintr),
         }
     }
-    if start < buf.len() { fbcon::kernel::vt_write(vt, &buf[start..]); }
+    fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        if buf.is_empty() { return Ok(0); }
+        let n = static_console::read_nonblock(buf);
+        if n == 0 { return Err(VfsError::Eagain); }
+        Ok(n)
+    }
+    fn poll(&self) -> u32 { static_console::poll() }
+    fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
+        Ok(static_console::write(buf))
+    }
+}
+
+/// Keyboard input sink: deliver one byte to the FOREGROUND video VT's tty
+/// (Linux `kbd_keycode` → the fg console's `tty_port`). Routes to
+/// `vt_tty(foreground())`, NOT the serial tty — the keyboard belongs to the
+/// video console, the serial line gets its own RX (`drv_serial` → ttyS0).
+/// Registered as the kbd sink at boot. # C: O(1) + waiter wake
+pub fn kbd_input(b: u8) {
+    vt_tty::vt_tty(foreground_vt()).receive_from_driver(&[b]);
 }
 
 /// Route a VT emulator's terminal answerback (DSR/CPR reply per `CSI n`)
-/// into the matching tty INPUT ring so the program that issued the query
-/// reads its reply back — the fbcon counterpart of Linux `respond_string`
-/// → `tty_insert_flip_string`. `vt == 0` is the system console (the serial
-/// `TtyStruct`'s flip path → N_TTY); `1..=N_VT` are the numbered VTs (the
-/// `tty::live` per-VT input ring, same path keyboard RX uses). Registered
-/// with `fbcon::kernel::set_reply_sink` at boot.
-/// # C: O(N) bytes + waiter wake
+/// into VT `vt`'s tty INPUT ring so the program that issued the query reads
+/// its reply back — the Linux `respond_string` → `tty_insert_flip_string`
+/// counterpart. Every VT (incl. the fg console) is a `vt_tty`; the serial
+/// line answers via its remote terminal, not here. Registered with
+/// `fbcon::kernel::set_reply_sink` at boot. # C: O(N) bytes + waiter wake
 pub fn vt_reply_sink(vt: u8, bytes: &[u8]) {
-    if vt == 0 {
-        // System console: feed the bytes into ttyS0's RX flip path so the
-        // reader (e.g. btop on /dev/console) drains them. The console tty
-        // is in raw mode while a full-screen app runs, so the reply passes
-        // straight through N_TTY into the read queue.
-        for &b in bytes {
-            static_console::rx_byte(b);
-        }
-    } else {
-        // Numbered VT (B4a): inject the answerback into the per-VT
-        // TtyStruct's RX flip path (→ N_TTY → read queue), the same path
-        // keyboard RX takes. Safe from the tick-drain context (process /
-        // softirq): vt_tty lazy-alloc is a plain CAS, no sleeping.
-        vt_tty::vt_tty(vt).receive_from_driver(bytes);
-    }
+    vt_tty::vt_tty(vt.max(1)).receive_from_driver(bytes);
 }
 
 /// Build the `init`-process fd table with fd 0/1/2 all pointing
@@ -259,11 +277,13 @@ impl Inode for VcsInode {
 pub fn register_devnodes() {
     use alloc::sync::Arc;
     use alloc::string::String;
+    // Video console (foreground VT): /dev/console, /dev/tty, /dev/tty0.
     let fg: vfs::InodeRef = Arc::new(ConsoleInode::new(0));
     devfs::register("/dev/console", Arc::clone(&fg));
     devfs::register("/dev/tty",     Arc::clone(&fg));
-    devfs::register("/dev/tty0",    Arc::clone(&fg));
-    devfs::register("/dev/ttyS0",   fg);
+    devfs::register("/dev/tty0",    fg);
+    // Serial line — a SEPARATE device (its own tty, serial-only, own winsize).
+    devfs::register("/dev/ttyS0",   Arc::new(SerialInode) as vfs::InodeRef);
     for vt in 1..=tty::live::N_VT as u8 {
         let mut path = String::with_capacity(10);
         path.push_str("/dev/tty");
