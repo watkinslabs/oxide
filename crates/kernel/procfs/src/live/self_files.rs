@@ -607,8 +607,9 @@ fn pmm_kb_stats() -> (u64, u64) {
 }
 
 /// `/proc/uptime` per `19§4`. "<seconds.cs> <idle_seconds.cs>\n".
-/// Reports the kernel's monotonic clock in seconds; idle is the
-/// same value (v1 has no separate idle accounting yet).
+/// First field = monotonic clock; second = summed per-CPU idle time
+/// from `sched::cpustat` (CLK_TCK=100 → 1 idle tick = 1 centisecond),
+/// matching Linux where idle is the all-CPU sum (can exceed uptime).
 pub struct ProcUptimeInode;
 
 impl Inode for ProcUptimeInode {
@@ -629,7 +630,9 @@ impl Inode for ProcUptimeInode {
         let ns = uptime_ns();
         push_uptime(&mut body, ns);
         body.push(b' ');
-        push_uptime(&mut body, ns);
+        // idle: all-CPU summed idle centiseconds → ns for push_uptime.
+        let idle_cs = sched::cpustat::snapshot().2;
+        push_uptime(&mut body, idle_cs.saturating_mul(10_000_000));
         body.push(b'\n');
         let off = off as usize;
         if off >= body.len() {

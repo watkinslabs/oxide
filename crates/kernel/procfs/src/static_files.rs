@@ -54,7 +54,7 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
     c.insert("stat".to_string(),        Arc::new(crate::stat::ProcStatInode) as InodeRef);
     c.insert("filesystems".to_string(), StaticFileInode::new(FILESYSTEMS) as InodeRef);
     c.insert("cmdline".to_string(),     Arc::new(crate::ProcCmdlineInode) as InodeRef);
-    c.insert("devices".to_string(),     StaticFileInode::new(b"Character devices:\n  1 mem\n  4 /dev/vc/0\n  5 /dev/tty\n136 pts\nBlock devices:\n") as InodeRef);
+    c.insert("devices".to_string(),     Arc::new(crate::devices::ProcDevicesInode) as InodeRef);
     c.insert("modules".to_string(),     StaticFileInode::new(b"") as InodeRef);
     c.insert("swaps".to_string(),       StaticFileInode::new(b"Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n") as InodeRef);
     c.insert("diskstats".to_string(),   Arc::new(crate::diskstats::ProcDiskstatsInode) as InodeRef);
