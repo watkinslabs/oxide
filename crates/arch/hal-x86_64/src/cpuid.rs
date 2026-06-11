@@ -116,6 +116,30 @@ pub fn vendor() -> [u8; 12] {
     v
 }
 
+/// `(display_family, display_model, stepping)` from CPUID leaf 1 EAX, per
+/// Intel SDM Vol 2A (the extended-family/model fold-in). `/proc/cpuinfo`.
+/// # C: O(1)
+pub fn family_model() -> (u32, u32, u32) {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        // SAFETY: leaf 1 is present on every 64-bit-capable CPU; cpuid is
+        // unprivileged with no memory effects.
+        let (a, _, _, _) = unsafe { cpuid(1) };
+        let base_family = (a >> 8) & 0xf;
+        let base_model  = (a >> 4) & 0xf;
+        let stepping    = a & 0xf;
+        let ext_family  = (a >> 20) & 0xff;
+        let ext_model   = (a >> 16) & 0xf;
+        let family = if base_family == 0xf { base_family + ext_family } else { base_family };
+        let model  = if base_family == 0x6 || base_family == 0xf {
+            (ext_model << 4) | base_model
+        } else { base_model };
+        return (family, model, stepping);
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { (0, 0, 0) }
+}
+
 /// Brand string from CPUID leaves 0x80000002..0x80000004 (48 bytes
 /// ASCII, NUL-padded). `0` if extended leaves are unsupported.
 /// # C: O(1)

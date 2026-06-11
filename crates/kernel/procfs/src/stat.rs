@@ -26,15 +26,24 @@ impl ProcStatInode {
     fn body() -> Vec<u8> {
         let (total, running) = sched::live::registry::live_counts();
         let btime = crate::hooks::boot_unix_seconds();
-        // CPU time (user nice system idle ...) in raw timer ticks — htop/btop
-        // compute %CPU from deltas, so the unit cancels. UP: cpu == cpu0.
-        let (cu, cs, ci) = sched::cpustat::snapshot();
-        let mut out: Vec<u8> = Vec::with_capacity(192);
+        let ctxt  = sched::diag::switches();
+        // Per-CPU time in raw timer ticks (user nice system idle iowait irq
+        // softirq steal guest guest_nice). htop computes %CPU from deltas so
+        // the unit cancels. `cpu` = aggregate; `cpuN` = each online CPU
+        // (Linux per-CPU kcpustat).
+        let ncpu = (cpu::smp::online_count() as usize).clamp(1, cpu::MAX_CPUS);
+        let (au, as_, ai) = sched::cpustat::snapshot();
+        let mut out: Vec<u8> = Vec::with_capacity(96 + ncpu * 80);
         let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut out), format_args!(
-            "cpu  {cu} 0 {cs} {ci} 0 0 0 0 0 0\n\
-             cpu0 {cu} 0 {cs} {ci} 0 0 0 0 0 0\n\
-             intr 0\n\
-             ctxt 0\n\
+            "cpu  {au} 0 {as_} {ai} 0 0 0 0 0 0\n"));
+        for c in 0..ncpu {
+            let (u, s, i) = sched::cpustat::snapshot_cpu(c);
+            let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut out), format_args!(
+                "cpu{c} {u} 0 {s} {i} 0 0 0 0 0 0\n"));
+        }
+        let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut out), format_args!(
+            "intr 0\n\
+             ctxt {ctxt}\n\
              btime {btime}\n\
              processes {total}\n\
              procs_running {running}\n\
