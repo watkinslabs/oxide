@@ -253,6 +253,13 @@ fn qemu_run_aarch64_grub(
     let home_drive = format!("if=none,id=home,format=raw,file={}", home_img.display());
     let netdev = ssh_fwd_netdev();
     let mut c = Command::new("qemu-system-aarch64");
+    // OXIDE_QEMU_QMP_SOCK: QMP control socket for the keyboard-login smoke
+    // (real virtio-keyboard `send-key` injection) — same as the x86 path.
+    let qmp_arg = std::env::var("OXIDE_QEMU_QMP_SOCK").ok().filter(|s| !s.is_empty())
+        .map(|s| format!("unix:{s},server,nowait"));
+    if let Some(ref q) = qmp_arg {
+        c.args(["-qmp", q.as_str()]);
+    }
     c.args([
         "-machine", "virt,gic-version=3,its=on",
         "-cpu", "cortex-a72",
@@ -345,6 +352,15 @@ fn qemu_run_grub_x86_64(
         if !p.is_empty() {
             c.args(["-d", "int,guest_errors", "-D", p.as_str()]);
         }
+    }
+    // OXIDE_QEMU_QMP_SOCK=<path>: expose a QMP control socket so the
+    // keyboard-login smoke can inject real virtio-keyboard events
+    // (`send-key`) — testing framebuffer keystroke input end-to-end, not
+    // just the serial UART RX path.
+    let qmp_arg = std::env::var("OXIDE_QEMU_QMP_SOCK").ok().filter(|s| !s.is_empty())
+        .map(|s| format!("unix:{s},server,nowait"));
+    if let Some(ref q) = qmp_arg {
+        c.args(["-qmp", q.as_str()]);
     }
     c.args([
         "-machine", "q35",
