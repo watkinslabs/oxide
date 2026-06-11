@@ -304,6 +304,21 @@ pub struct Vc {
     /// Lines scrolled back: 0 = live bottom, N = N lines into history.
     /// Clamped to `[0, history.len()]`. Output/echo snaps it to 0.
     view_offset: usize,
+    /// Alternate screen buffer (`CSI ?47/?1047/?1049h`). `Some` while on the
+    /// alt screen, holding the saved MAIN-screen cells + cursor/attr to
+    /// restore on `…l`. Full-screen apps (htop/top/vim/less) draw their UI on
+    /// the alt screen, then restore the shell on exit. Linux
+    /// `drivers/tty/vt/vt.c` `set_mode`/`save_screen`.
+    alt_screen: Option<AltScreen>,
+}
+
+/// Saved MAIN-screen state captured on alt-screen entry. # C: O(cols*rows).
+#[derive(Clone, Debug)]
+struct AltScreen {
+    cells: Vec<Cell>,
+    x: u16,
+    y: u16,
+    attr: Attr,
 }
 
 /// Default tab-stop bitmap: a stop every `TAB_WIDTH` columns (col 0 has
@@ -354,6 +369,41 @@ impl Vc {
             last_cursor: None,
             history: VecDeque::new(),
             view_offset: 0,
+            alt_screen: None,
+        }
+    }
+
+    /// Erase `n` cells from the cursor (CSI `n X`, ECH): overwrite with
+    /// blanks in the current attr WITHOUT moving the cursor, clamped to the
+    /// row end. # C: O(n).
+    pub fn erase_chars(&mut self, n: u16) {
+        let cur = self.idx(self.x, self.y);
+        let row_end = self.idx(0, self.y) + self.cols as usize;
+        let end = (cur + n.max(1) as usize).min(row_end);
+        self.fill(cur, end);
+    }
+
+    /// Enter the alternate screen (`CSI ?47/?1047/?1049h`): save the main
+    /// screen + cursor, then blank the alt screen. No-op if already on alt.
+    /// # C: O(cols*rows).
+    pub fn enter_alt(&mut self) {
+        if self.alt_screen.is_some() { return; }
+        self.alt_screen = Some(AltScreen {
+            cells: self.cells.clone(), x: self.x, y: self.y, attr: self.attr,
+        });
+        let total = self.cells.len();
+        self.fill(0, total);
+        self.x = 0; self.y = 0;
+        self.mark_all_dirty();
+    }
+
+    /// Leave the alternate screen (`CSI ?47/?1047/?1049l`): restore the saved
+    /// main screen + cursor. No-op if not on alt. # C: O(cols*rows).
+    pub fn leave_alt(&mut self) {
+        if let Some(a) = self.alt_screen.take() {
+            self.cells = a.cells;
+            self.x = a.x; self.y = a.y; self.attr = a.attr;
+            self.mark_all_dirty();
         }
     }
 
