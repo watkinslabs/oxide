@@ -201,6 +201,7 @@ pub fn alloc_arm_spi() -> Option<u32> {
 #[cfg(target_os = "oxide-kernel")] pub mod gic;
 #[cfg(target_os = "oxide-kernel")] pub mod its;
 #[cfg(target_os = "oxide-kernel")] pub mod lapic;
+pub mod irqstat;
 
 /// Hook for "poll the UART for input on each timer tick". Kernel
 /// installs this from `kernel/src/tty.rs::tick_poll_uart` at boot.

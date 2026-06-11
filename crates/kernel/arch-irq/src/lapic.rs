@@ -98,6 +98,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
     match vec_tag {
         hal_x86_64::VEC_TIMER => {
             TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+            crate::irqstat::hit_timer();
             // Per-CPU heartbeat + cross-CPU hard-lockup scan (runs on every
             // CPU that ticks, so a frozen CPU is observed by another).
             sched::diag::percpu::tick();
@@ -142,6 +143,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
         }
         hal_x86_64::VEC_RESCHED => {
             RESCHED_IPI_COUNT.fetch_add(1, Ordering::Relaxed);
+            crate::irqstat::hit_resched();
             // Cross-CPU resched IPI: another CPU asked us to pick a new
             // task. Set need_resched; the IRQ-exit slow path
             // (`oxide_irq_resched_on_exit` → `schedule()`) does the switch.
@@ -156,6 +158,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // per-vector registration yet still get drained.
             crate::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
             let idx = (v - hal_x86_64::VEC_MSI_POOL_FIRST) as usize;
+            crate::irqstat::hit_line(idx);
             let raw = crate::MSI_HANDLERS[idx].load(Ordering::Acquire);
             if !raw.is_null() {
                 // SAFETY: raw was installed via `register_msi_handler` with the documented `fn()` signature; reverse cast restores the ABI-compatible fn pointer.
