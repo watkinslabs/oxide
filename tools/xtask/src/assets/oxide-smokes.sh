@@ -4,7 +4,7 @@ echo init-fork-exec works
 for s in /bin/bare3 /bin/vim_smoke /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \
          /bin/mprotect_smoke /bin/mremap_dontunmap_smoke \
          /bin/inet6_smoke /bin/mmsg_smoke /bin/scm_smoke \
-         /bin/cmdsubst_probe /bin/alarm_probe /bin/symlink_probe /bin/mount_smoke /bin/statfs_smoke /bin/dev_smoke /bin/dsr_probe /bin/vtswitch_probe /bin/vtmode_probe \
+         /bin/cmdsubst_probe /bin/alarm_probe /bin/symlink_probe /bin/mount_smoke /bin/statfs_smoke /bin/dev_smoke /bin/dsr_probe /bin/vtswitch_probe /bin/vtmode_probe /bin/kdfont_probe \
          /bin/mmap_zero_smoke /bin/usleep_smoke \
          /bin/af_packet_smoke /bin/hello_dyn ; do
     [ -x "$s" ] && "$s"
