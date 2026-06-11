@@ -143,18 +143,10 @@ pub struct VirtioInputDev {
 // Crate entry points
 // ============================================================
 
-/// Boot-time registration with the driver-model registry.
-/// # C: O(1)
-pub fn register() {
-    drv::register(drv::DriverEntry { name: "virtio-input", probe });
-}
-
-/// Boot-time per-device probe shim. Real bring-up (queue setup +
-/// config-space scan + EVENTQ pre-fill) lands when the kernel's
-/// pci_boot picks up vendor=0x1AF4 device=0x1052 and calls into
-/// `install`.
-/// # C: O(1)
-pub fn probe(_bdf: u32) -> drv::KResult<()> { Err(drv::Error::NoMatch) }
+// virtio-input binds via the real driver-model Driver registered + bound at
+// its bring-up site (pci_boot/virtio_drv.rs → drv::bind), not a probe stub. The
+// old NoMatch DriverEntry (legacy drv::probe_all path, never called) was
+// removed in drivers-plan D2.
 
 /// Multi-device registry. v1 supports up to 8 simultaneous evdev
 /// devices (kbd + mouse + tablet + spares).
