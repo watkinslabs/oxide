@@ -1,70 +1,62 @@
 # state — session hand-off
 
-Branch: main @ 185b372d. x86 SMP=2 boots; poll/select/epoll wakes are wired.
-Roadmap: vty-plan.md.
+Branch: main @ post-#1759. Both arches boot SMP=2 → login. Per-fd poll/select
+is the Linux `->poll` model (no global POLL_WAIT). /proc is being built out the
+Linux way over real kernel state (no fakes; absent subsystems omitted).
 
-## Landed this session (4 PRs, all merged, both arches green)
-- **#1746 (B92):** unified wait4 child-selection predicate
-  (`registry::wait_pid_matches`, -1/0/+tid/-pgid) for reap_one/peek_one +
-  take_child_stop_event; closed pid==0/pid<-1 reap gap (waitid(P_PGID)) + the
-  take_child_stop_event vpid-vs-tid bug. The "console zombie" bug was a
-  MIS-DIAGNOSIS — reaping is correct. See [[project_console_zombie_resolved]].
-- **#1747 (B93): the real SMP bug.** x86 AP (`ap_main_x86`) never enabled two
-  per-CPU CPU features the BSP does: syscall MSRs (`install_syscall_msrs`) +
-  SSE (`enable_sse`: CR0.MP, CR4.OSFXSR|OSXMMEXCPT). A user task on the AP #UD'd
-  (syscall, or the first SSE insn — musl uses them everywhere) → halted the AP →
-  boot wedged. Now at full CR0/CR4/MSR parity with the BSP. Added
-  `OXIDE_QEMU_GDB=1` (xtask) → gdb stub on :1234 (how it was pinned). See
-  [[project_smp_ap_cpu_state]].
-- **#1748 (B94):** wire `notify_poll_waiters`/`notify_epoll_waiters` at the tty
-  RX + hangup sites. `notify_poll_waiters` had ZERO callers — poll/select on the
-  console never woke on input (lagged ~100 ms).
-- **#1749 (B95):** extend the poll-wake to AF_UNIX sockets, pipes (all 6
-  readiness sites), and eventfd. Every fd poll-bit transition now wakes
-  poll/select/epoll waiters; pipes/eventfd previously woke NEITHER global list.
+## Landed this session (procfs Linux-way buildout, all merged, both arches green)
+- **#1758 (B102): real /proc/interrupts.** New `arch-irq::irqstat` — per-CPU
+  LOC (local timer), RES (resched IPI), device-line (MSI/SPI) counters, fed by
+  the IRQ dispatcher (lapic.rs x86 timer/resched/MSI; gic.rs arm CNTV timer +
+  GICv2m SPI lines). `procfs::interrupts` renders Linux `show_interrupts`:
+  one column per online CPU, fired device rows, LOC/RES summary rows.
+- **#1759 (B103): real /proc/uptime idle + /proc/devices.** uptime field 2 was
+  a copy of field 1 → now all-CPU summed idle from `sched::cpustat` (CLK_TCK=100,
+  1 idle tick = 1 cs). devices block section derives majors live from the block
+  registry snapshot (dedup, Linux driver names); char section = fixed
+  kernel-created set (real majors).
+- **R82: real /proc/buddyinfo.** Added `Pmm::free_orders() -> [u64; ORDERS]`
+  read-only per-order free-block snapshot (docs/10 R01 revision on FROZEN spec);
+  `procfs::buddyinfo` renders the single Normal zone's per-order counts (Linux
+  `frag_show`). docs/19 R01 note extended to list the newly-backed rows.
 
-## SMP=2 status: reliable
-Across the B93/B94/B95 pre-push hooks, SMP=2 reached login on BOTH arches every
-time (attempt 1) — 6 clean boots. The B93 SSE fix appears to have also killed
-the documented "systemd exits ~25% right after keymap" flaky race (that was a
-process hitting the SSE #UD on the AP). No residual flake observed.
+## Earlier this session (already merged before #1758)
+- B96 rebuilt poll/select as per-fd `PollWaiter`+`PollSubscribers` (killed the
+  global POLL_WAIT hack the user rejected). B97/B100 per-CPU cputime accounting
+  on EVERY cpu (was BSP-only → htop/proc showed 1 active CPU). B98 loadavg EWMA.
+  B99/B101 cpuinfo/vmstat/partitions/diskstats real. R80 VT alt-screen+ECH.
+  R81 block per-disk DiskStats decorator. docs 17§3a/19§60/49§5 R01 amended.
 
-## Open / next
-- **Remaining poll-wake sites (larger, NOT clean single-site):** `timerfd`
-  (clock-driven — poll computes from monotonic_ns vs expiry, no event site;
-  needs the deadline scanner to wake pollers on expiry; the ~100 ms rescan is
-  the current mechanism) and **TCP sockets** (net/sock*.rs, tcp_conn.rs —
-  data-arrival sites in the net stack wake NEITHER global list; bounded by the
-  100 ms rescan). signalfd is already covered (signal delivery wakes the
-  target via wake_task_for_signal). The bounded sites (tty, pipe, unix socket,
-  eventfd) are done (#1748/#1749).
-- **100% CPU with ≥2 htops** (state.md's old poll-spin item): the console
-  poll readiness is ALREADY correctly gated (n_tty poll → has_input;
-  console/lib.rs:144 fix) and poll now sleeps + wakes correctly (B94/B95). If a
-  100% spin still reproduces it's htop-specific (/proc read loop), NOT a kernel
-  poll bug — needs a live htop-on-fb-console repro to confirm, don't blind-fix.
-- Resume the vty-plan.md / phase ladder (`00§3`) — audit the lowest unfinished
-  phase before starting a branch.
+## /proc status: what's REAL vs deliberately-stub
+REAL now: cpuinfo, stat (per-cpu cpu0..N + ctxt), loadavg, vmstat, meminfo,
+uptime (+idle), partitions, diskstats, interrupts, devices, buddyinfo, per-PID tree
+(status/stat/maps/smaps/statm/cmdline/comm/environ/io/limits/sched/fd/fdinfo/
+ns/cgroup/mounts/mountinfo + task/ + net/).
+STILL STUB — each blocked on a discipline boundary, NOT laziness:
+- softirqs — needs per-CPU per-slot counters in the `softirq` crate, whose spec
+  (docs/45) is DRAFT → can't extend subsystem code (Discipline rule 1).
+- zoneinfo — needs the broader per-zone watermark/stat set; lower value, still
+  stubbed. (buddyinfo now REAL via R82 `free_orders()`.)
+- modules — `modules::module_name` is a hardcoded "module" stub → rendering
+  would emit FAKE names; empty (nothing loaded) is the honest state.
+- kallsyms — needs a real symbol table; faking it is worse than empty.
+- per-PID auxv (zeroed), wchan ("0"), schedstat — auxv needs a per-task
+  saved_auxv field in the FROZEN task struct (R-branch); wchan needs kallsyms.
 
-## Diagnosis tools that worked (reuse)
-- **GDB for SMP wedges:** `OXIDE_QEMU_GDB=1 make qemu-x86 SMP=2 FEATURES=debug-reap`,
-  boot to the wedge, `gdb -q -nx -batch -x cmds ELF` → `target remote :1234`,
-  `info threads`, per-vCPU `bt`/`p/x $cr0`/`p/x $cr4`/`x/4i $rip`. The in-kernel
-  serial-sysrq dump is unreliable when a CPU is halted (UART not polled).
-- Fast loop = host tests (`cargo test -p <crate>`) + the pre-push hook as the
-  boot gate. Do NOT inner-loop on full boots.
+## Verification note
+New /proc inodes validated by construction: `/proc/interrupts` reuses the SAME
+`cpu::smp::online_count()` column loop as `/proc/stat`, which the user already
+confirmed renders cpu0–cpu3 correctly. Build + spec-lint + pre-push boot-smoke
+(both arches → login) all green. NOT content-captured in a boot: the rcS/
+oxide-smokes path doesn't run under the default systemd PID1 boot, so a /proc
+dump there wouldn't execute; a qemu-MCP login+cat (SMP=1, serial DSR-wedges at
+SMP≥2) is the route if a live capture is wanted.
 
-## Harness hygiene (cost real time this session)
-- ALWAYS `pkill -9 -x qemu-system-x86_64` + confirm `fuser
-  kernel/blobs/root-x86_64.img` free before booting (overlapping VMs fight the
-  write lock). Orphaned qemus reparent to the agent/systemd --user.
-- Dev shell is `set -e`: a `git push` after a `pkill`/`fuser` chain aborts
-  before the push — run `git push` as its OWN command.
-- `pgrep -f "githooks/pre-push"` matches your OWN waiter loops (false "hook
-  running"). Check `git ls-remote` for the real push state.
-
-## Discipline
-- THE LINUX WAY; no blind sched/MM/poll patches; no hypothesis fixes (the
-  zombie + poll-spin both turned out mis-diagnosed). spec-lint clean + both
-  arches every PR. Memories: project_smp_ap_cpu_state,
-  project_console_zombie_resolved, feedback_verify_left_no_bolton.
+## First task next session
+Decide direction with the user OR continue per "keep filling it out": the
+remaining honest /proc fills all need an R-branch (PMM buddyinfo accessor; task
+saved_auxv) or DRAFT-spec lift (softirq per-cpu counters). If continuing
+autonomously, the cleanest is buddyinfo via an R-branch on docs/10 adding a
+read-only `pmm::free_orders() -> [u64; ORDERS]` accessor + procfs buddyinfo
+inode. Untracked `abstract-anal.md` at repo root is a prior-session scratch
+artifact (asm-outside-arch inventory) — not mine, left in tree.
