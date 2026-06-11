@@ -526,13 +526,27 @@ pub fn set_leds(n: u8, leds: u32) -> KResult<()> {
     Ok(())
 }
 
-/// VT_RESIZE / VT_RESIZEX: store the VT's character grid. The caller (ioctl
-/// glue) also pushes the new tty winsize + raises SIGWINCH on the fg pgrp —
-/// it owns the tty + signal path. `Err(Inval)` on a zero dimension.
-/// # C: O(1)
+/// VT_RESIZE / VT_RESIZEX: live-resize the VT's character grid. On the kernel
+/// build this reflows the per-VT `Vc` screen buffer via `fbcon::kernel::
+/// resize_vt` (Linux `vc_do_resize`/`fbcon_resize`) — the framebuffer is a
+/// FIXED scanout, so a grid LARGER than the native fb cell grid is REJECTED
+/// (`Err(Inval)`, mirroring `fbcon_resize`); a grid that fits reflows the `Vc`
+/// and (if fg) repaints. Only on a successful reflow is the slot's cols/rows
+/// recorded. The caller (ioctl glue) then pushes the new tty winsize + raises
+/// SIGWINCH on the fg pgrp — it owns the tty + signal path. On the host build
+/// (no fbcon) the metadata store is kept so the vt unit tests pass.
+/// `Err(Inval)` on a zero dimension or a rejected (too-large) resize.
+/// # C: O(cols*rows) on the kernel reflow, else O(1).
 pub fn resize(n: u8, rows: u16, cols: u16) -> KResult<()> {
     if n < 1 || n as usize > MAX_NR_CONSOLES { return Err(Error::Inval); }
     if rows == 0 || cols == 0 { return Err(Error::Inval); }
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        // Reflow the real per-VT screen buffer; reject if it exceeds the fixed
+        // framebuffer scanout (fbcon_resize semantics). resize_vt takes
+        // (vt, cols, rows); our ABI arg order is (n, rows, cols).
+        if !fbcon::kernel::resize_vt(n, cols, rows) { return Err(Error::Inval); }
+    }
     let mut g = SLOTS.lock();
     g[(n - 1) as usize].cols = cols;
     g[(n - 1) as usize].rows = rows;
