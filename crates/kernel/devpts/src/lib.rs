@@ -94,6 +94,16 @@ impl Inode for PtyMasterInode {
         if g.master_readable() { mask |= vfs::POLL_IN; }
         mask
     }
+    /// B5e: last-close of the MASTER side hangs up the slave — the
+    /// terminal emulator / ssh / script exiting closes its master fd,
+    /// after which slave read → EOF (0) and slave write → EIO (Linux
+    /// pty semantics). A slave reader parked in the yield-loop re-checks
+    /// `slave_readable()` each tick, which `master_hangup` flips true via
+    /// `hung_up`, so it wakes and sees EOF without an explicit nudge.
+    /// # C: O(1)
+    fn on_release(&self) {
+        self.pair.inner.lock().master_hangup();
+    }
 }
 
 impl Inode for PtySlaveInode {

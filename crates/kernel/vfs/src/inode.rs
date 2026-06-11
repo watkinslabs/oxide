@@ -232,6 +232,17 @@ pub trait Inode: Send + Sync {
     /// # C: O(1)
     fn set_owner(&self, _uid: u32, _gid: u32) -> KResult<()> { Err(VfsError::Erofs) }
 
+    /// Last-close ("release") hook per Linux `file_operations->release`.
+    /// Fired by `File`'s Drop when the final fd referencing one open
+    /// file description closes (incl. on process exit, when the fd
+    /// table drops its `Arc<File>`s). dup'd fds share the `Arc<File>`,
+    /// so this fires exactly once per open description — the Linux
+    /// release point. Default no-op; pty MASTER overrides to hang up
+    /// the slave (master close → slave EOF/EIO). MUST NOT panic and
+    /// MUST NOT block (called from Drop, possibly on the exit path).
+    /// # C: O(1)
+    fn on_release(&self) {}
+
     /// memfd file-sealing state (`fcntl(F_ADD_SEALS/F_GET_SEALS)`,
     /// `docs/19`). `Some(&seals)` only for a sealable memfd (created with
     /// `MFD_ALLOW_SEALING`); `None` for every other inode, where
