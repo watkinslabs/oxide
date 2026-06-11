@@ -37,6 +37,7 @@ pub(crate) fn wake_peer_subs(pair: &UnixPair, end: UnixEnd) {
         }
     }
     sched::live::notify_epoll_waiters();
+    sched::live::notify_poll_waiters(); // poll/select on this socket fd, same transition as epoll
 }
 
 /// F181a: msgpair sibling of `wake_peer_subs`.
@@ -54,6 +55,7 @@ pub(crate) fn wake_msgpair_peer_subs(pair: &UnixMsgPair, end: UnixEnd) {
         }
     }
     sched::live::notify_epoll_waiters();
+    sched::live::notify_poll_waiters(); // poll/select on this socket fd, same transition as epoll
 }
 
 /// One stream-pair in-kernel: two unidirectional byte queues.
@@ -530,6 +532,7 @@ impl UnixDgramQueue {
                 if let Some(s) = weak.upgrade() { s.notify(); return; }
             }
             sched::live::notify_epoll_waiters();
+            sched::live::notify_poll_waiters(); // poll/select on this socket fd, same transition as epoll
         }
     }
     /// Pop one dgram if any. Returns the full message (caller copies

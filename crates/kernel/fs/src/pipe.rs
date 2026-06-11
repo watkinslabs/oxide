@@ -42,6 +42,22 @@ impl WaitList {
     unsafe fn park(&self) { unreachable!("park under hosted"); }
 }
 
+/// Wake tasks parked in poll/select/ppoll + epoll_wait after a pipe
+/// readability/writability transition. The per-direction `*_waiters`
+/// lists only wake blocking read()/write(); poll/select/epoll park on
+/// the GLOBAL POLL_WAIT/EPOLL_GLOBAL_WAIT lists, which nothing notified
+/// for pipes — so a `poll`/`epoll_wait` on a pipe only re-scanned on the
+/// ~100 ms fallback. Call after each `*_waiters.wake_all()`. Host build
+/// (no `sched::live`) is a no-op. Level-triggered; spurious wakes safe.
+/// # C: O(N_pollers)
+#[cfg(target_os = "oxide-kernel")]
+fn notify_pollers() {
+    sched::live::notify_poll_waiters();
+    sched::live::notify_epoll_waiters();
+}
+#[cfg(not(target_os = "oxide-kernel"))]
+fn notify_pollers() {}
+
 const PIPE_CAP: usize = 4096;
 
 struct PipeBuf {
@@ -180,6 +196,10 @@ impl vfs::Inode for EventfdInode {
         let add = u64::from_ne_bytes(a);
         if add == u64::MAX { return Err(vfs::VfsError::Einval); }
         self.counter.fetch_add(add, Ordering::AcqRel);
+        // Counter went nonzero → POLLIN readable. Wake poll/epoll waiters
+        // (sd-event drives eventfds via epoll_wait); without this they only
+        // re-scanned on the ~100 ms fallback.
+        notify_pollers();
         Ok(8)
     }
 }
@@ -268,6 +288,7 @@ impl Inode for PipeInode {
             let n = self.try_drain(buf);
             if n > 0 {
                 self.write_waiters.wake_all();
+                notify_pollers();
                 return Ok(n);
             }
             if self.writers.load(Ordering::Acquire) == 0 {
@@ -306,6 +327,7 @@ impl Inode for PipeInode {
             let n = self.try_fill(buf);
             if n > 0 {
                 self.read_waiters.wake_all();
+                notify_pollers();
                 return Ok(n);
             }
             // Signal-interruptible per pipe(7): a blocked write with a
@@ -334,6 +356,7 @@ impl Inode for PipeInode {
         let n = self.try_drain(buf);
         if n > 0 {
             self.write_waiters.wake_all();
+            notify_pollers();
             return Ok(n);
         }
         if self.writers.load(Ordering::Acquire) == 0 { Ok(0) }
@@ -365,6 +388,7 @@ impl Inode for PipeInode {
         let n = self.try_fill(buf);
         if n > 0 {
             self.read_waiters.wake_all();
+            notify_pollers();
             return Ok(n);
         }
         Err(VfsError::Eagain)
@@ -415,7 +439,7 @@ fn pipe_close_hook(inode: &InodeRef, was_writable: bool) {
             klog::write_dec_u64(prev as u64);
             klog::write_raw(b"\n");
         }
-        if prev <= 1 { pipe.read_waiters.wake_all(); }
+        if prev <= 1 { pipe.read_waiters.wake_all(); notify_pollers(); }
     } else {
         let prev = pipe.readers.fetch_sub(1, Ordering::AcqRel);
         if prev == 0 {
@@ -431,7 +455,7 @@ fn pipe_close_hook(inode: &InodeRef, was_writable: bool) {
             klog::write_dec_u64(pipe.writers.load(Ordering::Acquire) as u64);
             klog::write_raw(b"\n");
         }
-        if prev <= 1 { pipe.write_waiters.wake_all(); }
+        if prev <= 1 { pipe.write_waiters.wake_all(); notify_pollers(); }
     }
 }
 
