@@ -398,16 +398,13 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                  | (d.bdf.device as u32) << 8
                  | (d.bdf.function as u32);
     if is_virtio_gpu && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
-        use core::sync::atomic::{AtomicU32, AtomicU64};
-        let card_id = drv_virtio_gpu::install_with_drm(drv_virtio_gpu::VirtioGpuDev {
-            bdf: bdf_word, features_negotiated: drv_features as u64,
-            display: drv_virtio_gpu::DisplayInfo::default(),
-            resource_id_alloc: AtomicU32::new(1),
-            blob_uuid_alloc: AtomicU64::new(1), capset_count: 0,
-        });
+        // The real DRM card (with the live DisplayInfo from CMD_GET_DISPLAY_INFO)
+        // + the scanout are registered by post_init::get_display_info below; do
+        // NOT register a second card here with an empty DisplayInfo::default()
+        // (that became card0 with 0 crtcs and broke GETRESOURCES). Just bind the
+        // D1a model entry.
         debug_boot! { klog::write_raw(b"[INFO]  virtio-gpu installed feat=");
-            klog::write_hex_u64(drv_features); klog::write_raw(b" card=");
-            klog::write_dec_u64(card_id as u64); klog::write_raw(b"\n"); }
+            klog::write_hex_u64(drv_features); klog::write_raw(b"\n"); }
         model_bind(&VIRTIO_GPU_DRV, d.bdf); // D1a: publish + bind
     }
     if is_virtio_input && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {

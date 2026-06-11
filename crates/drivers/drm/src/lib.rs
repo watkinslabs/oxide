@@ -176,6 +176,107 @@ impl Default for DrmModeModeinfo {
     }
 }
 
+// `struct drm_mode_crtc` (drm_mode.h) — 0xc06864a1, 104 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct DrmModeCrtc {
+    pub set_connectors_ptr: u64,
+    pub count_connectors:   u32,
+    pub crtc_id:            u32,
+    pub fb_id:              u32,
+    pub x:                  u32,
+    pub y:                  u32,
+    pub gamma_size:         u32,
+    pub mode_valid:         u32,
+    pub mode:               DrmModeModeinfo,
+}
+
+impl Default for DrmModeCrtc {
+    fn default() -> Self {
+        Self { set_connectors_ptr: 0, count_connectors: 0, crtc_id: 0, fb_id: 0,
+               x: 0, y: 0, gamma_size: 0, mode_valid: 0, mode: DrmModeModeinfo::default() }
+    }
+}
+
+// `struct drm_mode_get_encoder` (drm_mode.h) — 0xc01464a6, 20 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeGetEncoder {
+    pub encoder_id:      u32,
+    pub encoder_type:    u32,
+    pub crtc_id:         u32,
+    pub possible_crtcs:  u32,
+    pub possible_clones: u32,
+}
+
+// `struct drm_mode_get_connector` (drm_mode.h) — 0xc05064a7, 80 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeGetConnector {
+    pub encoders_ptr:           u64,
+    pub modes_ptr:              u64,
+    pub props_ptr:              u64,
+    pub prop_values_ptr:        u64,
+    pub count_modes:            u32,
+    pub count_props:            u32,
+    pub count_encoders:         u32,
+    pub encoder_id:             u32,
+    pub connector_id:           u32,
+    pub connector_type:         u32,
+    pub connector_type_id:      u32,
+    pub connection:             u32,
+    pub mm_width:               u32,
+    pub mm_height:              u32,
+    pub subpixel:               u32,
+    pub pad:                    u32,
+}
+
+// `struct drm_mode_get_plane_res` (drm_mode.h) — 0xc00864b5, 16 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeGetPlaneRes {
+    pub plane_id_ptr: u64,
+    pub count_planes: u32,
+    pub pad:          u32,
+}
+
+// `struct drm_mode_get_plane` (drm_mode.h) — 0xc02064b6, 32 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeGetPlane {
+    pub plane_id:        u32,
+    pub crtc_id:         u32,
+    pub fb_id:           u32,
+    pub possible_crtcs:  u32,
+    pub gamma_size:      u32,
+    pub count_format_types: u32,
+    pub format_type_ptr: u64,
+}
+
+// drm_mode connection status (drm_mode.h)
+pub const DRM_MODE_CONNECTED:         u32 = 1;
+pub const DRM_MODE_DISCONNECTED:      u32 = 2;
+pub const DRM_MODE_UNKNOWNCONNECTION: u32 = 3;
+
+// drm_mode connector types (drm_mode.h)
+pub const DRM_MODE_CONNECTOR_VIRTUAL: u32 = 15;
+
+// drm_mode encoder types (drm_mode.h)
+pub const DRM_MODE_ENCODER_VIRTUAL: u32 = 5;
+
+// drm_mode subpixel order (drm_mode.h)
+pub const DRM_MODE_SUBPIXEL_UNKNOWN: u32 = 1;
+
+// drm_mode mode type / flags (drm_mode.h)
+pub const DRM_MODE_TYPE_PREFERRED: u32 = 1 << 3;
+pub const DRM_MODE_TYPE_DRIVER:    u32 = 1 << 6;
+pub const DRM_MODE_FLAG_PHSYNC:    u32 = 1 << 0;
+pub const DRM_MODE_FLAG_PVSYNC:    u32 = 1 << 2;
+
+// fourcc pixel formats (drm_fourcc.h)
+pub const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258; // 'XR24'
+pub const DRM_FORMAT_ARGB8888: u32 = 0x3432_5241; // 'AR24'
+
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug)]
 pub struct DrmEvent { pub ty: u32, pub length: u32 }
@@ -200,6 +301,46 @@ pub enum Error { Inval, NoMem, Busy, NoSpc, OpNotSupp, Perm, NoEnt }
 
 pub type KResult<T> = core::result::Result<T, Error>;
 
+/// Per-connector modeset facts the DRM core encodes into the
+/// `drm_mode_get_connector` wire struct.
+#[derive(Copy, Clone, Debug)]
+pub struct ConnectorInfo {
+    pub connection:     u32,   // DRM_MODE_CONNECTED / DISCONNECTED
+    pub connector_type: u32,   // DRM_MODE_CONNECTOR_*
+    pub encoder_id:     u32,   // currently-attached encoder
+    pub mm_width:       u32,
+    pub mm_height:      u32,
+    pub mode_count:     u32,   // number of modes (v1: always 1)
+}
+
+/// Per-CRTC modeset facts for `drm_mode_crtc`.
+#[derive(Copy, Clone, Debug)]
+pub struct CrtcInfo {
+    pub mode_valid: u32,
+    pub fb_id:      u32,
+    pub x:          u32,
+    pub y:          u32,
+    pub gamma_size: u32,
+    pub mode:       DrmModeModeinfo,
+}
+
+/// Per-encoder modeset facts for `drm_mode_get_encoder`.
+#[derive(Copy, Clone, Debug)]
+pub struct EncoderInfo {
+    pub encoder_type:    u32,   // DRM_MODE_ENCODER_*
+    pub crtc_id:         u32,
+    pub possible_crtcs:  u32,
+    pub possible_clones: u32,
+}
+
+/// Per-plane modeset facts for `drm_mode_get_plane`.
+#[derive(Copy, Clone, Debug)]
+pub struct PlaneInfo {
+    pub crtc_id:        u32,
+    pub fb_id:          u32,
+    pub possible_crtcs: u32,
+}
+
 pub trait DrmDriver: Send + Sync {
     fn name(&self) -> &'static str;
     fn version(&self) -> (u32, u32, u32);
@@ -211,6 +352,120 @@ pub trait DrmDriver: Send + Sync {
     /// Min/max width/height per `MODE_GETRESOURCES`.
     fn dim_bounds(&self) -> (u32, u32, u32, u32);
     fn cap(&self, cap: u64) -> u64;
+
+    // ---- D5a read-only modeset object enumeration ----
+    // V1 1:1:1 model: each enabled scanout i (0-based) →
+    //   CRTC id        = i + 1
+    //   connector id   = 0x100 + i
+    //   encoder id     = 0x200 + i
+    //   primary plane  = 0x300 + i
+    // Defaults below give an empty card; virtio-gpu overrides them.
+
+    /// Real CRTC object ids (one per enabled scanout). # C: O(n)
+    fn crtc_ids(&self) -> Vec<u32> { Vec::new() }
+    /// Real connector object ids. # C: O(n)
+    fn connector_ids(&self) -> Vec<u32> { Vec::new() }
+    /// Real encoder object ids. # C: O(n)
+    fn encoder_ids(&self) -> Vec<u32> { Vec::new() }
+    /// Real primary-plane object ids (one per CRTC). # C: O(n)
+    fn plane_ids(&self) -> Vec<u32> { Vec::new() }
+
+    /// Mode for connector `idx` built from the scanout rectangle.
+    /// # C: O(1)
+    fn mode_for(&self, _idx: usize) -> DrmModeModeinfo { DrmModeModeinfo::default() }
+    /// Connector facts for `idx`. `None` ⇒ no such connector.
+    /// # C: O(1)
+    fn connector_info(&self, _idx: usize) -> Option<ConnectorInfo> { None }
+    /// CRTC facts for `idx`. `None` ⇒ no such CRTC. # C: O(1)
+    fn crtc_info(&self, _idx: usize) -> Option<CrtcInfo> { None }
+    /// Encoder facts for `idx`. `None` ⇒ no such encoder. # C: O(1)
+    fn encoder_info(&self, _idx: usize) -> Option<EncoderInfo> { None }
+    /// Plane facts for `idx`. `None` ⇒ no such plane. # C: O(1)
+    fn plane_info(&self, _idx: usize) -> Option<PlaneInfo> { None }
+}
+
+// V1 1:1:1 id-model helpers — pure, hosted-testable.
+
+/// CRTC object id for the `i`-th enabled scanout. # C: O(1)
+pub const fn crtc_id_for(i: usize) -> u32 { (i + 1) as u32 }
+/// Connector object id for the `i`-th enabled scanout. # C: O(1)
+pub const fn connector_id_for(i: usize) -> u32 { 0x100 + i as u32 }
+/// Encoder object id for the `i`-th enabled scanout. # C: O(1)
+pub const fn encoder_id_for(i: usize) -> u32 { 0x200 + i as u32 }
+/// Primary-plane object id for the `i`-th CRTC. # C: O(1)
+pub const fn plane_id_for(i: usize) -> u32 { 0x300 + i as u32 }
+
+/// Invert `crtc_id_for`: id → scanout index, if valid for `count`.
+/// # C: O(1)
+pub fn crtc_idx_of(id: u32, count: usize) -> Option<usize> {
+    if id == 0 { return None; }
+    let i = (id - 1) as usize;
+    if i < count { Some(i) } else { None }
+}
+/// Invert `connector_id_for`. # C: O(1)
+pub fn connector_idx_of(id: u32, count: usize) -> Option<usize> {
+    if id < 0x100 { return None; }
+    let i = (id - 0x100) as usize;
+    if i < count { Some(i) } else { None }
+}
+/// Invert `encoder_id_for`. # C: O(1)
+pub fn encoder_idx_of(id: u32, count: usize) -> Option<usize> {
+    if id < 0x200 || id >= 0x300 { return None; }
+    let i = (id - 0x200) as usize;
+    if i < count { Some(i) } else { None }
+}
+/// Invert `plane_id_for`. # C: O(1)
+pub fn plane_idx_of(id: u32, count: usize) -> Option<usize> {
+    if id < 0x300 || id >= 0x400 { return None; }
+    let i = (id - 0x300) as usize;
+    if i < count { Some(i) } else { None }
+}
+
+/// Build a `DrmModeModeinfo` from a scanout `w`×`h` rectangle at
+/// 60 Hz. Sane CVT-ish timings so libdrm's mode list is non-empty.
+/// # C: O(1)
+pub fn mode_from_rect(w: u32, h: u32) -> DrmModeModeinfo {
+    let w16 = w as u16;
+    let h16 = h as u16;
+    // Simple synthesized timings: hsync ~ +6%, htotal ~ +25%; same
+    // for vertical. clock = htotal*vtotal*60 / 1000 (kHz).
+    let hsync_start = w16.saturating_add(w16 / 20);
+    let hsync_end   = w16.saturating_add(w16 / 10);
+    let htotal      = w16.saturating_add(w16 / 4);
+    let vsync_start = h16.saturating_add(3);
+    let vsync_end   = h16.saturating_add(9);
+    let vtotal      = h16.saturating_add(h16 / 40).saturating_add(20);
+    let clock = ((htotal as u64) * (vtotal as u64) * 60 / 1000) as u32;
+    let mut name = [0u8; 32];
+    write_mode_name(&mut name, w, h);
+    DrmModeModeinfo {
+        clock,
+        hdisplay: w16, hsync_start, hsync_end, htotal, hskew: 0,
+        vdisplay: h16, vsync_start, vsync_end, vtotal, vscan: 0,
+        vrefresh: 60,
+        flags: DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC,
+        ty: DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
+        name,
+    }
+}
+
+/// Write a "<w>x<h>" NUL-terminated mode name into `out[32]`.
+/// # C: O(len)
+fn write_mode_name(out: &mut [u8; 32], w: u32, h: u32) {
+    let mut p = 0usize;
+    p += write_dec(&mut out[p..], w);
+    if p < 31 { out[p] = b'x'; p += 1; }
+    let _ = write_dec(&mut out[p..], h);
+}
+
+fn write_dec(out: &mut [u8], mut v: u32) -> usize {
+    let mut tmp = [0u8; 10];
+    let mut n = 0;
+    if v == 0 { tmp[n] = b'0'; n += 1; }
+    while v > 0 { tmp[n] = b'0' + (v % 10) as u8; v /= 10; n += 1; }
+    let mut w = 0;
+    while w < n && w < out.len() { out[w] = tmp[n - 1 - w]; w += 1; }
+    w
 }
 
 // ============================================================
@@ -320,6 +575,88 @@ mod tests {
     }
 
     #[test]
+    fn crtc_layout() {
+        // drm_mode_crtc: ptr 8 + 5×u32(connectors..fb_id..) ... + 68 mode
+        // = 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 68 = 104.
+        assert_eq!(core::mem::size_of::<DrmModeCrtc>(), 104);
+    }
+
+    #[test]
+    fn get_encoder_layout() {
+        assert_eq!(core::mem::size_of::<DrmModeGetEncoder>(), 20);
+    }
+
+    #[test]
+    fn get_connector_layout() {
+        // 4 ptrs (32) + 12 u32 (48) = 80.
+        assert_eq!(core::mem::size_of::<DrmModeGetConnector>(), 80);
+        // encoder_id sits right after count_encoders.
+        assert_eq!(core::mem::offset_of!(DrmModeGetConnector, encoder_id), 44);
+        assert_eq!(core::mem::offset_of!(DrmModeGetConnector, connector_id), 48);
+        assert_eq!(core::mem::offset_of!(DrmModeGetConnector, connection), 60);
+    }
+
+    #[test]
+    fn get_plane_res_layout() {
+        assert_eq!(core::mem::size_of::<DrmModeGetPlaneRes>(), 16);
+    }
+
+    #[test]
+    fn get_plane_layout() {
+        // 6 u32 (24) + 1 ptr (8) = 32.
+        assert_eq!(core::mem::size_of::<DrmModeGetPlane>(), 32);
+        assert_eq!(core::mem::offset_of!(DrmModeGetPlane, format_type_ptr), 24);
+    }
+
+    #[test]
+    fn id_model_1_1_1() {
+        assert_eq!(crtc_id_for(0), 1);
+        assert_eq!(crtc_id_for(1), 2);
+        assert_eq!(connector_id_for(0), 0x100);
+        assert_eq!(encoder_id_for(0), 0x200);
+        assert_eq!(plane_id_for(0), 0x300);
+    }
+
+    #[test]
+    fn id_model_round_trips() {
+        let n = 3;
+        for i in 0..n {
+            assert_eq!(crtc_idx_of(crtc_id_for(i), n), Some(i));
+            assert_eq!(connector_idx_of(connector_id_for(i), n), Some(i));
+            assert_eq!(encoder_idx_of(encoder_id_for(i), n), Some(i));
+            assert_eq!(plane_idx_of(plane_id_for(i), n), Some(i));
+        }
+        // Out-of-range / wrong-namespace ids are rejected.
+        assert_eq!(crtc_idx_of(0, n), None);
+        assert_eq!(crtc_idx_of(99, n), None);
+        assert_eq!(connector_idx_of(0x99, n), None);
+        assert_eq!(encoder_idx_of(0x300, n), None);
+        assert_eq!(plane_idx_of(0x200, n), None);
+    }
+
+    #[test]
+    fn mode_builder_dims_and_name() {
+        let m = mode_from_rect(800, 600);
+        assert_eq!(m.hdisplay, 800);
+        assert_eq!(m.vdisplay, 600);
+        assert_eq!(m.vrefresh, 60);
+        assert!(m.htotal > 800);
+        assert!(m.vtotal > 600);
+        assert!(m.clock > 0);
+        // name starts "800x600\0"
+        assert_eq!(&m.name[..8], b"800x600\0");
+        assert_ne!(m.ty & DRM_MODE_TYPE_PREFERRED, 0);
+    }
+
+    #[test]
+    fn mode_builder_1920x1080() {
+        let m = mode_from_rect(1920, 1080);
+        assert_eq!(m.hdisplay, 1920);
+        assert_eq!(m.vdisplay, 1080);
+        assert_eq!(&m.name[..10], b"1920x1080\0");
+    }
+
+    #[test]
     fn handle_alloc_increments() {
         let a = alloc_handle();
         let b = alloc_handle();
@@ -351,4 +688,5 @@ mod tests {
     }
 }
 
+pub mod modeset;
 pub mod node;
