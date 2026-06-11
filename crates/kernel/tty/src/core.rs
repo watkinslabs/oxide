@@ -46,9 +46,36 @@ use ::core::sync::atomic::{AtomicU32, Ordering};
 
 use sync::{Spinlock, Tty as TtyClass};
 
-use crate::ldisc::{LdiscOps, NTty, Sig, TtyDriverHooks};
+use crate::ldisc::{vmin_vtime_decision, LdiscOps, NTty, Sig, TtyDriverHooks, VmtDecision};
 use crate::pty::{Winsize, TERMIOS_BYTES};
 use crate::wait::TtyWait;
+
+/// Outcome of a blocking `TtyStruct::read`. The syscall layer maps these:
+/// `Bytes(n)` → `n`, `Eof` → `0`, `Interrupted` → `-EINTR`. Returning an
+/// explicit enum (vs overloading `usize`) keeps the EINTR signal honest
+/// through every caller (static_console, vt_tty, ConsoleInode).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadOutcome {
+    /// `n` bytes were drained into the caller buffer (n ≥ 1, or 0 only on
+    /// a VMIN==0/VTIME timeout polling read that found nothing).
+    Bytes(usize),
+    /// End of input (canonical ^D at line start) — return 0 to userspace.
+    Eof,
+    /// A pending unblocked signal interrupted the blocking wait — the
+    /// syscall layer returns `-EINTR` (Linux `n_tty_read` → `-ERESTARTSYS`
+    /// / `-EINTR`).
+    Interrupted,
+}
+
+impl ReadOutcome {
+    /// Map to the byte count for callers that still expose `usize`
+    /// (treats Eof and Interrupted as 0 — only the syscall layer that
+    /// threads EINTR should consume the enum directly).
+    /// # C: O(1)
+    pub fn bytes_or_zero(self) -> usize {
+        match self { ReadOutcome::Bytes(n) => n, _ => 0 }
+    }
+}
 
 /// What the tty core needs from a concrete device (Linux
 /// `tty_operations`). The VT console driver (write → emulator → consw),
@@ -178,26 +205,45 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         self.wait.wake_all();
     }
 
-    /// Blocking read — THE lost-wakeup-free read. Returns once ≥1 byte (a
-    /// whole cooked line in canonical mode) or EOF is ready. See the
-    /// module header for the ordering proof.
-    /// # C: O(N) bytes copied + sleeps until input
-    pub fn read(&self, buf: &mut [u8]) -> usize {
+    /// Blocking read — THE lost-wakeup-free read. Returns a whole cooked
+    /// line in canonical mode, or honours c_cc[VMIN]/c_cc[VTIME] in
+    /// noncanonical mode (the 4 Linux cases), or EOF, or `Interrupted`
+    /// when an unblocked signal lands during the wait (Linux `n_tty_read`
+    /// `signal_pending` → -EINTR). See the module header for the
+    /// lost-wakeup ordering proof.
+    /// # C: O(N) bytes copied + sleeps until input / timer / signal
+    pub fn read(&self, buf: &mut [u8]) -> ReadOutcome {
         if buf.is_empty() {
-            return 0;
+            return ReadOutcome::Bytes(0);
         }
+        if self.inner.lock().ldisc.canonical() {
+            self.read_canon(buf)
+        } else {
+            self.read_raw(buf)
+        }
+    }
+
+    /// Canonical (ICANON) blocking read: block until a whole line or EOF,
+    /// interruptible by an unblocked signal. Unchanged line semantics —
+    /// the login / PAM path depends on this returning a full `\n`-
+    /// terminated line.
+    fn read_canon(&self, buf: &mut [u8]) -> ReadOutcome {
         loop {
             // Fast path: drain whatever is ready without parking.
             {
                 let mut g = self.inner.lock();
                 let n = g.ldisc.read(buf);
                 if n > 0 {
-                    return n;
+                    return ReadOutcome::Bytes(n);
                 }
                 // n == 0 with EOF pending also returns (canonical ^D).
                 if g.ldisc.eof_consumed() {
-                    return 0;
+                    return ReadOutcome::Eof;
                 }
+            }
+            // A pending unblocked signal aborts the blocking read (EINTR).
+            if self.wait.should_interrupt() {
+                return ReadOutcome::Interrupted;
             }
             // Slow path: enqueue, RE-CHECK under the lock, then sleep.
             {
@@ -213,6 +259,79 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
                 // take it to queue + wake.
             }
             self.wait.park_commit();
+        }
+    }
+
+    /// Noncanonical (raw) blocking read honouring c_cc[VMIN]/c_cc[VTIME]
+    /// (the 4 Linux cases — see `vmin_vtime_decision`). The VTIME timers
+    /// use the wait queue's `park_commit_deadline`; the read-timer base is
+    /// captured at entry and the interbyte timer resets as bytes arrive.
+    /// Signal-interruptible like the canonical path.
+    fn read_raw(&self, buf: &mut [u8]) -> ReadOutcome {
+        // Monotonic bases (kernel clock; host returns 0 — host VMIN/VTIME
+        // coverage drives `vmin_vtime_decision` directly).
+        let start = self.wait.now_ns();
+        let mut last_byte_at = start;
+        let mut got_any = false;
+        let mut prev_avail = 0usize;
+        loop {
+            let (min, time, avail) = {
+                let g = self.inner.lock();
+                (g.ldisc.vmin(), g.ldisc.vtime(), g.ldisc.available())
+            };
+            // Interbyte timer (MIN>0,TIME>0): reset the timer base on each
+            // newly-arrived byte (Linux restarts VTIME per received char).
+            if avail > prev_avail {
+                got_any = true;
+                last_byte_at = self.wait.now_ns();
+            }
+            prev_avail = avail;
+            let now = self.wait.now_ns();
+            let decision = vmin_vtime_decision(
+                min, time, avail, buf.len(),
+                now.saturating_sub(start), now.saturating_sub(last_byte_at), got_any,
+            );
+            match decision {
+                VmtDecision::ReturnNow(_) => {
+                    // Drain ignoring VMIN: a VTIME timeout returns fewer
+                    // than VMIN bytes (incl. 0 on a polling read).
+                    let n = self.inner.lock().ldisc.read_raw_drain(buf);
+                    return ReadOutcome::Bytes(n);
+                }
+                VmtDecision::BlockUntil(rel) => {
+                    if self.wait.should_interrupt() {
+                        return ReadOutcome::Interrupted;
+                    }
+                    // Re-check under the lock then park with a deadline.
+                    {
+                        let g = self.inner.lock();
+                        self.wait.park_prepare();
+                        if g.ldisc.has_input() {
+                            self.wait.park_abort();
+                            continue;
+                        }
+                    }
+                    // For MIN==0 the deadline is start-relative; for the
+                    // interbyte timer it is last-byte-relative — both
+                    // resolve to an absolute clock instant here.
+                    let base = if min == 0 { start } else { last_byte_at };
+                    self.wait.park_commit_deadline(base.saturating_add(rel));
+                }
+                VmtDecision::BlockNoDeadline => {
+                    if self.wait.should_interrupt() {
+                        return ReadOutcome::Interrupted;
+                    }
+                    {
+                        let g = self.inner.lock();
+                        self.wait.park_prepare();
+                        if g.ldisc.has_input() {
+                            self.wait.park_abort();
+                            continue;
+                        }
+                    }
+                    self.wait.park_commit();
+                }
+            }
         }
     }
 
