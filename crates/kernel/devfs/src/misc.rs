@@ -149,6 +149,24 @@ impl Inode for FullInode {
 /// shape but NOT for cryptographic use.
 static PRNG_STATE: AtomicU64 = AtomicU64::new(0x9E37_79B9_7F4A_7C15);
 
+/// Mix externally-sourced entropy bytes into the shared PRNG state.
+/// Folds each byte into `PRNG_STATE` via a wrapping multiply-xor so real
+/// hardware entropy (e.g. virtio-rng at boot, `/dev/hwrng` reads) actually
+/// perturbs the stream the LCG produces. NOT a cryptographic mixer — it is
+/// a deterministic avalanche over the existing non-crypto LCG placeholder
+/// (docs/26 CPRNG supersedes). Empty input is a no-op.
+/// # C: O(bytes.len())
+pub fn add_entropy(bytes: &[u8]) {
+    if bytes.is_empty() { return; }
+    let mut s = PRNG_STATE.load(Ordering::Relaxed);
+    for &b in bytes {
+        // Fold the byte in, then avalanche so adjacent inputs diverge.
+        s = (s ^ (b as u64)).wrapping_mul(0x100000001B3);
+        s ^= s >> 29;
+    }
+    PRNG_STATE.store(s, Ordering::Relaxed);
+}
+
 /// Pull one 64-bit pseudo-random value from the shared LCG.
 /// Used by `RandomInode` and `sys_getrandom`.
 /// SECURITY: NOT cryptographic — placeholder until docs/26.
@@ -158,6 +176,43 @@ pub fn lcg_next() -> u64 {
     s = s.wrapping_mul(0x5851_F42D_4C95_7F2D).wrapping_add(0x14057B7E_F767_814F);
     PRNG_STATE.store(s, Ordering::Relaxed);
     s
+}
+
+/// Hardware-entropy source hook. `/dev/hwrng` reads route here; the kmain
+/// boot path installs the virtio-rng `fill` fn after PCI enumeration via
+/// `set_hwrng_source`. Stored as a raw fn pointer so devfs needn't depend
+/// on the driver crate (same pattern as the dir-overlay hook). 0 = absent.
+static HWRNG_SOURCE: AtomicU64 = AtomicU64::new(0);
+type HwRngFn = fn(&mut [u8]) -> usize;
+
+/// Install the hardware-entropy source (virtio-rng `fill`). Boot, once,
+/// only when a virtio-rng device is present. Until installed, `/dev/hwrng`
+/// reads return 0 (EOF) rather than fabricating bytes.
+/// # C: O(1)
+pub fn set_hwrng_source(f: HwRngFn) {
+    HWRNG_SOURCE.store(f as usize as u64, Ordering::Release);
+}
+
+/// `/dev/hwrng` — Linux hardware-RNG char device. Each read pulls fresh
+/// bytes from the installed virtio-rng source; with no source installed
+/// (no device) reads return 0 (EOF), matching a `/dev/hwrng` whose backing
+/// hwrng has no current_rng. Real hardware entropy, NOT the LCG.
+pub struct HwRngInode;
+impl Inode for HwRngInode {
+    fn ino(&self) -> Ino { 0x2000_0005 }
+    fn file_type(&self) -> FileType { FileType::CharDev }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, _o: u64, b: &mut [u8]) -> KResult<usize> {
+        let p = HWRNG_SOURCE.load(Ordering::Acquire);
+        if p == 0 { return Ok(0); }
+        // SAFETY: p was stored from a `HwRngFn` via set_hwrng_source; the
+        // function pointer ABI matches and it is only ever set to the
+        // virtio-rng `fill` entry, which reads device entropy into `b`.
+        let f: HwRngFn = unsafe { core::mem::transmute(p as usize) };
+        Ok(f(b))
+    }
+    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
 
 /// `/dev/random` and `/dev/urandom` — fill with LCG bytes.
@@ -180,4 +235,38 @@ impl Inode for RandomInode {
         Ok(b.len())
     }
     fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Mixing entropy must perturb the PRNG state: the LCG stream after a
+    /// mix differs from the stream without it.
+    #[test]
+    fn add_entropy_changes_state() {
+        let before = lcg_next();
+        add_entropy(&[0x42, 0x99, 0x01, 0xFE]);
+        let after = lcg_next();
+        assert_ne!(before, after, "entropy mix must perturb the stream");
+    }
+
+    /// Different entropy inputs must drive the state to different places.
+    #[test]
+    fn distinct_inputs_distinct_state() {
+        add_entropy(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        let a = lcg_next();
+        add_entropy(&[8, 7, 6, 5, 4, 3, 2, 1]);
+        let b = lcg_next();
+        assert_ne!(a, b, "distinct entropy inputs must diverge");
+    }
+
+    /// Empty input is a no-op: the stream is unchanged.
+    #[test]
+    fn empty_input_noop() {
+        let s0 = PRNG_STATE.load(Ordering::Relaxed);
+        add_entropy(&[]);
+        let s1 = PRNG_STATE.load(Ordering::Relaxed);
+        assert_eq!(s0, s1, "empty entropy must not change state");
+    }
 }
