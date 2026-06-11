@@ -175,6 +175,15 @@ pub fn unpark_self_from_wait4() {
 /// # Lk: WAITERS, then runqueue inner
 fn wake_wait4_parent(parent_tid: u32) {
     let mut waiters = WAITERS.lock();
+    #[cfg(feature = "debug-ssh")]
+    {
+        let n = waiters.iter().filter(|t| t.tid == parent_tid).count();
+        klog::write_raw(b"[INFO]  ssh-trace: wake_wait4_parent parent_tid=");
+        klog::write_dec_u64(parent_tid as u64);
+        klog::write_raw(b" wait4_waiters_found=");
+        klog::write_dec_u64(n as u64);
+        klog::write_raw(b" (0 => parent not in wait4 - reap relies on its SIGCHLD handler)\n");
+    }
     if waiters.is_empty() { return; }
     let rq = match super::runqueue::global() {
         Some(r) => r,
