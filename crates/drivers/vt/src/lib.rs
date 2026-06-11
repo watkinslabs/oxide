@@ -43,6 +43,9 @@ pub const KDSETKEYCODE:     u64 = 0x4B4D;
 pub const KDSIGACCEPT:      u64 = 0x4B4E;
 pub const KDGKBMAP:         u64 = 0x4B70;
 pub const KDSKBMAP:         u64 = 0x4B71;
+pub const GIO_UNIMAP:       u64 = 0x4B66; // get unicode→font map (struct unimapdesc)
+pub const PIO_UNIMAP:       u64 = 0x4B67; // set unicode→font map
+pub const PIO_UNIMAPCLR:    u64 = 0x4B68; // clear unicode→font map
 
 pub const VT_OPENQRY:       u64 = 0x5600;
 pub const VT_GETMODE:       u64 = 0x5601;
