@@ -556,6 +556,8 @@ impl Emulator {
             }
             b'J' => vc.erase_display(self.param(0, 0)),
             b'K' => vc.erase_line(self.param(0, 0)),
+            b'X' => vc.erase_chars(self.count_param(0)), // ECH
+
             b'g' => {
                 // TBC: 0 = clear stop at cursor, 3 = clear all stops.
                 match self.param(0, 0) {
@@ -597,6 +599,10 @@ impl Emulator {
             }
             // DECTCEM cursor visibility (renderer-only flag).
             25 => vc.cursor_visible = set,
+            // Alternate screen buffer. ?47/?1047 switch buffers; ?1049 also
+            // saves/restores the cursor (covered by enter_alt/leave_alt).
+            // htop/top/vim/less use these (smcup/rmcup).
+            47 | 1047 | 1049 => if set { vc.enter_alt() } else { vc.leave_alt() },
             _ => {}
         }
     }
@@ -838,5 +844,38 @@ impl Emulator {
             }
             _ => b[0] as u32,
         }
+    }
+}
+
+#[cfg(test)]
+mod alt_ech_tests {
+    use super::Emulator;
+    use crate::vc::Vc;
+
+    #[test]
+    fn alt_screen_saves_and_restores_main() {
+        let mut vc = Vc::new(20, 5);
+        let mut em = Emulator::new();
+        em.feed_bytes(&mut vc, b"MAIN");                 // main screen content
+        em.feed_bytes(&mut vc, b"\x1b[?1049h");          // enter alt
+        assert_eq!(vc.glyph_at(0, 0), ' ' as u32, "alt screen starts blank");
+        em.feed_bytes(&mut vc, b"ALT");                  // draw on alt
+        assert_eq!(vc.glyph_at(0, 0), 'A' as u32);
+        em.feed_bytes(&mut vc, b"\x1b[?1049l");          // leave alt
+        assert_eq!(vc.glyph_at(0, 0), 'M' as u32, "main 'MAIN' restored");
+        assert_eq!(vc.glyph_at(3, 0), 'N' as u32);
+    }
+
+    #[test]
+    fn ech_erases_n_chars_without_moving_cursor() {
+        let mut vc = Vc::new(20, 2);
+        let mut em = Emulator::new();
+        em.feed_bytes(&mut vc, b"ABCDEF");
+        em.feed_bytes(&mut vc, b"\x1b[1G");   // cursor to col 1 (home of row)
+        em.feed_bytes(&mut vc, b"\x1b[3X");   // erase 3 chars
+        assert_eq!(vc.glyph_at(0, 0), ' ' as u32);
+        assert_eq!(vc.glyph_at(1, 0), ' ' as u32);
+        assert_eq!(vc.glyph_at(2, 0), ' ' as u32);
+        assert_eq!(vc.glyph_at(3, 0), 'D' as u32, "char 4 untouched");
     }
 }
