@@ -122,6 +122,8 @@ impl Inode for PtySlaveInode {
     }
     fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
         let mut g = self.pair.inner.lock();
+        // Master hung up → slave writes fail with EIO (Linux pty semantics).
+        if g.slave_hung_up() { return Err(VfsError::Eio); }
         Ok(g.slave_write(buf))
     }
     /// F201: readiness for select/poll. POLLIN when master→slave

@@ -163,6 +163,11 @@ pub struct TtyStruct<D: TtyDriver, W: TtyWait> {
     fg_pgrp: AtomicU32,
     /// Controlling session id — TIOCSCTTY/TIOCGSID. 0 = unset.
     sid: AtomicU32,
+    /// Open reference count (Linux `tty_struct::count`). `open()` bumps,
+    /// `close()` drops; the driver's `open()`/`close()` hooks fire on the
+    /// 0→1 / 1→0 edges only (first open powers the device, last close
+    /// quiesces it).
+    open_count: AtomicU32,
 }
 
 impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
@@ -175,6 +180,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             winsize: Spinlock::new(Winsize::default_pty()),
             fg_pgrp: AtomicU32::new(0),
             sid: AtomicU32::new(0),
+            open_count: AtomicU32::new(0),
         }
     }
 
@@ -446,6 +452,70 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             return Some(rv);
         }
         crate::ioctl::core_ioctl(self, cmd, arg)
+    }
+
+    // --- open / close / hangup (Linux tty lifecycle) ------------------
+
+    /// Current open reference count (Linux `tty_struct::count`).
+    /// # C: O(1)
+    pub fn open_count(&self) -> u32 {
+        self.open_count.load(Ordering::Acquire)
+    }
+
+    /// Open reference: bump the count; fire `driver.open()` on the 0→1
+    /// edge (first opener powers the device). The VFS open path for the
+    /// tty inode calls this once per `open(2)` that succeeds. Returns the
+    /// new count.
+    /// # C: O(1)
+    pub fn open(&self) -> u32 {
+        let prev = self.open_count.fetch_add(1, Ordering::AcqRel);
+        if prev == 0 {
+            self.inner.lock().driver.open();
+        }
+        prev + 1
+    }
+
+    /// Release reference: drop the count; fire `driver.close()` on the
+    /// 1→0 edge (last closer quiesces the device). The VFS release path
+    /// (final fd close) calls this. Saturates at 0 (a close with no open
+    /// is a no-op, never an underflow). Returns the new count.
+    /// # C: O(1)
+    pub fn close(&self) -> u32 {
+        let prev = self.open_count.load(Ordering::Acquire);
+        if prev == 0 { return 0; }
+        let now = self.open_count.fetch_sub(1, Ordering::AcqRel) - 1;
+        if now == 0 {
+            self.inner.lock().driver.close();
+        }
+        now
+    }
+
+    /// Hang up the tty (Linux `tty_hangup` / `__tty_hangup`): raise SIGHUP
+    /// on the foreground process group, reset the ldisc into its hung-up
+    /// state (queues flushed; reads → EOF, writes dropped), notify the
+    /// driver, and clear the controlling-session linkage. Idempotent — a
+    /// second hangup re-signals but the ldisc state is already hung.
+    /// # C: O(P) fg-pgrp tasks
+    pub fn hangup(&self) {
+        {
+            let mut g = self.inner.lock();
+            let PortInner { ldisc, driver } = &mut *g;
+            ldisc.hangup();
+            driver.signal_fg_pgrp(Sig::Hup);
+            driver.hangup();
+        }
+        // Drop the controlling-tty linkage (Linux clears tty->session /
+        // tty->pgrp on hangup) and wake any parked reader so it observes
+        // the hung-up EOF immediately rather than sleeping.
+        self.sid.store(0, Ordering::Release);
+        self.fg_pgrp.store(0, Ordering::Release);
+        self.wait.wake_all();
+    }
+
+    /// True once `hangup` has dropped the ldisc into its EOF/EIO state.
+    /// # C: O(1)
+    pub fn is_hung_up(&self) -> bool {
+        self.inner.lock().ldisc.is_hung_up()
     }
 
     /// Run a closure against the driver (open/close/hangup plumbing, and
