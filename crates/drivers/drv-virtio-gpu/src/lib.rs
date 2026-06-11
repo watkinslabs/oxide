@@ -502,6 +502,84 @@ impl drm::DrmDriver for VirtioGpuDrm {
         (1, 4096, 1, 2160)
     }
     fn cap(&self, c: u64) -> u64 { drm::default_cap(c) }
+
+    // ---- D5a read-only modeset enumeration over enabled scanouts ----
+    fn crtc_ids(&self) -> alloc::vec::Vec<u32> {
+        (0..self.display.count_enabled as usize).map(drm::crtc_id_for).collect()
+    }
+    fn connector_ids(&self) -> alloc::vec::Vec<u32> {
+        (0..self.display.count_enabled as usize).map(drm::connector_id_for).collect()
+    }
+    fn encoder_ids(&self) -> alloc::vec::Vec<u32> {
+        (0..self.display.count_enabled as usize).map(drm::encoder_id_for).collect()
+    }
+    fn plane_ids(&self) -> alloc::vec::Vec<u32> {
+        (0..self.display.count_enabled as usize).map(drm::plane_id_for).collect()
+    }
+    fn mode_for(&self, idx: usize) -> drm::DrmModeModeinfo {
+        match self.enabled_rect(idx) {
+            Some(r) => drm::mode_from_rect(r.width.max(1), r.height.max(1)),
+            None    => drm::DrmModeModeinfo::default(),
+        }
+    }
+    fn connector_info(&self, idx: usize) -> Option<drm::ConnectorInfo> {
+        let r = self.enabled_rect(idx)?;
+        // Crude physical size: assume ~96 DPI → mm = px * 25.4 / 96.
+        let mm_w = (r.width  as u64 * 254 / 960) as u32;
+        let mm_h = (r.height as u64 * 254 / 960) as u32;
+        Some(drm::ConnectorInfo {
+            connection:     drm::DRM_MODE_CONNECTED,
+            connector_type: drm::DRM_MODE_CONNECTOR_VIRTUAL,
+            encoder_id:     drm::encoder_id_for(idx),
+            mm_width:       mm_w,
+            mm_height:      mm_h,
+            mode_count:     1,
+        })
+    }
+    fn crtc_info(&self, idx: usize) -> Option<drm::CrtcInfo> {
+        let r = self.enabled_rect(idx)?;
+        Some(drm::CrtcInfo {
+            mode_valid: 1,
+            fb_id:      0,
+            x:          0,
+            y:          0,
+            gamma_size: 256,
+            mode:       drm::mode_from_rect(r.width.max(1), r.height.max(1)),
+        })
+    }
+    fn encoder_info(&self, idx: usize) -> Option<drm::EncoderInfo> {
+        self.enabled_rect(idx)?;
+        Some(drm::EncoderInfo {
+            encoder_type:    drm::DRM_MODE_ENCODER_VIRTUAL,
+            crtc_id:         drm::crtc_id_for(idx),
+            possible_crtcs:  1 << idx,
+            possible_clones: 0,
+        })
+    }
+    fn plane_info(&self, idx: usize) -> Option<drm::PlaneInfo> {
+        self.enabled_rect(idx)?;
+        Some(drm::PlaneInfo {
+            crtc_id:        drm::crtc_id_for(idx),
+            fb_id:          0,
+            possible_crtcs: 1 << idx,
+        })
+    }
+}
+
+impl VirtioGpuDrm {
+    /// Resolve the `idx`-th ENABLED scanout to its rectangle.
+    /// DisplayInfo.modes has gaps (disabled slots), so we walk the
+    /// array counting enabled entries. # C: O(VIRTIO_GPU_MAX_SCANOUTS)
+    fn enabled_rect(&self, idx: usize) -> Option<VirtioGpuRect> {
+        let mut seen = 0usize;
+        for m in self.display.modes.iter() {
+            if m.enabled != 0 {
+                if seen == idx { return Some(m.r); }
+                seen += 1;
+            }
+        }
+        None
+    }
 }
 
 /// Install + register with the DRM core (`47`).
@@ -701,6 +779,50 @@ mod tests {
         assert!(negotiated_features() & (1u64 << VIRTIO_GPU_F_EDID) != 0);
         // Cleanup.
         *DEV.lock() = None;
+    }
+
+    #[test]
+    fn drm_accessors_skip_disabled_scanouts() {
+        use drm::DrmDriver;
+        let mut modes = [VirtioGpuDisplayOne::default(); VIRTIO_GPU_MAX_SCANOUTS];
+        // scanout 0 disabled; scanout 1 enabled 800x600; scanout 3 enabled 1024x768.
+        modes[1] = VirtioGpuDisplayOne {
+            r: VirtioGpuRect { x: 0, y: 0, width: 800, height: 600 }, enabled: 1, flags: 0 };
+        modes[3] = VirtioGpuDisplayOne {
+            r: VirtioGpuRect { x: 0, y: 0, width: 1024, height: 768 }, enabled: 1, flags: 0 };
+        let d = VirtioGpuDrm {
+            display: DisplayInfo { modes, count_enabled: 2 },
+            features_negotiated: 0, bdf: 0,
+        };
+        // Two of each object, ids per the 1:1:1 model.
+        assert_eq!(d.crtc_ids(), alloc::vec![1, 2]);
+        assert_eq!(d.connector_ids(), alloc::vec![0x100, 0x101]);
+        assert_eq!(d.encoder_ids(), alloc::vec![0x200, 0x201]);
+        assert_eq!(d.plane_ids(), alloc::vec![0x300, 0x301]);
+        // enabled index 0 → first enabled (800x600), index 1 → 1024x768.
+        let m0 = d.mode_for(0);
+        assert_eq!(m0.hdisplay, 800);
+        assert_eq!(m0.vdisplay, 600);
+        let m1 = d.mode_for(1);
+        assert_eq!(m1.hdisplay, 1024);
+        assert_eq!(m1.vdisplay, 768);
+        // connector / crtc / encoder facts for index 1.
+        let c = d.connector_info(1).unwrap();
+        assert_eq!(c.connection, drm::DRM_MODE_CONNECTED);
+        assert_eq!(c.encoder_id, 0x201);
+        assert_eq!(c.mode_count, 1);
+        let cr = d.crtc_info(1).unwrap();
+        assert_eq!(cr.mode_valid, 1);
+        assert_eq!(cr.fb_id, 0);
+        assert_eq!(cr.mode.hdisplay, 1024);
+        let e = d.encoder_info(1).unwrap();
+        assert_eq!(e.crtc_id, 2);
+        assert_eq!(e.possible_crtcs, 1 << 1);
+        let p = d.plane_info(0).unwrap();
+        assert_eq!(p.crtc_id, 1);
+        // out of range
+        assert!(d.connector_info(2).is_none());
+        assert!(d.crtc_info(2).is_none());
     }
 
     #[test]
