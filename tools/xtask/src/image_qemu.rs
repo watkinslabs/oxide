@@ -280,6 +280,9 @@ fn qemu_run_aarch64_grub(
         // output and the GTK window stays blank.
         "-device", "virtio-gpu-pci,bus=pcie.0",
         "-device", "virtio-keyboard-pci,bus=pcie.0",
+        // D3.1: virtio-rng entropy source. The kernel seeds its RNG from
+        // this at boot and backs /dev/hwrng with it.
+        "-device", "virtio-rng-pci,bus=pcie.0,disable-legacy=on",
         "-chardev", uart_chardev.as_str(),
         "-serial", "chardev:ser0",
         "-display", if headless { "none" } else { "gtk" },
@@ -388,6 +391,9 @@ fn qemu_run_grub_x86_64(
         // fbcon renders + the GTK window takes keyboard input.
         "-device", "virtio-gpu-pci,bus=pcie.0",
         "-device", "virtio-keyboard-pci,bus=pcie.0",
+        // D3.1: virtio-rng entropy source. The kernel seeds its RNG from
+        // this at boot and backs /dev/hwrng with it.
+        "-device", "virtio-rng-pci,bus=pcie.0,disable-legacy=on",
         "-chardev", uart_chardev,
         "-serial", "chardev:ser0",
         // GTK window by default so the virtio-gpu console is visible +

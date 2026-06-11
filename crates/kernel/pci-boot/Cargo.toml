@@ -25,6 +25,8 @@ drv-virtio-net   = { path = "../../drivers/drv-virtio-net" }
 drv-virtio-blk   = { path = "../../drivers/drv-virtio-blk" }
 drv-virtio-gpu   = { path = "../../drivers/drv-virtio-gpu" }
 drv-virtio-input = { path = "../../drivers/drv-virtio-input" }
+drv-virtio-rng   = { path = "../../drivers/drv-virtio-rng" }
+devfs   = { path = "../devfs" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
