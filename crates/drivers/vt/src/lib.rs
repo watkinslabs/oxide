@@ -9,6 +9,8 @@
 
 extern crate alloc;
 
+pub mod tiocl;
+
 use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
@@ -302,6 +304,21 @@ pub fn scrolldelta(lines: isize) {
     #[cfg(not(target_os = "oxide-kernel"))]
     let _ = lines;
 }
+
+/// TIOCL_UNBLANKSCREEN (Linux `do_unblank_screen`): clear the blank flag and
+/// force a full repaint of the foreground console. The repaint is kernel-only
+/// (fbcon). # C: O(cols*rows) on the repaint.
+pub fn unblank() {
+    tiocl::set_blanked(false);
+    #[cfg(target_os = "oxide-kernel")]
+    fbcon::kernel::force_repaint();
+}
+
+/// TIOCL_BLANKSCREEN (Linux `do_blank_screen`): record the blank flag. We have
+/// no DPMS / pixel-blank hardware path, so this is the stored intent only (the
+/// flag is observable via TIOCL_BLANKEDSCREEN) — it does NOT clear the
+/// framebuffer. # C: O(1)
+pub fn blank() { tiocl::set_blanked(true); }
 
 /// VT_OPENQRY: return the first unallocated VT id, or `Err(Busy)`
 /// if every slot is taken.
