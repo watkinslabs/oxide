@@ -21,6 +21,7 @@ extern crate alloc;
 // init's fd 0/1/2 install a vt=0 (system console) ConsoleInode.
 
 pub mod static_console;
+pub mod vt_tty;
 
 use alloc::string::ToString;
 use alloc::sync::Arc;
@@ -68,23 +69,10 @@ impl Inode for ConsoleInode {
             // line (or 0 on ^D EOF).
             return Ok(static_console::read(buf));
         }
-        // Numbered VT: block-and-drain the per-VT ring (unchanged).
-        let first = loop {
-            if let Some(b) = tty::live::try_read_vt(self.vt) { break b; }
-            // SAFETY: we are the running task on this CPU; preempt-off; park before yielding.
-            unsafe { tty::live::park_current_for_tty_vt(self.vt); }
-            // SAFETY: process ctx, runqueue installed, preempt-off; current is now Sleeping so schedule() won't re-enqueue us — only the VT-ring wake will.
-            unsafe { sched::live::schedule(); }
-        };
-        buf[0] = first;
-        let mut n: usize = 1;
-        while n < buf.len() {
-            match tty::live::try_read_vt(self.vt) {
-                Some(b) => { buf[n] = b; n += 1; }
-                None    => break,
-            }
-        }
-        Ok(n)
+        // Numbered VT (B4a): the real per-VT `TtyStruct` parks
+        // lost-wakeup-free and returns a cooked line (or 0 on ^D EOF) —
+        // the same N_TTY core the system console uses.
+        Ok(vt_tty::vt_tty(self.vt).read(buf))
     }
 
     /// Non-blocking read per `15§5` / `28§3`. systemd PID1 opens
@@ -99,14 +87,7 @@ impl Inode for ConsoleInode {
         let n = if self.vt == 0 {
             static_console::read_nonblock(buf)
         } else {
-            let mut k: usize = 0;
-            while k < buf.len() {
-                match tty::live::try_read_vt(self.vt) {
-                    Some(b) => { buf[k] = b; k += 1; }
-                    None    => break,
-                }
-            }
-            k
+            vt_tty::vt_tty(self.vt).read_nonblock(buf)
         };
         if n == 0 { return Err(VfsError::Eagain); }
         Ok(n)
@@ -121,9 +102,10 @@ impl Inode for ConsoleInode {
         if self.vt == 0 {
             return static_console::poll();
         }
-        let mut mask = vfs::POLL_OUT;
-        if tty::live::vt_has_input(self.vt) { mask |= vfs::POLL_IN; }
-        mask
+        // Numbered VT (B4a): the per-VT TtyStruct owns readiness. The
+        // ldisc pollmask bits (POLLIN=1, POLLOUT=4) match vfs::POLL_IN /
+        // POLL_OUT (Linux uapi), so the mask passes through unchanged.
+        vt_tty::vt_tty(self.vt).poll()
     }
 
     /// Write `buf`. vt==0 (the system console) goes through the serial
@@ -156,26 +138,11 @@ impl Inode for ConsoleInode {
             dtrace!(b"CW_OUT", n as u64);
             return Ok(n);
         }
-        // Numbered VT path (tty-rebuild-plan §3-T7b Piece 3): route the
-        // write through the fbcon VT console — emulator → vc_data → consw
-        // cell-blit (the real Linux VT console driver path), NOT the old
-        // klog/kmsg-ring funnel. OPOST/ONLCR is applied here (the ldisc's
-        // output-processing job) before the emulator sees the bytes; the
-        // emulator itself treats `\n` as a raw linefeed (no column reset),
-        // so ONLCR-expanded `\r\n` is what moves to col 0 + next row.
-        //
-        // Per-VT framebuffer consoles (tty-rebuild-plan §3-P3): each
-        // numbered `/dev/ttyN` feeds its OWN `vc_cons[vt]` screen buffer
-        // (lazily allocated). Only the foreground VT is blitted to the
-        // physical FB; a write to an offscreen VT updates its `Vc` only.
-        // Ctrl-Alt-Fn (kbd) calls `fbcon::kernel::switch_vt` to bring a
-        // VT forward. Input (read/poll) uses the per-VT `tty::live` ring
-        // above.
-        let oflag = tty::live::output_oflag(self.vt);
-        let post = (oflag & tty::pty::oflag::OPOST) != 0;
-        let onlcr = post && (oflag & tty::pty::oflag::ONLCR) != 0;
-        fbcon_feed(self.vt, buf, onlcr);
-        Ok(buf.len())
+        // Numbered VT (B4a): the per-VT `TtyStruct` owns OPOST. Its N_TTY
+        // runs ONLCR, then `VtConsoleDriver::write` feeds the post-OPOST
+        // bytes to the fbcon emulator (→ vc_data → consw cell-blit). The
+        // ldisc owns OPOST now — NO manual fbcon_feed/ONLCR here.
+        Ok(vt_tty::vt_tty(self.vt).write(buf))
     }
 }
 
@@ -220,7 +187,11 @@ pub fn vt_reply_sink(vt: u8, bytes: &[u8]) {
             static_console::rx_byte(b);
         }
     } else {
-        tty::live::reply_inject_vt(vt, bytes);
+        // Numbered VT (B4a): inject the answerback into the per-VT
+        // TtyStruct's RX flip path (→ N_TTY → read queue), the same path
+        // keyboard RX takes. Safe from the tick-drain context (process /
+        // softirq): vt_tty lazy-alloc is a plain CAS, no sleeping.
+        vt_tty::vt_tty(vt).receive_from_driver(bytes);
     }
 }
 

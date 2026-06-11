@@ -120,7 +120,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             let ws = match &pty_pair {
                 Some(pair) => pair.with_pair(|p| p.winsize),
                 None if (ino & 0xff) as u8 <= 1 => console::static_console::winsize_get(),
-                None       => tty::pty::Winsize::default_pty(),
+                None       => console::vt_tty::vt_tty((ino & 0xff) as u8).winsize(),
             };
             let bytes = ws.to_le_bytes();
             // SAFETY: arg validated 8-byte aligned; CPL=0 writes through caller's AS.
@@ -154,7 +154,12 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                     let ch = console::static_console::winsize_set(ws);
                     (ch, console::static_console::foreground_pgid())
                 }
-                None => (false, 0),
+                // Numbered VT (B4a): store on the per-VT TtyStruct + raise
+                // SIGWINCH on its live fg pgrp when it changed.
+                None => {
+                    let tty = console::vt_tty::vt_tty((ino & 0xff) as u8);
+                    (tty.set_winsize(ws), tty.fg_pgrp())
+                }
             };
             if changed && fg != 0 {
                 // SIGWINCH = 28; bit (28-1) = 27.
@@ -180,7 +185,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                     // owns its termios on the new TtyStruct; numbered VTs
                     // keep the per-VT image.
                     if vt <= 1 { console::static_console::termios_get() }
-                    else       { tty::live::termios_get(vt) }
+                    else       { console::vt_tty::vt_tty(vt).termios() }
                 }
             };
             // SAFETY: arg validated 60-byte aligned; CPL=0 writes through caller's AS.
@@ -207,7 +212,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                 // T7: login ECHO-off + bash raw mode must reach the
                 // serial console's N_TTY ldisc, not a dead side table.
                 if vt <= 1 { console::static_console::termios_set(&buf); }
-                else       { tty::live::termios_set(vt, &buf); }
+                else       { console::vt_tty::vt_tty(vt).set_termios(&buf); }
             }
             0
         }
@@ -241,7 +246,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                 let is_console = vt <= 1;
                 if req == TIOCGPGRP {
                     let pgid = if is_console { console::static_console::foreground_pgid() }
-                               else          { tty::live::foreground_pgid(vt) };
+                               else          { console::vt_tty::vt_tty(vt).fg_pgrp() };
                     // SAFETY: arg validated 4-byte aligned; CPL=0 writes.
                     unsafe { core::ptr::write_volatile(arg as *mut u32, pgid); }
                 } else {
@@ -250,7 +255,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                     // T7: on the console, set the fg pgrp on the TtyStruct
                     // (+ driver shadow) so ISIG (^C) targets the live fg.
                     if is_console { console::static_console::set_foreground_pgid(pgid); }
-                    else          { tty::live::set_foreground_pgid(vt, pgid); }
+                    else          { console::vt_tty::set_fg_pgrp(vt, pgid); }
                 }
             }
             0
@@ -298,8 +303,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             if vt <= 1 {
                 console::static_console::set_session_and_fg(sid, pgid);
             } else {
-                tty::live::set_session(vt, sid);
-                tty::live::set_foreground_pgid(vt, pgid);
+                console::vt_tty::set_session_and_fg(vt, sid, pgid);
             }
             0
         }
@@ -317,7 +321,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             } else {
                 let vt = (ino & 0xff) as u8;
                 if vt <= 1 { console::static_console::session() }
-                else       { tty::live::session(vt) }
+                else       { console::vt_tty::vt_tty(vt).sid() }
             };
             if sid == 0 { return -(Errno::Enotty.as_i32() as i64); }
             // SAFETY: arg validated 4-byte aligned; CPL=0 write through caller's AS.
@@ -341,8 +345,8 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                 if my_sid != 0 && console::static_console::session() == my_sid {
                     console::static_console::notty();
                 }
-            } else if my_sid != 0 && tty::live::session(vt) == my_sid {
-                tty::live::set_session(vt, 0);
+            } else if my_sid != 0 && console::vt_tty::vt_tty(vt).sid() == my_sid {
+                console::vt_tty::notty(vt);
             }
             0
         }
