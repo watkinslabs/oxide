@@ -382,6 +382,37 @@ pub fn fbcon_flush_pixels(pixels: &[u8]) {
     }
 }
 
+/// Blank the displayed scanout: write black into the live framebuffer
+/// backing, then transfer+flush so the screen goes black. Used by the fbdev
+/// FBIOBLANK path (FB_BLANK_NORMAL..POWERDOWN). We have no DPMS hardware
+/// power path on a virtual GPU, so this is image-level blanking — the real,
+/// observable effect — NOT a panel power-down. No-op pre-setup.
+/// # C: O(fb_bytes) clear + O(1) submits.
+pub fn blank_scanout() {
+    let g = CTX.lock();
+    let ctx = match g.as_ref() { Some(c) => c, None => return };
+    // SAFETY: ctx.fb_va is HHDM-mapped for fb_bytes; bounded zero of the whole backing; CPL=0 writes through the HHDM mapping.
+    unsafe { core::ptr::write_bytes(ctx.fb_va as *mut u8, 0, ctx.fb_bytes as usize); }
+    let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
+    let (res_id, w, h) = (ctx.res_id, ctx.w, ctx.h);
+    // SAFETY: same VAs/PAs setup_scanout installed; sole writer under the CTX lock; cmd_buf is HHDM-mapped 4 KiB scratch.
+    unsafe {
+        let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
+            |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
+            ctx.q0_desc_pa, ctx.q0_driver_pa, ctx.q0_device_pa,
+            ctx.q0_notify_va, ctx.hhdm);
+        let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
+            |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
+            ctx.q0_desc_pa, ctx.q0_driver_pa, ctx.q0_device_pa,
+            ctx.q0_notify_va, ctx.hhdm);
+    }
+}
+
+/// Unblank: repaint the live console into the scanout and flush. Delegates to
+/// `fbcon::force_repaint` (re-blits every cell of the fg VT, raises the flush
+/// softirq). The FBIOBLANK(UNBLANK) restore path. # C: O(cols*rows) repaint.
+pub fn unblank_scanout() { fbcon::kernel::force_repaint(); }
+
 /// Install the scanout context for later flushes. Called once from
 /// `setup_scanout` after the resource is created and attached.
 fn install_scanout_ctx(

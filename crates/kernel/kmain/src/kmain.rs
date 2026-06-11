@@ -758,6 +758,14 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         if let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = drv_virtio_gpu::post_init::framebuffer() {
             fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
             fbdev::set_flush_hook(drv_virtio_gpu::post_init::flush_scanout);
+            // D6: real FBIOBLANK (image-level blank/restore) + the tick-driven
+            // pseudo-vblank wait for FBIO_WAITFORVSYNC. blank_scanout clears the
+            // displayed image to black; unblank_scanout repaints the console.
+            fbdev::set_blank_hooks(
+                drv_virtio_gpu::post_init::blank_scanout,
+                drv_virtio_gpu::post_init::unblank_scanout);
+            fbdev::set_yield_hook(fbdev_vsync_yield);
+            fbdev::set_now_hook(syscalls::vvar::monotonic_now_ns);
         }
         // Register the fbcon VT console as a printk console (Linux
         // vt_console_driver): kernel logs now render through the ECMA-48
@@ -843,6 +851,17 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
 #[cfg(target_os = "oxide-kernel")] pub use cmdline as boot_cmdline;
 #[cfg(target_os = "oxide-kernel")] pub use pci_boot;
 
+/// Cooperative-yield hook for fbdev's FBIO_WAITFORVSYNC wait loop: voluntarily
+/// reschedule + park the CPU until the next IRQ (the timer tick that advances
+/// the pseudo-vblank counter), so the waiter doesn't hot-spin. Runs in process
+/// context (the ioctl syscall path), satisfying `tick_yield`'s contract.
+/// # C: O(log N) + O(1) ctxsw + O(IRQ_latency)
+#[cfg(target_os = "oxide-kernel")]
+fn fbdev_vsync_yield() {
+    // SAFETY: invoked from the FBIOWAITFORVSYNC ioctl syscall path = process context, runqueue installed, preempt-off, no fbdev lock held across the yield (wait_vblank drops its hook guards before calling this); tick_yield's exact contract.
+    unsafe { sched::live::tick_yield(); }
+}
+
 /// Combined timer-tick hook: poll UART for input + drain any
 /// pending fbcon writes onto the GPU display.
 /// # SAFETY: timer-ISR context per the hook contract.
@@ -865,6 +884,10 @@ unsafe fn tick_poll_combined(from_user: bool) {
     // SAFETY: timer-ISR/tick context, BSP-only here (gated by the is_bsp check in the dispatcher); drv_ps2_keyboard::poll does only bounded CPL=0 reads of the i8042 status/data ports.
     unsafe { drv_ps2_keyboard::poll(); }
     fbcon::kernel::tick_drain();
+    // D6: advance the pseudo-vblank counter at the tick rate — the honest
+    // virtual-GPU vsync cadence that FBIO_WAITFORVSYNC blocks on and
+    // FBIOGET_VBLANK reports as the running frame count.
+    fbdev::vblank_tick();
     // F145: poll virtio-net rx from the timer tick as a fallback for
     // missed MSI-X edges. Real MSI handler still calls rx_drain_softirq
     // when it fires; this just ensures frames in the rx ring get

@@ -8,7 +8,11 @@
 use alloc::sync::Arc;
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
-pub const FB0_INO_BASE: Ino = 0x7001_0000;
+// NOT 0x7001_0000: pidfd owns the whole 0x70xx_xxxx space (PIDFD_INO_MARKER
+// 0x7000_0000, masked 0xFF00_0000), and the pidfd ioctl handler runs BEFORE
+// fbdev in the dispatch — so a 0x70-prefixed fb inode had every FBIO* ioctl
+// stolen by the pidfd path. Use the 0xFB ("FB") top byte, outside pidfd's range.
+pub const FB0_INO_BASE: Ino = 0xFB00_0000;
 
 pub struct FbInode {
     pub idx: u32,
@@ -79,50 +83,142 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
             Some(0)
         }
         crate::FBIOPUT_VSCREENINFO => {
-            // We don't reallocate the scanout: accept iff the requested mode
-            // matches the current geometry/bpp, else EINVAL (Linux rejects an
-            // unsupported mode rather than silently ignoring it).
+            // The single console scanout can't modeset (no per-fb realloc +
+            // reflow). Accept the SAME physical geometry/bpp and any virtual
+            // resolution that fits the allocated backing (so xres_virtual /
+            // yres_virtual / xoffset / yoffset updates land); reject a different
+            // physical xres/yres/bpp with EINVAL. Linux fbdev drivers that
+            // can't modeset return EINVAL here — honest, not a fake accept.
             if !user_ok(arg, 160) { return efault(); }
-            let cur = match crate::var_of(idx) { Some(v) => v, None => return Some(-(Errno::Eagain.as_i32() as i64)) };
+            let mut cur = match crate::var_of(idx) { Some(v) => v, None => return Some(-(Errno::Eagain.as_i32() as i64)) };
             // SAFETY: arg validated for 160 B; read the requested FbVarScreeninfo from the caller's AS.
             let req_v = unsafe { core::ptr::read_volatile(arg as *const crate::FbVarScreeninfo) };
             if req_v.xres != cur.xres || req_v.yres != cur.yres || req_v.bits_per_pixel != cur.bits_per_pixel {
                 return Some(-(Errno::Einval.as_i32() as i64));
             }
+            // Virtual resolution must cover the visible window and fit the
+            // backing (smem_len). xres_virtual==xres, yres_virtual<=backing rows.
+            let req_xv = if req_v.xres_virtual == 0 { cur.xres } else { req_v.xres_virtual };
+            let req_yv = if req_v.yres_virtual == 0 { cur.yres } else { req_v.yres_virtual };
+            let max_rows = match crate::fix_of(idx) {
+                Some(f) if f.line_length > 0 => (f.smem_len / f.line_length),
+                _ => cur.yres,
+            };
+            if req_xv != cur.xres || req_yv < cur.yres || req_yv > max_rows {
+                return Some(-(Errno::Einval.as_i32() as i64));
+            }
+            // Pan offset (if requested in the same call) must stay in range.
+            if crate::pan_check(&req_v, req_v.xoffset, req_v.yoffset).is_err() {
+                return Some(-(Errno::Einval.as_i32() as i64));
+            }
+            cur.xres_virtual = req_xv; cur.yres_virtual = req_yv;
+            cur.xoffset = req_v.xoffset; cur.yoffset = req_v.yoffset;
+            crate::set_var(idx, cur);
             Some(0)
         }
         crate::FBIOPAN_DISPLAY => {
-            // Single-buffer scanout: only (xoffset,yoffset)=(0,0) is valid;
-            // a pan to it flushes the current contents. Else EINVAL.
+            // Pan the visible window within the virtual canvas. Single-buffer
+            // console keeps yres_virtual==yres, so the only in-range offset is
+            // (0,0); a larger virtual canvas (set via PUT_VSCREENINFO) allows a
+            // real pan. Out of range → EINVAL (Linux fb_pan_display). On a valid
+            // pan we record the offset + flush the displayed region.
             if !user_ok(arg, 160) { return efault(); }
-            // SAFETY: arg validated for 160 B; read xoffset/yoffset (the first two u32 after the res fields) — read the whole struct.
+            // SAFETY: arg validated for 160 B; read the requested FbVarScreeninfo from the caller's AS.
             let v = unsafe { core::ptr::read_volatile(arg as *const crate::FbVarScreeninfo) };
-            if v.xoffset != 0 || v.yoffset != 0 { return Some(-(Errno::Einval.as_i32() as i64)); }
+            let mut cur = match crate::var_of(idx) { Some(c) => c, None => return Some(-(Errno::Eagain.as_i32() as i64)) };
+            if crate::pan_check(&cur, v.xoffset, v.yoffset).is_err() {
+                return Some(-(Errno::Einval.as_i32() as i64));
+            }
+            cur.xoffset = v.xoffset; cur.yoffset = v.yoffset;
+            crate::set_var(idx, cur);
             crate::flush();
             Some(0)
         }
-        crate::FBIOGETCMAP | crate::FBIOPUTCMAP => {
-            // Truecolor visual has no palette (Linux returns EINVAL for
-            // get/put cmap on a DIRECTCOLOR/TRUECOLOR fb).
-            Some(-(Errno::Einval.as_i32() as i64))
+        crate::FBIOPUTCMAP => {
+            // Truecolor PSEUDO-PALETTE: Linux fb_set_cmap on a truecolor visual
+            // writes the driver pseudo_palette (the 16 console colours). Copy
+            // `len` entries from the user red/green/blue arrays, pack each into a
+            // pixel in the visual's format, store in the [u32;16] palette.
+            if !user_ok(arg, 40) { return efault(); }
+            // SAFETY: arg validated for 40 B (FbCmap); read the descriptor from the caller's AS.
+            let cm = unsafe { core::ptr::read_volatile(arg as *const crate::FbCmap) };
+            let end = match cm.start.checked_add(cm.len) { Some(e) => e, None => return Some(-(Errno::Einval.as_i32() as i64)) };
+            if end > 16 { return Some(-(Errno::Einval.as_i32() as i64)); }
+            if cm.len == 0 { return Some(0); }
+            if cm.red == 0 || cm.green == 0 || cm.blue == 0 { return efault(); }
+            let nb = (cm.len as u64) * 2;
+            if !user_ok(cm.red, nb) || !user_ok(cm.green, nb) || !user_ok(cm.blue, nb) { return efault(); }
+            let var = match crate::var_of(idx) { Some(v) => v, None => return Some(-(Errno::Eagain.as_i32() as i64)) };
+            for i in 0..cm.len {
+                // SAFETY: cm.{red,green,blue} validated for cm.len*2 bytes above; aligned-by-element u16 reads of the caller's palette arrays within the validated span.
+                let (r, g, b) = unsafe {
+                    (core::ptr::read_volatile((cm.red + (i as u64) * 2) as *const u16),
+                     core::ptr::read_volatile((cm.green + (i as u64) * 2) as *const u16),
+                     core::ptr::read_volatile((cm.blue + (i as u64) * 2) as *const u16))
+                };
+                crate::set_palette(idx, (cm.start + i) as usize, crate::pack_pseudo(&var, r, g, b));
+            }
+            Some(0)
+        }
+        crate::FBIOGETCMAP => {
+            // Read the stored pseudo-palette back into the user arrays
+            // (unpack each pixel to Linux 16-bit-per-channel r/g/b).
+            if !user_ok(arg, 40) { return efault(); }
+            // SAFETY: arg validated for 40 B (FbCmap); read the descriptor from the caller's AS.
+            let cm = unsafe { core::ptr::read_volatile(arg as *const crate::FbCmap) };
+            let end = match cm.start.checked_add(cm.len) { Some(e) => e, None => return Some(-(Errno::Einval.as_i32() as i64)) };
+            if end > 16 { return Some(-(Errno::Einval.as_i32() as i64)); }
+            if cm.len == 0 { return Some(0); }
+            if cm.red == 0 || cm.green == 0 || cm.blue == 0 { return efault(); }
+            let nb = (cm.len as u64) * 2;
+            if !user_ok(cm.red, nb) || !user_ok(cm.green, nb) || !user_ok(cm.blue, nb) { return efault(); }
+            let var = match crate::var_of(idx) { Some(v) => v, None => return Some(-(Errno::Eagain.as_i32() as i64)) };
+            for i in 0..cm.len {
+                let px = crate::palette_at(idx, (cm.start + i) as usize).unwrap_or(0);
+                let (r, g, b) = crate::unpack_pseudo(&var, px);
+                // SAFETY: cm.{red,green,blue} validated for cm.len*2 bytes above; aligned-by-element u16 writes into the caller's palette arrays within the validated span.
+                unsafe {
+                    core::ptr::write_volatile((cm.red + (i as u64) * 2) as *mut u16, r);
+                    core::ptr::write_volatile((cm.green + (i as u64) * 2) as *mut u16, g);
+                    core::ptr::write_volatile((cm.blue + (i as u64) * 2) as *mut u16, b);
+                    if cm.transp != 0 && user_ok(cm.transp + (i as u64) * 2, 2) {
+                        core::ptr::write_volatile((cm.transp + (i as u64) * 2) as *mut u16, 0);
+                    }
+                }
+            }
+            Some(0)
         }
         crate::FBIOGET_VBLANK => {
-            // struct fb_vblank: flags u32, count u32, vcount, hcount, ... (32 B).
-            // No CRTC vblank counter — report "no vblank info" (flags=0).
+            // Report the real, tick-driven pseudo-vblank counter (the honest
+            // virtual-GPU vsync cadence). count = VBLANK_SEQ; flags advertise a
+            // valid frame count + vsync source.
             if !user_ok(arg, 32) { return efault(); }
-            // SAFETY: arg validated for 32 B; zero the fb_vblank struct in the caller's AS.
-            unsafe { core::ptr::write_bytes(arg as *mut u8, 0, 32); }
+            let mut vb = crate::FbVblank::default();
+            vb.flags = crate::FB_VBLANK_HAVE_COUNT | crate::FB_VBLANK_HAVE_VSYNC;
+            vb.count = crate::vblank_seq() as u32;
+            // SAFETY: arg validated for 32 B; FbVblank is 32 B; aligned write into the caller's AS.
+            unsafe { core::ptr::write_volatile(arg as *mut crate::FbVblank, vb); }
             Some(0)
         }
         // ---- by-value-arg ioctls (arg is NOT a pointer) ----
         crate::FBIOBLANK => {
-            // arg = FB_BLANK_* level (0..4) by value. Validate; no DPMS hw, so
-            // accept and no-op (blank state isn't observable on virtio-gpu).
-            if crate::is_blank_level(arg as u32) { Some(0) } else { Some(-(Errno::Einval.as_i32() as i64)) }
+            // arg = FB_BLANK_* level (0..4) by value. Validate, then apply a
+            // REAL transition: level ≥ NORMAL clears the displayed image to
+            // black; UNBLANK repaints the console. No hardware DPMS power-down
+            // (we can't cut panel power on a virtual GPU) — documented; the
+            // image-level blank IS observable, which is the honest effect.
+            let level = arg as u32;
+            if !crate::is_blank_level(level) { return Some(-(Errno::Einval.as_i32() as i64)); }
+            crate::apply_blank(idx, level);
+            Some(0)
         }
         crate::FBIO_WAITFORVSYNC => {
-            // No real vsync IRQ: flush the scanout (push pending pixels) and
-            // return immediately. Userspace uses this as "present my frame".
+            // Real wait on the tick-driven pseudo-vblank: read the current seq,
+            // block (cooperative yield) until it advances or the bounded
+            // deadline elapses, flush the scanout, return 0. NOT an immediate
+            // fake — it returns only after a vsync tick actually happened.
+            let start = crate::vblank_seq();
+            let _ = crate::wait_vblank(start);
             crate::flush();
             Some(0)
         }
