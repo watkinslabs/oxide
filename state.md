@@ -1,57 +1,74 @@
 # state — session hand-off
 
-Branch: main. Last merged: #1738 (P17-05 serial/fb console split).
-Active roadmap: **vty-plan.md** (P17-01..06).
+Branch: main @ f0b0e75b. Active work: **console zombie bug** (reap path).
+Roadmap: vty-plan.md. MCP note: drive qemu via the qemu MCP (it dropped mid last
+session; restart reconnects it). debug builds are flood-free now — use debug-reap.
 
-## Headline
-User: terminals must be done THE LINUX WAY (serial + framebuffer are SEPARATE
-devices, not one mirrored /dev/console). Landed the real device separation.
+## FIRST THING NEXT SESSION
+Reproduce the zombie + capture the reap_one trace, which pins the bug:
+    make qemu-x86 FEATURES=debug-reap        # (MCP: qemu_start, or boot-smoke)
+    # log in on the CONSOLE (graphical window), run `ls`, let it return
+    # grep serial for: signal_child_exit | wake_wait4_parent | reap_one | zombie tid
+The `reap_one` line shows the ZOMBIES list at reap time → answers the open question.
 
-## Landed this session
-- **#1736 (P17-01 tcflush):** TCFLSH/TCSETSF input flush — stale terminal-query
-  answerback no longer contaminates the username (getty-respawn login bug).
-- **#1738 (P17-05 serial/fb split):** the big one. Serial (`/dev/ttyS0`) and the
-  video VTs (`/dev/tty1..N`, `/dev/console`) are now SEPARATE tty devices:
-  - /dev/console,/dev/tty,/dev/tty0 → foreground video VT (vt_tty); renders to
-    fbcon ONCE. /dev/ttyS0 → SerialInode, serial-only, own 80x24 winsize.
-  - `console::route(ino)` centralizes device selection (low-byte 0xFD fg-VT /
-    0xFE serial / N=VT); all 10 ioctl sites use it.
-  - KernelUart::emit no longer mirrors to fbcon → **double-print fixed**.
-  - keyboard → vt_tty(foreground()). fbcon fg slot 1 == /dev/tty1 == /dev/console
-    (ONE foreground notion → fixes the VT-identity black screen).
-  - serial-getty-ttyS0.service added + wired into default.target.
-  - **Verified live both arches:** both gettys start; serial login → uid=0,
-    tty=/dev/ttyS0, no escape-soup; framebuffer renders text (not black).
-    Pre-push boot-smoke PASS x86+arm.
+## The bug (console: every program exit leaves a Z zombie; serial reaps fine)
+Reproducible EVERY exit on the framebuffer console. Captured trace (console, real):
+    signal_child_exit child=4102 parent_tid=4100 parent_upgrade=1
+    wake_wait4_parent  parent_tid=4100 wait4_waiters_found=1
+So the WAKE path WORKS: parent found (Weak upgrade ok → SIGCHLD sent), parent WAS
+parked in wait4 (waiters_found=1 → woken). Yet the zombie persists → the **reap
+itself** fails after the wake. The `reap_one` trace (added this session, #1744)
+will show whether the zombie is even IN the ZOMBIES list, or a parent/pid mismatch.
 
-## How Linux does serial+graphical (the rule, now implemented)
-Separate devices, never mirrored as terminals. printk → all consoles;
-interactive I/O → per-device. Video VT = default /dev/console; getty per device
-(console-getty on /dev/console + serial-getty@ttyS0). Each tty: own winsize
-(serial 80x24 until remote SIGWINCH; VT = fb cell grid).
+### Ruled out (by code reading)
+- clone returns child_tid (kernel tid); reap_one matches t.tid==pid → consistent
+  (NOT a vpid/tid mismatch in the basic path).
+- exit_group(231) routes to sys_exit (060_exit.rs) which DOES call
+  signal_child_exit (line 85). So the exit path isn't bypassing SIGCHLD.
+- Zombie enqueue: sys_exit → schedule() → prev is Zombie → stashed in per-CPU
+  `reap_pending` (schedule.rs:455) → INCOMING task's oxide_finish_task_switch
+  (schedule.rs:160-165) drains it → enqueue_zombie into ZOMBIES. Looks correct.
 
-## Open / next (vty-plan)
-- **Graphical keyboard login** — verify via QMP send-key
-  (tools/boot-smoke-kbd-login.sh) that typing at the framebuffer console logs in
-  (console-getty on the video VT). The MCP can't inject framebuffer keys.
-- **console-getty respawns once on arm** ("restart counter at 1") — minor; the
-  video-VT getty deactivates+restarts on first boot. Investigate.
-- **P17-02 job-control signals** (RC4) — Sig enum lacks Ttin/Ttou/Cont;
-  SIGTTIN/SIGTTOU/TOSTOP gates, pty SIGHUP drain, SIGCONT-on-hangup, orphan-pgrp.
-- **P17-03/04 emulator** (RC3) — ECH, alt-screen ?1049, DA reply, SGR
-  italic/dim/blink/strike, bracketed paste, DCS fix.
-- **P17-06 docs** — CHANGELOG/docs/19/docs/28 reflect the device split.
-- Known SMP=2 TCG flake: #UD at oxide_syscall_entry on cpu=1 (pre-existing AP
-  race; smoke retries past it). Not console-related.
+### Leading hypotheses (the reap_one trace decides)
+1. Zombie marked Z (shows in ps) but NOT in ZOMBIES list when parent's reap_one
+   runs (reap_pending drain race / wrong task drains it) → reap_one finds nothing.
+2. Parent 4100's wait4 is for a DIFFERENT pid than 4102 (shell has >1 child;
+   wake_wait4_parent wakes ALL waiters for the parent regardless of pid, but
+   reap_one(4100, specific_pid) won't match 4102) → 4102 never reaped.
+Key files: 061_wait4.rs (loop), zombies.rs (reap_one:274 w/ trace, signal_child_exit:86,
+wake_wait4_parent:176), schedule.rs (149 finish_task_switch, 450 zombie stash).
 
-## First command next session
-    git checkout -b P17-02-jobctl-signals
-    grep -n "pub enum Sig" crates/kernel/tty/src/ldisc/mod.rs
+## Diagnostics in place (cfg-gated, zero default cost)
+- **debug-pmm** (#1741): PMM double-free culprit ring (free Location). For the
+  crash-teardown double-free (latent; only on a crashing process; arrow fix
+  removed the htop-crash trigger so it stopped recurring).
+- **debug-ssh** (#1742): exit/wait4/signal-child trace — BUT also enables the
+  per-syscall flood → unusable (floods serial, blocks login).
+- **debug-reap** (#1743, #1744): ONLY the reap traces (signal_child_exit +
+  wake_wait4_parent + reap_one zombie-list dump), NO syscall flood. USE THIS.
 
-## Discipline reminders
-- THE LINUX WAY: implement the real subsystem; settled Linux behavior is NOT an
-  AskUserQuestion. [[feedback_linux_way_no_design_questions]]
-- Kill stale qemu-system before boot-smoke (vhost-vsock CID/port conflict makes
-  the pre-push hook falsely fail). Don't `pkill -f qemu` (matches your own shell)
-  — use `pkill -f qemu-system`.
-- spec-lint clean + boot-smoke both arches every PR.
+## Landed this session (console/tty)
+- #1736 tcflush (TCFLSH/TCSETSF input flush) — stale-answerback login fix.
+- #1738 serial/fb console SPLIT (P17-05): /dev/ttyS0 serial-only; /dev/console &
+  tty1..N = video VTs (vt_tty), rendered once; keyboard→fg VT; fbcon fg slot 1;
+  serial-getty@ttyS0 + console-getty both run. Verified both arches.
+- #1740 arrows/nav/F keys → escape sequences on the fb console (keymap). NOTE:
+  this also stopped htop crashing → stopped the double-free panic recurring.
+
+## Still open (from user testing the console)
+- **Zombies** (above) — THE active bug.
+- **100% CPU when ≥2 htops** — poll-spin: sys_poll (007_poll.rs:106) parks with a
+  20ms RESCAN_NS fallback (poll wait-queue not woken by all ready-sites); 2
+  non-sleeping pollers peg a core under the cooperative scheduler. Likely same
+  root as zombies (video-VT wake path). Fix candidate: wire vt_tty input →
+  notify_poll_waiters so poll sleeps the full timeout.
+- Rendering (line-draw/blocks): per the screenshot it actually renders fine now;
+  not a priority.
+- "Only 1 CPU" = default SMP=1; use `make qemu-x86 SMP=2`. Not a bug.
+
+## Discipline
+- THE LINUX WAY, real subsystem, no blind MM patches (don't mask the double-free).
+- spec-lint clean + both arches every PR. Kill stale qemu-system before smoke
+  (vsock CID conflict false-fails). Don't `pkill -f qemu` (matches own shell).
+- Memories: project_pmm_double_free_teardown, project_tty_vt_remediation,
+  feedback_linux_way_no_design_questions.
