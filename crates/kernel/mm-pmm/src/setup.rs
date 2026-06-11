@@ -334,6 +334,7 @@ pub fn frame_refcount(pa: u64) -> u32 {
 /// dropped its reference. If refcount reaches 0 the page must not
 /// be reachable via any live PTE.
 /// # C: O(1) amortised
+#[track_caller]
 pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
     let pfn = hal::Pfn(pa / 4096);
     if let Some(meta) = page_meta() {
@@ -514,6 +515,7 @@ pub fn alloc_contig(order: crate::Order) -> Option<u64> {
 /// `alloc_one_frame` (or huge-leaf split that wasn't promoted), no
 /// longer reachable via any live PTE; single-CPU pre-userspace v1.
 /// # C: O(1) amortised (PMM buddy free).
+#[track_caller]
 pub unsafe fn free_one_frame(pa: u64) {
     let p = match pmm_static() { Some(p) => p, None => return };
     let pfn = hal::Pfn(pa / 4096);
