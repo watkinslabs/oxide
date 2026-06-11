@@ -165,7 +165,13 @@ pub struct VtSlot {
     pub kd_mode:    u32,    // KD_TEXT / KD_GRAPHICS
     pub kb_mode:    u32,    // K_XLATE etc.
     pub vt_mode:    VtMode, // VT_AUTO or VT_PROCESS
-    pub proc:       u32,    // VT_PROCESS controlling pid (Linux vc->vt_pid); 0 = none
+    // VT_PROCESS controlling owner (Linux vc->vt_pid). Identity is the live
+    // task: `owner_vpid` is the namespace pid the userspace ioctl sees, but a
+    // vpid CAN be reused within a boot, so it is paired with the internal
+    // `owner_tid` (monotonic NEXT_TID, never reused) for a precise liveness
+    // test. Both 0 = no owner (VT_AUTO).
+    pub owner_vpid: u32,
+    pub owner_tid:  u32,
     pub leds:       u32,
     pub cols:       u16,
     pub rows:       u16,
@@ -178,7 +184,7 @@ impl Default for VtSlot {
         Self {
             kd_mode: KD_TEXT, kb_mode: K_XLATE,
             vt_mode: VtMode { mode: VT_AUTO, waitv: 0, relsig: 0, acqsig: 0, frsig: 0 },
-            proc: 0,
+            owner_vpid: 0, owner_tid: 0,
             leds: 0, cols: 80, rows: 25, locked: false, allocated: false,
         }
     }
@@ -212,6 +218,55 @@ fn fire_signal(pid: u32, signo: u16) {
     f(pid, signo);
 }
 
+/// Owner-liveness hook (`fn(vpid, tid) -> bool`), registered at boot. Lets the
+/// handshake decide whether a VT_PROCESS owner is still a live task before
+/// deferring a switch / firing acqsig — a vpid alone is reusable, so the hook
+/// checks the live registry that the task with this `vpid` still carries the
+/// recorded internal `tid`. `null` = no hook: host tests + early boot treat the
+/// owner as ALIVE so the existing handshake logic/tests are unaffected.
+static OWNER_ALIVE: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Register the owner-liveness hook (boot wiring, once).
+/// # C: O(1)
+pub fn set_owner_alive_hook(f: fn(vpid: u32, tid: u32) -> bool) {
+    OWNER_ALIVE.store(f as *mut (), Ordering::Release);
+}
+
+/// True if the VT_PROCESS owner identified by `(vpid, tid)` is still a live
+/// task. With no hook installed (host tests, pre-boot) the owner is treated as
+/// alive so the deferral handshake matches the legacy behaviour. A `(0,0)`
+/// owner (VT_AUTO / never set) is never alive. # C: O(1) + hook cost.
+fn owner_alive(vpid: u32, tid: u32) -> bool {
+    if vpid == 0 && tid == 0 { return false; }
+    let raw = OWNER_ALIVE.load(Ordering::Acquire);
+    if raw.is_null() { return true; }
+    // SAFETY: OWNER_ALIVE is only set via set_owner_alive_hook with a non-null fn(u32,u32)->bool cast through `as *mut ()`; the reverse cast restores the identical signature.
+    let f: fn(u32, u32) -> bool = unsafe { core::mem::transmute::<*mut (), fn(u32, u32) -> bool>(raw) };
+    f(vpid, tid)
+}
+
+/// VT-switch-completion hook (`fn(new_active_vt)`), registered at boot. Fired
+/// by `do_switch` after the active VT changes so the syscall layer can wake any
+/// task blocked in VT_WAITACTIVE. `null` = no hook (host tests install a
+/// recording one).
+static ON_SWITCH: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Register the switch-completion hook (boot wiring, once).
+/// # C: O(1)
+pub fn set_switch_hook(f: fn(n: u8)) {
+    ON_SWITCH.store(f as *mut (), Ordering::Release);
+}
+
+/// Fire the switch-completion hook for new active VT `n` (no-op if unset).
+/// # C: O(1) + hook cost.
+fn fire_switch(n: u8) {
+    let raw = ON_SWITCH.load(Ordering::Acquire);
+    if raw.is_null() { return; }
+    // SAFETY: ON_SWITCH is only set via set_switch_hook with a non-null fn(u8) cast through `as *mut ()`; the reverse cast restores the identical signature.
+    let f: fn(u8) = unsafe { core::mem::transmute::<*mut (), fn(u8)>(raw) };
+    f(n);
+}
+
 // Active foreground VT (1..MAX_NR_CONSOLES). 0 ⇒ uninitialised.
 static ACTIVE_VT: AtomicU8 = AtomicU8::new(0);
 
@@ -219,7 +274,7 @@ static SLOTS: Spinlock<[VtSlot; MAX_NR_CONSOLES], DriverLockClass>
     = Spinlock::new([
         VtSlot { kd_mode: KD_TEXT, kb_mode: K_XLATE,
                  vt_mode: VtMode { mode: VT_AUTO, waitv: 0, relsig: 0, acqsig: 0, frsig: 0 },
-                 proc: 0, leds: 0, cols: 80, rows: 25, locked: false, allocated: false };
+                 owner_vpid: 0, owner_tid: 0, leds: 0, cols: 80, rows: 25, locked: false, allocated: false };
         MAX_NR_CONSOLES
     ]);
 
@@ -275,13 +330,17 @@ pub fn activate(n: u8) -> KResult<()> {
     let cur = ACTIVE_VT.load(Ordering::Acquire);
     if cur > 0 && g[(cur - 1) as usize].locked { return Err(Error::Busy); }
     // Process-controlled switching (Linux `change_console`): if the CURRENT
-    // foreground VT is in VT_PROCESS mode with a live owner, the switch is
+    // foreground VT is in VT_PROCESS mode with a LIVE owner, the switch is
     // DEFERRED — signal the owner (`relsig`) and wait for its VT_RELDISP ack
     // before changing the display/input. VT_AUTO (the default) switches now.
+    // A DEAD owner must NOT wedge switching forever (Linux `vt_disallocate`
+    // path / `vc->vt_pid` death): if the owner task no longer exists, treat the
+    // VT as auto and switch immediately rather than wait for an ack that can
+    // never come.
     if cur > 0 && n != cur {
         let s = &g[(cur - 1) as usize];
-        if s.vt_mode.mode == VT_PROCESS && s.proc != 0 {
-            let (pid, sig) = (s.proc, s.vt_mode.relsig);
+        if s.vt_mode.mode == VT_PROCESS && owner_alive(s.owner_vpid, s.owner_tid) {
+            let (pid, sig) = (s.owner_vpid, s.vt_mode.relsig);
             drop(g);
             PENDING_SWITCH.store(n, Ordering::Release);
             fire_signal(pid, sig);
@@ -303,7 +362,11 @@ fn do_switch(n: u8) {
         let mut g = SLOTS.lock();
         g[(n - 1) as usize].allocated = true;
         let s = &g[(n - 1) as usize];
-        if s.vt_mode.mode == VT_PROCESS && s.proc != 0 { (s.proc, s.vt_mode.acqsig) } else { (0, 0) }
+        // Only signal an acquiring owner that is still LIVE — a stale vpid
+        // (owner exited, slot not yet torn down) must not receive acqsig.
+        if s.vt_mode.mode == VT_PROCESS && owner_alive(s.owner_vpid, s.owner_tid) {
+            (s.owner_vpid, s.vt_mode.acqsig)
+        } else { (0, 0) }
     };
     ACTIVE_VT.store(n, Ordering::Release);  // administrative active VT
     // The display + input retarget are kernel-only (fbcon::kernel and the
@@ -315,16 +378,41 @@ fn do_switch(n: u8) {
         tty::live::set_foreground(n);       // keyboard input target
     }
     fire_signal(acq_pid, acq_sig);          // VT_PROCESS owner: you have the VT
+    fire_switch(n);                         // wake VT_WAITACTIVE blockers
 }
 
 /// VT_RELDISP: the foreground VT_PROCESS owner answers a release request.
 /// `ack >= 1` allows a pending switch to complete (Linux `vt_reldisp`,
 /// `VT_ACKACQ`); `ack == 0` refuses it (the switch is cancelled). With no
-/// switch pending it is a successful no-op (acknowledging acquisition).
+/// switch pending it is a successful no-op (acknowledging acquisition,
+/// `VT_ACKACQ`).
+///
+/// Caller identity is validated against the RELEASING foreground VT (Linux
+/// `vt_reldisp`: the ioctl must come from the process that owns the current
+/// VT in VT_PROCESS mode). When a switch is pending, the call is valid ONLY
+/// if the current fg VT is VT_PROCESS and `(caller_vpid, caller_tid)` equals
+/// that VT's recorded owner — otherwise `Err(Perm)` (EPERM) and the pending
+/// switch is left intact. With no switch pending the identity check is skipped
+/// (the VT_ACKACQ no-op path).
 /// # C: O(cols*rows) when a pending switch completes.
-pub fn reldisp(ack: i32) -> KResult<()> {
-    let pending = PENDING_SWITCH.swap(0, Ordering::AcqRel);
+pub fn reldisp(ack: i32, caller_vpid: u32, caller_tid: u32) -> KResult<()> {
+    // Peek (don't consume) the pending switch first so a non-owner caller
+    // can't cancel a switch it doesn't own.
+    let pending = PENDING_SWITCH.load(Ordering::Acquire);
     if pending == 0 { return Ok(()); }
+    // Validate the caller IS the releasing fg VT's VT_PROCESS owner.
+    let cur = ACTIVE_VT.load(Ordering::Acquire);
+    {
+        let g = SLOTS.lock();
+        if cur < 1 || cur as usize > MAX_NR_CONSOLES { return Err(Error::Perm); }
+        let s = &g[(cur - 1) as usize];
+        let is_owner = s.vt_mode.mode == VT_PROCESS
+            && s.owner_vpid == caller_vpid && s.owner_tid == caller_tid
+            && !(caller_vpid == 0 && caller_tid == 0);
+        if !is_owner { return Err(Error::Perm); }
+    }
+    // Owner confirmed: now consume the pending switch.
+    PENDING_SWITCH.store(0, Ordering::Release);
     if ack == 0 {
         // Owner refused the release: cancel — stay on the current VT.
         return Ok(());
@@ -392,16 +480,23 @@ pub fn lock_switch(n: u8, locked: bool) -> KResult<()> {
 /// VT_SETMODE: store the VT operating mode — VT_AUTO (kernel switches
 /// freely) or VT_PROCESS (the owner is signalled on switch + must ack via
 /// VT_RELDISP) + the rel/acq/free signal numbers. # C: O(1)
-pub fn set_vt_mode(n: u8, mode: VtMode, pid: u32) -> KResult<()> {
+pub fn set_vt_mode(n: u8, mode: VtMode, vpid: u32, tid: u32) -> KResult<()> {
     if n < 1 || n as usize > MAX_NR_CONSOLES { return Err(Error::Inval); }
     if mode.mode != VT_AUTO && mode.mode != VT_PROCESS && mode.mode != VT_ACKACQ {
         return Err(Error::Inval);
     }
     let mut g = SLOTS.lock();
     g[(n - 1) as usize].vt_mode = mode;
-    // VT_PROCESS records the controlling process (the VT_SETMODE caller) to
-    // signal on switch; VT_AUTO relinquishes process control.
-    g[(n - 1) as usize].proc = if mode.mode == VT_PROCESS { pid } else { 0 };
+    // VT_PROCESS records the controlling process (the VT_SETMODE caller) by
+    // BOTH its namespace vpid (to signal) and internal tid (for liveness);
+    // VT_AUTO relinquishes process control (clears both).
+    if mode.mode == VT_PROCESS {
+        g[(n - 1) as usize].owner_vpid = vpid;
+        g[(n - 1) as usize].owner_tid  = tid;
+    } else {
+        g[(n - 1) as usize].owner_vpid = 0;
+        g[(n - 1) as usize].owner_tid  = 0;
+    }
     Ok(())
 }
 
@@ -434,7 +529,8 @@ pub fn slot(n: u8) -> Option<VtSlotSnap> {
     let g = SLOTS.lock();
     let s = &g[(n - 1) as usize];
     Some(VtSlotSnap {
-        kd_mode: s.kd_mode, kb_mode: s.kb_mode, vt_mode: s.vt_mode, proc: s.proc,
+        kd_mode: s.kd_mode, kb_mode: s.kb_mode, vt_mode: s.vt_mode,
+        owner_vpid: s.owner_vpid, owner_tid: s.owner_tid,
         leds: s.leds, cols: s.cols, rows: s.rows,
         locked: s.locked, allocated: s.allocated,
     })
@@ -442,7 +538,8 @@ pub fn slot(n: u8) -> Option<VtSlotSnap> {
 
 #[derive(Copy, Clone, Debug)]
 pub struct VtSlotSnap {
-    pub kd_mode: u32, pub kb_mode: u32, pub vt_mode: VtMode, pub proc: u32,
+    pub kd_mode: u32, pub kb_mode: u32, pub vt_mode: VtMode,
+    pub owner_vpid: u32, pub owner_tid: u32,
     pub leds: u32, pub cols: u16, pub rows: u16,
     pub locked: bool, pub allocated: bool,
 }
@@ -454,6 +551,10 @@ mod tests {
     fn reset() {
         ACTIVE_VT.store(0, Ordering::Release);
         PENDING_SWITCH.store(0, Ordering::Release);
+        // Detach the liveness + switch hooks so a prior test's hook never
+        // leaks into another (default: owner-alive, no switch hook).
+        OWNER_ALIVE.store(core::ptr::null_mut(), Ordering::Release);
+        ON_SWITCH.store(core::ptr::null_mut(), Ordering::Release);
         let mut g = SLOTS.lock();
         for s in g.iter_mut() { *s = VtSlot::default(); }
     }
@@ -571,17 +672,19 @@ mod tests {
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
         unsafe { init().unwrap(); }
         let m = VtMode { mode: VT_PROCESS, waitv: 0, relsig: 10, acqsig: 12, frsig: 0 };
-        set_vt_mode(1, m, 42).unwrap();
+        set_vt_mode(1, m, 42, 7000).unwrap();
         let s = slot(1).unwrap();
         assert_eq!(s.vt_mode.mode, VT_PROCESS);
         assert_eq!(s.vt_mode.relsig, 10);
         assert_eq!(s.vt_mode.acqsig, 12);
-        assert_eq!(s.proc, 42, "VT_PROCESS records the controlling pid");
-        // VT_AUTO relinquishes process control.
-        set_vt_mode(1, VtMode { mode: VT_AUTO, ..Default::default() }, 42).unwrap();
-        assert_eq!(slot(1).unwrap().proc, 0);
+        assert_eq!(s.owner_vpid, 42, "VT_PROCESS records the controlling vpid");
+        assert_eq!(s.owner_tid, 7000, "VT_PROCESS records the controlling internal tid");
+        // VT_AUTO relinquishes process control (clears both).
+        set_vt_mode(1, VtMode { mode: VT_AUTO, ..Default::default() }, 42, 7000).unwrap();
+        assert_eq!(slot(1).unwrap().owner_vpid, 0);
+        assert_eq!(slot(1).unwrap().owner_tid, 0);
         // Invalid mode rejected.
-        assert!(matches!(set_vt_mode(1, VtMode { mode: 99, ..Default::default() }, 1), Err(Error::Inval)));
+        assert!(matches!(set_vt_mode(1, VtMode { mode: 99, ..Default::default() }, 1, 1), Err(Error::Inval)));
     }
 
     #[test]
@@ -592,9 +695,9 @@ mod tests {
         set_signal_hook(rec_hook);
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
         unsafe { init().unwrap(); }                 // active = 1
-        // VT1 owned by pid 100 in VT_PROCESS; VT2 owned by pid 200.
-        set_vt_mode(1, VtMode { mode: VT_PROCESS, waitv: 0, relsig: 10, acqsig: 11, frsig: 0 }, 100).unwrap();
-        set_vt_mode(2, VtMode { mode: VT_PROCESS, waitv: 0, relsig: 20, acqsig: 21, frsig: 0 }, 200).unwrap();
+        // VT1 owned by vpid 100/tid 5000 in VT_PROCESS; VT2 owned by vpid 200/tid 6000.
+        set_vt_mode(1, VtMode { mode: VT_PROCESS, waitv: 0, relsig: 10, acqsig: 11, frsig: 0 }, 100, 5000).unwrap();
+        set_vt_mode(2, VtMode { mode: VT_PROCESS, waitv: 0, relsig: 20, acqsig: 21, frsig: 0 }, 200, 6000).unwrap();
 
         // Switch to 2 must DEFER: relsig(10) fires to the VT1 owner (100),
         // the active VT stays 1 until the owner acks.
@@ -602,8 +705,8 @@ mod tests {
         assert_eq!(active(), 1, "switch deferred until VT_RELDISP");
         assert_eq!(*REC.lock().last().unwrap(), (100u32, 10u16), "relsig to the releasing owner");
 
-        // RELDISP(1) completes the switch + fires acqsig(21) to the VT2 owner.
-        reldisp(1).unwrap();
+        // RELDISP(1) by the correct owner completes the switch + fires acqsig(21).
+        reldisp(1, 100, 5000).unwrap();
         assert_eq!(active(), 2, "RELDISP allowed the switch");
         assert_eq!(*REC.lock().last().unwrap(), (200u32, 21u16), "acqsig to the acquiring owner");
         set_signal_hook(|_, _| {}); // detach recorder for other tests
@@ -617,11 +720,11 @@ mod tests {
         set_signal_hook(rec_hook);
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
         unsafe { init().unwrap(); }                 // active = 1
-        set_vt_mode(1, VtMode { mode: VT_PROCESS, waitv: 0, relsig: 10, acqsig: 11, frsig: 0 }, 100).unwrap();
+        set_vt_mode(1, VtMode { mode: VT_PROCESS, waitv: 0, relsig: 10, acqsig: 11, frsig: 0 }, 100, 5000).unwrap();
         activate(3).unwrap();
         assert_eq!(active(), 1);
         // Owner refuses (ack 0): the switch is cancelled, stay on VT1.
-        reldisp(0).unwrap();
+        reldisp(0, 100, 5000).unwrap();
         assert_eq!(active(), 1, "refused release keeps the current VT");
         set_signal_hook(|_, _| {});
     }
@@ -645,5 +748,83 @@ mod tests {
         assert_eq!((s.rows, s.cols), (50, 160));
         assert!(matches!(resize(1, 0, 80), Err(Error::Inval)));
         assert!(matches!(resize(1, 24, 0), Err(Error::Inval)));
+    }
+
+    // Recording switch hook: appends every new-active VT do_switch reports.
+    static SW_REC: Spinlock<alloc::vec::Vec<u8>, DriverLockClass>
+        = Spinlock::new(alloc::vec::Vec::new());
+    fn sw_hook(n: u8) { SW_REC.lock().push(n); }
+
+    #[test]
+    fn reldisp_wrong_caller_refused_stays() {
+        let _s = HS_SERIAL.lock();
+        reset();
+        REC.lock().clear();
+        set_signal_hook(rec_hook);
+        // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
+        unsafe { init().unwrap(); }                 // active = 1
+        // VT1 owner = (vpid 100, tid 5000).
+        set_vt_mode(1, VtMode { mode: VT_PROCESS, waitv: 0, relsig: 10, acqsig: 11, frsig: 0 }, 100, 5000).unwrap();
+        activate(2).unwrap();
+        assert_eq!(active(), 1, "switch deferred");
+        // Wrong tid (vpid right, reused-pid impostor) → EPERM, switch intact.
+        assert!(matches!(reldisp(1, 100, 9999), Err(Error::Perm)));
+        assert_eq!(active(), 1, "non-owner RELDISP must not complete the switch");
+        // Wrong vpid → EPERM, switch intact.
+        assert!(matches!(reldisp(1, 999, 5000), Err(Error::Perm)));
+        assert_eq!(active(), 1);
+        // Correct owner → completes.
+        reldisp(1, 100, 5000).unwrap();
+        assert_eq!(active(), 2, "owner RELDISP completes the switch");
+        set_signal_hook(|_, _| {});
+    }
+
+    #[test]
+    fn dead_owner_does_not_defer() {
+        let _s = HS_SERIAL.lock();
+        reset();
+        REC.lock().clear();
+        set_signal_hook(rec_hook);
+        // Owner-liveness hook: nobody is alive.
+        set_owner_alive_hook(|_v, _t| false);
+        // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
+        unsafe { init().unwrap(); }                 // active = 1
+        set_vt_mode(1, VtMode { mode: VT_PROCESS, waitv: 0, relsig: 10, acqsig: 11, frsig: 0 }, 100, 5000).unwrap();
+        // Dead owner → switch is immediate, no deferral, no relsig fired.
+        activate(2).unwrap();
+        assert_eq!(active(), 2, "dead owner must not wedge switching");
+        assert!(REC.lock().is_empty(), "no relsig to a dead owner");
+        set_signal_hook(|_, _| {});
+    }
+
+    #[test]
+    fn alive_owner_defers() {
+        let _s = HS_SERIAL.lock();
+        reset();
+        REC.lock().clear();
+        set_signal_hook(rec_hook);
+        // Owner-liveness hook: everyone alive.
+        set_owner_alive_hook(|_v, _t| true);
+        // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
+        unsafe { init().unwrap(); }                 // active = 1
+        set_vt_mode(1, VtMode { mode: VT_PROCESS, waitv: 0, relsig: 10, acqsig: 11, frsig: 0 }, 100, 5000).unwrap();
+        activate(2).unwrap();
+        assert_eq!(active(), 1, "alive owner defers as before");
+        assert_eq!(*REC.lock().last().unwrap(), (100u32, 10u16), "relsig fired to the live owner");
+        set_signal_hook(|_, _| {});
+    }
+
+    #[test]
+    fn switch_hook_fires_on_do_switch() {
+        let _s = HS_SERIAL.lock();
+        reset();
+        SW_REC.lock().clear();
+        set_switch_hook(sw_hook);
+        // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
+        unsafe { init().unwrap(); }                 // active = 1 (no do_switch)
+        activate(4).unwrap();                       // VT_AUTO → immediate do_switch(4)
+        assert_eq!(active(), 4);
+        assert_eq!(*SW_REC.lock().last().unwrap(), 4u8, "switch hook records the new active VT");
+        set_switch_hook(|_n| {});
     }
 }

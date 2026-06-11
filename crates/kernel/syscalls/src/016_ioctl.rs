@@ -8,6 +8,17 @@ use syscall::errno::Errno;
 
 use crate::userbuf::validate_user_buf;
 
+/// VT_WAITACTIVE sleep queue: a task blocks here until a VT switch completes
+/// (Linux `vt_event` / `vt_waitactive`). Woken by `vt_switch_wake`, which the
+/// vt crate's switch-completion hook drives from `do_switch`.
+static VT_SWITCH_WAIT: sched::live::WaitList = sched::live::WaitList::new();
+
+/// Wake every task blocked in VT_WAITACTIVE. Registered (via
+/// `vt::set_switch_hook`) as the vt switch-completion hook in kmain, so each
+/// completed `do_switch` rouses the blocked waiters to re-check the active VT.
+/// # C: O(N_waiters)
+pub fn vt_switch_wake() { VT_SWITCH_WAIT.wake_all(); }
+
 /// `sys_ioctl(fd, request, arg)` — slot 16.
 /// # C: O(1)
 pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
@@ -442,11 +453,41 @@ fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64> {
             }
         }
         vt::VT_WAITACTIVE => {
-            // Synchronous (current single-CPU model): switch already
-            // happened by the time VT_ACTIVATE returned, so this is
-            // a no-op when n matches current; otherwise EINVAL.
-            if (arg as u8) == vt::active() { Some(0) }
-            else { Some(errno(Errno::Einval)) }
+            // Block until the active VT == n (Linux `vt_waitactive`): the
+            // requested switch may be DEFERRED behind a VT_PROCESS owner's
+            // VT_RELDISP, so this must sleep rather than EINVAL on a not-yet-
+            // current target. Signal-interruptible (EINTR): the owner that
+            // must field relsig + call VT_RELDISP is frequently the SAME task
+            // blocked here, so the wait MUST yield to signal delivery or the
+            // switch deadlocks.
+            let n = arg as u8;
+            if !(1..=63).contains(&n) { return Some(errno(Errno::Einval)); }
+            use core::sync::atomic::Ordering;
+            loop {
+                if vt::active() == n { return Some(0); }
+                let cur = match sched::live::current() {
+                    Some(c) => c, None => return Some(errno(Errno::Einval)),
+                };
+                // Any unblocked pending signal interrupts the wait (mirrors the
+                // poll/pselect6 EINTR check) so the dispatch tail can deliver it
+                // — including the relsig the owner must answer with VT_RELDISP.
+                let pending = cur.sigpending.load(Ordering::Acquire);
+                let mask    = cur.sigmask.load(Ordering::Acquire);
+                if pending & !mask != 0 { return Some(-(Errno::Eintr.as_i32() as i64)); }
+                // park WITH a re-check deadline (not a bare park): the
+                // active() check and the park are NOT under a shared lock, so a
+                // do_switch completing in that window would wake an empty list
+                // and the park would then miss it. The deadline bounds a missed
+                // wake to RESCAN_NS of latency (the re-loop re-reads active())
+                // instead of a hang — the same safety net poll/select use.
+                const RESCAN_NS: u64 = 20_000_000; // 20ms
+                let dl = crate::poll::poll_common::monotonic_ns().saturating_add(RESCAN_NS);
+                // SAFETY: process ctx; preempt-off across the syscall; park_with_deadline marks the running task Sleeping on VT_SWITCH_WAIT + stamps the wake deadline; schedule yields; the re-loop re-reads active() on wake — woken by vt_switch_wake (do_switch) or the deadline scanner.
+                unsafe {
+                    VT_SWITCH_WAIT.park_with_deadline(dl);
+                    sched::live::schedule();
+                }
+            }
         }
         vt::VT_DISALLOCATE => {
             match vt::disallocate(arg as u8) {
@@ -488,20 +529,29 @@ fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64> {
                 }
             };
             // Record the calling process as the VT's controlling owner (Linux
-            // vc->vt_pid) so the switch handshake can signal it.
-            let pid = sched::live::current()
-                .map(|t| t.vtgid.load(core::sync::atomic::Ordering::Acquire))
-                .unwrap_or(0);
-            match vt::set_vt_mode(vt_target, m, pid) {
+            // vc->vt_pid): BOTH its namespace vpid (to signal) and its internal
+            // tid (monotonic, never reused) so the handshake's liveness test is
+            // immune to vpid reuse.
+            let (vpid, tid) = sched::live::current()
+                .map(|t| (t.vtgid.load(core::sync::atomic::Ordering::Acquire), t.tid))
+                .unwrap_or((0, 0));
+            match vt::set_vt_mode(vt_target, m, vpid, tid) {
                 Ok(()) => Some(0),
                 Err(_) => Some(errno(Errno::Einval)),
             }
         }
         vt::VT_RELDISP => {
             // The foreground VT_PROCESS owner answers a release request: arg>=1
-            // allows a pending switch to complete, arg==0 refuses it.
-            match vt::reldisp(arg as i32) {
+            // allows a pending switch to complete, arg==0 refuses it. The vt
+            // layer validates the caller IS that VT's recorded owner (vpid+tid)
+            // — a non-owner that tries to ack/cancel another's switch gets
+            // EPERM (Linux `vt_reldisp` ownership check).
+            let (vpid, tid) = sched::live::current()
+                .map(|t| (t.vtgid.load(core::sync::atomic::Ordering::Acquire), t.tid))
+                .unwrap_or((0, 0));
+            match vt::reldisp(arg as i32, vpid, tid) {
                 Ok(()) => Some(0),
+                Err(vt::Error::Perm) => Some(errno(Errno::Eperm)),
                 Err(_) => Some(errno(Errno::Einval)),
             }
         }
