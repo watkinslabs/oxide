@@ -25,7 +25,9 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     const TCGETS:     u64 = 0x5401;
     const TCSETS:     u64 = 0x5402;
     const TCSETSW:    u64 = 0x5403; // TCSETS after pending output drains; v1 == TCSETS
-    const TCSETSF:    u64 = 0x5404; // TCSETS + flush input; v1 == TCSETS
+    const TCSETSF:    u64 = 0x5404; // TCSETS + flush unread input
+    const TCXONC:     u64 = 0x540A; // tcflow(): 0=TCOOFF 1=TCOON 2=TCIOFF 3=TCION
+    const TCFLSH:     u64 = 0x540B; // tcflush(): arg 0=TCIFLUSH 1=TCOFLUSH 2=TCIOFLUSH
     const TIOCGWINSZ: u64 = 0x5413;
     const TIOCSWINSZ: u64 = 0x5414;
     const TIOCGPTN:   u64 = 0x80045430;
@@ -207,15 +209,39 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             }
             if let Some(pair) = &pty_pair {
                 pair.with_pair(|p| p.termios = buf);
+                // TCSETSF also discards unread input (Linux `tcsetattr`
+                // TCSAFLUSH). agetty sets the line params with TCSETSF to
+                // drop any type-ahead/answerback before the login prompt.
+                if req == TCSETSF { pair.with_pair(|p| p.flush_slave(true, false)); }
             } else {
                 let vt = (ino & 0xff) as u8;
                 // T7: login ECHO-off + bash raw mode must reach the
                 // serial console's N_TTY ldisc, not a dead side table.
                 if vt <= 1 { console::static_console::termios_set(&buf); }
                 else       { console::vt_tty::vt_tty(vt).set_termios(&buf); }
+                if req == TCSETSF {
+                    if vt <= 1 { console::static_console::flush(tty::TtyFlush::Input); }
+                    else       { console::vt_tty::vt_tty(vt).flush(tty::TtyFlush::Input); }
+                }
             }
             0
         }
+        TCFLSH => {
+            // tcflush(): discard queued I/O per the arg selector. agetty/
+            // login/bash drop stale type-ahead + terminal-query answerback
+            // (`ESC[r;cR`) before reading; without it the bytes contaminate
+            // the username line → login fails → getty respawns (`28§4`).
+            let sel = tty::TtyFlush::from_arg(arg);
+            if let Some(pair) = &pty_pair {
+                pair.with_pair(|p| p.flush_slave(sel.input(), sel.output()));
+            } else {
+                let vt = (ino & 0xff) as u8;
+                if vt <= 1 { console::static_console::flush(sel); }
+                else       { console::vt_tty::vt_tty(vt).flush(sel); }
+            }
+            0
+        }
+        TCXONC => 0,
         TIOCGPTN => {
             if (ino & 0xFFFF_8000) != 0x6000_0000 { return -(Errno::Enotty.as_i32() as i64); }
             if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }

@@ -685,4 +685,18 @@ impl LdiscOps for NTty {
             }
         }
     }
+
+    /// TCIFLUSH: drop the unfinished canonical line, the completed read
+    /// queue, and the pending-EOF marker. Does NOT touch the hung-up latch
+    /// or flow state (Linux `tty_buffer_flush` clears only input). # C: O(1)
+    fn flush_input(&mut self) {
+        self.canon.clear();
+        self.readq.clear();
+        self.eof_pending = false;
+    }
+
+    /// TCOFLUSH: drop IXON-withheld output queued in `out_hold`. # C: O(1)
+    fn flush_output(&mut self) {
+        self.out_hold.clear();
+    }
 }

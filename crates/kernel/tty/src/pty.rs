@@ -273,6 +273,9 @@ impl Ring {
         n
     }
 
+    /// Discard all queued bytes (TCFLSH). # C: O(N) drop
+    pub fn clear(&mut self) { self.buf.clear(); }
+
     /// Drain up to `dst.len()` bytes into `dst`; returns the count
     /// actually copied. Zero return means the queue was empty.
     /// # C: O(N_read)
@@ -635,6 +638,16 @@ impl Pair {
     /// slave→master queue has drained.
     /// # C: O(N)
     pub fn master_read(&mut self, dst: &mut [u8]) -> usize { self.s_to_m.read(dst) }
+
+    /// TCFLSH from the SLAVE side (where login/bash/ssh run). TCIFLUSH
+    /// drops the slave's unread input (`m_to_s` — keystrokes the master
+    /// wrote) + the pending-EOF marker; TCOFLUSH drops the slave's
+    /// untransmitted output (`s_to_m` + IXON-withheld `out_hold`). Mirrors
+    /// Linux `tty_buffer_flush` on a pts. # C: O(N) dropped
+    pub fn flush_slave(&mut self, input: bool, output: bool) {
+        if input { self.m_to_s.clear(); self.pending_eof = false; }
+        if output { self.s_to_m.clear(); self.out_hold.clear(); }
+    }
 
     /// Hang up from the MASTER side (final master fd closed). The slave
     /// gets EOF on read + EIO on write, and SIGHUP is owed to the slave's

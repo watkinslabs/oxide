@@ -184,6 +184,15 @@ pub fn termios_set(t: &[u8; TERMIOS_BYTES]) {
     }
 }
 
+/// TCFLSH / TCSETSF: discard queued console I/O so agetty/login/bash drop
+/// stale type-ahead + terminal-query answerbacks before reading. No-op
+/// before `install`. # C: O(1)
+pub fn flush(qsel: tty::TtyFlush) {
+    if let Some(tty) = console() {
+        tty.flush(qsel);
+    }
+}
+
 /// TIOCGPGRP: foreground pgrp (0 = unset).
 /// # C: O(1)
 pub fn foreground_pgid() -> u32 {

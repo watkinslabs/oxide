@@ -121,6 +121,18 @@ pub trait LdiscOps {
     /// Replace the termios image and recompute derived state (TCSETS).
     /// # C: O(1)
     fn set_termios(&mut self, new: &[u8; crate::pty::TERMIOS_BYTES]);
+
+    /// TCFLSH TCIFLUSH / TCSETSF: discard all unread input — the unfinished
+    /// canonical line, the completed read queue, and any pending-EOF marker.
+    /// agetty/login/bash call `tcflush(TCIFLUSH)` before reading to drop
+    /// stale type-ahead + terminal-query answerbacks (`ESC[r;cR`); without
+    /// it those bytes contaminate the next line (`28§4`). # C: O(1)
+    fn flush_input(&mut self);
+
+    /// TCFLSH TCOFLUSH: discard not-yet-transmitted output — the IXON-
+    /// withheld `out_hold`. (Already-emitted bytes are gone to the driver.)
+    /// # C: O(1)
+    fn flush_output(&mut self);
 }
 
 #[cfg(test)]
