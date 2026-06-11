@@ -512,8 +512,8 @@ impl Inode for ProcHostnameInode {
 }
 
 /// `/proc/loadavg` per `19§4`. "<1m> <5m> <15m> <run>/<total> <last_pid>\n".
-/// v1: load averages are 0.00 (no decay accounting yet); run/total
-/// pulls live tids from the registry; last_pid reports the same.
+/// Load averages are the real 1/5/15-min EWMA (`sched::loadavg`); run/total +
+/// last_pid come from the live task registry.
 pub struct ProcLoadavgInode;
 
 impl Inode for ProcLoadavgInode {
@@ -534,8 +534,17 @@ impl Inode for ProcLoadavgInode {
         let tids = sched::live::registry::live_tids();
         let total = tids.len() as u64;
         let last = tids.last().copied().unwrap_or(1) as u64;
-        push(&mut body, b"0.00 0.00 0.00 ");
-        push_u64(&mut body, total);
+        let (_, running) = sched::live::registry::live_counts();
+        let avg = sched::loadavg::snapshot();
+        for a in avg {
+            let (i, f) = sched::loadavg::fmt_parts(a);
+            push_u64(&mut body, i);
+            body.push(b'.');
+            if f < 10 { body.push(b'0'); }
+            push_u64(&mut body, f);
+            body.push(b' ');
+        }
+        push_u64(&mut body, running);
         body.push(b'/');
         push_u64(&mut body, total);
         body.push(b' ');
