@@ -2,6 +2,12 @@
 
 FROZEN 2026-05-09. Dep:`01`,`02`,`07`,`08`,`13`,`15`,`28`,`45`,`47`,`48`,`50`. Provides:graphical console glyph backend for `50` (VT).
 
+## Revision 2026-06-11 (R01)
+
+§5 table completed to match the §2.5 "full vt102/xterm" mandate (the table was an incomplete subset): added `CSI L`/`M` (insert/delete lines), `CSI X` (ECH — erase chars), and the alternate-screen modes `CSI ?47`/`?1047`/`?1049` (smcup/rmcup). These were already required by §2.5; the table now lists them. No contract change.
+
+---
+
 Full Linux fbcon-equivalent surface per `linux/drivers/video/console/fbcon.c` + `linux/drivers/tty/vt/vt.c` console code paths. No deferrals.
 
 ## 1 Purpose
@@ -64,10 +70,13 @@ V1 parser supports v2 only (PSF v1 256-glyph 8×y header is half the size; rejec
 | `\x1b[<n>S` / `T` | scroll up / down N lines (within DECSTBM region) |
 | `\x1b[<n>P` | delete N chars |
 | `\x1b[<n>@` | insert N blanks |
+| `\x1b[<n>L` / `M` | insert / delete N lines (within DECSTBM region) |
+| `\x1b[<n>X` | ECH — erase N chars at cursor (no cursor move) |
 | `\x1b[<top>;<bot>r` | DECSTBM (set scroll region) |
 | `\x1b[6n` | DSR — report cursor pos |
 | `\x1b[?25h` / `?25l` | DECSET 25 — show / hide cursor |
 | `\x1b[?7h` / `?7l` | DECSET 7 — autowrap on/off |
+| `\x1b[?47h`/`l`, `?1047`, `?1049` | alternate screen buffer enter/leave (`?1049` also saves/restores cursor) — smcup/rmcup, used by htop/top/vim/less |
 | `\x1b[<args>m` | SGR (see §6) |
 | `\x1b 7` / `8` | DECSC / DECRC — save / restore cursor |
 | `\x1b D` | IND — index (cursor down + scroll) |
