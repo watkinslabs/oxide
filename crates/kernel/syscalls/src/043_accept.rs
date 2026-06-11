@@ -16,6 +16,12 @@ pub fn sys_accept(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let fd     = args.a0;
     let addr_p = args.a1;
+    // D3.3: AF_VSOCK accept — pop a queued peer from the listener's
+    // backlog (deliver_rx already replied OP_RESPONSE + inserted the
+    // conn), wrap it in a new VsockSocket fd.
+    if let Some(vs) = crate::net_common::vsock_from_fd(fd) {
+        return vsock_accept(&vs, addr_p, file_is_nonblock(fd), args.a3);
+    }
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"accept"); return -(Errno::Enotsock.as_i32() as i64); }
     };
@@ -79,6 +85,48 @@ pub fn sys_accept(args: &SyscallArgs) -> i64 {
             if (flags & SOCK_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
             fd as i64
         }
+        Err(e) => -(e as i64),
+    }
+}
+
+/// D3.3: AF_VSOCK accept. Pops one pending peer key from the listener's
+/// backlog (blocking unless O_NONBLOCK), looks up the connection
+/// deliver_rx already created, and installs it on a fresh VsockSocket fd.
+/// # C: O(1) per accept
+fn vsock_accept(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64,
+                nonblock: bool, flags: u64) -> i64 {
+    let port = match &*vs.kind.lock() {
+        net::vsock_socket::VsockKind::Listener(p) => *p,
+        _ => return -(Errno::Einval.as_i32() as i64),
+    };
+    let key = loop {
+        if let Some(k) = net::vsock::TABLE.pop_accept(port) { break k; }
+        if nonblock { return -(Errno::Eagain.as_i32() as i64); }
+        // SAFETY: process ctx (sys_accept AF_VSOCK); runqueue installed;
+        // preempt-off owned by the syscall stub; deliver_rx queues the
+        // peer + tick_yield reschedules so we re-poll the backlog.
+        unsafe { sched::live::tick_yield(); }
+    };
+    let conn = match net::vsock::TABLE.find(key) {
+        Some(c) => c, None => return -(Errno::Econnreset.as_i32() as i64),
+    };
+    if addr_p != 0 {
+        write_sockaddr_vm(addr_p, key.peer_port, key.peer_cid);
+    }
+    let new_sock = Arc::new(net::vsock_socket::VsockSocket::new());
+    *new_sock.kind.lock() = net::vsock_socket::VsockKind::Conn(conn);
+    let inode: vfs::InodeRef = new_sock as _;
+    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
+    // SAFETY: running task; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
+    let dentry = vfs::Dentry::new(None, alloc::string::String::from("[vsock]"), Arc::clone(&inode));
+    const SOCK_CLOEXEC:  u64 = 0o2_000_000;
+    const SOCK_NONBLOCK: u64 = 0o0_004_000;
+    let mut fl = vfs::OpenFlags::O_RDWR;
+    if (flags & SOCK_NONBLOCK) != 0 { fl |= vfs::OpenFlags::O_NONBLOCK; }
+    let file = vfs::File::new(inode, dentry, fl);
+    match fdt.alloc(file) {
+        Ok(fd) => { if (flags & SOCK_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); } fd as i64 }
         Err(e) => -(e as i64),
     }
 }

@@ -112,6 +112,28 @@ pub(crate) fn inode_as_inet_socket(inode: &vfs::InodeRef) -> Option<Arc<InetSock
     Some(arc)
 }
 
+/// D3.3: resolve an fd to its AF_VSOCK socket Arc, or None for a
+/// closed fd / non-vsock inode. Mirrors `inode_as_inet_socket` but
+/// keys on the VSOCK_INO_TAG. # C: O(1)
+pub(crate) fn vsock_from_fd(fd: u64) -> Option<Arc<net::vsock_socket::VsockSocket>> {
+    let cur = sched::live::current()?;
+    // SAFETY: running task; sole reader of fd_table slot.
+    let fdt = unsafe { cur.fd_table_ref() }?;
+    let file = fdt.get(fd as i32).ok()?;
+    let inode: &vfs::InodeRef = file.inode();
+    if (inode.ino() & 0xFFFF_FFFF_0000_0000) != net::vsock_socket::VSOCK_INO_TAG {
+        return None;
+    }
+    // Erase fat-pointer metadata via Arc::into_raw → cast → from_raw.
+    let raw = Arc::into_raw(inode.clone());
+    let ptr = raw as *const net::vsock_socket::VsockSocket;
+    // SAFETY: ino tag check above confirms the inode is a VsockSocket;
+    // refcount was incremented by `Arc::clone` then `into_raw`, so the
+    // matching `Arc::from_raw` consumes exactly that reference.
+    let arc = unsafe { Arc::from_raw(ptr) };
+    Some(arc)
+}
+
 /// Resolve an fd to its vfs::File Arc (running task's fd table).
 /// # C: O(1)
 pub(crate) fn fd_file(fd: u64) -> Option<Arc<vfs::File>> {

@@ -25,6 +25,7 @@ model_driver!(VirtioNetDrv,   VIRTIO_NET_DRV,   "virtio-net",   0x1000 | 0x1041)
 model_driver!(VirtioGpuDrv,   VIRTIO_GPU_DRV,   "virtio-gpu",   0x1050);
 model_driver!(VirtioInputDrv, VIRTIO_INPUT_DRV, "virtio-input", 0x1052);
 model_driver!(VirtioRngDrv,   VIRTIO_RNG_DRV,   "virtio-rng",   0x1044);
+model_driver!(VirtioVsockDrv, VIRTIO_VSOCK_DRV, "virtio-vsock", 0x1053);
 
 /// Canonical `0000:bb:dd.f` addr for a BDF (matches enumeration loop).
 /// # C: O(1)
@@ -41,47 +42,51 @@ fn model_bind(d: &'static dyn drv::Driver, bdf: pci::Bdf) {
     drv::bind_addr("pci", &pci_addr(bdf), d.name());
 }
 
-struct VirtioProbe {
-    cmd_orig: u16,
-    cmd_new:  u16,
-    cfg_va:   u64,
-    dev_features: u64,
-    drv_features: u64,
-    post_status: u32,
-    features_ok: bool,
-    msix_cfg:    u16,
-    num_queues:  u16,
-    queues: [(u16, u16); 8],
-    queues_len: usize,
-    q0_desc_pa:   u64,
-    q0_driver_pa: u64,
-    q0_device_pa: u64,
-    final_status: u8,
-    q0_notify_off: u16,
-    q0_notify_va:  u64,
-    post_notify_status: u8,
-    avail_idx_posted: u16,
-    used_idx_observed: u16,
-    isr_status: u8,
-    tx_used_idx: u16,
-    q1_notify_va: u64,
-    q1_notify_off: u16,
-    q0_size: u16,
-    q1_size: u16,
-    q1_desc_pa:   u64,
-    q1_driver_pa: u64,
-    q1_device_pa: u64,
-    rx0_buf_pa:  u64,
-    rx0_buf_len: u16,
-    mac:       [u8; 6],
-    mac_valid: bool,
-    tx0_buf_pa: u64,
-    // virtio-blk device-cfg harvest (Stage 1): capacity (512B sectors)
-    // + logical block size. Valid iff blk_cfg_valid (device-cfg BAR
-    // decoded). The serial is NOT here — the engine reads it via GET_ID.
-    blk_capacity: u64,
-    blk_blk_size: u32,
-    blk_cfg_valid: bool,
+// pub(super) so the trace (virtio_trace.rs) can read the fields without
+// re-deriving them; the inline bring-up here is the sole producer.
+pub(super) struct VirtioProbe {
+    pub(super) cmd_orig: u16,
+    pub(super) cmd_new:  u16,
+    pub(super) cfg_va:   u64,
+    pub(super) dev_features: u64,
+    pub(super) drv_features: u64,
+    pub(super) post_status: u32,
+    pub(super) features_ok: bool,
+    pub(super) msix_cfg:    u16,
+    pub(super) num_queues:  u16,
+    pub(super) queues: [(u16, u16); 8],
+    pub(super) queues_len: usize,
+    pub(super) q0_desc_pa:   u64,
+    pub(super) q0_driver_pa: u64,
+    pub(super) q0_device_pa: u64,
+    pub(super) final_status: u8,
+    pub(super) q0_notify_off: u16,
+    pub(super) q0_notify_va:  u64,
+    pub(super) post_notify_status: u8,
+    pub(super) avail_idx_posted: u16,
+    pub(super) used_idx_observed: u16,
+    pub(super) isr_status: u8,
+    pub(super) tx_used_idx: u16,
+    pub(super) q1_notify_va: u64,
+    pub(super) q1_notify_off: u16,
+    pub(super) q0_size: u16,
+    pub(super) q1_size: u16,
+    pub(super) q1_desc_pa:   u64,
+    pub(super) q1_driver_pa: u64,
+    pub(super) q1_device_pa: u64,
+    pub(super) rx0_buf_pa:  u64,
+    pub(super) rx0_buf_len: u16,
+    pub(super) mac:       [u8; 6],
+    pub(super) mac_valid: bool,
+    pub(super) tx0_buf_pa: u64,
+    // virtio-blk device-cfg harvest: capacity (512B sectors) + block
+    // size. Valid iff blk_cfg_valid. Serial read by the engine via GET_ID.
+    pub(super) blk_capacity: u64,
+    pub(super) blk_blk_size: u32,
+    pub(super) blk_cfg_valid: bool,
+    // D3.3: virtio-vsock guest CID (device-cfg offset 0, le64).
+    pub(super) vsock_cid: u64,
+    pub(super) vsock_cid_valid: bool,
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
@@ -95,6 +100,10 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     // alongside queue 0 inside the per-queue setup block below.
     let is_virtio_net_early = d.vendor_id == 0x1AF4
         && (d.device_id == 0x1000 || d.device_id == 0x1041);
+    // D3.3: virtio-vsock (0x1053) also needs q1 (TX) programmed, like
+    // virtio-net's q0(RX)+q1(TX) split (only net's dummy-TX-frame is gated).
+    let is_virtio_vsock_early = d.vendor_id == 0x1AF4 && d.device_id == 0x1053;
+    let needs_q1 = is_virtio_net_early || is_virtio_vsock_early;
 
     // Re-walk caps + decode virtio cfgs + decode BARs.
     let (vcaps, bars) = {
@@ -291,10 +300,10 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             // F59-09: queue_enable is u16 at +0x1C — must be a u16 store.
             w16(0x1C, 1);
 
-            //: for virtio-net, also stand up queue 1 (TX) so we
-            // can post outgoing frames. queue 0 = RX, queue 1 = TX
-            // by spec §5.1.6 Device Operation.
-            if is_virtio_net_early {
+            //: for virtio-net / virtio-vsock, also stand up queue 1
+            // (TX) so we can post outgoing frames. queue 0 = RX,
+            // queue 1 = TX by spec §5.1.6 Device Operation.
+            if needs_q1 {
                 if let (Some(q1d), Some(q1v), Some(q1u)) = (
                     pmm::setup::alloc_one_frame(),
                     pmm::setup::alloc_one_frame(),
@@ -582,6 +591,19 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         }
     }
 
+    // D3.3: virtio-vsock q1 notify VA. No dummy TX frame (vsock has no
+    // broadcast warm-up); the persistent driver posts real OP_* packets
+    // post-boot. Just map the q1 notify window so `tx_packet` can kick.
+    if is_virtio_vsock_early
+        && q1_desc_pa != 0
+        && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
+    {
+        if let Some(notify_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG) {
+            q1_notify_va_local = super::virtio_vsock_cfg::map_q1_notify(
+                &notify_cap, &bars, q1_notify_off_local);
+        }
+    }
+
     //: locate ISR cap, map its BAR page, and read the ISR byte
     // post-kick. Per Virtio 1.2 §4.1.4.5: ISR is a 1-byte read-to-clear
     // register; bit 0 = queue interrupt, bit 1 = config-change
@@ -646,6 +668,18 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     // else the wire default 512. The serial is read later by the engine
     // via GET_ID, not from device-cfg. Same window pattern as the MAC
     // harvest above.
+    // D3.3: harvest virtio_vsock_config (spec §5.10.4): guest_cid is a
+    // le64 at device-cfg offset 0. Same window pattern as the MAC harvest.
+    let mut vsock_cid_local: u64 = 0;
+    let mut vsock_cid_valid_local: bool = false;
+    if is_virtio_vsock_early {
+        if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
+            let (cid, valid) = super::virtio_vsock_cfg::harvest_cid(&devcfg_cap, &bars);
+            vsock_cid_local = cid;
+            vsock_cid_valid_local = valid;
+        }
+    }
+
     let mut blk_capacity_local: u64 = 0;
     let mut blk_blk_size_local: u32 = virtio::VIRTIO_BLK_SECTOR_BYTES;
     let mut blk_cfg_valid_local: bool = false;
@@ -714,6 +748,8 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         blk_capacity:  blk_capacity_local,
         blk_blk_size:  blk_blk_size_local,
         blk_cfg_valid: blk_cfg_valid_local,
+        vsock_cid:       vsock_cid_local,
+        vsock_cid_valid: vsock_cid_valid_local,
     })
 }
 
@@ -724,137 +760,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
 pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
     let p = match virtio_init_arch(d) { Some(p) => p, None => return };
     let bdf = d.bdf;
-    debug_boot! {
-        klog::write_raw(b"[INFO]  pci-cmd ");
-        klog::write_dec_u64(bdf.bus as u64);
-        klog::write_raw(b":");
-        klog::write_dec_u64(bdf.device as u64);
-        klog::write_raw(b".");
-        klog::write_dec_u64(bdf.function as u64);
-        klog::write_raw(b" was=");
-        klog::write_hex_u64(p.cmd_orig as u64);
-        klog::write_raw(b" now=");
-        klog::write_hex_u64(p.cmd_new as u64);
-        klog::write_raw(b"\n");
-
-        klog::write_raw(b"[INFO]  virtio-cfg ");
-        klog::write_dec_u64(bdf.bus as u64);
-        klog::write_raw(b":");
-        klog::write_dec_u64(bdf.device as u64);
-        klog::write_raw(b".");
-        klog::write_dec_u64(bdf.function as u64);
-        klog::write_raw(b" common-va=");
-        klog::write_hex_u64(p.cfg_va);
-        klog::write_raw(b" feat=");
-        klog::write_hex_u64(p.dev_features);
-        klog::write_raw(b" drv_feat=");
-        klog::write_hex_u64(p.drv_features);
-        klog::write_raw(b" status=");
-        klog::write_hex_u64(p.post_status as u64);
-        klog::write_raw(b" features_ok=");
-        klog::write_dec_u64(p.features_ok as u64);
-        klog::write_raw(b" num_queues=");
-        klog::write_dec_u64(p.num_queues as u64);
-        klog::write_raw(b" msix_cfg=");
-        klog::write_hex_u64(p.msix_cfg as u64);
-        klog::write_raw(b"\n");
-
-        for i in 0..p.queues_len {
-            let (qi, qsz) = p.queues[i];
-            klog::write_raw(b"[INFO]  virtio-q ");
-            klog::write_dec_u64(bdf.bus as u64);
-            klog::write_raw(b":");
-            klog::write_dec_u64(bdf.device as u64);
-            klog::write_raw(b".");
-            klog::write_dec_u64(bdf.function as u64);
-            klog::write_raw(b" idx=");
-            klog::write_dec_u64(qi as u64);
-            klog::write_raw(b" size=");
-            klog::write_dec_u64(qsz as u64);
-            klog::write_raw(b"\n");
-        }
-        if p.avail_idx_posted > 0 {
-            klog::write_raw(b"[INFO]  virtio-rx-post ");
-            klog::write_dec_u64(bdf.bus as u64);
-            klog::write_raw(b":");
-            klog::write_dec_u64(bdf.device as u64);
-            klog::write_raw(b".");
-            klog::write_dec_u64(bdf.function as u64);
-            klog::write_raw(b" avail_idx=");
-            klog::write_dec_u64(p.avail_idx_posted as u64);
-            klog::write_raw(b" used_idx=");
-            klog::write_dec_u64(p.used_idx_observed as u64);
-            klog::write_raw(b" isr=");
-            klog::write_hex_u64(p.isr_status as u64);
-            klog::write_raw(b"\n");
-        }
-        if p.q1_notify_va != 0 {
-            klog::write_raw(b"[INFO]  virtio-tx ");
-            klog::write_dec_u64(bdf.bus as u64);
-            klog::write_raw(b":");
-            klog::write_dec_u64(bdf.device as u64);
-            klog::write_raw(b".");
-            klog::write_dec_u64(bdf.function as u64);
-            klog::write_raw(b" q1_notify_off=");
-            klog::write_dec_u64(p.q1_notify_off as u64);
-            klog::write_raw(b" q1_notify_va=");
-            klog::write_hex_u64(p.q1_notify_va);
-            klog::write_raw(b" tx_used_idx=");
-            klog::write_dec_u64(p.tx_used_idx as u64);
-            klog::write_raw(b"\n");
-        }
-        if p.q0_notify_va != 0 {
-            klog::write_raw(b"[INFO]  virtio-notify ");
-            klog::write_dec_u64(bdf.bus as u64);
-            klog::write_raw(b":");
-            klog::write_dec_u64(bdf.device as u64);
-            klog::write_raw(b".");
-            klog::write_dec_u64(bdf.function as u64);
-            klog::write_raw(b" q=0 off=");
-            klog::write_hex_u64(p.q0_notify_off as u64);
-            klog::write_raw(b" va=");
-            klog::write_hex_u64(p.q0_notify_va);
-            klog::write_raw(b" post_status=");
-            klog::write_hex_u64(p.post_notify_status as u64);
-            klog::write_raw(b"\n");
-        }
-        //: read back queue_msix_vector (high u16 of dword at 0x18)
-        // and report MSI delivery count seen by the IRQ dispatcher.
-        // SAFETY: cfg_va Device-attr mapped during init; aligned u32 read.
-        let qmv_word = unsafe {
-            core::ptr::read_volatile((p.cfg_va + 0x18) as *const u32)
-        };
-        let qmv = (qmv_word >> 16) as u16;
-        let fires = arch_irq::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
-        klog::write_raw(b"[INFO]  virtio-msix ");
-        klog::write_dec_u64(bdf.bus as u64);
-        klog::write_raw(b":");
-        klog::write_dec_u64(bdf.device as u64);
-        klog::write_raw(b".");
-        klog::write_dec_u64(bdf.function as u64);
-        klog::write_raw(b" q0_msix_vec=");
-        klog::write_hex_u64(qmv as u64);
-        klog::write_raw(b" msi_fires=");
-        klog::write_dec_u64(fires as u64);
-        klog::write_raw(b"\n");
-        if p.q0_desc_pa != 0 {
-            klog::write_raw(b"[INFO]  virtio-q0-prog ");
-            klog::write_dec_u64(bdf.bus as u64);
-            klog::write_raw(b":");
-            klog::write_dec_u64(bdf.device as u64);
-            klog::write_raw(b".");
-            klog::write_dec_u64(bdf.function as u64);
-            klog::write_raw(b" desc_pa=");
-            klog::write_hex_u64(p.q0_desc_pa);
-            klog::write_raw(b" driver_pa=");
-            klog::write_hex_u64(p.q0_driver_pa);
-            klog::write_raw(b" device_pa=");
-            klog::write_hex_u64(p.q0_device_pa);
-            klog::write_raw(b" final_status=");
-            klog::write_hex_u64(p.final_status as u64);
-            klog::write_raw(b"\n");
-        }
-    }
+    super::virtio_trace::trace_probe(bdf, &p);
     // F59-01: hand persistent runtime state for the modern virtio-net
     // device to dev_virtio_net so later phases (RX poll, TX, ARP) can
     // drive the queues post-boot. Only register if the device reached
@@ -962,6 +868,25 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
                 klog::write_dec_u64(n as u64);
                 klog::write_raw(b" bytes\n");
             }
+        }
+    }
+
+    // D3.3: virtio-vsock (0x1053). Hand q0(RX)+q1(TX) rings + guest CID
+    // to drv-virtio-vsock (pre-posts RX, installs the net::vsock TX hook).
+    let vsock_ok = d.vendor_id == 0x1AF4 && d.device_id == 0x1053
+        && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
+        && p.q0_desc_pa != 0 && p.q0_notify_va != 0
+        && p.q1_desc_pa != 0 && p.q1_notify_va != 0 && p.vsock_cid_valid
+        && super::virtio_vsock_cfg::install_vsock(
+            p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa, p.q0_notify_va, p.q0_size,
+            p.q1_desc_pa, p.q1_driver_pa, p.q1_device_pa, p.q1_notify_va, p.q1_size,
+            p.vsock_cid);
+    if vsock_ok {
+        model_bind(&VIRTIO_VSOCK_DRV, bdf); // D1a: publish + bind
+        debug_boot! {
+            klog::write_raw(b"[INFO]  virtio-vsock installed cid=");
+            klog::write_dec_u64(p.vsock_cid);
+            klog::write_raw(b"\n");
         }
     }
 

@@ -320,6 +320,9 @@ fn qemu_run_aarch64_grub(
         // D3.1: virtio-rng entropy source. The kernel seeds its RNG from
         // this at boot and backs /dev/hwrng with it.
         "-device", "virtio-rng-pci,bus=pcie.0,disable-legacy=on",
+        // D3.3: virtio-vsock (modern id 0x1053). guest-cid=3; the host
+        // peer is always CID 2. Needs /dev/vhost-vsock on the host.
+        "-device", "vhost-vsock-pci,guest-cid=3,disable-legacy=on,bus=pcie.0",
         // D3.5: NVMe controller + scratch backing disk (lockstep with x86).
         "-drive", nvme_drive.as_str(),
         "-device", "nvme,serial=oxnvme,drive=nvm0,bus=pcie.0",
@@ -446,6 +449,9 @@ fn qemu_run_grub_x86_64(
         // D3.1: virtio-rng entropy source. The kernel seeds its RNG from
         // this at boot and backs /dev/hwrng with it.
         "-device", "virtio-rng-pci,bus=pcie.0,disable-legacy=on",
+        // D3.3: virtio-vsock (modern id 0x1053). guest-cid=3; the host
+        // peer is always CID 2. Needs /dev/vhost-vsock on the host.
+        "-device", "vhost-vsock-pci,guest-cid=3,disable-legacy=on,bus=pcie.0",
         // D3.5: NVMe controller + its scratch backing disk (drv-nvme brings
         // it up, registers nvme0n1, self-tests an LBA-0 read).
         "-drive", nvme_drive.as_str(),
