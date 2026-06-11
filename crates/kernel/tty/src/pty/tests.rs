@@ -567,11 +567,12 @@ fn ixon_vstop_pauses_slave_writes() {
     // ^S on master pauses output.
     p.master_write(b"\x13");
     assert!(p.output_stopped);
-    // slave_write under output_stopped is silently consumed.
+    // slave_write under output_stopped is WITHHELD (consumed from src,
+    // buffered in out_hold) — not dropped, not yet visible to master.
     let n = p.slave_write(b"hello");
     assert_eq!(n, 5);
     let mut buf = [0u8; 16];
-    assert_eq!(p.master_read(&mut buf), 0, "no bytes reach master");
+    assert_eq!(p.master_read(&mut buf), 0, "no bytes reach master while paused");
 }
 
 #[test]
@@ -581,15 +582,16 @@ fn ixon_vstart_resumes_slave_writes() {
     p.termios[TERMIOS_OFF_IFLAG..TERMIOS_OFF_IFLAG + 4]
         .copy_from_slice(&(iflag | iflag::IXON).to_le_bytes());
     p.master_write(b"\x13");                  // ^S
-    p.slave_write(b"dropped");                // dropped while paused
-    p.master_write(b"\x11");                  // ^Q
+    p.slave_write(b"held");                   // WITHHELD while paused (not dropped)
+    let mut buf = [0u8; 16];
+    assert_eq!(p.master_read(&mut buf), 0, "withheld while stopped");
+    p.master_write(b"\x11");                  // ^Q → flush held bytes
     assert!(!p.output_stopped);
     p.slave_write(b"ok\n");
-    let mut buf = [0u8; 16];
     let n = p.master_read(&mut buf);
-    // ONLCR expands \n → \r\n
-    assert_eq!(n, 4);
-    assert_eq!(&buf[..4], b"ok\r\n");
+    // Held "held" flushes first, then "ok\r\n" (ONLCR \n → \r\n).
+    assert_eq!(n, 8);
+    assert_eq!(&buf[..8], b"heldok\r\n");
 }
 
 #[test]
@@ -649,4 +651,45 @@ fn raw_mode_passes_vsusp_through() {
     p.termios[TERMIOS_OFF_CC + cc::VSUSP] = 0x1A;
     p.master_write(b"\x1a");
     assert!(!p.pending_sigtstp, "raw mode skips ISIG");
+}
+
+// ---------------------------------------------------------------------------
+// PTY hangup edge cases (console-plan B5 c): master close → slave EOF + EIO.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn master_hangup_makes_slave_read_eof() {
+    let mut p = cooked(0);
+    // A partial line with no newline would normally block under ICANON.
+    p.master_write(b"partial");
+    p.master_hangup();
+    assert!(p.hung_up && p.pending_sighup);
+    assert!(p.slave_readable(), "hung-up slave is readable (EOF-ready)");
+    // Residual bytes drain, then EOF — bypassing the ICANON \n rule.
+    let mut buf = [0u8; 16];
+    let n = p.slave_read(&mut buf);
+    assert_eq!(&buf[..n], b"partial");
+    assert_eq!(p.slave_read(&mut buf), 0, "then EOF");
+}
+
+#[test]
+fn master_hangup_makes_slave_write_hung() {
+    let mut p = cooked(0);
+    p.master_hangup();
+    // The adapter maps slave_hung_up() → EIO; the predicate is the gate.
+    assert!(p.slave_hung_up(), "slave writes should fail EIO after master close");
+}
+
+#[test]
+fn slave_hangup_makes_master_read_eof() {
+    let mut p = cooked(0);
+    p.slave_write(b"out");
+    p.hangup(); // generic (slave close) — master sees EOF after drain
+    assert!(p.master_readable());
+    let mut buf = [0u8; 8];
+    assert_eq!(p.master_read(&mut buf), 3);
+    assert_eq!(&buf[..3], b"out");
+    assert_eq!(p.master_read(&mut buf), 0, "EOF after drain");
+    // Slave close does NOT owe the slave a SIGHUP / EIO-on-write.
+    assert!(!p.slave_hung_up());
 }

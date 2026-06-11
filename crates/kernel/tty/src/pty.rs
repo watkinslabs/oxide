@@ -36,6 +36,7 @@ pub mod iflag {
     pub const ICRNL:  u32 = 0o000400; // translate \r to \n on input
     pub const INLCR:  u32 = 0o000100; // translate \n to \r on input
     pub const IXON:   u32 = 0o002000; // ^S/^Q flow control on output
+    pub const IXANY:  u32 = 0o004000; // any input char restarts stopped output
 }
 
 /// Linux c_oflag bits — output processing on slave_write.
@@ -329,9 +330,18 @@ pub struct Pair {
     /// (EOF). Cleared on the next non-empty slave_read.
     pub pending_eof: bool,
     /// IXON output-flow-control: VSTOP (^S) sets, VSTART (^Q) clears.
-    /// While set, slave_write enqueues into a holding buffer instead
-    /// of s_to_m; v1 simplification: slave_write is a no-op (drops).
+    /// While set, slave_write withholds OPOST-processed bytes into
+    /// `out_hold` instead of `s_to_m`; VSTART flushes them in order
+    /// (Linux pauses the program's output until ^Q, never drops it).
     pub output_stopped: bool,
+    /// Withheld slave output while `output_stopped` (^S). Flushed into
+    /// `s_to_m` on VSTART (^Q) / IXANY. Bounded by `PTY_BUF_BYTES`.
+    pub out_hold: VecDeque<u8>,
+    /// Set when the master side hangs up (final master fd closed). The
+    /// slave then sees EOF on read and EIO on write (Linux: slave I/O on
+    /// a hung-up pty fails). Distinct from `hung_up` which is the generic
+    /// either-side flag; this drives the slave-write EIO decision.
+    pub pending_sighup: bool,
     /// Set when c_cc[VSUSP] (^Z, default) hits master_write under
     /// ISIG. Kernel-side adapter posts SIGTSTP (sig 20) to every
     /// task in foreground_pgid and clears the flag.
@@ -373,21 +383,25 @@ impl Pair {
             pending_sigwinch: false,
             pending_eof: false,
             output_stopped: false,
+            out_hold: VecDeque::new(),
+            pending_sighup: false,
             pending_sigtstp: false,
             pending_sigquit: false,
         }
     }
 
-    /// True iff `master_read` would return at least one byte (i.e.
-    /// the slave→master ring has data). Used by `poll(POLLIN)`.
+    /// True iff `master_read` would return at least one byte (i.e. the
+    /// slave→master ring has data) OR the pair is hung up (read → EOF).
+    /// Used by `poll(POLLIN)` and the adapter's yield-loop exit.
     /// # C: O(1)
-    pub fn master_readable(&self) -> bool { !self.s_to_m.is_empty() }
+    pub fn master_readable(&self) -> bool { !self.s_to_m.is_empty() || self.hung_up }
 
     /// True iff `slave_read` would return at least one byte OR EOF
-    /// (pending_eof + empty queue). Under ICANON requires a `\n`
-    /// in m_to_s OR pending_eof; raw mode requires any buffered byte.
+    /// (pending_eof + empty queue, OR hung up). Under ICANON requires a
+    /// `\n` in m_to_s OR pending_eof; raw mode requires any buffered byte.
     /// # C: O(N)
     pub fn slave_readable(&self) -> bool {
+        if self.hung_up { return true; }
         if (self.lflag() & lflag::ICANON) == 0 {
             return !self.m_to_s.is_empty();
         }
@@ -435,11 +449,14 @@ impl Pair {
             } else {
                 raw
             };
-            // IXON flow control: VSTOP suspends slave_write; VSTART resumes.
-            // Both bytes are consumed (not enqueued / not echoed).
+            // IXON flow control: VSTOP suspends slave_write; VSTART (or any
+            // byte under IXANY) resumes + flushes withheld output. ^S/^Q
+            // are consumed (not enqueued / not echoed); an IXANY restart
+            // byte still falls through to be processed.
             if (iflag_v & iflag::IXON) != 0 {
                 let vstop  = self.termios[TERMIOS_OFF_CC + cc::VSTOP];
                 let vstart = self.termios[TERMIOS_OFF_CC + cc::VSTART];
+                let ixany  = (iflag_v & iflag::IXANY) != 0;
                 if vstop != 0 && b == vstop {
                     self.output_stopped = true;
                     consumed += 1;
@@ -447,8 +464,14 @@ impl Pair {
                 }
                 if vstart != 0 && b == vstart {
                     self.output_stopped = false;
+                    self.flush_out_hold();
                     consumed += 1;
                     continue;
+                }
+                if self.output_stopped && ixany {
+                    self.output_stopped = false;
+                    self.flush_out_hold();
+                    // fall through: this byte is still input.
                 }
             }
             if isig && b == vintr {
@@ -519,6 +542,11 @@ impl Pair {
     /// up to dst.len()). Raw mode drains whatever is available.
     /// # C: O(N)
     pub fn slave_read(&mut self, dst: &mut [u8]) -> usize {
+        // Hung up: deliver any residual bytes, then EOF (0). Bypasses the
+        // ICANON "wait for \n" rule — a hung-up tty never gets its newline.
+        if self.hung_up {
+            return self.m_to_s.read(dst);
+        }
         if (self.lflag() & lflag::ICANON) == 0 {
             let n = self.m_to_s.read(dst);
             if n > 0 { self.pending_eof = false; }
@@ -551,44 +579,76 @@ impl Pair {
         }
     }
 
-    /// Slave writes output (program text). With c_oflag & OPOST,
-    /// applies output transformations: ONLCR translates \n → \r\n,
-    /// OCRNL translates \r → \n. While `output_stopped` (^S), drops
-    /// bytes silently — caller perceives full consumption per Linux
-    /// IXON semantics. Returns bytes consumed from `src`.
+    /// Flush IXON-withheld slave output into `s_to_m` (called on VSTART /
+    /// IXANY). Bytes already passed OPOST; copy in order up to ring space.
+    /// # C: O(N) held bytes
+    fn flush_out_hold(&mut self) {
+        while let Some(&b) = self.out_hold.front() {
+            if self.s_to_m.space() == 0 { break; }
+            self.s_to_m.write(&[b]);
+            self.out_hold.pop_front();
+        }
+    }
+
+    /// Slave writes output (program text). With c_oflag & OPOST, applies
+    /// output transformations: ONLCR (\n → \r\n), OCRNL (\r → \n). While
+    /// `output_stopped` (^S) the OPOST-processed bytes are WITHHELD in
+    /// `out_hold` (not dropped); VSTART flushes them — matches Linux
+    /// pausing scroll. Returns bytes consumed from `src`.
     /// # C: O(N)
     pub fn slave_write(&mut self, src: &[u8]) -> usize {
-        if self.output_stopped { return src.len(); }
         let oflag_v = self.oflag();
-        if (oflag_v & oflag::OPOST) == 0 {
-            return self.s_to_m.write(src);
-        }
-        let onlcr = (oflag_v & oflag::ONLCR) != 0;
-        let ocrnl = (oflag_v & oflag::OCRNL) != 0;
+        let opost = (oflag_v & oflag::OPOST) != 0;
+        let onlcr = opost && (oflag_v & oflag::ONLCR) != 0;
+        let ocrnl = opost && (oflag_v & oflag::OCRNL) != 0;
+        // Sink: while stopped, into the holding buffer; else the ring.
         let mut consumed = 0;
         for &raw in src {
-            // ONLCR expands \n into \r\n — needs 2 bytes of space.
-            if raw == b'\n' && onlcr {
+            // Expand to the processed byte(s) for this input byte.
+            let two = raw == b'\n' && onlcr;
+            let mapped = if raw == b'\r' && ocrnl { b'\n' } else { raw };
+            if self.output_stopped {
+                let need = if two { 2 } else { 1 };
+                if PTY_BUF_BYTES.saturating_sub(self.out_hold.len()) < need { break; }
+                if two { self.out_hold.push_back(b'\r'); self.out_hold.push_back(b'\n'); }
+                else { self.out_hold.push_back(mapped); }
+            } else if two {
                 if self.s_to_m.space() < 2 { break; }
                 self.s_to_m.write(b"\r\n");
-            } else if raw == b'\r' && ocrnl {
-                if self.s_to_m.space() == 0 { break; }
-                self.s_to_m.write(b"\n");
             } else {
                 if self.s_to_m.space() == 0 { break; }
-                self.s_to_m.write(&[raw]);
+                self.s_to_m.write(&[mapped]);
             }
             consumed += 1;
         }
         consumed
     }
 
-    /// Master reads program output.
+    /// True when the slave side should fail I/O because the master hung
+    /// up (final master fd closed): slave reads → EOF, slave writes →
+    /// EIO. The kernel-side adapter consults this to map onto the VFS
+    /// error.
+    /// # C: O(1)
+    pub fn slave_hung_up(&self) -> bool { self.hung_up && self.pending_sighup }
+
+    /// Master reads program output. Returns 0 (EOF) once hung up and the
+    /// slave→master queue has drained.
     /// # C: O(N)
     pub fn master_read(&mut self, dst: &mut [u8]) -> usize { self.s_to_m.read(dst) }
 
-    /// Mark the pair hung-up (final fd on one side closed). Reads
-    /// on the surviving side that find no buffered data return EOF.
+    /// Hang up from the MASTER side (final master fd closed). The slave
+    /// gets EOF on read + EIO on write, and SIGHUP is owed to the slave's
+    /// foreground pgrp. Sets `pending_sighup` so the adapter posts SIGHUP.
+    /// # C: O(1)
+    pub fn master_hangup(&mut self) {
+        self.hung_up = true;
+        self.pending_sighup = true;
+    }
+
+    /// Mark the pair hung-up (final fd on one side closed). Reads on the
+    /// surviving side that find no buffered data return EOF. Generic
+    /// either-side flag; `master_hangup` is the master-close specialization
+    /// that also owes the slave a SIGHUP.
     /// # C: O(1)
     pub fn hangup(&mut self) { self.hung_up = true; }
 }
