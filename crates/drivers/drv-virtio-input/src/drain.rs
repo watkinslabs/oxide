@@ -123,6 +123,29 @@ fn handle_modifier(keycode: u16, pressed: bool) -> bool {
     }
 }
 
+/// Process one EV_KEY-equivalent key event: Linux `keycode` + pressed
+/// flag (press or autorepeat = true, release = false). This is THE
+/// shared input pipeline — both the virtio-input drain AND the i8042
+/// PS/2 keyboard driver route every key through here, so the modifier
+/// state machine, Ctrl-Alt-F<n> VT switch, Shift+PgUp/PgDn scrollback,
+/// and keymap→byte translation live in exactly one place.
+/// # C: O(cols*rows) on a VT switch/scroll repaint, else O(1).
+pub fn handle_key_event(keycode: u16, pressed: bool) {
+    if handle_modifier(keycode, pressed) {
+        // consumed by the modifier state machine
+    } else if handle_vt_switch(keycode, pressed) {
+        // Ctrl-Alt-F<n>: switched the foreground VT, no byte.
+    } else if handle_scroll(keycode, pressed) {
+        // Shift+PgUp/PgDn: scrolled the VT scrollback, no byte.
+    } else if pressed {
+        let out = keymap::translate(keycode);
+        out.for_each(|b| {
+            tty::live::input_push_byte(b);
+            DRAINED_KEYS.fetch_add(1, Ordering::Relaxed);
+        });
+    }
+}
+
 /// Per-virtio-input-device runtime state. Captured at boot via
 /// `install_q0`; consumed by the softirq drain.
 struct QueueCtx {
@@ -275,23 +298,12 @@ fn drain_one(ctx: &mut QueueCtx) {
         crate::evdev_queue::push_event0(evt.ty, evt.code, evt.value as i32);
 
         // EV_KEY: value=1 press, value=2 autorepeat, value=0 release.
+        // The per-key path (modifier/VT/scroll/translate) is the ONE
+        // shared pipeline in handle_key_event — same code the i8042 PS/2
+        // keyboard driver feeds its decoded scancodes into.
         if evt.ty == EV_KEY {
             let pressed = evt.value == 1 || evt.value == 2;
-            // Modifier keys feed the keymap state machine and never
-            // produce input bytes themselves.
-            if handle_modifier(evt.code, pressed) {
-                // consumed by the modifier state machine
-            } else if handle_vt_switch(evt.code, pressed) {
-                // Ctrl-Alt-F<n>: switched the foreground VT, no byte.
-            } else if handle_scroll(evt.code, pressed) {
-                // Shift+PgUp/PgDn: scrolled the VT scrollback, no byte.
-            } else if pressed {
-                let out = keymap::translate(evt.code);
-                out.for_each(|b| {
-                    tty::live::input_push_byte(b);
-                    DRAINED_KEYS.fetch_add(1, Ordering::Relaxed);
-                });
-            }
+            handle_key_event(evt.code, pressed);
         }
 
         // Recycle: re-add this descriptor to the avail ring.
