@@ -20,7 +20,7 @@ pub mod wait;
 pub use wait::TtyWait;
 
 pub mod core;
-pub use core::{TtyDriver, TtyStruct};
+pub use core::{ReadOutcome, TtyDriver, TtyStruct};
 
 pub mod ioctl;
 

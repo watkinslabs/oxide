@@ -77,7 +77,7 @@ fn lost_wakeup_free_concurrent_delivery() {
 
         barrier.wait();
         let mut buf = [0u8; 8];
-        let n = tty.read(&mut buf); // MUST return, never hang.
+        let n = tty.read(&mut buf).bytes_or_zero(); // MUST return, never hang.
         producer.join().unwrap();
         assert_eq!(n, 1, "reader must get the concurrently-delivered byte");
         assert_eq!(buf[0], b'X');
@@ -104,7 +104,7 @@ fn fast_path_no_park() {
     let tty = TtyStruct::with_termios(RecordingDriver::default(), HostWait::new(), raw_termios());
     tty.receive_from_driver(b"hi");
     let mut buf = [0u8; 8];
-    let n = tty.read(&mut buf);
+    let n = tty.read(&mut buf).bytes_or_zero();
     assert_eq!(&buf[..n], b"hi");
     assert_eq!(tty.wait_counters().commits.load(Ordering::SeqCst), 0);
 }
@@ -131,7 +131,7 @@ fn canonical_line_cooked_and_echoed() {
     });
     // read returns the whole cooked line.
     let mut buf = [0u8; 16];
-    let n = tty.read(&mut buf);
+    let n = tty.read(&mut buf).bytes_or_zero();
     assert_eq!(&buf[..n], b"hi\n");
 }
 
@@ -165,7 +165,7 @@ fn tcgets_tcsets_roundtrip_and_rawmode() {
     // Raw mode: bytes pass through one at a time, no cooking.
     tty.receive_from_driver(b"ab");
     let mut buf = [0u8; 8];
-    let n = tty.read(&mut buf);
+    let n = tty.read(&mut buf).bytes_or_zero();
     assert_eq!(&buf[..n], b"ab");
 }
 
