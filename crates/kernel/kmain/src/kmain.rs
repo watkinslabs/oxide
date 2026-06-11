@@ -688,6 +688,12 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // lossy byte-stream try_lock→drop sink. The serial console
         // (drv_serial::emit, SLOT_BYTE) stays the durable copy.
         klog::set_aux_sink(fbcon::kernel::vt_console_sink);
+        // Route the VT emulator's DSR/CPR answerback (CSI n) back into the
+        // matching tty INPUT ring (Linux vt_console respond_string), so an
+        // app that probes the real console size — btop sends ESC[999;999H
+        // then ESC[6n and reads the ESC[<r>;<c>R reply — learns the actual
+        // fbcon geometry instead of the serial host terminal answering.
+        fbcon::kernel::set_reply_sink(console::vt_reply_sink);
         // Seed /dev/console's winsize from the real fbcon grid (yres/CELL_H ×
         // xres/CELL_W) so full-screen apps (htop/btop) get the actual console
         // size, not the 24×80 default. The serial tty keeps its own winsize.
@@ -773,7 +779,7 @@ unsafe fn tick_poll_combined(from_user: bool) {
     // kernel-mode = a syscall or the idle spin loop, counted as idle.
     sched::cpustat::account(
         if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
-    // SAFETY: deferred to the underlying hooks; drv_serial::poll owns the UART RX drain invariants; fbcon::kernel::tick_drain is a no-op when no GPU flush is pending.
+    // SAFETY: deferred to the underlying hooks; drv_serial::poll owns the UART RX drain invariants; fbcon::kernel::tick_drain drains the per-VT answerback queues into the tty input rings outside any console write lock (our flush_to_ldisc).
     unsafe { drv_serial::poll(); }
     fbcon::kernel::tick_drain();
     // F145: poll virtio-net rx from the timer tick as a fallback for

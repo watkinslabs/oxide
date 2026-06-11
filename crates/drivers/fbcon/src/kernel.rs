@@ -14,8 +14,13 @@
 //     Only the FG vc is blitted to the FB; offscreen VTs update their
 //     `Vc` only (no blit).
 //   * `vt_write(vt, bytes)` — device write to a numbered VT (real lock).
+//     Any DSR/CPR answerback the emulator produces is QUEUED (not injected)
+//     for deferred, lock-safe delivery — see the answerback-queue block.
 //   * `vt_console_sink(bytes)` — printk; writes to the CURRENT fg VT
 //     (Linux `vt_console_print` → `fg_console`), best-effort `try_lock`.
+//     NEVER produces an answerback (printk text carries no query).
+//   * `drain_answerback()` — tick-driven (`flush_to_ldisc` analogue) drain
+//     of the per-VT answerback queues into the tty input rings, lock-free.
 //   * `switch_vt(n)` — set fg=n + full repaint from vc_cons[n].
 //
 // Re-entrancy: `vt_console_sink` is best-effort (skips its blit if the
@@ -91,6 +96,40 @@ fn pixels_as_bytes(px: &[u32]) -> &[u8] {
 /// GPU to repaint. Provided by drv-virtio-gpu at boot.
 pub type FlushFn = fn(pixels: &[u8]);
 static FLUSH_FN: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+// Terminal answerback (DSR/CPR reply per `CSI n`) delivery lives in the
+// host-testable `crate::answerback` module: the Linux flip-buffer model
+// (`tty_insert_flip_string` queue + deferred `flush_to_ldisc` drain). The
+// write path here QUEUES (`answerback::queue`); the timer tick DRAINS
+// (`drain_answerback` → `answerback::drain`) into the tty input rings with
+// no console write lock held and outside printk context.
+
+/// Deferred answerback drain sink type (re-export of `answerback::ReplyFn`).
+pub type ReplyFn = crate::answerback::ReplyFn;
+
+/// Register the deferred answerback drain sink (boot wiring, once). The
+/// sink injects queued reply bytes into the tty INPUT ring and is invoked
+/// ONLY from the tick drain — never from a write/printk path.
+/// # C: O(1).
+pub fn set_reply_sink(f: ReplyFn) {
+    crate::answerback::set_sink(f);
+}
+
+/// Queue an emulator answerback for `vt` for deferred delivery (Linux
+/// `tty_insert_flip_string`). Per-VT answerback lock only — safe under the
+/// console write lock. No-op for empty `bytes`.
+/// # C: O(N) bytes.
+fn queue_answerback(vt: u8, bytes: &[u8]) {
+    crate::answerback::queue(vt, bytes);
+}
+
+/// Drain all queued answerbacks into the tty input rings via the registered
+/// sink (Linux `flush_to_ldisc`). Runs from the timer tick: deferred, NO
+/// console write lock held, NOT printk context, input-only.
+/// # C: O(total queued bytes).
+pub fn drain_answerback() {
+    crate::answerback::drain();
+}
 
 /// True once `kernel_init` has finished. All sinks no-op before.
 static READY: AtomicBool = AtomicBool::new(false);
@@ -188,6 +227,12 @@ pub fn vt_console_sink(bytes: &[u8]) {
                 if start < bytes.len() { cell.em.feed_bytes(&mut cell.vc, &bytes[start..]); }
                 vtdata::render(&mut cell.vc, &mut st.renderer);
                 DIRTY.store(true, Ordering::Release);
+                // printk NEVER produces a terminal answerback — its text
+                // carries no DSR/CPR query — so the printk console path does
+                // NOT queue a reply (Linux `vt_console_print` likewise has
+                // no respond path). Discard any stray reply byte so it can't
+                // carry into the next device write on this fg VT.
+                let _ = cell.em.take_reply();
             }
         }
     }
@@ -196,10 +241,12 @@ pub fn vt_console_sink(bytes: &[u8]) {
     softirq::raise(softirq::Slot::FbconFlush);
 }
 
-/// Legacy no-op kept for API stability — the softirq mechanism in
-/// `flush_softirq` is the only drain path.
-/// # C: O(1).
-pub fn tick_drain() { /* superseded by softirq::Slot::FbconFlush */ }
+/// Per-tick fbcon work driven from `tick_poll_combined`. The GPU flush is
+/// handled by `softirq::Slot::FbconFlush`; this drains the deferred VT
+/// answerback queues into the tty input rings (our `flush_to_ldisc` work
+/// item — deferred, holds no console write lock, runs outside printk).
+/// # C: O(queued answerback bytes).
+pub fn tick_drain() { drain_answerback(); }
 
 /// Push the current rendered (fg) pixels to the GPU via the installed
 /// flush thunk. No-op if the thunk isn't installed.
@@ -229,6 +276,7 @@ pub fn vt_write(vt: u8, bytes: &[u8]) {
         return;
     }
     let mut blitted = false;
+    let mut reply: Option<vtdata::ReplyBytes> = None;
     {
         let mut guard = VT_STATE.lock();
         if let Some(st) = guard.as_mut() {
@@ -241,8 +289,24 @@ pub fn vt_write(vt: u8, bytes: &[u8]) {
                     DIRTY.store(true, Ordering::Release);
                     blitted = true;
                 }
+                // Drain any DSR/CPR answerback the emulator produced (even
+                // for an offscreen VT — the program reading it still expects
+                // its reply). QUEUE it under the per-VT answerback lock for
+                // DEFERRED delivery (Linux `tty_insert_flip_string`); the
+                // bytes do NOT reach the tty input ring here, inside the
+                // console write lock — the tick drain (`drain_answerback`,
+                // our `flush_to_ldisc`) injects them later, lock-free.
+                let r = cell.em.take_reply();
+                if !r.is_empty() { reply = Some(r); }
             }
         }
+    }
+    // Queue (don't inject) after releasing VT_STATE. queue_answerback takes
+    // only the per-VT answerback lock — never a tty lock — so even calling
+    // it under VT_STATE would be safe; placed here to keep the hot path
+    // short. The deferred tick drain performs the actual RX injection.
+    if let Some(r) = reply {
+        queue_answerback(vt, r.as_slice());
     }
     if blitted {
         softirq::raise(softirq::Slot::FbconFlush);

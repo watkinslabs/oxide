@@ -292,6 +292,12 @@ pub struct Vc {
     /// Set when the cursor moves or its row changes; the renderer
     /// repaints the cursor cell and clears it.
     cursor_dirty: bool,
+    /// Position of the cursor block last drawn by the renderer. When the
+    /// cursor moves, the renderer must first repaint THIS cell with its
+    /// normal (non-reverse) attributes so the reverse-video block leaves
+    /// no artifact behind (Linux fbcon erases the prior cursor cell before
+    /// drawing the new one). `None` = no cursor block currently on screen.
+    last_cursor: Option<(u16, u16)>,
     /// Scrolled-off rows, oldest at the front. Each entry is a full row
     /// of `cols` cells. Bounded by `SCROLLBACK_LINES` (evict oldest).
     history: VecDeque<Vec<Cell>>,
@@ -345,6 +351,7 @@ impl Vc {
             scroll_bot: rows - 1,
             dirty: vec![true; rows as usize],
             cursor_dirty: true,
+            last_cursor: None,
             history: VecDeque::new(),
             view_offset: 0,
         }
@@ -463,6 +470,21 @@ impl Vc {
     #[inline]
     pub fn is_cursor_dirty(&self) -> bool {
         self.cursor_dirty
+    }
+
+    /// Position of the cursor block the renderer last drew (`None` if no
+    /// block is on screen). The renderer erases this cell before drawing
+    /// the cursor at the new position. # C: O(1).
+    #[inline]
+    pub fn last_cursor(&self) -> Option<(u16, u16)> {
+        self.last_cursor
+    }
+
+    /// Record the cell the renderer just drew the cursor block into (or
+    /// `None` after erasing it, e.g. when hidden). # C: O(1).
+    #[inline]
+    pub fn set_last_cursor(&mut self, pos: Option<(u16, u16)>) {
+        self.last_cursor = pos;
     }
 
     /// Clear all dirty marks (called by the renderer after a pass).

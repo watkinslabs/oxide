@@ -47,4 +47,5 @@ pub(crate) const CRT_BINS: &[(&str, &str)] = &[
                                                   "userspace/socketpair_fork_probe/socketpair_fork_probe.c"),
     ("userspace/vim_smoke/vim_smoke",             "userspace/vim_smoke/vim_smoke.c"),
     ("userspace/tty_reset_probe/tty_reset_probe", "userspace/tty_reset_probe/tty_reset_probe.c"),
+    ("userspace/dsr_probe/dsr_probe",             "userspace/dsr_probe/dsr_probe.c"),
 ];

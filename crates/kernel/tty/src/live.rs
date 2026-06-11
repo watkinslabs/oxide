@@ -169,7 +169,28 @@ fn vt_index(vt: u8) -> usize {
 /// programs like bash + vim see the keystrokes one at a time.
 /// # C: O(W) — W tasks woken when a cooked line completes
 pub fn push_and_wake_fg(b: u8) {
-    let idx = vt_index(0);
+    push_and_wake_idx(vt_index(0), b);
+}
+
+/// Inject a terminal answerback (DSR/CPR reply) into VT `vt`'s input ring
+/// as if the bytes had arrived from the device, mirroring how keyboard RX
+/// reaches `VT_RINGS`. Routes through the VT's line discipline so the
+/// program reading the VT sees the reply (Linux `respond_string` →
+/// `tty_insert_flip_string`). `vt` is 1-based (1..=N_VT); 0 resolves to
+/// foreground.
+/// # C: O(N) bytes + O(W) waiter wake
+pub fn reply_inject_vt(vt: u8, bytes: &[u8]) {
+    let idx = vt_index(vt);
+    for &b in bytes {
+        push_and_wake_idx(idx, b);
+    }
+}
+
+/// Push one byte through VT `idx`'s line discipline and wake readers.
+/// Shared core of `push_and_wake_fg` (foreground) and `reply_inject_vt`
+/// (a specific VT). `idx` is a 0-based `VT_RINGS` index.
+/// # C: O(W) — W tasks woken when a cooked line completes
+fn push_and_wake_idx(idx: usize, b: u8) {
     let term = *VT_TERMIOS[idx].lock();
     let iflag = crate::pty::read_iflag(&term);
     let lflag = crate::pty::read_lflag(&term);

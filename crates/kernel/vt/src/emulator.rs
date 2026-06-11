@@ -38,6 +38,31 @@ impl Default for CsiState {
 const MAX_PARAMS: usize = 16;
 const MAX_INTER: usize = 4;
 
+/// Reply-buffer capacity. Longest reply is CPR `ESC[<r>;<c>R` — at most
+/// `2 + 5 + 1 + 5 + 1` bytes for 16-bit row/col decimals. 24 is ample.
+const REPLY_CAP: usize = 24;
+
+/// An owned, drained terminal answerback (DSR/CPR reply). Carries the
+/// fixed-size buffer + valid length so the caller can drop the borrow on
+/// the `Emulator` before injecting the bytes into the tty input ring.
+#[derive(Copy, Clone)]
+pub struct ReplyBytes {
+    bytes: [u8; REPLY_CAP],
+    len: usize,
+}
+
+impl ReplyBytes {
+    /// The valid reply bytes (empty when no reply was pending). # C: O(1).
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+
+    /// Whether any reply is pending. # C: O(1).
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 /// Emulator parser state. Holds no screen data — that lives in `Vc`.
 #[derive(Clone, Debug)]
 pub struct Emulator {
@@ -56,6 +81,13 @@ pub struct Emulator {
     charset_slot: u8,
     utf8_pending: [u8; 4],
     utf8_len: u8,
+    /// Pending terminal answerback bytes (DSR/CPR reply per `CSI n`). The
+    /// console driver drains this after each `feed`/`feed_bytes` and
+    /// injects it into the tty INPUT ring so the program that issued the
+    /// query reads its reply back (Linux `respond_string` →
+    /// `tty_insert_flip_string`). Pure data here — no I/O in `vtdata`.
+    reply: [u8; REPLY_CAP],
+    reply_len: u8,
 }
 
 impl Default for Emulator {
@@ -71,6 +103,8 @@ impl Default for Emulator {
             charset_slot: 0,
             utf8_pending: [0; 4],
             utf8_len: 0,
+            reply: [0; REPLY_CAP],
+            reply_len: 0,
         }
     }
 }
@@ -539,6 +573,7 @@ impl Emulator {
             b'm' => self.sgr(vc),
             b's' => vc.save_cursor(),
             b'u' => vc.restore_cursor(),
+            b'n' => self.device_status_report(vc),
             b'h' | b'l' => self.set_mode(vc, byte == b'h'),
             _ => {} // tolerate unknown final
         }
@@ -564,6 +599,84 @@ impl Emulator {
             25 => vc.cursor_visible = set,
             _ => {}
         }
+    }
+
+    /// DSR / CPR (`CSI n`, non-private) — Linux `do_con_trol` `'n'` /
+    /// `status_report` + `cursor_report`. Builds the answerback into the
+    /// reply buffer; the console driver drains it via `take_reply` and
+    /// feeds it back into the tty INPUT ring (Linux `respond_string`).
+    ///   `CSI 5 n` (DSR) → `CSI 0 n` ("terminal OK").
+    ///   `CSI 6 n` (CPR) → `CSI <row> ; <col> R`, row/col 1-based.
+    /// Private-prefixed `CSI ? n` (DEC DSR) is ignored here (no DEC
+    /// extended reports wired).
+    fn device_status_report(&mut self, vc: &Vc) {
+        if self.private {
+            return;
+        }
+        match self.param(0, 0) {
+            5 => {
+                self.reply_len = 0;
+                self.push_reply(b"\x1b[0n");
+            }
+            6 => {
+                let row = (vc.y as u32) + 1;
+                let col = (vc.x as u32) + 1;
+                self.reply_len = 0;
+                self.push_reply(b"\x1b[");
+                self.push_reply_dec(row);
+                self.push_reply(b";");
+                self.push_reply_dec(col);
+                self.push_reply(b"R");
+            }
+            _ => {}
+        }
+    }
+
+    /// Append literal bytes to the reply buffer (clamped to `REPLY_CAP`).
+    /// # parse-helper.
+    fn push_reply(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            let i = self.reply_len as usize;
+            if i < REPLY_CAP {
+                self.reply[i] = b;
+                self.reply_len += 1;
+            }
+        }
+    }
+
+    /// Append a decimal-encoded `u32` to the reply buffer. # parse-helper.
+    fn push_reply_dec(&mut self, mut v: u32) {
+        let mut buf = [0u8; 10];
+        let mut n = 0;
+        loop {
+            buf[n] = b'0' + (v % 10) as u8;
+            v /= 10;
+            n += 1;
+            if v == 0 {
+                break;
+            }
+        }
+        // Digits were produced least-significant-first; emit reversed.
+        while n > 0 {
+            n -= 1;
+            let d = buf[n];
+            let i = self.reply_len as usize;
+            if i < REPLY_CAP {
+                self.reply[i] = d;
+                self.reply_len += 1;
+            }
+        }
+    }
+
+    /// Drain the pending answerback (DSR/CPR) reply, if any. Returns the
+    /// bytes and clears the buffer; empty slice when no reply is pending.
+    /// The console driver calls this after `feed`/`feed_bytes` and injects
+    /// the result into the tty INPUT ring (Linux `respond_string`).
+    /// # C: O(reply_len).
+    pub fn take_reply(&mut self) -> ReplyBytes {
+        let len = self.reply_len as usize;
+        self.reply_len = 0;
+        ReplyBytes { bytes: self.reply, len }
     }
 
     fn set_scroll_region(&mut self, vc: &mut Vc) {
