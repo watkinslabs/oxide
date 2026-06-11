@@ -179,6 +179,12 @@ impl Drop for File {
             let f: fn(&InodeRef, bool) = unsafe { core::mem::transmute(h) };
             f(&self.inode, was_writable);
         }
+        // Last-close release per Linux `file_operations->release`: a
+        // File == one open file description; dup'd fds share this Arc,
+        // so Drop fires on the LAST close (incl. process exit). No lock
+        // is held here (only atomics read above); on_release must not
+        // block or panic. pty MASTER uses this to hang up the slave.
+        self.inode.on_release();
     }
 }
 
