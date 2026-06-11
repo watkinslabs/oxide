@@ -16,8 +16,8 @@ fn vt_login_line_reads_echoes_and_renders() {
 
     // (a) read() stream.
     let mut buf = [0u8; 32];
-    let got = tty.read(&mut buf);
-    assert_eq!(&buf[..got], b"root\n", "cooked login line");
+    let n = tty.read(&mut buf).bytes_or_zero();
+    assert_eq!(&buf[..n], b"root\n", "cooked login line");
 
     // (b) Vc cell grid: echo rendered "root" on row 0.
     assert!(vt_row(&tty, 0).starts_with("root"), "row0 = {:?}", vt_row(&tty, 0));
@@ -34,8 +34,8 @@ fn vt_password_echo_off_reads_but_screen_blank() {
     tty.receive_from_driver(b"secret\n");
 
     let mut buf = [0u8; 32];
-    let got = tty.read(&mut buf);
-    assert_eq!(&buf[..got], b"secret\n", "cooked password line");
+    let n = tty.read(&mut buf).bytes_or_zero();
+    assert_eq!(&buf[..n], b"secret\n", "cooked password line");
 
     // Nothing echoed → row 0 all blanks.
     assert_eq!(vt_row(&tty, 0).trim_end(), "", "screen must stay blank");
@@ -49,8 +49,8 @@ fn vt_line_editing_two_backspaces() {
     tty.receive_from_driver(b"ls -l\x7f\x7fxy\n");
 
     let mut buf = [0u8; 32];
-    let got = tty.read(&mut buf);
-    assert_eq!(&buf[..got], b"ls xy\n", "two backspaces should drop -l");
+    let n = tty.read(&mut buf).bytes_or_zero();
+    assert_eq!(&buf[..n], b"ls xy\n", "two backspaces should drop -l");
 
     // Screen shows the edited line (ECHOE \b \b erased the two cells).
     assert_eq!(vt_row(&tty, 0).trim_end(), "ls xy", "row0 = {:?}", vt_row(&tty, 0));
@@ -97,7 +97,7 @@ fn vt_ctrl_d_at_line_start_is_eof() {
 
     let mut buf = [0u8; 32];
     let got = tty.read(&mut buf);
-    assert_eq!(got, 0, "^D at line start → 0-length read (EOF)");
+    assert_eq!(got, tty::ReadOutcome::Eof, "^D at line start → EOF (read returns 0 to userspace)");
     assert_eq!(vt_row(&tty, 0).trim_end(), "", "EOF renders nothing");
 }
 
@@ -110,7 +110,7 @@ fn vt_prompt_then_input_share_active_vc() {
     tty.receive_from_driver(b"echo hi\n");
 
     let mut buf = [0u8; 32];
-    let got = tty.read(&mut buf);
-    assert_eq!(&buf[..got], b"echo hi\n");
+    let n = tty.read(&mut buf).bytes_or_zero();
+    assert_eq!(&buf[..n], b"echo hi\n");
     assert!(vt_row(&tty, 0).starts_with("$ echo hi"), "row0 = {:?}", vt_row(&tty, 0));
 }
