@@ -13,6 +13,7 @@ klog = { path = "../../shared/klog" }
 sync = { path = "../../shared/sync" }
 pmm  = { path = "../mm-pmm" }
 cpu  = { path = "../cpu" }
+block = { path = "../block" }
 vfs  = { path = "../vfs" }
 net  = { path = "../net" }
 modules = { path = "../modules" }
