@@ -8,11 +8,13 @@
 // kernel uses NX-marked PTEs; NXE off makes bit 63 reserved → #PF),
 // sets the per-AP stack, and `jmp`s `oxide_ap_entry_64` → `ap_main_x86`.
 //
-// STATUS: the bring-up is implemented + proven to bring the AP to long
-// mode + online (LAPIC enabled). It is GATED OFF (`bring_up_aps_x86`
-// returns 0) pending two integration fixes — see that fn — so x86 runs
-// UP, unchanged. AP entry path: FSGSBASE, GS_BASE, IDTR, LAPIC enable,
-// (per-CPU runqueue + timer + sti idle = the gated scheduling step).
+// STATUS: ENABLED (F428). `bring_up_aps_x86` INIT/SIPI-starts each MADT AP
+// to long mode; `ap_main_x86` then makes it a full scheduling target:
+// FSGSBASE, GS_BASE, syscall MSRs (EFER.SCE/STAR/LSTAR/SFMASK), IDTR, LAPIC
+// enable, per-CPU runqueue + TSS + syscall-kstack + LAPIC timer, then `sti`
+// idle. User tasks DO migrate onto the AP and issue `syscall` here — so the
+// per-AP syscall-MSR install is mandatory (without it the AP #UDs on
+// `syscall`/`sysretq`).
 
 #![cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 
@@ -85,6 +87,27 @@ unsafe fn ap_main_x86(percpu_base: u64, lapic_id: u32) -> ! {
     // SAFETY: AP at CPL=0, long mode, kernel master CR3; BSP completed
     // install_kernel_gdt; we only reload to descriptors present in it.
     unsafe { hal_x86_64::load_kernel_gdt_for_ap(); }
+
+    // Configure THIS AP's `syscall`/`sysret` MSRs (EFER.SCE, STAR, LSTAR,
+    // SFMASK). The SIPI trampoline set only EFER.LME|NXE, so SCE is OFF and
+    // STAR/LSTAR are unset on a fresh AP — a user task scheduled here would
+    // #UD on `syscall`, and a task that entered via `syscall` on the BSP then
+    // migrated would #UD on `sysretq` here. MUST follow load_kernel_gdt_for_ap
+    // (STAR's selectors key to the kernel GDT) and does NOT touch gs:[8] (the
+    // per-CPU syscall kstack is seeded by init_percpu_syscall_kstack below).
+    // SAFETY: AP at CPL=0, long mode, kernel GDT loaded above; install_syscall_msrs
+    // writes only privileged MSRs from kernel-controlled constants matching that GDT.
+    unsafe { hal_x86_64::install_syscall_msrs(); }
+
+    // Enable SSE/SSE2 on this AP (CR0.MP + clear CR0.EM, CR4.OSFXSR|OSXMMEXCPT).
+    // CR0/CR4 are per-CPU: the SIPI trampoline leaves the AP without these, so
+    // the FIRST SSE insn a user task runs here (`pxor`/`movups` — musl libc
+    // startup uses them pervasively) #UDs → unrecoverable fault → the AP halts
+    // in oxide_fault_common and the boot wedges. The BSP does this at
+    // _start_rust right after install_syscall_msrs; the AP must match.
+    // SAFETY: AP at CPL=0, long mode; privileged CR0/CR4 writes legal; this AP
+    // is the sole writer of its own CR0/CR4 (the regs are per-CPU).
+    unsafe { hal_x86_64::enable_sse(); }
 
     // Enable CR4.FSGSBASE on this AP (Limine leaves it off per-AP).
     // SAFETY: AP runs CPL=0 here; CR4 write is legal; bit 16 enables rd/wrgsbase which we use immediately below.
