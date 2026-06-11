@@ -19,6 +19,7 @@ struct RecordingDriver {
     signals: Vec<Sig>,
     opens: u32,
     closes: u32,
+    hangups: u32,
 }
 
 impl TtyDriver for RecordingDriver {
@@ -33,6 +34,9 @@ impl TtyDriver for RecordingDriver {
     }
     fn close(&mut self) {
         self.closes += 1;
+    }
+    fn hangup(&mut self) {
+        self.hangups += 1;
     }
 }
 
@@ -331,4 +335,67 @@ proptest! {
         }
         prop_assert_eq!(got, expect.into_bytes());
     }
+}
+
+// ---------------------------------------------------------------------
+// open/close refcount + hangup (console-plan B5 c).
+// ---------------------------------------------------------------------
+
+fn cooked_tty() -> TtyStruct<RecordingDriver, HostWait> {
+    TtyStruct::new(RecordingDriver::default(), HostWait::new())
+}
+
+#[test]
+fn open_close_refcount_fires_driver_on_edges() {
+    let tty = cooked_tty();
+    assert_eq!(tty.open_count(), 0);
+    // 0→1 fires driver.open(); subsequent opens only bump the count.
+    assert_eq!(tty.open(), 1);
+    assert_eq!(tty.open(), 2);
+    tty.with_driver(|d| assert_eq!(d.opens, 1, "driver.open() only on 0→1"));
+    // 2→1 does NOT close; 1→0 fires driver.close().
+    assert_eq!(tty.close(), 1);
+    tty.with_driver(|d| assert_eq!(d.closes, 0, "no close while still open"));
+    assert_eq!(tty.close(), 0);
+    tty.with_driver(|d| assert_eq!(d.closes, 1, "driver.close() only on 1→0"));
+}
+
+#[test]
+fn close_underflow_is_a_noop() {
+    let tty = cooked_tty();
+    // A close with no open never underflows nor fires the driver.
+    assert_eq!(tty.close(), 0);
+    assert_eq!(tty.open_count(), 0);
+    tty.with_driver(|d| assert_eq!(d.closes, 0));
+}
+
+#[test]
+fn hangup_raises_sighup_resets_ldisc_and_clears_linkage() {
+    let tty = cooked_tty();
+    tty.set_ctty(7);
+    tty.set_fg_pgrp(7);
+    tty.receive_from_driver(b"line\n"); // a cooked line waiting
+    assert!(tty.readable());
+    tty.hangup();
+    // SIGHUP raised on the fg pgrp + driver.hangup() fired.
+    tty.with_driver(|d| {
+        assert_eq!(d.signals.last(), Some(&Sig::Hup), "SIGHUP on hangup");
+        assert_eq!(d.hangups, 1, "driver.hangup() fired");
+    });
+    // Ldisc dropped to hung-up: read returns EOF (0), not the queued line.
+    assert!(tty.is_hung_up());
+    let mut buf = [0u8; 64];
+    assert_eq!(tty.read(&mut buf), super::ReadOutcome::Eof, "hung-up read → Eof");
+    // Controlling linkage cleared (Linux clears tty->session/pgrp).
+    assert_eq!(tty.sid(), 0);
+    assert_eq!(tty.fg_pgrp(), 0);
+}
+
+#[test]
+fn hangup_makes_writes_drop() {
+    let tty = cooked_tty();
+    tty.hangup();
+    let n = tty.write(b"after hangup");
+    assert_eq!(n, 12, "write reports consumed (EIO mapped at syscall layer)");
+    tty.with_driver(|d| assert!(d.out.is_empty(), "nothing reaches a hung-up driver"));
 }

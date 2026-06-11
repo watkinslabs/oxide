@@ -20,6 +20,44 @@ const CANON_CAP: usize = 4096;
 /// to the next multiple of 8 columns).
 const TAB_WIDTH: u16 = 8;
 
+/// Withheld-output cap while IXON-stopped. A producer that keeps writing
+/// while flow is stopped is bounded here (Linux backpressures the writer;
+/// at this lock-free layer we cap and drop past the limit — the visible
+/// effect on resume is identical for the scroll-pause use case).
+const HOLD_CAP: usize = 4096;
+
+/// IXON input-byte classification (Linux `n_tty.c` flow control). Pure:
+/// the caller supplies the live termios bits + the byte, and acts on the
+/// verdict (set/clear `stopped`, consume the byte). Host-testable alone.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FlowAction {
+    /// VSTOP (^S): set `stopped`, consume the byte (not queued/echoed).
+    Stop,
+    /// VSTART (^Q) or any byte under IXANY while stopped: clear `stopped`,
+    /// consume the byte.
+    Start,
+    /// Not a flow-control byte — process normally.
+    Normal,
+}
+
+/// Classify one input byte for IXON flow control given the live termios.
+///   * `iflag` — c_iflag (IXON / IXANY bits read via `crate::pty::iflag`)
+///   * `vstop` = c_cc[VSTOP] (^S), `vstart` = c_cc[VSTART] (^Q)
+///   * `b` = the (i-mapped) input byte, `stopped` = current flow state
+///
+/// Linux rules: IXON off → always Normal. VSTOP byte → Stop. VSTART byte
+/// → Start. While `stopped` with IXANY set, ANY other byte → Start (Linux
+/// restarts output on any key). A `0` cc disables that control char.
+/// # C: O(1)
+pub fn flow_action(iflag: u32, vstop: u8, vstart: u8, b: u8, stopped: bool) -> FlowAction {
+    if iflag & crate::pty::iflag::IXON == 0 { return FlowAction::Normal; }
+    if vstop != 0 && b == vstop { return FlowAction::Stop; }
+    if vstart != 0 && b == vstart { return FlowAction::Start; }
+    // IXANY: any byte resumes paused output (but is still processed).
+    if stopped && iflag & crate::pty::iflag::IXANY != 0 { return FlowAction::Start; }
+    FlowAction::Normal
+}
+
 /// N_TTY line discipline state.
 ///
 /// `termios` is the live image (reused `crate::pty` layout). `canon`
@@ -38,6 +76,21 @@ pub struct NTty {
     /// data or finds the queue genuinely empty. Lets the tty core (T4)
     /// distinguish "EOF → return 0 to user" from "nothing ready → park".
     eof_consumed: bool,
+    /// IXON output-flow-control state (Linux `n_tty.c` `stop_flag`). A
+    /// VSTOP byte (^S) in the input path sets it; VSTART (^Q) — or any
+    /// byte under IXANY — clears it. While set, `write` withholds output
+    /// into `out_hold` instead of pushing to the driver; the next clear
+    /// flushes `out_hold`. Mirrors a real terminal pausing scroll.
+    stopped: bool,
+    /// OPOST-processed output bytes withheld while `stopped`. Flushed to
+    /// the driver in order when flow resumes (^Q / IXANY). Bounded by the
+    /// same cap as the canon buffer so a stuck ^S can't grow unbounded.
+    out_hold: VecDeque<u8>,
+    /// Set the moment a hangup is delivered (`TtyStruct::hangup` / pty
+    /// master close). A hung-up ldisc: reads return EOF (0), writes are
+    /// dropped, input is flushed. Linux `tty_hangup` drops the tty to a
+    /// "ghost" state where operations short-circuit (28§5).
+    hung_up: bool,
 }
 
 /// Noncanonical (raw-mode) VMIN/VTIME read decision (Linux `n_tty.c`
@@ -131,6 +184,9 @@ impl NTty {
             out_col: 0,
             eof_pending: false,
             eof_consumed: false,
+            stopped: false,
+            out_hold: VecDeque::new(),
+            hung_up: false,
         }
     }
 
@@ -151,10 +207,11 @@ impl NTty {
     }
 
     /// True when `read` would return ≥1 byte or signal EOF. The tty core
-    /// (T4) calls this under its lock to decide whether to park.
+    /// (T4) calls this under its lock to decide whether to park. A hung-up
+    /// ldisc is always "ready" (read returns 0/EOF, never parks).
     /// # C: O(1)
     pub fn has_input(&self) -> bool {
-        !self.readq.is_empty() || self.eof_pending
+        self.hung_up || !self.readq.is_empty() || self.eof_pending
     }
 
     /// Bytes immediately drainable from the read queue.
@@ -285,6 +342,38 @@ impl NTty {
         }
     }
 
+    /// Flush all IXON-withheld output to the driver (called when ^Q /
+    /// IXANY clears the stop). No-op when nothing is held.
+    fn flush_hold<D: TtyDriverHooks>(&mut self, drv: &mut D) {
+        if self.out_hold.is_empty() { return; }
+        let bytes: alloc::vec::Vec<u8> = self.out_hold.drain(..).collect();
+        drv.driver_write(&bytes);
+    }
+
+    /// True while IXON flow control has output stopped (^S seen, no ^Q
+    /// yet). Introspection / tests.
+    /// # C: O(1)
+    pub fn stopped(&self) -> bool { self.stopped }
+
+    /// True once a hangup has been delivered (reads return EOF, writes
+    /// dropped). The tty core reports EOF on read in this state.
+    /// # C: O(1)
+    pub fn is_hung_up(&self) -> bool { self.hung_up }
+
+    /// Hang up the ldisc (Linux `tty_ldisc_hangup`): flush every queue
+    /// (input line, read queue, withheld output), clear flow state, and
+    /// latch the hung-up flag. After this, `receive_buf` ignores input,
+    /// `read` reports EOF, and `write` drops. Idempotent.
+    /// # C: O(N) queued bytes dropped
+    pub fn hangup(&mut self) {
+        self.canon.clear();
+        self.readq.clear();
+        self.out_hold.clear();
+        self.eof_pending = false;
+        self.stopped = false;
+        self.hung_up = true;
+    }
+
     /// ISIG dispatch: if `b` matches a signal cc and ISIG is set, raise
     /// it on the fg pgrp, drop the in-progress line, echo `^X`, and
     /// return true (byte consumed).
@@ -375,6 +464,10 @@ impl NTty {
     /// # C: O(N) bytes copied
     pub fn read_raw_drain(&mut self, buf: &mut [u8]) -> usize {
         self.eof_consumed = false;
+        if self.hung_up && self.readq.is_empty() {
+            self.eof_consumed = true;
+            return 0;
+        }
         let mut n = 0;
         while n < buf.len() {
             match self.readq.pop_front() {
@@ -454,11 +547,27 @@ impl NTty {
 
 impl LdiscOps for NTty {
     fn receive_buf<D: TtyDriverHooks>(&mut self, drv: &mut D, input: &[u8]) {
+        if self.hung_up { return; }
         for &raw in input {
             let b = match self.map_input(raw) {
                 Some(b) => b,
                 None => continue,
             };
+            // IXON flow control runs BEFORE everything else in the input
+            // path (Linux n_tty: ^S/^Q are intercepted before ISIG/canon).
+            match flow_action(self.iflag(), self.cc(cc::VSTOP), self.cc(cc::VSTART), b, self.stopped) {
+                FlowAction::Stop => { self.stopped = true; continue; }
+                FlowAction::Start => {
+                    self.stopped = false;
+                    self.flush_hold(drv);
+                    // VSTART/^S are consumed; an IXANY restart byte (other
+                    // than ^S/^Q) still falls through to be processed.
+                    if b == self.cc(cc::VSTART) || (self.cc(cc::VSTOP) != 0 && b == self.cc(cc::VSTOP)) {
+                        continue;
+                    }
+                }
+                FlowAction::Normal => {}
+            }
             if self.handle_isig(drv, b) {
                 continue;
             }
@@ -476,6 +585,11 @@ impl LdiscOps for NTty {
     fn read(&mut self, buf: &mut [u8]) -> usize {
         self.eof_consumed = false;
         if buf.is_empty() {
+            return 0;
+        }
+        // Hung-up tty: any remaining queued bytes drain first, then EOF.
+        if self.hung_up && self.readq.is_empty() {
+            self.eof_consumed = true;
             return 0;
         }
         if self.is_canon() {
@@ -528,15 +642,24 @@ impl LdiscOps for NTty {
     }
 
     fn write<D: TtyDriverHooks>(&mut self, drv: &mut D, buf: &[u8]) -> usize {
-        if self.oflag() & oflag::OPOST == 0 {
-            drv.driver_write(buf);
-            return buf.len();
-        }
+        // Hung-up tty: writes are dropped (Linux returns -EIO; the core
+        // maps the hung-up state to EIO — here the byte goes nowhere).
+        if self.hung_up { return buf.len(); }
         let mut out = alloc::vec::Vec::with_capacity(buf.len() + 8);
-        for &b in buf {
-            self.output_byte(b, &mut out);
+        if self.oflag() & oflag::OPOST == 0 {
+            out.extend_from_slice(buf);
+        } else {
+            for &b in buf { self.output_byte(b, &mut out); }
         }
-        drv.driver_write(&out);
+        // IXON: while flow is stopped (^S), withhold the processed bytes
+        // in `out_hold`; they flush in order on ^Q (flush_hold). The
+        // caller still sees full consumption (Linux blocks the writer; we
+        // buffer, then drop past HOLD_CAP).
+        if self.stopped {
+            for b in out { if self.out_hold.len() < HOLD_CAP { self.out_hold.push_back(b); } }
+        } else {
+            drv.driver_write(&out);
+        }
         buf.len()
     }
 

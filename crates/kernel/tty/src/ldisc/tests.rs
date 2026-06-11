@@ -415,6 +415,124 @@ fn set_termios_to_raw_flushes_pending_line() {
     assert_eq!(drain(&mut n), b"partial");
 }
 
+// ---- IXON flow control (d) ----
+
+/// A raw-mode (ICANON off) NTty with IXON enabled, so ^S/^Q are flow
+/// control and output is the simple raw passthrough we can observe.
+fn ixon_raw() -> NTty {
+    let mut t = default_termios();
+    // raw: clear ICANON|ECHO so input goes straight to readq, output raw.
+    set_u32(&mut t, TERMIOS_OFF_LFLAG, 0);
+    let il = crate::pty::read_iflag(&t) | iflag::IXON;
+    set_u32(&mut t, TERMIOS_OFF_IFLAG, il);
+    // VMIN=0 so a read with nothing queued returns 0 (no min-bytes wait).
+    t[TERMIOS_OFF_CC + cc::VMIN] = 0;
+    NTty::with_termios(t)
+}
+
+#[test]
+fn flow_action_classifies_stop_start_normal() {
+    use super::n_tty::{flow_action, FlowAction};
+    let on = iflag::IXON;
+    assert_eq!(flow_action(on, 0x13, 0x11, 0x13, false), FlowAction::Stop);
+    assert_eq!(flow_action(on, 0x13, 0x11, 0x11, true),  FlowAction::Start);
+    assert_eq!(flow_action(on, 0x13, 0x11, b'a',  false), FlowAction::Normal);
+    // IXON off → never flow control.
+    assert_eq!(flow_action(0, 0x13, 0x11, 0x13, false), FlowAction::Normal);
+    // IXANY: any byte while stopped restarts.
+    assert_eq!(flow_action(on | iflag::IXANY, 0x13, 0x11, b'z', true), FlowAction::Start);
+    // IXANY but not stopped → normal.
+    assert_eq!(flow_action(on | iflag::IXANY, 0x13, 0x11, b'z', false), FlowAction::Normal);
+}
+
+#[test]
+fn ixon_vstop_sets_stopped_and_consumes_byte() {
+    let mut n = ixon_raw();
+    let mut d = RecordingDriver::default();
+    n.receive_buf(&mut d, b"\x13"); // ^S
+    assert!(n.stopped(), "VSTOP set the stop flag");
+    let mut buf = [0u8; 8];
+    assert_eq!(n.read(&mut buf), 0, "^S byte was consumed, not queued");
+}
+
+#[test]
+fn ixon_vstart_clears_stopped_and_consumes_byte() {
+    let mut n = ixon_raw();
+    let mut d = RecordingDriver::default();
+    n.receive_buf(&mut d, b"\x13"); // ^S
+    n.receive_buf(&mut d, b"\x11"); // ^Q
+    assert!(!n.stopped(), "VSTART cleared the stop flag");
+    let mut buf = [0u8; 8];
+    assert_eq!(n.read(&mut buf), 0, "^S/^Q both consumed");
+}
+
+#[test]
+fn ixon_output_withheld_while_stopped_then_flushed_on_start() {
+    let mut n = ixon_raw();
+    let mut d = RecordingDriver::default();
+    n.receive_buf(&mut d, b"\x13"); // ^S — stop output
+    // Writes are withheld, NOT sent to the driver.
+    let w = n.write(&mut d, b"hello");
+    assert_eq!(w, 5, "write reports full consumption (buffered)");
+    assert!(d.out.is_empty(), "nothing reached the driver while stopped");
+    // ^Q flushes the held output in order.
+    n.receive_buf(&mut d, b"\x11");
+    assert_eq!(&d.out, b"hello", "withheld output flushed on VSTART");
+}
+
+#[test]
+fn ixon_ixany_resumes_and_keeps_the_restart_byte() {
+    let mut t = default_termios();
+    set_u32(&mut t, TERMIOS_OFF_LFLAG, 0);
+    let il = crate::pty::read_iflag(&t) | iflag::IXON | iflag::IXANY;
+    set_u32(&mut t, TERMIOS_OFF_IFLAG, il);
+    t[TERMIOS_OFF_CC + cc::VMIN] = 0;
+    let mut n = NTty::with_termios(t);
+    let mut d = RecordingDriver::default();
+    n.receive_buf(&mut d, b"\x13");          // ^S
+    n.write(&mut d, b"out");                  // withheld
+    n.receive_buf(&mut d, b"x");              // IXANY: any byte resumes
+    assert!(!n.stopped());
+    assert_eq!(&d.out, b"out", "held output flushed by IXANY restart");
+    // The restart byte itself is still input (raw → readq).
+    let mut buf = [0u8; 8];
+    let got = n.read(&mut buf);
+    assert_eq!(&buf[..got], b"x", "IXANY restart byte is still processed");
+}
+
+// ---- hangup (c): ldisc hung-up state ----
+
+#[test]
+fn hangup_flushes_queues_and_reports_eof() {
+    let mut n = NTty::new();
+    let mut d = RecordingDriver::default();
+    n.receive_buf(&mut d, b"queued\n"); // a full cooked line waiting
+    assert!(n.has_input());
+    n.hangup();
+    assert!(n.is_hung_up());
+    // Queues flushed; read reports EOF (0) with eof_consumed set.
+    let mut buf = [0u8; 64];
+    assert_eq!(n.read(&mut buf), 0, "hung-up read → EOF");
+    assert!(n.eof_consumed(), "EOF, not empty-park");
+    // has_input stays true so the core never parks forever on a hung tty.
+    assert!(n.has_input());
+}
+
+#[test]
+fn hangup_drops_writes_and_ignores_input() {
+    let mut n = NTty::new();
+    let mut d = RecordingDriver::default();
+    n.hangup();
+    // Writes are dropped (Linux: EIO at the syscall layer).
+    let w = n.write(&mut d, b"output");
+    assert_eq!(w, 6, "write reports consumed");
+    assert!(d.out.is_empty(), "hung-up write reaches nothing");
+    // Input after hangup is ignored.
+    n.receive_buf(&mut d, b"typed\n");
+    let mut buf = [0u8; 8];
+    assert_eq!(n.read(&mut buf), 0, "no input accepted after hangup");
+}
+
 // ---- fuzz: never panic, never over-read, never split a line ----
 
 proptest! {
