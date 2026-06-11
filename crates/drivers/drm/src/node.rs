@@ -20,7 +20,41 @@ use crate::{
     DRM_IOCTL_MODE_CREATE_DUMB, DRM_IOCTL_MODE_MAP_DUMB,
     DRM_IOCTL_MODE_DESTROY_DUMB, DRM_IOCTL_MODE_ADDFB2,
     DRM_IOCTL_MODE_ADDFB, DRM_IOCTL_MODE_RMFB,
+    DRM_IOCTL_MODE_SETCRTC, DRM_IOCTL_MODE_PAGE_FLIP,
 };
+
+use sync::{Spinlock, TaskList as OpsLockClass};
+
+// ============================================================
+// Runtime scanout backend hook (filled by drv-virtio-gpu at install)
+// ============================================================
+
+/// The runtime scanout operations the DRM core calls for SETCRTC /
+/// PAGE_FLIP. Filled by `drv-virtio-gpu::post_init::register_drm_hooks`
+/// at device install. The DRM crate cannot depend on the virtio-gpu
+/// crate (that crate depends on us), so the binding is a function-pointer
+/// table installed at runtime. `None` until a GPU is installed → SETCRTC
+/// honest-fails -EINVAL.
+#[derive(Copy, Clone)]
+pub struct ScanoutOps {
+    /// Create a virtio-gpu resource over a contiguous PA; returns res_id.
+    pub create_from_pa: fn(pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32>,
+    /// Switch scanout 0 to `res_id` + transfer + flush.
+    pub set_scanout: fn(res_id: u32, w: u32, h: u32) -> bool,
+    /// Restore the boot fbcon scanout + repaint the console.
+    pub restore_console: fn() -> bool,
+    /// The boot fbcon scanout resource id.
+    pub boot_res_id: fn() -> u32,
+}
+
+static SCANOUT_OPS: Spinlock<Option<ScanoutOps>, OpsLockClass> = Spinlock::new(None);
+
+/// Install the runtime scanout backend (called once at GPU install).
+/// # C: O(1)
+pub fn set_scanout_ops(ops: ScanoutOps) { *SCANOUT_OPS.lock() = Some(ops); }
+/// Snapshot the runtime scanout backend, or `None` if no GPU installed.
+/// # C: O(1)
+pub fn scanout_ops() -> Option<ScanoutOps> { *SCANOUT_OPS.lock() }
 
 /// `struct drm_version` Linux UAPI (88 bytes on 64-bit).
 #[repr(C)]
@@ -52,8 +86,25 @@ impl vfs::Inode for DrmCardInode {
     fn file_type(&self) -> vfs::FileType { vfs::FileType::CharDev }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Ok(0) }
+    /// read(2) on the card fd drains queued KMS events (DRM page-flip
+    /// completions) as `drm_event_vblank` records — Linux `drm_read`.
+    /// 0 bytes when no event is pending (libdrm polls then reads).
+    /// # C: O(events)
+    fn read(&self, _o: u64, b: &mut [u8]) -> vfs::KResult<usize> {
+        Ok(crate::crtc::drain_events(b))
+    }
     fn write(&self, _o: u64, b: &[u8]) -> vfs::KResult<usize> { Ok(b.len()) }
+    /// Last-close: if a KMS client took the scanout via SETCRTC and is
+    /// now closing its card fd, restore the boot fbcon scanout + repaint
+    /// the console so the fb console (and getty) come back. A normal
+    /// boot never opens card0 → this never fires → console untouched.
+    /// MUST NOT panic or block. # C: O(1) + O(scanout repaint).
+    fn on_release(&self) {
+        if crate::crtc::owner() != 0 {
+            if let Some(ops) = scanout_ops() { (ops.restore_console)(); }
+            crate::crtc::clear_owner();
+        }
+    }
 }
 
 pub struct DrmRenderInode;
@@ -292,6 +343,23 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
         DRM_IOCTL_MODE_ADDFB2       => Some(crate::dumb::addfb2(arg)),
         DRM_IOCTL_MODE_ADDFB        => Some(crate::dumb::addfb(arg)),
         DRM_IOCTL_MODE_RMFB         => Some(crate::dumb::rmfb(arg)),
+        // ---- D5b-2 SETCRTC / PAGE_FLIP (real scanout) ----
+        // Token = the card inode pointer (stable per card; v1 single
+        // client). Card required (no GPU → set_crtc honest-fails EINVAL).
+        DRM_IOCTL_MODE_SETCRTC => {
+            let token = Arc::as_ptr(inode) as *const () as u64;
+            match crate::cards().first() {
+                Some(d) => Some(crate::crtc::set_crtc(d, arg, token)),
+                None    => Some(-(Errno::Einval.as_i32() as i64)),
+            }
+        }
+        DRM_IOCTL_MODE_PAGE_FLIP => {
+            let token = Arc::as_ptr(inode) as *const () as u64;
+            match crate::cards().first() {
+                Some(d) => Some(crate::crtc::page_flip(d, arg, token)),
+                None    => Some(-(Errno::Einval.as_i32() as i64)),
+            }
+        }
         _ => Some(-(Errno::Enotty.as_i32() as i64)),
     }
 }

@@ -264,6 +264,21 @@ impl VirtioGpuDev {
 // old NoMatch DriverEntry (legacy drv::probe_all path, never called) was
 // removed in drivers-plan D2.
 
+/// Map a DRM fourcc to the virtio-gpu format the host expects for a
+/// userspace-painted XRGB/ARGB dumb buffer. Linux's virtio-gpu DRM
+/// driver maps DRM_FORMAT_XRGB8888 → VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM
+/// and DRM_FORMAT_ARGB8888 → VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM (the
+/// little-endian fourcc byte order == BGRA in memory). `None` for an
+/// unsupported fourcc. Pure → hosted-testable. # C: O(1)
+pub fn drm_fourcc_to_virtio(fourcc: u32) -> Option<u32> {
+    // drm_fourcc.h: XR24 = 0x34325258, AR24 = 0x34325241.
+    match fourcc {
+        0x3432_5258 => Some(VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM),
+        0x3432_5241 => Some(VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM),
+        _ => None,
+    }
+}
+
 /// Compute the negotiated feature mask given a host-advertised
 /// feature word + the driver's preferred bits. Pure function so
 /// the negotiation policy is hosted-testable in isolation from
@@ -592,6 +607,12 @@ pub fn install_with_drm(dev: VirtioGpuDev) -> u32 {
     });
     let card_id = drm::register(drm_dev);
     install(dev);
+    // Wire the runtime SETCRTC/PAGE_FLIP/restore hooks into the DRM
+    // core (kernel target only; the hosted unit tests don't link the
+    // post_init queue plumbing). No crate cycle: drm exposes the hook
+    // setter, this crate fills it.
+    #[cfg(target_os = "oxide-kernel")]
+    post_init::register_drm_hooks();
     card_id
 }
 
@@ -823,6 +844,17 @@ mod tests {
         // out of range
         assert!(d.connector_info(2).is_none());
         assert!(d.crtc_info(2).is_none());
+    }
+
+    #[test]
+    fn drm_fourcc_mapping() {
+        // XRGB8888 'XR24' → BGRX (no alpha); ARGB8888 'AR24' → BGRA.
+        assert_eq!(drm_fourcc_to_virtio(0x3432_5258), Some(VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM));
+        assert_eq!(drm_fourcc_to_virtio(0x3432_5241), Some(VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM));
+        // Match the drm crate's published fourcc constants exactly.
+        assert_eq!(drm_fourcc_to_virtio(drm::DRM_FORMAT_XRGB8888), Some(VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM));
+        assert_eq!(drm_fourcc_to_virtio(drm::DRM_FORMAT_ARGB8888), Some(VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM));
+        assert_eq!(drm_fourcc_to_virtio(0xdead_beef), None);
     }
 
     #[test]
