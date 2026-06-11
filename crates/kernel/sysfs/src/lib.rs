@@ -14,6 +14,7 @@ use alloc::vec::Vec;
 
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
+pub mod block;
 pub mod bus;
 
 const ARPHRD_LOOPBACK: u16 = 772;
@@ -302,6 +303,7 @@ pub fn init() {
     devfs::register("/sys/devices/virtual/net",
         Arc::new(SysDevicesVirtualNetInode) as InodeRef);
     bus::init();
+    block::init();
 }
 
 /// `vfs::fs::FileSystem` impl mounted at `/sys`. Lookups consult the

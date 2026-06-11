@@ -9,5 +9,6 @@ path = "src/lib.rs"
 vfs   = { path = "../vfs" }
 devfs = { path = "../devfs" }
 net   = { path = "../net" }
+block = { path = "../block" }
 netlink = { path = "../netlink" }
 drv   = { path = "../../drivers/drv" }
