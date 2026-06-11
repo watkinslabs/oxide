@@ -12,6 +12,22 @@ use crate::net_common::{AF_INET, AF_INET6, errno_from_neterr, socket_from_fd};
 pub fn sys_connect(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
+    // D3.3: AF_VSOCK connect — parse sockaddr_vm, drive the vsock
+    // OP_REQUEST→OP_RESPONSE handshake, stash the live conn on the fd.
+    if let Some(vs) = crate::net_common::vsock_from_fd(fd) {
+        let (_fam, port, cid) = match read_sockaddr_vm(addr_p) {
+            Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
+        };
+        return match net::vsock::connect(cid, port) {
+            Ok(c) => {
+                *vs.kind.lock() = net::vsock_socket::VsockKind::Conn(c);
+                0
+            }
+            Err(net::NetError::Econnrefused) => -(Errno::Econnrefused.as_i32() as i64),
+            Err(net::NetError::Enetunreach)  => -(Errno::Enetunreach.as_i32() as i64),
+            Err(_) => -(Errno::Etimedout.as_i32() as i64),
+        };
+    }
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"connect"); return -(Errno::Enotsock.as_i32() as i64); }
     };

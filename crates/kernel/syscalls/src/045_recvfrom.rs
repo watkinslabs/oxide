@@ -29,6 +29,17 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     if crate::netlink_fd::is_netlink(fd) {
         return crate::netlink_fd::recvfrom(fd, bufp, len, src_p);
     }
+    // D3.3: AF_VSOCK recv/recvfrom → OP_RW delivery via the socket
+    // inode read path (STREAM, src not filled — single peer).
+    if let Some(vs) = crate::net_common::vsock_from_fd(fd) {
+        if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+        let nb = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
+        // SAFETY: bufp validated; user page mapped under caller's AS.
+        let dst = unsafe { core::slice::from_raw_parts_mut(bufp as *mut u8, len) };
+        use vfs::Inode;
+        let r = if nb { vs.read_nonblock(0, dst) } else { vs.read(0, dst) };
+        return match r { Ok(n) => n as i64, Err(e) => -(e as i64) };
+    }
     let sock: Arc<net::sock::InetSocket> = match socket_from_fd(fd) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"recvfrom"); return -(Errno::Enotsock.as_i32() as i64); }
     };

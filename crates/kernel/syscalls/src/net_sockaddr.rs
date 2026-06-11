@@ -89,6 +89,39 @@ pub(crate) fn write_sockaddr_in6(ptr: u64, addr_bytes: [u8; 16], port_be: u16, s
     }
 }
 
+/// D3.3: read sockaddr_vm (AF_VSOCK, 16 B). Layout per Linux uapi
+/// `struct sockaddr_vm`: svm_family u16 @0, svm_reserved1 u16 @2,
+/// svm_port u32 @4, svm_cid u32 @8 (Linux CID is u32 but the wire
+/// protocol carries u64; we widen). Returns (family, port, cid).
+/// # C: O(1)
+pub(crate) fn read_sockaddr_vm(ptr: u64) -> Option<(u16, u32, u64)> {
+    if ptr == 0 || ptr >= USER_VA_END { return None; }
+    if ptr.checked_add(16).map_or(true, |e| e >= USER_VA_END) { return None; }
+    // SAFETY: 16 bytes inside validated user range; caller's AS active.
+    unsafe {
+        let family = core::ptr::read_volatile(ptr as *const u16);
+        let port   = core::ptr::read_volatile((ptr + 4) as *const u32);
+        let cid    = core::ptr::read_volatile((ptr + 8) as *const u32);
+        Some((family, port, cid as u64))
+    }
+}
+
+/// D3.3: write sockaddr_vm (16 B) at `ptr` (accept/getpeername).
+/// # C: O(1)
+pub(crate) fn write_sockaddr_vm(ptr: u64, port: u32, cid: u64) {
+    if ptr == 0 || ptr >= USER_VA_END { return; }
+    if ptr.checked_add(16).map_or(true, |e| e >= USER_VA_END) { return; }
+    const AF_VSOCK: u16 = 40;
+    // SAFETY: 16 bytes inside validated range; caller's AS active.
+    unsafe {
+        core::ptr::write_volatile(ptr as *mut u16, AF_VSOCK);
+        core::ptr::write_volatile((ptr + 2) as *mut u16, 0u16);
+        core::ptr::write_volatile((ptr + 4) as *mut u32, port);
+        core::ptr::write_volatile((ptr + 8) as *mut u32, cid as u32);
+        core::ptr::write_volatile((ptr + 12) as *mut u32, 0u32);
+    }
+}
+
 /// IPv4-mapped check (`::ffff:a.b.c.d`).
 /// Used to thread V6 sockets through the V4 transport for v1. # C: O(1)
 pub(crate) fn ipv4_from_v6_mapped(b: &[u8; 16]) -> Option<net::Ipv4Addr> {
