@@ -140,6 +140,52 @@ fn nvme_probe(d: &pci::PciDevice) {
     }
 }
 
+/// drivers-plan D3.6: bring up an AHCI/SATA controller. Matches PCI class
+/// 0x010601 (mass-storage / SATA / AHCI; QEMU ich9-ahci vendor 0x8086 device
+/// 0x2922). ABAR is BAR5, a 32-bit memory BAR holding the HBA register file;
+/// map 2 pages (generic HBA regs + the 32-port register array, 0x100 + 32*0x80
+/// = 0x1100 ≤ 2 pages) and hand the VA to `drv_ahci::init`, which enables
+/// AHCI mode, brings up the first SATA-disk port, runs IDENTIFY, and registers
+/// `sata0` as a `BlockDevice`. On success publish the D1a model driver + bind
+/// (`/sys/bus/pci/drivers/ahci` + the device's `driver` symlink).
+/// # SAFETY: boot path; PMM ready; single-CPU; IRQs masked. BAR5 PA owned by
+/// the device; map_mmio_pages splices a private Device-attr window.
+/// # C: O(BAR map + HBA/port bring-up)
+fn ahci_probe(d: &pci::PciDevice) {
+    let class24 = ((d.class_code as u32) << 16)
+        | ((d.subclass as u32) << 8) | (d.prog_if as u32);
+    if class24 != drv_ahci::AHCI_CLASS24 { return; }
+    let bdf = d.bdf;
+    // Decode BARs; BAR5 is the AHCI HBA register file (ABAR, 32-bit mem BAR).
+    let bars = {
+        #[cfg(target_arch = "x86_64")]
+        { let r = hal_x86_64::pci::LegacyPci; pci::decode_bars(&r, bdf) }
+        #[cfg(target_arch = "aarch64")]
+        { match hal_aarch64::pci::EcamPci::from_published() {
+            Some(r) => pci::decode_bars(&r, bdf),
+            None    => [pci::Bar::None; 6],
+        } }
+    };
+    let abar_pa = match bars[5] {
+        pci::Bar::Mem32 { base, .. } => base as u64,
+        pci::Bar::Mem64 { base, .. } => base,
+        _ => 0,
+    };
+    if abar_pa == 0 { return; }
+    // SAFETY: abar_pa decoded from the device's programmed BAR5; PMM ready +
+    // single-CPU + IRQs masked at the boot probe; 2 pages cover the generic
+    // HBA registers + the full 32-port register array (≤ 0x1100 bytes).
+    let abar_va = unsafe { map_mmio_pages(abar_pa & !0xFFF, 2) }
+        + (abar_pa & 0xFFF);
+    let idx = drv_ahci::init(abar_va);
+    if idx != 0 {
+        drv::register_driver(&drv_ahci::AHCI_DRIVER);
+        let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
+            0u16, bdf.bus, bdf.device, bdf.function);
+        drv::bind_addr("pci", &addr, "ahci");
+    }
+}
+
 /// Emit one `[INFO] pci-bar <bdf> N <kind>=...` line per programmed BAR.
 /// # C: O(1) — at most 6 BARs.
 fn bar_dump_arch(bdf: pci::Bdf) {
@@ -606,6 +652,7 @@ pub fn enumerate_and_log() {
             }
             virtio_probe_arch(d);
             nvme_probe(d);
+            ahci_probe(d);
         }
         // F40 + F57: brief IRQ unmask window so any MSIs queued
         // during the closed-loop drain through the per-arch IRQ
