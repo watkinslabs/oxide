@@ -205,14 +205,41 @@ pub fn try_wake_stopped(task: &Task) -> bool {
     true
 }
 
+/// wait4(2) child-selection predicate per `docs/15§5` — the single source
+/// of truth shared by the zombie-reap path (`live::zombies::reap_one`/
+/// `peek_one`) and the stop/cont path (`take_child_stop_event`). The four
+/// POSIX `pid` forms (Linux `kernel/exit.c eligible_child`):
+///   `-1`   any child of `parent`
+///   `0`    child of `parent` in the waiter's process group (`parent_pgid`)
+///   `>0`   that specific child by **kernel tid** — `056_clone` returns the
+///          kernel tid to the parent, so `waitpid(pid)` carries a kernel
+///          tid, NOT a vpid; matching `c_tid` is the inverse of that return
+///   `<-1`  any child in process group `-pid`
+/// `c_*` = the candidate child's fields. Pure (no globals) → unit-tested.
+/// # C: O(1)
+pub(crate) fn wait_pid_matches(
+    c_parent_tid: u32, c_tid: u32, c_pgid: u32,
+    parent: u32, pid: i32, parent_pgid: u32,
+) -> bool {
+    if c_parent_tid != parent { return false; }
+    match pid {
+        -1          => true,
+        0           => c_pgid == parent_pgid,
+        p if p > 0  => c_tid == p as u32,
+        p           => c_pgid == (-p) as u32, // p < -1: process group -pid
+    }
+}
+
 /// wait4(WUNTRACED/WCONTINUED) helper: take first pending stop/cont.
 /// `pid` follows wait4 semantics (-1/0/+pid/-pgid). Returns (tid, kind, sig)
-/// where kind: 1 = stopped, 2 = continued.
+/// where kind: 1 = stopped, 2 = continued. `parent_pgid` is the waiter's
+/// process group (for the `pid==0` form).
 /// # C: O(N_tasks)
 /// # Lk: REG.lock
 pub fn take_child_stop_event(
     parent: u32,
     pid: i32,
+    parent_pgid: u32,
     want_stop: bool,
     want_cont: bool,
 ) -> Option<(u32, u8, u32)> {
@@ -220,19 +247,10 @@ pub fn take_child_stop_event(
     let g = REG.lock();
     for (_, w) in g.iter() {
         let Some(t) = w.upgrade() else { continue };
-        if t.parent_tid.load(Ordering::Acquire) != parent {
-            continue;
-        }
-        let vpid = t.vtgid.load(Ordering::Acquire) as i32;
-        let pgid = t.pgid.load(Ordering::Acquire) as i32;
-        let matches = if pid == -1 || pid == 0 {
-            true
-        } else if pid > 0 {
-            vpid == pid
-        } else {
-            pgid == -pid
-        };
-        if !matches {
+        if !wait_pid_matches(
+            t.parent_tid.load(Ordering::Acquire), t.tid,
+            t.pgid.load(Ordering::Acquire), parent, pid, parent_pgid)
+        {
             continue;
         }
         if want_stop && t.stop_pending.swap(false, Ordering::AcqRel) {
@@ -296,4 +314,45 @@ pub fn thread_entries(tgid: u32) -> Vec<(u32, u32)> {
 #[cfg(test)]
 pub fn clear_for_tests() {
     REG.lock().clear();
+}
+
+#[cfg(test)]
+mod wait_match_tests {
+    use super::wait_pid_matches;
+    // Candidate child: parent_tid=100, kernel tid=4242, pgid=70.
+    // Waiter: parent_tid=100, process group 70.
+    const PARENT: u32 = 100;
+    const TID:    u32 = 4242;
+    const PGID:   u32 = 70;
+    fn m(pid: i32) -> bool { wait_pid_matches(PARENT, TID, PGID, 100, pid, 70) }
+
+    #[test]
+    fn minus_one_matches_any_child() { assert!(m(-1)); }
+
+    #[test]
+    fn positive_pid_matches_kernel_tid_not_pgid() {
+        assert!(m(4242));   // clone returned the kernel tid → waitpid(tid) matches
+        assert!(!m(70));    // a pgid is not a tid
+        assert!(!m(4243));  // wrong tid
+    }
+
+    #[test]
+    fn zero_matches_waiters_pgrp_only() {
+        assert!(wait_pid_matches(PARENT, TID, 70, 100, 0, 70));  // same pgrp
+        assert!(!wait_pid_matches(PARENT, TID, 88, 100, 0, 70)); // other pgrp
+    }
+
+    #[test]
+    fn neg_pgid_matches_that_process_group() {
+        assert!(m(-70));    // -pid == child pgid 70
+        assert!(!m(-88));   // different pgrp
+        assert!(!m(-4242)); // a tid is not a pgid
+    }
+
+    #[test]
+    fn other_parent_never_matches() {
+        for pid in [-4242, -70, -1, 0, 70, 4242] {
+            assert!(!wait_pid_matches(PARENT, TID, PGID, 999, pid, 70), "pid={pid}");
+        }
+    }
 }
