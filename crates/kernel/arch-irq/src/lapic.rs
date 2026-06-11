@@ -102,10 +102,19 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // CPU that ticks, so a frozen CPU is observed by another).
             sched::diag::percpu::tick();
             sched::live::preempt::set_need_resched();
+            // /proc/stat per-CPU cputime accounting runs on EVERY CPU — each
+            // charges its OWN tick to its own `cpuN` bucket (Linux per-CPU
+            // kcpustat). Was the timer taken in user mode? Saved CS sits at
+            // frame+96 (r11@0..vec@72, err@80, rip@88, cs@96); ring 3
+            // (CS&3==3) = user code was running.
+            // SAFETY: `frame` is the per-vector IRQ scaffold pushed by the stub; +96 is the CPU-pushed CS slot, within the saved frame.
+            let from_user = unsafe { (core::ptr::read_volatile(frame.add(96) as *const u64) & 3) == 3 };
+            sched::cpustat::account(
+                if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
             // UART poll + softirq drain are BSP-only: only the boot CPU
             // owns the UART, and the shared softirq queue must be drained
             // by one CPU to avoid cross-CPU races. APs that arm their own
-            // periodic timer (SMP) reach here too — they only resched.
+            // periodic timer (SMP) reach here too — they only account + resched.
             let is_bsp = {
                 use hal::CpuOps;
                 hal_x86_64::X86CpuOps::current_cpu() == ::cpu::smp::boot_cpu_id()
@@ -113,11 +122,6 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             if is_bsp {
                 // TTY input poll per docs/28: scrape pending UART RX into
                 // the ringbuffer + wake stdin waiters before the picker.
-                // /proc/stat CPU accounting: was the timer interrupt taken in
-                // user mode? Saved CS sits at frame+96 (r11@0..vec@72, err@80,
-                // rip@88, cs@96); ring 3 (CS&3==3) = user code was running.
-                // SAFETY: `frame` is the per-vector IRQ scaffold pushed by the stub; +96 is the CPU-pushed CS slot, within the saved frame.
-                let from_user = unsafe { (core::ptr::read_volatile(frame.add(96) as *const u64) & 3) == 3 };
                 // SAFETY: timer ISR ctx with IRQs masked; BSP owns the UART.
                 unsafe { crate::tick_poll(from_user); }
                 // Linux-style softirq bottom-half (fbcon flush, virtio-input

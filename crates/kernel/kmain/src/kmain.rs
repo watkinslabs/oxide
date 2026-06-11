@@ -871,14 +871,10 @@ fn fbdev_vsync_yield() {
 /// # SAFETY: timer-ISR context per the hook contract.
 /// # C: O(1) typical; O(xres*yres) on dirty fbcon repaint.
 #[cfg(target_os = "oxide-kernel")]
-unsafe fn tick_poll_combined(from_user: bool) {
-    // /proc/stat CPU accounting (htop/btop %CPU): the cooperative scheduler
-    // SPINS when waiting (the idle task never parks), so the running task's
-    // class can't distinguish idle from busy — but the privilege level the
-    // timer interrupted can. A user-mode tick = real user code was running;
-    // kernel-mode = a syscall or the idle spin loop, counted as idle.
-    sched::cpustat::account(
-        if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
+unsafe fn tick_poll_combined(_from_user: bool) {
+    // NOTE: /proc/stat per-CPU cputime accounting (cpustat::account) moved to
+    // the timer ISR (arch_irq lapic/gic) so it runs on EVERY CPU — this hook
+    // is BSP-only (device polling), which left APs' cpuN buckets at zero.
     // Load average (1/5/15 min EWMA, resampled ~every 5s — self-gated on the
     // monotonic clock, so the per-tick cost is one compare).
     {
