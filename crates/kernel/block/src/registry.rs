@@ -84,3 +84,62 @@ pub fn by_serial(serial: &str) -> Option<Arc<dyn BlockDevice>> {
 pub fn snapshot() -> Vec<Arc<Disk>> {
     TABLE.lock().clone()
 }
+
+/// Capacity in 512-byte sectors — Linux `/sys/block/<dev>/size` units.
+/// ALWAYS 512-byte units regardless of the logical block size, so a
+/// 4096-byte-sector disk with N blocks reports `N * 8`.
+/// # C: O(1)
+pub fn size_512_sectors(capacity_blocks: u64, block_size: u32) -> u64 {
+    capacity_blocks.saturating_mul((block_size as u64) / 512)
+}
+
+/// Synthetic (major, minor) for a disk by registration name + 1-based
+/// index. Linux majors where they exist: virtio-blk 254, NVMe 259,
+/// SCSI/AHCI disk 8. Minor = `index - 1`. Honest: oxide assigns these
+/// statically by name prefix — no dynamic major allocator yet.
+/// # C: O(1)
+pub fn major_minor(name: &str, index: u32) -> (u32, u32) {
+    let major = if name.starts_with("nvme") { 259 }
+        else if name.starts_with("vd") { 254 }
+        else if name.starts_with("sd") || name.starts_with("sata") { 8 }
+        else { 254 };
+    (major, index.saturating_sub(1))
+}
+
+#[cfg(test)]
+mod sysfs_format_tests {
+    use super::*;
+
+    #[test]
+    fn size_units_512_block() { assert_eq!(size_512_sectors(2048, 512), 2048); }
+
+    #[test]
+    fn size_units_4k_block() { assert_eq!(size_512_sectors(1000, 4096), 8000); }
+
+    #[test]
+    fn size_units_zero_capacity() { assert_eq!(size_512_sectors(0, 512), 0); }
+
+    #[test]
+    fn major_minor_virtio() {
+        assert_eq!(major_minor("vda", 1), (254, 0));
+        assert_eq!(major_minor("vdb", 2), (254, 1));
+    }
+
+    #[test]
+    fn major_minor_nvme() { assert_eq!(major_minor("nvme0n1", 1), (259, 0)); }
+
+    #[test]
+    fn major_minor_ahci() {
+        assert_eq!(major_minor("sata0", 3), (8, 2));
+        assert_eq!(major_minor("sda", 1), (8, 0));
+    }
+
+    #[test]
+    fn uevent_body_format() {
+        // The /sys/block/<dev>/uevent body sysfs renders from these.
+        let (major, minor) = major_minor("vda", 1);
+        let body = alloc::format!(
+            "MAJOR={}\nMINOR={}\nDEVNAME={}\nDEVTYPE=disk\n", major, minor, "vda");
+        assert_eq!(body, "MAJOR=254\nMINOR=0\nDEVNAME=vda\nDEVTYPE=disk\n");
+    }
+}
