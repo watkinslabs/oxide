@@ -417,6 +417,115 @@ pub fn framebuffer() -> Option<(u64, u64, u64, u32, u32, u32)> {
     Some((c.fb_va - c.hhdm, c.fb_va, c.fb_bytes, c.w * 4, c.w, c.h))
 }
 
+// ============================================================
+// D5b-2 runtime KMS scanout API (the drm crate calls these via the
+// hook registered in `register_drm_hooks`). All honest-fail (return
+// false/None) if the scanout CTX is None — i.e. QEMU was launched
+// without virtio-gpu, so SETCRTC must -EINVAL upstream.
+//
+// CONSOLE SAFETY: the boot fbcon framebuffer is res_id 1 and stays
+// allocated+attached for the whole boot. SETCRTC creates a NEW res_id
+// (>=2) for the client's dumb buffer and switches scanout 0 to it.
+// res_id 1 is never unref'd, so `restore_console_scanout` can
+// SET_SCANOUT back to it + force_repaint to bring the console (and
+// getty) back when the client closes its card fd.
+// ============================================================
+
+/// Boot fbcon scanout resource id (set up by `setup_scanout`).
+pub const BOOT_SCANOUT_RES_ID: u32 = 1;
+
+/// Runtime resource-id allocator. Boot fb is res_id 1; runtime KMS
+/// resources start at 2 so they never collide with the console fb.
+static NEXT_RUNTIME_RES_ID: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(2);
+
+/// The boot fbcon scanout resource id (= 1). # C: O(1)
+pub fn boot_scanout_res_id() -> u32 { BOOT_SCANOUT_RES_ID }
+
+/// Run an encode closure as one CTRLQ command + poll used. Mirrors the
+/// boot `submit_one` but takes the queue context from the installed
+/// CTX. `false` if no CTX or the round-trip times out / NAKs.
+/// # C: O(1) submit + host-side O(work).
+fn submit_ctrl<F: Fn(&mut [u8]) -> usize>(encode: F) -> bool {
+    let g = CTX.lock();
+    let ctx = match g.as_ref() { Some(c) => c, None => return false };
+    let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
+    // SAFETY: cmd_buf is the HHDM-mapped 4 KiB scratch frame setup_scanout installed; q0 descriptor/avail/used/notify VAs are the exact ones the boot path validated; we hold the CTX lock so we are the sole writer for this submit; the encode closure writes < 0x100 bytes into the per-call request slice.
+    let ok = unsafe {
+        submit_one(cmd_buf_va_p, ctx.cmd_buf_pa, |b| encode(b),
+            ctx.q0_desc_pa, ctx.q0_driver_pa, ctx.q0_device_pa,
+            ctx.q0_notify_va, ctx.hhdm)
+    };
+    if !ok { return false; }
+    // SAFETY: cmd_buf_va is HHDM-mapped 4 KiB; submit_raw places the 24-byte response at +0x200; aligned u32 read of the response type word.
+    let resp = unsafe { core::ptr::read_volatile((ctx.cmd_buf_va + 0x200) as *const u32) };
+    // Accept any RESP_OK_* (0x1100..0x1200).
+    resp >= 0x1100 && resp < 0x1200
+}
+
+/// Create a new virtio-gpu 2D resource backed by a userspace-painted
+/// contiguous physical buffer (`pa`, `w*h*4` bytes). Issues
+/// RESOURCE_CREATE_2D + RESOURCE_ATTACH_BACKING (one mem-entry over the
+/// whole contiguous run). Returns the new res_id, or `None` if no
+/// scanout CTX or a command failed. The buffer's PA must be a single
+/// contiguous run (DRM dumb buffers are alloc_contig). # C: O(1) submits.
+pub fn create_scanout_from_pa(pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32> {
+    if !scanout_ready() { return None; }
+    let fmt = crate::drm_fourcc_to_virtio(fmt_drm)?;
+    if w == 0 || h == 0 { return None; }
+    let bytes = (w as u64) * (h as u64) * 4;
+    if bytes == 0 || bytes > u32::MAX as u64 { return None; }
+    let res_id = NEXT_RUNTIME_RES_ID.fetch_add(1, Ordering::AcqRel);
+    if !submit_ctrl(|b| crate::encode_resource_create_2d(b, res_id, fmt, w, h)) {
+        return None;
+    }
+    if !submit_ctrl(|b| crate::encode_resource_attach_backing_one(b, res_id, pa, bytes as u32)) {
+        return None;
+    }
+    Some(res_id)
+}
+
+/// Switch scanout 0 to `res_id` and make its pixels visible:
+/// SET_SCANOUT(0, res_id, 0,0,w,h) + TRANSFER_TO_HOST_2D + RESOURCE_FLUSH.
+/// `false` if no CTX or a command failed. # C: O(1) submits.
+pub fn set_scanout(res_id: u32, w: u32, h: u32) -> bool {
+    if !scanout_ready() || w == 0 || h == 0 { return false; }
+    if !submit_ctrl(|b| crate::encode_set_scanout(b, 0, res_id, 0, 0, w, h)) { return false; }
+    if !submit_ctrl(|b| crate::encode_transfer_to_host_2d(b, res_id, 0, 0, w, h, 0)) { return false; }
+    if !submit_ctrl(|b| crate::encode_resource_flush(b, res_id, 0, 0, w, h)) { return false; }
+    true
+}
+
+/// Restore the boot fbcon scanout (res_id 1) and re-paint the console.
+/// Called from `DrmCardInode::on_release` when a KMS client that took
+/// the scanout closes its card fd, so the fb console + getty come back.
+/// SET_SCANOUT back to res_id 1 over the boot dimensions + flush, then
+/// `fbcon::force_repaint()` re-blits the live VT into res_id 1's backing
+/// (via fbcon_flush_pixels) so the next flush shows real content.
+/// `false` if no CTX. # C: O(1) submits + O(cols*rows) repaint.
+pub fn restore_console_scanout() -> bool {
+    let (w, h) = match dimensions() { Some(d) => d, None => return false };
+    let ok = set_scanout(BOOT_SCANOUT_RES_ID, w, h);
+    // Bring the console content back: force_repaint marks the fg VT
+    // dirty + raises the flush softirq, which calls fbcon_flush_pixels
+    // → writes res_id 1's backing + transfer/flush.
+    fbcon::kernel::force_repaint();
+    ok
+}
+
+/// Register the DRM↔virtio-gpu runtime scanout hooks with the `47` DRM
+/// core. Called once from `install_with_drm` so SETCRTC/PAGE_FLIP can
+/// drive the scanout without a crate dependency cycle (drm cannot
+/// depend on this crate; this crate depends on drm). # C: O(1)
+pub fn register_drm_hooks() {
+    drm::node::set_scanout_ops(drm::node::ScanoutOps {
+        create_from_pa: create_scanout_from_pa,
+        set_scanout,
+        restore_console: restore_console_scanout,
+        boot_res_id: boot_scanout_res_id,
+    });
+}
+
 /// Push the CURRENT framebuffer contents to the host display
 /// (transfer_to_host_2d + resource_flush, no pixel copy). For the fbdev
 /// path: userspace wrote the mmap'd scanout directly (or via write()), this
