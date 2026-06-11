@@ -365,6 +365,17 @@ pub struct VirtioNetDev {
     tx_dropped: AtomicU64,
 }
 
+/// Process-global RX counters. `rx_poll` is a free function (not a
+/// method on `VirtioNetDev`) driven from the softirq path, so the
+/// counters it bumps must be reachable without a `&self`. The single
+/// registered `VirtioNetDev`'s `stats()` reads these statics. Linux
+/// counts the L2 ethernet frame in rx_bytes — i.e. the virtio_net_hdr
+/// (12 bytes) is excluded.
+static RX_PACKETS: AtomicU64 = AtomicU64::new(0);
+static RX_BYTES:   AtomicU64 = AtomicU64::new(0);
+static RX_DROPPED: AtomicU64 = AtomicU64::new(0);
+static RX_ERRORS:  AtomicU64 = AtomicU64::new(0);
+
 impl VirtioNetDev {
     /// Build a `VirtioNetDev` from the persisted modern state.
     /// Returns `None` if `init_modern` hasn't run or MAC is invalid.
@@ -440,10 +451,14 @@ impl net::NetDev for VirtioNetDev {
     }
     fn stats(&self) -> net::NetStats {
         net::NetStats {
+            rx_packets: RX_PACKETS.load(Ordering::Relaxed),
+            rx_bytes:   RX_BYTES.load(Ordering::Relaxed),
+            rx_errors:  RX_ERRORS.load(Ordering::Relaxed),
+            rx_dropped: RX_DROPPED.load(Ordering::Relaxed),
             tx_packets: self.tx_packets.load(Ordering::Relaxed),
             tx_bytes:   self.tx_bytes.load(Ordering::Relaxed),
+            tx_errors:  0,
             tx_dropped: self.tx_dropped.load(Ordering::Relaxed),
-            ..net::NetStats::default()
         }
     }
 }
@@ -678,7 +693,22 @@ pub fn rx_poll<F: FnMut(&[u8])>(mut cb: F) -> usize {
                     body_len,
                 )
             };
+            // Linux rx accounting: count the L2 ethernet frame (the
+            // virtio_net_hdr is excluded from rx_bytes). A frame shorter
+            // than a minimum ethernet header is a runt → rx_errors; the
+            // (id!=0 / oversized) else-branch below is a dropped frame.
+            if body_len >= 14 {
+                RX_PACKETS.fetch_add(1, Ordering::Relaxed);
+                RX_BYTES.fetch_add(body_len as u64, Ordering::Relaxed);
+            } else {
+                RX_ERRORS.fetch_add(1, Ordering::Relaxed);
+            }
             frames.push(body.to_vec());
+        } else {
+            // Device wrote a slot we didn't publish, or a frame too
+            // short to even hold the virtio_net_hdr, or one larger than
+            // the buffer — dropped, not delivered upward.
+            RX_DROPPED.fetch_add(1, Ordering::Relaxed);
         }
         delivered += 1;
     }
