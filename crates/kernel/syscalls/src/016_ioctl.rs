@@ -462,9 +462,99 @@ fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64> {
                 Err(_) => Some(errno(Errno::Einval)),
             }
         }
+        vt::VT_GETMODE => {
+            let m = vt::slot(vt_target).map(|s| s.vt_mode).unwrap_or_default();
+            if arg == 0 || arg + 8 >= hal::USER_VA_END { return Some(errno(Errno::Efault)); }
+            // SAFETY: arg validated < USER_VA_END - 8; struct vt_mode is 8 bytes (u8,u8,u16,u16,u16) written field-by-field into the caller's AS.
+            unsafe {
+                core::ptr::write_volatile(arg as *mut u8, m.mode);
+                core::ptr::write_volatile((arg + 1) as *mut u8, m.waitv);
+                core::ptr::write_volatile((arg + 2) as *mut u16, m.relsig);
+                core::ptr::write_volatile((arg + 4) as *mut u16, m.acqsig);
+                core::ptr::write_volatile((arg + 6) as *mut u16, m.frsig);
+            }
+            Some(0)
+        }
+        vt::VT_SETMODE => {
+            if arg == 0 || arg + 8 >= hal::USER_VA_END { return Some(errno(Errno::Efault)); }
+            // SAFETY: arg validated < USER_VA_END - 8; reading the 8-byte struct vt_mode from the caller's AS field-by-field.
+            let m = unsafe {
+                vt::VtMode {
+                    mode:   core::ptr::read_volatile(arg as *const u8),
+                    waitv:  core::ptr::read_volatile((arg + 1) as *const u8),
+                    relsig: core::ptr::read_volatile((arg + 2) as *const u16),
+                    acqsig: core::ptr::read_volatile((arg + 4) as *const u16),
+                    frsig:  core::ptr::read_volatile((arg + 6) as *const u16),
+                }
+            };
+            match vt::set_vt_mode(vt_target, m) {
+                Ok(()) => Some(0),
+                Err(_) => Some(errno(Errno::Einval)),
+            }
+        }
+        vt::KDGETLED | vt::KDGKBLED => {
+            let leds = vt::slot(vt_target).map(|s| s.leds).unwrap_or(0) as u8;
+            if arg != 0 && arg < hal::USER_VA_END {
+                // SAFETY: arg validated < USER_VA_END; single-byte LED state store into caller's AS.
+                unsafe { core::ptr::write_volatile(arg as *mut u8, leds); }
+            }
+            Some(0)
+        }
+        vt::KDSETLED | vt::KDSKBLED => {
+            // arg = LED bitmask by value (Scroll=1,Num=2,Caps=4); 0xff means
+            // "revert to the default kbd-driven state" — no LED hardware, so
+            // store the bits (0 on revert).
+            let leds = if (arg as u32) == 0xff { 0 } else { (arg as u32) & 0x7 };
+            match vt::set_leds(vt_target, leds) {
+                Ok(()) => Some(0),
+                Err(_) => Some(errno(Errno::Einval)),
+            }
+        }
+        vt::VT_RESIZE | vt::VT_RESIZEX => {
+            // vt_sizes { u16 v_rows, v_cols, ... } / vt_consize { u16 v_rows,
+            // v_cols, ... } — both lead with rows then cols.
+            if arg == 0 || arg + 4 >= hal::USER_VA_END { return Some(errno(Errno::Efault)); }
+            // SAFETY: arg validated < USER_VA_END - 4; reading the leading 2×u16 (rows, cols) of the resize struct from the caller's AS.
+            let (rows, cols) = unsafe {
+                (core::ptr::read_volatile(arg as *const u16),
+                 core::ptr::read_volatile((arg + 2) as *const u16))
+            };
+            match vt::resize(vt_target, rows, cols) {
+                Ok(()) => { vt_apply_winsize(rows, cols); Some(0) }
+                Err(_) => Some(errno(Errno::Einval)),
+            }
+        }
+        vt::TIOCLINUX => {
+            // *arg's first byte selects the subfunction. Answer the safe,
+            // widely-used ones; unknown subfunctions = EINVAL (as Linux does).
+            if arg == 0 || arg >= hal::USER_VA_END { return Some(errno(Errno::Efault)); }
+            // SAFETY: arg validated < USER_VA_END; read the 1-byte subfunction selector from the caller's AS.
+            let sub = unsafe { core::ptr::read_volatile(arg as *const u8) };
+            match sub {
+                6 => Some(vt::active().saturating_sub(1) as i64), // TIOCL_GETFGCONSOLE (0-based)
+                _ => Some(errno(Errno::Einval)),
+            }
+        }
         // KIOCSOUND / KDMKTONE / KDADDIO — accept silently or EPERM.
         vt::KIOCSOUND | vt::KDMKTONE => Some(0),
         vt::KDADDIO => Some(errno(Errno::Eperm)),
         _ => None,
+    }
+}
+
+/// VT_RESIZE/VT_RESIZEX side effect: push the new grid into the system
+/// console winsize and raise SIGWINCH on its fg pgrp (Linux `vt_resize` →
+/// tty winsize update + signal), so a full-screen app reflows.
+/// # C: O(P) tasks in the fg pgrp.
+fn vt_apply_winsize(rows: u16, cols: u16) {
+    let ws = tty::pty::Winsize { rows, cols, xpixel: 0, ypixel: 0 };
+    let changed = console::static_console::winsize_set(ws);
+    let fg = console::static_console::foreground_pgid();
+    if changed && fg != 0 {
+        use core::sync::atomic::Ordering;
+        // SIGWINCH = 28; bit (28-1) = 27.
+        for t in sched::live::registry::tasks_in_pgrp(fg) {
+            t.sigpending.fetch_or(1u64 << 27, Ordering::Release);
+        }
     }
 }
