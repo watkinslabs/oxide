@@ -42,6 +42,9 @@ pub mod pollmask {
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Sig {
+    /// Hangup (carrier loss / `tty_hangup`) → SIGHUP. Raised on the fg
+    /// pgrp + session leader when the controlling tty hangs up (28§5).
+    Hup = 1,
     /// VINTR (^C) → SIGINT.
     Int = 2,
     /// VQUIT (^\) → SIGQUIT.
