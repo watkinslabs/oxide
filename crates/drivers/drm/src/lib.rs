@@ -60,7 +60,9 @@ pub const DRM_IOCTL_MODE_DESTROY_DUMB:    u64 = 0xc00464b4;
 pub const DRM_IOCTL_MODE_GETPLANERESOURCES: u64 = 0xc00864b5;
 pub const DRM_IOCTL_MODE_GETPLANE:        u64 = 0xc02064b6;
 pub const DRM_IOCTL_MODE_SETPLANE:        u64 = 0xc03064b7;
-pub const DRM_IOCTL_MODE_ADDFB2:          u64 = 0xc04464b8;
+// _IOWR(0x64, 0xb8, struct drm_mode_fb_cmd2): the modern struct carries
+// modifier[4] (u64) so sizeof = 104 (0x68), NOT the pre-modifier 68 (0x44).
+pub const DRM_IOCTL_MODE_ADDFB2:          u64 = 0xc06864b8;
 pub const DRM_IOCTL_MODE_OBJ_GETPROPERTIES:u64 = 0xc02064b9;
 pub const DRM_IOCTL_MODE_OBJ_SETPROPERTY: u64 = 0xc01864ba;
 pub const DRM_IOCTL_MODE_CURSOR2:         u64 = 0xc02464bf;
@@ -688,5 +690,6 @@ mod tests {
     }
 }
 
+pub mod dumb;
 pub mod modeset;
 pub mod node;
