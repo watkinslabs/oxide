@@ -54,8 +54,10 @@ const KEY_F12:         u16 = 88;
 /// If `keycode` is a function key while Ctrl+Alt are held, switch the
 /// foreground VT to F<n> (Linux Ctrl-Alt-F<n>) and return `true` so the
 /// key is not translated to a byte. F1..F10 = 59..=68, F11=87, F12=88.
-/// Routes both the fb console (`fbcon::kernel::switch_vt`) and the input
-/// RX path (`tty::live::set_foreground`) to the target VT.
+/// Routes through the ONE unified switch (`vt::activate`) so the keyboard
+/// and the VT_ACTIVATE ioctl share a single path: it redraws the fb console
+/// AND retargets input AND updates the administrative active VT (Linux
+/// `change_console`). A VT_LOCKSWITCH on the source VT refuses the switch.
 /// # C: O(cols*rows) on switch (full repaint), else O(1).
 fn handle_vt_switch(keycode: u16, pressed: bool) -> bool {
     if !pressed {
@@ -73,8 +75,7 @@ fn handle_vt_switch(keycode: u16, pressed: bool) -> bool {
         KEY_F12 => 12u8,                              // F12 → VT 12
         _ => return false,
     };
-    tty::live::set_foreground(vt);
-    fbcon::kernel::switch_vt(vt);
+    let _ = vt::activate(vt); // honours VT_LOCKSWITCH; Err = switch refused
     true
 }
 
