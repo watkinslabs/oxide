@@ -750,5 +750,10 @@ mod tests {
 // See `kernel.rs`: one shared physical `VcRenderer`, a lazily-allocated
 // per-VT `Vc`+`Emulator` array (`vc_cons`), an `fg` foreground index,
 // `vt_write(vt,..)` / `vt_console_sink` (printk→fg) / `switch_vt(n)`.
+/// Deferred VT answerback (DSR/CPR) delivery — the Linux flip-buffer /
+/// `flush_to_ldisc` model. Host-testable (the queue/drain decoupling that
+/// fixes the synchronous-injection boot wedge is unit-tested off-boot).
+pub mod answerback;
+
 #[cfg(target_os = "oxide-kernel")]
 pub mod kernel;

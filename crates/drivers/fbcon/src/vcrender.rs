@@ -149,7 +149,11 @@ impl Consw for VcRenderer {
         }
     }
 
-    /// Cursor = reverse-video block at the vc cursor cell. # C: O(CELL).
+    /// Cursor = reverse-video block at the vc cursor cell. When `visible`
+    /// is false (`?25l` hid the cursor) the cell is blitted with its
+    /// NORMAL attributes — i.e. the block is erased, so the cursor is
+    /// actually hidden (Linux fbcon stops drawing the cursor block). The
+    /// bridge (`consw::render`) passes `vc.cursor_visible`. # C: O(CELL).
     fn con_cursor(&mut self, vc: &Vc, visible: bool) {
         let (cx, cy) = (vc.x as u32, vc.y as u32);
         if cx >= self.cols || cy >= self.rows {

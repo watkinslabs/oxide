@@ -28,7 +28,7 @@ mod tests_vt100;
 mod consw_tests;
 
 pub use consw::{render, switch, Consw, ScrollDir};
-pub use emulator::{CsiState, Emulator};
+pub use emulator::{CsiState, Emulator, ReplyBytes};
 pub use palette::{rgb, xterm_256, xterm_256_rgb, VGA_PALETTE};
 pub use vc::{
     map_charset, Attr, Cell, Charset, Vc, ATTR_BOLD, ATTR_REVERSE, ATTR_UNDERLINE,

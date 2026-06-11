@@ -59,7 +59,22 @@ pub trait Consw {
         for r in 0..rows {
             self.con_putcs(vc, r, 0, cols);
         }
-        self.con_cursor(vc, true);
+        // The full repaint above already painted the (normal) cursor cell,
+        // so any stale block is gone; draw the cursor honoring visibility.
+        self.con_cursor(vc, vc.cursor_visible);
+    }
+}
+
+/// Erase the cursor block the renderer last drew at `old` by repainting
+/// that cell with its normal (non-reverse) attributes, then forget it.
+/// No-op when nothing was drawn. Mirrors Linux fbcon erasing the prior
+/// cursor cell before moving the block. # C: O(1).
+fn erase_old_cursor<C: Consw>(vc: &mut Vc, consw: &mut C) {
+    if let Some((ox, oy)) = vc.last_cursor() {
+        if oy < vc.rows && ox < vc.cols {
+            consw.con_putcs(vc, oy as u32, ox as u32, 1);
+        }
+        vc.set_last_cursor(None);
     }
 }
 
@@ -77,7 +92,21 @@ pub fn render<C: Consw>(vc: &mut Vc, consw: &mut C) {
         }
     }
     if vc.is_cursor_dirty() {
-        consw.con_cursor(vc, true);
+        // Erase the previous cursor block so a moved cursor leaves no
+        // reverse-video artifact behind (Linux fbcon erases the prior
+        // cell). Skip it when that row was already repainted this pass
+        // (a dirty-row putcs above drew the cell with its normal attrs).
+        if let Some((_ox, oy)) = vc.last_cursor() {
+            if !vc.is_row_dirty(oy) {
+                erase_old_cursor(vc, consw);
+            } else {
+                vc.set_last_cursor(None);
+            }
+        }
+        // Draw the cursor at its new position honoring `cursor_visible`
+        // (`?25l` actually hides the block).
+        consw.con_cursor(vc, vc.cursor_visible);
+        vc.set_last_cursor(if vc.cursor_visible { Some((vc.x, vc.y)) } else { None });
     }
     vc.clear_dirty();
 }
@@ -87,5 +116,8 @@ pub fn render<C: Consw>(vc: &mut Vc, consw: &mut C) {
 /// # C: O(cols*rows).
 pub fn switch<C: Consw>(vc: &mut Vc, consw: &mut C) {
     consw.con_switch(vc);
+    // The full repaint cleared any old block; record the new one (or none
+    // when the cursor is hidden).
+    vc.set_last_cursor(if vc.cursor_visible { Some((vc.x, vc.y)) } else { None });
     vc.clear_dirty();
 }
