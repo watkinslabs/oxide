@@ -658,6 +658,17 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         sum
     }
 
+    /// Per-order free-block counts (`free_count[o]` = number of free
+    /// order-`o` blocks). For `/proc/buddyinfo` (Linux `frag_show`).
+    /// Read-only snapshot under the buddy lock.
+    /// # C: O(ORDERS)
+    pub fn free_orders(&self) -> [u64; ORDERS] {
+        let g = self.inner.lock_irqsave::<I>();
+        let mut out = [0u64; ORDERS];
+        for o in 0..ORDERS { out[o] = g.free_count[o]; }
+        out
+    }
+
     /// Total allocated pages.
     /// # C: O(1)
     pub fn allocated_pages(&self) -> u64 {
