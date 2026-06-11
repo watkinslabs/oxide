@@ -244,9 +244,40 @@ pub fn init_console_fd_table() -> Arc<FdTable> {
     table
 }
 
+/// `/dev/vcs` (text) + `/dev/vcsa` (text+attr) — the VT screen-dump devices
+/// (Linux `drivers/tty/vt/vc_screen.c`). A read snapshots the FOREGROUND VT's
+/// screen: `vcs` = `rows*cols` glyph bytes; `vcsa` = a 4-byte header
+/// `[rows, cols, cursor_x, cursor_y]` then `[glyph, attr]` pairs. Read-only
+/// here (writing the screen via vcs is not supported → EINVAL).
+pub struct VcsInode { with_attr: bool }
+
+impl VcsInode {
+    /// `attr=false` → /dev/vcs(0); `attr=true` → /dev/vcsa(0). # C: O(1)
+    pub const fn new(attr: bool) -> Self { Self { with_attr: attr } }
+}
+
+impl Inode for VcsInode {
+    // Distinct, collision-free inos (low byte 0 ⇒ the VT/fbdev ioctl routers
+    // skip these): 0x7600 = vcs, 0x7700 = vcsa.
+    fn ino(&self) -> Ino { if self.with_attr { 0x7700 } else { 0x7600 } }
+    fn file_type(&self) -> FileType { FileType::CharDev }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let data = fbcon::kernel::screen_dump(self.with_attr);
+        let off = off as usize;
+        if off >= data.len() { return Ok(0); }
+        let n = (data.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&data[off..off + n]);
+        Ok(n)
+    }
+    fn write(&self, _off: u64, _buf: &[u8]) -> KResult<usize> { Err(VfsError::Einval) }
+}
+
 /// Register the console/tty char-device nodes into devfs (self-registration
 /// per docs/56). /dev/{console,tty,tty0,ttyS0} alias the foreground VT (vt=0);
-/// /dev/tty1..N each carry their own VT id. Boot, once.
+/// /dev/tty1..N each carry their own VT id; /dev/vcs{,0,a,a0} dump the screen.
+/// Boot, once.
 /// # C: O(N_VT)
 pub fn register_devnodes() {
     use alloc::sync::Arc;
@@ -263,4 +294,11 @@ pub fn register_devnodes() {
         path.push((b'0' + (vt % 10)) as char);
         devfs::register_owned(path, Arc::new(ConsoleInode::new(vt)) as vfs::InodeRef);
     }
+    // VT screen-dump devices (vc_screen.c). 0 = current foreground VT.
+    let vcs: vfs::InodeRef = Arc::new(VcsInode::new(false));
+    devfs::register("/dev/vcs",  Arc::clone(&vcs));
+    devfs::register("/dev/vcs0", vcs);
+    let vcsa: vfs::InodeRef = Arc::new(VcsInode::new(true));
+    devfs::register("/dev/vcsa",  Arc::clone(&vcsa));
+    devfs::register("/dev/vcsa0", vcsa);
 }
