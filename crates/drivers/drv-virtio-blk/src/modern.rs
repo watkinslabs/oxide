@@ -185,6 +185,17 @@ pub struct BlkState {
     inflight:     Spinlock<RingShadow, DriverLockClass>,
 }
 
+// Single-in-flight by design (drivers-plan D7c, deliberate — NOT a façade).
+// Each request is a real 3-descriptor chain (header IN + data + status WRITE)
+// with genuine device completion (used.idx poll, then park on BLK_COMPL); the
+// `busy` gate serializes submitters onto fixed descriptors 0..2 + the one
+// shared bounce region. Multiple-in-flight (a free-descriptor pool, completion
+// matched by used.ring[].id, per-request data buffers) is DEFERRED to the
+// phase-17 block-layer/scheduler work: oxide issues NO concurrent block I/O
+// today (pagecache + every syscall read/write path serialize above this; no
+// async I/O until io_uring lands), so multi-in-flight would be unobservable
+// complexity on the ext4-root critical path — high boot risk, zero consumer.
+// Correct + serial, not faked.
 struct RingShadow {
     avail_idx: u16,
     used_seen: u16,
