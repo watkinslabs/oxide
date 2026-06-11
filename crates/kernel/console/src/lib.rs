@@ -134,7 +134,25 @@ impl Inode for ConsoleInode {
     fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
         dtrace!(b"CW_IN", buf.len() as u64);
         if self.vt == 0 {
+            // System console. The serial line is the SECONDARY console (the
+            // durable log + the boot/login path): cooked OPOST/ONLCR → UART
+            // via the serial `TtyStruct`. The PRIMARY console is the
+            // framebuffer VT `vc_cons[0]` — feed the SAME bytes through its
+            // `vc_data` emulator (the Linux fb-console contract, the same
+            // path the numbered VTs use). That is what renders /dev/console
+            // on the framebuffer AND answers DSR/CPR (`ESC[6n`) LOCALLY with
+            // the real fbcon geometry: the emulator queues the reply and the
+            // tick drain injects it back into THIS tty's input ring
+            // (`vt_reply_sink(0)` → `static_console::rx_byte`), so a probe
+            // (`printf '\033[6n'; read -d R`) on /dev/console reads oxide's
+            // geometry, not the serial host terminal's. `vt_write` no-ops
+            // before fbcon init, so a serial-only machine keeps a pure-serial
+            // /dev/console (the remote terminal answers, as Linux serial does).
             let n = static_console::write(buf);
+            let oflag = tty::pty::read_oflag(&static_console::termios_get());
+            let onlcr = (oflag & tty::pty::oflag::OPOST) != 0
+                && (oflag & tty::pty::oflag::ONLCR) != 0;
+            fbcon_feed(0, buf, onlcr);
             dtrace!(b"CW_OUT", n as u64);
             return Ok(n);
         }
@@ -156,20 +174,53 @@ impl Inode for ConsoleInode {
         let oflag = tty::live::output_oflag(self.vt);
         let post = (oflag & tty::pty::oflag::OPOST) != 0;
         let onlcr = post && (oflag & tty::pty::oflag::ONLCR) != 0;
-        if !onlcr {
-            fbcon::kernel::vt_write(self.vt, buf);
-            return Ok(buf.len());
-        }
-        let mut start = 0;
-        for (i, &b) in buf.iter().enumerate() {
-            if b == b'\n' {
-                if i > start { fbcon::kernel::vt_write(self.vt, &buf[start..i]); }
-                fbcon::kernel::vt_write(self.vt, b"\r\n");
-                start = i + 1;
-            }
-        }
-        if start < buf.len() { fbcon::kernel::vt_write(self.vt, &buf[start..]); }
+        fbcon_feed(self.vt, buf, onlcr);
         Ok(buf.len())
+    }
+}
+
+/// Feed `buf` to fbcon VT `vt`'s `vc_data` emulator (the Linux VT console
+/// device write: emulator → `vc_data` → consw cell-blit + DSR/CPR
+/// answerback). Applies ONLCR output translation (`\n` → `\r\n`) when
+/// `onlcr` is set — the ldisc's OPOST job; the emulator itself treats `\n`
+/// as a bare linefeed (no column reset). Shared by the system console
+/// (vt 0) and the numbered VTs.
+/// # C: O(N) bytes + dirty-cell blit on the fg VT.
+fn fbcon_feed(vt: u8, buf: &[u8], onlcr: bool) {
+    if !onlcr {
+        fbcon::kernel::vt_write(vt, buf);
+        return;
+    }
+    let mut start = 0;
+    for (i, &b) in buf.iter().enumerate() {
+        if b == b'\n' {
+            if i > start { fbcon::kernel::vt_write(vt, &buf[start..i]); }
+            fbcon::kernel::vt_write(vt, b"\r\n");
+            start = i + 1;
+        }
+    }
+    if start < buf.len() { fbcon::kernel::vt_write(vt, &buf[start..]); }
+}
+
+/// Route a VT emulator's terminal answerback (DSR/CPR reply per `CSI n`)
+/// into the matching tty INPUT ring so the program that issued the query
+/// reads its reply back — the fbcon counterpart of Linux `respond_string`
+/// → `tty_insert_flip_string`. `vt == 0` is the system console (the serial
+/// `TtyStruct`'s flip path → N_TTY); `1..=N_VT` are the numbered VTs (the
+/// `tty::live` per-VT input ring, same path keyboard RX uses). Registered
+/// with `fbcon::kernel::set_reply_sink` at boot.
+/// # C: O(N) bytes + waiter wake
+pub fn vt_reply_sink(vt: u8, bytes: &[u8]) {
+    if vt == 0 {
+        // System console: feed the bytes into ttyS0's RX flip path so the
+        // reader (e.g. btop on /dev/console) drains them. The console tty
+        // is in raw mode while a full-screen app runs, so the reply passes
+        // straight through N_TTY into the read queue.
+        for &b in bytes {
+            static_console::rx_byte(b);
+        }
+    } else {
+        tty::live::reply_inject_vt(vt, bytes);
     }
 }
 

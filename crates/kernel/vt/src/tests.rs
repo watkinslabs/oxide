@@ -432,6 +432,51 @@ fn view_offset_change_marks_all_rows_dirty() {
     }
 }
 
+#[test]
+fn dsr_device_status_replies_ok() {
+    // CSI 5 n (DSR) → CSI 0 n ("terminal OK").
+    let mut vc = Vc::new(80, 24);
+    let mut em = Emulator::new();
+    em.feed_bytes(&mut vc, b"\x1b[5n");
+    let r = em.take_reply();
+    assert_eq!(r.as_slice(), b"\x1b[0n");
+    // Drained: a second take is empty.
+    assert!(em.take_reply().is_empty());
+}
+
+#[test]
+fn cpr_cursor_position_report_is_one_based() {
+    // Move to a known cell, then CSI 6 n (CPR) → CSI <row>;<col> R,
+    // 1-based for the CURRENT cursor position.
+    let mut vc = Vc::new(80, 24);
+    let mut em = Emulator::new();
+    em.feed_bytes(&mut vc, b"\x1b[10;20H"); // row 10, col 20 (1-based)
+    assert_eq!((vc.y, vc.x), (9, 19)); // 0-based internally
+    em.feed_bytes(&mut vc, b"\x1b[6n");
+    let r = em.take_reply();
+    assert_eq!(r.as_slice(), b"\x1b[10;20R");
+}
+
+#[test]
+fn cpr_after_clamp_reports_real_geometry() {
+    // btop's probe: CSI 999;999H clamps to the real grid, then CSI 6n
+    // reports the clamped (= real) row/col. On a 24×80 grid that's 24;80.
+    let mut vc = Vc::new(80, 24);
+    let mut em = Emulator::new();
+    em.feed_bytes(&mut vc, b"\x1b[999;999H\x1b[6n");
+    let r = em.take_reply();
+    assert_eq!(r.as_slice(), b"\x1b[24;80R");
+}
+
+#[test]
+fn private_dsr_produces_no_reply() {
+    // CSI ? 6 n (DEC DSR) is private — no standard reply.
+    let mut vc = Vc::new(80, 24);
+    let mut em = Emulator::new();
+    em.feed_bytes(&mut vc, b"\x1b[?6n");
+    assert!(em.take_reply().is_empty());
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 4000, ..ProptestConfig::default() })]
 
