@@ -301,6 +301,41 @@ pub fn lock_switch(n: u8, locked: bool) -> KResult<()> {
     Ok(())
 }
 
+/// VT_SETMODE: store the VT operating mode — VT_AUTO (kernel switches
+/// freely) or VT_PROCESS (the owner is signalled on switch + must ack via
+/// VT_RELDISP) + the rel/acq/free signal numbers. # C: O(1)
+pub fn set_vt_mode(n: u8, mode: VtMode) -> KResult<()> {
+    if n < 1 || n as usize > MAX_NR_CONSOLES { return Err(Error::Inval); }
+    if mode.mode != VT_AUTO && mode.mode != VT_PROCESS && mode.mode != VT_ACKACQ {
+        return Err(Error::Inval);
+    }
+    let mut g = SLOTS.lock();
+    g[(n - 1) as usize].vt_mode = mode;
+    Ok(())
+}
+
+/// KDSETLED / KDSKBLED: set the keyboard LED bits (Scroll/Num/Caps) on VT n.
+/// # C: O(1)
+pub fn set_leds(n: u8, leds: u32) -> KResult<()> {
+    if n < 1 || n as usize > MAX_NR_CONSOLES { return Err(Error::Inval); }
+    let mut g = SLOTS.lock();
+    g[(n - 1) as usize].leds = leds;
+    Ok(())
+}
+
+/// VT_RESIZE / VT_RESIZEX: store the VT's character grid. The caller (ioctl
+/// glue) also pushes the new tty winsize + raises SIGWINCH on the fg pgrp —
+/// it owns the tty + signal path. `Err(Inval)` on a zero dimension.
+/// # C: O(1)
+pub fn resize(n: u8, rows: u16, cols: u16) -> KResult<()> {
+    if n < 1 || n as usize > MAX_NR_CONSOLES { return Err(Error::Inval); }
+    if rows == 0 || cols == 0 { return Err(Error::Inval); }
+    let mut g = SLOTS.lock();
+    g[(n - 1) as usize].cols = cols;
+    g[(n - 1) as usize].rows = rows;
+    Ok(())
+}
+
 /// Snapshot a slot for inspection by the kernel ioctl glue.
 /// # C: O(1)
 pub fn slot(n: u8) -> Option<VtSlotSnap> {
@@ -429,5 +464,41 @@ mod tests {
     fn vtmode_size() {
         // u8 + u8 + u16 + u16 + u16 = 8 bytes
         assert_eq!(core::mem::size_of::<VtMode>(), 8);
+    }
+
+    #[test]
+    fn set_get_vt_mode_roundtrips() {
+        reset();
+        // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
+        unsafe { init().unwrap(); }
+        let m = VtMode { mode: VT_PROCESS, waitv: 0, relsig: 10, acqsig: 12, frsig: 0 };
+        set_vt_mode(1, m).unwrap();
+        let s = slot(1).unwrap();
+        assert_eq!(s.vt_mode.mode, VT_PROCESS);
+        assert_eq!(s.vt_mode.relsig, 10);
+        assert_eq!(s.vt_mode.acqsig, 12);
+        // Invalid mode rejected.
+        assert!(matches!(set_vt_mode(1, VtMode { mode: 99, ..Default::default() }), Err(Error::Inval)));
+    }
+
+    #[test]
+    fn set_leds_stored() {
+        reset();
+        // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
+        unsafe { init().unwrap(); }
+        set_leds(1, 0b101).unwrap();
+        assert_eq!(slot(1).unwrap().leds, 0b101);
+    }
+
+    #[test]
+    fn resize_stores_grid_rejects_zero() {
+        reset();
+        // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
+        unsafe { init().unwrap(); }
+        resize(1, 50, 160).unwrap();
+        let s = slot(1).unwrap();
+        assert_eq!((s.rows, s.cols), (50, 160));
+        assert!(matches!(resize(1, 0, 80), Err(Error::Inval)));
+        assert!(matches!(resize(1, 24, 0), Err(Error::Inval)));
     }
 }
