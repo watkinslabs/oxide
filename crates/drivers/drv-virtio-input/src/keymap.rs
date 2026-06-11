@@ -278,6 +278,17 @@ impl Out {
         Self { buf, len: n as u8 }
     }
 
+    /// Build from a raw byte sequence (≤5 bytes) — for the fixed escape
+    /// sequences special keys emit (`ESC [ A`, `ESC [ 5 ~`, `ESC O P`, …).
+    /// # C: O(N)
+    pub fn seq(bytes: &[u8]) -> Self {
+        let mut buf = [0u8; 5];
+        let n = if bytes.len() > 5 { 5 } else { bytes.len() };
+        let mut i = 0;
+        while i < n { buf[i] = bytes[i]; i += 1; }
+        Self { buf, len: n as u8 }
+    }
+
     /// Prepend ESC (0x1b) for the xterm Meta convention. Caller
     /// ensures `len + 1 <= 5`.
     /// # C: O(1)
@@ -327,11 +338,51 @@ fn encode_utf8(cp: u32, out: &mut [u8]) -> usize {
     }
 }
 
+/// Navigation / function keys → ANSI/xterm escape sequences. These are
+/// layout-independent (the keymap codepoint tables only hold printable
+/// chars), so a framebuffer console must synthesize them here the way a
+/// real terminal's keyboard does — otherwise arrows/PgUp/F-keys produce
+/// nothing and full-screen apps (htop, vi, less) can't navigate. Normal
+/// cursor-key mode (DECCKM off — what htop/less use); app-cursor-keys
+/// (`ESC O A`) is a follow-up tied to the emulator's DECCKM state.
+/// Keycodes are Linux evdev `KEY_*` (the codes virtio-input/i8042 deliver).
+/// # C: O(1)
+fn special_key_seq(kc: u16) -> Option<Out> {
+    Some(match kc {
+        103 => Out::seq(b"\x1b[A"),    // KEY_UP
+        108 => Out::seq(b"\x1b[B"),    // KEY_DOWN
+        106 => Out::seq(b"\x1b[C"),    // KEY_RIGHT
+        105 => Out::seq(b"\x1b[D"),    // KEY_LEFT
+        102 => Out::seq(b"\x1b[H"),    // KEY_HOME
+        107 => Out::seq(b"\x1b[F"),    // KEY_END
+        104 => Out::seq(b"\x1b[5~"),   // KEY_PAGEUP
+        109 => Out::seq(b"\x1b[6~"),   // KEY_PAGEDOWN
+        110 => Out::seq(b"\x1b[2~"),   // KEY_INSERT
+        111 => Out::seq(b"\x1b[3~"),   // KEY_DELETE
+        59  => Out::seq(b"\x1bOP"),    // KEY_F1
+        60  => Out::seq(b"\x1bOQ"),    // KEY_F2
+        61  => Out::seq(b"\x1bOR"),    // KEY_F3
+        62  => Out::seq(b"\x1bOS"),    // KEY_F4
+        63  => Out::seq(b"\x1b[15~"),  // KEY_F5
+        64  => Out::seq(b"\x1b[17~"),  // KEY_F6
+        65  => Out::seq(b"\x1b[18~"),  // KEY_F7
+        66  => Out::seq(b"\x1b[19~"),  // KEY_F8
+        67  => Out::seq(b"\x1b[20~"),  // KEY_F9
+        68  => Out::seq(b"\x1b[21~"),  // KEY_F10
+        87  => Out::seq(b"\x1b[23~"),  // KEY_F11
+        88  => Out::seq(b"\x1b[24~"),  // KEY_F12
+        _ => return None,
+    })
+}
+
 /// Translate `keycode` under the active layout and modifier state.
-/// Returns `Out::NONE` if no map is loaded or the key has no entry
-/// for the current modifier combination.
+/// Returns `Out::NONE` if no map is loaded or the key has no entry for the
+/// current modifier combination. Special keys (arrows/nav/F) emit their
+/// fixed escape sequence regardless of layout.
 /// # C: O(1) — table lookups + UTF-8 encode + meta prefix.
 pub fn translate(keycode: u16) -> Out {
+    // Special keys first — layout-independent, no codepoint in the tables.
+    if let Some(seq) = special_key_seq(keycode) { return seq; }
     if !is_loaded() { return Out::NONE; }
     let g = ACTIVE.lock();
     let km = match g.as_ref() { Some(k) => k, None => return Out::NONE };
@@ -557,6 +608,34 @@ keycode 28 plain=\n
         install();
         MODS_RAW.store(0, Ordering::Relaxed);
         assert_eq!(translate(30).as_bytes(), b"a");
+    }
+
+    // Arrows + navigation keys emit ANSI/xterm escape sequences regardless
+    // of the loaded layout — the framebuffer console's job (a real serial
+    // terminal does this itself). Without these, htop/vi/less can't navigate.
+    #[test]
+    fn special_keys_emit_escape_sequences() {
+        let _g = lock_serial();
+        install();
+        MODS_RAW.store(0, Ordering::Relaxed);
+        assert_eq!(translate(103).as_bytes(), b"\x1b[A", "Up");
+        assert_eq!(translate(108).as_bytes(), b"\x1b[B", "Down");
+        assert_eq!(translate(106).as_bytes(), b"\x1b[C", "Right");
+        assert_eq!(translate(105).as_bytes(), b"\x1b[D", "Left");
+        assert_eq!(translate(104).as_bytes(), b"\x1b[5~", "PageUp");
+        assert_eq!(translate(109).as_bytes(), b"\x1b[6~", "PageDown");
+        assert_eq!(translate(59).as_bytes(),  b"\x1bOP", "F1");
+    }
+
+    // Special keys work even with NO layout loaded (they don't consult the
+    // codepoint tables) — proving the layout-independence.
+    #[test]
+    fn special_keys_independent_of_layout() {
+        let _g = lock_serial();
+        LOADED.store(false, Ordering::Release);
+        assert_eq!(translate(103).as_bytes(), b"\x1b[A");
+        // A printable key with no layout loaded still yields nothing.
+        assert_eq!(translate(30).as_bytes(), b"");
     }
 
     #[test]
