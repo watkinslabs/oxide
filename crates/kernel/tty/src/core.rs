@@ -50,18 +50,6 @@ use crate::ldisc::{vmin_vtime_decision, LdiscOps, NTty, Sig, TtyDriverHooks, Vmt
 use crate::pty::{Winsize, TERMIOS_BYTES};
 use crate::wait::TtyWait;
 
-/// Wake tasks parked in poll/select/ppoll + epoll_wait after a tty
-/// readability transition (RX byte queued, hangup). `sched::live` is
-/// kernel-only, so the host-test build gets a no-op.
-/// # C: O(N_pollers)
-#[cfg(target_os = "oxide-kernel")]
-fn notify_pollers() {
-    sched::live::notify_poll_waiters();
-    sched::live::notify_epoll_waiters();
-}
-#[cfg(not(target_os = "oxide-kernel"))]
-fn notify_pollers() {}
-
 /// TCFLSH queue selector (the ioctl arg). Linux uapi: TCIFLUSH=0 (input),
 /// TCOFLUSH=1 (output), TCIOFLUSH=2 (both). Typed so the ioctl shim never
 /// passes a bare literal (07§5).
@@ -206,6 +194,11 @@ pub struct TtyStruct<D: TtyDriver, W: TtyWait> {
     /// 0→1 / 1→0 edges only (first open powers the device, last close
     /// quiesces it).
     open_count: AtomicU32,
+    /// Per-tty poll/select/epoll wait queue (the Linux `tty->poll` wait
+    /// queue). poll/select/epoll subscribe here via the fd's inode; every
+    /// RX / hangup transition calls `subs.notify()` to wake ONLY the tasks
+    /// polling THIS tty — no global broadcast.
+    subs: vfs::PollSubscribers,
 }
 
 impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
@@ -219,8 +212,13 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             fg_pgrp: AtomicU32::new(0),
             sid: AtomicU32::new(0),
             open_count: AtomicU32::new(0),
+            subs: vfs::PollSubscribers::new(),
         }
     }
+
+    /// The per-tty poll/select/epoll wait queue, for the fd inode's
+    /// `poll_subscribers()`. # C: O(1)
+    pub fn poll_subs(&self) -> &vfs::PollSubscribers { &self.subs }
 
     /// Build with a caller-supplied termios image (raw-mode ptys etc.).
     /// # C: O(1)
@@ -247,14 +245,12 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         // wake_all here, because its enqueue serialized with our queue
         // above on the same port lock.
         self.wait.wake_all();
-        // The RX byte queue just flipped POLLIN readable: wake tasks parked in
-        // poll/select/ppoll (POLL_WAIT) and epoll_wait (EPOLL_GLOBAL_WAIT) on
-        // this tty's fd. Without this they only re-scanned on the bounded
-        // ~100 ms fallback deadline — input on a polled console lagged up to
-        // that long. `notify_poll_waiters` had ZERO callers; this is its
-        // intended tty-RX wire (mod.rs POLL_WAIT doc). Outside the port lock
-        // (same as the reader wake); spurious wakes are level-triggered-safe.
-        notify_pollers();
+        // The RX byte queue just flipped POLLIN readable: wake ONLY the tasks
+        // polling THIS tty (poll/select/ppoll/epoll subscribed to our
+        // `PollSubscribers` via the fd inode's `poll_subscribers()`). Per-fd,
+        // targeted — the Linux `->poll` wait-queue wake. Outside the port lock
+        // (same as the reader wake); level-triggered, so spurious wakes safe.
+        self.subs.notify();
     }
 
     /// Blocking read — THE lost-wakeup-free read. Returns a whole cooked
@@ -567,7 +563,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         self.wait.wake_all();
         // Hangup flips POLLHUP + read→EOF: wake poll/select/epoll waiters too
         // (same rationale as receive_from_driver).
-        notify_pollers();
+        self.subs.notify();
     }
 
     /// True once `hangup` has dropped the ldisc into its EOF/EIO state.

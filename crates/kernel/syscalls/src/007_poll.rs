@@ -45,7 +45,24 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let deadline = if timeout > 0 { Some(monotonic_ns().saturating_add((timeout as u64) * 1_000_000)) } else { None };
-    loop {
+    // Linux `->poll`: register this call's waiter on each polled fd's OWN
+    // wait queue (PollSubscribers). The fd's readiness transition `notify()`s
+    // only its subscribers — no global broadcast. Subscribe once, up front,
+    // so a transition between scans still wakes us.
+    let waiter = crate::poll::poll_common::PollWaiter::new();
+    let mut subbed: alloc::vec::Vec<vfs::InodeRef> = alloc::vec::Vec::new();
+    for i in 0..nfds {
+        let p = fds_ptr + i * 8;
+        // SAFETY: pollfd[i].fd inside the validated nfds*8-byte range.
+        let fd = unsafe { core::ptr::read_volatile(p as *const i32) };
+        if let Ok(file) = fdt.get(fd) {
+            if let Some(s) = file.inode().poll_subscribers() {
+                waiter.subscribe(s);
+                subbed.push(file.inode().clone());
+            }
+        }
+    }
+    let rv: i64 = loop {
         let mut ready: i64 = 0;
         for i in 0..nfds {
             let p = fds_ptr + i * 8;
@@ -88,8 +105,9 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
             unsafe { core::ptr::write_volatile((p + 6) as *mut i16, revents); }
             if revents != 0 { ready += 1; }
         }
-        if ready > 0 || timeout == 0 { return ready; }
-        if let Some(dl) = deadline { if monotonic_ns() >= dl { return 0; } }
+        if ready > 0 { break ready; }
+        if timeout == 0 { break 0; }
+        if let Some(dl) = deadline { if monotonic_ns() >= dl { break 0; } }
         // B17 (T11 close): break out of the poll loop on any unblocked
         // pending signal so the dispatch tail can deliver the signal
         // (and run its default action / handler). Without this, a task
@@ -101,23 +119,26 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
         let pending = cur.sigpending.load(Ordering::Acquire);
         let mask    = cur.sigmask.load(Ordering::Acquire);
         if pending & !mask != 0 {
-            return -(Errno::Eintr.as_i32() as i64);
+            break -(Errno::Eintr.as_i32() as i64);
         }
-        // B57: sleep on the poll wait queue (Linux way) instead of busy-
-        // yield. Woken by `notify_poll_waiters`; bounded re-scan caps
-        // worst-case latency for not-yet-wired ready-sites.
+        // Park until a subscribed fd's `notify()` wakes us, or the caller's
+        // timeout. The bounded safety-net rescan only bounds the worst case
+        // for polled fds with NO event source (timerfd) and closes the tiny
+        // scan→park window — same as epoll_wait. NOT the primary wake path.
         const RESCAN_NS: u64 = 20_000_000;
         let rescan_at = monotonic_ns().saturating_add(RESCAN_NS);
         let park_dl = match deadline {
             Some(d) => core::cmp::min(d, rescan_at),
             None    => rescan_at,
         };
-        // SAFETY: process ctx; preempt-off across the syscall; park marks Sleeping + stamps deadline; tick_yield yields; re-scan on wake.
-        unsafe {
-            sched::live::POLL_WAIT.park_with_deadline(park_dl);
-            sched::live::tick_yield();
-        }
+        // SAFETY: process ctx; preempt-off across the syscall; park+yield per `13§8`.
+        unsafe { waiter.park_until(park_dl); }
+    };
+    // Drop our registration from every fd we subscribed to.
+    for ino in &subbed {
+        if let Some(s) = ino.poll_subscribers() { waiter.unsubscribe(s); }
     }
+    rv
 }
 
 fn yield_sleep_ms(ms: u64) {

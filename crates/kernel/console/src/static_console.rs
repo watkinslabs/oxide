@@ -160,6 +160,12 @@ pub fn poll() -> u32 {
     }
 }
 
+/// The serial console tty's poll/select/epoll wait queue (the Linux
+/// `->poll` wait queue). `None` before `install`. # C: O(1)
+pub fn poll_subscribers() -> Option<&'static vfs::PollSubscribers> {
+    console().map(|tty| tty.poll_subs())
+}
+
 // --------------------------------------------------- ioctl source-of-truth
 //
 // `016_ioctl` routes the non-pty console branch here so the tty owns
