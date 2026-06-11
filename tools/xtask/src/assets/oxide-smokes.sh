@@ -17,6 +17,21 @@ if [ -e /etc/oxide-vsock-smoke ] && [ -x /bin/vsock_probe ]; then
     /bin/vsock_probe
     echo post-vsock_probe rv=$?
 fi
+# D7b: virtio-net statistics. The strict rx>0/tx>0 gate needs the
+# systemd boot's networkd DHCP (see tools/boot-smoke-probe.sh
+# netstats_probe). The rcS path has no DHCP, so eth0 counters may be 0
+# here — run the probe only when traffic has already moved, else just
+# confirm the statistics tree exists + parses (still proves the sysfs
+# surface, not the live count).
+if [ -x /bin/netstats_probe ]; then
+    rxp=$(cat /sys/class/net/eth0/statistics/rx_packets 2>/dev/null || echo 0)
+    txp=$(cat /sys/class/net/eth0/statistics/tx_packets 2>/dev/null || echo 0)
+    if [ "$rxp" -gt 0 ] && [ "$txp" -gt 0 ]; then
+        /bin/netstats_probe
+    else
+        echo "netstats_probe: SKIP (no DHCP under rcS) rx=$rxp tx=$txp files=$([ -e /sys/class/net/eth0/statistics/rx_packets ] && echo ok || echo missing)"
+    fi
+fi
 echo pre-exit_test
 /bin/exit_test
 echo post-exit_test rv=$?

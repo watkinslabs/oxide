@@ -41,7 +41,7 @@ pub use stack::{NetStack, UdpRxQueue};
 pub use route::{RouteEntry, RouteTable};
 pub use ipv4::{Ipv4Hdr, Ipv4Error, push_ipv4_header, ip_checksum, IPV4_HDR_LEN};
 
-pub use netdev::{NetDev, NetError, NetResult, IfaceRegistry, IfaceEntry, NetStats};
+pub use netdev::{NetDev, NetError, NetResult, IfaceRegistry, IfaceEntry, NetStats, STAT_FIELDS};
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock;
