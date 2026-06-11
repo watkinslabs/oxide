@@ -650,6 +650,7 @@ pub fn glue_mmap(
     fd: i64,
     file_off: u64,
     backing: Option<alloc::sync::Arc<dyn vmm::FileBacking>>,
+    phys_base: Option<u64>,
 ) -> Result<u64, i64> {
     use syscall::errno::Errno;
     const MAP_SHARED:  u64 = 0x01;
@@ -683,7 +684,11 @@ pub fn glue_mmap(
     let is_anon = flags & MAP_ANON != 0;
     let _ = fd;
     if is_anon {
-        if backing.is_some() { return Err(-(Errno::Einval.as_i32() as i64)); }
+        if backing.is_some() || phys_base.is_some() { return Err(-(Errno::Einval.as_i32() as i64)); }
+    } else if phys_base.is_some() {
+        // Device physical mapping (e.g. /dev/fbN, Linux remap_pfn_range):
+        // no FileBacking, just a page-aligned offset into the device memory.
+        if (file_off & 0xfff) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
     } else {
         if backing.is_none()       { return Err(-(Errno::Ebadf.as_i32() as i64)); }
         if (file_off & 0xfff) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
@@ -746,9 +751,10 @@ pub fn glue_mmap(
     // 64 KiB guard distance below vma.start (used by pthread stacks
     // and ld.so's main stack).
     if want_grows_down { vma_flags |= VmaFlags::GROWSDOWN; }
-    let vma_backing = match backing {
-        Some(b) => VmaBacking::File { backing: b, off: file_off },
-        None    => VmaBacking::Anonymous,
+    let vma_backing = match (phys_base, backing) {
+        (Some(pa), _) => VmaBacking::PhysRange { base_pa: pa + file_off },
+        (None, Some(b)) => VmaBacking::File { backing: b, off: file_off },
+        (None, None)    => VmaBacking::Anonymous,
     };
     let hint = if addr != 0 {
         match UserVirtAddr::new(addr) {

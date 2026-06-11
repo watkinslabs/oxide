@@ -691,6 +691,14 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     if let Some((w, h)) = drv_virtio_gpu::post_init::dimensions() {
         fbcon::kernel::kernel_init(w, h, drv_virtio_gpu::post_init::fbcon_flush_pixels);
+        // Back /dev/fb0 with the real virtio-gpu scanout (console-plan #1):
+        // FBIOGET_*SCREENINFO report the true geometry/smem, mmap maps the
+        // scanout PA into userspace (remap_pfn_range), write()/PAN/WAITFORVSYNC
+        // flush via the GPU. No-op if the scanout isn't up.
+        if let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = drv_virtio_gpu::post_init::framebuffer() {
+            fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
+            fbdev::set_flush_hook(drv_virtio_gpu::post_init::flush_scanout);
+        }
         // Register the fbcon VT console as a printk console (Linux
         // vt_console_driver): kernel logs now render through the ECMA-48
         // emulator → vc_data → fbcon cell-blit (lossless), not the old

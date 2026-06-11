@@ -173,6 +173,11 @@ pub enum VmaBacking {
     /// task frame allocation. Used for the vvar page so a single
     /// kernel write (via HHDM) propagates to every user mapping.
     KernelFrame { pa: u64 },
+    /// Contiguous device physical range (Linux `remap_pfn_range` / VM_PFNMAP).
+    /// The page-fault handler maps page at VMA offset `O` to `base_pa + O`
+    /// directly — no PMM frame alloc, no refcount, no copy. Used for
+    /// `/dev/fbN`: userspace writes hit the real scanout memory.
+    PhysRange { base_pa: u64 },
     Special,
 }
 
@@ -185,6 +190,7 @@ impl core::fmt::Debug for VmaBacking {
                 write!(f, "KernelBytes {{ len: {}, off: {} }}", data.len(), off)
             }
             VmaBacking::KernelFrame { pa } => write!(f, "KernelFrame {{ pa: {:#x} }}", pa),
+            VmaBacking::PhysRange { base_pa } => write!(f, "PhysRange {{ base_pa: {:#x} }}", base_pa),
             VmaBacking::Special => f.write_str("Special"),
         }
     }
