@@ -378,6 +378,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // UART sink below + fbcon aux sink); a tty write goes TtyStruct → UART
     // and NOT into the kmsg ring (dmesg/shell split).
     console::static_console::install();
+    // The physical keyboard (virtio-input) is a second input source for the
+    // system console /dev/console (alongside the UART): route keyboard bytes
+    // into the SAME N_TTY RX so console-getty/login/shell read keystrokes
+    // (cooked + echoed → serial + framebuffer) at the screen, not just over
+    // serial. Without this, framebuffer login can't type. (console-plan B0;
+    // B4 folds this into the unified per-VT tty.)
+    tty::live::set_kbd_sink(console::static_console::rx_byte);
     // Serial sysrq: snoop a magic console sequence (`<NUL> t` = task
     // dump) for on-demand liveness diagnostics, before bytes reach the
     // tty. Pairs with the per-tick liveness watchdog (`05`, `27`).
@@ -805,6 +812,13 @@ unsafe fn tick_poll_combined(from_user: bool) {
     // delivered even if the device's interrupt-coalesce or our MSI
     // routing dropped the edge.
     drv_virtio_net::modern::rx_drain_softirq();
+    // Same MSI-X-fallback for virtio-input (keyboard): raise the InputDrain
+    // softirq each tick so queued EV_KEY events get walked even if the
+    // device's MSI edge was missed/coalesced (notably aarch64 GICv3/ITS,
+    // where the input MSI does not reliably fire — without this, framebuffer
+    // keyboard input never drains on arm). The device IRQ stays the fast
+    // path; the ring walk runs in softirq context (IRQs on), not here.
+    drv_virtio_input::drain::raise_drain();
     // Wake any virtio-blk task sleeping for an I/O completion so it
     // re-checks used.idx — the timer-tick backstop for the adaptive
     // spin-then-sleep wait (the completion MSI is the fast path).
