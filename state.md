@@ -1,61 +1,57 @@
 # state — session hand-off
 
-Branch: main. Last merged: #1736 (P17-01-tcflush). Active roadmap: **vty-plan.md**.
+Branch: main. Last merged: #1738 (P17-05 serial/fb console split).
+Active roadmap: **vty-plan.md** (P17-01..06).
 
 ## Headline
-User reported: can't log in (serial AND graphical), console "renders like
-garbage, nowhere near vt100." Drove the live VM (qemu MCP) + a 5-agent code
-audit; the changelog over-claimed (console+drivers "done"). Corrected the
-diagnosis and started the TTY/VT remediation program (vty-plan.md, P17-01..06).
+User: terminals must be done THE LINUX WAY (serial + framebuffer are SEPARATE
+devices, not one mirrored /dev/console). Landed the real device separation.
 
-## What's PROVEN (live, both KVM+TCG)
-- Kernel/login/shell are functionally sound: `root` → shell → `id` → `uid=0`;
-  `sleep 2; echo X` flushes on its own → timer ticks + idle output flush WORK.
-- Default termios has **IXON off** → ldisc write is synchronous. The "prompt
-  appears only on input" seen over the qemu-MCP serial bridge is a BRIDGE
-  artifact, not a kernel stall. (Refuted the "LAPIC timer dead" theory.)
+## Landed this session
+- **#1736 (P17-01 tcflush):** TCFLSH/TCSETSF input flush — stale terminal-query
+  answerback no longer contaminates the username (getty-respawn login bug).
+- **#1738 (P17-05 serial/fb split):** the big one. Serial (`/dev/ttyS0`) and the
+  video VTs (`/dev/tty1..N`, `/dev/console`) are now SEPARATE tty devices:
+  - /dev/console,/dev/tty,/dev/tty0 → foreground video VT (vt_tty); renders to
+    fbcon ONCE. /dev/ttyS0 → SerialInode, serial-only, own 80x24 winsize.
+  - `console::route(ino)` centralizes device selection (low-byte 0xFD fg-VT /
+    0xFE serial / N=VT); all 10 ioctl sites use it.
+  - KernelUart::emit no longer mirrors to fbcon → **double-print fixed**.
+  - keyboard → vt_tty(foreground()). fbcon fg slot 1 == /dev/tty1 == /dev/console
+    (ONE foreground notion → fixes the VT-identity black screen).
+  - serial-getty-ttyS0.service added + wired into default.target.
+  - **Verified live both arches:** both gettys start; serial login → uid=0,
+    tty=/dev/ttyS0, no escape-soup; framebuffer renders text (not black).
+    Pre-push boot-smoke PASS x86+arm.
 
-## Root causes (vty-plan.md has full file:line detail)
-- **RC1 serial login** = missing `tcflush` → stale terminal-query answerback
-  (`ESC[r;cR`, kernel-injected during boot) + type-ahead contaminate the
-  username read → login fails → getty respawns ("it resets"). **FIXED in
-  #1736** (TCFLSH/TCSETSF input flush). NOTE: the qemu-MCP can't reproduce the
-  contamination (it doesn't auto-reply to `ESC[6n`), so the *live* end-to-end
-  serial-login fix needs confirmation on a REAL terminal / boot-smoke-login.sh.
-- **RC2 graphical login (black screen)** = VT-identity split: getty runs on
-  fbcon vc0 but VT switching + keyboard target vc1..N; keyboard hard-pinned to
-  vc0 ignoring foreground(). CONFIRMED, not yet fixed. (P17-05)
-- **RC3 emulator gaps** (garbage render): no ECH `CSI X`, no alt-screen
-  `?1049/?47`, no DA `CSI c`/DECID reply, missing SGR dim/italic/blink/strike,
-  no bracketed-paste/keypad, OSC/DCS parse bugs. CONFIRMED. (P17-03/04)
-- **RC4 job-control signals**: `Sig` enum only has Hup/Int/Quit/Tstp — MISSING
-  SIGTTIN/SIGTTOU/TOSTOP, broken pty SIGHUP drain, no SIGCONT-on-hangup, no
-  orphan-pgrp, TIOCNOTTY-on-pty no-op, no auto-ctty. CONFIRMED. (P17-02)
-- **RC5 tty::live not retired** (changelog lied) — survives as buggy kbd router.
-  Retire after RC2. (P17-05)
-- **RC6 docs lie** — fix CHANGELOG/state.md/docs/28 + delete dead scratch md.
+## How Linux does serial+graphical (the rule, now implemented)
+Separate devices, never mirrored as terminals. printk → all consoles;
+interactive I/O → per-device. Video VT = default /dev/console; getty per device
+(console-getty on /dev/console + serial-getty@ttyS0). Each tty: own winsize
+(serial 80x24 until remote SIGWINCH; VT = fb cell grid).
 
-## Open / next (autonomous: "both, serial first; don't stop")
-1. **Confirm RC1 end-to-end** on a real terminal (boot-smoke-login.sh x86/arm)
-   — the MCP can't show the contamination fix. If serial login still flakes,
-   the answerback-timing (deferred tick-drain delivering CPR after agetty's
-   size-read times out) needs addressing too.
-2. **P17-02 job-control signals** (RC4) — pure, hosted-testable, directly
-   serves the user's "support ALL SIGNALS" demand. Add Sig::Ttin/Ttou/Cont +
-   the read/write gates + pty SIGHUP drain.
-3. **P17-05 fbcon VT-unify** (RC2) — the graphical-login fix (vc1 default fg,
-   /dev/console→foreground VT, foreground-aware keyboard, getty on tty1).
-4. **P17-03/04 emulator** (RC3) — ECH, alt-screen, DA, SGR attrs, brkt paste.
-5. **P17-06 docs**.
+## Open / next (vty-plan)
+- **Graphical keyboard login** — verify via QMP send-key
+  (tools/boot-smoke-kbd-login.sh) that typing at the framebuffer console logs in
+  (console-getty on the video VT). The MCP can't inject framebuffer keys.
+- **console-getty respawns once on arm** ("restart counter at 1") — minor; the
+  video-VT getty deactivates+restarts on first boot. Investigate.
+- **P17-02 job-control signals** (RC4) — Sig enum lacks Ttin/Ttou/Cont;
+  SIGTTIN/SIGTTOU/TOSTOP gates, pty SIGHUP drain, SIGCONT-on-hangup, orphan-pgrp.
+- **P17-03/04 emulator** (RC3) — ECH, alt-screen ?1049, DA reply, SGR
+  italic/dim/blink/strike, bracketed paste, DCS fix.
+- **P17-06 docs** — CHANGELOG/docs/19/docs/28 reflect the device split.
+- Known SMP=2 TCG flake: #UD at oxide_syscall_entry on cpu=1 (pre-existing AP
+  race; smoke retries past it). Not console-related.
 
 ## First command next session
-    ./tools/boot-smoke-login.sh x86 600   # confirm #1736 fixed serial login
     git checkout -b P17-02-jobctl-signals
     grep -n "pub enum Sig" crates/kernel/tty/src/ldisc/mod.rs
 
 ## Discipline reminders
-- spec-before-code OK (docs/28 FROZEN). spec-lint clean every commit/PR.
-- Lockstep BOTH arches every PR. Verify-left: hosted cargo test is the dev loop,
-  qemu MCP for live gates. qemu-MCP serial bridge buffers — verify real login
-  via boot-smoke-login.sh, not MCP keystrokes.
-- Don't `git add -A` blindly (it swept scratch md into #1736; D03 cleaned up).
+- THE LINUX WAY: implement the real subsystem; settled Linux behavior is NOT an
+  AskUserQuestion. [[feedback_linux_way_no_design_questions]]
+- Kill stale qemu-system before boot-smoke (vhost-vsock CID/port conflict makes
+  the pre-push hook falsely fail). Don't `pkill -f qemu` (matches your own shell)
+  — use `pkill -f qemu-system`.
+- spec-lint clean + boot-smoke both arches every PR.
