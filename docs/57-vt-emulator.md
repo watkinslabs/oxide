@@ -148,15 +148,17 @@ Bare `CSI m` ≡ `CSI 0 m`. 256-index and truecolor resolve to RGB at apply time
 ### 9.1 Tab stops
 Bool-per-column; default every 8 (`TAB_WIDTH`). HTS sets, TBC clears, HT advances to next set stop and clamps at the right margin (VT100).
 
-### 9.2 Wide characters (East-Asian width) — **work item, not yet implemented**
+### 9.2 Wide characters (East-Asian width)
 
-Per Unicode EAW, a codepoint has print width 0 (combining), 1 (narrow), or 2 (wide: CJK, many emoji, double-width box-drawing). Current `Vc::put_glyph` assumes width 1 and advances the cursor 1 — wide text renders misaligned. Required model (host wide-char handling is a correct reference here):
+Per Unicode EAW, a codepoint has print width 0 (combining), 1 (narrow), or 2 (wide: CJK, many emoji, double-width box-drawing). Model:
 
-1. Width-2 glyph writes a **primary** cell (`wide` flag) + a **spacer** cell (`wide_spacer`, codepoint `\0`) in the next column; cursor advances 2.
-2. Width-0 (combining mark) composes onto the previous cell, no advance.
-3. Overwriting either half of a wide pair clears the *other* half to a blank (with the overwritten cell's colors) — three cases: write-on-primary clears its spacer; write-on-spacer clears its primary; any write clears a stale spacer at the target.
-4. A width-2 glyph with the cursor in the last column wraps first (or, with autowrap off, is dropped) — it never straddles the right margin.
-5. Width source: a compiled-in EAW interval table (no `unicode-width` crate — vendor the table into `vt`), queried by codepoint.
+1. Width-2 glyph writes a **primary** cell (`ATTR_WIDE`) + a **spacer** cell (`ATTR_WIDE_SPACER`) in the next column; cursor advances 2.
+2. Width-0 (combining mark) currently drops without advancing (a single-glyph cell can't store the mark) — preserves alignment; full composition is a later item.
+3. Overwriting either half of a wide pair clears the *other* half to a blank carrying that half's colors — write-on-primary clears its spacer; write-on-spacer clears its primary.
+4. A width-2 glyph with the cursor in the last column wraps first (autowrap) or is dropped (autowrap off) — it never straddles the right margin.
+5. Width source: compiled-in EAW interval table (`eaw.rs`, `char_width(cp)`), binary-searched — no `unicode-width` crate.
+
+Implemented: `cell.rs` (`ATTR_WIDE`/`ATTR_WIDE_SPACER`), `vc.rs` (`put_glyph_w`, `invalidate_wide_at`), `emulator.rs` (`print` width dispatch), `eaw.rs` (table).
 
 ### 9.3 Erase / scroll
 ED/EL/ECH write blanks with the current bg (not the default) per ECMA-48. SU/SD/IL/DL/RI/IND scroll within `[scroll_top, scroll_bottom]`; lines leaving the top of the *full* screen (not a sub-region) enter scrollback.
@@ -194,7 +196,7 @@ Getty's terminal-size probe sends `\e[6n` (DSR-CPR) and blocks on the reply befo
 - CSI coverage: each `§5` final drives the documented `Vc` mutation from a known start state (table-driven).
 - SGR: 16-color, 256-color, truecolor, and every attribute flag round-trip into the cell attr.
 - Pending-wrap: print to last column then one more glyph → wrap occurred exactly once, no blank line; CUF after last-column print clears the latch without wrapping.
-- Wide chars: width-2 glyph occupies primary+spacer, advances 2; overwriting either half clears the other; width-2 at last column wraps. (Gated on `§9.2` landing.)
+- Wide chars: width-2 glyph occupies primary+spacer, advances 2; overwriting either half clears the other; width-2 at last column wraps; combining mark does not advance (`tests_wide.rs`).
 - Alt screen: enter, scribble, leave → main grid + cursor restored byte-exact.
 - UTF-8: 1/2/3/4-byte and invalid → U+FFFD, no desync.
 - Answerback: `\e[6n` at row r col c → exactly `\e[r;cR` queued; `\e[c` → `\e[?6c`.

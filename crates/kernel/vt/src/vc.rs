@@ -10,7 +10,7 @@ use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::palette::{xterm_256_rgb, VGA_PALETTE};
+use crate::palette::VGA_PALETTE;
 
 /// Number of virtual terminals (Linux `MAX_NR_CONSOLES` default).
 /// # C: const.
@@ -116,125 +116,13 @@ pub const DEFAULT_BG_RGB: u32 =
 /// VT (per-VT lazy alloc is a later task).
 pub const SCROLLBACK_LINES: usize = 1000;
 
-// Cells now carry FULLY-RESOLVED 24-bit RGB (Linux per-cell attributes,
-// but truecolor-faithful): SGR 16/256-color indices are resolved to RGB
-// at set-time via the canonical `palette`; SGR 38;2/48;2 truecolor is
-// stored verbatim. The renderer reads `cell.fg`/`cell.bg` directly and
-// no longer does a palette lookup. `flags` keeps bold/underline/reverse.
+// `Attr` + `Cell` live in `cell.rs`; re-export so `vc::Attr` and external
+// `vtdata::Attr` paths keep resolving (57§9).
+pub use crate::cell::{
+    Attr, Cell, ATTR_BLINK, ATTR_BOLD, ATTR_CONCEAL, ATTR_FAINT, ATTR_ITALIC,
+    ATTR_REVERSE, ATTR_STRIKE, ATTR_UNDERLINE, ATTR_WIDE, ATTR_WIDE_SPACER,
+};
 
-/// Flag bit: bold/bright intensity (SGR 1).
-pub const ATTR_BOLD: u16 = 1;
-/// Flag bit: underline (SGR 4).
-pub const ATTR_UNDERLINE: u16 = 2;
-/// Flag bit: reverse video (SGR 7).
-pub const ATTR_REVERSE: u16 = 4;
-
-/// Cell/cursor attribute: fg/bg as resolved 0x00RRGGBB RGB + bold/
-/// underline/reverse flags. SGR index colors are resolved to RGB at
-/// set-time (see `set_fg_index`/`set_bg_index`); truecolor SGR stores
-/// RGB directly. `bold` brightens a basic 0..7 index to 8..15 at resolve
-/// time, so the cell holds the bright RGB (VGA bright convention).
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Attr {
-    pub fg: u32,
-    pub bg: u32,
-    pub bold: bool,
-    pub underline: bool,
-    pub reverse: bool,
-}
-
-impl Default for Attr {
-    fn default() -> Self {
-        Attr {
-            fg: DEFAULT_FG_RGB,
-            bg: DEFAULT_BG_RGB,
-            bold: false,
-            underline: false,
-            reverse: false,
-        }
-    }
-}
-
-impl Attr {
-    /// Pack the bold/underline/reverse flags into a u16 (`ATTR_*`).
-    /// # C: O(1).
-    pub fn flags(self) -> u16 {
-        let mut f = 0u16;
-        if self.bold {
-            f |= ATTR_BOLD;
-        }
-        if self.underline {
-            f |= ATTR_UNDERLINE;
-        }
-        if self.reverse {
-            f |= ATTR_REVERSE;
-        }
-        f
-    }
-
-    /// Build an `Attr` from a `Cell`'s fg/bg RGB + packed flags.
-    /// # C: O(1).
-    pub fn from_cell(c: Cell) -> Self {
-        Attr {
-            fg: c.fg,
-            bg: c.bg,
-            bold: c.flags & ATTR_BOLD != 0,
-            underline: c.flags & ATTR_UNDERLINE != 0,
-            reverse: c.flags & ATTR_REVERSE != 0,
-        }
-    }
-
-    /// Set fg from an SGR 16/256-color index, resolving to RGB now. A
-    /// basic 0..7 index brightens to 8..15 when `bold` (VGA convention).
-    /// # C: O(1).
-    pub fn set_fg_index(&mut self, idx: u32) {
-        let i = if self.bold && idx < 8 { idx + 8 } else { idx };
-        self.fg = xterm_256_rgb(i);
-    }
-
-    /// Set bg from an SGR 16/256-color index, resolving to RGB now.
-    /// # C: O(1).
-    pub fn set_bg_index(&mut self, idx: u32) {
-        self.bg = xterm_256_rgb(idx);
-    }
-
-    /// Reset to SGR defaults (SGR 0).
-    /// # C: O(1).
-    pub fn reset(&mut self) {
-        *self = Attr::default();
-    }
-}
-
-/// One screen cell: a glyph codepoint, fully-resolved fg/bg 0x00RRGGBB,
-/// and packed `ATTR_*` flags. A blank cell is `glyph == ' '` with the
-/// prevailing attr.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Cell {
-    pub glyph: u32,
-    pub fg: u32,
-    pub bg: u32,
-    pub flags: u16,
-}
-
-impl Default for Cell {
-    fn default() -> Self {
-        Cell::blank(Attr::default())
-    }
-}
-
-impl Cell {
-    /// Blank cell carrying `attr` (used for erase/scroll fill).
-    /// # C: O(1).
-    pub fn blank(attr: Attr) -> Self {
-        Cell { glyph: ' ' as u32, fg: attr.fg, bg: attr.bg, flags: attr.flags() }
-    }
-
-    /// Cell with `glyph` and `attr` applied.
-    /// # C: O(1).
-    pub fn glyph(glyph: u32, attr: Attr) -> Self {
-        Cell { glyph, fg: attr.fg, bg: attr.bg, flags: attr.flags() }
-    }
-}
 
 /// Per-VT screen buffer + emulator-visible state.
 #[derive(Clone, Debug)]
@@ -613,16 +501,53 @@ impl Vc {
         }
     }
 
-    /// Write a glyph at the cursor with the current attr (no advance). The
-    /// codepoint is mapped through the active GL charset first, so a DEC
-    /// Special Graphics byte (e.g. `q`) lands as its box-drawing glyph.
-    /// # C: O(1).
+    /// Write a narrow (width-1) glyph at the cursor with the current attr
+    /// (no advance). The codepoint is mapped through the active GL charset
+    /// first, so a DEC Special Graphics byte (e.g. `q`) lands as its box-
+    /// drawing glyph. # C: O(1).
     pub fn put_glyph(&mut self, cp: u32) {
+        self.put_glyph_w(cp, false)
+    }
+
+    /// Write a glyph at the cursor (no advance), `wide`=true for an East-
+    /// Asian width-2 codepoint: the primary cell is flagged `ATTR_WIDE` and
+    /// a `ATTR_WIDE_SPACER` cell is written in the next column. Any wide
+    /// pair the write lands on (at the primary or the spacer) is first torn
+    /// apart so no orphaned half survives (`57§9.2`). Caller must have
+    /// ensured a width-2 glyph fits before the right margin.
+    /// # C: O(1).
+    pub fn put_glyph_w(&mut self, cp: u32, wide: bool) {
         self.snap_to_bottom();
         let mapped = map_charset(cp, self.active_charset());
+        self.invalidate_wide_at(self.x, self.y);
         let i = self.idx(self.x, self.y);
-        self.cells[i] = Cell::glyph(mapped, self.attr);
+        let extra = if wide { ATTR_WIDE } else { 0 };
+        self.cells[i] = Cell::glyph_flags(mapped, self.attr, extra);
+        if wide && self.x + 1 < self.cols {
+            self.invalidate_wide_at(self.x + 1, self.y);
+            let j = self.idx(self.x + 1, self.y);
+            self.cells[j] = Cell::wide_spacer(self.attr);
+        }
         self.mark_row_dirty(self.y);
+    }
+
+    /// Clear a stale wide-char half at `(col,row)` so a write there cannot
+    /// leave an orphan: if the target is a wide primary, blank its spacer at
+    /// `col+1`; if it is a spacer, blank its primary at `col-1`. Blanks keep
+    /// the cleared cell's own colors. # C: O(1).
+    fn invalidate_wide_at(&mut self, col: u16, row: u16) {
+        let i = self.idx(col, row);
+        let c = self.cells[i];
+        if c.is_wide() && col + 1 < self.cols {
+            let j = self.idx(col + 1, row);
+            let attr = Attr::from_cell(self.cells[j]);
+            self.cells[j] = Cell::blank(attr);
+        }
+        if c.is_wide_spacer() && col > 0 {
+            let j = self.idx(col - 1, row);
+            let attr = Attr::from_cell(self.cells[j]);
+            self.cells[j] = Cell::blank(attr);
+        }
     }
 
     // ---- tab stops --------------------------------------------------
