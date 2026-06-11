@@ -383,7 +383,12 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // (cooked + echoed → serial + framebuffer) at the screen, not just over
     // serial. Without this, framebuffer login can't type. (console-plan B0;
     // B4 folds this into the unified per-VT tty.)
-    tty::live::set_kbd_sink(console::static_console::rx_byte);
+    // The keyboard belongs to the VIDEO console: deliver keystrokes to the
+    // FOREGROUND VT's tty (Linux `kbd_keycode` → fg console), NOT the serial
+    // line. `kbd_input` routes to `vt_tty(foreground())`; serial RX has its
+    // own path (`drv_serial` → ttyS0). This is what makes framebuffer login
+    // type into the VT shown on screen.
+    tty::live::set_kbd_sink(console::kbd_input);
     // Serial sysrq: snoop a magic console sequence (`<NUL> t` = task
     // dump) for on-demand liveness diagnostics, before bytes reach the
     // tty. Pairs with the per-tick liveness watchdog (`05`, `27`).
@@ -779,13 +784,12 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // then ESC[6n and reads the ESC[<r>;<c>R reply — learns the actual
         // fbcon geometry instead of the serial host terminal answering.
         fbcon::kernel::set_reply_sink(console::vt_reply_sink);
-        // Seed /dev/console's winsize from the real fbcon grid (yres/CELL_H ×
-        // xres/CELL_W) so full-screen apps (htop/btop) get the actual console
-        // size, not the 24×80 default. The serial tty keeps its own winsize.
-        if let Some((rows, cols)) = fbcon::kernel::console_dims() {
-            console::static_console::winsize_set(
-                tty::pty::Winsize { rows, cols, xpixel: w as u16, ypixel: h as u16 });
-        }
+        // The VIDEO VTs get their winsize from the fbcon grid (seeded in
+        // vt_tty::build via console_dims). The SERIAL tty keeps the 80×24
+        // serial default until the remote terminal resizes it — it must NOT
+        // be seeded with the framebuffer geometry (that was the old conflated
+        // /dev/console-is-serial behavior that made htop on the serial line
+        // report the framebuffer size).
         let _ = w; let _ = h;
     }
     // Load the rootfs-resident keyboard layout. Linux pattern:

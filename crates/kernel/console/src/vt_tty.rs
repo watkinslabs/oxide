@@ -104,6 +104,12 @@ fn build(vt: u8) -> &'static VtTty {
         KernelWait::new(),
         default_termios(),
     ));
+    // Seed the VT winsize from the framebuffer cell grid (Linux: a VT's
+    // winsize is its console geometry, not the 80×24 serial default). So
+    // full-screen apps (htop/btop) on the video console see the real size.
+    if let Some((rows, cols)) = fbcon::kernel::console_dims() {
+        tty.set_winsize(tty::pty::Winsize { rows, cols, xpixel: 0, ypixel: 0 });
+    }
     let raw = Arc::into_raw(tty);
     // build() leaks the Arc for the kernel lifetime (numbered VTs never
     // close); the ref is published into VT_TTYS so callers share one tty.
