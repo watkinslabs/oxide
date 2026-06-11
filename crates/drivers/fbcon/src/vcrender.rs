@@ -41,18 +41,18 @@ pub fn blit_cell(
     if flags & ATTR_REVERSE != 0 {
         core::mem::swap(&mut fg_px, &mut bg_px);
     }
-    // ASCII-only built-in font (0x20..0x7e); others map to '?'.
-    let g = if (0x20..0x7f).contains(&glyph) {
-        (glyph - 0x20) as usize
-    } else {
-        ('?' as usize) - 0x20
-    };
+    // Map the cell's Unicode codepoint to a glyph index via the active
+    // font's unicode table (`conv_uni_to_pc`); unmapped → the font's '?'
+    // fallback. This is what renders DEC/box-drawing (U+25xx) + accented
+    // Latin the emulator already stores, instead of the old ASCII-only `?`.
+    let font = crate::font::active();
+    let g = font.glyph_index(glyph);
     let cw = CELL_W as usize;
     let ch = CELL_H as usize;
     let cell_x = col as usize * cw;
     let cell_y = row as usize * ch;
     for py in 0..ch {
-        let bits = crate::BUILTIN_FONT[g * ch + py];
+        let bits = font.glyph_row(g, py);
         let underline = underline_flag && py == ch - 1;
         let base = (cell_y + py) * stride_px + cell_x;
         for pxn in 0..cw {
@@ -291,5 +291,45 @@ mod tests {
 
         // The consw blit ran: pixels for the glyphs are non-zero.
         assert!(r.pixels().iter().any(|&p| p != 0), "blit produced no pixels");
+    }
+
+    // Extract cell (0,0)'s CELL_W×CELL_H pixel block from a renderer.
+    fn cell00(r: &VcRenderer) -> alloc::vec::Vec<u32> {
+        let stride = (r.cols * CELL_W) as usize;
+        let mut out = alloc::vec::Vec::new();
+        for py in 0..CELL_H as usize {
+            for px in 0..CELL_W as usize {
+                out.push(r.pixels()[py * stride + px]);
+            }
+        }
+        out
+    }
+
+    // #2 glyphs: DEC special-graphics / box-drawing must render the REAL
+    // line-drawing glyph (conv_uni_to_pc(U+2500)=CP437 196), NOT collapse to
+    // '?'. Feeding `ESC(0` selects DEC special graphics into G0; `q` then
+    // maps to U+2500 (─). The rendered cell must differ from a rendered '?'.
+    #[test]
+    fn box_drawing_renders_not_question_mark() {
+        let mut vc = Vc::new(4, 1);
+        let mut em = Emulator::new();
+        let mut r = VcRenderer::new();
+        r.con_init(vc.cols as u32, vc.rows as u32);
+        em.feed_bytes(&mut vc, b"\x1b(0q"); // G0=DEC special, 'q' → U+2500
+        assert_eq!(vc.glyph_at(0, 0), 0x2500, "emulator stores U+2500 for ESC(0 q");
+        vtdata::render(&mut vc, &mut r);
+        let box_px = cell00(&r);
+
+        // Render a literal '?' in the same position for comparison.
+        let mut vc2 = Vc::new(4, 1);
+        let mut em2 = Emulator::new();
+        let mut r2 = VcRenderer::new();
+        r2.con_init(vc2.cols as u32, vc2.rows as u32);
+        em2.feed_bytes(&mut vc2, b"?");
+        vtdata::render(&mut vc2, &mut r2);
+        let q_px = cell00(&r2);
+
+        assert!(box_px.iter().any(|&p| p != 0), "box glyph must have lit pixels");
+        assert_ne!(box_px, q_px, "U+2500 must NOT render as '?' (the old collapse)");
     }
 }
