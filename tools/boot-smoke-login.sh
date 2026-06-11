@@ -104,8 +104,11 @@ wait_for 'login_shell[[:space:]]\+on' "login-shell (shopt login_shell on)" "$dea
 printf 'python3 -c "print(123454321)"\n' >&9
 wait_for '123454321' "python3 (encodings/stdlib zip)" "$deadline"
 # Box C: stty (coreutils applet) is staged + works — queries the tty winsize.
+# /dev/console is the unified fb-primary console (console-plan B4): its winsize
+# is the framebuffer cell grid (50 rows x 160 cols at the default 8x16 font on
+# the QEMU fb), not the pre-unification serial 24x80 default.
 printf 'stty size\n' >&9
-wait_for '24 80' "stty (coreutils applet)" "$deadline"
+wait_for '50 160' "stty (coreutils applet)" "$deadline"
 # Box D: vendor base-set apps actually run (real cross-built upstream binaries).
 # BACKGROUND each + count which produced output (a foreground `{ a|head; b|head; }`
 # chain intermittently stalled under TCG — one slow/SIGPIPE'd app blocked the
