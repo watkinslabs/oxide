@@ -337,6 +337,62 @@ pub fn switch_vt(n: u8) {
     softirq::raise(softirq::Slot::FbconFlush);
 }
 
+/// Scroll the FOREGROUND VT's view by `lines` (Linux `con_scrolldelta` /
+/// Shift+PgUp/PgDn): positive scrolls UP into scrollback history, negative
+/// scrolls back DOWN toward the live bottom. The `Vc` already holds the
+/// history + clamps `view_offset`; this adjusts it and full-repaints the fg
+/// (the renderer's `visible_glyph_at` honours the offset). No-op pre-init.
+/// # C: O(cols*rows) — full-screen repaint.
+pub fn scrolldelta(lines: isize) {
+    if !READY.load(Ordering::Acquire) || lines == 0 {
+        return;
+    }
+    {
+        let mut guard = VT_STATE.lock();
+        if let Some(st) = guard.as_mut() {
+            let fg = st.fg as usize;
+            if let Some(cell) = st.vc_cons[fg].as_mut() {
+                if lines > 0 { cell.vc.scroll_view_up(lines as usize); }
+                else { cell.vc.scroll_view_down((-lines) as usize); }
+                // Full repaint from the (possibly scrolled) view.
+                vtdata::switch(&mut cell.vc, &mut st.renderer);
+                DIRTY.store(true, Ordering::Release);
+            }
+        }
+    }
+    softirq::raise(softirq::Slot::FbconFlush);
+}
+
+/// Snapshot the foreground VT's screen for `/dev/vcs*` (Linux `vcs_read`).
+/// `with_attr` = false → `/dev/vcs`: `rows*cols` glyph bytes (Latin-1, no
+/// newlines). `with_attr` = true → `/dev/vcsa`: a 4-byte header
+/// `[rows, cols, cursor_x, cursor_y]` then `rows*cols` pairs of
+/// `[glyph, attr]` (attr = VGA fg/bg nibble approximation). Reads the LIVE
+/// bottom (view_offset ignored, as Linux vcs does). Empty pre-init.
+/// # C: O(rows*cols).
+pub fn screen_dump(with_attr: bool) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::new();
+    let guard = VT_STATE.lock();
+    let st = match guard.as_ref() { Some(s) => s, None => return out };
+    let fg = st.fg as usize;
+    let cell = match st.vc_cons[fg].as_ref() { Some(c) => c, None => return out };
+    let (rows, cols) = (st.rows, st.cols);
+    if with_attr {
+        out.push(rows.min(255) as u8);
+        out.push(cols.min(255) as u8);
+        out.push(cell.vc.x.min(255) as u8);
+        out.push(cell.vc.y.min(255) as u8);
+    }
+    for r in 0..rows {
+        for c in 0..cols {
+            let g = cell.vc.glyph_at(c, r);
+            out.push(if (0x20..0x7f).contains(&g) { g as u8 } else { b' ' });
+            if with_attr { out.push(0x07); } // default light-grey-on-black
+        }
+    }
+    out
+}
+
 /// Currently-foreground fbcon VT index (0 = system console). Test/diag.
 /// # C: O(1).
 pub fn foreground() -> u8 {

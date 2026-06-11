@@ -238,6 +238,16 @@ pub unsafe fn init() -> KResult<()> {
 /// # C: O(1)
 pub fn active() -> u8 { ACTIVE_VT.load(Ordering::Acquire) }
 
+/// Scroll the foreground VT's scrollback by `lines` (Linux `con_scrolldelta`,
+/// Shift+PgUp/PgDn): + = back into history, - = forward to the live bottom.
+/// Forwards to the fbcon console layer (kernel-only). # C: O(cols*rows).
+pub fn scrolldelta(lines: isize) {
+    #[cfg(target_os = "oxide-kernel")]
+    fbcon::kernel::scrolldelta(lines);
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let _ = lines;
+}
+
 /// VT_OPENQRY: return the first unallocated VT id, or `Err(Busy)`
 /// if every slot is taken.
 /// # C: O(MAX_NR_CONSOLES)
