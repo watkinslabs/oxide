@@ -541,10 +541,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     drv::set_sysfs_hook(crate::sysfs::bus::publish_device_cb);
     drv::set_driver_hook(crate::sysfs::bus::publish_driver_cb);
     drv::set_bind_hook(crate::sysfs::bus::bind_device_cb);
-    // Register virtio-gpu wire driver. The matching probe runs from
-    // pci_boot::virtio_probe_arch when the device id is found.
-    drv_virtio_gpu::register();
-    drv_virtio_input::register();
+    // virtio-gpu/input bind via the real driver-model Driver registered + bound
+    // at their bring-up sites in pci_boot (drivers-plan D1a/D2); the old
+    // NoMatch DriverEntry probe stubs were removed in D2.
     // SAFETY: kernel_main runs single-CPU pre-init; vt::init allocates VT 1 + sets ACTIVE_VT.
     let _ = unsafe { vt::init() };
     // VT_PROCESS switch handshake (console-plan #6c): the vt layer signals a
