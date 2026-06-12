@@ -199,6 +199,16 @@ pub fn flush(qsel: tty::TtyFlush) {
     }
 }
 
+/// TCXONC: software output flow control on the serial console. TCOOFF
+/// suspends output (the `TtyStruct::write` path parks until resumed),
+/// TCOON resumes + wakes parked writers. No-op before `install` (the
+/// degraded raw-emit fallback has no suspendable queue). # C: O(1)
+pub fn flow(action: tty::TtyFlow) {
+    if let Some(tty) = console() {
+        tty.flow(action);
+    }
+}
+
 /// TIOCGPGRP: foreground pgrp (0 = unset).
 /// # C: O(1)
 pub fn foreground_pgid() -> u32 {

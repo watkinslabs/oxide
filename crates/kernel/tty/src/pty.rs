@@ -651,6 +651,20 @@ impl Pair {
         if output { self.s_to_m.clear(); self.out_hold.clear(); }
     }
 
+    /// TCXONC output flow control from the SLAVE side. `stop=true` (TCOOFF)
+    /// sets `output_stopped` so subsequent `slave_write` bytes are WITHHELD
+    /// in `out_hold` (not dropped); `stop=false` (TCOON) clears it and
+    /// flushes the held bytes into `s_to_m` — exactly the path ^S/^Q drive
+    /// via `master_write`, so an explicit tcflow() and an interactive ^S
+    /// share one mechanism. Returns true if the stop state changed.
+    /// # C: O(N) held bytes on resume
+    pub fn flow_output(&mut self, stop: bool) -> bool {
+        let changed = self.output_stopped != stop;
+        self.output_stopped = stop;
+        if !stop { self.flush_out_hold(); }
+        changed
+    }
+
     /// Hang up from the MASTER side (final master fd closed). The slave
     /// gets EOF on read + EIO on write, and SIGHUP is owed to the slave's
     /// foreground pgrp. Sets `pending_sighup` so the adapter posts SIGHUP.
