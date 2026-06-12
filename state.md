@@ -41,6 +41,10 @@ All x86+arm boot-verified, spec-lint clean:
   read drains+renders records (vs `trace` snapshot); blocking parks via
   tick-yield, O_NONBLOCK→EAGAIN; `pending` absorbs short reads. Probe
   tracepipe_probe.
+- **F444 #TBD** (§2.13) real fanotify NOTIF-class: split sys_fanotify_init →
+  InotifyInode{fanotify}; Event carries Option<InodeRef>+pid; read() emits the
+  24-byte fanotify_event_metadata installing a real O_RDONLY object fd; fixed
+  fanotify_mark to use the combined devfs+mount resolver. Probe fanotify_probe.
 
 ## linux2.md remaining (validated real gaps — each a dedicated session)
 
@@ -55,8 +59,12 @@ All x86+arm boot-verified, spec-lint clean:
 - **§2.11 eBPF** verifier/JIT (`security/src/bpf.rs`) — very large.
 - **§2.12 tracefs** beyond trace_marker: per-CPU ring buffers, real tracepoints
   (sched_switch/sys_enter anchors), trace_pipe blocking read, per-event enable.
-- **§2.13 fanotify** real semantics (own event format + perm events) — currently
-  shimmed onto inotify (`fs/src/inotify.rs`).
+- **§2.13 fanotify** NOTIF-class DONE in F444: real fanotify_event_metadata +
+  object fd. REMAINING: perm-events (FAN_*_PERM / FAN_CLASS_CONTENT — the
+  accessing task blocks on the access until userspace writes a struct
+  fanotify_response{fd,response} back to the group fd). Needs a per-event
+  response wait + the write() path on the group fd. Plus FAN_REPORT_FID
+  (file-handle instead of fd). Separate dedicated piece.
 - **§3 X11/Wayland** — huge.
 
 ## First command next session

@@ -47,18 +47,25 @@ struct Watch {
     mask: u32,
 }
 
-#[repr(C)]
 struct Event {
     wd:     i32,
     mask:   u32,
     cookie: u32,
     /// Length of the trailing name field (0 — v1 doesn't track names yet).
     len:    u32,
+    /// fanotify only: the object that triggered the event (read() opens a
+    /// fresh fd to it for `fanotify_event_metadata.fd`). `None` for inotify.
+    obj:    Option<InodeRef>,
+    /// fanotify only: pid that caused the event (captured at fire time).
+    pid:    u32,
 }
 
 pub struct InotifyInode {
     pub flags:   u32,
     pub next_wd: AtomicI32,
+    /// `true` for a `fanotify_init` group: read() emits the 24-byte
+    /// `fanotify_event_metadata` (+ an object fd) instead of `inotify_event`.
+    fanotify: bool,
     watches: Spinlock<Vec<Watch>, TaskListClass>,
     events:  Spinlock<VecDeque<Event>, TaskListClass>,
 }
@@ -68,15 +75,62 @@ impl InotifyInode {
     /// write hook can find this inotify when an inode it watches is
     /// modified. Drop unregisters.
     /// # C: O(1)
-    pub fn new(flags: u32) -> Arc<Self> {
+    pub fn new(flags: u32) -> Arc<Self> { Self::new_kind(flags, false) }
+
+    /// `fanotify_init` group (read() yields `fanotify_event_metadata`).
+    /// # C: O(1)
+    pub fn new_fanotify(flags: u32) -> Arc<Self> { Self::new_kind(flags, true) }
+
+    fn new_kind(flags: u32, fanotify: bool) -> Arc<Self> {
         let arc = Arc::new(Self {
             flags,
             next_wd: AtomicI32::new(1),
+            fanotify,
             watches: Spinlock::new(Vec::new()),
             events:  Spinlock::new(VecDeque::new()),
         });
         register_instance(Arc::downgrade(&arc));
         arc
+    }
+
+    /// Install a fresh O_RDONLY fd referring to `obj` in the current task's
+    /// fd table for a `fanotify_event_metadata.fd`. Returns FAN_NOFD (-1)
+    /// when there is no task or the fd table is full.
+    /// # C: O(1)
+    fn install_obj_fd(obj: &InodeRef) -> i32 {
+        let cur = match sched::current() { Some(c) => c, None => return -1 };
+        // SAFETY: running task on this CPU; sole reader of its fd-table slot.
+        let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -1 };
+        let dentry = vfs::Dentry::new(None, alloc::string::String::from("[fanotify]"), obj.clone());
+        let file = vfs::File::new(obj.clone(), dentry, vfs::OpenFlags::O_RDONLY);
+        fdt.alloc(file).unwrap_or(-1)
+    }
+
+    /// Drain queued events as Linux `struct fanotify_event_metadata` (24 B):
+    /// {event_len u32, vers u8=3, reserved u8, metadata_len u16=24, mask u64,
+    /// fd i32, pid i32}. Each event installs a fresh O_RDONLY fd to its object
+    /// (FAN_NOFD=-1 if unavailable). EAGAIN on an empty queue (no EOF).
+    /// # C: O(events drained)
+    fn read_fanotify(&self, buf: &mut [u8]) -> KResult<usize> {
+        const META: usize = 24;
+        const FAN_METADATA_VERSION: u8 = 3;
+        let mut written = 0;
+        let mut q = self.events.lock();
+        while written + META <= buf.len() {
+            let ev = match q.pop_front() { Some(e) => e, None => break };
+            let fd = match &ev.obj { Some(o) => Self::install_obj_fd(o), None => -1 };
+            let s = &mut buf[written..written + META];
+            s[0..4].copy_from_slice(&(META as u32).to_le_bytes());
+            s[4] = FAN_METADATA_VERSION;
+            s[5] = 0;
+            s[6..8].copy_from_slice(&(META as u16).to_le_bytes());
+            s[8..16].copy_from_slice(&(ev.mask as u64).to_le_bytes());
+            s[16..20].copy_from_slice(&fd.to_le_bytes());
+            s[20..24].copy_from_slice(&(ev.pid as i32).to_le_bytes());
+            written += META;
+        }
+        if written == 0 { return Err(VfsError::Eagain); }
+        Ok(written)
     }
 }
 
@@ -90,6 +144,7 @@ impl Inode for InotifyInode {
     /// shape: {wd: i32, mask: u32, cookie: u32, len: u32, name[len]}.
     /// v1 always emits len=0 (no name tail).
     fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        if self.fanotify { return self.read_fanotify(buf); }
         const HDR: usize = 16;
         let mut written = 0;
         let mut q = self.events.lock();
@@ -137,14 +192,22 @@ fn register_instance(w: Weak<InotifyInode>) {
 /// # C: O(N_inotify * N_watches_per)
 fn fire_event(inode: &InodeRef, mask_bit: u32) {
     let key = inode_key(inode);
+    // pid that caused the event (the writer), captured here in its context —
+    // fanotify reports it; inotify ignores it.
+    #[cfg(target_os = "oxide-kernel")]
+    let pid = sched::current().map(|t| t.tgid.load(Ordering::Relaxed)).unwrap_or(0);
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let pid = 0u32;
     let g = INSTANCES.lock();
     for w in g.iter() {
         let arc = match w.upgrade() { Some(a) => a, None => continue };
         let watches = arc.watches.lock();
         for wi in watches.iter() {
             if wi.inode_key == key && (wi.mask & mask_bit) != 0 {
+                // fanotify needs the object to mint an fd on read; inotify skips it.
+                let obj = if arc.fanotify { Some(inode.clone()) } else { None };
                 let mut q = arc.events.lock();
-                q.push_back(Event { wd: wi.wd, mask: mask_bit, cookie: 0, len: 0 });
+                q.push_back(Event { wd: wi.wd, mask: mask_bit, cookie: 0, len: 0, obj, pid });
             }
         }
     }
@@ -241,6 +304,39 @@ pub fn sys_inotify_init1(args: &syscall::SyscallArgs) -> i64 {
     match fdt.alloc(file) {
         Ok(fd) => {
             if (flags & IN_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
+            fd as i64
+        }
+        Err(e) => -(e as i64),
+    }
+}
+
+/// `sys_fanotify_init(flags, event_f_flags)`. Allocates a fanotify GROUP fd
+/// whose read() yields `fanotify_event_metadata`. `flags` carries
+/// FAN_CLOEXEC/FAN_NONBLOCK + the class (NOTIF); `event_f_flags` is the open
+/// mode for minted object fds (we open them O_RDONLY).
+/// # C: O(N_fds)
+pub fn sys_fanotify_init(args: &syscall::SyscallArgs) -> i64 {
+    use vfs::{Dentry, File, OpenFlags};
+    use syscall::errno::Errno;
+    let flags = args.a0 as u32;
+    const FAN_CLOEXEC:  u32 = 0x1;
+    const FAN_NONBLOCK: u32 = 0x2;
+    let cur = match sched::current() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let arc = InotifyInode::new_fanotify(flags);
+    let inode: InodeRef = arc as InodeRef;
+    let dentry = Dentry::new(None, "fanotify".to_string(), Arc::clone(&inode));
+    let mut fl = OpenFlags::O_RDONLY;
+    if (flags & FAN_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
+    let file = File::new(inode, dentry, fl);
+    match fdt.alloc(file) {
+        Ok(fd) => {
+            if (flags & FAN_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
             fd as i64
         }
         Err(e) => -(e as i64),
@@ -373,7 +469,9 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
     let s = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let inode = match devfs::lookup(s) {
+    // Resolve via devfs + the mount table (tmpfs/ext4), matching
+    // inotify_add_watch — was devfs-only, so marks on real files missed.
+    let inode = match devfs::lookup(s).or_else(|| vfs::mount::lookup(s).ok()) {
         Some(i) => i, None => return -(Errno::Enoent.as_i32() as i64),
     };
     let key = inode_key(&inode);
@@ -422,7 +520,7 @@ mod tests {
     #[test]
     fn queued_event_is_readable_then_drains_to_eagain() {
         let ino = InotifyInode::new(0);
-        ino.events.lock().push_back(Event { wd: 1, mask: IN_MODIFY, cookie: 0, len: 0 });
+        ino.events.lock().push_back(Event { wd: 1, mask: IN_MODIFY, cookie: 0, len: 0, obj: None, pid: 0 });
         assert_eq!(ino.poll(), vfs::POLL_IN);
         let mut buf = [0u8; 64];
         assert_eq!(ino.read(0, &mut buf), Ok(16));
