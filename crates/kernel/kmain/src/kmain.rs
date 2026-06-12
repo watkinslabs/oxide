@@ -789,6 +789,11 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // then ESC[6n and reads the ESC[<r>;<c>R reply — learns the actual
         // fbcon geometry instead of the serial host terminal answering.
         fbcon::kernel::set_reply_sink(console::vt_reply_sink);
+        // Let the keyboard driver + selection-paste read the foreground VT's
+        // DECCKM / bracketed-paste mode (the emulators live in fbcon). Linux
+        // `applkey` reads `vc_cons[fg_console]`.
+        tty::live::set_app_cursor_query(fbcon::kernel::fg_app_cursor);
+        tty::live::set_bracketed_paste_query(fbcon::kernel::fg_bracketed_paste);
         // The VIDEO VTs get their winsize from the fbcon grid (seeded in
         // vt_tty::build via console_dims). The SERIAL tty keeps the 80×24
         // serial default until the remote terminal resizes it — it must NOT
