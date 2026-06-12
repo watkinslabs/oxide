@@ -23,9 +23,9 @@ use crate::tcp_conn::{TcpConn, Endpoint};
 // Netfilter hook bridge lives in `netfilter_hook` (08§7 split). Re-export
 // the public API so `net::stack::install_nf_hook` / `NF_INET_*` paths stay
 // stable; pull the crate-internal helpers into scope for the packet path.
-pub use crate::netfilter_hook::{NfHookFn, install_nf_hook,
+pub use crate::netfilter_hook::{NfHookFn, install_nf_hook, NFPROTO_IPV4,
     NF_INET_PRE_ROUTING, NF_INET_LOCAL_IN, NF_INET_LOCAL_OUT, NF_INET_POST_ROUTING};
-use crate::netfilter_hook::{nf_hook_eval, nf_output_ipv4};
+use crate::netfilter_hook::{nf_hook_eval, nf_output};
 
 /// Per-port UDP rx queue. The bind-syscall reads from here.
 /// F162: q + waiters live behind their own locks so `deliver_rx`
@@ -369,7 +369,7 @@ impl NetStack {
             .map_err(|_| NetError::Enobufs)?;
         p.proto = crate::addr::eth_p::IPV4;
         p.iface = Some(iface_id);
-        if !nf_output_ipv4(&p) { return Ok(()); }
+        if !nf_output(&p, NFPROTO_IPV4) { return Ok(()); }
         iface.xmit(p)
     }
 
@@ -638,7 +638,7 @@ impl NetStack {
             .map_err(|_| NetError::Enobufs)?;
         p.proto = crate::addr::eth_p::IPV4;
         p.iface = Some(route.iface);
-        if !nf_output_ipv4(&p) { return Ok(()); }
+        if !nf_output(&p, NFPROTO_IPV4) { return Ok(()); }
         iface.xmit(p)
     }
 
@@ -649,8 +649,8 @@ impl NetStack {
         // PRE_ROUTING fires on every received packet before the routing
         // decision; this is a host stack so all accepted packets are then
         // delivered locally → LOCAL_IN (no FORWARD path).
-        if nf_hook_eval(NF_INET_PRE_ROUTING, l3) == 0 { return Ok(()); }
-        if nf_hook_eval(NF_INET_LOCAL_IN, l3) == 0 { return Ok(()); }
+        if nf_hook_eval(NF_INET_PRE_ROUTING, l3, NFPROTO_IPV4) == 0 { return Ok(()); }
+        if nf_hook_eval(NF_INET_LOCAL_IN, l3, NFPROTO_IPV4) == 0 { return Ok(()); }
         let hdr = Ipv4Hdr::parse(l3).map_err(|_| NetError::Einval)?;
         let total = hdr.total_len as usize;
         if total > l3.len() { return Err(NetError::Einval); }
@@ -685,7 +685,7 @@ impl NetStack {
                     p.iface = Some(iface);
                     let dev = self.ifaces.lookup(iface).ok_or(NetError::Enetunreach)?;
                     // ICMP echo reply is kernel-generated → LOCAL_OUT + POST_ROUTING.
-                    if nf_output_ipv4(&p) { dev.xmit(p)?; }
+                    if nf_output(&p, NFPROTO_IPV4) { dev.xmit(p)?; }
                 } else if echo.typ == icmp::ICMP_TYPE_DEST_UNREACH {
                     self.handle_dest_unreach(echo.code, payload);
                 }
