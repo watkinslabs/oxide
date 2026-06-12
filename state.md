@@ -1,6 +1,33 @@
 # state — session hand-off
 
-Branch: **main** (clean). All this session's work merged.
+Branch: **main** (clean). All this session's work merged. 17 PRs (#1769–#1785).
+
+## OVERNIGHT autonomous run — meta-finding
+Validated huge swathes of linux2.md against code: the system is FAR more
+complete than linux2.md's pessimistic framing. Already-real (linux2 was wrong):
+IPC ns (shm/sem/msg/mq ns-keyed), mount ns (resolve_mount filters mount_ns),
+pivot_root, perms/*at, route+addr control-plane (persistent tables), sched_setattr.
+Many stale "v1/follow-up/global/hardcoded" comments fixed (#1782, #1784, #1786-area).
+Genuine gaps FIXED this run: namespace fork-inheritance (#1776), shared UTS-ns
+registry (#1778), sched_setscheduler aliased-to-get (#1779), net-ns rtnetlink
+dumps (#1780), dynlink IRELATIVE/IFUNC (#1783), AT_HWCAP baseline arm (#1785).
+
+## HIGH-VALUE NEXT (need daytime / live verification — too risky unattended)
+1. **openssl-on-aarch64 constructor hang** (#1 linux2 §2.3 blocker). Uses the
+   REAL ld-musl (NOT dynlink.c — F33 was a separate fix). arm libcrypto IS
+   vendored + openssl_probe builds for arm → diagnosable. Hypotheses: arm
+   signal-frame gap (OpenSSL armcap SIGILL+longjmp probe; see
+   project_signal_frame_minimal) OR ld-musl reloc OR getauxval. Needs LIVE arm
+   qemu diagnosis (gdb / serial trace where it hangs before main).
+2. **Full arm rt_sigframe** (ucontext) — unblocks Go/SA_SIGINFO + maybe (1).
+   HIGH value, HIGH risk (subtle signal ABI; wrong = breaks ALL arm signals).
+   Verify with a SIGILL+longjmp probe on arm before trusting.
+3. **io_uring user-mmap** — rings live in HHDM, not user-visible → io_uring
+   unusable by liburing. Needs multi-page liburing layout + offset-cookie mmap.
+4. **AT_HWCAP crypto-ext bits** (read ID_AA64ISAR0_EL1 for AES/SHA/CRC32) — F34
+   did only the FP|ASIMD baseline (safe). Optional bits need careful ID decode.
+
+## linux2.md progress this session
 
 ## Merged this session (vty-plan completion, 7 PRs)
 - #1769 P17-09 vt: DA/DECID answerback, IRM insert mode, C1 8-bit controls,
