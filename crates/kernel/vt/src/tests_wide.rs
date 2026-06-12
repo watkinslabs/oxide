@@ -120,3 +120,27 @@ fn sgr_flags_packed_into_cell() {
     assert_eq!(c.glyph, 'Z' as u32);
     assert!(c.flags & ATTR_ITALIC != 0);
 }
+
+#[test]
+fn linux_acs_font_mode_draws_box_corners() {
+    // Exactly what ncurses on TERM=linux emits for a box corner: smacs
+    // (\E[11m), the raw CP437 corner bytes, then rmacs (\E[10m). Each byte
+    // must map to the box-drawing codepoint, NOT be UTF-8-misdecoded.
+    let vc = run(10, 2, &[0x1b, b'[', b'1', b'1', b'm', 0xDA, 0xC4, 0xBF, 0x1b, b'[', b'1', b'0', b'm']);
+    assert_eq!(vc.cell_at(0, 0).unwrap().glyph, 0x250C, "┌ corner");
+    assert_eq!(vc.cell_at(1, 0).unwrap().glyph, 0x2500, "─ line");
+    assert_eq!(vc.cell_at(2, 0).unwrap().glyph, 0x2510, "┐ corner");
+    assert_eq!((vc.x, vc.y), (3, 0));
+}
+
+#[test]
+fn rmacs_returns_to_utf8_decoding() {
+    // After \E[10m, a high byte is UTF-8 again, not CP437.
+    let mut vc = Vc::new(10, 2);
+    let mut em = Emulator::new();
+    em.feed_bytes(&mut vc, &[0x1b, b'[', b'1', b'1', b'm', 0xC4]); // CP437 ─
+    assert_eq!(vc.cell_at(0, 0).unwrap().glyph, 0x2500);
+    em.feed_bytes(&mut vc, b"\x1b[10m"); // rmacs
+    em.feed_bytes(&mut vc, "é".as_bytes()); // 0xC3 0xA9 UTF-8 → U+00E9
+    assert_eq!(vc.cell_at(1, 0).unwrap().glyph, 0x00E9, "UTF-8 decoding restored");
+}

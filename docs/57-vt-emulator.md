@@ -115,9 +115,21 @@ Param defaults in `[]`. Coordinates 1-based on the wire, 0-based internally.
 | 22 | bold+faint off | 49 | bg default |
 | 23 | italic off | 90–97 | fg bright 8–15 |
 | 24 | underline off | 100–107 | bg bright 8–15 |
-| 25 | blink off | | |
+| 25 | blink off | 10/11/12 | font select (`§6.1`) |
 
 Bare `CSI m` ≡ `CSI 0 m`. 256-index and truecolor resolve to RGB at apply time and are stored as RGB in the cell attr (the palette is consulted once). Indexed colors track the active palette (`55`).
+
+### 6.1 Linux font select (SGR 10/11/12 — box-drawing on `TERM=linux`)
+
+`TERM=linux` ncurses draws box-drawing via `smacs`=`\E[11m` … raw CP437 bytes … `rmacs`=`\E[10m` (the `acsc` line/corner bytes are CP437: `0xC4`=─, `0xB3`=│, `0xDA`=┌, `0xBF`=┐, `0xC0`=└, `0xD9`=┘). SGR 10/11/12 drive the Linux console `disp_ctrl`/translation state (`vt.c`):
+
+| Code | Effect |
+|---|---|
+| 10 | primary font: exit alternate; bytes are UTF-8 again |
+| 11 | first alternate: each raw byte → glyph via CP437 (no UTF-8 decode); ESC still parsed |
+| 12 | second alternate: like 11 but XOR each byte with 0x80 (`toggle_meta`) |
+
+In alternate-font mode the byte stream is NOT UTF-8 — a raw `0xC4` is `─`, not a UTF-8 lead. The CP437 table (`cp437.rs`) maps bytes to Unicode codepoints that the EXISTING console font renders (it changes mapping, not the font). RIS resets to primary.
 
 ## 7 ANSI modes (SM/RM, no `?`)
 
