@@ -93,6 +93,8 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
         return -(Errno::Enotdir.as_i32() as i64);
     }
     if let Err(e) = inode.on_open() { return -(e as i64); }
+    // fanotify FAN_OPEN_PERM (fast no-op without perm marks; deny → EACCES).
+    if !::fs::inotify::check_open_perm(&inode) { return -(Errno::Eacces.as_i32() as i64); }
     if (flags & O_TRUNC) != 0 { let _ = inode.truncate(0); }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
