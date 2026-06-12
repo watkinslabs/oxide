@@ -13,6 +13,10 @@
 
 use crate::vc::{Attr, Charset, Vc};
 
+mod osc;
+mod sgr;
+use osc::OSC_CAP;
+
 /// Parser superstate (mirrors fbcon `CsiState`).
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum CsiState {
@@ -97,6 +101,10 @@ pub struct Emulator {
     /// this is a 7-bit ST (`ESC \`) terminator or just payload. Prevents a
     /// bare `\` in a title from ending the string early (`57§14`).
     str_esc: bool,
+    /// Collected OSC payload bytes (between `ESC ]` and the terminator),
+    /// parsed by `osc::osc_dispatch` for color-control OSCs.
+    osc_buf: [u8; OSC_CAP],
+    osc_len: u16,
     /// Pending terminal answerback bytes (DSR/CPR reply per `CSI n`). The
     /// console driver drains this after each `feed`/`feed_bytes` and
     /// injects it into the tty INPUT ring so the program that issued the
@@ -123,6 +131,8 @@ impl Default for Emulator {
             toggle_meta: false,
             insert_mode: false,
             str_esc: false,
+            osc_buf: [0; OSC_CAP],
+            osc_len: 0,
             reply: [0; REPLY_CAP],
             reply_len: 0,
         }
@@ -173,12 +183,13 @@ impl Emulator {
             CsiState::Charset => self.charset_designate(vc, byte),
             CsiState::Hash => self.hash(vc, byte),
             CsiState::Osc => {
-                // OSC opening byte (e.g. the parameter digit); discard
-                // and enter the string-collection state.
+                // First OSC payload byte: enter the string-collection state
+                // and start the buffer fresh.
+                self.osc_len = 0;
                 self.state = CsiState::OscString;
-                self.osc_string(byte);
+                self.osc_string(vc, byte);
             }
-            CsiState::OscString => self.osc_string(byte),
+            CsiState::OscString => self.osc_string(vc, byte),
             CsiState::DcsString => self.dcs_string(byte),
         }
     }
@@ -446,24 +457,6 @@ impl Emulator {
         }
     }
 
-    fn osc_string(&mut self, byte: u8) {
-        if self.str_esc {
-            // We saw ESC: only `ESC \` is ST. Anything else is payload and
-            // the string continues (the ESC + this byte are consumed).
-            self.str_esc = false;
-            if byte == b'\\' {
-                self.state = CsiState::Ground;
-            }
-            return;
-        }
-        match byte {
-            0x07 => self.state = CsiState::Ground, // BEL terminates
-            0x9c => self.state = CsiState::Ground, // C1 ST terminates
-            0x1b => self.str_esc = true,           // maybe `ESC \` (7-bit ST)
-            _ => {}                                // collect/ignore title bytes
-        }
-    }
-
     /// DCS string collection. Identical termination rules to OSC (`BEL`,
     /// `ESC \`, or C1 `ST`); the payload is consumed without being executed
     /// as commands (`57§14`). We answer no DCS requests on a vt102 console.
@@ -583,6 +576,9 @@ impl Emulator {
         vc.scroll_top = 0;
         vc.scroll_bot = vc.rows - 1;
         vc.reset_tabs();
+        vc.reset_palette(None);
+        vc.set_default_fg(crate::vc::DEFAULT_FG_RGB);
+        vc.set_default_bg(crate::vc::DEFAULT_BG_RGB);
         vc.clear();
         *self = Emulator::new();
     }
@@ -882,81 +878,6 @@ impl Emulator {
         vc.wrap_pending = false;
     }
 
-    fn sgr(&mut self, vc: &mut Vc) {
-        let n = self.param_count as usize + 1;
-        let mut i = 0;
-        if n == 1 && !self.param_seen {
-            // bare CSI m == CSI 0 m
-            vc.attr.reset();
-            return;
-        }
-        while i < n {
-            let p = self.params[i];
-            match p {
-                0 => vc.attr.reset(),
-                1 => vc.attr.bold = true,
-                2 => vc.attr.faint = true,
-                3 => vc.attr.italic = true,
-                4 => vc.attr.underline = true,
-                5 => vc.attr.blink = true,
-                7 => vc.attr.reverse = true,
-                8 => vc.attr.conceal = true,
-                9 => vc.attr.strike = true,
-                // Linux console font select (vt.c): 10 = primary font /
-                // exit alternate, 11 = first alternate (CP437 direct), 12 =
-                // second alternate (CP437 with high-bit toggle). Drives the
-                // `disp_ctrl` byte path above — NOT a color/attr.
-                10 => { self.disp_ctrl = false; self.toggle_meta = false; }
-                11 => { self.disp_ctrl = true; self.toggle_meta = false; }
-                12 => { self.disp_ctrl = true; self.toggle_meta = true; }
-                21 => vc.attr.underline = true, // double-underline → underline
-                22 => { vc.attr.bold = false; vc.attr.faint = false; }
-                23 => vc.attr.italic = false,
-                24 => vc.attr.underline = false,
-                25 => vc.attr.blink = false,
-                27 => vc.attr.reverse = false,
-                28 => vc.attr.conceal = false,
-                29 => vc.attr.strike = false,
-                // 16-color fg/bg: resolve index→RGB now (bold brightens a
-                // basic 0..7 fg at resolve time, VGA convention).
-                30..=37 => vc.attr.set_fg_index(p - 30),
-                90..=97 => vc.attr.set_fg_index(p - 90 + 8),
-                40..=47 => vc.attr.set_bg_index(p - 40),
-                100..=107 => vc.attr.set_bg_index(p - 100 + 8),
-                39 => vc.attr.fg = crate::vc::DEFAULT_FG_RGB,
-                49 => vc.attr.bg = crate::vc::DEFAULT_BG_RGB,
-                38 => {
-                    if i + 2 < n && self.params[i + 1] == 5 {
-                        vc.attr.set_fg_index(self.params[i + 2].min(255));
-                        i += 2;
-                    } else if i + 4 < n && self.params[i + 1] == 2 {
-                        // 38;2;r;g;b truecolor → store RGB verbatim.
-                        vc.attr.fg = crate::palette::rgb([
-                            self.params[i + 2].min(255) as u8,
-                            self.params[i + 3].min(255) as u8,
-                            self.params[i + 4].min(255) as u8,
-                        ]);
-                        i += 4;
-                    }
-                }
-                48 => {
-                    if i + 2 < n && self.params[i + 1] == 5 {
-                        vc.attr.set_bg_index(self.params[i + 2].min(255));
-                        i += 2;
-                    } else if i + 4 < n && self.params[i + 1] == 2 {
-                        vc.attr.bg = crate::palette::rgb([
-                            self.params[i + 2].min(255) as u8,
-                            self.params[i + 3].min(255) as u8,
-                            self.params[i + 4].min(255) as u8,
-                        ]);
-                        i += 4;
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-    }
 
     // ---- UTF-8 ------------------------------------------------------
 
