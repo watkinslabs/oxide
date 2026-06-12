@@ -2,11 +2,14 @@
  * systemd resolved DoT/DNSSEC + journal TLS). Links -lssl -lcrypto so
  * both are DT_NEEDED. Computes a SHA-256 digest via libcrypto's EVP API.
  *
- * NOTE: rcS runs this on x86 only. On aarch64, libcrypto.so HANGS during
- * its load-time constructor (before main even runs — verified: a probe
- * that only prints + takes symbol addresses never reached main on arm).
- * That makes openssl currently unloadable on arm → tracked as a HARD
- * systemd-on-arm blocker in TASKS.md, to root-cause in Track D6. */
+ * RESOLVED on aarch64 (was a HARD systemd-on-arm blocker): libcrypto.so
+ * used to HANG in its load-time constructor before main. It no longer
+ * reproduces — VERIFIED LIVE 2026-06-12: this probe runs on aarch64 and
+ * prints the EVP SHA-256 digest. The fix came from earlier kernel work
+ * (this comment was stale); attribution test confirmed it is NOT
+ * AT_HWCAP-dependent (works with AT_HWCAP advertising 0 or the ARMv8-A
+ * baseline). Root cause of the original hang not pinned down — left as a
+ * note rather than a guess. */
 #include <stdio.h>
 #include <string.h>
 #include <openssl/evp.h>
@@ -19,5 +22,8 @@ int main(void) {
     }
     printf("openssl_probe: libcrypto+libssl OK %s sha256[0]=%02x\n",
            OPENSSL_VERSION_TEXT, md[0]);
+    // Machine-checkable line for boot-smoke-probe.sh (gates this in CI on
+    // BOTH arches now that aarch64 no longer hangs).
+    printf("openssl_probe: PASS\n");
     return 0;
 }
