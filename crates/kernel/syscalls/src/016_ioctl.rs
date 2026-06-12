@@ -412,10 +412,15 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64> {
     if inode.file_type() != vfs::FileType::CharDev { return None; }
-    // /dev/tty<N> + /dev/tty0 + /dev/console all use ConsoleInode
-    // whose ino == max(vt, 1); 0 means foreground alias.
+    // /dev/console + /dev/tty0 (ConsoleInode vt=0) carry the FG-alias low
+    // byte (FG_VT_INO_LB) and act on the ACTIVE VT — Linux: a VT/KD ioctl on
+    // the controlling console operates on `fg_console`. /dev/tty<N> carries
+    // its own low byte N and acts on VT N specifically. (The old test
+    // `ino_low == 1` was a dead branch: the alias low byte is 0xFD, never 1,
+    // so VT/KD ioctls on /dev/console never resolved — and /dev/tty1 wrongly
+    // targeted the active VT instead of VT 1.)
     let ino_low = (inode.ino() & 0xFF) as u8;
-    let vt_target = if ino_low == 1 { vt::active() } else { ino_low };
+    let vt_target = if ino_low == console::FG_VT_INO_LB { vt::active() } else { ino_low };
     if !(1..=63).contains(&vt_target) { return None; }
     use syscall::errno::Errno;
     let errno = |e: Errno| -(e.as_i32() as i64);
