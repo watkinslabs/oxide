@@ -672,9 +672,11 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             }
         }
         sched::live::preempt::set_need_resched();
-        // Linux-style softirq bottom-half (BSP-only): see lapic.rs comment.
-        if is_bsp && softirq::pending() {
-            // SAFETY: EOI was issued above; softirq::run_pending guards re-entry. daifset on the tail restores IRQ masking before tick_pick_next.
+        // Per-CPU softirq bottom-half (Linux: every CPU runs its own
+        // __do_softirq from irq_exit). Each CPU drains its OWN pending mask;
+        // this CPU's IN_PROGRESS guards re-entry. See lapic.rs comment.
+        if softirq::pending() {
+            // SAFETY: EOI was issued above; per-CPU softirq::run_pending guards re-entry. daifset on the tail restores IRQ masking before tick_pick_next.
             unsafe {
                 core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags));
                 softirq::run_pending();
