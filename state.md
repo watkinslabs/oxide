@@ -38,7 +38,20 @@ TLS/IFUNC/versioning/dlopen) → 2 PID1/login/PAM/NSS → 3 namespaces+mount+roo
 → 4 net control-plane (rtnetlink) → 5 io_uring_register (returns 0 uncond) →
 6 ext4 extent depth/scale → 7 X11/Wayland graphics stack.
 
-## linux2.md progress this session
+## linux2.md progress (overnight run, continuing)
+- #1778 F31: shared uts_namespace registry — true Linux shared-ns UTS (setns
+  adopts hostname; members share one entry). Replaced F30 per-task copies.
+- #1779 B111: real sched_setscheduler(144) — was ALIASED to getscheduler
+  (chrt/RT services silently got old policy back). Now applies policy+prio.
+- #1780 F32: net-ns-aware rtnetlink dumps (GETLINK/GETADDR/GETROUTE) + per-ns
+  routes (RouteRow.ns) — containers' `ip` now sees only their netns, not host.
+- VALIDATED ALREADY-REAL (linux2.md was pessimistic): IPC ns (shm/sem/msg/mq
+  all ns-keyed), pivot_root (real, main-dispatch), perms/*at (real), route/addr
+  control-plane (persistent ROUTE_TABLE/ADDR_TABLE, not hardcoded), sched_setattr
+  (real RT requeue). Syscall dispatch coverage broad + honest (ENOSYS only for
+  the 17 OBSOLETE + genuinely-unimpl; cred/timer/perms/xattr/keyring sub-dispatch).
+
+## earlier linux2.md progress this session
 - #1776 F30 (§2.4): clone/fork now INHERIT parent namespaces (was: every fork
   reset to root ns — namespaces non-functional across process creation; Linux
   `copy_namespaces`). UTS ns now isolates domainname too (was nodename only).
