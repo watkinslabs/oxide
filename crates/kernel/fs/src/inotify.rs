@@ -40,6 +40,27 @@ pub const IN_CLOSE_NOWRITE: u32 = 0x0010;
 pub const IN_OPEN:          u32 = 0x0020;
 pub const IN_ALL_EVENTS:    u32 = 0x0fff;
 
+// fanotify permission events (`linux/fanotify.h`). FAN_OPEN_PERM blocks the
+// opening task until userspace writes a struct fanotify_response.
+pub const FAN_ACCESS_PERM:  u32 = 0x0002_0000;
+pub const FAN_OPEN_PERM:    u32 = 0x0001_0000;
+const FAN_ALLOW: u32 = 0x01;
+const FAN_DENY:  u32 = 0x02;
+
+/// A pending permission decision. The accessing task parks on `response`
+/// (0 = pending) until the fanotify daemon writes a verdict, or the group
+/// closes (auto-allow — never wedge an open on a dead daemon).
+struct PermEvent {
+    obj:      InodeRef,
+    pid:      u32,
+    response: AtomicU32, // 0 pending, FAN_ALLOW, FAN_DENY
+}
+
+/// Number of live FAN_*_PERM marks. The open hot path early-returns when 0,
+/// so a normal boot (no perm daemon) pays nothing and can never block.
+static PERM_MARK_COUNT: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
 #[derive(Clone)]
 struct Watch {
     wd: i32,
@@ -68,6 +89,11 @@ pub struct InotifyInode {
     fanotify: bool,
     watches: Spinlock<Vec<Watch>, TaskListClass>,
     events:  Spinlock<VecDeque<Event>, TaskListClass>,
+    /// fanotify perm events awaiting delivery to the daemon's read().
+    perm_queue: Spinlock<VecDeque<Arc<PermEvent>>, TaskListClass>,
+    /// Perm events the daemon has read (minted-fd → event), awaiting its
+    /// `fanotify_response` write.
+    perm_pending: Spinlock<Vec<(i32, Arc<PermEvent>)>, TaskListClass>,
 }
 
 impl InotifyInode {
@@ -88,6 +114,8 @@ impl InotifyInode {
             fanotify,
             watches: Spinlock::new(Vec::new()),
             events:  Spinlock::new(VecDeque::new()),
+            perm_queue:   Spinlock::new(VecDeque::new()),
+            perm_pending: Spinlock::new(Vec::new()),
         });
         register_instance(Arc::downgrade(&arc));
         arc
@@ -114,23 +142,98 @@ impl InotifyInode {
     fn read_fanotify(&self, buf: &mut [u8]) -> KResult<usize> {
         const META: usize = 24;
         const FAN_METADATA_VERSION: u8 = 3;
-        let mut written = 0;
-        let mut q = self.events.lock();
-        while written + META <= buf.len() {
-            let ev = match q.pop_front() { Some(e) => e, None => break };
-            let fd = match &ev.obj { Some(o) => Self::install_obj_fd(o), None => -1 };
-            let s = &mut buf[written..written + META];
+        let emit = |s: &mut [u8], mask: u32, fd: i32, pid: u32| {
             s[0..4].copy_from_slice(&(META as u32).to_le_bytes());
             s[4] = FAN_METADATA_VERSION;
             s[5] = 0;
             s[6..8].copy_from_slice(&(META as u16).to_le_bytes());
-            s[8..16].copy_from_slice(&(ev.mask as u64).to_le_bytes());
+            s[8..16].copy_from_slice(&(mask as u64).to_le_bytes());
             s[16..20].copy_from_slice(&fd.to_le_bytes());
-            s[20..24].copy_from_slice(&(ev.pid as i32).to_le_bytes());
+            s[20..24].copy_from_slice(&(pid as i32).to_le_bytes());
+        };
+        let mut written = 0;
+        // Perm events first: the accessor is blocked, so the daemon must see
+        // them ahead of notification events. Each minted fd is recorded in
+        // perm_pending so the daemon's response write() can match it.
+        while written + META <= buf.len() {
+            let pev = { self.perm_queue.lock().pop_front() };
+            let pev = match pev { Some(p) => p, None => break };
+            let fd = Self::install_obj_fd(&pev.obj);
+            self.perm_pending.lock().push((fd, pev.clone()));
+            emit(&mut buf[written..written + META], FAN_OPEN_PERM, fd, pev.pid);
+            written += META;
+        }
+        let mut q = self.events.lock();
+        while written + META <= buf.len() {
+            let ev = match q.pop_front() { Some(e) => e, None => break };
+            let fd = match &ev.obj { Some(o) => Self::install_obj_fd(o), None => -1 };
+            emit(&mut buf[written..written + META], ev.mask, fd, ev.pid);
             written += META;
         }
         if written == 0 { return Err(VfsError::Eagain); }
         Ok(written)
+    }
+
+    /// `true` for a `fanotify_init` group. # C: O(1)
+    pub fn is_fanotify(&self) -> bool { self.fanotify }
+
+    /// Apply a `struct fanotify_response { __s32 fd; __u32 response }` write:
+    /// match the pending perm event by its minted fd, store the verdict so
+    /// the parked accessor wakes. # C: O(N_pending)
+    fn apply_response(&self, fd: i32, response: u32) {
+        let mut pend = self.perm_pending.lock();
+        if let Some(pos) = pend.iter().position(|(f, _)| *f == fd) {
+            let (_, ev) = pend.remove(pos);
+            let v = if response == FAN_DENY { FAN_DENY } else { FAN_ALLOW };
+            ev.response.store(v, Ordering::Release);
+        }
+    }
+
+    /// On group close, auto-ALLOW every still-pending perm event so a dead
+    /// or exited daemon never wedges a blocked open (Linux `fanotify_release`).
+    /// # C: O(N_pending + N_queued)
+    fn release_perms(&self) {
+        for ev in self.perm_queue.lock().drain(..) { ev.response.store(FAN_ALLOW, Ordering::Release); }
+        for (_, ev) in self.perm_pending.lock().drain(..) { ev.response.store(FAN_ALLOW, Ordering::Release); }
+    }
+}
+
+/// FAN_OPEN_PERM hook for the open path. Returns `true` to allow the open,
+/// `false` to deny (caller returns -EACCES). Fast-paths to allow when no
+/// FAN_*_PERM marks exist anywhere (the common case — zero overhead, never
+/// blocks). Otherwise queues a perm event to each matching fanotify group
+/// and parks until a verdict arrives.
+/// # C: O(1) fast path; else O(groups) + park
+pub fn check_open_perm(inode: &InodeRef) -> bool {
+    if PERM_MARK_COUNT.load(Ordering::Acquire) == 0 { return true; }
+    let key = inode_key(inode);
+    #[cfg(target_os = "oxide-kernel")]
+    let pid = sched::current().map(|t| t.tgid.load(Ordering::Relaxed)).unwrap_or(0);
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let pid = 0u32;
+    let ev = Arc::new(PermEvent { obj: inode.clone(), pid, response: AtomicU32::new(0) });
+    let mut queued = false;
+    {
+        let g = INSTANCES.lock();
+        for w in g.iter() {
+            let arc = match w.upgrade() { Some(a) => a, None => continue };
+            if !arc.fanotify { continue; }
+            let hit = arc.watches.lock().iter()
+                .any(|wi| wi.inode_key == key && (wi.mask & FAN_OPEN_PERM) != 0);
+            if hit { arc.perm_queue.lock().push_back(ev.clone()); queued = true; }
+        }
+    }
+    if !queued { return true; }
+    // Park until the daemon responds (or a group close auto-allows).
+    loop {
+        let r = ev.response.load(Ordering::Acquire);
+        if r != 0 { return r == FAN_ALLOW; }
+        #[cfg(target_os = "oxide-kernel")]
+        // SAFETY: open syscall context; runqueue installed; yield until the
+        // fanotify daemon writes a verdict or the group closes.
+        unsafe { sched::live::tick_yield(); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        return true;
     }
 }
 
@@ -144,7 +247,22 @@ impl Inode for InotifyInode {
     /// shape: {wd: i32, mask: u32, cookie: u32, len: u32, name[len]}.
     /// v1 always emits len=0 (no name tail).
     fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
-        if self.fanotify { return self.read_fanotify(buf); }
+        if self.fanotify {
+            // A blocking fanotify group read parks until an event is queued
+            // (Linux default; O_NONBLOCK routes to read_nonblock → EAGAIN).
+            loop {
+                match self.read_fanotify(buf) {
+                    Err(VfsError::Eagain) => {
+                        #[cfg(target_os = "oxide-kernel")]
+                        // SAFETY: read syscall context; runqueue installed; yield until an event arrives.
+                        unsafe { sched::live::tick_yield(); }
+                        #[cfg(not(target_os = "oxide-kernel"))]
+                        return Err(VfsError::Eagain);
+                    }
+                    other => return other,
+                }
+            }
+        }
         const HDR: usize = 16;
         let mut written = 0;
         let mut q = self.events.lock();
@@ -164,14 +282,40 @@ impl Inode for InotifyInode {
         if written == 0 { return Err(VfsError::Eagain); }
         Ok(written)
     }
+    /// O_NONBLOCK read: never parks. fanotify drains once (EAGAIN if empty);
+    /// inotify already drains non-blocking. # C: O(events drained)
+    fn read_nonblock(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        if self.fanotify { return self.read_fanotify(buf); }
+        self.read(off, buf)
+    }
     /// POLLIN only when at least one event is queued. The default inode
     /// poll() reports always-readable, which drives an inotify watcher's
     /// event loop into a busy spin (read returns EAGAIN, poll says ready).
     /// # C: O(1)
     fn poll(&self) -> u32 {
-        if self.events.lock().is_empty() { 0 } else { vfs::POLL_IN }
+        let ready = !self.events.lock().is_empty()
+            || (self.fanotify && !self.perm_queue.lock().is_empty());
+        if ready { vfs::POLL_IN } else { 0 }
     }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+    /// fanotify: a `struct fanotify_response { __s32 fd; __u32 response }`
+    /// (8 B) verdict from the daemon unblocks the matching perm event.
+    /// inotify fds are not writable (EIO).
+    /// # C: O(N_pending)
+    fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
+        if !self.fanotify { return Err(VfsError::Eio); }
+        let mut off = 0;
+        while off + 8 <= buf.len() {
+            let fd = i32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]]);
+            let resp = u32::from_le_bytes([buf[off+4], buf[off+5], buf[off+6], buf[off+7]]);
+            self.apply_response(fd, resp);
+            off += 8;
+        }
+        if off == 0 { return Err(VfsError::Einval); }
+        Ok(off)
+    }
+    /// Last close of a fanotify group auto-allows pending perm events so a
+    /// crashed/exited daemon never wedges a blocked open.
+    fn on_release(&self) { if self.fanotify { self.release_perms(); } }
 }
 
 /// Global registry of weak refs to every live InotifyInode. Walked
@@ -331,7 +475,9 @@ pub fn sys_fanotify_init(args: &syscall::SyscallArgs) -> i64 {
     let arc = InotifyInode::new_fanotify(flags);
     let inode: InodeRef = arc as InodeRef;
     let dentry = Dentry::new(None, "fanotify".to_string(), Arc::clone(&inode));
-    let mut fl = OpenFlags::O_RDONLY;
+    // A fanotify group fd is read (events) AND write (responses) — must be
+    // O_RDWR or the response write() is rejected EBADF before the inode.
+    let mut fl = OpenFlags::O_RDWR;
     if (flags & FAN_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);
     match fdt.alloc(file) {
@@ -456,8 +602,11 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
     let inotify = match fd_to_inotify(fd) {
         Some(a) => a, None => return -(Errno::Einval.as_i32() as i64),
     };
+    const PERM_BITS: u32 = FAN_OPEN_PERM | FAN_ACCESS_PERM;
     if flags & FAN_MARK_FLUSH != 0 {
         let mut g = inotify.watches.lock();
+        let perms = g.iter().filter(|w| w.mask & PERM_BITS != 0).count();
+        if perms > 0 { PERM_MARK_COUNT.fetch_sub(perms, Ordering::AcqRel); }
         g.clear();
         return 0;
     }
@@ -475,25 +624,30 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
         Some(i) => i, None => return -(Errno::Enoent.as_i32() as i64),
     };
     let key = inode_key(&inode);
-    // Mask bits ACCESS / MODIFY / ATTRIB / CLOSE_* / OPEN match between
-    // fanotify and inotify exactly (low 6 bits); higher fanotify bits
-    // (PERM events, ONDIR, EVENT_ON_CHILD) are filtered out for v1.
-    let in_mask = mask & IN_ALL_EVENTS;
+    // Keep the notification bits (low 6 match inotify) AND the FAN_*_PERM
+    // bits (needed for the open-permission hook); other high bits (ONDIR,
+    // EVENT_ON_CHILD) are dropped for v1.
+    let in_mask = mask & (IN_ALL_EVENTS | PERM_BITS);
     if flags & FAN_MARK_REMOVE != 0 {
         let mut g = inotify.watches.lock();
         let n_before = g.len();
+        let perms = g.iter().filter(|w| w.inode_key == key && w.mask & PERM_BITS != 0).count();
         g.retain(|w| w.inode_key != key);
+        if perms > 0 { PERM_MARK_COUNT.fetch_sub(perms, Ordering::AcqRel); }
         return if g.len() == n_before { -(Errno::Enoent.as_i32() as i64) } else { 0 };
     }
     if flags & FAN_MARK_ADD != 0 {
         let mut g = inotify.watches.lock();
         for w in g.iter_mut() {
             if w.inode_key == key {
+                let gained_perm = (in_mask & PERM_BITS) & !w.mask != 0;
                 w.mask |= in_mask;
+                if gained_perm { PERM_MARK_COUNT.fetch_add(1, Ordering::AcqRel); }
                 return 0;
             }
         }
         let wd = inotify.next_wd.fetch_add(1, Ordering::Relaxed);
+        if in_mask & PERM_BITS != 0 { PERM_MARK_COUNT.fetch_add(1, Ordering::AcqRel); }
         g.push(Watch { wd, inode_key: key, mask: in_mask });
         return 0;
     }
