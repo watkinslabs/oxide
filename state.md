@@ -34,18 +34,24 @@ load-constructor hang NO LONGER REPRODUCES — /bin/openssl_probe runs EVP SHA-2
 work). Attribution test REFUTED the F34/AT_HWCAP guess (arm AT_HWCAP→0 still
 works). systemd + PAM login + openssl all run dynamically (real ld-musl) on arm.
 
+## MORE RESOLVED this run
+- **io_uring usable** (#1793, §2.7): mmap(io_uring_fd) maps the ring page →
+  userspace shares the rings. /bin/io_uring_probe (raw NOP round-trip) PASSes
+  on BOTH arches. (liburing's 3-region mmap layout = follow-up; single-page
+  raw layout works now.)
+- **AT_HWCAP complete** on arm (#1791): baseline + crypto-ext from ID_AA64ISAR0.
+
 ## HIGH-VALUE NEXT (need daytime / human-in-loop — too risky fully-unattended)
-1. **Full arm rt_sigframe (ucontext)** — unblocks Go / SA_SIGINFO apps
-   (project_signal_frame_minimal). HIGH value, HIGH risk (wrong = breaks ALL
-   arm signals). Verify with a SIGILL+longjmp probe on arm BEFORE trusting.
-2. **io_uring user-mmap** — rings live in HHDM, not user-visible → io_uring
-   unusable by liburing. Needs multi-page liburing layout + offset-cookie mmap;
-   no in-tree io_uring userspace test → hard to verify.
-3. **ext4 extent depth** — capped at 2 (Linux: 5); generalize the extent walk.
+1. **Arm rt_sigframe** — LIKELY ALREADY DONE (sigframe_probe.c exists testing
+   SA_SIGINFO handler(sig,siginfo,ucontext)+resume; fault path sets siginfo+
+   ucontext). project_signal_frame_minimal is probably STALE. VERIFY: drive
+   sigframe_probe on arm with a ^C injection (no harness yet — reuse the
+   QMP-send-key path from dsr_probe/vtswitch_probe). If SIGFRAME_OK → close it.
+2. **ext4 extent depth** — capped at 2 (Linux: 5); generalize the walk.
    Hosted-testable over a deep-extent ext4 image; fs-risky.
-4. **AT_HWCAP crypto-ext bits** (ID_AA64ISAR0_EL1 → AES/SHA/CRC32). Safe (reads
-   actual ID reg). cpu_hwcap() hook now exists (#1785).
-5. **Graphics stack** (§3): no xorg/mesa/weston in-tree — huge, userspace.
+3. **liburing 3-region mmap** (IORING_OFF_SQ_RING/CQ_RING/SQES offset cookies)
+   so real liburing programs work, not just raw single-page users (#1793).
+4. **Graphics stack** (§3): no xorg/mesa/weston in-tree — huge, userspace.
 
 ## Workflow notes
 - Boot smoke both arches before push (kernel/userspace paths). boot-smoke-probe.sh
