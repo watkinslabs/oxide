@@ -20,6 +20,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use sync::{Spinlock, Tty as TtyClass};
 use tty::Pair as TtyPair;
+use tty::Sig;
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
 /// Spinlock-wrapped pair shared between the master and slave inodes.
@@ -102,7 +103,19 @@ impl Inode for PtyMasterInode {
     /// `hung_up`, so it wakes and sees EOF without an explicit nudge.
     /// # C: O(1)
     fn on_release(&self) {
-        self.pair.inner.lock().master_hangup();
+        let fg = {
+            let mut g = self.pair.inner.lock();
+            g.master_hangup();
+            g.foreground_pgid
+        };
+        // Master last-close = carrier loss. Linux `__tty_hangup` delivers
+        // SIGHUP + SIGCONT to the slave's foreground process group (SIGCONT
+        // so a stopped job wakes to take the SIGHUP). `pending_sighup` had
+        // been set but never drained — the slave's shell never saw SIGHUP.
+        if fg != 0 {
+            let bits = (1u64 << (Sig::Hup.signo() - 1)) | (1u64 << (Sig::Cont.signo() - 1));
+            post_signal_pgrp(fg, bits);
+        }
     }
 }
 
