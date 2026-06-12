@@ -234,7 +234,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "bare3", "sptest", "pamtest", "login_sim", "sem_smoke", "msg_smoke",
         "mq_smoke", "ptrace_smoke", "ptrace_singlestep_smoke", "mprotect_smoke",
         "mremap_dontunmap_smoke", "inet6_smoke", "mmsg_smoke", "scm_smoke",
-        "cgroup_smoke", "cmdsubst_probe", "alarm_probe", "symlink_probe",
+        "cgroup_smoke", "cmdsubst_probe", "alarm_probe", "io_uring_probe", "symlink_probe",
         "mount_smoke", "statfs_smoke", "fsmount_probe", "memfd_seal_probe",
         "uevent_probe", "rtlink_probe", "dev_smoke", "vim_smoke",
         "mmap_zero_smoke", "mmchurn_smoke", "mallocstress_smoke", "mallocstress_dyn",
