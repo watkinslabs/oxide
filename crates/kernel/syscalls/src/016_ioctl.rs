@@ -245,7 +245,34 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             }
             0
         }
-        TCXONC => 0,
+        TCXONC => {
+            // tcflow(): software flow control. TCOOFF(0) suspends output,
+            // TCOON(1) resumes it, TCIOFF(2)/TCION(3) transmit a STOP/START
+            // char to the input source. The output pair (TCOOFF/TCOON) is
+            // the must-have: a suspended tty's WRITE path parks until
+            // resumed (bash job-control / ^S). An out-of-range action is
+            // EINVAL — never a fake success.
+            let action = match tty::TtyFlow::from_arg(arg) {
+                Some(a) => a,
+                None => return -(Errno::Einval.as_i32() as i64),
+            };
+            if let Some(pair) = &pty_pair {
+                // Slave-side pts: output-suspend withholds slave_write bytes
+                // in the pair's out_hold (the same buffer ^S/^Q drive).
+                // TCIOFF/TCION have no upstream to flow-control on a pts.
+                match action {
+                    tty::TtyFlow::OutputOff => { pair.with_pair(|p| p.flow_output(true)); }
+                    tty::TtyFlow::OutputOn  => { pair.with_pair(|p| p.flow_output(false)); }
+                    tty::TtyFlow::InputOff | tty::TtyFlow::InputOn => {}
+                }
+            } else {
+                match console::route(ino) {
+                    console::TtyTarget::Serial => console::static_console::flow(action),
+                    console::TtyTarget::Vt(vt) => { console::vt_tty::vt_tty(vt).flow(action); }
+                }
+            }
+            0
+        }
         TIOCGPTN => {
             if (ino & 0xFFFF_8000) != 0x6000_0000 { return -(Errno::Enotty.as_i32() as i64); }
             if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
