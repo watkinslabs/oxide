@@ -4,7 +4,7 @@ echo init-fork-exec works
 for s in /bin/bare3 /bin/vim_smoke /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \
          /bin/mprotect_smoke /bin/mremap_dontunmap_smoke \
          /bin/inet6_smoke /bin/mmsg_smoke /bin/scm_smoke \
-         /bin/cmdsubst_probe /bin/alarm_probe /bin/tcflow_probe /bin/tty_ioctl_probe /bin/nlmcast_probe /bin/tracemark_probe /bin/tracepipe_probe /bin/symlink_probe /bin/mount_smoke /bin/statfs_smoke /bin/dev_smoke /bin/dsr_probe /bin/vtswitch_probe /bin/vtmode_probe /bin/vtresize_probe /bin/kdfont_probe /bin/fbdev_probe /bin/drm_probe /bin/drm_probe2 /bin/vcs_probe /bin/ptyhup_probe /bin/hwrng_probe /bin/sysblock_probe \
+         /bin/cmdsubst_probe /bin/alarm_probe /bin/tcflow_probe /bin/tty_ioctl_probe /bin/nlmcast_probe /bin/tracemark_probe /bin/tracepipe_probe /bin/fanotify_probe /bin/symlink_probe /bin/mount_smoke /bin/statfs_smoke /bin/dev_smoke /bin/dsr_probe /bin/vtswitch_probe /bin/vtmode_probe /bin/vtresize_probe /bin/kdfont_probe /bin/fbdev_probe /bin/drm_probe /bin/drm_probe2 /bin/vcs_probe /bin/ptyhup_probe /bin/hwrng_probe /bin/sysblock_probe \
          /bin/mmap_zero_smoke /bin/usleep_smoke \
          /bin/af_packet_smoke /bin/hello_dyn \
          /bin/pid_identity_probe /bin/tkill_probe /bin/io_uring_probe /bin/io_uring_reg_probe /bin/sigframe_self_probe /bin/sigchld_probe ; do
