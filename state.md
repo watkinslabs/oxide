@@ -24,7 +24,8 @@ route+addr control-plane (persistent tables), sched_setattr. Genuine gaps FIXED:
 - #1779 real sched_setscheduler(144) — was ALIASED to getscheduler (fake success).
 - #1780 net-ns-aware rtnetlink dumps (GETLINK/GETADDR/GETROUTE) + per-ns routes.
 - #1783 dynlink R_*_IRELATIVE (IFUNC) — was skipped (stub-interp path only).
-- #1785 AT_HWCAP baseline (FP|ASIMD) on arm — was 0.
+- #1785 AT_HWCAP baseline (FP|ASIMD) on arm — was 0; #1791 + crypto/CRC bits
+  from ID_AA64ISAR0_EL1 (host-tested decode → arm hw crypto, openssl verified).
 - Stale-comment honesty fixes: #1782, #1784, #1789.
 
 **#1 linux2 §2.3 blocker RESOLVED + verified** (#1787): openssl-on-aarch64
