@@ -46,8 +46,11 @@ Command set now specced in **docs/57** (ECMA-48/VT100/VT220/xterm interpreter +
 cell model). LANDED: ECH, alt-screen, truecolor, **wide chars (East-Asian
 width: primary+spacer cells, EAW table `eaw.rs`, cursor advance by width,
 overwrite invalidation)**, **SGR 2/3/5/8/9 + resets 22/23/25/28/29** (faint/
-italic/blink/conceal/strike). Single live parser `vt/src/emulator.rs`.
-Remaining vs real terminal:
+italic/blink/conceal/strike), **SGR 10/11/12 Linux font-select +
+disp_ctrl/CP437 (`cp437.rs`)** — fixes box-drawing on TERM=linux
+(ncurses smacs `\E[11m` + raw CP437 corner/line bytes were UTF-8-misdecoded;
+now mapped to the box codepoints the font already has). Single live parser
+`vt/src/emulator.rs`. Remaining vs real terminal:
 - **ECH `CSI X`** — absent (no `b'X'` arm). ncurses/systemd use it constantly →
   stale glyphs.
 - **Alternate screen `?1049/?47/?1047`** — no alt buffer in `Vc`. vim/less/htop/
