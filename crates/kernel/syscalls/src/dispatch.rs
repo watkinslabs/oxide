@@ -122,7 +122,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_UNSHARE       => crate::s272_unshare::sys_unshare(&args),
         syscall::nrs::NR_SETNS         => crate::s308_setns::sys_setns(&args),
         syscall::nrs::NR_PTRACE        => crate::ptrace::sys_ptrace(&args),
-        syscall::nrs::NR_FANOTIFY_INIT => ::fs::inotify::sys_inotify_init1(&args),
+        syscall::nrs::NR_FANOTIFY_INIT => ::fs::inotify::sys_fanotify_init(&args),
         syscall::nrs::NR_FANOTIFY_MARK => ::fs::inotify::sys_fanotify_mark(&args),
         syscall::nrs::NR_SHMGET        => ipc::sysv_shm::sys_shmget(&args),
         syscall::nrs::NR_SHMAT         => ipc::sysv_shm::sys_shmat(&args),
