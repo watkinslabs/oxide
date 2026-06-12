@@ -13,7 +13,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
     if crate::netlink_fd::is_netlink(fd) {
-        return crate::netlink_fd::bind();
+        return crate::netlink_fd::bind(fd, addr_p);
     }
     // D3.3: AF_VSOCK bind — record the local port; listen() registers
     // the listener in the table. sockaddr_vm svm_port @4.

@@ -21,6 +21,7 @@ extern crate alloc;
 
 pub mod rtnetlink;
 pub mod genetlink;
+pub mod mcast;
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -241,6 +242,44 @@ pub fn emit_uevent(action: &str, devpath: &str, subsystem: &str) -> usize {
     n
 }
 
+/// Live `NETLINK_ROUTE` sockets eligible for multicast delivery (`ip
+/// monitor`, systemd-networkd, NetworkManager). Weak so closed sockets
+/// drop out. `rtnl_multicast` enqueues to those whose `groups` mask
+/// carries the target group bit. Mirrors Linux's per-netns netlink table.
+static RTNL_LISTENERS: Spinlock<Vec<alloc::sync::Weak<NetlinkSocket>>, SockLockClass>
+    = Spinlock::new(Vec::new());
+
+/// Register a `NETLINK_ROUTE` socket for multicast. Called at socket
+/// creation. Subscription (group bits) is set later via bind nl_groups or
+/// NETLINK_ADD_MEMBERSHIP. # C: O(N_listeners) — prunes dead weaks.
+pub fn register_rtnl_listener(sock: &alloc::sync::Arc<NetlinkSocket>) {
+    let mut g = RTNL_LISTENERS.lock();
+    g.retain(|w| w.strong_count() > 0);
+    g.push(alloc::sync::Arc::downgrade(sock));
+}
+
+/// Broadcast `msg` (kernel-originated nlmsg(s): seq 0, pid 0) to every
+/// `NETLINK_ROUTE` socket subscribed to `group` (an `RTNLGRP_*` number;
+/// the socket's `groups` bitmask carries bit `group-1`, the legacy
+/// `RTMGRP_*` layout). Mirrors `nlmsg_multicast`/`netlink_broadcast`.
+/// Returns the number of sockets reached. # C: O(N_listeners)
+pub fn rtnl_multicast(group: u32, msg: &[u8]) -> usize {
+    if group == 0 || group > 32 { return 0; }
+    let bit = 1u32 << (group - 1);
+    let mut g = RTNL_LISTENERS.lock();
+    g.retain(|w| w.strong_count() > 0);
+    let mut n = 0;
+    for w in g.iter() {
+        if let Some(s) = w.upgrade() {
+            if (s.groups.load(Ordering::Acquire) & bit) != 0 {
+                s.enqueue(msg.to_vec());
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 impl NetlinkSocket {
     /// # C: O(1)
     pub fn new(protocol: u16) -> Self {
@@ -250,6 +289,18 @@ impl NetlinkSocket {
             groups:   AtomicU32::new(0),
             rx_queue: Spinlock::new(VecDeque::new()),
         }
+    }
+
+    /// `bind` nl_groups: subscribe to the given group bitmask (legacy
+    /// `RTMGRP_*` layout, bit `g-1` = group `g`). # C: O(1)
+    pub fn set_group_mask(&self, mask: u32) { self.groups.store(mask, Ordering::Release); }
+    /// `NETLINK_ADD_MEMBERSHIP`: subscribe to one `RTNLGRP_*` group. # C: O(1)
+    pub fn add_membership(&self, group: u32) {
+        if group != 0 && group <= 32 { self.groups.fetch_or(1u32 << (group - 1), Ordering::AcqRel); }
+    }
+    /// `NETLINK_DROP_MEMBERSHIP`: unsubscribe one group. # C: O(1)
+    pub fn drop_membership(&self, group: u32) {
+        if group != 0 && group <= 32 { self.groups.fetch_and(!(1u32 << (group - 1)), Ordering::AcqRel); }
     }
 
     /// Drop a fully-formatted reply buffer onto the RX queue. The
@@ -433,5 +484,43 @@ mod tests {
         let a = alloc_port_id();
         let b = alloc_port_id();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn membership_bits_map_group_minus_one() {
+        let s = NetlinkSocket::new(proto::NETLINK_ROUTE);
+        s.add_membership(1);  // RTNLGRP_LINK → bit 0
+        s.add_membership(5);  // RTNLGRP_IPV4_IFADDR → bit 4
+        assert_eq!(s.groups.load(Ordering::Acquire), (1 << 0) | (1 << 4));
+        s.drop_membership(1);
+        assert_eq!(s.groups.load(Ordering::Acquire), 1 << 4);
+        s.set_group_mask(0xF);  // bind nl_groups replaces the mask
+        assert_eq!(s.groups.load(Ordering::Acquire), 0xF);
+        s.add_membership(0);  // group 0 is a no-op (RTNLGRP_NONE)
+        assert_eq!(s.groups.load(Ordering::Acquire), 0xF);
+    }
+
+    #[test]
+    fn rtnl_multicast_delivers_only_to_subscribers() {
+        use alloc::sync::Arc;
+        let a = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE)); // RTNLGRP_LINK
+        let b = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE)); // RTNLGRP_IPV4_IFADDR
+        a.add_membership(1);
+        b.add_membership(5);
+        register_rtnl_listener(&a);
+        register_rtnl_listener(&b);
+        let msg = alloc::vec![0xABu8; 8];
+
+        let n = rtnl_multicast(1, &msg);  // RTNLGRP_LINK
+        assert_eq!(n, 1);
+        assert!(a.dequeue().is_some());   // subscriber got it
+        assert!(b.dequeue().is_none());   // non-subscriber did not
+
+        let n = rtnl_multicast(5, &msg);  // RTNLGRP_IPV4_IFADDR
+        assert_eq!(n, 1);
+        assert!(a.dequeue().is_none());
+        assert!(b.dequeue().is_some());
+
+        assert_eq!(rtnl_multicast(0, &msg), 0);  // RTNLGRP_NONE reaches nobody
     }
 }

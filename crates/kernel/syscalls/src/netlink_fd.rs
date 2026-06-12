@@ -32,16 +32,60 @@ pub fn is_netlink(fd: u64) -> bool {
         .unwrap_or(false)
 }
 
-/// `bind(fd, sockaddr_nl, ...)` for netlink. dhcpcd's if_linksocket
-/// passes nl_pid + nl_groups; v1 ignores them (no multicast wiring),
-/// just returns 0.
+/// Resolve `fd` to its concrete `NetlinkSocket`, if it is one.
 /// # C: O(1)
-pub fn bind() -> i64 { 0 }
+fn netlink_sock(fd: u64) -> Option<Arc<vfs::File>> {
+    let f = fd_file_local(fd)?;
+    if (f.inode().ino() & 0xFFFF_FFFF_0000_0000) == NL_TAG { Some(f) } else { None }
+}
 
-/// `setsockopt(fd, ...)` for netlink. Tuning knobs (NETLINK_BROADCAST_ERROR,
-/// NETLINK_NO_ENOBUFS) accepted as no-op.
+/// `bind(fd, sockaddr_nl, addrlen)` for netlink. `nl_groups` (offset 8)
+/// is the multicast subscription bitmask (legacy RTMGRP_* layout); set
+/// it on the socket so rtnl_multicast delivers RTM_NEW*/DEL* notifications
+/// (`ip monitor`, systemd-networkd). `nl_pid` autobind is unchanged (the
+/// socket keeps its allocated port_id, which getsockname reports).
 /// # C: O(1)
-pub fn setsockopt() -> i64 { 0 }
+pub fn bind(fd: u64, addr_p: u64) -> i64 {
+    let file = match netlink_sock(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
+    if addr_p == 0 || addr_p + 12 >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    // SAFETY: addr_p+12 validated < USER_VA_END; sockaddr_nl.nl_groups @ +8.
+    let nl_groups = unsafe { core::ptr::read_volatile((addr_p + 8) as *const u32) };
+    if let Some(s) = file.inode().as_any()
+        .and_then(|a| a.downcast_ref::<::netlink::NetlinkSocket>())
+    {
+        s.set_group_mask(nl_groups);
+    }
+    0
+}
+
+/// `setsockopt(fd, level, optname, optval, optlen)` for netlink. At
+/// SOL_NETLINK, NETLINK_ADD_MEMBERSHIP / NETLINK_DROP_MEMBERSHIP take a
+/// group NUMBER (RTNLGRP_*) in optval and (un)subscribe the socket so
+/// rtnl_multicast reaches it (`ip monitor`, networkd). Other tuning knobs
+/// (NETLINK_BROADCAST_ERROR, NETLINK_NO_ENOBUFS, NETLINK_PKTINFO) no-op.
+/// # C: O(1)
+pub fn setsockopt(fd: u64, level: u64, optname: u64, optval: u64, optlen: u64) -> i64 {
+    const SOL_NETLINK: u64 = 270;
+    const NETLINK_ADD_MEMBERSHIP:  u64 = 1;
+    const NETLINK_DROP_MEMBERSHIP: u64 = 2;
+    if level == SOL_NETLINK
+        && (optname == NETLINK_ADD_MEMBERSHIP || optname == NETLINK_DROP_MEMBERSHIP)
+    {
+        if optval == 0 || optval + 4 > USER_VA_END || optlen < 4 {
+            return -(Errno::Einval.as_i32() as i64);
+        }
+        let file = match netlink_sock(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
+        // SAFETY: optval+4 validated < USER_VA_END; group is a 4-byte int.
+        let group = unsafe { core::ptr::read_volatile(optval as *const u32) };
+        if let Some(s) = file.inode().as_any()
+            .and_then(|a| a.downcast_ref::<::netlink::NetlinkSocket>())
+        {
+            if optname == NETLINK_ADD_MEMBERSHIP { s.add_membership(group); }
+            else { s.drop_membership(group); }
+        }
+    }
+    0
+}
 
 /// `getsockopt(fd, level, optname, optval, optlen)` for netlink.
 /// sd_netlink_open REQUIRES getsockopt(SOL_SOCKET, SO_PROTOCOL) — it stores
