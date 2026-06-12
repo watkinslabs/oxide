@@ -1329,6 +1329,11 @@ name = "tracefs"
 version = "0.1.0"
 dependencies = [
  "devfs",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "sched",
+ "sync",
  "vfs",
 ]
 
