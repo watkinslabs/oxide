@@ -477,11 +477,13 @@ pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
     let ifaces = ifaces_snapshot();
     for row in addr_snapshot().iter() {
-        // Resolve the iface label by ifindex; missing → "?"
-        let name = ifaces.iter()
-            .find(|(id, _, _, _, _, _)| *id == row.ifindex)
-            .map(|(_, n, _, _, _, _)| n.as_str())
-            .unwrap_or("?");
+        // Only addresses on an iface in the caller's netns (ifaces is already
+        // ns-filtered); a row whose ifindex isn't present here belongs to
+        // another namespace and is skipped.
+        let name = match ifaces.iter().find(|(id, _, _, _, _, _)| *id == row.ifindex) {
+            Some((_, n, _, _, _, _)) => n.as_str(),
+            None => continue,
+        };
         let one = build_newaddr_reply(
             req.nlmsg_seq, req.nlmsg_pid,
             row.ifindex as i32, name, row.addr, row.prefixlen, row.scope,
@@ -660,7 +662,7 @@ fn build_newroute_reply(
 /// # C: O(N_ifaces)
 pub fn handle_getroute(req: &Nlmsghdr) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
-    for r in route_snapshot().iter() {
+    for r in route_snapshot_ns(net::netdev::current_net_ns()).iter() {
         reply.extend_from_slice(&build_newroute_reply(
             req.nlmsg_seq, req.nlmsg_pid,
             r.table, r.protocol, r.scope, r.kind,
@@ -676,6 +678,9 @@ pub fn handle_getroute(req: &Nlmsghdr) -> Vec<u8> {
 /// equivalents (RTA_DST length=16) ride a follow-up.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct RouteRow {
+    /// Network namespace (CLONE_NEWNET; 0 = init ns). Routes are per-netns
+    /// in Linux (`net->ipv4.fib_*`); a netns dump sees only its own rows.
+    pub ns:          u64,
     pub table:       u8,
     pub protocol:    u8,
     pub scope:       u8,
@@ -689,25 +694,32 @@ pub struct RouteRow {
 static ROUTE_TABLE: Spinlock<Vec<RouteRow>, SockLockClass> =
     Spinlock::new(Vec::new());
 
-/// Insert (or replace by key=`(table, dst, oif)`).
+/// Insert (or replace by key=`(ns, table, dst, oif)`).
 /// # C: O(N)
 pub fn route_insert(row: RouteRow) {
     let mut g = ROUTE_TABLE.lock();
     let dup = g.iter().position(|r|
-        r.table == row.table
+        r.ns == row.ns
+        && r.table == row.table
         && r.dst == row.dst
         && r.oif_ifindex == row.oif_ifindex);
     if let Some(i) = dup { g[i] = row; }
     else { g.push(row); }
 }
 
-/// Remove rows matching `(table, dst, oif)`. Returns count removed.
+/// Remove rows matching `(ns, table, dst, oif)`. Returns count removed.
 /// # C: O(N)
-pub fn route_remove(table: u8, dst: Option<([u8; 4], u8)>, oif: u32) -> usize {
+pub fn route_remove(ns: u64, table: u8, dst: Option<([u8; 4], u8)>, oif: u32) -> usize {
     let mut g = ROUTE_TABLE.lock();
     let before = g.len();
-    g.retain(|r| !(r.table == table && r.dst == dst && r.oif_ifindex == oif));
+    g.retain(|r| !(r.ns == ns && r.table == table && r.dst == dst && r.oif_ifindex == oif));
     before - g.len()
+}
+
+/// Snapshot the routes in network namespace `ns` (for the RTM_GETROUTE dump).
+/// # C: O(N)
+pub fn route_snapshot_ns(ns: u64) -> Vec<RouteRow> {
+    ROUTE_TABLE.lock().iter().filter(|r| r.ns == ns).cloned().collect()
 }
 
 /// Full snapshot for RTM_GETROUTE.
@@ -721,6 +733,7 @@ pub fn route_snapshot() -> Vec<RouteRow> {
 /// # C: O(1)
 pub fn seed_default_routes_lo(lo_ifindex: u32) {
     route_insert(RouteRow {
+        ns: 0,
         table: RT_TABLE_LOCAL, protocol: RTPROT_KERNEL,
         scope: RT_SCOPE_HOST, kind: RTN_LOCAL,
         dst: Some(([127, 0, 0, 0], 8)),
@@ -734,6 +747,7 @@ pub fn seed_default_routes_lo(lo_ifindex: u32) {
 /// # C: O(1)
 pub fn seed_default_routes(eth0_ifindex: u32) {
     route_insert(RouteRow {
+        ns: 0,
         table: RT_TABLE_MAIN, protocol: RTPROT_KERNEL,
         scope: RT_SCOPE_LINK, kind: RTN_UNICAST,
         dst: Some(([10, 0, 2, 0], 24)),
@@ -741,6 +755,7 @@ pub fn seed_default_routes(eth0_ifindex: u32) {
         prefsrc: Some([10, 0, 2, 15]),
     });
     route_insert(RouteRow {
+        ns: 0,
         table: RT_TABLE_MAIN, protocol: RTPROT_BOOT,
         scope: RT_SCOPE_UNIVERSE, kind: RTN_UNICAST,
         dst: None, gateway: Some([10, 0, 2, 2]),
@@ -805,6 +820,7 @@ pub fn handle_newroute(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     };
     let dst = dst_addr.map(|a| (a, dst_len));
     route_insert(RouteRow {
+        ns: net::netdev::current_net_ns(),
         table, protocol, scope, kind,
         dst, gateway: gw, oif_ifindex: oif, prefsrc: src,
     });
@@ -827,7 +843,7 @@ pub fn handle_delroute(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         None    => return nlmsg_ack(req, -22),
     };
     let dst = dst_addr.map(|a| (a, dst_len));
-    let n = route_remove(table, dst, oif);
+    let n = route_remove(net::netdev::current_net_ns(), table, dst, oif);
     nlmsg_ack(req, if n > 0 { 0 } else { -3 /* ESRCH */ })
 }
 
@@ -841,7 +857,9 @@ const _: u16 = msg::NLMSG_DONE;
 #[cfg(target_os = "oxide-kernel")]
 fn ifaces_snapshot() -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool, u32)> {
     let stack = net::sock::stack();
-    stack.ifaces.snapshot_devs()
+    // A netns sees only its own ifaces (Linux `sock_net(skb->sk)`); the
+    // host runs in ns 0 so this is identical to the old all-ns-0 dump.
+    stack.ifaces.snapshot_devs_in_ns(net::netdev::current_net_ns())
         .into_iter()
         .map(|(id, dev)| {
             let is_lo = dev.name() == "lo";
