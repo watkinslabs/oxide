@@ -530,9 +530,12 @@ impl Inode for ProcLoadavgInode {
     }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let mut body = alloc::vec::Vec::with_capacity(64);
-        let tids = sched::live::registry::live_tids();
-        let total = tids.len() as u64;
-        let last = tids.last().copied().unwrap_or(1) as u64;
+        // B118: loadavg's last field is last_pid — a Linux PID, so it must
+        // come from VPID space (live_vpids, sorted) not the opaque internal
+        // tid. total = live task count (either list has the same length).
+        let vpids = sched::live::registry::live_vpids();
+        let total = vpids.len() as u64;
+        let last = vpids.last().copied().unwrap_or(1) as u64;
         let (_, running) = sched::live::registry::live_counts();
         let avg = sched::loadavg::snapshot();
         for a in avg {
