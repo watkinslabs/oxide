@@ -131,6 +131,40 @@ fn append_promotes_inline_to_depth1_when_full() {
 }
 
 #[test]
+fn rmw_write_and_read_into_depth1_file() {
+    // Regression: write_file_block / read_file_block must work at depth>=1.
+    // Pre-fix write_file_block returned DepthUnsupported for any multi-extent
+    // file, so write_at's RMW phase silently failed on fragmented files.
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let n = m.create_file(2, b"deeprmw.bin", 0o644).unwrap();
+    let bs = m.sb.block_size as usize;
+    // Force depth>=1 with 5 non-contiguous extents (spacer breaks contiguity).
+    for i in 0..5u8 {
+        let _spacer = m.alloc_block(0).unwrap();
+        m.append_block(n, &std::vec![i; bs]).unwrap();
+    }
+    let inode = m.read_inode(n).unwrap();
+    let hdr = ext4::parse_extent_header(&inode.i_block).unwrap();
+    assert!(hdr.depth >= 1, "test needs a depth>=1 tree to exercise the deep walk");
+
+    // RMW-write into logical block 3 (mid-file) via write_at — exercises
+    // write_file_block's depth-agnostic resolve. Straddle no boundary: a
+    // sub-block write at offset 3*bs+10.
+    let off = 3 * bs as u64 + 10;
+    let payload: std::vec::Vec<u8> = (100..132u8).collect();
+    m.write_at(n, off, &payload).unwrap();
+
+    // Read it back via the deep read_file_block walk.
+    let inode2 = m.read_inode(n).unwrap();
+    let blk3 = m.read_file_block(&inode2, 3).unwrap();
+    assert_eq!(&blk3[10..10 + payload.len()], &payload[..], "RMW bytes round-trip at depth>=1");
+    // Untouched logical block 4 still reads its original append content.
+    let blk4 = m.read_file_block(&inode2, 4).unwrap();
+    assert_eq!(blk4[0], 4u8, "neighbouring deep block intact");
+}
+
+#[test]
 fn append_survives_remount() {
     let disk = build_disk();
     {
