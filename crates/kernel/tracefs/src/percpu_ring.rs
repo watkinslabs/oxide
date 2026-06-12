@@ -27,6 +27,8 @@ pub const PAYLOAD: usize = 80;
 /// Record kinds.
 pub const KIND_MARK: u8 = 1;
 pub const KIND_SCHED_SWITCH: u8 = 2;
+pub const KIND_SYS_ENTER: u8 = 3;
+pub const KIND_SYS_EXIT: u8 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy)]

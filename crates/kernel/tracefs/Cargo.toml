@@ -12,6 +12,7 @@ sync  = { path = "../../shared/sync" }
 hal   = { path = "../../arch/hal" }
 sched = { path = "../sched" }
 cpu   = { path = "../cpu" }
+syscall = { path = "../syscall" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }

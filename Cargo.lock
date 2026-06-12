@@ -1335,6 +1335,7 @@ dependencies = [
  "hal-x86_64",
  "sched",
  "sync",
+ "syscall",
  "vfs",
 ]
 

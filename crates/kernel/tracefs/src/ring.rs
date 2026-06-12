@@ -15,7 +15,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as TraceClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
-use crate::percpu_ring::{self, Record, KIND_MARK, KIND_SCHED_SWITCH, PAYLOAD};
+use crate::percpu_ring::{self, Record, KIND_MARK, KIND_SCHED_SWITCH, KIND_SYS_ENTER, KIND_SYS_EXIT, PAYLOAD};
 
 /// Linux default: tracing_on = 1 (recording enabled; the `nop` tracer just
 /// doesn't generate function events — trace_marker still records).
@@ -108,7 +108,45 @@ fn set_sched_switch(on: bool) {
     #[cfg(target_os = "oxide-kernel")]
     sched::live::install_sched_switch_hook(if on { Some(record_sched_switch) } else { None });
     #[cfg(not(target_os = "oxide-kernel"))]
-    let _ = record_sched_switch; // referenced so the hosted build keeps it
+    let _ = record_sched_switch;
+}
+
+/// sys_enter tracepoint hook — fires per syscall in dispatch (syscall ctx, not
+/// the deepest hot path but frequent). Wait-free record.
+/// Payload: [comm 16 null-pad][nr u32 LE]. # C: O(1)
+fn record_sys_enter(nr: u32) {
+    if !tracing_on() { return; }
+    let (pid, comm) = cur_task();
+    let mut pl = [0u8; PAYLOAD];
+    pl[..16].copy_from_slice(&comm);
+    pl[16..20].copy_from_slice(&nr.to_le_bytes());
+    percpu_ring::record(this_cpu(), now_ns(), pid, KIND_SYS_ENTER, &pl[..20]);
+}
+
+/// sys_exit tracepoint hook. Payload: [comm 16][nr u32 LE][ret i64 LE].
+/// # C: O(1)
+fn record_sys_exit(nr: u32, ret: i64) {
+    if !tracing_on() { return; }
+    let (pid, comm) = cur_task();
+    let mut pl = [0u8; PAYLOAD];
+    pl[..16].copy_from_slice(&comm);
+    pl[16..20].copy_from_slice(&nr.to_le_bytes());
+    pl[20..28].copy_from_slice(&ret.to_le_bytes());
+    percpu_ring::record(this_cpu(), now_ns(), pid, KIND_SYS_EXIT, &pl[..28]);
+}
+
+static SYS_ENTER_ON: AtomicBool = AtomicBool::new(false);
+static SYS_EXIT_ON: AtomicBool = AtomicBool::new(false);
+
+/// Enable/disable the sys_enter tracepoint. # C: O(1)
+fn set_sys_enter(on: bool) {
+    SYS_ENTER_ON.store(on, Ordering::Release);
+    syscall::tracepoint::install_sys_enter_hook(if on { Some(record_sys_enter) } else { None });
+}
+/// Enable/disable the sys_exit tracepoint. # C: O(1)
+fn set_sys_exit(on: bool) {
+    SYS_EXIT_ON.store(on, Ordering::Release);
+    syscall::tracepoint::install_sys_exit_hook(if on { Some(record_sys_exit) } else { None });
 }
 
 /// trim a null-padded comm field to its &str.
@@ -138,6 +176,19 @@ fn fmt_record(out: &mut Vec<u8>, e: &Record) {
             out.extend_from_slice(format!(
                 "{:>16}-{:<5} [{:03}] ..... {}.{:06}: sched_switch: prev_comm={} prev_pid={} ==> next_comm={} next_pid={}\n",
                 prev_comm, e.pid, e.cpu, secs, usec, prev_comm, e.pid, next_comm, next_pid).as_bytes());
+        }
+        KIND_SYS_ENTER if p.len() >= 16 + 4 => {
+            let comm = comm_str(&p[..16]);
+            let nr = u32::from_le_bytes([p[16], p[17], p[18], p[19]]);
+            out.extend_from_slice(format!("{:>16}-{:<5} [{:03}] ..... {}.{:06}: sys_enter: NR {}\n",
+                comm, e.pid, e.cpu, secs, usec, nr).as_bytes());
+        }
+        KIND_SYS_EXIT if p.len() >= 16 + 4 + 8 => {
+            let comm = comm_str(&p[..16]);
+            let nr = u32::from_le_bytes([p[16], p[17], p[18], p[19]]);
+            let ret = i64::from_le_bytes([p[20], p[21], p[22], p[23], p[24], p[25], p[26], p[27]]);
+            out.extend_from_slice(format!("{:>16}-{:<5} [{:03}] ..... {}.{:06}: sys_exit: NR {} = {}\n",
+                comm, e.pid, e.cpu, secs, usec, nr, ret).as_bytes());
         }
         _ => {}
     }
@@ -222,24 +273,28 @@ impl Inode for TracingOnInode {
     }
 }
 
-/// `events/sched/sched_switch/enable` — read "1\n"/"0\n"; write 1/0 installs
-/// or clears the scheduler tracepoint hook.
-struct SchedSwitchEnableInode { ino: Ino }
-impl Inode for SchedSwitchEnableInode {
+/// `events/<sub>/<event>/enable` — read "1\n"/"0\n"; write 1/0 installs or
+/// clears the event's tracepoint hook (per-event get/set fn pointers).
+struct EnableInode { ino: Ino, get: fn() -> bool, set: fn(bool) }
+impl Inode for EnableInode {
     fn ino(&self) -> Ino { self.ino }
     fn file_type(&self) -> FileType { FileType::Regular }
     fn size(&self) -> u64 { 2 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body: &[u8] = if SCHED_SWITCH_ON.load(Ordering::Acquire) { b"1\n" } else { b"0\n" };
+        let body: &[u8] = if (self.get)() { b"1\n" } else { b"0\n" };
         Ok(read_at(body, off, buf))
     }
     fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
         let on = !matches!(buf.iter().find(|b| !b.is_ascii_whitespace()), Some(b'0'));
-        set_sched_switch(on);
+        (self.set)(on);
         Ok(buf.len())
     }
 }
+
+fn sched_switch_on() -> bool { SCHED_SWITCH_ON.load(Ordering::Acquire) }
+fn sys_enter_on() -> bool { SYS_ENTER_ON.load(Ordering::Acquire) }
+fn sys_exit_on() -> bool { SYS_EXIT_ON.load(Ordering::Acquire) }
 
 /// `/sys/kernel/tracing/trace_pipe` — the CONSUMING ftrace reader. Unlike
 /// `trace` (non-destructive snapshot), each read drains records out of the
@@ -311,5 +366,9 @@ pub fn register() {
     devfs::register("/sys/kernel/tracing/tracing_on",
         Arc::new(TracingOnInode { ino: alloc_ino() }) as InodeRef);
     devfs::register("/sys/kernel/tracing/events/sched/sched_switch/enable",
-        Arc::new(SchedSwitchEnableInode { ino: alloc_ino() }) as InodeRef);
+        Arc::new(EnableInode { ino: alloc_ino(), get: sched_switch_on, set: set_sched_switch }) as InodeRef);
+    devfs::register("/sys/kernel/tracing/events/syscalls/sys_enter/enable",
+        Arc::new(EnableInode { ino: alloc_ino(), get: sys_enter_on, set: set_sys_enter }) as InodeRef);
+    devfs::register("/sys/kernel/tracing/events/syscalls/sys_exit/enable",
+        Arc::new(EnableInode { ino: alloc_ino(), get: sys_exit_on, set: set_sys_exit }) as InodeRef);
 }
