@@ -587,14 +587,6 @@ name = "inflate"
 version = "0.1.0"
 
 [[package]]
-name = "iouring"
-version = "0.1.0"
-dependencies = [
- "hal",
- "klog",
-]
-
-[[package]]
 name = "ipc"
 version = "0.1.0"
 dependencies = [
@@ -1273,7 +1265,6 @@ dependencies = [
  "hal",
  "hal-aarch64",
  "hal-x86_64",
- "iouring",
  "ipc",
  "kalloc",
  "klog",
