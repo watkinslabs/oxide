@@ -30,6 +30,20 @@ pub const VIRTIO_SND_D_OUTPUT: u8 = 0;
 /// PCM stream direction: device→guest (capture).
 pub const VIRTIO_SND_D_INPUT: u8 = 1;
 
+// CONTROLQ PCM-stream lifecycle codes (docs/58§4.1).
+const VIRTIO_SND_R_PCM_SET_PARAMS: u32 = 0x0101;
+const VIRTIO_SND_R_PCM_PREPARE:    u32 = 0x0102;
+const VIRTIO_SND_R_PCM_RELEASE:    u32 = 0x0103;
+const VIRTIO_SND_R_PCM_START:      u32 = 0x0104;
+const VIRTIO_SND_R_PCM_STOP:       u32 = 0x0105;
+
+/// PCM sample format `VIRTIO_SND_PCM_FMT_S16` (docs/58§4.3).
+pub const VIRTIO_SND_PCM_FMT_S16: u8 = 5;
+/// PCM rate `VIRTIO_SND_PCM_RATE_44100` (docs/58§4.3).
+pub const VIRTIO_SND_PCM_RATE_44100: u8 = 6;
+/// Playback sample rate matching VIRTIO_SND_PCM_RATE_44100 (Hz).
+const PLAYBACK_RATE_HZ: u32 = 44100;
+
 /// sizeof(virtio_snd_pcm_info) on the wire (docs/58§4): hda_fn_nid(4)
 /// features(4) formats(8) rates(8) direction(1) channels_min(1)
 /// channels_max(1) padding[5] = 32 bytes. `direction` sits at byte 24.
@@ -43,6 +57,12 @@ const SND_HDR_SIZE: usize = 4;
 /// Bounded spin budget for one CONTROLQ completion. QEMU retires control
 /// requests near-instantly; generous headroom, matching the rng/blk style.
 const CTL_POLL_BUDGET: u32 = 2_000_000;
+
+/// TXQ completion poll budget. Each iteration forces a VM exit (device_status
+/// read) so QEMU's audio timer can retire a buffer; the count therefore
+/// bounds real wall-clock, not just spins. Generous so a period (≈23 ms at
+/// 44.1 kHz / 2 KiB) retires even under TCG.
+const TX_POLL_BUDGET: u32 = 4_000_000;
 
 /// Control scratch-frame layout: request at offset 0, response at 0x200
 /// (leaves 0x200 for any request, 0xE00 for the response array).
@@ -59,6 +79,10 @@ struct Ctx {
     q0_notify_va: u64,
     q0_size:      u16,
     hhdm:         u64,
+    /// virtio common-cfg MMIO window. A harmless read of device_status
+    /// (@0x14) forces a VM exit so QEMU's audio-backend timer can retire
+    /// TXQ buffers while we poll (TCG holds the BQL during tight spins).
+    cfg_va:       u64,
     /// One 4 KiB frame split into request + response windows for control
     /// requests. Allocated once at install.
     scratch_pa:   u64,
@@ -69,6 +93,23 @@ struct Ctx {
     streams:  u32,
     chmaps:   u32,
     controls: u32,
+    /// First OUTPUT stream id discovered by PCM_INFO (None if no playback
+    /// stream). The default playback target for `beep`/`pcm_write`.
+    out_stream: Option<u32>,
+    /// TXQ(2) ring the boot probe programmed (0 if not programmed).
+    q2_desc_pa:   u64,
+    q2_driver_pa: u64,
+    q2_device_pa: u64,
+    q2_notify_va: u64,
+    q2_size:      u16,
+    /// TXQ driver-side avail.idx shadow.
+    tx_avail_idx: u16,
+    /// Period payload frame (one 4 KiB page) the TXQ payload descriptor
+    /// points at; refilled each `tx_period`.
+    tx_buf_pa: u64,
+    /// TXQ scratch: virtio_snd_pcm_xfer header (@0) + virtio_snd_pcm_status
+    /// (@16). One 4 KiB page.
+    tx_scratch_pa: u64,
 }
 
 // SAFETY justification: Ctx holds raw PAs/VAs into HHDM/MMIO stable for
@@ -85,10 +126,18 @@ pub struct SndInstall {
     pub q0_notify_va: u64,
     pub q0_size:      u16,
     pub hhdm:         u64,
+    /// virtio common-cfg MMIO window (for the TXQ-poll VM-exit yield).
+    pub cfg_va:       u64,
     pub jacks:    u32,
     pub streams:  u32,
     pub chmaps:   u32,
     pub controls: u32,
+    /// TXQ(2) playback ring + notify VA (0 if the queue didn't program).
+    pub q2_desc_pa:   u64,
+    pub q2_driver_pa: u64,
+    pub q2_device_pa: u64,
+    pub q2_notify_va: u64,
+    pub q2_size:      u16,
 }
 
 /// Probe result handed back for the boot line: total streams + the
@@ -124,25 +173,46 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         return None;
     }
     let scratch_pa = pmm::setup::alloc_one_frame()?;
-    // Zero the scratch frame for deterministic request/response state.
-    let va = p.hhdm.wrapping_add(scratch_pa) as *mut u8;
-    // SAFETY: HHDM covers all RAM the PMM hands out; this freshly-allocated
-    // 4 KiB frame is owned exclusively by this driver; aligned u8 stores
-    // span only the page we just allocated.
-    unsafe { for i in 0..0x1000usize { core::ptr::write_volatile(va.add(i), 0); } }
+    // TXQ payload + xfer/status scratch frames. Zero-alloc failures leave the
+    // TXQ unprogrammed (CONTROLQ probe still works; playback returns false).
+    let (tx_buf_pa, tx_scratch_pa) = if p.q2_desc_pa != 0 {
+        (pmm::setup::alloc_one_frame().unwrap_or(0),
+         pmm::setup::alloc_one_frame().unwrap_or(0))
+    } else { (0, 0) };
+    // Zero every freshly-allocated frame for deterministic state.
+    for &pa in &[scratch_pa, tx_buf_pa, tx_scratch_pa] {
+        if pa == 0 { continue; }
+        let va = p.hhdm.wrapping_add(pa) as *mut u8;
+        // SAFETY: HHDM covers all RAM the PMM hands out; each frame is
+        // freshly allocated and owned by this driver; aligned u8 stores span
+        // only the 4 KiB page.
+        unsafe { for i in 0..0x1000usize { core::ptr::write_volatile(va.add(i), 0); } }
+    }
     // Seed avail.idx from the live used.idx so the first request waits for a
     // fresh completion rather than mistaking a stale idx for its own.
     let used = p.hhdm.wrapping_add(p.q0_device_pa) as *const u16;
     // SAFETY: HHDM-mapped queue-0 used ring programmed by the boot probe;
     // aligned u16 load of used.idx at u16 offset 1 in the device-owned frame.
     let used_seen = unsafe { core::ptr::read_volatile(used.add(1)) };
+    // TXQ avail.idx seeds from its own used.idx likewise (0 if unprogrammed).
+    let tx_used_seen = if p.q2_device_pa != 0 {
+        let txu = p.hhdm.wrapping_add(p.q2_device_pa) as *const u16;
+        // SAFETY: HHDM-mapped TXQ used ring programmed by the boot probe;
+        // aligned u16 load of used.idx at u16 offset 1.
+        unsafe { core::ptr::read_volatile(txu.add(1)) }
+    } else { 0 };
     *CTX.lock() = Some(Ctx {
         q0_desc_pa: p.q0_desc_pa, q0_driver_pa: p.q0_driver_pa,
         q0_device_pa: p.q0_device_pa, q0_notify_va: p.q0_notify_va,
-        q0_size: p.q0_size, hhdm: p.hhdm, scratch_pa,
+        q0_size: p.q0_size, hhdm: p.hhdm, cfg_va: p.cfg_va, scratch_pa,
         avail_idx: used_seen,
         jacks: p.jacks, streams: p.streams,
         chmaps: p.chmaps, controls: p.controls,
+        out_stream: None,
+        q2_desc_pa: p.q2_desc_pa, q2_driver_pa: p.q2_driver_pa,
+        q2_device_pa: p.q2_device_pa, q2_notify_va: p.q2_notify_va,
+        q2_size: p.q2_size, tx_avail_idx: tx_used_seen,
+        tx_buf_pa, tx_scratch_pa,
     });
     let (out, input) = pcm_info_scan();
     Some(SndProbe { streams: p.streams, out, input })
@@ -183,12 +253,19 @@ fn pcm_info_scan() -> (u32, u32) {
     let entries = ((resp_len - SND_HDR_SIZE) / PCM_INFO_SIZE).min(count as usize);
     let base = h.wrapping_add(ctx.scratch_pa + RESP_OFF + SND_HDR_SIZE as u64) as *const u8;
     let (mut out, mut input) = (0u32, 0u32);
+    let mut first_out: Option<u32> = None;
     for i in 0..entries {
         // SAFETY: HHDM-mapped response window the device just filled;
         // bounded u8 read of the direction byte of entry `i` (< resp_len).
         let dir = unsafe { core::ptr::read_volatile(base.add(i * PCM_INFO_SIZE + PCM_INFO_DIR_OFF)) };
-        if dir == VIRTIO_SND_D_INPUT { input += 1; } else { out += 1; }
+        if dir == VIRTIO_SND_D_INPUT {
+            input += 1;
+        } else {
+            out += 1;
+            if first_out.is_none() { first_out = Some(i as u32); }
+        }
     }
+    ctx.out_stream = first_out;
     (out, input)
 }
 
@@ -257,4 +334,176 @@ fn submit_ctl(ctx: &mut Ctx, req_len: usize, resp_len: usize) -> Option<u32> {
     // SAFETY: HHDM-mapped response window the device just wrote; aligned u32
     // load of the status header at RESP_OFF.
     Some(unsafe { core::ptr::read_volatile(st) })
+}
+
+// ── PCM playback (TXQ) ──────────────────────────────────────────────────
+// docs/58§4 control reqs + §8 TXQ device operation. PR-C: enough to drive a
+// tone end-to-end; ALSA/OSS substream plumbing (PR-D/PR-E) layers on top.
+
+/// The default OUTPUT stream id, or None if no playback stream / not
+/// installed. # C: O(1)
+pub fn output_stream() -> Option<u32> { CTX.lock().as_ref().and_then(|c| c.out_stream) }
+
+/// Issue a simple `virtio_snd_pcm_hdr` control request (code + stream_id) on
+/// the CONTROLQ — PREPARE / START / STOP / RELEASE. Returns the status le32.
+/// # C: O(CONTROLQ round-trip)
+fn pcm_ctl(ctx: &mut Ctx, code: u32, stream_id: u32) -> Option<u32> {
+    let req = ctx.hhdm.wrapping_add(ctx.scratch_pa + REQ_OFF) as *mut u32;
+    // SAFETY: HHDM-mapped scratch request window owned by this driver; two
+    // aligned u32 stores build the 8-byte virtio_snd_pcm_hdr.
+    unsafe {
+        core::ptr::write_volatile(req.add(0), code);
+        core::ptr::write_volatile(req.add(1), stream_id);
+    }
+    submit_ctl(ctx, 8, SND_HDR_SIZE)
+}
+
+/// `VIRTIO_SND_R_PCM_SET_PARAMS` on `stream_id`: 24-byte
+/// virtio_snd_pcm_set_params (docs/58§4). Returns the status le32.
+/// # C: O(CONTROLQ round-trip)
+fn pcm_set_params(
+    ctx: &mut Ctx, stream_id: u32, buffer_bytes: u32, period_bytes: u32,
+    channels: u8, format: u8, rate: u8,
+) -> Option<u32> {
+    let base = ctx.hhdm.wrapping_add(ctx.scratch_pa + REQ_OFF);
+    let w = base as *mut u32;
+    let b = base as *mut u8;
+    // SAFETY: HHDM-mapped scratch request window owned by this driver; the
+    // u32 and u8 stores stay within the 24-byte set_params struct.
+    unsafe {
+        core::ptr::write_volatile(w.add(0), VIRTIO_SND_R_PCM_SET_PARAMS); // hdr.code
+        core::ptr::write_volatile(w.add(1), stream_id);                   // hdr.stream_id
+        core::ptr::write_volatile(w.add(2), buffer_bytes);
+        core::ptr::write_volatile(w.add(3), period_bytes);
+        core::ptr::write_volatile(w.add(4), 0u32);                        // features
+        core::ptr::write_volatile(b.add(20), channels);
+        core::ptr::write_volatile(b.add(21), format);
+        core::ptr::write_volatile(b.add(22), rate);
+        core::ptr::write_volatile(b.add(23), 0u8);                        // padding
+    }
+    submit_ctl(ctx, 24, SND_HDR_SIZE)
+}
+
+/// Push one PCM period (≤4 KiB) to the TXQ: a 3-descriptor chain
+/// (virtio_snd_pcm_xfer hdr RO + payload RO + virtio_snd_pcm_status WO),
+/// kick, poll the used ring. Returns true once the device retires it.
+/// # C: O(TX_POLL_BUDGET)
+fn tx_period(ctx: &mut Ctx, stream_id: u32, pcm: &[u8]) -> bool {
+    if ctx.q2_desc_pa == 0 || ctx.tx_buf_pa == 0 || ctx.tx_scratch_pa == 0 { return false; }
+    let h = ctx.hhdm;
+    let n = pcm.len().min(0x1000);
+    // xfer hdr (stream_id) at tx_scratch+0; copy payload into tx_buf.
+    let xfer = h.wrapping_add(ctx.tx_scratch_pa) as *mut u32;
+    let buf = h.wrapping_add(ctx.tx_buf_pa) as *mut u8;
+    // SAFETY: HHDM-mapped driver-owned scratch + payload frames; the xfer u32
+    // store and the n≤4 KiB payload copy stay within their 4 KiB pages.
+    unsafe {
+        core::ptr::write_volatile(xfer, stream_id);
+        for i in 0..n { core::ptr::write_volatile(buf.add(i), pcm[i]); }
+    }
+    // 3-descriptor chain at TXQ desc index 0.
+    let desc = h.wrapping_add(ctx.q2_desc_pa) as *mut u64;
+    // SAFETY: HHDM-mapped TXQ descriptor table programmed by the boot probe;
+    // six aligned u64 stores build a 3-descriptor chain over driver-owned
+    // buffers (xfer hdr RO → payload RO → status WO).
+    unsafe {
+        core::ptr::write_volatile(desc.add(0), ctx.tx_scratch_pa);          // xfer hdr
+        core::ptr::write_volatile(desc.add(1),
+            4u64 | ((VRING_DESC_F_NEXT as u64) << 32) | (1u64 << 48));
+        core::ptr::write_volatile(desc.add(2), ctx.tx_buf_pa);              // payload
+        core::ptr::write_volatile(desc.add(3),
+            (n as u64) | ((VRING_DESC_F_NEXT as u64) << 32) | (2u64 << 48));
+        core::ptr::write_volatile(desc.add(4), ctx.tx_scratch_pa + 16);     // status
+        core::ptr::write_volatile(desc.add(5),
+            8u64 | ((VRING_DESC_F_WRITE as u64) << 32));
+    }
+    // Publish to TXQ avail + kick + poll used.
+    let qsz = if ctx.q2_size == 0 { 1u16 } else { ctx.q2_size };
+    let slot = (ctx.tx_avail_idx % qsz) as usize;
+    let avail = h.wrapping_add(ctx.q2_driver_pa) as *mut u16;
+    // SAFETY: HHDM-mapped TXQ avail ring; u16 stores at ring(2+slot)/idx(1)
+    // within the driver-owned frame; slot bounded by q2_size; Release fences
+    // publish the descriptor chain before the idx bump.
+    let target = unsafe {
+        core::ptr::write_volatile(avail.add(2 + slot), 0u16);
+        core::sync::atomic::fence(Ordering::Release);
+        ctx.tx_avail_idx = ctx.tx_avail_idx.wrapping_add(1);
+        core::ptr::write_volatile(avail.add(1), ctx.tx_avail_idx);
+        ctx.tx_avail_idx
+    };
+    core::sync::atomic::fence(Ordering::Release);
+    // Kick the device via the TXQ notify register (queue index 2).
+    // SAFETY: notify VA is the Device-attr MMIO window mapped by the boot
+    // probe; an aligned u16 store of queue index 2 is the spec-defined kick.
+    unsafe { core::ptr::write_volatile(ctx.q2_notify_va as *mut u16, 2u16); }
+    let used = h.wrapping_add(ctx.q2_device_pa) as *const u16;
+    let mut polls = 0u32;
+    loop {
+        // SAFETY: HHDM-mapped TXQ used ring; aligned u16 load of used.idx.
+        let uidx = unsafe { core::ptr::read_volatile(used.add(1)) };
+        if uidx == target { return true; }
+        if polls >= TX_POLL_BUDGET { return false; }
+        // Unlike the synchronous CONTROLQ, virtio-sound retires a TXQ buffer
+        // only when the audio backend consumes it (a QEMU timer). Under TCG
+        // the vCPU holds the BQL during a tight spin, starving that timer —
+        // so every iteration we read device_status (@0x14, read-only) to
+        // force a VM exit, releasing the BQL so the backend can make progress.
+        if ctx.cfg_va != 0 {
+            // SAFETY: cfg_va is the Device-attr-mapped common-cfg window;
+            // device_status is a u32 at +0x14; the read has no side effect.
+            let _ = unsafe { core::ptr::read_volatile((ctx.cfg_va + 0x14) as *const u32) };
+        }
+        polls += 1;
+        core::hint::spin_loop();
+    }
+}
+
+/// Play a square-wave tone of `hz` Hz for `ms` ms on the default OUTPUT
+/// stream: SET_PARAMS(S16 mono 44.1 kHz) → PREPARE → START → push period
+/// buffers on the TXQ → STOP. Returns true on success. Backs the VT
+/// `KIOCSOUND`/`KDMKTONE` beep (50§16) and a boot self-test under debug-boot.
+/// # C: O((ms/period) × TXQ round-trip)
+pub fn beep(hz: u32, ms: u32) -> bool { beep_diag(hz, ms) == 0 }
+
+/// `beep` with a diagnostic step code: 0=ok, 1=not installed, 2=no OUTPUT
+/// stream, 3=no TXQ, 4=SET_PARAMS rejected, 5=PREPARE rejected, 6=START
+/// rejected, 7=TXQ transfer timeout. The code is the failing stage so the
+/// boot self-test can pinpoint a lockstep gap.
+/// # C: O((ms/period) × TXQ round-trip)
+pub fn beep_diag(hz: u32, ms: u32) -> u8 {
+    let mut g = CTX.lock();
+    let ctx = match g.as_mut() { Some(c) => c, None => return 1 };
+    let stream = match ctx.out_stream { Some(s) => s, None => return 2 };
+    if ctx.q2_desc_pa == 0 { return 3; }
+
+    // S16 mono @44.1 kHz; 2 KiB period, 4 KiB (2-period) buffer.
+    const PERIOD_BYTES: usize = 2048;
+    if pcm_set_params(ctx, stream, (PERIOD_BYTES * 2) as u32, PERIOD_BYTES as u32,
+        1, VIRTIO_SND_PCM_FMT_S16, VIRTIO_SND_PCM_RATE_44100) != Some(VIRTIO_SND_S_OK)
+    {
+        return 4;
+    }
+    if pcm_ctl(ctx, VIRTIO_SND_R_PCM_PREPARE, stream) != Some(VIRTIO_SND_S_OK) { return 5; }
+    if pcm_ctl(ctx, VIRTIO_SND_R_PCM_START, stream) != Some(VIRTIO_SND_S_OK) { return 6; }
+
+    // Synthesise the square wave into 2 KiB periods (1024 mono S16 samples)
+    // and stream them. half = samples per half-cycle.
+    let total = (PLAYBACK_RATE_HZ as u64 * ms as u64 / 1000) as usize;
+    let half = if hz == 0 { 1 } else { (PLAYBACK_RATE_HZ / (2 * hz)).max(1) as usize };
+    let mut buf = [0u8; PERIOD_BYTES];
+    let mut s = 0usize;
+    let mut ok = true;
+    while s < total && ok {
+        for k in 0..(PERIOD_BYTES / 2) {
+            let amp: i16 = if ((s + k) / half) % 2 == 0 { 8000 } else { -8000 };
+            let le = (amp as u16).to_le_bytes();
+            buf[k * 2] = le[0];
+            buf[k * 2 + 1] = le[1];
+        }
+        ok = tx_period(ctx, stream, &buf);
+        s += PERIOD_BYTES / 2;
+    }
+    let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_STOP, stream);
+    let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
+    if ok { 0 } else { 7 }
 }

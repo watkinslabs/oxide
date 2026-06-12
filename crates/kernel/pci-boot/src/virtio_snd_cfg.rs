@@ -45,7 +45,8 @@ pub(super) fn harvest(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn install_snd(
     q0_desc_pa: u64, q0_driver_pa: u64, q0_device_pa: u64, q0_notify_va: u64, q0_size: u16,
-    jacks: u32, streams: u32, chmaps: u32, controls: u32,
+    cfg_va: u64, jacks: u32, streams: u32, chmaps: u32, controls: u32,
+    q2_desc_pa: u64, q2_driver_pa: u64, q2_device_pa: u64, q2_notify_va: u64, q2_size: u16,
 ) -> Option<drv_virtio_snd::SndProbe> {
     let hhdm = {
         #[cfg(target_arch = "x86_64")]
@@ -55,6 +56,7 @@ pub(super) fn install_snd(
     };
     drv_virtio_snd::install(drv_virtio_snd::SndInstall {
         q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, q0_size, hhdm,
-        jacks, streams, chmaps, controls,
+        cfg_va, jacks, streams, chmaps, controls,
+        q2_desc_pa, q2_driver_pa, q2_device_pa, q2_notify_va, q2_size,
     })
 }

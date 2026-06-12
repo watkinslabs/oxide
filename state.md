@@ -19,35 +19,32 @@ hacks/stubs/façades. Both arches lockstep. Assembly stays in
 - **C89 #1832** PR-A: extracted `pci-boot/src/virtio_qsetup.rs::program_queue` —
   uniform per-queue setup (alloc+zero rings, program desc/driver/device PAs, bind
   msix, enable, capture notify_off). virtio_drv.rs 908→826 lines. Both arches boot.
-- **F454 (this branch)** PR-B: `crates/drivers/drv-virtio-snd` crate — CONTROLQ
-  engine (`submit_ctl` 2-desc chain req-RO/resp-WO, poll used ring) + `R_PCM_INFO`
+- **F454 #1833** PR-B: `crates/drivers/drv-virtio-snd` crate — CONTROLQ engine
+  (`submit_ctl` 2-desc chain req-RO/resp-WO, poll used ring) + `R_PCM_INFO`
   query + `virtio_snd_config` harvest (`virtio_snd_cfg.rs`). Boot line verified
   BOTH arches: `virtio-snd: bdf=0:8.0 card=C0 streams=2 out=1 in=1`. QEMU
-  `virtio-sound-pci,audiodev=none,disable-legacy=on` added to both arch boots
-  (image_qemu.rs). `config()` accessor exposes jacks/streams/chmaps/controls.
+  `virtio-sound-pci,audiodev=none,disable-legacy=on` added to both arch boots.
+  `config()` accessor exposes jacks/streams/chmaps/controls.
+- **F455 (this branch)** PR-C: PCM playback. TXQ(2) programmed via `program_queue`
+  + `notify_va` helper (VirtioProbe `snd_q2_*`). `beep(hz,ms)`/`beep_diag`:
+  SET_PARAMS(S16 mono 44.1k)→PREPARE→START→3-desc TX chains (xfer/payload/status)
+  →STOP. Verified BOTH arches `boot-tone diag=0`; x86 wav backend captured the
+  exact ±8000 square wave (peak_abs=8000, non-zero PCM). **LOCKSTEP GOTCHA fixed:**
+  virtio-sound retires TX via the audio-backend timer (not synchronously like
+  CONTROLQ); under ARM TCG a tight busy-poll holds the QEMU BQL and starves that
+  timer → diag=7 timeout. Fix: `tx_period` poll reads device_status (cfg_va+0x14)
+  each iteration to force a VM exit, releasing the BQL (Ctx now carries cfg_va).
 
-### NEXT TASK — PR-C: PCM playback + tone (virtio-snd)
-
-Program TXQ(2)/RXQ(3) for snd via `program_queue` (extend VirtioProbe with
-q2_*/q3_* PAs+notify_va, OR program inside the snd install). Then on TXQ:
-`SET_PARAMS`(0x0101)/`PREPARE`(0x0102)/`START`(0x0104) control reqs (reuse
-`submit_ctl` — already generic over req/resp len), then push a period-buffer
-3-desc chain (`virtio_snd_pcm_xfer` hdr RO + PCM payload RO + `virtio_snd_pcm_status`
-WO) onto TXQ, advance avail, notify; used ring retires → free period + bump hw_ptr.
-`beep(hz,ms)` synth square wave. VERIFY: swap the boot `audiodev none` for
-`-audiodev wav,id=snd0,path=/tmp/out.wav` and assert out.wav has non-zero PCM.
-Wire `beep` into `50§16` KIOCSOUND backend.
-
-Wire types already in `drv-virtio-snd/src/lib.rs`: status codes, R_PCM_*, D_OUTPUT/
-INPUT. `virtio_snd_pcm_set_params` layout = hdr(8: code+stream_id) + buffer_bytes(4)
-+ period_bytes(4) + features(4) + channels(1) format(1) rate(1) pad(1) (docs/58§4).
-
-## After PR-C (gap list order)
-- PR-D ALSA `/dev/snd/*` (controlC0 + pcmC0D0p, SNDRV_PCM_IOCTL_*) + PR-E OSS `/dev/dsp`.
-  `drv_virtio_snd::config()` sizes the card. controls=0 unless VIRTIO_SND_F_CTLS.
+### NEXT TASK — PR-D: ALSA `/dev/snd/*` nodes (then PR-E OSS `/dev/dsp`)
+`crates/kernel/sound` glue: controlC0 (minor card*32+0) + pcmC0D0p (card*32+16),
+`SNDRV_PCM_IOCTL_*` (docs/58§5.1) → drv-virtio-snd. HW_PARAMS→SET_PARAMS,
+PREPARE/START/DROP, WRITEI_FRAMES→a `pcm_write` (generalise `beep`'s TX loop into
+a public `pcm_write(stream,bytes)`). `drv_virtio_snd::config()` sizes the card;
+`output_stream()` gives the default playback stream. Also wire `beep` into the
+`50§16` KIOCSOUND/KDMKTONE VT backend. Then PR-E OSS `/dev/dsp` (major 14).
 2. Mouse/pointer: virtio-tablet/mouse 2nd evdev node (event1, EV_REL/EV_ABS/BTN_*).
 3. Ethernet: e1000/rtl8139 PCI drivers (oxide DHCP is a static seed — see memory).
 4. 3D/virgl + Xorg/Mesa userspace. 5. Module lifecycle (modules/lib.rs).
 
 ## First command next session
-    sed -n '1,30p' docs/58-virtio-snd.md   # §6 device-operation (TXQ playback)
+    sed -n '131,168p' docs/58-virtio-snd.md   # §5 ALSA /dev/snd nodes + PCM ioctls
