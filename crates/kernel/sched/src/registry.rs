@@ -45,7 +45,24 @@ pub fn lookup(tid: u32) -> Option<Arc<Task>> {
 pub fn lookup_in_ns(ns: u64, vpid: u32) -> Option<Arc<Task>> {
     use core::sync::atomic::Ordering;
     if ns == 0 {
-        return lookup(vpid);
+        // Init NS: kernel-side callers pass an internal tid; userspace passes
+        // the pid it actually sees — a vpid/vtid (getpid/gettid/fork return
+        // those, NOT the opaque internal tid; NEXT_TID base is far above the
+        // small vpid range so the two never collide). Match internal tid
+        // FIRST (preserves every existing kernel caller verbatim), then fall
+        // back to vtid/vtgid so userspace signal targeting resolves the Linux
+        // way (by the visible pid): e.g. musl raise()→tkill(gettid()) and
+        // kill(getpid()) must hit self. Previously only `lookup(vpid)`
+        // (internal tid) ran, so raise/abort/pthread_kill silently ESRCH'd and
+        // the signal was never posted (verified: the handler never ran).
+        if let Some(t) = lookup(vpid) {
+            return Some(t);
+        }
+        let g = REG.lock();
+        return g.iter().filter_map(|(_, w)| w.upgrade()).find(|t| {
+            t.vtid.load(Ordering::Acquire) == vpid
+                || t.vtgid.load(Ordering::Acquire) == vpid
+        });
     }
     let g = REG.lock();
     g.iter().filter_map(|(_, w)| w.upgrade()).find(|t| {
