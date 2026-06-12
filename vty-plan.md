@@ -1,11 +1,54 @@
 # vty-plan — full Linux-compliant TTY/VT remediation
 
-Status: ACTIVE. Goal: the console (serial AND framebuffer) behaves like a real
-Linux terminal — all signals, all job control, full ECMA-48/vt100/vt220/xterm
-command set, both arches. No stubs, no "narrow smoke gate passes." Verified live
-under qemu (MCP) on x86_64 AND aarch64.
+Status: MOSTLY COMPLETE (2026-06-11). Goal: the console (serial AND framebuffer)
+behaves like a real Linux terminal — all signals, all job control, full
+ECMA-48/vt100/vt220/xterm command set, both arches. No stubs, no "narrow smoke
+gate passes." Verified live under qemu on x86_64 AND aarch64.
 
-Grounded in a 5-agent code audit (2026-06-11). Every claim below cites file:line.
+## Completion status (2026-06-11)
+
+DONE (merged, both arches reach `oxide login:`):
+- **RC3 emulator command set** — DA/DECID, IRM insert mode, C1 8-bit controls,
+  OSC/DCS ST-terminator fix (#1769); OSC 4/104/10/11 color control + per-VC
+  palette (#1770); DECCKM `?1` cursor-key app mode + bracketed paste `?2004`
+  (#1771). Earlier: ECH, alt-screen, SGR 2/3/5/8/9 + resets, wide chars, Linux
+  font-select/CP437 (#1768). emulator.rs split into `emulator/{mod,sgr,osc}.rs`.
+- **RC4 job control** — SIGTTIN/SIGTTOU + TOSTOP background-pgrp gate (Linux
+  `tty_check_change`, host-tested `tty::jobctl::decide`) (#1772); pty
+  master-hangup SIGHUP+SIGCONT drain (#1773).
+- **RC2 (re-scoped)** — the 2026-06-11 audit was STALE: fbcon `fg`, keyboard
+  target, and `vt::ACTIVE_VT` already init to 1 and are written together by the
+  sole writer `vt::do_switch`; the keyboard already follows the foreground VT;
+  getty on `/dev/console` already resolves to the foreground VT. The one real
+  functional bug — VT/KD ioctls on `/dev/console` hit a dead `ino_low==1` branch
+  — is fixed (#1774): alias → `vt::active()`, `/dev/ttyN` → VT N.
+
+REMAINING (documented honestly; not yet done):
+- **Mouse reporting** (`?1000/1002/1003/1006`, SGR1006) — needs a real pointer
+  pipeline (accumulate EV_REL/EV_ABS + BTN_* → cell coords via fbcon geometry →
+  encode → inject to fg tty). Emulator-only flag storage would be compatibility
+  theater. X11/Wayland already get raw events via `/dev/input/event0`; VT
+  xterm-mouse is only for terminal apps on the bare console. Sequence with
+  graphics bring-up.
+- **Step B / RC5 cleanup** — collapse the 3 synced foreground atomics to one
+  canonical reader (`vt::active()`) + retire `tty::live`. NO behavior change
+  (runtime already correct); pure hardening so it can't drift. Low priority.
+- **RC4 follow-ups** — auto-ctty on first open, session enforcement on
+  TIOCSCTTY/TIOCSPGRP. Current explicit-TIOCSCTTY getty flow works; strict
+  enforcement risks the login path for marginal value. Do with care + heavy
+  boot verification.
+- **RC1 serial answerback — REASSESSED, NOT the Linux way as prescribed.** The
+  plan proposed kernel-side CPR/DA answerback on the serial tty. But a real
+  Linux serial line does NOT synthesize terminal-query replies — the CONNECTED
+  terminal does; kernel-side serial answerback would double-reply and corrupt
+  real-terminal sessions. The fbcon VT answers because IT is the terminal
+  emulator; ttyS0 is a raw line. The SMP≥2 console-getty wedge (state.md) is a
+  separate concurrency bug, not an answerback gap. Do NOT implement kernel-side
+  serial answerback.
+- **docs/57 stays DRAFT** until mouse lands (its §8 lists mouse modes).
+
+Grounded in a 5-agent code audit (2026-06-11) since partly superseded above.
+Every claim below cites file:line.
 
 ## Root causes (confirmed live + in code)
 
