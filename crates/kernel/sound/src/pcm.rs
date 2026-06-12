@@ -104,15 +104,30 @@ fn iv_set(b: &UserBuf, param: usize, v: u32) {
 
 // ── refinement ─────────────────────────────────────────────────────────
 
-/// Refine the app's snd_pcm_hw_params against the device caps, pinning each
-/// parameter to a concrete supported value and writing it back. Shared by
-/// HW_REFINE (commit=false) and HW_PARAMS (commit=true → apply to device +
-/// move to SETUP). Returns 0 or -errno.
-fn refine(b: &UserBuf, commit: bool) -> i64 {
-    let (vf, vr, ch_min, ch_max) = caps();
+/// Concrete geometry chosen by the refinement (ALSA enums + frame math).
+pub(crate) struct Resolved {
+    pub format: u32, pub rate: u32, pub channels: u32, pub frame_bytes: u32,
+    pub period_frames: u32, pub buffer_frames: u32,
+    pub period_bytes: u32, pub buffer_bytes: u32,
+}
 
+/// ALSA format → virtio_snd FMT enum (re-exported for the capture path).
+/// # C: O(1)
+pub(crate) fn fmt_alsa_to_virtio(f: u32) -> u8 { alsa_fmt_to_virtio(f).unwrap_or(5) }
+/// Hz → virtio RATE enum (re-exported for the capture path). # C: O(1)
+pub(crate) fn rate_hz_to_enum(hz: u32) -> u8 { hz_rate_enum(hz) }
+
+/// Refine the app's snd_pcm_hw_params against `(virtio_formats, virtio_rates,
+/// ch_min, ch_max)`, pin each parameter to a concrete supported value,
+/// write it back, and return the resolved geometry. Direction-agnostic and
+/// device-free — both the playback and capture handlers call this, then
+/// apply via their own ops. Returns Err(-errno) on an unsatisfiable request.
+/// # C: O(1)
+pub(crate) fn refine_params(b: &UserBuf, vf: u64, vr: u64, ch_min: u8, ch_max: u8)
+    -> Result<Resolved, i64>
+{
     // ACCESS — only RW_INTERLEAVED.
-    if !mask_test(b, P_ACCESS, ACCESS_RW_INTERLEAVED) { return err(Errno::Einval); }
+    if !mask_test(b, P_ACCESS, ACCESS_RW_INTERLEAVED) { return Err(err(Errno::Einval)); }
     mask_set_single(b, P_ACCESS, ACCESS_RW_INTERLEAVED);
 
     // FORMAT — first device-supported format the app permits, by preference.
@@ -123,14 +138,14 @@ fn refine(b: &UserBuf, commit: bool) -> i64 {
             if (vf >> ve) & 1 != 0 && mask_test(b, P_FORMAT, f) { format = Some(f); break; }
         }
     }
-    let format = match format { Some(f) => f, None => return err(Errno::Einval) };
+    let format = match format { Some(f) => f, None => return Err(err(Errno::Einval)) };
     mask_set_single(b, P_FORMAT, format);
     mask_set_single(b, P_SUBFORMAT, 0); // STD
 
     // CHANNELS — clamp the app's requested min into the device range.
     let want_ch = iv_min(b, P_CHANNELS).max(1);
     if iv_max(b, P_CHANNELS).max(1) < ch_min as u32 || want_ch > ch_max as u32 {
-        return err(Errno::Einval);
+        return Err(err(Errno::Einval));
     }
     let channels = want_ch.clamp(ch_min as u32, ch_max as u32);
     iv_set(b, P_CHANNELS, channels);
@@ -149,7 +164,7 @@ fn refine(b: &UserBuf, commit: bool) -> i64 {
         (0u8..14).map(rate_enum_hz)
             .find(|&hz| { let ve = hz_rate_enum(hz); (vr >> ve) & 1 != 0 && hz >= rmin && hz <= rmax })
     });
-    let rate = match rate { Some(r) => r, None => return err(Errno::Einval) };
+    let rate = match rate { Some(r) => r, None => return Err(err(Errno::Einval)) };
     iv_set(b, P_RATE, rate);
 
     // Derived bit/byte/period/buffer geometry.
@@ -191,18 +206,26 @@ fn refine(b: &UserBuf, commit: bool) -> i64 {
     b.w32(HWP_RATE_DEN, 1);
     b.w64(HWP_FIFO_SIZE, 0);
 
+    Ok(Resolved {
+        format, rate, channels, frame_bytes: frame_bytes.max(1),
+        period_frames, buffer_frames, period_bytes, buffer_bytes,
+    })
+}
+
+/// Playback HW_REFINE/HW_PARAMS: refine against the OUTPUT caps; on commit
+/// apply via the playback ops + record the substream geometry. # C: O(CONTROLQ)
+fn refine(b: &UserBuf, commit: bool) -> i64 {
+    let (vf, vr, ch_min, ch_max) = caps();
+    let r = match refine_params(b, vf, vr, ch_min, ch_max) { Ok(r) => r, Err(e) => return e };
     if commit {
-        // Apply to the device via the driver ops, then record geometry.
-        let ve_fmt = alsa_fmt_to_virtio(format).unwrap_or(5);
-        let ve_rate = hz_rate_enum(rate);
-        if !drv_virtio_snd::pcm_hw_params(ve_rate, ve_fmt, channels as u8,
-                                          period_bytes, buffer_bytes) {
+        if !drv_virtio_snd::pcm_hw_params(rate_hz_to_enum(r.rate), fmt_alsa_to_virtio(r.format),
+                                          r.channels as u8, r.period_bytes, r.buffer_bytes) {
             return err(Errno::Eio);
         }
         let mut p = PCM.lock();
-        p.format = format; p.rate = rate; p.channels = channels;
-        p.frame_bytes = frame_bytes.max(1);
-        p.period_frames = period_frames; p.buffer_frames = buffer_frames;
+        p.format = r.format; p.rate = r.rate; p.channels = r.channels;
+        p.frame_bytes = r.frame_bytes;
+        p.period_frames = r.period_frames; p.buffer_frames = r.buffer_frames;
         p.state = STATE_SETUP;
         p.appl_ptr = 0; p.hw_ptr = 0;
     }

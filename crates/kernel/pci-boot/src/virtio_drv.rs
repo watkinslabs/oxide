@@ -101,6 +101,12 @@ pub(super) struct VirtioProbe {
     pub(super) snd_q2_device_pa: u64,
     pub(super) snd_q2_notify_va: u64,
     pub(super) snd_q2_size:      u16,
+    // F457: virtio-snd RXQ(3) capture ring + notify VA. 0 if not snd.
+    pub(super) snd_q3_desc_pa:   u64,
+    pub(super) snd_q3_driver_pa: u64,
+    pub(super) snd_q3_device_pa: u64,
+    pub(super) snd_q3_notify_va: u64,
+    pub(super) snd_q3_size:      u16,
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
@@ -282,6 +288,11 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     let mut snd_q2_device_pa_local: u64 = 0;
     let mut snd_q2_notify_va_local: u64 = 0;
     let mut snd_q2_size_local:      u16 = 0;
+    let mut snd_q3_desc_pa_local:   u64 = 0;
+    let mut snd_q3_driver_pa_local: u64 = 0;
+    let mut snd_q3_device_pa_local: u64 = 0;
+    let mut snd_q3_notify_va_local: u64 = 0;
+    let mut snd_q3_size_local:      u16 = 0;
     let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
     let (q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_off, final_status) = if features_ok {
         // q0: msix_vec=0 (vector 0). program_queue returns None if the
@@ -301,19 +312,30 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                     }
                 }
 
-                // F455: virtio-snd TXQ is queue 2 (CONTROLQ=0, EVENTQ=1,
-                // TXQ=2, RXQ=3 per docs/58§2). Program it + map its notify
-                // window so the driver can push PCM period buffers. Polls
-                // used.idx → VIRTIO_MSI_NO_VECTOR (0xFFFF).
+                // F455/F457: virtio-snd queues (CONTROLQ=0, EVENTQ=1, TXQ=2,
+                // RXQ=3 per docs/58§2). Program TXQ(2, playback) + RXQ(3,
+                // capture) + map each notify window. Poll used.idx →
+                // VIRTIO_MSI_NO_VECTOR (0xFFFF).
                 if is_virtio_snd_early {
+                    let ncap = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG);
                     if let Some(r2) = super::virtio_qsetup::program_queue(cfg_va, 2, 0xFFFF, hhdm) {
                         snd_q2_desc_pa_local = r2.desc_pa;
                         snd_q2_driver_pa_local = r2.driver_pa;
                         snd_q2_device_pa_local = r2.device_pa;
                         snd_q2_size_local = r2.size;
-                        if let Some(ncap) = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG) {
+                        if let Some(ncap) = ncap.as_ref() {
                             snd_q2_notify_va_local =
-                                super::virtio_qsetup::notify_va(&ncap, &bars, r2.notify_off);
+                                super::virtio_qsetup::notify_va(ncap, &bars, r2.notify_off);
+                        }
+                    }
+                    if let Some(r3) = super::virtio_qsetup::program_queue(cfg_va, 3, 0xFFFF, hhdm) {
+                        snd_q3_desc_pa_local = r3.desc_pa;
+                        snd_q3_driver_pa_local = r3.driver_pa;
+                        snd_q3_device_pa_local = r3.device_pa;
+                        snd_q3_size_local = r3.size;
+                        if let Some(ncap) = ncap.as_ref() {
+                            snd_q3_notify_va_local =
+                                super::virtio_qsetup::notify_va(ncap, &bars, r3.notify_off);
                         }
                     }
                 }
@@ -734,6 +756,11 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         snd_q2_device_pa: snd_q2_device_pa_local,
         snd_q2_notify_va: snd_q2_notify_va_local,
         snd_q2_size:      snd_q2_size_local,
+        snd_q3_desc_pa:   snd_q3_desc_pa_local,
+        snd_q3_driver_pa: snd_q3_driver_pa_local,
+        snd_q3_device_pa: snd_q3_device_pa_local,
+        snd_q3_notify_va: snd_q3_notify_va_local,
+        snd_q3_size:      snd_q3_size_local,
     })
 }
 
@@ -885,7 +912,9 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
             p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa, p.q0_notify_va, p.q0_size,
             p.cfg_va, p.snd_jacks, p.snd_streams, p.snd_chmaps, p.snd_controls,
             p.snd_q2_desc_pa, p.snd_q2_driver_pa, p.snd_q2_device_pa,
-            p.snd_q2_notify_va, p.snd_q2_size)
+            p.snd_q2_notify_va, p.snd_q2_size,
+            p.snd_q3_desc_pa, p.snd_q3_driver_pa, p.snd_q3_device_pa,
+            p.snd_q3_notify_va, p.snd_q3_size)
         {
             model_bind(&VIRTIO_SND_DRV, bdf); // D1a: publish + bind
             debug_boot! {
