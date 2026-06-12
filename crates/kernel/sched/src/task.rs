@@ -359,10 +359,12 @@ pub struct Task {
     /// # C: O(1)
     pub ns_membership: AtomicU64,
 
-    /// Per-NS UTS hostname when bit 1 of `ns_membership` is set.
-    /// Empty string means "inherit from global". Single-mutator per
-    /// `13§5`. # C: O(1) read
+    /// Per-NS UTS hostname (`ns_membership` bit 1); empty = inherit global.
+    /// Single-mutator per `13§5`. # C: O(1) read
     pub uts_hostname: UnsafeCell<alloc::string::String>,
+    /// Per-NS UTS domainname (NIS/YP); a UTS ns isolates BOTH names (Linux
+    /// `struct uts_namespace`). Single-mutator per `13§5`. # C: O(1) read
+    pub uts_domainname: UnsafeCell<alloc::string::String>,
 
     /// Tracer tid for `ptrace(2)` — 0 = no tracer attached.
     /// PTRACE_TRACEME / ATTACH / SEIZE / DETACH / CONT / SYSCALL /
@@ -468,17 +470,15 @@ pub struct Task {
     /// by the fork dispatcher.
     pub unshare_pid_pending: AtomicBool,
 
-    /// User namespace id (CLONE_NEWUSER). Default 0 (init NS).
-    /// Per-NS cap scoping per `27§R01` lives in F118.
+    /// User namespace id (CLONE_NEWUSER). Default 0 (init NS); F118 caps.
     pub user_ns: AtomicU64,
-    /// Parent user_ns id at the moment this task last unshared
-    /// CLONE_NEWUSER. Together with `dev_proc_ns::user_ns_parent`
-    /// global registry, this lets `has_cap_for(target, cap)` walk
-    /// the ancestor chain.
+    /// Parent user_ns id at the last CLONE_NEWUSER unshare. With the
+    /// `dev_proc_ns::user_ns_parent` registry, lets `has_cap_for(target,
+    /// cap)` walk the ancestor chain.
     pub parent_user_ns: AtomicU64,
     /// Cgroup namespace id (CLONE_NEWCGROUP). Default 0 (init NS).
-    /// /proc/self/cgroup rebasing is a follow-up (currently a flat
-    /// single-cgroup hierarchy — every NS sees "0::/" path).
+    /// /proc/self/cgroup rebasing is a follow-up (flat single hierarchy —
+    /// every NS sees "0::/").
     pub cgroup_ns: AtomicU64,
 
     /// Mount namespace id (CLONE_NEWNS). Default 0 (init NS).
@@ -868,6 +868,7 @@ impl Task {
             vfork_pending: AtomicBool::new(false),
             ns_membership: AtomicU64::new(0),
             uts_hostname:  UnsafeCell::new(alloc::string::String::new()),
+            uts_domainname: UnsafeCell::new(alloc::string::String::new()),
             traced_by:       AtomicU32::new(0),
             ptrace_options:  AtomicU32::new(0),
             ptrace_eventmsg: AtomicU64::new(0),
