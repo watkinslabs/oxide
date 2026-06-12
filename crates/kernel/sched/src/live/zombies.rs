@@ -300,13 +300,16 @@ pub fn reap_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(u32, i32)> {
         }
     }
     let pos = q.iter().position(|t| wait_pid_matches(
-        t.parent_tid.load(Ordering::Acquire), t.tid, t.pgid.load(Ordering::Acquire),
-        parent, pid, parent_pgid))?;
+        t.parent_tid.load(Ordering::Acquire), t.vtgid.load(Ordering::Acquire),
+        t.pgid.load(Ordering::Acquire), parent, pid, parent_pgid))?;
     let t = q.remove(pos);
-    let tid = t.tid;
+    // Return the child's vpid (vtgid) — the PID userspace waited on — NOT the
+    // opaque internal tid. Single pid identity (Linux): waitpid returns the
+    // same value fork() returned.
+    let vpid = t.vtgid.load(Ordering::Acquire);
     let code = t.exit_status.load(Ordering::Acquire);
     drop(t);  // strong-ref released; Task freed if no other holders
-    Some((tid, code))
+    Some((vpid, code))
 }
 
 /// B14: reap zombies whose parent is gone — Linux subreaper path.
