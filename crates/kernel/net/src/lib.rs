@@ -70,44 +70,10 @@ mod tests;
 #[cfg(test)]
 mod tests_correctness;
 
-/// Subsystem-level error per `38`. Kept for the existing skeleton
-/// `init` shim; per-module errors live in their own files.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Error {
-    NotImplemented,
-    NoMem,
-    Inval,
-    Io,
-}
-
-#[allow(dead_code)]
-pub(crate) type StubResult<T> = core::result::Result<T, Error>;
-
-/// Initialization entry; called by the kernel boot phase per `00§3` /
-/// `boot-flow.md`. v1 returns `NotImplemented`; bodies in P1-N.
-///
-/// # SAFETY: caller is the boot path, runs single-CPU with IRQs off
-/// per `boot-flow.md`. Subsystem-specific preconditions documented at
-/// the implementation site.
-///
-/// # C: O(N_pfn) once at boot
-/// # Ctx: pre-init, IRQ-off, single-CPU
-pub unsafe fn init() -> StubResult<()> {
-    Err(Error::NotImplemented)
-}
-
-#[cfg(test)]
-mod stub_tests {
-    use super::*;
-
-    #[test]
-    fn init_returns_not_implemented() {
-        // SAFETY: hosted-test entry; nothing else has touched the subsystem; init's preconditions trivially hold.
-        let r = unsafe { init() };
-        assert_eq!(r, Err(Error::NotImplemented));
-    }
-}
-
+// Real bring-up runs through the module functions (stack init in kmain,
+// loopback/iface registration, the timer-driven TCP RTO below); there is
+// no subsystem-level `init()` entrypoint. Per-module errors live in their
+// own files (NetError, TcpConnError, PktError, ...).
 
 #[cfg(target_os = "oxide-kernel")] pub mod unix_cmsg;
 
