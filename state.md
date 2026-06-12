@@ -38,9 +38,35 @@ TLS/IFUNC/versioning/dlopen) → 2 PID1/login/PAM/NSS → 3 namespaces+mount+roo
 → 4 net control-plane (rtnetlink) → 5 io_uring_register (returns 0 uncond) →
 6 ext4 extent depth/scale → 7 X11/Wayland graphics stack.
 
-## First task next session
-Begin linux2.md. Suggested first contained win: **io_uring_register** (§2.7,
-`crates/kernel/syscalls/src/427_io_uring_register.rs` returns 0 unconditionally)
-— implement real Linux registration (fixed buffers/files, ring visibility).
-First validate against code, then implement. `git -C /home/nd/oxide2 log
---oneline -8 main` for context.
+## linux2.md progress this session
+- #1776 F30 (§2.4): clone/fork now INHERIT parent namespaces (was: every fork
+  reset to root ns — namespaces non-functional across process creation; Linux
+  `copy_namespaces`). UTS ns now isolates domainname too (was nodename only).
+  Factored `s272_unshare::apply_new_namespaces(&Task,bits)` shared by
+  unshare+clone.
+- VALIDATED, NOT a stub: io_uring (§2.7) — `427_register` returns 0, BUT the
+  whole subsystem lacks user-visible ring mmap (rings live in HHDM kernel mem),
+  so register isn't the gating piece; the mmap foundation is. Don't implement
+  register first — build on sand. io_uring `iouring` crate (§2.9) is a dead
+  45-line NotImplemented skeleton; real impl is in `syscalls/io_uring.rs`.
+
+## Next task (precise): shared UTS-namespace registry
+F30 stored UTS host/domain PER-TASK (copy on fork) — gives isolation but NOT
+true Linux shared-ns semantics: two tasks in one UTS ns must SHARE one
+`uts_namespace` (sethostname by one visible to the other), and `setns(uts_fd)`
+must restore that ns's hostname (today `308_setns` UTS only sets the membership
+bit, leaves hostname stale — `nscg/proc_ns.rs:setns_apply`). Linux-correct fix:
+a refcounted registry `id → {hostname, domainname}` in `nscg`; task carries a
+`uts_ns` id (REPLACES the two per-task `String` fields → shrinks task.rs, which
+is AT the 1000-line cap); unshare allocates+copies, sethostname/setdomainname
+write the entry, uname reads it, setns points at it, fork inherits the id
+(shares). Touches: task.rs, nscg/proc_ns, hostname module (global=id 0),
+063_uname, 170/171, 272_unshare, 056_clone. One focused PR.
+
+## Then continue linux2.md §6 priority
+1 shared-lib runtime both arches (aarch64 TLS/IFUNC/versioning/dlopen) — biggest
+→ 2 PID1/login/PAM/NSS → 3 mount propagation/pivot_root → 4 rtnetlink control
+plane → 5 io_uring user-mmap then register → 6 ext4 extent depth → 7 graphics.
+CORE RULE (memory `feedback_linux_way_per_task_gate`): every task, ask "is this
+the Linux way?"; name the exact Linux mechanism; no approximations/theater.
+`git -C /home/nd/oxide2 log --oneline -10 main` for context.
