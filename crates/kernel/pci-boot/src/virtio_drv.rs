@@ -94,6 +94,13 @@ pub(super) struct VirtioProbe {
     pub(super) snd_chmaps:    u32,
     pub(super) snd_controls:  u32,
     pub(super) snd_cfg_valid: bool,
+    // F455: virtio-snd TXQ(2) playback ring + notify VA. 0 if not snd or
+    // the queue didn't program. (eventq/rxq land with events/capture.)
+    pub(super) snd_q2_desc_pa:   u64,
+    pub(super) snd_q2_driver_pa: u64,
+    pub(super) snd_q2_device_pa: u64,
+    pub(super) snd_q2_notify_va: u64,
+    pub(super) snd_q2_size:      u16,
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
@@ -111,6 +118,8 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     // virtio-net's q0(RX)+q1(TX) split (only net's dummy-TX-frame is gated).
     let is_virtio_vsock_early = d.vendor_id == 0x1AF4 && d.device_id == 0x1053;
     let needs_q1 = is_virtio_net_early || is_virtio_vsock_early;
+    // F455: virtio-snd (0x1059) needs TXQ(2) programmed for PCM playback.
+    let is_virtio_snd_early = d.vendor_id == 0x1AF4 && d.device_id == 0x1059;
 
     // Re-walk caps + decode virtio cfgs + decode BARs.
     let (vcaps, bars) = {
@@ -267,6 +276,12 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     let mut q1_driver_pa: u64 = 0;
     let mut q1_device_pa: u64 = 0;
     let mut q1_notify_off_local: u16 = 0;
+    // F455: virtio-snd TXQ(2) state captured when snd programs it below.
+    let mut snd_q2_desc_pa_local:   u64 = 0;
+    let mut snd_q2_driver_pa_local: u64 = 0;
+    let mut snd_q2_device_pa_local: u64 = 0;
+    let mut snd_q2_notify_va_local: u64 = 0;
+    let mut snd_q2_size_local:      u16 = 0;
     let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
     let (q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_off, final_status) = if features_ok {
         // q0: msix_vec=0 (vector 0). program_queue returns None if the
@@ -283,6 +298,23 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                         q1_driver_pa = r1.driver_pa;
                         q1_device_pa = r1.device_pa;
                         q1_notify_off_local = r1.notify_off;
+                    }
+                }
+
+                // F455: virtio-snd TXQ is queue 2 (CONTROLQ=0, EVENTQ=1,
+                // TXQ=2, RXQ=3 per docs/58§2). Program it + map its notify
+                // window so the driver can push PCM period buffers. Polls
+                // used.idx → VIRTIO_MSI_NO_VECTOR (0xFFFF).
+                if is_virtio_snd_early {
+                    if let Some(r2) = super::virtio_qsetup::program_queue(cfg_va, 2, 0xFFFF, hhdm) {
+                        snd_q2_desc_pa_local = r2.desc_pa;
+                        snd_q2_driver_pa_local = r2.driver_pa;
+                        snd_q2_device_pa_local = r2.device_pa;
+                        snd_q2_size_local = r2.size;
+                        if let Some(ncap) = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG) {
+                            snd_q2_notify_va_local =
+                                super::virtio_qsetup::notify_va(&ncap, &bars, r2.notify_off);
+                        }
                     }
                 }
 
@@ -697,6 +729,11 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         snd_chmaps:    snd_chmaps_local,
         snd_controls:  snd_controls_local,
         snd_cfg_valid: snd_cfg_valid_local,
+        snd_q2_desc_pa:   snd_q2_desc_pa_local,
+        snd_q2_driver_pa: snd_q2_driver_pa_local,
+        snd_q2_device_pa: snd_q2_device_pa_local,
+        snd_q2_notify_va: snd_q2_notify_va_local,
+        snd_q2_size:      snd_q2_size_local,
     })
 }
 
@@ -846,7 +883,9 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
     {
         if let Some(sp) = super::virtio_snd_cfg::install_snd(
             p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa, p.q0_notify_va, p.q0_size,
-            p.snd_jacks, p.snd_streams, p.snd_chmaps, p.snd_controls)
+            p.cfg_va, p.snd_jacks, p.snd_streams, p.snd_chmaps, p.snd_controls,
+            p.snd_q2_desc_pa, p.snd_q2_driver_pa, p.snd_q2_device_pa,
+            p.snd_q2_notify_va, p.snd_q2_size)
         {
             model_bind(&VIRTIO_SND_DRV, bdf); // D1a: publish + bind
             debug_boot! {
@@ -858,6 +897,15 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
                 klog::write_dec_u64(sp.out as u64);
                 klog::write_raw(b" in=");
                 klog::write_dec_u64(sp.input as u64);
+                klog::write_raw(b"\n");
+                // F455: boot self-test — play a short 440 Hz tone through the
+                // TXQ playback path (like the nvme/ahci LBA-0 self-test read).
+                // Audible only on a real backend; the wav/none backends in CI
+                // capture/discard it. Gated under debug-boot. The diag code
+                // pinpoints any lockstep gap (0=ok; see beep_diag).
+                let beep_diag = drv_virtio_snd::beep_diag(440, 150);
+                klog::write_raw(b"[INFO]  virtio-snd: boot-tone diag=");
+                klog::write_dec_u64(beep_diag as u64);
                 klog::write_raw(b"\n");
             }
         }
