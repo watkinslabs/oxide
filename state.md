@@ -52,10 +52,13 @@ works). systemd + PAM login + openssl all run dynamically (real ld-musl) on arm.
    — tkill is THREAD-targeted, sys_kill has pid/pgrp semantics (tkill(0)=pgrp
    etc. is wrong); should route like tgkill(234) minus the tgid check. (b)
    sys_kill self fast-path compares `pid == cur.tid` (INTERNAL tid) vs the
-   user-supplied vtid (vpid≠internal-tid minefield, see
-   pid_identity_and_at_syscalls) — if gettid returns vtid this misses + relies
-   on lookup_in_ns. abort()/pthread_kill/raise all depend on this. Trace with a
-   tkill probe + dtrace; fix the dispatch + identity together. DO NOT fix blind.
+   user-supplied vtid → misses; fallback `lookup_in_ns(0,X) → lookup(X)` keys
+   the INTERNAL tid (REG key, NEXT_TID@0x1000) but gettid returns the small
+   VTID → MISS iff vtid≠internal-tid in ns 0 (pid_identity minefield; high
+   blast radius — kill/tgkill/wait all route here). abort()/pthread_kill/raise
+   depend on it. Trace ACTUAL vtid vs internal-tid for a shell-spawned task
+   (dtrace in sys_kill), then fix lookup_in_ns(0) to use lookup_by_vpid +
+   route tkill to a thread-targeted handler. DO NOT fix blind.
 3. **ext4 extent depth** — capped at 2 (Linux: 5); generalize the walk.
    Hosted-testable over a deep-extent ext4 image; fs-risky.
 3. **liburing 3-region mmap** (IORING_OFF_SQ_RING/CQ_RING/SQES offset cookies)
