@@ -77,6 +77,32 @@ int main(void) {
     if (!round(fan, FAN_ALLOW, /*expect_ok=*/1)) fail("ALLOW did not permit open");
     if (!round(fan, FAN_DENY,  /*expect_ok=*/0)) fail("DENY did not block open with EACCES");
 
+    // FAN_ACCESS_PERM: swap the mark to read-permission. The child's open is
+    // now unblocked; its read() blocks on the access-perm event.
+    if (fanotify_mark(fan, FAN_MARK_REMOVE, FAN_OPEN_PERM, AT_FDCWD, TARGET) != 0)
+        fail("remove FAN_OPEN_PERM");
+    if (fanotify_mark(fan, FAN_MARK_ADD, FAN_ACCESS_PERM, AT_FDCWD, TARGET) != 0)
+        fail("add FAN_ACCESS_PERM");
+    pid_t pid = fork();
+    if (pid < 0) fail("fork access");
+    if (pid == 0) {
+        int f = open(TARGET, O_RDONLY);   // open-perm removed → not blocked
+        if (f < 0) _exit(3);
+        char b[8];
+        ssize_t r = read(f, b, sizeof b); // blocks on FAN_ACCESS_PERM
+        close(f);
+        _exit(r > 0 ? 0 : 4);
+    }
+    struct fanotify_event_metadata meta;
+    if (read(fan, &meta, sizeof meta) < (ssize_t)FAN_EVENT_METADATA_LEN) fail("daemon access read");
+    if (!(meta.mask & FAN_ACCESS_PERM)) fail("event missing FAN_ACCESS_PERM");
+    struct fanotify_response resp = { .fd = meta.fd, .response = FAN_ALLOW };
+    if (write(fan, &resp, sizeof resp) != (ssize_t)sizeof resp) fail("write access response");
+    close(meta.fd);
+    int st = 0;
+    if (waitpid(pid, &st, 0) < 0) fail("waitpid access");
+    if (!(WIFEXITED(st) && WEXITSTATUS(st) == 0)) fail("ACCESS_PERM allow did not permit read");
+
     alarm(0);
     write(1, PASS, sizeof PASS - 1);
     return 0;

@@ -53,6 +53,7 @@ const FAN_DENY:  u32 = 0x02;
 struct PermEvent {
     obj:      InodeRef,
     pid:      u32,
+    mask:     u32,       // FAN_OPEN_PERM or FAN_ACCESS_PERM
     response: AtomicU32, // 0 pending, FAN_ALLOW, FAN_DENY
 }
 
@@ -160,7 +161,7 @@ impl InotifyInode {
             let pev = match pev { Some(p) => p, None => break };
             let fd = Self::install_obj_fd(&pev.obj);
             self.perm_pending.lock().push((fd, pev.clone()));
-            emit(&mut buf[written..written + META], FAN_OPEN_PERM, fd, pev.pid);
+            emit(&mut buf[written..written + META], pev.mask, fd, pev.pid);
             written += META;
         }
         let mut q = self.events.lock();
@@ -198,20 +199,26 @@ impl InotifyInode {
     }
 }
 
-/// FAN_OPEN_PERM hook for the open path. Returns `true` to allow the open,
-/// `false` to deny (caller returns -EACCES). Fast-paths to allow when no
-/// FAN_*_PERM marks exist anywhere (the common case — zero overhead, never
-/// blocks). Otherwise queues a perm event to each matching fanotify group
+/// FAN_OPEN_PERM hook for the open path. # C: O(1) fast / O(groups)+park
+pub fn check_open_perm(inode: &InodeRef) -> bool { check_perm(inode, FAN_OPEN_PERM) }
+
+/// FAN_ACCESS_PERM hook for the read path. # C: O(1) fast / O(groups)+park
+pub fn check_access_perm(inode: &InodeRef) -> bool { check_perm(inode, FAN_ACCESS_PERM) }
+
+/// Permission-event core. Returns `true` to allow, `false` to deny (caller
+/// returns -EACCES). Fast-paths to allow when no FAN_*_PERM marks exist
+/// anywhere (zero overhead on the open/read hot paths — never blocks boot).
+/// Otherwise queues a perm event (tagged `perm_mask`) to each matching group
 /// and parks until a verdict arrives.
 /// # C: O(1) fast path; else O(groups) + park
-pub fn check_open_perm(inode: &InodeRef) -> bool {
+fn check_perm(inode: &InodeRef, perm_mask: u32) -> bool {
     if PERM_MARK_COUNT.load(Ordering::Acquire) == 0 { return true; }
     let key = inode_key(inode);
     #[cfg(target_os = "oxide-kernel")]
     let pid = sched::current().map(|t| t.tgid.load(Ordering::Relaxed)).unwrap_or(0);
     #[cfg(not(target_os = "oxide-kernel"))]
     let pid = 0u32;
-    let ev = Arc::new(PermEvent { obj: inode.clone(), pid, response: AtomicU32::new(0) });
+    let ev = Arc::new(PermEvent { obj: inode.clone(), pid, mask: perm_mask, response: AtomicU32::new(0) });
     let mut queued = false;
     {
         let g = INSTANCES.lock();
@@ -219,7 +226,7 @@ pub fn check_open_perm(inode: &InodeRef) -> bool {
             let arc = match w.upgrade() { Some(a) => a, None => continue };
             if !arc.fanotify { continue; }
             let hit = arc.watches.lock().iter()
-                .any(|wi| wi.inode_key == key && (wi.mask & FAN_OPEN_PERM) != 0);
+                .any(|wi| wi.inode_key == key && (wi.mask & perm_mask) != 0);
             if hit { arc.perm_queue.lock().push_back(ev.clone()); queued = true; }
         }
     }
