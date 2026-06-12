@@ -20,30 +20,12 @@ use crate::udp::UdpHdr;
 use crate::tcp_hdr::{TcpHdr, flags as tcp_flags, TCP_HDR_MIN_LEN};
 use crate::tcp_conn::{TcpConn, Endpoint};
 
-/// Netfilter verdict callback. Verdict u32: NF_DROP=0, NF_ACCEPT=1.
-pub type NfHookFn = fn(hook_id: u32, pkt: &[u8]) -> u32;
-
-static NF_HOOK: core::sync::atomic::AtomicPtr<()> =
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
-
-/// Install netfilter bridge. Idempotent. # C: O(1)
-pub fn install_nf_hook(f: NfHookFn) {
-    NF_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
-}
-
-/// Invoke the registered netfilter hook. Returns NF_ACCEPT (1)
-/// when no hook is installed so the default-accept path still
-/// works without netfilter wired.
-/// # C: O(1) when no hook; otherwise O(eval)
-fn nf_hook_eval(hook_id: u32, pkt: &[u8]) -> u32 {
-    let raw = NF_HOOK.load(core::sync::atomic::Ordering::Acquire);
-    if raw.is_null() { return 1; /* NF_ACCEPT */ }
-    // SAFETY: raw was installed via `install_nf_hook` with the documented `fn(u32, &[u8]) -> u32` signature.
-    let f: NfHookFn = unsafe { core::mem::transmute(raw) };
-    f(hook_id, pkt)
-}
-
-pub const NF_INET_LOCAL_IN: u32 = 1;
+// Netfilter hook bridge lives in `netfilter_hook` (08§7 split). Re-export
+// the public API so `net::stack::install_nf_hook` / `NF_INET_*` paths stay
+// stable; pull the crate-internal helpers into scope for the packet path.
+pub use crate::netfilter_hook::{NfHookFn, install_nf_hook,
+    NF_INET_PRE_ROUTING, NF_INET_LOCAL_IN, NF_INET_LOCAL_OUT, NF_INET_POST_ROUTING};
+use crate::netfilter_hook::{nf_hook_eval, nf_output_ipv4};
 
 /// Per-port UDP rx queue. The bind-syscall reads from here.
 /// F162: q + waiters live behind their own locks so `deliver_rx`
@@ -387,6 +369,7 @@ impl NetStack {
             .map_err(|_| NetError::Enobufs)?;
         p.proto = crate::addr::eth_p::IPV4;
         p.iface = Some(iface_id);
+        if !nf_output_ipv4(&p) { return Ok(()); }
         iface.xmit(p)
     }
 
@@ -655,6 +638,7 @@ impl NetStack {
             .map_err(|_| NetError::Enobufs)?;
         p.proto = crate::addr::eth_p::IPV4;
         p.iface = Some(route.iface);
+        if !nf_output_ipv4(&p) { return Ok(()); }
         iface.xmit(p)
     }
 
@@ -662,6 +646,10 @@ impl NetStack {
 
     /// Demux IPv4 → ICMP/UDP/TCP. # C: O(payload)
     pub fn deliver_rx(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
+        // PRE_ROUTING fires on every received packet before the routing
+        // decision; this is a host stack so all accepted packets are then
+        // delivered locally → LOCAL_IN (no FORWARD path).
+        if nf_hook_eval(NF_INET_PRE_ROUTING, l3) == 0 { return Ok(()); }
         if nf_hook_eval(NF_INET_LOCAL_IN, l3) == 0 { return Ok(()); }
         let hdr = Ipv4Hdr::parse(l3).map_err(|_| NetError::Einval)?;
         let total = hdr.total_len as usize;
@@ -696,7 +684,8 @@ impl NetStack {
                     p.proto = crate::addr::eth_p::IPV4;
                     p.iface = Some(iface);
                     let dev = self.ifaces.lookup(iface).ok_or(NetError::Enetunreach)?;
-                    dev.xmit(p)?;
+                    // ICMP echo reply is kernel-generated → LOCAL_OUT + POST_ROUTING.
+                    if nf_output_ipv4(&p) { dev.xmit(p)?; }
                 } else if echo.typ == icmp::ICMP_TYPE_DEST_UNREACH {
                     self.handle_dest_unreach(echo.code, payload);
                 }
