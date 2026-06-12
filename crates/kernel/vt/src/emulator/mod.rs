@@ -97,6 +97,14 @@ pub struct Emulator {
     /// each printed glyph shifts the rest of the line right by its width
     /// before being placed (Linux `vt.c` `decim`); default replace.
     insert_mode: bool,
+    /// DECCKM (`?1h`/`?1l`): when set, cursor keys send `ESC O x` (SS3)
+    /// instead of `ESC [ x` (CSI). Read by the keyboard layer for the
+    /// FOREGROUND VT (Linux `applkey` consults `vc_decckm`). `57§8`.
+    app_cursor: bool,
+    /// Bracketed paste (`?2004h`/`l`): when set, pasted text (selection
+    /// paste) is wrapped in `ESC [ 200 ~` … `ESC [ 201 ~` so the receiving
+    /// program can distinguish it from typed input. `57§8`.
+    bracketed_paste: bool,
     /// Saw `ESC` (0x1b) inside an OSC/DCS string: the next byte decides if
     /// this is a 7-bit ST (`ESC \`) terminator or just payload. Prevents a
     /// bare `\` in a title from ending the string early (`57§14`).
@@ -130,6 +138,8 @@ impl Default for Emulator {
             disp_ctrl: false,
             toggle_meta: false,
             insert_mode: false,
+            app_cursor: false,
+            bracketed_paste: false,
             str_esc: false,
             osc_buf: [0; OSC_CAP],
             osc_len: 0,
@@ -704,6 +714,9 @@ impl Emulator {
             return;
         }
         match self.param(0, 0) {
+            // DECCKM application cursor keys (input-encoding mode read by the
+            // keyboard layer for the foreground VT).
+            1 => self.app_cursor = set,
             // DECOM origin mode: cursor confined to + addressed relative to
             // the scroll region. Per DEC, toggling DECOM homes the cursor.
             6 => {
@@ -721,8 +734,23 @@ impl Emulator {
             // saves/restores the cursor (covered by enter_alt/leave_alt).
             // htop/top/vim/less use these (smcup/rmcup).
             47 | 1047 | 1049 => if set { vc.enter_alt() } else { vc.leave_alt() },
+            // Bracketed paste: read by the selection-paste path.
+            2004 => self.bracketed_paste = set,
             _ => {}
         }
+    }
+
+    /// DECCKM (application-cursor-keys) state of THIS VT. The keyboard layer
+    /// reads it for the foreground VT to choose `ESC O x` vs `ESC [ x`.
+    /// # C: O(1).
+    pub fn app_cursor(&self) -> bool {
+        self.app_cursor
+    }
+
+    /// Bracketed-paste (`?2004`) state of THIS VT. The selection-paste path
+    /// wraps pasted bytes in `ESC[200~`…`ESC[201~` when set. # C: O(1).
+    pub fn bracketed_paste(&self) -> bool {
+        self.bracketed_paste
     }
 
     /// DSR / CPR (`CSI n`, non-private) — Linux `do_con_trol` `'n'` /

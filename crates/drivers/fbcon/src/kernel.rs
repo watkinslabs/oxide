@@ -473,3 +473,33 @@ pub fn foreground() -> u8 {
         .map(|st| st.fg)
         .unwrap_or(0)
 }
+
+/// Read a keyboard-relevant mode from the FOREGROUND VT's emulator (Linux
+/// `applkey` consults `vc_cons[fg_console]`). Best-effort: returns `false`
+/// if the state lock is contended or the VT isn't allocated yet.
+/// # C: O(1).
+fn fg_em_mode(f: impl Fn(&Emulator) -> bool) -> bool {
+    if let Some(mut g) = VT_STATE.try_lock() {
+        if let Some(st) = g.as_mut() {
+            let i = st.ensure(st.fg);
+            if let Some(cell) = st.vc_cons[i].as_ref() {
+                return f(&cell.em);
+            }
+        }
+    }
+    false
+}
+
+/// DECCKM (application cursor keys) state of the foreground VT — the
+/// keyboard layer reads this to encode arrows as `ESC O x` vs `ESC [ x`.
+/// # C: O(1).
+pub fn fg_app_cursor() -> bool {
+    fg_em_mode(|em| em.app_cursor())
+}
+
+/// Bracketed-paste (`?2004`) state of the foreground VT — the
+/// selection-paste path wraps the payload in `ESC[200~`…`ESC[201~`.
+/// # C: O(1).
+pub fn fg_bracketed_paste() -> bool {
+    fg_em_mode(|em| em.bracketed_paste())
+}
