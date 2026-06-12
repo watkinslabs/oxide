@@ -73,11 +73,15 @@ pub const NFT_META_NFPROTO: u32 = 15;
 pub const NFT_META_L4PROTO: u32 = 16;
 
 pub const NFPROTO_IPV4: u8 = 2;
+pub const NFPROTO_IPV6: u8 = 10;
 
 pub const NFTA_DATA_VALUE:   u16 = 1;
 pub const NFTA_DATA_VERDICT: u16 = 2;
 
 pub const NFTA_VERDICT_CODE: u16 = 1;
+
+/// Fixed IPv6 main-header length (no extension headers).
+const IPV6_FIXED_HDR: usize = 40;
 
 // nf_tables payload base
 pub const NFT_PAYLOAD_LL_HEADER:        u32 = 0;
@@ -277,7 +281,7 @@ pub fn run_rule(exprs: &[Expr], pkt: &[u8]) -> Option<i32> {
 pub fn run_rule_with_lookup(exprs: &[Expr], pkt: &[u8], lookup: Option<SetLookupFn>) -> Option<i32> {
     let mut visits = 0u64;
     let mut bytes  = 0u64;
-    run_rule_full(exprs, pkt, lookup, &mut visits, &mut bytes)
+    run_rule_full(exprs, pkt, lookup, NFPROTO_IPV4, &mut visits, &mut bytes)
 }
 
 /// Same as `run_rule_with_lookup` but also accumulates counter
@@ -287,7 +291,7 @@ pub fn run_rule_with_lookup(exprs: &[Expr], pkt: &[u8], lookup: Option<SetLookup
 /// Linux's nft_counter).
 /// # C: O(N_exprs · max_len)
 pub fn run_rule_full(exprs: &[Expr], pkt: &[u8],
-                     lookup: Option<SetLookupFn>,
+                     lookup: Option<SetLookupFn>, family: u8,
                      packets: &mut u64, bytes: &mut u64) -> Option<i32> {
     let mut regs = vec![0u8; REG_BYTES];
     for e in exprs {
@@ -296,10 +300,17 @@ pub fn run_rule_full(exprs: &[Expr], pkt: &[u8],
                 let base_off: usize = match *base {
                     NFT_PAYLOAD_NETWORK_HEADER => 0,
                     NFT_PAYLOAD_TRANSPORT_HEADER => {
-                        // IPv4 IHL → byte offset to L4. Only IPv4
-                        // for now; IPv6 lands when v6 stack does.
-                        if pkt.is_empty() || (pkt[0] >> 4) != 4 { return None; }
-                        ((pkt[0] & 0x0f) as usize) * 4
+                        // Network-header length → byte offset to L4. IPv6 has a
+                        // fixed 40-byte header (extension-header walk is a
+                        // follow-up); IPv4 reads IHL from the first byte.
+                        if pkt.is_empty() { return None; }
+                        match family {
+                            NFPROTO_IPV6 => IPV6_FIXED_HDR,
+                            _ => {
+                                if (pkt[0] >> 4) != 4 { return None; }
+                                ((pkt[0] & 0x0f) as usize) * 4
+                            }
+                        }
                     }
                     _ => return None,
                 };
@@ -330,12 +341,16 @@ pub fn run_rule_full(exprs: &[Expr], pkt: &[u8],
                     }
                     NFT_META_NFPROTO => {
                         if dst + 1 > regs.len() { return None; }
-                        regs[dst] = NFPROTO_IPV4;
+                        regs[dst] = family;
                     }
                     NFT_META_L4PROTO => {
-                        if pkt.len() < 10 { return None; }
                         if dst + 1 > regs.len() { return None; }
-                        regs[dst] = pkt[9]; // IPv4 hdr.proto
+                        // IPv6 next-header @ +6, IPv4 protocol @ +9.
+                        let proto = match family {
+                            NFPROTO_IPV6 => { if pkt.len() < 7  { return None; } pkt[6] }
+                            _            => { if pkt.len() < 10 { return None; } pkt[9] }
+                        };
+                        regs[dst] = proto;
                     }
                     _ => return None,
                 }
