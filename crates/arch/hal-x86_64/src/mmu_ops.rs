@@ -102,6 +102,39 @@ pub unsafe fn capture_kernel_master() -> u64 {
     cr3
 }
 
+/// Re-sync the master PML4's kernel-half entries (256..512) from the CURRENT
+/// active CR3. Device-MMIO BARs (virtio etc.) are spliced into the active
+/// boot-AS root AFTER `capture_kernel_master` froze the master — so the
+/// master, and every AP that boots on it (`smp_x86` loads `kernel_master()`
+/// as the AP CR3), was missing those top-level PML4 entries. A virtio access
+/// in AP kernel context (e.g. an fbcon GPU-flush softirq on an idle AP) then
+/// `#PF`s NP on the unmapped BAR VA. Call once after PCI enumeration, before
+/// AP bring-up: the copied entries reference shared L3 tables, so later
+/// splices into those sub-trees remain visible through the master too.
+///
+/// # SAFETY: boot path, single-CPU, pre-AP-bring-up; HHDM covers both PML4
+/// frames; `MASTER_PML4_PA` already captured.
+/// # C: O(1) (256-entry copy)
+pub unsafe fn resync_kernel_master() {
+    let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+    let master_pa = MASTER_PML4_PA.load(Ordering::Acquire);
+    if hhdm == 0 || master_pa == 0 { return; }
+    // SAFETY: privileged CR3 read at CPL=0; pure read.
+    let active_pa = unsafe { crate::regs::read_cr3() } & !0xfff;
+    if active_pa == master_pa { return; } // already on the master
+    // SAFETY: both PML4 frames are HHDM-mapped; single-CPU pre-AP bring-up;
+    // copying only kernel-half entries (256..512), each referencing an L3
+    // shared across every AS — so the master gains the post-PCI BAR entry
+    // without disturbing the rest.
+    unsafe {
+        let dst = (hhdm.wrapping_add(master_pa)) as *mut u64;
+        let src = (hhdm.wrapping_add(active_pa)) as *const u64;
+        for i in 256..512 {
+            core::ptr::write_volatile(dst.add(i), core::ptr::read_volatile(src.add(i)));
+        }
+    }
+}
+
 /// Read the captured master PML4 PA, or 0 if `capture_kernel_master`
 /// hasn't run.
 /// # C: O(1)
