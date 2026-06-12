@@ -49,8 +49,15 @@ pub enum Sig {
     Int = 2,
     /// VQUIT (^\) → SIGQUIT.
     Quit = 3,
+    /// Continue (`SIGCONT`) — resumes a stopped pgrp (28§6).
+    Cont = 18,
     /// VSUSP (^Z) → SIGTSTP.
     Tstp = 20,
+    /// Background-pgrp read of the controlling tty → SIGTTIN (28§6).
+    Ttin = 21,
+    /// Background-pgrp write of the controlling tty under TOSTOP →
+    /// SIGTTOU (28§6).
+    Ttou = 22,
 }
 
 impl Sig {

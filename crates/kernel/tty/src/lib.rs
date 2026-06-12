@@ -16,6 +16,8 @@ pub use pty::{Pair, Ring, PTY_BUF_BYTES};
 pub mod ldisc;
 pub use ldisc::{LdiscOps, NTty, Sig, TtyDriverHooks};
 
+pub mod jobctl;
+
 pub mod wait;
 pub use wait::TtyWait;
 
