@@ -6,7 +6,7 @@ branch). Dev loop: `tools/boot-smoke-probe.sh x86 <probe>` under `OXIDE_QEMU_KVM
 (kills the shell) — use `pkill -9 -x qemu-system-x86_64`. Stale qemu holds the
 root.img write-lock; kill all qemu first.
 
-## Merged this run (18 PRs) — linux2.md "is this the Linux way" + a crash fix
+## Merged this run (19 PRs) — linux2.md "is this the Linux way" + a crash fix
 
 - **B120 #1809** real TIOCM* modem + TIOCSPTLCK/GPTLCK pts lock (Inode::on_open).
 - **F439 #1810** rtnetlink multicast (bind nl_groups + ADD/DROP_MEMBERSHIP +
@@ -30,12 +30,13 @@ root.img write-lock; kill all qemu first.
   cascade. resync_kernel_master() copies kernel-half PML4[256..512] into the master
   after PCI enum. Verified SMP=4 boots clean. (arm immune: split TTBR0/TTBR1 → one
   shared kernel tree.)
-- **F447 #1825 / F448 #1826** (§2.12) tracefs real tracepoints: per-CPU LOCKLESS
+- **F447 #1825 / F448 #1826 / F449 #1827** (§2.12) tracefs real tracepoints: per-CPU LOCKLESS
   ring buffer (percpu_ring.rs — wait-free SPSC, drop-on-full, 5 unit tests);
   trace_marker/trace/trace_pipe rewired onto it; **sched_switch static
   tracepoint** (sched install_sched_switch_hook fired at the switch site; tracefs
-  records wait-free; events/sched/sched_switch/enable gates it = install/clear
-  the hook; available_events lists it). Probe tracesched_probe.
+  records wait-free; install-is-enable hook pattern). + sys_enter/sys_exit
+  tracepoints (syscall/tracepoint.rs bridge, fired in dispatch). Probes
+  tracesched_probe + tracesys_probe.
 - **B125 #1824** stall detector: now.saturating_sub (was wrapping) — kills the
   bogus "18446744073s" false stall from cross-CPU clock skew.
 
@@ -44,10 +45,11 @@ root.img write-lock; kill all qemu first.
 The bounded/testable gaps are done. What's left:
 - **§2.11 eBPF** verifier + JIT/interpreter (security/src/bpf.rs) — large, high value
   (seccomp/tracing/tc/XDP).
-- **§2.12 tracefs**: foundation + sched_switch DONE (F447/F448). REMAINING (same
-  proven pattern): more tracepoints (sys_enter/sys_exit — hook at the syscall
-  entry/exit site), per-event format files (events/.../format), function tracer
-  (current_tracer=function — much larger).
+- **§2.12 tracefs**: per-CPU lockless ring + 3 real tracepoints DONE — sched_switch
+  (F448), sys_enter + sys_exit (F449), each enable-gated + in available_events.
+  REMAINING (minor/infeasible): per-event format files (low value — `trace`
+  already renders text); function tracer needs -pg/mcount instrumentation
+  (build-system change). §2.12 substantially complete.
 - **§3 X11/Wayland** (distro endgame) — huge.
 - §2.8 ext4 append tree-growth past depth 2 — pathological (needs ~millions of
   non-contig extents), clean-failing, not brute-force testable. Low priority.
