@@ -514,9 +514,12 @@ static void apply_relas(Dso* d, Rela* tab, long size_bytes) {
                 // resolver function. Call it and store the implementation
                 // address it returns (musl convention: the resolver takes
                 // no args and reads getauxval(AT_HWCAP) itself). Without
-                // this the slot stays unrelocated and the first indirect
-                // call through it jumps to garbage — the documented
-                // libcrypto-on-aarch64 load-time-constructor hang.
+                // this the slot stayed unrelocated and the first indirect
+                // call through it jumped to garbage — so any IFUNC-using
+                // program loaded by THIS stub interpreter broke. (Programs
+                // with PT_INTERP=/lib/ld-musl use the real musl ld.so, not
+                // this loader — e.g. openssl_probe; its arm hang is a
+                // separate, still-open issue in that path.)
                 uint64_t (*resolver)(void) =
                     (uint64_t (*)(void))(d->base + (uint64_t)r->r_addend);
                 *slot = resolver();
