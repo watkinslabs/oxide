@@ -41,6 +41,11 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         if (proto as u16) == ::netlink::proto::NETLINK_KOBJECT_UEVENT {
             ::netlink::register_uevent_listener(&sock);
         }
+        // NETLINK_ROUTE sockets receive rtnl multicast (RTM_NEW*/DEL*)
+        // once subscribed via bind nl_groups / NETLINK_ADD_MEMBERSHIP.
+        if (proto as u16) == ::netlink::proto::NETLINK_ROUTE {
+            ::netlink::register_rtnl_listener(&sock);
+        }
         sock as _
     } else {
         let inet = match (domain, typ) {

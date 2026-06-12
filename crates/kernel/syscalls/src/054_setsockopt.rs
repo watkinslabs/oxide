@@ -17,7 +17,7 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     let optval   = args.a3;
     let optlen   = args.a4 as u32;
     if crate::netlink_fd::is_netlink(fd) {
-        return crate::netlink_fd::setsockopt();
+        return crate::netlink_fd::setsockopt(fd, level, optname, optval, optlen as u64);
     }
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"setsockopt"); return -(Errno::Enotsock.as_i32() as i64); }
