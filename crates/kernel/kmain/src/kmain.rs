@@ -848,6 +848,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     }
 
     #[cfg(target_os = "oxide-kernel")] sched::live::spawn_timer_driver();
+    // ksoftirqd: process-context softirq drainer the restart gate defers to
+    // (Linux wakeup_softirqd target). Installs the softirq wakeup hook.
+    #[cfg(target_os = "oxide-kernel")] sched::live::spawn_ksoftirqd();
     sched::halt_forever()
 }
 
