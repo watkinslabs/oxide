@@ -132,6 +132,26 @@ pub fn live_vpids() -> Vec<u32> {
     out
 }
 
+/// Resolve a USERSPACE-supplied pid/tid (the value getpid/gettid/fork return)
+/// to a Task, interpreted in the CALLER's pid namespace. THIS is the correct
+/// primitive for any syscall whose pid arg comes from userspace (kill,
+/// sched_*, getpgid/setpgid, …) — NOT `lookup`, which keys the opaque
+/// internal tid and so silently fails on a userspace vpid (the
+/// pid_identity minefield). `pid == 0` is the caller's responsibility (means
+/// "self"/"caller's pgrp" depending on the syscall). # C: O(N_tasks)
+pub fn resolve_user_pid(pid: u32) -> Option<Arc<Task>> {
+    #[cfg(target_os = "oxide-kernel")]
+    let ns = {
+        use core::sync::atomic::Ordering;
+        crate::live::current()
+            .map(|c| c.pid_ns.load(Ordering::Acquire))
+            .unwrap_or(0)
+    };
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let ns = 0u64; // host/test: no scheduler → init NS
+    lookup_in_ns(ns, pid)
+}
+
 /// Resolve a userspace PID (vtgid) to a Task. Different from
 /// `lookup` which keys on the kernel-internal TID. Used by procfs's
 /// `/proc/<PID>` lookup so `cat /proc/1/status` sees init.

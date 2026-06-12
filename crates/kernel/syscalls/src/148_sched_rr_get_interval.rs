@@ -16,7 +16,7 @@ pub fn sys_sched_rr_get_interval(args: &SyscallArgs) -> i64 {
     let t = if pid == 0 {
         sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {
-        sched::live::registry::lookup(pid)
+        sched::live::registry::resolve_user_pid(pid)
     };
     if t.is_none() { return -(Errno::Esrch.as_i32() as i64); }
     // SAFETY: tp+16 validated < USER_VA_END; struct timespec is { i64 sec; i64 nsec }; CPL=0.
