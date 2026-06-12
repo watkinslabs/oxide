@@ -26,7 +26,7 @@
 // kthread→user pair; wired via `MmuOps::activate(next.mm.root_pa)`.
 
 use alloc::sync::Arc;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 use hal::{Context, MmuOps};
 use crate::{RunqueueInner, SchedClass, Task, TaskState};
@@ -42,6 +42,30 @@ type ArchCtx = hal_aarch64::ContextAArch64;
 type ActiveMmu = hal_x86_64::mmu_ops::X86Mmu;
 #[cfg(target_arch = "aarch64")]
 type ActiveMmu = hal_aarch64::mmu_ops::ArmMmu;
+
+/// `sched_switch` tracepoint hook (Linux `trace_sched_switch`). tracefs
+/// installs it when the event is enabled and clears it when disabled, so the
+/// switch hot path pays only one atomic load + null check while OFF. Fires on
+/// every context switch with (prev_pid, prev_comm, next_pid, next_comm).
+pub type SchedSwitchFn = fn(u32, &str, u32, &str);
+static SCHED_SWITCH_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Install (Some) / clear (None) the sched_switch tracepoint hook. # C: O(1)
+pub fn install_sched_switch_hook(f: Option<SchedSwitchFn>) {
+    let p = match f { Some(f) => f as *mut (), None => core::ptr::null_mut() };
+    SCHED_SWITCH_HOOK.store(p, Ordering::Release);
+}
+
+/// Fire the sched_switch hook if installed. # C: O(1) when off
+#[inline]
+fn fire_sched_switch(pp: u32, pc: &str, np: u32, nc: &str) {
+    let raw = SCHED_SWITCH_HOOK.load(Ordering::Acquire);
+    if raw.is_null() { return; }
+    // SAFETY: raw was installed via `install_sched_switch_hook` with the
+    // documented `fn(u32,&str,u32,&str)` signature; non-null implies a live fn.
+    let f: SchedSwitchFn = unsafe { core::mem::transmute(raw) };
+    f(pp, pc, np, nc);
+}
 
 /// Aggregate metrics returned by `uninstall_global_with_stats`,
 /// for smoke-driver bookkeeping.
@@ -408,6 +432,10 @@ pub unsafe fn schedule() {
     let prev_root = unsafe { prev_ref.mm_ref() }.map(|a| a.root_pa()).unwrap_or(0);
     // SAFETY: next_arc is owned by this schedule scope; the runqueue invariant for the picked task; no concurrent execve writer on this CPU.
     let next_root = unsafe { next_arc.mm_ref() }.map(|a| a.root_pa()).unwrap_or(0);
+    // sched_switch tracepoint (Linux trace_sched_switch) — both task refs are
+    // live here; no-op (one atomic load) unless tracefs enabled the event.
+    fire_sched_switch(prev_ref.tgid.load(Ordering::Relaxed), prev_ref.name,
+                      next_arc.tgid.load(Ordering::Relaxed), next_arc.name);
     if next_root != 0 && next_root != prev_root {
         // SAFETY: root_pa is the AS-private root populated with kernel-half mappings per P2-19; activate writes CR3/TTBR0 + flushes user TLB; preempt-off + single-CPU.
         unsafe { ActiveMmu::activate(next_root); }
