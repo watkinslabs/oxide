@@ -26,6 +26,8 @@ pub mod lflag {
     pub const ECHOE:   u32 = 0o000020; // VERASE echoes "\b \b"
     pub const ECHOK:   u32 = 0o000040; // VKILL echoes "\r\n"
     pub const ECHONL:  u32 = 0o000100; // echo NL even when ECHO off
+    pub const NOFLSH:  u32 = 0o000200; // don't flush queues on ISIG
+    pub const TOSTOP:  u32 = 0o000400; // SIGTTOU on bg-pgrp write
     pub const ECHOCTL: u32 = 0o001000; // echo control chars as ^X
     pub const IEXTEN:  u32 = 0o100000; // enable VWERASE/VLNEXT/VEOL2 (impl-defined input)
 }
