@@ -123,9 +123,15 @@ pub type KResult<T> = core::result::Result<T, Error>;
 pub struct CapBitmap { pub bits: [u8; 96] }
 impl Default for CapBitmap { fn default() -> Self { Self { bits: [0u8; 96] } } }
 
+#[derive(Clone)]
 pub struct VirtioInputDev {
     pub bdf:        u32,
     pub evdev_id:   u32,
+    /// Device class: a pointer (mouse/tablet — advertises EV_REL/EV_ABS) vs
+    /// a keyboard. Only keyboard-class devices feed the console keyboard
+    /// pipeline (mirrors Linux binding the VT keyboard input_handler to
+    /// keyboard-capability devices, not pointers).
+    pub is_pointer: bool,
     pub name:       [u8; 128],
     pub name_len:   usize,
     pub serial:     [u8; 128],
@@ -137,6 +143,7 @@ pub struct VirtioInputDev {
     pub abs_bits:   CapBitmap,    // ABS_*  range
     pub led_bits:   CapBitmap,
     pub abs_info:   [Option<VirtioInputAbsInfo>; 64],
+    pub prop_bits:  [u8; 4],      // INPUT_PROP_* device properties
 }
 
 // ============================================================
@@ -165,13 +172,45 @@ pub fn install(dev: VirtioInputDev) {
 /// # C: O(1)
 pub fn count() -> usize { DEVICES.lock().len() }
 
-/// Register a probed device with default capability bitmaps.
-/// Convenience wrapper for `pci_boot` to keep its install-site terse.
-/// # C: O(1) amortised; allocator-bounded vec push.
-pub fn install_default(bdf: u32) -> u32 {
+/// Select `(select, subsel)` on the device config and return the reported
+/// `size` (valid bytes in the config union @8). The virtio_input_config
+/// header is `{u8 select@0; u8 subsel@1; u8 size@2; ...}` (docs/46§4).
+/// # SAFETY: `cfg_va` is the Device-attr-mapped device-cfg window owned by
+/// the caller; the select/subsel stores drive the device's config recompute.
+unsafe fn cfg_select(cfg_va: u64, select: u8, subsel: u8) -> u8 {
+    // SAFETY: per fn contract; aligned u8 MMIO ops on the config header.
+    unsafe {
+        core::ptr::write_volatile(cfg_va as *mut u8, select);
+        core::ptr::write_volatile((cfg_va + 1) as *mut u8, subsel);
+        core::ptr::read_volatile((cfg_va + 2) as *const u8)
+    }
+}
+
+/// Copy the selected config union (bytes @8, length = current `size`) into
+/// `dst`, returning the byte count copied (≤ dst.len, ≤ 128).
+/// # SAFETY: `cfg_va` is the Device-attr-mapped device-cfg window; a config
+/// item was just selected via `cfg_select`.
+unsafe fn cfg_payload(cfg_va: u64, dst: &mut [u8]) -> usize {
+    // SAFETY: per fn contract; aligned u8 reads of `size` payload bytes @8.
+    let size = unsafe { core::ptr::read_volatile((cfg_va + 2) as *const u8) } as usize;
+    let n = size.min(dst.len()).min(128);
+    for i in 0..n {
+        // SAFETY: i < size ≤ 128; reads stay within the config union window.
+        dst[i] = unsafe { core::ptr::read_volatile((cfg_va + 8 + i as u64) as *const u8) };
+    }
+    n
+}
+
+/// Probe one virtio-input device: read its identity + full capability
+/// bitmaps from config space (the Linux virtio_input.c probe sequence,
+/// docs/46§5) and register it. Returns the assigned evdev id.
+/// # SAFETY: `cfg_va` is the Device-attr-mapped virtio-input device-cfg
+/// window owned by the caller for the device's lifetime.
+/// # C: O(abs axes) config round-trips
+pub unsafe fn install_device(bdf: u32, cfg_va: u64) -> u32 {
     let evdev_id = count() as u32;
-    install(VirtioInputDev {
-        bdf, evdev_id,
+    let mut dev = VirtioInputDev {
+        bdf, evdev_id, is_pointer: false,
         name: [0; 128], name_len: 0, serial: [0; 128], serial_len: 0,
         ids: VirtioInputDevIds::default(),
         ev_bits: [0; 32],
@@ -180,7 +219,70 @@ pub fn install_default(bdf: u32) -> u32 {
         abs_bits: CapBitmap::default(),
         led_bits: CapBitmap::default(),
         abs_info: [None; 64],
-    });
+        prop_bits: [0; 4],
+    };
+    // SAFETY: cfg_va valid per fn contract; the config protocol is a series
+    // of select/subsel writes + size/payload reads with no other effect.
+    unsafe {
+        // ID_NAME → friendly name.
+        let _ = cfg_select(cfg_va, VIRTIO_INPUT_CFG_ID_NAME, 0);
+        dev.name_len = cfg_payload(cfg_va, &mut dev.name);
+        // ID_SERIAL → unique string.
+        let _ = cfg_select(cfg_va, VIRTIO_INPUT_CFG_ID_SERIAL, 0);
+        dev.serial_len = cfg_payload(cfg_va, &mut dev.serial);
+        // ID_DEVIDS → bustype/vendor/product/version (4 × le16).
+        let n = cfg_select(cfg_va, VIRTIO_INPUT_CFG_ID_DEVIDS, 0);
+        if n >= 8 {
+            let rd16 = |o: u64| (core::ptr::read_volatile((cfg_va + 8 + o) as *const u8) as u16)
+                | ((core::ptr::read_volatile((cfg_va + 9 + o) as *const u8) as u16) << 8);
+            dev.ids = VirtioInputDevIds {
+                bustype: rd16(0), vendor: rd16(2), product: rd16(4), version: rd16(6),
+            };
+        }
+        // PROP_BITS → device properties.
+        let _ = cfg_select(cfg_va, VIRTIO_INPUT_CFG_PROP_BITS, 0);
+        let _ = cfg_payload(cfg_va, &mut dev.prop_bits);
+        // EV_BITS: virtio reports per-type. `subsel = EV_<type>` returns the
+        // supported-code bitmap for that type, and a non-zero `size` means the
+        // type itself is supported — so the EV-type bitmap is BUILT by probing
+        // each type and setting bit `subsel` when size>0 (Linux
+        // virtio_input.c::virtinput_cfg_bits + set_bit(subsel, evbit)). There is
+        // no subsel=0 "supported types" read; subsel=0 is EV_SYN's codes.
+        let mut abs_sz = 0u8;
+        for ty in 0u8..32 {
+            let sz = cfg_select(cfg_va, VIRTIO_INPUT_CFG_EV_BITS, ty);
+            if sz == 0 { continue; }
+            dev.ev_bits[(ty / 8) as usize] |= 1 << (ty % 8);
+            match ty as u16 {
+                EV_KEY => { let _ = cfg_payload(cfg_va, &mut dev.key_bits.bits); }
+                EV_REL => { let _ = cfg_payload(cfg_va, &mut dev.rel_bits.bits); }
+                EV_ABS => { abs_sz = sz; let _ = cfg_payload(cfg_va, &mut dev.abs_bits.bits); }
+                EV_LED => { let _ = cfg_payload(cfg_va, &mut dev.led_bits.bits); }
+                _ => {}
+            }
+        }
+        // ABS_INFO for each supported ABS axis.
+        if abs_sz > 0 {
+            for axis in 0..64u8 {
+                if dev.abs_bits.bits[(axis / 8) as usize] & (1 << (axis % 8)) == 0 { continue; }
+                let m = cfg_select(cfg_va, VIRTIO_INPUT_CFG_ABS_INFO, axis);
+                if m >= 20 {
+                    let rd32 = |o: u64| {
+                        let mut v = 0u32;
+                        for b in 0..4 { v |= (core::ptr::read_volatile((cfg_va + 8 + o + b) as *const u8) as u32) << (b * 8); }
+                        v
+                    };
+                    dev.abs_info[axis as usize] = Some(VirtioInputAbsInfo {
+                        min: rd32(0), max: rd32(4), fuzz: rd32(8), flat: rd32(12), res: rd32(16),
+                    });
+                }
+            }
+        }
+        // Class: a pointer advertises EV_REL or EV_ABS.
+        dev.is_pointer = (dev.ev_bits[(EV_REL / 8) as usize] & (1 << (EV_REL % 8))) != 0
+            || (dev.ev_bits[(EV_ABS / 8) as usize] & (1 << (EV_ABS % 8))) != 0;
+    }
+    install(dev);
     evdev_id
 }
 
@@ -188,6 +290,20 @@ pub fn install_default(bdf: u32) -> u32 {
 /// # C: O(N)
 pub fn name_of(evdev_id: u32) -> Option<[u8; 128]> {
     DEVICES.lock().iter().find(|d| d.evdev_id == evdev_id).map(|d| d.name)
+}
+
+/// Clone the full device record for `evdev_id` (identity + capability
+/// bitmaps + absinfo). The EVIOCG* ioctls copy from this snapshot so the
+/// DEVICES lock isn't held across the user-buffer writes. # C: O(N)
+pub fn device(evdev_id: u32) -> Option<VirtioInputDev> {
+    DEVICES.lock().iter().find(|d| d.evdev_id == evdev_id).cloned()
+}
+
+/// True iff `evdev_id` is a pointer (mouse/tablet). Drives the drain's
+/// console-keyboard gating: pointer devices don't feed the console.
+/// Unknown ids default to keyboard-class (false). # C: O(N)
+pub fn is_pointer(evdev_id: u32) -> bool {
+    DEVICES.lock().iter().find(|d| d.evdev_id == evdev_id).map_or(false, |d| d.is_pointer)
 }
 
 /// Dispatch an EVIOC* ioctl. Returns `Some(rv)` if recognised.
@@ -248,6 +364,7 @@ mod tests {
         install(VirtioInputDev {
             bdf:        0,
             evdev_id:   0,
+            is_pointer: false,
             name:       [0; 128],
             name_len:   0,
             serial:     [0; 128],
@@ -259,6 +376,7 @@ mod tests {
             abs_bits:   CapBitmap::default(),
             led_bits:   CapBitmap::default(),
             abs_info:   [None; 64],
+            prop_bits:  [0; 4],
         });
         assert_eq!(count(), 1);
         DEVICES.lock().clear();
