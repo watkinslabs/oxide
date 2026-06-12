@@ -14,6 +14,8 @@ use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN, push_ipv6_header};
 use crate::netdev::{NetError, NetResult};
 use crate::pkt::Pkt;
 use crate::stack::NetStack;
+use crate::netfilter_hook::{nf_hook_eval, nf_output, NFPROTO_IPV6,
+    NF_INET_PRE_ROUTING, NF_INET_LOCAL_IN};
 
 /// F180a: per-port IPv6 UDP queue. Same shape as `UdpRxQueue`
 /// but keyed by IPv6 source-address.
@@ -115,6 +117,7 @@ impl NetStack {
             .map_err(|_| NetError::Enobufs)?;
         p.proto = crate::addr::eth_p::IPV6;
         p.iface = Some(iface_id);
+        if !nf_output(&p, NFPROTO_IPV6) { return Ok(()); }
         iface.xmit(p)
     }
 
@@ -124,6 +127,9 @@ impl NetStack {
     /// Extension headers skipped (no HBH/Routing/Fragment yet).
     /// # C: O(payload)
     pub fn deliver_rx_ipv6(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
+        // Netfilter ingress: PRE_ROUTING then (host stack → local) LOCAL_IN.
+        if nf_hook_eval(NF_INET_PRE_ROUTING, l3, NFPROTO_IPV6) == 0 { return Ok(()); }
+        if nf_hook_eval(NF_INET_LOCAL_IN, l3, NFPROTO_IPV6) == 0 { return Ok(()); }
         let hdr = Ipv6Hdr::parse(l3).map_err(|_| NetError::Einval)?;
         let payload_end = IPV6_HDR_LEN + hdr.payload_length as usize;
         if payload_end > l3.len() { return Err(NetError::Einval); }
@@ -273,6 +279,7 @@ impl NetStack {
             .map_err(|_| NetError::Enobufs)?;
         p.proto = crate::addr::eth_p::IPV6;
         p.iface = Some(iface_id);
+        if !nf_output(&p, NFPROTO_IPV6) { return Ok(()); }
         iface.xmit(p)
     }
 
@@ -319,6 +326,7 @@ impl NetStack {
         p.proto = crate::addr::eth_p::IPV6;
         p.iface = Some(iface);
         let dev = self.ifaces.lookup(iface).ok_or(NetError::Enetunreach)?;
+        if !nf_output(&p, NFPROTO_IPV6) { return Ok(()); }
         dev.xmit(p)
     }
 }

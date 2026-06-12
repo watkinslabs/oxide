@@ -731,7 +731,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             // F104: nftables packet-path enforcement. Bridge the
             // netfilter eval() into net::stack via a fn pointer so
             // the net crate stays independent of netfilter.
-            net::stack::install_nf_hook(|h, p| netfilter::eval(h, p).as_u32());
+            net::stack::install_nf_hook(|h, p, fam| netfilter::eval(h, p, fam).as_u32());
             // P8 boot smoke: loopback UDP send-then-recv +
             // ICMP echo round-trip via the in-kernel net stack.
             {

@@ -359,12 +359,12 @@ use super::*;
         let mut packets = 0u64;
         let mut bytes = 0u64;
         let pkt = vec![0u8; 40];
-        assert_eq!(run_rule_full(&exprs, &pkt, None, &mut packets, &mut bytes),
+        assert_eq!(run_rule_full(&exprs, &pkt, None, NFPROTO_IPV4, &mut packets, &mut bytes),
                    Some(NF_DROP));
         assert_eq!(packets, 1);
         assert_eq!(bytes, 40);
         // Run again — accumulates
-        assert_eq!(run_rule_full(&exprs, &pkt, None, &mut packets, &mut bytes),
+        assert_eq!(run_rule_full(&exprs, &pkt, None, NFPROTO_IPV4, &mut packets, &mut bytes),
                    Some(NF_DROP));
         assert_eq!(packets, 2);
         assert_eq!(bytes, 80);
@@ -398,7 +398,7 @@ use super::*;
         let exprs = parse_exprs(&rule);
         let mut p = 0u64;
         let mut b = 0u64;
-        assert_eq!(run_rule_full(&exprs, &vec![0u8; 20], None, &mut p, &mut b), None);
+        assert_eq!(run_rule_full(&exprs, &vec![0u8; 20], None, NFPROTO_IPV4, &mut p, &mut b), None);
         assert_eq!(p, 0);
         assert_eq!(b, 0);
         let _ = counter_data.is_empty();
