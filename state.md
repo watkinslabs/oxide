@@ -1,62 +1,37 @@
 # state — session hand-off
 
-Branch: main @ post-#1759. Both arches boot SMP=2 → login. Per-fd poll/select
-is the Linux `->poll` model (no global POLL_WAIT). /proc is being built out the
-Linux way over real kernel state (no fakes; absent subsystems omitted).
+Branch: **main** (clean). All this session's work merged.
 
-## Landed this session (procfs Linux-way buildout, all merged, both arches green)
-- **#1758 (B102): real /proc/interrupts.** New `arch-irq::irqstat` — per-CPU
-  LOC (local timer), RES (resched IPI), device-line (MSI/SPI) counters, fed by
-  the IRQ dispatcher (lapic.rs x86 timer/resched/MSI; gic.rs arm CNTV timer +
-  GICv2m SPI lines). `procfs::interrupts` renders Linux `show_interrupts`:
-  one column per online CPU, fired device rows, LOC/RES summary rows.
-- **#1759 (B103): real /proc/uptime idle + /proc/devices.** uptime field 2 was
-  a copy of field 1 → now all-CPU summed idle from `sched::cpustat` (CLK_TCK=100,
-  1 idle tick = 1 cs). devices block section derives majors live from the block
-  registry snapshot (dedup, Linux driver names); char section = fixed
-  kernel-created set (real majors).
-- **R82: real /proc/buddyinfo.** Added `Pmm::free_orders() -> [u64; ORDERS]`
-  read-only per-order free-block snapshot (docs/10 R01 revision on FROZEN spec);
-  `procfs::buddyinfo` renders the single Normal zone's per-order counts (Linux
-  `frag_show`). docs/19 R01 note extended to list the newly-backed rows.
+## Merged this session
+- #1768 P17-08 VT font-select SGR 10/11/12 + CP437 — box-drawing corners on
+  TERM=linux (htop symptom #2). New crates/kernel/vt/src/cp437.rs (data table;
+  font untouched). disp_ctrl mode: SGR 11 = CP437 direct, 12 = +toggle_meta,
+  10 = back to UTF-8.
+- Softirq subsystem made Linux-faithful end-to-end (CPU-STALL root cause was a
+  softirq livelock, NOT the VT branch — wedged CPU RIP was in
+  drv_virtio_net::modern::rx_drain_softirq via run_pending looping unbounded):
+  - #1764 B105 __do_softirq restart gate (MAX_SOFTIRQ_RESTART=10 + time + need_resched)
+  - #1765 B106 ksoftirqd kthread (deferral target)
+  - #1766 B107 per-CPU PENDING/IN_PROGRESS + per-CPU pinned ksoftirqd + per-CPU
+    drain from every CPU's irq_exit (was BSP-only global)
+  - #1767 B108 local_bh_disable/local_bh_enable/spin_lock_bh on preempt_count
+    (Linux bit-field SOFTIRQ field); IN_PROGRESS bool retired; sched::bh module
+  See auto-memory project_softirq_livelock.md for the full structure.
 
-## Earlier this session (already merged before #1758)
-- B96 rebuilt poll/select as per-fd `PollWaiter`+`PollSubscribers` (killed the
-  global POLL_WAIT hack the user rejected). B97/B100 per-CPU cputime accounting
-  on EVERY cpu (was BSP-only → htop/proc showed 1 active CPU). B98 loadavg EWMA.
-  B99/B101 cpuinfo/vmstat/partitions/diskstats real. R80 VT alt-screen+ECH.
-  R81 block per-disk DiskStats decorator. docs 17§3a/19§60/49§5 R01 amended.
+## htop symptoms (SMP=4) — all CLOSED
+1. 1 CPU -> #1763 (dynamic /sys cpu). 2. box corners -> #1768. 3. CPU-STALL ->
+   softirq livelock, #1764-#1767.
 
-## /proc status: what's REAL vs deliberately-stub
-REAL now: cpuinfo, stat (per-cpu cpu0..N + ctxt), loadavg, vmstat, meminfo,
-uptime (+idle), partitions, diskstats, interrupts, devices, buddyinfo, per-PID tree
-(status/stat/maps/smaps/statm/cmdline/comm/environ/io/limits/sched/fd/fdinfo/
-ns/cgroup/mounts/mountinfo + task/ + net/).
-STILL STUB — each blocked on a discipline boundary, NOT laziness:
-- softirqs — needs per-CPU per-slot counters in the `softirq` crate, whose spec
-  (docs/45) is DRAFT → can't extend subsystem code (Discipline rule 1).
-- zoneinfo — needs the broader per-zone watermark/stat set; lower value, still
-  stubbed. (buddyinfo now REAL via R82 `free_orders()`.)
-- modules — `modules::module_name` is a hardcoded "module" stub → rendering
-  would emit FAKE names; empty (nothing loaded) is the honest state.
-- kallsyms — needs a real symbol table; faking it is worse than empty.
-- per-PID auxv (zeroed), wchan ("0"), schedstat — auxv needs a per-task
-  saved_auxv field in the FROZEN task struct (R-branch); wchan needs kallsyms.
-
-## Verification note
-New /proc inodes validated by construction: `/proc/interrupts` reuses the SAME
-`cpu::smp::online_count()` column loop as `/proc/stat`, which the user already
-confirmed renders cpu0–cpu3 correctly. Build + spec-lint + pre-push boot-smoke
-(both arches → login) all green. NOT content-captured in a boot: the rcS/
-oxide-smokes path doesn't run under the default systemd PID1 boot, so a /proc
-dump there wouldn't execute; a qemu-MCP login+cat (SMP=1, serial DSR-wedges at
-SMP≥2) is the route if a live capture is wanted.
+## Open / next candidates
+- Softirq optional follow-ups (NOT blockers): live RX-flood verification under
+  qemu MCP (gate trip + ksoftirqd takeover never watched live); /proc/softirqs
+  per-CPU counters (oxide counters still global diag). Two deliberate
+  divergences kept + documented: raise() no process-ctx wakeup_softirqd
+  (fbcon/klog under rq-lock reentrancy risk); ksoftirqd 100ms park backstop.
+- vty-plan RC3 remaining (docs/57): DA/DECID answerback, DECCKM ?1, bracketed
+  paste ?2004, IRM insert, OSC palette 4/104. RC1: console-getty DSR wedge at SMP>=2.
+- Pre-existing unmerged branches: B73-console-autologin, P16-01-uts-ns-fork-inherit.
 
 ## First task next session
-Decide direction with the user OR continue per "keep filling it out": the
-remaining honest /proc fills all need an R-branch (PMM buddyinfo accessor; task
-saved_auxv) or DRAFT-spec lift (softirq per-cpu counters). If continuing
-autonomously, the cleanest is buddyinfo via an R-branch on docs/10 adding a
-read-only `pmm::free_orders() -> [u64; ORDERS]` accessor + procfs buddyinfo
-inode. Untracked `abstract-anal.md` at repo root is a prior-session scratch
-artifact (asm-outside-arch inventory) — not mine, left in tree.
+Pick lowest unfinished phase-17 tty/login item (vty-plan RC3) OR audit phase
+ladder per 00§3. `git -C /home/nd/oxide2 log --oneline -10 main` for context.
