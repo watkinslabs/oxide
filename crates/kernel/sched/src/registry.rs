@@ -249,20 +249,22 @@ pub fn try_wake_stopped(task: &Task) -> bool {
 ///   `-1`   any child of `parent`
 ///   `0`    child of `parent` in the waiter's process group (`parent_pgid`)
 ///   `>0`   that specific child by **kernel tid** — `056_clone` returns the
-///          kernel tid to the parent, so `waitpid(pid)` carries a kernel
-///          tid, NOT a vpid; matching `c_tid` is the inverse of that return
+///          vpid to the parent (clone returns the child's vtid==vtgid), so
+///          `waitpid(pid)` carries the vpid and we match the child's vtgid.
 ///   `<-1`  any child in process group `-pid`
-/// `c_*` = the candidate child's fields. Pure (no globals) → unit-tested.
+/// `c_*` = the candidate child's fields: `c_parent_tid` is the INTERNAL tid
+/// (kernel parent-linkage), `c_vpid` is the child's vtgid (the PID userspace
+/// sees), `c_pgid` is the process-group id (vpid space). Pure → unit-tested.
 /// # C: O(1)
 pub(crate) fn wait_pid_matches(
-    c_parent_tid: u32, c_tid: u32, c_pgid: u32,
+    c_parent_tid: u32, c_vpid: u32, c_pgid: u32,
     parent: u32, pid: i32, parent_pgid: u32,
 ) -> bool {
     if c_parent_tid != parent { return false; }
     match pid {
         -1          => true,
         0           => c_pgid == parent_pgid,
-        p if p > 0  => c_tid == p as u32,
+        p if p > 0  => c_vpid == p as u32,
         p           => c_pgid == (-p) as u32, // p < -1: process group -pid
     }
 }
@@ -284,18 +286,19 @@ pub fn take_child_stop_event(
     let g = REG.lock();
     for (_, w) in g.iter() {
         let Some(t) = w.upgrade() else { continue };
+        let cvpid = t.vtgid.load(Ordering::Acquire);
         if !wait_pid_matches(
-            t.parent_tid.load(Ordering::Acquire), t.tid,
+            t.parent_tid.load(Ordering::Acquire), cvpid,
             t.pgid.load(Ordering::Acquire), parent, pid, parent_pgid)
         {
             continue;
         }
         if want_stop && t.stop_pending.swap(false, Ordering::AcqRel) {
             let sig = t.stop_signal.load(Ordering::Acquire);
-            return Some((t.tid, 1, sig as u32));
+            return Some((cvpid, 1, sig as u32));
         }
         if want_cont && t.cont_pending.swap(false, Ordering::AcqRel) {
-            return Some((t.tid, 2, 0));
+            return Some((cvpid, 2, 0));
         }
     }
     None
