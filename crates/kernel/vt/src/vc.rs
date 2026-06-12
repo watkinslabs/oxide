@@ -198,6 +198,26 @@ pub struct Vc {
     /// the alt screen, then restore the shell on exit. Linux
     /// `drivers/tty/vt/vt.c` `set_mode`/`save_screen`.
     alt_screen: Option<AltScreen>,
+    /// Active 256-color palette (index → 0x00RRGGBB). SGR index colors and
+    /// `38;5`/`48;5` resolve through THIS table at apply time, so `OSC 4`
+    /// palette redefinition affects glyphs printed afterward (`57§14`).
+    /// Initialized to the xterm/VGA defaults (`palette::xterm_256_rgb`).
+    palette: [u32; 256],
+    /// Default fg/bg (`OSC 10`/`11`, SGR 39/49 target). Distinct from the
+    /// const `DEFAULT_*_RGB` so `OSC 10/11` can redefine them per VT.
+    default_fg: u32,
+    default_bg: u32,
+}
+
+/// The xterm/VGA-default 256-entry palette. # C: O(256).
+fn default_palette() -> [u32; 256] {
+    let mut p = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        p[i] = crate::palette::xterm_256_rgb(i as u32);
+        i += 1;
+    }
+    p
 }
 
 /// Saved MAIN-screen state captured on alt-screen entry. # C: O(cols*rows).
@@ -258,6 +278,49 @@ impl Vc {
             history: VecDeque::new(),
             view_offset: 0,
             alt_screen: None,
+            palette: default_palette(),
+            default_fg: DEFAULT_FG_RGB,
+            default_bg: DEFAULT_BG_RGB,
+        }
+    }
+
+    /// Resolve + apply an SGR 16/256-color index to the current fg through
+    /// the active palette. A basic 0..7 index brightens to 8..15 when bold
+    /// (VGA convention). # C: O(1).
+    pub fn set_fg_index(&mut self, idx: u32) {
+        let i = if self.attr.bold && idx < 8 { idx + 8 } else { idx };
+        self.attr.fg = self.palette[i.min(255) as usize];
+    }
+
+    /// Resolve + apply an SGR 16/256-color index to the current bg through
+    /// the active palette. # C: O(1).
+    pub fn set_bg_index(&mut self, idx: u32) {
+        self.attr.bg = self.palette[idx.min(255) as usize];
+    }
+
+    /// Default fg (SGR 39 target). # C: O(1).
+    pub fn default_fg(&self) -> u32 { self.default_fg }
+    /// Default bg (SGR 49 target). # C: O(1).
+    pub fn default_bg(&self) -> u32 { self.default_bg }
+
+    /// `OSC 4 ; idx ; spec` — redefine one palette entry. Future glyphs use
+    /// it; already-printed cells keep their resolved RGB (set-time model).
+    /// # C: O(1).
+    pub fn set_palette(&mut self, idx: u8, rgb: u32) {
+        self.palette[idx as usize] = rgb;
+    }
+
+    /// `OSC 10` — set the default fg. # C: O(1).
+    pub fn set_default_fg(&mut self, rgb: u32) { self.default_fg = rgb; }
+    /// `OSC 11` — set the default bg. # C: O(1).
+    pub fn set_default_bg(&mut self, rgb: u32) { self.default_bg = rgb; }
+
+    /// `OSC 104` — reset one (`Some`) or all (`None`) palette entries to the
+    /// xterm/VGA defaults. # C: O(1) or O(256).
+    pub fn reset_palette(&mut self, idx: Option<u8>) {
+        match idx {
+            Some(i) => self.palette[i as usize] = crate::palette::xterm_256_rgb(i as u32),
+            None => self.palette = default_palette(),
         }
     }
 
