@@ -20,6 +20,9 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
         return crate::netlink_fd::read(fd as u64, buf, cnt);
     }
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
+    // fanotify FAN_ACCESS_PERM: blocks until a daemon allows/denies (fast
+    // no-op when no perm marks exist). Deny → EACCES.
+    if !::fs::inotify::check_access_perm(&file.inode()) { return -(Errno::Eacces.as_i32() as i64); }
     // SAFETY: range [buf, buf+cnt) validated < USER_VA_END by validate_user_buf_writable; user pages mapped via active CR3; demand-paging resolves not-present pages on first kernel-side write.
     let slice: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, cnt) };
     match file.read(slice) {
