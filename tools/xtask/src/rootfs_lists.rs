@@ -36,6 +36,7 @@ pub(crate) const CRT_BINS: &[(&str, &str)] = &[
     ("userspace/memfd_seal_probe/memfd_seal_probe", "userspace/memfd_seal_probe/memfd_seal_probe.c"),
     ("userspace/uevent_probe/uevent_probe",       "userspace/uevent_probe/uevent_probe.c"),
     ("userspace/rtlink_probe/rtlink_probe",       "userspace/rtlink_probe/rtlink_probe.c"),
+    ("userspace/tracemark_probe/tracemark_probe", "userspace/tracemark_probe/tracemark_probe.c"),
     ("userspace/nlmcast_probe/nlmcast_probe",     "userspace/nlmcast_probe/nlmcast_probe.c"),
     ("userspace/dev_smoke/dev_smoke",             "userspace/dev_smoke/dev_smoke.c"),
     ("userspace/mmap_zero_smoke/mmap_zero_smoke", "userspace/mmap_zero_smoke/mmap_zero_smoke.c"),

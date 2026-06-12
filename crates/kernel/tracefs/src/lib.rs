@@ -1,6 +1,8 @@
 #![no_std]
 extern crate alloc;
 
+pub mod ring;
+
 // Boot-time tracefs registration per `37§R01` and v2-arch-plan §1.8.
 //
 // V1: static directory at /sys/kernel/tracing whose readdir +
@@ -24,17 +26,15 @@ use vfs::StaticFileInode;
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    // Empty-trace defaults — match Linux's "no tracer attached" state.
-    devfs::register("/sys/kernel/tracing/tracing_on",
-        StaticFileInode::new(b"0\n") as InodeRef);
+    // Real trace buffer: trace / trace_marker / tracing_on are live inodes
+    // (record + render + gate); the rest stay nop-tracer static defaults.
+    ring::register();
     devfs::register("/sys/kernel/tracing/current_tracer",
         StaticFileInode::new(b"nop\n") as InodeRef);
     devfs::register("/sys/kernel/tracing/available_tracers",
         StaticFileInode::new(b"nop\n") as InodeRef);
     devfs::register("/sys/kernel/tracing/available_events",
         StaticFileInode::new(b"") as InodeRef);
-    devfs::register("/sys/kernel/tracing/trace",
-        StaticFileInode::new(b"# tracer: nop\n#\n") as InodeRef);
     devfs::register("/sys/kernel/tracing/trace_pipe",
         StaticFileInode::new(b"") as InodeRef);
     devfs::register("/sys/kernel/tracing/trace_options",
