@@ -9,99 +9,131 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::collections::VecDeque;
 use alloc::format;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as TraceClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
-/// Max buffered records (ring — oldest dropped when full). Bounds memory
-/// the way Linux's per-CPU `buffer_size_kb` does.
-const MAX_ENTRIES: usize = 4096;
+use crate::percpu_ring::{self, Record, KIND_MARK, KIND_SCHED_SWITCH, PAYLOAD};
 
-/// One recorded trace event (today: a `trace_marker` write).
-struct TraceEntry {
-    ts_ns: u64,
-    pid:   u32,
-    comm:  [u8; 16],
-    clen:  usize,
-    msg:   Vec<u8>,
-}
-
-static BUF: Spinlock<VecDeque<TraceEntry>, TraceClass> = Spinlock::new(VecDeque::new());
 /// Linux default: tracing_on = 1 (recording enabled; the `nop` tracer just
 /// doesn't generate function events — trace_marker still records).
 static TRACING_ON: AtomicBool = AtomicBool::new(true);
 static NEXT_INO: AtomicU64 = AtomicU64::new(0x3700_0000);
 
-/// Monotonic ns since boot — the ftrace timestamp clock.
-/// # C: O(1)
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-fn now_ns() -> u64 { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 }
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-fn now_ns() -> u64 { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
-#[cfg(not(target_os = "oxide-kernel"))]
-fn now_ns() -> u64 { 0 }
+/// Read-side serialization: `trace`/`trace_pipe` readers + clear take this so
+/// concurrent drains don't double-consume. The PRODUCER side (record) is
+/// lockless. # not held across blocking.
+static READ_LOCK: Spinlock<(), TraceClass> = Spinlock::new(());
 
-/// Current task's (pid, comm) for the record header, or (0, "<kernel>").
-/// # C: O(1)
-fn cur_task() -> (u32, [u8; 16], usize) {
+/// `tracing_on` gate (shared with the tracepoint sites). # C: O(1)
+pub(crate) fn tracing_on() -> bool { TRACING_ON.load(Ordering::Acquire) }
+
+/// Monotonic ns since boot — the ftrace timestamp clock. # C: O(1)
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub(crate) fn now_ns() -> u64 { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 }
+/// Monotonic ns since boot. # C: O(1)
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+pub(crate) fn now_ns() -> u64 { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+/// Monotonic ns since boot (hosted stub). # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub(crate) fn now_ns() -> u64 { 0 }
+
+/// Current CPU id (the per-CPU ring index). # C: O(1)
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub(crate) fn this_cpu() -> usize { use hal::CpuOps; hal_x86_64::X86CpuOps::current_cpu() as usize }
+/// Current CPU id. # C: O(1)
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+pub(crate) fn this_cpu() -> usize { use hal::CpuOps; hal_aarch64::ArmCpuOps::current_cpu() as usize }
+/// Current CPU id (hosted stub). # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub(crate) fn this_cpu() -> usize { 0 }
+
+/// Current task's (pid, comm[16] null-padded). # C: O(1)
+fn cur_task() -> (u32, [u8; 16]) {
     let mut comm = [0u8; 16];
     #[cfg(target_os = "oxide-kernel")]
     if let Some(t) = sched::live::current() {
         let name = t.name.as_bytes();
         let n = name.len().min(16);
         comm[..n].copy_from_slice(&name[..n]);
-        return (t.tgid.load(Ordering::Relaxed), comm, n);
+        return (t.tgid.load(Ordering::Relaxed), comm);
     }
     let k = b"<kernel>";
     comm[..k.len()].copy_from_slice(k);
-    (0, comm, k.len())
+    (0, comm)
 }
 
-/// Record a `trace_marker` write. No-op when tracing_on=0. Trailing newline
-/// is stripped (Linux records one marker per write without it).
-/// # C: O(1) amortized
+/// Record a `trace_marker` write into this CPU's lockless ring. No-op when
+/// tracing_on=0. Trailing newline stripped (one marker per write).
+/// Payload layout: [comm: 16 bytes null-padded][msg bytes].
+/// # C: O(1)
 fn record_marker(msg: &[u8]) {
-    if !TRACING_ON.load(Ordering::Acquire) { return; }
-    let (pid, comm, clen) = cur_task();
+    if !tracing_on() { return; }
+    let (pid, comm) = cur_task();
     let trimmed = msg.strip_suffix(b"\n").unwrap_or(msg);
-    let mut g = BUF.lock();
-    while g.len() >= MAX_ENTRIES { g.pop_front(); }
-    g.push_back(TraceEntry { ts_ns: now_ns(), pid, comm, clen, msg: trimmed.to_vec() });
+    let mut pl = [0u8; PAYLOAD];
+    pl[..16].copy_from_slice(&comm);
+    let mn = trimmed.len().min(PAYLOAD - 16);
+    pl[16..16 + mn].copy_from_slice(&trimmed[..mn]);
+    percpu_ring::record(this_cpu(), now_ns(), pid, KIND_MARK, &pl[..16 + mn]);
 }
 
-/// Render the buffer in Linux ftrace text format. # C: O(N_entries · msg)
+/// trim a null-padded comm field to its &str.
+fn comm_str(b: &[u8]) -> &str {
+    let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    core::str::from_utf8(&b[..end]).unwrap_or("?")
+}
+
+/// Append one record's Linux ftrace event line to `out`. # C: O(payload)
+fn fmt_record(out: &mut Vec<u8>, e: &Record) {
+    let secs = e.ts_ns / 1_000_000_000;
+    let usec = (e.ts_ns % 1_000_000_000) / 1_000;
+    let p = e.data();
+    match e.kind {
+        KIND_MARK if p.len() >= 16 => {
+            let comm = comm_str(&p[..16]);
+            out.extend_from_slice(format!("{:>16}-{:<5} [{:03}] ..... {}.{:06}: tracing_mark_write: ",
+                comm, e.pid, e.cpu, secs, usec).as_bytes());
+            out.extend_from_slice(&p[16..]);
+            out.push(b'\n');
+        }
+        KIND_SCHED_SWITCH if p.len() >= 16 + 4 + 16 + 4 => {
+            // [prev_comm 16][next_pid u32 LE][next_comm 16][next state u8...]
+            let prev_comm = comm_str(&p[..16]);
+            let next_pid = u32::from_le_bytes([p[16], p[17], p[18], p[19]]);
+            let next_comm = comm_str(&p[20..36]);
+            out.extend_from_slice(format!(
+                "{:>16}-{:<5} [{:03}] ..... {}.{:06}: sched_switch: prev_comm={} prev_pid={} ==> next_comm={} next_pid={}\n",
+                prev_comm, e.pid, e.cpu, secs, usec, prev_comm, e.pid, next_comm, next_pid).as_bytes());
+        }
+        _ => {}
+    }
+}
+
+/// Render an ftrace `trace` snapshot (header + all unconsumed records,
+/// timestamp-ordered; non-destructive). # C: O(N · payload)
 fn render() -> Vec<u8> {
-    let g = BUF.lock();
-    let mut out: Vec<u8> = Vec::with_capacity(256 + g.len() * 48);
+    let _g = READ_LOCK.lock();
+    let recs = percpu_ring::collect(false);
+    let mut out: Vec<u8> = Vec::with_capacity(256 + recs.len() * 64);
     out.extend_from_slice(b"# tracer: nop\n#\n");
     out.extend_from_slice(format!("# entries-in-buffer/entries-written: {}/{}   #P:1\n#\n",
-        g.len(), g.len()).as_bytes());
+        recs.len(), recs.len()).as_bytes());
     out.extend_from_slice(b"#           TASK-PID     CPU#  TIMESTAMP  FUNCTION\n");
     out.extend_from_slice(b"#              | |         |       |         |\n");
-    for e in g.iter() { fmt_entry(&mut out, e); }
+    for e in recs.iter() { fmt_record(&mut out, e); }
     out
 }
 
-/// Append one record's Linux ftrace event line to `out`. # C: O(msg)
-fn fmt_entry(out: &mut Vec<u8>, e: &TraceEntry) {
-    let comm = core::str::from_utf8(&e.comm[..e.clen]).unwrap_or("?");
-    let secs = e.ts_ns / 1_000_000_000;
-    let usec = (e.ts_ns % 1_000_000_000) / 1_000;
-    out.extend_from_slice(format!("{:>16}-{:<5} [000] ..... {}.{:06}: tracing_mark_write: ",
-        comm, e.pid, secs, usec).as_bytes());
-    out.extend_from_slice(&e.msg);
-    out.push(b'\n');
-}
-
-/// Pop ALL buffered records and render their event lines (no header) —
-/// the `trace_pipe` consuming-read path. # C: O(N_entries · msg)
+/// Drain ALL records, render their event lines (no header) — `trace_pipe`'s
+/// consuming read. # C: O(N · payload)
 fn drain_render() -> Vec<u8> {
-    let mut g = BUF.lock();
-    let mut out: Vec<u8> = Vec::with_capacity(g.len() * 48);
-    while let Some(e) = g.pop_front() { fmt_entry(&mut out, &e); }
+    let _g = READ_LOCK.lock();
+    let recs = percpu_ring::collect(true);
+    let mut out: Vec<u8> = Vec::with_capacity(recs.len() * 64);
+    for e in recs.iter() { fmt_record(&mut out, e); }
     out
 }
 
@@ -137,7 +169,7 @@ impl Inode for TraceInode {
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> { Ok(read_at(&render(), off, buf)) }
     /// Any write clears the buffer (Linux `echo > trace`). # C: O(1)
-    fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> { BUF.lock().clear(); Ok(buf.len()) }
+    fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> { percpu_ring::clear(); Ok(buf.len()) }
 }
 
 /// `/sys/kernel/tracing/tracing_on` — read "1\n"/"0\n"; write toggles.
@@ -212,7 +244,7 @@ impl Inode for TracePipeInode {
     }
     fn poll(&self) -> u32 {
         let mut mask = 0;
-        if !self.pending.lock().is_empty() || !BUF.lock().is_empty() { mask |= vfs::POLL_IN; }
+        if !self.pending.lock().is_empty() || percpu_ring::any_pending() { mask |= vfs::POLL_IN; }
         mask
     }
 }
