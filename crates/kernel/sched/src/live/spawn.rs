@@ -209,6 +209,15 @@ pub unsafe fn spawn_user_thread_with_vpid(
     // it's wrapped in Arc + made visible via registry/runqueue.
     if vpid_tgid != 0 { task.vtgid.store(vpid_tgid, Ordering::Release); }
     if vpid_tid  != 0 { task.vtid.store(vpid_tid,   Ordering::Release); }
+    // B118: pgid/sid live in VPID space, not the opaque internal tid.
+    // Task::new_user seeds both to the internal tid; for a user task with
+    // a stamped vpid (init = 1) re-seed to vtgid so getpgid/getsid and
+    // ps PGRP/SID report Linux pids. Forks override via clone (inherit
+    // parent); kthreads (vpid 0) keep the internal tid (not user-visible).
+    if vpid_tgid != 0 {
+        task.pgid.store(vpid_tgid, Ordering::Release);
+        task.sid.store(vpid_tgid, Ordering::Release);
+    }
 
     let stack: Box<[u8]> = alloc::vec![0u8; KTHREAD_STACK_BYTES].into_boxed_slice();
     // SAFETY: task is local; no concurrent reader.
