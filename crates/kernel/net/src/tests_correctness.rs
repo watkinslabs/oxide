@@ -177,6 +177,48 @@ fn f180a_ipv6_udp_no_bind_silent_drop() {
     assert!(stack.recv_udp6(9999).is_none());
 }
 
+// ----- netfilter hook wiring: PRE_ROUTING/LOCAL_IN (RX), LOCAL_OUT/
+//        POST_ROUTING (TX) must fire on the real IPv4 packet path -------
+
+#[test]
+fn netfilter_ipv4_hooks_fire_on_rx_and_tx() {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use crate::stack::{install_nf_hook, NF_INET_PRE_ROUTING, NF_INET_LOCAL_IN,
+        NF_INET_LOCAL_OUT, NF_INET_POST_ROUTING};
+    use crate::ipv4::{push_ipv4_header, IPV4_HDR_LEN};
+    use crate::udp::UDP_HDR_LEN;
+
+    // Process-global recorder: OR each hook id the stack invokes. Returns
+    // NF_ACCEPT(1) so the path behaves exactly as the no-hook default.
+    static SEEN: AtomicU32 = AtomicU32::new(0);
+    fn rec(h: u32, _p: &[u8]) -> u32 { SEEN.fetch_or(1u32 << h, Ordering::AcqRel); 1 }
+    install_nf_hook(rec);
+    SEEN.store(0, Ordering::Release);
+
+    let stack = NetStack::new();
+    let (id, _lo) = stack.register_loopback();
+    let lo = Ipv4Addr::LOOPBACK;
+
+    // RX: deliver an IPv4/UDP frame to 127.0.0.1 → PRE_ROUTING + LOCAL_IN.
+    let payload = b"nf!";
+    let mut p = Pkt::with_capacity(IPV4_HDR_LEN, IPV4_HDR_LEN + UDP_HDR_LEN + payload.len() + IPV4_HDR_LEN);
+    let slot = p.put(UDP_HDR_LEN + payload.len()).unwrap();
+    crate::udp::UdpHdr::build_into(40000, 5555, lo, lo, payload, slot);
+    push_ipv4_header(&mut p, lo, lo, IpProto::Udp, 1).unwrap();
+    let frame = p.data().to_vec();
+    stack.bind_udp(lo, 5555).unwrap();
+    stack.deliver_rx(id, &frame).unwrap();
+
+    // TX: a locally-generated IPv4 segment → LOCAL_OUT + POST_ROUTING.
+    stack.send_l4_over_ipv4_pub(lo, lo, b"hello").unwrap();
+
+    let seen = SEEN.load(Ordering::Acquire);
+    assert!(seen & (1 << NF_INET_PRE_ROUTING)  != 0, "PRE_ROUTING did not fire");
+    assert!(seen & (1 << NF_INET_LOCAL_IN)     != 0, "LOCAL_IN did not fire");
+    assert!(seen & (1 << NF_INET_LOCAL_OUT)    != 0, "LOCAL_OUT did not fire");
+    assert!(seen & (1 << NF_INET_POST_ROUTING) != 0, "POST_ROUTING did not fire");
+}
+
 #[test]
 fn f180a_ipv6_udp_eaddrinuse_on_dup_bind() {
     use crate::addr::Ipv6Addr;
