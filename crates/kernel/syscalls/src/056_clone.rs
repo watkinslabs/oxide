@@ -150,6 +150,31 @@ pub fn sys_clone_dispatch(
         *child.ctty.get() = (*cur.ctty.get()).clone();
     }
     child.umask.store(cur.umask.load(Ordering::Acquire), Ordering::Release);
+    // Namespaces inherit across clone/fork (Linux `copy_namespaces`): the
+    // child shares the parent's namespaces unless this clone requests new
+    // ones via CLONE_NEW*. Without this, every fork dropped back to the root
+    // namespace (hostname/domainname/ipc/net/user/cgroup/mount all reset),
+    // so namespaces were effectively non-functional across process creation.
+    child.ns_membership.store(cur.ns_membership.load(Ordering::Acquire), Ordering::Release);
+    child.ipc_ns.store(cur.ipc_ns.load(Ordering::Acquire), Ordering::Release);
+    child.net_ns.store(cur.net_ns.load(Ordering::Acquire), Ordering::Release);
+    child.user_ns.store(cur.user_ns.load(Ordering::Acquire), Ordering::Release);
+    child.parent_user_ns.store(cur.parent_user_ns.load(Ordering::Acquire), Ordering::Release);
+    child.cgroup_ns.store(cur.cgroup_ns.load(Ordering::Acquire), Ordering::Release);
+    child.mount_ns.store(cur.mount_ns.load(Ordering::Acquire), Ordering::Release);
+    // SAFETY: child not yet scheduled (sole writer to its UTS slots); parent reads are the running task on this CPU per `13§5`.
+    unsafe {
+        *child.uts_hostname.get() = (*cur.uts_hostname.get()).clone();
+        *child.uts_domainname.get() = (*cur.uts_domainname.get()).clone();
+    }
+    // Clone-time CLONE_NEW* creates fresh namespaces for the child AFTER it
+    // inherited the parent's (Linux `create_new_namespaces`). No-op for the
+    // common fork/pthread path (no CLONE_NEW* bits → new_ns_bits == 0).
+    let new_ns_bits = crate::s272_unshare::ns_bits_from_flags(flags);
+    if new_ns_bits != 0 {
+        child.ns_membership.fetch_or(new_ns_bits, Ordering::Release);
+        crate::s272_unshare::apply_new_namespaces(&child, new_ns_bits);
+    }
     // Materialise an Arc<Task> for the parent by bumping its
     // strong count (the runqueue's `current` AtomicPtr already
     // holds one), then downgrade to Weak<Task>. Drops the bumped
