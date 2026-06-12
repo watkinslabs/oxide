@@ -233,6 +233,13 @@ pub trait CpuOps {
     /// # SAFETY: `base` points to a valid per-CPU area for this CPU.
     /// # C: O(1)
     unsafe fn set_percpu_base(base: *mut u8);
+
+    /// ELF `AT_HWCAP` advertised to userspace in the initial auxv (Linux
+    /// `ELF_HWCAP`). Userspace (musl, OpenSSL) selects SIMD/crypto code
+    /// paths from it. Only bits for features the CPU is GUARANTEED to have
+    /// are set, so a program can never pick an instruction the hardware
+    /// lacks (→ SIGILL). # C: O(1)
+    fn cpu_hwcap() -> u64;
 }
 
 // ---------------------------------------------------------------------------
