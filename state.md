@@ -33,17 +33,21 @@ All x86+arm boot-verified, spec-lint clean:
   DepthUnsupported. Test rmw_write_and_read_into_depth1_file.
 - **C88 #1816** chore: removed user's stale root-level scratch .md + synced
   Cargo.lock (tracefs deps from F442).
+- **B122 #1817** (§2.8) ext4 truncate at depth>=1 (was DepthUnsupported — any
+  multi-extent file failed). Recursive shrink walk: free_subtree reclaims
+  orphaned data+metadata; emptied tree resets to depth-0; i_blocks recomputed.
+  Tests truncate_depth1_frees_tail_and_keeps_head + _to_zero_resets_to_empty.
 
 ## linux2.md remaining (validated real gaps — each a dedicated session)
 
-- **§2.8 ext4 extent-tree GROWTH past depth 2** (read/RMW-write fixed in B121).
-  Remaining: append + truncate tree-growth. `extent_rw.rs` append_inline/
-  depth1/depth2 → DepthUnsupported; truncate_inode_inner depth!=0 →
-  DepthUnsupported (truncating a multi-extent file fails — testable, do next).
-  Append depth>=3 needs ~millions of non-contig extents to reach → not
-  brute-force testable; a RECURSIVE rightmost-append (splits propagate up)
-  replaces the 3 hardcoded handlers, verified to depth 2. Truncate-depth>=1 is
-  the testable, higher-value next step (force depth 1 w/ 5 appends, truncate).
+- **§2.8 ext4 APPEND tree-growth past depth 2** — LAST depth cap in ext4.
+  read/RMW-write (B121) + truncate (B122) are now depth-agnostic. Append
+  (`extent_rw.rs` append_inline/depth1/depth2) still returns ExtentTreeFull/
+  DepthUnsupported past depth 2 — but this is a CLEAN failure (no corruption)
+  on a PATHOLOGICAL case (depth>=3 needs ~millions of non-contig extents).
+  Low priority + not brute-force testable on the 1 MB mini.img. Proper fix =
+  RECURSIVE rightmost-append (splits propagate up) replacing the 3 hardcoded
+  handlers; do it WITH a large fragmented mkfs fixture so depth>=3 is forcible.
 - **§2.11 eBPF** verifier/JIT (`security/src/bpf.rs`) — very large.
 - **§2.12 tracefs** beyond trace_marker: per-CPU ring buffers, real tracepoints
   (sched_switch/sys_enter anchors), trace_pipe blocking read, per-event enable.
