@@ -250,19 +250,35 @@ impl IfaceRegistry {
         self.snapshot_in_ns(0)
     }
 
-    /// Full-device snapshot (id, Arc<dyn NetDev>) for RTM_GETLINK
-    /// dumps that need `.mac()` / `.mtu()` / `.name()` on the
-    /// returned dev. Init-NS only — namespaced variant TBD when
-    /// CLONE_NEWNET socket dispatch lands.
-    /// # C: O(N)
-    pub fn snapshot_devs(&self) -> Vec<(NetIfaceId, Arc<dyn NetDev>)> {
+    /// Full-device snapshot (id, Arc<dyn NetDev>) for RTM_GETLINK dumps in
+    /// network namespace `ns` (a netns sees only its own ifaces — Linux
+    /// `for_each_netdev` over `net->dev_index_head`). # C: O(N)
+    pub fn snapshot_devs_in_ns(&self, ns: u64) -> Vec<(NetIfaceId, Arc<dyn NetDev>)> {
         let g = self.inner.lock();
         g.entries.iter()
-            .filter(|e| e.ns == 0)
+            .filter(|e| e.ns == ns)
             .map(|e| (e.id, e.dev.clone()))
             .collect()
     }
+
+    /// Init-NS device snapshot (compat shim). # C: O(N)
+    pub fn snapshot_devs(&self) -> Vec<(NetIfaceId, Arc<dyn NetDev>)> {
+        self.snapshot_devs_in_ns(0)
+    }
 }
+
+/// The running task's network namespace id (CLONE_NEWNET; 0 = init ns).
+/// rtnetlink dumps filter by this so a container's `ip` only sees its own
+/// ifaces/addrs/routes (Linux `sock_net(skb->sk)`). Host/test builds have no
+/// scheduler → init ns (0). # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn current_net_ns() -> u64 {
+    use core::sync::atomic::Ordering;
+    sched::live::current().map(|t| t.net_ns.load(Ordering::Acquire)).unwrap_or(0)
+}
+/// Host/test stub: init ns. # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn current_net_ns() -> u64 { 0 }
 
 #[cfg(test)]
 mod tests {
