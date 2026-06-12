@@ -52,8 +52,7 @@ pub fn handle_pidfd_ioctl(id: u32, req: u64, arg: u64) -> i64 {
     if arg == 0 || arg >= hal::USER_VA_END || want < 64 {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let task = match sched::live::registry::lookup(id)
-        .or_else(|| sched::live::registry::lookup_by_vpid(id))
+    let task = match sched::live::registry::resolve_user_pid(id)
     {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };

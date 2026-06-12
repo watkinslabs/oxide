@@ -6,8 +6,14 @@
 /// the task with that global tid. None → ESRCH.
 /// # C: O(1) registry lookup
 pub(crate) fn affinity_target(pid: u32) -> Option<alloc::sync::Arc<sched::Task>> {
-    let tid = if pid == 0 { sched::live::current()?.tid } else { pid };
-    sched::live::registry::lookup(tid)
+    // pid==0 → self (by internal tid); else resolve the USERSPACE pid (vpid),
+    // not the internal tid (sched_setaffinity/getaffinity take a vpid).
+    if pid == 0 {
+        let t = sched::live::current()?.tid;
+        sched::live::registry::lookup(t)
+    } else {
+        sched::live::registry::resolve_user_pid(pid)
+    }
 }
 
 /// Bitmask of online CPUs (bit N set ⇔ CPU N online). Capped at 64.

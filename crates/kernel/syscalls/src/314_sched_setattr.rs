@@ -47,7 +47,7 @@ pub fn sys_sched_setattr(args: &SyscallArgs) -> i64 {
     if (size as u64) < SCHED_ATTR_MIN_SIZE { return -(Errno::Einval.as_i32() as i64); }
     let task = if pid == 0 {
         sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
-    } else { sched::live::registry::lookup(pid) };
+    } else { sched::live::registry::resolve_user_pid(pid) };
     let t = match task { Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64) };
     apply_sched_policy(&t, policy, nice, prio)
 }
