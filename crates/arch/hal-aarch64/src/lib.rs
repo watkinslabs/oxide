@@ -140,6 +140,19 @@ pub fn mmio_barrier() {
 pub struct ArmCpuOps;
 
 impl CpuOps for ArmCpuOps {
+    /// `AT_HWCAP` for aarch64. Advertises the ARMv8-A *mandatory* baseline
+    /// — `HWCAP_FP` (1<<0) + `HWCAP_ASIMD` (1<<1) — which every ARMv8-A
+    /// core (and the QEMU `virt` default CPU) is guaranteed to implement,
+    /// so userspace NEON paths are always safe. Optional crypto-extension
+    /// bits (AES/PMULL/SHA) are intentionally NOT set without reading
+    /// `ID_AA64ISAR0_EL1`, to avoid ever advertising an absent instruction.
+    /// # C: O(1)
+    fn cpu_hwcap() -> u64 {
+        const HWCAP_FP: u64 = 1 << 0;
+        const HWCAP_ASIMD: u64 = 1 << 1;
+        HWCAP_FP | HWCAP_ASIMD
+    }
+
     /// # C: O(1)
     fn current_cpu() -> u32 {
         #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]

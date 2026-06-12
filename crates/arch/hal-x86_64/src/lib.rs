@@ -213,6 +213,11 @@ pub fn mmio_barrier() {
 pub struct X86CpuOps;
 
 impl CpuOps for X86CpuOps {
+    /// x86_64 userspace detects features via the `CPUID` instruction
+    /// directly (glibc/musl ignore `AT_HWCAP` here), so advertise 0.
+    /// # C: O(1)
+    fn cpu_hwcap() -> u64 { 0 }
+
     /// # C: O(1)
     fn current_cpu() -> u32 {
         #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]

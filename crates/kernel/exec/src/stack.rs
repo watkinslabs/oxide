@@ -75,6 +75,7 @@ pub unsafe fn build_user_stack(
     random16: &[u8; 16],
     exec_path: &[u8],
     vdso_ehdr: u64,
+    hwcap: u64,
 ) -> Option<u64> {
     let mut cursor = stack_top;
 
@@ -133,7 +134,7 @@ pub unsafe fn build_user_stack(
         (AT_PLATFORM, platform_va),
         (AT_EXECFN,  execfn_va),
         (AT_RANDOM,  random_va),
-        (AT_HWCAP,   0),
+        (AT_HWCAP,   hwcap),
         (AT_CLKTCK,  100),
         // 0 = "no vDSO mapped" — glibc / musl skip the AT_SYSINFO_EHDR
         // entry under that value. Non-zero = vDSO load VA per K14.
