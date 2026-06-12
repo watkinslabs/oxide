@@ -81,6 +81,14 @@ pub struct Emulator {
     charset_slot: u8,
     utf8_pending: [u8; 4],
     utf8_len: u8,
+    /// Linux console font-mapping mode (`SGR 11`/`12`, `vt.c` disp_ctrl):
+    /// when set, incoming bytes are NOT UTF-8 decoded — each raw byte maps
+    /// through CP437 to a glyph (this is how ncurses on `TERM=linux` draws
+    /// box-drawing: `smacs`=`\E[11m`, raw CP437 bytes, `rmacs`=`\E[10m`).
+    disp_ctrl: bool,
+    /// `SGR 12` second alternate font: like `disp_ctrl` but XOR each byte
+    /// with 0x80 first (Linux `toggle_meta`).
+    toggle_meta: bool,
     /// Pending terminal answerback bytes (DSR/CPR reply per `CSI n`). The
     /// console driver drains this after each `feed`/`feed_bytes` and
     /// injects it into the tty INPUT ring so the program that issued the
@@ -103,6 +111,8 @@ impl Default for Emulator {
             charset_slot: 0,
             utf8_pending: [0; 4],
             utf8_len: 0,
+            disp_ctrl: false,
+            toggle_meta: false,
             reply: [0; REPLY_CAP],
             reply_len: 0,
         }
@@ -173,6 +183,14 @@ impl Emulator {
     }
 
     fn ground(&mut self, vc: &mut Vc, byte: u8) {
+        // Linux font-mapping mode (after `\E[11m`/`\E[12m`): bytes are raw
+        // CP437 glyphs, NOT UTF-8 — this is how ncurses draws box-drawing on
+        // TERM=linux. ESC still breaks out so the closing `\E[10m` is parsed.
+        if self.disp_ctrl && byte != 0x1b {
+            let b = if self.toggle_meta { byte ^ 0x80 } else { byte };
+            self.print(vc, crate::cp437::to_unicode(b));
+            return;
+        }
         match byte {
             0x1b => {
                 self.state = CsiState::Esc;
@@ -793,6 +811,13 @@ impl Emulator {
                 7 => vc.attr.reverse = true,
                 8 => vc.attr.conceal = true,
                 9 => vc.attr.strike = true,
+                // Linux console font select (vt.c): 10 = primary font /
+                // exit alternate, 11 = first alternate (CP437 direct), 12 =
+                // second alternate (CP437 with high-bit toggle). Drives the
+                // `disp_ctrl` byte path above — NOT a color/attr.
+                10 => { self.disp_ctrl = false; self.toggle_meta = false; }
+                11 => { self.disp_ctrl = true; self.toggle_meta = false; }
+                12 => { self.disp_ctrl = true; self.toggle_meta = true; }
                 21 => vc.attr.underline = true, // double-underline → underline
                 22 => { vc.attr.bold = false; vc.attr.faint = false; }
                 23 => vc.attr.italic = false,
