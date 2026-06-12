@@ -315,7 +315,7 @@ const IF_OPER_DOWN: u8 = 2;
 /// Layout: nlmsghdr (16) | ifinfomsg (16) | nlattr blocks.
 /// Each block is `{ u16 len; u16 type; payload }` padded to 4 B.
 /// # C: O(N attrs)
-fn build_newlink_reply(
+pub(crate) fn build_newlink_reply(
     seq: u32, pid: u32,
     ifindex: i32,
     name: &str,
@@ -414,7 +414,7 @@ pub fn handle_getlink(req: &Nlmsghdr) -> Vec<u8> {
 /// `addr` / `prefixlen` are stored as host-order; we serialize the
 /// IPv4 as network-order bytes per Linux RTNL convention.
 /// # C: O(N attrs)
-fn build_newaddr_reply(
+pub(crate) fn build_newaddr_reply(
     seq: u32, pid: u32,
     ifindex: i32,
     label: &str,
@@ -571,6 +571,7 @@ pub fn handle_newaddr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     addr_insert(IfaceAddr {
         ifindex, family, addr, prefixlen, scope,
     });
+    crate::mcast::notify_addr(false, ifindex, addr, prefixlen, scope);
     nlmsg_ack(req, 0)
 }
 
@@ -592,13 +593,14 @@ pub fn handle_deladdr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         None    => return nlmsg_ack(req, -22),
     };
     let n = addr_remove(ifindex, addr, prefixlen);
+    if n > 0 { crate::mcast::notify_addr(true, ifindex, addr, prefixlen, 0); }
     nlmsg_ack(req, if n > 0 { 0 } else { -2 /* ENOENT */ })
 }
 
 /// Build one RTM_NEWROUTE reply.
 /// # C: O(N attrs)
 #[allow(clippy::too_many_arguments)]
-fn build_newroute_reply(
+pub(crate) fn build_newroute_reply(
     seq: u32, pid: u32,
     table: u8, protocol: u8, scope: u8, kind: u8,
     dst: Option<([u8; 4], u8)>, // (addr, prefixlen)
@@ -824,6 +826,7 @@ pub fn handle_newroute(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         table, protocol, scope, kind,
         dst, gateway: gw, oif_ifindex: oif, prefsrc: src,
     });
+    crate::mcast::notify_route(false, table, protocol, scope, kind, dst, gw, oif, src);
     nlmsg_ack(req, 0)
 }
 
@@ -844,6 +847,7 @@ pub fn handle_delroute(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     };
     let dst = dst_addr.map(|a| (a, dst_len));
     let n = route_remove(net::netdev::current_net_ns(), table, dst, oif);
+    if n > 0 { crate::mcast::notify_route(true, table, 0, 0, 0, dst, _gw, oif, _src); }
     nlmsg_ack(req, if n > 0 { 0 } else { -3 /* ESRCH */ })
 }
 
@@ -854,8 +858,9 @@ const _: u16 = msg::NLMSG_DONE;
 /// devices from `net::sock::stack().ifaces`; hosted/test builds
 /// return an empty list so the rtnetlink reply path is testable
 /// without dragging the runtime socket layer in.
+/// # C: O(N_ifaces)
 #[cfg(target_os = "oxide-kernel")]
-fn ifaces_snapshot() -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool, u32)> {
+pub(crate) fn ifaces_snapshot() -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool, u32)> {
     let stack = net::sock::stack();
     // A netns sees only its own ifaces (Linux `sock_net(skb->sk)`); the
     // host runs in ns 0 so this is identical to the old all-ns-0 dump.
@@ -869,8 +874,9 @@ fn ifaces_snapshot() -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool, u32
         })
         .collect()
 }
+/// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
-fn ifaces_snapshot() -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool, u32)> {
+pub(crate) fn ifaces_snapshot() -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool, u32)> {
     alloc::vec::Vec::new()
 }
 
@@ -896,7 +902,7 @@ pub fn handle_setlink(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         if ifindex <= 0 { return nlmsg_ack(req, -19 /* ENODEV */); }
         let id = net::addr::NetIfaceId::from_raw(ifindex as u32);
         match net::sock::stack().ifaces.set_iface_flags(id, ifi_flags, ifi_change) {
-            Some(_) => nlmsg_ack(req, 0),
+            Some(_) => { crate::mcast::notify_link(ifindex); nlmsg_ack(req, 0) }
             None    => nlmsg_ack(req, -19 /* ENODEV */),
         }
     }
