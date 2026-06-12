@@ -25,10 +25,11 @@ const AFMT_S16_LE: u32 = 0x0000_0010;
 const AFMT_S8: u32 = 0x0000_0040;
 const AFMT_U16_LE: u32 = 0x0000_0080;
 
-/// OSS lazily-applied params (virtio enums) + whether the device is armed.
-struct Oss { rate: u8, format: u8, channels: u8, running: bool }
+/// OSS lazily-applied params (virtio enums) + whether each direction is
+/// armed (`running` = playback, `cap_running` = capture).
+struct Oss { rate: u8, format: u8, channels: u8, running: bool, cap_running: bool }
 static OSS: Spinlock<Oss, L> =
-    Spinlock::new(Oss { rate: 6 /*44100*/, format: V_S16, channels: 2, running: false });
+    Spinlock::new(Oss { rate: 6 /*44100*/, format: V_S16, channels: 2, running: false, cap_running: false });
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -60,7 +61,8 @@ fn rate_enum_to_hz(e: u8) -> u32 {
     HZ[(e as usize).min(13)]
 }
 
-/// Stop + release the device and disarm, so the next write re-applies params.
+/// Stop + release both directions and disarm, so the next I/O re-applies
+/// params (SNDCTL_DSP_RESET / a param change).
 fn reset() {
     let mut o = OSS.lock();
     if o.running {
@@ -68,6 +70,27 @@ fn reset() {
         let _ = drv_virtio_snd::pcm_hw_free();
         o.running = false;
     }
+    if o.cap_running {
+        let _ = drv_virtio_snd::cap_trigger(false);
+        let _ = drv_virtio_snd::cap_hw_free();
+        o.cap_running = false;
+    }
+}
+
+/// /dev/dsp read(2): lazily cap_hw_params→cap_prepare→cap_trigger on the
+/// first read after a param change, then capture (blocking). Returns bytes.
+/// # C: O(bytes/period × RXQ round-trip)
+pub fn read(buf: &mut [u8]) -> usize {
+    if buf.is_empty() { return 0; }
+    let (rate, fmt, ch) = { let o = OSS.lock(); (o.rate, o.format, o.channels) };
+    if !OSS.lock().cap_running {
+        let period = drv_virtio_snd::period_bytes() as u32;
+        if !drv_virtio_snd::cap_hw_params(rate, fmt, ch, period, period * 2) { return 0; }
+        if !drv_virtio_snd::cap_prepare() { return 0; }
+        if !drv_virtio_snd::cap_trigger(true) { return 0; }
+        OSS.lock().cap_running = true;
+    }
+    drv_virtio_snd::pcm_recv(buf)
 }
 
 /// /dev/dsp write(2): lazily hw_params→prepare→trigger on the first write
@@ -111,14 +134,14 @@ pub fn handle(is_mixer: bool, req: u64, arg: u64) -> i64 {
         2 => {                                                       // SPEED
             let hz = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
             let e = hz_to_rate_enum(hz);
-            { let mut o = OSS.lock(); o.rate = e; o.running = false; }
+            { let mut o = OSS.lock(); o.rate = e; o.running = false; o.cap_running = false; }
             reset();
             wi(arg, rate_enum_to_hz(e));
             0
         }
         3 => {                                                       // STEREO
             let st = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
-            { let mut o = OSS.lock(); o.channels = if st != 0 { 2 } else { 1 }; o.running = false; }
+            { let mut o = OSS.lock(); o.channels = if st != 0 { 2 } else { 1 }; o.running = false; o.cap_running = false; }
             reset();
             wi(arg, (OSS.lock().channels - 1) as u32);
             0
@@ -128,14 +151,14 @@ pub fn handle(is_mixer: bool, req: u64, arg: u64) -> i64 {
         5 => {                                                       // SETFMT
             let a = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
             if a == 0 { wi(arg, virtio_to_afmt(OSS.lock().format)); return 0; }
-            { let mut o = OSS.lock(); o.format = afmt_to_virtio(a); o.running = false; }
+            { let mut o = OSS.lock(); o.format = afmt_to_virtio(a); o.running = false; o.cap_running = false; }
             reset();
             wi(arg, virtio_to_afmt(OSS.lock().format));
             0
         }
         6 => {                                                       // CHANNELS
             let n = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
-            { let mut o = OSS.lock(); o.channels = n.clamp(1, 2) as u8; o.running = false; }
+            { let mut o = OSS.lock(); o.channels = n.clamp(1, 2) as u8; o.running = false; o.cap_running = false; }
             reset();
             wi(arg, OSS.lock().channels as u32);
             0

@@ -47,6 +47,7 @@ pub(super) fn install_snd(
     q0_desc_pa: u64, q0_driver_pa: u64, q0_device_pa: u64, q0_notify_va: u64, q0_size: u16,
     cfg_va: u64, jacks: u32, streams: u32, chmaps: u32, controls: u32,
     q2_desc_pa: u64, q2_driver_pa: u64, q2_device_pa: u64, q2_notify_va: u64, q2_size: u16,
+    q3_desc_pa: u64, q3_driver_pa: u64, q3_device_pa: u64, q3_notify_va: u64, q3_size: u16,
 ) -> Option<drv_virtio_snd::SndProbe> {
     let hhdm = {
         #[cfg(target_arch = "x86_64")]
@@ -58,5 +59,6 @@ pub(super) fn install_snd(
         q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, q0_size, hhdm,
         cfg_va, jacks, streams, chmaps, controls,
         q2_desc_pa, q2_driver_pa, q2_device_pa, q2_notify_va, q2_size,
+        q3_desc_pa, q3_driver_pa, q3_device_pa, q3_notify_va, q3_size,
     })
 }

@@ -206,6 +206,14 @@ impl UserBuf {
         // SAFETY: as r32; 8-byte write within the validated span.
         unsafe { core::ptr::write_volatile((self.base + off as u64) as *mut u64, v); }
     }
+    /// Copy `s` verbatim to `off` (capture PCM → user buffer). # C: O(s.len)
+    pub fn wbytes(&self, off: usize, s: &[u8]) {
+        if !self.ok(off, s.len()) { return; }
+        for (i, &b) in s.iter().enumerate() {
+            // SAFETY: off+s.len ≤ len validated; byte write within the span.
+            unsafe { core::ptr::write_volatile((self.base + (off + i) as u64) as *mut u8, b); }
+        }
+    }
     /// Write a NUL-padded byte string of `cap` bytes. # C: O(cap)
     pub fn wstr(&self, off: usize, s: &[u8], cap: usize) {
         if !self.ok(off, cap) { return; }

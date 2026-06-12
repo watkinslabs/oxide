@@ -127,6 +127,29 @@ struct Ctx {
     cfg_format:   u8,
     cfg_channels: u8,
     cfg_period_bytes: u32,
+    // ── capture (INPUT stream, RXQ) — mirrors the OUTPUT fields above ──
+    /// First INPUT stream id from PCM_INFO (None if no capture stream).
+    in_stream:  Option<u32>,
+    in_formats: u64,
+    in_rates:   u64,
+    in_ch_min:  u8,
+    in_ch_max:  u8,
+    /// RXQ(3) ring the boot probe programmed (0 if not programmed).
+    q3_desc_pa:   u64,
+    q3_driver_pa: u64,
+    q3_device_pa: u64,
+    q3_notify_va: u64,
+    q3_size:      u16,
+    rx_avail_idx: u16,
+    /// RXQ payload frame (device writes captured PCM here) + scratch (xfer
+    /// hdr @0 + status @16). One 4 KiB page each.
+    rx_buf_pa:     u64,
+    rx_scratch_pa: u64,
+    cap_state: PcmState,
+    cap_rate:     u8,
+    cap_format:   u8,
+    cap_channels: u8,
+    cap_period_bytes: u32,
 }
 
 /// OUTPUT substream state (mirrors SNDRV_PCM_STATE_* the core exposes).
@@ -159,6 +182,12 @@ pub struct SndInstall {
     pub q2_device_pa: u64,
     pub q2_notify_va: u64,
     pub q2_size:      u16,
+    /// RXQ(3) capture ring + notify VA (0 if the queue didn't program).
+    pub q3_desc_pa:   u64,
+    pub q3_driver_pa: u64,
+    pub q3_device_pa: u64,
+    pub q3_notify_va: u64,
+    pub q3_size:      u16,
 }
 
 /// Probe result handed back for the boot line: total streams + the
@@ -200,8 +229,13 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         (pmm::setup::alloc_one_frame().unwrap_or(0),
          pmm::setup::alloc_one_frame().unwrap_or(0))
     } else { (0, 0) };
+    // RXQ payload + xfer/status scratch frames (capture).
+    let (rx_buf_pa, rx_scratch_pa) = if p.q3_desc_pa != 0 {
+        (pmm::setup::alloc_one_frame().unwrap_or(0),
+         pmm::setup::alloc_one_frame().unwrap_or(0))
+    } else { (0, 0) };
     // Zero every freshly-allocated frame for deterministic state.
-    for &pa in &[scratch_pa, tx_buf_pa, tx_scratch_pa] {
+    for &pa in &[scratch_pa, tx_buf_pa, tx_scratch_pa, rx_buf_pa, rx_scratch_pa] {
         if pa == 0 { continue; }
         let va = p.hhdm.wrapping_add(pa) as *mut u8;
         // SAFETY: HHDM covers all RAM the PMM hands out; each frame is
@@ -222,6 +256,12 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         // aligned u16 load of used.idx at u16 offset 1.
         unsafe { core::ptr::read_volatile(txu.add(1)) }
     } else { 0 };
+    let rx_used_seen = if p.q3_device_pa != 0 {
+        let rxu = p.hhdm.wrapping_add(p.q3_device_pa) as *const u16;
+        // SAFETY: HHDM-mapped RXQ used ring programmed by the boot probe;
+        // aligned u16 load of used.idx at u16 offset 1.
+        unsafe { core::ptr::read_volatile(rxu.add(1)) }
+    } else { 0 };
     *CTX.lock() = Some(Ctx {
         q0_desc_pa: p.q0_desc_pa, q0_driver_pa: p.q0_driver_pa,
         q0_device_pa: p.q0_device_pa, q0_notify_va: p.q0_notify_va,
@@ -240,6 +280,17 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         cfg_format: VIRTIO_SND_PCM_FMT_S16,
         cfg_channels: 2,
         cfg_period_bytes: PERIOD_BYTES as u32,
+        in_stream: None,
+        in_formats: 0, in_rates: 0, in_ch_min: 1, in_ch_max: 2,
+        q3_desc_pa: p.q3_desc_pa, q3_driver_pa: p.q3_driver_pa,
+        q3_device_pa: p.q3_device_pa, q3_notify_va: p.q3_notify_va,
+        q3_size: p.q3_size, rx_avail_idx: rx_used_seen,
+        rx_buf_pa, rx_scratch_pa,
+        cap_state: PcmState::Idle,
+        cap_rate: VIRTIO_SND_PCM_RATE_44100,
+        cap_format: VIRTIO_SND_PCM_FMT_S16,
+        cap_channels: 2,
+        cap_period_bytes: PERIOD_BYTES as u32,
     });
     let (out, input) = pcm_info_scan();
     Some(SndProbe { streams: p.streams, out, input })
@@ -281,6 +332,7 @@ fn pcm_info_scan() -> (u32, u32) {
     let base = h.wrapping_add(ctx.scratch_pa + RESP_OFF + SND_HDR_SIZE as u64) as *const u8;
     let (mut out, mut input) = (0u32, 0u32);
     let mut first_out: Option<u32> = None;
+    let mut first_in: Option<u32> = None;
     for i in 0..entries {
         let e = base.wrapping_add(i * PCM_INFO_SIZE);
         // u8 read of byte `off` within entry `e` of the device-filled
@@ -295,14 +347,20 @@ fn pcm_info_scan() -> (u32, u32) {
             for b in 0..8 { v |= (rd8(off + b) as u64) << (b * 8); }
             v
         };
+        // formats@8 / rates@16 (le64), channels_min@25 / channels_max@26.
         if rd8(PCM_INFO_DIR_OFF) == VIRTIO_SND_D_INPUT {
             input += 1;
+            if first_in.is_none() {
+                first_in = Some(i as u32);
+                ctx.in_formats = rd64(8);
+                ctx.in_rates = rd64(16);
+                ctx.in_ch_min = rd8(25).max(1);
+                ctx.in_ch_max = rd8(26).max(ctx.in_ch_min);
+            }
         } else {
             out += 1;
             if first_out.is_none() {
                 first_out = Some(i as u32);
-                // Harvest OUTPUT caps: formats@8 / rates@16 (le64),
-                // channels_min@25 / channels_max@26.
                 ctx.out_formats = rd64(8);
                 ctx.out_rates = rd64(16);
                 ctx.out_ch_min = rd8(25).max(1);
@@ -311,6 +369,7 @@ fn pcm_info_scan() -> (u32, u32) {
         }
     }
     ctx.out_stream = first_out;
+    ctx.in_stream = first_in;
     (out, input)
 }
 
@@ -686,6 +745,185 @@ pub fn pcm_submit(bytes: &[u8]) -> usize {
         let n = (bytes.len() - off).min(chunk);
         if !tx_period(ctx, stream, &bytes[off..off + n]) { break; }
         off += n;
+    }
+    off
+}
+
+// ── INPUT substream ops (RXQ capture) — mirror of the OUTPUT ops ────────
+
+/// Post one capture buffer to the RXQ: a 3-descriptor chain (virtio_snd_
+/// pcm_xfer hdr RO + payload WO + virtio_snd_pcm_status WO), kick, poll the
+/// used ring, then copy the captured PCM into `out`. Returns bytes captured
+/// (the used-ring length minus the 8-byte status trailer). # C: O(TX_POLL_BUDGET)
+fn rx_period(ctx: &mut Ctx, stream_id: u32, out: &mut [u8]) -> usize {
+    if ctx.q3_desc_pa == 0 || ctx.rx_buf_pa == 0 || ctx.rx_scratch_pa == 0 { return 0; }
+    let h = ctx.hhdm;
+    let n = out.len().min(0x1000);
+    let xfer = h.wrapping_add(ctx.rx_scratch_pa) as *mut u32;
+    // SAFETY: HHDM-mapped driver-owned scratch frame; one aligned u32 store
+    // writes the virtio_snd_pcm_xfer stream_id header.
+    unsafe { core::ptr::write_volatile(xfer, stream_id); }
+    let desc = h.wrapping_add(ctx.q3_desc_pa) as *mut u64;
+    // SAFETY: HHDM-mapped RXQ descriptor table programmed by the boot probe;
+    // six aligned u64 stores build a 3-descriptor chain: xfer hdr RO →
+    // payload WO (device fills) → status WO, over driver-owned frames.
+    unsafe {
+        core::ptr::write_volatile(desc.add(0), ctx.rx_scratch_pa);            // xfer hdr (RO)
+        core::ptr::write_volatile(desc.add(1),
+            4u64 | ((VRING_DESC_F_NEXT as u64) << 32) | (1u64 << 48));
+        core::ptr::write_volatile(desc.add(2), ctx.rx_buf_pa);               // payload (WO)
+        core::ptr::write_volatile(desc.add(3),
+            (n as u64) | (((VRING_DESC_F_NEXT | VRING_DESC_F_WRITE) as u64) << 32) | (2u64 << 48));
+        core::ptr::write_volatile(desc.add(4), ctx.rx_scratch_pa + 16);      // status (WO)
+        core::ptr::write_volatile(desc.add(5),
+            8u64 | ((VRING_DESC_F_WRITE as u64) << 32));
+    }
+    let qsz = if ctx.q3_size == 0 { 1u16 } else { ctx.q3_size };
+    let slot = (ctx.rx_avail_idx % qsz) as usize;
+    let avail = h.wrapping_add(ctx.q3_driver_pa) as *mut u16;
+    // SAFETY: HHDM-mapped RXQ avail ring; u16 stores at ring(2+slot)/idx(1)
+    // within the driver-owned frame; slot bounded by q3_size; Release fences
+    // publish the descriptor chain before the idx bump.
+    let target = unsafe {
+        core::ptr::write_volatile(avail.add(2 + slot), 0u16);
+        core::sync::atomic::fence(Ordering::Release);
+        ctx.rx_avail_idx = ctx.rx_avail_idx.wrapping_add(1);
+        core::ptr::write_volatile(avail.add(1), ctx.rx_avail_idx);
+        ctx.rx_avail_idx
+    };
+    core::sync::atomic::fence(Ordering::Release);
+    // Kick the device via the RXQ notify register (queue index 3).
+    // SAFETY: notify VA is the Device-attr MMIO window mapped by the boot
+    // probe; an aligned u16 store of queue index 3 is the spec-defined kick.
+    unsafe { core::ptr::write_volatile(ctx.q3_notify_va as *mut u16, 3u16); }
+    let used16 = h.wrapping_add(ctx.q3_device_pa) as *const u16;
+    let mut polls = 0u32;
+    loop {
+        // SAFETY: HHDM-mapped RXQ used ring; aligned u16 load of used.idx.
+        let uidx = unsafe { core::ptr::read_volatile(used16.add(1)) };
+        if uidx == target { break; }
+        if polls >= TX_POLL_BUDGET { return 0; }
+        // Same BQL-yield as TXQ: the device fills the RX buffer on its audio
+        // timer; force a VM exit each spin so QEMU makes progress under TCG.
+        if ctx.cfg_va != 0 {
+            // SAFETY: cfg_va Device-attr common-cfg window; device_status @0x14
+            // is a side-effect-free u32 read.
+            let _ = unsafe { core::ptr::read_volatile((ctx.cfg_va + 0x14) as *const u32) };
+        }
+        polls += 1;
+        core::hint::spin_loop();
+    }
+    // used ring elem: {id:u32, len:u32} at byte 4 + elem*8; len = bytes the
+    // device wrote (payload + 8-byte status). Payload = len - 8.
+    let elem = ((target.wrapping_sub(1)) % qsz) as usize;
+    let used32 = h.wrapping_add(ctx.q3_device_pa) as *const u32;
+    // SAFETY: HHDM-mapped used ring; aligned u32 load of the completed elem's
+    // len at u32 index 1 + elem*2 + 1; elem bounded by q3_size.
+    let used_len = unsafe { core::ptr::read_volatile(used32.add(1 + elem * 2 + 1)) } as usize;
+    let payload = used_len.saturating_sub(8).min(n);
+    let src = h.wrapping_add(ctx.rx_buf_pa) as *const u8;
+    // SAFETY: HHDM-mapped RX payload frame the device just filled; bounded
+    // read of `payload` ≤ n ≤ 4 KiB bytes.
+    for i in 0..payload { out[i] = unsafe { core::ptr::read_volatile(src.add(i)) }; }
+    payload
+}
+
+/// INPUT-stream hw capabilities `(formats, rates, ch_min, ch_max)`. None
+/// until installed. # C: O(1)
+pub fn cap_caps() -> Option<(u64, u64, u8, u8)> {
+    CTX.lock().as_ref().map(|c| (c.in_formats, c.in_rates, c.in_ch_min, c.in_ch_max))
+}
+
+/// The default INPUT (capture) stream id, or None. # C: O(1)
+pub fn input_stream() -> Option<u32> { CTX.lock().as_ref().and_then(|c| c.in_stream) }
+
+/// Current INPUT substream state. # C: O(1)
+pub fn cap_state() -> PcmState {
+    CTX.lock().as_ref().map(|c| c.cap_state).unwrap_or(PcmState::Idle)
+}
+
+/// `(installed, has_input_stream, has_rxq)` capture-readiness probe. # C: O(1)
+pub fn capture_ready() -> (bool, bool, bool) {
+    match CTX.lock().as_ref() {
+        Some(c) => (true, c.in_stream.is_some(), c.q3_desc_pa != 0),
+        None => (false, false, false),
+    }
+}
+
+/// Bytes per frame of the configured capture format × channels. # C: O(1)
+pub fn cap_frame_size() -> usize {
+    CTX.lock().as_ref().map(|c| frame_bytes(c.cap_format, c.cap_channels)).unwrap_or(4)
+}
+
+/// snd_pcm_ops::hw_params for the INPUT stream (RELEASE-if-armed then
+/// SET_PARAMS). → cap state Configured. # C: O(CONTROLQ)
+pub fn cap_hw_params(rate: u8, format: u8, channels: u8,
+                     period_bytes: u32, buffer_bytes: u32) -> bool {
+    let mut g = CTX.lock();
+    let ctx = match g.as_mut() { Some(c) => c, None => return false };
+    let stream = match ctx.in_stream { Some(s) => s, None => return false };
+    let ch = channels.clamp(1, 2);
+    if ctx.cap_state == PcmState::Prepared || ctx.cap_state == PcmState::Running {
+        let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_STOP, stream);
+        let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
+    }
+    if pcm_set_params(ctx, stream, buffer_bytes, period_bytes, ch, format, rate)
+        != Some(VIRTIO_SND_S_OK) { return false; }
+    ctx.cap_rate = rate; ctx.cap_format = format; ctx.cap_channels = ch;
+    ctx.cap_period_bytes = period_bytes.max(1).min(0x1000);
+    ctx.cap_state = PcmState::Configured;
+    true
+}
+
+/// snd_pcm_ops::prepare for the INPUT stream. → cap state Prepared. # C: O(CONTROLQ)
+pub fn cap_prepare() -> bool {
+    let mut g = CTX.lock();
+    let ctx = match g.as_mut() { Some(c) => c, None => return false };
+    if ctx.cap_state == PcmState::Idle { return false; }
+    let stream = match ctx.in_stream { Some(s) => s, None => return false };
+    if pcm_ctl(ctx, VIRTIO_SND_R_PCM_PREPARE, stream) != Some(VIRTIO_SND_S_OK) { return false; }
+    ctx.cap_state = PcmState::Prepared;
+    true
+}
+
+/// snd_pcm_ops::trigger for the INPUT stream. → Running / Prepared. # C: O(CONTROLQ)
+pub fn cap_trigger(start: bool) -> bool {
+    let mut g = CTX.lock();
+    let ctx = match g.as_mut() { Some(c) => c, None => return false };
+    let stream = match ctx.in_stream { Some(s) => s, None => return false };
+    let code = if start { VIRTIO_SND_R_PCM_START } else { VIRTIO_SND_R_PCM_STOP };
+    if pcm_ctl(ctx, code, stream) != Some(VIRTIO_SND_S_OK) { return false; }
+    ctx.cap_state = if start { PcmState::Running } else { PcmState::Prepared };
+    true
+}
+
+/// snd_pcm_ops::hw_free for the INPUT stream. → cap state Idle. # C: O(CONTROLQ)
+pub fn cap_hw_free() -> bool {
+    let mut g = CTX.lock();
+    let ctx = match g.as_mut() { Some(c) => c, None => return false };
+    if ctx.cap_state == PcmState::Idle { return true; }
+    let stream = match ctx.in_stream { Some(s) => s, None => return false };
+    let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
+    ctx.cap_state = PcmState::Idle;
+    true
+}
+
+/// Capture interleaved PCM from a Running INPUT stream into `out` — the
+/// snd_pcm_ops transfer for READI: post period-sized RXQ buffers, blocking
+/// until each is filled. Returns bytes captured (0 if not Running / no
+/// device / RX timeout). # C: O(bytes/period × RXQ round-trip)
+pub fn pcm_recv(out: &mut [u8]) -> usize {
+    let mut g = CTX.lock();
+    let ctx = match g.as_mut() { Some(c) => c, None => return 0 };
+    if ctx.cap_state != PcmState::Running { return 0; }
+    let stream = match ctx.in_stream { Some(s) => s, None => return 0 };
+    let chunk = (ctx.cap_period_bytes as usize).max(1).min(0x1000);
+    let mut off = 0usize;
+    while off < out.len() {
+        let end = (off + chunk).min(out.len());
+        let got = rx_period(ctx, stream, &mut out[off..end]);
+        if got == 0 { break; }
+        off += got;
     }
     off
 }

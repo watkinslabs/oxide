@@ -53,15 +53,26 @@ hacks/stubs/façades. Both arches lockstep. Assembly stays in
     S16/2/44.1k + OSS path. PASS both arches. In oxide-smokes.sh + CRT_BINS.
   - **GOTCHA fixed:** sw_params `boundary` is @64 not @56 (silence_size@56).
 
-### NEXT TASK — capture (RXQ) + ALSA controls + KIOCSOUND
-- Capture: program RXQ(3) like TXQ; `/dev/snd/pcmC0D0c` + READI; OSS /dev/dsp read.
-- Mixer: when VIRTIO_SND_F_CTLS negotiated (config.controls>0), CTL_INFO/READ/WRITE
-  → real `SNDRV_CTL_IOCTL_ELEM_*` element list (now reports 0 elements honestly).
-- Wire `drv_virtio_snd::beep` into `50§16` KIOCSOUND/KDMKTONE — needs ASYNC
-  playback (a kthread tone), NOT the blocking beep (would stall the console bell).
+- **F457 (this branch)** PR-E: capture (RXQ), full-duplex. Boot probe programs
+  RXQ(3) like TXQ(2). drv-virtio-snd capture ops mirror playback:
+  `cap_caps`/`cap_hw_params`/`cap_prepare`/`cap_trigger`/`cap_hw_free`/`pcm_recv`
+  + `rx_period` (3-desc chain, payload WO; reads used-len for captured bytes;
+  same BQL-yield). sound crate: `capture.rs` substream + `/dev/snd/pcmC0D0c`
+  (READI/read) sharing `pcm::refine_params` (refactored pure/direction-agnostic);
+  OSS `/dev/dsp` read(2). snd_probe extended (capture HW_PARAMS/PREPARE/READI),
+  PASS both arches. QEMU null-audiodev capture yields silence frames.
+
+### NEXT TASK — MOUSE (user: "then the mouse when done with all things audio")
+Audio is functionally done (playback+capture+ALSA+OSS; mixer needs F_CTLS which
+QEMU doesn't offer; KIOCSOUND console beep needs async kthread infra — deferred).
+- Mouse: QEMU `-device virtio-tablet-pci` (or virtio-mouse). 2nd evdev node
+  `/dev/input/event1`. drv-virtio-input already drains all EV_* types (drain.rs
+  push_event0) — needs a SECOND device instance + event1 node + EV_ABS/EV_REL/
+  BTN_* reporting. Verify via QMP `input-send-event` (mouse move/click) → read
+  event1 input_event records. Add to qemu args (image_qemu.rs) both arches.
 2. Mouse/pointer: virtio-tablet/mouse 2nd evdev node (event1, EV_REL/EV_ABS/BTN_*).
 3. Ethernet: e1000/rtl8139 PCI drivers (oxide DHCP is a static seed — see memory).
 4. 3D/virgl + Xorg/Mesa userspace. 5. Module lifecycle (modules/lib.rs).
 
 ## First command next session
-    grep -n 'RXQ\|capture\|READI\|pcmC0D0c' docs/58-virtio-snd.md   # capture path
+    grep -rn 'event0\|EvdevInode\|install_default' crates/drivers/drv-virtio-input/src/   # 2nd evdev node for mouse
