@@ -638,6 +638,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         sound::init();
         debug_boot! { klog::write_raw(b"[INFO]  /dev/snd/* + /dev/dsp registered (virtio-snd)\n"); }
     }
+    // 46§: publish /dev/input/event1.. for virtio-input pointer devices.
+    #[cfg(target_os = "oxide-kernel")]
+    drv_virtio_input::devfs::register_extra_nodes();
 
     // Mount the ext4 root fs from the virtio-blk disk (serial
     // `oxide-root`). Linux's CONFIG_EXT4_FS=y equivalent: real driver

@@ -387,9 +387,34 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         model_bind(&VIRTIO_GPU_DRV, d.bdf); // D1a: publish + bind
     }
     if is_virtio_input && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
-        let evdev_id = drv_virtio_input::install_default(bdf_word);
+        // Probe the device's identity + capability bitmaps from config space
+        // (the Linux virtio_input.c sequence, docs/46§5): name, ids,
+        // EV_BITS / KEY|REL|ABS code maps, ABS_INFO, PROP_BITS. Drives the
+        // EVIOCG* ioctls + the keyboard-vs-pointer class (pointers advertise
+        // EV_REL/EV_ABS and don't feed the console keyboard pipeline).
+        let evdev_id = match vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
+            Some(devcfg_cap) => {
+                let dbar_pa = match bars[devcfg_cap.bar as usize] {
+                    pci::Bar::Mem32 { base, .. } => base as u64,
+                    pci::Bar::Mem64 { base, .. } => base,
+                    _ => 0,
+                };
+                if dbar_pa != 0 {
+                    let d_pa = dbar_pa + devcfg_cap.offset as u64;
+                    let d_page_pa = d_pa & !0xFFF;
+                    // SAFETY: d_page_pa is the page-aligned BAR-relative device-cfg
+                    // physical frame from the validated capability; map one MMIO page.
+                    let d_va = unsafe { map_mmio_pages(d_page_pa, 1) } + (d_pa - d_page_pa);
+                    // SAFETY: d_va is the just-mapped virtio-input device-cfg
+                    // window; install_device drives the select/subsel protocol.
+                    unsafe { drv_virtio_input::install_device(bdf_word, d_va) }
+                } else { 0 }
+            }
+            None => 0,
+        };
         debug_boot! { klog::write_raw(b"[INFO]  virtio-input installed evdev_id=");
-            klog::write_dec_u64(evdev_id as u64); klog::write_raw(b"\n"); }
+            klog::write_dec_u64(evdev_id as u64);
+            klog::write_raw(if drv_virtio_input::is_pointer(evdev_id) { b" pointer\n" } else { b" keyboard\n" }); }
         model_bind(&VIRTIO_INPUT_DRV, d.bdf); // D1a: publish + bind
     }
     // Stage 1: the persistent virtio-blk engine (drv-virtio-blk) owns

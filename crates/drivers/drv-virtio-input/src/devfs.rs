@@ -1,106 +1,210 @@
-// /dev/input/event0 evdev substrate per `35§R01` and v2-arch-plan
-// §1.9. V1: admit + answer EVIOCGNAME / EVIOCGID identification
-// ioctls. Real key / abs / rel event delivery is a follow-up once the
-// virtio-input PCI driver lands.
-
-
+// /dev/input/event<id> evdev substrate per `35§R01`. Full Linux evdev ABI:
+// blocking/non-blocking reads of 24-byte `input_event` records, `->poll`
+// (POLLIN only when a record is queued), per-fd poll/epoll subscribers, and
+// the EVIOCG* identification/capability ioctls answered from the device's
+// real virtio config-space capability bitmaps (drv::VirtioInputDev).
 
 use alloc::sync::Arc;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError, POLL_IN, POLL_OUT};
 
 const EVDEV_INO_BASE: Ino = 0x7400_0000;
 
-const EVIOCGVERSION: u64 = 0x80044501;
-const EVIOCGID:      u64 = 0x80084502;
-// EVIOCGNAME is _IOR('E', 0x06, len) — len is variable; we match on the
-// low 16 bits (cmd nr + group letter) and ignore the size field.
-const EVIOCGNAME_NR: u32 = 0x4506;
-
-/// Single evdev device — keyboard-shaped placeholder identified as
-/// "oxide-input". Real input frame delivery is a follow-up.
-pub struct EvdevInode;
+/// One evdev device node — `/dev/input/event<id>`. Reads pop 24-byte Linux
+/// `input_event` records from that device's queue (event0 = keyboard,
+/// event1 = pointer, …).
+pub struct EvdevInode { pub id: u32 }
 
 impl Inode for EvdevInode {
-    fn ino(&self) -> Ino { EVDEV_INO_BASE | 0x01 }
+    fn ino(&self) -> Ino { EVDEV_INO_BASE | (0x01 + self.id as Ino) }
     fn file_type(&self) -> FileType { FileType::CharDev }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
 
-    /// Blocking pop of one input_event record (24 B). Parks the
-    /// caller on EVENT0.waiters when the queue is empty; resumes
-    /// when virtio-input pushes the next event. Reads of less than
-    /// one record return 0 (matches Linux evdev: EINVAL on too-
-    /// small buf, but Ok(0) is the more forgiving v1 choice).
+    /// Blocking pop of one input_event record (24 B). Parks the caller on
+    /// this device's queue waiters when empty; resumes when virtio-input
+    /// pushes the next event. Reads of less than one record return 0.
     fn read(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
-        use crate::evdev_queue::{EVENT0, INPUT_EVENT_BYTES};
+        use crate::evdev_queue::INPUT_EVENT_BYTES;
         if buf.len() < INPUT_EVENT_BYTES { return Ok(0); }
         // SAFETY: caller is the running task on this CPU; read_blocking parks safely via WaitList and reschedules.
-        let n = unsafe { EVENT0.read_blocking(buf) };
+        let n = unsafe { crate::evdev_queue::queue(self.id).read_blocking(buf) };
         Ok(n)
     }
 
     /// Non-blocking variant per O_NONBLOCK.
     fn read_nonblock(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
-        use crate::evdev_queue::{EVENT0, INPUT_EVENT_BYTES};
+        use crate::evdev_queue::INPUT_EVENT_BYTES;
         if buf.len() < INPUT_EVENT_BYTES { return Ok(0); }
-        match EVENT0.try_pop_bytes(buf) {
+        match crate::evdev_queue::queue(self.id).try_pop_bytes(buf) {
             Some(n) => Ok(n),
             None    => Err(VfsError::Eagain),
         }
     }
 
     fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+
+    /// Linux evdev_poll: EPOLLOUT always (evdev sink never blocks writes),
+    /// EPOLLIN only when at least one record is queued. sys_poll masks the
+    /// result against the caller's requested events, so a `poll(POLLIN)`
+    /// blocks until the drain pushes the next event. # C: O(1)
+    fn poll(&self) -> u32 {
+        if crate::evdev_queue::queue(self.id).is_empty() { POLL_OUT }
+        else { POLL_IN | POLL_OUT }
+    }
+
+    /// Per-fd subscriber list: `epoll_ctl(ADD)` registers here and the
+    /// queue's `push` calls `notify()` to wake only subscribed epolls.
+    /// # C: O(1)
+    fn poll_subscribers(&self) -> Option<&vfs::PollSubscribers> {
+        Some(&crate::evdev_queue::queue(self.id).subs)
+    }
 }
 
-/// EVIOC* ioctl handler. Returns `Some(rv)` when the request is
-/// recognised; `None` to let the generic CharDev path run.
+// ---- Linux asm-generic/ioctl.h decode --------------------------------------
+#[inline] fn ioc_nr(req: u64)   -> u32 { (req & 0xFF) as u32 }
+#[inline] fn ioc_type(req: u64) -> u32 { ((req >> 8) & 0xFF) as u32 }
+#[inline] fn ioc_size(req: u64) -> usize { ((req >> 16) & 0x3FFF) as usize }
+
+/// Copy `src` (capped at the ioctl's declared size) into the user buffer at
+/// `arg`. Returns the byte count (Linux EVIOCG* convention).
+/// # SAFETY: `arg` validated in `[1, USER_VA_END)` by the caller; writes
+/// `min(src.len, cap)` bytes within that user-owned window, nothing else.
+unsafe fn uwrite(arg: u64, src: &[u8], cap: usize) -> i64 {
+    let n = src.len().min(cap);
+    // SAFETY: per fn contract — arg+i stays inside the validated user window for i < n ≤ cap.
+    unsafe { for i in 0..n { core::ptr::write_volatile((arg + i as u64) as *mut u8, src[i]); } }
+    n as i64
+}
+
+/// Zero-fill `cap` bytes at the user buffer (unknown EV_BIT class / absent
+/// key/led state — Linux returns a zeroed bitmap, not an error).
+/// # SAFETY: `arg` validated in `[1, USER_VA_END)`; writes `cap` zero bytes
+/// within that user-owned window.
+unsafe fn uzero(arg: u64, cap: usize) -> i64 {
+    // SAFETY: per fn contract — arg+i stays inside the validated user window for i < cap.
+    unsafe { for i in 0..cap { core::ptr::write_volatile((arg + i as u64) as *mut u8, 0); } }
+    cap as i64
+}
+
+/// EVIOC* ioctl handler. Returns `Some(rv)` when the request is recognised;
+/// `None` to let the generic CharDev path run. Answers identification +
+/// capability queries from the device's real virtio config-space record.
 /// # C: O(1)
 pub fn handle_evdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
-    if inode.ino() & 0xFFFF_FFFF_0000_0000 != EVDEV_INO_BASE {
-        return None;
-    }
+    let ino = inode.ino();
+    if (ino & !0xFF) != EVDEV_INO_BASE || (ino & 0xFF) == 0 { return None; }
     use syscall::errno::Errno;
+    if ioc_type(req) != b'E' as u64 as u32 { return None; }
+    let nr = ioc_nr(req);
+
+    // EVIOCSCLOCKID / EVIOCGRAB / EVIOCREVOKE — state-changing, no readback.
+    // Ack so libinput/X11 grab logic proceeds (single-reader model).
+    const EVIOCGRAB_NR:     u32 = 0x90;
+    const EVIOCREVOKE_NR:   u32 = 0x91;
+    const EVIOCSCLOCKID_NR: u32 = 0xa0;
+    if nr == EVIOCGRAB_NR || nr == EVIOCREVOKE_NR || nr == EVIOCSCLOCKID_NR {
+        return Some(0);
+    }
+
     if arg == 0 || arg >= hal::USER_VA_END {
         return Some(-(Errno::Efault.as_i32() as i64));
     }
-    // _IOR / _IOW low byte = group ('E'); high 16 = size; nr = bits
-    // [8..16] of the lowest dword. Match by cmd-nr+group only.
-    let group = (req >> 8) & 0xFF;
-    let nr    = (req & 0xFF) | ((req >> 8) & 0xFF00);
-    if group != b'E' as u64 { return None; }
-    if (nr as u32) == EVIOCGNAME_NR {
-        const NAME: &[u8] = b"oxide-input";
-        // SAFETY: arg validated < USER_VA_END; we write the canonical 12-byte name + NUL terminator.
-        unsafe {
-            for i in 0..NAME.len() {
-                core::ptr::write_volatile((arg + i as u64) as *mut u8, NAME[i]);
+    let size = ioc_size(req);
+    let evdev_id = ((ino & 0xFF) - 1) as u32;
+    let dev = crate::device(evdev_id);
+
+    // SAFETY: arg validated in [1, USER_VA_END); each uwrite/uzero bounds its
+    // write by the ioctl-declared size within that user-owned window.
+    let rv: i64 = unsafe { match nr {
+        0x01 => { // EVIOCGVERSION → int EV_VERSION
+            let v: u32 = 0x01_0001;
+            uwrite(arg, &v.to_le_bytes(), size.max(4)); 0
+        }
+        0x02 => { // EVIOCGID → struct input_id { bustype, vendor, product, version }
+            let ids = dev.as_ref().map(|d| d.ids).unwrap_or_default();
+            let mut b = [0u8; 8];
+            b[0..2].copy_from_slice(&ids.bustype.to_le_bytes());
+            b[2..4].copy_from_slice(&ids.vendor.to_le_bytes());
+            b[4..6].copy_from_slice(&ids.product.to_le_bytes());
+            b[6..8].copy_from_slice(&ids.version.to_le_bytes());
+            uwrite(arg, &b, size.max(8)); 0
+        }
+        0x06 => { // EVIOCGNAME(len) → device name, NUL-terminated
+            match dev.as_ref() {
+                Some(d) => {
+                    let len = d.name_len.min(d.name.len());
+                    let mut b = [0u8; 129];
+                    b[..len].copy_from_slice(&d.name[..len]);
+                    // emit name bytes + NUL, capped at requested size
+                    uwrite(arg, &b[..len + 1], size)
+                }
+                None => uzero(arg, size),
             }
-            core::ptr::write_volatile((arg + NAME.len() as u64) as *mut u8, 0);
         }
-        return Some((NAME.len() + 1) as i64);
-    }
-    if req == EVIOCGVERSION {
-        // SAFETY: arg validated < USER_VA_END; 4-byte aligned write of the EV_VERSION constant.
-        unsafe { core::ptr::write_volatile(arg as *mut u32, 0x010001); }
-        return Some(0);
-    }
-    if req == EVIOCGID {
-        // struct input_id { u16 bustype; u16 vendor; u16 product; u16 version; }
-        // SAFETY: arg validated < USER_VA_END; 8-byte aligned write of the placeholder id.
-        unsafe {
-            core::ptr::write_volatile(arg          as *mut u16, 0x06);    // BUS_VIRTUAL
-            core::ptr::write_volatile((arg + 2)    as *mut u16, 0xDEAD);  // vendor
-            core::ptr::write_volatile((arg + 4)    as *mut u16, 0xBEEF);  // product
-            core::ptr::write_volatile((arg + 6)    as *mut u16, 1);
+        0x07 => uzero(arg, size), // EVIOCGPHYS — no physical-location string
+        0x08 => { // EVIOCGUNIQ(len) → serial / unique id
+            match dev.as_ref() {
+                Some(d) if d.serial_len > 0 => {
+                    let len = d.serial_len.min(d.serial.len());
+                    let mut b = [0u8; 129];
+                    b[..len].copy_from_slice(&d.serial[..len]);
+                    uwrite(arg, &b[..len + 1], size)
+                }
+                _ => uzero(arg, size),
+            }
         }
-        return Some(0);
-    }
-    Some(-(Errno::Enotty.as_i32() as i64))
+        0x09 => { // EVIOCGPROP(len) → INPUT_PROP_* bitmap
+            match dev.as_ref() {
+                Some(d) => uwrite(arg, &d.prop_bits, size),
+                None    => uzero(arg, size),
+            }
+        }
+        0x18 | 0x19 | 0x1a | 0x1b => uzero(arg, size), // GKEY/GLED/GSND/GSW state
+        0x20..=0x3f => { // EVIOCGBIT(ev, len) → capability bitmap for ev type
+            let ev = nr - 0x20;
+            match (dev.as_ref(), ev) {
+                (Some(d), 0x00) => uwrite(arg, &d.ev_bits, size),
+                (Some(d), 0x01) => uwrite(arg, &d.key_bits.bits, size), // EV_KEY
+                (Some(d), 0x02) => uwrite(arg, &d.rel_bits.bits, size), // EV_REL
+                (Some(d), 0x03) => uwrite(arg, &d.abs_bits.bits, size), // EV_ABS
+                (Some(d), 0x11) => uwrite(arg, &d.led_bits.bits, size), // EV_LED
+                _               => uzero(arg, size),
+            }
+        }
+        0x40..=0x7f => { // EVIOCGABS(axis) → struct input_absinfo (24 B)
+            let axis = (nr - 0x40) as usize;
+            let ai = dev.as_ref().and_then(|d| d.abs_info.get(axis).copied().flatten());
+            let mut b = [0u8; 24]; // value=0 (current pos unknown), then min/max/fuzz/flat/res
+            if let Some(a) = ai {
+                b[4..8].copy_from_slice(&a.min.to_le_bytes());
+                b[8..12].copy_from_slice(&a.max.to_le_bytes());
+                b[12..16].copy_from_slice(&a.fuzz.to_le_bytes());
+                b[16..20].copy_from_slice(&a.flat.to_le_bytes());
+                b[20..24].copy_from_slice(&a.res.to_le_bytes());
+            }
+            uwrite(arg, &b, size.max(24))
+        }
+        _ => return Some(-(Errno::Enotty.as_i32() as i64)),
+    } };
+    Some(rv)
 }
 
-/// Boot-time registration. Called from the boot init.
+/// Boot-time registration of the always-present keyboard node
+/// (`/dev/input/event0`). Called early (before PCI enum) so a console
+/// keyboard reader has a node even before the device drains.
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    devfs::register("/dev/input/event0", Arc::new(EvdevInode) as InodeRef);
+    devfs::register("/dev/input/event0", Arc::new(EvdevInode { id: 0 }) as InodeRef);
+}
+
+/// Register `/dev/input/event<id>` for every additional virtio-input device
+/// discovered at PCI enumeration (event1 = pointer, …). event0 is already
+/// registered by `init`. Called once after enumeration. # C: O(count)
+pub fn register_extra_nodes() {
+    let n = crate::count();
+    for id in 1..n.min(crate::evdev_queue::MAX_EVDEV) as u32 {
+        let path = alloc::format!("/dev/input/event{id}");
+        devfs::register_owned(path, Arc::new(EvdevInode { id }) as InodeRef);
+    }
 }
