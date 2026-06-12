@@ -20,6 +20,12 @@ pub struct PendingSignal {
     pub handler:  u64,
     pub flags:    u64,
     pub restorer: u64,
+    /// B117: extra siginfo_t fields for an SA_SIGINFO handler. For
+    /// SIGCHLD this carries the dequeued child-exit event
+    /// (si_code / si_pid / si_uid / si_status); `None` ⇒ deliver a
+    /// signo-only siginfo (the prior behaviour, correct for signals
+    /// with no associated data).
+    pub info:     Option<sched::SigInfo>,
 }
 
 /// Inspect `current.sigpending & !current.sigmask`; if non-zero,
@@ -36,16 +42,34 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
     let deliver = pending & !masked;
     if deliver == 0 { return None; }
     let sig = deliver.trailing_zeros() + 1;
+    let mut info: Option<sched::SigInfo> = None;
     if sig >= 33 && sig <= 64 {
-        let (_info, empty) = cur.rt_pop(sig);
+        let (rec, empty) = cur.rt_pop(sig);
+        info = rec;
         if empty {
             cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
         }
     } else {
-        cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+        // B117: SIGCHLD (standard signal) carries a child-exit
+        // siginfo. Pop one queued child event so the SA_SIGINFO
+        // handler reads the right si_pid (child VPID) / si_status /
+        // si_code. The pending bit stays set only if more child
+        // events remain queued (Linux re-raises SIGCHLD per child),
+        // so a reaper handling N exits sees N deliveries.
+        if sig == sched::live::sigpend::Signum::Sigchld as u32 {
+            let mut q = cur.child_sigq.lock();
+            info = q.pop_front();
+            let more = !q.is_empty();
+            drop(q);
+            if !more {
+                cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+            }
+        } else {
+            cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+        }
     }
     // SAFETY: running task on this CPU; preempt-off; sole reader of sigactions slot per single-mutator invariant in `13§5`.
     let table = unsafe { &*cur.sigactions.get() };
     let h = table[(sig - 1) as usize];
-    Some(PendingSignal { sig, handler: h.handler, flags: h.flags, restorer: h.restorer })
+    Some(PendingSignal { sig, handler: h.handler, flags: h.flags, restorer: h.restorer, info })
 }

@@ -224,6 +224,15 @@ pub struct Task {
     /// # C: O(1) push / O(1) pop
     pub rt_sigqueue: Spinlock<[VecDeque<SigInfo>; 32], TaskListClass>,
 
+    /// B117: per-parent SIGCHLD child-exit event queue (`27§5`,
+    /// siginfo(7)). SIGCHLD(17) collapses in `sigpending`, but an
+    /// SA_SIGINFO handler still needs the child's si_pid/si_status/
+    /// si_code. Each child pushes one `SigInfo`: `pid`=child VPID
+    /// (vtgid, NOT internal tid), `code`=CLD_*, `value`=exit status.
+    /// Delivery pops the oldest record; empty ⇒ zeroed siginfo.
+    /// # C: O(1) push / O(1) pop
+    pub child_sigq: Spinlock<VecDeque<SigInfo>, TaskListClass>,
+
     /// Per-task signal mask per `27§3`. Bit i set ⇔ signal i+1
     /// blocked. `rt_sigprocmask` writes; signal-delivery checks.
     /// # C: O(1)
@@ -661,43 +670,6 @@ pub struct SaHandler {
 }
 
 impl Task {
-    /// Enqueue `info` on the per-task RT signal queue for `signo`
-    /// (33..=64). Returns true if accepted, false if dropped due
-    /// to the per-signal cap. Caller is also responsible for
-    /// setting the pending bit on `sigpending`. Standard signals
-    /// (1..=31) MUST NOT use this path — they collapse to the
-    /// bitmap with synthesised siginfo at delivery time.
-    /// # C: O(1)
-    pub fn rt_push(&self, info: SigInfo) -> bool {
-        let idx = match info.signo.checked_sub(33) {
-            Some(i) if (i as usize) < 32 => i as usize,
-            _ => return false,
-        };
-        let mut g = self.rt_sigqueue.lock();
-        if g[idx].len() >= RT_QUEUE_CAP { return false; }
-        g[idx].push_back(info);
-        true
-    }
-
-    /// Pop the longest-waiting siginfo for RT `signo` (33..=64).
-    /// Returns `None` if the queue is empty (i.e. the bitmap had
-    /// the bit set without a queued record — synthesised by a
-    /// non-`sigqueue` source like `kill(2)` — and the caller
-    /// should fall back to a synthesised siginfo).
-    /// `queue_empty_after` lets the caller decide whether to
-    /// clear the bitmap bit (POSIX: bit clears when queue drains).
-    /// # C: O(1)
-    pub fn rt_pop(&self, signo: u32) -> (Option<SigInfo>, bool) {
-        let idx = match signo.checked_sub(33) {
-            Some(i) if (i as usize) < 32 => i as usize,
-            _ => return (None, true),
-        };
-        let mut g = self.rt_sigqueue.lock();
-        let info = g[idx].pop_front();
-        let empty = g[idx].is_empty();
-        (info, empty)
-    }
-
     /// Borrow `mm` (the `Arc<AddressSpace>` if set). Read-only;
     /// callers must observe the single-mutator invariant per the
     /// `mm` field doc.
@@ -844,6 +816,7 @@ impl Task {
                 VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new(),
                 VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new(),
             ]),
+            child_sigq: Spinlock::new(VecDeque::new()),
             sigmask:    AtomicU64::new(0),
             sigaltstack_sp:    AtomicU64::new(0),
             sigaltstack_size:  AtomicU64::new(0),

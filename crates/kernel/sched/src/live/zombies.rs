@@ -49,6 +49,10 @@ pub fn park_zombie(task: Arc<Task>) {
     // SAFETY: task is the running task on this CPU about to Zombie; we are sole reader of parent_arc per the single-mutator-per-active-CPU invariant; child set this slot at fork time.
     let parent = unsafe { (&*task.parent_arc.get()).as_ref().and_then(|w| w.upgrade()) };
     if let Some(ref p) = parent {
+        // B117: record the child-exit siginfo BEFORE the pending bit
+        // so a SIGCHLD delivered to an SA_SIGINFO handler reads the
+        // right si_pid/si_status/si_code (siginfo(7)).
+        push_child_event(&task, p);
         // F167: typed signal bit instead of `1u64 << 16` magic.
         p.sigpending.fetch_or(super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
         accrue_child_time(&task, p);
@@ -59,6 +63,40 @@ pub fn park_zombie(task: Arc<Task>) {
     // Also wake a parent blocked in epoll_wait/poll on a SIGCHLD
     // signalfd (systemd) — wake_wait4_parent only covers wait4 parkers.
     if let Some(p) = parent { wake_task_for_signal(&p); }
+}
+
+/// B117: queue a SIGCHLD child-exit `SigInfo` against `parent` so
+/// the SIGCHLD delivery path fills the handler's siginfo_t. `si_pid`
+/// is the child's VPID (vtgid — the value waitpid/fork return, NOT
+/// the opaque internal tid); `si_uid` is the child's real uid;
+/// `si_status` + `si_code` are decoded from the child's wait4-encoded
+/// `exit_status` per siginfo(7): bit 8 (0x100) set ⇒ killed by signal
+/// (CLD_KILLED / CLD_DUMPED if the core bit 0x80 is set on the signo),
+/// else exited (CLD_EXITED, si_status = exit code).
+/// # C: O(1)
+fn push_child_event(child: &Task, parent: &Task) {
+    // CLD_* si_code values (siginfo(7) / asm-generic/siginfo.h).
+    const CLD_EXITED: i32 = 1;
+    const CLD_KILLED: i32 = 2;
+    const CLD_DUMPED: i32 = 3;
+    let raw = child.exit_status.load(Ordering::Acquire);
+    let (code, status) = if raw & 0x100 != 0 {
+        let signo = raw & 0x7f;
+        // 0x80 bit in the encoded byte marks a core dump (mirrors the
+        // SIG_DFL / SIGSEGV terminate encoders that set 0x100|signo).
+        let cld = if raw & 0x80 != 0 { CLD_DUMPED } else { CLD_KILLED };
+        (cld, signo)
+    } else {
+        (CLD_EXITED, raw & 0xff)
+    };
+    let info = crate::task::SigInfo {
+        signo: super::sigpend::Signum::Sigchld.as_u8() as u32,
+        code,
+        pid:   child.vtgid.load(Ordering::Acquire),
+        uid:   child.creds.ruid.load(Ordering::Acquire),
+        value: status as u64,
+    };
+    parent.child_sigq_push(info);
 }
 
 /// Add the dying child's elapsed CPU to the parent's
@@ -99,6 +137,9 @@ pub fn signal_child_exit(task: &Task) {
         klog::write_raw(b"\n");
     }
     if let Some(ref p) = parent {
+        // B117: queue child-exit siginfo (si_pid/si_status/si_code)
+        // before flagging SIGCHLD so an SA_SIGINFO handler sees it.
+        push_child_event(task, p);
         // F167: typed signal bit.
         p.sigpending.fetch_or(super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
     }
