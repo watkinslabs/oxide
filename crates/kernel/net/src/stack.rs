@@ -27,15 +27,13 @@ pub use crate::netfilter_hook::{NfHookFn, install_nf_hook, NFPROTO_IPV4,
     NF_INET_PRE_ROUTING, NF_INET_LOCAL_IN, NF_INET_LOCAL_OUT, NF_INET_POST_ROUTING};
 use crate::netfilter_hook::{nf_hook_eval, nf_output};
 
-/// Per-port UDP rx queue. The bind-syscall reads from here.
-/// F162: q + waiters live behind their own locks so `deliver_rx`
-/// and `sys_recvfrom` can serialize against each other without
-/// holding the outer udp-map lock across long operations / parks.
+/// Per-port UDP rx queue (bind-syscall reads from here). F162: q + waiters
+/// have their own locks so deliver_rx / sys_recvfrom don't hold the udp-map
+/// lock across parks.
 pub struct UdpRxQueue {
     pub bound_ip:   Ipv4Addr,
     pub bound_port: u16,
-    /// Datagrams waiting for a reader. Each entry is
-    /// (src_ip, src_port, payload bytes).
+    /// Datagrams waiting for a reader: (src_ip, src_port, payload bytes).
     pub q: Spinlock<VecDeque<(Ipv4Addr, u16, Vec<u8>)>, StackLockClass>,
     /// F162: blocking sys_recvfrom waiters (kernel only).
     #[cfg(target_os = "oxide-kernel")]
@@ -44,15 +42,16 @@ pub struct UdpRxQueue {
     pub error_eno: core::sync::atomic::AtomicI32,
     /// F181a: per-fd epoll subscribers.
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
+    /// SO_ATTACH_BPF socket-filter program bytes (run per datagram; r0==0 drops).
+    pub bpf_filter: Spinlock<Option<Vec<u8>>, StackLockClass>,
 }
 
+pub use crate::bpf_filter::{install_bpf_filter_runner, BpfFilterFn}; // bridge in bpf_filter.rs
+use crate::bpf_filter::bpf_accept;
 // F180a Udp6RxQueue + IPv6 methods in stack_ipv6.rs.
-
 impl UdpRxQueue {
     /// F174: read+clear pending per-port errno. # C: O(1)
-    pub fn take_error(&self) -> i32 {
-        self.error_eno.swap(0, core::sync::atomic::Ordering::AcqRel)
-    }
+    pub fn take_error(&self) -> i32 { self.error_eno.swap(0, core::sync::atomic::Ordering::AcqRel) }
     /// # C: O(1)
     pub fn new(bound_ip: Ipv4Addr, bound_port: u16) -> Self {
         Self {
@@ -62,11 +61,11 @@ impl UdpRxQueue {
             waiters: sched::live::WaitList::new(),
             error_eno: core::sync::atomic::AtomicI32::new(0),
             poll_subs: Spinlock::new(None),
+            bpf_filter: Spinlock::new(None),
         }
     }
 
-    /// F181a: register bound socket's subscribers.
-    /// # C: O(1)
+    /// F181a: register bound socket's subscribers. # C: O(1)
     pub fn register_poll_subs(&self, subs: &alloc::sync::Arc<vfs::PollSubscribers>) {
         *self.poll_subs.lock() = Some(alloc::sync::Arc::downgrade(subs));
     }
@@ -285,6 +284,13 @@ impl NetStack {
             src_hint:   Some(Ipv4Addr::LOOPBACK),
         });
         (id, lo)
+    }
+
+    /// SO_ATTACH_BPF / SO_DETACH_BPF: set/clear the UDP port's socket filter
+    /// (false if nothing is bound there). # C: O(log N)
+    pub fn set_udp_bpf_filter(&self, port: u16, insns: Option<Vec<u8>>) -> bool {
+        let q = { self.udp.lock().get(&port).cloned() };
+        match q { Some(q) => { *q.bpf_filter.lock() = insns; true } None => false }
     }
 
     /// UDP bind. Eaddrinuse if taken. # C: O(log N)
@@ -700,6 +706,10 @@ impl NetStack {
                 let q_arc = { self.udp.lock().get(&udp.dst_port).cloned() };
                 if let Some(q) = q_arc {
                     let body = &payload[crate::udp::UDP_HDR_LEN .. udp.length as usize];
+                    // SO_ATTACH_BPF: a 0 verdict drops the datagram.
+                    let drop = { q.bpf_filter.lock().as_ref()
+                        .map(|insns| !bpf_accept(insns, body)).unwrap_or(false) };
+                    if drop { return Ok(()); }
                     q.q.lock().push_back((hdr.src, udp.src_port, body.to_vec()));
                     #[cfg(target_os = "oxide-kernel")]
                     {

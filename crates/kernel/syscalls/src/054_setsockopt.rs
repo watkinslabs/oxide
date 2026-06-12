@@ -69,9 +69,35 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             }
         }
         (IPPROTO_TCP, 1) => if let Some(v) = read_i32(optval) { sock.opts.tcp_nodelay.store(v, Ordering::Release); },
+        // SO_ATTACH_BPF (50): attach an eBPF program (by its bpf() prog fd) as
+        // a socket filter on the bound UDP port. SO_DETACH_BPF/FILTER (27): clear.
+        (SOL_SOCKET, 50) => {
+            if let (Some(prog_fd), Some(port)) = (read_i32(optval), *sock.local_port.lock()) {
+                if let Some(insns) = bpf_prog_insns(prog_fd) {
+                    net::sock::stack().set_udp_bpf_filter(port, Some(insns));
+                }
+            }
+        }
+        (SOL_SOCKET, 27) => {
+            if let Some(port) = *sock.local_port.lock() {
+                net::sock::stack().set_udp_bpf_filter(port, None);
+            }
+        }
         _ => {}
     }
     0
+}
+
+/// Resolve a `bpf(BPF_PROG_LOAD)` program fd to its instruction bytes.
+/// # C: O(1) fd lookup + clone
+fn bpf_prog_insns(fd: i32) -> Option<alloc::vec::Vec<u8>> {
+    let cur = sched::live::current()?;
+    // SAFETY: running task on this CPU; sole reader of the fd-table slot.
+    let fdt = unsafe { cur.fd_table_ref() }?.clone();
+    let f = fdt.get(fd).ok()?;
+    let any = f.inode().as_any()?;
+    let prog = any.downcast_ref::<security::bpf::BpfProgInode>()?;
+    Some(prog.insns.clone())
 }
 
 /// Store SO_PRIORITY when a value is present. # C: O(1)
