@@ -20,6 +20,7 @@ extern crate alloc;
 //
 // init's fd 0/1/2 install a vt=0 (system console) ConsoleInode.
 
+pub mod jobctl;
 pub mod static_console;
 pub mod vt_tty;
 
@@ -118,7 +119,10 @@ impl Inode for ConsoleInode {
         // vt 0 = foreground video VT; vt N = that VT. The serial line is a
         // separate device (SerialInode) — never reached here.
         let vt = if self.vt == 0 { foreground_vt() } else { self.vt };
-        let outcome = vt_tty::vt_tty(vt).read(buf);
+        let tty = vt_tty::vt_tty(vt);
+        jobctl::check(tty.fg_pgrp(), tty.sid(), self.ino(),
+            tty::pty::read_lflag(&tty.termios()), jobctl::Access::Read)?;
+        let outcome = tty.read(buf);
         match outcome {
             ReadOutcome::Bytes(n) => Ok(n),
             ReadOutcome::Eof => Ok(0),
@@ -136,7 +140,10 @@ impl Inode for ConsoleInode {
     fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
         let vt = if self.vt == 0 { foreground_vt() } else { self.vt };
-        let n = vt_tty::vt_tty(vt).read_nonblock(buf);
+        let tty = vt_tty::vt_tty(vt);
+        jobctl::check(tty.fg_pgrp(), tty.sid(), self.ino(),
+            tty::pty::read_lflag(&tty.termios()), jobctl::Access::Read)?;
+        let n = tty.read_nonblock(buf);
         if n == 0 { return Err(VfsError::Eagain); }
         Ok(n)
     }
@@ -170,7 +177,10 @@ impl Inode for ConsoleInode {
     fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
         dtrace!(b"CW_IN", buf.len() as u64);
         let vt = if self.vt == 0 { foreground_vt() } else { self.vt };
-        let n = vt_tty::vt_tty(vt).write(buf);
+        let tty = vt_tty::vt_tty(vt);
+        jobctl::check(tty.fg_pgrp(), tty.sid(), self.ino(),
+            tty::pty::read_lflag(&tty.termios()), jobctl::Access::Write)?;
+        let n = tty.write(buf);
         dtrace!(b"CW_OUT", n as u64);
         Ok(n)
     }
@@ -182,6 +192,20 @@ impl Inode for ConsoleInode {
 /// independent of the framebuffer geometry.
 pub struct SerialInode;
 
+impl SerialInode {
+    /// Job-control gate for ttyS0 (background-pgrp read/write of the
+    /// controlling serial tty). # C: O(pgrp size).
+    fn jobctl(&self, access: jobctl::Access) -> KResult<()> {
+        jobctl::check(
+            static_console::foreground_pgid(),
+            static_console::session(),
+            self.ino(),
+            tty::pty::read_lflag(&static_console::termios_get()),
+            access,
+        )
+    }
+}
+
 impl Inode for SerialInode {
     fn ino(&self) -> Ino { TTY_INO_BASE | SERIAL_INO_LB as Ino }
     fn file_type(&self) -> FileType { FileType::CharDev }
@@ -190,6 +214,7 @@ impl Inode for SerialInode {
 
     fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
+        self.jobctl(jobctl::Access::Read)?;
         match static_console::read(buf) {
             ReadOutcome::Bytes(n) => Ok(n),
             ReadOutcome::Eof => Ok(0),
@@ -198,6 +223,7 @@ impl Inode for SerialInode {
     }
     fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
+        self.jobctl(jobctl::Access::Read)?;
         let n = static_console::read_nonblock(buf);
         if n == 0 { return Err(VfsError::Eagain); }
         Ok(n)
@@ -207,6 +233,7 @@ impl Inode for SerialInode {
         static_console::poll_subscribers()
     }
     fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
+        self.jobctl(jobctl::Access::Write)?;
         Ok(static_console::write(buf))
     }
 }
