@@ -62,6 +62,7 @@ mod virtio_drv;
 mod virtio_qsetup;
 mod virtio_blk_cfg;
 mod virtio_vsock_cfg;
+mod virtio_snd_cfg;
 mod virtio_trace;
 use virtio_drv::virtio_probe_arch;
 
