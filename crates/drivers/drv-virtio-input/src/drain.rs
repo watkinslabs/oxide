@@ -138,7 +138,8 @@ pub fn handle_key_event(keycode: u16, pressed: bool) {
     } else if handle_scroll(keycode, pressed) {
         // Shift+PgUp/PgDn: scrolled the VT scrollback, no byte.
     } else if pressed {
-        let out = keymap::translate(keycode);
+        // Cursor keys honor the foreground VT's DECCKM (Linux `applkey`).
+        let out = keymap::translate_app(keycode, tty::live::fg_app_cursor());
         out.for_each(|b| {
             tty::live::input_push_byte(b);
             DRAINED_KEYS.fetch_add(1, Ordering::Relaxed);

@@ -661,3 +661,27 @@ fn osc10_11_set_defaults_and_sgr_39_49_use_them() {
     em.feed_bytes(&mut vc, b"\x1b[0mY");
     assert_eq!(fg_at(&vc, 1, 0), 0x112233, "reset honors OSC 10 default fg");
 }
+
+// ===== P17-11: DECCKM (?1) + bracketed paste (?2004) modes ============
+
+#[test]
+fn decckm_mode_tracks_set_reset() {
+    let mut vc = Vc::new(10, 2);
+    let mut em = Emulator::new();
+    assert!(!em.app_cursor(), "DECCKM off by default");
+    em.feed_bytes(&mut vc, b"\x1b[?1h");
+    assert!(em.app_cursor(), "?1h sets DECCKM");
+    em.feed_bytes(&mut vc, b"\x1b[?1l");
+    assert!(!em.app_cursor(), "?1l clears DECCKM");
+}
+
+#[test]
+fn bracketed_paste_mode_tracks_set_reset() {
+    let mut vc = Vc::new(10, 2);
+    let mut em = Emulator::new();
+    assert!(!em.bracketed_paste());
+    em.feed_bytes(&mut vc, b"\x1b[?2004h");
+    assert!(em.bracketed_paste(), "?2004h enables bracketed paste");
+    em.feed_bytes(&mut vc, b"\x1b[?2004l");
+    assert!(!em.bracketed_paste());
+}

@@ -717,9 +717,14 @@ fn handle_tioclinux(arg: u64) -> i64 {
         vt::tiocl::TIOCL_PASTESEL => {
             // Inject the stored selection into the fg console's tty INPUT,
             // byte-by-byte through the same path the keyboard uses (Linux
-            // `paste_selection` → `tty_insert_flip_*`).
+            // `paste_selection` → `tty_insert_flip_*`). When the foreground
+            // VT has bracketed-paste (`?2004`) on, wrap the payload in the
+            // paste markers so the program can tell paste from typed input.
+            let bracket = tty::live::fg_bracketed_paste();
+            if bracket { for &b in b"\x1b[200~" { tty::live::input_push_byte(b); } }
             let sel = vt::tiocl::selection();
             for &b in sel.iter() { tty::live::input_push_byte(b); }
+            if bracket { for &b in b"\x1b[201~" { tty::live::input_push_byte(b); } }
             0
         }
         vt::tiocl::TIOCL_UNBLANKSCREEN => { vt::unblank(); 0 }
