@@ -24,7 +24,7 @@
 // split (tty-rebuild-plan §0 fact (a)).
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use serialtty::{KernelUart, SerialOut, SerialTtyDriver};
 use tty::ldisc::Sig;
@@ -208,6 +208,47 @@ pub fn flow(action: tty::TtyFlow) {
         tty.flow(action);
     }
 }
+
+// ----------------------------------------------------------- modem lines
+//
+// TIOCMGET/SET/BIS/BIC. The serial console's `tiocmget`/`tiocmset` operate
+// on a software MCR shadow (QEMU's emulated 16550 modem lines aren't wired
+// out to us): output lines DTR/RTS/OUT1/OUT2/LOOP/ST/SR are caller-settable;
+// input lines CTS/CAR(DCD)/DSR are strapped active (a console always has
+// carrier). Mirrors a UART driver whose tiocmset writes the MCR and
+// tiocmget OR's MCR|MSR. Defaults DTR|RTS asserted (line ready).
+
+const TIOCM_LE:   u32 = 0x001;
+const TIOCM_DTR:  u32 = 0x002;
+const TIOCM_RTS:  u32 = 0x004;
+const TIOCM_ST:   u32 = 0x008;
+const TIOCM_SR:   u32 = 0x010;
+const TIOCM_CTS:  u32 = 0x020;
+const TIOCM_CAR:  u32 = 0x040;
+const TIOCM_DSR:  u32 = 0x100;
+const TIOCM_OUT1: u32 = 0x2000;
+const TIOCM_OUT2: u32 = 0x4000;
+const TIOCM_LOOP: u32 = 0x8000;
+/// Caller-controllable output lines (MCR-side).
+const MODEM_CTRL: u32 = TIOCM_DTR | TIOCM_RTS | TIOCM_ST | TIOCM_SR
+    | TIOCM_OUT1 | TIOCM_OUT2 | TIOCM_LOOP;
+/// Strapped input lines (console carrier always present).
+const MODEM_STRAP: u32 = TIOCM_LE | TIOCM_CTS | TIOCM_CAR | TIOCM_DSR;
+/// Software MCR shadow (controllable bits only). Strap is OR'd in on GET.
+static MODEM: AtomicU32 = AtomicU32::new(TIOCM_DTR | TIOCM_RTS);
+
+/// TIOCMGET: controllable shadow | strapped input lines.
+/// # C: O(1)
+pub fn modem_get() -> u32 { MODEM.load(Ordering::Acquire) | MODEM_STRAP }
+/// TIOCMSET: replace the controllable lines (input lines ignored).
+/// # C: O(1)
+pub fn modem_set(bits: u32) { MODEM.store(bits & MODEM_CTRL, Ordering::Release); }
+/// TIOCMBIS: assert the given controllable lines.
+/// # C: O(1)
+pub fn modem_bis(bits: u32) { MODEM.fetch_or(bits & MODEM_CTRL, Ordering::AcqRel); }
+/// TIOCMBIC: clear the given controllable lines.
+/// # C: O(1)
+pub fn modem_bic(bits: u32) { MODEM.fetch_and(!(bits & MODEM_CTRL), Ordering::AcqRel); }
 
 /// TIOCGPGRP: foreground pgrp (0 = unset).
 /// # C: O(1)
