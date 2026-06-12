@@ -28,6 +28,7 @@ pub mod rlimit;
 pub mod rt;
 pub mod runqueue;
 pub mod task;
+mod sigqueue;
 mod sched_enc;
 
 pub use cfs::CfsRunqueue;

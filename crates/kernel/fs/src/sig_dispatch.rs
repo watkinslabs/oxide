@@ -25,6 +25,20 @@ use core::sync::atomic::Ordering;
 /// # C: O(1)
 #[inline]
 pub unsafe fn deliver(handler: u64, restorer: u64, sig: u32, saved_ret: u64) -> u64 {
+    // SAFETY: no extra siginfo payload (e.g. SIGILL from ptrace) —
+    // pass-through to the siginfo-aware variant with `None`.
+    unsafe { deliver_with_info(handler, restorer, sig, saved_ret, None) }
+}
+
+/// B117: `deliver` variant that threads the extra SA_SIGINFO payload
+/// (`hal::SigChld` for SIGCHLD) into the per-arch frame builder so an
+/// SA_SIGINFO handler reads si_pid/si_status/si_code. `None` ⇒ a
+/// signo-only siginfo (prior behaviour).
+/// # SAFETY: same contract as `deliver`.
+/// # C: O(1)
+#[inline]
+pub unsafe fn deliver_with_info(handler: u64, restorer: u64, sig: u32, saved_ret: u64,
+                                chld: Option<hal::SigChld>) -> u64 {
     // Block the delivered signal during its handler (POSIX SA_NODEFER-off);
     // rt_sigreturn restores this mask (docs/54 §3.5).
     let old_sigmask = match sched::live::current() {
@@ -35,7 +49,7 @@ pub unsafe fn deliver(handler: u64, restorer: u64, sig: u32, saved_ret: u64) -> 
     {
         // SAFETY: dispatch tail; hal owns the arch frame mechanics + uses the
         // live saved syscall frame on this CPU's kstack.
-        unsafe { hal_x86_64::build_signal_frame(handler, restorer, sig, saved_ret, old_sigmask); }
+        unsafe { hal_x86_64::build_signal_frame(handler, restorer, sig, saved_ret, old_sigmask, chld); }
         0
     }
     #[cfg(target_arch = "aarch64")]
@@ -48,7 +62,7 @@ pub unsafe fn deliver(handler: u64, restorer: u64, sig: u32, saved_ret: u64) -> 
             .map(|p| p as *mut hal_aarch64::SvcFrame)
             .unwrap_or_else(hal_aarch64::current_svc_frame);
         // SAFETY: dispatch tail; `frame` is the live saved SVC frame.
-        unsafe { hal_aarch64::build_signal_frame(frame, handler, restorer, sig, saved_ret, old_sigmask); }
+        unsafe { hal_aarch64::build_signal_frame(frame, handler, restorer, sig, saved_ret, old_sigmask, chld); }
         sig as u64
     }
 }
