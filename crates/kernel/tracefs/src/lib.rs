@@ -26,16 +26,15 @@ use vfs::StaticFileInode;
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    // Real trace buffer: trace / trace_marker / tracing_on are live inodes
-    // (record + render + gate); the rest stay nop-tracer static defaults.
+    // Real trace buffer: trace / trace_marker / trace_pipe / tracing_on are
+    // live inodes (record + render + drain + gate); the rest stay nop-tracer
+    // static defaults.
     ring::register();
     devfs::register("/sys/kernel/tracing/current_tracer",
         StaticFileInode::new(b"nop\n") as InodeRef);
     devfs::register("/sys/kernel/tracing/available_tracers",
         StaticFileInode::new(b"nop\n") as InodeRef);
     devfs::register("/sys/kernel/tracing/available_events",
-        StaticFileInode::new(b"") as InodeRef);
-    devfs::register("/sys/kernel/tracing/trace_pipe",
         StaticFileInode::new(b"") as InodeRef);
     devfs::register("/sys/kernel/tracing/trace_options",
         StaticFileInode::new(b"") as InodeRef);
