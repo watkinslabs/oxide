@@ -128,12 +128,13 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             }
             // Per-CPU softirq bottom-half (fbcon flush, virtio-input/net drain)
             // with IRQs locally enabled so device-ack waits make progress. Each
-            // CPU drains its own mask; this CPU's IN_PROGRESS guards re-entry.
+            // CPU drains its own mask; `do_softirq` does the bh accounting +
+            // `in_interrupt()` re-entry guard (Linux irq_exit → invoke_softirq).
             if softirq::pending() {
-                // SAFETY: EOI issued above; LAPIC accepts next IRQ; per-CPU run_pending guards re-entry; cli restores ISR masking before tick_pick_next.
+                // SAFETY: EOI issued above; LAPIC accepts next IRQ; do_softirq's in_interrupt guard blocks re-entry; cli restores ISR masking before tick_pick_next.
                 unsafe {
                     core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
-                    softirq::run_pending();
+                    sched::bh::do_softirq();
                     core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
                 }
             }
@@ -172,10 +173,10 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
                 softirq::raise(softirq::Slot::NetRx);
             }
             if softirq::pending() {
-                // SAFETY: EOI was issued above; nested IRQs into the dispatcher are fine — softirq::run_pending guards re-entry via IN_PROGRESS.
+                // SAFETY: EOI was issued above; nested IRQs into the dispatcher are fine — do_softirq's in_interrupt guard blocks re-entry.
                 unsafe {
                     core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
-                    softirq::run_pending();
+                    sched::bh::do_softirq();
                     core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
                 }
             }

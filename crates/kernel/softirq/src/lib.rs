@@ -25,7 +25,7 @@
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 /// Softirq slot identifiers. Add new entries at the bottom; never
 /// reorder existing variants — handlers index by `as u32`.
@@ -90,11 +90,10 @@ static HANDLERS: [AtomicPtr<()>; N_SLOTS] = [
     AtomicPtr::new(core::ptr::null_mut()), AtomicPtr::new(core::ptr::null_mut()),
 ];
 
-/// Per-CPU re-entry guard (Linux serialises softirqs per-CPU via local-bh /
-/// `in_interrupt`). Set while THIS CPU is draining; a nested call on the same
-/// CPU (timer fires inside a handler) observes true and bails — the outer
-/// drain picks up the new bits. Other CPUs drain their own entry concurrently.
-static IN_PROGRESS: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+// Re-entry is guarded by the per-CPU `preempt_count` softirq field (Linux
+// `in_interrupt()`), checked by the caller `sched::bh::do_softirq` — there is
+// no separate flag. `run_pending` below is the pure `__do_softirq` core; it
+// runs only inside that bh-accounted bracket.
 
 /// Linux `MAX_SOFTIRQ_RESTART` (`kernel/softirq.c`): restart-pass cap before
 /// the drain defers, so a self-re-raising slot (virtio-net `NetRx` re-armed
@@ -179,33 +178,26 @@ pub fn raise(slot: Slot) {
 /// # C: O(1)
 pub fn pending() -> bool { PENDING[this_cpu()].load(Ordering::Acquire) != 0 }
 
-/// Drain the pending bitmask, calling each set slot's handler.
-/// Loops until PENDING is 0 (so a handler that raises another bit
-/// is observed in the same drain).
+/// `__do_softirq` core: drain THIS CPU's pending mask with Linux's restart
+/// gate. NOT a public entry point — call `sched::bh::do_softirq` (or
+/// `local_bh_enable`), which brackets this in softirq accounting and supplies
+/// the `in_interrupt()` re-entry guard.
 ///
 /// # Ctx
-/// Must run with IRQs enabled — handlers may wait on device IRQ
-/// acks (virtio used-idx). Caller (the ISR shim) is responsible
-/// for the `sti` / `cli` envelope.
+/// Runs with IRQs enabled (handlers wait on device IRQ acks) and
+/// `in_serving_softirq` set by the caller.
 ///
 /// # SAFETY
-/// Caller must have enabled IRQs locally before calling. Re-entry
-/// is guarded by `IN_PROGRESS`; nested calls return without doing
-/// work, and the outer drain picks up new bits.
+/// Caller must run inside `sched::bh`'s softirq-accounted bracket (so re-entry
+/// is excluded and `this_cpu` is stable) with IRQs locally enabled.
 ///
-/// # C: O(N_handlers_with_work) per drain pass; bounded by handler
-/// runtime + the number of times handlers re-raise themselves.
+/// # C: O(N_handlers_with_work) per drain pass; bounded by the restart gate.
 pub unsafe fn run_pending() {
-    // This CPU's slot. Stable for the drain: callers are the IRQ/timer tail
-    // (migration only happens at IRQ-exit, not mid-tail) or ksoftirqd (pinned
-    // via affinity), so `this_cpu` can't change under us.
+    // This CPU's slot. Stable for the drain: callers (`sched::bh::do_softirq`)
+    // run with `in_serving_softirq` set, so preemption/migration is off and
+    // `this_cpu` can't change under us. Re-entry is already excluded by the
+    // caller's `in_interrupt()` guard — no flag here.
     let c = this_cpu();
-    if IN_PROGRESS[c]
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
-        return;
-    }
     RUNS.fetch_add(1, Ordering::Relaxed);
     // Linux `__do_softirq` restart gate, on THIS CPU's pending mask. A handler
     // that re-raises its own bit (NetRx re-armed by each RX MSI under a packet
@@ -253,7 +245,6 @@ pub unsafe fn run_pending() {
         DEFERRALS.fetch_add(1, Ordering::Relaxed);
         break;
     }
-    IN_PROGRESS[c].store(false, Ordering::Release);
 }
 
 #[cfg(test)]

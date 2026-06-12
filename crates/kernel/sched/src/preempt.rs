@@ -69,6 +69,53 @@ pub unsafe fn set_schedule_hook(hook: unsafe fn()) {
 /// # C: O(1)
 pub fn preempt_count() -> u32 { preempt_count_slot().load(Ordering::Acquire) }
 
+// ---- Linux preempt_count bit-field layout (`include/linux/preempt.h`) ----
+//
+// The per-CPU count is partitioned exactly like Linux: the low byte is the
+// PREEMPT-disable nesting (`preempt_disable`/`enable`, ±1), the next byte is
+// the SOFTIRQ field (`local_bh_disable` + the "serving a softirq" marker).
+// `should_resched()` already gates on the WHOLE word being zero, so a non-zero
+// SOFTIRQ field correctly blocks preemption while bottom-halves are disabled —
+// no other change needed. HARDIRQ/NMI fields are reserved for when the IRQ
+// path starts accounting (`irq_enter`); today only PREEMPT + SOFTIRQ are used.
+
+/// Softirq field shift (Linux `SOFTIRQ_SHIFT` = `PREEMPT_BITS`).
+pub const SOFTIRQ_SHIFT: u32 = 8;
+/// One softirq unit. Added once = "serving a softirq" (`in_serving_softirq`).
+pub const SOFTIRQ_OFFSET: u32 = 1 << SOFTIRQ_SHIFT;
+/// Softirq field mask.
+pub const SOFTIRQ_MASK: u32 = 0xff << SOFTIRQ_SHIFT;
+/// `local_bh_disable` increment — `2 * SOFTIRQ_OFFSET` so the low bit of the
+/// field distinguishes "bh disabled by process" (even) from "serving a
+/// softirq" (odd), exactly as Linux (`SOFTIRQ_DISABLE_OFFSET`).
+pub const SOFTIRQ_DISABLE_OFFSET: u32 = 2 * SOFTIRQ_OFFSET;
+
+/// The softirq field of this CPU's count (Linux `softirq_count()`).
+/// # C: O(1)
+pub fn softirq_count() -> u32 { preempt_count() & SOFTIRQ_MASK }
+
+/// True while THIS CPU is actively running a softirq handler (Linux
+/// `in_serving_softirq()` — odd softirq field). Guards softirq re-entry.
+/// # C: O(1)
+pub fn in_serving_softirq() -> bool { (preempt_count() & SOFTIRQ_OFFSET) != 0 }
+
+/// True in any bottom-half/IRQ context (Linux `in_interrupt()`). Today =
+/// softirq field non-zero; gains the HARDIRQ/NMI fields when those are
+/// accounted. Used as the softirq drain re-entry guard.
+/// # C: O(1)
+pub fn in_interrupt() -> bool { (preempt_count() & SOFTIRQ_MASK) != 0 }
+
+/// Raw add to this CPU's count (Linux `preempt_count_add`/`__preempt_count_add`).
+/// No reschedule check — bottom-half accounting only. # C: O(1)
+pub fn preempt_count_add(n: u32) { preempt_count_slot().fetch_add(n, Ordering::AcqRel); }
+
+/// Raw subtract from this CPU's count (Linux `preempt_count_sub`). No
+/// reschedule check — the bh layer decides when to resched. # C: O(1)
+pub fn preempt_count_sub(n: u32) {
+    let prev = preempt_count_slot().fetch_sub(n, Ordering::AcqRel);
+    debug_assert!(prev >= n, "preempt_count_sub underflow");
+}
+
 /// True iff a reschedule has been requested (set by wake_up / tick).
 /// # C: O(1)
 pub fn need_resched() -> bool { need_resched_slot().load(Ordering::Acquire) }
@@ -153,6 +200,27 @@ pub unsafe fn preempt_enable() {
             // SAFETY: raw came from a `unsafe fn()` cast in
             // set_schedule_hook; install-once-at-boot contract; caller
             // of preempt_enable promised this is a safe schedule point.
+            let f: unsafe fn() = unsafe { core::mem::transmute(raw) };
+            // SAFETY: per set_schedule_hook contract.
+            unsafe { f(); }
+        }
+    }
+}
+
+/// Linux `preempt_check_resched`: if the count is back to zero and a
+/// reschedule is pending, take it via the installed hook. Used by the
+/// bottom-half layer (`local_bh_enable`) which manipulates the count directly
+/// rather than through `preempt_enable`.
+///
+/// # SAFETY: same contract as `preempt_enable` — a schedule may run here, so
+/// the caller must be at a safe point (not in an IRQ handler, no spinlock the
+/// scheduler needs held).
+/// # C: O(1) + O(log N) iff schedule fires
+pub unsafe fn preempt_check_resched() {
+    if preempt_count() == 0 && take_need_resched() {
+        let raw = SCHEDULE_HOOK.load(Ordering::Acquire);
+        if !raw.is_null() {
+            // SAFETY: raw came from a `unsafe fn()` cast in set_schedule_hook (install-once-at-boot); caller promised a safe schedule point.
             let f: unsafe fn() = unsafe { core::mem::transmute(raw) };
             // SAFETY: per set_schedule_hook contract.
             unsafe { f(); }

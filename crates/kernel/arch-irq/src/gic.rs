@@ -674,12 +674,12 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         sched::live::preempt::set_need_resched();
         // Per-CPU softirq bottom-half (Linux: every CPU runs its own
         // __do_softirq from irq_exit). Each CPU drains its OWN pending mask;
-        // this CPU's IN_PROGRESS guards re-entry. See lapic.rs comment.
+        // do_softirq does the bh accounting + in_interrupt re-entry guard.
         if softirq::pending() {
-            // SAFETY: EOI was issued above; per-CPU softirq::run_pending guards re-entry. daifset on the tail restores IRQ masking before tick_pick_next.
+            // SAFETY: EOI was issued above; do_softirq's in_interrupt guard blocks re-entry. daifset on the tail restores IRQ masking before tick_pick_next.
             unsafe {
                 core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags));
-                softirq::run_pending();
+                sched::bh::do_softirq();
                 core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags));
             }
         }
