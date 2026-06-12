@@ -93,6 +93,7 @@ mod open_common;
 #[path = "111_getpgrp.rs"] pub mod s111_getpgrp; #[path = "121_getpgid.rs"] pub mod s121_getpgid; #[path = "124_getsid.rs"] pub mod s124_getsid;
 #[path = "109_setpgid.rs"] pub mod s109_setpgid; #[path = "112_setsid.rs"] pub mod s112_setsid; #[path = "095_umask.rs"] pub mod s095_umask;
 #[path = "309_getcpu.rs"] pub mod s309_getcpu; #[path = "143_sched_getparam.rs"] pub mod s143_sched_getparam; #[path = "145_sched_getscheduler.rs"] pub mod s145_sched_getscheduler;
+#[path = "144_sched_setscheduler.rs"] pub mod s144_sched_setscheduler;
 #[path = "146_sched_get_priority_max.rs"] pub mod s146_sched_get_priority_max; #[path = "147_sched_get_priority_min.rs"] pub mod s147_sched_get_priority_min; #[path = "324_membarrier.rs"] pub mod s324_membarrier;
 #[path = "170_sethostname.rs"] pub mod s170_sethostname; #[path = "037_alarm.rs"] pub mod s037_alarm; #[path = "034_pause.rs"] pub mod s034_pause;
 #[path = "038_setitimer.rs"] pub mod s038_setitimer; #[path = "036_getitimer.rs"] pub mod s036_getitimer;
