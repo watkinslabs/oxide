@@ -12,6 +12,7 @@ extern crate alloc;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
+pub mod bh;
 pub mod cfs;
 pub mod clock;
 pub mod cmdline;

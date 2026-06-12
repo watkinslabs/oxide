@@ -48,10 +48,10 @@ extern "C" fn ksoftirqd(arg: usize) -> ! {
     let my_cpu = if arg < MAX_CPUS { arg } else { 0 };
     loop {
         if softirq::pending() {
-            // SAFETY: process-context kthread with IRQs enabled (run_pending's
-            // documented contract); this CPU's IN_PROGRESS guard serialises it
-            // against this CPU's IRQ-tail drainer; no lock held across the call.
-            unsafe { softirq::run_pending(); }
+            // Linux run_ksoftirqd: drain in process context via the bh-accounted
+            // entry (in_serving_softirq marked, in_interrupt re-entry guard).
+            // SAFETY: process-context kthread, IRQs enabled, no lock held.
+            unsafe { crate::bh::do_softirq(); }
             // cond_resched(): yield so draining a flood stays preemptible.
             // SAFETY: running kthread, preempt-off, no lock held; schedule
             // re-enqueues this still-Runnable task.
