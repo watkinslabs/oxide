@@ -42,12 +42,21 @@ works). systemd + PAM login + openssl all run dynamically (real ld-musl) on arm.
 - **AT_HWCAP complete** on arm (#1791): baseline + crypto-ext from ID_AA64ISAR0.
 
 ## HIGH-VALUE NEXT (need daytime / human-in-loop — too risky fully-unattended)
-1. **Arm rt_sigframe** — LIKELY ALREADY DONE (sigframe_probe.c exists testing
-   SA_SIGINFO handler(sig,siginfo,ucontext)+resume; fault path sets siginfo+
-   ucontext). project_signal_frame_minimal is probably STALE. VERIFY: drive
-   sigframe_probe on arm with a ^C injection (no harness yet — reuse the
-   QMP-send-key path from dsr_probe/vtswitch_probe). If SIGFRAME_OK → close it.
-2. **ext4 extent depth** — capped at 2 (Linux: 5); generalize the walk.
+1. **rt_sigframe — RESOLVED/refuted** (#1795): sigframe_self_probe (SA_SIGINFO
+   via SIGALRM, checks sig/siginfo/non-null-ucontext/resume) PASSes on BOTH
+   arches → full Linux rt_sigframe. project_signal_frame_minimal was STALE.
+2. **NEW BUG (high value): self-signal delivery via raise()/tkill broken.**
+   sigframe_self_probe v1 used raise(SIGUSR1) and the handler NEVER ran (2s of
+   nanosleep windows); SIGALRM (kernel-posted) works fine. musl raise()→
+   SYS_tkill(own tid). Two issues: (a) `NR_TKILL => sys_kill` (dispatch.rs:370)
+   — tkill is THREAD-targeted, sys_kill has pid/pgrp semantics (tkill(0)=pgrp
+   etc. is wrong); should route like tgkill(234) minus the tgid check. (b)
+   sys_kill self fast-path compares `pid == cur.tid` (INTERNAL tid) vs the
+   user-supplied vtid (vpid≠internal-tid minefield, see
+   pid_identity_and_at_syscalls) — if gettid returns vtid this misses + relies
+   on lookup_in_ns. abort()/pthread_kill/raise all depend on this. Trace with a
+   tkill probe + dtrace; fix the dispatch + identity together. DO NOT fix blind.
+3. **ext4 extent depth** — capped at 2 (Linux: 5); generalize the walk.
    Hosted-testable over a deep-extent ext4 image; fs-risky.
 3. **liburing 3-region mmap** (IORING_OFF_SQ_RING/CQ_RING/SQES offset cookies)
    so real liburing programs work, not just raw single-page users (#1793).
