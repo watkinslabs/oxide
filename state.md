@@ -6,7 +6,7 @@ branch). Dev loop: `tools/boot-smoke-probe.sh x86 <probe>` under `OXIDE_QEMU_KVM
 (kills the shell) — use `pkill -9 -x qemu-system-x86_64`. Stale qemu holds the
 root.img write-lock; kill all qemu first.
 
-## Merged this run (19 PRs) — linux2.md "is this the Linux way" + a crash fix
+## Merged this run (20 PRs) — linux2.md "is this the Linux way" + a crash fix
 
 - **B120 #1809** real TIOCM* modem + TIOCSPTLCK/GPTLCK pts lock (Inode::on_open).
 - **F439 #1810** rtnetlink multicast (bind nl_groups + ADD/DROP_MEMBERSHIP +
