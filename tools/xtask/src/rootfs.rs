@@ -901,12 +901,9 @@ exit 0
     put(&stage("profile",
 b"export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export PS1='\\h:\\w\\$ '
-# oxide's console is an xterm-class emulator: the keyboard emits xterm key
-# sequences (F1=ESC O P, F5=ESC[15~, see keymap.rs) and the renderer handles
-# the xterm output set (alternate screen ?1049, DEC line-drawing ESC(0,
-# 256-color). TERM=linux mislabeled it: that terminfo lacks smcup, so
-# full-screen apps (htop, vim, less) never used the alternate screen and
-# F-keys mismatched. xterm-256color matches the real capabilities.
+# oxide's console is an xterm-class emulator (xterm key sequences + ?1049
+# alt-screen / DEC line-drawing / 256-color), so xterm-256color not linux,
+# whose terminfo lacks smcup (that blocked htop/vim alt-screen). See B123.
 export TERM=xterm-256color
 umask 022
 if [ -d /etc/profile.d ]; then

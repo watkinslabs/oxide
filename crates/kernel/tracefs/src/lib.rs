@@ -1,6 +1,7 @@
 #![no_std]
 extern crate alloc;
 
+pub mod percpu_ring;
 pub mod ring;
 
 // Boot-time tracefs registration per `37§R01` and v2-arch-plan §1.8.
