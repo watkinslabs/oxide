@@ -348,6 +348,7 @@ pub fn install_open(
     {
         return Err(VfsError::Enotdir);
     }
+    inode.on_open()?;
     if flags.contains(OpenFlags::O_TRUNC) {
         let _ = inode.truncate(0);
     }

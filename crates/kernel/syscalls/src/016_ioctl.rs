@@ -32,15 +32,17 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     const TIOCSWINSZ: u64 = 0x5414;
     const TIOCGPTN:   u64 = 0x80045430;
     const TIOCSPTLCK: u64 = 0x40045431;
+    const TIOCGPTLCK: u64 = 0x80045439;
     const TIOCGPGRP:  u64 = 0x540F;
     const TIOCSPGRP:  u64 = 0x5410;
     const TIOCSCTTY:  u64 = 0x540E;
     const TIOCNOTTY:  u64 = 0x5422;
     const TIOCGSID:   u64 = 0x5429;
-    // Modem-control bits (DTR/RTS/CD/RI/DSR/CTS). For our v1 console
-    // alias these are nominal — report all signals asserted on GET,
-    // accept and ignore SETs / BISs / BICs. getty issues a
-    // TIOCMGET to confirm carrier-detect before the login banner.
+    // Modem-control bits (DTR/RTS/CD/RI/DSR/CTS). The serial/VT console
+    // models a software modem register (TIOCMGET reflects prior
+    // TIOCMSET/BIS/BIC; carrier strapped active). A pty has no modem
+    // lines → ENOTTY (Linux `pty` has no `tiocmget`/`tiocmset`). getty
+    // issues TIOCMGET to confirm carrier-detect before the login banner.
     const TIOCMGET:   u64 = 0x5415;
     const TIOCMBIS:   u64 = 0x5416;
     const TIOCMBIC:   u64 = 0x5417;
@@ -280,7 +282,28 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             unsafe { core::ptr::write_volatile(arg as *mut u32, (ino & 0x7FFF) as u32); }
             0
         }
-        TIOCSPTLCK => 0,
+        TIOCSPTLCK => {
+            // Master-side pts lock toggle (glibc/musl unlockpt = arg 0).
+            if (ino & 0xFFFF_8000) != 0x6000_0000 { return -(Errno::Enotty.as_i32() as i64); }
+            if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
+            // SAFETY: arg validated 4-byte aligned; CPL=0 read through caller's AS.
+            let v = unsafe { core::ptr::read_volatile(arg as *const i32) };
+            match &pty_pair {
+                Some(pair) => { pair.set_locked(v != 0); 0 }
+                None => -(Errno::Enotty.as_i32() as i64),
+            }
+        }
+        TIOCGPTLCK => {
+            if (ino & 0xFFFF_8000) != 0x6000_0000 { return -(Errno::Enotty.as_i32() as i64); }
+            if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
+            let locked = match &pty_pair {
+                Some(pair) => pair.is_locked(),
+                None => return -(Errno::Enotty.as_i32() as i64),
+            };
+            // SAFETY: arg validated 4-byte aligned; CPL=0 write through caller's AS.
+            unsafe { core::ptr::write_volatile(arg as *mut i32, locked as i32); }
+            0
+        }
         TIOCGPGRP | TIOCSPGRP => {
             if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
             // PTY fds: read/write the pair's foreground_pgid. Boot
@@ -413,22 +436,35 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             0
         }
         TIOCMGET => {
-            // Nominal modem-status: DTR | RTS | CD | DSR | CTS all
-            // asserted (matches a healthy serial console). Bits from
-            // linux/include/uapi/asm-generic/termios.h.
+            // Linux: only a driver with `tiocmget` answers. Serial console
+            // has one (software MCR); VT (vt.c) + pty have none → ENOTTY.
             if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
-            const TIOCM_LE:  u32 = 0x001;
-            const TIOCM_DTR: u32 = 0x002;
-            const TIOCM_RTS: u32 = 0x004;
-            const TIOCM_CTS: u32 = 0x020;
-            const TIOCM_CAR: u32 = 0x040;
-            const TIOCM_DSR: u32 = 0x100;
-            let bits = TIOCM_LE | TIOCM_DTR | TIOCM_RTS | TIOCM_CTS | TIOCM_CAR | TIOCM_DSR;
+            if pty_pair.is_some() { return -(Errno::Enotty.as_i32() as i64); }
+            let bits = match console::route(ino) {
+                console::TtyTarget::Serial => console::static_console::modem_get(),
+                console::TtyTarget::Vt(_)  => return -(Errno::Enotty.as_i32() as i64),
+            };
             // SAFETY: arg validated 4-byte aligned; CPL=0 write through caller's AS.
             unsafe { core::ptr::write_volatile(arg as *mut u32, bits); }
             0
         }
-        TIOCMSET | TIOCMBIS | TIOCMBIC => 0,
+        TIOCMSET | TIOCMBIS | TIOCMBIC => {
+            if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
+            if pty_pair.is_some() { return -(Errno::Enotty.as_i32() as i64); }
+            match console::route(ino) {
+                console::TtyTarget::Serial => {
+                    // SAFETY: arg validated 4-byte aligned; CPL=0 read through caller's AS.
+                    let v = unsafe { core::ptr::read_volatile(arg as *const u32) };
+                    match req {
+                        TIOCMSET => console::static_console::modem_set(v),
+                        TIOCMBIS => console::static_console::modem_bis(v),
+                        _        => console::static_console::modem_bic(v),
+                    }
+                    0
+                }
+                console::TtyTarget::Vt(_) => -(Errno::Enotty.as_i32() as i64),
+            }
+        }
         _ => -(Errno::Enotty.as_i32() as i64),
     }
 }

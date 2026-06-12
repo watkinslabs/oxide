@@ -232,6 +232,15 @@ pub trait Inode: Send + Sync {
     /// # C: O(1)
     fn set_owner(&self, _uid: u32, _gid: u32) -> KResult<()> { Err(VfsError::Erofs) }
 
+    /// Open-time hook per Linux `file_operations->open`. Fired by the
+    /// open path after path resolution, before the `File`/fd is built, so
+    /// a driver can reject the open. Default `Ok`. pty SLAVE overrides to
+    /// return `Eio` while the pair is `TIOCSPTLCK`-locked (Linux
+    /// `pts_unix98_lookup` returns `-EIO` on a locked slave — glibc/musl
+    /// `unlockpt` clears it before the slave is opened).
+    /// # C: O(1)
+    fn on_open(&self) -> KResult<()> { Ok(()) }
+
     /// Last-close ("release") hook per Linux `file_operations->release`.
     /// Fired by `File`'s Drop when the final fd referencing one open
     /// file description closes (incl. on process exit, when the fd
