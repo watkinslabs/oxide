@@ -29,7 +29,7 @@ pub fn sys_sched_setscheduler(args: &SyscallArgs) -> i64 {
     let task = if pid == 0 {
         sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {
-        sched::live::registry::lookup(pid)
+        sched::live::registry::resolve_user_pid(pid)
     };
     let t = match task { Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64) };
     // sched_setscheduler does not change `nice` for the normal classes — keep
