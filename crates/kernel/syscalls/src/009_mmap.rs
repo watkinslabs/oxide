@@ -40,6 +40,17 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 Err(rv) => rv,
             };
         }
+        // io_uring fd: map the ring page (SQ/CQ/SQE all live in it) straight
+        // to its PA so userspace shares the rings with the kernel (Linux
+        // io_uring_mmap → remap_pfn_range). Must precede the page-cache
+        // fallback below (IoUringInode read/write return EINVAL).
+        if let Some((pa, len)) = crate::io_uring::mmap_backing(inode, offset) {
+            if args.a1 > len { return -(Errno::Einval.as_i32() as i64); }
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd, 0, None, Some(pa)) {
+                Ok(va)  => va as i64,
+                Err(rv) => rv,
+            };
+        }
         match fbdev::devfs::mmap_backing(inode) {
             Some((pa, len)) => {
                 // The mapped window must fit within the device's backing.
