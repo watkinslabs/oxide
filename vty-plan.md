@@ -43,18 +43,16 @@ numbered VT that IS the default foreground.
 
 ### RC3 — VT emulator incomplete: garbage rendering  [HIGH]
 Command set now specced in **docs/57** (ECMA-48/VT100/VT220/xterm interpreter +
-cell model). ECH + alt-screen + truecolor since landed; remaining vs docs/57:
-- **Wide chars (East-Asian width)** — `Vc::put_glyph` assumes width 1, advances 1
-  (`vc.rs:620`). CJK/emoji/double-width box-drawing misalign. Need the
-  primary+spacer cell model + EAW table per docs/57§9.2.
-Single live parser `vt/src/emulator.rs`. Missing/broken vs real terminal:
+cell model). LANDED: ECH, alt-screen, truecolor, **wide chars (East-Asian
+width: primary+spacer cells, EAW table `eaw.rs`, cursor advance by width,
+overwrite invalidation)**, **SGR 2/3/5/8/9 + resets 22/23/25/28/29** (faint/
+italic/blink/conceal/strike). Single live parser `vt/src/emulator.rs`.
+Remaining vs real terminal:
 - **ECH `CSI X`** — absent (no `b'X'` arm). ncurses/systemd use it constantly →
   stale glyphs.
 - **Alternate screen `?1049/?47/?1047`** — no alt buffer in `Vc`. vim/less/htop/
   pager wipe primary to black, never restore. (Also a black-screen cause.)
 - **DA `CSI c` + DECID `ESC Z`** — no reply; DA-probing programs stall.
-- **SGR 2/3/5/9** (dim/italic/blink/strike) + resets 23/25/28/29 — dropped; no
-  attr fields in `Attr`.
 - **Bracketed paste `?2004`**, **DECCKM `?1`** app-cursor, **keypad `ESC =/>`** —
   dropped; bash readline + full-screen apps assume them.
 - **OSC 4/104 palette**, **OSC ST parse bug** (lone `\` ends OSC), **DCS not

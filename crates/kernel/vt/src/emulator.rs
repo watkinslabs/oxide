@@ -398,22 +398,43 @@ impl Emulator {
     // ---- printable + C0 effects -------------------------------------
 
     fn print(&mut self, vc: &mut Vc, cp: u32) {
+        // East-Asian width: 0 = combining (composes onto the prior cell — a
+        // single-glyph cell can't store the mark, so drop it without moving
+        // the cursor, preserving alignment), 1 = narrow, 2 = wide (`57§9.2`).
+        let w = crate::eaw::char_width(cp);
+        if w == 0 {
+            return;
+        }
+        // Resolve a pending wrap left by a prior last-column write.
         if vc.wrap_pending && vc.autowrap {
             vc.x = 0;
             self.line_feed(vc);
             vc.wrap_pending = false;
         }
-        vc.put_glyph(cp);
-        if vc.x + 1 >= vc.cols {
+        // A width-2 glyph that would straddle the right margin wraps first
+        // (autowrap) or is dropped (no autowrap — it can't fit one column).
+        if w == 2 && vc.x + 1 >= vc.cols {
             if vc.autowrap {
-                // Defer the wrap (Linux/xterm pending-wrap): stay in the
-                // last column; the next printable triggers the wrap.
+                vc.x = 0;
+                self.line_feed(vc);
+                vc.wrap_pending = false;
+            } else {
+                return;
+            }
+        }
+        vc.put_glyph_w(cp, w == 2);
+        let adv = w as u16;
+        if vc.x + adv >= vc.cols {
+            if vc.autowrap {
+                // Pending-wrap (Linux/xterm): stay in the last column; the
+                // next printable triggers the wrap.
+                vc.x = vc.cols - 1;
                 vc.wrap_pending = true;
             } else {
                 vc.x = vc.cols - 1;
             }
         } else {
-            vc.x += 1;
+            vc.x += adv;
         }
     }
 
@@ -765,11 +786,21 @@ impl Emulator {
             match p {
                 0 => vc.attr.reset(),
                 1 => vc.attr.bold = true,
+                2 => vc.attr.faint = true,
+                3 => vc.attr.italic = true,
                 4 => vc.attr.underline = true,
+                5 => vc.attr.blink = true,
                 7 => vc.attr.reverse = true,
-                22 => vc.attr.bold = false,
+                8 => vc.attr.conceal = true,
+                9 => vc.attr.strike = true,
+                21 => vc.attr.underline = true, // double-underline → underline
+                22 => { vc.attr.bold = false; vc.attr.faint = false; }
+                23 => vc.attr.italic = false,
                 24 => vc.attr.underline = false,
+                25 => vc.attr.blink = false,
                 27 => vc.attr.reverse = false,
+                28 => vc.attr.conceal = false,
+                29 => vc.attr.strike = false,
                 // 16-color fg/bg: resolve index→RGB now (bold brightens a
                 // basic 0..7 fg at resolve time, VGA convention).
                 30..=37 => vc.attr.set_fg_index(p - 30),
