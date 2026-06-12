@@ -41,10 +41,16 @@ All x86+arm boot-verified, spec-lint clean:
   read drains+renders records (vs `trace` snapshot); blocking parks via
   tick-yield, O_NONBLOCK→EAGAIN; `pending` absorbs short reads. Probe
   tracepipe_probe.
-- **F444 #TBD** (§2.13) real fanotify NOTIF-class: split sys_fanotify_init →
+- **F444 #1819** (§2.13) real fanotify NOTIF-class: split sys_fanotify_init →
   InotifyInode{fanotify}; Event carries Option<InodeRef>+pid; read() emits the
   24-byte fanotify_event_metadata installing a real O_RDONLY object fd; fixed
   fanotify_mark to use the combined devfs+mount resolver. Probe fanotify_probe.
+- **F445 #1820** (§2.13) fanotify FAN_OPEN_PERM: open() of a perm-marked file
+  BLOCKS until the daemon writes a verdict. check_open_perm hooked into
+  sys_open/openat (fast-path when PERM_MARK_COUNT==0 → never blocks boot);
+  group read blocks + delivers perm events first; group write() applies
+  fanotify_response{fd,resp}; on_release auto-allows (dead-daemon safety).
+  Group fd now O_RDWR. Probe fanotify_perm_probe (2-proc ALLOW+DENY).
 
 ## linux2.md remaining (validated real gaps — each a dedicated session)
 
@@ -59,12 +65,11 @@ All x86+arm boot-verified, spec-lint clean:
 - **§2.11 eBPF** verifier/JIT (`security/src/bpf.rs`) — very large.
 - **§2.12 tracefs** beyond trace_marker: per-CPU ring buffers, real tracepoints
   (sched_switch/sys_enter anchors), trace_pipe blocking read, per-event enable.
-- **§2.13 fanotify** NOTIF-class DONE in F444: real fanotify_event_metadata +
-  object fd. REMAINING: perm-events (FAN_*_PERM / FAN_CLASS_CONTENT — the
-  accessing task blocks on the access until userspace writes a struct
-  fanotify_response{fd,response} back to the group fd). Needs a per-event
-  response wait + the write() path on the group fd. Plus FAN_REPORT_FID
-  (file-handle instead of fd). Separate dedicated piece.
+- **§2.13 fanotify** NOTIF (F444) + FAN_OPEN_PERM (F445) DONE. REMAINING (niche
+  follow-ups, perm infra already exists): FAN_ACCESS_PERM (same mechanism but
+  hooks the READ path — one check_open_perm-style call in sys_read, reusing the
+  PERM_MARK_COUNT fast-path) + FAN_REPORT_FID (emit a file handle instead of an
+  fd). Lower priority than the large gaps below.
 - **§3 X11/Wayland** — huge.
 
 ## First command next session
