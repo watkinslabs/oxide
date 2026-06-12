@@ -37,6 +37,10 @@ All x86+arm boot-verified, spec-lint clean:
   multi-extent file failed). Recursive shrink walk: free_subtree reclaims
   orphaned data+metadata; emptied tree resets to depth-0; i_blocks recomputed.
   Tests truncate_depth1_frees_tail_and_keeps_head + _to_zero_resets_to_empty.
+- **F443 #1818** (§2.12) real consuming/blocking trace_pipe over F442's buffer:
+  read drains+renders records (vs `trace` snapshot); blocking parks via
+  tick-yield, O_NONBLOCK→EAGAIN; `pending` absorbs short reads. Probe
+  tracepipe_probe.
 
 ## linux2.md remaining (validated real gaps — each a dedicated session)
 
