@@ -91,6 +91,8 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     if let Some(rv) = drm::node::handle_drm_ioctl(file.inode(), req, arg) {
         return rv;
     }
+    // ALSA /dev/snd/* + OSS /dev/dsp,/dev/mixer — the `sound` ALSA core.
+    if let Some(rv) = sound::handle_ioctl(file.inode(), req, arg) { return rv; }
     // B48: SIOC* network-iface ioctls on AF_INET / AF_INET6 sockets.
     // dhcpcd's whole bring-up dance uses SIOCGIFFLAGS / SIOCSIFFLAGS
     // / SIOCGIFADDR / SIOCSIFADDR / SIOCGIFINDEX / SIOCGIFHWADDR

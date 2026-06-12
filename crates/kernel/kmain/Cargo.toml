@@ -59,6 +59,8 @@ drv-virtio-net    = { path = "../../drivers/drv-virtio-net" }
 drv-virtio-blk    = { path = "../../drivers/drv-virtio-blk" }
 drv-virtio-rng    = { path = "../../drivers/drv-virtio-rng" }
 drv-virtio-vsock  = { path = "../../drivers/drv-virtio-vsock" }
+drv-virtio-snd    = { path = "../../drivers/drv-virtio-snd" }
+sound             = { path = "../sound" }
 drv-serial        = { path = "../../drivers/drv-serial" }
 drv-ps2-keyboard  = { path = "../../drivers/drv-ps2-keyboard" }
 drm               = { path = "../../drivers/drm" }
