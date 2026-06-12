@@ -611,3 +611,53 @@ fn dcs_payload_not_executed_as_commands() {
     assert_eq!(vc.attr_at(0, 0).unwrap().fg, crate::vc::DEFAULT_FG_RGB,
         "DCS payload CSI 31m was not executed");
 }
+
+// ===== P17-10: OSC 4/104/10/11 color control ==========================
+
+/// fg RGB of the glyph printed at (col,row).
+fn fg_at(vc: &Vc, col: u16, row: u16) -> u32 { vc.attr_at(col, row).unwrap().fg }
+
+#[test]
+fn osc4_redefines_palette_index_for_future_glyphs() {
+    let mut vc = Vc::new(10, 2);
+    let mut em = Emulator::new();
+    // Redefine color index 1 (red) to pure green via rgb:00/ff/00, BEL-term.
+    em.feed_bytes(&mut vc, b"\x1b]4;1;rgb:00/ff/00\x07");
+    em.feed_bytes(&mut vc, b"\x1b[31mX");   // SGR 31 = fg index 1
+    assert_eq!(fg_at(&vc, 0, 0), 0x00ff00, "glyph uses redefined palette entry");
+}
+
+#[test]
+fn osc4_hash_form_and_st_terminator() {
+    let mut vc = Vc::new(10, 2);
+    let mut em = Emulator::new();
+    // #0000ff via 7-bit ST (ESC \).
+    em.feed_bytes(&mut vc, b"\x1b]4;2;#0000ff\x1b\\");
+    em.feed_bytes(&mut vc, b"\x1b[32mX");   // SGR 32 = fg index 2
+    assert_eq!(fg_at(&vc, 0, 0), 0x0000ff);
+}
+
+#[test]
+fn osc104_resets_palette() {
+    let mut vc = Vc::new(10, 2);
+    let mut em = Emulator::new();
+    em.feed_bytes(&mut vc, b"\x1b]4;1;rgb:00/ff/00\x07");
+    em.feed_bytes(&mut vc, b"\x1b]104;1\x07");   // reset index 1
+    em.feed_bytes(&mut vc, b"\x1b[31mX");
+    assert_eq!(fg_at(&vc, 0, 0), crate::palette::xterm_256_rgb(1), "index 1 back to default red");
+}
+
+#[test]
+fn osc10_11_set_defaults_and_sgr_39_49_use_them() {
+    let mut vc = Vc::new(10, 2);
+    let mut em = Emulator::new();
+    em.feed_bytes(&mut vc, b"\x1b]10;rgb:11/22/33\x07");  // default fg
+    em.feed_bytes(&mut vc, b"\x1b]11;#445566\x07");        // default bg
+    // SGR 39/49 select the (now redefined) defaults.
+    em.feed_bytes(&mut vc, b"\x1b[39;49mX");
+    assert_eq!(fg_at(&vc, 0, 0), 0x112233);
+    assert_eq!(vc.attr_at(0, 0).unwrap().bg, 0x445566);
+    // SGR 0 reset also lands on the redefined defaults.
+    em.feed_bytes(&mut vc, b"\x1b[0mY");
+    assert_eq!(fg_at(&vc, 1, 0), 0x112233, "reset honors OSC 10 default fg");
+}
