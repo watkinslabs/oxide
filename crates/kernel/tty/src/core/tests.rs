@@ -399,3 +399,77 @@ fn hangup_makes_writes_drop() {
     assert_eq!(n, 12, "write reports consumed (EIO mapped at syscall layer)");
     tty.with_driver(|d| assert!(d.out.is_empty(), "nothing reaches a hung-up driver"));
 }
+
+#[test]
+fn tcxonc_output_suspend_resume_state() {
+    use super::TtyFlow;
+    let tty = cooked_tty();
+    // Default: not stopped; a write proceeds normally.
+    assert!(!tty.output_stopped());
+    let n = tty.write(b"hi");
+    assert_eq!(n, 2);
+    tty.with_driver(|d| assert!(!d.out.is_empty(), "write emitted while running"));
+
+    // TCOOFF sets the suspend flag (and reports the state change).
+    assert!(tty.flow(TtyFlow::OutputOff), "TCOOFF changes state");
+    assert!(tty.output_stopped());
+    // Idempotent: a second TCOOFF reports no change.
+    assert!(!tty.flow(TtyFlow::OutputOff), "second TCOOFF no change");
+
+    // TCOON clears it (and reports the change), waking any parked writer.
+    assert!(tty.flow(TtyFlow::OutputOn), "TCOON changes state");
+    assert!(!tty.output_stopped());
+    assert!(!tty.flow(TtyFlow::OutputOn), "second TCOON no change");
+
+    // A write AFTER resume proceeds without parking.
+    let n = tty.write(b"go");
+    assert_eq!(n, 2, "write after TCOON proceeds");
+}
+
+#[test]
+fn tcxonc_input_actions_no_output_state_change() {
+    use super::TtyFlow;
+    let tty = cooked_tty();
+    // TCIOFF/TCION have no upstream to flow-control on a directly-attached
+    // line: they must NOT touch output_stopped and report no change.
+    assert!(!tty.flow(TtyFlow::InputOff), "TCIOFF reports no change");
+    assert!(!tty.output_stopped(), "TCIOFF leaves output running");
+    assert!(!tty.flow(TtyFlow::InputOn), "TCION reports no change");
+    assert!(!tty.output_stopped(), "TCION leaves output running");
+}
+
+#[test]
+fn tcxonc_from_arg_rejects_out_of_range() {
+    use super::TtyFlow;
+    assert_eq!(TtyFlow::from_arg(0), Some(TtyFlow::OutputOff));
+    assert_eq!(TtyFlow::from_arg(1), Some(TtyFlow::OutputOn));
+    assert_eq!(TtyFlow::from_arg(2), Some(TtyFlow::InputOff));
+    assert_eq!(TtyFlow::from_arg(3), Some(TtyFlow::InputOn));
+    assert_eq!(TtyFlow::from_arg(4), None, "out-of-range → EINVAL at shim");
+    assert_eq!(TtyFlow::from_arg(99), None);
+}
+
+#[test]
+fn tcxonc_parked_writer_wakes_on_resume() {
+    use super::TtyFlow;
+    // A writer that hits a suspended tty must PARK (output paused, not
+    // dropped), then complete once a concurrent TCOON resumes output —
+    // the must-have flow-control behaviour, exercised end to end.
+    for _ in 0..200 {
+        let tty = Arc::new(cooked_tty());
+        tty.flow(TtyFlow::OutputOff);
+        let barrier = Arc::new(Barrier::new(2));
+        let t2 = Arc::clone(&tty);
+        let b2 = Arc::clone(&barrier);
+        let writer = std::thread::spawn(move || {
+            b2.wait();
+            // Parks until the main thread resumes output.
+            t2.write(b"resumed")
+        });
+        barrier.wait();
+        // Resume: clears the flag and wakes the parked writer.
+        tty.flow(TtyFlow::OutputOn);
+        let n = writer.join().unwrap();
+        assert_eq!(n, 7, "parked write completes after TCOON");
+    }
+}

@@ -42,7 +42,7 @@
 
 extern crate alloc;
 
-use ::core::sync::atomic::{AtomicU32, Ordering};
+use ::core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use sync::{Spinlock, Tty as TtyClass};
 
@@ -74,6 +74,40 @@ impl TtyFlush {
     pub fn input(self) -> bool { matches!(self, Self::Input | Self::Both) }
     /// True when output should be flushed. # C: O(1)
     pub fn output(self) -> bool { matches!(self, Self::Output | Self::Both) }
+}
+
+/// TCXONC action (tcflow(3) arg). Linux uapi: TCOOFF=0 (suspend output),
+/// TCOON=1 (resume output), TCIOFF=2 (transmit a STOP char to suspend the
+/// peer's transmission into us), TCION=3 (transmit a START char to resume
+/// it). Typed so the ioctl shim never passes a bare literal (07§5). The
+/// shim decodes via `from_arg`, which rejects out-of-range args (EINVAL) —
+/// unlike `TtyFlush::from_arg` it validates, because a bogus action must
+/// not silently suspend output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TtyFlow {
+    /// TCOOFF — suspend output (hold the write path until resumed).
+    OutputOff,
+    /// TCOON — resume output (clear the suspend flag; wake parked writers).
+    OutputOn,
+    /// TCIOFF — transmit a STOP char (^S) toward the input source.
+    InputOff,
+    /// TCION — transmit a START char (^Q) toward the input source.
+    InputOn,
+}
+
+impl TtyFlow {
+    /// Decode the TCXONC ioctl arg (0..=3). Out-of-range → `None` so the
+    /// shim returns EINVAL (Linux rejects a bad action rather than
+    /// treating it as a no-op success). # C: O(1)
+    pub fn from_arg(arg: u64) -> Option<Self> {
+        match arg {
+            0 => Some(Self::OutputOff),
+            1 => Some(Self::OutputOn),
+            2 => Some(Self::InputOff),
+            3 => Some(Self::InputOn),
+            _ => None,
+        }
+    }
 }
 
 /// Outcome of a blocking `TtyStruct::read`. The syscall layer maps these:
@@ -199,6 +233,14 @@ pub struct TtyStruct<D: TtyDriver, W: TtyWait> {
     /// RX / hangup transition calls `subs.notify()` to wake ONLY the tasks
     /// polling THIS tty — no global broadcast.
     subs: vfs::PollSubscribers,
+    /// Output-suspend flag (Linux `tty->flow.stopped` / `STOP_OUTPUT`).
+    /// Set by TCXONC TCOOFF or a ^S under IXON; cleared by TCOON / ^Q.
+    /// While set, `write` parks the caller on the wait queue rather than
+    /// emitting — the program's output pauses, never drops (Linux holds
+    /// the chars in the driver write queue; we hold the writer's thread).
+    /// Lives outside the port lock so the write-park loop can re-check it
+    /// without holding the ldisc lock across `park_commit`.
+    output_stopped: AtomicBool,
 }
 
 impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
@@ -213,6 +255,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             sid: AtomicU32::new(0),
             open_count: AtomicU32::new(0),
             subs: vfs::PollSubscribers::new(),
+            output_stopped: AtomicBool::new(false),
         }
     }
 
@@ -396,11 +439,69 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
 
     /// Write `buf` through the ldisc output processing (OPOST/ONLCR/…) to
     /// the driver. Returns bytes consumed.
-    /// # C: O(N) bytes
+    ///
+    /// OUTPUT FLOW CONTROL (TCXONC TCOOFF / ^S): if `output_stopped` is
+    /// set, park the writer on the wait queue until TCOON / ^Q clears it,
+    /// then emit — Linux pauses the program's output, it does not drop or
+    /// error. A pending unblocked signal aborts the wait (the byte count
+    /// returned is 0 → the syscall layer maps that to a short write /
+    /// EINTR like a parked reader). The re-check uses the same wait queue
+    /// the reader path uses, so the `flow` resume wakes both.
+    /// # C: O(N) bytes; sleeps while output is suspended
     pub fn write(&self, buf: &[u8]) -> usize {
+        // Hold the writer while output is suspended. Re-check after each
+        // wake (level-triggered: resume clears the flag then wakes). No
+        // port lock is held across the park, so RX + resume proceed.
+        while self.output_stopped.load(Ordering::Acquire) {
+            if self.wait.should_interrupt() { return 0; }
+            self.wait.park_prepare();
+            // Re-check under the just-enqueued state: if resume cleared the
+            // flag between the load and the enqueue, abort the sleep.
+            if !self.output_stopped.load(Ordering::Acquire) {
+                self.wait.park_abort();
+                break;
+            }
+            self.wait.park_commit();
+        }
         let mut g = self.inner.lock();
         let PortInner { ldisc, driver } = &mut *g;
         ldisc.write(driver, buf)
+    }
+
+    /// TCXONC software flow control (tcflow(3)). TCOOFF suspends output
+    /// (sets the flag so `write` parks); TCOON resumes (clears it + wakes
+    /// parked writers). TCIOFF/TCION (transmit a STOP/START char toward the
+    /// input source) are honoured as state on the local flag for the
+    /// console/serial line: there is no separate upstream to signal, so
+    /// InputOff is treated like a local output-suspend request and InputOn
+    /// like a resume — `false` is returned for them so the shim can choose
+    /// to report the narrower no-effect honestly; callers that only care
+    /// about the must-have output path use OutputOff/OutputOn.
+    ///
+    /// Returns `true` when the action changed the output-suspend state.
+    /// # C: O(W) parked writers on resume
+    pub fn flow(&self, action: TtyFlow) -> bool {
+        match action {
+            TtyFlow::OutputOff => {
+                let prev = self.output_stopped.swap(true, Ordering::AcqRel);
+                !prev
+            }
+            TtyFlow::OutputOn => {
+                let prev = self.output_stopped.swap(false, Ordering::AcqRel);
+                // Wake any writer parked in `write`'s suspend loop.
+                self.wait.wake_all();
+                prev
+            }
+            // No upstream transmitter to flow-control on a directly-attached
+            // line; record nothing and report no state change.
+            TtyFlow::InputOff | TtyFlow::InputOn => false,
+        }
+    }
+
+    /// True while output is suspended (TCXONC TCOOFF / ^S in effect).
+    /// # C: O(1)
+    pub fn output_stopped(&self) -> bool {
+        self.output_stopped.load(Ordering::Acquire)
     }
 
     /// Poll mask (POLLIN when a read would return; POLLOUT always).
