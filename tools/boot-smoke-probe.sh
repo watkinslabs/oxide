@@ -49,18 +49,23 @@ wait_for() {
             echo "boot-smoke-probe: FAIL — qemu exited before $label" >&2
             tail -n 50 "$LOG" >&2; exit 1
         fi
-        grep -aq "$pat" "$LOG" 2>/dev/null && return 0
+        grep -aqE "$pat" "$LOG" 2>/dev/null && return 0
         sleep 2
     done
     echo "boot-smoke-probe: FAIL — timeout waiting for $label" >&2
     tail -n 50 "$LOG" >&2; exit 1
 }
 
+# Login creds: default the unprivileged alice; override (e.g. LOGIN_USER=root,
+# root has no password) for probes needing caps like CAP_BPF.
+LOGIN_USER="${LOGIN_USER:-alice}"
+LOGIN_PASS="${LOGIN_PASS:-swordfish}"
 deadline=$(( $(date +%s) + TIMEOUT ))
 wait_for "oxide login:" "login prompt" "$deadline"
-sleep 1; printf 'alice\n' >&9
-sleep 2; printf 'swordfish\n' >&9
-wait_for 'oxide:~\$' "shell prompt" "$deadline"
+sleep 1; printf '%s\n' "$LOGIN_USER" >&9
+sleep 2; printf '%s\n' "$LOGIN_PASS" >&9
+# root prompts with '#', regular users with '$'.
+wait_for 'oxide:~[#$]' "shell prompt" "$deadline"
 printf '/bin/%s\n' "$PROBE" >&9
 while [ "$(date +%s)" -lt "$deadline" ]; do
     if grep -aq "${PROBE}: PASS" "$LOG" 2>/dev/null; then
