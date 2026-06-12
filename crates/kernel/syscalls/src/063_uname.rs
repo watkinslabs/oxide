@@ -29,14 +29,8 @@ unsafe fn write_utsname_field(tp: u64, off: usize, src: &[u8]) {
 /// # C: O(1)
 pub fn uts_hostname_for_current() -> alloc::vec::Vec<u8> {
     use core::sync::atomic::Ordering;
-    if let Some(t) = sched::live::current() {
-        if (t.ns_membership.load(Ordering::Acquire) & (1u64 << 1)) != 0 {
-            // SAFETY: per-task uts_hostname slot single-mutator per `13§5`; running task on this CPU is the sole writer.
-            let s = unsafe { (*t.uts_hostname.get()).clone() };
-            if !s.is_empty() { return s.into_bytes(); }
-        }
-    }
-    crate::hostname::snapshot()
+    let uts_ns = sched::live::current().map(|t| t.uts_ns.load(Ordering::Acquire)).unwrap_or(0);
+    crate::hostname::host_for(uts_ns)
 }
 
 /// Resolve the calling task's NIS/YP domainname per UTS namespace
@@ -45,14 +39,8 @@ pub fn uts_hostname_for_current() -> alloc::vec::Vec<u8> {
 /// global domainname. # C: O(1)
 pub fn uts_domainname_for_current() -> alloc::vec::Vec<u8> {
     use core::sync::atomic::Ordering;
-    if let Some(t) = sched::live::current() {
-        if (t.ns_membership.load(Ordering::Acquire) & (1u64 << 1)) != 0 {
-            // SAFETY: per-task uts_domainname slot single-mutator per `13§5`; running task on this CPU is the sole writer.
-            let s = unsafe { (*t.uts_domainname.get()).clone() };
-            if !s.is_empty() { return s.into_bytes(); }
-        }
-    }
-    crate::hostname::domain_snapshot()
+    let uts_ns = sched::live::current().map(|t| t.uts_ns.load(Ordering::Acquire)).unwrap_or(0);
+    crate::hostname::dom_for(uts_ns)
 }
 
 /// `sys_uname(buf)` — slot 63. Writes the 6-field utsname struct

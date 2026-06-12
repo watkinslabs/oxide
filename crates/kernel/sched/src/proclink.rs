@@ -93,7 +93,7 @@ fn task_ns_link(tid_opt: Option<u32>, leaf: &str) -> Option<Vec<u8>> {
     };
     let id = match leaf {
         "ipc"    => task.ipc_ns.load(Ordering::Acquire),
-        "uts"    => (task.ns_membership.load(Ordering::Acquire) >> 1) & 0xff_ffff_ffff,
+        "uts"    => task.uts_ns.load(Ordering::Acquire),
         "pid" | "pid_for_children" => task.pid_ns.load(Ordering::Acquire),
         "net"    => task.net_ns.load(Ordering::Acquire),
         "user"   => task.user_ns.load(Ordering::Acquire),

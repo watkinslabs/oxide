@@ -63,15 +63,14 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
 pub(crate) fn apply_new_namespaces(task: &sched::Task, bits: u64) {
     use core::sync::atomic::Ordering;
     if (bits & (1u64 << 1)) != 0 {
-        // CLONE_NEWUTS — snapshot current hostname + domainname into the
-        // private per-task slots (UTS ns isolates both).
-        let host = alloc::string::String::from_utf8(crate::hostname::snapshot()).unwrap_or_default();
-        let dom = alloc::string::String::from_utf8(crate::hostname::domain_snapshot()).unwrap_or_default();
-        // SAFETY: per-task slots single-mutator per `13§5`; `task` is the running task (unshare) or an unscheduled child (clone) — sole writer either way.
-        unsafe {
-            *task.uts_hostname.get() = host;
-            *task.uts_domainname.get() = dom;
-        }
+        // CLONE_NEWUTS — allocate a fresh shared uts_namespace seeded with a
+        // COPY of the task's current ns names (UTS ns isolates both), then
+        // point the task at it. Members of the new ns share the entry.
+        let cur_ns = task.uts_ns.load(Ordering::Acquire);
+        let host = crate::hostname::host_for(cur_ns);
+        let dom = crate::hostname::dom_for(cur_ns);
+        let new_id = nscg::uts_ns::uts_alloc(host, dom);
+        task.uts_ns.store(new_id, Ordering::Release);
     }
     if (bits & (1u64 << 2)) != 0 {
         // CLONE_NEWIPC — fresh ipc_ns id (F100).

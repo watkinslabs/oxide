@@ -3,11 +3,10 @@
 
 use syscall::SyscallArgs;
 
-/// `sys_sethostname(name, len)` — slot 170. Updates the hostname
-/// visible via uname.nodename. Per F97: when the task carries
-/// CLONE_NEWUTS, writes go to the per-task `uts_hostname` slot
-/// (private to the namespace); else they update the global.
-/// Requires CAP_SYS_ADMIN.
+/// `sys_sethostname(name, len)` — slot 170. Updates the hostname visible
+/// via uname.nodename, writing the calling task's UTS namespace (shared by
+/// all members via the `nscg` uts registry; uts_ns 0 = global). Requires
+/// CAP_SYS_ADMIN.
 /// # C: O(N)
 pub fn sys_sethostname(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
@@ -23,15 +22,9 @@ pub fn sys_sethostname(args: &SyscallArgs) -> i64 {
     unsafe {
         for i in 0..len { buf[i] = core::ptr::read_volatile((ptr + i as u64) as *const u8); }
     }
-    if (cur.ns_membership.load(Ordering::Acquire) & (1u64 << 1)) != 0 {
-        let s = match core::str::from_utf8(&buf[..len]) {
-            Ok(s) => alloc::string::String::from(s),
-            Err(_) => return -(Errno::Einval.as_i32() as i64),
-        };
-        // SAFETY: per-task uts_hostname slot single-mutator per `13§5`; running task on this CPU is the sole writer.
-        unsafe { *cur.uts_hostname.get() = s; }
-    } else {
-        crate::hostname::set(&buf[..len]);
-    }
+    // Write the calling task's UTS namespace (shared by all members);
+    // uts_ns 0 = the global hostname (Linux refcounted uts_namespace).
+    let uts_ns = cur.uts_ns.load(Ordering::Acquire);
+    crate::hostname::set_host_for(uts_ns, &buf[..len]);
     0
 }

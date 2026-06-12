@@ -327,7 +327,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // SAFETY: PMM up; HHDM offset just published; one-shot.
         unsafe { syscalls::vvar::init(); }
         procfs::hooks::set_boot_unix_secs_hook(syscalls::time::boot_unix_seconds);
-        procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot, syscalls::hostname::set);
+        procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot_current, syscalls::hostname::set_current);
         procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
         ::devfs::set_current_hooks(sched::live::current_mount_ns, sched::live::current_chroot_root);
         console::register_devnodes(); ::devfs::boot::set_dir_overlay(ext4::dir::read_dir_overlay); ::devfs::boot::populate_defaults(); procfs::init();
