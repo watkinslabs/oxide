@@ -112,10 +112,10 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             let from_user = unsafe { (core::ptr::read_volatile(frame.add(96) as *const u64) & 3) == 3 };
             sched::cpustat::account(
                 if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
-            // UART poll + softirq drain are BSP-only: only the boot CPU
-            // owns the UART, and the shared softirq queue must be drained
-            // by one CPU to avoid cross-CPU races. APs that arm their own
-            // periodic timer (SMP) reach here too — they only account + resched.
+            // UART poll is BSP-only (only the boot CPU owns the UART). The
+            // softirq drain is PER-CPU (Linux: every CPU runs its own
+            // __do_softirq from irq_exit) — each CPU drains its OWN pending
+            // mask below. APs that arm their own periodic timer reach here too.
             let is_bsp = {
                 use hal::CpuOps;
                 hal_x86_64::X86CpuOps::current_cpu() == ::cpu::smp::boot_cpu_id()
@@ -125,16 +125,16 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
                 // the ringbuffer + wake stdin waiters before the picker.
                 // SAFETY: timer ISR ctx with IRQs masked; BSP owns the UART.
                 unsafe { crate::tick_poll(from_user); }
-                // Linux-style softirq bottom-half (fbcon flush, virtio-input
-                // drain, ...) with IRQs locally enabled so device-ack waits
-                // make progress. run_pending guards re-entry.
-                if softirq::pending() {
-                    // SAFETY: EOI issued above; LAPIC accepts next IRQ; run_pending guards re-entry; cli restores ISR masking before tick_pick_next.
-                    unsafe {
-                        core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
-                        softirq::run_pending();
-                        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
-                    }
+            }
+            // Per-CPU softirq bottom-half (fbcon flush, virtio-input/net drain)
+            // with IRQs locally enabled so device-ack waits make progress. Each
+            // CPU drains its own mask; this CPU's IN_PROGRESS guards re-entry.
+            if softirq::pending() {
+                // SAFETY: EOI issued above; LAPIC accepts next IRQ; per-CPU run_pending guards re-entry; cli restores ISR masking before tick_pick_next.
+                unsafe {
+                    core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+                    softirq::run_pending();
+                    core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
                 }
             }
             // The actual switch happens at IRQ exit via

@@ -5,16 +5,18 @@
 // installed handler. Slots are statically numbered (`Slot::*`) so the
 // dispatch is a fixed-size table — no allocation, no dyn, no lock.
 //
-// Concurrency
-//   - PENDING is a u32 AtomicU32. `raise` is fetch_or; `run_pending`
-//     atomically swaps to 0 and drains. Multiple raises during a
-//     handler simply re-flag — the runner loops until PENDING is 0.
-//   - IN_PROGRESS guards against re-entry: a nested timer ISR that
-//     calls run_pending observes IN_PROGRESS=true and returns; the
-//     outer runner drains the new pending bits on its next iteration.
-//   - Handlers run with IRQs enabled by the timer-ISR shim; nested
-//     timer IRQs can fire but their `run_pending` calls bail on
-//     IN_PROGRESS so we never recurse.
+// Per-CPU model (Linux `irq_stat[]` + per-CPU ksoftirqd)
+//   - PENDING / IN_PROGRESS are per-CPU arrays. `raise` sets the bit on the
+//     CURRENT CPU; `run_pending` drains ONLY this CPU's mask. There is no
+//     global queue and no single-CPU bottleneck — every CPU raises + drains
+//     its own work from its own timer/MSI tail and its own ksoftirqd.
+//   - IN_PROGRESS[cpu] guards re-entry on that CPU: a nested timer ISR that
+//     calls run_pending observes its own CPU's guard set and returns; the
+//     outer runner drains the new bits on its next iteration. Other CPUs
+//     drain concurrently against their own entries.
+//   - run_pending applies Linux's `__do_softirq` restart gate
+//     (MAX_SOFTIRQ_RESTART / MAX_SOFTIRQ_TIME / need_resched); leftover work
+//     defers to this CPU's ksoftirqd via the `wakeup_softirqd` hook.
 //
 // Limits
 //   - 32 slots (one u32 of pending bits). Bump to u64 + 64 handlers
@@ -43,9 +45,29 @@ pub enum Slot {
 }
 
 const N_SLOTS: usize = 32;
+/// Per-CPU array width (Linux `irq_stat[NR_CPUS]`).
+const MAX_CPUS: usize = cpu::MAX_CPUS;
 
-/// Pending bitmask. Bit `Slot::* as u32` set ⇒ handler must run.
-static PENDING: AtomicU32 = AtomicU32::new(0);
+/// Per-CPU pending bitmasks — Linux `irq_stat[cpu].__softirq_pending`. Bit
+/// `Slot::* as u32` set on CPU N ⇒ that CPU must run the handler. Each CPU
+/// raises and drains ONLY its own entry; there is no global queue. The handler
+/// table (`HANDLERS`) stays global — Linux `softirq_vec[]` is shared; only the
+/// pending mask + drain state are per-CPU.
+static PENDING: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
+
+/// Current logical CPU id (kernel) / 0 (host tests). Same arch glue as
+/// `sched::diag::percpu::this_cpu_id`. Clamped to `MAX_CPUS` so a bogus id
+/// can never index out of bounds.
+#[inline]
+fn this_cpu() -> usize {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    let id = { use hal::CpuOps; hal_x86_64::X86CpuOps::current_cpu() as usize };
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    let id = { use hal::CpuOps; hal_aarch64::ArmCpuOps::current_cpu() as usize };
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let id = 0usize;
+    if id >= MAX_CPUS { 0 } else { id }
+}
 
 /// Handler table. Slot N's handler in `HANDLERS[N]`; null = unset.
 /// Stored as `*mut ()` for AtomicPtr; cast through `fn()` on load.
@@ -68,10 +90,11 @@ static HANDLERS: [AtomicPtr<()>; N_SLOTS] = [
     AtomicPtr::new(core::ptr::null_mut()), AtomicPtr::new(core::ptr::null_mut()),
 ];
 
-/// Re-entry guard. Set while `run_pending` is draining; nested
-/// callers (from a timer that fires inside a handler) observe true
-/// and bail. The outer drain loop picks up their pending bits.
-static IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+/// Per-CPU re-entry guard (Linux serialises softirqs per-CPU via local-bh /
+/// `in_interrupt`). Set while THIS CPU is draining; a nested call on the same
+/// CPU (timer fires inside a handler) observes true and bails — the outer
+/// drain picks up the new bits. Other CPUs drain their own entry concurrently.
+static IN_PROGRESS: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 
 /// Linux `MAX_SOFTIRQ_RESTART` (`kernel/softirq.c`): restart-pass cap before
 /// the drain defers, so a self-re-raising slot (virtio-net `NetRx` re-armed
@@ -141,17 +164,20 @@ pub fn set_handler(slot: Slot, f: fn()) -> *mut () {
     HANDLERS[slot as usize].swap(raw, Ordering::Release)
 }
 
-/// Mark `slot` as needing a deferred-handler run. Cheap fetch_or;
-/// safe to call from any context (ISR, process, softirq itself).
+/// Raise `slot` on THIS CPU — Linux `__raise_softirq_irqoff` / `or_softirq_
+/// pending`. The bit lands on the running CPU's mask; that CPU drains it from
+/// its own timer/MSI tail or its ksoftirqd. Must run with the CPU pinned (ISR
+/// context or IRQs/preempt off) so `this_cpu` is stable, exactly as Linux
+/// requires of `raise_softirq_irqoff`.
 /// # C: O(1) — atomic fetch_or.
 pub fn raise(slot: Slot) {
-    PENDING.fetch_or(1u32 << (slot as u32), Ordering::Release);
+    PENDING[this_cpu()].fetch_or(1u32 << (slot as u32), Ordering::Release);
     RAISES.fetch_add(1, Ordering::Relaxed);
 }
 
-/// True iff at least one slot is pending. Cheap acquire load.
+/// True iff this CPU has a slot pending (Linux `local_softirq_pending()`).
 /// # C: O(1)
-pub fn pending() -> bool { PENDING.load(Ordering::Acquire) != 0 }
+pub fn pending() -> bool { PENDING[this_cpu()].load(Ordering::Acquire) != 0 }
 
 /// Drain the pending bitmask, calling each set slot's handler.
 /// Loops until PENDING is 0 (so a handler that raises another bit
@@ -170,26 +196,30 @@ pub fn pending() -> bool { PENDING.load(Ordering::Acquire) != 0 }
 /// # C: O(N_handlers_with_work) per drain pass; bounded by handler
 /// runtime + the number of times handlers re-raise themselves.
 pub unsafe fn run_pending() {
-    if IN_PROGRESS
+    // This CPU's slot. Stable for the drain: callers are the IRQ/timer tail
+    // (migration only happens at IRQ-exit, not mid-tail) or ksoftirqd (pinned
+    // via affinity), so `this_cpu` can't change under us.
+    let c = this_cpu();
+    if IN_PROGRESS[c]
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
         return;
     }
     RUNS.fetch_add(1, Ordering::Relaxed);
-    // Linux `__do_softirq` restart gate. A handler that re-raises its own bit
-    // (NetRx re-armed by each RX MSI under a packet flood) would otherwise
-    // spin this loop forever: the CPU never returns to the timer-ISR tail, the
-    // percpu heartbeat goes unstamped, and the hard-lockup watchdog fires.
-    // Mirror the kernel exactly — after running the pending set, restart only
-    // while `time_before(jiffies, end) && !need_resched() && --max_restart`;
-    // otherwise `wakeup_softirqd()` and return, leaving still-pending bits set
-    // for the deferral target to finish.
+    // Linux `__do_softirq` restart gate, on THIS CPU's pending mask. A handler
+    // that re-raises its own bit (NetRx re-armed by each RX MSI under a packet
+    // flood) would otherwise spin this loop forever: the CPU never returns to
+    // the timer-ISR tail, the percpu heartbeat goes unstamped, and the
+    // hard-lockup watchdog fires. Mirror the kernel exactly — after running the
+    // pending set, restart only while `time_before(jiffies, end) &&
+    // !need_resched() && --max_restart`; otherwise `wakeup_softirqd()` and
+    // return, leaving still-pending bits set for this CPU's ksoftirqd to finish.
     let end = jiffies().wrapping_add(MAX_SOFTIRQ_TIME);
     let mut max_restart = MAX_SOFTIRQ_RESTART;
     loop {
-        // `set_softirq_pending(0)` — claim the current set, run each handler.
-        let bits = PENDING.swap(0, Ordering::AcqRel);
+        // `set_softirq_pending(0)` — claim this CPU's set, run each handler.
+        let bits = PENDING[c].swap(0, Ordering::AcqRel);
         if bits == 0 {
             break;
         }
@@ -205,8 +235,8 @@ pub unsafe fn run_pending() {
                 f();
             }
         }
-        // Re-raised during the pass? Apply the three-way restart gate.
-        if !pending() {
+        // Re-raised on this CPU during the pass? Apply the three-way gate.
+        if PENDING[c].load(Ordering::Acquire) == 0 {
             break;
         }
         // `time_before(jiffies, end)` — wrapping-safe signed compare.
@@ -217,14 +247,13 @@ pub unsafe fn run_pending() {
                 continue;
             }
         }
-        // Gate tripped with work pending → hand off to the deferral target
-        // (Linux wakes per-CPU ksoftirqd; oxide's installed hook re-arms a
-        // prompt drain). The still-pending bits remain set in PENDING.
+        // Gate tripped with work pending → hand off to THIS CPU's ksoftirqd
+        // (Linux `wakeup_softirqd`). The still-pending bits remain set.
         wakeup_softirqd();
         DEFERRALS.fetch_add(1, Ordering::Relaxed);
         break;
     }
-    IN_PROGRESS.store(false, Ordering::Release);
+    IN_PROGRESS[c].store(false, Ordering::Release);
 }
 
 #[cfg(test)]
@@ -247,7 +276,7 @@ mod tests {
     #[test]
     fn raise_then_run_invokes_handler() {
         T_HITS.store(0, Ordering::Relaxed);
-        PENDING.store(0, Ordering::Relaxed);
+        PENDING[0].store(0, Ordering::Relaxed);
         set_handler(Slot::FbconFlush, t_handler);
         raise(Slot::FbconFlush);
         assert!(pending());
@@ -260,7 +289,7 @@ mod tests {
     #[test]
     fn run_pending_drains_until_empty() {
         T_HITS.store(0, Ordering::Relaxed);
-        PENDING.store(0, Ordering::Relaxed);
+        PENDING[0].store(0, Ordering::Relaxed);
         set_handler(Slot::FbconFlush, t_handler);
         raise(Slot::FbconFlush);
         raise(Slot::FbconFlush);
@@ -272,7 +301,7 @@ mod tests {
 
     #[test]
     fn unset_slot_no_handler_no_call() {
-        PENDING.store(0, Ordering::Relaxed);
+        PENDING[0].store(0, Ordering::Relaxed);
         HANDLERS[Slot::InputDrain as usize].store(core::ptr::null_mut(), Ordering::Relaxed);
         raise(Slot::InputDrain);
         // SAFETY: hosted unit test; no IRQs to coordinate with; sole caller of run_pending in this thread.
@@ -284,7 +313,7 @@ mod tests {
     #[test]
     fn self_rearming_handler_is_bounded() {
         REARM_HITS.store(0, Ordering::Relaxed);
-        PENDING.store(0, Ordering::Relaxed);
+        PENDING[0].store(0, Ordering::Relaxed);
         set_handler(Slot::NetRx, rearming_handler);
         raise(Slot::NetRx);
         // SAFETY: hosted unit test; no IRQs to coordinate with; sole caller of run_pending in this thread.
@@ -295,6 +324,6 @@ mod tests {
         assert!(pending());
         // Reset shared statics so sibling tests aren't tainted.
         set_handler(Slot::NetRx, noop_handler);
-        PENDING.store(0, Ordering::Relaxed);
+        PENDING[0].store(0, Ordering::Relaxed);
     }
 }
