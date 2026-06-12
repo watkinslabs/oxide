@@ -208,6 +208,7 @@ unsafe fn spawn_user_blob_with_vpid(
             &random16,
             argv_ref.first().copied().unwrap_or(b""),
             0, // smoke: no vDSO mapped
+            <hal_x86_64::X86CpuOps as hal::CpuOps>::cpu_hwcap(),
         )
     }.unwrap_or(USER_STACK_TOP);
 
