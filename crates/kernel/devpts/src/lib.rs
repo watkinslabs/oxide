@@ -16,7 +16,7 @@ extern crate alloc;
 
 use alloc::format;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use sync::{Spinlock, Tty as TtyClass};
 use tty::Pair as TtyPair;
@@ -28,6 +28,11 @@ pub struct LockedPair {
     inner: Spinlock<TtyPair, TtyClass>,
     ino_master: Ino,
     ino_slave:  Ino,
+    /// `TIOCSPTLCK` slave lock (Linux `TTY_PTY_LOCK`). Allocated LOCKED:
+    /// glibc/musl `unlockpt(master)` (= `TIOCSPTLCK` with 0) must clear it
+    /// before the slave can be opened, matching `pts_unix98_lookup`'s
+    /// `-EIO` on a locked slave. POSIX requires `unlockpt` pre-slave-open.
+    locked: AtomicBool,
 }
 
 impl LockedPair {
@@ -37,10 +42,17 @@ impl LockedPair {
         Arc::new(Self {
             inner: Spinlock::new(TtyPair::new(pts_num)),
             ino_master, ino_slave,
+            locked: AtomicBool::new(true),
         })
     }
     /// # C: O(1)
     pub fn pts_num(&self) -> u32 { self.inner.lock().pts_num }
+    /// `TIOCGPTLCK` read-back: 1 = locked, 0 = unlocked.
+    /// # C: O(1)
+    pub fn is_locked(&self) -> bool { self.locked.load(Ordering::Acquire) }
+    /// `TIOCSPTLCK` setter: non-zero arg locks, zero unlocks.
+    /// # C: O(1)
+    pub fn set_locked(&self, v: bool) { self.locked.store(v, Ordering::Release); }
 }
 
 /// `/dev/ptmx`-side inode. Each Arc<LockedPair> backs exactly one
@@ -124,6 +136,12 @@ impl Inode for PtySlaveInode {
     fn file_type(&self) -> FileType { FileType::CharDev }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    /// Linux `pts_unix98_lookup`: a `TIOCSPTLCK`-locked slave can't be
+    /// opened (`-EIO`) — the master must `unlockpt` first.
+    /// # C: O(1)
+    fn on_open(&self) -> KResult<()> {
+        if self.pair.is_locked() { Err(VfsError::Eio) } else { Ok(()) }
+    }
     fn read(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         // Yield-block until at least one byte (or a complete line under
         // ICANON) is available on the master→slave queue. Matches the
