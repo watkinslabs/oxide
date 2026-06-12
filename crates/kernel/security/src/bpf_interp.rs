@@ -56,17 +56,125 @@ const BPF_SRC_X: u8 = 0x08; // bit 3 — 0=use imm, 1=use src reg
 
 const BPF_LD_IMM_DW: u8 = 0x18;
 
-const BPF_OP_ADD: u8 = 0x00;
-const BPF_OP_SUB: u8 = 0x10;
-const BPF_OP_OR:  u8 = 0x40;
-const BPF_OP_AND: u8 = 0x50;
-const BPF_OP_XOR: u8 = 0xa0;
-const BPF_OP_MOV: u8 = 0xb0;
+// ALU op (bits 4..7), shared by BPF_ALU64 (0x07) and BPF_ALU 32-bit (0x04).
+const BPF_OP_ADD:  u8 = 0x00;
+const BPF_OP_SUB:  u8 = 0x10;
+const BPF_OP_MUL:  u8 = 0x20;
+const BPF_OP_DIV:  u8 = 0x30;
+const BPF_OP_OR:   u8 = 0x40;
+const BPF_OP_AND:  u8 = 0x50;
+const BPF_OP_LSH:  u8 = 0x60;
+const BPF_OP_RSH:  u8 = 0x70;
+const BPF_OP_NEG:  u8 = 0x80;
+const BPF_OP_MOD:  u8 = 0x90;
+const BPF_OP_XOR:  u8 = 0xa0;
+const BPF_OP_MOV:  u8 = 0xb0;
+const BPF_OP_ARSH: u8 = 0xc0;
 
-const BPF_OP_JA:  u8 = 0x00;
-const BPF_OP_JEQ: u8 = 0x10;
-const BPF_OP_JNE: u8 = 0x50;
+// JMP op (bits 4..7), shared by BPF_JMP (0x05) and BPF_JMP32 (0x06).
+const BPF_OP_JA:   u8 = 0x00;
+const BPF_OP_JEQ:  u8 = 0x10;
+const BPF_OP_JGT:  u8 = 0x20;
+const BPF_OP_JGE:  u8 = 0x30;
+const BPF_OP_JSET: u8 = 0x40;
+const BPF_OP_JNE:  u8 = 0x50;
+const BPF_OP_JSGT: u8 = 0x60;
+const BPF_OP_JSGE: u8 = 0x70;
+const BPF_OP_JLT:  u8 = 0xa0;
+const BPF_OP_JLE:  u8 = 0xb0;
+const BPF_OP_JSLT: u8 = 0xc0;
+const BPF_OP_JSLE: u8 = 0xd0;
 const BPF_OP_EXIT_RAW: u8 = 0x90; // opcode = JMP | EXIT_op = 0x05 | 0x90 = 0x95
+
+const BPF_ALU:   u8 = 0x04; // 32-bit ALU class
+const BPF_JMP32: u8 = 0x06; // 32-bit JMP class
+
+/// Apply an ALU op. `is64` false → 32-bit (operate on low 32, zero-extend).
+/// DIV/MOD are UNSIGNED (eBPF); div-by-0 → 0, mod-by-0 → dst (Linux). NEG is
+/// unary. # C: O(1)
+fn alu(op: u8, dst: i64, rhs: i64, is64: bool) -> Option<i64> {
+    if is64 {
+        let (a, b) = (dst, rhs);
+        let r = match op {
+            BPF_OP_ADD => a.wrapping_add(b),
+            BPF_OP_SUB => a.wrapping_sub(b),
+            BPF_OP_MUL => a.wrapping_mul(b),
+            BPF_OP_DIV => if b == 0 { 0 } else { ((a as u64) / (b as u64)) as i64 },
+            BPF_OP_MOD => if b == 0 { a } else { ((a as u64) % (b as u64)) as i64 },
+            BPF_OP_OR  => a | b,
+            BPF_OP_AND => a & b,
+            BPF_OP_XOR => a ^ b,
+            BPF_OP_LSH => ((a as u64) << ((b as u64) & 63)) as i64,
+            BPF_OP_RSH => ((a as u64) >> ((b as u64) & 63)) as i64,
+            BPF_OP_ARSH => a >> ((b as u64) & 63),
+            BPF_OP_NEG => a.wrapping_neg(),
+            BPF_OP_MOV => b,
+            _ => return None,
+        };
+        Some(r)
+    } else {
+        let (a, b) = (dst as u32, rhs as u32);
+        let r: u32 = match op {
+            BPF_OP_ADD => a.wrapping_add(b),
+            BPF_OP_SUB => a.wrapping_sub(b),
+            BPF_OP_MUL => a.wrapping_mul(b),
+            BPF_OP_DIV => if b == 0 { 0 } else { a / b },
+            BPF_OP_MOD => if b == 0 { a } else { a % b },
+            BPF_OP_OR  => a | b,
+            BPF_OP_AND => a & b,
+            BPF_OP_XOR => a ^ b,
+            BPF_OP_LSH => a << (b & 31),
+            BPF_OP_RSH => a >> (b & 31),
+            BPF_OP_ARSH => ((a as i32) >> (b & 31)) as u32,
+            BPF_OP_NEG => a.wrapping_neg(),
+            BPF_OP_MOV => b,
+            _ => return None,
+        };
+        Some(r as i64) // 32-bit results are zero-extended to 64
+    }
+}
+
+/// Evaluate a conditional-jump predicate. `is64` false → compare low 32 bits.
+/// # C: O(1)
+fn jmp_take(op: u8, lhs: i64, rhs: i64, is64: bool) -> Option<bool> {
+    let take = if is64 {
+        let (lu, ru) = (lhs as u64, rhs as u64);
+        match op {
+            BPF_OP_JA   => true,
+            BPF_OP_JEQ  => lhs == rhs,
+            BPF_OP_JNE  => lhs != rhs,
+            BPF_OP_JSET => (lhs & rhs) != 0,
+            BPF_OP_JGT  => lu > ru,
+            BPF_OP_JGE  => lu >= ru,
+            BPF_OP_JLT  => lu < ru,
+            BPF_OP_JLE  => lu <= ru,
+            BPF_OP_JSGT => lhs > rhs,
+            BPF_OP_JSGE => lhs >= rhs,
+            BPF_OP_JSLT => lhs < rhs,
+            BPF_OP_JSLE => lhs <= rhs,
+            _ => return None,
+        }
+    } else {
+        let (ls, rs) = (lhs as i32, rhs as i32);
+        let (lu, ru) = (lhs as u32, rhs as u32);
+        match op {
+            BPF_OP_JA   => true,
+            BPF_OP_JEQ  => lu == ru,
+            BPF_OP_JNE  => lu != ru,
+            BPF_OP_JSET => (lu & ru) != 0,
+            BPF_OP_JGT  => lu > ru,
+            BPF_OP_JGE  => lu >= ru,
+            BPF_OP_JLT  => lu < ru,
+            BPF_OP_JLE  => lu <= ru,
+            BPF_OP_JSGT => ls > rs,
+            BPF_OP_JSGE => ls >= rs,
+            BPF_OP_JSLT => ls < rs,
+            BPF_OP_JSLE => ls <= rs,
+            _ => return None,
+        }
+    };
+    Some(take)
+}
 
 #[derive(Copy, Clone)]
 struct Insn { opcode: u8, dst: u8, src: u8, off: i16, imm: i32 }
@@ -124,35 +232,26 @@ pub fn run_with_helpers(insns: &[u8], pkt: &[u8], helpers: &[Helper]) -> Option<
         }
         let class = i.opcode & BPF_CLASS_MASK;
         match class {
-            BPF_ALU64 => {
+            BPF_ALU64 | BPF_ALU => {
+                let is64 = class == BPF_ALU64;
                 let op  = i.opcode & 0xf0;
                 let src_is_reg = (i.opcode & BPF_SRC_X) != 0;
                 let dst = i.dst as usize;
-                let rhs: i64 = if src_is_reg { regs[i.src as usize] } else { i.imm as i64 };
-                regs[dst] = match op {
-                    BPF_OP_ADD => regs[dst].wrapping_add(rhs),
-                    BPF_OP_SUB => regs[dst].wrapping_sub(rhs),
-                    BPF_OP_OR  => regs[dst] | rhs,
-                    BPF_OP_AND => regs[dst] & rhs,
-                    BPF_OP_XOR => regs[dst] ^ rhs,
-                    BPF_OP_MOV => rhs,
-                    _ => return None,
-                };
+                // NEG is unary (no source operand); others take imm or src reg.
+                let rhs: i64 = if op == BPF_OP_NEG { 0 }
+                               else if src_is_reg { regs[i.src as usize] }
+                               else { i.imm as i64 };
+                regs[dst] = alu(op, regs[dst], rhs, is64)?;
                 pc += 1;
             }
-            BPF_JMP => {
+            BPF_JMP | BPF_JMP32 => {
                 let op = i.opcode & 0xf0;
+                if op == BPF_OP_EXIT_RAW { return Some(regs[0]); } // double-guard
+                let is64 = class == BPF_JMP;
                 let src_is_reg = (i.opcode & BPF_SRC_X) != 0;
                 let lhs = regs[i.dst as usize];
                 let rhs: i64 = if src_is_reg { regs[i.src as usize] } else { i.imm as i64 };
-                let take = match op {
-                    BPF_OP_JA  => true,
-                    BPF_OP_JEQ => lhs == rhs,
-                    BPF_OP_JNE => lhs != rhs,
-                    BPF_OP_EXIT_RAW => return Some(regs[0]), // double-guard
-                    _ => return None,
-                };
-                if take {
+                if jmp_take(op, lhs, rhs, is64)? {
                     let tgt = (pc as i64) + 1 + i.off as i64;
                     if tgt < 0 || tgt >= n as i64 { return None; }
                     pc = tgt as usize;
@@ -393,6 +492,56 @@ mod tests {
             raw(0x95, 0, 0, 0, 0),
         ]);
         assert_eq!(run_with_helpers(&p, &[], &helpers), Some(42));
+    }
+
+    // helper: MOV64 R0,a ; <op>64 R0,b ; EXIT
+    fn alu64_imm(opc: u8, a: i32, b: i32) -> Option<i64> {
+        run(&cat(&[raw(0xb7, 0, 0, 0, a), raw(opc, 0, 0, 0, b), raw(0x95, 0, 0, 0, 0)]), &[])
+    }
+
+    #[test]
+    fn alu64_arith_ops() {
+        assert_eq!(alu64_imm(0x27, 6, 7), Some(42));        // MUL
+        assert_eq!(alu64_imm(0x37, 84, 2), Some(42));       // DIV (unsigned)
+        assert_eq!(alu64_imm(0x37, 5, 0), Some(0));         // DIV by 0 -> 0
+        assert_eq!(alu64_imm(0x97, 17, 5), Some(2));        // MOD
+        assert_eq!(alu64_imm(0x97, 17, 0), Some(17));       // MOD by 0 -> dst
+        assert_eq!(alu64_imm(0x67, 1, 5), Some(32));        // LSH
+        assert_eq!(alu64_imm(0x77, 64, 2), Some(16));       // RSH (logical)
+        assert_eq!(alu64_imm(0xc7, -8, 1), Some(-4));       // ARSH (signed)
+        // NEG (unary): MOV R0,5 ; NEG64 R0 ; EXIT
+        assert_eq!(run(&cat(&[raw(0xb7,0,0,0,5), raw(0x87,0,0,0,0), raw(0x95,0,0,0,0)]), &[]), Some(-5));
+    }
+
+    #[test]
+    fn alu32_zero_extends() {
+        // MOV R0, -1 ; ADD32 R0, 1 ; EXIT -> 0xFFFFFFFF + 1 = 0 (32-bit), zext.
+        let p = cat(&[raw(0xb7,0,0,0,-1), raw(0x04,0,0,0,1), raw(0x95,0,0,0,0)]);
+        assert_eq!(run(&p, &[]), Some(0));
+        // MOV R0, -1 ; MOV32 R0, R0-equiv via imm: AND32 R0, -1 -> 0xFFFFFFFF.
+        let p2 = cat(&[raw(0xb7,0,0,0,-1), raw(0x54,0,0,0,-1), raw(0x95,0,0,0,0)]);
+        assert_eq!(run(&p2, &[]), Some(0xFFFF_FFFF));
+    }
+
+    #[test]
+    fn jmp_unsigned_and_signed() {
+        // JGT taken: MOV R0,10 ; JGT R0,5,+1 ; MOV R0,0 ; EXIT -> 10
+        let jgt = cat(&[raw(0xb7,0,0,0,10), raw(0x25,0,0,1,5), raw(0xb7,0,0,0,0), raw(0x95,0,0,0,0)]);
+        assert_eq!(run(&jgt, &[]), Some(10));
+        // JSGT with negative: MOV R0,-1 ; JSGT R0,5,+1 ; MOV R0,7 ; EXIT
+        // -1 > 5 signed = false → fall through → R0=7.
+        let jsgt = cat(&[raw(0xb7,0,0,0,-1), raw(0x65,0,0,1,5), raw(0xb7,0,0,0,7), raw(0x95,0,0,0,0)]);
+        assert_eq!(run(&jsgt, &[]), Some(7));
+        // JSET taken: MOV R0,0b1010 ; JSET R0,0b0010,+1 ; MOV R0,0 ; EXIT -> 10
+        let jset = cat(&[raw(0xb7,0,0,0,0b1010), raw(0x45,0,0,1,0b0010), raw(0xb7,0,0,0,0), raw(0x95,0,0,0,0)]);
+        assert_eq!(run(&jset, &[]), Some(0b1010));
+    }
+
+    #[test]
+    fn jmp32_compares_low_word() {
+        // JEQ32 taken on low 32 bits: MOV R0,5 ; JEQ32 R0,5,+1 ; MOV R0,0 ; EXIT
+        let p = cat(&[raw(0xb7,0,0,0,5), raw(0x16,0,0,1,5), raw(0xb7,0,0,0,0), raw(0x95,0,0,0,0)]);
+        assert_eq!(run(&p, &[]), Some(5));
     }
 
     #[test]
