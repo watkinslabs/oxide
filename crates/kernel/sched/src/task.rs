@@ -359,12 +359,12 @@ pub struct Task {
     /// # C: O(1)
     pub ns_membership: AtomicU64,
 
-    /// Per-NS UTS hostname (`ns_membership` bit 1); empty = inherit global.
-    /// Single-mutator per `13§5`. # C: O(1) read
-    pub uts_hostname: UnsafeCell<alloc::string::String>,
-    /// Per-NS UTS domainname (NIS/YP); a UTS ns isolates BOTH names (Linux
-    /// `struct uts_namespace`). Single-mutator per `13§5`. # C: O(1) read
-    pub uts_domainname: UnsafeCell<alloc::string::String>,
+    /// UTS namespace id (CLONE_NEWUTS). 0 = init/global ns; ≥1 indexes the
+    /// shared `nscg` uts registry holding {hostname, domainname}. Tasks in
+    /// the same UTS ns SHARE one entry (Linux refcounted `uts_namespace`):
+    /// a sethostname by one is visible to the others; fork inherits the id;
+    /// setns repoints it. Replaces the old per-task hostname copies.
+    pub uts_ns: AtomicU64,
 
     /// Tracer tid for `ptrace(2)` — 0 = no tracer attached.
     /// PTRACE_TRACEME / ATTACH / SEIZE / DETACH / CONT / SYSCALL /
@@ -867,8 +867,7 @@ impl Task {
             clear_child_tid: AtomicU64::new(0),
             vfork_pending: AtomicBool::new(false),
             ns_membership: AtomicU64::new(0),
-            uts_hostname:  UnsafeCell::new(alloc::string::String::new()),
-            uts_domainname: UnsafeCell::new(alloc::string::String::new()),
+            uts_ns:        AtomicU64::new(0),
             traced_by:       AtomicU32::new(0),
             ptrace_options:  AtomicU32::new(0),
             ptrace_eventmsg: AtomicU64::new(0),
