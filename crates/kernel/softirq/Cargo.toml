@@ -14,3 +14,7 @@ license = "MPL-2.0"
 # have a context they can run in.
 
 [dependencies]
+cpu = { path = "../cpu" }
+hal = { path = "../../arch/hal" }
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
