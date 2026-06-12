@@ -17,6 +17,7 @@ extern crate std;
 
 pub mod palette;
 pub mod cell;
+pub mod cp437;
 pub mod eaw;
 pub mod vc;
 pub mod emulator;
