@@ -79,7 +79,7 @@ impl Inode for NsInode {
 pub fn ns_inode_for(task: &sched::Task, kind: NsKind) -> InodeRef {
     use core::sync::atomic::Ordering;
     let id = match kind {
-        NsKind::Uts    => (task.ns_membership.load(Ordering::Acquire) >> 1) & 0xff_ffff_ffff,
+        NsKind::Uts    => task.uts_ns.load(Ordering::Acquire),
         NsKind::Ipc    => task.ipc_ns.load(Ordering::Acquire),
         NsKind::Pid    => task.pid_ns.load(Ordering::Acquire),
         NsKind::Net    => task.net_ns.load(Ordering::Acquire),
@@ -149,11 +149,10 @@ pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
     }
     match ns.kind {
         NsKind::Uts => {
-            // Set membership bit but the per-task hostname slot is
-            // owned by unshare/sethostname; setns alone doesn't
-            // mutate it. Programs using uts NS via setns are rare
-            // — record the bit so subsequent uname() consults the
-            // task slot (which may be empty → falls back to global).
+            // Join the target UTS namespace: point the task at that ns id —
+            // uname/sethostname now resolve the shared registry entry, so
+            // setns correctly adopts the namespace's hostname + domainname.
+            cur.uts_ns.store(ns.id, Ordering::Release);
             cur.ns_membership.fetch_or(1u64 << 1, Ordering::Release);
         }
         NsKind::Ipc    => cur.ipc_ns.store(ns.id, Ordering::Release),

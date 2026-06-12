@@ -162,11 +162,10 @@ pub fn sys_clone_dispatch(
     child.parent_user_ns.store(cur.parent_user_ns.load(Ordering::Acquire), Ordering::Release);
     child.cgroup_ns.store(cur.cgroup_ns.load(Ordering::Acquire), Ordering::Release);
     child.mount_ns.store(cur.mount_ns.load(Ordering::Acquire), Ordering::Release);
-    // SAFETY: child not yet scheduled (sole writer to its UTS slots); parent reads are the running task on this CPU per `13§5`.
-    unsafe {
-        *child.uts_hostname.get() = (*cur.uts_hostname.get()).clone();
-        *child.uts_domainname.get() = (*cur.uts_domainname.get()).clone();
-    }
+    // UTS ns is a SHARED id: the child references the parent's uts_namespace
+    // entry (sethostname by either is mutually visible) until a clone-time
+    // CLONE_NEWUTS below gives it a fresh copy.
+    child.uts_ns.store(cur.uts_ns.load(Ordering::Acquire), Ordering::Release);
     // Clone-time CLONE_NEW* creates fresh namespaces for the child AFTER it
     // inherited the parent's (Linux `create_new_namespaces`). No-op for the
     // common fork/pthread path (no CLONE_NEW* bits → new_ns_bits == 0).

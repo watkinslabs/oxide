@@ -76,6 +76,41 @@ pub fn domain_set(new: &[u8]) {
     g.len = end;
 }
 
+/// Hostname for UTS namespace `uts_ns` (0 = global statics, ≥1 = the shared
+/// `nscg` registry; unknown id falls back to global). # C: O(log N)
+pub fn host_for(uts_ns: u64) -> alloc::vec::Vec<u8> {
+    if uts_ns == 0 { snapshot() } else { nscg::uts_ns::uts_hostname(uts_ns).unwrap_or_else(snapshot) }
+}
+
+/// Domainname for UTS namespace `uts_ns` (0 = global). # C: O(log N)
+pub fn dom_for(uts_ns: u64) -> alloc::vec::Vec<u8> {
+    if uts_ns == 0 { domain_snapshot() } else { nscg::uts_ns::uts_domainname(uts_ns).unwrap_or_else(domain_snapshot) }
+}
+
+/// Set the hostname of UTS namespace `uts_ns` (0 = global). # C: O(log N)
+pub fn set_host_for(uts_ns: u64, name: &[u8]) {
+    if uts_ns == 0 { set(name); } else { nscg::uts_ns::uts_set_hostname(uts_ns, name.to_vec()); }
+}
+
+/// Set the domainname of UTS namespace `uts_ns` (0 = global). # C: O(log N)
+pub fn set_dom_for(uts_ns: u64, name: &[u8]) {
+    if uts_ns == 0 { domain_set(name); } else { nscg::uts_ns::uts_set_domainname(uts_ns, name.to_vec()); }
+}
+
+/// UTS-namespace id of the running task (0 if none). # C: O(1)
+fn current_uts_ns() -> u64 {
+    use core::sync::atomic::Ordering;
+    sched::live::current().map(|c| c.uts_ns.load(Ordering::Acquire)).unwrap_or(0)
+}
+
+/// Hostname for the running task's UTS namespace — the `/proc/sys/kernel/
+/// hostname` reader (procfs hook); ns-aware unlike the raw global. # C: O(1)
+pub fn snapshot_current() -> alloc::vec::Vec<u8> { host_for(current_uts_ns()) }
+
+/// Set the running task's UTS-namespace hostname — `/proc/sys/kernel/
+/// hostname` write hook. # C: O(1)
+pub fn set_current(b: &[u8]) { set_host_for(current_uts_ns(), b) }
+
 /// `sys_setdomainname(name, len)` — slot 171. Mirror of sethostname
 /// for the NIS/YP domain name slot.
 /// # C: O(N)
@@ -90,20 +125,10 @@ pub fn sys_setdomainname(args: &syscall::SyscallArgs) -> i64 {
     unsafe {
         for i in 0..len { buf[i] = core::ptr::read_volatile((ptr + i as u64) as *const u8); }
     }
-    // A UTS-namespaced task (ns_membership bit 1) writes its PRIVATE
-    // domainname slot; others update the global (mirrors sethostname / F97).
+    // Write the calling task's UTS namespace (shared by all members);
+    // uts_ns 0 = the global domainname.
     use core::sync::atomic::Ordering;
-    if let Some(cur) = sched::live::current() {
-        if (cur.ns_membership.load(Ordering::Acquire) & (1u64 << 1)) != 0 {
-            let s = match core::str::from_utf8(&buf[..len]) {
-                Ok(s) => alloc::string::String::from(s),
-                Err(_) => return -(Errno::Einval.as_i32() as i64),
-            };
-            // SAFETY: per-task uts_domainname slot single-mutator per `13§5`; running task on this CPU is the sole writer.
-            unsafe { *cur.uts_domainname.get() = s; }
-            return 0;
-        }
-    }
-    domain_set(&buf[..len]);
+    let uts_ns = sched::live::current().map(|c| c.uts_ns.load(Ordering::Acquire)).unwrap_or(0);
+    set_dom_for(uts_ns, &buf[..len]);
     0
 }

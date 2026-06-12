@@ -16,6 +16,7 @@
 extern crate alloc;
 
 pub mod proc_ns;
+pub mod uts_ns;
 
 pub use proc_ns::{
     CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS,
