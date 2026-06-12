@@ -26,14 +26,19 @@ Rule: implement everything the Linux way. No hacks. No oxide-only mixins. No fak
 
 ### 2.3 Dynamic linker / shared library runtime
 
-- `userspace/dynlink/dynlink.c` is real but still missing Linux-grade pieces:
-  - TLS init image / DTV setup
-  - IFUNC
-  - GNU symbol versioning
-  - `dlopen` / `dlsym`
-  - full lazy binding if needed
-- `userspace/openssl_probe/openssl_probe.c` documents an aarch64 constructor hang before `main`, which is a hard blocker for serious shared-lib userspace.
-- Need full Linux-style loader/runtime behavior on both arches, not “works for small hand-picked binaries”.
+- NOTE (2026-06-12): real distro shared-lib userspace uses the REAL musl
+  ld.so (`PT_INTERP=/lib/ld-musl-<arch>.so.1`), NOT `dynlink.c`. The custom
+  `dynlink.c` is a `-static-pie` STUB interpreter for the `hello_dyn` test
+  only. So the pieces below matter for `dynlink.c`'s niche path, not for
+  systemd/openssl/coreutils (those ride real ld-musl).
+- `userspace/dynlink.c` stub still missing (niche): TLS init image / DTV,
+  GNU symbol versioning, `dlopen`/`dlsym`, full lazy binding. IFUNC
+  (`R_*_IRELATIVE`) now handled (#1783).
+- ~~openssl aarch64 constructor hang~~ **RESOLVED** (verified live 2026-06-12,
+  #1787): `/bin/openssl_probe` runs EVP SHA-256 + PASSes on x86 AND aarch64.
+  Was a stale blocker (fixed by earlier kernel work). systemd + login (PAM) +
+  openssl all run dynamically (real ld-musl) on arm.
+- Remaining: keep validating broader shared-lib programs on both arches.
 
 ### 2.4 Namespaces
 
