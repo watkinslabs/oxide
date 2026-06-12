@@ -39,6 +39,22 @@ pub fn uts_hostname_for_current() -> alloc::vec::Vec<u8> {
     crate::hostname::snapshot()
 }
 
+/// Resolve the calling task's NIS/YP domainname per UTS namespace
+/// membership — a UTS namespace isolates BOTH nodename and domainname.
+/// CLONE_NEWUTS-bearing task → private `uts_domainname` slot; else the
+/// global domainname. # C: O(1)
+pub fn uts_domainname_for_current() -> alloc::vec::Vec<u8> {
+    use core::sync::atomic::Ordering;
+    if let Some(t) = sched::live::current() {
+        if (t.ns_membership.load(Ordering::Acquire) & (1u64 << 1)) != 0 {
+            // SAFETY: per-task uts_domainname slot single-mutator per `13§5`; running task on this CPU is the sole writer.
+            let s = unsafe { (*t.uts_domainname.get()).clone() };
+            if !s.is_empty() { return s.into_bytes(); }
+        }
+    }
+    crate::hostname::domain_snapshot()
+}
+
 /// `sys_uname(buf)` — slot 63. Writes the 6-field utsname struct
 /// (sysname/nodename/release/version/machine/domainname, each 65 B).
 /// # C: O(1)
@@ -48,7 +64,7 @@ pub fn kernel_uname(args: &SyscallArgs) -> i64 {
         return rv;
     }
     let host = uts_hostname_for_current();
-    let dom = crate::hostname::domain_snapshot();
+    let dom = uts_domainname_for_current();
     let dom_bytes: &[u8] = if dom.is_empty() { b"(none)" } else { &dom };
     // SAFETY: range validated; user half mapped writable; byte writes need no alignment.
     unsafe {
