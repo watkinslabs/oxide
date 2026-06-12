@@ -13,7 +13,8 @@
 //
 // Intentional v2 phase 33 first-cut omissions:
 //   * Lazy binding (PLT entries are eager-resolved here).
-//   * IFUNC (R_X86_64_IRELATIVE).
+//   * IFUNC (R_X86_64_IRELATIVE / R_AARCH64_IRELATIVE) — call the
+//     resolver, store its result (both arches).
 //   * TLS init image (DT_TLSDESC, DTV setup) — single-thread programs.
 //   * dlopen / dlsym (no runtime loader API).
 //   * GNU symbol versioning (DT_VERNEED / DT_VERSYM).
@@ -221,12 +222,14 @@ typedef struct { uint64_t r_offset; uint64_t r_info; int64_t r_addend; } Rela;
   #define R_GLOB_DAT  6    // R_GLOB_DAT
   #define R_JUMP_SLOT 7    // R_JUMP_SLOT
   #define R_RELATIVE  8    // R_RELATIVE
+  #define R_IRELATIVE 37   // R_X86_64_IRELATIVE (IFUNC)
 #elif defined(__aarch64__)
   #define R_NONE      0    // R_AARCH64_NONE
   #define R_ABS64     257  // R_AARCH64_ABS64
   #define R_GLOB_DAT  1025 // R_AARCH64_GLOB_DAT
   #define R_JUMP_SLOT 1026 // R_AARCH64_JUMP_SLOT
   #define R_RELATIVE  1027 // R_AARCH64_RELATIVE
+  #define R_IRELATIVE 1032 // R_AARCH64_IRELATIVE (IFUNC)
 #endif
 
 #define ELF64_R_SYM(i)  ((i) >> 32)
@@ -504,6 +507,19 @@ static void apply_relas(Dso* d, Rela* tab, long size_bytes) {
                     v = resolve_global(nm, ELF64_ST_BIND(s->st_info) == STB_WEAK);
                 }
                 *slot = v;
+                break;
+            }
+            case R_IRELATIVE: {
+                // IFUNC: r_addend is the (base-relative) address of the
+                // resolver function. Call it and store the implementation
+                // address it returns (musl convention: the resolver takes
+                // no args and reads getauxval(AT_HWCAP) itself). Without
+                // this the slot stays unrelocated and the first indirect
+                // call through it jumps to garbage — the documented
+                // libcrypto-on-aarch64 load-time-constructor hang.
+                uint64_t (*resolver)(void) =
+                    (uint64_t (*)(void))(d->base + (uint64_t)r->r_addend);
+                *slot = resolver();
                 break;
             }
             case R_NONE: break;
