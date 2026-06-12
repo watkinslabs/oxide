@@ -11,6 +11,7 @@ use core::sync::atomic::Ordering;
 
 use sched::live::wait_list::WaitList;
 use sync::{Spinlock, TaskList as TaskListClass};
+use vfs::PollSubscribers;
 
 /// One `struct input_event` per Linux input.h (24 B on 64-bit).
 #[repr(C)]
@@ -33,17 +34,27 @@ const QUEUE_CAP: usize = 256;
 pub struct EvdevQueue {
     pub buf:     Spinlock<VecDeque<InputEvent>, TaskListClass>,
     pub waiters: WaitList,
+    pub subs:    PollSubscribers,
 }
 
 impl EvdevQueue {
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { buf: Spinlock::new(VecDeque::new()), waiters: WaitList::new() }
+        Self {
+            buf:     Spinlock::new(VecDeque::new()),
+            waiters: WaitList::new(),
+            subs:    PollSubscribers::new(),
+        }
     }
+
+    /// True iff no event is queued (drives evdev `->poll`: POLLIN is
+    /// reported only when at least one record is ready, matching Linux
+    /// evdev_poll). # C: O(1)
+    pub fn is_empty(&self) -> bool { self.buf.lock().is_empty() }
 
     /// Push an event; if cap-full, drop oldest (Linux evdev:
     /// overflow drops the oldest record + signals SYN_DROPPED).
-    /// Wakes one parked reader.
+    /// Wakes one parked reader and notifies poll/epoll subscribers.
     /// # C: O(1)
     pub fn push(&self, ev: InputEvent) {
         let mut g = self.buf.lock();
@@ -51,6 +62,7 @@ impl EvdevQueue {
         g.push_back(ev);
         drop(g);
         self.waiters.wake_one();
+        self.subs.notify();
     }
 
     /// Non-blocking pop. Returns the record bytes if available.
@@ -92,14 +104,24 @@ fn ev_to_bytes(ev: &InputEvent) -> [u8; INPUT_EVENT_BYTES] {
     b
 }
 
-/// Global queue for /dev/input/event0. Future per-device entries
-/// (event1, event2, …) ride a registry follow-up.
-pub static EVENT0: EvdevQueue = EvdevQueue::new();
+/// Max simultaneous evdev devices (kbd + mouse/tablet + spares). Matches
+/// the drain's CTXS slot count; the CTXS slot index IS the evdev id.
+pub const MAX_EVDEV: usize = 8;
 
-/// Push a (type, code, value) event onto event0 with the current
-/// monotonic timestamp.
+/// Per-device evdev queues. `EVENT_QUEUES[id]` backs `/dev/input/event<id>`;
+/// the drain pushes by the device's CTXS slot index = its evdev id.
+pub static EVENT_QUEUES: [EvdevQueue; MAX_EVDEV] =
+    [const { EvdevQueue::new() }; MAX_EVDEV];
+
+/// The queue backing `/dev/input/event<id>` (clamped to MAX_EVDEV-1).
 /// # C: O(1)
-pub fn push_event0(ev_type: u16, code: u16, value: i32) {
+pub fn queue(id: u32) -> &'static EvdevQueue {
+    &EVENT_QUEUES[(id as usize).min(MAX_EVDEV - 1)]
+}
+
+/// Push a (type, code, value) event onto `/dev/input/event<id>` with the
+/// current monotonic timestamp. # C: O(1)
+pub fn push_event(id: u32, ev_type: u16, code: u16, value: i32) {
     use hal::TimerOps;
     #[cfg(target_arch = "x86_64")]
     let ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
@@ -108,5 +130,5 @@ pub fn push_event0(ev_type: u16, code: u16, value: i32) {
     let _ = Ordering::Acquire; // suppress unused-import warning when no-op cfg.
     let tv_sec  = ns / 1_000_000_000;
     let tv_usec = (ns % 1_000_000_000) / 1_000;
-    EVENT0.push(InputEvent { tv_sec, tv_usec, ev_type, code, value });
+    queue(id).push(InputEvent { tv_sec, tv_usec, ev_type, code, value });
 }

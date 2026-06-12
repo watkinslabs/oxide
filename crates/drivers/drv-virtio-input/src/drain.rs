@@ -162,6 +162,10 @@ struct QueueCtx {
     last_used:   u16,
     /// Driver-side: avail.idx we last wrote.
     avail_idx:   u16,
+    /// Device class (from config-space EV_BITS at install): pointer
+    /// (mouse/tablet) vs keyboard. Only keyboard-class devices feed the
+    /// console keyboard pipeline.
+    is_pointer:  bool,
 }
 
 /// Up to 8 input devices share one drain (kbd + mouse + ...).
@@ -230,14 +234,17 @@ pub unsafe fn install_q0(
         }
         core::ptr::write_volatile(avail_va.add(2) as *mut u16, qsize);            // idx = qsize (all posted)
     }
-    // Find a free CTX slot.
+    // Find a free CTX slot. The slot index is this device's evdev id (slots
+    // fill in enumeration order, matching install_default); look up its
+    // class so the drain can gate the console keyboard pipeline.
     {
         let mut g = CTXS.lock();
-        for slot in g.iter_mut() {
+        for (idx, slot) in g.iter_mut().enumerate() {
             if slot.is_none() {
                 *slot = Some(QueueCtx {
                     hhdm, desc_pa, driver_pa, device_pa, notify_va,
                     qsize, buf_pa, last_used: 0, avail_idx: qsize,
+                    is_pointer: crate::is_pointer(idx as u32),
                 });
                 break;
             }
@@ -264,13 +271,16 @@ pub fn raise_drain() { softirq::raise(softirq::Slot::InputDrain); }
 /// # C: O(n_pending × n_devices)
 fn drain_softirq() {
     let mut g = CTXS.lock();
-    for slot in g.iter_mut() {
+    // The CTXS slot index is the device's evdev id (event0, event1, …):
+    // install_q0 fills slots in enumeration order, matching install_default's
+    // evdev_id assignment. Route each device's events to its own queue.
+    for (id, slot) in g.iter_mut().enumerate() {
         let ctx = match slot.as_mut() { Some(c) => c, None => continue };
-        drain_one(ctx);
+        drain_one(ctx, id as u32);
     }
 }
 
-fn drain_one(ctx: &mut QueueCtx) {
+fn drain_one(ctx: &mut QueueCtx, evdev_id: u32) {
     // Used ring layout at device_pa: u16 flags @ 0; u16 idx @ 2;
     // UsedElem { u32 id; u32 len } ring[qsize] @ 4; u16 avail_event @ tail.
     let used_va = ctx.hhdm.wrapping_add(ctx.device_pa) as *mut u8;
@@ -291,18 +301,21 @@ fn drain_one(ctx: &mut QueueCtx) {
         let evt = unsafe { core::ptr::read_volatile(evt_va) };
         DRAINED_EVENTS.fetch_add(1, Ordering::Relaxed);
 
-        // Publish the raw event to /dev/input/event0 readers
-        // (X11 / Wayland / evdev / libinput clients block-read
-        // these). Every event flows to the queue; the tty
-        // line-discipline below is the *additional* keyboard-as-
-        // console plumbing.
-        crate::evdev_queue::push_event0(evt.ty, evt.code, evt.value as i32);
+        // Publish the raw event to /dev/input/event<id> readers (X11 /
+        // Wayland / evdev / libinput clients block-read these). Every event
+        // flows to this device's queue; the tty line-discipline below is the
+        // *additional* keyboard-as-console plumbing (event0 only).
+        crate::evdev_queue::push_event(evdev_id, evt.ty, evt.code, evt.value as i32);
 
         // EV_KEY: value=1 press, value=2 autorepeat, value=0 release.
-        // The per-key path (modifier/VT/scroll/translate) is the ONE
-        // shared pipeline in handle_key_event — same code the i8042 PS/2
-        // keyboard driver feeds its decoded scancodes into.
-        if evt.ty == EV_KEY {
+        // The per-key path (modifier/VT/scroll/translate) is the ONE shared
+        // pipeline in handle_key_event — same code the i8042 PS/2 keyboard
+        // driver feeds its decoded scancodes into. Only KEYBOARD-class
+        // devices feed the console: this mirrors Linux binding the VT
+        // keyboard input_handler to keyboard-capability devices, not
+        // pointers. A pointer's EV_KEY events are buttons (BTN_LEFT, …) and
+        // reach only this device's /dev/input/event<id> for libinput.
+        if evt.ty == EV_KEY && !ctx.is_pointer {
             let pressed = evt.value == 1 || evt.value == 2;
             handle_key_event(evt.code, pressed);
         }
