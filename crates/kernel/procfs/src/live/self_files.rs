@@ -193,15 +193,15 @@ impl Inode for ProcSelfStatInode {
         Err(VfsError::Enotdir)
     }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        use core::sync::atomic::Ordering;
         let mut body = alloc::vec::Vec::with_capacity(192);
         let cur = sched::live::current();
-        let tid = cur.map(|c| c.tid as u64).unwrap_or(1);
-        let ppid = cur
-            .map(|c| c.parent_tid.load(Ordering::Acquire) as u64)
-            .unwrap_or(0);
+        // /proc/self/stat reports the VPID userspace sees (Linux field 1),
+        // not the opaque internal tid; PPid likewise resolves to the parent's
+        // vpid (mirrors pid_stat.rs; self fast-path used to leak internal tids).
+        let vpid = cur.map(|c| sched::live::registry::display_vpid(c.tid)).unwrap_or(1);
+        let ppid = cur.map(|c| sched::live::registry::parent_vpid(c.tid)).unwrap_or(0);
         let name = cur.map(|c| c.name).unwrap_or("init");
-        push_u64(&mut body, tid);
+        push_u64(&mut body, vpid);
         push(&mut body, b" (");
         push(&mut body, name.as_bytes());
         let state_char = cur.map(|c| c.state().linux_char()).unwrap_or(b'R');
@@ -234,13 +234,12 @@ pub struct ProcSelfStatusInode;
 
 impl ProcSelfStatusInode {
     fn body() -> alloc::vec::Vec<u8> {
-        use core::sync::atomic::Ordering;
         let mut out = alloc::vec::Vec::with_capacity(256);
         let cur = sched::live::current();
-        let tid = cur.map(|c| c.tid as u64).unwrap_or(1);
-        let ppid = cur
-            .map(|c| c.parent_tid.load(Ordering::Acquire) as u64)
-            .unwrap_or(0);
+        // VPID userspace sees (Tgid/Pid), and the parent's vpid (PPid) — not
+        // the opaque internal tids the self fast-path used to leak.
+        let tid = cur.map(|c| sched::live::registry::display_vpid(c.tid)).unwrap_or(1);
+        let ppid = cur.map(|c| sched::live::registry::parent_vpid(c.tid)).unwrap_or(0);
         let name = cur.map(|c| c.name).unwrap_or("oxide");
         push(&mut out, b"Name:\t");
         push(&mut out, name.as_bytes());

@@ -16,7 +16,7 @@ pub(crate) fn for_each_target(which: u64, who: u32, mut f: impl FnMut(&alloc::sy
         0 => {
             let t = if who == 0 {
                 sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
-            } else { sched::live::registry::lookup(who) };
+            } else { sched::live::registry::resolve_user_pid(who) };
             if let Some(t) = t { f(&t); }
         }
         1 => {

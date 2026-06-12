@@ -75,7 +75,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             0
         }
         PTRACE_ATTACH | PTRACE_SEIZE => {
-            match sched::live::registry::lookup(pid) {
+            match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => {
                     t.traced_by.store(cur.tid, Ordering::Release);
                     // F104: ATTACH posts SIGSTOP so the target stops at
@@ -93,7 +93,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             }
         }
         PTRACE_DETACH => {
-            if let Some(t) = sched::live::registry::lookup(pid) {
+            if let Some(t) = sched::live::registry::resolve_user_pid(pid) {
                 t.traced_by.store(0, Ordering::Release);
                 // F104: clear any pending SIGSTOP from a prior ATTACH
                 // and wake the target if it parked in stop_until_cont.
@@ -104,7 +104,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
         }
         PTRACE_KILL => {
             // Set SIGKILL pending on target.
-            if let Some(t) = sched::live::registry::lookup(pid) {
+            if let Some(t) = sched::live::registry::resolve_user_pid(pid) {
                 t.sigpending.fetch_or(1u64 << 8, Ordering::Release); // SIGKILL = 9 → bit 8
             }
             0
@@ -123,7 +123,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             // -EFAULT on unmapped target page.
             let addr = args.a2;
             let data = args.a3;
-            let target = match sched::live::registry::lookup(pid) {
+            let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             // SAFETY: target task; we hold an Arc<Task> from the registry; mm slot is single-mutator per `13§5` and target is either running or parked — fork/exec don't mutate the slot under us.
@@ -149,7 +149,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             // path follows when the kernel grows one).
             let addr = args.a2;
             let data = args.a3;
-            let target = match sched::live::registry::lookup(pid) {
+            let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             // SAFETY: same as PEEKTEXT — we hold Arc<Task>; mm slot stable per `13§5`.
@@ -177,7 +177,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             // RFLAGS.TF / MDSCR_EL1.SS on the next entry. Until those
             // arches land, behaviour matches CONT — flag is set but
             // no trap fires; first-cut wake semantics preserved.
-            let target = match sched::live::registry::lookup(pid) {
+            let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             let sig = args.a3 as i32;
@@ -202,7 +202,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             // Target must be stopped or attached; we read its
             // kernel_stack top and copy the 15-u64 user-reg block at
             // offset -0x80 (x86) / SVC frame (aarch64) into `data`.
-            let target = match sched::live::registry::lookup(pid) {
+            let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             let top = target.kernel_stack.load(Ordering::Acquire);
@@ -246,7 +246,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             // frame, symmetric with F115 GETREGS. Target must be
             // stopped; the frame at kstack_top - 0x80 (x86) /
             // -0xD0 (aarch64) is stable while the tracee is parked.
-            let target = match sched::live::registry::lookup(pid) {
+            let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             let top = target.kernel_stack.load(Ordering::Acquire);
@@ -280,14 +280,14 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             0
         }
         PTRACE_SETOPTIONS => {
-            let target = match sched::live::registry::lookup(pid) {
+            let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             target.ptrace_options.store(args.a3 as u32, Ordering::Release);
             0
         }
         PTRACE_GETEVENTMSG => {
-            let target = match sched::live::registry::lookup(pid) {
+            let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             let data = args.a3;
@@ -304,7 +304,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             // default if no stop has snapshotted). Tracer reads
             // 128 bytes; we fill the first 32 with the SigInfo
             // record and leave the rest zero.
-            let target = match sched::live::registry::lookup(pid) {
+            let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             let data = args.a3;
@@ -332,7 +332,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             // with a non-zero signal arg, the kernel would normally
             // deliver this siginfo (full delivery integration rides
             // a follow-up; the write itself is now real).
-            let target = match sched::live::registry::lookup(pid) {
+            let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             let data = args.a3;
@@ -360,7 +360,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             // synthetic SIGSTOP, on delivery a PTRACE_EVENT_STOP fires and
             // wait4 reports the stop. v1 substrate: mark stop_pending +
             // raise SIGSTOP. The pending bit drives wait4(WUNTRACED).
-            let target = match sched::live::registry::lookup(pid) {
+            let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             target.sigpending.fetch_or(1u64 << 18, Ordering::Release); // SIGSTOP
@@ -371,7 +371,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
         PTRACE_LISTEN => {
             // Re-enter listen state without resuming: keep target Stopped,
             // clear cont_pending so wait4(WCONTINUED) won't fire spuriously.
-            let target = match sched::live::registry::lookup(pid) {
+            let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             target.cont_pending.store(false, Ordering::Release);

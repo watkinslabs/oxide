@@ -25,7 +25,7 @@ pub fn sys_get_robust_list(args: &SyscallArgs) -> i64 {
         (cur.robust_list_head.load(Ordering::Acquire),
          cur.robust_list_len.load(Ordering::Acquire))
     } else {
-        let task = match sched::live::registry::lookup(pid) {
+        let task = match sched::live::registry::resolve_user_pid(pid) {
             Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
         };
         (task.robust_list_head.load(Ordering::Acquire),
