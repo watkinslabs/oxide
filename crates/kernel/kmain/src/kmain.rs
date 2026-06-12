@@ -630,6 +630,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         debug_boot! { klog::write_raw(b"[INFO]  /dev/hwrng registered (virtio-rng)\n"); }
     }
 
+    // docs/58§5-6: if a virtio-snd card came up, publish the ALSA
+    // /dev/snd/* (primary) + OSS /dev/dsp (emulation) nodes. Absent a
+    // card, nothing is created (no fabricated device).
+    #[cfg(target_os = "oxide-kernel")]
+    if drv_virtio_snd::present() {
+        sound::init();
+        debug_boot! { klog::write_raw(b"[INFO]  /dev/snd/* + /dev/dsp registered (virtio-snd)\n"); }
+    }
+
     // Mount the ext4 root fs from the virtio-blk disk (serial
     // `oxide-root`). Linux's CONFIG_EXT4_FS=y equivalent: real driver
     // from crates/ext4 built into the kernel, backed by a real disk.
