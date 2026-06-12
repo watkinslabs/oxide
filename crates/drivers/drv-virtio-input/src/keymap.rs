@@ -347,14 +347,22 @@ fn encode_utf8(cp: u32, out: &mut [u8]) -> usize {
 /// (`ESC O A`) is a follow-up tied to the emulator's DECCKM state.
 /// Keycodes are Linux evdev `KEY_*` (the codes virtio-input/i8042 deliver).
 /// # C: O(1)
-fn special_key_seq(kc: u16) -> Option<Out> {
+fn special_key_seq(kc: u16, app_cursor: bool) -> Option<Out> {
+    // Cursor keys (arrows + Home/End) honor DECCKM: app mode = SS3 `ESC O x`,
+    // normal mode = CSI `ESC [ x` (Linux `applkey`). Nav (PgUp/Del/…) and F5+
+    // use `ESC [ … ~` regardless; F1-F4 are always SS3.
+    let cur = |c: u8| if app_cursor {
+        Out::seq(&[0x1b, b'O', c])
+    } else {
+        Out::seq(&[0x1b, b'[', c])
+    };
     Some(match kc {
-        103 => Out::seq(b"\x1b[A"),    // KEY_UP
-        108 => Out::seq(b"\x1b[B"),    // KEY_DOWN
-        106 => Out::seq(b"\x1b[C"),    // KEY_RIGHT
-        105 => Out::seq(b"\x1b[D"),    // KEY_LEFT
-        102 => Out::seq(b"\x1b[H"),    // KEY_HOME
-        107 => Out::seq(b"\x1b[F"),    // KEY_END
+        103 => cur(b'A'),              // KEY_UP
+        108 => cur(b'B'),              // KEY_DOWN
+        106 => cur(b'C'),              // KEY_RIGHT
+        105 => cur(b'D'),              // KEY_LEFT
+        102 => cur(b'H'),              // KEY_HOME
+        107 => cur(b'F'),              // KEY_END
         104 => Out::seq(b"\x1b[5~"),   // KEY_PAGEUP
         109 => Out::seq(b"\x1b[6~"),   // KEY_PAGEDOWN
         110 => Out::seq(b"\x1b[2~"),   // KEY_INSERT
@@ -375,14 +383,21 @@ fn special_key_seq(kc: u16) -> Option<Out> {
     })
 }
 
-/// Translate `keycode` under the active layout and modifier state.
-/// Returns `Out::NONE` if no map is loaded or the key has no entry for the
-/// current modifier combination. Special keys (arrows/nav/F) emit their
-/// fixed escape sequence regardless of layout.
-/// # C: O(1) — table lookups + UTF-8 encode + meta prefix.
+/// Translate `keycode` under the active layout and modifier state, in
+/// normal (non-application) cursor-key mode. # C: O(1).
 pub fn translate(keycode: u16) -> Out {
+    translate_app(keycode, false)
+}
+
+/// Translate `keycode` under the active layout + modifier state, honoring
+/// the foreground VT's DECCKM (`app_cursor`) for the cursor keys. Returns
+/// `Out::NONE` if no map is loaded or the key has no entry for the current
+/// modifier combination. Special keys (arrows/nav/F) emit their fixed escape
+/// sequence regardless of layout.
+/// # C: O(1) — table lookups + UTF-8 encode + meta prefix.
+pub fn translate_app(keycode: u16, app_cursor: bool) -> Out {
     // Special keys first — layout-independent, no codepoint in the tables.
-    if let Some(seq) = special_key_seq(keycode) { return seq; }
+    if let Some(seq) = special_key_seq(keycode, app_cursor) { return seq; }
     if !is_loaded() { return Out::NONE; }
     let g = ACTIVE.lock();
     let km = match g.as_ref() { Some(k) => k, None => return Out::NONE };
@@ -729,5 +744,20 @@ keycode 39 plain=U+00F6 shift=U+00D6
         assert_eq!(translate(39).as_bytes(), "ö".as_bytes());
         MODS_RAW.store(Mods::SHIFT.bits(), Ordering::Relaxed);
         assert_eq!(translate(39).as_bytes(), "Ö".as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod app_cursor_tests {
+    use super::translate_app;
+
+    #[test]
+    fn arrows_use_csi_in_normal_mode_ss3_in_app_mode() {
+        assert_eq!(translate_app(103, false).as_bytes(), b"\x1b[A", "Up normal = CSI");
+        assert_eq!(translate_app(103, true).as_bytes(),  b"\x1bOA", "Up app = SS3");
+        assert_eq!(translate_app(105, true).as_bytes(),  b"\x1bOD", "Left app = SS3");
+        assert_eq!(translate_app(102, true).as_bytes(),  b"\x1bOH", "Home app = SS3");
+        // Nav keys are unaffected by DECCKM.
+        assert_eq!(translate_app(104, true).as_bytes(),  b"\x1b[5~", "PgUp app unchanged");
     }
 }

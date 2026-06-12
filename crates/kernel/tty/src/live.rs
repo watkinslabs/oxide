@@ -57,6 +57,47 @@ pub fn foreground() -> u8 {
     FOREGROUND_VT.load(Ordering::Acquire)
 }
 
+/// Foreground-VT keyboard-mode queries. The fbcon VT layer owns the per-VT
+/// emulators (DECCKM / bracketed-paste live there); these fn-pointers are
+/// registered at boot so the keyboard driver (`tty` dep only) and the
+/// selection-paste path can read the FOREGROUND VT's mode without a direct
+/// fbcon dependency (Linux `applkey` reads `vc_cons[fg_console]`). `null` =
+/// not installed → mode off.
+static APP_CURSOR_Q: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static BRACKETED_Q: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Register the foreground-VT DECCKM query (boot wiring, once). # C: O(1)
+pub fn set_app_cursor_query(f: fn() -> bool) {
+    APP_CURSOR_Q.store(f as *mut (), Ordering::Release);
+}
+
+/// Register the foreground-VT bracketed-paste query (boot wiring). # C: O(1)
+pub fn set_bracketed_paste_query(f: fn() -> bool) {
+    BRACKETED_Q.store(f as *mut (), Ordering::Release);
+}
+
+fn query(slot: &AtomicPtr<()>) -> bool {
+    let raw = slot.load(Ordering::Acquire);
+    if raw.is_null() {
+        return false;
+    }
+    // SAFETY: slot is only ever set via the matching set_*_query with a non-null fn() -> bool cast through `as *mut ()`; the reverse transmute restores the identical signature.
+    let f: fn() -> bool = unsafe { core::mem::transmute::<*mut (), fn() -> bool>(raw) };
+    f()
+}
+
+/// DECCKM (application cursor keys) of the foreground VT. The keyboard
+/// driver encodes arrows as `ESC O x` when set. # C: O(1) + query cost
+pub fn fg_app_cursor() -> bool {
+    query(&APP_CURSOR_Q)
+}
+
+/// Bracketed-paste mode of the foreground VT. The selection-paste path
+/// wraps pasted bytes in `ESC[200~`…`ESC[201~` when set. # C: O(1) + query
+pub fn fg_bracketed_paste() -> bool {
+    query(&BRACKETED_Q)
+}
+
 /// Set the foreground VT (the keyboard-input target). Called by `vt::activate`
 /// (VT_ACTIVATE ioctl + Ctrl-Alt-Fn). Out-of-range clamps to 1..=N_VT.
 /// # C: O(1)
