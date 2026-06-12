@@ -26,6 +26,7 @@ model_driver!(VirtioGpuDrv,   VIRTIO_GPU_DRV,   "virtio-gpu",   0x1050);
 model_driver!(VirtioInputDrv, VIRTIO_INPUT_DRV, "virtio-input", 0x1052);
 model_driver!(VirtioRngDrv,   VIRTIO_RNG_DRV,   "virtio-rng",   0x1044);
 model_driver!(VirtioVsockDrv, VIRTIO_VSOCK_DRV, "virtio-vsock", 0x1053);
+model_driver!(VirtioSndDrv,   VIRTIO_SND_DRV,   "virtio-snd",   0x1059);
 
 /// Canonical `0000:bb:dd.f` addr for a BDF (matches enumeration loop).
 /// # C: O(1)
@@ -87,6 +88,12 @@ pub(super) struct VirtioProbe {
     // D3.3: virtio-vsock guest CID (device-cfg offset 0, le64).
     pub(super) vsock_cid: u64,
     pub(super) vsock_cid_valid: bool,
+    // F454: virtio_snd_config (docs/58§4, le32 ×4 at device-cfg offset 0).
+    pub(super) snd_jacks:     u32,
+    pub(super) snd_streams:   u32,
+    pub(super) snd_chmaps:    u32,
+    pub(super) snd_controls:  u32,
+    pub(super) snd_cfg_valid: bool,
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
@@ -608,6 +615,26 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         }
     }
 
+    // F454: harvest virtio_snd_config (docs/58§4): le32 jacks/streams/
+    // chmaps/controls at device-cfg offset 0. Same window pattern as MAC.
+    let is_virtio_snd = d.vendor_id == 0x1AF4 && d.device_id == 0x1059;
+    let mut snd_jacks_local: u32 = 0;
+    let mut snd_streams_local: u32 = 0;
+    let mut snd_chmaps_local: u32 = 0;
+    let mut snd_controls_local: u32 = 0;
+    let mut snd_cfg_valid_local: bool = false;
+    if is_virtio_snd {
+        if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
+            if let Some((j, s, c, ct)) = super::virtio_snd_cfg::harvest(&devcfg_cap, &bars) {
+                snd_jacks_local = j;
+                snd_streams_local = s;
+                snd_chmaps_local = c;
+                snd_controls_local = ct;
+                snd_cfg_valid_local = true;
+            }
+        }
+    }
+
 
     //: read used.idx after the kick.
     let used_idx_observed = if avail_idx_posted > 0 && q0_device_pa != 0 {
@@ -665,6 +692,11 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         blk_cfg_valid: blk_cfg_valid_local,
         vsock_cid:       vsock_cid_local,
         vsock_cid_valid: vsock_cid_valid_local,
+        snd_jacks:     snd_jacks_local,
+        snd_streams:   snd_streams_local,
+        snd_chmaps:    snd_chmaps_local,
+        snd_controls:  snd_controls_local,
+        snd_cfg_valid: snd_cfg_valid_local,
     })
 }
 
@@ -802,6 +834,32 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
             klog::write_raw(b"[INFO]  virtio-vsock installed cid=");
             klog::write_dec_u64(p.vsock_cid);
             klog::write_raw(b"\n");
+        }
+    }
+
+    // F454: virtio-snd (0x1059). Hand the CONTROLQ (q0) ring + harvested
+    // virtio_snd_config to drv-virtio-snd, which queries the PCM stream
+    // table via VIRTIO_SND_R_PCM_INFO. TXQ/RXQ playback rings land in PR-C.
+    if d.vendor_id == 0x1AF4 && d.device_id == 0x1059
+        && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
+        && p.q0_desc_pa != 0 && p.q0_notify_va != 0 && p.snd_cfg_valid
+    {
+        if let Some(sp) = super::virtio_snd_cfg::install_snd(
+            p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa, p.q0_notify_va, p.q0_size,
+            p.snd_jacks, p.snd_streams, p.snd_chmaps, p.snd_controls)
+        {
+            model_bind(&VIRTIO_SND_DRV, bdf); // D1a: publish + bind
+            debug_boot! {
+                klog::write_raw(b"[INFO]  virtio-snd: bdf=0:");
+                klog::write_dec_u64(bdf.device as u64);
+                klog::write_raw(b".0 card=C0 streams=");
+                klog::write_dec_u64(sp.streams as u64);
+                klog::write_raw(b" out=");
+                klog::write_dec_u64(sp.out as u64);
+                klog::write_raw(b" in=");
+                klog::write_dec_u64(sp.input as u64);
+                klog::write_raw(b"\n");
+            }
         }
     }
 

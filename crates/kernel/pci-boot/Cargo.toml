@@ -27,6 +27,7 @@ drv-virtio-gpu   = { path = "../../drivers/drv-virtio-gpu" }
 drv-virtio-input = { path = "../../drivers/drv-virtio-input" }
 drv-virtio-rng   = { path = "../../drivers/drv-virtio-rng" }
 drv-virtio-vsock = { path = "../../drivers/drv-virtio-vsock" }
+drv-virtio-snd   = { path = "../../drivers/drv-virtio-snd" }
 drv-nvme         = { path = "../../drivers/drv-nvme" }
 drv-ahci         = { path = "../../drivers/drv-ahci" }
 block            = { path = "../block" }
