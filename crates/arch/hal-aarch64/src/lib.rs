@@ -150,7 +150,9 @@ impl CpuOps for ArmCpuOps {
     fn cpu_hwcap() -> u64 {
         const HWCAP_FP: u64 = 1 << 0;
         const HWCAP_ASIMD: u64 = 1 << 1;
-        HWCAP_FP | HWCAP_ASIMD
+        // Baseline (mandatory on ARMv8-A) | optional crypto/CRC bits decoded
+        // from ID_AA64ISAR0_EL1 (set only for features the CPU actually has).
+        HWCAP_FP | HWCAP_ASIMD | crate::cpuid::isar0_hwcap(crate::cpuid::id_aa64isar0_el1())
     }
 
     /// # C: O(1)
