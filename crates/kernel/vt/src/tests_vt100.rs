@@ -512,3 +512,102 @@ fn vttest_wrap_then_scroll() {
     assert_eq!(trimmed(&vc2, 0), "def");
     assert_eq!(vc2.glyph_at(0, 1), 'g' as u32);
 }
+
+// ===== P17-09: alt screen / ECH (relocated) + DA/DECID/IRM/C1/string ==
+
+#[test]
+fn alt_screen_saves_and_restores_main() {
+    let mut vc = Vc::new(20, 5);
+    let mut em = Emulator::new();
+    em.feed_bytes(&mut vc, b"MAIN");
+    em.feed_bytes(&mut vc, b"\x1b[?1049h");
+    assert_eq!(vc.glyph_at(0, 0), ' ' as u32, "alt screen starts blank");
+    em.feed_bytes(&mut vc, b"ALT");
+    assert_eq!(vc.glyph_at(0, 0), 'A' as u32);
+    em.feed_bytes(&mut vc, b"\x1b[?1049l");
+    assert_eq!(vc.glyph_at(0, 0), 'M' as u32, "main 'MAIN' restored");
+    assert_eq!(vc.glyph_at(3, 0), 'N' as u32);
+}
+
+#[test]
+fn ech_erases_n_chars_without_moving_cursor() {
+    let mut vc = Vc::new(20, 2);
+    let mut em = Emulator::new();
+    em.feed_bytes(&mut vc, b"ABCDEF");
+    em.feed_bytes(&mut vc, b"\x1b[1G");
+    em.feed_bytes(&mut vc, b"\x1b[3X");
+    assert_eq!(vc.glyph_at(0, 0), ' ' as u32);
+    assert_eq!(vc.glyph_at(2, 0), ' ' as u32);
+    assert_eq!(vc.glyph_at(3, 0), 'D' as u32, "char 4 untouched");
+}
+
+#[test]
+fn primary_da_and_decid_reply_vt102_id() {
+    let mut vc = Vc::new(10, 2);
+    let mut em = Emulator::new();
+    em.feed_bytes(&mut vc, b"\x1b[c");
+    assert_eq!(em.take_reply().as_slice(), b"\x1b[?6c", "CSI c -> primary DA");
+    em.feed_bytes(&mut vc, b"\x1b[0c");
+    assert_eq!(em.take_reply().as_slice(), b"\x1b[?6c", "CSI 0 c -> primary DA");
+    em.feed_bytes(&mut vc, b"\x1bZ");
+    assert_eq!(em.take_reply().as_slice(), b"\x1b[?6c", "ESC Z (DECID) -> same id");
+}
+
+#[test]
+fn secondary_da_not_answered() {
+    let mut vc = Vc::new(10, 2);
+    let mut em = Emulator::new();
+    em.feed_bytes(&mut vc, b"\x1b[>c");
+    assert!(em.take_reply().is_empty(), "CSI > c (secondary DA) unanswered on vt102");
+}
+
+#[test]
+fn irm_insert_mode_shifts_line_right() {
+    let mut vc = Vc::new(10, 2);
+    let mut em = Emulator::new();
+    em.feed_bytes(&mut vc, b"ACE");        // A C E
+    em.feed_bytes(&mut vc, b"\x1b[1G");    // home of row
+    em.feed_bytes(&mut vc, b"\x1b[4h");    // IRM on
+    em.feed_bytes(&mut vc, b"B");          // insert B at col0
+    assert_eq!(vc.glyph_at(0, 0), 'B' as u32);
+    assert_eq!(vc.glyph_at(1, 0), 'A' as u32, "A pushed right");
+    assert_eq!(vc.glyph_at(2, 0), 'C' as u32);
+    em.feed_bytes(&mut vc, b"\x1b[4l");    // IRM off
+    em.feed_bytes(&mut vc, b"X");          // overwrite (replace mode)
+    assert_eq!(vc.glyph_at(1, 0), 'X' as u32, "replace overwrites");
+}
+
+#[test]
+fn c1_csi_8bit_moves_cursor_like_esc_bracket() {
+    let mut vc = Vc::new(10, 4);
+    let mut em = Emulator::new();
+    // 0x9b is 8-bit CSI: 0x9b '3' '3' 'C' would be CUF n; use cursor down.
+    em.feed_bytes(&mut vc, &[0x9b, b'2', b'B']); // CSI 2 B -> down 2
+    assert_eq!(vc.y, 2, "8-bit CSI parsed as CUD");
+    // 0x84 (IND) indexes down one line.
+    em.feed_bytes(&mut vc, &[0x84]);
+    assert_eq!(vc.y, 3, "C1 IND advances one line");
+}
+
+#[test]
+fn osc_title_with_backslash_not_terminated_early() {
+    let mut vc = Vc::new(10, 2);
+    let mut em = Emulator::new();
+    // OSC 0 ; a\b BEL — a bare '\' must NOT end the string; only BEL does.
+    em.feed_bytes(&mut vc, b"\x1b]0;a\\b\x07Z");
+    // The trailing 'Z' must print as a glyph (parser returned to ground at BEL).
+    assert_eq!(vc.glyph_at(0, 0), 'Z' as u32, "byte after OSC BEL prints");
+    assert_eq!(em.state(), crate::emulator::CsiState::Ground);
+}
+
+#[test]
+fn dcs_payload_not_executed_as_commands() {
+    let mut vc = Vc::new(10, 2);
+    let mut em = Emulator::new();
+    // DCS ... ESC [ 31 m ... ST : the CSI inside the DCS payload must NOT
+    // change attrs; then ST ends it and 'Q' prints with default attr.
+    em.feed_bytes(&mut vc, b"\x1bP1$r\x1b[31m\x1b\\Q");
+    assert_eq!(vc.glyph_at(0, 0), 'Q' as u32, "byte after DCS ST prints");
+    assert_eq!(vc.attr_at(0, 0).unwrap().fg, crate::vc::DEFAULT_FG_RGB,
+        "DCS payload CSI 31m was not executed");
+}

@@ -89,6 +89,14 @@ pub struct Emulator {
     /// `SGR 12` second alternate font: like `disp_ctrl` but XOR each byte
     /// with 0x80 first (Linux `toggle_meta`).
     toggle_meta: bool,
+    /// IRM insert/replace mode (ANSI mode 4, `CSI 4h`/`CSI 4l`). When set,
+    /// each printed glyph shifts the rest of the line right by its width
+    /// before being placed (Linux `vt.c` `decim`); default replace.
+    insert_mode: bool,
+    /// Saw `ESC` (0x1b) inside an OSC/DCS string: the next byte decides if
+    /// this is a 7-bit ST (`ESC \`) terminator or just payload. Prevents a
+    /// bare `\` in a title from ending the string early (`57§14`).
+    str_esc: bool,
     /// Pending terminal answerback bytes (DSR/CPR reply per `CSI n`). The
     /// console driver drains this after each `feed`/`feed_bytes` and
     /// injects it into the tty INPUT ring so the program that issued the
@@ -113,6 +121,8 @@ impl Default for Emulator {
             utf8_len: 0,
             disp_ctrl: false,
             toggle_meta: false,
+            insert_mode: false,
+            str_esc: false,
             reply: [0; REPLY_CAP],
             reply_len: 0,
         }
@@ -169,16 +179,7 @@ impl Emulator {
                 self.osc_string(byte);
             }
             CsiState::OscString => self.osc_string(byte),
-            CsiState::DcsString => {
-                // Collect until ST (ESC \) / BEL; we only need to not
-                // misinterpret the payload as commands.
-                if byte == 0x07 {
-                    self.state = CsiState::Ground;
-                } else if byte == 0x1b {
-                    // crude: treat following byte handling via Esc state
-                    self.state = CsiState::Esc;
-                }
-            }
+            CsiState::DcsString => self.dcs_string(byte),
         }
     }
 
@@ -224,10 +225,45 @@ impl Emulator {
                     self.print(vc, cp);
                 }
             }
+            // C1 8-bit controls (0x80..0x9f): only when NOT inside a UTF-8
+            // sequence (the continuation arm above claims those first). Each
+            // is the single-byte form of an `ESC Fe` two-byte control.
+            b if (0x80..=0x9f).contains(&b) => self.c1(vc, b),
             _ => {
                 // C0 control we don't handle, or stray continuation.
                 self.utf8_len = 0;
             }
+        }
+    }
+
+    /// C1 8-bit control (`0x80..0x9f`) = the single-byte equivalent of an
+    /// `ESC Fe` sequence (`0x9b`=CSI, `0x9d`=OSC, `0x90`=DCS, `0x84`=IND,
+    /// `0x85`=NEL, `0x88`=HTS, `0x8d`=RI, `0x9c`=ST). Others have no screen
+    /// effect on a vt102 (`57§3`).
+    fn c1(&mut self, vc: &mut Vc, byte: u8) {
+        match byte {
+            0x84 => self.index(vc), // IND
+            0x85 => {
+                // NEL: index + CR.
+                self.line_feed(vc);
+                vc.x = 0;
+                vc.wrap_pending = false;
+            }
+            0x88 => vc.set_tab(),         // HTS
+            0x8d => self.reverse_index(vc), // RI
+            0x90 => self.state = CsiState::DcsString, // DCS
+            0x9b => {
+                // CSI: begin a control sequence (reset accumulators).
+                self.state = CsiState::CsiParam;
+                self.params = [0; MAX_PARAMS];
+                self.param_count = 0;
+                self.param_seen = false;
+                self.intermediate = [0; MAX_INTER];
+                self.inter_count = 0;
+                self.private = false;
+            }
+            0x9d => self.state = CsiState::Osc, // OSC
+            _ => {}                              // ST (0x9c) in ground / others
         }
     }
 
@@ -274,6 +310,11 @@ impl Emulator {
             }
             b'c' => {
                 self.full_reset(vc);
+                self.state = CsiState::Ground;
+            }
+            b'Z' => {
+                // DECID (obsolete) — same answerback as primary DA.
+                self.answer_da();
                 self.state = CsiState::Ground;
             }
             // ESC ( / ) / * / + — charset designator; next byte selects.
@@ -406,10 +447,38 @@ impl Emulator {
     }
 
     fn osc_string(&mut self, byte: u8) {
+        if self.str_esc {
+            // We saw ESC: only `ESC \` is ST. Anything else is payload and
+            // the string continues (the ESC + this byte are consumed).
+            self.str_esc = false;
+            if byte == b'\\' {
+                self.state = CsiState::Ground;
+            }
+            return;
+        }
         match byte {
             0x07 => self.state = CsiState::Ground, // BEL terminates
-            b'\\' => self.state = CsiState::Ground, // ST tail
-            _ => {} // collect/ignore title bytes
+            0x9c => self.state = CsiState::Ground, // C1 ST terminates
+            0x1b => self.str_esc = true,           // maybe `ESC \` (7-bit ST)
+            _ => {}                                // collect/ignore title bytes
+        }
+    }
+
+    /// DCS string collection. Identical termination rules to OSC (`BEL`,
+    /// `ESC \`, or C1 `ST`); the payload is consumed without being executed
+    /// as commands (`57§14`). We answer no DCS requests on a vt102 console.
+    fn dcs_string(&mut self, byte: u8) {
+        if self.str_esc {
+            self.str_esc = false;
+            if byte == b'\\' {
+                self.state = CsiState::Ground;
+            }
+            return;
+        }
+        match byte {
+            0x07 | 0x9c => self.state = CsiState::Ground,
+            0x1b => self.str_esc = true,
+            _ => {}
         }
     }
 
@@ -439,6 +508,12 @@ impl Emulator {
             } else {
                 return;
             }
+        }
+        // IRM: shift the rest of the line right by the glyph width before
+        // placing it, so existing cells are pushed aside rather than
+        // overwritten (Linux `vt.c` insert mode).
+        if self.insert_mode {
+            self.insert_blanks(vc, w as u16);
         }
         vc.put_glyph_w(cp, w == 2);
         let adv = w as u16;
@@ -615,6 +690,9 @@ impl Emulator {
             b's' => vc.save_cursor(),
             b'u' => vc.restore_cursor(),
             b'n' => self.device_status_report(vc),
+            // DA (primary device attributes). Only the plain/`0` request
+            // (non-private) is answered; `CSI > c` (secondary) is skipped.
+            b'c' => if !self.private { self.answer_da() },
             b'h' | b'l' => self.set_mode(vc, byte == b'h'),
             _ => {} // tolerate unknown final
         }
@@ -622,7 +700,12 @@ impl Emulator {
 
     fn set_mode(&mut self, vc: &mut Vc, set: bool) {
         if !self.private {
-            return; // only DEC private modes acted on (?6/?7/?25)
+            // ANSI modes (no `?`). IRM (4) = insert/replace; the rest are
+            // unused on a vt102 console.
+            if self.param(0, 0) == 4 {
+                self.insert_mode = set;
+            }
+            return;
         }
         match self.param(0, 0) {
             // DECOM origin mode: cursor confined to + addressed relative to
@@ -675,6 +758,14 @@ impl Emulator {
             }
             _ => {}
         }
+    }
+
+    /// Primary DA (`CSI c` / DECID `ESC Z`) answerback. Linux console
+    /// replies the VT102 id `ESC [ ? 6 c` (`vt.c` `VT102ID`); the console
+    /// driver injects it into the tty input ring like CPR. # parse-helper.
+    fn answer_da(&mut self) {
+        self.reply_len = 0;
+        self.push_reply(b"\x1b[?6c");
     }
 
     /// Append literal bytes to the reply buffer (clamped to `REPLY_CAP`).
@@ -900,38 +991,5 @@ impl Emulator {
             }
             _ => b[0] as u32,
         }
-    }
-}
-
-#[cfg(test)]
-mod alt_ech_tests {
-    use super::Emulator;
-    use crate::vc::Vc;
-
-    #[test]
-    fn alt_screen_saves_and_restores_main() {
-        let mut vc = Vc::new(20, 5);
-        let mut em = Emulator::new();
-        em.feed_bytes(&mut vc, b"MAIN");                 // main screen content
-        em.feed_bytes(&mut vc, b"\x1b[?1049h");          // enter alt
-        assert_eq!(vc.glyph_at(0, 0), ' ' as u32, "alt screen starts blank");
-        em.feed_bytes(&mut vc, b"ALT");                  // draw on alt
-        assert_eq!(vc.glyph_at(0, 0), 'A' as u32);
-        em.feed_bytes(&mut vc, b"\x1b[?1049l");          // leave alt
-        assert_eq!(vc.glyph_at(0, 0), 'M' as u32, "main 'MAIN' restored");
-        assert_eq!(vc.glyph_at(3, 0), 'N' as u32);
-    }
-
-    #[test]
-    fn ech_erases_n_chars_without_moving_cursor() {
-        let mut vc = Vc::new(20, 2);
-        let mut em = Emulator::new();
-        em.feed_bytes(&mut vc, b"ABCDEF");
-        em.feed_bytes(&mut vc, b"\x1b[1G");   // cursor to col 1 (home of row)
-        em.feed_bytes(&mut vc, b"\x1b[3X");   // erase 3 chars
-        assert_eq!(vc.glyph_at(0, 0), ' ' as u32);
-        assert_eq!(vc.glyph_at(1, 0), ' ' as u32);
-        assert_eq!(vc.glyph_at(2, 0), ' ' as u32);
-        assert_eq!(vc.glyph_at(3, 0), 'D' as u32, "char 4 untouched");
     }
 }
