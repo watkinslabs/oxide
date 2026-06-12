@@ -49,25 +49,36 @@
 #![allow(dead_code)]
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::sync::atomic::AtomicU32;
 
 use sync::{Spinlock, TaskList as RingLockClass};
+use vfs::File;
 
 pub(crate) const SQE_SIZE: usize = 64;
 pub(crate) const CQE_SIZE: usize = 16;
 
-const IORING_OP_NOP:        u8 = 0;
-const IORING_OP_READV:      u8 = 1;
-const IORING_OP_WRITEV:     u8 = 2;
-const IORING_OP_FSYNC:      u8 = 3;
-const IORING_OP_ACCEPT:     u8 = 13;
-const IORING_OP_CONNECT:    u8 = 16;
-const IORING_OP_OPENAT:     u8 = 18;
-const IORING_OP_CLOSE:      u8 = 19;
-const IORING_OP_READ:       u8 = 22;
-const IORING_OP_WRITE:      u8 = 23;
-const IORING_OP_SEND:       u8 = 26;
-const IORING_OP_RECV:       u8 = 27;
+pub(crate) const IORING_OP_NOP:         u8 = 0;
+pub(crate) const IORING_OP_READV:       u8 = 1;
+pub(crate) const IORING_OP_WRITEV:      u8 = 2;
+pub(crate) const IORING_OP_FSYNC:       u8 = 3;
+pub(crate) const IORING_OP_READ_FIXED:  u8 = 4;
+pub(crate) const IORING_OP_WRITE_FIXED: u8 = 5;
+pub(crate) const IORING_OP_ACCEPT:      u8 = 13;
+pub(crate) const IORING_OP_CONNECT:     u8 = 16;
+pub(crate) const IORING_OP_OPENAT:      u8 = 18;
+pub(crate) const IORING_OP_CLOSE:       u8 = 19;
+pub(crate) const IORING_OP_READ:        u8 = 22;
+pub(crate) const IORING_OP_WRITE:       u8 = 23;
+pub(crate) const IORING_OP_SEND:        u8 = 26;
+pub(crate) const IORING_OP_RECV:        u8 = 27;
+
+/// IOSQE_FIXED_FILE — SQE `flags` bit 0: `fd` field is an index into the
+/// registered-files array, not a raw fd.
+pub(crate) const IOSQE_FIXED_FILE: u8 = 1 << 0;
+
+/// Cap on registered iovecs / files, mirroring Linux `UIO_MAXIOV`.
+pub(crate) const IORING_MAX_REG: u32 = 1024;
 
 /// One io_uring instance — owns a kernel page laying out SQ + CQ + SQE array.
 pub struct IoUring {
@@ -99,8 +110,26 @@ const OFF_SQE_ARR: u32 = 0x0800;
 
 pub(crate) const MAX_ENTRIES: u32 = 64;
 
+/// Resources registered against a ring via `io_uring_register(2)`. Linux
+/// keeps fixed buffers, fixed files and the completion eventfd on the ring
+/// context (`struct io_ring_ctx`); oxide mirrors that here, guarded by its
+/// own lock so registration never contends the SQ/CQ ring lock.
+#[derive(Default)]
+pub struct IoUringReg {
+    /// Fixed buffers: (user_base, len). Indexed by SQE `buf_index`.
+    /// `None` = no `REGISTER_BUFFERS` done (distinguishes from empty set so
+    /// `UNREGISTER_BUFFERS` can return `ENXIO`).
+    pub buffers: Option<Vec<(u64, u64)>>,
+    /// Fixed files: a `None` slot = the `-1` empty-slot Linux allows. The
+    /// outer `Option` = no `REGISTER_FILES` done.
+    pub files: Option<Vec<Option<Arc<File>>>>,
+    /// Completion eventfd — signalled (+1) on every CQE post.
+    pub eventfd: Option<Arc<File>>,
+}
+
 pub struct IoUringInode {
     pub ring: Spinlock<IoUring, RingLockClass>,
+    pub reg:  Spinlock<IoUringReg, RingLockClass>,
 }
 
 impl IoUringInode {
@@ -131,7 +160,56 @@ impl IoUringInode {
                 cq_head: AtomicU32::new(0),
                 cq_tail: AtomicU32::new(0),
             }),
+            reg: Spinlock::new(IoUringReg::default()),
         }))
+    }
+
+    /// Resolve SQE `buf_index` to the registered buffer's user range, then
+    /// clamp the requested `[off, off+len)` window inside it. Returns the
+    /// effective `(user_addr, byte_len)` for the fixed I/O, or an errno.
+    /// Linux: `EFAULT` if no such buffer index, `EINVAL`/`EFAULT` on an
+    /// out-of-range window. # C: O(1)
+    pub fn fixed_buf_window(&self, buf_index: u16, off: u64, len: u32) -> Result<(u64, u64), i64> {
+        use syscall::errno::Errno;
+        let g = self.reg.lock();
+        let bufs = match g.buffers.as_ref() {
+            Some(b) => b, None => return Err(-(Errno::Efault.as_i32() as i64)),
+        };
+        let (base, blen) = match bufs.get(buf_index as usize) {
+            Some(&bl) => bl, None => return Err(-(Errno::Efault.as_i32() as i64)),
+        };
+        let want = len as u64;
+        // off + want must lie within [0, blen]; reject wrap and overrun.
+        let end = match off.checked_add(want) { Some(e) => e, None => return Err(-(Errno::Efault.as_i32() as i64)) };
+        if end > blen { return Err(-(Errno::Efault.as_i32() as i64)); }
+        let addr = match base.checked_add(off) { Some(a) => a, None => return Err(-(Errno::Efault.as_i32() as i64)) };
+        if addr >= hal::USER_VA_END || (want > 0 && (addr + want) > hal::USER_VA_END) {
+            return Err(-(Errno::Efault.as_i32() as i64));
+        }
+        Ok((addr, want))
+    }
+
+    /// Resolve a fixed-file index (IOSQE_FIXED_FILE) to its `Arc<File>`.
+    /// Linux: `EBADF` if no files registered, the index is out of range, or
+    /// the slot is the empty `-1`. # C: O(1)
+    pub fn fixed_file(&self, idx: u32) -> Result<Arc<File>, i64> {
+        use syscall::errno::Errno;
+        let g = self.reg.lock();
+        match g.files.as_ref().and_then(|f| f.get(idx as usize)).and_then(|s| s.clone()) {
+            Some(f) => Ok(f),
+            None    => Err(-(Errno::Ebadf.as_i32() as i64)),
+        }
+    }
+
+    /// Signal the registered completion eventfd (+1), if any. Called after
+    /// each CQE post so an `epoll`/`read` waiter on the eventfd wakes.
+    /// # C: O(1)
+    pub fn signal_eventfd(&self) {
+        let efd = { self.reg.lock().eventfd.clone() };
+        if let Some(f) = efd {
+            let one = 1u64.to_ne_bytes();
+            let _ = f.inode().write(0, &one);
+        }
     }
 }
 
@@ -160,28 +238,97 @@ impl vfs::Inode for IoUringInode {
     fn write(&self, _o: u64, _b: &[u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Einval) }
 }
 
+/// One decoded SQE's operands, threaded from the enter loop into dispatch so
+/// the registered-resource ops (READ_FIXED / WRITE_FIXED / IOSQE_FIXED_FILE)
+/// can consume the ring's registration state.
+pub(crate) struct OpArgs {
+    pub opcode:    u8,
+    pub flags:     u8,
+    pub fd:        i32,
+    pub off:       u64,
+    pub addr:      u64,
+    pub len:       u32,
+    pub buf_index: u16,
+}
+
 /// IORING_OP_* → underlying syscall dispatch. Runs each opcode
 /// synchronously (no worker threads). Called by the slot-426
-/// `sys_io_uring_enter` handler in s426_io_uring_enter.
+/// `sys_io_uring_enter` handler in s426_io_uring_enter. `inode` carries the
+/// registered buffers/files so FIXED ops + IOSQE_FIXED_FILE resolve.
 /// # C: O(1) match + one syscall handler call
-pub(crate) fn dispatch_op(opcode: u8, fd: i32, off: u64, addr: u64, len: u32) -> i64 {
-    let sa = syscall::SyscallArgs {
-        a0: fd as u64, a1: addr, a2: len as u64, a3: off, a4: 0, a5: 0,
+pub(crate) fn dispatch_op(inode: &IoUringInode, op: &OpArgs) -> i64 {
+    use syscall::errno::Errno;
+    // IOSQE_FIXED_FILE: the SQE `fd` field is an index into the registered
+    // files array; resolve it to a real fd by mapping the fixed file into a
+    // scratch fd in the caller's table. We instead reuse the per-op handlers
+    // which take a raw fd, so resolve the fixed file to its lowest-numbered
+    // existing fd is impossible — instead install it transiently.
+    let (fd, fixed_file) = if (op.flags & IOSQE_FIXED_FILE) != 0 {
+        match inode.fixed_file(op.fd as u32) {
+            Ok(f)  => (op.fd, Some(f)),
+            Err(e) => return e,
+        }
+    } else { (op.fd, None) };
+
+    // For a fixed file we hand the per-op handlers a temporary fd installed
+    // in the caller's table (handlers resolve fd→File via the fd table), then
+    // remove it afterwards. This keeps each handler unmodified.
+    let scratch = match &fixed_file {
+        Some(f) => match install_scratch_fd(f.clone()) { Ok(s) => Some(s), Err(e) => return e },
+        None => None,
     };
-    match opcode {
+    let eff_fd = scratch.unwrap_or(fd);
+
+    let res = match op.opcode {
         IORING_OP_NOP    => 0,
-        IORING_OP_READ   => crate::s017_pread64::sys_pread64(&sa),
-        IORING_OP_WRITE  => crate::s018_pwrite64::sys_pwrite64(&sa),
-        IORING_OP_READV  => crate::s019_readv::sys_readv(&sa),
-        IORING_OP_WRITEV => crate::s020_writev::sys_writev(&sa),
+        IORING_OP_READ   => run(eff_fd, op.addr, op.len as u64, op.off, crate::s017_pread64::sys_pread64),
+        IORING_OP_WRITE  => run(eff_fd, op.addr, op.len as u64, op.off, crate::s018_pwrite64::sys_pwrite64),
+        IORING_OP_READV  => run(eff_fd, op.addr, op.len as u64, op.off, crate::s019_readv::sys_readv),
+        IORING_OP_WRITEV => run(eff_fd, op.addr, op.len as u64, op.off, crate::s020_writev::sys_writev),
         IORING_OP_FSYNC  => 0,
-        IORING_OP_CLOSE  => crate::s003_close::sys_close(&sa),
-        IORING_OP_OPENAT => crate::s257_openat::sys_openat(&sa),
-        IORING_OP_SEND   => crate::s044_sendto::sys_sendto(&sa),
-        IORING_OP_RECV   => crate::net_recv::sys_recvfrom(&sa),
-        IORING_OP_ACCEPT => crate::s043_accept::sys_accept(&sa),
-        IORING_OP_CONNECT => crate::s042_connect::sys_connect(&sa),
-        _ => -(syscall::errno::Errno::Einval.as_i32() as i64),
+        IORING_OP_CLOSE  => run(eff_fd, op.addr, op.len as u64, op.off, crate::s003_close::sys_close),
+        IORING_OP_OPENAT => run(eff_fd, op.addr, op.len as u64, op.off, crate::s257_openat::sys_openat),
+        IORING_OP_SEND   => run(eff_fd, op.addr, op.len as u64, op.off, crate::s044_sendto::sys_sendto),
+        IORING_OP_RECV   => run(eff_fd, op.addr, op.len as u64, op.off, crate::net_recv::sys_recvfrom),
+        IORING_OP_ACCEPT => run(eff_fd, op.addr, op.len as u64, op.off, crate::s043_accept::sys_accept),
+        IORING_OP_CONNECT => run(eff_fd, op.addr, op.len as u64, op.off, crate::s042_connect::sys_connect),
+        IORING_OP_READ_FIXED => match inode.fixed_buf_window(op.buf_index, op.off, op.len) {
+            Ok((addr, n)) => run(eff_fd, addr, n, op.off, crate::s017_pread64::sys_pread64),
+            Err(e) => e,
+        },
+        IORING_OP_WRITE_FIXED => match inode.fixed_buf_window(op.buf_index, op.off, op.len) {
+            Ok((addr, n)) => run(eff_fd, addr, n, op.off, crate::s018_pwrite64::sys_pwrite64),
+            Err(e) => e,
+        },
+        _ => -(Errno::Einval.as_i32() as i64),
+    };
+
+    if let Some(s) = scratch { remove_scratch_fd(s); }
+    res
+}
+
+/// Invoke a per-op syscall handler with the io_uring SQE operand mapping
+/// (`fd, addr, len, off` → `a0,a1,a2,a3`). # C: one handler call
+fn run(fd: i32, addr: u64, len: u64, off: u64, f: fn(&syscall::SyscallArgs) -> i64) -> i64 {
+    let sa = syscall::SyscallArgs { a0: fd as u64, a1: addr, a2: len, a3: off, a4: 0, a5: 0 };
+    f(&sa)
+}
+
+/// Install `file` at the lowest free fd in the current task's table so a raw-fd
+/// op handler can resolve it (used for IOSQE_FIXED_FILE). # C: O(N)
+fn install_scratch_fd(file: Arc<File>) -> Result<i32, i64> {
+    use syscall::errno::Errno;
+    let cur = match sched::live::current() { Some(c) => c, None => return Err(-(Errno::Ebadf.as_i32() as i64)) };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot for io_uring fixed-file scratch install.
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return Err(-(Errno::Ebadf.as_i32() as i64)) };
+    match fdt.alloc(file) { Ok(fd) => Ok(fd), Err(e) => Err(-(e as i64)) }
+}
+
+/// Remove a scratch fd installed by `install_scratch_fd`. # C: O(1)
+fn remove_scratch_fd(fd: i32) {
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot for io_uring fixed-file scratch removal.
+        if let Some(t) = unsafe { cur.fd_table_ref() } { let _ = t.clone().close(fd); }
     }
 }
 

@@ -9,7 +9,7 @@
 use alloc::sync::Arc;
 
 use crate::io_uring::{
-    dispatch_op, IoUringInode, CQE_SIZE, OFF_CQ_HDR, OFF_CQ_RING, OFF_SQ_HDR,
+    dispatch_op, IoUringInode, OpArgs, CQE_SIZE, OFF_CQ_HDR, OFF_CQ_RING, OFF_SQ_HDR,
     OFF_SQ_RING, SQE_SIZE,
 };
 
@@ -57,16 +57,24 @@ pub fn sys_io_uring_enter(args: &syscall::SyscallArgs) -> i64 {
         while submitted < to_submit && sq_h != sq_t {
             let idx = core::ptr::read_volatile((sq_ring + (sq_h & mask) as u64 * 4) as *const u32);
             let sqe = sqe_arr + (idx & mask) as u64 * SQE_SIZE as u64;
+            // SQE layout (Linux struct io_uring_sqe): opcode@0, flags@1,
+            // ioprio@2, fd@4, off@8, addr@16, len@24, op_flags@28,
+            // user_data@32, buf_index@40 (union).
             let opcode  = core::ptr::read_volatile((sqe +  0) as *const u8);
-            let _flags  = core::ptr::read_volatile((sqe +  1) as *const u8);
+            let flags   = core::ptr::read_volatile((sqe +  1) as *const u8);
             let _ioprio = core::ptr::read_volatile((sqe +  2) as *const u16);
             let fd_op   = core::ptr::read_volatile((sqe +  4) as *const i32);
             let off_op  = core::ptr::read_volatile((sqe +  8) as *const u64);
             let addr    = core::ptr::read_volatile((sqe + 16) as *const u64);
             let lenfld  = core::ptr::read_volatile((sqe + 24) as *const u32);
             let user_data = core::ptr::read_volatile((sqe + 32) as *const u64);
+            let buf_idx = core::ptr::read_volatile((sqe + 40) as *const u16);
 
-            let res: i64 = dispatch_op(opcode, fd_op, off_op, addr, lenfld);
+            let op = OpArgs {
+                opcode, flags, fd: fd_op, off: off_op, addr,
+                len: lenfld, buf_index: buf_idx,
+            };
+            let res: i64 = dispatch_op(&ring_inode, &op);
 
             let cqe = cq_ring + (cq_t & mask) as u64 * CQE_SIZE as u64;
             core::ptr::write_volatile((cqe +  0) as *mut u64, user_data);
@@ -80,5 +88,10 @@ pub fn sys_io_uring_enter(args: &syscall::SyscallArgs) -> i64 {
         core::ptr::write_volatile(sq_head_p, sq_h);
         core::ptr::write_volatile(cq_tail_p, cq_t);
     }
+    drop(g);
+    // Signal the registered completion eventfd once per enter if any CQEs were
+    // posted (Linux signals per-CQE; once is sufficient for the level-triggered
+    // eventfd counter to wake an epoll/read waiter).
+    if submitted > 0 { ring_inode.signal_eventfd(); }
     submitted as i64
 }
