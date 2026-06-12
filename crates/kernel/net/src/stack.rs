@@ -44,6 +44,32 @@ pub struct UdpRxQueue {
     pub error_eno: core::sync::atomic::AtomicI32,
     /// F181a: per-fd epoll subscribers.
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
+    /// SO_ATTACH_BPF: attached eBPF socket-filter program bytes. Run on each
+    /// inbound datagram's payload; r0==0 drops it (Linux socket filter).
+    pub bpf_filter: Spinlock<Option<Vec<u8>>, StackLockClass>,
+}
+
+/// SO_ATTACH_BPF runner bridge: `(insns, pkt) -> accept`. Installed by kmain
+/// (the bpf interpreter lives in `security`, which net can't depend on).
+/// Returns true (accept) when no runner is installed.
+static BPF_RUNNER: core::sync::atomic::AtomicPtr<()> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+pub type BpfFilterFn = fn(&[u8], &[u8]) -> bool;
+
+/// Install the eBPF socket-filter runner. Idempotent. # C: O(1)
+pub fn install_bpf_filter_runner(f: BpfFilterFn) {
+    BPF_RUNNER.store(f as *mut (), core::sync::atomic::Ordering::Release);
+}
+
+/// Run an attached filter on `pkt`; true = accept, false = drop. No runner
+/// installed → accept. # C: O(prog)
+fn bpf_accept(insns: &[u8], pkt: &[u8]) -> bool {
+    let raw = BPF_RUNNER.load(core::sync::atomic::Ordering::Acquire);
+    if raw.is_null() { return true; }
+    // SAFETY: raw was installed via `install_bpf_filter_runner` with the
+    // documented `fn(&[u8], &[u8]) -> bool` signature.
+    let f: BpfFilterFn = unsafe { core::mem::transmute(raw) };
+    f(insns, pkt)
 }
 
 // F180a Udp6RxQueue + IPv6 methods in stack_ipv6.rs.
@@ -62,6 +88,7 @@ impl UdpRxQueue {
             waiters: sched::live::WaitList::new(),
             error_eno: core::sync::atomic::AtomicI32::new(0),
             poll_subs: Spinlock::new(None),
+            bpf_filter: Spinlock::new(None),
         }
     }
 
@@ -285,6 +312,14 @@ impl NetStack {
             src_hint:   Some(Ipv4Addr::LOOPBACK),
         });
         (id, lo)
+    }
+
+    /// SO_ATTACH_BPF / SO_DETACH_BPF: set (or clear) the eBPF socket filter on
+    /// the UDP port's rx queue. Returns false if no socket is bound there.
+    /// # C: O(log N)
+    pub fn set_udp_bpf_filter(&self, port: u16, insns: Option<Vec<u8>>) -> bool {
+        let q = { self.udp.lock().get(&port).cloned() };
+        match q { Some(q) => { *q.bpf_filter.lock() = insns; true } None => false }
     }
 
     /// UDP bind. Eaddrinuse if taken. # C: O(log N)
@@ -700,6 +735,13 @@ impl NetStack {
                 let q_arc = { self.udp.lock().get(&udp.dst_port).cloned() };
                 if let Some(q) = q_arc {
                     let body = &payload[crate::udp::UDP_HDR_LEN .. udp.length as usize];
+                    // SO_ATTACH_BPF: run the socket filter over the payload; a
+                    // 0 verdict drops the datagram (Linux socket filter).
+                    let drop = {
+                        let f = q.bpf_filter.lock();
+                        f.as_ref().map(|insns| !bpf_accept(insns, body)).unwrap_or(false)
+                    };
+                    if drop { return Ok(()); }
                     q.q.lock().push_back((hdr.src, udp.src_port, body.to_vec()));
                     #[cfg(target_os = "oxide-kernel")]
                     {
