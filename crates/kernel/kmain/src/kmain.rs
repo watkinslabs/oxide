@@ -361,6 +361,11 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // + sysrq `<NUL>b` make a wedged CPU dump its own RIP/regs.
     #[cfg(target_os = "oxide-kernel")]
     arch_irq::install_diag_nmi_hook();
+    // Feed the softirq restart gate its scheduler/time inputs (Linux
+    // __do_softirq: need_resched + jiffies + wakeup_softirqd) so a
+    // self-re-raising bottom half (virtio-net RX flood) can't livelock a CPU.
+    #[cfg(target_os = "oxide-kernel")]
+    arch_irq::install_softirq_hooks();
 
     // Wire the UART RX sink (tty line discipline), then probe + bring up
     // the serial console. drv_serial::init detects the UART (ACPI SPCR,

@@ -73,10 +73,63 @@ static HANDLERS: [AtomicPtr<()>; N_SLOTS] = [
 /// and bail. The outer drain loop picks up their pending bits.
 static IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
+/// Linux `MAX_SOFTIRQ_RESTART` (`kernel/softirq.c`): restart-pass cap before
+/// the drain defers, so a self-re-raising slot (virtio-net `NetRx` re-armed
+/// by every RX MSI under a packet flood) can't monopolize the CPU and starve
+/// the percpu heartbeat.
+const MAX_SOFTIRQ_RESTART: u32 = 10;
+/// Linux `MAX_SOFTIRQ_TIME` (`2*HZ/1000` jiffies): the wall-clock ceiling on
+/// one drain. Expressed in ticks since oxide's jiffies hook returns ticks.
+const MAX_SOFTIRQ_TIME: u64 = 2;
+
+/// Boot-installed scheduler/time hooks. `softirq` is a leaf crate (no `sched`
+/// dep — that would cycle); the arch/sched layer installs these at boot, the
+/// same pattern as `sched::diag::nmi::set_poke_hook`. Null before install =
+/// safe defaults (no resched pending, jiffies 0, no-op wakeup), so the
+/// restart loop degrades to the `MAX_SOFTIRQ_RESTART` cap alone pre-boot.
+static RESCHED_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static JIFFIES_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static WAKEUP_HOOK:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Install the `need_resched()` peek (non-consuming). # C: O(1)
+pub fn set_resched_hook(f: fn() -> bool) { RESCHED_HOOK.store(f as *mut (), Ordering::Release); }
+/// Install the jiffies/tick reader. # C: O(1)
+pub fn set_jiffies_hook(f: fn() -> u64) { JIFFIES_HOOK.store(f as *mut (), Ordering::Release); }
+/// Install `wakeup_softirqd` — the deferral target run when the restart gate
+/// trips with work still pending. # C: O(1)
+pub fn set_wakeup_hook(f: fn()) { WAKEUP_HOOK.store(f as *mut (), Ordering::Release); }
+
+/// Peek `need_resched` via the installed hook. False (don't yield) if unset.
+fn need_resched() -> bool {
+    let p = RESCHED_HOOK.load(Ordering::Acquire);
+    if p.is_null() { return false; }
+    // SAFETY: p stored from a `fn() -> bool` by set_resched_hook; reverse-transmute to that exact ABI before call.
+    let f: fn() -> bool = unsafe { core::mem::transmute(p) };
+    f()
+}
+/// Read jiffies/ticks via the installed hook. 0 if unset (time gate inert).
+fn jiffies() -> u64 {
+    let p = JIFFIES_HOOK.load(Ordering::Acquire);
+    if p.is_null() { return 0; }
+    // SAFETY: p stored from a `fn() -> u64` by set_jiffies_hook; reverse-transmute to that exact ABI before call.
+    let f: fn() -> u64 = unsafe { core::mem::transmute(p) };
+    f()
+}
+/// Fire the deferral hook (Linux `wakeup_softirqd`). No-op if unset.
+fn wakeup_softirqd() {
+    let p = WAKEUP_HOOK.load(Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: p stored from a `fn()` by set_wakeup_hook; reverse-transmute to that exact ABI before call.
+    let f: fn() = unsafe { core::mem::transmute(p) };
+    f();
+}
+
 /// Diagnostic counters.
 pub static RAISES: AtomicU32 = AtomicU32::new(0);
 pub static RUNS: AtomicU32 = AtomicU32::new(0);
 pub static HANDLER_CALLS: AtomicU32 = AtomicU32::new(0);
+/// Times a drain tripped the restart gate and deferred still-pending bits.
+pub static DEFERRALS: AtomicU32 = AtomicU32::new(0);
 
 /// Install a handler. Caller passes a `fn()` so we don't need
 /// `dyn` (per `07§5` no-dyn-in-kernel rule). One handler per slot;
@@ -124,7 +177,18 @@ pub unsafe fn run_pending() {
         return;
     }
     RUNS.fetch_add(1, Ordering::Relaxed);
+    // Linux `__do_softirq` restart gate. A handler that re-raises its own bit
+    // (NetRx re-armed by each RX MSI under a packet flood) would otherwise
+    // spin this loop forever: the CPU never returns to the timer-ISR tail, the
+    // percpu heartbeat goes unstamped, and the hard-lockup watchdog fires.
+    // Mirror the kernel exactly — after running the pending set, restart only
+    // while `time_before(jiffies, end) && !need_resched() && --max_restart`;
+    // otherwise `wakeup_softirqd()` and return, leaving still-pending bits set
+    // for the deferral target to finish.
+    let end = jiffies().wrapping_add(MAX_SOFTIRQ_TIME);
+    let mut max_restart = MAX_SOFTIRQ_RESTART;
     loop {
+        // `set_softirq_pending(0)` — claim the current set, run each handler.
         let bits = PENDING.swap(0, Ordering::AcqRel);
         if bits == 0 {
             break;
@@ -141,6 +205,24 @@ pub unsafe fn run_pending() {
                 f();
             }
         }
+        // Re-raised during the pass? Apply the three-way restart gate.
+        if !pending() {
+            break;
+        }
+        // `time_before(jiffies, end)` — wrapping-safe signed compare.
+        let within_time = (jiffies().wrapping_sub(end) as i64) < 0;
+        if within_time && !need_resched() {
+            max_restart -= 1;
+            if max_restart != 0 {
+                continue;
+            }
+        }
+        // Gate tripped with work pending → hand off to the deferral target
+        // (Linux wakes per-CPU ksoftirqd; oxide's installed hook re-arms a
+        // prompt drain). The still-pending bits remain set in PENDING.
+        wakeup_softirqd();
+        DEFERRALS.fetch_add(1, Ordering::Relaxed);
+        break;
     }
     IN_PROGRESS.store(false, Ordering::Release);
 }
@@ -152,6 +234,15 @@ mod tests {
 
     static T_HITS: AtomicU32 = AtomicU32::new(0);
     fn t_handler() { T_HITS.fetch_add(1, Ordering::Relaxed); }
+
+    static REARM_HITS: AtomicU32 = AtomicU32::new(0);
+    // Mimics an RX softirq re-armed by an MSI mid-drain: re-raises its own
+    // bit every pass. Without the restart cap this loops `run_pending` forever.
+    fn rearming_handler() {
+        REARM_HITS.fetch_add(1, Ordering::Relaxed);
+        raise(Slot::NetRx);
+    }
+    fn noop_handler() {}
 
     #[test]
     fn raise_then_run_invokes_handler() {
@@ -188,5 +279,22 @@ mod tests {
         unsafe { run_pending(); }
         // No panic, no crash; just a no-op.
         assert!(!pending());
+    }
+
+    #[test]
+    fn self_rearming_handler_is_bounded() {
+        REARM_HITS.store(0, Ordering::Relaxed);
+        PENDING.store(0, Ordering::Relaxed);
+        set_handler(Slot::NetRx, rearming_handler);
+        raise(Slot::NetRx);
+        // SAFETY: hosted unit test; no IRQs to coordinate with; sole caller of run_pending in this thread.
+        unsafe { run_pending(); }
+        // Capped at MAX_SOFTIRQ_RESTART passes — NOT an infinite livelock.
+        assert_eq!(REARM_HITS.load(Ordering::Relaxed), MAX_SOFTIRQ_RESTART);
+        // Still-pending work is deferred (left set), not dropped.
+        assert!(pending());
+        // Reset shared statics so sibling tests aren't tainted.
+        set_handler(Slot::NetRx, noop_handler);
+        PENDING.store(0, Ordering::Relaxed);
     }
 }

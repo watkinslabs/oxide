@@ -228,6 +228,40 @@ pub fn install_diag_nmi_hook() {
     gic::install_diag_hooks();
 }
 
+/// `softirq` is a leaf crate; feed it the same three inputs Linux's
+/// `__do_softirq` restart gate reads — `need_resched()` (peek, not consumed),
+/// jiffies (this arch's timer-tick counter), and `wakeup_softirqd()`. Without
+/// these the bottom-half drain has no scheduler/time awareness and a
+/// self-re-raising softirq (virtio-net RX under a flood) livelocks the CPU.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn install_softirq_hooks() {
+    softirq::set_resched_hook(softirq_need_resched);
+    softirq::set_jiffies_hook(softirq_jiffies);
+    softirq::set_wakeup_hook(softirq_wakeup);
+}
+
+/// Non-consuming `need_resched` peek for the softirq restart gate. Must NOT
+/// consume the flag — the IRQ-exit slow path still owns the reschedule.
+#[cfg(target_os = "oxide-kernel")]
+fn softirq_need_resched() -> bool { sched::preempt::need_resched() }
+
+/// This CPU's timer-tick counter as the softirq jiffies source.
+#[cfg(target_os = "oxide-kernel")]
+fn softirq_jiffies() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    { lapic::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed) }
+    #[cfg(target_arch = "aarch64")]
+    { gic::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed) }
+}
+
+/// Linux `wakeup_softirqd` analog. oxide has no ksoftirqd kthread; the
+/// timer-ISR tail re-drains pending softirqs every tick, so asking the
+/// scheduler to run promptly (`need_resched`) is the deferral signal — the
+/// CPU returns from the IRQ tail and the next tick finishes the drain.
+#[cfg(target_os = "oxide-kernel")]
+fn softirq_wakeup() { sched::preempt::set_need_resched(); }
+
 /// # SAFETY: caller is timer-ISR ctx; hook installed by kernel boot.
 /// # C: O(1) — atomic load + indirect call.
 pub unsafe fn tick_poll(from_user: bool) {
