@@ -40,6 +40,7 @@ pub(crate) const CRT_BINS: &[(&str, &str)] = &[
     ("userspace/tracepipe_probe/tracepipe_probe", "userspace/tracepipe_probe/tracepipe_probe.c"),
     ("userspace/tracesched_probe/tracesched_probe", "userspace/tracesched_probe/tracesched_probe.c"),
     ("userspace/tracesys_probe/tracesys_probe", "userspace/tracesys_probe/tracesys_probe.c"),
+    ("userspace/bpf_filter_probe/bpf_filter_probe", "userspace/bpf_filter_probe/bpf_filter_probe.c"),
     ("userspace/fanotify_probe/fanotify_probe", "userspace/fanotify_probe/fanotify_probe.c"),
     ("userspace/fanotify_perm_probe/fanotify_perm_probe", "userspace/fanotify_perm_probe/fanotify_perm_probe.c"),
     ("userspace/nlmcast_probe/nlmcast_probe",     "userspace/nlmcast_probe/nlmcast_probe.c"),

@@ -745,6 +745,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             // netfilter eval() into net::stack via a fn pointer so
             // the net crate stays independent of netfilter.
             net::stack::install_nf_hook(|h, p, fam| netfilter::eval(h, p, fam).as_u32());
+            // SO_ATTACH_BPF socket filters: run the eBPF program over each
+            // inbound datagram; r0 != 0 accepts, 0 drops.
+            net::stack::install_bpf_filter_runner(
+                |insns, pkt| security::bpf_interp::run(insns, pkt).map_or(false, |r| r != 0));
             // P8 boot smoke: loopback UDP send-then-recv +
             // ICMP echo round-trip via the in-kernel net stack.
             {
