@@ -90,9 +90,9 @@ echo pre-kmod_probe
 /bin/kmod_probe
 echo post-kmod_probe rv=$?
 echo pre-openssl_probe
-# aarch64: libcrypto.so hangs in its load-time constructor (before main)
-# under the oxide kernel — running it would wedge rcS → no login. x86 runs
-# it; arm is gated until the load hang is fixed (TASKS.md HARD blocker, D6).
+# Runs on BOTH arches now: the old aarch64 load-time-constructor hang no
+# longer reproduces (verified live 2026-06-12; fixed by earlier kernel
+# work — this gate's x86-only note was stale).
 /bin/openssl_probe
 echo post-openssl_probe rv=$?
 echo pre-libidn2_probe
