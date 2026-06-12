@@ -79,7 +79,8 @@ fn regs_from_frame(f: &SvcFrame) -> [u64; 31] {
 /// TTBR0 is the caller's user AS.
 /// # C: O(1)
 pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u64,
-                                 sig: u32, saved_ret: u64, old_sigmask: u64) {
+                                 sig: u32, saved_ret: u64, old_sigmask: u64,
+                                 chld: Option<hal::SigChld>) {
     // SAFETY: per fn contract — sole writer of the live SVC frame this dispatch.
     let frame = unsafe { &mut *frame };
     let saved_pc     = frame.elr_el1;
@@ -99,6 +100,15 @@ pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u
     };
     sf.uc.uc_sigmask = old_sigmask;
     sf.info[0..4].copy_from_slice(&(sig as i32).to_ne_bytes()); // si_signo
+    // B117: SIGCHLD _sifields — same generic siginfo_t layout as
+    // x86_64 (asm-generic): si_code@8, si_pid@16, si_uid@20,
+    // si_status@24. si_errno@4 stays 0.
+    if let Some(c) = chld {
+        sf.info[8..12].copy_from_slice(&c.code.to_ne_bytes());    // si_code
+        sf.info[16..20].copy_from_slice(&c.pid.to_ne_bytes());    // si_pid
+        sf.info[20..24].copy_from_slice(&c.uid.to_ne_bytes());    // si_uid
+        sf.info[24..28].copy_from_slice(&c.status.to_ne_bytes()); // si_status
+    }
     // SAFETY: new_sp < saved_sp (EL0) < USER_VA_END; CPL=EL1 writes via TTBR0; repr(C) matches restore.
     unsafe { core::ptr::write_volatile(new_sp as *mut RtSigframe, sf); }
 

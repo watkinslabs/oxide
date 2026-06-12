@@ -75,7 +75,22 @@ int main(void) {
                sp, (int)parent_pid);
         return 1;
     }
-    printf("pid_identity_probe: PASS pid=%d (==child getpid==waitpid); child getppid=%d==parent\n",
-           (int)pid, (int)child_getppid);
+    /* B118: pgid/sid live in VPID space. The opaque internal tid starts at
+     * 0x1000 (4096); a leaked internal tid here would be >= 4096. They must
+     * also be self-consistent: getpgid(0)==getpgid(getpid()), getsid likewise. */
+    pid_t pg0 = getpgid(0), pgp = getpgid(parent_pid);
+    pid_t sd0 = getsid(0),  sdp = getsid(parent_pid);
+    if (pg0 != pgp || sd0 != sdp) {
+        printf("pid_identity_probe: FAIL getpgid(0)=%d!=getpgid(pid)=%d or getsid(0)=%d!=getsid(pid)=%d\n",
+               (int)pg0, (int)pgp, (int)sd0, (int)sdp);
+        return 1;
+    }
+    if (pg0 <= 0 || pg0 >= 0x1000 || sd0 <= 0 || sd0 >= 0x1000) {
+        printf("pid_identity_probe: FAIL pgid=%d sid=%d not in vpid space (internal-tid leak)\n",
+               (int)pg0, (int)sd0);
+        return 1;
+    }
+    printf("pid_identity_probe: PASS pid=%d (==child getpid==waitpid); child getppid=%d==parent; pgid=%d sid=%d\n",
+           (int)pid, (int)child_getppid, (int)pg0, (int)sd0);
     return 0;
 }
