@@ -135,7 +135,20 @@ impl IoUringInode {
     }
 }
 
+/// Physical backing for `mmap(io_uring_fd)` — the single ring page (Linux
+/// maps SQ ring / CQ ring / SQE array; oxide lays all three out in this one
+/// page at the `sq_off`/`cq_off`/`sqe_off` offsets reported by setup, so a
+/// single PhysRange mapping exposes them). The page is never freed (it
+/// outlives the fd), so the mapping can't dangle. Returns `(page_pa, PAGE)`.
+/// # C: O(1).
+pub fn mmap_backing(inode: &vfs::InodeRef, _offset: u64) -> Option<(u64, u64)> {
+    let iu = inode.as_any()?.downcast_ref::<IoUringInode>()?;
+    let pa = iu.ring.lock().page_pa;
+    Some((pa, PAGE))
+}
+
 impl vfs::Inode for IoUringInode {
+    fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
     fn ino(&self) -> vfs::Ino {
         // High-bits tag distinct from socket / ext4 / pipe inodes.
         0x494F_5552_0000_0000u64 | (self as *const _ as u64 & 0xFFFF_FFFF) as vfs::Ino

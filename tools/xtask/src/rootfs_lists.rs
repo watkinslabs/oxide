@@ -20,6 +20,7 @@ pub(crate) const CRT_BINS: &[(&str, &str)] = &[
     ("userspace/cgroup_smoke/cgroup_smoke",       "userspace/cgroup_smoke/cgroup_smoke.c"),
     ("userspace/cmdsubst_probe/cmdsubst_probe",   "userspace/cmdsubst_probe/cmdsubst_probe.c"),
     ("userspace/alarm_probe/alarm_probe",         "userspace/alarm_probe/alarm_probe.c"),
+    ("userspace/io_uring_probe/io_uring_probe",   "userspace/io_uring_probe/io_uring_probe.c"),
     ("userspace/sigframe_probe/sigframe_probe",   "userspace/sigframe_probe/sigframe_probe.c"),
     ("userspace/symlink_probe/symlink_probe",     "userspace/symlink_probe/symlink_probe.c"),
     ("userspace/mount_smoke/mount_smoke",         "userspace/mount_smoke/mount_smoke.c"),
