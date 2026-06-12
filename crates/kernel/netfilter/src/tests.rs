@@ -99,7 +99,7 @@ use super::*;
         // No chain registered on a fresh hook id ⇒ default Accept.
         // 4242 is well outside any real hook value to avoid colliding
         // with other tests' inserts.
-        assert_eq!(eval(4242, &[]), Verdict::Accept);
+        assert_eq!(eval(4242, &[], nft_expr::NFPROTO_IPV4), Verdict::Accept);
     }
 
     #[test]
@@ -116,7 +116,7 @@ use super::*;
             policy:       NFT_CHAIN_POLICY_DROP,
         };
         chain_insert(c);
-        assert_eq!(eval(7777, &[]), Verdict::Drop);
+        assert_eq!(eval(7777, &[], nft_expr::NFPROTO_IPV4), Verdict::Drop);
         let _ = chain_remove(2, "oxide-test-hookT", "input");
     }
 
@@ -167,7 +167,7 @@ use super::*;
             raw_expr,
         };
         rule_insert(r);
-        assert_eq!(eval(8881, &[]), Verdict::Drop);
+        assert_eq!(eval(8881, &[], nft_expr::NFPROTO_IPV4), Verdict::Drop);
         let _ = chain_remove(2, "oxide-test-evalT", "input");
     }
 
@@ -182,7 +182,7 @@ use super::*;
             policy:       NFT_CHAIN_POLICY_ACCEPT,
         };
         chain_insert(c);
-        assert_eq!(eval(7778, &[]), Verdict::Accept);
+        assert_eq!(eval(7778, &[], nft_expr::NFPROTO_IPV4), Verdict::Accept);
         let _ = chain_remove(2, "oxide-test-hookT2", "input");
     }
 

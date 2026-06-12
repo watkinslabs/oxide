@@ -253,8 +253,11 @@ pub const NFT_CHAIN_POLICY_DROP:   u32 = 0; // matches Linux NF_DROP
 /// If no rule fires, chain policy decides. Multiple chains chain in
 /// priority order — Accept moves on to the next chain; Drop returns
 /// immediately.
+/// `family` is the L3 family of `pkt` (NFPROTO_IPV4 / NFPROTO_IPV6) so the
+/// expr engine computes transport-header offsets + `meta nfproto`/`l4proto`
+/// per-family (a nft `inet` base chain hooks both v4 and v6).
 /// # C: O(N_chains × N_rules × expr_len)
-pub fn eval(hook_id: u32, pkt: &[u8]) -> Verdict {
+pub fn eval(hook_id: u32, pkt: &[u8], family: u8) -> Verdict {
     let mut chains: Vec<NftChain> = CHAINS.lock().clone();
     chains.retain(|c| c.hook == Some(hook_id));
     chains.sort_by_key(|c| c.priority);
@@ -286,7 +289,7 @@ pub fn eval(hook_id: u32, pkt: &[u8]) -> Verdict {
             let mut pkts = 0u64;
             let mut bytes = 0u64;
             let verdict = nft_expr::run_rule_full(
-                &exprs, pkt, Some(&lookup), &mut pkts, &mut bytes);
+                &exprs, pkt, Some(&lookup), family, &mut pkts, &mut bytes);
             if pkts != 0 { counter_bump(r.handle, pkts, bytes); }
             match verdict {
                 Some(nft_expr::NF_DROP)   => { chain_verdict = Some(Verdict::Drop);   break; }

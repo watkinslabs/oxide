@@ -178,45 +178,63 @@ fn f180a_ipv6_udp_no_bind_silent_drop() {
 }
 
 // ----- netfilter hook wiring: PRE_ROUTING/LOCAL_IN (RX), LOCAL_OUT/
-//        POST_ROUTING (TX) must fire on the real IPv4 packet path -------
+//        POST_ROUTING (TX) must fire on the real IPv4 AND IPv6 paths -----
 
 #[test]
-fn netfilter_ipv4_hooks_fire_on_rx_and_tx() {
+fn netfilter_hooks_fire_on_rx_and_tx_both_families() {
     use core::sync::atomic::{AtomicU32, Ordering};
     use crate::stack::{install_nf_hook, NF_INET_PRE_ROUTING, NF_INET_LOCAL_IN,
         NF_INET_LOCAL_OUT, NF_INET_POST_ROUTING};
+    use crate::netfilter_hook::{NFPROTO_IPV4, NFPROTO_IPV6};
     use crate::ipv4::{push_ipv4_header, IPV4_HDR_LEN};
-    use crate::udp::UDP_HDR_LEN;
+    use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+    use crate::udp::{UDP_HDR_LEN, build_into_v6};
+    use crate::addr::Ipv6Addr;
 
-    // Process-global recorder: OR each hook id the stack invokes. Returns
+    // Per-family recorder: OR each hook id into the family's mask. Returns
     // NF_ACCEPT(1) so the path behaves exactly as the no-hook default.
-    static SEEN: AtomicU32 = AtomicU32::new(0);
-    fn rec(h: u32, _p: &[u8]) -> u32 { SEEN.fetch_or(1u32 << h, Ordering::AcqRel); 1 }
+    static SEEN_V4: AtomicU32 = AtomicU32::new(0);
+    static SEEN_V6: AtomicU32 = AtomicU32::new(0);
+    fn rec(h: u32, _p: &[u8], fam: u8) -> u32 {
+        let slot = if fam == NFPROTO_IPV6 { &SEEN_V6 } else { &SEEN_V4 };
+        slot.fetch_or(1u32 << h, Ordering::AcqRel);
+        1
+    }
     install_nf_hook(rec);
-    SEEN.store(0, Ordering::Release);
+    SEEN_V4.store(0, Ordering::Release);
+    SEEN_V6.store(0, Ordering::Release);
 
     let stack = NetStack::new();
     let (id, _lo) = stack.register_loopback();
-    let lo = Ipv4Addr::LOOPBACK;
 
-    // RX: deliver an IPv4/UDP frame to 127.0.0.1 → PRE_ROUTING + LOCAL_IN.
+    // --- IPv4 RX (PRE_ROUTING + LOCAL_IN) + TX (LOCAL_OUT + POST_ROUTING).
+    let lo4 = Ipv4Addr::LOOPBACK;
     let payload = b"nf!";
     let mut p = Pkt::with_capacity(IPV4_HDR_LEN, IPV4_HDR_LEN + UDP_HDR_LEN + payload.len() + IPV4_HDR_LEN);
     let slot = p.put(UDP_HDR_LEN + payload.len()).unwrap();
-    crate::udp::UdpHdr::build_into(40000, 5555, lo, lo, payload, slot);
-    push_ipv4_header(&mut p, lo, lo, IpProto::Udp, 1).unwrap();
+    crate::udp::UdpHdr::build_into(40000, 5555, lo4, lo4, payload, slot);
+    push_ipv4_header(&mut p, lo4, lo4, IpProto::Udp, 1).unwrap();
     let frame = p.data().to_vec();
-    stack.bind_udp(lo, 5555).unwrap();
+    stack.bind_udp(lo4, 5555).unwrap();
     stack.deliver_rx(id, &frame).unwrap();
+    stack.send_l4_over_ipv4_pub(lo4, lo4, b"hello").unwrap();
 
-    // TX: a locally-generated IPv4 segment → LOCAL_OUT + POST_ROUTING.
-    stack.send_l4_over_ipv4_pub(lo, lo, b"hello").unwrap();
+    // --- IPv6 RX + TX over the same loopback iface.
+    let lo6 = Ipv6Addr::LOOPBACK;
+    let l4_len = UDP_HDR_LEN + payload.len();
+    let mut frame6 = alloc::vec![0u8; IPV6_HDR_LEN + l4_len];
+    build_into_v6(40001, 5556, lo6, lo6, payload, &mut frame6[IPV6_HDR_LEN..]);
+    Ipv6Hdr::build(lo6, lo6, IpProto::Udp, l4_len as u16).write_to(&mut frame6[..IPV6_HDR_LEN]);
+    stack.deliver_rx_ipv6(id, &frame6).unwrap();
+    stack.send_l4_over_ipv6(lo6, lo6, IpProto::Udp, b"hello6").unwrap();
 
-    let seen = SEEN.load(Ordering::Acquire);
-    assert!(seen & (1 << NF_INET_PRE_ROUTING)  != 0, "PRE_ROUTING did not fire");
-    assert!(seen & (1 << NF_INET_LOCAL_IN)     != 0, "LOCAL_IN did not fire");
-    assert!(seen & (1 << NF_INET_LOCAL_OUT)    != 0, "LOCAL_OUT did not fire");
-    assert!(seen & (1 << NF_INET_POST_ROUTING) != 0, "POST_ROUTING did not fire");
+    for (fam, seen) in [("v4", SEEN_V4.load(Ordering::Acquire)),
+                        ("v6", SEEN_V6.load(Ordering::Acquire))] {
+        assert!(seen & (1 << NF_INET_PRE_ROUTING)  != 0, "{fam} PRE_ROUTING did not fire");
+        assert!(seen & (1 << NF_INET_LOCAL_IN)     != 0, "{fam} LOCAL_IN did not fire");
+        assert!(seen & (1 << NF_INET_LOCAL_OUT)    != 0, "{fam} LOCAL_OUT did not fire");
+        assert!(seen & (1 << NF_INET_POST_ROUTING) != 0, "{fam} POST_ROUTING did not fire");
+    }
 }
 
 #[test]
