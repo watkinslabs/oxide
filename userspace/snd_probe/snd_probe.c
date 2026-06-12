@@ -59,6 +59,7 @@ struct snd_ctl_card_info {
 #define PCM_PREPARE    _IO('A', 0x40)
 #define PCM_DRAIN      _IO('A', 0x44)
 #define PCM_WRITEI     _IOW('A', 0x50, struct snd_xferi)
+#define PCM_READI      _IOR('A', 0x51, struct snd_xferi)
 #define CTL_CARD_INFO  _IOR('U', 0x01, struct snd_ctl_card_info)
 #define CTL_PCM_NEXT   _IOR('U', 0x30, int)
 
@@ -154,6 +155,23 @@ int main(void) {
     if (w == 0 && xf.result <= 0) return fail("WRITEI accepted 0 frames");
     ioctl(fd, PCM_DRAIN, 0);
     close(fd);
+
+    // ── pcmC0D0c (capture, RXQ) ──
+    int rfd = open("/dev/snd/pcmC0D0c", O_RDONLY);
+    if (rfd < 0) return fail("open pcmC0D0c");
+    struct snd_pcm_hw_params rhw; hw_base(&rhw);
+    mask_set(&rhw, P_FORMAT, FORMAT_S16_LE);
+    ival_set(&rhw, P_CHANNELS, 2);
+    ival_set(&rhw, P_RATE, 44100);
+    if (ioctl(rfd, PCM_HW_PARAMS, &rhw) < 0) return fail("capture HW_PARAMS");
+    if (ioctl(rfd, PCM_PREPARE, 0) < 0) return fail("capture PREPARE");
+    enum { CFRAMES = 512 };
+    static short cbuf[CFRAMES * 2];
+    struct snd_xferi rxf = { .result = 0, .buf = cbuf, .frames = CFRAMES };
+    long r = ioctl(rfd, PCM_READI, &rxf);
+    if (r < 0 && rxf.result <= 0) return fail("capture READI");
+    ioctl(rfd, PCM_DRAIN, 0);
+    close(rfd);
 
     // ── OSS /dev/dsp ──
     int dfd = open("/dev/dsp", O_WRONLY);
