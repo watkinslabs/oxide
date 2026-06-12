@@ -117,9 +117,10 @@ static NEXT_MNT_ID: AtomicU64 = AtomicU64::new(1);
 /// reads the calling task's `mount_ns` id, so `register`/`register_bind`
 /// can stamp each new mount with the namespace that created it without
 /// every call site passing it. `null` (pre-install / hosted tests) ⇒ ns 0.
-/// The per-ns *tree* (resolution scoped to the caller's ns, copy-on-unshare
-/// divergence) builds on this stamp; today resolution stays global (ns 0
-/// base visible to all) — see `docs/16§6` + TASKS V7 stage U2.
+/// Resolution IS per-ns: `resolve_mount` only considers mounts whose `ns`
+/// matches the caller's, and `unshare(CLONE_NEWNS)` copy-on-unshares the
+/// parent set via `snapshot_ns` so a new ns starts complete then diverges
+/// (`docs/16§6`).
 static CURRENT_NS_PROVIDER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Signature of the mount-ns provider.

@@ -1,8 +1,9 @@
-// NETLINK_ROUTE per `25§7` + Linux `linux/rtnetlink.h`. F89 implements
-// the RTM_GETLINK dump path that `ip link show` issues. Per-iface
-// RTM_NEWLINK replies are built from `net::sock::stack().ifaces`;
-// the dump terminates with NLMSG_DONE. RTM_NEWADDR/GETADDR and
-// RTM_NEWROUTE/GETROUTE land in follow-up F90+/F91 PRs.
+// NETLINK_ROUTE per `25§7` + Linux `linux/rtnetlink.h`. Implements the
+// link/addr/route control plane `ip` + systemd-networkd drive: GETLINK
+// dump + NEWLINK/SETLINK flag mutation; GETADDR dump + NEWADDR/DELADDR
+// against the persistent ADDR_TABLE; GETROUTE dump + NEWROUTE/DELROUTE
+// against the persistent ROUTE_TABLE. All dumps are per-net-namespace
+// (`current_net_ns`) and terminate with NLMSG_DONE.
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -651,9 +652,8 @@ fn build_newroute_reply(
     out
 }
 
-/// RTM_GETROUTE dump. v1 publishes the hardcoded route table used
-/// at boot. Real per-iface route table writes via RTM_NEWROUTE are
-/// follow-up (need the route-policy substrate + persistent table).
+/// RTM_GETROUTE dump — the caller's-netns rows of the persistent
+/// ROUTE_TABLE (boot-seeded + mutated by RTM_NEWROUTE/DELROUTE).
 ///
 /// Published routes when an eth0-like iface is up:
 ///   `local 127.0.0.0/8 dev lo proto kernel scope host`
