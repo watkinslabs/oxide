@@ -1205,6 +1205,12 @@ dependencies = [
 [[package]]
 name = "softirq"
 version = "0.1.0"
+dependencies = [
+ "cpu",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+]
 
 [[package]]
 name = "spec-lint"
