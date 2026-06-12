@@ -69,4 +69,6 @@ All x86+arm boot-verified, spec-lint clean:
 
 ## First command next session
 
-    sed -n '40,60p' crates/kernel/ext4/src/extent_rw.rs   # the depth ladder to replace
+Pick the next gap. Bounded candidates (highest value first):
+  - fanotify perm-events (builds on F444): sed -n '1,60p' crates/kernel/fs/src/inotify.rs
+  - eBPF / tracepoints / X11 are large dedicated builds (see list above).
