@@ -1,79 +1,54 @@
 # state — session hand-off
 
-Branch: **main** (clean). All work merged. This session: ~22 PRs (#1769–#1789).
+Branch: **main**. Branch counters now live in `metadata/index.md` (AUTHORITATIVE —
+read+bump per branch). Dev loop: `tools/boot-smoke-probe.sh x86 <probe>` under
+`OXIDE_QEMU_KVM=1` (~20s). **GOTCHA: never `pkill -f qemu-system`** — it matches
+the bash-tool's own cmdline and SIGTERMs the shell (exit 144). Use
+`pkill -9 -x qemu-system-x86_64`.
 
-## What this session did
-**vty-plan: substance complete** (emulator command set + job control). Merged:
-- #1769 vt DA/DECID, IRM, C1 controls, OSC/DCS ST fix; #1770 OSC 4/104/10/11
-  palette (emulator split into emulator/{mod,sgr,osc}.rs); #1771 DECCKM ?1 +
-  bracketed paste ?2004; #1772 SIGTTIN/SIGTTOU/TOSTOP job control; #1773 pty
-  SIGHUP+SIGCONT drain; #1774 VT/KD ioctl on /dev/console → active VT.
-  REMAINING vty (deferred, documented in vty-plan.md): mouse reporting (needs a
-  pointer pipeline — emulator-only = theater), Step B/RC5 cleanup (no-behavior),
-  auto-ctty/session-enforcement (login-path risk), RC1 serial answerback
-  (REASSESSED: NOT the Linux way — a serial line's terminal answers, not the
-  kernel). docs/57 stays DRAFT until mouse lands.
+## This run (linux2.md loop — "is this the Linux way", no fakes)
 
-**linux2.md: validated + real fixes.** META-FINDING: system is FAR more complete
-than linux2.md's framing. Already-real (linux2 was wrong): IPC ns (shm/sem/msg/mq
-ns-keyed), mount ns (resolve_mount filters mount_ns), pivot_root, perms/*at,
-route+addr control-plane (persistent tables), sched_setattr. Genuine gaps FIXED:
-- #1776 namespace fork-inheritance (clone copied NO ns state → every fork reset
-  to root ns; now copy_namespaces) + UTS domainname isolation.
-- #1778 shared uts_namespace registry (true shared-ns; setns adopts hostname).
-- #1779 real sched_setscheduler(144) — was ALIASED to getscheduler (fake success).
-- #1780 net-ns-aware rtnetlink dumps (GETLINK/GETADDR/GETROUTE) + per-ns routes.
-- #1783 dynlink R_*_IRELATIVE (IFUNC) — was skipped (stub-interp path only).
-- #1785 AT_HWCAP baseline (FP|ASIMD) on arm — was 0; #1791 + crypto/CRC bits
-  from ID_AA64ISAR0_EL1 (host-tested decode → arm hw crypto, openssl verified).
-- Stale-comment honesty fixes: #1782, #1784, #1789.
+PID identity fully unified on the VPID (user-facing pid == vtgid/vtid; internal
+tid is kernel-only). Landed + boot-verified (pid_identity_probe PASS x86,
+pgid=8 sid=7):
+- B112–B116 (prior): fork/wait/getpid/gettid/getppid/kill/sched/prlimit/ptrace/
+  affinity/priority/rt_sigqueue/pidfd/proc-self all resolve via `resolve_user_pid`.
+- **B117 #1806** SIGCHLD siginfo: real si_pid(child VPID)/si_status/si_code via
+  per-parent child_sigq; SA_SIGINFO handlers now correct (sigchld_probe PASS).
+- **B118 #1805** pgid/sid in VPID space (with_vpid spawn re-seeds to vtgid; forks
+  inherit via clone; kthreads keep internal tid) + /proc/loadavg last_pid via
+  live_vpids (pid_identity_probe extended, PASS).
+- **B119 #1807** real TCXONC output flow control (TCOOFF/TCOON park/wake; pty
+  out_hold reuse; bad action EINVAL) — replaced `TCXONC=>0` (tcflow_probe PASS).
 
-**#1 linux2 §2.3 blocker RESOLVED + verified** (#1787): openssl-on-aarch64
-load-constructor hang NO LONGER REPRODUCES — /bin/openssl_probe runs EVP SHA-256
-+ PASSes on BOTH arches (boot-smoke-probe). Was stale (fixed by earlier kernel
-work). Attribution test REFUTED the F34/AT_HWCAP guess (arm AT_HWCAP→0 still
-works). systemd + PAM login + openssl all run dynamically (real ld-musl) on arm.
+All three boot-verified on merged main x86.
 
-## MORE RESOLVED this run
-- **io_uring usable** (#1793, §2.7): mmap(io_uring_fd) maps the ring page →
-  userspace shares the rings. /bin/io_uring_probe (raw NOP round-trip) PASSes
-  on BOTH arches. (liburing's 3-region mmap layout = follow-up; single-page
-  raw layout works now.)
-- **AT_HWCAP complete** on arm (#1791): baseline + crypto-ext from ID_AA64ISAR0.
+## OPEN — 3 agents running (build-only, worktrees; collect → boot-verify → PR/merge)
 
-## HIGH-VALUE NEXT (need daytime / human-in-loop — too risky fully-unattended)
-1. **rt_sigframe — RESOLVED/refuted** (#1795): sigframe_self_probe (SA_SIGINFO
-   via SIGALRM, checks sig/siginfo/non-null-ucontext/resume) PASSes on BOTH
-   arches → full Linux rt_sigframe. project_signal_frame_minimal was STALE.
-2. **NEW BUG (high value): self-signal delivery via raise()/tkill broken.**
-   sigframe_self_probe v1 used raise(SIGUSR1) and the handler NEVER ran (2s of
-   nanosleep windows); SIGALRM (kernel-posted) works fine. musl raise()→
-   SYS_tkill(own tid). Two issues: (a) `NR_TKILL => sys_kill` (dispatch.rs:370)
-   — tkill is THREAD-targeted, sys_kill has pid/pgrp semantics (tkill(0)=pgrp
-   etc. is wrong); should route like tgkill(234) minus the tgid check. (b)
-   sys_kill self fast-path compares `pid == cur.tid` (INTERNAL tid) vs the
-   user-supplied vtid → misses; fallback `lookup_in_ns(0,X) → lookup(X)` keys
-   the INTERNAL tid (REG key, NEXT_TID@0x1000) but gettid returns the small
-   VTID → MISS iff vtid≠internal-tid in ns 0 (pid_identity minefield; high
-   blast radius — kill/tgkill/wait all route here). abort()/pthread_kill/raise
-   depend on it. Trace ACTUAL vtid vs internal-tid for a shell-spawned task
-   (dtrace in sys_kill), then fix lookup_in_ns(0) to use lookup_by_vpid +
-   route tkill to a thread-targeted handler. DO NOT fix blind.
-3. **ext4 extent depth** — capped at 2 (Linux: 5); generalize the walk.
-   Hosted-testable over a deep-extent ext4 image; fs-risky.
-3. **liburing 3-region mmap** (IORING_OFF_SQ_RING/CQ_RING/SQES offset cookies)
-   so real liburing programs work, not just raw single-page users (#1793).
-4. **Graphics stack** (§3): no xorg/mesa/weston in-tree — huge, userspace.
+1. **F438-io-uring-register** — real io_uring_register: REGISTER_BUFFERS/FILES/
+   EVENTFD/PROBE + READ_FIXED/WRITE_FIXED + IOSQE_FIXED_FILE. Replaces
+   `427 sys_io_uring_register {0}`. Probe: io_uring_reg_probe.
+2. **B120-tty-ioctl-defake** — TIOCMSET/MGET/MBIS/MBIC (pty→ENOTTY; serial/VT→
+   real modem bitmask) + TIOCSPTLCK/GPTLCK real pts lock (default locked,
+   slave-open EIO while locked). Probe: tty_ioctl_probe.
+3. **F439-netlink-multicast** — real bind() nl_groups + NETLINK_ADD/DROP_MEMBERSHIP
+   + rtnl_multicast broadcast of RTM_NEWLINK/NEWADDR/NEWROUTE to subscribed
+   sockets. Replaces `netlink_fd::bind {0}`. Probe: nlmcast_probe.
 
-## Workflow notes
-- Boot smoke both arches before push (kernel/userspace paths). boot-smoke-probe.sh
-  <arch> <probe> logs in + runs /bin/<probe> + asserts "<probe>: PASS" — works on
-  the systemd boot, both arches. rcS smokes (oxide-smokes.sh) need the rcS boot.
-- CORE RULE (memory feedback_linux_way_per_task_gate): every task, ask "is this
-  the Linux way?"; name the exact Linux mechanism; no hacks/theater; measure,
-  don't claim (the openssl F34 attribution was tested + refuted, not assumed).
+**Merge order:** each agent wires the same 3 rootfs files (rootfs_lists.rs,
+rootfs.rs put-list, oxide-smokes.sh) → trivial 1-line list conflicts on 2nd/3rd
+merge; resolve by keeping ALL probe names. **Bump index.md per branch** (F438→
+F next=439; F439→440; B120→B next=121) inside that branch's PR. Boot-verify each
+probe on x86 after merge (arm lockstep batch at end).
 
-## First task next session
-`git -C /home/nd/oxide2 log --oneline -12 main`. Pick from HIGH-VALUE NEXT —
-the arm rt_sigframe (1) is highest-leverage but do it with a SIGILL+longjmp arm
-probe as the verification gate.
+## First command next session
+
+    cat /tmp/claude-1000/-home-nd-oxide2/*/tasks/ab85a5a9b438cd6d4.output | tail   # io_uring agent result
+    # then for each returned branch: checkout, merge main, fix list conflict,
+    # bump metadata/index.md, spec-lint, push, PR, merge, boot-smoke-probe x86 <probe>
+
+## linux2.md remaining (validated real gaps, not yet started)
+§2.6 full rtnetlink for iproute2/networkd · §2.8 ext4 deep extent trees · §2.9
+stale NotImplemented init() shims (iouring/net/tty crates) · §2.10 netfilter RX/TX
+enforcement · §2.11 eBPF verifier/JIT · §2.12 tracefs/ftrace real buffers · §2.13
+fanotify real semantics · §3 X11/Wayland bring-up. Priority order = linux2.md §7.
