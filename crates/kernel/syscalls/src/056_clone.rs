@@ -117,6 +117,9 @@ pub fn sys_clone_dispatch(
         Ok(t)  => t,
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
+    // The vpid (vtid) to return to the parent — captured now, before the
+    // `child` Arc may be dropped at the end. spawn stamped it.
+    let child_vpid_ret = child.vtid.load(Ordering::Acquire);
 
     // CLONE_THREAD: the new task joins the caller's thread group.
     // Without it the child is its own process leader and tgid==tid.
@@ -238,7 +241,9 @@ pub fn sys_clone_dispatch(
     // CLONE_PARENT_SETTID: write child tid in caller's AS.
     if (flags & CLONE_PARENT_SETTID) != 0 && ptid != 0 && ptid < hal::USER_VA_END {
         // SAFETY: ptid validated < USER_VA_END; CPL=0 writes in caller's AS.
-        unsafe { core::ptr::write_volatile(ptid as *mut i32, child_tid as i32); }
+        // Linux writes the child's TID (the vtid userspace sees), not the
+        // opaque internal tid.
+        unsafe { core::ptr::write_volatile(ptid as *mut i32, child.vtid.load(Ordering::Acquire) as i32); }
     }
     // CLONE_CHILD_SETTID: writes happen in child AS — for CLONE_VM
     // the AS is shared with parent so the write is visible directly;
@@ -252,7 +257,8 @@ pub fn sys_clone_dispatch(
        && (flags & CLONE_VM) != 0
     {
         // SAFETY: ctid validated < USER_VA_END; AS shared (CLONE_VM); CPL=0.
-        unsafe { core::ptr::write_volatile(ctid as *mut i32, child_tid as i32); }
+        // Child's TID = its vtid (what gettid() returns), not internal tid.
+        unsafe { core::ptr::write_volatile(ctid as *mut i32, child.vtid.load(Ordering::Acquire) as i32); }
     }
     // CLONE_CHILD_CLEARTID: stash for thread-exit FUTEX_WAKE path.
     if (flags & CLONE_CHILD_CLEARTID) != 0 {
@@ -316,7 +322,12 @@ pub fn sys_clone_dispatch(
         drop(child);
     }
 
-    child_tid as i64
+    // Return the child's vpid to the parent (Linux: clone/fork returns the
+    // child's TID == its PID for a new process). vtid==vtgid for a forked
+    // process; for a thread it's the thread's vtid. This is the SAME value
+    // the child's getpid()/gettid() report and that waitpid()/kill() take —
+    // ONE pid identity. (The internal tid stays a kernel-only registry key.)
+    child_vpid_ret as i64
 }
 
 /// x86_64 fork-spawn: capture parent's saved-syscall regs from the
