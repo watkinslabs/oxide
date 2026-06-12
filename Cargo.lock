@@ -1328,6 +1328,7 @@ dependencies = [
 name = "tracefs"
 version = "0.1.0"
 dependencies = [
+ "cpu",
  "devfs",
  "hal",
  "hal-aarch64",

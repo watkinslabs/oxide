@@ -11,6 +11,7 @@ devfs = { path = "../devfs" }
 sync  = { path = "../../shared/sync" }
 hal   = { path = "../../arch/hal" }
 sched = { path = "../sched" }
+cpu   = { path = "../cpu" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
