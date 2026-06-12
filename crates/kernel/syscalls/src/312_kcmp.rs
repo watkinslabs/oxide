@@ -17,10 +17,10 @@ pub fn sys_kcmp(args: &SyscallArgs) -> i64 {
     let idx1 = args.a3 as u64;
     let idx2 = args.a4 as u64;
     if ty > 7 { return errno(Errno::Einval); }
-    let t1 = match sched::live::registry::lookup(pid1) {
+    let t1 = match sched::live::registry::resolve_user_pid(pid1) {
         Some(t) => t, None => return errno(Errno::Esrch),
     };
-    let t2 = match sched::live::registry::lookup(pid2) {
+    let t2 = match sched::live::registry::resolve_user_pid(pid2) {
         Some(t) => t, None => return errno(Errno::Esrch),
     };
     // KCMP_FILE = 0: compare File at fd idx1 in t1 vs fd idx2 in t2.
