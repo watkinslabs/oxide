@@ -27,6 +27,22 @@ pub struct Va(pub u64);
 /// this is non-canonical user space.
 pub const USER_VA_END: u64 = 0x0000_8000_0000_0000;
 
+/// Extra siginfo_t payload an SA_SIGINFO handler reads, passed
+/// arch-neutrally from the signal-delivery path into the per-arch
+/// `build_signal_frame` so it can populate the `_sifields` union
+/// (`27§5`, siginfo(7)). Currently the SIGCHLD `_sigchld` shape:
+/// `code`→si_code (CLD_*), `pid`→si_pid (child VPID), `uid`→si_uid,
+/// `status`→si_status. POD so it crosses the HAL boundary without a
+/// crate cycle (sched/fs/hal all share this one type).
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct SigChld {
+    pub code:   i32,
+    pub pid:    i32,
+    pub uid:    u32,
+    pub status: i32,
+}
+
 /// User virtual address per `01§1`. Newtype with a private constructor
 /// so the only way to obtain one is `UserVirtAddr::new`, which rejects
 /// `≥ USER_VA_END` and any non-canonical bit pattern. No `+usize` impl

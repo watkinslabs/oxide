@@ -7,7 +7,7 @@ for s in /bin/bare3 /bin/vim_smoke /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \
          /bin/cmdsubst_probe /bin/alarm_probe /bin/symlink_probe /bin/mount_smoke /bin/statfs_smoke /bin/dev_smoke /bin/dsr_probe /bin/vtswitch_probe /bin/vtmode_probe /bin/vtresize_probe /bin/kdfont_probe /bin/fbdev_probe /bin/drm_probe /bin/drm_probe2 /bin/vcs_probe /bin/ptyhup_probe /bin/hwrng_probe /bin/sysblock_probe \
          /bin/mmap_zero_smoke /bin/usleep_smoke \
          /bin/af_packet_smoke /bin/hello_dyn \
-         /bin/pid_identity_probe /bin/tkill_probe /bin/io_uring_probe /bin/sigframe_self_probe ; do
+         /bin/pid_identity_probe /bin/tkill_probe /bin/io_uring_probe /bin/sigframe_self_probe /bin/sigchld_probe ; do
     [ -x "$s" ] && "$s"
 done
 # D3.3: AF_VSOCK round-trip — only when the host echo peer is present

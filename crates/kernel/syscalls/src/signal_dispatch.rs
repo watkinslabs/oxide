@@ -39,6 +39,20 @@ fn default_is_core(sig: u32) -> bool {
         || s == Signum::Sigsys  as u8
 }
 
+/// B117: build the `hal::SigChld` siginfo payload for a SIGCHLD
+/// PendingSignal, mapping the dequeued `sched::SigInfo` child event
+/// (pid=child VPID, value=child exit status, code=CLD_*) onto the
+/// arch-neutral `_sigchld` fields the frame builder writes. `None`
+/// for non-SIGCHLD or a SIGCHLD with no queued child event (e.g.
+/// `kill(pid, SIGCHLD)` — no child exited).
+/// # C: O(1)
+#[inline]
+fn sigchld_payload(p: &PendingSignal) -> Option<hal::SigChld> {
+    if p.sig as u8 != Signum::Sigchld as u8 { return None; }
+    let i = p.info?;
+    Some(hal::SigChld { code: i.code, pid: i.pid as i32, uid: i.uid, status: i.value as i32 })
+}
+
 /// Dispatch one PendingSignal at the syscall-return tail. Returns
 /// the value the dispatcher should propagate as its u64 retval —
 /// nonzero only when a handler was set up on aarch64 (the SVC
@@ -81,8 +95,11 @@ pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64, sys_exit_fn: &
         }
         SIG_IGN => 0,  // explicit ignore: drop
         handler => {
+            // B117: for SIGCHLD pass the dequeued child-exit siginfo
+            // so an SA_SIGINFO handler reads si_pid/si_status/si_code.
+            let chld = sigchld_payload(p);
             // SAFETY: dispatch tail; per-arch saved frame live; deliver_arm/_x86 rewrites only the saved frame and user signal stack.
-            let sig_rv = unsafe { ::fs::sig_dispatch::deliver(handler, p.restorer, p.sig, saved_ret) };
+            let sig_rv = unsafe { ::fs::sig_dispatch::deliver_with_info(handler, p.restorer, p.sig, saved_ret, chld) };
             #[cfg(target_arch = "aarch64")]
             return sig_rv;
             #[cfg(not(target_arch = "aarch64"))]

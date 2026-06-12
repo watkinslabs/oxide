@@ -77,7 +77,8 @@ const RED_ZONE: u64 = 128;
 /// saved frame is live; active CR3 is the caller's user AS.
 /// # C: O(1)
 pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
-                                 saved_ret: u64, old_sigmask: u64) {
+                                 saved_ret: u64, old_sigmask: u64,
+                                 chld: Option<hal::SigChld>) {
     let full = current_user_full_frame();
     // SAFETY: dispatch ctx; `full` points at the live 16-quadword saved block.
     let g = |i: usize| unsafe { core::ptr::read_volatile(full.add(i)) };
@@ -110,6 +111,15 @@ pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
     };
     sf.uc.uc_sigmask[0] = old_sigmask;
     sf.info[0..4].copy_from_slice(&(sig as i32).to_ne_bytes()); // si_signo
+    // B117: SIGCHLD _sifields per Linux siginfo_t (asm-generic):
+    // si_code@8, si_pid@16, si_uid@20, si_status@24. si_errno@4
+    // stays 0. These are the fields a reaper switches on.
+    if let Some(c) = chld {
+        sf.info[8..12].copy_from_slice(&c.code.to_ne_bytes());    // si_code
+        sf.info[16..20].copy_from_slice(&c.pid.to_ne_bytes());    // si_pid
+        sf.info[20..24].copy_from_slice(&c.uid.to_ne_bytes());    // si_uid
+        sf.info[24..28].copy_from_slice(&c.status.to_ne_bytes()); // si_status
+    }
     // SAFETY: new_rsp < saved_rsp < USER_VA_END; CPL=0 write via active CR3; repr(C) matches restore.
     unsafe { core::ptr::write_volatile(new_rsp as *mut RtSigframe, sf); }
 
