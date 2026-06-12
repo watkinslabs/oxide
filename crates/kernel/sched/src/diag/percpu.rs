@@ -87,7 +87,11 @@ fn scan(me: u32, now: u64) {
         if x as u32 == me || !HB_SEEN[x].load(Ordering::Relaxed) {
             continue;
         }
-        let age = now.wrapping_sub(HB_NS[x].load(Ordering::Relaxed));
+        // saturating, not wrapping: a peer CPU's heartbeat can read a hair
+        // AHEAD of our `now` (per-CPU TSC/monotonic skew); wrapping_sub would
+        // underflow to ~u64::MAX → a bogus "no heartbeat for 18446744073s"
+        // false stall (+ spurious NMI poke). Skew clamps to age 0.
+        let age = now.saturating_sub(HB_NS[x].load(Ordering::Relaxed));
         let latched = HB_STUCK[x].load(Ordering::Relaxed);
         if newly_stalled(age, latched) {
             HB_STUCK[x].store(true, Ordering::Relaxed);
@@ -146,7 +150,11 @@ pub fn dump_cpus() {
             continue;
         }
         any = true;
-        let age = now.wrapping_sub(HB_NS[x].load(Ordering::Relaxed));
+        // saturating, not wrapping: a peer CPU's heartbeat can read a hair
+        // AHEAD of our `now` (per-CPU TSC/monotonic skew); wrapping_sub would
+        // underflow to ~u64::MAX → a bogus "no heartbeat for 18446744073s"
+        // false stall (+ spurious NMI poke). Skew clamps to age 0.
+        let age = now.saturating_sub(HB_NS[x].load(Ordering::Relaxed));
         klog::write_raw(b"  ");
         klog::write_dec_u64(x as u64);
         klog::write_raw(b"    ");
