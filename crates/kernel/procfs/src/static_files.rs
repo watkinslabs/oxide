@@ -14,31 +14,6 @@ use crate::{
     LIMITS_BODY, VERSION_BODY,
 };
 
-/// `/sys/devices/system/cpu/{online,present,possible}` — the online CPU mask,
-/// computed at read time from `cpu::smp::online_count()` (Linux cpumask
-/// bitmap-list form: `0` for 1 CPU, `0-N` for N+1). nproc / sched_getaffinity
-/// / libnuma / systemd parse these.
-struct SysCpuRangeInode;
-impl vfs::Inode for SysCpuRangeInode {
-    fn ino(&self) -> vfs::Ino { 0x3000_1C01 }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        let n = (cpu::smp::online_count() as usize).clamp(1, cpu::MAX_CPUS);
-        let mut s = alloc::string::String::new();
-        if n <= 1 { s.push_str("0\n"); }
-        else { let _ = core::fmt::Write::write_fmt(&mut s, format_args!("0-{}\n", n - 1)); }
-        let b = s.as_bytes();
-        let off = off as usize;
-        if off >= b.len() { return Ok(0); }
-        let k = (b.len() - off).min(buf.len());
-        buf[..k].copy_from_slice(&b[off..off + k]);
-        Ok(k)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Erofs) }
-}
-
 /// Build the `/proc` root directory's static children — the Linux `proc_create`
 /// set (cpuinfo/meminfo/stat/…). Each is a real child inode the directory OWNS
 /// (`ProcRootInode::new` takes this map; lookup+readdir walk it). NOT a registry.
@@ -156,36 +131,16 @@ pub fn register_static_files() {
         "/sys/kernel/random/entropy_avail",
         StaticFileInode::new(b"4096\n") as InodeRef,
     );
-    // /sys/devices/system/cpu/* — online/present/possible are the live CPU
-    // mask, computed at read time from online_count() (Linux cpumask list).
-    // `offline` is empty (no CPUs ever taken offline).
+    // /sys/devices/system/cpu — the CPU device subsystem (Linux
+    // drivers/base/cpu.c). ONE dynamic kobject directory owns the whole
+    // subtree: control files + a `cpuN` device dir per CPU, enumerated at
+    // readdir time so the set tracks the live online_count() rather than a
+    // boot-time snapshot taken before the APs are up. nproc / htop /
+    // lscpu (`_SC_NPROCESSORS_CONF` reads the cpuN dirs) walk this.
     devfs::register(
-        "/sys/devices/system/cpu/online",
-        Arc::new(SysCpuRangeInode) as InodeRef,
+        "/sys/devices/system/cpu",
+        Arc::new(crate::syscpu::SysCpuRootInode) as InodeRef,
     );
-    devfs::register(
-        "/sys/devices/system/cpu/possible",
-        Arc::new(SysCpuRangeInode) as InodeRef,
-    );
-    devfs::register(
-        "/sys/devices/system/cpu/present",
-        Arc::new(SysCpuRangeInode) as InodeRef,
-    );
-    devfs::register(
-        "/sys/devices/system/cpu/offline",
-        StaticFileInode::new(b"\n") as InodeRef,
-    );
-    devfs::register(
-        "/sys/devices/system/cpu/kernel_max",
-        StaticFileInode::new(b"0\n") as InodeRef,
-    );
-    // htop/get_nprocs_conf enumerate cpuN directories here; register a leaf
-    // under each online cpuN so the directories exist in readdir output.
-    let ncpu = (cpu::smp::online_count() as usize).clamp(1, cpu::MAX_CPUS);
-    for c in 0..ncpu {
-        let path = alloc::format!("/sys/devices/system/cpu/cpu{c}/online");
-        devfs::register_owned(path, StaticFileInode::new(b"1\n") as InodeRef);
-    }
     // /sys/class/net dynamic — readdir walks the live netdev registry,
     // lookup synthesises per-iface attribute files from the NetDev trait
     // (address/mtu/operstate/type/flags/carrier/speed/duplex/ifindex/...).
