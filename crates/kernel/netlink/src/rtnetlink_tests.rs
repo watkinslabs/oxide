@@ -62,15 +62,35 @@
     fn route_table_insert_remove_snapshot() {
         let before = route_snapshot().len();
         route_insert(RouteRow {
+            ns: 0,
             table: RT_TABLE_MAIN, protocol: RTPROT_STATIC,
             scope: RT_SCOPE_LINK, kind: RTN_UNICAST,
             dst: Some(([192, 168, 99, 0], 24)),
             gateway: None, oif_ifindex: 7777, prefsrc: None,
         });
         assert_eq!(route_snapshot().len(), before + 1);
-        let n = route_remove(RT_TABLE_MAIN, Some(([192, 168, 99, 0], 24)), 7777);
+        let n = route_remove(0, RT_TABLE_MAIN, Some(([192, 168, 99, 0], 24)), 7777);
         assert_eq!(n, 1);
         assert_eq!(route_snapshot().len(), before);
+    }
+
+    #[test]
+    fn routes_isolated_per_net_ns() {
+        let row = |ns| RouteRow {
+            ns, table: RT_TABLE_MAIN, protocol: RTPROT_STATIC,
+            scope: RT_SCOPE_LINK, kind: RTN_UNICAST,
+            dst: Some(([10, 9, 8, 0], 24)), gateway: None,
+            oif_ifindex: 6543, prefsrc: None,
+        };
+        let n0 = route_snapshot_ns(770).len();
+        let n1 = route_snapshot_ns(771).len();
+        route_insert(row(770));
+        // The route is visible in ns 770 only; ns 771's view is unchanged.
+        assert_eq!(route_snapshot_ns(770).len(), n0 + 1);
+        assert_eq!(route_snapshot_ns(771).len(), n1, "other netns unaffected");
+        // Removing under the wrong ns is a no-op; under the right ns it works.
+        assert_eq!(route_remove(771, RT_TABLE_MAIN, Some(([10, 9, 8, 0], 24)), 6543), 0);
+        assert_eq!(route_remove(770, RT_TABLE_MAIN, Some(([10, 9, 8, 0], 24)), 6543), 1);
     }
 
     #[test]
