@@ -22,7 +22,7 @@ fn sched_lookup_policy(pid: u32) -> i32 {
     let task = if pid == 0 {
         sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {
-        sched::live::registry::lookup(pid)
+        sched::live::registry::resolve_user_pid(pid)
     };
     match task.map(|t| t.sched_class()) {
         Some(SchedClass::Rt { policy: SchedPolicy::Fifo, .. }) => 1,
