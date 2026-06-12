@@ -404,6 +404,7 @@ fn spawn_init_from_rootfs_arm() {
             &random16,
             b"/lib/systemd/systemd",
             0, // smoke: no vDSO mapped
+            <hal_aarch64::ArmCpuOps as hal::CpuOps>::cpu_hwcap(),
         )
     }.unwrap_or(INIT_STACK_TOP);
 

@@ -285,6 +285,7 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
             &random16,
             &path_owned,
             vdso_ehdr,
+            <hal_x86_64::X86CpuOps as hal::CpuOps>::cpu_hwcap(),
         )
     } {
         Some(sp) => sp,
@@ -538,6 +539,7 @@ pub(crate) fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u
             &random16,
             &path_owned,
             vdso_ehdr,
+            <hal_aarch64::ArmCpuOps as hal::CpuOps>::cpu_hwcap(),
         )
     } {
         Some(sp) => sp,
