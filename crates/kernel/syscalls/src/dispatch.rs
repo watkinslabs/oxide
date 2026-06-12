@@ -328,7 +328,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_FSTATFS => crate::statfs::sys_fstatfs(&args),
         syscall::nrs::NR_GETCPU        => crate::s309_getcpu::sys_getcpu(&args),
         syscall::nrs::NR_SCHED_GETPARAM => crate::s143_sched_getparam::sys_sched_getparam(&args),
-        syscall::nrs::NR_SCHED_SETSCHEDULER | syscall::nrs::NR_SCHED_GETSCHEDULER
+        syscall::nrs::NR_SCHED_SETSCHEDULER
+                                 => crate::s144_sched_setscheduler::sys_sched_setscheduler(&args),
+        syscall::nrs::NR_SCHED_GETSCHEDULER
                                  => crate::s145_sched_getscheduler::sys_sched_getscheduler(&args),
         syscall::nrs::NR_SCHED_GET_PRIORITY_MAX
                                  => crate::s146_sched_get_priority_max::sys_sched_get_priority_max(&args),
