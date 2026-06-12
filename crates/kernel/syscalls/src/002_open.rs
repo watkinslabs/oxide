@@ -75,6 +75,9 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     } else {
         return -(Errno::Enoent.as_i32() as i64);
     };
+    // fanotify FAN_OPEN_PERM: blocks here until a daemon allows/denies (fast
+    // no-op when no perm marks exist). Deny → EACCES, no fd created.
+    if !::fs::inotify::check_open_perm(&inode) { return -(Errno::Eacces.as_i32() as i64); }
     if (flags & O_TRUNC) != 0 { let _ = inode.truncate(0); }
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
