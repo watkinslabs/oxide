@@ -606,6 +606,19 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     { crate::pci_boot::enumerate_and_log(); }
 
+    // PCI enumeration spliced the device-MMIO BARs (virtio-gpu/net/blk
+    // notify + cfg regions, 0xffff_fd00…) into the ACTIVE boot-AS root —
+    // NOT into the kernel master PML4, which APs already booted on
+    // (smp_x86 loads `kernel_master()` as the AP CR3). So an AP in kernel
+    // context (e.g. the fbcon GPU-flush softirq on an idle AP) would #PF NP
+    // on a BAR. Re-sync the master's kernel-half PML4 entries from the
+    // active root in place — the APs share that master frame and never
+    // cached the BAR VAs, so they pick up the entries on first walk.
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    // SAFETY: boot path; APs spin in their park loop; master frame is the one
+    // they CR3 to; copying kernel-half entries (shared L3s) into it.
+    unsafe { hal_x86_64::mmu_ops::resync_kernel_master(); }
+
     // D3.1: if PCI enumeration brought up a virtio-rng device, route
     // /dev/hwrng reads to its `fill` engine and publish the node. Absent a
     // device, /dev/hwrng is not created (no fabricated entropy source).
