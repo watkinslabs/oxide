@@ -15,9 +15,13 @@ pub fn sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
     let cur_ns = sched::live::current()
         .map(|c| c.pid_ns.load(core::sync::atomic::Ordering::Acquire))
         .unwrap_or(0);
-    if sched::live::registry::lookup_in_ns(cur_ns, pid).is_none() {
-        return -(Errno::Esrch.as_i32() as i64);
-    }
+    // Resolve the userspace pid (vpid) to its task, and bind the pidfd to the
+    // task's STABLE INTERNAL tid — the pidfd's consumers (pidfd_send_signal /
+    // pidfd_getfd) resolve by internal tid. (Was storing the raw vpid, which
+    // those consumers then looked up by internal tid → always ESRCH.)
+    let target = match sched::live::registry::lookup_in_ns(cur_ns, pid) {
+        Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+    };
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -25,7 +29,7 @@ pub fn sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let inode = crate::pidfd::new_pidfd_inode(pid);
+    let inode = crate::pidfd::new_pidfd_inode(target.tid);
     let dentry = Dentry::new(None, "pidfd".to_string(), Arc::clone(&inode));
     let mut fl = OpenFlags::O_RDWR;
     if (flags & PIDFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }

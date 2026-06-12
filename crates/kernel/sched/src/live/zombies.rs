@@ -268,9 +268,11 @@ pub fn peek_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(u32, i32)> {
     use core::sync::atomic::Ordering;
     let q = ZOMBIES.lock();
     let t = q.iter().find(|t| wait_pid_matches(
-        t.parent_tid.load(Ordering::Acquire), t.tid, t.pgid.load(Ordering::Acquire),
-        parent, pid, parent_pgid))?;
-    Some((t.tid, t.exit_status.load(Ordering::Acquire)))
+        t.parent_tid.load(Ordering::Acquire), t.vtgid.load(Ordering::Acquire),
+        t.pgid.load(Ordering::Acquire), parent, pid, parent_pgid))?;
+    // Return the child's vpid (vtgid) — what waitid reports as its return +
+    // siginfo si_pid — NOT the internal tid. Mirrors reap_one.
+    Some((t.vtgid.load(Ordering::Acquire), t.exit_status.load(Ordering::Acquire)))
 }
 
 /// # C: O(N_zombies)

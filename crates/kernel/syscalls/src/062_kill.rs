@@ -21,7 +21,11 @@ pub fn sys_kill(args: &SyscallArgs) -> i64 {
     };
     let bit = if sig == 0 { 0 } else { 1u64 << (sig - 1) };
     if pid > 0 {
-        if pid as u32 == cur.tid {
+        // Self fast-path: a task signalling its own VPID (the value getpid()/
+        // gettid() report) posts to itself. (Was `== cur.tid`, the internal
+        // tid — which userspace never passes, so it silently never matched.)
+        let p = pid as u32;
+        if p == cur.vtgid.load(Ordering::Acquire) || p == cur.vtid.load(Ordering::Acquire) {
             if sig != 0 { cur.sigpending.fetch_or(bit, Ordering::Release); }
             return 0;
         }
