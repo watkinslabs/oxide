@@ -14,6 +14,7 @@ sync = { path = "../../shared/sync" }
 vfs  = { path = "../../kernel/vfs" }
 cgroup = { path = "../cgroup" }
 timer = { path = "../timer" }
+softirq = { path = "../softirq" }
 vmm  = { path = "../../kernel/mm-vmm" }
 syscall = { path = "../syscall" }
 
