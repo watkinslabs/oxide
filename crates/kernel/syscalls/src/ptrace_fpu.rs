@@ -37,7 +37,7 @@ pub fn peek_user(pid: u32, addr: u64, data: u64) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     let addr = addr as usize;
-    let target = match sched::live::registry::lookup(pid) {
+    let target = match sched::live::registry::resolve_user_pid(pid) {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
     let top = target.kernel_stack.load(Ordering::Acquire);
@@ -69,7 +69,7 @@ pub fn poke_user(pid: u32, addr: u64, data: u64) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     let addr = addr as usize;
-    let target = match sched::live::registry::lookup(pid) {
+    let target = match sched::live::registry::resolve_user_pid(pid) {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
     let top = target.kernel_stack.load(Ordering::Acquire);
@@ -96,7 +96,7 @@ pub fn poke_user(pid: u32, addr: u64, data: u64) -> i64 {
 /// # C: O(n) — 512 / 528 byte copy.
 pub fn get_fpregs(pid: u32, data: u64) -> i64 {
     use syscall::errno::Errno;
-    let target = match sched::live::registry::lookup(pid) {
+    let target = match sched::live::registry::resolve_user_pid(pid) {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
     #[cfg(target_arch = "x86_64")]
@@ -122,7 +122,7 @@ pub fn get_fpregs(pid: u32, data: u64) -> i64 {
 pub fn set_fpregs(pid: u32, data: u64) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
-    let target = match sched::live::registry::lookup(pid) {
+    let target = match sched::live::registry::resolve_user_pid(pid) {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
     #[cfg(target_arch = "x86_64")]

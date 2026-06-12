@@ -9,6 +9,18 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <fcntl.h>
+#include <stdlib.h>
+
+/* Field 1 of /proc/self/stat is the PID. Returns it, or -1. */
+static long self_stat_pid(void) {
+    int fd = open("/proc/self/stat", O_RDONLY);
+    if (fd < 0) return -1;
+    char b[256]; ssize_t n = read(fd, b, sizeof b - 1); close(fd);
+    if (n <= 0) return -1;
+    b[n] = 0;
+    return strtol(b, (char **)0, 10);   /* field 1 = pid */
+}
 
 int main(void) {
     int fds[2];
@@ -17,20 +29,21 @@ int main(void) {
     pid_t pid = fork();
     if (pid < 0) { printf("pid_identity_probe: FAIL fork\n"); return 1; }
     if (pid == 0) {
-        /* child: report own getpid() to the parent, then exit 42. */
+        /* child: report own getpid() + getppid() to the parent, then exit 42. */
         close(fds[0]);
-        pid_t mine = getpid();
-        ssize_t _ = write(fds[1], &mine, sizeof mine);
+        pid_t buf[2] = { getpid(), getppid() };
+        ssize_t _ = write(fds[1], buf, sizeof buf);
         (void)_;
         close(fds[1]);
         _exit(42);
     }
     /* parent */
     close(fds[1]);
-    pid_t child_getpid = -1;
-    if (read(fds[0], &child_getpid, sizeof child_getpid) != (ssize_t)sizeof child_getpid) {
+    pid_t buf[2] = { -1, -1 };
+    if (read(fds[0], buf, sizeof buf) != (ssize_t)sizeof buf) {
         printf("pid_identity_probe: FAIL pipe-read\n"); return 1;
     }
+    pid_t child_getpid = buf[0], child_getppid = buf[1];
     close(fds[0]);
     int st = 0;
     pid_t w = waitpid(pid, &st, 0);
@@ -51,6 +64,18 @@ int main(void) {
         printf("pid_identity_probe: FAIL child pid == parent pid\n");
         return 1;
     }
-    printf("pid_identity_probe: PASS pid=%d (== child getpid == waitpid)\n", (int)pid);
+    if (child_getppid != parent_pid) {
+        printf("pid_identity_probe: FAIL child getppid=%d != parent getpid=%d\n",
+               (int)child_getppid, (int)parent_pid);
+        return 1;
+    }
+    long sp = self_stat_pid();
+    if (sp != (long)parent_pid) {
+        printf("pid_identity_probe: FAIL /proc/self/stat pid=%ld != getpid=%d\n",
+               sp, (int)parent_pid);
+        return 1;
+    }
+    printf("pid_identity_probe: PASS pid=%d (==child getpid==waitpid); child getppid=%d==parent\n",
+           (int)pid, (int)child_getppid);
     return 0;
 }

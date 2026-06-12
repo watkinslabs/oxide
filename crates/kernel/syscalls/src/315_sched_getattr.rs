@@ -26,7 +26,7 @@ pub fn sys_sched_getattr(args: &SyscallArgs) -> i64 {
     let task = if pid == 0 {
         sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {
-        sched::live::registry::lookup(pid)
+        sched::live::registry::resolve_user_pid(pid)
     };
     let t = match task { Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64) };
     // policy: SCHED_OTHER=0, FIFO=1, RR=2, IDLE=5; RT priority from the class.

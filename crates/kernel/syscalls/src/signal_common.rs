@@ -35,7 +35,9 @@ pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) 
 pub(crate) fn rt_sigqueue_to(tid: u32, sig: u32, info_ptr: u64) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
-    let target = match sched::live::registry::lookup(tid) {
+    // `tid` is a USERSPACE pid/tid (rt_sigqueueinfo / rt_tgsigqueueinfo) —
+    // resolve it as a vpid, not the internal tid.
+    let target = match sched::live::registry::resolve_user_pid(tid) {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
     let info = if info_ptr != 0 && info_ptr < hal::USER_VA_END {
