@@ -64,6 +64,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     // kernel so the sysrq / watchdog task dump can tell a read(0) park
     // from a spin from a fault loop. Two relaxed stores (`13` diag).
     if let Some(c) = sched::current() { c.note_syscall(nr as u32); }
+    // sys_enter tracepoint (no-op unless tracefs enabled it).
+    syscall::tracepoint::fire_sys_enter(nr as u32);
     debug_syscall! { sched::trace::entry(nr, a0, a1, a2); }
     // seccomp KILL/TRAP/ERRNO/ALLOW filter check.
     if let Err(rv) = security::seccomp::check(nr, &[a0, a1, a2, a3, a4, 0]) { return rv as u64; }
@@ -444,6 +446,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             }
         }
     };
+    // sys_exit tracepoint (no-op unless tracefs enabled it).
+    syscall::tracepoint::fire_sys_exit(nr as u32, rv);
     debug_sched! {
         klog::write_raw(b"[INFO]  syscall: nr=");
         klog::write_hex_u64(nr);
