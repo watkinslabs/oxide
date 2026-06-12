@@ -49,7 +49,14 @@ pub fn sys_sched_setattr(args: &SyscallArgs) -> i64 {
         sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else { sched::live::registry::lookup(pid) };
     let t = match task { Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64) };
+    apply_sched_policy(&t, policy, nice, prio)
+}
 
+/// Apply a scheduling `policy` (+ `nice` for normal classes, `prio` for RT) to
+/// `t` via the runqueue (dequeue→change→requeue). Shared by sched_setattr and
+/// sched_setscheduler (Linux `__sched_setscheduler`). RT policies require
+/// euid 0; SCHED_DEADLINE is EOPNOTSUPP. Returns 0 or `-errno`. # C: O(log N)
+pub(crate) fn apply_sched_policy(t: &alloc::sync::Arc<sched::Task>, policy: u32, nice: i32, prio: u32) -> i64 {
     let new_class = match policy {
         SCHED_OTHER | SCHED_BATCH => {
             let n = sched::rlimit::clamp_nice(nice);
@@ -71,6 +78,6 @@ pub fn sys_sched_setattr(args: &SyscallArgs) -> i64 {
         SCHED_DEADLINE => return -(Errno::Eopnotsupp.as_i32() as i64),
         _ => return -(Errno::Einval.as_i32() as i64),
     };
-    sched::live::runqueue::set_class(&t, new_class);
+    sched::live::runqueue::set_class(t, new_class);
     0
 }
