@@ -4,17 +4,21 @@
 //! file (R0..R10, R10 is the read-only frame pointer in Linux —
 //! v1 leaves it zero) and a 512-byte stack. Programs return R0.
 //!
-//! v1 opcode set covers what a "load const, do arithmetic, return"
-//! program needs:
+//! Opcode coverage (imm + reg variants):
 //!
-//!   ALU64: MOV/ADD/SUB/AND/OR/XOR (imm + reg variants)
-//!   JMP:   JA, JEQ, JNE (imm variants), EXIT
-//!   LD:    LD_IMM_DW (the 16-byte wide load — only opcode whose
-//!          slot count is 2)
+//!   ALU64 / ALU (32-bit, zero-extends): MOV ADD SUB MUL DIV MOD OR AND
+//!          XOR LSH RSH ARSH NEG (DIV/MOD unsigned; /0→0, %0→dst)
+//!   JMP / JMP32 (compares low 32): JA JEQ JNE JSET JGT JGE JLT JLE
+//!          JSGT JSGE JSLT JSLE, EXIT
+//!   LDX:   load size B/H/W/DW from [src+off] — the 512-byte stack
+//!          (R10-relative) or the read-only ctx (R1/pkt)
+//!   STX / ST: store reg / imm size B/H/W/DW to the writable stack
+//!   LD:    LD_IMM_DW (the 16-byte wide load — slot count 2)
+//!   CALL:  helper dispatch (R1..R5 → helper, R0 = result)
 //!
-//! BPF_LDX/STX (packet/map loads) ride F109; helper CALL rides
-//! after that. Programs hitting any other opcode return None so
-//! callers see "unsupported" distinct from "ran and returned".
+//! Programs hitting any other opcode return None so callers see
+//! "unsupported" distinct from "ran and returned". Map-pointer helper
+//! args + the full verifier breadth ride follow-ups.
 //!
 //! Step budget is 1M dispatches per call (Linux's `BPF_COMPLEXITY_
 //! LIMIT_INSNS` is also 1M); exceed it and we bail with None.
@@ -32,10 +36,6 @@ const BPF_LD:    u8 = 0x00;
 const BPF_LDX:   u8 = 0x01;
 
 // BPF_LDX | BPF_MEM | <size>
-const BPF_LDX_MEM_B:  u8 = 0x71;
-const BPF_LDX_MEM_H:  u8 = 0x69;
-const BPF_LDX_MEM_W:  u8 = 0x61;
-const BPF_LDX_MEM_DW: u8 = 0x79;
 
 const BPF_CALL: u8 = 0x85;
 
@@ -50,7 +50,6 @@ pub struct Helper { pub id: u32, pub f: HelperFn }
 /// Context register. Linux passes the program's context (skb /
 /// xdp_md / etc.) in R1 on entry. v1 models that as "R1 is an
 /// offset into `pkt`"; any other src reg on a LDX is rejected.
-const CTX_REG: u8 = 1;
 
 const BPF_SRC_X: u8 = 0x08; // bit 3 — 0=use imm, 1=use src reg
 
@@ -88,6 +87,51 @@ const BPF_OP_EXIT_RAW: u8 = 0x90; // opcode = JMP | EXIT_op = 0x05 | 0x90 = 0x95
 
 const BPF_ALU:   u8 = 0x04; // 32-bit ALU class
 const BPF_JMP32: u8 = 0x06; // 32-bit JMP class
+const BPF_ST:    u8 = 0x02; // store immediate to memory
+const BPF_STX:   u8 = 0x03; // store register to memory
+
+/// 512-byte BPF stack mapped at a distinct high address range so memory ops
+/// route to it vs the read-only ctx (pkt). R10 = STACK_BASE + STACK_SIZE.
+const STACK_SIZE: usize = 512;
+const STACK_BASE: u64 = 0x1_0000_0000;
+
+/// Access size of a MEM opcode (bits 3..4): W=4, H=2, B=1, DW=8.
+fn mem_size(opcode: u8) -> Option<usize> {
+    if opcode & 0xe0 != 0x60 { return None; } // must be BPF_MEM mode
+    Some(match (opcode >> 3) & 0x03 { 0 => 4, 1 => 2, 2 => 1, 3 => 8, _ => return None })
+}
+
+/// Read `size` bytes from a BPF address — the stack or the read-only ctx
+/// (pkt) — zero-extended to i64. None on OOB. # C: O(size)
+fn mem_read(addr: i64, size: usize, stack: &[u8], pkt: &[u8]) -> Option<i64> {
+    let a = addr as u64;
+    let (buf, off): (&[u8], usize) = if a >= STACK_BASE && a < STACK_BASE + STACK_SIZE as u64 {
+        (stack, (a - STACK_BASE) as usize)
+    } else {
+        (pkt, usize::try_from(addr).ok()?)
+    };
+    if off.checked_add(size)? > buf.len() { return None; }
+    Some(match size {
+        1 => buf[off] as i64,
+        2 => u16::from_le_bytes([buf[off], buf[off + 1]]) as i64,
+        4 => u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]) as i64,
+        8 => u64::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3],
+                                 buf[off+4], buf[off+5], buf[off+6], buf[off+7]]) as i64,
+        _ => return None,
+    })
+}
+
+/// Write `size` bytes of `val` to a BPF stack address. Only the stack is
+/// writable — a store to ctx is rejected. None on OOB. # C: O(size)
+fn mem_write(addr: i64, size: usize, val: i64, stack: &mut [u8]) -> Option<()> {
+    let a = addr as u64;
+    if a < STACK_BASE || a >= STACK_BASE + STACK_SIZE as u64 { return None; }
+    let off = (a - STACK_BASE) as usize;
+    if off.checked_add(size)? > stack.len() { return None; }
+    let v = val as u64;
+    for k in 0..size { stack[off + k] = (v >> (k * 8)) as u8; }
+    Some(())
+}
 
 /// Apply an ALU op. `is64` false → 32-bit (operate on low 32, zero-extend).
 /// DIV/MOD are UNSIGNED (eBPF); div-by-0 → 0, mod-by-0 → dst (Linux). NEG is
@@ -209,8 +253,11 @@ pub fn run_with_helpers(insns: &[u8], pkt: &[u8], helpers: &[Helper]) -> Option<
     let n = insns.len() / 8;
 
     let mut regs = [0i64; NUM_REGS];
-    // R10 is the frame pointer in Linux; leave it 0 here — we
-    // don't admit LDX/STX yet so no one observes it.
+    // R10 = frame pointer at the TOP of a 512-byte stack (Linux: programs
+    // address locals as [R10 + negative off]). The stack lives in a distinct
+    // high address range so mem ops route to it vs the read-only ctx (pkt).
+    let mut stack = [0u8; STACK_SIZE];
+    regs[10] = (STACK_BASE + STACK_SIZE as u64) as i64;
     let mut pc: usize = 0;
     let mut budget = STEP_BUDGET;
 
@@ -260,36 +307,25 @@ pub fn run_with_helpers(insns: &[u8], pkt: &[u8], helpers: &[Helper]) -> Option<
                 }
             }
             BPF_LDX => {
-                if i.src != CTX_REG { return None; }
-                let base = regs[CTX_REG as usize];
-                let off = base.wrapping_add(i.off as i64);
-                if off < 0 { return None; }
-                let off = off as usize;
-                let val: i64 = match i.opcode {
-                    BPF_LDX_MEM_B => {
-                        if off >= pkt.len() { return None; }
-                        pkt[off] as i64
-                    }
-                    BPF_LDX_MEM_H => {
-                        if off + 2 > pkt.len() { return None; }
-                        u16::from_le_bytes([pkt[off], pkt[off + 1]]) as i64
-                    }
-                    BPF_LDX_MEM_W => {
-                        if off + 4 > pkt.len() { return None; }
-                        u32::from_le_bytes([
-                            pkt[off], pkt[off + 1], pkt[off + 2], pkt[off + 3]
-                        ]) as i64
-                    }
-                    BPF_LDX_MEM_DW => {
-                        if off + 8 > pkt.len() { return None; }
-                        u64::from_le_bytes([
-                            pkt[off], pkt[off + 1], pkt[off + 2], pkt[off + 3],
-                            pkt[off + 4], pkt[off + 5], pkt[off + 6], pkt[off + 7],
-                        ]) as i64
-                    }
-                    _ => return None,
-                };
-                regs[i.dst as usize] = val;
+                // Load size bytes from [src_reg + off] — stack (R10-relative)
+                // or read-only ctx (R1/pkt) per the address range.
+                let size = mem_size(i.opcode)?;
+                let addr = regs[i.src as usize].wrapping_add(i.off as i64);
+                regs[i.dst as usize] = mem_read(addr, size, &stack, pkt)?;
+                pc += 1;
+            }
+            BPF_STX => {
+                // Store src_reg to [dst_reg + off] (writable stack only).
+                let size = mem_size(i.opcode)?;
+                let addr = regs[i.dst as usize].wrapping_add(i.off as i64);
+                mem_write(addr, size, regs[i.src as usize], &mut stack)?;
+                pc += 1;
+            }
+            BPF_ST => {
+                // Store imm to [dst_reg + off] (writable stack only).
+                let size = mem_size(i.opcode)?;
+                let addr = regs[i.dst as usize].wrapping_add(i.off as i64);
+                mem_write(addr, size, i.imm as i64, &mut stack)?;
                 pc += 1;
             }
             BPF_LD => {
@@ -447,9 +483,11 @@ mod tests {
     }
 
     #[test]
-    fn ldx_from_non_ctx_reg_rejected() {
-        // LDX_MEM_B R0, [R2 + 0] ; EXIT — only R1 is the ctx ptr.
+    fn ldx_from_bad_address_rejected() {
+        // MOV R2, 0x500000 (past the 2-byte pkt, not in the stack range) ;
+        // LDX_MEM_B R0, [R2+0] ; EXIT → OOB → None.
         let p = cat(&[
+            raw(0xb7, 2, 0, 0, 0x500000),
             raw(0x71, 0, 2, 0, 0),
             raw(0x95, 0, 0, 0, 0),
         ]);
@@ -542,6 +580,43 @@ mod tests {
         // JEQ32 taken on low 32 bits: MOV R0,5 ; JEQ32 R0,5,+1 ; MOV R0,0 ; EXIT
         let p = cat(&[raw(0xb7,0,0,0,5), raw(0x16,0,0,1,5), raw(0xb7,0,0,0,0), raw(0x95,0,0,0,0)]);
         assert_eq!(run(&p, &[]), Some(5));
+    }
+
+    #[test]
+    fn stack_st_then_ldx_roundtrips() {
+        // ST_MEM_W [R10-8] = 1234 ; LDX_MEM_W R0 = [R10-8] ; EXIT
+        let p = cat(&[
+            raw(0x62, 10, 0, -8, 1234),
+            raw(0x61, 0, 10, -8, 0),
+            raw(0x95, 0, 0, 0, 0),
+        ]);
+        assert_eq!(run(&p, &[]), Some(1234));
+    }
+
+    #[test]
+    fn stack_stx_reg_dw_roundtrips() {
+        // MOV R1, 99 ; STX_DW [R10-16] = R1 ; LDX_DW R0 = [R10-16] ; EXIT
+        let p = cat(&[
+            raw(0xb7, 1, 0, 0, 99),
+            raw(0x7b, 10, 1, -16, 0),
+            raw(0x79, 0, 10, -16, 0),
+            raw(0x95, 0, 0, 0, 0),
+        ]);
+        assert_eq!(run(&p, &[]), Some(99));
+    }
+
+    #[test]
+    fn store_past_stack_top_is_rejected() {
+        // ST_MEM_W [R10+8] = 1 — above the frame pointer → OOB → None.
+        let p = cat(&[raw(0x62, 10, 0, 8, 1), raw(0x95, 0, 0, 0, 0)]);
+        assert_eq!(run(&p, &[]), None);
+    }
+
+    #[test]
+    fn ldx_from_ctx_still_works() {
+        // LDX_MEM_B R0 = [R1+1] over the pkt; R1 defaults to 0 (pkt base).
+        let p = cat(&[raw(0x71, 0, 1, 1, 0), raw(0x95, 0, 0, 0, 0)]);
+        assert_eq!(run(&p, &[0xaa, 0xbb, 0xcc]), Some(0xbb));
     }
 
     #[test]
