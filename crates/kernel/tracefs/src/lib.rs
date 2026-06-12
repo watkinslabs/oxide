@@ -36,7 +36,7 @@ pub fn init() {
     devfs::register("/sys/kernel/tracing/available_tracers",
         StaticFileInode::new(b"nop\n") as InodeRef);
     devfs::register("/sys/kernel/tracing/available_events",
-        StaticFileInode::new(b"") as InodeRef);
+        StaticFileInode::new(b"sched:sched_switch\n") as InodeRef);
     devfs::register("/sys/kernel/tracing/trace_options",
         StaticFileInode::new(b"") as InodeRef);
     devfs::register("/sys/kernel/tracing/buffer_size_kb",

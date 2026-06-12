@@ -80,6 +80,37 @@ fn record_marker(msg: &[u8]) {
     percpu_ring::record(this_cpu(), now_ns(), pid, KIND_MARK, &pl[..16 + mn]);
 }
 
+/// sched_switch tracepoint hook (installed in the scheduler while the event
+/// is enabled). Runs IN the context-switch hot path — IRQs off, rq lock held
+/// — so it MUST stay wait-free + alloc-free: one tracing_on load, a stack
+/// payload, the lockless ring record. Payload:
+/// [prev_comm 16 null-pad][next_pid u32 LE][next_comm 16 null-pad].
+/// # C: O(1)
+fn record_sched_switch(prev_pid: u32, prev_comm: &str, next_pid: u32, next_comm: &str) {
+    if !tracing_on() { return; }
+    let mut pl = [0u8; PAYLOAD];
+    let pc = prev_comm.as_bytes();
+    pl[..pc.len().min(16)].copy_from_slice(&pc[..pc.len().min(16)]);
+    pl[16..20].copy_from_slice(&next_pid.to_le_bytes());
+    let nc = next_comm.as_bytes();
+    let nn = nc.len().min(16);
+    pl[20..20 + nn].copy_from_slice(&nc[..nn]);
+    percpu_ring::record(this_cpu(), now_ns(), prev_pid, KIND_SCHED_SWITCH, &pl[..36]);
+}
+
+/// `events/sched/sched_switch/enable` state. Installing/clearing the scheduler
+/// hook IS the enable — the switch hot path costs one null-check when off.
+static SCHED_SWITCH_ON: AtomicBool = AtomicBool::new(false);
+
+/// Enable (true) / disable the sched_switch tracepoint. # C: O(1)
+fn set_sched_switch(on: bool) {
+    SCHED_SWITCH_ON.store(on, Ordering::Release);
+    #[cfg(target_os = "oxide-kernel")]
+    sched::live::install_sched_switch_hook(if on { Some(record_sched_switch) } else { None });
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let _ = record_sched_switch; // referenced so the hosted build keeps it
+}
+
 /// trim a null-padded comm field to its &str.
 fn comm_str(b: &[u8]) -> &str {
     let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
@@ -99,8 +130,8 @@ fn fmt_record(out: &mut Vec<u8>, e: &Record) {
             out.extend_from_slice(&p[16..]);
             out.push(b'\n');
         }
-        KIND_SCHED_SWITCH if p.len() >= 16 + 4 + 16 + 4 => {
-            // [prev_comm 16][next_pid u32 LE][next_comm 16][next state u8...]
+        KIND_SCHED_SWITCH if p.len() >= 16 + 4 + 16 => {
+            // [prev_comm 16][next_pid u32 LE][next_comm 16]
             let prev_comm = comm_str(&p[..16]);
             let next_pid = u32::from_le_bytes([p[16], p[17], p[18], p[19]]);
             let next_comm = comm_str(&p[20..36]);
@@ -191,6 +222,25 @@ impl Inode for TracingOnInode {
     }
 }
 
+/// `events/sched/sched_switch/enable` — read "1\n"/"0\n"; write 1/0 installs
+/// or clears the scheduler tracepoint hook.
+struct SchedSwitchEnableInode { ino: Ino }
+impl Inode for SchedSwitchEnableInode {
+    fn ino(&self) -> Ino { self.ino }
+    fn file_type(&self) -> FileType { FileType::Regular }
+    fn size(&self) -> u64 { 2 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let body: &[u8] = if SCHED_SWITCH_ON.load(Ordering::Acquire) { b"1\n" } else { b"0\n" };
+        Ok(read_at(body, off, buf))
+    }
+    fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
+        let on = !matches!(buf.iter().find(|b| !b.is_ascii_whitespace()), Some(b'0'));
+        set_sched_switch(on);
+        Ok(buf.len())
+    }
+}
+
 /// `/sys/kernel/tracing/trace_pipe` — the CONSUMING ftrace reader. Unlike
 /// `trace` (non-destructive snapshot), each read drains records out of the
 /// buffer and renders their event lines (no header). A blocking read parks
@@ -260,4 +310,6 @@ pub fn register() {
         Arc::new(TracePipeInode { ino: alloc_ino(), pending: Spinlock::new(Vec::new()) }) as InodeRef);
     devfs::register("/sys/kernel/tracing/tracing_on",
         Arc::new(TracingOnInode { ino: alloc_ino() }) as InodeRef);
+    devfs::register("/sys/kernel/tracing/events/sched/sched_switch/enable",
+        Arc::new(SchedSwitchEnableInode { ino: alloc_ino() }) as InodeRef);
 }

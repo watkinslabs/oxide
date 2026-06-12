@@ -43,6 +43,7 @@ pub use schedule::{
     current, current_mount_ns, current_chroot_root, mark_done, schedule,
     oxide_finish_task_switch, tick_yield,
     install_default_runqueue, runqueue_active, RunStats,
+    install_sched_switch_hook, SchedSwitchFn,
 };
 pub use spawn::{next_tid, spawn_kernel_thread, spawn_user_thread, spawn_user_thread_for_fork, spawn_user_thread_with_vpid};
 pub mod timer_driver;
