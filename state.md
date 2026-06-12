@@ -58,3 +58,33 @@ The bounded/testable gaps are done. What's left:
 
     sed -n '1,40p' crates/kernel/security/src/bpf.rs   # if taking eBPF
     # or build the per-CPU lockless trace ring buffer for §2.12 tracepoints
+
+## NEXT BIG DIRECTION — gap list (user, this session) toward Linux/desktop/games
+
+User wants breadth on missing subsystems (skip Doom itself for now). Prioritized
+by (value × tractability × headless-verifiability):
+
+1. **AUDIO (#1, game-blocker, "effectively absent")** — add a virtio-sound
+   (virtio-snd, device_id 0x1059) driver reusing the virtio-pci infra
+   (drv-virtio-rng is the simplest template; virtio_drv.rs does the probe/queue
+   bring-up). Needs: 4 queues (ctrl/event/tx/rx), PCM control protocol
+   (PCM_INFO→SET_PARAMS→PREPARE→START + period buffers), an OSS /dev/dsp (write
+   PCM→play) node. VERIFY: QEMU `-audiodev wav,path=out.wav` capture → assert
+   non-zero samples. Multi-PR (one of the most complex virtio devices). No ALSA/
+   Pulse/PipeWire userspace yet either.
+2. **Mouse/pointer + USB HID** — drain.rs already push_event0's ALL event types,
+   but only a virtio-KEYBOARD is wired + the evdev node advertises kbd-only caps.
+   Add a virtio-tablet/mouse QEMU device + a 2nd evdev node (event1) with
+   EV_REL/EV_ABS/BTN_* caps. VERIFY is the hard part (needs QMP input-send-event
+   pointer injection — the serial boot-smoke can't do it). USB HID stack absent.
+3. **Ethernet beyond virtio-net** — e1000/rtl8139 PCI drivers. Bounded but
+   oxide "DHCP" is a static seed, so verifying a 2nd NIC is murky.
+4. **3D/virgl + Xorg/Mesa/libdrm userspace** — huge; DRM ioctls (drm/node.rs
+   SET_MASTER/GET_MAGIC/atomic-TEST_ONLY) are placeholder; active GPU path is 2D
+   scanout only. Many sessions; needs vendor userspace roots (none exist).
+5. **Module lifecycle** (modules/lib.rs: load/unload/reloc/signature/refcount),
+   **syscall tail** (mostly thin in main dispatch; ~legit per-flag rejections).
+
+Recommended start: AUDIO via virtio-snd (PR1 = driver bring-up to DRIVER_OK +
+PCM_INFO/SET_PARAMS/PREPARE/START + a single tone out the tx queue, wav-verified;
+PR2 = /dev/dsp + arbitrary PCM; PR3 = capture/mixer).
