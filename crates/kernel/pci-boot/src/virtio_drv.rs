@@ -245,134 +245,52 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         if queue_size == 0 { break; }
     }
 
-    // queue_notify_off = hi-u16 of cfg+0x1C.
-    let q0_notify_off = (r32(0x1C) >> 16) as u16;
-    // queue 1 (TX) state captured via queue_select switch.
+    // Per-arch HHDM offset, hoisted once for all queue programming. The
+    // virtio core (virtio_qsetup) programs EVERY virtqueue uniformly —
+    // q0 (all devices) + q1 (net/vsock TX) here, q2/q3 for multi-queue
+    // devices (virtio-snd) via the same `program_queue`.
+    let hhdm = {
+        #[cfg(target_arch = "x86_64")]
+        { hal_x86_64::mmu_ops::hhdm_offset() }
+        #[cfg(target_arch = "aarch64")]
+        { hal_aarch64::mmu_ops::hhdm_offset() }
+    };
+    // queue 1 (TX) state captured when net/vsock program it below.
     let mut q1_desc_pa: u64 = 0;
     let mut q1_driver_pa: u64 = 0;
     let mut q1_device_pa: u64 = 0;
     let mut q1_notify_off_local: u16 = 0;
     let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
-    let (q0_desc_pa, q0_driver_pa, q0_device_pa, final_status) = if q0_size != 0 && features_ok {
-        let pa_desc   = pmm::setup::alloc_one_frame().unwrap_or(0);
-        let pa_driver = pmm::setup::alloc_one_frame().unwrap_or(0);
-        let pa_device = pmm::setup::alloc_one_frame().unwrap_or(0);
-        if pa_desc != 0 && pa_driver != 0 && pa_device != 0 {
-            //: zero the 3 ring frames via HHDM BEFORE programming
-            // queue_enable so the device sees deterministic ring state.
-            // PMM doesn't guarantee zero-init.
-            let hhdm = {
-                #[cfg(target_arch = "x86_64")]
-                { hal_x86_64::mmu_ops::hhdm_offset() }
-                #[cfg(target_arch = "aarch64")]
-                { hal_aarch64::mmu_ops::hhdm_offset() }
-            };
-            if hhdm != 0 {
-                for &pa in &[pa_desc, pa_driver, pa_device] {
-                    let va = hhdm.wrapping_add(pa) as *mut u64;
-                    // SAFETY: HHDM covers all RAM PMM hands out;
-                    // single-CPU pre-init; we own these freshly-allocated
-                    // frames; aligned u64 stores within a 4 KiB page.
-                    unsafe {
-                        for i in 0..(0x1000 / 8) {
-                            core::ptr::write_volatile(va.add(i), 0);
-                        }
+    let (q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_off, final_status) = if features_ok {
+        // q0: msix_vec=0 (vector 0). program_queue returns None if the
+        // device reports queue_size==0 (no such queue) or alloc fails.
+        match super::virtio_qsetup::program_queue(cfg_va, 0, 0, hhdm) {
+            Some(r0) => {
+                //: for virtio-net / virtio-vsock, also stand up queue 1
+                // (TX) so we can post outgoing frames. queue 0 = RX,
+                // queue 1 = TX by spec §5.1.6 Device Operation. q1 polls
+                // used.idx, so bind VIRTIO_MSI_NO_VECTOR (0xFFFF).
+                if needs_q1 {
+                    if let Some(r1) = super::virtio_qsetup::program_queue(cfg_va, 1, 0xFFFF, hhdm) {
+                        q1_desc_pa = r1.desc_pa;
+                        q1_driver_pa = r1.driver_pa;
+                        q1_device_pa = r1.device_pa;
+                        q1_notify_off_local = r1.notify_off;
                     }
                 }
-            }
-            // F59-09: queue_select=0 via u16 store at +0x16.
-            w16(0x16, 0);
-            // queue_size at 0x18 (low u16) — leave as-is.
-            //: bind queue_msix_vector at +0x1A to MSI-X table
-            // F59-09: queue_msix_vector is u16 at +0x1A — must be a
-            // u16 store (QEMU's switch dispatcher would drop a u32
-            // store at 0x18, only triggering queue_size).
-            w16(0x1A, 0);
-            // queue_desc le64 at +0x20: separate u32 cases at 0x20/0x24.
-            w32(0x20, (pa_desc & 0xFFFF_FFFF) as u32);
-            w32(0x24, (pa_desc >> 32) as u32);
-            // queue_driver (avail) le64 at +0x28:
-            w32(0x28, (pa_driver & 0xFFFF_FFFF) as u32);
-            w32(0x2C, (pa_driver >> 32) as u32);
-            // queue_device (used) le64 at +0x30:
-            w32(0x30, (pa_device & 0xFFFF_FFFF) as u32);
-            w32(0x34, (pa_device >> 32) as u32);
-            // F59-09: queue_enable is u16 at +0x1C — must be a u16 store.
-            w16(0x1C, 1);
 
-            //: for virtio-net / virtio-vsock, also stand up queue 1
-            // (TX) so we can post outgoing frames. queue 0 = RX,
-            // queue 1 = TX by spec §5.1.6 Device Operation.
-            if needs_q1 {
-                if let (Some(q1d), Some(q1v), Some(q1u)) = (
-                    pmm::setup::alloc_one_frame(),
-                    pmm::setup::alloc_one_frame(),
-                    pmm::setup::alloc_one_frame(),
-                ) {
-                    let hhdm = {
-                        #[cfg(target_arch = "x86_64")]
-                        { hal_x86_64::mmu_ops::hhdm_offset() }
-                        #[cfg(target_arch = "aarch64")]
-                        { hal_aarch64::mmu_ops::hhdm_offset() }
-                    };
-                    if hhdm != 0 {
-                        for &p in &[q1d, q1v, q1u] {
-                            let v = hhdm.wrapping_add(p) as *mut u64;
-                            // SAFETY: HHDM-mapped freshly-allocated frame; aligned u64 stores within the 4 KiB page bounds we own.
-                            unsafe {
-                                for i in 0..(0x1000 / 8) {
-                                    core::ptr::write_volatile(v.add(i), 0);
-                                }
-                            }
-                        }
-                    }
-                    // F59-09: queue_select=1 via u16 store at +0x16.
-                    // The earlier u32 store at 0x14 was dropped by
-                    // QEMU's switch-on-addr dispatcher, so q1's ring
-                    // PA writes were silently going to q0 instead.
-                    // Confirmed: with the u16 store, q1_notify_off
-                    // reads back as 1 (was 0 with the bug), TX kicks
-                    // reach the device, SLIRP replies to ARP.
-                    w16(0x16, 1);
-                    // Capture per-queue notify_off (u16 at +0x1E).
-                    // SAFETY: cfg_va Device-attr-mapped above; aligned u16 load of queue_notify_off for the currently-selected queue (q1).
-                    q1_notify_off_local = unsafe {
-                        core::ptr::read_volatile((cfg_va + 0x1E) as *const u16)
-                    };
-                    // q1 polls used.idx, no MSI-X needed.
-                    // F59-09: queue_msix_vector u16 at +0x1A.
-                    w16(0x1A, 0xFFFF);
-                    // queue_desc/driver/device for q1
-                    w32(0x20, (q1d & 0xFFFF_FFFF) as u32);
-                    w32(0x24, (q1d >> 32) as u32);
-                    w32(0x28, (q1v & 0xFFFF_FFFF) as u32);
-                    w32(0x2C, (q1v >> 32) as u32);
-                    w32(0x30, (q1u & 0xFFFF_FFFF) as u32);
-                    w32(0x34, (q1u >> 32) as u32);
-                    // F59-09: queue_enable u16 at +0x1C.
-                    w16(0x1C, 1);
-                    // Stash for outer-scope use post-DRIVER_OK.
-                    q1_desc_pa = q1d;
-                    q1_driver_pa = q1v;
-                    q1_device_pa = q1u;
-                    // Restore queue_select=0 so subsequent reads in
-                    // the kick path see q0 state.
-                    w16(0x16, 0); // F59-09: restore queue_select=0 via u16 store
-                }
+                // DRIVER_OK
+                w32(0x14, st(virtio::VIRTIO_STATUS_ACKNOWLEDGE
+                           | virtio::VIRTIO_STATUS_DRIVER
+                           | virtio::VIRTIO_STATUS_FEATURES_OK
+                           | virtio::VIRTIO_STATUS_DRIVER_OK));
+                let final_status = (r32(0x14) & 0xFF) as u8;
+                (r0.desc_pa, r0.driver_pa, r0.device_pa, r0.notify_off, final_status)
             }
-
-            // DRIVER_OK
-            w32(0x14, st(virtio::VIRTIO_STATUS_ACKNOWLEDGE
-                       | virtio::VIRTIO_STATUS_DRIVER
-                       | virtio::VIRTIO_STATUS_FEATURES_OK
-                       | virtio::VIRTIO_STATUS_DRIVER_OK));
-            let final_status = (r32(0x14) & 0xFF) as u8;
-            (pa_desc, pa_driver, pa_device, final_status)
-        } else {
-            (0, 0, 0, post_status as u8)
+            None => (0, 0, 0, 0, post_status as u8),
         }
     } else {
-        (0, 0, 0, post_status as u8)
+        (0, 0, 0, 0, post_status as u8)
     };
     // virtio-blk (transitional 0x1001 or modern 0x1042) — device-cfg
     // is harvested below; the persistent engine (drv-virtio-blk) owns
