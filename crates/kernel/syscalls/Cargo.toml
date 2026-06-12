@@ -54,7 +54,6 @@ drm               = { path = "../../drivers/drm" }
 fbdev             = { path = "../../drivers/fbdev" }
 fbcon             = { path = "../../drivers/fbcon" }
 vt                = { path = "../../drivers/vt" }
-iouring = { path = "../iouring" }
 
 [features]
 debug-boot = ["kmacros/debug-boot"]
