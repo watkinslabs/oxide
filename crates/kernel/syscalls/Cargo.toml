@@ -54,6 +54,8 @@ drm               = { path = "../../drivers/drm" }
 fbdev             = { path = "../../drivers/fbdev" }
 fbcon             = { path = "../../drivers/fbcon" }
 vt                = { path = "../../drivers/vt" }
+sound             = { path = "../sound" }
+drv-virtio-snd    = { path = "../../drivers/drv-virtio-snd" }
 
 [features]
 debug-boot = ["kmacros/debug-boot"]

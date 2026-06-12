@@ -35,16 +35,33 @@ hacks/stubs/façades. Both arches lockstep. Assembly stays in
   timer → diag=7 timeout. Fix: `tx_period` poll reads device_status (cfg_va+0x14)
   each iteration to force a VM exit, releasing the BQL (Ctx now carries cfg_va).
 
-### NEXT TASK — PR-D: ALSA `/dev/snd/*` nodes (then PR-E OSS `/dev/dsp`)
-`crates/kernel/sound` glue: controlC0 (minor card*32+0) + pcmC0D0p (card*32+16),
-`SNDRV_PCM_IOCTL_*` (docs/58§5.1) → drv-virtio-snd. HW_PARAMS→SET_PARAMS,
-PREPARE/START/DROP, WRITEI_FRAMES→a `pcm_write` (generalise `beep`'s TX loop into
-a public `pcm_write(stream,bytes)`). `drv_virtio_snd::config()` sizes the card;
-`output_stream()` gives the default playback stream. Also wire `beep` into the
-`50§16` KIOCSOUND/KDMKTONE VT backend. Then PR-E OSS `/dev/dsp` (major 14).
+- **F456 (this branch)** PR-D: ALSA sound subsystem, the Linux way (user
+  insisted: no shortcuts, ALSA primary + OSS emulation on the SAME engine).
+  - drv-virtio-snd refactored to real `snd_pcm_ops`: `pcm_hw_params` (release-
+    if-needed then SET_PARAMS) / `pcm_prepare` / `pcm_trigger` / `pcm_hw_free` /
+    `pcm_submit` + `pcm_caps` (per-stream formats/rates/ch from PCM_INFO) +
+    `PcmState`. `beep` rebuilt on the private primitives (self-test unchanged).
+  - NEW `crates/kernel/sound` = ALSA PCM core: substream state machine +
+    `hw_params` refinement against device caps (uapi.rs has exact LP64 offsets
+    from the cross-toolchain asound.h) + sw_params + appl/hw_ptr accounting +
+    full `SNDRV_PCM_IOCTL_*`/`SNDRV_CTL_IOCTL_*` ABI. Nodes: `/dev/snd/controlC0`
+    + `/dev/snd/pcmC0D0p` (primary), `/dev/dsp`/`/dev/audio`/`/dev/mixer`
+    (snd-pcm-oss emulation, oss.rs). `sound::handle_ioctl` in the 016_ioctl
+    chain; `sound::init()` in kmain after PCI enum.
+  - Smoke: `userspace/snd_probe/snd_probe.c` (self-contained UAPI) drives the
+    real libasound sequence + asserts HW_PARAMS REJECTS FLOAT64 + pins
+    S16/2/44.1k + OSS path. PASS both arches. In oxide-smokes.sh + CRT_BINS.
+  - **GOTCHA fixed:** sw_params `boundary` is @64 not @56 (silence_size@56).
+
+### NEXT TASK — capture (RXQ) + ALSA controls + KIOCSOUND
+- Capture: program RXQ(3) like TXQ; `/dev/snd/pcmC0D0c` + READI; OSS /dev/dsp read.
+- Mixer: when VIRTIO_SND_F_CTLS negotiated (config.controls>0), CTL_INFO/READ/WRITE
+  → real `SNDRV_CTL_IOCTL_ELEM_*` element list (now reports 0 elements honestly).
+- Wire `drv_virtio_snd::beep` into `50§16` KIOCSOUND/KDMKTONE — needs ASYNC
+  playback (a kthread tone), NOT the blocking beep (would stall the console bell).
 2. Mouse/pointer: virtio-tablet/mouse 2nd evdev node (event1, EV_REL/EV_ABS/BTN_*).
 3. Ethernet: e1000/rtl8139 PCI drivers (oxide DHCP is a static seed — see memory).
 4. 3D/virgl + Xorg/Mesa userspace. 5. Module lifecycle (modules/lib.rs).
 
 ## First command next session
-    sed -n '131,168p' docs/58-virtio-snd.md   # §5 ALSA /dev/snd nodes + PCM ioctls
+    grep -n 'RXQ\|capture\|READI\|pcmC0D0c' docs/58-virtio-snd.md   # capture path

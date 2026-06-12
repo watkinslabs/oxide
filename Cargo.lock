@@ -672,6 +672,7 @@ dependencies = [
  "drv-virtio-input",
  "drv-virtio-net",
  "drv-virtio-rng",
+ "drv-virtio-snd",
  "drv-virtio-vsock",
  "elf",
  "elf-load",
@@ -701,6 +702,7 @@ dependencies = [
  "security",
  "smoke",
  "softirq",
+ "sound",
  "sync",
  "syscall",
  "syscalls",
@@ -1220,6 +1222,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sound"
+version = "0.1.0"
+dependencies = [
+ "devfs",
+ "drv-virtio-snd",
+ "hal",
+ "klog",
+ "sync",
+ "syscall",
+ "vfs",
+]
+
+[[package]]
 name = "spec-lint"
 version = "0.1.0"
 
@@ -1270,6 +1285,7 @@ dependencies = [
  "drv-virtio-gpu",
  "drv-virtio-input",
  "drv-virtio-net",
+ "drv-virtio-snd",
  "elf",
  "elf-load",
  "ext4",
@@ -1297,6 +1313,7 @@ dependencies = [
  "security",
  "smoke",
  "softirq",
+ "sound",
  "sync",
  "syscall",
  "tracefs",

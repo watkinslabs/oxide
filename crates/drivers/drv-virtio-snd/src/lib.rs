@@ -96,6 +96,13 @@ struct Ctx {
     /// First OUTPUT stream id discovered by PCM_INFO (None if no playback
     /// stream). The default playback target for `beep`/`pcm_write`.
     out_stream: Option<u32>,
+    /// OUTPUT stream capabilities harvested from PCM_INFO: supported
+    /// `formats`/`rates` bitmasks (VIRTIO_SND_PCM_FMT_*/RATE_* bit indices)
+    /// + channel range. Drive the ALSA `hw_params` refinement.
+    out_formats: u64,
+    out_rates:   u64,
+    out_ch_min:  u8,
+    out_ch_max:  u8,
     /// TXQ(2) ring the boot probe programmed (0 if not programmed).
     q2_desc_pa:   u64,
     q2_driver_pa: u64,
@@ -110,7 +117,21 @@ struct Ctx {
     /// TXQ scratch: virtio_snd_pcm_xfer header (@0) + virtio_snd_pcm_status
     /// (@16). One 4 KiB page.
     tx_scratch_pa: u64,
+    /// OUTPUT substream lifecycle state (the snd_pcm_ops state machine the
+    /// ALSA core drives via hw_params/prepare/trigger).
+    pcm_state: PcmState,
+    /// Applied geometry (set by `pcm_hw_params`): rate/format are
+    /// VIRTIO_SND_PCM_RATE_*/FMT_* enum values; bytes-per-frame derives from
+    /// format×channels. `period_bytes` is the TXQ transfer unit.
+    cfg_rate:     u8,
+    cfg_format:   u8,
+    cfg_channels: u8,
+    cfg_period_bytes: u32,
 }
+
+/// OUTPUT substream state (mirrors SNDRV_PCM_STATE_* the core exposes).
+#[derive(PartialEq, Clone, Copy)]
+pub enum PcmState { Idle, Configured, Prepared, Running }
 
 // SAFETY justification: Ctx holds raw PAs/VAs into HHDM/MMIO stable for
 // the device lifetime; all access is funneled through the CONTROLQ
@@ -209,10 +230,16 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         jacks: p.jacks, streams: p.streams,
         chmaps: p.chmaps, controls: p.controls,
         out_stream: None,
+        out_formats: 0, out_rates: 0, out_ch_min: 1, out_ch_max: 2,
         q2_desc_pa: p.q2_desc_pa, q2_driver_pa: p.q2_driver_pa,
         q2_device_pa: p.q2_device_pa, q2_notify_va: p.q2_notify_va,
         q2_size: p.q2_size, tx_avail_idx: tx_used_seen,
         tx_buf_pa, tx_scratch_pa,
+        pcm_state: PcmState::Idle,
+        cfg_rate: VIRTIO_SND_PCM_RATE_44100,
+        cfg_format: VIRTIO_SND_PCM_FMT_S16,
+        cfg_channels: 2,
+        cfg_period_bytes: PERIOD_BYTES as u32,
     });
     let (out, input) = pcm_info_scan();
     Some(SndProbe { streams: p.streams, out, input })
@@ -255,14 +282,32 @@ fn pcm_info_scan() -> (u32, u32) {
     let (mut out, mut input) = (0u32, 0u32);
     let mut first_out: Option<u32> = None;
     for i in 0..entries {
-        // SAFETY: HHDM-mapped response window the device just filled;
-        // bounded u8 read of the direction byte of entry `i` (< resp_len).
-        let dir = unsafe { core::ptr::read_volatile(base.add(i * PCM_INFO_SIZE + PCM_INFO_DIR_OFF)) };
-        if dir == VIRTIO_SND_D_INPUT {
+        let e = base.wrapping_add(i * PCM_INFO_SIZE);
+        // u8 read of byte `off` within entry `e` of the device-filled
+        // response window (bounded by entries < resp_len).
+        let rd8 = |off: usize| -> u8 {
+            // SAFETY: `e` is the HHDM-mapped response window the device just
+            // filled; off < PCM_INFO_SIZE keeps the read inside this entry.
+            unsafe { core::ptr::read_volatile(e.add(off)) }
+        };
+        let rd64 = |off: usize| -> u64 {
+            let mut v = 0u64;
+            for b in 0..8 { v |= (rd8(off + b) as u64) << (b * 8); }
+            v
+        };
+        if rd8(PCM_INFO_DIR_OFF) == VIRTIO_SND_D_INPUT {
             input += 1;
         } else {
             out += 1;
-            if first_out.is_none() { first_out = Some(i as u32); }
+            if first_out.is_none() {
+                first_out = Some(i as u32);
+                // Harvest OUTPUT caps: formats@8 / rates@16 (le64),
+                // channels_min@25 / channels_max@26.
+                ctx.out_formats = rd64(8);
+                ctx.out_rates = rd64(16);
+                ctx.out_ch_min = rd8(25).max(1);
+                ctx.out_ch_max = rd8(26).max(ctx.out_ch_min);
+            }
         }
     }
     ctx.out_stream = first_out;
@@ -477,7 +522,6 @@ pub fn beep_diag(hz: u32, ms: u32) -> u8 {
     if ctx.q2_desc_pa == 0 { return 3; }
 
     // S16 mono @44.1 kHz; 2 KiB period, 4 KiB (2-period) buffer.
-    const PERIOD_BYTES: usize = 2048;
     if pcm_set_params(ctx, stream, (PERIOD_BYTES * 2) as u32, PERIOD_BYTES as u32,
         1, VIRTIO_SND_PCM_FMT_S16, VIRTIO_SND_PCM_RATE_44100) != Some(VIRTIO_SND_S_OK)
     {
@@ -506,4 +550,142 @@ pub fn beep_diag(hz: u32, ms: u32) -> u8 {
     let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_STOP, stream);
     let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
     if ok { 0 } else { 7 }
+}
+
+// ── OUTPUT substream ops (the snd_pcm_ops the ALSA core drives) ─────────
+//
+// The `sound` crate (ALSA PCM core) owns the substream state machine +
+// ring accounting + the SNDRV_PCM_IOCTL ABI; it calls these ops to apply
+// hw params, prepare/free the device buffer, trigger start/stop, and
+// transfer frames — exactly the snd_pcm_ops split in Linux ALSA. The OSS
+// /dev/dsp emulation drives the same ops via the core.
+
+const PERIOD_BYTES: usize = 2048;
+
+/// Bytes per frame for a virtio_snd format enum × channel count. The
+/// supported formats are 1-byte (µ-law/A-law/S8/U8) or 2-byte (S16/U16).
+/// # C: O(1)
+fn frame_bytes(format: u8, channels: u8) -> usize {
+    let bps = match format {
+        VIRTIO_SND_PCM_FMT_S16 | 6 /*U16*/ => 2,
+        _ => 1,
+    };
+    bps * channels.max(1) as usize
+}
+
+/// OUTPUT-stream hw capabilities `(formats, rates, ch_min, ch_max)` harvested
+/// from PCM_INFO — `formats`/`rates` are VIRTIO_SND_PCM_FMT_*/RATE_* bit
+/// masks. Drive the ALSA `hw_params` refinement. None until installed.
+/// # C: O(1)
+pub fn pcm_caps() -> Option<(u64, u64, u8, u8)> {
+    CTX.lock().as_ref().map(|c| (c.out_formats, c.out_rates, c.out_ch_min, c.out_ch_max))
+}
+
+/// Default period (fragment) size in bytes the TXQ transfers. # C: O(1)
+pub fn period_bytes() -> usize { PERIOD_BYTES }
+
+/// `(installed, has_output_stream, has_txq)` — playback-readiness probe for
+/// the core/self-test. # C: O(1)
+pub fn playback_ready() -> (bool, bool, bool) {
+    match CTX.lock().as_ref() {
+        Some(c) => (true, c.out_stream.is_some(), c.q2_desc_pa != 0),
+        None => (false, false, false),
+    }
+}
+
+/// Current OUTPUT substream state. # C: O(1)
+pub fn pcm_state() -> PcmState {
+    CTX.lock().as_ref().map(|c| c.pcm_state).unwrap_or(PcmState::Idle)
+}
+
+/// Applied geometry `(rate, format, channels, period_bytes)` (enums), or
+/// None if not installed. # C: O(1)
+pub fn configured() -> Option<(u8, u8, u8, u32)> {
+    CTX.lock().as_ref().map(|c| (c.cfg_rate, c.cfg_format, c.cfg_channels, c.cfg_period_bytes))
+}
+
+/// Bytes per frame of the configured format × channels (frames↔bytes for
+/// the core's appl_ptr/hw_ptr accounting). # C: O(1)
+pub fn frame_size() -> usize {
+    CTX.lock().as_ref().map(|c| frame_bytes(c.cfg_format, c.cfg_channels)).unwrap_or(4)
+}
+
+/// snd_pcm_ops::hw_params — apply rate/format/channels + the period/buffer
+/// geometry to the device (VIRTIO_SND_R_PCM_SET_PARAMS). rate/format are
+/// VIRTIO_SND_PCM_RATE_*/FMT_* enums. → state Configured. # C: O(CONTROLQ)
+pub fn pcm_hw_params(rate: u8, format: u8, channels: u8,
+                     period_bytes: u32, buffer_bytes: u32) -> bool {
+    let mut g = CTX.lock();
+    let ctx = match g.as_mut() { Some(c) => c, None => return false };
+    let stream = match ctx.out_stream { Some(s) => s, None => return false };
+    let ch = channels.clamp(1, 2);
+    // SET_PARAMS requires a released stream (spec §5.14): if a prior session
+    // left it PREPARED/RUNNING, STOP+RELEASE first so re-config is robust.
+    if ctx.pcm_state == PcmState::Prepared || ctx.pcm_state == PcmState::Running {
+        let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_STOP, stream);
+        let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
+    }
+    if pcm_set_params(ctx, stream, buffer_bytes, period_bytes, ch, format, rate)
+        != Some(VIRTIO_SND_S_OK) { return false; }
+    ctx.cfg_rate = rate;
+    ctx.cfg_format = format;
+    ctx.cfg_channels = ch;
+    ctx.cfg_period_bytes = period_bytes.max(1).min(0x1000);
+    ctx.pcm_state = PcmState::Configured;
+    true
+}
+
+/// snd_pcm_ops::prepare — allocate the device buffer + ready the stream
+/// (VIRTIO_SND_R_PCM_PREPARE). → state Prepared. # C: O(CONTROLQ)
+pub fn pcm_prepare() -> bool {
+    let mut g = CTX.lock();
+    let ctx = match g.as_mut() { Some(c) => c, None => return false };
+    if ctx.pcm_state == PcmState::Idle { return false; }
+    let stream = match ctx.out_stream { Some(s) => s, None => return false };
+    if pcm_ctl(ctx, VIRTIO_SND_R_PCM_PREPARE, stream) != Some(VIRTIO_SND_S_OK) { return false; }
+    ctx.pcm_state = PcmState::Prepared;
+    true
+}
+
+/// snd_pcm_ops::trigger — START (`start=true`) / STOP (`start=false`)
+/// streaming. → state Running / Prepared. # C: O(CONTROLQ)
+pub fn pcm_trigger(start: bool) -> bool {
+    let mut g = CTX.lock();
+    let ctx = match g.as_mut() { Some(c) => c, None => return false };
+    let stream = match ctx.out_stream { Some(s) => s, None => return false };
+    let code = if start { VIRTIO_SND_R_PCM_START } else { VIRTIO_SND_R_PCM_STOP };
+    if pcm_ctl(ctx, code, stream) != Some(VIRTIO_SND_S_OK) { return false; }
+    ctx.pcm_state = if start { PcmState::Running } else { PcmState::Prepared };
+    true
+}
+
+/// snd_pcm_ops::hw_free — release the device buffer
+/// (VIRTIO_SND_R_PCM_RELEASE). → state Idle. # C: O(CONTROLQ)
+pub fn pcm_hw_free() -> bool {
+    let mut g = CTX.lock();
+    let ctx = match g.as_mut() { Some(c) => c, None => return false };
+    if ctx.pcm_state == PcmState::Idle { return true; }
+    let stream = match ctx.out_stream { Some(s) => s, None => return false };
+    let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
+    ctx.pcm_state = PcmState::Idle;
+    true
+}
+
+/// Transfer interleaved PCM frames to a Running OUTPUT stream — the
+/// snd_pcm_ops transfer/ack: push the bytes as period-sized TXQ chains,
+/// blocking until each is consumed. Returns bytes accepted (0 if not
+/// Running / no device / TX timeout). # C: O(bytes/period × TXQ round-trip)
+pub fn pcm_submit(bytes: &[u8]) -> usize {
+    let mut g = CTX.lock();
+    let ctx = match g.as_mut() { Some(c) => c, None => return 0 };
+    if ctx.pcm_state != PcmState::Running { return 0; }
+    let stream = match ctx.out_stream { Some(s) => s, None => return 0 };
+    let chunk = (ctx.cfg_period_bytes as usize).max(1).min(0x1000);
+    let mut off = 0usize;
+    while off < bytes.len() {
+        let n = (bytes.len() - off).min(chunk);
+        if !tx_period(ctx, stream, &bytes[off..off + n]) { break; }
+        off += n;
+    }
+    off
 }
