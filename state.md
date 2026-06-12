@@ -13,12 +13,12 @@ registry (#1778), sched_setscheduler aliased-to-get (#1779), net-ns rtnetlink
 dumps (#1780), dynlink IRELATIVE/IFUNC (#1783), AT_HWCAP baseline arm (#1785).
 
 ## HIGH-VALUE NEXT (need daytime / live verification — too risky unattended)
-1. **openssl-on-aarch64 constructor hang** (#1 linux2 §2.3 blocker). Uses the
-   REAL ld-musl (NOT dynlink.c — F33 was a separate fix). arm libcrypto IS
-   vendored + openssl_probe builds for arm → diagnosable. Hypotheses: arm
-   signal-frame gap (OpenSSL armcap SIGILL+longjmp probe; see
-   project_signal_frame_minimal) OR ld-musl reloc OR getauxval. Needs LIVE arm
-   qemu diagnosis (gdb / serial trace where it hangs before main).
+1. **openssl-on-aarch64 hang — RESOLVED** (#1787, verified live both arches:
+   /bin/openssl_probe runs EVP SHA-256 + PASSes on x86 AND arm). It was a STALE
+   blocker (fixed by earlier kernel work; comment lied). Attribution test
+   REFUTED the F34/AT_HWCAP hypothesis (reverted arm AT_HWCAP→0, still works).
+   Root cause of the original hang never pinned down — fine, it's gone. boot-
+   smoke-probe.sh arm/x86 openssl_probe now gate it.
 2. **Full arm rt_sigframe** (ucontext) — unblocks Go/SA_SIGINFO + maybe (1).
    HIGH value, HIGH risk (subtle signal ABI; wrong = breaks ALL arm signals).
    Verify with a SIGILL+longjmp probe on arm before trusting.
