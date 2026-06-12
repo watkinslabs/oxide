@@ -99,20 +99,6 @@ impl Attr {
         }
     }
 
-    /// Set fg from an SGR 16/256-color index, resolving to RGB now. A basic
-    /// 0..7 index brightens to 8..15 when `bold` (VGA convention).
-    /// # C: O(1).
-    pub fn set_fg_index(&mut self, idx: u32) {
-        let i = if self.bold && idx < 8 { idx + 8 } else { idx };
-        self.fg = xterm_256_rgb(i);
-    }
-
-    /// Set bg from an SGR 16/256-color index, resolving to RGB now.
-    /// # C: O(1).
-    pub fn set_bg_index(&mut self, idx: u32) {
-        self.bg = xterm_256_rgb(idx);
-    }
-
     /// Reset to SGR defaults (SGR 0).
     /// # C: O(1).
     pub fn reset(&mut self) {
