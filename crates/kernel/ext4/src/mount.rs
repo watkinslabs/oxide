@@ -297,62 +297,57 @@ impl Mount {
     /// + leaves); deeper trees surface DepthUnsupported.
     /// # C: O(depth × log N) — small constant in practice
     pub fn read_file_block(&self, inode: &Inode, file_blk: u32) -> Result<Vec<u8>, MountError> {
-        let hdr = inode::parse_extent_header(&inode.i_block)?;
+        let phys = self.resolve_pblock(&inode.i_block, file_blk)?;
+        let byte_off = phys * (self.sb.block_size as u64);
+        read_byte_range(&*self.dev, byte_off, self.sb.block_size as usize)
+    }
+
+    /// Map a file-logical block → physical LBA by descending the extent
+    /// tree from the inode `i_block` through ANY number of interior levels
+    /// (depth 0..=5 per the ext4 spec — Linux `ext4_ext_binsearch`/
+    /// `ext4_find_extent`). Replaces the old depth-0/1/2 hand-unroll that
+    /// returned `DepthUnsupported` past depth 2.
+    /// # C: O(depth) block I/Os + O(entries) per level
+    pub(crate) fn resolve_pblock(&self, i_block: &[u8; inode::I_BLOCK_LEN], file_blk: u32)
+        -> Result<u64, MountError>
+    {
+        let hdr = inode::parse_extent_header(i_block)?;
         if hdr.depth == 0 {
-            return self.read_file_block_from_leaves(&inode.i_block, &hdr, file_blk);
+            return self.leaf_pblock_inline(i_block, &hdr, file_blk);
         }
-        if hdr.depth > 2 { return Err(MountError::DepthUnsupported); }
-        // depth > 0: walk inline idx records, descend into the
-        // child block whose `block` covers `file_blk`. Inline
-        // idx records share i_block with their header.
-        let child_lba = self.find_child_for(&inode.i_block, &hdr, file_blk)?;
-        // Child block: [ExtentHeader | records]. Read it.
+        // Descend interior levels: pick the child idx covering file_blk,
+        // read the child block, repeat until a leaf (depth 0).
         let bs = self.sb.block_size as usize;
-        let child = read_byte_range(&*self.dev, child_lba * (bs as u64), bs)?;
-        let chdr = inode::parse_extent_header_slice(&child)?;
-        if chdr.depth == 0 {
-            self.read_file_block_from_leaves_slice(&child, &chdr, file_blk)
-        } else {
-            // depth=2: one more level. Recurse via finding
-            // child_lba inside this child's idx records.
-            let next_child_lba = self.find_child_for_slice(&child, &chdr, file_blk)?;
-            let leaf = read_byte_range(&*self.dev, next_child_lba * (bs as u64), bs)?;
-            let lhdr = inode::parse_extent_header_slice(&leaf)?;
-            if lhdr.depth != 0 { return Err(MountError::DepthUnsupported); }
-            self.read_file_block_from_leaves_slice(&leaf, &lhdr, file_blk)
+        let mut child_lba = self.find_child_for(i_block, &hdr, file_blk)?;
+        loop {
+            let buf = read_byte_range(&*self.dev, child_lba * (bs as u64), bs)?;
+            let chdr = inode::parse_extent_header_slice(&buf)?;
+            if chdr.depth == 0 {
+                return self.leaf_pblock_slice(&buf, &chdr, file_blk);
+            }
+            child_lba = self.find_child_for_slice(&buf, &chdr, file_blk)?;
         }
     }
 
-    /// Inline-i_block leaf walk (depth==0).
-    fn read_file_block_from_leaves(&self, i_block: &[u8; inode::I_BLOCK_LEN],
-                                    hdr: &inode::ExtentHeader, file_blk: u32)
-        -> Result<Vec<u8>, MountError>
-    {
+    /// Leaf (depth-0) lookup against the inline i_block → physical LBA.
+    fn leaf_pblock_inline(&self, i_block: &[u8; inode::I_BLOCK_LEN],
+                          hdr: &inode::ExtentHeader, file_blk: u32) -> Result<u64, MountError> {
         for i in 0..hdr.entries {
-            let e = inode::parse_inline_extent(i_block, hdr, i)
-                .ok_or(MountError::NotFound)?;
+            let e = inode::parse_inline_extent(i_block, hdr, i).ok_or(MountError::NotFound)?;
             if file_blk >= e.block && file_blk < e.block + e.len as u32 {
-                let phys = e.start_lba() + (file_blk - e.block) as u64;
-                let byte_off = phys * (self.sb.block_size as u64);
-                return read_byte_range(&*self.dev, byte_off, self.sb.block_size as usize);
+                return Ok(e.start_lba() + (file_blk - e.block) as u64);
             }
         }
         Err(MountError::NotFound)
     }
 
-    /// Slice variant of leaf walk for child blocks (which are
-    /// fs-block-sized, not 60 bytes).
-    fn read_file_block_from_leaves_slice(&self, buf: &[u8],
-                                          hdr: &inode::ExtentHeader, file_blk: u32)
-        -> Result<Vec<u8>, MountError>
-    {
+    /// Leaf (depth-0) lookup against a child block slice → physical LBA.
+    fn leaf_pblock_slice(&self, buf: &[u8], hdr: &inode::ExtentHeader, file_blk: u32)
+        -> Result<u64, MountError> {
         for i in 0..hdr.entries {
-            let e = inode::parse_inline_extent_slice(buf, hdr, i)
-                .ok_or(MountError::NotFound)?;
+            let e = inode::parse_inline_extent_slice(buf, hdr, i).ok_or(MountError::NotFound)?;
             if file_blk >= e.block && file_blk < e.block + e.len as u32 {
-                let phys = e.start_lba() + (file_blk - e.block) as u64;
-                let byte_off = phys * (self.sb.block_size as u64);
-                return read_byte_range(&*self.dev, byte_off, self.sb.block_size as usize);
+                return Ok(e.start_lba() + (file_blk - e.block) as u64);
             }
         }
         Err(MountError::NotFound)
@@ -410,18 +405,13 @@ impl Mount {
         if data.len() != self.sb.block_size as usize {
             return Err(MountError::Inode(InodeError::BadLen));
         }
-        let hdr = inode::parse_extent_header(&inode.i_block)?;
-        if hdr.depth != 0 { return Err(MountError::DepthUnsupported); }
-        for i in 0..hdr.entries {
-            let e = inode::parse_inline_extent(&inode.i_block, &hdr, i)
-                .ok_or(MountError::NotFound)?;
-            if file_blk >= e.block && file_blk < e.block + e.len as u32 {
-                let phys = e.start_lba() + (file_blk - e.block) as u64;
-                let byte_off = phys * (self.sb.block_size as u64);
-                return write_byte_range(&*self.dev, byte_off, data);
-            }
-        }
-        Err(MountError::NotFound)
+        // Resolve the physical LBA via the depth-agnostic extent walk, then
+        // RMW in place. Was depth-0-only (DepthUnsupported on any multi-extent
+        // file), which silently failed write_at's RMW phase for fragmented
+        // files; the descent below handles depth 0..=5.
+        let phys = self.resolve_pblock(&inode.i_block, file_blk)?;
+        let byte_off = phys * (self.sb.block_size as u64);
+        write_byte_range(&*self.dev, byte_off, data)
     }
 
     /// Shadow-aware companion to `read_file_block`: walks the
@@ -431,17 +421,8 @@ impl Mount {
     pub fn read_file_block_meta(&self, inode: &Inode, file_blk: u32)
         -> Result<Vec<u8>, MountError>
     {
-        let hdr = inode::parse_extent_header(&inode.i_block)?;
-        if hdr.depth != 0 { return Err(MountError::DepthUnsupported); }
-        for i in 0..hdr.entries {
-            let e = inode::parse_inline_extent(&inode.i_block, &hdr, i)
-                .ok_or(MountError::NotFound)?;
-            if file_blk >= e.block && file_blk < e.block + e.len as u32 {
-                let phys = e.start_lba() + (file_blk - e.block) as u64;
-                return self.read_metadata_block(phys);
-            }
-        }
-        Err(MountError::NotFound)
+        let phys = self.resolve_pblock(&inode.i_block, file_blk)?;
+        self.read_metadata_block(phys)
     }
 
     /// Like `write_file_block` but routes through `metadata_write`
@@ -458,18 +439,9 @@ impl Mount {
         if data.len() != self.sb.block_size as usize {
             return Err(MountError::Inode(InodeError::BadLen));
         }
-        let hdr = inode::parse_extent_header(&inode.i_block)?;
-        if hdr.depth != 0 { return Err(MountError::DepthUnsupported); }
-        for i in 0..hdr.entries {
-            let e = inode::parse_inline_extent(&inode.i_block, &hdr, i)
-                .ok_or(MountError::NotFound)?;
-            if file_blk >= e.block && file_blk < e.block + e.len as u32 {
-                let phys = e.start_lba() + (file_blk - e.block) as u64;
-                let byte_off = phys * (self.sb.block_size as u64);
-                return self.metadata_write(byte_off, data);
-            }
-        }
-        Err(MountError::NotFound)
+        let phys = self.resolve_pblock(&inode.i_block, file_blk)?;
+        let byte_off = phys * (self.sb.block_size as u64);
+        self.metadata_write(byte_off, data)
     }
 
     /// Add a `name → child_ino` entry to directory `dir_ino`.
