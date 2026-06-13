@@ -1,0 +1,9 @@
+prefix=/home/nd/oxide2/vendor/openssl/install-aarch64
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: OpenSSL-libcrypto
+Description: oxide L2 staged OpenSSL-libcrypto
+Version: 3.0.15
+Libs: -L${libdir} -lcrypto
+Cflags: -I${includedir}

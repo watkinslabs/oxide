@@ -128,6 +128,27 @@ pub(crate) fn read_user_exec_path(path_ptr: u64) -> Result<alloc::vec::Vec<u8>, 
 ///   new_eff   = if VFS_CAP_FLAGS_EFFECTIVE then new_perm else 0
 ///   inh stays unchanged.
 /// # C: O(1)
+/// Capability transition every execve must apply, regardless of whether the
+/// exec'd file's inode resolves for file-caps. Privileged-root path (Linux
+/// `cap_bprm_creds_from_file`): a process exec'ing with euid 0 regains the
+/// full bounding set as permitted AND effective. systemd's executor lowers
+/// its *effective* set before execve and relies on the kernel restoring
+/// effective=permitted for root on exec; without this, systemd-networkd
+/// (root, then drops privs deliberately) can't acquire CAP_SETPCAP and aborts
+/// ("Failed to drop privileges: Operation not permitted"). # C: O(1)
+pub(crate) fn regain_root_caps_at_execve(cur: &sched::Task) {
+    use core::sync::atomic::Ordering;
+    let euid = cur.creds.euid.load(Ordering::Acquire);
+    if euid == 0 {
+        let bounding = cur.creds.cap_bounding.load(Ordering::Acquire);
+        cur.creds.cap_permitted.store(bounding, Ordering::Release);
+        cur.creds.cap_effective.store(bounding, Ordering::Release);
+    }
+}
+
+/// Apply the exec'd file's `security.capability` xattr to the task's caps
+/// (non-root file-cap path; root is handled by `regain_root_caps_at_execve`).
+/// # C: O(1)
 pub(crate) fn apply_file_caps_at_execve(inode: &vfs::InodeRef, cur: &sched::Task) {
     use core::sync::atomic::Ordering;
     const VFS_CAP_FLAGS_EFFECTIVE: u32 = 0x01;

@@ -22,8 +22,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         let cross = repo.join("vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc");
         if !cross.is_file() {
             eprintln!("xtask rootfs: aarch64 toolchain missing — running tools/fetch-cross.sh");
-            let mut c = Command::new(repo.join("tools/fetch-cross.sh").to_str().unwrap());
-            run(c)?;
+            run(Command::new(repo.join("tools/fetch-cross.sh").to_str().unwrap()))?;
         }
         cross
     } else {
@@ -654,14 +653,18 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         b"NAME=oxide\nVERSION=0.1\nID=oxide\nPRETTY_NAME=\"oxide-os 0.1\"\n")?,
         "/etc/os-release")?;
     put(&stage("hostname", b"oxide\n")?, "/etc/hostname")?;
-    // root has no password (NoPassword path); alice has hash for "swordfish".
+    // root: no password; alice: "swordfish". systemd-network (uid/gid 192):
+    // networkd privsep-drops to it (sysusers.d on every distro) — aborts at
+    // startup ("Cannot resolve user name systemd-network") without it.
     put(&stage("passwd",
         b"root:x:0:0:root:/root:/bin/sh\n\
+          systemd-network:x:192:192:systemd Network Management:/:/usr/sbin/nologin\n\
           alice:x:1000:1000:Alice User:/home/alice:/bin/sh\n\
           nobody:x:65534:65534:nobody:/:/bin/false\n")?,
         "/etc/passwd")?;
     put(&stage("group",
         b"root:x:0:\n\
+          systemd-network:x:192:\n\
           wheel:x:10:alice\n\
           users:x:100:alice\n\
           nobody:x:65534:\n")?,
@@ -671,6 +674,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     //  ship Drepper-2007 parity in P14-08).
     put(&stage("shadow",
         b"root::19000:0:99999:7:::\n\
+          systemd-network:!*:19000:0:99999:7:::\n\
           alice:$6$alsalt$Gy2r/DsI0Nj04MSfT1ob.ARb1hRHSZAx9elcKZSElN4EA7.NvTuioqQSs7hTeM7c/.mZ2Sk6GuR4vey3Lk1521:19000:0:99999:7:::\n\
           nobody:!:19000:0:99999:7:::\n")?,
         "/etc/shadow")?;
@@ -709,20 +713,16 @@ session    required   pam_unix.so\n")?,
     // the sshd stack: full pam_unix once T14 lands a real one; for now
     // the stub unblocks the console.
     put(&stage("pam_login",
-        b"# B18: console login PAM stack - mirrors the sshd stack so
-# the same pam_unix.so + /etc/shadow flow drives both login paths.
-# nullok: accept the empty root password (root::... in /etc/shadow) so
-# the console behaves like a normal dev box -- `root` + Enter -> shell.
+        b"# console login PAM stack - mirrors the sshd stack (pam_unix.so +
+# /etc/shadow); nullok accepts the empty root password (root + Enter).
 auth       required   pam_unix.so nullok
 account    required   pam_unix.so
 password   required   pam_unix.so nullok
 session    required   pam_unix.so
 ")?,
         "/etc/pam.d/login")?;
-    // Stage PAM modules at /usr/lib/security/ — libpam was built
-    // with --prefix=/usr --libdir=lib so DEFAULT_MODULE_PATH baked
-    // into libpam.a is "/usr/lib/security/". Sources are upstream
-    // Linux-PAM 1.7.2 under vendor/pam/Linux-PAM-1.7.2/modules/,
+    // Stage PAM modules at /usr/lib/security/ (libpam DEFAULT_MODULE_PATH).
+    // Sources are upstream Linux-PAM 1.7.2 under vendor/pam/.../modules/,
     // built by vendor/pam/build.sh into install-<arch>/modules/.
     let pam_vendor = |name: &str| pam_vendor_sec.join(name);
     put(&pam_vendor("pam_permit.so"),  "/usr/lib/security/pam_permit.so")?;
@@ -731,17 +731,10 @@ session    required   pam_unix.so
     put(&pam_vendor("pam_warn.so"),    "/usr/lib/security/pam_warn.so")?;
     put(&pam_vendor("pam_rootok.so"),  "/usr/lib/security/pam_rootok.so")?;
     put(&pam_vendor("pam_unix.so"),    "/usr/lib/security/pam_unix.so")?;
-    // unix_chkpwd setuid helper — non-root callers (su, passwd) fork
-    // it to validate /etc/shadow without needing read access themselves.
-    // B18 diagnostic: stage the real binary at .real, install a shell
-    // wrapper at the canonical path that captures stdin + stderr to
-    // /tmp/chkpwd.* so we can see exactly what pam_unix's child reads
-    // and prints. Wrapper is staged here only — no vendor code touched.
+    // unix_chkpwd setuid helper — su/passwd fork it to validate /etc/shadow.
     let chkpwd_src = repo.join(format!("vendor/pam/install-{arch}/unix_chkpwd"));
     put(&chkpwd_src, "/usr/sbin/unix_chkpwd")?;
     // Shared libpam + libpam_misc — login, sshd, su DT_NEEDED them.
-    // Modules dlopen at runtime against the same libpam.so loaded in
-    // the host process; that's the standard Linux-PAM ecosystem flow.
     let pam_lib = repo.join(format!("vendor/pam/install-{arch}/lib"));
     put(&pam_lib.join("libpam.so.0.85.1"),         "/usr/lib/libpam.so.0.85.1")?;
     put(&pam_lib.join("libpam_misc.so.0.82.1"),    "/usr/lib/libpam_misc.so.0.82.1")?;
@@ -749,9 +742,7 @@ session    required   pam_unix.so
     ln_via_debugfs("/usr/lib/libpam.so.0.85.1",      "/usr/lib/libpam.so")?;
     ln_via_debugfs("/usr/lib/libpam_misc.so.0.82.1", "/usr/lib/libpam_misc.so.0")?;
     ln_via_debugfs("/usr/lib/libpam_misc.so.0.82.1", "/usr/lib/libpam_misc.so")?;
-    // L2: libcap (first cross-built systemd shared dep). Real libcap.so →
-    // /usr/lib + soname/linker-name symlinks; libcap_probe links it.
-    // L2 shared libs → /usr/lib: put the real .so + soname/linker symlinks.
+    // L2 shared libs → /usr/lib: real .so + soname/linker-name symlinks.
     let stage_so = |vendor: &str, real: &str, soname: &str, linker: &str| -> Result<(), u8> {
         let dir = repo.join(format!("vendor/{vendor}/install-{arch}/lib"));
         put(&dir.join(real), &format!("/usr/lib/{real}"))?;
@@ -763,16 +754,30 @@ session    required   pam_unix.so
     for (vendor, real, soname, linker) in l2_deps::L2_LIBS {
         stage_so(vendor, real, soname, linker)?;
     }
-    for d in ["/lib/systemd", "/usr/lib/systemd", "/usr/lib/systemd/system", "/etc/systemd", "/etc/systemd/system"] { dbg(&format!("mkdir {d}"))?; }
+    // NB: do NOT pre-create /run/systemd/netif — networkd makes it 192:192.
+    for d in ["/lib/systemd", "/usr/lib/systemd", "/usr/lib/systemd/system",
+              "/etc/systemd", "/etc/systemd/system", "/etc/systemd/system/multi-user.target.wants",
+              "/etc/systemd/network", "/var/lib/systemd", "/var/lib/systemd/network"] { dbg(&format!("mkdir {d}"))?; }
     for (rel, tgt) in l2_deps::SYSTEMD_STAGE {
         put(&repo.join(format!("vendor/systemd/install-{arch}/{rel}")), tgt)?;
-        // Unit files → 0644 (PID1 warns on exec / missing world-read,
-        // systemd fs-util.c:350/356). Keep S_IFREG (0100000) like put()'s
-        // 0100755 or debugfs sif zeroes the type → ext4 EIO.
+        // Unit files → 0644 (PID1 warns on exec); debugfs sif keeps S_IFREG.
         if tgt.ends_with(".target") || tgt.ends_with(".service") {
             dbg(&format!("sif {tgt} mode 0100644"))?;
         }
     }
+
+    // systemd-networkd (D6 net): built+staged+enabled but NOT pulled by
+    // default.target yet (auto-start gated on executor↔PID1 readiness + CPU
+    // fairness); run by hand it pulls a real DHCPv4 lease. Bodies in l2_deps.
+    put(&stage("systemd-networkd.service", l2_deps::NETWORKD_SERVICE)?,
+        "/usr/lib/systemd/system/systemd-networkd.service")?;
+    dbg("sif /usr/lib/systemd/system/systemd-networkd.service mode 0100644")?;
+    put(&stage("eth0.network", l2_deps::ETH0_NETWORK)?, "/etc/systemd/network/eth0.network")?;
+    dbg("sif /etc/systemd/network/eth0.network mode 0100644")?;
+    // default.target authored here (not SYSTEMD_STAGE — debugfs can't overwrite).
+    put(&stage("default.target", l2_deps::DEFAULT_TARGET)?,
+        "/usr/lib/systemd/system/default.target")?;
+    dbg("sif /usr/lib/systemd/system/default.target mode 0100644")?;
     // /etc/inittab — legacy sysv format (systemd is PID1; kept informational).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS
@@ -782,10 +787,7 @@ ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
 ")?,
         "/etc/inittab")?;
 
-    // /etc/dhcpcd.conf — minimal config. 10s bind timeout so rcS
-    // doesn't park forever when no DHCP server answers. No hooks
-    // (we ship no /lib/dhcpcd/dhcpcd-hooks tree); dhcpcd tolerates
-    // a missing hooks dir.
+    // /etc/dhcpcd.conf — minimal config (10s bind timeout; no hooks dir).
     put(&stage("dhcpcd.conf",
 b"# F123: minimal dhcpcd.conf for oxide userspace.
 duid

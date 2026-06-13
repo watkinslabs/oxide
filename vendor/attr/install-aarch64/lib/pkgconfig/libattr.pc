@@ -1,0 +1,9 @@
+prefix=/home/nd/oxide2/vendor/attr/install-aarch64
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: libattr
+Description: oxide L2 staged libattr
+Version: 2.5.2
+Libs: -L${libdir} -lattr
+Cflags: -I${includedir}

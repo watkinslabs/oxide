@@ -10,8 +10,8 @@ use syscall::errno::Errno;
 use hal::{USER_VA_END, TimerOps};
 
 use crate::execve_common::{
-    apply_file_caps_at_execve, read_user_exec_path, reset_caught_signals,
-    reset_per_execve_state, resolve_shebang_chain,
+    apply_file_caps_at_execve, regain_root_caps_at_execve, read_user_exec_path,
+    reset_caught_signals, reset_per_execve_state, resolve_shebang_chain,
 };
 
 /// `sys_execve(path, argv, envp)` per `15§5` / `31§4`. Thin wrapper
@@ -262,6 +262,10 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
             Some(path_str)
         } else { None }
     };
+    // Cap transition: root regains the full set on exec (unconditional —
+    // Linux applies this even with no file-caps; the devfs::lookup below only
+    // covers file-cap xattrs on devfs nodes, not ext4 binaries).
+    regain_root_caps_at_execve(cur);
     // F103: file capabilities — apply security.capability xattr from the
     // exec path's inode to the calling task's cap_permitted / cap_effective.
     if let Some(p) = exec_path_for_caps {
@@ -523,6 +527,7 @@ pub(crate) fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u
             Some(path_str)
         } else { None }
     };
+    regain_root_caps_at_execve(cur);
     if let Some(p) = exec_path_for_caps {
         if let Some(inode) = devfs::lookup(&p) {
             apply_file_caps_at_execve(&inode, cur);

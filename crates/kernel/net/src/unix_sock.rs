@@ -612,6 +612,15 @@ impl UnixRegistry {
         Ok(l)
     }
 
+    /// Release a bound stream-listener path (called when the owning socket
+    /// closes / its process dies). Linux frees the bind so the address is
+    /// reusable; without this, a restart-looping daemon hits EADDRINUSE on
+    /// rebind. # C: O(log N)
+    pub fn unbind(&self, path: &str) { self.inner.lock().remove(path); }
+
+    /// Release a bound dgram path. # C: O(log N)
+    pub fn dgram_unbind(&self, path: &str) { self.dgrams.lock().remove(path); }
+
     /// Look up a listener; returns `None` if no listener is bound.
     /// # C: O(log N)
     pub fn lookup(&self, path: &str) -> Option<Arc<UnixListener>> {
