@@ -1,5 +1,6 @@
 // xtask: CI entry, 07§8.
 use std::process::ExitCode;
+mod buildns;
 mod cmds;
 mod image_qemu;
 mod l2_deps;

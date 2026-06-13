@@ -73,8 +73,10 @@ pub(crate) fn ensure_blobs(arch: &str, rest: &[String]) -> Result<(), u8> {
         c.arg("vdso/build.sh");
         run(c)?;
     }
-    let img = format!("kernel/blobs/rootfs-{arch}.img");
-    if !std::path::Path::new(&img).exists() {
+    let id = parse_arg(rest, "--id");
+    let repo = crate::image_qemu::repo_root();
+    let img = crate::buildns::blobs_dir(&repo, id.as_deref()).join(format!("rootfs-{arch}.img"));
+    if !img.exists() {
         eprintln!("xtask: rootfs ({arch}) missing -> xtask rootfs");
         crate::cmd_rootfs(rest)?;
     }
@@ -86,6 +88,8 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         eprintln!("xtask kernel: --arch <x86_64|aarch64> required");
         2u8
     })?;
+    let id = parse_arg(rest, "--id");
+    if let Some(ref id) = id { crate::buildns::validate(id)?; }
     ensure_blobs(&arch, rest)?;
     let profile = parse_arg(rest, "--profile").unwrap_or("release".into());
     let features = parse_arg(rest, "--features");
@@ -114,6 +118,10 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
     ]);
     if let Some(f) = features.as_ref() {
         c.args(["--features", f.as_str()]);
+    }
+    if id.is_some() {
+        let repo = crate::image_qemu::repo_root();
+        c.env("CARGO_TARGET_DIR", crate::buildns::cargo_target_dir(&repo, id.as_deref()).unwrap());
     }
     run(c)
 }

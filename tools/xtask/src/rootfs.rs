@@ -14,7 +14,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         return Err(2);
     }
     let repo = image_qemu::repo_root();
-    let blobs = repo.join("kernel/blobs");
+    let id = parse_arg(rest, "--id");
+    if let Some(ref id) = id { crate::buildns::validate(id)?; }
+    let blobs = crate::buildns::blobs_dir(&repo, id.as_deref());
     std::fs::create_dir_all(&blobs).map_err(|e| { eprintln!("mkdir blobs: {e}"); 1u8 })?;
 
     // Pick the compiler driver per arch.
@@ -166,14 +168,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // boot. Nothing to refresh under kernel/blobs/.
 
     // Rootfs size: 1 GiB. Post-F405 the rootfs is a REAL virtio-blk DISK
-    // (root-<arch>.img), read on demand by the kernel — NOT include_bytes!d into
-    // the kernel ELF anymore. So the old embed-size limits are gone: this image
-    // can grow freely (the kernel never allocates its size; virtio-blk reads
-    // blocks lazily into the page cache). 1 GiB gives the full vendored app
-    // backlog ample room. (History: 16→32(F251)→128(F345)→192→1024(F407); the
-    // earlier bumps were forced by the embed overflowing → ENOSPC → systemd
-    // dropped → boot panic. No longer embed-bound.)
-    let img = repo.join(format!("kernel/blobs/rootfs-{arch}.img"));
+    // (root-<arch>.img), read on demand by the kernel — NOT include_bytes!d, so
+    // the old embed-size limits are gone (kernel reads blocks lazily into the
+    // page cache). History: 16→32(F251)→128(F345)→192→1024(F407); earlier bumps
+    // were forced by the embed overflowing → ENOSPC → systemd drop → boot panic.
+    let img = blobs.join(format!("rootfs-{arch}.img"));
     eprintln!("xtask rootfs: mkfs.ext4 {}", img.display());
     {
         let mut c = Command::new("dd");
