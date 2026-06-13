@@ -119,7 +119,14 @@ fn cap_emulate_setxuid(
 ) {
     let had_root = old_r == 0 || old_e == 0 || old_s == 0;
     let has_root = new_r == 0 || new_e == 0 || new_s == 0;
-    if had_root && !has_root {
+    // Linux (security/commoncap.c): the full permitted+effective clear on a
+    // root→non-root id transition is SUPPRESSED when SECURE_KEEP_CAPS
+    // (PR_SET_KEEPCAPS) is set. Privilege-dropping daemons — systemd-networkd,
+    // sshd — set PR_SET_KEEPCAPS, drop the uid, then re-raise their effective
+    // set from the retained permitted via capset. Without honouring it,
+    // permitted was wiped and the daemon's capset("acquire CAP_SETPCAP")
+    // failed with EPERM ("Failed to drop privileges").
+    if had_root && !has_root && !cur.keep_caps.load(Ordering::Acquire) {
         cur.creds.cap_permitted.store(0, Ordering::Release);
         cur.creds.cap_effective.store(0, Ordering::Release);
         cur.creds.cap_ambient.store(0, Ordering::Release);

@@ -1,0 +1,9 @@
+prefix=/home/nd/oxide2/vendor/util-linux/install-aarch64
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: blkid
+Description: oxide L2 staged blkid
+Version: 2.40
+Libs: -L${libdir} -lblkid
+Cflags: -I${includedir} -I${includedir}/blkid

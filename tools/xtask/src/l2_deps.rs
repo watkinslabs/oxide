@@ -60,9 +60,17 @@ pub const SYSTEMD_STAGE: &[(&str, &str)] = &[
     ("lib/libsystemd-core-259.so",     "/usr/lib/libsystemd-core-259.so"),
     ("lib/libsystemd-shared-259.so",   "/usr/lib/libsystemd-shared-259.so"),
     ("bin/systemctl",                  "/usr/bin/systemctl"),
+    // systemd-networkd stack (D6 net): the standard-distro DHCP/network
+    // manager. Replaces the rtnetlink static-IP seed façade — eth0 boots
+    // addressless and networkd pulls a real lease via the kernel's
+    // netlink/AF_PACKET plumbing. Service unit + eth0.network staged below.
+    ("lib/systemd/systemd-networkd",              "/lib/systemd/systemd-networkd"),
+    ("lib/systemd/systemd-networkd-wait-online",  "/lib/systemd/systemd-networkd-wait-online"),
+    ("bin/networkctl",                            "/usr/bin/networkctl"),
     // F350 #5: minimal systemd unit tree (built into install-*/usr/lib/systemd/
-    // system by build.sh). default.target → console-shell on /dev/console.
-    ("usr/lib/systemd/system/default.target",       "/usr/lib/systemd/system/default.target"),
+    // system by build.sh). NB: default.target is NOT staged here — rootfs.rs
+    // authors it (to also Wants= systemd-networkd) and `debugfs write` cannot
+    // overwrite an existing file, so staging build.sh's first would shadow it.
     ("usr/lib/systemd/system/console-shell.service", "/usr/lib/systemd/system/console-shell.service"),
     ("usr/lib/systemd/system/console-getty.service", "/usr/lib/systemd/system/console-getty.service"),
     ("usr/lib/systemd/system/serial-getty-ttyS0.service", "/usr/lib/systemd/system/serial-getty-ttyS0.service"),
@@ -82,3 +90,45 @@ pub const SYSTEMD_STAGE: &[(&str, &str)] = &[
     ("usr/lib/systemd/system/rescue.target",        "/usr/lib/systemd/system/rescue.target"),
     ("usr/lib/systemd/system/emergency.target",     "/usr/lib/systemd/system/emergency.target"),
 ];
+
+// systemd-networkd unit + eth0 .network + the oxide default.target body.
+// Kept here (not inline in rootfs.rs) to hold that file under the 1000-line
+// cap. NB: networkd is NOT in default.target Wants yet — see rootfs.rs.
+pub const NETWORKD_SERVICE: &[u8] = b"[Unit]
+Description=Network Configuration
+Documentation=man:systemd-networkd.service(8)
+DefaultDependencies=no
+After=systemd-networkd.socket
+Wants=network.target
+Before=network.target
+
+[Service]
+Type=exec
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=infinity
+ExecStart=/lib/systemd/systemd-networkd
+
+[Install]
+WantedBy=multi-user.target
+";
+
+pub const ETH0_NETWORK: &[u8] = b"[Match]
+Name=eth0
+
+[Network]
+DHCP=ipv4
+
+[DHCPv4]
+UseDNS=yes
+UseRoutes=yes
+";
+
+pub const DEFAULT_TARGET: &[u8] = b"[Unit]
+Description=Oxide Default Target
+Documentation=man:systemd.special(7)
+DefaultDependencies=no
+Wants=console-getty.service
+After=console-getty.service
+AllowIsolate=yes
+";

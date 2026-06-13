@@ -28,3 +28,4 @@ pub fn entry(nr: u64, a0: u64, a1: u64, a2: u64) {
         klog::write_raw(b"\n");
     }
 }
+

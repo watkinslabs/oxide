@@ -1,0 +1,9 @@
+prefix=/home/nd/oxide2/vendor/pcre2/install-aarch64
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: libpcre2-8
+Description: oxide L2 staged libpcre2-8
+Version: 10.44
+Libs: -L${libdir} -lpcre2-8
+Cflags: -I${includedir}
