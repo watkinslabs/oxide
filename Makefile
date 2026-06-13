@@ -207,7 +207,7 @@ smoke-vsock-arm: arm
 	./tools/boot-smoke-vsock.sh arm $(VSOCK_SMOKE_TIMEOUT)
 smoke-vsock: smoke-vsock-x86
 
-# Rebuild kernel/blobs/rootfs.img from userspace/ sources. Run after
+# Rebuild target/builds/default/root-<arch>.img from userspace/ sources. Run after
 # editing any userspace/<name>/<name>.c so include_bytes! picks up
 # the new bytes on the next kernel build.
 rootfs:

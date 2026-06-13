@@ -62,7 +62,12 @@ def qemu_cmd(arch: str, image: Path) -> list[str]:
     # rootfs is embedded in the kernel Image so no block device is needed,
     # and semihosting carries early-boot UART before pl011 is up.
     if arch == "x86_64":
-        rootfs = REPO / "kernel/blobs/rootfs-x86_64.img"
+        # Single resolver: ask xtask for the build path (one scheme,
+        # target/builds/default/...) — no hardcoded blob-dir literal.
+        rootfs = subprocess.check_output(
+            ["cargo", "run", "-q", "-p", "xtask", "--",
+             "path", "root-img", "--arch", "x86_64"],
+            cwd=REPO).decode().strip()
         return [
             "qemu-system-x86_64",
             "-machine", "q35,accel=tcg",
@@ -99,7 +104,9 @@ def run(name: str, arch: str, timeout: int) -> int:
     if not scenario.exists():
         print(f"accept: no scenario at {scenario}", file=sys.stderr)
         return 2
-    image = REPO / f"target/oxide-{arch}-grub.iso"
+    image = Path(subprocess.check_output(
+        ["cargo", "run", "-q", "-p", "xtask", "--", "path", "iso", "--arch", arch],
+        cwd=REPO).decode().strip())
     if not image.exists():
         print(f"accept: build the boot ISO first "
               f"(cargo run -p xtask -- image --arch {arch})",

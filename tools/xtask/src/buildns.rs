@@ -2,9 +2,11 @@
 // outputs of one xtask invocation into a per-id namespace so multiple
 // different builds coexist on disk without overwriting each other.
 //
-// HARD INVARIANT: when `id == None` every returned path is BYTE-IDENTICAL
-// to the pre-namespacing literals (CI / pre-push run with no --id and must
-// be unaffected). The `None` branch reuses the exact original strings.
+// HARD INVARIANT (C90): there is ONE scheme — every build lives under
+// `target/builds/<id>`. The no-id build is simply the `default` namespace
+// (`id == None` ≡ `"default"`); there is no special-case `kernel/blobs` or
+// `target/blobs` dir anymore. The shared cargo compile output stays at the
+// canonical `target/<arch>-unknown-oxide-kernel/...` (see `kernel_elf_build`).
 
 use std::path::{Path, PathBuf};
 
@@ -23,24 +25,17 @@ pub(crate) fn validate(id: &str) -> Result<(), u8> {
     Ok(())
 }
 
-/// Build-output target dir: `repo/target/builds/<id>` when id set, else the
-/// plain `repo/target`.
+/// Build-output target dir: `repo/target/builds/<id-or-"default">`. The no-id
+/// build is the `default` namespace (C90 — no special-case `target/` dir).
 pub(crate) fn target_dir(repo: &Path, id: Option<&str>) -> PathBuf {
-    match id {
-        Some(id) => repo.join("target").join("builds").join(id),
-        None => repo.join("target"),
-    }
+    repo.join("target").join("builds").join(id.unwrap_or("default"))
 }
 
-/// Disk-image blob dir. C90: an id'd build puts EVERYTHING under one folder
-/// `repo/target/builds/<id>` (disk images alongside the ISO + ELF snapshot);
-/// the no-id legacy path stays `repo/kernel/blobs` BYTE-IDENTICAL (CI / make /
-/// smoke hardcode it — the CI-safety invariant).
+/// Disk-image blob dir. C90: a build puts EVERYTHING under one folder
+/// `repo/target/builds/<id-or-"default">` (disk images alongside the ISO + ELF
+/// snapshot). Identical to `target_dir` — there is no separate blobs location.
 pub(crate) fn blobs_dir(repo: &Path, id: Option<&str>) -> PathBuf {
-    match id {
-        Some(id) => repo.join("target").join("builds").join(id),
-        None => repo.join("kernel/blobs"),
-    }
+    target_dir(repo, id)
 }
 
 /// GRUB ISO output path for `arch`.
@@ -58,18 +53,20 @@ pub(crate) fn arm_image(repo: &Path, id: Option<&str>) -> PathBuf {
     target_dir(repo, id).join("oxide-aarch64.Image")
 }
 
-/// Per-id kernel ELF SNAPSHOT path (where an id'd build's ELF is copied to):
+/// Per-build kernel ELF SNAPSHOT path (where a build's ELF is copied to):
 /// `<target_dir(id)>/<arch>-unknown-oxide-kernel/<prof_dir>/oxide-<arch>`.
-/// For `id == None` this equals `kernel_elf_build` (the shared build output).
+/// Every build (incl. the `default` no-id one) snapshots here; this is NOT the
+/// cargo working dir — that is `kernel_elf_build` (the shared compile output).
 pub(crate) fn kernel_elf(repo: &Path, id: Option<&str>, arch: &str, prof_dir: &str) -> PathBuf {
     target_dir(repo, id).join(format!("{arch}-unknown-oxide-kernel/{prof_dir}/oxide-{arch}"))
 }
 
 /// SHARED build output path — where cargo actually writes the kernel ELF when
-/// building in the default `target/` (no `CARGO_TARGET_DIR` override):
-/// `target/<arch>-unknown-oxide-kernel/<prof_dir>/oxide-<arch>`. The kernel
-/// always compiles here so cargo's incremental cache is reused across ids; an
-/// id'd build then snapshots this ELF to `kernel_elf(.. Some(id) ..)`.
+/// building in the plain `target/` (no `CARGO_TARGET_DIR` override):
+/// `target/<arch>-unknown-oxide-kernel/<prof_dir>/oxide-<arch>`. This is the
+/// cargo working dir, NOT a namespace (so cargo's incremental cache is reused
+/// across ids); EVERY build — including the `default` no-id one — then snapshots
+/// this ELF into `kernel_elf(repo, id, ..)` under `target/builds/<id>/`.
 pub(crate) fn kernel_elf_build(repo: &Path, arch: &str, prof_dir: &str) -> PathBuf {
-    kernel_elf(repo, None, arch, prof_dir)
+    repo.join("target").join(format!("{arch}-unknown-oxide-kernel/{prof_dir}/oxide-{arch}"))
 }

@@ -4,8 +4,8 @@
 //
 // Cache store: target/rootfs-cache/{root,home}-<hash>-<arch>.img
 // The cache is SHARED across ids (not a per-id namespace), so it lives at a
-// fixed `target/rootfs-cache/` — outside both `kernel/blobs/` and any per-id
-// `target/builds/<id>/` namespace, so neither GC sweeps it. LRU-trimmed by
+// fixed `target/rootfs-cache/` — outside every `target/builds/<id>/` namespace
+// (incl. `default`), so namespace GC never sweeps it. LRU-trimmed by
 // `xtask gc` (gc.rs).
 //
 // Fingerprint model (like cargo): hash (path,len,mtime_nanos) over the inputs,

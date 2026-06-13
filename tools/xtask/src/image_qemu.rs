@@ -28,7 +28,7 @@ fn ssh_fwd_netdev() -> String {
 }
 
 /// D3.5: ensure a small raw NVMe scratch disk exists at
-/// `kernel/blobs/nvme-<arch>.img` (16 MiB, zeroed). Created if missing so the
+/// `target/builds/<id>/nvme-<arch>.img` (16 MiB, zeroed). Created if missing so the
 /// `nvme` QEMU device always has a backing file. Returns its path. # C: O(1)
 fn ensure_nvme_img(repo: &std::path::Path, id: Option<&str>, arch: &str) -> std::path::PathBuf {
     let img = crate::buildns::blobs_dir(repo, id).join(format!("nvme-{arch}.img"));
@@ -43,7 +43,7 @@ fn ensure_nvme_img(repo: &std::path::Path, id: Option<&str>, arch: &str) -> std:
 }
 
 /// D3.6: ensure a small raw AHCI/SATA scratch disk exists at
-/// `kernel/blobs/ahci-<arch>.img` (16 MiB, zeroed). Created if missing so the
+/// `target/builds/<id>/ahci-<arch>.img` (16 MiB, zeroed). Created if missing so the
 /// `ich9-ahci` + `ide-hd` QEMU devices always have a backing file. Returns its
 /// path. # C: O(1)
 fn ensure_ahci_img(repo: &std::path::Path, id: Option<&str>, arch: &str) -> std::path::PathBuf {

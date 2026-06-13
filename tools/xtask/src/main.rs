@@ -5,6 +5,7 @@ mod cmds;
 mod gc;
 mod image_qemu;
 mod l2_deps;
+mod path;
 mod stats;
 mod rootfs;
 mod rootfs_cache;
@@ -35,6 +36,7 @@ fn main() -> ExitCode {
         "doc-check" => cmd_doc_check(rest),
         "stats"     => stats::cmd_stats(rest),
         "gc"        => gc::cmd_gc(rest),
+        "path"      => path::cmd_path(rest),
         "-h" | "--help" => return usage(),
         _ => { eprintln!("xtask: unknown subcommand `{cmd}`"); return usage(); }
     };
@@ -45,6 +47,6 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: xtask <kernel|user|image|test|qemu|rootfs|grub|gc|soak|bench|spec-lint|doc-check|stats> [args]");
+    eprintln!("usage: xtask <kernel|user|image|test|qemu|rootfs|grub|gc|path|soak|bench|spec-lint|doc-check|stats> [args]");
     ExitCode::from(2)
 }

@@ -168,7 +168,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
 
     // F153-1: no embedded init blob. PID 1 lives in the rootfs as a
     // /sbin/init entry; the kernel reads it from ext4 at
-    // boot. Nothing to refresh under kernel/blobs/.
+    // boot. Nothing to refresh under target/builds/<id>/.
 
     // 1 GiB ext4 staged DIRECTLY into root-<arch>.img (the boot disk, serial
     // `oxide-root`) — C90: no separate rootfs-<arch>.img + 1 GiB cp. The kernel

@@ -142,15 +142,15 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         c.args(["--features", f.as_str()]);
     }
     run(c)?;
-    // Snapshot: for an id'd build, copy the freshly built ELF from the shared
-    // build location to the per-id snapshot path so a running instance boots a
-    // stable ISO decoupled from later builds that reuse target/. No-id builds
-    // leave the ELF at its canonical shared path — byte-identical to today.
-    if let Some(id) = id.as_deref() {
+    // Snapshot: copy the freshly built ELF from the shared cargo build location
+    // into the build's namespace (`target/builds/<id-or-"default">/...`) so a
+    // running instance boots a stable ISO decoupled from later builds that reuse
+    // the shared target/. C90: EVERY build snapshots, incl. the no-id `default`.
+    {
         let prof_dir = if profile == "dev" { "debug" } else { profile.as_str() };
         let repo = crate::image_qemu::repo_root();
         let src = crate::buildns::kernel_elf_build(&repo, &arch, prof_dir);
-        let dst = crate::buildns::kernel_elf(&repo, Some(id), &arch, prof_dir);
+        let dst = crate::buildns::kernel_elf(&repo, id.as_deref(), &arch, prof_dir);
         if let Some(p) = dst.parent() {
             std::fs::create_dir_all(p).map_err(|e| { eprintln!("xtask: snapshot mkdir failed: {e}"); 1u8 })?;
         }
