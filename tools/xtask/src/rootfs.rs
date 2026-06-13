@@ -19,7 +19,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let blobs = crate::buildns::blobs_dir(&repo, id.as_deref());
     std::fs::create_dir_all(&blobs).map_err(|e| { eprintln!("mkdir blobs: {e}"); 1u8 })?;
 
-    // Content-addressed rootfs cache (rootfs_cache.rs): skip/HIT short-circuits the restage.
+    crate::gc::rebuild_vendor(&repo, &arch, rest)?; // --rebuild-vendor[=pkg,...] busts the cache hash below
     if let crate::rootfs_cache::Plan::Skip = crate::rootfs_cache::pre_build(&repo, &blobs, &arch, rest)? { return Ok(()); }
 
     // Pick the compiler driver per arch.
