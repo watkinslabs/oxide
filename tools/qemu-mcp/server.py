@@ -1,10 +1,13 @@
 """qemu-mcp — interactive QEMU + GDB control surface for Claude Code.
 
-Spawns QEMU paused at start with the GDB stub on :1234, attaches a
-GDB/MI session with the kernel ELF as the symbol source, and
-exposes a small tool surface for setting breakpoints, stepping,
-reading registers / memory / disassembly, and inspecting serial
-output.
+BUILDS the kernel image into a per-build namespace (target/builds/<id>/
+via xtask), spawns QEMU paused with the GDB stub on a per-instance FREE
+port, attaches a GDB/MI session with the namespaced kernel ELF as the
+symbol source, and exposes a tool surface for setting breakpoints,
+stepping, reading registers / memory / disassembly, and serial. Multiple
+instances of different builds run concurrently; tools take an optional
+`instance_id` (default = sole/most-recent). See the FastMCP `instructions`
+(_INSTRUCTIONS below) for the full model the AI client reads.
 
 Tool surface (in invocation order for a typical debug session):
 
@@ -20,7 +23,10 @@ Tool surface (in invocation order for a typical debug session):
     qemu_backtrace()           — call stack
     qemu_info(what)            — `info <what>` (e.g. "registers", "breakpoints")
     qemu_serial(clear=False)   — accumulated serial bytes since last call
-    qemu_stop()                — kill QEMU + GDB
+    qemu_stop()                — kill QEMU + GDB, GC its build namespace
+    qemu_list()                — live instances (id, build_id, arch, ports)
+    qemu_gc(keep_last=1)       — reclaim dead on-disk build namespaces
+(every tool above also takes an optional `instance_id`.)
 
 Design notes:
 
@@ -67,7 +73,37 @@ GDB_PROMPT = "(gdb)"
 # kernel/blobs, but the MCP always uses a build_id so it never touches it.
 _BUILDS_ROOT = REPO_ROOT / "target" / "builds"
 
-mcp = FastMCP("qemu-mcp")
+_INSTRUCTIONS = """\
+qemu-mcp — build, boot, and live-debug the oxide kernel under QEMU+GDB.
+
+BUILD MODEL (C90 namespacing): `qemu_start` BUILDS the kernel image itself (via
+`cargo run -p xtask -- grub --arch <arch> --id <build_id>`) and launches it — you
+do not build separately. Every build is isolated in its own folder
+`target/builds/<build_id>/` (ISO + kernel ELF + root/home/nvme/ahci disks all
+together). `build_id` = `<name-or-git-branch>-<UTCstamp>`.
+
+MULTIPLE INSTANCES: N instances of DIFFERENT builds can run at once — each gets
+its own build namespace, free gdb/ssh ports, sockets, and pcap. `qemu_start`
+returns an `instance_id`; EVERY other tool takes an optional `instance_id`
+(default = the sole / most-recently-started instance, so single-instance use
+needs no id). `qemu_list()` shows live instances.
+
+BUILD CONTROL (qemu_start kwargs): `name` (label), `features`, `smp`, `accel`
+("kvm" fast / "tcg" — some SMP timing bugs ONLY repro under tcg), and the rebuild
+passthrough `rebuild_vendor` / `rebuild_rootfs` / `skip_rootfs` / `clean_kernel`
+(forwarded to xtask). GDB attaches with the namespaced kernel ELF as the symbol
+source, on a per-instance free port.
+
+GC: a stopped build's namespace is reclaimed automatically (it's protected while
+running via a `.live` PID marker that the CLI `xtask gc` honors). `qemu_gc()`
+sweeps dead namespaces manually.
+
+TYPICAL FLOW: qemu_start(arch) -> qemu_break(symbol) -> qemu_continue() ->
+qemu_regs()/qemu_mem()/qemu_disasm()/qemu_backtrace() -> qemu_serial() ->
+qemu_stop(). Dev-only tool (docs/02): not in any shipped artifact.
+"""
+
+mcp = FastMCP("qemu-mcp", instructions=_INSTRUCTIONS)
 
 
 # ---------------------------------------------------------------------------
