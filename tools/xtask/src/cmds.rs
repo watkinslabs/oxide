@@ -57,7 +57,7 @@ pub(crate) fn ensure_blobs(arch: &str, rest: &[String]) -> Result<(), u8> {
     // only the vDSO needs stubbing. Only creates a placeholder when the real
     // blob is absent — never clobbers a locally-built one.
     if std::env::var_os("OXIDE_STUB_BLOBS").is_some() {
-        let f = format!("kernel/blobs/vdso-{arch}.so");
+        let f = format!("crates/kernel/syscalls/vdso/vdso-{arch}.so");
         if !std::path::Path::new(&f).exists() {
             if let Some(p) = std::path::Path::new(&f).parent() { let _ = std::fs::create_dir_all(p); }
             std::fs::write(&f, b"").map_err(|e| { eprintln!("xtask: stub-blob write failed: {e}"); 1u8 })?;
@@ -65,16 +65,18 @@ pub(crate) fn ensure_blobs(arch: &str, rest: &[String]) -> Result<(), u8> {
         }
         return Ok(());
     }
-    let vso = format!("kernel/blobs/vdso-{arch}.so");
-    let vsrc = format!("vdso/vdso-{arch}.S");
-    if is_stale(&vso, &[&vsrc, "vdso/vdso.lds", "vdso/build.sh"]) {
+    let vso = format!("crates/kernel/syscalls/vdso/vdso-{arch}.so");
+    let vsrc = format!("crates/kernel/syscalls/vdso/vdso-{arch}.S");
+    if is_stale(&vso, &[&vsrc, "crates/kernel/syscalls/vdso/vdso.lds", "crates/kernel/syscalls/vdso/build.sh"]) {
         eprintln!("xtask: vdso ({arch}) missing/stale -> vdso/build.sh");
         let mut c = Command::new("sh");
-        c.arg("vdso/build.sh");
+        c.arg("crates/kernel/syscalls/vdso/build.sh");
         run(c)?;
     }
-    let img = format!("kernel/blobs/rootfs-{arch}.img");
-    if !std::path::Path::new(&img).exists() {
+    let id = parse_arg(rest, "--id");
+    let repo = crate::image_qemu::repo_root();
+    let img = crate::buildns::blobs_dir(&repo, id.as_deref()).join(format!("root-{arch}.img"));
+    if !img.exists() {
         eprintln!("xtask: rootfs ({arch}) missing -> xtask rootfs");
         crate::cmd_rootfs(rest)?;
     }
@@ -86,6 +88,8 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         eprintln!("xtask kernel: --arch <x86_64|aarch64> required");
         2u8
     })?;
+    let id = parse_arg(rest, "--id");
+    if let Some(ref id) = id { crate::buildns::validate(id)?; }
     ensure_blobs(&arch, rest)?;
     let profile = parse_arg(rest, "--profile").unwrap_or("release".into());
     let features = parse_arg(rest, "--features");
@@ -99,6 +103,28 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         "aarch64" => ("boot-aarch64", "kernel-bin-aarch64"),
         _ => unreachable!(),
     };
+    // `--clean-kernel`: `cargo clean -p <pkg>` the kernel packages in the SHARED
+    // target/ so they recompile from scratch (rules out incremental-cache
+    // corruption). Default absent = incremental, no clean.
+    let clean_kernel = rest.iter().any(|a| a == "--clean-kernel");
+    if clean_kernel {
+        let mut k = Command::new("cargo");
+        k.args([
+            "clean",
+            "-Z", "unstable-options",
+            "-Z", "json-target-spec",
+            "--target", target,
+            "--profile", &profile,
+            "-p", "kmain",
+            "-p", boot_pkg,
+            "-p", bin_pkg,
+        ]);
+        run(k)?;
+    }
+    // Always build in the DEFAULT target/ (no CARGO_TARGET_DIR override) so
+    // cargo's incremental cache is reused across ids — only crates that
+    // actually changed recompile. Build lock serializes builds, so sharing
+    // target/ is safe. An id'd build then snapshots its ELF below.
     let mut c = Command::new("cargo");
     c.args([
         "build",
@@ -115,7 +141,25 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
     if let Some(f) = features.as_ref() {
         c.args(["--features", f.as_str()]);
     }
-    run(c)
+    run(c)?;
+    // Snapshot: copy the freshly built ELF from the shared cargo build location
+    // into the build's namespace (`target/builds/<id-or-"default">/...`) so a
+    // running instance boots a stable ISO decoupled from later builds that reuse
+    // the shared target/. C90: EVERY build snapshots, incl. the no-id `default`.
+    {
+        let prof_dir = if profile == "dev" { "debug" } else { profile.as_str() };
+        let repo = crate::image_qemu::repo_root();
+        let src = crate::buildns::kernel_elf_build(&repo, &arch, prof_dir);
+        let dst = crate::buildns::kernel_elf(&repo, id.as_deref(), &arch, prof_dir);
+        if let Some(p) = dst.parent() {
+            std::fs::create_dir_all(p).map_err(|e| { eprintln!("xtask: snapshot mkdir failed: {e}"); 1u8 })?;
+        }
+        std::fs::copy(&src, &dst).map_err(|e| {
+            eprintln!("xtask: snapshot copy {} -> {} failed: {e}", src.display(), dst.display());
+            1u8
+        })?;
+    }
+    Ok(())
 }
 
 

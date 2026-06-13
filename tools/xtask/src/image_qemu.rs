@@ -28,10 +28,10 @@ fn ssh_fwd_netdev() -> String {
 }
 
 /// D3.5: ensure a small raw NVMe scratch disk exists at
-/// `kernel/blobs/nvme-<arch>.img` (16 MiB, zeroed). Created if missing so the
+/// `target/builds/<id>/nvme-<arch>.img` (16 MiB, zeroed). Created if missing so the
 /// `nvme` QEMU device always has a backing file. Returns its path. # C: O(1)
-fn ensure_nvme_img(repo: &std::path::Path, arch: &str) -> std::path::PathBuf {
-    let img = repo.join(format!("kernel/blobs/nvme-{arch}.img"));
+fn ensure_nvme_img(repo: &std::path::Path, id: Option<&str>, arch: &str) -> std::path::PathBuf {
+    let img = crate::buildns::blobs_dir(repo, id).join(format!("nvme-{arch}.img"));
     if !img.exists() {
         if let Some(parent) = img.parent() { let _ = std::fs::create_dir_all(parent); }
         if let Ok(f) = std::fs::File::create(&img) {
@@ -43,11 +43,11 @@ fn ensure_nvme_img(repo: &std::path::Path, arch: &str) -> std::path::PathBuf {
 }
 
 /// D3.6: ensure a small raw AHCI/SATA scratch disk exists at
-/// `kernel/blobs/ahci-<arch>.img` (16 MiB, zeroed). Created if missing so the
+/// `target/builds/<id>/ahci-<arch>.img` (16 MiB, zeroed). Created if missing so the
 /// `ich9-ahci` + `ide-hd` QEMU devices always have a backing file. Returns its
 /// path. # C: O(1)
-fn ensure_ahci_img(repo: &std::path::Path, arch: &str) -> std::path::PathBuf {
-    let img = repo.join(format!("kernel/blobs/ahci-{arch}.img"));
+fn ensure_ahci_img(repo: &std::path::Path, id: Option<&str>, arch: &str) -> std::path::PathBuf {
+    let img = crate::buildns::blobs_dir(repo, id).join(format!("ahci-{arch}.img"));
     if !img.exists() {
         if let Some(parent) = img.parent() { let _ = std::fs::create_dir_all(parent); }
         if let Ok(f) = std::fs::File::create(&img) {
@@ -74,7 +74,8 @@ pub(crate) fn cmd_image(rest: &[String]) -> Result<(), u8> {
 fn kernel_elf_path(repo: &std::path::Path, arch: &str, rest: &[String]) -> Result<std::path::PathBuf, u8> {
     let profile = parse_arg(rest, "--profile").unwrap_or("release".into());
     let prof_dir = if profile == "dev" { "debug".to_string() } else { profile };
-    let p = repo.join(format!("target/{arch}-unknown-oxide-kernel/{prof_dir}/oxide-{arch}"));
+    let id = parse_arg(rest, "--id");
+    let p = crate::buildns::kernel_elf(repo, id.as_deref(), arch, &prof_dir);
     if !p.exists() {
         eprintln!("xtask: kernel ELF not at {}", p.display());
         return Err(2);
@@ -137,8 +138,10 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
     } else { rest };
     crate::cmd_kernel(kargs)?;
     let repo = repo_root();
+    let id = parse_arg(rest, "--id");
+    if let Some(ref id) = id { crate::buildns::validate(id)?; }
     let kernel_elf = kernel_elf_path(&repo, &arch, rest)?;
-    let iso = build_grub_iso(&repo, &arch, &kernel_elf)?;
+    let iso = build_grub_iso(&repo, id.as_deref(), &arch, &kernel_elf)?;
     // `--build-only`: produce the GRUB ISO + rootfs but skip the qemu launch.
     // The qemu-mcp / accept.py use this to build the boot artifact, then
     // spawn their own qemu against it.
@@ -146,7 +149,7 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
         println!("xtask grub: built {} (--build-only, not launching qemu)", iso.display());
         return Ok(());
     }
-    qemu_run_grub_x86_64(&repo, &iso, smp)
+    qemu_run_grub_x86_64(&repo, id.as_deref(), &iso, smp)
 }
 
 /// GRUB on aarch64 (Limine-free): build the EFI-stub flat Image, stage it
@@ -154,10 +157,10 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
 /// the vendored arm64-efi GRUB modules (no host grub2-efi-aa64 install
 /// needed — see tools/fetch-grub.sh), then boot under OVMF. OVMF loads
 /// GRUB, GRUB's `linux` loads our PE Image, the kernel's EFI stub exits
-/// boot services + drops the MMU and joins the self-boot trampoline. The
-/// rootfs is embedded in the kernel (ext4::rootfs `include_bytes!`), so
-/// root mounts without a block device; the EFI stub's ACPI RSDP brings up
-/// PCI (virtio-net/gpu).
+/// boot services + drops the MMU and joins the self-boot trampoline. Root
+/// mounts from the root-aarch64.img virtio-blk disk (serial `oxide-root`,
+/// attached below) — NOT embedded; the EFI stub's ACPI RSDP brings up PCI
+/// (virtio-blk/net/gpu).
 fn cmd_grub_aarch64(rest: &[String]) -> Result<(), u8> {
     let smp: u32 = parse_arg(rest, "--smp").and_then(|s| s.parse().ok()).unwrap_or(1);
     // OXIDE_SKIP_ROOTFS=1 reuses the cached rootfs disk instead of restaging
@@ -180,16 +183,18 @@ fn cmd_grub_aarch64(rest: &[String]) -> Result<(), u8> {
     } else { rest };
     crate::cmd_kernel(kargs)?;
     let repo = repo_root();
+    let id = parse_arg(rest, "--id");
+    if let Some(ref id) = id { crate::buildns::validate(id)?; }
     let kernel_elf = kernel_elf_path(&repo, "aarch64", rest)?;
-    let image = build_arm_image(&repo, &kernel_elf)?;
-    let iso = build_grub_arm_iso(&repo, &image)?;
+    let image = build_arm_image(&repo, id.as_deref(), &kernel_elf)?;
+    let iso = build_grub_arm_iso(&repo, id.as_deref(), &image)?;
     // `--build-only`: produce the ISO but skip the qemu launch (qemu-mcp /
     // boot-smoke build the artifact then spawn their own qemu).
     if rest.iter().any(|a| a == "--build-only") {
         println!("xtask grub: built {} (--build-only, not launching qemu)", iso.display());
         return Ok(());
     }
-    qemu_run_aarch64_grub(&repo, &iso, smp)
+    qemu_run_aarch64_grub(&repo, id.as_deref(), &iso, smp)
 }
 
 /// objcopy the aarch64 kernel ELF → flat arm64 `Image` (arm64 Image
@@ -198,9 +203,11 @@ fn cmd_grub_aarch64(rest: &[String]) -> Result<(), u8> {
 /// all load.
 fn build_arm_image(
     repo: &std::path::Path,
+    id: Option<&str>,
     kernel_elf: &std::path::Path,
 ) -> Result<std::path::PathBuf, u8> {
-    let image = repo.join("target/oxide-aarch64.Image");
+    let image = crate::buildns::arm_image(repo, id);
+    if let Some(p) = image.parent() { let _ = std::fs::create_dir_all(p); }
     let objcopy = if which("rust-objcopy").is_some() { "rust-objcopy" }
                   else if which("llvm-objcopy").is_some() { "llvm-objcopy" }
                   else {
@@ -218,6 +225,7 @@ fn build_arm_image(
 /// and grub2-mkrescue an EFI ISO with the vendored arm64-efi modules.
 fn build_grub_arm_iso(
     repo: &std::path::Path,
+    id: Option<&str>,
     image: &std::path::Path,
 ) -> Result<std::path::PathBuf, u8> {
     use std::fs;
@@ -226,7 +234,7 @@ fn build_grub_arm_iso(
         eprintln!("xtask grub: vendored arm64-efi modules missing — run tools/fetch-grub.sh");
         return Err(2);
     }
-    let stage = repo.join("target/grub-stage-aarch64");
+    let stage = crate::buildns::grub_stage(repo, id, "aarch64");
     let _ = fs::remove_dir_all(&stage);
     fs::create_dir_all(stage.join("boot/grub")).map_err(|_| 1u8)?;
     fs::copy(image, stage.join("boot/oxide-aarch64.Image")).map_err(|_| 1u8)?;
@@ -238,7 +246,7 @@ fn build_grub_arm_iso(
                linux /boot/oxide-aarch64.Image\n    \
                boot\n}\n";
     fs::write(stage.join("boot/grub/grub.cfg"), cfg).map_err(|_| 1u8)?;
-    let iso = repo.join("target/oxide-aarch64-grub.iso");
+    let iso = crate::buildns::iso_path(repo, id, "aarch64");
     let _ = fs::remove_file(&iso);
     let mkrescue = if which("grub2-mkrescue").is_some() { "grub2-mkrescue" } else { "grub-mkrescue" };
     let mut c = Command::new(mkrescue);
@@ -250,12 +258,13 @@ fn build_grub_arm_iso(
 
 /// Boot the aarch64 GRUB EFI ISO under QEMU with OVMF. Semihosting is on
 /// (the kernel's early klog uses it until device_map remaps PL011); GIC
-/// v3+ITS as the kernel expects; rootfs embedded in the Image (no block
-/// device). OXIDE_QEMU_UART_SOCK routes serial to a unix socket (the
+/// v3+ITS as the kernel expects; root mounts from the root-aarch64.img
+/// virtio-blk disk attached below. OXIDE_QEMU_UART_SOCK routes serial to a unix socket (the
 /// boot-smoke/login scripts feed scripted keystrokes that way); else
 /// headless stdio for CI or a muxed stdio + GTK display interactively.
 fn qemu_run_aarch64_grub(
     repo: &std::path::Path,
+    id: Option<&str>,
     iso: &std::path::Path,
     smp: u32,
 ) -> Result<(), u8> {
@@ -263,14 +272,15 @@ fn qemu_run_aarch64_grub(
         eprintln!("xtask grub: qemu-system-aarch64 not on PATH; install qemu-system-aarch64.");
         return Err(2);
     }
+    let blobs = crate::buildns::blobs_dir(repo, id);
     let ovmf = repo.join("vendor/firmware/ovmf-aarch64.fd");
-    let root_img = repo.join("kernel/blobs/root-aarch64.img");
-    let home_img = repo.join("kernel/blobs/home-aarch64.img");
+    let root_img = blobs.join("root-aarch64.img");
+    let home_img = blobs.join("home-aarch64.img");
     // D3.5: NVMe scratch disk for the drv-nvme bring-up (lockstep with x86).
-    let nvme_img = ensure_nvme_img(repo, "aarch64");
+    let nvme_img = ensure_nvme_img(repo, id, "aarch64");
     let nvme_drive = format!("id=nvm0,if=none,format=raw,file={}", nvme_img.display());
     // D3.6: AHCI/SATA scratch disk for the drv-ahci bring-up (lockstep w/ x86).
-    let ahci_img = ensure_ahci_img(repo, "aarch64");
+    let ahci_img = ensure_ahci_img(repo, id, "aarch64");
     let ahci_drive = format!("id=sata0,if=none,format=raw,file={}", ahci_img.display());
     let smp_str = smp.to_string();
     let headless = std::env::var("OXIDE_QEMU_HEADLESS").is_ok();
@@ -353,11 +363,12 @@ fn qemu_run_aarch64_grub(
 /// then `grub2-mkrescue` into a hybrid BIOS+UEFI ISO.
 fn build_grub_iso(
     repo: &std::path::Path,
+    id: Option<&str>,
     arch: &str,
     kernel_elf: &std::path::Path,
 ) -> Result<std::path::PathBuf, u8> {
     use std::fs;
-    let stage = repo.join(format!("target/grub-stage-{arch}"));
+    let stage = crate::buildns::grub_stage(repo, id, arch);
     let _ = fs::remove_dir_all(&stage);
     fs::create_dir_all(stage.join("boot/grub")).map_err(|_| 1u8)?;
     fs::copy(kernel_elf, stage.join(format!("boot/oxide-{arch}"))).map_err(|_| 1u8)?;
@@ -367,7 +378,7 @@ fn build_grub_iso(
          multiboot2 /boot/oxide-{arch} BOOT_IMAGE=/boot/oxide-{arch} root=/dev/oxide0 ro quiet console=ttyS0,115200\n    \
          boot\n}}\n");
     fs::write(stage.join("boot/grub/grub.cfg"), cfg).map_err(|_| 1u8)?;
-    let iso = repo.join(format!("target/oxide-{arch}-grub.iso"));
+    let iso = crate::buildns::iso_path(repo, id, arch);
     let _ = fs::remove_file(&iso);
     let mkrescue = if which("grub2-mkrescue").is_some() { "grub2-mkrescue" } else { "grub-mkrescue" };
     let mut c = Command::new(mkrescue);
@@ -381,16 +392,18 @@ fn build_grub_iso(
 /// rootfs as virtio-blk (/dev/oxide0) and serial→stdio for the console.
 fn qemu_run_grub_x86_64(
     repo: &std::path::Path,
+    id: Option<&str>,
     iso: &std::path::Path,
     smp: u32,
 ) -> Result<(), u8> {
-    let root_img = repo.join("kernel/blobs/root-x86_64.img");
-    let home_img = repo.join("kernel/blobs/home-x86_64.img");
+    let blobs = crate::buildns::blobs_dir(repo, id);
+    let root_img = blobs.join("root-x86_64.img");
+    let home_img = blobs.join("home-x86_64.img");
     // D3.5: NVMe scratch disk for the drv-nvme bring-up.
-    let nvme_img = ensure_nvme_img(repo, "x86_64");
+    let nvme_img = ensure_nvme_img(repo, id, "x86_64");
     let nvme_drive = format!("id=nvm0,if=none,format=raw,file={}", nvme_img.display());
     // D3.6: AHCI/SATA scratch disk for the drv-ahci bring-up.
-    let ahci_img = ensure_ahci_img(repo, "x86_64");
+    let ahci_img = ensure_ahci_img(repo, id, "x86_64");
     let ahci_drive = format!("id=sata0,if=none,format=raw,file={}", ahci_img.display());
     let smp_str = smp.to_string();
     let accel = if std::env::var("OXIDE_QEMU_KVM").is_ok()

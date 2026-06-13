@@ -1,9 +1,8 @@
 // Stage-2 disk-rootfs migration (BUILD side): produce standalone disk
-// images attached as virtio-blk drives so a later stage mounts root from
-// disk instead of the kernel-embedded rootfs.
+// images attached as virtio-blk drives so the kernel mounts root from disk.
 //
-// - root-<arch>.img : same content as rootfs-<arch>.img (base distro +
-//   tools) plus empty mount-point dirs /home and /usr/local. Identified by
+// - root-<arch>.img : the base distro + tools, staged in place by cmd_rootfs,
+//   plus empty mount-point dirs /home and /usr/local added here. Identified by
 //   the kernel via virtio-blk serial `oxide-root`.
 // - home-<arch>.img : small (64 MiB) ext4 with /home/alice (0755, uid/gid
 //   1000) — the /home volume. Serial `oxide-home`.
@@ -12,32 +11,26 @@
 use std::process::Command;
 use crate::cmds::run;
 
-/// Build root-<arch>.img + home-<arch>.img next to the (already-built)
-/// rootfs-<arch>.img. Called at the end of `cmd_rootfs`.
+/// Finalize root-<arch>.img (add mount-points) + build home-<arch>.img next to
+/// it. Called at the end of `cmd_rootfs`, which already staged root-<arch>.img.
 pub(crate) fn build_disks(
     blobs: &std::path::Path,
-    rootfs_img: &std::path::Path,
     arch: &str,
 ) -> Result<(), u8> {
-    build_root(blobs, rootfs_img, arch)?;
+    build_root(blobs, arch)?;
     build_home(blobs, arch)?;
     Ok(())
 }
 
-/// root disk = a byte-for-byte copy of the boot rootfs (so it carries
-/// /lib/systemd/systemd, bash, coreutils, libs, /etc — everything to
-/// boot+login) with empty /home and /usr/local mount-points added for the
-/// Stage-5 volume mounts.
+/// root disk = the already-staged boot rootfs (carries /lib/systemd/systemd,
+/// bash, coreutils, libs, /etc — everything to boot+login). C90: no longer a
+/// copy of a separate rootfs-<arch>.img; this adds the empty /home and
+/// /usr/local mount-points IN PLACE for the Stage-5 volume mounts.
 fn build_root(
     blobs: &std::path::Path,
-    rootfs_img: &std::path::Path,
     arch: &str,
 ) -> Result<(), u8> {
     let root_img = blobs.join(format!("root-{arch}.img"));
-    eprintln!("xtask rootfs: cp {} -> {}", rootfs_img.display(), root_img.display());
-    std::fs::copy(rootfs_img, &root_img).map_err(|e| {
-        eprintln!("xtask rootfs: copy root img: {e}"); 1u8
-    })?;
     // Empty mount-point dirs. /home already exists in the rootfs (with
     // /home/alice); make it an empty mount-point on the ROOT disk by leaving
     // the existing dir (harmless — the /home volume mounts over it). Ensure
@@ -54,7 +47,7 @@ fn build_root(
     dbg("mkdir /usr/local/bin")?;
     dbg("mkdir /usr/local/sbin")?;
     dbg("mkdir /home")?;
-    eprintln!("xtask rootfs: built {} ({} bytes)",
+    eprintln!("xtask rootfs: finalized {} ({} bytes)",
         root_img.display(),
         std::fs::metadata(&root_img).map(|m| m.len()).unwrap_or(0));
     Ok(())

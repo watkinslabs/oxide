@@ -18,9 +18,9 @@ use hal::UserVirtAddr;
 use vmm::{VmaBacking, VmaFlags, VmaProt};
 
 #[cfg(target_arch = "x86_64")]
-pub const VDSO_BLOB: &[u8] = include_bytes!("../../../../kernel/blobs/vdso-x86_64.so");
+pub const VDSO_BLOB: &[u8] = include_bytes!("../vdso/vdso-x86_64.so");
 #[cfg(target_arch = "aarch64")]
-pub const VDSO_BLOB: &[u8] = include_bytes!("../../../../kernel/blobs/vdso-aarch64.so");
+pub const VDSO_BLOB: &[u8] = include_bytes!("../vdso/vdso-aarch64.so");
 
 const PT_LOAD: u32 = 1;
 const PF_X: u32 = 1;

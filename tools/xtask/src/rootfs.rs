@@ -14,8 +14,13 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         return Err(2);
     }
     let repo = image_qemu::repo_root();
-    let blobs = repo.join("kernel/blobs");
+    let id = parse_arg(rest, "--id");
+    if let Some(ref id) = id { crate::buildns::validate(id)?; }
+    let blobs = crate::buildns::blobs_dir(&repo, id.as_deref());
     std::fs::create_dir_all(&blobs).map_err(|e| { eprintln!("mkdir blobs: {e}"); 1u8 })?;
+
+    crate::gc::rebuild_vendor(&repo, &arch, rest)?; // --rebuild-vendor[=pkg,...] busts the cache hash below
+    if let crate::rootfs_cache::Plan::Skip = crate::rootfs_cache::pre_build(&repo, &blobs, &arch, rest)? { return Ok(()); }
 
     // Pick the compiler driver per arch.
     let cc: std::path::PathBuf = if arch == "aarch64" {
@@ -163,17 +168,13 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
 
     // F153-1: no embedded init blob. PID 1 lives in the rootfs as a
     // /sbin/init entry; the kernel reads it from ext4 at
-    // boot. Nothing to refresh under kernel/blobs/.
+    // boot. Nothing to refresh under target/builds/<id>/.
 
-    // Rootfs size: 1 GiB. Post-F405 the rootfs is a REAL virtio-blk DISK
-    // (root-<arch>.img), read on demand by the kernel — NOT include_bytes!d into
-    // the kernel ELF anymore. So the old embed-size limits are gone: this image
-    // can grow freely (the kernel never allocates its size; virtio-blk reads
-    // blocks lazily into the page cache). 1 GiB gives the full vendored app
-    // backlog ample room. (History: 16→32(F251)→128(F345)→192→1024(F407); the
-    // earlier bumps were forced by the embed overflowing → ENOSPC → systemd
-    // dropped → boot panic. No longer embed-bound.)
-    let img = repo.join(format!("kernel/blobs/rootfs-{arch}.img"));
+    // 1 GiB ext4 staged DIRECTLY into root-<arch>.img (the boot disk, serial
+    // `oxide-root`) — C90: no separate rootfs-<arch>.img + 1 GiB cp. The kernel
+    // reads blocks lazily into the page cache (NOT include_bytes!d), so the old
+    // embed-size limits are gone (history 16→1024 MiB forced by embed overflow).
+    let img = blobs.join(format!("root-{arch}.img"));
     eprintln!("xtask rootfs: mkfs.ext4 {}", img.display());
     {
         let mut c = Command::new("dd");
@@ -977,7 +978,7 @@ hosts:  files
         ("d", "dumb"), ("l", "linux"), ("s", "screen"),
         ("v", "vt100"), ("x", "xterm"), ("x", "xterm-256color"),
     ] {
-        let host = repo.join(format!("kernel/blobs/terminfo/{sub}/{name}"));
+        let host = repo.join(format!("vendor/terminfo/{sub}/{name}"));
         put(&host, &format!("/usr/share/terminfo/{sub}/{name}"))?;
     }
 
@@ -990,11 +991,9 @@ hosts:  files
         img.display(),
         std::fs::metadata(&img).map(|m| m.len()).unwrap_or(0));
 
-    // Stage-2 disk-rootfs migration: produce the standalone root + home
-    // disk images (root-<arch>.img, home-<arch>.img) alongside the embedded
-    // rootfs. The embedded rootfs build above is kept unchanged so the
-    // kernel still compiles via include_bytes!; Stage 4 mounts root from the
-    // root disk and drops the embed.
-    crate::rootfs_disks::build_disks(&blobs, &img, &arch)?;
+    // root-<arch>.img is now staged in place above; add the /home + /usr/local
+    // mount-points, then build the standalone home disk (virtio-blk drives).
+    crate::rootfs_disks::build_disks(&blobs, &arch)?;
+    crate::rootfs_cache::post_build(&repo, &blobs, &arch); // store images in cache for next HIT
     Ok(())
 }

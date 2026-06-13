@@ -1,10 +1,13 @@
 """qemu-mcp — interactive QEMU + GDB control surface for Claude Code.
 
-Spawns QEMU paused at start with the GDB stub on :1234, attaches a
-GDB/MI session with the kernel ELF as the symbol source, and
-exposes a small tool surface for setting breakpoints, stepping,
-reading registers / memory / disassembly, and inspecting serial
-output.
+BUILDS the kernel image into a per-build namespace (target/builds/<id>/
+via xtask), spawns QEMU paused with the GDB stub on a per-instance FREE
+port, attaches a GDB/MI session with the namespaced kernel ELF as the
+symbol source, and exposes a tool surface for setting breakpoints,
+stepping, reading registers / memory / disassembly, and serial. Multiple
+instances of different builds run concurrently; tools take an optional
+`instance_id` (default = sole/most-recent). See the FastMCP `instructions`
+(_INSTRUCTIONS below) for the full model the AI client reads.
 
 Tool surface (in invocation order for a typical debug session):
 
@@ -20,7 +23,10 @@ Tool surface (in invocation order for a typical debug session):
     qemu_backtrace()           — call stack
     qemu_info(what)            — `info <what>` (e.g. "registers", "breakpoints")
     qemu_serial(clear=False)   — accumulated serial bytes since last call
-    qemu_stop()                — kill QEMU + GDB
+    qemu_stop()                — kill QEMU + GDB, GC its build namespace
+    qemu_list()                — live instances (id, build_id, arch, ports)
+    qemu_gc(keep_last=1)       — reclaim dead on-disk build namespaces
+(every tool above also takes an optional `instance_id`.)
 
 Design notes:
 
@@ -58,10 +64,100 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-GDB_PORT = 1234
 GDB_PROMPT = "(gdb)"
 
-mcp = FastMCP("qemu-mcp")
+# Namespaced build artifact root (per xtask --id <slug>). C90: an id'd build
+# puts EVERYTHING under one folder target/builds/<id>/ — kernel ELF snapshot,
+# ISO, AND the root/home/nvme/ahci disk images (buildns::blobs_dir maps an
+# id'd build to target/builds/<id>). No-id legacy blobs still live at
+# kernel/blobs, but the MCP always uses a build_id so it never touches it.
+_BUILDS_ROOT = REPO_ROOT / "target" / "builds"
+
+_INSTRUCTIONS = """\
+qemu-mcp — build, boot, and live-debug the oxide kernel under QEMU+GDB.
+
+BUILD MODEL (C90 namespacing): `qemu_start` BUILDS the kernel image itself (via
+`cargo run -p xtask -- grub --arch <arch> --id <build_id>`) and launches it — you
+do not build separately. Every build is isolated in its own folder
+`target/builds/<build_id>/` (ISO + kernel ELF + root/home/nvme/ahci disks all
+together). `build_id` = `<name-or-git-branch>-<UTCstamp>`.
+
+MULTIPLE INSTANCES: N instances of DIFFERENT builds can run at once — each gets
+its own build namespace, free gdb/ssh ports, sockets, and pcap. `qemu_start`
+returns an `instance_id`; EVERY other tool takes an optional `instance_id`
+(default = the sole / most-recently-started instance, so single-instance use
+needs no id). `qemu_list()` shows live instances.
+
+BUILD CONTROL (qemu_start kwargs): `name` (label), `features`, `smp`, `accel`
+("kvm" fast / "tcg" — some SMP timing bugs ONLY repro under tcg), and the rebuild
+passthrough `rebuild_vendor` / `rebuild_rootfs` / `skip_rootfs` / `clean_kernel`
+(forwarded to xtask). GDB attaches with the namespaced kernel ELF as the symbol
+source, on a per-instance free port.
+
+GC: a stopped build's namespace is reclaimed automatically (it's protected while
+running via a `.live` PID marker that the CLI `xtask gc` honors). `qemu_gc()`
+sweeps dead namespaces manually.
+
+TYPICAL FLOW: qemu_start(arch) -> qemu_break(symbol) -> qemu_continue() ->
+qemu_regs()/qemu_mem()/qemu_disasm()/qemu_backtrace() -> qemu_serial() ->
+qemu_stop(). Dev-only tool (docs/02): not in any shipped artifact.
+"""
+
+mcp = FastMCP("qemu-mcp", instructions=_INSTRUCTIONS)
+
+
+# ---------------------------------------------------------------------------
+# Build identity / port allocation / slug rules
+# ---------------------------------------------------------------------------
+
+# xtask slug rule: build_id must be entirely [A-Za-z0-9._-].
+import re as _re_mod
+
+_SLUG_OK = _re_mod.compile(r"[^A-Za-z0-9._-]")
+
+
+def _slugify(raw: str) -> str:
+    """Reduce `raw` to xtask's slug alphabet [A-Za-z0-9._-]. '/' → '-'
+    first (branch names like `feat/foo`), then strip any other unsafe
+    char. Empty result falls back to 'build'."""
+    s = raw.replace("/", "-")
+    s = _SLUG_OK.sub("", s)
+    return s or "build"
+
+
+def _current_branch() -> str:
+    """Current git branch (`git rev-parse --abbrev-ref HEAD`), or
+    'detached' if unavailable."""
+    try:
+        p = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                           cwd=REPO_ROOT, capture_output=True, text=True)
+        if p.returncode == 0 and p.stdout.strip():
+            return p.stdout.strip()
+    except Exception:
+        pass
+    return "detached"
+
+
+def _make_build_id(name: str | None) -> str:
+    """Derive a build_id `<slug>-<stamp>`. slug = name or current branch
+    (slugified); stamp = UTC YYYYMMDDThhmmss. Result satisfies the xtask
+    slug rule."""
+    slug = _slugify(name if name else _current_branch())
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+    return f"{slug}-{stamp}"
+
+
+def _free_port() -> int:
+    """Allocate a free TCP port by binding to ('', 0) and reading the
+    OS-assigned port. Closes the socket so the port is free for the
+    caller to bind — a small TOCTOU window, acceptable for dev tooling."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("", 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.getsockname()[1]
+    finally:
+        s.close()
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +166,12 @@ mcp = FastMCP("qemu-mcp")
 
 @dataclass
 class Session:
+    instance_id: str
+    build_id: str
     arch: str
+    gdb_port: int
+    ssh_port: int | None
+    sock_dir: str
     qemu: subprocess.Popen
     gdb: subprocess.Popen
     serial: deque[str]
@@ -79,6 +180,7 @@ class Session:
     gdb_lock: threading.Lock
     serial_reader: threading.Thread
     gdb_reader: threading.Thread
+    started_at: float = 0.0
     serial_sock: socket.socket | None = None
     serial_sock_path: str | None = None
     qmp_sock: socket.socket | None = None
@@ -86,14 +188,170 @@ class Session:
     qmp_lock: threading.Lock = None  # type: ignore[assignment]
 
 
-_SESSION: Session | None = None
+# instance_id -> Session. instance_id = build_id, or build_id#2/#3… for
+# additional concurrent instances of the same build.
+_SESSIONS: dict[str, Session] = {}
 _SESSION_LOCK = threading.Lock()
 
+# Serializes namespace builds (they write fixed-ish paths within a
+# namespace) and marks the build_id currently being built so GC never
+# rmtree's a build mid-construction.
+_BUILD_LOCK = threading.Lock()
+_BUILDING: set[str] = set()
+_BUILDING_LOCK = threading.Lock()
 
-def _require() -> Session:
-    if _SESSION is None:
-        raise RuntimeError("no active session — call qemu_start first")
-    return _SESSION
+
+def _resolve(instance_id: str | None) -> Session:
+    """Resolve `instance_id` to a Session. None → the sole instance, or
+    the most-recently-started one when several are live (back-compat for
+    single-instance callers)."""
+    with _SESSION_LOCK:
+        if not _SESSIONS:
+            raise RuntimeError("no active session — call qemu_start first")
+        if instance_id is None:
+            # Most-recently-started.
+            return max(_SESSIONS.values(), key=lambda s: s.started_at)
+        s = _SESSIONS.get(instance_id)
+        if s is None:
+            raise RuntimeError(f"no session with instance_id={instance_id!r}; "
+                               f"live: {sorted(_SESSIONS)}")
+        return s
+
+
+_RESERVED: set[str] = set()
+
+
+def _alloc_instance_id(build_id: str) -> str:
+    """Pick + reserve an instance_id: build_id, or build_id#N for the Nth
+    concurrent instance of an already-running/reserved build. Caller holds
+    _SESSION_LOCK. The id is added to _RESERVED so a concurrent start can't
+    pick the same one before this start finishes registering its Session;
+    the reservation is cleared when the Session is registered (or on error)."""
+    taken = set(_SESSIONS) | _RESERVED
+    cand = build_id
+    n = 2
+    while cand in taken:
+        cand = f"{build_id}#{n}"
+        n += 1
+    _RESERVED.add(cand)
+    return cand
+
+
+# ---------------------------------------------------------------------------
+# .live PID markers (xtask gc protection)
+# ---------------------------------------------------------------------------
+
+# `xtask gc` (tools/xtask/src/gc.rs) spares a build namespace from reclaim if
+# target/builds/<id>/.live exists AND names a PID with /proc/<pid> alive. The
+# MCP writes these markers so a CLI `xtask gc` never rmtree's a build that has
+# a running qemu. One PID line per live instance; file deleted when empty.
+_LIVE_LOCK = threading.Lock()
+
+
+def _live_path(build_id: str) -> Path:
+    return _BUILDS_ROOT / build_id / ".live"
+
+
+def _live_add(build_id: str, pid: int) -> None:
+    """Append `pid` as a line to target/builds/<id>/.live (create dir/file as
+    needed). Best-effort: never raises (teardown/start must not die over it)."""
+    try:
+        with _LIVE_LOCK:
+            p = _live_path(build_id)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            existing: list[str] = []
+            if p.exists():
+                existing = [ln for ln in p.read_text().splitlines() if ln.strip()]
+            if str(pid) not in existing:
+                existing.append(str(pid))
+            p.write_text("\n".join(existing) + "\n")
+    except Exception:
+        pass
+
+
+def _live_remove(build_id: str, pid: int) -> None:
+    """Remove `pid`'s line from target/builds/<id>/.live; delete the file if it
+    becomes empty. Best-effort: tolerate a missing/locked file, never raise."""
+    try:
+        with _LIVE_LOCK:
+            p = _live_path(build_id)
+            if not p.exists():
+                return
+            kept = [ln for ln in p.read_text().splitlines()
+                    if ln.strip() and ln.strip() != str(pid)]
+            if kept:
+                p.write_text("\n".join(kept) + "\n")
+            else:
+                try: p.unlink()
+                except FileNotFoundError: pass
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Garbage collection of unreferenced build namespaces
+# ---------------------------------------------------------------------------
+
+def _live_build_ids() -> set[str]:
+    """build_ids referenced by ≥1 live session."""
+    with _SESSION_LOCK:
+        return {s.build_id for s in _SESSIONS.values()}
+
+
+def _is_building(build_id: str) -> bool:
+    with _BUILDING_LOCK:
+        return build_id in _BUILDING
+
+
+def _on_disk_build_ids() -> list[str]:
+    """All build_ids present under target/builds/ (directory names)."""
+    if not _BUILDS_ROOT.is_dir():
+        return []
+    return [p.name for p in _BUILDS_ROOT.iterdir() if p.is_dir()]
+
+
+def _rmtree_namespace(build_id: str) -> None:
+    """Remove the namespace dir for a build_id. C90: an id'd build holds
+    EVERYTHING (ELF, ISO, disk images) under target/builds/<id>, so that one
+    dir is the whole namespace. HARD GUARD: only ever touches
+    target/builds/<id> — never the default root target/builds/ itself. A
+    blank/dotted id is rejected so no path can resolve to a parent."""
+    if not build_id or build_id in (".", "..") or "/" in build_id or "\\" in build_id:
+        return
+    target = _BUILDS_ROOT / build_id
+    # Defensive: resolved path MUST be a direct child of _BUILDS_ROOT.
+    try:
+        if target.resolve().parent != _BUILDS_ROOT.resolve():
+            return
+    except Exception:
+        return
+    if target.is_dir():
+        shutil.rmtree(target, ignore_errors=True)
+
+
+def _gc_sweep(keep_last: int = 1) -> list[str]:
+    """Collect on-disk build namespaces with no live instance, keeping the
+    most-recent `keep_last` unused ones. A build is spared if it is live or
+    currently mid-build. Returns the list of collected build_ids.
+
+    'most-recent' uses the directory mtime as the recency proxy (build_ids
+    also carry a sortable timestamp, but mtime is the on-disk truth)."""
+    live = _live_build_ids()
+    candidates = []
+    for bid in _on_disk_build_ids():
+        if bid in live or _is_building(bid):
+            continue
+        try:
+            mtime = (_BUILDS_ROOT / bid).stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        candidates.append((mtime, bid))
+    # Keep the `keep_last` newest unused; collect the rest.
+    candidates.sort(reverse=True)  # newest first
+    to_collect = [bid for _, bid in candidates[keep_last:]]
+    for bid in to_collect:
+        _rmtree_namespace(bid)
+    return to_collect
 
 
 # ---------------------------------------------------------------------------
@@ -164,9 +422,41 @@ def _gdb_cmd(s: Session, cmd: str, timeout: float = 30.0) -> list[str]:
 # Build helper
 # ---------------------------------------------------------------------------
 
-def _build_image(arch: str, features: str = "debug-boot") -> Path:
-    """Run `cargo run -p xtask -- image --arch <arch>` from the repo
-    root. Returns the path to the produced disk image.
+def _rebuild_flags(rebuild_vendor: str | None = None, rebuild_rootfs: bool = False,
+                   skip_rootfs: bool = False, clean_kernel: bool = False) -> list[str]:
+    """Translate the qemu_start rebuild knobs into xtask `grub` flags. Pure
+    (no I/O) so it's unit-testable.
+
+      rebuild_vendor None      → (nothing)
+      rebuild_vendor ""        → --rebuild-vendor          (all deps)
+      rebuild_vendor "a,b"     → --rebuild-vendor=a,b
+      rebuild_rootfs True      → --rebuild-rootfs
+      skip_rootfs    True      → --skip-rootfs
+      clean_kernel   True      → --clean-kernel
+    """
+    flags: list[str] = []
+    if rebuild_vendor is not None:
+        flags.append("--rebuild-vendor" if rebuild_vendor == ""
+                     else f"--rebuild-vendor={rebuild_vendor}")
+    if rebuild_rootfs:
+        flags.append("--rebuild-rootfs")
+    if skip_rootfs:
+        flags.append("--skip-rootfs")
+    if clean_kernel:
+        flags.append("--clean-kernel")
+    return flags
+
+
+def _build_image(arch: str, build_id: str, features: str = "debug-boot",
+                 rebuild_flags: list[str] | None = None) -> Path:
+    """Run `cargo run -p xtask -- grub --arch <arch> --id <build_id>` from
+    the repo root, building kernel + rootfs + ISO into the `build_id`
+    namespace (everything under target/builds/<id>/). Returns the path
+    to the namespaced GRUB ISO.
+
+    Serialized behind `_BUILD_LOCK` (builds write fixed-ish paths within a
+    namespace) and marked active under `_BUILDING` so GC can't rmtree a
+    build mid-construction.
 
     Default features = `debug-boot` (matches `make qemu-x86`/`-arm`):
     boot UART sink installs + operational-pulse log lines, but no
@@ -174,31 +464,44 @@ def _build_image(arch: str, features: str = "debug-boot") -> Path:
     when debugging kernel internals."""
     if arch not in ("x86_64", "aarch64"):
         raise ValueError(f"arch must be x86_64 or aarch64, got {arch!r}")
-    # x86: Limine is gone — build the GRUB multiboot2 ISO (matches `make
-    # qemu-x86`/`xtask grub`). `--build-only` produces the ISO + rootfs
+    # Limine is gone on both arches: `xtask grub --arch <arch> --id <id>
+    # --features <f> --build-only` yields target/builds/<id>/oxide-<arch>-
+    # grub.iso (x86 multiboot2; arm EFI-stub) plus the namespaced blobs,
     # without launching qemu, so the MCP can spawn its own gdb-paused one.
-    # Limine is gone on both arches: `xtask grub --arch <arch> --build-only`
-    # yields target/oxide-<arch>-grub.iso (x86 multiboot2; arm EFI-stub).
     cmd = ["cargo", "run", "--quiet", "-p", "xtask", "--",
-           "grub", "--arch", arch, "--features", features, "--build-only"]
-    proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+           "grub", "--arch", arch, "--id", build_id,
+           "--features", features, "--build-only",
+           *(rebuild_flags or [])]
+    with _BUILDING_LOCK:
+        _BUILDING.add(build_id)
+    try:
+        with _BUILD_LOCK:
+            proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    finally:
+        with _BUILDING_LOCK:
+            _BUILDING.discard(build_id)
     if proc.returncode != 0:
         raise RuntimeError(
             f"image build failed (exit {proc.returncode})\n"
             f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
         )
-    img = REPO_ROOT / "target" / f"oxide-{arch}-grub.iso"
+    img = _BUILDS_ROOT / build_id / f"oxide-{arch}-grub.iso"
     if not img.is_file():
         raise RuntimeError(f"expected boot artifact at {img} but it isn't there")
     return img
 
 
-def _kernel_elf(arch: str) -> Path:
-    """The kernel ELF GDB needs for symbols. xtask kernel writes it
-    under target/<triple>/<profile>/<bin>."""
-    if arch == "x86_64":
-        return REPO_ROOT / "target" / "x86_64-unknown-oxide-kernel" / "release" / "oxide-x86_64"
-    return REPO_ROOT / "target" / "aarch64-unknown-oxide-kernel" / "release" / "oxide-aarch64"
+def _kernel_elf(arch: str, build_id: str) -> Path:
+    """The kernel ELF GDB needs for symbols. xtask writes it under the
+    namespace: target/builds/<id>/<triple>/release/oxide-<arch>."""
+    triple = f"{arch}-unknown-oxide-kernel"
+    return _BUILDS_ROOT / build_id / triple / "release" / f"oxide-{arch}"
+
+
+def _blob(arch: str, build_id: str, kind: str) -> Path:
+    """Namespaced disk image. C90: id'd disk images live alongside the ISO +
+    ELF under target/builds/<id>/<kind>-<arch>.img (kind ∈ root|home|nvme|ahci)."""
+    return _BUILDS_ROOT / build_id / f"{kind}-{arch}.img"
 
 
 # ---------------------------------------------------------------------------
@@ -206,16 +509,24 @@ def _kernel_elf(arch: str) -> Path:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def qemu_start(arch: str, features: str = "debug-boot", smp: int = 1,
-               accel: str = "kvm", mem: str = "2G", cpu: str = "",
+def qemu_start(arch: str, name: str | None = None, features: str = "debug-boot",
+               smp: int = 1, accel: str = "kvm", mem: str = "2G", cpu: str = "",
                paused: bool = True, ssh_fwd: bool = False,
-               extra_args: list[str] | None = None) -> str:
-    """Build the kernel image for `arch` (x86_64 or aarch64), spawn
-    QEMU with the gdb-stub on :1234, and attach a GDB/MI session
-    targeting the kernel ELF for symbols.
+               extra_args: list[str] | None = None,
+               rebuild_vendor: str | None = None, rebuild_rootfs: bool = False,
+               skip_rootfs: bool = False, clean_kernel: bool = False) -> str:
+    """Build the kernel image for `arch` (x86_64 or aarch64) into a
+    per-build namespace, spawn QEMU with the gdb-stub on a free port, and
+    attach a GDB/MI session targeting the kernel ELF for symbols.
+
+    Multiple instances of DIFFERENT builds can run concurrently — each
+    gets its own build namespace, gdb/ssh ports, sockets, and pcap. The
+    returned `instance_id` identifies this instance for every other tool.
 
     Flags (control the run precisely):
       arch       "x86_64" | "aarch64"
+      name       optional build label; slugified into the build_id
+                 `<slug>-<UTCstamp>`. Default = current git branch.
       features   kernel Cargo features (default "debug-boot"; "debug-all"
                  = full trace firehose; "debug-watchdog" already default-on
                  in the boot crates so the liveness diag is always present).
@@ -231,41 +542,63 @@ def qemu_start(arch: str, features: str = "debug-boot", smp: int = 1,
                  x86 tcg→"Haswell-v4", arm→"cortex-a72").
       paused     start halted under the gdb stub (`-S`) so you can set
                  breakpoints before the first instruction (default True).
-                 False = run immediately (still gdb-attachable via :1234).
-      ssh_fwd    add host:2222→guest:22 forward (default False).
+                 False = run immediately (still gdb-attachable).
+      ssh_fwd    add host:<freeport>→guest:22 forward (default False).
       extra_args list of raw extra QEMU args appended verbatim, for full
                  control (e.g. ["-d","int,guest_errors","-D","/tmp/q.log"]).
 
-    Returns a short status line incl. the effective config. Subsequent
-    calls require `qemu_stop` first.
+    Rebuild passthrough (forwarded to the xtask `grub` build command):
+      rebuild_vendor  None = no-op; "" = --rebuild-vendor (rebuild ALL vendor
+                      deps); "systemd,bash" = --rebuild-vendor=systemd,bash.
+      rebuild_rootfs  True → --rebuild-rootfs (rebuild the rootfs image).
+      skip_rootfs     True → --skip-rootfs (reuse the existing rootfs).
+      clean_kernel    True → --clean-kernel (force a clean kernel rebuild).
+
+    Returns a status line incl. the effective config and the instance_id.
     """
-    global _SESSION
+    # Reclaim space from prior unreferenced builds before building a new one.
+    try:
+        _gc_sweep(keep_last=1)
+    except Exception:
+        pass
+
+    if not shutil.which("gdb"):
+        raise RuntimeError("`gdb` not on PATH — install gdb to use qemu-mcp")
+    qemu_bin = f"qemu-system-{arch}"
+    if not shutil.which(qemu_bin):
+        raise RuntimeError(f"`{qemu_bin}` not on PATH — install QEMU")
+    if smp < 1:
+        raise RuntimeError(f"smp must be >= 1 (got {smp})")
+    if accel not in ("kvm", "tcg"):
+        raise RuntimeError(f"accel must be 'kvm' or 'tcg' (got {accel!r})")
+
+    build_id = _make_build_id(name)
+    extra_args = list(extra_args or [])
+    smp_args = ["-smp", str(int(smp))]
+    # aarch64 on a non-arm host can't use kvm; force tcg there.
+    eff_accel = "tcg" if arch == "aarch64" else accel
+
+    # Per-instance runtime resources (no collisions across instances).
+    gdb_port = _free_port()
+    ssh_port = _free_port() if ssh_fwd else None
+    netdev = (f"user,id=net0,hostfwd=tcp::{ssh_port}-:22" if ssh_fwd
+              else "user,id=net0")
+    pause_args = ["-gdb", f"tcp::{gdb_port}", "-S"] if paused else ["-gdb", f"tcp::{gdb_port}"]
+
+    # Build into the namespace (serialized under _BUILD_LOCK internally).
+    rebuild_flags = _rebuild_flags(rebuild_vendor, rebuild_rootfs,
+                                   skip_rootfs, clean_kernel)
+    img = _build_image(arch, build_id, features, rebuild_flags)
+    elf = _kernel_elf(arch, build_id)
+    if not elf.is_file():
+        raise RuntimeError(f"kernel ELF missing at {elf} — image build did not produce it")
+    root_img = _blob(arch, build_id, "root")
+    home_img = _blob(arch, build_id, "home")
+
     with _SESSION_LOCK:
-        if _SESSION is not None:
-            raise RuntimeError("session already active — call qemu_stop first")
+        instance_id = _alloc_instance_id(build_id)
 
-        if not shutil.which("gdb"):
-            raise RuntimeError("`gdb` not on PATH — install gdb to use qemu-mcp")
-        qemu_bin = f"qemu-system-{arch}"
-        if not shutil.which(qemu_bin):
-            raise RuntimeError(f"`{qemu_bin}` not on PATH — install QEMU")
-        if smp < 1:
-            raise RuntimeError(f"smp must be >= 1 (got {smp})")
-        if accel not in ("kvm", "tcg"):
-            raise RuntimeError(f"accel must be 'kvm' or 'tcg' (got {accel!r})")
-        extra_args = list(extra_args or [])
-        smp_args = ["-smp", str(int(smp))]
-        # aarch64 on a non-arm host can't use kvm; force tcg there.
-        eff_accel = "tcg" if arch == "aarch64" else accel
-        netdev = ("user,id=net0,hostfwd=tcp::2222-:22" if ssh_fwd
-                  else "user,id=net0")
-        pause_args = ["-s", "-S"] if paused else ["-s"]
-
-        img = _build_image(arch, features)
-        elf = _kernel_elf(arch)
-        if not elf.is_file():
-            raise RuntimeError(f"kernel ELF missing at {elf} — image build did not produce it")
-
+    try:
         # Serial bridge via unix socket: QEMU listens, we connect.
         # `-serial stdio` doesn't reliably deliver host stdin to guest
         # UART RX when stdin is a pipe — switching to a dedicated
@@ -273,6 +606,7 @@ def qemu_start(arch: str, features: str = "debug-boot", smp: int = 1,
         # directions deterministic.
         sock_dir = tempfile.mkdtemp(prefix="oxide-qemu-")
         sock_path = os.path.join(sock_dir, "serial.sock")
+        pcap_path = os.path.join(sock_dir, "slirp.pcap")
 
         if arch == "x86_64":
             # GRUB ISO boots under SeaBIOS (qemu default — NO `-bios OVMF`),
@@ -297,9 +631,9 @@ def qemu_start(arch: str, features: str = "debug-boot", smp: int = 1,
                 # the serials kmain's root-mount looks up (oxide-root/oxide-home).
                 # Was a single stale rootfs-x86_64.img/oxide-virt-blk-0 → the
                 # kmain.rs:512 "root disk serial=oxide-root not found" panic.
-                "-drive", f"if=none,id=root,format=raw,file={REPO_ROOT}/kernel/blobs/root-x86_64.img",
+                "-drive", f"if=none,id=root,format=raw,file={root_img}",
                 "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on",
-                "-drive", f"if=none,id=home,format=raw,file={REPO_ROOT}/kernel/blobs/home-x86_64.img",
+                "-drive", f"if=none,id=home,format=raw,file={home_img}",
                 "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on",
                 # Phase 8 prep: explicit modern virtio-net so the
                 # kernel sees device 0x1041 (not the QEMU-default
@@ -308,9 +642,9 @@ def qemu_start(arch: str, features: str = "debug-boot", smp: int = 1,
                 "-nic", "none",
                 "-netdev", netdev,
                 "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
-                # F59-09: dump every frame on/off net0 to pcap so we can
-                # see whether the guest's TX kicks reach SLIRP at all.
-                "-object", "filter-dump,id=f0,netdev=net0,file=/tmp/oxide-slirp.pcap",
+                # F59-09: dump every frame on/off net0 to a per-instance pcap
+                # so we can see whether the guest's TX kicks reach SLIRP.
+                "-object", f"filter-dump,id=f0,netdev=net0,file={pcap_path}",
                 # `-vga none` disables QEMU's default stdvga
                 # (bochs-display, vendor 1234:1111). Without it,
                 # QMP screendump captures that empty stdvga frame
@@ -349,18 +683,18 @@ def qemu_start(arch: str, features: str = "debug-boot", smp: int = 1,
                 # (was "embedded in kernel" — stale pre-F405).
                 "-cdrom", str(img),
                 "-boot", "d",
-                "-drive", f"if=none,id=root,format=raw,file={REPO_ROOT}/kernel/blobs/root-aarch64.img",
+                "-drive", f"if=none,id=root,format=raw,file={root_img}",
                 "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on",
-                "-drive", f"if=none,id=home,format=raw,file={REPO_ROOT}/kernel/blobs/home-aarch64.img",
+                "-drive", f"if=none,id=home,format=raw,file={home_img}",
                 "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on",
                 # Phase 8 prep: explicit modern virtio-net (0x1041)
                 # symmetric with x86; aarch64 virt has no
                 # default-NIC so `-nic none` is unnecessary.
                 "-netdev", netdev,
                 "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
-                # F59-09: dump every frame on/off net0 to pcap so we can
-                # see whether the guest's TX kicks reach SLIRP at all.
-                "-object", "filter-dump,id=f0,netdev=net0,file=/tmp/oxide-slirp.pcap",
+                # F59-09: dump every frame on/off net0 to a per-instance pcap
+                # so we can see whether the guest's TX kicks reach SLIRP.
+                "-object", f"filter-dump,id=f0,netdev=net0,file={pcap_path}",
                 # `-vga none` disables QEMU's default stdvga
                 # (bochs-display, vendor 1234:1111). Without it,
                 # QMP screendump captures that empty stdvga frame
@@ -391,6 +725,11 @@ def qemu_start(arch: str, features: str = "debug-boot", smp: int = 1,
             bufsize=1,
             preexec_fn=os.setsid,  # own process group; clean kill on stop
         )
+
+        # Mark this build live for the CLI `xtask gc` (gc.rs spares a build
+        # whose .live names a still-alive PID). Written the moment the qemu
+        # pid is known; removed in qemu_stop before the GC sweep.
+        _live_add(build_id, qemu_proc.pid)
 
         # Briefly wait for QEMU to bind the gdb-stub port + create the
         # serial socket before we ask GDB to connect / open the socket;
@@ -454,7 +793,12 @@ def qemu_start(arch: str, features: str = "debug-boot", smp: int = 1,
         gdb_reader.start()
 
         s = Session(
+            instance_id=instance_id,
+            build_id=build_id,
             arch=arch,
+            gdb_port=gdb_port,
+            ssh_port=ssh_port,
+            sock_dir=sock_dir,
             qemu=qemu_proc,
             gdb=gdb_proc,
             serial=serial,
@@ -463,43 +807,62 @@ def qemu_start(arch: str, features: str = "debug-boot", smp: int = 1,
             gdb_lock=gdb_lock,
             serial_reader=serial_reader,
             gdb_reader=gdb_reader,
+            started_at=time.monotonic(),
             serial_sock=serial_sock,
             serial_sock_path=sock_path,
             qmp_sock=qmp_sock,
             qmp_sock_path=qmp_path if qmp_sock else None,
             qmp_lock=threading.Lock(),
         )
-        _SESSION = s
 
-        # Prime GDB: skip its banner, attach to QEMU's gdb-stub.
+        # Prime GDB: skip its banner, attach to QEMU's gdb-stub on our port.
         _gdb_wait_prompt(s, timeout=10.0)
-        attach = _gdb_cmd(s, f"-target-select extended-remote localhost:{GDB_PORT}", timeout=10.0)
+        attach = _gdb_cmd(s, f"-target-select extended-remote localhost:{gdb_port}", timeout=10.0)
 
+        with _SESSION_LOCK:
+            _SESSIONS[instance_id] = s
+            _RESERVED.discard(instance_id)
+
+        ssh_note = f" ssh=tcp::{ssh_port}-:22" if ssh_port else ""
         state = "paused at entry" if paused else "running"
         return (
-            f"qemu-mcp: started arch={arch} smp={smp} accel={eff_accel} "
-            f"mem={mem} features={features}; QEMU {state}; "
-            f"GDB attached to localhost:{GDB_PORT}.\n"
-            f"image={img}\nelf={elf}\n"
+            f"qemu-mcp: started instance_id={instance_id} arch={arch} smp={smp} "
+            f"accel={eff_accel} mem={mem} features={features}; QEMU {state}; "
+            f"GDB attached to localhost:{gdb_port}.{ssh_note}\n"
+            f"build_id={build_id}\nimage={img}\nelf={elf}\n"
             f"attach response:\n" + "\n".join(attach[-10:])
         )
+    except Exception:
+        # Release the reservation so a retry can reuse the id, and drop any
+        # .live marker we wrote before the failure so gc can reclaim it.
+        try:
+            if "qemu_proc" in locals() and qemu_proc is not None:
+                _live_remove(build_id, qemu_proc.pid)
+        except Exception:
+            pass
+        with _SESSION_LOCK:
+            _RESERVED.discard(instance_id)
+        raise
 
 
 @mcp.tool()
-def qemu_break(target: str) -> str:
+def qemu_break(target: str, instance_id: str | None = None) -> str:
     """Set a breakpoint at `target` (a symbol name like
     `kernel_main`, or a hex address like `0xffffffff80100abc`).
-    Returns the breakpoint number + location."""
-    s = _require()
+    Returns the breakpoint number + location.
+
+    `instance_id` selects which running instance (default: the sole /
+    most-recently-started one)."""
+    s = _resolve(instance_id)
     out = _gdb_cmd(s, f"-break-insert {target}")
     return "\n".join(out)
 
 
 @mcp.tool()
-def qemu_continue() -> str:
+def qemu_continue(instance_id: str | None = None) -> str:
     """Resume execution. Returns when the CPU stops (breakpoint, fault,
     or other stop event). Output includes the stop reason + frame."""
-    s = _require()
+    s = _resolve(instance_id)
     # `-exec-continue` returns ^running immediately; the actual stop
     # event arrives later as `*stopped`. Wait for it explicitly.
     s.gdb.stdin.write("-exec-continue\n")
@@ -511,7 +874,8 @@ def qemu_continue() -> str:
 
 @mcp.tool()
 def qemu_run_until(pattern: str, timeout: float = 60.0,
-                   poll_interval: float = 0.1) -> str:
+                   poll_interval: float = 0.1,
+                   instance_id: str | None = None) -> str:
     """Resume execution and watch the serial buffer for a regex.
 
     Returns the moment the pattern matches (or `timeout` elapses)
@@ -528,7 +892,7 @@ def qemu_run_until(pattern: str, timeout: float = 60.0,
     The CPU keeps running on return — call again with a new
     pattern, or `qemu_interrupt` / `qemu_stop` when done.
     """
-    s = _require()
+    s = _resolve(instance_id)
     import re as _re
     rx = _re.compile(pattern)
     # -exec-continue returns ^running immediately; we don't wait
@@ -553,21 +917,21 @@ def qemu_run_until(pattern: str, timeout: float = 60.0,
 
 
 @mcp.tool()
-def qemu_interrupt(timeout: float = 5.0) -> str:
+def qemu_interrupt(timeout: float = 5.0, instance_id: str | None = None) -> str:
     """Interrupt a running guest. Sends `-exec-interrupt` to GDB so
     the next memory/register read can succeed. Returns the stop
     frame. No-op if already stopped."""
-    s = _require()
+    s = _resolve(instance_id)
     s.gdb.stdin.write("-exec-interrupt\n")
     s.gdb.stdin.flush()
     return _wait_stopped(s, timeout=timeout)
 
 
 @mcp.tool()
-def qemu_stepi(count: int = 1) -> str:
+def qemu_stepi(count: int = 1, instance_id: str | None = None) -> str:
     """Single-step `count` instructions. Returns the new PC + the
     next instruction's disassembly."""
-    s = _require()
+    s = _resolve(instance_id)
     if count < 1 or count > 1_000_000:
         raise ValueError("count must be in [1, 1_000_000]")
     out: list[str] = []
@@ -577,9 +941,9 @@ def qemu_stepi(count: int = 1) -> str:
 
 
 @mcp.tool()
-def qemu_step(count: int = 1) -> str:
+def qemu_step(count: int = 1, instance_id: str | None = None) -> str:
     """Source-level step `count` lines."""
-    s = _require()
+    s = _resolve(instance_id)
     if count < 1 or count > 1_000_000:
         raise ValueError("count must be in [1, 1_000_000]")
     out: list[str] = []
@@ -589,27 +953,27 @@ def qemu_step(count: int = 1) -> str:
 
 
 @mcp.tool()
-def qemu_finish() -> str:
+def qemu_finish(instance_id: str | None = None) -> str:
     """Step out of the current frame (continue until the current
     function returns)."""
-    s = _require()
+    s = _resolve(instance_id)
     out = _gdb_cmd(s, "-exec-finish")
     return "\n".join(out)
 
 
 @mcp.tool()
-def qemu_regs() -> str:
+def qemu_regs(instance_id: str | None = None) -> str:
     """All CPU registers in hex."""
-    s = _require()
+    s = _resolve(instance_id)
     out = _gdb_cmd(s, "-data-list-register-values x")
     return "\n".join(out)
 
 
 @mcp.tool()
-def qemu_mem(addr: str, count: int = 64) -> str:
+def qemu_mem(addr: str, count: int = 64, instance_id: str | None = None) -> str:
     """Read `count` bytes starting at `addr`. `addr` may be a
     symbol name or hex literal."""
-    s = _require()
+    s = _resolve(instance_id)
     if count < 1 or count > 4096:
         raise ValueError("count must be in [1, 4096]")
     out = _gdb_cmd(s, f"-data-read-memory-bytes {shlex.quote(addr)} {count}")
@@ -617,9 +981,9 @@ def qemu_mem(addr: str, count: int = 64) -> str:
 
 
 @mcp.tool()
-def qemu_disasm(addr: str, count: int = 8) -> str:
+def qemu_disasm(addr: str, count: int = 8, instance_id: str | None = None) -> str:
     """Disassemble `count` instructions starting at `addr`."""
-    s = _require()
+    s = _resolve(instance_id)
     if count < 1 or count > 4096:
         raise ValueError("count must be in [1, 4096]")
     # mode 2 = disassembly with source if available; -- 2 is the
@@ -631,19 +995,19 @@ def qemu_disasm(addr: str, count: int = 8) -> str:
 
 
 @mcp.tool()
-def qemu_backtrace() -> str:
+def qemu_backtrace(instance_id: str | None = None) -> str:
     """Call stack of the current frame."""
-    s = _require()
+    s = _resolve(instance_id)
     out = _gdb_cmd(s, "-stack-list-frames")
     return "\n".join(out)
 
 
 @mcp.tool()
-def qemu_info(what: str = "registers") -> str:
+def qemu_info(what: str = "registers", instance_id: str | None = None) -> str:
     """`info <what>` via the GDB CLI command bridge. Common values:
     `registers`, `breakpoints`, `frame`, `proc`, `mem`. Forwarded
     verbatim — caller decides what to query."""
-    s = _require()
+    s = _resolve(instance_id)
     out = _gdb_cmd(s, f"-interpreter-exec console {shlex.quote('info ' + what)}")
     return "\n".join(out)
 
@@ -690,7 +1054,8 @@ def _qmp_send(s: Session, cmd: dict, timeout: float = 5.0) -> dict:
 
 
 @mcp.tool()
-def qemu_screen(as_text: bool = True, width: int = 120, height: int = 40) -> str:
+def qemu_screen(as_text: bool = True, width: int = 120, height: int = 40,
+                instance_id: str | None = None) -> str:
     """Capture the QEMU framebuffer (VGA / virtio-gpu / ramfb scanout).
 
     Issues QMP `screendump` to write a PPM file under /tmp, then:
@@ -707,8 +1072,8 @@ def qemu_screen(as_text: bool = True, width: int = 120, height: int = 40) -> str
     OVMF clear-screen background); otherwise look for recognizable
     text shapes (banner, cursor blink).
     """
-    s = _require()
-    ppm_path = f"/tmp/oxide-screen-{os.getpid()}.ppm"
+    s = _resolve(instance_id)
+    ppm_path = os.path.join(s.sock_dir, "screen.ppm")
     try: os.unlink(ppm_path)
     except FileNotFoundError: pass
     resp = _qmp_send(s, {"execute": "screendump", "arguments": {"filename": ppm_path}})
@@ -780,11 +1145,11 @@ def _ppm_to_ascii(path: str, w: int, h: int) -> str:
 
 
 @mcp.tool()
-def qemu_serial(clear: bool = False) -> str:
+def qemu_serial(clear: bool = False, instance_id: str | None = None) -> str:
     """Accumulated serial output (kernel stdout). Returns everything
     captured since the session started, or since the last call with
     `clear=True`."""
-    s = _require()
+    s = _resolve(instance_id)
     with s.serial_lock:
         out = "\n".join(s.serial)
         if clear:
@@ -793,7 +1158,8 @@ def qemu_serial(clear: bool = False) -> str:
 
 
 @mcp.tool()
-def qemu_send_serial(text: str, append_newline: bool = True) -> str:
+def qemu_send_serial(text: str, append_newline: bool = True,
+                     instance_id: str | None = None) -> str:
     """Write `text` into the guest's serial port (UART RX) — i.e.
     type into the booted system as if at a terminal. Returns the
     number of bytes sent.
@@ -809,7 +1175,7 @@ def qemu_send_serial(text: str, append_newline: bool = True) -> str:
     (or future RX IRQ) picks the bytes up on the next poll and
     wakes any task parked in `read(0)`.
     """
-    s = _require()
+    s = _resolve(instance_id)
     if append_newline and not text.endswith("\n"):
         text = text + "\n"
     if s.serial_sock is None:
@@ -820,61 +1186,93 @@ def qemu_send_serial(text: str, append_newline: bool = True) -> str:
 
 
 @mcp.tool()
-def qemu_stop() -> str:
-    """Tear down the QEMU + GDB session."""
-    global _SESSION
+def qemu_stop(instance_id: str | None = None, keep_last: int = 1) -> str:
+    """Tear down a QEMU + GDB instance and GC its build namespace.
+
+    `instance_id` selects which instance (default: the sole /
+    most-recently-started one). After the instance is removed, if its
+    build_id has no remaining live instances and is not among the
+    most-recent `keep_last` unused build_ids, its target/builds/<id>/
+    namespace is rmtree'd."""
     with _SESSION_LOCK:
-        if _SESSION is None:
+        if not _SESSIONS:
             return "no active session"
-        s = _SESSION
+        if instance_id is None:
+            s = max(_SESSIONS.values(), key=lambda x: x.started_at)
+        else:
+            s = _SESSIONS.get(instance_id)
+            if s is None:
+                return f"no session with instance_id={instance_id!r}; live: {sorted(_SESSIONS)}"
+        del _SESSIONS[s.instance_id]
+        build_id = s.build_id
+
+    try:
+        s.gdb.stdin.write("-gdb-exit\n")
+        s.gdb.stdin.flush()
+    except Exception:
+        pass
+    try:
+        s.gdb.terminate()
+    except Exception:
+        pass
+    try:
+        os.killpg(os.getpgid(s.qemu.pid), signal.SIGTERM)
+    except Exception:
+        pass
+    for sock in (s.serial_sock, s.qmp_sock):
+        if sock is not None:
+            try: sock.shutdown(socket.SHUT_RDWR)
+            except Exception: pass
+            try: sock.close()
+            except Exception: pass
+    # Reap.
+    for proc, _name in ((s.gdb, "gdb"), (s.qemu, "qemu")):
         try:
-            s.gdb.stdin.write("-gdb-exit\n")
-            s.gdb.stdin.flush()
+            proc.wait(timeout=2.0)
         except Exception:
-            pass
-        try:
-            s.gdb.terminate()
-        except Exception:
-            pass
-        try:
-            os.killpg(os.getpgid(s.qemu.pid), signal.SIGTERM)
-        except Exception:
-            pass
-        if s.serial_sock is not None:
-            try:
-                s.serial_sock.shutdown(socket.SHUT_RDWR)
-            except Exception:
-                pass
-            try:
-                s.serial_sock.close()
-            except Exception:
-                pass
-        if s.qmp_sock is not None:
-            try:
-                s.qmp_sock.shutdown(socket.SHUT_RDWR)
-            except Exception:
-                pass
-            try:
-                s.qmp_sock.close()
-            except Exception:
-                pass
-        # Reap.
-        for proc, name in ((s.gdb, "gdb"), (s.qemu, "qemu")):
-            try:
-                proc.wait(timeout=2.0)
-            except Exception:
-                proc.kill()
-        if s.serial_sock_path is not None:
-            try:
-                os.unlink(s.serial_sock_path)
-            except Exception:
-                pass
-            try:
-                os.rmdir(os.path.dirname(s.serial_sock_path))
-            except Exception:
-                pass
-        _SESSION = None
-        return "qemu-mcp: session stopped"
+            proc.kill()
+    # Remove the per-instance socket/qmp/pcap/screen scratch dir.
+    try:
+        shutil.rmtree(s.sock_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    # Drop this instance's .live PID line BEFORE the GC sweep so a
+    # just-stopped build becomes reclaimable (by both our sweep and the CLI
+    # `xtask gc`). Best-effort; never blocks teardown.
+    _live_remove(build_id, s.qemu.pid)
+
+    # GC: if this build_id is now unreferenced and not among keep_last
+    # most-recent unused builds, drop its namespace.
+    collected: list[str] = []
+    if build_id not in _live_build_ids() and not _is_building(build_id):
+        collected = _gc_sweep(keep_last=keep_last)
+    note = f" gc-collected={collected}" if collected else ""
+    return f"qemu-mcp: instance {s.instance_id} stopped (build {build_id}).{note}"
+
+
+@mcp.tool()
+def qemu_list() -> str:
+    """List live instances: instance_id, build_id, arch, gdb/ssh ports."""
+    with _SESSION_LOCK:
+        if not _SESSIONS:
+            return "no live instances"
+        rows = ["instance_id\tbuild_id\tarch\tgdb\tssh"]
+        for iid, s in sorted(_SESSIONS.items()):
+            rows.append(f"{iid}\t{s.build_id}\t{s.arch}\t{s.gdb_port}\t{s.ssh_port or '-'}")
+    return "\n".join(rows)
+
+
+@mcp.tool()
+def qemu_gc(keep_last: int = 1) -> str:
+    """Sweep on-disk build namespaces (target/builds/*) with no live
+    instance, keeping the most-recent `keep_last` unused
+    ones. Builds that are live or mid-build are never touched. Returns
+    the collected build_ids."""
+    collected = _gc_sweep(keep_last=keep_last)
+    if not collected:
+        return "qemu-mcp: gc — nothing to collect"
+    return "qemu-mcp: gc collected:\n" + "\n".join(collected)
 
 
 # ---------------------------------------------------------------------------
