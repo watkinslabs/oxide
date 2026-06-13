@@ -19,6 +19,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let blobs = crate::buildns::blobs_dir(&repo, id.as_deref());
     std::fs::create_dir_all(&blobs).map_err(|e| { eprintln!("mkdir blobs: {e}"); 1u8 })?;
 
+    // Content-addressed rootfs cache (rootfs_cache.rs): skip/HIT short-circuits the restage.
+    if let crate::rootfs_cache::Plan::Skip = crate::rootfs_cache::pre_build(&repo, &blobs, &arch, rest)? { return Ok(()); }
+
     // Pick the compiler driver per arch.
     let cc: std::path::PathBuf = if arch == "aarch64" {
         let cross = repo.join("vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc");
@@ -989,11 +992,8 @@ hosts:  files
         img.display(),
         std::fs::metadata(&img).map(|m| m.len()).unwrap_or(0));
 
-    // Stage-2 disk-rootfs migration: produce the standalone root + home
-    // disk images (root-<arch>.img, home-<arch>.img) alongside the embedded
-    // rootfs. The embedded rootfs build above is kept unchanged so the
-    // kernel still compiles via include_bytes!; Stage 4 mounts root from the
-    // root disk and drops the embed.
+    // Standalone root + home disk images (virtio-blk drives mounted at boot).
     crate::rootfs_disks::build_disks(&blobs, &img, &arch)?;
+    crate::rootfs_cache::post_build(&repo, &blobs, &arch); // store images in cache for next HIT
     Ok(())
 }
