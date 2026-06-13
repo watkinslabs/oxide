@@ -1,5 +1,6 @@
 [Unit]
 Description=Console Shell (oxide first light)
+Documentation=man:systemd-debug-generator(8)
 DefaultDependencies=no
 ConditionPathExists=/dev/console
 [Service]

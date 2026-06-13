@@ -1,78 +1,57 @@
 # state — session hand-off
 
-Branch: **main**. Counters in `metadata/index.md` (AUTHORITATIVE — read+bump per
-branch). Dev loop: `tools/boot-smoke-probe.sh x86 <probe>` under `OXIDE_QEMU_KVM=1`
-(~20s); `tools/boot-smoke-login.sh x86` for the full login gate. **GOTCHA:** never
-`pkill -f qemu-system` (kills the shell) AND `pkill -x` can't match the >15-char
-process names — find PIDs via `pgrep -af qemu-system` and `kill -9 <pid>`. A stale
-qemu holds the vsock guest-cid=3 AND the root.img write-lock; kill ALL qemu (both
-arches) before any boot, or `vhost-vsock: cid Address already in use` fails the arm boot.
+Branch: **B126-dhcp-iface-carrier** (PR pending). Counters in `metadata/index.md`
+(AUTHORITATIVE — read+bump per branch). **Dev loop GOTCHA:** the qemu MCP
+(`mcp__qemu__qemu_start` arch=x86_64 accel=kvm; then `qemu_continue`,
+`qemu_send_serial`, `qemu_serial`) is the RELIABLE boot harness — the
+shell `tools/boot-smoke-*.sh` scripts get killed mid-boot when backgrounded
+and leave STALE logs (cost hours this session). Build with
+`cargo run -p xtask -- grub --arch x86_64 --features debug-boot --build-only`
+as a SEPARATE step, confirm `grub: built`, THEN MCP-boot. Never trust a
+chained build+boot one-liner. Always verify the ISO mtime is fresh.
 
-## Active run — AUDIO (virtio-snd) then mouse/USB-HID, eth, 3D, modules (gap list)
+## Done this run — real systemd-networkd DHCP, the Linux way (4 kernel bugs)
 
-User directive: work the gap list to **100% Linux compat**, the Linux way — NO
-hacks/stubs/façades. Both arches lockstep. Assembly stays in
-`crates/arch/hal-{x86_64,aarch64}`. Self-paced `/loop` — do not stop at phase seams.
+Replaced the static-IP seed façade with **real vendored systemd-networkd**
+obtaining a DHCPv4 lease. PROVEN via MCP: networkd gets DHCP ACK + assigns
+`eth0 10.0.2.15/24` + default route via `10.0.2.2` (QEMU user-net server).
+Four genuine kernel bugs the real daemon exposed, all fixed the Linux way:
 
-### Done this run
-- **F453 #1831** `docs/58` FROZEN — virtio-snd wire protocol + ALSA/OSS UAPI.
-- **C89 #1832** PR-A: extracted `pci-boot/src/virtio_qsetup.rs::program_queue` —
-  uniform per-queue setup (alloc+zero rings, program desc/driver/device PAs, bind
-  msix, enable, capture notify_off). virtio_drv.rs 908→826 lines. Both arches boot.
-- **F454 #1833** PR-B: `crates/drivers/drv-virtio-snd` crate — CONTROLQ engine
-  (`submit_ctl` 2-desc chain req-RO/resp-WO, poll used ring) + `R_PCM_INFO`
-  query + `virtio_snd_config` harvest (`virtio_snd_cfg.rs`). Boot line verified
-  BOTH arches: `virtio-snd: bdf=0:8.0 card=C0 streams=2 out=1 in=1`. QEMU
-  `virtio-sound-pci,audiodev=none,disable-legacy=on` added to both arch boots.
-  `config()` accessor exposes jacks/streams/chmaps/controls.
-- **F455 (this branch)** PR-C: PCM playback. TXQ(2) programmed via `program_queue`
-  + `notify_va` helper (VirtioProbe `snd_q2_*`). `beep(hz,ms)`/`beep_diag`:
-  SET_PARAMS(S16 mono 44.1k)→PREPARE→START→3-desc TX chains (xfer/payload/status)
-  →STOP. Verified BOTH arches `boot-tone diag=0`; x86 wav backend captured the
-  exact ±8000 square wave (peak_abs=8000, non-zero PCM). **LOCKSTEP GOTCHA fixed:**
-  virtio-sound retires TX via the audio-backend timer (not synchronously like
-  CONTROLQ); under ARM TCG a tight busy-poll holds the QEMU BQL and starves that
-  timer → diag=7 timeout. Fix: `tx_period` poll reads device_status (cfg_va+0x14)
-  each iteration to force a VM exit, releasing the BQL (Ctx now carries cfg_va).
+1. **netlink IFLA_CARRIER missing** (`netlink/rtnetlink.rs build_newlink_reply`)
+   — every network manager parks at "waiting for carrier" without it. Now
+   emits IFLA_CARRIER + operstate from IFF_RUNNING.
+2. **root doesn't regain caps on execve for ext4 binaries**
+   (`syscalls/execve_common.rs regain_root_caps_at_execve`, called
+   unconditionally in `059_execve.rs`) — the old path only ran file-caps via
+   `devfs::lookup`, never for real-fs binaries, so a root daemon couldn't
+   acquire CAP_SETPCAP. Linux `cap_bprm_creds_from_file` root path.
+3. **cap_emulate_setxuid ignored PR_SET_KEEPCAPS** (`sched/cred.rs`) — wiped
+   permitted on the root→systemd-network uid drop; networkd KEEPCAPS-retains
+   then re-raises. Now gated on `!keep_caps`.
+4. **AF_UNIX bound listener leaked on close** (`net/sock_drop.rs` +
+   `unix_sock.rs unbind`) — restart-looping daemon hit EADDRINUSE on rebind.
+   Now released in InetSocket::Drop.
 
-- **F456 (this branch)** PR-D: ALSA sound subsystem, the Linux way (user
-  insisted: no shortcuts, ALSA primary + OSS emulation on the SAME engine).
-  - drv-virtio-snd refactored to real `snd_pcm_ops`: `pcm_hw_params` (release-
-    if-needed then SET_PARAMS) / `pcm_prepare` / `pcm_trigger` / `pcm_hw_free` /
-    `pcm_submit` + `pcm_caps` (per-stream formats/rates/ch from PCM_INFO) +
-    `PcmState`. `beep` rebuilt on the private primitives (self-test unchanged).
-  - NEW `crates/kernel/sound` = ALSA PCM core: substream state machine +
-    `hw_params` refinement against device caps (uapi.rs has exact LP64 offsets
-    from the cross-toolchain asound.h) + sw_params + appl/hw_ptr accounting +
-    full `SNDRV_PCM_IOCTL_*`/`SNDRV_CTL_IOCTL_*` ABI. Nodes: `/dev/snd/controlC0`
-    + `/dev/snd/pcmC0D0p` (primary), `/dev/dsp`/`/dev/audio`/`/dev/mixer`
-    (snd-pcm-oss emulation, oss.rs). `sound::handle_ioctl` in the 016_ioctl
-    chain; `sound::init()` in kmain after PCI enum.
-  - Smoke: `userspace/snd_probe/snd_probe.c` (self-contained UAPI) drives the
-    real libasound sequence + asserts HW_PARAMS REJECTS FLOAT64 + pins
-    S16/2/44.1k + OSS path. PASS both arches. In oxide-smokes.sh + CRT_BINS.
-  - **GOTCHA fixed:** sw_params `boundary` is @64 not @56 (silence_size@56).
+Plus userspace integration: built `systemd-networkd`/`networkctl` (added to
+`vendor/systemd/build.sh` ninja targets + install), `systemd-network` user
+(uid 192) in passwd/group/shadow, `.network`+`.service` units (bodies in
+`l2_deps.rs`). Static seed REMOVED — `seed_defaults` no longer fakes eth0
+(`rtnetlink.rs`); eth0 boots addressless.
 
-- **F457 (this branch)** PR-E: capture (RXQ), full-duplex. Boot probe programs
-  RXQ(3) like TXQ(2). drv-virtio-snd capture ops mirror playback:
-  `cap_caps`/`cap_hw_params`/`cap_prepare`/`cap_trigger`/`cap_hw_free`/`pcm_recv`
-  + `rx_period` (3-desc chain, payload WO; reads used-len for captured bytes;
-  same BQL-yield). sound crate: `capture.rs` substream + `/dev/snd/pcmC0D0c`
-  (READI/read) sharing `pcm::refine_params` (refactored pure/direction-agnostic);
-  OSS `/dev/dsp` read(2). snd_probe extended (capture HW_PARAMS/PREPARE/READI),
-  PASS both arches. QEMU null-audiodev capture yields silence frames.
+## OPEN — networkd auto-start at boot (2 follow-ups)
 
-### NEXT TASK — MOUSE (user: "then the mouse when done with all things audio")
-Audio is functionally done (playback+capture+ALSA+OSS; mixer needs F_CTLS which
-QEMU doesn't offer; KIOCSOUND console beep needs async kthread infra — deferred).
-- Mouse: QEMU `-device virtio-tablet-pci` (or virtio-mouse). 2nd evdev node
-  `/dev/input/event1`. drv-virtio-input already drains all EV_* types (drain.rs
-  push_event0) — needs a SECOND device instance + event1 node + EV_ABS/EV_REL/
-  BTN_* reporting. Verify via QMP `input-send-event` (mouse move/click) → read
-  event1 input_event records. Add to qemu args (image_qemu.rs) both arches.
-2. Mouse/pointer: virtio-tablet/mouse 2nd evdev node (event1, EV_REL/EV_ABS/BTN_*).
-3. Ethernet: e1000/rtl8139 PCI drivers (oxide DHCP is a static seed — see memory).
-4. 3D/virgl + Xorg/Mesa userspace. 5. Module lifecycle (modules/lib.rs).
+networkd is built+staged+enabled but NOT yet in default.target Wants (started
+by hand it pulls a real lease). Auto-start blocks on:
+- **systemd-executor↔PID1 readiness notify**: Type=notify/exec start-op never
+  completes — the executor's notify msg carries SCM_RIGHTS fds ("Got extra
+  auxiliary fds with notification message"); PID1 closes the fds but the
+  service never goes "active" → 90s timeout. Likely an AF_UNIX dgram
+  cmsg/SCM_RIGHTS gap on the notify path.
+- **single-CPU scheduler fairness**: with TimeoutStartSec=infinity networkd
+  runs forever but a busy daemon starves the getty (cooperative sched) → no
+  login. Needs preemption/fairness or networkd settling (which needs READY).
+
+Boot today is clean (8.5s, login fast) because networkd isn't auto-pulled.
 
 ## First command next session
-    grep -rn 'event0\|EvdevInode\|install_default' crates/drivers/drv-virtio-input/src/   # 2nd evdev node for mouse
+    grep -rn 'SCM_RIGHTS\|cmsg\|notify' crates/kernel/net/src/unix_sock.rs crates/kernel/net/src/sock_io.rs   # executor notify SCM_RIGHTS path
