@@ -23,7 +23,7 @@ FEATURES ?=
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         qemu-x86-grub \
         vendor-rebuild vendor-x86 vendor-arm \
-        clean help
+        clean clean-builds help
 
 all: build
 
@@ -227,6 +227,11 @@ qemu-mcp:
 
 clean:
 	$(CARGO) clean
+
+# Reclaim dead build namespaces + LRU-trim the rootfs cache (see tools/xtask gc).
+# Pass flags via GC_ARGS, e.g. `make clean-builds GC_ARGS="--all"` or `--dry-run`.
+clean-builds:
+	$(CARGO) run -q -p xtask -- gc $(GC_ARGS)
 
 help:
 	@awk '/^# `make / { sub(/^# /,""); print }' $(firstword $(MAKEFILE_LIST))
