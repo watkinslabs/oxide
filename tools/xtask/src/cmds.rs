@@ -103,6 +103,28 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         "aarch64" => ("boot-aarch64", "kernel-bin-aarch64"),
         _ => unreachable!(),
     };
+    // `--clean-kernel`: `cargo clean -p <pkg>` the kernel packages in the SHARED
+    // target/ so they recompile from scratch (rules out incremental-cache
+    // corruption). Default absent = incremental, no clean.
+    let clean_kernel = rest.iter().any(|a| a == "--clean-kernel");
+    if clean_kernel {
+        let mut k = Command::new("cargo");
+        k.args([
+            "clean",
+            "-Z", "unstable-options",
+            "-Z", "json-target-spec",
+            "--target", target,
+            "--profile", &profile,
+            "-p", "kmain",
+            "-p", boot_pkg,
+            "-p", bin_pkg,
+        ]);
+        run(k)?;
+    }
+    // Always build in the DEFAULT target/ (no CARGO_TARGET_DIR override) so
+    // cargo's incremental cache is reused across ids — only crates that
+    // actually changed recompile. Build lock serializes builds, so sharing
+    // target/ is safe. An id'd build then snapshots its ELF below.
     let mut c = Command::new("cargo");
     c.args([
         "build",
@@ -119,11 +141,25 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
     if let Some(f) = features.as_ref() {
         c.args(["--features", f.as_str()]);
     }
-    if id.is_some() {
+    run(c)?;
+    // Snapshot: for an id'd build, copy the freshly built ELF from the shared
+    // build location to the per-id snapshot path so a running instance boots a
+    // stable ISO decoupled from later builds that reuse target/. No-id builds
+    // leave the ELF at its canonical shared path — byte-identical to today.
+    if let Some(id) = id.as_deref() {
+        let prof_dir = if profile == "dev" { "debug" } else { profile.as_str() };
         let repo = crate::image_qemu::repo_root();
-        c.env("CARGO_TARGET_DIR", crate::buildns::cargo_target_dir(&repo, id.as_deref()).unwrap());
+        let src = crate::buildns::kernel_elf_build(&repo, &arch, prof_dir);
+        let dst = crate::buildns::kernel_elf(&repo, Some(id), &arch, prof_dir);
+        if let Some(p) = dst.parent() {
+            std::fs::create_dir_all(p).map_err(|e| { eprintln!("xtask: snapshot mkdir failed: {e}"); 1u8 })?;
+        }
+        std::fs::copy(&src, &dst).map_err(|e| {
+            eprintln!("xtask: snapshot copy {} -> {} failed: {e}", src.display(), dst.display());
+            1u8
+        })?;
     }
-    run(c)
+    Ok(())
 }
 
 
