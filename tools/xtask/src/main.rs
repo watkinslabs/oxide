@@ -6,6 +6,7 @@ mod image_qemu;
 mod l2_deps;
 mod stats;
 mod rootfs;
+mod rootfs_cache;
 mod rootfs_disks;
 mod rootfs_lists;
 mod rootfs_dynprobe;
