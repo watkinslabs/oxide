@@ -1,6 +1,6 @@
 // x86_64 kernel binary stage. Pulls `boot_x86_64::_start` (the
 // Limine entry point) into the link, supplies a panic handler, and
-// lets the linker script in `link/x86_64-kernel.ld` decide layout.
+// lets the linker script in `x86_64-kernel.ld` (in this crate) decide layout.
 //
 // `cargo build -p kernel-bin-x86_64 --target ...oxide-kernel.json`
 // produces `target/<target>/<profile>/oxide-x86_64`, an ELF64 the

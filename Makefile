@@ -23,7 +23,7 @@ FEATURES ?=
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         qemu-x86-grub \
         vendor-rebuild vendor-x86 vendor-arm \
-        clean help
+        clean clean-builds help
 
 all: build
 
@@ -207,7 +207,7 @@ smoke-vsock-arm: arm
 	./tools/boot-smoke-vsock.sh arm $(VSOCK_SMOKE_TIMEOUT)
 smoke-vsock: smoke-vsock-x86
 
-# Rebuild kernel/blobs/rootfs.img from userspace/ sources. Run after
+# Rebuild target/builds/default/root-<arch>.img from userspace/ sources. Run after
 # editing any userspace/<name>/<name>.c so include_bytes! picks up
 # the new bytes on the next kernel build.
 rootfs:
@@ -227,6 +227,11 @@ qemu-mcp:
 
 clean:
 	$(CARGO) clean
+
+# Reclaim dead build namespaces + LRU-trim the rootfs cache (see tools/xtask gc).
+# Pass flags via GC_ARGS, e.g. `make clean-builds GC_ARGS="--all"` or `--dry-run`.
+clean-builds:
+	$(CARGO) run -q -p xtask -- gc $(GC_ARGS)
 
 help:
 	@awk '/^# `make / { sub(/^# /,""); print }' $(firstword $(MAKEFILE_LIST))

@@ -1,57 +1,77 @@
 # state — session hand-off
 
-Branch: **B126-dhcp-iface-carrier** (PR pending). Counters in `metadata/index.md`
-(AUTHORITATIVE — read+bump per branch). **Dev loop GOTCHA:** the qemu MCP
-(`mcp__qemu__qemu_start` arch=x86_64 accel=kvm; then `qemu_continue`,
-`qemu_send_serial`, `qemu_serial`) is the RELIABLE boot harness — the
-shell `tools/boot-smoke-*.sh` scripts get killed mid-boot when backgrounded
-and leave STALE logs (cost hours this session). Build with
-`cargo run -p xtask -- grub --arch x86_64 --features debug-boot --build-only`
-as a SEPARATE step, confirm `grub: built`, THEN MCP-boot. Never trust a
-chained build+boot one-liner. Always verify the ISO mtime is fresh.
+TWO branches in flight, both committed-local + **NOT pushed**. Counters in
+`metadata/index.md` (AUTHORITATIVE — read+bump per branch).
 
-## Done this run — real systemd-networkd DHCP, the Linux way (4 kernel bugs)
+**Dev-loop gotchas (cost hours):** x86 boots ALWAYS `OXIDE_QEMU_KVM=1` (TCG
+smp>1 reads as a hang); stale qemu holds the disk write-lock → find via
+`fuser <img>` + `kill -9` (`pkill -x` misses the 15-char name); `KEEP_LOG`
+copies only on smoke EXIT.
 
-Replaced the static-IP seed façade with **real vendored systemd-networkd**
-obtaining a DHCPv4 lease. PROVEN via MCP: networkd gets DHCP ACK + assigns
-`eth0 10.0.2.15/24` + default route via `10.0.2.2` (QEMU user-net server).
-Four genuine kernel bugs the real daemon exposed, all fixed the Linux way:
+## Branch C90-build-namespacing (CURRENT, 14 commits) — build system + structure
 
-1. **netlink IFLA_CARRIER missing** (`netlink/rtnetlink.rs build_newlink_reply`)
-   — every network manager parks at "waiting for carrier" without it. Now
-   emits IFLA_CARRIER + operstate from IFF_RUNNING.
-2. **root doesn't regain caps on execve for ext4 binaries**
-   (`syscalls/execve_common.rs regain_root_caps_at_execve`, called
-   unconditionally in `059_execve.rs`) — the old path only ran file-caps via
-   `devfs::lookup`, never for real-fs binaries, so a root daemon couldn't
-   acquire CAP_SETPCAP. Linux `cap_bprm_creds_from_file` root path.
-3. **cap_emulate_setxuid ignored PR_SET_KEEPCAPS** (`sched/cred.rs`) — wiped
-   permitted on the root→systemd-network uid drop; networkd KEEPCAPS-retains
-   then re-raises. Now gated on `!keep_caps`.
-4. **AF_UNIX bound listener leaked on close** (`net/sock_drop.rs` +
-   `unix_sock.rs unbind`) — restart-looping daemon hit EADDRINUSE on rebind.
-   Now released in InetSocket::Drop.
+A complete per-build artifact system + a big structure de-sprawl. All verified
+building, spec-lint clean, no-id paths boot-tested (KVM no-id reaches systemd
+Default Target in 4.6s).
 
-Plus userspace integration: built `systemd-networkd`/`networkctl` (added to
-`vendor/systemd/build.sh` ninja targets + install), `systemd-network` user
-(uid 192) in passwd/group/shadow, `.network`+`.service` units (bodies in
-`l2_deps.rs`). Static seed REMOVED — `seed_defaults` no longer fakes eth0
-(`rtnetlink.rs`); eth0 boots addressless.
+- **`xtask --id <slug>`**: every build isolated in ONE folder `target/builds/<id>/`
+  (ISO + kernel ELF snapshot + root/home/nvme/ahci images together). No-id ≡ the
+  `default` namespace — there is NO "blobs" dir anymore (`kernel/blobs` and the
+  whole `kernel/` top-level dir DELETED).
+- **`xtask path <kind> --arch <a> [--id <id>]`** = the SINGLE path resolver
+  (root-img/home-img/nvme/ahci/iso/elf/build-dir). The smoke scripts
+  (run-smokes.sh, accept.py) query it instead of hardcoding.
+- **Content-addressed rootfs cache** `target/rootfs-cache/` (FNV of inputs):
+  kernel-only iter reuses the image (`cp`, ~0.05s) vs restage (~10s).
+- **Incremental kernel**: compiles in shared `target/` then snapshots the ELF
+  into the namespace (no fresh CARGO_TARGET_DIR / from-scratch per id).
+- **`xtask gc`** (+ `make clean-builds`): reclaims dead `target/builds/<id>` +
+  LRU-trims the cache; protects builds with a live `.live` PID marker + the
+  `default` namespace. Hard rmtree guard (validate + resolved-parent==root).
+- **`--rebuild-vendor[=pkg,…]`** re-runs `vendor/<pkg>/build.sh`.
+- **qemu-mcp multi-instance**: `qemu_start(name,…, rebuild_vendor/rebuild_rootfs/
+  skip_rootfs/clean_kernel)` builds via `xtask grub --id` + launches off
+  `target/builds/<build_id>/`; per-instance free gdb/ssh ports; instance registry
+  (`instance_id` on every tool); writes `.live`; `qemu_list`/`qemu_gc`. GDB
+  validated (namespaced ELF symbols + free port). FastMCP `instructions=` added
+  so the AI client gets the model.
+- **Structure**: `terminfo`→`vendor/terminfo`, `vdso`→`crates/kernel/syscalls/vdso`
+  (build output gitignored next to its `.S`), `link/`→the two `kernel-bin` crates.
+- Reclaimed ~40GB of `target/` cruft this session.
 
-## OPEN — networkd auto-start at boot (2 follow-ups)
+OPEN/optional on C90: (a) flatten the ELF snapshot to one flat
+`target/builds/<id>/oxide-<arch>` + delete the transient `grub-stage/` scratch
+(proposed, not done); (b) rename `targets/`→`kernel-targets/` (kills the
+`target/` clash; only `cmds.rs:97-98` + docs ref it); (c) a LIVE qemu-mcp
+2-instance shakeout (wiring verified by inspection, never run live — MCP was
+disconnected); (d) PUSH — but C90 touches crates/ so the pre-push smoke fires,
+and the `oxide login:` marker depends on the serial-getty fix that lives on
+B127, not here (see below) — resolve before pushing.
 
-networkd is built+staged+enabled but NOT yet in default.target Wants (started
-by hand it pulls a real lease). Auto-start blocks on:
-- **systemd-executor↔PID1 readiness notify**: Type=notify/exec start-op never
-  completes — the executor's notify msg carries SCM_RIGHTS fds ("Got extra
-  auxiliary fds with notification message"); PID1 closes the fds but the
-  service never goes "active" → 90s timeout. Likely an AF_UNIX dgram
-  cmsg/SCM_RIGHTS gap on the notify path.
-- **single-CPU scheduler fairness**: with TimeoutStartSec=infinity networkd
-  runs forever but a busy daemon starves the getty (cooperative sched) → no
-  login. Needs preemption/fairness or networkd settling (which needs READY).
+## Branch B127-smp-load-balance (5 commits) — SMP fix, BLOCKED
 
-Boot today is clean (8.5s, login fast) because networkd isn't auto-pulled.
+The user's actual goal thread. Committed, NOT pushed. Three correct, verified
+fixes; one real kernel blocker remains.
+- ✅ SMP work distribution (placement_load incl. running task; fork→
+  wake_up_new_task→select_task_rq; local-only wakes routed through ttwu).
+- ✅ serial login on ttyS0 (/dev/console = video VT, so headless serial had no
+  getty — added serial-getty-ttyS0.service). THIS is the `oxide login:` marker
+  fix C90 lacks.
+- ✅ fork child woken LAST (was runnable on an AP before clone finished init).
+- ❌ **BLOCKER — SMP>1 still crashes** non-deterministically under load. Root
+  cause (3-agent analysis, file:line in the B127 state): (1) **no x86 cross-CPU
+  TLB shootdown** — all user tasks share one page-table tree, every PTE change
+  flushes only the LOCAL TLB (`mm-pmm/user_as.rs:626`, `mm-vmm/address_space.rs:
+  786/809`), never IPIs others → stale TLB on the other CPU (aarch64 immune,
+  `tlbi …is` broadcasts). Fix = `native_flush_tlb_others` IPI. (2) **no IST** for
+  any fault vector (`idt.rs:148` all ist=0) → #PF/#DF triple-fault hazard.
+  Default qemu SMP kept at 1 until fixed.
+- Also unresolved: arm SMP=2 boot stalls at "Queued start job for default target"
+  before the getty (every arm run this session).
 
 ## First command next session
-    grep -rn 'SCM_RIGHTS\|cmsg\|notify' crates/kernel/net/src/unix_sock.rs crates/kernel/net/src/sock_io.rs   # executor notify SCM_RIGHTS path
+```
+cd /home/nd/oxide2 && git branch --show-current && git log --oneline -3
+```
+Then decide: finish/push C90 (handle the pre-push smoke vs serial-getty), or do
+the B127 x86 TLB-shootdown + IST work (the real SMP blocker, the user's goal).

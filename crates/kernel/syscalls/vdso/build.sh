@@ -11,7 +11,7 @@
 set -eu
 
 here="$(cd "$(dirname "$0")" && pwd)"
-out="$here/../kernel/blobs"
+out="$here"
 mkdir -p "$out"
 
 xcc="${CC:-gcc}"
