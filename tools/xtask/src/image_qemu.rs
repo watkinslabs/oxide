@@ -157,10 +157,10 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
 /// the vendored arm64-efi GRUB modules (no host grub2-efi-aa64 install
 /// needed — see tools/fetch-grub.sh), then boot under OVMF. OVMF loads
 /// GRUB, GRUB's `linux` loads our PE Image, the kernel's EFI stub exits
-/// boot services + drops the MMU and joins the self-boot trampoline. The
-/// rootfs is embedded in the kernel (ext4::rootfs `include_bytes!`), so
-/// root mounts without a block device; the EFI stub's ACPI RSDP brings up
-/// PCI (virtio-net/gpu).
+/// boot services + drops the MMU and joins the self-boot trampoline. Root
+/// mounts from the root-aarch64.img virtio-blk disk (serial `oxide-root`,
+/// attached below) — NOT embedded; the EFI stub's ACPI RSDP brings up PCI
+/// (virtio-blk/net/gpu).
 fn cmd_grub_aarch64(rest: &[String]) -> Result<(), u8> {
     let smp: u32 = parse_arg(rest, "--smp").and_then(|s| s.parse().ok()).unwrap_or(1);
     // OXIDE_SKIP_ROOTFS=1 reuses the cached rootfs disk instead of restaging
@@ -258,8 +258,8 @@ fn build_grub_arm_iso(
 
 /// Boot the aarch64 GRUB EFI ISO under QEMU with OVMF. Semihosting is on
 /// (the kernel's early klog uses it until device_map remaps PL011); GIC
-/// v3+ITS as the kernel expects; rootfs embedded in the Image (no block
-/// device). OXIDE_QEMU_UART_SOCK routes serial to a unix socket (the
+/// v3+ITS as the kernel expects; root mounts from the root-aarch64.img
+/// virtio-blk disk attached below. OXIDE_QEMU_UART_SOCK routes serial to a unix socket (the
 /// boot-smoke/login scripts feed scripted keystrokes that way); else
 /// headless stdio for CI or a muxed stdio + GTK display interactively.
 fn qemu_run_aarch64_grub(

@@ -170,12 +170,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // /sbin/init entry; the kernel reads it from ext4 at
     // boot. Nothing to refresh under kernel/blobs/.
 
-    // Rootfs size: 1 GiB. Post-F405 the rootfs is a REAL virtio-blk DISK
-    // (root-<arch>.img), read on demand by the kernel — NOT include_bytes!d, so
-    // the old embed-size limits are gone (kernel reads blocks lazily into the
-    // page cache). History: 16→32(F251)→128(F345)→192→1024(F407); earlier bumps
-    // were forced by the embed overflowing → ENOSPC → systemd drop → boot panic.
-    let img = blobs.join(format!("rootfs-{arch}.img"));
+    // 1 GiB ext4 staged DIRECTLY into root-<arch>.img (the boot disk, serial
+    // `oxide-root`) — C90: no separate rootfs-<arch>.img + 1 GiB cp. The kernel
+    // reads blocks lazily into the page cache (NOT include_bytes!d), so the old
+    // embed-size limits are gone (history 16→1024 MiB forced by embed overflow).
+    let img = blobs.join(format!("root-{arch}.img"));
     eprintln!("xtask rootfs: mkfs.ext4 {}", img.display());
     {
         let mut c = Command::new("dd");
@@ -992,8 +991,9 @@ hosts:  files
         img.display(),
         std::fs::metadata(&img).map(|m| m.len()).unwrap_or(0));
 
-    // Standalone root + home disk images (virtio-blk drives mounted at boot).
-    crate::rootfs_disks::build_disks(&blobs, &img, &arch)?;
+    // root-<arch>.img is now staged in place above; add the /home + /usr/local
+    // mount-points, then build the standalone home disk (virtio-blk drives).
+    crate::rootfs_disks::build_disks(&blobs, &arch)?;
     crate::rootfs_cache::post_build(&repo, &blobs, &arch); // store images in cache for next HIT
     Ok(())
 }

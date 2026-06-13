@@ -1,15 +1,16 @@
 // xtask gc — reclaim dead build namespaces + LRU-trim the rootfs cache.
 //
 // Build namespacing (buildns.rs) leaks per-id dirs under `target/builds/<id>`
-// and `kernel/blobs/<id>` when xtask is driven directly (not via the MCP,
-// which has its own GC). The content-addressed rootfs cache
-// (rootfs_cache.rs) at `kernel/blobs/cache/{root,home}-<hash>-<arch>.img`
+// (C90: an id'd build's disk images now live here too) and any legacy
+// `kernel/blobs/<id>` from older builds, when xtask is driven directly (not
+// via the MCP, which has its own GC). The content-addressed rootfs cache
+// (rootfs_cache.rs) at `target/rootfs-cache/{root,home}-<hash>-<arch>.img`
 // grows unbounded (one pair per distinct input hash). `gc` reclaims both.
 //
 // HARD GUARD: `remove_dir_all` is only ever called on a path whose `<id>`
 // passes `buildns::validate` AND whose canonicalized parent is exactly
 // `target/builds` resp `kernel/blobs`; `remove_file` only on entries directly
-// inside `kernel/blobs/cache`. The roots themselves are NEVER removed. This
+// inside `target/rootfs-cache`. The roots themselves are NEVER removed. This
 // mirrors the MCP's `_rmtree_namespace` resolved-parent assertion.
 
 use std::collections::BTreeSet;
@@ -29,7 +30,7 @@ pub(crate) fn cmd_gc(rest: &[String]) -> Result<(), u8> {
 
     let builds_root = repo.join("target/builds");
     let blobs_root = repo.join("kernel/blobs");
-    let cache_root = blobs_root.join("cache");
+    let cache_root = repo.join("target/rootfs-cache");
 
     let mut freed: u64 = 0;
     let mut reclaimed: Vec<String> = Vec::new();

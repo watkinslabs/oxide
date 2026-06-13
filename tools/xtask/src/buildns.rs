@@ -32,11 +32,13 @@ pub(crate) fn target_dir(repo: &Path, id: Option<&str>) -> PathBuf {
     }
 }
 
-/// Disk-image blob dir: `repo/kernel/blobs/<id>` when id set, else the plain
-/// `repo/kernel/blobs`.
+/// Disk-image blob dir. C90: an id'd build puts EVERYTHING under one folder
+/// `repo/target/builds/<id>` (disk images alongside the ISO + ELF snapshot);
+/// the no-id legacy path stays `repo/kernel/blobs` BYTE-IDENTICAL (CI / make /
+/// smoke hardcode it — the CI-safety invariant).
 pub(crate) fn blobs_dir(repo: &Path, id: Option<&str>) -> PathBuf {
     match id {
-        Some(id) => repo.join("kernel/blobs").join(id),
+        Some(id) => repo.join("target").join("builds").join(id),
         None => repo.join("kernel/blobs"),
     }
 }
