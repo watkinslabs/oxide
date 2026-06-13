@@ -202,6 +202,57 @@ def _alloc_instance_id(build_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# .live PID markers (xtask gc protection)
+# ---------------------------------------------------------------------------
+
+# `xtask gc` (tools/xtask/src/gc.rs) spares a build namespace from reclaim if
+# target/builds/<id>/.live exists AND names a PID with /proc/<pid> alive. The
+# MCP writes these markers so a CLI `xtask gc` never rmtree's a build that has
+# a running qemu. One PID line per live instance; file deleted when empty.
+_LIVE_LOCK = threading.Lock()
+
+
+def _live_path(build_id: str) -> Path:
+    return _BUILDS_ROOT / build_id / ".live"
+
+
+def _live_add(build_id: str, pid: int) -> None:
+    """Append `pid` as a line to target/builds/<id>/.live (create dir/file as
+    needed). Best-effort: never raises (teardown/start must not die over it)."""
+    try:
+        with _LIVE_LOCK:
+            p = _live_path(build_id)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            existing: list[str] = []
+            if p.exists():
+                existing = [ln for ln in p.read_text().splitlines() if ln.strip()]
+            if str(pid) not in existing:
+                existing.append(str(pid))
+            p.write_text("\n".join(existing) + "\n")
+    except Exception:
+        pass
+
+
+def _live_remove(build_id: str, pid: int) -> None:
+    """Remove `pid`'s line from target/builds/<id>/.live; delete the file if it
+    becomes empty. Best-effort: tolerate a missing/locked file, never raise."""
+    try:
+        with _LIVE_LOCK:
+            p = _live_path(build_id)
+            if not p.exists():
+                return
+            kept = [ln for ln in p.read_text().splitlines()
+                    if ln.strip() and ln.strip() != str(pid)]
+            if kept:
+                p.write_text("\n".join(kept) + "\n")
+            else:
+                try: p.unlink()
+                except FileNotFoundError: pass
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Garbage collection of unreferenced build namespaces
 # ---------------------------------------------------------------------------
 
@@ -335,7 +386,33 @@ def _gdb_cmd(s: Session, cmd: str, timeout: float = 30.0) -> list[str]:
 # Build helper
 # ---------------------------------------------------------------------------
 
-def _build_image(arch: str, build_id: str, features: str = "debug-boot") -> Path:
+def _rebuild_flags(rebuild_vendor: str | None = None, rebuild_rootfs: bool = False,
+                   skip_rootfs: bool = False, clean_kernel: bool = False) -> list[str]:
+    """Translate the qemu_start rebuild knobs into xtask `grub` flags. Pure
+    (no I/O) so it's unit-testable.
+
+      rebuild_vendor None      → (nothing)
+      rebuild_vendor ""        → --rebuild-vendor          (all deps)
+      rebuild_vendor "a,b"     → --rebuild-vendor=a,b
+      rebuild_rootfs True      → --rebuild-rootfs
+      skip_rootfs    True      → --skip-rootfs
+      clean_kernel   True      → --clean-kernel
+    """
+    flags: list[str] = []
+    if rebuild_vendor is not None:
+        flags.append("--rebuild-vendor" if rebuild_vendor == ""
+                     else f"--rebuild-vendor={rebuild_vendor}")
+    if rebuild_rootfs:
+        flags.append("--rebuild-rootfs")
+    if skip_rootfs:
+        flags.append("--skip-rootfs")
+    if clean_kernel:
+        flags.append("--clean-kernel")
+    return flags
+
+
+def _build_image(arch: str, build_id: str, features: str = "debug-boot",
+                 rebuild_flags: list[str] | None = None) -> Path:
     """Run `cargo run -p xtask -- grub --arch <arch> --id <build_id>` from
     the repo root, building kernel + rootfs + ISO into the `build_id`
     namespace (everything under target/builds/<id>/). Returns the path
@@ -357,7 +434,8 @@ def _build_image(arch: str, build_id: str, features: str = "debug-boot") -> Path
     # without launching qemu, so the MCP can spawn its own gdb-paused one.
     cmd = ["cargo", "run", "--quiet", "-p", "xtask", "--",
            "grub", "--arch", arch, "--id", build_id,
-           "--features", features, "--build-only"]
+           "--features", features, "--build-only",
+           *(rebuild_flags or [])]
     with _BUILDING_LOCK:
         _BUILDING.add(build_id)
     try:
@@ -398,7 +476,9 @@ def _blob(arch: str, build_id: str, kind: str) -> Path:
 def qemu_start(arch: str, name: str | None = None, features: str = "debug-boot",
                smp: int = 1, accel: str = "kvm", mem: str = "2G", cpu: str = "",
                paused: bool = True, ssh_fwd: bool = False,
-               extra_args: list[str] | None = None) -> str:
+               extra_args: list[str] | None = None,
+               rebuild_vendor: str | None = None, rebuild_rootfs: bool = False,
+               skip_rootfs: bool = False, clean_kernel: bool = False) -> str:
     """Build the kernel image for `arch` (x86_64 or aarch64) into a
     per-build namespace, spawn QEMU with the gdb-stub on a free port, and
     attach a GDB/MI session targeting the kernel ELF for symbols.
@@ -430,6 +510,13 @@ def qemu_start(arch: str, name: str | None = None, features: str = "debug-boot",
       ssh_fwd    add host:<freeport>→guest:22 forward (default False).
       extra_args list of raw extra QEMU args appended verbatim, for full
                  control (e.g. ["-d","int,guest_errors","-D","/tmp/q.log"]).
+
+    Rebuild passthrough (forwarded to the xtask `grub` build command):
+      rebuild_vendor  None = no-op; "" = --rebuild-vendor (rebuild ALL vendor
+                      deps); "systemd,bash" = --rebuild-vendor=systemd,bash.
+      rebuild_rootfs  True → --rebuild-rootfs (rebuild the rootfs image).
+      skip_rootfs     True → --skip-rootfs (reuse the existing rootfs).
+      clean_kernel    True → --clean-kernel (force a clean kernel rebuild).
 
     Returns a status line incl. the effective config and the instance_id.
     """
@@ -463,7 +550,9 @@ def qemu_start(arch: str, name: str | None = None, features: str = "debug-boot",
     pause_args = ["-gdb", f"tcp::{gdb_port}", "-S"] if paused else ["-gdb", f"tcp::{gdb_port}"]
 
     # Build into the namespace (serialized under _BUILD_LOCK internally).
-    img = _build_image(arch, build_id, features)
+    rebuild_flags = _rebuild_flags(rebuild_vendor, rebuild_rootfs,
+                                   skip_rootfs, clean_kernel)
+    img = _build_image(arch, build_id, features, rebuild_flags)
     elf = _kernel_elf(arch, build_id)
     if not elf.is_file():
         raise RuntimeError(f"kernel ELF missing at {elf} — image build did not produce it")
@@ -601,6 +690,11 @@ def qemu_start(arch: str, name: str | None = None, features: str = "debug-boot",
             preexec_fn=os.setsid,  # own process group; clean kill on stop
         )
 
+        # Mark this build live for the CLI `xtask gc` (gc.rs spares a build
+        # whose .live names a still-alive PID). Written the moment the qemu
+        # pid is known; removed in qemu_stop before the GC sweep.
+        _live_add(build_id, qemu_proc.pid)
+
         # Briefly wait for QEMU to bind the gdb-stub port + create the
         # serial socket before we ask GDB to connect / open the socket;
         # otherwise we hit ECONNREFUSED / ENOENT.
@@ -703,7 +797,13 @@ def qemu_start(arch: str, name: str | None = None, features: str = "debug-boot",
             f"attach response:\n" + "\n".join(attach[-10:])
         )
     except Exception:
-        # Release the reservation so a retry can reuse the id.
+        # Release the reservation so a retry can reuse the id, and drop any
+        # .live marker we wrote before the failure so gc can reclaim it.
+        try:
+            if "qemu_proc" in locals() and qemu_proc is not None:
+                _live_remove(build_id, qemu_proc.pid)
+        except Exception:
+            pass
         with _SESSION_LOCK:
             _RESERVED.discard(instance_id)
         raise
@@ -1100,6 +1200,11 @@ def qemu_stop(instance_id: str | None = None, keep_last: int = 1) -> str:
         shutil.rmtree(s.sock_dir, ignore_errors=True)
     except Exception:
         pass
+
+    # Drop this instance's .live PID line BEFORE the GC sweep so a
+    # just-stopped build becomes reclaimable (by both our sweep and the CLI
+    # `xtask gc`). Best-effort; never blocks teardown.
+    _live_remove(build_id, s.qemu.pid)
 
     # GC: if this build_id is now unreferenced and not among keep_last
     # most-recent unused builds, drop its namespace.
