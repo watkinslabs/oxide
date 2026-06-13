@@ -41,13 +41,6 @@ pub(crate) fn blobs_dir(repo: &Path, id: Option<&str>) -> PathBuf {
     }
 }
 
-/// `CARGO_TARGET_DIR` to set on the kernel cargo build Command: `Some` only
-/// when id is set (so deps + ELF land under target/builds/<id>); `None`
-/// otherwise so the env var is NOT set and cargo uses the default `target/`.
-pub(crate) fn cargo_target_dir(repo: &Path, id: Option<&str>) -> Option<PathBuf> {
-    id.map(|id| repo.join("target").join("builds").join(id))
-}
-
 /// GRUB ISO output path for `arch`.
 pub(crate) fn iso_path(repo: &Path, id: Option<&str>, arch: &str) -> PathBuf {
     target_dir(repo, id).join(format!("oxide-{arch}-grub.iso"))
@@ -63,7 +56,18 @@ pub(crate) fn arm_image(repo: &Path, id: Option<&str>) -> PathBuf {
     target_dir(repo, id).join("oxide-aarch64.Image")
 }
 
-/// Compiled kernel ELF path: `<target_dir>/<arch>-unknown-oxide-kernel/<prof_dir>/oxide-<arch>`.
+/// Per-id kernel ELF SNAPSHOT path (where an id'd build's ELF is copied to):
+/// `<target_dir(id)>/<arch>-unknown-oxide-kernel/<prof_dir>/oxide-<arch>`.
+/// For `id == None` this equals `kernel_elf_build` (the shared build output).
 pub(crate) fn kernel_elf(repo: &Path, id: Option<&str>, arch: &str, prof_dir: &str) -> PathBuf {
     target_dir(repo, id).join(format!("{arch}-unknown-oxide-kernel/{prof_dir}/oxide-{arch}"))
+}
+
+/// SHARED build output path — where cargo actually writes the kernel ELF when
+/// building in the default `target/` (no `CARGO_TARGET_DIR` override):
+/// `target/<arch>-unknown-oxide-kernel/<prof_dir>/oxide-<arch>`. The kernel
+/// always compiles here so cargo's incremental cache is reused across ids; an
+/// id'd build then snapshots this ELF to `kernel_elf(.. Some(id) ..)`.
+pub(crate) fn kernel_elf_build(repo: &Path, arch: &str, prof_dir: &str) -> PathBuf {
+    kernel_elf(repo, None, arch, prof_dir)
 }
