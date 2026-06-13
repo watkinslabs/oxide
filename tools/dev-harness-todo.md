@@ -47,9 +47,13 @@ Ordered by ROI. Several build on the `--id` build-namespacing (xtask `buildns`).
 
 - [x] `--id` build namespacing in xtask (`buildns`) — isolates per-build
   compile dir + images + ISO; id=None is byte-identical to today (CI-safe).
-- [ ] MCP `server.py`: multi-instance (per-instance gdb/ssh ports, pcap, serial/
-  qmp sockets), instance→build registry, build lock, GC of unreferenced builds
-  (`keep_last=1`). Builds on `--id`.
+- [x] MCP `server.py`: multi-instance (per-instance free gdb/ssh ports, pcap,
+  serial/qmp sockets), instance→build registry, build lock, GC of unreferenced
+  builds (`keep_last=1`), `qemu_list`/`qemu_gc` tools. Verified: py_compile,
+  build_id/free-port/GC-predicate logic tests, malicious-id rmtree guard.
+  PENDING: a live end-to-end shakeout — launch two DIFFERENT builds concurrently
+  and confirm both boot without lock conflict + GC reclaims on stop (~15-20 min
+  of namespaced builds; not yet run).
 
 ## Out of scope (correctness, not harness)
 
