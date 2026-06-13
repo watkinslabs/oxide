@@ -1,6 +1,6 @@
 // aarch64 kernel binary stage. Pulls `boot_aarch64::_start` (the
 // EDK2/U-Boot entry point) into the link, supplies a panic handler,
-// and lets the linker script in `link/aarch64-kernel.ld` decide
+// and lets the linker script in `aarch64-kernel.ld` (in this crate) decide
 // layout.
 //
 // `cargo build -p kernel-bin-aarch64 --target ...oxide-kernel.json`
