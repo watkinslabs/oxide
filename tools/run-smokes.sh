@@ -18,7 +18,12 @@ run_one() {
   case "$arch" in x86_64|aarch64) ;; *) echo "arch must be x86_64 or aarch64"; return 2;; esac
 
   local repo; repo="$(cd "$(dirname "$0")/.." && pwd)"
-  local img="$repo/target/oxide-$arch-grub.iso"
+  # Single resolver: ask xtask for every build path (the one scheme,
+  # target/builds/default/...) — no hardcoded blob-dir or target/ literals.
+  local img root_img home_img
+  img="$(cd "$repo" && cargo run -q -p xtask -- path iso --arch "$arch")" || return 2
+  root_img="$(cd "$repo" && cargo run -q -p xtask -- path root-img --arch "$arch")" || return 2
+  home_img="$(cd "$repo" && cargo run -q -p xtask -- path home-img --arch "$arch")" || return 2
   if [ ! -f "$img" ]; then
     echo "no boot ISO at $img — run 'cargo run -p xtask -- image --arch $arch --features debug-all' first" >&2
     return 2
@@ -47,9 +52,9 @@ run_one() {
     qemu_args=(qemu-system-x86_64
       -machine q35 -cpu Haswell-v4 -m 2G
       -cdrom "$img" -boot d
-      -drive "if=none,id=root,format=raw,file=$repo/kernel/blobs/root-x86_64.img"
+      -drive "if=none,id=root,format=raw,file=$root_img"
       -device "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root"
-      -drive "if=none,id=home,format=raw,file=$repo/kernel/blobs/home-x86_64.img"
+      -drive "if=none,id=home,format=raw,file=$home_img"
       -device "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home"
       -display none -no-reboot -no-shutdown
       -serial stdio)
@@ -59,9 +64,9 @@ run_one() {
       -machine virt,gic-version=3,its=on -cpu cortex-a72 -m 2G
       -bios "$repo/vendor/firmware/ovmf-aarch64.fd"
       -cdrom "$img" -boot d
-      -drive "if=none,id=root,format=raw,file=$repo/kernel/blobs/root-aarch64.img"
+      -drive "if=none,id=root,format=raw,file=$root_img"
       -device "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root"
-      -drive "if=none,id=home,format=raw,file=$repo/kernel/blobs/home-aarch64.img"
+      -drive "if=none,id=home,format=raw,file=$home_img"
       -device "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home"
       -display none -no-reboot
       # Semihosting required: boot-aarch64 uses `hlt #0xf000`
