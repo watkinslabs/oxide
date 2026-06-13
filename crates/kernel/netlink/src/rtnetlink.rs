@@ -72,12 +72,12 @@ pub fn seed_defaults(eth0_ifindex: Option<u32>, lo_ifindex: Option<u32>) {
             addr: [127, 0, 0, 1], prefixlen: 8, scope: RT_SCOPE_HOST,
         });
     }
-    if let Some(idx) = eth0_ifindex {
-        addr_insert(IfaceAddr {
-            ifindex: idx, family: AF_INET,
-            addr: [10, 0, 2, 15], prefixlen: 24, scope: RT_SCOPE_UNIVERSE,
-        });
-    }
+    // eth0 boots ADDRESSLESS — the Linux way. systemd-networkd's DHCPv4
+    // client obtains the lease (10.0.2.15/24 + default route via 10.0.2.2 from
+    // QEMU's user-net server) and installs it via RTM_NEWADDR. The former
+    // static-IP seed here was a façade that masked whether DHCP actually
+    // worked; it's gone now that the real client does.
+    let _ = eth0_ifindex;
 }
 
 // ---- Message types -------------------------------------------------------
@@ -135,6 +135,7 @@ pub mod ifla {
     pub const IFLA_OPERSTATE: u16 = 16; // u8
     pub const IFLA_LINKMODE:  u16 = 17;
     pub const IFLA_GROUP:     u16 = 27;
+    pub const IFLA_CARRIER:   u16 = 33; // u8 — link-layer carrier (0/1)
 }
 
 // ---- IFF_* iface flags ---------------------------------------------------
@@ -345,9 +346,16 @@ pub(crate) fn build_newlink_reply(
     put_nlattr(&mut body, ifla::IFLA_BROADCAST, &[0xFFu8; 6]);
     put_nlattr_u32(&mut body, ifla::IFLA_MTU, mtu);
     put_nlattr_u32(&mut body, ifla::IFLA_TXQLEN, 1000);
-    let operstate = if flags & iff::IFF_UP != 0 { IF_OPER_UP } else { IF_OPER_DOWN };
+    // Carrier follows IFF_RUNNING (link-layer up). dhcpcd/NetworkManager read
+    // IFLA_CARRIER first and park at "waiting for carrier" when it's absent —
+    // real Linux always emits it for ethernet links. operstate UP requires
+    // carrier present (IF_OPER_UP iff running), matching the kernel's
+    // rfc2863_policy mapping.
+    let carrier = flags & iff::IFF_RUNNING != 0;
+    let operstate = if carrier { IF_OPER_UP } else { IF_OPER_DOWN };
     put_nlattr_u8(&mut body, ifla::IFLA_OPERSTATE, operstate);
     put_nlattr_u8(&mut body, ifla::IFLA_LINKMODE, 0);
+    put_nlattr_u8(&mut body, ifla::IFLA_CARRIER, carrier as u8);
 
     // Now serialize the leading nlmsghdr with the full length.
     let total = Nlmsghdr::SIZE + body.len();

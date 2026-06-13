@@ -51,5 +51,13 @@ impl Drop for InetSocket {
         if let SockKind::Unix(pair, end) = &*self.kind.lock() {
             pair.close_writer(*end);
         }
+        // Release a bound AF_UNIX stream-listener path so the address is
+        // reusable after the socket closes (Linux frees the bind on close).
+        // Without this, the bind leaks in UNIX_REGISTRY and a restart-looping
+        // daemon (systemd-networkd's varlink listener) hits EADDRINUSE on
+        // rebind → "Could not set up manager: Address in use".
+        if let SockKind::UnixListener(l) = &*self.kind.lock() {
+            crate::sock::UNIX_REGISTRY.unbind(&l.path);
+        }
     }
 }

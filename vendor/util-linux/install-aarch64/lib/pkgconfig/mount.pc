@@ -1,0 +1,10 @@
+prefix=/home/nd/oxide2/vendor/util-linux/install-aarch64
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: mount
+Description: oxide L2 staged mount
+Version: 2.40
+Requires: blkid
+Libs: -L${libdir} -lmount
+Cflags: -I${includedir} -I${includedir}/libmount

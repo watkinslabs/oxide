@@ -103,7 +103,7 @@ pkg_config_libdir = '${pcdirs}'
 EOF
   rm -rf "$bdir"
   ( cd "$SRC" && meson setup "build-${arch}" --cross-file "$cross" $OPTS >/dev/null )
-  ninja -C "$bdir" src/shared/libsystemd-shared-259.so libsystemd.so.0.42.0 src/core/libsystemd-core-259.so systemd systemd-executor systemctl >/dev/null
+  ninja -C "$bdir" src/shared/libsystemd-shared-259.so libsystemd.so.0.42.0 src/core/libsystemd-core-259.so systemd systemd-executor systemctl systemd-networkd systemd-networkd-wait-online networkctl >/dev/null
   rm -rf "$install"; mkdir -p "$install/lib"
   cp -L "$bdir/src/shared/libsystemd-shared-259.so" "$install/lib/"
   cp -L "$bdir/libsystemd.so.0.42.0" "$install/lib/libsystemd.so.0.42.0"
@@ -119,6 +119,21 @@ EOF
   # binary" ⇒ PID1 freezes. Staged to /usr/lib/systemd/ by l2_deps.
   cp -L "$bdir/systemd-executor" "$install/lib/systemd/systemd-executor"
   cp -L "$bdir/systemctl" "$install/bin/systemctl"
+  # systemd-networkd stack: the DHCP/network manager daemon (D6 net), its
+  # wait-online helper, and networkctl. networkd links libsystemd-shared.so
+  # (already staged) + statically-embeds libsystemd-network. Runs as a
+  # libexec under /lib/systemd/; the .network config + service unit are
+  # staged by rootfs.rs. This is the standard-distro DHCP client path
+  # (replacing the rtnetlink static-IP seed façade).
+  cp -L "$bdir/systemd-networkd"              "$install/lib/systemd/systemd-networkd"
+  cp -L "$bdir/systemd-networkd-wait-online"  "$install/lib/systemd/systemd-networkd-wait-online"
+  cp -L "$bdir/networkctl"                    "$install/bin/networkctl"
+  # Generated (meson-substituted) networkd units → staged unit tree.
+  mkdir -p "$install/usr/lib/systemd/system"
+  for u in systemd-networkd.service systemd-networkd.socket \
+           systemd-networkd-wait-online.service; do
+    cp -L "$bdir/units/$u" "$install/usr/lib/systemd/system/$u" 2>/dev/null || true
+  done
   # public sd-*.h headers for the probe.
   mkdir -p "$install/include/systemd"
   cp "$SRC"/src/systemd/*.h "$install/include/systemd/" 2>/dev/null || true

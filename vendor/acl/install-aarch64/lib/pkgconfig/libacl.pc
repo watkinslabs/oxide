@@ -1,0 +1,9 @@
+prefix=/home/nd/oxide2/vendor/acl/install-aarch64
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: libacl
+Description: oxide L2 staged libacl
+Version: 2.3.2
+Libs: -L${libdir} -lacl
+Cflags: -I${includedir}
