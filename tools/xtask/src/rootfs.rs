@@ -978,7 +978,7 @@ hosts:  files
         ("d", "dumb"), ("l", "linux"), ("s", "screen"),
         ("v", "vt100"), ("x", "xterm"), ("x", "xterm-256color"),
     ] {
-        let host = repo.join(format!("kernel/blobs/terminfo/{sub}/{name}"));
+        let host = repo.join(format!("vendor/terminfo/{sub}/{name}"));
         put(&host, &format!("/usr/share/terminfo/{sub}/{name}"))?;
     }
 
