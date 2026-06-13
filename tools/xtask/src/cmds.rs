@@ -75,7 +75,7 @@ pub(crate) fn ensure_blobs(arch: &str, rest: &[String]) -> Result<(), u8> {
     }
     let id = parse_arg(rest, "--id");
     let repo = crate::image_qemu::repo_root();
-    let img = crate::buildns::blobs_dir(&repo, id.as_deref()).join(format!("rootfs-{arch}.img"));
+    let img = crate::buildns::blobs_dir(&repo, id.as_deref()).join(format!("root-{arch}.img"));
     if !img.exists() {
         eprintln!("xtask: rootfs ({arch}) missing -> xtask rootfs");
         crate::cmd_rootfs(rest)?;

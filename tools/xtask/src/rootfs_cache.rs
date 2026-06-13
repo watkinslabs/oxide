@@ -2,11 +2,11 @@
 // (root-<arch>.img + home-<arch>.img). A kernel-only iteration reuses the
 // cached image instead of re-running the slow ~50-app debugfs restage.
 //
-// Cache store: kernel/blobs/cache/{root,home}-<hash>-<arch>.img
-// `cache/` is SHARED (not a per-id namespace); the MCP's per-id GC targets
-// only `kernel/blobs/<id>` direct children, and `cache` is just another such
-// name — its GC must SKIP `cache/`. `cache/` is LRU-managed separately
-// (future work); nothing here prunes it yet.
+// Cache store: target/rootfs-cache/{root,home}-<hash>-<arch>.img
+// The cache is SHARED across ids (not a per-id namespace), so it lives at a
+// fixed `target/rootfs-cache/` — outside both `kernel/blobs/` and any per-id
+// `target/builds/<id>/` namespace, so neither GC sweeps it. LRU-trimmed by
+// `xtask gc` (gc.rs).
 //
 // Fingerprint model (like cargo): hash (path,len,mtime_nanos) over the inputs,
 // NOT file contents (too slow over GBs of vendor binaries). A change to any
@@ -59,8 +59,8 @@ pub(crate) fn post_build(repo: &Path, blobs: &Path, arch: &str) {
     store_to_cache(repo, blobs, &hash, arch);
 }
 
-/// Cache dir: `kernel/blobs/cache` (shared across ids).
-pub(crate) fn cache_dir(repo: &Path) -> PathBuf { repo.join("kernel/blobs/cache") }
+/// Cache dir: `target/rootfs-cache` (shared across ids).
+pub(crate) fn cache_dir(repo: &Path) -> PathBuf { repo.join("target/rootfs-cache") }
 
 fn root_cache_path(repo: &Path, hash: &str, arch: &str) -> PathBuf {
     cache_dir(repo).join(format!("root-{hash}-{arch}.img"))

@@ -60,11 +60,12 @@ from mcp.server.fastmcp import FastMCP
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 GDB_PROMPT = "(gdb)"
 
-# Namespaced build artifact roots (per xtask --id <slug>):
-#   target/builds/<id>/                — kernel ELF + ISO
-#   kernel/blobs/<id>/{root,home,...}  — disk images
+# Namespaced build artifact root (per xtask --id <slug>). C90: an id'd build
+# puts EVERYTHING under one folder target/builds/<id>/ — kernel ELF snapshot,
+# ISO, AND the root/home/nvme/ahci disk images (buildns::blobs_dir maps an
+# id'd build to target/builds/<id>). No-id legacy blobs still live at
+# kernel/blobs, but the MCP always uses a build_id so it never touches it.
 _BUILDS_ROOT = REPO_ROOT / "target" / "builds"
-_BLOBS_ROOT = REPO_ROOT / "kernel" / "blobs"
 
 mcp = FastMCP("qemu-mcp")
 
@@ -223,22 +224,22 @@ def _on_disk_build_ids() -> list[str]:
 
 
 def _rmtree_namespace(build_id: str) -> None:
-    """Remove BOTH namespace dirs for a build_id. HARD GUARD: only ever
-    touches target/builds/<id> and kernel/blobs/<id> — never the default
-    roots target/ or kernel/blobs/ themselves. A blank/dotted id is
-    rejected so no path can resolve to a parent."""
+    """Remove the namespace dir for a build_id. C90: an id'd build holds
+    EVERYTHING (ELF, ISO, disk images) under target/builds/<id>, so that one
+    dir is the whole namespace. HARD GUARD: only ever touches
+    target/builds/<id> — never the default root target/builds/ itself. A
+    blank/dotted id is rejected so no path can resolve to a parent."""
     if not build_id or build_id in (".", "..") or "/" in build_id or "\\" in build_id:
         return
-    for root in (_BUILDS_ROOT, _BLOBS_ROOT):
-        target = root / build_id
-        # Defensive: resolved path MUST be a direct child of `root`.
-        try:
-            if target.resolve().parent != root.resolve():
-                continue
-        except Exception:
-            continue
-        if target.is_dir():
-            shutil.rmtree(target, ignore_errors=True)
+    target = _BUILDS_ROOT / build_id
+    # Defensive: resolved path MUST be a direct child of _BUILDS_ROOT.
+    try:
+        if target.resolve().parent != _BUILDS_ROOT.resolve():
+            return
+    except Exception:
+        return
+    if target.is_dir():
+        shutil.rmtree(target, ignore_errors=True)
 
 
 def _gc_sweep(keep_last: int = 1) -> list[str]:
@@ -337,7 +338,7 @@ def _gdb_cmd(s: Session, cmd: str, timeout: float = 30.0) -> list[str]:
 def _build_image(arch: str, build_id: str, features: str = "debug-boot") -> Path:
     """Run `cargo run -p xtask -- grub --arch <arch> --id <build_id>` from
     the repo root, building kernel + rootfs + ISO into the `build_id`
-    namespace (target/builds/<id>/, kernel/blobs/<id>/). Returns the path
+    namespace (everything under target/builds/<id>/). Returns the path
     to the namespaced GRUB ISO.
 
     Serialized behind `_BUILD_LOCK` (builds write fixed-ish paths within a
@@ -384,9 +385,9 @@ def _kernel_elf(arch: str, build_id: str) -> Path:
 
 
 def _blob(arch: str, build_id: str, kind: str) -> Path:
-    """Namespaced disk image: kernel/blobs/<id>/<kind>-<arch>.img
-    (kind ∈ root|home|nvme|ahci)."""
-    return _BLOBS_ROOT / build_id / f"{kind}-{arch}.img"
+    """Namespaced disk image. C90: id'd disk images live alongside the ISO +
+    ELF under target/builds/<id>/<kind>-<arch>.img (kind ∈ root|home|nvme|ahci)."""
+    return _BUILDS_ROOT / build_id / f"{kind}-{arch}.img"
 
 
 # ---------------------------------------------------------------------------
@@ -1055,8 +1056,8 @@ def qemu_stop(instance_id: str | None = None, keep_last: int = 1) -> str:
     `instance_id` selects which instance (default: the sole /
     most-recently-started one). After the instance is removed, if its
     build_id has no remaining live instances and is not among the
-    most-recent `keep_last` unused build_ids, both target/builds/<id>/
-    and kernel/blobs/<id>/ are rmtree'd."""
+    most-recent `keep_last` unused build_ids, its target/builds/<id>/
+    namespace is rmtree'd."""
     with _SESSION_LOCK:
         if not _SESSIONS:
             return "no active session"
@@ -1123,8 +1124,8 @@ def qemu_list() -> str:
 
 @mcp.tool()
 def qemu_gc(keep_last: int = 1) -> str:
-    """Sweep on-disk build namespaces (target/builds/*, kernel/blobs/*)
-    with no live instance, keeping the most-recent `keep_last` unused
+    """Sweep on-disk build namespaces (target/builds/*) with no live
+    instance, keeping the most-recent `keep_last` unused
     ones. Builds that are live or mid-build are never touched. Returns
     the collected build_ids."""
     collected = _gc_sweep(keep_last=keep_last)
