@@ -57,7 +57,7 @@ pub(crate) fn ensure_blobs(arch: &str, rest: &[String]) -> Result<(), u8> {
     // only the vDSO needs stubbing. Only creates a placeholder when the real
     // blob is absent — never clobbers a locally-built one.
     if std::env::var_os("OXIDE_STUB_BLOBS").is_some() {
-        let f = format!("kernel/blobs/vdso-{arch}.so");
+        let f = format!("crates/kernel/syscalls/vdso/vdso-{arch}.so");
         if !std::path::Path::new(&f).exists() {
             if let Some(p) = std::path::Path::new(&f).parent() { let _ = std::fs::create_dir_all(p); }
             std::fs::write(&f, b"").map_err(|e| { eprintln!("xtask: stub-blob write failed: {e}"); 1u8 })?;
@@ -65,12 +65,12 @@ pub(crate) fn ensure_blobs(arch: &str, rest: &[String]) -> Result<(), u8> {
         }
         return Ok(());
     }
-    let vso = format!("kernel/blobs/vdso-{arch}.so");
-    let vsrc = format!("vdso/vdso-{arch}.S");
-    if is_stale(&vso, &[&vsrc, "vdso/vdso.lds", "vdso/build.sh"]) {
+    let vso = format!("crates/kernel/syscalls/vdso/vdso-{arch}.so");
+    let vsrc = format!("crates/kernel/syscalls/vdso/vdso-{arch}.S");
+    if is_stale(&vso, &[&vsrc, "crates/kernel/syscalls/vdso/vdso.lds", "crates/kernel/syscalls/vdso/build.sh"]) {
         eprintln!("xtask: vdso ({arch}) missing/stale -> vdso/build.sh");
         let mut c = Command::new("sh");
-        c.arg("vdso/build.sh");
+        c.arg("crates/kernel/syscalls/vdso/build.sh");
         run(c)?;
     }
     let id = parse_arg(rest, "--id");
