@@ -67,19 +67,31 @@ pub(crate) unsafe fn fd_of(f: *mut FILE) -> i32 {
     unsafe { (*f)._fileno }
 }
 
-// Memory streams (fmemopen/open_memstream) have no fd: _fileno == -1 and a
-// MemCookie pointer is stashed in the otherwise-unused _codecvt field.
+// Non-fd streams have _fileno == -1 and a cookie pointer in the otherwise-unused
+// _codecvt field. _flags2 bit 1 (IS_COOKIE) tells fopencookie streams apart from
+// fmemopen/open_memstream memory streams.
+const IS_COOKIE: i32 = 2;
 pub(crate) unsafe fn is_mem(f: *mut FILE) -> bool {
-    // SAFETY: f is a valid FILE pointer; memory streams mark _fileno = -1.
-    unsafe { (*f)._fileno < 0 }
+    // SAFETY: f is a valid FILE; an fd-less stream without the cookie bit is a
+    // fmemopen/open_memstream memory stream.
+    unsafe { (*f)._fileno < 0 && (*f)._flags2 & IS_COOKIE == 0 }
+}
+pub(crate) unsafe fn is_cookie(f: *mut FILE) -> bool {
+    // SAFETY: f is a valid FILE; an fd-less stream with the cookie bit set is a
+    // fopencookie custom-callback stream.
+    unsafe { (*f)._fileno < 0 && (*f)._flags2 & IS_COOKIE != 0 }
 }
 pub(crate) unsafe fn set_cookie(f: *mut FILE, c: *mut u8) {
     // SAFETY: f is a valid FILE; repurpose _codecvt (unused: no wide I/O) to
     // hold the memory-stream cookie pointer, and mark the stream fd-less.
     unsafe { (*f)._codecvt = c; (*f)._fileno = -1; }
 }
+pub(crate) unsafe fn set_cookie_backing(f: *mut FILE, c: *mut u8) {
+    // SAFETY: as set_cookie, plus the IS_COOKIE bit for a fopencookie stream.
+    unsafe { (*f)._codecvt = c; (*f)._fileno = -1; (*f)._flags2 |= IS_COOKIE; }
+}
 pub(crate) unsafe fn cookie(f: *mut FILE) -> *mut u8 {
-    // SAFETY: f is a valid memory stream; read the cookie pointer back.
+    // SAFETY: f is a valid memory/cookie stream; read the cookie pointer back.
     unsafe { (*f)._codecvt }
 }
 
