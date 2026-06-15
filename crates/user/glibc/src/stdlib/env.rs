@@ -130,6 +130,17 @@ mod imp {
         }
     }
 
+    // A valid environment variable name is non-empty and contains no '='.
+    unsafe fn bad_name(name: *const u8) -> bool {
+        // SAFETY: name is a NUL-terminated C string; scan to the terminator.
+        unsafe {
+            if *name == 0 { return true; }
+            let mut i = 0;
+            while *name.add(i) != 0 { if *name.add(i) == b'=' { return true; } i += 1; }
+            false
+        }
+    }
+
     unsafe fn put_entry(name: *const u8, nlen: usize, entry: *mut u8) -> i32 {
         // SAFETY: under LOCK; replaces a matching entry or appends `entry`.
         unsafe {
@@ -165,6 +176,7 @@ mod imp {
     pub unsafe extern "C" fn setenv(name: *const u8, value: *const u8, overwrite: i32) -> i32 {
         // SAFETY: name/value NUL-terminated; mutates environ under LOCK.
         unsafe {
+            if bad_name(name) { crate::internal::errno::set(22); return -1; }
             let nlen = strlen_impl(name);
             lock();
             if overwrite == 0 && !find_env(load() as *const *const u8, name, nlen).is_null() { unlock(); return 0; }
@@ -180,6 +192,7 @@ mod imp {
     pub unsafe extern "C" fn unsetenv(name: *const u8) -> i32 {
         // SAFETY: name NUL-terminated; compacts environ under LOCK.
         unsafe {
+            if bad_name(name) { crate::internal::errno::set(22); return -1; }
             let nlen = strlen_impl(name);
             lock();
             let cur = load();
