@@ -118,6 +118,33 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
+    // G19b: the oxide glibc-on-kernel smoke — built against OUR glibc sysroot
+    // (not musl): Scrt1.o + -l:libc.so.6 + PT_INTERP=/lib/ld-linux-<arch>.so.2.
+    // Staged below alongside the sysroot's ld-linux/libc.so.6/folded stubs/
+    // ld.so.cache + a systemd oneshot unit (x86_64 first; aarch64 in G19c).
+    if arch == "x86_64" {
+        let triple = format!("{arch}-unknown-linux-gnu");
+        crate::sysroot::build_sysroot(&triple)?;
+        let srlib = repo.join(format!("target/sysroot/{triple}/lib"));
+        let ld = "ld-linux-x86-64.so.2";
+        let obj = repo.join("target/g19-glibc-smoke.o");
+        let mut o = Command::new("cc");
+        o.args(["-c", "-O2", "-fPIE", "-fno-stack-protector",
+                repo.join("userspace/g19_glibc_smoke/g19_glibc_smoke.c").to_str().unwrap(),
+                "-o", obj.to_str().unwrap()]);
+        run(o)?;
+        let smoke = user_out.join("g19_glibc_smoke");
+        let mut l = Command::new("cc");
+        l.args(["-fPIE", "-pie", "-nostdlib", "-Wl,--allow-shlib-undefined",
+                &format!("-Wl,--dynamic-linker=/lib/{ld}"),
+                obj.to_str().unwrap()]);
+        l.arg(srlib.join("Scrt1.o"));
+        l.args([&format!("-L{}", srlib.display()), "-l:libc.so.6",
+                "-o", smoke.to_str().unwrap()]);
+        run(l)?;
+        eprintln!("xtask rootfs: built glibc-on-kernel smoke → {}", smoke.display());
+    }
+
     // F231 / B18: PAM modules come from vendor/pam/install-<arch>/modules/
     // (upstream Linux-PAM 1.7.2 sources, built by vendor/pam/build.sh).
     // Host binaries that dlopen these (login, sshd, su) must link with
@@ -261,6 +288,39 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         }
     } else {
         eprintln!("xtask rootfs: WARN missing {}", ldso.display());
+    }
+    // G19b: stage the oxide glibc system libc + loader + folded stubs +
+    // ld.so.cache from target/sysroot (parallel to musl — distinct paths:
+    // /lib/ld-linux-x86-64.so.2 vs /lib/ld-musl-x86_64.so.1). A systemd
+    // oneshot unit runs /bin/g19_glibc_smoke early so its marker lands on
+    // serial — proving a glibc dynamic binary runs on the kernel.
+    if arch == "x86_64" {
+        let triple = format!("{arch}-unknown-linux-gnu");
+        let srlib = repo.join(format!("target/sysroot/{triple}/lib"));
+        put(&srlib.join("ld-linux-x86-64.so.2"), "/lib/ld-linux-x86-64.so.2")?;
+        put(&srlib.join("libc.so.6"), "/lib/libc.so.6")?;
+        for s in ["libpthread.so.0", "libdl.so.2", "librt.so.1", "libm.so.6", "libutil.so.1", "libresolv.so.2"] {
+            put(&srlib.join(s), &format!("/lib/{s}"))?;
+        }
+        let cache = repo.join(format!("target/sysroot/{triple}/etc/ld.so.cache"));
+        put(&cache, "/etc/ld.so.cache")?;
+        put(&user("g19_glibc_smoke"), "/bin/g19_glibc_smoke")?;
+        // oneshot unit + default.target.wants symlink so the default systemd
+        // boot runs it before the getty.
+        let svc = repo.join("target/g19smoke.service");
+        std::fs::write(&svc,
+b"[Unit]
+Description=G19 glibc-on-kernel smoke
+DefaultDependencies=no
+Before=console-getty.service
+[Service]
+Type=oneshot
+ExecStart=/bin/g19_glibc_smoke
+").map_err(|_| 1u8)?;
+        put(&svc, "/usr/lib/systemd/system/g19smoke.service")?;
+        dbg("sif /usr/lib/systemd/system/g19smoke.service mode 0100644")?;
+        dbg("mkdir /usr/lib/systemd/system/default.target.wants")?;
+        dbg("symlink /usr/lib/systemd/system/default.target.wants/g19smoke.service ../g19smoke.service")?;
     }
     put(&user("hello_dyn"), "/bin/hello_dyn")?;
     put(&user("hello_dyn_libc"), "/bin/hello_dyn_libc")?;
