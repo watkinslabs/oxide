@@ -2,6 +2,8 @@
 //! exit family lands early (G2) for the process-entry path.
 pub mod exit;
 pub mod strto;
+pub mod strtod;
 pub mod sort;
+pub mod rand;
 #[cfg(feature = "freestanding")]
 pub mod arith;
