@@ -4,8 +4,11 @@
 //! snprintf, unbuffered; read-side (fopen/fread/fgets/scanf), buffering,
 //! and exact float formatting are G6 follow-ups.
 pub mod fmt;
+pub mod scan;
 pub mod file;
 #[cfg(feature = "freestanding")]
 pub mod printf;
+#[cfg(feature = "freestanding")]
+pub mod scanf;
 #[cfg(feature = "freestanding")]
 pub mod put;
