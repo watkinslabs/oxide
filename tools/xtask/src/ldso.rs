@@ -120,9 +120,34 @@ fn check_libc_linked_x86(ld_abs: &std::path::Path) -> Result<(), u8> {
     eprintln!("xtask ldso: libc-linked exit={code} (want 13 = strlen(\"hello-dynamic\"))");
     if code == 13 {
         eprintln!("xtask ldso: G12g rtld DT_NEEDED libc.so.6 link+run PASS");
-        Ok(())
     } else {
         eprintln!("xtask ldso: G12g rtld DT_NEEDED link+run FAIL");
+        return Err(1);
+    }
+    check_tls_pie_x86(ld_abs)
+}
+
+// Run a PIE with its own __thread variable through our ld: proves the static
+// TLS block + thread-pointer setup positions thread-locals correctly.
+fn check_tls_pie_x86(ld_abs: &std::path::Path) -> Result<(), u8> {
+    let dir = ld_abs.parent().unwrap();
+    let bin = "target/ldso-tls-pie";
+    let mut cc = Command::new("cc");
+    cc.args(["-fPIE", "-pie", "-nostdlib", "-nostartfiles", "-Wl,-e,_start",
+             &format!("-Wl,--dynamic-linker={}", ld_abs.display()),
+             &format!("-Wl,-rpath,{}", dir.display()),
+             "userspace/ldso_smoke/tls_pie.c", "-o", bin]);
+    run(cc)?;
+    eprintln!("xtask ldso: running {bin} (__thread) through our ld");
+    let out = Command::new(format!("./{bin}")).output()
+        .map_err(|e| { eprintln!("xtask ldso: run failed: {e}"); 1u8 })?;
+    let code = out.status.code().unwrap_or(-1);
+    eprintln!("xtask ldso: tls exit={code} (want 7 = __thread tvar)");
+    if code == 7 {
+        eprintln!("xtask ldso: G12g rtld static-TLS run PASS");
+        Ok(())
+    } else {
+        eprintln!("xtask ldso: G12g rtld static-TLS run FAIL");
         Err(1)
     }
 }

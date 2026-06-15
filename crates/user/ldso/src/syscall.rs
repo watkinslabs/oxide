@@ -72,6 +72,19 @@ unsafe fn syscall(n: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usiz
     r
 }
 
+/// Set the thread pointer to `tp` (x86_64: arch_prctl ARCH_SET_FS;
+/// aarch64: write tpidr_el0). Installs the static TLS block.
+/// # C: arch_prctl(ARCH_SET_FS, tp) / msr tpidr_el0, tp
+pub unsafe fn set_thread_pointer(tp: usize) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: arch_prctl(ARCH_SET_FS, tp) sets this thread's FS base; the
+    // kernel reads no user memory. nr 158, ARCH_SET_FS = 0x1002.
+    unsafe { syscall(158, 0x1002, tp, 0, 0, 0, 0); }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: a single move to the user TLS register; no memory access.
+    unsafe { core::arch::asm!("msr tpidr_el0, {}", in(reg) tp); }
+}
+
 /// # C: ssize_t write(fd, buf, len)
 pub unsafe fn write(fd: i32, buf: &[u8]) -> isize {
     // SAFETY: buf is a live slice passed by ptr/len to write(2).
