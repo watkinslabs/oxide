@@ -2,4 +2,5 @@
 //! frexp/ldexp/modf; transcendentals + trig follow.
 pub mod basic;
 pub mod exp;
+pub mod log;
 pub mod sqrt;
