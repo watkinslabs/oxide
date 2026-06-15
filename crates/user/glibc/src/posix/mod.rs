@@ -11,3 +11,4 @@ pub mod fd;
 #[cfg(feature = "freestanding")]
 pub mod fs;
 pub mod stat;
+pub mod fnmatch;
