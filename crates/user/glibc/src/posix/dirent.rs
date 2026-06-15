@@ -36,14 +36,14 @@ mod imp {
 
     #[repr(C)]
     #[allow(clippy::upper_case_acronyms)] // DIR is the standard C type name
-    pub struct DIR { fd: i32, pos: usize, end: usize, buf: [u8; BUF] }
+    pub struct DIR { fd: i32, pos: usize, end: usize, last_off: i64, buf: [u8; BUF] }
 
     unsafe fn alloc_dir(fd: i32) -> *mut DIR {
         // SAFETY: heap-allocate a DIR and initialise its scalar fields; the
         // buffer is filled on demand by readdir.
         unsafe {
             let d = crate::malloc::heap::malloc(core::mem::size_of::<DIR>()) as *mut DIR;
-            if !d.is_null() { (*d).fd = fd; (*d).pos = 0; (*d).end = 0; }
+            if !d.is_null() { (*d).fd = fd; (*d).pos = 0; (*d).end = 0; (*d).last_off = 0; }
             d
         }
     }
@@ -80,6 +80,7 @@ mod imp {
             }
             let e = (*d).buf.as_mut_ptr().add((*d).pos) as *mut dirent;
             (*d).pos += (*e).d_reclen as usize;
+            (*d).last_off = (*e).d_off; // seek offset of the NEXT entry → telldir
             e
         }
     }
@@ -175,6 +176,7 @@ mod imp {
             io::lseek((*d).fd, 0, io::SEEK_SET);
             (*d).pos = 0;
             (*d).end = 0;
+            (*d).last_off = 0;
         }
     }
     // # C: int dirfd(DIR *d)
@@ -182,5 +184,48 @@ mod imp {
     pub unsafe extern "C" fn dirfd(d: *mut DIR) -> i32 {
         // SAFETY: d is a valid DIR; read its descriptor.
         unsafe { (*d).fd }
+    }
+
+    // # C: int readdir_r(DIR *d, struct dirent *entry, struct dirent **result)
+    #[no_mangle]
+    pub unsafe extern "C" fn readdir_r(d: *mut DIR, entry: *mut dirent, result: *mut *mut dirent) -> i32 {
+        // SAFETY: d is a valid DIR; entry is caller-provided dirent storage and
+        // result a writable out-param. Copy the next entry into *entry, publish
+        // it via *result (NULL at end-of-dir), return 0 (errno-style).
+        unsafe {
+            let e = readdir(d);
+            if e.is_null() { *result = core::ptr::null_mut(); return 0; }
+            let sz = (*e).d_reclen as usize;
+            core::ptr::copy_nonoverlapping(e as *const u8, entry as *mut u8, sz);
+            *result = entry;
+            0
+        }
+    }
+    // # C: int readdir64_r(DIR *d, struct dirent64 *entry, struct dirent64 **result)
+    #[no_mangle]
+    pub unsafe extern "C" fn readdir64_r(d: *mut DIR, entry: *mut dirent, result: *mut *mut dirent) -> i32 {
+        // SAFETY: identical dirent layout on LP64; forwards to readdir_r.
+        unsafe { readdir_r(d, entry, result) }
+    }
+
+    // # C: long telldir(DIR *d)
+    #[no_mangle]
+    pub unsafe extern "C" fn telldir(d: *mut DIR) -> i64 {
+        // SAFETY: d is a valid DIR; return the kernel d_off recorded for the next
+        // entry to read (0 at start). seekdir round-trips this opaque value.
+        unsafe { (*d).last_off }
+    }
+    // # C: void seekdir(DIR *d, long loc)
+    #[no_mangle]
+    pub unsafe extern "C" fn seekdir(d: *mut DIR, loc: i64) {
+        // SAFETY: d is a valid DIR; loc was returned by telldir on this stream.
+        // lseek the directory fd to that offset and drop the buffer so the next
+        // readdir refills from there.
+        unsafe {
+            io::lseek((*d).fd, loc, io::SEEK_SET);
+            (*d).pos = 0;
+            (*d).end = 0;
+            (*d).last_off = loc;
+        }
     }
 }

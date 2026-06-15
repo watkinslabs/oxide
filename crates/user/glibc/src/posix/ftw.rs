@@ -116,3 +116,16 @@ pub unsafe extern "C" fn nftw(path: *const u8, f: Fn4, _nopenfd: i32, flags: i32
     // SAFETY: path NUL-terminated; f a valid nftw callback.
     unsafe { run(path, flags, None, Some(f)) }
 }
+// struct stat64 == struct stat on LP64, so the LFS walkers forward unchanged.
+// # C: int ftw64(const char *dirpath, fn, int nopenfd)
+#[no_mangle]
+pub unsafe extern "C" fn ftw64(path: *const u8, f: Fn3, nopenfd: i32) -> i32 {
+    // SAFETY: stat64 == stat on LP64; forward to ftw.
+    unsafe { ftw(path, f, nopenfd) }
+}
+// # C: int nftw64(const char *dirpath, fn, int nopenfd, int flags)
+#[no_mangle]
+pub unsafe extern "C" fn nftw64(path: *const u8, f: Fn4, nopenfd: i32, flags: i32) -> i32 {
+    // SAFETY: stat64 == stat on LP64; forward to nftw.
+    unsafe { nftw(path, f, nopenfd, flags) }
+}
