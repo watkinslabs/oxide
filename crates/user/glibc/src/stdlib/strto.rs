@@ -104,6 +104,33 @@ mod exports {
         // SAFETY: LP64 unsigned long long == unsigned long; forwards.
         unsafe { strtoul_impl(s, endptr, base) }
     }
+    // C23 variants: glibc 2.38+ headers redirect strto{l,ll,ul,ull} to these
+    // __isoc23_* symbols (they add the C23 "0b" binary-prefix rule for base
+    // 0/2). Our strto*_impl already follows the standard contract; alias them.
+    // # C: long __isoc23_strtol(const char *, char **, int)
+    #[no_mangle]
+    pub unsafe extern "C" fn __isoc23_strtol(s: *const u8, endptr: *mut *mut u8, base: i32) -> i64 {
+        // SAFETY: same contract as strtol; forwards strtol_impl.
+        unsafe { strtol_impl(s, endptr, base) }
+    }
+    // # C: long long __isoc23_strtoll(const char *, char **, int)
+    #[no_mangle]
+    pub unsafe extern "C" fn __isoc23_strtoll(s: *const u8, endptr: *mut *mut u8, base: i32) -> i64 {
+        // SAFETY: LP64 long long == long; forwards strtol_impl.
+        unsafe { strtol_impl(s, endptr, base) }
+    }
+    // # C: unsigned long __isoc23_strtoul(const char *, char **, int)
+    #[no_mangle]
+    pub unsafe extern "C" fn __isoc23_strtoul(s: *const u8, endptr: *mut *mut u8, base: i32) -> u64 {
+        // SAFETY: same contract as strtoul; forwards strtoul_impl.
+        unsafe { strtoul_impl(s, endptr, base) }
+    }
+    // # C: unsigned long long __isoc23_strtoull(const char *, char **, int)
+    #[no_mangle]
+    pub unsafe extern "C" fn __isoc23_strtoull(s: *const u8, endptr: *mut *mut u8, base: i32) -> u64 {
+        // SAFETY: LP64 unsigned long long == unsigned long; forwards.
+        unsafe { strtoul_impl(s, endptr, base) }
+    }
     // # C: int atoi(const char *s)
     #[no_mangle]
     pub unsafe extern "C" fn atoi(s: *const u8) -> i32 {
