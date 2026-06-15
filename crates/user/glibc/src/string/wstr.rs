@@ -63,6 +63,44 @@ pub(crate) unsafe fn wcschr_impl(s: *const i32, c: i32) -> *mut i32 {
     }
 }
 
+/// # C: wchar_t *wcpcpy(wchar_t *dst, const wchar_t *src) — copy incl 0, ret &0
+pub(crate) unsafe fn wcpcpy_impl(dst: *mut i32, src: *const i32) -> *mut i32 {
+    // SAFETY: dst has room for wcslen(src)+1; src 0-terminated. Returns the
+    // address of the written terminator (stpcpy analog).
+    unsafe { let mut i = 0; loop { let c = *src.add(i); *dst.add(i) = c; if c == 0 { return dst.add(i); } i += 1; } }
+}
+/// # C: wchar_t *wcpncpy(wchar_t *dst, const wchar_t *src, size_t n)
+pub(crate) unsafe fn wcpncpy_impl(dst: *mut i32, src: *const i32, n: usize) -> *mut i32 {
+    // SAFETY: dst writable for n wchars; copy up to a 0 then 0-pad to n;
+    // returns the address after the last non-pad wchar (stpncpy analog).
+    unsafe {
+        let mut i = 0;
+        while i < n && *src.add(i) != 0 { *dst.add(i) = *src.add(i); i += 1; }
+        let end = dst.add(i);
+        while i < n { *dst.add(i) = 0; i += 1; }
+        end
+    }
+}
+/// # C: wchar_t *wcschrnul(const wchar_t *s, wchar_t c) — &c or &terminator
+pub(crate) unsafe fn wcschrnul_impl(s: *const i32, c: i32) -> *mut i32 {
+    // SAFETY: s 0-terminated; returns the first c, or the terminator if absent.
+    unsafe { let mut i = 0; loop { let x = *s.add(i); if x == c || x == 0 { return s.add(i) as *mut i32; } i += 1; } }
+}
+/// # C: size_t wcsnlen(const wchar_t *s, size_t maxlen)
+pub(crate) unsafe fn wcsnlen_impl(s: *const i32, maxlen: usize) -> usize {
+    // SAFETY: s readable for up to maxlen wchars or a 0 terminator.
+    unsafe { let mut n = 0; while n < maxlen && *s.add(n) != 0 { n += 1; } n }
+}
+/// # C: size_t wcsxfrm(wchar_t *dst, const wchar_t *src, size_t n) — C-locale id
+pub(crate) unsafe fn wcsxfrm_impl(dst: *mut i32, src: *const i32, n: usize) -> usize {
+    // SAFETY: src 0-terminated; C/POSIX collation is the identity, so copy up
+    // to n-1 wchars + 0 and return the source length (C11 7.29.4.4.4).
+    unsafe {
+        let len = wcslen_impl(src);
+        if n > 0 { let c = if len < n { len } else { n - 1 }; core::ptr::copy_nonoverlapping(src, dst, c); *dst.add(c) = 0; }
+        len
+    }
+}
 /// # C: wchar_t *wcsncpy(wchar_t *dst, const wchar_t *src, size_t n)
 pub(crate) unsafe fn wcsncpy_impl(dst: *mut i32, src: *const i32, n: usize) -> *mut i32 {
     // SAFETY: dst writable for n wchars; src 0-terminated. Copy up to a 0, then
@@ -221,6 +259,24 @@ mod imp {
     // # C: wchar_t *wcsncpy(wchar_t *, const wchar_t *, size_t)
     // SAFETY: dst writable for n wchars; src 0-terminated. Forwards.
     #[no_mangle] pub unsafe extern "C" fn wcsncpy(d: *mut i32, s: *const i32, n: usize) -> *mut i32 { unsafe { wcsncpy_impl(d, s, n) } }
+    // # C: wchar_t *wcpcpy(wchar_t *, const wchar_t *)
+    // SAFETY: dst has room for wcslen(src)+1; forwards wcpcpy_impl.
+    #[no_mangle] pub unsafe extern "C" fn wcpcpy(d: *mut i32, s: *const i32) -> *mut i32 { unsafe { wcpcpy_impl(d, s) } }
+    // # C: wchar_t *wcpncpy(wchar_t *, const wchar_t *, size_t)
+    // SAFETY: dst writable for n wchars; forwards wcpncpy_impl.
+    #[no_mangle] pub unsafe extern "C" fn wcpncpy(d: *mut i32, s: *const i32, n: usize) -> *mut i32 { unsafe { wcpncpy_impl(d, s, n) } }
+    // # C: wchar_t *wcschrnul(const wchar_t *, wchar_t)
+    // SAFETY: s 0-terminated; forwards wcschrnul_impl.
+    #[no_mangle] pub unsafe extern "C" fn wcschrnul(s: *const i32, c: i32) -> *mut i32 { unsafe { wcschrnul_impl(s, c) } }
+    // # C: size_t wcsnlen(const wchar_t *, size_t)
+    // SAFETY: s readable for up to maxlen wchars; forwards wcsnlen_impl.
+    #[no_mangle] pub unsafe extern "C" fn wcsnlen(s: *const i32, maxlen: usize) -> usize { unsafe { wcsnlen_impl(s, maxlen) } }
+    // # C: int wcscoll(const wchar_t *, const wchar_t *) — C locale == wcscmp
+    // SAFETY: both 0-terminated; C/POSIX collation is byte order.
+    #[no_mangle] pub unsafe extern "C" fn wcscoll(a: *const i32, b: *const i32) -> i32 { unsafe { wcscmp_impl(a, b) } }
+    // # C: size_t wcsxfrm(wchar_t *, const wchar_t *, size_t)
+    // SAFETY: src 0-terminated; forwards wcsxfrm_impl.
+    #[no_mangle] pub unsafe extern "C" fn wcsxfrm(d: *mut i32, s: *const i32, n: usize) -> usize { unsafe { wcsxfrm_impl(d, s, n) } }
     // # C: wchar_t *wcscat(wchar_t *, const wchar_t *)
     // SAFETY: dst 0-terminated with room; src 0-terminated. Forwards.
     #[no_mangle] pub unsafe extern "C" fn wcscat(d: *mut i32, s: *const i32) -> *mut i32 { unsafe { wcscat_impl(d, s) } }
