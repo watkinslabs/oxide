@@ -25,6 +25,7 @@ pub mod dynamic;
 pub mod linkmap;
 pub mod loader;
 pub mod reloc;
+pub mod relocate;
 pub mod search;
 pub mod symbol;
 

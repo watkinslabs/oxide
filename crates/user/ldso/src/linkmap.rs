@@ -26,7 +26,7 @@ where
     while i < order.len() {
         let cur = order[i].clone();
         for d in deps(&cur) {
-            if !order.iter().any(|o| *o == d) {
+            if !order.contains(&d) {
                 order.push(d);
             }
         }
