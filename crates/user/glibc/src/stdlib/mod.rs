@@ -18,3 +18,5 @@ pub mod subopt;
 pub mod a64l;
 #[cfg(feature = "freestanding")]
 pub mod fmtmsg;
+#[cfg(feature = "freestanding")]
+pub mod rand48;
