@@ -108,6 +108,54 @@ mod imp {
     // # C: int versionsort64(...) — LFS alias
     // SAFETY: identical dirent layout on LP64; forwards to versionsort.
     #[no_mangle] pub unsafe extern "C" fn versionsort64(a: *const *const dirent, b: *const *const dirent) -> i32 { unsafe { versionsort(a, b) } }
+    type FilterFn = extern "C" fn(*const dirent) -> i32;
+    type CmpFn = extern "C" fn(*const *const dirent, *const *const dirent) -> i32;
+
+    // # C: int scandir(const char *dir, struct dirent ***namelist, filter, compar)
+    #[no_mangle]
+    pub unsafe extern "C" fn scandir(dirp: *const u8, namelist: *mut *mut *mut dirent, filter: Option<FilterFn>, compar: Option<CmpFn>) -> i32 {
+        // SAFETY: dirp NUL-terminated; namelist a writable out-param. Reads all
+        // entries, applies filter, malloc-copies survivors into a grown array,
+        // sorts with compar (each element a dirent* — qsort passes &elem, the
+        // dirent** compar expects), and publishes the array. -1 on open error.
+        unsafe {
+            let d = opendir(dirp);
+            if d.is_null() { return -1; }
+            let mut arr: *mut *mut dirent = core::ptr::null_mut();
+            let (mut cap, mut cnt) = (0usize, 0usize);
+            loop {
+                let e = readdir(d);
+                if e.is_null() { break; }
+                if let Some(f) = filter { if f(e) == 0 { continue; } }
+                let sz = (*e).d_reclen as usize;
+                let copy = crate::malloc::heap::malloc(sz) as *mut dirent;
+                if copy.is_null() { continue; }
+                core::ptr::copy_nonoverlapping(e as *const u8, copy as *mut u8, sz);
+                if cnt == cap {
+                    cap = if cap == 0 { 16 } else { cap * 2 };
+                    arr = crate::malloc::heap::realloc(arr as *mut u8, cap * 8) as *mut *mut dirent;
+                }
+                *arr.add(cnt) = copy;
+                cnt += 1;
+            }
+            closedir(d);
+            if let Some(c) = compar {
+                // qsort over the dirent* array; the element addr (&dirent*) is
+                // exactly the `const dirent **` the comparator expects.
+                let cmp: crate::stdlib::sort::Cmp = core::mem::transmute(c);
+                crate::stdlib::sort::qsort_impl(arr as *mut u8, cnt, 8, cmp);
+            }
+            *namelist = arr;
+            cnt as i32
+        }
+    }
+    // # C: int scandir64(...) — LFS alias
+    #[no_mangle]
+    pub unsafe extern "C" fn scandir64(dirp: *const u8, namelist: *mut *mut *mut dirent, filter: Option<FilterFn>, compar: Option<CmpFn>) -> i32 {
+        // SAFETY: identical dirent layout on LP64; forwards to scandir.
+        unsafe { scandir(dirp, namelist, filter, compar) }
+    }
+
     // # C: int closedir(DIR *d)
     #[no_mangle]
     pub unsafe extern "C" fn closedir(d: *mut DIR) -> i32 {
