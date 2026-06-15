@@ -526,6 +526,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "glibc"
+version = "0.1.0"
+dependencies = [
+ "nss",
+]
+
+[[package]]
 name = "hal"
 version = "0.1.0"
 dependencies = [
