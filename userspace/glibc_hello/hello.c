@@ -31,6 +31,7 @@ long  read(int fd, void *buf, unsigned long n);
 int   mkdir(const char *path, unsigned mode);
 int   rmdir(const char *path);
 char *getcwd(char *buf, unsigned long size);
+int   stat(const char *path, void *buf);
 
 static void on_exit_handler(void) {
     static const char m[] = "atexit-ok\n";
@@ -99,6 +100,14 @@ int main(int argc, char **argv, char **envp) {
     if (rmdir("/tmp/oxide_g8b") != 0) return 26;
     char cwd[256];
     if (!getcwd(cwd, sizeof cwd)) return 27;
+
+    /* stat: /proc/self/exe is a regular file with size > 0 (x86_64 offsets) */
+    char stbuf[144];
+    if (stat("/proc/self/exe", stbuf) != 0) return 28;
+    unsigned smode = *(unsigned *)(stbuf + 24); /* st_mode @24 */
+    long ssize = *(long *)(stbuf + 48);          /* st_size @48 */
+    if (ssize <= 0) return 29;
+    if ((smode & 0170000) != 0100000) return 30; /* S_ISREG */
 
     /* env: setenv then getenv round-trip */
     if (setenv("OXIDE_G7C", "yes", 1) != 0) return 16;
