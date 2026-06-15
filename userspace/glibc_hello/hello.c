@@ -44,6 +44,12 @@ int   raise(int sig);
 static volatile int g_sigflag = 0;
 static void on_usr1(int s) { (void)s; g_sigflag = 1; }
 
+typedef unsigned long pthread_t;
+int pthread_create(pthread_t *t, const void *attr, void *(*start)(void *), void *arg);
+int pthread_join(pthread_t t, void **retval);
+static volatile int g_shared = 0;
+static void *worker(void *a) { (void)a; for (int i = 0; i < 1000; i++) g_shared++; return (void *)42; }
+
 static void on_exit_handler(void) {
     static const char m[] = "atexit-ok\n";
     write(1, m, sizeof(m) - 1);
@@ -155,6 +161,15 @@ int main(int argc, char **argv, char **envp) {
     if (nanosleep(req, 0) != 0) return 39;
     if (clock_gettime(1, ts2) != 0) return 40;
     if (ts2[0] < ts1[0] || (ts2[0] == ts1[0] && ts2[1] < ts1[1])) return 41;
+
+    /* pthread: create a worker, join it, check shared state + retval
+       (exercises the clone child-entry trampoline + CHILD_CLEARTID join) */
+    pthread_t th;
+    if (pthread_create(&th, 0, worker, 0) != 0) return 42;
+    void *rv = 0;
+    if (pthread_join(th, &rv) != 0) return 43;
+    if (g_shared != 1000) return 44;
+    if (rv != (void *)42) return 45;
 
     /* env: setenv then getenv round-trip */
     if (setenv("OXIDE_G7C", "yes", 1) != 0) return 16;
