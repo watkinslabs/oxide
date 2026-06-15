@@ -20,6 +20,17 @@ sub-phase per PR.
 - G7b #1850 — strtod/strtof + rand/srand (glibc TYPE_3, host-matched)
 - G7c #1851 — environ/getenv/setenv/unsetenv/putenv/clearenv
 - G7d #1852 — atexit/__cxa_atexit/exit-handlers + abort (G7 stdlib complete)
+- G8a #1853 — posix process: fork/vfork/exec*/wait* + getuid/getpid/...
+- G8b #1854 — posix fds+fs: pipe/dup + getcwd/unlink/mkdir/rename/... (via *at)
+- G8c #1855 — struct stat (per-arch) + stat/fstat/lstat/fstatat
+- G8d #1856 — fnmatch (oracle caught swapped PATHNAME/NOESCAPE flags)
+- G8e #1857 — getopt/getopt_long (POSIX order; GNU permutation = follow-up)
+- G8f #1858 — dirent: opendir/readdir/closedir via getdents64
+- G8g #1859 — glob/globfree (G8 posix COMPLETE)
+- G9a #1860 — signal: sigset_t (oracle caught glibc 32/33 reservation) + kill/raise/sigprocmask
+- G9b #1861 — sigaction + rt_sigreturn restorer (x86 trampoline; verified) + signal() (G9 COMPLETE)
+- G10a #1862 — time: clocks + gmtime/timegm/mktime (oracle calendar)
+- G10b (this) — strftime (oracle vs host)
 
 ## How it's built/verified (per sub-phase)
 - C-ABI exports `#[cfg(feature="freestanding")] #[no_mangle] pub unsafe extern "C"`,
@@ -35,16 +46,16 @@ sub-phase per PR.
 - Push with `SKIP_SMOKE=1` (glibc not yet wired into the boot image).
 
 ## Next task (first command)
-Continue the loop at **G8 — posix**: process (fork via clone, vfork, execve +
-execv/execvp/execlp, wait/waitpid via wait4), fds (pipe/pipe2/dup/dup2/dup3),
-fs (getcwd/chdir/access/unlink/mkdir/rmdir/rename/symlink/link/readlink/chmod/chown/
-umask), ids (getpid/getppid/getuid/geteuid/getgid/setuid…), and stat/fstat/lstat/
-fstatat with the glibc `struct stat` layout in abi/<arch>.toml (translate kernel
-statx/newfstatat). Then glob/fnmatch/getopt. Remaining ladder: G9 signal, G10 time,
-G11 pthread, G12 ldso (rtld), G13 net, G14 nss, G15 math, G16 locale, G17
-crypt/rt/termios/setjmp, G18 folded-lib stubs + sysroot, G19 migrate userspace
-musl→glibc + retire musl. Plus G6 follow-ups: stdio buffering + putc/getc macros,
-exact float dtoa.
+Continue the loop at **G11 — pthread** (the big one): READ docs/54 + docs/14 first.
+Split: G11a TLS + thread create (clone CLONE_VM|FS|FILES|SIGHAND|THREAD|SETTLS|
+PARENT_SETTID|CHILD_CLEARTID, mmap stack+TLS, set FS base / TPIDR, __tls_get_addr,
+pthread_self/create/exit/join via CHILD_CLEARTID futex); G11b mutex
+(pthread_mutex_t 40/48B, futex); G11c cond/rwlock/once/keys. Smoke each on host.
+Remaining ladder: G12 ldso (rtld), G13 net, G14 nss, G15 math, G16 locale (+TZ),
+G17 crypt/rt/termios/setjmp, G18 folded-lib stubs + sysroot, G19 migrate userspace
+musl→glibc + retire musl. Tracked follow-ups: stdio buffering+putc/getc macros,
+exact float dtoa, getopt GNU permutation, strptime, glob multi-component, IFUNC
+SIMD string variants (post-rtld).
 
 ## Notes
 - musl path stays buildable until G19. 59 is DRAFT — edit directly (no R-block).
