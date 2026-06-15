@@ -124,3 +124,26 @@ pub unsafe extern "C" fn twalk(root: *const c_void, action: Action) {
     // SAFETY: root is null or a tree node produced by tsearch; action is valid.
     unsafe { walk(root as *mut Node, action, 0); }
 }
+
+type FreeFn = extern "C" fn(*mut c_void);
+
+unsafe fn destroy(n: *mut Node, freefn: FreeFn) {
+    // SAFETY: n is null or a valid Node; recurse children-first, invoke freefn
+    // on each node's key, then free the node itself (glibc tdestroy order).
+    unsafe {
+        if n.is_null() { return; }
+        destroy((*n).left, freefn);
+        destroy((*n).right, freefn);
+        freefn((*n).key as *mut c_void);
+        free(n as *mut c_void);
+    }
+}
+
+// # C: void tdestroy(void *root, void (*free_node)(void *nodep))
+#[no_mangle]
+pub unsafe extern "C" fn tdestroy(root: *mut c_void, freefn: FreeFn) {
+    // SAFETY: root is null or a tree produced by tsearch; freefn is a valid
+    // destructor for each key. Free every node post-order; the caller must not
+    // reuse the root pointer afterwards (glibc tdestroy contract).
+    unsafe { destroy(root as *mut Node, freefn); }
+}
