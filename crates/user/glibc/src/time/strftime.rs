@@ -30,6 +30,20 @@ impl W<'_> {
 
 fn year(t: &tm) -> i64 { t.tm_year as i64 + 1900 }
 
+// ISO 8601 week-based (year, week): week 1 contains the year's first Thursday,
+// weeks start Monday. Used by %V/%G/%g.
+fn iso_week(t: &tm) -> (i64, i64) {
+    let wd = { let w = t.tm_wday.rem_euclid(7) as i64; if w == 0 { 7 } else { w } }; // 1=Mon..7=Sun
+    let yday1 = t.tm_yday as i64 + 1; // 1-based day of year
+    let y = year(t);
+    let p = |y: i64| (y + y.div_euclid(4) - y.div_euclid(100) + y.div_euclid(400)).rem_euclid(7);
+    let weeks = |y: i64| if p(y) == 4 || p(y - 1) == 3 { 53 } else { 52 };
+    let week = (yday1 - wd + 10).div_euclid(7);
+    if week < 1 { (y - 1, weeks(y - 1)) }
+    else if week > weeks(y) { (y + 1, 1) }
+    else { (y, week) }
+}
+
 /// # C: write tm per fmt into buf; None on overflow
 pub(crate) fn format(buf: &mut [u8], fmt: &[u8], t: &tm) -> Option<usize> {
     let mut w = W { buf, pos: 0, ovf: false };
@@ -68,9 +82,15 @@ fn emit(w: &mut W, fmt: &[u8], t: &tm) {
             b'B' => w.puts(MON[mo]),
             b'u' => w.num(if wd == 0 { 7 } else { wd } as i64, 0, false),
             b'w' => w.num(wd as i64, 0, false),
+            b'U' => w.num((t.tm_yday as i64 + 7 - wd as i64).div_euclid(7), 2, true),
+            b'W' => w.num((t.tm_yday as i64 + 7 - (wd as i64 + 6).rem_euclid(7)).div_euclid(7), 2, true),
+            b'V' => w.num(iso_week(t).1, 2, true),
+            b'G' => w.num(iso_week(t).0, 0, false),
+            b'g' => w.num(iso_week(t).0.rem_euclid(100), 2, true),
             b'F' => emit(w, b"%Y-%m-%d", t),
             b'T' | b'X' => emit(w, b"%H:%M:%S", t),
             b'R' => emit(w, b"%H:%M", t),
+            b'r' => emit(w, b"%I:%M:%S %p", t),
             b'D' | b'x' => emit(w, b"%m/%d/%y", t),
             b'c' => emit(w, b"%a %b %e %H:%M:%S %Y", t),
             b'z' => {
