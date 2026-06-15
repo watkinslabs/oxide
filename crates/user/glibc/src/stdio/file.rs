@@ -96,7 +96,8 @@ pub(crate) unsafe fn cookie(f: *mut FILE) -> *mut u8 {
 }
 
 #[cfg(feature = "freestanding")]
-pub(crate) use streams::{alloc_file, free_file, is_std, set_eof, set_unget, stdin_ptr, stdout_ptr, take_unget};
+pub(crate) use streams::{alloc_file, free_file, is_std, set_eof, set_unget, stdin_ptr, stdout_ptr, take_unget,
+    get_orient, set_orient, set_wunget, take_wunget};
 
 #[cfg(feature = "freestanding")]
 mod streams {
@@ -165,6 +166,33 @@ mod streams {
         // SAFETY: f is a valid stream; consume any pushed-back byte.
         unsafe {
             if (*f)._flags2 & HAS_UNGET != 0 { (*f)._flags2 &= !HAS_UNGET; Some((*f)._shortbuf[0]) } else { None }
+        }
+    }
+
+    // Stream orientation (C99 7.19.2): _mode < 0 byte/narrow, > 0 wide, 0 unset.
+    // glibc uses this exact _IO_FILE._mode field for the same purpose.
+    pub(crate) unsafe fn get_orient(f: *mut FILE) -> i32 {
+        // SAFETY: f is a valid stream; read its orientation field.
+        unsafe { (*f)._mode }
+    }
+    pub(crate) unsafe fn set_orient(f: *mut FILE, mode: i32) {
+        // SAFETY: f is a valid stream; record orientation only when still
+        // unset (0), per C99 — the first wide/narrow op fixes it.
+        unsafe { if (*f)._mode == 0 { (*f)._mode = mode; } }
+    }
+
+    // _flags2 bit 2 = a pushed-back wide char sits in _wide_data (reinterpreted
+    // as the wchar_t value). One-char ungetwc, mirroring the narrow pushback.
+    const HAS_WUNGET: i32 = 4;
+    pub(crate) unsafe fn set_wunget(f: *mut FILE, wc: i32) {
+        // SAFETY: f is a valid stream; stash one pushed-back wide char in the
+        // otherwise-unused _wide_data field (we do no glibc wide-buffer I/O).
+        unsafe { (*f)._flags2 |= HAS_WUNGET; (*f)._wide_data = wc as usize as *mut u8; }
+    }
+    pub(crate) unsafe fn take_wunget(f: *mut FILE) -> Option<i32> {
+        // SAFETY: f is a valid stream; consume any pushed-back wide char.
+        unsafe {
+            if (*f)._flags2 & HAS_WUNGET != 0 { (*f)._flags2 &= !HAS_WUNGET; Some((*f)._wide_data as usize as i32) } else { None }
         }
     }
 
