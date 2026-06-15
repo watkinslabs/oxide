@@ -7,3 +7,5 @@ pub mod sigaction;
 pub mod sig;
 #[cfg(feature = "freestanding")]
 pub mod desc;
+#[cfg(feature = "freestanding")]
+pub mod legacy;
