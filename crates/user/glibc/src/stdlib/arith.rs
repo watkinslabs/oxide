@@ -8,6 +8,8 @@ pub struct div_t { pub quot: i32, pub rem: i32 }
 pub struct ldiv_t { pub quot: i64, pub rem: i64 }
 #[repr(C)]
 pub struct lldiv_t { pub quot: i64, pub rem: i64 }
+#[repr(C)]
+pub struct imaxdiv_t { pub quot: i64, pub rem: i64 }
 
 // # C: int abs(int)
 #[no_mangle]
@@ -31,3 +33,6 @@ pub extern "C" fn ldiv(num: i64, den: i64) -> ldiv_t { ldiv_t { quot: num / den,
 // # C: lldiv_t lldiv(long long, long long)
 #[no_mangle]
 pub extern "C" fn lldiv(num: i64, den: i64) -> lldiv_t { lldiv_t { quot: num / den, rem: num % den } }
+// # C: imaxdiv_t imaxdiv(intmax_t num, intmax_t den) — intmax_t is i64 on LP64
+#[no_mangle]
+pub extern "C" fn imaxdiv(num: i64, den: i64) -> imaxdiv_t { imaxdiv_t { quot: num / den, rem: num % den } }

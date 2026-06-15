@@ -100,6 +100,16 @@ mod imp {
             0
         }
     }
+
+    // # C: char *strerror_r(int errnum, char *buf, size_t buflen) — GNU form.
+    // Returns the 'static message pointer (glibc returns the immutable string for
+    // a defined code and ignores buf); buf is the fallback scratch for unknowns.
+    #[no_mangle]
+    pub unsafe extern "C" fn strerror_r(errnum: i32, _buf: *mut u8, _buflen: usize) -> *mut u8 {
+        // SAFETY: msg() yields a 'static NUL-terminated message; the GNU contract
+        // permits returning it directly without writing the caller's buffer.
+        msg(errnum).as_ptr() as *mut u8
+    }
 }
 
 #[cfg(test)]

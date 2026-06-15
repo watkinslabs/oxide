@@ -93,6 +93,46 @@ mod imp {
         unsafe { let mut i = 0; while i < n { *s.add(i) ^= 42; i += 1; } s }
     }
 
+    // # C: char *basename(const char *path) — GNU <string.h> form: pointer to
+    // the part after the last '/', or the whole string if none. Does NOT modify
+    // the buffer and never strips trailing slashes (that is __xpg_basename).
+    #[no_mangle]
+    pub unsafe extern "C" fn basename(path: *const u8) -> *mut u8 {
+        // SAFETY: path null (→path) or a NUL-terminated string; returns a pointer
+        // just past the last '/' within it, scanning forward to the terminator.
+        unsafe {
+            if path.is_null() { return path as *mut u8; }
+            let mut last = path;
+            let mut p = path;
+            loop {
+                let c = *p;
+                p = p.add(1);
+                if c == b'/' { last = p; }
+                if c == 0 { return last as *mut u8; }
+            }
+        }
+    }
+
+    // # C: char *strfry(char *string) — randomly permute string in place (GNU)
+    #[no_mangle]
+    pub unsafe extern "C" fn strfry(string: *mut u8) -> *mut u8 {
+        // SAFETY: string is a NUL-terminated mutable buffer; Fisher-Yates shuffle
+        // over its bytes via the process random() source, in place (no realloc).
+        unsafe {
+            let mut n = 0usize;
+            while *string.add(n) != 0 { n += 1; }
+            let mut i = 0usize;
+            while i + 1 < n {
+                let span = (n - i) as u64;
+                let r = crate::stdlib::rand48::random() as u64;
+                let j = i + (r % span) as usize;
+                let t = *string.add(i); *string.add(i) = *string.add(j); *string.add(j) = t;
+                i += 1;
+            }
+            string
+        }
+    }
+
     // # C: char *strsep(char **stringp, const char *delim)
     #[no_mangle]
     pub unsafe extern "C" fn strsep(stringp: *mut *mut u8, delim: *const u8) -> *mut u8 {

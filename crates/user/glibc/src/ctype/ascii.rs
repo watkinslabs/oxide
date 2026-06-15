@@ -47,6 +47,18 @@ mod exports {
     // # C: int tolower(int)
     #[no_mangle]
     pub extern "C" fn tolower(c: i32) -> i32 { to_lower(c) }
+    // # C: int isascii(int) — true for the 7-bit ASCII range [0,127] (XSI/SVID)
+    #[no_mangle]
+    pub extern "C" fn isascii(c: i32) -> i32 { (c & !0x7f == 0) as i32 }
+    // # C: int toascii(int) — mask to the low 7 bits (XSI/SVID)
+    #[no_mangle]
+    pub extern "C" fn toascii(c: i32) -> i32 { c & 0x7f }
+    // # C: int _tolower(int) — unchecked lowercase (assumes isupper(c)); SVID
+    #[no_mangle]
+    pub extern "C" fn _tolower(c: i32) -> i32 { c | 0x20 }
+    // # C: int _toupper(int) — unchecked uppercase (assumes islower(c)); SVID
+    #[no_mangle]
+    pub extern "C" fn _toupper(c: i32) -> i32 { c & !0x20 }
 }
 
 #[cfg(test)]
