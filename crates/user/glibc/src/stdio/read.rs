@@ -2,7 +2,8 @@
 // posix::io (buffering + putc/getc-macro compat is a follow-up). One-char
 // ungetc via the FILE pushback slot (file.rs).
 #![cfg(feature = "freestanding")]
-use super::file::{self, alloc_file, fd_of, free_file, is_std, set_eof, set_unget, stdin_ptr, take_unget, FILE};
+use super::file::{self, alloc_file, fd_of, free_file, is_mem, is_std, set_eof, set_unget, stdin_ptr, take_unget, FILE};
+use super::memstream::{mem_close, stream_read, stream_seek, stream_tell};
 use crate::internal::errno;
 use crate::malloc::heap;
 use crate::posix::io;
@@ -28,7 +29,7 @@ pub(crate) unsafe fn getc_raw(f: *mut FILE) -> i32 {
     unsafe {
         if let Some(c) = take_unget(f) { return c as i32; }
         let mut b = 0u8;
-        if io::read(fd_of(f), &mut b as *mut u8, 1) == 1 { b as i32 } else { set_eof(f); -1 }
+        if stream_read(f, &mut b as *mut u8, 1) == 1 { b as i32 } else { set_eof(f); -1 }
     }
 }
 
@@ -73,6 +74,7 @@ pub unsafe extern "C" fn fclose(f: *mut FILE) -> i32 {
     // SAFETY: f is a valid stream; close its fd and free heap FILEs.
     unsafe {
         if is_std(f) { return 0; }
+        if is_mem(f) { mem_close(f); free_file(f); return 0; }
         let r = io::close(fd_of(f));
         free_file(f);
         if r < 0 { -1 } else { 0 }
@@ -89,7 +91,7 @@ pub unsafe extern "C" fn fread(ptr: *mut u8, size: usize, nmemb: usize, f: *mut 
         let mut got = 0usize;
         if let Some(c) = take_unget(f) { *ptr = c; got = 1; }
         if got < total {
-            let r = io::read(fd_of(f), ptr.add(got), total - got);
+            let r = stream_read(f, ptr.add(got), total - got);
             if r > 0 { got += r as usize; }
         }
         if got < total { set_eof(f); }
@@ -181,7 +183,7 @@ pub unsafe extern "C" fn fseek(f: *mut FILE, off: i64, whence: i32) -> i32 {
     // SAFETY: f is a seekable stream; clears EOF/pushback on success.
     unsafe {
         let _ = take_unget(f);
-        if io::lseek(fd_of(f), off, whence) < 0 { return -1; }
+        if stream_seek(f, off, whence) < 0 { return -1; }
         (*f)._flags &= !file::IO_EOF_SEEN;
         0
     }
@@ -190,7 +192,7 @@ pub unsafe extern "C" fn fseek(f: *mut FILE, off: i64, whence: i32) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn ftell(f: *mut FILE) -> i64 {
     // SAFETY: f is a seekable stream; query the current offset.
-    unsafe { io::lseek(fd_of(f), 0, io::SEEK_CUR) }
+    unsafe { stream_tell(f) }
 }
 #[no_mangle]
 pub unsafe extern "C" fn ftello(f: *mut FILE) -> i64 {
