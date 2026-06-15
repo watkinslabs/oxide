@@ -1,0 +1,13 @@
+# folded-stub — an empty shared object used as a glibc folded-lib compatibility
+# shim (docs/59§6 G18a). `xtask folded` builds it once per soname with
+# -soname=<lib> + a forced DT_NEEDED on libc.so.6; it exports no symbols of its
+# own (all real symbols live in libc.so.6).
+[package]
+name = "folded-stub"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib"]
