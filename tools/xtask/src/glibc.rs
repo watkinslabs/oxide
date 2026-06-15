@@ -21,8 +21,9 @@ const ARM: &str = "aarch64-unknown-linux-gnu";
 pub(crate) fn cmd_glibc(rest: &[String]) -> Result<(), u8> {
     let check = rest.iter().any(|a| a == "--check");
     build_staticlib(X86)?;
-    if target_installed(ARM) { build_staticlib(ARM)?; }
-    else { eprintln!("xtask glibc: aarch64 target not installed; skipping its staticlib (add with `rustup target add {ARM}`)"); }
+    build_sharedlib(X86)?;
+    if target_installed(ARM) { build_staticlib(ARM)?; build_sharedlib(ARM)?; }
+    else { eprintln!("xtask glibc: aarch64 target not installed; skipping its libs (add with `rustup target add {ARM}`)"); }
     if check { check_hello_x86()?; }
     Ok(())
 }
@@ -30,13 +31,32 @@ pub(crate) fn cmd_glibc(rest: &[String]) -> Result<(), u8> {
 fn build_staticlib(triple: &str) -> Result<(), u8> {
     eprintln!("xtask glibc: building libc.a for {triple}");
     let mut c = Command::new("cargo");
-    c.args(["rustc", "-p", "glibc", "--release", "--features", "freestanding",
+    c.args(["rustc", "-p", "glibc", "--release", "--features", "crt",
             "--target", triple, "--crate-type", "staticlib"]);
     run(c)
 }
 
 fn staticlib_path(triple: &str) -> PathBuf {
     PathBuf::from("target").join(triple).join("release").join("libglibc.a")
+}
+
+// Build the shipped libc.so.6 (cdylib, no crt — the executable's crt1 supplies
+// _start; libc.so.6 must not reference an external `main`). Linked with
+// rust-lld directly so the same path builds x86_64 and aarch64.
+pub(crate) fn build_sharedlib(triple: &str) -> Result<(), u8> {
+    eprintln!("xtask glibc: building libc.so.6 for {triple}");
+    let mut c = Command::new("cargo");
+    c.args(["rustc", "-p", "glibc", "--release", "--features", "freestanding",
+            "--target", triple, "--crate-type", "cdylib", "--",
+            "-C", "linker-flavor=ld.lld", "-C", "linker=rust-lld",
+            "-C", "link-arg=--soname=libc.so.6", "-C", "relocation-model=pic",
+            "-C", "panic=abort"]);
+    run(c)
+}
+
+#[allow(dead_code)] // used by the G12g dynamic-link harness (next PR)
+pub(crate) fn sharedlib_path(triple: &str) -> PathBuf {
+    PathBuf::from("target").join(triple).join("release").join("libglibc.so")
 }
 
 fn target_installed(triple: &str) -> bool {
