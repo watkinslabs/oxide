@@ -89,6 +89,25 @@ mod imp {
         // SAFETY: alias of readdir; identical 64-bit layout.
         unsafe { readdir(d) }
     }
+    // # C: int alphasort(const struct dirent **a, const struct dirent **b)
+    #[no_mangle]
+    pub unsafe extern "C" fn alphasort(a: *const *const dirent, b: *const *const dirent) -> i32 {
+        // SAFETY: a/b point to dirent pointers (scandir comparator); compare the
+        // NUL-terminated d_name fields by C-locale collation (== strcmp).
+        unsafe { crate::string::cmp::strcmp_impl((*(*a)).d_name.as_ptr(), (*(*b)).d_name.as_ptr()) }
+    }
+    // # C: int versionsort(const struct dirent **a, const struct dirent **b)
+    #[no_mangle]
+    pub unsafe extern "C" fn versionsort(a: *const *const dirent, b: *const *const dirent) -> i32 {
+        // SAFETY: a/b point to dirent pointers; natural-version compare on d_name.
+        unsafe { crate::string::cmp::strverscmp_impl((*(*a)).d_name.as_ptr(), (*(*b)).d_name.as_ptr()) }
+    }
+    // # C: int alphasort64(...) — LFS alias
+    // SAFETY: identical dirent layout on LP64; forwards to alphasort.
+    #[no_mangle] pub unsafe extern "C" fn alphasort64(a: *const *const dirent, b: *const *const dirent) -> i32 { unsafe { alphasort(a, b) } }
+    // # C: int versionsort64(...) — LFS alias
+    // SAFETY: identical dirent layout on LP64; forwards to versionsort.
+    #[no_mangle] pub unsafe extern "C" fn versionsort64(a: *const *const dirent, b: *const *const dirent) -> i32 { unsafe { versionsort(a, b) } }
     // # C: int closedir(DIR *d)
     #[no_mangle]
     pub unsafe extern "C" fn closedir(d: *mut DIR) -> i32 {
