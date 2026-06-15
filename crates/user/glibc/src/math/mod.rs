@@ -2,6 +2,7 @@
 //! frexp/ldexp/modf; transcendentals + trig follow.
 pub mod atrig;
 pub mod basic;
+#[cfg(feature = "freestanding")] pub mod complex;
 pub mod exp;
 pub mod extra;
 pub mod fma;
