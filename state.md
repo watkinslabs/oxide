@@ -59,11 +59,10 @@ G0–G18 COMPLETE. Done:
 `xtask glibc-test`: differential conformance harness (tools/xtask/src/
 glibc_test.rs + userspace/glibc_conformance/*.c). Each C program is compiled
 once, linked+run BOTH against host glibc (oracle) and our sysroot (Scrt1.o +
-libc.so.6 via our ld-linux on the host), stdout+exit diffed. **21/21 programs
-match host glibc** (stdio/string/malloc/math/strto/qsort/ctype/snprintf/sscanf/
-time/env/file/setjmp/wchar/abs/pthread/signal/fseek/atexit/mathedge). Both
+libc.so.6 via our ld-linux on the host), stdout+exit diffed. **36/36 programs match host glibc** (stdio/string/malloc/math/strto/qsort/ctype/snprintf/sscanf/
+time/env/file/setjmp/wchar/abs/pthread/signal/fseek/atexit/getopt/inet/fnmatch/strcase/asprintf/libgen/qsort_r/realpath/locale). Both
 arches build libc.so.6 (x86 run-tested; aarch64 build-parity, run rides QEMU).
-9 real bugs it caught + fixed: printf %e/%f (C exponent+width), __isoc23_strto*,
+16+ real bugs/gaps it caught + fixed (incl a MAJOR ld-linux R_X86_64_COPY/R_AARCH64_COPY fix — the source must exclude the exe, else every libc DATA symbol the exe reads (optind/stdout/errno/environ) stays 0; this also unblocks the on-kernel path): printf %e/%f (C exponent+width), __isoc23_strto*,
 __isoc23/99_sscanf, ctype tables (__ctype_b_loc/_tolower_loc/_toupper_loc),
 scanf %x 0x-prefix, strtok/strtok_r, wcs* family, setjmp symbol export (naked
 #[no_mangle], per-arch — was localized by the cdylib version script).
