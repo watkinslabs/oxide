@@ -10,6 +10,10 @@
 //   - cdylib/staticlib (feature `freestanding`, via `xtask glibc`):
 //     the shipped libc, no_std final artifact.
 #![no_std]
+// c_variadic (printf family, stdio G6) is only exercised in the
+// freestanding build; declaring it only there keeps the workspace rlib
+// build free of the unused-feature warning.
+#![cfg_attr(feature = "freestanding", feature(c_variadic))]
 #![forbid(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::missing_safety_doc)]
 // A C library exposes its surface via #[no_mangle] exports, not internal
