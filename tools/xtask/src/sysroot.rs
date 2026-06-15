@@ -29,7 +29,7 @@ pub(crate) fn cmd_sysroot(rest: &[String]) -> Result<(), u8> {
 
 fn root_dir(triple: &str) -> PathBuf { PathBuf::from("target/sysroot").join(triple) }
 
-fn build_sysroot(triple: &str) -> Result<(), u8> {
+pub(crate) fn build_sysroot(triple: &str) -> Result<(), u8> {
     eprintln!("xtask sysroot: building artifacts for {triple}");
     crate::glibc::build_staticlib(triple)?;
     crate::glibc::build_sharedlib(triple)?;

@@ -181,20 +181,79 @@ pub(crate) unsafe fn vformat(out: &mut dyn Sink, fmt: *const u8, args: &mut dyn 
                 }
                 b'f' | b'F' | b'e' | b'E' | b'g' | b'G' => {
                     let v = args.next_f64();
-                    let prec = sp.prec.unwrap_or(6);
-                    let mut a = Adapter(out);
-                    match sp.conv {
-                        b'e' => { let _ = write!(a, "{:.*e}", prec, v); }
-                        b'E' => { let _ = write!(a, "{:.*E}", prec, v); }
-                        b'g' | b'G' => { let _ = write!(a, "{}", v); }
-                        _ => { let _ = write!(a, "{:.*}", prec, v); }
-                    }
+                    fmt_float(out, &sp, v);
                 }
                 0 => break,
                 other => { out.push(b'%'); out.push(other); }
             }
         }
         out.count()
+    }
+}
+
+// Fixed stack buffer used to render a float magnitude before padding.
+struct Buf { b: [u8; 512], n: usize }
+impl Sink for Buf {
+    fn push(&mut self, x: u8) { if self.n < self.b.len() { self.b[self.n] = x; self.n += 1; } }
+    fn count(&self) -> usize { self.n }
+}
+
+// Render a float per C printf semantics: sign (or +/space flag), C-style
+// exponent (e±dd, ≥2 digits) for e/E, then field-width + zero/space padding.
+// f/e/g share sign+pad; only the magnitude rendering differs.
+fn fmt_float(out: &mut dyn Sink, sp: &Spec, v: f64) {
+    let neg = v.is_sign_negative() && !v.is_nan();
+    let mag = if neg { -v } else { v };
+    let prec = sp.prec.unwrap_or(6);
+    let mut buf = Buf { b: [0; 512], n: 0 };
+    {
+        let mut a = Adapter(&mut buf);
+        match sp.conv {
+            b'e' | b'E' => { let _ = write!(a, "{:.*e}", prec, mag); }
+            b'g' | b'G' => { let _ = write!(a, "{}", mag); }
+            _ => { let _ = write!(a, "{:.*}", prec, mag); }
+        }
+    }
+    // Rust renders the exponent as "...eN" (no sign/pad); rewrite to C "e±NN".
+    let mut body = [0u8; 512];
+    let mut bn = 0usize;
+    let upper = sp.conv == b'E' || sp.conv == b'G';
+    let mut i = 0usize;
+    while i < buf.n {
+        let c = buf.b[i];
+        if (c == b'e' || c == b'E') && (sp.conv == b'e' || sp.conv == b'E') {
+            body[bn] = if upper { b'E' } else { b'e' }; bn += 1;
+            i += 1;
+            let esign = if i < buf.n && buf.b[i] == b'-' { i += 1; b'-' } else { b'+' };
+            body[bn] = esign; bn += 1;
+            let estart = i;
+            while i < buf.n { body[bn] = buf.b[i]; bn += 1; i += 1; }
+            // pad exponent digits to ≥2 by inserting a '0' if only one digit
+            if i - estart == 1 {
+                body[bn] = body[bn - 1];
+                body[bn - 1] = b'0';
+                bn += 1;
+            }
+        } else {
+            body[bn] = if upper { c.to_ascii_uppercase() } else { c }; bn += 1;
+            i += 1;
+        }
+    }
+    let sign: &[u8] = if neg { b"-" } else if sp.plus { b"+" } else if sp.space { b" " } else { b"" };
+    // width padding: zero-fill (after sign) unless left-justified; floats
+    // zero-pad even when a precision is set (unlike integers).
+    let content = sign.len() + bn;
+    let pad = sp.width.saturating_sub(content);
+    if sp.left {
+        out.push_all(sign); out.push_all(&body[..bn]);
+        for _ in 0..pad { out.push(b' '); }
+    } else if sp.zero {
+        out.push_all(sign);
+        for _ in 0..pad { out.push(b'0'); }
+        out.push_all(&body[..bn]);
+    } else {
+        for _ in 0..pad { out.push(b' '); }
+        out.push_all(sign); out.push_all(&body[..bn]);
     }
 }
 
