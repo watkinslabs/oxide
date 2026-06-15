@@ -7,7 +7,7 @@
 // envp = argv + argc + 1 (skip the args and their NULL terminator).
 // Pure pointer arithmetic — testable without a real stack.
 #[inline]
-pub unsafe fn envp_of(argv: *mut *mut u8, argc: i32) -> *mut *mut u8 {
+pub(crate) unsafe fn envp_of(argv: *mut *mut u8, argc: i32) -> *mut *mut u8 {
     // SAFETY: argv points at argc pointers followed by a NULL then envp,
     // per the SysV initial process stack; offset stays inside that block.
     unsafe { argv.add(argc as usize + 1) }
@@ -31,6 +31,11 @@ pub unsafe extern "C" fn __libc_start_main(
     // SAFETY: argv/argc come from the kernel-provided initial stack, so
     // envp_of's offset stays within the auxv block laid out below argv.
     let envp = unsafe { envp_of(argv, argc) };
+    // Seed the stack-protector canary from auxv AT_RANDOM before any
+    // -fstack-protector frame runs (G3).
+    // SAFETY: envp points at the kernel-provided env+auxv block, the
+    // contract reseed_from_auxv requires.
+    unsafe { crate::start::stack_guard::reseed_from_auxv(envp as *const usize) };
     // G2+: store __environ, run __libc_csu_init / preinit+init arrays here.
     let code = main(argc, argv, envp);
     crate::stdlib::exit::exit(code) // diverges; coerces to i32
@@ -48,6 +53,7 @@ mod tests {
         let envp = unsafe { envp_of(argv, 2) };
         // SAFETY: argv is a live 5-elem array; index 3 is in bounds.
         assert_eq!(unsafe { envp.offset_from(argv) }, 3);
+        // SAFETY: index 3 of the live 5-elem array holds env slot 0 (9).
         assert_eq!(unsafe { *envp } as usize, 9);
     }
 }
