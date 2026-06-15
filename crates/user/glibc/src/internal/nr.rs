@@ -107,6 +107,23 @@ pub mod x86_64 {
     pub const PIPE2: usize = 293;
     pub const PRLIMIT64: usize = 302;
     pub const GETRANDOM: usize = 318;
+    // sockets (x86_64 individual syscalls, syscall_64.tbl)
+    pub const SOCKET: usize = 41;
+    pub const CONNECT: usize = 42;
+    pub const ACCEPT: usize = 43;
+    pub const SENDTO: usize = 44;
+    pub const RECVFROM: usize = 45;
+    pub const SENDMSG: usize = 46;
+    pub const RECVMSG: usize = 47;
+    pub const SHUTDOWN: usize = 48;
+    pub const BIND: usize = 49;
+    pub const LISTEN: usize = 50;
+    pub const GETSOCKNAME: usize = 51;
+    pub const GETPEERNAME: usize = 52;
+    pub const SOCKETPAIR: usize = 53;
+    pub const SETSOCKOPT: usize = 54;
+    pub const GETSOCKOPT: usize = 55;
+    pub const ACCEPT4: usize = 288;
 }
 
 pub mod aarch64 {
@@ -189,4 +206,21 @@ pub mod aarch64 {
     pub const WAIT4: usize = 260;
     pub const PRLIMIT64: usize = 261;
     pub const GETRANDOM: usize = 278;
+    // sockets (aarch64 asm-generic/unistd.h)
+    pub const SOCKET: usize = 198;
+    pub const SOCKETPAIR: usize = 199;
+    pub const BIND: usize = 200;
+    pub const LISTEN: usize = 201;
+    pub const ACCEPT: usize = 202;
+    pub const CONNECT: usize = 203;
+    pub const GETSOCKNAME: usize = 204;
+    pub const GETPEERNAME: usize = 205;
+    pub const SENDTO: usize = 206;
+    pub const RECVFROM: usize = 207;
+    pub const SETSOCKOPT: usize = 208;
+    pub const GETSOCKOPT: usize = 209;
+    pub const SHUTDOWN: usize = 210;
+    pub const SENDMSG: usize = 211;
+    pub const RECVMSG: usize = 212;
+    pub const ACCEPT4: usize = 242;
 }
