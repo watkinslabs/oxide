@@ -1,1 +1,3 @@
-//! ctype — glibc-ABI surface, one fn/file (docs/59§3). Implemented at G4 (docs/59§6).
+//! ctype — glibc-ABI is*/to* (docs/59§3, §6 G4). C/POSIX locale, range
+//! based; locale-aware tables arrive at G16.
+pub mod ascii;
