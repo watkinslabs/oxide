@@ -63,6 +63,21 @@ pub unsafe extern "C" fn sscanf(s: *const u8, fmt: *const u8, mut ap: ...) -> i3
     }
 }
 
+// glibc 2.38+ headers redirect sscanf to __isoc23_sscanf (and older ones to
+// __isoc99_sscanf). Same contract as sscanf; provide both aliases.
+// # C: int __isoc23_sscanf(const char *s, const char *fmt, ...)
+#[no_mangle]
+pub unsafe extern "C" fn __isoc23_sscanf(s: *const u8, fmt: *const u8, mut ap: ...) -> i32 {
+    // SAFETY: s/fmt NUL-terminated; ap supplies the pointer args.
+    unsafe { let mut src = StrSource::new(s); let mut a = Va(&mut ap); scan::vscan(&mut src, fmt, &mut a) }
+}
+// # C: int __isoc99_sscanf(const char *s, const char *fmt, ...)
+#[no_mangle]
+pub unsafe extern "C" fn __isoc99_sscanf(s: *const u8, fmt: *const u8, mut ap: ...) -> i32 {
+    // SAFETY: s/fmt NUL-terminated; ap supplies the pointer args.
+    unsafe { let mut src = StrSource::new(s); let mut a = Va(&mut ap); scan::vscan(&mut src, fmt, &mut a) }
+}
+
 // # C: int vfscanf(FILE *f, const char *fmt, va_list ap)
 #[no_mangle]
 pub unsafe extern "C" fn vfscanf(f: *mut FILE, fmt: *const u8, mut ap: VaList) -> i32 {
