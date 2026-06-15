@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc c12f0bfc61a1b9d316bc808bfa3c9c92c87418f25f20da12213c0fae946d6120 # shrinks to s = "/"
 cc fd65d1b5315a024fa6e6097947615fd457b1afd2a390585888378a426a74048c # shrinks to p = "*", s = "/", pn = true, pd = false
+cc a4f01cd7b9b3341adf35e6dd2fa9b8388af851fc7fdbfe7162176505b99b4b83 # shrinks to p = "[![.]", s = "/", pn = false, pd = false
