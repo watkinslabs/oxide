@@ -1,18 +1,16 @@
 # glibc — unsupported (cannot implement)
 
-Functions we genuinely cannot ship, with the hard reason. NOT a
-deferral list — these are blocked by a representational/arch limit,
-not by effort. Revisit only if the underlying blocker is removed.
+Hard-blocked, not deferred. Revisit only if the blocker is removed.
+
+## long double / long-double-typed (124)
+BLOCKER: x86_64 `long double` = 80-bit x87 `f80`; Rust has no f80, so the
+extern-C ABI is inexpressible. (aarch64 = binary128 = nightly f128, but a
+single portable signature is needed for lockstep.) Needs an 80-bit
+soft-float + x87-ABI shim. Includes `*l` math/complex, strtold/wcstold,
+qecvt/qfcvt/qgcvt, strfroml, nexttoward*.
 
 ## long double `*l` / long-double-typed (122)
-BLOCKER: on x86_64 the C `long double` is the 80-bit x87 extended type
-(`f80`). Rust has no `f80`, so the `extern "C"` ABI for any function
 taking or returning `long double` cannot be expressed at all (aarch64
-`long double` is IEEE binary128 = nightly `f128`, but lockstep needs a
-single portable signature). Unblocks only with an 80-bit soft-float +
-an x87-ABI shim. Includes the `*l` math, `*l` complex, strtold/wcstold,
-qecvt/qfcvt/qgcvt, strfroml, and nexttoward* (long-double arg).
-
 long double sinhl (long double x)
 long double coshl (long double x)
 long double tanhl (long double x)
@@ -137,8 +135,7 @@ complex long double cacosl (complex long double z)
 complex long double catanl (complex long double z)
 
 ## PowerPC builtins (10)
-BLOCKER: `__ppc_*` are PowerPC-only intrinsics. oxide targets x86_64 +
-aarch64 only (docs/29a); no PowerPC target exists, so these are N/A.
+BLOCKER: `__ppc_*` are PowerPC-only; oxide targets x86_64+aarch64 only.
 
 uint64_t __ppc_get_timebase (void)
 uint64_t __ppc_get_timebase_freq (void)
