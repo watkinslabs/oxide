@@ -12,6 +12,10 @@
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::missing_safety_doc)]
+// A C library exposes its surface via #[no_mangle] exports, not internal
+// callers; crate-internal helpers are legitimately unused in builds that
+// gate out their freestanding callers. dead_code is noise here.
+#![allow(dead_code)]
 
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;

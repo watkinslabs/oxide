@@ -18,21 +18,22 @@ pub extern "C" fn __errno_location() -> *mut i32 {
     ERRNO.0.get()
 }
 
-pub fn set(e: i32) {
+/// # C: *__errno_location() = e
+pub(crate) fn set(e: i32) {
     // SAFETY: exclusive single-thread access to the global errno cell
     // until per-thread TLS replaces it at G11; no aliasing &mut exists.
     unsafe { *ERRNO.0.get() = e };
 }
 
-// Split a raw syscall return: Err(errno) in the [-4095,-1] band, else Ok.
+/// # C: split raw return: -errno band → Err, else Ok
 #[inline]
-pub fn ret(r: isize) -> Result<isize, i32> {
+pub(crate) fn ret(r: isize) -> Result<isize, i32> {
     if (-4095..=-1).contains(&r) { Err(-r as i32) } else { Ok(r) }
 }
 
-// libc convention: on error set errno and return -1, else pass the value.
+/// # C: on error set errno + return -1, else pass value
 #[inline]
-pub fn ret_isize(r: isize) -> isize {
+pub(crate) fn ret_isize(r: isize) -> isize {
     match ret(r) {
         Ok(v) => v,
         Err(e) => { set(e); -1 }
