@@ -4,5 +4,6 @@
 pub mod chr;
 pub mod cmp;
 pub mod cpy;
+pub mod dup;
 pub mod len;
 pub mod mem;
