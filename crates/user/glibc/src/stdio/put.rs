@@ -56,6 +56,24 @@ pub unsafe extern "C" fn putc(c: i32, f: *mut FILE) -> i32 {
     unsafe { fputc(c, f) }
 }
 
+// # C: void perror(const char *s) — "[s: ]<strerror(errno)>\n" to stderr
+#[no_mangle]
+pub unsafe extern "C" fn perror(s: *const u8) {
+    // SAFETY: s is null or a NUL-terminated C string; write the optional
+    // prefix, the C-locale errno message (without its NUL), and a newline to
+    // fd 2 (stderr), each via the unbuffered io::write path.
+    unsafe {
+        let e = *crate::internal::errno::__errno_location();
+        if !s.is_null() && *s != 0 {
+            io::write(2, s, strlen_impl(s));
+            io::write(2, b": ".as_ptr(), 2);
+        }
+        let m = crate::string::strerror::msg(e);
+        io::write(2, m.as_ptr(), m.len() - 1);
+        io::write(2, b"\n".as_ptr(), 1);
+    }
+}
+
 // # C: int putchar(int c)
 #[no_mangle]
 pub unsafe extern "C" fn putchar(c: i32) -> i32 {
