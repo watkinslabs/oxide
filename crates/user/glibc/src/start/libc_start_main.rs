@@ -36,6 +36,8 @@ pub unsafe extern "C" fn __libc_start_main(
     // SAFETY: envp points at the kernel-provided env+auxv block, the
     // contract reseed_from_auxv requires.
     unsafe { crate::start::stack_guard::reseed_from_auxv(envp as *const usize) };
+    // Stash envp so getauxval(3) can walk the auxv after startup (G8).
+    crate::start::auxv::save_envp(envp as *const usize);
     // Publish environ for getenv/setenv (G7c).
     // SAFETY: envp is the kernel-provided NULL-terminated env array.
     unsafe { crate::stdlib::env::init_environ(envp) };
