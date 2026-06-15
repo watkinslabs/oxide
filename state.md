@@ -9,13 +9,13 @@ integration** (user directive). Driver = the differential conformance harness.
 ## Validation engine — `xtask glibc-test`
 Each `userspace/glibc_conformance/*.c` is compiled once and run BOTH against
 host glibc (oracle) and our sysroot (Scrt1.o + libc.so.6 via our ld-linux on
-the host kernel); stdout+exit diffed. **85/85 programs byte-exact** on
+the host kernel); stdout+exit diffed. **88/88 programs byte-exact** on
 x86_64+aarch64. This is the verify-left engine — keep adding programs.
 
 ## Progress tracker (per user request)
 - `glibc_done.md` — functions our libc.so.6 exports (authoritative: `nm -D`),
-  harness-validated. **553 / 1296** of the upstream `glibc.md` list.
-- `glibc.md` — remaining TODO (~769; ~160 are complex/long-double variants
+  harness-validated. **585 / 1296** of the upstream `glibc.md` list.
+- `glibc.md` — remaining TODO (~711; ~160 are complex/long-double variants
   we defer; the rest are specialized clusters, see below).
 - Refresh after adding exports: rebuild sysroot, `nm -D --defined-only
   libc.so.6 | awk '{print $NF}'`, re-split the two files by membership.
@@ -35,18 +35,22 @@ x86_64+aarch64. This is the verify-left engine — keep adding programs.
   to ~14-15 sig figs, conformance-diffed at %.12-13g. **gettext** (C-locale
   passthrough), **mntent** (fstab parse, tested via fmemopen), **ftw/nftw**
   (temp-tree walk), **a64l/l64a**, alphasort/versionsort.
+- **Bessel** j0/j1/y0/y1/jn/yn (series + recurrence-built Hankel asymptotic,
+  ≤1e-6 rel, %.6g) — the asymptotic coeffs come from a runtime recurrence, no
+  transcribed constants. **inet_aton/addr/ntoa/network/makeaddr/lnaof/netof**.
+  **wcstol/wcstod family** (+wcscasecmp/wcstok/wcswcs). Float-variant math
+  (ceilf/fmodf/…) + logb/ilogb. stdio `_unlocked` + __uflow/__overflow.
 - LFS `*64` aliases + pread/pwrite/creat; `<argz.h>` vectors; wide-string
   family; `<search.h>` (tsearch/hsearch/lsearch); strverscmp; strsignal.
 
-## Remaining clusters (the real ~667 non-complex TODO)
+## Remaining clusters (the real ~580 non-complex TODO)
 Specialized, larger commitments — pick per integration need:
-- **aio_*** (POSIX async I/O) — whole subsystem.
-- **argp_*** (GNU arg parser) — large.
-- **gettext / textdomain / bindtextdomain** (i18n) — infra.
-- **backtrace*** — needs unwinder.
-- math **transcendentals** erf/erfc/lgamma/tgamma/j0/j1/y0/y1 (fdlibm ports;
-  float-exact-hard) + **complex** (c*) + **long double** (*l) variants.
-- misc: a64l/l64a, adjtime, addmntent/getmntent, mntent, ftw/nftw, wordexp,
+- **aio_*** (POSIX async I/O, over pthread) — whole subsystem.
+- **argp_*** (GNU arg parser, help gen) — large; **wordexp** (shell expansion).
+- **backtrace*** — needs an unwinder. **obstack** (macro-heavy GNU pools).
+- **utmp/wtmp**, getpwent/getgrent enumeration, sched_*/rlimit syscall wraps.
+- math **complex** (c*) + **long double** (*l) variants (deferred bulk).
+- misc: addmntent, adjtime, fmtmsg, catgets, getdate,
   fts, obstack, hcreate edge, regex backreferences.
 
 ## Verify gate (every PR)
