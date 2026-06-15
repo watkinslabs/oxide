@@ -8,7 +8,7 @@ Building **oxide-libc**: our own glibc-ABI C library in Rust, replacing musl
 **Don't stop until ladder complete or hard blocker.**
 
 ## Position
-G0–G17 COMPLETE. Done:
+G0–G18 COMPLETE. Done:
 - libc core G0–G11 (string/stdlib/stdio/malloc/time/signal/pthread).
 - G12 dynamic linker (a–h): self-reloc, lib-search, bump alloc, symbol +
   GNU/sysv hash, symbol versioning, loader, relocate, static/IE TLS, dlopen.
@@ -42,23 +42,38 @@ G0–G17 COMPLETE. Done:
   - G17d setjmp/longjmp/sigsetjmp/siglongjmp: per-arch global_asm (x86_64
     runtime-validated via the static smoke; aarch64 assembles); jmp_buf ABI
     (#1907)
+- G18 folded-lib + sysroot (all merged):
+  - G18a folded stubs: 6 empty .so shims (libpthread/dl/rt/m/util/resolv) with
+    DT_SONAME + NEEDED(libc.so.6), empty dynsym; `xtask folded --check`
+    (crates/user/folded-stub) (#1909)
+  - G18b ld.so.cache encoder: `ldso::cache::build_cache` (glibc new-format),
+    round-trips through the rtld's `cache::lookup` reader (#1910)
+  - G18c sysroot publish: `xtask sysroot --check` lays out
+    target/sysroot/<triple>/{lib,etc} and validates static + dynamic
+    link/run + cache resolution (#1911)
 
-`xtask glibc --check` = exit0, 127 glibc tests.
+`xtask glibc --check` = exit0, 127 glibc tests; 41 ldso tests.
+`xtask folded --check` / `xtask sysroot --check` PASS both arches.
 
-## NEXT: G18 — folded-lib stubs + ld.so.cache + sysroot
-All symbols live in libc.so.6 (the folded-libc model). G18 ships the linker-
-name compatibility shims real binaries NEED in their DT_NEEDED:
-- Emit empty shared objects libpthread.so.0, libdl.so.2, librt.so.1,
-  libm.so.6, libutil.so.1, libresolv.so.2 — each a tiny .so with DT_SONAME set
-  + DT_NEEDED on libc.so.6 (no symbols of their own). Build via xtask (rust-lld,
-  both arches), like the existing ldso/glibc cdylib builds in tools/xtask.
-- ld.so.cache builder: write /etc/ld.so.cache in the glibc `new format`
-  (CACHEMAGIC_NEW "glibc-ld.so.cache1.1", sorted entries) so the rtld's
-  cache.rs (already a reader) resolves names → paths. Pure encoder hosted-
-  tested by round-tripping through cache.rs's parser.
-- Publish a sysroot: lib/ld-linux-*.so + libc.so.6 + the folded stubs +
-  ld.so.cache + headers, laid out so a vendor cross-build can link against it.
-Then G19 migrate userspace musl→glibc + retire musl (the last rung).
+## NEXT: G19 — migrate userspace musl→glibc + retire musl (FINAL rung)
+The whole oxide-libc exists; G19 makes the userspace actually use it, then
+removes musl. This is the lockstep + boot phase (not pure hosted code):
+- Point the userspace build/targets at the oxide glibc sysroot
+  (target/sysroot/<triple>) instead of `*-unknown-linux-musl`. Audit how
+  userspace is currently built (docs/29a, tools/xtask rootfs*, vendor cross-
+  builds) and switch the libc/sysroot + dynamic-linker.
+- A real dynamic exe with a normal `main` needs an Scrt1.o-equivalent (our
+  `crt` feature builds _start into libc.a; for dynamic PIEs we likely need a
+  standalone Scrt1.o that calls __libc_start_main). Provide it if missing —
+  this is the one known gap the G18c smoke side-stepped with -nostartfiles.
+- Rebuild userspace (at minimum the existing bins; ideally bash/coreutils per
+  29a) against the sysroot. Fix glibc-vs-musl gaps as they surface (missing
+  syscalls, struct sizes, symbol versions).
+- Boot BOTH arches to `oxide login:` via the qemu MCP
+  (mcp__qemu__qemu_start arch=x86_64 AND arch=aarch64) — lockstep, verified,
+  not "should work".
+- Remove musl from the build once both boot. Then docs/59 ladder is COMPLETE:
+  mark 59 FROZEN/done + update CLAUDE.md status line.
 
 ## How it's built/verified (per sub-phase)
 - C-ABI exports `#[cfg(feature="freestanding")] #[no_mangle] pub unsafe extern
@@ -80,14 +95,15 @@ Then G19 migrate userspace musl→glibc + retire musl (the last rung).
   smoke-hook path).
 
 ## Next task (first command)
-Continue the loop at **G18 — folded-lib stubs + ld.so.cache + sysroot** (see
-NEXT above). Branch `P28-67-glibc-g18a-*`. Likely xtask-heavy (emit .so shims +
-cache encoder), less per-fn glibc code.
+Continue the loop at **G19 — migrate userspace musl→glibc + retire musl** (see
+NEXT above). Branch `P28-70-glibc-g19a-*`. Start by auditing how userspace is
+built today (grep musl in targets/, tools/xtask/rootfs*, Makefile, vendor) and
+the Scrt1.o gap; this phase ends with both arches booting to login on glibc.
 
 ## Notes
 - musl path stays buildable until G19. 59 is DRAFT — edit directly (no R-block).
 - P28 prefix is the loop's ad-hoc glibc sequence; not tracked in
-  metadata/index.md. Last used P28-66. C-type counter next=91. D-type next=99.
+  metadata/index.md. Last used P28-69. C-type counter next=91. D-type next=100.
 - Test crate: glibc is `#![no_std]`, std is test-gated (no prelude) — in tests
   `use alloc::vec::Vec;`; derive Debug on enums asserted with assert_eq!.
 - Charset-name C-string clippy fights c_char signedness across arches — use
