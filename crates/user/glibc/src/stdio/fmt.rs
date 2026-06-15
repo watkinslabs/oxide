@@ -330,6 +330,7 @@ fn scan_len(fmt: *const u8, i: &mut usize) -> Len {
 }
 
 // The engine. Returns the number of bytes that would be written.
+#[allow(clippy::manual_c_str_literals)] // byte literal is arch-portable (c_char signedness)
 pub(crate) unsafe fn vformat(out: &mut dyn Sink, fmt: *const u8, args: &mut dyn Args) -> usize {
     // SAFETY: fmt is a NUL-terminated format string; args supplies one
     // vararg per conversion as the caller promised. Counting is the Sink's.
@@ -357,7 +358,8 @@ pub(crate) unsafe fn vformat(out: &mut dyn Sink, fmt: *const u8, args: &mut dyn 
                     emit(out, &sp, b"", b"", &b);
                 }
                 b's' => {
-                    let p = args.next_ptr();
+                    let mut p = args.next_ptr();
+                    if p.is_null() { p = b"(null)\0".as_ptr(); } // glibc prints "(null)"
                     let max = sp.prec.unwrap_or(usize::MAX);
                     let mut n = 0usize;
                     while n < max && *p.add(n) != 0 { n += 1; }
@@ -481,7 +483,11 @@ fn fmt_hexfloat(out: &mut dyn Sink, sp: &Spec, v: f64) {
 fn fmt_float(out: &mut dyn Sink, sp: &Spec, v: f64) {
     let neg = v.is_sign_negative() && !v.is_nan();
     let mag = if neg { -v } else { v };
-    let upper = sp.conv == b'E' || sp.conv == b'G';
+    let upper = matches!(sp.conv, b'E' | b'G' | b'F');
+    // inf/nan: glibc spells them "inf"/"nan" (upper conversions "INF"/"NAN");
+    // core::fmt would render "NaN", so handle them here. nan carries no sign.
+    if v.is_nan() { emit_float_body(out, sp, false, b"", if upper { b"NAN" } else { b"nan" }, false); return; }
+    if v.is_infinite() { emit_float_body(out, sp, neg, b"", if upper { b"INF" } else { b"inf" }, false); return; }
     // Decide the effective rendering: e-style vs f-style and its precision.
     // %g (C): P sig digits (default 6, min 1); use f-style iff -4 ≤ X < P where
     // X is the decimal exponent, else e-style; then strip trailing zeros.
@@ -526,6 +532,16 @@ fn fmt_float(out: &mut dyn Sink, sp: &Spec, v: f64) {
         }
     }
     if is_g && !sp.alt && frac_end == 0 { bn = strip_zeros(&mut body, bn); } // f-style %g
+    // '#' (alt) flag forces a radix point even when the rendering has none
+    // (e.g. "%#.0f" of 1 → "1."); insert it after the mantissa's integer part.
+    if sp.alt {
+        let mant_end = if frac_end > 0 { frac_end } else { bn }; // e-style mantissa ends at 'e'
+        if !body[..mant_end].contains(&b'.') {
+            if frac_end > 0 { body.copy_within(frac_end..bn, frac_end + 1); body[frac_end] = b'.'; }
+            else { body[bn] = b'.'; }
+            bn += 1;
+        }
+    }
     // floats zero-pad even when a precision is set (unlike integers).
     emit_float_body(out, sp, neg, b"", &body[..bn], true);
 }
