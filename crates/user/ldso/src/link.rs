@@ -13,7 +13,7 @@ use crate::relocate::RelocCtx;
 use crate::{auxv, linkmap, loader, phdr, relocate, search, syscall};
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const RELAENT: usize = 24;
 
@@ -27,16 +27,45 @@ const MACHINE: u16 = elf::EM_AARCH64;
 struct GlobalLink {
     objs: UnsafeCell<Vec<OwnedObj>>,
     sonames: UnsafeCell<Vec<&'static [u8]>>,
+    // The rtld's own objview — resolution scope only (it self-relocated and
+    // is never relocated/init'd here), so libc's _dl_* refs can bind.
+    rtld: UnsafeCell<Option<OwnedObj>>,
+    // Saved LD_LIBRARY_PATH (ptr,len) so dlopen can search at runtime.
+    llp_ptr: AtomicUsize,
+    llp_len: AtomicUsize,
     lock: AtomicBool,
 }
-// SAFETY: all access goes through with_lock(), which serializes mutation; the
-// objects' backing mmaps live for the process.
+// SAFETY: all mutation is serialized by the lock; the objects' backing mmaps
+// live for the process.
 unsafe impl Sync for GlobalLink {}
 static LINK: GlobalLink = GlobalLink {
     objs: UnsafeCell::new(Vec::new()),
     sonames: UnsafeCell::new(Vec::new()),
+    rtld: UnsafeCell::new(None),
+    llp_ptr: AtomicUsize::new(0),
+    llp_len: AtomicUsize::new(0),
     lock: AtomicBool::new(false),
 };
+
+unsafe fn saved_llp() -> &'static [u8] {
+    // SAFETY: ptr/len were saved from the env at link(); the env lives for the
+    // process. Empty if LD_LIBRARY_PATH was unset.
+    unsafe {
+        let p = LINK.llp_ptr.load(Ordering::Acquire);
+        let n = LINK.llp_len.load(Ordering::Acquire);
+        if p == 0 { &[] } else { core::slice::from_raw_parts(p as *const u8, n) }
+    }
+}
+
+// The resolution scope: every loaded object's view plus the rtld's own.
+unsafe fn scope_map() -> Vec<linkmap::ObjView<'static>> {
+    // SAFETY: caller holds the lock; views reference live mappings.
+    unsafe {
+        let mut m: Vec<linkmap::ObjView> = objs().iter().map(|o| o.view()).collect();
+        if let Some(r) = &*LINK.rtld.get() { m.push(r.view()); }
+        m
+    }
+}
 
 fn lock() {
     while LINK.lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire).is_err() {
@@ -142,7 +171,7 @@ unsafe fn relocate_range(from: usize, app_tls_off: i64) {
     // SAFETY: applies each object's RELA+JMPREL+TLS in place; resolver reads
     // the global link map's windows.
     unsafe {
-        let map: Vec<linkmap::ObjView> = objs().iter().map(|o| o.view()).collect();
+        let map = scope_map();
         let resolve = |name: &[u8]| linkmap::lookup_global(&map, name, None).map(|(_, a)| a);
         for oi in from..objs().len() {
             let o = &objs()[oi];
@@ -205,9 +234,24 @@ unsafe fn setup_static_tls(base: u64, phdrs: &[u8], phnum: usize) -> i64 {
     }
 }
 
+// Build the rtld's own objview from its load base + _DYNAMIC, for resolution
+// scope only (it self-relocated; never relocated/init'd here).
+unsafe fn rtld_objview(rtld_base: u64, rtld_dyn: *const Dyn) -> Option<OwnedObj> {
+    // SAFETY: rtld_base is AT_BASE; its ehdr/phdrs are mapped there. Read
+    // e_phoff/phnum, find the load span to bound the windows.
+    unsafe {
+        if rtld_base == 0 { return None; }
+        let ph_off = *((rtld_base + 0x20) as *const u64); // e_phoff
+        let ph_num = *((rtld_base + 0x38) as *const u16) as usize; // e_phnum
+        let phdrs = core::slice::from_raw_parts((rtld_base + ph_off) as *const u8, ph_num * phdr::PHDR_SIZE);
+        let (_, hi) = phdr::load_vaddr_span(phdrs, ph_num).unwrap_or((0, 0));
+        Some(build_objview(rtld_base, rtld_base + hi, rtld_dyn))
+    }
+}
+
 /// Link the app + its DT_NEEDED graph and return the app entry point.
 /// # C: build the global link map, relocate all, run init, return AT_ENTRY
-pub unsafe fn link(sp: *const usize) -> usize {
+pub unsafe fn link(sp: *const usize, rtld_base: u64, rtld_dyn: *const Dyn) -> usize {
     // SAFETY: sp is the initial stack; AT_* describe the kernel-mapped app.
     unsafe {
         let at_phdr = auxv::auxval(sp, auxv::AT_PHDR).unwrap_or(0);
@@ -221,6 +265,10 @@ pub unsafe fn link(sp: *const usize) -> usize {
         let llp = ld_library_path(sp);
 
         lock();
+        // Save LD_LIBRARY_PATH + the rtld view for dlopen / cross-lib resolution.
+        LINK.llp_ptr.store(llp.as_ptr() as usize, Ordering::Release);
+        LINK.llp_len.store(llp.len(), Ordering::Release);
+        *LINK.rtld.get() = rtld_objview(rtld_base, rtld_dyn);
         objs().push(build_objview(app_base, app_base + app_hi, (app_base + app_dyn_v) as *const Dyn));
         load_needed(llp, 0);
         let app_tls_off = setup_static_tls(app_base, phdrs, phnum);
@@ -230,5 +278,96 @@ pub unsafe fn link(sp: *const usize) -> usize {
         for i in (0..n).rev() { run_init(&objs()[i]); }
         unlock();
         entry
+    }
+}
+
+unsafe fn cstr_len(p: *const u8) -> usize {
+    // SAFETY: p is a NUL-terminated C string.
+    unsafe { let mut n = 0; while *p.add(n) != 0 { n += 1; } n }
+}
+
+/// dlopen core: load `path` (+ deps) into the global map, relocate against the
+/// full scope, run its init, and return a handle (object index + 1; 0 = fail).
+/// # C: void *_dl_open(const char *path, int mode)
+#[no_mangle]
+pub unsafe extern "C" fn _dl_open(path: *const u8, _mode: i32) -> usize {
+    // SAFETY: path is NUL-terminated; we search/open/map under the link lock.
+    unsafe {
+        if path.is_null() { return 0; }
+        lock();
+        let from = objs().len();
+        let pslice = core::slice::from_raw_parts(path, cstr_len(path));
+        let mut pb = [0u8; search::PATH_MAX];
+        let resolved: *const u8 = if pslice.contains(&b'/') {
+            path
+        } else if find_lib(pslice, saved_llp(), &mut pb) {
+            pb.as_ptr()
+        } else {
+            unlock();
+            return 0;
+        };
+        let idx = match load_one(resolved) { Some(i) => i, None => { unlock(); return 0; } };
+        load_needed(saved_llp(), from);
+        relocate_range(from, 0);
+        let n = objs().len();
+        for i in (from..n).rev() { run_init(&objs()[i]); }
+        unlock();
+        idx + 1
+    }
+}
+
+/// dlsym core: resolve `name` in the handle's object, or the whole scope when
+/// `handle` is RTLD_DEFAULT (0). Returns the runtime address (0 = not found).
+/// # C: void *_dl_sym(void *handle, const char *name)
+#[no_mangle]
+pub unsafe extern "C" fn _dl_sym(handle: usize, name: *const u8) -> usize {
+    // SAFETY: name is NUL-terminated; lookup reads live link-map windows.
+    unsafe {
+        if name.is_null() { return 0; }
+        let ns = core::slice::from_raw_parts(name, cstr_len(name));
+        lock();
+        let r = if handle == 0 {
+            let map = scope_map();
+            linkmap::lookup_global(&map, ns, None).map(|(_, a)| a)
+        } else {
+            let idx = handle - 1;
+            if idx < objs().len() {
+                let o = &objs()[idx];
+                let v = o.view();
+                crate::symbol::resolve(v.gnu_hash, v.sysv_hash, &v.sym, ns)
+                    .filter(|&i| v.sym.is_defined(i))
+                    .and_then(|i| v.sym.value(i))
+                    .map(|val| o.base + val)
+            } else {
+                None
+            }
+        };
+        unlock();
+        r.unwrap_or(0) as usize
+    }
+}
+
+/// # C: int _dl_close(void *handle) — refcount unmap is a follow-up; returns 0.
+#[no_mangle]
+pub extern "C" fn _dl_close(_handle: usize) -> i32 { 0 }
+
+/// dladdr core: find the loaded object containing `addr`; writes its base into
+/// `fbase_out`. Returns 1 on a hit, 0 otherwise. (sname/saddr: follow-up.)
+/// # C: int _dl_addr(const void *addr, void **fbase_out)
+#[no_mangle]
+pub unsafe extern "C" fn _dl_addr(addr: usize, fbase_out: *mut usize) -> i32 {
+    // SAFETY: walks the global map under the lock; fbase_out is writable.
+    unsafe {
+        lock();
+        let mut hit = 0i32;
+        for o in objs().iter() {
+            if addr >= o.base as usize && addr < o.image_end as usize {
+                if !fbase_out.is_null() { *fbase_out = o.base as usize; }
+                hit = 1;
+                break;
+            }
+        }
+        unlock();
+        hit
     }
 }
