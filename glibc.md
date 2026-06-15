@@ -1,7 +1,10 @@
 # glibc — remaining (TODO)
 
-Not yet in oxide-libc; moves to glibc_done.md when done (complex/long-double deferred).
+Not yet in oxide-libc; complex/long-double deferred.
 
+# glibc — implemented (oxide-libc)
+# glibc — remaining (TODO)
+Not yet in oxide-libc; moves to glibc_done.md when done (complex/long-double deferred).
 # glibc — implemented (oxide-libc)
 via `xtask glibc-test`. Moved out of glibc.md (the remaining TODO list).
 # glibc — remaining (TODO)
@@ -42,11 +45,7 @@ complex float catanhf (complex float z)
 complex long double catanhl (complex long double z)
 char * bind_textdomain_codeset (const char *domainname, const char *codeset)
 void sync (void)
-int stat64 (const char *filename, struct stat64 *buf)
-int fstat64 (int filedes, struct stat64 *buf)
-int lstat64 (const char *filename, struct stat64 *buf)
 void *sbrk (ptrdiff_t delta)
-void * mmap64 (void *address, size_t length, int protect, int flags, int filedes, off64_t offset)
 int msync (void *address, size_t length, int flags)
 void * mremap (void *address, size_t length, size_t new_length, int flag)
 int madvise (void *addr, size_t length, int advice)
@@ -134,7 +133,6 @@ int ecvt_r (double value, int ndigit, int *decpt, int *neg, char *buf, size_t le
 int fcvt_r (double value, int ndigit, int *decpt, int *neg, char *buf, size_t len)
 int qecvt_r (long double value, int ndigit, int *decpt, int *neg, char *buf, size_t len)
 int qfcvt_r (long double value, int ndigit, int *decpt, int *neg, char *buf, size_t len)
-int open64 (const char *filename, int flags[, mode_t mode])
 int semctl (int semid, int semnum, int cmd);
 int semget (key_t key, int nsems, int semflg);
 int semop (int semid, struct sembuf *sops, size_t nsops);
@@ -359,7 +357,6 @@ complex long double ctanl (complex long double z)
 int get_nprocs_conf (void)
 int get_nprocs (void)
 int getloadavg (double loadavg[], int nelem)
-off64_t lseek64 (int filedes, off64_t offset, int whence)
 int select (int nfds, fd_set *read-fds, fd_set *write-fds, fd_set *except-fds, struct timeval *timeout)
 int obstack_room (struct obstack *obstack-ptr)
 void obstack_1grow_fast (struct obstack *obstack-ptr, char c)
@@ -396,10 +393,6 @@ void errx (int status, const char *format, ...)
 void verrx (int status, const char *format, va_list ap)
 size_t parse_printf_format (const char *template, size_t n, int *argtypes)
 char * canonicalize_file_name (const char *name)
-ssize_t pread (int filedes, void *buffer, size_t size, off_t offset)
-ssize_t pread64 (int filedes, void *buffer, size_t size, off64_t offset)
-ssize_t pwrite (int filedes, const void *buffer, size_t size, off_t offset)
-ssize_t pwrite64 (int filedes, const void *buffer, size_t size, off64_t offset)
 int getpriority (int class, int id)
 int setpriority (int class, int id, int niceval)
 int nice (int increment)
