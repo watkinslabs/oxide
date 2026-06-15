@@ -317,6 +317,13 @@ int main(int argc, char **argv, char **envp) {
     if (read(sv[0], &sc, 1) != 1 || sc != 'Z') return 69;
     close(sv[0]); close(sv[1]);
 
+    /* nss: getpwuid(0) reads /etc/passwd → uid 0 is "root" */
+    struct pw_min { char *pw_name, *pw_passwd; unsigned pw_uid, pw_gid; char *pw_gecos, *pw_dir, *pw_shell; };
+    struct pw_min *getpwuid(unsigned uid);
+    struct pw_min *pw = getpwuid(0);
+    if (!pw) return 70;
+    if (strcmp(pw->pw_name, "root") != 0) return 71;
+
     /* env: setenv then getenv round-trip */
     if (setenv("OXIDE_G7C", "yes", 1) != 0) return 16;
     char *ev = getenv("OXIDE_G7C");

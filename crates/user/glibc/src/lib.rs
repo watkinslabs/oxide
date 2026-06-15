@@ -25,6 +25,9 @@
 extern crate std;
 
 extern crate alloc;
+// The workspace nss crate (file-format parsers); aliased because glibc has its
+// own `mod nss` (the C-ABI surface) which would otherwise shadow it.
+extern crate nss as libnss;
 
 // Internal, no C ABI: errno TLS slot, raw syscall wrappers, sym-version
 // macro, lock primitive (docs/59§3). `symver!` is #[macro_export].
