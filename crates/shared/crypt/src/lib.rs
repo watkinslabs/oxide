@@ -16,7 +16,9 @@
 extern crate std;
 
 extern crate alloc;
+pub mod sha256;
 pub mod sha512;
+pub use sha256::Sha256;
 pub use sha512::Sha512;
 
 /// Result of `verify`.
