@@ -2,6 +2,13 @@
 
 FROZEN 2026-05-02. Dep:`02`,`08`.
 
+## Revision 2026-06-14 (R05)
+
+- Changed: §3.3-3.4 userspace target triples flip `*-unknown-linux-musl` → `*-unknown-linux-gnu`; §3 build ladder step 3 "musl fork" → "oxide-libc (`crates/user/glibc`, glibc-ABI Rust)" per `59`; UAPI export step unchanged (libc binds same kernel ABI). `rust-lld` both arches unchanged.
+- Why: glibc ABI is the userspace contract (`03` R01, `59§1`). Stock Rust `x86_64-unknown-linux-gnu`/`aarch64-unknown-linux-gnu` `std` links against our `libc.so.6`.
+- Affected code: `xtask` gains `glibc` subcommand (builds cdylib+staticlib+crt+ldso, publishes sysroot); `xtask user` orchestration retargets. musl path retained until `59§6` G19.
+- Test contract change: §9 adds ABI-golden + symbol-version-set checks (`59§7`).
+
 ## Revision 2026-05-25 (R04)
 
 - Changed: §5 adds "No magic numbers for errno / ABI constants" rule.

@@ -2,12 +2,19 @@
 
 FROZEN 2026-05-02. Dep:`02`,`08`.
 
-Linux-compatible at modern userspace ABI. Pre-2015 / 4.x-era stuff dropped unless named reason. musl/glibc≥2.34 runs; libc5 doesn't.
+Linux-compatible at modern userspace ABI. Pre-2015 / 4.x-era stuff dropped unless named reason. glibc≥2.34 runs; libc5 doesn't.
+
+## Revision 2026-06-14 (R01)
+
+- Changed: userspace libc ABI = **glibc** (our own Rust impl, `59`), not musl. §1 clause 2 reads against glibc-linked binaries; Linux-compat ABI target = glibc ABI (`libc.so.6`, `ld-linux-*`, `GLIBC_2.x` symbol versions, IFUNC).
+- Why: endgame = Fedora RPM userspace + from-source GNOME; Fedora is glibc. musl cannot run unmodified Fedora `-gnu` binaries.
+- Affected code: `crates/user/glibc/` per `59`; supersedes `29a§2-4`, `07§3`, `29§4` (see their R-blocks).
+- Test contract change: differential oracle vs host glibc (`59§7`) replaces musl-parity smokes.
 
 ## 1 Filter (per feature)
 
 1. Modern Linux still preferred path? Else use the replacement.
-2. Fresh musl-linked Go/Rust/Zig today exercise it? Else justify or drop.
+2. Fresh glibc-linked Go/Rust/Zig today exercise it? Else justify or drop.
 3. Costs a verification harness? Drop unless 1+2 say keep.
 
 When in doubt, drop. Add later if needed.
