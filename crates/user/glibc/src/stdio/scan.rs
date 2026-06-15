@@ -118,6 +118,28 @@ unsafe fn conv_str(src: &mut dyn Source, args: &mut dyn ScanArgs, suppress: bool
     }
 }
 
+// %[...]: read the longest run of chars in (or, for %[^...], not in) `set`,
+// up to `width`. Unlike %s it does NOT skip leading whitespace. Fails (returns
+// false) if zero chars match, per C.
+unsafe fn conv_scanset(src: &mut dyn Source, args: &mut dyn ScanArgs, suppress: bool, width: usize, set: &[bool; 256], negate: bool) -> bool {
+    // SAFETY: on success we write the matched run + NUL into the caller's buffer.
+    unsafe {
+        let cap = if width == 0 { usize::MAX } else { width };
+        let dst = if suppress { core::ptr::null_mut() } else { args.next_ptr() };
+        let mut n = 0usize;
+        while n < cap {
+            let c = src.peek();
+            if c < 0 || set[c as usize] == negate { break; }
+            src.bump();
+            if !suppress { *dst.add(n) = c as u8; }
+            n += 1;
+        }
+        if n == 0 { return false; }
+        if !suppress { *dst.add(n) = 0; }
+        true
+    }
+}
+
 unsafe fn conv_char(src: &mut dyn Source, args: &mut dyn ScanArgs, suppress: bool, width: usize) -> bool {
     // SAFETY: writes exactly `width` (default 1) raw bytes; no NUL added.
     unsafe {
@@ -191,6 +213,28 @@ pub(crate) unsafe fn vscan(src: &mut dyn Source, fmt: *const u8, args: &mut dyn 
                 b's' => conv_str(src, args, suppress, width),
                 b'c' => conv_char(src, args, suppress, width),
                 b'f' | b'e' | b'g' | b'E' | b'G' => conv_float(src, args, suppress, width, matches!(len, Len::Long | Len::LongLong)),
+                b'[' => {
+                    // parse the scanset from the format: optional leading '^'
+                    // (negate); a ']' right after '['/'^' is a literal member.
+                    let mut negate = false;
+                    if *fmt.add(i) == b'^' { negate = true; i += 1; }
+                    let mut set = [false; 256];
+                    let mut first = true;
+                    let mut prev: i32 = -1; // last literal char, for a-z range syntax
+                    loop {
+                        let ch = *fmt.add(i);
+                        if ch == 0 { break; }
+                        if ch == b']' && !first { i += 1; break; }
+                        let next = *fmt.add(i + 1);
+                        if ch == b'-' && prev >= 0 && next != b']' && next != 0 {
+                            let mut c = prev as u16; // inclusive range prev..=next
+                            while c <= next as u16 { set[c as usize] = true; c += 1; }
+                            prev = -1; first = false; i += 2; continue;
+                        }
+                        set[ch as usize] = true; prev = ch as i32; first = false; i += 1;
+                    }
+                    conv_scanset(src, args, suppress, width, &set, negate)
+                }
                 _ => break,
             };
             if !ok { if assigned == 0 && src.peek() < 0 { return -1; } break; }
