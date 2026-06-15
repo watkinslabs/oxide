@@ -6,6 +6,7 @@
 #![allow(clippy::upper_case_acronyms)]
 
 pub mod wchar;
+pub mod wctype;
 
 pub const LC_CTYPE: i32 = 0;
 pub const LC_NUMERIC: i32 = 1;
