@@ -17,8 +17,10 @@
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
+pub mod cache;
 pub mod dynamic;
 pub mod reloc;
+pub mod search;
 
 #[cfg(feature = "freestanding")]
 pub mod syscall;
@@ -31,7 +33,6 @@ mod freestanding {
         // unrecoverable — exit_group(127) like glibc's _dl_fatal_printf path.
         // SAFETY: exit_group(2) takes a scalar code and never returns; no
         // memory is dereferenced.
-        unsafe { crate::syscall::sys1(crate::syscall::NR_EXIT_GROUP, 127) };
-        loop {}
+        unsafe { crate::syscall::exit_group(127) }
     }
 }
