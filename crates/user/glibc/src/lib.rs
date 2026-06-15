@@ -48,6 +48,7 @@ pub mod malloc; //  G5
 pub mod stdio; //  G6
 pub mod stdlib; //  G7
 pub mod posix; //  G8
+pub mod search; //  G8 (<search.h>)
 pub mod signal; //  G9
 pub mod time; //  G10
 pub mod pthread; //  G11
