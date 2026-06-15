@@ -73,6 +73,8 @@ pub mod x86_64 {
     pub const GETDENTS64: usize = 217;
     pub const SET_TID_ADDRESS: usize = 218;
     pub const CLOCK_GETTIME: usize = 228;
+    pub const CLOCK_GETRES: usize = 229;
+    pub const CLOCK_NANOSLEEP: usize = 230;
     pub const EXIT_GROUP: usize = 231;
     pub const TGKILL: usize = 234;
     pub const RT_SIGPENDING: usize = 127;
@@ -147,6 +149,8 @@ pub mod aarch64 {
     pub const SET_ROBUST_LIST: usize = 99;
     pub const NANOSLEEP: usize = 101;
     pub const CLOCK_GETTIME: usize = 113;
+    pub const CLOCK_GETRES: usize = 114;
+    pub const CLOCK_NANOSLEEP: usize = 115;
     pub const SCHED_YIELD: usize = 124;
     pub const KILL: usize = 129;
     pub const TGKILL: usize = 131;

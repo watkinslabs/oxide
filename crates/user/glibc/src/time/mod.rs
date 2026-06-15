@@ -1,1 +1,6 @@
-//! time — glibc-ABI surface, one fn/file (docs/59§3). Implemented at G10 (docs/59§6).
+//! time — glibc-ABI (docs/59§3, §6 G10). `tm` is the always-built
+//! oracle-tested calendar; `clock` is the freestanding syscall layer.
+//! strftime + TZ-aware localtime land in G10b/G16.
+pub mod tm;
+#[cfg(feature = "freestanding")]
+pub mod clock;
