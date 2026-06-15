@@ -7,3 +7,7 @@ publish = false
 [[bin]]
 name = "xtask"
 path = "src/main.rs"
+
+[dependencies]
+# the rtld's ld.so.cache encoder (build_cache) + reader (lookup), host-side.
+ldso = { path = "../../crates/user/ldso", features = ["hosted"] }
