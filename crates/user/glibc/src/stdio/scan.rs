@@ -6,7 +6,7 @@
 // are a follow-up. Differentially tested vs host sscanf.
 
 pub(crate) trait Source {
-    fn peek(&self) -> i32; // current byte or -1 at end
+    fn peek(&mut self) -> i32; // current byte or -1 at end (may read for FILE)
     fn bump(&mut self) -> i32; // consume + return it, or -1
     fn consumed(&self) -> usize;
 }
@@ -25,7 +25,7 @@ impl StrSource {
     pub(crate) fn new(p: *const u8) -> Self { StrSource { p, pos: 0 } }
 }
 impl Source for StrSource {
-    fn peek(&self) -> i32 {
+    fn peek(&mut self) -> i32 {
         // SAFETY: p is a NUL-terminated C string; pos stops at the NUL.
         let b = unsafe { *self.p.add(self.pos) };
         if b == 0 { -1 } else { b as i32 }

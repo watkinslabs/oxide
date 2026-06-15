@@ -68,7 +68,7 @@ pub(crate) unsafe fn fd_of(f: *mut FILE) -> i32 {
 }
 
 #[cfg(feature = "freestanding")]
-pub(crate) use streams::stdout_ptr;
+pub(crate) use streams::{alloc_file, free_file, is_std, set_eof, set_unget, stdin_ptr, stdout_ptr, take_unget};
 
 #[cfg(feature = "freestanding")]
 mod streams {
@@ -103,6 +103,42 @@ mod streams {
     pub(crate) fn stderr_ptr() -> *mut FILE { STDERR_FILE.0.get() }
     /// # C: &stdin
     pub(crate) fn stdin_ptr() -> *mut FILE { STDIN_FILE.0.get() }
+
+    /// # C: stream is one of stdin/stdout/stderr
+    pub(crate) fn is_std(f: *mut FILE) -> bool {
+        f == STDIN_FILE.0.get() || f == STDOUT_FILE.0.get() || f == STDERR_FILE.0.get()
+    }
+
+    // _flags2 bit 0 = a pushed-back byte sits in _shortbuf[0] (our one-char
+    // ungetc; glibc uses _IO_backup_base, but we own these FILE objects).
+    const HAS_UNGET: i32 = 1;
+    pub(crate) unsafe fn alloc_file(fd: i32, flags: i32) -> *mut FILE {
+        // SAFETY: allocate a FILE on the heap and initialise every field
+        // via FILE::std; returns null on OOM.
+        unsafe {
+            let p = crate::malloc::heap::malloc(core::mem::size_of::<FILE>()) as *mut FILE;
+            if !p.is_null() { p.write(FILE::std(fd, flags)); }
+            p
+        }
+    }
+    pub(crate) unsafe fn free_file(f: *mut FILE) {
+        // SAFETY: f was returned by alloc_file (a heap FILE), not a std stream.
+        unsafe { crate::malloc::heap::free(f as *mut u8); }
+    }
+    pub(crate) unsafe fn set_eof(f: *mut FILE) {
+        // SAFETY: f is a valid stream; set its EOF flag bit.
+        unsafe { (*f)._flags |= IO_EOF_SEEN; }
+    }
+    pub(crate) unsafe fn set_unget(f: *mut FILE, c: u8) {
+        // SAFETY: f is a valid stream; stash one pushed-back byte.
+        unsafe { (*f)._flags2 |= HAS_UNGET; (*f)._shortbuf[0] = c; }
+    }
+    pub(crate) unsafe fn take_unget(f: *mut FILE) -> Option<u8> {
+        // SAFETY: f is a valid stream; consume any pushed-back byte.
+        unsafe {
+            if (*f)._flags2 & HAS_UNGET != 0 { (*f)._flags2 &= !HAS_UNGET; Some((*f)._shortbuf[0]) } else { None }
+        }
+    }
 
     // # C: int fileno(FILE *)
     #[no_mangle]

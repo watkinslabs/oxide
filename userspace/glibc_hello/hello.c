@@ -11,6 +11,12 @@ int  printf(const char *fmt, ...);
 int  puts(const char *s);
 int  memcmp(const void *a, const void *b, unsigned long n);
 int  sscanf(const char *s, const char *fmt, ...);
+void *fopen(const char *path, const char *mode);
+int   fclose(void *f);
+unsigned long fwrite(const void *p, unsigned long sz, unsigned long n, void *f);
+char *fgets(char *buf, int size, void *f);
+void  rewind(void *f);
+int   fscanf(void *f, const char *fmt, ...);
 
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
@@ -29,7 +35,24 @@ int main(int argc, char **argv, char **envp) {
     if (sscanf("42 -7", "%d %d", &a, &b) != 2) return 7;
     if (a != 42 || b != -7) return 8;
 
-    printf("%s (k=%d) scan=%d,%d\n", buf, k, a, b);
+    /* file round-trip: write then read back via fgets + fscanf */
+    void *wf = fopen("/tmp/oxide_g6c.txt", "w");
+    if (!wf) return 9;
+    const char *line = "xyz 314\n";
+    if (fwrite(line, 1, 8, wf) != 8) return 10;
+    fclose(wf);
+    void *rf = fopen("/tmp/oxide_g6c.txt", "r");
+    if (!rf) return 11;
+    char rb[32];
+    if (!fgets(rb, sizeof rb, rf)) return 12;
+    if (memcmp(rb, "xyz 314\n", 8) != 0) return 13;
+    rewind(rf);
+    char word[8]; int num = 0;
+    if (fscanf(rf, "%s %d", word, &num) != 2) return 14;
+    if (memcmp(word, "xyz", 4) != 0 || num != 314) return 15;
+    fclose(rf);
+
+    printf("%s (k=%d) scan=%d,%d file=%s/%d\n", buf, k, a, b, word, num);
     puts("hello from oxide-libc");
     return 0;
 }
