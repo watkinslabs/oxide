@@ -69,7 +69,9 @@ Internal-only shared bits (no C ABI): `crates/user/glibc/src/internal/` — errn
 
 ## 4 Syscall layer (libc side)
 
-libc never inlines raw `syscall` opcodes in portable `.rs`. One arch shim `arch/<arch>/syscall.rs` exposes `sys0..sys6(nr, …) -> isize`; everything else calls those. Numbers from `syscall::nrs` (`15`), never bare literals (`07§5`). Mirrors kernel hollow-shell discipline (`53`) on the userspace side: thin syscall wrappers, real C-library logic above them.
+libc never inlines raw `syscall` opcodes in portable `.rs`. One arch shim `arch/<arch>/syscall.rs` exposes `sys0..sys6(nr, …) -> isize`; everything else calls those. Mirrors kernel hollow-shell discipline (`53`) on the userspace side: thin syscall wrappers, real C-library logic above them.
+
+Numbers live in `internal/nr.rs` as **per-arch named constants** (`nr::FOO`, never bare slot literals — `07§5`), sourced from the canonical Linux uapi: x86_64 from `syscall_64.tbl`, aarch64 from `asm-generic/unistd.h` — the same per-sysdeps split glibc keeps. Not consumed from the kernel `syscall` crate (x86_64-only dispatch keys + kernel `hal`/`klog` deps = wrong arch + wrong layer for userspace) nor from a generated `userspace/uapi` (export is x86_64-only and unbuilt). aarch64 is asm-generic: no `open`/`stat`/`access`/`pipe`/`dup2`/`fork`/`rename` — libc composes those from `openat`/`newfstatat`/`faccessat`/… (the arch dispatch lives in the wrapper, e.g. `posix/io.rs` `open`→`openat`).
 
 ## 5 Dynamic linker (ld-linux)
 
