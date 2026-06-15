@@ -62,6 +62,7 @@ pub mod rt; //  G17
 pub mod termios; //  G17
 pub mod setjmp; //  G17
 pub mod start; //  G2 csu / __libc_start_main
+pub mod regex; //  G7+ (<regex.h> ERE engine)
 
 // Freestanding final-artifact requirements (cdylib/staticlib). Active
 // only under `--features freestanding` (set by `xtask glibc`). In the
