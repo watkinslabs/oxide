@@ -28,6 +28,9 @@ extern crate alloc;
 // The workspace nss crate (file-format parsers); aliased because glibc has its
 // own `mod nss` (the C-ABI surface) which would otherwise shadow it.
 extern crate nss as libnss;
+// The workspace crypt crate (sha256crypt/sha512crypt); aliased because glibc
+// has its own `mod crypt` (the C-ABI surface).
+extern crate crypt as libcrypt;
 
 // Internal, no C ABI: errno TLS slot, raw syscall wrappers, sym-version
 // macro, lock primitive (docs/59§3). `symver!` is #[macro_export].
