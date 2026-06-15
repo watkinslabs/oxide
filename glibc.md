@@ -18,6 +18,8 @@ complex/long-double deferred.
 # glibc — remaining (TODO)
 # glibc — implemented (oxide-libc)
 # glibc — remaining (TODO)
+# glibc — implemented (oxide-libc)
+# glibc — remaining (TODO)
 Not yet in oxide-libc; moves to glibc_done.md when done (complex/long-double deferred).
 # glibc — implemented (oxide-libc)
 via `xtask glibc-test`. Moved out of glibc.md (the remaining TODO list).
@@ -654,8 +656,6 @@ int __fwriting (FILE *stream)
 void mtrace (void)
 void muntrace (void)
 clock_t clock (void)
-int scandir (const char *dir, struct dirent ***namelist, int (*selector) (const struct dirent *), int (*cmp) (const struct dirent **, const struct dirent **))
-int scandir64 (const char *dir, struct dirent64 ***namelist, int (*selector) (const struct dirent64 *), int (*cmp) (const struct dirent64 **, const struct dirent64 **))
 struct group * fgetgrent (FILE *stream)
 int fgetgrent_r (FILE *stream, struct group *result_buf, char *buffer, size_t buflen, struct group **result)
 void setgrent (void)
