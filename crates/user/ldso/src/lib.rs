@@ -17,10 +17,14 @@
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
+extern crate alloc;
+
+pub mod bump;
 pub mod cache;
 pub mod dynamic;
 pub mod reloc;
 pub mod search;
+pub mod symbol;
 
 #[cfg(feature = "freestanding")]
 pub mod syscall;
