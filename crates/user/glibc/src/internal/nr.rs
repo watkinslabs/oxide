@@ -75,6 +75,10 @@ pub mod x86_64 {
     pub const CLOCK_GETTIME: usize = 228;
     pub const EXIT_GROUP: usize = 231;
     pub const TGKILL: usize = 234;
+    pub const RT_SIGPENDING: usize = 127;
+    pub const RT_SIGSUSPEND: usize = 130;
+    pub const SIGALTSTACK: usize = 131;
+    pub const PAUSE: usize = 34;
     pub const OPENAT: usize = 257;
     pub const NEWFSTATAT: usize = 262;
     pub const UNLINKAT: usize = 263;
@@ -146,6 +150,10 @@ pub mod aarch64 {
     pub const SCHED_YIELD: usize = 124;
     pub const KILL: usize = 129;
     pub const TGKILL: usize = 131;
+    pub const RT_SIGPENDING: usize = 136;
+    pub const RT_SIGSUSPEND: usize = 133;
+    pub const SIGALTSTACK: usize = 132;
+    pub const PPOLL: usize = 73;
     pub const RT_SIGACTION: usize = 134;
     pub const RT_SIGPROCMASK: usize = 135;
     pub const RT_SIGRETURN: usize = 139;
