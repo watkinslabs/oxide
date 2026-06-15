@@ -59,7 +59,7 @@ G0–G18 COMPLETE. Done:
 `xtask glibc-test`: differential conformance harness (tools/xtask/src/
 glibc_test.rs + userspace/glibc_conformance/*.c). Each C program is compiled
 once, linked+run BOTH against host glibc (oracle) and our sysroot (Scrt1.o +
-libc.so.6 via our ld-linux on the host), stdout+exit diffed. **67/67 programs match host glibc** (through #1945). Added since 55: full wide-string
+libc.so.6 via our ld-linux on the host), stdout+exit diffed. **72/72 programs match host glibc** (through #1951; 9 subsystem audits done: printf/scanf/strftime/strtol/strtod/ctype/env/getopt/qsort — getopt got full GNU permutation + getopt_long abbreviation; strtod got hex floats + ERANGE; env got name validation. Next big libc gap: regex (regcomp/regexec — MISSING entirely)). Added since 55: full wide-string
 family, asctime/ctime/difftime/perror, strlcpy/strlcat/explicit_bzero/
 reallocarray/getsubopt, <search.h> tsearch+lsearch+hsearch+insque/remque,
 strtoimax/strtoumax/rawmemchr/strcasestr, strverscmp, strsignal, ffs family,
