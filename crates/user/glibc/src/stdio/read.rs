@@ -101,6 +101,22 @@ pub unsafe extern "C" fn fread(ptr: *mut u8, size: usize, nmemb: usize, f: *mut 
     }
 }
 
+// # C: int __uflow(FILE *) — get-buffer underflow handler (the getc/getc_unlocked
+// macros call this when _IO_read_ptr>=_IO_read_end, always so for our unbuffered
+// streams): read and return the next byte, or EOF.
+#[no_mangle]
+pub unsafe extern "C" fn __uflow(f: *mut FILE) -> i32 {
+    // SAFETY: f is a valid readable stream; read one byte via the choke point.
+    unsafe { getc_raw(f) }
+}
+// # C: int __underflow(FILE *) — like __uflow but glibc leaves the byte; we have
+// no buffer to peek, so reading + returning is the closest unbuffered behaviour.
+#[no_mangle]
+pub unsafe extern "C" fn __underflow(f: *mut FILE) -> i32 {
+    // SAFETY: f is a valid readable stream; reads one byte via the choke point.
+    unsafe { getc_raw(f) }
+}
+
 // # C: int fgetc(FILE *) / getc(FILE *)
 #[no_mangle]
 pub unsafe extern "C" fn fgetc(f: *mut FILE) -> i32 {

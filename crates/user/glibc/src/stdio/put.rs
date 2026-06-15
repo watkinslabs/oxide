@@ -82,6 +82,15 @@ pub unsafe extern "C" fn putchar(c: i32) -> i32 {
     unsafe { fputc(c, stdout_ptr()) }
 }
 
+// # C: int __overflow(FILE *, int c) — put-buffer overflow handler (the putc/
+// putc_unlocked macros call this when _IO_write_ptr>=_IO_write_end, always so
+// for our unbuffered streams): write the byte c, return it or EOF.
+#[no_mangle]
+pub unsafe extern "C" fn __overflow(f: *mut FILE, c: i32) -> i32 {
+    // SAFETY: f is a valid writable stream; EOF flushes only (no byte to add).
+    unsafe { if c == -1 { return 0; } fputc(c, f) }
+}
+
 // # C: int fflush(FILE *) — fd streams are unbuffered (G6a); memory streams
 // republish their buffer + length to an open_memstream caller.
 #[no_mangle]
