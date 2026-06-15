@@ -13,3 +13,4 @@ pthread_rwlock_t = 56
 pthread_t        = 8
 jmp_buf          = 312    # 22 GPR + 8 FPR (d8-d15) + sigmask
 sigset_t         = 128
+FILE             = 216   # _IO_FILE, LP64 (G6) — same layout as x86_64

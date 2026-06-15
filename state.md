@@ -1,77 +1,40 @@
-# state — session hand-off
+# state.md — session handoff
 
-TWO branches in flight, both committed-local + **NOT pushed**. Counters in
-`metadata/index.md` (AUTHORITATIVE — read+bump per branch).
+## Headline
+Building **oxide-libc**: our own glibc-ABI C library in Rust, replacing musl
+(user directive 2026-06-14). Spec: `docs/59`. Crate: `crates/user/glibc`.
+Driven by a self-paced `/loop` grinding the `docs/59§6` G0–G19 ladder, one
+sub-phase per PR.
 
-**Dev-loop gotchas (cost hours):** x86 boots ALWAYS `OXIDE_QEMU_KVM=1` (TCG
-smp>1 reads as a hang); stale qemu holds the disk write-lock → find via
-`fuser <img>` + `kill -9` (`pkill -x` misses the 15-char name); `KEEP_LOG`
-copies only on smoke EXIT.
+## Merged this run (branches P28-NN-glibc-*)
+- G0 #1840 — spec 59 + musl→glibc R-revisions (03/07/29/29a, master-plan 27/28)
+- G1 #1841 — crate skeleton, ABI infra (version maps, abi goldens, symver!)
+- G2 #1842 — entry path: _start/__libc_start_main/errno/exit/write; `xtask glibc`
+- G3 #1843 — per-arch syscall table (internal/nr.rs), unistd, mman, auxv canary
+- G4 #1844 — string/ (mem*+str*) + ctype/ascii.rs, differential proptest oracle
+- G5 #1845 — malloc/ segregated allocator + global_allocator + strdup
 
-## Branch C90-build-namespacing (CURRENT, 14 commits) — build system + structure
+## How it's built/verified (per sub-phase)
+- C-ABI exports `#[cfg(feature="freestanding")] #[no_mangle] pub unsafe extern "C"`,
+  over always-built `pub(crate)` inner impls so the hosted oracle can test them.
+- Oracle: proptest vs host glibc via `libc` dev-dep (docs/59§7).
+- `cargo run -p xtask -- glibc [--check]` builds both `-gnu` staticlibs + runs the
+  x86 entry smoke (`userspace/glibc_hello`). aarch64 *run* = QEMU milestone (later).
+- Gates each PR: `cargo test -p glibc`, `cargo clippy -p glibc` (default AND
+  `--features freestanding` for both `-gnu` targets), `cargo run -q -p spec-lint | grep glibc`.
+- spec-lint gotchas: `is_pub_fn` matches `pub fn`/`pub(crate) fn`/`pub const fn` →
+  use `pub(crate) unsafe fn` or add `/// # C:`. Every `unsafe {}` needs `// SAFETY:` ≥30
+  chars within 4 preceding lines (one block per test body).
+- Push with `SKIP_SMOKE=1` (glibc not yet wired into the boot image).
 
-A complete per-build artifact system + a big structure de-sprawl. All verified
-building, spec-lint clean, no-id paths boot-tested (KVM no-id reaches systemd
-Default Target in 4.6s).
+## Next task (first command)
+Continue the loop at **G6 — stdio**: `FILE` (ABI layout must match glibc — record in
+`abi/<arch>.toml`), fopen/fdopen/fclose/fread/fwrite, buffering, `printf`/`fprintf`/
+`snprintf`/`vsnprintf` (format engine), `fputs`/`fgets`/`puts`/`putchar`/`getchar`.
+Then G7 stdlib (env/exit/strtol/qsort), G8 posix (fork/exec/wait/glob), … through G19
+(migrate userspace musl→glibc, retire musl).
 
-- **`xtask --id <slug>`**: every build isolated in ONE folder `target/builds/<id>/`
-  (ISO + kernel ELF snapshot + root/home/nvme/ahci images together). No-id ≡ the
-  `default` namespace — there is NO "blobs" dir anymore (`kernel/blobs` and the
-  whole `kernel/` top-level dir DELETED).
-- **`xtask path <kind> --arch <a> [--id <id>]`** = the SINGLE path resolver
-  (root-img/home-img/nvme/ahci/iso/elf/build-dir). The smoke scripts
-  (run-smokes.sh, accept.py) query it instead of hardcoding.
-- **Content-addressed rootfs cache** `target/rootfs-cache/` (FNV of inputs):
-  kernel-only iter reuses the image (`cp`, ~0.05s) vs restage (~10s).
-- **Incremental kernel**: compiles in shared `target/` then snapshots the ELF
-  into the namespace (no fresh CARGO_TARGET_DIR / from-scratch per id).
-- **`xtask gc`** (+ `make clean-builds`): reclaims dead `target/builds/<id>` +
-  LRU-trims the cache; protects builds with a live `.live` PID marker + the
-  `default` namespace. Hard rmtree guard (validate + resolved-parent==root).
-- **`--rebuild-vendor[=pkg,…]`** re-runs `vendor/<pkg>/build.sh`.
-- **qemu-mcp multi-instance**: `qemu_start(name,…, rebuild_vendor/rebuild_rootfs/
-  skip_rootfs/clean_kernel)` builds via `xtask grub --id` + launches off
-  `target/builds/<build_id>/`; per-instance free gdb/ssh ports; instance registry
-  (`instance_id` on every tool); writes `.live`; `qemu_list`/`qemu_gc`. GDB
-  validated (namespaced ELF symbols + free port). FastMCP `instructions=` added
-  so the AI client gets the model.
-- **Structure**: `terminfo`→`vendor/terminfo`, `vdso`→`crates/kernel/syscalls/vdso`
-  (build output gitignored next to its `.S`), `link/`→the two `kernel-bin` crates.
-- Reclaimed ~40GB of `target/` cruft this session.
-
-OPEN/optional on C90: (a) flatten the ELF snapshot to one flat
-`target/builds/<id>/oxide-<arch>` + delete the transient `grub-stage/` scratch
-(proposed, not done); (b) rename `targets/`→`kernel-targets/` (kills the
-`target/` clash; only `cmds.rs:97-98` + docs ref it); (c) a LIVE qemu-mcp
-2-instance shakeout (wiring verified by inspection, never run live — MCP was
-disconnected); (d) PUSH — but C90 touches crates/ so the pre-push smoke fires,
-and the `oxide login:` marker depends on the serial-getty fix that lives on
-B127, not here (see below) — resolve before pushing.
-
-## Branch B127-smp-load-balance (5 commits) — SMP fix, BLOCKED
-
-The user's actual goal thread. Committed, NOT pushed. Three correct, verified
-fixes; one real kernel blocker remains.
-- ✅ SMP work distribution (placement_load incl. running task; fork→
-  wake_up_new_task→select_task_rq; local-only wakes routed through ttwu).
-- ✅ serial login on ttyS0 (/dev/console = video VT, so headless serial had no
-  getty — added serial-getty-ttyS0.service). THIS is the `oxide login:` marker
-  fix C90 lacks.
-- ✅ fork child woken LAST (was runnable on an AP before clone finished init).
-- ❌ **BLOCKER — SMP>1 still crashes** non-deterministically under load. Root
-  cause (3-agent analysis, file:line in the B127 state): (1) **no x86 cross-CPU
-  TLB shootdown** — all user tasks share one page-table tree, every PTE change
-  flushes only the LOCAL TLB (`mm-pmm/user_as.rs:626`, `mm-vmm/address_space.rs:
-  786/809`), never IPIs others → stale TLB on the other CPU (aarch64 immune,
-  `tlbi …is` broadcasts). Fix = `native_flush_tlb_others` IPI. (2) **no IST** for
-  any fault vector (`idt.rs:148` all ist=0) → #PF/#DF triple-fault hazard.
-  Default qemu SMP kept at 1 until fixed.
-- Also unresolved: arm SMP=2 boot stalls at "Queued start job for default target"
-  before the getty (every arm run this session).
-
-## First command next session
-```
-cd /home/nd/oxide2 && git branch --show-current && git log --oneline -3
-```
-Then decide: finish/push C90 (handle the pre-push smoke vs serial-getty), or do
-the B127 x86 TLB-shootdown + IST work (the real SMP blocker, the user's goal).
+## Notes
+- musl path stays buildable until G19. 59 is DRAFT — edit directly (no R-block).
+- IFUNC SIMD string variants deferred to post-rtld (G12+, needs IRELATIVE).
+- aarch64-unknown-linux-gnu rustup target was added this run (needed for staticlib).

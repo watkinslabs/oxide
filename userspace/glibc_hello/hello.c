@@ -1,13 +1,15 @@
-/* G2/G3 smoke for oxide-libc (docs/59§6): exercises the entry path
- * _start -> __libc_start_main (auxv AT_RANDOM canary reseed) -> main and
- * the core syscall wrappers (open/close/getpid/write), linked against
- * our libc.a with -nostdlib. No libc headers (we are the libc); declare
- * the symbols we call. Built -fno-stack-protector until the global-guard
- * read path is wired (G3 seeds the guard; using it needs G11 TLS). */
+/* G2/G3/G6 smoke for oxide-libc (docs/59§6): entry path + core syscalls
+ * + stdio. Linked against our libc.a with -nostdlib; we declare the
+ * symbols we call (we are the libc). -fno-stack-protector until the
+ * global-guard read path is wired (G3 seeds it; using it needs G11 TLS). */
 long write(int fd, const void *buf, unsigned long n);
 int  open(const char *path, int flags, unsigned mode);
 int  close(int fd);
 int  getpid(void);
+int  snprintf(char *s, unsigned long n, const char *fmt, ...);
+int  printf(const char *fmt, ...);
+int  puts(const char *s);
+int  memcmp(const void *a, const void *b, unsigned long n);
 
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
@@ -15,7 +17,14 @@ int main(int argc, char **argv, char **envp) {
     if (fd < 0) return 2;
     if (close(fd) != 0) return 3;
     if (getpid() <= 0) return 4;
-    static const char msg[] = "hello from oxide-libc\n";
-    write(1, msg, sizeof(msg) - 1);
+
+    char buf[64];
+    int k = snprintf(buf, sizeof buf, "n=%d hex=%#x s=%s", 42, 255, "ok");
+    const char *want = "n=42 hex=0xff s=ok";
+    if (k != 18) return 5;
+    if (memcmp(buf, want, 18) != 0) return 6;
+
+    printf("%s (k=%d)\n", buf, k);
+    puts("hello from oxide-libc");
     return 0;
 }
