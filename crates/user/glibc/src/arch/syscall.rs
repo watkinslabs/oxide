@@ -6,7 +6,7 @@
 // x86_64: nr→rax, args rdi/rsi/rdx/r10/r8/r9, `syscall`, clobbers rcx/r11.
 #[cfg(target_arch = "x86_64")]
 #[inline]
-pub unsafe fn syscall6(nr: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize) -> isize {
+pub(crate) unsafe fn syscall6(nr: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize) -> isize {
     let r;
     // SAFETY: raw x86_64 syscall; caller (a libc wrapper) guarantees nr +
     // arg pointers are valid for that syscall's kernel contract per docs/15.
@@ -26,7 +26,7 @@ pub unsafe fn syscall6(nr: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5
 // aarch64: nr→x8, args x0..x5, `svc #0`, result x0.
 #[cfg(target_arch = "aarch64")]
 #[inline]
-pub unsafe fn syscall6(nr: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize) -> isize {
+pub(crate) unsafe fn syscall6(nr: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize) -> isize {
     let r;
     // SAFETY: raw aarch64 syscall; caller (a libc wrapper) guarantees nr +
     // arg pointers are valid for that syscall's kernel contract per docs/15.
@@ -47,22 +47,45 @@ pub unsafe fn syscall6(nr: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5
 // host glibc directly, never this.
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline]
-pub unsafe fn syscall6(_nr: usize, _a1: usize, _a2: usize, _a3: usize, _a4: usize, _a5: usize, _a6: usize) -> isize {
+pub(crate) unsafe fn syscall6(_nr: usize, _a1: usize, _a2: usize, _a3: usize, _a4: usize, _a5: usize, _a6: usize) -> isize {
     -38
 }
 
-// sys0..sys6 over syscall6 with trailing zero args.
+// sys0..sys6 over syscall6 with trailing zero args. SAFETY (all): thin
+// forwarders; the caller upholds the kernel ABI (valid nr + arg pointers)
+// for the specific syscall being issued.
 #[inline]
-pub unsafe fn sys0(nr: usize) -> isize { unsafe { syscall6(nr, 0, 0, 0, 0, 0, 0) } }
+pub(crate) unsafe fn sys0(nr: usize) -> isize {
+    // SAFETY: forwards nr with no args; caller guarantees nr is argless.
+    unsafe { syscall6(nr, 0, 0, 0, 0, 0, 0) }
+}
 #[inline]
-pub unsafe fn sys1(nr: usize, a1: usize) -> isize { unsafe { syscall6(nr, a1, 0, 0, 0, 0, 0) } }
+pub(crate) unsafe fn sys1(nr: usize, a1: usize) -> isize {
+    // SAFETY: forwards to syscall6; caller upholds the syscall's ABI.
+    unsafe { syscall6(nr, a1, 0, 0, 0, 0, 0) }
+}
 #[inline]
-pub unsafe fn sys2(nr: usize, a1: usize, a2: usize) -> isize { unsafe { syscall6(nr, a1, a2, 0, 0, 0, 0) } }
+pub(crate) unsafe fn sys2(nr: usize, a1: usize, a2: usize) -> isize {
+    // SAFETY: forwards to syscall6; caller upholds the syscall's ABI.
+    unsafe { syscall6(nr, a1, a2, 0, 0, 0, 0) }
+}
 #[inline]
-pub unsafe fn sys3(nr: usize, a1: usize, a2: usize, a3: usize) -> isize { unsafe { syscall6(nr, a1, a2, a3, 0, 0, 0) } }
+pub(crate) unsafe fn sys3(nr: usize, a1: usize, a2: usize, a3: usize) -> isize {
+    // SAFETY: forwards to syscall6; caller upholds the syscall's ABI.
+    unsafe { syscall6(nr, a1, a2, a3, 0, 0, 0) }
+}
 #[inline]
-pub unsafe fn sys4(nr: usize, a1: usize, a2: usize, a3: usize, a4: usize) -> isize { unsafe { syscall6(nr, a1, a2, a3, a4, 0, 0) } }
+pub(crate) unsafe fn sys4(nr: usize, a1: usize, a2: usize, a3: usize, a4: usize) -> isize {
+    // SAFETY: forwards to syscall6; caller upholds the syscall's ABI.
+    unsafe { syscall6(nr, a1, a2, a3, a4, 0, 0) }
+}
 #[inline]
-pub unsafe fn sys5(nr: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize) -> isize { unsafe { syscall6(nr, a1, a2, a3, a4, a5, 0) } }
+pub(crate) unsafe fn sys5(nr: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize) -> isize {
+    // SAFETY: forwards to syscall6; caller upholds the syscall's ABI.
+    unsafe { syscall6(nr, a1, a2, a3, a4, a5, 0) }
+}
 #[inline]
-pub unsafe fn sys6(nr: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize) -> isize { unsafe { syscall6(nr, a1, a2, a3, a4, a5, a6) } }
+pub(crate) unsafe fn sys6(nr: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize) -> isize {
+    // SAFETY: forwards to syscall6; caller upholds the syscall's ABI.
+    unsafe { syscall6(nr, a1, a2, a3, a4, a5, a6) }
+}

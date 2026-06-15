@@ -4,8 +4,9 @@
 
 // Raw process termination. Always built (used by __libc_start_main and
 // __stack_chk_fail); not a C export by itself.
+/// # C: exit_group(code) — terminate the whole thread group
 #[inline]
-pub fn exit_group(code: i32) -> ! {
+pub(crate) fn exit_group(code: i32) -> ! {
     // SAFETY: exit_group(2) terminates every thread in the group with
     // `code` and never returns; no memory is referenced.
     unsafe { crate::arch::syscall::sys1(crate::internal::nr::EXIT_GROUP, code as usize) };
