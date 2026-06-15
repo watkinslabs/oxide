@@ -11,3 +11,5 @@ pub mod tok;
 pub mod wstr;
 pub mod gnu;
 pub mod strerror;
+#[cfg(feature = "freestanding")]
+pub mod bits;

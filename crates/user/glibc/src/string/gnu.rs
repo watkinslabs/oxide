@@ -85,6 +85,13 @@ mod imp {
     // # C: void *memmem(const void *, size_t, const void *, size_t)
     // SAFETY: h is readable for hl bytes and ne for nl bytes (substring search).
     #[no_mangle] pub unsafe extern "C" fn memmem(h: *const u8, hl: usize, ne: *const u8, nl: usize) -> *mut u8 { unsafe { memmem_impl(h, hl, ne, nl) } }
+    // # C: void *memfrob(void *s, size_t n) — XOR each byte with 42 (GNU)
+    #[no_mangle]
+    pub unsafe extern "C" fn memfrob(s: *mut u8, n: usize) -> *mut u8 {
+        // SAFETY: s is writable for n bytes; XOR each with the constant 42 (the
+        // GNU obfuscation; applying it twice restores the original).
+        unsafe { let mut i = 0; while i < n { *s.add(i) ^= 42; i += 1; } s }
+    }
 
     // # C: char *strsep(char **stringp, const char *delim)
     #[no_mangle]
