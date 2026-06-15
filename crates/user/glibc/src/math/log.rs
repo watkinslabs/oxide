@@ -94,7 +94,7 @@ mod tests {
     proptest! {
         #[test]
         fn log_matches_host(x in 1e-300f64..1e300) {
-            // SAFETY: host libm, scalar in/out.
+            // SAFETY: host libm log/log2/log10 extern calls, scalar f64 in/out.
             let (h, h2, h10) = unsafe { (log(x), log2(x), log10(x)) };
             prop_assert!(ulp(super::log(x), h) <= 2);
             prop_assert!(ulp(super::log2(x), h2) <= 4);
@@ -102,7 +102,7 @@ mod tests {
         }
         #[test]
         fn log1p_matches_host(x in -0.9f64..1e6) {
-            // SAFETY: host libm, scalar in/out.
+            // SAFETY: host libm log1p() extern call, scalar f64 in/out.
             let h = unsafe { log1p(x) };
             prop_assert!(ulp(super::log1p(x), h) <= 2, "log1p({})", x);
         }

@@ -232,6 +232,7 @@ mod tests {
     proptest! {
         #[test]
         fn pow_matches_host(x in 1e-3f64..100.0, y in -20.0f64..20.0) {
+            // SAFETY: host libm pow() extern call, scalar f64 in/out.
             let h = unsafe { pow(x, y) };
             prop_assert!(ulp(super::pow(x, y), h) <= 4, "pow({},{})={} vs {}", x, y, super::pow(x, y), h);
         }

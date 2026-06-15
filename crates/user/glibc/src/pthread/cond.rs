@@ -81,7 +81,7 @@ unsafe fn wait_common(c: *mut pthread_cond_t, m: *mut pthread_mutex_t, to: *cons
 // # C: int pthread_cond_wait(pthread_cond_t*, pthread_mutex_t*)
 #[no_mangle]
 pub unsafe extern "C" fn pthread_cond_wait(c: *mut pthread_cond_t, m: *mut pthread_mutex_t) -> i32 {
-    // SAFETY: c/m valid; m held by caller.
+    // SAFETY: c/m point at live pthread_cond_t/pthread_mutex_t; m is held by the calling thread.
     unsafe { wait_common(c, m, core::ptr::null()) }
 }
 
@@ -107,7 +107,7 @@ pub unsafe extern "C" fn pthread_cond_timedwait(c: *mut pthread_cond_t, m: *mut 
 // # C: int pthread_condattr_init(pthread_condattr_t*)
 #[no_mangle]
 pub unsafe extern "C" fn pthread_condattr_init(a: *mut pthread_condattr_t) -> i32 {
-    // SAFETY: a is a writable condattr.
+    // SAFETY: a points at a writable pthread_condattr_t; store the default clock into it.
     unsafe { (*a).__clock = CLOCK_REALTIME; 0 }
 }
 // # C: int pthread_condattr_destroy(pthread_condattr_t*)
@@ -116,7 +116,7 @@ pub unsafe extern "C" fn pthread_condattr_destroy(_a: *mut pthread_condattr_t) -
 // # C: int pthread_condattr_setclock(pthread_condattr_t*, clockid_t)
 #[no_mangle]
 pub unsafe extern "C" fn pthread_condattr_setclock(a: *mut pthread_condattr_t, clk: i32) -> i32 {
-    // SAFETY: a is a writable condattr.
+    // SAFETY: a points at a writable pthread_condattr_t; store the caller's clockid into it.
     unsafe { (*a).__clock = clk; 0 }
 }
 // # C: int pthread_condattr_getclock(const pthread_condattr_t*, clockid_t*)
