@@ -4,6 +4,7 @@ pub mod atrig;
 pub mod basic;
 pub mod exp;
 pub mod extra;
+pub mod fma;
 pub mod hyper;
 pub mod log;
 pub mod pow;
