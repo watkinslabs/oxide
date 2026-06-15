@@ -13,7 +13,9 @@ fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
 // x86_64 SysV: main→rdi, argc→rsi, argv→rdx, init/fini/rtld_fini=0,
 // stack_end pushed as the 7th arg. `call __libc_start_main` resolves through
 // the PLT to libc.so.6; `lea [rip+main]` is PC-relative to the app's main.
-#[cfg(target_arch = "x86_64")]
+// Gated out of hosted `cargo test`: the test harness supplies its own
+// `_start`, so emitting ours too is a duplicate-symbol link error.
+#[cfg(all(not(test), target_arch = "x86_64"))]
 core::arch::global_asm!(
     ".text",
     ".globl _start",
@@ -35,7 +37,7 @@ core::arch::global_asm!(
     ".size _start, .-_start",
 );
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(not(test), target_arch = "aarch64"))]
 core::arch::global_asm!(
     ".text",
     ".globl _start",
