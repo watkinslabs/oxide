@@ -35,6 +35,8 @@ int   stat(const char *path, void *buf);
 void *opendir(const char *name);
 void *readdir(void *d);
 int   closedir(void *d);
+int   glob(const char *pat, int flags, void *errfn, void *pglob);
+void  globfree(void *pglob);
 
 static void on_exit_handler(void) {
     static const char m[] = "atexit-ok\n";
@@ -124,6 +126,13 @@ int main(int argc, char **argv, char **envp) {
     }
     closedir(dp);
     if (!found_dot || dcount < 2) return 32;
+
+    /* glob: /dev/n* matches at least /dev/null */
+    char gbuf[72];
+    if (glob("/dev/n*", 0, 0, gbuf) != 0) return 33;
+    unsigned long gpathc = *(unsigned long *)(gbuf + 0);
+    if (gpathc < 1) return 34;
+    globfree(gbuf);
 
     /* env: setenv then getenv round-trip */
     if (setenv("OXIDE_G7C", "yes", 1) != 0) return 16;
