@@ -338,6 +338,8 @@ mod exports {
     }
     // # C: double gamma(double) — legacy alias of lgamma
     #[no_mangle] pub extern "C" fn gamma(x: f64) -> f64 { lgamma(x) }
+    // # C: float gammaf(float) — legacy alias of lgammaf (log-gamma)
+    #[no_mangle] pub extern "C" fn gammaf(x: f32) -> f32 { let mut s = 0; super::lgamma_r(x as f64, &mut s) as f32 }
 
     // # C: Bessel functions of the first/second kind
     #[no_mangle] pub extern "C" fn j0(x: f64) -> f64 { super::j0(x) }
