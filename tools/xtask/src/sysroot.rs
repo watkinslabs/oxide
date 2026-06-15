@@ -35,6 +35,7 @@ fn build_sysroot(triple: &str) -> Result<(), u8> {
     crate::glibc::build_sharedlib(triple)?;
     crate::ldso::build_ldso(triple, ld_soname(triple))?;
     crate::folded::build_arch(triple)?; // → target/folded/<triple>/<stub>
+    let scrt1 = build_crt1(triple)?; // Scrt1.o (dynamic-exe _start)
 
     let root = root_dir(triple);
     let lib = root.join("lib");
@@ -47,6 +48,7 @@ fn build_sysroot(triple: &str) -> Result<(), u8> {
     copy(&crate::glibc::staticlib_path(triple), &lib.join("libc.a"))?;
     let folded = crate::folded::outdir(triple);
     for stub in crate::folded::STUBS { copy(&folded.join(stub), &lib.join(stub))?; }
+    copy(&scrt1, &lib.join("Scrt1.o"))?;
 
     // /etc/ld.so.cache mapping each soname → its installed /lib path.
     let cache = build_cache_image(ldso);
@@ -66,6 +68,26 @@ fn build_cache_image(ldso: &str) -> Vec<u8> {
     let entries: Vec<(&[u8], &[u8], i32)> = names.iter().zip(&paths)
         .map(|(n, p)| (n.as_bytes(), p.as_bytes(), LIBC6)).collect();
     ldso::cache::build_cache(&entries)
+}
+
+// Build crt1 as a single relocatable object (Scrt1.o role) and return its path.
+fn build_crt1(triple: &str) -> Result<PathBuf, u8> {
+    let mut c = Command::new("cargo");
+    c.args(["rustc", "-p", "crt1", "--release", "--target", triple,
+            "--crate-type", "staticlib", "--",
+            "-C", "relocation-model=pic", "-C", "panic=abort",
+            "-C", "codegen-units=1", "--emit", "obj"]);
+    run(c)?;
+    // --emit obj with one CGU drops a single crt1-<hash>.o under deps/.
+    let deps = PathBuf::from("target").join(triple).join("release").join("deps");
+    let mut found: Option<PathBuf> = None;
+    if let Ok(rd) = std::fs::read_dir(&deps) {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n.starts_with("crt1-") && n.ends_with(".o") { found = Some(e.path()); }
+        }
+    }
+    found.ok_or_else(|| { eprintln!("xtask sysroot: crt1 object not found in {}", deps.display()); 1u8 })
 }
 
 fn check_x86() -> Result<(), u8> {
@@ -108,6 +130,28 @@ fn check_x86() -> Result<(), u8> {
     let code = out.status.code().unwrap_or(-1);
     eprintln!("xtask sysroot: dynamic exit={code} (want 13 via sysroot ld-linux + libc.so.6)");
     if code != 13 { eprintln!("xtask sysroot: dynamic-link smoke FAIL"); return Err(1); }
+
+    // 2b) a NORMAL int main() exe — no -nostartfiles — linked dynamically via
+    //     the sysroot's Scrt1.o + libc.so.6, run through our ld-linux.
+    let mbin = "target/sysroot-dyn-main";
+    let mut cc = Command::new("cc");
+    cc.args(["-c", "-O2", "-fPIE", "userspace/sysroot_smoke/main.c", "-o", "target/sysroot-main.o"]);
+    run(cc)?;
+    let mut ld = Command::new("cc");
+    ld.args(["-fPIE", "-pie", "-nostdlib", "-Wl,--allow-shlib-undefined",
+             &format!("-Wl,--dynamic-linker={}", lib.join(ld_soname(X86)).display()),
+             &format!("-Wl,-rpath,{}", lib.display()),
+             "target/sysroot-main.o"]);
+    ld.arg(lib.join("Scrt1.o"));
+    ld.args([&format!("-L{}", lib.display()), "-l:libc.so.6", "-o", mbin]);
+    run(ld)?;
+    let out = Command::new(format!("./{mbin}")).env("LD_LIBRARY_PATH", &lib).output().map_err(|_| 1u8)?;
+    let code = out.status.code().unwrap_or(-1);
+    let mo = String::from_utf8_lossy(&out.stdout);
+    eprintln!("xtask sysroot: dyn-main exit={code} stdout={mo:?} (want 7 + g19-dynamic-main-ok)");
+    if code != 7 || !mo.contains("g19-dynamic-main-ok") {
+        eprintln!("xtask sysroot: dynamic-main (Scrt1.o) smoke FAIL"); return Err(1);
+    }
 
     // 3) the generated ld.so.cache resolves via the rtld's own reader.
     let cache = std::fs::read(root.join("etc/ld.so.cache")).map_err(|_| 1u8)?;
