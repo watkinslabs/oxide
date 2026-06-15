@@ -1,1 +1,6 @@
-//! malloc — glibc-ABI surface, one fn/file (docs/59§3). Implemented at G5 (docs/59§6).
+//! malloc — segregated free-list allocator (docs/59§3, §6 G5). `heap` is
+//! the always-built, oracle-tested algorithm; `api` is the freestanding
+//! C ABI + Rust #[global_allocator].
+pub mod heap;
+#[cfg(feature = "freestanding")]
+pub mod api;
