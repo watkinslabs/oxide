@@ -16,3 +16,5 @@ pub mod scanf;
 pub mod put;
 #[cfg(feature = "freestanding")]
 pub mod memstream;
+#[cfg(feature = "freestanding")]
+pub mod cookie;
