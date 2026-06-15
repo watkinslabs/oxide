@@ -10,3 +10,4 @@ pub mod mem;
 pub mod tok;
 pub mod wstr;
 pub mod gnu;
+pub mod strerror;
