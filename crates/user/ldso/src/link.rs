@@ -173,6 +173,11 @@ unsafe fn relocate_range(from: usize, app_tls_off: i64) {
     unsafe {
         let map = scope_map();
         let resolve = |name: &[u8]| linkmap::lookup_global(&map, name, None).map(|(_, a)| a);
+        // COPY relocs (in the exe) must source the symbol from a SHARED LIB,
+        // not the exe's own .bss slot — resolve over the map EXCLUDING the exe
+        // (object 0). map = [exe, deps…, rtld], so map[1..] is the right scope.
+        let copy_scope: &[linkmap::ObjView] = if map.len() > 1 { &map[1..] } else { &map };
+        let resolve_copy = |name: &[u8]| linkmap::lookup_global(copy_scope, name, None).map(|(_, a)| a);
         for oi in from..objs().len() {
             let o = &objs()[oi];
             let v = o.view();
@@ -180,11 +185,11 @@ unsafe fn relocate_range(from: usize, app_tls_off: i64) {
             let ctx = RelocCtx { base: o.base, sym: v.sym, tls_offset: off, tls_modid: modid };
             if let Some(ra) = o.info.rela {
                 let cnt = (o.info.relasz as usize) / RELAENT;
-                let _ = relocate::apply(&ctx, (o.base + ra) as *const Rela, cnt, &resolve);
+                let _ = relocate::apply(&ctx, (o.base + ra) as *const Rela, cnt, &resolve, &resolve_copy);
             }
             if let Some(jr) = o.info.jmprel {
                 let cnt = (o.info.pltrelsz as usize) / RELAENT;
-                let _ = relocate::apply(&ctx, (o.base + jr) as *const Rela, cnt, &resolve);
+                let _ = relocate::apply(&ctx, (o.base + jr) as *const Rela, cnt, &resolve, &resolve_copy);
             }
         }
     }
