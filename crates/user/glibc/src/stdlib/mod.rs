@@ -8,3 +8,5 @@ pub mod sort;
 pub mod rand;
 #[cfg(feature = "freestanding")]
 pub mod arith;
+#[cfg(feature = "freestanding")]
+pub mod realpath;

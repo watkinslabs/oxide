@@ -17,21 +17,25 @@ unsafe fn swap(a: *mut u8, b: *mut u8, size: usize) {
     unsafe { let mut k = 0; while k < size { core::ptr::swap(a.add(k), b.add(k)); k += 1; } }
 }
 
-pub(crate) unsafe fn qsort_impl(base: *mut u8, n: usize, size: usize, cmp: Cmp) {
-    // SAFETY: base addresses n elements of `size` bytes; cmp is a valid
-    // comparator over them. Heapsort only swaps within the array.
+// Generic heapsort over a comparison closure (shared by qsort + qsort_r).
+pub(crate) unsafe fn heapsort<F: Fn(*const c_void, *const c_void) -> i32>(base: *mut u8, n: usize, size: usize, cmp: &F) {
+    // SAFETY: base addresses n elements of `size` bytes; cmp orders them.
+    // Heapsort only swaps within the array.
     unsafe {
         if n < 2 || size == 0 { return; }
-        // build max-heap
         let mut start = n / 2;
         while start > 0 { start -= 1; siftdown(base, size, cmp, start, n); }
-        // pop max to the end, repeat
         let mut end = n;
         while end > 1 { end -= 1; swap(elem(base, size, 0), elem(base, size, end), size); siftdown(base, size, cmp, 0, end); }
     }
 }
 
-unsafe fn siftdown(base: *mut u8, size: usize, cmp: Cmp, mut root: usize, count: usize) {
+pub(crate) unsafe fn qsort_impl(base: *mut u8, n: usize, size: usize, cmp: Cmp) {
+    // SAFETY: forwards to heapsort with the 2-arg C comparator.
+    unsafe { heapsort(base, n, size, &|a, b| cmp(a, b)); }
+}
+
+unsafe fn siftdown<F: Fn(*const c_void, *const c_void) -> i32>(base: *mut u8, size: usize, cmp: &F, mut root: usize, count: usize) {
     // SAFETY: root < count <= nmemb; children indices are bounds-checked.
     unsafe {
         loop {
@@ -77,6 +81,13 @@ mod exports {
     pub unsafe extern "C" fn bsearch(key: *const u8, base: *const u8, n: usize, size: usize, cmp: Cmp) -> *mut u8 {
         // SAFETY: forwards the C bsearch contract unchanged.
         unsafe { bsearch_impl(key, base, n, size, cmp) }
+    }
+    type CmpR = extern "C" fn(*const c_void, *const c_void, *mut c_void) -> i32;
+    // # C: void qsort_r(void *base, size_t n, size_t size, cmpr, void *ctx)
+    #[no_mangle]
+    pub unsafe extern "C" fn qsort_r(base: *mut u8, n: usize, size: usize, cmp: CmpR, ctx: *mut c_void) {
+        // SAFETY: heapsort over the 3-arg comparator threading `ctx`.
+        unsafe { heapsort(base, n, size, &|a, b| cmp(a, b, ctx)); }
     }
 }
 
