@@ -51,7 +51,9 @@ the largest sub-phase, split into its own ladder G12a–G12g.
   so libc.so.6's _dl_* bind; glibc dlfcn/mod.rs thin-wraps). HARNESS dlopen_pie.c→99.
   `xtask ldso --check` = 4 smokes (42/13/7/99); static smoke uses --gc-sections so
   unused dlopen's _dl_* refs don't break the static link.
-- NEXT PHASE: G13 net.
+- G13 net ✓ (#1884 inet, #1885 socket, #1886 addrinfo; DNS resolver follow-up).
+- G14 nss ✓ (files backend: getpwnam/getpwuid/getgrnam/getgrgid; _r/ent/shadow + nsswitch follow-up).
+- NEXT PHASE: G15 math (libm).
 - G12e — symbol versioning (VERSYM/VERNEED, GLIBC_2.x matching)
 - G12f — TLS (static+dynamic block, DTV, __tls_get_addr, TPOFF/DTPMOD/DTPOFF) +
   **per-thread errno** (move errno into the TCB now that main+threads have one)
