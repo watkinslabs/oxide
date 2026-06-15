@@ -22,6 +22,9 @@ const _: () = {
 };
 
 #[cfg(feature = "freestanding")]
+pub(crate) use imp::{closedir, opendir, readdir};
+
+#[cfg(feature = "freestanding")]
 mod imp {
     use super::dirent;
     use crate::arch::syscall::sys3;
