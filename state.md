@@ -35,6 +35,14 @@ the largest sub-phase, split into its own ladder G12a–G12g.
   → exit 42 / "ld-ok" (x86; aarch64 run = QEMU later). KEY FIX: `.hidden _dl_start`
   in entry.rs so `_start`'s call is a direct PC-relative call, not an unrelocated
   PLT jump (that was the 0x1856-segfault). Fixture: userspace/ldso_smoke/raw_pie.c.
+- G12g ✓ **DT_NEEDED libc.so.6 linking — the rtld links + runs a REAL libc-linked
+  binary** (#1878 crt-split, #1879 versioned lookup, + this: objview.rs/link.rs/mem.rs).
+  `xtask ldso --check` runs dyn_libc.c (strlen via JUMP_SLOT against libc.so.6) → exit 13.
+  KEYS: rtld linked `-Bsymbolic` (internal refs → RELATIVE so self-reloc covers them);
+  rtld has own mem.rs (memcpy/memset/memcmp/bcmp/strlen/getauxval); read WHOLE dep file
+  (elf::parse validates PT_LOAD bounds vs the buffer). Remaining G12g: lazy PLT,
+  relocate.rs Kind::Tls wiring (DTV + set tp).
+- ~~G12e~~ done; G12h next = dlopen/dlsym/dlclose/dladdr/dlinfo.
 - G12e — symbol versioning (VERSYM/VERNEED, GLIBC_2.x matching)
 - G12f — TLS (static+dynamic block, DTV, __tls_get_addr, TPOFF/DTPMOD/DTPOFF) +
   **per-thread errno** (move errno into the TCB now that main+threads have one)
