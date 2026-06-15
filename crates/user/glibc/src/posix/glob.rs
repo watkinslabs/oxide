@@ -176,6 +176,21 @@ fn stat_mode(st: &[u8; 160]) -> u32 {
     u32::from_ne_bytes([st[16], st[17], st[18], st[19]])
 }
 
+// glob64_t is layout-identical to glob_t on LP64 (off64_t/struct dirent64 match
+// their non-LFS forms), so the *64 entry points forward to the base versions.
+// # C: int glob64(const char *pattern, int flags, errfn, glob64_t *pglob)
+#[no_mangle]
+pub unsafe extern "C" fn glob64(pattern: *const u8, flags: i32, errfunc: *const c_void, pglob: *mut glob_t) -> i32 {
+    // SAFETY: glob64_t == glob_t on LP64; forward to glob with the same args.
+    unsafe { glob(pattern, flags, errfunc, pglob) }
+}
+// # C: void globfree64(glob64_t *pglob)
+#[no_mangle]
+pub unsafe extern "C" fn globfree64(pglob: *mut glob_t) {
+    // SAFETY: glob64_t == glob_t on LP64; forward to globfree.
+    unsafe { globfree(pglob) }
+}
+
 // # C: void globfree(glob_t *pglob)
 #[no_mangle]
 pub unsafe extern "C" fn globfree(pglob: *mut glob_t) {
