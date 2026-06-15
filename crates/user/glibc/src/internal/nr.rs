@@ -70,6 +70,7 @@ pub mod x86_64 {
     pub const READLINK: usize = 89;
     pub const GETTID: usize = 186;
     pub const FUTEX: usize = 202;
+    pub const ARCH_PRCTL: usize = 158;
     pub const GETDENTS64: usize = 217;
     pub const SET_TID_ADDRESS: usize = 218;
     pub const CLOCK_GETTIME: usize = 228;

@@ -62,6 +62,56 @@ static void *counter_worker(void *a) {
     return 0;
 }
 
+/* G11c: cond / rwlock / once / TLS-keys */
+typedef union { unsigned char b[48]; long a; } pthread_cond_t;
+int pthread_cond_init(pthread_cond_t *c, const void *attr);
+int pthread_cond_wait(pthread_cond_t *c, pthread_mutex_t *m);
+int pthread_cond_signal(pthread_cond_t *c);
+static pthread_cond_t g_cv;
+static pthread_mutex_t g_cvm;
+static volatile int g_ready = 0, g_woke = 0;
+static void *cv_worker(void *a) {
+    (void)a;
+    pthread_mutex_lock(&g_cvm);
+    while (!g_ready) pthread_cond_wait(&g_cv, &g_cvm);
+    g_woke = 1;
+    pthread_mutex_unlock(&g_cvm);
+    return 0;
+}
+
+typedef union { unsigned char b[56]; long a; } pthread_rwlock_t;
+int pthread_rwlock_init(pthread_rwlock_t *l, const void *attr);
+int pthread_rwlock_rdlock(pthread_rwlock_t *l);
+int pthread_rwlock_wrlock(pthread_rwlock_t *l);
+int pthread_rwlock_unlock(pthread_rwlock_t *l);
+static pthread_rwlock_t g_rw;
+static unsigned long g_rwcount = 0;
+static void *rw_worker(void *a) {
+    (void)a;
+    for (int i = 0; i < 1000; i++) { pthread_rwlock_wrlock(&g_rw); g_rwcount++; pthread_rwlock_unlock(&g_rw); }
+    return 0;
+}
+
+typedef int pthread_once_t;
+int pthread_once(pthread_once_t *o, void (*init)(void));
+static pthread_once_t g_once = 0; /* PTHREAD_ONCE_INIT */
+static volatile int g_once_count = 0;
+static void once_init(void) { g_once_count++; }
+static void *once_worker(void *a) { (void)a; pthread_once(&g_once, once_init); return 0; }
+
+typedef unsigned int pthread_key_t;
+int pthread_key_create(pthread_key_t *k, void (*dtor)(void *));
+void *pthread_getspecific(pthread_key_t k);
+int pthread_setspecific(pthread_key_t k, const void *v);
+static pthread_key_t g_key;
+static volatile int g_key_thread_ok = 0;
+static void *key_worker(void *a) {
+    (void)a;
+    pthread_setspecific(g_key, (void *)0x222);
+    if (pthread_getspecific(g_key) == (void *)0x222) g_key_thread_ok = 1;
+    return 0;
+}
+
 static void on_exit_handler(void) {
     static const char m[] = "atexit-ok\n";
     write(1, m, sizeof(m) - 1);
@@ -190,6 +240,42 @@ int main(int argc, char **argv, char **envp) {
     for (int i = 0; i < 4; i++) if (pthread_create(&mt[i], 0, counter_worker, 0) != 0) return 46;
     for (int i = 0; i < 4; i++) if (pthread_join(mt[i], 0) != 0) return 47;
     if (g_count != 40000) return 48;
+
+    /* pthread_cond: worker waits on a predicate; main sets it + signals */
+    pthread_mutex_init(&g_cvm, 0);
+    pthread_cond_init(&g_cv, 0);
+    pthread_t cvt;
+    if (pthread_create(&cvt, 0, cv_worker, 0) != 0) return 49;
+    pthread_mutex_lock(&g_cvm);
+    g_ready = 1;
+    pthread_mutex_unlock(&g_cvm);
+    pthread_cond_signal(&g_cv);
+    if (pthread_join(cvt, 0) != 0) return 50;
+    if (g_woke != 1) return 51;
+
+    /* pthread_rwlock: 4 writers each increment 1000x under wrlock == 4000 */
+    pthread_rwlock_init(&g_rw, 0);
+    pthread_rwlock_rdlock(&g_rw); pthread_rwlock_unlock(&g_rw); /* basic rd path */
+    pthread_t rwt[4];
+    for (int i = 0; i < 4; i++) if (pthread_create(&rwt[i], 0, rw_worker, 0) != 0) return 52;
+    for (int i = 0; i < 4; i++) if (pthread_join(rwt[i], 0) != 0) return 53;
+    if (g_rwcount != 4000) return 54;
+
+    /* pthread_once: init runs exactly once across main + 4 threads */
+    pthread_once(&g_once, once_init);
+    pthread_t ot[4];
+    for (int i = 0; i < 4; i++) if (pthread_create(&ot[i], 0, once_worker, 0) != 0) return 55;
+    for (int i = 0; i < 4; i++) if (pthread_join(ot[i], 0) != 0) return 56;
+    if (g_once_count != 1) return 57;
+
+    /* TLS keys: per-thread isolation (main keeps 0x111, thread sets 0x222) */
+    if (pthread_key_create(&g_key, 0) != 0) return 58;
+    if (pthread_setspecific(g_key, (void *)0x111) != 0) return 59;
+    pthread_t kt;
+    if (pthread_create(&kt, 0, key_worker, 0) != 0) return 60;
+    if (pthread_join(kt, 0) != 0) return 61;
+    if (!g_key_thread_ok) return 62;
+    if (pthread_getspecific(g_key) != (void *)0x111) return 63;
 
     /* env: setenv then getenv round-trip */
     if (setenv("OXIDE_G7C", "yes", 1) != 0) return 16;

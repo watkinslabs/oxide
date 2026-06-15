@@ -5,11 +5,19 @@
 //! not a stub. Mutex/cond/rwlock are G11b/c.
 #![cfg(feature = "freestanding")]
 #![allow(clippy::upper_case_acronyms)]
+pub mod cond;
+pub mod key;
 pub mod mutex;
+pub mod once;
+pub mod rwlock;
 use crate::internal::nr;
 use crate::malloc::heap;
 use crate::posix::mman;
 use core::ffi::c_void;
+
+/// Per-thread TLS-key slots (POSIX _POSIX_THREAD_KEYS_MAX). Backs
+/// pthread_getspecific/setspecific until full ELF TLS lands (G12).
+pub(crate) const KEYS_MAX: usize = 128;
 
 // CLONE_VM|FS|FILES|SIGHAND|THREAD|SYSVSEM|SETTLS|PARENT_SETTID|CHILD_CLEARTID
 const CLONE_THREAD_FLAGS: usize = 0x3d_0f00;
@@ -23,11 +31,12 @@ pub struct Tcb {
     self_ptr: usize, // fs:0 / TPIDR self-pointer (glibc tcbhead)
     tid: i32,        // CHILD_CLEARTID word + PARENT_SETTID target
     _pad: i32,
-    start: StartFn,
+    start: Option<StartFn>, // None on the main thread (no routine)
     arg: *mut c_void,
     retval: *mut c_void,
     stack_base: usize,
     stack_size: usize,
+    pub(crate) keys: [*mut c_void; KEYS_MAX], // TLS-key values
 }
 
 extern "C" {
@@ -79,13 +88,52 @@ core::arch::global_asm!(
     "  ret",
 );
 
-unsafe fn current_tcb() -> *mut Tcb {
+pub(crate) unsafe fn current_tcb() -> *mut Tcb {
     #[cfg(target_arch = "x86_64")]
-    // SAFETY: fs:0 holds the Tcb self-pointer on a pthread-created thread.
+    // SAFETY: fs:0 holds the Tcb self-pointer on every thread once
+    // pthread_create (CLONE_SETTLS) or init_main_tcb has run.
     unsafe { let p: usize; core::arch::asm!("mov {}, fs:0", out(reg) p); p as *mut Tcb }
     #[cfg(target_arch = "aarch64")]
-    // SAFETY: tpidr_el0 holds the Tcb self-pointer on a created thread.
+    // SAFETY: tpidr_el0 holds the Tcb self-pointer on every thread once
+    // pthread_create (CLONE_SETTLS) or init_main_tcb has run.
     unsafe { let p: usize; core::arch::asm!("mrs {}, tpidr_el0", out(reg) p); p as *mut Tcb }
+}
+
+// Install a minimal TCB for the main thread so pthread_self() and the
+// TLS-key store work before the first pthread_create. Called once from
+// __libc_start_main. Full ELF TLS (per-thread errno, __tls_get_addr)
+// lands in G12; this is the foundation, not a stub.
+pub(crate) unsafe fn init_main_tcb() {
+    // SAFETY: runs single-threaded at startup before main; the malloc'd
+    // TCB lives for the whole process and is published via the thread
+    // pointer (arch_prctl ARCH_SET_FS / tpidr_el0).
+    unsafe {
+        let tcb = heap::malloc(core::mem::size_of::<Tcb>()) as *mut Tcb;
+        if tcb.is_null() { return; }
+        (*tcb).self_ptr = tcb as usize;
+        (*tcb).tid = crate::posix::ids::gettid();
+        (*tcb).start = None;
+        (*tcb).arg = core::ptr::null_mut();
+        (*tcb).retval = core::ptr::null_mut();
+        (*tcb).stack_base = 0;
+        (*tcb).stack_size = 0;
+        (*tcb).keys = [core::ptr::null_mut(); KEYS_MAX];
+        set_thread_pointer(tcb as usize);
+    }
+}
+
+unsafe fn set_thread_pointer(tp: usize) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: arch_prctl(ARCH_SET_FS) sets the calling thread's FS base to
+    // the TCB; no memory is dereferenced by the kernel here.
+    unsafe {
+        const ARCH_SET_FS: usize = 0x1002;
+        crate::arch::syscall::sys2(nr::ARCH_PRCTL, ARCH_SET_FS, tp);
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: writing tpidr_el0 sets this thread's user TLS register to the
+    // TCB pointer; a single register move with no memory access.
+    unsafe { core::arch::asm!("msr tpidr_el0, {}", in(reg) tp); }
 }
 
 // The new thread's first Rust frame: run the routine, stash the result,
@@ -94,7 +142,8 @@ extern "C" fn thread_start(tcb: *mut Tcb) {
     // SAFETY: tcb is the just-created thread's control block; we own it
     // until join. Run the user routine, then SYS_exit (this thread only).
     unsafe {
-        let rv = ((*tcb).start)((*tcb).arg);
+        let f = (*tcb).start.unwrap_unchecked();
+        let rv = f((*tcb).arg);
         (*tcb).retval = rv;
         crate::arch::syscall::sys1(nr::EXIT, 0);
     }
@@ -113,11 +162,12 @@ pub unsafe extern "C" fn pthread_create(thread: *mut usize, _attr: *const c_void
         if tcb.is_null() { mman::munmap(base, STACK_SIZE); return 11; }
         (*tcb).self_ptr = tcb as usize;
         (*tcb).tid = 0;
-        (*tcb).start = start;
+        (*tcb).start = Some(start);
         (*tcb).arg = arg;
         (*tcb).retval = core::ptr::null_mut();
         (*tcb).stack_base = base as usize;
         (*tcb).stack_size = STACK_SIZE;
+        (*tcb).keys = [core::ptr::null_mut(); KEYS_MAX];
         // child stack: 16-aligned, with [sp]=entry, [sp+8]=arg(tcb)
         let sp = ((base as usize + STACK_SIZE) & !15) - 16;
         *(sp as *mut usize) = thread_start as extern "C" fn(*mut Tcb) as usize;
