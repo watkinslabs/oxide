@@ -19,11 +19,22 @@ unsafe fn parse(s: *const u8, mut base: i32) -> Parsed {
         while matches!(*p, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') { p = p.add(1); }
         let mut neg = false;
         if *p == b'+' || *p == b'-' { neg = *p == b'-'; p = p.add(1); }
+        // A 0x/0b prefix is consumed only when a valid digit follows; otherwise
+        // the leading '0' is itself the value (endptr at the 'x'/'b'). glibc
+        // (2.38+) accepts the 0b/0B binary prefix in base 0 and base 2.
+        let is_hex = |c: u8| matches!(dval(c), Some(d) if d < 16);
+        let is_bin = |c: u8| c == b'0' || c == b'1';
         if base == 0 {
             if *p == b'0' {
-                if *p.add(1) == b'x' || *p.add(1) == b'X' { base = 16; p = p.add(2); } else { base = 8; }
+                let c1 = *p.add(1);
+                if (c1 == b'x' || c1 == b'X') && is_hex(*p.add(2)) { base = 16; p = p.add(2); }
+                else if (c1 == b'b' || c1 == b'B') && is_bin(*p.add(2)) { base = 2; p = p.add(2); }
+                else { base = 8; } // leading 0 → octal; the '0' digit is read below
             } else { base = 10; }
-        } else if base == 16 && *p == b'0' && (*p.add(1) == b'x' || *p.add(1) == b'X') {
+        } else if *p == b'0'
+            && ((base == 16 && (*p.add(1) == b'x' || *p.add(1) == b'X') && is_hex(*p.add(2)))
+                || (base == 2 && (*p.add(1) == b'b' || *p.add(1) == b'B') && is_bin(*p.add(2))))
+        {
             p = p.add(2);
         }
         let b = base as u64;
