@@ -151,6 +151,12 @@ pub unsafe extern "C" fn wait(status: *mut i32) -> i32 {
     // SAFETY: status is null or a valid int out-param.
     unsafe { wait4(-1, status, 0, core::ptr::null_mut()) }
 }
+// # C: pid_t wait3(int *status, int options, struct rusage *rusage)
+#[no_mangle]
+pub unsafe extern "C" fn wait3(status: *mut i32, options: i32, rusage: *mut c_void) -> i32 {
+    // SAFETY: wait3 = wait4(-1, ...); status/rusage are null or valid out-params.
+    unsafe { wait4(-1, status, options, rusage) }
+}
 
 // # C: int system(const char *command)
 #[no_mangle]
