@@ -13,3 +13,5 @@ pub mod gnu;
 pub mod strerror;
 #[cfg(feature = "freestanding")]
 pub mod bits;
+#[cfg(feature = "freestanding")]
+pub mod wstrto;
