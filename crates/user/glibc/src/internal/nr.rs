@@ -189,6 +189,12 @@ pub mod x86_64 {
     pub const SETRESGID: usize = 119;
     pub const SETTIMEOFDAY: usize = 164;
     pub const PSELECT6: usize = 270;
+    // SysV IPC semaphores (syscall_64.tbl). Direct nrs — x86_64 has no ipc()
+    // multiplexer; each op is its own slot.
+    pub const SEMGET: usize = 64;
+    pub const SEMOP: usize = 65;
+    pub const SEMCTL: usize = 66;
+    pub const SEMTIMEDOP: usize = 220;
 }
 
 pub mod aarch64 {
@@ -352,4 +358,9 @@ pub mod aarch64 {
     pub const SETRESGID: usize = 149;
     pub const GETGROUPS: usize = 158;
     pub const SYSINFO: usize = 179;
+    // SysV IPC semaphores (asm-generic/unistd.h). Direct nrs (no ipc() mux).
+    pub const SEMGET: usize = 190;
+    pub const SEMCTL: usize = 191;
+    pub const SEMTIMEDOP: usize = 192;
+    pub const SEMOP: usize = 193;
 }
