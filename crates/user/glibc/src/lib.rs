@@ -67,6 +67,7 @@ pub mod start; //  G2 csu / __libc_start_main
 pub mod regex; //  G7+ (<regex.h> ERE engine)
 pub mod misc; //  G8 (<syslog.h>,<err.h>,<error.h>)
 pub mod obstack; //  <obstack.h> GNU memory pools
+pub mod aio; //  G17 (<aio.h> POSIX async I/O over a pthread worker pool)
 
 // Freestanding final-artifact requirements (cdylib/staticlib). Active
 // only under `--features freestanding` (set by `xtask glibc`). In the
