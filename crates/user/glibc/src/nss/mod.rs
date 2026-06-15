@@ -10,6 +10,9 @@ extern crate alloc;
 #[cfg(feature = "freestanding")]
 use alloc::vec::Vec;
 
+pub mod r#enum;
+pub mod shadow;
+
 #[repr(C)]
 pub struct passwd {
     pub pw_name: *mut u8,
@@ -102,32 +105,51 @@ pub(crate) fn pack_group(g: &libnss::Group, buf: &mut [u8], memv: &mut [*mut u8]
     true
 }
 
+/// Pack a parsed Shadow into `buf` (NUL-terminated name+hash) + fill `out`'s
+/// pointers/longs. Pure; false if buf too small.
+///
+/// # C: serialize Shadow strings into buf, point out at them
+pub(crate) fn pack_shadow(s: &libnss::Shadow, buf: &mut [u8], out: &mut spwd) -> bool {
+    out.sp_lstchg = s.last_change; out.sp_min = s.min; out.sp_max = s.max;
+    out.sp_warn = s.warn; out.sp_inact = s.inactive; out.sp_expire = s.expire;
+    out.sp_flag = !0u64; // glibc reads -1 (all-ones) when reserved field absent
+    let mut pos = 0;
+    match put(buf, pos, s.name.as_bytes()) { Some((p, np)) => { out.sp_namp = p; pos = np; } None => return false }
+    match put(buf, pos, s.passwd_hash.as_bytes()) { Some((p, _)) => { out.sp_pwdp = p; } None => return false }
+    true
+}
+
 #[cfg(feature = "freestanding")]
-mod exports {
+pub(crate) mod shared {
+    //! Freestanding helpers shared by mod.rs `exports`, `r#enum`, `shadow`:
+    //! whole-file slurp + static-buffer packers for the non-`_r` get* calls.
     use super::*;
     use crate::arch::syscall::{sys1, sys3, sys4};
     use crate::internal::nr;
-    use crate::string::len::strlen_impl;
     use core::cell::UnsafeCell;
 
-    const PWBUF: usize = 1024;
-    const MEMMAX: usize = 64;
+    pub(crate) const PWBUF: usize = 1024;
+    pub(crate) const MEMMAX: usize = 64;
 
-    struct PwState { ent: passwd, buf: [u8; PWBUF] }
-    struct GrState { ent: group, buf: [u8; PWBUF], mem: [*mut u8; MEMMAX] }
-    struct St { pw: UnsafeCell<PwState>, gr: UnsafeCell<GrState> }
+    pub(crate) struct PwState { pub ent: passwd, pub buf: [u8; PWBUF] }
+    pub(crate) struct GrState { pub ent: group, pub buf: [u8; PWBUF], pub mem: [*mut u8; MEMMAX] }
+    pub(crate) struct SpState { pub ent: spwd, pub buf: [u8; PWBUF] }
+    struct St { pw: UnsafeCell<PwState>, gr: UnsafeCell<GrState>, sp: UnsafeCell<SpState> }
     // SAFETY: the non-reentrant get* calls use these process-global statics
-    // single-threaded (glibc's getpwnam is likewise not thread-safe; threads
-    // use the _r variants, a follow-up).
+    // single-threaded (glibc's getpwent is likewise not thread-safe; threads
+    // use the _r variants); no concurrent aliasing within the libc contract.
     unsafe impl Sync for St {}
     static S: St = St {
         pw: UnsafeCell::new(PwState { ent: ZERO_PW, buf: [0; PWBUF] }),
         gr: UnsafeCell::new(GrState { ent: ZERO_GR, buf: [0; PWBUF], mem: [core::ptr::null_mut(); MEMMAX] }),
+        sp: UnsafeCell::new(SpState { ent: ZERO_SP, buf: [0; PWBUF] }),
     };
-    const ZERO_PW: passwd = passwd { pw_name: core::ptr::null_mut(), pw_passwd: core::ptr::null_mut(), pw_uid: 0, pw_gid: 0, pw_gecos: core::ptr::null_mut(), pw_dir: core::ptr::null_mut(), pw_shell: core::ptr::null_mut() };
-    const ZERO_GR: group = group { gr_name: core::ptr::null_mut(), gr_passwd: core::ptr::null_mut(), gr_gid: 0, __pad: 0, gr_mem: core::ptr::null_mut() };
+    pub(crate) const ZERO_PW: passwd = passwd { pw_name: core::ptr::null_mut(), pw_passwd: core::ptr::null_mut(), pw_uid: 0, pw_gid: 0, pw_gecos: core::ptr::null_mut(), pw_dir: core::ptr::null_mut(), pw_shell: core::ptr::null_mut() };
+    pub(crate) const ZERO_GR: group = group { gr_name: core::ptr::null_mut(), gr_passwd: core::ptr::null_mut(), gr_gid: 0, __pad: 0, gr_mem: core::ptr::null_mut() };
+    pub(crate) const ZERO_SP: spwd = spwd { sp_namp: core::ptr::null_mut(), sp_pwdp: core::ptr::null_mut(), sp_lstchg: 0, sp_min: 0, sp_max: 0, sp_warn: 0, sp_inact: 0, sp_expire: 0, sp_flag: 0 };
 
-    unsafe fn read_file(path: &[u8]) -> Option<Vec<u8>> {
+    /// # C: int openat(AT_FDCWD,path,O_RDONLY); read to EOF; close
+    pub(crate) unsafe fn read_file(path: &[u8]) -> Option<Vec<u8>> {
         // SAFETY: path is NUL-terminated; openat read-only, read to EOF, close.
         unsafe {
             const AT_FDCWD: usize = (-100i64) as usize;
@@ -145,20 +167,37 @@ mod exports {
         }
     }
 
-    unsafe fn fill_pw(p: &libnss::Passwd) -> *mut passwd {
+    /// # C: struct passwd *_fill(const struct Passwd*) into static buffer
+    pub(crate) unsafe fn fill_pw(p: &libnss::Passwd) -> *mut passwd {
         // SAFETY: writes the static PwState single-threaded; returns its addr.
         unsafe {
             let st = &mut *S.pw.get();
             if pack_passwd(p, &mut st.buf, &mut st.ent) { &mut st.ent } else { core::ptr::null_mut() }
         }
     }
-    unsafe fn fill_gr(g: &libnss::Group) -> *mut group {
+    /// # C: struct group *_fill(const struct Group*) into static buffer
+    pub(crate) unsafe fn fill_gr(g: &libnss::Group) -> *mut group {
         // SAFETY: writes the static GrState single-threaded; returns its addr.
         unsafe {
             let st = &mut *S.gr.get();
             if pack_group(g, &mut st.buf, &mut st.mem, &mut st.ent) { &mut st.ent } else { core::ptr::null_mut() }
         }
     }
+    /// # C: struct spwd *_fill(const struct Shadow*) into static buffer
+    pub(crate) unsafe fn fill_sp(s: &libnss::Shadow) -> *mut spwd {
+        // SAFETY: writes the static SpState single-threaded; returns its addr.
+        unsafe {
+            let st = &mut *S.sp.get();
+            if pack_shadow(s, &mut st.buf, &mut st.ent) { &mut st.ent } else { core::ptr::null_mut() }
+        }
+    }
+}
+
+#[cfg(feature = "freestanding")]
+mod exports {
+    use super::*;
+    use super::shared::{fill_pw, fill_gr, read_file};
+    use crate::string::len::strlen_impl;
 
     // # C: struct passwd *getpwnam(const char *name)
     #[no_mangle]
@@ -238,5 +277,25 @@ mod tests {
     fn struct_sizes_match_host() {
         assert_eq!(core::mem::size_of::<passwd>(), core::mem::size_of::<libc::passwd>());
         assert_eq!(core::mem::size_of::<group>(), core::mem::size_of::<libc::group>());
+        assert_eq!(core::mem::size_of::<spwd>(), core::mem::size_of::<libc::spwd>());
     }
+
+    #[test]
+    fn pack_shadow_round_trip() {
+        let s = libnss::parse_shadow_line("alice:$6$salt$hash:19000:0:99999:7:::").unwrap();
+        let mut buf = [0u8; 256];
+        let mut out = ZERO_SP_TEST;
+        assert!(pack_shadow(&s, &mut buf, &mut out));
+        assert_eq!(out.sp_lstchg, 19000);
+        assert_eq!(out.sp_max, 99999);
+        assert_eq!(out.sp_inact, -1);
+        // SAFETY: pack_shadow set the pointers into `buf`; read the strings.
+        unsafe {
+            let name = core::ffi::CStr::from_ptr(out.sp_namp as *const i8).to_str().unwrap();
+            let hash = core::ffi::CStr::from_ptr(out.sp_pwdp as *const i8).to_str().unwrap();
+            assert_eq!(name, "alice");
+            assert_eq!(hash, "$6$salt$hash");
+        }
+    }
+    const ZERO_SP_TEST: spwd = spwd { sp_namp: core::ptr::null_mut(), sp_pwdp: core::ptr::null_mut(), sp_lstchg: 0, sp_min: 0, sp_max: 0, sp_warn: 0, sp_inact: 0, sp_expire: 0, sp_flag: 0 };
 }

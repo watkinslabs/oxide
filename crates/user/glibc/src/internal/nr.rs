@@ -50,6 +50,7 @@ pub mod x86_64 {
     pub const GETGID: usize = 104;
     pub const GETEUID: usize = 107;
     pub const GETEGID: usize = 108;
+    pub const SETGROUPS: usize = 116;
     pub const SETPGID: usize = 109;
     pub const GETPPID: usize = 110;
     pub const GETPGRP: usize = 111;
@@ -214,6 +215,7 @@ pub mod aarch64 {
     pub const GETTID: usize = 178;
     pub const SETGID: usize = 144;
     pub const SETUID: usize = 146;
+    pub const SETGROUPS: usize = 159;
     pub const SETPGID: usize = 154;
     pub const GETPGID: usize = 155;
     pub const GETSID: usize = 156;
