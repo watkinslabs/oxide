@@ -24,3 +24,9 @@ freestanding = []
 
 [dependencies]
 nss = { path = "../nss" }
+
+# Differential oracle (docs/59§7): compare our impls against the host
+# glibc. Test-only; never linked into the shipped libc.
+[dev-dependencies]
+libc = "0.2"
+proptest = "1"

@@ -529,7 +529,9 @@ dependencies = [
 name = "glibc"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "nss",
+ "proptest",
 ]
 
 [[package]]
