@@ -1,6 +1,6 @@
 # glibc — implemented (oxide-libc)
 
-Exports of our libc.so.6, harness-validated vs host glibc.
+Exports of libc.so.6, harness-validated.
 
 time_t time (time_t *result)
 size_t mbstowcs (wchar_t *wstring, const char *string, size_t size)
@@ -485,3 +485,7 @@ int alphasort64 (const struct dirent64 **a, const struct dirent **b)
 int versionsort64 (const struct dirent64 **a, const struct dirent64 **b)
 char * l64a (long int n)
 long int a64l (const char *string)
+double erf (double x)
+float erff (float x)
+double erfc (double x)
+float erfcf (float x)
