@@ -89,6 +89,28 @@ fn emit(out: &mut dyn Sink, sp: &Spec, sign: &[u8], prefix: &[u8], body: &[u8]) 
     if sp.left { for _ in 0..pad { out.push(b' '); } }
 }
 
+// %ls / %lc: convert a wchar_t (i32) sequence to UTF-8, honoring precision as
+// a *byte* cap that never splits a multibyte char (C11 7.21.6.1).
+unsafe fn wide_bytes(p: *const i32, max_bytes: usize) -> alloc::vec::Vec<u8> {
+    // SAFETY: p is a 0-terminated wchar_t array (or null, handled by caller);
+    // we read wchars until the 0 terminator, never past it.
+    unsafe {
+        let mut v = alloc::vec::Vec::new();
+        if p.is_null() { return v; }
+        let mut i = 0;
+        loop {
+            let wc = *p.add(i);
+            if wc == 0 { break; }
+            let mut buf = [0u8; 4];
+            let s = char::from_u32(wc as u32).unwrap_or('\u{FFFD}').encode_utf8(&mut buf);
+            if v.len() + s.len() > max_bytes { break; }
+            v.extend_from_slice(s.as_bytes());
+            i += 1;
+        }
+        v
+    }
+}
+
 fn fmt_uint(out: &mut dyn Sink, sp: &Spec, mut v: u64, neg: bool, base: u64, upper: bool, signed_conv: bool) {
     let mut tmp = [0u8; 24];
     let mut n = 0usize;
@@ -209,7 +231,13 @@ unsafe fn emit_val(out: &mut dyn Sink, sp: &Spec, val: Val) {
             b'o' => fmt_uint(out, sp, uv(val), false, 8, false, false),
             b'x' => fmt_uint(out, sp, uv(val), false, 16, false, false),
             b'X' => fmt_uint(out, sp, uv(val), false, 16, true, false),
+            b'c' if matches!(sp.len, Len::Long) => { let b = wide_bytes([iv(val) as i32, 0].as_ptr(), usize::MAX); emit(out, sp, b"", b"", &b); }
             b'c' => emit(out, sp, b"", b"", &[iv(val) as u8]),
+            b's' if matches!(sp.len, Len::Long) => {
+                let p = if let Val::P(p) = val { p as *const i32 } else { core::ptr::null() };
+                let b = wide_bytes(p, sp.prec.unwrap_or(usize::MAX));
+                emit(out, sp, b"", b"", &b);
+            }
             b's' => {
                 let p = if let Val::P(p) = val { p } else { b"(null)\0".as_ptr() };
                 let max = sp.prec.unwrap_or(usize::MAX);
@@ -321,7 +349,12 @@ pub(crate) unsafe fn vformat(out: &mut dyn Sink, fmt: *const u8, args: &mut dyn 
                 b'o' => { let v = unsigned(args, sp.len); fmt_uint(out, &sp, v, false, 8, false, false); }
                 b'x' => { let v = unsigned(args, sp.len); fmt_uint(out, &sp, v, false, 16, false, false); }
                 b'X' => { let v = unsigned(args, sp.len); fmt_uint(out, &sp, v, false, 16, true, false); }
+                b'c' if matches!(sp.len, Len::Long) => { let b = wide_bytes([args.next_i32(), 0].as_ptr(), usize::MAX); emit(out, &sp, b"", b"", &b); }
                 b'c' => { let ch = args.next_i32() as u8; emit(out, &sp, b"", b"", &[ch]); }
+                b's' if matches!(sp.len, Len::Long) => {
+                    let b = wide_bytes(args.next_ptr() as *const i32, sp.prec.unwrap_or(usize::MAX));
+                    emit(out, &sp, b"", b"", &b);
+                }
                 b's' => {
                     let p = args.next_ptr();
                     let max = sp.prec.unwrap_or(usize::MAX);
