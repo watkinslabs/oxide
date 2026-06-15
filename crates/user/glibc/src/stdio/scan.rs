@@ -82,10 +82,15 @@ unsafe fn conv_int(src: &mut dyn Source, args: &mut dyn ScanArgs, suppress: bool
                 return true;
             }
         }
-        if base == 16 && src.peek() == b'0' as i32 {
-            // optional 0x for %x
-        }
         let mut val: i64 = 0; let mut any = false;
+        // base 16 accepts an optional "0x"/"0X" prefix (the leading 0 is itself
+        // a valid hex digit, so "0" alone still matches).
+        if base == 16 && taken < cap && src.peek() == b'0' as i32 {
+            src.bump(); taken += 1; any = true;
+            if taken < cap && (src.peek() == b'x' as i32 || src.peek() == b'X' as i32) {
+                src.bump(); taken += 1; any = false; // require ≥1 hex digit after 0x
+            }
+        }
         while taken < cap { match digit_val(src.peek(), base) { Some(d) => { val = val * base + d; src.bump(); taken += 1; any = true; } None => break } }
         if !any { return false; }
         let _ = signed;
