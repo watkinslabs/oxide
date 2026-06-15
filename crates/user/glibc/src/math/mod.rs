@@ -1,1 +1,3 @@
-//! math — glibc-ABI surface, one fn/file (docs/59§3). Implemented at G15 (docs/59§6).
+//! math — libm (docs/59§3, §6 G15). basic = sign/rounding/classify/fmod/
+//! frexp/ldexp/modf; transcendentals + trig follow.
+pub mod basic;
