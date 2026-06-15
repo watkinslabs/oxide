@@ -24,6 +24,12 @@ pub mod glob;
 #[cfg(feature = "freestanding")]
 pub mod argz;
 #[cfg(feature = "freestanding")]
+pub mod argp;
+#[cfg(feature = "freestanding")]
+pub mod envz;
+#[cfg(feature = "freestanding")]
+pub mod wordexp;
+#[cfg(feature = "freestanding")]
 pub mod mntent;
 #[cfg(feature = "freestanding")]
 pub mod ftw;
