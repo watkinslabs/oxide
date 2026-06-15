@@ -31,6 +31,18 @@ pub unsafe extern "C" fn realloc(ptr: *mut u8, size: usize) -> *mut u8 {
     // SAFETY: ptr is null or allocator-owned (C realloc rule).
     unsafe { heap::realloc(ptr, size) }
 }
+// # C: void *reallocarray(void *ptr, size_t nmemb, size_t size)
+#[no_mangle]
+pub unsafe extern "C" fn reallocarray(ptr: *mut u8, nmemb: usize, size: usize) -> *mut u8 {
+    // SAFETY: ptr is null or allocator-owned; like realloc(ptr, nmemb*size) but
+    // fails with ENOMEM (leaving ptr intact) when the product overflows.
+    unsafe {
+        match nmemb.checked_mul(size) {
+            Some(total) => heap::realloc(ptr, total),
+            None => { crate::internal::errno::set(ENOMEM); core::ptr::null_mut() }
+        }
+    }
+}
 // # C: void *aligned_alloc(size_t align, size_t size)
 #[no_mangle]
 pub unsafe extern "C" fn aligned_alloc(align: usize, size: usize) -> *mut u8 {
