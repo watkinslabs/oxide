@@ -13,6 +13,13 @@ sub-phase per PR.
 - G3 #1843 — per-arch syscall table (internal/nr.rs), unistd, mman, auxv canary
 - G4 #1844 — string/ (mem*+str*) + ctype/ascii.rs, differential proptest oracle
 - G5 #1845 — malloc/ segregated allocator + global_allocator + strdup
+- G6a #1846 — stdio printf format engine + write-side (printf/puts/fwrite) + FILE
+- G6b #1847 — scanf engine + sscanf/vsscanf
+- G6c #1848 — read-side (fopen/fread/fgets/getline/fseek) + scanf over FILE
+- G7a #1849 — strtol family + qsort/bsearch + abs/div
+- G7b #1850 — strtod/strtof + rand/srand (glibc TYPE_3, host-matched)
+- G7c #1851 — environ/getenv/setenv/unsetenv/putenv/clearenv
+- G7d #1852 — atexit/__cxa_atexit/exit-handlers + abort (G7 stdlib complete)
 
 ## How it's built/verified (per sub-phase)
 - C-ABI exports `#[cfg(feature="freestanding")] #[no_mangle] pub unsafe extern "C"`,
@@ -28,11 +35,16 @@ sub-phase per PR.
 - Push with `SKIP_SMOKE=1` (glibc not yet wired into the boot image).
 
 ## Next task (first command)
-Continue the loop at **G6 — stdio**: `FILE` (ABI layout must match glibc — record in
-`abi/<arch>.toml`), fopen/fdopen/fclose/fread/fwrite, buffering, `printf`/`fprintf`/
-`snprintf`/`vsnprintf` (format engine), `fputs`/`fgets`/`puts`/`putchar`/`getchar`.
-Then G7 stdlib (env/exit/strtol/qsort), G8 posix (fork/exec/wait/glob), … through G19
-(migrate userspace musl→glibc, retire musl).
+Continue the loop at **G8 — posix**: process (fork via clone, vfork, execve +
+execv/execvp/execlp, wait/waitpid via wait4), fds (pipe/pipe2/dup/dup2/dup3),
+fs (getcwd/chdir/access/unlink/mkdir/rmdir/rename/symlink/link/readlink/chmod/chown/
+umask), ids (getpid/getppid/getuid/geteuid/getgid/setuid…), and stat/fstat/lstat/
+fstatat with the glibc `struct stat` layout in abi/<arch>.toml (translate kernel
+statx/newfstatat). Then glob/fnmatch/getopt. Remaining ladder: G9 signal, G10 time,
+G11 pthread, G12 ldso (rtld), G13 net, G14 nss, G15 math, G16 locale, G17
+crypt/rt/termios/setjmp, G18 folded-lib stubs + sysroot, G19 migrate userspace
+musl→glibc + retire musl. Plus G6 follow-ups: stdio buffering + putc/getc macros,
+exact float dtoa.
 
 ## Notes
 - musl path stays buildable until G19. 59 is DRAFT — edit directly (no R-block).
