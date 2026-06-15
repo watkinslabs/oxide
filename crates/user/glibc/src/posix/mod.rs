@@ -13,6 +13,7 @@ pub mod fs;
 pub mod stat;
 pub mod fnmatch;
 pub mod getopt;
+pub mod libgen;
 pub mod dirent;
 #[cfg(feature = "freestanding")]
 pub mod glob;

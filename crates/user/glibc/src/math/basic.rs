@@ -36,6 +36,32 @@ pub(crate) fn fmax(a: f64, b: f64) -> f64 { if isnan(a) { b } else if isnan(b) |
 /// # C: double fdim(double, double) — positive difference max(x-y, 0)
 pub(crate) fn fdim(a: f64, b: f64) -> f64 { if isnan(a) || isnan(b) { f64::NAN } else if a > b { a - b } else { 0.0 } }
 
+/// # C: double nextafter(double, double) — next representable double toward y
+pub(crate) fn nextafter(x: f64, y: f64) -> f64 {
+    if isnan(x) || isnan(y) { return f64::NAN; }
+    if x == y { return y; }
+    if x == 0.0 { return f64::from_bits(1).copysign(y); } // smallest subnormal toward y
+    let mut u = x.to_bits();
+    if (x < y) == (x > 0.0) { u += 1; } else { u -= 1; }
+    f64::from_bits(u)
+}
+
+/// # C: double remquo(double, double, int*) — IEEE remainder + low quotient bits
+pub(crate) fn remquo(x: f64, y: f64, quo: &mut i32) -> f64 {
+    if isnan(x) || isnan(y) || isinf(x) || y == 0.0 { *quo = 0; return f64::NAN; }
+    if isinf(y) { *quo = 0; return x; }
+    // q = round-to-nearest-even of x/y (rint); r = x - q*y. Exact for the
+    // magnitudes real programs use; full subnormal-exact handling is a follow-up.
+    let qf = rint(x / y);
+    let r = x - qf * y;
+    let qi = qf as i64;
+    let neg = (x < 0.0) ^ (y < 0.0);
+    *quo = (qi.unsigned_abs() as i32 & 7) * if neg { -1 } else { 1 };
+    r
+}
+/// # C: double remainder(double, double) — IEEE remainder
+pub(crate) fn remainder(x: f64, y: f64) -> f64 { let mut q = 0; remquo(x, y, &mut q) }
+
 // ---- rounding (musl-style bit ops) ----
 /// # C: double trunc(double)
 pub(crate) fn trunc(x: f64) -> f64 {
@@ -172,6 +198,13 @@ mod exports {
     #[no_mangle] pub extern "C" fn fmax(a: f64, b: f64) -> f64 { super::fmax(a, b) }
     #[no_mangle] pub extern "C" fn fdim(a: f64, b: f64) -> f64 { super::fdim(a, b) }
     #[no_mangle] pub extern "C" fn fdimf(a: f32, b: f32) -> f32 { super::fdim(a as f64, b as f64) as f32 }
+    #[no_mangle] pub extern "C" fn nextafter(x: f64, y: f64) -> f64 { super::nextafter(x, y) }
+    #[no_mangle] pub extern "C" fn remainder(x: f64, y: f64) -> f64 { super::remainder(x, y) }
+    // # C: double remquo(double, double, int *quo)
+    #[no_mangle] pub unsafe extern "C" fn remquo(x: f64, y: f64, quo: *mut i32) -> f64 {
+        // SAFETY: quo is a writable int out-param per remquo(3).
+        unsafe { super::remquo(x, y, &mut *quo) }
+    }
     #[no_mangle] pub extern "C" fn fmod(x: f64, y: f64) -> f64 { super::fmod(x, y) }
     #[no_mangle] pub extern "C" fn ldexp(x: f64, n: i32) -> f64 { super::ldexp(x, n) }
     #[no_mangle] pub extern "C" fn scalbn(x: f64, n: i32) -> f64 { super::scalbn(x, n) }

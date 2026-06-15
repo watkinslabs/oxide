@@ -103,8 +103,8 @@ mod imp {
     /// strong symbol or unsupported type.
     ///
     /// # C: apply each RELA to base+r_offset, symbols via global resolve
-    pub unsafe fn apply<R: Fn(&[u8]) -> Option<u64>>(
-        ctx: &RelocCtx, rela: *const Rela, count: usize, resolve: &R,
+    pub unsafe fn apply<R: Fn(&[u8]) -> Option<u64>, RC: Fn(&[u8]) -> Option<u64>>(
+        ctx: &RelocCtx, rela: *const Rela, count: usize, resolve: &R, resolve_copy: &RC,
     ) -> Result<(), usize> {
         // SAFETY: [rela, rela+count) is a valid RELA array in the object's
         // mapping; each slot base+r_offset is a writable word in a PT_LOAD.
@@ -128,9 +128,12 @@ mod imp {
                         (slot as *mut u64).write(f());
                     }
                     Kind::Copy => {
-                        // memcpy symsize bytes from the resolved symbol to slot.
+                        // memcpy symsize bytes from the symbol's definition in a
+                        // SHARED LIB to the exe's slot. The source lookup must
+                        // exclude the executable itself (whose .bss slot is the
+                        // COPY target) — hence resolve_copy, not resolve.
                         let idx = r_sym(e.r_info);
-                        let src = sym_addr(ctx, idx, resolve).ok_or(i)?;
+                        let src = sym_addr(ctx, idx, resolve_copy).ok_or(i)?;
                         let size = sym_size(ctx, idx);
                         core::ptr::copy_nonoverlapping(src as *const u8, slot as *mut u8, size);
                     }
