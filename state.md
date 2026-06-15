@@ -8,14 +8,13 @@ Driven by a self-paced `/loop` grinding the `docs/59§6` G0–G19 ladder, one
 sub-phase per PR. **Don't stop until ladder complete or hard blocker.**
 
 ## Position
-G0–G14 COMPLETE + G15 (math) in progress. Done: libc core (G0–G11), the full
+G0–G15 COMPLETE (libc core + dyn linker + net + nss + full libm). Done: libc core (G0–G11), the full
 dynamic linker (G12a–h: self-reloc/lib-search/alloc/symbol/versioning/loader/
 relocate/TLS/dlopen — `xtask ldso --check` runs 4 smokes 42/13/7/99), net
 (G13: inet/socket/getaddrinfo), nss (G14: getpw*/getgr*). G15 math: basic,
 sqrt, exp, log family, pow, sin/cos/tan, asin/acos/atan/atan2 — all oracle-tested
 vs host libm (≤2–4 ULP). `xtask glibc --check`=exit0 (90 glibc tests).
-NEXT: G15f — sinh/cosh/tanh/cbrt/hypot/expm1/exp2/asinh/acosh/atanh (remaining
-libm), then G16 locale(+TZ), G17 crypt/rt/termios/setjmp, G18 folded-lib stubs +
+NEXT: G16 locale(+TZ), G17 crypt/rt/termios/setjmp, G18 folded-lib stubs +
 ld.so.cache + sysroot, G19 migrate userspace musl→glibc + retire musl.
 Math follow-ups: bit-exact sqrt, huge-arg trig (Payne–Hanek), dedicated f32 cores.
 
