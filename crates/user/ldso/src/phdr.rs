@@ -6,6 +6,7 @@
 pub const PT_LOAD: u32 = 1;
 pub const PT_DYNAMIC: u32 = 2;
 pub const PT_INTERP: u32 = 3;
+pub const PT_TLS: u32 = 7;
 pub const PT_PHDR: u32 = 6;
 pub const PHDR_SIZE: usize = 56;
 
@@ -49,6 +50,23 @@ pub fn load_vaddr_span(phdrs: &[u8], phnum: usize) -> Option<(u64, u64)> {
     if seen { Some((min, max)) } else { None }
 }
 
+/// PT_TLS descriptor `(vaddr, filesz, memsz, align)` for the TLS init image,
+/// or None if the object has no thread-local storage.
+/// # C: first PT_TLS (p_vaddr, p_filesz, p_memsz, p_align)
+pub fn find_tls(phdrs: &[u8], phnum: usize) -> Option<(u64, u64, u64, u64)> {
+    for i in 0..phnum {
+        let o = i * PHDR_SIZE;
+        if rd_u32(phdrs, o)? == PT_TLS {
+            let vaddr = rd_u64(phdrs, o + 16)?;
+            let filesz = rd_u64(phdrs, o + 32)?; // p_filesz @32
+            let memsz = rd_u64(phdrs, o + 40)?; // p_memsz @40
+            let align = rd_u64(phdrs, o + 48)?; // p_align @48
+            return Some((vaddr, filesz, memsz, align));
+        }
+    }
+    None
+}
+
 /// App load bias from AT_PHDR: the kernel-reported phdr address minus the
 /// link-time vaddr of the PT_PHDR segment. (For a PIE both differ by the
 /// load bias; for a non-PIE PT_PHDR.p_vaddr == AT_PHDR so bias is 0.)
@@ -70,6 +88,18 @@ mod tests {
         e[16..24].copy_from_slice(&vaddr.to_le_bytes());
         e[40..48].copy_from_slice(&memsz.to_le_bytes());
         e
+    }
+
+    #[test]
+    fn finds_tls() {
+        let mut t = Vec::new();
+        t.extend(phdr(PT_LOAD, 0, 0x1000));
+        let mut tls = phdr(PT_TLS, 0x2000, 0x40);
+        tls[32..40].copy_from_slice(&0x18u64.to_le_bytes()); // filesz
+        tls[48..56].copy_from_slice(&0x10u64.to_le_bytes()); // align
+        t.extend(tls);
+        assert_eq!(find_tls(&t, 2), Some((0x2000, 0x18, 0x40, 0x10)));
+        assert_eq!(find_tls(&phdr(PT_LOAD, 0, 0x10), 1), None);
     }
 
     #[test]
