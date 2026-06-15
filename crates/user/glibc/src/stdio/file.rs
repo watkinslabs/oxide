@@ -67,6 +67,22 @@ pub(crate) unsafe fn fd_of(f: *mut FILE) -> i32 {
     unsafe { (*f)._fileno }
 }
 
+// Memory streams (fmemopen/open_memstream) have no fd: _fileno == -1 and a
+// MemCookie pointer is stashed in the otherwise-unused _codecvt field.
+pub(crate) unsafe fn is_mem(f: *mut FILE) -> bool {
+    // SAFETY: f is a valid FILE pointer; memory streams mark _fileno = -1.
+    unsafe { (*f)._fileno < 0 }
+}
+pub(crate) unsafe fn set_cookie(f: *mut FILE, c: *mut u8) {
+    // SAFETY: f is a valid FILE; repurpose _codecvt (unused: no wide I/O) to
+    // hold the memory-stream cookie pointer, and mark the stream fd-less.
+    unsafe { (*f)._codecvt = c; (*f)._fileno = -1; }
+}
+pub(crate) unsafe fn cookie(f: *mut FILE) -> *mut u8 {
+    // SAFETY: f is a valid memory stream; read the cookie pointer back.
+    unsafe { (*f)._codecvt }
+}
+
 #[cfg(feature = "freestanding")]
 pub(crate) use streams::{alloc_file, free_file, is_std, set_eof, set_unget, stdin_ptr, stdout_ptr, take_unget};
 

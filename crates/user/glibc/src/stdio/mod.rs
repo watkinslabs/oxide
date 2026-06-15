@@ -14,3 +14,5 @@ pub mod read;
 pub mod scanf;
 #[cfg(feature = "freestanding")]
 pub mod put;
+#[cfg(feature = "freestanding")]
+pub mod memstream;
