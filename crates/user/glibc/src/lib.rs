@@ -56,6 +56,7 @@ pub mod dlfcn; //  G12 (binds crates/user/ldso)
 pub mod net; //  G13
 pub mod nss; //  G14 (dispatches crates/user/nss)
 pub mod math; //  G15
+pub mod fenv; //  G15 (<fenv.h> FP environment)
 pub mod locale; //  G16
 pub mod crypt; //  G17
 pub mod rt; //  G17
