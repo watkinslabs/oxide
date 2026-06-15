@@ -6,9 +6,11 @@ use core::ffi::c_void;
 
 pub(crate) type AtexitFn = extern "C" fn();
 pub(crate) type CxaFn = extern "C" fn(*mut c_void);
+// on_exit handler: void (*)(int status, void *arg).
+pub(crate) type OnExitFn = extern "C" fn(i32, *mut c_void);
 
 #[derive(Clone, Copy)]
-pub(crate) enum Slot { Plain(AtexitFn), Cxa(CxaFn, *mut c_void) }
+pub(crate) enum Slot { Plain(AtexitFn), Cxa(CxaFn, *mut c_void), OnExit(OnExitFn, *mut c_void) }
 
 const SLOTS: usize = 64;
 
@@ -20,15 +22,20 @@ impl Registry {
     pub(crate) fn push(&mut self, s: Slot) -> bool {
         if self.n < SLOTS { self.slots[self.n] = Some(s); self.n += 1; true } else { false }
     }
-    /// # C: invoke all registered handlers in LIFO order, once each
-    pub(crate) unsafe fn run(&mut self) {
+    /// # C: invoke all registered handlers in LIFO order, once each (`code` is
+    /// the process exit status, passed to on_exit handlers)
+    pub(crate) unsafe fn run(&mut self, code: i32) {
         // Each slot holds a handler the caller registered; call each once,
         // newest first. (Calling the fn pointers is type-safe; the unsafe
         // contract is that the registered pointers are still valid.)
         while self.n > 0 {
             self.n -= 1;
             if let Some(s) = self.slots[self.n].take() {
-                match s { Slot::Plain(f) => f(), Slot::Cxa(f, a) => f(a) }
+                match s {
+                    Slot::Plain(f) => f(),
+                    Slot::Cxa(f, a) => f(a),
+                    Slot::OnExit(f, a) => f(code, a),
+                }
             }
         }
     }
@@ -70,21 +77,22 @@ mod imp {
         if ok { 0 } else { -1 }
     }
 
-    // run the atexit registry (called by exit()).
-    pub(crate) unsafe fn run_atexit() {
+    // run the atexit registry (called by exit()), passing the exit status to
+    // any on_exit handlers.
+    pub(crate) unsafe fn run_atexit(code: i32) {
         // SAFETY: drains the atexit registry once under the lock; handlers
         // were registered by the program and are called newest-first.
         unsafe {
             while G.lock.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { core::hint::spin_loop(); }
-            (*G.at.get()).run();
+            (*G.at.get()).run(code);
             G.lock.store(false, Ordering::Release);
         }
     }
-    unsafe fn run_quick() {
+    unsafe fn run_quick(code: i32) {
         // SAFETY: drains the at_quick_exit registry once under the lock.
         unsafe {
             while G.lock.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { core::hint::spin_loop(); }
-            (*G.quick.get()).run();
+            (*G.quick.get()).run(code);
             G.lock.store(false, Ordering::Release);
         }
     }
@@ -98,20 +106,23 @@ mod imp {
     // # C: int at_quick_exit(void (*fn)(void))
     #[no_mangle]
     pub extern "C" fn at_quick_exit(f: AtexitFn) -> i32 { reg(Slot::Plain(f), true) }
+    // # C: int on_exit(void (*fn)(int, void*), void *arg)
+    #[no_mangle]
+    pub extern "C" fn on_exit(f: OnExitFn, arg: *mut c_void) -> i32 { reg(Slot::OnExit(f, arg), false) }
 
     // # C: _Noreturn void exit(int) — run atexit handlers (LIFO) then exit.
     #[no_mangle]
     pub extern "C" fn exit(code: i32) -> ! {
         // SAFETY: run_atexit drains the registry; no stdio buffering yet to
         // flush (G6 follow-up).
-        unsafe { run_atexit(); }
+        unsafe { run_atexit(code); }
         exit_group(code)
     }
     // # C: _Noreturn void quick_exit(int)
     #[no_mangle]
     pub extern "C" fn quick_exit(code: i32) -> ! {
         // SAFETY: runs the at_quick_exit list then terminates.
-        unsafe { run_quick(); }
+        unsafe { run_quick(code); }
         exit_group(code)
     }
     // # C: _Noreturn void _exit(int) — no atexit, no flush.
@@ -148,7 +159,7 @@ mod tests {
         assert!(r.push(Slot::Plain(h1)));
         assert!(r.push(Slot::Plain(h2)));
         // SAFETY: the three handlers are valid; run drains LIFO.
-        unsafe { r.run(); }
+        unsafe { r.run(0); }
         assert_eq!(ORDER[0].load(Ordering::Relaxed), 12);
         assert_eq!(ORDER[1].load(Ordering::Relaxed), 11);
         assert_eq!(ORDER[2].load(Ordering::Relaxed), 10);
