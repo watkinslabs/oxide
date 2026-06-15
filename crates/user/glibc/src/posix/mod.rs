@@ -23,3 +23,5 @@ pub mod argz;
 pub mod mntent;
 #[cfg(feature = "freestanding")]
 pub mod ftw;
+#[cfg(feature = "freestanding")]
+pub mod utmp;
