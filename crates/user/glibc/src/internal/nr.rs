@@ -154,6 +154,20 @@ pub mod x86_64 {
     pub const SETSOCKOPT: usize = 54;
     pub const GETSOCKOPT: usize = 55;
     pub const ACCEPT4: usize = 288;
+    // process control + timers + system-info (syscall_64.tbl)
+    pub const SELECT: usize = 23;
+    pub const GETITIMER: usize = 36;
+    pub const ALARM: usize = 37;
+    pub const SETITIMER: usize = 38;
+    pub const SYSINFO: usize = 99;
+    pub const TIMES: usize = 100;
+    pub const SETREUID: usize = 113;
+    pub const SETREGID: usize = 114;
+    pub const GETGROUPS: usize = 115;
+    pub const SETRESUID: usize = 117;
+    pub const SETRESGID: usize = 119;
+    pub const SETTIMEOFDAY: usize = 164;
+    pub const PSELECT6: usize = 270;
 }
 
 pub mod aarch64 {
@@ -283,4 +297,18 @@ pub mod aarch64 {
     pub const SENDMSG: usize = 211;
     pub const RECVMSG: usize = 212;
     pub const ACCEPT4: usize = 242;
+    // process control + timers + system-info (asm-generic/unistd.h).
+    // No alarm/select/getitimer-legacy slots: alarm composes from setitimer,
+    // select composes from pselect6 (same as io.rs openat/poll composition).
+    pub const PSELECT6: usize = 72;
+    pub const GETITIMER: usize = 102;
+    pub const SETITIMER: usize = 103;
+    pub const TIMES: usize = 153;
+    pub const SETTIMEOFDAY: usize = 170;
+    pub const SETREGID: usize = 143;
+    pub const SETREUID: usize = 145;
+    pub const SETRESUID: usize = 147;
+    pub const SETRESGID: usize = 149;
+    pub const GETGROUPS: usize = 158;
+    pub const SYSINFO: usize = 179;
 }
