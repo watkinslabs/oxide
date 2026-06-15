@@ -147,3 +147,94 @@ pub unsafe extern "C" fn argz_next(argz: *const u8, len: usize, entry: *const u8
         if next < end { next as *mut u8 } else { core::ptr::null_mut() }
     }
 }
+
+// # C: error_t argz_add_sep(char **argz, size_t *len, const char *str, int delim)
+#[no_mangle]
+pub unsafe extern "C" fn argz_add_sep(argz: *mut *mut u8, len: *mut usize, s: *const u8, delim: i32) -> i32 {
+    // SAFETY: argz/len a valid pair; s NUL-terminated. Split s on `delim` and
+    // append each (non-empty) field as a new argz entry.
+    unsafe {
+        let d = delim as u8;
+        let total = strlen_impl(s);
+        let mut i = 0;
+        while i < total {
+            while i < total && *s.add(i) == d { i += 1; }
+            let start = i;
+            while i < total && *s.add(i) != d { i += 1; }
+            if i > start {
+                let old = *len;
+                let seg = i - start;
+                if !resize(argz, old, old + seg + 1) { return ENOMEM; }
+                core::ptr::copy_nonoverlapping(s.add(start), (*argz).add(old), seg);
+                *(*argz).add(old + seg) = 0;
+                *len = old + seg + 1;
+            }
+        }
+        0
+    }
+}
+
+// # C: void argz_delete(char **argz, size_t *len, char *entry)
+#[no_mangle]
+pub unsafe extern "C" fn argz_delete(argz: *mut *mut u8, len: *mut usize, entry: *mut u8) {
+    // SAFETY: argz/len a valid pair; entry is null (no-op) or points at an
+    // entry within the buffer. Splice out the entry + its NUL and shrink.
+    unsafe {
+        if entry.is_null() { return; }
+        let base = *argz;
+        let off = (entry as usize) - (base as usize);
+        let elen = strlen_impl(entry) + 1;
+        let old = *len;
+        let tail = old - off - elen;
+        core::ptr::copy(entry.add(elen), entry, tail);
+        let nl = old - elen;
+        if nl == 0 { heap::free(base); *argz = core::ptr::null_mut(); *len = 0; return; }
+        let p = heap::realloc(base, nl);
+        if !p.is_null() { *argz = p; }
+        *len = nl;
+    }
+}
+
+// # C: error_t argz_insert(char **argz, size_t *len, char *before, const char *entry)
+#[no_mangle]
+pub unsafe extern "C" fn argz_insert(argz: *mut *mut u8, len: *mut usize, before: *mut u8, entry: *const u8) -> i32 {
+    // SAFETY: argz/len a valid pair; before is null (append) or points at an
+    // entry within the buffer; entry NUL-terminated. Grow + open a gap + copy.
+    unsafe {
+        let elen = strlen_impl(entry) + 1;
+        let old = *len;
+        if before.is_null() { return argz_add(argz, len, entry); }
+        let off = (before as usize) - (*argz as usize);
+        if !resize(argz, old, old + elen) { return ENOMEM; }
+        let base = *argz;
+        core::ptr::copy(base.add(off), base.add(off + elen), old - off);
+        core::ptr::copy_nonoverlapping(entry, base.add(off), elen);
+        *len = old + elen;
+        0
+    }
+}
+
+// # C: error_t argz_replace(char **argz, size_t *len, const char *str, const char *with, unsigned *replace_count)
+#[no_mangle]
+pub unsafe extern "C" fn argz_replace(argz: *mut *mut u8, len: *mut usize, str: *const u8, with: *const u8, replace_count: *mut u32) -> i32 {
+    // SAFETY: argz/len a valid pair; str/with NUL-terminated. Replace every
+    // entry equal to `str` with `with`, rebuilding the buffer; report count.
+    unsafe {
+        use crate::string::cmp::strcmp_impl;
+        let mut nz: *mut u8 = core::ptr::null_mut();
+        let mut nl = 0usize;
+        let mut count = 0u32;
+        let mut e = argz_next(*argz, *len, core::ptr::null());
+        while !e.is_null() {
+            let rep = strcmp_impl(e, str) == 0;
+            let src = if rep { count += 1; with } else { e as *const u8 };
+            if argz_add(&mut nz, &mut nl, src) != 0 { heap::free(nz); return ENOMEM; }
+            e = argz_next(*argz, *len, e);
+        }
+        heap::free(*argz);
+        *argz = nz;
+        *len = nl;
+        if !replace_count.is_null() { *replace_count += count; }
+        0
+    }
+}

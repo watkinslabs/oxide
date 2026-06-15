@@ -306,6 +306,60 @@ mod imp {
     }
 }
 
+// Reusable table-driven long-opt scanner (shared with argp). `longopt` mirrors
+// the C `struct option`; getopt_long_table is the slice-typed core of
+// getopt_long without touching the C globals (argp keeps its own cursor).
+#[derive(Clone, Copy)]
+#[allow(non_camel_case_types)]
+pub(crate) struct longopt { pub name: *const u8, pub has_arg: i32, pub flag: *mut i32, pub val: i32 }
+
+// One getopt_long step over a slice argv with an explicit longopts slice and
+// cursor. Same semantics as getopt_long: returns the val, -1 at end, '?'/':'.
+pub(crate) unsafe fn getopt_long_table(argv: &mut [*const u8], optstring: *const u8, longs: &[longopt], st: &mut St) -> i32 {
+    // SAFETY: argv entries NUL-terminated; optstring/longs valid; cursor st.
+    unsafe {
+        let argc = argv.len() as i32;
+        let mode = opt_mode(optstring);
+        if st.pos == 0 {
+            if let Some(rv) = advance(argv, mode, st) { return rv; }
+        }
+        let arg = argv[st.optind as usize];
+        if st.pos == 1 && *arg == b'-' && *arg.add(1) == b'-' && *arg.add(2) != 0 {
+            let body = arg.add(2);
+            let mut nlen = 0usize;
+            while *body.add(nlen) != 0 && *body.add(nlen) != b'=' { nlen += 1; }
+            let has_eq = *body.add(nlen) == b'=';
+            let (mut chosen, mut nmatch, mut exact) = (-1isize, 0i32, -1isize);
+            for (i, o) in longs.iter().enumerate() {
+                if o.name.is_null() { break; }
+                let olen = strlen_impl(o.name);
+                if olen >= nlen && (0..nlen).all(|k| *o.name.add(k) == *body.add(k)) {
+                    if olen == nlen { exact = i as isize; break; }
+                    chosen = i as isize; nmatch += 1;
+                }
+            }
+            let sel = if exact >= 0 { exact } else if nmatch == 1 { chosen } else { -1 };
+            st.pos = 0;
+            if sel < 0 { st.optind += 1; return b'?' as i32; }
+            let o = &longs[sel as usize];
+            st.optind += 1;
+            st.optarg = core::ptr::null_mut();
+            if o.has_arg != 0 {
+                if has_eq { st.optarg = body.add(nlen + 1) as *mut u8; }
+                else if o.has_arg == 1 {
+                    if st.optind < argc { st.optarg = argv[st.optind as usize] as *mut u8; st.optind += 1; }
+                    else { st.optopt = o.val; return b'?' as i32; }
+                }
+            }
+            if !o.flag.is_null() { *o.flag = o.val; return 0; }
+            return o.val;
+        }
+        getopt_core(argv, optstring, st)
+    }
+}
+
+use crate::string::len::strlen_impl;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -112,7 +112,7 @@ pub const IO_NO_WRITES: i32 = 0x0008;
 pub const IO_CURRENTLY_PUTTING: i32 = 0x0800;
 
 #[cfg(feature = "freestanding")]
-pub(crate) use streams::{alloc_file, free_file, is_std, set_eof, set_unget, stdin_ptr, stdout_ptr,
+pub(crate) use streams::{alloc_file, free_file, is_std, set_eof, set_unget, stdin_ptr, stdout_ptr, stderr_ptr,
     take_unget, get_orient, set_orient, set_wunget, take_wunget,
     set_buf, buf_size, set_bufmode, last_was_read, mark_read, mark_write,
     set_popen_pid, popen_pid};
