@@ -25,18 +25,20 @@ the largest sub-phase, split into its own ladder G12a–G12g.
   in-process image buffer, `syscall.rs` standalone rtld syscalls)
 
 ## G12 ladder (the rtld — docs/59§5, docs/31)
-- G12a ✓ self-reloc bootstrap + crate skeleton
-- G12b — DT_NEEDED graph + lib search (LD_LIBRARY_PATH/ld.so.cache) + mmap PT_LOAD
-- G12c — symbol resolution + full reloc set (reuse `crate::dl` engine: RELA/JMPREL/
-  GLOB_DAT/JUMP_SLOT/64/IRELATIVE/COPY)
-- G12d — symbol versioning (VERSYM/VERNEED, GLIBC_2.x matching)
-- G12e — TLS (static+dynamic block, DTV, __tls_get_addr, TPOFF/DTPMOD/DTPOFF) +
+- G12a ✓ #1867 self-reloc bootstrap + crate skeleton (dynamic.rs/reloc.rs/syscall.rs)
+- G12b ✓ #1868 library lookup (search.rs paths + cache.rs ld.so.cache + fs syscalls)
+- G12c ✓ #1869 rtld core: bump.rs allocator (+freestanding #[global_allocator]) +
+  symbol.rs (SymView + GNU/sysv hash resolve via elf::hash)
+- G12d ✓ #1870 link map (linkmap.rs: DT_NEEDED BFS dependency_order + lookup_global)
+  — REMAINING G12d: the runnable-rtld milestone (see Next task)
+- G12e — symbol versioning (VERSYM/VERNEED, GLIBC_2.x matching)
+- G12f — TLS (static+dynamic block, DTV, __tls_get_addr, TPOFF/DTPMOD/DTPOFF) +
   **per-thread errno** (move errno into the TCB now that main+threads have one)
-- G12f — lazy PLT (_dl_runtime_resolve trampoline) + .init_array order + handoff
-- G12g — dlopen/dlsym/dlclose/dladdr/dlinfo (libdl, folded into libc.so.6)
+- G12g — lazy PLT (_dl_runtime_resolve trampoline) + .init_array order + handoff
+- G12h — dlopen/dlsym/dlclose/dladdr/dlinfo (libdl, folded into libc.so.6)
 - Verification gap: full dynamic run needs libc.so.6 + ld-linux built and a
   dynamically-linked binary run on the HOST kernel (same trick as the static
-  `xtask glibc --check`); build that dynamic-run harness around G12b/c.
+  `xtask glibc --check`); that harness is built as part of remaining-G12d.
 
 ## How it's built/verified (per sub-phase)
 - C-ABI exports `#[cfg(feature="freestanding")] #[no_mangle] pub unsafe extern "C"`
@@ -50,12 +52,25 @@ the largest sub-phase, split into its own ladder G12a–G12g.
 - Push with `SKIP_SMOKE=1` (glibc/ldso not yet wired into the boot image).
 
 ## Next task (first command)
-Continue the loop at **G12b**: in `crates/user/ldso` add the freestanding loader
-core — DT_NEEDED dependency walk, library search path (LD_LIBRARY_PATH, /lib64,
-/lib, ld.so.cache parse), and mmap-based PT_LOAD mapping of each DSO (openat+mmap
-via `syscall.rs`, extended with NR_OPENAT/NR_MMAP/NR_CLOSE/NR_READ/NR_PREAD64 +
-NR_FSTAT). Hosted-test the search-path resolution + a fake ld.so.cache parse;
-defer the real mmap run to the dynamic-run harness (G12c).
+Continue the loop at **remaining-G12d — the runnable-rtld milestone** (mostly
+freestanding; verified by a NEW host harness):
+1. `loader.rs` (freestanding): given a path, openat + read ehdr/phdrs, mmap each
+   PT_LOAD at load_bias (first map a placeholder span for the whole image to pick
+   a bias, then mmap PT_LOADs MAP_FIXED with p_flags→prot, bss zero-fill, W^X).
+   Return base + parsed DynInfo + symtab/strtab/hash windows → an ObjView.
+2. `relocate.rs` (freestanding): in-place full reloc applier over real mappings
+   (not crate::dl's Vec buffers) — RELATIVE/GLOB_DAT/JUMP_SLOT/64/IRELATIVE/COPY,
+   resolving symbols via linkmap::lookup_global. (reloc.rs already does RELATIVE.)
+3. `entry.rs` + global_asm `_dl_start`/`_start`: read initial SP, compute the
+   rtld's own load bias (PC-relative _DYNAMIC), call reloc::relocate_self, then
+   _dl_main(sp): load the app + its DT_NEEDED graph, relocate all, run init_array,
+   jump to the app entry with the original SP/auxv.
+4. DYNAMIC-RUN HARNESS: extend tools/xtask — build libc.so.6 (cdylib, soname
+   libc.so.6) + ld-linux-x86-64.so.2 (ldso cdylib) for both -gnu arches; compile a
+   tiny dyn binary with `-Wl,--dynamic-linker=<our ld>` + `-Wl,-rpath`; run on the
+   HOST kernel; assert it executes (prints + exit 0). x86 runs locally; arm = build
+   + QEMU later. This is the gate that proves the rtld actually links+runs.
+Split into 2-3 PRs if large (loader+reloc first, then entry+harness).
 
 ## Notes
 - musl path stays buildable until G19. 59 is DRAFT — edit directly (no R-block).
