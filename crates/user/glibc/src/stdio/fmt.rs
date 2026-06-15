@@ -198,47 +198,81 @@ impl Sink for Buf {
     fn count(&self) -> usize { self.n }
 }
 
+// Decimal exponent X of a magnitude (X such that mag = d.ddd × 10^X); 0 for 0.
+fn decimal_exp(mag: f64) -> i32 {
+    if mag == 0.0 || !mag.is_finite() { return 0; }
+    let mut b = Buf { b: [0; 512], n: 0 };
+    { let mut a = Adapter(&mut b); let _ = write!(a, "{:e}", mag); } // "d.dddeN"
+    let mut i = 0;
+    while i < b.n && b.b[i] != b'e' { i += 1; }
+    i += 1;
+    let neg = i < b.n && b.b[i] == b'-';
+    if neg { i += 1; }
+    let mut x: i32 = 0;
+    while i < b.n { x = x * 10 + (b.b[i] - b'0') as i32; i += 1; }
+    if neg { -x } else { x }
+}
+
+// Strip trailing zeros (and a bare trailing '.') from body[..end] — %g without
+// '#'. No-op if there is no decimal point.
+fn strip_zeros(body: &mut [u8], mut end: usize) -> usize {
+    if !body[..end].contains(&b'.') { return end; }
+    while end > 0 && body[end - 1] == b'0' { end -= 1; }
+    if end > 0 && body[end - 1] == b'.' { end -= 1; }
+    end
+}
+
 // Render a float per C printf semantics: sign (or +/space flag), C-style
 // exponent (e±dd, ≥2 digits) for e/E, then field-width + zero/space padding.
 // f/e/g share sign+pad; only the magnitude rendering differs.
 fn fmt_float(out: &mut dyn Sink, sp: &Spec, v: f64) {
     let neg = v.is_sign_negative() && !v.is_nan();
     let mag = if neg { -v } else { v };
-    let prec = sp.prec.unwrap_or(6);
+    let upper = sp.conv == b'E' || sp.conv == b'G';
+    // Decide the effective rendering: e-style vs f-style and its precision.
+    // %g (C): P sig digits (default 6, min 1); use f-style iff -4 ≤ X < P where
+    // X is the decimal exponent, else e-style; then strip trailing zeros.
+    let is_g = sp.conv == b'g' || sp.conv == b'G';
+    let (estyle, rprec) = match sp.conv {
+        b'e' | b'E' => (true, sp.prec.unwrap_or(6)),
+        b'g' | b'G' => {
+            let p = sp.prec.unwrap_or(6).max(1);
+            let x = decimal_exp(mag);
+            if x >= -4 && x < p as i32 { (false, (p as i32 - 1 - x).max(0) as usize) }
+            else { (true, p - 1) }
+        }
+        _ => (false, sp.prec.unwrap_or(6)),
+    };
     let mut buf = Buf { b: [0; 512], n: 0 };
     {
         let mut a = Adapter(&mut buf);
-        match sp.conv {
-            b'e' | b'E' => { let _ = write!(a, "{:.*e}", prec, mag); }
-            b'g' | b'G' => { let _ = write!(a, "{}", mag); }
-            _ => { let _ = write!(a, "{:.*}", prec, mag); }
-        }
+        if estyle { let _ = write!(a, "{:.*e}", rprec, mag); }
+        else { let _ = write!(a, "{:.*}", rprec, mag); }
     }
     // Rust renders the exponent as "...eN" (no sign/pad); rewrite to C "e±NN".
+    // For %g, strip trailing zeros from the fraction (and a bare '.') unless '#'.
     let mut body = [0u8; 512];
     let mut bn = 0usize;
-    let upper = sp.conv == b'E' || sp.conv == b'G';
+    let mut frac_end = 0usize; // index in body where the fraction (mantissa) ends
     let mut i = 0usize;
     while i < buf.n {
         let c = buf.b[i];
-        if (c == b'e' || c == b'E') && (sp.conv == b'e' || sp.conv == b'E') {
+        if (c == b'e' || c == b'E') && estyle {
+            frac_end = bn;
+            if is_g && !sp.alt { bn = strip_zeros(&mut body, bn); frac_end = bn; }
             body[bn] = if upper { b'E' } else { b'e' }; bn += 1;
             i += 1;
             let esign = if i < buf.n && buf.b[i] == b'-' { i += 1; b'-' } else { b'+' };
             body[bn] = esign; bn += 1;
             let estart = i;
             while i < buf.n { body[bn] = buf.b[i]; bn += 1; i += 1; }
-            // pad exponent digits to ≥2 by inserting a '0' if only one digit
-            if i - estart == 1 {
-                body[bn] = body[bn - 1];
-                body[bn - 1] = b'0';
-                bn += 1;
-            }
+            if i - estart == 1 { body[bn] = body[bn - 1]; body[bn - 1] = b'0'; bn += 1; }
         } else {
             body[bn] = if upper { c.to_ascii_uppercase() } else { c }; bn += 1;
             i += 1;
         }
     }
+    if is_g && !sp.alt && frac_end == 0 { bn = strip_zeros(&mut body, bn); } // f-style %g
     let sign: &[u8] = if neg { b"-" } else if sp.plus { b"+" } else if sp.space { b" " } else { b"" };
     // width padding: zero-fill (after sign) unless left-justified; floats
     // zero-pad even when a precision is set (unlike integers).

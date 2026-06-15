@@ -33,6 +33,8 @@ pub(crate) fn copysignf(x: f32, y: f32) -> f32 {
 pub(crate) fn fmin(a: f64, b: f64) -> f64 { if isnan(a) { b } else if isnan(b) || a < b { a } else { b } }
 /// # C: double fmax(double, double)
 pub(crate) fn fmax(a: f64, b: f64) -> f64 { if isnan(a) { b } else if isnan(b) || a > b { a } else { b } }
+/// # C: double fdim(double, double) — positive difference max(x-y, 0)
+pub(crate) fn fdim(a: f64, b: f64) -> f64 { if isnan(a) || isnan(b) { f64::NAN } else if a > b { a - b } else { 0.0 } }
 
 // ---- rounding (musl-style bit ops) ----
 /// # C: double trunc(double)
@@ -168,6 +170,8 @@ mod exports {
     #[no_mangle] pub extern "C" fn copysign(x: f64, y: f64) -> f64 { super::copysign(x, y) }
     #[no_mangle] pub extern "C" fn fmin(a: f64, b: f64) -> f64 { super::fmin(a, b) }
     #[no_mangle] pub extern "C" fn fmax(a: f64, b: f64) -> f64 { super::fmax(a, b) }
+    #[no_mangle] pub extern "C" fn fdim(a: f64, b: f64) -> f64 { super::fdim(a, b) }
+    #[no_mangle] pub extern "C" fn fdimf(a: f32, b: f32) -> f32 { super::fdim(a as f64, b as f64) as f32 }
     #[no_mangle] pub extern "C" fn fmod(x: f64, y: f64) -> f64 { super::fmod(x, y) }
     #[no_mangle] pub extern "C" fn ldexp(x: f64, n: i32) -> f64 { super::ldexp(x, n) }
     #[no_mangle] pub extern "C" fn scalbn(x: f64, n: i32) -> f64 { super::scalbn(x, n) }
