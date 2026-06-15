@@ -21,6 +21,11 @@ char *getenv(const char *name);
 int   setenv(const char *name, const char *value, int overwrite);
 int   strcmp(const char *a, const char *b);
 int   atexit(void (*fn)(void));
+int   fork(void);
+int   execvp(const char *file, char *const argv[]);
+int   waitpid(int pid, int *status, int options);
+int   getppid(void);
+void  _exit(int code);
 
 static void on_exit_handler(void) {
     static const char m[] = "atexit-ok\n";
@@ -61,6 +66,19 @@ int main(int argc, char **argv, char **envp) {
     if (fscanf(rf, "%s %d", word, &num) != 2) return 14;
     if (memcmp(word, "xyz", 4) != 0 || num != 314) return 15;
     fclose(rf);
+
+    /* process: fork + execvp(/bin/true-ish) + waitpid */
+    if (getppid() <= 0) return 18;
+    int pid = fork();
+    if (pid < 0) return 19;
+    if (pid == 0) {
+        char *av[] = { "true", 0 };
+        execvp("true", av);
+        _exit(127); /* exec failed */
+    }
+    int st = 0;
+    if (waitpid(pid, &st, 0) != pid) return 20;
+    if (((st & 0x7f) != 0) || (((st >> 8) & 0xff) != 0)) return 21; /* child exit 0 */
 
     /* env: setenv then getenv round-trip */
     if (setenv("OXIDE_G7C", "yes", 1) != 0) return 16;

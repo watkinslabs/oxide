@@ -50,7 +50,7 @@ pub(crate) unsafe fn make_entry(name: *const u8, value: *const u8) -> *mut u8 {
 }
 
 #[cfg(feature = "freestanding")]
-pub(crate) use imp::init_environ;
+pub(crate) use imp::{current_environ, init_environ};
 
 #[cfg(feature = "freestanding")]
 mod imp {
@@ -93,6 +93,12 @@ mod imp {
     pub(crate) unsafe fn init_environ(envp: *mut *mut u8) {
         // SAFETY: envp is the kernel-provided NULL-terminated env array.
         unsafe { store(envp); }
+    }
+
+    /// # C: the current environ array (for execv/execvp/system)
+    pub(crate) fn current_environ() -> *mut *mut u8 {
+        // SAFETY: a plain pointer load; the array stays valid for the process.
+        unsafe { load() }
     }
 
     // ensure environ points at a malloc'd array with room for ≥1 more.

@@ -2,3 +2,7 @@
 //! write/read land early (G2), mmap/brk at G3, for the entry + malloc paths.
 pub mod io;
 pub mod mman;
+#[cfg(feature = "freestanding")]
+pub mod ids;
+#[cfg(feature = "freestanding")]
+pub mod process;
