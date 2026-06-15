@@ -33,6 +33,7 @@ pub fn join_path(dir: &[u8], name: &[u8], out: &mut [u8]) -> Option<usize> {
 pub struct Colon<'a> { rest: &'a [u8] }
 
 impl<'a> Colon<'a> {
+    /// # C: O(1)
     pub fn new(s: &'a [u8]) -> Self { Colon { rest: s } }
 }
 
@@ -51,6 +52,7 @@ impl<'a> Iterator for Colon<'a> {
 
 /// True if `name` is an explicit path (contains '/') — used verbatim, not
 /// searched, per the dynamic-linker contract.
+/// # C: O(n)
 pub fn is_path(name: &[u8]) -> bool { name.contains(&b'/') }
 
 /// Resolve `name` to a NUL-terminated path in `out`, using `exists` to probe

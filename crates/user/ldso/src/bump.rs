@@ -14,6 +14,7 @@ pub struct Bump {
 }
 
 impl Bump {
+    /// # C: O(1)
     pub const fn new() -> Self {
         Bump { cur: AtomicUsize::new(0), end: AtomicUsize::new(0) }
     }
