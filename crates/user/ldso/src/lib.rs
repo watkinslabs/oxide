@@ -30,6 +30,7 @@ pub mod reloc;
 pub mod relocate;
 pub mod search;
 pub mod symbol;
+pub mod tls;
 pub mod version;
 
 #[cfg(feature = "freestanding")]
