@@ -122,7 +122,12 @@ mod imp {
     pub extern "C" fn _Exit(code: i32) -> ! { exit_group(code) }
     // # C: _Noreturn void abort(void)
     #[no_mangle]
-    pub extern "C" fn abort() -> ! { exit_group(134) } // 128 + SIGABRT; real raise at G9
+    pub extern "C" fn abort() -> ! {
+        // SAFETY: raise SIGABRT (default action terminates with core); if a
+        // handler returns or it's blocked/ignored, fall back to exit_group.
+        unsafe { crate::signal::sig::raise(6); }
+        exit_group(134) // 128 + SIGABRT
+    }
 }
 
 #[cfg(test)]
