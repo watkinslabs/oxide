@@ -485,8 +485,8 @@ fn fmt_float(out: &mut dyn Sink, sp: &Spec, v: f64) {
     let mag = if neg { -v } else { v };
     let upper = matches!(sp.conv, b'E' | b'G' | b'F');
     // inf/nan: glibc spells them "inf"/"nan" (upper conversions "INF"/"NAN");
-    // core::fmt would render "NaN", so handle them here. nan carries no sign.
-    if v.is_nan() { emit_float_body(out, sp, false, b"", if upper { b"NAN" } else { b"nan" }, false); return; }
+    // core::fmt would render "NaN". A NaN with its sign bit set prints "-nan".
+    if v.is_nan() { emit_float_body(out, sp, v.is_sign_negative(), b"", if upper { b"NAN" } else { b"nan" }, false); return; }
     if v.is_infinite() { emit_float_body(out, sp, neg, b"", if upper { b"INF" } else { b"inf" }, false); return; }
     // Decide the effective rendering: e-style vs f-style and its precision.
     // %g (C): P sig digits (default 6, min 1); use f-style iff -4 ≤ X < P where
