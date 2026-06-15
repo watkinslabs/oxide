@@ -105,6 +105,28 @@ void *pthread_getspecific(pthread_key_t k);
 int pthread_setspecific(pthread_key_t k, const void *v);
 static pthread_key_t g_key;
 static volatile int g_key_thread_ok = 0;
+
+/* G12f: per-thread errno isolation. Both threads set a distinct errno via a
+ * failing call, sync so both have set, then re-read — each must still see its
+ * own value (would be clobbered if errno were a single global). */
+extern int *__errno_location(void);
+#define ERRNO (*__errno_location())
+static volatile int g_eb = 0;
+static void *errno_worker_a(void *a) {
+    (void)a;
+    open("/no/such/path/a", 0, 0);          /* -> ENOENT (2) */
+    __sync_fetch_and_add(&g_eb, 1);
+    while (g_eb < 2) { }
+    return (void *)(long)ERRNO;
+}
+static void *errno_worker_b(void *a) {
+    (void)a;
+    close(-1);                               /* -> EBADF (9) */
+    __sync_fetch_and_add(&g_eb, 1);
+    while (g_eb < 2) { }
+    return (void *)(long)ERRNO;
+}
+
 static void *key_worker(void *a) {
     (void)a;
     pthread_setspecific(g_key, (void *)0x222);
@@ -276,6 +298,15 @@ int main(int argc, char **argv, char **envp) {
     if (pthread_join(kt, 0) != 0) return 61;
     if (!g_key_thread_ok) return 62;
     if (pthread_getspecific(g_key) != (void *)0x111) return 63;
+
+    /* per-thread errno isolation: each thread keeps its own errno */
+    pthread_t et[2]; void *ea = 0, *eb = 0;
+    if (pthread_create(&et[0], 0, errno_worker_a, 0) != 0) return 64;
+    if (pthread_create(&et[1], 0, errno_worker_b, 0) != 0) return 64;
+    pthread_join(et[0], &ea);
+    pthread_join(et[1], &eb);
+    if ((long)ea != 2) return 65;   /* worker A still sees ENOENT */
+    if ((long)eb != 9) return 66;   /* worker B still sees EBADF */
 
     /* env: setenv then getenv round-trip */
     if (setenv("OXIDE_G7C", "yes", 1) != 0) return 16;

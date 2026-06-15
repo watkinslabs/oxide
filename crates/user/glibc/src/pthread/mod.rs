@@ -36,6 +36,7 @@ pub struct Tcb {
     retval: *mut c_void,
     stack_base: usize,
     stack_size: usize,
+    pub(crate) errno: i32, // per-thread errno (docs/59§6 G12f)
     pub(crate) keys: [*mut c_void; KEYS_MAX], // TLS-key values
 }
 
@@ -117,6 +118,7 @@ pub(crate) unsafe fn init_main_tcb() {
         (*tcb).retval = core::ptr::null_mut();
         (*tcb).stack_base = 0;
         (*tcb).stack_size = 0;
+        (*tcb).errno = 0;
         (*tcb).keys = [core::ptr::null_mut(); KEYS_MAX];
         set_thread_pointer(tcb as usize);
     }
@@ -167,6 +169,7 @@ pub unsafe extern "C" fn pthread_create(thread: *mut usize, _attr: *const c_void
         (*tcb).retval = core::ptr::null_mut();
         (*tcb).stack_base = base as usize;
         (*tcb).stack_size = STACK_SIZE;
+        (*tcb).errno = 0;
         (*tcb).keys = [core::ptr::null_mut(); KEYS_MAX];
         // child stack: 16-aligned, with [sp]=entry, [sp+8]=arg(tcb)
         let sp = ((base as usize + STACK_SIZE) & !15) - 16;
