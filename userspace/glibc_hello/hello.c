@@ -26,6 +26,11 @@ int   execvp(const char *file, char *const argv[]);
 int   waitpid(int pid, int *status, int options);
 int   getppid(void);
 void  _exit(int code);
+int   pipe(int fds[2]);
+long  read(int fd, void *buf, unsigned long n);
+int   mkdir(const char *path, unsigned mode);
+int   rmdir(const char *path);
+char *getcwd(char *buf, unsigned long size);
 
 static void on_exit_handler(void) {
     static const char m[] = "atexit-ok\n";
@@ -79,6 +84,21 @@ int main(int argc, char **argv, char **envp) {
     int st = 0;
     if (waitpid(pid, &st, 0) != pid) return 20;
     if (((st & 0x7f) != 0) || (((st >> 8) & 0xff) != 0)) return 21; /* child exit 0 */
+
+    /* fds: pipe write/read round-trip */
+    int p[2];
+    if (pipe(p) != 0) return 22;
+    if (write(p[1], "Z", 1) != 1) return 23;
+    char pc = 0;
+    if (read(p[0], &pc, 1) != 1 || pc != 'Z') return 24;
+    close(p[0]); close(p[1]);
+
+    /* fs: mkdir/rmdir + getcwd */
+    rmdir("/tmp/oxide_g8b"); /* ignore if absent */
+    if (mkdir("/tmp/oxide_g8b", 0755) != 0) return 25;
+    if (rmdir("/tmp/oxide_g8b") != 0) return 26;
+    char cwd[256];
+    if (!getcwd(cwd, sizeof cwd)) return 27;
 
     /* env: setenv then getenv round-trip */
     if (setenv("OXIDE_G7C", "yes", 1) != 0) return 16;
