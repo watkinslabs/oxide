@@ -19,3 +19,5 @@ pub mod dirent;
 pub mod glob;
 #[cfg(feature = "freestanding")]
 pub mod argz;
+#[cfg(feature = "freestanding")]
+pub mod mntent;
