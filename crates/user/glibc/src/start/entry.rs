@@ -9,7 +9,7 @@
 
 // x86_64 SysV: args rdi,rsi,rdx,rcx,r8,r9 then stack. main→rdi, argc→rsi,
 // argv→rdx, init/fini/rtld_fini=0, stack_end on the stack.
-#[cfg(all(feature = "freestanding", target_arch = "x86_64"))]
+#[cfg(all(feature = "crt", target_arch = "x86_64"))]
 core::arch::global_asm!(
     ".text",
     ".globl _start",
@@ -32,7 +32,7 @@ core::arch::global_asm!(
 );
 
 // aarch64: 8 arg regs, so stack_end rides in x6 (no stack arg).
-#[cfg(all(feature = "freestanding", target_arch = "aarch64"))]
+#[cfg(all(feature = "crt", target_arch = "aarch64"))]
 core::arch::global_asm!(
     ".text",
     ".globl _start",

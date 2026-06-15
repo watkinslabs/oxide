@@ -21,6 +21,10 @@ hosted = ["nss/hosted"]
 # freestanding: real shipped-libc build (no_std final artifact). Set by
 # `xtask glibc` together with --crate-type cdylib/staticlib.
 freestanding = []
+# crt: the crt1.o role — the `_start` entry that references the app `main`.
+# Belongs in the static-link archive / Scrt1, NOT in libc.so.6 (which would
+# get an unresolvable PC32 ref to an external `main`). Implies freestanding.
+crt = ["freestanding"]
 
 [dependencies]
 nss = { path = "../nss" }
