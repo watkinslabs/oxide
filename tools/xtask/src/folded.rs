@@ -17,7 +17,7 @@ const X86: &str = "x86_64-unknown-linux-gnu";
 const ARM: &str = "aarch64-unknown-linux-gnu";
 
 // glibc's standard folded libraries (soname → folded into libc.so.6).
-const STUBS: [&str; 6] = [
+pub(crate) const STUBS: [&str; 6] = [
     "libpthread.so.0", "libdl.so.2", "librt.so.1",
     "libm.so.6", "libutil.so.1", "libresolv.so.2",
 ];
@@ -31,9 +31,9 @@ pub(crate) fn cmd_folded(rest: &[String]) -> Result<(), u8> {
     Ok(())
 }
 
-fn outdir(triple: &str) -> PathBuf { PathBuf::from("target/folded").join(triple) }
+pub(crate) fn outdir(triple: &str) -> PathBuf { PathBuf::from("target/folded").join(triple) }
 
-fn build_arch(triple: &str) -> Result<(), u8> {
+pub(crate) fn build_arch(triple: &str) -> Result<(), u8> {
     // Stage libc.so.6 next to the shims so the forced DT_NEEDED resolves at
     // link time.
     crate::glibc::build_sharedlib(triple)?;
