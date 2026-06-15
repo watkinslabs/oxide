@@ -1,6 +1,6 @@
 # glibc — implemented (oxide-libc)
 
-Exports of libc.so.6, harness-validated via nm -D. 1137 functions.
+> Exports of libc.so.6, harness-validated via nm -D. 1136 functions.
 
 time_t time (time_t *result)
 size_t mbstowcs (wchar_t *wstring, const char *string, size_t size)
@@ -1052,7 +1052,6 @@ void argp_state_help (const struct argp_state *state, FILE *stream, unsigned fla
 char * strerror_r (int errnum, char *buf, size_t n)
 char * strfry (char *string)
 char * basename (const char *filename)
-char * basename (char *path)
 int getcontext (ucontext_t *ucp)
 void makecontext (ucontext_t *ucp, void (*func) (void), int argc, ...)
 int setcontext (const ucontext_t *ucp)
