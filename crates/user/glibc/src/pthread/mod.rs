@@ -5,6 +5,7 @@
 //! not a stub. Mutex/cond/rwlock are G11b/c.
 #![cfg(feature = "freestanding")]
 #![allow(clippy::upper_case_acronyms)]
+pub mod attr;
 pub mod cond;
 pub mod key;
 pub mod mutex;
