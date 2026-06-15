@@ -529,6 +529,7 @@ dependencies = [
 name = "glibc"
 version = "0.1.0"
 dependencies = [
+ "crypt",
  "libc",
  "nss",
  "proptest",

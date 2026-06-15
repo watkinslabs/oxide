@@ -17,7 +17,7 @@ crate-type = ["rlib"]
 default = []
 # hosted: pull std so tests can call the host system glibc for the
 # differential oracle (docs/59§7).
-hosted = ["nss/hosted"]
+hosted = ["nss/hosted", "crypt/hosted"]
 # freestanding: real shipped-libc build (no_std final artifact). Set by
 # `xtask glibc` together with --crate-type cdylib/staticlib.
 freestanding = []
@@ -28,6 +28,7 @@ crt = ["freestanding"]
 
 [dependencies]
 nss = { path = "../nss" }
+crypt = { path = "../../shared/crypt" }
 
 # Differential oracle (docs/59§7): compare our impls against the host
 # glibc. Test-only; never linked into the shipped libc.
