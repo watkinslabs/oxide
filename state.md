@@ -59,7 +59,7 @@ G0–G18 COMPLETE. Done:
 `xtask glibc-test`: differential conformance harness (tools/xtask/src/
 glibc_test.rs + userspace/glibc_conformance/*.c). Each C program is compiled
 once, linked+run BOTH against host glibc (oracle) and our sysroot (Scrt1.o +
-libc.so.6 via our ld-linux on the host), stdout+exit diffed. **72/72 programs match host glibc** (through #1951; 9 subsystem audits done: printf/scanf/strftime/strtol/strtod/ctype/env/getopt/qsort — getopt got full GNU permutation + getopt_long abbreviation; strtod got hex floats + ERANGE; env got name validation. Next big libc gap: regex (regcomp/regexec — MISSING entirely)). Added since 55: full wide-string
+libc.so.6 via our ld-linux on the host), stdout+exit diffed. **73/73 programs match host glibc** (through #1954). 9 subsystem audits done (printf/scanf/strftime/strtol/strtod/ctype/env/getopt/qsort): getopt got full GNU permutation + getopt_long abbreviation; strtod got hex floats + ERANGE; env got name validation. **regex (regcomp/regexec/regfree/regerror) NOW IMPLEMENTED** — ERE+BRE via a backtracking VM (Russ Cox approach) in crates/user/glibc/src/regex/{engine,mod}.rs; byte-exact vs glibc incl capture spans + error codes. Remaining libc follow-ups: regex backreferences + POSIX longest-submatch edges; math transcendentals (erf/lgamma/tgamma/j0). NEXT MAJOR: G19 on-kernel boot (the ladder exit gate; kernel /dev/console→serial blocker tracked below). Added since 55: full wide-string
 family, asctime/ctime/difftime/perror, strlcpy/strlcat/explicit_bzero/
 reallocarray/getsubopt, <search.h> tsearch+lsearch+hsearch+insque/remque,
 strtoimax/strtoumax/rawmemchr/strcasestr, strverscmp, strsignal, ffs family,
@@ -162,7 +162,7 @@ the Scrt1.o gap; this phase ends with both arches booting to login on glibc.
 ## Notes
 - musl path stays buildable until G19. 59 is DRAFT — edit directly (no R-block).
 - P28 prefix is the loop's ad-hoc glibc sequence; not tracked in
-  metadata/index.md. Last used P28-101 (strtol audit). C-type counter
+  metadata/index.md. Last used P28-110 (regex BRE). C-type counter
   next=91. D-type next=100.
 - Test crate: glibc is `#![no_std]`, std is test-gated (no prelude) — in tests
   `use alloc::vec::Vec;`; derive Debug on enums asserted with assert_eq!.
