@@ -1,0 +1,15 @@
+# ABI goldens, aarch64 — docs/59§2, §7. See x86_64.toml for the contract.
+# Some struct sizes differ from x86_64 (e.g. pthread_mutex_t 48 vs 40).
+
+[loader]
+soname        = "libc.so.6"
+interp        = "/lib/ld-linux-aarch64.so.1"
+baseline_node = "GLIBC_2.17"
+
+[sizeof]
+pthread_mutex_t  = 48
+pthread_cond_t   = 48
+pthread_rwlock_t = 56
+pthread_t        = 8
+jmp_buf          = 312    # 22 GPR + 8 FPR (d8-d15) + sigmask
+sigset_t         = 128

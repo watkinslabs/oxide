@@ -1,0 +1,26 @@
+# oxide-libc — glibc-ABI C standard library, in Rust. Spec: docs/59.
+# rlib here = joins workspace build + hosted differential oracle tests.
+# The shipped libc.so.6 / libc.a are produced by `xtask glibc`, which
+# rebuilds with --crate-type cdylib/staticlib + the version script
+# (glibc.ld.version) + freestanding link flags. See docs/59§3,§5.
+[package]
+name = "glibc"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[features]
+default = []
+# hosted: pull std so tests can call the host system glibc for the
+# differential oracle (docs/59§7).
+hosted = ["nss/hosted"]
+# freestanding: real shipped-libc build (no_std final artifact). Set by
+# `xtask glibc` together with --crate-type cdylib/staticlib.
+freestanding = []
+
+[dependencies]
+nss = { path = "../nss" }

@@ -1,0 +1,19 @@
+# ABI goldens, x86_64 — docs/59§2, §7. Frozen sizes/offsets/version nodes
+# our libc.so.6 must match reference glibc byte-for-byte. CI diffs the
+# built artifact (readelf/pahole) against this; drift = fail. Filled per
+# struct as each area lands (G6 FILE, G11 pthread_*, …). Numbers below are
+# the glibc x86_64 LP64 layout.
+
+[loader]
+soname        = "libc.so.6"
+interp        = "/lib64/ld-linux-x86-64.so.2"
+baseline_node = "GLIBC_2.2.5"
+
+[sizeof]
+pthread_mutex_t  = 40
+pthread_cond_t   = 48
+pthread_rwlock_t = 56
+pthread_t        = 8     # opaque unsigned long
+jmp_buf          = 200   # __jmp_buf_tag: 8*8 regs + sigmask + savemask
+sigset_t         = 128
+# FILE, DIR, glob_t, stat: recorded when G6/G8/G10 land.
