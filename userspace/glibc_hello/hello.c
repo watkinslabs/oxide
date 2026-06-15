@@ -50,6 +50,18 @@ int pthread_join(pthread_t t, void **retval);
 static volatile int g_shared = 0;
 static void *worker(void *a) { (void)a; for (int i = 0; i < 1000; i++) g_shared++; return (void *)42; }
 
+typedef union { unsigned char __b[40]; long __a; } pthread_mutex_t;
+int pthread_mutex_init(pthread_mutex_t *m, const void *attr);
+int pthread_mutex_lock(pthread_mutex_t *m);
+int pthread_mutex_unlock(pthread_mutex_t *m);
+static pthread_mutex_t g_mtx; /* zero-init == NORMAL mutex */
+static unsigned long g_count = 0;
+static void *counter_worker(void *a) {
+    (void)a;
+    for (int i = 0; i < 10000; i++) { pthread_mutex_lock(&g_mtx); g_count++; pthread_mutex_unlock(&g_mtx); }
+    return 0;
+}
+
 static void on_exit_handler(void) {
     static const char m[] = "atexit-ok\n";
     write(1, m, sizeof(m) - 1);
@@ -170,6 +182,14 @@ int main(int argc, char **argv, char **envp) {
     if (pthread_join(th, &rv) != 0) return 43;
     if (g_shared != 1000) return 44;
     if (rv != (void *)42) return 45;
+
+    /* pthread_mutex: 4 threads each increment a shared counter 10000x under
+       a NORMAL mutex; join all; assert exactly 40000 (real mutual exclusion) */
+    pthread_mutex_init(&g_mtx, 0);
+    pthread_t mt[4];
+    for (int i = 0; i < 4; i++) if (pthread_create(&mt[i], 0, counter_worker, 0) != 0) return 46;
+    for (int i = 0; i < 4; i++) if (pthread_join(mt[i], 0) != 0) return 47;
+    if (g_count != 40000) return 48;
 
     /* env: setenv then getenv round-trip */
     if (setenv("OXIDE_G7C", "yes", 1) != 0) return 16;
