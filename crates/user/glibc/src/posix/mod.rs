@@ -12,3 +12,4 @@ pub mod fd;
 pub mod fs;
 pub mod stat;
 pub mod fnmatch;
+pub mod getopt;
