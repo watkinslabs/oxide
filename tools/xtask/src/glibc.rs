@@ -28,7 +28,7 @@ pub(crate) fn cmd_glibc(rest: &[String]) -> Result<(), u8> {
     Ok(())
 }
 
-fn build_staticlib(triple: &str) -> Result<(), u8> {
+pub(crate) fn build_staticlib(triple: &str) -> Result<(), u8> {
     eprintln!("xtask glibc: building libc.a for {triple}");
     let mut c = Command::new("cargo");
     c.args(["rustc", "-p", "glibc", "--release", "--features", "crt",
@@ -36,7 +36,7 @@ fn build_staticlib(triple: &str) -> Result<(), u8> {
     run(c)
 }
 
-fn staticlib_path(triple: &str) -> PathBuf {
+pub(crate) fn staticlib_path(triple: &str) -> PathBuf {
     PathBuf::from("target").join(triple).join("release").join("libglibc.a")
 }
 
