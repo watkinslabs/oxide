@@ -81,7 +81,7 @@ mod tests {
         #[test]
         fn exp_matches_host(x in -700.0f64..700.0) {
             let ours = super::exp(x);
-            // SAFETY: host libm exp, scalar in/out.
+            // SAFETY: host libm exp() extern call, scalar f64 in/out.
             let host = unsafe { exp(x) };
             prop_assert!(ulp(ours, host) <= 2, "exp({})={} vs {} ({} ulp)", x, ours, host, ulp(ours, host));
         }

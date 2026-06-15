@@ -5,26 +5,37 @@
 #![allow(clippy::upper_case_acronyms)]
 
 // ---- classification ----
+/// # C: int signbit(double)
 pub(crate) fn signbit(x: f64) -> bool { x.to_bits() >> 63 != 0 }
+/// # C: int isnan(double)
 pub(crate) fn isnan(x: f64) -> bool { x.to_bits() & 0x7fff_ffff_ffff_ffff > 0x7ff0_0000_0000_0000 }
+/// # C: int isinf(double)
 pub(crate) fn isinf(x: f64) -> bool { x.to_bits() & 0x7fff_ffff_ffff_ffff == 0x7ff0_0000_0000_0000 }
+/// # C: int isfinite(double)
 pub(crate) fn isfinite(x: f64) -> bool { x.to_bits() & 0x7ff0_0000_0000_0000 != 0x7ff0_0000_0000_0000 }
 
 // ---- sign ----
+/// # C: double fabs(double)
 pub(crate) fn fabs(x: f64) -> f64 { f64::from_bits(x.to_bits() & 0x7fff_ffff_ffff_ffff) }
+/// # C: float fabsf(float)
 pub(crate) fn fabsf(x: f32) -> f32 { f32::from_bits(x.to_bits() & 0x7fff_ffff) }
+/// # C: double copysign(double, double)
 pub(crate) fn copysign(x: f64, y: f64) -> f64 {
     f64::from_bits((x.to_bits() & 0x7fff_ffff_ffff_ffff) | (y.to_bits() & 0x8000_0000_0000_0000))
 }
+/// # C: float copysignf(float, float)
 pub(crate) fn copysignf(x: f32, y: f32) -> f32 {
     f32::from_bits((x.to_bits() & 0x7fff_ffff) | (y.to_bits() & 0x8000_0000))
 }
 
 // ---- min/max (IEEE: NaN-tolerant, return the non-NaN operand) ----
+/// # C: double fmin(double, double)
 pub(crate) fn fmin(a: f64, b: f64) -> f64 { if isnan(a) { b } else if isnan(b) || a < b { a } else { b } }
+/// # C: double fmax(double, double)
 pub(crate) fn fmax(a: f64, b: f64) -> f64 { if isnan(a) { b } else if isnan(b) || a > b { a } else { b } }
 
 // ---- rounding (musl-style bit ops) ----
+/// # C: double trunc(double)
 pub(crate) fn trunc(x: f64) -> f64 {
     let mut i = x.to_bits();
     let e = ((i >> 52) & 0x7ff) as i32 - 0x3ff;
@@ -35,8 +46,11 @@ pub(crate) fn trunc(x: f64) -> f64 {
     i &= !m;
     f64::from_bits(i)
 }
+/// # C: double floor(double)
 pub(crate) fn floor(x: f64) -> f64 { let t = trunc(x); if x < 0.0 && t != x { t - 1.0 } else { t } }
+/// # C: double ceil(double)
 pub(crate) fn ceil(x: f64) -> f64 { let t = trunc(x); if x > 0.0 && t != x { t + 1.0 } else { t } }
+/// # C: double round(double)
 pub(crate) fn round(x: f64) -> f64 {
     // round-half-away-from-zero
     let t = trunc(x);
@@ -44,6 +58,7 @@ pub(crate) fn round(x: f64) -> f64 {
     if isnan(x) || isinf(x) { return x; }
     if fabs(frac) >= 0.5 { t + copysign(1.0, x) } else { t }
 }
+/// # C: double rint(double)
 pub(crate) fn rint(x: f64) -> f64 {
     // round-to-nearest-even via the 2^52 add/sub trick (default FP mode).
     let e = ((x.to_bits() >> 52) & 0x7ff) as i32;
@@ -54,6 +69,7 @@ pub(crate) fn rint(x: f64) -> f64 {
 }
 
 // ---- fmod (faithful musl port; exact remainder) ----
+/// # C: double fmod(double, double)
 pub(crate) fn fmod(x: f64, y: f64) -> f64 {
     let mut uxi = x.to_bits();
     let mut uy = y.to_bits();
@@ -105,6 +121,7 @@ pub(crate) fn fmod(x: f64, y: f64) -> f64 {
 }
 
 // ---- frexp / ldexp / modf ----
+/// # C: double frexp(double, int*)
 pub(crate) fn frexp(x: f64) -> (f64, i32) {
     let bits = x.to_bits();
     let ee = ((bits >> 52) & 0x7ff) as i32;
@@ -119,8 +136,10 @@ pub(crate) fn frexp(x: f64) -> (f64, i32) {
     let m = f64::from_bits((bits & 0x800f_ffff_ffff_ffff) | 0x3fe0_0000_0000_0000);
     (m, e)
 }
+/// # C: double ldexp(double, int)
 pub(crate) fn ldexp(x: f64, n: i32) -> f64 { scalbn(x, n) }
 #[allow(clippy::if_same_then_else)] // musl's two-step exponent clamp
+/// # C: double scalbn(double, int)
 pub(crate) fn scalbn(x: f64, mut n: i32) -> f64 {
     // 2^1023, 2^-1022 (min normal), 2^53 as bit patterns (no C hex floats).
     let two_1023 = f64::from_bits(2046u64 << 52);
@@ -136,6 +155,7 @@ pub(crate) fn scalbn(x: f64, mut n: i32) -> f64 {
     }
     y * f64::from_bits(((0x3ff + n) as u64) << 52)
 }
+/// # C: double modf(double, double*)
 pub(crate) fn modf(x: f64) -> (f64, f64) { let i = trunc(x); (x - i, i) }
 
 #[cfg(feature = "freestanding")]
@@ -156,16 +176,16 @@ mod exports {
     // # C: double frexp(double, int*)
     #[no_mangle]
     pub unsafe extern "C" fn frexp(x: f64, e: *mut i32) -> f64 {
-        // SAFETY: e is a writable int out-param per frexp(3).
         let (m, ee) = super::frexp(x);
+        // SAFETY: frexp out-param e: null-checked writable *mut i32 per frexp(3) contract.
         unsafe { if !e.is_null() { *e = ee; } }
         m
     }
     // # C: double modf(double, double*)
     #[no_mangle]
     pub unsafe extern "C" fn modf(x: f64, ip: *mut f64) -> f64 {
-        // SAFETY: ip is a writable double out-param per modf(3).
         let (frac, i) = super::modf(x);
+        // SAFETY: modf out-param ip: null-checked writable *mut f64 per modf(3) contract.
         unsafe { if !ip.is_null() { *ip = i; } }
         frac
     }

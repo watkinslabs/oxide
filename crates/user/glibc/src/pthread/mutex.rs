@@ -125,7 +125,7 @@ pub unsafe extern "C" fn pthread_mutex_timedlock(m: *mut pthread_mutex_t, _absti
 // # C: int pthread_mutexattr_init(pthread_mutexattr_t*)
 #[no_mangle]
 pub unsafe extern "C" fn pthread_mutexattr_init(a: *mut pthread_mutexattr_t) -> i32 {
-    // SAFETY: a is a writable mutexattr.
+    // SAFETY: a points at a writable pthread_mutexattr_t; store the default kind into it.
     unsafe { (*a).__kind = 0; 0 }
 }
 // # C: int pthread_mutexattr_destroy(pthread_mutexattr_t*)
@@ -134,7 +134,7 @@ pub unsafe extern "C" fn pthread_mutexattr_destroy(_a: *mut pthread_mutexattr_t)
 // # C: int pthread_mutexattr_settype(pthread_mutexattr_t*, int)
 #[no_mangle]
 pub unsafe extern "C" fn pthread_mutexattr_settype(a: *mut pthread_mutexattr_t, kind: i32) -> i32 {
-    // SAFETY: a is a writable mutexattr.
+    // SAFETY: a points at a writable pthread_mutexattr_t; store the caller's kind into it.
     unsafe { (*a).__kind = kind; 0 }
 }
 // # C: int pthread_mutexattr_gettype(const pthread_mutexattr_t*, int*)
