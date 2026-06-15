@@ -70,6 +70,46 @@ pub unsafe extern "C" fn lseek(fd: i32, off: i64, whence: i32) -> i64 {
     ret_isize(unsafe { sys3(nr::LSEEK, fd as usize, off as usize, whence as usize) }) as i64
 }
 
+// # C: int creat(const char *path, mode_t mode) — open O_WRONLY|O_CREAT|O_TRUNC
+#[no_mangle]
+pub unsafe extern "C" fn creat(path: *const u8, mode: u32) -> i32 {
+    // SAFETY: forwards to open with the creat flag set; same pointer contract.
+    unsafe { open(path, O_WRONLY | O_CREAT | O_TRUNC, mode) }
+}
+
+// # C: ssize_t pread(int fd, void *buf, size_t n, off_t off)
+#[no_mangle]
+pub unsafe extern "C" fn pread(fd: i32, buf: *mut u8, n: usize, off: i64) -> isize {
+    // SAFETY: pread(2); kernel writes up to n bytes into buf at file offset off.
+    ret_isize(unsafe { sys4(nr::PREAD64, fd as usize, buf as usize, n, off as usize) })
+}
+// # C: ssize_t pwrite(int fd, const void *buf, size_t n, off_t off)
+#[no_mangle]
+pub unsafe extern "C" fn pwrite(fd: i32, buf: *const u8, n: usize, off: i64) -> isize {
+    // SAFETY: pwrite(2); kernel reads up to n bytes from buf, writing at off.
+    ret_isize(unsafe { sys4(nr::PWRITE64, fd as usize, buf as usize, n, off as usize) })
+}
+
+// LFS aliases — on LP64 off64_t == off_t, so these equal the base calls.
+// # C: int open64(const char *, int, mode_t)
+// SAFETY: LFS alias of open; identical args on LP64. Forwards.
+#[no_mangle] pub unsafe extern "C" fn open64(path: *const u8, flags: i32, mode: u32) -> i32 { unsafe { open(path, flags, mode) } }
+// # C: int openat64(int, const char *, int, mode_t)
+// SAFETY: LFS alias of openat; identical args on LP64. Forwards.
+#[no_mangle] pub unsafe extern "C" fn openat64(d: i32, path: *const u8, flags: i32, mode: u32) -> i32 { unsafe { openat(d, path, flags, mode) } }
+// # C: int creat64(const char *, mode_t)
+// SAFETY: LFS alias of creat; identical args on LP64. Forwards.
+#[no_mangle] pub unsafe extern "C" fn creat64(path: *const u8, mode: u32) -> i32 { unsafe { creat(path, mode) } }
+// # C: off64_t lseek64(int, off64_t, int)
+// SAFETY: LFS alias of lseek; off64_t == off_t on LP64. Forwards.
+#[no_mangle] pub unsafe extern "C" fn lseek64(fd: i32, off: i64, whence: i32) -> i64 { unsafe { lseek(fd, off, whence) } }
+// # C: ssize_t pread64(int, void *, size_t, off64_t)
+// SAFETY: LFS alias of pread; buf valid for n bytes per the caller. Forwards.
+#[no_mangle] pub unsafe extern "C" fn pread64(fd: i32, buf: *mut u8, n: usize, off: i64) -> isize { unsafe { pread(fd, buf, n, off) } }
+// # C: ssize_t pwrite64(int, const void *, size_t, off64_t)
+// SAFETY: LFS alias of pwrite; buf valid for n bytes per the caller. Forwards.
+#[no_mangle] pub unsafe extern "C" fn pwrite64(fd: i32, buf: *const u8, n: usize, off: i64) -> isize { unsafe { pwrite(fd, buf, n, off) } }
+
 // # C: pid_t getpid(void) — always succeeds, never sets errno.
 #[no_mangle]
 pub unsafe extern "C" fn getpid() -> i32 {
