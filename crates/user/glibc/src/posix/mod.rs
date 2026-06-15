@@ -52,3 +52,8 @@ pub mod utime;
 pub mod pty;
 #[cfg(feature = "freestanding")]
 pub mod tty;
+pub mod sysvipc;
+#[cfg(feature = "freestanding")]
+pub mod shm;
+#[cfg(feature = "freestanding")]
+pub mod posixsem;
