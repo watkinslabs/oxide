@@ -104,6 +104,42 @@ pub unsafe extern "C" fn sprintf(s: *mut u8, fmt: *const u8, mut ap: ...) -> i32
     // SAFETY: unbounded buffer per C sprintf; caller guarantees capacity.
     unsafe { into_slice(s, usize::MAX, fmt, &mut ap) }
 }
+// asprintf: format into a grown buffer, then malloc(len+1)+copy so the result
+// is free()-able by the caller. Format once (no va_copy needed).
+struct VecSink { v: alloc::vec::Vec<u8> }
+impl Sink for VecSink {
+    fn push(&mut self, b: u8) { self.v.push(b); }
+    fn count(&self) -> usize { self.v.len() }
+}
+unsafe fn into_alloc(strp: *mut *mut u8, fmt: *const u8, ap: &mut VaList) -> i32 {
+    extern "C" { fn malloc(n: usize) -> *mut c_void; }
+    let mut sink = VecSink { v: alloc::vec::Vec::new() };
+    let mut a = Va(ap);
+    // SAFETY: fmt NUL-terminated; ap holds the matching varargs.
+    let n = unsafe { fmt::vformat(&mut sink, fmt, &mut a) };
+    // SAFETY: malloc n+1; copy the formatted bytes + NUL; publish via *strp.
+    unsafe {
+        let buf = malloc(n + 1) as *mut u8;
+        if buf.is_null() { *strp = core::ptr::null_mut(); return -1; }
+        core::ptr::copy_nonoverlapping(sink.v.as_ptr(), buf, n);
+        *buf.add(n) = 0;
+        *strp = buf;
+    }
+    n as i32
+}
+// # C: int vasprintf(char **strp, const char *fmt, va_list ap)
+#[no_mangle]
+pub unsafe extern "C" fn vasprintf(strp: *mut *mut u8, fmt: *const u8, mut ap: VaList) -> i32 {
+    // SAFETY: strp writable; fmt/ap per the C contract.
+    unsafe { into_alloc(strp, fmt, &mut ap) }
+}
+// # C: int asprintf(char **strp, const char *fmt, ...)
+#[no_mangle]
+pub unsafe extern "C" fn asprintf(strp: *mut *mut u8, fmt: *const u8, mut ap: ...) -> i32 {
+    // SAFETY: strp writable; ap supplies the varargs named by fmt.
+    unsafe { into_alloc(strp, fmt, &mut ap) }
+}
+
 // # C: int vfprintf(FILE *f, const char *fmt, va_list ap)
 #[no_mangle]
 pub unsafe extern "C" fn vfprintf(f: *mut file::FILE, fmt: *const u8, mut ap: VaList) -> i32 {
