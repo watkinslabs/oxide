@@ -14,8 +14,14 @@ pub const R_X86_64_GLOB_DAT: u32 = 6;
 pub const R_X86_64_JUMP_SLOT: u32 = 7;
 pub const R_X86_64_RELATIVE: u32 = 8;
 pub const R_X86_64_IRELATIVE: u32 = 37;
+pub const R_X86_64_DTPMOD64: u32 = 16;
+pub const R_X86_64_DTPOFF64: u32 = 17;
+pub const R_X86_64_TPOFF64: u32 = 18;
 // aarch64 reloc types
 pub const R_AARCH64_ABS64: u32 = 257;
+pub const R_AARCH64_TLS_DTPMOD: u32 = 1028;
+pub const R_AARCH64_TLS_DTPREL: u32 = 1029;
+pub const R_AARCH64_TLS_TPREL: u32 = 1030;
 pub const R_AARCH64_COPY: u32 = 1024;
 pub const R_AARCH64_GLOB_DAT: u32 = 1025;
 pub const R_AARCH64_JUMP_SLOT: u32 = 1026;
@@ -70,9 +76,14 @@ mod imp {
     use crate::symbol::{SymView, STB_WEAK};
 
     /// Everything the applier needs about the object being relocated.
+    /// `tls_offset` is this object's TLS module's tp offset (from
+    /// tls::layout); 0 if the object has no PT_TLS. `tls_modid` is its
+    /// 1-based TLS module id (for DTPMOD).
     pub struct RelocCtx<'a> {
         pub base: u64,
         pub sym: SymView<'a>,
+        pub tls_offset: i64,
+        pub tls_modid: u64,
     }
 
     /// Resolve symbol index `idx` to a runtime address: try the global scope
@@ -123,7 +134,21 @@ mod imp {
                         let size = sym_size(ctx, idx);
                         core::ptr::copy_nonoverlapping(src as *const u8, slot as *mut u8, size);
                     }
-                    Kind::Tls => { /* G12f */ }
+                    Kind::Tls => {
+                        // TLS symbol value = offset within its module's TLS
+                        // block (st_value); local def for same-object refs.
+                        let idx = r_sym(e.r_info);
+                        let sv = if idx == 0 { 0 } else { ctx.sym.value(idx).unwrap_or(0) };
+                        let t = r_type(e.r_info);
+                        let val: u64 = match t {
+                            R_X86_64_DTPMOD64 | R_AARCH64_TLS_DTPMOD => ctx.tls_modid,
+                            R_X86_64_DTPOFF64 | R_AARCH64_TLS_DTPREL => crate::tls::dtpoff(sv, e.r_addend),
+                            R_X86_64_TPOFF64 | R_AARCH64_TLS_TPREL =>
+                                crate::tls::tpoff(ctx.tls_offset, sv).wrapping_add(e.r_addend) as u64,
+                            _ => { i += 1; continue; }
+                        };
+                        (slot as *mut u64).write(val);
+                    }
                     Kind::Unsupported => return Err(i),
                 }
                 i += 1;
