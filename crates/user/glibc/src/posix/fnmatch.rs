@@ -1,15 +1,35 @@
 // fnmatch (docs/59§6 G8). Shell wildcard matching: *, ?, [..] (ranges +
-// [!..]/[^..] negation), with FNM_NOESCAPE / FNM_PATHNAME / FNM_PERIOD.
-// The matcher runs on byte slices (oracle-tested vs host fnmatch); the C
-// export converts the NUL-terminated args. POSIX [:class:] sets are a
-// follow-up.
+// [!..]/[^..] negation), POSIX [:class:]/[.coll.]/[=equiv=] sub-brackets,
+// with FNM_NOESCAPE / FNM_PATHNAME / FNM_PERIOD. The matcher runs on byte
+// slices (oracle-tested vs host fnmatch); the C export converts the
+// NUL-terminated args.
 pub const FNM_NOMATCH: i32 = 1;
 const FNM_PATHNAME: i32 = 1; // glibc bit values
 const FNM_NOESCAPE: i32 = 2;
 const FNM_PERIOD: i32 = 4;
 
+// POSIX [:name:] character class membership (C locale, ASCII).
+fn class_match(name: &[u8], c: u8) -> bool {
+    match name {
+        b"alnum" => c.is_ascii_alphanumeric(),
+        b"alpha" => c.is_ascii_alphabetic(),
+        b"blank" => c == b' ' || c == b'\t',
+        b"cntrl" => c.is_ascii_control(),
+        b"digit" => c.is_ascii_digit(),
+        b"graph" => c.is_ascii_graphic(),
+        b"lower" => c.is_ascii_lowercase(),
+        b"print" => c.is_ascii_graphic() || c == b' ',
+        b"punct" => c.is_ascii_punctuation(),
+        b"space" => c == b' ' || (b'\t'..=b'\r').contains(&c), // SP \t \n \v \f \r
+        b"upper" => c.is_ascii_uppercase(),
+        b"xdigit" => c.is_ascii_hexdigit(),
+        _ => false,
+    }
+}
+
 // Returns Some((matched, index after ']')) or None if the bracket is
-// malformed (no closing ']'), in which case '[' is a literal.
+// malformed (no closing ']', or an unterminated [:/[./[= sub-bracket), in
+// which case the leading '[' is a literal — matching glibc.
 fn bracket(p: &[u8], start: usize, ch: u8, noescape: bool) -> Option<(bool, usize)> {
     let mut i = start + 1;
     let neg = matches!(p.get(i), Some(b'!') | Some(b'^'));
@@ -18,6 +38,34 @@ fn bracket(p: &[u8], start: usize, ch: u8, noescape: bool) -> Option<(bool, usiz
     let mut matched = false;
     while i < p.len() {
         if p[i] == b']' && i > first { return Some((matched ^ neg, i + 1)); }
+        // POSIX sub-brackets: [:class:], [.coll.], [=equiv=]. Each runs to a
+        // matching `kind]` closer; absence → malformed bracket (None).
+        if p[i] == b'[' && i + 1 < p.len() && matches!(p[i + 1], b':' | b'.' | b'=') {
+            let kind = p[i + 1];
+            let mut j = i + 2;
+            while j + 1 < p.len() && !(p[j] == kind && p[j + 1] == b']') { j += 1; }
+            if !(j + 1 < p.len() && p[j] == kind && p[j + 1] == b']') { return None; }
+            let inner = &p[i + 2..j];
+            if kind == b':' {
+                if class_match(inner, ch) { matched = true; }
+                i = j + 2;
+                continue;
+            }
+            // [.x.] / [=x=]: C-locale collating/equivalence element. Only a
+            // single-byte element is representable; treat it as that literal
+            // (and a possible range low endpoint). Multi-byte → no match.
+            if inner.len() != 1 { i = j + 2; continue; }
+            let lo = inner[0];
+            if j + 3 < p.len() && p[j + 2] == b'-' && p[j + 3] != b']' {
+                let hi = p[j + 3];
+                if ch >= lo && ch <= hi { matched = true; }
+                i = j + 4;
+            } else {
+                if ch == lo { matched = true; }
+                i = j + 2;
+            }
+            continue;
+        }
         let lo = if p[i] == b'\\' && !noescape && i + 1 < p.len() { i += 1; p[i] } else { p[i] };
         // range lo-hi (the '-' must not be the closing ']')
         if i + 2 < p.len() && p[i + 1] == b'-' && p[i + 2] != b']' {
@@ -123,7 +171,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn matches_host(p in "[ab*?.\\[\\]!/-]{0,8}", s in "[ab./]{0,8}", pn in any::<bool>(), pd in any::<bool>()) {
+        fn matches_host(p in "[ab*?.:=^\\\\\\[\\]!/-]{0,10}", s in "[ab.:/= ]{0,8}", pn in any::<bool>(), pd in any::<bool>()) {
             let flags = (if pn { FNM_PATHNAME } else { 0 }) | (if pd { FNM_PERIOD } else { 0 });
             let ours = fnmatch_slice(p.as_bytes(), s.as_bytes(), flags);
             prop_assert_eq!(ours, host(&p, &s, flags), "p={:?} s={:?} flags={}", p, s, flags);

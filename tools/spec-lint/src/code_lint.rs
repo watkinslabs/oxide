@@ -209,7 +209,7 @@ fn check_static_mut(path: &Path, text: &str, lines: &[&str], f: &mut Findings) {
             }
         }
         if !t.starts_with("//") && !t.starts_with("#") {
-            if depth_test == 0 && contains_token(t, "static mut ") {
+            if depth_test == 0 && is_static_mut_item(t) {
                 f.push(path, i + 1, "code/static-mut",
                     "`static mut` forbidden outside `#[cfg(test)]`");
             }
@@ -219,10 +219,18 @@ fn check_static_mut(path: &Path, text: &str, lines: &[&str], f: &mut Findings) {
     let _ = text;
 }
 
-fn contains_token(s: &str, needle: &str) -> bool {
-    // ignore comments
-    if let Some(idx) = s.find("//") { return s[..idx].contains(needle); }
-    s.contains(needle)
+// True only for a `static mut` ITEM declaration, not a `&'static mut T`
+// reference type (the lifetime form is preceded by `'`).
+fn is_static_mut_item(s: &str) -> bool {
+    let code = match s.find("//") { Some(idx) => &s[..idx], None => s };
+    let mut from = 0;
+    while let Some(rel) = code[from..].find("static mut ") {
+        let at = from + rel;
+        // `&'static mut` → the byte before `static` is `'`.
+        if at == 0 || code.as_bytes()[at - 1] != b'\'' { return true; }
+        from = at + 1;
+    }
+    false
 }
 
 fn check_panic_fmt(path: &Path, lines: &[&str], f: &mut Findings) {
