@@ -36,7 +36,10 @@ pub unsafe extern "C" fn __libc_start_main(
     // SAFETY: envp points at the kernel-provided env+auxv block, the
     // contract reseed_from_auxv requires.
     unsafe { crate::start::stack_guard::reseed_from_auxv(envp as *const usize) };
-    // G2+: store __environ, run __libc_csu_init / preinit+init arrays here.
+    // Publish environ for getenv/setenv (G7c).
+    // SAFETY: envp is the kernel-provided NULL-terminated env array.
+    unsafe { crate::stdlib::env::init_environ(envp) };
+    // G2+: run __libc_csu_init / preinit+init arrays here.
     let code = main(argc, argv, envp);
     crate::stdlib::exit::exit(code) // diverges; coerces to i32
 }
