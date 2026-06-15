@@ -5,3 +5,4 @@ pub mod exp;
 pub mod log;
 pub mod pow;
 pub mod sqrt;
+pub mod trig;
