@@ -5,6 +5,7 @@ pub mod basic;
 pub mod exp;
 pub mod extra;
 pub mod fma;
+pub mod special;
 pub mod hyper;
 pub mod log;
 pub mod pow;
