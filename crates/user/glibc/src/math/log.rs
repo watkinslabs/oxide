@@ -67,13 +67,15 @@ pub(crate) fn logf(x: f32) -> f32 { log(x as f64) as f32 }
 pub(crate) fn log2f(x: f32) -> f32 { log2(x as f64) as f32 }
 /// # C: float log10f(float)
 pub(crate) fn log10f(x: f32) -> f32 { log10(x as f64) as f32 }
+/// # C: float log1pf(float)
+pub(crate) fn log1pf(x: f32) -> f32 { log1p(x as f64) as f32 }
 
 #[cfg(feature = "freestanding")]
 mod exports {
     macro_rules! f64_1 { ($n:ident) => { #[no_mangle] pub extern "C" fn $n(x: f64) -> f64 { super::$n(x) } }; }
     macro_rules! f32_1 { ($n:ident) => { #[no_mangle] pub extern "C" fn $n(x: f32) -> f32 { super::$n(x) } }; }
     f64_1!(log); f64_1!(log2); f64_1!(log10); f64_1!(log1p);
-    f32_1!(logf); f32_1!(log2f); f32_1!(log10f);
+    f32_1!(logf); f32_1!(log2f); f32_1!(log10f); f32_1!(log1pf);
 }
 
 #[cfg(test)]
