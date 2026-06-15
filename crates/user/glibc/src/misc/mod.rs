@@ -12,6 +12,8 @@ pub mod progname;
 pub mod syslog;
 pub mod err;
 pub mod error;
+#[cfg(feature = "freestanding")]
+pub mod backtrace;
 
 // Shared fd-backed formatting sink: drives crate::stdio::fmt::vformat with
 // a VaList, accumulating into a small stack buffer flushed via write(2).

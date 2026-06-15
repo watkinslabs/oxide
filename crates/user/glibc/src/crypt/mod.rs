@@ -4,6 +4,11 @@
 //! `$id$[rounds=N$]salt$digest` setting string; crypt/crypt_r are the C ABI.
 use alloc::string::String;
 
+// DES block cipher + setkey/encrypt/ecb_crypt/cbc_crypt/des_setparity (G17a).
+pub mod des;
+#[cfg(feature = "freestanding")]
+pub mod des_api;
+
 const ROUNDS_DEFAULT: u32 = 5000;
 const ROUNDS_MIN: u32 = 1000;
 const ROUNDS_MAX: u32 = 999_999_999;
