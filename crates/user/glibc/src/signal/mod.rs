@@ -2,5 +2,6 @@
 //! mask/kill/raise syscall wrappers. G9b adds sigaction + the
 //! rt_sigreturn restorer trampoline + signal().
 pub mod sigset;
+pub mod sigaction;
 #[cfg(feature = "freestanding")]
 pub mod sig;
