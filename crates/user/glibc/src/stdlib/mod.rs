@@ -12,3 +12,5 @@ pub mod arith;
 pub mod realpath;
 #[cfg(feature = "freestanding")]
 pub mod mkstemp;
+#[cfg(feature = "freestanding")]
+pub mod subopt;

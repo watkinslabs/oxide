@@ -62,6 +62,38 @@ pub(crate) unsafe fn strncat_impl(dst: *mut u8, src: *const u8, n: usize) -> *mu
     dst
 }
 
+/// # C: size_t strlcpy(char *dst, const char *src, size_t size) — BSD/glibc 2.38
+pub(crate) unsafe fn strlcpy_impl(dst: *mut u8, src: *const u8, size: usize) -> usize {
+    // SAFETY: src is NUL-terminated; dst is writable for `size` bytes. Copies
+    // at most size-1 bytes then a NUL, and returns strlen(src) (the length it
+    // tried to create) so callers can detect truncation.
+    unsafe {
+        let slen = strlen_impl(src);
+        if size > 0 {
+            let n = if slen < size { slen } else { size - 1 };
+            core::ptr::copy_nonoverlapping(src, dst, n);
+            *dst.add(n) = 0;
+        }
+        slen
+    }
+}
+/// # C: size_t strlcat(char *dst, const char *src, size_t size) — BSD/glibc 2.38
+pub(crate) unsafe fn strlcat_impl(dst: *mut u8, src: *const u8, size: usize) -> usize {
+    // SAFETY: dst is a NUL-terminated buffer of `size` bytes; src NUL-terminated.
+    // Appends to dst, NUL-terminating within size, and returns the length it
+    // tried to create (initial dlen capped at size + strlen(src)).
+    unsafe {
+        let mut dlen = 0;
+        while dlen < size && *dst.add(dlen) != 0 { dlen += 1; }
+        let slen = strlen_impl(src);
+        if dlen == size { return size + slen; } // dst not NUL-terminated within size
+        let mut i = 0;
+        while *src.add(i) != 0 && dlen + i + 1 < size { *dst.add(dlen + i) = *src.add(i); i += 1; }
+        *dst.add(dlen + i) = 0;
+        dlen + slen
+    }
+}
+
 #[cfg(feature = "freestanding")]
 mod exports {
     use super::*;
@@ -89,6 +121,18 @@ mod exports {
         // SAFETY: forwards the C strncat contract to strncat_impl unchanged.
         unsafe { strncat_impl(dst, src, n) }
     }
+    // # C: size_t strlcpy(char *, const char *, size_t)
+    #[no_mangle]
+    pub unsafe extern "C" fn strlcpy(dst: *mut u8, src: *const u8, size: usize) -> usize {
+        // SAFETY: forwards the BSD strlcpy contract to strlcpy_impl unchanged.
+        unsafe { strlcpy_impl(dst, src, size) }
+    }
+    // # C: size_t strlcat(char *, const char *, size_t)
+    #[no_mangle]
+    pub unsafe extern "C" fn strlcat(dst: *mut u8, src: *const u8, size: usize) -> usize {
+        // SAFETY: forwards the BSD strlcat contract to strlcat_impl unchanged.
+        unsafe { strlcat_impl(dst, src, size) }
+    }
 }
 
 #[cfg(test)]
@@ -100,6 +144,25 @@ mod tests {
         let mut v: Vec<u8> = bytes.iter().map(|&b| if b == 0 { 1 } else { b }).collect();
         v.push(0);
         v
+    }
+    #[test]
+    fn strl_family() {
+        // SAFETY: buffers are sized for the bytes touched; sources NUL-terminated.
+        unsafe {
+            let mut d = [0u8; 4];
+            assert_eq!(strlcpy_impl(d.as_mut_ptr(), b"hello\0".as_ptr(), 4), 5); // wanted 5
+            assert_eq!(&d, b"hel\0"); // truncated to size-1 + NUL
+            let mut e = [0u8; 8];
+            assert_eq!(strlcpy_impl(e.as_mut_ptr(), b"hi\0".as_ptr(), 8), 2);
+            assert_eq!(&e[..3], b"hi\0");
+            let mut c = *b"ab\0\0\0\0\0\0";
+            assert_eq!(strlcat_impl(c.as_mut_ptr(), b"cd\0".as_ptr(), 8), 4);
+            assert_eq!(&c[..5], b"abcd\0");
+            // truncating strlcat: size leaves room for only 1 more char
+            let mut f = *b"ab\0\0";
+            assert_eq!(strlcat_impl(f.as_mut_ptr(), b"xyz\0".as_ptr(), 4), 5); // 2+3
+            assert_eq!(&f, b"abx\0");
+        }
     }
     proptest! {
         #[test]
