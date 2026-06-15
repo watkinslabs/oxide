@@ -95,6 +95,13 @@ mod exports {
         // SAFETY: forwards the C memcmp contract to memcmp_impl unchanged.
         unsafe { memcmp_impl(a, b, n) }
     }
+    // # C: int bcmp(const void *a, const void *b, size_t n) — like memcmp but
+    // only zero/non-zero matters; the compiler lowers slice-equality to it.
+    #[no_mangle]
+    pub unsafe extern "C" fn bcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
+        // SAFETY: forwards to memcmp_impl; same buffer contract.
+        unsafe { memcmp_impl(a, b, n) }
+    }
     // # C: void *memchr(const void *s, int c, size_t n)
     #[no_mangle]
     pub unsafe extern "C" fn memchr(s: *const u8, c: i32, n: usize) -> *mut u8 {
