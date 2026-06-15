@@ -45,6 +45,12 @@ pub struct FILE {
     _unused2: [u8; 20],
 }
 
+// glibc fpos_t / fpos64_t (_G_fpos{,64}_t): { __off_t __pos; __mbstate_t
+// __state; } = 16 bytes on LP64. fgetpos/fsetpos use only __pos (narrow
+// streams keep a zero mbstate). Layout is ABI-fixed; tested below.
+#[repr(C)]
+pub struct Fpos { pub __pos: i64, pub __state: [u8; 8] }
+
 impl FILE {
     const fn std(fd: i32, flags: i32) -> FILE {
         FILE {
@@ -95,13 +101,25 @@ pub(crate) unsafe fn cookie(f: *mut FILE) -> *mut u8 {
     unsafe { (*f)._codecvt }
 }
 
+// glibc _flags buffering bits (introspection + setvbuf record intent; the
+// actual I/O path is unbuffered, so these are advisory but ABI-visible).
+pub const IO_UNBUFFERED: i32 = 0x0002;
+pub const IO_LINE_BUF: i32 = 0x0200;
+// glibc access-mode + last-op flags: NO_READS/NO_WRITES mark the stream's
+// mode, CURRENTLY_PUTTING records that the last op was a write.
+pub const IO_NO_READS: i32 = 0x0004;
+pub const IO_NO_WRITES: i32 = 0x0008;
+pub const IO_CURRENTLY_PUTTING: i32 = 0x0800;
+
 #[cfg(feature = "freestanding")]
-pub(crate) use streams::{alloc_file, free_file, is_std, set_eof, set_unget, stdin_ptr, stdout_ptr, take_unget,
-    get_orient, set_orient, set_wunget, take_wunget};
+pub(crate) use streams::{alloc_file, free_file, is_std, set_eof, set_unget, stdin_ptr, stdout_ptr,
+    take_unget, get_orient, set_orient, set_wunget, take_wunget,
+    set_buf, buf_size, set_bufmode, last_was_read, mark_read, mark_write,
+    set_popen_pid, popen_pid};
 
 #[cfg(feature = "freestanding")]
 mod streams {
-    use super::{FILE, IO_EOF_SEEN, IO_ERR_SEEN};
+    use super::{FILE, IO_EOF_SEEN, IO_ERR_SEEN, IO_UNBUFFERED, IO_LINE_BUF, IO_CURRENTLY_PUTTING};
     use core::cell::UnsafeCell;
 
     struct StdFile(UnsafeCell<FILE>);
@@ -196,6 +214,55 @@ mod streams {
         }
     }
 
+    // setvbuf records the caller's buffer + capacity in the glibc buffer-pointer
+    // fields so the GNU introspection (__fbufsize) can report them. Our I/O is
+    // unbuffered, so the buffer is advisory; the ABI fields stay consistent.
+    pub(crate) unsafe fn set_buf(f: *mut FILE, base: *mut u8, size: usize) {
+        // SAFETY: f is a valid stream; record an advisory user buffer in the
+        // glibc _io_buf_base/_io_buf_end pointer pair (size bytes wide).
+        unsafe { (*f)._io_buf_base = base; (*f)._io_buf_end = if base.is_null() { core::ptr::null_mut() } else { base.add(size) }; }
+    }
+    pub(crate) unsafe fn buf_size(f: *mut FILE) -> usize {
+        // SAFETY: f is a valid stream; the buffer span is end-base (0 if unset).
+        unsafe {
+            let (b, e) = ((*f)._io_buf_base, (*f)._io_buf_end);
+            if b.is_null() || e.is_null() { 0 } else { (e as usize).wrapping_sub(b as usize) }
+        }
+    }
+    pub(crate) unsafe fn set_bufmode(f: *mut FILE, mode: i32) {
+        // SAFETY: f is a valid stream; clear the two buffering bits then set the
+        // one for `mode` (0=_IOFBF full, 1=_IOLBF line, 2=_IONBF none).
+        unsafe {
+            (*f)._flags &= !(IO_UNBUFFERED | IO_LINE_BUF);
+            match mode { 1 => (*f)._flags |= IO_LINE_BUF, 2 => (*f)._flags |= IO_UNBUFFERED, _ => {} }
+        }
+    }
+    // Track last-op direction for __freading/__fwriting via CURRENTLY_PUTTING.
+    pub(crate) unsafe fn mark_read(f: *mut FILE) {
+        // SAFETY: f is a valid stream; clear the write-in-progress flag.
+        unsafe { (*f)._flags &= !IO_CURRENTLY_PUTTING; }
+    }
+    pub(crate) unsafe fn mark_write(f: *mut FILE) {
+        // SAFETY: f is a valid stream; set the write-in-progress flag.
+        unsafe { (*f)._flags |= IO_CURRENTLY_PUTTING; }
+    }
+    pub(crate) unsafe fn last_was_read(f: *mut FILE) -> bool {
+        // SAFETY: f is a valid stream; the put flag being clear means the last
+        // direction was a read.
+        unsafe { (*f)._flags & IO_CURRENTLY_PUTTING == 0 }
+    }
+
+    // popen stores the child pid in the otherwise-unused _old_offset field so
+    // pclose can waitpid on it. 0 = not a popen stream.
+    pub(crate) unsafe fn set_popen_pid(f: *mut FILE, pid: i32) {
+        // SAFETY: f is a fresh popen stream; stash the child pid for pclose.
+        unsafe { (*f)._old_offset = pid as i64; }
+    }
+    pub(crate) unsafe fn popen_pid(f: *mut FILE) -> i32 {
+        // SAFETY: f is a valid stream; read back any popen child pid.
+        unsafe { (*f)._old_offset as i32 }
+    }
+
     // # C: int fileno(FILE *)
     #[no_mangle]
     pub unsafe extern "C" fn fileno(f: *mut FILE) -> i32 {
@@ -224,7 +291,13 @@ mod streams {
 
 #[cfg(test)]
 mod tests {
-    use super::FILE;
+    use super::{Fpos, FILE};
+    #[test]
+    fn fpos_abi_layout() {
+        // glibc _G_fpos64_t: __off64_t (8) + __mbstate_t (8) = 16 bytes.
+        assert_eq!(core::mem::size_of::<Fpos>(), 16);
+        assert_eq!(core::mem::offset_of!(Fpos, __pos), 0);
+    }
     #[test]
     fn file_abi_layout() {
         // glibc _IO_FILE LP64 golden offsets/size (abi/<arch>.toml).
