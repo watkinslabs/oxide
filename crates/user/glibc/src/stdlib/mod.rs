@@ -14,3 +14,5 @@ pub mod realpath;
 pub mod mkstemp;
 #[cfg(feature = "freestanding")]
 pub mod subopt;
+#[cfg(feature = "freestanding")]
+pub mod a64l;
