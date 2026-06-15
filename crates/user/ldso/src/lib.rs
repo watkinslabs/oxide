@@ -23,6 +23,7 @@ pub mod bump;
 pub mod cache;
 pub mod dynamic;
 pub mod linkmap;
+pub mod loader;
 pub mod reloc;
 pub mod search;
 pub mod symbol;
