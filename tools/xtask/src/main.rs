@@ -4,6 +4,7 @@ mod buildns;
 mod cmds;
 mod gc;
 mod glibc;
+mod ldso;
 mod image_qemu;
 mod l2_deps;
 mod path;
@@ -30,6 +31,7 @@ fn main() -> ExitCode {
         "test"      => cmd_test(rest),
         "user"      => stub("user", "29a"),
         "glibc"     => glibc::cmd_glibc(rest),
+        "ldso"      => ldso::cmd_ldso(rest),
         "rootfs"    => cmd_rootfs(rest),
         "image"     => image_qemu::cmd_image(rest),
         "grub"      => image_qemu::cmd_grub(rest),

@@ -13,6 +13,7 @@ use crate::dynamic::Dyn;
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
     ".globl _start",
+    ".hidden _dl_start",               // direct PC-relative call (no unrelocated PLT)
     ".type _start,@function",
     "_start:",
     "  xor ebp, ebp",
@@ -28,6 +29,7 @@ core::arch::global_asm!(
 #[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
     ".globl _start",
+    ".hidden _dl_start",               // direct PC-relative call (no unrelocated PLT)
     ".type _start,%function",
     "_start:",
     "  mov x0, sp",                    // arg1 = initial SP
