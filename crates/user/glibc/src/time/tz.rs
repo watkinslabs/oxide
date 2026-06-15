@@ -298,6 +298,28 @@ mod imp {
             e
         }
     }
+
+    // # C: char *ctime(const time_t *t) — asctime(localtime(t))
+    #[no_mangle]
+    pub unsafe extern "C" fn ctime(t: *const i64) -> *mut u8 {
+        // SAFETY: t is a valid time_t; render local time into the global
+        // asctime buffer (shared with asctime per the C contract).
+        unsafe { let s = &mut *st(); localtime_into(*t, &mut s.lt); crate::time::cfmt::imp::asctime_static(&s.lt) }
+    }
+    // # C: char *ctime_r(const time_t *t, char *buf) — buf >= 26 bytes
+    #[no_mangle]
+    pub unsafe extern "C" fn ctime_r(t: *const i64, buf: *mut u8) -> *mut u8 {
+        // SAFETY: t is a valid time_t; buf is writable for 26 bytes. Use a local
+        // tm so we do not disturb the global localtime buffer.
+        unsafe {
+            let mut tmp = tm { tm_sec: 0, tm_min: 0, tm_hour: 0, tm_mday: 0, tm_mon: 0, tm_year: 0,
+                               tm_wday: 0, tm_yday: 0, tm_isdst: 0, tm_gmtoff: 0, tm_zone: core::ptr::null() };
+            localtime_into(*t, &mut tmp);
+            let s = crate::time::cfmt::asctime_fmt(&tmp);
+            core::ptr::copy_nonoverlapping(s.as_ptr(), buf, 26);
+            buf
+        }
+    }
 }
 
 #[cfg(test)]
