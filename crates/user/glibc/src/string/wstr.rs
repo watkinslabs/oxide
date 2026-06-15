@@ -63,6 +63,128 @@ pub(crate) unsafe fn wcschr_impl(s: *const i32, c: i32) -> *mut i32 {
     }
 }
 
+/// # C: wchar_t *wcsncpy(wchar_t *dst, const wchar_t *src, size_t n)
+pub(crate) unsafe fn wcsncpy_impl(dst: *mut i32, src: *const i32, n: usize) -> *mut i32 {
+    // SAFETY: dst writable for n wchars; src 0-terminated. Copy up to a 0, then
+    // 0-pad to n (C wcsncpy contract).
+    unsafe {
+        let mut i = 0;
+        while i < n && *src.add(i) != 0 { *dst.add(i) = *src.add(i); i += 1; }
+        while i < n { *dst.add(i) = 0; i += 1; }
+        dst
+    }
+}
+/// # C: wchar_t *wcscat(wchar_t *dst, const wchar_t *src)
+pub(crate) unsafe fn wcscat_impl(dst: *mut i32, src: *const i32) -> *mut i32 {
+    // SAFETY: dst is 0-terminated with room for the concatenation; src 0-terminated.
+    unsafe { let e = dst.add(wcslen_impl(dst)); wcscpy_impl(e, src); dst }
+}
+/// # C: wchar_t *wcsncat(wchar_t *dst, const wchar_t *src, size_t n)
+pub(crate) unsafe fn wcsncat_impl(dst: *mut i32, src: *const i32, n: usize) -> *mut i32 {
+    // SAFETY: dst 0-terminated with room; appends up to n src wchars then a 0.
+    unsafe {
+        let mut d = dst.add(wcslen_impl(dst));
+        let mut i = 0;
+        while i < n && *src.add(i) != 0 { *d = *src.add(i); d = d.add(1); i += 1; }
+        *d = 0;
+        dst
+    }
+}
+/// # C: wchar_t *wcsrchr(const wchar_t *s, wchar_t c)
+pub(crate) unsafe fn wcsrchr_impl(s: *const i32, c: i32) -> *mut i32 {
+    // SAFETY: s 0-terminated; scan to the terminator tracking the last match.
+    unsafe {
+        let mut last = core::ptr::null_mut();
+        let mut i = 0;
+        loop {
+            let x = *s.add(i);
+            if x == c { last = s.add(i) as *mut i32; }
+            if x == 0 { return last; }
+            i += 1;
+        }
+    }
+}
+unsafe fn w_in(set: *const i32, c: i32) -> bool {
+    // SAFETY: set is a 0-terminated wchar_t array; scan to the terminator.
+    unsafe {
+        let mut k = 0;
+        loop {
+            let s = *set.add(k);
+            if s == 0 { return false; }
+            if s == c { return true; }
+            k += 1;
+        }
+    }
+}
+/// # C: size_t wcsspn(const wchar_t *s, const wchar_t *accept)
+pub(crate) unsafe fn wcsspn_impl(s: *const i32, accept: *const i32) -> usize {
+    // SAFETY: both 0-terminated; count leading run present in accept.
+    unsafe { let mut i = 0; while *s.add(i) != 0 && w_in(accept, *s.add(i)) { i += 1; } i }
+}
+/// # C: size_t wcscspn(const wchar_t *s, const wchar_t *reject)
+pub(crate) unsafe fn wcscspn_impl(s: *const i32, reject: *const i32) -> usize {
+    // SAFETY: both 0-terminated; count leading run absent from reject.
+    unsafe { let mut i = 0; while *s.add(i) != 0 && !w_in(reject, *s.add(i)) { i += 1; } i }
+}
+/// # C: wchar_t *wcspbrk(const wchar_t *s, const wchar_t *accept)
+pub(crate) unsafe fn wcspbrk_impl(s: *const i32, accept: *const i32) -> *mut i32 {
+    // SAFETY: both 0-terminated; first s wchar present in accept, else null.
+    unsafe {
+        let mut i = 0;
+        loop {
+            let b = *s.add(i);
+            if b == 0 { return core::ptr::null_mut(); }
+            if w_in(accept, b) { return s.add(i) as *mut i32; }
+            i += 1;
+        }
+    }
+}
+/// # C: wchar_t *wcsstr(const wchar_t *hay, const wchar_t *needle)
+pub(crate) unsafe fn wcsstr_impl(hay: *const i32, needle: *const i32) -> *mut i32 {
+    // SAFETY: both 0-terminated; naive substring scan within bounds.
+    unsafe {
+        let nlen = wcslen_impl(needle);
+        if nlen == 0 { return hay as *mut i32; }
+        let mut i = 0;
+        loop {
+            let mut j = 0;
+            while j < nlen && *hay.add(i + j) == *needle.add(j) { j += 1; }
+            if j == nlen { return hay.add(i) as *mut i32; }
+            if *hay.add(i) == 0 { return core::ptr::null_mut(); }
+            i += 1;
+        }
+    }
+}
+/// # C: wchar_t *wmemset(wchar_t *s, wchar_t c, size_t n)
+pub(crate) unsafe fn wmemset_impl(s: *mut i32, c: i32, n: usize) -> *mut i32 {
+    // SAFETY: s is writable for n wchar_t elements; fill each with c.
+    unsafe { let mut i = 0; while i < n { *s.add(i) = c; i += 1; } s }
+}
+/// # C: wchar_t *wmemcpy(wchar_t *d, const wchar_t *s, size_t n)
+pub(crate) unsafe fn wmemcpy_impl(d: *mut i32, s: *const i32, n: usize) -> *mut i32 {
+    // SAFETY: d and s are valid for n non-overlapping wchars.
+    unsafe { core::ptr::copy_nonoverlapping(s, d, n); d }
+}
+/// # C: wchar_t *wmemmove(wchar_t *d, const wchar_t *s, size_t n)
+pub(crate) unsafe fn wmemmove_impl(d: *mut i32, s: *const i32, n: usize) -> *mut i32 {
+    // SAFETY: d and s are valid for n wchars; may overlap (copy handles it).
+    unsafe { core::ptr::copy(s, d, n); d }
+}
+/// # C: int wmemcmp(const wchar_t *a, const wchar_t *b, size_t n)
+pub(crate) unsafe fn wmemcmp_impl(a: *const i32, b: *const i32, n: usize) -> i32 {
+    // SAFETY: a and b are readable for n wchars.
+    unsafe {
+        let mut i = 0;
+        while i < n { let (x, y) = (*a.add(i), *b.add(i)); if x != y { return if x < y { -1 } else { 1 }; } i += 1; }
+        0
+    }
+}
+/// # C: wchar_t *wmemchr(const wchar_t *s, wchar_t c, size_t n)
+pub(crate) unsafe fn wmemchr_impl(s: *const i32, c: i32, n: usize) -> *mut i32 {
+    // SAFETY: s is readable for n wchar_t elements; scan for the value c.
+    unsafe { let mut i = 0; while i < n { if *s.add(i) == c { return s.add(i) as *mut i32; } i += 1; } core::ptr::null_mut() }
+}
+
 #[cfg(feature = "freestanding")]
 mod imp {
     use super::*;
@@ -96,6 +218,58 @@ mod imp {
         // SAFETY: s is a 0-terminated wchar_t array; forwards wcschr_impl.
         unsafe { wcschr_impl(s, c) }
     }
+    // # C: wchar_t *wcsncpy(wchar_t *, const wchar_t *, size_t)
+    // SAFETY: dst writable for n wchars; src 0-terminated. Forwards.
+    #[no_mangle] pub unsafe extern "C" fn wcsncpy(d: *mut i32, s: *const i32, n: usize) -> *mut i32 { unsafe { wcsncpy_impl(d, s, n) } }
+    // # C: wchar_t *wcscat(wchar_t *, const wchar_t *)
+    // SAFETY: dst 0-terminated with room; src 0-terminated. Forwards.
+    #[no_mangle] pub unsafe extern "C" fn wcscat(d: *mut i32, s: *const i32) -> *mut i32 { unsafe { wcscat_impl(d, s) } }
+    // # C: wchar_t *wcsncat(wchar_t *, const wchar_t *, size_t)
+    // SAFETY: dst 0-terminated with room; appends up to n wchars. Forwards.
+    #[no_mangle] pub unsafe extern "C" fn wcsncat(d: *mut i32, s: *const i32, n: usize) -> *mut i32 { unsafe { wcsncat_impl(d, s, n) } }
+    // # C: wchar_t *wcsrchr(const wchar_t *, wchar_t)
+    // SAFETY: s 0-terminated; forwards wcsrchr_impl.
+    #[no_mangle] pub unsafe extern "C" fn wcsrchr(s: *const i32, c: i32) -> *mut i32 { unsafe { wcsrchr_impl(s, c) } }
+    // # C: size_t wcsspn(const wchar_t *, const wchar_t *)
+    // SAFETY: both 0-terminated; forwards wcsspn_impl.
+    #[no_mangle] pub unsafe extern "C" fn wcsspn(s: *const i32, a: *const i32) -> usize { unsafe { wcsspn_impl(s, a) } }
+    // # C: size_t wcscspn(const wchar_t *, const wchar_t *)
+    // SAFETY: both 0-terminated; forwards wcscspn_impl.
+    #[no_mangle] pub unsafe extern "C" fn wcscspn(s: *const i32, r: *const i32) -> usize { unsafe { wcscspn_impl(s, r) } }
+    // # C: wchar_t *wcspbrk(const wchar_t *, const wchar_t *)
+    // SAFETY: both 0-terminated; forwards wcspbrk_impl.
+    #[no_mangle] pub unsafe extern "C" fn wcspbrk(s: *const i32, a: *const i32) -> *mut i32 { unsafe { wcspbrk_impl(s, a) } }
+    // # C: wchar_t *wcsstr(const wchar_t *, const wchar_t *)
+    // SAFETY: both 0-terminated; forwards wcsstr_impl.
+    #[no_mangle] pub unsafe extern "C" fn wcsstr(h: *const i32, n: *const i32) -> *mut i32 { unsafe { wcsstr_impl(h, n) } }
+    // # C: wchar_t *wmemset(wchar_t *, wchar_t, size_t)
+    // SAFETY: s writable for n wchars; forwards wmemset_impl.
+    #[no_mangle] pub unsafe extern "C" fn wmemset(s: *mut i32, c: i32, n: usize) -> *mut i32 { unsafe { wmemset_impl(s, c, n) } }
+    // # C: wchar_t *wmemcpy(wchar_t *, const wchar_t *, size_t)
+    // SAFETY: d and s valid for n non-overlapping wchars; forwards.
+    #[no_mangle] pub unsafe extern "C" fn wmemcpy(d: *mut i32, s: *const i32, n: usize) -> *mut i32 { unsafe { wmemcpy_impl(d, s, n) } }
+    // # C: wchar_t *wmemmove(wchar_t *, const wchar_t *, size_t)
+    // SAFETY: d and s valid for n wchars, possibly overlapping; forwards.
+    #[no_mangle] pub unsafe extern "C" fn wmemmove(d: *mut i32, s: *const i32, n: usize) -> *mut i32 { unsafe { wmemmove_impl(d, s, n) } }
+    // # C: int wmemcmp(const wchar_t *, const wchar_t *, size_t)
+    // SAFETY: a and b readable for n wchars; forwards wmemcmp_impl.
+    #[no_mangle] pub unsafe extern "C" fn wmemcmp(a: *const i32, b: *const i32, n: usize) -> i32 { unsafe { wmemcmp_impl(a, b, n) } }
+    // # C: wchar_t *wmemchr(const wchar_t *, wchar_t, size_t)
+    // SAFETY: s readable for n wchars; forwards wmemchr_impl.
+    #[no_mangle] pub unsafe extern "C" fn wmemchr(s: *const i32, c: i32, n: usize) -> *mut i32 { unsafe { wmemchr_impl(s, c, n) } }
+
+    // # C: wchar_t *wcsdup(const wchar_t *s) — malloc a copy
+    #[no_mangle]
+    pub unsafe extern "C" fn wcsdup(s: *const i32) -> *mut i32 {
+        // SAFETY: s 0-terminated; allocate (wcslen+1)*4 bytes via malloc and copy.
+        unsafe {
+            extern "C" { fn malloc(n: usize) -> *mut core::ffi::c_void; }
+            let n = wcslen_impl(s) + 1;
+            let p = malloc(n * 4) as *mut i32;
+            if p.is_null() { return p; }
+            wmemcpy_impl(p, s, n)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -117,6 +291,30 @@ mod tests {
             let mut d = [0i32; 4];
             wcscpy_impl(d.as_mut_ptr(), a.as_ptr());
             assert_eq!(wcslen_impl(d.as_ptr()), 2);
+        }
+    }
+    #[test]
+    fn wide_extras() {
+        // SAFETY: all arrays are 0-terminated / sized for the bytes touched.
+        unsafe {
+            let mut buf = [104i32, 105, 0, 0, 0, 0]; // "hi"
+            wcscat_impl(buf.as_mut_ptr(), [33i32, 0].as_ptr()); // + "!"
+            assert_eq!(wcslen_impl(buf.as_ptr()), 3);
+            assert_eq!(buf[2], 33);
+            let s = [97i32, 98, 99, 98, 0]; // "abcb"
+            assert_eq!(wcsrchr_impl(s.as_ptr(), 98) as usize - s.as_ptr() as usize, 3 * 4);
+            let acc = [99i32, 0]; // "c"
+            assert_eq!(wcscspn_impl(s.as_ptr(), acc.as_ptr()), 2);
+            assert_eq!(wcsspn_impl([99i32, 99, 97, 0].as_ptr(), acc.as_ptr()), 2);
+            assert_eq!(wcsstr_impl(s.as_ptr(), [98i32, 99, 0].as_ptr()) as usize - s.as_ptr() as usize, 4);
+            let mut m = [0i32; 4];
+            wmemset_impl(m.as_mut_ptr(), 7, 4);
+            assert_eq!(m, [7, 7, 7, 7]);
+            assert!(wmemcmp_impl([1i32, 2].as_ptr(), [1i32, 3].as_ptr(), 2) < 0);
+            assert_eq!(wmemchr_impl(s.as_ptr(), 99, 4) as usize - s.as_ptr() as usize, 2 * 4);
+            let mut n = [0i32; 4];
+            wcsncpy_impl(n.as_mut_ptr(), [65i32, 0].as_ptr(), 4); // "A" + 0-pad
+            assert_eq!(n, [65, 0, 0, 0]);
         }
     }
 }
