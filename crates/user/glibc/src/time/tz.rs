@@ -299,6 +299,13 @@ mod imp {
         }
     }
 
+    // # C: time_t timelocal(struct tm *tm) — GNU alias of mktime
+    #[no_mangle]
+    pub unsafe extern "C" fn timelocal(t: *mut tm) -> i64 {
+        // SAFETY: timelocal == mktime; forwards the same struct-tm contract.
+        unsafe { mktime(t) }
+    }
+
     // # C: char *ctime(const time_t *t) — asctime(localtime(t))
     #[no_mangle]
     pub unsafe extern "C" fn ctime(t: *const i64) -> *mut u8 {

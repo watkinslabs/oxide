@@ -174,6 +174,23 @@ mod imp {
         };
         s.as_ptr()
     }
+
+    // # C: int rpmatch(const char *response) — 1 = yes, 0 = no, -1 = no match.
+    // C/POSIX locale: YESEXPR ^[+1yY], NOEXPR ^[-0nN] (the regexes glibc ships
+    // for the C locale). Only the first character is inspected.
+    #[no_mangle]
+    pub unsafe extern "C" fn rpmatch(response: *const u8) -> i32 {
+        // SAFETY: response is null or a NUL-terminated string; inspect its first
+        // byte against the C-locale yes/no expressions.
+        unsafe {
+            if response.is_null() { return -1; }
+            match *response {
+                b'y' | b'Y' => 1,
+                b'n' | b'N' => 0,
+                _ => -1,
+            }
+        }
+    }
 }
 
 #[cfg(test)]

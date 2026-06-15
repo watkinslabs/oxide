@@ -4,6 +4,7 @@
 pub mod tm;
 pub mod tz;
 pub mod strftime;
+pub mod strptime;
 pub mod cfmt;
 #[cfg(feature = "freestanding")]
 pub mod clock;
