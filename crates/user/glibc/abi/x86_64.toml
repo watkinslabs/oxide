@@ -16,4 +16,5 @@ pthread_rwlock_t = 56
 pthread_t        = 8     # opaque unsigned long
 jmp_buf          = 200   # __jmp_buf_tag: 8*8 regs + sigmask + savemask
 sigset_t         = 128
-# FILE, DIR, glob_t, stat: recorded when G6/G8/G10 land.
+FILE             = 216   # _IO_FILE, LP64 (G6); _IO_write_ptr@40, _fileno@112
+# DIR, glob_t, stat: recorded when G8/G10 land.
