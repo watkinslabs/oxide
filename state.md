@@ -59,10 +59,13 @@ G0–G18 COMPLETE. Done:
 `xtask glibc-test`: differential conformance harness (tools/xtask/src/
 glibc_test.rs + userspace/glibc_conformance/*.c). Each C program is compiled
 once, linked+run BOTH against host glibc (oracle) and our sysroot (Scrt1.o +
-libc.so.6 via our ld-linux on the host), stdout+exit diffed. **36/36 programs match host glibc** (stdio/string/malloc/math/strto/qsort/ctype/snprintf/sscanf/
-time/env/file/setjmp/wchar/abs/pthread/signal/fseek/atexit/getopt/inet/fnmatch/strcase/asprintf/libgen/qsort_r/realpath/locale). Both
-arches build libc.so.6 (x86 run-tested; aarch64 build-parity, run rides QEMU).
-16+ real bugs/gaps it caught + fixed (incl a MAJOR ld-linux R_X86_64_COPY/R_AARCH64_COPY fix — the source must exclude the exe, else every libc DATA symbol the exe reads (optind/stdout/errno/environ) stays 0; this also unblocks the on-kernel path): printf %e/%f (C exponent+width), __isoc23_strto*,
+libc.so.6 via our ld-linux on the host), stdout+exit diffed. **55/55 programs match host glibc** (batches 1–17; through #1933 added strerror/imaxabs,
+strcoll/strxfrm/memccpy, strtoimax/strtoumax/rawmemchr/strcasestr, full
+wide-string family (wcs*/wmem*/wcsdup), asctime/ctime/difftime/perror,
+strlcpy/strlcat/explicit_bzero/reallocarray/getsubopt, <search.h> tsearch+
+lsearch families). Both arches build libc.so.6 (x86 run-tested; aarch64
+build-parity, run rides QEMU).
+18+ real bugs/gaps it caught + fixed (incl a MAJOR ld-linux R_X86_64_COPY/R_AARCH64_COPY fix — the source must exclude the exe, else every libc DATA symbol the exe reads (optind/stdout/errno/environ) stays 0; this also unblocks the on-kernel path; AND printf %ls/%lc read the wchar_t* as char* → stopped at first embedded NUL): printf %e/%f (C exponent+width), %ls/%lc wide, __isoc23_strto*,
 __isoc23/99_sscanf, ctype tables (__ctype_b_loc/_tolower_loc/_toupper_loc),
 scanf %x 0x-prefix, strtok/strtok_r, wcs* family, setjmp symbol export (naked
 #[no_mangle], per-arch — was localized by the cdylib version script).
@@ -154,7 +157,8 @@ the Scrt1.o gap; this phase ends with both arches booting to login on glibc.
 ## Notes
 - musl path stays buildable until G19. 59 is DRAFT — edit directly (no R-block).
 - P28 prefix is the loop's ad-hoc glibc sequence; not tracked in
-  metadata/index.md. Last used P28-69. C-type counter next=91. D-type next=100.
+  metadata/index.md. Last used P28-89 (conformance batch 17). C-type counter
+  next=91. D-type next=100.
 - Test crate: glibc is `#![no_std]`, std is test-gated (no prelude) — in tests
   `use alloc::vec::Vec;`; derive Debug on enums asserted with assert_eq!.
 - Charset-name C-string clippy fights c_char signedness across arches — use
