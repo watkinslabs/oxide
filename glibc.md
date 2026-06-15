@@ -16,6 +16,8 @@ complex/long-double deferred.
 # glibc — remaining (TODO)
 # glibc — implemented (oxide-libc)
 # glibc — remaining (TODO)
+# glibc — implemented (oxide-libc)
+# glibc — remaining (TODO)
 Not yet in oxide-libc; moves to glibc_done.md when done (complex/long-double deferred).
 # glibc — implemented (oxide-libc)
 via `xtask glibc-test`. Moved out of glibc.md (the remaining TODO list).
@@ -417,9 +419,7 @@ float remainderf (float numerator, float denominator)
 long double remainderl (long double numerator, long double denominator)
 int putpwent (const struct passwd *p, FILE *stream)
 pid_t wait3 (int *status-ptr, int options, struct rusage *usage)
-int ftw (const char *filename, __ftw_func_t func, int descriptors)
 int ftw64 (const char *filename, __ftw64_func_t func, int descriptors)
-int nftw (const char *filename, __nftw_func_t func, int descriptors, int flag)
 int nftw64 (const char *filename, __nftw64_func_t func, int descriptors, int flag)
 int fflush_unlocked (FILE *stream)
 void _flushlbf (void)
