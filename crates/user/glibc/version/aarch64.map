@@ -1,0 +1,13 @@
+/* glibc symbol-version map, aarch64. docs/59§2 (R02), §5.
+ * aarch64 glibc has no pre-2.17 history: baseline node = GLIBC_2.17.
+ * Otherwise mirrors x86_64.map. `xtask glibc` selects this for the
+ * aarch64-unknown-linux-gnu build. */
+GLIBC_2.17 {
+  global:
+    /* G2: __libc_start_main; __errno_location; _start (entry) */
+  local:
+    *;
+};
+GLIBC_2.28   {} GLIBC_2.17;
+GLIBC_2.34   {} GLIBC_2.28;  /* pthread/dl/rt folded into libc here */
+GLIBC_2.38   {} GLIBC_2.34;
