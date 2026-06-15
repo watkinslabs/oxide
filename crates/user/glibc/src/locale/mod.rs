@@ -8,6 +8,8 @@
 pub mod iconv;
 pub mod wchar;
 pub mod wctype;
+#[cfg(feature = "freestanding")]
+pub mod gettext;
 
 pub const LC_CTYPE: i32 = 0;
 pub const LC_NUMERIC: i32 = 1;
