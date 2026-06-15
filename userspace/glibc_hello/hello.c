@@ -17,6 +17,9 @@ unsigned long fwrite(const void *p, unsigned long sz, unsigned long n, void *f);
 char *fgets(char *buf, int size, void *f);
 void  rewind(void *f);
 int   fscanf(void *f, const char *fmt, ...);
+char *getenv(const char *name);
+int   setenv(const char *name, const char *value, int overwrite);
+int   strcmp(const char *a, const char *b);
 
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
@@ -52,7 +55,12 @@ int main(int argc, char **argv, char **envp) {
     if (memcmp(word, "xyz", 4) != 0 || num != 314) return 15;
     fclose(rf);
 
-    printf("%s (k=%d) scan=%d,%d file=%s/%d\n", buf, k, a, b, word, num);
+    /* env: setenv then getenv round-trip */
+    if (setenv("OXIDE_G7C", "yes", 1) != 0) return 16;
+    char *ev = getenv("OXIDE_G7C");
+    if (!ev || strcmp(ev, "yes") != 0) return 17;
+
+    printf("%s (k=%d) scan=%d,%d file=%s/%d env=%s\n", buf, k, a, b, word, num, ev);
     puts("hello from oxide-libc");
     return 0;
 }
