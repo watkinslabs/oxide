@@ -99,8 +99,8 @@ non-overlapping phases land in parallel once their deps are green.
 | 24 | SysV IPC (shm/sem/msg) + POSIX MQ + keyring | open | `24` |
 | 25 | perf_event_open + tracefs/ftrace + ebpf programs running tracepoints | open | `27`,`37` |
 | 26 | Core dump generation (sigaction SIGSEGV → ELF coredump in fs) | open | `27`,`16` |
-| 27 | Dynamic linker (real ld-musl: PT_INTERP, DT_NEEDED, GOT/PLT, RELA/JMPREL, ld.so.cache, LD_LIBRARY_PATH, dlopen/dlsym) | open | `31`,`29a` |
-| 28 | Standard userspace libc + NSS + PAM (musl-with-nss, /etc/{passwd,group,shadow}, pam_unix) | open | `29a`,`43` |
+| 27 | Dynamic linker (real ld-linux `crates/user/ldso`: PT_INTERP, DT_NEEDED, GOT/PLT, RELA/JMPREL/IRELATIVE, sym-versioning, ld.so.cache, LD_LIBRARY_PATH, dlopen/dlsym) | open | `31`,`29a`,`59` |
+| 28 | Standard userspace libc (oxide-libc, glibc-ABI Rust `crates/user/glibc` per `59`) + NSS + PAM, /etc/{passwd,group,shadow}, pam_unix | open | `29a`,`43`,`59` |
 | 29 | System manager (real PID 1 — service supervision, dep order, journalctl on klog ring) | open | `29a` |
 | 30 | Package manager (rpmbuild against our libc, dnf/microdnf, /var/lib/rpm) | open | `43`,`29a` |
 | 31 | TTY + login flow (agetty per /dev/tty[0-N], terminfo/ncurses, motd/issue, real /dev/console termios) | open | `28`,`29a` |
