@@ -65,6 +65,52 @@ pub fn lookup<'a>(cache: &'a [u8], soname: &[u8]) -> Option<&'a [u8]> {
     None
 }
 
+/// Encode an `/etc/ld.so.cache` (new format) from `(soname, path, flags)`
+/// triples. Entries are sorted by soname (lookup is linear, so order only
+/// affects determinism); each soname/path is NUL-terminated in the string
+/// table and referenced by file-relative offset. Host/build tool only — not
+/// compiled into the shipped rtld.
+///
+/// # C: writes a glibc-ld.so.cache1.1 image (ldconfig output)
+#[cfg(any(test, feature = "hosted"))]
+pub fn build_cache(entries: &[(&[u8], &[u8], i32)]) -> alloc::vec::Vec<u8> {
+    use alloc::vec::Vec;
+    let mut ents: Vec<(&[u8], &[u8], i32)> = entries.to_vec();
+    ents.sort_by(|a, b| a.0.cmp(b.0));
+    let nlibs = ents.len();
+    let strtab_start = NEW_HDR + nlibs * ENTRY;
+    let mut strs: Vec<u8> = Vec::new();
+    let mut offs: Vec<(u32, u32, i32)> = Vec::new();
+    for (k, v, f) in &ents {
+        let ko = (strtab_start + strs.len()) as u32;
+        strs.extend_from_slice(k);
+        strs.push(0);
+        let vo = (strtab_start + strs.len()) as u32;
+        strs.extend_from_slice(v);
+        strs.push(0);
+        offs.push((ko, vo, *f));
+    }
+    let mut buf = Vec::with_capacity(strtab_start + strs.len());
+    buf.extend_from_slice(MAGIC_NEW); // 17
+    buf.extend_from_slice(VERSION); // 3
+    buf.extend_from_slice(&(nlibs as u32).to_le_bytes());
+    buf.extend_from_slice(&(strs.len() as u32).to_le_bytes());
+    buf.push(0); // flags
+    buf.extend_from_slice(&[0, 0, 0]); // pad
+    buf.extend_from_slice(&0u32.to_le_bytes()); // ext_off
+    buf.extend_from_slice(&[0u8; 12]); // unused
+    debug_assert_eq!(buf.len(), NEW_HDR);
+    for (ko, vo, f) in &offs {
+        buf.extend_from_slice(&f.to_le_bytes()); // flags
+        buf.extend_from_slice(&ko.to_le_bytes()); // key
+        buf.extend_from_slice(&vo.to_le_bytes()); // value
+        buf.extend_from_slice(&0u32.to_le_bytes()); // osversion
+        buf.extend_from_slice(&0u64.to_le_bytes()); // hwcap
+    }
+    buf.extend_from_slice(&strs);
+    buf
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +194,34 @@ mod tests {
     fn rejects_garbage() {
         assert_eq!(lookup(b"not a cache", b"libc.so.6"), None);
         assert_eq!(lookup(&[], b"x"), None);
+    }
+
+    #[test]
+    fn encoder_roundtrips_through_reader() {
+        // build_cache → lookup must recover every entry (the rtld's own reader
+        // is the oracle), and miss absent names.
+        let img = build_cache(&[
+            (b"libc.so.6", b"/lib/x86_64-linux-oxide/libc.so.6", 1),
+            (b"libpthread.so.0", b"/lib/x86_64-linux-oxide/libpthread.so.0", 1),
+            (b"libm.so.6", b"/lib/x86_64-linux-oxide/libm.so.6", 1),
+        ]);
+        assert_eq!(lookup(&img, b"libc.so.6"), Some(&b"/lib/x86_64-linux-oxide/libc.so.6"[..]));
+        assert_eq!(lookup(&img, b"libpthread.so.0"), Some(&b"/lib/x86_64-linux-oxide/libpthread.so.0"[..]));
+        assert_eq!(lookup(&img, b"libm.so.6"), Some(&b"/lib/x86_64-linux-oxide/libm.so.6"[..]));
+        assert_eq!(lookup(&img, b"libnope.so.9"), None);
+        // header advertises the entry count
+        assert_eq!(rd_u32(&img, 20), Some(3));
+    }
+
+    #[test]
+    fn encoder_sorts_and_handles_empty() {
+        let empty = build_cache(&[]);
+        assert_eq!(rd_u32(&empty, 20), Some(0));
+        assert_eq!(lookup(&empty, b"libc.so.6"), None);
+        // entries come out sorted by soname
+        let img = build_cache(&[(b"libz.so.1", b"/z", 1), (b"liba.so.1", b"/a", 1)]);
+        let nb = 0usize;
+        let first_key = rd_u32(&img, nb + NEW_HDR + 4).unwrap() as usize;
+        assert_eq!(cstr_at(&img, first_key), Some(&b"liba.so.1"[..]));
     }
 }
