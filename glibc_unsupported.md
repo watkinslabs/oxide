@@ -3,7 +3,9 @@
 Hard-blocked, not deferred.
 
 ## long double / long-double-typed: 126
-x86_64 `long double` = 80-bit f80; Rust has no f80 so the extern-C ABI is inexpressible.
+x86_64 `long double` = 80-bit x87 f80; Rust has no f80 so the extern-C ABI
+is inexpressible (aarch64 binary128=f128, but one portable signature is needed
+for lockstep). Needs an 80-bit soft-float + x87-ABI shim.
 
 ## long double / long-double-typed (125)
 ## long double / long-double-typed (124)
@@ -132,9 +134,12 @@ complex long double casinl (complex long double z)
 complex long double cacosl (complex long double z)
 complex long double catanl (complex long double z)
 
-## header-only macros / compiler builtins: 23
-Never a libc.so.6 symbol. obstack_* expand in <obstack.h> over the implemented _obstack_* fns; alloca is __builtin_alloca; DTTOIF/IFTODT/DES_FAILED are macros.
+## header-only macros / compiler builtins: 24
+Never a libc.so.6 symbol: obstack_* expand in <obstack.h> over the implemented
+_obstack_* fns; sigsetjmp is a macro over the exported __sigsetjmp; alloca is
+__builtin_alloca; DTTOIF/IFTODT/DES_FAILED are macros.
 
+int sigsetjmp (sigjmp_buf state, int savesigs)
 void obstack_blank (struct obstack *obstack-ptr, int size)
 void obstack_grow (struct obstack *obstack-ptr, void *data, int size)
 void obstack_grow0 (struct obstack *obstack-ptr, void *data, int size)
