@@ -256,6 +256,59 @@ mod imp {
         }
     }
 
+    // # C: size_t mbsnrtowcs(wchar_t *dst, const char **src, size_t nmc, size_t len, mbstate_t *ps)
+    #[no_mangle]
+    pub unsafe extern "C" fn mbsnrtowcs(dst: *mut i32, src: *mut *const u8, nmc: usize, len: usize, _ps: *mut mbstate_t) -> usize {
+        // SAFETY: *src is readable for nmc bytes; dst null (count only) or writable
+        // for `len` wchars. Consumes at most nmc input bytes; on a non-null dst
+        // advances *src past the bytes consumed (to NULL after a NUL is copied).
+        unsafe {
+            let mut p = *src;
+            let mut consumed = 0usize; // bytes consumed from the input window
+            let mut w = 0usize;        // wchars produced
+            loop {
+                if !dst.is_null() && w >= len { *src = p; return w; }
+                if consumed >= nmc { if !dst.is_null() { *src = p; } return w; }
+                let avail = nmc - consumed;
+                let b = core::slice::from_raw_parts(p, avail);
+                match decode_utf8(b) {
+                    Ok((cp, clen)) => {
+                        if !dst.is_null() { *dst.add(w) = cp as i32; }
+                        if cp == 0 { if !dst.is_null() { *src = core::ptr::null(); } return w; }
+                        p = p.add(clen); consumed += clen; w += 1;
+                    }
+                    _ => { if !dst.is_null() { *src = p; } errno::set(EILSEQ); return usize::MAX; }
+                }
+            }
+        }
+    }
+
+    // # C: size_t wcsnrtombs(char *dst, const wchar_t **src, size_t nwc, size_t len, mbstate_t *ps)
+    #[no_mangle]
+    pub unsafe extern "C" fn wcsnrtombs(dst: *mut u8, src: *mut *const i32, nwc: usize, len: usize, _ps: *mut mbstate_t) -> usize {
+        // SAFETY: *src is readable for nwc wchars; dst null (count only) or writable
+        // for `len` bytes. Consumes at most nwc wchars; on a non-null dst advances
+        // *src past the wchars consumed (to NULL after the terminator is copied).
+        unsafe {
+            let mut p = *src;
+            let mut k = 0usize;        // wchars consumed
+            let mut written = 0usize;  // bytes produced
+            loop {
+                if k >= nwc { if !dst.is_null() { *src = p; } return written; }
+                let wc = *p;
+                if wc == 0 { if !dst.is_null() { *src = core::ptr::null(); } return written; }
+                let cp = wc as u32;
+                if cp > 0x10FFFF || (0xD800..=0xDFFF).contains(&cp) { if !dst.is_null() { *src = p; } errno::set(EILSEQ); return usize::MAX; }
+                let (o, clen) = encode_utf8(cp);
+                if !dst.is_null() {
+                    if written + clen > len { *src = p; return written; }
+                    core::ptr::copy_nonoverlapping(o.as_ptr(), dst.add(written), clen);
+                }
+                written += clen; p = p.add(1); k += 1;
+            }
+        }
+    }
+
     // # C: wint_t btowc(int c)
     #[no_mangle]
     pub extern "C" fn btowc(c: i32) -> i32 {

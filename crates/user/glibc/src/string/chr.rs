@@ -201,6 +201,18 @@ mod exports {
         // SAFETY: forwards the C strpbrk contract to strpbrk_impl unchanged.
         unsafe { strpbrk_impl(s, accept) }
     }
+    // # C: char *index(const char *s, int c) — BSD/legacy alias of strchr
+    #[no_mangle]
+    pub unsafe extern "C" fn index(s: *const u8, c: i32) -> *mut u8 {
+        // SAFETY: index is strchr; forwards the same NUL-terminated contract.
+        unsafe { strchr_impl(s, c) }
+    }
+    // # C: char *rindex(const char *s, int c) — BSD/legacy alias of strrchr
+    #[no_mangle]
+    pub unsafe extern "C" fn rindex(s: *const u8, c: i32) -> *mut u8 {
+        // SAFETY: rindex is strrchr; forwards the same NUL-terminated contract.
+        unsafe { strrchr_impl(s, c) }
+    }
 }
 
 #[cfg(test)]
