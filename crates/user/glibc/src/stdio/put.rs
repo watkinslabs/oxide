@@ -3,6 +3,7 @@
 // land next.
 #![cfg(feature = "freestanding")]
 use super::file::{fd_of, stdout_ptr, FILE};
+use super::memstream::stream_write;
 use crate::posix::io;
 use crate::string::len::strlen_impl;
 
@@ -12,7 +13,7 @@ pub unsafe extern "C" fn fwrite(ptr: *const u8, size: usize, nmemb: usize, f: *m
     let total = size.saturating_mul(nmemb);
     if total == 0 { return 0; }
     // SAFETY: ptr is valid for `total` bytes per the C contract; f is a stream.
-    let w = unsafe { io::write(fd_of(f), ptr, total) };
+    let w = unsafe { stream_write(f, ptr, total) };
     if w <= 0 { 0 } else { (w as usize) / size.max(1) }
 }
 
@@ -22,7 +23,7 @@ pub unsafe extern "C" fn fputs(s: *const u8, f: *mut FILE) -> i32 {
     // SAFETY: s is NUL-terminated; f is a stream. Returns ≥0 / EOF(-1).
     unsafe {
         let n = strlen_impl(s);
-        if io::write(fd_of(f), s, n) < 0 { -1 } else { 0 }
+        if stream_write(f, s, n) < 0 { -1 } else { 0 }
     }
 }
 
@@ -45,7 +46,7 @@ pub unsafe extern "C" fn fputc(c: i32, f: *mut FILE) -> i32 {
     // SAFETY: f is a stream; write one byte from the stack.
     unsafe {
         let b = c as u8;
-        if io::write(fd_of(f), &b as *const u8, 1) == 1 { c & 0xff } else { -1 }
+        if stream_write(f, &b as *const u8, 1) == 1 { c & 0xff } else { -1 }
     }
 }
 
@@ -81,6 +82,10 @@ pub unsafe extern "C" fn putchar(c: i32) -> i32 {
     unsafe { fputc(c, stdout_ptr()) }
 }
 
-// # C: int fflush(FILE *) — no-op while unbuffered (G6a).
+// # C: int fflush(FILE *) — fd streams are unbuffered (G6a); memory streams
+// republish their buffer + length to an open_memstream caller.
 #[no_mangle]
-pub unsafe extern "C" fn fflush(_f: *mut FILE) -> i32 { 0 }
+pub unsafe extern "C" fn fflush(f: *mut FILE) -> i32 {
+    // SAFETY: f is null (flush-all, nothing buffered) or a valid stream.
+    unsafe { if !f.is_null() && super::file::is_mem(f) { super::memstream::mem_flush(f); } 0 }
+}
