@@ -7,6 +7,7 @@ mod glibc;
 mod ldso;
 mod folded;
 mod sysroot;
+mod glibc_test;
 mod image_qemu;
 mod l2_deps;
 mod path;
@@ -36,6 +37,7 @@ fn main() -> ExitCode {
         "ldso"      => ldso::cmd_ldso(rest),
         "folded"    => folded::cmd_folded(rest),
         "sysroot"   => sysroot::cmd_sysroot(rest),
+        "glibc-test" => glibc_test::cmd_glibc_test(rest),
         "rootfs"    => cmd_rootfs(rest),
         "image"     => image_qemu::cmd_image(rest),
         "grub"      => image_qemu::cmd_grub(rest),
