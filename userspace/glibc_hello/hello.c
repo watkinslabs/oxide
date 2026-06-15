@@ -37,6 +37,12 @@ void *readdir(void *d);
 int   closedir(void *d);
 int   glob(const char *pat, int flags, void *errfn, void *pglob);
 void  globfree(void *pglob);
+typedef void (*sighandler_t)(int);
+sighandler_t signal(int sig, sighandler_t handler);
+int   raise(int sig);
+
+static volatile int g_sigflag = 0;
+static void on_usr1(int s) { (void)s; g_sigflag = 1; }
 
 static void on_exit_handler(void) {
     static const char m[] = "atexit-ok\n";
@@ -133,6 +139,12 @@ int main(int argc, char **argv, char **envp) {
     unsigned long gpathc = *(unsigned long *)(gbuf + 0);
     if (gpathc < 1) return 34;
     globfree(gbuf);
+
+    /* signal: install SIGUSR1 handler, raise it, verify it ran + returned
+       (exercises the rt_sigreturn restorer) */
+    if (signal(10 /*SIGUSR1*/, on_usr1) == (sighandler_t)-1) return 35;
+    if (raise(10) != 0) return 36;
+    if (g_sigflag != 1) return 37;
 
     /* env: setenv then getenv round-trip */
     if (setenv("OXIDE_G7C", "yes", 1) != 0) return 16;
