@@ -20,3 +20,7 @@ pub mod memstream;
 pub mod cookie;
 #[cfg(feature = "freestanding")]
 pub mod unlocked;
+#[cfg(feature = "freestanding")]
+pub mod wide;
+#[cfg(feature = "freestanding")]
+pub mod wide_fmt;
