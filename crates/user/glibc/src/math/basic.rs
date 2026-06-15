@@ -9,6 +9,10 @@
 pub(crate) fn signbit(x: f64) -> bool { x.to_bits() >> 63 != 0 }
 /// # C: int isnan(double)
 pub(crate) fn isnan(x: f64) -> bool { x.to_bits() & 0x7fff_ffff_ffff_ffff > 0x7ff0_0000_0000_0000 }
+
+// glibc's invalid-operation result on x86 is the negative quiet NaN (the FPU
+// default QNaN). fmod/remainder/remquo return it on a domain error.
+const INVALID: f64 = f64::from_bits(0xfff8_0000_0000_0000);
 /// # C: int isinf(double)
 pub(crate) fn isinf(x: f64) -> bool { x.to_bits() & 0x7fff_ffff_ffff_ffff == 0x7ff0_0000_0000_0000 }
 /// # C: int isfinite(double)
@@ -48,7 +52,7 @@ pub(crate) fn nextafter(x: f64, y: f64) -> f64 {
 
 /// # C: double remquo(double, double, int*) — IEEE remainder + low quotient bits
 pub(crate) fn remquo(x: f64, y: f64, quo: &mut i32) -> f64 {
-    if isnan(x) || isnan(y) || isinf(x) || y == 0.0 { *quo = 0; return f64::NAN; }
+    if isnan(x) || isnan(y) || isinf(x) || y == 0.0 { *quo = 0; return INVALID; }
     if isinf(y) { *quo = 0; return x; }
     // q = round-to-nearest-even of x/y (rint); r = x - q*y. Exact for the
     // magnitudes real programs use; full subnormal-exact handling is a follow-up.
@@ -104,7 +108,8 @@ pub(crate) fn fmod(x: f64, y: f64) -> f64 {
     let mut ex = ((uxi >> 52) & 0x7ff) as i32;
     let mut ey = ((uy >> 52) & 0x7ff) as i32;
     let sx = uxi >> 63;
-    if uy << 1 == 0 || isnan(y) || ex == 0x7ff { return f64::NAN; }
+    // invalid (y==0, y NaN, x inf/NaN): the FPU NaN (matches glibc's -nan).
+    if uy << 1 == 0 || isnan(y) || ex == 0x7ff { return INVALID; }
     if uxi << 1 <= uy << 1 {
         if uxi << 1 == uy << 1 { return 0.0 * x; }
         return x;
@@ -184,7 +189,14 @@ pub(crate) fn scalbn(x: f64, mut n: i32) -> f64 {
     y * f64::from_bits(((0x3ff + n) as u64) << 52)
 }
 /// # C: double modf(double, double*)
-pub(crate) fn modf(x: f64) -> (f64, f64) { let i = trunc(x); (x - i, i) }
+pub(crate) fn modf(x: f64) -> (f64, f64) {
+    // returns (fractional, integral); the fractional part carries x's sign even
+    // when zero (so modf(-3.0) → (-0.0, -3.0)), and modf(±inf) → (±0.0, ±inf).
+    if isinf(x) { return (copysign(0.0, x), x); }
+    let i = trunc(x);
+    let f = x - i;
+    (if f == 0.0 { copysign(0.0, x) } else { f }, i)
+}
 
 #[cfg(feature = "freestanding")]
 mod exports {
