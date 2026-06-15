@@ -61,10 +61,15 @@ pub(crate) fn tanh(x: f64) -> f64 {
     copysign(-u / (2.0 + u), x)
 }
 
+/// # C: float expm1f(float)
 pub(crate) fn expm1f(x: f32) -> f32 { expm1(x as f64) as f32 }
+/// # C: float exp2f(float)
 pub(crate) fn exp2f(x: f32) -> f32 { exp2(x as f64) as f32 }
+/// # C: float sinhf(float)
 pub(crate) fn sinhf(x: f32) -> f32 { sinh(x as f64) as f32 }
+/// # C: float coshf(float)
 pub(crate) fn coshf(x: f32) -> f32 { cosh(x as f64) as f32 }
+/// # C: float tanhf(float)
 pub(crate) fn tanhf(x: f32) -> f32 { tanh(x as f64) as f32 }
 
 #[cfg(feature = "freestanding")]
@@ -94,13 +99,14 @@ mod tests {
     proptest! {
         #[test]
         fn expm1_exp2_match_host(x in -50.0f64..50.0) {
-            // SAFETY: host libm, scalar in/out.
+            // SAFETY: expm1/exp2 are host libm extern "C" fns, scalar f64 args in/out, no memory access.
             let (he, h2) = unsafe { (expm1(x), exp2(x)) };
             prop_assert!(ulp(super::expm1(x), he) <= 3, "expm1({})", x);
             prop_assert!(ulp(super::exp2(x), h2) <= 3, "exp2({})", x);
         }
         #[test]
         fn hyper_match_host(x in -200.0f64..200.0) {
+            // SAFETY: sinh/cosh/tanh are host libm extern "C" fns, scalar f64 args in/out, no memory access.
             let (hs, hc, ht) = unsafe { (sinh(x), cosh(x), tanh(x)) };
             prop_assert!(ulp(super::sinh(x), hs) <= 3, "sinh({})", x);
             prop_assert!(ulp(super::cosh(x), hc) <= 3, "cosh({})", x);

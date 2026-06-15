@@ -98,7 +98,7 @@ mod exports {
     // # C: int listen(int fd, int backlog)
     #[no_mangle]
     pub unsafe extern "C" fn listen(fd: i32, backlog: i32) -> i32 {
-        // SAFETY: scalar args.
+        // SAFETY: listen(2) takes scalar fd+backlog, dereferences no memory.
         ret_isize(unsafe { crate::arch::syscall::sys2(nr::LISTEN, fd as usize, backlog as usize) }) as i32
     }
     // # C: int accept(int fd, struct sockaddr *addr, socklen_t *len)
@@ -170,7 +170,7 @@ mod exports {
     // # C: int shutdown(int fd, int how)
     #[no_mangle]
     pub unsafe extern "C" fn shutdown(fd: i32, how: i32) -> i32 {
-        // SAFETY: scalar args.
+        // SAFETY: shutdown(2) takes scalar fd+how, dereferences no memory.
         ret_isize(unsafe { crate::arch::syscall::sys2(nr::SHUTDOWN, fd as usize, how as usize) }) as i32
     }
     // # C: int setsockopt(int fd, int level, int opt, const void *val, socklen_t len)

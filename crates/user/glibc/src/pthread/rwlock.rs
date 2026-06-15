@@ -39,7 +39,7 @@ unsafe fn wake(l: *mut pthread_rwlock_t) {
 // # C: int pthread_rwlock_init(pthread_rwlock_t*, const pthread_rwlockattr_t*)
 #[no_mangle]
 pub unsafe extern "C" fn pthread_rwlock_init(l: *mut pthread_rwlock_t, _attr: *const pthread_rwlockattr_t) -> i32 {
-    // SAFETY: l is a writable rwlock.
+    // SAFETY: l points at a writable pthread_rwlock_t; zero its state word and padding.
     unsafe { (*l).__state = 0; (*l).__pad = [0; 13]; 0 }
 }
 // # C: int pthread_rwlock_destroy(pthread_rwlock_t*)

@@ -99,10 +99,15 @@ pub(crate) fn atanh(x: f64) -> f64 {
     copysign(r, x)
 }
 
+/// # C: float cbrtf(float)
 pub(crate) fn cbrtf(x: f32) -> f32 { cbrt(x as f64) as f32 }
+/// # C: float hypotf(float, float)
 pub(crate) fn hypotf(x: f32, y: f32) -> f32 { hypot(x as f64, y as f64) as f32 }
+/// # C: float asinhf(float)
 pub(crate) fn asinhf(x: f32) -> f32 { asinh(x as f64) as f32 }
+/// # C: float acoshf(float)
 pub(crate) fn acoshf(x: f32) -> f32 { acosh(x as f64) as f32 }
+/// # C: float atanhf(float)
 pub(crate) fn atanhf(x: f32) -> f32 { atanh(x as f64) as f32 }
 
 #[cfg(feature = "freestanding")]
@@ -134,13 +139,14 @@ mod tests {
     proptest! {
         #[test]
         fn cbrt_hypot_match_host(x in -1e30f64..1e30, y in -1e30f64..1e30) {
-            // SAFETY: host libm, scalar in/out.
+            // SAFETY: cbrt/hypot are host libm extern "C" fns, scalar f64 args in/out, no memory access.
             let (hc, hh) = unsafe { (cbrt(x), hypot(x, y)) };
             prop_assert!(ulp(super::cbrt(x), hc) <= 2, "cbrt({})", x);
             prop_assert!(ulp(super::hypot(x, y), hh) <= 2, "hypot({},{})", x, y);
         }
         #[test]
         fn inverse_hyper_match_host(x in -1e6f64..1e6) {
+            // SAFETY: asinh/atanh are host libm extern "C" fns, scalar f64 args in/out, no memory access.
             let (ha, hat) = unsafe { (asinh(x), atanh(x)) };
             prop_assert!(ulp(super::asinh(x), ha) <= 3, "asinh({})", x);
             // atanh only defined on (-1,1)
@@ -148,6 +154,7 @@ mod tests {
         }
         #[test]
         fn acosh_match_host(x in 1.0f64..1e6) {
+            // SAFETY: acosh is a host libm extern "C" fn, scalar f64 arg in/out, no memory access.
             let h = unsafe { acosh(x) };
             prop_assert!(ulp(super::acosh(x), h) <= 3, "acosh({})", x);
         }
