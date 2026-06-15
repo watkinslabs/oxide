@@ -54,16 +54,18 @@ mod imp {
     pub enum MapError { Reserve, MapSeg, Anon }
 
     /// Map all PT_LOAD segments of `parsed` (file backed by `fd`) into one
-    /// reserved span and return the load bias. For ET_DYN the bias is the
-    /// reservation base; for ET_EXEC (fixed vaddr) the bias is 0.
+    /// reserved span and return `(load bias, image end)`. For ET_DYN the bias
+    /// is the reservation base; for ET_EXEC (fixed vaddr) the bias is 0. The
+    /// image end (bias + ceil(max vaddr+memsz)) bounds in-image window slices.
     ///
     /// # C: reserve span, mmap each PT_LOAD file-backed at bias+vaddr
-    pub unsafe fn map_object(fd: i32, parsed: &ParsedElf) -> Result<u64, MapError> {
+    pub unsafe fn map_object(fd: i32, parsed: &ParsedElf) -> Result<(u64, u64), MapError> {
         // SAFETY: drives mmap(2) over fd; every mapping is MAP_FIXED inside
         // the span we just reserved, so no existing mapping is clobbered.
         unsafe {
             let (lo, hi) = load_span(&parsed.loads).ok_or(MapError::Reserve)?;
             let total = (hi - lo) as usize;
+            let img_end = hi; // relative to vaddr 0; add bias below
             // Reserve the whole range PROT_NONE to claim a contiguous bias.
             let resv = syscall::mmap(0, total, 0, syscall::MAP_PRIVATE | syscall::MAP_ANONYMOUS, -1, 0);
             if resv < 0 { return Err(MapError::Reserve); }
@@ -94,7 +96,7 @@ mod imp {
                     if r < 0 { return Err(MapError::Anon); }
                 }
             }
-            Ok(bias)
+            Ok((bias, bias.wrapping_add(img_end)))
         }
     }
 }
