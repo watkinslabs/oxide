@@ -3,99 +3,74 @@
 ## Headline
 Building **oxide-libc**: our own glibc-ABI C library in Rust, replacing musl
 (user directive 2026-06-14). Spec: `docs/59`. Crates: `crates/user/glibc`
-(libc) + `crates/user/ldso` (the dynamic linker, new in G12a).
-Driven by a self-paced `/loop` grinding the `docs/59§6` G0–G19 ladder, one
-sub-phase per PR. **Don't stop until ladder complete or hard blocker.**
+(libc) + `crates/user/ldso` (the dynamic linker). Driven by a self-paced
+`/loop` grinding the `docs/59§6` G0–G19 ladder, one sub-phase per PR.
+**Don't stop until ladder complete or hard blocker.**
 
 ## Position
-G0–G15 COMPLETE (libc core + dyn linker + net + nss + full libm). Done: libc core (G0–G11), the full
-dynamic linker (G12a–h: self-reloc/lib-search/alloc/symbol/versioning/loader/
-relocate/TLS/dlopen — `xtask ldso --check` runs 4 smokes 42/13/7/99), net
-(G13: inet/socket/getaddrinfo), nss (G14: getpw*/getgr*). G15 math: basic,
-sqrt, exp, log family, pow, sin/cos/tan, asin/acos/atan/atan2 — all oracle-tested
-vs host libm (≤2–4 ULP). `xtask glibc --check`=exit0 (90 glibc tests).
-NEXT: G16 locale(+TZ), G17 crypt/rt/termios/setjmp, G18 folded-lib stubs +
-ld.so.cache + sysroot, G19 migrate userspace musl→glibc + retire musl.
-Math follow-ups: bit-exact sqrt, huge-arg trig (Payne–Hanek), dedicated f32 cores.
+G0–G15 COMPLETE + G16a/G16b. Done:
+- libc core G0–G11 (string/stdlib/stdio/malloc/time/signal/pthread).
+- G12 dynamic linker (a–h): self-reloc, lib-search, bump alloc, symbol +
+  GNU/sysv hash, symbol versioning, loader, relocate, static/IE TLS, dlopen.
+  `xtask ldso --check` = 4 host smokes (raw_pie 42 / dyn_libc 13 / tls_pie 7 /
+  dlopen_pie 99).
+- G13 net (inet/socket/getaddrinfo), G14 nss (getpw*/getgr* files backend).
+- G15 math: full libm (basic/sqrt/exp/log/pow/trig/atrig/hyper/cbrt/hypot/
+  inv-hyper) — all oracle-tested vs host libm ≤2–4 ULP.
+- G16a locale: setlocale (C/POSIX/C.UTF-8/en_US.UTF-8), localeconv (C-locale
+  lconv), nl_langinfo (#1896).
+- G16b locale/wchar: UTF-8 multibyte⇄wide codec — decode_utf8/encode_utf8
+  (oracle vs Rust core char) + mbrtowc/mbtowc/mblen/mbrlen, wcrtomb/wctomb,
+  mbstowcs/wcstombs, mbsrtowcs/wcsrtombs, btowc/wctob, mbsinit; mbstate_t
+  8 bytes (#1897).
+- Cleared all 65 spec-lint debt entries in math/net/pthread (#1898) — glibc
+  spec-lint now EMPTY.
 
-## Merged recently
-- G9b #1861 — sigaction + rt_sigreturn restorer (verified)
-- G10a/b #1862/#1863 — time clocks + calendar + strftime (oracle)
-- G11a #1864 — pthread create/join (clone trampoline + CHILD_CLEARTID futex + per-arch TCB/CLONE_SETTLS)
-- G11b #1865 — pthread_mutex (40B, 3-state futex lock, NORMAL/RECURSIVE/ERRORCHECK)
-- G11c #1866 — pthread cond(48B)/rwlock(56B)/once(4B)/TLS-keys + **main-thread TCB**
-  (`init_main_tcb`: arch_prctl ARCH_SET_FS / tpidr_el0 from __libc_start_main, so
-  pthread_self/keys work pre-create; Tcb gained keys[128], start is Option<StartFn>)
-- G12a (this) — ldso crate skeleton + self-relocation bootstrap (`dynamic.rs`
-  _DYNAMIC parse, `reloc.rs` R_*_RELATIVE self-reloc — real apply tested against an
-  in-process image buffer, `syscall.rs` standalone rtld syscalls)
+`xtask glibc --check` = exit0, 100 glibc tests.
 
-## G12 ladder (the rtld — docs/59§5, docs/31)
-- G12a ✓ #1867 self-reloc bootstrap + crate skeleton (dynamic.rs/reloc.rs/syscall.rs)
-- G12b ✓ #1868 library lookup (search.rs paths + cache.rs ld.so.cache + fs syscalls)
-- G12c ✓ #1869 rtld core: bump.rs allocator (+freestanding #[global_allocator]) +
-  symbol.rs (SymView + GNU/sysv hash resolve via elf::hash)
-- G12d ✓ RUNNABLE RTLD (#1870 linkmap, #1871 loader, #1872 relocate, #1873 entry,
-  + harness PR): `xtask ldso --check` builds ld-linux-{x86-64.so.2,aarch64.so.1}
-  cdylibs (rust-lld both arches) and runs a no-libc PIE through our ld on the host
-  → exit 42 / "ld-ok" (x86; aarch64 run = QEMU later). KEY FIX: `.hidden _dl_start`
-  in entry.rs so `_start`'s call is a direct PC-relative call, not an unrelocated
-  PLT jump (that was the 0x1856-segfault). Fixture: userspace/ldso_smoke/raw_pie.c.
-- G12g ✓ **DT_NEEDED libc.so.6 linking — the rtld links + runs a REAL libc-linked
-  binary** (#1878 crt-split, #1879 versioned lookup, + this: objview.rs/link.rs/mem.rs).
-  `xtask ldso --check` runs dyn_libc.c (strlen via JUMP_SLOT against libc.so.6) → exit 13.
-  KEYS: rtld linked `-Bsymbolic` (internal refs → RELATIVE so self-reloc covers them);
-  rtld has own mem.rs (memcpy/memset/memcmp/bcmp/strlen/getauxval); read WHOLE dep file
-  (elf::parse validates PT_LOAD bounds vs the buffer).
-  + static/initial-exec TLS: link.rs setup_static_tls (phdr::find_tls + tls::layout +
-  mmap block + copy init image + syscall::set_thread_pointer), relocate.rs Kind::Tls
-  TPOFF/DTPMOD/DTPOFF. HARNESS tls_pie.c (__thread) → exit 7. 3 smokes green: 42/13/7.
-  Remaining G12g: lazy PLT (_dl_runtime_resolve), general-dynamic DTV/__tls_get_addr.
-- G12h ✓ **dlopen/dlsym/dlclose/dladdr — G12 (the dynamic linker) COMPLETE**
-  (#1882 global link-map, + this: rtld exports _dl_open/_dl_sym/_dl_close/_dl_addr
-  over the global LINK map and adds ITSELF to the resolution scope via rtld_objview
-  so libc.so.6's _dl_* bind; glibc dlfcn/mod.rs thin-wraps). HARNESS dlopen_pie.c→99.
-  `xtask ldso --check` = 4 smokes (42/13/7/99); static smoke uses --gc-sections so
-  unused dlopen's _dl_* refs don't break the static link.
-- G13 net ✓ (#1884 inet, #1885 socket, #1886 addrinfo; DNS resolver follow-up).
-- G14 nss ✓ (files backend: getpwnam/getpwuid/getgrnam/getgrgid; _r/ent/shadow + nsswitch follow-up).
-- NEXT PHASE: G15 math (libm).
-- G12e — symbol versioning (VERSYM/VERNEED, GLIBC_2.x matching)
-- G12f — TLS (static+dynamic block, DTV, __tls_get_addr, TPOFF/DTPMOD/DTPOFF) +
-  **per-thread errno** (move errno into the TCB now that main+threads have one)
-- G12g — DT_NEEDED libc.so.6 linking (extend _dl_main: loader::map_object +
-  search::resolve + linkmap + relocate::apply + .init_array) → run a real
-  libc.so.6-linked binary; + lazy PLT (_dl_runtime_resolve) + handoff polish
-- G12h — dlopen/dlsym/dlclose/dladdr/dlinfo (libdl, folded into libc.so.6)
-- Harness: `xtask ldso [--check]` (tools/xtask/src/ldso.rs); builds cdylibs via
-  rust-lld (`-C linker-flavor=ld.lld`) — no cross-gcc needed for aarch64 link.
+## NEXT: G16c — locale/wctype.rs
+wide-char classification + case mapping: iswalpha/iswdigit/iswspace/iswalnum/
+iswupper/iswlower/iswpunct/iswcntrl/iswprint/iswgraph/iswxdigit/iswblank +
+towupper/towlower (+ wctype/iswctype, wctrans/towctrans). C/POSIX-locale
+semantics (ASCII fast path) + the Unicode simple case-fold/category tables for
+the common BMP ranges; oracle = Rust core `char::is_alphabetic` etc. /
+`to_uppercase`. Pure inner classify(u32)->mask + towupper/towlower(u32)->u32,
+hosted-tested; freestanding C ABI wraps it.
+Then: G16d iconv (UTF-8↔UTF-16/32/Latin1), G16e TZ (tzset + TZif parse +
+localtime). Then G17 crypt/rt/termios/setjmp, G18 folded-lib stubs +
+ld.so.cache + sysroot publish, G19 migrate userspace musl→glibc + retire musl.
 
 ## How it's built/verified (per sub-phase)
-- C-ABI exports `#[cfg(feature="freestanding")] #[no_mangle] pub unsafe extern "C"`
-  over always-built `pub(crate)` inner impls so the hosted oracle/tests can run.
-- glibc gate: `cargo test -p glibc`, clippy default+`--features freestanding` for
-  BOTH `-gnu` targets, `cargo run -q -p spec-lint | grep glibc`,
-  `cargo run -q -p xtask -- glibc --check` (builds both staticlibs + runs smoke).
-- ldso gate: `cargo test -p ldso`, same clippy matrix, spec-lint.
-- spec-lint: `# C:` on every `pub fn`/`pub(crate) fn`/`pub const fn`; `// SAFETY:`
-  ≥30 chars within 4 lines before each `unsafe {}`; one unsafe block per test body.
-- Push with `SKIP_SMOKE=1` (glibc/ldso not yet wired into the boot image).
+- C-ABI exports `#[cfg(feature="freestanding")] #[no_mangle] pub unsafe extern
+  "C"` over always-built `pub(crate)` inner impls so hosted oracle/tests run.
+- Pure logic differentially tested vs host glibc/libm (libc dev-dep or declared
+  host externs). BIND host result to a local BEFORE prop_assert!. No C
+  hex-float literals. `#![allow(clippy::excessive_precision/approx_constant)]`
+  for numeric tables. UnsafeCell::get() is safe (no unsafe block).
+- glibc gate: `cargo test -p glibc`; clippy default AND `--features
+  freestanding` × {x86_64,aarch64}-unknown-linux-gnu (grep -B2 'glibc/src'
+  empty); `cargo run -q -p spec-lint | grep glibc/src` empty;
+  `cargo run -q -p xtask -- glibc --check` exit 0.
+- spec-lint: `# C:` on every pub/pub(crate)/pub const fn; `// SAFETY:` ≥30
+  chars within 4 lines before each `unsafe {}`; freestanding-only `use`
+  cfg-gated.
+- Branch per change incl state.md (P28-NN-glibc-*); `git commit -F -` heredocs
+  (no backticks in -m); push with `SKIP_SMOKE=1` if hook triggers (glibc/ldso
+  not yet wired into the boot image — though crates/user/ is outside the
+  smoke-hook path).
 
 ## Next task (first command)
-Continue the loop at **G12e — symbol versioning** (VERSYM/VERNEED, GLIBC_2.x).
-glibc binaries reference versioned symbols (printf@GLIBC_2.2.5); the rtld must
-match the requested version when resolving. Add `version.rs`: parse DT_VERSYM
-(u16/sym) + DT_VERNEED/DT_VERNEEDNUM (Elf64_Verneed + Vernaux chains, version
-name strings); extend symbol::resolve / linkmap::lookup_global to filter by
-version (hidden vs default, version index match). Pure parsing → hosted-tested
-with a synthetic version table. Then wire into the freestanding resolver.
-After G12e: G12f TLS + per-thread errno; G12g DT_NEEDED libc.so.6 linking +
-lazy PLT (run a real libc-linked binary through `xtask ldso --check`); G12h dlopen.
+Continue the loop at **G16c — locale/wctype.rs** (see NEXT above). Branch
+`P28-60-glibc-g16c-wctype`.
 
 ## Notes
 - musl path stays buildable until G19. 59 is DRAFT — edit directly (no R-block).
-- Remaining after G12: G13 net, G14 nss, G15 math, G16 locale(+TZ), G17 crypt/rt/
-  termios/setjmp, G18 folded-lib stubs + sysroot, G19 migrate userspace→glibc.
-- Tracked follow-ups: stdio buffering+putc/getc macros, exact float dtoa, getopt
-  GNU permutation, strptime, glob multi-component, IFUNC SIMD string variants
-  (post-rtld, needs IRELATIVE), TLS-key destructor invocation at thread exit.
+- P28 prefix is the loop's ad-hoc glibc sequence; not tracked in
+  metadata/index.md. Last used P28-59. C-type counter next=91.
+- Tracked follow-ups: bit-exact correctly-rounded sqrt; huge-arg trig
+  (Payne–Hanek); dedicated f32 libm cores; long double. /etc/hosts + stub DNS
+  resolver; nss _r variants/setpwent/getspnam/nsswitch. lazy PLT
+  (_dl_runtime_resolve); general-dynamic DTV/__tls_get_addr. stdio
+  buffering+putc/getc macros; exact float dtoa; getopt GNU permutation;
+  strptime; glob multi-component; IFUNC SIMD string variants (post-rtld, needs
+  IRELATIVE); TLS-key destructor invocation at thread exit.
