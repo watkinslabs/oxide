@@ -248,4 +248,41 @@ mod exports {
             }
         }
     }
+
+    // ---- putpwent ----
+
+    // Append a C string (or "" when null) to `out`.
+    unsafe fn push_field(out: &mut alloc::vec::Vec<u8>, s: *mut u8) {
+        // SAFETY: s is null or a NUL-terminated C string; copy its bytes.
+        unsafe { if !s.is_null() { let mut i = 0; loop { let c = *s.add(i); if c == 0 { break; } out.push(c); i += 1; } } }
+    }
+
+    /// # C: int putpwent(const struct passwd *p, FILE *stream)
+    #[no_mangle]
+    pub unsafe extern "C" fn putpwent(p: *const passwd, f: *mut FILE) -> i32 {
+        // SAFETY: p is a valid passwd; f a writable FILE*. Format the standard
+        // /etc/passwd line `name:passwd:uid:gid:gecos:dir:shell\n` and fputs it.
+        unsafe {
+            if p.is_null() || f.is_null() { crate::internal::errno::set(EINVAL); return -1; }
+            let pw = &*p;
+            let mut line: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+            push_field(&mut line, pw.pw_name); line.push(b':');
+            push_field(&mut line, pw.pw_passwd); line.push(b':');
+            write_u32(&mut line, pw.pw_uid); line.push(b':');
+            write_u32(&mut line, pw.pw_gid); line.push(b':');
+            push_field(&mut line, pw.pw_gecos); line.push(b':');
+            push_field(&mut line, pw.pw_dir); line.push(b':');
+            push_field(&mut line, pw.pw_shell); line.push(b'\n');
+            line.push(0);
+            if crate::stdio::put::fputs(line.as_ptr(), f) < 0 { -1 } else { 0 }
+        }
+    }
+    const EINVAL: i32 = 22;
+    fn write_u32(out: &mut alloc::vec::Vec<u8>, mut v: u32) {
+        if v == 0 { out.push(b'0'); return; }
+        let mut tmp = [0u8; 10];
+        let mut i = 0;
+        while v > 0 { tmp[i] = b'0' + (v % 10) as u8; v /= 10; i += 1; }
+        while i > 0 { i -= 1; out.push(tmp[i]); }
+    }
 }

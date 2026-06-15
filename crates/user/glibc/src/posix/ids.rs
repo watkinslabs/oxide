@@ -83,3 +83,10 @@ pub unsafe extern "C" fn getsid(pid: i32) -> i32 {
     // SAFETY: getsid(2) takes a scalar pid; no memory is dereferenced.
     ret_isize(unsafe { sys1(nr::GETSID, pid as usize) }) as i32
 }
+// # C: int setgroups(size_t size, const gid_t *list)
+#[no_mangle]
+pub unsafe extern "C" fn setgroups(size: usize, list: *const u32) -> i32 {
+    // SAFETY: list points to `size` gid_t values (or null when size==0);
+    // setgroups(2) reads them. nss/shadow.rs already uses SETGROUPS via initgroups.
+    ret_isize(unsafe { sys2(nr::SETGROUPS, size, list as usize) }) as i32
+}
