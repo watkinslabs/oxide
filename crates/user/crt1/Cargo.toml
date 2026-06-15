@@ -1,0 +1,13 @@
+# crt1 — the dynamic-exe C runtime startup object (docs/59§6 G19a). Provides
+# `_start` (crt1.o / Scrt1.o role) separate from libc.so.6, so a normal
+# `int main(){…}` program links dynamically against the oxide glibc sysroot.
+# `xtask sysroot` extracts the object as lib/Scrt1.o.
+[package]
+name = "crt1"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["staticlib"]
