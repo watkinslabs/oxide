@@ -57,8 +57,7 @@ pub use imp::*;
 
 #[cfg(feature = "freestanding")]
 mod imp {
-    use super::IPC_64;
-    use super::sembuf;
+    use super::{IPC_64, sembuf};
     use crate::arch::syscall::{sys3, sys4};
     use crate::internal::errno::ret_isize;
     use crate::internal::nr;
@@ -91,19 +90,31 @@ mod imp {
         ret_isize(unsafe { sys4(nr::SEMTIMEDOP, semid as usize, sops as usize, nsops, timeout as usize) }) as i32
     }
 
+    // Wide-struct commands (semid64_ds / seminfo): glibc ORs IPC_64 only for
+    // these so the kernel returns the wide layout. Value/array commands
+    // (SETVAL/GETVAL/GETPID/GETNCNT/GETZCNT/GETALL/SETALL/IPC_RMID) pass the
+    // bare cmd — the kernel EINVALs IPC_64 on those.
+    fn needs_ipc64(cmd: i32) -> bool {
+        matches!(cmd, super::IPC_STAT | super::IPC_SET | super::IPC_INFO
+            | super::SEM_STAT | super::SEM_INFO | super::SEM_STAT_ANY)
+    }
+
     // # C: int semctl(int semid, int semnum, int cmd, ... /* union semun arg */)
     #[no_mangle]
     pub unsafe extern "C" fn semctl(semid: i32, semnum: i32, cmd: i32, mut args: ...) -> i32 {
-        // The kernel takes the union value (int for SETVAL, pointer for
-        // IPC_STAT/IPC_SET/GETALL/SETALL/IPC_INFO/SEM_*) as one word; value
-        // commands ignore it. Read one usize-wide word and forward; OR IPC_64
-        // so the kernel uses the wide semid64_ds layout (glibc convention).
+        // The kernel takes the union value (int for SETVAL, pointer for the
+        // struct/array commands) as one word; value commands ignore it. Read
+        // one usize-wide word and forward, ORing IPC_64 only for wide-struct
+        // commands (glibc convention).
         // SAFETY: per the SysV C contract the union semun word is the 4th
         // vararg whenever a cmd needs it; reading one usize-wide word matches
         // glibc's __semctl, which forwards that same word (value or pointer)
         // as the raw 4th syscall argument without dereferencing it libc-side.
-        let raw: usize = unsafe { args.next_arg::<usize>() };
-        ret_isize(unsafe { sys4(nr::SEMCTL, semid as usize, semnum as usize, (cmd | IPC_64) as usize, raw) }) as i32
+        ret_isize(unsafe {
+            let raw: usize = args.next_arg::<usize>();
+            let kcmd = if needs_ipc64(cmd) { cmd | IPC_64 } else { cmd };
+            sys4(nr::SEMCTL, semid as usize, semnum as usize, kcmd as usize, raw)
+        }) as i32
     }
 }
 

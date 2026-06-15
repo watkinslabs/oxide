@@ -29,10 +29,7 @@ pub unsafe extern "C" fn sem_open(name: *const u8, oflag: i32, mut args: ...) ->
     // read them only in that branch. Mapped file is validated kernel-side.
     unsafe {
         let mut buf = [0u8; PATH_CAP];
-        match build_path(name, b"sem.", &mut buf) {
-            Err(e) => { set(e); return SEM_FAILED; }
-            Ok(_) => {}
-        }
+        if let Err(e) = build_path(name, b"sem.", &mut buf) { set(e); return SEM_FAILED; }
         let (mode, value) = if oflag & O_CREAT != 0 {
             let m = args.next_arg::<u32>();
             let v = args.next_arg::<u32>();
