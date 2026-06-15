@@ -31,3 +31,7 @@ pub mod sched;
 pub mod resource;
 #[cfg(feature = "freestanding")]
 pub mod utmp;
+#[cfg(feature = "freestanding")]
+pub mod pty;
+#[cfg(feature = "freestanding")]
+pub mod tty;
