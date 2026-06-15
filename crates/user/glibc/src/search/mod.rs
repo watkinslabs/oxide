@@ -5,3 +5,7 @@
 pub mod tree;
 #[cfg(feature = "freestanding")]
 pub mod lin;
+#[cfg(feature = "freestanding")]
+pub mod hash;
+#[cfg(feature = "freestanding")]
+pub mod list;
