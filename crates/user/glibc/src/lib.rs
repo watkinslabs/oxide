@@ -63,6 +63,7 @@ pub mod crypt; //  G17
 pub mod rt; //  G17
 pub mod termios; //  G17
 pub mod setjmp; //  G17
+pub mod ucontext; //  G17 (<ucontext.h> getcontext/setcontext/makecontext/swapcontext)
 pub mod start; //  G2 csu / __libc_start_main
 pub mod regex; //  G7+ (<regex.h> ERE engine)
 pub mod misc; //  G8 (<syslog.h>,<err.h>,<error.h>)
