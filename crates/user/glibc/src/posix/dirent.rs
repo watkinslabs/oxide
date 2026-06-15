@@ -1,0 +1,116 @@
+// Directory reading (docs/59§6 G8). The kernel linux_dirent64 has the
+// same field order as glibc struct dirent (d_ino, d_off, d_reclen,
+// d_type, d_name), so readdir returns a pointer straight into the DIR
+// buffer that getdents64 filled — no per-entry copy. DIR is opaque to C.
+// Layout golden: d_type@18, d_name@19.
+
+#[repr(C)]
+pub struct dirent {
+    pub d_ino: u64,
+    pub d_off: i64,
+    pub d_reclen: u16,
+    pub d_type: u8,
+    pub d_name: [u8; 256],
+}
+
+// d_name must sit at offset 19 to match the kernel's variable-length entries.
+const _: () = {
+    assert!(core::mem::offset_of!(dirent, d_off) == 8);
+    assert!(core::mem::offset_of!(dirent, d_reclen) == 16);
+    assert!(core::mem::offset_of!(dirent, d_type) == 18);
+    assert!(core::mem::offset_of!(dirent, d_name) == 19);
+};
+
+#[cfg(feature = "freestanding")]
+mod imp {
+    use super::dirent;
+    use crate::arch::syscall::sys3;
+    use crate::internal::errno::ret_isize;
+    use crate::internal::nr;
+    use crate::posix::io::{self, AT_FDCWD};
+
+    const BUF: usize = 32768;
+
+    #[repr(C)]
+    #[allow(clippy::upper_case_acronyms)] // DIR is the standard C type name
+    pub struct DIR { fd: i32, pos: usize, end: usize, buf: [u8; BUF] }
+
+    unsafe fn alloc_dir(fd: i32) -> *mut DIR {
+        // SAFETY: heap-allocate a DIR and initialise its scalar fields; the
+        // buffer is filled on demand by readdir.
+        unsafe {
+            let d = crate::malloc::heap::malloc(core::mem::size_of::<DIR>()) as *mut DIR;
+            if !d.is_null() { (*d).fd = fd; (*d).pos = 0; (*d).end = 0; }
+            d
+        }
+    }
+
+    // # C: DIR *opendir(const char *name)
+    #[no_mangle]
+    pub unsafe extern "C" fn opendir(name: *const u8) -> *mut DIR {
+        // SAFETY: name NUL-terminated; open the dir then wrap its fd.
+        unsafe {
+            let fd = io::openat(AT_FDCWD, name, io::O_RDONLY | io::O_DIRECTORY | io::O_CLOEXEC, 0);
+            if fd < 0 { return core::ptr::null_mut(); }
+            let d = alloc_dir(fd);
+            if d.is_null() { io::close(fd); }
+            d
+        }
+    }
+    // # C: DIR *fdopendir(int fd)
+    #[no_mangle]
+    pub unsafe extern "C" fn fdopendir(fd: i32) -> *mut DIR {
+        // SAFETY: fd is an open directory descriptor the caller hands over.
+        unsafe { alloc_dir(fd) }
+    }
+    // # C: struct dirent *readdir(DIR *d)
+    #[no_mangle]
+    pub unsafe extern "C" fn readdir(d: *mut DIR) -> *mut dirent {
+        // SAFETY: d is a valid DIR; refill via getdents64 when drained, then
+        // return a pointer to the current entry inside the buffer.
+        unsafe {
+            if (*d).pos >= (*d).end {
+                let r = ret_isize(sys3(nr::GETDENTS64, (*d).fd as usize, (*d).buf.as_mut_ptr() as usize, BUF));
+                if r <= 0 { return core::ptr::null_mut(); }
+                (*d).end = r as usize;
+                (*d).pos = 0;
+            }
+            let e = (*d).buf.as_mut_ptr().add((*d).pos) as *mut dirent;
+            (*d).pos += (*e).d_reclen as usize;
+            e
+        }
+    }
+    // # C: struct dirent *readdir64(DIR *d) — same as readdir (LFS).
+    #[no_mangle]
+    pub unsafe extern "C" fn readdir64(d: *mut DIR) -> *mut dirent {
+        // SAFETY: alias of readdir; identical 64-bit layout.
+        unsafe { readdir(d) }
+    }
+    // # C: int closedir(DIR *d)
+    #[no_mangle]
+    pub unsafe extern "C" fn closedir(d: *mut DIR) -> i32 {
+        // SAFETY: d came from opendir/fdopendir; close fd + free the DIR.
+        unsafe {
+            if d.is_null() { return -1; }
+            let r = io::close((*d).fd);
+            crate::malloc::heap::free(d as *mut u8);
+            r
+        }
+    }
+    // # C: void rewinddir(DIR *d)
+    #[no_mangle]
+    pub unsafe extern "C" fn rewinddir(d: *mut DIR) {
+        // SAFETY: d is valid; seek to 0 and drop the buffered entries.
+        unsafe {
+            io::lseek((*d).fd, 0, io::SEEK_SET);
+            (*d).pos = 0;
+            (*d).end = 0;
+        }
+    }
+    // # C: int dirfd(DIR *d)
+    #[no_mangle]
+    pub unsafe extern "C" fn dirfd(d: *mut DIR) -> i32 {
+        // SAFETY: d is a valid DIR; read its descriptor.
+        unsafe { (*d).fd }
+    }
+}
