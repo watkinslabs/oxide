@@ -197,12 +197,74 @@ pub(crate) fn modf(x: f64) -> (f64, f64) {
     let f = x - i;
     (if f == 0.0 { copysign(0.0, x) } else { f }, i)
 }
+/// # C: int ilogb(double) — unbiased base-2 exponent (FP_ILOGB0/NAN edges)
+pub(crate) fn ilogb(x: f64) -> i32 {
+    if x == 0.0 { return i32::MIN; }
+    if isnan(x) || isinf(x) { return i32::MAX; }
+    let bits = x.to_bits();
+    let e = ((bits >> 52) & 0x7ff) as i32;
+    if e == 0 { let m = bits & 0xf_ffff_ffff_ffff; -1022 - (m.leading_zeros() as i32 - 11) } else { e - 1023 }
+}
+/// # C: double logb(double)
+pub(crate) fn logb(x: f64) -> f64 {
+    if x == 0.0 { return f64::NEG_INFINITY; }
+    if isnan(x) { return x; }
+    if isinf(x) { return f64::INFINITY; }
+    ilogb(x) as f64
+}
+/// # C: double scalbln(double, long)
+pub(crate) fn scalbln(x: f64, n: i64) -> f64 { scalbn(x, n.clamp(i32::MIN as i64, i32::MAX as i64) as i32) }
+/// # C: float nextafterf(float, float)
+pub(crate) fn nextafterf(x: f32, y: f32) -> f32 {
+    if x.is_nan() || y.is_nan() { return f32::NAN; }
+    if x == y { return y; }
+    if x == 0.0 { return f32::from_bits(1 | (y.to_bits() & 0x8000_0000)); }
+    let mut u = x.to_bits();
+    if (x < y) == (x > 0.0) { u += 1; } else { u -= 1; }
+    f32::from_bits(u)
+}
 
 #[cfg(feature = "freestanding")]
 mod exports {
     macro_rules! f64_1 { ($name:ident, $inner:ident) => {
         #[no_mangle] pub extern "C" fn $name(x: f64) -> f64 { super::$inner(x) }
     }; }
+    // float wrappers — bit-exact via the f64 cores for rounding/decomposition.
+    macro_rules! f32_1 { ($name:ident, $inner:ident) => {
+        #[no_mangle] pub extern "C" fn $name(x: f32) -> f32 { super::$inner(x as f64) as f32 }
+    }; }
+    f32_1!(ceilf, ceil); f32_1!(floorf, floor); f32_1!(truncf, trunc);
+    f32_1!(roundf, round); f32_1!(rintf, rint); f32_1!(nearbyintf, rint);
+    #[no_mangle] pub extern "C" fn fmodf(x: f32, y: f32) -> f32 { super::fmod(x as f64, y as f64) as f32 }
+    #[no_mangle] pub extern "C" fn remainderf(x: f32, y: f32) -> f32 { super::remainder(x as f64, y as f64) as f32 }
+    #[no_mangle] pub extern "C" fn dremf(x: f32, y: f32) -> f32 { super::remainder(x as f64, y as f64) as f32 }
+    #[no_mangle] pub extern "C" fn drem(x: f64, y: f64) -> f64 { super::remainder(x, y) }
+    #[no_mangle] pub extern "C" fn fmaxf(a: f32, b: f32) -> f32 { super::fmax(a as f64, b as f64) as f32 }
+    #[no_mangle] pub extern "C" fn fminf(a: f32, b: f32) -> f32 { super::fmin(a as f64, b as f64) as f32 }
+    #[no_mangle] pub extern "C" fn nextafterf(x: f32, y: f32) -> f32 { super::nextafterf(x, y) }
+    #[no_mangle] pub extern "C" fn ldexpf(x: f32, n: i32) -> f32 { super::ldexp(x as f64, n) as f32 }
+    #[no_mangle] pub extern "C" fn scalbnf(x: f32, n: i32) -> f32 { super::scalbn(x as f64, n) as f32 }
+    #[no_mangle] pub extern "C" fn scalblnf(x: f32, n: i64) -> f32 { super::scalbln(x as f64, n) as f32 }
+    #[no_mangle] pub extern "C" fn logbf(x: f32) -> f32 { super::logb(x as f64) as f32 }
+    #[no_mangle] pub extern "C" fn ilogbf(x: f32) -> i32 { super::ilogb(x as f64) }
+    // # C: double logb(double); int ilogb(double); double scalbln(double,long)
+    #[no_mangle] pub extern "C" fn logb(x: f64) -> f64 { super::logb(x) }
+    #[no_mangle] pub extern "C" fn ilogb(x: f64) -> i32 { super::ilogb(x) }
+    #[no_mangle] pub extern "C" fn scalbln(x: f64, n: i64) -> f64 { super::scalbln(x, n) }
+    // # C: float frexpf(float, int*)
+    #[no_mangle] pub unsafe extern "C" fn frexpf(x: f32, e: *mut i32) -> f32 {
+        let (m, ee) = super::frexp(x as f64);
+        // SAFETY: e is null or a writable int out-param per frexpf(3).
+        unsafe { if !e.is_null() { *e = ee; } }
+        m as f32
+    }
+    // # C: float modff(float, float*)
+    #[no_mangle] pub unsafe extern "C" fn modff(x: f32, ip: *mut f32) -> f32 {
+        let (frac, i) = super::modf(x as f64);
+        // SAFETY: ip is null or a writable float out-param per modff(3).
+        unsafe { if !ip.is_null() { *ip = i as f32; } }
+        frac as f32
+    }
     f64_1!(fabs, fabs); f64_1!(floor, floor); f64_1!(ceil, ceil);
     f64_1!(trunc, trunc); f64_1!(round, round); f64_1!(rint, rint); f64_1!(nearbyint, rint);
     #[no_mangle] pub extern "C" fn copysign(x: f64, y: f64) -> f64 { super::copysign(x, y) }
