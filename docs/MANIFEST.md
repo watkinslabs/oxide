@@ -77,6 +77,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `56-timers-and-registration.md` | DRAFT | — | `02`,`06`,`07`,`08`,`13`,`23`,`52`,`53` |
 | `57-vt-emulator.md` | DRAFT | — | `01`,`02`,`07`,`08`,`28`,`49`,`50`,`55` |
 | `58-virtio-snd.md` | FROZEN | 2026-06-12 | `01`,`02`,`07`,`15`,`16`,`18`,`19`,`22`,`34`,`35`,`50` |
+| `59-glibc.md` | DRAFT | — | `01`,`02`,`03`,`07`,`08`,`09`,`15`,`29`,`29a`,`31`,`53` |
 | `kernel-audit.md` | DRAFT | — | `00`,`15` |
 | `44-phase-quick-reference.md` | DRAFT | — | `00`,`40`,`43` |
 | `network-gap-analysis.md` | DRAFT | — | `25`,`26` |

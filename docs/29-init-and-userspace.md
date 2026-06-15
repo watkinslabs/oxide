@@ -2,6 +2,13 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`13`,`15`,`16`,`19`,`28`,`31`,`39`. Provides:every running userspace.
 
+## Revision 2026-06-14 (R04)
+
+- Changed: §4 libc = **oxide-libc** (glibc-ABI Rust, `crates/user/glibc`, `59`), not the musl fork; loader = `ld-linux-x86-64.so.2`/`ld-linux-aarch64.so.1` (`crates/user/ldso`), not `ld-oxide.so.1`. §4.1 build-order step "musl" → "oxide-libc + ldso". `/etc` + image steps unchanged.
+- Why: glibc ABI is the userspace contract (`03` R01, `59`).
+- Affected code: `xtask user` retargets to `xtask glibc`; musl fork + ld-oxide retired at `59§6` G19.
+- Test contract change: glibc differential oracle (`59§7`).
+
 ## Revision 2026-05-02 (R03)
 
 - Changed: added §4.1 "Build order".
