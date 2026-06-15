@@ -39,6 +39,10 @@ pub unsafe extern "C" fn __libc_start_main(
     // Publish environ for getenv/setenv (G7c).
     // SAFETY: envp is the kernel-provided NULL-terminated env array.
     unsafe { crate::stdlib::env::init_environ(envp) };
+    // Seed program_invocation_name/_short_name from argv[0] for err/error.
+    // SAFETY: argv holds argc pointers; argv[0] is the NUL-terminated program
+    // path (or NULL), which progname::seed handles.
+    unsafe { if argc > 0 { crate::misc::progname::seed(*argv); } }
     // Install the main-thread TCB so pthread_self / TLS-keys work before
     // the first pthread_create (G11c).
     // SAFETY: single-threaded startup; sets this thread's thread pointer.
