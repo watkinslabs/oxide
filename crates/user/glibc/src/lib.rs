@@ -19,8 +19,7 @@ extern crate std;
 extern crate alloc;
 
 // Internal, no C ABI: errno TLS slot, raw syscall wrappers, sym-version
-// macro, lock primitive (docs/59§3).
-#[macro_use]
+// macro, lock primitive (docs/59§3). `symver!` is #[macro_export].
 pub mod internal;
 
 // Per-arch: syscall asm, _start, TLS setup, IFUNC variants, setjmp/clone
@@ -49,16 +48,35 @@ pub mod termios; //  G17
 pub mod setjmp; //  G17
 pub mod start; //  G2 csu / __libc_start_main
 
-// Freestanding final-artifact requirements (cdylib/staticlib). Inert in
-// rlib + hosted/test builds.
-#[cfg(all(not(test), not(feature = "hosted")))]
+// Freestanding final-artifact requirements (cdylib/staticlib). Active
+// only under `--features freestanding` (set by `xtask glibc`). In the
+// workspace rlib + hosted/test builds the #[no_mangle] C exports stay
+// off so they don't clash with the host libc the test binary links.
+#[cfg(feature = "freestanding")]
 mod freestanding {
+    use core::alloc::{GlobalAlloc, Layout};
+
+    // Placeholder allocator so `extern crate alloc` links in the shipped
+    // artifact. G2 allocates nothing; G5 replaces this with the real
+    // malloc/free arena. alloc here is a hard error if ever hit.
+    struct StubAlloc;
+    // SAFETY: trivial no-op allocator; alloc always reports failure (null),
+    // dealloc is a no-op — sound because nothing allocates before G5.
+    unsafe impl GlobalAlloc for StubAlloc {
+        unsafe fn alloc(&self, _l: Layout) -> *mut u8 { core::ptr::null_mut() }
+        unsafe fn dealloc(&self, _p: *mut u8, _l: Layout) {}
+    }
+    #[global_allocator]
+    static GLOBAL: StubAlloc = StubAlloc;
+
     // # C: void abort path for libc panics in the shipped artifact.
     #[panic_handler]
     fn panic(_info: &core::panic::PanicInfo) -> ! {
         // SAFETY: SYS_exit_group with status 127; no memory touched, no
         // return, terminating the process is the only sound libc-panic action.
         unsafe { crate::arch::syscall::sys1(crate::internal::nr::EXIT_GROUP, 127) };
-        loop {}
+        // SAFETY: exit_group(127) never returns; the kernel has destroyed
+        // the process so this point is provably unreachable.
+        unsafe { core::hint::unreachable_unchecked() }
     }
 }
