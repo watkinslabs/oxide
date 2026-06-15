@@ -108,6 +108,19 @@ mod exports {
         // SAFETY: forwards the C memchr contract to memchr_impl unchanged.
         unsafe { memchr_impl(s, c, n) }
     }
+    // # C: void bzero(void *s, size_t n) — legacy memset(s,0,n)
+    #[no_mangle]
+    pub unsafe extern "C" fn bzero(s: *mut u8, n: usize) {
+        // SAFETY: s is writable for n bytes; zero-fill via memset_impl.
+        unsafe { memset_impl(s, 0, n); }
+    }
+    // # C: void bcopy(const void *src, void *dst, size_t n) — note arg order
+    #[no_mangle]
+    pub unsafe extern "C" fn bcopy(src: *const u8, dst: *mut u8, n: usize) {
+        // SAFETY: src and dst are valid for n bytes; legacy memmove with the
+        // source and destination arguments swapped relative to memmove.
+        unsafe { memmove_impl(dst, src, n); }
+    }
     // # C: void explicit_bzero(void *s, size_t n) — scrub not optimized away
     #[no_mangle]
     pub unsafe extern "C" fn explicit_bzero(s: *mut u8, n: usize) {
