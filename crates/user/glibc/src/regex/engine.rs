@@ -26,7 +26,7 @@ enum Inst { Char(u8), Any, Class(usize), Match, Jmp(usize), Split(usize, usize),
 
 pub struct Prog { insts: Vec<Inst>, classes: Vec<[bool; 256]>, pub ngroup: usize, icase: bool, newline: bool }
 
-struct Parser<'a> { b: &'a [u8], i: usize, ngroup: usize, classes: Vec<[bool; 256]>, icase: bool }
+struct Parser<'a> { b: &'a [u8], i: usize, ngroup: usize, classes: Vec<[bool; 256]>, icase: bool, ere: bool }
 
 fn lc(c: u8) -> u8 { if c.is_ascii_uppercase() { c + 32 } else { c } }
 
@@ -40,73 +40,96 @@ impl<'a> Parser<'a> {
         Ok(n)
     }
 
+    // second byte of a "\x" escape at the cursor, if any (for BRE delimiters).
+    fn esc2(&self) -> Option<u8> { if self.peek() == Some(b'\\') { self.b.get(self.i + 1).copied() } else { None } }
+    // is the cursor at the alternation token? ERE '|', BRE '\|' (GNU).
+    fn at_alt(&self) -> bool { if self.ere { self.peek() == Some(b'|') } else { self.esc2() == Some(b'|') } }
+    // is the cursor at a group close? ERE ')', BRE '\)'.
+    fn at_close(&self) -> bool { if self.ere { self.peek() == Some(b')') } else { self.esc2() == Some(b')') } }
+
     fn alt(&mut self) -> Result<Node, i32> {
         let mut branches = alloc::vec![self.concat()?];
-        while self.peek() == Some(b'|') { self.bump(); branches.push(self.concat()?); }
+        while self.at_alt() { self.i += if self.ere { 1 } else { 2 }; branches.push(self.concat()?); }
         Ok(if branches.len() == 1 { branches.pop().unwrap() } else { Node::Alt(branches) })
     }
 
     fn concat(&mut self) -> Result<Node, i32> {
         let mut parts = Vec::new();
-        while let Some(c) = self.peek() {
-            if c == b'|' || c == b')' { break; }
-            parts.push(self.repeat()?);
+        let mut first = true;
+        while self.peek().is_some() && !self.at_alt() && !self.at_close() {
+            parts.push(self.repeat(first)?);
+            first = false;
         }
         Ok(match parts.len() { 0 => Node::Empty, 1 => parts.pop().unwrap(), _ => Node::Concat(parts) })
     }
 
-    fn repeat(&mut self) -> Result<Node, i32> {
-        let mut atom = self.atom()?;
+    fn repeat(&mut self, first: bool) -> Result<Node, i32> {
+        let mut atom = self.atom(first)?;
         loop {
             match self.peek() {
                 Some(b'*') => { self.bump(); atom = Node::Repeat(Box::new(atom), 0, None); }
-                Some(b'+') => { self.bump(); atom = Node::Repeat(Box::new(atom), 1, None); }
-                Some(b'?') => { self.bump(); atom = Node::Repeat(Box::new(atom), 0, Some(1)); }
-                Some(b'{') => {
-                    if let Some((min, max, adv)) = self.try_bound() { self.i = adv; atom = Node::Repeat(Box::new(atom), min, max); }
-                    else { break; } // a literal '{'
+                Some(b'+') if self.ere => { self.bump(); atom = Node::Repeat(Box::new(atom), 1, None); }
+                Some(b'?') if self.ere => { self.bump(); atom = Node::Repeat(Box::new(atom), 0, Some(1)); }
+                _ => {
+                    // bound: ERE "{...}", BRE "\{...\}"
+                    let at_bound = if self.ere { self.peek() == Some(b'{') } else { self.esc2() == Some(b'{') };
+                    if at_bound {
+                        if let Some((min, max, adv)) = self.try_bound() { self.i = adv; atom = Node::Repeat(Box::new(atom), min, max); continue; }
+                    }
+                    break;
                 }
-                _ => break,
             }
         }
         Ok(atom)
     }
 
-    // parse {n}, {n,}, {n,m} starting at '{'; return (min,max,new_index) or None.
+    // parse {n}/{n,}/{n,m}; cursor at '{' (ERE) or '\{' (BRE). None = literal.
     fn try_bound(&self) -> Option<(usize, Option<usize>, usize)> {
-        let mut j = self.i + 1;
+        let close = if self.ere { 1 } else { 2 }; // bytes of "}" vs "\}"
+        let at_close = |j: usize| if self.ere { self.b.get(j) == Some(&b'}') } else { self.b.get(j) == Some(&b'\\') && self.b.get(j + 1) == Some(&b'}') };
+        let mut j = self.i + close; // past "{" / "\{"
         let mut min = 0usize; let mut any = false;
         while j < self.b.len() && self.b[j].is_ascii_digit() { min = min * 10 + (self.b[j] - b'0') as usize; j += 1; any = true; }
         if !any { return None; }
         let max;
-        if j < self.b.len() && self.b[j] == b'}' { max = Some(min); j += 1; }
-        else if j < self.b.len() && self.b[j] == b',' {
+        if at_close(j) { max = Some(min); j += close; }
+        else if self.b.get(j) == Some(&b',') {
             j += 1;
-            if j < self.b.len() && self.b[j] == b'}' { max = None; j += 1; }
+            if at_close(j) { max = None; j += close; }
             else {
                 let mut m = 0usize; let mut many = false;
                 while j < self.b.len() && self.b[j].is_ascii_digit() { m = m * 10 + (self.b[j] - b'0') as usize; j += 1; many = true; }
-                if !many || j >= self.b.len() || self.b[j] != b'}' { return None; }
-                max = Some(m); j += 1;
+                if !many || !at_close(j) { return None; }
+                max = Some(m); j += close;
             }
         } else { return None; }
         Some((min, max, j))
     }
 
-    fn atom(&mut self) -> Result<Node, i32> {
+    // `$` is an anchor in ERE always; in BRE only at end or before '\)' / '\|'.
+    fn dollar_is_anchor(&self) -> bool {
+        if self.ere { return true; }
+        self.peek().is_none() || self.esc2() == Some(b')') || self.esc2() == Some(b'|')
+    }
+
+    fn atom(&mut self, first: bool) -> Result<Node, i32> {
+        // group open: ERE '(', BRE '\('
+        let group_open = if self.ere { self.peek() == Some(b'(') } else { self.esc2() == Some(b'(') };
+        if group_open {
+            self.i += if self.ere { 1 } else { 2 };
+            self.ngroup += 1; let idx = self.ngroup;
+            let inner = self.alt()?;
+            if !self.at_close() { return Err(super::REG_EPAREN); }
+            self.i += if self.ere { 1 } else { 2 };
+            return Ok(Node::Group(Box::new(inner), idx));
+        }
         match self.bump() {
-            Some(b'(') => {
-                self.ngroup += 1; let idx = self.ngroup;
-                let inner = self.alt()?;
-                if self.bump() != Some(b')') { return Err(super::REG_EPAREN); }
-                Ok(Node::Group(Box::new(inner), idx))
-            }
             Some(b'[') => self.class(),
             Some(b'.') => Ok(Node::Any),
-            Some(b'^') => Ok(Node::Bol),
-            Some(b'$') => Ok(Node::Eol),
+            Some(b'^') if self.ere || first => Ok(Node::Bol),
+            Some(b'$') if self.dollar_is_anchor() => Ok(Node::Eol),
             Some(b'\\') => { let c = self.bump().ok_or(super::REG_EESCAPE)?; Ok(self.lit(c)) }
-            Some(c) => Ok(self.lit(c)),
+            Some(c) => Ok(self.lit(c)), // BRE: +?(){}| ^ $ here are literals
             None => Ok(Node::Empty),
         }
     }
@@ -239,8 +262,8 @@ fn compile_repeat(inner: &Node, min: usize, max: Option<usize>, out: &mut Vec<In
 }
 
 /// # C: compile an ERE pattern to a VM program (regcomp backend)
-pub fn compile_pattern(pat: &[u8], icase: bool, newline: bool) -> Result<Prog, i32> {
-    let mut p = Parser { b: pat, i: 0, ngroup: 0, classes: Vec::new(), icase };
+pub fn compile_pattern(pat: &[u8], icase: bool, newline: bool, ere: bool) -> Result<Prog, i32> {
+    let mut p = Parser { b: pat, i: 0, ngroup: 0, classes: Vec::new(), icase, ere };
     let ast = p.parse()?;
     let mut insts = Vec::new();
     insts.push(Inst::Save(0));
@@ -316,7 +339,7 @@ pub fn exec(prog: &Prog, input: &[u8], notbol: bool, noteol: bool) -> Option<Vec
 mod tests {
     use super::*;
     fn m(pat: &str, s: &str) -> Option<(usize, usize)> {
-        let p = compile_pattern(pat.as_bytes(), false, false).unwrap();
+        let p = compile_pattern(pat.as_bytes(), false, false, true).unwrap();
         exec(&p, s.as_bytes(), false, false).map(|c| (c[0], c[1]))
     }
     #[test]
@@ -335,7 +358,7 @@ mod tests {
     }
     #[test]
     fn captures() {
-        let p = compile_pattern(b"(a+)(b+)", false, false).unwrap();
+        let p = compile_pattern(b"(a+)(b+)", false, false, true).unwrap();
         let c = exec(&p, b"aaabb", false, false).unwrap();
         assert_eq!((c[0], c[1]), (0, 5));
         assert_eq!((c[2], c[3]), (0, 3)); // group 1 = "aaa"

@@ -50,7 +50,7 @@ mod imp {
         // into a heap engine::Prog whose pointer lives in preg->buffer.
         unsafe {
             let pat = core::slice::from_raw_parts(pattern, strlen_impl(pattern));
-            match engine::compile_pattern(pat, cflags & REG_ICASE != 0, cflags & REG_NEWLINE != 0) {
+            match engine::compile_pattern(pat, cflags & REG_ICASE != 0, cflags & REG_NEWLINE != 0, cflags & REG_EXTENDED != 0) {
                 Ok(prog) => {
                     let ng = prog.ngroup;
                     (*preg).buffer = Box::into_raw(Box::new(prog)) as *mut core::ffi::c_void;
