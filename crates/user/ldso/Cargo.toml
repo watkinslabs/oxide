@@ -1,0 +1,18 @@
+[package]
+name = "ldso"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+elf = { path = "../../shared/elf" }
+
+[features]
+default = []
+# host differential/logic tests (pulls std)
+hosted = []
+# the actual ld-linux-*.so build: emits the C-ABI entry + bootstrap
+freestanding = []

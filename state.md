@@ -2,62 +2,65 @@
 
 ## Headline
 Building **oxide-libc**: our own glibc-ABI C library in Rust, replacing musl
-(user directive 2026-06-14). Spec: `docs/59`. Crate: `crates/user/glibc`.
+(user directive 2026-06-14). Spec: `docs/59`. Crates: `crates/user/glibc`
+(libc) + `crates/user/ldso` (the dynamic linker, new in G12a).
 Driven by a self-paced `/loop` grinding the `docs/59§6` G0–G19 ladder, one
-sub-phase per PR.
+sub-phase per PR. **Don't stop until ladder complete or hard blocker.**
 
-## Merged this run (branches P28-NN-glibc-*)
-- G0 #1840 — spec 59 + musl→glibc R-revisions (03/07/29/29a, master-plan 27/28)
-- G1 #1841 — crate skeleton, ABI infra (version maps, abi goldens, symver!)
-- G2 #1842 — entry path: _start/__libc_start_main/errno/exit/write; `xtask glibc`
-- G3 #1843 — per-arch syscall table (internal/nr.rs), unistd, mman, auxv canary
-- G4 #1844 — string/ (mem*+str*) + ctype/ascii.rs, differential proptest oracle
-- G5 #1845 — malloc/ segregated allocator + global_allocator + strdup
-- G6a #1846 — stdio printf format engine + write-side (printf/puts/fwrite) + FILE
-- G6b #1847 — scanf engine + sscanf/vsscanf
-- G6c #1848 — read-side (fopen/fread/fgets/getline/fseek) + scanf over FILE
-- G7a #1849 — strtol family + qsort/bsearch + abs/div
-- G7b #1850 — strtod/strtof + rand/srand (glibc TYPE_3, host-matched)
-- G7c #1851 — environ/getenv/setenv/unsetenv/putenv/clearenv
-- G7d #1852 — atexit/__cxa_atexit/exit-handlers + abort (G7 stdlib complete)
-- G8a #1853 — posix process: fork/vfork/exec*/wait* + getuid/getpid/...
-- G8b #1854 — posix fds+fs: pipe/dup + getcwd/unlink/mkdir/rename/... (via *at)
-- G8c #1855 — struct stat (per-arch) + stat/fstat/lstat/fstatat
-- G8d #1856 — fnmatch (oracle caught swapped PATHNAME/NOESCAPE flags)
-- G8e #1857 — getopt/getopt_long (POSIX order; GNU permutation = follow-up)
-- G8f #1858 — dirent: opendir/readdir/closedir via getdents64
-- G8g #1859 — glob/globfree (G8 posix COMPLETE)
-- G9a #1860 — signal: sigset_t (oracle caught glibc 32/33 reservation) + kill/raise/sigprocmask
-- G9b #1861 — sigaction + rt_sigreturn restorer (x86 trampoline; verified) + signal() (G9 COMPLETE)
-- G10a #1862 — time: clocks + gmtime/timegm/mktime (oracle calendar)
-- G10b (this) — strftime (oracle vs host)
+## Position
+G0–G11 COMPLETE (libc core: entry, syscalls, string/ctype, malloc, stdio,
+stdlib, posix, signal, time, pthread). Now in **G12 — the dynamic linker (rtld)**,
+the largest sub-phase, split into its own ladder G12a–G12g.
+
+## Merged recently
+- G9b #1861 — sigaction + rt_sigreturn restorer (verified)
+- G10a/b #1862/#1863 — time clocks + calendar + strftime (oracle)
+- G11a #1864 — pthread create/join (clone trampoline + CHILD_CLEARTID futex + per-arch TCB/CLONE_SETTLS)
+- G11b #1865 — pthread_mutex (40B, 3-state futex lock, NORMAL/RECURSIVE/ERRORCHECK)
+- G11c #1866 — pthread cond(48B)/rwlock(56B)/once(4B)/TLS-keys + **main-thread TCB**
+  (`init_main_tcb`: arch_prctl ARCH_SET_FS / tpidr_el0 from __libc_start_main, so
+  pthread_self/keys work pre-create; Tcb gained keys[128], start is Option<StartFn>)
+- G12a (this) — ldso crate skeleton + self-relocation bootstrap (`dynamic.rs`
+  _DYNAMIC parse, `reloc.rs` R_*_RELATIVE self-reloc — real apply tested against an
+  in-process image buffer, `syscall.rs` standalone rtld syscalls)
+
+## G12 ladder (the rtld — docs/59§5, docs/31)
+- G12a ✓ self-reloc bootstrap + crate skeleton
+- G12b — DT_NEEDED graph + lib search (LD_LIBRARY_PATH/ld.so.cache) + mmap PT_LOAD
+- G12c — symbol resolution + full reloc set (reuse `crate::dl` engine: RELA/JMPREL/
+  GLOB_DAT/JUMP_SLOT/64/IRELATIVE/COPY)
+- G12d — symbol versioning (VERSYM/VERNEED, GLIBC_2.x matching)
+- G12e — TLS (static+dynamic block, DTV, __tls_get_addr, TPOFF/DTPMOD/DTPOFF) +
+  **per-thread errno** (move errno into the TCB now that main+threads have one)
+- G12f — lazy PLT (_dl_runtime_resolve trampoline) + .init_array order + handoff
+- G12g — dlopen/dlsym/dlclose/dladdr/dlinfo (libdl, folded into libc.so.6)
+- Verification gap: full dynamic run needs libc.so.6 + ld-linux built and a
+  dynamically-linked binary run on the HOST kernel (same trick as the static
+  `xtask glibc --check`); build that dynamic-run harness around G12b/c.
 
 ## How it's built/verified (per sub-phase)
-- C-ABI exports `#[cfg(feature="freestanding")] #[no_mangle] pub unsafe extern "C"`,
-  over always-built `pub(crate)` inner impls so the hosted oracle can test them.
-- Oracle: proptest vs host glibc via `libc` dev-dep (docs/59§7).
-- `cargo run -p xtask -- glibc [--check]` builds both `-gnu` staticlibs + runs the
-  x86 entry smoke (`userspace/glibc_hello`). aarch64 *run* = QEMU milestone (later).
-- Gates each PR: `cargo test -p glibc`, `cargo clippy -p glibc` (default AND
-  `--features freestanding` for both `-gnu` targets), `cargo run -q -p spec-lint | grep glibc`.
-- spec-lint gotchas: `is_pub_fn` matches `pub fn`/`pub(crate) fn`/`pub const fn` →
-  use `pub(crate) unsafe fn` or add `/// # C:`. Every `unsafe {}` needs `// SAFETY:` ≥30
-  chars within 4 preceding lines (one block per test body).
-- Push with `SKIP_SMOKE=1` (glibc not yet wired into the boot image).
+- C-ABI exports `#[cfg(feature="freestanding")] #[no_mangle] pub unsafe extern "C"`
+  over always-built `pub(crate)` inner impls so the hosted oracle/tests can run.
+- glibc gate: `cargo test -p glibc`, clippy default+`--features freestanding` for
+  BOTH `-gnu` targets, `cargo run -q -p spec-lint | grep glibc`,
+  `cargo run -q -p xtask -- glibc --check` (builds both staticlibs + runs smoke).
+- ldso gate: `cargo test -p ldso`, same clippy matrix, spec-lint.
+- spec-lint: `# C:` on every `pub fn`/`pub(crate) fn`/`pub const fn`; `// SAFETY:`
+  ≥30 chars within 4 lines before each `unsafe {}`; one unsafe block per test body.
+- Push with `SKIP_SMOKE=1` (glibc/ldso not yet wired into the boot image).
 
 ## Next task (first command)
-Continue the loop at **G11 — pthread** (the big one): READ docs/54 + docs/14 first.
-Split: G11a TLS + thread create (clone CLONE_VM|FS|FILES|SIGHAND|THREAD|SETTLS|
-PARENT_SETTID|CHILD_CLEARTID, mmap stack+TLS, set FS base / TPIDR, __tls_get_addr,
-pthread_self/create/exit/join via CHILD_CLEARTID futex); G11b mutex
-(pthread_mutex_t 40/48B, futex); G11c cond/rwlock/once/keys. Smoke each on host.
-Remaining ladder: G12 ldso (rtld), G13 net, G14 nss, G15 math, G16 locale (+TZ),
-G17 crypt/rt/termios/setjmp, G18 folded-lib stubs + sysroot, G19 migrate userspace
-musl→glibc + retire musl. Tracked follow-ups: stdio buffering+putc/getc macros,
-exact float dtoa, getopt GNU permutation, strptime, glob multi-component, IFUNC
-SIMD string variants (post-rtld).
+Continue the loop at **G12b**: in `crates/user/ldso` add the freestanding loader
+core — DT_NEEDED dependency walk, library search path (LD_LIBRARY_PATH, /lib64,
+/lib, ld.so.cache parse), and mmap-based PT_LOAD mapping of each DSO (openat+mmap
+via `syscall.rs`, extended with NR_OPENAT/NR_MMAP/NR_CLOSE/NR_READ/NR_PREAD64 +
+NR_FSTAT). Hosted-test the search-path resolution + a fake ld.so.cache parse;
+defer the real mmap run to the dynamic-run harness (G12c).
 
 ## Notes
 - musl path stays buildable until G19. 59 is DRAFT — edit directly (no R-block).
-- IFUNC SIMD string variants deferred to post-rtld (G12+, needs IRELATIVE).
-- aarch64-unknown-linux-gnu rustup target was added this run (needed for staticlib).
+- Remaining after G12: G13 net, G14 nss, G15 math, G16 locale(+TZ), G17 crypt/rt/
+  termios/setjmp, G18 folded-lib stubs + sysroot, G19 migrate userspace→glibc.
+- Tracked follow-ups: stdio buffering+putc/getc macros, exact float dtoa, getopt
+  GNU permutation, strptime, glob multi-component, IFUNC SIMD string variants
+  (post-rtld, needs IRELATIVE), TLS-key destructor invocation at thread exit.
