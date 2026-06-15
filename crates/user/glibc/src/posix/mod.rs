@@ -3,6 +3,8 @@
 pub mod io;
 pub mod mman;
 #[cfg(feature = "freestanding")]
+pub mod random;
+#[cfg(feature = "freestanding")]
 pub mod ids;
 #[cfg(feature = "freestanding")]
 pub mod process;
@@ -30,6 +32,15 @@ pub mod resource;
 #[cfg(feature = "freestanding")]
 pub mod utmp;
 #[cfg(feature = "freestanding")]
+pub mod vector;
+#[cfg(feature = "freestanding")]
+pub mod vfsctl;
+#[cfg(feature = "freestanding")]
+pub mod mem;
+#[cfg(feature = "freestanding")]
+pub mod special;
+#[cfg(feature = "freestanding")]
+pub mod utime;
 pub mod pty;
 #[cfg(feature = "freestanding")]
 pub mod tty;
