@@ -7,3 +7,5 @@ pub mod cpy;
 pub mod dup;
 pub mod len;
 pub mod mem;
+pub mod tok;
+pub mod wstr;
