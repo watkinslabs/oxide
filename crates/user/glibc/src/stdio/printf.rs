@@ -4,7 +4,8 @@
 // rest take C varargs (...).
 #![cfg(feature = "freestanding")]
 use super::fmt::{self, Args, Sink};
-use super::file;
+use super::file::{self, FILE};
+use super::memstream::stream_write;
 use crate::posix::io;
 use core::ffi::{c_void, VaList};
 
@@ -51,6 +52,37 @@ impl Sink for FdSink {
         if self.len == self.buf.len() { self.flush(); }
     }
     fn count(&self) -> usize { self.total }
+}
+
+// fprintf sink: buffer then route through stream_write so memory streams
+// (fmemopen/open_memstream, fd = -1) work, not just fd-backed streams.
+struct FileSink { f: *mut FILE, buf: [u8; 256], len: usize, total: usize }
+impl FileSink {
+    fn new(f: *mut FILE) -> Self { FileSink { f, buf: [0; 256], len: 0, total: 0 } }
+    fn flush(&mut self) {
+        if self.len > 0 {
+            // SAFETY: buf[..len] is initialised; stream_write reads len bytes.
+            unsafe { stream_write(self.f, self.buf.as_ptr(), self.len); }
+            self.len = 0;
+        }
+    }
+}
+impl Sink for FileSink {
+    fn push(&mut self, b: u8) {
+        self.buf[self.len] = b;
+        self.len += 1;
+        self.total += 1;
+        if self.len == self.buf.len() { self.flush(); }
+    }
+    fn count(&self) -> usize { self.total }
+}
+unsafe fn into_file(f: *mut FILE, fmt: *const u8, ap: &mut VaList) -> i32 {
+    let mut sink = FileSink::new(f);
+    let mut a = Va(ap);
+    // SAFETY: fmt is NUL-terminated; ap holds the matching varargs.
+    let total = unsafe { fmt::vformat(&mut sink, fmt, &mut a) };
+    sink.flush();
+    total as i32
 }
 
 struct Va<'a, 'b>(&'a mut VaList<'b>);
@@ -143,14 +175,14 @@ pub unsafe extern "C" fn asprintf(strp: *mut *mut u8, fmt: *const u8, mut ap: ..
 // # C: int vfprintf(FILE *f, const char *fmt, va_list ap)
 #[no_mangle]
 pub unsafe extern "C" fn vfprintf(f: *mut file::FILE, fmt: *const u8, mut ap: VaList) -> i32 {
-    // SAFETY: f is a valid stream; we write to its fd.
-    unsafe { into_fd(file::fd_of(f), fmt, &mut ap) }
+    // SAFETY: f is a valid stream (fd-backed or memory); route via stream_write.
+    unsafe { into_file(f, fmt, &mut ap) }
 }
 // # C: int fprintf(FILE *f, const char *fmt, ...)
 #[no_mangle]
 pub unsafe extern "C" fn fprintf(f: *mut file::FILE, fmt: *const u8, mut ap: ...) -> i32 {
     // SAFETY: f is a valid stream; ap supplies the named varargs.
-    unsafe { into_fd(file::fd_of(f), fmt, &mut ap) }
+    unsafe { into_file(f, fmt, &mut ap) }
 }
 // # C: int vprintf(const char *fmt, va_list ap)
 #[no_mangle]
