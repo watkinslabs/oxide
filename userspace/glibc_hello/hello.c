@@ -20,9 +20,16 @@ int   fscanf(void *f, const char *fmt, ...);
 char *getenv(const char *name);
 int   setenv(const char *name, const char *value, int overwrite);
 int   strcmp(const char *a, const char *b);
+int   atexit(void (*fn)(void));
+
+static void on_exit_handler(void) {
+    static const char m[] = "atexit-ok\n";
+    write(1, m, sizeof(m) - 1);
+}
 
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
+    atexit(on_exit_handler);
     int fd = open("/dev/null", 0 /*O_RDONLY*/, 0);
     if (fd < 0) return 2;
     if (close(fd) != 0) return 3;
