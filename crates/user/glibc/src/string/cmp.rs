@@ -76,6 +76,54 @@ pub(crate) unsafe fn strxfrm_impl(dst: *mut u8, src: *const u8, n: usize) -> usi
     }
 }
 
+/// # C: int strverscmp(const char *, const char *) — GNU version compare
+/// Faithful port of glibc's strverscmp state machine: digit runs compare
+/// numerically, leading zeros order before non-zero magnitudes.
+pub(crate) unsafe fn strverscmp_impl(s1: *const u8, s2: *const u8) -> i32 {
+    const S_N: usize = 0; const S_I: u8 = 3; const S_F: u8 = 6; const S_Z: u8 = 9;
+    const CMP: i8 = 2; const LEN: i8 = 3;
+    // next_state[state] for the current char class (x/d/0 folded into the index)
+    const NEXT: [u8; 12] = [0, S_I, S_Z, 0, S_I, S_I, 0, S_F, S_F, 0, S_F, S_Z];
+    // result_type[state*3 + c2class]
+    const RES: [i8; 36] = [
+        CMP, CMP, CMP, CMP, LEN, CMP, CMP, CMP, CMP,
+        CMP, -1, -1, 1, LEN, LEN, 1, LEN, LEN,
+        CMP, CMP, CMP, CMP, CMP, CMP, CMP, CMP, CMP,
+        CMP, 1, 1, -1, CMP, CMP, -1, CMP, CMP,
+    ];
+    // SAFETY: s1/s2 are NUL-terminated C strings; every read stays within each
+    // string (the loop returns at the shared terminator).
+    unsafe {
+        if s1 == s2 { return 0; }
+        let (mut p1, mut p2) = (s1, s2);
+        let dig = |c: u8| c.is_ascii_digit();
+        let mut c1 = *p1; p1 = p1.add(1);
+        let mut c2 = *p2; p2 = p2.add(1);
+        let mut state = S_N + (c1 == b'0') as usize + dig(c1) as usize;
+        let mut diff;
+        loop {
+            diff = c1 as i32 - c2 as i32;
+            if diff != 0 { break; }
+            if c1 == 0 { return 0; }
+            state = NEXT[state] as usize;
+            c1 = *p1; p1 = p1.add(1);
+            c2 = *p2; p2 = p2.add(1);
+            state += (c1 == b'0') as usize + dig(c1) as usize;
+        }
+        let r = RES[state * 3 + (c2 == b'0') as usize + dig(c2) as usize];
+        if r == CMP { diff }
+        else if r == LEN {
+            loop {
+                let a = *p1; p1 = p1.add(1);
+                if !dig(a) { break; }
+                let b = *p2; p2 = p2.add(1);
+                if !dig(b) { return 1; }
+            }
+            if dig(*p2) { -1 } else { diff }
+        } else { r as i32 }
+    }
+}
+
 #[cfg(feature = "freestanding")]
 mod exports {
     use super::*;
@@ -115,6 +163,12 @@ mod exports {
         // SAFETY: forwards the C strxfrm contract to strxfrm_impl unchanged.
         unsafe { strxfrm_impl(dst, src, n) }
     }
+    // # C: int strverscmp(const char *, const char *)
+    #[no_mangle]
+    pub unsafe extern "C" fn strverscmp(a: *const u8, b: *const u8) -> i32 {
+        // SAFETY: forwards the GNU strverscmp contract to strverscmp_impl.
+        unsafe { strverscmp_impl(a, b) }
+    }
 }
 
 #[cfg(test)]
@@ -140,6 +194,25 @@ mod tests {
             let n2 = strxfrm_impl(s.as_mut_ptr(), b"world\0".as_ptr(), 3);
             assert_eq!(n2, 5);
             assert_eq!(&s, b"wo\0");
+        }
+    }
+    #[test]
+    fn strverscmp_oracle() {
+        // host glibc strverscmp (not surfaced by the libc crate); compare signs.
+        extern "C" { fn strverscmp(a: *const u8, b: *const u8) -> i32; }
+        let cases: &[(&[u8], &[u8])] = &[
+            (b"000\0", b"00\0"), (b"alpha1\0", b"alpha001\0"), (b"part1_1\0", b"part1_10\0"),
+            (b"item-1.0.0\0", b"item-1.0.1\0"), (b"foo\0", b"foo\0"), (b"1\0", b"10\0"),
+            (b"jan1\0", b"jan10\0"), (b"\0", b"a\0"), (b"a\0", b"\0"), (b"5.9\0", b"5.10\0"),
+            (b"01\0", b"010\0"), (b"x009y\0", b"x09y\0"),
+        ];
+        for (a, b) in cases {
+            // SAFETY: both are NUL-terminated literals; compare our result's sign
+            // to the host glibc strverscmp.
+            let (o, t) = unsafe {
+                (strverscmp_impl(a.as_ptr(), b.as_ptr()), strverscmp(a.as_ptr(), b.as_ptr()))
+            };
+            assert_eq!(o.signum(), t.signum(), "strverscmp {a:?} vs {b:?}");
         }
     }
     proptest! {
