@@ -108,6 +108,18 @@ mod exports {
         // SAFETY: forwards the C memchr contract to memchr_impl unchanged.
         unsafe { memchr_impl(s, c, n) }
     }
+    // # C: void explicit_bzero(void *s, size_t n) — scrub not optimized away
+    #[no_mangle]
+    pub unsafe extern "C" fn explicit_bzero(s: *mut u8, n: usize) {
+        // SAFETY: s is writable for n bytes; volatile stores plus a compiler
+        // fence prevent the dead-store elimination that would defeat secret
+        // scrubbing (the whole point of explicit_bzero vs memset).
+        unsafe {
+            let mut i = 0;
+            while i < n { core::ptr::write_volatile(s.add(i), 0); i += 1; }
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+        }
+    }
 }
 
 #[cfg(test)]
