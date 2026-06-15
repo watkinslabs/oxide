@@ -66,6 +66,8 @@ pub mod x86_64 {
     pub const WAIT4: usize = 61;
     pub const KILL: usize = 62;
     pub const UNAME: usize = 63;
+    pub const SETHOSTNAME: usize = 170;
+    pub const SETDOMAINNAME: usize = 171;
     pub const FCNTL: usize = 72;
     pub const GETCWD: usize = 79;
     pub const READLINK: usize = 89;
@@ -208,6 +210,8 @@ pub mod aarch64 {
     pub const RT_SIGPROCMASK: usize = 135;
     pub const RT_SIGRETURN: usize = 139;
     pub const UNAME: usize = 160;
+    pub const SETHOSTNAME: usize = 161;
+    pub const SETDOMAINNAME: usize = 162;
     pub const GETPID: usize = 172;
     pub const GETPPID: usize = 173;
     pub const GETUID: usize = 174;
