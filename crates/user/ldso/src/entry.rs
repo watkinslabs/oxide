@@ -51,23 +51,11 @@ pub unsafe extern "C" fn _dl_start(sp: *const usize, dynamic: *const Dyn) -> usi
     }
 }
 
-// Relocate the kernel-mapped app and return its entry point.
+// Link the kernel-mapped app + its DT_NEEDED graph and return its entry.
 // # C: void *_dl_main(void *sp)
 unsafe fn _dl_main(sp: *const usize) -> usize {
-    // SAFETY: sp is the initial stack; AT_PHDR/AT_PHNUM/AT_ENTRY describe the
-    // app the kernel already mapped. We read its phdrs, apply RELATIVE relocs
-    // against its load bias, and return AT_ENTRY for _start to jump to.
-    unsafe {
-        let at_phdr = crate::auxv::auxval(sp, crate::auxv::AT_PHDR).unwrap_or(0);
-        let phnum = crate::auxv::auxval(sp, crate::auxv::AT_PHNUM).unwrap_or(0);
-        let entry = crate::auxv::auxval(sp, crate::auxv::AT_ENTRY).unwrap_or(0);
-        if at_phdr == 0 || phnum == 0 { return entry; }
-        let phdrs = core::slice::from_raw_parts(at_phdr as *const u8, phnum * crate::phdr::PHDR_SIZE);
-        let bias = crate::phdr::load_bias(phdrs, phnum, at_phdr as u64).unwrap_or(0);
-        if let Some(dynv) = crate::phdr::find_vaddr(phdrs, phnum, crate::phdr::PT_DYNAMIC) {
-            let app_dyn = bias.wrapping_add(dynv) as *const Dyn;
-            crate::reloc::relocate_self(bias, app_dyn);
-        }
-        entry
-    }
+    // SAFETY: sp is the initial stack; link() reads AT_* and the app's phdrs,
+    // loads dependencies, relocates the link map, runs initializers, and
+    // returns AT_ENTRY for _start to jump to.
+    unsafe { crate::link::link(sp) }
 }

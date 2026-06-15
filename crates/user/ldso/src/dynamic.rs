@@ -38,6 +38,8 @@ pub const DT_RUNPATH: i64 = 29;
 pub const DT_FLAGS: i64 = 30;
 pub const DT_GNU_HASH: i64 = 0x6fff_fef5;
 pub const DT_VERSYM: i64 = 0x6fff_fff0;
+pub const DT_VERDEF: i64 = 0x6fff_fffc;
+pub const DT_VERDEFNUM: i64 = 0x6fff_fffd;
 pub const DT_RELACOUNT: i64 = 0x6fff_fff9;
 pub const DT_VERNEED: i64 = 0x6fff_fffe;
 pub const DT_VERNEEDNUM: i64 = 0x6fff_ffff;
@@ -64,6 +66,9 @@ pub struct DynInfo {
     pub versym: Option<u64>,
     pub verneed: Option<u64>,
     pub verneednum: u64,
+    pub verdef: Option<u64>,
+    /// DT_NEEDED soname strtab offsets, in order.
+    pub needed: alloc::vec::Vec<u64>,
     pub init: Option<u64>,
     pub init_array: Option<u64>,
     pub init_arraysz: u64,
@@ -96,6 +101,8 @@ pub fn parse(dynv: &[Dyn]) -> DynInfo {
             DT_VERSYM => i.versym = Some(d.d_val),
             DT_VERNEED => i.verneed = Some(d.d_val),
             DT_VERNEEDNUM => i.verneednum = d.d_val,
+            DT_VERDEF => i.verdef = Some(d.d_val),
+            DT_NEEDED => i.needed.push(d.d_val),
             DT_INIT => i.init = Some(d.d_val),
             DT_INIT_ARRAY => i.init_array = Some(d.d_val),
             DT_INIT_ARRAYSZ => i.init_arraysz = d.d_val,
@@ -111,6 +118,18 @@ pub fn parse(dynv: &[Dyn]) -> DynInfo {
         }
     }
     i
+}
+
+/// Parse a `_DYNAMIC` array reached by raw pointer (walks to DT_NULL).
+/// # C: parse(dynv[0..=DT_NULL])
+pub unsafe fn parse_ptr(dynv: *const Dyn) -> DynInfo {
+    // SAFETY: dynv is a DT_NULL-terminated _DYNAMIC array in a mapped object;
+    // we read entries sequentially to the terminator, all in-bounds.
+    unsafe {
+        let mut n = 0usize;
+        while (*dynv.add(n)).d_tag != DT_NULL { n += 1; }
+        parse(core::slice::from_raw_parts(dynv, n + 1))
+    }
 }
 
 #[cfg(test)]

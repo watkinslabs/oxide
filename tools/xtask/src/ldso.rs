@@ -38,6 +38,11 @@ fn build_ldso(triple: &str, soname: &str) -> Result<(), u8> {
             "-C", "linker-flavor=ld.lld", "-C", "linker=rust-lld",
             "-C", &format!("link-arg=--soname={soname}"),
             "-C", "link-arg=--entry=_start", "-C", "link-arg=--no-undefined",
+            // -Bsymbolic pre-binds the rtld's own symbol refs (e.g. the global
+            // allocator) to RELATIVE relocs, which self-reloc applies; without
+            // it those stay GLOB_DAT/JUMP_SLOT and call through an unrelocated
+            // GOT before the rtld can resolve them.
+            "-C", "link-arg=-Bsymbolic",
             "-C", "relocation-model=pic", "-C", "panic=abort"]);
     run(c)
 }
@@ -78,9 +83,46 @@ fn check_raw_pie_x86() -> Result<(), u8> {
     eprintln!("xtask ldso: exit={code} stdout={stdout:?}");
     if code == 42 && stdout.contains("ld-ok") {
         eprintln!("xtask ldso: G12d rtld dynamic-run smoke PASS (self-reloc + app RELATIVE + handoff)");
-        Ok(())
     } else {
         eprintln!("xtask ldso: G12d rtld dynamic-run smoke FAIL");
+        return Err(1);
+    }
+    check_libc_linked_x86(&abs)
+}
+
+// Link a tiny PIE against our libc.so.6 and run it through our ld: proves
+// DT_NEEDED loading + JUMP_SLOT/GLOB_DAT resolution against a real shared lib.
+fn check_libc_linked_x86(ld_abs: &std::path::Path) -> Result<(), u8> {
+    let so = crate::glibc::sharedlib_path(X86);
+    crate::glibc::build_sharedlib(X86)?;
+    if !so.exists() { eprintln!("xtask ldso: {} missing", so.display()); return Err(1); }
+    let dir = PathBuf::from("target/ldso-dynroot");
+    let _ = std::fs::create_dir_all(&dir);
+    let libc = dir.join("libc.so.6");
+    std::fs::copy(&so, &libc).map_err(|_| 1u8)?;
+    let dirabs = std::fs::canonicalize(&dir).map_err(|_| 1u8)?;
+    let bin = "target/ldso-dyn-libc";
+
+    let mut cc = Command::new("cc");
+    cc.args(["-fPIE", "-pie", "-nostdlib", "-nostartfiles", "-Wl,-e,_start",
+             &format!("-Wl,--dynamic-linker={}", ld_abs.display()),
+             &format!("-Wl,-rpath,{}", dirabs.display()),
+             &format!("-L{}", dirabs.display()), "-l:libc.so.6",
+             "userspace/ldso_smoke/dyn_libc.c", "-o", bin]);
+    run(cc)?;
+
+    eprintln!("xtask ldso: running {bin} (libc.so.6-linked) through our ld");
+    let out = Command::new(format!("./{bin}"))
+        .env("LD_LIBRARY_PATH", &dirabs)
+        .output()
+        .map_err(|e| { eprintln!("xtask ldso: run failed: {e}"); 1u8 })?;
+    let code = out.status.code().unwrap_or(-1);
+    eprintln!("xtask ldso: libc-linked exit={code} (want 13 = strlen(\"hello-dynamic\"))");
+    if code == 13 {
+        eprintln!("xtask ldso: G12g rtld DT_NEEDED libc.so.6 link+run PASS");
+        Ok(())
+    } else {
+        eprintln!("xtask ldso: G12g rtld DT_NEEDED link+run FAIL");
         Err(1)
     }
 }
