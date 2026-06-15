@@ -1,0 +1,20 @@
+/* glibc symbol-version map, x86_64. docs/59§2 (R02), §5.
+ * Fed to the linker by `xtask glibc` (--version-script). Baseline node
+ * GLIBC_2.2.5; later nodes chain to it. Symbols are added to the node
+ * that first introduced them in upstream glibc as each is implemented
+ * (G2+). Empty nodes are valid and reserve the version for ordering.
+ * `local: *` keeps internal Rust symbols out of the dynamic table. */
+GLIBC_2.2.5 {
+  global:
+    /* G2: __libc_start_main; __errno_location; _start (entry, not versioned) */
+  local:
+    *;
+};
+GLIBC_2.3    {} GLIBC_2.2.5;
+GLIBC_2.3.2  {} GLIBC_2.3;
+GLIBC_2.4    {} GLIBC_2.3.2;
+GLIBC_2.14   {} GLIBC_2.4;   /* memcpy@GLIBC_2.14 lives here */
+GLIBC_2.17   {} GLIBC_2.14;
+GLIBC_2.28   {} GLIBC_2.17;
+GLIBC_2.34   {} GLIBC_2.28;  /* pthread/dl/rt folded into libc here */
+GLIBC_2.38   {} GLIBC_2.34;
