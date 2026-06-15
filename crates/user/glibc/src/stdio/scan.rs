@@ -2,8 +2,8 @@
 // sscanf, a FILE for fscanf/scanf — G6c) and stores into vararg pointers
 // via `ScanArgs`. Conversions d/i/u/o/x/c/s/f(+e/g) with width, '*'
 // suppression and length modifiers; whitespace in the format matches a
-// run of input whitespace, other literals must match. Scanset %[ and %n
-// are a follow-up. Differentially tested vs host sscanf.
+// run of input whitespace, other literals must match. Scanset %[ (ranges,
+// negation) and %n implemented. Differentially tested vs host sscanf.
 
 pub(crate) trait Source {
     fn peek(&mut self) -> i32; // current byte or -1 at end (may read for FILE)
@@ -204,6 +204,12 @@ pub(crate) unsafe fn vscan(src: &mut dyn Source, fmt: *const u8, args: &mut dyn 
                 _ => Len::Int,
             };
             let conv = *fmt.add(i); i += 1;
+            // %n: store chars consumed so far; never a matching failure and not
+            // counted as an assignment, so handle it before the assign logic.
+            if conv == b'n' {
+                if !suppress { store_int(args.next_ptr(), len, src.consumed() as i64); }
+                continue;
+            }
             let ok = match conv {
                 b'd' => conv_int(src, args, suppress, width, len, 10, true),
                 b'i' => conv_int(src, args, suppress, width, len, 0, true),
