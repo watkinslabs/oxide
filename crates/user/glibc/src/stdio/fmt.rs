@@ -251,6 +251,7 @@ unsafe fn emit_val(out: &mut dyn Sink, sp: &Spec, val: Val) {
                 else { let mut s2 = Spec { alt: true, ..core_copy(sp) }; s2.conv = b'x'; fmt_uint(out, &s2, p as u64, false, 16, false, false); }
             }
             b'f' | b'F' | b'e' | b'E' | b'g' | b'G' => { if let Val::F(v) = val { fmt_float(out, sp, v); } }
+            b'a' | b'A' => { if let Val::F(v) = val { fmt_hexfloat(out, sp, v); } }
             _ => { out.push(b'%'); out.push(sp.conv); }
         }
     }
@@ -371,6 +372,7 @@ pub(crate) unsafe fn vformat(out: &mut dyn Sink, fmt: *const u8, args: &mut dyn 
                     let v = args.next_f64();
                     fmt_float(out, &sp, v);
                 }
+                b'a' | b'A' => { let v = args.next_f64(); fmt_hexfloat(out, &sp, v); }
                 0 => break,
                 other => { out.push(b'%'); out.push(other); }
             }
@@ -408,6 +410,69 @@ fn strip_zeros(body: &mut [u8], mut end: usize) -> usize {
     while end > 0 && body[end - 1] == b'0' { end -= 1; }
     if end > 0 && body[end - 1] == b'.' { end -= 1; }
     end
+}
+
+// sign+prefix+width emit shared by fmt_float/fmt_hexfloat. `prefix` (e.g. the
+// "0x" of %a) stays attached after the sign and before any zero padding, like
+// an integer prefix. zero_ok=false (inf/nan) forces space padding regardless
+// of the '0' flag, per C.
+fn emit_float_body(out: &mut dyn Sink, sp: &Spec, neg: bool, prefix: &[u8], body: &[u8], zero_ok: bool) {
+    let sign: &[u8] = if neg { b"-" } else if sp.plus { b"+" } else if sp.space { b" " } else { b"" };
+    let pad = sp.width.saturating_sub(sign.len() + prefix.len() + body.len());
+    if sp.left { out.push_all(sign); out.push_all(prefix); out.push_all(body); for _ in 0..pad { out.push(b' '); } }
+    else if sp.zero && zero_ok { out.push_all(sign); out.push_all(prefix); for _ in 0..pad { out.push(b'0'); } out.push_all(body); }
+    else { for _ in 0..pad { out.push(b' '); } out.push_all(sign); out.push_all(prefix); out.push_all(body); }
+}
+
+// %a/%A: C99 hexadecimal float "0x1.fracp±d" (lowercase) / "0X1.FRACP±D".
+// Default precision renders the exact mantissa (13 nibbles, trailing zeros
+// stripped); explicit precision rounds to nearest-even at the nibble boundary,
+// carrying into the leading digit (which may become 2).
+fn fmt_hexfloat(out: &mut dyn Sink, sp: &Spec, v: f64) {
+    let upper = sp.conv == b'A';
+    let neg = v.is_sign_negative();
+    if v.is_nan() { emit_float_body(out, sp, false, b"", if upper { b"NAN" } else { b"nan" }, false); return; }
+    if v.is_infinite() { emit_float_body(out, sp, neg, b"", if upper { b"INF" } else { b"inf" }, false); return; }
+    let bits = v.abs().to_bits();
+    let exp_field = ((bits >> 52) & 0x7ff) as i32;
+    let mant = bits & 0xf_ffff_ffff_ffff; // 52-bit fraction
+    let (mut lead, ubexp, mut frac) = if exp_field == 0 {
+        if mant == 0 { (0u8, 0i32, 0u64) } else { (0u8, -1022, mant) }
+    } else { (1u8, exp_field - 1023, mant) };
+    // round to an explicit precision (in nibbles) if given
+    if let Some(p) = sp.prec {
+        if p < 13 {
+            let drop = 52 - 4 * p; // bits discarded
+            let kept = frac >> drop;
+            let rem = frac & ((1u64 << drop) - 1);
+            let half = 1u64 << (drop - 1);
+            let up = rem > half || (rem == half && (kept & 1) == 1);
+            let mut k = kept + if up { 1 } else { 0 };
+            if k >> (4 * p) != 0 { lead += 1; k = 0; } // carry into leading digit
+            frac = k << drop;
+        }
+    }
+    let digit = |nib: u64| -> u8 { if nib < 10 { b'0' + nib as u8 } else { (if upper { b'A' } else { b'a' }) + (nib - 10) as u8 } };
+    let mut b = [0u8; 32];
+    let mut n = 0;
+    b[n] = b'0' + lead; n += 1;
+    // fraction nibbles (MSB first)
+    let ndig = match sp.prec {
+        Some(p) => p.min(13),
+        None => { let mut last = 0; for k in 0..13 { if (frac >> (48 - 4 * k)) & 0xf != 0 { last = k + 1; } } last }
+    };
+    if ndig > 0 {
+        b[n] = b'.'; n += 1;
+        for k in 0..ndig { b[n] = digit((frac >> (48 - 4 * k)) & 0xf); n += 1; }
+    }
+    b[n] = if upper { b'P' } else { b'p' }; n += 1;
+    b[n] = if ubexp < 0 { b'-' } else { b'+' }; n += 1;
+    let ae = ubexp.unsigned_abs();
+    if ae >= 1000 { b[n] = b'0' + (ae / 1000 % 10) as u8; n += 1; }
+    if ae >= 100 { b[n] = b'0' + (ae / 100 % 10) as u8; n += 1; }
+    if ae >= 10 { b[n] = b'0' + (ae / 10 % 10) as u8; n += 1; }
+    b[n] = b'0' + (ae % 10) as u8; n += 1;
+    emit_float_body(out, sp, neg, if upper { b"0X" } else { b"0x" }, &b[..n], true);
 }
 
 // Render a float per C printf semantics: sign (or +/space flag), C-style
@@ -461,22 +526,8 @@ fn fmt_float(out: &mut dyn Sink, sp: &Spec, v: f64) {
         }
     }
     if is_g && !sp.alt && frac_end == 0 { bn = strip_zeros(&mut body, bn); } // f-style %g
-    let sign: &[u8] = if neg { b"-" } else if sp.plus { b"+" } else if sp.space { b" " } else { b"" };
-    // width padding: zero-fill (after sign) unless left-justified; floats
-    // zero-pad even when a precision is set (unlike integers).
-    let content = sign.len() + bn;
-    let pad = sp.width.saturating_sub(content);
-    if sp.left {
-        out.push_all(sign); out.push_all(&body[..bn]);
-        for _ in 0..pad { out.push(b' '); }
-    } else if sp.zero {
-        out.push_all(sign);
-        for _ in 0..pad { out.push(b'0'); }
-        out.push_all(&body[..bn]);
-    } else {
-        for _ in 0..pad { out.push(b' '); }
-        out.push_all(sign); out.push_all(&body[..bn]);
-    }
+    // floats zero-pad even when a precision is set (unlike integers).
+    emit_float_body(out, sp, neg, b"", &body[..bn], true);
 }
 
 // Spec is not Copy (no derive to keep it small); shallow clone for %p.
