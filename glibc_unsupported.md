@@ -1,16 +1,10 @@
 # glibc — unsupported (cannot implement)
 
-Hard-blocked, not deferred.
+> Hard-blocked, not deferred. 156 entries.
 
-## long double / long-double-typed: 126
-x86_64 `long double` = 80-bit x87 f80; Rust has no f80 so the extern-C ABI
-is inexpressible (aarch64 binary128=f128, but one portable signature is needed
-for lockstep). Needs an 80-bit soft-float + x87-ABI shim.
+## long double / long-double-typed: 122
+> x86_64 long double is 80-bit x87 f80; Rust has no f80 so the extern-C ABI cannot be expressed.
 
-## long double / long-double-typed (125)
-## long double / long-double-typed (124)
-## long double `*l` / long-double-typed (122)
-taking or returning `long double` cannot be expressed at all (aarch64
 long double sinhl (long double x)
 long double coshl (long double x)
 long double tanhl (long double x)
@@ -134,10 +128,8 @@ complex long double casinl (complex long double z)
 complex long double cacosl (complex long double z)
 complex long double catanl (complex long double z)
 
-## header-only macros / compiler builtins: 24
-Never a libc.so.6 symbol: obstack_* expand in <obstack.h> over the implemented
-_obstack_* fns; sigsetjmp is a macro over the exported __sigsetjmp; alloca is
-__builtin_alloca; DTTOIF/IFTODT/DES_FAILED are macros.
+## header-only macros and compiler builtins: 24
+> Never a libc.so.6 symbol; obstack_ and sigsetjmp expand over implemented underlying symbols; alloca is a compiler builtin.
 
 int sigsetjmp (sigjmp_buf state, int savesigs)
 void obstack_blank (struct obstack *obstack-ptr, int size)
@@ -165,7 +157,7 @@ void * obstack_base (struct obstack *obstack-ptr)
 void * obstack_next_free (struct obstack *obstack-ptr)
 
 ## PowerPC builtins: 10
-__ppc_* are PowerPC-only; oxide targets x86_64+aarch64.
+> __ppc_ are PowerPC-only; oxide targets x86_64 and aarch64.
 
 uint64_t __ppc_get_timebase (void)
 uint64_t __ppc_get_timebase_freq (void)
