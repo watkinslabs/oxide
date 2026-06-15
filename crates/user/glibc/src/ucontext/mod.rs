@@ -169,12 +169,12 @@ mod imp {
     /// # C: int swapcontext(ucontext_t *oucp, const ucontext_t *ucp)
     #[no_mangle]
     pub unsafe extern "C" fn swapcontext(oucp: *mut ucontext_t, ucp: *const ucontext_t) -> i32 {
-        // SAFETY: oucp/ucp are valid distinct ucontext_t. getcontext(oucp) saves
-        // the current context (returns 0 now AND when later resumed via oucp —
-        // indistinguishable by return value). We disambiguate with a guard
-        // stored IN oucp->uc_flags, read/written through a volatile pointer so
-        // the compiler reloads it after the resume jump: first pass sees 0 and
-        // calls setcontext(ucp); the resume pass sees 1 and returns.
+        // getcontext(oucp) saves the current context (returns 0 now AND when later
+        // resumed via oucp — indistinguishable by return value); a guard stored IN
+        // oucp->uc_flags, read/written volatile so the compiler reloads it after the
+        // resume jump, disambiguates: first pass sees 0 and calls setcontext(ucp),
+        // the resume pass sees 1 and returns.
+        // SAFETY: oucp/ucp are valid distinct ucontext_t; guard lives in oucp->uc_flags.
         unsafe {
             let guard = core::ptr::addr_of_mut!((*oucp).uc_flags);
             core::ptr::write_volatile(guard, 0);
