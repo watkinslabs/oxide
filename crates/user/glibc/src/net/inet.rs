@@ -180,6 +180,124 @@ mod exports {
     #[no_mangle]
     pub extern "C" fn ntohl(x: u32) -> u32 { bswap32(x) }
 
+    #[repr(C)]
+    pub struct in_addr { pub s_addr: u32 } // network byte order
+
+    struct Ntoa(core::cell::UnsafeCell<[u8; 16]>);
+    // SAFETY: process-global inet_ntoa buffer; single-threaded until TLS.
+    unsafe impl Sync for Ntoa {}
+    static NTOA: Ntoa = Ntoa(core::cell::UnsafeCell::new([0u8; 16]));
+
+    // parse one numeric component (C inet: 0x→hex, 0→octal, else decimal);
+    // returns (value, bytes consumed) or None if no digit.
+    unsafe fn num(p: *const u8) -> Option<(u64, usize)> {
+        // SAFETY: p points into a NUL-terminated string; digits stop at a
+        // non-digit, always within the string.
+        unsafe {
+            let (mut base, mut i): (u64, usize) = (10, 0);
+            if *p == b'0' {
+                if *p.add(1) == b'x' || *p.add(1) == b'X' { base = 16; i = 2; } else { base = 8; i = 1; }
+            }
+            let start = i;
+            let mut v = 0u64;
+            loop {
+                let c = *p.add(i);
+                let d = match c {
+                    b'0'..=b'9' => (c - b'0') as u64,
+                    b'a'..=b'f' if base == 16 => (c - b'a' + 10) as u64,
+                    b'A'..=b'F' if base == 16 => (c - b'A' + 10) as u64,
+                    _ => break,
+                };
+                if d >= base { break; }
+                v = v * base + d; i += 1;
+            }
+            if i == start && base != 8 { return None; } // "0x" with no hex digit
+            if i == 0 { return None; }
+            Some((v, i))
+        }
+    }
+
+    // # C: int inet_aton(const char *cp, struct in_addr *inp)
+    #[no_mangle]
+    pub unsafe extern "C" fn inet_aton(cp: *const u8, inp: *mut in_addr) -> i32 {
+        // SAFETY: cp NUL-terminated; inp null or writable. Parses the classic
+        // a / a.b / a.b.c / a.b.c.d forms (octal/hex/decimal parts).
+        unsafe {
+            let mut parts = [0u64; 4];
+            let mut n = 0usize;
+            let mut p = cp;
+            loop {
+                let (v, adv) = match num(p) { Some(x) => x, None => return 0 };
+                parts[n] = v; n += 1; p = p.add(adv);
+                if *p == b'.' { if n == 4 { return 0; } p = p.add(1); continue; }
+                break;
+            }
+            while *p == b' ' || *p == b'\t' || *p == b'\n' { p = p.add(1); }
+            if *p != 0 { return 0; }
+            let addr: u64 = match n {
+                1 => parts[0],
+                2 => { if parts[0] > 0xff || parts[1] > 0xff_ffff { return 0; } (parts[0] << 24) | parts[1] }
+                3 => { if parts[0] > 0xff || parts[1] > 0xff || parts[2] > 0xffff { return 0; } (parts[0] << 24) | (parts[1] << 16) | parts[2] }
+                4 => { if parts.iter().take(4).any(|&x| x > 0xff) { return 0; } (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3] }
+                _ => return 0,
+            };
+            if addr > 0xffff_ffff { return 0; }
+            if !inp.is_null() { (*inp).s_addr = (addr as u32).to_be(); }
+            1
+        }
+    }
+    // # C: in_addr_t inet_addr(const char *cp)
+    #[no_mangle]
+    pub unsafe extern "C" fn inet_addr(cp: *const u8) -> u32 {
+        // SAFETY: cp NUL-terminated; INADDR_NONE (0xffffffff) on parse failure.
+        unsafe { let mut a = in_addr { s_addr: 0 }; if inet_aton(cp, &mut a) != 0 { a.s_addr } else { 0xffff_ffff } }
+    }
+    // # C: in_addr_t inet_network(const char *cp) — host byte order, -1 on error
+    #[no_mangle]
+    pub unsafe extern "C" fn inet_network(cp: *const u8) -> u32 {
+        // SAFETY: cp NUL-terminated; returns the parsed value in host order.
+        unsafe { let mut a = in_addr { s_addr: 0 }; if inet_aton(cp, &mut a) != 0 { u32::from_be(a.s_addr) } else { 0xffff_ffff } }
+    }
+    // # C: char *inet_ntoa(struct in_addr in)
+    #[no_mangle]
+    pub unsafe extern "C" fn inet_ntoa(addr: in_addr) -> *mut u8 {
+        // SAFETY: format the 4 network-order bytes into a process-global buffer.
+        unsafe {
+            let b = u32::from_be(addr.s_addr).to_be_bytes();
+            let buf = NTOA.0.get();
+            let mut k = 0;
+            for (i, &octet) in b.iter().enumerate() {
+                if i > 0 { (*buf)[k] = b'.'; k += 1; }
+                if octet >= 100 { (*buf)[k] = b'0' + octet / 100; k += 1; }
+                if octet >= 10 { (*buf)[k] = b'0' + (octet / 10) % 10; k += 1; }
+                (*buf)[k] = b'0' + octet % 10; k += 1;
+            }
+            (*buf)[k] = 0;
+            (*buf).as_mut_ptr()
+        }
+    }
+    // # C: struct in_addr inet_makeaddr(in_addr_t net, in_addr_t host) — classful
+    #[no_mangle]
+    pub extern "C" fn inet_makeaddr(net: u32, host: u32) -> in_addr {
+        let a = if net < 128 { (net << 24) | (host & 0xff_ffff) }
+            else if net < 65536 { (net << 16) | (host & 0xffff) }
+            else if net < 0x100_0000 { (net << 8) | (host & 0xff) }
+            else { net | host };
+        in_addr { s_addr: a.to_be() }
+    }
+    // # C: in_addr_t inet_lnaof(struct in_addr in) — classful local (host) part
+    #[no_mangle]
+    pub extern "C" fn inet_lnaof(addr: in_addr) -> u32 {
+        let a = u32::from_be(addr.s_addr);
+        if a >> 24 < 128 { a & 0xff_ffff } else if a >> 24 < 192 { a & 0xffff } else { a & 0xff }
+    }
+    // # C: in_addr_t inet_netof(struct in_addr in) — classful network part
+    #[no_mangle]
+    pub extern "C" fn inet_netof(addr: in_addr) -> u32 {
+        let a = u32::from_be(addr.s_addr);
+        if a >> 24 < 128 { (a >> 24) & 0xff } else if a >> 24 < 192 { (a >> 16) & 0xffff } else { (a >> 8) & 0xff_ffff }
+    }
+
     // # C: int inet_pton(int af, const char *src, void *dst)
     #[no_mangle]
     pub unsafe extern "C" fn inet_pton(af: i32, src: *const u8, dst: *mut u8) -> i32 {
