@@ -1,13 +1,14 @@
-// errno — exposed to C via `__errno_location` (docs/59§2). One
-// process-wide cell until TLS lands (G11), at which point this becomes a
-// per-thread slot. A syscall returning -4095..=-1 is `-errno` (Linux
-// ABI); `ret` splits ok/err, `ret_isize` applies the libc convention
-// (return -1, set errno).
+// errno — exposed to C via `__errno_location` (docs/59§2, §6 G12f).
+// Per-thread: errno lives in the thread's TCB (pthread::Tcb::errno), reached
+// via the thread pointer (fs:0 / tpidr_el0). A process-wide cell is the
+// fallback before the main-thread TCB is installed and for hosted tests. A
+// syscall returning -4095..=-1 is `-errno` (Linux ABI); `ret` splits ok/err,
+// `ret_isize` applies the libc convention (return -1, set errno).
 use core::cell::UnsafeCell;
 
 struct ErrnoCell(UnsafeCell<i32>);
-// SAFETY: single-threaded until G11 wires real TLS; the cell is only
-// touched through set()/__errno_location on the one running thread.
+// SAFETY: the global cell is only the pre-TCB/hosted fallback; once a TCB is
+// installed each thread uses its own TCB slot, so no cross-thread aliasing.
 unsafe impl Sync for ErrnoCell {}
 static ERRNO: ErrnoCell = ErrnoCell(UnsafeCell::new(0));
 
@@ -15,13 +16,23 @@ static ERRNO: ErrnoCell = ErrnoCell(UnsafeCell::new(0));
 #[cfg(feature = "freestanding")]
 #[no_mangle]
 pub extern "C" fn __errno_location() -> *mut i32 {
-    ERRNO.0.get()
+    // SAFETY: current_tcb reads the thread pointer; once init_main_tcb /
+    // pthread_create has run (before any errno access) it is a live TCB. The
+    // null check covers the brief pre-TCB startup window.
+    unsafe {
+        let tcb = crate::pthread::current_tcb();
+        if tcb.is_null() { ERRNO.0.get() } else { core::ptr::addr_of_mut!((*tcb).errno) }
+    }
 }
 
 /// # C: *__errno_location() = e
 pub(crate) fn set(e: i32) {
-    // SAFETY: exclusive single-thread access to the global errno cell
-    // until per-thread TLS replaces it at G11; no aliasing &mut exists.
+    #[cfg(feature = "freestanding")]
+    // SAFETY: __errno_location returns this thread's errno slot (TCB or the
+    // startup fallback); writing through it is the libc errno contract.
+    unsafe { *__errno_location() = e };
+    #[cfg(not(feature = "freestanding"))]
+    // SAFETY: hosted/test build uses the single global cell, single-threaded.
     unsafe { *ERRNO.0.get() = e };
 }
 
