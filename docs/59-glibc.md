@@ -104,7 +104,7 @@ Each sub-phase: small files, hosted oracle test vs host glibc, then boot-smoke a
 | G8 | `posix/` fork/exec/wait/glob/fnmatch/regex/getopt | busybox-class static bin runs |
 | G9 | `signal/` sigaction/restorer/mask/raise/abort | signal smokes (existing ports) |
 | G10 | `time/` clock/gmtime/localtime/strftime/tz | oracle + tz |
-| G11 | `pthread/` threads/mutex/cond/rwlock/once/TLS-keys/atfork. G11a=create/join (clone trampoline + CHILD_CLEARTID futex + per-arch TCB/CLONE_SETTLS) + self/exit/detach/equal. G11b=`pthread/mutex.rs` (40B `pthread_mutex_t`, 3-state futex lock, NORMAL/RECURSIVE/ERRORCHECK + mutexattr). G11c=cond/rwlock/once/TLS-keys. | loom + pthread smokes |
+| G11 | `pthread/` threads/mutex/cond/rwlock/once/TLS-keys/atfork. G11a=create/join (clone trampoline + CHILD_CLEARTID futex + per-arch TCB/CLONE_SETTLS) + self/exit/detach/equal. G11b=`pthread/mutex.rs` (40B `pthread_mutex_t`, 3-state futex lock, NORMAL/RECURSIVE/ERRORCHECK + mutexattr). G11c=`cond.rs` (48B, seq-futex condvar + condattr clock), `rwlock.rs` (56B, state-word futex rwlock), `once.rs` (4B, 3-state futex once), `key.rs` (TLS keys: global slot table + per-thread values in the TCB) + minimal main-thread TCB (`init_main_tcb`, arch_prctl/tpidr) so self/keys work pre-create. | loom + pthread smokes |
 | G12 | `ldso/` rtld + IRELATIVE + sym-versioning + dlopen | dynamic `hello` runs; `dlopen` smoke |
 | G13 | `net/` sockets + inet + getaddrinfo + stub resolver | tcp/inet6 smokes |
 | G14 | `nss/` passwd/group/shadow + nsswitch | login_sim + pamtest |
