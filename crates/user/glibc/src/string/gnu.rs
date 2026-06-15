@@ -34,6 +34,22 @@ pub(crate) unsafe fn memrchr_impl(s: *const u8, c: i32, n: usize) -> *mut u8 {
         core::ptr::null_mut()
     }
 }
+/// # C: void *memccpy(void *dst, const void *src, int c, size_t n) — copy until c
+pub(crate) unsafe fn memccpy_impl(dst: *mut u8, src: *const u8, c: i32, n: usize) -> *mut u8 {
+    // SAFETY: dst and src are valid for n bytes; copy bytes one at a time,
+    // stopping right after the first byte equal to c is written. Returns the
+    // address just past that byte in dst, or null if c is absent in src[..n].
+    unsafe {
+        let cb = c as u8;
+        let mut i = 0;
+        while i < n {
+            *dst.add(i) = *src.add(i);
+            if *src.add(i) == cb { return dst.add(i + 1); }
+            i += 1;
+        }
+        core::ptr::null_mut()
+    }
+}
 /// # C: void *memmem(haystack, hl, needle, nl) — first needle in haystack
 pub(crate) unsafe fn memmem_impl(h: *const u8, hl: usize, ne: *const u8, nl: usize) -> *mut u8 {
     // SAFETY: h is readable for hl bytes and ne for nl bytes; substring scan.
@@ -63,6 +79,9 @@ mod imp {
     // # C: void *memrchr(const void *, int, size_t)
     // SAFETY: s is readable for n bytes; scans backward for the byte c.
     #[no_mangle] pub unsafe extern "C" fn memrchr(s: *const u8, c: i32, n: usize) -> *mut u8 { unsafe { memrchr_impl(s, c, n) } }
+    // # C: void *memccpy(void *, const void *, int, size_t)
+    // SAFETY: dst and src are valid for n bytes; copies until byte c is written.
+    #[no_mangle] pub unsafe extern "C" fn memccpy(d: *mut u8, s: *const u8, c: i32, n: usize) -> *mut u8 { unsafe { memccpy_impl(d, s, c, n) } }
     // # C: void *memmem(const void *, size_t, const void *, size_t)
     // SAFETY: h is readable for hl bytes and ne for nl bytes (substring search).
     #[no_mangle] pub unsafe extern "C" fn memmem(h: *const u8, hl: usize, ne: *const u8, nl: usize) -> *mut u8 { unsafe { memmem_impl(h, hl, ne, nl) } }
@@ -103,6 +122,11 @@ mod tests {
             assert_eq!(memrchr_impl(b"a/b/c".as_ptr(), b'/' as i32, 5) as usize - b"a/b/c".as_ptr() as usize, 3);
             assert_eq!(memmem_impl(b"hello".as_ptr(), 5, b"ll".as_ptr(), 2) as usize - b"hello".as_ptr() as usize, 2);
             assert!(memmem_impl(b"hello".as_ptr(), 5, b"zz".as_ptr(), 2).is_null());
+            let mut m = [0u8; 8];
+            let r = memccpy_impl(m.as_mut_ptr(), b"ab:cd".as_ptr(), b':' as i32, 8);
+            assert_eq!(r as usize - m.as_ptr() as usize, 3); // just past ':'
+            assert_eq!(&m[..3], b"ab:");
+            assert!(memccpy_impl(m.as_mut_ptr(), b"abcd".as_ptr(), b':' as i32, 4).is_null());
         }
     }
 }
