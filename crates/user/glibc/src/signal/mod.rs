@@ -5,3 +5,5 @@ pub mod sigset;
 pub mod sigaction;
 #[cfg(feature = "freestanding")]
 pub mod sig;
+#[cfg(feature = "freestanding")]
+pub mod desc;
