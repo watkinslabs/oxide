@@ -2,7 +2,7 @@
 // (buffering is a G6 follow-up). Read-side (fread/fgets/getline) + fopen
 // land next.
 #![cfg(feature = "freestanding")]
-use super::file::{fd_of, stdout_ptr, FILE};
+use super::file::{fd_of, mark_write, stdout_ptr, FILE};
 use super::memstream::stream_write;
 use crate::posix::io;
 use crate::string::len::strlen_impl;
@@ -12,6 +12,9 @@ use crate::string::len::strlen_impl;
 pub unsafe extern "C" fn fwrite(ptr: *const u8, size: usize, nmemb: usize, f: *mut FILE) -> usize {
     let total = size.saturating_mul(nmemb);
     if total == 0 { return 0; }
+    // SAFETY: ptr is valid for `total` bytes per the C contract; f is a stream;
+    // record write direction for the GNU __fwriting introspection.
+    unsafe { mark_write(f); }
     // SAFETY: ptr is valid for `total` bytes per the C contract; f is a stream.
     let w = unsafe { stream_write(f, ptr, total) };
     if w <= 0 { 0 } else { (w as usize) / size.max(1) }
@@ -43,8 +46,9 @@ pub unsafe extern "C" fn puts(s: *const u8) -> i32 {
 // # C: int fputc(int c, FILE *f)
 #[no_mangle]
 pub unsafe extern "C" fn fputc(c: i32, f: *mut FILE) -> i32 {
-    // SAFETY: f is a stream; write one byte from the stack.
+    // SAFETY: f is a stream; write one byte from the stack and mark direction.
     unsafe {
+        mark_write(f);
         let b = c as u8;
         if stream_write(f, &b as *const u8, 1) == 1 { c & 0xff } else { -1 }
     }
