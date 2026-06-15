@@ -3,13 +3,13 @@
 // ungetc via the FILE pushback slot (file.rs).
 #![cfg(feature = "freestanding")]
 use super::cookie::cookie_close;
-use super::file::{self, alloc_file, fd_of, free_file, is_cookie, is_mem, is_std, set_eof, set_unget, stdin_ptr, take_unget, FILE};
+use super::file::{self, alloc_file, fd_of, free_file, is_cookie, is_mem, is_std, mark_read, set_eof, set_unget, stdin_ptr, take_unget, FILE};
 use super::memstream::{mem_close, stream_read, stream_seek, stream_tell};
 use crate::internal::errno;
 use crate::malloc::heap;
 use crate::posix::io;
 
-unsafe fn mode_flags(mode: *const u8) -> Option<i32> {
+pub(crate) unsafe fn mode_flags(mode: *const u8) -> Option<i32> {
     // SAFETY: mode is a NUL-terminated mode string ("r"/"w"/"a"[+][b]).
     unsafe {
         let mut plus = false;
@@ -24,10 +24,23 @@ unsafe fn mode_flags(mode: *const u8) -> Option<i32> {
     }
 }
 
+// Initial _flags access bits from a mode string: NO_WRITES for "r" (no '+'),
+// NO_READS for "w"/"a" (no '+'); "+" clears both (read+write).
+pub(crate) unsafe fn mode_initflags(mode: *const u8) -> i32 {
+    // SAFETY: mode is a NUL-terminated open-mode string.
+    unsafe {
+        let mut plus = false;
+        let mut i = 0; while *mode.add(i) != 0 { if *mode.add(i) == b'+' { plus = true; } i += 1; }
+        if plus { return 0; }
+        match *mode { b'r' => file::IO_NO_WRITES, b'w' | b'a' => file::IO_NO_READS, _ => 0 }
+    }
+}
+
 // shared one-byte read honouring the pushback slot.
 pub(crate) unsafe fn getc_raw(f: *mut FILE) -> i32 {
     // SAFETY: f is a valid stream; reads pushback then one byte from its fd.
     unsafe {
+        mark_read(f);
         if let Some(c) = take_unget(f) { return c as i32; }
         let mut b = 0u8;
         if stream_read(f, &mut b as *mut u8, 1) == 1 { b as i32 } else { set_eof(f); -1 }
@@ -42,16 +55,17 @@ pub unsafe extern "C" fn fopen(path: *const u8, mode: *const u8) -> *mut FILE {
         let flags = match mode_flags(mode) { Some(f) => f, None => { errno::set(22); return core::ptr::null_mut(); } };
         let fd = io::open(path, flags, 0o666);
         if fd < 0 { return core::ptr::null_mut(); }
-        let f = alloc_file(fd, 0);
+        let f = alloc_file(fd, mode_initflags(mode));
         if f.is_null() { io::close(fd); errno::set(12); }
         f
     }
 }
 // # C: FILE *fdopen(int fd, const char *mode)
 #[no_mangle]
-pub unsafe extern "C" fn fdopen(fd: i32, _mode: *const u8) -> *mut FILE {
-    // SAFETY: fd is an open descriptor the caller hands to the stream.
-    unsafe { alloc_file(fd, 0) }
+pub unsafe extern "C" fn fdopen(fd: i32, mode: *const u8) -> *mut FILE {
+    // SAFETY: fd is an open descriptor the caller hands to the stream; record
+    // the mode's access bits so the GNU introspection can report direction.
+    unsafe { let fl = if mode.is_null() { 0 } else { mode_initflags(mode) }; alloc_file(fd, fl) }
 }
 // # C: FILE *freopen(const char *path, const char *mode, FILE *f)
 #[no_mangle]
@@ -65,7 +79,7 @@ pub unsafe extern "C" fn freopen(path: *const u8, mode: *const u8, f: *mut FILE)
         let old = fd_of(f);
         if old >= 0 { io::close(old); }
         (*f)._fileno = fd;
-        (*f)._flags = 0;
+        (*f)._flags = mode_initflags(mode);
         f
     }
 }
