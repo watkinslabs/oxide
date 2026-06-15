@@ -9,13 +9,13 @@ integration** (user directive). Driver = the differential conformance harness.
 ## Validation engine — `xtask glibc-test`
 Each `userspace/glibc_conformance/*.c` is compiled once and run BOTH against
 host glibc (oracle) and our sysroot (Scrt1.o + libc.so.6 via our ld-linux on
-the host kernel); stdout+exit diffed. **76/76 programs byte-exact** on
+the host kernel); stdout+exit diffed. **82/82 programs byte-exact** on
 x86_64+aarch64. This is the verify-left engine — keep adding programs.
 
 ## Progress tracker (per user request)
 - `glibc_done.md` — functions our libc.so.6 exports (authoritative: `nm -D`),
-  harness-validated. **477 / 1296** of the upstream `glibc.md` list.
-- `glibc.md` — remaining TODO (~827; ~160 are complex/long-double variants
+  harness-validated. **510 / 1296** of the upstream `glibc.md` list.
+- `glibc.md` — remaining TODO (~806; ~160 are complex/long-double variants
   we defer; the rest are specialized clusters, see below).
 - Refresh after adding exports: rebuild sysroot, `nm -D --defined-only
   libc.so.6 | awk '{print $NF}'`, re-split the two files by membership.
@@ -31,6 +31,10 @@ x86_64+aarch64. This is the verify-left engine — keep adding programs.
 - **regex** (`crates/user/glibc/src/regex/`) — ERE+BRE, regcomp/regexec/
   regfree/regerror, capture spans + error codes byte-exact (Russ Cox VM).
 - **FILE backing abstraction** → fmemopen / open_memstream / fopencookie.
+- **erf/erfc** (series+CF) and **tgamma/lgamma** (Lanczos g=7) — transcendentals
+  to ~14-15 sig figs, conformance-diffed at %.12-13g. **gettext** (C-locale
+  passthrough), **mntent** (fstab parse, tested via fmemopen), **ftw/nftw**
+  (temp-tree walk), **a64l/l64a**, alphasort/versionsort.
 - LFS `*64` aliases + pread/pwrite/creat; `<argz.h>` vectors; wide-string
   family; `<search.h>` (tsearch/hsearch/lsearch); strverscmp; strsignal.
 
