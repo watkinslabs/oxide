@@ -32,6 +32,9 @@ int   mkdir(const char *path, unsigned mode);
 int   rmdir(const char *path);
 char *getcwd(char *buf, unsigned long size);
 int   stat(const char *path, void *buf);
+void *opendir(const char *name);
+void *readdir(void *d);
+int   closedir(void *d);
 
 static void on_exit_handler(void) {
     static const char m[] = "atexit-ok\n";
@@ -108,6 +111,19 @@ int main(int argc, char **argv, char **envp) {
     long ssize = *(long *)(stbuf + 48);          /* st_size @48 */
     if (ssize <= 0) return 29;
     if ((smode & 0170000) != 0100000) return 30; /* S_ISREG */
+
+    /* dirent: opendir(".")/readdir lists entries incl "." */
+    void *dp = opendir(".");
+    if (!dp) return 31;
+    int found_dot = 0, dcount = 0;
+    void *de;
+    while ((de = readdir(dp))) {
+        char *nm = (char *)de + 19; /* d_name @19 */
+        if (nm[0] == '.' && nm[1] == 0) found_dot = 1;
+        if (++dcount > 100000) break;
+    }
+    closedir(dp);
+    if (!found_dot || dcount < 2) return 32;
 
     /* env: setenv then getenv round-trip */
     if (setenv("OXIDE_G7C", "yes", 1) != 0) return 16;
