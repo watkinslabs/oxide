@@ -53,13 +53,17 @@ Specialized, larger commitments — pick per integration need:
 new warns); `cargo run -q -p spec-lint -- all | grep -i glibc` empty. Branch
 `P28-NN-*` (last merged P28-138), `SKIP_SMOKE=1` push, PR, merge, delete.
 
-## KNOWN PRE-EXISTING RED CI (NOT glibc — main HEAD already fails these)
-1. `test --hosted`: `crates/kernel/vtconsole/src/tests.rs:217` — `&buf[..got]`
-   where `got` is `ReadOutcome` not `usize`; vtconsole lib-test won't compile.
-2. `spec-lint`: 6 findings — `ldso/src/{bump,link,search}.rs` (missing `# C:`,
-   `static mut`) + `tools/xtask/src/rootfs.rs` (1059 lines > 1000 cap).
-These gate the PR CI badge but are unrelated to libc; merges proceed because
-the repo already operates with main red. Fixing them is separate infra work.
+## CI is GREEN (B127 / PR #1984 cleared the pre-existing red)
+Fixed the 5 hosted-test/spec-lint breakages that were red on main (all
+unrelated to the new libc clusters, several masked behind the first compile
+error): vtconsole test used `tty.read()` (now `ReadOutcome`) as a usize;
+spec-lint `code/static-mut` false-positive on `&'static mut T` (ldso); 3
+ldso pub fns missing `# C:`; `rootfs.rs` over the 1000-line cap (split to
+`rootfs_etc::write_accounts_and_markers`); crt1 `_start` global_asm! emitted
+under cfg(test) → duplicate-symbol; glibc `fnmatch` diverged from glibc on
+POSIX `[.coll.]`/`[:class:]`/`[=equiv=]` sub-brackets (proptest `[![.]`) —
+now parses all three + 12 char classes, proptest charset broadened.
+All 6 PR checks pass (build×4, spec-lint, test --hosted).
 
 ## Next task (first command)
 Pick next cluster (recommend aio_* or argp_*+wordexp). Add `t_<x>.c`, implement,
