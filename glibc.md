@@ -1,7 +1,9 @@
 # glibc — remaining (TODO)
 
-Not yet in oxide-libc; complex/long-double deferred.
+complex/long-double deferred.
 
+# glibc — implemented (oxide-libc)
+# glibc — remaining (TODO)
 # glibc — implemented (oxide-libc)
 # glibc — remaining (TODO)
 Not yet in oxide-libc; moves to glibc_done.md when done (complex/long-double deferred).
@@ -273,17 +275,9 @@ int setpayloadl (long double *x, long double payload)
 int setpayloadsig (double *x, double payload)
 int setpayloadsigf (float *x, float payload)
 int setpayloadsigl (long double *x, long double payload)
-error_t argz_create (char *const argv[], char **argz, size_t *argz_len)
-error_t argz_create_sep (const char *string, int sep, char **argz, size_t *argz_len)
-size_t argz_count (const char *argz, size_t argz_len)
-void argz_extract (const char *argz, size_t argz_len, char **argv)
-void argz_stringify (char *argz, size_t len, int sep)
-error_t argz_add (char **argz, size_t *argz_len, const char *str)
 error_t argz_add_sep (char **argz, size_t *argz_len, const char *str, int delim)
-error_t argz_append (char **argz, size_t *argz_len, const char *buf, size_t buf_len)
 void argz_delete (char **argz, size_t *argz_len, char *entry)
 error_t argz_insert (char **argz, size_t *argz_len, char *before, const char *entry)
-char * argz_next (const char *argz, size_t argz_len, const char *entry)
 error_t argz_replace (char&nbsp;**argz,&nbsp;<span class="nolinebreak">size_t</span>&nbsp;*<span class="nolinebreak">argz_len</span><!-- /@w -->, const&nbsp;char&nbsp;*str,&nbsp;const&nbsp;char&nbsp;*with<!-- /@w -->, unsigned&nbsp;*<span class="nolinebreak">replace_count</span><!-- /@w -->)
 int vwprintf (const wchar_t *template, va_list ap)
 int vfwprintf (FILE *stream, const wchar_t *template, va_list ap)

@@ -17,3 +17,5 @@ pub mod libgen;
 pub mod dirent;
 #[cfg(feature = "freestanding")]
 pub mod glob;
+#[cfg(feature = "freestanding")]
+pub mod argz;
