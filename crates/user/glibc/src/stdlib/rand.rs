@@ -89,12 +89,8 @@ mod exports {
         // SAFETY: seed is a valid in/out pointer per the C contract.
         unsafe { rand_r_impl(&mut *seed) }
     }
-    // # C: long random(void) — same TYPE_3 stream as rand
-    #[no_mangle]
-    pub extern "C" fn random() -> i64 { with(|rng| rng.next_i32() as i64) }
-    // # C: void srandom(unsigned seed)
-    #[no_mangle]
-    pub extern "C" fn srandom(seed: u32) { with(|rng| rng.srandom(seed)); }
+    // random/srandom + initstate/setstate live in stdlib::rand48 (full glibc
+    // TYPE_3 state machine over struct random_data).
 }
 
 #[cfg(test)]
