@@ -124,6 +124,27 @@ pub mod x86_64 {
     pub const PIPE2: usize = 293;
     pub const PRLIMIT64: usize = 302;
     pub const GETRANDOM: usize = 318;
+    // fs/mem/vector cluster (syscall_64.tbl)
+    pub const MOUNT: usize = 165;
+    pub const UMOUNT2: usize = 166;
+    pub const SWAPON: usize = 167;
+    pub const SWAPOFF: usize = 168;
+    pub const SYNC: usize = 162;
+    pub const SYNCFS: usize = 306;
+    pub const MSYNC: usize = 26;
+    pub const MLOCK: usize = 149;
+    pub const MUNLOCK: usize = 150;
+    pub const MLOCKALL: usize = 151;
+    pub const MUNLOCKALL: usize = 152;
+    pub const MKNOD: usize = 133;
+    pub const MKNODAT: usize = 259;
+    pub const FALLOCATE: usize = 285;
+    pub const READV: usize = 19;
+    pub const WRITEV: usize = 20;
+    pub const PREADV: usize = 295;
+    pub const PWRITEV: usize = 296;
+    pub const UTIMENSAT: usize = 280;
+    pub const FUTIMESAT: usize = 261;
     // sched + resource (syscall_64.tbl)
     pub const SCHED_SETPARAM: usize = 142;
     pub const SCHED_GETPARAM: usize = 143;
@@ -253,6 +274,26 @@ pub mod aarch64 {
     pub const WAIT4: usize = 260;
     pub const PRLIMIT64: usize = 261;
     pub const GETRANDOM: usize = 278;
+    // fs/mem/vector cluster (asm-generic/unistd.h). No plain mknod /
+    // futimesat on asm-generic — compose from mknodat / utimensat.
+    pub const MOUNT: usize = 40;
+    pub const UMOUNT2: usize = 39;
+    pub const SWAPON: usize = 224;
+    pub const SWAPOFF: usize = 225;
+    pub const SYNC: usize = 81;
+    pub const SYNCFS: usize = 267;
+    pub const MSYNC: usize = 227;
+    pub const MLOCK: usize = 228;
+    pub const MUNLOCK: usize = 229;
+    pub const MLOCKALL: usize = 230;
+    pub const MUNLOCKALL: usize = 231;
+    pub const MKNODAT: usize = 33;
+    pub const FALLOCATE: usize = 47;
+    pub const READV: usize = 65;
+    pub const WRITEV: usize = 66;
+    pub const PREADV: usize = 69;
+    pub const PWRITEV: usize = 70;
+    pub const UTIMENSAT: usize = 88;
     // sched + resource (asm-generic/unistd.h)
     pub const SCHED_SETPARAM: usize = 118;
     pub const SCHED_SETSCHEDULER: usize = 119;
