@@ -26,6 +26,7 @@ pub const EAI_SYSTEM: i32 = -11;
 
 /// Parse a service string to a port. Numeric ("80") or a small well-known
 /// table (DNS resolution of /etc/services is a follow-up). None on bad.
+/// # C: in_port_t parse_port(const char *service) — getservbyname helper
 pub(crate) fn parse_port(service: &[u8]) -> Option<u16> {
     if service.is_empty() { return Some(0); }
     if service.iter().all(|b| b.is_ascii_digit()) {

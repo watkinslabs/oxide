@@ -135,8 +135,11 @@ pub(crate) fn tan(x: f64) -> f64 {
 /// # C: void sincos(double, double*, double*)
 pub(crate) fn sincos(x: f64) -> (f64, f64) { (sin(x), cos(x)) }
 
+/// # C: float sinf(float x)
 pub(crate) fn sinf(x: f32) -> f32 { sin(x as f64) as f32 }
+/// # C: float cosf(float x)
 pub(crate) fn cosf(x: f32) -> f32 { cos(x as f64) as f32 }
+/// # C: float tanf(float x)
 pub(crate) fn tanf(x: f32) -> f32 { tan(x as f64) as f32 }
 
 #[cfg(feature = "freestanding")]
@@ -171,7 +174,7 @@ mod tests {
     proptest! {
         #[test]
         fn trig_matches_host(x in -1e6f64..1e6) {
-            // SAFETY: host libm, scalar in/out.
+            // SAFETY: host libm sin/cos/tan extern calls, scalar f64 in and out, no pointers.
             let (hs, hc, ht) = unsafe { (sin(x), cos(x), tan(x)) };
             prop_assert!(ulp(super::sin(x), hs) <= 2, "sin({})", x);
             prop_assert!(ulp(super::cos(x), hc) <= 2, "cos({})", x);

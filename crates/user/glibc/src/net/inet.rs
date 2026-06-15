@@ -16,6 +16,7 @@ pub(crate) fn bswap32(x: u32) -> u32 { x.swap_bytes() }
 
 /// Parse an IPv4 dotted-quad into 4 network-order bytes. Strict like glibc:
 /// exactly 4 decimal octets 0..=255, no leading zeros. Returns false on bad.
+/// # C: int inet_pton(AF_INET, const char *src, void *dst)
 pub(crate) fn pton4(src: &[u8], out: &mut [u8; 4]) -> bool {
     let mut parts = 0usize;
     let mut i = 0usize;
@@ -41,6 +42,7 @@ pub(crate) fn pton4(src: &[u8], out: &mut [u8; 4]) -> bool {
 }
 
 /// Format 4 network-order bytes as a dotted-quad into `out`; returns the len.
+/// # C: const char *inet_ntop(AF_INET, const void *src, char *dst, socklen_t)
 pub(crate) fn ntop4(addr: &[u8; 4], out: &mut [u8]) -> Option<usize> {
     let mut n = 0;
     for (k, &b) in addr.iter().enumerate() {
@@ -60,6 +62,7 @@ fn write_dec(mut v: u32, out: &mut [u8]) -> usize {
 
 /// Parse an IPv6 text address into 16 network-order bytes (supports "::"
 /// zero compression and a trailing embedded IPv4). Returns false on bad.
+/// # C: int inet_pton(AF_INET6, const char *src, void *dst)
 pub(crate) fn pton6(src: &[u8], out: &mut [u8; 16]) -> bool {
     *out = [0; 16];
     let mut groups = [0u16; 8];
@@ -124,6 +127,7 @@ fn hexval(c: u8) -> u8 {
 
 /// Format 16 network-order bytes as canonical IPv6 text (RFC5952: lowercase,
 /// no leading zeros, longest zero-run ≥2 compressed to "::"). Returns len.
+/// # C: const char *inet_ntop(AF_INET6, const void *src, char *dst, socklen_t)
 pub(crate) fn ntop6(addr: &[u8; 16], out: &mut [u8]) -> Option<usize> {
     let mut g = [0u16; 8];
     for (gk, c) in g.iter_mut().zip(addr.chunks_exact(2)) { *gk = ((c[0] as u16) << 8) | c[1] as u16; }

@@ -160,9 +160,13 @@ pub(crate) fn atan2(y: f64, x: f64) -> f64 {
     }
 }
 
+/// # C: float asinf(float x)
 pub(crate) fn asinf(x: f32) -> f32 { asin(x as f64) as f32 }
+/// # C: float acosf(float x)
 pub(crate) fn acosf(x: f32) -> f32 { acos(x as f64) as f32 }
+/// # C: float atanf(float x)
 pub(crate) fn atanf(x: f32) -> f32 { atan(x as f64) as f32 }
+/// # C: float atan2f(float y, float x)
 pub(crate) fn atan2f(y: f32, x: f32) -> f32 { atan2(y as f64, x as f64) as f32 }
 
 #[cfg(feature = "freestanding")]
@@ -193,18 +197,20 @@ mod tests {
     proptest! {
         #[test]
         fn asin_acos_match_host(x in -1.0f64..1.0) {
-            // SAFETY: host libm, scalar in/out.
+            // SAFETY: host libm asin/acos extern calls, scalar f64 in and out, no pointers.
             let (ha, hc) = unsafe { (asin(x), acos(x)) };
             prop_assert!(ulp(super::asin(x), ha) <= 2, "asin({})", x);
             prop_assert!(ulp(super::acos(x), hc) <= 2, "acos({})", x);
         }
         #[test]
         fn atan_matches_host(x in -1e3f64..1e3) {
+            // SAFETY: host libm atan extern call, scalar f64 in and out, no pointers.
             let h = unsafe { atan(x) };
             prop_assert!(ulp(super::atan(x), h) <= 2, "atan({})", x);
         }
         #[test]
         fn atan2_matches_host(y in -1e3f64..1e3, x in -1e3f64..1e3) {
+            // SAFETY: host libm atan2 extern call, scalar f64 args and result, no pointers.
             let h = unsafe { atan2(y, x) };
             prop_assert!(ulp(super::atan2(y, x), h) <= 2, "atan2({},{})", y, x);
         }
