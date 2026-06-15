@@ -24,3 +24,9 @@ pub mod unlocked;
 pub mod wide;
 #[cfg(feature = "freestanding")]
 pub mod wide_fmt;
+#[cfg(feature = "freestanding")]
+pub mod lfs;
+#[cfg(feature = "freestanding")]
+pub mod bufio;
+#[cfg(feature = "freestanding")]
+pub mod introspect;
