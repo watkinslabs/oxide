@@ -20,3 +20,5 @@ pub mod a64l;
 pub mod fmtmsg;
 #[cfg(feature = "freestanding")]
 pub mod rand48;
+#[cfg(feature = "freestanding")]
+pub mod fcvt;
