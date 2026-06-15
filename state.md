@@ -8,7 +8,7 @@ Building **oxide-libc**: our own glibc-ABI C library in Rust, replacing musl
 **Don't stop until ladder complete or hard blocker.**
 
 ## Position
-G0–G16 COMPLETE. Done:
+G0–G17 COMPLETE. Done:
 - libc core G0–G11 (string/stdlib/stdio/malloc/time/signal/pthread).
 - G12 dynamic linker (a–h): self-reloc, lib-search, bump alloc, symbol +
   GNU/sysv hash, symbol versioning, loader, relocate, static/IE TLS, dlopen.
@@ -31,23 +31,34 @@ G0–G16 COMPLETE. Done:
     (#1902)
 - Cleared all 65 spec-lint debt entries in math/net/pthread (#1898) — glibc
   spec-lint EMPTY and kept that way each PR.
+- G17 group (all merged):
+  - G17a crypt: $5$ sha256crypt / $6$ sha512crypt (pure cores in workspace
+    `crypt` crate, aliased libcrypt; Drepper-vector-verified) + crypt/crypt_r
+    (#1904)
+  - G17b rt: clock_settime, timer_*, sem_* (futex; pure value state machine),
+    mq_*; struct ABI checks (#1905)
+  - G17c termios: 60B struct termios + pure cfmakeraw/cf* speed + tc* ioctl
+    shims (#1906)
+  - G17d setjmp/longjmp/sigsetjmp/siglongjmp: per-arch global_asm (x86_64
+    runtime-validated via the static smoke; aarch64 assembles); jmp_buf ABI
+    (#1907)
 
-`xtask glibc --check` = exit0, 113 glibc tests.
+`xtask glibc --check` = exit0, 127 glibc tests.
 
-## NEXT: G17 — crypt + rt + termios + setjmp
-Small modules per family under crates/user/glibc:
-- crypt: SHA-256-crypt ($5$) and SHA-512-crypt ($6$) (glibc algorithm:
-  base64 1000-round scheme) + crypt/crypt_r; pure transform hosted-tested vs
-  known $6$ vectors / host crypt.
-- rt: clock_nanosleep/clock_settime, timer_create/settime/gettime/delete,
-  sem_init/wait/post/trywait/timedwait/getvalue/destroy (futex-backed),
-  mq_open/send/receive/… , aio if scoped.
-- termios: tcgetattr/tcsetattr/cfgetispeed/cfsetispeed/… (ioctl TCGETS/TCSETS),
-  termios struct ABI-verified vs libc.
-- setjmp/longjmp + sigsetjmp/siglongjmp: per-arch asm (x86_64 + aarch64) saving
-  callee-saved regs + sp + return addr; jmp_buf size ABI-verified.
-Then G18 folded-lib stubs (libpthread/dl/rt/m/util .so) + ld.so.cache builder +
-sysroot publish, G19 migrate userspace musl→glibc + retire musl.
+## NEXT: G18 — folded-lib stubs + ld.so.cache + sysroot
+All symbols live in libc.so.6 (the folded-libc model). G18 ships the linker-
+name compatibility shims real binaries NEED in their DT_NEEDED:
+- Emit empty shared objects libpthread.so.0, libdl.so.2, librt.so.1,
+  libm.so.6, libutil.so.1, libresolv.so.2 — each a tiny .so with DT_SONAME set
+  + DT_NEEDED on libc.so.6 (no symbols of their own). Build via xtask (rust-lld,
+  both arches), like the existing ldso/glibc cdylib builds in tools/xtask.
+- ld.so.cache builder: write /etc/ld.so.cache in the glibc `new format`
+  (CACHEMAGIC_NEW "glibc-ld.so.cache1.1", sorted entries) so the rtld's
+  cache.rs (already a reader) resolves names → paths. Pure encoder hosted-
+  tested by round-tripping through cache.rs's parser.
+- Publish a sysroot: lib/ld-linux-*.so + libc.so.6 + the folded stubs +
+  ld.so.cache + headers, laid out so a vendor cross-build can link against it.
+Then G19 migrate userspace musl→glibc + retire musl (the last rung).
 
 ## How it's built/verified (per sub-phase)
 - C-ABI exports `#[cfg(feature="freestanding")] #[no_mangle] pub unsafe extern
@@ -69,13 +80,14 @@ sysroot publish, G19 migrate userspace musl→glibc + retire musl.
   smoke-hook path).
 
 ## Next task (first command)
-Continue the loop at **G17 — crypt/rt/termios/setjmp** (see NEXT above). Branch
-`P28-63-glibc-g17a-*` (pick the first family, e.g. crypt).
+Continue the loop at **G18 — folded-lib stubs + ld.so.cache + sysroot** (see
+NEXT above). Branch `P28-67-glibc-g18a-*`. Likely xtask-heavy (emit .so shims +
+cache encoder), less per-fn glibc code.
 
 ## Notes
 - musl path stays buildable until G19. 59 is DRAFT — edit directly (no R-block).
 - P28 prefix is the loop's ad-hoc glibc sequence; not tracked in
-  metadata/index.md. Last used P28-62. C-type counter next=91. D-type next=98.
+  metadata/index.md. Last used P28-66. C-type counter next=91. D-type next=99.
 - Test crate: glibc is `#![no_std]`, std is test-gated (no prelude) — in tests
   `use alloc::vec::Vec;`; derive Debug on enums asserted with assert_eq!.
 - Charset-name C-string clippy fights c_char signedness across arches — use
