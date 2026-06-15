@@ -8,6 +8,13 @@ use crate::internal::nr;
 
 const ENOMEM: i32 = 12;
 
+// mmap prot/flags (same numeric values on x86_64 and aarch64).
+pub const PROT_READ: i32 = 0x1;
+pub const PROT_WRITE: i32 = 0x2;
+pub const MAP_PRIVATE: i32 = 0x2;
+pub const MAP_ANONYMOUS: i32 = 0x20;
+pub const MAP_FAILED: *mut u8 = usize::MAX as *mut u8;
+
 // # C: void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off)
 #[no_mangle]
 pub unsafe extern "C" fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8 {
