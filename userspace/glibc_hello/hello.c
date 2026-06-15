@@ -324,6 +324,15 @@ int main(int argc, char **argv, char **envp) {
     if (!pw) return 70;
     if (strcmp(pw->pw_name, "root") != 0) return 71;
 
+    /* setjmp/longjmp: longjmp(env,5) makes setjmp "return" 5 the 2nd time */
+    typedef long jmp_buf[32]; /* >= glibc 200-byte __jmp_buf_tag */
+    int setjmp(jmp_buf) __attribute__((returns_twice));
+    void longjmp(jmp_buf, int) __attribute__((noreturn));
+    jmp_buf jb;
+    volatile int sj = setjmp(jb);
+    if (sj == 0) longjmp(jb, 5);
+    if (sj != 5) return 72;
+
     /* env: setenv then getenv round-trip */
     if (setenv("OXIDE_G7C", "yes", 1) != 0) return 16;
     char *ev = getenv("OXIDE_G7C");
