@@ -40,6 +40,22 @@ pub(crate) fn fmax(a: f64, b: f64) -> f64 { if isnan(a) { b } else if isnan(b) |
 /// # C: double fdim(double, double) — positive difference max(x-y, 0)
 pub(crate) fn fdim(a: f64, b: f64) -> f64 { if isnan(a) || isnan(b) { f64::NAN } else if a > b { a - b } else { 0.0 } }
 
+// ---- magnitude max/min (C23: compare |a| vs |b|, ties → fmax/fmin) ----
+/// # C: double fmaxmag(double, double) — arg with larger |x|; ties → fmax
+pub(crate) fn fmaxmag(a: f64, b: f64) -> f64 {
+    if isnan(a) { return b; }
+    if isnan(b) { return a; }
+    let (ma, mb) = (fabs(a), fabs(b));
+    if ma > mb { a } else if mb > ma { b } else { fmax(a, b) }
+}
+/// # C: double fminmag(double, double) — arg with smaller |x|; ties → fmin
+pub(crate) fn fminmag(a: f64, b: f64) -> f64 {
+    if isnan(a) { return b; }
+    if isnan(b) { return a; }
+    let (ma, mb) = (fabs(a), fabs(b));
+    if ma < mb { a } else if mb < ma { b } else { fmin(a, b) }
+}
+
 /// # C: double nextafter(double, double) — next representable double toward y
 pub(crate) fn nextafter(x: f64, y: f64) -> f64 {
     if isnan(x) || isnan(y) { return f64::NAN; }
@@ -272,6 +288,22 @@ mod exports {
     #[no_mangle] pub extern "C" fn fmax(a: f64, b: f64) -> f64 { super::fmax(a, b) }
     #[no_mangle] pub extern "C" fn fdim(a: f64, b: f64) -> f64 { super::fdim(a, b) }
     #[no_mangle] pub extern "C" fn fdimf(a: f32, b: f32) -> f32 { super::fdim(a as f64, b as f64) as f32 }
+    // # C: double fmaxmag(double,double); double fminmag(double,double) (C23)
+    #[no_mangle] pub extern "C" fn fmaxmag(a: f64, b: f64) -> f64 { super::fmaxmag(a, b) }
+    #[no_mangle] pub extern "C" fn fminmag(a: f64, b: f64) -> f64 { super::fminmag(a, b) }
+    // # C: float fmaxmagf(float,float); float fminmagf(float,float)
+    #[no_mangle] pub extern "C" fn fmaxmagf(a: f32, b: f32) -> f32 {
+        if a.is_nan() { return b; }
+        if b.is_nan() { return a; }
+        let (ma, mb) = (a.abs(), b.abs());
+        if ma > mb { a } else if mb > ma { b } else { super::fmax(a as f64, b as f64) as f32 }
+    }
+    #[no_mangle] pub extern "C" fn fminmagf(a: f32, b: f32) -> f32 {
+        if a.is_nan() { return b; }
+        if b.is_nan() { return a; }
+        let (ma, mb) = (a.abs(), b.abs());
+        if ma < mb { a } else if mb < ma { b } else { super::fmin(a as f64, b as f64) as f32 }
+    }
     #[no_mangle] pub extern "C" fn nextafter(x: f64, y: f64) -> f64 { super::nextafter(x, y) }
     #[no_mangle] pub extern "C" fn remainder(x: f64, y: f64) -> f64 { super::remainder(x, y) }
     // # C: double remquo(double, double, int *quo)
