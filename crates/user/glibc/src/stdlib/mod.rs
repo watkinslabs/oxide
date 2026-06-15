@@ -10,3 +10,5 @@ pub mod rand;
 pub mod arith;
 #[cfg(feature = "freestanding")]
 pub mod realpath;
+#[cfg(feature = "freestanding")]
+pub mod mkstemp;
