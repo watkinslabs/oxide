@@ -73,6 +73,12 @@ wint!(/// # C: unsigned long long __isoc23_wcstoull(...)
 wint!(/// # C: uintmax_t __isoc23_wcstoumax(...)
       __isoc23_wcstoumax, strtoul_impl, u64);
 
+// BSD aliases (quad_t/u_quad_t == long long on LP64).
+wint!(/// # C: long long wcstoq(const wchar_t *, wchar_t **, int)
+      wcstoq, strtol_impl, i64);
+wint!(/// # C: unsigned long long wcstouq(const wchar_t *, wchar_t **, int)
+      wcstouq, strtoul_impl, u64);
+
 // # C: double wcstod(const wchar_t *, wchar_t **)
 #[no_mangle]
 pub unsafe extern "C" fn wcstod(wcs: *const i32, endptr: *mut *mut i32) -> f64 {

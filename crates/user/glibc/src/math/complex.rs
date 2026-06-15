@@ -38,6 +38,11 @@ fn imp_carg(z: __cdouble) -> f64 { atan2(z.im, z.re) }
 fn imp_cexp(z: __cdouble) -> __cdouble { let e = exp(z.re); cd(e * cos(z.im), e * sin(z.im)) }
 /// # C: double _Complex imp_clog(double _Complex) — ln|z| + i·arg z (principal)
 fn imp_clog(z: __cdouble) -> __cdouble { cd(log(imp_cabs(z)), atan2(z.im, z.re)) }
+/// # C: double _Complex imp_clog10(double _Complex) — base-10 = clog(z)/ln(10)
+fn imp_clog10(z: __cdouble) -> __cdouble {
+    const LN10: f64 = 2.302585092994045684017991454684364208_f64; // ln(10)
+    let l = imp_clog(z); cd(l.re / LN10, l.im / LN10)
+}
 /// # C: double _Complex imp_csqrt(double _Complex) — principal branch
 fn imp_csqrt(z: __cdouble) -> __cdouble {
     if z.re == 0.0 && z.im == 0.0 { return cd(0.0, z.im); }
@@ -158,6 +163,7 @@ macro_rules! c1 {
 
 c1!(cexp,   cexpf,   imp_cexp,   "double _Complex cexp(double _Complex)",   "float _Complex cexpf(float _Complex)");
 c1!(clog,   clogf,   imp_clog,   "double _Complex clog(double _Complex)",   "float _Complex clogf(float _Complex)");
+c1!(clog10, clog10f, imp_clog10, "double _Complex clog10(double _Complex)", "float _Complex clog10f(float _Complex)");
 c1!(csqrt,  csqrtf,  imp_csqrt,  "double _Complex csqrt(double _Complex)",  "float _Complex csqrtf(float _Complex)");
 c1!(csin,   csinf,   imp_csin,   "double _Complex csin(double _Complex)",   "float _Complex csinf(float _Complex)");
 c1!(ccos,   ccosf,   imp_ccos,   "double _Complex ccos(double _Complex)",   "float _Complex ccosf(float _Complex)");

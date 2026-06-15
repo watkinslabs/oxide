@@ -167,6 +167,19 @@ mod exports {
         // SAFETY: same contract as strtoumax; forwards strtoul_impl.
         unsafe { strtoul_impl(s, endptr, base) }
     }
+    // BSD aliases (<stdlib.h>): quad_t / u_quad_t are i64/u64 == long long.
+    // # C: long long strtoq(const char *, char **, int)
+    #[no_mangle]
+    pub unsafe extern "C" fn strtoq(s: *const u8, endptr: *mut *mut u8, base: i32) -> i64 {
+        // SAFETY: strtoq == strtoll; forwards the signed strtol_impl unchanged.
+        unsafe { strtol_impl(s, endptr, base) }
+    }
+    // # C: unsigned long long strtouq(const char *, char **, int)
+    #[no_mangle]
+    pub unsafe extern "C" fn strtouq(s: *const u8, endptr: *mut *mut u8, base: i32) -> u64 {
+        // SAFETY: strtouq == strtoull; forwards the unsigned strtoul_impl unchanged.
+        unsafe { strtoul_impl(s, endptr, base) }
+    }
     // # C: int atoi(const char *s)
     #[no_mangle]
     pub unsafe extern "C" fn atoi(s: *const u8) -> i32 {
