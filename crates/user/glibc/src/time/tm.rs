@@ -101,30 +101,13 @@ mod imp {
         // SAFETY: t is valid; result lives in the process-global buffer.
         unsafe { gmtime_into(*t, &mut *gmtime_buf()); gmtime_buf() }
     }
-    // # C: struct tm *localtime_r(...) — UTC until TZ (G16)
-    #[no_mangle]
-    pub unsafe extern "C" fn localtime_r(t: *const i64, out: *mut tm) -> *mut tm {
-        // SAFETY: same pointer contract as gmtime_r (t/out valid).
-        unsafe { gmtime_r(t, out) }
-    }
-    // # C: struct tm *localtime(const time_t *t)
-    #[no_mangle]
-    pub unsafe extern "C" fn localtime(t: *const i64) -> *mut tm {
-        // SAFETY: same pointer contract as gmtime (t valid; global buf).
-        unsafe { gmtime(t) }
-    }
     // # C: time_t timegm(struct tm *tm)
     #[no_mangle]
     pub unsafe extern "C" fn timegm(t: *mut tm) -> i64 {
         // SAFETY: t is a valid, fully-initialised struct tm.
         unsafe { timegm_of(&*t) }
     }
-    // # C: time_t mktime(struct tm *tm) — UTC until TZ (G16)
-    #[no_mangle]
-    pub unsafe extern "C" fn mktime(t: *mut tm) -> i64 {
-        // SAFETY: t is a valid struct tm; normalise via gmtime(timegm).
-        unsafe { let e = timegm_of(&*t); gmtime_into(e, &mut *t); e }
-    }
+    // localtime/localtime_r/mktime are zone-aware and live in time::tz (G16e).
 }
 
 #[cfg(test)]
