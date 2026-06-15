@@ -27,3 +27,5 @@ pub mod ftw;
 pub mod sched;
 #[cfg(feature = "freestanding")]
 pub mod resource;
+#[cfg(feature = "freestanding")]
+pub mod utmp;
