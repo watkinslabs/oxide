@@ -2,7 +2,8 @@
 // posix::io (buffering + putc/getc-macro compat is a follow-up). One-char
 // ungetc via the FILE pushback slot (file.rs).
 #![cfg(feature = "freestanding")]
-use super::file::{self, alloc_file, fd_of, free_file, is_mem, is_std, set_eof, set_unget, stdin_ptr, take_unget, FILE};
+use super::cookie::cookie_close;
+use super::file::{self, alloc_file, fd_of, free_file, is_cookie, is_mem, is_std, set_eof, set_unget, stdin_ptr, take_unget, FILE};
 use super::memstream::{mem_close, stream_read, stream_seek, stream_tell};
 use crate::internal::errno;
 use crate::malloc::heap;
@@ -75,6 +76,7 @@ pub unsafe extern "C" fn fclose(f: *mut FILE) -> i32 {
     unsafe {
         if is_std(f) { return 0; }
         if is_mem(f) { mem_close(f); free_file(f); return 0; }
+        if is_cookie(f) { cookie_close(f); free_file(f); return 0; }
         let r = io::close(fd_of(f));
         free_file(f);
         if r < 0 { -1 } else { 0 }

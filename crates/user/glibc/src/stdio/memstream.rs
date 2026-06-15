@@ -4,7 +4,8 @@
 // stdio routes through, so fread/fwrite/fseek/getc/fputs all work unchanged on
 // memory streams. C ABI only.
 #![cfg(feature = "freestanding")]
-use super::file::{alloc_file, cookie, fd_of, is_mem, set_cookie, FILE};
+use super::cookie::{cookie_read, cookie_seek, cookie_write};
+use super::file::{alloc_file, cookie, fd_of, is_cookie, is_mem, set_cookie, FILE};
 use crate::malloc::heap;
 use crate::posix::io;
 
@@ -204,19 +205,35 @@ pub unsafe extern "C" fn open_memstream(ptr: *mut *mut u8, sizeloc: *mut usize) 
 // memory streams the cookie above. The rest of stdio calls only these.
 pub(crate) unsafe fn stream_read(f: *mut FILE, dst: *mut u8, n: usize) -> isize {
     // SAFETY: f is a valid stream; dst is writable for n bytes.
-    unsafe { if is_mem(f) { mem_read(f, dst, n) } else { io::read(fd_of(f), dst, n) } }
+    unsafe {
+        if is_mem(f) { mem_read(f, dst, n) }
+        else if is_cookie(f) { cookie_read(f, dst, n) }
+        else { io::read(fd_of(f), dst, n) }
+    }
 }
 pub(crate) unsafe fn stream_write(f: *mut FILE, src: *const u8, n: usize) -> isize {
     // SAFETY: f is a valid stream; src is readable for n bytes.
-    unsafe { if is_mem(f) { mem_write(f, src, n) } else { io::write(fd_of(f), src, n) } }
+    unsafe {
+        if is_mem(f) { mem_write(f, src, n) }
+        else if is_cookie(f) { cookie_write(f, src, n) }
+        else { io::write(fd_of(f), src, n) }
+    }
 }
 pub(crate) unsafe fn stream_seek(f: *mut FILE, off: i64, whence: i32) -> i64 {
     // SAFETY: f is a valid open stream; memory streams reposition the cookie
-    // cursor, fd streams lseek the descriptor.
-    unsafe { if is_mem(f) { mem_seek(f, off, whence) } else { io::lseek(fd_of(f), off, whence) } }
+    // cursor, cookie streams call the seek callback, fd streams lseek.
+    unsafe {
+        if is_mem(f) { mem_seek(f, off, whence) }
+        else if is_cookie(f) { cookie_seek(f, off, whence) }
+        else { io::lseek(fd_of(f), off, whence) }
+    }
 }
 pub(crate) unsafe fn stream_tell(f: *mut FILE) -> i64 {
     // SAFETY: f is a valid open stream; report the cookie cursor or the fd's
     // current offset.
-    unsafe { if is_mem(f) { mem_tell(f) } else { io::lseek(fd_of(f), 0, io::SEEK_CUR) } }
+    unsafe {
+        if is_mem(f) { mem_tell(f) }
+        else if is_cookie(f) { cookie_seek(f, 0, io::SEEK_CUR) }
+        else { io::lseek(fd_of(f), 0, io::SEEK_CUR) }
+    }
 }
