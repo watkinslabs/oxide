@@ -146,6 +146,16 @@ int main(int argc, char **argv, char **envp) {
     if (raise(10) != 0) return 36;
     if (g_sigflag != 1) return 37;
 
+    /* time: monotonic clock nondecreasing + nanosleep 1ms returns 0 */
+    long ts1[2] = {0, 0}, ts2[2] = {0, 0};
+    int clock_gettime(int, void *);
+    int nanosleep(const void *, void *);
+    if (clock_gettime(1 /*MONOTONIC*/, ts1) != 0) return 38;
+    long req[2] = {0, 1000000}; /* 1ms */
+    if (nanosleep(req, 0) != 0) return 39;
+    if (clock_gettime(1, ts2) != 0) return 40;
+    if (ts2[0] < ts1[0] || (ts2[0] == ts1[0] && ts2[1] < ts1[1])) return 41;
+
     /* env: setenv then getenv round-trip */
     if (setenv("OXIDE_G7C", "yes", 1) != 0) return 16;
     char *ev = getenv("OXIDE_G7C");
