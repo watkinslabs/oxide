@@ -146,11 +146,166 @@ impl core::fmt::Write for Adapter<'_> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result { self.0.push_all(s.as_bytes()); Ok(()) }
 }
 
+// ---- positional arguments (%N$, glibc) -------------------------------------
+// A buffered vararg: positional formats reference args out of order, so they
+// must be pre-scanned for type, read once in index order, then formatted by
+// index (you cannot index a C va_list arbitrarily).
+#[derive(Clone, Copy)]
+enum Val { I(i64), U(u64), F(f64), P(*const u8), None }
+
+// Read an optional leading "<digits>$" (a 1-based arg position).
+unsafe fn parse_pos(p: *const u8) -> (Option<usize>, usize) {
+    // SAFETY: p is within the NUL-terminated format string.
+    unsafe {
+        let (n, a) = read_num(p);
+        if a > 0 && *p.add(a) == b'$' { (Some(n), a + 1) } else { (None, 0) }
+    }
+}
+
+// Does the format use positional specifiers anywhere?
+unsafe fn is_positional(fmt: *const u8) -> bool {
+    // SAFETY: walks the NUL-terminated format looking for `%<digits>$`.
+    unsafe {
+        let mut i = 0usize;
+        loop {
+            let c = *fmt.add(i);
+            if c == 0 { return false; }
+            if c == b'%' {
+                i += 1;
+                if *fmt.add(i) == b'%' { i += 1; continue; }
+                let (pos, _) = parse_pos(fmt.add(i));
+                if pos.is_some() { return true; }
+            } else { i += 1; }
+        }
+    }
+}
+
+// Read one positional vararg of the type implied by (conv, len).
+unsafe fn read_val(args: &mut dyn Args, conv: u8, len: Len) -> Val {
+    // SAFETY: args supplies the matching vararg per the caller's promise.
+    unsafe {
+        match conv {
+            b'd' | b'i' => Val::I(signed(args, len)),
+            b'u' | b'o' | b'x' | b'X' => Val::U(unsigned(args, len)),
+            b'f' | b'F' | b'e' | b'E' | b'g' | b'G' | b'a' | b'A' => Val::F(args.next_f64()),
+            b'c' => Val::I(args.next_i32() as i64),
+            b's' | b'p' | b'n' => Val::P(args.next_ptr()),
+            _ => Val::None,
+        }
+    }
+}
+
+// Emit one conversion using an already-read value (shared by the positional
+// path). Mirrors the sequential conversion handlers in vformat.
+#[allow(clippy::manual_c_str_literals)] // byte literal is arch-portable (c_char signedness)
+unsafe fn emit_val(out: &mut dyn Sink, sp: &Spec, val: Val) {
+    // SAFETY: for %s/%p, val is a valid C string / pointer per the format.
+    unsafe {
+        let iv = |v: Val| -> i64 { if let Val::I(x) = v { x } else { 0 } };
+        let uv = |v: Val| -> u64 { if let Val::U(x) = v { x } else { 0 } };
+        match sp.conv {
+            b'd' | b'i' => { let v = iv(val); fmt_uint(out, sp, v.unsigned_abs(), v < 0, 10, false, true); }
+            b'u' => fmt_uint(out, sp, uv(val), false, 10, false, false),
+            b'o' => fmt_uint(out, sp, uv(val), false, 8, false, false),
+            b'x' => fmt_uint(out, sp, uv(val), false, 16, false, false),
+            b'X' => fmt_uint(out, sp, uv(val), false, 16, true, false),
+            b'c' => emit(out, sp, b"", b"", &[iv(val) as u8]),
+            b's' => {
+                let p = if let Val::P(p) = val { p } else { b"(null)\0".as_ptr() };
+                let max = sp.prec.unwrap_or(usize::MAX);
+                let mut n = 0usize;
+                while n < max && *p.add(n) != 0 { n += 1; }
+                emit(out, sp, b"", b"", core::slice::from_raw_parts(p, n));
+            }
+            b'p' => {
+                let p = if let Val::P(p) = val { p as usize } else { 0 };
+                if p == 0 { emit(out, sp, b"", b"", b"(nil)"); }
+                else { let mut s2 = Spec { alt: true, ..core_copy(sp) }; s2.conv = b'x'; fmt_uint(out, &s2, p as u64, false, 16, false, false); }
+            }
+            b'f' | b'F' | b'e' | b'E' | b'g' | b'G' => { if let Val::F(v) = val { fmt_float(out, sp, v); } }
+            _ => { out.push(b'%'); out.push(sp.conv); }
+        }
+    }
+}
+
+// Two-pass positional formatter: (1) type-scan each conversion's arg index,
+// (2) read positions 1..=max in order, (3) format from the value table.
+unsafe fn vformat_positional(out: &mut dyn Sink, fmt: *const u8, args: &mut dyn Args) -> usize {
+    // SAFETY: fmt NUL-terminated; args holds positions 1..=max in order.
+    unsafe {
+        let mut tys: [(u8, Len); 64] = [(0, Len::Int); 64]; // conv,len per position (0 = unused)
+        let mut maxpos = 0usize;
+        // Pass 1: scan types (incl positional width/prec `*N$`, which are int).
+        let mut i = 0usize;
+        loop {
+            let c = *fmt.add(i);
+            if c == 0 { break; }
+            if c != b'%' { i += 1; continue; }
+            i += 1;
+            if *fmt.add(i) == b'%' { i += 1; continue; }
+            let (pos, a) = parse_pos(fmt.add(i)); i += a;
+            // flags
+            while matches!(*fmt.add(i), b'-' | b'+' | b' ' | b'#' | b'0') { i += 1; }
+            // width (optionally *M$)
+            if *fmt.add(i) == b'*' { i += 1; let (wp, wa) = parse_pos(fmt.add(i)); if let Some(w) = wp { if w < 64 { tys[w] = (b'd', Len::Int); maxpos = maxpos.max(w); } i += wa; } }
+            else { let (_, na) = read_num(fmt.add(i)); i += na; }
+            // precision (optionally .*K$)
+            if *fmt.add(i) == b'.' { i += 1; if *fmt.add(i) == b'*' { i += 1; let (pp, pa) = parse_pos(fmt.add(i)); if let Some(pk) = pp { if pk < 64 { tys[pk] = (b'd', Len::Int); maxpos = maxpos.max(pk); } i += pa; } } else { let (_, na) = read_num(fmt.add(i)); i += na; } }
+            let len = scan_len(fmt, &mut i);
+            let conv = *fmt.add(i); i += 1;
+            if let Some(p) = pos { if p < 64 { tys[p] = (conv, len); maxpos = maxpos.max(p); } }
+        }
+        // Pass 2: read args 1..=maxpos in order.
+        let mut vals: [Val; 64] = [Val::None; 64];
+        for p in 1..=maxpos { let (conv, len) = tys[p]; if conv != 0 { vals[p] = read_val(args, conv, len); } }
+        // Pass 3: format from the table.
+        let mut i = 0usize;
+        loop {
+            let c = *fmt.add(i);
+            if c == 0 { break; }
+            if c != b'%' { out.push(c); i += 1; continue; }
+            i += 1;
+            if *fmt.add(i) == b'%' { out.push(b'%'); i += 1; continue; }
+            let (pos, a) = parse_pos(fmt.add(i)); i += a;
+            let (mut left, mut plus, mut space, mut alt, mut zero) = (false, false, false, false, false);
+            loop { match *fmt.add(i) { b'-' => left = true, b'+' => plus = true, b' ' => space = true, b'#' => alt = true, b'0' => zero = true, _ => break } i += 1; }
+            let mut width = 0usize;
+            if *fmt.add(i) == b'*' { i += 1; let (wp, wa) = parse_pos(fmt.add(i)); i += wa; if let Some(w) = wp { width = if let Val::I(x) = vals[w] { x.max(0) as usize } else { 0 }; } }
+            else { let (w, na) = read_num(fmt.add(i)); width = w; i += na; }
+            let mut prec = None;
+            if *fmt.add(i) == b'.' { i += 1; if *fmt.add(i) == b'*' { i += 1; let (pp, pa) = parse_pos(fmt.add(i)); i += pa; if let Some(pk) = pp { prec = Some(if let Val::I(x) = vals[pk] { x.max(0) as usize } else { 0 }); } } else { let (pv, na) = read_num(fmt.add(i)); prec = Some(pv); i += na; } }
+            let len = scan_len(fmt, &mut i);
+            let conv = *fmt.add(i); i += 1;
+            let sp = Spec { left, plus, space, alt, zero, width, prec, len, conv };
+            let val = match pos { Some(p) if p < 64 => vals[p], _ => Val::None };
+            emit_val(out, &sp, val);
+        }
+        out.count()
+    }
+}
+
+// Parse a length modifier at *i, advancing i past it.
+fn scan_len(fmt: *const u8, i: &mut usize) -> Len {
+    // SAFETY: fmt is NUL-terminated; only advances over present modifier bytes.
+    unsafe {
+        match *fmt.add(*i) {
+            b'h' => { *i += 1; if *fmt.add(*i) == b'h' { *i += 1; Len::Char } else { Len::Short } }
+            b'l' => { *i += 1; if *fmt.add(*i) == b'l' { *i += 1; Len::LongLong } else { Len::Long } }
+            b'z' => { *i += 1; Len::Size }
+            b'j' => { *i += 1; Len::IntMax }
+            b't' => { *i += 1; Len::PtrDiff }
+            b'L' => { *i += 1; Len::LongLong }
+            _ => Len::Int,
+        }
+    }
+}
+
 // The engine. Returns the number of bytes that would be written.
 pub(crate) unsafe fn vformat(out: &mut dyn Sink, fmt: *const u8, args: &mut dyn Args) -> usize {
     // SAFETY: fmt is a NUL-terminated format string; args supplies one
     // vararg per conversion as the caller promised. Counting is the Sink's.
     unsafe {
+        if is_positional(fmt) { return vformat_positional(out, fmt, args); }
         let mut i = 0usize;
         loop {
             let c = *fmt.add(i);
