@@ -13,3 +13,4 @@ pub mod fs;
 pub mod stat;
 pub mod fnmatch;
 pub mod getopt;
+pub mod dirent;
