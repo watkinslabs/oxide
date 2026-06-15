@@ -30,7 +30,7 @@ pub(crate) fn cmd_ldso(rest: &[String]) -> Result<(), u8> {
 // rust-lld directly (multi-arch, no cross-gcc needed) so the same path
 // builds x86_64 and aarch64: our own _start as entry, PIC, no undefined
 // symbols (the rtld is self-contained), soname per arch.
-fn build_ldso(triple: &str, soname: &str) -> Result<(), u8> {
+pub(crate) fn build_ldso(triple: &str, soname: &str) -> Result<(), u8> {
     eprintln!("xtask ldso: building {soname} for {triple}");
     let mut c = Command::new("cargo");
     c.args(["rustc", "-p", "ldso", "--release", "--features", "freestanding",
@@ -47,7 +47,7 @@ fn build_ldso(triple: &str, soname: &str) -> Result<(), u8> {
     run(c)
 }
 
-fn ldso_path(triple: &str) -> PathBuf {
+pub(crate) fn ldso_path(triple: &str) -> PathBuf {
     PathBuf::from("target").join(triple).join("release").join("libldso.so")
 }
 
