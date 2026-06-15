@@ -45,7 +45,13 @@ the largest sub-phase, split into its own ladder G12a–G12g.
   mmap block + copy init image + syscall::set_thread_pointer), relocate.rs Kind::Tls
   TPOFF/DTPMOD/DTPOFF. HARNESS tls_pie.c (__thread) → exit 7. 3 smokes green: 42/13/7.
   Remaining G12g: lazy PLT (_dl_runtime_resolve), general-dynamic DTV/__tls_get_addr.
-- ~~G12e~~ done; G12h next = dlopen/dlsym/dlclose/dladdr/dlinfo.
+- G12h ✓ **dlopen/dlsym/dlclose/dladdr — G12 (the dynamic linker) COMPLETE**
+  (#1882 global link-map, + this: rtld exports _dl_open/_dl_sym/_dl_close/_dl_addr
+  over the global LINK map and adds ITSELF to the resolution scope via rtld_objview
+  so libc.so.6's _dl_* bind; glibc dlfcn/mod.rs thin-wraps). HARNESS dlopen_pie.c→99.
+  `xtask ldso --check` = 4 smokes (42/13/7/99); static smoke uses --gc-sections so
+  unused dlopen's _dl_* refs don't break the static link.
+- NEXT PHASE: G13 net.
 - G12e — symbol versioning (VERSYM/VERNEED, GLIBC_2.x matching)
 - G12f — TLS (static+dynamic block, DTV, __tls_get_addr, TPOFF/DTPMOD/DTPOFF) +
   **per-thread errno** (move errno into the TCB now that main+threads have one)

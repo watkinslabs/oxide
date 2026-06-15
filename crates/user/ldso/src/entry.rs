@@ -47,15 +47,16 @@ pub unsafe extern "C" fn _dl_start(sp: *const usize, dynamic: *const Dyn) -> usi
     unsafe {
         let base = crate::auxv::auxval(sp, crate::auxv::AT_BASE).unwrap_or(0) as u64;
         crate::reloc::relocate_self(base, dynamic);
-        _dl_main(sp)
+        _dl_main(sp, base, dynamic)
     }
 }
 
 // Link the kernel-mapped app + its DT_NEEDED graph and return its entry.
-// # C: void *_dl_main(void *sp)
-unsafe fn _dl_main(sp: *const usize) -> usize {
+// # C: void *_dl_main(void *sp, rtld_base, rtld_dynamic)
+unsafe fn _dl_main(sp: *const usize, rtld_base: u64, rtld_dyn: *const Dyn) -> usize {
     // SAFETY: sp is the initial stack; link() reads AT_* and the app's phdrs,
     // loads dependencies, relocates the link map, runs initializers, and
-    // returns AT_ENTRY for _start to jump to.
-    unsafe { crate::link::link(sp) }
+    // returns AT_ENTRY for _start to jump to. rtld_base/rtld_dyn let it add
+    // itself to the resolution scope (so libc's _dl_* refs bind).
+    unsafe { crate::link::link(sp, rtld_base, rtld_dyn) }
 }
