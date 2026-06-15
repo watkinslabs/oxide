@@ -308,6 +308,15 @@ int main(int argc, char **argv, char **envp) {
     if ((long)ea != 2) return 65;   /* worker A still sees ENOENT */
     if ((long)eb != 9) return 66;   /* worker B still sees EBADF */
 
+    /* net: socketpair(AF_UNIX,SOCK_STREAM) write/read round-trip */
+    int socketpair(int domain, int type, int protocol, int sv[2]);
+    int sv[2];
+    if (socketpair(1 /*AF_UNIX*/, 1 /*SOCK_STREAM*/, 0, sv) != 0) return 67;
+    if (write(sv[1], "Z", 1) != 1) return 68;
+    char sc = 0;
+    if (read(sv[0], &sc, 1) != 1 || sc != 'Z') return 69;
+    close(sv[0]); close(sv[1]);
+
     /* env: setenv then getenv round-trip */
     if (setenv("OXIDE_G7C", "yes", 1) != 0) return 16;
     char *ev = getenv("OXIDE_G7C");
