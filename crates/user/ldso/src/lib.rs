@@ -19,15 +19,20 @@ extern crate std;
 
 extern crate alloc;
 
+pub mod auxv;
 pub mod bump;
 pub mod cache;
 pub mod dynamic;
 pub mod linkmap;
 pub mod loader;
+pub mod phdr;
 pub mod reloc;
 pub mod relocate;
 pub mod search;
 pub mod symbol;
+
+#[cfg(feature = "freestanding")]
+pub mod entry;
 
 #[cfg(feature = "freestanding")]
 pub mod syscall;
