@@ -41,3 +41,6 @@ pub mod mem;
 pub mod special;
 #[cfg(feature = "freestanding")]
 pub mod utime;
+pub mod pty;
+#[cfg(feature = "freestanding")]
+pub mod tty;
