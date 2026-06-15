@@ -4,3 +4,5 @@
 pub mod heap;
 #[cfg(feature = "freestanding")]
 pub mod api;
+// mallinfo/mallopt/malloc_stats/malloc_trim + mcheck/mtrace/cfree (introspection).
+pub mod introspect;
