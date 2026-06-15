@@ -119,6 +119,19 @@ pub mod x86_64 {
     pub const PIPE2: usize = 293;
     pub const PRLIMIT64: usize = 302;
     pub const GETRANDOM: usize = 318;
+    // sched + resource (syscall_64.tbl)
+    pub const SCHED_SETPARAM: usize = 142;
+    pub const SCHED_GETPARAM: usize = 143;
+    pub const SCHED_SETSCHEDULER: usize = 144;
+    pub const SCHED_GETSCHEDULER: usize = 145;
+    pub const SCHED_GET_PRIORITY_MAX: usize = 146;
+    pub const SCHED_GET_PRIORITY_MIN: usize = 147;
+    pub const SCHED_RR_GET_INTERVAL: usize = 148;
+    pub const SCHED_SETAFFINITY: usize = 203;
+    pub const SCHED_GETAFFINITY: usize = 204;
+    pub const GETRUSAGE: usize = 98;
+    pub const GETPRIORITY: usize = 140;
+    pub const SETPRIORITY: usize = 141;
     // sockets (x86_64 individual syscalls, syscall_64.tbl)
     pub const SOCKET: usize = 41;
     pub const CONNECT: usize = 42;
@@ -230,6 +243,19 @@ pub mod aarch64 {
     pub const WAIT4: usize = 260;
     pub const PRLIMIT64: usize = 261;
     pub const GETRANDOM: usize = 278;
+    // sched + resource (asm-generic/unistd.h)
+    pub const SCHED_SETPARAM: usize = 118;
+    pub const SCHED_SETSCHEDULER: usize = 119;
+    pub const SCHED_GETSCHEDULER: usize = 120;
+    pub const SCHED_GETPARAM: usize = 121;
+    pub const SCHED_SETAFFINITY: usize = 122;
+    pub const SCHED_GETAFFINITY: usize = 123;
+    pub const SCHED_GET_PRIORITY_MAX: usize = 125;
+    pub const SCHED_GET_PRIORITY_MIN: usize = 126;
+    pub const SCHED_RR_GET_INTERVAL: usize = 127;
+    pub const SETPRIORITY: usize = 140;
+    pub const GETPRIORITY: usize = 141;
+    pub const GETRUSAGE: usize = 165;
     // sockets (aarch64 asm-generic/unistd.h)
     pub const SOCKET: usize = 198;
     pub const SOCKETPAIR: usize = 199;
