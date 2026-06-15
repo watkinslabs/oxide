@@ -1,1 +1,3 @@
-//! net — glibc-ABI surface, one fn/file (docs/59§3). Implemented at G13 (docs/59§6).
+//! net — glibc-ABI surface (docs/59§3, §6 G13). inet (byte order + pton/ntop)
+//! first; socket wrappers + getaddrinfo follow.
+pub mod inet;
