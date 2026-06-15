@@ -27,6 +27,13 @@ pub unsafe extern "C" fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, 
     }
 }
 
+// # C: void *mmap64(...) — LFS alias (off64_t == off_t on LP64)
+#[no_mangle]
+pub unsafe extern "C" fn mmap64(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8 {
+    // SAFETY: identical to mmap on LP64; forwards unchanged.
+    unsafe { mmap(addr, len, prot, flags, fd, off) }
+}
+
 // # C: int munmap(void *addr, size_t len)
 #[no_mangle]
 pub unsafe extern "C" fn munmap(addr: *mut u8, len: usize) -> i32 {

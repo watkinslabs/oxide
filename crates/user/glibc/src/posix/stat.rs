@@ -125,6 +125,38 @@ mod exports {
         // SAFETY: path NUL-terminated; direct newfstatat with caller flags.
         unsafe { statat(dirfd, path, buf, flags as usize) }
     }
+    // LFS aliases: on LP64 struct stat64 == struct stat (off64_t == off_t), so
+    // these are exact aliases of the base calls (what glibc does).
+    // # C: int stat64(const char *, struct stat64 *)
+    // SAFETY: LFS alias of stat; identical struct layout on LP64. Forwards.
+    #[no_mangle] pub unsafe extern "C" fn stat64(path: *const u8, buf: *mut stat) -> i32 { unsafe { stat(path, buf) } }
+    // # C: int lstat64(const char *, struct stat64 *)
+    // SAFETY: LFS alias of lstat; identical struct layout on LP64. Forwards.
+    #[no_mangle] pub unsafe extern "C" fn lstat64(path: *const u8, buf: *mut stat) -> i32 { unsafe { lstat(path, buf) } }
+    // # C: int fstat64(int, struct stat64 *)
+    // SAFETY: LFS alias of fstat; identical struct layout on LP64. Forwards.
+    #[no_mangle] pub unsafe extern "C" fn fstat64(fd: i32, buf: *mut stat) -> i32 { unsafe { fstat(fd, buf) } }
+    // # C: int fstatat64(int, const char *, struct stat64 *, int)
+    // SAFETY: LFS alias of fstatat; identical struct layout on LP64. Forwards.
+    #[no_mangle] pub unsafe extern "C" fn fstatat64(d: i32, p: *const u8, buf: *mut stat, f: i32) -> i32 { unsafe { fstatat(d, p, buf, f) } }
+    // # C: int __xstat(int ver, const char *, struct stat *) — old glibc inline-stat ABI
+    // SAFETY: versioned-stat ABI alias; ver ignored, struct is our single stat. Forwards.
+    #[no_mangle] pub unsafe extern "C" fn __xstat(_ver: i32, path: *const u8, buf: *mut stat) -> i32 { unsafe { stat(path, buf) } }
+    // # C: int __lxstat(int ver, const char *, struct stat *)
+    // SAFETY: versioned-lstat ABI alias; ver ignored. Forwards to lstat.
+    #[no_mangle] pub unsafe extern "C" fn __lxstat(_ver: i32, path: *const u8, buf: *mut stat) -> i32 { unsafe { lstat(path, buf) } }
+    // # C: int __fxstat(int ver, int fd, struct stat *)
+    // SAFETY: versioned-fstat ABI alias; ver ignored. Forwards to fstat.
+    #[no_mangle] pub unsafe extern "C" fn __fxstat(_ver: i32, fd: i32, buf: *mut stat) -> i32 { unsafe { fstat(fd, buf) } }
+    // # C: int __xstat64(int ver, const char *, struct stat64 *)
+    // SAFETY: versioned-stat64 ABI alias; ver ignored, LP64 struct. Forwards to stat.
+    #[no_mangle] pub unsafe extern "C" fn __xstat64(_ver: i32, path: *const u8, buf: *mut stat) -> i32 { unsafe { stat(path, buf) } }
+    // # C: int __lxstat64(int ver, const char *, struct stat64 *)
+    // SAFETY: versioned-lstat64 ABI alias; ver ignored, LP64 struct. Forwards to lstat.
+    #[no_mangle] pub unsafe extern "C" fn __lxstat64(_ver: i32, path: *const u8, buf: *mut stat) -> i32 { unsafe { lstat(path, buf) } }
+    // # C: int __fxstat64(int ver, int fd, struct stat64 *)
+    // SAFETY: versioned-fstat64 ABI alias; ver ignored, LP64 struct. Forwards to fstat.
+    #[no_mangle] pub unsafe extern "C" fn __fxstat64(_ver: i32, fd: i32, buf: *mut stat) -> i32 { unsafe { fstat(fd, buf) } }
 }
 
 #[cfg(test)]
