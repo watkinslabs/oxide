@@ -10,6 +10,7 @@ int  snprintf(char *s, unsigned long n, const char *fmt, ...);
 int  printf(const char *fmt, ...);
 int  puts(const char *s);
 int  memcmp(const void *a, const void *b, unsigned long n);
+int  sscanf(const char *s, const char *fmt, ...);
 
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
@@ -24,7 +25,11 @@ int main(int argc, char **argv, char **envp) {
     if (k != 18) return 5;
     if (memcmp(buf, want, 18) != 0) return 6;
 
-    printf("%s (k=%d)\n", buf, k);
+    int a = 0, b = 0;
+    if (sscanf("42 -7", "%d %d", &a, &b) != 2) return 7;
+    if (a != 42 || b != -7) return 8;
+
+    printf("%s (k=%d) scan=%d,%d\n", buf, k, a, b);
     puts("hello from oxide-libc");
     return 0;
 }
