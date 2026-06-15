@@ -3,6 +3,7 @@ use std::process::ExitCode;
 mod buildns;
 mod cmds;
 mod gc;
+mod glibc;
 mod image_qemu;
 mod l2_deps;
 mod path;
@@ -28,6 +29,7 @@ fn main() -> ExitCode {
         "kernel"    => cmd_kernel(rest),
         "test"      => cmd_test(rest),
         "user"      => stub("user", "29a"),
+        "glibc"     => glibc::cmd_glibc(rest),
         "rootfs"    => cmd_rootfs(rest),
         "image"     => image_qemu::cmd_image(rest),
         "grub"      => image_qemu::cmd_grub(rest),
@@ -47,6 +49,6 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: xtask <kernel|user|image|test|qemu|rootfs|grub|gc|path|soak|bench|spec-lint|doc-check|stats> [args]");
+    eprintln!("usage: xtask <kernel|user|glibc|image|test|qemu|rootfs|grub|gc|path|soak|bench|spec-lint|doc-check|stats> [args]");
     ExitCode::from(2)
 }
