@@ -5,6 +5,7 @@
 //! the host's; setlocale/localeconv/nl_langinfo C ABI are freestanding.
 #![allow(clippy::upper_case_acronyms)]
 
+pub mod iconv;
 pub mod wchar;
 pub mod wctype;
 
