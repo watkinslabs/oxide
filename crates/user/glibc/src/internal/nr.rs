@@ -77,6 +77,8 @@ pub mod x86_64 {
     pub const CLOCK_GETRES: usize = 229;
     pub const CLOCK_NANOSLEEP: usize = 230;
     pub const CLOCK_SETTIME: usize = 227;
+    pub const ADJTIMEX: usize = 159;
+    pub const CLOCK_ADJTIME: usize = 305;
     pub const TIMER_CREATE: usize = 222;
     pub const TIMER_SETTIME: usize = 223;
     pub const TIMER_GETTIME: usize = 224;
@@ -208,6 +210,8 @@ pub mod aarch64 {
     pub const WAITID: usize = 95;
     pub const FUTEX: usize = 98;
     pub const CLOCK_SETTIME: usize = 112;
+    pub const ADJTIMEX: usize = 171;
+    pub const CLOCK_ADJTIME: usize = 266;
     pub const TIMER_CREATE: usize = 107;
     pub const TIMER_GETTIME: usize = 108;
     pub const TIMER_GETOVERRUN: usize = 109;

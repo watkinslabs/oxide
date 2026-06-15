@@ -16,3 +16,5 @@ pub mod mkstemp;
 pub mod subopt;
 #[cfg(feature = "freestanding")]
 pub mod a64l;
+#[cfg(feature = "freestanding")]
+pub mod fmtmsg;
