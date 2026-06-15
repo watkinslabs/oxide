@@ -40,13 +40,41 @@ unsafe fn ld_library_path(sp: *const usize) -> &'static [u8] {
     }
 }
 
+// Allocate the static TLS block for an object's PT_TLS, install the thread
+// pointer, and return the object's tp offset (0 if no TLS). Initial-exec:
+// supports the main exe's own TLS (general-dynamic DTV is a follow-up).
+unsafe fn setup_static_tls(base: u64, phdrs: &[u8], phnum: usize) -> i64 {
+    // SAFETY: reads PT_TLS from the object's phdrs, mmaps a zeroed block,
+    // copies the init image, and sets the thread pointer.
+    unsafe {
+        let (vaddr, filesz, memsz, align) = match phdr::find_tls(phdrs, phnum) { Some(t) => t, None => return 0 };
+        let (offs, total) = crate::tls::layout(&[(memsz, align)], crate::tls::target_variant());
+        let tp_off = offs[0];
+        let size = ((total as usize) + 4096 + 4095) & !4095;
+        let blk = syscall::mmap(0, size, syscall::PROT_READ | syscall::PROT_WRITE,
+            syscall::MAP_PRIVATE | syscall::MAP_ANONYMOUS, -1, 0);
+        if blk < 0 { return 0; }
+        let blk = blk as usize;
+        let tp = match crate::tls::target_variant() {
+            crate::tls::Variant::Two => blk + total as usize,
+            crate::tls::Variant::One => blk,
+        };
+        let data = (tp as i64 + tp_off) as usize; // module TLS block base
+        core::ptr::copy_nonoverlapping((base + vaddr) as *const u8, data as *mut u8, filesz as usize);
+        // tcbhead self-pointer at the thread pointer (glibc reads fs:0 / tp[0]).
+        *(tp as *mut usize) = tp;
+        syscall::set_thread_pointer(tp);
+        tp_off
+    }
+}
+
 // Apply an object's RELA then JMPREL tables, resolving symbols globally.
-unsafe fn relocate_obj(o: &OwnedObj, map: &[linkmap::ObjView]) {
+unsafe fn relocate_obj(o: &OwnedObj, map: &[linkmap::ObjView], tls_offset: i64, tls_modid: u64) {
     // SAFETY: o is a mapped object; its rela/jmprel tables live at base+addr
     // within the mapping; resolver reads only the link map's windows.
     unsafe {
         let v = o.view();
-        let ctx = RelocCtx { base: o.base, sym: v.sym };
+        let ctx = RelocCtx { base: o.base, sym: v.sym, tls_offset, tls_modid };
         let resolve = |name: &[u8]| linkmap::lookup_global(map, name, None).map(|(_, a)| a);
         if let Some(ra) = o.info.rela {
             let cnt = (o.info.relasz as usize) / RELAENT;
@@ -145,9 +173,17 @@ pub unsafe fn link(sp: *const usize) -> usize {
             i += 1;
         }
 
+        // Static TLS: set up the main executable's TLS block + thread pointer
+        // (initial-exec). General-dynamic DTV across libs is a follow-up.
+        let app_tls_off = setup_static_tls(app_base, phdrs, phnum);
+
         // Relocate every object against the full scope.
         let map: Vec<linkmap::ObjView> = objs.iter().map(|o| o.view()).collect();
-        for o in &objs { relocate_obj(o, &map); }
+        for (oi, o) in objs.iter().enumerate() {
+            // module 0 is the app (TLS module id 1); others have no TLS wired yet.
+            let (off, modid) = if oi == 0 { (app_tls_off, 1) } else { (0, (oi + 1) as u64) };
+            relocate_obj(o, &map, off, modid);
+        }
         // Initializers run dependency-first (deps were pushed after the app).
         for o in objs.iter().rev() { run_init(o); }
         entry
