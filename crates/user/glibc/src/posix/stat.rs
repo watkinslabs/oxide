@@ -76,6 +76,9 @@ const _: () = {
 };
 
 #[cfg(feature = "freestanding")]
+pub(crate) use exports::stat_raw;
+
+#[cfg(feature = "freestanding")]
 mod exports {
     use super::stat;
     use crate::arch::syscall::sys4;
@@ -85,6 +88,12 @@ mod exports {
 
     const AT_SYMLINK_NOFOLLOW: usize = 0x100;
     const AT_EMPTY_PATH: usize = 0x1000;
+
+    // crate-internal stat for glob's GLOB_MARK (buf is a raw byte buffer).
+    pub(crate) unsafe fn stat_raw(path: *const u8, buf: *mut u8) -> i32 {
+        // SAFETY: path NUL-terminated; buf is ≥ sizeof(struct stat) bytes.
+        unsafe { statat(AT_FDCWD, path, buf as *mut stat, 0) }
+    }
 
     unsafe fn statat(dirfd: i32, path: *const u8, buf: *mut stat, flags: usize) -> i32 {
         // SAFETY: path NUL-terminated (or "" with AT_EMPTY_PATH); buf is a
