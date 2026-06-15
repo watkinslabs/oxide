@@ -18,6 +18,9 @@ pub extern "C" fn labs(x: i64) -> i64 { x.wrapping_abs() }
 // # C: long long llabs(long long)
 #[no_mangle]
 pub extern "C" fn llabs(x: i64) -> i64 { x.wrapping_abs() }
+// # C: intmax_t imaxabs(intmax_t) — intmax_t is i64 on LP64
+#[no_mangle]
+pub extern "C" fn imaxabs(x: i64) -> i64 { x.wrapping_abs() }
 
 // # C: div_t div(int num, int den)
 #[no_mangle]
