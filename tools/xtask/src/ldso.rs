@@ -105,6 +105,7 @@ fn check_libc_linked_x86(ld_abs: &std::path::Path) -> Result<(), u8> {
 
     let mut cc = Command::new("cc");
     cc.args(["-fPIE", "-pie", "-nostdlib", "-nostartfiles", "-Wl,-e,_start",
+             "-Wl,--allow-shlib-undefined", // libc.so.6's _dl_* resolve at runtime
              &format!("-Wl,--dynamic-linker={}", ld_abs.display()),
              &format!("-Wl,-rpath,{}", dirabs.display()),
              &format!("-L{}", dirabs.display()), "-l:libc.so.6",
@@ -145,9 +146,51 @@ fn check_tls_pie_x86(ld_abs: &std::path::Path) -> Result<(), u8> {
     eprintln!("xtask ldso: tls exit={code} (want 7 = __thread tvar)");
     if code == 7 {
         eprintln!("xtask ldso: G12g rtld static-TLS run PASS");
-        Ok(())
     } else {
         eprintln!("xtask ldso: G12g rtld static-TLS run FAIL");
+        return Err(1);
+    }
+    check_dlopen_x86(ld_abs)
+}
+
+// dlopen("libfoo.so")+dlsym("foo") from a libc.so.6-linked PIE through our ld:
+// proves dlopen/dlsym + the rtld-in-resolution-scope path end-to-end.
+fn check_dlopen_x86(ld_abs: &std::path::Path) -> Result<(), u8> {
+    let so = crate::glibc::sharedlib_path(X86);
+    if !so.exists() { return Err(1); }
+    let dir = PathBuf::from("target/ldso-dynroot");
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::copy(&so, dir.join("libc.so.6")).map_err(|_| 1u8)?;
+    let dirabs = std::fs::canonicalize(&dir).map_err(|_| 1u8)?;
+
+    // libfoo.so: tiny self-contained shared lib (no libc) in the search dir.
+    let mut foo = Command::new("cc");
+    foo.args(["-shared", "-fPIC", "-nostdlib", "userspace/ldso_smoke/foo.c",
+              "-o", dir.join("libfoo.so").to_str().unwrap()]);
+    run(foo)?;
+
+    let bin = "target/ldso-dlopen-pie";
+    let mut cc = Command::new("cc");
+    cc.args(["-fPIE", "-pie", "-nostdlib", "-nostartfiles", "-Wl,-e,_start",
+             "-Wl,--allow-shlib-undefined", // libc.so.6's _dl_* resolve at runtime
+             &format!("-Wl,--dynamic-linker={}", ld_abs.display()),
+             &format!("-Wl,-rpath,{}", dirabs.display()),
+             &format!("-L{}", dirabs.display()), "-l:libc.so.6",
+             "userspace/ldso_smoke/dlopen_pie.c", "-o", bin]);
+    run(cc)?;
+
+    eprintln!("xtask ldso: running {bin} (dlopen libfoo.so) through our ld");
+    let out = Command::new(format!("./{bin}"))
+        .env("LD_LIBRARY_PATH", &dirabs)
+        .output()
+        .map_err(|e| { eprintln!("xtask ldso: run failed: {e}"); 1u8 })?;
+    let code = out.status.code().unwrap_or(-1);
+    eprintln!("xtask ldso: dlopen exit={code} (want 99 = foo())");
+    if code == 99 {
+        eprintln!("xtask ldso: G12h rtld dlopen/dlsym run PASS — G12 dynamic linker COMPLETE");
+        Ok(())
+    } else {
+        eprintln!("xtask ldso: G12h rtld dlopen/dlsym run FAIL");
         Err(1)
     }
 }

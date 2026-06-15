@@ -84,7 +84,9 @@ fn check_hello_x86() -> Result<(), u8> {
     run(cc)?;
 
     let mut ld = Command::new("cc");
-    ld.args(["-static", "-no-pie", "-nostdlib", obj]);
+    // --gc-sections drops unreferenced libc fns (e.g. dlopen, whose _dl_*
+    // come from the rtld at runtime) so they don't break a static link.
+    ld.args(["-static", "-no-pie", "-nostdlib", "-Wl,--gc-sections", obj]);
     ld.arg(&lib);
     ld.args(["-o", bin]);
     run(ld)?;
