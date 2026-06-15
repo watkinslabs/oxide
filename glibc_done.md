@@ -505,3 +505,8 @@ char * dngettext (const char *domain, const char *msgid1, const char *msgid2, un
 char * dcngettext (const char *domain, const char *msgid1, const char *msgid2, unsigned long int n, int category)
 char * textdomain (const char *domainname)
 char * bindtextdomain (const char *domainname, const char *dirname)
+FILE * setmntent (const char *file, const char *mode)
+int endmntent (FILE *stream)
+struct mntent * getmntent (FILE *stream)
+struct mntent * getmntent_r (FILE *stream, struct mntent *result, char *buffer, int bufsize)
+char * hasmntopt (const struct mntent *mnt, const char *opt)
