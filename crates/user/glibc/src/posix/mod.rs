@@ -34,6 +34,8 @@ pub mod wordexp;
 #[cfg(feature = "freestanding")]
 pub mod mntent;
 #[cfg(feature = "freestanding")]
+pub mod fstab;
+#[cfg(feature = "freestanding")]
 pub mod ftw;
 #[cfg(feature = "freestanding")]
 pub mod sched;
