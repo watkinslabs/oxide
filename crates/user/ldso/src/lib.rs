@@ -25,6 +25,12 @@ pub mod cache;
 pub mod dynamic;
 pub mod linkmap;
 pub mod loader;
+#[cfg(feature = "freestanding")]
+pub mod link;
+#[cfg(feature = "freestanding")]
+pub mod mem;
+#[cfg(feature = "freestanding")]
+pub mod objview;
 pub mod phdr;
 pub mod reloc;
 pub mod relocate;
