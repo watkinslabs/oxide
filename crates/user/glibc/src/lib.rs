@@ -64,6 +64,7 @@ pub mod termios; //  G17
 pub mod setjmp; //  G17
 pub mod start; //  G2 csu / __libc_start_main
 pub mod regex; //  G7+ (<regex.h> ERE engine)
+pub mod misc; //  G8 (<syslog.h>,<err.h>,<error.h>)
 pub mod obstack; //  <obstack.h> GNU memory pools
 
 // Freestanding final-artifact requirements (cdylib/staticlib). Active
