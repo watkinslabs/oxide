@@ -1,1 +1,6 @@
-//! signal — glibc-ABI surface, one fn/file (docs/59§3). Implemented at G9 (docs/59§6).
+//! signal — glibc-ABI (docs/59§3, §6 G9). G9a: sigset_t ops (oracle) +
+//! mask/kill/raise syscall wrappers. G9b adds sigaction + the
+//! rt_sigreturn restorer trampoline + signal().
+pub mod sigset;
+#[cfg(feature = "freestanding")]
+pub mod sig;
