@@ -11,6 +11,18 @@ use crate::internal::nr;
 
 pub const AT_FDCWD: i32 = -100;
 
+// open(2) flags (asm-generic / x86_64 — same values both arches).
+pub const O_RDONLY: i32 = 0;
+pub const O_WRONLY: i32 = 1;
+pub const O_RDWR: i32 = 2;
+pub const O_CREAT: i32 = 0o100;
+pub const O_TRUNC: i32 = 0o1000;
+pub const O_APPEND: i32 = 0o2000;
+// lseek(2) whence.
+pub const SEEK_SET: i32 = 0;
+pub const SEEK_CUR: i32 = 1;
+pub const SEEK_END: i32 = 2;
+
 // # C: ssize_t write(int fd, const void *buf, size_t n)
 #[no_mangle]
 pub unsafe extern "C" fn write(fd: i32, buf: *const u8, n: usize) -> isize {

@@ -9,6 +9,8 @@ pub mod file;
 #[cfg(feature = "freestanding")]
 pub mod printf;
 #[cfg(feature = "freestanding")]
+pub mod read;
+#[cfg(feature = "freestanding")]
 pub mod scanf;
 #[cfg(feature = "freestanding")]
 pub mod put;
