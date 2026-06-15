@@ -5,6 +5,8 @@
 //! the host's; setlocale/localeconv/nl_langinfo C ABI are freestanding.
 #![allow(clippy::upper_case_acronyms)]
 
+pub mod wchar;
+
 pub const LC_CTYPE: i32 = 0;
 pub const LC_NUMERIC: i32 = 1;
 pub const LC_TIME: i32 = 2;
