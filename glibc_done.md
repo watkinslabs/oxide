@@ -512,3 +512,5 @@ struct mntent * getmntent_r (FILE *stream, struct mntent *result, char *buffer, 
 char * hasmntopt (const struct mntent *mnt, const char *opt)
 int ftw (const char *filename, __ftw_func_t func, int descriptors)
 int nftw (const char *filename, __nftw_func_t func, int descriptors, int flag)
+int scandir (const char *dir, struct dirent ***namelist, int (*selector) (const struct dirent *), int (*cmp) (const struct dirent **, const struct dirent **))
+int scandir64 (const char *dir, struct dirent64 ***namelist, int (*selector) (const struct dirent64 *), int (*cmp) (const struct dirent64 **, const struct dirent64 **))
