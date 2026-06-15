@@ -21,6 +21,7 @@ extern "C" {
     fn fopen(path: *const u8, mode: *const u8) -> *mut FILE;
     fn fclose(f: *mut FILE) -> i32;
     fn fgets(buf: *mut u8, size: i32, f: *mut FILE) -> *mut u8;
+    fn fputc(c: i32, f: *mut FILE) -> i32;
 }
 
 fn is_ws(c: u8) -> bool { c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' }
@@ -60,6 +61,7 @@ unsafe fn parse(line: *mut u8, m: *mut mntent) -> bool {
             if *line.add(i) != 0 { *line.add(i) = 0; i += 1; }
         }
         if fc < 4 { return false; } // need at least fsname/dir/type/opts
+        for fp in fields.iter().take(4) { unescape(*fp); } // decode \\0NN escapes in place
         (*m).mnt_fsname = fields[0];
         (*m).mnt_dir = fields[1];
         (*m).mnt_type = fields[2];
@@ -69,6 +71,26 @@ unsafe fn parse(line: *mut u8, m: *mut mntent) -> bool {
         true
     }
 }
+
+// Decode glibc's \\0NN octal escapes (\\040 \\011 \\012 \\134) in place; a
+// 3-digit octal run after a backslash collapses to one byte, shifting the tail.
+unsafe fn unescape(s: *mut u8) {
+    // SAFETY: s is a NUL-terminated field within the line buffer; rewriting it
+    // in place only shrinks it, so it stays within its original allocation.
+    unsafe {
+        if s.is_null() { return; }
+        let (mut r, mut w) = (0usize, 0usize);
+        loop {
+            let c = *s.add(r);
+            if c == 0 { *s.add(w) = 0; return; }
+            if c == b'\\' && is_oct(*s.add(r + 1)) && is_oct(*s.add(r + 2)) && is_oct(*s.add(r + 3)) {
+                let v = ((*s.add(r + 1) - b'0') << 6) | ((*s.add(r + 2) - b'0') << 3) | (*s.add(r + 3) - b'0');
+                *s.add(w) = v; w += 1; r += 4;
+            } else { *s.add(w) = c; w += 1; r += 1; }
+        }
+    }
+}
+fn is_oct(c: u8) -> bool { (b'0'..=b'7').contains(&c) }
 
 unsafe fn atoi_(s: *mut u8) -> i32 {
     // SAFETY: s is a NUL-terminated field; parse a leading signed decimal.
@@ -135,5 +157,65 @@ pub unsafe extern "C" fn hasmntopt(m: *const mntent, opt: *const u8) -> *mut u8 
             if *p == 0 { return core::ptr::null_mut(); }
             p = p.add(1);
         }
+    }
+}
+
+// Write one byte to f, escaping space/tab/newline/backslash as octal \\0NN
+// per glibc's mangle_mntent so the line round-trips through getmntent's split.
+unsafe fn put_escaped(f: *mut FILE, c: u8) {
+    // SAFETY: f is a writable FILE* opened in append/write mode by the caller
+    // of addmntent; we emit either c or its 3-digit octal escape sequence.
+    unsafe {
+        let oct = match c { b' ' => Some(0o40u8), b'\t' => Some(0o11), b'\n' => Some(0o12), b'\\' => Some(0o134), _ => None };
+        match oct {
+            None => { fputc(c as i32, f); }
+            Some(v) => {
+                fputc(b'\\' as i32, f);
+                fputc((b'0' + (v >> 6)) as i32, f);
+                fputc((b'0' + ((v >> 3) & 7)) as i32, f);
+                fputc((b'0' + (v & 7)) as i32, f);
+            }
+        }
+    }
+}
+
+// Write a NUL-terminated field with escaping, or "-" if the pointer is null
+// (glibc emits "-" for a missing fsname/dir/type/opts so the line stays 6-col).
+unsafe fn put_field(f: *mut FILE, s: *const u8) {
+    // SAFETY: s is null or a NUL-terminated C string supplied in the mntent;
+    // emit each byte through put_escaped into the append-mode FILE* f.
+    unsafe {
+        if s.is_null() { fputc(b'-' as i32, f); return; }
+        let mut i = 0; let mut any = false;
+        while *s.add(i) != 0 { put_escaped(f, *s.add(i)); i += 1; any = true; }
+        if !any { fputc(b'-' as i32, f); }
+    }
+}
+
+unsafe fn put_int(f: *mut FILE, mut v: i32) {
+    // SAFETY: f is the append-mode FILE*; emit a signed decimal integer field.
+    unsafe {
+        if v < 0 { fputc(b'-' as i32, f); v = -v; }
+        let mut digs = [0u8; 12]; let mut n = 0;
+        loop { digs[n] = b'0' + (v % 10) as u8; v /= 10; n += 1; if v == 0 { break; } }
+        while n > 0 { n -= 1; fputc(digs[n] as i32, f); }
+    }
+}
+
+// # C: int addmntent(FILE *stream, const struct mntent *mnt)
+#[no_mangle]
+pub unsafe extern "C" fn addmntent(f: *mut FILE, m: *const mntent) -> i32 {
+    // SAFETY: f is a FILE* opened for append/write; m is a valid mntent whose
+    // string fields are null or NUL-terminated. Emit one fstab line with field
+    // escaping, returning 0 on success (1 on a null arg, per glibc EOF guard).
+    unsafe {
+        if f.is_null() || m.is_null() { return 1; }
+        put_field(f, (*m).mnt_fsname); fputc(b' ' as i32, f);
+        put_field(f, (*m).mnt_dir);    fputc(b' ' as i32, f);
+        put_field(f, (*m).mnt_type);   fputc(b' ' as i32, f);
+        put_field(f, (*m).mnt_opts);   fputc(b' ' as i32, f);
+        put_int(f, (*m).mnt_freq);     fputc(b' ' as i32, f);
+        put_int(f, (*m).mnt_passno);   fputc(b'\n' as i32, f);
+        0
     }
 }

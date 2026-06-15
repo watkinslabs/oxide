@@ -7,3 +7,7 @@ pub mod strftime;
 pub mod cfmt;
 #[cfg(feature = "freestanding")]
 pub mod clock;
+#[cfg(feature = "freestanding")]
+pub mod adjtime;
+#[cfg(feature = "freestanding")]
+pub mod getdate;
