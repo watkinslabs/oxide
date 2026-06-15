@@ -137,7 +137,7 @@ fn input_echoes_to_screen_and_read_returns_line() {
     tty.receive_from_driver(b"ls -l\n");
     // Program read returns the cooked line (with trailing \n).
     let mut buf = [0u8; 32];
-    let got = tty.read(&mut buf);
+    let got = tty.read(&mut buf).bytes_or_zero();
     assert_eq!(&buf[..got], b"ls -l\n");
     // Echo went out driver_write → emulator → Vc: screen shows "ls -l".
     assert!(row(&tty, 0).starts_with("ls -l"), "row0 = {:?}", row(&tty, 0));
@@ -163,7 +163,7 @@ fn password_mode_echo_off_reads_line_but_screen_blank() {
 
     tty.receive_from_driver(b"secret\n");
     let mut buf = [0u8; 32];
-    let got = tty.read(&mut buf);
+    let got = tty.read(&mut buf).bytes_or_zero();
     assert_eq!(&buf[..got], b"secret\n");
     // Nothing echoed → screen row 0 is all blanks.
     assert_eq!(row(&tty, 0).trim_end(), "");
@@ -200,7 +200,7 @@ fn backspace_editing_visible_on_screen() {
     // ECHOE echoes "\b \b": emulator BS then space then BS erases the cell.
     tty.receive_from_driver(b"abX\x7fc\n");
     let mut buf = [0u8; 32];
-    let got = tty.read(&mut buf);
+    let got = tty.read(&mut buf).bytes_or_zero();
     assert_eq!(&buf[..got], b"abc\n", "cooked line should be abc");
     // Screen shows "abc" — the X was erased by the echoed \b \b.
     assert_eq!(row(&tty, 0).trim_end(), "abc", "row0 = {:?}", row(&tty, 0));
@@ -213,7 +213,7 @@ fn write_then_input_share_the_active_vc() {
     tty.write(b"$ ");
     tty.receive_from_driver(b"echo hi\n");
     let mut buf = [0u8; 32];
-    let got = tty.read(&mut buf);
+    let got = tty.read(&mut buf).bytes_or_zero();
     assert_eq!(&buf[..got], b"echo hi\n");
     // Row 0: prompt then echoed command.
     assert!(row(&tty, 0).starts_with("$ echo hi"), "row0 = {:?}", row(&tty, 0));
