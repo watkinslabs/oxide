@@ -3,6 +3,7 @@
 pub mod atrig;
 pub mod basic;
 pub mod exp;
+pub mod hyper;
 pub mod log;
 pub mod pow;
 pub mod sqrt;
