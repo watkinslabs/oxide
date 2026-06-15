@@ -6,3 +6,7 @@ pub mod mman;
 pub mod ids;
 #[cfg(feature = "freestanding")]
 pub mod process;
+#[cfg(feature = "freestanding")]
+pub mod fd;
+#[cfg(feature = "freestanding")]
+pub mod fs;
