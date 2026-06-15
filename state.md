@@ -14,8 +14,8 @@ x86_64+aarch64. This is the verify-left engine — keep adding programs.
 
 ## Progress tracker (per user request) — THREE files now
 - `glibc_done.md` — functions libc.so.6 exports (`nm -D`), harness-validated.
-  **813 / 1297**.
-- `glibc.md` — achievable TODO not yet exported. **352**.
+  **987 / 1303**.
+- `glibc.md` — achievable TODO not yet exported. **182**.
 - `glibc_unsupported.md` — **132** genuinely-blocked: 122 long-double (`*l`,
   `*l` complex, strtold/wcstold, qecvt/qfcvt/qgcvt, strfroml, nexttoward*) —
   x86_64 `long double`=80-bit f80, Rust has no f80 so the extern-C ABI is
