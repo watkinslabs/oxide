@@ -131,6 +131,31 @@ mod exports {
         // SAFETY: LP64 unsigned long long == unsigned long; forwards.
         unsafe { strtoul_impl(s, endptr, base) }
     }
+    // <inttypes.h>: intmax_t/uintmax_t are i64/u64 on LP64 == long long.
+    // # C: intmax_t strtoimax(const char *, char **, int)
+    #[no_mangle]
+    pub unsafe extern "C" fn strtoimax(s: *const u8, endptr: *mut *mut u8, base: i32) -> i64 {
+        // SAFETY: LP64 intmax_t == long; forwards strtol_impl.
+        unsafe { strtol_impl(s, endptr, base) }
+    }
+    // # C: uintmax_t strtoumax(const char *, char **, int)
+    #[no_mangle]
+    pub unsafe extern "C" fn strtoumax(s: *const u8, endptr: *mut *mut u8, base: i32) -> u64 {
+        // SAFETY: LP64 uintmax_t == unsigned long; forwards strtoul_impl.
+        unsafe { strtoul_impl(s, endptr, base) }
+    }
+    // # C: intmax_t __isoc23_strtoimax(const char *, char **, int)
+    #[no_mangle]
+    pub unsafe extern "C" fn __isoc23_strtoimax(s: *const u8, endptr: *mut *mut u8, base: i32) -> i64 {
+        // SAFETY: same contract as strtoimax; forwards strtol_impl.
+        unsafe { strtol_impl(s, endptr, base) }
+    }
+    // # C: uintmax_t __isoc23_strtoumax(const char *, char **, int)
+    #[no_mangle]
+    pub unsafe extern "C" fn __isoc23_strtoumax(s: *const u8, endptr: *mut *mut u8, base: i32) -> u64 {
+        // SAFETY: same contract as strtoumax; forwards strtoul_impl.
+        unsafe { strtoul_impl(s, endptr, base) }
+    }
     // # C: int atoi(const char *s)
     #[no_mangle]
     pub unsafe extern "C" fn atoi(s: *const u8) -> i32 {

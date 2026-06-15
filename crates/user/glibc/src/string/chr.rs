@@ -65,6 +65,38 @@ pub(crate) unsafe fn strstr_impl(hay: *const u8, needle: *const u8) -> *mut u8 {
     }
 }
 
+/// # C: void *rawmemchr(const void *s, int c) — memchr with no count
+pub(crate) unsafe fn rawmemchr_impl(s: *const u8, c: i32) -> *mut u8 {
+    // SAFETY: caller guarantees byte c occurs at or after s (GNU contract); we
+    // scan forward without a length bound and stop at the first match.
+    unsafe {
+        let cb = c as u8;
+        let mut i = 0;
+        loop { if *s.add(i) == cb { return s.add(i) as *mut u8; } i += 1; }
+    }
+}
+
+#[inline]
+fn lc(b: u8) -> u8 { if b.is_ascii_uppercase() { b + 32 } else { b } }
+
+/// # C: char *strcasestr(const char *hay, const char *needle) — case-insensitive
+pub(crate) unsafe fn strcasestr_impl(hay: *const u8, needle: *const u8) -> *mut u8 {
+    // SAFETY: C strcasestr contract — both NUL-terminated; naive O(n*m) scan
+    // comparing ASCII-lowercased bytes, staying within each string's bounds.
+    unsafe {
+        let nlen = strlen_impl(needle);
+        if nlen == 0 { return hay as *mut u8; }
+        let mut i = 0;
+        loop {
+            let mut j = 0;
+            while j < nlen && lc(*hay.add(i + j)) == lc(*needle.add(j)) { j += 1; }
+            if j == nlen { return hay.add(i) as *mut u8; }
+            if *hay.add(i) == 0 { return core::ptr::null_mut(); }
+            i += 1;
+        }
+    }
+}
+
 unsafe fn in_set(set: *const u8, b: u8) -> bool {
     // SAFETY: set is a NUL-terminated string; scan stops at terminator.
     unsafe {
@@ -133,6 +165,18 @@ mod exports {
         // SAFETY: forwards the C strrchr contract to strrchr_impl unchanged.
         unsafe { strrchr_impl(s, c) }
     }
+    // # C: void *rawmemchr(const void *s, int c)
+    #[no_mangle]
+    pub unsafe extern "C" fn rawmemchr(s: *const u8, c: i32) -> *mut u8 {
+        // SAFETY: forwards the GNU rawmemchr contract to rawmemchr_impl.
+        unsafe { rawmemchr_impl(s, c) }
+    }
+    // # C: char *strcasestr(const char *hay, const char *needle)
+    #[no_mangle]
+    pub unsafe extern "C" fn strcasestr(hay: *const u8, needle: *const u8) -> *mut u8 {
+        // SAFETY: forwards the GNU strcasestr contract to strcasestr_impl.
+        unsafe { strcasestr_impl(hay, needle) }
+    }
     // # C: char *strstr(const char *hay, const char *needle)
     #[no_mangle]
     pub unsafe extern "C" fn strstr(hay: *const u8, needle: *const u8) -> *mut u8 {
@@ -168,6 +212,21 @@ mod tests {
         let mut v: Vec<u8> = bytes.iter().map(|&b| if b == 0 { 1 } else { b }).collect();
         v.push(0);
         v
+    }
+    #[test]
+    fn strcasestr_and_rawmemchr() {
+        // SAFETY: all buffers below are NUL-terminated / contain the target byte.
+        unsafe {
+            let h = cstr(b"Hello World");
+            let n = cstr(b"WORLD");
+            let r = strcasestr_impl(h.as_ptr(), n.as_ptr());
+            assert_eq!(r as usize - h.as_ptr() as usize, 6);
+            assert!(strcasestr_impl(h.as_ptr(), cstr(b"xyz").as_ptr()).is_null());
+            let s = cstr(b"abcXdef");
+            assert_eq!(rawmemchr_impl(s.as_ptr(), b'X' as i32) as usize - s.as_ptr() as usize, 3);
+            // rawmemchr can target the NUL terminator (common glibc use)
+            assert_eq!(rawmemchr_impl(s.as_ptr(), 0) as usize - s.as_ptr() as usize, 7);
+        }
     }
     proptest! {
         #[test]
