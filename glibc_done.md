@@ -1,7 +1,6 @@
 # glibc — implemented (oxide-libc)
 
-Functions our libc.so.6 exports, validated byte-exact vs host glibc
-via `xtask glibc-test`. Moved out of glibc.md (the remaining TODO list).
+Exports of our libc.so.6, harness-validated vs host glibc.
 
 time_t time (time_t *result)
 size_t mbstowcs (wchar_t *wstring, const char *string, size_t size)
@@ -456,3 +455,9 @@ double atan2 (double y, double x)
 float atan2f (float y, float x)
 int setuid (uid_t newuid)
 int sigprocmask (int how, const sigset_t *restrict set, sigset_t *restrict oldset)
+wchar_t * wcpncpy (wchar_t *restrict wto, const wchar_t *restrict wfrom, size_t size)
+wchar_t * wcschrnul (const wchar_t *wstring, wchar_t wc)
+wchar_t * wcpcpy (wchar_t *restrict wto, const wchar_t *restrict wfrom)
+size_t wcsnlen (const wchar_t *ws, size_t maxlen)
+int wcscoll (const wchar_t *ws1, const wchar_t *ws2)
+size_t wcsxfrm (wchar_t *restrict wto, const wchar_t *wfrom, size_t size)
