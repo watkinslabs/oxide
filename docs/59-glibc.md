@@ -99,7 +99,7 @@ Each sub-phase: small files, hosted oracle test vs host glibc, then boot-smoke a
 | G3 | `arch/<arch>/syscall.rs` + `internal/` + raw unistd (read/write/open/close/brk/mmap/exit_group) | static `hello` via real syscalls both arches |
 | G4 | `string/` + `ctype/` (one fn/file) + IFUNC variants | oracle proptest vs host glibc 10M ops |
 | G5 | `malloc/` allocator | malloc oracle + stress (mtmalloc/mmchurn ports) |
-| G6 | `stdio/` FILE + printf/scanf/buffering. G6a=printf format engine (int/str/char/ptr exact, float via core::fmt) + snprintf family + write-side (printf/fprintf/puts/fputs/putchar/fwrite) unbuffered + FILE ABI layout + std streams. Follow-ups: read-side (fopen/fread/fgets/getline/scanf), stdio buffering + putc/getc-macro (__overflow/__uflow), exact float dtoa. | printf/snprintf oracle vs host; `hello` printf runs |
+| G6 | `stdio/` FILE + printf/scanf/buffering. G6a=printf format engine (int/str/char/ptr exact, float via core::fmt) + snprintf family + write-side (printf/fprintf/puts/fputs/putchar/fwrite) unbuffered + FILE ABI layout + std streams. G6b=scanf engine + sscanf/vsscanf. G6c=read-side (fopen/fdopen/freopen/fclose/fread/fgetc/getc/getchar/ungetc/fgets/getline/getdelim/fseek/ftell/rewind) + scanf/fscanf/vfscanf over a FILE source. Follow-ups: stdio buffering + putc/getc-macro (__overflow/__uflow), exact float dtoa. | printf/snprintf/sscanf oracle vs host; `hello` printf + file round-trip + fscanf runs |
 | G7 | `stdlib/` env/exit/str→num/qsort/bsearch | oracle |
 | G8 | `posix/` fork/exec/wait/glob/fnmatch/regex/getopt | busybox-class static bin runs |
 | G9 | `signal/` sigaction/restorer/mask/raise/abort | signal smokes (existing ports) |
