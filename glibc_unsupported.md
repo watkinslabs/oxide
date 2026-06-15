@@ -1,14 +1,12 @@
 # glibc — unsupported (cannot implement)
 
-Hard-blocked, not deferred. Revisit only if the blocker is removed.
+Hard-blocked, not deferred.
 
+## long double / long-double-typed: 126
+x86_64 `long double` = 80-bit f80; Rust has no f80 so the extern-C ABI is inexpressible.
+
+## long double / long-double-typed (125)
 ## long double / long-double-typed (124)
-BLOCKER: x86_64 `long double` = 80-bit x87 `f80`; Rust has no f80, so the
-extern-C ABI is inexpressible. (aarch64 = binary128 = nightly f128, but a
-single portable signature is needed for lockstep.) Needs an 80-bit
-soft-float + x87-ABI shim. Includes `*l` math/complex, strtold/wcstold,
-qecvt/qfcvt/qgcvt, strfroml, nexttoward*.
-
 ## long double `*l` / long-double-typed (122)
 taking or returning `long double` cannot be expressed at all (aarch64
 long double sinhl (long double x)
@@ -134,8 +132,35 @@ complex long double casinl (complex long double z)
 complex long double cacosl (complex long double z)
 complex long double catanl (complex long double z)
 
-## PowerPC builtins (10)
-BLOCKER: `__ppc_*` are PowerPC-only; oxide targets x86_64+aarch64 only.
+## header-only macros / compiler builtins: 23
+Never a libc.so.6 symbol. obstack_* expand in <obstack.h> over the implemented _obstack_* fns; alloca is __builtin_alloca; DTTOIF/IFTODT/DES_FAILED are macros.
+
+void obstack_blank (struct obstack *obstack-ptr, int size)
+void obstack_grow (struct obstack *obstack-ptr, void *data, int size)
+void obstack_grow0 (struct obstack *obstack-ptr, void *data, int size)
+void obstack_1grow (struct obstack *obstack-ptr, char c)
+void obstack_ptr_grow (struct obstack *obstack-ptr, void *data)
+void obstack_int_grow (struct obstack *obstack-ptr, int data)
+void * obstack_finish (struct obstack *obstack-ptr)
+int obstack_object_size (struct obstack *obstack-ptr)
+int DES_FAILED (int err)
+void * obstack_alloc (struct obstack *obstack-ptr, int size)
+void * obstack_copy (struct obstack *obstack-ptr, void *address, int size)
+void * obstack_copy0 (struct obstack *obstack-ptr, void *address, int size)
+int obstack_init (struct obstack *obstack-ptr)
+int obstack_room (struct obstack *obstack-ptr)
+void obstack_1grow_fast (struct obstack *obstack-ptr, char c)
+void obstack_ptr_grow_fast (struct obstack *obstack-ptr, void *data)
+void obstack_int_grow_fast (struct obstack *obstack-ptr, int data)
+void obstack_blank_fast (struct obstack *obstack-ptr, int size)
+int IFTODT (mode_t mode)
+mode_t DTTOIF (int dtype)
+void * alloca (size_t size)
+void * obstack_base (struct obstack *obstack-ptr)
+void * obstack_next_free (struct obstack *obstack-ptr)
+
+## PowerPC builtins: 10
+__ppc_* are PowerPC-only; oxide targets x86_64+aarch64.
 
 uint64_t __ppc_get_timebase (void)
 uint64_t __ppc_get_timebase_freq (void)
