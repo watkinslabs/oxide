@@ -1,76 +1,80 @@
 # state.md — session handoff
 
 ## Headline
-**glibc full-surface completion** toward G19d (musl→glibc vendor migration).
-The entire libc-FUNCTION surface the 95 vendor binaries reference is now done.
-Conformance **144/144** (`cargo run -q -p xtask -- glibc-test`). Both arches
-build + boot to `oxide login:` (x86 KVM, arm `make smoke-arm` ~58s).
+**glibc full-compliance build-out** (docs/59 §9) toward G19d. Directive: implement
+EVERYTHING achievable, value-agnostic. Conformance **154/154**
+(`cargo run -q -p xtask -- glibc-test`); both arches build + boot (`oxide login:`).
+~2000 symbols exported (from ~1486 at run start). glibc.md is the live TODO.
 
-## Landed this session (merged to main, F473–F487 + D100)
-- pthread FULL surface (#2037–2042): control/sched, barriers+spinlocks, attr
-  extensions, mutexattr/condattr/rwlockattr + timed/clock locks,
-  cancel/timedjoin/getattr_np/atfork. pthread gap = 0.
-- C11 <threads.h> (#2043). modern syscalls (#2044: close_range/getdents64/
-  renameat2/getcpu/mount-API/fanotify/pidfd/process_vm/epoll_pwait2/ptrace/
-  arch_prctl). locale `_l` (#2045, incl. __isoc23_strto*_l; newlocale returns a
-  real __locale_struct — <ctype.h> inlines is*_l through it). eaccess/
-  sigisemptyset/__fpclassify/gets (#2046). putgrent/putspent/lckpwdf/ulckpwdf
-  (#2047). in6addr_any/loopback (#2048). mbrtoc32/c32rtomb (#2049).
-  wcwidth/wcswidth (#2050). clone(2) (#2051, naked fn). dl_iterate_phdr (#2052,
-  ldso _dl_iterate_phdr + glibc wrapper). Full audit doc (#2036, docs/59 §9).
+## Done this run (merged, F473–F497 + D/B fixes)
+pthread FULL surface (80), C11 threads (25), modern syscalls (~34), locale `_l`
+(~28 + __isoc23_strto*_l), account-db (putgrent/putspent/lckpwdf/ulckpwdf),
+eaccess/euidaccess/sigisemptyset/sigorset/sigandset/__fpclassify/gets, in6addr,
+mbrtoc32/c32rtomb, wcwidth/wcswidth, clone(2), dl_iterate_phdr, _FloatN math
+aliases (246), ether_aton/ntoa + arc4random, acct/clock_getcpuclockid/execvpe,
+C23 fmaximum/fminimum (16), netdb _r (serv/proto/net), dlvsym/dladdr1/dlmopen/
+dlinfo, C23 *pi trig + *m1/*p1 (math/cpi.rs), /etc/ethers DB (ether_line/hostton/
+ntohost), /etc/ttys DB (getttyent family).
 
-## Remaining vendor gap = 8 symbols, ONE blocker (docs/59 §9.4)
-`__environ`/`_environ`/`__signgam`/`__tzname`/`__timezone`/`__daylight`/
-`__progname`/`__progname_full` — global_asm `.set` aliases of canonical Rust
-statics. EXPORT is solved (supplementary `--version-script` in build_sharedlib
-re-promotes them; verified all land at the canonical address). BLOCKER (precise,
-docs/59 §9.4 #2): ldso ALREADY does R_*_COPY (relocate.rs Kind::Copy memcpy).
-The real issue is INTERPOSITION codegen: our libc reaches its own `environ`/
-`signgam`/`tzname` DIRECTLY (PC-relative, same-cdylib #[no_mangle] static), not
-via the GOT, so libc's startup writes go to libc's private storage while the
-exe's COPY-reloc slot keeps the pre-startup null → desync. Fix = force
-GOT-indirect access to copy-relocatable exported data inside libc (PIC
-visibility/codegen: turn off direct-access-external-data, or a GOT-load shim) so
-the exe's interposing copy is the single storage. NOT a libc-wrapper or
-ld.so-COPY change. The alias export is REVERTED (useless without the codegen fix).
+## Remaining achievable clusters (DO ALL — full compliance, glibc.md §2)
+1. **Sun RPC (149)** — clnt_*/svc_*/auth_*/xdr_*/pmap_*/key_*/callrpc/registerrpc/
+   netname/ruserpass + getrpcent/byname/bynumber(+_r)/set/end. Needs XDR + RPC
+   client/server + /etc/rpc parser. Largest block; do in sub-batches (xdr first).
+2. **resolver (32)** — res_query/search/send/mkquery/nquery/nsearch/nsend/
+   gethostby*; dn_comp/dn_expand/dn_skipname; getifaddrs/freeifaddrs (netlink
+   RTM_GETADDR); getaddrinfo_a/gai_*; recvmmsg/sendmmsg; get/setsourcefilter.
+3. **gshadow (16)** — struct sgrp + getsgnam/getsgent/fgetsgent/sgetsgent/putsgent
+   (+_r)/set/end. /etc/gshadow parser (needs a libnss-crate parse_gshadow + glibc
+   side; sg_adm + sg_mem are two char** arrays — pack via a 2-list packer).
+4. **aliases (14)** — struct aliasent + getaliasbyname/getaliasent(+_r)/set/end.
+   /etc/aliases (mail) parser; self-contained in glibc.
+5. **fts/fts64 (10)** — fs-tree traversal (coreutils -R/du/find). Exact FTSENT ABI.
+6. Any stragglers: re-run the audit (below) to find remaining f32/f64 + misc.
 
-## Lower-priority full-surface (docs/59 §9.1, non-vendor)
-- `_FloatN` f32/f64 math aliases (208 map to existing libm). Export via
-  naked-fn `jmp`/`b` thunks (like clone) — bare asm `.set` is localized by
-  rustc's cdylib filter. Mechanical.
-- C23 new math (~90: sinpi/fmaximum/fminimum/narrowing fNadd) — need real impls.
-- wide `_l`, Sun RPC (135, deprecated — only if a vendor pkg links it),
-  fts/fts64 (coreutils -R; exact FTSENT ABI — substantial), crypt_* (libxcrypt).
-- Hard-blocked (NOT counted): long-double f80 + _Float128 (~560) —
-  glibc_unsupported.md. printf %Lf shim is the only worthwhile long-double piece.
+## The ONE migration blocker (docs/59 §9.4, reverted/deferred)
+8 `__`-aliased DATA symbols (__environ/_environ/__signgam/__tzname/__timezone/
+__daylight/__progname/__progname_full). Export works (version-script); but libc
+reaches its own exported data DIRECTLY not via GOT, so copy-reloc interposition
+in an executable desyncs. Fix = GOT-indirect codegen for copy-relocatable libc
+data (no rustc semantic-interposition flag → GOT shim/structural split). Likely
+moot for real GNU-ld vendor binaries — confirm in G19d. DON'T re-add the alias
+export without the codegen fix (it's useless alone; empirically verified).
 
-## The rhythm (keep using it)
-One cluster = one `F4xx` branch (read+bump counter in metadata/index.md). Add
-fns (per-arch nr in internal/nr.rs for syscalls), wire module, build BOTH arches
-(`cargo build -q -p glibc --features freestanding --target {x86_64,aarch64}-unknown-linux-gnu`),
-add `userspace/glibc_conformance/t_*.c` (diffs our libc.so.6 vs host byte-exact),
-`cargo run -q -p xtask -- glibc-test`, spec-lint clean, commit/PR/merge.
-- KEY export fact: rustc cdylib exports ONLY its `#[no_mangle]` Rust items.
-  Bare `global_asm` `.globl`/`.set` symbols are LOCALIZED out of .dynsym. To
-  export an asm symbol: a `#[unsafe(naked)] #[no_mangle]` fn (functions), or a
-  supplementary `--version-script` (data — but see §9.4 loader caveat).
-- spec-lint: `// SAFETY:` ≥30 chars immediately before `unsafe {`; `pub(crate) fn`
-  needs `/// # C:` (is_pub_fn matches `pub(crate) fn`, NOT `pub unsafe extern "C"`
-  nor `pub(crate) unsafe fn`).
+## Hard-blocked (NOT achievable — glibc_unsupported.md)
+long double `*l` (x86 f80) + `_Float128`/`_Float32x`/`_Float64x` (~700). No Rust
+extern-C type. Only worthwhile bit: a `%Lf`/`%Lg` printf/scanf asm shim.
+
+## The rhythm (proven this run)
+One cluster = one `F4xx` branch (read+bump counter in metadata/index.md). nr in
+internal/nr.rs (per-arch) for syscalls; wire the module; build BOTH arches
+(`cargo build -q -p glibc --features freestanding --target {x86_64,aarch64}-unknown-linux-gnu`);
+add `userspace/glibc_conformance/t_*.c` (diffs our libc.so.6 vs host byte-exact);
+`xtask glibc-test`; spec-lint clean; commit/PR/merge; bump glibc.md periodically.
+- Export facts: rustc cdylib exports ONLY its `#[no_mangle]` Rust items. Bare
+  `global_asm` `.set`/`.globl` are LOCALIZED → export via `#[unsafe(naked)]`
+  fns (functions) or `crates/user/glibc/version/floatn.map` (+--version-script in
+  xtask glibc build_sharedlib). Data aliases also need the §9.4 codegen.
+- spec-lint: `// SAFETY:` ≥30 chars, immediately before `unsafe {`; `pub(crate) fn`
+  needs `/// # C:` (is_pub_fn matches `pub(crate) fn`, NOT `pub unsafe extern "C"`/
+  `pub(crate) unsafe fn`). Macro-generated export fns must NOT collide with the
+  private core (name cores `k_*`).
+- Math conformance: SELECT-style (min/max) test with `==`; computed (trig/exp)
+  test with a tolerance `NEAR()` + exact-at-special-point `==`.
+- exec'ing a host binary in a test → pass a CLEAN envp (no LD_LIBRARY_PATH leak).
 - Author Chris Watkins; NO Co-Authored-By.
 
-## Verify gates / boot
+## Re-audit (find what's left)
+nm -D host glibc (libc/m/pthread/rt/dl/resolv/util/crypt/anl in /lib64) → public
+set; nm -D our target/sysroot/x86_64-unknown-linux-gnu/lib/libc.so.6; comm -23.
+Filter `^_`/`GLIBC_`/internal; drop f80/_Float128 (hard-blocked).
+
+## Verify / boot
 - x86: `OXIDE_QEMU_KVM=1 timeout 240 cargo run -q -p xtask -- grub --arch x86_64
-  --smp 1 > /tmp/b.log 2>&1` (KVM ~20s; rc=124 = booted+timed-out = ok).
-- arm: `timeout 540 make smoke-arm` (TCG ~58s to `oxide login:` — WORKS locally).
-  `pkill -x qemu-system-<arch>` (NOT -f). Don't touch image_qemu.rs/firmware.
-- conformance: `cargo run -q -p xtask -- glibc-test` (144/144). x86-only harness.
-- ldso changes are boot-critical → boot BOTH arches before push (done for #2052).
+  --smp 1 > /tmp/b.log 2>&1` (rc=124=ok). arm: `timeout 540 make smoke-arm`
+  (~58s to login, WORKS locally). `pkill -x qemu-system-<arch>`. ldso changes →
+  boot BOTH before push. conformance harness is x86-only.
 
 ## First task next session
-Either: (a) GOT-indirect codegen for copy-relocatable libc data (§9.4 #2 —
-unblocks the `__` aliases + copy-relocated canonical data), or (b) start G19d:
-rebuild the vendor packages against the glibc sysroot, retire musl. The libc
-function surface is complete enough to attempt G19d; the §9.4 data aliases may
-or may not bite depending on how vendor binaries reference them (real GNU ld
-collapses aliases at their link time, so many may already work).
+aliases DB (self-contained, §2.4) or gshadow (§2.3), then the big ones (resolver,
+Sun RPC). Or pivot to G19d (vendor rebuild on glibc) — the function surface is
+deep enough to attempt it; the §9.4 data aliases may not bite real binaries.
