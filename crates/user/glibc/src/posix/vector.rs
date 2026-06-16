@@ -61,9 +61,9 @@ pub unsafe extern "C" fn pwritev(fd: i32, iov: *const iovec, iovcnt: i32, off: i
     ret_isize(unsafe { crate::arch::syscall::sys5(nr::PWRITEV, fd as usize, iov as usize, iovcnt as usize, (off as usize) & 0xffff_ffff, (off as u64 >> 32) as usize) })
 }
 // LFS aliases — off64_t == off_t on LP64.
-// SAFETY: preadv64 == preadv; same fd + iovec contract.
+// SAFETY: preadv64 == preadv on LP64; same fd + iovec + offset contract.
 #[no_mangle] pub unsafe extern "C" fn preadv64(fd: i32, iov: *const iovec, c: i32, off: i64) -> isize { unsafe { preadv(fd, iov, c, off) } }
-// SAFETY: pwritev64 == pwritev.
+// SAFETY: pwritev64 == pwritev on LP64; same fd + iovec + offset contract.
 #[no_mangle] pub unsafe extern "C" fn pwritev64(fd: i32, iov: *const iovec, c: i32, off: i64) -> isize { unsafe { pwritev(fd, iov, c, off) } }
 
 // # C: int fcntl(int fd, int cmd, ... /* arg */)

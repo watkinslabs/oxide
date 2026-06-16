@@ -84,11 +84,11 @@ pub unsafe extern "C" fn mkostemps(template: *mut u8, suffixlen: i32, flags: i32
 }
 
 // LFS aliases — identical on LP64 (off64_t == off_t; the temp path is the same).
-// SAFETY: mkstemp64 == mkstemp; template ends in "XXXXXX".
+// SAFETY: mkstemp64 == mkstemp on LP64; template ends in the "XXXXXX" run.
 #[no_mangle] pub unsafe extern "C" fn mkstemp64(t: *mut u8) -> i32 { unsafe { mkstemp(t) } }
-// SAFETY: mkstemps64 == mkstemps.
+// SAFETY: mkstemps64 == mkstemps on LP64; "XXXXXX<suffix>" template.
 #[no_mangle] pub unsafe extern "C" fn mkstemps64(t: *mut u8, s: i32) -> i32 { unsafe { mkstemps(t, s) } }
-// SAFETY: mkostemp64 == mkostemp.
+// SAFETY: mkostemp64 == mkostemp on LP64; template + extra open flags.
 #[no_mangle] pub unsafe extern "C" fn mkostemp64(t: *mut u8, f: i32) -> i32 { unsafe { mkostemp(t, f) } }
-// SAFETY: mkostemps64 == mkostemps.
+// SAFETY: mkostemps64 == mkostemps on LP64; suffix + extra open flags.
 #[no_mangle] pub unsafe extern "C" fn mkostemps64(t: *mut u8, s: i32, f: i32) -> i32 { unsafe { mkostemps(t, s, f) } }
