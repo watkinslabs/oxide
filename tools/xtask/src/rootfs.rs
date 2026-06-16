@@ -118,23 +118,27 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // G19b: the oxide glibc-on-kernel smoke — built against OUR glibc sysroot
-    // (not musl): Scrt1.o + -l:libc.so.6 + PT_INTERP=/lib/ld-linux-<arch>.so.2.
+    // G19b/c: the oxide glibc-on-kernel smoke — built against OUR glibc sysroot
+    // (not musl): Scrt1.o + -l:libc.so.6 + PT_INTERP=/lib/ld-linux-<arch>.so.{2,1}.
     // Staged below alongside the sysroot's ld-linux/libc.so.6/folded stubs/
-    // ld.so.cache + a systemd oneshot unit (x86_64 first; aarch64 in G19c).
-    if arch == "x86_64" {
+    // ld.so.cache + a systemd oneshot unit. Both arches (G19b x86, G19c arm).
+    {
         let triple = format!("{arch}-unknown-linux-gnu");
         crate::sysroot::build_sysroot(&triple)?;
         let srlib = repo.join(format!("target/sysroot/{triple}/lib"));
-        let ld = "ld-linux-x86-64.so.2";
-        let obj = repo.join("target/g19-glibc-smoke.o");
-        let mut o = Command::new("cc");
+        let ld = if arch == "aarch64" { "ld-linux-aarch64.so.1" } else { "ld-linux-x86-64.so.2" };
+        // x86: host gcc (targets x86_64). arm: the vendored aarch64 cross driver.
+        // -nostdlib keeps the driver from injecting its own (musl) crt/specs —
+        // we supply our Scrt1.o + libc.so.6, so the binary is pure oxide-glibc.
+        let smoke_cc: std::path::PathBuf = if arch == "aarch64" { cc.clone() } else { "cc".into() };
+        let obj = repo.join(format!("target/g19-glibc-smoke-{arch}.o"));
+        let mut o = Command::new(&smoke_cc);
         o.args(["-c", "-O2", "-fPIE", "-fno-stack-protector",
                 repo.join("userspace/g19_glibc_smoke/g19_glibc_smoke.c").to_str().unwrap(),
                 "-o", obj.to_str().unwrap()]);
         run(o)?;
         let smoke = user_out.join("g19_glibc_smoke");
-        let mut l = Command::new("cc");
+        let mut l = Command::new(&smoke_cc);
         l.args(["-fPIE", "-pie", "-nostdlib", "-Wl,--allow-shlib-undefined",
                 &format!("-Wl,--dynamic-linker=/lib/{ld}"),
                 obj.to_str().unwrap()]);
@@ -142,7 +146,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         l.args([&format!("-L{}", srlib.display()), "-l:libc.so.6",
                 "-o", smoke.to_str().unwrap()]);
         run(l)?;
-        eprintln!("xtask rootfs: built glibc-on-kernel smoke → {}", smoke.display());
+        eprintln!("xtask rootfs: built glibc-on-kernel smoke ({arch}) → {}", smoke.display());
     }
 
     // F231 / B18: PAM modules come from vendor/pam/install-<arch>/modules/
@@ -294,10 +298,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // /lib/ld-linux-x86-64.so.2 vs /lib/ld-musl-x86_64.so.1). A systemd
     // oneshot unit runs /bin/g19_glibc_smoke early so its marker lands on
     // serial — proving a glibc dynamic binary runs on the kernel.
-    if arch == "x86_64" {
+    {
         let triple = format!("{arch}-unknown-linux-gnu");
         let srlib = repo.join(format!("target/sysroot/{triple}/lib"));
-        put(&srlib.join("ld-linux-x86-64.so.2"), "/lib/ld-linux-x86-64.so.2")?;
+        let ld = if arch == "aarch64" { "ld-linux-aarch64.so.1" } else { "ld-linux-x86-64.so.2" };
+        put(&srlib.join(ld), &format!("/lib/{ld}"))?;
         put(&srlib.join("libc.so.6"), "/lib/libc.so.6")?;
         for s in ["libpthread.so.0", "libdl.so.2", "librt.so.1", "libm.so.6", "libutil.so.1", "libresolv.so.2"] {
             put(&srlib.join(s), &format!("/lib/{s}"))?;
