@@ -15,6 +15,8 @@ pub mod shadow;
 #[cfg(feature = "freestanding")]
 pub mod putent;
 #[cfg(feature = "freestanding")]
+pub mod gshadow;
+#[cfg(feature = "freestanding")]
 pub mod aliases;
 
 #[repr(C)]
