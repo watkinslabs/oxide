@@ -10,9 +10,7 @@ use crate::arch::syscall::{sys1, sys2, sys3, sys4, sys5, sys6};
 use crate::internal::errno::ret_isize;
 use crate::internal::nr;
 
-// NB: statfs/fstatfs deferred — glibc translates between the kernel and the
-// public `struct statfs` (f_type came back 0 with a direct pass-through);
-// needs the struct-layout work, tracked as a follow-up.
+// statfs/fstatfs + statvfs/fstatvfs now live in posix/statfs.rs.
 
 // # C: int flock(int fd, int op)
 #[no_mangle]
