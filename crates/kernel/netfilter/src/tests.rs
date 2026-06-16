@@ -1,5 +1,13 @@
 use super::*;
 
+    // Count-based tests below assert on whole-store snapshots of shared global
+    // Spinlock tables; cargo test runs them in parallel, so two touching the
+    // same static race (one's insert lands between another's `before` snapshot
+    // and its assert). Serialize them with this lock. Crate is #![no_std], so
+    // reuse the same Spinlock the stores use rather than std::sync::Mutex; its
+    // guard Drop releases on a test panic-unwind, so no poison cascade.
+    static STORE_LOCK: Spinlock<(), SockLockClass> = Spinlock::new(());
+    fn store_guard() -> sync::Guard<'static, (), SockLockClass> { STORE_LOCK.lock() }
 
     #[test]
     fn nfgenmsg_roundtrip() {
@@ -14,6 +22,7 @@ use super::*;
 
     #[test]
     fn table_insert_dedup_remove() {
+        let _g = store_guard();
         let t = NftTable { family: 2, name: String::from("oxide-test-t"), flags: 0 };
         let before = tables_snapshot().len();
         table_insert(t.clone());
@@ -26,6 +35,7 @@ use super::*;
 
     #[test]
     fn object_insert_dedup_remove() {
+        let _g = store_guard();
         let o = NftObject {
             table_family: 2,
             table_name:   String::from("oxide-test-t"),
@@ -52,6 +62,7 @@ use super::*;
 
     #[test]
     fn set_insert_dedup_remove() {
+        let _g = store_guard();
         let s = NftSet {
             table_family: 2,
             table_name:   String::from("oxide-test-t"),
@@ -69,6 +80,7 @@ use super::*;
 
     #[test]
     fn rule_insert_and_remove_round_trip() {
+        let _g = store_guard();
         let h = next_rule_handle();
         let r = NftRule {
             table_family: 2,
@@ -104,6 +116,7 @@ use super::*;
 
     #[test]
     fn eval_drop_policy_drops_packet() {
+        let _g = store_guard();
         // Insert a base chain bound to a synthetic hook id with
         // policy=DROP. eval() should return Drop. Use a per-test
         // hook id so parallel tests don't trample.
@@ -122,6 +135,7 @@ use super::*;
 
     #[test]
     fn eval_runs_rule_immediate_drop() {
+        let _g = store_guard();
         use super::nft_expr::*;
         // Build a rule that unconditionally drops via NFTA_RULE_EXPRESSIONS.
         fn nla(buf: &mut Vec<u8>, ty: u16, payload: &[u8]) {
@@ -173,6 +187,7 @@ use super::*;
 
     #[test]
     fn eval_accept_policy_passes_through() {
+        let _g = store_guard();
         let c = NftChain {
             table_family: 2,
             table_name:   String::from("oxide-test-hookT2"),
@@ -188,6 +203,7 @@ use super::*;
 
     #[test]
     fn chain_insert_dedup_remove() {
+        let _g = store_guard();
         let c = NftChain {
             table_family: 2,
             table_name:   String::from("oxide-test-t"),
@@ -207,6 +223,7 @@ use super::*;
 
     #[test]
     fn setelem_insert_dedup_remove_round_trip() {
+        let _g = store_guard();
         let e = NftSetElem {
             table_family: 2,
             table_name:   String::from("oxide-test-elT"),
@@ -225,6 +242,7 @@ use super::*;
 
     #[test]
     fn setelem_lookup_round_trips_with_data() {
+        let _g = store_guard();
         let e = NftSetElem {
             table_family: 2,
             table_name:   String::from("oxide-test-elT2"),
