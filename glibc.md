@@ -52,9 +52,12 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (ns_format_ttl/ns_parse_ttl DONE — F533, net/nameser.rs, host-diffable
   t_nsttl.c. ns_datetosecs DEFERRED — host glibc's range validation rejects
   dates past a version/time-dependent recent-past cutoff (1980 fails, 2024
-  passes), so not safely bit-diffable. STILL TODO: ns_name_pack/compress
-  (compression-pointer emit must match glibc), ns_initparse/ns_parserr/
-  ns_skiprr/ns_sprintrr (ns_msg/ns_rr parse).)
+  passes), so not safely bit-diffable.)
+  (ns_name_pack/ns_name_compress DONE — F534, net/nameser.rs, uncompressed
+  emit like dn_comp (matches glibc when dnptrs==NULL; full labels are
+  wire-legal), host-diffable t_nameser2.c. STILL TODO: compression-pointer
+  emit when dnptrs given; ns_initparse/ns_parserr/ns_skiprr/ns_sprintrr
+  (ns_msg/ns_rr parse); ns_datetosecs.)
 - ~~**fts/fts64 (10)**~~ DONE — posix/fts.rs (F511). BSD pre/post-order iterator,
   cycle detect (FTS_DC), FTS_LOGICAL/PHYSICAL/SEEDOT/XDEV/COMFOLLOW + fts_set
   SKIP/FOLLOW. Exact FTSENT ABI (112B). Host-diffable t_fts.c over a temp tree.

@@ -138,6 +138,46 @@ pub unsafe extern "C" fn ns_name_pton(src: *const c_char, dst: *mut u8, dstsiz: 
     }
 }
 
+// # C: int ns_name_pack(const u_char *src, u_char *dst, int dstsiz,
+//                       const u_char **dnptrs, const u_char **lastdnptr)
+// Pack an uncompressed wire name into dst. Like dn_comp, no compression pointers
+// are emitted (always full labels — wire-legal; matches glibc when dnptrs==NULL),
+// so the dnptr args are accepted and unused. -1 (EMSGSIZE) on a compressed src,
+// an over-long name (>255), or insufficient dst.
+#[no_mangle]
+pub unsafe extern "C" fn ns_name_pack(src: *const u8, dst: *mut u8, dstsiz: i32, _dnptrs: *mut *const u8, _lastdnptr: *mut *const u8) -> i32 {
+    // SAFETY: src is a NUL-terminated uncompressed wire name; dst is dstsiz bytes.
+    unsafe {
+        let cap = if dstsiz > 0 { dstsiz as usize } else { crate::internal::errno::set(EMSGSIZE); return -1; };
+        // validate: total length ≤ 255, no compression flag in any label length.
+        let mut l = 0usize; let mut p = src;
+        loop {
+            let n = *p;
+            if n & NS_CMPRSFLGS != 0 { crate::internal::errno::set(EMSGSIZE); return -1; }
+            l += n as usize + 1;
+            if l > 255 { crate::internal::errno::set(EMSGSIZE); return -1; }
+            p = p.add(n as usize + 1);
+            if n == 0 { break; }
+        }
+        if l > cap { crate::internal::errno::set(EMSGSIZE); return -1; }
+        core::ptr::copy_nonoverlapping(src, dst, l);
+        l as i32
+    }
+}
+
+// # C: int ns_name_compress(const char *src, u_char *dst, size_t dstsiz,
+//                           const u_char **dnptrs, const u_char **lastdnptr)
+// ns_name_pton then ns_name_pack: presentation → wire (uncompressed).
+#[no_mangle]
+pub unsafe extern "C" fn ns_name_compress(src: *const c_char, dst: *mut u8, dstsiz: usize, dnptrs: *mut *const u8, lastdnptr: *mut *const u8) -> i32 {
+    // SAFETY: src presentation name → 255-byte wire scratch → pack into dst.
+    unsafe {
+        let mut tmp = [0u8; 255];
+        if ns_name_pton(src, tmp.as_mut_ptr(), tmp.len()) < 0 { return -1; }
+        ns_name_pack(tmp.as_ptr(), dst, dstsiz as i32, dnptrs, lastdnptr)
+    }
+}
+
 // # C: int ns_name_skip(const unsigned char **ptrptr, const unsigned char *eom)
 // Advance *ptrptr past one wire name (a compression pointer ends it). 0 / -1.
 #[no_mangle]
