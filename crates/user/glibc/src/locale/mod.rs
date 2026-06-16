@@ -14,6 +14,8 @@ pub mod gettext;
 pub mod catgets;
 #[cfg(feature = "freestanding")]
 pub mod strfmon;
+#[cfg(feature = "freestanding")]
+pub mod posix_l;
 
 pub const LC_CTYPE: i32 = 0;
 pub const LC_NUMERIC: i32 = 1;
