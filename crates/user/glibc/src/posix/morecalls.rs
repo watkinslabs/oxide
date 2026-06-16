@@ -27,6 +27,7 @@ pub unsafe extern "C" fn sendfile(out_fd: i32, in_fd: i32, offset: *mut i64, cou
     // SAFETY: offset is null or a writable off_t the kernel reads+updates.
     unsafe { ret_isize(sys4(nr::SENDFILE, out_fd as usize, in_fd as usize, offset as usize, count)) }
 }
+// SAFETY: LFS alias of sendfile (off64_t == off_t on LP64); same fd+buffer contract.
 #[no_mangle] pub unsafe extern "C" fn sendfile64(o: i32, i: i32, off: *mut i64, c: usize) -> isize { unsafe { sendfile(o, i, off, c) } }
 
 // # C: ssize_t splice(int fd_in, off64_t *off_in, int fd_out, off64_t *off_out, size_t len, unsigned int flags)
@@ -50,6 +51,7 @@ pub unsafe extern "C" fn posix_fadvise(fd: i32, offset: i64, len: i64, advice: i
     let r = unsafe { sys4(nr::FADVISE64, fd as usize, offset as usize, len as usize, advice as usize) };
     if r < 0 { (-r) as i32 } else { 0 }
 }
+// SAFETY: LFS alias of posix_fadvise; identical scalar args, no user buffers.
 #[no_mangle] pub unsafe extern "C" fn posix_fadvise64(fd: i32, o: i64, l: i64, a: i32) -> i32 { unsafe { posix_fadvise(fd, o, l, a) } }
 
 // # C: int memfd_create(const char *name, unsigned int flags)
