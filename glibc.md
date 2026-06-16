@@ -111,8 +111,11 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   t_spawn.c chdir_np + attr getter round-trip).
 - **BSD net auth** — rcmd/rexec/ruserok/iruserok/rresvport(_af), bindresvport.
 - **re_* BSD regex (~12)** — re_comp/re_exec/re_compile_pattern/re_search/re_match.
-- **libxcrypt** — crypt_gensalt(+_r/_ra/_rn)/crypt_ra/crypt_rn/crypt_preferred_method/
-  crypt_checksalt/fcrypt/xcrypt/xencrypt/xdecrypt.
+- **libxcrypt** — (crypt_gensalt/_rn/_ra + crypt_rn/crypt_ra + crypt_preferred_method
+  DONE — F536, crypt/mod.rs; $5$/$6$ salt = crypt-itoa64 of rbytes (NULL⇒getrandom),
+  rounds= iff ≠ default; NOT host-diffable (harness has no -lcrypt) → Rust unit-test
+  vectors from libxcrypt. preferred_method="$6$" — yescrypt not impl.) STILL TODO:
+  crypt_checksalt, fcrypt(=crypt alias), xcrypt/xencrypt/xdecrypt (SunRPC DES).
 - Re-audit (docs/59 §9 / state.md recipe) for stragglers after each batch.
 
 ## 3. HARD-BLOCKED (glibc_unsupported.md): long double `*l` + `_Float128`/
