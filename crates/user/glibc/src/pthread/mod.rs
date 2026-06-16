@@ -8,6 +8,7 @@
 pub mod atfork;
 pub mod attr;
 pub mod barrier;
+pub mod c11;
 pub mod cond;
 pub mod control;
 pub mod spin;
