@@ -117,6 +117,36 @@ pub(crate) unsafe fn wcscat_impl(dst: *mut i32, src: *const i32) -> *mut i32 {
     // SAFETY: dst is 0-terminated with room for the concatenation; src 0-terminated.
     unsafe { let e = dst.add(wcslen_impl(dst)); wcscpy_impl(e, src); dst }
 }
+/// # C: size_t wcslcpy(wchar_t *dst, const wchar_t *src, size_t size)
+pub(crate) unsafe fn wcslcpy_impl(dst: *mut i32, src: *const i32, size: usize) -> usize {
+    // SAFETY: dst writable for `size` wchars; src 0-terminated. BSD semantics:
+    // copy ≤ size-1 wchars, always 0-terminate when size>0, return wcslen(src).
+    unsafe {
+        let slen = wcslen_impl(src);
+        if size > 0 {
+            let n = core::cmp::min(slen, size - 1);
+            let mut i = 0; while i < n { *dst.add(i) = *src.add(i); i += 1; }
+            *dst.add(n) = 0;
+        }
+        slen
+    }
+}
+/// # C: size_t wcslcat(wchar_t *dst, const wchar_t *src, size_t size)
+pub(crate) unsafe fn wcslcat_impl(dst: *mut i32, src: *const i32, size: usize) -> usize {
+    // SAFETY: dst holds a 0-terminated string within `size` wchars (else dlen
+    // clamps to size); src 0-terminated. BSD semantics: append within `size`,
+    // 0-terminate, return the length it tried to make (dlen + wcslen(src)).
+    unsafe {
+        let dlen = wcsnlen_impl(dst, size);
+        let slen = wcslen_impl(src);
+        if dlen == size { return size + slen; } // dst not 0-terminated within size
+        let avail = size - dlen - 1; // room for src wchars (excl. terminator)
+        let n = core::cmp::min(slen, avail);
+        let mut i = 0; while i < n { *dst.add(dlen + i) = *src.add(i); i += 1; }
+        *dst.add(dlen + n) = 0;
+        dlen + slen
+    }
+}
 /// # C: wchar_t *wcsncat(wchar_t *dst, const wchar_t *src, size_t n)
 pub(crate) unsafe fn wcsncat_impl(dst: *mut i32, src: *const i32, n: usize) -> *mut i32 {
     // SAFETY: dst 0-terminated with room; appends up to n src wchars then a 0.
@@ -283,6 +313,12 @@ mod imp {
     // # C: wchar_t *wcsncat(wchar_t *, const wchar_t *, size_t)
     // SAFETY: dst 0-terminated with room; appends up to n wchars. Forwards.
     #[no_mangle] pub unsafe extern "C" fn wcsncat(d: *mut i32, s: *const i32, n: usize) -> *mut i32 { unsafe { wcsncat_impl(d, s, n) } }
+    // # C: size_t wcslcpy(wchar_t *, const wchar_t *, size_t)
+    // SAFETY: dst writable for size wchars; src 0-terminated. Forwards.
+    #[no_mangle] pub unsafe extern "C" fn wcslcpy(d: *mut i32, s: *const i32, size: usize) -> usize { unsafe { wcslcpy_impl(d, s, size) } }
+    // # C: size_t wcslcat(wchar_t *, const wchar_t *, size_t)
+    // SAFETY: dst 0-terminated within size; src 0-terminated. Forwards.
+    #[no_mangle] pub unsafe extern "C" fn wcslcat(d: *mut i32, s: *const i32, size: usize) -> usize { unsafe { wcslcat_impl(d, s, size) } }
     // # C: wchar_t *wcsrchr(const wchar_t *, wchar_t)
     // SAFETY: s 0-terminated; forwards wcsrchr_impl.
     #[no_mangle] pub unsafe extern "C" fn wcsrchr(s: *const i32, c: i32) -> *mut i32 { unsafe { wcsrchr_impl(s, c) } }
