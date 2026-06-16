@@ -55,8 +55,10 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
 - **LFS aliases** — mkstemp64/mkostemp64/mkstemps64/mkostemps(64)/preadv64(v2)/
   pwritev64(v2)/lockf64/scandirat64/strtof64/wcstof64. Mostly thin == aliases.
 - **SysV signal compat** — sigset/sighold/sigrelse/sigignore; sigvec; sigreturn.
-- **misc syscalls** — sched_getattr/setattr/getcpu, mlock2, sync_file_range,
-  vmsplice/tee/splice(done), pivot_root, mount_setattr/move_mount/open_tree,
+- **misc syscalls** —
+  (tee/vmsplice/sync_file_range DONE — F521, posix/morecalls.rs, t_splicefam.c;
+  splice/getcpu also done). sched_getattr/setattr, mlock2,
+  pivot_root, mount_setattr/move_mount/open_tree,
   pidfd_getpid/spawn/spawnp, modify_ldt, ioperm, uselib, ustat, swab, revoke,
   setlogin, lockf, scandirat, timespec_get/getres, ftok, ftime, ualarm,
   group_member, gnu_dev_major/minor/makedev, glob_pattern_p, ttyslot, scandirat/scandirat64 (DONE F519), lockf/lockf64 (DONE F520, posix/lockf.rs, t_lockf.c),
