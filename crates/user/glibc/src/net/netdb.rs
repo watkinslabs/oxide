@@ -153,6 +153,38 @@ pub(crate) fn put(buf: &mut [u8], pos: usize, s: &[u8]) -> Option<(*mut u8, usiz
     Some((p, end))
 }
 
+// Deep-copy `name` + the NULL-terminated `aliases` array (+ optional `extra`
+// string) into a getXbyY_r caller buffer. Layout: [(n+1) alias pointers,
+// 8-aligned][name\0][extra\0][alias strings]. Returns (name, extra,
+// aliases_array) or None on ERANGE. `extra` may be null.
+/// # C: internal — pack a netdb entry's strings into a getXbyY_r buffer
+pub(crate) unsafe fn pack_r(name: *const u8, aliases: *const *mut u8, extra: *const u8, buf: *mut u8, buflen: usize) -> Option<(*mut u8, *mut u8, *mut *mut u8)> {
+    // SAFETY: name/extra null or NUL strings; aliases a NULL-terminated array;
+    // buf writable for buflen bytes. The pointer array is 8-aligned at buf
+    // start; every string copy is bounds-checked against buflen.
+    unsafe {
+        let n = { let mut k = 0; if !aliases.is_null() { while !(*aliases.add(k)).is_null() { k += 1; } } k };
+        let arr = (buf as usize + 7) & !7;
+        let strlen = |s: *const u8| -> usize { let mut i = 0; if !s.is_null() { while *s.add(i) != 0 { i += 1; } } i };
+        let mut pos = (arr - buf as usize) + (n + 1) * 8;
+        if pos > buflen { return None; }
+        let mut copy = |s: *const u8| -> Option<*mut u8> {
+            if s.is_null() { return Some(core::ptr::null_mut()); }
+            let l = strlen(s);
+            if pos + l + 1 > buflen { return None; }
+            core::ptr::copy_nonoverlapping(s, buf.add(pos), l);
+            *buf.add(pos + l) = 0;
+            let p = buf.add(pos); pos += l + 1; Some(p)
+        };
+        let name_p = copy(name)?;
+        let extra_p = copy(extra)?;
+        let arr_ptr = arr as *mut *mut u8;
+        for k in 0..n { let ap = copy(*aliases.add(k))?; *arr_ptr.add(k) = ap; }
+        *arr_ptr.add(n) = core::ptr::null_mut();
+        Some((name_p, extra_p, arr_ptr))
+    }
+}
+
 /// Pack `strs` as NUL-terminated C strings into `buf`, writing a
 /// NULL-terminated pointer vector into `ptrs`. Returns false if either is too
 /// small. `ptrs` must hold strs.len()+1 slots.
