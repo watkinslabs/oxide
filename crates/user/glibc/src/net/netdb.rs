@@ -57,7 +57,17 @@ pub struct netent {
 }
 const _: () = assert!(core::mem::size_of::<netent>() == 24);
 
+#[repr(C)]
+pub struct rpcent {
+    pub r_name: *mut u8,
+    pub r_aliases: *mut *mut u8,
+    pub r_number: i32,
+    __pad: i32,
+}
+const _: () = assert!(core::mem::size_of::<rpcent>() == 24);
+
 // Zero initializers (the `__pad` fields are private; built here).
+pub(crate) const ZERO_RPC: rpcent = rpcent { r_name: core::ptr::null_mut(), r_aliases: core::ptr::null_mut(), r_number: 0, __pad: 0 };
 pub(crate) const ZERO_HOST: hostent = hostent { h_name: core::ptr::null_mut(), h_aliases: core::ptr::null_mut(), h_addrtype: 0, h_length: 0, h_addr_list: core::ptr::null_mut() };
 pub(crate) const ZERO_SERV: servent = servent { s_name: core::ptr::null_mut(), s_aliases: core::ptr::null_mut(), s_port: 0, __pad: 0, s_proto: core::ptr::null_mut() };
 pub(crate) const ZERO_PROTO: protoent = protoent { p_name: core::ptr::null_mut(), p_aliases: core::ptr::null_mut(), p_proto: 0, __pad: 0 };
@@ -91,6 +101,16 @@ pub(crate) fn parse_proto_line(line: &str) -> Option<ProtoVal> {
     if f.len() < 2 { return None; }
     let proto: i32 = f[1].parse().ok()?;
     Some(ProtoVal { name: f[0].into(), proto, aliases: f[2..].iter().map(|s| (*s).into()).collect() })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RpcVal { pub name: String, pub aliases: Vec<String>, pub number: i32 }
+/// # C: parse one /etc/rpc line:  name  number  [aliases...]
+pub(crate) fn parse_rpc_line(line: &str) -> Option<RpcVal> {
+    let f = fields(line);
+    if f.len() < 2 { return None; }
+    let number: i32 = f[1].parse().ok()?;
+    Some(RpcVal { name: f[0].into(), number, aliases: f[2..].iter().map(|s| (*s).into()).collect() })
 }
 
 /// # C: parse one /etc/services line:  name  port/proto  [aliases...]
