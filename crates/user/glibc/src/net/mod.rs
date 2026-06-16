@@ -22,4 +22,5 @@ pub mod ethers;
 pub mod rpcent;
 #[cfg(feature = "freestanding")]
 pub mod resolv_name;
+pub mod nameser;
 pub mod socket;
