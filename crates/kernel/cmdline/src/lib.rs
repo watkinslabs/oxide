@@ -46,19 +46,85 @@ pub unsafe fn set(bytes: &'static [u8]) {
 /// parsing lands. The console= component matches the UART the boot
 /// crate actually programs, so userspace's `console=` introspection
 /// agrees with what's emitting on serial.
+///
+/// Linux convention `console=tty0 console=ttyS0,115200`: printk fans out
+/// to BOTH consoles (framebuffer VT + serial UART), and the LAST entry
+/// (serial) is the *preferred console* that backs `/dev/console`
+/// (`preferred_console`). So the boot framebuffer stays visible AND the
+/// getty/login line on `/dev/console` reaches the serial port.
 /// # SAFETY: boot path only.
 /// # C: O(1)
 pub unsafe fn install_arch_default() {
     #[cfg(target_arch = "x86_64")]
     const DEFAULT: &[u8] =
-        b"BOOT_IMAGE=/oxide root=/dev/oxide0 ro quiet console=ttyS0,115200\n";
+        b"BOOT_IMAGE=/oxide root=/dev/oxide0 ro quiet console=tty0 console=ttyS0,115200\n";
     #[cfg(target_arch = "aarch64")]
     const DEFAULT: &[u8] =
-        b"BOOT_IMAGE=/oxide root=/dev/oxide0 ro quiet console=ttyAMA0,115200\n";
+        b"BOOT_IMAGE=/oxide root=/dev/oxide0 ro quiet console=tty0 console=ttyAMA0,115200\n";
     // Only install if nothing else (e.g. a future Limine/DTB parser)
     // has set it already.
     if PTR.load(Ordering::Acquire).is_null() {
         // SAFETY: install_arch_default is boot-only (single-writer); DEFAULT is a 'static byte literal that outlives the kernel; no procfs read can race here because /proc isn't mounted yet.
         unsafe { set(DEFAULT); }
     }
+}
+
+/// Kind of console device named by a `console=` token.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConsoleKind {
+    /// A serial UART line (`ttyS<n>` x86 16550, `ttyAMA<n>` arm PL011).
+    /// Backs `/dev/ttyS0` (the serial tty).
+    Serial,
+    /// Video VT `n` — `tty0` = current foreground VT, `tty<n>` = VT n.
+    Vt(u8),
+}
+
+/// Map a `console=` device name (the token after `console=`, up to `,` or
+/// whitespace) to its [`ConsoleKind`]. Linux device naming:
+/// `ttyS*`/`ttyAMA*` = serial; `tty0` = fg VT; `tty<n>` = VT n.
+fn classify(name: &[u8]) -> Option<ConsoleKind> {
+    if name.is_empty() { return None; }
+    if name.starts_with(b"ttyS") || name.starts_with(b"ttyAMA") {
+        return Some(ConsoleKind::Serial);
+    }
+    if let Some(rest) = name.strip_prefix(b"tty") {
+        // `tty` followed by digits → VT n (tty0 = fg). Non-digit tail
+        // (already-handled ttyS/ttyAMA, or unknown) → not a VT.
+        if !rest.is_empty() && rest.iter().all(|c| c.is_ascii_digit()) {
+            let mut n: u32 = 0;
+            for &c in rest { n = n.saturating_mul(10).saturating_add((c - b'0') as u32); }
+            return Some(ConsoleKind::Vt(n.min(255) as u8));
+        }
+    }
+    None
+}
+
+/// The *preferred console*: the device named by the LAST `console=` token on
+/// the boot cmdline (Linux semantics — last wins, backs `/dev/console`).
+/// Falls back to `Vt(0)` (the foreground video VT) when no parseable
+/// `console=` is present, matching Linux's default-to-VT behavior.
+/// # C: O(cmdline length)
+pub fn preferred_console() -> ConsoleKind { preferred_console_in(get()) }
+
+/// Pure form of [`preferred_console`] over an explicit cmdline slice (kept
+/// global-free so it is unit-testable). Scans every `console=` token, parses
+/// its device name, and keeps the LAST parseable one. # C: O(line length)
+pub fn preferred_console_in(line: &[u8]) -> ConsoleKind {
+    let mut chosen = ConsoleKind::Vt(0);
+    let mut i = 0;
+    while let Some(p) = find(&line[i..], b"console=") {
+        let start = i + p + b"console=".len();
+        // device name = bytes up to ',' or ASCII whitespace.
+        let mut end = start;
+        while end < line.len() && line[end] != b',' && !line[end].is_ascii_whitespace() { end += 1; }
+        if let Some(k) = classify(&line[start..end]) { chosen = k; }
+        i = end;
+    }
+    chosen
+}
+
+/// First index of `needle` in `hay`, or `None`. # C: O(len)
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() { return None; }
+    (0..=hay.len() - needle.len()).find(|&w| &hay[w..w + needle.len()] == needle)
 }

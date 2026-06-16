@@ -257,13 +257,15 @@ pub fn vt_reply_sink(vt: u8, bytes: &[u8]) {
     vt_tty::vt_tty(vt.max(1)).receive_from_driver(bytes);
 }
 
-/// Build the `init`-process fd table with fd 0/1/2 all pointing
-/// at `/dev/console` (vt=0, foreground-alias). Returns an
-/// `Arc<FdTable>` ready to install on the spawned user task.
-/// # C: O(1)
+/// Build the `init`-process fd table with fd 0/1/2 all pointing at
+/// `/dev/console` — the *preferred console* per `console=`
+/// ([`system_console_inode`]), so a kernel-spawned PID1 writes its stdout/
+/// stderr to the serial line when booted `console=ttyS0` (matching Linux,
+/// where init inherits the console device). Returns an `Arc<FdTable>` ready
+/// to install on the spawned user task. # C: O(1)
 pub fn init_console_fd_table() -> Arc<FdTable> {
     let table = Arc::new(FdTable::new());
-    let inode: InodeRef = Arc::new(ConsoleInode::new(0));
+    let inode: InodeRef = system_console_inode();
     // Full path so /proc/self/fd/{0,1,2} readlink to /dev/console
     // (the Linux contract) and symlink follow (/dev/stdout → fd/1 →
     // /dev/console) reopens the real node.
@@ -307,17 +309,35 @@ impl Inode for VcsInode {
     fn write(&self, _off: u64, _buf: &[u8]) -> KResult<usize> { Err(VfsError::Einval) }
 }
 
+/// The backing inode for `/dev/console` — the *preferred console* named by
+/// the LAST `console=` on the boot cmdline (Linux: `/dev/console` (5:1) is the
+/// kernel's preferred console device, NOT a fixed alias of the video VT).
+/// `console=ttyS0`/`ttyAMA0` ⇒ the serial tty; `console=tty<n>`/none ⇒ the
+/// foreground video VT. This is what makes systemd's `console-getty` (whose
+/// `TTYPath=/dev/console`) put `oxide login:` on the serial line when booted
+/// `console=ttyS0`, matching Linux. # C: O(cmdline length)
+pub fn system_console_inode() -> InodeRef {
+    match cmdline::preferred_console() {
+        cmdline::ConsoleKind::Serial => Arc::new(SerialInode) as InodeRef,
+        cmdline::ConsoleKind::Vt(_)  => Arc::new(ConsoleInode::new(0)) as InodeRef,
+    }
+}
+
 /// Register the console/tty char-device nodes into devfs (self-registration
-/// per docs/56). /dev/{console,tty,tty0,ttyS0} alias the foreground VT (vt=0);
+/// per docs/56). `/dev/console` follows the preferred `console=`
+/// ([`system_console_inode`]); `/dev/tty`+`/dev/tty0` are the foreground VT;
 /// /dev/tty1..N each carry their own VT id; /dev/vcs{,0,a,a0} dump the screen.
 /// Boot, once.
 /// # C: O(N_VT)
 pub fn register_devnodes() {
     use alloc::sync::Arc;
     use alloc::string::String;
-    // Video console (foreground VT): /dev/console, /dev/tty, /dev/tty0.
+    // /dev/console = the preferred console (serial when console=ttyS0/ttyAMA0,
+    // else the fg VT) — the Linux 5:1 kernel-console device.
+    devfs::register("/dev/console", system_console_inode());
+    // /dev/tty, /dev/tty0 = the foreground video VT (always video; distinct
+    // from /dev/console, which the console= cmdline may point at serial).
     let fg: vfs::InodeRef = Arc::new(ConsoleInode::new(0));
-    devfs::register("/dev/console", Arc::clone(&fg));
     devfs::register("/dev/tty",     Arc::clone(&fg));
     devfs::register("/dev/tty0",    fg);
     // Serial line — a SEPARATE device (its own tty, serial-only, own winsize).
