@@ -18,15 +18,15 @@ const EEXIST: i32 = 17;
 const TABLE: &[u8; 62] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
-// # C: int mkstemp(char *template)
-#[no_mangle]
-pub unsafe extern "C" fn mkstemp(template: *mut u8) -> i32 {
-    // SAFETY: template is a writable C string ending in "XXXXXX"; we overwrite
-    // those 6 bytes in place and openat the result.
+// Core: fill the trailing "XXXXXX" + suffixlen bytes before it, openat with
+// O_RDWR|O_CREAT|O_EXCL | extra. suffixlen = chars after "XXXXXX" (mkstemps).
+unsafe fn do_mkstemp(template: *mut u8, extra: usize, suffixlen: usize) -> i32 {
+    // SAFETY: template is a writable C string with "XXXXXX" suffixlen bytes from
+    // the end; we overwrite those 6 bytes in place and openat the result.
     unsafe {
         let n = strlen_impl(template);
-        if n < 6 { errno::set(EINVAL); return -1; }
-        let xs = template.add(n - 6);
+        if n < 6 + suffixlen { errno::set(EINVAL); return -1; }
+        let xs = template.add(n - 6 - suffixlen);
         for k in 0..6 { if *xs.add(k) != b'X' { errno::set(EINVAL); return -1; } }
 
         let mut ts = timespec { tv_sec: 0, tv_nsec: 0 };
@@ -39,7 +39,7 @@ pub unsafe extern "C" fn mkstemp(template: *mut u8) -> i32 {
         for _ in 0..0x40000 {
             let mut x = r;
             for k in 0..6 { *xs.add(k) = TABLE[(x % 62) as usize]; x /= 62; }
-            let fd = sys4(nr::OPENAT, AT_FDCWD, template as usize, O_RDWR | O_CREAT | O_EXCL, 0o600) as i32;
+            let fd = sys4(nr::OPENAT, AT_FDCWD, template as usize, O_RDWR | O_CREAT | O_EXCL | extra, 0o600) as i32;
             if fd >= 0 { return fd; }
             if fd != -EEXIST { errno::set(-fd); return -1; } // a non-collision error
             r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); // LCG step
@@ -47,4 +47,29 @@ pub unsafe extern "C" fn mkstemp(template: *mut u8) -> i32 {
         errno::set(EEXIST);
         -1
     }
+}
+
+// # C: int mkstemp(char *template)
+#[no_mangle]
+pub unsafe extern "C" fn mkstemp(template: *mut u8) -> i32 {
+    // SAFETY: template ends in "XXXXXX"; do_mkstemp overwrites them + opens.
+    unsafe { do_mkstemp(template, 0, 0) }
+}
+
+// # C: int mkostemp(char *template, int flags) — mkstemp + extra open flags.
+#[no_mangle]
+pub unsafe extern "C" fn mkostemp(template: *mut u8, flags: i32) -> i32 {
+    // glibc masks out O_RDWR/O_CREAT/O_EXCL/O_ACCMODE from the caller flags (it
+    // always sets those), passing the rest (O_CLOEXEC etc.) through to openat.
+    let extra = (flags as usize) & !(O_RDWR | O_CREAT | O_EXCL | 0o3);
+    // SAFETY: template ends in "XXXXXX"; do_mkstemp overwrites them + opens with
+    // the extra (masked) flags OR'd into the openat call.
+    unsafe { do_mkstemp(template, extra, 0) }
+}
+
+// # C: int mkstemps(char *template, int suffixlen) — "XXXXXX<suffix>".
+#[no_mangle]
+pub unsafe extern "C" fn mkstemps(template: *mut u8, suffixlen: i32) -> i32 {
+    // SAFETY: as mkstemp with a fixed suffix after the X's.
+    unsafe { do_mkstemp(template, 0, suffixlen.max(0) as usize) }
 }
