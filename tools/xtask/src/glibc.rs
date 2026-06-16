@@ -45,12 +45,17 @@ pub(crate) fn staticlib_path(triple: &str) -> PathBuf {
 // rust-lld directly so the same path builds x86_64 and aarch64.
 pub(crate) fn build_sharedlib(triple: &str) -> Result<(), u8> {
     eprintln!("xtask glibc: building libc.so.6 for {triple}");
+    // Supplementary version script re-promotes the global_asm `.set` _FloatN
+    // function aliases into .dynsym — rustc's cdylib filter localizes bare asm
+    // symbols otherwise (docs/59§9.1). Functions only (PLT-resolved); data
+    // aliases are NOT here (they need copy-reloc interposition, §9.4).
+    let floatn = "crates/user/glibc/version/floatn.map";
     let mut c = Command::new("cargo");
     c.args(["rustc", "-p", "glibc", "--release", "--features", "freestanding",
             "--target", triple, "--crate-type", "cdylib", "--",
             "-C", "linker-flavor=ld.lld", "-C", "linker=rust-lld",
             "-C", "link-arg=--soname=libc.so.6", "-C", "relocation-model=pic",
-            "-C", "panic=abort"]);
+            "-C", "panic=abort", "-C", &format!("link-arg=--version-script={floatn}")]);
     run(c)
 }
 
