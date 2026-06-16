@@ -36,10 +36,36 @@ now LOAD AND RUN on the oxide kernel, both arches.
   pthread (4-thread futex-mutex contention + join) passes on arm now.
   Diagnosed via `g19_glibc_jointest` (join-isolation, now a regression test).
 
-## SMP status (task #6 — effectively done)
+## SMP status (task #6 — done)
 - x86 SMP=2 flaky-login race: **NOT reproducible** (5/5 clean tcg boots) —
   already fixed by prior work.
 - The real concurrency bug was the arm clone/pthread hang above (fixed).
+
+## CI flakes fixed (both parallel-test global-state races)
+- B129 (#2012) netfilter; B130 (#2020) vt — serialize tests sharing globals.
+
+## libc-completeness gaps (IMPORTANT — tracker overstated "complete")
+The glibc_done.md "achievable surface COMPLETE" claim is WRONG: core POSIX/
+Linux fns the conformance harness never exercised were entirely MISSING from
+libc.so.6. Found by auditing exports vs what real GNU/systemd programs need.
+Fixed this session (each with a conformance test, byte-exact vs host glibc):
+- F460 (#2021) poll/ppoll
+- F461 (#2022) epoll create1/ctl/wait/pwait
+- F462 (#2023) eventfd/signalfd/timerfd/inotify
+Still missing (audited, next): **statx**, **posix_spawn** (+ likely more —
+run a systematic export-vs-acceptance-binary symbol audit per docs/59§7).
+
+## Next (first tasks)
+1. statx + posix_spawn (same pattern: nr + thin wrapper in posix/, t_*.c
+   conformance test, both arches). Then a SYSTEMATIC libc symbol audit
+   (`nm -D` our libc vs the union of undefined syms in the 95 vendor
+   binaries) to find ALL remaining gaps before the migration.
+2. **G19d (task #4) — the big phase**: migrate the 95 vendor packages
+   (bash/coreutils/util-linux/systemd/…) from static/dynamic-musl to OUR
+   glibc sysroot (currently all `/lib/ld-musl-*`); retire musl + ld-oxide.
+   Needs the libc surface complete first (above). Build-system work in
+   vendor/*/build.sh + rootfs.rs. G19final gate: `make smoke` both arches
+   green on glibc.
 
 ## Verify gates / how to boot
 - **x86**: `OXIDE_QEMU_KVM=1 timeout 240 cargo run -q -p xtask -- grub --arch
