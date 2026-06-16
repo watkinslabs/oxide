@@ -419,3 +419,146 @@ pub unsafe extern "C" fn ns_parse_ttl(src: *const c_char, dst: *mut u64) -> i32 
 }
 // ns_datetosecs deferred: host glibc's range validation rejects dates beyond a
 // (time/version-dependent) recent-past cutoff, so it is not safely diffable yet.
+
+// --- DNS message parser (ns_msg/ns_rr) -------------------------------------
+const ENODEV: i32 = 19;
+
+// ns_msg — 80-byte ABI per <arpa/nameser.h>. Macros (ns_msg_id/count/...) read
+// these fields directly in the caller, so only the layout must match.
+#[repr(C)]
+pub struct NsMsg {
+    msg: *const u8,            // @0  _msg
+    eom: *const u8,            // @8  _eom
+    id: u16,                   // @16 _id
+    flags: u16,                // @18 _flags
+    counts: [u16; 4],          // @20 _counts
+    sections: [*const u8; 4],  // @32 _sections
+    sect: i32,                 // @64 _sect
+    rrnum: i32,                // @68 _rrnum
+    msg_ptr: *const u8,        // @72 _msg_ptr
+}
+
+// ns_rr — 1048-byte ABI. name[1025] then type/class/ttl/rdlength/rdata.
+#[repr(C)]
+pub struct NsRr {
+    name: [u8; 1025],          // @0
+    rtype: u16,                // @1026
+    rr_class: u16,             // @1028
+    ttl: u32,                  // @1032
+    rdlength: u16,             // @1036
+    rdata: *const u8,          // @1040
+}
+
+// (mask, shift) per ns_flag (qr,opcode,aa,tc,rd,ra,z,ad,cd,rcode); glibc table.
+const FLAGDATA: [(u16, u32); 10] = [
+    (0x8000, 15), (0x7800, 11), (0x0400, 10), (0x0200, 9), (0x0100, 8),
+    (0x0080, 7), (0x0040, 6), (0x0020, 5), (0x0010, 4), (0x000f, 0),
+];
+
+unsafe fn setsection(h: &mut NsMsg, sect: i32) {
+    h.sect = sect;
+    if sect == 4 { h.rrnum = -1; h.msg_ptr = core::ptr::null(); }
+    else { h.rrnum = 0; h.msg_ptr = h.sections[sect as usize]; }
+}
+unsafe fn rd16(p: *const u8) -> u16 { unsafe { ((*p as u16) << 8) | *p.add(1) as u16 } }
+unsafe fn rd32(p: *const u8) -> u32 { unsafe { ((*p as u32) << 24) | ((*p.add(1) as u32) << 16) | ((*p.add(2) as u32) << 8) | *p.add(3) as u32 } }
+
+// # C: int ns_msg_getflag(ns_msg handle, int flag) — extract a header flag bit.
+#[no_mangle]
+pub extern "C" fn ns_msg_getflag(handle: NsMsg, flag: i32) -> i32 {
+    if flag < 0 || flag as usize >= FLAGDATA.len() { return 0; }
+    let (mask, shift) = FLAGDATA[flag as usize];
+    ((handle.flags & mask) >> shift) as i32
+}
+
+// # C: int ns_skiprr(const u_char *ptr, const u_char *eom, ns_sect section, int count)
+// Bytes spanned by `count` RRs of `section` (questions carry no ttl/rdata).
+#[no_mangle]
+pub unsafe extern "C" fn ns_skiprr(ptr: *const u8, eom: *const u8, section: i32, count: i32) -> i32 {
+    // SAFETY: ptr/eom bound a DNS message; dn_skipname + rdlength advance keep
+    // every read within eom.
+    unsafe {
+        let optr = ptr; let mut p = ptr; let mut c = count;
+        while c > 0 {
+            let b = crate::net::resolv_name::dn_skipname(p, eom);
+            if b < 0 { crate::internal::errno::set(EMSGSIZE); return -1; }
+            p = p.add(b as usize + 4); // name + type(2) + class(2)
+            if section != 0 { // not ns_s_qd
+                if p.add(6) > eom { crate::internal::errno::set(EMSGSIZE); return -1; }
+                p = p.add(4); // ttl
+                let rdlen = rd16(p) as usize; p = p.add(2 + rdlen);
+            }
+            c -= 1;
+        }
+        if p > eom { crate::internal::errno::set(EMSGSIZE); return -1; }
+        (p as usize - optr as usize) as i32
+    }
+}
+
+// # C: int ns_initparse(const u_char *msg, int msglen, ns_msg *handle)
+#[no_mangle]
+pub unsafe extern "C" fn ns_initparse(msg: *const u8, msglen: i32, handle: *mut NsMsg) -> i32 {
+    // SAFETY: msg points at msglen bytes; handle is a caller ns_msg. Header (12B)
+    // + per-section skip stay within eom; sections recorded for ns_parserr.
+    unsafe {
+        let h = &mut *handle;
+        let eom = msg.add(msglen as usize);
+        h.msg = msg; h.eom = eom;
+        let mut p = msg;
+        if p.add(2) > eom { crate::internal::errno::set(EMSGSIZE); return -1; }
+        h.id = rd16(p); p = p.add(2);
+        if p.add(2) > eom { crate::internal::errno::set(EMSGSIZE); return -1; }
+        h.flags = rd16(p); p = p.add(2);
+        for i in 0..4 {
+            if p.add(2) > eom { crate::internal::errno::set(EMSGSIZE); return -1; }
+            h.counts[i] = rd16(p); p = p.add(2);
+        }
+        for i in 0..4 {
+            if h.counts[i] == 0 { h.sections[i] = core::ptr::null(); }
+            else {
+                let b = ns_skiprr(p, eom, i as i32, h.counts[i] as i32);
+                if b < 0 { return -1; }
+                h.sections[i] = p; p = p.add(b as usize);
+            }
+        }
+        if p != eom { crate::internal::errno::set(EMSGSIZE); return -1; }
+        setsection(h, 4);
+        0
+    }
+}
+
+// # C: int ns_parserr(ns_msg *handle, ns_sect section, int rrnum, ns_rr *rr)
+#[no_mangle]
+pub unsafe extern "C" fn ns_parserr(handle: *mut NsMsg, section: i32, rrnum: i32, rr: *mut NsRr) -> i32 {
+    // SAFETY: handle was filled by ns_initparse; rr is a caller ns_rr. Names are
+    // expanded via ns_name_uncompress; every field read is eom-bounded.
+    unsafe {
+        let h = &mut *handle; let r = &mut *rr;
+        if section < 0 || section >= 4 { crate::internal::errno::set(ENODEV); return -1; }
+        if section != h.sect { setsection(h, section); }
+        let mut rn = rrnum;
+        if rn == -1 { rn = h.rrnum; }
+        if rn < 0 || rn >= h.counts[section as usize] as i32 { crate::internal::errno::set(ENODEV); return -1; }
+        if rn < h.rrnum { setsection(h, section); }
+        if rn > h.rrnum {
+            let b = ns_skiprr(h.msg_ptr, h.eom, section, rn - h.rrnum);
+            if b < 0 { return -1; }
+            h.msg_ptr = h.msg_ptr.add(b as usize); h.rrnum = rn;
+        }
+        let b = ns_name_uncompress(h.msg, h.eom, h.msg_ptr, r.name.as_mut_ptr() as *mut c_char, r.name.len());
+        if b < 0 { return -1; }
+        h.msg_ptr = h.msg_ptr.add(b as usize);
+        if h.msg_ptr.add(4) > h.eom { crate::internal::errno::set(EMSGSIZE); return -1; }
+        r.rtype = rd16(h.msg_ptr); r.rr_class = rd16(h.msg_ptr.add(2)); h.msg_ptr = h.msg_ptr.add(4);
+        if section == 0 { r.ttl = 0; r.rdlength = 0; r.rdata = core::ptr::null(); }
+        else {
+            if h.msg_ptr.add(6) > h.eom { crate::internal::errno::set(EMSGSIZE); return -1; }
+            r.ttl = rd32(h.msg_ptr); r.rdlength = rd16(h.msg_ptr.add(4)); h.msg_ptr = h.msg_ptr.add(6);
+            if h.msg_ptr.add(r.rdlength as usize) > h.eom { crate::internal::errno::set(EMSGSIZE); return -1; }
+            r.rdata = h.msg_ptr; h.msg_ptr = h.msg_ptr.add(r.rdlength as usize);
+        }
+        h.rrnum += 1;
+        if h.rrnum > h.counts[section as usize] as i32 { setsection(h, 4); }
+        0
+    }
+}

@@ -56,8 +56,10 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (ns_name_pack/ns_name_compress DONE — F534, net/nameser.rs, uncompressed
   emit like dn_comp (matches glibc when dnptrs==NULL; full labels are
   wire-legal), host-diffable t_nameser2.c. STILL TODO: compression-pointer
-  emit when dnptrs given; ns_initparse/ns_parserr/ns_skiprr/ns_sprintrr
-  (ns_msg/ns_rr parse); ns_datetosecs.)
+  emit when dnptrs given; ns_sprintrr/ns_sprintrrf (RR pretty-print); ns_datetosecs.)
+  (ns_initparse/ns_parserr/ns_skiprr/ns_msg_getflag DONE — F535, net/nameser.rs,
+  NsMsg(80B)/NsRr(1048B) ABI structs + header/section walk + per-RR name
+  expansion; host-diffable t_nsmsg.c (flags, question, multi-RR, OOB).)
 - ~~**fts/fts64 (10)**~~ DONE — posix/fts.rs (F511). BSD pre/post-order iterator,
   cycle detect (FTS_DC), FTS_LOGICAL/PHYSICAL/SEEDOT/XDEV/COMFOLLOW + fts_set
   SKIP/FOLLOW. Exact FTSENT ABI (112B). Host-diffable t_fts.c over a temp tree.
