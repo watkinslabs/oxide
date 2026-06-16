@@ -64,6 +64,13 @@ pub unsafe extern "C" fn sigaltstack(ss: *const core::ffi::c_void, old: *mut cor
     ret_isize(unsafe { sys2(nr::SIGALTSTACK, ss as usize, old as usize) }) as i32
 }
 
+// # C: int __libc_current_sigrtmin(void) / __libc_current_sigrtmax(void)
+// glibc reserves the first few RT signals for the threading impl; the public
+// SIGRTMIN/SIGRTMAX macros call these. We expose the full kernel RT range
+// (34..=64) — no internal RT signals reserved.
+#[no_mangle] pub extern "C" fn __libc_current_sigrtmin() -> i32 { 34 }
+#[no_mangle] pub extern "C" fn __libc_current_sigrtmax() -> i32 { 64 }
+
 // # C: int pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset)
 // glibc 2.34+ folds pthread_sigmask into the same rt_sigprocmask path as
 // sigprocmask (the thread mask IS the kernel per-thread blocked set).

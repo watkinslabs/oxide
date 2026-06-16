@@ -138,6 +138,14 @@ mod imp {
         }
     }
 
+    // # C: size_t __ctype_get_mb_cur_max(void) — backs the MB_CUR_MAX macro.
+    // C/POSIX LC_CTYPE → 1 byte; the UTF-8 locales (C.UTF-8 / en_US.UTF-8) → 6
+    // (the max UTF-8 sequence glibc reports).
+    #[no_mangle]
+    pub extern "C" fn __ctype_get_mb_cur_max() -> usize {
+        if CUR[LC_CTYPE as usize].load(Ordering::Acquire) == 0 { 1 } else { 6 }
+    }
+
     // # C: struct lconv *localeconv(void)
     #[no_mangle]
     pub extern "C" fn localeconv() -> *mut lconv {
