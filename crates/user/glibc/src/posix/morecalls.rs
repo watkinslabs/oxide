@@ -127,6 +127,11 @@ pub unsafe extern "C" fn pwritev2(fd: i32, iov: *const c_void, iovcnt: i32, off:
     // SAFETY: iov is an array of `iovcnt` iovec the kernel reads.
     unsafe { ret_isize(sys6(nr::PWRITEV2, fd as usize, iov as usize, iovcnt as usize, off as usize, 0, flags as usize)) }
 }
+// LFS aliases — off64_t == off_t on LP64.
+// SAFETY: preadv64v2 == preadv2; same fd + iovec + flags contract.
+#[no_mangle] pub unsafe extern "C" fn preadv64v2(fd: i32, iov: *const c_void, c: i32, off: i64, fl: i32) -> isize { unsafe { preadv2(fd, iov, c, off, fl) } }
+// SAFETY: pwritev64v2 == pwritev2.
+#[no_mangle] pub unsafe extern "C" fn pwritev64v2(fd: i32, iov: *const c_void, c: i32, off: i64, fl: i32) -> isize { unsafe { pwritev2(fd, iov, c, off, fl) } }
 
 // # C: int __sched_cpucount(size_t setsize, const cpu_set_t *setp)
 // Backs the CPU_COUNT macro: popcount of the first `setsize` bytes of the mask.
