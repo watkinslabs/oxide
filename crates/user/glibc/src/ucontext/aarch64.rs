@@ -33,10 +33,20 @@ pub unsafe extern "C" fn getcontext(_ucp: *mut ucontext_t) -> i32 {
         "mov x2, sp",
         "str x2, [x0, #{sp}]",
         "str xzr, [x0, #{r0}]",        // regs[0]=0 → resumed getcontext returns 0
-        "stp d8,  d9,  [x0, #{d8}]",
-        "stp d10, d11, [x0, #{d10}]",
-        "stp d12, d13, [x0, #{d12}]",
-        "stp d14, d15, [x0, #{d14}]",
+        // d8..d15 → vregs[8..15] (low halves, each 16 bytes apart). The base
+        // offset (600) exceeds the ldp/stp imm range [-512,504], so address
+        // via a scratch base (x1, caller-saved — not preserved by getcontext)
+        // and `str` each at its true 16-spaced offset (stp would pack them 8
+        // apart, corrupting the odd vregs).
+        "add x1, x0, #{vd8}",
+        "str d8,  [x1]",
+        "str d9,  [x1, #16]",
+        "str d10, [x1, #32]",
+        "str d11, [x1, #48]",
+        "str d12, [x1, #64]",
+        "str d13, [x1, #80]",
+        "str d14, [x1, #96]",
+        "str d15, [x1, #112]",
         "b __getcontext_post",
         r18 = const r(18),
         r20 = const r(20),
@@ -48,10 +58,7 @@ pub unsafe extern "C" fn getcontext(_ucp: *mut ucontext_t) -> i32 {
         pc  = const PC,
         sp  = const SP,
         r0  = const r(0),
-        d8  = const d(8),
-        d10 = const d(10),
-        d12 = const d(12),
-        d14 = const d(14),
+        vd8 = const d(8),
     );
 }
 
@@ -72,10 +79,17 @@ pub unsafe extern "C" fn __setcontext_regs(_ucp: *const ucontext_t) -> ! {
         "ldr x16, [x0, #{pc}]",        // branch target pc (== lr on resume)
         "ldr x2, [x0, #{sp}]",
         "mov sp, x2",
-        "ldp d8,  d9,  [x0, #{d8}]",
-        "ldp d10, d11, [x0, #{d10}]",
-        "ldp d12, d13, [x0, #{d12}]",
-        "ldp d14, d15, [x0, #{d14}]",
+        // d8..d15 ← vregs[8..15] (16-spaced); base offset > ldp imm range, so
+        // address via x1 scratch + `ldr` each (x1 is reloaded from r1 below).
+        "add x1, x0, #{vd8}",
+        "ldr d8,  [x1]",
+        "ldr d9,  [x1, #16]",
+        "ldr d10, [x1, #32]",
+        "ldr d11, [x1, #48]",
+        "ldr d12, [x1, #64]",
+        "ldr d13, [x1, #80]",
+        "ldr d14, [x1, #96]",
+        "ldr d15, [x1, #112]",
         "ldp x2, x3, [x0, #{r2}]",
         "ldp x4, x5, [x0, #{r4}]",
         "ldr x1, [x0, #{r1}]",
@@ -90,10 +104,7 @@ pub unsafe extern "C" fn __setcontext_regs(_ucp: *const ucontext_t) -> ! {
         r30 = const r(30),
         pc  = const PC,
         sp  = const SP,
-        d8  = const d(8),
-        d10 = const d(10),
-        d12 = const d(12),
-        d14 = const d(14),
+        vd8 = const d(8),
         r2  = const r(2),
         r4  = const r(4),
         r1  = const r(1),
