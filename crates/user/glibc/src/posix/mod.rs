@@ -33,6 +33,8 @@ pub mod statfs;
 #[cfg(feature = "freestanding")]
 pub mod modern;
 #[cfg(feature = "freestanding")]
+pub mod sysmisc;
+#[cfg(feature = "freestanding")]
 pub mod clone;
 #[cfg(feature = "freestanding")]
 pub mod fs;
