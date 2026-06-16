@@ -18,4 +18,4 @@ Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
 | R | 83  | revision block on FROZEN spec |
 | Z | 19  | freeze a DRAFT spec |
 | C | 91  | tooling / deps / CI plumbing |
-| P17 | 16 | phase-17 work (tty + login) |
+| P17 | 17 | phase-17 work (tty + login) |
