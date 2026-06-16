@@ -122,13 +122,13 @@ mod exports {
     // # C: int getnetbyaddr_r(uint32_t, int, struct netent*, char*, size_t, struct netent**)
     #[no_mangle]
     pub unsafe extern "C" fn getnetbyaddr_r(net: u32, type_: i32, rb: *mut netent, buf: *mut u8, n: usize, result: *mut *mut netent) -> i32 {
-        // SAFETY: as getnetbyname_r.
+        // SAFETY: deep-copy the lookup result into the caller rb/buf.
         unsafe { pack(getnetbyaddr(net, type_), rb, buf, n, result) }
     }
     // # C: int getnetent_r(struct netent*, char*, size_t, struct netent**)
     #[no_mangle]
     pub unsafe extern "C" fn getnetent_r(rb: *mut netent, buf: *mut u8, n: usize, result: *mut *mut netent) -> i32 {
-        // SAFETY: as getnetbyname_r.
+        // SAFETY: deep-copy the lookup result into the caller rb/buf.
         unsafe { pack(getnetent(), rb, buf, n, result) }
     }
 }
