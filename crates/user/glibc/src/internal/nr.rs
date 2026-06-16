@@ -305,6 +305,10 @@ pub mod x86_64 {
     pub const MODIFY_LDT: usize = 154;
     pub const IOPL: usize = 172;
     pub const IOPERM: usize = 173;
+    // memory protection keys (syscall_64.tbl)
+    pub const PKEY_MPROTECT: usize = 329;
+    pub const PKEY_ALLOC: usize = 330;
+    pub const PKEY_FREE: usize = 331;
 }
 
 pub mod aarch64 {
@@ -576,4 +580,8 @@ pub mod aarch64 {
     pub const ACCT: usize = 89;
     pub const RECVMMSG: usize = 243;
     pub const SENDMMSG: usize = 269;
+    // memory protection keys (asm-generic/unistd.h)
+    pub const PKEY_MPROTECT: usize = 288;
+    pub const PKEY_ALLOC: usize = 289;
+    pub const PKEY_FREE: usize = 290;
 }
