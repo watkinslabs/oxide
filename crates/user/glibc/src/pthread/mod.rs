@@ -7,6 +7,7 @@
 #![allow(clippy::upper_case_acronyms)]
 pub mod attr;
 pub mod cond;
+pub mod control;
 pub mod key;
 pub mod mutex;
 pub mod once;
