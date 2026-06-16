@@ -130,3 +130,36 @@ Musl stays buildable through G0–G18 (parallel path); retired in G19. No hard c
 - OQ2: malloc — reimplement ptmalloc internals or behavior-compatible arena allocator? (ABI only requires behavior + symbol set; lean behavior-compatible.)
 - OQ3: resolver — full bind9-style stub vs minimal `files dns`? (G13 minimal, full in later PR; never "deferred" — tracked here.)
 - OQ4: keep `crates/user/dl`,`nss`,`pam` as today and have glibc call into them, or absorb? (lean: glibc `nss/` dispatches to `crates/user/nss` modules; pam stays separate lib.)
+
+## 9 Remaining surface (full host-glibc audit, 2026-06-16)
+
+Method: `nm -D --defined-only` host Fedora glibc (libc/m/pthread/rt/dl/resolv/util/crypt/anl) → 4214 public syms; minus our `libc.so.6` exports (1486) minus `glibc_unsupported.md` (long-double f80 + `_Float128`/`_Float32x`/`_Float64x` — not expressible in Rust extern-C). Earlier "achievable surface COMPLETE" was scoped to what the 95 vendor binaries reference (~35 left); THIS is the complete glibc public API, incl. symbols no current vendor binary happens to call yet. Per Discipline rule 3 (no subset) these are in scope.
+
+### 9.1 Status by cluster
+
+| Cluster | Missing | Priority | Notes |
+|---|---|---|---|
+| pthread full surface | 80 | **HIGH** | have 49 (create/join/mutex/cond/rwlock/once/key). Missing: barriers, spinlocks, cancel, affinity, sched, setname, kill, sigqueue, timed/tryjoin, mutexattr prio/protocol/robust/pshared, rwlockattr. Folded into libc.so.6 — real MT programs need these. |
+| fts/fts64 | 10 | **HIGH** | coreutils `rm -r`/`du`/`chmod -R`, `find`. fs-tree traversal over our VFS. |
+| net resolver / NSS `_r` | 48 | **HIGH** | getifaddrs/freeifaddrs, dn_comp/expand/skipname, res_* (query/search/send/mkquery/nquery), getaddrinfo_a/gai_*, reentrant get*by*_r, recvmmsg/sendmmsg, get/setsourcefilter. |
+| modern syscall wrappers | 39 | MED | close_range/closefrom, getdents64, getdirentries, renameat2, getcpu, fsopen/fsmount/fsconfig/fspick (new mount API), fanotify_init/mark, process_vm_readv/writev, process_madvise/mrelease, arch_prctl, ptrace, readahead, remap_file_pages, epoll_pwait2, acct, fallocate64, preadv64/pwritev64(v2). Obsolete (skip-ok): bdflush, create_module/get_kernel_syms/query_module, STREAMS getmsg/putmsg/getpmsg/putpmsg, profil. |
+| locale `_l` variants | 16 | MED | newlocale/freelocale/uselocale/duplocale, nl_langinfo_l, str{coll,xfrm}_l, strto{d,f,ld,l,ul}_l, to{lower,upper}_l. Needs the `__locale_t` object (G16). |
+| C11 threads | 25 | MED | thrd_*/cnd_*/mtx_*/tss_*/call_once — thin shims over the pthread surface above. |
+| wide/multibyte | 28 | MED | wc*/c8rtomb/c16rtomb/c32rtomb/mbr* remainder (G16). |
+| `_FloatN` math (f32/f64) | 259 | LOW | `*f32`==float, `*f64`==double on both arches — ABI-identical aliases of existing libm; mechanical. |
+| C23 math (`*pi`, exp/log m1/p1, fmaximum/fminimum, narrowing fadd/fsub/…) | ~90 | LOW | new ISO C23 surface; niche. |
+| Sun RPC (clnt_/svc/auth/xdr/pmap/callrpc) | 138 | LOW | historically libtirpc; glibc-deprecated. Implement only if a vendor pkg links it. |
+| crypt_* (libxcrypt) | 8 | LOW | separate lib (G17). |
+| arc4random/ether_/argp/misc | ~20 | LOW | arc4random{,_buf,_uniform}, ether_*, misc BSD-isms. |
+
+### 9.2 Hard-blocked (NOT counted above — see `glibc_unsupported.md`)
+
+long-double (`*l`, x86 f80) + `_Float128`/`_Float32x`/`_Float64x` extended-precision: ~560 syms. Rust has no `f80`/`_Float128` extern-C type, so the ABI cannot be expressed. Permanent, not deferred.
+
+### 9.3 Closed since the vendor-scoped audit (F-series PRs)
+
+poll/ppoll, epoll, eventfd/signalfd/timerfd/inotify, statx, xattr×12, file/proc wrappers, sig wait family, posix_spawn family, chroot/fexecve/shm, mkostemp/mkstemps/futimesat/waitid (#2033), admin syscalls caps/modules/msg/sigqueue/personality/quota/reboot/fsuid (#2034), statfs/fstatfs/statvfs/fstatvfs (#2035).
+
+### 9.4 Work order (next PRs)
+
+pthread surface → fts → resolver/NSS_r → modern syscalls → locale `_l` → C11 threads → wide/mb → `_FloatN` aliases → C23 math → (RPC/crypt only if vendor-linked).
