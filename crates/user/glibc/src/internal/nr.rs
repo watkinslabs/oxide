@@ -209,6 +209,7 @@ pub mod x86_64 {
     pub const INOTIFY_INIT1: usize = 294;
     pub const INOTIFY_ADD_WATCH: usize = 254;
     pub const INOTIFY_RM_WATCH: usize = 255;
+    pub const STATX: usize = 332;
 }
 
 pub mod aarch64 {
@@ -390,4 +391,5 @@ pub mod aarch64 {
     pub const INOTIFY_INIT1: usize = 26;
     pub const INOTIFY_ADD_WATCH: usize = 27;
     pub const INOTIFY_RM_WATCH: usize = 28;
+    pub const STATX: usize = 291;
 }
