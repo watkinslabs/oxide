@@ -57,7 +57,8 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
 - **SysV signal compat** — sigset/sighold/sigrelse/sigignore; sigvec; sigreturn.
 - **misc syscalls** —
   (tee/vmsplice/sync_file_range DONE — F521, posix/morecalls.rs, t_splicefam.c;
-  splice/getcpu also done). sched_getattr/setattr, mlock2,
+  splice/getcpu also done). mlock2,
+  (sched_getattr/setattr/getcpu DONE — F522, posix/sched.rs, t_schedattr.c),
   pivot_root, mount_setattr/move_mount/open_tree,
   pidfd_getpid/spawn/spawnp, modify_ldt, ioperm, uselib, ustat, swab, revoke,
   setlogin, lockf, scandirat, timespec_get/getres, ftok, ftime, ualarm,
