@@ -1,71 +1,53 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (1672 exported). The libc **function** surface the 95 vendor
-> binaries reference is COMPLETE — conformance 144/144, both arches boot.
-> What's left below is the FULL upstream surface (most non-vendor) + the one
-> real migration blocker. Counts current as of the pthread/C11/syscalls/locale/
-> account-db/wide/clone/dl_iterate_phdr pass.
+> `libc.so.6` (**1919 exported**). Directive: implement EVERYTHING achievable
+> (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128`
+> (§3) are truly impossible. Conformance 150/150, both arches boot.
 
-## 1. VENDOR-NEEDED gap — 8 symbols, ONE blocker (the only thing G19d truly needs)
+## 1. The one migration blocker (docs/59 §9.4)
 
-`__environ` `_environ` `__signgam` `__tzname` `__timezone` `__daylight` `__progname` `__progname_full`
+8 `__`-aliased DATA symbols (`__environ`/`_environ`/`__signgam`/`__tzname`/
+`__timezone`/`__daylight`/`__progname`/`__progname_full`). They export fine via
+version-script, but our libc reaches its own exported data DIRECTLY (PC-relative,
+same cdylib) not via the GOT, so an executable's copy-reloc interposition
+desyncs. Fix = GOT-indirect codegen for copy-relocatable exported data inside
+libc (rustc has no semantic-interposition flag → GOT-load shim or structural
+split). Likely moot for real GNU-ld vendor binaries — confirm in G19d. Reverted
+(export alone is useless without the codegen fix).
 
-These are `.set` aliases of canonical Rust statics (environ/signgam/tzname/…).
-- **Export**: solved — a supplementary `--version-script` in `xtask glibc`
-  build_sharedlib re-promotes them (rustc localizes bare asm symbols otherwise).
-- **Blocker (docs/59 §9.4)**: our libc reaches its own exported data DIRECTLY
-  (PC-relative, same cdylib), not via the GOT, so an executable's copy-reloc
-  interposition desyncs (libc writes its private storage; the exe reads its
-  un-updated copy). ldso already does R_*_COPY. Fix = force GOT-indirect access
-  to copy-relocatable exported data inside libc (PIC visibility/codegen; rustc
-  exposes no semantic-interposition flag → needs a GOT-load shim or a structural
-  split). LIKELY MOOT for real vendor binaries (GNU ld collapses aliases + gcc
-  -fPIE GOT-accesses data) — confirm during G19d before investing.
+## 2. Remaining achievable clusters (DO ALL — full compliance)
 
-## 2. Full-surface, not vendor-referenced (lower priority)
-
-### net resolver (32) — DNS + iface
-dn_comp dn_expand dn_skipname getifaddrs freeifaddrs gai_error gai_suspend getaddrinfo_a getipv4sourcefilter getsourcefilter setsourcefilter recvmmsg sendmmsg res_query res_querydomain res_search res_send res_mkquery res_nmkquery res_nquery res_nquerydomain res_nsearch res_nsend res_gethostbyname res_gethostbyname2 res_gethostbyaddr res_hnok res_dnok res_mailok res_ownok res_send_setqhook res_send_setrhook
-
-### NSS reentrant `_r` + enumerators (~40) — nss db iteration
-get{host,net,proto,rpc,serv,sg,alias}ent_r, get{net,proto,rpc,serv,sg}by*_r, getaliasbyname_r, fgetsgent_r, sgetsgent_r, twalk_r, ether_aton_r, ether_ntoa_r; set/get/end{alias,rpc,sg,tty}ent, getsgent, getttyent, putsgent, sgetsgent
-
-### fts/fts64 (10) — coreutils `rm -r`/`du`/`find` (exact FTSENT ABI — substantial)
-fts_open fts_read fts_children fts_set fts_close + fts64_*
-
-### dl extras (4)
-dladdr1 dlinfo dlmopen dlvsym
-
-### misc syscall wrappers (~15)
-acct chflags fchflags clock_getcpuclockid execveat execvpe getcpu quotactl process_madvise process_mrelease pidfd_getpid pidfd_spawn pidfd_spawnp; STREAMS getmsg/putmsg/getpmsg/putpmsg + fattach/fdetach (obsolete); bdflush/create_module (obsolete)
-
-### BSD/misc (~15)
-arc4random arc4random_buf arc4random_uniform ether_aton ether_ntoa ether_hostton ether_ntohost ether_line bindresvport argp_program_version_hook crypt_gensalt(+_r/_ra/_rn) crypt_ra crypt_rn crypt_preferred_method crypt_checksalt fcrypt
-
-### `_FloatN` math aliases (265) — MECHANICAL
-`*f32`==float, `*f64`==double; alias existing libm via naked-fn jmp/b thunks
-(asm `.set` is localized by rustc → use naked fns like `clone`). 208 map to
-existing cores; ~57 need a base (the C23 set below).
-
-### C23 new math (~90)
-`*pi` trig (sinpi/cospi/atan2pi…), exp10m1/exp2m1/log*p1, fmaximum/fminimum
-(+_mag/_num variants), narrowing fadd/fsub/fmul/fdiv/fsqrt/ffma (+f32x/f64x).
-Need real implementations, not aliases.
-
-### Sun RPC (138) — DEPRECATED (libtirpc territory)
-clnt_*/svc_*/auth*/xdr_*/pmap_*/callrpc/key_*/netname/… — build only if a
-specific vendor package links it.
+- **Sun RPC (149)**: clnt_*/svc_*/auth_*/xdr_*/pmap_*/key_*/callrpc/registerrpc/
+  netname/get_my_address/ruserpass + getrpcent/byname/bynumber(+_r)/set/end.
+  Needs the XDR + RPC client/server machinery + /etc/rpc parser. Largest block.
+- **gshadow (16)**: struct sgrp + getsgnam/getsgent/fgetsgent/sgetsgent/putsgent
+  (+_r) + set/end. /etc/gshadow parser (libnss crate + glibc). sg_adm + sg_mem
+  (two char** arrays).
+- **aliases (14)**: struct aliasent + getaliasbyname/getaliasent(+_r)/set/end.
+  /etc/aliases (mail) parser.
+- **ttyent (7)**: struct ttyent + getttyent/getttynam/setttyent/endttyent +
+  fstab-ish /etc/ttys parser (usually empty on Linux → NULL).
+- **resolver (32)**: res_query/search/send/mkquery/nquery/nsearch/nsend/
+  gethostby*; dn_comp/dn_expand/dn_skipname; getifaddrs/freeifaddrs (netlink
+  RTM_GETADDR); getaddrinfo_a/gai_* (async); recvmmsg/sendmmsg; get/setsourcefilter.
+- **C23 trig `*pi` (35)**: sinpi/cospi/tanpi/asinpi/acospi/atanpi/atan2pi
+  (+f/f32/f64). NEED exact argument reduction (exact at integer/half-integer).
+- **C23 `*m1`/`*p1` (16)**: exp10m1/exp2m1/log10p1/log2p1 (+f/f32/f64).
+- **fts/fts64 (10)**: fs-tree traversal (coreutils -R/du/find). Exact FTSENT ABI.
+- **ether DB (3)**: ether_hostton/ether_ntohost/ether_line (/etc/ethers parser).
+- **`_FloatN` f32/f64 (57 remaining)**: alias to the C23 bases above once those
+  exist (regen version/floatn.map after C23 trig/m1p1/minmax land).
 
 ## 3. HARD-BLOCKED — cannot implement (docs/59 §9.2, glibc_unsupported.md)
+long double `*l` (x86 80-bit f80) + `_Float128`/`_Float32x`/`_Float64x` (~700).
+No Rust extern-C type. Only worthwhile piece: a `%Lf`/`%Lg` printf/scanf shim.
 
-- **long double `*l` (x86 80-bit f80): ~226** + **`_Float128`/`_Float32x`/`_Float64x`: ~477**.
-  Rust has no `f80`/`_Float128` extern-C type → the ABI can't be expressed.
-  Only worthwhile piece: a `%Lf`/`%Lg` printf/scanf asm shim.
-
-## Done (this pass)
-pthread FULL surface (80), C11 `<threads.h>` (25), modern syscalls (~34), locale
-`_l` (~28 + `__isoc23_strto*_l`), account-db (putgrent/putspent/lckpwdf/ulckpwdf),
-eaccess/euidaccess/sigisemptyset/sigorset/sigandset/__fpclassify/gets,
-in6addr_any/in6addr_loopback, mbrtoc32/c32rtomb, wcwidth/wcswidth, clone(2),
-dl_iterate_phdr. Each byte-exact vs host glibc (`xtask glibc-test`, 144/144).
+## Done (this autonomous run, ~30 PRs, conformance 150/150)
+pthread FULL surface (80), C11 threads (25), modern syscalls (~34), locale `_l`
+(~28 + __isoc23_strto*_l), account-db (putgrent/putspent/lckpwdf/ulckpwdf),
+eaccess/euidaccess/sigisemptyset/sigorset/sigandset/__fpclassify/gets, in6addr,
+mbrtoc32/c32rtomb, wcwidth/wcswidth, clone(2), dl_iterate_phdr, _FloatN math
+aliases (208), ether_aton/ntoa + arc4random family, acct/clock_getcpuclockid/
+execvpe, C23 fmaximum/fminimum family (16), netdb _r (serv/proto/net), dlvsym/
+dladdr1/dlmopen/dlinfo. Each byte-exact vs host (`xtask glibc-test`).
