@@ -55,7 +55,9 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   pidfd_getpid/spawn/spawnp, modify_ldt, ioperm, uselib, ustat, swab, revoke,
   setlogin, lockf, scandirat, timespec_get/getres, ftok, ftime, ualarm,
   group_member, gnu_dev_major/minor/makedev, glob_pattern_p, ttyslot,
-  sigabbrev_np/sigdescr_np/strerrorname_np/strerrordesc_np, twalk_r,
+  (sigabbrev_np/sigdescr_np/strerrorname_np/strerrordesc_np DONE — F512,
+  string/errname.rs complete 133-errno name+desc table, signal/desc.rs abbrev;
+  host-diffable t_errname_np.c exhaustive), twalk_r,
   open_wmemstream, wcslcat/wcslcpy, mbrtoc8/mbrtoc16/c8rtomb/c16rtomb,
   posix_spawn_file_actions_add{chdir,fchdir,closefrom,tcsetpgrp}_np +
   posix_spawnattr_get/set{sched*,sig*,pgroup,cgroup_np}.
