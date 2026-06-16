@@ -6,6 +6,15 @@
 
 pub const AF_INET: i32 = 2;
 pub const AF_INET6: i32 = 10;
+
+// # C: const struct in6_addr in6addr_any / in6addr_loopback — exported data
+// (struct in6_addr is { uint8_t s6_addr[16] }; ABI-identical to [u8;16]).
+#[cfg(feature = "freestanding")]
+#[no_mangle]
+pub static in6addr_any: [u8; 16] = [0; 16];
+#[cfg(feature = "freestanding")]
+#[no_mangle]
+pub static in6addr_loopback: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
 pub const INET_ADDRSTRLEN: usize = 16;
 pub const INET6_ADDRSTRLEN: usize = 46;
 
