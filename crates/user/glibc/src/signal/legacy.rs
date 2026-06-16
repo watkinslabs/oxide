@@ -73,6 +73,60 @@ pub unsafe extern "C" fn sigpause(mask: i32) -> i32 {
     }
 }
 
+const SIG_UNBLOCK: i32 = 1;
+const SIG_HOLD: usize = 2;
+
+// A one-signal sigset_t (bit sig-1), covering the full 1..64 range.
+fn one_sig(sig: i32) -> sigset_t {
+    let mut s = sigset_t { __val: [0; 16] };
+    if sig >= 1 && sig <= 64 { let n = (sig - 1) as usize; s.__val[n / 64] |= 1u64 << (n % 64); }
+    s
+}
+
+/// # C: int sighold(int sig) — block `sig` (SysV).
+#[no_mangle]
+pub unsafe extern "C" fn sighold(sig: i32) -> i32 {
+    // SAFETY: SIG_BLOCK a one-signal set via sigprocmask.
+    unsafe { let s = one_sig(sig); sigprocmask(SIG_BLOCK, &s, core::ptr::null_mut()) }
+}
+/// # C: int sigrelse(int sig) — unblock `sig` (SysV).
+#[no_mangle]
+pub unsafe extern "C" fn sigrelse(sig: i32) -> i32 {
+    // SAFETY: SIG_UNBLOCK a one-signal set via sigprocmask.
+    unsafe { let s = one_sig(sig); sigprocmask(SIG_UNBLOCK, &s, core::ptr::null_mut()) }
+}
+/// # C: int sigignore(int sig) — set `sig`'s disposition to SIG_IGN (SysV).
+#[no_mangle]
+pub unsafe extern "C" fn sigignore(sig: i32) -> i32 {
+    // SAFETY: install SIG_IGN for `sig` via sigaction (no flags).
+    unsafe {
+        let act = sigaction_t { sa_handler: SIG_IGN, sa_mask: sigset_t { __val: [0; 16] }, sa_flags: 0, sa_restorer: 0 };
+        sigaction(sig, &act, core::ptr::null_mut())
+    }
+}
+/// # C: sighandler_t sigset(int sig, sighandler_t disp) — SysV set disposition.
+/// Returns the previous disposition (SIG_HOLD if the signal was blocked).
+#[no_mangle]
+pub unsafe extern "C" fn sigset(sig: i32, disp: usize) -> usize {
+    // SAFETY: query the prior action + blocked state, then either block the
+    // signal (disp==SIG_HOLD) or install the handler and unblock it.
+    unsafe {
+        let s = one_sig(sig);
+        let mut oact = sigaction_t { sa_handler: 0, sa_mask: sigset_t { __val: [0; 16] }, sa_flags: 0, sa_restorer: 0 };
+        if sigaction(sig, core::ptr::null(), &mut oact) < 0 { return SIG_ERR; }
+        let mut oset = sigset_t { __val: [0; 16] };
+        if disp == SIG_HOLD {
+            if sigprocmask(SIG_BLOCK, &s, &mut oset) < 0 { return SIG_ERR; }
+        } else {
+            let act = sigaction_t { sa_handler: disp, sa_mask: sigset_t { __val: [0; 16] }, sa_flags: 0, sa_restorer: 0 };
+            if sigaction(sig, &act, core::ptr::null_mut()) < 0 { return SIG_ERR; }
+            if sigprocmask(SIG_UNBLOCK, &s, &mut oset) < 0 { return SIG_ERR; }
+        }
+        let n = (sig - 1) as usize;
+        if sig >= 1 && sig <= 64 && (oset.__val[n / 64] >> (n % 64)) & 1 != 0 { SIG_HOLD } else { oact.sa_handler }
+    }
+}
+
 /// # C: int siginterrupt(int sig, int flag) — toggle SA_RESTART on `sig`.
 #[no_mangle]
 pub unsafe extern "C" fn siginterrupt(sig: i32, flag: i32) -> i32 {
