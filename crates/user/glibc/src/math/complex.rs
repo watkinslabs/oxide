@@ -40,7 +40,7 @@ fn imp_cexp(z: __cdouble) -> __cdouble { let e = exp(z.re); cd(e * cos(z.im), e 
 fn imp_clog(z: __cdouble) -> __cdouble { cd(log(imp_cabs(z)), atan2(z.im, z.re)) }
 /// # C: double _Complex imp_clog10(double _Complex) — base-10 = clog(z)/ln(10)
 fn imp_clog10(z: __cdouble) -> __cdouble {
-    const LN10: f64 = 2.302585092994045684017991454684364208_f64; // ln(10)
+    const LN10: f64 = core::f64::consts::LN_10; // ln(10)
     let l = imp_clog(z); cd(l.re / LN10, l.im / LN10)
 }
 /// # C: double _Complex imp_csqrt(double _Complex) — principal branch
