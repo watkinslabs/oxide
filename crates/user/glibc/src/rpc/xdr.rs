@@ -421,6 +421,109 @@ pub unsafe extern "C" fn xdr_free(proc: unsafe extern "C" fn(*mut XDR, *mut c_vo
     }
 }
 
+type XdrProc = unsafe extern "C" fn(*mut XDR, *mut c_void) -> i32;
+
+// # C: bool_t xdr_vector(XDR*, char *basep, unsigned nelem, unsigned elemsize, xdrproc_t)
+#[no_mangle]
+pub unsafe extern "C" fn xdr_vector(x: *mut XDR, basep: *mut u8, nelem: u32, elemsize: u32, elproc: XdrProc) -> i32 {
+    // SAFETY: basep is an nelem*elemsize array; run elproc on each element.
+    unsafe {
+        for i in 0..nelem as usize {
+            if elproc(x, basep.add(i * elemsize as usize) as *mut c_void) == 0 { return FALSE; }
+        }
+        TRUE
+    }
+}
+// # C: bool_t xdr_array(XDR*, char**, unsigned*, unsigned maxsize, unsigned elemsize, xdrproc_t)
+#[no_mangle]
+pub unsafe extern "C" fn xdr_array(x: *mut XDR, addrp: *mut *mut u8, sizep: *mut u32, maxsize: u32, elemsize: u32, elproc: XdrProc) -> i32 {
+    // SAFETY: length-prefixed counted array; DECODE allocs the element block,
+    // FREE runs elproc(FREE) on each element then frees the block.
+    unsafe {
+        if xdr_u_int(x, sizep) == 0 { return FALSE; }
+        let n = *sizep;
+        if n > maxsize { return FALSE; }
+        let op = (*x).x_op;
+        if op == DECODE && n != 0 && (*addrp).is_null() {
+            *addrp = crate::malloc::heap::malloc(n as usize * elemsize as usize);
+            if (*addrp).is_null() { return FALSE; }
+            core::ptr::write_bytes(*addrp, 0, n as usize * elemsize as usize);
+        }
+        let r = if n != 0 { xdr_vector(x, *addrp, n, elemsize, elproc) } else { TRUE };
+        if op == FREE && !(*addrp).is_null() { crate::malloc::heap::free(*addrp); *addrp = core::ptr::null_mut(); }
+        r
+    }
+}
+// # C: bool_t xdr_reference(XDR*, char**, unsigned size, xdrproc_t)
+#[no_mangle]
+pub unsafe extern "C" fn xdr_reference(x: *mut XDR, pp: *mut *mut u8, size: u32, proc: XdrProc) -> i32 {
+    // SAFETY: a non-optional pointer to one object; DECODE allocs it, FREE frees it.
+    unsafe {
+        let op = (*x).x_op;
+        if op == DECODE && (*pp).is_null() {
+            *pp = crate::malloc::heap::malloc(size as usize);
+            if (*pp).is_null() { return FALSE; }
+            core::ptr::write_bytes(*pp, 0, size as usize);
+        }
+        if (*pp).is_null() { return TRUE; }
+        let r = proc(x, *pp as *mut c_void);
+        if op == FREE { crate::malloc::heap::free(*pp); *pp = core::ptr::null_mut(); }
+        r
+    }
+}
+// # C: bool_t xdr_pointer(XDR*, char**, unsigned objsize, xdrproc_t)
+#[no_mangle]
+pub unsafe extern "C" fn xdr_pointer(x: *mut XDR, objpp: *mut *mut u8, objsize: u32, proc: XdrProc) -> i32 {
+    // SAFETY: an optional pointer — a leading bool says whether the object is
+    // present, then xdr_reference handles it.
+    unsafe {
+        let mut more = (!(*objpp).is_null()) as i32;
+        if xdr_bool(x, &mut more) == 0 { return FALSE; }
+        if more == 0 { *objpp = core::ptr::null_mut(); return TRUE; }
+        xdr_reference(x, objpp, objsize, proc)
+    }
+}
+
+// Sizing stream: counts bytes (in x_handy) instead of touching memory.
+unsafe extern "C" fn size_putlong(x: *mut XDR, _: *const i64) -> i32 {
+    // SAFETY: x is the live sizing stream; a wire long counts as 4 bytes.
+    unsafe { (*x).x_handy += 4; TRUE }
+}
+unsafe extern "C" fn size_putint32(x: *mut XDR, _: *const i32) -> i32 {
+    // SAFETY: x is the live sizing stream; a wire int32 counts as 4 bytes.
+    unsafe { (*x).x_handy += 4; TRUE }
+}
+unsafe extern "C" fn size_putbytes(x: *mut XDR, _: *const u8, n: u32) -> i32 {
+    // SAFETY: x is the live sizing stream; n raw bytes add n to the count.
+    unsafe { (*x).x_handy += n; TRUE }
+}
+unsafe extern "C" fn size_getlong(_: *mut XDR, _: *mut i64) -> i32 { FALSE }
+unsafe extern "C" fn size_getbytes(_: *mut XDR, _: *mut u8, _: u32) -> i32 { FALSE }
+unsafe extern "C" fn size_getpostn(x: *const XDR) -> u32 {
+    // SAFETY: x is the live sizing stream; x_handy holds the accumulated count.
+    unsafe { (*x).x_handy }
+}
+unsafe extern "C" fn size_setpostn(_: *mut XDR, _: u32) -> i32 { FALSE }
+unsafe extern "C" fn size_inline(_: *mut XDR, _: u32) -> *mut i32 { core::ptr::null_mut() }
+unsafe extern "C" fn size_getint32(_: *mut XDR, _: *mut i32) -> i32 { FALSE }
+static SIZE_OPS: XdrOps = XdrOps {
+    getlong: size_getlong, putlong: size_putlong, getbytes: size_getbytes, putbytes: size_putbytes,
+    getpostn: size_getpostn, setpostn: size_setpostn, inline_: size_inline, destroy: mem_destroy,
+    getint32: size_getint32, putint32: size_putint32,
+};
+// # C: unsigned long xdr_sizeof(xdrproc_t func, void *data)
+#[no_mangle]
+pub unsafe extern "C" fn xdr_sizeof(func: XdrProc, data: *mut c_void) -> u64 {
+    // SAFETY: run func against a counting stream (ENCODE op) and read the byte
+    // total accumulated in x_handy.
+    unsafe {
+        let mut x: XDR = core::mem::zeroed();
+        x.x_ops = &SIZE_OPS; x.x_op = ENCODE; x.x_handy = 0;
+        func(&mut x, data);
+        x.x_handy as u64
+    }
+}
+
 // # C: unsigned int xdr_getpos(const XDR*) / bool_t xdr_setpos(XDR*, unsigned)
 #[no_mangle]
 pub unsafe extern "C" fn xdr_getpos(x: *const XDR) -> u32 {
