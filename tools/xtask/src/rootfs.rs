@@ -154,6 +154,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         };
         build_glibc_bin("g19_glibc_smoke")?;
         build_glibc_bin("g19_glibc_test")?;
+        build_glibc_bin("g19_glibc_pthread")?;
     }
 
     // F231 / B18: PAM modules come from vendor/pam/install-<arch>/modules/
@@ -316,22 +317,28 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         }
         let cache = repo.join(format!("target/sysroot/{triple}/etc/ld.so.cache"));
         put(&cache, "/etc/ld.so.cache")?;
-        put(&user("g19_glibc_smoke"), "/bin/g19_glibc_smoke")?;
-        put(&user("g19_glibc_test"),  "/bin/g19_glibc_test")?;
+        put(&user("g19_glibc_smoke"),   "/bin/g19_glibc_smoke")?;
+        put(&user("g19_glibc_test"),    "/bin/g19_glibc_test")?;
+        put(&user("g19_glibc_pthread"), "/bin/g19_glibc_pthread")?;
         // oneshot unit (pulled in by the Oxide Default Target's Wants) runs the
-        // glibc smoke + the broader stdio/malloc/string test before the getty,
-        // so their markers land on serial.
+        // glibc-on-kernel bins before the getty so their markers land on serial.
+        // pthread is x86-only in the boot oneshot for now: it passes on x86 but
+        // join/mutex futex hang on aarch64 (a kernel futex gap — tracked with
+        // the SMP/futex work); the binary is still staged on arm for manual run.
+        // TimeoutStartSec keeps a hung ExecStart from wedging the getty.
+        let pthread_exec = if arch == "x86_64" { "ExecStart=/bin/g19_glibc_pthread\n" } else { "" };
         let svc = repo.join("target/g19smoke.service");
-        std::fs::write(&svc,
-b"[Unit]
+        std::fs::write(&svc, format!(
+"[Unit]
 Description=G19 glibc-on-kernel smoke
 DefaultDependencies=no
 Before=console-getty.service
 [Service]
 Type=oneshot
+TimeoutStartSec=30
 ExecStart=/bin/g19_glibc_smoke
 ExecStart=/bin/g19_glibc_test
-").map_err(|_| 1u8)?;
+{pthread_exec}").as_bytes()).map_err(|_| 1u8)?;
         // /usr/lib/systemd/system is created by the later L2 systemd staging,
         // so it does not exist yet at this point — `debugfs write` would fail
         // SILENTLY (debugfs exits 0 even on error), dropping the unit. Create
