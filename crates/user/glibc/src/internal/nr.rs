@@ -264,6 +264,7 @@ pub mod x86_64 {
     pub const MSGRCV: usize = 70;
     pub const MSGCTL: usize = 71;
     pub const RT_SIGQUEUEINFO: usize = 129;
+    pub const RT_TGSIGQUEUEINFO: usize = 297;
 }
 
 pub mod aarch64 {
@@ -500,4 +501,5 @@ pub mod aarch64 {
     pub const MSGRCV: usize = 188;
     pub const MSGCTL: usize = 187;
     pub const RT_SIGQUEUEINFO: usize = 138;
+    pub const RT_TGSIGQUEUEINFO: usize = 240;
 }
