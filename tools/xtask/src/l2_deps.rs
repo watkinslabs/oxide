@@ -128,6 +128,7 @@ pub const DEFAULT_TARGET: &[u8] = b"[Unit]
 Description=Oxide Default Target
 Documentation=man:systemd.special(7)
 DefaultDependencies=no
+Wants=g19smoke.service
 Wants=console-getty.service
 After=console-getty.service
 AllowIsolate=yes
