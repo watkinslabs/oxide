@@ -21,6 +21,8 @@ pub mod linuxfd;
 #[cfg(feature = "freestanding")]
 pub mod xattr;
 #[cfg(feature = "freestanding")]
+pub mod morecalls;
+#[cfg(feature = "freestanding")]
 pub mod fs;
 pub mod stat;
 pub mod fnmatch;
