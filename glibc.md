@@ -61,7 +61,9 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (sched_getattr/setattr/getcpu DONE — F522, posix/sched.rs, t_schedattr.c),
   (mlock2/pivot_root/open_tree/move_mount/mount_setattr DONE — F523,
   posix/morecalls.rs, t_mountmem.c).
-  pidfd_getpid/spawn/spawnp, modify_ldt, ioperm, uselib, ustat, swab, revoke,
+  (execveat/sockatmark/isfdtype DONE — F525, posix/process.rs +
+  net/socket.rs + posix/stat.rs; host-diffable t_morecalls.c).
+  pidfd_getpid/spawn/spawnp, modify_ldt, ioperm, uselib, ustat, revoke,
   setlogin, lockf, scandirat, timespec_get/getres, ftok, ftime, ualarm,
   group_member, gnu_dev_major/minor/makedev, glob_pattern_p, ttyslot, scandirat/scandirat64 (DONE F519), lockf/lockf64 (DONE F520, posix/lockf.rs, t_lockf.c),
   (sigabbrev_np/sigdescr_np/strerrorname_np/strerrordesc_np DONE — F512,

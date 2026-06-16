@@ -119,6 +119,16 @@ mod exports {
         // SAFETY: composes newfstatat(fd, "", buf, AT_EMPTY_PATH).
         unsafe { statat(fd, b"\0".as_ptr(), buf, AT_EMPTY_PATH) }
     }
+    // # C: int isfdtype(int fd, int fdtype) — 1 if fd's st_mode type == fdtype.
+    #[no_mangle]
+    pub unsafe extern "C" fn isfdtype(fd: i32, fdtype: i32) -> i32 {
+        // SAFETY: fstat fills a local stat; compare its S_IFMT bits to fdtype.
+        unsafe {
+            let mut st: stat = core::mem::zeroed();
+            if statat(fd, b"\0".as_ptr(), &mut st, AT_EMPTY_PATH) < 0 { return -1; }
+            ((st.st_mode & 0o170000) == fdtype as u32) as i32
+        }
+    }
     // # C: int fstatat(int dirfd, const char *path, struct stat *buf, int flags)
     #[no_mangle]
     pub unsafe extern "C" fn fstatat(dirfd: i32, path: *const u8, buf: *mut stat, flags: i32) -> i32 {

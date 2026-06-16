@@ -4,7 +4,7 @@
 #![cfg(feature = "freestanding")]
 // b"..\0" literals are already *const u8 (no arch-varying c_char cast).
 #![allow(clippy::manual_c_str_literals)]
-use crate::arch::syscall::{sys3, sys4};
+use crate::arch::syscall::{sys3, sys4, sys5};
 use crate::internal::errno::ret_isize;
 use crate::internal::nr;
 use crate::stdlib::env::current_environ;
@@ -52,6 +52,13 @@ pub unsafe extern "C" fn vfork() -> i32 {
 pub unsafe extern "C" fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32 {
     // SAFETY: path NUL-terminated; argv/envp NULL-terminated pointer arrays.
     ret_isize(unsafe { sys3(nr::EXECVE, path as usize, argv as usize, envp as usize) }) as i32
+}
+// # C: int execveat(int dirfd, const char *path, char *const argv[], char *const envp[], int flags)
+#[no_mangle]
+pub unsafe extern "C" fn execveat(dirfd: i32, path: *const u8, argv: *const *const u8, envp: *const *const u8, flags: i32) -> i32 {
+    // SAFETY: execveat(2); path resolved relative to dirfd (AT_EMPTY_PATH ⇒ dirfd
+    // itself). argv/envp NULL-terminated pointer arrays; only returns on error.
+    ret_isize(unsafe { sys5(nr::EXECVEAT, dirfd as usize, path as usize, argv as usize, envp as usize, flags as usize) }) as i32
 }
 // # C: int execv(const char *path, char *const argv[])
 #[no_mangle]
