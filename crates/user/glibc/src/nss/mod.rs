@@ -12,6 +12,8 @@ use alloc::vec::Vec;
 
 pub mod r#enum;
 pub mod shadow;
+#[cfg(feature = "freestanding")]
+pub mod putent;
 
 #[repr(C)]
 pub struct passwd {
