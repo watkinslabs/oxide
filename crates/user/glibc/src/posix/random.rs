@@ -23,6 +23,40 @@ pub unsafe extern "C" fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> i
     ret_isize(unsafe { sys3(nr::GETRANDOM, buf as usize, buflen, flags as usize) })
 }
 
+// # C: void arc4random_buf(void *buf, size_t n) — fill n bytes with CSPRNG bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arc4random_buf(buf: *mut core::ffi::c_void, n: usize) {
+    // SAFETY: loop getrandom until n bytes are written (arc4random never fails);
+    // the kernel validates each shrinking range.
+    unsafe {
+        let p = buf as *mut u8;
+        let mut done = 0usize;
+        while done < n {
+            let r = sys3(nr::GETRANDOM, p.add(done) as usize, n - done, 0);
+            match ret(r) {
+                Ok(k) if k > 0 => done += k as usize,
+                Err(e) if e == EINTR => continue,
+                _ => { core::ptr::write_bytes(p.add(done), 0, n - done); break; }
+            }
+        }
+    }
+}
+// # C: uint32_t arc4random(void)
+#[no_mangle]
+pub unsafe extern "C" fn arc4random() -> u32 {
+    // SAFETY: fill a 4-byte stack word with CSPRNG bytes.
+    unsafe { let mut v: u32 = 0; arc4random_buf(&mut v as *mut u32 as *mut core::ffi::c_void, 4); v }
+}
+// # C: uint32_t arc4random_uniform(uint32_t upper_bound) — unbiased [0,upper).
+#[no_mangle]
+pub unsafe extern "C" fn arc4random_uniform(upper: u32) -> u32 {
+    if upper < 2 { return 0; }
+    // Rejection sampling: discard the low (2^32 % upper) values to avoid modulo bias.
+    let min = upper.wrapping_neg() % upper;
+    // SAFETY: arc4random reads kernel entropy; loop until an unbiased draw.
+    unsafe { loop { let r = arc4random(); if r >= min { return r % upper; } } }
+}
+
 // # C: int getentropy(void *buf, size_t buflen) — 0 / -1+errno, max 256 bytes.
 #[no_mangle]
 pub unsafe extern "C" fn getentropy(buf: *mut u8, buflen: usize) -> i32 {

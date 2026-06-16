@@ -10,4 +10,6 @@ pub mod netdb_net;
 pub mod netdb_proto;
 pub mod netdb_serv;
 pub mod netgr;
+#[cfg(feature = "freestanding")]
+pub mod ethers;
 pub mod socket;
