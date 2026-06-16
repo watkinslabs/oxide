@@ -42,6 +42,27 @@ pub unsafe extern "C" fn splice(fd_in: i32, off_in: *mut i64, fd_out: i32, off_o
     unsafe { ret_isize(sys6(nr::SPLICE, fd_in as usize, off_in as usize, fd_out as usize, off_out as usize, len, flags as usize)) }
 }
 
+// # C: ssize_t tee(int fd_in, int fd_out, size_t len, unsigned int flags)
+#[no_mangle]
+pub unsafe extern "C" fn tee(fd_in: i32, fd_out: i32, len: usize, flags: u32) -> isize {
+    // SAFETY: tee(2) duplicates pipe data between two pipe fds; scalar args.
+    unsafe { ret_isize(sys4(nr::TEE, fd_in as usize, fd_out as usize, len, flags as usize)) }
+}
+
+// # C: ssize_t vmsplice(int fd, const struct iovec *iov, size_t nr_segs, unsigned int flags)
+#[no_mangle]
+pub unsafe extern "C" fn vmsplice(fd: i32, iov: *const c_void, nr_segs: usize, flags: u32) -> isize {
+    // SAFETY: iov points at nr_segs struct iovec the kernel reads; fd is a pipe.
+    unsafe { ret_isize(sys4(nr::VMSPLICE, fd as usize, iov as usize, nr_segs, flags as usize)) }
+}
+
+// # C: int sync_file_range(int fd, off64_t offset, off64_t nbytes, unsigned int flags)
+#[no_mangle]
+pub unsafe extern "C" fn sync_file_range(fd: i32, offset: i64, nbytes: i64, flags: u32) -> i32 {
+    // SAFETY: sync_file_range(2) — scalar args, no user buffers.
+    unsafe { ret_isize(sys4(nr::SYNC_FILE_RANGE, fd as usize, offset as usize, nbytes as usize, flags as usize)) as i32 }
+}
+
 // # C: ssize_t copy_file_range(int fd_in, off64_t *off_in, int fd_out, off64_t *off_out, size_t len, unsigned int flags)
 #[no_mangle]
 pub unsafe extern "C" fn copy_file_range(fd_in: i32, off_in: *mut i64, fd_out: i32, off_out: *mut i64, len: usize, flags: u32) -> isize {
