@@ -1,86 +1,76 @@
 # state.md — session handoff
 
 ## Headline
-Building **oxide-libc**: our own glibc-ABI C library in Rust (replacing musl),
-spec `docs/59`. Crates: `crates/user/glibc` (libc) + `crates/user/ldso`
-(dynamic linker). Phase: **hardening libc to be bulletproof before G19
-integration** (user directive). Driver = the differential conformance harness.
+Driving **G19 glibc-on-kernel integration** (docs/59§6) + the Linux-correct
+console/serial fix that unblocked it. Branch series `P17-NN` (tty+login phase,
+index-tracked). glibc-ABI libc (`crates/user/glibc`) + rtld (`crates/user/ldso`)
+now LOAD AND RUN on the oxide kernel, both arches.
 
-## Validation engine — `xtask glibc-test`
-Each `userspace/glibc_conformance/*.c` is compiled once and run BOTH against
-host glibc (oracle) and our sysroot (Scrt1.o + libc.so.6 via our ld-linux on
-the host kernel); stdout+exit diffed. **93/93 programs byte-exact** on
-x86_64+aarch64. This is the verify-left engine — keep adding programs.
+## Landed this session (merged to main)
+- **P17-12 (#2013)** `/dev/console` follows the `console=` cmdline (Linux 5:1):
+  console crate's serial-vs-VT split routed /dev/console to the video VT, so
+  `oxide login:` never reached serial → boot-smoke hung at getty on BOTH arches
+  (masked by SKIP_SMOKE doc pushes). Fixed: `cmdline::preferred_console()` (last
+  `console=` wins), `console::system_console_inode()` for /dev/console + init
+  fd0/1/2, default cmdline `console=tty0 console=ttyS0`. Also fixed the aarch64
+  vdso build path (broke after the vdso→crate move).
+- **P17-13 (#2014)** G19b: glibc smoke runs on x86 kernel. Two staging bugs:
+  `debugfs write` exits 0 on failure (unit dropped because /usr/lib/systemd/
+  system didn't exist yet → mkdir parents first); unit wired via the wrong
+  wants dir → `Wants=g19smoke.service` on the Oxide Default Target.
+- **P17-14 (#2015)** G19c: glibc smoke runs on aarch64. Fixed ucontext/aarch64
+  ldp/stp offset >504 build error (+ the stp-packs-8-not-16 vreg bug) via x1
+  base + individual str/ldr. Generalized the g19 build/stage to both arches.
+- **P17-15 (#2016)** glibc stdio/malloc/string kernel test (both arches):
+  snprintf, malloc/realloc, string, full FILE path (fopen/fprintf/fclose).
+- **B129 (#2012)** netfilter parallel-test flake (was the real CI-red) + glibc
+  math clippy correctness.
 
-## Progress tracker (per user request) — THREE files now
-- `glibc_done.md` — functions libc.so.6 exports (`nm -D`), harness-validated.
-  **1137** exported. ACHIEVABLE SURFACE COMPLETE (TODO=0).
-- `glibc.md` — achievable TODO: **0** — done.
-- `glibc_unsupported.md` — **132** genuinely-blocked: 122 long-double (`*l`,
-  `*l` complex, strtold/wcstold, qecvt/qfcvt/qgcvt, strfroml, nexttoward*) —
-  x86_64 `long double`=80-bit f80, Rust has no f80 so the extern-C ABI is
-  inexpressible; + 10 `__ppc_*` (PowerPC-only, arch N/A). NOT a deferral list.
-- Refresh: rebuild sysroot (the harness does it), `nm -D --defined-only
-  target/sysroot/x86_64-*/lib/libc.so.6 | awk '{print $NF}'`, then the
-  three-way python re-split: done=exported, unsupported=longdouble|__ppc,
-  todo=rest.
+- **P17-16 (#2017)** pthread-on-kernel test: clone/TLS/futex-mutex/join.
+- **P17-17 (#2018, MERGING)** `fix(clone)`: aarch64 ctid/tls arg order
+  (CLONE_BACKWARDS). clone arg order is per-arch — x86 `(…,ctid=a3,tls=a4)`,
+  arm `(…,tls=a3,ctid=a4)`. Dispatcher used x86 order everywhere → arm
+  `clear_child_tid` got the TLS value → thread-exit CHILD_CLEARTID FUTEX_WAKE
+  hit the wrong addr → `pthread_join` hung forever on arm. Fixed in
+  dispatch.rs (arch-select ctid/tls). **Verified both arches**: full glibc
+  pthread (4-thread futex-mutex contention + join) passes on arm now.
+  Diagnosed via `g19_glibc_jointest` (join-isolation, now a regression test).
 
-## AUTONOMOUS LOOP IN PROGRESS (user: "do this in a loop, do not stop")
-Land every achievable glibc function via rounds of ~6 parallel worktree
-sub-agents → central integrate (merge w/ union driver on registration files,
-resolve, full harness+workspace+spec-lint, refresh trackers) → repeat until
-glibc.md empty. Each agent's gate = differential conformance vs host glibc.
-- Round 1 (PRs #1978-1982): complex math, utmp, sched/rlimit, pw/gr enum, misc.
-- Round 2 (PRs #1986-1991): obstack, rand48+random, fenv (x86+arm), netdb
-  host/proto/serv/net/netgroup, syslog+err/error, wide-char stdio. 99/99.
-- B127 (#1984): cleared pre-existing red CI (see below).
+## SMP status (task #6 — effectively done)
+- x86 SMP=2 flaky-login race: **NOT reproducible** (5/5 clean tcg boots) —
+  already fixed by prior work.
+- The real concurrency bug was the arm clone/pthread hang above (fixed).
 
-## What's solid (validated this phase)
-- printf/scanf/strftime/strtol/strtod/ctype/env/getopt/qsort audits; fma;
-  regex; FILE backing; erf/tgamma/lgamma; Bessel; inet; wcsto*; complex math;
-  obstack; rand48+TYPE_3 random; fenv; netdb DBs; syslog/err; wide stdio;
-  fnmatch (POSIX [:class:]/[.coll.]/[=equiv=]); LFS *64; argz; search; utmp;
-  sched; pw/gr/shadow enum.
+## Verify gates / how to boot
+- **x86**: `OXIDE_QEMU_KVM=1 timeout 240 cargo run -q -p xtask -- grub --arch
+  x86_64 --smp 1 > /tmp/b.log 2>&1` (foreground, single line, KVM ~20s to login).
+  grep the log for markers. rc=124 = booted+timed-out = good.
+- **arm boot infra gotcha (THIS dev box)**: the standard `-bios ovmf-aarch64.fd`
+  OVMF (retrage nightly) STALLS in DXE under TCG here — never reaches GRUB. The
+  repo's qemu path is UNCHANGED (works on the user's infra). For LOCAL arm
+  verification only, boot the built ISO via the Fedora EDK2 **pflash** firmware
+  (known-good): `-drive if=pflash,unit=0,file=/usr/share/edk2/aarch64/
+  QEMU_EFI-silent-pflash.raw,readonly=on -drive if=pflash,unit=1,file=<copy of
+  vars-template-pflash.raw>` + the ISO + root/home virtio-blk disks. ~5-7 min
+  TCG to login. Do NOT change the repo firmware/image_qemu.rs (user directive).
+- **NEVER `pkill -f qemu-system`** in a multi-step shell command — `-f` matches
+  the pkill command's OWN cmdline, `-9` kills the parent shell before the next
+  step runs (cost hours of "no log" confusion). Use `pkill -x qemu-system-<arch>`
+  (exact process name) or just don't pkill (single-line foreground boots are clean).
+- rootfs staging changes need a cache MISS: `rm -f target/rootfs-cache/*<arch>*`.
+- glibc host conformance: `cargo run -q -p xtask -- glibc-test` (114/114).
 
-## Remaining achievable clusters (the 352 TODO) — next rounds
-- aio_* (async I/O over pthread); argp_*+wordexp+argz/envz extras.
-- backtrace* (frame-pointer/unwinder); fcvt/ecvt/gcvt+strfromd/f; printf_size.
-- pty/tty (openpty/forkpty/ptsname/grantpt/ttyname/isatty/tcgetpgrp).
-- fs+proc syscalls (mount/umount/madvise/mlock/mremap/mknod/truncate64/ioctl/
-  fcntl/readv/writev/select/getrandom/getentropy/sysconf/getauxval/...).
-- ucontext (getcontext/makecontext/swapcontext, per-arch asm).
-- DES crypt (encrypt/setkey/ecb_crypt/cbc_crypt); catgets.
-- stdio64 + GNU __f* introspection; f64/f32 math extras (exp10/llround/
-  roundeven/fromfp/totalorder/nextup/sincosf/...); strptime/wcsftime/strfmon.
-
-## Verify gate (every PR)
-`cargo run -q -p xtask -- glibc-test` (93/93, must be prev+N, zero regress);
-`cargo test -p glibc`; `cargo clippy -p glibc {,--features freestanding}` (no
-new warns); `cargo run -q -p spec-lint -- all | grep -i glibc` empty. Branch
-`P28-NN-*` (last merged P28-138), `SKIP_SMOKE=1` push, PR, merge, delete.
-
-## CI is GREEN (B127 / PR #1984 cleared the pre-existing red)
-Fixed the 5 hosted-test/spec-lint breakages that were red on main (all
-unrelated to the new libc clusters, several masked behind the first compile
-error): vtconsole test used `tty.read()` (now `ReadOutcome`) as a usize;
-spec-lint `code/static-mut` false-positive on `&'static mut T` (ldso); 3
-ldso pub fns missing `# C:`; `rootfs.rs` over the 1000-line cap (split to
-`rootfs_etc::write_accounts_and_markers`); crt1 `_start` global_asm! emitted
-under cfg(test) → duplicate-symbol; glibc `fnmatch` diverged from glibc on
-POSIX `[.coll.]`/`[:class:]`/`[=equiv=]` sub-brackets (proptest `[![.]`) —
-now parses all three + 12 char classes, proptest charset broadened.
-All 6 PR checks pass (build×4, spec-lint, test --hosted).
-
-## Next task (first command)
-Pick next cluster (recommend aio_* or argp_*+wordexp). Add `t_<x>.c`, implement,
-`cargo run -q -p xtask -- glibc-test`, refresh tracker, PR. Can fan out parallel
-worktree sub-agents (one cluster each, distinct module files; orchestrator
-merges + refreshes tracker centrally to avoid nr.rs/mod.rs race).
+## Next (first task)
+1. Finish P17-16: confirm arm pthread markers (g19p-*), commit + PR + merge.
+2. **SMP** (user-requested, task #6): the x86 SMP=2 flaky-login race (qemu MCP
+   docs: repros under `accel=tcg smp=2`, never kvm) + AP bring-up timing. Repro
+   with `--smp 2` tcg, fix root cause the Linux way (no hacks), both arches
+   boot SMP=2 to login.
+3. G19d (task #4): migrate init/userspace probes musl→glibc; G19final retire musl.
 
 ## Notes
-- glibc is `#![no_std]` + alloc; std is test-only. `freestanding` feature gates
-  the C-ABI surface + defines panic_impl, so in-file `#[cfg(test)]` under
-  freestanding can't link — the conformance harness IS the oracle.
-- `crates/arch/...` setjmp etc. are per-arch `cfg(target_arch)` files.
-- 4 agent worktrees remain under `.claude/worktrees/agent-*` (the merged
-  P28-134..138 branches) — GC when convenient.
+- glibc 2.34+ folds pthread/dl/rt into libc.so.6 (our libc exports
+  pthread_create etc.); folded stubs (libpthread.so.0…) → libc.so.6.
+- The g19 oneshot (`g19smoke.service`, Before=console-getty) runs all three
+  glibc-on-kernel bins before login so markers land on serial.
+- Tasks tracked in the TaskList (1-3,5 done/in-progress; 4,6 pending).
