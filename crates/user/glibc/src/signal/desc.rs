@@ -42,6 +42,33 @@ fn known(sig: i32) -> Option<&'static [u8]> {
     })
 }
 
+// Signal abbreviation (no "SIG" prefix) for the standard 1–31 signals; glibc's
+// sys_sigabbrev. NULL for RT / out-of-range. SIGABRT(6)=ABRT, SIGIO/POLL(29)=POLL.
+fn abbrev(sig: i32) -> Option<&'static [u8]> {
+    Some(match sig {
+        1 => b"HUP\0", 2 => b"INT\0", 3 => b"QUIT\0", 4 => b"ILL\0", 5 => b"TRAP\0",
+        6 => b"ABRT\0", 7 => b"BUS\0", 8 => b"FPE\0", 9 => b"KILL\0", 10 => b"USR1\0",
+        11 => b"SEGV\0", 12 => b"USR2\0", 13 => b"PIPE\0", 14 => b"ALRM\0", 15 => b"TERM\0",
+        16 => b"STKFLT\0", 17 => b"CHLD\0", 18 => b"CONT\0", 19 => b"STOP\0", 20 => b"TSTP\0",
+        21 => b"TTIN\0", 22 => b"TTOU\0", 23 => b"URG\0", 24 => b"XCPU\0", 25 => b"XFSZ\0",
+        26 => b"VTALRM\0", 27 => b"PROF\0", 28 => b"WINCH\0", 29 => b"POLL\0", 30 => b"PWR\0",
+        31 => b"SYS\0",
+        _ => return None,
+    })
+}
+
+// # C: const char *sigabbrev_np(int sig)
+#[no_mangle]
+pub extern "C" fn sigabbrev_np(sig: i32) -> *const u8 {
+    match abbrev(sig) { Some(a) => a.as_ptr(), None => core::ptr::null() }
+}
+
+// # C: const char *sigdescr_np(int sig)
+#[no_mangle]
+pub extern "C" fn sigdescr_np(sig: i32) -> *const u8 {
+    match known(sig) { Some(d) => d.as_ptr(), None => core::ptr::null() }
+}
+
 struct Buf(UnsafeCell<[u8; 32]>);
 // SAFETY: process-global strsignal scratch for the unknown/RT path; single
 // threaded until TLS makes it per-thread.
