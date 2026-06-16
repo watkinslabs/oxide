@@ -579,27 +579,35 @@ pub struct VtSlotSnap {
 mod tests {
     use super::*;
 
-    fn reset() {
+    // Serializes EVERY test that touches the shared global VT state. cargo
+    // test runs the module in parallel, so without this two tests' reset()s
+    // and assertions interleave on ACTIVE_VT/PENDING_SWITCH/SLOTS (the
+    // intermittent kdsetmode `left != right` CI flake). reset() takes the lock
+    // and returns the guard; the caller holds it (`let _g = reset();`) for the
+    // whole test. Subsumes the old handshake-only HS_SERIAL.
+    static STATE_SERIAL: Spinlock<(), DriverLockClass> = Spinlock::new(());
+
+    #[must_use]
+    fn reset() -> sync::Guard<'static, (), DriverLockClass> {
+        let ser = STATE_SERIAL.lock();
         ACTIVE_VT.store(0, Ordering::Release);
         PENDING_SWITCH.store(0, Ordering::Release);
         // Detach the liveness + switch hooks so a prior test's hook never
         // leaks into another (default: owner-alive, no switch hook).
         OWNER_ALIVE.store(core::ptr::null_mut(), Ordering::Release);
         ON_SWITCH.store(core::ptr::null_mut(), Ordering::Release);
-        let mut g = SLOTS.lock();
-        for s in g.iter_mut() { *s = VtSlot::default(); }
+        { let mut g = SLOTS.lock(); for s in g.iter_mut() { *s = VtSlot::default(); } }
+        ser
     }
 
     // Recording signal hook: appends every (pid, signo) the handshake fires.
     static REC: Spinlock<alloc::vec::Vec<(u32, u16)>, DriverLockClass>
         = Spinlock::new(alloc::vec::Vec::new());
     fn rec_hook(pid: u32, signo: u16) { REC.lock().push((pid, signo)); }
-    // Serializes the handshake tests — they share PENDING_SWITCH + the hook.
-    static HS_SERIAL: Spinlock<(), DriverLockClass> = Spinlock::new(());
 
     #[test]
     fn init_makes_tty1_active() {
-        reset();
+        let _vts = reset();
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
         unsafe { init().unwrap(); }
         assert_eq!(active(), 1);
@@ -608,7 +616,7 @@ mod tests {
 
     #[test]
     fn openqry_returns_first_free() {
-        reset();
+        let _vts = reset();
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
         unsafe { init().unwrap(); }
         // VT1 is allocated, so openqry returns 2.
@@ -617,7 +625,7 @@ mod tests {
 
     #[test]
     fn activate_switches_and_allocates() {
-        reset();
+        let _vts = reset();
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
         unsafe { init().unwrap(); }
         activate(3).unwrap();
@@ -627,7 +635,7 @@ mod tests {
 
     #[test]
     fn activate_rejects_out_of_range() {
-        reset();
+        let _vts = reset();
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
         unsafe { init().unwrap(); }
         assert!(matches!(activate(0), Err(Error::Inval)));
@@ -636,7 +644,7 @@ mod tests {
 
     #[test]
     fn lockswitch_blocks_activate() {
-        reset();
+        let _vts = reset();
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
         unsafe { init().unwrap(); }
         lock_switch(1, true).unwrap();
@@ -647,7 +655,7 @@ mod tests {
 
     #[test]
     fn kdsetmode_kd_graphics_only_when_valid() {
-        reset();
+        let _vts = reset();
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
         unsafe { init().unwrap(); }
         assert!(set_kd_mode(1, KD_GRAPHICS).is_ok());
@@ -657,7 +665,7 @@ mod tests {
 
     #[test]
     fn kdskbmode_validates_range() {
-        reset();
+        let _vts = reset();
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
         unsafe { init().unwrap(); }
         assert!(set_kb_mode(1, K_UNICODE).is_ok());
@@ -666,7 +674,7 @@ mod tests {
 
     #[test]
     fn vt_getstate_reports_allocations() {
-        reset();
+        let _vts = reset();
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
         unsafe { init().unwrap(); }
         activate(5).unwrap();
@@ -678,7 +686,7 @@ mod tests {
 
     #[test]
     fn disallocate_inactive_only() {
-        reset();
+        let _vts = reset();
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
         unsafe { init().unwrap(); }
         activate(2).unwrap();
@@ -699,7 +707,7 @@ mod tests {
 
     #[test]
     fn set_get_vt_mode_roundtrips() {
-        reset();
+        let _vts = reset();
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
         unsafe { init().unwrap(); }
         let m = VtMode { mode: VT_PROCESS, waitv: 0, relsig: 10, acqsig: 12, frsig: 0 };
@@ -720,8 +728,7 @@ mod tests {
 
     #[test]
     fn process_switch_defers_then_reldisp_completes() {
-        let _s = HS_SERIAL.lock();
-        reset();
+        let _vts = reset();
         REC.lock().clear();
         set_signal_hook(rec_hook);
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
@@ -745,8 +752,7 @@ mod tests {
 
     #[test]
     fn process_switch_reldisp_refuse_stays() {
-        let _s = HS_SERIAL.lock();
-        reset();
+        let _vts = reset();
         REC.lock().clear();
         set_signal_hook(rec_hook);
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
@@ -762,7 +768,7 @@ mod tests {
 
     #[test]
     fn set_leds_stored() {
-        reset();
+        let _vts = reset();
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
         unsafe { init().unwrap(); }
         set_leds(1, 0b101).unwrap();
@@ -771,7 +777,7 @@ mod tests {
 
     #[test]
     fn resize_stores_grid_rejects_zero() {
-        reset();
+        let _vts = reset();
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
         unsafe { init().unwrap(); }
         resize(1, 50, 160).unwrap();
@@ -788,8 +794,7 @@ mod tests {
 
     #[test]
     fn reldisp_wrong_caller_refused_stays() {
-        let _s = HS_SERIAL.lock();
-        reset();
+        let _vts = reset();
         REC.lock().clear();
         set_signal_hook(rec_hook);
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
@@ -812,8 +817,7 @@ mod tests {
 
     #[test]
     fn dead_owner_does_not_defer() {
-        let _s = HS_SERIAL.lock();
-        reset();
+        let _vts = reset();
         REC.lock().clear();
         set_signal_hook(rec_hook);
         // Owner-liveness hook: nobody is alive.
@@ -830,8 +834,7 @@ mod tests {
 
     #[test]
     fn alive_owner_defers() {
-        let _s = HS_SERIAL.lock();
-        reset();
+        let _vts = reset();
         REC.lock().clear();
         set_signal_hook(rec_hook);
         // Owner-liveness hook: everyone alive.
@@ -847,8 +850,7 @@ mod tests {
 
     #[test]
     fn switch_hook_fires_on_do_switch() {
-        let _s = HS_SERIAL.lock();
-        reset();
+        let _vts = reset();
         SW_REC.lock().clear();
         set_switch_hook(sw_hook);
         // SAFETY: hosted-test path; init has no asm/IO side effects on host build.
