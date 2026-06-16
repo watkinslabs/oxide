@@ -69,6 +69,33 @@ fn push_u32(out: &mut String, mut v: u32) {
     for &b in &buf[i..] { out.push(b as char); }
 }
 
+// crypt base64 alphabet (itoa64) — distinct from standard base64.
+const ITOA64: &[u8; 64] = b"./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+/// # C: crypt_gensalt setting body for `$5$`/`$6$`.
+/// "$id$[rounds=N$]<salt>"; salt = crypt-b64 of min(4, rbytes/3) little-endian
+/// 3-byte groups (≤16 chars). rounds= emitted only when ≠ default. None on an
+/// unsupported prefix or fewer than 3 rbytes.
+pub(crate) fn gensalt(prefix: &[u8], count: u32, rbytes: &[u8]) -> Option<String> {
+    let id = if prefix.starts_with(b"$5$") { b'5' } else if prefix.starts_with(b"$6$") { b'6' } else { return None };
+    let groups = (rbytes.len() / 3).min(4);
+    if groups == 0 { return None; }
+    let mut out = String::new();
+    out.push('$'); out.push(id as char); out.push('$');
+    if count != 0 {
+        let r = count.clamp(ROUNDS_MIN, ROUNDS_MAX);
+        if r != ROUNDS_DEFAULT { out.push_str("rounds="); push_u32(&mut out, r); out.push('$'); }
+    }
+    for g in 0..groups {
+        let v = rbytes[g * 3] as u32 | ((rbytes[g * 3 + 1] as u32) << 8) | ((rbytes[g * 3 + 2] as u32) << 16);
+        out.push(ITOA64[(v & 0x3f) as usize] as char);
+        out.push(ITOA64[((v >> 6) & 0x3f) as usize] as char);
+        out.push(ITOA64[((v >> 12) & 0x3f) as usize] as char);
+        out.push(ITOA64[((v >> 18) & 0x3f) as usize] as char);
+    }
+    Some(out)
+}
+
 #[cfg(feature = "freestanding")]
 pub use imp::*;
 
@@ -136,6 +163,108 @@ mod imp {
             }
         }
     }
+
+    const ERANGE: i32 = 34;
+    const ENOMEM: i32 = 12;
+    static GSOUT: OutBuf = OutBuf(UnsafeCell::new([0; OUTLEN]));
+
+    // rbytes window: borrow the caller's bytes, or (NULL) fill `scratch` from
+    // getrandom for a random salt. None ⇒ insufficient entropy.
+    unsafe fn rbytes_window<'a>(rbytes: *const u8, nrbytes: i32, scratch: &'a mut [u8; 16]) -> Option<&'a [u8]> {
+        // SAFETY: rbytes is null or points at nrbytes readable bytes.
+        unsafe {
+            if rbytes.is_null() {
+                let n = crate::posix::random::getrandom(scratch.as_mut_ptr(), 16, 0);
+                if n < 16 { return None; }
+                Some(&scratch[..])
+            } else if nrbytes <= 0 { None }
+            else { Some(core::slice::from_raw_parts(rbytes, nrbytes as usize)) }
+        }
+    }
+
+    // # C: char *crypt_gensalt(const char *prefix, unsigned long count, const char *rbytes, int nrbytes)
+    #[no_mangle]
+    pub unsafe extern "C" fn crypt_gensalt(prefix: *const u8, count: u64, rbytes: *const u8, nrbytes: i32) -> *mut u8 {
+        // SAFETY: prefix is a C string; rbytes is null or nrbytes bytes; result in
+        // the process-global GSOUT buffer (separate from crypt's OUT).
+        unsafe {
+            let mut sc = [0u8; 16];
+            let rb = match rbytes_window(rbytes, nrbytes, &mut sc) { Some(r) => r, None => { errno::set(EINVAL); return core::ptr::null_mut() } };
+            match gensalt(as_bytes(prefix), count as u32, rb) {
+                Some(s) => store(GSOUT.0.get() as *mut u8, &s),
+                None => { errno::set(EINVAL); core::ptr::null_mut() }
+            }
+        }
+    }
+
+    // # C: char *crypt_gensalt_rn(const char *prefix, unsigned long count, const char *rbytes, int nrbytes, char *output, int output_size)
+    #[no_mangle]
+    pub unsafe extern "C" fn crypt_gensalt_rn(prefix: *const u8, count: u64, rbytes: *const u8, nrbytes: i32, output: *mut u8, output_size: i32) -> *mut u8 {
+        // SAFETY: output is a caller buffer of output_size bytes; result written
+        // there iff it fits (ERANGE otherwise).
+        unsafe {
+            let mut sc = [0u8; 16];
+            let rb = match rbytes_window(rbytes, nrbytes, &mut sc) { Some(r) => r, None => { errno::set(EINVAL); return core::ptr::null_mut() } };
+            match gensalt(as_bytes(prefix), count as u32, rb) {
+                Some(s) => { if s.len() + 1 > output_size as usize { errno::set(ERANGE); return core::ptr::null_mut(); } store(output, &s) }
+                None => { errno::set(EINVAL); core::ptr::null_mut() }
+            }
+        }
+    }
+
+    // # C: char *crypt_gensalt_ra(const char *prefix, unsigned long count, const char *rbytes, int nrbytes)
+    #[no_mangle]
+    pub unsafe extern "C" fn crypt_gensalt_ra(prefix: *const u8, count: u64, rbytes: *const u8, nrbytes: i32) -> *mut u8 {
+        // SAFETY: result is heap-allocated for the caller to free (libxcrypt _ra).
+        unsafe {
+            let mut sc = [0u8; 16];
+            let rb = match rbytes_window(rbytes, nrbytes, &mut sc) { Some(r) => r, None => { errno::set(EINVAL); return core::ptr::null_mut() } };
+            match gensalt(as_bytes(prefix), count as u32, rb) {
+                Some(s) => { let p = crate::malloc::heap::malloc(s.len() + 1); if p.is_null() { errno::set(ENOMEM); return core::ptr::null_mut(); } store(p, &s) }
+                None => { errno::set(EINVAL); core::ptr::null_mut() }
+            }
+        }
+    }
+
+    // # C: char *crypt_rn(const char *phrase, const char *setting, void *data, int size)
+    #[no_mangle]
+    pub unsafe extern "C" fn crypt_rn(phrase: *const u8, setting: *const u8, data: *mut u8, size: i32) -> *mut u8 {
+        // SAFETY: data is a caller buffer of `size` bytes; result iff it fits.
+        unsafe {
+            match crypt_hash(as_bytes(phrase), as_bytes(setting)) {
+                Some(s) => { if s.len() + 1 > size as usize { errno::set(ERANGE); return core::ptr::null_mut(); } store(data, &s) }
+                None => { errno::set(EINVAL); core::ptr::null_mut() }
+            }
+        }
+    }
+
+    // # C: char *crypt_ra(const char *phrase, const char *setting, void **data, int *size)
+    #[no_mangle]
+    pub unsafe extern "C" fn crypt_ra(phrase: *const u8, setting: *const u8, data: *mut *mut u8, size: *mut i32) -> *mut u8 {
+        // SAFETY: *data is null or a heap block of *size bytes; (re)allocated to
+        // fit the result, with *data/*size updated.
+        unsafe {
+            match crypt_hash(as_bytes(phrase), as_bytes(setting)) {
+                Some(s) => {
+                    let need = s.len() + 1;
+                    if (*data).is_null() || (*size as usize) < need {
+                        let np = crate::malloc::heap::realloc(*data, need);
+                        if np.is_null() { errno::set(ENOMEM); return core::ptr::null_mut(); }
+                        *data = np; *size = need as i32;
+                    }
+                    store(*data, &s)
+                }
+                None => { errno::set(EINVAL); core::ptr::null_mut() }
+            }
+        }
+    }
+
+    // # C: const char *crypt_preferred_method(void) — our strongest supported
+    // method is sha512crypt ($6$); yescrypt ($y$) is not implemented.
+    #[no_mangle]
+    pub extern "C" fn crypt_preferred_method() -> *const u8 {
+        b"$6$\0".as_ptr()
+    }
 }
 
 #[cfg(test)]
@@ -146,6 +275,20 @@ mod tests {
     fn sha512_full_setting_drepper() {
         let out = crypt_hash(b"Hello world!", b"$6$saltstring").unwrap();
         assert_eq!(out, "$6$saltstring$svn8UoSVapNtMuq1ukKS4tPQd8iKwSMHWjl/O817G3uBnIFNjnQJuesI68u4OTLiBFdcbYEdFCoEOfaS35inz1");
+    }
+
+    // Vectors captured from host libxcrypt crypt_gensalt (rbytes = i*17, i=0..16).
+    #[test]
+    fn gensalt_vectors_match_libxcrypt() {
+        let rb: [u8; 16] = core::array::from_fn(|i| (i * 17) as u8);
+        assert_eq!(gensalt(b"$6$", 0, &rb).unwrap(), "$6$.2V6nEIJaR5WNeui");
+        assert_eq!(gensalt(b"$5$", 5000, &rb).unwrap(), "$5$.2V6nEIJaR5WNeui");
+        assert_eq!(gensalt(b"$6$", 1000, &rb).unwrap(), "$6$rounds=1000$.2V6nEIJaR5WNeui");
+        assert_eq!(gensalt(b"$6$", 10000, &rb).unwrap(), "$6$rounds=10000$.2V6nEIJaR5WNeui");
+        assert_eq!(gensalt(b"$6$", 100, &rb).unwrap(), "$6$rounds=1000$.2V6nEIJaR5WNeui");  // clamped
+        assert_eq!(gensalt(b"$6$", 0, &rb[..8]).unwrap(), "$6$.2V6nEIJ");                    // 8 bytes ⇒ 8 chars
+        assert!(gensalt(b"$1$", 0, &rb).is_none());   // unsupported method
+        assert!(gensalt(b"$6$", 0, &rb[..2]).is_none()); // <3 rbytes
     }
 
     #[test]
