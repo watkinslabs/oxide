@@ -210,6 +210,19 @@ pub mod x86_64 {
     pub const INOTIFY_ADD_WATCH: usize = 254;
     pub const INOTIFY_RM_WATCH: usize = 255;
     pub const STATX: usize = 332;
+    // xattr (x86_64 syscall_64.tbl)
+    pub const SETXATTR: usize = 188;
+    pub const LSETXATTR: usize = 189;
+    pub const FSETXATTR: usize = 190;
+    pub const GETXATTR: usize = 191;
+    pub const LGETXATTR: usize = 192;
+    pub const FGETXATTR: usize = 193;
+    pub const LISTXATTR: usize = 194;
+    pub const LLISTXATTR: usize = 195;
+    pub const FLISTXATTR: usize = 196;
+    pub const REMOVEXATTR: usize = 197;
+    pub const LREMOVEXATTR: usize = 198;
+    pub const FREMOVEXATTR: usize = 199;
 }
 
 pub mod aarch64 {
@@ -392,4 +405,17 @@ pub mod aarch64 {
     pub const INOTIFY_ADD_WATCH: usize = 27;
     pub const INOTIFY_RM_WATCH: usize = 28;
     pub const STATX: usize = 291;
+    // xattr (asm-generic/unistd.h)
+    pub const SETXATTR: usize = 5;
+    pub const LSETXATTR: usize = 6;
+    pub const FSETXATTR: usize = 7;
+    pub const GETXATTR: usize = 8;
+    pub const LGETXATTR: usize = 9;
+    pub const FGETXATTR: usize = 10;
+    pub const LISTXATTR: usize = 11;
+    pub const LLISTXATTR: usize = 12;
+    pub const FLISTXATTR: usize = 13;
+    pub const REMOVEXATTR: usize = 14;
+    pub const LREMOVEXATTR: usize = 15;
+    pub const FREMOVEXATTR: usize = 16;
 }
