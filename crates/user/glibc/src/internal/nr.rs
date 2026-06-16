@@ -265,6 +265,26 @@ pub mod x86_64 {
     pub const MSGCTL: usize = 71;
     pub const RT_SIGQUEUEINFO: usize = 129;
     pub const RT_TGSIGQUEUEINFO: usize = 297;
+    pub const CLOSE_RANGE: usize = 436;
+    pub const GETCPU: usize = 309;
+    pub const RENAMEAT2: usize = 316;
+    pub const READAHEAD: usize = 187;
+    pub const REMAP_FILE_PAGES: usize = 216;
+    pub const PROCESS_VM_READV: usize = 310;
+    pub const PROCESS_VM_WRITEV: usize = 311;
+    pub const PROCESS_MADVISE: usize = 440;
+    pub const PROCESS_MRELEASE: usize = 448;
+    pub const PIDFD_OPEN: usize = 434;
+    pub const PIDFD_GETFD: usize = 438;
+    pub const PIDFD_SEND_SIGNAL: usize = 424;
+    pub const FANOTIFY_INIT: usize = 300;
+    pub const FANOTIFY_MARK: usize = 301;
+    pub const FSOPEN: usize = 430;
+    pub const FSCONFIG: usize = 431;
+    pub const FSMOUNT: usize = 432;
+    pub const FSPICK: usize = 433;
+    pub const EPOLL_PWAIT2: usize = 441;
+    pub const PTRACE: usize = 101;
 }
 
 pub mod aarch64 {
@@ -502,4 +522,24 @@ pub mod aarch64 {
     pub const MSGCTL: usize = 187;
     pub const RT_SIGQUEUEINFO: usize = 138;
     pub const RT_TGSIGQUEUEINFO: usize = 240;
+    pub const CLOSE_RANGE: usize = 436;
+    pub const GETCPU: usize = 168;
+    pub const RENAMEAT2: usize = 276;
+    pub const READAHEAD: usize = 213;
+    pub const REMAP_FILE_PAGES: usize = 234;
+    pub const PROCESS_VM_READV: usize = 270;
+    pub const PROCESS_VM_WRITEV: usize = 271;
+    pub const PROCESS_MADVISE: usize = 440;
+    pub const PROCESS_MRELEASE: usize = 448;
+    pub const PIDFD_OPEN: usize = 434;
+    pub const PIDFD_GETFD: usize = 438;
+    pub const PIDFD_SEND_SIGNAL: usize = 424;
+    pub const FANOTIFY_INIT: usize = 262;
+    pub const FANOTIFY_MARK: usize = 263;
+    pub const FSOPEN: usize = 430;
+    pub const FSCONFIG: usize = 431;
+    pub const FSMOUNT: usize = 432;
+    pub const FSPICK: usize = 433;
+    pub const EPOLL_PWAIT2: usize = 441;
+    pub const PTRACE: usize = 117;
 }
