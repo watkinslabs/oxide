@@ -155,6 +155,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         build_glibc_bin("g19_glibc_smoke")?;
         build_glibc_bin("g19_glibc_test")?;
         build_glibc_bin("g19_glibc_pthread")?;
+        build_glibc_bin("g19_glibc_jointest")?;
     }
 
     // F231 / B18: PAM modules come from vendor/pam/install-<arch>/modules/
@@ -320,16 +321,15 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&user("g19_glibc_smoke"),   "/bin/g19_glibc_smoke")?;
         put(&user("g19_glibc_test"),    "/bin/g19_glibc_test")?;
         put(&user("g19_glibc_pthread"), "/bin/g19_glibc_pthread")?;
+        put(&user("g19_glibc_jointest"), "/bin/g19_glibc_jointest")?;
         // oneshot unit (pulled in by the Oxide Default Target's Wants) runs the
         // glibc-on-kernel bins before the getty so their markers land on serial.
-        // pthread is x86-only in the boot oneshot for now: it passes on x86 but
-        // join/mutex futex hang on aarch64 (a kernel futex gap — tracked with
-        // the SMP/futex work); the binary is still staged on arm for manual run.
+        // pthread runs on BOTH arches now: the aarch64 join hang (clone ctid/tls
+        // swapped in the CLONE_BACKWARDS ABI) is fixed in dispatch.rs.
         // TimeoutStartSec keeps a hung ExecStart from wedging the getty.
-        let pthread_exec = if arch == "x86_64" { "ExecStart=/bin/g19_glibc_pthread\n" } else { "" };
         let svc = repo.join("target/g19smoke.service");
-        std::fs::write(&svc, format!(
-"[Unit]
+        std::fs::write(&svc,
+b"[Unit]
 Description=G19 glibc-on-kernel smoke
 DefaultDependencies=no
 Before=console-getty.service
@@ -338,7 +338,9 @@ Type=oneshot
 TimeoutStartSec=30
 ExecStart=/bin/g19_glibc_smoke
 ExecStart=/bin/g19_glibc_test
-{pthread_exec}").as_bytes()).map_err(|_| 1u8)?;
+ExecStart=/bin/g19_glibc_jointest
+ExecStart=/bin/g19_glibc_pthread
+").map_err(|_| 1u8)?;
         // /usr/lib/systemd/system is created by the later L2 systemd staging,
         // so it does not exist yet at this point — `debugfs write` would fail
         // SILENTLY (debugfs exits 0 even on error), dropping the unit. Create
