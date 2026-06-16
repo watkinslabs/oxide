@@ -1,13 +1,21 @@
 # state.md — session handoff
 
 ## Headline
-**glibc full-compliance build-out** (docs/59 §9). Conformance **184/184**
+**glibc full-compliance build-out** (docs/59 §9). Conformance **185/185**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Clean tree on
-`main`. `glibc.md` = live per-cluster TODO. F counter next = **535**
+`main`. `glibc.md` = live per-cluster TODO. F counter next = **537**
 (metadata/index.md).
 
-## Done this run (merged to main, F524–F534, one cluster per PR, host-diffable t_*.c)
+## INFLECTION (read first)
+The quick host-diffable clusters are largely exhausted. Remaining glibc gaps are
+all EITHER large (ns_sprintrr ~30-RR-type formatter; Sun RPC ~80) OR risky for
+bit-exact host-diff (re_* GNU regex engine semantics) OR not host-diffable
+(libxcrypt needs -lcrypt absent from harness → unit-test vectors). Pick a lane
+deliberately; the "one small cluster per PR in 20 min" rhythm no longer applies
+cleanly. F536 (crypt_gensalt) already broke it (unit-test validated).
+
+## Done this run (merged to main, F524–F536, one cluster per PR)
 - **F524** posix_spawn _np file actions + spawnattr getters + SETSIGDEF/SETSCHED — posix/spawn.rs
 - **F525** execveat/sockatmark/isfdtype — posix/process.rs + net/socket.rs + posix/stat.rs
 - **F526** pidfd_getpid + pidfd_spawn/spawnp (clone CLONE_PIDFD) — posix/modern.rs + posix/spawn.rs
@@ -19,22 +27,29 @@
 - **F532** ns_name_unpack/uncompress + ns_samename/samedomain/subdomain/makecanon — net/nameser.rs
 - **F533** ns_format_ttl + ns_parse_ttl — net/nameser.rs
 - **F534** ns_name_pack + ns_name_compress (uncompressed, like dn_comp) — net/nameser.rs
+- **F535** ns_initparse/ns_parserr/ns_skiprr/ns_msg_getflag — net/nameser.rs (NsMsg 80B/NsRr 1048B ABI)
+- **F536** crypt_gensalt(+_rn/_ra) + crypt_rn/crypt_ra + crypt_preferred_method — crypt/mod.rs
+  (UNIT-TEST validated, not host-diff — harness has no -lcrypt)
 
-## Bigger remaining clusters (glibc.md §2)
-- **resolver (~45)** res_query/search/send/mkquery — needs DNS over sockets.
-- **ns_ remainder** ns_initparse/ns_parserr/ns_skiprr/ns_sprintrr (ns_msg/ns_rr
-  struct parse); ns_name_pack compression-pointer emit when dnptrs given.
-- **Sun RPC (~80)** clnt_*/svc_*/auth_*/pmap_* — needs sockets; rpc_msg XDR pure.
-- **re_* BSD regex (~11)** re_comp/re_exec/re_compile_pattern/re_search/re_match —
-  GNU re_pattern_buffer ABI over our existing regex engine (crates/.../regex/).
-- **libxcrypt (~12)** crypt_gensalt(+_r/_ra/_rn)/crypt_ra/crypt_rn/crypt_preferred_method
-  — NOT host-diffable (host crypt needs -lcrypt, not in harness); validate via Rust
-  unit-test vectors like crypt/des.rs.
-- **BSD net-auth** rcmd/rexec/ruserok/iruserok/rresvport(_af)/bindresvport.
-- **multicast src filters** getsourcefilter/setsourcefilter/get/setipv4sourcefilter.
+## Bigger remaining clusters (glibc.md §2) — pick a lane
+- **ns_sprintrr/ns_sprintrrf** — RR pretty-print; host-diffable (-lresolv) but a
+  big per-RR-type formatter (A/AAAA/NS/CNAME/SOA/MX/TXT/… ~30 types, ns_print.c).
+  A focused subset works IF you only test the types you implement.
+- **resolver (~45)** res_query/search/send/mkquery — needs DNS over sockets;
+  res_mkquery/res_nmkquery are PURE (build a query packet) → host-diffable subset.
+- **Sun RPC (~80)** clnt_*/svc_*/auth_*/pmap_* — needs sockets; rpc_msg XDR pure
+  (RFC5531) → xdr_* helpers are a host-diffable pure subset; clnt/svc need sockets.
+- **re_* BSD regex (~11)** — GNU re_pattern_buffer ABI over our regex engine.
+  RISK: GNU engine match semantics differ from our POSIX engine → host-diff may
+  fail on edge cases. re_comp/re_exec (BSD-simple) are the safest start.
+- **libxcrypt remainder** — crypt_checksalt, fcrypt(=crypt alias), xcrypt/xencrypt/
+  xdecrypt (SunRPC DES). Unit-test validated.
+- **BSD net-auth** rcmd/rexec/ruserok/iruserok/rresvport(_af)/bindresvport (sockets).
+- **multicast src filters** getsourcefilter/set + ipv4 variants (group_filter sockopt).
 - small leftovers: STREAMS getmsg/putmsg/isastream/fattach/fdetach (likely
   compat-only/non-linkable), chflags family (murky errno), open_wmemstream,
-  malloc_info, psiginfo (needs glibc si_code→string tables — substantial).
+  malloc_info, psiginfo (needs glibc si_code→string tables — substantial),
+  gnu_get_libc_version/release (trivial but version string differs → not diffable).
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need
@@ -46,7 +61,7 @@
 long double `*l` (x86 f80) + `_Float128`/`_Float32x`/`_Float64x` (~700). No Rust
 extern-C type. Only worthwhile bit: a `%Lf`/`%Lg` printf/scanf asm shim.
 
-## The rhythm (proven, 11 PRs this run)
+## The rhythm (proven, 13 PRs this run)
 One cluster = one F<NN> branch (read+bump F in metadata/index.md). Build BOTH
 arches (`cargo build -q -p glibc --features freestanding --target
 {x86_64,aarch64}-unknown-linux-gnu`); add host-diffable t_*.c (`#include` what
@@ -81,6 +96,7 @@ Re-audit then pick the next cluster:
   cargo build -q -p glibc --features freestanding --target x86_64-unknown-linux-gnu
   nm -D target/sysroot/x86_64-unknown-linux-gnu/lib/libc.so.6 | awk '$2~/[TWiBD]/{print $3}' | sed 's/@.*//' | sort -u > /tmp/ours
   comm -23 /tmp/host /tmp/ours | grep -vE '^_|f128|f32x|f64x'
-Then pick the next cluster — suggest ns_initparse/ns_parserr (ns_msg/ns_rr
-struct parse, host-diffable -lresolv), re_* BSD regex (engine exists), or
-libxcrypt crypt_gensalt (unit-test validated, not host-diffable).
+Then pick a lane from "Bigger remaining clusters" above — suggest res_mkquery/
+res_nmkquery (PURE query-packet build, host-diffable -lresolv) or ns_sprintrr
+(focused RR-type subset) for the next host-diffable work; or re_comp/re_exec
+(BSD-simple regex) to start the regex lane.
