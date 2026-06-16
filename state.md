@@ -23,16 +23,16 @@ build + boot to `oxide login:` (x86 KVM, arm `make smoke-arm` ~58s).
 `__environ`/`_environ`/`__signgam`/`__tzname`/`__timezone`/`__daylight`/
 `__progname`/`__progname_full` — global_asm `.set` aliases of canonical Rust
 statics. EXPORT is solved (supplementary `--version-script` in build_sharedlib
-re-promotes them; verified all land at the canonical address). BLOCKER: our
-**ld.so does not do R_*_COPY copy-reloc redirection** for data symbols —
-empirically, a single-reference usability test leaves __environ/__progname/
-__tzname at their initial value while host populates them. Fix is a
-`crates/user/ldso` feature (handle R_X86_64_COPY / R_AARCH64_COPY: memcpy initial
-bytes + bind the symbol to the executable's copy for all objects). This also
-affects copy-relocated libc data in executables generally. Focused ldso task.
-NOT a libc change — don't re-attempt the version-script alias export until the
-loader does copy-reloc redirection (it's reverted; the export alone is useless
-without redirection).
+re-promotes them; verified all land at the canonical address). BLOCKER (precise,
+docs/59 §9.4 #2): ldso ALREADY does R_*_COPY (relocate.rs Kind::Copy memcpy).
+The real issue is INTERPOSITION codegen: our libc reaches its own `environ`/
+`signgam`/`tzname` DIRECTLY (PC-relative, same-cdylib #[no_mangle] static), not
+via the GOT, so libc's startup writes go to libc's private storage while the
+exe's COPY-reloc slot keeps the pre-startup null → desync. Fix = force
+GOT-indirect access to copy-relocatable exported data inside libc (PIC
+visibility/codegen: turn off direct-access-external-data, or a GOT-load shim) so
+the exe's interposing copy is the single storage. NOT a libc-wrapper or
+ld.so-COPY change. The alias export is REVERTED (useless without the codegen fix).
 
 ## Lower-priority full-surface (docs/59 §9.1, non-vendor)
 - `_FloatN` f32/f64 math aliases (208 map to existing libm). Export via
@@ -68,8 +68,8 @@ add `userspace/glibc_conformance/t_*.c` (diffs our libc.so.6 vs host byte-exact)
 - ldso changes are boot-critical → boot BOTH arches before push (done for #2052).
 
 ## First task next session
-Either: (a) the ldso R_*_COPY data-symbol redirection feature (unblocks §9.4 +
-copy-relocated data generally — highest-value remaining), or (b) start G19d:
+Either: (a) GOT-indirect codegen for copy-relocatable libc data (§9.4 #2 —
+unblocks the `__` aliases + copy-relocated canonical data), or (b) start G19d:
 rebuild the vendor packages against the glibc sysroot, retire musl. The libc
 function surface is complete enough to attempt G19d; the §9.4 data aliases may
 or may not bite depending on how vendor binaries reference them (real GNU ld
