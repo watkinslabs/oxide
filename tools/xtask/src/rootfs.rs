@@ -317,6 +317,13 @@ Before=console-getty.service
 Type=oneshot
 ExecStart=/bin/g19_glibc_smoke
 ").map_err(|_| 1u8)?;
+        // /usr/lib/systemd/system is created by the later L2 systemd staging,
+        // so it does not exist yet at this point — `debugfs write` would fail
+        // SILENTLY (debugfs exits 0 even on error), dropping the unit. Create
+        // the parents first (mkdir on an existing dir is a harmless no-op:
+        // debugfs prints to the muted stderr and still exits 0).
+        dbg("mkdir /usr/lib/systemd")?;
+        dbg("mkdir /usr/lib/systemd/system")?;
         put(&svc, "/usr/lib/systemd/system/g19smoke.service")?;
         dbg("sif /usr/lib/systemd/system/g19smoke.service mode 0100644")?;
         dbg("mkdir /usr/lib/systemd/system/default.target.wants")?;
