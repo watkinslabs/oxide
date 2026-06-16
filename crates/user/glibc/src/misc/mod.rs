@@ -14,6 +14,8 @@ pub mod err;
 pub mod error;
 #[cfg(feature = "freestanding")]
 pub mod backtrace;
+#[cfg(feature = "freestanding")]
+pub mod ttyent;
 
 // Shared fd-backed formatting sink: drives crate::stdio::fmt::vformat with
 // a VaList, accumulating into a small stack buffer flushed via write(2).
