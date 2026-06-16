@@ -205,3 +205,27 @@ pub unsafe extern "C" fn globfree(pglob: *mut glob_t) {
         (*pglob).gl_pathc = 0;
     }
 }
+
+// # C: int glob_pattern_p(const char *pattern, int quote) — 1 if the pattern has
+// an unquoted glob metacharacter (* ? or a closed […]); else 0. quote≠0 ⇒ a
+// backslash escapes the next char.
+#[no_mangle]
+pub unsafe extern "C" fn glob_pattern_p(pattern: *const u8, quote: i32) -> i32 {
+    // SAFETY: pattern is a NUL-terminated string; scan stops at the terminator.
+    unsafe {
+        let mut open = false;
+        let mut i = 0;
+        loop {
+            let c = *pattern.add(i);
+            match c {
+                0 => return 0,
+                b'?' | b'*' => return 1,
+                b'\\' => { if quote != 0 && *pattern.add(i + 1) != 0 { i += 1; } }
+                b'[' => open = true,
+                b']' => if open { return 1; },
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+}
