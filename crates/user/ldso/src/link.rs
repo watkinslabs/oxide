@@ -356,6 +356,47 @@ pub unsafe extern "C" fn _dl_sym(handle: usize, name: *const u8) -> usize {
 #[no_mangle]
 pub extern "C" fn _dl_close(_handle: usize) -> i32 { 0 }
 
+// struct dl_phdr_info (LP64, 64 bytes) — fields the unwinder/backtrace read.
+#[repr(C)]
+struct DlPhdrInfo {
+    addr: u64, name: *const u8, phdr: *const u8, phnum: u16, _pad: [u8; 6],
+    adds: u64, subs: u64, tls_modid: usize, tls_data: *const u8,
+}
+static EMPTY_NAME: [u8; 1] = [0];
+
+/// dl_iterate_phdr core: call `cb(info, sizeof, data)` for each loaded object.
+/// Each object's phdrs are recovered from its ELF header at `base`
+/// (e_phoff@0x20, e_phnum@0x38). Stops + returns the first nonzero `cb` result.
+/// dlpi_name is "" for now (the unwinder keys on addr/phdr, not the name).
+/// # C: int _dl_iterate_phdr(int (*cb)(struct dl_phdr_info*, size_t, void*), void *data)
+#[no_mangle]
+pub unsafe extern "C" fn _dl_iterate_phdr(
+    cb: extern "C" fn(*const core::ffi::c_void, usize, *mut core::ffi::c_void) -> i32,
+    data: *mut core::ffi::c_void,
+) -> i32 {
+    // SAFETY: snapshot each object's base under the lock, release it (so the
+    // callback may re-enter the loader), then read each ELF header at base to
+    // reconstruct dlpi_phdr/dlpi_phnum and invoke the callback.
+    unsafe {
+        lock();
+        let mut bases: Vec<u64> = objs().iter().map(|o| o.base).collect();
+        if let Some(r) = &*LINK.rtld.get() { bases.push(r.base); }
+        unlock();
+        for base in bases {
+            if base == 0 { continue; }
+            let phoff = *((base + 0x20) as *const u64);
+            let phnum = *((base + 0x38) as *const u16);
+            let info = DlPhdrInfo {
+                addr: base, name: EMPTY_NAME.as_ptr(), phdr: (base + phoff) as *const u8,
+                phnum, _pad: [0; 6], adds: 0, subs: 0, tls_modid: 0, tls_data: core::ptr::null(),
+            };
+            let r = cb(&info as *const _ as *const core::ffi::c_void, core::mem::size_of::<DlPhdrInfo>(), data);
+            if r != 0 { return r; }
+        }
+        0
+    }
+}
+
 /// dladdr core: find the loaded object containing `addr`; writes its base into
 /// `fbase_out`. Returns 1 on a hit, 0 otherwise. (sname/saddr: follow-up.)
 /// # C: int _dl_addr(const void *addr, void **fbase_out)
