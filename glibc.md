@@ -69,6 +69,9 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (pidfd_getpid/pidfd_spawn/pidfd_spawnp DONE — F526, posix/modern.rs
   (fdinfo "Pid:" parse) + posix/spawn.rs (clone CLONE_PIDFD reusing
   child_apply); host-diffable t_spawn.c via pidfd_open + waitid(P_PIDFD)).
+  (pkey_alloc/free/mprotect + pkey_get/set DONE — F529, posix/modern.rs;
+  alloc/free/mprotect syscall passthrough both arches, get/set via PKRU
+  (x86) / POR_EL0 (arm) register ops; host-diffable t_pkey.c).
   (revoke/ustat/uselib/modify_ldt/iopl/ioperm DONE — F527, posix/misc2.rs;
   revoke=ENOSYS stub, ustat/uselib x86 passthrough else ENOSYS, modify_ldt/
   iopl/ioperm x86-only; t_deprecated.c diffs revoke + x86 trio — ustat/uselib

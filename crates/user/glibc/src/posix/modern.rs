@@ -258,3 +258,67 @@ pub unsafe extern "C" fn arch_prctl(code: i32, addr: usize) -> i32 {
     // unsigned long out-param per `code`.
     ret_isize(unsafe { sys2(nr::ARCH_PRCTL, code as usize, addr) }) as i32
 }
+
+// --- memory protection keys (pkey_*) ---------------------------------------
+// # C: int pkey_alloc(unsigned flags, unsigned access_rights)
+#[no_mangle]
+pub unsafe extern "C" fn pkey_alloc(flags: u32, access_rights: u32) -> i32 {
+    // SAFETY: pkey_alloc(2) — scalar args; allocates a protection key.
+    ret_isize(unsafe { sys2(nr::PKEY_ALLOC, flags as usize, access_rights as usize) }) as i32
+}
+// # C: int pkey_free(int pkey)
+#[no_mangle]
+pub unsafe extern "C" fn pkey_free(pkey: i32) -> i32 {
+    // SAFETY: pkey_free(2) — scalar key; dereferences no memory.
+    ret_isize(unsafe { crate::arch::syscall::sys1(nr::PKEY_FREE, pkey as usize) }) as i32
+}
+// # C: int pkey_mprotect(void *addr, size_t len, int prot, int pkey)
+#[no_mangle]
+pub unsafe extern "C" fn pkey_mprotect(addr: *mut c_void, len: usize, prot: i32, pkey: i32) -> i32 {
+    // SAFETY: pkey_mprotect(2); addr/len name a mapping, prot+pkey are scalars.
+    ret_isize(unsafe { sys4(nr::PKEY_MPROTECT, addr as usize, len, prot as usize, pkey as usize) }) as i32
+}
+
+// pkey_get/pkey_set read/write the per-thread protection register directly (no
+// syscall): PKRU on x86_64, POR_EL0 on aarch64. Each key owns 2 bits.
+#[cfg(target_arch = "x86_64")]
+unsafe fn rd_prot() -> u32 {
+    let pkru: u32;
+    // SAFETY: RDPKRU reads PKRU with ecx=0; clobbers eax/edx, no memory touched.
+    unsafe { core::arch::asm!("xor ecx, ecx", "rdpkru", out("eax") pkru, out("ecx") _, out("edx") _, options(nomem, nostack)); }
+    pkru
+}
+#[cfg(target_arch = "x86_64")]
+unsafe fn wr_prot(v: u32) {
+    // SAFETY: WRPKRU writes PKRU with ecx=edx=0; reads eax only, no memory touched.
+    unsafe { core::arch::asm!("xor ecx, ecx", "xor edx, edx", "wrpkru", in("eax") v, out("ecx") _, out("edx") _, options(nomem, nostack)); }
+}
+#[cfg(target_arch = "aarch64")]
+unsafe fn rd_prot() -> u32 {
+    let por: u64;
+    // SAFETY: reads POR_EL0 (S3_3_C10_C2_4); writes only the `por` out register.
+    unsafe { core::arch::asm!("mrs {0}, S3_3_C10_C2_4", out(reg) por, options(nomem, nostack)); }
+    por as u32
+}
+#[cfg(target_arch = "aarch64")]
+unsafe fn wr_prot(v: u32) {
+    // SAFETY: writes POR_EL0 (S3_3_C10_C2_4) then ISB to synchronize the update.
+    unsafe { core::arch::asm!("msr S3_3_C10_C2_4, {0}", "isb", in(reg) v as u64, options(nomem, nostack)); }
+}
+
+// # C: int pkey_get(int pkey) — current access rights (2 bits) for pkey.
+#[no_mangle]
+pub unsafe extern "C" fn pkey_get(pkey: i32) -> i32 {
+    if !(0..16).contains(&pkey) { crate::internal::errno::set(22 /* EINVAL */); return -1; }
+    // SAFETY: pkey is bounds-checked to 0..16; rd_prot touches no memory.
+    let v = unsafe { rd_prot() };
+    ((v >> (2 * pkey)) & 3) as i32
+}
+// # C: int pkey_set(int pkey, unsigned access_rights)
+#[no_mangle]
+pub unsafe extern "C" fn pkey_set(pkey: i32, rights: u32) -> i32 {
+    if !(0..16).contains(&pkey) || rights > 3 { crate::internal::errno::set(22 /* EINVAL */); return -1; }
+    // SAFETY: pkey/rights bounds-checked; read-modify-write the protection reg.
+    unsafe { let v = (rd_prot() & !(3 << (2 * pkey))) | (rights << (2 * pkey)); wr_prot(v); }
+    0
+}
