@@ -46,9 +46,11 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   -lresolv oracle; dn_comp/dn_expand/dn_skipname + recvmmsg/sendmmsg done.)
   (ns_get16/get32/put16/put32 + ns_name_ntop/pton/skip DONE — F531,
   net/nameser.rs RFC1035 codec w/ glibc escaping (special \, \DDD nonprint,
-  root "."), host-diffable t_nameser.c. STILL TODO: ns_name_unpack/pack/
-  compress/uncompress (need msg-base ptr), ns_initparse/ns_parserr/ns_skiprr/
-  ns_sprintrr, ns_samedomain/subdomain/samename, ns_makecanon, ns_datetosecs.)
+  root "."), host-diffable t_nameser.c.
+  (ns_name_unpack/uncompress + ns_samename/samedomain/subdomain/makecanon DONE
+  — F532, net/nameser.rs, host-diffable t_nameser2.c. STILL TODO: ns_name_pack/
+  compress (compression-pointer emit must match glibc), ns_initparse/ns_parserr/
+  ns_skiprr/ns_sprintrr (ns_msg/ns_rr parse), ns_datetosecs, ns_format_ttl/parse_ttl.)
 - ~~**fts/fts64 (10)**~~ DONE — posix/fts.rs (F511). BSD pre/post-order iterator,
   cycle detect (FTS_DC), FTS_LOGICAL/PHYSICAL/SEEDOT/XDEV/COMFOLLOW + fts_set
   SKIP/FOLLOW. Exact FTSENT ABI (112B). Host-diffable t_fts.c over a temp tree.

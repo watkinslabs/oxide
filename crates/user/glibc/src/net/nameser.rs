@@ -160,3 +160,147 @@ pub unsafe extern "C" fn ns_name_skip(ptrptr: *mut *const u8, eom: *const u8) ->
         0
     }
 }
+
+// # C: int ns_name_unpack(const u_char *msg, const u_char *eom, const u_char *src,
+//                         u_char *dst, size_t dstsiz)
+// Expand the (possibly compressed) wire name at src into UNCOMPRESSED wire form
+// in dst, following pointers. Returns the bytes consumed at src, -1 on error.
+#[no_mangle]
+pub unsafe extern "C" fn ns_name_unpack(msg: *const u8, eom: *const u8, src: *const u8, dst: *mut u8, dstsiz: usize) -> i32 {
+    // SAFETY: msg/eom bound the message; src points within it; dst is dstsiz
+    // bytes. Pointers are followed with a checked-byte budget to bar loops.
+    unsafe {
+        let dstlim = dst as usize + dstsiz;
+        let mut dstp = dst;
+        let mut srcp = src;
+        let mut len: isize = -1;
+        let mut checked: isize = 0;
+        if (srcp as usize) < msg as usize || srcp >= eom { crate::internal::errno::set(EMSGSIZE); return -1; }
+        loop {
+            let n = *srcp; srcp = srcp.add(1);
+            if n == 0 { break; }
+            match n & NS_CMPRSFLGS {
+                0 => {
+                    if dstp as usize + n as usize + 1 >= dstlim || srcp.add(n as usize) > eom { crate::internal::errno::set(EMSGSIZE); return -1; }
+                    checked += n as isize + 1;
+                    *dstp = n; dstp = dstp.add(1);
+                    core::ptr::copy_nonoverlapping(srcp, dstp, n as usize);
+                    dstp = dstp.add(n as usize); srcp = srcp.add(n as usize);
+                }
+                NS_CMPRSFLGS => {
+                    if srcp >= eom { crate::internal::errno::set(EMSGSIZE); return -1; }
+                    if len < 0 { len = srcp as isize - src as isize + 1; }
+                    let off = (((n & 0x3f) as usize) << 8) | *srcp as usize;
+                    srcp = msg.add(off);
+                    if (srcp as usize) < msg as usize || srcp >= eom { crate::internal::errno::set(EMSGSIZE); return -1; }
+                    checked += 2;
+                    if checked >= eom as isize - msg as isize { crate::internal::errno::set(EMSGSIZE); return -1; }
+                }
+                _ => { crate::internal::errno::set(EMSGSIZE); return -1; }
+            }
+        }
+        if dstp as usize >= dstlim { crate::internal::errno::set(EMSGSIZE); return -1; }
+        *dstp = 0;
+        if len < 0 { len = srcp as isize - src as isize; }
+        len as i32
+    }
+}
+
+// # C: int ns_name_uncompress(const u_char *msg, const u_char *eom, const u_char *src,
+//                             char *dst, size_t dstsiz)
+// ns_name_unpack then ns_name_ntop: compressed wire → presentation text.
+#[no_mangle]
+pub unsafe extern "C" fn ns_name_uncompress(msg: *const u8, eom: *const u8, src: *const u8, dst: *mut c_char, dstsiz: usize) -> i32 {
+    // SAFETY: forwards to unpack (into a 255-byte wire scratch) then ntop.
+    unsafe {
+        let mut tmp = [0u8; 255];
+        let n = ns_name_unpack(msg, eom, src, tmp.as_mut_ptr(), tmp.len());
+        if n < 0 { return -1; }
+        if ns_name_ntop(tmp.as_ptr(), dst, dstsiz) < 0 { return -1; }
+        n
+    }
+}
+
+unsafe fn nlen(s: *const u8) -> usize { let mut n = 0; unsafe { while *s.add(n) != 0 { n += 1; } } n }
+fn lc(c: u8) -> u8 { if c.is_ascii_uppercase() { c + 32 } else { c } }
+
+// # C: int ns_makecanon(const char *src, char *dst, size_t dstsize)
+// Strip trailing unescaped dots, then append exactly one canonical trailing dot.
+#[no_mangle]
+pub unsafe extern "C" fn ns_makecanon(src: *const c_char, dst: *mut c_char, dstsize: usize) -> i32 {
+    // SAFETY: src is NUL-terminated; dst is dstsize bytes (need strlen+2).
+    unsafe {
+        let s = src as *const u8; let d = dst as *mut u8;
+        let mut n = nlen(s);
+        if n + 2 > dstsize { crate::internal::errno::set(EMSGSIZE); return -1; }
+        core::ptr::copy_nonoverlapping(s, d, n); *d.add(n) = 0;
+        while n >= 1 && *d.add(n - 1) == b'.' {
+            if n >= 2 && *d.add(n - 2) == b'\\' && (n < 3 || *d.add(n - 3) != b'\\') { break; }
+            n -= 1; *d.add(n) = 0;
+        }
+        *d.add(n) = b'.'; n += 1; *d.add(n) = 0;
+        0
+    }
+}
+
+// # C: int ns_samename(const char *a, const char *b) — caseless equality of the
+// canonical forms. 1 equal, 0 not, -1 on a name too long to canonicalize.
+#[no_mangle]
+pub unsafe extern "C" fn ns_samename(a: *const c_char, b: *const c_char) -> i32 {
+    // SAFETY: a/b NUL-terminated; canonicalize each into a 1025-byte scratch.
+    unsafe {
+        let mut ta = [0u8; 1025]; let mut tb = [0u8; 1025];
+        if ns_makecanon(a, ta.as_mut_ptr() as *mut c_char, ta.len()) < 0 { return -1; }
+        if ns_makecanon(b, tb.as_mut_ptr() as *mut c_char, tb.len()) < 0 { return -1; }
+        let mut i = 0;
+        loop {
+            let (x, y) = (lc(ta[i]), lc(tb[i]));
+            if x != y { return 0; }
+            if x == 0 { return 1; }
+            i += 1;
+        }
+    }
+}
+
+// # C: int ns_samedomain(const char *a, const char *b) — is name `a` within
+// domain `b` (equal counts)? Trailing unescaped dots are ignored on both.
+#[no_mangle]
+pub unsafe extern "C" fn ns_samedomain(a: *const c_char, b: *const c_char) -> i32 {
+    // SAFETY: a/b NUL-terminated; only indexed reads within their lengths.
+    unsafe {
+        let pa = a as *const u8; let pb = b as *const u8;
+        let mut la = nlen(pa); let mut lb = nlen(pb);
+        // strip an unescaped trailing dot from a
+        if la != 0 && *pa.add(la - 1) == b'.' {
+            let mut esc = false; let mut j = la as isize - 2;
+            while j >= 0 && *pa.add(j as usize) == b'\\' { esc = !esc; j -= 1; }
+            if !esc { la -= 1; }
+        }
+        if lb != 0 && *pb.add(lb - 1) == b'.' {
+            let mut esc = false; let mut j = lb as isize - 2;
+            while j >= 0 && *pb.add(j as usize) == b'\\' { esc = !esc; j -= 1; }
+            if !esc { lb -= 1; }
+        }
+        if lb == 0 { return 1; }                 // b is the root
+        if lb > la { return 0; }
+        let caseless_eq = |off: usize, len: usize| -> bool {
+            for k in 0..len { if lc(*pa.add(off + k)) != lc(*pb.add(k)) { return false; } }
+            true
+        };
+        if lb == la { return caseless_eq(0, lb) as i32; }
+        // lb < la: a must end with b, preceded by an unescaped dot
+        if *pa.add(la - lb - 1) != b'.' { return 0; }
+        let mut esc = false; let mut j = la as isize - lb as isize - 2;
+        while j >= 0 && *pa.add(j as usize) == b'\\' { esc = !esc; j -= 1; }
+        if esc { return 0; }
+        caseless_eq(la - lb, lb) as i32
+    }
+}
+
+// # C: int ns_subdomain(const char *a, const char *b) — `a` is a PROPER
+// subdomain of `b` (within b but not equal).
+#[no_mangle]
+pub unsafe extern "C" fn ns_subdomain(a: *const c_char, b: *const c_char) -> i32 {
+    // SAFETY: forwards to ns_samedomain + ns_samename on NUL-terminated names.
+    unsafe { (ns_samedomain(a, b) != 0 && ns_samename(a, b) == 0) as i32 }
+}
