@@ -8,6 +8,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/syscall.h>
+#include <sys/pidfd.h>
 #include <sched.h>
 #include <string.h>
 
@@ -67,6 +69,29 @@ int main(void) {
     posix_spawnattr_getschedparam(&at, &gsp);
     posix_spawnattr_destroy(&at);
     printf("attr flags=0x%x pg=%d pol=%d prio=%d\n", gf & 0x3f, gpg, gpol, gsp.sched_priority);
+
+    /* pidfd_getpid: a pidfd for ourselves resolves back to getpid(). */
+    int self_pfd = (int)syscall(SYS_pidfd_open, getpid(), 0);
+    printf("pidfd_getpid match=%d\n", self_pfd >= 0 && pidfd_getpid(self_pfd) == getpid());
+    if (self_pfd >= 0) close(self_pfd);
+
+    /* pidfd_spawn: launch /bin/true, get a pidfd, reap via the pidfd. */
+    int cpfd = -1; pid_t junk;
+    int rc4 = pidfd_spawn(&cpfd, "/bin/true", NULL, NULL, (char*[]){"true",NULL}, CLEAN);
+    int eat0 = 0;
+    if (rc4 == 0) {
+        siginfo_t si = {0};
+        if (waitid(P_PIDFD, cpfd, &si, WEXITED) == 0) eat0 = (si.si_code == CLD_EXITED && si.si_status == 0);
+        close(cpfd);
+    }
+    printf("pidfd_spawn rc=%d reaped0=%d\n", rc4, eat0);
+
+    /* pidfd_spawnp: PATH search for true. */
+    int ppfd = -1;
+    int rc5 = pidfd_spawnp(&ppfd, "true", NULL, NULL, (char*[]){"true",NULL}, CLEAN);
+    if (rc5 == 0) { siginfo_t si = {0}; waitid(P_PIDFD, ppfd, &si, WEXITED); close(ppfd); }
+    printf("pidfd_spawnp rc=%d\n", rc5);
+    (void)junk;
 
     unlink(out); unlink(out2);
     return 0;
