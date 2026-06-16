@@ -200,7 +200,7 @@ pub unsafe extern "C" fn pthread_attr_getinheritsched(attr: *const c_void, out: 
 #[no_mangle]
 pub unsafe extern "C" fn pthread_attr_setschedpolicy(attr: *mut c_void, policy: i32) -> i32 {
     if policy != 0 && policy != 1 && policy != 2 { return 22; } // OTHER/FIFO/RR
-    // SAFETY: attr writable.
+    // SAFETY: attr is a writable pthread_attr_t object; store the policy field.
     unsafe { (*as_attr(attr)).policy = policy; } 0
 }
 // # C: int pthread_attr_getschedpolicy(const pthread_attr_t*, int*)
@@ -226,7 +226,7 @@ pub unsafe extern "C" fn pthread_attr_getschedparam(attr: *const c_void, param: 
 pub unsafe extern "C" fn pthread_attr_setscope(attr: *mut c_void, scope: i32) -> i32 {
     if scope == 1 { return 95; }       // PTHREAD_SCOPE_PROCESS unsupported (ENOTSUP)
     if scope != 0 { return 22; }       // only PTHREAD_SCOPE_SYSTEM(0)
-    // SAFETY: attr writable.
+    // SAFETY: attr is a writable pthread_attr_t object; store the scope field.
     unsafe { (*as_attr(attr)).scope = scope; } 0
 }
 // # C: int pthread_attr_getscope(const pthread_attr_t*, int*)
@@ -253,7 +253,7 @@ pub unsafe extern "C" fn pthread_attr_getstack(attr: *const c_void, addr: *mut u
 // # C: int pthread_attr_setstackaddr(pthread_attr_t*, void*) — deprecated
 #[no_mangle]
 pub unsafe extern "C" fn pthread_attr_setstackaddr(attr: *mut c_void, addr: *mut c_void) -> i32 {
-    // SAFETY: attr writable.
+    // SAFETY: attr is a writable pthread_attr_t object; store the stack address.
     unsafe { (*as_attr(attr)).stackaddr = addr as usize; } 0
 }
 // # C: int pthread_attr_getstackaddr(const pthread_attr_t*, void**) — deprecated
