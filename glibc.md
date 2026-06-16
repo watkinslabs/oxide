@@ -37,7 +37,8 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   res_gethostby*; __res_state; ns_* (ns_get16/put/name/parse); getaddrinfo_a/gai_*
   (async, needs threads); (getifaddrs/freeifaddrs DONE — net/ifaddrs.rs, F510,
   netlink RTM_GETLINK+GETADDR, host-diffable t_getifaddrs.c);
-  inet6_opt_*/inet6_rth_*/inet6_option_* (RFC3542 ext-hdr, ~22).
+  inet6_opt_*/inet6_option_* (RFC3542 ext-hdr, ~16).
+  (inet6_rth_* DONE — F517, net/inet6_rth.rs, host-diffable t_inet6_rth.c).
   (inet_net_pton/ntop/neta/nsap_addr/nsap_ntoa DONE — F516, net/inet.rs,
   AF_INET classful-default-bits + class-D=4, host-diffable t_inet_net.c via
   -lresolv oracle; dn_comp/dn_expand/dn_skipname + recvmmsg/sendmmsg done.)
