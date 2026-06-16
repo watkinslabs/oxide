@@ -106,3 +106,56 @@ pub unsafe extern "C" fn waitid(idtype: i32, id: u32, infop: *mut c_void, option
     // waitid(2) arg (rusage) is NULL.
     ret_isize(unsafe { sys5(nr::WAITID, idtype as usize, id as usize, infop as usize, options as usize, 0) }) as i32
 }
+
+// --- legacy / deprecated syscall wrappers ----------------------------------
+const ENOSYS: i32 = 38;
+
+// # C: int revoke(const char *path) — no Linux syscall; glibc stub ⇒ ENOSYS.
+#[no_mangle]
+pub unsafe extern "C" fn revoke(_path: *const c_char) -> i32 {
+    crate::internal::errno::set(ENOSYS); -1
+}
+
+// # C: int ustat(dev_t dev, struct ustat *ubuf) — deprecated; x86_64 only.
+#[no_mangle]
+pub unsafe extern "C" fn ustat(dev: u64, ubuf: *mut c_void) -> i32 {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: ustat(2); ubuf is a writable struct ustat the kernel fills.
+    { ret_isize(unsafe { crate::arch::syscall::sys2(nr::USTAT, dev as usize, ubuf as usize) }) as i32 }
+    #[cfg(not(target_arch = "x86_64"))]
+    { let _ = (dev, ubuf); crate::internal::errno::set(ENOSYS); -1 }
+}
+
+// # C: int uselib(const char *library) — obsolete; x86_64 only, else ENOSYS.
+#[no_mangle]
+pub unsafe extern "C" fn uselib(library: *const c_char) -> i32 {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: uselib(2); library is a NUL-terminated path the kernel reads.
+    { ret_isize(unsafe { sys1(nr::USELIB, library as usize) }) as i32 }
+    #[cfg(not(target_arch = "x86_64"))]
+    { let _ = library; crate::internal::errno::set(ENOSYS); -1 }
+}
+
+// # C: int modify_ldt(int func, void *ptr, unsigned long bytecount) — x86 only.
+#[cfg(target_arch = "x86_64")]
+#[no_mangle]
+pub unsafe extern "C" fn modify_ldt(func: i32, ptr: *mut c_void, bytecount: u64) -> i32 {
+    // SAFETY: modify_ldt(2); ptr is a user_desc buffer of bytecount bytes.
+    ret_isize(unsafe { sys3(nr::MODIFY_LDT, func as usize, ptr as usize, bytecount as usize) }) as i32
+}
+
+// # C: int iopl(int level) — x86 I/O privilege level (needs CAP_SYS_RAWIO).
+#[cfg(target_arch = "x86_64")]
+#[no_mangle]
+pub unsafe extern "C" fn iopl(level: i32) -> i32 {
+    // SAFETY: iopl(2) takes a scalar level; dereferences no memory.
+    ret_isize(unsafe { sys1(nr::IOPL, level as usize) }) as i32
+}
+
+// # C: int ioperm(unsigned long from, unsigned long num, int turn_on) — x86.
+#[cfg(target_arch = "x86_64")]
+#[no_mangle]
+pub unsafe extern "C" fn ioperm(from: u64, num: u64, turn_on: i32) -> i32 {
+    // SAFETY: ioperm(2) takes scalar port range + flag; dereferences no memory.
+    ret_isize(unsafe { sys3(nr::IOPERM, from as usize, num as usize, turn_on as usize) }) as i32
+}
