@@ -115,13 +115,41 @@ mod imp {
     // # C: int scandir(const char *dir, struct dirent ***namelist, filter, compar)
     #[no_mangle]
     pub unsafe extern "C" fn scandir(dirp: *const u8, namelist: *mut *mut *mut dirent, filter: Option<FilterFn>, compar: Option<CmpFn>) -> i32 {
-        // SAFETY: dirp NUL-terminated; namelist a writable out-param. Reads all
-        // entries, applies filter, malloc-copies survivors into a grown array,
-        // sorts with compar (each element a dirent* — qsort passes &elem, the
-        // dirent** compar expects), and publishes the array. -1 on open error.
+        // SAFETY: dirp NUL-terminated; namelist a writable out-param. Opens the
+        // directory then defers to the shared collector. -1 on open error.
         unsafe {
             let d = opendir(dirp);
             if d.is_null() { return -1; }
+            scandir_dir(d, namelist, filter, compar)
+        }
+    }
+    // # C: int scandirat(int dfd, const char *dir, struct dirent ***namelist, filter, compar)
+    #[no_mangle]
+    pub unsafe extern "C" fn scandirat(dfd: i32, dirp: *const u8, namelist: *mut *mut *mut dirent, filter: Option<FilterFn>, compar: Option<CmpFn>) -> i32 {
+        // SAFETY: dirp NUL-terminated, resolved relative to dfd; namelist a
+        // writable out-param. Opens via openat+fdopendir, then the shared
+        // collector. -1 on open error.
+        unsafe {
+            let fd = io::openat(dfd, dirp, io::O_RDONLY | io::O_DIRECTORY | io::O_CLOEXEC, 0);
+            if fd < 0 { return -1; }
+            let d = fdopendir(fd);
+            if d.is_null() { io::close(fd); return -1; }
+            scandir_dir(d, namelist, filter, compar)
+        }
+    }
+    // # C: int scandirat64(...) — LFS alias
+    #[no_mangle]
+    pub unsafe extern "C" fn scandirat64(dfd: i32, dirp: *const u8, namelist: *mut *mut *mut dirent, filter: Option<FilterFn>, compar: Option<CmpFn>) -> i32 {
+        // SAFETY: identical dirent layout on LP64; forwards to scandirat.
+        unsafe { scandirat(dfd, dirp, namelist, filter, compar) }
+    }
+    // Shared collector: read+filter+sort+publish from an open DIR (consumes it).
+    unsafe fn scandir_dir(d: *mut DIR, namelist: *mut *mut *mut dirent, filter: Option<FilterFn>, compar: Option<CmpFn>) -> i32 {
+        // SAFETY: d is an open DIR (closed here). Reads all entries, applies the
+        // filter, malloc-copies survivors into a grown array, sorts with compar
+        // (each element a dirent* — qsort passes &elem, the dirent** compar
+        // expects), and publishes the array via namelist.
+        unsafe {
             let mut arr: *mut *mut dirent = core::ptr::null_mut();
             let (mut cap, mut cnt) = (0usize, 0usize);
             loop {
@@ -141,8 +169,6 @@ mod imp {
             }
             closedir(d);
             if let Some(c) = compar {
-                // qsort over the dirent* array; the element addr (&dirent*) is
-                // exactly the `const dirent **` the comparator expects.
                 let cmp: crate::stdlib::sort::Cmp = core::mem::transmute(c);
                 crate::stdlib::sort::qsort_impl(arr as *mut u8, cnt, 8, cmp);
             }
