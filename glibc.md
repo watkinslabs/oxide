@@ -12,6 +12,14 @@ DIRECTLY not via GOT, so copy-reloc interposition in an executable desyncs. Fix 
 GOT-indirect codegen for copy-relocatable libc data. Likely moot for real GNU-ld
 vendor binaries (confirm in G19d). Reverted; don't re-add without the codegen fix.
 
+## NOTE (latest++): XDR layer DONE — rpc/xdr.rs: xdrmem_create + 10-op vtable +
+all scalar/fixed-width/hyper/float/double primitives + opaque/bytes/string/
+wrapstring/netobj + vector/array/reference/pointer + xdr_sizeof + getpos/setpos.
+RFC4506-verified vs our libc (glibc keeps xdr_* COMPAT-ONLY → not host-diffable).
+Also DONE: SysV signal (sighold/sigrelse/sigignore/sigset). Remaining RPC =
+clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
+replymsg/opaque_auth/...). Conformance 163/163.
+
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
 (mkstemp64 family + preadv64/pwritev64(v2) + strtof64/wcstof64) + mkostemps,
