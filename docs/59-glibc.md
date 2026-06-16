@@ -158,8 +158,14 @@ long-double (`*l`, x86 f80) + `_Float128`/`_Float32x`/`_Float64x` extended-preci
 
 ### 9.3 Closed since the vendor-scoped audit (F-series PRs)
 
-poll/ppoll, epoll, eventfd/signalfd/timerfd/inotify, statx, xattr×12, file/proc wrappers, sig wait family, posix_spawn family, chroot/fexecve/shm, mkostemp/mkstemps/futimesat/waitid (#2033), admin syscalls caps/modules/msg/sigqueue/personality/quota/reboot/fsuid (#2034), statfs/fstatfs/statvfs/fstatvfs (#2035).
+poll/ppoll, epoll, eventfd/signalfd/timerfd/inotify, statx, xattr×12, file/proc wrappers, sig wait family, posix_spawn family, chroot/fexecve/shm, mkostemp/mkstemps/futimesat/waitid, admin syscalls, statfs/statvfs, pthread FULL surface (#2037–2042), C11 threads (#2043), modern syscalls (#2044), locale `_l` (#2045), eaccess/sigisemptyset/__fpclassify/gets (#2046), putgrent/putspent/lckpwdf/ulckpwdf (#2047), in6addr_any/in6addr_loopback.
 
-### 9.4 Work order (next PRs)
+### 9.4 KNOWN ISSUE — `__`-aliased data symbols + copy relocations
 
-pthread surface → fts → resolver/NSS_r → modern syscalls → locale `_l` → C11 threads → wide/mb → `_FloatN` aliases → C23 math → (RPC/crypt only if vendor-linked).
+The data symbols `__environ`/`_environ` (==environ), `__signgam`, `__tzname`/`__timezone`/`__daylight`, `__progname`/`__progname_full` are global_asm `.set` aliases of canonical Rust `#[no_mangle]` statics. Two problems:
+1. **Export**: rustc's cdylib export filter keeps only its own `#[no_mangle]` items, so the asm aliases are localized out of `.dynsym`. A supplementary anonymous `--version-script` (listing them in `global:`) on the `build_sharedlib` link DOES promote them (verified: all land at the canonical symbol's address).
+2. **Copy-reloc aliasing**: even exported at the same lib address, a PIE that references both a canonical name and its `__` alias as DATA gets a separate copy-reloc per name (lld/our-ld don't collapse aliases the way GNU ld does for glibc's weak aliases), so `environ != __environ` in that executable and libc's runtime writes desync. Fixing needs alias-aware copy relocs in the static linker + ld.so, OR making the three truly one symbol — a focused dynamic-linker task, not a thin wrapper. Deferred; the canonical names (`environ`, `signgam`, `tzname`, …) work.
+
+### 9.5 Work order (next PRs)
+
+resolver/NSS_r → wide/mb (wcwidth/wcswidth/mbrtoc32) → clone(2) C wrapper → dl_iterate_phdr → data-alias export+copy-reloc (9.4) → fts → `_FloatN` aliases (same export mechanism as 9.4) → C23 math → (RPC/crypt only if vendor-linked).
