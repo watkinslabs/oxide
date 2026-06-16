@@ -203,6 +203,109 @@ pub unsafe extern "C" fn pthread_yield() -> i32 {
 #[no_mangle]
 pub extern "C" fn pthread_kill_other_threads_np() {}
 
+// --- cancellation (deferred; acts at testcancel / cancellation points) -----
+use super::{current_tcb, join_common, Tcb};
+const PTHREAD_CANCELED: *mut c_void = usize::MAX as *mut c_void;
+
+// # C: int pthread_setcancelstate(int state, int *oldstate)
+#[no_mangle]
+pub unsafe extern "C" fn pthread_setcancelstate(state: i32, oldstate: *mut i32) -> i32 {
+    if state != 0 && state != 1 { return 22; } // ENABLE(0)/DISABLE(1)
+    // SAFETY: current_tcb is valid on any thread once the TCB is installed;
+    // oldstate is null or a writable int receiving the prior state.
+    unsafe {
+        let tcb = current_tcb();
+        if !oldstate.is_null() { *oldstate = (*tcb).cancelstate; }
+        (*tcb).cancelstate = state;
+    }
+    0
+}
+// # C: int pthread_setcanceltype(int type, int *oldtype)
+#[no_mangle]
+pub unsafe extern "C" fn pthread_setcanceltype(ty: i32, oldtype: *mut i32) -> i32 {
+    if ty != 0 && ty != 1 { return 22; } // DEFERRED(0)/ASYNCHRONOUS(1)
+    // SAFETY: as setcancelstate; updates this thread's TCB cancel type.
+    unsafe {
+        let tcb = current_tcb();
+        if !oldtype.is_null() { *oldtype = (*tcb).canceltype; }
+        (*tcb).canceltype = ty;
+    }
+    0
+}
+// # C: void pthread_testcancel(void)
+#[no_mangle]
+pub unsafe extern "C" fn pthread_testcancel() {
+    // SAFETY: if a cancel is pending and cancellation is enabled, terminate this
+    // thread with PTHREAD_CANCELED (the deferred-cancellation contract).
+    unsafe {
+        let tcb = current_tcb();
+        if (*tcb).cancelreq != 0 && (*tcb).cancelstate == 0 {
+            crate::pthread::pthread_exit(PTHREAD_CANCELED);
+        }
+    }
+}
+// # C: int pthread_cancel(pthread_t thread)
+#[no_mangle]
+pub unsafe extern "C" fn pthread_cancel(thread: usize) -> i32 {
+    // SAFETY: thread is a live pthread_t; set its cancel-requested flag. If the
+    // target is the caller and asynchronous+enabled, act immediately.
+    unsafe {
+        let tcb = thread as *mut Tcb;
+        (*tcb).cancelreq = 1;
+        if thread == current_tcb() as usize && (*tcb).canceltype == 1 && (*tcb).cancelstate == 0 {
+            crate::pthread::pthread_exit(PTHREAD_CANCELED);
+        }
+    }
+    0
+}
+
+// --- timed / try join + getattr_np -----------------------------------------
+// # C: int pthread_tryjoin_np(pthread_t, void **retval)
+#[no_mangle]
+pub unsafe extern "C" fn pthread_tryjoin_np(thread: usize, retval: *mut *mut c_void) -> i32 {
+    // SAFETY: thread is a joinable pthread_t; non-blocking reap or EBUSY.
+    unsafe { join_common(thread, retval, 1, 0, core::ptr::null()) }
+}
+// # C: int pthread_timedjoin_np(pthread_t, void **retval, const struct timespec *abstime)
+#[no_mangle]
+pub unsafe extern "C" fn pthread_timedjoin_np(thread: usize, retval: *mut *mut c_void, abstime: *const crate::time::clock::timespec) -> i32 {
+    // SAFETY: abstime is an absolute CLOCK_REALTIME deadline.
+    unsafe { join_common(thread, retval, 2, 0 /* CLOCK_REALTIME */, abstime) }
+}
+// # C: int pthread_clockjoin_np(pthread_t, void **retval, clockid_t, const struct timespec *abstime)
+#[no_mangle]
+pub unsafe extern "C" fn pthread_clockjoin_np(thread: usize, retval: *mut *mut c_void, clk: i32, abstime: *const crate::time::clock::timespec) -> i32 {
+    // SAFETY: abstime is an absolute deadline on `clk`.
+    unsafe { join_common(thread, retval, 2, clk, abstime) }
+}
+
+// # C: int pthread_getattr_np(pthread_t thread, pthread_attr_t *attr)
+// Fill attr from the thread's actual stack region (created threads carry it in
+// the TCB; the main thread's size comes from RLIMIT_STACK).
+#[no_mangle]
+pub unsafe extern "C" fn pthread_getattr_np(thread: usize, attr: *mut c_void) -> i32 {
+    use crate::pthread::attr::Attr;
+    // SAFETY: thread is a live pthread_t; attr is a writable pthread_attr_t we
+    // overlay our Attr onto and populate with the thread's stack + guardsize.
+    unsafe {
+        let tcb = thread as *const Tcb;
+        let (base, size) = ((*tcb).stack_base, (*tcb).stack_size);
+        let a = attr as *mut Attr;
+        (*a).detach = 0; (*a).inherit = 0; (*a).policy = 0; (*a).priority = 0;
+        (*a).scope = 0; (*a).guardsize = 4096; (*a).ext = 0;
+        if base != 0 {
+            (*a).stackaddr = base; (*a).stacksize = size;
+        } else {
+            // main thread: size from RLIMIT_STACK, address unknown (0)
+            let mut rl = crate::posix::resource::Rlimit { rlim_cur: 0, rlim_max: 0 };
+            let r = crate::posix::resource::getrlimit(3 /* RLIMIT_STACK */, &mut rl);
+            (*a).stacksize = if r == 0 && rl.rlim_cur != crate::posix::resource::RLIM_INFINITY { rl.rlim_cur as usize } else { 8 << 20 };
+            (*a).stackaddr = 0;
+        }
+        0
+    }
+}
+
 static CONCURRENCY: AtomicI32 = AtomicI32::new(0);
 // # C: int pthread_getconcurrency(void)
 #[no_mangle]

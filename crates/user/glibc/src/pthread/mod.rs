@@ -5,6 +5,7 @@
 //! not a stub. Mutex/cond/rwlock are G11b/c.
 #![cfg(feature = "freestanding")]
 #![allow(clippy::upper_case_acronyms)]
+pub mod atfork;
 pub mod attr;
 pub mod barrier;
 pub mod cond;
@@ -41,6 +42,9 @@ pub struct Tcb {
     stack_base: usize,
     stack_size: usize,
     pub(crate) errno: i32, // per-thread errno (docs/59§6 G12f)
+    pub(crate) cancelstate: i32, // PTHREAD_CANCEL_ENABLE(0)/DISABLE(1)
+    pub(crate) canceltype: i32,  // PTHREAD_CANCEL_DEFERRED(0)/ASYNCHRONOUS(1)
+    pub(crate) cancelreq: i32,   // 1 once pthread_cancel targets this thread
     pub(crate) keys: [*mut c_void; KEYS_MAX], // TLS-key values
 }
 
@@ -123,6 +127,7 @@ pub(crate) unsafe fn init_main_tcb() {
         (*tcb).stack_base = 0;
         (*tcb).stack_size = 0;
         (*tcb).errno = 0;
+        (*tcb).cancelstate = 0; (*tcb).canceltype = 0; (*tcb).cancelreq = 0;
         (*tcb).keys = [core::ptr::null_mut(); KEYS_MAX];
         set_thread_pointer(tcb as usize);
     }
@@ -174,6 +179,7 @@ pub unsafe extern "C" fn pthread_create(thread: *mut usize, _attr: *const c_void
         (*tcb).stack_base = base as usize;
         (*tcb).stack_size = STACK_SIZE;
         (*tcb).errno = 0;
+        (*tcb).cancelstate = 0; (*tcb).canceltype = 0; (*tcb).cancelreq = 0;
         (*tcb).keys = [core::ptr::null_mut(); KEYS_MAX];
         // child stack: 16-aligned, with [sp]=entry, [sp+8]=arg(tcb)
         let sp = ((base as usize + STACK_SIZE) & !15) - 16;
@@ -190,24 +196,46 @@ pub unsafe extern "C" fn pthread_create(thread: *mut usize, _attr: *const c_void
     }
 }
 
-// # C: int pthread_join(pthread_t, void **retval)
-#[no_mangle]
-pub unsafe extern "C" fn pthread_join(thread: usize, retval: *mut *mut c_void) -> i32 {
-    // SAFETY: thread is a joinable pthread_t from pthread_create; wait on
-    // the CHILD_CLEARTID futex word, then reclaim the stack + TCB.
+// Shared join: wait on the CHILD_CLEARTID futex (optionally until an absolute
+// deadline on `clk`), then reclaim the stack + TCB. mode: 0=block, 1=try (no
+// wait), 2=timed. Returns 0, EBUSY, or ETIMEDOUT.
+pub(crate) unsafe fn join_common(thread: usize, retval: *mut *mut c_void, mode: i32, clk: i32, abstime: *const crate::time::clock::timespec) -> i32 {
+    // SAFETY: thread is a joinable pthread_t; addr is its tid futex word. We
+    // sleep until it clears (deadline-aware) then free the thread's resources.
     unsafe {
+        use crate::time::clock::{clock_gettime, timespec, CLOCK_MONOTONIC, CLOCK_REALTIME};
         let tcb = thread as *mut Tcb;
         let addr = &mut (*tcb).tid as *mut i32;
         loop {
             let t = core::ptr::read_volatile(addr);
             if t == 0 { break; }
-            crate::arch::syscall::sys6(nr::FUTEX, addr as usize, FUTEX_WAIT, t as usize, 0, 0, 0);
+            if mode == 1 { return 16; } // EBUSY (tryjoin)
+            if mode == 2 {
+                let c = if clk == CLOCK_MONOTONIC { CLOCK_MONOTONIC } else { CLOCK_REALTIME };
+                let mut now = timespec { tv_sec: 0, tv_nsec: 0 };
+                clock_gettime(c, &mut now);
+                let mut sec = (*abstime).tv_sec - now.tv_sec;
+                let mut nsec = (*abstime).tv_nsec - now.tv_nsec;
+                if nsec < 0 { nsec += 1_000_000_000; sec -= 1; }
+                if sec < 0 { return 110; } // ETIMEDOUT
+                let rel = timespec { tv_sec: sec, tv_nsec: nsec };
+                crate::arch::syscall::sys6(nr::FUTEX, addr as usize, FUTEX_WAIT, t as usize, &rel as *const _ as usize, 0, 0);
+            } else {
+                crate::arch::syscall::sys6(nr::FUTEX, addr as usize, FUTEX_WAIT, t as usize, 0, 0, 0);
+            }
         }
         if !retval.is_null() { *retval = (*tcb).retval; }
         mman::munmap((*tcb).stack_base as *mut u8, (*tcb).stack_size);
         heap::free(tcb as *mut u8);
         0
     }
+}
+
+// # C: int pthread_join(pthread_t, void **retval)
+#[no_mangle]
+pub unsafe extern "C" fn pthread_join(thread: usize, retval: *mut *mut c_void) -> i32 {
+    // SAFETY: thread is a joinable pthread_t from pthread_create.
+    unsafe { join_common(thread, retval, 0, 0, core::ptr::null()) }
 }
 
 // # C: pthread_t pthread_self(void)
