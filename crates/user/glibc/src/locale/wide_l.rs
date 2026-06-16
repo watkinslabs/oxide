@@ -41,21 +41,21 @@ cw! {
 
 // # C: int iswctype_l(wint_t, wctype_t, locale_t)
 #[no_mangle] pub unsafe extern "C" fn iswctype_l(wc: u32, desc: u64, _l: usize) -> i32 {
-    // SAFETY: delegates to iswctype.
+    // SAFETY: C-locale delegator; forwards to iswctype, ignoring the locale arg.
     unsafe { iswctype(wc, desc) }
 }
 // # C: wint_t towlower_l(wint_t, locale_t) / towupper_l
 #[no_mangle] pub unsafe extern "C" fn towlower_l(wc: u32, _l: usize) -> u32 {
-    // SAFETY: delegates to towlower.
+    // SAFETY: C-locale delegator; forwards to towlower, ignoring the locale arg.
     unsafe { towlower(wc) }
 }
 #[no_mangle] pub unsafe extern "C" fn towupper_l(wc: u32, _l: usize) -> u32 {
-    // SAFETY: delegates to towupper.
+    // SAFETY: C-locale delegator; forwards to towupper, ignoring the locale arg.
     unsafe { towupper(wc) }
 }
 // # C: wint_t towctrans_l(wint_t, wctrans_t, locale_t)
 #[no_mangle] pub unsafe extern "C" fn towctrans_l(wc: u32, desc: isize, _l: usize) -> u32 {
-    // SAFETY: delegates to towctrans.
+    // SAFETY: C-locale delegator; forwards to towctrans, ignoring the locale arg.
     unsafe { towctrans(wc, desc) }
 }
 // # C: wctype_t wctype_l(const char*, locale_t)
@@ -93,47 +93,47 @@ cw! {
     unsafe { wcstod(s, e) }
 }
 #[no_mangle] pub unsafe extern "C" fn wcstof_l(s: *const i32, e: *mut *mut i32, _l: usize) -> f32 {
-    // SAFETY: == wcstof.
+    // SAFETY: C-locale delegator forwarding to wcstof (locale-invariant).
     unsafe { wcstof(s, e) }
 }
 #[no_mangle] pub unsafe extern "C" fn wcstof32_l(s: *const i32, e: *mut *mut i32, _l: usize) -> f32 {
-    // SAFETY: _Float32 == float == wcstof.
+    // SAFETY: _Float32 == float; C-locale delegator forwarding to wcstof.
     unsafe { wcstof(s, e) }
 }
 #[no_mangle] pub unsafe extern "C" fn wcstof64_l(s: *const i32, e: *mut *mut i32, _l: usize) -> f64 {
-    // SAFETY: _Float64 == double == wcstod.
+    // SAFETY: _Float64 == double; C-locale delegator forwarding to wcstod.
     unsafe { wcstod(s, e) }
 }
 #[no_mangle] pub unsafe extern "C" fn wcstol_l(s: *const i32, e: *mut *mut i32, b: i32, _l: usize) -> i64 {
-    // SAFETY: == wcstol.
+    // SAFETY: C-locale delegator forwarding to wcstol (locale-invariant).
     unsafe { wcstol(s, e, b) }
 }
 #[no_mangle] pub unsafe extern "C" fn wcstoul_l(s: *const i32, e: *mut *mut i32, b: i32, _l: usize) -> u64 {
-    // SAFETY: == wcstoul.
+    // SAFETY: C-locale delegator forwarding to wcstoul (locale-invariant).
     unsafe { wcstoul(s, e, b) }
 }
 #[no_mangle] pub unsafe extern "C" fn wcstoll_l(s: *const i32, e: *mut *mut i32, b: i32, _l: usize) -> i64 {
-    // SAFETY: == wcstoll.
+    // SAFETY: C-locale delegator forwarding to wcstoll (locale-invariant).
     unsafe { wcstoll(s, e, b) }
 }
 #[no_mangle] pub unsafe extern "C" fn wcstoull_l(s: *const i32, e: *mut *mut i32, b: i32, _l: usize) -> u64 {
-    // SAFETY: == wcstoull.
+    // SAFETY: C-locale delegator forwarding to wcstoull (locale-invariant).
     unsafe { wcstoull(s, e, b) }
 }
 // C23 entry points (modern GCC redirects wcstol_l → __isoc23_wcstol_l).
 #[no_mangle] pub unsafe extern "C" fn __isoc23_wcstol_l(s: *const i32, e: *mut *mut i32, b: i32, l: usize) -> i64 {
-    // SAFETY: C23 alias of wcstol_l.
+    // SAFETY: C23 entry point; forwards to wcstol_l with the same args.
     unsafe { wcstol_l(s, e, b, l) }
 }
 #[no_mangle] pub unsafe extern "C" fn __isoc23_wcstoul_l(s: *const i32, e: *mut *mut i32, b: i32, l: usize) -> u64 {
-    // SAFETY: C23 alias of wcstoul_l.
+    // SAFETY: C23 entry point; forwards to wcstoul_l with the same args.
     unsafe { wcstoul_l(s, e, b, l) }
 }
 #[no_mangle] pub unsafe extern "C" fn __isoc23_wcstoll_l(s: *const i32, e: *mut *mut i32, b: i32, l: usize) -> i64 {
-    // SAFETY: C23 alias of wcstoll_l.
+    // SAFETY: C23 entry point; forwards to wcstoll_l with the same args.
     unsafe { wcstoll_l(s, e, b, l) }
 }
 #[no_mangle] pub unsafe extern "C" fn __isoc23_wcstoull_l(s: *const i32, e: *mut *mut i32, b: i32, l: usize) -> u64 {
-    // SAFETY: C23 alias of wcstoull_l.
+    // SAFETY: C23 entry point; forwards to wcstoull_l with the same args.
     unsafe { wcstoull_l(s, e, b, l) }
 }
