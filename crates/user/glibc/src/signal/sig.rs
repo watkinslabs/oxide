@@ -64,6 +64,53 @@ pub unsafe extern "C" fn sigaltstack(ss: *const core::ffi::c_void, old: *mut cor
     ret_isize(unsafe { sys2(nr::SIGALTSTACK, ss as usize, old as usize) }) as i32
 }
 
+// # C: int pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset)
+// glibc 2.34+ folds pthread_sigmask into the same rt_sigprocmask path as
+// sigprocmask (the thread mask IS the kernel per-thread blocked set).
+#[no_mangle]
+pub unsafe extern "C" fn pthread_sigmask(how: i32, set: *const sigset_t, oldset: *mut sigset_t) -> i32 {
+    // SAFETY: set/oldset null or valid sigset_t; forwards to the sigprocmask
+    // rt_sigprocmask wrapper (identical kernel semantics for the calling thread).
+    let r = unsafe { sigprocmask(how, set, oldset) };
+    if r == 0 { return 0; }
+    // pthread_sigmask returns the error number directly (not -1/errno).
+    // SAFETY: __errno_location returns this thread's valid errno slot; reading it.
+    unsafe { *crate::internal::errno::__errno_location() }
+}
+
+// # C: int sigtimedwait(const sigset_t *set, siginfo_t *info, const struct timespec *timeout)
+#[no_mangle]
+pub unsafe extern "C" fn sigtimedwait(set: *const sigset_t, info: *mut core::ffi::c_void, timeout: *const core::ffi::c_void) -> i32 {
+    // SAFETY: set is a valid sigset_t; info null or a writable siginfo_t the
+    // kernel fills; timeout null or a valid timespec. Returns the signo or -1.
+    ret_isize(unsafe { sys4(nr::RT_SIGTIMEDWAIT, set as usize, info as usize, timeout as usize, KERNEL_SIGSET) }) as i32
+}
+
+// # C: int sigwaitinfo(const sigset_t *set, siginfo_t *info)
+#[no_mangle]
+pub unsafe extern "C" fn sigwaitinfo(set: *const sigset_t, info: *mut core::ffi::c_void) -> i32 {
+    // SAFETY: sigtimedwait with a NULL timeout (block until a signal arrives).
+    unsafe { sigtimedwait(set, info, core::ptr::null()) }
+}
+
+// # C: int sigwait(const sigset_t *set, int *sig)
+// POSIX: returns 0 and writes the accepted signo to *sig, or the error number.
+#[no_mangle]
+pub unsafe extern "C" fn sigwait(set: *const sigset_t, sig: *mut i32) -> i32 {
+    // SAFETY: set valid; sig a writable int. A 128-byte siginfo_t scratch on
+    // this frame receives the kernel's info; we only surface si_signo.
+    unsafe {
+        let mut info = [0u8; 128];
+        loop {
+            let r = sys4(nr::RT_SIGTIMEDWAIT, set as usize, info.as_mut_ptr() as usize, 0, KERNEL_SIGSET);
+            if r >= 0 { if !sig.is_null() { *sig = r as i32; } return 0; }
+            // EINTR (-4) → retry; otherwise return the (positive) error number.
+            if r == -4 { continue; }
+            return (-r) as i32;
+        }
+    }
+}
+
 // # C: int pause(void)
 #[cfg(target_arch = "x86_64")]
 #[no_mangle]
