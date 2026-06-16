@@ -248,6 +248,22 @@ pub mod x86_64 {
     pub const SHMAT: usize = 30;
     pub const SHMCTL: usize = 31;
     pub const SHMDT: usize = 67;
+    pub const CAPGET: usize = 125;
+    pub const CAPSET: usize = 126;
+    pub const INIT_MODULE: usize = 175;
+    pub const DELETE_MODULE: usize = 176;
+    pub const NAME_TO_HANDLE_AT: usize = 303;
+    pub const OPEN_BY_HANDLE_AT: usize = 304;
+    pub const PERSONALITY: usize = 135;
+    pub const QUOTACTL: usize = 179;
+    pub const REBOOT: usize = 169;
+    pub const SETFSUID: usize = 122;
+    pub const SETFSGID: usize = 123;
+    pub const MSGGET: usize = 68;
+    pub const MSGSND: usize = 69;
+    pub const MSGRCV: usize = 70;
+    pub const MSGCTL: usize = 71;
+    pub const RT_SIGQUEUEINFO: usize = 129;
 }
 
 pub mod aarch64 {
@@ -468,4 +484,20 @@ pub mod aarch64 {
     pub const SHMCTL: usize = 195;
     pub const SHMAT: usize = 196;
     pub const SHMDT: usize = 197;
+    pub const CAPGET: usize = 90;
+    pub const CAPSET: usize = 91;
+    pub const INIT_MODULE: usize = 105;
+    pub const DELETE_MODULE: usize = 106;
+    pub const NAME_TO_HANDLE_AT: usize = 264;
+    pub const OPEN_BY_HANDLE_AT: usize = 265;
+    pub const PERSONALITY: usize = 92;
+    pub const QUOTACTL: usize = 60;
+    pub const REBOOT: usize = 142;
+    pub const SETFSUID: usize = 151;
+    pub const SETFSGID: usize = 152;
+    pub const MSGGET: usize = 186;
+    pub const MSGSND: usize = 189;
+    pub const MSGRCV: usize = 188;
+    pub const MSGCTL: usize = 187;
+    pub const RT_SIGQUEUEINFO: usize = 138;
 }
