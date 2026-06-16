@@ -223,6 +223,24 @@ pub mod x86_64 {
     pub const REMOVEXATTR: usize = 197;
     pub const LREMOVEXATTR: usize = 198;
     pub const FREMOVEXATTR: usize = 199;
+    // file/process syscall wrappers (x86_64)
+    pub const STATFS: usize = 137;
+    pub const FSTATFS: usize = 138;
+    pub const FLOCK: usize = 73;
+    pub const SENDFILE: usize = 40;
+    pub const SPLICE: usize = 275;
+    pub const COPY_FILE_RANGE: usize = 326;
+    pub const FADVISE64: usize = 221;
+    pub const MEMFD_CREATE: usize = 319;
+    pub const MINCORE: usize = 27;
+    pub const PRCTL: usize = 157;
+    pub const SETNS: usize = 308;
+    pub const UNSHARE: usize = 272;
+    pub const GETRESUID: usize = 118;
+    pub const GETRESGID: usize = 120;
+    pub const VHANGUP: usize = 153;
+    pub const PREADV2: usize = 327;
+    pub const PWRITEV2: usize = 328;
 }
 
 pub mod aarch64 {
@@ -418,4 +436,22 @@ pub mod aarch64 {
     pub const REMOVEXATTR: usize = 14;
     pub const LREMOVEXATTR: usize = 15;
     pub const FREMOVEXATTR: usize = 16;
+    // file/process syscall wrappers (asm-generic/unistd.h)
+    pub const STATFS: usize = 43;
+    pub const FSTATFS: usize = 44;
+    pub const FLOCK: usize = 32;
+    pub const SENDFILE: usize = 71;
+    pub const SPLICE: usize = 76;
+    pub const COPY_FILE_RANGE: usize = 285;
+    pub const FADVISE64: usize = 223;
+    pub const MEMFD_CREATE: usize = 279;
+    pub const MINCORE: usize = 232;
+    pub const PRCTL: usize = 167;
+    pub const SETNS: usize = 268;
+    pub const UNSHARE: usize = 97;
+    pub const GETRESUID: usize = 148;
+    pub const GETRESGID: usize = 150;
+    pub const VHANGUP: usize = 58;
+    pub const PREADV2: usize = 286;
+    pub const PWRITEV2: usize = 287;
 }
