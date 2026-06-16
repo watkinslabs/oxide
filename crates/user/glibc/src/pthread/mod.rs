@@ -6,8 +6,10 @@
 #![cfg(feature = "freestanding")]
 #![allow(clippy::upper_case_acronyms)]
 pub mod attr;
+pub mod barrier;
 pub mod cond;
 pub mod control;
+pub mod spin;
 pub mod key;
 pub mod mutex;
 pub mod once;
