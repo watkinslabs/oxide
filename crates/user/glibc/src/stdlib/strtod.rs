@@ -130,6 +130,12 @@ mod exports {
             v
         }
     }
+    // # C: _Float64 strtof64(const char *s, char **endptr) — == strtod on LP64.
+    #[no_mangle]
+    pub unsafe extern "C" fn strtof64(s: *const u8, endptr: *mut *mut u8) -> f64 {
+        // SAFETY: _Float64 == double; same contract as strtod.
+        unsafe { strtod(s, endptr) }
+    }
     // # C: float strtof(const char *s, char **endptr)
     #[no_mangle]
     pub unsafe extern "C" fn strtof(s: *const u8, endptr: *mut *mut u8) -> f32 {

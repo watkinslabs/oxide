@@ -73,3 +73,22 @@ pub unsafe extern "C" fn mkstemps(template: *mut u8, suffixlen: i32) -> i32 {
     // SAFETY: as mkstemp with a fixed suffix after the X's.
     unsafe { do_mkstemp(template, 0, suffixlen.max(0) as usize) }
 }
+
+// # C: int mkostemps(char *template, int suffixlen, int flags) — mkstemps + flags.
+#[no_mangle]
+pub unsafe extern "C" fn mkostemps(template: *mut u8, suffixlen: i32, flags: i32) -> i32 {
+    let extra = (flags as usize) & !(O_RDWR | O_CREAT | O_EXCL | 0o3);
+    // SAFETY: "XXXXXX<suffix>"; do_mkstemp overwrites the X's + opens with the
+    // extra (masked) flags.
+    unsafe { do_mkstemp(template, extra, suffixlen.max(0) as usize) }
+}
+
+// LFS aliases — identical on LP64 (off64_t == off_t; the temp path is the same).
+// SAFETY: mkstemp64 == mkstemp; template ends in "XXXXXX".
+#[no_mangle] pub unsafe extern "C" fn mkstemp64(t: *mut u8) -> i32 { unsafe { mkstemp(t) } }
+// SAFETY: mkstemps64 == mkstemps.
+#[no_mangle] pub unsafe extern "C" fn mkstemps64(t: *mut u8, s: i32) -> i32 { unsafe { mkstemps(t, s) } }
+// SAFETY: mkostemp64 == mkostemp.
+#[no_mangle] pub unsafe extern "C" fn mkostemp64(t: *mut u8, f: i32) -> i32 { unsafe { mkostemp(t, f) } }
+// SAFETY: mkostemps64 == mkostemps.
+#[no_mangle] pub unsafe extern "C" fn mkostemps64(t: *mut u8, s: i32, f: i32) -> i32 { unsafe { mkostemps(t, s, f) } }
