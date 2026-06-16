@@ -37,8 +37,10 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   res_gethostby*; __res_state; ns_* (ns_get16/put/name/parse); getaddrinfo_a/gai_*
   (async, needs threads); (getifaddrs/freeifaddrs DONE — net/ifaddrs.rs, F510,
   netlink RTM_GETLINK+GETADDR, host-diffable t_getifaddrs.c);
-  inet6_opt_*/inet6_rth_*/inet6_option_* (RFC3542 ext-hdr, ~22); inet_net_pton/
-  ntop/neta/nsap. (dn_comp/dn_expand/dn_skipname + recvmmsg/sendmmsg done.)
+  inet6_opt_*/inet6_rth_*/inet6_option_* (RFC3542 ext-hdr, ~22).
+  (inet_net_pton/ntop/neta/nsap_addr/nsap_ntoa DONE — F516, net/inet.rs,
+  AF_INET classful-default-bits + class-D=4, host-diffable t_inet_net.c via
+  -lresolv oracle; dn_comp/dn_expand/dn_skipname + recvmmsg/sendmmsg done.)
 - ~~**fts/fts64 (10)**~~ DONE — posix/fts.rs (F511). BSD pre/post-order iterator,
   cycle detect (FTS_DC), FTS_LOGICAL/PHYSICAL/SEEDOT/XDEV/COMFOLLOW + fts_set
   SKIP/FOLLOW. Exact FTSENT ABI (112B). Host-diffable t_fts.c over a temp tree.
