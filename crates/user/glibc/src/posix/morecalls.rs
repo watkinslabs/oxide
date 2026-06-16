@@ -12,6 +12,13 @@ use crate::internal::nr;
 
 // statfs/fstatfs + statvfs/fstatvfs now live in posix/statfs.rs.
 
+// # C: int acct(const char *filename) — enable/disable process accounting.
+#[no_mangle]
+pub unsafe extern "C" fn acct(filename: *const c_char) -> i32 {
+    // SAFETY: filename is null (disable) or a NUL-terminated path the kernel reads.
+    ret_isize(unsafe { sys1(nr::ACCT, filename as usize) }) as i32
+}
+
 // # C: int flock(int fd, int op)
 #[no_mangle]
 pub unsafe extern "C" fn flock(fd: i32, op: i32) -> i32 {

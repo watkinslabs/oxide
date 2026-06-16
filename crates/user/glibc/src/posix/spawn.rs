@@ -195,6 +195,27 @@ unsafe fn child_apply(fa: *const c_void, at: *const c_void) {
     }
 }
 
+// # C: int execvpe(const char *file, char *const argv[], char *const envp[])
+// Like execvp but with an explicit environment. If `file` contains a '/', exec
+// it directly; else PATH-search (using envp's PATH). Returns -1 only on failure.
+#[no_mangle]
+pub unsafe extern "C" fn execvpe(file: *const c_char, argv: *const *const c_char, envp: *const *const c_char) -> i32 {
+    // SAFETY: file NUL-terminated; argv/envp NULL-terminated arrays. execve/
+    // path_search_exec only return on failure, leaving errno set.
+    unsafe {
+        let fp = file as *const u8;
+        let mut has_slash = false;
+        let mut i = 0;
+        while *fp.add(i) != 0 { if *fp.add(i) == b'/' { has_slash = true; break; } i += 1; }
+        if has_slash {
+            crate::posix::process::execve(fp, argv as *const *const u8, envp as *const *const u8);
+        } else {
+            path_search_exec(file, argv, envp);
+        }
+        -1
+    }
+}
+
 // PATH-search `file` using the PATH from `envp` (not the process environ) and
 // execve each candidate with `envp`. Returns only if every candidate failed.
 unsafe fn path_search_exec(file: *const c_char, argv: *const *const c_char, envp: *const *const c_char) {
