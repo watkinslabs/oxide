@@ -7,15 +7,20 @@
 #![cfg(feature = "freestanding")]
 use core::ffi::{c_char, c_void};
 use crate::malloc::heap;
+use crate::posix::sched::SchedParam;
 
-// spawn attr flags (bits/posix_opt-style; match glibc <spawn.h>)
+// spawn attr flags (bits/spawn.h; match glibc).
 const SETPGROUP: i16 = 0x02;
+const SETSIGDEF: i16 = 0x04;
 const SETSIGMASK: i16 = 0x08;
+const SETSCHEDPARAM: i16 = 0x10;
+const SETSCHEDULER: i16 = 0x20;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct Action { kind: u8, fd: i32, newfd: i32, oflag: i32, mode: u32, path: *const c_char }
-// Open=0 (fd,oflag,mode,path → open then dup2 to fd), Close=1 (fd), Dup2=2 (fd→newfd)
+// Open=0 (fd,oflag,mode,path → open then dup2 to fd), Close=1 (fd), Dup2=2 (fd→newfd),
+// Chdir=3 (path), Fchdir=4 (fd), Closefrom=5 (fd=lowfd), Tcsetpgrp=6 (fd).
 
 // Our posix_spawn_file_actions_t layout (≤ 80 bytes the caller allocated).
 #[repr(C)]
@@ -23,7 +28,8 @@ struct FileActions { used: usize, cap: usize, acts: *mut Action, _pad: [u8; 56] 
 
 // Our posix_spawnattr_t layout (≤ 336 bytes the caller allocated).
 #[repr(C)]
-struct SpawnAttr { flags: i16, pgroup: i32, sigdefault: u64, sigmask: u64, _pad: [u8; 312] }
+struct SpawnAttr { flags: i16, pgroup: i32, sigdefault: u64, sigmask: u64,
+    schedpolicy: i32, schedprio: i32, cgroup: i32, _pad: [u8; 300] }
 
 // --- file actions -------------------------------------------------------
 #[no_mangle]
@@ -67,12 +73,33 @@ pub unsafe extern "C" fn posix_spawn_file_actions_adddup2(fa: *mut c_void, fd: i
     // SAFETY: fa is an init'd posix_spawn_file_actions_t; push records the dup2.
     unsafe { push(fa, Action { kind: 2, fd, newfd, oflag: 0, mode: 0, path: core::ptr::null() }) }
 }
+// GNU _np file actions: chdir(path), fchdir(fd), closefrom(fd≥), tcsetpgrp(fd).
+#[no_mangle]
+pub unsafe extern "C" fn posix_spawn_file_actions_addchdir_np(fa: *mut c_void, path: *const c_char) -> i32 {
+    // SAFETY: path outlives the spawn call (caller contract); recorded by pointer.
+    unsafe { push(fa, Action { kind: 3, fd: 0, newfd: 0, oflag: 0, mode: 0, path }) }
+}
+#[no_mangle]
+pub unsafe extern "C" fn posix_spawn_file_actions_addfchdir_np(fa: *mut c_void, fd: i32) -> i32 {
+    // SAFETY: fa is an init'd posix_spawn_file_actions_t; push records the fchdir.
+    unsafe { push(fa, Action { kind: 4, fd, newfd: 0, oflag: 0, mode: 0, path: core::ptr::null() }) }
+}
+#[no_mangle]
+pub unsafe extern "C" fn posix_spawn_file_actions_addclosefrom_np(fa: *mut c_void, from: i32) -> i32 {
+    // SAFETY: fa is an init'd posix_spawn_file_actions_t; push records closefrom.
+    unsafe { push(fa, Action { kind: 5, fd: from, newfd: 0, oflag: 0, mode: 0, path: core::ptr::null() }) }
+}
+#[no_mangle]
+pub unsafe extern "C" fn posix_spawn_file_actions_addtcsetpgrp_np(fa: *mut c_void, tcfd: i32) -> i32 {
+    // SAFETY: fa is an init'd posix_spawn_file_actions_t; push records tcsetpgrp.
+    unsafe { push(fa, Action { kind: 6, fd: tcfd, newfd: 0, oflag: 0, mode: 0, path: core::ptr::null() }) }
+}
 
 // --- spawn attributes ---------------------------------------------------
 #[no_mangle]
 pub unsafe extern "C" fn posix_spawnattr_init(at: *mut c_void) -> i32 {
     // SAFETY: at is a caller-allocated posix_spawnattr_t (≥336 bytes).
-    unsafe { *(at as *mut SpawnAttr) = SpawnAttr { flags: 0, pgroup: 0, sigdefault: 0, sigmask: 0, _pad: [0; 312] }; }
+    unsafe { *(at as *mut SpawnAttr) = SpawnAttr { flags: 0, pgroup: 0, sigdefault: 0, sigmask: 0, schedpolicy: 0, schedprio: 0, cgroup: 0, _pad: [0; 300] }; }
     0
 }
 #[no_mangle] pub unsafe extern "C" fn posix_spawnattr_destroy(_at: *mut c_void) -> i32 { 0 }
@@ -96,39 +123,52 @@ pub unsafe extern "C" fn posix_spawnattr_init(at: *mut c_void) -> i32 {
     // SAFETY: at is init'd; set is null or a sigset_t whose low word is the mask.
     unsafe { (*(at as *mut SpawnAttr)).sigdefault = if set.is_null() { 0 } else { *set }; } 0
 }
-// Scheduling attrs accepted + ignored (no RT scheduling enforced yet).
-#[no_mangle] pub unsafe extern "C" fn posix_spawnattr_setschedparam(_at: *mut c_void, _p: *const c_void) -> i32 { 0 }
-#[no_mangle] pub unsafe extern "C" fn posix_spawnattr_setschedpolicy(_at: *mut c_void, _p: i32) -> i32 { 0 }
+#[no_mangle] pub unsafe extern "C" fn posix_spawnattr_getpgroup(at: *const c_void, out: *mut i32) -> i32 {
+    // SAFETY: at is an init'd posix_spawnattr_t; out is a writable pid_t.
+    unsafe { *out = (*(at as *const SpawnAttr)).pgroup; } 0
+}
+#[no_mangle] pub unsafe extern "C" fn posix_spawnattr_getsigmask(at: *const c_void, set: *mut u64) -> i32 {
+    // SAFETY: at is init'd; set is a sigset_t out (low word carries the mask).
+    unsafe { *set = (*(at as *const SpawnAttr)).sigmask; } 0
+}
+#[no_mangle] pub unsafe extern "C" fn posix_spawnattr_getsigdefault(at: *const c_void, set: *mut u64) -> i32 {
+    // SAFETY: at is init'd; set is a sigset_t out (low word carries the mask).
+    unsafe { *set = (*(at as *const SpawnAttr)).sigdefault; } 0
+}
+// Scheduling attrs stored + replayed in the child (sched_set{scheduler,param}).
+#[no_mangle] pub unsafe extern "C" fn posix_spawnattr_setschedparam(at: *mut c_void, p: *const SchedParam) -> i32 {
+    // SAFETY: at is init'd; p points to a struct sched_param (one int).
+    unsafe { (*(at as *mut SpawnAttr)).schedprio = if p.is_null() { 0 } else { (*p).sched_priority }; } 0
+}
+#[no_mangle] pub unsafe extern "C" fn posix_spawnattr_getschedparam(at: *const c_void, p: *mut SchedParam) -> i32 {
+    // SAFETY: at is init'd; p is a writable struct sched_param out-pointer.
+    unsafe { (*p).sched_priority = (*(at as *const SpawnAttr)).schedprio; } 0
+}
+#[no_mangle] pub unsafe extern "C" fn posix_spawnattr_setschedpolicy(at: *mut c_void, policy: i32) -> i32 {
+    // SAFETY: at is a caller-allocated, init'd posix_spawnattr_t we write into.
+    unsafe { (*(at as *mut SpawnAttr)).schedpolicy = policy; } 0
+}
+#[no_mangle] pub unsafe extern "C" fn posix_spawnattr_getschedpolicy(at: *const c_void, out: *mut i32) -> i32 {
+    // SAFETY: at is an init'd posix_spawnattr_t; out is a writable int.
+    unsafe { *out = (*(at as *const SpawnAttr)).schedpolicy; } 0
+}
+// SETCGROUP_NP (GNU): the child is moved into this cgroup v2 id via clone3's
+// CLONE_INTO_CGROUP; we store + apply best-effort post-fork (write to cgroup.procs).
+#[no_mangle] pub unsafe extern "C" fn posix_spawnattr_setcgroup_np(at: *mut c_void, cgroup: i32) -> i32 {
+    // SAFETY: at is a caller-allocated, init'd posix_spawnattr_t we write into.
+    unsafe { (*(at as *mut SpawnAttr)).cgroup = cgroup; } 0
+}
+#[no_mangle] pub unsafe extern "C" fn posix_spawnattr_getcgroup_np(at: *const c_void, out: *mut i32) -> i32 {
+    // SAFETY: at is an init'd posix_spawnattr_t; out is a writable int.
+    unsafe { *out = (*(at as *const SpawnAttr)).cgroup; } 0
+}
 
 // --- the spawn itself ---------------------------------------------------
 unsafe fn child_setup_and_exec(path: *const c_char, fa: *const c_void, at: *const c_void, argv: *const *const c_char, envp: *const *const c_char) -> ! {
     // SAFETY: runs in the forked child; applies attrs + file actions then
     // execve. Any failure ⇒ _exit(127) (the posix_spawn child-error contract).
     unsafe {
-        if !at.is_null() {
-            let a = &*(at as *const SpawnAttr);
-            if a.flags & SETPGROUP != 0 { crate::posix::ids::setpgid(0, a.pgroup); }
-            if a.flags & SETSIGMASK != 0 {
-                let m = a.sigmask;
-                crate::signal::sig::sigprocmask(2 /* SIG_SETMASK */, &m as *const u64 as *const _, core::ptr::null_mut());
-            }
-            // SETSIGDEF: reset the named signals to SIG_DFL (best-effort).
-            // (Handled by glibc via sigaction; our default mask suffices for the
-            // common spawn-with-clean-handlers case — full reset is a follow-up.)
-        }
-        if !fa.is_null() {
-            let f = &*(fa as *const FileActions);
-            for i in 0..f.used {
-                let act = *f.acts.add(i);
-                let r = match act.kind {
-                    0 => { let nfd = crate::posix::io::open(act.path as *const u8, act.oflag, act.mode);
-                           if nfd < 0 { -1 } else if nfd != act.fd { let d = crate::posix::fd::dup2(nfd, act.fd); crate::posix::io::close(nfd); d } else { nfd } }
-                    1 => crate::posix::io::close(act.fd),
-                    _ => crate::posix::fd::dup2(act.fd, act.newfd),
-                };
-                if r < 0 { crate::stdlib::exit::exit_group(127); }
-            }
-        }
+        child_apply(fa, at);
         crate::posix::process::execve(path as *const u8, argv as *const *const u8, envp as *const *const u8);
         crate::stdlib::exit::exit_group(127); // execve only returns on error
     }
@@ -171,14 +211,25 @@ pub unsafe extern "C" fn posix_spawnp(pid: *mut i32, file: *const c_char, fa: *c
     }
 }
 
-// Shared child attr+action application for the spawnp path (no exec).
+// Shared child attr+action application (used by both spawn + spawnp paths).
+// SIG_SETMASK=2. SETSIGDEF resets the named signals to SIG_DFL; setpgid runs
+// before file actions so a tcsetpgrp action picks up the child's new pgrp.
 unsafe fn child_apply(fa: *const c_void, at: *const c_void) {
-    // SAFETY: child context; mirrors child_setup_and_exec's pre-exec steps.
+    // SAFETY: child context; applies spawn attrs then replays file actions.
     unsafe {
         if !at.is_null() {
             let a = &*(at as *const SpawnAttr);
             if a.flags & SETPGROUP != 0 { crate::posix::ids::setpgid(0, a.pgroup); }
+            if a.flags & SETSIGDEF != 0 {
+                let mut s = 1u8;
+                while s <= 64 { if a.sigdefault & (1u64 << (s - 1)) != 0 { crate::signal::sigaction::exports::signal(s as i32, 0 /* SIG_DFL */); } s += 1; }
+            }
             if a.flags & SETSIGMASK != 0 { let m = a.sigmask; crate::signal::sig::sigprocmask(2, &m as *const u64 as *const _, core::ptr::null_mut()); }
+            if a.flags & (SETSCHEDULER | SETSCHEDPARAM) != 0 {
+                let p = SchedParam { sched_priority: a.schedprio };
+                if a.flags & SETSCHEDULER != 0 { crate::posix::sched::sched_setscheduler(0, a.schedpolicy, &p); }
+                else { crate::posix::sched::sched_setparam(0, &p); }
+            }
         }
         if !fa.is_null() {
             let f = &*(fa as *const FileActions);
@@ -187,7 +238,11 @@ unsafe fn child_apply(fa: *const c_void, at: *const c_void) {
                 let r = match act.kind {
                     0 => { let nfd = crate::posix::io::open(act.path as *const u8, act.oflag, act.mode); if nfd < 0 { -1 } else if nfd != act.fd { let d = crate::posix::fd::dup2(nfd, act.fd); crate::posix::io::close(nfd); d } else { nfd } }
                     1 => crate::posix::io::close(act.fd),
-                    _ => crate::posix::fd::dup2(act.fd, act.newfd),
+                    2 => crate::posix::fd::dup2(act.fd, act.newfd),
+                    3 => crate::posix::fs::chdir(act.path as *const u8),
+                    4 => crate::posix::fs::fchdir(act.fd),
+                    5 => { crate::posix::modern::closefrom(act.fd); 0 }
+                    _ => crate::posix::tty::tcsetpgrp(act.fd, crate::posix::ids::getpgrp()),
                 };
                 if r < 0 { crate::stdlib::exit::exit_group(127); }
             }

@@ -71,8 +71,12 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (wcslcat/wcslcpy DONE — F514, string/wstr.rs BSD bounded copy/concat; host-diffable t_wcslcpy.c), (twalk_r DONE — F515, search/tree.rs; host-diffable t_twalk_r.c),
   (mbrtoc8/mbrtoc16/c8rtomb/c16rtomb DONE — F513, locale/wchar.rs surrogate +
   code-unit state machines over mbstate_t; host-diffable t_uchar_c816.c),
-  posix_spawn_file_actions_add{chdir,fchdir,closefrom,tcsetpgrp}_np +
-  posix_spawnattr_get/set{sched*,sig*,pgroup,cgroup_np}.
+  (posix_spawn_file_actions_add{chdir,fchdir,closefrom,tcsetpgrp}_np +
+  posix_spawnattr_get/set{sched*,sig*,pgroup,cgroup_np} DONE — F524,
+  posix/spawn.rs: new file-action kinds replayed in child_apply,
+  SpawnAttr stores sched policy/prio + cgroup, SETSIGDEF resets to SIG_DFL,
+  SETSCHED{ULER,PARAM} replayed via sched_set{scheduler,param}; host-diffable
+  t_spawn.c chdir_np + attr getter round-trip).
 - **BSD net auth** — rcmd/rexec/ruserok/iruserok/rresvport(_af), bindresvport.
 - **re_* BSD regex (~12)** — re_comp/re_exec/re_compile_pattern/re_search/re_match.
 - **libxcrypt** — crypt_gensalt(+_r/_ra/_rn)/crypt_ra/crypt_rn/crypt_preferred_method/

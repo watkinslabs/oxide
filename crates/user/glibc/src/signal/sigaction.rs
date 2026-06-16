@@ -30,7 +30,7 @@ const _: () = {
 };
 
 #[cfg(feature = "freestanding")]
-mod exports {
+pub mod exports {
     use super::*;
     use crate::arch::syscall::sys4;
     use crate::internal::errno::ret_isize;
