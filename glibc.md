@@ -12,6 +12,14 @@ DIRECTLY not via GOT, so copy-reloc interposition in an executable desyncs. Fix 
 GOT-indirect codegen for copy-relocatable libc data. Likely moot for real GNU-ld
 vendor binaries (confirm in G19d). Reverted; don't re-add without the codegen fix.
 
+## NOTE (latest): also DONE since the §-headers below were written —
+wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
+(mkstemp64 family + preadv64/pwritev64(v2) + strtof64/wcstof64) + mkostemps,
+C23 `<stdbit.h>` (42), gnu_dev_*/swab/ftok/timespec_get(res)/group_member/ualarm,
+/etc/rpc DB, dn_comp/expand/skipname, sendmmsg/recvmmsg, /etc/{ethers,ttys,
+aliases,gshadow} DBs, C23 *pi/*m1/*p1 + fmaximum/fminimum, netdb _r, dl extras.
+Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED.
+
 ## 2. Remaining achievable clusters (DO ALL)
 - **Sun RPC (~140)** — clnt_*/svc_*/auth_*/xdr_*/pmap_*/key_*/callrpc/registerrpc/
   xprt/svcerr/svctcp/svcudp/getrpcport/netname/passwd2des/des_setparity/ruserpass.
