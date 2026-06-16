@@ -106,4 +106,34 @@ mod exports {
             fill(&p)
         }
     }
+
+    const ERANGE: i32 = 34;
+    unsafe fn pack(s: *mut protoent, rb: *mut protoent, buf: *mut u8, n: usize, result: *mut *mut protoent) -> i32 {
+        // SAFETY: deep-copy the static protoent into the caller's _r storage.
+        unsafe {
+            if s.is_null() { *result = core::ptr::null_mut(); return 0; }
+            match pack_r((*s).p_name, (*s).p_aliases, core::ptr::null(), buf, n) {
+                Some((nm, _, al)) => { (*rb).p_name = nm; (*rb).p_aliases = al; (*rb).p_proto = (*s).p_proto; *result = rb; 0 }
+                None => { *result = core::ptr::null_mut(); ERANGE }
+            }
+        }
+    }
+    // # C: int getprotobyname_r(const char*, struct protoent*, char*, size_t, struct protoent**)
+    #[no_mangle]
+    pub unsafe extern "C" fn getprotobyname_r(name: *const u8, rb: *mut protoent, buf: *mut u8, n: usize, result: *mut *mut protoent) -> i32 {
+        // SAFETY: deep-copy the lookup result into rb/buf.
+        unsafe { pack(getprotobyname(name), rb, buf, n, result) }
+    }
+    // # C: int getprotobynumber_r(int, struct protoent*, char*, size_t, struct protoent**)
+    #[no_mangle]
+    pub unsafe extern "C" fn getprotobynumber_r(proto: i32, rb: *mut protoent, buf: *mut u8, n: usize, result: *mut *mut protoent) -> i32 {
+        // SAFETY: as getprotobyname_r.
+        unsafe { pack(getprotobynumber(proto), rb, buf, n, result) }
+    }
+    // # C: int getprotoent_r(struct protoent*, char*, size_t, struct protoent**)
+    #[no_mangle]
+    pub unsafe extern "C" fn getprotoent_r(rb: *mut protoent, buf: *mut u8, n: usize, result: *mut *mut protoent) -> i32 {
+        // SAFETY: as getprotobyname_r.
+        unsafe { pack(getprotoent(), rb, buf, n, result) }
+    }
 }
