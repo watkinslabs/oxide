@@ -101,4 +101,34 @@ mod exports {
             fill(&v)
         }
     }
+
+    const ERANGE: i32 = 34;
+    unsafe fn pack(s: *mut netent, rb: *mut netent, buf: *mut u8, n: usize, result: *mut *mut netent) -> i32 {
+        // SAFETY: deep-copy the static netent into the caller's _r storage.
+        unsafe {
+            if s.is_null() { *result = core::ptr::null_mut(); return 0; }
+            match pack_r((*s).n_name, (*s).n_aliases, core::ptr::null(), buf, n) {
+                Some((nm, _, al)) => { (*rb).n_name = nm; (*rb).n_aliases = al; (*rb).n_addrtype = (*s).n_addrtype; (*rb).n_net = (*s).n_net; *result = rb; 0 }
+                None => { *result = core::ptr::null_mut(); ERANGE }
+            }
+        }
+    }
+    // # C: int getnetbyname_r(const char*, struct netent*, char*, size_t, struct netent**)
+    #[no_mangle]
+    pub unsafe extern "C" fn getnetbyname_r(name: *const u8, rb: *mut netent, buf: *mut u8, n: usize, result: *mut *mut netent) -> i32 {
+        // SAFETY: deep-copy the lookup result into rb/buf.
+        unsafe { pack(getnetbyname(name), rb, buf, n, result) }
+    }
+    // # C: int getnetbyaddr_r(uint32_t, int, struct netent*, char*, size_t, struct netent**)
+    #[no_mangle]
+    pub unsafe extern "C" fn getnetbyaddr_r(net: u32, type_: i32, rb: *mut netent, buf: *mut u8, n: usize, result: *mut *mut netent) -> i32 {
+        // SAFETY: as getnetbyname_r.
+        unsafe { pack(getnetbyaddr(net, type_), rb, buf, n, result) }
+    }
+    // # C: int getnetent_r(struct netent*, char*, size_t, struct netent**)
+    #[no_mangle]
+    pub unsafe extern "C" fn getnetent_r(rb: *mut netent, buf: *mut u8, n: usize, result: *mut *mut netent) -> i32 {
+        // SAFETY: as getnetbyname_r.
+        unsafe { pack(getnetent(), rb, buf, n, result) }
+    }
 }

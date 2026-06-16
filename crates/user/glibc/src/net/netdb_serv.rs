@@ -113,4 +113,35 @@ mod exports {
             fill(&v)
         }
     }
+
+    const ERANGE: i32 = 34;
+    // Deep-copy the static servent `s` into the caller's `_r` buffer.
+    unsafe fn pack(s: *mut servent, rb: *mut servent, buf: *mut u8, n: usize, result: *mut *mut servent) -> i32 {
+        // SAFETY: s is the static result (or null); rb/buf the caller storage.
+        unsafe {
+            if s.is_null() { *result = core::ptr::null_mut(); return 0; }
+            match pack_r((*s).s_name, (*s).s_aliases, (*s).s_proto, buf, n) {
+                Some((nm, pr, al)) => { (*rb).s_name = nm; (*rb).s_aliases = al; (*rb).s_proto = pr; (*rb).s_port = (*s).s_port; *result = rb; 0 }
+                None => { *result = core::ptr::null_mut(); ERANGE }
+            }
+        }
+    }
+    // # C: int getservbyname_r(const char*, const char*, struct servent*, char*, size_t, struct servent**)
+    #[no_mangle]
+    pub unsafe extern "C" fn getservbyname_r(name: *const u8, proto: *const u8, rb: *mut servent, buf: *mut u8, n: usize, result: *mut *mut servent) -> i32 {
+        // SAFETY: deep-copy the (single-threaded) lookup result into rb/buf.
+        unsafe { pack(getservbyname(name, proto), rb, buf, n, result) }
+    }
+    // # C: int getservbyport_r(int, const char*, struct servent*, char*, size_t, struct servent**)
+    #[no_mangle]
+    pub unsafe extern "C" fn getservbyport_r(port: i32, proto: *const u8, rb: *mut servent, buf: *mut u8, n: usize, result: *mut *mut servent) -> i32 {
+        // SAFETY: as getservbyname_r.
+        unsafe { pack(getservbyport(port, proto), rb, buf, n, result) }
+    }
+    // # C: int getservent_r(struct servent*, char*, size_t, struct servent**)
+    #[no_mangle]
+    pub unsafe extern "C" fn getservent_r(rb: *mut servent, buf: *mut u8, n: usize, result: *mut *mut servent) -> i32 {
+        // SAFETY: as getservbyname_r.
+        unsafe { pack(getservent(), rb, buf, n, result) }
+    }
 }
