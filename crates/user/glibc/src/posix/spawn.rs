@@ -8,6 +8,16 @@
 use core::ffi::{c_char, c_void};
 use crate::malloc::heap;
 use crate::posix::sched::SchedParam;
+use crate::internal::nr;
+
+// clone(CLONE_PIDFD|SIGCHLD): fork-like child + a pidfd written to the parent.
+const CLONE_PIDFD: usize = 0x1000;
+const SIGCHLD: usize = 17;
+unsafe fn clone_pidfd(pidfd_out: *mut i32) -> isize {
+    // SAFETY: clone(2) with stack=0 ⇒ fork semantics; the pidfd lands in the
+    // parent_tid slot (3rd arg), identical on x86_64 + aarch64 clone ABIs.
+    unsafe { crate::arch::syscall::sys5(nr::CLONE, CLONE_PIDFD | SIGCHLD, 0, pidfd_out as usize, 0, 0) }
+}
 
 // spawn attr flags (bits/spawn.h; match glibc).
 const SETPGROUP: i16 = 0x02;
@@ -183,6 +193,44 @@ pub unsafe extern "C" fn posix_spawn(pid: *mut i32, path: *const c_char, fa: *co
         if p < 0 { return -p; }
         if p == 0 { child_setup_and_exec(path, fa, at, argv, envp); }
         if !pid.is_null() { *pid = p; }
+        0
+    }
+}
+
+// # C: int pidfd_spawn(int *pidfd, const char *path, const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *at, char *const argv[], char *const envp[])
+// glibc 2.39: posix_spawn that returns a pidfd (via CLONE_PIDFD) instead of a pid.
+#[no_mangle]
+pub unsafe extern "C" fn pidfd_spawn(pidfd: *mut i32, path: *const c_char, fa: *const c_void, at: *const c_void, argv: *const *const c_char, envp: *const *const c_char) -> i32 {
+    // SAFETY: clone(CLONE_PIDFD); child sets up + execs (never returns here);
+    // parent stores the pidfd. clone < 0 ⇒ return the positive errno.
+    unsafe {
+        let mut pfd: i32 = -1;
+        let p = clone_pidfd(&mut pfd);
+        if p < 0 { return (-p) as i32; }
+        if p == 0 { child_setup_and_exec(path, fa, at, argv, envp); }
+        if !pidfd.is_null() { *pidfd = pfd; }
+        0
+    }
+}
+
+// # C: int pidfd_spawnp(int *pidfd, const char *file, ...) — pidfd_spawn + PATH search.
+#[no_mangle]
+pub unsafe extern "C" fn pidfd_spawnp(pidfd: *mut i32, file: *const c_char, fa: *const c_void, at: *const c_void, argv: *const *const c_char, envp: *const *const c_char) -> i32 {
+    // SAFETY: '/' in `file` ⇒ direct pidfd_spawn; else clone(CLONE_PIDFD) and the
+    // child PATH-searches with the passed envp (execvpe-shaped). clone<0 ⇒ errno.
+    unsafe {
+        let mut has_slash = false;
+        let mut i = 0; while *file.add(i) != 0 { if *file.add(i) == b'/' as c_char { has_slash = true; break; } i += 1; }
+        if has_slash { return pidfd_spawn(pidfd, file, fa, at, argv, envp); }
+        let mut pfd: i32 = -1;
+        let p = clone_pidfd(&mut pfd);
+        if p < 0 { return (-p) as i32; }
+        if p == 0 {
+            if !at.is_null() || !fa.is_null() { child_apply(fa, at); }
+            path_search_exec(file, argv, envp);
+            crate::stdlib::exit::exit_group(127);
+        }
+        if !pidfd.is_null() { *pidfd = pfd; }
         0
     }
 }
