@@ -125,6 +125,33 @@ pub unsafe extern "C" fn twalk(root: *const c_void, action: Action) {
     unsafe { walk(root as *mut Node, action, 0); }
 }
 
+type ActionR = extern "C" fn(*const c_void, i32, *mut c_void);
+
+unsafe fn walk_r(n: *mut Node, action: ActionR, closure: *mut c_void) {
+    // SAFETY: n is null or a valid Node; recurse in order invoking action with
+    // the glibc VISIT codes and the caller's opaque closure (twalk_r variant).
+    unsafe {
+        if n.is_null() { return; }
+        if (*n).left.is_null() && (*n).right.is_null() {
+            action(n as *const c_void, 3, closure); // leaf
+        } else {
+            action(n as *const c_void, 0, closure); // preorder
+            walk_r((*n).left, action, closure);
+            action(n as *const c_void, 1, closure); // postorder
+            walk_r((*n).right, action, closure);
+            action(n as *const c_void, 2, closure); // endorder
+        }
+    }
+}
+
+// # C: void twalk_r(const void *root, void (*action)(const void*, VISIT, void*), void *closure)
+#[no_mangle]
+pub unsafe extern "C" fn twalk_r(root: *const c_void, action: ActionR, closure: *mut c_void) {
+    // SAFETY: root is null or a tree node produced by tsearch; action is valid;
+    // closure is passed through opaquely to each invocation.
+    unsafe { walk_r(root as *mut Node, action, closure); }
+}
+
 type FreeFn = extern "C" fn(*mut c_void);
 
 unsafe fn destroy(n: *mut Node, freefn: FreeFn) {
