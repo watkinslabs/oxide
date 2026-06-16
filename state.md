@@ -2,9 +2,9 @@
 
 ## Headline
 **glibc full-compliance build-out** (docs/59 §9) toward G19d. Directive: implement
-EVERYTHING achievable, value-agnostic. Conformance **154/154**
+EVERYTHING achievable, value-agnostic. Conformance **163/163**
 (`cargo run -q -p xtask -- glibc-test`); both arches build + boot (`oxide login:`).
-~2000 symbols exported (from ~1486 at run start). glibc.md is the live TODO.
+~2100 symbols exported (from ~1486 at run start). glibc.md is the live TODO.
 
 ## Done this run (merged, F473–F497 + D/B fixes)
 pthread FULL surface (80), C11 threads (25), modern syscalls (~34), locale `_l`
