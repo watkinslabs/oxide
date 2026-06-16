@@ -4,6 +4,8 @@ pub mod addrinfo;
 #[cfg(feature = "freestanding")]
 pub mod ifaddrs;
 #[cfg(feature = "freestanding")]
+pub mod inet6_rth;
+#[cfg(feature = "freestanding")]
 pub mod ifname;
 pub mod inet;
 pub mod netdb;
