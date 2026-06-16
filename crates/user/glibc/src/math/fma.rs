@@ -17,7 +17,7 @@ fn decomp(x: f64) -> (bool, u64, i32) {
 // weight of bit 0) into an f64 of the given sign. `sticky` folds in any bits
 // already lost below bit 0. Round-to-nearest-even, with overflow→inf and
 // gradual underflow.
-fn pack(sign: bool, mut m: u128, mut exp: i32, mut sticky: bool) -> f64 {
+fn pack(sign: bool, mut m: u128, mut exp: i32, sticky: bool) -> f64 {
     // An exactly-zero magnitude is the result of full cancellation: +0.0 in
     // round-to-nearest (IEEE 754 §6.3), regardless of the operand sign.
     if m == 0 { return 0.0; }
@@ -46,8 +46,7 @@ fn pack(sign: bool, mut m: u128, mut exp: i32, mut sticky: bool) -> f64 {
         // subnormal / underflow: shift mant right by (1 - biased)
         let shift = 1 - biased;
         if shift >= 64 {
-            sticky = sticky_bits || mant != 0;
-            return f64::from_bits(s | (sticky as u64 & 0)); // ±0 (full underflow)
+            return f64::from_bits(s); // full underflow → signed ±0
         }
         let lost = mant & ((1u64 << shift) - 1);
         let mut sub = mant >> shift;
