@@ -59,7 +59,7 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   vmsplice/tee/splice(done), pivot_root, mount_setattr/move_mount/open_tree,
   pidfd_getpid/spawn/spawnp, modify_ldt, ioperm, uselib, ustat, swab, revoke,
   setlogin, lockf, scandirat, timespec_get/getres, ftok, ftime, ualarm,
-  group_member, gnu_dev_major/minor/makedev, glob_pattern_p, ttyslot,
+  group_member, gnu_dev_major/minor/makedev, glob_pattern_p, ttyslot, scandirat/scandirat64 (DONE F519, posix/dirent.rs, t_scandirat.c),
   (sigabbrev_np/sigdescr_np/strerrorname_np/strerrordesc_np DONE — F512,
   string/errname.rs complete 133-errno name+desc table, signal/desc.rs abbrev;
   host-diffable t_errname_np.c exhaustive), twalk_r,
