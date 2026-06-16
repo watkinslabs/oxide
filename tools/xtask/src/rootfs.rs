@@ -131,22 +131,29 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         // -nostdlib keeps the driver from injecting its own (musl) crt/specs —
         // we supply our Scrt1.o + libc.so.6, so the binary is pure oxide-glibc.
         let smoke_cc: std::path::PathBuf = if arch == "aarch64" { cc.clone() } else { "cc".into() };
-        let obj = repo.join(format!("target/g19-glibc-smoke-{arch}.o"));
-        let mut o = Command::new(&smoke_cc);
-        o.args(["-c", "-O2", "-fPIE", "-fno-stack-protector",
-                repo.join("userspace/g19_glibc_smoke/g19_glibc_smoke.c").to_str().unwrap(),
-                "-o", obj.to_str().unwrap()]);
-        run(o)?;
-        let smoke = user_out.join("g19_glibc_smoke");
-        let mut l = Command::new(&smoke_cc);
-        l.args(["-fPIE", "-pie", "-nostdlib", "-Wl,--allow-shlib-undefined",
-                &format!("-Wl,--dynamic-linker=/lib/{ld}"),
-                obj.to_str().unwrap()]);
-        l.arg(srlib.join("Scrt1.o"));
-        l.args([&format!("-L{}", srlib.display()), "-l:libc.so.6",
-                "-o", smoke.to_str().unwrap()]);
-        run(l)?;
-        eprintln!("xtask rootfs: built glibc-on-kernel smoke ({arch}) → {}", smoke.display());
+        // Build one glibc-sysroot binary: compile `<name>/<name>.c` then link
+        // it against our Scrt1.o + libc.so.6 with the per-arch interp.
+        let build_glibc_bin = |name: &str| -> Result<(), u8> {
+            let obj = repo.join(format!("target/{name}-{arch}.o"));
+            let mut o = Command::new(&smoke_cc);
+            o.args(["-c", "-O2", "-fPIE", "-fno-stack-protector",
+                    repo.join(format!("userspace/{name}/{name}.c")).to_str().unwrap(),
+                    "-o", obj.to_str().unwrap()]);
+            run(o)?;
+            let out = user_out.join(name);
+            let mut l = Command::new(&smoke_cc);
+            l.args(["-fPIE", "-pie", "-nostdlib", "-Wl,--allow-shlib-undefined",
+                    &format!("-Wl,--dynamic-linker=/lib/{ld}"),
+                    obj.to_str().unwrap()]);
+            l.arg(srlib.join("Scrt1.o"));
+            l.args([&format!("-L{}", srlib.display()), "-l:libc.so.6",
+                    "-o", out.to_str().unwrap()]);
+            run(l)?;
+            eprintln!("xtask rootfs: built glibc-on-kernel bin ({arch}) → {}", out.display());
+            Ok(())
+        };
+        build_glibc_bin("g19_glibc_smoke")?;
+        build_glibc_bin("g19_glibc_test")?;
     }
 
     // F231 / B18: PAM modules come from vendor/pam/install-<arch>/modules/
@@ -310,8 +317,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         let cache = repo.join(format!("target/sysroot/{triple}/etc/ld.so.cache"));
         put(&cache, "/etc/ld.so.cache")?;
         put(&user("g19_glibc_smoke"), "/bin/g19_glibc_smoke")?;
-        // oneshot unit + default.target.wants symlink so the default systemd
-        // boot runs it before the getty.
+        put(&user("g19_glibc_test"),  "/bin/g19_glibc_test")?;
+        // oneshot unit (pulled in by the Oxide Default Target's Wants) runs the
+        // glibc smoke + the broader stdio/malloc/string test before the getty,
+        // so their markers land on serial.
         let svc = repo.join("target/g19smoke.service");
         std::fs::write(&svc,
 b"[Unit]
@@ -321,6 +330,7 @@ Before=console-getty.service
 [Service]
 Type=oneshot
 ExecStart=/bin/g19_glibc_smoke
+ExecStart=/bin/g19_glibc_test
 ").map_err(|_| 1u8)?;
         // /usr/lib/systemd/system is created by the later L2 systemd staging,
         // so it does not exist yet at this point — `debugfs write` would fail
