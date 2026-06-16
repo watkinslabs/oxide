@@ -82,4 +82,47 @@ mod api {
             r
         }
     }
+
+    // # C: void *dlvsym(void *handle, const char *name, const char *version)
+    // We resolve unversioned (the rtld matches the default version); the
+    // explicit `version` is advisory here.
+    #[no_mangle]
+    pub unsafe extern "C" fn dlvsym(handle: *mut c_void, name: *const u8, _version: *const u8) -> *mut c_void {
+        // SAFETY: handle is a dlopen result or RTLD_DEFAULT(null); name NUL-term.
+        unsafe { _dl_sym(handle as usize, name) as *mut c_void }
+    }
+
+    // # C: int dladdr1(const void *addr, Dl_info *info, void **extra, int flags)
+    // dladdr + an extra out-param (RTLD_DL_SYMENT/RTLD_DL_LINKMAP); we fill the
+    // Dl_info and clear *extra (symbol-entry/link-map detail is a follow-up).
+    #[no_mangle]
+    pub unsafe extern "C" fn dladdr1(addr: *const c_void, info: *mut Dl_info, extra: *mut *mut c_void, flags: i32) -> i32 {
+        // SAFETY: info writable Dl_info; extra null or a writable void* out-param.
+        // glibc only writes *extra for RTLD_DL_SYMENT(1)/RTLD_DL_LINKMAP(2);
+        // flags 0 leaves it untouched. We have no sym-entry/link-map detail yet
+        // → NULL for those requests.
+        unsafe {
+            if (flags == 1 || flags == 2) && !extra.is_null() { *extra = core::ptr::null_mut(); }
+            dladdr(addr, info)
+        }
+    }
+
+    // # C: void *dlmopen(Lmid_t lmid, const char *file, int mode)
+    // Single link-map namespace: LM_ID_BASE/LM_ID_NEWLM both load into it.
+    #[no_mangle]
+    pub unsafe extern "C" fn dlmopen(_lmid: isize, file: *const u8, mode: i32) -> *mut c_void {
+        // SAFETY: file NUL-terminated or null; delegates to the one-namespace loader.
+        unsafe { _dl_open(file, mode) as *mut c_void }
+    }
+
+    // # C: int dlinfo(void *handle, int request, void *arg)
+    // RTLD_DI_LINKMAP(2): *arg = handle (our handle IS the link-map node).
+    // Other requests are not yet supported → -1.
+    #[no_mangle]
+    pub unsafe extern "C" fn dlinfo(handle: *mut c_void, request: i32, arg: *mut c_void) -> i32 {
+        // SAFETY: arg is request-specific; for RTLD_DI_LINKMAP it is a void** we set.
+        unsafe {
+            if request == 2 && !arg.is_null() { *(arg as *mut *mut c_void) = handle; 0 } else { -1 }
+        }
+    }
 }
