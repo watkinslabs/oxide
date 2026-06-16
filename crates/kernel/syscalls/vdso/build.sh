@@ -13,9 +13,12 @@ set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 out="$here"
 mkdir -p "$out"
+# Repo root: this script lives at crates/kernel/syscalls/vdso/ (4 levels deep).
+# The vendored cross toolchain is at <root>/vendor/cross (per fetch-cross.sh).
+root="$(cd "$here/../../../.." && pwd)"
 
 xcc="${CC:-gcc}"
-acc="$here/../vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
+acc="$root/vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
 
 common="-nostdlib -shared -fPIC -fno-stack-protector
         -Wl,--hash-style=sysv
@@ -43,7 +46,7 @@ if [ -x "$acc" ]; then
         -Wl,--build-id=none \
         -o "$out/vdso-aarch64.so" \
         "$here/vdso-aarch64.S"
-    astrip="$here/../vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-strip"
+    astrip="$root/vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-strip"
     "$astrip" --strip-debug --remove-section=.comment --remove-section=.note \
         "$out/vdso-aarch64.so"
 else
