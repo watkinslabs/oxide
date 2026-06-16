@@ -44,16 +44,37 @@ now LOAD AND RUN on the oxide kernel, both arches.
 ## CI flakes fixed (both parallel-test global-state races)
 - B129 (#2012) netfilter; B130 (#2020) vt — serialize tests sharing globals.
 
-## libc-completeness gaps (IMPORTANT — tracker overstated "complete")
+## libc-completeness sweep (IMPORTANT — tracker overstated "complete")
 The glibc_done.md "achievable surface COMPLETE" claim is WRONG: core POSIX/
 Linux fns the conformance harness never exercised were entirely MISSING from
-libc.so.6. Found by auditing exports vs what real GNU/systemd programs need.
-Fixed this session (each with a conformance test, byte-exact vs host glibc):
-- F460 (#2021) poll/ppoll
-- F461 (#2022) epoll create1/ctl/wait/pwait
-- F462 (#2023) eventfd/signalfd/timerfd/inotify
-Still missing (audited, next): **statx**, **posix_spawn** (+ likely more —
-run a systematic export-vs-acceptance-binary symbol audit per docs/59§7).
+libc.so.6. Audit method: `nm -D` our libc.so.6 vs the union of undefined syms
+across the 95 vendor binaries (`comm -23 /tmp/needed.txt /tmp/ours.txt`).
+**Started at 110 missing; down to 49.** Each fix has a t_*.c conformance test
+byte-exact vs host glibc (125/125 pass). Closed this run:
+- poll/ppoll(#2021) epoll(#2022) eventfd/signalfd/timerfd/inotify(#2023)
+  statx(#2025) xattr×12(#2026) file/proc-wrappers×14(#2027)
+  pthread_sigmask/sigtimedwait/sigwaitinfo/sigwait(#2028)
+  __assert_fail/__cxa_finalize/MB_CUR_MAX/SIGRTMIN/CPU_COUNT/eventfd_rw(#2029)
+  posix_spawn family×18(#2030) chroot/fexecve/getdtablesize/daemon/shm(#2031)
+- fork+exec CONFIRMED working (t_forkexec); the conformance harness leaks its
+  LD_LIBRARY_PATH=our-sysroot into exec'd HOST binaries → spawn tests pass a
+  clean envp. NOT a libc bug.
+
+### Remaining 49 audit gaps (prioritized clusters), next:
+- net resolver: getifaddrs/freeifaddrs, res_init/res_query/__res_state,
+  dn_expand, ns_get16/32
+- locale: newlocale/freelocale/uselocale, mbrtoc32, strtod_l
+- account-db: getusershell/setusershell/endusershell, lckpwdf/ulckpwdf,
+  putgrent/putspent
+- stdio internals (gnulib): __freadahead/__freadptr/__freadptrinc/__fseterr
+- file/misc: statfs/fstatfs/statvfs/fstatvfs (glibc translates the kernel
+  struct — needs the layout work), eaccess/euidaccess, futimesat, lchmod,
+  lockf (fcntl), mkostemp, waitid wrapper
+- pthread: pthread_kill/pthread_cancel/pthread_getcpuclockid
+- misc: sigqueue, sigsetjmp, strtold/truncl (long double — see
+  glibc_unsupported.md), wcwidth/wcswidth, thrd_exit, __flt_rounds
+- __environ/_environ/___environ: aliased via global_asm `.set` but NOT in the
+  dynamic export set — needs the cdylib version-script to list them.
 
 ## Next (first tasks)
 1. statx + posix_spawn (same pattern: nr + thin wrapper in posix/, t_*.c
