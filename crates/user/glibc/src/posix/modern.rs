@@ -9,6 +9,22 @@ use crate::arch::syscall::{sys2, sys3, sys4, sys5, sys6};
 use crate::internal::errno::ret_isize;
 use crate::internal::nr;
 
+// # C: int eaccess(const char *path, int mode) — access(2) by EFFECTIVE ids.
+#[no_mangle]
+pub unsafe extern "C" fn eaccess(path: *const c_char, mode: i32) -> i32 {
+    const AT_FDCWD: usize = (-100i64) as usize;
+    const AT_EACCESS: usize = 0x200;
+    // SAFETY: path is a NUL-terminated user path; faccessat2 takes a flags arg,
+    // and AT_EACCESS selects the effective uid/gid (vs access(2)'s real ids).
+    ret_isize(unsafe { sys4(nr::FACCESSAT2, AT_FDCWD, path as usize, mode as usize, AT_EACCESS) }) as i32
+}
+// # C: int euidaccess(const char *path, int mode) — GNU alias of eaccess.
+#[no_mangle]
+pub unsafe extern "C" fn euidaccess(path: *const c_char, mode: i32) -> i32 {
+    // SAFETY: identical to eaccess (effective-id access check).
+    unsafe { eaccess(path, mode) }
+}
+
 // # C: int close_range(unsigned first, unsigned last, int flags)
 #[no_mangle]
 pub unsafe extern "C" fn close_range(first: u32, last: u32, flags: u32) -> i32 {

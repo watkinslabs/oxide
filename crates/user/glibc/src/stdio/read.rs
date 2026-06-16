@@ -149,6 +149,26 @@ pub unsafe extern "C" fn getchar() -> i32 {
     unsafe { getc_raw(stdin_ptr()) }
 }
 
+// # C: char *gets(char *s) — read a line from stdin, drop the newline, NUL-
+// terminate. Unbounded (deprecated/removed in C11) but still exported by glibc.
+#[no_mangle]
+pub unsafe extern "C" fn gets(s: *mut u8) -> *mut u8 {
+    // SAFETY: s is a caller buffer large enough for the line + NUL; we read
+    // bytes from stdin until newline/EOF. NULL on immediate EOF with no input.
+    unsafe {
+        let mut i = 0usize;
+        loop {
+            let c = getc_raw(stdin_ptr());
+            if c < 0 { if i == 0 { return core::ptr::null_mut(); } break; }
+            if c == b'\n' as i32 { break; }
+            *s.add(i) = c as u8;
+            i += 1;
+        }
+        *s.add(i) = 0;
+        s
+    }
+}
+
 // # C: int ungetc(int c, FILE *f)
 #[no_mangle]
 pub unsafe extern "C" fn ungetc(c: i32, f: *mut FILE) -> i32 {
