@@ -98,6 +98,7 @@ pub unsafe extern "C" fn ualarm(usecs: u32, interval: u32) -> u32 {
     // SAFETY: arm ITIMER_REAL via setitimer with a {value,interval} itimerval
     // (two timevals of {sec,usec}); return the previous value's remaining usecs.
     const ITIMER_REAL: i32 = 0;
+    // SAFETY: new/old are itimerval structs on this frame the kernel reads/writes.
     unsafe {
         // struct itimerval = { struct timeval it_interval; struct timeval it_value; }
         // timeval = { time_t tv_sec; suseconds_t tv_usec; } -> [i64;2].
