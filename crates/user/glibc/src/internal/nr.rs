@@ -287,6 +287,8 @@ pub mod x86_64 {
     pub const PTRACE: usize = 101;
     pub const FACCESSAT2: usize = 439;
     pub const ACCT: usize = 163;
+    pub const RECVMMSG: usize = 299;
+    pub const SENDMMSG: usize = 307;
 }
 
 pub mod aarch64 {
@@ -546,4 +548,6 @@ pub mod aarch64 {
     pub const PTRACE: usize = 117;
     pub const FACCESSAT2: usize = 439;
     pub const ACCT: usize = 89;
+    pub const RECVMMSG: usize = 243;
+    pub const SENDMMSG: usize = 269;
 }
