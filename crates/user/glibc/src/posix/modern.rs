@@ -151,6 +151,50 @@ pub unsafe extern "C" fn pidfd_send_signal(pidfd: i32, sig: i32, info: *mut c_vo
     // SAFETY: info is null or a siginfo_t the kernel reads.
     ret_isize(unsafe { sys4(nr::PIDFD_SEND_SIGNAL, pidfd as usize, sig as usize, info as usize, flags as usize) }) as i32
 }
+// # C: pid_t pidfd_getpid(int pidfd) — pid the pidfd refers to (glibc 2.36).
+// Reads /proc/self/fdinfo/<pidfd> and parses its "Pid:" line. Pid -1 (reaped) ⇒
+// ESRCH; Pid 0 (foreign pid namespace) ⇒ EREMOTE.
+#[no_mangle]
+pub unsafe extern "C" fn pidfd_getpid(pidfd: i32) -> i32 {
+    const ESRCH: i32 = 3; const EREMOTE: i32 = 66; const EBADF: i32 = 9;
+    if pidfd < 0 { crate::internal::errno::set(EBADF); return -1; }
+    // SAFETY: path/buf are local bounded arrays; the opened fdinfo fd is closed
+    // before return; read fills at most buf.len()-1 bytes.
+    unsafe {
+        let mut path = *b"/proc/self/fdinfo/0000000000\0";
+        let mut n = b"/proc/self/fdinfo/".len();
+        if pidfd == 0 { path[n] = b'0'; n += 1; }
+        else {
+            let mut digits = [0u8; 10]; let mut d = 0; let mut v = pidfd as u32;
+            while v > 0 { digits[d] = b'0' + (v % 10) as u8; v /= 10; d += 1; }
+            while d > 0 { d -= 1; path[n] = digits[d]; n += 1; }
+        }
+        path[n] = 0;
+        let fd = crate::posix::io::open(path.as_ptr(), 0 /* O_RDONLY */, 0);
+        if fd < 0 { return -1; }
+        let mut buf = [0u8; 512];
+        let got = crate::posix::io::read(fd, buf.as_mut_ptr(), buf.len() - 1);
+        crate::posix::io::close(fd);
+        if got <= 0 { crate::internal::errno::set(EBADF); return -1; }
+        let g = got as usize;
+        let mut i = 0;
+        while i + 4 <= g {
+            if &buf[i..i + 4] == b"Pid:" {
+                let mut j = i + 4;
+                while j < g && (buf[j] == b' ' || buf[j] == b'\t') { j += 1; }
+                let neg = j < g && buf[j] == b'-'; if neg { j += 1; }
+                let mut val: i64 = 0;
+                while j < g && buf[j].is_ascii_digit() { val = val * 10 + (buf[j] - b'0') as i64; j += 1; }
+                let val = (if neg { -val } else { val }) as i32;
+                if val == -1 { crate::internal::errno::set(ESRCH); return -1; }
+                if val == 0 { crate::internal::errno::set(EREMOTE); return -1; }
+                return val;
+            }
+            i += 1;
+        }
+        crate::internal::errno::set(EBADF); -1
+    }
+}
 
 // --- cross-process memory --------------------------------------------------
 // # C: ssize_t process_vm_readv(pid_t, const struct iovec *local, unsigned long liovcnt,
