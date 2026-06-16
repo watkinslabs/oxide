@@ -74,6 +74,24 @@ mod exports {
         // SAFETY: set is a valid sigset_t to read.
         unsafe { ismember(&(*set).__val, sig) }
     }
+    // # C: int sigisemptyset(const sigset_t *set) — GNU: 1 if no signal is set.
+    #[no_mangle]
+    pub unsafe extern "C" fn sigisemptyset(set: *const sigset_t) -> i32 {
+        // SAFETY: set is a valid sigset_t; true iff every word is zero.
+        unsafe { (*set).__val.iter().all(|&w| w == 0) as i32 }
+    }
+    // # C: int sigorset(sigset_t *dest, const sigset_t *a, const sigset_t *b)
+    #[no_mangle]
+    pub unsafe extern "C" fn sigorset(dest: *mut sigset_t, a: *const sigset_t, b: *const sigset_t) -> i32 {
+        // SAFETY: dest/a/b are valid sigset_t; word-wise OR into dest.
+        unsafe { for i in 0..WORDS { (*dest).__val[i] = (*a).__val[i] | (*b).__val[i]; } 0 }
+    }
+    // # C: int sigandset(sigset_t *dest, const sigset_t *a, const sigset_t *b)
+    #[no_mangle]
+    pub unsafe extern "C" fn sigandset(dest: *mut sigset_t, a: *const sigset_t, b: *const sigset_t) -> i32 {
+        // SAFETY: dest/a/b are valid sigset_t; word-wise AND into dest.
+        unsafe { for i in 0..WORDS { (*dest).__val[i] = (*a).__val[i] & (*b).__val[i]; } 0 }
+    }
 }
 
 #[cfg(test)]

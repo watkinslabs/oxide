@@ -228,6 +228,20 @@ mod exports {
     // # C: int finite(double)/finitef(float) — legacy finite predicates
     #[no_mangle] pub extern "C" fn finite(x: f64) -> i32 { b::isfinite(x) as i32 }
     #[no_mangle] pub extern "C" fn finitef(x: f32) -> i32 { b::isfinite(x as f64) as i32 }
+    // # C: int __fpclassify(double) — FP_NAN0/INF1/ZERO2/SUBNORMAL3/NORMAL4
+    #[no_mangle] pub extern "C" fn __fpclassify(x: f64) -> i32 {
+        let bits = x.to_bits(); let exp = (bits >> 52) & 0x7ff; let man = bits & 0xf_ffff_ffff_ffff;
+        if exp == 0x7ff { if man == 0 { 1 } else { 0 } }          // INF : NAN
+        else if exp == 0 { if man == 0 { 2 } else { 3 } }         // ZERO : SUBNORMAL
+        else { 4 }                                                 // NORMAL
+    }
+    // # C: int __fpclassifyf(float)
+    #[no_mangle] pub extern "C" fn __fpclassifyf(x: f32) -> i32 {
+        let bits = x.to_bits(); let exp = (bits >> 23) & 0xff; let man = bits & 0x7f_ffff;
+        if exp == 0xff { if man == 0 { 1 } else { 0 } }
+        else if exp == 0 { if man == 0 { 2 } else { 3 } }
+        else { 4 }
+    }
 
     // ---- C23 payload + total-order (glibc takes pointers) ----
     // # C: double getpayload(const double *); float getpayloadf(const float *)
