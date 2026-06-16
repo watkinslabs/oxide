@@ -80,6 +80,41 @@ pub unsafe extern "C" fn posix_fadvise(fd: i32, offset: i64, len: i64, advice: i
 // SAFETY: LFS alias of posix_fadvise; identical scalar args, no user buffers.
 #[no_mangle] pub unsafe extern "C" fn posix_fadvise64(fd: i32, o: i64, l: i64, a: i32) -> i32 { unsafe { posix_fadvise(fd, o, l, a) } }
 
+// # C: int mlock2(const void *addr, size_t len, unsigned int flags)
+#[no_mangle]
+pub unsafe extern "C" fn mlock2(addr: *const c_void, len: usize, flags: u32) -> i32 {
+    // SAFETY: mlock2(2) — locks [addr,addr+len); scalar passthrough.
+    ret_isize(unsafe { sys3(nr::MLOCK2, addr as usize, len, flags as usize) }) as i32
+}
+
+// # C: int pivot_root(const char *new_root, const char *put_old)
+#[no_mangle]
+pub unsafe extern "C" fn pivot_root(new_root: *const c_char, put_old: *const c_char) -> i32 {
+    // SAFETY: both are NUL-terminated paths the kernel reads.
+    ret_isize(unsafe { sys2(nr::PIVOT_ROOT, new_root as usize, put_old as usize) }) as i32
+}
+
+// # C: int open_tree(int dfd, const char *path, unsigned int flags)
+#[no_mangle]
+pub unsafe extern "C" fn open_tree(dfd: i32, path: *const c_char, flags: u32) -> i32 {
+    // SAFETY: path NUL-terminated, resolved relative to dfd; returns a new fd.
+    ret_isize(unsafe { sys3(nr::OPEN_TREE, dfd as usize, path as usize, flags as usize) }) as i32
+}
+
+// # C: int move_mount(int from_dfd, const char *from, int to_dfd, const char *to, unsigned int flags)
+#[no_mangle]
+pub unsafe extern "C" fn move_mount(from_dfd: i32, from: *const c_char, to_dfd: i32, to: *const c_char, flags: u32) -> i32 {
+    // SAFETY: from/to NUL-terminated paths resolved relative to their dfds.
+    unsafe { ret_isize(sys5(nr::MOVE_MOUNT, from_dfd as usize, from as usize, to_dfd as usize, to as usize, flags as usize)) as i32 }
+}
+
+// # C: int mount_setattr(int dfd, const char *path, unsigned int flags, struct mount_attr *attr, size_t size)
+#[no_mangle]
+pub unsafe extern "C" fn mount_setattr(dfd: i32, path: *const c_char, flags: u32, attr: *mut c_void, size: usize) -> i32 {
+    // SAFETY: path NUL-terminated; attr points at a struct mount_attr of `size`.
+    unsafe { ret_isize(sys5(nr::MOUNT_SETATTR, dfd as usize, path as usize, flags as usize, attr as usize, size)) as i32 }
+}
+
 // # C: int memfd_create(const char *name, unsigned int flags)
 #[no_mangle]
 pub unsafe extern "C" fn memfd_create(name: *const c_char, flags: u32) -> i32 {
