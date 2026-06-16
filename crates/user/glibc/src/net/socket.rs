@@ -199,6 +199,14 @@ mod exports {
         // SAFETY: val/len are writable out-params with *len the capacity.
         ret_isize(unsafe { sys5(nr::GETSOCKOPT, fd as usize, level as usize, opt as usize, val as usize, len as usize) }) as i32
     }
+    // # C: int sockatmark(int fd) — 1 if the next read is at the OOB mark, else 0.
+    #[no_mangle]
+    pub unsafe extern "C" fn sockatmark(fd: i32) -> i32 {
+        let mut flag: i32 = 0;
+        // SAFETY: ioctl(SIOCATMARK=0x8905) writes one int into flag, a valid out-param.
+        let r = ret_isize(unsafe { sys3(nr::IOCTL, fd as usize, 0x8905, &mut flag as *mut i32 as usize) }) as i32;
+        if r < 0 { r } else { flag }
+    }
 }
 
 #[cfg(test)]
