@@ -123,6 +123,16 @@ pub unsafe extern "C" fn pwritev2(fd: i32, iov: *const c_void, iovcnt: i32, off:
     unsafe { ret_isize(sys6(nr::PWRITEV2, fd as usize, iov as usize, iovcnt as usize, off as usize, 0, flags as usize)) }
 }
 
+// # C: int __sched_cpucount(size_t setsize, const cpu_set_t *setp)
+// Backs the CPU_COUNT macro: popcount of the first `setsize` bytes of the mask.
+#[no_mangle]
+pub unsafe extern "C" fn __sched_cpucount(setsize: usize, setp: *const c_void) -> i32 {
+    let mut n = 0u32;
+    // SAFETY: setp points to at least `setsize` readable bytes (the cpu_set_t).
+    unsafe { let p = setp as *const u8; for i in 0..setsize { n += (*p.add(i)).count_ones(); } }
+    n as i32
+}
+
 // # C: int usleep(useconds_t usec) — composed from nanosleep.
 #[no_mangle]
 pub unsafe extern "C" fn usleep(usec: u32) -> i32 {
