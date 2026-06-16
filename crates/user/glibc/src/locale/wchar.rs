@@ -162,6 +162,151 @@ mod imp {
         unsafe { wcrtomb(s, c32 as i32, ps) }
     }
 
+    // <uchar.h> UTF-16 / UTF-8 converters. char16_t == u16, char8_t == u8. The
+    // C/UTF-8 locale fixes the multibyte encoding to UTF-8. mbstate_t carries the
+    // pending surrogate (c16) or the buffered code units (c8) across calls.
+    // Per-call static state stands in when ps is NULL (single-threaded for now).
+    use core::cell::UnsafeCell;
+    struct St(UnsafeCell<mbstate_t>);
+    // SAFETY: per-converter fallback mbstate used only when the caller passes a
+    // NULL ps; single-threaded until TLS lands, matching the strsignal pattern.
+    unsafe impl Sync for St {}
+    static S_C16D: St = St(UnsafeCell::new(mbstate_t { __count: 0, __value: 0 }));
+    static S_C16E: St = St(UnsafeCell::new(mbstate_t { __count: 0, __value: 0 }));
+    static S_C8D: St = St(UnsafeCell::new(mbstate_t { __count: 0, __value: 0 }));
+    static S_C8E: St = St(UnsafeCell::new(mbstate_t { __count: 0, __value: 0 }));
+    #[inline] unsafe fn st<'a>(ps: *mut mbstate_t, fallback: &'a St) -> &'a mut mbstate_t {
+        // SAFETY: ps is a caller mbstate or NULL; on NULL use the static fallback.
+        unsafe { if ps.is_null() { &mut *fallback.0.get() } else { &mut *ps } }
+    }
+
+    // # C: size_t mbrtoc16(char16_t *pc16, const char *s, size_t n, mbstate_t *ps)
+    #[no_mangle]
+    pub unsafe extern "C" fn mbrtoc16(pc16: *mut u16, s: *const u8, n: usize, ps: *mut mbstate_t) -> usize {
+        // SAFETY: pc16 null or writable char16_t; s null (reset) or readable for n
+        // bytes. Astral chars yield the high surrogate first (return = bytes) then
+        // the low surrogate on the next call (return = (size_t)-3, 0 bytes).
+        unsafe {
+            let m = st(ps, &S_C16D);
+            if m.__count == 1 { // pending low surrogate
+                m.__count = 0;
+                if !pc16.is_null() { *pc16 = m.__value as u16; }
+                return usize::MAX - 2; // (size_t)-3
+            }
+            if s.is_null() { m.__count = 0; return 0; }
+            let b = core::slice::from_raw_parts(s, n);
+            match decode_utf8(b) {
+                Ok((0, _)) => { if !pc16.is_null() { *pc16 = 0; } 0 }
+                Ok((cp, len)) if cp <= 0xFFFF => { if !pc16.is_null() { *pc16 = cp as u16; } len }
+                Ok((cp, len)) => {
+                    let v = cp - 0x10000;
+                    let hi = 0xD800 + (v >> 10);
+                    let lo = 0xDC00 + (v & 0x3FF);
+                    if !pc16.is_null() { *pc16 = hi as u16; }
+                    m.__count = 1; m.__value = lo;
+                    len
+                }
+                Err(-2) => usize::MAX - 1, // (size_t)-2 incomplete
+                _ => { errno::set(EILSEQ); usize::MAX }
+            }
+        }
+    }
+
+    // # C: size_t c16rtomb(char *s, char16_t c16, mbstate_t *ps)
+    #[no_mangle]
+    pub unsafe extern "C" fn c16rtomb(s: *mut u8, c16: u16, ps: *mut mbstate_t) -> usize {
+        // SAFETY: s null (reset → 1) or writable for ≤4 bytes. A high surrogate is
+        // buffered (return 0) until its low surrogate completes the scalar value.
+        unsafe {
+            let m = st(ps, &S_C16E);
+            if s.is_null() { m.__count = 0; return 1; }
+            let c = c16 as u32;
+            if m.__count == 1 { // pending high surrogate
+                if (0xDC00..=0xDFFF).contains(&c) {
+                    let hi = m.__value; m.__count = 0;
+                    let cp = 0x10000 + ((hi - 0xD800) << 10) + (c - 0xDC00);
+                    let (o, len) = encode_utf8(cp);
+                    core::ptr::copy_nonoverlapping(o.as_ptr(), s, len);
+                    return len;
+                }
+                m.__count = 0; errno::set(EILSEQ); return usize::MAX;
+            }
+            if (0xD800..=0xDBFF).contains(&c) { m.__count = 1; m.__value = c; return 0; }
+            if (0xDC00..=0xDFFF).contains(&c) { errno::set(EILSEQ); return usize::MAX; }
+            let (o, len) = encode_utf8(c);
+            core::ptr::copy_nonoverlapping(o.as_ptr(), s, len);
+            len
+        }
+    }
+
+    // # C: size_t mbrtoc8(char8_t *pc8, const char *s, size_t n, mbstate_t *ps)
+    #[no_mangle]
+    pub unsafe extern "C" fn mbrtoc8(pc8: *mut u8, s: *const u8, n: usize, ps: *mut mbstate_t) -> usize {
+        // SAFETY: pc8 null or writable char8_t; s null (reset) or readable for n
+        // bytes. One UTF-8 code unit per call: the first returns the consumed byte
+        // count, each buffered remainder returns (size_t)-3.
+        unsafe {
+            let m = st(ps, &S_C8D);
+            if m.__count > 0 { // buffered output bytes in __value little-endian
+                let cnt = m.__count as u32;
+                let bytes = m.__value.to_le_bytes();
+                if !pc8.is_null() { *pc8 = bytes[0]; }
+                let rest = [bytes[1], bytes[2], bytes[3], 0];
+                m.__value = u32::from_le_bytes(rest);
+                m.__count = (cnt - 1) as i32;
+                return usize::MAX - 2; // (size_t)-3
+            }
+            if s.is_null() { m.__count = 0; return 0; }
+            let b = core::slice::from_raw_parts(s, n);
+            match decode_utf8(b) {
+                Ok((0, _)) => { if !pc8.is_null() { *pc8 = 0; } 0 }
+                Ok((_, len)) => {
+                    if !pc8.is_null() { *pc8 = b[0]; }
+                    // buffer b[1..len] little-endian for the (size_t)-3 follow-ups
+                    let mut v = [0u8; 4];
+                    for i in 1..len { v[i - 1] = b[i]; }
+                    m.__value = u32::from_le_bytes(v);
+                    m.__count = (len - 1) as i32;
+                    len
+                }
+                Err(-2) => usize::MAX - 1,
+                _ => { errno::set(EILSEQ); usize::MAX }
+            }
+        }
+    }
+
+    // # C: size_t c8rtomb(char *s, char8_t c8, mbstate_t *ps)
+    #[no_mangle]
+    pub unsafe extern "C" fn c8rtomb(s: *mut u8, c8: u8, ps: *mut mbstate_t) -> usize {
+        // SAFETY: s null (reset → 1) or writable for ≤4 bytes. Accumulates UTF-8
+        // code units (lead + continuations) until a scalar completes, then writes
+        // it; partial sequences return 0.
+        unsafe {
+            let m = st(ps, &S_C8E);
+            if s.is_null() { m.__count = 0; return 1; }
+            let collected = m.__count as usize;
+            if collected == 0 {
+                let need = match c8 { 0x00..=0x7F => 1, 0xC0..=0xDF => 2, 0xE0..=0xEF => 3, 0xF0..=0xF7 => 4,
+                                      _ => { errno::set(EILSEQ); return usize::MAX } };
+                if need == 1 { *s = c8; return 1; }
+                m.__value = u32::from_le_bytes([c8, 0, 0, 0]); m.__count = 1;
+                return 0;
+            }
+            // continuation byte expected
+            if c8 & 0xC0 != 0x80 { m.__count = 0; errno::set(EILSEQ); return usize::MAX; }
+            let mut v = m.__value.to_le_bytes();
+            v[collected] = c8;
+            let need = match v[0] { 0xC0..=0xDF => 2, 0xE0..=0xEF => 3, _ => 4 };
+            if collected + 1 == need {
+                m.__count = 0; m.__value = 0;
+                core::ptr::copy_nonoverlapping(v.as_ptr(), s, need);
+                return need;
+            }
+            m.__value = u32::from_le_bytes(v); m.__count = (collected + 1) as i32;
+            0
+        }
+    }
+
     // # C: int wctomb(char *s, wchar_t wc)
     #[no_mangle]
     pub unsafe extern "C" fn wctomb(s: *mut u8, wc: i32) -> i32 {
