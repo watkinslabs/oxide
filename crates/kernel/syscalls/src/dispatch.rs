@@ -361,8 +361,17 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_DUP3          => crate::s292_dup3::sys_dup3(&args),
         syscall::nrs::NR_FORK          => crate::clone::sys_clone_dispatch(&args, 0x11 /* SIGCHLD */, 0, 0, 0, 0),
         syscall::nrs::NR_VFORK         => crate::clone::sys_clone_dispatch(&args, 0x4111 /* CLONE_VM|CLONE_VFORK|SIGCHLD */, 0, 0, 0, 0),
-        // Linux x86_64 clone(flags, child_stack, ptid, ctid, tls).
-        syscall::nrs::NR_CLONE         => crate::clone::sys_clone_dispatch(&args, args.a0, args.a1, args.a2, args.a3, args.a4),
+        // clone() arg order is per-arch (Linux kernel/fork.c). x86_64:
+        // clone(flags, stack, ptid, ctid, tls) (a3=ctid, a4=tls). aarch64 uses
+        // the CLONE_BACKWARDS ABI: clone(flags, stack, ptid, tls, ctid)
+        // (a3=tls, a4=ctid) — ctid/tls are SWAPPED. Passing x86 order on arm
+        // stored the TLS value into clear_child_tid, so thread-exit FUTEX_WAKE'd
+        // the wrong address and pthread_join hung forever.
+        syscall::nrs::NR_CLONE         => {
+            #[cfg(target_arch = "x86_64")] let (ctid, tls) = (args.a3, args.a4);
+            #[cfg(target_arch = "aarch64")] let (ctid, tls) = (args.a4, args.a3);
+            crate::clone::sys_clone_dispatch(&args, args.a0, args.a1, args.a2, ctid, tls)
+        }
         syscall::nrs::NR_EXECVE        => crate::execve::sys_execve(&args),
         // execveat(dirfd, path, argv, envp, flags) honors AT_EMPTY_PATH
         // — fexecve(3) maps to execveat(fd, "", AT_EMPTY_PATH).
