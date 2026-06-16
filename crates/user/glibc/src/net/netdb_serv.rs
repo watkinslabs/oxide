@@ -135,13 +135,13 @@ mod exports {
     // # C: int getservbyport_r(int, const char*, struct servent*, char*, size_t, struct servent**)
     #[no_mangle]
     pub unsafe extern "C" fn getservbyport_r(port: i32, proto: *const u8, rb: *mut servent, buf: *mut u8, n: usize, result: *mut *mut servent) -> i32 {
-        // SAFETY: as getservbyname_r.
+        // SAFETY: deep-copy the (single-threaded) lookup result into rb/buf.
         unsafe { pack(getservbyport(port, proto), rb, buf, n, result) }
     }
     // # C: int getservent_r(struct servent*, char*, size_t, struct servent**)
     #[no_mangle]
     pub unsafe extern "C" fn getservent_r(rb: *mut servent, buf: *mut u8, n: usize, result: *mut *mut servent) -> i32 {
-        // SAFETY: as getservbyname_r.
+        // SAFETY: deep-copy the (single-threaded) lookup result into rb/buf.
         unsafe { pack(getservent(), rb, buf, n, result) }
     }
 }
