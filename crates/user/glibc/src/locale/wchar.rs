@@ -147,6 +147,21 @@ mod imp {
         }
     }
 
+    // # C: size_t mbrtoc32(char32_t *pc32, const char *s, size_t n, mbstate_t *ps)
+    // In the C/UTF-8 locale char32_t == wchar_t (a 32-bit Unicode scalar), so
+    // mbrtoc32 IS mbrtowc.
+    #[no_mangle]
+    pub unsafe extern "C" fn mbrtoc32(pc32: *mut u32, s: *const u8, n: usize, ps: *mut mbstate_t) -> usize {
+        // SAFETY: pc32 is null or a writable char32_t; delegates to mbrtowc.
+        unsafe { mbrtowc(pc32 as *mut i32, s, n, ps) }
+    }
+    // # C: size_t c32rtomb(char *s, char32_t c32, mbstate_t *ps)
+    #[no_mangle]
+    pub unsafe extern "C" fn c32rtomb(s: *mut u8, c32: u32, ps: *mut mbstate_t) -> usize {
+        // SAFETY: s null (reset) or writable for ≤4 bytes; delegates to wcrtomb.
+        unsafe { wcrtomb(s, c32 as i32, ps) }
+    }
+
     // # C: int wctomb(char *s, wchar_t wc)
     #[no_mangle]
     pub unsafe extern "C" fn wctomb(s: *mut u8, wc: i32) -> i32 {
