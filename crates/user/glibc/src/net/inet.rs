@@ -340,6 +340,176 @@ mod exports {
             }
         }
     }
+
+    use crate::internal::errno::set as set_errno;
+    const EAFNOSUPPORT: i32 = 97;
+    const EMSGSIZE: i32 = 90;
+    const ENOENT: i32 = 2;
+    const EINVAL: i32 = 22;
+
+    // # C: int inet_net_pton(int af, const char *cp, void *buf, size_t size)
+    #[no_mangle]
+    pub unsafe extern "C" fn inet_net_pton(af: i32, cp: *const u8, buf: *mut u8, size: usize) -> i32 {
+        // SAFETY: cp NUL-terminated; buf writable for `size` bytes. AF_INET only
+        // (glibc). Returns the network width in bits, or -1 with errno set.
+        unsafe {
+            if af != AF_INET { set_errno(EAFNOSUPPORT); return -1; }
+            let s = core::slice::from_raw_parts(cp, strlen_impl(cp));
+            let mut octets = [0u8; 4];
+            let mut nbytes = 0usize;
+            let mut bits: i32 = -1;
+            if s.len() >= 2 && s[0] == b'0' && (s[1] == b'x' || s[1] == b'X') {
+                // hex: nibble pairs into bytes, odd trailing nibble → high nibble
+                let mut tmp = 0u8; let mut dirty = 0;
+                let mut i = 2;
+                while i < s.len() {
+                    let h = match hexval_opt(s[i]) { Some(v) => v, None => { set_errno(ENOENT); return -1; } };
+                    if dirty == 0 { tmp = h; dirty = 1; } else { tmp = (tmp << 4) | h; dirty = 0;
+                        if nbytes >= 4 { set_errno(EMSGSIZE); return -1; } octets[nbytes] = tmp; nbytes += 1; }
+                    i += 1;
+                }
+                if dirty == 1 { if nbytes >= 4 { set_errno(EMSGSIZE); return -1; } octets[nbytes] = tmp << 4; nbytes += 1; }
+            } else if !s.is_empty() && s[0].is_ascii_digit() {
+                // dotted decimal, optional /bits
+                let mut i = 0;
+                loop {
+                    let mut v = 0u32; let mut got = false;
+                    while i < s.len() && s[i].is_ascii_digit() { v = v * 10 + (s[i] - b'0') as u32; got = true; i += 1; if v > 255 { set_errno(ENOENT); return -1; } }
+                    if !got { set_errno(ENOENT); return -1; }
+                    if nbytes >= 4 { set_errno(EMSGSIZE); return -1; }
+                    octets[nbytes] = v as u8; nbytes += 1;
+                    if i < s.len() && s[i] == b'.' { i += 1; continue; }
+                    break;
+                }
+                if i < s.len() && s[i] == b'/' {
+                    i += 1; let mut b = 0i32; let mut got = false;
+                    while i < s.len() && s[i].is_ascii_digit() { b = b * 10 + (s[i] - b'0') as i32; got = true; i += 1; }
+                    if !got || i != s.len() || b > 32 { set_errno(ENOENT); return -1; }
+                    bits = b;
+                } else if i != s.len() { set_errno(ENOENT); return -1; }
+            } else { set_errno(ENOENT); return -1; }
+            if bits == -1 {
+                // classful default; class D (224-239) is fixed at 4 bits and not
+                // widened, everyone else widens to cover the octets actually given.
+                let f = octets[0];
+                if f >= 240 { bits = 32; }
+                else if f >= 224 { bits = 4; }
+                else {
+                    bits = if f >= 192 { 24 } else if f >= 128 { 16 } else { 8 };
+                    if bits < (nbytes as i32) * 8 { bits = (nbytes as i32) * 8; }
+                }
+            }
+            // glibc writes max(nbytes, ceil(bits/8)) octets: the parsed ones plus
+            // zero-fill out to the mask width.
+            let need = core::cmp::max(nbytes, ((bits as usize) + 7) / 8);
+            if need > size { set_errno(EMSGSIZE); return -1; }
+            for j in 0..need { *buf.add(j) = if j < nbytes { octets[j] } else { 0 }; }
+            bits
+        }
+    }
+
+    // # C: char *inet_net_ntop(int af, const void *cp, int bits, char *buf, size_t size)
+    #[no_mangle]
+    pub unsafe extern "C" fn inet_net_ntop(af: i32, cp: *const u8, bits: i32, buf: *mut u8, size: usize) -> *const u8 {
+        // SAFETY: cp holds ≥ ceil(bits/8) bytes; buf writable for `size`. AF_INET
+        // only. Prints ceil(bits/8) octets (min 1) + "/bits". NULL + errno on error.
+        unsafe {
+            if af != AF_INET { set_errno(EAFNOSUPPORT); return core::ptr::null(); }
+            if !(0..=32).contains(&bits) { set_errno(EINVAL); return core::ptr::null(); }
+            let mut octets = ((bits as usize) + 7) / 8;
+            if octets == 0 { octets = 1; }
+            let mut out = [0u8; 32]; let mut k = 0;
+            for i in 0..octets {
+                if i > 0 { out[k] = b'.'; k += 1; }
+                k += u8_dec(*cp.add(i), &mut out[k..]);
+            }
+            out[k] = b'/'; k += 1;
+            k += u8_dec(bits as u8, &mut out[k..]);
+            if k + 1 > size { set_errno(EMSGSIZE); return core::ptr::null(); }
+            core::ptr::copy_nonoverlapping(out.as_ptr(), buf, k); *buf.add(k) = 0;
+            buf
+        }
+    }
+
+    // # C: char *inet_neta(in_addr_t src, char *dst, size_t size)
+    #[no_mangle]
+    pub unsafe extern "C" fn inet_neta(src: u32, dst: *mut u8, size: usize) -> *const u8 {
+        // SAFETY: dst writable for `size`. Emits the nonzero octets (MSB→LSB)
+        // joined by '.', dropping zero octets; all-zero → "0.0.0.0".
+        unsafe {
+            let b = src.to_be_bytes();
+            let mut out = [0u8; 16]; let mut k = 0; let mut first = true;
+            if src == 0 {
+                let z = b"0.0.0.0"; out[..7].copy_from_slice(z); k = 7;
+            } else {
+                for &octet in b.iter() {
+                    if octet == 0 { continue; }
+                    if !first { out[k] = b'.'; k += 1; }
+                    first = false;
+                    k += u8_dec(octet, &mut out[k..]);
+                }
+            }
+            if k + 1 > size { set_errno(EMSGSIZE); return core::ptr::null(); }
+            core::ptr::copy_nonoverlapping(out.as_ptr(), dst, k); *dst.add(k) = 0;
+            dst
+        }
+    }
+
+    // # C: unsigned int inet_nsap_addr(const char *cp, unsigned char *buf, int len)
+    #[no_mangle]
+    pub unsafe extern "C" fn inet_nsap_addr(cp: *const u8, buf: *mut u8, len: i32) -> u32 {
+        // SAFETY: cp NUL-terminated; buf writable for `len` bytes. Parses hex
+        // nibble pairs, skipping '.', '+', '/' and whitespace. 0 on malformed.
+        unsafe {
+            let max = if len < 0 { 0 } else { len as usize };
+            let s = core::slice::from_raw_parts(cp, strlen_impl(cp));
+            let mut n = 0usize; let mut i = 0;
+            while i < s.len() && n < max {
+                let c = s[i];
+                if c == b'.' || c == b'+' || c == b'/' || c == b' ' || c == b'\t' || c == b'\n' { i += 1; continue; }
+                let hi = match hexval_opt(c) { Some(v) => v, None => return 0 };
+                i += 1;
+                if i >= s.len() { return 0; }
+                let lo = match hexval_opt(s[i]) { Some(v) => v, None => return 0 };
+                i += 1;
+                *buf.add(n) = (hi << 4) | lo; n += 1;
+            }
+            n as u32
+        }
+    }
+
+    // # C: char *inet_nsap_ntoa(int binlen, const unsigned char *binary, char *ascii)
+    #[no_mangle]
+    pub unsafe extern "C" fn inet_nsap_ntoa(binlen: i32, binary: *const u8, ascii: *mut u8) -> *const u8 {
+        // SAFETY: binary holds binlen bytes; ascii writable for the formatted
+        // output (≤ 3*binlen + 1). Uppercase hex, a '.' before each odd index.
+        unsafe {
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            let n = if binlen < 0 { 0 } else { binlen as usize };
+            let mut k = 0;
+            for i in 0..n {
+                if i & 1 == 1 { *ascii.add(k) = b'.'; k += 1; }
+                let c = *binary.add(i);
+                *ascii.add(k) = HEX[(c >> 4) as usize]; k += 1;
+                *ascii.add(k) = HEX[(c & 0xf) as usize]; k += 1;
+            }
+            *ascii.add(k) = 0;
+            ascii
+        }
+    }
+}
+
+// Hex digit value, or None for a non-hex byte.
+#[inline] fn hexval_opt(c: u8) -> Option<u8> {
+    match c { b'0'..=b'9' => Some(c - b'0'), b'a'..=b'f' => Some(c - b'a' + 10), b'A'..=b'F' => Some(c - b'A' + 10), _ => None }
+}
+// Write the decimal of `v` (0..=255) into `out`; returns the digit count.
+#[inline] fn u8_dec(v: u8, out: &mut [u8]) -> usize {
+    let mut k = 0;
+    if v >= 100 { out[k] = b'0' + v / 100; k += 1; }
+    if v >= 10 { out[k] = b'0' + (v / 10) % 10; k += 1; }
+    out[k] = b'0' + v % 10; k += 1;
+    k
 }
 
 #[cfg(test)]
