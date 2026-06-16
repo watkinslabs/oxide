@@ -18,6 +18,8 @@ pub mod strfmon;
 pub mod posix_l;
 #[cfg(feature = "freestanding")]
 pub mod width;
+#[cfg(feature = "freestanding")]
+pub mod wide_l;
 
 pub const LC_CTYPE: i32 = 0;
 pub const LC_NUMERIC: i32 = 1;
