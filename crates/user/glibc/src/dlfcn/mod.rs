@@ -22,6 +22,15 @@ mod api {
         fn _dl_sym(handle: usize, name: *const u8) -> usize;
         fn _dl_close(handle: usize) -> i32;
         fn _dl_addr(addr: usize, fbase_out: *mut usize) -> i32;
+        fn _dl_iterate_phdr(cb: extern "C" fn(*const c_void, usize, *mut c_void) -> i32, data: *mut c_void) -> i32;
+    }
+
+    // # C: int dl_iterate_phdr(int (*cb)(struct dl_phdr_info*, size_t, void*), void *data)
+    #[no_mangle]
+    pub unsafe extern "C" fn dl_iterate_phdr(cb: extern "C" fn(*const c_void, usize, *mut c_void) -> i32, data: *mut c_void) -> i32 {
+        // SAFETY: delegates to the rtld, which walks its link map and calls cb
+        // once per loaded object with a struct dl_phdr_info.
+        unsafe { _dl_iterate_phdr(cb, data) }
     }
 
     // # C: void *dlopen(const char *file, int mode)
