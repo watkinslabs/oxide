@@ -1,34 +1,29 @@
-/* LFS / *64 + pread/pwrite/creat audit vs host glibc. Real syscalls on a temp
-   file (the harness runs our libc against the host kernel). */
+/* LFS *64 aliases + mkostemps + strtof64/wcstof64. vs host glibc. */
 #define _GNU_SOURCE
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/stat.h>
+#include <sys/uio.h>
+#include <wchar.h>
 
-int main(void){
-    const char *p = "/tmp/oxide_lfs_test.dat";
-    int fd = creat(p, 0644);
-    const char *msg = "hello LFS world";
-    pwrite(fd, msg, 15, 0);
-    pwrite(fd, "XYZ", 3, 5);          /* overwrite at offset 5 */
-    close(fd);
+int main(void) {
+    char t1[] = "/tmp/lfs_XXXXXX"; int f1 = mkstemp64(t1);
+    char t2[] = "/tmp/lfs_XXXXXX.log"; int f2 = mkostemps(t2, 4, O_CLOEXEC);
+    printf("mkstemp64=%d mkostemps=%d ends_log=%d cloexec=%d\n",
+           f1 >= 0, f2 >= 0, strcmp(t2 + strlen(t2) - 4, ".log") == 0,
+           f2 >= 0 && (fcntl(f2, F_GETFD) & FD_CLOEXEC) != 0);
 
-    struct stat64 st;
-    int r = stat64(p, &st);
-    printf("stat64 r=%d size=%lld\n", r, (long long)st.st_size);
+    /* preadv64/pwritev64 round-trip */
+    struct iovec wv[2] = { { "AB", 2 }, { "CD", 2 } };
+    pwritev64(f1, wv, 2, 0);
+    char b0[2], b1[2];
+    struct iovec rv[2] = { { b0, 2 }, { b1, 2 } };
+    ssize_t n = preadv64(f1, rv, 2, 0);
+    printf("pv64=%zd data=%d\n", n, memcmp(b0, "AB", 2) == 0 && memcmp(b1, "CD", 2) == 0);
 
-    fd = open64(p, O_RDONLY);
-    char buf[32];
-    ssize_t n = pread64(fd, buf, 15, 0); buf[n] = 0;
-    printf("pread n=%zd buf=%s\n", n, buf);
-    off_t pos = lseek64(fd, 5, SEEK_SET);
-    n = read(fd, buf, 3); buf[n] = 0;
-    printf("lseek pos=%lld read=%s\n", (long long)pos, buf);
-    struct stat64 fs;
-    fstat64(fd, &fs);
-    printf("fstat64 size=%lld isreg=%d\n", (long long)fs.st_size, S_ISREG(fs.st_mode)!=0);
-    close(fd);
-    unlink(p);
+    printf("strtof64=%d wcstof64=%d\n", strtof64("3.25", NULL) == 3.25, wcstof64(L"2.5", NULL) == 2.5);
+    close(f1); close(f2); unlink(t1); unlink(t2);
     return 0;
 }

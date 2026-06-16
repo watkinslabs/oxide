@@ -92,6 +92,12 @@ pub unsafe extern "C" fn wcstod(wcs: *const i32, endptr: *mut *mut i32) -> f64 {
         v
     }
 }
+// # C: _Float64 wcstof64(const wchar_t *, wchar_t **) — == wcstod on LP64.
+#[no_mangle]
+pub unsafe extern "C" fn wcstof64(wcs: *const i32, endptr: *mut *mut i32) -> f64 {
+    // SAFETY: _Float64 == double; same contract as wcstod.
+    unsafe { wcstod(wcs, endptr) }
+}
 // # C: float wcstof(const wchar_t *, wchar_t **)
 #[no_mangle]
 pub unsafe extern "C" fn wcstof(wcs: *const i32, endptr: *mut *mut i32) -> f32 {
