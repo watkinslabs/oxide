@@ -330,14 +330,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot_current, syscalls::hostname::set_current);
         procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
         ::devfs::set_current_hooks(sched::live::current_mount_ns, sched::live::current_chroot_root);
-        // Ensure the boot cmdline is published BEFORE /dev/console registers, so
-        // the node follows the preferred `console=` (serial when console=ttyS0)
-        // from its first open — systemd's console-getty then reaches the serial
-        // line. The arch boot crate's MB2/DTB capture usually ran already; this
-        // is the idempotent fallback (no-op if the slot is set).
-        // SAFETY: boot path, single-CPU pre-userspace; install_arch_default is a
-        // no-op when the cmdline slot is already populated and cannot race a
-        // procfs reader at this point (userspace has not started).
+        // Publish cmdline before /dev/console registers so the node follows console= from its first open (console-getty → serial).
+        // SAFETY: boot-only single-writer, pre-userspace; install_arch_default is idempotent (no-op if the slot is set) and cannot race a procfs reader here.
         unsafe { crate::boot_cmdline::install_arch_default(); }
         console::register_devnodes(); ::devfs::boot::set_dir_overlay(ext4::dir::read_dir_overlay); ::devfs::boot::populate_defaults(); procfs::init();
         drm::node::register();
@@ -659,9 +653,6 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // the virtio-blk devices; no other CPU has yet observed ROOT.
     #[cfg(target_os = "oxide-kernel")]
     unsafe {
-        // Stand-in cmdline until real bootloader parsing lands. No-op
-        // if a Limine/DTB parser has already populated the slot.
-        crate::boot_cmdline::install_arch_default();
         let root_dev = block::registry::by_serial("oxide-root")
             .expect("root disk (virtio-blk serial=oxide-root) not found");
         ext4::rootfs::init_from_dev(root_dev)
