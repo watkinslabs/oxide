@@ -66,7 +66,10 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (pidfd_getpid/pidfd_spawn/pidfd_spawnp DONE — F526, posix/modern.rs
   (fdinfo "Pid:" parse) + posix/spawn.rs (clone CLONE_PIDFD reusing
   child_apply); host-diffable t_spawn.c via pidfd_open + waitid(P_PIDFD)).
-  modify_ldt, ioperm, uselib, ustat, revoke,
+  (revoke/ustat/uselib/modify_ldt/iopl/ioperm DONE — F527, posix/misc2.rs;
+  revoke=ENOSYS stub, ustat/uselib x86 passthrough else ENOSYS, modify_ldt/
+  iopl/ioperm x86-only; t_deprecated.c diffs revoke + x86 trio — ustat/uselib
+  host-compat-only so not diff-linkable).
   setlogin, lockf, scandirat, timespec_get/getres, ftok, ftime, ualarm,
   group_member, gnu_dev_major/minor/makedev, glob_pattern_p, ttyslot, scandirat/scandirat64 (DONE F519), lockf/lockf64 (DONE F520, posix/lockf.rs, t_lockf.c),
   (sigabbrev_np/sigdescr_np/strerrorname_np/strerrordesc_np DONE — F512,
