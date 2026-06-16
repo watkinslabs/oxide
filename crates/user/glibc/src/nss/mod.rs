@@ -14,6 +14,8 @@ pub mod r#enum;
 pub mod shadow;
 #[cfg(feature = "freestanding")]
 pub mod putent;
+#[cfg(feature = "freestanding")]
+pub mod aliases;
 
 #[repr(C)]
 pub struct passwd {
