@@ -139,6 +139,33 @@ mod imp {
         unsafe { crate::signal::sig::raise(6); }
         exit_group(134) // 128 + SIGABRT
     }
+
+    // # C: void __cxa_finalize(void *dso)
+    // Runs DSO destructors at dlclose/exit. We register all __cxa_atexit
+    // handlers in one global list run at exit(); a per-DSO finalize is a no-op
+    // (handlers still run at process exit) — the symbol just needs to exist so
+    // DSO _fini stubs link.
+    #[no_mangle]
+    pub extern "C" fn __cxa_finalize(_dso: *mut c_void) {}
+
+    // # C: _Noreturn void __assert_fail(const char *assertion, const char *file,
+    //                                   unsigned int line, const char *function)
+    #[no_mangle]
+    pub extern "C" fn __assert_fail(assertion: *const u8, file: *const u8, line: u32, function: *const u8) -> ! {
+        // SAFETY: the four args are NUL-terminated C strings (or null); we write
+        // a diagnostic to fd 2 via the raw write(2) slot, then abort().
+        unsafe {
+            let w = |s: *const u8| { if !s.is_null() { let mut n = 0usize; while *s.add(n) != 0 { n += 1; } let _ = crate::arch::syscall::sys3(crate::internal::nr::WRITE, 2, s as usize, n); } };
+            let lit = |s: &[u8]| { let _ = crate::arch::syscall::sys3(crate::internal::nr::WRITE, 2, s.as_ptr() as usize, s.len()); };
+            w(file); lit(b":"); // file:
+            // line number (decimal) — small stack buffer
+            let mut buf = [0u8; 12]; let mut i = buf.len(); let mut v = line;
+            loop { i -= 1; buf[i] = b'0' + (v % 10) as u8; v /= 10; if v == 0 { break; } }
+            lit(&buf[i..]); lit(b": ");
+            w(function); lit(b": Assertion `"); w(assertion); lit(b"' failed.\n");
+        }
+        abort()
+    }
 }
 
 #[cfg(test)]

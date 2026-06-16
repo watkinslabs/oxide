@@ -15,6 +15,23 @@ pub unsafe extern "C" fn eventfd(initval: u32, flags: i32) -> i32 {
     ret_isize(unsafe { sys2(nr::EVENTFD2, initval as usize, flags as usize) }) as i32
 }
 
+// # C: int eventfd_read(int fd, eventfd_t *value)  (glibc helper: read 8 bytes)
+#[no_mangle]
+pub unsafe extern "C" fn eventfd_read(fd: i32, value: *mut u64) -> i32 {
+    // SAFETY: value is a writable 8-byte eventfd_t. read(2) of exactly 8 bytes.
+    let r = unsafe { sys3(nr::READ, fd as usize, value as usize, 8) };
+    if r == 8 { 0 } else { -1 }
+}
+
+// # C: int eventfd_write(int fd, eventfd_t value)  (glibc helper: write 8 bytes)
+#[no_mangle]
+pub unsafe extern "C" fn eventfd_write(fd: i32, value: u64) -> i32 {
+    let v = value;
+    // SAFETY: write(2) of the 8-byte counter from this frame (&v is valid here).
+    let r = unsafe { sys3(nr::WRITE, fd as usize, &v as *const u64 as usize, 8) };
+    if r == 8 { 0 } else { -1 }
+}
+
 // # C: int signalfd(int fd, const sigset_t *mask, int flags)
 #[no_mangle]
 pub unsafe extern "C" fn signalfd(fd: i32, mask: *const c_void, flags: i32) -> i32 {
