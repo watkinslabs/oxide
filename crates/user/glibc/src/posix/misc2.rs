@@ -3,7 +3,7 @@
 // symbol audit. Thin wrappers; kernel structs pass through as pointers.
 #![cfg(feature = "freestanding")]
 use core::ffi::{c_char, c_void};
-use crate::arch::syscall::{sys1, sys3, sys5};
+use crate::arch::syscall::{sys1, sys3, sys4, sys5};
 use crate::internal::errno::ret_isize;
 use crate::internal::nr;
 
@@ -81,4 +81,28 @@ pub unsafe extern "C" fn shmdt(shmaddr: *const c_void) -> i32 {
 pub unsafe extern "C" fn shmctl(shmid: i32, cmd: i32, buf: *mut c_void) -> i32 {
     // SAFETY: buf is null or a struct shmid_ds the kernel reads/writes.
     ret_isize(unsafe { sys3(nr::SHMCTL, shmid as usize, cmd as usize, buf as usize) }) as i32
+}
+
+// # C: int futimesat(int dirfd, const char *path, const struct timeval times[2])
+// Composed from utimensat (timeval µs → timespec ns; NULL times = now).
+#[no_mangle]
+pub unsafe extern "C" fn futimesat(dirfd: i32, path: *const c_char, times: *const [i64; 2]) -> i32 {
+    // SAFETY: path NUL-terminated; times null or two timevals {sec,usec}.
+    // ts[2] lives on this frame for the utimensat(2) call.
+    unsafe {
+        if times.is_null() {
+            return ret_isize(sys4(nr::UTIMENSAT, dirfd as usize, path as usize, 0, 0)) as i32;
+        }
+        let tv = &*(times as *const [[i64; 2]; 2]);
+        let ts = [[tv[0][0], tv[0][1] * 1000], [tv[1][0], tv[1][1] * 1000]];
+        ret_isize(sys4(nr::UTIMENSAT, dirfd as usize, path as usize, ts.as_ptr() as usize, 0)) as i32
+    }
+}
+
+// # C: int waitid(idtype_t idtype, id_t id, siginfo_t *infop, int options)
+#[no_mangle]
+pub unsafe extern "C" fn waitid(idtype: i32, id: u32, infop: *mut c_void, options: i32) -> i32 {
+    // SAFETY: infop is null or a writable siginfo_t the kernel fills; the 5th
+    // waitid(2) arg (rusage) is NULL.
+    ret_isize(unsafe { sys5(nr::WAITID, idtype as usize, id as usize, infop as usize, options as usize, 0) }) as i32
 }
