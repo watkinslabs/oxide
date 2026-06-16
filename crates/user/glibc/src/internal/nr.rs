@@ -285,6 +285,7 @@ pub mod x86_64 {
     pub const FSPICK: usize = 433;
     pub const EPOLL_PWAIT2: usize = 441;
     pub const PTRACE: usize = 101;
+    pub const FACCESSAT2: usize = 439;
 }
 
 pub mod aarch64 {
@@ -542,4 +543,5 @@ pub mod aarch64 {
     pub const FSPICK: usize = 433;
     pub const EPOLL_PWAIT2: usize = 441;
     pub const PTRACE: usize = 117;
+    pub const FACCESSAT2: usize = 439;
 }
