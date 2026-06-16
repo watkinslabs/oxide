@@ -299,6 +299,12 @@ pub mod x86_64 {
     pub const ACCT: usize = 163;
     pub const RECVMMSG: usize = 299;
     pub const SENDMMSG: usize = 307;
+    // legacy / x86-only (syscall_64.tbl). ustat/uselib have no asm-generic nr.
+    pub const USTAT: usize = 136;
+    pub const USELIB: usize = 134;
+    pub const MODIFY_LDT: usize = 154;
+    pub const IOPL: usize = 172;
+    pub const IOPERM: usize = 173;
 }
 
 pub mod aarch64 {
