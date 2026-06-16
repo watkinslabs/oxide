@@ -236,6 +236,14 @@ pub unsafe extern "C" fn strfromf(s: *mut u8, n: usize, format: *const u8, fp: f
     unsafe { strfrom(s, n, format, fp as f64) }
 }
 
+/// # C: int strfromf64(char *s, size_t n, const char *format, _Float64 fp)
+/// _Float64 == double, so strfromf64 is identical to strfromd.
+#[no_mangle]
+pub unsafe extern "C" fn strfromf64(s: *mut u8, n: usize, format: *const u8, fp: f64) -> c_int {
+    // SAFETY: forwards the strfromd contract (the _Float64 alias) to the engine.
+    unsafe { strfrom(s, n, format, fp) }
+}
+
 // ---- printf customization API: PA_* argtype codes ---------------------------
 // glibc <printf.h> constants. parse_printf_format fills *argtypes with these.
 const PA_INT: c_int = 0;

@@ -336,6 +336,16 @@ mod exports {
         // SAFETY: s is a writable int out-param.
         unsafe { super::lgamma_r(x as f64, &mut *s) as f32 }
     }
+    // # C: _Float32 lgammaf32_r(_Float32, int *) — _Float32 == float.
+    #[no_mangle] pub unsafe extern "C" fn lgammaf32_r(x: f32, s: *mut i32) -> f32 {
+        // SAFETY: s is a writable int out-param; identical to lgammaf_r.
+        unsafe { super::lgamma_r(x as f64, &mut *s) as f32 }
+    }
+    // # C: _Float64 lgammaf64_r(_Float64, int *) — _Float64 == double.
+    #[no_mangle] pub unsafe extern "C" fn lgammaf64_r(x: f64, s: *mut i32) -> f64 {
+        // SAFETY: s is a writable int out-param; identical to lgamma_r.
+        unsafe { super::lgamma_r(x, &mut *s) }
+    }
     // # C: double gamma(double) — legacy alias of lgamma
     #[no_mangle] pub extern "C" fn gamma(x: f64) -> f64 { lgamma(x) }
     // # C: float gammaf(float) — legacy alias of lgammaf (log-gamma)

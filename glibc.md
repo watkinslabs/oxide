@@ -50,8 +50,11 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
 - **wide `_l` (~25)** — isw*_l, tow{lower,upper,ctrans}_l, wctype_l/wctrans_l/
   iswctype_l, wcs{coll,xfrm,casecmp,ncasecmp}_l, wcsto{d,f,l,ul,ll,ull,f32,f64}_l,
   wcsftime_l. Delegate to the C-locale base (like the narrow _l already done).
-- **C23 narrowing math** — f32add/f32div/f32mul/f32sub/f32sqrt/f32fma(+f64x...),
-  logp1/logp1f/logp1f32/f64 (== log1p). exp10m1/exp2m1/log10p1/log2p1 done.
+- **C23 narrowing math** — f32add/f32div/f32mul/f32sub/f32sqrt/f32fma(+f64x...)
+  STILL DEFERRED (round-to-odd). exp10m1/exp2m1/log10p1/log2p1 done.
+  (logp1/logp1f/logp1f32/f64 + remquof/remquof32 + lgammaf32_r/f64_r +
+  strfromf64 DONE — F528, _Float32==float/_Float64==double aliases of existing
+  fns; bit-exact host-diffable t_c23math.c).
 - **LFS aliases** — mkstemp64/mkostemp64/mkstemps64/mkostemps(64)/preadv64(v2)/
   pwritev64(v2)/lockf64/scandirat64/strtof64/wcstof64. Mostly thin == aliases.
 - **SysV signal compat** — sigset/sighold/sigrelse/sigignore; sigvec; sigreturn.
