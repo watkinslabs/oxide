@@ -39,7 +39,9 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   netlink RTM_GETLINK+GETADDR, host-diffable t_getifaddrs.c);
   inet6_opt_*/inet6_rth_*/inet6_option_* (RFC3542 ext-hdr, ~22); inet_net_pton/
   ntop/neta/nsap. (dn_comp/dn_expand/dn_skipname + recvmmsg/sendmmsg done.)
-- **fts/fts64 (10)** — fs-tree traversal (coreutils -R/du/find). Exact FTSENT ABI.
+- ~~**fts/fts64 (10)**~~ DONE — posix/fts.rs (F511). BSD pre/post-order iterator,
+  cycle detect (FTS_DC), FTS_LOGICAL/PHYSICAL/SEEDOT/XDEV/COMFOLLOW + fts_set
+  SKIP/FOLLOW. Exact FTSENT ABI (112B). Host-diffable t_fts.c over a temp tree.
 - **wide `_l` (~25)** — isw*_l, tow{lower,upper,ctrans}_l, wctype_l/wctrans_l/
   iswctype_l, wcs{coll,xfrm,casecmp,ncasecmp}_l, wcsto{d,f,l,ul,ll,ull,f32,f64}_l,
   wcsftime_l. Delegate to the C-locale base (like the narrow _l already done).
