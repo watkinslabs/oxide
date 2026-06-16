@@ -142,6 +142,14 @@ pub unsafe extern "C" fn fchmod(fd: i32, mode: u32) -> i32 {
     // SAFETY: fchmod(2) takes scalar fd/mode.
     ret_isize(unsafe { sys2(nr::FCHMOD, fd as usize, mode as usize) }) as i32
 }
+// # C: int lchmod(const char *path, mode_t mode) — chmod without following a
+// final symlink. Uses fchmodat2(AT_SYMLINK_NOFOLLOW); a symlink target ⇒ EOPNOTSUPP.
+#[no_mangle]
+pub unsafe extern "C" fn lchmod(path: *const u8, mode: u32) -> i32 {
+    const AT_SYMLINK_NOFOLLOW: usize = 0x100;
+    // SAFETY: path NUL-terminated; fchmodat2(2) is the 4-arg flagged chmod.
+    ret_isize(unsafe { sys4(nr::FCHMODAT2, AT_FDCWD as usize, path as usize, mode as usize, AT_SYMLINK_NOFOLLOW) }) as i32
+}
 // # C: int fchownat(int dirfd, const char *path, uid_t, gid_t, int flags)
 #[no_mangle]
 pub unsafe extern "C" fn fchownat(dirfd: i32, path: *const u8, owner: u32, group: u32, flags: i32) -> i32 {

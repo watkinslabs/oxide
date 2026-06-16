@@ -309,6 +309,7 @@ pub mod x86_64 {
     pub const PKEY_MPROTECT: usize = 329;
     pub const PKEY_ALLOC: usize = 330;
     pub const PKEY_FREE: usize = 331;
+    pub const FCHMODAT2: usize = 452;
 }
 
 pub mod aarch64 {
@@ -584,4 +585,5 @@ pub mod aarch64 {
     pub const PKEY_MPROTECT: usize = 288;
     pub const PKEY_ALLOC: usize = 289;
     pub const PKEY_FREE: usize = 290;
+    pub const FCHMODAT2: usize = 452;
 }
