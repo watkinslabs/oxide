@@ -58,7 +58,8 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (sigabbrev_np/sigdescr_np/strerrorname_np/strerrordesc_np DONE — F512,
   string/errname.rs complete 133-errno name+desc table, signal/desc.rs abbrev;
   host-diffable t_errname_np.c exhaustive), twalk_r,
-  open_wmemstream, wcslcat/wcslcpy,
+  open_wmemstream,
+  (wcslcat/wcslcpy DONE — F514, string/wstr.rs BSD bounded copy/concat; host-diffable t_wcslcpy.c),
   (mbrtoc8/mbrtoc16/c8rtomb/c16rtomb DONE — F513, locale/wchar.rs surrogate +
   code-unit state machines over mbstate_t; host-diffable t_uchar_c816.c),
   posix_spawn_file_actions_add{chdir,fchdir,closefrom,tcsetpgrp}_np +
