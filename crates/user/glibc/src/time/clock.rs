@@ -8,6 +8,16 @@ use crate::internal::nr;
 pub const CLOCK_REALTIME: i32 = 0;
 pub const CLOCK_MONOTONIC: i32 = 1;
 
+// # C: int clock_getcpuclockid(pid_t pid, clockid_t *clock_id)
+// Encodes the per-PROCESS CPU clock the kernel posix-cpu-timers expects:
+// (~pid<<3)|CPUCLOCK_SCHED. pid 0 = the calling process.
+#[no_mangle]
+pub unsafe extern "C" fn clock_getcpuclockid(pid: i32, clock_id: *mut i32) -> i32 {
+    // SAFETY: clock_id is a writable clockid_t out-param.
+    unsafe { *clock_id = (!pid << 3) | 2 /* CPUCLOCK_SCHED */; }
+    0
+}
+
 #[repr(C)]
 pub struct timespec { pub tv_sec: i64, pub tv_nsec: i64 }
 #[repr(C)]
