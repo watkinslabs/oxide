@@ -136,6 +136,11 @@ pub mod x86_64 {
     pub const MUNLOCK: usize = 150;
     pub const MLOCKALL: usize = 151;
     pub const MUNLOCKALL: usize = 152;
+    pub const MLOCK2: usize = 325;
+    pub const PIVOT_ROOT: usize = 155;
+    pub const OPEN_TREE: usize = 428;
+    pub const MOVE_MOUNT: usize = 429;
+    pub const MOUNT_SETATTR: usize = 442;
     pub const MKNOD: usize = 133;
     pub const MKNODAT: usize = 259;
     pub const FALLOCATE: usize = 285;
@@ -407,6 +412,11 @@ pub mod aarch64 {
     pub const MUNLOCK: usize = 229;
     pub const MLOCKALL: usize = 230;
     pub const MUNLOCKALL: usize = 231;
+    pub const MLOCK2: usize = 284;
+    pub const PIVOT_ROOT: usize = 41;
+    pub const OPEN_TREE: usize = 428;
+    pub const MOVE_MOUNT: usize = 429;
+    pub const MOUNT_SETATTR: usize = 442;
     pub const MKNODAT: usize = 33;
     pub const FALLOCATE: usize = 47;
     pub const READV: usize = 65;
