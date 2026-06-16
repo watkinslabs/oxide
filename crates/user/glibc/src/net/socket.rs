@@ -167,6 +167,20 @@ mod exports {
         // SAFETY: msg is a valid msghdr describing writable iovecs.
         ret_isize(unsafe { sys3(nr::RECVMSG, fd as usize, msg as usize, flags as usize) })
     }
+    // # C: int sendmmsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
+    #[no_mangle]
+    pub unsafe extern "C" fn sendmmsg(fd: i32, msgvec: *mut c_void, vlen: u32, flags: i32) -> i32 {
+        // SAFETY: msgvec is a vlen-element mmsghdr array the kernel reads/updates
+        // (msg_len out-fields); returns the count of messages sent.
+        ret_isize(unsafe { sys4(nr::SENDMMSG, fd as usize, msgvec as usize, vlen as usize, flags as usize) }) as i32
+    }
+    // # C: int recvmmsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags, struct timespec *timeout)
+    #[no_mangle]
+    pub unsafe extern "C" fn recvmmsg(fd: i32, msgvec: *mut c_void, vlen: u32, flags: i32, timeout: *mut c_void) -> i32 {
+        // SAFETY: msgvec is a writable vlen-element mmsghdr array; timeout null
+        // or a timespec; returns the count of messages received.
+        ret_isize(unsafe { sys5(nr::RECVMMSG, fd as usize, msgvec as usize, vlen as usize, flags as usize, timeout as usize) }) as i32
+    }
     // # C: int shutdown(int fd, int how)
     #[no_mangle]
     pub unsafe extern "C" fn shutdown(fd: i32, how: i32) -> i32 {
