@@ -27,6 +27,8 @@ pub mod spawn;
 #[cfg(feature = "freestanding")]
 pub mod misc2;
 #[cfg(feature = "freestanding")]
+pub mod admin;
+#[cfg(feature = "freestanding")]
 pub mod fs;
 pub mod stat;
 pub mod fnmatch;
