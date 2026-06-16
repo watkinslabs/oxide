@@ -11,6 +11,7 @@ path = "src/lib.rs"
 klog       = { path = "../../shared/klog" }
 kmacros    = { path = "../../shared/kmacros" }
 vfs        = { path = "../vfs" }
+cmdline    = { path = "../cmdline" }
 tty        = { path = "../tty" }
 devfs      = { path = "../devfs" }
 sched      = { path = "../sched" }

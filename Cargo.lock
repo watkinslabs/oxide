@@ -118,6 +118,7 @@ version = "0.1.0"
 name = "console"
 version = "0.1.0"
 dependencies = [
+ "cmdline",
  "devfs",
  "drv-serial",
  "fbcon",

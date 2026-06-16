@@ -330,6 +330,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot_current, syscalls::hostname::set_current);
         procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
         ::devfs::set_current_hooks(sched::live::current_mount_ns, sched::live::current_chroot_root);
+        // Ensure the boot cmdline is published BEFORE /dev/console registers, so
+        // the node follows the preferred `console=` (serial when console=ttyS0)
+        // from its first open — systemd's console-getty then reaches the serial
+        // line. The arch boot crate's MB2/DTB capture usually ran already; this
+        // is the idempotent fallback (no-op if the slot is set).
+        // SAFETY: boot path, single-CPU pre-userspace; install_arch_default is a
+        // no-op when the cmdline slot is already populated and cannot race a
+        // procfs reader at this point (userspace has not started).
+        unsafe { crate::boot_cmdline::install_arch_default(); }
         console::register_devnodes(); ::devfs::boot::set_dir_overlay(ext4::dir::read_dir_overlay); ::devfs::boot::populate_defaults(); procfs::init();
         drm::node::register();
         fs::tmpfs::init(); tracefs::init(); drv_virtio_input::devfs::init();
