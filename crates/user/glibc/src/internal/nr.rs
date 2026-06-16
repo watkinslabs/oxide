@@ -200,6 +200,15 @@ pub mod x86_64 {
     pub const EPOLL_CREATE1: usize = 291;
     pub const EPOLL_CTL: usize = 233;
     pub const EPOLL_PWAIT: usize = 281;
+    // Linux event fds (x86_64). eventfd/signalfd compose from the *2/*4 slots.
+    pub const EVENTFD2: usize = 290;
+    pub const SIGNALFD4: usize = 289;
+    pub const TIMERFD_CREATE: usize = 283;
+    pub const TIMERFD_SETTIME: usize = 286;
+    pub const TIMERFD_GETTIME: usize = 287;
+    pub const INOTIFY_INIT1: usize = 294;
+    pub const INOTIFY_ADD_WATCH: usize = 254;
+    pub const INOTIFY_RM_WATCH: usize = 255;
 }
 
 pub mod aarch64 {
@@ -372,4 +381,13 @@ pub mod aarch64 {
     pub const EPOLL_CREATE1: usize = 20;
     pub const EPOLL_CTL: usize = 21;
     pub const EPOLL_PWAIT: usize = 22;
+    // Linux event fds (asm-generic/unistd.h).
+    pub const EVENTFD2: usize = 19;
+    pub const SIGNALFD4: usize = 74;
+    pub const TIMERFD_CREATE: usize = 85;
+    pub const TIMERFD_SETTIME: usize = 86;
+    pub const TIMERFD_GETTIME: usize = 87;
+    pub const INOTIFY_INIT1: usize = 26;
+    pub const INOTIFY_ADD_WATCH: usize = 27;
+    pub const INOTIFY_RM_WATCH: usize = 28;
 }
