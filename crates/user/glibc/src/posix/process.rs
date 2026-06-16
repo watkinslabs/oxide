@@ -28,8 +28,17 @@ unsafe fn do_fork() -> isize {
 // # C: pid_t fork(void)
 #[no_mangle]
 pub unsafe extern "C" fn fork() -> i32 {
-    // SAFETY: do_fork issues the fork/clone syscall; no memory touched.
-    ret_isize(unsafe { do_fork() }) as i32
+    // SAFETY: run pthread_atfork prepare handlers (lock held across the fork),
+    // do_fork, then run parent/child handlers (releasing the lock) per side; on
+    // fork error release the lock without running post handlers.
+    unsafe {
+        crate::pthread::atfork::run_prepare();
+        let r = ret_isize(do_fork()) as i32;
+        if r < 0 { crate::pthread::atfork::abort_unlock(); }
+        else if r == 0 { crate::pthread::atfork::run_child(); }
+        else { crate::pthread::atfork::run_parent(); }
+        r
+    }
 }
 // # C: pid_t vfork(void) — implemented as fork (POSIX-permitted).
 #[no_mangle]
