@@ -242,6 +242,12 @@ pub mod x86_64 {
     pub const VHANGUP: usize = 153;
     pub const PREADV2: usize = 327;
     pub const PWRITEV2: usize = 328;
+    pub const CHROOT: usize = 161;
+    pub const EXECVEAT: usize = 322;
+    pub const SHMGET: usize = 29;
+    pub const SHMAT: usize = 30;
+    pub const SHMCTL: usize = 31;
+    pub const SHMDT: usize = 67;
 }
 
 pub mod aarch64 {
@@ -456,4 +462,10 @@ pub mod aarch64 {
     pub const VHANGUP: usize = 58;
     pub const PREADV2: usize = 286;
     pub const PWRITEV2: usize = 287;
+    pub const CHROOT: usize = 51;
+    pub const EXECVEAT: usize = 281;
+    pub const SHMGET: usize = 194;
+    pub const SHMCTL: usize = 195;
+    pub const SHMAT: usize = 196;
+    pub const SHMDT: usize = 197;
 }
