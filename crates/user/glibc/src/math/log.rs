@@ -76,6 +76,11 @@ mod exports {
     macro_rules! f32_1 { ($n:ident) => { #[no_mangle] pub extern "C" fn $n(x: f32) -> f32 { super::$n(x) } }; }
     f64_1!(log); f64_1!(log2); f64_1!(log10); f64_1!(log1p);
     f32_1!(logf); f32_1!(log2f); f32_1!(log10f); f32_1!(log1pf);
+    // C23 renames: logp1 == log1p. _Float32==float, _Float64==double.
+    #[no_mangle] pub extern "C" fn logp1(x: f64) -> f64 { super::log1p(x) }
+    #[no_mangle] pub extern "C" fn logp1f(x: f32) -> f32 { super::log1pf(x) }
+    #[no_mangle] pub extern "C" fn logp1f32(x: f32) -> f32 { super::log1pf(x) }
+    #[no_mangle] pub extern "C" fn logp1f64(x: f64) -> f64 { super::log1p(x) }
 }
 
 #[cfg(test)]

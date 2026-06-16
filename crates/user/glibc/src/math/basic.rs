@@ -311,6 +311,18 @@ mod exports {
         // SAFETY: quo is a writable int out-param per remquo(3).
         unsafe { super::remquo(x, y, &mut *quo) }
     }
+    // # C: float remquof(float, float, int *quo) — exact via the f64 remainder
+    // (float remainder + low quo bits are exact under double promotion).
+    #[no_mangle] pub unsafe extern "C" fn remquof(x: f32, y: f32, quo: *mut i32) -> f32 {
+        let mut q = 0i32; let r = super::remquo(x as f64, y as f64, &mut q);
+        // SAFETY: quo is null or a writable int out-param per remquo(3).
+        unsafe { if !quo.is_null() { *quo = q; } } r as f32
+    }
+    // # C: _Float32 remquof32(_Float32, _Float32, int *) — _Float32 == float.
+    #[no_mangle] pub unsafe extern "C" fn remquof32(x: f32, y: f32, quo: *mut i32) -> f32 {
+        // SAFETY: quo is null or a writable int out-param; identical to remquof.
+        unsafe { remquof(x, y, quo) }
+    }
     #[no_mangle] pub extern "C" fn fmod(x: f64, y: f64) -> f64 { super::fmod(x, y) }
     #[no_mangle] pub extern "C" fn ldexp(x: f64, n: i32) -> f64 { super::ldexp(x, n) }
     #[no_mangle] pub extern "C" fn scalbn(x: f64, n: i32) -> f64 { super::scalbn(x, n) }
