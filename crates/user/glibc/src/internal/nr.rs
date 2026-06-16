@@ -189,6 +189,7 @@ pub mod x86_64 {
     pub const SETRESGID: usize = 119;
     pub const SETTIMEOFDAY: usize = 164;
     pub const PSELECT6: usize = 270;
+    pub const PPOLL: usize = 271;
     // SysV IPC semaphores (syscall_64.tbl). Direct nrs — x86_64 has no ipc()
     // multiplexer; each op is its own slot.
     pub const SEMGET: usize = 64;

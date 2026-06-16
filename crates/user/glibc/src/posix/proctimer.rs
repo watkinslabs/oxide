@@ -157,6 +157,41 @@ pub unsafe extern "C" fn pselect(nfds: i32, r: *mut fd_set, w: *mut fd_set, e: *
     }
 }
 
+// poll(2): one entry per fd, kernel sets `revents`. (`struct pollfd`.)
+#[repr(C)]
+pub struct pollfd { pub fd: i32, pub events: i16, pub revents: i16 }
+
+// # C: int poll(struct pollfd *fds, nfds_t nfds, int timeout)
+// Composed from ppoll like glibc: the plain poll(2) slot is legacy; modern
+// glibc routes through ppoll. timeout < 0 = block forever (NULL timespec);
+// else convert milliseconds to a timespec. NULL sigmask, 0 sigsetsize.
+#[no_mangle]
+pub unsafe extern "C" fn poll(fds: *mut pollfd, nfds: u64, timeout: i32) -> i32 {
+    // SAFETY: fds is null or an array of `nfds` pollfd the kernel reads/writes;
+    // ts lives on this frame for the syscall's duration.
+    unsafe {
+        let mut ts = timespec { tv_sec: 0, tv_nsec: 0 };
+        let tsp = if timeout < 0 { core::ptr::null::<timespec>() } else {
+            ts.tv_sec = (timeout / 1000) as i64;
+            ts.tv_nsec = ((timeout % 1000) as i64) * 1_000_000;
+            &ts as *const timespec
+        };
+        ret_isize(sys6(nr::PPOLL, fds as usize, nfds as usize, tsp as usize, 0, 8, 0)) as i32
+    }
+}
+
+// # C: int ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *tmo,
+//               const sigset_t *sigmask)
+#[no_mangle]
+pub unsafe extern "C" fn ppoll(fds: *mut pollfd, nfds: u64, tmo: *const timespec, sigmask: *const core::ffi::c_void) -> i32 {
+    // SAFETY: ppoll(2) — sigmask is a {ptr}+size pair (size = _NSIG/8 = 8);
+    // NULL sigmask passes a null pointer with size 0 (glibc convention).
+    unsafe {
+        let (mp, sz) = if sigmask.is_null() { (0usize, 0usize) } else { (sigmask as usize, 8usize) };
+        ret_isize(sys6(nr::PPOLL, fds as usize, nfds as usize, tmo as usize, mp, sz, 0)) as i32
+    }
+}
+
 // # C: int settimeofday(const struct timeval *tv, const struct timezone *tz)
 #[no_mangle]
 pub unsafe extern "C" fn settimeofday(tv: *const timeval, tz: *const core::ffi::c_void) -> i32 {
