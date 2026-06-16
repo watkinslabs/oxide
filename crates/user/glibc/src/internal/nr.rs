@@ -190,6 +190,7 @@ pub mod x86_64 {
     pub const SETTIMEOFDAY: usize = 164;
     pub const PSELECT6: usize = 270;
     pub const PPOLL: usize = 271;
+    pub const RT_SIGTIMEDWAIT: usize = 128;
     // SysV IPC semaphores (syscall_64.tbl). Direct nrs — x86_64 has no ipc()
     // multiplexer; each op is its own slot.
     pub const SEMGET: usize = 64;
@@ -293,6 +294,7 @@ pub mod aarch64 {
     pub const RT_SIGSUSPEND: usize = 133;
     pub const SIGALTSTACK: usize = 132;
     pub const PPOLL: usize = 73;
+    pub const RT_SIGTIMEDWAIT: usize = 137;
     pub const RT_SIGACTION: usize = 134;
     pub const RT_SIGPROCMASK: usize = 135;
     pub const RT_SIGRETURN: usize = 139;
