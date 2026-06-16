@@ -127,13 +127,13 @@ mod exports {
     // # C: int getprotobynumber_r(int, struct protoent*, char*, size_t, struct protoent**)
     #[no_mangle]
     pub unsafe extern "C" fn getprotobynumber_r(proto: i32, rb: *mut protoent, buf: *mut u8, n: usize, result: *mut *mut protoent) -> i32 {
-        // SAFETY: as getprotobyname_r.
+        // SAFETY: deep-copy the lookup result into the caller rb/buf.
         unsafe { pack(getprotobynumber(proto), rb, buf, n, result) }
     }
     // # C: int getprotoent_r(struct protoent*, char*, size_t, struct protoent**)
     #[no_mangle]
     pub unsafe extern "C" fn getprotoent_r(rb: *mut protoent, buf: *mut u8, n: usize, result: *mut *mut protoent) -> i32 {
-        // SAFETY: as getprotobyname_r.
+        // SAFETY: deep-copy the lookup result into the caller rb/buf.
         unsafe { pack(getprotoent(), rb, buf, n, result) }
     }
 }
