@@ -196,6 +196,10 @@ pub mod x86_64 {
     pub const SEMOP: usize = 65;
     pub const SEMCTL: usize = 66;
     pub const SEMTIMEDOP: usize = 220;
+    // epoll (x86_64 syscall_64.tbl). epoll_wait composes from epoll_pwait.
+    pub const EPOLL_CREATE1: usize = 291;
+    pub const EPOLL_CTL: usize = 233;
+    pub const EPOLL_PWAIT: usize = 281;
 }
 
 pub mod aarch64 {
@@ -364,4 +368,8 @@ pub mod aarch64 {
     pub const SEMCTL: usize = 191;
     pub const SEMTIMEDOP: usize = 192;
     pub const SEMOP: usize = 193;
+    // epoll (asm-generic/unistd.h). No plain epoll_wait on arm — epoll_pwait.
+    pub const EPOLL_CREATE1: usize = 20;
+    pub const EPOLL_CTL: usize = 21;
+    pub const EPOLL_PWAIT: usize = 22;
 }
