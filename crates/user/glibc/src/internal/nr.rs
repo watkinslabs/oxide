@@ -155,6 +155,8 @@ pub mod x86_64 {
     pub const SCHED_RR_GET_INTERVAL: usize = 148;
     pub const SCHED_SETAFFINITY: usize = 203;
     pub const SCHED_GETAFFINITY: usize = 204;
+    pub const SCHED_SETATTR: usize = 314;
+    pub const SCHED_GETATTR: usize = 315;
     pub const GETRUSAGE: usize = 98;
     pub const GETPRIORITY: usize = 140;
     pub const SETPRIORITY: usize = 141;
@@ -419,6 +421,8 @@ pub mod aarch64 {
     pub const SCHED_GETPARAM: usize = 121;
     pub const SCHED_SETAFFINITY: usize = 122;
     pub const SCHED_GETAFFINITY: usize = 123;
+    pub const SCHED_SETATTR: usize = 274;
+    pub const SCHED_GETATTR: usize = 275;
     pub const SCHED_GET_PRIORITY_MAX: usize = 125;
     pub const SCHED_GET_PRIORITY_MIN: usize = 126;
     pub const SCHED_RR_GET_INTERVAL: usize = 127;
