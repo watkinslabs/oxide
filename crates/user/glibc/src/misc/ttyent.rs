@@ -148,6 +148,6 @@ pub unsafe extern "C" fn setttyent() -> i32 {
 // # C: int endttyent(void)
 #[no_mangle]
 pub unsafe extern "C" fn endttyent() -> i32 {
-    // SAFETY: clear the loaded state.
+    // SAFETY: reset the single-threaded global ttys cursor + free its lines.
     unsafe { let s = &mut *S.0.get(); s.idx = 0; s.loaded = false; s.lines = Vec::new(); } 1
 }
