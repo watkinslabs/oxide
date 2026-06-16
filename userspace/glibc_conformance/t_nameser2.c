@@ -32,5 +32,18 @@ int main(void) {
     char c1[256], c2[256];
     ns_makecanon("a.b.c", c1, sizeof c1); ns_makecanon("a.b.c...", c2, sizeof c2);
     printf("makecanon plain=[%s] trail=[%s]\n", c1, c2);
+
+    /* ns_name_pack (uncompressed) + ns_name_compress, NULL dnptrs */
+    unsigned char src[] = {3,'w','w','w',7,'e','x','a','m','p','l','e',3,'c','o','m',0};
+    unsigned char po[64];
+    int pk = ns_name_pack(src, po, sizeof po, NULL, NULL);
+    printf("pack r=%d match=%d\n", pk, memcmp(po, src, sizeof src) == 0);
+    unsigned char co[64];
+    int cm = ns_name_compress("www.example.com", co, sizeof co, NULL, NULL);
+    printf("compress r=%d match=%d\n", cm, memcmp(co, src, sizeof src) == 0);
+    unsigned char co2[64];
+    int cm2 = ns_name_compress("a.b.", co2, sizeof co2, NULL, NULL);
+    unsigned char exp2[] = {1,'a',1,'b',0};
+    printf("compress_fqdn r=%d match=%d\n", cm2, memcmp(co2, exp2, sizeof exp2) == 0);
     return 0;
 }
