@@ -107,6 +107,11 @@ mod imp {
         // SAFETY: t is a valid, fully-initialised struct tm.
         unsafe { timegm_of(&*t) }
     }
+    // # C: int dysize(int year) — days in `year` (366 if leap, else 365).
+    #[no_mangle]
+    pub extern "C" fn dysize(year: i32) -> i32 {
+        if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 }
+    }
     // localtime/localtime_r/mktime are zone-aware and live in time::tz (G16e).
 }
 
