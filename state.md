@@ -96,6 +96,7 @@ Re-audit then pick the next cluster:
   cargo build -q -p glibc --features freestanding --target x86_64-unknown-linux-gnu
   nm -D target/sysroot/x86_64-unknown-linux-gnu/lib/libc.so.6 | awk '$2~/[TWiBD]/{print $3}' | sed 's/@.*//' | sort -u > /tmp/ours
   comm -23 /tmp/host /tmp/ours | grep -vE '^_|f128|f32x|f64x'
-Then pick the next cluster — suggest ns_initparse/ns_parserr (ns_msg/ns_rr
-struct parse, host-diffable -lresolv), re_* BSD regex (engine exists), or
-libxcrypt crypt_gensalt (unit-test validated, not host-diffable).
+Then pick a lane from "Bigger remaining clusters" above — suggest res_mkquery/
+res_nmkquery (PURE query-packet build, host-diffable -lresolv) or ns_sprintrr
+(focused RR-type subset) for the next host-diffable work; or re_comp/re_exec
+(BSD-simple regex) to start the regex lane.
