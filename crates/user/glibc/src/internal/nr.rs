@@ -230,6 +230,9 @@ pub mod x86_64 {
     pub const FLOCK: usize = 73;
     pub const SENDFILE: usize = 40;
     pub const SPLICE: usize = 275;
+    pub const TEE: usize = 276;
+    pub const SYNC_FILE_RANGE: usize = 277;
+    pub const VMSPLICE: usize = 278;
     pub const COPY_FILE_RANGE: usize = 326;
     pub const FADVISE64: usize = 221;
     pub const MEMFD_CREATE: usize = 319;
@@ -490,7 +493,10 @@ pub mod aarch64 {
     pub const FSTATFS: usize = 44;
     pub const FLOCK: usize = 32;
     pub const SENDFILE: usize = 71;
+    pub const VMSPLICE: usize = 75;
     pub const SPLICE: usize = 76;
+    pub const TEE: usize = 77;
+    pub const SYNC_FILE_RANGE: usize = 84;
     pub const COPY_FILE_RANGE: usize = 285;
     pub const FADVISE64: usize = 223;
     pub const MEMFD_CREATE: usize = 279;
