@@ -13,6 +13,8 @@ use core::sync::atomic::{AtomicU32, Ordering};
 const FUTEX_WAIT_PRIVATE: usize = 128;
 const FUTEX_WAKE_PRIVATE: usize = 129;
 const ETIMEDOUT: i32 = 110;
+const CLOCK_MASK: i32 = 0xff;     // condattr low bits: clock id
+const CONDATTR_PSHARED: i32 = 0x100; // condattr bit 8: pshared
 
 #[repr(C)]
 pub struct pthread_cond_t {
@@ -36,7 +38,8 @@ pub unsafe extern "C" fn pthread_cond_init(c: *mut pthread_cond_t, attr: *const 
     // SAFETY: c is a writable condvar; attr null or a valid condattr.
     unsafe {
         (*c).__seq = 0;
-        (*c).__clock = if attr.is_null() { CLOCK_REALTIME } else { (*attr).__clock };
+        // condattr packs pshared in the high bits; only the clock drives waits.
+        (*c).__clock = if attr.is_null() { CLOCK_REALTIME } else { (*attr).__clock & CLOCK_MASK };
         (*c).__pad = [0; 10];
         0
     }
@@ -88,11 +91,16 @@ pub unsafe extern "C" fn pthread_cond_wait(c: *mut pthread_cond_t, m: *mut pthre
 // # C: int pthread_cond_timedwait(pthread_cond_t*, pthread_mutex_t*, const struct timespec*)
 #[no_mangle]
 pub unsafe extern "C" fn pthread_cond_timedwait(c: *mut pthread_cond_t, m: *mut pthread_mutex_t, abstime: *const timespec) -> i32 {
-    // SAFETY: c/m valid, m held; abstime a valid absolute deadline. FUTEX_WAIT
-    // takes a relative timeout, so convert abstime - now on the cond's clock.
+    // SAFETY: c/m valid, m held; wait on the cond's configured clock.
+    unsafe { clockwait_impl(c, m, (*c).__clock, abstime) }
+}
+
+// abstime(absolute, on `clk`) → relative FUTEX_WAIT timeout, then wait.
+unsafe fn clockwait_impl(c: *mut pthread_cond_t, m: *mut pthread_mutex_t, clk_sel: i32, abstime: *const timespec) -> i32 {
+    // SAFETY: c/m valid, m held; abstime null (infinite) or a valid deadline.
     unsafe {
         if abstime.is_null() { return wait_common(c, m, core::ptr::null()); }
-        let clk = if (*c).__clock == CLOCK_MONOTONIC { CLOCK_MONOTONIC } else { CLOCK_REALTIME };
+        let clk = if clk_sel == CLOCK_MONOTONIC { CLOCK_MONOTONIC } else { CLOCK_REALTIME };
         let mut now = timespec { tv_sec: 0, tv_nsec: 0 };
         clock_gettime(clk, &mut now);
         let mut sec = (*abstime).tv_sec - now.tv_sec;
@@ -102,6 +110,13 @@ pub unsafe extern "C" fn pthread_cond_timedwait(c: *mut pthread_cond_t, m: *mut 
         let rel = timespec { tv_sec: sec, tv_nsec: nsec };
         wait_common(c, m, &rel)
     }
+}
+
+// # C: int pthread_cond_clockwait(pthread_cond_t*, pthread_mutex_t*, clockid_t, const struct timespec*)
+#[no_mangle]
+pub unsafe extern "C" fn pthread_cond_clockwait(c: *mut pthread_cond_t, m: *mut pthread_mutex_t, clk: i32, abstime: *const timespec) -> i32 {
+    // SAFETY: c/m valid, m held; abstime an absolute deadline on `clk`.
+    unsafe { clockwait_impl(c, m, clk, abstime) }
 }
 
 // # C: int pthread_condattr_init(pthread_condattr_t*)
@@ -116,12 +131,26 @@ pub unsafe extern "C" fn pthread_condattr_destroy(_a: *mut pthread_condattr_t) -
 // # C: int pthread_condattr_setclock(pthread_condattr_t*, clockid_t)
 #[no_mangle]
 pub unsafe extern "C" fn pthread_condattr_setclock(a: *mut pthread_condattr_t, clk: i32) -> i32 {
-    // SAFETY: a points at a writable pthread_condattr_t; store the caller's clockid into it.
-    unsafe { (*a).__clock = clk; 0 }
+    if clk != CLOCK_REALTIME && clk != CLOCK_MONOTONIC { return 22; } // EINVAL
+    // SAFETY: a is a writable condattr; set the clock bits, preserve pshared.
+    unsafe { (*a).__clock = ((*a).__clock & !CLOCK_MASK) | (clk & CLOCK_MASK); 0 }
 }
 // # C: int pthread_condattr_getclock(const pthread_condattr_t*, clockid_t*)
 #[no_mangle]
 pub unsafe extern "C" fn pthread_condattr_getclock(a: *const pthread_condattr_t, out: *mut i32) -> i32 {
-    // SAFETY: a/out are valid condattr / clockid out-param.
-    unsafe { *out = (*a).__clock; 0 }
+    // SAFETY: a/out valid; return the clock bits only.
+    unsafe { *out = (*a).__clock & CLOCK_MASK; 0 }
+}
+// # C: int pthread_condattr_setpshared(pthread_condattr_t*, int)
+#[no_mangle]
+pub unsafe extern "C" fn pthread_condattr_setpshared(a: *mut pthread_condattr_t, ps: i32) -> i32 {
+    if ps != 0 && ps != 1 { return 22; }
+    // SAFETY: a is a writable condattr; toggle the pshared bit.
+    unsafe { (*a).__clock = ((*a).__clock & !CONDATTR_PSHARED) | (if ps != 0 { CONDATTR_PSHARED } else { 0 }); 0 }
+}
+// # C: int pthread_condattr_getpshared(const pthread_condattr_t*, int*)
+#[no_mangle]
+pub unsafe extern "C" fn pthread_condattr_getpshared(a: *const pthread_condattr_t, out: *mut i32) -> i32 {
+    // SAFETY: a/out valid; read the pshared bit.
+    unsafe { *out = ((*a).__clock & CONDATTR_PSHARED != 0) as i32; 0 }
 }
