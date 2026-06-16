@@ -33,9 +33,10 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   xprt/svcerr/svctcp/svcudp/getrpcport/netname/passwd2des/des_setparity/ruserpass.
   A whole subsystem (XDR serialization + RPC client/server). Biggest block.
   (getrpcent/byname/bynumber + _r already done — net/rpcent.rs.)
-- **resolver (~50)** — res_query/search/send/mkquery/nquery/nsearch/nsend/ninit/
-  res_gethostby*; __res_state; ns_* (ns_get16/put/name/parse); getifaddrs/
-  freeifaddrs (netlink RTM_GETADDR); getaddrinfo_a/gai_* (async, needs threads);
+- **resolver (~48)** — res_query/search/send/mkquery/nquery/nsearch/nsend/ninit/
+  res_gethostby*; __res_state; ns_* (ns_get16/put/name/parse); getaddrinfo_a/gai_*
+  (async, needs threads); (getifaddrs/freeifaddrs DONE — net/ifaddrs.rs, F510,
+  netlink RTM_GETLINK+GETADDR, host-diffable t_getifaddrs.c);
   inet6_opt_*/inet6_rth_*/inet6_option_* (RFC3542 ext-hdr, ~22); inet_net_pton/
   ntop/neta/nsap. (dn_comp/dn_expand/dn_skipname + recvmmsg/sendmmsg done.)
 - **fts/fts64 (10)** — fs-tree traversal (coreutils -R/du/find). Exact FTSENT ABI.
