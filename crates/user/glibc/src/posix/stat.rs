@@ -81,7 +81,7 @@ pub(crate) use exports::stat_raw;
 #[cfg(feature = "freestanding")]
 mod exports {
     use super::stat;
-    use crate::arch::syscall::sys4;
+    use crate::arch::syscall::{sys4, sys5};
     use crate::internal::errno::ret_isize;
     use crate::internal::nr;
     use crate::posix::io::AT_FDCWD;
@@ -139,6 +139,18 @@ mod exports {
     // # C: int fstatat64(int, const char *, struct stat64 *, int)
     // SAFETY: LFS alias of fstatat; identical struct layout on LP64. Forwards.
     #[no_mangle] pub unsafe extern "C" fn fstatat64(d: i32, p: *const u8, buf: *mut stat, f: i32) -> i32 { unsafe { fstatat(d, p, buf, f) } }
+
+    // # C: int statx(int dirfd, const char *path, int flags, unsigned int mask,
+    //               struct statx *buf)
+    // statx(2) — modern extensible stat (coreutils ls/stat, systemd). `struct
+    // statx` is arch-INDEPENDENT (fixed 256-byte layout), so it passes through
+    // as an opaque pointer the kernel fills; the conformance test pins it.
+    #[no_mangle]
+    pub unsafe extern "C" fn statx(dirfd: i32, path: *const u8, flags: i32, mask: u32, buf: *mut u8) -> i32 {
+        // SAFETY: path is NUL-terminated; buf is a writable 256-byte struct statx
+        // the kernel fills. Args passed straight to the statx(2) slot.
+        ret_isize(unsafe { sys5(nr::STATX, dirfd as usize, path as usize, flags as usize, mask as usize, buf as usize) }) as i32
+    }
     // # C: int __xstat(int ver, const char *, struct stat *) — old glibc inline-stat ABI
     // SAFETY: versioned-stat ABI alias; ver ignored, struct is our single stat. Forwards.
     #[no_mangle] pub unsafe extern "C" fn __xstat(_ver: i32, path: *const u8, buf: *mut stat) -> i32 { unsafe { stat(path, buf) } }
