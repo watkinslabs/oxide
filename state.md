@@ -4,18 +4,10 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **185/185**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Clean tree on
-`main`. `glibc.md` = live per-cluster TODO. F counter next = **537**
+`main`. `glibc.md` = live per-cluster TODO. F counter next = **537**, D = **113**
 (metadata/index.md).
 
-## INFLECTION (read first)
-The quick host-diffable clusters are largely exhausted. Remaining glibc gaps are
-all EITHER large (ns_sprintrr ~30-RR-type formatter; Sun RPC ~80) OR risky for
-bit-exact host-diff (re_* GNU regex engine semantics) OR not host-diffable
-(libxcrypt needs -lcrypt absent from harness → unit-test vectors). Pick a lane
-deliberately; the "one small cluster per PR in 20 min" rhythm no longer applies
-cleanly. F536 (crypt_gensalt) already broke it (unit-test validated).
-
-## Done this run (merged to main, F524–F536, one cluster per PR)
+## Done this run (merged to main, F524–F536, 13 PRs)
 - **F524** posix_spawn _np file actions + spawnattr getters + SETSIGDEF/SETSCHED — posix/spawn.rs
 - **F525** execveat/sockatmark/isfdtype — posix/process.rs + net/socket.rs + posix/stat.rs
 - **F526** pidfd_getpid + pidfd_spawn/spawnp (clone CLONE_PIDFD) — posix/modern.rs + posix/spawn.rs
@@ -23,80 +15,79 @@ cleanly. F536 (crypt_gensalt) already broke it (unit-test validated).
 - **F528** C23 math: logp1*/remquof*/lgammaf32_r/f64_r/strfromf64 — math/* + stdlib/fcvt.rs
 - **F529** pkey_alloc/free/mprotect + pkey_get/set (PKRU x86 / POR_EL0 arm) — posix/modern.rs
 - **F530** glob_pattern_p + lchmod (fchmodat2) + dysize — posix/glob.rs + posix/fs.rs + time/tm.rs
-- **F531** ns_get/put16/32 + ns_name_ntop/pton/skip — net/nameser.rs (NEW file, RFC1035)
-- **F532** ns_name_unpack/uncompress + ns_samename/samedomain/subdomain/makecanon — net/nameser.rs
-- **F533** ns_format_ttl + ns_parse_ttl — net/nameser.rs
-- **F534** ns_name_pack + ns_name_compress (uncompressed, like dn_comp) — net/nameser.rs
-- **F535** ns_initparse/ns_parserr/ns_skiprr/ns_msg_getflag — net/nameser.rs (NsMsg 80B/NsRr 1048B ABI)
+- **F531–F535** entire `ns_*` resolver family — net/nameser.rs (NEW): wire get/put, name
+  ntop/pton/skip/unpack/uncompress/pack/compress, domain relations, format/parse_ttl,
+  full DNS message parser (ns_initparse/parserr/skiprr/msg_getflag, NsMsg 80B/NsRr 1048B)
 - **F536** crypt_gensalt(+_rn/_ra) + crypt_rn/crypt_ra + crypt_preferred_method — crypt/mod.rs
-  (UNIT-TEST validated, not host-diff — harness has no -lcrypt)
+  (UNIT-TEST validated — harness has no -lcrypt)
 
-## Bigger remaining clusters (glibc.md §2) — pick a lane
-- **ns_sprintrr/ns_sprintrrf** — RR pretty-print; host-diffable (-lresolv) but a
-  big per-RR-type formatter (A/AAAA/NS/CNAME/SOA/MX/TXT/… ~30 types, ns_print.c).
-  A focused subset works IF you only test the types you implement.
-- **resolver (~45)** res_query/search/send/mkquery — needs DNS over sockets;
-  res_mkquery/res_nmkquery are PURE (build a query packet) → host-diffable subset.
-- **Sun RPC (~80)** clnt_*/svc_*/auth_*/pmap_* — needs sockets; rpc_msg XDR pure
-  (RFC5531) → xdr_* helpers are a host-diffable pure subset; clnt/svc need sockets.
-- **re_* BSD regex (~11)** — GNU re_pattern_buffer ABI over our regex engine.
-  RISK: GNU engine match semantics differ from our POSIX engine → host-diff may
-  fail on edge cases. re_comp/re_exec (BSD-simple) are the safest start.
-- **libxcrypt remainder** — crypt_checksalt, fcrypt(=crypt alias), xcrypt/xencrypt/
-  xdecrypt (SunRPC DES). Unit-test validated.
-- **BSD net-auth** rcmd/rexec/ruserok/iruserok/rresvport(_af)/bindresvport (sockets).
-- **multicast src filters** getsourcefilter/set + ipv4 variants (group_filter sockopt).
-- small leftovers: STREAMS getmsg/putmsg/isastream/fattach/fdetach (likely
-  compat-only/non-linkable), chflags family (murky errno), open_wmemstream,
-  malloc_info, psiginfo (needs glibc si_code→string tables — substantial),
-  gnu_get_libc_version/release (trivial but version string differs → not diffable).
+## CRITICAL FINDING — the verifiable surface is largely DONE (read before continuing)
+The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
+- **~190 hard-blocked** long double `*l` + `_Float128/_Float32x/_Float64x`. No Rust
+  extern-C type. Impossible. (glibc_unsupported.md)
+- **~106 Sun RPC** (clnt_*/svc_*/auth_*/pmap_*/xdr_callmsg/...). NOT VERIFIABLE here:
+  (a) host glibc keeps them COMPAT-ONLY — NOT linkable without libtirpc (absent), so
+  no host-diff oracle, and rpc/*.h headers are GONE (can't even declare the structs);
+  (b) our rpc/{xdr,...}.rs are `#![cfg(feature="freestanding")]` and their deps
+  (malloc/strlen) too, so `cargo test` on host can't reach them (and `--features
+  freestanding` host test = duplicate panic_impl). The XDR core already shipped this way
+  UNTESTED. Adding more RPC = unverifiable bolt-on → I declined (discipline). Doing RPC
+  properly first needs a test path: gate xdr+deps on `any(freestanding,test)`.
+- **socket/infra-dependent** clnt/svc, res_query/res_send, BSD net-auth (rcmd/rexec/
+  ruserok/rresvport/bindresvport), getsourcefilter/setsourcefilter, getrpcport — can't
+  verify without a live peer/server in the harness.
+- **res_mkquery/res_nmkquery** — pure + host-diffable IF the random 2-byte ID is masked,
+  BUT need the ~500-byte `__res_state` struct ABI + res_ninit, which we DON'T have.
+
+## Still tractable AND verifiable (the real remaining work — small)
+- **inet6_option_* (6, RFC2292)** — inet6_option_space/init/append/alloc/next/find;
+  cmsghdr Hop-by-Hop/Dest TLV builder. Host-LINKABLE + host-diffable. space(n)=
+  CMSG_SPACE((n+2+7)&~7) verified: space(0)=24, space(8)=32, space(16)=40. (Sibling of
+  the RFC3542 inet6_opt_* already done in F518.) Best next cluster.
+- **isctype (1)** — `isctype(c,mask)` = `__ctype_b_loc()[c] & mask` (returns the masked
+  bits, NOT a bool). We have the ctype table (iswctype works). Trivial, host-diffable.
+- **ns_sprintrr/ns_sprintrrf** — host-diffable (-lresolv) but INTRICATE: tab-column
+  alignment depends on owner-name length; per-RR-type rdata formatters (~30 types in
+  ns_print.c) + name decompression. Probed formats (A/AAAA/NS/CNAME/MX/TXT/PTR):
+  `<name>.\t\t<ttl> IN <TYPE><tab-pad><rdata>` (ttl via ns_format_ttl, "1H" etc.).
+  A focused subset is doable but high bit-exact-padding risk — iterate vs the oracle.
+- small maybes: llseek (=lseek on 64-bit; check it's linkable not compat-only),
+  gnu_get_libc_version/release (trivial but version string ≠ host → not diffable).
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need
-  round-to-odd via a wider intermediate type we lack in Rust extern-C. ffma is the
-  hard 3-term one.
-- **inet6_option_* (RFC2292, ~6)** obsolete, cmsghdr+ip6_hbh-wrapped.
+  round-to-odd via a wider intermediate type we lack in Rust extern-C. ffma hardest.
+- **psiginfo** — needs glibc's full si_code→string tables (substantial).
+- **open_wmemstream** — wide-stream orientation plumbing. **malloc_info** — XML stats dump.
 
-## Hard-blocked (NOT achievable — glibc_unsupported.md)
-long double `*l` (x86 f80) + `_Float128`/`_Float32x`/`_Float64x` (~700). No Rust
-extern-C type. Only worthwhile bit: a `%Lf`/`%Lg` printf/scanf asm shim.
+## The proven loop (for the tractable host-diffable ones)
+One cluster = one F<NN> branch (read+bump F in metadata/index.md). Build BOTH arches
+(`cargo build -q -p glibc --features freestanding --target {x86_64,aarch64}-unknown-linux-gnu`);
+write host-diffable t_*.c; `xtask glibc-test`; spec-lint; commit/PR/merge
+(`gh pr create…; gh pr merge --merge --delete-branch=true`); bump glibc.md.
+Author Chris Watkins, NO Co-Authored-By. spec-lint: `// SAFETY:` ≥30 chars on the line
+before `unsafe {`; every pub fn needs `# C:`. New syscalls: per-arch nr in internal/nr.rs.
 
-## The rhythm (proven, 13 PRs this run)
-One cluster = one F<NN> branch (read+bump F in metadata/index.md). Build BOTH
-arches (`cargo build -q -p glibc --features freestanding --target
-{x86_64,aarch64}-unknown-linux-gnu`); add host-diffable t_*.c (`#include` what
-mkstemp/structs need); `xtask glibc-test`; spec-lint clean; commit/PR/merge
-(`gh pr create … ; gh pr merge --merge --delete-branch=true`); bump glibc.md.
-Author Chris Watkins, NO Co-Authored-By. EXPORT: rustc cdylib exports
-`#[no_mangle]` items only. spec-lint: `// SAFETY:` ≥30 chars on the line before
-`unsafe {`; every `pub fn`/`pub(crate) fn` needs `# C:`. New syscalls: add
-per-arch nr in internal/nr.rs (x86 syscall_64.tbl, arm asm-generic).
-
-## Host-diffability gotchas learned this run
-- Some host symbols are COMPAT-ONLY (non-linkable): ustat, uselib, getmsg/putmsg.
-  Can't build a host oracle → can't differentially test. Keep wrapper, note it.
-- Differential harness needs BIT-EXACT match. Our lgamma is ~1 ULP off host → print
-  reduced precision for double lgamma. log1p/remquo etc. ARE bit-exact.
-- Uninitialized C locals + -O2 → layout-dependent flakes (zero-init them).
-
-## Probing host for exact semantics (the proven loop)
-Write /tmp/p.c, `cc p.c [-lresolv] -o pbin && ./pbin`, read EXACT output, match
-byte-for-byte. WATCH: C arg-eval order is right-to-left. Use a unique output
-binary name (not /tmp/pk etc. — collides with leftover dirs).
+## Host-diffability gotchas learned
+- COMPAT-ONLY host symbols (non-linkable, no oracle): ustat, uselib, getmsg/putmsg,
+  ALL crypt/xdr/rpc. Headers may also be absent (rpc/*.h gone → can't even declare structs).
+- Differential harness needs BIT-EXACT match. Our lgamma ~1 ULP off host → print reduced
+  precision. Uninitialized C locals + -O2 → layout flakes (zero-init).
+- Probe loop: write /tmp/p.c, `cc p.c [-lresolv] -o pbin && ./pbin`, match byte-for-byte.
+  Unique output binary name (not /tmp/pk — collides with leftover dirs).
 
 ## Boot / verify gate (mandatory before push for crates/user/glibc touches)
-Each glibc change invalidates the rootfs cache → x86 restages (~3-4 min) then
-boots. Run sequentially in ONE bg command (run_in_background:true): x86 grub
-(KVM, timeout 300) → pkill → `make smoke-arm SMOKE_TIMEOUT=800`. The push hook
-re-runs smoke (cache HIT, fast). `pkill -x qemu-system-<arch>`.
+glibc change invalidates rootfs cache → x86 restages (~3-4 min). Run sequentially in ONE
+bg command: x86 grub (KVM, timeout 300) → pkill → `make smoke-arm SMOKE_TIMEOUT=800`.
+`pkill -x qemu-system-<arch>`. Push hook re-runs smoke (cache HIT, fast).
 
 ## First task on restart
-Re-audit then pick the next cluster:
+Re-audit, then do the tractable cluster: **inet6_option_* + isctype** (host-diffable),
+then attempt ns_sprintrr (subset, iterate vs -lresolv oracle).
   nm -D /lib64/lib{c,m,pthread,rt,dl,resolv,util,crypt,anl}.so* | awk '$2~/[TWiB]/{print $3}' | sed 's/@.*//' | sort -u > /tmp/host
   cargo build -q -p glibc --features freestanding --target x86_64-unknown-linux-gnu
   nm -D target/sysroot/x86_64-unknown-linux-gnu/lib/libc.so.6 | awk '$2~/[TWiBD]/{print $3}' | sed 's/@.*//' | sort -u > /tmp/ours
   comm -23 /tmp/host /tmp/ours | grep -vE '^_|f128|f32x|f64x'
-Then pick a lane from "Bigger remaining clusters" above — suggest res_mkquery/
-res_nmkquery (PURE query-packet build, host-diffable -lresolv) or ns_sprintrr
-(focused RR-type subset) for the next host-diffable work; or re_comp/re_exec
-(BSD-simple regex) to start the regex lane.
+DECISION NEEDED: invest in (a) the RPC test-path refactor to unlock ~106 unverified→
+verified RPC symbols, or (b) accept RPC stays out and call the glibc surface "complete
+modulo impossible/infra-bound" once inet6_option_/isctype/ns_sprintrr land.
