@@ -23,7 +23,8 @@ Also DONE: libxcrypt compatibility aliases + crypt_checksalt (F548).
 Also DONE: C-locale strtof32_l/strtof64_l (F549); strtold/wcstold remain
 hard-blocked with the other long-double ABI functions.
 Also DONE: resolver validators res_hnok/res_ownok/res_mailok/res_dnok (F550)
-gethostent_r (F551), and setlogin ENOSYS stub (F552).
+gethostent_r (F551), setlogin ENOSYS stub (F552), and profil/sprofil +
+gmon no-ops (F553).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 163/163.
@@ -135,6 +136,8 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   the futex wait loop, host-diffable timeout coverage in t_ipcsem.c),
   (setlogin DONE — F552, glibc-matching ENOSYS stub host-diffed in
   t_deprecated.c),
+  (profil/sprofil + monstartup/moncontrol/mcount DONE — F553, successful
+  no-op compatibility hooks host-diffed in t_deprecated.c),
   lockf, scandirat, timespec_get/getres, ftok, ftime, ualarm,
   group_member, gnu_dev_major/minor/makedev, glob_pattern_p, ttyslot, scandirat/scandirat64 (DONE F519), lockf/lockf64 (DONE F520, posix/lockf.rs, t_lockf.c),
   (sigabbrev_np/sigdescr_np/strerrorname_np/strerrordesc_np DONE — F512,

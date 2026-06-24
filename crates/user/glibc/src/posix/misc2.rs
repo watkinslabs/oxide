@@ -122,6 +122,26 @@ pub unsafe extern "C" fn setlogin(_name: *const c_char) -> i32 {
     crate::internal::errno::set(ENOSYS); -1
 }
 
+// # C: int profil(unsigned short *sample_buffer, size_t size, size_t offset, unsigned int scale)
+#[no_mangle]
+pub unsafe extern "C" fn profil(_sample_buffer: *mut u16, _size: usize, _offset: usize, _scale: u32) -> i32 { 0 }
+
+// # C: int sprofil(struct prof *profp, int profcnt, struct timeval *tvp, unsigned int flags)
+#[no_mangle]
+pub unsafe extern "C" fn sprofil(_profp: *mut c_void, _profcnt: i32, _tvp: *mut c_void, _flags: u32) -> i32 { 0 }
+
+// # C: void monstartup(unsigned long lowpc, unsigned long highpc)
+#[no_mangle]
+pub extern "C" fn monstartup(_lowpc: usize, _highpc: usize) {}
+
+// # C: void moncontrol(int mode)
+#[no_mangle]
+pub extern "C" fn moncontrol(_mode: i32) {}
+
+// # C: void mcount(void)
+#[no_mangle]
+pub extern "C" fn mcount() {}
+
 // # C: int ustat(dev_t dev, struct ustat *ubuf) — deprecated; x86_64 only.
 #[no_mangle]
 pub unsafe extern "C" fn ustat(dev: u64, ubuf: *mut c_void) -> i32 {
