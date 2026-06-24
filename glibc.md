@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2180 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2199 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **194/194**; both arches boot.
 
@@ -58,6 +58,9 @@ Also DONE: legacy compat exports matherr, sigvec, step/advance, loc1/loc2/locs,
 and tr_break (F581).
 Also DONE: resolver UDP query/send/search exports res_query/res_search/
 res_querydomain/res_send and res_n* variants (F582).
+Also DONE: SunRPC keyserv/netname/DES compat exports getnetname,
+host2netname/user2netname, netname2host/netname2user,
+getpublickey/getsecretkey, key_* helpers, passwd2des, xencrypt/xdecrypt (F583).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
