@@ -265,4 +265,5 @@
     cprojl;
     creall;
     isinfl;
-    isnanl;};
+    isnanl;
+    rintl;};
