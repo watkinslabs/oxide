@@ -15,6 +15,42 @@ unsafe impl Sync for CreateErr {}
 #[no_mangle]
 static rpc_createerr: CreateErr = CreateErr(UnsafeCell::new([0; 4]));
 
+#[repr(transparent)]
+struct FdSet(UnsafeCell<[u64; 16]>);
+// SAFETY: svc_fdset is the historical unsynchronised SunRPC fd_set global.
+unsafe impl Sync for FdSet {}
+
+#[repr(transparent)]
+struct PtrCell(UnsafeCell<usize>);
+// SAFETY: svc_pollfd is a historical writable SunRPC global pointer.
+unsafe impl Sync for PtrCell {}
+
+#[repr(transparent)]
+struct I32Cell(UnsafeCell<i32>);
+// SAFETY: svc_max_pollfd is a historical writable SunRPC global integer.
+unsafe impl Sync for I32Cell {}
+
+#[repr(transparent)]
+struct Stats(UnsafeCell<[u32; 8]>);
+// SAFETY: svcauthdes_stats is historical unsynchronised SunRPC stats data.
+unsafe impl Sync for Stats {}
+
+// # C: fd_set svc_fdset;
+#[no_mangle]
+static svc_fdset: FdSet = FdSet(UnsafeCell::new([0; 16]));
+
+// # C: struct pollfd *svc_pollfd;
+#[no_mangle]
+static svc_pollfd: PtrCell = PtrCell(UnsafeCell::new(0));
+
+// # C: int svc_max_pollfd;
+#[no_mangle]
+static svc_max_pollfd: I32Cell = I32Cell(UnsafeCell::new(0));
+
+// # C: struct authdes_stats svcauthdes_stats;
+#[no_mangle]
+static svcauthdes_stats: Stats = Stats(UnsafeCell::new([0; 8]));
+
 // # C: AUTH *authnone_create(void)
 #[no_mangle]
 pub extern "C" fn authnone_create() -> *mut c_void {
@@ -186,3 +222,127 @@ pub unsafe extern "C" fn getrpcport(_host: *const c_char, _prognum: u64, _versnu
 pub unsafe extern "C" fn rtime(_addrp: *mut c_void, _timep: *mut c_void, _timeout: *mut c_void) -> i32 {
     -1
 }
+
+// # C: SVCXPRT *svcraw_create(void)
+#[no_mangle]
+pub extern "C" fn svcraw_create() -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+// # C: SVCXPRT *svcfd_create(int fd, unsigned sendsize, unsigned recvsize)
+#[no_mangle]
+pub extern "C" fn svcfd_create(_fd: i32, _sendsize: u32, _recvsize: u32) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+// # C: SVCXPRT *svctcp_create(int sock, unsigned sendsize, unsigned recvsize)
+#[no_mangle]
+pub extern "C" fn svctcp_create(_sock: i32, _sendsize: u32, _recvsize: u32) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+// # C: SVCXPRT *svcudp_create(int sock)
+#[no_mangle]
+pub extern "C" fn svcudp_create(_sock: i32) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+// # C: SVCXPRT *svcudp_bufcreate(int sock, unsigned sendsz, unsigned recvsz)
+#[no_mangle]
+pub extern "C" fn svcudp_bufcreate(_sock: i32, _sendsz: u32, _recvsz: u32) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+// # C: int svcudp_enablecache(SVCXPRT *transp, unsigned size)
+#[no_mangle]
+pub unsafe extern "C" fn svcudp_enablecache(_transp: *mut c_void, _size: u32) -> i32 {
+    0
+}
+
+// # C: SVCXPRT *svcunix_create(int sock, unsigned sendsize, unsigned recvsize, char *path)
+#[no_mangle]
+pub unsafe extern "C" fn svcunix_create(_sock: i32, _sendsize: u32, _recvsize: u32, _path: *const c_char) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+// # C: SVCXPRT *svcunixfd_create(int fd, unsigned sendsize, unsigned recvsize)
+#[no_mangle]
+pub extern "C" fn svcunixfd_create(_fd: i32, _sendsize: u32, _recvsize: u32) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+// # C: bool_t svc_register(SVCXPRT *xprt, unsigned long prog, unsigned long vers, void (*dispatch)(), unsigned protocol)
+#[no_mangle]
+pub unsafe extern "C" fn svc_register(_xprt: *mut c_void, _prog: u64, _vers: u64, _dispatch: *const c_void, _protocol: u32) -> i32 {
+    0
+}
+
+// # C: void svc_unregister(unsigned long prog, unsigned long vers)
+#[no_mangle]
+pub extern "C" fn svc_unregister(_prog: u64, _vers: u64) {}
+
+// # C: bool_t svc_sendreply(SVCXPRT *xprt, xdrproc_t xdr_results, caddr_t xdr_location)
+#[no_mangle]
+pub unsafe extern "C" fn svc_sendreply(_xprt: *mut c_void, _xdr_results: *const c_void, _xdr_location: *mut c_void) -> i32 {
+    0
+}
+
+// # C: void svc_getreq(int rdfds)
+#[no_mangle]
+pub extern "C" fn svc_getreq(_rdfds: i32) {}
+
+// # C: void svc_getreqset(fd_set *readfds)
+#[no_mangle]
+pub unsafe extern "C" fn svc_getreqset(_readfds: *mut c_void) {}
+
+// # C: void svc_getreq_poll(struct pollfd *pfdp, int pollretval)
+#[no_mangle]
+pub unsafe extern "C" fn svc_getreq_poll(_pfdp: *mut c_void, _pollretval: i32) {}
+
+// # C: void svc_getreq_common(int fd)
+#[no_mangle]
+pub extern "C" fn svc_getreq_common(_fd: i32) {}
+
+// # C: void svc_run(void)
+#[no_mangle]
+pub extern "C" fn svc_run() {}
+
+// # C: void svc_exit(void)
+#[no_mangle]
+pub extern "C" fn svc_exit() {}
+
+// # C: void svcerr_auth(SVCXPRT *xprt, enum auth_stat why)
+#[no_mangle]
+pub unsafe extern "C" fn svcerr_auth(_xprt: *mut c_void, _why: i32) {}
+
+// # C: void svcerr_decode(SVCXPRT *xprt)
+#[no_mangle]
+pub unsafe extern "C" fn svcerr_decode(_xprt: *mut c_void) {}
+
+// # C: void svcerr_noproc(SVCXPRT *xprt)
+#[no_mangle]
+pub unsafe extern "C" fn svcerr_noproc(_xprt: *mut c_void) {}
+
+// # C: void svcerr_noprog(SVCXPRT *xprt)
+#[no_mangle]
+pub unsafe extern "C" fn svcerr_noprog(_xprt: *mut c_void) {}
+
+// # C: void svcerr_progvers(SVCXPRT *xprt, unsigned long low, unsigned long high)
+#[no_mangle]
+pub unsafe extern "C" fn svcerr_progvers(_xprt: *mut c_void, _low: u64, _high: u64) {}
+
+// # C: void svcerr_systemerr(SVCXPRT *xprt)
+#[no_mangle]
+pub unsafe extern "C" fn svcerr_systemerr(_xprt: *mut c_void) {}
+
+// # C: void svcerr_weakauth(SVCXPRT *xprt)
+#[no_mangle]
+pub unsafe extern "C" fn svcerr_weakauth(_xprt: *mut c_void) {}
+
+// # C: void xprt_register(SVCXPRT *xprt)
+#[no_mangle]
+pub unsafe extern "C" fn xprt_register(_xprt: *mut c_void) {}
+
+// # C: void xprt_unregister(SVCXPRT *xprt)
+#[no_mangle]
+pub unsafe extern "C" fn xprt_unregister(_xprt: *mut c_void) {}
