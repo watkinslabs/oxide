@@ -15,11 +15,13 @@ pub(crate) struct MemCookie {
     buf: *mut u8,
     pos: usize,
     len: usize,  // logical length: readable extent / write high-water mark
+    term: usize, // terminator slot; differs from len for open_wmemstream seek-back writes
     cap: usize,  // allocated capacity (fmemopen: fixed = size; memstream grows)
     readable: bool,
     writable: bool,
     nul_term: bool,        // keep a NUL just past the data (w/a fmemopen, memstream)
     dynamic: bool,         // open_memstream: realloc-grow + publish to user ptrs
+    wide: bool,            // open_wmemstream: buf/pos/len/cap are wchar_t units
     own_buf: bool,         // free buf on close (fmemopen NULL-buf, memstream)
     uptr: *mut *mut u8,    // open_memstream: *uptr = buf
     usz: *mut usize,       // open_memstream: *usz = len
@@ -36,7 +38,13 @@ unsafe fn publish(c: *mut MemCookie) {
     // SAFETY: c is a live cookie; for dynamic streams uptr/usz are the caller's
     // out-params and buf has room for the terminator (ensured on every write).
     unsafe {
-        if (*c).nul_term && (*c).len < (*c).cap { *(*c).buf.add((*c).len) = 0; }
+        if (*c).nul_term && (*c).len < (*c).cap {
+            if (*c).wide {
+                if (*c).term < (*c).cap { *((*c).buf as *mut i32).add((*c).term) = 0; }
+            } else {
+                *(*c).buf.add((*c).len) = 0;
+            }
+        }
         if (*c).dynamic {
             if !(*c).uptr.is_null() { *(*c).uptr = (*c).buf; }
             if !(*c).usz.is_null() { *(*c).usz = (*c).len; }
@@ -45,13 +53,14 @@ unsafe fn publish(c: *mut MemCookie) {
 }
 
 unsafe fn grow(c: *mut MemCookie, need: usize) -> bool {
-    // SAFETY: c is a live dynamic cookie; realloc buf to hold `need` bytes plus
-    // the always-present NUL terminator, doubling to amortise.
+    // SAFETY: c is a live dynamic cookie; realloc buf to hold `need` elements
+    // plus the always-present terminator, doubling to amortise.
     unsafe {
-        if need < (*c).cap { return true; } // room for need bytes + the NUL
+        if need < (*c).cap { return true; } // room for need elements + the NUL
         let mut nc = if (*c).cap == 0 { 64 } else { (*c).cap };
         while nc < need + 1 { nc *= 2; }
-        let nb = heap::realloc((*c).buf, nc);
+        let elem = if (*c).wide { core::mem::size_of::<i32>() } else { 1 };
+        let nb = heap::realloc((*c).buf, nc * elem);
         if nb.is_null() { return false; }
         (*c).buf = nb; (*c).cap = nc; true
     }
@@ -62,6 +71,7 @@ pub(crate) unsafe fn mem_read(f: *mut FILE, dst: *mut u8, n: usize) -> isize {
     unsafe {
         let c = ck(f);
         if !(*c).readable { return 0; }
+        if (*c).wide { return 0; }
         let avail = (*c).len.saturating_sub((*c).pos);
         let r = n.min(avail);
         if r > 0 { core::ptr::copy_nonoverlapping((*c).buf.add((*c).pos), dst, r); (*c).pos += r; }
@@ -75,6 +85,7 @@ pub(crate) unsafe fn mem_write(f: *mut FILE, src: *const u8, n: usize) -> isize 
     unsafe {
         let c = ck(f);
         if !(*c).writable || n == 0 { return 0; }
+        if (*c).wide { return 0; }
         let w = if (*c).dynamic {
             if !grow(c, (*c).pos + n) { return 0; }
             n
@@ -85,6 +96,7 @@ pub(crate) unsafe fn mem_write(f: *mut FILE, src: *const u8, n: usize) -> isize 
         };
         if w > 0 { core::ptr::copy_nonoverlapping(src, (*c).buf.add((*c).pos), w); (*c).pos += w; }
         if (*c).pos > (*c).len { (*c).len = (*c).pos; }
+        (*c).term = (*c).len;
         if (*c).nul_term {
             // NUL just past the data, or over the last byte when the buffer is full
             let np = if (*c).pos < (*c).cap { (*c).pos } else { (*c).cap - 1 };
@@ -118,6 +130,25 @@ pub(crate) unsafe fn mem_tell(f: *mut FILE) -> i64 {
 pub(crate) unsafe fn mem_flush(f: *mut FILE) {
     // SAFETY: f is a memory stream with a live cookie.
     unsafe { publish(ck(f)); }
+}
+
+pub(crate) unsafe fn wmem_write(f: *mut FILE, wc: i32) -> Option<bool> {
+    // SAFETY: f is a memory stream; when it is an open_wmemstream, append one
+    // wchar_t unit and republish the wchar buffer/length.
+    unsafe {
+        if !is_mem(f) { return None; }
+        let c = ck(f);
+        if !(*c).wide { return None; }
+        if !(*c).writable { return Some(false); }
+        if !grow(c, (*c).pos + 1) { return Some(false); }
+        let wb = (*c).buf as *mut i32;
+        *wb.add((*c).pos) = wc;
+        (*c).pos += 1;
+        (*c).len = (*c).pos;
+        if (*c).pos > (*c).term { (*c).term = (*c).pos; }
+        publish(c);
+        Some(true)
+    }
 }
 
 // fclose on a memory stream: finalize, then free the buffer (if owned) + cookie.
@@ -167,8 +198,8 @@ pub unsafe extern "C" fn fmemopen(buf: *mut u8, size: usize, mode: *const u8) ->
             _ => (0, size), // r / r+
         };
         let c = new_cookie(MemCookie {
-            buf: b, pos, len, cap: size, readable, writable,
-            nul_term: m0 == b'w' || m0 == b'a', dynamic: false, own_buf: own,
+            buf: b, pos, len, term: len, cap: size, readable, writable,
+            nul_term: m0 == b'w' || m0 == b'a', dynamic: false, wide: false, own_buf: own,
             uptr: core::ptr::null_mut(), usz: core::ptr::null_mut(),
         });
         if c.is_null() { if own { heap::free(b); } return core::ptr::null_mut(); }
@@ -189,14 +220,40 @@ pub unsafe extern "C" fn open_memstream(ptr: *mut *mut u8, sizeloc: *mut usize) 
         let b = heap::malloc(64); if b.is_null() { return core::ptr::null_mut(); }
         *b = 0;
         let c = new_cookie(MemCookie {
-            buf: b, pos: 0, len: 0, cap: 64, readable: false, writable: true,
-            nul_term: true, dynamic: true, own_buf: true, uptr: ptr, usz: sizeloc,
+            buf: b, pos: 0, len: 0, term: 0, cap: 64, readable: false, writable: true,
+            nul_term: true, dynamic: true, wide: false, own_buf: true, uptr: ptr, usz: sizeloc,
         });
         if c.is_null() { heap::free(b); return core::ptr::null_mut(); }
         let f = alloc_file(-1, 0);
         if f.is_null() { heap::free(c as *mut u8); heap::free(b); return core::ptr::null_mut(); }
         set_cookie(f, c as *mut u8);
         *ptr = b; *sizeloc = 0;
+        f
+    }
+}
+
+// # C: FILE *open_wmemstream(wchar_t **ptr, size_t *sizeloc)
+#[no_mangle]
+pub unsafe extern "C" fn open_wmemstream(ptr: *mut *mut i32, sizeloc: *mut usize) -> *mut FILE {
+    // SAFETY: ptr/sizeloc are writable out-params updated on every wide write,
+    // flush, and close. The grown wchar_t buffer is handed to the caller.
+    unsafe {
+        if ptr.is_null() || sizeloc.is_null() { crate::internal::errno::set(EINVAL); return core::ptr::null_mut(); }
+        let cap = 64usize;
+        let bytes = cap * core::mem::size_of::<i32>();
+        let b = heap::malloc(bytes); if b.is_null() { return core::ptr::null_mut(); }
+        *(b as *mut i32) = 0;
+        let c = new_cookie(MemCookie {
+            buf: b, pos: 0, len: 0, term: 0, cap, readable: false, writable: true,
+            nul_term: true, dynamic: true, wide: true, own_buf: true,
+            uptr: ptr as *mut *mut u8, usz: sizeloc,
+        });
+        if c.is_null() { heap::free(b); return core::ptr::null_mut(); }
+        let f = alloc_file(-1, 0);
+        if f.is_null() { heap::free(c as *mut u8); heap::free(b); return core::ptr::null_mut(); }
+        set_cookie(f, c as *mut u8);
+        super::file::set_orient(f, 1);
+        *ptr = b as *mut i32; *sizeloc = 0;
         f
     }
 }
