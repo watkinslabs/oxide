@@ -88,6 +88,71 @@ pub extern "C" fn ttyname(fd: i32) -> *mut u8 {
     buf as *mut u8
 }
 
+unsafe fn cstr_eq(a: *const u8, b: *const u8) -> bool {
+    // SAFETY: both inputs are NUL-terminated C strings from libc-owned buffers.
+    unsafe {
+        if a.is_null() || b.is_null() { return false; }
+        let mut i = 0usize;
+        loop {
+            let ca = *a.add(i);
+            let cb = *b.add(i);
+            if ca != cb { return false; }
+            if ca == 0 { return true; }
+            i += 1;
+        }
+    }
+}
+
+unsafe fn tty_slot_for(path: *const u8) -> i32 {
+    // SAFETY: path is a NUL-terminated tty path. Scan /etc/ttys through the
+    // ttyent API and compare both "/dev/name" and bare "name" spellings.
+    unsafe {
+        if path.is_null() { return 0; }
+        let mut bare = path;
+        if *path == b'/'
+            && *path.add(1) == b'd'
+            && *path.add(2) == b'e'
+            && *path.add(3) == b'v'
+            && *path.add(4) == b'/'
+        {
+            bare = path.add(5);
+        }
+        if crate::misc::ttyent::setttyent() == 0 { return 0; }
+        let mut slot = 1i32;
+        loop {
+            let ent = crate::misc::ttyent::getttyent();
+            if ent.is_null() { break; }
+            let name = (*ent).ty_name as *const u8;
+            if cstr_eq(name, path) || cstr_eq(name, bare) {
+                crate::misc::ttyent::endttyent();
+                return slot;
+            }
+            slot += 1;
+        }
+        crate::misc::ttyent::endttyent();
+        0
+    }
+}
+
+// # C: int ttyslot(void)
+#[no_mangle]
+pub unsafe extern "C" fn ttyslot() -> i32 {
+    // SAFETY: ttyname_r writes into the fixed local buffer; tty_slot_for only
+    // reads the NUL-terminated result while the buffer is live.
+    unsafe {
+        let mut buf = [0u8; TTY_BUF];
+        let mut fd = 0i32;
+        while fd < 3 {
+            if ttyname_r(fd, buf.as_mut_ptr(), buf.len()) == 0 {
+                let slot = tty_slot_for(buf.as_ptr());
+                if slot != 0 { return slot; }
+            }
+            fd += 1;
+        }
+        0
+    }
+}
+
 // # C: pid_t tcgetpgrp(int fd)
 #[no_mangle]
 pub extern "C" fn tcgetpgrp(fd: i32) -> i32 {
