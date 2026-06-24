@@ -58,5 +58,12 @@ int main(void){
     ira.s_addr = htonl(raddr);
     errno = 0; show("iruserok", iruserok(raddr, 0, "remote", "local"));
     errno = 0; show("iruserok_af", iruserok_af(&ira, 0, "remote", "local", AF_INET));
+    char host1[] = "example.invalid", host2[] = "example.invalid";
+    char host3[] = "example.invalid", host4[] = "example.invalid";
+    char *phost1 = host1, *phost2 = host2, *phost3 = host3, *phost4 = host4;
+    errno = 0; show("rcmd", rcmd(&phost1, 1, "remote", "local", "true", NULL));
+    errno = 0; show("rcmd_af", rcmd_af(&phost2, 1, "remote", "local", "true", NULL, AF_INET));
+    errno = 0; show("rexec", rexec(&phost3, 1, "remote", "pass", "true", NULL));
+    errno = 0; show("rexec_af", rexec_af(&phost4, 1, "remote", "pass", "true", NULL, AF_INET));
     return 0;
 }
