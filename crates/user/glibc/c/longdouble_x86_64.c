@@ -505,3 +505,53 @@ long double remainderl(long double numerator, long double denominator) {
 long double dreml(long double numerator, long double denominator) {
     return x87_fprem1(numerator, denominator);
 }
+
+static unsigned long long nan_payloadl(const char *tagp) {
+    unsigned long long payload = 0;
+    int base = 10;
+
+    if (tagp == (const char *)0) {
+        return 0;
+    }
+    if (tagp[0] == '0' && (tagp[1] == 'x' || tagp[1] == 'X')) {
+        base = 16;
+        tagp += 2;
+    }
+    while (*tagp != '\0') {
+        unsigned int digit;
+        if (*tagp >= '0' && *tagp <= '9') {
+            digit = (unsigned int)(*tagp - '0');
+        } else if (base == 16 && *tagp >= 'a' && *tagp <= 'f') {
+            digit = (unsigned int)(*tagp - 'a' + 10);
+        } else if (base == 16 && *tagp >= 'A' && *tagp <= 'F') {
+            digit = (unsigned int)(*tagp - 'A' + 10);
+        } else {
+            return 0;
+        }
+        if (digit >= (unsigned int)base) {
+            return 0;
+        }
+        payload = payload * (unsigned long long)base + (unsigned long long)digit;
+        payload &= 0x3fffffffffffffffull;
+        tagp += 1;
+    }
+    return payload;
+}
+
+long double nanl(const char *tagp) {
+    union {
+        long double value;
+        unsigned char bytes[16];
+    } u;
+    unsigned long long sig = 0xc000000000000000ull | nan_payloadl(tagp);
+
+    for (unsigned int i = 0; i < 16; i += 1) {
+        u.bytes[i] = 0;
+    }
+    for (unsigned int i = 0; i < 8; i += 1) {
+        u.bytes[i] = (unsigned char)(sig >> (i * 8));
+    }
+    u.bytes[8] = 0xffu;
+    u.bytes[9] = 0x7fu;
+    return u.value;
+}
