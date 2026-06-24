@@ -73,6 +73,7 @@ const _: () = assert!(core::mem::size_of::<iovec>() == 16);
 #[cfg(feature = "freestanding")]
 mod exports {
     use super::*;
+    use core::cell::UnsafeCell;
     use crate::arch::syscall::{sys1, sys3, sys4, sys5, sys6};
     use crate::internal::errno::ret_isize;
     use crate::internal::nr;
@@ -84,6 +85,16 @@ mod exports {
     const MCAST_MSFILTER: i32 = 48;
     const ENOMEM: i32 = 12;
     const EINVAL: i32 = 22;
+
+    #[repr(transparent)]
+    struct I32Cell(UnsafeCell<i32>);
+    // SAFETY: rexecoptions is a historical writable C data symbol. glibc also
+    // exposes it as unsynchronised process-global state.
+    unsafe impl Sync for I32Cell {}
+
+    // # C: int rexecoptions;
+    #[no_mangle]
+    static rexecoptions: I32Cell = I32Cell(UnsafeCell::new(0));
 
     #[repr(C)]
     struct IpMsfilter {
