@@ -9,6 +9,8 @@
 
 extern int revoke(const char *);
 extern int setlogin(const char *);
+extern int chflags(const char *, unsigned long);
+extern int fchflags(int, unsigned long);
 extern int profil(unsigned short *, size_t, size_t, unsigned int);
 extern int sprofil(void *, int, void *, unsigned int);
 extern void monstartup(unsigned long, unsigned long);
@@ -25,6 +27,8 @@ static void show(const char *n, int r) { printf("%s=%d errno=%d\n", n, r, r < 0 
 int main(void) {
     errno = 0; show("revoke", revoke("/dev/null"));
     errno = 0; show("setlogin", setlogin("oxide"));
+    errno = 0; show("chflags", chflags("/dev/null", 0));
+    errno = 0; show("fchflags", fchflags(-1, 0));
     unsigned short profbuf[4] = {0};
     errno = 0; show("profil", profil(profbuf, sizeof profbuf, 0, 1));
     errno = 0; show("sprofil", sprofil(NULL, 0, NULL, 0));
