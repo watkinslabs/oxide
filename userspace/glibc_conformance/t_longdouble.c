@@ -1,3 +1,4 @@
+#include <complex.h>
 #include <math.h>
 #include <stdio.h>
 
@@ -14,6 +15,10 @@ int main(void) {
     volatile long double mz = -0.0L;
     volatile long double zero = 0.0L;
 
+    long double _Complex z;
+    __real__ z = -3.0L;
+    __imag__ z = 4.0L;
+    long double _Complex cz = conjl(z);
     long double nanv = zero / zero;
     long double infv = pos / zero;
 
@@ -30,5 +35,10 @@ int main(void) {
            __signbitl(mz) ? 1 : 0,
            __fpclassifyl(zero),
            __issignalingl(nanv) ? 1 : 0);
+    printf("complex_access=%d/%d/%d/%d\n",
+           creall(z) == -3.0L,
+           cimagl(z) == 4.0L,
+           creall(cz) == -3.0L,
+           cimagl(cz) == -4.0L);
     return 0;
 }
