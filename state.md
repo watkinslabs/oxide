@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **191/191**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F553-profil-gmon-noops`. `glibc.md` = live per-cluster TODO. F counter next = **554**, B = **138**, D = **112**
+`F554-register-printf-type`. `glibc.md` = live per-cluster TODO. F counter next = **555**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -105,6 +105,10 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   stable host behavior exercised here; host-diffed in t_deprecated.c.
   Verification: `xtask glibc-test` 191/191; both freestanding arch builds;
   `spec-lint`; filtered symbol audit now 360.
+- **F554 DONE locally:** register_printf_type added as the GNU printf
+  extension type-ID allocator starting at 8; host-diffed in t_printf_ext.c.
+  Verification: `xtask glibc-test` 192/192; both freestanding arch builds;
+  `spec-lint`; filtered symbol audit now 359.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
