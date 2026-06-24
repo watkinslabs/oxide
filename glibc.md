@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2172 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2180 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **194/194**; both arches boot.
 
@@ -56,6 +56,8 @@ Also DONE: STREAMS ENOSYS stubs getmsg/putmsg/getpmsg/putpmsg/fattach/
 fdetach/isastream (F580).
 Also DONE: legacy compat exports matherr, sigvec, step/advance, loc1/loc2/locs,
 and tr_break (F581).
+Also DONE: resolver UDP query/send/search exports res_query/res_search/
+res_querydomain/res_send and res_n* variants (F582).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
@@ -123,6 +125,9 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (res_mkquery/res_nmkquery DONE — F575, net/resolv_query.rs, pure standard
   QUERY packet builders using ns_name_compress and resolver options for RD/AD
   flags; host-diffable t_res_mkquery.c masks random IDs.)
+  (res_query/res_search/res_querydomain/res_send and res_n* variants DONE —
+  F582, net/resolv_query.rs, UDP to first IPv4 /etc/resolv.conf nameserver with
+  bounded ppoll timeout.)
   (gai_error/gai_cancel/gai_suspend DONE — F576, net/addrinfo.rs, completed/
   unsubmitted async status helpers plus GNU EAI strerror strings; host-diffable
   t_gai_async.c. getaddrinfo_a DONE — F577, synchronous GAI_WAIT/GAI_NOWAIT
