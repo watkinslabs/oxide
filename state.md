@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **194/194**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F583-sunrpc-key-stubs`. `glibc.md` = live per-cluster TODO. F counter next = **584**, B = **138**, D = **112**
+`F584-sunrpc-client-stubs`. `glibc.md` = live per-cluster TODO. F counter next = **585**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -244,6 +244,12 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   added beside des_api. Current Fedora exposes them compat-only, so
   verification is regression suite + both freestanding arch builds +
   `spec-lint` + audit drop to 249.
+- **F584 DONE locally:** SunRPC client/auth/portmapper compatibility exports
+  added in rpc/stubs.rs, including authdes/authunix/authnone, clnt_*,
+  pmap_*, callrpc/registerrpc, rpc_createerr, get_myaddress/getrpcport, and
+  rtime. These are conservative no-runtime stubs for compat-only host symbols.
+  Verification: regression suite + both freestanding arch builds + `spec-lint`
+  + audit drop to 219.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
