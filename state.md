@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **194/194**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F576-gai-status`. `glibc.md` = live per-cluster TODO. F counter next = **577**, B = **138**, D = **112**
+`F577-getaddrinfo-a`. `glibc.md` = live per-cluster TODO. F counter next = **578**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -207,6 +207,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   strings. Host-diffed in t_gai_async.c. Verification: `xtask glibc-test`
   194/194; both freestanding arch builds; `spec-lint`; filtered symbol audit
   now 301.
+- **F577 DONE locally:** getaddrinfo_a added with synchronous GAI_WAIT/GAI_NOWAIT
+  completion over the existing getaddrinfo implementation, storing per-request
+  `gaicb.__return` and result pointers. Host-diffed in t_gai_async.c.
+  Verification: `xtask glibc-test` 194/194; both freestanding arch builds;
+  `spec-lint`; filtered symbol audit now 300.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
