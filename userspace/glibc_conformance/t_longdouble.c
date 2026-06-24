@@ -54,6 +54,7 @@ int main(void) {
     long double frexp_zv = frexpl(mz, &frexp_ze);
     long double fmod_z = fmodl(-4.0L, 2.0L);
     long double rem_z = remainderl(-4.0L, 2.0L);
+    unsigned char *nan1_bytes = (unsigned char *)&(long double){ nanl("1") };
 
     printf("sizeof_ld=%zu\n", sizeof(long double));
     printf("fabsl=%d\n", fabsl(neg) == 2.5L);
@@ -164,5 +165,10 @@ int main(void) {
            dreml(5.5L, 2.0L) == -0.5L,
            isnanl(fmodl(infv, 2.0L)) ? 1 : 0,
            isnanl(remainderl(2.0L, zero)) ? 1 : 0);
+    printf("nanl=%d/%d/%u/%d\n",
+           isnanl(nanl("")) ? 1 : 0,
+           signbit(nanl("")) ? 1 : 0,
+           (unsigned int)nan1_bytes[0],
+           isnanl(nanl("bad")) ? 1 : 0);
     return 0;
 }
