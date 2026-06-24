@@ -9,6 +9,7 @@
 #include <nl_types.h>
 #include <net/if.h>
 #include <execinfo.h>
+#include <crypt.h>
 #include <malloc.h>
 #include <stdio.h>
 #include <string.h>
@@ -46,6 +47,10 @@ int main(void) {
 
     /* mallopt accepts a documented tunable -> 1. */
     printf("mallopt=%d\n", mallopt(M_TRIM_THRESHOLD, 128 * 1024));
+    printf("checksalt=%d %d\n", crypt_checksalt("$6$salt"), crypt_checksalt("") == CRYPT_SALT_INVALID);
+    unsigned char rb[16]; for (int i = 0; i < 16; i++) rb[i] = (unsigned char)(i * 17);
+    char salt[CRYPT_GENSALT_OUTPUT_SIZE];
+    printf("gensalt_r=%s\n", crypt_gensalt_r("$6$", 0, (const char *)rb, 16, salt, sizeof salt));
 
     return 0;
 }

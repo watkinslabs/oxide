@@ -164,6 +164,27 @@ mod imp {
         }
     }
 
+    // # C: char *fcrypt(const char *key, const char *setting)
+    #[no_mangle]
+    pub unsafe extern "C" fn fcrypt(key: *const u8, setting: *const u8) -> *mut u8 {
+        // SAFETY: legacy libcrypt alias of crypt; same C-string contract.
+        unsafe { crypt(key, setting) }
+    }
+
+    // # C: char *xcrypt(const char *key, const char *setting)
+    #[no_mangle]
+    pub unsafe extern "C" fn xcrypt(key: *const u8, setting: *const u8) -> *mut u8 {
+        // SAFETY: libxcrypt compatibility alias of crypt.
+        unsafe { crypt(key, setting) }
+    }
+
+    // # C: char *xcrypt_r(const char *key, const char *setting, struct crypt_data *data)
+    #[no_mangle]
+    pub unsafe extern "C" fn xcrypt_r(key: *const u8, setting: *const u8, data: *mut u8) -> *mut u8 {
+        // SAFETY: libxcrypt compatibility alias of crypt_r.
+        unsafe { crypt_r(key, setting, data) }
+    }
+
     const ERANGE: i32 = 34;
     const ENOMEM: i32 = 12;
     static GSOUT: OutBuf = OutBuf(UnsafeCell::new([0; OUTLEN]));
@@ -197,6 +218,13 @@ mod imp {
         }
     }
 
+    // # C: char *xcrypt_gensalt(const char *prefix, unsigned long count, const char *rbytes, int nrbytes)
+    #[no_mangle]
+    pub unsafe extern "C" fn xcrypt_gensalt(prefix: *const u8, count: u64, rbytes: *const u8, nrbytes: i32) -> *mut u8 {
+        // SAFETY: libxcrypt compatibility alias of crypt_gensalt.
+        unsafe { crypt_gensalt(prefix, count, rbytes, nrbytes) }
+    }
+
     // # C: char *crypt_gensalt_rn(const char *prefix, unsigned long count, const char *rbytes, int nrbytes, char *output, int output_size)
     #[no_mangle]
     pub unsafe extern "C" fn crypt_gensalt_rn(prefix: *const u8, count: u64, rbytes: *const u8, nrbytes: i32, output: *mut u8, output_size: i32) -> *mut u8 {
@@ -210,6 +238,20 @@ mod imp {
                 None => { errno::set(EINVAL); core::ptr::null_mut() }
             }
         }
+    }
+
+    // # C: char *crypt_gensalt_r(const char *prefix, unsigned long count, const char *rbytes, int nrbytes, char *output, int output_size)
+    #[no_mangle]
+    pub unsafe extern "C" fn crypt_gensalt_r(prefix: *const u8, count: u64, rbytes: *const u8, nrbytes: i32, output: *mut u8, output_size: i32) -> *mut u8 {
+        // SAFETY: historical alias of crypt_gensalt_rn; same output buffer contract.
+        unsafe { crypt_gensalt_rn(prefix, count, rbytes, nrbytes, output, output_size) }
+    }
+
+    // # C: char *xcrypt_gensalt_r(const char *prefix, unsigned long count, const char *rbytes, int nrbytes, char *output, int output_size)
+    #[no_mangle]
+    pub unsafe extern "C" fn xcrypt_gensalt_r(prefix: *const u8, count: u64, rbytes: *const u8, nrbytes: i32, output: *mut u8, output_size: i32) -> *mut u8 {
+        // SAFETY: libxcrypt compatibility alias of crypt_gensalt_rn.
+        unsafe { crypt_gensalt_rn(prefix, count, rbytes, nrbytes, output, output_size) }
     }
 
     // # C: char *crypt_gensalt_ra(const char *prefix, unsigned long count, const char *rbytes, int nrbytes)
@@ -256,6 +298,18 @@ mod imp {
                 }
                 None => { errno::set(EINVAL); core::ptr::null_mut() }
             }
+        }
+    }
+
+    // # C: int crypt_checksalt(const char *setting)
+    #[no_mangle]
+    pub unsafe extern "C" fn crypt_checksalt(setting: *const u8) -> i32 {
+        // SAFETY: setting is null or a NUL-terminated C string. Return
+        // libxcrypt's stable public status constants for the supported surface.
+        unsafe {
+            let s = as_bytes(setting);
+            if s.is_empty() { return 1; } // CRYPT_SALT_INVALID
+            if parse_setting(s).is_some() { 0 } else { 3 } // OK, else LEGACY/unsupported
         }
     }
 
