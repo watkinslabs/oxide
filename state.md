@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **192/192**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F569-re-two-string`. `glibc.md` = live per-cluster TODO. F counter next = **570**, B = **138**, D = **112**
+`F570-psiginfo`. `glibc.md` = live per-cluster TODO. F counter next = **571**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -176,6 +176,10 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   and caller-owned register arrays. Host-diffed in t_regex.c. Verification:
   `xtask glibc-test` 192/192; both freestanding arch builds; `spec-lint`;
   filtered symbol audit now 322.
+- **F570 DONE locally:** psiginfo added for the stable SI_USER glibc output
+  path, with a psignal-style fallback. Host-diffed in t_ucontext.c via
+  captured stderr. Verification: `xtask glibc-test` 192/192; both
+  freestanding arch builds; `spec-lint`; filtered symbol audit now 321.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 

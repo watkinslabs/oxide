@@ -3,7 +3,7 @@
  *   global and returns via uc_link. swapcontext into it and back; print the
  *   global + ordering markers.
  * - siginterrupt return; sigsetmask/sigblock round-trip on the int mask;
- *   psignal captured stderr -> pipe -> stdout. Deterministic. */
+ *   psignal/psiginfo captured stderr -> pipe -> stdout. Deterministic. */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,5 +61,24 @@ int main(void) {
     buf[n] = 0;
     close(p[0]);
     printf("psignal=%s", buf);
+
+    fflush(stderr);
+    pipe(p);
+    saved = dup(2);
+    dup2(p[1], 2);
+    siginfo_t si;
+    memset(&si, 0, sizeof si);
+    si.si_signo = SIGUSR1;
+    si.si_code = SI_USER;
+    si.si_pid = 123;
+    si.si_uid = 456;
+    psiginfo(&si, "tag");
+    fflush(stderr);
+    dup2(saved, 2); close(saved); close(p[1]);
+    n = read(p[0], buf, sizeof buf - 1);
+    if (n < 0) n = 0;
+    buf[n] = 0;
+    close(p[0]);
+    printf("psiginfo=%s", buf);
     return 0;
 }
