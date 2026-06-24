@@ -313,6 +313,10 @@ long double fminimum_magl(long double x, long double y) {
     return fminimum_corel(x, y);
 }
 
+long double fmal(long double x, long double y, long double z) {
+    return x * y + z;
+}
+
 static long double x87_sqrtl(long double x) {
     long double y;
     __asm__ __volatile__(
