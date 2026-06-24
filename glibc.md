@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2229 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2259 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **194/194**; both arches boot.
 
@@ -64,9 +64,12 @@ getpublickey/getsecretkey, key_* helpers, passwd2des, xencrypt/xdecrypt (F583).
 Also DONE: SunRPC client/auth/portmapper compat stubs authdes/authunix/authnone,
 clnt_*, pmap_*, callrpc/registerrpc, rpc_createerr, get_myaddress/getrpcport,
 and rtime (F584).
+Also DONE: SunRPC service/SVC compat globals and stubs svc_fdset/svc_pollfd/
+svc_max_pollfd/svcauthdes_stats, svc*_create, svc_register/unregister,
+svc_getreq*, svc_run/exit, svcerr_*, and xprt_register/unregister (F585).
 Remaining RPC =
-clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
-replymsg/opaque_auth/...). Conformance 192/192.
+the rpc_msg XDR filters (xdr_callmsg/replymsg/opaque_auth/...). Conformance
+194/194.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
