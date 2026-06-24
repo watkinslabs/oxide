@@ -83,6 +83,9 @@ Also DONE: first real x86_64 f80 long-double ABI bridge (F588): xtask compiles
 and links `crates/user/glibc/c/longdouble_x86_64.c` into libc.so.6/libc.a,
 exporting fabsl/copysignl/isnanl/isinfl/finitel without host libc/libm
 dependencies. Host-diffed in t_longdouble.
+Also DONE: f80 classifier compatibility bridge (F589): __finitel,
+__isinfl, __isnanl, __signbitl, __fpclassifyl, and __issignalingl exported from
+the same freestanding C object and host-diffed in t_longdouble.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
@@ -287,10 +290,10 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
 Rust still has no stable extern-C type for x86_64 f80 or IEEE quad returns, so
 functions that directly pass/return those types need ABI-side bridge code.
 F588 proves the x86_64 path by linking a freestanding C object for
-fabsl/copysignl/isnanl/isinfl/finitel. Remaining work is to grow that bridge
-carefully, reject compiler builtins that lower to self-PLT libcalls, keep
-objects dependency-free, and design the separate aarch64 quad-long-double
-surface.
+fabsl/copysignl/isnanl/isinfl/finitel, and F589 extends it to f80 classifier
+compatibility aliases. Remaining work is to grow that bridge carefully, reject
+compiler builtins that lower to self-PLT libcalls, keep objects dependency-free,
+and design the separate aarch64 quad-long-double surface.
 
 ## Done (this run, ~41 PRs, 160/160)
 pthread FULL surface, C11 threads, modern syscalls, locale `_l` (narrow),

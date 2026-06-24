@@ -251,6 +251,12 @@
     tanpif64;
 
     /* x86_64 SysV f80 long-double ABI bridge. */
+    __finitel;
+    __fpclassifyl;
+    __isinfl;
+    __isnanl;
+    __issignalingl;
+    __signbitl;
     copysignl;
     fabsl;
     finitel;

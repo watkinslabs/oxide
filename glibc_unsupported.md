@@ -1,8 +1,8 @@
 # glibc — unsupported (cannot implement)
 
-> Hard-blocked, not deferred. 156 entries.
+> Hard-blocked, not deferred. 151 entries.
 
-## long double / long-double-typed: 122
+## long double / long-double-typed: 117
 > x86_64 long double is 80-bit x87 f80; Rust has no f80 so the extern-C ABI cannot be expressed.
 
 long double sinhl (long double x)
@@ -39,7 +39,6 @@ long double jnl (int n, long double x)
 long double y0l (long double x)
 long double y1l (long double x)
 long double ynl (int n, long double x)
-long double copysignl (long double x, long double y)
 long double nextafterl (long double x, long double y)
 double nexttoward (double x, long double y)
 float nexttowardf (float x, long double y)
@@ -98,7 +97,6 @@ uintmax_t ufromfpl (long double x, int round, unsigned int width)
 intmax_t fromfpxl (long double x, int round, unsigned int width)
 uintmax_t ufromfpxl (long double x, int round, unsigned int width)
 long double modfl (long double value, long double *integer-part)
-long double fabsl (long double number)
 long double cabsl (complex long double z)
 long double frexpl (long double value, int *exponent)
 long double ldexpl (long double value, int exponent)
@@ -117,9 +115,6 @@ long double strtold (const char *string, char **tailptr)
 long double wcstold (const wchar_t *string, wchar_t **tailptr)
 int totalorderl (long double x, long double y)
 int totalordermagl (long double x, long double y)
-int isinfl (long double x)
-int isnanl (long double x)
-int finitel (long double x)
 long double asinl (long double x)
 long double acosl (long double x)
 long double atanl (long double x)
