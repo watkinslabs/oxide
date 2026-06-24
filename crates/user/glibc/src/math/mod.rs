@@ -11,6 +11,7 @@ pub mod exp;
 pub mod extra;
 pub mod extras;
 pub mod fma;
+#[cfg(feature = "freestanding")] pub mod legacy;
 pub mod round;
 pub mod special;
 pub mod hyper;
