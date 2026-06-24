@@ -269,4 +269,5 @@
     isnanl;
     floorl;
     rintl;
+    roundevenl;
     truncl;};
