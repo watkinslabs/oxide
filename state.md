@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **194/194**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F584-sunrpc-client-stubs`. `glibc.md` = live per-cluster TODO. F counter next = **585**, B = **138**, D = **112**
+`F585-sunrpc-service-stubs`. `glibc.md` = live per-cluster TODO. F counter next = **586**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -250,6 +250,12 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   rtime. These are conservative no-runtime stubs for compat-only host symbols.
   Verification: regression suite + both freestanding arch builds + `spec-lint`
   + audit drop to 219.
+- **F585 DONE locally:** SunRPC service/SVC compatibility globals and exports
+  added in rpc/stubs.rs, including svc_fdset/svc_pollfd/svc_max_pollfd,
+  svcauthdes_stats, svc*_create, svc_register/unregister, svc_getreq*,
+  svc_run/exit, svcerr_*, and xprt_register/unregister. These are conservative
+  no-runtime stubs for compat-only host symbols. Verification: regression suite
+  + both freestanding arch builds + `spec-lint` + audit drop to 189.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
