@@ -12,11 +12,13 @@
 // aarch64-unknown-linux-gnu target is installed; the aarch64 *run* is the
 // QEMU boot milestone (docs/59§6 G2).
 use crate::cmds::run;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::UNIX_EPOCH;
 
 const X86: &str = "x86_64-unknown-linux-gnu";
 const ARM: &str = "aarch64-unknown-linux-gnu";
+const LONGDOUBLE_X86_SOURCE: &str = "crates/user/glibc/c/longdouble_x86_64.c";
 
 pub(crate) fn cmd_glibc(rest: &[String]) -> Result<(), u8> {
     let check = rest.iter().any(|a| a == "--check");
@@ -33,7 +35,15 @@ pub(crate) fn build_staticlib(triple: &str) -> Result<(), u8> {
     let mut c = Command::new("cargo");
     c.args(["rustc", "-p", "glibc", "--release", "--features", "crt",
             "--target", triple, "--crate-type", "staticlib"]);
-    run(c)
+    run(c)?;
+
+    if let Some(obj) = build_longdouble_bridge(triple, false)? {
+        let lib = staticlib_path(triple);
+        let mut ar = Command::new("ar");
+        ar.args(["rcs", lib.to_str().unwrap(), obj.to_str().unwrap()]);
+        run(ar)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn staticlib_path(triple: &str) -> PathBuf {
@@ -50,12 +60,18 @@ pub(crate) fn build_sharedlib(triple: &str) -> Result<(), u8> {
     // symbols otherwise (docs/59§9.1). Functions only (PLT-resolved); data
     // aliases are NOT here (they need copy-reloc interposition, §9.4).
     let floatn = "crates/user/glibc/version/floatn.map";
+    let extra_obj = build_longdouble_bridge(triple, true)?;
     let mut c = Command::new("cargo");
     c.args(["rustc", "-p", "glibc", "--release", "--features", "freestanding",
             "--target", triple, "--crate-type", "cdylib", "--",
             "-C", "linker-flavor=ld.lld", "-C", "linker=rust-lld",
             "-C", "link-arg=--soname=libc.so.6", "-C", "relocation-model=pic",
             "-C", "panic=abort", "-C", &format!("link-arg=--version-script={floatn}")]);
+    if let Some(obj) = extra_obj {
+        let stamp = longdouble_bridge_stamp()?;
+        c.args(["--cfg", &format!("oxide_glibc_longdouble_bridge_mtime=\"{stamp}\"")]);
+        c.args(["-C", &format!("link-arg={}", obj.display())]);
+    }
     run(c)
 }
 
@@ -74,6 +90,41 @@ fn target_installed(triple: &str) -> bool {
 fn sysroot() -> String {
     Command::new("rustc").args(["--print", "sysroot"]).output()
         .ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+}
+
+fn build_longdouble_bridge(triple: &str, pic: bool) -> Result<Option<PathBuf>, u8> {
+    if triple != X86 {
+        return Ok(None);
+    }
+
+    let out_dir = Path::new("target").join(triple).join("release").join("glibc-extra");
+    std::fs::create_dir_all(&out_dir).map_err(|e| {
+        eprintln!("xtask glibc: failed to create {}: {e}", out_dir.display());
+        1u8
+    })?;
+
+    let obj = out_dir.join(if pic { "longdouble_x86_64.pic.o" } else { "longdouble_x86_64.o" });
+    let mut cc = Command::new("cc");
+    cc.args(["-c", "-O2", "-ffreestanding", "-fno-stack-protector", "-fno-builtin"]);
+    if pic {
+        cc.arg("-fPIC");
+    } else {
+        cc.arg("-fno-pie");
+    }
+    cc.args([LONGDOUBLE_X86_SOURCE, "-o"]);
+    cc.arg(&obj);
+    run(cc)?;
+    Ok(Some(obj))
+}
+
+fn longdouble_bridge_stamp() -> Result<u64, u8> {
+    let modified = std::fs::metadata(LONGDOUBLE_X86_SOURCE)
+        .and_then(|m| m.modified())
+        .map_err(|e| {
+            eprintln!("xtask glibc: failed to stat {LONGDOUBLE_X86_SOURCE}: {e}");
+            1u8
+        })?;
+    Ok(modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())
 }
 
 // Compile + static-link userspace/glibc_hello against libc.a and run it.

@@ -1,11 +1,12 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2290 exported**). Directive: implement EVERYTHING achievable
-> (full compliance), value-agnostic. Achievable audited surface is complete.
-> Remaining audit names are hard-blocked f80/long-double ABI symbols (§3) plus
-> host `errno@@GLIBC_PRIVATE`, which is an ELF TLS data symbol. Conformance
-> **194/194**; both arches boot.
+> `libc.so.6` (**~2295 exported**). Directive: implement EVERYTHING achievable
+> (full compliance), value-agnostic. Achievable audited surface now includes an
+> x86_64 C ABI bridge for real f80 long-double entry points. Remaining audit
+> names are mostly broader long-double/quad families plus host
+> `errno@@GLIBC_PRIVATE`, which is an ELF TLS data symbol. Conformance
+> **195/195**; both arches build.
 
 ## 1. The one migration blocker (docs/59 §9.4)
 8 `__`-aliased DATA symbols (__environ/_environ/__signgam/__tzname/__timezone/
@@ -78,6 +79,10 @@ fseek/fputwc/fflush coverage (F587). Remaining audit surface is long-double-
 family ABI plus public errno. Final audit note: host errno is a GLIBC_PRIVATE
 TLS data symbol; our per-thread errno is available through __errno_location,
 and exporting a plain `errno` object would be semantically wrong (D112).
+Also DONE: first real x86_64 f80 long-double ABI bridge (F588): xtask compiles
+and links `crates/user/glibc/c/longdouble_x86_64.c` into libc.so.6/libc.a,
+exporting fabsl/copysignl/isnanl/isinfl/finitel without host libc/libm
+dependencies. Host-diffed in t_longdouble.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
@@ -278,8 +283,14 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   compat-only/non-linkable on this host.
 - Re-audit (docs/59 §9 / state.md recipe) for stragglers after each batch.
 
-## 3. HARD-BLOCKED (glibc_unsupported.md): long double `*l` + `_Float128`/
-`_Float32x`/`_Float64x` (~700). No Rust extern-C type. Only the `%Lf` printf shim.
+## 3. DEFERRED ABI WORK: long double `*l` + `_Float128`/`_Float32x`/`_Float64x`
+Rust still has no stable extern-C type for x86_64 f80 or IEEE quad returns, so
+functions that directly pass/return those types need ABI-side bridge code.
+F588 proves the x86_64 path by linking a freestanding C object for
+fabsl/copysignl/isnanl/isinfl/finitel. Remaining work is to grow that bridge
+carefully, reject compiler builtins that lower to self-PLT libcalls, keep
+objects dependency-free, and design the separate aarch64 quad-long-double
+surface.
 
 ## Done (this run, ~41 PRs, 160/160)
 pthread FULL surface, C11 threads, modern syscalls, locale `_l` (narrow),
