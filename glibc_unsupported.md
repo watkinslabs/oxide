@@ -1,13 +1,10 @@
 # glibc — unsupported (cannot implement)
 
-> Hard-blocked, not deferred. 61 entries.
+> Hard-blocked, not deferred. 55 entries.
 
-## long double / long-double-typed: 27
+## long double / long-double-typed: 21
 > x86_64 long double is 80-bit x87 f80; Rust has no f80 so the extern-C ABI cannot be expressed.
 
-complex long double casinhl (complex long double z)
-complex long double cacoshl (complex long double z)
-complex long double catanhl (complex long double z)
 char * qecvt (long double value, int ndigit, int *decpt, int *neg)
 char * qfcvt (long double value, int ndigit, int *decpt, int *neg)
 char * qgcvt (long double value, int ndigit, char *buf)
@@ -29,9 +26,6 @@ int strfroml (char *restrict string, size_t size, const char *restrict format, l
 long double fmal (long double x, long double y, long double z)
 long double strtold (const char *string, char **tailptr)
 long double wcstold (const wchar_t *string, wchar_t **tailptr)
-complex long double casinl (complex long double z)
-complex long double cacosl (complex long double z)
-complex long double catanl (complex long double z)
 
 ## header-only macros and compiler builtins: 24
 > Never a libc.so.6 symbol; obstack_ and sigsetjmp expand over implemented underlying symbols; alloca is a compiler builtin.
