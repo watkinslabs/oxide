@@ -493,6 +493,37 @@ long double significandl(long double x) {
     return sig;
 }
 
+long double cbrtl(long double x) {
+    if (x == 0.0L || !__builtin_isfinite(x)) {
+        return x;
+    }
+
+    long double ax = __builtin_fabsl(x);
+    long double sig;
+    long double expv;
+    x87_extractl(ax, &sig, &expv);
+
+    int exp = (int)expv;
+    int q = exp / 3;
+    int rem = exp - q * 3;
+    if (rem < 0) {
+        rem += 3;
+        q -= 1;
+    }
+
+    long double y = x87_scalbnl(1.0L, q);
+    if (rem == 1) {
+        y *= 1.2599210498948731647672106072782283506L;
+    } else if (rem == 2) {
+        y *= 1.5874010519681994747517056392723082604L;
+    }
+
+    for (unsigned int i = 0; i < 10; i += 1) {
+        y = (2.0L * y + ax / (y * y)) / 3.0L;
+    }
+    return __builtin_copysignl(y, x);
+}
+
 static long double x87_fprem(long double x, long double y) {
     long double r;
     __asm__ __volatile__(

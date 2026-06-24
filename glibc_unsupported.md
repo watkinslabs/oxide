@@ -1,8 +1,8 @@
 # glibc — unsupported (cannot implement)
 
-> Hard-blocked, not deferred. 98 entries.
+> Hard-blocked, not deferred. 97 entries.
 
-## long double / long-double-typed: 64
+## long double / long-double-typed: 63
 > x86_64 long double is 80-bit x87 f80; Rust has no f80 so the extern-C ABI cannot be expressed.
 
 long double sinhl (long double x)
@@ -50,7 +50,6 @@ long double logl (long double x)
 long double log10l (long double x)
 long double log2l (long double x)
 long double powl (long double base, long double power)
-long double cbrtl (long double x)
 long double expm1l (long double x)
 long double log1pl (long double x)
 complex long double cexpl (complex long double z)
