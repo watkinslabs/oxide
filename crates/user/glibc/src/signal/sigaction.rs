@@ -32,9 +32,12 @@ const _: () = {
 #[cfg(feature = "freestanding")]
 pub mod exports {
     use super::*;
+    use core::ffi::c_void;
     use crate::arch::syscall::sys4;
-    use crate::internal::errno::ret_isize;
+    use crate::internal::errno::{self, ret_isize};
     use crate::internal::nr;
+
+    const ENOSYS: i32 = 38;
 
     // Kernel struct sigaction (what rt_sigaction reads/writes).
     #[repr(C)]
@@ -99,6 +102,13 @@ pub mod exports {
             if sigaction(sig, &act, &mut old) < 0 { return SIG_ERR; }
             old.sa_handler
         }
+    }
+
+    // # C: int sigreturn(struct sigcontext *scp) — obsolete glibc stub.
+    #[no_mangle]
+    pub unsafe extern "C" fn sigreturn(_scp: *mut c_void) -> i32 {
+        errno::set(ENOSYS);
+        -1
     }
 }
 
