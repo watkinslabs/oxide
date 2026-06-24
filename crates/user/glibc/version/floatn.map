@@ -294,6 +294,12 @@
     modfl;
     nanl;
     nearbyintl;
+    nextafterl;
+    nextdownl;
+    nexttoward;
+    nexttowardf;
+    nexttowardl;
+    nextupl;
     floorl;
     rintl;
     roundl;
