@@ -343,6 +343,11 @@
     nextupl;
     pow10l;
     powl;
+    qecvt;
+    qecvt_r;
+    qfcvt;
+    qfcvt_r;
+    qgcvt;
     coshl;
     floorl;
     rintl;
