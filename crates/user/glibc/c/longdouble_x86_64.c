@@ -81,3 +81,33 @@ long double _Complex cprojl(long double _Complex z) {
 long double rintl(long double x) {
     return __builtin_rintl(x);
 }
+
+static long double x87_round_mode(long double x, unsigned short mode) {
+    unsigned short cw;
+    unsigned short newcw;
+    long double y;
+    __asm__ __volatile__("fnstcw %0" : "=m"(cw));
+    newcw = (unsigned short)((cw & (unsigned short)~0x0c00u) | mode);
+    __asm__ __volatile__(
+        "fldcw %2\n\t"
+        "fldt %1\n\t"
+        "frndint\n\t"
+        "fstpt %0\n\t"
+        "fldcw %3"
+        : "=m"(y)
+        : "m"(x), "m"(newcw), "m"(cw)
+        : "st");
+    return y;
+}
+
+long double ceill(long double x) {
+    return x87_round_mode(x, 0x0800u);
+}
+
+long double floorl(long double x) {
+    return x87_round_mode(x, 0x0400u);
+}
+
+long double truncl(long double x) {
+    return x87_round_mode(x, 0x0c00u);
+}
