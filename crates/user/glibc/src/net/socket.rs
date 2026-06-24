@@ -76,6 +76,44 @@ mod exports {
     use crate::arch::syscall::{sys3, sys4, sys5, sys6};
     use crate::internal::errno::ret_isize;
     use crate::internal::nr;
+    use crate::malloc::heap;
+
+    const IPPROTO_IP: i32 = 0;
+    const IPPROTO_IPV6: i32 = 41;
+    const IP_MSFILTER: i32 = 41;
+    const MCAST_MSFILTER: i32 = 48;
+    const ENOMEM: i32 = 12;
+    const EINVAL: i32 = 22;
+
+    #[repr(C)]
+    struct IpMsfilter {
+        multiaddr: u32,
+        interface: u32,
+        fmode: u32,
+        numsrc: u32,
+        slist: [u32; 1],
+    }
+
+    #[repr(C)]
+    struct GroupFilter {
+        interface: u32,
+        group: sockaddr_storage,
+        fmode: u32,
+        numsrc: u32,
+        slist: [sockaddr_storage; 1],
+    }
+
+    fn ip_msfilter_size(numsrc: u32) -> Option<usize> {
+        core::mem::size_of::<IpMsfilter>()
+            .checked_sub(core::mem::size_of::<u32>())?
+            .checked_add(numsrc as usize * core::mem::size_of::<u32>())
+    }
+
+    fn group_filter_size(numsrc: u32) -> Option<usize> {
+        core::mem::size_of::<GroupFilter>()
+            .checked_sub(core::mem::size_of::<sockaddr_storage>())?
+            .checked_add(numsrc as usize * core::mem::size_of::<sockaddr_storage>())
+    }
 
     // # C: int socket(int domain, int type, int protocol)
     #[no_mangle]
@@ -198,6 +236,106 @@ mod exports {
     pub unsafe extern "C" fn getsockopt(fd: i32, level: i32, opt: i32, val: *mut c_void, len: *mut u32) -> i32 {
         // SAFETY: val/len are writable out-params with *len the capacity.
         ret_isize(unsafe { sys5(nr::GETSOCKOPT, fd as usize, level as usize, opt as usize, val as usize, len as usize) }) as i32
+    }
+    // # C: int getipv4sourcefilter(int s, struct in_addr ifaddr,
+    //                              struct in_addr group, uint32_t *fmode,
+    //                              uint32_t *numsrc, struct in_addr *slist)
+    #[no_mangle]
+    pub unsafe extern "C" fn getipv4sourcefilter(fd: i32, ifaddr: u32, group: u32, fmode: *mut u32, numsrc: *mut u32, slist: *mut u32) -> i32 {
+        // SAFETY: fmode/numsrc are writable; slist has capacity *numsrc. A
+        // temporary ip_msfilter buffer is passed to getsockopt(IP_MSFILTER).
+        unsafe {
+            let n = *numsrc;
+            let Some(size) = ip_msfilter_size(n) else { crate::internal::errno::set(EINVAL); return -1; };
+            let p = heap::malloc(size) as *mut IpMsfilter;
+            if p.is_null() { crate::internal::errno::set(ENOMEM); return -1; }
+            (*p).multiaddr = group; (*p).interface = ifaddr; (*p).fmode = 0; (*p).numsrc = n;
+            let mut len = size as u32;
+            let r = getsockopt(fd, IPPROTO_IP, IP_MSFILTER, p as *mut c_void, &mut len);
+            if r == 0 {
+                *fmode = (*p).fmode; *numsrc = (*p).numsrc;
+                core::ptr::copy_nonoverlapping((*p).slist.as_ptr(), slist, core::cmp::min(n, (*p).numsrc) as usize);
+            }
+            heap::free(p as *mut u8);
+            r
+        }
+    }
+
+    // # C: int setipv4sourcefilter(int s, struct in_addr ifaddr,
+    //                              struct in_addr group, uint32_t fmode,
+    //                              uint32_t numsrc, const struct in_addr *slist)
+    #[no_mangle]
+    pub unsafe extern "C" fn setipv4sourcefilter(fd: i32, ifaddr: u32, group: u32, fmode: u32, numsrc: u32, slist: *const u32) -> i32 {
+        // SAFETY: slist points at numsrc IPv4 addresses. The packed
+        // ip_msfilter buffer is passed to setsockopt(IP_MSFILTER).
+        unsafe {
+            let Some(size) = ip_msfilter_size(numsrc) else { crate::internal::errno::set(EINVAL); return -1; };
+            let p = heap::malloc(size) as *mut IpMsfilter;
+            if p.is_null() { crate::internal::errno::set(ENOMEM); return -1; }
+            (*p).multiaddr = group; (*p).interface = ifaddr; (*p).fmode = fmode; (*p).numsrc = numsrc;
+            core::ptr::copy_nonoverlapping(slist, (*p).slist.as_mut_ptr(), numsrc as usize);
+            let r = setsockopt(fd, IPPROTO_IP, IP_MSFILTER, p as *const c_void, size as u32);
+            heap::free(p as *mut u8);
+            r
+        }
+    }
+
+    unsafe fn sourcefilter_level(group: *const sockaddr) -> i32 {
+        // SAFETY: group points at a sockaddr supplied to get/setsourcefilter.
+        unsafe {
+            match (*group).sa_family {
+                AF_INET => IPPROTO_IP,
+                AF_INET6 => IPPROTO_IPV6,
+                _ => IPPROTO_IP,
+            }
+        }
+    }
+
+    // # C: int getsourcefilter(int s, uint32_t ifindex, const struct sockaddr *group,
+    //                          socklen_t grouplen, uint32_t *fmode,
+    //                          uint32_t *numsrc, struct sockaddr_storage *slist)
+    #[no_mangle]
+    pub unsafe extern "C" fn getsourcefilter(fd: i32, ifindex: u32, group: *const sockaddr, grouplen: u32, fmode: *mut u32, numsrc: *mut u32, slist: *mut sockaddr_storage) -> i32 {
+        // SAFETY: group points at grouplen bytes; fmode/numsrc are writable and
+        // slist has capacity *numsrc. Packed group_filter goes to getsockopt.
+        unsafe {
+            let n = *numsrc;
+            let Some(size) = group_filter_size(n) else { crate::internal::errno::set(EINVAL); return -1; };
+            let p = heap::malloc(size) as *mut GroupFilter;
+            if p.is_null() { crate::internal::errno::set(ENOMEM); return -1; }
+            (*p).interface = ifindex; (*p).fmode = 0; (*p).numsrc = n;
+            core::ptr::write_bytes(&mut (*p).group as *mut sockaddr_storage as *mut u8, 0, core::mem::size_of::<sockaddr_storage>());
+            core::ptr::copy_nonoverlapping(group as *const u8, &mut (*p).group as *mut sockaddr_storage as *mut u8, grouplen as usize);
+            let mut len = size as u32;
+            let r = getsockopt(fd, sourcefilter_level(group), MCAST_MSFILTER, p as *mut c_void, &mut len);
+            if r == 0 {
+                *fmode = (*p).fmode; *numsrc = (*p).numsrc;
+                core::ptr::copy_nonoverlapping((*p).slist.as_ptr(), slist, core::cmp::min(n, (*p).numsrc) as usize);
+            }
+            heap::free(p as *mut u8);
+            r
+        }
+    }
+
+    // # C: int setsourcefilter(int s, uint32_t ifindex, const struct sockaddr *group,
+    //                          socklen_t grouplen, uint32_t fmode,
+    //                          uint32_t numsrc, const struct sockaddr_storage *slist)
+    #[no_mangle]
+    pub unsafe extern "C" fn setsourcefilter(fd: i32, ifindex: u32, group: *const sockaddr, grouplen: u32, fmode: u32, numsrc: u32, slist: *const sockaddr_storage) -> i32 {
+        // SAFETY: group points at grouplen bytes; slist points at numsrc source
+        // addresses. Packed group_filter goes to setsockopt(MCAST_MSFILTER).
+        unsafe {
+            let Some(size) = group_filter_size(numsrc) else { crate::internal::errno::set(EINVAL); return -1; };
+            let p = heap::malloc(size) as *mut GroupFilter;
+            if p.is_null() { crate::internal::errno::set(ENOMEM); return -1; }
+            (*p).interface = ifindex; (*p).fmode = fmode; (*p).numsrc = numsrc;
+            core::ptr::write_bytes(&mut (*p).group as *mut sockaddr_storage as *mut u8, 0, core::mem::size_of::<sockaddr_storage>());
+            core::ptr::copy_nonoverlapping(group as *const u8, &mut (*p).group as *mut sockaddr_storage as *mut u8, grouplen as usize);
+            core::ptr::copy_nonoverlapping(slist, (*p).slist.as_mut_ptr(), numsrc as usize);
+            let r = setsockopt(fd, sourcefilter_level(group), MCAST_MSFILTER, p as *const c_void, size as u32);
+            heap::free(p as *mut u8);
+            r
+        }
     }
     // # C: int sockatmark(int fd) — 1 if the next read is at the OOB mark, else 0.
     #[no_mangle]

@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2099 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2103 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **192/192**; both arches boot.
 
@@ -32,6 +32,7 @@ Also DONE: klogctl syslog(2) wrapper (F557).
 Also DONE: public sigreturn ENOSYS stub (F558).
 Also DONE: ns_name_ntol/ns_name_rollback (F559).
 Also DONE: ns_datetosecs (F560).
+Also DONE: source-filter socket APIs (F561).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
@@ -51,7 +52,10 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (getrpcent/byname/bynumber + _r already done — net/rpcent.rs.)
 - **resolver (~48)** — res_query/search/send/mkquery/nquery/nsearch/nsend/ninit/
   res_gethostby*; __res_state; ns_* (ns_get16/put/name/parse); getaddrinfo_a/gai_*
-  (async, needs threads); (getifaddrs/freeifaddrs DONE — net/ifaddrs.rs, F510,
+  (async, needs threads); (getipv4sourcefilter/setipv4sourcefilter +
+  getsourcefilter/setsourcefilter DONE — F561, net/socket.rs, IP_MSFILTER/
+  MCAST_MSFILTER packing over getsockopt/setsockopt; invalid-fd EBADF
+  host-diffed in t_inet2.c); (getifaddrs/freeifaddrs DONE — net/ifaddrs.rs, F510,
   netlink RTM_GETLINK+GETADDR, host-diffable t_getifaddrs.c);
   (inet6_option_* DONE — F537, net/inet6_option.rs, RFC2292 obsolete
   cmsghdr-wrapped builder/parser with glibc-matched padding, host-diffable
