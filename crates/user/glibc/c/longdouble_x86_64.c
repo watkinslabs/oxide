@@ -28,3 +28,27 @@ int isinfl(long double x) {
 int finitel(long double x) {
     return __builtin_isfinite(x);
 }
+
+int __finitel(long double x) {
+    return __builtin_isfinite(x);
+}
+
+int __isinfl(long double x) {
+    return __builtin_isinf(x);
+}
+
+int __isnanl(long double x) {
+    return __builtin_isnan(x);
+}
+
+int __signbitl(long double x) {
+    return __builtin_signbit(x);
+}
+
+int __fpclassifyl(long double x) {
+    return __builtin_fpclassify(0, 1, 4, 3, 2, x);
+}
+
+int __issignalingl(long double x) {
+    return __builtin_issignaling(x);
+}
