@@ -10,6 +10,7 @@
  */
 
 static long double log2_valuel(long double x);
+static char *qgcvt_corel(long double value, int ndigit, char *buf);
 
 long double fabsl(long double x) {
     return __builtin_fabsl(x);
@@ -698,6 +699,43 @@ int qfcvt_r(long double value, int ndigit, int *decpt, int *sign, char *buf, uns
 }
 
 char *qgcvt(long double value, int ndigit, char *buf) {
+    return qgcvt_corel(value, ndigit, buf);
+}
+
+static int c_strlen(const char *s) {
+    int n = 0;
+    while (s[n]) {
+        n += 1;
+    }
+    return n;
+}
+
+static int write_strfroml(char *s, unsigned long n, const char *src, int len) {
+    if (n != 0) {
+        unsigned long cap = n - 1;
+        unsigned long m = (unsigned long)len < cap ? (unsigned long)len : cap;
+        for (unsigned long i = 0; i < m; i += 1) {
+            s[i] = src[i];
+        }
+        s[m] = 0;
+    }
+    return len;
+}
+
+static char *append_int(char *p, int v, int min_width) {
+    char tmp[16];
+    int n = 0;
+    while (v > 0 || n < min_width) {
+        tmp[n++] = (char)('0' + (v % 10));
+        v /= 10;
+    }
+    while (n > 0) {
+        *p++ = tmp[--n];
+    }
+    return p;
+}
+
+static char *qgcvt_corel(long double value, int ndigit, char *buf) {
     int dp = 0;
     int sign = 0;
     char digits[360];
@@ -765,6 +803,112 @@ char *qgcvt(long double value, int ndigit, char *buf) {
     }
     *out = 0;
     return buf;
+}
+
+static int strfroml_precision(const char *format, int fallback) {
+    int precision = fallback;
+    for (int i = 0; format[i]; i += 1) {
+        if (format[i] == '.') {
+            i += 1;
+            precision = 0;
+            while (ascii_digit((unsigned char)format[i])) {
+                precision = precision * 10 + (format[i] - '0');
+                i += 1;
+            }
+            break;
+        }
+    }
+    return precision;
+}
+
+static char strfroml_conv(const char *format) {
+    char conv = 'g';
+    for (int i = 0; format[i]; i += 1) {
+        if (format[i] == 'L') {
+            continue;
+        }
+        if (format[i] == 'f' || format[i] == 'F' ||
+            format[i] == 'e' || format[i] == 'E' ||
+            format[i] == 'g' || format[i] == 'G') {
+            conv = format[i];
+        }
+    }
+    return conv;
+}
+
+static int format_fixedl(long double value, int precision, char *out) {
+    int dp = 0;
+    int sign = 0;
+    char digits[380];
+    qfcvt_corel(value, precision, &dp, &sign, digits, sizeof(digits));
+    char *p = out;
+    if (sign) {
+        *p++ = '-';
+    }
+    if (dp <= 0) {
+        *p++ = '0';
+    } else {
+        int have = c_strlen(digits);
+        for (int i = 0; i < dp; i += 1) {
+            *p++ = i < have ? digits[i] : '0';
+        }
+    }
+    if (precision > 0) {
+        *p++ = '.';
+        int have = c_strlen(digits);
+        for (int i = 0; i < precision; i += 1) {
+            int idx = dp + i;
+            *p++ = idx >= 0 && idx < have ? digits[idx] : '0';
+        }
+    }
+    *p = 0;
+    return (int)(p - out);
+}
+
+static int format_expl(long double value, int precision, char conv, char *out) {
+    int dp = 0;
+    int sign = 0;
+    char digits[380];
+    qecvt_corel(value, precision + 1, &dp, &sign, digits, sizeof(digits));
+    char *p = out;
+    if (sign) {
+        *p++ = '-';
+    }
+    *p++ = digits[0];
+    if (precision > 0) {
+        *p++ = '.';
+        for (int i = 1; i <= precision; i += 1) {
+            *p++ = digits[i];
+        }
+    }
+    int exp = dp - 1;
+    *p++ = conv == 'E' ? 'E' : 'e';
+    *p++ = exp < 0 ? '-' : '+';
+    if (exp < 0) {
+        exp = -exp;
+    }
+    p = append_int(p, exp, 2);
+    *p = 0;
+    return (int)(p - out);
+}
+
+int strfroml(char *s, unsigned long n, const char *format, long double value) {
+    char conv = strfroml_conv(format);
+    int precision = strfroml_precision(format, 6);
+    if (precision > 300) {
+        precision = 300;
+    }
+    char out[420];
+    int len;
+    if (conv == 'f' || conv == 'F') {
+        len = format_fixedl(value, precision, out);
+    } else if (conv == 'e' || conv == 'E') {
+        len = format_expl(value, precision, conv, out);
+    } else {
+        qgcvt_corel(value, precision == 0 ? 1 : precision, out);
+        len = c_strlen(out);
+    }
+    return write_strfroml(s, n, out, len);
 }
 
 static long double x87_sqrtl(long double x) {

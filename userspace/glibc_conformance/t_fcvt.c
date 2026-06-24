@@ -76,6 +76,12 @@ static void strfrom_t(void){
     printf("strfromf ret=%d buf=%s\n", n, b);
     n = strfromf(b, sizeof b, "%g", 0.5f);
     printf("strfromf ret=%d buf=%s\n", n, b);
+    n = strfroml(b, sizeof b, "%.5f", 3.14159L);
+    printf("strfroml ret=%d buf=%s\n", n, b);
+    n = strfroml(b, sizeof b, "%.3e", 10000.0L);
+    printf("strfroml ret=%d buf=%s\n", n, b);
+    n = strfroml(b, sizeof b, "%g", 0.5L);
+    printf("strfroml ret=%d buf=%s\n", n, b);
 }
 
 static void parse_t(void){
