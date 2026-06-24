@@ -8,6 +8,10 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
+extern int rresvport(int *);
+extern int rresvport_af(int *, int);
+extern int bindresvport(int, struct sockaddr_in *);
+
 static void show(const char *n, int r) {
     printf("%s=%d errno=%d\n", n, r, r < 0 ? errno : 0);
 }
@@ -39,5 +43,12 @@ int main(void){
     nsrc = 1; fmode = 0;
     errno = 0; show("getsourcefilter", getsourcefilter(-1, 0, (struct sockaddr *)&ss, sizeof(struct sockaddr_in), &fmode, &nsrc, &ss));
     errno = 0; show("setsourcefilter", setsourcefilter(-1, 0, (struct sockaddr *)&ss, sizeof(struct sockaddr_in), 0, 1, &ss));
+    int port = 0;
+    errno = 0; show("rresvport", rresvport(&port));
+    printf("rresvport_port=%d\n", port);
+    port = 0;
+    errno = 0; show("rresvport_af", rresvport_af(&port, AF_INET));
+    printf("rresvport_af_port=%d\n", port);
+    errno = 0; show("bindresvport", bindresvport(-1, NULL));
     return 0;
 }
