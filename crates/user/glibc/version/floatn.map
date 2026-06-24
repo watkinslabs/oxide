@@ -364,6 +364,7 @@
     sincosl;
     sinl;
     sqrtl;
+    strfroml;
     strtold;
     cosl;
     tanhl;
