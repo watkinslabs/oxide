@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **195/195**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F615-long-double-complex-math-batch`. `glibc.md` = live per-cluster TODO. F counter next = **616**, B = **138**, D = **113**
+`F616-long-double-complex-inverse-batch`. `glibc.md` = live per-cluster TODO. F counter next = **617**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -373,6 +373,10 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   C object checked for no PLT relocations or unresolved symbols.
 - **F615 DONE locally:** f80 csinl, ccosl, ctanl, cexpl, clogl, clog10l,
   csqrtl, and cpowl added to the C bridge using private scalar/complex helpers.
+  Host-diffed in t_longdouble; C object checked for no PLT relocations or
+  unresolved symbols.
+- **F616 DONE locally:** f80 casinl, cacosl, catanl, casinhl, cacoshl, and
+  catanhl added to the C bridge using private complex log/sqrt helpers.
   Host-diffed in t_longdouble; C object checked for no PLT relocations or
   unresolved symbols.
 
