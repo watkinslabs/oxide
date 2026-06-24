@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **192/192**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F564-remote-command-stubs`. `glibc.md` = live per-cluster TODO. F counter next = **565**, B = **138**, D = **112**
+`F565-mcheck-check-all`. `glibc.md` = live per-cluster TODO. F counter next = **566**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -153,6 +153,10 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   remote-command failures with glibc-matched EINVAL behavior for unresolved
   hosts. Host-diffed in t_inet2.c. Verification: `xtask glibc-test` 192/192;
   both freestanding arch builds; `spec-lint`; filtered symbol audit now 334.
+- **F565 DONE locally:** mcheck_check_all added as a malloc-debug no-op beside
+  mcheck/mtrace, preserving errno like host glibc. Host-diffed in t_crypto.c.
+  Verification: `xtask glibc-test` 192/192; both freestanding arch builds;
+  `spec-lint`; filtered symbol audit now 333.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
