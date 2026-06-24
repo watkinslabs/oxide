@@ -4,6 +4,7 @@ pub mod atrig;
 pub mod basic;
 #[cfg(feature = "freestanding")] pub mod float_n;
 #[cfg(feature = "freestanding")] pub mod minmax_c23;
+#[cfg(feature = "freestanding")] pub mod narrow;
 #[cfg(feature = "freestanding")] pub mod cpi;
 #[cfg(feature = "freestanding")] pub mod complex;
 pub mod exp;
