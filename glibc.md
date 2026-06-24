@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2106 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2110 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **192/192**; both arches boot.
 
@@ -34,6 +34,7 @@ Also DONE: ns_name_ntol/ns_name_rollback (F559).
 Also DONE: ns_datetosecs (F560).
 Also DONE: source-filter socket APIs (F561).
 Also DONE: reserved-port helpers bindresvport/rresvport(_af) (F562).
+Also DONE: ruserok/iruserok remote-login denials (F563).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
@@ -180,9 +181,11 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   SpawnAttr stores sched policy/prio + cgroup, SETSIGDEF resets to SIG_DFL,
   SETSCHED{ULER,PARAM} replayed via sched_set{scheduler,param}; host-diffable
   t_spawn.c chdir_np + attr getter round-trip).
-- **BSD net auth** — rcmd/rexec/ruserok/iruserok.
+- **BSD net auth** — rcmd/rexec.
   (bindresvport/rresvport/rresvport_af DONE — F562, net/socket.rs, reserved
   port range bind with host-diffed unprivileged failure behavior in t_inet2.c.)
+  (ruserok/ruserok_af/iruserok/iruserok_af DONE — F563, net/socket.rs,
+  conservative remote-login denial behavior host-diffed in t_inet2.c.)
 - **re_* BSD regex (~12)** — re_comp/re_exec/re_compile_pattern/re_search/re_match.
 - **libxcrypt** — (crypt_gensalt/_rn/_ra + crypt_rn/crypt_ra + crypt_preferred_method
   DONE — F536, crypt/mod.rs; $5$/$6$ salt = crypt-itoa64 of rbytes (NULL⇒getrandom),
