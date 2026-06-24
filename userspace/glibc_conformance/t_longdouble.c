@@ -47,6 +47,7 @@ int main(void) {
     long double infpart = modfl(-infv, &infw);
     long double nanw = 0.0L;
     long double nanpart = modfl(nanv, &nanw);
+    long double scaled_zero = scalbnl(mz, 5);
 
     printf("sizeof_ld=%zu\n", sizeof(long double));
     printf("fabsl=%d\n", fabsl(neg) == 2.5L);
@@ -123,5 +124,12 @@ int main(void) {
            isinfl(infw) && signbit(infw),
            infpart == 0.0L && signbit(infpart),
            isnanl(nanpart) && isnanl(nanw));
+    printf("scale_batch=%d/%d/%d/%d/%d/%d\n",
+           ldexpl(1.5L, 3) == 12.0L,
+           scalbnl(-3.0L, -1) == -1.5L,
+           scalblnl(2.0L, 10) == 2048.0L,
+           scaled_zero == 0.0L && signbit(scaled_zero),
+           isnanl(scalbnl(nanv, 3)) ? 1 : 0,
+           isinfl(scalblnl(infv, -4)));
     return 0;
 }

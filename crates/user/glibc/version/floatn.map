@@ -280,6 +280,7 @@
     creall;
     isinfl;
     isnanl;
+    ldexpl;
     llrintl;
     llroundl;
     lrintl;
@@ -290,5 +291,7 @@
     rintl;
     roundl;
     roundevenl;
+    scalblnl;
+    scalbnl;
     sqrtl;
     truncl;};
