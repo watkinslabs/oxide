@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2129 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2130 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **192/192**; both arches boot.
 
@@ -44,6 +44,7 @@ Also DONE: GNU regex re_match_2/re_search_2/re_set_registers (F569).
 Also DONE: psiginfo SI_USER output path (F570).
 Also DONE: malloc_info minimal XML + bad-option EINVAL return (F571).
 Also DONE: rexecoptions remote-exec compatibility data symbol (F572).
+Also DONE: ruserpass no-.netrc compatibility path (F573).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
@@ -194,8 +195,8 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   SpawnAttr stores sched policy/prio + cgroup, SETSIGDEF resets to SIG_DFL,
   SETSCHED{ULER,PARAM} replayed via sched_set{scheduler,param}; host-diffable
   t_spawn.c chdir_np + attr getter round-trip).
-- **BSD net auth** — remote-login helpers mostly closed; ruserpass remains in
-  Sun RPC/DES compatibility scope.
+- **BSD net auth** — remote-login helpers mostly closed; remaining netname/DES
+  compatibility stays in Sun RPC/DES scope.
   (bindresvport/rresvport/rresvport_af DONE — F562, net/socket.rs, reserved
   port range bind with host-diffed unprivileged failure behavior in t_inet2.c.)
   (ruserok/ruserok_af/iruserok/iruserok_af DONE — F563, net/socket.rs,
@@ -203,6 +204,8 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (rcmd/rcmd_af/rexec/rexec_af DONE — F564, net/socket.rs, conservative
   EINVAL failure behavior for unresolved hosts host-diffed in t_inet2.c.
   rexecoptions data symbol DONE — F572, read/write host-diffed in t_inet2.c.)
+  (ruserpass DONE — F573, net/socket.rs, no-.netrc path returns 0 with ENOENT
+  and untouched outputs when HOME is missing; host-diffed in t_inet2.c.)
 - **old regexp.h regex (~6)** — advance/step/loc1/loc2/locs/tr_break legacy
   interfaces/globals.
   (re_comp/re_exec DONE — F566, regex/mod.rs, process-global compiled pattern
