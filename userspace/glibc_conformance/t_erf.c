@@ -8,6 +8,8 @@ int main(void){
     for (size_t i=0;i<sizeof xs/sizeof xs[0];i++)
         printf("erf(%.4g)=%.13g erfc=%.13g\n", xs[i], erf(xs[i]), erfc(xs[i]));
     printf("erff=%.6g erfcf=%.6g\n", erff(1.5f), erfcf(1.5f));
+    printf("erfl=%.5g erfcl=%.5g\n", (double)erfl(1.5L), (double)erfcl(1.5L));
+    printf("erfl_neg=%.5g erfcl_neg=%.5g\n", (double)erfl(-1.0L), (double)erfcl(-1.0L));
     printf("inf: erf=%.1f erfc=%.1f nerf=%.1f nerfc=%.1f\n", erf(INFINITY), erfc(INFINITY), erf(-INFINITY), erfc(-INFINITY));
     return 0;
 }
