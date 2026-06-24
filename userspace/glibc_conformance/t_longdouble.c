@@ -102,5 +102,10 @@ int main(void) {
            fminimum_mag_numl(-4.0L, 3.0L) == 3.0L,
            fmaximum_magl(-4.0L, 3.0L) == -4.0L,
            fminimum_magl(-4.0L, 3.0L) == 3.0L);
+    printf("sqrtl=%d/%d/%d/%d\n",
+           sqrtl(4.0L) == 2.0L,
+           sqrtl(mz) == 0.0L,
+           signbit(sqrtl(mz)) ? 1 : 0,
+           isnanl(sqrtl(-1.0L)) ? 1 : 0);
     return 0;
 }
