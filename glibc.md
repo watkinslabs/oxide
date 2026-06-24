@@ -101,6 +101,8 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   t_gnu_version.c.)
   (argp_program_version_hook DONE — F542, posix/argp.rs + help.rs, exported
   hook pointer and --version dispatch precedence; host-diffable t_argp.c.)
+  (getpw DONE — F543, nss/mod.rs, legacy uid→passwd-line renderer over
+  /etc/passwd; host-diffable t_pwgr.c.)
   (pkey_alloc/free/mprotect + pkey_get/set DONE — F529, posix/modern.rs;
   alloc/free/mprotect syscall passthrough both arches, get/set via PKRU
   (x86) / POR_EL0 (arm) register ops; host-diffable t_pkey.c).

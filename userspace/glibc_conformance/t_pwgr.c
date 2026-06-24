@@ -86,6 +86,13 @@ int main(void) {
     printf("erange rc=%d result_null=%d\n", erc != 0, pr2 == NULL);
     fclose(pf3);
 
+    /* --- getpw: obsolete passwd line renderer over the live passwd DB --- */
+    char gb[4096];
+    int grc = getpw(getuid(), gb);
+    printf("getpw self rc=%d line=%s\n", grc, grc == 0 ? gb : "-");
+    int gmiss = getpw((uid_t)4294967294u, gb);
+    printf("getpw miss=%d\n", gmiss);
+
     unlink(pwpath);
     unlink(grpath);
     return 0;
