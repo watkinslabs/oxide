@@ -260,6 +260,7 @@
     ceill;
     copysignl;
     fabsl;
+    dreml;
     fdiml;
     finitel;
     fmaxl;
@@ -274,6 +275,7 @@
     fminimum_magl;
     fminimum_numl;
     fminimuml;
+    fmodl;
     frexpl;
     cimagl;
     conjl;
@@ -295,6 +297,7 @@
     rintl;
     roundl;
     roundevenl;
+    remainderl;
     scalbl;
     scalblnl;
     scalbnl;

@@ -457,3 +457,51 @@ long double significandl(long double x) {
     x87_extractl(x, &sig, &exp);
     return sig;
 }
+
+static long double x87_fprem(long double x, long double y) {
+    long double r;
+    __asm__ __volatile__(
+        "fldt %2\n\t"
+        "fldt %1\n"
+        "1:\n\t"
+        "fprem\n\t"
+        "fnstsw %%ax\n\t"
+        "testw $0x0400, %%ax\n\t"
+        "jnz 1b\n\t"
+        "fstpt %0\n\t"
+        "fstp %%st(0)"
+        : "=m"(r)
+        : "m"(x), "m"(y)
+        : "ax", "cc", "st");
+    return r;
+}
+
+static long double x87_fprem1(long double x, long double y) {
+    long double r;
+    __asm__ __volatile__(
+        "fldt %2\n\t"
+        "fldt %1\n"
+        "1:\n\t"
+        "fprem1\n\t"
+        "fnstsw %%ax\n\t"
+        "testw $0x0400, %%ax\n\t"
+        "jnz 1b\n\t"
+        "fstpt %0\n\t"
+        "fstp %%st(0)"
+        : "=m"(r)
+        : "m"(x), "m"(y)
+        : "ax", "cc", "st");
+    return r;
+}
+
+long double fmodl(long double numerator, long double denominator) {
+    return x87_fprem(numerator, denominator);
+}
+
+long double remainderl(long double numerator, long double denominator) {
+    return x87_fprem1(numerator, denominator);
+}
+
+long double dreml(long double numerator, long double denominator) {
+    return x87_fprem1(numerator, denominator);
+}
