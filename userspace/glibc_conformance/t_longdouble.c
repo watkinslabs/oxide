@@ -52,6 +52,8 @@ int main(void) {
     long double frexp_v = frexpl(-12.0L, &frexp_e);
     int frexp_ze = 99;
     long double frexp_zv = frexpl(mz, &frexp_ze);
+    long double fmod_z = fmodl(-4.0L, 2.0L);
+    long double rem_z = remainderl(-4.0L, 2.0L);
 
     printf("sizeof_ld=%zu\n", sizeof(long double));
     printf("fabsl=%d\n", fabsl(neg) == 2.5L);
@@ -152,5 +154,15 @@ int main(void) {
            frexp_zv == 0.0L && signbit(frexp_zv) && frexp_ze == 0,
            significandl(12.0L) == 1.5L,
            isnanl(significandl(nanv)) ? 1 : 0);
+    printf("remainder_batch=%d/%d/%d/%d/%d/%d/%d/%d/%d\n",
+           fmodl(5.5L, 2.0L) == 1.5L,
+           fmodl(-5.5L, 2.0L) == -1.5L,
+           fmod_z == 0.0L && signbit(fmod_z),
+           remainderl(5.5L, 2.0L) == -0.5L,
+           remainderl(6.0L, 4.0L) == -2.0L,
+           rem_z == 0.0L && signbit(rem_z),
+           dreml(5.5L, 2.0L) == -0.5L,
+           isnanl(fmodl(infv, 2.0L)) ? 1 : 0,
+           isnanl(remainderl(2.0L, zero)) ? 1 : 0);
     return 0;
 }
