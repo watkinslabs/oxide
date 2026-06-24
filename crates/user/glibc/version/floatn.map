@@ -364,6 +364,7 @@
     sincosl;
     sinl;
     sqrtl;
+    strtold;
     cosl;
     tanhl;
     tanl;
@@ -371,4 +372,5 @@
     totalordermagl;
     ufromfpl;
     ufromfpxl;
+    wcstold;
     truncl;};
