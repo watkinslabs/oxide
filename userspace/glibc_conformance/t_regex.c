@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <regex.h>
 
+extern char *re_comp(const char *);
+extern int re_exec(const char *);
+
 static void t(const char *pat, const char *s, int cflags, int eflags){
     regex_t re; regmatch_t m[10];
     int rc = regcomp(&re, pat, cflags | REG_EXTENDED);
@@ -67,5 +70,8 @@ int main(void){
     regex_t bad; int rc = regcomp(&bad, "a(b", REG_EXTENDED);
     char buf[64]; regerror(rc, &bad, buf, sizeof buf);
     printf("E|rc=%d msg=%s\n", rc, buf);
+
+    printf("RE|comp=%s\n", re_comp("a*b") ? "err" : "ok");
+    printf("RE|match=%d nomatch=%d\n", re_exec("aaab"), re_exec("ccc"));
     return 0;
 }
