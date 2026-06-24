@@ -8,6 +8,8 @@ extern int __isnanl(long double);
 extern int __signbitl(long double);
 extern int __fpclassifyl(long double);
 extern int __issignalingl(long double);
+extern long double fmaxmagl(long double, long double);
+extern long double fminmagl(long double, long double);
 
 int main(void) {
     volatile long double neg = -2.5L;
@@ -75,5 +77,13 @@ int main(void) {
            llroundl(-2.5L),
            lrintl(2.5L),
            llrintl(-1.5L));
+    printf("minmax_batch=%d/%d/%d/%d/%d/%d/%d\n",
+           fmaxl(nanv, neg) == neg,
+           signbit(fmaxl(mz, zero)) ? 1 : 0,
+           signbit(fminl(mz, zero)) ? 1 : 0,
+           fdiml(pos, neg) == 3.5L,
+           fdiml(neg, pos) == 0.0L,
+           fmaxmagl(-4.0L, 3.0L) == -4.0L,
+           fminmagl(-4.0L, 3.0L) == 3.0L);
     return 0;
 }

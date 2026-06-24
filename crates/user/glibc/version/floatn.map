@@ -260,7 +260,12 @@
     ceill;
     copysignl;
     fabsl;
+    fdiml;
     finitel;
+    fmaxl;
+    fmaxmagl;
+    fminl;
+    fminmagl;
     cimagl;
     conjl;
     cprojl;
