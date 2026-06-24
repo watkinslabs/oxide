@@ -134,6 +134,14 @@ mod exports {
             }
         }
     }
+
+    // # C: size_t strftime_l(char *s, size_t max, const char *fmt, const struct tm *tm, locale_t loc)
+    #[no_mangle]
+    pub unsafe extern "C" fn strftime_l(s: *mut u8, max: usize, fmt: *const u8, t: *const tm, _loc: usize) -> usize {
+        // SAFETY: delegates to strftime; Oxide supports only C-equivalent
+        // locales, so locale_t does not change formatting.
+        unsafe { strftime(s, max, fmt, t) }
+    }
 }
 
 #[cfg(test)]

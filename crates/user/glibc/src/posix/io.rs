@@ -103,6 +103,9 @@ pub unsafe extern "C" fn pwrite(fd: i32, buf: *const u8, n: usize, off: i64) -> 
 // # C: off64_t lseek64(int, off64_t, int)
 // SAFETY: LFS alias of lseek; off64_t == off_t on LP64. Forwards.
 #[no_mangle] pub unsafe extern "C" fn lseek64(fd: i32, off: i64, whence: i32) -> i64 { unsafe { lseek(fd, off, whence) } }
+// # C: off_t llseek(int, off_t, int)
+// SAFETY: GNU llseek alias of lseek on LP64; same scalar args/return.
+#[no_mangle] pub unsafe extern "C" fn llseek(fd: i32, off: i64, whence: i32) -> i64 { unsafe { lseek(fd, off, whence) } }
 // # C: ssize_t pread64(int, void *, size_t, off64_t)
 // SAFETY: LFS alias of pread; buf valid for n bytes per the caller. Forwards.
 #[no_mangle] pub unsafe extern "C" fn pread64(fd: i32, buf: *mut u8, n: usize, off: i64) -> isize { unsafe { pread(fd, buf, n, off) } }

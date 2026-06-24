@@ -141,6 +141,14 @@ mod imp {
         }
     }
 
+    // # C: char *strptime_l(const char *s, const char *format, struct tm *tm, locale_t loc)
+    #[no_mangle]
+    pub unsafe extern "C" fn strptime_l(s: *const u8, format: *const u8, t: *mut tm, _loc: usize) -> *mut u8 {
+        // SAFETY: delegates to strptime; only C-equivalent locales exist, so
+        // locale_t does not affect parsing.
+        unsafe { strptime(s, format, t) }
+    }
+
     // # C: size_t wcsftime(wchar_t *s, size_t maxsize, const wchar_t *format, const struct tm *tm)
     #[no_mangle]
     pub unsafe extern "C" fn wcsftime(s: *mut i32, maxsize: usize, format: *const i32, t: *const tm) -> usize {
@@ -165,6 +173,14 @@ mod imp {
                 None => 0,
             }
         }
+    }
+
+    // # C: size_t wcsftime_l(wchar_t *s, size_t max, const wchar_t *fmt, const struct tm *tm, locale_t loc)
+    #[no_mangle]
+    pub unsafe extern "C" fn wcsftime_l(s: *mut i32, maxsize: usize, format: *const i32, t: *const tm, _loc: usize) -> usize {
+        // SAFETY: delegates to wcsftime; only C-equivalent locales exist, so
+        // locale_t does not alter wide time formatting.
+        unsafe { wcsftime(s, maxsize, format, t) }
     }
 }
 

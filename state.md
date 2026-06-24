@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **190/190**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F545-stdbit-ul-ull`. `glibc.md` = live per-cluster TODO. F counter next = **546**, B = **138**, D = **112**
+`F546-time-l-llseek`. `glibc.md` = live per-cluster TODO. F counter next = **547**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -67,8 +67,14 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   variants (`stdc_*_ul`, `stdc_*_ull`) added; host-diffable coverage folded
   into t_stdbit.c. Verification: `xtask glibc-test` 190/190; both freestanding
   arch builds; `spec-lint`; filtered symbol audit now 385 missing (down from 413).
-- small maybes: llseek (=lseek on 64-bit; check it's linkable not compat-only),
-  gnu_get_libc_version/release (trivial but version string ≠ host → not diffable).
+- **F546 DONE locally:** llseek + C-locale time `_l` wrappers
+  (strftime_l/strptime_l/wcsftime_l). Time `_l` paths are host-diffed in
+  t_strftime.c; llseek is implemented as an LP64 lseek alias but not
+  host-diffable because host glibc exposes it as non-default compat-only.
+  Verification: `xtask glibc-test` 190/190; both freestanding arch builds;
+  `spec-lint`; filtered symbol audit now 381 missing.
+- small maybes: re-audit for any remaining host-linkable stragglers before
+  choosing RPC/test-infra work.
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need
