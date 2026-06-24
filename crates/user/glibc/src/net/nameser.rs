@@ -264,6 +264,144 @@ pub unsafe extern "C" fn ns_name_uncompress(msg: *const u8, eom: *const u8, src:
 unsafe fn nlen(s: *const u8) -> usize { let mut n = 0; unsafe { while *s.add(n) != 0 { n += 1; } } n }
 fn lc(c: u8) -> u8 { if c.is_ascii_uppercase() { c + 32 } else { c } }
 
+fn res_printable(c: u8) -> bool { (0x21..0x7f).contains(&c) }
+fn host_char(c: u8) -> bool { c.is_ascii_alphanumeric() || c == b'-' || c == b'_' }
+
+unsafe fn label_ok<F>(s: *const u8, start: usize, end: usize, pred: F) -> bool
+where
+    F: Fn(u8, bool) -> bool,
+{
+    let mut i = start;
+    let mut len = 0usize;
+    // SAFETY: caller supplies label byte offsets within the same NUL-terminated
+    // domain string; this loop reads only bytes before `end`.
+    unsafe {
+        while i < end {
+            let mut escaped = false;
+            let mut c = *s.add(i);
+            i += 1;
+            if c == b'\\' {
+                if i >= end { return false; }
+                escaped = true;
+                c = *s.add(i);
+                i += 1;
+            }
+            if !pred(c, escaped) { return false; }
+            len += 1;
+            if len > 63 { return false; }
+        }
+    }
+    true
+}
+
+unsafe fn domain_ok<F>(name: *const c_char, pred: F) -> bool
+where
+    F: Copy + Fn(u8, bool) -> bool,
+{
+    // SAFETY: `name` is a caller NUL-terminated domain string; all helper
+    // calls and indexed reads stay within the measured string length.
+    unsafe {
+        if name.is_null() { return false; }
+        let s = name as *const u8;
+        let n = nlen(s);
+        if n == 0 { return true; }
+        let mut total = 1usize; // final root label.
+        let mut start = 0usize;
+        let mut i = 0usize;
+        while i <= n {
+            let at_end = i == n;
+            let c = if at_end { 0 } else { *s.add(i) };
+            if at_end || c == b'.' {
+                if i == start {
+                    return n == 1 && start == 0 || at_end && start == n;
+                }
+                if !label_ok(s, start, i, pred) { return false; }
+                total += i - start + 1;
+                if total > 255 { return false; }
+                start = i + 1;
+            } else if c == b'\\' {
+                i += 1;
+                if i >= n { return false; }
+            }
+            i += 1;
+        }
+        true
+    }
+}
+
+unsafe fn first_unescaped_dot(name: *const u8, n: usize) -> Option<usize> {
+    let mut i = 0usize;
+    // SAFETY: caller passes the measured byte length of `name`; this scan reads
+    // only indexes below that length while handling escaped bytes.
+    unsafe {
+        while i < n {
+            let c = *name.add(i);
+            if c == b'.' { return Some(i); }
+            if c == b'\\' {
+                i += 1;
+                if i >= n { return None; }
+            }
+            i += 1;
+        }
+    }
+    None
+}
+
+// # C: int res_dnok(const char *dn)
+#[no_mangle]
+pub unsafe extern "C" fn res_dnok(dn: *const c_char) -> i32 {
+    // SAFETY: dn is a caller NUL-terminated name; validation performs bounded
+    // byte walks and rejects whitespace/control characters and bad labels.
+    unsafe { domain_ok(dn, |c, _| res_printable(c)) as i32 }
+}
+
+// # C: int res_hnok(const char *dn)
+#[no_mangle]
+pub unsafe extern "C" fn res_hnok(dn: *const c_char) -> i32 {
+    // SAFETY: dn is a caller NUL-terminated host name.
+    unsafe {
+        if dn.is_null() { return 0; }
+        let s = dn as *const u8;
+        let c = *s;
+        if c != 0 && c != b'.' && c != b'_' && !c.is_ascii_alphanumeric() { return 0; }
+        domain_ok(dn, |c, escaped| host_char(c) && !(escaped && c == b'.')) as i32
+    }
+}
+
+// # C: int res_ownok(const char *dn)
+#[no_mangle]
+pub unsafe extern "C" fn res_ownok(dn: *const c_char) -> i32 {
+    // SAFETY: dn is a caller NUL-terminated owner name. A leading "*." wildcard
+    // is accepted in addition to the host-name subset.
+    unsafe {
+        if dn.is_null() { return 0; }
+        let s = dn as *const u8;
+        if *s == b'*' && *s.add(1) == b'.' {
+            return domain_ok(s.add(2) as *const c_char, |c, escaped| host_char(c) && !(escaped && c == b'.')) as i32;
+        }
+        res_hnok(dn)
+    }
+}
+
+// # C: int res_mailok(const char *dn)
+#[no_mangle]
+pub unsafe extern "C" fn res_mailok(dn: *const c_char) -> i32 {
+    // SAFETY: dn is a caller NUL-terminated mailbox name. The first label is
+    // the local part and may contain printable punctuation; the remaining
+    // suffix must be a valid general DNS domain.
+    unsafe {
+        if dn.is_null() { return 0; }
+        let s = dn as *const u8;
+        let n = nlen(s);
+        if n == 0 || (n == 1 && *s == b'.') { return 1; }
+        if !domain_ok(dn, |c, _| res_printable(c)) { return 0; }
+        let Some(dot) = first_unescaped_dot(s, n) else { return 0; };
+        if dot + 1 == n { return 0; }
+        if dot == 0 || !label_ok(s, 0, dot, |c, _| res_printable(c)) { return 0; }
+        domain_ok(s.add(dot + 1) as *const c_char, |c, escaped| host_char(c) && !(escaped && c == b'.')) as i32
+    }
+}
+
 // # C: int ns_makecanon(const char *src, char *dst, size_t dstsize)
 // Strip trailing unescaped dots, then append exactly one canonical trailing dot.
 #[no_mangle]
