@@ -283,6 +283,7 @@
     fminimum_magl;
     fminimum_numl;
     fminimuml;
+    fmal;
     fmodl;
     frexpl;
     fromfpl;
