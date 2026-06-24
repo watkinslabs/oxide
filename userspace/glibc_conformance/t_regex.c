@@ -2,9 +2,19 @@
    alternation, capture groups, REG_ICASE/NEWLINE/NOTBOL/NOTEOL, regerror. */
 #include <stdio.h>
 #include <regex.h>
+#include <string.h>
 
 extern char *re_comp(const char *);
 extern int re_exec(const char *);
+struct re_registers {
+    unsigned num_regs;
+    int *start;
+    int *end;
+};
+extern const char *re_compile_pattern(const char *, size_t, struct re_pattern_buffer *);
+extern int re_compile_fastmap(struct re_pattern_buffer *);
+extern int re_match(struct re_pattern_buffer *, const char *, int, int, struct re_registers *);
+extern int re_search(struct re_pattern_buffer *, const char *, int, int, int, struct re_registers *);
 
 static void t(const char *pat, const char *s, int cflags, int eflags){
     regex_t re; regmatch_t m[10];
@@ -73,5 +83,19 @@ int main(void){
 
     printf("RE|comp=%s\n", re_comp("a*b") ? "err" : "ok");
     printf("RE|match=%d nomatch=%d\n", re_exec("aaab"), re_exec("ccc"));
+
+    struct re_pattern_buffer rb;
+    memset(&rb, 0, sizeof rb);
+    printf("GNURE|compile=%s\n", re_compile_pattern("a*b", 3, &rb) ? "err" : "ok");
+    char fast[256];
+    memset(fast, 0, sizeof fast);
+    rb.__fastmap = fast;
+    printf("GNURE|fastmap=%d\n", re_compile_fastmap(&rb));
+    struct re_registers regs;
+    memset(&regs, 0, sizeof regs);
+    printf("GNURE|match=%d\n", re_match(&rb, "aaab", 4, 0, &regs));
+    printf("GNURE|regs=%u %d %d\n", regs.num_regs, regs.start ? regs.start[0] : -9, regs.end ? regs.end[0] : -9);
+    printf("GNURE|search=%d\n", re_search(&rb, "xxaaab", 6, 0, 6, &regs));
+    printf("GNURE|regs2=%u %d %d\n", regs.num_regs, regs.start ? regs.start[0] : -9, regs.end ? regs.end[0] : -9);
     return 0;
 }
