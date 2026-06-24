@@ -292,6 +292,7 @@
     lrintl;
     lroundl;
     modfl;
+    nanl;
     nearbyintl;
     floorl;
     rintl;
