@@ -379,3 +379,81 @@ long double scalbl(long double value, long double exponent) {
     }
     return x87_scalbnl(value, exponent);
 }
+
+static void x87_extractl(long double x, long double *significand, long double *exponent) {
+    long double sig;
+    long double exp;
+    __asm__ __volatile__(
+        "fldt %2\n\t"
+        "fxtract\n\t"
+        "fstpt %0\n\t"
+        "fstpt %1"
+        : "=m"(sig), "=m"(exp)
+        : "m"(x)
+        : "st");
+    *significand = sig;
+    *exponent = exp;
+}
+
+static long double finite_logbl(long double x) {
+    long double sig;
+    long double exp;
+    x87_extractl(x, &sig, &exp);
+    return exp;
+}
+
+long double logbl(long double x) {
+    if (x == 0.0L) {
+        long double zero = 0.0L;
+        return -1.0L / zero;
+    }
+    if (!__builtin_isfinite(x)) {
+        return x * x;
+    }
+
+    return finite_logbl(x);
+}
+
+int ilogbl(long double x) {
+    if (x == 0.0L || __builtin_isnan(x)) {
+        return -2147483647 - 1;
+    }
+    if (__builtin_isinf(x)) {
+        return 2147483647;
+    }
+    return (int)finite_logbl(x);
+}
+
+long int llogbl(long double x) {
+    if (x == 0.0L || __builtin_isnan(x)) {
+        return -__LONG_MAX__ - 1L;
+    }
+    if (__builtin_isinf(x)) {
+        return __LONG_MAX__;
+    }
+    return (long int)finite_logbl(x);
+}
+
+long double frexpl(long double value, int *exponent) {
+    if (value == 0.0L || !__builtin_isfinite(value)) {
+        *exponent = 0;
+        return value;
+    }
+
+    long double sig;
+    long double exp;
+    x87_extractl(value, &sig, &exp);
+    *exponent = (int)exp + 1;
+    return x87_scalbnl(sig, -1.0L);
+}
+
+long double significandl(long double x) {
+    if (x == 0.0L || !__builtin_isfinite(x)) {
+        return x;
+    }
+
+    long double sig;
+    long double exp;
+    x87_extractl(x, &sig, &exp);
+    return sig;
+}

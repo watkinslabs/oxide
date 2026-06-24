@@ -274,13 +274,17 @@
     fminimum_magl;
     fminimum_numl;
     fminimuml;
+    frexpl;
     cimagl;
     conjl;
     cprojl;
     creall;
+    ilogbl;
     isinfl;
     isnanl;
     ldexpl;
+    llogbl;
+    logbl;
     llrintl;
     llroundl;
     lrintl;
@@ -294,5 +298,6 @@
     scalbl;
     scalblnl;
     scalbnl;
+    significandl;
     sqrtl;
     truncl;};
