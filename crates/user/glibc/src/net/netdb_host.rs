@@ -119,6 +119,24 @@ mod exports {
             }
         }
     }
+    /// # C: struct hostent *res_gethostbyname(const char *name)
+    #[no_mangle]
+    pub unsafe extern "C" fn res_gethostbyname(name: *const u8) -> *mut hostent {
+        // SAFETY: resolver compatibility alias over gethostbyname.
+        unsafe { gethostbyname(name) }
+    }
+    /// # C: struct hostent *res_gethostbyname2(const char *name, int af)
+    #[no_mangle]
+    pub unsafe extern "C" fn res_gethostbyname2(name: *const u8, af: i32) -> *mut hostent {
+        // SAFETY: resolver compatibility alias over gethostbyname2.
+        unsafe { gethostbyname2(name, af) }
+    }
+    /// # C: struct hostent *res_gethostbyaddr(const char *addr, int len, int type)
+    #[no_mangle]
+    pub unsafe extern "C" fn res_gethostbyaddr(addr: *const u8, len: i32, type_: i32) -> *mut hostent {
+        // SAFETY: resolver compatibility alias over gethostbyaddr.
+        unsafe { gethostbyaddr(addr, len as u32, type_) }
+    }
 
     // ---- enumeration ----
     /// # C: void sethostent(int stayopen)
