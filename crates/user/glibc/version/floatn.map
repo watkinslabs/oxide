@@ -257,6 +257,7 @@
     __isnanl;
     __issignalingl;
     __signbitl;
+    canonicalizel;
     ceill;
     copysignl;
     fabsl;
@@ -277,6 +278,7 @@
     fminimuml;
     fmodl;
     frexpl;
+    getpayloadl;
     cimagl;
     conjl;
     cprojl;
@@ -308,6 +310,8 @@
     scalbl;
     scalblnl;
     scalbnl;
+    setpayloadl;
+    setpayloadsigl;
     significandl;
     sqrtl;
     totalorderl;
