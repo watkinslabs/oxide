@@ -259,6 +259,7 @@
     __signbitl;
     cabsl;
     canonicalizel;
+    cbrtl;
     ceill;
     copysignl;
     fabsl;
