@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2060 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2088 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **190/190**; both arches boot.
 
@@ -16,14 +16,15 @@ vendor binaries (confirm in G19d). Reverted; don't re-add without the codegen fi
 all scalar/fixed-width/hyper/float/double primitives + opaque/bytes/string/
 wrapstring/netobj + vector/array/reference/pointer + xdr_sizeof + getpos/setpos.
 RFC4506-verified vs our libc (glibc keeps xdr_* COMPAT-ONLY → not host-diffable).
-Also DONE: SysV signal (sighold/sigrelse/sigignore/sigset). Remaining RPC =
+Also DONE: SysV signal (sighold/sigrelse/sigignore/sigset), and the missing
+C23 `<stdbit.h>` unsigned long / unsigned long long variants (F545). Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 163/163.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
 (mkstemp64 family + preadv64/pwritev64(v2) + strtof64/wcstof64) + mkostemps,
-C23 `<stdbit.h>` (42), gnu_dev_*/swab/ftok/timespec_get(res)/group_member/ualarm,
+C23 `<stdbit.h>` (70), gnu_dev_*/swab/ftok/timespec_get(res)/group_member/ualarm,
 /etc/rpc DB, dn_comp/expand/skipname, sendmmsg/recvmmsg, /etc/{ethers,ttys,
 aliases,gshadow} DBs, C23 *pi/*m1/*p1 + fmaximum/fminimum, netdb _r, dl extras.
 Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED.
