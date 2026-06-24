@@ -121,6 +121,10 @@ pub extern "C" fn mtrace() {}
 #[no_mangle]
 pub extern "C" fn muntrace() {}
 
+// # C: void mcheck_check_all(void)
+#[no_mangle]
+pub extern "C" fn mcheck_check_all() {}
+
 #[cfg(test)]
 mod tests {
     #[test]

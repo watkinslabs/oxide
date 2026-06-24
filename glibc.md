@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2114 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2115 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **192/192**; both arches boot.
 
@@ -36,6 +36,7 @@ Also DONE: source-filter socket APIs (F561).
 Also DONE: reserved-port helpers bindresvport/rresvport(_af) (F562).
 Also DONE: ruserok/iruserok remote-login denials (F563).
 Also DONE: rcmd/rexec remote-command failure stubs (F564).
+Also DONE: mcheck_check_all malloc-debug no-op (F565).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
@@ -200,6 +201,10 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   are non-default compat-only on host so ABI-audited, while crypt_checksalt and
   crypt_gensalt_r are host-diffed in t_crypto.c.) STILL TODO:
   xencrypt/xdecrypt (SunRPC DES).
+- **malloc debug** — mcheck/mcheck_pedantic/mprobe/mtrace/muntrace already
+  done; mcheck_check_all DONE — F565, malloc/introspect.rs, errno-preserving
+  no-op host-diffed in t_crypto.c. STILL TODO: malloc_info; mallwatch is
+  compat-only/non-linkable on this host.
 - Re-audit (docs/59 §9 / state.md recipe) for stragglers after each batch.
 
 ## 3. HARD-BLOCKED (glibc_unsupported.md): long double `*l` + `_Float128`/
