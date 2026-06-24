@@ -3,7 +3,7 @@
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
 > `libc.so.6` (**~2060 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
-> are truly impossible. Conformance **188/188**; both arches boot.
+> are truly impossible. Conformance **189/189**; both arches boot.
 
 ## 1. The one migration blocker (docs/59 §9.4)
 8 `__`-aliased DATA symbols (__environ/_environ/__signgam/__tzname/__timezone/
@@ -94,6 +94,8 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   posix/fs.rs + time/tm.rs; host-diffable t_miscsmall.c).
   (getusershell/setusershell/endusershell DONE — F539, posix/usershell.rs,
   /etc/shells parser with glibc default fallback; host-diffable t_usershell.c).
+  (ftime DONE — F540, time/clock.rs, CLOCK_REALTIME-backed legacy timeb fill;
+  host-diffable property test t_ftime.c.)
   (pkey_alloc/free/mprotect + pkey_get/set DONE — F529, posix/modern.rs;
   alloc/free/mprotect syscall passthrough both arches, get/set via PKRU
   (x86) / POR_EL0 (arm) register ops; host-diffable t_pkey.c).
