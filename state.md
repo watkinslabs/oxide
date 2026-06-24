@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **195/195**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F588-long-double-abi-bridge`. `glibc.md` = live per-cluster TODO. F counter next = **589**, B = **138**, D = **113**
+`F589-long-double-classify-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **590**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -283,6 +283,10 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   checks show the five symbols present. Probe note: many tempting
   `__builtin_*l` wrappers lower to self-PLT libcalls and must be rejected or
   hand-written.
+- **F589 DONE locally:** f80 classifier compatibility exports added to the C
+  bridge: __finitel, __isinfl, __isnanl, __signbitl, __fpclassifyl, and
+  __issignalingl. Host-diffed in t_longdouble; C object checked for no PLT
+  relocations or unresolved symbols.
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need
