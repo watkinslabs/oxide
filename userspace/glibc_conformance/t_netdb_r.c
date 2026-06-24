@@ -30,5 +30,13 @@ int main(void) {
     int r4 = getprotoent_r(&pe2, buf, sizeof buf, &pr2);
     printf("protoent r=%d first=%d\n", r4, pr2 != NULL && pe2.p_name[0] != 0);
     endprotoent();
+
+    struct hostent he, *hr = NULL;
+    int herr = 0;
+    sethostent(1);
+    int r5 = gethostent_r(&he, buf, sizeof buf, &hr, &herr);
+    printf("hostent r=%d first=%d type=%d\n", r5, hr != NULL && he.h_name[0] != 0,
+           hr ? he.h_addrtype : -1);
+    endhostent();
     return 0;
 }

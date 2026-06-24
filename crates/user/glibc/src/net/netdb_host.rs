@@ -212,6 +212,25 @@ mod exports {
             }
         }
     }
+    /// # C: int gethostent_r(struct hostent*, char*, size_t, struct hostent**, int*)
+    #[no_mangle]
+    pub unsafe extern "C" fn gethostent_r(ret: *mut hostent, buf: *mut u8, n: usize, result: *mut *mut hostent, herrnop: *mut i32) -> i32 {
+        // SAFETY: lazily slurps /etc/hosts, advances the global cursor, and
+        // packs the selected entry into caller-owned output storage.
+        unsafe {
+            *result = core::ptr::null_mut();
+            let e = &mut *S.en.get();
+            if !e.loaded {
+                if let Some(b) = read_file(b"/etc/hosts\0") {
+                    e.v = core::str::from_utf8(&b).unwrap_or("").lines().filter_map(parse_host_line).collect();
+                }
+                e.loaded = true;
+            }
+            if e.i >= e.v.len() { *herrnop = HOST_NOT_FOUND; return ENOENT; }
+            let h = e.v[e.i].clone(); e.i += 1;
+            host_r(&h, ret, buf, n, result, herrnop)
+        }
+    }
 
     // ---- hostname / domainname / hostid ----
 
