@@ -279,6 +279,8 @@
     fminimuml;
     fmodl;
     frexpl;
+    fromfpl;
+    fromfpxl;
     getpayloadl;
     hypotl;
     cimagl;
@@ -318,4 +320,6 @@
     sqrtl;
     totalorderl;
     totalordermagl;
+    ufromfpl;
+    ufromfpxl;
     truncl;};
