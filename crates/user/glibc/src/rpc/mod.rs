@@ -4,3 +4,5 @@
 #![allow(clippy::upper_case_acronyms)]
 #[cfg(feature = "freestanding")]
 pub mod xdr;
+#[cfg(feature = "freestanding")]
+pub mod stubs;
