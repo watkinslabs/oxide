@@ -20,6 +20,10 @@ extern long double fmaximum_magl(long double, long double);
 extern long double fminimum_magl(long double, long double);
 extern int totalorderl(const long double *, const long double *);
 extern int totalordermagl(const long double *, const long double *);
+extern int canonicalizel(long double *, const long double *);
+extern long double getpayloadl(const long double *);
+extern int setpayloadl(long double *, long double);
+extern int setpayloadsigl(long double *, long double);
 
 int main(void) {
     volatile long double neg = -2.5L;
@@ -63,6 +67,14 @@ int main(void) {
     long double zerov = zero;
     long double next_pos = nextafterl(0.0L, 1.0L);
     long double next_neg = nextafterl(0.0L, -1.0L);
+    long double payload_q = 0.0L;
+    long double payload_s = 0.0L;
+    long double payload_bad = 123.0L;
+    long double canon_dst = 0.0L;
+    int setpayload_q_rc = setpayloadl(&payload_q, 42.0L);
+    int setpayload_s_rc = setpayloadsigl(&payload_s, 42.0L);
+    int setpayload_s0_rc = setpayloadsigl(&payload_bad, 0.0L);
+    int canonicalize_rc = canonicalizel(&canon_dst, &(long double){3.5L});
 
     printf("sizeof_ld=%zu\n", sizeof(long double));
     printf("fabsl=%d\n", fabsl(neg) == 2.5L);
@@ -198,5 +210,14 @@ int main(void) {
            nextdownl(zero) < 0.0L,
            nexttoward(0.0, 1.0L) > 0.0,
            nexttowardf(-0.0f, -1.0L) < 0.0f);
+    printf("payload_batch=%d/%d/%d/%d/%d/%d/%d/%d\n",
+           setpayload_q_rc == 0,
+           isnanl(payload_q) ? 1 : 0,
+           getpayloadl(&payload_q) == 42.0L,
+           setpayload_s_rc == 0,
+           isnanl(payload_s) ? 1 : 0,
+           getpayloadl(&payload_s) == 42.0L,
+           setpayload_s0_rc == 1 && payload_bad == 0.0L,
+           canonicalize_rc == 0 && canon_dst == 3.5L);
     return 0;
 }
