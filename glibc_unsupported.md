@@ -1,16 +1,6 @@
 # glibc — unsupported (cannot implement)
 
-> Hard-blocked, not deferred. 40 entries.
-
-## long double / long-double-typed: 6
-> x86_64 long double is 80-bit x87 f80; Rust has no f80 so the extern-C ABI cannot be expressed.
-
-long double j0l (long double x)
-long double j1l (long double x)
-long double jnl (int n, long double x)
-long double y0l (long double x)
-long double y1l (long double x)
-long double ynl (int n, long double x)
+> Hard-blocked, not deferred. 34 entries.
 
 ## header-only macros and compiler builtins: 24
 > Never a libc.so.6 symbol; obstack_ and sigsetjmp expand over implemented underlying symbols; alloca is a compiler builtin.
