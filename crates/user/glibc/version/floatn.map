@@ -260,5 +260,8 @@
     copysignl;
     fabsl;
     finitel;
+    cimagl;
+    conjl;
+    creall;
     isinfl;
     isnanl;};

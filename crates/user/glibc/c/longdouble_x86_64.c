@@ -52,3 +52,18 @@ int __fpclassifyl(long double x) {
 int __issignalingl(long double x) {
     return __builtin_issignaling(x);
 }
+
+long double creall(long double _Complex z) {
+    return __real__ z;
+}
+
+long double cimagl(long double _Complex z) {
+    return __imag__ z;
+}
+
+long double _Complex conjl(long double _Complex z) {
+    long double _Complex r;
+    __real__ r = __real__ z;
+    __imag__ r = -__imag__ z;
+    return r;
+}
