@@ -2,8 +2,10 @@
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
 > `libc.so.6` (**~2290 exported**). Directive: implement EVERYTHING achievable
-> (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
-> are truly impossible. Conformance **194/194**; both arches boot.
+> (full compliance), value-agnostic. Achievable audited surface is complete.
+> Remaining audit names are hard-blocked f80/long-double ABI symbols (§3) plus
+> host `errno@@GLIBC_PRIVATE`, which is an ELF TLS data symbol. Conformance
+> **194/194**; both arches boot.
 
 ## 1. The one migration blocker (docs/59 §9.4)
 8 `__`-aliased DATA symbols (__environ/_environ/__signgam/__tzname/__timezone/
@@ -73,7 +75,9 @@ and key filters, xdrrec_*, and xdrstdio_create (F586). Remaining audit surface
 was long-double-family ABI, open_wmemstream, and public errno.
 Also DONE: open_wmemstream wide memory stream, including host-diffed fputws/
 fseek/fputwc/fflush coverage (F587). Remaining audit surface is long-double-
-family ABI plus public errno. Conformance 194/194.
+family ABI plus public errno. Final audit note: host errno is a GLIBC_PRIVATE
+TLS data symbol; our per-thread errno is available through __errno_location,
+and exporting a plain `errno` object would be semantically wrong (D112).
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases

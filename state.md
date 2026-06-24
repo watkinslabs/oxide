@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **194/194**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F587-open-wmemstream`. `glibc.md` = live per-cluster TODO. F counter next = **588**, B = **138**, D = **112**
+`D112-final-glibc-audit`. `glibc.md` = live per-cluster TODO. F counter next = **588**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -269,8 +269,12 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   glibc's seek-back overwrite/terminator behavior. Added host-diff coverage to
   t_memstream. Verification: regression suite + both freestanding arch builds +
   `spec-lint` + audit drop to 158.
-- small maybes: re-audit for any remaining host-linkable stragglers before
-  choosing RPC/test-infra work.
+- **D112 DONE locally:** final glibc audit documented. Remaining 158 audited
+  names are blocked, not pending implementation: 157 are long-double/f80 ABI
+  entry points we cannot represent correctly with the current Rust extern-C ABI
+  surface, and `errno` is a host GLIBC_PRIVATE TLS data symbol. Our errno is
+  correctly exposed through `__errno_location`; adding a non-TLS public data
+  object named `errno` would be audit-only and semantically wrong.
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need
