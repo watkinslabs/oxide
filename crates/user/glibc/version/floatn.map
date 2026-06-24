@@ -324,6 +324,9 @@
     ilogbl;
     isinfl;
     isnanl;
+    j0l;
+    j1l;
+    jnl;
     ldexpl;
     lgammal;
     lgammal_r;
@@ -380,4 +383,7 @@
     ufromfpl;
     ufromfpxl;
     wcstold;
-    truncl;};
+    truncl;
+    y0l;
+    y1l;
+    ynl;};
