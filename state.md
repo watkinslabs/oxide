@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **192/192**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F563-ruserok-stubs`. `glibc.md` = live per-cluster TODO. F counter next = **564**, B = **138**, D = **112**
+`F564-remote-command-stubs`. `glibc.md` = live per-cluster TODO. F counter next = **565**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -149,6 +149,10 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   conservative remote-login denials matching glibc's stable negative cases.
   Host-diffed in t_inet2.c. Verification: `xtask glibc-test` 192/192; both
   freestanding arch builds; `spec-lint`; filtered symbol audit now 338.
+- **F564 DONE locally:** rcmd/rcmd_af and rexec/rexec_af added as conservative
+  remote-command failures with glibc-matched EINVAL behavior for unresolved
+  hosts. Host-diffed in t_inet2.c. Verification: `xtask glibc-test` 192/192;
+  both freestanding arch builds; `spec-lint`; filtered symbol audit now 334.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
