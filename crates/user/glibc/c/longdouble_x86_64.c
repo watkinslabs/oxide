@@ -891,3 +891,94 @@ int canonicalizel(long double *cx, const long double *x) {
     *cx = *x;
     return 0;
 }
+
+static long double fromfp_roundl(long double x, int rnd) {
+    if (rnd == 0) {
+        return x87_round_mode(x, 0x0800u);
+    }
+    if (rnd == 1) {
+        return x87_round_mode(x, 0x0400u);
+    }
+    if (rnd == 2) {
+        return x87_round_mode(x, 0x0c00u);
+    }
+    if (rnd == 3) {
+        return round_awayl(x);
+    }
+    return x87_round_mode(x, 0x0000u);
+}
+
+static long int fromfp_valuel(long double x, int rnd, unsigned int width) {
+    unsigned int w = width > 64u ? 64u : width;
+    long int hi;
+    long int lo;
+    long double r;
+
+    if (w == 0) {
+        return 0;
+    }
+    if (w >= 64u) {
+        hi = __LONG_MAX__;
+        lo = -__LONG_MAX__ - 1L;
+    } else {
+        hi = (long int)((1ull << (w - 1u)) - 1ull);
+        lo = -(long int)(1ull << (w - 1u));
+    }
+    if (__builtin_isnan(x) || (__builtin_isinf(x) && x < 0.0L)) {
+        return lo;
+    }
+    if (__builtin_isinf(x)) {
+        return hi;
+    }
+
+    r = fromfp_roundl(x, rnd);
+    if (r >= (long double)hi) {
+        return hi;
+    }
+    if (r <= (long double)lo) {
+        return lo;
+    }
+    return (long int)r;
+}
+
+static unsigned long int ufromfp_valuel(long double x, int rnd, unsigned int width) {
+    unsigned int w = width > 64u ? 64u : width;
+    unsigned long int hi;
+    long double r;
+
+    if (w == 0) {
+        return 0;
+    }
+    hi = w >= 64u ? ~0ul : ((1ul << w) - 1ul);
+    if (__builtin_isnan(x) || (__builtin_isinf(x) && x < 0.0L)) {
+        return 0;
+    }
+    if (__builtin_isinf(x)) {
+        return hi;
+    }
+
+    r = fromfp_roundl(x, rnd);
+    if (r <= 0.0L) {
+        return 0;
+    }
+    if (r >= (long double)hi) {
+        return hi;
+    }
+    return (unsigned long int)r;
+}
+
+long int fromfpl(long double x, int rnd, unsigned int width) {
+    return fromfp_valuel(x, rnd, width);
+}
+
+unsigned long int ufromfpl(long double x, int rnd, unsigned int width) {
+    return ufromfp_valuel(x, rnd, width);
+}
+
+long int fromfpxl(long double x, int rnd, unsigned int width) {
+    return fromfp_valuel(x, rnd, width);
+}
+
+unsigned long int ufromfpxl(long double x, int rnd, unsigned int width) {
+    return ufromfp_valuel(x, rnd, width);
+}

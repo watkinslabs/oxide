@@ -1,4 +1,5 @@
 #include <complex.h>
+#include <stdint.h>
 #include <math.h>
 #include <stdio.h>
 
@@ -24,6 +25,10 @@ extern int canonicalizel(long double *, const long double *);
 extern long double getpayloadl(const long double *);
 extern int setpayloadl(long double *, long double);
 extern int setpayloadsigl(long double *, long double);
+extern intmax_t fromfpl(long double, int, unsigned int);
+extern uintmax_t ufromfpl(long double, int, unsigned int);
+extern intmax_t fromfpxl(long double, int, unsigned int);
+extern uintmax_t ufromfpxl(long double, int, unsigned int);
 
 int main(void) {
     volatile long double neg = -2.5L;
@@ -226,5 +231,16 @@ int main(void) {
            getpayloadl(&payload_s) == 42.0L,
            setpayload_s0_rc == 1 && payload_bad == 0.0L,
            canonicalize_rc == 0 && canon_dst == 3.5L);
+    printf("fromfp_l=%jd/%jd/%jd/%jd/%jd/%ju/%jd/%ju/%jd/%jd\n",
+           fromfpl(2.5L, FP_INT_TONEAREST, 16),
+           fromfpl(2.5L, FP_INT_UPWARD, 16),
+           fromfpl(-2.5L, FP_INT_DOWNWARD, 16),
+           fromfpl(200.0L, FP_INT_TONEAREST, 8),
+           fromfpl(nanv, FP_INT_TONEAREST, 8),
+           ufromfpl(-1.0L, FP_INT_TONEAREST, 8),
+           fromfpxl(7.5L, FP_INT_TONEAREST, 16),
+           ufromfpxl(200.7L, FP_INT_DOWNWARD, 8),
+           fromfpl(infv, FP_INT_TONEAREST, 8),
+           fromfpl(-infv, FP_INT_TONEAREST, 8));
     return 0;
 }
