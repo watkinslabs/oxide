@@ -57,5 +57,11 @@ int main(void) {
            rintl(2.5L) == 2.0L,
            rintl(-1.5L) == -2.0L,
            signbit(rintl(mz)) ? 1 : 0);
+    printf("x87_round=%d/%d/%d/%d/%d\n",
+           ceill(1.2L) == 2.0L,
+           ceill(-1.2L) == -1.0L,
+           floorl(-1.2L) == -2.0L,
+           truncl(-1.8L) == -1.0L,
+           signbit(floorl(mz)) ? 1 : 0);
     return 0;
 }
