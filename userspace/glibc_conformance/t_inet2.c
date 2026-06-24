@@ -4,12 +4,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <netdb.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
 extern int rresvport(int *);
-extern int rresvport_af(int *, int);
+extern int rresvport_af(int *, sa_family_t);
 extern int bindresvport(int, struct sockaddr_in *);
 
 static void show(const char *n, int r) {
@@ -50,5 +51,12 @@ int main(void){
     errno = 0; show("rresvport_af", rresvport_af(&port, AF_INET));
     printf("rresvport_af_port=%d\n", port);
     errno = 0; show("bindresvport", bindresvport(-1, NULL));
+    errno = 0; show("ruserok", ruserok("example.invalid", 0, "remote", "local"));
+    errno = 0; show("ruserok_af", ruserok_af("example.invalid", 0, "remote", "local", AF_INET));
+    uint32_t raddr = 0x0a000001u;
+    struct in_addr ira;
+    ira.s_addr = htonl(raddr);
+    errno = 0; show("iruserok", iruserok(raddr, 0, "remote", "local"));
+    errno = 0; show("iruserok_af", iruserok_af(&ira, 0, "remote", "local", AF_INET));
     return 0;
 }
