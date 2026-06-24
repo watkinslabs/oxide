@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **194/194**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F578-compat-data-hooks`. `glibc.md` = live per-cluster TODO. F counter next = **579**, B = **138**, D = **112**
+`F579-obsolete-linux-stubs`. `glibc.md` = live per-cluster TODO. F counter next = **580**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -217,6 +217,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   Current Fedora headers no longer declare these obsolete names, so verification
   is regression suite + both freestanding arch builds + `spec-lint` + audit
   drop to 297.
+- **F579 DONE locally:** obsolete Linux module/NFS/stack syscall compatibility
+  wrappers bdflush/create_module/query_module/get_kernel_syms/nfsservctl/sstk
+  added as ENOSYS stubs. Current Fedora headers no longer declare/default-link
+  these names, so verification is regression suite + both freestanding arch
+  builds + `spec-lint` + audit drop to 291.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
