@@ -63,5 +63,9 @@ int main(void) {
            floorl(-1.2L) == -2.0L,
            truncl(-1.8L) == -1.0L,
            signbit(floorl(mz)) ? 1 : 0);
+    printf("roundevenl=%d/%d/%d\n",
+           roundevenl(2.5L) == 2.0L,
+           roundevenl(3.5L) == 4.0L,
+           signbit(roundevenl(mz)) ? 1 : 0);
     return 0;
 }
