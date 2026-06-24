@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **190/190**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F541-gnu-libc-version`. `glibc.md` = live per-cluster TODO. F counter next = **542**, D = **112**
+`F542-argp-version-hook`. `glibc.md` = live per-cluster TODO. F counter next = **543**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -52,6 +52,8 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
 - **F541 DONE locally:** gnu_get_libc_version/release report the supported ABI
   ceiling (`2.38`) and stable release; host-diffable t_gnu_version.c.
   Conformance now 190/190.
+- **F542 DONE locally:** argp_program_version_hook exported and honored before
+  argp_program_version in --version handling; host-diffable t_argp.c.
 - small maybes: llseek (=lseek on 64-bit; check it's linkable not compat-only),
   gnu_get_libc_version/release (trivial but version string ≠ host → not diffable).
 

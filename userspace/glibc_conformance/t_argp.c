@@ -64,6 +64,31 @@ static void test_argp(void) {
     printf("argp_err: %s", buf);
 }
 
+static void version_hook(FILE *stream, struct argp_state *state) {
+    fprintf(stream, "hook name=%s next=%d flags=%u\n",
+            state && state->name ? state->name : "(null)",
+            state ? state->next : -1, state ? state->flags : 0);
+}
+
+static void test_argp_version_hook(void) {
+    fflush(stdout);
+    int p[2]; if (pipe(p) != 0) return;
+    int saved = dup(1); dup2(p[1], 1); close(p[1]);
+
+    argp_program_version = "plain-version";
+    argp_program_version_hook = version_hook;
+    char *av[] = {"progname", "--version", NULL};
+    int idx = 99;
+    int r = argp_parse(&argp, 2, av, ARGP_NO_EXIT, &idx, NULL);
+
+    fflush(stdout); dup2(saved, 1); close(saved);
+    char buf[256]; ssize_t n = read(p[0], buf, sizeof buf - 1);
+    if (n < 0) n = 0; buf[n] = 0; close(p[0]);
+    printf("argp_version_hook: r=%d idx=%d out=%s", r, idx, buf);
+    argp_program_version_hook = NULL;
+    argp_program_version = NULL;
+}
+
 /* ---- argz extras ---- */
 static void test_argz(void) {
     char *az = NULL; size_t len = 0;
@@ -123,6 +148,7 @@ static void test_wordexp(void) {
 
 int main(void) {
     test_argp();
+    test_argp_version_hook();
     test_argz();
     test_envz();
     test_wordexp();
