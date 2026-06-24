@@ -149,6 +149,34 @@ mod exports {
         // SAFETY: rresvport is the IPv4 form of rresvport_af.
         unsafe { rresvport_af(alport, AF_INET as i32) }
     }
+    // # C: int rcmd_af(char **ahost, unsigned short rport, const char *locuser, const char *remuser, const char *cmd, int *fd2p, sa_family_t af)
+    #[no_mangle]
+    pub unsafe extern "C" fn rcmd_af(_ahost: *mut *mut c_char, _rport: u16, _locuser: *const c_char, _remuser: *const c_char, _cmd: *const c_char, _fd2p: *mut i32, _af: u16) -> i32 {
+        crate::internal::errno::set(EINVAL);
+        -1
+    }
+
+    // # C: int rcmd(char **ahost, unsigned short rport, const char *locuser, const char *remuser, const char *cmd, int *fd2p)
+    #[no_mangle]
+    pub unsafe extern "C" fn rcmd(ahost: *mut *mut c_char, rport: u16, locuser: *const c_char, remuser: *const c_char, cmd: *const c_char, fd2p: *mut i32) -> i32 {
+        // SAFETY: rcmd is the IPv4 form of rcmd_af.
+        unsafe { rcmd_af(ahost, rport, locuser, remuser, cmd, fd2p, AF_INET) }
+    }
+
+    // # C: int rexec_af(char **ahost, int rport, const char *name, const char *pass, const char *cmd, int *fd2p, sa_family_t af)
+    #[no_mangle]
+    pub unsafe extern "C" fn rexec_af(_ahost: *mut *mut c_char, _rport: i32, _name: *const c_char, _pass: *const c_char, _cmd: *const c_char, _fd2p: *mut i32, _af: u16) -> i32 {
+        crate::internal::errno::set(EINVAL);
+        -1
+    }
+
+    // # C: int rexec(char **ahost, int rport, const char *name, const char *pass, const char *cmd, int *fd2p)
+    #[no_mangle]
+    pub unsafe extern "C" fn rexec(ahost: *mut *mut c_char, rport: i32, name: *const c_char, pass: *const c_char, cmd: *const c_char, fd2p: *mut i32) -> i32 {
+        // SAFETY: rexec is the IPv4 form of rexec_af.
+        unsafe { rexec_af(ahost, rport, name, pass, cmd, fd2p, AF_INET) }
+    }
+
     // # C: int ruserok_af(const char *rhost, int suser, const char *ruser, const char *luser, sa_family_t af)
     #[no_mangle]
     pub unsafe extern "C" fn ruserok_af(_rhost: *const c_char, _suser: i32, _ruser: *const c_char, _luser: *const c_char, _af: u16) -> i32 {
