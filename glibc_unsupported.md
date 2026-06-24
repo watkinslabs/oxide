@@ -1,8 +1,8 @@
 # glibc — unsupported (cannot implement)
 
-> Hard-blocked, not deferred. 129 entries.
+> Hard-blocked, not deferred. 126 entries.
 
-## long double / long-double-typed: 95
+## long double / long-double-typed: 92
 > x86_64 long double is 80-bit x87 f80; Rust has no f80 so the extern-C ABI cannot be expressed.
 
 long double sinhl (long double x)
@@ -82,10 +82,7 @@ intmax_t fromfpxl (long double x, int round, unsigned int width)
 uintmax_t ufromfpxl (long double x, int round, unsigned int width)
 long double cabsl (complex long double z)
 long double frexpl (long double value, int *exponent)
-long double ldexpl (long double value, int exponent)
 long double scalbl (long double value, long double exponent)
-long double scalbnl (long double x, int n)
-long double scalblnl (long double x, long int n)
 long double significandl (long double x)
 int strfroml (char *restrict string, size_t size, const char *restrict format, long double value)
 long double fmal (long double x, long double y, long double z)

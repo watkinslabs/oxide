@@ -342,3 +342,29 @@ long double modfl(long double value, long double *integer_part) {
     }
     return fraction;
 }
+
+static long double x87_scalbnl(long double x, long double exponent) {
+    long double y;
+    __asm__ __volatile__(
+        "fldt %2\n\t"
+        "fldt %1\n\t"
+        "fscale\n\t"
+        "fstp %%st(1)\n\t"
+        "fstpt %0"
+        : "=m"(y)
+        : "m"(x), "m"(exponent)
+        : "st");
+    return y;
+}
+
+long double ldexpl(long double value, int exponent) {
+    return x87_scalbnl(value, (long double)exponent);
+}
+
+long double scalbnl(long double x, int n) {
+    return x87_scalbnl(x, (long double)n);
+}
+
+long double scalblnl(long double x, long int n) {
+    return x87_scalbnl(x, (long double)n);
+}
