@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **195/195**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F601-long-double-scalbl`. `glibc.md` = live per-cluster TODO. F counter next = **602**, B = **138**, D = **113**
+`F602-long-double-exponent-batch`. `glibc.md` = live per-cluster TODO. F counter next = **603**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -322,6 +322,9 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   object checked for no PLT relocations or unresolved symbols.
 - **F601 DONE locally:** f80 scalbl added to the C bridge with fractional
   exponent rejection before the shared x87 fscale helper. Host-diffed in
+  t_longdouble; C object checked for no PLT relocations or unresolved symbols.
+- **F602 DONE locally:** f80 logbl, ilogbl, llogbl, frexpl, and significandl
+  added to the C bridge with shared x87 fxtract handling. Host-diffed in
   t_longdouble; C object checked for no PLT relocations or unresolved symbols.
 
 ## DEFERRED (hard, not skipped)
