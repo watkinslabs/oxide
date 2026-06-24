@@ -240,3 +240,75 @@ pub unsafe extern "C" fn psignal(sig: i32, s: *const u8) {
         crate::arch::syscall::sys3(crate::internal::nr::WRITE, 2, buf.as_ptr() as usize, n);
     }
 }
+
+unsafe fn push_cstr_trunc(buf: &mut [u8], n: &mut usize, s: *const u8, max: usize) {
+    // SAFETY: s is null or NUL-terminated; writes stay within buf.
+    unsafe {
+        if s.is_null() {
+            return;
+        }
+        let mut p = s;
+        let limit = core::cmp::min(max, buf.len());
+        while *p != 0 && *n < limit {
+            buf[*n] = *p;
+            *n += 1;
+            p = p.add(1);
+        }
+    }
+}
+
+fn push_bytes(buf: &mut [u8], n: &mut usize, s: &[u8]) {
+    for &b in s {
+        if *n >= buf.len() {
+            break;
+        }
+        buf[*n] = b;
+        *n += 1;
+    }
+}
+
+fn push_u32(buf: &mut [u8], n: &mut usize, mut v: u32) {
+    let mut tmp = [0u8; 10];
+    let mut i = tmp.len();
+    loop {
+        i -= 1;
+        tmp[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    push_bytes(buf, n, &tmp[i..]);
+}
+
+/// # C: void psiginfo(const siginfo_t *pinfo, const char *s)
+#[no_mangle]
+pub unsafe extern "C" fn psiginfo(pinfo: *const u8, s: *const u8) {
+    // SAFETY: pinfo is null or a glibc siginfo_t. We read the stable LP64
+    // fields needed for SI_USER output: signo@0, code@8, pid@16, uid@20.
+    unsafe {
+        let sig = if pinfo.is_null() { 0 } else { *(pinfo as *const i32) };
+        let mut buf = [0u8; 192];
+        let mut n = 0usize;
+        push_cstr_trunc(&mut buf, &mut n, s, 96);
+        if n > 0 {
+            push_bytes(&mut buf, &mut n, b": ");
+        }
+        let sig_s = super::desc::strsignal(sig);
+        push_cstr_trunc(&mut buf, &mut n, sig_s as *const u8, 144);
+        if !pinfo.is_null() {
+            let code = *(pinfo.add(8) as *const i32);
+            if code == 0 {
+                let pid = *(pinfo.add(16) as *const u32);
+                let uid = *(pinfo.add(20) as *const u32);
+                push_bytes(&mut buf, &mut n, b" (Signal sent by kill() ");
+                push_u32(&mut buf, &mut n, pid);
+                push_bytes(&mut buf, &mut n, b" ");
+                push_u32(&mut buf, &mut n, uid);
+                push_bytes(&mut buf, &mut n, b")");
+            }
+        }
+        push_bytes(&mut buf, &mut n, b"\n");
+        crate::arch::syscall::sys3(crate::internal::nr::WRITE, 2, buf.as_ptr() as usize, n);
+    }
+}

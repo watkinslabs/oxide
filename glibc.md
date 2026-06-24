@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2126 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2127 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **192/192**; both arches boot.
 
@@ -41,6 +41,7 @@ Also DONE: BSD regex re_comp/re_exec (F566).
 Also DONE: GNU regex re_compile_pattern/re_compile_fastmap/re_match/re_search (F567).
 Also DONE: GNU regex re_syntax_options/re_set_syntax (F568).
 Also DONE: GNU regex re_match_2/re_search_2/re_set_registers (F569).
+Also DONE: psiginfo SI_USER output path (F570).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
@@ -172,6 +173,8 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   t_sysmisc.c),
   (sigreturn DONE — F558, signal/sigaction.rs, public obsolete ENOSYS stub
   host-diffed in t_signal.c; internal rt_sigreturn restorer remains separate),
+  (psiginfo DONE — F570, signal/legacy.rs, glibc SI_USER output path with
+  psignal-style fallback; host-diffed via captured stderr in t_ucontext.c),
   lockf, scandirat, timespec_get/getres, ftok, ftime, ualarm,
   group_member, gnu_dev_major/minor/makedev, glob_pattern_p, ttyslot, scandirat/scandirat64 (DONE F519), lockf/lockf64 (DONE F520, posix/lockf.rs, t_lockf.c),
   (sigabbrev_np/sigdescr_np/strerrorname_np/strerrordesc_np DONE — F512,
