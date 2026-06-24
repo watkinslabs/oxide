@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **192/192**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F565-mcheck-check-all`. `glibc.md` = live per-cluster TODO. F counter next = **566**, B = **138**, D = **112**
+`F566-re-comp-exec`. `glibc.md` = live per-cluster TODO. F counter next = **567**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -157,6 +157,10 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   mcheck/mtrace, preserving errno like host glibc. Host-diffed in t_crypto.c.
   Verification: `xtask glibc-test` 192/192; both freestanding arch builds;
   `spec-lint`; filtered symbol audit now 333.
+- **F566 DONE locally:** BSD regex re_comp/re_exec added over the existing
+  regex engine with an atomic process-global compiled pattern. Host-diffed in
+  t_regex.c. Verification: `xtask glibc-test` 192/192; both freestanding arch
+  builds; `spec-lint`; filtered symbol audit now 331.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
