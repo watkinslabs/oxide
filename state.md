@@ -1,10 +1,10 @@
 # state.md — session handoff
 
 ## Headline
-**glibc full-compliance build-out** (docs/59 §9). Conformance **185/185**
+**glibc full-compliance build-out** (docs/59 §9). Conformance **186/186**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
-(x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Clean tree on
-`main`. `glibc.md` = live per-cluster TODO. F counter next = **537**, D = **113**
+(x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
+`F537-inet6-option-isctype`. `glibc.md` = live per-cluster TODO. F counter next = **538**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -40,12 +40,8 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   BUT need the ~500-byte `__res_state` struct ABI + res_ninit, which we DON'T have.
 
 ## Still tractable AND verifiable (the real remaining work — small)
-- **inet6_option_* (6, RFC2292)** — inet6_option_space/init/append/alloc/next/find;
-  cmsghdr Hop-by-Hop/Dest TLV builder. Host-LINKABLE + host-diffable. space(n)=
-  CMSG_SPACE((n+2+7)&~7) verified: space(0)=24, space(8)=32, space(16)=40. (Sibling of
-  the RFC3542 inet6_opt_* already done in F518.) Best next cluster.
-- **isctype (1)** — `isctype(c,mask)` = `__ctype_b_loc()[c] & mask` (returns the masked
-  bits, NOT a bool). We have the ctype table (iswctype works). Trivial, host-diffable.
+- **F537 DONE locally:** inet6_option_space/init/append/alloc/next/find + isctype;
+  conformance now 186/186. Not committed yet in this handoff unless branch says so.
 - **ns_sprintrr/ns_sprintrrf** — host-diffable (-lresolv) but INTRICATE: tab-column
   alignment depends on owner-name length; per-RR-type rdata formatters (~30 types in
   ns_print.c) + name decompression. Probed formats (A/AAAA/NS/CNAME/MX/TXT/PTR):
@@ -82,12 +78,11 @@ bg command: x86 grub (KVM, timeout 300) → pkill → `make smoke-arm SMOKE_TIME
 `pkill -x qemu-system-<arch>`. Push hook re-runs smoke (cache HIT, fast).
 
 ## First task on restart
-Re-audit, then do the tractable cluster: **inet6_option_* + isctype** (host-diffable),
-then attempt ns_sprintrr (subset, iterate vs -lresolv oracle).
+Re-audit, then attempt **ns_sprintrr/ns_sprintrrf** (subset, iterate vs -lresolv oracle).
   nm -D /lib64/lib{c,m,pthread,rt,dl,resolv,util,crypt,anl}.so* | awk '$2~/[TWiB]/{print $3}' | sed 's/@.*//' | sort -u > /tmp/host
   cargo build -q -p glibc --features freestanding --target x86_64-unknown-linux-gnu
   nm -D target/sysroot/x86_64-unknown-linux-gnu/lib/libc.so.6 | awk '$2~/[TWiBD]/{print $3}' | sed 's/@.*//' | sort -u > /tmp/ours
   comm -23 /tmp/host /tmp/ours | grep -vE '^_|f128|f32x|f64x'
 DECISION NEEDED: invest in (a) the RPC test-path refactor to unlock ~106 unverified→
 verified RPC symbols, or (b) accept RPC stays out and call the glibc surface "complete
-modulo impossible/infra-bound" once inet6_option_/isctype/ns_sprintrr land.
+modulo impossible/infra-bound" once ns_sprintrr lands.

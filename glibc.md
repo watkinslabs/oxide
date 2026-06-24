@@ -3,7 +3,7 @@
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
 > `libc.so.6` (**~2060 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
-> are truly impossible. Conformance **160/160**; both arches boot.
+> are truly impossible. Conformance **186/186**; both arches boot.
 
 ## 1. The one migration blocker (docs/59 §9.4)
 8 `__`-aliased DATA symbols (__environ/_environ/__signgam/__tzname/__timezone/
@@ -37,8 +37,9 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   res_gethostby*; __res_state; ns_* (ns_get16/put/name/parse); getaddrinfo_a/gai_*
   (async, needs threads); (getifaddrs/freeifaddrs DONE — net/ifaddrs.rs, F510,
   netlink RTM_GETLINK+GETADDR, host-diffable t_getifaddrs.c);
-  inet6_option_* (RFC2292 DEPRECATED, ~6) — DEFERRED: cmsghdr+ip6_hbh-wrapped,
-  obsolete (host warns); intricate cmsg/alignment layout, low value.
+  (inet6_option_* DONE — F537, net/inet6_option.rs, RFC2292 obsolete
+  cmsghdr-wrapped builder/parser with glibc-matched padding, host-diffable
+  t_inet6_option.c; isctype DONE — ctype/table.rs, host-diffable t_ctype2.c.)
   (inet6_opt_* DONE — F518, net/inet6_opt.rs, host-diffable t_inet6_opt.c).
   (inet6_rth_* DONE — F517, net/inet6_rth.rs, host-diffable t_inet6_rth.c).
   (inet_net_pton/ntop/neta/nsap_addr/nsap_ntoa DONE — F516, net/inet.rs,

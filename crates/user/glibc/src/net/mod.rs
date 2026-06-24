@@ -6,6 +6,8 @@ pub mod ifaddrs;
 #[cfg(feature = "freestanding")]
 pub mod inet6_opt;
 #[cfg(feature = "freestanding")]
+pub mod inet6_option;
+#[cfg(feature = "freestanding")]
 pub mod inet6_rth;
 #[cfg(feature = "freestanding")]
 pub mod ifname;
