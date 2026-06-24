@@ -99,6 +99,9 @@ freestanding C object and host-diffed in t_longdouble.
 Also DONE: f80 rounding batch (F595): nearbyintl, roundl, lroundl, llroundl,
 lrintl, and llrintl exported from the same freestanding C object and
 host-diffed in t_longdouble.
+Also DONE: f80 min/max batch (F596): fmaxl, fminl, fdiml, fmaxmagl, and
+fminmagl exported from the same freestanding C object and host-diffed in
+t_longdouble.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases

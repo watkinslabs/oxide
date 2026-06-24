@@ -145,3 +145,74 @@ long int lrintl(long double x) {
 long long int llrintl(long double x) {
     return (long long int)__builtin_rintl(x);
 }
+
+static long double fmax_corel(long double x, long double y) {
+    if (__builtin_isnan(x)) {
+        return y;
+    }
+    if (__builtin_isnan(y)) {
+        return x;
+    }
+    return x > y ? x : y;
+}
+
+static long double fmin_corel(long double x, long double y) {
+    if (__builtin_isnan(x)) {
+        return y;
+    }
+    if (__builtin_isnan(y)) {
+        return x;
+    }
+    return x <= y ? x : y;
+}
+
+long double fmaxl(long double x, long double y) {
+    return fmax_corel(x, y);
+}
+
+long double fminl(long double x, long double y) {
+    return fmin_corel(x, y);
+}
+
+long double fdiml(long double x, long double y) {
+    if (__builtin_isnan(x) || __builtin_isnan(y)) {
+        return x + y;
+    }
+    return x > y ? x - y : 0.0L;
+}
+
+long double fmaxmagl(long double x, long double y) {
+    long double ax = __builtin_fabsl(x);
+    long double ay = __builtin_fabsl(y);
+    if (__builtin_isnan(x)) {
+        return y;
+    }
+    if (__builtin_isnan(y)) {
+        return x;
+    }
+    if (ax > ay) {
+        return x;
+    }
+    if (ay > ax) {
+        return y;
+    }
+    return fmax_corel(x, y);
+}
+
+long double fminmagl(long double x, long double y) {
+    long double ax = __builtin_fabsl(x);
+    long double ay = __builtin_fabsl(y);
+    if (__builtin_isnan(x)) {
+        return y;
+    }
+    if (__builtin_isnan(y)) {
+        return x;
+    }
+    if (ax < ay) {
+        return x;
+    }
+    if (ay < ax) {
+        return y;
+    }
+    return fmin_corel(x, y);
+}
