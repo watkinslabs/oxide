@@ -1,7 +1,9 @@
-/* gnu_dev_*, swab, ftok, timespec_get, group_member. vs host glibc. */
+/* gnu_dev_*, swab, ftok, timespec_get, group_member, klogctl. vs host glibc. */
 #define _GNU_SOURCE
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/klog.h>
 #include <sys/types.h>
 #include <sys/sysmacros.h>
 #include <sys/ipc.h>
@@ -24,5 +26,8 @@ int main(void) {
     printf("timespec_get=%d sec_pos=%d\n", timespec_get(&ts, TIME_UTC), ts.tv_sec > 0);
 
     printf("group_member=%d\n", group_member(0x7ffffffe));  /* not a member -> 0 */
+    errno = 0;
+    int kr = klogctl(10, NULL, 0);
+    printf("klogctl=%d errno=%d\n", kr, kr < 0 ? errno : 0);
     return 0;
 }
