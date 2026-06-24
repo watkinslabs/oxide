@@ -19,6 +19,7 @@ extern long double fmaximum_mag_numl(long double, long double);
 extern long double fminimum_mag_numl(long double, long double);
 extern long double fmaximum_magl(long double, long double);
 extern long double fminimum_magl(long double, long double);
+extern void sincosl(long double, long double *, long double *);
 extern int totalorderl(const long double *, const long double *);
 extern int totalordermagl(const long double *, const long double *);
 extern int canonicalizel(long double *, const long double *);
@@ -76,10 +77,13 @@ int main(void) {
     long double payload_s = 0.0L;
     long double payload_bad = 123.0L;
     long double canon_dst = 0.0L;
+    long double sincos_s = 0.0L;
+    long double sincos_c = 0.0L;
     int setpayload_q_rc = setpayloadl(&payload_q, 42.0L);
     int setpayload_s_rc = setpayloadsigl(&payload_s, 42.0L);
     int setpayload_s0_rc = setpayloadsigl(&payload_bad, 0.0L);
     int canonicalize_rc = canonicalizel(&canon_dst, &(long double){3.5L});
+    sincosl(0.5L, &sincos_s, &sincos_c);
 
     printf("sizeof_ld=%zu\n", sizeof(long double));
     printf("fabsl=%d\n", fabsl(neg) == 2.5L);
@@ -161,6 +165,16 @@ int main(void) {
            cbrtl(mz) == 0.0L && signbit(cbrtl(mz)),
            isinfl(cbrtl(-infv)) && signbit(cbrtl(-infv)),
            isnanl(cbrtl(nanv)) ? 1 : 0);
+    printf("trig_l=%d/%d/%d/%d/%d/%d/%d/%d/%d\n",
+           sinl(0.0L) == 0.0L && !signbit(sinl(0.0L)),
+           cosl(0.0L) == 1.0L,
+           tanl(0.0L) == 0.0L && !signbit(tanl(0.0L)),
+           sincos_s == sinl(0.5L),
+           sincos_c == cosl(0.5L),
+           atanl(1.0L) == atan2l(1.0L, 1.0L),
+           asinl(0.5L) > 0.0L && asinl(0.5L) < 1.0L,
+           acosl(0.5L) > 1.0L && acosl(0.5L) < 2.0L,
+           cargl(z) == atan2l(4.0L, -3.0L));
     printf("modfl=%d/%d/%d/%d/%d/%d/%d\n",
            part == -0.75L,
            whole == -2.0L,
