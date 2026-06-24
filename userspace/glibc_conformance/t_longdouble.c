@@ -175,6 +175,16 @@ int main(void) {
            asinl(0.5L) > 0.0L && asinl(0.5L) < 1.0L,
            acosl(0.5L) > 1.0L && acosl(0.5L) < 2.0L,
            cargl(z) == atan2l(4.0L, -3.0L));
+    printf("exp_log_l=%d/%d/%d/%d/%d/%d/%d/%d/%d\n",
+           exp2l(10.0L) == 1024.0L,
+           expl(0.0L) == 1.0L,
+           exp10l(2.0L) > 99.999999999999L && exp10l(2.0L) < 100.000000000001L,
+           log2l(1024.0L) == 10.0L,
+           logl(1.0L) == 0.0L,
+           log10l(1000.0L) > 2.999999999999999L && log10l(1000.0L) < 3.000000000000001L,
+           powl(2.0L, 10.0L) == 1024.0L,
+           expm1l(0.0L) == 0.0L,
+           log1pl(0.0L) == 0.0L);
     printf("modfl=%d/%d/%d/%d/%d/%d/%d\n",
            part == -0.75L,
            whole == -2.0L,

@@ -603,6 +603,79 @@ long double cargl(long double _Complex z) {
     return atan2_valuel(__imag__ z, __real__ z);
 }
 
+static long double exp2_valuel(long double x) {
+    long double i = x87_round_mode(x, 0x0400u);
+    long double f = x - i;
+    long double y;
+    __asm__ __volatile__(
+        "fldt %2\n\t"
+        "f2xm1\n\t"
+        "fld1\n\t"
+        "faddp\n\t"
+        "fldt %1\n\t"
+        "fxch %%st(1)\n\t"
+        "fscale\n\t"
+        "fstp %%st(1)\n\t"
+        "fstpt %0"
+        : "=m"(y)
+        : "m"(i), "m"(f)
+        : "st");
+    return y;
+}
+
+static long double log2_valuel(long double x) {
+    long double y;
+    __asm__ __volatile__(
+        "fld1\n\t"
+        "fldt %1\n\t"
+        "fyl2x\n\t"
+        "fstpt %0"
+        : "=m"(y)
+        : "m"(x)
+        : "st");
+    return y;
+}
+
+long double exp2l(long double x) {
+    return exp2_valuel(x);
+}
+
+long double expl(long double x) {
+    return exp2_valuel(x * 1.4426950408889634073599246810018921374L);
+}
+
+long double exp10l(long double x) {
+    return exp2_valuel(x * 3.3219280948873623478703194294893901759L);
+}
+
+long double pow10l(long double x) {
+    return exp2_valuel(x * 3.3219280948873623478703194294893901759L);
+}
+
+long double expm1l(long double x) {
+    return exp2_valuel(x * 1.4426950408889634073599246810018921374L) - 1.0L;
+}
+
+long double log2l(long double x) {
+    return log2_valuel(x);
+}
+
+long double logl(long double x) {
+    return log2_valuel(x) * 0.69314718055994530941723212145817656808L;
+}
+
+long double log10l(long double x) {
+    return log2_valuel(x) * 0.30102999566398119521373889472449302677L;
+}
+
+long double log1pl(long double x) {
+    return log2_valuel(1.0L + x) * 0.69314718055994530941723212145817656808L;
+}
+
+long double powl(long double base, long double power) {
+    return exp2_valuel(power * log2_valuel(base));
+}
+
 static long double x87_fprem(long double x, long double y) {
     long double r;
     __asm__ __volatile__(
