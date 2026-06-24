@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2128 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2129 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **192/192**; both arches boot.
 
@@ -43,6 +43,7 @@ Also DONE: GNU regex re_syntax_options/re_set_syntax (F568).
 Also DONE: GNU regex re_match_2/re_search_2/re_set_registers (F569).
 Also DONE: psiginfo SI_USER output path (F570).
 Also DONE: malloc_info minimal XML + bad-option EINVAL return (F571).
+Also DONE: rexecoptions remote-exec compatibility data symbol (F572).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
@@ -200,7 +201,8 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (ruserok/ruserok_af/iruserok/iruserok_af DONE — F563, net/socket.rs,
   conservative remote-login denial behavior host-diffed in t_inet2.c.)
   (rcmd/rcmd_af/rexec/rexec_af DONE — F564, net/socket.rs, conservative
-  EINVAL failure behavior for unresolved hosts host-diffed in t_inet2.c.)
+  EINVAL failure behavior for unresolved hosts host-diffed in t_inet2.c.
+  rexecoptions data symbol DONE — F572, read/write host-diffed in t_inet2.c.)
 - **old regexp.h regex (~6)** — advance/step/loc1/loc2/locs/tr_break legacy
   interfaces/globals.
   (re_comp/re_exec DONE — F566, regex/mod.rs, process-global compiled pattern
