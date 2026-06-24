@@ -165,6 +165,48 @@ pub extern "C" fn sstk(_increment: isize) -> i32 {
     crate::internal::errno::set(ENOSYS); -1
 }
 
+// # C: int getmsg(int fd, struct strbuf *ctlptr, struct strbuf *dataptr, int *flagsp)
+#[no_mangle]
+pub unsafe extern "C" fn getmsg(_fd: i32, _ctlptr: *mut c_void, _dataptr: *mut c_void, _flagsp: *mut i32) -> i32 {
+    crate::internal::errno::set(ENOSYS); -1
+}
+
+// # C: int putmsg(int fd, const struct strbuf *ctlptr, const struct strbuf *dataptr, int flags)
+#[no_mangle]
+pub unsafe extern "C" fn putmsg(_fd: i32, _ctlptr: *const c_void, _dataptr: *const c_void, _flags: i32) -> i32 {
+    crate::internal::errno::set(ENOSYS); -1
+}
+
+// # C: int getpmsg(int fd, struct strbuf *ctlptr, struct strbuf *dataptr, int *bandp, int *flagsp)
+#[no_mangle]
+pub unsafe extern "C" fn getpmsg(_fd: i32, _ctlptr: *mut c_void, _dataptr: *mut c_void, _bandp: *mut i32, _flagsp: *mut i32) -> i32 {
+    crate::internal::errno::set(ENOSYS); -1
+}
+
+// # C: int putpmsg(int fd, const struct strbuf *ctlptr, const struct strbuf *dataptr, int band, int flags)
+#[no_mangle]
+pub unsafe extern "C" fn putpmsg(_fd: i32, _ctlptr: *const c_void, _dataptr: *const c_void, _band: i32, _flags: i32) -> i32 {
+    crate::internal::errno::set(ENOSYS); -1
+}
+
+// # C: int fattach(int fd, const char *path)
+#[no_mangle]
+pub unsafe extern "C" fn fattach(_fd: i32, _path: *const c_char) -> i32 {
+    crate::internal::errno::set(ENOSYS); -1
+}
+
+// # C: int fdetach(const char *path)
+#[no_mangle]
+pub unsafe extern "C" fn fdetach(_path: *const c_char) -> i32 {
+    crate::internal::errno::set(ENOSYS); -1
+}
+
+// # C: int isastream(int fd)
+#[no_mangle]
+pub extern "C" fn isastream(_fd: i32) -> i32 {
+    crate::internal::errno::set(ENOSYS); -1
+}
+
 // # C: int fchflags(int fd, unsigned long flags) — glibc stub.
 #[no_mangle]
 pub extern "C" fn fchflags(_fd: i32, _flags: u64) -> i32 {

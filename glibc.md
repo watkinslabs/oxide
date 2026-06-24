@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2157 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2164 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **194/194**; both arches boot.
 
@@ -52,6 +52,8 @@ Also DONE: getaddrinfo_a synchronous GAI_WAIT/GAI_NOWAIT compatibility path (F57
 Also DONE: mallwatch + res_send_setqhook/res_send_setrhook compat exports (F578).
 Also DONE: obsolete Linux ENOSYS stubs bdflush/create_module/query_module/
 get_kernel_syms/nfsservctl/sstk (F579).
+Also DONE: STREAMS ENOSYS stubs getmsg/putmsg/getpmsg/putpmsg/fattach/
+fdetach/isastream (F580).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
