@@ -18,7 +18,8 @@ wrapstring/netobj + vector/array/reference/pointer + xdr_sizeof + getpos/setpos.
 RFC4506-verified vs our libc (glibc keeps xdr_* COMPAT-ONLY → not host-diffable).
 Also DONE: SysV signal (sighold/sigrelse/sigignore/sigset), the missing
 C23 `<stdbit.h>` unsigned long / unsigned long long variants (F545), and
-llseek + C-locale time `_l` wrappers (F546). Remaining RPC =
+llseek + C-locale time `_l` wrappers (F546), and sem_clockwait (F547).
+Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 163/163.
 
@@ -118,6 +119,8 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (llseek + strftime_l/strptime_l/wcsftime_l DONE — F546, posix/io.rs +
   time/{strftime,strptime}.rs; time `_l` host-diffable in t_strftime.c, llseek
   implemented as LP64 lseek alias but host keeps it non-default compat-only),
+  (sem_clockwait DONE — F547, rt/sem.rs; clockid-param absolute timeout shares
+  the futex wait loop, host-diffable timeout coverage in t_ipcsem.c),
   setlogin, lockf, scandirat, timespec_get/getres, ftok, ftime, ualarm,
   group_member, gnu_dev_major/minor/makedev, glob_pattern_p, ttyslot, scandirat/scandirat64 (DONE F519), lockf/lockf64 (DONE F520, posix/lockf.rs, t_lockf.c),
   (sigabbrev_np/sigdescr_np/strerrorname_np/strerrordesc_np DONE — F512,

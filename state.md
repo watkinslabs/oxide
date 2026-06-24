@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **190/190**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F546-time-l-llseek`. `glibc.md` = live per-cluster TODO. F counter next = **547**, B = **138**, D = **112**
+`F547-sem-clockwait`. `glibc.md` = live per-cluster TODO. F counter next = **548**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -73,6 +73,10 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   host-diffable because host glibc exposes it as non-default compat-only.
   Verification: `xtask glibc-test` 190/190; both freestanding arch builds;
   `spec-lint`; filtered symbol audit now 381 missing.
+- **F547 DONE locally:** sem_clockwait over the existing POSIX semaphore
+  futex wait loop, parameterized by clockid for absolute deadlines. Host-diffed
+  timeout behavior in t_ipcsem.c. Verification: `xtask glibc-test` 190/190;
+  both freestanding arch builds; `spec-lint`; filtered symbol audit now 380.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 

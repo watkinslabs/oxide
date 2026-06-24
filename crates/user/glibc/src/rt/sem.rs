@@ -74,11 +74,11 @@ mod imp {
     }
 
     // Block until a token is available; abstime null = forever, else an
-    // absolute CLOCK_REALTIME deadline.
-    unsafe fn wait_common(s: *mut sem_t, abstime: *const timespec) -> i32 {
-        // SAFETY: s valid; abstime null or a valid absolute deadline. Recompute
-        // the relative FUTEX_WAIT timeout each iteration so the deadline holds
-        // across spurious wakeups.
+    // absolute deadline on `clockid`.
+    unsafe fn wait_common(s: *mut sem_t, clockid: i32, abstime: *const timespec) -> i32 {
+        // SAFETY: s valid; abstime null or a valid absolute deadline for
+        // clockid. Recompute the relative FUTEX_WAIT timeout each iteration so
+        // the deadline holds across spurious wakeups.
         unsafe {
             let w = word(s);
             loop {
@@ -92,7 +92,7 @@ mod imp {
                     core::ptr::null()
                 } else {
                     let mut now = timespec { tv_sec: 0, tv_nsec: 0 };
-                    clock_gettime(CLOCK_REALTIME, &mut now);
+                    clock_gettime(clockid, &mut now);
                     rel.tv_sec = (*abstime).tv_sec - now.tv_sec;
                     rel.tv_nsec = (*abstime).tv_nsec - now.tv_nsec;
                     if rel.tv_nsec < 0 { rel.tv_nsec += 1_000_000_000; rel.tv_sec -= 1; }
@@ -109,14 +109,21 @@ mod imp {
     #[no_mangle]
     pub unsafe extern "C" fn sem_wait(s: *mut sem_t) -> i32 {
         // SAFETY: s valid; block until a token is available.
-        unsafe { wait_common(s, core::ptr::null()) }
+        unsafe { wait_common(s, CLOCK_REALTIME, core::ptr::null()) }
     }
 
     // # C: int sem_timedwait(sem_t *sem, const struct timespec *abstime)
     #[no_mangle]
     pub unsafe extern "C" fn sem_timedwait(s: *mut sem_t, abstime: *const timespec) -> i32 {
         // SAFETY: s valid; abstime is an absolute CLOCK_REALTIME deadline.
-        unsafe { wait_common(s, abstime) }
+        unsafe { wait_common(s, CLOCK_REALTIME, abstime) }
+    }
+
+    // # C: int sem_clockwait(sem_t *sem, clockid_t clockid, const struct timespec *abstime)
+    #[no_mangle]
+    pub unsafe extern "C" fn sem_clockwait(s: *mut sem_t, clockid: i32, abstime: *const timespec) -> i32 {
+        // SAFETY: s valid; abstime is an absolute deadline for clockid.
+        unsafe { wait_common(s, clockid, abstime) }
     }
 
     // # C: int sem_getvalue(sem_t *sem, int *sval)
