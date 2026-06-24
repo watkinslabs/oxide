@@ -77,3 +77,7 @@ long double _Complex cprojl(long double _Complex z) {
     }
     return z;
 }
+
+long double rintl(long double x) {
+    return __builtin_rintl(x);
+}
