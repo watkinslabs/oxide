@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
+#include <locale.h>
 #include <unistd.h>
 #include <sys/uio.h>
 #include <wchar.h>
@@ -24,6 +25,9 @@ int main(void) {
     printf("pv64=%zd data=%d\n", n, memcmp(b0, "AB", 2) == 0 && memcmp(b1, "CD", 2) == 0);
 
     printf("strtof64=%d wcstof64=%d\n", strtof64("3.25", NULL) == 3.25, wcstof64(L"2.5", NULL) == 2.5);
+    locale_t loc = newlocale(LC_ALL_MASK, "C", (locale_t)0);
+    printf("strtofN_l=%d %d\n", strtof32_l("1.5", NULL, loc) == 1.5f, strtof64_l("4.5", NULL, loc) == 4.5);
+    freelocale(loc);
     close(f1); close(f2); unlink(t1); unlink(t2);
     return 0;
 }

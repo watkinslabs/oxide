@@ -20,6 +20,8 @@ Also DONE: SysV signal (sighold/sigrelse/sigignore/sigset), the missing
 C23 `<stdbit.h>` unsigned long / unsigned long long variants (F545), and
 llseek + C-locale time `_l` wrappers (F546), and sem_clockwait (F547).
 Also DONE: libxcrypt compatibility aliases + crypt_checksalt (F548).
+Also DONE: C-locale strtof32_l/strtof64_l (F549); strtold/wcstold remain
+hard-blocked with the other long-double ABI functions.
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 163/163.
