@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **192/192**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F571-malloc-info`. `glibc.md` = live per-cluster TODO. F counter next = **572**, B = **138**, D = **112**
+`F572-rexecoptions`. `glibc.md` = live per-cluster TODO. F counter next = **573**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -184,6 +184,10 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   for nonzero options plus minimal XML for option 0. Host-diffed bad-option
   behavior in t_crypto.c. Verification: `xtask glibc-test` 192/192; both
   freestanding arch builds; `spec-lint`; filtered symbol audit now 320.
+- **F572 DONE locally:** rexecoptions writable compatibility data symbol
+  exported next to the remote exec stubs. Host-diffed read/write behavior in
+  t_inet2.c. Verification: `xtask glibc-test` 192/192; both freestanding arch
+  builds; `spec-lint`; filtered symbol audit now 319.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
