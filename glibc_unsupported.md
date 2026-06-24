@@ -1,8 +1,8 @@
 # glibc — unsupported (cannot implement)
 
-> Hard-blocked, not deferred. 97 entries.
+> Hard-blocked, not deferred. 88 entries.
 
-## long double / long-double-typed: 63
+## long double / long-double-typed: 54
 > x86_64 long double is 80-bit x87 f80; Rust has no f80 so the extern-C ABI cannot be expressed.
 
 long double sinhl (long double x)
@@ -17,7 +17,6 @@ long double atanhl (long double x)
 complex long double casinhl (complex long double z)
 complex long double cacoshl (complex long double z)
 complex long double catanhl (complex long double z)
-long double cargl (complex long double z)
 char * qecvt (long double value, int ndigit, int *decpt, int *neg)
 char * qfcvt (long double value, int ndigit, int *decpt, int *neg)
 char * qgcvt (long double value, int ndigit, char *buf)
@@ -35,10 +34,6 @@ long double jnl (int n, long double x)
 long double y0l (long double x)
 long double y1l (long double x)
 long double ynl (int n, long double x)
-long double sinl (long double x)
-long double cosl (long double x)
-long double tanl (long double x)
-void sincosl (long double x, long double *sinx, long double *cosx)
 complex long double csinl (complex long double z)
 complex long double ccosl (complex long double z)
 complex long double ctanl (complex long double z)
@@ -61,10 +56,6 @@ int strfroml (char *restrict string, size_t size, const char *restrict format, l
 long double fmal (long double x, long double y, long double z)
 long double strtold (const char *string, char **tailptr)
 long double wcstold (const wchar_t *string, wchar_t **tailptr)
-long double asinl (long double x)
-long double acosl (long double x)
-long double atanl (long double x)
-long double atan2l (long double y, long double x)
 complex long double casinl (complex long double z)
 complex long double cacosl (complex long double z)
 complex long double catanl (complex long double z)
