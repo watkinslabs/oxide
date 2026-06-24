@@ -1,15 +1,10 @@
 # glibc — unsupported (cannot implement)
 
-> Hard-blocked, not deferred. 54 entries.
+> Hard-blocked, not deferred. 49 entries.
 
-## long double / long-double-typed: 20
+## long double / long-double-typed: 15
 > x86_64 long double is 80-bit x87 f80; Rust has no f80 so the extern-C ABI cannot be expressed.
 
-char * qecvt (long double value, int ndigit, int *decpt, int *neg)
-char * qfcvt (long double value, int ndigit, int *decpt, int *neg)
-char * qgcvt (long double value, int ndigit, char *buf)
-int qecvt_r (long double value, int ndigit, int *decpt, int *neg, char *buf, size_t len)
-int qfcvt_r (long double value, int ndigit, int *decpt, int *neg, char *buf, size_t len)
 long double erfl (long double x)
 long double erfcl (long double x)
 long double lgammal (long double x)
