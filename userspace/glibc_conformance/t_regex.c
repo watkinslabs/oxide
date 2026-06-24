@@ -15,6 +15,14 @@ extern const char *re_compile_pattern(const char *, size_t, struct re_pattern_bu
 extern int re_compile_fastmap(struct re_pattern_buffer *);
 extern int re_match(struct re_pattern_buffer *, const char *, int, int, struct re_registers *);
 extern int re_search(struct re_pattern_buffer *, const char *, int, int, int, struct re_registers *);
+extern reg_syntax_t re_syntax_options;
+extern reg_syntax_t re_set_syntax(reg_syntax_t);
+#ifndef RE_SYNTAX_POSIX_EXTENDED
+#define RE_SYNTAX_POSIX_EXTENDED 242428UL
+#endif
+#ifndef RE_SYNTAX_POSIX_BASIC
+#define RE_SYNTAX_POSIX_BASIC 16843462UL
+#endif
 
 static void t(const char *pat, const char *s, int cflags, int eflags){
     regex_t re; regmatch_t m[10];
@@ -97,5 +105,16 @@ int main(void){
     printf("GNURE|regs=%u %d %d\n", regs.num_regs, regs.start ? regs.start[0] : -9, regs.end ? regs.end[0] : -9);
     printf("GNURE|search=%d\n", re_search(&rb, "xxaaab", 6, 0, 6, &regs));
     printf("GNURE|regs2=%u %d %d\n", regs.num_regs, regs.start ? regs.start[0] : -9, regs.end ? regs.end[0] : -9);
+    printf("GNURE|syntax0=%lu\n", (unsigned long)re_syntax_options);
+    reg_syntax_t old_syntax = re_set_syntax(RE_SYNTAX_POSIX_BASIC);
+    printf("GNURE|setbasic_old=%lu now=%lu\n", (unsigned long)old_syntax, (unsigned long)re_syntax_options);
+    memset(&rb, 0, sizeof rb);
+    printf("GNURE|basic_plus=%s ", re_compile_pattern("a+b", 3, &rb) ? "err" : "ok");
+    printf("match=%d\n", re_match(&rb, "aaab", 4, 0, 0));
+    old_syntax = re_set_syntax(RE_SYNTAX_POSIX_EXTENDED);
+    printf("GNURE|setext_old=%lu now=%lu\n", (unsigned long)old_syntax, (unsigned long)re_syntax_options);
+    memset(&rb, 0, sizeof rb);
+    printf("GNURE|ext_plus=%s ", re_compile_pattern("a+b", 3, &rb) ? "err" : "ok");
+    printf("match=%d\n", re_match(&rb, "aaab", 4, 0, 0));
     return 0;
 }

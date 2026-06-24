@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **192/192**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F567-re-pattern-search`. `glibc.md` = live per-cluster TODO. F counter next = **568**, B = **138**, D = **112**
+`F568-re-syntax-options`. `glibc.md` = live per-cluster TODO. F counter next = **569**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -166,6 +166,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   glibc-compatible register allocation for the tested path. Host-diffed in
   t_regex.c. Verification: `xtask glibc-test` 192/192; both freestanding arch
   builds; `spec-lint`; filtered symbol audit now 327.
+- **F568 DONE locally:** GNU regex re_syntax_options and re_set_syntax added,
+  with re_compile_pattern honoring POSIX basic vs extended syntax for the
+  covered path. Host-diffed in t_regex.c. Verification: `xtask glibc-test`
+  192/192; both freestanding arch builds; `spec-lint`; filtered symbol audit
+  now 325.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
