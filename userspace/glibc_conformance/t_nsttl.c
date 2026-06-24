@@ -1,5 +1,5 @@
-/* ns_format_ttl + ns_parse_ttl — pure libresolv TTL codec. Diff vs host glibc
- * (-lresolv). (ns_datetosecs deferred: host validation is version/time-specific.) */
+/* ns_format_ttl + ns_parse_ttl + ns_datetosecs — pure libresolv codecs.
+ * Diff vs host glibc (-lresolv). */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <arpa/nameser.h>
@@ -21,5 +21,15 @@ int main(void) {
     printf("parse_empty r=%d\n", ns_parse_ttl("", &t));
     printf("parse_badunit r=%d\n", ns_parse_ttl("5x", &t));
     printf("parse_leadunit r=%d\n", ns_parse_ttl("h", &t));
+
+    const char *dates[] = {
+        "19900101000000", "20240229010203", "21060207062815",
+        "19891231235959", "20241301000000", "2024010100000x", "short"
+    };
+    for (unsigned i = 0; i < sizeof dates/sizeof *dates; i++) {
+        int err = -1;
+        unsigned v = ns_datetosecs(dates[i], &err);
+        printf("date %s v=%u err=%d\n", dates[i], v, err);
+    }
     return 0;
 }

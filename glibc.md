@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2098 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2099 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **192/192**; both arches boot.
 
@@ -31,6 +31,7 @@ Also DONE: chflags/fchflags legacy stubs (F556).
 Also DONE: klogctl syslog(2) wrapper (F557).
 Also DONE: public sigreturn ENOSYS stub (F558).
 Also DONE: ns_name_ntol/ns_name_rollback (F559).
+Also DONE: ns_datetosecs (F560).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
@@ -68,9 +69,9 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (ns_name_unpack/uncompress + ns_samename/samedomain/subdomain/makecanon DONE
   — F532, net/nameser.rs, host-diffable t_nameser2.c.)
   (ns_format_ttl/ns_parse_ttl DONE — F533, net/nameser.rs, host-diffable
-  t_nsttl.c. ns_datetosecs DEFERRED — host glibc's range validation rejects
-  dates past a version/time-dependent recent-past cutoff (1980 fails, 2024
-  passes), so not safely bit-diffable.)
+  t_nsttl.c. ns_datetosecs DONE — F560, net/nameser_date.rs, yyyymmddhhmmss
+  UTC parser with glibc/BIND sticky errp validation and uint32 wrapping
+  arithmetic; host-diffable t_nsttl.c.)
   (ns_name_pack/ns_name_compress DONE — F534, net/nameser.rs, uncompressed
   emit like dn_comp (matches glibc when dnptrs==NULL; full labels are
   wire-legal), host-diffable t_nameser2.c. STILL TODO: compression-pointer
