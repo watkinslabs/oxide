@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <netdb.h>
@@ -13,6 +14,7 @@ extern int rresvport(int *);
 extern int rresvport_af(int *, sa_family_t);
 extern int bindresvport(int, struct sockaddr_in *);
 extern int rexecoptions;
+extern int ruserpass(const char *, const char **, const char **);
 
 static void show(const char *n, int r) {
     printf("%s=%d errno=%d\n", n, r, r < 0 ? errno : 0);
@@ -69,5 +71,10 @@ int main(void){
     printf("rexecoptions=%d\n", rexecoptions);
     rexecoptions = 7;
     printf("rexecoptions2=%d\n", rexecoptions);
+    setenv("HOME", "/tmp/oxide-no-home", 1);
+    const char *rpu = NULL, *rpp = NULL;
+    errno = 0;
+    printf("ruserpass=%d errno=%d user_null=%d pass_null=%d\n",
+           ruserpass("example.invalid", &rpu, &rpp), errno, rpu == NULL, rpp == NULL);
     return 0;
 }
