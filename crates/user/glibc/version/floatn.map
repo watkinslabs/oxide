@@ -257,6 +257,7 @@
     __isnanl;
     __issignalingl;
     __signbitl;
+    ceill;
     copysignl;
     fabsl;
     finitel;
@@ -266,4 +267,6 @@
     creall;
     isinfl;
     isnanl;
-    rintl;};
+    floorl;
+    rintl;
+    truncl;};
