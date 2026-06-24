@@ -2,7 +2,7 @@
 // exact glibc layout, size-asserted vs the libc crate) + freestanding syscall
 // wrappers. x86_64/aarch64 both use individual socket syscalls (not socketcall).
 #![allow(clippy::upper_case_acronyms)]
-use core::ffi::c_void;
+use core::ffi::{c_char, c_void};
 
 pub const AF_UNIX: u16 = 1;
 pub const AF_INET: u16 = 2;
@@ -148,6 +148,31 @@ mod exports {
     pub unsafe extern "C" fn rresvport(alport: *mut i32) -> i32 {
         // SAFETY: rresvport is the IPv4 form of rresvport_af.
         unsafe { rresvport_af(alport, AF_INET as i32) }
+    }
+    // # C: int ruserok_af(const char *rhost, int suser, const char *ruser, const char *luser, sa_family_t af)
+    #[no_mangle]
+    pub unsafe extern "C" fn ruserok_af(_rhost: *const c_char, _suser: i32, _ruser: *const c_char, _luser: *const c_char, _af: u16) -> i32 {
+        -1
+    }
+
+    // # C: int ruserok(const char *rhost, int suser, const char *ruser, const char *luser)
+    #[no_mangle]
+    pub unsafe extern "C" fn ruserok(rhost: *const c_char, suser: i32, ruser: *const c_char, luser: *const c_char) -> i32 {
+        // SAFETY: ruserok is the IPv4 form of ruserok_af.
+        unsafe { ruserok_af(rhost, suser, ruser, luser, AF_INET) }
+    }
+
+    // # C: int iruserok_af(const void *raddr, int suser, const char *ruser, const char *luser, sa_family_t af)
+    #[no_mangle]
+    pub unsafe extern "C" fn iruserok_af(_raddr: *const c_void, _suser: i32, _ruser: *const c_char, _luser: *const c_char, _af: u16) -> i32 {
+        -1
+    }
+
+    // # C: int iruserok(uint32_t raddr, int suser, const char *ruser, const char *luser)
+    #[no_mangle]
+    pub unsafe extern "C" fn iruserok(raddr: u32, suser: i32, ruser: *const c_char, luser: *const c_char) -> i32 {
+        // SAFETY: iruserok_af only observes the provided IPv4 address bytes.
+        unsafe { iruserok_af(&raddr as *const u32 as *const c_void, suser, ruser, luser, AF_INET) }
     }
     // # C: int socketpair(int domain, int type, int protocol, int sv[2])
     #[no_mangle]
