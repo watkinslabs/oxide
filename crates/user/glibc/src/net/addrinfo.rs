@@ -19,10 +19,20 @@ pub const EAI_BADFLAGS: i32 = -1;
 pub const EAI_NONAME: i32 = -2;
 pub const EAI_AGAIN: i32 = -3;
 pub const EAI_FAIL: i32 = -4;
+pub const EAI_NODATA: i32 = -5;
 pub const EAI_FAMILY: i32 = -6;
+pub const EAI_SOCKTYPE: i32 = -7;
 pub const EAI_SERVICE: i32 = -8;
+pub const EAI_ADDRFAMILY: i32 = -9;
 pub const EAI_MEMORY: i32 = -10;
 pub const EAI_SYSTEM: i32 = -11;
+pub const EAI_OVERFLOW: i32 = -12;
+pub const EAI_INPROGRESS: i32 = -100;
+pub const EAI_CANCELED: i32 = -101;
+pub const EAI_NOTCANCELED: i32 = -102;
+pub const EAI_ALLDONE: i32 = -103;
+pub const EAI_INTR: i32 = -104;
+pub const EAI_IDN_ENCODE: i32 = -105;
 
 /// Parse a service string to a port. Numeric ("80") or a small well-known
 /// table (DNS resolution of /etc/services is a follow-up). None on bad.
@@ -91,6 +101,17 @@ pub struct addrinfo {
     pub ai_next: *mut addrinfo,
 }
 const _: () = assert!(core::mem::size_of::<addrinfo>() == 48);
+
+#[repr(C)]
+pub struct gaicb {
+    pub ar_name: *const u8,
+    pub ar_service: *const u8,
+    pub ar_request: *const addrinfo,
+    pub ar_result: *mut addrinfo,
+    pub __return: i32,
+    __glibc_reserved: [i32; 5],
+}
+const _: () = assert!(core::mem::size_of::<gaicb>() == 56);
 
 #[cfg(feature = "freestanding")]
 mod exports {
@@ -163,13 +184,43 @@ mod exports {
             EAI_NONAME => b"Name or service not known\0",
             EAI_AGAIN => b"Temporary failure in name resolution\0",
             EAI_FAIL => b"Non-recoverable failure in name resolution\0",
+            EAI_NODATA => b"No address associated with hostname\0",
             EAI_FAMILY => b"ai_family not supported\0",
+            EAI_SOCKTYPE => b"ai_socktype not supported\0",
             EAI_SERVICE => b"Servname not supported for ai_socktype\0",
+            EAI_ADDRFAMILY => b"Address family for hostname not supported\0",
             EAI_MEMORY => b"Memory allocation failure\0",
             EAI_SYSTEM => b"System error\0",
+            EAI_OVERFLOW => b"Result too large for supplied buffer\0",
+            EAI_INPROGRESS => b"Processing request in progress\0",
+            EAI_CANCELED => b"Request canceled\0",
+            EAI_NOTCANCELED => b"Request not canceled\0",
+            EAI_ALLDONE => b"All requests done\0",
+            EAI_INTR => b"Interrupted by a signal\0",
+            EAI_IDN_ENCODE => b"Parameter string not correctly encoded\0",
             _ => b"Unknown error\0",
         };
         s.as_ptr()
+    }
+
+    // # C: int gai_error(struct gaicb *req)
+    #[no_mangle]
+    pub unsafe extern "C" fn gai_error(req: *mut gaicb) -> i32 {
+        // SAFETY: req is a caller-owned gaicb; read its glibc-compatible status slot.
+        unsafe { (*req).__return }
+    }
+
+    // # C: int gai_cancel(struct gaicb *gaicbp)
+    #[no_mangle]
+    pub extern "C" fn gai_cancel(_gaicbp: *mut gaicb) -> i32 {
+        EAI_ALLDONE
+    }
+
+    // # C: int gai_suspend(const struct gaicb *const list[], int ent,
+    //                      const struct timespec *timeout)
+    #[no_mangle]
+    pub extern "C" fn gai_suspend(_list: *const *const gaicb, _ent: i32, _timeout: *const core::ffi::c_void) -> i32 {
+        EAI_ALLDONE
     }
 
     // # C: int getnameinfo(const struct sockaddr *sa, socklen_t salen,
