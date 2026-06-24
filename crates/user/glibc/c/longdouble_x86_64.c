@@ -115,3 +115,33 @@ long double truncl(long double x) {
 long double roundevenl(long double x) {
     return x87_round_mode(x, 0x0000u);
 }
+
+static long double round_awayl(long double x) {
+    long double ax = __builtin_fabsl(x);
+    long double y = x87_round_mode(ax + 0.5L, 0x0c00u);
+    return __builtin_copysignl(y, x);
+}
+
+long double nearbyintl(long double x) {
+    return x87_round_mode(x, 0x0000u);
+}
+
+long double roundl(long double x) {
+    return round_awayl(x);
+}
+
+long int lroundl(long double x) {
+    return (long int)round_awayl(x);
+}
+
+long long int llroundl(long double x) {
+    return (long long int)round_awayl(x);
+}
+
+long int lrintl(long double x) {
+    return (long int)__builtin_rintl(x);
+}
+
+long long int llrintl(long double x) {
+    return (long long int)__builtin_rintl(x);
+}
