@@ -103,6 +103,13 @@ mod imp {
         // SAFETY: TOUPPER_TABLE is 'static [i32;384]; +128 offset as above.
         unsafe { *TU_LOC.0.get() = TOUPPER_TABLE.as_ptr().add(128); TU_LOC.0.get() }
     }
+
+    // # C: int isctype(int c, int mask)
+    #[no_mangle]
+    pub extern "C" fn isctype(c: i32, mask: i32) -> i32 {
+        if !(-128..=255).contains(&c) { return 0; }
+        (B_TABLE[(c + 128) as usize] as i32) & mask
+    }
 }
 
 #[cfg(test)]
