@@ -26,6 +26,7 @@ Also DONE: resolver validators res_hnok/res_ownok/res_mailok/res_dnok (F550)
 gethostent_r (F551), setlogin ENOSYS stub (F552), and profil/sprofil +
 gmon no-ops (F553).
 Also DONE: register_printf_type (F554).
+Also DONE: res_gethostbyname/res_gethostbyname2/res_gethostbyaddr aliases (F555).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 163/163.
@@ -82,6 +83,9 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (gethostent_r DONE — F551, net/netdb_host.rs, reentrant /etc/hosts
   enumeration over the existing cursor + caller-buffer hostent packer;
   host-diffable t_netdb_r.c.)
+  (res_gethostbyname/res_gethostbyname2/res_gethostbyaddr DONE — F555,
+  net/netdb_host.rs, compatibility aliases over gethostby*; host glibc keeps
+  these compat-only here, so ABI-audit verified.)
 - ~~**fts/fts64 (10)**~~ DONE — posix/fts.rs (F511). BSD pre/post-order iterator,
   cycle detect (FTS_DC), FTS_LOGICAL/PHYSICAL/SEEDOT/XDEV/COMFOLLOW + fts_set
   SKIP/FOLLOW. Exact FTSENT ABI (112B). Host-diffable t_fts.c over a temp tree.
