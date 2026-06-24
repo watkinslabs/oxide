@@ -599,3 +599,181 @@ int totalordermagl(const long double *x, const long double *y) {
     long double ay = __builtin_fabsl(*y);
     return totalorder_valuel(ax, ay);
 }
+
+static unsigned long long ld_sig(const unsigned char bytes[16]) {
+    unsigned long long sig = 0;
+    for (unsigned int i = 0; i < 8; i += 1) {
+        sig |= (unsigned long long)bytes[i] << (i * 8);
+    }
+    return sig;
+}
+
+static void set_ld_sig(unsigned char bytes[16], unsigned long long sig) {
+    for (unsigned int i = 0; i < 8; i += 1) {
+        bytes[i] = (unsigned char)(sig >> (i * 8));
+    }
+}
+
+static unsigned short ld_sign_exp(const unsigned char bytes[16]) {
+    return (unsigned short)((unsigned short)bytes[8] | ((unsigned short)bytes[9] << 8));
+}
+
+static void set_ld_sign_exp(unsigned char bytes[16], unsigned short sign_exp) {
+    bytes[8] = (unsigned char)sign_exp;
+    bytes[9] = (unsigned char)(sign_exp >> 8);
+}
+
+static int ld_is_nan(long double x) {
+    union {
+        long double value;
+        unsigned char bytes[16];
+    } u;
+    u.value = x;
+    unsigned short exp = (unsigned short)(ld_sign_exp(u.bytes) & 0x7fffu);
+    unsigned long long sig = ld_sig(u.bytes);
+    return exp == 0x7fffu && (sig & 0x7fffffffffffffffull) != 0;
+}
+
+static void ld_step_mag(unsigned char bytes[16], int up) {
+    unsigned short se = ld_sign_exp(bytes);
+    unsigned short sign = (unsigned short)(se & 0x8000u);
+    unsigned short exp = (unsigned short)(se & 0x7fffu);
+    unsigned long long sig = ld_sig(bytes);
+
+    if (up) {
+        if (exp == 0) {
+            if (sig == 0x7fffffffffffffffull) {
+                exp = 1;
+                sig = 0x8000000000000000ull;
+            } else {
+                sig += 1;
+            }
+        } else if (exp < 0x7fffu) {
+            if (sig == 0xffffffffffffffffull) {
+                exp += 1;
+                sig = 0x8000000000000000ull;
+            } else {
+                sig += 1;
+            }
+        }
+    } else {
+        if (exp == 0) {
+            sig -= 1;
+        } else if (sig == 0x8000000000000000ull) {
+            exp -= 1;
+            sig = exp == 0 ? 0x7fffffffffffffffull : 0xffffffffffffffffull;
+        } else {
+            sig -= 1;
+        }
+    }
+
+    set_ld_sig(bytes, sig);
+    set_ld_sign_exp(bytes, (unsigned short)(sign | exp));
+}
+
+static long double nextafter_valuel(long double x, long double y) {
+    union {
+        long double value;
+        unsigned char bytes[16];
+    } u;
+
+    if (ld_is_nan(x) || ld_is_nan(y)) {
+        return x + y;
+    }
+    if (x == y) {
+        return y;
+    }
+    u.value = x;
+    if (x == 0.0L) {
+        for (unsigned int i = 0; i < 16; i += 1) {
+            u.bytes[i] = 0;
+        }
+        set_ld_sig(u.bytes, 1);
+        set_ld_sign_exp(u.bytes, __builtin_signbit(y) ? 0x8000u : 0x0000u);
+        return u.value;
+    }
+
+    int up = x > 0.0L ? y > x : y < x;
+    ld_step_mag(u.bytes, up);
+    return u.value;
+}
+
+long double nextafterl(long double x, long double y) {
+    return nextafter_valuel(x, y);
+}
+
+long double nexttowardl(long double x, long double y) {
+    return nextafter_valuel(x, y);
+}
+
+long double nextupl(long double x) {
+    if (ld_is_nan(x)) {
+        return x + x;
+    }
+    long double inf = 1.0L / 0.0L;
+    return x == inf ? x : nextafter_valuel(x, inf);
+}
+
+long double nextdownl(long double x) {
+    if (ld_is_nan(x)) {
+        return x + x;
+    }
+    long double inf = 1.0L / 0.0L;
+    return x == -inf ? x : nextafter_valuel(x, -inf);
+}
+
+static double nexttoward_double(double x, long double y) {
+    union {
+        double value;
+        unsigned long long bits;
+    } u;
+    if (__builtin_isnan(x) || ld_is_nan(y)) {
+        return x + (double)y;
+    }
+    if ((long double)x == y) {
+        return (double)y;
+    }
+    u.value = x;
+    if (x == 0.0) {
+        u.bits = __builtin_signbit(y) ? 0x8000000000000001ull : 1ull;
+        return u.value;
+    }
+    if ((x > 0.0) == (y > (long double)x)) {
+        u.bits += 1;
+    } else {
+        u.bits -= 1;
+    }
+    return u.value;
+}
+
+static float nexttoward_float(float x, long double y) {
+    union {
+        float value;
+        unsigned int bits;
+    } u;
+    if (__builtin_isnan(x) || ld_is_nan(y)) {
+        return x + (float)y;
+    }
+    if ((long double)x == y) {
+        return (float)y;
+    }
+    u.value = x;
+    if (x == 0.0f) {
+        u.bits = __builtin_signbit(y) ? 0x80000001u : 1u;
+        return u.value;
+    }
+    if ((x > 0.0f) == (y > (long double)x)) {
+        u.bits += 1;
+    } else {
+        u.bits -= 1;
+    }
+    return u.value;
+}
+
+double nexttoward(double x, long double y) {
+    return nexttoward_double(x, y);
+}
+
+float nexttowardf(float x, long double y) {
+    return nexttoward_float(x, y);
+}

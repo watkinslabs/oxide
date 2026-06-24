@@ -61,6 +61,8 @@ int main(void) {
     long double nnan = -pnan;
     long double mzv = mz;
     long double zerov = zero;
+    long double next_pos = nextafterl(0.0L, 1.0L);
+    long double next_neg = nextafterl(0.0L, -1.0L);
 
     printf("sizeof_ld=%zu\n", sizeof(long double));
     printf("fabsl=%d\n", fabsl(neg) == 2.5L);
@@ -185,5 +187,16 @@ int main(void) {
            totalorderl(&(long double){1.0L}, &pnan),
            totalordermagl(&(long double){-3.0L}, &(long double){2.0L}),
            totalordermagl(&(long double){-2.0L}, &(long double){2.0L}));
+    printf("next_batch=%d/%d/%d/%d/%d/%d/%d/%d/%d/%d\n",
+           next_pos > 0.0L && !signbit(next_pos),
+           next_neg < 0.0L && signbit(next_neg),
+           nextafterl(1.0L, 2.0L) > 1.0L,
+           nextafterl(1.0L, 0.0L) < 1.0L,
+           nextafterl(-1.0L, -2.0L) < -1.0L,
+           nextafterl(-1.0L, 0.0L) > -1.0L,
+           nextupl(mz) > 0.0L,
+           nextdownl(zero) < 0.0L,
+           nexttoward(0.0, 1.0L) > 0.0,
+           nexttowardf(-0.0f, -1.0L) < 0.0f);
     return 0;
 }
