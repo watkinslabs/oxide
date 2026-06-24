@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **192/192**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F560-ns-datetosecs`. `glibc.md` = live per-cluster TODO. F counter next = **561**, B = **138**, D = **112**
+`F561-sourcefilter-invalidfd`. `glibc.md` = live per-cluster TODO. F counter next = **562**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -136,6 +136,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   spec-lint line cap. Host-diffed in t_nsttl.c. Verification:
   `xtask glibc-test` 192/192; both freestanding arch builds; `spec-lint`;
   filtered symbol audit now 349.
+- **F561 DONE locally:** getipv4sourcefilter/setipv4sourcefilter and
+  getsourcefilter/setsourcefilter added over allocator-backed IP_MSFILTER/
+  MCAST_MSFILTER getsockopt/setsockopt packing. Invalid-fd EBADF behavior is
+  host-diffed in t_inet2.c. Verification: `xtask glibc-test` 192/192; both
+  freestanding arch builds; `spec-lint`; filtered symbol audit now 345.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
