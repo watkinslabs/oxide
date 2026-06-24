@@ -257,6 +257,7 @@
     __isnanl;
     __issignalingl;
     __signbitl;
+    cabsl;
     canonicalizel;
     ceill;
     copysignl;
@@ -279,6 +280,7 @@
     fmodl;
     frexpl;
     getpayloadl;
+    hypotl;
     cimagl;
     conjl;
     cprojl;
