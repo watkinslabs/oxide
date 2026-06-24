@@ -8,6 +8,15 @@ use super::file::{self, FILE};
 use super::memstream::stream_write;
 use crate::posix::io;
 use core::ffi::{c_void, VaList};
+use core::sync::atomic::{AtomicI32, Ordering};
+
+static NEXT_PRINTF_TYPE: AtomicI32 = AtomicI32::new(8);
+
+// # C: int register_printf_type(printf_va_arg_function fct)
+#[no_mangle]
+pub extern "C" fn register_printf_type(_fct: *mut c_void) -> i32 {
+    NEXT_PRINTF_TYPE.fetch_add(1, Ordering::Relaxed)
+}
 
 // snprintf sink: write ≤ cap-1 bytes + NUL; count everything (return value).
 struct SliceSink { buf: *mut u8, cap: usize, pos: usize, total: usize }
