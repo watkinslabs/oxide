@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **192/192**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F558-sigreturn-stub`. `glibc.md` = live per-cluster TODO. F counter next = **559**, B = **138**, D = **112**
+`F559-ns-name-helpers`. `glibc.md` = live per-cluster TODO. F counter next = **560**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -125,6 +125,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   ENOSYS stub, distinct from the internal rt_sigreturn restorer trampoline;
   host-diffed in t_signal.c. Verification: `xtask glibc-test` 192/192;
   both freestanding arch builds; `spec-lint`; filtered symbol audit now 352.
+- **F559 DONE locally:** ns_name_ntol and ns_name_rollback added to the
+  resolver name-codec cluster, matching glibc lowercasing and compression-table
+  rollback behavior; host-diffed in t_nameser.c. Verification:
+  `xtask glibc-test` 192/192; both freestanding arch builds; `spec-lint`;
+  filtered symbol audit now 350.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 

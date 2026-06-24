@@ -78,6 +78,35 @@ pub unsafe extern "C" fn ns_name_ntop(src: *const u8, dst: *mut c_char, dstsiz: 
     }
 }
 
+// # C: int ns_name_ntol(const unsigned char *src, unsigned char *dst, size_t dstsiz)
+// Wire name → wire name, lowercasing label bytes. Compression is rejected.
+#[no_mangle]
+pub unsafe extern "C" fn ns_name_ntol(src: *const u8, dst: *mut u8, dstsiz: usize) -> i32 {
+    // SAFETY: src is a NUL-terminated uncompressed wire name; dst is dstsiz
+    // bytes. The loop validates each label length before copying bytes.
+    unsafe {
+        if dstsiz == 0 { crate::internal::errno::set(EMSGSIZE); return -1; }
+        let mut cp = src;
+        let mut dn = 0usize;
+        loop {
+            let n = *cp;
+            cp = cp.add(1);
+            if n & NS_CMPRSFLGS != 0 { crate::internal::errno::set(EMSGSIZE); return -1; }
+            if dn >= dstsiz { crate::internal::errno::set(EMSGSIZE); return -1; }
+            *dst.add(dn) = n;
+            dn += 1;
+            if n == 0 { return dn as i32; }
+            if dn + n as usize >= dstsiz { crate::internal::errno::set(EMSGSIZE); return -1; }
+            for _ in 0..n {
+                let c = *cp;
+                cp = cp.add(1);
+                *dst.add(dn) = lc(c);
+                dn += 1;
+            }
+        }
+    }
+}
+
 // # C: int ns_name_pton(const char *src, unsigned char *dst, size_t dstsiz)
 // Presentation text → wire name. Returns 1 if fully qualified (trailing dot /
 // root), 0 if not, -1 (EMSGSIZE) on overflow or a malformed escape / "..".
@@ -175,6 +204,24 @@ pub unsafe extern "C" fn ns_name_compress(src: *const c_char, dst: *mut u8, dsts
         let mut tmp = [0u8; 255];
         if ns_name_pton(src, tmp.as_mut_ptr(), tmp.len()) < 0 { return -1; }
         ns_name_pack(tmp.as_ptr(), dst, dstsiz as i32, dnptrs, lastdnptr)
+    }
+}
+
+// # C: void ns_name_rollback(const unsigned char *src,
+//                            const unsigned char **dnptrs,
+//                            const unsigned char **lastdnptr)
+#[no_mangle]
+pub unsafe extern "C" fn ns_name_rollback(src: *const u8, mut dnptrs: *mut *const u8, lastdnptr: *mut *const u8) {
+    // SAFETY: dnptrs..lastdnptr is a caller-owned pointer table; stop at the
+    // first null entry or at lastdnptr, matching glibc's compression rollback.
+    unsafe {
+        while dnptrs < lastdnptr && !(*dnptrs).is_null() {
+            if *dnptrs >= src {
+                *dnptrs = core::ptr::null();
+                break;
+            }
+            dnptrs = dnptrs.add(1);
+        }
     }
 }
 
