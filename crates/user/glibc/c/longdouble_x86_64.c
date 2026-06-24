@@ -758,6 +758,105 @@ long double _Complex ctanhl(long double _Complex z) {
     return r;
 }
 
+static long double _Complex cexpl_valuel(long double _Complex z) {
+    long double x = __real__ z;
+    long double y = __imag__ z;
+    long double siny;
+    long double cosy;
+    x87_sincosl(y, &siny, &cosy);
+    long double ex = exp2_valuel(x * 1.4426950408889634073599246810018921374L);
+    long double _Complex r;
+    __real__ r = ex * cosy;
+    __imag__ r = ex * siny;
+    return r;
+}
+
+static long double _Complex clogl_valuel(long double _Complex z) {
+    long double _Complex r;
+    __real__ r = log2_valuel(hypot_valuel(__real__ z, __imag__ z)) * 0.69314718055994530941723212145817656808L;
+    __imag__ r = atan2_valuel(__imag__ z, __real__ z);
+    return r;
+}
+
+static long double _Complex csqrtl_valuel(long double _Complex z) {
+    long double x = __real__ z;
+    long double y = __imag__ z;
+    long double mag = hypot_valuel(x, y);
+    long double _Complex r;
+    __real__ r = x87_sqrtl((mag + x) * 0.5L);
+    __imag__ r = __builtin_copysignl(x87_sqrtl((mag - x) * 0.5L), y);
+    return r;
+}
+
+long double _Complex csinl(long double _Complex z) {
+    long double x = __real__ z;
+    long double y = __imag__ z;
+    long double sinx;
+    long double cosx;
+    x87_sincosl(x, &sinx, &cosx);
+    long double _Complex r;
+    __real__ r = sinx * coshl_valuel(y);
+    __imag__ r = cosx * sinhl_valuel(y);
+    return r;
+}
+
+long double _Complex ccosl(long double _Complex z) {
+    long double x = __real__ z;
+    long double y = __imag__ z;
+    long double sinx;
+    long double cosx;
+    x87_sincosl(x, &sinx, &cosx);
+    long double _Complex r;
+    __real__ r = cosx * coshl_valuel(y);
+    __imag__ r = -sinx * sinhl_valuel(y);
+    return r;
+}
+
+long double _Complex ctanl(long double _Complex z) {
+    long double x = __real__ z;
+    long double y = __imag__ z;
+    long double sinx;
+    long double cosx;
+    x87_sincosl(x, &sinx, &cosx);
+    long double sr = sinx * coshl_valuel(y);
+    long double si = cosx * sinhl_valuel(y);
+    long double cr = cosx * coshl_valuel(y);
+    long double ci = -sinx * sinhl_valuel(y);
+    long double denom = cr * cr + ci * ci;
+    long double _Complex r;
+    __real__ r = (sr * cr + si * ci) / denom;
+    __imag__ r = (si * cr - sr * ci) / denom;
+    return r;
+}
+
+long double _Complex cexpl(long double _Complex z) {
+    return cexpl_valuel(z);
+}
+
+long double _Complex clogl(long double _Complex z) {
+    return clogl_valuel(z);
+}
+
+long double _Complex clog10l(long double _Complex z) {
+    long double _Complex l = clogl_valuel(z);
+    long double _Complex r;
+    __real__ r = (__real__ l) * 0.43429448190325182765112891891660508229L;
+    __imag__ r = (__imag__ l) * 0.43429448190325182765112891891660508229L;
+    return r;
+}
+
+long double _Complex csqrtl(long double _Complex z) {
+    return csqrtl_valuel(z);
+}
+
+long double _Complex cpowl(long double _Complex base, long double _Complex power) {
+    long double _Complex lb = clogl_valuel(base);
+    long double _Complex exponent;
+    __real__ exponent = (__real__ power) * (__real__ lb) - (__imag__ power) * (__imag__ lb);
+    __imag__ exponent = (__real__ power) * (__imag__ lb) + (__imag__ power) * (__real__ lb);
+    return cexpl_valuel(exponent);
+}
+
 static long double x87_fprem(long double x, long double y) {
     long double r;
     __asm__ __volatile__(
