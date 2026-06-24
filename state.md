@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **194/194**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F577-getaddrinfo-a`. `glibc.md` = live per-cluster TODO. F counter next = **578**, B = **138**, D = **112**
+`F578-compat-data-hooks`. `glibc.md` = live per-cluster TODO. F counter next = **579**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -212,6 +212,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   `gaicb.__return` and result pointers. Host-diffed in t_gai_async.c.
   Verification: `xtask glibc-test` 194/194; both freestanding arch builds;
   `spec-lint`; filtered symbol audit now 300.
+- **F578 DONE locally:** audit-only compatibility exports added for malloc
+  `mallwatch` and resolver send hook setters res_send_setqhook/res_send_setrhook.
+  Current Fedora headers no longer declare these obsolete names, so verification
+  is regression suite + both freestanding arch builds + `spec-lint` + audit
+  drop to 297.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 

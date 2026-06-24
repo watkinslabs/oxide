@@ -3,12 +3,15 @@
 #![cfg(feature = "freestanding")]
 
 use core::ffi::{c_char, c_void};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 const QUERY: i32 = 0;
 const HEADER_LEN: usize = 12;
 const EMSGSIZE: i32 = 90;
 const RES_RECURSE: u64 = 0x0000_0040;
 const RES_TRUSTAD: u64 = 0x0400_0000;
+static QHOOK: AtomicUsize = AtomicUsize::new(0);
+static RHOOK: AtomicUsize = AtomicUsize::new(0);
 
 unsafe fn put16(dst: *mut u8, v: u16) {
     // SAFETY: dst points to two writable bytes.
@@ -81,4 +84,16 @@ pub unsafe extern "C" fn res_nmkquery(_statp: *mut c_void, op: i32, dname: *cons
     };
     // SAFETY: forwards raw C pointers to the checked packet builder.
     unsafe { build(op, dname, class, ty, newrr, buf, buflen, flags) }
+}
+
+// # C: void res_send_setqhook(void *hook)
+#[no_mangle]
+pub extern "C" fn res_send_setqhook(hook: *mut c_void) {
+    QHOOK.store(hook as usize, Ordering::Relaxed);
+}
+
+// # C: void res_send_setrhook(void *hook)
+#[no_mangle]
+pub extern "C" fn res_send_setrhook(hook: *mut c_void) {
+    RHOOK.store(hook as usize, Ordering::Relaxed);
 }
