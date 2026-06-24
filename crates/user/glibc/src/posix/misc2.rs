@@ -109,6 +109,7 @@ pub unsafe extern "C" fn waitid(idtype: i32, id: u32, infop: *mut c_void, option
 
 // --- legacy / deprecated syscall wrappers ----------------------------------
 const ENOSYS: i32 = 38;
+const EINVAL: i32 = 22;
 
 // # C: int revoke(const char *path) — no Linux syscall; glibc stub ⇒ ENOSYS.
 #[no_mangle]
@@ -120,6 +121,18 @@ pub unsafe extern "C" fn revoke(_path: *const c_char) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn setlogin(_name: *const c_char) -> i32 {
     crate::internal::errno::set(ENOSYS); -1
+}
+
+// # C: int chflags(const char *path, unsigned long flags) — glibc stub.
+#[no_mangle]
+pub unsafe extern "C" fn chflags(_path: *const c_char, _flags: u64) -> i32 {
+    crate::internal::errno::set(ENOSYS); -1
+}
+
+// # C: int fchflags(int fd, unsigned long flags) — glibc stub.
+#[no_mangle]
+pub extern "C" fn fchflags(_fd: i32, _flags: u64) -> i32 {
+    crate::internal::errno::set(EINVAL); -1
 }
 
 // # C: int profil(unsigned short *sample_buffer, size_t size, size_t offset, unsigned int scale)
