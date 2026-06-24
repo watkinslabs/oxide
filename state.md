@@ -1,10 +1,10 @@
 # state.md — session handoff
 
 ## Headline
-**glibc full-compliance build-out** (docs/59 §9). Conformance **192/192**
+**glibc full-compliance build-out** (docs/59 §9). Conformance **193/193**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F574-narrowing-math`. `glibc.md` = live per-cluster TODO. F counter next = **575**, B = **138**, D = **112**
+`F575-res-mkquery`. `glibc.md` = live per-cluster TODO. F counter next = **576**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -36,8 +36,8 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
 - **socket/infra-dependent** clnt/svc, res_query/res_send, BSD net-auth (rcmd/rexec/
   ruserok/rresvport/bindresvport), getsourcefilter/setsourcefilter, getrpcport — can't
   verify without a live peer/server in the harness.
-- **res_mkquery/res_nmkquery** — pure + host-diffable IF the random 2-byte ID is masked,
-  BUT need the ~500-byte `__res_state` struct ABI + res_ninit, which we DON'T have.
+- **res_query/res_send network paths** — still infra-dependent. The pure packet
+  builders are now done without requiring full resolver initialization.
 
 ## Still tractable AND verifiable (the real remaining work — small)
 - **F537 DONE locally and committed:** inet6_option_space/init/append/alloc/next/find
@@ -197,6 +197,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   Host-diffed exact sample values in t_c23math.c. Verification:
   `xtask glibc-test` 192/192; both freestanding arch builds; `spec-lint`;
   filtered symbol audit now 306.
+- **F575 DONE locally:** res_mkquery/res_nmkquery added as pure standard QUERY
+  packet builders with glibc-matched RD/AD header flag handling from resolver
+  options. Host-diffed in t_res_mkquery.c with random IDs masked. Verification:
+  `xtask glibc-test` 193/193; both freestanding arch builds; `spec-lint`;
+  filtered symbol audit now 304.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
