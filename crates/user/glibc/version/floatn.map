@@ -289,4 +289,5 @@
     rintl;
     roundl;
     roundevenl;
+    sqrtl;
     truncl;};
