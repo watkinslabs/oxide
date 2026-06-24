@@ -25,4 +25,6 @@ pub mod rpcent;
 #[cfg(feature = "freestanding")]
 pub mod resolv_name;
 pub mod nameser;
+#[cfg(feature = "freestanding")]
+pub mod nameser_date;
 pub mod socket;
