@@ -264,8 +264,16 @@
     finitel;
     fmaxl;
     fmaxmagl;
+    fmaximum_mag_numl;
+    fmaximum_magl;
+    fmaximum_numl;
+    fmaximuml;
     fminl;
     fminmagl;
+    fminimum_mag_numl;
+    fminimum_magl;
+    fminimum_numl;
+    fminimuml;
     cimagl;
     conjl;
     cprojl;

@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **195/195**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F596-long-double-minmax-batch`. `glibc.md` = live per-cluster TODO. F counter next = **597**, B = **138**, D = **113**
+`F597-long-double-c23-minmax-batch`. `glibc.md` = live per-cluster TODO. F counter next = **598**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -307,6 +307,10 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
 - **F596 DONE locally:** f80 fmaxl, fminl, fdiml, fmaxmagl, and fminmagl added
   to the C bridge. Host-diffed in t_longdouble; C object checked for no PLT
   relocations or unresolved symbols.
+- **F597 DONE locally:** f80 C23 min/max variants added to the C bridge:
+  fmaximum_numl, fminimum_numl, fmaximuml, fminimuml, fmaximum_mag_numl,
+  fminimum_mag_numl, fmaximum_magl, and fminimum_magl. Host-diffed in
+  t_longdouble; C object checked for no PLT relocations or unresolved symbols.
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need

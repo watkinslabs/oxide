@@ -10,6 +10,14 @@ extern int __fpclassifyl(long double);
 extern int __issignalingl(long double);
 extern long double fmaxmagl(long double, long double);
 extern long double fminmagl(long double, long double);
+extern long double fmaximum_numl(long double, long double);
+extern long double fminimum_numl(long double, long double);
+extern long double fmaximuml(long double, long double);
+extern long double fminimuml(long double, long double);
+extern long double fmaximum_mag_numl(long double, long double);
+extern long double fminimum_mag_numl(long double, long double);
+extern long double fmaximum_magl(long double, long double);
+extern long double fminimum_magl(long double, long double);
 
 int main(void) {
     volatile long double neg = -2.5L;
@@ -85,5 +93,14 @@ int main(void) {
            fdiml(neg, pos) == 0.0L,
            fmaxmagl(-4.0L, 3.0L) == -4.0L,
            fminmagl(-4.0L, 3.0L) == 3.0L);
+    printf("c23_minmax=%d/%d/%d/%d/%d/%d/%d/%d\n",
+           fmaximum_numl(nanv, neg) == neg,
+           fminimum_numl(nanv, neg) == neg,
+           isnanl(fmaximuml(nanv, neg)) ? 1 : 0,
+           isnanl(fminimuml(nanv, neg)) ? 1 : 0,
+           fmaximum_mag_numl(-4.0L, 3.0L) == -4.0L,
+           fminimum_mag_numl(-4.0L, 3.0L) == 3.0L,
+           fmaximum_magl(-4.0L, 3.0L) == -4.0L,
+           fminimum_magl(-4.0L, 3.0L) == 3.0L);
     return 0;
 }
