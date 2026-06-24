@@ -291,10 +291,18 @@
     hypotl;
     cimagl;
     ccoshl;
+    ccosl;
+    cexpl;
+    clog10l;
+    clogl;
     conjl;
     cprojl;
+    cpowl;
     csinhl;
+    csinl;
+    csqrtl;
     ctanhl;
+    ctanl;
     creall;
     exp10l;
     exp2l;
