@@ -50,6 +50,8 @@ int main(void) {
     /* mallopt accepts a documented tunable -> 1. */
     printf("mallopt=%d\n", mallopt(M_TRIM_THRESHOLD, 128 * 1024));
     errno = 0;
+    printf("malloc_info_badopt=%d errno=%d\n", malloc_info(1, stdout), errno);
+    errno = 0;
     mcheck_check_all();
     printf("mcheck_check_all_errno=%d\n", errno);
     printf("checksalt=%d %d\n", crypt_checksalt("$6$salt"), crypt_checksalt("") == CRYPT_SALT_INVALID);
