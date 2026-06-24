@@ -5,14 +5,10 @@ extern crate alloc;
 
 // `/dev/console` + `/dev/tty<N>` char-devices per docs/16 + docs/28.
 //
-// T7 core cutover (tty-rebuild-plan §3-T7): `/dev/console`, `/dev/tty`,
-// `/dev/tty0`, `/dev/ttyS0` (the serial login path) all delegate to ONE
-// global serial `TtyStruct` (`static_console`) built on the new tty
-// stack — N_TTY ldisc + lost-wakeup-free `TtyStruct::read` + N_TTY OPOST
-// → UART write. This replaces the old input-only `tty::live` VT-ring and
-// the racy `ConsoleInode::read` park loop (the intermittent login race).
-// The `/dev/tty1`..N per-VT nodes still carry their own VT id for the
-// (inert until kbd VT-switch) multi-VT screen buffers.
+// `/dev/console`, `/dev/tty`, and `/dev/tty0` resolve to the foreground
+// video VT by default. `/dev/ttyS0` is a separate serial tty. This mirrors
+// Linux's device split: a machine can run a framebuffer console login and
+// an independent serial login at the same time without mirroring user I/O.
 //
 // printk stays SEPARATE: kernel logs reach the UART via klog's serial
 // sink (and mirror to fbcon); a tty write here goes TtyStruct → UART, NOT
@@ -106,11 +102,9 @@ impl Inode for ConsoleInode {
     }
 
     /// Blocking read. vt==0 (the system console: /dev/console, /dev/tty,
-    /// /dev/tty0, /dev/ttyS0) delegates to the new serial `TtyStruct`'s
-    /// lost-wakeup-free `read` (N_TTY cooks/blocks; returns a whole line
-    /// in ICANON, so PAM's `read(STDIN, line, N)` sees the full password
-    /// up to `\n` — the B18 stale-tail bug cannot recur). The numbered VT
-    /// nodes (vt 1..N) keep their per-VT screen-ring path (T7b territory).
+    /// /dev/tty0) resolves to the foreground VT's `TtyStruct`; numbered VT
+    /// nodes pin their own `TtyStruct`. `/dev/ttyS0` is a separate serial
+    /// inode and never reaches this path.
     fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
         // TtyStruct::read parks lost-wakeup-free and returns a cooked line
@@ -133,8 +127,8 @@ impl Inode for ConsoleInode {
     /// Non-blocking read per `15§5` / `28§3`. systemd PID1 opens
     /// `/dev/console` with `O_NONBLOCK` and runs a `ppoll`+`read` loop: it
     /// expects `read` to return `EAGAIN` on an empty input queue, NOT to
-    /// park. vt==0 delegates to the serial `TtyStruct`'s non-blocking
-    /// drain; the numbered VTs drain their ring. Either way, empty ⇒
+    /// park. vt==0 delegates to the foreground VT `TtyStruct`'s non-blocking
+    /// drain; the numbered VTs drain their own tty. Either way, empty ⇒
     /// `Eagain`.
     /// # C: O(buf.len())
     fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
@@ -259,10 +253,9 @@ pub fn vt_reply_sink(vt: u8, bytes: &[u8]) {
 
 /// Build the `init`-process fd table with fd 0/1/2 all pointing at
 /// `/dev/console` — the *preferred console* per `console=`
-/// ([`system_console_inode`]), so a kernel-spawned PID1 writes its stdout/
-/// stderr to the serial line when booted `console=ttyS0` (matching Linux,
-/// where init inherits the console device). Returns an `Arc<FdTable>` ready
-/// to install on the spawned user task. # C: O(1)
+/// ([`system_console_inode`]), so a kernel-spawned PID1 inherits the same
+/// console device that userspace opens at `/dev/console`. Returns an
+/// `Arc<FdTable>` ready to install on the spawned user task. # C: O(1)
 pub fn init_console_fd_table() -> Arc<FdTable> {
     let table = Arc::new(FdTable::new());
     let inode: InodeRef = system_console_inode();
@@ -312,10 +305,8 @@ impl Inode for VcsInode {
 /// The backing inode for `/dev/console` — the *preferred console* named by
 /// the LAST `console=` on the boot cmdline (Linux: `/dev/console` (5:1) is the
 /// kernel's preferred console device, NOT a fixed alias of the video VT).
-/// `console=ttyS0`/`ttyAMA0` ⇒ the serial tty; `console=tty<n>`/none ⇒ the
-/// foreground video VT. This is what makes systemd's `console-getty` (whose
-/// `TTYPath=/dev/console`) put `oxide login:` on the serial line when booted
-/// `console=ttyS0`, matching Linux. # C: O(cmdline length)
+/// `console=ttyS0`/`ttyAMA0` as the preferred console ⇒ the serial tty;
+/// `console=tty<n>`/none ⇒ the foreground video VT. # C: O(cmdline length)
 pub fn system_console_inode() -> InodeRef {
     match cmdline::preferred_console() {
         cmdline::ConsoleKind::Serial => Arc::new(SerialInode) as InodeRef,
@@ -332,8 +323,9 @@ pub fn system_console_inode() -> InodeRef {
 pub fn register_devnodes() {
     use alloc::sync::Arc;
     use alloc::string::String;
-    // /dev/console = the preferred console (serial when console=ttyS0/ttyAMA0,
-    // else the fg VT) — the Linux 5:1 kernel-console device.
+    // /dev/console = the preferred console (serial when a serial console is
+    // the preferred console, else the fg VT) — the Linux 5:1 kernel-console
+    // device.
     devfs::register("/dev/console", system_console_inode());
     // /dev/tty, /dev/tty0 = the foreground video VT (always video; distinct
     // from /dev/console, which the console= cmdline may point at serial).
