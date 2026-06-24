@@ -1246,6 +1246,38 @@ long double exp10l(long double x) {
     return exp2_valuel(x * 3.3219280948873623478703194294893901759L);
 }
 
+static long double erf_corel(long double x) {
+    if (__builtin_isnan(x)) {
+        return x + x;
+    }
+    if (__builtin_isinf(x)) {
+        return __builtin_signbit(x) ? -1.0L : 1.0L;
+    }
+    int neg = x < 0.0L;
+    long double ax = neg ? -x : x;
+    if (ax >= 6.0L) {
+        return neg ? -1.0L : 1.0L;
+    }
+    long double t = 1.0L / (1.0L + 0.3275911L * ax);
+    long double poly = (((((1.061405429L * t - 1.453152027L) * t) + 1.421413741L) * t - 0.284496736L) * t + 0.254829592L) * t;
+    long double y = 1.0L - poly * exp2_valuel(-(ax * ax) * 1.4426950408889634073599246810018921374L);
+    return neg ? -y : y;
+}
+
+long double erfl(long double x) {
+    return erf_corel(x);
+}
+
+long double erfcl(long double x) {
+    if (__builtin_isnan(x)) {
+        return x + x;
+    }
+    if (__builtin_isinf(x)) {
+        return __builtin_signbit(x) ? 2.0L : 0.0L;
+    }
+    return 1.0L - erf_corel(x);
+}
+
 long double pow10l(long double x) {
     return exp2_valuel(x * 3.3219280948873623478703194294893901759L);
 }
