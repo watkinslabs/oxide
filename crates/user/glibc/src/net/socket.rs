@@ -73,7 +73,7 @@ const _: () = assert!(core::mem::size_of::<iovec>() == 16);
 #[cfg(feature = "freestanding")]
 mod exports {
     use super::*;
-    use crate::arch::syscall::{sys3, sys4, sys5, sys6};
+    use crate::arch::syscall::{sys1, sys3, sys4, sys5, sys6};
     use crate::internal::errno::ret_isize;
     use crate::internal::nr;
     use crate::malloc::heap;
@@ -121,6 +121,34 @@ mod exports {
         // SAFETY: scalar args; socket(2) dereferences no memory.
         ret_isize(unsafe { sys3(nr::SOCKET, domain as usize, ty as usize, proto as usize) }) as i32
     }
+    // # C: int rresvport_af(int *alport, int family)
+    #[no_mangle]
+    pub unsafe extern "C" fn rresvport_af(alport: *mut i32, family: i32) -> i32 {
+        // SAFETY: alport is a writable port out-param. A TCP socket is opened,
+        // bound through bindresvport, and closed on bind failure.
+        unsafe {
+            let fd = socket(family, SOCK_STREAM, 0);
+            if fd < 0 { return -1; }
+            let mut sin = sockaddr_in { sin_family: family as u16, sin_port: 0, sin_addr: 0, sin_zero: [0; 8] };
+            if !alport.is_null() && *alport > 0 { sin.sin_port = (*alport as u16).to_be(); }
+            let r = bindresvport(fd, &mut sin);
+            if r == 0 {
+                if !alport.is_null() { *alport = u16::from_be(sin.sin_port) as i32; }
+                fd
+            } else {
+                if !alport.is_null() { *alport = u16::from_be(sin.sin_port) as i32; }
+                sys1(nr::CLOSE, fd as usize);
+                -1
+            }
+        }
+    }
+
+    // # C: int rresvport(int *alport)
+    #[no_mangle]
+    pub unsafe extern "C" fn rresvport(alport: *mut i32) -> i32 {
+        // SAFETY: rresvport is the IPv4 form of rresvport_af.
+        unsafe { rresvport_af(alport, AF_INET as i32) }
+    }
     // # C: int socketpair(int domain, int type, int protocol, int sv[2])
     #[no_mangle]
     pub unsafe extern "C" fn socketpair(domain: i32, ty: i32, proto: i32, sv: *mut i32) -> i32 {
@@ -132,6 +160,29 @@ mod exports {
     pub unsafe extern "C" fn bind(fd: i32, addr: *const sockaddr, len: u32) -> i32 {
         // SAFETY: addr points at `len` valid bytes of a sockaddr.
         ret_isize(unsafe { sys3(nr::BIND, fd as usize, addr as usize, len as usize) }) as i32
+    }
+    // # C: int bindresvport(int sd, struct sockaddr_in *sin)
+    #[no_mangle]
+    pub unsafe extern "C" fn bindresvport(fd: i32, sin: *mut sockaddr_in) -> i32 {
+        // SAFETY: sin is null or a writable sockaddr_in. We bind either the
+        // requested port or the historical reserved range [512, 1024).
+        unsafe {
+            let mut local = sockaddr_in { sin_family: AF_INET, sin_port: 0, sin_addr: 0, sin_zero: [0; 8] };
+            let sp = if sin.is_null() { &mut local as *mut sockaddr_in } else { sin };
+            if (*sp).sin_family == 0 { (*sp).sin_family = AF_INET; }
+            if (*sp).sin_port != 0 {
+                return bind(fd, sp as *const sockaddr, core::mem::size_of::<sockaddr_in>() as u32);
+            }
+            for port in 512u16..1024u16 {
+                (*sp).sin_port = port.to_be();
+                let r = bind(fd, sp as *const sockaddr, core::mem::size_of::<sockaddr_in>() as u32);
+                if r == 0 { return 0; }
+                let e = *crate::internal::errno::__errno_location();
+                if e != 98 { return -1; } // EADDRINUSE: try the next port.
+            }
+            crate::internal::errno::set(98);
+            -1
+        }
     }
     // # C: int listen(int fd, int backlog)
     #[no_mangle]
