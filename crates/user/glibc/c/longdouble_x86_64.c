@@ -524,6 +524,85 @@ long double cbrtl(long double x) {
     return __builtin_copysignl(y, x);
 }
 
+static void x87_sincosl(long double x, long double *sinx, long double *cosx) {
+    long double s;
+    long double c;
+    __asm__ __volatile__(
+        "fldt %2\n\t"
+        "fsincos\n\t"
+        "fstpt %0\n\t"
+        "fstpt %1"
+        : "=m"(c), "=m"(s)
+        : "m"(x)
+        : "st");
+    *sinx = s;
+    *cosx = c;
+}
+
+long double sinl(long double x) {
+    long double s;
+    long double c;
+    x87_sincosl(x, &s, &c);
+    return s;
+}
+
+long double cosl(long double x) {
+    long double s;
+    long double c;
+    x87_sincosl(x, &s, &c);
+    return c;
+}
+
+void sincosl(long double x, long double *sinx, long double *cosx) {
+    x87_sincosl(x, sinx, cosx);
+}
+
+long double tanl(long double x) {
+    long double t;
+    __asm__ __volatile__(
+        "fldt %1\n\t"
+        "fptan\n\t"
+        "fstp %%st(0)\n\t"
+        "fstpt %0"
+        : "=m"(t)
+        : "m"(x)
+        : "st");
+    return t;
+}
+
+static long double atan2_valuel(long double y, long double x) {
+    long double a;
+    __asm__ __volatile__(
+        "fldt %2\n\t"
+        "fldt %1\n\t"
+        "fpatan\n\t"
+        "fstpt %0"
+        : "=m"(a)
+        : "m"(x), "m"(y)
+        : "st");
+    return a;
+}
+
+long double atan2l(long double y, long double x) {
+    return atan2_valuel(y, x);
+}
+
+long double atanl(long double x) {
+    return atan2_valuel(x, 1.0L);
+}
+
+long double asinl(long double x) {
+    return atan2_valuel(x, x87_sqrtl((1.0L - x) * (1.0L + x)));
+}
+
+long double acosl(long double x) {
+    return atan2_valuel(x87_sqrtl((1.0L - x) * (1.0L + x)), x);
+}
+
+long double cargl(long double _Complex z) {
+    return atan2_valuel(__imag__ z, __real__ z);
+}
+
 static long double x87_fprem(long double x, long double y) {
     long double r;
     __asm__ __volatile__(

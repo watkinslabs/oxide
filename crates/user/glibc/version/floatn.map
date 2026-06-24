@@ -257,7 +257,12 @@
     __isnanl;
     __issignalingl;
     __signbitl;
+    acosl;
+    asinl;
+    atan2l;
+    atanl;
     cabsl;
+    cargl;
     canonicalizel;
     cbrtl;
     ceill;
@@ -318,7 +323,11 @@
     setpayloadl;
     setpayloadsigl;
     significandl;
+    sincosl;
+    sinl;
     sqrtl;
+    cosl;
+    tanl;
     totalorderl;
     totalordermagl;
     ufromfpl;
