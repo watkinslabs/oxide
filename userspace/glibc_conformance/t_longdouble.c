@@ -18,6 +18,8 @@ extern long double fmaximum_mag_numl(long double, long double);
 extern long double fminimum_mag_numl(long double, long double);
 extern long double fmaximum_magl(long double, long double);
 extern long double fminimum_magl(long double, long double);
+extern int totalorderl(const long double *, const long double *);
+extern int totalordermagl(const long double *, const long double *);
 
 int main(void) {
     volatile long double neg = -2.5L;
@@ -55,6 +57,10 @@ int main(void) {
     long double fmod_z = fmodl(-4.0L, 2.0L);
     long double rem_z = remainderl(-4.0L, 2.0L);
     unsigned char *nan1_bytes = (unsigned char *)&(long double){ nanl("1") };
+    long double pnan = nanl("");
+    long double nnan = -pnan;
+    long double mzv = mz;
+    long double zerov = zero;
 
     printf("sizeof_ld=%zu\n", sizeof(long double));
     printf("fabsl=%d\n", fabsl(neg) == 2.5L);
@@ -170,5 +176,14 @@ int main(void) {
            signbit(nanl("")) ? 1 : 0,
            (unsigned int)nan1_bytes[0],
            isnanl(nanl("bad")) ? 1 : 0);
+    printf("totalorder=%d/%d/%d/%d/%d/%d/%d/%d\n",
+           totalorderl(&(long double){1.0L}, &(long double){2.0L}),
+           totalorderl(&(long double){2.0L}, &(long double){1.0L}),
+           totalorderl(&mzv, &zerov),
+           totalorderl(&zerov, &mzv),
+           totalorderl(&nnan, &(long double){1.0L}),
+           totalorderl(&(long double){1.0L}, &pnan),
+           totalordermagl(&(long double){-3.0L}, &(long double){2.0L}),
+           totalordermagl(&(long double){-2.0L}, &(long double){2.0L}));
     return 0;
 }
