@@ -555,3 +555,47 @@ long double nanl(const char *tagp) {
     u.bytes[9] = 0x7fu;
     return u.value;
 }
+
+static int totalorder_finitel(long double x, long double y) {
+    if (x < y) {
+        return 1;
+    }
+    if (x > y) {
+        return 0;
+    }
+    if (x == 0.0L && y == 0.0L) {
+        return __builtin_signbit(x) || !__builtin_signbit(y);
+    }
+    return 1;
+}
+
+static int totalorder_valuel(long double xv, long double yv) {
+    int x_nan = __builtin_isnan(xv);
+    int y_nan = __builtin_isnan(yv);
+
+    if (x_nan || y_nan) {
+        int xs = __builtin_signbit(xv);
+        int ys = __builtin_signbit(yv);
+        if (x_nan && y_nan) {
+            if (xs != ys) {
+                return xs ? 1 : 0;
+            }
+            return 1;
+        }
+        if (x_nan) {
+            return xs ? 1 : 0;
+        }
+        return ys ? 0 : 1;
+    }
+    return totalorder_finitel(xv, yv);
+}
+
+int totalorderl(const long double *x, const long double *y) {
+    return totalorder_valuel(*x, *y);
+}
+
+int totalordermagl(const long double *x, const long double *y) {
+    long double ax = __builtin_fabsl(*x);
+    long double ay = __builtin_fabsl(*y);
+    return totalorder_valuel(ax, ay);
+}

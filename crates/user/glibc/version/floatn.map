@@ -304,4 +304,6 @@
     scalbnl;
     significandl;
     sqrtl;
+    totalorderl;
+    totalordermagl;
     truncl;};
