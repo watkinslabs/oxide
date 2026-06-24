@@ -140,6 +140,18 @@ pub unsafe extern "C" fn strtof_l(n: *const c_char, e: *mut *mut c_char, _l: usi
     // SAFETY: delegates to strtof under the C locale.
     unsafe { strtof(n, e) }
 }
+// # C: _Float32 strtof32_l(const char*, char**, locale_t)
+#[no_mangle]
+pub unsafe extern "C" fn strtof32_l(n: *const c_char, e: *mut *mut c_char, l: usize) -> f32 {
+    // SAFETY: _Float32 == float on Oxide targets; same contract as strtof_l.
+    unsafe { strtof_l(n, e, l) }
+}
+// # C: _Float64 strtof64_l(const char*, char**, locale_t)
+#[no_mangle]
+pub unsafe extern "C" fn strtof64_l(n: *const c_char, e: *mut *mut c_char, l: usize) -> f64 {
+    // SAFETY: _Float64 == double on Oxide targets; same contract as strtod_l.
+    unsafe { strtod_l(n, e, l) }
+}
 // # C: long strtol_l(const char*, char**, int base, locale_t)
 #[no_mangle]
 pub unsafe extern "C" fn strtol_l(n: *const c_char, e: *mut *mut c_char, b: i32, _l: usize) -> i64 {
