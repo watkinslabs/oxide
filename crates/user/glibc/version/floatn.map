@@ -267,7 +267,13 @@
     creall;
     isinfl;
     isnanl;
+    llrintl;
+    llroundl;
+    lrintl;
+    lroundl;
+    nearbyintl;
     floorl;
     rintl;
+    roundl;
     roundevenl;
     truncl;};

@@ -67,5 +67,13 @@ int main(void) {
            roundevenl(2.5L) == 2.0L,
            roundevenl(3.5L) == 4.0L,
            signbit(roundevenl(mz)) ? 1 : 0);
+    printf("round_batch=%d/%d/%d/%ld/%lld/%ld/%lld\n",
+           nearbyintl(2.5L) == 2.0L,
+           roundl(2.5L) == 3.0L,
+           roundl(-2.5L) == -3.0L,
+           lroundl(2.5L),
+           llroundl(-2.5L),
+           lrintl(2.5L),
+           llrintl(-1.5L));
     return 0;
 }
