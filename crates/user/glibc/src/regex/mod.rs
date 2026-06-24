@@ -42,6 +42,9 @@ mod imp {
     use super::*;
     use crate::string::len::strlen_impl;
     use alloc::boxed::Box;
+    use core::sync::atomic::{AtomicPtr, Ordering};
+
+    static RE_COMP_PROG: AtomicPtr<engine::Prog> = AtomicPtr::new(core::ptr::null_mut());
 
     // # C: int regcomp(regex_t *preg, const char *pattern, int cflags)
     #[no_mangle]
@@ -127,6 +130,45 @@ mod imp {
                 *errbuf.add(n) = 0;
             }
             need
+        }
+    }
+
+    // # C: char *re_comp(const char *pattern)
+    #[no_mangle]
+    pub unsafe extern "C" fn re_comp(pattern: *const u8) -> *const u8 {
+        // SAFETY: pattern is null or a NUL-terminated regex. The obsolete BSD
+        // API stores one process-global compiled program for re_exec.
+        unsafe {
+            if pattern.is_null() {
+                return core::ptr::null();
+            }
+            let pat = core::slice::from_raw_parts(pattern, strlen_impl(pattern));
+            match engine::compile_pattern(pat, false, false, true) {
+                Ok(prog) => {
+                    let new = Box::into_raw(Box::new(prog));
+                    let old = RE_COMP_PROG.swap(new, Ordering::AcqRel);
+                    if !old.is_null() {
+                        drop(Box::from_raw(old));
+                    }
+                    core::ptr::null()
+                }
+                Err(_) => b"Invalid regular expression\0".as_ptr(),
+            }
+        }
+    }
+
+    // # C: int re_exec(const char *string)
+    #[no_mangle]
+    pub unsafe extern "C" fn re_exec(string: *const u8) -> i32 {
+        // SAFETY: string is NUL-terminated; RE_COMP_PROG is the process-global
+        // compiled program from re_comp. glibc returns 1 for match, 0 otherwise.
+        unsafe {
+            let prog = RE_COMP_PROG.load(Ordering::Acquire);
+            if prog.is_null() {
+                return 0;
+            }
+            let s = core::slice::from_raw_parts(string, strlen_impl(string));
+            if engine::exec(&*prog, s, false, false).is_some() { 1 } else { 0 }
         }
     }
 }
