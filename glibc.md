@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2148 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2151 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **194/194**; both arches boot.
 
@@ -49,6 +49,7 @@ Also DONE: C23 narrowing math fadd/fsub/fmul/fdiv/fsqrt/ffma + f32* f64 aliases 
 Also DONE: res_mkquery/res_nmkquery standard QUERY packet builders (F575).
 Also DONE: gai_error/gai_cancel/gai_suspend async getaddrinfo status helpers (F576).
 Also DONE: getaddrinfo_a synchronous GAI_WAIT/GAI_NOWAIT compatibility path (F577).
+Also DONE: mallwatch + res_send_setqhook/res_send_setrhook compat exports (F578).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
