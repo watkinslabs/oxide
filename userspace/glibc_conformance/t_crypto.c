@@ -10,7 +10,9 @@
 #include <net/if.h>
 #include <execinfo.h>
 #include <crypt.h>
+#include <errno.h>
 #include <malloc.h>
+#include <mcheck.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -47,6 +49,9 @@ int main(void) {
 
     /* mallopt accepts a documented tunable -> 1. */
     printf("mallopt=%d\n", mallopt(M_TRIM_THRESHOLD, 128 * 1024));
+    errno = 0;
+    mcheck_check_all();
+    printf("mcheck_check_all_errno=%d\n", errno);
     printf("checksalt=%d %d\n", crypt_checksalt("$6$salt"), crypt_checksalt("") == CRYPT_SALT_INVALID);
     unsigned char rb[16]; for (int i = 0; i < 16; i++) rb[i] = (unsigned char)(i * 17);
     char salt[CRYPT_GENSALT_OUTPUT_SIZE];
