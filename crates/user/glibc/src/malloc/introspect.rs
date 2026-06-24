@@ -10,6 +10,7 @@
 #![cfg(feature = "freestanding")]
 use super::heap;
 use crate::stdio::{file::FILE, put::fputs};
+use core::cell::UnsafeCell;
 
 const EINVAL: i32 = 22;
 
@@ -22,6 +23,16 @@ const M_CHECK_ACTION: i32 = -5;
 const M_PERTURB: i32 = -6;
 const M_ARENA_TEST: i32 = -7;
 const M_ARENA_MAX: i32 = -8;
+
+#[repr(transparent)]
+struct UsizeCell(UnsafeCell<usize>);
+// SAFETY: mallwatch is a historical writable malloc-debug C data symbol.
+// glibc exposes it as unsynchronised process-global compatibility state.
+unsafe impl Sync for UsizeCell {}
+
+// # C: void *mallwatch;
+#[no_mangle]
+static mallwatch: UsizeCell = UsizeCell(UnsafeCell::new(0));
 
 // struct mallinfo — 10 `int` fields (40 bytes, glibc layout).
 #[repr(C)]
