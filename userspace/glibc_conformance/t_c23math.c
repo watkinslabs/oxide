@@ -14,6 +14,18 @@ extern float remquof32(float, float, int *);
 extern float lgammaf32_r(float, int *);
 extern double lgammaf64_r(double, int *);
 extern int strfromf64(char *, size_t, const char *, double);
+extern float fadd(double, double);
+extern float fsub(double, double);
+extern float fmul(double, double);
+extern float fdiv(double, double);
+extern float fsqrt(double);
+extern float ffma(double, double, double);
+extern float f32addf64(double, double);
+extern float f32subf64(double, double);
+extern float f32mulf64(double, double);
+extern float f32divf64(double, double);
+extern float f32sqrtf64(double);
+extern float f32fmaf64(double, double, double);
 
 int main(void) {
     printf("logp1=%a logp1f=%a logp1f32=%a logp1f64=%a\n",
@@ -33,5 +45,13 @@ int main(void) {
     char buf[64];
     strfromf64(buf, sizeof buf, "%.10g", 3.14159265358979);
     printf("strfromf64=%s\n", buf);
+    printf("narrow=%a %a %a %a %a %a\n",
+        (double)fadd(1.25, 2.5), (double)fsub(5.5, 2.25),
+        (double)fmul(1.5, 3.0), (double)fdiv(7.5, 2.5),
+        (double)fsqrt(9.0), (double)ffma(2.0, 3.0, 4.0));
+    printf("narrow_alias=%a %a %a %a %a %a\n",
+        (double)f32addf64(1.25, 2.5), (double)f32subf64(5.5, 2.25),
+        (double)f32mulf64(1.5, 3.0), (double)f32divf64(7.5, 2.5),
+        (double)f32sqrtf64(9.0), (double)f32fmaf64(2.0, 3.0, 4.0));
     return 0;
 }

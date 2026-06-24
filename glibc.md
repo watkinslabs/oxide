@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2130 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2142 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **192/192**; both arches boot.
 
@@ -45,6 +45,7 @@ Also DONE: psiginfo SI_USER output path (F570).
 Also DONE: malloc_info minimal XML + bad-option EINVAL return (F571).
 Also DONE: rexecoptions remote-exec compatibility data symbol (F572).
 Also DONE: ruserpass no-.netrc compatibility path (F573).
+Also DONE: C23 narrowing math fadd/fsub/fmul/fdiv/fsqrt/ffma + f32* f64 aliases (F574).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
@@ -115,8 +116,11 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
 - **wide `_l` (~25)** — isw*_l, tow{lower,upper,ctrans}_l, wctype_l/wctrans_l/
   iswctype_l, wcs{coll,xfrm,casecmp,ncasecmp}_l, wcsto{d,f,l,ul,ll,ull,f32,f64}_l,
   wcsftime_l. Delegate to the C-locale base (like the narrow _l already done).
-- **C23 narrowing math** — f32add/f32div/f32mul/f32sub/f32sqrt/f32fma(+f64x...)
-  STILL DEFERRED (round-to-odd). exp10m1/exp2m1/log10p1/log2p1 done.
+- **C23 narrowing math** — f64x/long-double variants remain blocked/deferred
+  with the rest of long-double ABI. exp10m1/exp2m1/log10p1/log2p1 done.
+  fadd/fsub/fmul/fdiv/fsqrt/ffma + f32addf64/f32subf64/f32mulf64/
+  f32divf64/f32sqrtf64/f32fmaf64 DONE — F574, math/narrow.rs, float result
+  from existing f64 operations; exact host-diffed sample values in t_c23math.c.
   (logp1/logp1f/logp1f32/f64 + remquof/remquof32 + lgammaf32_r/f64_r +
   strfromf64 DONE — F528, _Float32==float/_Float64==double aliases of existing
   fns; bit-exact host-diffable t_c23math.c).
