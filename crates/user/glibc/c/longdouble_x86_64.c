@@ -312,3 +312,15 @@ long double fminimum_magl(long double x, long double y) {
     }
     return fminimum_corel(x, y);
 }
+
+long double sqrtl(long double x) {
+    long double y;
+    __asm__ __volatile__(
+        "fldt %1\n\t"
+        "fsqrt\n\t"
+        "fstpt %0"
+        : "=m"(y)
+        : "m"(x)
+        : "st");
+    return y;
+}
