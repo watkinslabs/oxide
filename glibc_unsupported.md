@@ -1,14 +1,10 @@
 # glibc — unsupported (cannot implement)
 
-> Hard-blocked, not deferred. 44 entries.
+> Hard-blocked, not deferred. 40 entries.
 
-## long double / long-double-typed: 10
+## long double / long-double-typed: 6
 > x86_64 long double is 80-bit x87 f80; Rust has no f80 so the extern-C ABI cannot be expressed.
 
-long double lgammal (long double x)
-long double lgammal_r (long double x, int *signp)
-long double gammal (long double x)
-long double tgammal (long double x)
 long double j0l (long double x)
 long double j1l (long double x)
 long double jnl (int n, long double x)

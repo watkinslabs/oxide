@@ -290,6 +290,7 @@
     frexpl;
     fromfpl;
     fromfpxl;
+    gammal;
     getpayloadl;
     hypotl;
     cacoshl;
@@ -324,6 +325,8 @@
     isinfl;
     isnanl;
     ldexpl;
+    lgammal;
+    lgammal_r;
     llogbl;
     logbl;
     log10l;
@@ -371,6 +374,7 @@
     cosl;
     tanhl;
     tanl;
+    tgammal;
     totalorderl;
     totalordermagl;
     ufromfpl;

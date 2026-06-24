@@ -1278,6 +1278,108 @@ long double erfcl(long double x) {
     return 1.0L - erf_corel(x);
 }
 
+static long double lanczos_suml(long double z) {
+    static const long double c[9] = {
+        0.99999999999980993L,
+        676.5203681218851L,
+        -1259.1392167224028L,
+        771.32342877765313L,
+        -176.61502916214059L,
+        12.507343278686905L,
+        -0.13857109526572012L,
+        9.9843695780195716e-6L,
+        1.5056327351493116e-7L,
+    };
+    long double a = c[0];
+    for (int i = 1; i < 9; i += 1) {
+        a += c[i] / (z + (long double)i);
+    }
+    return a;
+}
+
+static int is_integerl(long double x) {
+    return x87_round_mode(x, 0x0400u) == x;
+}
+
+long double tgammal(long double x) {
+    if (__builtin_isnan(x)) {
+        return x + x;
+    }
+    if (__builtin_isinf(x)) {
+        if (x > 0.0L) {
+            return x;
+        }
+        long double zero = 0.0L;
+        return zero / zero;
+    }
+    if (x == 0.0L) {
+        return __builtin_signbit(x) ? -__builtin_infl() : __builtin_infl();
+    }
+    if (x < 0.0L && is_integerl(x)) {
+        long double zero = 0.0L;
+        return zero / zero;
+    }
+    if (x < 0.5L) {
+        long double s;
+        long double c;
+        x87_sincosl(3.1415926535897932384626433832795028842L * x, &s, &c);
+        return 3.1415926535897932384626433832795028842L / (s * tgammal(1.0L - x));
+    }
+    long double z = x - 1.0L;
+    long double a = lanczos_suml(z);
+    long double t = z + 7.5L;
+    long double p = exp2_valuel((z + 0.5L) * log2_valuel(t) - t * 1.4426950408889634073599246810018921374L);
+    return 2.5066282746310005024157652848110452530L * p * a;
+}
+
+static long double lgammal_r_corel(long double x, int *signp) {
+    if (signp) {
+        *signp = 1;
+    }
+    if (__builtin_isnan(x)) {
+        return x + x;
+    }
+    if (__builtin_isinf(x) || (x <= 0.0L && is_integerl(x))) {
+        return __builtin_infl();
+    }
+    if (x == 1.0L || x == 2.0L) {
+        return 0.0L;
+    }
+    if (x < 0.5L) {
+        long double s;
+        long double c;
+        x87_sincosl(3.1415926535897932384626433832795028842L * x, &s, &c);
+        if (signp) {
+            *signp = s < 0.0L ? -1 : 1;
+        }
+        int inner = 1;
+        long double as = s < 0.0L ? -s : s;
+        return log2_valuel(3.1415926535897932384626433832795028842L / as) * 0.69314718055994530941723212145817656808L -
+            lgammal_r_corel(1.0L - x, &inner);
+    }
+    long double z = x - 1.0L;
+    long double a = lanczos_suml(z);
+    long double t = z + 7.5L;
+    return 0.91893853320467274178032973640561763986L +
+        (z + 0.5L) * log2_valuel(t) * 0.69314718055994530941723212145817656808L -
+        t +
+        log2_valuel(a) * 0.69314718055994530941723212145817656808L;
+}
+
+long double lgammal_r(long double x, int *signp) {
+    return lgammal_r_corel(x, signp);
+}
+
+long double lgammal(long double x) {
+    int sign = 1;
+    return lgammal_r_corel(x, &sign);
+}
+
+long double gammal(long double x) {
+    int sign = 1;
+    return lgammal_r_corel(x, &sign);
+}
+
 long double pow10l(long double x) {
     return exp2_valuel(x * 3.3219280948873623478703194294893901759L);
 }
