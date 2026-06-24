@@ -189,6 +189,7 @@ pub mod x86_64 {
     pub const SETITIMER: usize = 38;
     pub const SYSINFO: usize = 99;
     pub const TIMES: usize = 100;
+    pub const SYSLOG: usize = 103;
     pub const SETREUID: usize = 113;
     pub const SETREGID: usize = 114;
     pub const GETGROUPS: usize = 115;
@@ -474,6 +475,7 @@ pub mod aarch64 {
     pub const GETITIMER: usize = 102;
     pub const SETITIMER: usize = 103;
     pub const TIMES: usize = 153;
+    pub const SYSLOG: usize = 116;
     pub const SETTIMEOFDAY: usize = 170;
     pub const SETREGID: usize = 143;
     pub const SETREUID: usize = 145;
