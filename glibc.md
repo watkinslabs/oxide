@@ -19,6 +19,7 @@ RFC4506-verified vs our libc (glibc keeps xdr_* COMPAT-ONLY → not host-diffabl
 Also DONE: SysV signal (sighold/sigrelse/sigignore/sigset), the missing
 C23 `<stdbit.h>` unsigned long / unsigned long long variants (F545), and
 llseek + C-locale time `_l` wrappers (F546), and sem_clockwait (F547).
+Also DONE: libxcrypt compatibility aliases + crypt_checksalt (F548).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 163/163.
@@ -140,9 +141,13 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
 - **re_* BSD regex (~12)** — re_comp/re_exec/re_compile_pattern/re_search/re_match.
 - **libxcrypt** — (crypt_gensalt/_rn/_ra + crypt_rn/crypt_ra + crypt_preferred_method
   DONE — F536, crypt/mod.rs; $5$/$6$ salt = crypt-itoa64 of rbytes (NULL⇒getrandom),
-  rounds= iff ≠ default; NOT host-diffable (harness has no -lcrypt) → Rust unit-test
-  vectors from libxcrypt. preferred_method="$6$" — yescrypt not impl.) STILL TODO:
-  crypt_checksalt, fcrypt(=crypt alias), xcrypt/xencrypt/xdecrypt (SunRPC DES).
+  rounds= iff ≠ default; host harness now links -lcrypt for default libxcrypt
+  symbols; Rust vectors from libxcrypt. preferred_method="$6$" — yescrypt not
+  impl.) (crypt_checksalt, crypt_gensalt_r, fcrypt, xcrypt/xcrypt_r,
+  xcrypt_gensalt/xcrypt_gensalt_r DONE — F548, crypt/mod.rs; xcrypt/fcrypt
+  are non-default compat-only on host so ABI-audited, while crypt_checksalt and
+  crypt_gensalt_r are host-diffed in t_crypto.c.) STILL TODO:
+  xencrypt/xdecrypt (SunRPC DES).
 - Re-audit (docs/59 §9 / state.md recipe) for stragglers after each batch.
 
 ## 3. HARD-BLOCKED (glibc_unsupported.md): long double `*l` + `_Float128`/

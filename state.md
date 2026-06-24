@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **190/190**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F547-sem-clockwait`. `glibc.md` = live per-cluster TODO. F counter next = **548**, B = **138**, D = **112**
+`F548-libxcrypt-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **549**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -77,6 +77,13 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   futex wait loop, parameterized by clockid for absolute deadlines. Host-diffed
   timeout behavior in t_ipcsem.c. Verification: `xtask glibc-test` 190/190;
   both freestanding arch builds; `spec-lint`; filtered symbol audit now 380.
+- **F548 DONE locally:** libxcrypt compatibility names: crypt_checksalt,
+  crypt_gensalt_r, fcrypt, xcrypt/xcrypt_r, xcrypt_gensalt/xcrypt_gensalt_r.
+  Host harness now links oracle binaries with -lcrypt; t_crypto host-diffs
+  default crypt_checksalt + crypt_gensalt_r. The xcrypt/fcrypt names are
+  non-default compat-only on host, so covered by ABI audit. Verification:
+  `xtask glibc-test` 190/190; both freestanding arch builds; `spec-lint`;
+  filtered symbol audit now 373.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
