@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **190/190**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F544-ttyslot`. `glibc.md` = live per-cluster TODO. F counter next = **545**, D = **112**
+`B137-console-default-vt`. `glibc.md` = live per-cluster TODO. F counter next = **545**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -58,6 +58,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   legacy colon-line form; host-diffable t_pwgr.c.
 - **F544 DONE locally:** ttyslot scans /etc/ttys through ttyent and returns the
   historical slot index, with Linux/glibc 0-on-miss coverage in t_ttyent.c.
+- **B137 DONE locally:** x86 GRUB/default cmdline prefers the video VT
+  (`console=... console=tty0`) while rootfs starts a separate ttyS0 getty, so
+  `/dev/console` and `/dev/ttyS0` are independent login devices. Build-only
+  GRUB/rootfs verified for x86_64 + aarch64; local x86 smoke could not enter
+  guest because this host lacks `/dev/vhost-vsock`.
 - small maybes: llseek (=lseek on 64-bit; check it's linkable not compat-only),
   gnu_get_libc_version/release (trivial but version string ≠ host → not diffable).
 

@@ -73,7 +73,6 @@ pub const SYSTEMD_STAGE: &[(&str, &str)] = &[
     // overwrite an existing file, so staging build.sh's first would shadow it.
     ("usr/lib/systemd/system/console-shell.service", "/usr/lib/systemd/system/console-shell.service"),
     ("usr/lib/systemd/system/console-getty.service", "/usr/lib/systemd/system/console-getty.service"),
-    ("usr/lib/systemd/system/serial-getty-ttyS0.service", "/usr/lib/systemd/system/serial-getty-ttyS0.service"),
     ("usr/lib/systemd/system/sysinit.target",       "/usr/lib/systemd/system/sysinit.target"),
     ("usr/lib/systemd/system/basic.target",         "/usr/lib/systemd/system/basic.target"),
     ("usr/lib/systemd/system/multi-user.target",    "/usr/lib/systemd/system/multi-user.target"),
@@ -130,6 +129,29 @@ Documentation=man:systemd.special(7)
 DefaultDependencies=no
 Wants=g19smoke.service
 Wants=console-getty.service
-After=console-getty.service
+Wants=serial-getty-ttyS0.service
+After=console-getty.service serial-getty-ttyS0.service
 AllowIsolate=yes
+";
+
+pub const SERIAL_GETTY_TTYS0_SERVICE: &[u8] = b"[Unit]
+Description=Serial Getty on ttyS0 (oxide login)
+DefaultDependencies=no
+ConditionPathExists=/dev/ttyS0
+
+[Service]
+Environment=TERM=vt100
+ExecStart=-/sbin/getty -L 115200 ttyS0 vt100
+Restart=always
+RestartSec=1
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyS0
+TTYReset=yes
+KillMode=process
+IgnoreSIGPIPE=no
+
+[Install]
+WantedBy=multi-user.target
 ";

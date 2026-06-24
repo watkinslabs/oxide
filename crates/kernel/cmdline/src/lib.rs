@@ -47,20 +47,20 @@ pub unsafe fn set(bytes: &'static [u8]) {
 /// crate actually programs, so userspace's `console=` introspection
 /// agrees with what's emitting on serial.
 ///
-/// Linux convention `console=tty0 console=ttyS0,115200`: printk fans out
-/// to BOTH consoles (framebuffer VT + serial UART), and the LAST entry
-/// (serial) is the *preferred console* that backs `/dev/console`
-/// (`preferred_console`). So the boot framebuffer stays visible AND the
-/// getty/login line on `/dev/console` reaches the serial port.
+/// Linux convention with multiple `console=` entries: printk may fan out
+/// to every registered console, and the LAST entry is the preferred
+/// console backing `/dev/console` (`preferred_console`). Oxide's default
+/// keeps serial present for logs/debug while making the video VT the
+/// preferred interactive console when a framebuffer console exists.
 /// # SAFETY: boot path only.
 /// # C: O(1)
 pub unsafe fn install_arch_default() {
     #[cfg(target_arch = "x86_64")]
     const DEFAULT: &[u8] =
-        b"BOOT_IMAGE=/oxide root=/dev/oxide0 ro quiet console=tty0 console=ttyS0,115200\n";
+        b"BOOT_IMAGE=/oxide root=/dev/oxide0 ro quiet console=ttyS0,115200 console=tty0\n";
     #[cfg(target_arch = "aarch64")]
     const DEFAULT: &[u8] =
-        b"BOOT_IMAGE=/oxide root=/dev/oxide0 ro quiet console=tty0 console=ttyAMA0,115200\n";
+        b"BOOT_IMAGE=/oxide root=/dev/oxide0 ro quiet console=ttyAMA0,115200 console=tty0\n";
     // Only install if nothing else (e.g. a future Limine/DTB parser)
     // has set it already.
     if PTR.load(Ordering::Acquire).is_null() {
