@@ -1,10 +1,10 @@
 # state.md — session handoff
 
 ## Headline
-**glibc full-compliance build-out** (docs/59 §9). Conformance **186/186**
+**glibc full-compliance build-out** (docs/59 §9). Conformance **187/187**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F537-inet6-option-isctype`. `glibc.md` = live per-cluster TODO. F counter next = **538**, D = **113**
+`F538-ns-sprintrr`. `glibc.md` = live per-cluster TODO. F counter next = **539**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -40,13 +40,12 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   BUT need the ~500-byte `__res_state` struct ABI + res_ninit, which we DON'T have.
 
 ## Still tractable AND verifiable (the real remaining work — small)
-- **F537 DONE locally:** inet6_option_space/init/append/alloc/next/find + isctype;
-  conformance now 186/186. Not committed yet in this handoff unless branch says so.
-- **ns_sprintrr/ns_sprintrrf** — host-diffable (-lresolv) but INTRICATE: tab-column
-  alignment depends on owner-name length; per-RR-type rdata formatters (~30 types in
-  ns_print.c) + name decompression. Probed formats (A/AAAA/NS/CNAME/MX/TXT/PTR):
-  `<name>.\t\t<ttl> IN <TYPE><tab-pad><rdata>` (ttl via ns_format_ttl, "1H" etc.).
-  A focused subset is doable but high bit-exact-padding risk — iterate vs the oracle.
+- **F537 DONE locally and committed:** inet6_option_space/init/append/alloc/next/find
+  + isctype; host-diffable coverage in t_inet6_option.c + t_ctype2.c.
+- **F538 DONE locally:** ns_sprintrr/ns_sprintrrf for A/AAAA/NS/CNAME/PTR/MX/TXT
+  and RFC3597 unknown-RR fallback; canonical absolute names, origin-relative
+  owner/RDATA names, TTL/class/type tab-column layout; host-diffable t_nssprint.c.
+  Conformance now 187/187.
 - small maybes: llseek (=lseek on 64-bit; check it's linkable not compat-only),
   gnu_get_libc_version/release (trivial but version string ≠ host → not diffable).
 
@@ -78,7 +77,8 @@ bg command: x86 grub (KVM, timeout 300) → pkill → `make smoke-arm SMOKE_TIME
 `pkill -x qemu-system-<arch>`. Push hook re-runs smoke (cache HIT, fast).
 
 ## First task on restart
-Re-audit, then attempt **ns_sprintrr/ns_sprintrrf** (subset, iterate vs -lresolv oracle).
+Re-audit the remaining missing symbol set after F538, then decide the next
+verifiable glibc increment:
   nm -D /lib64/lib{c,m,pthread,rt,dl,resolv,util,crypt,anl}.so* | awk '$2~/[TWiB]/{print $3}' | sed 's/@.*//' | sort -u > /tmp/host
   cargo build -q -p glibc --features freestanding --target x86_64-unknown-linux-gnu
   nm -D target/sysroot/x86_64-unknown-linux-gnu/lib/libc.so.6 | awk '$2~/[TWiBD]/{print $3}' | sed 's/@.*//' | sort -u > /tmp/ours
