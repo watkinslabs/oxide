@@ -85,6 +85,7 @@ mod exports {
     const MCAST_MSFILTER: i32 = 48;
     const ENOMEM: i32 = 12;
     const EINVAL: i32 = 22;
+    const ENOENT: i32 = 2;
 
     #[repr(transparent)]
     struct I32Cell(UnsafeCell<i32>);
@@ -213,6 +214,16 @@ mod exports {
         // SAFETY: iruserok_af only observes the provided IPv4 address bytes.
         unsafe { iruserok_af(&raddr as *const u32 as *const c_void, suser, ruser, luser, AF_INET) }
     }
+
+    // # C: int ruserpass(const char *host, const char **aname, const char **apass)
+    #[no_mangle]
+    pub unsafe extern "C" fn ruserpass(_host: *const c_char, _aname: *mut *const c_char, _apass: *mut *const c_char) -> i32 {
+        // SAFETY: conservative no-.netrc path. Host glibc returns success while
+        // leaving outputs untouched when HOME/.netrc cannot be opened.
+        crate::internal::errno::set(ENOENT);
+        0
+    }
+
     // # C: int socketpair(int domain, int type, int protocol, int sv[2])
     #[no_mangle]
     pub unsafe extern "C" fn socketpair(domain: i32, ty: i32, proto: i32, sv: *mut i32) -> i32 {
