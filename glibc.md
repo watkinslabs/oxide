@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2123 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2126 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **192/192**; both arches boot.
 
@@ -40,6 +40,7 @@ Also DONE: mcheck_check_all malloc-debug no-op (F565).
 Also DONE: BSD regex re_comp/re_exec (F566).
 Also DONE: GNU regex re_compile_pattern/re_compile_fastmap/re_match/re_search (F567).
 Also DONE: GNU regex re_syntax_options/re_set_syntax (F568).
+Also DONE: GNU regex re_match_2/re_search_2/re_set_registers (F569).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
@@ -194,8 +195,8 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   conservative remote-login denial behavior host-diffed in t_inet2.c.)
   (rcmd/rcmd_af/rexec/rexec_af DONE — F564, net/socket.rs, conservative
   EINVAL failure behavior for unresolved hosts host-diffed in t_inet2.c.)
-- **re_* BSD regex (~4)** — re_match_2/re_search_2/re_set_registers and legacy
-  globals.
+- **old regexp.h regex (~6)** — advance/step/loc1/loc2/locs/tr_break legacy
+  interfaces/globals.
   (re_comp/re_exec DONE — F566, regex/mod.rs, process-global compiled pattern
   over the existing engine; host-diffed in t_regex.c.)
   (re_compile_pattern/re_compile_fastmap/re_match/re_search DONE — F567,
@@ -205,6 +206,9 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (re_syntax_options/re_set_syntax DONE — F568, regex/mod.rs, global GNU
   syntax setting honored by re_compile_pattern for POSIX basic vs extended;
   host-diffed in t_regex.c.)
+  (re_match_2/re_search_2/re_set_registers DONE — F569, regex/mod.rs,
+  two-string GNU regex helpers and caller-owned register arrays over the
+  existing engine; host-diffed in t_regex.c.)
 - **libxcrypt** — (crypt_gensalt/_rn/_ra + crypt_rn/crypt_ra + crypt_preferred_method
   DONE — F536, crypt/mod.rs; $5$/$6$ salt = crypt-itoa64 of rbytes (NULL⇒getrandom),
   rounds= iff ≠ default; host harness now links -lcrypt for default libxcrypt
