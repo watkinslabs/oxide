@@ -290,8 +290,11 @@
     getpayloadl;
     hypotl;
     cimagl;
+    ccoshl;
     conjl;
     cprojl;
+    csinhl;
+    ctanhl;
     creall;
     exp10l;
     exp2l;
