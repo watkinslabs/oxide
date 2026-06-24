@@ -777,3 +777,82 @@ double nexttoward(double x, long double y) {
 float nexttowardf(float x, long double y) {
     return nexttoward_float(x, y);
 }
+
+static int ld_unsupported_encoding(long double x) {
+    union {
+        long double value;
+        unsigned char bytes[16];
+    } u;
+    u.value = x;
+    unsigned short exp = (unsigned short)(ld_sign_exp(u.bytes) & 0x7fffu);
+    unsigned long long sig = ld_sig(u.bytes);
+    unsigned long long intbit = 0x8000000000000000ull;
+
+    return exp != 0 && exp != 0x7fffu && (sig & intbit) == 0;
+}
+
+static int ld_payload_value(long double payload, unsigned long long *out) {
+    long double max_payload = 4611686018427387903.0L;
+    unsigned long long bits;
+
+    if (__builtin_isnan(payload) || payload < 0.0L || payload > max_payload) {
+        return 0;
+    }
+    bits = (unsigned long long)payload;
+    if ((long double)bits != payload) {
+        return 0;
+    }
+    *out = bits;
+    return 1;
+}
+
+long double getpayloadl(const long double *x) {
+    union {
+        long double value;
+        unsigned char bytes[16];
+    } u;
+    u.value = *x;
+    unsigned short exp = (unsigned short)(ld_sign_exp(u.bytes) & 0x7fffu);
+    unsigned long long sig = ld_sig(u.bytes);
+
+    if (exp != 0x7fffu || (sig & 0x7fffffffffffffffull) == 0) {
+        return -1.0L;
+    }
+    return (long double)(sig & 0x3fffffffffffffffull);
+}
+
+static int setpayload_valuel(long double *x, long double payload, int signaling) {
+    union {
+        long double value;
+        unsigned char bytes[16];
+    } u;
+    unsigned long long bits;
+
+    for (unsigned int i = 0; i < 16; i += 1) {
+        u.bytes[i] = 0;
+    }
+    if (!ld_payload_value(payload, &bits) || (signaling && bits == 0)) {
+        *x = u.value;
+        return 1;
+    }
+    set_ld_sig(u.bytes, (signaling ? 0x8000000000000000ull : 0xc000000000000000ull) | bits);
+    set_ld_sign_exp(u.bytes, 0x7fffu);
+    *x = u.value;
+    return 0;
+}
+
+int setpayloadl(long double *x, long double payload) {
+    return setpayload_valuel(x, payload, 0);
+}
+
+int setpayloadsigl(long double *x, long double payload) {
+    return setpayload_valuel(x, payload, 1);
+}
+
+int canonicalizel(long double *cx, const long double *x) {
+    if (ld_unsupported_encoding(*x)) {
+        return 1;
+    }
+    *cx = *x;
+    return 0;
+}
