@@ -185,6 +185,13 @@ int main(void) {
            powl(2.0L, 10.0L) == 1024.0L,
            expm1l(0.0L) == 0.0L,
            log1pl(0.0L) == 0.0L);
+    printf("hyperbolic_l=%d/%d/%d/%d/%d/%d\n",
+           sinhl(0.0L) == 0.0L && !signbit(sinhl(0.0L)),
+           coshl(0.0L) == 1.0L,
+           tanhl(0.0L) == 0.0L && !signbit(tanhl(0.0L)),
+           asinhl(1.0L) > 0.8L && asinhl(1.0L) < 0.9L,
+           acoshl(2.0L) > 1.3L && acoshl(2.0L) < 1.4L,
+           atanhl(0.5L) > 0.5L && atanhl(0.5L) < 0.6L);
     printf("modfl=%d/%d/%d/%d/%d/%d/%d\n",
            part == -0.75L,
            whole == -2.0L,
