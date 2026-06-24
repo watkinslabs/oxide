@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **194/194**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F582-resolver-udp-query`. `glibc.md` = live per-cluster TODO. F counter next = **583**, B = **138**, D = **112**
+`F583-sunrpc-key-stubs`. `glibc.md` = live per-cluster TODO. F counter next = **584**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -238,6 +238,12 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   packet builder, first IPv4 nameserver from /etc/resolv.conf, UDP send/recv,
   and a bounded ppoll timeout. Verification: regression suite + both
   freestanding arch builds + `spec-lint` + audit drop to 268.
+- **F583 DONE locally:** SunRPC keyserv/netname/DES compatibility exports
+  getnetname, host2netname/user2netname, netname2host/netname2user,
+  getpublickey/getsecretkey, key_* helpers, passwd2des, xencrypt/xdecrypt
+  added beside des_api. Current Fedora exposes them compat-only, so
+  verification is regression suite + both freestanding arch builds +
+  `spec-lint` + audit drop to 249.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
