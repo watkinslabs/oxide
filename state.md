@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **195/195**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F620-long-double-strfroml`. `glibc.md` = live per-cluster TODO. F counter next = **621**, B = **138**, D = **113**
+`F621-long-double-erf`. `glibc.md` = live per-cluster TODO. F counter next = **622**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -391,6 +391,9 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
 - **F620 DONE locally:** f80 strfroml added to the C bridge for f/e/g formats
   using the local q-conversion helpers. Host-diffed in t_fcvt; C object checked
   for no PLT relocations or unresolved symbols.
+- **F621 DONE locally:** f80 erfl and erfcl added to the C bridge using the
+  local x87 exponential path. Host-diffed in t_erf; C object checked for no PLT
+  relocations or unresolved symbols.
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need

@@ -269,6 +269,8 @@
     copysignl;
     fabsl;
     dreml;
+    erfcl;
+    erfl;
     fdiml;
     finitel;
     fmaxl;
