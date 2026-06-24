@@ -6,6 +6,7 @@
 #![cfg(feature = "freestanding")]
 use super::des;
 use core::cell::UnsafeCell;
+use core::ffi::{c_char, c_void};
 
 // SunRPC mode flags + status (rpc/des_crypt.h). mode bit0 = DES_DECRYPT.
 const DES_DECRYPT: u32 = 0x0001;
@@ -143,4 +144,135 @@ pub unsafe extern "C" fn des_setparity(key: *mut u8) {
             *key.add(i) = (b & 0xFE) | ((ones & 1 == 0) as u8); // odd total parity
         }
     }
+}
+
+// # C: int getnetname(char *name)
+#[no_mangle]
+pub unsafe extern "C" fn getnetname(_name: *mut c_char) -> i32 {
+    0
+}
+
+// # C: int host2netname(char *netname, const char *host, const char *domain)
+#[no_mangle]
+pub unsafe extern "C" fn host2netname(_netname: *mut c_char, _host: *const c_char, _domain: *const c_char) -> i32 {
+    0
+}
+
+// # C: int user2netname(char *netname, uid_t uid, const char *domain)
+#[no_mangle]
+pub unsafe extern "C" fn user2netname(_netname: *mut c_char, _uid: u32, _domain: *const c_char) -> i32 {
+    0
+}
+
+// # C: int netname2host(const char *netname, char *host, int hostlen)
+#[no_mangle]
+pub unsafe extern "C" fn netname2host(_netname: *const c_char, _host: *mut c_char, _hostlen: i32) -> i32 {
+    0
+}
+
+// # C: int netname2user(const char *netname, uid_t *uidp, gid_t *gidp,
+//                       int *gidlenp, gid_t *gidlist)
+#[no_mangle]
+pub unsafe extern "C" fn netname2user(_netname: *const c_char, _uidp: *mut u32, _gidp: *mut u32, _gidlenp: *mut i32, _gidlist: *mut u32) -> i32 {
+    0
+}
+
+// # C: int getpublickey(const char *netname, char *publickey)
+#[no_mangle]
+pub unsafe extern "C" fn getpublickey(_netname: *const c_char, _publickey: *mut c_char) -> i32 {
+    0
+}
+
+// # C: int getsecretkey(const char *netname, char *secretkey, const char *passwd)
+#[no_mangle]
+pub unsafe extern "C" fn getsecretkey(_netname: *const c_char, _secretkey: *mut c_char, _passwd: *const c_char) -> i32 {
+    0
+}
+
+// # C: int key_encryptsession(const char *remotename, des_block *deskey)
+#[no_mangle]
+pub unsafe extern "C" fn key_encryptsession(_remotename: *const c_char, _deskey: *mut c_void) -> i32 {
+    -1
+}
+
+// # C: int key_decryptsession(const char *remotename, des_block *deskey)
+#[no_mangle]
+pub unsafe extern "C" fn key_decryptsession(_remotename: *const c_char, _deskey: *mut c_void) -> i32 {
+    -1
+}
+
+// # C: int key_encryptsession_pk(const char *remotename, netobj *remotekey, des_block *deskey)
+#[no_mangle]
+pub unsafe extern "C" fn key_encryptsession_pk(_remotename: *const c_char, _remotekey: *const c_void, _deskey: *mut c_void) -> i32 {
+    -1
+}
+
+// # C: int key_decryptsession_pk(const char *remotename, netobj *remotekey, des_block *deskey)
+#[no_mangle]
+pub unsafe extern "C" fn key_decryptsession_pk(_remotename: *const c_char, _remotekey: *const c_void, _deskey: *mut c_void) -> i32 {
+    -1
+}
+
+// # C: int key_gendes(des_block *deskey)
+#[no_mangle]
+pub unsafe extern "C" fn key_gendes(_deskey: *mut c_void) -> i32 {
+    -1
+}
+
+// # C: int key_setsecret(const char *key)
+#[no_mangle]
+pub unsafe extern "C" fn key_setsecret(_key: *const c_char) -> i32 {
+    -1
+}
+
+// # C: int key_secretkey_is_set(void)
+#[no_mangle]
+pub extern "C" fn key_secretkey_is_set() -> i32 {
+    0
+}
+
+// # C: int key_get_conv(const char *pkey, des_block *deskey)
+#[no_mangle]
+pub unsafe extern "C" fn key_get_conv(_pkey: *const c_char, _deskey: *mut c_void) -> i32 {
+    -1
+}
+
+// # C: int key_setnet(void *arg)
+#[no_mangle]
+pub unsafe extern "C" fn key_setnet(_arg: *mut c_void) -> i32 {
+    -1
+}
+
+// # C: void passwd2des(char *passwd, char *key)
+#[no_mangle]
+pub unsafe extern "C" fn passwd2des(passwd: *const c_char, key: *mut c_char) {
+    // SAFETY: key is an 8-byte DES key output buffer. Fold the password bytes
+    // into it deterministically, then set odd DES parity like glibc's DES API.
+    unsafe {
+        if key.is_null() { return; }
+        for i in 0..8 { *key.add(i) = 0; }
+        if !passwd.is_null() {
+            let mut p = passwd as *const u8;
+            let mut i = 0usize;
+            while *p != 0 {
+                let k = key as *mut u8;
+                *k.add(i & 7) ^= *p;
+                p = p.add(1);
+                i += 1;
+            }
+        }
+        des_setparity(key as *mut u8);
+    }
+}
+
+// # C: int xencrypt(char *secret, char *passwd)
+#[no_mangle]
+pub unsafe extern "C" fn xencrypt(_secret: *mut c_char, _passwd: *const c_char) -> i32 {
+    0
+}
+
+// # C: int xdecrypt(char *secret, char *passwd)
+#[no_mangle]
+pub unsafe extern "C" fn xdecrypt(_secret: *mut c_char, _passwd: *const c_char) -> i32 {
+    0
 }
