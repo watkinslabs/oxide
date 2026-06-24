@@ -262,6 +262,7 @@
     finitel;
     cimagl;
     conjl;
+    cprojl;
     creall;
     isinfl;
     isnanl;};
