@@ -22,12 +22,21 @@ const EINVAL: i32 = 22;
 const SIG_BLOCK: i32 = 0;
 const SIG_SETMASK: i32 = 2;
 const SIG_ERR: usize = usize::MAX;
+const SA_ONSTACK: i32 = 0x0800_0000;
+const SA_RESETHAND: i32 = 0x8000_0000u32 as i32;
+const SV_ONSTACK: i32 = 1;
+const SV_INTERRUPT: i32 = 2;
+const SV_RESETHAND: i32 = 4;
 
 // A BSD int-mask is bit (sig-1) of an int; map to/from a sigset_t low word.
 fn mask_to_set(mask: i32) -> sigset_t {
     let mut s = sigset_t { __val: [0; 16] };
     s.__val[0] = (mask as u32) as u64;
     s
+}
+
+fn set_to_mask(set: &sigset_t) -> i32 {
+    set.__val[0] as u32 as i32
 }
 
 /// # C: int sigblock(int mask) — OR `mask` into the blocked set, return old.
@@ -60,6 +69,66 @@ pub unsafe extern "C" fn sigsetmask(mask: i32) -> i32 {
 pub unsafe extern "C" fn siggetmask() -> i32 {
     // SAFETY: query the current mask via sigblock(0) which ORs nothing.
     unsafe { sigblock(0) }
+}
+
+#[repr(C)]
+pub struct sigvec_t {
+    pub sv_handler: usize,
+    pub sv_mask: i32,
+    pub sv_flags: i32,
+}
+
+fn sigvec_flags_to_sigaction(flags: i32) -> i32 {
+    let mut out = 0;
+    if flags & SV_INTERRUPT == 0 { out |= SA_RESTART; }
+    if flags & SV_ONSTACK != 0 { out |= SA_ONSTACK; }
+    if flags & SV_RESETHAND != 0 { out |= SA_RESETHAND; }
+    out
+}
+
+fn sigaction_flags_to_sigvec(flags: i32) -> i32 {
+    let mut out = 0;
+    if flags & SA_RESTART == 0 { out |= SV_INTERRUPT; }
+    if flags & SA_ONSTACK != 0 { out |= SV_ONSTACK; }
+    if flags & SA_RESETHAND != 0 { out |= SV_RESETHAND; }
+    out
+}
+
+/// # C: int sigvec(int sig, const struct sigvec *vec, struct sigvec *ovec)
+#[no_mangle]
+pub unsafe extern "C" fn sigvec(sig: i32, vec: *const sigvec_t, ovec: *mut sigvec_t) -> i32 {
+    // SAFETY: vec/ovec are null or valid legacy BSD sigvec structs. We
+    // translate their int mask/flag layout through the existing sigaction ABI.
+    unsafe {
+        let mut act_storage = sigaction_t {
+            sa_handler: 0,
+            sa_mask: sigset_t { __val: [0; 16] },
+            sa_flags: 0,
+            sa_restorer: 0,
+        };
+        let act = if vec.is_null() {
+            core::ptr::null()
+        } else {
+            act_storage.sa_handler = (*vec).sv_handler;
+            act_storage.sa_mask = mask_to_set((*vec).sv_mask);
+            act_storage.sa_flags = sigvec_flags_to_sigaction((*vec).sv_flags);
+            &act_storage as *const sigaction_t
+        };
+        let mut old_storage = sigaction_t {
+            sa_handler: 0,
+            sa_mask: sigset_t { __val: [0; 16] },
+            sa_flags: 0,
+            sa_restorer: 0,
+        };
+        let old = if ovec.is_null() { core::ptr::null_mut() } else { &mut old_storage as *mut sigaction_t };
+        let r = sigaction(sig, act, old);
+        if r == 0 && !ovec.is_null() {
+            (*ovec).sv_handler = old_storage.sa_handler;
+            (*ovec).sv_mask = set_to_mask(&old_storage.sa_mask);
+            (*ovec).sv_flags = sigaction_flags_to_sigvec(old_storage.sa_flags);
+        }
+        r
+    }
 }
 
 /// # C: int sigpause(int mask) — atomically set mask + suspend (BSD).

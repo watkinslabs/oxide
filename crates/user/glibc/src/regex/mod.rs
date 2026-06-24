@@ -51,11 +51,24 @@ mod imp {
     use crate::string::len::strlen_impl;
     use alloc::boxed::Box;
     use alloc::vec::Vec;
+    use core::cell::UnsafeCell;
     use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
     static RE_COMP_PROG: AtomicPtr<engine::Prog> = AtomicPtr::new(core::ptr::null_mut());
     #[no_mangle]
     pub static re_syntax_options: AtomicU64 = AtomicU64::new(0);
+
+    #[repr(transparent)]
+    struct PtrCell(UnsafeCell<*mut u8>);
+    // SAFETY: loc1/loc2/locs are historical writable regexp C data symbols.
+    unsafe impl Sync for PtrCell {}
+
+    #[no_mangle]
+    static loc1: PtrCell = PtrCell(UnsafeCell::new(core::ptr::null_mut()));
+    #[no_mangle]
+    static loc2: PtrCell = PtrCell(UnsafeCell::new(core::ptr::null_mut()));
+    #[no_mangle]
+    static locs: PtrCell = PtrCell(UnsafeCell::new(core::ptr::null_mut()));
 
     unsafe fn fill_registers(regs: *mut re_registers, caps: &[usize], base: i32) {
         // SAFETY: regs is null or a writable GNU re_registers. If its arrays
@@ -382,6 +395,52 @@ mod imp {
             if engine::exec(&*prog, s, false, false).is_some() { 1 } else { 0 }
         }
     }
+
+    unsafe fn legacy_regex(string: *const u8, expbuf: *const u8, anchored: bool) -> i32 {
+        // SAFETY: string and expbuf are NUL-terminated byte strings supplied by
+        // the caller. The obsolete API stores match bounds in loc1/loc2.
+        unsafe {
+            if string.is_null() || expbuf.is_null() {
+                return 0;
+            }
+            let pat = core::slice::from_raw_parts(expbuf, strlen_impl(expbuf));
+            let s = core::slice::from_raw_parts(string, strlen_impl(string));
+            let Ok(prog) = engine::compile_pattern(pat, false, false, true) else {
+                return 0;
+            };
+            let Some(caps) = engine::exec(&prog, s, false, false) else {
+                return 0;
+            };
+            let start = caps.first().copied().unwrap_or(usize::MAX);
+            let end = caps.get(1).copied().unwrap_or(usize::MAX);
+            if start == usize::MAX || end == usize::MAX || (anchored && start != 0) {
+                return 0;
+            }
+            *loc1.0.get() = string.add(start) as *mut u8;
+            *loc2.0.get() = string.add(end) as *mut u8;
+            1
+        }
+    }
+
+    // # C: int step(const char *string, const char *expbuf)
+    #[no_mangle]
+    pub unsafe extern "C" fn step(string: *const u8, expbuf: *const u8) -> i32 {
+        // SAFETY: forwards the NUL-terminated legacy regexp operands to the
+        // shared compatibility matcher.
+        unsafe { legacy_regex(string, expbuf, false) }
+    }
+
+    // # C: int advance(const char *string, const char *expbuf)
+    #[no_mangle]
+    pub unsafe extern "C" fn advance(string: *const u8, expbuf: *const u8) -> i32 {
+        // SAFETY: forwards the NUL-terminated legacy regexp operands to the
+        // shared compatibility matcher, requiring a match at string start.
+        unsafe { legacy_regex(string, expbuf, true) }
+    }
+
+    // # C: void tr_break(void)
+    #[no_mangle]
+    pub extern "C" fn tr_break() {}
 }
 
 #[cfg(test)]
