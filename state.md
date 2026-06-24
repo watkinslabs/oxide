@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **194/194**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F586-xdr-rpc-compat-filters`. `glibc.md` = live per-cluster TODO. F counter next = **587**, B = **138**, D = **112**
+`F587-open-wmemstream`. `glibc.md` = live per-cluster TODO. F counter next = **588**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -263,6 +263,12 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   key, record, and stdio backend entries are conservative compat stubs.
   Verification: regression suite + both freestanding arch builds + `spec-lint`
   + audit drop to 159.
+- **F587 DONE locally:** open_wmemstream implemented on the existing memory
+  stream backing with a wide-mode cookie. fputwc/fputws write wchar_t units
+  directly for these streams, publish wchar_t* + size_t like glibc, and preserve
+  glibc's seek-back overwrite/terminator behavior. Added host-diff coverage to
+  t_memstream. Verification: regression suite + both freestanding arch builds +
+  `spec-lint` + audit drop to 158.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 

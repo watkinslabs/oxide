@@ -6,7 +6,7 @@
 // wide_fmt.rs (built on the narrow printf/scanf engines).
 #![cfg(feature = "freestanding")]
 use super::file::{get_orient, set_eof, set_orient, set_wunget, stdin_ptr, stdout_ptr, take_wunget, FILE};
-use super::memstream::{stream_read, stream_write};
+use super::memstream::{stream_read, stream_write, wmem_write};
 use crate::locale::wchar::{decode_utf8, encode_utf8};
 
 // wint_t WEOF = (wint_t)-1; in our i32 ABI that is the 0xFFFFFFFF bit pattern.
@@ -47,6 +47,7 @@ pub(crate) unsafe fn putwc_raw(wc: i32, f: *mut FILE) -> i32 {
         set_orient(f, ORIENT_WIDE);
         let cp = wc as u32;
         if cp > 0x10FFFF || (0xD800..=0xDFFF).contains(&cp) { return WEOF; }
+        if let Some(ok) = wmem_write(f, wc) { return if ok { wc } else { WEOF }; }
         let (o, len) = encode_utf8(cp);
         if stream_write(f, o.as_ptr(), len) == len as isize { wc } else { WEOF }
     }

@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <wchar.h>
 int main(void){
     /* fmemopen read */
     char src[] = "line1\nline2\nrest";
@@ -30,5 +31,17 @@ int main(void){
     printf("memstream=%s size=%zu\n", mp, ms);
     fclose(m);
     free(mp);
+
+    /* open_wmemstream: dynamic wchar_t buffer + wide-position overwrite */
+    wchar_t *wp = NULL; size_t ws = 1234;
+    FILE *wm = open_wmemstream(&wp, &ws);
+    fputws(L"ABC", wm);
+    fseek(wm, 1, SEEK_SET);
+    fputwc(L'x', wm);
+    fflush(wm);
+    printf("wmem_size=%zu vals=%ld,%ld,%ld nul=%ld tell=%ld\n",
+           ws, (long)wp[0], (long)wp[1], (long)wp[2], (long)wp[3], ftell(wm));
+    fclose(wm);
+    free(wp);
     return 0;
 }
