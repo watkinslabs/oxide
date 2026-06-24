@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **194/194**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F580-streams-stubs`. `glibc.md` = live per-cluster TODO. F counter next = **581**, B = **138**, D = **112**
+`F581-legacy-compat-stubs`. `glibc.md` = live per-cluster TODO. F counter next = **582**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -227,6 +227,12 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   headers/default-link oracle for these obsolete names, so verification is
   regression suite + both freestanding arch builds + `spec-lint` + audit drop
   to 284.
+- **F581 DONE locally:** legacy compatibility exports matherr, sigvec,
+  step/advance, loc1/loc2/locs, and tr_break added. `sigvec` translates through
+  sigaction; step/advance reuse the existing regex engine and update the legacy
+  match-bound globals. These are compat-only on current Fedora, so verification
+  is regression suite + both freestanding arch builds + `spec-lint` + audit
+  drop to 276.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
