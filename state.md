@@ -1,10 +1,10 @@
 # state.md — session handoff
 
 ## Headline
-**glibc full-compliance build-out** (docs/59 §9). Conformance **191/191**
+**glibc full-compliance build-out** (docs/59 §9). Conformance **192/192**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F555-res-gethost-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **556**, B = **138**, D = **112**
+`F556-chflags-stubs`. `glibc.md` = live per-cluster TODO. F counter next = **557**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -113,6 +113,10 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   res_gethostbyaddr added as resolver compatibility aliases over existing
   host DB lookups. Host glibc exposes them compat-only here, so verification is
   existing suite regression + both arch builds + `spec-lint` + audit drop to 356.
+- **F556 DONE locally:** chflags/fchflags added as glibc-matching legacy stubs
+  (`chflags` ENOSYS, `fchflags` EINVAL) and host-diffed in t_deprecated.c.
+  Verification: `xtask glibc-test` 192/192; both freestanding arch builds;
+  `spec-lint`; filtered symbol audit now 354.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
