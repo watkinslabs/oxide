@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 extern int revoke(const char *);
+extern int setlogin(const char *);
 #ifdef __x86_64__
 extern int modify_ldt(int, void *, unsigned long);
 extern int iopl(int);
@@ -18,6 +19,7 @@ static void show(const char *n, int r) { printf("%s=%d errno=%d\n", n, r, r < 0 
 
 int main(void) {
     errno = 0; show("revoke", revoke("/dev/null"));
+    errno = 0; show("setlogin", setlogin("oxide"));
 #ifdef __x86_64__
     /* modify_ldt(0=read, buf, 0) reads 0 bytes of the LDT — succeeds with 0. */
     char ldt[64];
