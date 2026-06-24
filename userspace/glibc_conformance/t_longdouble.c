@@ -30,6 +30,7 @@ extern intmax_t fromfpl(long double, int, unsigned int);
 extern uintmax_t ufromfpl(long double, int, unsigned int);
 extern intmax_t fromfpxl(long double, int, unsigned int);
 extern uintmax_t ufromfpxl(long double, int, unsigned int);
+extern long double _Complex clog10l(long double _Complex);
 
 int main(void) {
     volatile long double neg = -2.5L;
@@ -43,6 +44,18 @@ int main(void) {
     long double _Complex czero;
     __real__ czero = 0.0L;
     __imag__ czero = 0.0L;
+    long double _Complex cone;
+    __real__ cone = 1.0L;
+    __imag__ cone = 0.0L;
+    long double _Complex ctwo;
+    __real__ ctwo = 2.0L;
+    __imag__ ctwo = 0.0L;
+    long double _Complex cthree;
+    __real__ cthree = 3.0L;
+    __imag__ cthree = 0.0L;
+    long double _Complex chundred;
+    __real__ chundred = 100.0L;
+    __imag__ chundred = 0.0L;
     long double _Complex cz = conjl(z);
     long double nanv = zero / zero;
     long double infv = pos / zero;
@@ -113,6 +126,19 @@ int main(void) {
            cimagl(ccoshl(czero)) == 0.0L,
            creall(ctanhl(czero)) == 0.0L,
            cimagl(ctanhl(czero)) == 0.0L);
+    printf("complex_math_l=%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d\n",
+           creall(csinl(czero)) == 0.0L,
+           cimagl(csinl(czero)) == 0.0L,
+           creall(ccosl(czero)) == 1.0L,
+           cimagl(ccosl(czero)) == 0.0L,
+           creall(ctanl(czero)) == 0.0L,
+           cimagl(ctanl(czero)) == 0.0L,
+           creall(cexpl(czero)) == 1.0L,
+           cimagl(cexpl(czero)) == 0.0L,
+           creall(clogl(cone)) == 0.0L && cimagl(clogl(cone)) == 0.0L,
+           creall(clog10l(chundred)) > 1.999999999999999L && creall(clog10l(chundred)) < 2.000000000000001L,
+           creall(csqrtl((long double _Complex)4.0L)) == 2.0L && cimagl(csqrtl((long double _Complex)4.0L)) == 0.0L,
+           creall(cpowl(ctwo, cthree)) == 8.0L && cimagl(cpowl(ctwo, cthree)) == 0.0L);
     printf("cprojl=%d/%d/%d/%d\n",
            isinfl(creall(cpz)) ? 1 : 0,
            cimagl(cpz) == 0.0L,
