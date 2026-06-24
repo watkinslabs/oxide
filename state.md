@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **191/191**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F552-setlogin-stub`. `glibc.md` = live per-cluster TODO. F counter next = **553**, B = **138**, D = **112**
+`F553-profil-gmon-noops`. `glibc.md` = live per-cluster TODO. F counter next = **554**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -100,6 +100,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
 - **F552 DONE locally:** setlogin added as glibc-matching ENOSYS stub and
   host-diffed in t_deprecated.c. Verification: `xtask glibc-test` 191/191;
   both freestanding arch builds; `spec-lint`; filtered symbol audit now 365.
+- **F553 DONE locally:** profil/sprofil and gmon controls
+  (monstartup/moncontrol/mcount) added as successful no-ops, matching the
+  stable host behavior exercised here; host-diffed in t_deprecated.c.
+  Verification: `xtask glibc-test` 191/191; both freestanding arch builds;
+  `spec-lint`; filtered symbol audit now 360.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
