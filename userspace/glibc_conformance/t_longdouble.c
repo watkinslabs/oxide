@@ -131,5 +131,11 @@ int main(void) {
            scaled_zero == 0.0L && signbit(scaled_zero),
            isnanl(scalbnl(nanv, 3)) ? 1 : 0,
            isinfl(scalblnl(infv, -4)));
+    printf("scalbl=%d/%d/%d/%d/%d\n",
+           scalbl(3.0L, 2.0L) == 12.0L,
+           scalbl(3.0L, -1.0L) == 1.5L,
+           scaled_zero == 0.0L && signbit(scalbl(mz, 3.0L)),
+           isnanl(scalbl(8.0L, 1.9L)) ? 1 : 0,
+           isinfl(scalbl(infv, -2.0L)) ? 1 : 0);
     return 0;
 }

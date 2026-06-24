@@ -291,6 +291,7 @@
     rintl;
     roundl;
     roundevenl;
+    scalbl;
     scalblnl;
     scalbnl;
     sqrtl;
