@@ -155,6 +155,12 @@ int main(void) {
            isnanl(hypotl(nanv, 1.0L)) ? 1 : 0,
            cabsl(z) == 5.0L,
            isinfl(cabsl(ipz)) ? 1 : 0);
+    printf("cbrtl=%d/%d/%d/%d/%d\n",
+           cbrtl(27.0L) == 3.0L,
+           cbrtl(-8.0L) == -2.0L,
+           cbrtl(mz) == 0.0L && signbit(cbrtl(mz)),
+           isinfl(cbrtl(-infv)) && signbit(cbrtl(-infv)),
+           isnanl(cbrtl(nanv)) ? 1 : 0);
     printf("modfl=%d/%d/%d/%d/%d/%d/%d\n",
            part == -0.75L,
            whole == -2.0L,
