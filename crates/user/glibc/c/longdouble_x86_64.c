@@ -336,6 +336,212 @@ static long double pow10_intl(int n) {
     return r;
 }
 
+static long double pow2_intl(int n) {
+    long double r = 1.0L;
+    if (n >= 0) {
+        for (int i = 0; i < n; i += 1) {
+            r *= 2.0L;
+        }
+    } else {
+        for (int i = 0; i < -n; i += 1) {
+            r *= 0.5L;
+        }
+    }
+    return r;
+}
+
+static int ascii_space(unsigned char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r';
+}
+
+static int ascii_digit(unsigned char c) {
+    return c >= '0' && c <= '9';
+}
+
+static unsigned char ascii_lower(unsigned char c) {
+    return c >= 'A' && c <= 'Z' ? (unsigned char)(c + ('a' - 'A')) : c;
+}
+
+static int ascii_hex(unsigned char c) {
+    if (c >= '0' && c <= '9') {
+        return (int)(c - '0');
+    }
+    c = ascii_lower(c);
+    if (c >= 'a' && c <= 'f') {
+        return (int)(c - 'a' + 10);
+    }
+    return -1;
+}
+
+static int parse_signed_int(const char **pp) {
+    const char *p = *pp;
+    int neg = 0;
+    int n = 0;
+    if (*p == '+' || *p == '-') {
+        neg = *p == '-';
+        p += 1;
+    }
+    while (ascii_digit((unsigned char)*p)) {
+        if (n < 100000) {
+            n = n * 10 + (int)(*p - '0');
+        }
+        p += 1;
+    }
+    *pp = p;
+    return neg ? -n : n;
+}
+
+static long double strtold_parse(const char *s, const char **endptr) {
+    const char *p = s;
+    while (ascii_space((unsigned char)*p)) {
+        p += 1;
+    }
+    int neg = 0;
+    if (*p == '+' || *p == '-') {
+        neg = *p == '-';
+        p += 1;
+    }
+
+    if (ascii_lower((unsigned char)p[0]) == 'i' &&
+        ascii_lower((unsigned char)p[1]) == 'n' &&
+        ascii_lower((unsigned char)p[2]) == 'f') {
+        p += 3;
+        if (ascii_lower((unsigned char)p[0]) == 'i' &&
+            ascii_lower((unsigned char)p[1]) == 'n' &&
+            ascii_lower((unsigned char)p[2]) == 'i' &&
+            ascii_lower((unsigned char)p[3]) == 't' &&
+            ascii_lower((unsigned char)p[4]) == 'y') {
+            p += 5;
+        }
+        if (endptr) {
+            *endptr = p;
+        }
+        return neg ? -__builtin_infl() : __builtin_infl();
+    }
+    if (ascii_lower((unsigned char)p[0]) == 'n' &&
+        ascii_lower((unsigned char)p[1]) == 'a' &&
+        ascii_lower((unsigned char)p[2]) == 'n') {
+        p += 3;
+        if (endptr) {
+            *endptr = p;
+        }
+        long double v = __builtin_nanl("");
+        return neg ? -v : v;
+    }
+
+    if (p[0] == '0' && ascii_lower((unsigned char)p[1]) == 'x') {
+        const char *q = p + 2;
+        const char *mant_start = q;
+        long double mant = 0.0L;
+        int bexp = 0;
+        int any = 0;
+        int d;
+        while ((d = ascii_hex((unsigned char)*q)) >= 0) {
+            mant = mant * 16.0L + (long double)d;
+            q += 1;
+            any = 1;
+        }
+        if (*q == '.') {
+            q += 1;
+            while ((d = ascii_hex((unsigned char)*q)) >= 0) {
+                mant = mant * 16.0L + (long double)d;
+                bexp -= 4;
+                q += 1;
+                any = 1;
+            }
+        }
+        if (any) {
+            if (ascii_lower((unsigned char)*q) == 'p') {
+                const char *r = q + 1;
+                if (*r == '+' || *r == '-') {
+                    r += 1;
+                }
+                if (ascii_digit((unsigned char)*r)) {
+                    r = q + 1;
+                    bexp += parse_signed_int(&r);
+                    q = r;
+                }
+            }
+            if (endptr) {
+                *endptr = q;
+            }
+            long double v = mant * pow2_intl(bexp);
+            return neg ? -v : v;
+        }
+        p = mant_start - 2;
+    }
+
+    long double mant = 0.0L;
+    int any = 0;
+    int frac = 0;
+    while (ascii_digit((unsigned char)*p)) {
+        mant = mant * 10.0L + (long double)(*p - '0');
+        p += 1;
+        any = 1;
+    }
+    if (*p == '.') {
+        p += 1;
+        while (ascii_digit((unsigned char)*p)) {
+            mant = mant * 10.0L + (long double)(*p - '0');
+            p += 1;
+            frac += 1;
+            any = 1;
+        }
+    }
+    if (!any) {
+        if (endptr) {
+            *endptr = s;
+        }
+        return 0.0L;
+    }
+    int exp10 = -frac;
+    if (ascii_lower((unsigned char)*p) == 'e') {
+        const char *q = p + 1;
+        if (*q == '+' || *q == '-') {
+            q += 1;
+        }
+        if (ascii_digit((unsigned char)*q)) {
+            q = p + 1;
+            exp10 += parse_signed_int(&q);
+            p = q;
+        }
+    }
+    if (endptr) {
+        *endptr = p;
+    }
+    long double v = mant * pow10_intl(exp10);
+    return neg ? -v : v;
+}
+
+long double strtold(const char *s, char **endptr) {
+    const char *end = s;
+    long double v = strtold_parse(s, &end);
+    if (endptr) {
+        *endptr = (char *)end;
+    }
+    return v;
+}
+
+long double wcstold(const int *wcs, int **endptr) {
+    char buf[256];
+    int i = 0;
+    while (i + 1 < (int)sizeof(buf)) {
+        int c = wcs[i];
+        if (c <= 0 || c > 0x7f) {
+            break;
+        }
+        buf[i] = (char)c;
+        i += 1;
+    }
+    buf[i] = 0;
+    const char *end = buf;
+    long double v = strtold_parse(buf, &end);
+    if (endptr) {
+        *endptr = (int *)(wcs + (end - buf));
+    }
+    return v;
+}
+
 static int write_cbuf(char *buf, unsigned long len, const char *src, int n) {
     if ((unsigned long)n + 1ul > len) {
         return -1;
