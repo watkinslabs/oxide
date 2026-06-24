@@ -33,6 +33,9 @@ pub const EAI_NOTCANCELED: i32 = -102;
 pub const EAI_ALLDONE: i32 = -103;
 pub const EAI_INTR: i32 = -104;
 pub const EAI_IDN_ENCODE: i32 = -105;
+const GAI_WAIT: i32 = 0;
+const GAI_NOWAIT: i32 = 1;
+const EINVAL: i32 = 22;
 
 /// Parse a service string to a port. Numeric ("80") or a small well-known
 /// table (DNS resolution of /etc/services is a follow-up). None on bad.
@@ -221,6 +224,28 @@ mod exports {
     #[no_mangle]
     pub extern "C" fn gai_suspend(_list: *const *const gaicb, _ent: i32, _timeout: *const core::ffi::c_void) -> i32 {
         EAI_ALLDONE
+    }
+
+    // # C: int getaddrinfo_a(int mode, struct gaicb *list[], int ent,
+    //                        struct sigevent *sig)
+    #[no_mangle]
+    pub unsafe extern "C" fn getaddrinfo_a(mode: i32, list: *mut *mut gaicb, ent: i32, _sig: *mut core::ffi::c_void) -> i32 {
+        // SAFETY: list points to ent gaicb pointers supplied by the caller.
+        // This compatibility path completes each non-null request immediately.
+        unsafe {
+            if mode != GAI_WAIT && mode != GAI_NOWAIT {
+                crate::internal::errno::set(EINVAL);
+                return EAI_SYSTEM;
+            }
+            for i in 0..ent {
+                let req = *list.add(i as usize);
+                if req.is_null() { continue; }
+                (*req).ar_result = core::ptr::null_mut();
+                let r = getaddrinfo((*req).ar_name, (*req).ar_service, (*req).ar_request, &mut (*req).ar_result);
+                (*req).__return = r;
+            }
+            0
+        }
     }
 
     // # C: int getnameinfo(const struct sockaddr *sa, socklen_t salen,
