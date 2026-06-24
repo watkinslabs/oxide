@@ -19,6 +19,14 @@ pub unsafe extern "C" fn acct(filename: *const c_char) -> i32 {
     ret_isize(unsafe { sys1(nr::ACCT, filename as usize) }) as i32
 }
 
+// # C: int klogctl(int type, char *bufp, int len)
+#[no_mangle]
+pub unsafe extern "C" fn klogctl(typ: i32, bufp: *mut c_char, len: i32) -> i32 {
+    // SAFETY: syslog(2) reads/writes bufp according to `typ`; pointer and
+    // length are passed through unchanged to the kernel.
+    ret_isize(unsafe { sys3(nr::SYSLOG, typ as usize, bufp as usize, len as usize) }) as i32
+}
+
 // # C: int flock(int fd, int op)
 #[no_mangle]
 pub unsafe extern "C" fn flock(fd: i32, op: i32) -> i32 {
