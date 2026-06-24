@@ -10,6 +10,9 @@ int main(void){
     for (int nv=2; nv<=4; nv++)
         printf("jn(%d): 1=%.6g 5=%.6g 20=%.6g | yn 5=%.6g\n",
                nv, jn(nv,1.0), jn(nv,5.0), jn(nv,20.0), yn(nv,5.0));
+    printf("jl: j0=%.5g j1=%.5g jn=%.5g\n", (double)j0l(5.0L), (double)j1l(5.0L), (double)jnl(3, 5.0L));
+    printf("yl: y0=%.5g y1=%.5g yn=%.5g\n", (double)y0l(5.0L), (double)y1l(5.0L), (double)ynl(3, 5.0L));
+    printf("lzero: jn2=%.1f yn2=%.1f\n", (double)jnl(2, 0.0L), (double)ynl(2, 0.0L));
     printf("j1neg=%.6g j0neg=%.6g y0_0=%.1f y0neg=%g\n", j1(-3.0), j0(-3.0), y0(0.0), y0(-1.0));
     return 0;
 }

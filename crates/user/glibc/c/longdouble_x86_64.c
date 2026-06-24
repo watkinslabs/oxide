@@ -1380,6 +1380,278 @@ long double gammal(long double x) {
     return lgammal_r_corel(x, &sign);
 }
 
+static void bessel_pql(long double nu, long double x, long double *pout, long double *qout) {
+    long double mu = 4.0L * nu * nu;
+    long double a = 1.0L;
+    long double p = 1.0L;
+    long double q = 0.0L;
+    long double xn = 1.0L;
+    long double prev = __builtin_infl();
+    for (int n = 1; n <= 20; n += 1) {
+        long double odd = (long double)(2 * n - 1);
+        a *= (mu - odd * odd) / (8.0L * (long double)n);
+        xn /= x;
+        long double t = a * xn;
+        long double at = t < 0.0L ? -t : t;
+        if (at > prev) {
+            break;
+        }
+        prev = at;
+        if ((n & 1) == 0) {
+            p += ((n / 2) & 1) == 0 ? t : -t;
+        } else {
+            q += (((n - 1) / 2) & 1) == 0 ? t : -t;
+        }
+    }
+    *pout = p;
+    *qout = q;
+}
+
+static long double bessel_j_seriesl(int nu, long double x) {
+    long double t = (x * 0.5L) * (x * 0.5L);
+    if (nu == 0) {
+        long double term = 1.0L;
+        long double sum = 1.0L;
+        for (long double m = 1.0L; m <= 200.0L; m += 1.0L) {
+            term *= -t / (m * m);
+            sum += term;
+            long double aterm = term < 0.0L ? -term : term;
+            long double asum = sum < 0.0L ? -sum : sum;
+            if (aterm <= asum * 1e-18L) {
+                break;
+            }
+        }
+        return sum;
+    }
+    long double term = x * 0.5L;
+    long double sum = term;
+    for (long double m = 1.0L; m <= 200.0L; m += 1.0L) {
+        term *= -t / (m * (m + 1.0L));
+        sum += term;
+        long double aterm = term < 0.0L ? -term : term;
+        long double asum = sum < 0.0L ? -sum : sum;
+        if (aterm <= asum * 1e-18L) {
+            break;
+        }
+    }
+    return sum;
+}
+
+static long double j0l_corel(long double x) {
+    if (__builtin_isnan(x)) {
+        return x + x;
+    }
+    long double ax = x < 0.0L ? -x : x;
+    if (__builtin_isinf(ax)) {
+        return 0.0L;
+    }
+    if (ax < 9.0L) {
+        return bessel_j_seriesl(0, ax);
+    }
+    long double p;
+    long double q;
+    long double s;
+    long double c;
+    bessel_pql(0.0L, ax, &p, &q);
+    x87_sincosl(ax - 0.78539816339744830961566084581987572105L, &s, &c);
+    return x87_sqrtl(2.0L / (3.1415926535897932384626433832795028842L * ax)) * (c * p - s * q);
+}
+
+static long double j1l_corel(long double x) {
+    if (__builtin_isnan(x)) {
+        return x + x;
+    }
+    long double sign = x < 0.0L ? -1.0L : 1.0L;
+    long double ax = x < 0.0L ? -x : x;
+    if (__builtin_isinf(ax)) {
+        return 0.0L;
+    }
+    if (ax < 9.0L) {
+        return sign * bessel_j_seriesl(1, ax);
+    }
+    long double p;
+    long double q;
+    long double s;
+    long double c;
+    bessel_pql(1.0L, ax, &p, &q);
+    x87_sincosl(ax - 2.3561944901923449288469825374596271631L, &s, &c);
+    return sign * x87_sqrtl(2.0L / (3.1415926535897932384626433832795028842L * ax)) * (c * p - s * q);
+}
+
+static long double y0l_corel(long double x) {
+    if (__builtin_isnan(x)) {
+        return x + x;
+    }
+    if (x < 0.0L) {
+        long double zero = 0.0L;
+        return zero / zero;
+    }
+    if (x == 0.0L) {
+        return -__builtin_infl();
+    }
+    if (__builtin_isinf(x)) {
+        return 0.0L;
+    }
+    if (x < 9.0L) {
+        long double t = (x * 0.5L) * (x * 0.5L);
+        long double cc = 1.0L;
+        long double h = 0.0L;
+        long double s2 = 0.0L;
+        for (long double m = 1.0L; m <= 200.0L; m += 1.0L) {
+            cc *= t / (m * m);
+            h += 1.0L / m;
+            long im = (long)m;
+            long double term = (im & 1) ? cc * h : -cc * h;
+            s2 += term;
+            long double aterm = cc * h;
+            if (aterm < 0.0L) {
+                aterm = -aterm;
+            }
+            long double asum = s2 < 0.0L ? -s2 : s2;
+            if (aterm <= asum * 1e-18L + 1e-300L) {
+                break;
+            }
+        }
+        return 0.63661977236758134307553505349005744814L *
+            ((log2_valuel(x * 0.5L) * 0.69314718055994530941723212145817656808L + 0.57721566490153286060651209008240243104L) *
+             bessel_j_seriesl(0, x) + s2);
+    }
+    long double p;
+    long double q;
+    long double s;
+    long double c;
+    bessel_pql(0.0L, x, &p, &q);
+    x87_sincosl(x - 0.78539816339744830961566084581987572105L, &s, &c);
+    return x87_sqrtl(2.0L / (3.1415926535897932384626433832795028842L * x)) * (s * p + c * q);
+}
+
+static long double y1l_corel(long double x) {
+    if (__builtin_isnan(x)) {
+        return x + x;
+    }
+    if (x < 0.0L) {
+        long double zero = 0.0L;
+        return zero / zero;
+    }
+    if (x == 0.0L) {
+        return -__builtin_infl();
+    }
+    if (__builtin_isinf(x)) {
+        return 0.0L;
+    }
+    if (x < 9.0L) {
+        long double t = (x * 0.5L) * (x * 0.5L);
+        long double cc = x * 0.5L;
+        long double hk = 0.0L;
+        long double s = 0.0L;
+        for (long double k = 0.0L; k <= 200.0L; k += 1.0L) {
+            long double hk1 = hk + 1.0L / (k + 1.0L);
+            long ik = (long)k;
+            long double term = (ik & 1) ? -cc * (hk + hk1) : cc * (hk + hk1);
+            s += term;
+            long double aterm = cc * (hk + hk1);
+            if (aterm < 0.0L) {
+                aterm = -aterm;
+            }
+            long double asum = s < 0.0L ? -s : s;
+            if (aterm <= asum * 1e-18L + 1e-300L) {
+                break;
+            }
+            k += 1.0L;
+            hk = hk1;
+            cc *= t / (k * (k + 1.0L));
+            k -= 1.0L;
+        }
+        return 0.63661977236758134307553505349005744814L *
+            (log2_valuel(x * 0.5L) * 0.69314718055994530941723212145817656808L + 0.57721566490153286060651209008240243104L) *
+            bessel_j_seriesl(1, x) -
+            0.63661977236758134307553505349005744814L / x -
+            s / 3.1415926535897932384626433832795028842L;
+    }
+    long double p;
+    long double q;
+    long double s;
+    long double c;
+    bessel_pql(1.0L, x, &p, &q);
+    x87_sincosl(x - 2.3561944901923449288469825374596271631L, &s, &c);
+    return x87_sqrtl(2.0L / (3.1415926535897932384626433832795028842L * x)) * (s * p + c * q);
+}
+
+static long double jnl_corel(int n, long double x) {
+    if (n == 0) {
+        return j0l_corel(x);
+    }
+    if (n == 1) {
+        return j1l_corel(x);
+    }
+    if (n == -1) {
+        return -j1l_corel(x);
+    }
+    if (n < 0) {
+        long double r = jnl_corel(-n, x);
+        return ((-n) & 1) ? -r : r;
+    }
+    if (x == 0.0L) {
+        return 0.0L;
+    }
+    long double a = j0l_corel(x);
+    long double b = j1l_corel(x);
+    for (int k = 1; k < n; k += 1) {
+        long double c = 2.0L * (long double)k / x * b - a;
+        a = b;
+        b = c;
+    }
+    return b;
+}
+
+static long double ynl_corel(int n, long double x) {
+    if (n == 0) {
+        return y0l_corel(x);
+    }
+    if (n == 1) {
+        return y1l_corel(x);
+    }
+    if (n < 0) {
+        long double r = ynl_corel(-n, x);
+        return ((-n) & 1) ? -r : r;
+    }
+    if (x == 0.0L) {
+        return -__builtin_infl();
+    }
+    long double a = y0l_corel(x);
+    long double b = y1l_corel(x);
+    for (int k = 1; k < n; k += 1) {
+        long double c = 2.0L * (long double)k / x * b - a;
+        a = b;
+        b = c;
+    }
+    return b;
+}
+
+long double j0l(long double x) {
+    return j0l_corel(x);
+}
+
+long double j1l(long double x) {
+    return j1l_corel(x);
+}
+
+long double jnl(int n, long double x) {
+    return jnl_corel(n, x);
+}
+
+long double y0l(long double x) {
+    return y0l_corel(x);
+}
+
+long double y1l(long double x) {
+    return y1l_corel(x);
+}
+
+long double ynl(int n, long double x) {
+    return ynl_corel(n, x);
+}
+
 long double pow10l(long double x) {
     return exp2_valuel(x * 3.3219280948873623478703194294893901759L);
 }
