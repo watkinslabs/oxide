@@ -1,9 +1,9 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2092 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2094 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
-> are truly impossible. Conformance **191/191**; both arches boot.
+> are truly impossible. Conformance **192/192**; both arches boot.
 
 ## 1. The one migration blocker (docs/59 §9.4)
 8 `__`-aliased DATA symbols (__environ/_environ/__signgam/__tzname/__timezone/
@@ -27,9 +27,10 @@ gethostent_r (F551), setlogin ENOSYS stub (F552), and profil/sprofil +
 gmon no-ops (F553).
 Also DONE: register_printf_type (F554).
 Also DONE: res_gethostbyname/res_gethostbyname2/res_gethostbyaddr aliases (F555).
+Also DONE: chflags/fchflags legacy stubs (F556).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
-replymsg/opaque_auth/...). Conformance 163/163.
+replymsg/opaque_auth/...). Conformance 192/192.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
@@ -145,6 +146,9 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   no-op compatibility hooks host-diffed in t_deprecated.c),
   (register_printf_type DONE — F554, GNU printf extension type-ID allocator
   host-diffed in t_printf_ext.c),
+  (chflags/fchflags DONE — F556, posix/misc2.rs, glibc-compatible legacy
+  stubs: chflags returns ENOSYS and fchflags returns EINVAL; host-diffed in
+  t_deprecated.c),
   lockf, scandirat, timespec_get/getres, ftok, ftime, ualarm,
   group_member, gnu_dev_major/minor/makedev, glob_pattern_p, ttyslot, scandirat/scandirat64 (DONE F519), lockf/lockf64 (DONE F520, posix/lockf.rs, t_lockf.c),
   (sigabbrev_np/sigdescr_np/strerrorname_np/strerrordesc_np DONE — F512,
