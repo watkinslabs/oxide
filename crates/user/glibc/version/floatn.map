@@ -297,6 +297,9 @@
     exp2l;
     expl;
     expm1l;
+    acoshl;
+    asinhl;
+    atanhl;
     ilogbl;
     isinfl;
     isnanl;
@@ -322,6 +325,7 @@
     nextupl;
     pow10l;
     powl;
+    coshl;
     floorl;
     rintl;
     roundl;
@@ -330,6 +334,7 @@
     scalbl;
     scalblnl;
     scalbnl;
+    sinhl;
     setpayloadl;
     setpayloadsigl;
     significandl;
@@ -337,6 +342,7 @@
     sinl;
     sqrtl;
     cosl;
+    tanhl;
     tanl;
     totalorderl;
     totalordermagl;
