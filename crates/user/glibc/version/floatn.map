@@ -248,4 +248,11 @@
     sinpif32;
     sinpif64;
     tanpif32;
-    tanpif64;};
+    tanpif64;
+
+    /* x86_64 SysV f80 long-double ABI bridge. */
+    copysignl;
+    fabsl;
+    finitel;
+    isinfl;
+    isnanl;};
