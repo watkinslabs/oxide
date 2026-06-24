@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **194/194**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F585-sunrpc-service-stubs`. `glibc.md` = live per-cluster TODO. F counter next = **586**, B = **138**, D = **112**
+`F586-xdr-rpc-compat-filters`. `glibc.md` = live per-cluster TODO. F counter next = **587**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -256,6 +256,13 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   svc_run/exit, svcerr_*, and xprt_register/unregister. These are conservative
   no-runtime stubs for compat-only host symbols. Verification: regression suite
   + both freestanding arch builds + `spec-lint` + audit drop to 189.
+- **F586 DONE locally:** remaining SunRPC/XDR compatibility filters exported in
+  rpc/xdr.rs: xdr_des_block, xdr_opaque_auth, xdr_authunix_parms, xdr_pmap,
+  xdr_pmaplist, xdr_union, rpc message/key filter exports, xdrrec_* and
+  xdrstdio_create. Clear-layout filters use existing XDR primitives; message,
+  key, record, and stdio backend entries are conservative compat stubs.
+  Verification: regression suite + both freestanding arch builds + `spec-lint`
+  + audit drop to 159.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
