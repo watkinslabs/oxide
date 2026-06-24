@@ -1,16 +1,14 @@
 // Global serial system console (tty-rebuild-plan §3-T7 core cutover).
 //
-// The boot serial line (`/dev/console`, `/dev/tty`, `/dev/tty0`,
-// `/dev/ttyS0`) is one `TtyStruct` built around `serialtty`'s
-// `SerialTtyDriver` over the real UART (`KernelUart` → `drv_serial::emit`)
-// with N_TTY (ICANON|ECHO|ISIG, OPOST|ONLCR). This REPLACES the old
-// input-only `tty::live` VT-ring + the racy `ConsoleInode::read` park
-// loop: reads use the lost-wakeup-free `TtyStruct::read`, writes use
-// N_TTY OPOST → UART. Position in the stack (tty-rebuild-plan §0):
+// The boot serial line (`/dev/ttyS0`) is a `TtyStruct` built around
+// `serialtty`'s `SerialTtyDriver` over the real UART (`KernelUart` →
+// `drv_serial::emit`) with N_TTY (ICANON|ECHO|ISIG, OPOST|ONLCR). The
+// framebuffer `/dev/console` path uses the VT tty stack; serial remains a
+// separate login/debug line. Position in the stack:
 //
-//   /dev/console inode ─▶ TtyStruct ─▶ N_TTY ─▶ SerialTtyDriver ─▶ UART
-//                            │ block/wake (KernelWait, lost-wakeup-free)
-//                            └ fg_pgrp / sid / termios = SOURCE OF TRUTH
+//   /dev/ttyS0 inode ─▶ TtyStruct ─▶ N_TTY ─▶ SerialTtyDriver ─▶ UART
+//                         │ block/wake (KernelWait, lost-wakeup-free)
+//                         └ fg_pgrp / sid / termios = SOURCE OF TRUTH
 //
 // The `016_ioctl` handler routes the non-pty console branch
 // (TCGETS/TCSETS/TIOCSPGRP/TIOCSCTTY/...) here so the tty itself owns
@@ -30,7 +28,7 @@ use serialtty::{KernelUart, SerialOut, SerialTtyDriver};
 use tty::ldisc::Sig;
 use tty::pty::{default_termios, Winsize, TERMIOS_BYTES};
 use tty::wait::kernel::KernelWait;
-use tty::{ReadOutcome, TtyDriver, TtyStruct};
+use tty::{ReadOutcome, TtyStruct};
 
 /// `FgSignal` raising a real signal on the fg pgrp (Linux `isig` →
 /// `kill_pgrp`). Mirrors `tty::live::deliver_signal_to_waiters`: OR the

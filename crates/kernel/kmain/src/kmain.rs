@@ -330,7 +330,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot_current, syscalls::hostname::set_current);
         procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
         ::devfs::set_current_hooks(sched::live::current_mount_ns, sched::live::current_chroot_root);
-        // Publish cmdline before /dev/console registers so the node follows console= from its first open (console-getty → serial).
+        // Publish cmdline before /dev/console registers so the node follows
+        // the preferred console from its first open.
         // SAFETY: boot-only single-writer, pre-userspace; install_arch_default is idempotent (no-op if the slot is set) and cannot race a procfs reader here.
         unsafe { crate::boot_cmdline::install_arch_default(); }
         console::register_devnodes(); ::devfs::boot::set_dir_overlay(ext4::dir::read_dir_overlay); ::devfs::boot::populate_defaults(); procfs::init();
@@ -375,22 +376,12 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // else legacy 8250 scratch-probe on x86) and only registers as the
     // console (TX via klog sink + RX IRQ) if one responds — a machine
     // with no serial keeps the framebuffer/VT console.
-    // T7 core cutover (tty-rebuild-plan §3-T7): the serial login path
-    // (/dev/console, /dev/tty, /dev/tty0, /dev/ttyS0) is now ONE global
-    // serial `TtyStruct` on the new tty stack. `install` assembles it
-    // (N_TTY: ICANON|ECHO|ISIG, OPOST|ONLCR) and wires UART RX → its flip
-    // path → N_TTY (lost-wakeup-free `TtyStruct::read`), REPLACING the old
-    // `set_rx_sink(tty::live::push_and_wake_fg)` input-only ring + the
-    // racy `ConsoleInode::read` park loop. printk stays separate (klog →
-    // UART sink below + fbcon aux sink); a tty write goes TtyStruct → UART
-    // and NOT into the kmsg ring (dmesg/shell split).
+    // Install the serial tty (`/dev/ttyS0`) on the new tty stack. The
+    // framebuffer console (`/dev/console` by default on x86 QEMU) uses the
+    // VT tty stack; serial remains a separate login/debug line. printk stays
+    // separate (klog → UART sink below + fbcon aux sink); a tty write goes
+    // through its owning TtyStruct, not into the kmsg ring.
     console::static_console::install();
-    // The physical keyboard (virtio-input) is a second input source for the
-    // system console /dev/console (alongside the UART): route keyboard bytes
-    // into the SAME N_TTY RX so console-getty/login/shell read keystrokes
-    // (cooked + echoed → serial + framebuffer) at the screen, not just over
-    // serial. Without this, framebuffer login can't type. (console-plan B0;
-    // B4 folds this into the unified per-VT tty.)
     // The keyboard belongs to the VIDEO console: deliver keystrokes to the
     // FOREGROUND VT's tty (Linux `kbd_keycode` → fg console), NOT the serial
     // line. `kbd_input` routes to `vt_tty(foreground())`; serial RX has its
@@ -401,7 +392,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // dump) for on-demand liveness diagnostics, before bytes reach the
     // tty. Pairs with the per-tick liveness watchdog (`05`, `27`).
     drv_serial::set_rx_prefilter(sched::diag::sysrq_rx);
-    // SAFETY: post-ACPI/LAPIC + MmuOps live; single-CPU, IRQs masked. init probes the UART; on detection serial becomes the primary console (klog sink + RX IRQ). No serial → the fb/VT console (set_aux_sink below) is the default active console.
+    // SAFETY: post-ACPI/LAPIC + MmuOps live; single-CPU, IRQs masked. init
+    // probes the UART; on detection it installs the serial klog sink + RX IRQ.
+    // `/dev/console` selection remains cmdline-driven.
     if unsafe { drv_serial::init(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE) } {
         klog::set_byte_sink(drv_serial::emit);
         // drivers-plan D1a: record the 8250/PL011 console in the drv model
