@@ -1,10 +1,10 @@
 # state.md — session handoff
 
 ## Headline
-**glibc full-compliance build-out** (docs/59 §9). Conformance **189/189**
+**glibc full-compliance build-out** (docs/59 §9). Conformance **190/190**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F540-ftime`. `glibc.md` = live per-cluster TODO. F counter next = **541**, D = **112**
+`F541-gnu-libc-version`. `glibc.md` = live per-cluster TODO. F counter next = **542**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -49,6 +49,9 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   with glibc default fallback; host-diffable t_usershell.c. Conformance now 188/188.
 - **F540 DONE locally:** ftime over CLOCK_REALTIME into the LP64 timeb layout;
   host-diffable t_ftime.c. Conformance now 189/189.
+- **F541 DONE locally:** gnu_get_libc_version/release report the supported ABI
+  ceiling (`2.38`) and stable release; host-diffable t_gnu_version.c.
+  Conformance now 190/190.
 - small maybes: llseek (=lseek on 64-bit; check it's linkable not compat-only),
   gnu_get_libc_version/release (trivial but version string ≠ host → not diffable).
 
