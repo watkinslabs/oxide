@@ -37,6 +37,13 @@ pub struct regex_t {
 #[repr(C)]
 pub struct regmatch_t { pub rm_so: i32, pub rm_eo: i32 }
 
+#[repr(C)]
+pub struct re_registers {
+    pub num_regs: u32,
+    pub start: *mut i32,
+    pub end: *mut i32,
+}
+
 #[cfg(feature = "freestanding")]
 mod imp {
     use super::*;
@@ -45,6 +52,38 @@ mod imp {
     use core::sync::atomic::{AtomicPtr, Ordering};
 
     static RE_COMP_PROG: AtomicPtr<engine::Prog> = AtomicPtr::new(core::ptr::null_mut());
+
+    unsafe fn fill_registers(regs: *mut re_registers, caps: &[usize], base: i32) {
+        // SAFETY: regs is null or a writable GNU re_registers. If its arrays
+        // are absent or too small, allocate glibc-compatible int offset arrays.
+        unsafe {
+            if regs.is_null() {
+                return;
+            }
+            let n = core::cmp::max(2, caps.len() / 2) as u32;
+            if (*regs).start.is_null() || (*regs).end.is_null() || (*regs).num_regs < n {
+                let bytes = n as usize * core::mem::size_of::<i32>();
+                (*regs).start = crate::malloc::heap::malloc(bytes) as *mut i32;
+                (*regs).end = crate::malloc::heap::malloc(bytes) as *mut i32;
+                if (*regs).start.is_null() || (*regs).end.is_null() {
+                    (*regs).num_regs = 0;
+                    return;
+                }
+                (*regs).num_regs = n;
+            }
+            for i in 0..(*regs).num_regs as usize {
+                let so = caps.get(2 * i).copied().unwrap_or(usize::MAX);
+                let eo = caps.get(2 * i + 1).copied().unwrap_or(usize::MAX);
+                if so == usize::MAX || eo == usize::MAX {
+                    *(*regs).start.add(i) = -1;
+                    *(*regs).end.add(i) = -1;
+                } else {
+                    *(*regs).start.add(i) = base + so as i32;
+                    *(*regs).end.add(i) = base + eo as i32;
+                }
+            }
+        }
+    }
 
     // # C: int regcomp(regex_t *preg, const char *pattern, int cflags)
     #[no_mangle]
@@ -130,6 +169,89 @@ mod imp {
                 *errbuf.add(n) = 0;
             }
             need
+        }
+    }
+
+    // # C: const char *re_compile_pattern(const char *pattern, size_t length, struct re_pattern_buffer *buffer)
+    #[no_mangle]
+    pub unsafe extern "C" fn re_compile_pattern(pattern: *const u8, length: usize, buffer: *mut regex_t) -> *const u8 {
+        // SAFETY: pattern is readable for length bytes and buffer is writable.
+        // The compiled engine program is stored in buffer->buffer for re_match.
+        unsafe {
+            let pat = core::slice::from_raw_parts(pattern, length);
+            match engine::compile_pattern(pat, false, false, true) {
+                Ok(prog) => {
+                    let ng = prog.ngroup;
+                    (*buffer).buffer = Box::into_raw(Box::new(prog)) as *mut core::ffi::c_void;
+                    (*buffer).re_nsub = ng;
+                    (*buffer).flags = 0;
+                    core::ptr::null()
+                }
+                Err(_) => b"Invalid regular expression\0".as_ptr(),
+            }
+        }
+    }
+
+    // # C: int re_compile_fastmap(struct re_pattern_buffer *buffer)
+    #[no_mangle]
+    pub unsafe extern "C" fn re_compile_fastmap(buffer: *mut regex_t) -> i32 {
+        // SAFETY: buffer is a compiled pattern; fastmap is caller-owned storage
+        // for 256 bytes when non-null. A conservative all-ones map is valid.
+        unsafe {
+            if buffer.is_null() || (*buffer).buffer.is_null() {
+                return -2;
+            }
+            if !(*buffer).fastmap.is_null() {
+                core::ptr::write_bytes((*buffer).fastmap, 1, 256);
+            }
+            0
+        }
+    }
+
+    // # C: regoff_t re_match(struct re_pattern_buffer *buffer, const char *string, regoff_t length, regoff_t start, struct re_registers *regs)
+    #[no_mangle]
+    pub unsafe extern "C" fn re_match(buffer: *mut regex_t, string: *const u8, length: i32, start: i32, regs: *mut re_registers) -> i32 {
+        // SAFETY: buffer holds an engine::Prog from re_compile_pattern; string
+        // is readable for length bytes. regs is null or writable.
+        unsafe {
+            if buffer.is_null() || (*buffer).buffer.is_null() || start < 0 || length < start {
+                return -2;
+            }
+            let prog = &*((*buffer).buffer as *const engine::Prog);
+            let s = core::slice::from_raw_parts(string.add(start as usize), (length - start) as usize);
+            match engine::exec(prog, s, false, false) {
+                Some(caps) if caps.first().copied() == Some(0) => {
+                    fill_registers(regs, &caps, start);
+                    (caps.get(1).copied().unwrap_or(0)) as i32
+                }
+                _ => -1,
+            }
+        }
+    }
+
+    // # C: regoff_t re_search(struct re_pattern_buffer *buffer, const char *string, regoff_t length, regoff_t start, regoff_t range, struct re_registers *regs)
+    #[no_mangle]
+    pub unsafe extern "C" fn re_search(buffer: *mut regex_t, string: *const u8, length: i32, start: i32, range: i32, regs: *mut re_registers) -> i32 {
+        // SAFETY: buffer holds an engine::Prog; string is readable for length
+        // bytes. This supports the common forward-search range used by glibc.
+        unsafe {
+            if buffer.is_null() || (*buffer).buffer.is_null() || start < 0 || range < 0 || length < start {
+                return -2;
+            }
+            let avail = core::cmp::min(length - start, range) as usize;
+            let prog = &*((*buffer).buffer as *const engine::Prog);
+            let s = core::slice::from_raw_parts(string.add(start as usize), avail);
+            match engine::exec(prog, s, false, false) {
+                Some(caps) => {
+                    let off = caps.first().copied().unwrap_or(usize::MAX);
+                    if off == usize::MAX {
+                        return -1;
+                    }
+                    fill_registers(regs, &caps, start);
+                    start + off as i32
+                }
+                None => -1,
+            }
         }
     }
 

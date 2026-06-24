@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2117 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2121 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **192/192**; both arches boot.
 
@@ -38,6 +38,7 @@ Also DONE: ruserok/iruserok remote-login denials (F563).
 Also DONE: rcmd/rexec remote-command failure stubs (F564).
 Also DONE: mcheck_check_all malloc-debug no-op (F565).
 Also DONE: BSD regex re_comp/re_exec (F566).
+Also DONE: GNU regex re_compile_pattern/re_compile_fastmap/re_match/re_search (F567).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
@@ -192,9 +193,14 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   conservative remote-login denial behavior host-diffed in t_inet2.c.)
   (rcmd/rcmd_af/rexec/rexec_af DONE — F564, net/socket.rs, conservative
   EINVAL failure behavior for unresolved hosts host-diffed in t_inet2.c.)
-- **re_* BSD regex (~10)** — re_compile_pattern/re_search/re_match family.
+- **re_* BSD regex (~6)** — re_match_2/re_search_2/re_set_registers/
+  re_set_syntax/re_syntax_options and legacy globals.
   (re_comp/re_exec DONE — F566, regex/mod.rs, process-global compiled pattern
   over the existing engine; host-diffed in t_regex.c.)
+  (re_compile_pattern/re_compile_fastmap/re_match/re_search DONE — F567,
+  regex/mod.rs, lower-level GNU buffer API over the existing engine with
+  glibc-style register allocation for the tested path; host-diffed in
+  t_regex.c.)
 - **libxcrypt** — (crypt_gensalt/_rn/_ra + crypt_rn/crypt_ra + crypt_preferred_method
   DONE — F536, crypt/mod.rs; $5$/$6$ salt = crypt-itoa64 of rbytes (NULL⇒getrandom),
   rounds= iff ≠ default; host harness now links -lcrypt for default libxcrypt
