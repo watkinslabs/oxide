@@ -230,6 +230,29 @@ mod exports {
             core::ptr::null_mut()
         }
     }
+    // # C: int getpw(uid_t uid, char *buf)
+    #[no_mangle]
+    pub unsafe extern "C" fn getpw(uid: u32, out: *mut u8) -> i32 {
+        // SAFETY: out is the caller's legacy getpw buffer. glibc's contract is
+        // a sufficiently large buffer; serialize the passwd line without NL.
+        unsafe {
+            let buf = match read_file(b"/etc/passwd\0") { Some(b) => b, None => return -1 };
+            for p in libnss::parse_passwd(&buf) {
+                if p.uid == uid {
+                    let mut pos = 0usize;
+                    if !put_field(out, &mut pos, p.name.as_bytes(), b':') { return -1; }
+                    if !put_field(out, &mut pos, p.passwd.as_bytes(), b':') { return -1; }
+                    if !put_dec(out, &mut pos, p.uid as u64, b':') { return -1; }
+                    if !put_dec(out, &mut pos, p.gid as u64, b':') { return -1; }
+                    if !put_field(out, &mut pos, p.gecos.as_bytes(), b':') { return -1; }
+                    if !put_field(out, &mut pos, p.home.as_bytes(), b':') { return -1; }
+                    if !put_field(out, &mut pos, p.shell.as_bytes(), 0) { return -1; }
+                    return 0;
+                }
+            }
+            -1
+        }
+    }
     // # C: struct group *getgrnam(const char *name)
     #[no_mangle]
     pub unsafe extern "C" fn getgrnam(name: *const u8) -> *mut group {
@@ -254,6 +277,39 @@ mod exports {
             }
             core::ptr::null_mut()
         }
+    }
+
+    unsafe fn put_field(out: *mut u8, pos: &mut usize, s: &[u8], sep: u8) -> bool {
+        // SAFETY: getpw's historical contract supplies a large writable buffer.
+        unsafe {
+            if out.is_null() { return false; }
+            core::ptr::copy_nonoverlapping(s.as_ptr(), out.add(*pos), s.len());
+            *pos += s.len();
+            if sep == 0 { *out.add(*pos) = 0; } else { *out.add(*pos) = sep; *pos += 1; }
+            true
+        }
+    }
+
+    unsafe fn put_dec(out: *mut u8, pos: &mut usize, mut v: u64, sep: u8) -> bool {
+        let mut d = [0u8; 20];
+        let mut n = 0usize;
+        if v == 0 { d[n] = b'0'; n += 1; }
+        while v != 0 { d[n] = b'0' + (v % 10) as u8; v /= 10; n += 1; }
+        while n != 0 {
+            n -= 1;
+            // SAFETY: getpw's historical contract supplies a large buffer.
+            unsafe { *out.add(*pos) = d[n]; }
+            *pos += 1;
+        }
+        if sep == 0 {
+            // SAFETY: append the terminal NUL after decimal digits.
+            unsafe { *out.add(*pos) = 0; }
+        } else {
+            // SAFETY: append the requested field separator after digits.
+            unsafe { *out.add(*pos) = sep; }
+            *pos += 1;
+        }
+        true
     }
 }
 
