@@ -857,6 +857,97 @@ long double _Complex cpowl(long double _Complex base, long double _Complex power
     return cexpl_valuel(exponent);
 }
 
+static long double _Complex caddl_valuel(long double _Complex a, long double _Complex b) {
+    long double _Complex r;
+    __real__ r = (__real__ a) + (__real__ b);
+    __imag__ r = (__imag__ a) + (__imag__ b);
+    return r;
+}
+
+static long double _Complex csubl_valuel(long double _Complex a, long double _Complex b) {
+    long double _Complex r;
+    __real__ r = (__real__ a) - (__real__ b);
+    __imag__ r = (__imag__ a) - (__imag__ b);
+    return r;
+}
+
+static long double _Complex cmull_valuel(long double _Complex a, long double _Complex b) {
+    long double _Complex r;
+    __real__ r = (__real__ a) * (__real__ b) - (__imag__ a) * (__imag__ b);
+    __imag__ r = (__real__ a) * (__imag__ b) + (__imag__ a) * (__real__ b);
+    return r;
+}
+
+static long double _Complex casinl_valuel(long double _Complex z) {
+    long double _Complex one;
+    __real__ one = 1.0L;
+    __imag__ one = 0.0L;
+    long double _Complex iz;
+    __real__ iz = -(__imag__ z);
+    __imag__ iz = __real__ z;
+    long double _Complex inner = caddl_valuel(iz, csqrtl_valuel(csubl_valuel(one, cmull_valuel(z, z))));
+    long double _Complex l = clogl_valuel(inner);
+    long double _Complex r;
+    __real__ r = __imag__ l;
+    __imag__ r = -(__real__ l);
+    return r;
+}
+
+long double _Complex casinl(long double _Complex z) {
+    return casinl_valuel(z);
+}
+
+long double _Complex cacosl(long double _Complex z) {
+    long double _Complex a = casinl_valuel(z);
+    long double _Complex r;
+    __real__ r = 1.5707963267948966192313216916397514421L - (__real__ a);
+    __imag__ r = -(__imag__ a);
+    return r;
+}
+
+long double _Complex catanl(long double _Complex z) {
+    long double _Complex one;
+    __real__ one = 1.0L;
+    __imag__ one = 0.0L;
+    long double _Complex iz;
+    __real__ iz = -(__imag__ z);
+    __imag__ iz = __real__ z;
+    long double _Complex lm = clogl_valuel(csubl_valuel(one, iz));
+    long double _Complex lp = clogl_valuel(caddl_valuel(one, iz));
+    long double _Complex d = csubl_valuel(lm, lp);
+    long double _Complex r;
+    __real__ r = -0.5L * (__imag__ d);
+    __imag__ r = 0.5L * (__real__ d);
+    return r;
+}
+
+long double _Complex casinhl(long double _Complex z) {
+    long double _Complex one;
+    __real__ one = 1.0L;
+    __imag__ one = 0.0L;
+    return clogl_valuel(caddl_valuel(z, csqrtl_valuel(caddl_valuel(cmull_valuel(z, z), one))));
+}
+
+long double _Complex cacoshl(long double _Complex z) {
+    long double _Complex one;
+    __real__ one = 1.0L;
+    __imag__ one = 0.0L;
+    return clogl_valuel(caddl_valuel(z, csqrtl_valuel(csubl_valuel(cmull_valuel(z, z), one))));
+}
+
+long double _Complex catanhl(long double _Complex z) {
+    long double _Complex one;
+    __real__ one = 1.0L;
+    __imag__ one = 0.0L;
+    long double _Complex lp = clogl_valuel(caddl_valuel(one, z));
+    long double _Complex lm = clogl_valuel(csubl_valuel(one, z));
+    long double _Complex d = csubl_valuel(lp, lm);
+    long double _Complex r;
+    __real__ r = 0.5L * (__real__ d);
+    __imag__ r = 0.5L * (__imag__ d);
+    return r;
+}
+
 static long double x87_fprem(long double x, long double y) {
     long double r;
     __asm__ __volatile__(

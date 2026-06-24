@@ -289,6 +289,10 @@
     fromfpxl;
     getpayloadl;
     hypotl;
+    cacoshl;
+    cacosl;
+    casinhl;
+    casinl;
     cimagl;
     ccoshl;
     ccosl;
@@ -301,6 +305,8 @@
     csinhl;
     csinl;
     csqrtl;
+    catanhl;
+    catanl;
     ctanhl;
     ctanl;
     creall;
