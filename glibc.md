@@ -3,7 +3,7 @@
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
 > `libc.so.6` (**~2060 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
-> are truly impossible. Conformance **186/186**; both arches boot.
+> are truly impossible. Conformance **187/187**; both arches boot.
 
 ## 1. The one migration blocker (docs/59 §9.4)
 8 `__`-aliased DATA symbols (__environ/_environ/__signgam/__tzname/__timezone/
@@ -57,10 +57,14 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (ns_name_pack/ns_name_compress DONE — F534, net/nameser.rs, uncompressed
   emit like dn_comp (matches glibc when dnptrs==NULL; full labels are
   wire-legal), host-diffable t_nameser2.c. STILL TODO: compression-pointer
-  emit when dnptrs given; ns_sprintrr/ns_sprintrrf (RR pretty-print); ns_datetosecs.)
+  emit when dnptrs given; ns_datetosecs.)
   (ns_initparse/ns_parserr/ns_skiprr/ns_msg_getflag DONE — F535, net/nameser.rs,
   NsMsg(80B)/NsRr(1048B) ABI structs + header/section walk + per-RR name
   expansion; host-diffable t_nsmsg.c (flags, question, multi-RR, OOB).)
+  (ns_sprintrr/ns_sprintrrf DONE — F538, net/nameser.rs, zone-style RR
+  formatting for A/AAAA/NS/CNAME/PTR/MX/TXT plus RFC3597 unknown-RR fallback,
+  canonical absolute names, origin-relative owner/RDATA names, TTL/class/type
+  tab-column layout; host-diffable t_nssprint.c via -lresolv oracle.)
 - ~~**fts/fts64 (10)**~~ DONE — posix/fts.rs (F511). BSD pre/post-order iterator,
   cycle detect (FTS_DC), FTS_LOGICAL/PHYSICAL/SEEDOT/XDEV/COMFOLLOW + fts_set
   SKIP/FOLLOW. Exact FTSENT ABI (112B). Host-diffable t_fts.c over a temp tree.
