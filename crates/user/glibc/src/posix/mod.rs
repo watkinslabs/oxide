@@ -87,3 +87,5 @@ pub mod sysvipc;
 pub mod shm;
 #[cfg(feature = "freestanding")]
 pub mod posixsem;
+#[cfg(feature = "freestanding")]
+pub mod usershell;
