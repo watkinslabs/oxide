@@ -12,6 +12,7 @@ pub mod progname;
 pub mod syslog;
 pub mod err;
 pub mod error;
+pub mod gnu_version;
 #[cfg(feature = "freestanding")]
 pub mod backtrace;
 #[cfg(feature = "freestanding")]
