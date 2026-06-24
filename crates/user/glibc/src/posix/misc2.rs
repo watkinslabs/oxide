@@ -116,6 +116,12 @@ pub unsafe extern "C" fn revoke(_path: *const c_char) -> i32 {
     crate::internal::errno::set(ENOSYS); -1
 }
 
+// # C: int setlogin(const char *name) — BSD login-name setter; glibc stub.
+#[no_mangle]
+pub unsafe extern "C" fn setlogin(_name: *const c_char) -> i32 {
+    crate::internal::errno::set(ENOSYS); -1
+}
+
 // # C: int ustat(dev_t dev, struct ustat *ubuf) — deprecated; x86_64 only.
 #[no_mangle]
 pub unsafe extern "C" fn ustat(dev: u64, ubuf: *mut c_void) -> i32 {
