@@ -111,3 +111,7 @@ long double floorl(long double x) {
 long double truncl(long double x) {
     return x87_round_mode(x, 0x0c00u);
 }
+
+long double roundevenl(long double x) {
+    return x87_round_mode(x, 0x0000u);
+}
