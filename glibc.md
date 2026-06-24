@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2096 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2098 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **192/192**; both arches boot.
 
@@ -30,6 +30,7 @@ Also DONE: res_gethostbyname/res_gethostbyname2/res_gethostbyaddr aliases (F555)
 Also DONE: chflags/fchflags legacy stubs (F556).
 Also DONE: klogctl syslog(2) wrapper (F557).
 Also DONE: public sigreturn ENOSYS stub (F558).
+Also DONE: ns_name_ntol/ns_name_rollback (F559).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
@@ -59,9 +60,11 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (inet_net_pton/ntop/neta/nsap_addr/nsap_ntoa DONE — F516, net/inet.rs,
   AF_INET classful-default-bits + class-D=4, host-diffable t_inet_net.c via
   -lresolv oracle; dn_comp/dn_expand/dn_skipname + recvmmsg/sendmmsg done.)
-  (ns_get16/get32/put16/put32 + ns_name_ntop/pton/skip DONE — F531,
+  (ns_get16/get32/put16/put32 + ns_name_ntop/ntol/pton/skip +
+  ns_name_rollback DONE — F531/F559,
   net/nameser.rs RFC1035 codec w/ glibc escaping (special \, \DDD nonprint,
-  root "."), host-diffable t_nameser.c.
+  root "."), lowercasing, and compression-table rollback; host-diffable
+  t_nameser.c.
   (ns_name_unpack/uncompress + ns_samename/samedomain/subdomain/makecanon DONE
   — F532, net/nameser.rs, host-diffable t_nameser2.c.)
   (ns_format_ttl/ns_parse_ttl DONE — F533, net/nameser.rs, host-diffable
