@@ -1,9 +1,9 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2088 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2092 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
-> are truly impossible. Conformance **190/190**; both arches boot.
+> are truly impossible. Conformance **191/191**; both arches boot.
 
 ## 1. The one migration blocker (docs/59 §9.4)
 8 `__`-aliased DATA symbols (__environ/_environ/__signgam/__tzname/__timezone/
@@ -22,6 +22,7 @@ llseek + C-locale time `_l` wrappers (F546), and sem_clockwait (F547).
 Also DONE: libxcrypt compatibility aliases + crypt_checksalt (F548).
 Also DONE: C-locale strtof32_l/strtof64_l (F549); strtold/wcstold remain
 hard-blocked with the other long-double ABI functions.
+Also DONE: resolver validators res_hnok/res_ownok/res_mailok/res_dnok (F550).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 163/163.
@@ -71,6 +72,10 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   formatting for A/AAAA/NS/CNAME/PTR/MX/TXT plus RFC3597 unknown-RR fallback,
   canonical absolute names, origin-relative owner/RDATA names, TTL/class/type
   tab-column layout; host-diffable t_nssprint.c via -lresolv oracle.)
+  (res_hnok/res_ownok/res_mailok/res_dnok DONE — F550, net/nameser.rs,
+  host/mailbox/owner/general DNS domain validators with glibc-matched
+  wildcard, escaping, whitespace, label-length, and total-size behavior;
+  host-diffable t_resok.c via -lresolv oracle.)
 - ~~**fts/fts64 (10)**~~ DONE — posix/fts.rs (F511). BSD pre/post-order iterator,
   cycle detect (FTS_DC), FTS_LOGICAL/PHYSICAL/SEEDOT/XDEV/COMFOLLOW + fts_set
   SKIP/FOLLOW. Exact FTSENT ABI (112B). Host-diffable t_fts.c over a temp tree.

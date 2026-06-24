@@ -1,10 +1,10 @@
 # state.md — session handoff
 
 ## Headline
-**glibc full-compliance build-out** (docs/59 §9). Conformance **190/190**
+**glibc full-compliance build-out** (docs/59 §9). Conformance **191/191**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F549-floatn-l-conversions`. `glibc.md` = live per-cluster TODO. F counter next = **550**, B = **138**, D = **112**
+`F550-resolver-validators`. `glibc.md` = live per-cluster TODO. F counter next = **551**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -88,6 +88,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   strtof_l/strtod_l; host-diffed in t_lfs.c. strtold/wcstold remain blocked
   with the rest of long-double ABI. Verification: `xtask glibc-test` 190/190;
   both freestanding arch builds; `spec-lint`; filtered symbol audit now 371.
+- **F550 DONE locally:** resolver domain validators res_hnok/res_ownok/
+  res_mailok/res_dnok added in net/nameser.rs; host-diffed in t_resok.c
+  across wildcard, mailbox, escaping, whitespace, label-length, and total-size
+  cases. Verification: `xtask glibc-test` 191/191; both freestanding arch
+  builds; `spec-lint`; filtered symbol audit now 367.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
