@@ -67,3 +67,13 @@ long double _Complex conjl(long double _Complex z) {
     __imag__ r = -__imag__ z;
     return r;
 }
+
+long double _Complex cprojl(long double _Complex z) {
+    if (__builtin_isinf(__real__ z) || __builtin_isinf(__imag__ z)) {
+        long double _Complex r;
+        __real__ r = __builtin_infl();
+        __imag__ r = __builtin_copysignl(0.0L, __imag__ z);
+        return r;
+    }
+    return z;
+}
