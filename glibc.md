@@ -16,8 +16,9 @@ vendor binaries (confirm in G19d). Reverted; don't re-add without the codegen fi
 all scalar/fixed-width/hyper/float/double primitives + opaque/bytes/string/
 wrapstring/netobj + vector/array/reference/pointer + xdr_sizeof + getpos/setpos.
 RFC4506-verified vs our libc (glibc keeps xdr_* COMPAT-ONLY → not host-diffable).
-Also DONE: SysV signal (sighold/sigrelse/sigignore/sigset), and the missing
-C23 `<stdbit.h>` unsigned long / unsigned long long variants (F545). Remaining RPC =
+Also DONE: SysV signal (sighold/sigrelse/sigignore/sigset), the missing
+C23 `<stdbit.h>` unsigned long / unsigned long long variants (F545), and
+llseek + C-locale time `_l` wrappers (F546). Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 163/163.
 
@@ -114,6 +115,9 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   revoke=ENOSYS stub, ustat/uselib x86 passthrough else ENOSYS, modify_ldt/
   iopl/ioperm x86-only; t_deprecated.c diffs revoke + x86 trio — ustat/uselib
   host-compat-only so not diff-linkable).
+  (llseek + strftime_l/strptime_l/wcsftime_l DONE — F546, posix/io.rs +
+  time/{strftime,strptime}.rs; time `_l` host-diffable in t_strftime.c, llseek
+  implemented as LP64 lseek alias but host keeps it non-default compat-only),
   setlogin, lockf, scandirat, timespec_get/getres, ftok, ftime, ualarm,
   group_member, gnu_dev_major/minor/makedev, glob_pattern_p, ttyslot, scandirat/scandirat64 (DONE F519), lockf/lockf64 (DONE F520, posix/lockf.rs, t_lockf.c),
   (sigabbrev_np/sigdescr_np/strerrorname_np/strerrordesc_np DONE — F512,
