@@ -1,7 +1,7 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2289 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2290 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
 > are truly impossible. Conformance **194/194**; both arches boot.
 
@@ -70,7 +70,10 @@ svc_getreq*, svc_run/exit, svcerr_*, and xprt_register/unregister (F585).
 Also DONE: remaining SunRPC/XDR compatibility filter exports xdr_des_block,
 xdr_opaque_auth, xdr_authunix_parms, xdr_pmap/pmaplist, xdr_union, rpc message
 and key filters, xdrrec_*, and xdrstdio_create (F586). Remaining audit surface
-is long-double-family ABI, open_wmemstream, and public errno. Conformance 194/194.
+was long-double-family ABI, open_wmemstream, and public errno.
+Also DONE: open_wmemstream wide memory stream, including host-diffed fputws/
+fseek/fputwc/fflush coverage (F587). Remaining audit surface is long-double-
+family ABI plus public errno. Conformance 194/194.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
