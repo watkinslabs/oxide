@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **192/192**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F573-ruserpass`. `glibc.md` = live per-cluster TODO. F counter next = **574**, B = **138**, D = **112**
+`F574-narrowing-math`. `glibc.md` = live per-cluster TODO. F counter next = **575**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -192,6 +192,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   leaving outputs untouched, and setting ENOENT when HOME is missing. Host-diffed
   in t_inet2.c. Verification: `xtask glibc-test` 192/192; both freestanding
   arch builds; `spec-lint`; filtered symbol audit now 318.
+- **F574 DONE locally:** C23 narrowing math fadd/fsub/fmul/fdiv/fsqrt/ffma and
+  f32* f64 aliases added over existing f64 math, returning float/_Float32.
+  Host-diffed exact sample values in t_c23math.c. Verification:
+  `xtask glibc-test` 192/192; both freestanding arch builds; `spec-lint`;
+  filtered symbol audit now 306.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
