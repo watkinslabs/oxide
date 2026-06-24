@@ -375,7 +375,7 @@ fn build_grub_iso(
     let cfg = format!(
         "set timeout=0\nset default=0\nserial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console\n\n\
          menuentry \"oxide (multiboot2)\" {{\n    \
-         multiboot2 /boot/oxide-{arch} BOOT_IMAGE=/boot/oxide-{arch} root=/dev/oxide0 ro quiet console=ttyS0,115200\n    \
+         multiboot2 /boot/oxide-{arch} BOOT_IMAGE=/boot/oxide-{arch} root=/dev/oxide0 ro quiet console=ttyS0,115200 console=tty0\n    \
          boot\n}}\n");
     fs::write(stage.join("boot/grub/grub.cfg"), cfg).map_err(|_| 1u8)?;
     let iso = crate::buildns::iso_path(repo, id, arch);

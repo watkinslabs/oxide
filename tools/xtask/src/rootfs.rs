@@ -305,8 +305,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // G19b: stage the oxide glibc system libc + loader + folded stubs +
     // ld.so.cache from target/sysroot (parallel to musl — distinct paths:
     // /lib/ld-linux-x86-64.so.2 vs /lib/ld-musl-x86_64.so.1). A systemd
-    // oneshot unit runs /bin/g19_glibc_smoke early so its marker lands on
-    // serial — proving a glibc dynamic binary runs on the kernel.
+    // oneshot unit runs /bin/g19_glibc_smoke early, before the gettys.
     {
         let triple = format!("{arch}-unknown-linux-gnu");
         let srlib = repo.join(format!("target/sysroot/{triple}/lib"));
@@ -323,7 +322,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&user("g19_glibc_pthread"), "/bin/g19_glibc_pthread")?;
         put(&user("g19_glibc_jointest"), "/bin/g19_glibc_jointest")?;
         // oneshot unit (pulled in by the Oxide Default Target's Wants) runs the
-        // glibc-on-kernel bins before the getty so their markers land on serial.
+        // glibc-on-kernel bins before the gettys so their output cannot race
+        // against login prompts.
         // pthread runs on BOTH arches now: the aarch64 join hang (clone ctid/tls
         // swapped in the CLONE_BACKWARDS ABI) is fixed in dispatch.rs.
         // TimeoutStartSec keeps a hung ExecStart from wedging the getty.
@@ -332,7 +332,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
 b"[Unit]
 Description=G19 glibc-on-kernel smoke
 DefaultDependencies=no
-Before=console-getty.service
+Before=console-getty.service serial-getty-ttyS0.service
 [Service]
 Type=oneshot
 TimeoutStartSec=30
@@ -769,6 +769,9 @@ ExecStart=/bin/g19_glibc_pthread
     put(&stage("default.target", l2_deps::DEFAULT_TARGET)?,
         "/usr/lib/systemd/system/default.target")?;
     dbg("sif /usr/lib/systemd/system/default.target mode 0100644")?;
+    put(&stage("serial-getty-ttyS0.service", l2_deps::SERIAL_GETTY_TTYS0_SERVICE)?,
+        "/usr/lib/systemd/system/serial-getty-ttyS0.service")?;
+    dbg("sif /usr/lib/systemd/system/serial-getty-ttyS0.service mode 0100644")?;
     // /etc/inittab — legacy sysv format (systemd is PID1; kept informational).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS

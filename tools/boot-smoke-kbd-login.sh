@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Framebuffer KEYBOARD login gate (console-plan B0). Boots headless with a QMP
 # control socket, waits for `oxide login:`, then injects REAL virtio-keyboard
-# events via QMP `send-key` (not serial RX) to type the username + password +
-# `id`. /dev/console output mirrors to serial, so success is observed there:
-# `uid=1000(alice)`. Proves keystrokes from the physical keyboard reach
-# console-getty/login/shell on the framebuffer console.
+# events via QMP `send-key` (not serial RX). This script predates the strict
+# serial-vs-VT split and can no longer observe framebuffer-shell output through
+# the serial log; keep it as a harness skeleton until a screenshot/console
+# capture oracle is wired in.
 #
 # Usage: tools/boot-smoke-kbd-login.sh x86 [timeout]
 set -uo pipefail
