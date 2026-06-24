@@ -50,6 +50,7 @@ mod imp {
     use super::*;
     use crate::string::len::strlen_impl;
     use alloc::boxed::Box;
+    use alloc::vec::Vec;
     use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
     static RE_COMP_PROG: AtomicPtr<engine::Prog> = AtomicPtr::new(core::ptr::null_mut());
@@ -85,6 +86,19 @@ mod imp {
                     *(*regs).end.add(i) = base + eo as i32;
                 }
             }
+        }
+    }
+
+    unsafe fn concat_pair(s1: *const u8, len1: i32, s2: *const u8, len2: i32) -> Option<Vec<u8>> {
+        // SAFETY: callers pass readable buffers for len1/len2 bytes.
+        unsafe {
+            if len1 < 0 || len2 < 0 {
+                return None;
+            }
+            let mut out = Vec::with_capacity(len1 as usize + len2 as usize);
+            out.extend_from_slice(core::slice::from_raw_parts(s1, len1 as usize));
+            out.extend_from_slice(core::slice::from_raw_parts(s2, len2 as usize));
+            Some(out)
         }
     }
 
@@ -255,6 +269,71 @@ mod imp {
                     start + off as i32
                 }
                 None => -1,
+            }
+        }
+    }
+
+    // # C: regoff_t re_search_2(struct re_pattern_buffer *buffer, const char *s1, regoff_t len1, const char *s2, regoff_t len2, regoff_t start, regoff_t range, struct re_registers *regs, regoff_t stop)
+    #[no_mangle]
+    pub unsafe extern "C" fn re_search_2(buffer: *mut regex_t, s1: *const u8, len1: i32, s2: *const u8, len2: i32, start: i32, range: i32, regs: *mut re_registers, stop: i32) -> i32 {
+        // SAFETY: s1/s2 are readable for len1/len2 bytes; buffer holds an
+        // engine::Prog from re_compile_pattern.
+        unsafe {
+            let Some(joined) = concat_pair(s1, len1, s2, len2) else {
+                return -2;
+            };
+            if buffer.is_null() || (*buffer).buffer.is_null() || start < 0 || range < 0 || stop < start || joined.len() < start as usize {
+                return -2;
+            }
+            let end = core::cmp::min(joined.len(), core::cmp::min(stop as usize, (start + range) as usize));
+            let prog = &*((*buffer).buffer as *const engine::Prog);
+            match engine::exec(prog, &joined[start as usize..end], false, false) {
+                Some(caps) => {
+                    let off = caps.first().copied().unwrap_or(usize::MAX);
+                    if off == usize::MAX {
+                        return -1;
+                    }
+                    fill_registers(regs, &caps, start);
+                    start + off as i32
+                }
+                None => -1,
+            }
+        }
+    }
+
+    // # C: regoff_t re_match_2(struct re_pattern_buffer *buffer, const char *s1, regoff_t len1, const char *s2, regoff_t len2, regoff_t start, struct re_registers *regs, regoff_t stop)
+    #[no_mangle]
+    pub unsafe extern "C" fn re_match_2(buffer: *mut regex_t, s1: *const u8, len1: i32, s2: *const u8, len2: i32, start: i32, regs: *mut re_registers, stop: i32) -> i32 {
+        // SAFETY: s1/s2 are readable for len1/len2 bytes; buffer holds an
+        // engine::Prog from re_compile_pattern.
+        unsafe {
+            let Some(joined) = concat_pair(s1, len1, s2, len2) else {
+                return -2;
+            };
+            if buffer.is_null() || (*buffer).buffer.is_null() || start < 0 || stop < start || joined.len() < start as usize {
+                return -2;
+            }
+            let end = core::cmp::min(joined.len(), stop as usize);
+            let prog = &*((*buffer).buffer as *const engine::Prog);
+            match engine::exec(prog, &joined[start as usize..end], false, false) {
+                Some(caps) if caps.first().copied() == Some(0) => {
+                    fill_registers(regs, &caps, start);
+                    (caps.get(1).copied().unwrap_or(0)) as i32
+                }
+                _ => -1,
+            }
+        }
+    }
+
+    // # C: void re_set_registers(struct re_pattern_buffer *buffer, struct re_registers *regs, size_t num_regs, regoff_t *starts, regoff_t *ends)
+    #[no_mangle]
+    pub unsafe extern "C" fn re_set_registers(_buffer: *mut regex_t, regs: *mut re_registers, num_regs: usize, starts: *mut i32, ends: *mut i32) {
+        // SAFETY: regs is writable; starts/ends are caller-owned arrays.
+        unsafe {
+            if !regs.is_null() {
+                (*regs).num_regs = num_regs as u32;
+                (*regs).start = starts;
+                (*regs).end = ends;
             }
         }
     }

@@ -15,6 +15,9 @@ extern const char *re_compile_pattern(const char *, size_t, struct re_pattern_bu
 extern int re_compile_fastmap(struct re_pattern_buffer *);
 extern int re_match(struct re_pattern_buffer *, const char *, int, int, struct re_registers *);
 extern int re_search(struct re_pattern_buffer *, const char *, int, int, int, struct re_registers *);
+extern int re_match_2(struct re_pattern_buffer *, const char *, int, const char *, int, int, struct re_registers *, int);
+extern int re_search_2(struct re_pattern_buffer *, const char *, int, const char *, int, int, int, struct re_registers *, int);
+extern void re_set_registers(struct re_pattern_buffer *, struct re_registers *, size_t, int *, int *);
 extern reg_syntax_t re_syntax_options;
 extern reg_syntax_t re_set_syntax(reg_syntax_t);
 #ifndef RE_SYNTAX_POSIX_EXTENDED
@@ -116,5 +119,15 @@ int main(void){
     memset(&rb, 0, sizeof rb);
     printf("GNURE|ext_plus=%s ", re_compile_pattern("a+b", 3, &rb) ? "err" : "ok");
     printf("match=%d\n", re_match(&rb, "aaab", 4, 0, 0));
+    printf("GNURE|match2=%d\n", re_match_2(&rb, "xx", 2, "aaab", 4, 2, &regs, 6));
+    printf("GNURE|regs3=%u %d %d\n", regs.num_regs, regs.start ? regs.start[0] : -9, regs.end ? regs.end[0] : -9);
+    memset(&regs, 0, sizeof regs);
+    printf("GNURE|search2=%d\n", re_search_2(&rb, "xx", 2, "aaab", 4, 0, 6, &regs, 6));
+    printf("GNURE|regs4=%u %d %d\n", regs.num_regs, regs.start ? regs.start[0] : -9, regs.end ? regs.end[0] : -9);
+    int starts[2] = {-7, -7};
+    int ends[2] = {-8, -8};
+    re_set_registers(&rb, &regs, 2, starts, ends);
+    printf("GNURE|match2_set=%d\n", re_match_2(&rb, "", 0, "aaab", 4, 0, &regs, 4));
+    printf("GNURE|regs5=%u %d %d %d %d\n", regs.num_regs, starts[0], ends[0], starts[1], ends[1]);
     return 0;
 }
