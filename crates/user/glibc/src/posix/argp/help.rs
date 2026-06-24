@@ -203,8 +203,12 @@ pub(crate) unsafe fn do_version(st: *mut argp_state, exit: bool) {
     // SAFETY: print argp_program_version (or version_hook) then exit.
     unsafe {
         let f = (*st).out_stream;
-        let v = *globals::argp_program_version.0.get();
-        if !v.is_null() { fputs(v, f); fputc('\n' as i32, f); }
+        if let Some(hook) = *globals::argp_program_version_hook.0.get() {
+            hook(f, st);
+        } else {
+            let v = *globals::argp_program_version.0.get();
+            if !v.is_null() { fputs(v, f); fputc('\n' as i32, f); }
+        }
         if exit { crate::stdlib::exit::exit_group(0); }
     }
 }
