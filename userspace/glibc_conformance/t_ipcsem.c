@@ -11,6 +11,8 @@
 #include <sys/sem.h>
 #include <sys/mman.h>
 #include <semaphore.h>
+#include <errno.h>
+#include <time.h>
 
 int main(void){
     /* --- SysV semaphore set --- */
@@ -43,6 +45,16 @@ int main(void){
     int v = -1; sem_getvalue(s, &v);
     printf("getvalue=%d\n", v);
     printf("sem_post=%d\n", sem_post(s));
+    sem_t local;
+    sem_init(&local, 0, 0);
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    ts.tv_nsec += 1000000;
+    if (ts.tv_nsec >= 1000000000L) { ts.tv_nsec -= 1000000000L; ts.tv_sec++; }
+    errno = 0;
+    int cw = sem_clockwait(&local, CLOCK_MONOTONIC, &ts);
+    printf("sem_clockwait_timeout=%d errno=%d\n", cw, errno == ETIMEDOUT);
+    sem_destroy(&local);
     printf("sem_close=%d\n", sem_close(s));
     printf("sem_unlink=%d\n", sem_unlink("/oxide_test_sem"));
     return 0;
