@@ -21,6 +21,14 @@ int main(void) {
     long double _Complex cz = conjl(z);
     long double nanv = zero / zero;
     long double infv = pos / zero;
+    long double _Complex ipz;
+    __real__ ipz = 1.0L;
+    __imag__ ipz = infv;
+    long double _Complex inz;
+    __real__ inz = infv;
+    __imag__ inz = -2.0L;
+    long double _Complex cpz = cprojl(ipz);
+    long double _Complex cnz = cprojl(inz);
 
     printf("sizeof_ld=%zu\n", sizeof(long double));
     printf("fabsl=%d\n", fabsl(neg) == 2.5L);
@@ -40,5 +48,10 @@ int main(void) {
            cimagl(z) == 4.0L,
            creall(cz) == -3.0L,
            cimagl(cz) == -4.0L);
+    printf("cprojl=%d/%d/%d/%d\n",
+           isinfl(creall(cpz)) ? 1 : 0,
+           cimagl(cpz) == 0.0L,
+           signbit(cimagl(cpz)) ? 1 : 0,
+           signbit(cimagl(cnz)) ? 1 : 0);
     return 0;
 }
