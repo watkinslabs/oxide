@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **195/195**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F611-long-double-trig-batch`. `glibc.md` = live per-cluster TODO. F counter next = **612**, B = **138**, D = **113**
+`F612-long-double-exp-log-batch`. `glibc.md` = live per-cluster TODO. F counter next = **613**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -361,6 +361,10 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   acosl, and cargl added to the C bridge using x87 trig/fpatan instructions and
   existing private sqrt helpers. Host-diffed in t_longdouble; C object checked
   for no PLT relocations or unresolved symbols.
+- **F612 DONE locally:** f80 expl, exp2l, exp10l, pow10l, expm1l, logl, log2l,
+  log10l, log1pl, and powl added to the C bridge using x87 f2xm1/fscale/fyl2x
+  helpers. Host-diffed in t_longdouble; C object checked for no PLT relocations
+  or unresolved symbols.
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need
