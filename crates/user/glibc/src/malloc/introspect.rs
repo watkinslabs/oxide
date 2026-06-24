@@ -9,6 +9,9 @@
 // Freestanding only.
 #![cfg(feature = "freestanding")]
 use super::heap;
+use crate::stdio::{file::FILE, put::fputs};
+
+const EINVAL: i32 = 22;
 
 // mallopt parameter ids (<malloc.h>); negative so they never collide with sizes.
 const M_TRIM_THRESHOLD: i32 = -1;
@@ -76,6 +79,20 @@ pub extern "C" fn malloc_stats() {
     // SAFETY: writes a fixed ASCII summary to fd 2 (stderr); MSG is a 'static
     // literal so the pointer+len range handed to write(2) is always valid.
     unsafe { crate::posix::io::write(2, MSG.as_ptr(), MSG.len()); }
+}
+
+// # C: int malloc_info(int options, FILE *stream)
+#[no_mangle]
+pub unsafe extern "C" fn malloc_info(options: i32, stream: *mut FILE) -> i32 {
+    // SAFETY: stream is a writable FILE* when options == 0. glibc returns
+    // EINVAL directly (not via errno) for nonzero options.
+    unsafe {
+        if options != 0 {
+            return EINVAL;
+        }
+        const XML: &[u8] = b"<malloc version=\"1\">\n<heap nr=\"0\">\n<sizes>\n</sizes>\n<total type=\"fast\" count=\"0\" size=\"0\"/>\n<total type=\"rest\" count=\"0\" size=\"0\"/>\n<system type=\"current\" size=\"0\"/>\n<system type=\"max\" size=\"0\"/>\n</heap>\n</malloc>\n\0";
+        fputs(XML.as_ptr(), stream)
+    }
 }
 
 // # C: size_t malloc_usable_size(void *ptr) is in malloc::api; cfree aliases free.
