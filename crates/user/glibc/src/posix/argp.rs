@@ -83,6 +83,8 @@ const EINVAL: i32 = 22;
 // program name + bug address globals (referenced by help)
 pub(crate) mod globals {
     use core::cell::UnsafeCell;
+    use crate::stdio::file::FILE;
+    use super::argp_state;
     #[repr(transparent)]
     pub(crate) struct Ptr(pub UnsafeCell<*const u8>);
     // SAFETY: process-wide argp config; single-threaded argp use per contract.
@@ -90,9 +92,17 @@ pub(crate) mod globals {
     #[repr(transparent)]
     pub(crate) struct I32(pub UnsafeCell<i32>);
     unsafe impl Sync for I32 {}
+    pub type VersionHook = Option<unsafe extern "C" fn(*mut FILE, *mut argp_state)>;
+    #[repr(transparent)]
+    pub(crate) struct Hook(pub UnsafeCell<VersionHook>);
+    // SAFETY: process-wide argp config; single-threaded argp use per contract.
+    unsafe impl Sync for Hook {}
     // # C: const char *argp_program_version;
     #[no_mangle]
     pub static argp_program_version: Ptr = Ptr(UnsafeCell::new(core::ptr::null()));
+    // # C: void (*argp_program_version_hook)(FILE *, struct argp_state *);
+    #[no_mangle]
+    pub static argp_program_version_hook: Hook = Hook(UnsafeCell::new(None));
     // # C: const char *argp_program_bug_address;
     #[no_mangle]
     pub static argp_program_bug_address: Ptr = Ptr(UnsafeCell::new(core::ptr::null()));
