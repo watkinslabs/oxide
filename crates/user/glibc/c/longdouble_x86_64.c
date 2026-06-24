@@ -324,3 +324,21 @@ long double sqrtl(long double x) {
         : "st");
     return y;
 }
+
+long double modfl(long double value, long double *integer_part) {
+    if (!__builtin_isfinite(value)) {
+        *integer_part = value;
+        if (__builtin_isinf(value)) {
+            return __builtin_copysignl(0.0L, value);
+        }
+        return value + value;
+    }
+
+    long double whole = x87_round_mode(value, 0x0c00u);
+    long double fraction = value - whole;
+    *integer_part = whole;
+    if (fraction == 0.0L) {
+        return __builtin_copysignl(0.0L, value);
+    }
+    return fraction;
+}

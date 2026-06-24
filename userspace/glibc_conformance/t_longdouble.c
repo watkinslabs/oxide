@@ -39,6 +39,14 @@ int main(void) {
     __imag__ inz = -2.0L;
     long double _Complex cpz = cprojl(ipz);
     long double _Complex cnz = cprojl(inz);
+    long double whole = 0.0L;
+    long double part = modfl(-2.75L, &whole);
+    long double zw = 1.0L;
+    long double zpart = modfl(mz, &zw);
+    long double infw = 0.0L;
+    long double infpart = modfl(-infv, &infw);
+    long double nanw = 0.0L;
+    long double nanpart = modfl(nanv, &nanw);
 
     printf("sizeof_ld=%zu\n", sizeof(long double));
     printf("fabsl=%d\n", fabsl(neg) == 2.5L);
@@ -107,5 +115,13 @@ int main(void) {
            sqrtl(mz) == 0.0L,
            signbit(sqrtl(mz)) ? 1 : 0,
            isnanl(sqrtl(-1.0L)) ? 1 : 0);
+    printf("modfl=%d/%d/%d/%d/%d/%d/%d\n",
+           part == -0.75L,
+           whole == -2.0L,
+           zpart == 0.0L,
+           signbit(zpart) ? 1 : 0,
+           isinfl(infw) && signbit(infw),
+           infpart == 0.0L && signbit(infpart),
+           isnanl(nanpart) && isnanl(nanw));
     return 0;
 }

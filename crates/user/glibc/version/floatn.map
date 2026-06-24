@@ -284,6 +284,7 @@
     llroundl;
     lrintl;
     lroundl;
+    modfl;
     nearbyintl;
     floorl;
     rintl;
