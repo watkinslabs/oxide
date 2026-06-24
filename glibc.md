@@ -88,6 +88,8 @@ __isinfl, __isnanl, __signbitl, __fpclassifyl, and __issignalingl exported from
 the same freestanding C object and host-diffed in t_longdouble.
 Also DONE: f80 complex accessors (F590): creall, cimagl, and conjl exported from
 the same freestanding C object and host-diffed in t_longdouble.
+Also DONE: f80 complex projection (F591): cprojl exported from the same
+freestanding C object and host-diffed in t_longdouble.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
