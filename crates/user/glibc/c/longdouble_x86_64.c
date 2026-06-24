@@ -368,3 +368,14 @@ long double scalbnl(long double x, int n) {
 long double scalblnl(long double x, long int n) {
     return x87_scalbnl(x, (long double)n);
 }
+
+long double scalbl(long double value, long double exponent) {
+    if (__builtin_isfinite(exponent)) {
+        long double whole = x87_round_mode(exponent, 0x0c00u);
+        if (whole != exponent) {
+            long double zero = 0.0L;
+            return zero / zero;
+        }
+    }
+    return x87_scalbnl(value, exponent);
+}
