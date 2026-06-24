@@ -22,6 +22,9 @@ pub unsafe extern "C" fn clock_getcpuclockid(pid: i32, clock_id: *mut i32) -> i3
 pub struct timespec { pub tv_sec: i64, pub tv_nsec: i64 }
 #[repr(C)]
 pub struct timeval { pub tv_sec: i64, pub tv_usec: i64 }
+#[repr(C)]
+pub struct timeb { pub time: i64, pub millitm: u16, pub timezone: i16, pub dstflag: i16 }
+const _: () = assert!(core::mem::size_of::<timeb>() == 16);
 
 // # C: int clock_gettime(clockid_t clk, struct timespec *ts)
 #[no_mangle]
@@ -70,5 +73,24 @@ pub unsafe extern "C" fn time(t: *mut i64) -> i64 {
         if clock_gettime(CLOCK_REALTIME, &mut ts) != 0 { return -1; }
         if !t.is_null() { *t = ts.tv_sec; }
         ts.tv_sec
+    }
+}
+
+// # C: int ftime(struct timeb *timebuf)
+#[no_mangle]
+pub unsafe extern "C" fn ftime(timebuf: *mut timeb) -> i32 {
+    // SAFETY: timebuf is a valid timeb out-param; derive seconds and
+    // milliseconds from CLOCK_REALTIME like glibc's legacy wrapper.
+    unsafe {
+        let mut ts = timespec { tv_sec: 0, tv_nsec: 0 };
+        let r = clock_gettime(CLOCK_REALTIME, &mut ts);
+        if r != 0 { return r; }
+        if !timebuf.is_null() {
+            (*timebuf).time = ts.tv_sec;
+            (*timebuf).millitm = (ts.tv_nsec / 1_000_000) as u16;
+            (*timebuf).timezone = 0;
+            (*timebuf).dstflag = 0;
+        }
+        0
     }
 }
