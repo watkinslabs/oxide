@@ -12,6 +12,7 @@
 extern int rresvport(int *);
 extern int rresvport_af(int *, sa_family_t);
 extern int bindresvport(int, struct sockaddr_in *);
+extern int rexecoptions;
 
 static void show(const char *n, int r) {
     printf("%s=%d errno=%d\n", n, r, r < 0 ? errno : 0);
@@ -65,5 +66,8 @@ int main(void){
     errno = 0; show("rcmd_af", rcmd_af(&phost2, 1, "remote", "local", "true", NULL, AF_INET));
     errno = 0; show("rexec", rexec(&phost3, 1, "remote", "pass", "true", NULL));
     errno = 0; show("rexec_af", rexec_af(&phost4, 1, "remote", "pass", "true", NULL, AF_INET));
+    printf("rexecoptions=%d\n", rexecoptions);
+    rexecoptions = 7;
+    printf("rexecoptions2=%d\n", rexecoptions);
     return 0;
 }
