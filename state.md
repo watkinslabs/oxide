@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **192/192**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F557-klogctl-wrapper`. `glibc.md` = live per-cluster TODO. F counter next = **558**, B = **138**, D = **112**
+`F558-sigreturn-stub`. `glibc.md` = live per-cluster TODO. F counter next = **559**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -121,6 +121,10 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   per-arch syscall numbers and unprivileged EPERM host-diff coverage in
   t_sysmisc.c. Verification: `xtask glibc-test` 192/192; both freestanding
   arch builds; `spec-lint`; filtered symbol audit now 353.
+- **F558 DONE locally:** public sigreturn added as the obsolete glibc
+  ENOSYS stub, distinct from the internal rt_sigreturn restorer trampoline;
+  host-diffed in t_signal.c. Verification: `xtask glibc-test` 192/192;
+  both freestanding arch builds; `spec-lint`; filtered symbol audit now 352.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 

@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <errno.h>
 #include <signal.h>
 #include <unistd.h>
 static volatile sig_atomic_t got = 0;
@@ -11,5 +12,8 @@ int main(void){
     sigaction(SIGUSR2, &sa, NULL);
     raise(SIGUSR2);
     printf("got2=%d\n", got);
+    errno = 0;
+    int sr = sigreturn(NULL);
+    printf("sigreturn=%d errno=%d\n", sr, sr < 0 ? errno : 0);
     return 0;
 }
