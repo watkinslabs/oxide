@@ -24,6 +24,8 @@ pub mod ethers;
 pub mod rpcent;
 #[cfg(feature = "freestanding")]
 pub mod resolv_name;
+#[cfg(feature = "freestanding")]
+pub mod resolv_query;
 pub mod nameser;
 #[cfg(feature = "freestanding")]
 pub mod nameser_date;
