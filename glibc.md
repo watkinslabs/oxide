@@ -1,9 +1,9 @@
 # glibc — remaining TODO
 
 > Live audit (docs/59 §9): `nm -D` host Fedora glibc (4214 public) vs our
-> `libc.so.6` (**~2144 exported**). Directive: implement EVERYTHING achievable
+> `libc.so.6` (**~2147 exported**). Directive: implement EVERYTHING achievable
 > (full compliance), value-agnostic. Only the hard-blocked f80/`_Float128` (§3)
-> are truly impossible. Conformance **193/193**; both arches boot.
+> are truly impossible. Conformance **194/194**; both arches boot.
 
 ## 1. The one migration blocker (docs/59 §9.4)
 8 `__`-aliased DATA symbols (__environ/_environ/__signgam/__tzname/__timezone/
@@ -47,6 +47,7 @@ Also DONE: rexecoptions remote-exec compatibility data symbol (F572).
 Also DONE: ruserpass no-.netrc compatibility path (F573).
 Also DONE: C23 narrowing math fadd/fsub/fmul/fdiv/fsqrt/ffma + f32* f64 aliases (F574).
 Also DONE: res_mkquery/res_nmkquery standard QUERY packet builders (F575).
+Also DONE: gai_error/gai_cancel/gai_suspend async getaddrinfo status helpers (F576).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 192/192.
@@ -114,6 +115,9 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   (res_mkquery/res_nmkquery DONE — F575, net/resolv_query.rs, pure standard
   QUERY packet builders using ns_name_compress and resolver options for RD/AD
   flags; host-diffable t_res_mkquery.c masks random IDs.)
+  (gai_error/gai_cancel/gai_suspend DONE — F576, net/addrinfo.rs, completed/
+  unsubmitted async status helpers plus GNU EAI strerror strings; host-diffable
+  t_gai_async.c. getaddrinfo_a queueing remains TODO.)
 - ~~**fts/fts64 (10)**~~ DONE — posix/fts.rs (F511). BSD pre/post-order iterator,
   cycle detect (FTS_DC), FTS_LOGICAL/PHYSICAL/SEEDOT/XDEV/COMFOLLOW + fts_set
   SKIP/FOLLOW. Exact FTSENT ABI (112B). Host-diffable t_fts.c over a temp tree.

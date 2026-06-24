@@ -1,10 +1,10 @@
 # state.md — session handoff
 
 ## Headline
-**glibc full-compliance build-out** (docs/59 §9). Conformance **193/193**
+**glibc full-compliance build-out** (docs/59 §9). Conformance **194/194**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F575-res-mkquery`. `glibc.md` = live per-cluster TODO. F counter next = **576**, B = **138**, D = **112**
+`F576-gai-status`. `glibc.md` = live per-cluster TODO. F counter next = **577**, B = **138**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -202,6 +202,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   options. Host-diffed in t_res_mkquery.c with random IDs masked. Verification:
   `xtask glibc-test` 193/193; both freestanding arch builds; `spec-lint`;
   filtered symbol audit now 304.
+- **F576 DONE locally:** gai_error/gai_cancel/gai_suspend added for completed
+  or unsubmitted GNU async getaddrinfo control blocks, plus GNU EAI strerror
+  strings. Host-diffed in t_gai_async.c. Verification: `xtask glibc-test`
+  194/194; both freestanding arch builds; `spec-lint`; filtered symbol audit
+  now 301.
 - small maybes: re-audit for any remaining host-linkable stragglers before
   choosing RPC/test-infra work.
 
