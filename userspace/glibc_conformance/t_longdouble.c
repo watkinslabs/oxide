@@ -53,5 +53,9 @@ int main(void) {
            cimagl(cpz) == 0.0L,
            signbit(cimagl(cpz)) ? 1 : 0,
            signbit(cimagl(cnz)) ? 1 : 0);
+    printf("rintl=%d/%d/%d\n",
+           rintl(2.5L) == 2.0L,
+           rintl(-1.5L) == -2.0L,
+           signbit(rintl(mz)) ? 1 : 0);
     return 0;
 }
