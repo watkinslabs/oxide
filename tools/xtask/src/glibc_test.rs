@@ -51,9 +51,10 @@ fn run_one(src: &Path, name: &str, lib: &Path) -> Result<bool, u8> {
     run(cc)?;
 
     // 2. host-glibc link + run (the oracle). -lresolv for the inet_net_*/nsap
-    // and resolver compat symbols glibc keeps outside libc proper.
+    // and resolver compat symbols; -lcrypt for libxcrypt symbols that host
+    // glibc keeps outside libc proper.
     let mut hl = Command::new("cc");
-    hl.args([&obj, "-lm", "-lresolv", "-o", &hbin]);
+    hl.args([&obj, "-lm", "-lresolv", "-lcrypt", "-o", &hbin]);
     run(hl)?;
     let (ho, hc) = capture(&format!("./{hbin}"), None);
 
