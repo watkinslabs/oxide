@@ -216,3 +216,99 @@ long double fminmagl(long double x, long double y) {
     }
     return fmin_corel(x, y);
 }
+
+static long double fmaximum_corel(long double x, long double y) {
+    if (__builtin_isnan(x) || __builtin_isnan(y)) {
+        return x + y;
+    }
+    return x > y ? x : y;
+}
+
+static long double fminimum_corel(long double x, long double y) {
+    if (__builtin_isnan(x) || __builtin_isnan(y)) {
+        return x + y;
+    }
+    return x <= y ? x : y;
+}
+
+long double fmaximum_numl(long double x, long double y) {
+    return fmax_corel(x, y);
+}
+
+long double fminimum_numl(long double x, long double y) {
+    return fmin_corel(x, y);
+}
+
+long double fmaximuml(long double x, long double y) {
+    return fmaximum_corel(x, y);
+}
+
+long double fminimuml(long double x, long double y) {
+    return fminimum_corel(x, y);
+}
+
+long double fmaximum_mag_numl(long double x, long double y) {
+    long double ax = __builtin_fabsl(x);
+    long double ay = __builtin_fabsl(y);
+    if (__builtin_isnan(x)) {
+        return y;
+    }
+    if (__builtin_isnan(y)) {
+        return x;
+    }
+    if (ax > ay) {
+        return x;
+    }
+    if (ay > ax) {
+        return y;
+    }
+    return fmax_corel(x, y);
+}
+
+long double fminimum_mag_numl(long double x, long double y) {
+    long double ax = __builtin_fabsl(x);
+    long double ay = __builtin_fabsl(y);
+    if (__builtin_isnan(x)) {
+        return y;
+    }
+    if (__builtin_isnan(y)) {
+        return x;
+    }
+    if (ax < ay) {
+        return x;
+    }
+    if (ay < ax) {
+        return y;
+    }
+    return fmin_corel(x, y);
+}
+
+long double fmaximum_magl(long double x, long double y) {
+    long double ax = __builtin_fabsl(x);
+    long double ay = __builtin_fabsl(y);
+    if (__builtin_isnan(x) || __builtin_isnan(y)) {
+        return x + y;
+    }
+    if (ax > ay) {
+        return x;
+    }
+    if (ay > ax) {
+        return y;
+    }
+    return fmaximum_corel(x, y);
+}
+
+long double fminimum_magl(long double x, long double y) {
+    long double ax = __builtin_fabsl(x);
+    long double ay = __builtin_fabsl(y);
+    if (__builtin_isnan(x) || __builtin_isnan(y)) {
+        return x + y;
+    }
+    if (ax < ay) {
+        return x;
+    }
+    if (ay < ax) {
+        return y;
+    }
+    return fminimum_corel(x, y);
+}
