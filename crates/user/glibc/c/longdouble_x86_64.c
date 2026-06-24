@@ -676,6 +676,35 @@ long double powl(long double base, long double power) {
     return exp2_valuel(power * log2_valuel(base));
 }
 
+long double sinhl(long double x) {
+    long double ex = exp2_valuel(x * 1.4426950408889634073599246810018921374L);
+    long double enx = 1.0L / ex;
+    return (ex - enx) * 0.5L;
+}
+
+long double coshl(long double x) {
+    long double ex = exp2_valuel(x * 1.4426950408889634073599246810018921374L);
+    long double enx = 1.0L / ex;
+    return (ex + enx) * 0.5L;
+}
+
+long double tanhl(long double x) {
+    long double e2x = exp2_valuel(2.0L * x * 1.4426950408889634073599246810018921374L);
+    return (e2x - 1.0L) / (e2x + 1.0L);
+}
+
+long double asinhl(long double x) {
+    return log2_valuel(x + x87_sqrtl(x * x + 1.0L)) * 0.69314718055994530941723212145817656808L;
+}
+
+long double acoshl(long double x) {
+    return log2_valuel(x + x87_sqrtl((x - 1.0L) * (x + 1.0L))) * 0.69314718055994530941723212145817656808L;
+}
+
+long double atanhl(long double x) {
+    return 0.5L * log2_valuel((1.0L + x) / (1.0L - x)) * 0.69314718055994530941723212145817656808L;
+}
+
 static long double x87_fprem(long double x, long double y) {
     long double r;
     __asm__ __volatile__(
