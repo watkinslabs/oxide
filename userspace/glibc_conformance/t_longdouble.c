@@ -48,6 +48,10 @@ int main(void) {
     long double nanw = 0.0L;
     long double nanpart = modfl(nanv, &nanw);
     long double scaled_zero = scalbnl(mz, 5);
+    int frexp_e = 0;
+    long double frexp_v = frexpl(-12.0L, &frexp_e);
+    int frexp_ze = 99;
+    long double frexp_zv = frexpl(mz, &frexp_ze);
 
     printf("sizeof_ld=%zu\n", sizeof(long double));
     printf("fabsl=%d\n", fabsl(neg) == 2.5L);
@@ -137,5 +141,16 @@ int main(void) {
            scaled_zero == 0.0L && signbit(scalbl(mz, 3.0L)),
            isnanl(scalbl(8.0L, 1.9L)) ? 1 : 0,
            isinfl(scalbl(infv, -2.0L)) ? 1 : 0);
+    printf("exponent_batch=%d/%d/%d/%d/%d/%d/%d/%d/%d/%d\n",
+           logbl(12.0L) == 3.0L,
+           isinfl(logbl(zero)) && signbit(logbl(zero)),
+           ilogbl(12.0L),
+           ilogbl(zero) == (-2147483647 - 1),
+           llogbl(infv) == __LONG_MAX__,
+           frexp_v == -0.75L,
+           frexp_e == 4,
+           frexp_zv == 0.0L && signbit(frexp_zv) && frexp_ze == 0,
+           significandl(12.0L) == 1.5L,
+           isnanl(significandl(nanv)) ? 1 : 0);
     return 0;
 }
