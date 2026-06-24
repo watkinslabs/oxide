@@ -18,6 +18,7 @@ pub const REG_BADPAT: i32 = 2;
 pub const REG_EESCAPE: i32 = 5;
 pub const REG_EBRACK: i32 = 7;
 pub const REG_EPAREN: i32 = 8;
+pub const RE_SYNTAX_POSIX_BASIC: u64 = 16843462;
 
 // glibc re_pattern_buffer (LP64, 64 bytes); programs read re_nsub (offset 48).
 #[repr(C)]
@@ -49,9 +50,11 @@ mod imp {
     use super::*;
     use crate::string::len::strlen_impl;
     use alloc::boxed::Box;
-    use core::sync::atomic::{AtomicPtr, Ordering};
+    use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
     static RE_COMP_PROG: AtomicPtr<engine::Prog> = AtomicPtr::new(core::ptr::null_mut());
+    #[no_mangle]
+    pub static re_syntax_options: AtomicU64 = AtomicU64::new(0);
 
     unsafe fn fill_registers(regs: *mut re_registers, caps: &[usize], base: i32) {
         // SAFETY: regs is null or a writable GNU re_registers. If its arrays
@@ -179,7 +182,8 @@ mod imp {
         // The compiled engine program is stored in buffer->buffer for re_match.
         unsafe {
             let pat = core::slice::from_raw_parts(pattern, length);
-            match engine::compile_pattern(pat, false, false, true) {
+            let ere = re_syntax_options.load(Ordering::Acquire) != RE_SYNTAX_POSIX_BASIC;
+            match engine::compile_pattern(pat, false, false, ere) {
                 Ok(prog) => {
                     let ng = prog.ngroup;
                     (*buffer).buffer = Box::into_raw(Box::new(prog)) as *mut core::ffi::c_void;
@@ -253,6 +257,12 @@ mod imp {
                 None => -1,
             }
         }
+    }
+
+    // # C: reg_syntax_t re_set_syntax(reg_syntax_t syntax)
+    #[no_mangle]
+    pub extern "C" fn re_set_syntax(syntax: u64) -> u64 {
+        re_syntax_options.swap(syntax, Ordering::AcqRel)
     }
 
     // # C: char *re_comp(const char *pattern)
