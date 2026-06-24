@@ -143,6 +143,13 @@ int main(void) {
            sqrtl(mz) == 0.0L,
            signbit(sqrtl(mz)) ? 1 : 0,
            isnanl(sqrtl(-1.0L)) ? 1 : 0);
+    printf("hypot_abs=%d/%d/%d/%d/%d/%d\n",
+           hypotl(3.0L, 4.0L) == 5.0L,
+           hypotl(mz, zero) == 0.0L && !signbit(hypotl(mz, zero)),
+           isinfl(hypotl(infv, nanv)) ? 1 : 0,
+           isnanl(hypotl(nanv, 1.0L)) ? 1 : 0,
+           cabsl(z) == 5.0L,
+           isinfl(cabsl(ipz)) ? 1 : 0);
     printf("modfl=%d/%d/%d/%d/%d/%d/%d\n",
            part == -0.75L,
            whole == -2.0L,

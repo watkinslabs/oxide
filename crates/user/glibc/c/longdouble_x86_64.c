@@ -313,7 +313,7 @@ long double fminimum_magl(long double x, long double y) {
     return fminimum_corel(x, y);
 }
 
-long double sqrtl(long double x) {
+static long double x87_sqrtl(long double x) {
     long double y;
     __asm__ __volatile__(
         "fldt %1\n\t"
@@ -323,6 +323,41 @@ long double sqrtl(long double x) {
         : "m"(x)
         : "st");
     return y;
+}
+
+long double sqrtl(long double x) {
+    return x87_sqrtl(x);
+}
+
+static long double hypot_valuel(long double x, long double y) {
+    long double ax = __builtin_fabsl(x);
+    long double ay = __builtin_fabsl(y);
+
+    if (__builtin_isinf(ax) || __builtin_isinf(ay)) {
+        return 1.0L / 0.0L;
+    }
+    if (__builtin_isnan(ax) || __builtin_isnan(ay)) {
+        return ax + ay;
+    }
+    if (ay > ax) {
+        long double tmp = ax;
+        ax = ay;
+        ay = tmp;
+    }
+    if (ay == 0.0L) {
+        return ax;
+    }
+
+    long double ratio = ay / ax;
+    return ax * x87_sqrtl(1.0L + ratio * ratio);
+}
+
+long double hypotl(long double x, long double y) {
+    return hypot_valuel(x, y);
+}
+
+long double cabsl(long double _Complex z) {
+    return hypot_valuel(__real__ z, __imag__ z);
 }
 
 long double modfl(long double value, long double *integer_part) {
