@@ -1,10 +1,10 @@
 # state.md — session handoff
 
 ## Headline
-**glibc full-compliance build-out** (docs/59 §9). Conformance **187/187**
+**glibc full-compliance build-out** (docs/59 §9). Conformance **188/188**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F538-ns-sprintrr`. `glibc.md` = live per-cluster TODO. F counter next = **539**, D = **112**
+`F539-usershell-db`. `glibc.md` = live per-cluster TODO. F counter next = **540**, D = **112**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -45,7 +45,8 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
 - **F538 DONE locally:** ns_sprintrr/ns_sprintrrf for A/AAAA/NS/CNAME/PTR/MX/TXT
   and RFC3597 unknown-RR fallback; canonical absolute names, origin-relative
   owner/RDATA names, TTL/class/type tab-column layout; host-diffable t_nssprint.c.
-  Conformance now 187/187.
+- **F539 DONE locally:** getusershell/setusershell/endusershell over /etc/shells
+  with glibc default fallback; host-diffable t_usershell.c. Conformance now 188/188.
 - small maybes: llseek (=lseek on 64-bit; check it's linkable not compat-only),
   gnu_get_libc_version/release (trivial but version string ≠ host → not diffable).
 
