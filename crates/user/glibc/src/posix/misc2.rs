@@ -129,6 +129,42 @@ pub unsafe extern "C" fn chflags(_path: *const c_char, _flags: u64) -> i32 {
     crate::internal::errno::set(ENOSYS); -1
 }
 
+// # C: int bdflush(int func, long *address) — obsolete Linux syscall wrapper.
+#[no_mangle]
+pub unsafe extern "C" fn bdflush(_func: i32, _address: *mut isize) -> i32 {
+    crate::internal::errno::set(ENOSYS); -1
+}
+
+// # C: void *create_module(const char *name, size_t size) — obsolete.
+#[no_mangle]
+pub unsafe extern "C" fn create_module(_name: *const c_char, _size: usize) -> *mut c_void {
+    crate::internal::errno::set(ENOSYS); !0usize as *mut c_void
+}
+
+// # C: int query_module(const char *name, int which, void *buf, size_t bufsize, size_t *ret)
+#[no_mangle]
+pub unsafe extern "C" fn query_module(_name: *const c_char, _which: i32, _buf: *mut c_void, _bufsize: usize, _ret: *mut usize) -> i32 {
+    crate::internal::errno::set(ENOSYS); -1
+}
+
+// # C: int get_kernel_syms(struct kernel_sym *table) — obsolete.
+#[no_mangle]
+pub unsafe extern "C" fn get_kernel_syms(_table: *mut c_void) -> i32 {
+    crate::internal::errno::set(ENOSYS); -1
+}
+
+// # C: int nfsservctl(int cmd, struct nfsctl_arg *argp, union nfsctl_res *resp)
+#[no_mangle]
+pub unsafe extern "C" fn nfsservctl(_cmd: i32, _argp: *mut c_void, _resp: *mut c_void) -> i32 {
+    crate::internal::errno::set(ENOSYS); -1
+}
+
+// # C: int sstk(intptr_t increment) — obsolete stack-growth syscall wrapper.
+#[no_mangle]
+pub extern "C" fn sstk(_increment: isize) -> i32 {
+    crate::internal::errno::set(ENOSYS); -1
+}
+
 // # C: int fchflags(int fd, unsigned long flags) — glibc stub.
 #[no_mangle]
 pub extern "C" fn fchflags(_fd: i32, _flags: u64) -> i32 {
