@@ -103,6 +103,9 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   hook pointer and --version dispatch precedence; host-diffable t_argp.c.)
   (getpw DONE — F543, nss/mod.rs, legacy uid→passwd-line renderer over
   /etc/passwd; host-diffable t_pwgr.c.)
+  (ttyslot DONE — F544, posix/tty.rs, scans /etc/ttys via ttyent and returns
+  the historical 1-based slot or Linux/glibc 0-on-miss; host-diffable
+  t_ttyent.c.)
   (pkey_alloc/free/mprotect + pkey_get/set DONE — F529, posix/modern.rs;
   alloc/free/mprotect syscall passthrough both arches, get/set via PKRU
   (x86) / POR_EL0 (arm) register ops; host-diffable t_pkey.c).
