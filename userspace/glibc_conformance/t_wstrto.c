@@ -12,6 +12,10 @@ int main(void){
     double d = wcstod(L"3.14159e2zz", &end);
     printf("wcstod=%.5f rest=%ls\n", d, end);
     printf("wcstof=%.3f\n", wcstof(L"-0.5", NULL));
+    long double ld = wcstold(L" -12345e0tail", &end);
+    printf("wcstold=%d rest=%ls\n", ld == -12345.0L, end);
+    ld = wcstold(L"0x1.8p+2zz", &end);
+    printf("wcstoldhex=%d rest=%ls\n", ld == 6.0L, end);
 
     printf("casecmp=%d ncase=%d\n", wcscasecmp(L"Hello", L"hello"), wcsncasecmp(L"ABCx", L"abcY", 3));
 
