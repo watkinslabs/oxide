@@ -9,6 +9,8 @@
  * relocation back to the same public symbol; those become recursive exports.
  */
 
+static long double log2_valuel(long double x);
+
 long double fabsl(long double x) {
     return __builtin_fabsl(x);
 }
@@ -315,6 +317,248 @@ long double fminimum_magl(long double x, long double y) {
 
 long double fmal(long double x, long double y, long double z) {
     return x * y + z;
+}
+
+static char qecvt_buffer[400];
+static char qfcvt_buffer[400];
+
+static long double pow10_intl(int n) {
+    long double r = 1.0L;
+    if (n >= 0) {
+        for (int i = 0; i < n; i += 1) {
+            r *= 10.0L;
+        }
+    } else {
+        for (int i = 0; i < -n; i += 1) {
+            r /= 10.0L;
+        }
+    }
+    return r;
+}
+
+static int write_cbuf(char *buf, unsigned long len, const char *src, int n) {
+    if ((unsigned long)n + 1ul > len) {
+        return -1;
+    }
+    for (int i = 0; i < n; i += 1) {
+        buf[i] = src[i];
+    }
+    buf[n] = 0;
+    return 0;
+}
+
+static int qecvt_corel(long double value, int ndigit, int *decpt, int *sign, char *buf, unsigned long len) {
+    int nd = ndigit < 1 ? 1 : ndigit;
+    if (nd > 350) {
+        nd = 350;
+    }
+    int neg = __builtin_signbit(value) && !__builtin_isnan(value);
+    if (sign) {
+        *sign = neg;
+    }
+    long double mag = neg ? -value : value;
+    char tmp[360];
+    if (mag == 0.0L || !__builtin_isfinite(mag)) {
+        if (decpt) {
+            *decpt = mag == 0.0L ? 1 : 0;
+        }
+        char c = __builtin_isnan(mag) ? 'n' : (__builtin_isinf(mag) ? 'i' : '0');
+        for (int i = 0; i < nd; i += 1) {
+            tmp[i] = c;
+        }
+        return write_cbuf(buf, len, tmp, nd);
+    }
+
+    int exp10 = (int)x87_round_mode(log2_valuel(mag) * 0.30102999566398119521373889472449302677L, 0x0400u);
+    long double scaled = mag / pow10_intl(exp10);
+    while (scaled >= 10.0L) {
+        scaled /= 10.0L;
+        exp10 += 1;
+    }
+    while (scaled < 1.0L) {
+        scaled *= 10.0L;
+        exp10 -= 1;
+    }
+
+    for (int i = 0; i <= nd; i += 1) {
+        int d = (int)x87_round_mode(scaled, 0x0c00u);
+        if (d < 0) {
+            d = 0;
+        } else if (d > 9) {
+            d = 9;
+        }
+        tmp[i] = (char)('0' + d);
+        scaled = (scaled - (long double)d) * 10.0L;
+    }
+    if (tmp[nd] >= '5') {
+        int carry = 1;
+        for (int i = nd - 1; i >= 0 && carry; i -= 1) {
+            if (tmp[i] == '9') {
+                tmp[i] = '0';
+            } else {
+                tmp[i] += 1;
+                carry = 0;
+            }
+        }
+        if (carry) {
+            tmp[0] = '1';
+            for (int i = 1; i < nd; i += 1) {
+                tmp[i] = '0';
+            }
+            exp10 += 1;
+        }
+    }
+    if (decpt) {
+        *decpt = exp10 + 1;
+    }
+    return write_cbuf(buf, len, tmp, nd);
+}
+
+static int qfcvt_corel(long double value, int ndigit, int *decpt, int *sign, char *buf, unsigned long len) {
+    int nd = ndigit < 0 ? 0 : ndigit;
+    if (nd > 350) {
+        nd = 350;
+    }
+    int neg = __builtin_signbit(value) && !__builtin_isnan(value);
+    if (sign) {
+        *sign = neg;
+    }
+    long double mag = neg ? -value : value;
+    if (mag == 0.0L || !__builtin_isfinite(mag)) {
+        char tmp[360];
+        int n = mag == 0.0L ? nd + 1 : 3;
+        char c = __builtin_isnan(mag) ? 'n' : (__builtin_isinf(mag) ? 'i' : '0');
+        if (decpt) {
+            *decpt = mag == 0.0L ? 1 : 0;
+        }
+        for (int i = 0; i < n; i += 1) {
+            tmp[i] = c;
+        }
+        return write_cbuf(buf, len, tmp, n);
+    }
+
+    long double scale = pow10_intl(nd);
+    long double rounded = x87_round_mode(mag * scale + 0.5L, 0x0400u);
+    if (rounded == 0.0L) {
+        if (decpt) {
+            *decpt = -nd;
+        }
+        return write_cbuf(buf, len, "", 0);
+    }
+
+    int dp = (int)x87_round_mode(log2_valuel(rounded / scale) * 0.30102999566398119521373889472449302677L, 0x0400u) + 1;
+    if (decpt) {
+        *decpt = dp;
+    }
+    int total = dp > 0 ? dp + nd : nd + dp;
+    if (total < 0) {
+        total = 0;
+    }
+    if (total > 350) {
+        total = 350;
+    }
+    char tmp[360];
+    long double div = pow10_intl(total - 1);
+    for (int i = 0; i < total; i += 1) {
+        int d = div == 0.0L ? 0 : (int)x87_round_mode(rounded / div, 0x0c00u);
+        if (d < 0) {
+            d = 0;
+        } else if (d > 9) {
+            d = 9;
+        }
+        tmp[i] = (char)('0' + d);
+        rounded -= (long double)d * div;
+        div /= 10.0L;
+    }
+    return write_cbuf(buf, len, tmp, total);
+}
+
+char *qecvt(long double value, int ndigit, int *decpt, int *sign) {
+    qecvt_corel(value, ndigit, decpt, sign, qecvt_buffer, sizeof(qecvt_buffer));
+    return qecvt_buffer;
+}
+
+char *qfcvt(long double value, int ndigit, int *decpt, int *sign) {
+    qfcvt_corel(value, ndigit, decpt, sign, qfcvt_buffer, sizeof(qfcvt_buffer));
+    return qfcvt_buffer;
+}
+
+int qecvt_r(long double value, int ndigit, int *decpt, int *sign, char *buf, unsigned long len) {
+    return qecvt_corel(value, ndigit, decpt, sign, buf, len);
+}
+
+int qfcvt_r(long double value, int ndigit, int *decpt, int *sign, char *buf, unsigned long len) {
+    return qfcvt_corel(value, ndigit, decpt, sign, buf, len);
+}
+
+char *qgcvt(long double value, int ndigit, char *buf) {
+    int dp = 0;
+    int sign = 0;
+    char digits[360];
+    int nd = ndigit < 1 ? 1 : ndigit;
+    if (nd > 350) {
+        nd = 350;
+    }
+    qecvt_corel(value, nd, &dp, &sign, digits, sizeof(digits));
+    char *out = buf;
+    if (sign) {
+        *out++ = '-';
+    }
+    if (dp > nd || dp <= -4) {
+        *out++ = digits[0];
+        int last = nd - 1;
+        while (last > 0 && digits[last] == '0') {
+            last -= 1;
+        }
+        if (last > 0) {
+            *out++ = '.';
+            for (int i = 1; i <= last; i += 1) {
+                *out++ = digits[i];
+            }
+        }
+        int exp = dp - 1;
+        *out++ = 'e';
+        *out++ = exp < 0 ? '-' : '+';
+        if (exp < 0) {
+            exp = -exp;
+        }
+        if (exp >= 100) {
+            *out++ = (char)('0' + (exp / 100) % 10);
+        }
+        *out++ = (char)('0' + (exp / 10) % 10);
+        *out++ = (char)('0' + exp % 10);
+    } else {
+        if (dp <= 0) {
+            *out++ = '0';
+            *out++ = '.';
+            for (int i = 0; i < -dp; i += 1) {
+                *out++ = '0';
+            }
+            int last = nd - 1;
+            while (last > 0 && digits[last] == '0') {
+                last -= 1;
+            }
+            for (int i = 0; i <= last; i += 1) {
+                *out++ = digits[i];
+            }
+        } else {
+            int last = nd - 1;
+            while (last >= dp && digits[last] == '0') {
+                last -= 1;
+            }
+            for (int i = 0; i < dp; i += 1) {
+                *out++ = i < nd ? digits[i] : '0';
+            }
+            if (last >= dp) {
+                *out++ = '.';
+                for (int i = dp; i <= last; i += 1) {
+                    *out++ = digits[i];
+                }
+            }
+        }
+    }
+    *out = 0;
+    return buf;
 }
 
 static long double x87_sqrtl(long double x) {

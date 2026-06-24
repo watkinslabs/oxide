@@ -44,6 +44,28 @@ static void cvt_r(void){
     printf("fcvt_r ret=%d buf=%s dp=%d sign=%d\n", r, buf, dp, sign);
 }
 
+static void q_cvt(void){
+    int dp, sign;
+    long double xs[] = {3.14159L, 0.0L, -123.456L, 1e-5L, 100.0L, 0.0001234L, 0.05L, 0.005L};
+    for (size_t i=0;i<sizeof xs/sizeof xs[0];i++){
+        char eb[32]; int edp, esign;
+        strcpy(eb, qecvt(xs[i], 5, &edp, &esign));
+        printf("qecvt[%zu]=\"%s\" dp=%d sign=%d\n", i, eb, edp, esign);
+        char fb[32]; int fdp, fsign;
+        strcpy(fb, qfcvt(xs[i], 3, &fdp, &fsign));
+        (void)dp; (void)sign;
+        printf("qfcvt[%zu]=\"%s\" dp=%d sign=%d\n", i, fb, fdp, fsign);
+    }
+    char b[64];
+    printf("qgcvt(3.14159,5)=%s\n", qgcvt(3.14159L, 5, b));
+    printf("qgcvt(100000,4)=%s\n", qgcvt(100000.0L, 4, b));
+    printf("qgcvt(0.0001234,3)=%s\n", qgcvt(0.0001234L, 3, b));
+    int r = qecvt_r(3.14159L, 5, &dp, &sign, b, sizeof b);
+    printf("qecvt_r ret=%d buf=%s dp=%d sign=%d\n", r, b, dp, sign);
+    r = qfcvt_r(3.14159L, 3, &dp, &sign, b, sizeof b);
+    printf("qfcvt_r ret=%d buf=%s dp=%d sign=%d\n", r, b, dp, sign);
+}
+
 static void strfrom_t(void){
     char b[64];
     int n = strfromd(b, sizeof b, "%.5f", 3.14159);
@@ -104,6 +126,7 @@ int main(void){
     ecvt_fcvt();
     gcvt_t();
     cvt_r();
+    q_cvt();
     strfrom_t();
     parse_t();
     psize_t();
