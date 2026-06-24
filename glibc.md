@@ -22,7 +22,8 @@ llseek + C-locale time `_l` wrappers (F546), and sem_clockwait (F547).
 Also DONE: libxcrypt compatibility aliases + crypt_checksalt (F548).
 Also DONE: C-locale strtof32_l/strtof64_l (F549); strtold/wcstold remain
 hard-blocked with the other long-double ABI functions.
-Also DONE: resolver validators res_hnok/res_ownok/res_mailok/res_dnok (F550).
+Also DONE: resolver validators res_hnok/res_ownok/res_mailok/res_dnok (F550)
+and gethostent_r (F551).
 Remaining RPC =
 clnt_*/svc_*/auth_*/pmap_* (sockets) + the rpc_msg XDR filters (xdr_callmsg/
 replymsg/opaque_auth/...). Conformance 163/163.
@@ -76,6 +77,9 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   host/mailbox/owner/general DNS domain validators with glibc-matched
   wildcard, escaping, whitespace, label-length, and total-size behavior;
   host-diffable t_resok.c via -lresolv oracle.)
+  (gethostent_r DONE — F551, net/netdb_host.rs, reentrant /etc/hosts
+  enumeration over the existing cursor + caller-buffer hostent packer;
+  host-diffable t_netdb_r.c.)
 - ~~**fts/fts64 (10)**~~ DONE — posix/fts.rs (F511). BSD pre/post-order iterator,
   cycle detect (FTS_DC), FTS_LOGICAL/PHYSICAL/SEEDOT/XDEV/COMFOLLOW + fts_set
   SKIP/FOLLOW. Exact FTSENT ABI (112B). Host-diffable t_fts.c over a temp tree.
