@@ -102,6 +102,10 @@ host-diffed in t_longdouble.
 Also DONE: f80 min/max batch (F596): fmaxl, fminl, fdiml, fmaxmagl, and
 fminmagl exported from the same freestanding C object and host-diffed in
 t_longdouble.
+Also DONE: f80 C23 min/max batch (F597): fmaximum_numl, fminimum_numl,
+fmaximuml, fminimuml, fmaximum_mag_numl, fminimum_mag_numl, fmaximum_magl, and
+fminimum_magl exported from the same freestanding C object and host-diffed in
+t_longdouble.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
