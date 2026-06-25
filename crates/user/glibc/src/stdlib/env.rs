@@ -1,4 +1,4 @@
-// Environment (docs/59§6 G7). `environ`/`__environ` is the char** the
+// Environment (docs/59§6 G7). `environ`/`__environ`/`_environ` is the char** the
 // kernel hands us via envp (set in __libc_start_main). getenv reads it;
 // setenv/unsetenv/putenv/clearenv manage a malloc'd owned copy
 // (copy-on-first-write) under a spinlock. find_env/make_entry are pure
@@ -64,11 +64,22 @@ mod imp {
     // pointer (getenv / program access) observe a consistent array.
     unsafe impl Sync for CharPP {}
 
-    // # C: char **environ; (and __environ alias below)
+    // # C: char **environ; (and __environ/_environ aliases below)
     #[no_mangle]
     static environ: CharPP = CharPP(UnsafeCell::new(core::ptr::null_mut()));
-    // __environ is the same object (glibc keeps them aliased).
-    core::arch::global_asm!(".globl __environ", ".set __environ, environ");
+    // __environ/_environ are the same object (glibc keeps them aliased).
+    core::arch::global_asm!(
+        ".globl __environ",
+        ".set __environ, environ",
+        ".globl _environ",
+        ".set _environ, environ",
+    );
+    unsafe extern "C" {
+        #[link_name = "__environ"]
+        static environ_dunder_alias: CharPP;
+        #[link_name = "_environ"]
+        static environ_single_alias: CharPP;
+    }
 
     static OWNED: AtomicBool = AtomicBool::new(false);
     static CAP: AtomicUsize = AtomicUsize::new(0);
@@ -81,8 +92,13 @@ mod imp {
         unsafe { *environ.0.get() }
     }
     unsafe fn store(p: *mut *mut u8) {
-        // SAFETY: writes the environ array pointer under LOCK.
-        unsafe { *environ.0.get() = p; }
+        // SAFETY: writes the environ array pointer under LOCK. The alias writes
+        // keep non-PIE COPY relocations for __environ/_environ synchronized too.
+        unsafe {
+            *environ.0.get() = p;
+            *environ_dunder_alias.0.get() = p;
+            *environ_single_alias.0.get() = p;
+        }
     }
     unsafe fn count(a: *mut *mut u8) -> usize {
         // SAFETY: a is null or a NULL-terminated array; scan stops at NULL.

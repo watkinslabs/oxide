@@ -1,0 +1,14 @@
+/* Bare global_asm data aliases that must be visible from .dynsym for copy
+ * relocations. x86_64 consumes these through floatn.map; this generic map is
+ * for arches that must not consume the x86-only _FloatN/long-double list. */
+{
+  global:
+    _environ;
+    __daylight;
+    __environ;
+    __progname;
+    __progname_full;
+    __signgam;
+    __timezone;
+    __tzname;
+};

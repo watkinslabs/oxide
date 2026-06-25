@@ -314,6 +314,10 @@ mod exports {
     #[no_mangle]
     static signgam: Sg = Sg(UnsafeCell::new(1));
     core::arch::global_asm!(".globl __signgam", ".set __signgam, signgam");
+    unsafe extern "C" {
+        #[link_name = "__signgam"]
+        static signgam_alias: Sg;
+    }
 
     // # C: double tgamma(double)
     #[no_mangle] pub extern "C" fn tgamma(x: f64) -> f64 { super::tgamma(x) }
@@ -328,7 +332,11 @@ mod exports {
     #[no_mangle] pub extern "C" fn lgamma(x: f64) -> f64 {
         let mut sg = 0; let r = super::lgamma_r(x, &mut sg);
         // SAFETY: signgam is the process-global int slot for the result sign.
-        unsafe { *signgam.0.get() = sg; } r
+        unsafe {
+            *signgam.0.get() = sg;
+            *signgam_alias.0.get() = sg;
+        }
+        r
     }
     // # C: float lgammaf(float)
     #[no_mangle] pub extern "C" fn lgammaf(x: f32) -> f32 { let mut s = 0; super::lgamma_r(x as f64, &mut s) as f32 }

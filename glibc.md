@@ -6,14 +6,15 @@
 > x86_64 C ABI bridge for real f80 long-double entry points. Remaining audit
 > names are mostly broader long-double/quad families plus host
 > `errno@@GLIBC_PRIVATE`, which is an ELF TLS data symbol. Conformance
-> **195/195**; both arches build.
+> **198/198**; both arches build.
 
-## 1. The one migration blocker (docs/59 §9.4)
-8 `__`-aliased DATA symbols (__environ/_environ/__signgam/__tzname/__timezone/
-__daylight/__progname/__progname_full). Export works; libc reaches its own data
-DIRECTLY not via GOT, so copy-reloc interposition in an executable desyncs. Fix =
-GOT-indirect codegen for copy-relocatable libc data. Likely moot for real GNU-ld
-vendor binaries (confirm in G19d). Reverted; don't re-add without the codegen fix.
+## 1. Copy-reloc data aliases DONE (docs/59 §9.4)
+The copy-relocatable DATA aliases (__environ/_environ/__signgam/__tzname/
+__timezone/__daylight/__progname/__progname_full) are exported, and libc-owned
+writes now update the canonical slot plus each alias slot through distinct GOT
+entries. This keeps non-PIE COPY-reloc consumers synchronized for startup env,
+program names, tzset, and lgamma sign state. Covered by `t_copyreloc_globals`,
+linked -fno-pie/-no-pie while the rest of the conformance suite stays PIE.
 
 ## NOTE (latest++): XDR layer DONE — rpc/xdr.rs: xdrmem_create + 10-op vtable +
 all scalar/fixed-width/hyper/float/double primitives + opaque/bytes/string/
