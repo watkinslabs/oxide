@@ -172,11 +172,16 @@
     __munmap;
     __nanosleep;
     __newlocale;
+    __mq_open_2;
     __mktemp;
     __nl_langinfo_l;
     __open64;
+    __open64_2;
     __open64_nocancel;
+    __open_2;
     __open_nocancel;
+    __openat64_2;
+    __openat_2;
     __pipe;
     __posix_getopt;
     __pow_finite;
