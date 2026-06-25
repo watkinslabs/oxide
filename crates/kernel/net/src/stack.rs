@@ -372,9 +372,16 @@ impl NetStack {
 
     /// Pop one queued datagram or None. # C: O(log N)
     pub fn recv_udp(&self, port: u16) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
+        self.recv_udp_opts(port, false)
+    }
+
+    /// Pop or peek one queued datagram or None. Peeking clones the
+    /// front payload and leaves queue state unchanged.
+    /// # C: O(log N + payload bytes when peeking)
+    pub fn recv_udp_opts(&self, port: u16, peek: bool) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
         let q = { self.udp.lock().get(&port)?.clone() };
-        let popped = q.q.lock().pop_front();
-        popped
+        let mut g = q.q.lock();
+        if peek { g.front().cloned() } else { g.pop_front() }
     }
 
     /// F162: clone the per-port UdpRxQueue Arc out of the udp map so

@@ -5,7 +5,7 @@
 
 use crate::stack::TcpEntry;
 use crate::netdev::NetError;
-use crate::sock::{drain_loopback, socket_recv, socket_recv6, stack, InetSocket, SockKind, AF_INET6};
+use crate::sock::{drain_loopback, stack, InetSocket, SockKind, AF_INET6};
 use crate::Ipv4Addr;
 
 /// F159: blocking wait for TCP connect's SYN-ACK. Park on
@@ -290,8 +290,14 @@ pub fn compute_deadline_ns(timeo_ns: i64) -> u64 {
 /// datagram socket, both `None` when there's no stored peer.
 pub struct Received {
     pub payload: alloc::vec::Vec<u8>,
+    pub full_len: usize,
     pub peer: Option<(Ipv4Addr, u16)>,
     pub peer6: Option<(crate::Ipv6Addr, u16)>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct RecvOptions {
+    pub peek: bool,
 }
 
 /// `recvfrom` per `recvfrom(2)`. work fn. Returns the payload
@@ -299,14 +305,29 @@ pub struct Received {
 /// for sockets without a stored peer).
 /// # C: O(payload bytes)
 pub fn recvfrom(sock: &alloc::sync::Arc<InetSocket>, max_len: usize) -> Result<Received, NetError> {
+    recvfrom_opts(sock, max_len, RecvOptions::default())
+}
+
+/// `recvfrom` variant with datagram flags that affect queue consumption.
+/// # C: O(payload bytes)
+pub fn recvfrom_opts(
+    sock: &alloc::sync::Arc<InetSocket>,
+    max_len: usize,
+    opts: RecvOptions,
+) -> Result<Received, NetError> {
     // AF_UNIX SOCK_DGRAM.
     if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
         let q = q.clone();
-        let msg = q.pop().ok_or(NetError::Eagain)?;
-        let take = core::cmp::min(max_len, msg.payload.len());
+        let msg = if opts.peek {
+            q.msgs.lock().front().map(|msg| msg.payload.clone())
+        } else {
+            q.pop().map(|msg| msg.payload)
+        }.ok_or(NetError::Eagain)?;
+        let full_len = msg.len();
+        let take = core::cmp::min(max_len, full_len);
         let mut out = alloc::vec::Vec::with_capacity(take);
-        out.extend_from_slice(&msg.payload[..take]);
-        return Ok(Received { payload: out, peer: None, peer6: None });
+        out.extend_from_slice(&msg[..take]);
+        return Ok(Received { payload: out, full_len, peer: None, peer6: None });
     }
     // AF_UNIX SOCK_SEQPACKET/DGRAM socketpair. The inode read() path
     // drains via read_unix_msg_blocking, but recvmsg/recvfrom landed
@@ -320,8 +341,8 @@ pub fn recvfrom(sock: &alloc::sync::Arc<InetSocket>, max_len: usize) -> Result<R
         _ => None,
     };
     if let Some((pair, end)) = msgpair {
-        return match pair.recv(end, max_len) {
-            Some(msg) => Ok(Received { payload: msg, peer: None, peer6: None }),
+        return match pair.recv_payload(end, max_len, opts.peek) {
+            Some((msg, full_len)) => Ok(Received { payload: msg, full_len, peer: None, peer6: None }),
             None => Err(NetError::Eagain),
         };
     }
@@ -330,12 +351,13 @@ pub fn recvfrom(sock: &alloc::sync::Arc<InetSocket>, max_len: usize) -> Result<R
     if let SockKind::Packet { rx, .. } = &*sock.kind.lock() {
         let frame = {
             let mut q = rx.lock();
-            q.pop_front().ok_or(NetError::Eagain)?
+            if opts.peek { q.front().cloned() } else { q.pop_front() }.ok_or(NetError::Eagain)?
         };
-        let take = core::cmp::min(max_len, frame.len());
+        let full_len = frame.len();
+        let take = core::cmp::min(max_len, full_len);
         let mut out = alloc::vec::Vec::with_capacity(take);
         out.extend_from_slice(&frame[..take]);
-        return Ok(Received { payload: out, peer: None, peer6: None });
+        return Ok(Received { payload: out, full_len, peer: None, peer6: None });
     }
     // TCP.
     if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
@@ -343,23 +365,29 @@ pub fn recvfrom(sock: &alloc::sync::Arc<InetSocket>, max_len: usize) -> Result<R
         drain_loopback();
         let payload = stack().tcp_recv(&entry, max_len);
         if payload.is_empty() { return Err(NetError::Eagain); }
+        let full_len = payload.len();
         let peer = *sock.peer.lock();
-        return Ok(Received { payload, peer, peer6: None });
+        return Ok(Received { payload, full_len, peer, peer6: None });
     }
     // UDP. AF_INET6 dgram sockets bind into the v6 port map, so the
-    // recv must consult recv_udp6 — the v4 socket_recv would always
-    // miss and the caller would block forever.
+    // recv must consult recv_udp6_opts; the v4 map would always miss.
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6 {
-        let (src_ip6, src_port, full) = socket_recv6(sock).ok_or(NetError::Eagain)?;
-        let take = core::cmp::min(max_len, full.len());
+        drain_loopback();
+        let port = (*sock.local_port.lock()).ok_or(NetError::Eagain)?;
+        let (src_ip6, src_port, full) = stack().recv_udp6_opts(port, opts.peek).ok_or(NetError::Eagain)?;
+        let full_len = full.len();
+        let take = core::cmp::min(max_len, full_len);
         let mut out = alloc::vec::Vec::with_capacity(take);
         out.extend_from_slice(&full[..take]);
-        return Ok(Received { payload: out, peer: None, peer6: Some((src_ip6, src_port)) });
+        return Ok(Received { payload: out, full_len, peer: None, peer6: Some((src_ip6, src_port)) });
     }
     // UDP / others (AF_INET).
-    let (src_ip, src_port, full) = socket_recv(sock).ok_or(NetError::Eagain)?;
-    let take = core::cmp::min(max_len, full.len());
+    drain_loopback();
+    let port = (*sock.local_port.lock()).ok_or(NetError::Eagain)?;
+    let (src_ip, src_port, full) = stack().recv_udp_opts(port, opts.peek).ok_or(NetError::Eagain)?;
+    let full_len = full.len();
+    let take = core::cmp::min(max_len, full_len);
     let mut out = alloc::vec::Vec::with_capacity(take);
     out.extend_from_slice(&full[..take]);
-    Ok(Received { payload: out, peer: Some((src_ip, src_port)), peer6: None })
+    Ok(Received { payload: out, full_len, peer: Some((src_ip, src_port)), peer6: None })
 }
