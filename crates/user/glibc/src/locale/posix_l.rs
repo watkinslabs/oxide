@@ -265,11 +265,23 @@ pub unsafe extern "C" fn strcasecmp_l(a: *const c_char, b: *const c_char, _l: us
     // SAFETY: C-locale case-fold == strcasecmp.
     unsafe { strcasecmp(a, b) }
 }
+// # C: int __strcasecmp_l(const char*, const char*, locale_t)
+#[no_mangle]
+pub unsafe extern "C" fn __strcasecmp_l(a: *const c_char, b: *const c_char, l: usize) -> i32 {
+    // SAFETY: internal alias has the same string/locale contract as strcasecmp_l.
+    unsafe { strcasecmp_l(a, b, l) }
+}
 // # C: int strncasecmp_l(const char*, const char*, size_t, locale_t)
 #[no_mangle]
 pub unsafe extern "C" fn strncasecmp_l(a: *const c_char, b: *const c_char, n: usize, _l: usize) -> i32 {
     // SAFETY: C-locale case-fold == strncasecmp.
     unsafe { strncasecmp(a, b, n) }
+}
+// # C: int __strncasecmp_l(const char*, const char*, size_t, locale_t)
+#[no_mangle]
+pub unsafe extern "C" fn __strncasecmp_l(a: *const c_char, b: *const c_char, n: usize, l: usize) -> i32 {
+    // SAFETY: internal alias has the same string/locale contract as strncasecmp_l.
+    unsafe { strncasecmp_l(a, b, n, l) }
 }
 
 // --- misc _l ---------------------------------------------------------------
