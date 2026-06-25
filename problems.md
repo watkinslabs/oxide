@@ -3,6 +3,7 @@
 ## Open
 
 - IPv4 forwarding drops transit packets with expired TTL or missing routes silently instead of generating ICMP Time Exceeded / Destination Unreachable. Track as a forwarding refinement after basic router mode.
+- RTM_NEWROUTE/GETROUTE do not parse or emit RTA_MULTIPATH yet. ECMP currently works for duplicate equal-cost IPv4 route rows, but iproute2 multipath nexthop arrays still need netlink support.
 
 ## Resolved
 
@@ -13,3 +14,4 @@
 - Policy routing rules were not enforced by the live IPv4 data path. Fixed by moving custom rules into the net layer, making IPv4 routes table-aware, and selecting routes by effective rule priority.
 - Legacy SIOCADDRT route insertion was not table-aware after route entries gained table selection. Fixed by inserting ioctl-created routes into the main routing table.
 - `/proc/sys/net/ipv4/ip_forward` was registered twice, with a later read-only static file shadowing the writable sysctl. Fixed by using one inode backed by live IPv4 forwarding state.
+- IPv4 route lookup ignored ECMP and always selected the first equal-prefix route. Fixed by selecting among equal-cost routes with a stable destination hash.

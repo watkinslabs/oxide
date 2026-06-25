@@ -42,6 +42,16 @@ impl RouteEntry {
     }
 }
 
+/// Stable per-destination ECMP bucket. # C: O(1)
+fn ecmp_hash(addr: Ipv4Addr) -> u32 {
+    let mut x = addr.as_u32();
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb_352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846c_a68b);
+    x ^ (x >> 16)
+}
+
 pub struct RouteTable {
     pub(crate) inner: Spinlock<Vec<RouteEntry>, RouteLockClass>,
 }
@@ -59,15 +69,28 @@ impl RouteTable {
     }
 
     fn lookup_in_table_locked(g: &[RouteEntry], table: u32, addr: Ipv4Addr) -> Option<RouteEntry> {
-        let mut best: Option<RouteEntry> = None;
+        let mut best_prefix: Option<u8> = None;
+        let mut count = 0usize;
         for e in g.iter() {
             if e.table != table || !e.matches(addr) { continue; }
-            match best {
-                Some(b) if b.prefix_len >= e.prefix_len => {}
-                _ => best = Some(*e),
+            match best_prefix {
+                Some(p) if p > e.prefix_len => {}
+                Some(p) if p == e.prefix_len => count += 1,
+                _ => {
+                    best_prefix = Some(e.prefix_len);
+                    count = 1;
+                }
             }
         }
-        best
+        let prefix = best_prefix?;
+        let mut nth = (ecmp_hash(addr) as usize) % count;
+        for e in g.iter() {
+            if e.table == table && e.prefix_len == prefix && e.matches(addr) {
+                if nth == 0 { return Some(*e); }
+                nth -= 1;
+            }
+        }
+        None
     }
 
     /// Longest-prefix lookup in one table. Returns `None` if no route matches.
@@ -146,5 +169,23 @@ mod tests {
         let r = t.lookup(Ipv4Addr::new(8, 8, 8, 8)).unwrap();
         assert_eq!(r.iface, NetIfaceId::from_raw(2));
         assert_eq!(policy_rule::remove(0, policy_rule::AF_INET, Some(1000), Some(100)), 1);
+    }
+
+    #[test]
+    fn ecmp_equal_prefix_uses_destination_hash() {
+        let t = RouteTable::new();
+        t.add(RouteEntry::main(Ipv4Addr::ANY, 0, NetIfaceId::from_raw(1), None, None));
+        t.add(RouteEntry::main(Ipv4Addr::ANY, 0, NetIfaceId::from_raw(2), None, None));
+        let first = t.lookup(Ipv4Addr::new(203, 0, 113, 1)).unwrap().iface;
+        let mut saw_other = false;
+        for last in 2..=254 {
+            let r = t.lookup(Ipv4Addr::new(203, 0, 113, last)).unwrap();
+            if r.iface != first {
+                saw_other = true;
+                break;
+            }
+        }
+        assert!(saw_other);
+        assert_eq!(t.lookup(Ipv4Addr::new(203, 0, 113, 1)).unwrap().iface, first);
     }
 }
