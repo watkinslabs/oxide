@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **195/195**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F642-glibc-signal-sched-internal-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **643**, B = **138**, D = **113**
+`F643-glibc-assert-brk-compat-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **644**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
