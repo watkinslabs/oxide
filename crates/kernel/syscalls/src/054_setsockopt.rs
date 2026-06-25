@@ -4,7 +4,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 use crate::net_trace::trace_enotsock_at;
-use crate::net_common::socket_from_fd;
+use crate::net_common::{errno_from_neterr, socket_from_fd};
 
 /// `setsockopt(fd, level, optname, optval, optlen)` slot 54. # C: O(1)
 pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
@@ -16,6 +16,8 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     const IP_TTL: u64 = 2;
     const IP_PKTINFO: u64 = 8;
     const IPPROTO_IPV6: u64 = 41;
+    const IPV6_JOIN_GROUP: u64 = 20;
+    const IPV6_LEAVE_GROUP: u64 = 21;
     const IPV6_V6ONLY: u64 = 26;
     const IPPROTO_TCP: u64 = 6;
     const TCP_CORK: u64 = 3;
@@ -72,6 +74,14 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         (IPPROTO_IPV6, IPV6_V6ONLY) => {
             let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
             sock.opts.ipv6_v6only.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
+        }
+        (IPPROTO_IPV6, IPV6_JOIN_GROUP) => {
+            let rc = ipv6_mcast_membership(&sock, optval, optlen, true);
+            if rc != 0 { return rc; }
+        }
+        (IPPROTO_IPV6, IPV6_LEAVE_GROUP) => {
+            let rc = ipv6_mcast_membership(&sock, optval, optlen, false);
+            if rc != 0 { return rc; }
         }
         (SOL_SOCKET, SO_BINDTODEVICE) => {
             let rc = bind_to_device(&sock, optval, optlen);
@@ -154,6 +164,58 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         _ => {}
     }
     0
+}
+
+fn ipv6_mcast_membership(
+    sock: &alloc::sync::Arc<net::sock::InetSocket>,
+    optval: u64,
+    optlen: u32,
+    join: bool,
+) -> i64 {
+    use core::sync::atomic::Ordering;
+    const IPV6_MREQ_LEN: u64 = 20;
+    if sock.family.load(Ordering::Acquire) != net::sock::AF_INET6 {
+        return -(Errno::Eafnosupport.as_i32() as i64);
+    }
+    if (optlen as u64) < IPV6_MREQ_LEN {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let Some(end) = optval.checked_add(IPV6_MREQ_LEN) else {
+        return -(Errno::Efault.as_i32() as i64);
+    };
+    if end > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+
+    let mut addr = [0u8; 16];
+    for i in 0..addr.len() {
+        // SAFETY: optval + sizeof(ipv6_mreq) was validated in user range.
+        addr[i] = unsafe { core::ptr::read_volatile((optval + i as u64) as *const u8) };
+    }
+    // SAFETY: ipv6_mreq is 16-byte in6_addr followed by a u32 ifindex.
+    let req_if = unsafe { core::ptr::read_volatile((optval + 16) as *const u32) };
+    let group = net::Ipv6Addr(addr);
+    if !group.is_multicast() { return -(Errno::Einval.as_i32() as i64); }
+
+    let iface = if req_if != 0 {
+        net::NetIfaceId::from_raw(req_if)
+    } else {
+        let raw = sock.opts.bound_ifindex.load(Ordering::Acquire);
+        if raw == 0 { return -(Errno::Enodev.as_i32() as i64); }
+        net::NetIfaceId::from_raw(raw)
+    };
+    if net::sock::stack().ifaces.lookup(iface).is_none() {
+        return -(Errno::Enodev.as_i32() as i64);
+    }
+
+    let src = *sock.local_ip6.lock();
+    let result = if join {
+        net::sock::stack().join_ipv6_multicast(iface, group, src)
+    } else {
+        net::sock::stack().leave_ipv6_multicast(iface, group, src)
+    };
+    match result {
+        Ok(()) => 0,
+        Err(e) => errno_from_neterr(e),
+    }
 }
 
 fn refresh_tcp_keepalive(sock: &alloc::sync::Arc<net::sock::InetSocket>) {
