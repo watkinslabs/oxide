@@ -95,6 +95,12 @@ mod imp {
         // SAFETY: t/out are valid per the C contract.
         unsafe { gmtime_into(*t, &mut *out); out }
     }
+    // # C: struct tm *__gmtime_r(const time_t *t, struct tm *out)
+    #[no_mangle]
+    pub unsafe extern "C" fn __gmtime_r(t: *const i64, out: *mut tm) -> *mut tm {
+        // SAFETY: internal alias has the same time_t/out contract as gmtime_r.
+        unsafe { gmtime_r(t, out) }
+    }
     // # C: struct tm *gmtime(const time_t *t)
     #[no_mangle]
     pub unsafe extern "C" fn gmtime(t: *const i64) -> *mut tm {

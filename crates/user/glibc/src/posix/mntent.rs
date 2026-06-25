@@ -120,6 +120,12 @@ pub unsafe extern "C" fn getmntent_r(f: *mut FILE, m: *mut mntent, buf: *mut u8,
         }
     }
 }
+// # C: struct mntent *__getmntent_r(FILE *, struct mntent *, char *, int)
+#[no_mangle]
+pub unsafe extern "C" fn __getmntent_r(f: *mut FILE, m: *mut mntent, buf: *mut u8, buflen: i32) -> *mut mntent {
+    // SAFETY: internal alias has the same stream/storage contract as getmntent_r.
+    unsafe { getmntent_r(f, m, buf, buflen) }
+}
 
 struct Line(UnsafeCell<[u8; 4096]>);
 // SAFETY: process-global getmntent line buffer; single-threaded until TLS.

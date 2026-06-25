@@ -196,6 +196,11 @@ mod imp {
         if !(-128..=255).contains(&c) { return 0; }
         (B_TABLE[(c + 128) as usize] as i32) & mask
     }
+    // # C: int __isctype(int c, int mask)
+    #[no_mangle]
+    pub extern "C" fn __isctype(c: i32, mask: i32) -> i32 {
+        isctype(c, mask)
+    }
 }
 
 #[cfg(test)]

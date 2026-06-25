@@ -155,6 +155,11 @@ Also DONE: syscall/LFS internal compatibility aliases (F634): `__adjtimex`,
 `fseeko64`/`ftello64`, and versioned `fxstatat` aliases exported over existing
 implementations. Verified by ABI export audit, regression suite, spec-lint, and
 both freestanding arch builds.
+Also DONE: parser/time/ctype internal aliases (F635): `__getmntent_r`,
+`__gmtime_r`, `__isctype`, `__inet_aton_exact`, and `__inet_pton_length`
+exported over existing mount-entry, time, ctype, and inet parser logic.
+Verified by ABI export audit, regression suite, spec-lint, and both
+freestanding arch builds.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
