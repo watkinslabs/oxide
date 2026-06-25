@@ -27,6 +27,13 @@
     __connect;
     __cosh_finite;
     __coshf_finite;
+    __ctype32_b;
+    __ctype32_tolower;
+    __ctype32_toupper;
+    __ctype_b;
+    __ctype_init;
+    __ctype_tolower;
+    __ctype_toupper;
     __dcgettext;
     __dgettext;
     __duplocale;

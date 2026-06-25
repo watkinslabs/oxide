@@ -66,10 +66,39 @@ const fn build_toupper() -> [i32; 384] {
     while i < 384 { let c = i as i32 - 128; t[i] = if c >= 'a' as i32 && c <= 'z' as i32 { c - 32 } else { c }; i += 1; }
     t
 }
+const fn build_b32() -> [u32; 384] {
+    let mut t = [0u32; 384];
+    let mut c = 0usize;
+    while c < 128 { t[c + 128] = class(c as u8) as u32; c += 1; }
+    t
+}
+const fn build_tolower32() -> [u32; 384] {
+    let mut t = [0u32; 384];
+    let mut i = 0usize;
+    while i < 384 {
+        let c = i as i32 - 128;
+        t[i] = (if c >= 'A' as i32 && c <= 'Z' as i32 { c + 32 } else { c }) as u32;
+        i += 1;
+    }
+    t
+}
+const fn build_toupper32() -> [u32; 384] {
+    let mut t = [0u32; 384];
+    let mut i = 0usize;
+    while i < 384 {
+        let c = i as i32 - 128;
+        t[i] = (if c >= 'a' as i32 && c <= 'z' as i32 { c - 32 } else { c }) as u32;
+        i += 1;
+    }
+    t
+}
 
 pub(crate) static B_TABLE: [u16; 384] = build_b();
 pub(crate) static TOLOWER_TABLE: [i32; 384] = build_tolower();
 pub(crate) static TOUPPER_TABLE: [i32; 384] = build_toupper();
+static B32_TABLE: [u32; 384] = build_b32();
+static TOLOWER32_TABLE: [u32; 384] = build_tolower32();
+static TOUPPER32_TABLE: [u32; 384] = build_toupper32();
 
 #[cfg(feature = "freestanding")]
 mod imp {
@@ -83,6 +112,63 @@ mod imp {
     static B_LOC: Loc<u16> = Loc(UnsafeCell::new(core::ptr::null()));
     static TL_LOC: Loc<i32> = Loc(UnsafeCell::new(core::ptr::null()));
     static TU_LOC: Loc<i32> = Loc(UnsafeCell::new(core::ptr::null()));
+
+    #[repr(transparent)]
+    struct Ptr<T>(*const T);
+    // SAFETY: these are immutable ABI pointer objects into static tables.
+    unsafe impl<T> Sync for Ptr<T> {}
+
+    const CTYPE_B_PTR: *const u16 = {
+        // SAFETY: B_TABLE has 384 entries; +128 is the documented base offset.
+        unsafe { B_TABLE.as_ptr().add(128) }
+    };
+    const CTYPE_TOLOWER_PTR: *const i32 = {
+        // SAFETY: TOLOWER_TABLE has 384 entries; +128 is the base offset.
+        unsafe { TOLOWER_TABLE.as_ptr().add(128) }
+    };
+    const CTYPE_TOUPPER_PTR: *const i32 = {
+        // SAFETY: TOUPPER_TABLE has 384 entries; +128 is the base offset.
+        unsafe { TOUPPER_TABLE.as_ptr().add(128) }
+    };
+    const CTYPE32_B_PTR: *const u32 = {
+        // SAFETY: B32_TABLE has 384 entries; +128 is the documented offset.
+        unsafe { B32_TABLE.as_ptr().add(128) }
+    };
+    const CTYPE32_TOLOWER_PTR: *const u32 = {
+        // SAFETY: TOLOWER32_TABLE has 384 entries; +128 is the base offset.
+        unsafe { TOLOWER32_TABLE.as_ptr().add(128) }
+    };
+    const CTYPE32_TOUPPER_PTR: *const u32 = {
+        // SAFETY: TOUPPER32_TABLE has 384 entries; +128 is the base offset.
+        unsafe { TOUPPER32_TABLE.as_ptr().add(128) }
+    };
+
+    // # C: const unsigned short *__ctype_b;
+    #[no_mangle]
+    static __ctype_b: Ptr<u16> = Ptr(CTYPE_B_PTR);
+    // # C: const int *__ctype_tolower;
+    #[no_mangle]
+    static __ctype_tolower: Ptr<i32> = Ptr(CTYPE_TOLOWER_PTR);
+    // # C: const int *__ctype_toupper;
+    #[no_mangle]
+    static __ctype_toupper: Ptr<i32> = Ptr(CTYPE_TOUPPER_PTR);
+    // # C: const unsigned int *__ctype32_b;
+    #[no_mangle]
+    static __ctype32_b: Ptr<u32> = Ptr(CTYPE32_B_PTR);
+    // # C: const unsigned int *__ctype32_tolower;
+    #[no_mangle]
+    static __ctype32_tolower: Ptr<u32> = Ptr(CTYPE32_TOLOWER_PTR);
+    // # C: const unsigned int *__ctype32_toupper;
+    #[no_mangle]
+    static __ctype32_toupper: Ptr<u32> = Ptr(CTYPE32_TOUPPER_PTR);
+
+    // # C: void __ctype_init(void)
+    #[no_mangle]
+    pub extern "C" fn __ctype_init() {
+        __ctype_b_loc();
+        __ctype_tolower_loc();
+        __ctype_toupper_loc();
+    }
 
     // # C: const unsigned short **__ctype_b_loc(void)
     #[no_mangle]

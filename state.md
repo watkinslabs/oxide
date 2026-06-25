@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **195/195**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F631-glibc-scanf-isoc-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **632**, B = **138**, D = **113**
+`F632-glibc-ctype-data-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **633**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -438,6 +438,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   wide `__isoc23_*scanf`/`__isoc99_*scanf` stream, stdin, string, and `va_list`
   entry points. Verified by ABI export audit, regression suite, spec-lint, and
   both freestanding arch builds.
+- **F632 DONE locally:** legacy ctype data compatibility exports added for
+  `__ctype_b`, `__ctype_tolower`, `__ctype_toupper`, `__ctype32_b`,
+  `__ctype32_tolower`, `__ctype32_toupper`, and `__ctype_init`. Verified by
+  ABI export audit, regression suite, spec-lint, and both freestanding arch
+  builds.
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need
