@@ -1,10 +1,10 @@
 # state.md — session handoff
 
 ## Headline
-**glibc full-compliance build-out** (docs/59 §9). Conformance **196/196**
+**glibc full-compliance build-out** (docs/59 §9). Conformance **197/197**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F644-glibc-resolver-base64`. `glibc.md` = live per-cluster TODO. F counter next = **645**, B = **138**, D = **113**
+`F645-glibc-open-fortify-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **646**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
