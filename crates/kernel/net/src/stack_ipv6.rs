@@ -242,6 +242,11 @@ impl NetStack {
                 };
                 self.xmit_ipv6(iface, dst, src, IpProto::Icmpv6, &reply)?;
             }
+            t if t == crate::icmpv6::ICMPV6_TYPE_MLD_QUERY => {
+                if let Ok(q) = crate::icmpv6::Mldv1Query::parse(payload, src, dst) {
+                    self.respond_mld_query(iface, q)?;
+                }
+            }
             t if t == crate::ndp::NDP_NS => {
                 // F180c: parse the solicitation; if the target matches
                 // an address bound on this iface, build a solicited NA
@@ -274,6 +279,25 @@ impl NetStack {
                 }
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// Respond immediately to MLDv1 general and group-specific queries for
+    /// memberships tracked on this interface. # C: O(N groups)
+    fn respond_mld_query(&self, iface: NetIfaceId, q: crate::icmpv6::Mldv1Query)
+        -> NetResult<()>
+    {
+        let groups = {
+            let g = self.v6_mcast.lock();
+            g.get(&iface).cloned().unwrap_or_default()
+        };
+        let src = self.v6_src_on_iface(iface).unwrap_or(Ipv6Addr::ANY);
+        for group in groups {
+            if group == crate::ndp::IPV6_ALL_NODES { continue; }
+            if !q.group.is_unspecified() && q.group != group { continue; }
+            let body = crate::icmpv6::build_mldv1_report(src, group);
+            self.xmit_ipv6(iface, src, group, IpProto::Icmpv6, &body)?;
         }
         Ok(())
     }
