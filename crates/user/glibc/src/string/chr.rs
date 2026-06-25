@@ -144,6 +144,97 @@ pub(crate) unsafe fn strpbrk_impl(s: *const u8, accept: *const u8) -> *mut u8 {
     }
 }
 
+pub(crate) unsafe fn strcspn_c1_impl(s: *const u8, reject: i32) -> usize {
+    // SAFETY: legacy glibc inline helper; s is NUL-terminated.
+    unsafe {
+        let reject = reject as u8;
+        let mut i = 0;
+        while *s.add(i) != 0 && *s.add(i) != reject { i += 1; }
+        i
+    }
+}
+
+pub(crate) unsafe fn strcspn_c2_impl(s: *const u8, reject1: i32, reject2: i32) -> usize {
+    // SAFETY: legacy glibc inline helper; s is NUL-terminated.
+    unsafe {
+        let reject1 = reject1 as u8;
+        let reject2 = reject2 as u8;
+        let mut i = 0;
+        while *s.add(i) != 0 && *s.add(i) != reject1 && *s.add(i) != reject2 { i += 1; }
+        i
+    }
+}
+
+pub(crate) unsafe fn strcspn_c3_impl(s: *const u8, reject1: i32, reject2: i32, reject3: i32) -> usize {
+    // SAFETY: legacy glibc inline helper; s is NUL-terminated.
+    unsafe {
+        let reject1 = reject1 as u8;
+        let reject2 = reject2 as u8;
+        let reject3 = reject3 as u8;
+        let mut i = 0;
+        while *s.add(i) != 0 && *s.add(i) != reject1 && *s.add(i) != reject2 && *s.add(i) != reject3 {
+            i += 1;
+        }
+        i
+    }
+}
+
+pub(crate) unsafe fn strspn_c1_impl(s: *const u8, accept: i32) -> usize {
+    // SAFETY: legacy glibc inline helper; s is NUL-terminated.
+    unsafe {
+        let accept = accept as u8;
+        let mut i = 0;
+        while *s.add(i) == accept { i += 1; }
+        i
+    }
+}
+
+pub(crate) unsafe fn strspn_c2_impl(s: *const u8, accept1: i32, accept2: i32) -> usize {
+    // SAFETY: legacy glibc inline helper; s is NUL-terminated.
+    unsafe {
+        let accept1 = accept1 as u8;
+        let accept2 = accept2 as u8;
+        let mut i = 0;
+        while *s.add(i) == accept1 || *s.add(i) == accept2 { i += 1; }
+        i
+    }
+}
+
+pub(crate) unsafe fn strspn_c3_impl(s: *const u8, accept1: i32, accept2: i32, accept3: i32) -> usize {
+    // SAFETY: legacy glibc inline helper; s is NUL-terminated.
+    unsafe {
+        let accept1 = accept1 as u8;
+        let accept2 = accept2 as u8;
+        let accept3 = accept3 as u8;
+        let mut i = 0;
+        while *s.add(i) == accept1 || *s.add(i) == accept2 || *s.add(i) == accept3 { i += 1; }
+        i
+    }
+}
+
+pub(crate) unsafe fn strpbrk_c2_impl(s: *const u8, accept1: i32, accept2: i32) -> *mut u8 {
+    // SAFETY: legacy glibc inline helper; s is NUL-terminated.
+    unsafe {
+        let accept1 = accept1 as u8;
+        let accept2 = accept2 as u8;
+        let mut p = s;
+        while *p != 0 && *p != accept1 && *p != accept2 { p = p.add(1); }
+        if *p == 0 { core::ptr::null_mut() } else { p as *mut u8 }
+    }
+}
+
+pub(crate) unsafe fn strpbrk_c3_impl(s: *const u8, accept1: i32, accept2: i32, accept3: i32) -> *mut u8 {
+    // SAFETY: legacy glibc inline helper; s is NUL-terminated.
+    unsafe {
+        let accept1 = accept1 as u8;
+        let accept2 = accept2 as u8;
+        let accept3 = accept3 as u8;
+        let mut p = s;
+        while *p != 0 && *p != accept1 && *p != accept2 && *p != accept3 { p = p.add(1); }
+        if *p == 0 { core::ptr::null_mut() } else { p as *mut u8 }
+    }
+}
+
 #[cfg(feature = "freestanding")]
 mod exports {
     use super::*;
@@ -212,6 +303,54 @@ mod exports {
     pub unsafe extern "C" fn strpbrk(s: *const u8, accept: *const u8) -> *mut u8 {
         // SAFETY: forwards the C strpbrk contract to strpbrk_impl unchanged.
         unsafe { strpbrk_impl(s, accept) }
+    }
+    // # C: size_t __strcspn_c1(const char *s, int reject)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strcspn_c1(s: *const u8, reject: i32) -> usize {
+        // SAFETY: forwards the legacy inline helper contract unchanged.
+        unsafe { strcspn_c1_impl(s, reject) }
+    }
+    // # C: size_t __strcspn_c2(const char *s, int reject1, int reject2)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strcspn_c2(s: *const u8, reject1: i32, reject2: i32) -> usize {
+        // SAFETY: forwards the legacy inline helper contract unchanged.
+        unsafe { strcspn_c2_impl(s, reject1, reject2) }
+    }
+    // # C: size_t __strcspn_c3(const char *s, int reject1, int reject2, int reject3)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strcspn_c3(s: *const u8, reject1: i32, reject2: i32, reject3: i32) -> usize {
+        // SAFETY: forwards the legacy inline helper contract unchanged.
+        unsafe { strcspn_c3_impl(s, reject1, reject2, reject3) }
+    }
+    // # C: size_t __strspn_c1(const char *s, int accept)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strspn_c1(s: *const u8, accept: i32) -> usize {
+        // SAFETY: forwards the legacy inline helper contract unchanged.
+        unsafe { strspn_c1_impl(s, accept) }
+    }
+    // # C: size_t __strspn_c2(const char *s, int accept1, int accept2)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strspn_c2(s: *const u8, accept1: i32, accept2: i32) -> usize {
+        // SAFETY: forwards the legacy inline helper contract unchanged.
+        unsafe { strspn_c2_impl(s, accept1, accept2) }
+    }
+    // # C: size_t __strspn_c3(const char *s, int accept1, int accept2, int accept3)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strspn_c3(s: *const u8, accept1: i32, accept2: i32, accept3: i32) -> usize {
+        // SAFETY: forwards the legacy inline helper contract unchanged.
+        unsafe { strspn_c3_impl(s, accept1, accept2, accept3) }
+    }
+    // # C: char *__strpbrk_c2(const char *s, int accept1, int accept2)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strpbrk_c2(s: *const u8, accept1: i32, accept2: i32) -> *mut u8 {
+        // SAFETY: forwards the legacy inline helper contract unchanged.
+        unsafe { strpbrk_c2_impl(s, accept1, accept2) }
+    }
+    // # C: char *__strpbrk_c3(const char *s, int accept1, int accept2, int accept3)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strpbrk_c3(s: *const u8, accept1: i32, accept2: i32, accept3: i32) -> *mut u8 {
+        // SAFETY: forwards the legacy inline helper contract unchanged.
+        unsafe { strpbrk_c3_impl(s, accept1, accept2, accept3) }
     }
     // # C: char *index(const char *s, int c) — BSD/legacy alias of strchr
     #[no_mangle]

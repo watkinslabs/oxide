@@ -57,6 +57,30 @@ mod imp {
         // SAFETY: uses the process-global save pointer (non-reentrant, per C).
         unsafe { strtok_r_impl(s, delim, SAVE.0.get()) }
     }
+    // # C: char *__strtok_r_1c(char *s, char sep, char **nextp)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strtok_r_1c(s: *mut u8, sep: u8, nextp: *mut *mut u8) -> *mut u8 {
+        // SAFETY: legacy one-character tokenizer; s/*nextp are null or mutable C strings.
+        unsafe {
+            let mut p = if s.is_null() { *nextp } else { s };
+            while *p == sep { p = p.add(1); }
+            let mut result = core::ptr::null_mut();
+            if *p != 0 {
+                result = p;
+                p = p.add(1);
+                while *p != 0 {
+                    if *p == sep {
+                        *p = 0;
+                        p = p.add(1);
+                        break;
+                    }
+                    p = p.add(1);
+                }
+            }
+            *nextp = p;
+            result
+        }
+    }
 }
 
 #[cfg(test)]

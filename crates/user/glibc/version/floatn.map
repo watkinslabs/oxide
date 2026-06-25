@@ -180,6 +180,15 @@
     __sqrtf_finite;
     __strcasecmp_l;
     __strcasestr;
+    __strcspn_c1;
+    __strcspn_c2;
+    __strcspn_c3;
+    __strpbrk_c2;
+    __strpbrk_c3;
+    __strsep_1c;
+    __strsep_2c;
+    __strsep_3c;
+    __strsep_g;
     __stpcpy;
     __stpncpy;
     __strcasecmp;
@@ -187,7 +196,11 @@
     __strerror_r;
     __strndup;
     __strncasecmp_l;
+    __strspn_c1;
+    __strspn_c2;
+    __strspn_c3;
     __strtok_r;
+    __strtok_r_1c;
     __strverscmp;
     __sysconf;
     __timezone;
