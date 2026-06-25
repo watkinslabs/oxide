@@ -18,6 +18,8 @@ struct CountDev {
     len2: AtomicUsize,
     tos0: AtomicUsize,
     ttl0: AtomicUsize,
+    icmp_type0: AtomicUsize,
+    icmp_code0: AtomicUsize,
 }
 
 impl CountDev {
@@ -37,6 +39,8 @@ impl CountDev {
             len2: AtomicUsize::new(0),
             tos0: AtomicUsize::new(0),
             ttl0: AtomicUsize::new(0),
+            icmp_type0: AtomicUsize::new(usize::MAX),
+            icmp_code0: AtomicUsize::new(usize::MAX),
         }
     }
 
@@ -66,6 +70,11 @@ impl NetDev for CountDev {
         if pkt.data().first().map(|b| b >> 4) == Some(4) {
             let hdr = Ipv4Hdr::parse(pkt.data()).unwrap();
             self.store_hdr(idx, hdr);
+            let off = hdr.ihl_bytes();
+            if idx == 0 && hdr.proto == IpProto::Icmp as u8 && pkt.data().len() >= off + 2 {
+                self.icmp_type0.store(pkt.data()[off] as usize, Ordering::Relaxed);
+                self.icmp_code0.store(pkt.data()[off + 1] as usize, Ordering::Relaxed);
+            }
         } else if pkt.data().first().map(|b| b >> 4) == Some(6) {
             let hdr = Ipv6Hdr::parse(pkt.data()).unwrap();
             let (id, flags, len) = match idx {
@@ -83,6 +92,17 @@ impl NetDev for CountDev {
         }
         Ok(())
     }
+}
+
+fn transit_ipv4(src: Ipv4Addr, dst: Ipv4Addr, ttl: u8) -> alloc::vec::Vec<u8> {
+    let mut frame = alloc::vec![0u8; IPV4_HDR_LEN];
+    let mut ip = Ipv4Hdr::build(src, dst, IpProto::Udp, 0, 55);
+    ip.ttl = ttl;
+    ip.checksum = 0;
+    ip.write_to(&mut frame[..IPV4_HDR_LEN]);
+    ip.checksum = crate::ipv4::ip_checksum(&frame[..IPV4_HDR_LEN]);
+    ip.write_to(&mut frame[..IPV4_HDR_LEN]);
+    frame
 }
 
 #[test]
@@ -271,19 +291,11 @@ fn ipv4_forwarding_sysctl_gates_transit_packets() {
         gateway: None,
         src_hint: None,
     });
-    let mut frame = alloc::vec![0u8; IPV4_HDR_LEN];
-    let mut ip = Ipv4Hdr::build(
+    let frame = transit_ipv4(
         Ipv4Addr::new(192, 0, 2, 10),
         Ipv4Addr::new(198, 51, 100, 20),
-        IpProto::Udp,
-        0,
-        55,
+        9,
     );
-    ip.ttl = 9;
-    ip.checksum = 0;
-    ip.write_to(&mut frame[..IPV4_HDR_LEN]);
-    ip.checksum = crate::ipv4::ip_checksum(&frame[..IPV4_HDR_LEN]);
-    ip.write_to(&mut frame[..IPV4_HDR_LEN]);
 
     stack.deliver_rx(in_id, &frame).unwrap();
     assert_eq!(out_dev.tx.load(Ordering::Relaxed), 0);
@@ -293,6 +305,61 @@ fn ipv4_forwarding_sysctl_gates_transit_packets() {
     crate::forwarding::set_ipv4_enabled(false);
     assert_eq!(out_dev.tx.load(Ordering::Relaxed), 1);
     assert_eq!(out_dev.ttl0.load(Ordering::Relaxed), 8);
+}
+
+#[test]
+fn ipv4_forwarding_ttl_expired_emits_time_exceeded() {
+    crate::forwarding::set_ipv4_enabled(true);
+    let stack = NetStack::new();
+    let in_dev = Arc::new(CountDev::new());
+    let out_dev = Arc::new(CountDev::new());
+    let in_id = stack.ifaces.register(in_dev.clone());
+    let out_id = stack.ifaces.register(out_dev.clone());
+    crate::iface_addr::set_primary_addr(0, in_id, Ipv4Addr::new(192, 0, 2, 1), 0);
+    stack.routes.add(RouteEntry {
+        table: crate::policy_rule::RT_TABLE_MAIN,
+        dst: Ipv4Addr::new(198, 51, 100, 0),
+        prefix_len: 24,
+        iface: out_id,
+        gateway: None,
+        src_hint: None,
+    });
+
+    let frame = transit_ipv4(
+        Ipv4Addr::new(192, 0, 2, 10),
+        Ipv4Addr::new(198, 51, 100, 20),
+        1,
+    );
+    stack.deliver_rx(in_id, &frame).unwrap();
+    crate::forwarding::set_ipv4_enabled(false);
+    let _ = crate::iface_addr::remove(0, in_id, Ipv4Addr::new(192, 0, 2, 1), 0);
+
+    assert_eq!(out_dev.tx.load(Ordering::Relaxed), 0);
+    assert_eq!(in_dev.tx.load(Ordering::Relaxed), 1);
+    assert_eq!(in_dev.icmp_type0.load(Ordering::Relaxed), icmp::ICMP_TYPE_TIME_EXC as usize);
+    assert_eq!(in_dev.icmp_code0.load(Ordering::Relaxed), icmp::time_exceeded_code::TTL as usize);
+}
+
+#[test]
+fn ipv4_forwarding_no_route_emits_net_unreachable() {
+    crate::forwarding::set_ipv4_enabled(true);
+    let stack = NetStack::new();
+    let in_dev = Arc::new(CountDev::new());
+    let in_id = stack.ifaces.register(in_dev.clone());
+    crate::iface_addr::set_primary_addr(0, in_id, Ipv4Addr::new(192, 0, 2, 1), 0);
+
+    let frame = transit_ipv4(
+        Ipv4Addr::new(192, 0, 2, 10),
+        Ipv4Addr::new(198, 51, 100, 20),
+        9,
+    );
+    stack.deliver_rx(in_id, &frame).unwrap();
+    crate::forwarding::set_ipv4_enabled(false);
+    let _ = crate::iface_addr::remove(0, in_id, Ipv4Addr::new(192, 0, 2, 1), 0);
+
+    assert_eq!(in_dev.tx.load(Ordering::Relaxed), 1);
+    assert_eq!(in_dev.icmp_type0.load(Ordering::Relaxed), icmp::ICMP_TYPE_DEST_UNREACH as usize);
+    assert_eq!(in_dev.icmp_code0.load(Ordering::Relaxed), icmp::unreach_code::NET as usize);
 }
 
 #[test]
