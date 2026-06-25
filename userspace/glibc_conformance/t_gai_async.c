@@ -42,8 +42,13 @@ int main(void) {
         freeaddrinfo(req.ar_result);
     }
 
+    struct addrinfo bad_hints;
+    memset(&bad_hints, 0, sizeof bad_hints);
+    bad_hints.ai_flags = AI_NUMERICHOST;
+
     memset(&req, 0, sizeof req);
     req.ar_name = "no-such.invalid";
+    req.ar_request = &bad_hints;
     errno = 0; pr("wait_bad", getaddrinfo_a(GAI_WAIT, work, 1, NULL));
     errno = 0; pr("wait_bad_error", gai_error(&req));
     errno = 0; pr("bad_mode", getaddrinfo_a(99, work, 1, NULL));
