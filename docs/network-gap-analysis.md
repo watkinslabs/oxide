@@ -115,8 +115,8 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | Loopback default route               | done     | |
 | IPv6 route table                     | done     | longest-prefix lookup mirrors v4 |
 | ECMP multipath                       | gap      | |
-| Policy routing / `ip rule`           | partial  | RTM_GETRULE publishes default local/main/default rules; custom rule mutation TBD |
-| Routing socket (NETLINK_ROUTE)       | partial  | GETLINK/GETADDR/GETROUTE/GETRULE + namespace-scoped addr/route mutation; IPv4 and IPv6 GETADDR emit cacheinfo/flags and SLAAC lifetimes |
+| Policy routing / `ip rule`           | partial  | GETRULE plus NEWRULE/DELRULE custom rule storage; packet routing does not yet apply rule table selection |
+| Routing socket (NETLINK_ROUTE)       | partial  | GETLINK/GETADDR/GETROUTE/GETRULE + namespace-scoped addr/route/rule mutation; IPv4 and IPv6 GETADDR emit cacheinfo/flags and SLAAC lifetimes |
 | IP forwarding (sysctl net.ipv4.ip_forward) | gap | host-mode only today |
 
 ## 7. ARP / neighbor table
@@ -205,7 +205,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 1. **NETLINK_ROUTE completeness** (RTM_GETLINK / NEWADDR / GETROUTE)
    — every userspace network tool reads these (`ip`, `networkd`,
    `NetworkManager`). High impact for "real distro programs work."
-2. **Policy routing mutation** — RTM_NEWRULE/DELRULE for custom rules.
+2. **Policy routing enforcement** — apply custom rule table selection in packet routing.
 3. **IP forwarding controls** — sysctl-backed host/router mode.
 
 Items beyond #10 are tuning/perf or rare-app territory.
