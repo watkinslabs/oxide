@@ -14,6 +14,7 @@ use sync::{Spinlock, Socket as SockLockClass};
 /// One entry in the kernel's iface→address table.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct IfaceAddr {
+    pub ns:        u64,
     pub ifindex:   u32,
     pub family:    u8,   // AF_INET (v1 IPv6 ride a follow-up)
     pub addr:      [u8; 4],
@@ -29,32 +30,40 @@ pub struct IfaceAddr {
 static ADDR_TABLE: Spinlock<Vec<IfaceAddr>, SockLockClass> =
     Spinlock::new(Vec::new());
 
-/// Insert (or replace, by ifindex+addr+prefixlen) an address row.
+/// Insert (or replace, by ns+ifindex+addr+prefixlen) an address row.
 /// Idempotent; same triple twice is one row.
 /// # C: O(N) duplicate scan
 pub fn addr_insert(row: IfaceAddr) {
     let mut g = ADDR_TABLE.lock();
     let dup = g.iter().position(|r|
-        r.ifindex == row.ifindex
+        r.ns == row.ns
+        && r.ifindex == row.ifindex
         && r.addr == row.addr
         && r.prefixlen == row.prefixlen);
     if let Some(i) = dup { g[i] = row; }
     else { g.push(row); }
 }
 
-/// Remove rows matching (ifindex, addr, prefixlen). Returns the
+/// Remove rows matching (ns, ifindex, addr, prefixlen). Returns the
 /// number removed. # C: O(N)
-pub fn addr_remove(ifindex: u32, addr: [u8; 4], prefixlen: u8) -> usize {
+pub fn addr_remove(ns: u64, ifindex: u32, addr: [u8; 4], prefixlen: u8) -> usize {
     let mut g = ADDR_TABLE.lock();
     let before = g.len();
     g.retain(|r|
-        !(r.ifindex == ifindex
+        !(r.ns == ns
+          && r.ifindex == ifindex
           && r.addr == addr
           && r.prefixlen == prefixlen));
     before - g.len()
 }
 
-/// Snapshot of all address rows. # C: O(N)
+/// Snapshot of address rows in network namespace `ns`.
+/// # C: O(N)
+pub fn addr_snapshot_ns(ns: u64) -> Vec<IfaceAddr> {
+    ADDR_TABLE.lock().iter().filter(|r| r.ns == ns).cloned().collect()
+}
+
+/// Full snapshot of all address rows. # C: O(N)
 pub fn addr_snapshot() -> Vec<IfaceAddr> {
     ADDR_TABLE.lock().clone()
 }
@@ -67,7 +76,7 @@ pub fn addr_snapshot() -> Vec<IfaceAddr> {
 pub fn seed_defaults(eth0_ifindex: Option<u32>, lo_ifindex: Option<u32>) {
     if let Some(idx) = lo_ifindex {
         addr_insert(IfaceAddr {
-            ifindex: idx, family: AF_INET,
+            ns: 0, ifindex: idx, family: AF_INET,
             addr: [127, 0, 0, 1], prefixlen: 8, scope: RT_SCOPE_HOST,
         });
     }
@@ -487,7 +496,7 @@ pub(crate) fn build_newaddr_reply(
 pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
     let ifaces = ifaces_snapshot();
-    for row in addr_snapshot().iter() {
+    for row in addr_snapshot_ns(net::netdev::current_net_ns()).iter() {
         // Only addresses on an iface in the caller's netns (ifaces is already
         // ns-filtered); a row whose ifindex isn't present here belongs to
         // another namespace and is skipped.
@@ -579,7 +588,7 @@ pub fn handle_newaddr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         None    => return nlmsg_ack(req, -22 /* EINVAL */),
     };
     addr_insert(IfaceAddr {
-        ifindex, family, addr, prefixlen, scope,
+        ns: net::netdev::current_net_ns(), ifindex, family, addr, prefixlen, scope,
     });
     crate::mcast::notify_addr(false, ifindex, addr, prefixlen, scope);
     nlmsg_ack(req, 0)
@@ -602,7 +611,7 @@ pub fn handle_deladdr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         Some(a) => a,
         None    => return nlmsg_ack(req, -22),
     };
-    let n = addr_remove(ifindex, addr, prefixlen);
+    let n = addr_remove(net::netdev::current_net_ns(), ifindex, addr, prefixlen);
     if n > 0 { crate::mcast::notify_addr(true, ifindex, addr, prefixlen, 0); }
     nlmsg_ack(req, if n > 0 { 0 } else { -2 /* ENOENT */ })
 }

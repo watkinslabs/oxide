@@ -116,7 +116,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | IPv6 route table                     | done     | longest-prefix lookup mirrors v4 |
 | ECMP multipath                       | gap      | |
 | Policy routing / `ip rule`           | partial  | RTM_GETRULE publishes default local/main/default rules; custom rule mutation TBD |
-| Routing socket (NETLINK_ROUTE)       | partial  | GETLINK/GETADDR/GETROUTE/GETRULE + addr/route mutation; RTM route changes sync live IPv4 datapath |
+| Routing socket (NETLINK_ROUTE)       | partial  | GETLINK/GETADDR/GETROUTE/GETRULE + namespace-scoped addr/route mutation; RTM route changes sync live IPv4 datapath |
 | IP forwarding (sysctl net.ipv4.ip_forward) | gap | host-mode only today |
 
 ## 7. ARP / neighbor table
@@ -205,7 +205,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 1. **NETLINK_ROUTE completeness** (RTM_GETLINK / NEWADDR / GETROUTE)
    — every userspace network tool reads these (`ip`, `networkd`,
    `NetworkManager`). High impact for "real distro programs work."
-2. **NETLINK_ROUTE address mutation** — RTM_NEWADDR/DELADDR plus notification coverage.
+2. **Unify IPv4 primary-address state** — SIOCSIFADDR and RTM_NEWADDR should feed one live source-address owner.
 3. **IGMPv3/MLDv2 report formats** — source-specific multicast on the wire.
 
 Items beyond #10 are tuning/perf or rare-app territory.
