@@ -400,6 +400,11 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   freestanding build, `spec-lint`, `git diff --check`, `xtask glibc-test`
   195/195, ABI audit for the 5 aliases/data symbols, and aarch64
   freestanding build.
+- **F644 DONE:** resolver base64 compatibility entry points `__b64_ntop`
+  and `__b64_pton`, with host-diff coverage for padded, whitespace, invalid,
+  and small-buffer paths. Verification: x86_64 freestanding build,
+  `spec-lint`, `git diff --check`, `xtask glibc-test` 196/196, ABI audit for
+  the 2 exported symbols, and aarch64 freestanding build.
 - Re-audit (docs/59 §9 / state.md recipe) for stragglers after each batch.
 
 ## 3. DEFERRED ABI WORK: long double `*l` + `_Float128`/`_Float32x`/`_Float64x`
