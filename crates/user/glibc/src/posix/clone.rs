@@ -43,6 +43,17 @@ pub unsafe extern "C" fn clone(
     )
 }
 
+// # C: int __clone(...) — glibc compatibility alias for clone(2).
+#[cfg(target_arch = "x86_64")]
+#[no_mangle]
+pub unsafe extern "C" fn __clone(
+    f: extern "C" fn(*mut c_void) -> i32, stack: *mut c_void, flags: i32,
+    arg: *mut c_void, ptid: *mut i32, tls: *mut c_void, ctid: *mut i32,
+) -> i32 {
+    // SAFETY: __clone has the same ABI and preconditions as clone.
+    unsafe { clone(f, stack, flags, arg, ptid, tls, ctid) }
+}
+
 // # C: int clone(...) — aarch64 (CLONE_BACKWARDS: tls before ctid)
 #[cfg(target_arch = "aarch64")]
 #[unsafe(naked)]
@@ -68,4 +79,15 @@ pub unsafe extern "C" fn clone(
         "mov x8, #94",             // SYS_exit
         "svc #0",
     )
+}
+
+// # C: int __clone(...) — glibc compatibility alias for clone(2).
+#[cfg(target_arch = "aarch64")]
+#[no_mangle]
+pub unsafe extern "C" fn __clone(
+    f: extern "C" fn(*mut c_void) -> i32, stack: *mut c_void, flags: i32,
+    arg: *mut c_void, ptid: *mut i32, tls: *mut c_void, ctid: *mut i32,
+) -> i32 {
+    // SAFETY: __clone has the same ABI and preconditions as clone.
+    unsafe { clone(f, stack, flags, arg, ptid, tls, ctid) }
 }

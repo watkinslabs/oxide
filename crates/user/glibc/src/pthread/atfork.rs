@@ -31,6 +31,18 @@ pub extern "C" fn pthread_atfork(prepare: Handler, parent: Handler, child: Handl
     0
 }
 
+// # C: int __register_atfork(..., void *dso_handle) — DSO handle ignored here.
+#[no_mangle]
+pub extern "C" fn __register_atfork(
+    prepare: Handler,
+    parent: Handler,
+    child: Handler,
+    dso_handle: *mut core::ffi::c_void,
+) -> i32 {
+    let _ = dso_handle;
+    pthread_atfork(prepare, parent, child)
+}
+
 /// # C: internal — run pthread_atfork prepare handlers (LIFO) before fork(2).
 /// The lock is held across the fork (released by run_parent/run_child, or
 /// abort_unlock on fork failure) so the registry stays stable for both procs.
