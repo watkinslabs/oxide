@@ -1,7 +1,6 @@
 // Kernel-side AF_INET/UNIX wrapper around `crate::NetStack`.
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-
 use crate::{NetStack, LoopbackDev, Ipv4Addr, NetIfaceId, NetError};
 use crate::stack::{TcpEntry, TcpListenEntry};
 use sync::{Spinlock, Socket as SockLockClass};
@@ -219,6 +218,8 @@ pub struct SockOpts {
     pub linger_s:  core::sync::atomic::AtomicI32,
     pub priority:  core::sync::atomic::AtomicI32,
     pub mark:      core::sync::atomic::AtomicI32,
+    pub ip_ttl:    core::sync::atomic::AtomicI32,
+    pub ip_tos:    core::sync::atomic::AtomicI32,
     /// SO_BINDTODEVICE: 0 means no bound egress/ingress interface.
     pub bound_ifindex: core::sync::atomic::AtomicU32,
     /// IPPROTO_TCP / TCP_NODELAY round-trip cell.
@@ -253,6 +254,8 @@ impl Default for SockOpts {
             linger_s:    AtomicI32::new(0),
             priority:    AtomicI32::new(0),
             mark:        AtomicI32::new(0),
+            ip_ttl:      AtomicI32::new(crate::ipv4::IPV4_DEFAULT_TTL as i32),
+            ip_tos:      AtomicI32::new(0),
             bound_ifindex: AtomicU32::new(0),
             tcp_nodelay: AtomicI32::new(0),
             tcp_keepidle_s: AtomicI32::new(crate::sock_opts::TCP_KEEPIDLE_DEFAULT_S),
@@ -681,7 +684,9 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
             .or_else(|| iface_primary_ip(bound_iface.or_else(|| STACK.routes.lookup(dst).map(|r| r.iface))))
             .unwrap_or(Ipv4Addr::LOOPBACK)
     };
-    STACK.send_udp_to_bound(src_ip, src_port, dst, dst_port, payload, bound_iface(sock)?)?;
+    let ttl = sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire) as u8;
+    let tos = sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8;
+    STACK.send_udp_to_bound_opts(src_ip, src_port, dst, dst_port, payload, bound_iface(sock)?, tos, ttl)?;
     drain_loopback();
     Ok(payload.len())
 }

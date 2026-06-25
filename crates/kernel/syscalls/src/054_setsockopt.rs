@@ -11,6 +11,9 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     const SOL_SOCKET: u64  = 1;
     const SO_BINDTODEVICE: u64 = 25;
+    const IPPROTO_IP: u64 = 0;
+    const IP_TOS: u64 = 1;
+    const IP_TTL: u64 = 2;
     const IPPROTO_TCP: u64 = 6;
     const TCP_KEEPIDLE: u64 = 4;
     const TCP_KEEPINTVL: u64 = 5;
@@ -47,6 +50,17 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         (SOL_SOCKET, 16) => if let Some(v) = read_i32(optval) { sock.opts.passcred.store(v, Ordering::Release); }, // SO_PASSCRED
         (SOL_SOCKET, 12) => priority_store(&sock, read_i32(optval)),
         (SOL_SOCKET, 36) => mark_store(&sock, read_i32(optval)),
+        (IPPROTO_IP, IP_TOS) => {
+            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            sock.opts.ip_tos.store(v & 0xff, Ordering::Release);
+        }
+        (IPPROTO_IP, IP_TTL) => {
+            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            if !(1..=255).contains(&v) {
+                return -(Errno::Einval.as_i32() as i64);
+            }
+            sock.opts.ip_ttl.store(v, Ordering::Release);
+        }
         (SOL_SOCKET, SO_BINDTODEVICE) => {
             let rc = bind_to_device(&sock, optval, optlen);
             if rc != 0 { return rc; }

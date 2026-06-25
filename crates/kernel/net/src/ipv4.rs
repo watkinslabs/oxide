@@ -143,10 +143,20 @@ pub fn push_ipv4_header_tos_frag(
     pkt: &mut Pkt, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto, id: u16,
     tos: u8, flags_frag: u16,
 ) -> Result<(), crate::pkt::PktError> {
+    push_ipv4_header_tos_ttl_frag(pkt, src, dst, proto, id, tos, IPV4_DEFAULT_TTL, flags_frag)
+}
+
+/// Push an IPv4 header with explicit TOS, TTL, and flags/fragment-offset bits.
+/// # C: O(payload_len) for the checksum
+pub fn push_ipv4_header_tos_ttl_frag(
+    pkt: &mut Pkt, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto, id: u16,
+    tos: u8, ttl: u8, flags_frag: u16,
+) -> Result<(), crate::pkt::PktError> {
     let payload_len = pkt.len() as u16;
     let mut hdr = Ipv4Hdr::build_with_flags(src, dst, proto, payload_len, id, flags_frag);
-    if tos != 0 {
+    if tos != 0 || ttl != IPV4_DEFAULT_TTL {
         hdr.tos = tos;
+        hdr.ttl = ttl;
         hdr.checksum = 0;
         let mut buf = [0u8; IPV4_HDR_LEN];
         hdr.write_to(&mut buf);
@@ -163,7 +173,15 @@ pub fn push_ipv4_header_tos_frag(
 pub fn push_ipv4_header_tos(
     pkt: &mut Pkt, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto, id: u16, tos: u8,
 ) -> Result<(), crate::pkt::PktError> {
-    push_ipv4_header_tos_frag(pkt, src, dst, proto, id, tos, 0x4000)
+    push_ipv4_header_tos_ttl(pkt, src, dst, proto, id, tos, IPV4_DEFAULT_TTL)
+}
+
+/// Push an IPv4 header with explicit TOS and TTL.
+/// # C: O(payload_len) for the checksum
+pub fn push_ipv4_header_tos_ttl(
+    pkt: &mut Pkt, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto, id: u16, tos: u8, ttl: u8,
+) -> Result<(), crate::pkt::PktError> {
+    push_ipv4_header_tos_ttl_frag(pkt, src, dst, proto, id, tos, ttl, 0x4000)
 }
 
 #[cfg(test)]

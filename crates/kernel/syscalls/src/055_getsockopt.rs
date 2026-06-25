@@ -68,6 +68,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     // Read-back of options stored via setsockopt.
     use core::sync::atomic::Ordering;
     const IPPROTO_TCP: u64 = 6;
+    const IPPROTO_IP: u64 = 0;
+    const IP_TOS: u64 = 1;
+    const IP_TTL: u64 = 2;
     const TCP_KEEPIDLE: u64 = 4;
     const TCP_KEEPINTVL: u64 = 5;
     const TCP_KEEPCNT: u64 = 6;
@@ -95,6 +98,8 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (SOL_SOCKET, 12) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
             (SOL_SOCKET, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
             (SOL_SOCKET, SO_BINDTODEVICE) => return bind_to_device_name(&s, optval, optlen_p),
+            (IPPROTO_IP, IP_TOS) => return i32_back(s.opts.ip_tos.load(Ordering::Acquire)),
+            (IPPROTO_IP, IP_TTL) => return i32_back(s.opts.ip_ttl.load(Ordering::Acquire)),
             (IPPROTO_TCP, 1) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_KEEPIDLE) => return i32_back(s.opts.tcp_keepidle_s.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_KEEPINTVL) => return i32_back(s.opts.tcp_keepintvl_s.load(Ordering::Acquire)),
