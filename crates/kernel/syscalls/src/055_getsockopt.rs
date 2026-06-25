@@ -1,6 +1,7 @@
 // 055 getsockopt — one syscall, one file (docs/53 §0). Moved verbatim from net.rs.
 #![cfg(target_os = "oxide-kernel")]
 use syscall::SyscallArgs;
+use syscall::errno::Errno;
 use hal::USER_VA_END;
 use net::sock::SockKind;
 use crate::net_common::{peercred_for_fd, socket_from_fd};
@@ -17,6 +18,7 @@ use crate::net_common::{peercred_for_fd, socket_from_fd};
 /// # C: O(1)
 pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const SOL_SOCKET:   u64 = 1;
+    const SO_BINDTODEVICE: u64 = 25;
     const SO_TYPE:      u64 = 3;
     const SO_PEERCRED:  u64 = 17;
     let _fd     = args.a0;
@@ -90,6 +92,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (SOL_SOCKET, 8)  => return i32_back(s.opts.rcvbuf.load(Ordering::Acquire)),
             (SOL_SOCKET, 12) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
             (SOL_SOCKET, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_BINDTODEVICE) => return bind_to_device_name(&s, optval, optlen_p),
             (IPPROTO_TCP, 1) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_KEEPIDLE) => return i32_back(s.opts.tcp_keepidle_s.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_KEEPINTVL) => return i32_back(s.opts.tcp_keepintvl_s.load(Ordering::Acquire)),
@@ -122,6 +125,43 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     if optlen_p != 0 && optlen_p < USER_VA_END {
         // SAFETY: optlen_p validated < USER_VA_END; CPL=0 write through caller's AS.
         unsafe { core::ptr::write_volatile(optlen_p as *mut u32, 0); }
+    }
+    0
+}
+
+fn bind_to_device_name(s: &alloc::sync::Arc<net::sock::InetSocket>,
+                       optval: u64, optlen_p: u64) -> i64 {
+    use core::sync::atomic::Ordering;
+    const IFNAMSIZ: usize = 16;
+    if optval == 0 || optval >= USER_VA_END || optlen_p == 0 || optlen_p >= USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: optlen_p was range-checked; userspace owns the pointed u32.
+    let cap = unsafe { core::ptr::read_volatile(optlen_p as *const u32) } as usize;
+    let raw = s.opts.bound_ifindex.load(Ordering::Acquire);
+    if raw == 0 {
+        // SAFETY: validated pointers; zero-length readback for unbound sockets.
+        unsafe { core::ptr::write_volatile(optlen_p as *mut u32, 0); }
+        return 0;
+    }
+    let id = net::NetIfaceId::from_raw(raw);
+    let dev = match net::sock::stack().ifaces.lookup(id) {
+        Some(dev) => dev,
+        None => return -(Errno::Enodev.as_i32() as i64),
+    };
+    let name = dev.name().as_bytes();
+    let need = name.len().saturating_add(1);
+    if need > IFNAMSIZ || cap < need || optval + need as u64 > USER_VA_END {
+        return -(Errno::Erange.as_i32() as i64);
+    }
+    for (i, b) in name.iter().enumerate() {
+        // SAFETY: optval + need was range-checked; byte writes are ABI-safe.
+        unsafe { core::ptr::write_volatile((optval + i as u64) as *mut u8, *b); }
+    }
+    // SAFETY: trailing NUL lies within the validated range.
+    unsafe {
+        core::ptr::write_volatile((optval + name.len() as u64) as *mut u8, 0);
+        core::ptr::write_volatile(optlen_p as *mut u32, need as u32);
     }
     0
 }

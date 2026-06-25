@@ -30,7 +30,9 @@ impl Drop for InetSocket {
                 (s, c.local.ip, c.remote.ip)
             };
             if let Some(seg_bytes) = seg {
-                let _ = stk.send_l4_over_ip(src, dst, crate::addr::IpProto::Tcp, &seg_bytes);
+                let _ = stk.send_l4_over_ip_bound(
+                    src, dst, crate::addr::IpProto::Tcp, &seg_bytes, entry.bound_iface(),
+                );
                 drain_loopback();
             }
             #[cfg(target_os = "oxide-kernel")]

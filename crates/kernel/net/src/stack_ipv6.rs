@@ -26,6 +26,7 @@ pub struct Udp6RxQueue {
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
     pub error_eno: core::sync::atomic::AtomicI32,
+    pub bound_ifindex: core::sync::atomic::AtomicU32,
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
 }
 
@@ -38,6 +39,7 @@ impl Udp6RxQueue {
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
             error_eno: core::sync::atomic::AtomicI32::new(0),
+            bound_ifindex: core::sync::atomic::AtomicU32::new(0),
             poll_subs: Spinlock::new(None),
         }
     }
@@ -55,10 +57,26 @@ impl NetStack {
     /// F180a: IPv6 UDP bind. `Eaddrinuse` if port taken.
     /// # C: O(log N)
     pub fn bind_udp6(&self, bind_ip: Ipv6Addr, port: u16) -> NetResult<()> {
+        self.bind_udp6_with_iface(bind_ip, port, None)
+    }
+
+    /// IPv6 UDP bind with an optional SO_BINDTODEVICE filter. # C: O(log N)
+    pub fn bind_udp6_with_iface(&self, bind_ip: Ipv6Addr, port: u16,
+                                iface: Option<NetIfaceId>) -> NetResult<()> {
         let mut g = self.udp6_map().lock();
         if g.contains_key(&port) { return Err(NetError::Eaddrinuse); }
-        g.insert(port, Arc::new(Udp6RxQueue::new(bind_ip, port)));
+        let q = Arc::new(Udp6RxQueue::new(bind_ip, port));
+        q.bound_ifindex.store(iface.map(|i| i.raw()).unwrap_or(0), core::sync::atomic::Ordering::Release);
+        g.insert(port, q);
         Ok(())
+    }
+
+    /// Update the bound iface for an already-bound IPv6 UDP port. # C: O(log N)
+    pub fn set_udp6_bound_iface(&self, port: u16, iface: Option<NetIfaceId>) -> bool {
+        if let Some(q) = self.udp6_map().lock().get(&port) {
+            q.bound_ifindex.store(iface.map(|i| i.raw()).unwrap_or(0), core::sync::atomic::Ordering::Release);
+            true
+        } else { false }
     }
 
     /// F180a: pop one queued IPv6 datagram for `port`.
@@ -144,6 +162,8 @@ impl NetStack {
                 };
                 let q_arc = { self.udp6_map().lock().get(&udp.dst_port).cloned() };
                 if let Some(q) = q_arc {
+                    let bound = q.bound_ifindex.load(core::sync::atomic::Ordering::Acquire);
+                    if bound != 0 && bound != iface.raw() { return Ok(()); }
                     let body = &payload[crate::udp::UDP_HDR_LEN .. udp.length as usize];
                     q.q.lock().push_back((hdr.src, udp.src_port, body.to_vec()));
                     #[cfg(target_os = "oxide-kernel")]
