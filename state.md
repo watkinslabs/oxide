@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **195/195**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F625-glibc-math-classifier-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **626**, B = **138**, D = **113**
+`F626-glibc-fork-compat-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **627**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -410,6 +410,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   and the f80 C bridge. Host keeps several compat-only here, so validation is ABI
   export audit plus regression suite; C object checked for no PLT relocations or
   unresolved symbols.
+- **F626 DONE locally:** glibc fork/clone compatibility aliases (`_Fork`,
+  `__fork`, `__libc_fork`, `__vfork`, `__clone`, and `__register_atfork`) added
+  over the existing process, clone, and atfork implementations. `_Fork` bypasses
+  atfork handlers; the others preserve existing wrapper semantics. Verified by
+  ABI export audit, regression suite, and both freestanding arch builds.
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need

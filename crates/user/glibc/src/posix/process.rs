@@ -40,11 +40,40 @@ pub unsafe extern "C" fn fork() -> i32 {
         r
     }
 }
+
+// # C: pid_t _Fork(void) — async-signal-safe fork without atfork handlers.
+#[no_mangle]
+pub unsafe extern "C" fn _Fork() -> i32 {
+    // SAFETY: raw fork-like syscall; caller observes parent/child returns.
+    ret_isize(unsafe { do_fork() }) as i32
+}
+
+// # C: pid_t __fork(void) — glibc compatibility alias.
+#[no_mangle]
+pub unsafe extern "C" fn __fork() -> i32 {
+    // SAFETY: __fork has the same ABI and preconditions as fork.
+    unsafe { fork() }
+}
+
+// # C: pid_t __libc_fork(void) — glibc internal compatibility alias.
+#[no_mangle]
+pub unsafe extern "C" fn __libc_fork() -> i32 {
+    // SAFETY: __libc_fork has the same ABI and preconditions as fork.
+    unsafe { fork() }
+}
+
 // # C: pid_t vfork(void) — implemented as fork (POSIX-permitted).
 #[no_mangle]
 pub unsafe extern "C" fn vfork() -> i32 {
     // SAFETY: fork is a valid vfork implementation (no shared address space).
     ret_isize(unsafe { do_fork() }) as i32
+}
+
+// # C: pid_t __vfork(void) — glibc compatibility alias.
+#[no_mangle]
+pub unsafe extern "C" fn __vfork() -> i32 {
+    // SAFETY: __vfork has the same ABI and preconditions as vfork.
+    unsafe { vfork() }
 }
 
 // # C: int execve(const char *path, char *const argv[], char *const envp[])

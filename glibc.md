@@ -116,6 +116,10 @@ Also DONE: glibc math classifier/complex compatibility aliases (F625):
 `__clog10*`, plus f80 `__iscanonicall`, over existing Rust math cores and the
 x86_64 f80 C bridge. Verified by ABI export audit, regression suite, both
 freestanding arch builds, and C-object no-PLT audit.
+Also DONE: glibc fork/clone compatibility aliases (F626): `_Fork`, `__fork`,
+`__libc_fork`, `__vfork`, `__clone`, and `__register_atfork` exported over the
+existing process, clone, and atfork implementations. Verified by ABI export
+audit, regression suite, and both freestanding arch builds.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
