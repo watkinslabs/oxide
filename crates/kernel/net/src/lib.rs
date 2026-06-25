@@ -34,7 +34,10 @@ pub mod tcp_conn;
 pub use tcp_conn::{TcpConn, TcpConnError, Endpoint};
 
 pub mod unix_sock;
-pub use unix_sock::{UnixDgram, UnixDgramQueue, UnixEnd, UnixListener, UnixMsgPair, UnixPair, UnixRegistry};
+pub use unix_sock::{
+    UnixDgram, UnixDgramQueue, UnixEnd, UnixListener, UnixMsgPair, UnixPair, UnixRegistry,
+    unix_path_display, unix_path_is_abstract,
+};
 pub mod route;
 pub mod route6;
 pub mod netfilter_hook;

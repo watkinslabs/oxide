@@ -15,17 +15,29 @@ pub(crate) fn read_sa_family(ptr: u64) -> Option<u16> {
     unsafe { Some(core::ptr::read_volatile(ptr as *const u16)) }
 }
 
-/// Read sockaddr_un path (NUL-terminated, ≤107 B). # C: O(108)
-pub(crate) fn read_sockaddr_un_path(ptr: u64) -> Option<alloc::string::String> {
-    if ptr == 0 || ptr >= USER_VA_END { return None; }
-    // SAFETY: ptr in user range; user page mapped (caller's AS); 108-byte bounded read.
+/// Read sockaddr_un path. Filesystem paths are NUL-terminated; Linux
+/// abstract namespace paths preserve the addrlen-delimited leading NUL
+/// marker. # C: O(108)
+pub(crate) fn read_sockaddr_un_path_len(ptr: u64, addrlen: u64) -> Option<alloc::string::String> {
+    if ptr == 0 || ptr >= USER_VA_END || addrlen <= 2 { return None; }
+    let path_len = (addrlen - 2).min(108) as usize;
+    // SAFETY: ptr in user range; caller's address space is active; read is bounded by sockaddr_un.
     unsafe {
         let p = (ptr + 2) as *const u8;
+        let first = core::ptr::read_volatile(p);
         let mut bytes = alloc::vec::Vec::new();
-        for i in 0..108 {
-            let b = core::ptr::read_volatile(p.add(i));
-            if b == 0 { break; }
-            bytes.push(b);
+        if first == 0 {
+            for i in 0..path_len {
+                bytes.push(core::ptr::read_volatile(p.add(i)));
+            }
+            while bytes.len() > 1 && bytes.last().copied() == Some(0) { bytes.pop(); }
+        } else {
+            bytes.push(first);
+            for i in 1..path_len {
+                let b = core::ptr::read_volatile(p.add(i));
+                if b == 0 { break; }
+                bytes.push(b);
+            }
         }
         alloc::string::String::from_utf8(bytes).ok()
     }
