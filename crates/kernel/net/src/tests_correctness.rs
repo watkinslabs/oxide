@@ -18,6 +18,8 @@ use crate::netdev::NetError;
 // F184-F191 tests live in tests_perf.rs (1000-line cap).
 #[path = "tests_perf.rs"]
 mod tests_perf;
+#[path = "tests_mld.rs"]
+mod tests_mld;
 
 pub(super) fn ep(ip: Ipv4Addr, port: u16) -> Endpoint { Endpoint { ip: IpAddr::V4(ip), port } }
 

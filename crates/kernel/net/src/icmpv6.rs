@@ -59,6 +59,31 @@ impl Icmp6Echo {
     }
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Mldv1Query {
+    pub max_resp_delay: u16,
+    pub group:          Ipv6Addr,
+}
+
+impl Mldv1Query {
+    /// Parse an MLDv1 Listener Query. # C: O(N)
+    pub fn parse(buf: &[u8], src: Ipv6Addr, dst: Ipv6Addr) -> Result<Self, Icmp6Error> {
+        if buf.len() < 24 { return Err(Icmp6Error::Short); }
+        if compute_icmp6_checksum_with_field(buf, src, dst, true) != 0 {
+            return Err(Icmp6Error::BadChecksum);
+        }
+        if buf[0] != ICMPV6_TYPE_MLD_QUERY || buf[1] != 0 {
+            return Err(Icmp6Error::BadType);
+        }
+        let mut group = [0u8; 16];
+        group.copy_from_slice(&buf[8..24]);
+        Ok(Self {
+            max_resp_delay: u16::from_be_bytes([buf[4], buf[5]]),
+            group: Ipv6Addr(group),
+        })
+    }
+}
+
 /// Build an Echo Reply for a received Echo Request.
 /// # C: O(1)
 pub fn build_echo_reply(src: Ipv6Addr, dst: Ipv6Addr, request: &[u8])
@@ -85,6 +110,22 @@ pub fn build_mldv1_report(src: Ipv6Addr, group: Ipv6Addr) -> alloc::vec::Vec<u8>
 /// Build an MLDv1 Done message for `group`. # C: O(1)
 pub fn build_mldv1_done(src: Ipv6Addr, group: Ipv6Addr) -> alloc::vec::Vec<u8> {
     build_mldv1(ICMPV6_TYPE_MLD_DONE, src, crate::ndp::IPV6_ALL_ROUTERS, group)
+}
+
+/// Build an MLDv1 Listener Query. # C: O(1)
+pub fn build_mldv1_query(
+    src: Ipv6Addr,
+    dst: Ipv6Addr,
+    group: Ipv6Addr,
+    max_resp_delay: u16,
+) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec![0u8; 24];
+    out[0] = ICMPV6_TYPE_MLD_QUERY;
+    out[4..6].copy_from_slice(&max_resp_delay.to_be_bytes());
+    out[8..24].copy_from_slice(&group.0);
+    let cs = compute_icmp6_checksum(&out, src, dst);
+    out[2..4].copy_from_slice(&cs.to_be_bytes());
+    out
 }
 
 fn build_mldv1(typ: u8, src: Ipv6Addr, dst: Ipv6Addr, group: Ipv6Addr)
@@ -154,5 +195,16 @@ mod tests {
         h.build_into(src, src, payload, &mut buf);
         buf[5] ^= 0xFF;
         assert_eq!(Icmp6Echo::parse(&buf, src, src).err().unwrap(), Icmp6Error::BadChecksum);
+    }
+
+    #[test]
+    fn mld_query_round_trip() {
+        let src = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
+        let dst = crate::ndp::IPV6_ALL_NODES;
+        let group = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,0x1234]);
+        let query = build_mldv1_query(src, dst, group, 1000);
+        let parsed = Mldv1Query::parse(&query, src, dst).unwrap();
+        assert_eq!(parsed.max_resp_delay, 1000);
+        assert_eq!(parsed.group, group);
     }
 }
