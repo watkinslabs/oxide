@@ -177,7 +177,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | IPv6 inbound reassembly              | done     | RFC 8200 Fragment headers reassemble before L4 demux |
 | IPv6 outbound fragmentation          | done     | L4 send path emits RFC 8200 Fragment headers to iface MTU |
 | IP_MULTICAST_*                       | partial  | IF/TTL/LOOP, ADD/DROP_MEMBERSHIP, IP_MSFILTER, and MCAST_* IPv4 source filters wired |
-| IGMP / MLD                           | partial  | IGMPv2 and MLDv1 host behavior wired; IGMPv3/MLDv2 report formats TBD |
+| IGMP / MLD                           | partial  | IGMPv3 and MLDv2 report formats wired for host joins/leaves/query replies; advanced source query handling TBD |
 
 ## 11. Performance / observability
 
@@ -205,7 +205,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 1. **NETLINK_ROUTE completeness** (RTM_GETLINK / NEWADDR / GETROUTE)
    — every userspace network tool reads these (`ip`, `networkd`,
    `NetworkManager`). High impact for "real distro programs work."
-2. **IGMPv3/MLDv2 report formats** — source-specific multicast on the wire.
-3. **IPv4/IPv6 address lifetime metadata** — cacheinfo, preferred/valid lifetimes, and dynamic/static flags.
+2. **IPv4/IPv6 address lifetime metadata** — cacheinfo, preferred/valid lifetimes, and dynamic/static flags.
+3. **IGMPv3/MLDv2 source query handling** — honor source lists in multicast listener queries.
 
 Items beyond #10 are tuning/perf or rare-app territory.

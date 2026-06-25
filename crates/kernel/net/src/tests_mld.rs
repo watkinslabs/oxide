@@ -11,7 +11,7 @@ fn ipv6_packet(src: Ipv6Addr, dst: Ipv6Addr, payload: &[u8]) -> Vec<u8> {
 #[test]
 fn mld_general_query_reports_joined_group() {
     use crate::icmpv6::{
-        build_mldv1_query, ICMPV6_TYPE_MLD_REPORT,
+        build_mldv1_query, ICMPV6_TYPE_MLDV2_REPORT,
     };
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
@@ -30,9 +30,12 @@ fn mld_general_query_reports_joined_group() {
     let report = lo.rx_pop().expect("query response");
     let hdr = crate::ipv6::Ipv6Hdr::parse(report.data()).unwrap();
     assert_eq!(hdr.src, src);
-    assert_eq!(hdr.dst, group);
+    assert_eq!(hdr.dst, crate::icmpv6::IPV6_MLDV2_ROUTERS);
     let body = &report.data()[crate::ipv6::IPV6_HDR_LEN..];
-    assert_eq!(body[0], ICMPV6_TYPE_MLD_REPORT);
-    assert_eq!(&body[8..24], &group.0);
+    assert_eq!(body[0], ICMPV6_TYPE_MLDV2_REPORT);
+    assert_eq!(u16::from_be_bytes([body[6], body[7]]), 1);
+    assert_eq!(body[8], crate::icmpv6::MLDV2_RECORD_MODE_IS_EXCLUDE);
+    assert_eq!(u16::from_be_bytes([body[10], body[11]]), 0);
+    assert_eq!(&body[12..28], &group.0);
     assert!(lo.rx_pop().is_none());
 }
