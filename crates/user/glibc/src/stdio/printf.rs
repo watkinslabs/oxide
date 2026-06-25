@@ -180,6 +180,12 @@ pub unsafe extern "C" fn asprintf(strp: *mut *mut u8, fmt: *const u8, mut ap: ..
     // SAFETY: strp writable; ap supplies the varargs named by fmt.
     unsafe { into_alloc(strp, fmt, &mut ap) }
 }
+// # C: int __asprintf(char **strp, const char *fmt, ...)
+#[no_mangle]
+pub unsafe extern "C" fn __asprintf(strp: *mut *mut u8, fmt: *const u8, mut ap: ...) -> i32 {
+    // SAFETY: __asprintf has the same writable strp and varargs contract as asprintf.
+    unsafe { into_alloc(strp, fmt, &mut ap) }
+}
 
 // # C: int vfprintf(FILE *f, const char *fmt, va_list ap)
 #[no_mangle]
