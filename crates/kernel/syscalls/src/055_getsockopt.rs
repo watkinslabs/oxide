@@ -64,6 +64,8 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const IP_TOS: u64 = 1;
     const IP_TTL: u64 = 2;
     const IP_PKTINFO: u64 = 8;
+    const IP_MULTICAST_TTL: u64 = 33;
+    const IP_MULTICAST_LOOP: u64 = 34;
     const IPV6_V6ONLY: u64 = 26;
     const TCP_CORK: u64 = 3;
     const TCP_KEEPIDLE: u64 = 4;
@@ -99,6 +101,8 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (IPPROTO_IP, IP_TOS) => return i32_back(s.opts.ip_tos.load(Ordering::Acquire)),
             (IPPROTO_IP, IP_TTL) => return i32_back(s.opts.ip_ttl.load(Ordering::Acquire)),
             (IPPROTO_IP, IP_PKTINFO) => return i32_back(s.opts.ip_pktinfo.load(Ordering::Acquire)),
+            (IPPROTO_IP, IP_MULTICAST_TTL) => return i32_back(s.opts.ip_mcast_ttl.load(Ordering::Acquire)),
+            (IPPROTO_IP, IP_MULTICAST_LOOP) => return i32_back(s.opts.ip_mcast_loop.load(Ordering::Acquire)),
             (IPPROTO_IPV6, IPV6_V6ONLY) => return i32_back(s.opts.ipv6_v6only.load(Ordering::Acquire)),
             (IPPROTO_TCP, 1) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_CORK) => return i32_back(s.opts.tcp_cork.load(Ordering::Acquire)),

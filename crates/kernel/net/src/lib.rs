@@ -24,6 +24,7 @@ pub mod loopback;
 pub mod ipv4;
 pub mod ipv6;
 pub mod icmp;
+pub mod igmp;
 pub mod icmpv6;
 pub mod arp;
 pub mod ethernet;
@@ -64,7 +65,10 @@ pub mod sock_io;
 pub mod sock_drop;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock_v6;
+#[cfg(target_os = "oxide-kernel")]
+pub mod sock_mcast;
 pub mod stack_ipv6;
+pub mod stack_igmp;
 pub mod tcp_cc;
 pub mod stack_icmp;
 pub mod ipv4_reasm;
