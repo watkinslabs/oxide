@@ -12,6 +12,7 @@ use crate::net_common::{AF_INET, AF_INET6, errno_from_neterr, socket_from_fd};
 pub fn sys_connect(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
+    let addrlen = args.a2;
     // D3.3: AF_VSOCK connect — parse sockaddr_vm, drive the vsock
     // OP_REQUEST→OP_RESPONSE handshake, stash the live conn on the fd.
     if let Some(vs) = crate::net_common::vsock_from_fd(fd) {
@@ -36,7 +37,7 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         Some(f) => f as u32, None => return -(Errno::Efault.as_i32() as i64),
     };
     let addr = if family == AF_UNIX {
-        let path = match read_sockaddr_un_path(addr_p) {
+        let path = match read_sockaddr_un_path_len(addr_p, addrlen) {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
         net::sock::RemoteAddr::UnixPath(path)

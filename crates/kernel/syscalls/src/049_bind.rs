@@ -12,6 +12,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     const AF_UNIX: u16 = 1;
     let fd     = args.a0;
     let addr_p = args.a1;
+    let addrlen = args.a2;
     if crate::netlink_fd::is_netlink(fd) {
         return crate::netlink_fd::bind(fd, addr_p);
     }
@@ -32,7 +33,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     };
     // Parse the user sockaddr into the typed BoundAddr enum.
     let addr = if family == AF_UNIX as u16 {
-        let path = match read_sockaddr_un_path(addr_p) {
+        let path = match read_sockaddr_un_path_len(addr_p, addrlen) {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
         // If the socket is already SOCK_DGRAM, pass its queue along.
@@ -93,7 +94,9 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     };
     if rv == 0 {
         if let Some(p) = unix_path {
-            fs::tmpfs::register(p, fs::tmpfs::TmpfsSockInode::new() as vfs::InodeRef);
+            if !net::unix_path_is_abstract(&p) {
+                fs::tmpfs::register(p, fs::tmpfs::TmpfsSockInode::new() as vfs::InodeRef);
+            }
         }
     }
     rv

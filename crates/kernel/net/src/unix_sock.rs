@@ -594,6 +594,25 @@ pub struct UnixRegistry {
     pub(crate) dgrams: Spinlock<BTreeMap<String, Arc<UnixDgramQueue>>, UnixLockClass>,
 }
 
+/// Linux AF_UNIX abstract namespace addresses are keyed by a leading
+/// NUL byte, not by a filesystem pathname. # C: O(1)
+pub fn unix_path_is_abstract(path: &str) -> bool {
+    path.as_bytes().first().copied() == Some(0)
+}
+
+/// Render a registry key the way `/proc/net/unix` reports it: abstract
+/// sockets use an `@` prefix while literal `@...` pathnames stay distinct
+/// internally. # C: O(N)
+pub fn unix_path_display(path: &str) -> String {
+    if unix_path_is_abstract(path) {
+        let mut out = String::from("@");
+        out.push_str(core::str::from_utf8(&path.as_bytes()[1..]).unwrap_or(""));
+        out
+    } else {
+        path.into()
+    }
+}
+
 impl UnixRegistry {
     /// # C: O(1)
     pub const fn new() -> Self {
@@ -687,6 +706,26 @@ impl UnixRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abstract_and_literal_at_paths_are_distinct() {
+        let registry = UnixRegistry::new();
+
+        registry.bind(String::from("\0svc")).unwrap();
+        registry.bind(String::from("@svc")).unwrap();
+
+        assert!(registry.lookup("\0svc").is_some());
+        assert!(registry.lookup("@svc").is_some());
+        assert_eq!(registry.snapshot_paths().len(), 2);
+    }
+
+    #[test]
+    fn abstract_path_display_uses_procfs_at_prefix() {
+        assert!(unix_path_is_abstract("\0svc"));
+        assert!(!unix_path_is_abstract("@svc"));
+        assert_eq!(unix_path_display("\0svc"), "@svc");
+        assert_eq!(unix_path_display("@svc"), "@svc");
+    }
 
     #[test]
     fn round_trip() {

@@ -23,7 +23,7 @@ const SCM_RIGHTS:  i32 = 1;
 /// pty master/slave fds — so STREAM support is mandatory, not optional.
 /// # C: O(controllen + iov)
 pub fn try_sendmsg_with_fds(
-    fd: u64, name: u64, iov: u64, iovlen: u64,
+    fd: u64, name: u64, namelen: u64, iov: u64, iovlen: u64,
     control: u64, controllen: u64,
 ) -> Option<i64> {
     if controllen < 16 || control == 0 || control >= USER_VA_END { return None; }
@@ -41,7 +41,7 @@ pub fn try_sendmsg_with_fds(
     let fds = parse_scm_rights(control, controllen);
     if fds.is_empty() { return None; }
     match kind_kind {
-        1 => Some(sendmsg_unix_dgram_with_fds(&s, name, iov, iovlen, fds)),
+        1 => Some(sendmsg_unix_dgram_with_fds(&s, name, namelen, iov, iovlen, fds)),
         2 | 3 => Some(sendmsg_unix_stream_with_fds(&s, iov, iovlen, fds)),
         _ => None,
     }
@@ -144,12 +144,12 @@ pub fn parse_scm_rights(control: u64, controllen: u64) -> Vec<Arc<File>> {
 /// contents into a single payload Vec; pushes onto target queue.
 /// # C: O(payload + nfds)
 pub fn sendmsg_unix_dgram_with_fds(
-    sock: &Arc<InetSocket>, name: u64, iov: u64, iovlen: u64,
+    sock: &Arc<InetSocket>, name: u64, namelen: u64, iov: u64, iovlen: u64,
     fds: Vec<Arc<File>>,
 ) -> i64 {
     // Resolve target queue: explicit `name` path or stashed peer.
     let path: alloc::string::String = if name != 0 {
-        match crate::net_sockaddr::read_sockaddr_un_path(name) {
+        match crate::net_sockaddr::read_sockaddr_un_path_len(name, namelen) {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         }
     } else {

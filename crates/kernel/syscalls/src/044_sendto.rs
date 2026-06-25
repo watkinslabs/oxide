@@ -19,6 +19,7 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     let len    = args.a2 as usize;
     let flags  = args.a3;
     let dest_p = args.a4;
+    let dest_len = args.a5;
     // F132: netlink fd routing must happen BEFORE socket_from_fd,
     // which only knows InetSocket — netlink would otherwise hit
     // the ENOTSOCK branch despite is_netlink() recognizing it.
@@ -64,7 +65,7 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     let dest = if dest_p == 0 {
         None
     } else if matches!(*sock.kind.lock(), SockKind::UnixDgram(_)) {
-        match read_sockaddr_un_path(dest_p) {
+        match read_sockaddr_un_path_len(dest_p, dest_len) {
             Some(p) => Some(net::sock::RemoteAddr::UnixPath(p)),
             None    => return -(Errno::Einval.as_i32() as i64),
         }
