@@ -171,6 +171,12 @@ mod imp {
         // not setuid-aware; refined at G9 hardening).
         unsafe { getenv(name) }
     }
+    // # C: char *__secure_getenv(const char *name)
+    #[no_mangle]
+    pub unsafe extern "C" fn __secure_getenv(name: *const u8) -> *mut u8 {
+        // SAFETY: internal alias has the same C-string contract as secure_getenv.
+        unsafe { secure_getenv(name) }
+    }
     // # C: int setenv(const char *name, const char *value, int overwrite)
     #[no_mangle]
     pub unsafe extern "C" fn setenv(name: *const u8, value: *const u8, overwrite: i32) -> i32 {

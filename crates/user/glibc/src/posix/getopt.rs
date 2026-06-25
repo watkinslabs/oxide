@@ -233,6 +233,12 @@ mod imp {
         // SAFETY: standard getopt(3) contract; argv has argc entries.
         unsafe { run(argc, argv, optstring) }
     }
+    // # C: int __posix_getopt(int argc, char *const argv[], const char *optstring)
+    #[no_mangle]
+    pub unsafe extern "C" fn __posix_getopt(argc: i32, argv: *mut *mut u8, optstring: *const u8) -> i32 {
+        // SAFETY: POSIX getopt alias; same argv/optstring contract as getopt.
+        unsafe { run(argc, argv, optstring) }
+    }
 
     #[repr(C)]
     pub struct option { pub name: *const u8, pub has_arg: i32, pub flag: *mut i32, pub val: i32 }
