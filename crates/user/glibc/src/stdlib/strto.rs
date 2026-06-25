@@ -115,6 +115,30 @@ mod exports {
         // SAFETY: LP64 unsigned long long == unsigned long; forwards.
         unsafe { strtoul_impl(s, endptr, base) }
     }
+    // # C: long __strtol_internal(const char *, char **, int, int)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strtol_internal(s: *const u8, endptr: *mut *mut u8, base: i32, _group: i32) -> i64 {
+        // SAFETY: same C contract as strtol; the C locale parser ignores grouping.
+        unsafe { strtol_impl(s, endptr, base) }
+    }
+    // # C: long long __strtoll_internal(const char *, char **, int, int)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strtoll_internal(s: *const u8, endptr: *mut *mut u8, base: i32, _group: i32) -> i64 {
+        // SAFETY: same C contract as strtoll; the C locale parser ignores grouping.
+        unsafe { strtol_impl(s, endptr, base) }
+    }
+    // # C: unsigned long __strtoul_internal(const char *, char **, int, int)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strtoul_internal(s: *const u8, endptr: *mut *mut u8, base: i32, _group: i32) -> u64 {
+        // SAFETY: same C contract as strtoul; the C locale parser ignores grouping.
+        unsafe { strtoul_impl(s, endptr, base) }
+    }
+    // # C: unsigned long long __strtoull_internal(const char *, char **, int, int)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strtoull_internal(s: *const u8, endptr: *mut *mut u8, base: i32, _group: i32) -> u64 {
+        // SAFETY: same C contract as strtoull; the C locale parser ignores grouping.
+        unsafe { strtoul_impl(s, endptr, base) }
+    }
     // C23 variants: glibc 2.38+ headers redirect strto{l,ll,ul,ull} to these
     // __isoc23_* symbols (they add the C23 "0b" binary-prefix rule for base
     // 0/2). Our strto*_impl already follows the standard contract; alias them.
