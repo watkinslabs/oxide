@@ -138,6 +138,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | SOL_SOCKET | SO_SNDBUF/RCVBUF  | done   | F164, F186 |
 | SOL_SOCKET | SO_SNDTIMEO/RCVTIMEO | done | F167 |
 | SOL_SOCKET | SO_ERROR          | done   | F163 |
+| SOL_SOCKET | SO_TYPE/DOMAIN/PROTOCOL | done | getsockopt reports socket identity from family/kind/protocol metadata |
 | SOL_SOCKET | SO_LINGER         | done   | F194 (abortive only) |
 | SOL_SOCKET | SO_PRIORITY/MARK  | partial | stored, not data-path enforced |
 | SOL_SOCKET | SO_BINDTODEVICE   | done   | setsockopt/getsockopt by ifname; applies to UDP/TCP paths |
