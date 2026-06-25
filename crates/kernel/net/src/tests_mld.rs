@@ -39,3 +39,35 @@ fn mld_general_query_reports_joined_group() {
     assert_eq!(&body[12..28], &group.0);
     assert!(lo.rx_pop().is_none());
 }
+
+#[test]
+fn mldv2_source_query_reports_sources() {
+    use crate::icmpv6::{
+        build_mldv2_query, ICMPV6_TYPE_MLDV2_REPORT,
+    };
+    let stack = NetStack::new();
+    let (id, lo) = stack.register_loopback();
+    let src = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
+    let router = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,2]);
+    let group = Ipv6Addr::from_segments([0xff3e,0,0,0,0,0,0,0x1234]);
+    let source = Ipv6Addr::from_segments([0x2001,0xdb8,0,0,0,0,0,9]);
+    stack.add_v6_addr(id, src);
+
+    stack.join_ipv6_multicast(id, group, src).unwrap();
+    let _ = lo.rx_pop().expect("initial MLD report");
+
+    let query = build_mldv2_query(router, group, group, 1000, &[source]);
+    let packet = ipv6_packet(router, group, &query);
+    stack.deliver_rx_ipv6(id, &packet).unwrap();
+
+    let report = lo.rx_pop().expect("source query response");
+    let hdr = crate::ipv6::Ipv6Hdr::parse(report.data()).unwrap();
+    assert_eq!(hdr.dst, crate::icmpv6::IPV6_MLDV2_ROUTERS);
+    let body = &report.data()[crate::ipv6::IPV6_HDR_LEN..];
+    assert_eq!(body[0], ICMPV6_TYPE_MLDV2_REPORT);
+    assert_eq!(body[8], crate::icmpv6::MLDV2_RECORD_MODE_IS_EXCLUDE);
+    assert_eq!(u16::from_be_bytes([body[10], body[11]]), 1);
+    assert_eq!(&body[12..28], &group.0);
+    assert_eq!(&body[28..44], &source.0);
+    assert!(lo.rx_pop().is_none());
+}

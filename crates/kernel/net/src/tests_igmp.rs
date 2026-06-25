@@ -75,6 +75,32 @@ fn igmp_general_query_reports_joined_group() {
 }
 
 #[test]
+fn igmpv3_source_query_reports_sources() {
+    let stack = NetStack::new();
+    let (id, lo) = stack.register_loopback();
+    let src = Ipv4Addr::LOOPBACK;
+    let router = Ipv4Addr::new(127, 0, 0, 2);
+    let group = Ipv4Addr::new(232, 9, 8, 7);
+    let source = Ipv4Addr::new(10, 0, 0, 9);
+
+    stack.join_ipv4_multicast(id, group, src).unwrap();
+    let _ = lo.rx_pop().expect("initial IGMP report");
+
+    let query = crate::igmp::build_igmpv3_query(group, 10, &[source]);
+    let packet = ipv4_packet(router, group, &query);
+    stack.deliver_rx(id, &packet).unwrap();
+
+    let report = lo.rx_pop().expect("source query response");
+    let body = &report.data()[crate::ipv4::IPV4_HDR_LEN..];
+    assert_eq!(body[0], crate::igmp::IGMP_TYPE_V3_REPORT);
+    assert_eq!(body[8], crate::igmp::IGMP_V3_RECORD_MODE_IS_EXCLUDE);
+    assert_eq!(u16::from_be_bytes([body[10], body[11]]), 1);
+    assert_eq!(&body[12..16], &group.octets());
+    assert_eq!(&body[16..20], &source.octets());
+    assert!(lo.rx_pop().is_none());
+}
+
+#[test]
 fn ipv4_multicast_source_filter_drops_denied_udp_source() {
     let stack = NetStack::new();
     let (id, _lo) = stack.register_loopback();

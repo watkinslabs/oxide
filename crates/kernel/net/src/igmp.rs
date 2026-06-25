@@ -1,5 +1,5 @@
-// IGMPv1/v2 host messages. The stack tracks host memberships and emits
-// IGMPv2 reports/leaves; queries are accepted in v1/v2's shared 8-byte form.
+// IGMP host messages. The stack tracks host memberships and emits IGMPv3
+// reports; queries are accepted in v1/v2 and v3 forms.
 
 use crate::addr::Ipv4Addr;
 use crate::ipv4::ip_checksum;
@@ -20,21 +20,38 @@ pub const IPV4_IGMPV3_ROUTERS: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 22);
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum IgmpError { Short, BadChecksum, BadType }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IgmpQuery {
     pub max_resp_time: u8,
     pub group: Ipv4Addr,
+    pub sources: alloc::vec::Vec<Ipv4Addr>,
 }
 
 impl IgmpQuery {
     /// Parse an IGMP membership query. # C: O(N)
     pub fn parse(buf: &[u8]) -> Result<Self, IgmpError> {
         if buf.len() < IGMP_LEN { return Err(IgmpError::Short); }
-        if ip_checksum(&buf[..IGMP_LEN]) != 0 { return Err(IgmpError::BadChecksum); }
         if buf[0] != IGMP_TYPE_QUERY { return Err(IgmpError::BadType); }
+        if buf.len() >= 12 {
+            if ip_checksum(buf) != 0 { return Err(IgmpError::BadChecksum); }
+            let nsrc = u16::from_be_bytes([buf[10], buf[11]]) as usize;
+            let need = 12 + 4 * nsrc;
+            if buf.len() < need { return Err(IgmpError::Short); }
+            let mut sources = alloc::vec::Vec::with_capacity(nsrc);
+            for chunk in buf[12..need].chunks_exact(4) {
+                sources.push(Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]));
+            }
+            return Ok(Self {
+                max_resp_time: buf[1],
+                group: Ipv4Addr::new(buf[4], buf[5], buf[6], buf[7]),
+                sources,
+            });
+        }
+        if ip_checksum(&buf[..IGMP_LEN]) != 0 { return Err(IgmpError::BadChecksum); }
         Ok(Self {
             max_resp_time: buf[1],
             group: Ipv4Addr::new(buf[4], buf[5], buf[6], buf[7]),
+            sources: alloc::vec::Vec::new(),
         })
     }
 }
@@ -79,6 +96,24 @@ pub fn build_igmp_query(group: Ipv4Addr, max_resp_time: u8) -> [u8; IGMP_LEN] {
     out
 }
 
+/// Build an IGMPv3 membership query for tests. # C: O(N sources)
+pub fn build_igmpv3_query(group: Ipv4Addr, max_resp_time: u8, sources: &[Ipv4Addr])
+    -> alloc::vec::Vec<u8>
+{
+    let nsrc = sources.len().min(u16::MAX as usize);
+    let mut out = alloc::vec![0u8; 12 + 4 * nsrc];
+    out[0] = IGMP_TYPE_QUERY;
+    out[1] = max_resp_time;
+    out[4..8].copy_from_slice(&group.octets());
+    out[10..12].copy_from_slice(&(nsrc as u16).to_be_bytes());
+    for (i, src) in sources.iter().take(nsrc).enumerate() {
+        out[12 + 4 * i..16 + 4 * i].copy_from_slice(&src.octets());
+    }
+    let cs = ip_checksum(&out);
+    out[2..4].copy_from_slice(&cs.to_be_bytes());
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,6 +125,17 @@ mod tests {
         let parsed = IgmpQuery::parse(&q).unwrap();
         assert_eq!(parsed.group, group);
         assert_eq!(parsed.max_resp_time, 10);
+        assert!(parsed.sources.is_empty());
+    }
+
+    #[test]
+    fn v3_query_round_trip_sources() {
+        let group = Ipv4Addr::new(232, 1, 2, 3);
+        let sources = [Ipv4Addr::new(10, 0, 0, 1), Ipv4Addr::new(10, 0, 0, 2)];
+        let q = build_igmpv3_query(group, 10, &sources);
+        let parsed = IgmpQuery::parse(&q).unwrap();
+        assert_eq!(parsed.group, group);
+        assert_eq!(parsed.sources, sources);
     }
 
     #[test]
