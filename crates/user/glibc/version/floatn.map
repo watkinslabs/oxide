@@ -213,6 +213,7 @@
     __select;
     __send;
     __sendmmsg;
+    __setmntent;
     __setpgid;
     __sbrk;
     __sigaction;

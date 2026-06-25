@@ -415,6 +415,10 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   `__bsd_getpgrp`, forwarding to `getpgid(pid)`. Verification: x86_64
   freestanding build, `spec-lint`, `git diff --check`, `xtask glibc-test`
   197/197, ABI audit for the exported symbol, and aarch64 freestanding build.
+- **F647 DONE:** internal mount-table opener alias `__setmntent`, forwarding
+  to `setmntent`. Verification: x86_64 freestanding build, `spec-lint`,
+  `git diff --check`, `xtask glibc-test` 197/197, ABI audit for the exported
+  symbol, and aarch64 freestanding build.
 - Re-audit (docs/59 §9 / state.md recipe) for stragglers after each batch.
 
 ## 3. DEFERRED ABI WORK: long double `*l` + `_Float128`/`_Float32x`/`_Float64x`
