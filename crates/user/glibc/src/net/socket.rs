@@ -283,6 +283,12 @@ mod exports {
         // SAFETY: addr points at `len` valid bytes.
         ret_isize(unsafe { sys3(nr::CONNECT, fd as usize, addr as usize, len as usize) }) as i32
     }
+    // # C: int __connect(int fd, const struct sockaddr *addr, socklen_t len)
+    #[no_mangle]
+    pub unsafe extern "C" fn __connect(fd: i32, addr: *const sockaddr, len: u32) -> i32 {
+        // SAFETY: __connect has the same sockaddr buffer contract as connect.
+        unsafe { connect(fd, addr, len) }
+    }
     // # C: int getsockname(int fd, struct sockaddr *addr, socklen_t *len)
     #[no_mangle]
     pub unsafe extern "C" fn getsockname(fd: i32, addr: *mut sockaddr, len: *mut u32) -> i32 {

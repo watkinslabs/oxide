@@ -70,12 +70,21 @@ mod imp {
     // # C: char *stpcpy(char *, const char *)
     // SAFETY: d has room for strlen(s)+1; s is a NUL-terminated C string.
     #[no_mangle] pub unsafe extern "C" fn stpcpy(d: *mut u8, s: *const u8) -> *mut u8 { unsafe { stpcpy_impl(d, s) } }
+    // # C: char *__stpcpy(char *, const char *)
+    // SAFETY: __stpcpy has the same destination/source contract as stpcpy.
+    #[no_mangle] pub unsafe extern "C" fn __stpcpy(d: *mut u8, s: *const u8) -> *mut u8 { unsafe { stpcpy(d, s) } }
     // # C: char *stpncpy(char *, const char *, size_t)
     // SAFETY: d is writable for n bytes; s is a NUL-terminated C string.
     #[no_mangle] pub unsafe extern "C" fn stpncpy(d: *mut u8, s: *const u8, n: usize) -> *mut u8 { unsafe { stpncpy_impl(d, s, n) } }
+    // # C: char *__stpncpy(char *, const char *, size_t)
+    // SAFETY: __stpncpy has the same destination/source contract as stpncpy.
+    #[no_mangle] pub unsafe extern "C" fn __stpncpy(d: *mut u8, s: *const u8, n: usize) -> *mut u8 { unsafe { stpncpy(d, s, n) } }
     // # C: void *mempcpy(void *, const void *, size_t)
     // SAFETY: d and s are valid for n non-overlapping bytes per memcpy.
     #[no_mangle] pub unsafe extern "C" fn mempcpy(d: *mut u8, s: *const u8, n: usize) -> *mut u8 { unsafe { mempcpy_impl(d, s, n) } }
+    // # C: void *__mempcpy(void *, const void *, size_t)
+    // SAFETY: __mempcpy has the same non-overlap buffer contract as mempcpy.
+    #[no_mangle] pub unsafe extern "C" fn __mempcpy(d: *mut u8, s: *const u8, n: usize) -> *mut u8 { unsafe { mempcpy(d, s, n) } }
     // # C: void *memrchr(const void *, int, size_t)
     // SAFETY: s is readable for n bytes; scans backward for the byte c.
     #[no_mangle] pub unsafe extern "C" fn memrchr(s: *const u8, c: i32, n: usize) -> *mut u8 { unsafe { memrchr_impl(s, c, n) } }

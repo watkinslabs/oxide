@@ -37,11 +37,23 @@ mod exports {
         // SAFETY: forwards the C strdup contract to strdup_impl unchanged.
         unsafe { strdup_impl(s) }
     }
+    // # C: char *__strdup(const char *s)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strdup(s: *const u8) -> *mut u8 {
+        // SAFETY: __strdup has the same C-string contract as strdup.
+        unsafe { strdup(s) }
+    }
     // # C: char *strndup(const char *s, size_t n)
     #[no_mangle]
     pub unsafe extern "C" fn strndup(s: *const u8, n: usize) -> *mut u8 {
         // SAFETY: forwards the C strndup contract to strndup_impl unchanged.
         unsafe { strndup_impl(s, n) }
+    }
+    // # C: char *__strndup(const char *s, size_t n)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strndup(s: *const u8, n: usize) -> *mut u8 {
+        // SAFETY: __strndup has the same bounded C-string contract as strndup.
+        unsafe { strndup(s, n) }
     }
 }
 

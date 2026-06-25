@@ -33,6 +33,12 @@ pub unsafe extern "C" fn backtrace(buffer: *mut *mut core::ffi::c_void, size: i3
         n
     }
 }
+// # C: int __backtrace(void **buffer, int size)
+#[no_mangle]
+pub unsafe extern "C" fn __backtrace(buffer: *mut *mut core::ffi::c_void, size: i32) -> i32 {
+    // SAFETY: __backtrace has the same output-array contract as backtrace.
+    unsafe { backtrace(buffer, size) }
+}
 
 #[inline(always)]
 fn frame_pointer() -> usize {
@@ -76,6 +82,12 @@ pub unsafe extern "C" fn backtrace_symbols(buffer: *const *mut core::ffi::c_void
         arr
     }
 }
+// # C: char **__backtrace_symbols(void *const *buffer, int size)
+#[no_mangle]
+pub unsafe extern "C" fn __backtrace_symbols(buffer: *const *mut core::ffi::c_void, size: i32) -> *mut *mut u8 {
+    // SAFETY: __backtrace_symbols has the same address-array contract as backtrace_symbols.
+    unsafe { backtrace_symbols(buffer, size) }
+}
 
 // # C: void backtrace_symbols_fd(void *const *buffer, int size, int fd)
 #[no_mangle]
@@ -92,6 +104,12 @@ pub unsafe extern "C" fn backtrace_symbols_fd(buffer: *const *mut core::ffi::c_v
             crate::posix::io::write(fd, line.as_ptr(), len + 1);
         }
     }
+}
+// # C: void __backtrace_symbols_fd(void *const *buffer, int size, int fd)
+#[no_mangle]
+pub unsafe extern "C" fn __backtrace_symbols_fd(buffer: *const *mut core::ffi::c_void, size: i32, fd: i32) {
+    // SAFETY: __backtrace_symbols_fd has the same address-array contract as backtrace_symbols_fd.
+    unsafe { backtrace_symbols_fd(buffer, size, fd) }
 }
 
 // Format "[0xADDR]" + NUL into dst; returns the length excluding the NUL.

@@ -33,6 +33,12 @@ pub unsafe extern "C" fn dup2(oldfd: i32, newfd: i32) -> i32 {
     // SAFETY: dup3(2) takes scalar fds; old != new here so EINVAL can't fire.
     ret_isize(unsafe { sys3(nr::DUP3, oldfd as usize, newfd as usize, 0) }) as i32
 }
+// # C: int __dup2(int oldfd, int newfd)
+#[no_mangle]
+pub unsafe extern "C" fn __dup2(oldfd: i32, newfd: i32) -> i32 {
+    // SAFETY: __dup2 has the same scalar fd contract as dup2.
+    unsafe { dup2(oldfd, newfd) }
+}
 // # C: int dup3(int oldfd, int newfd, int flags)
 #[no_mangle]
 pub unsafe extern "C" fn dup3(oldfd: i32, newfd: i32, flags: i32) -> i32 {
