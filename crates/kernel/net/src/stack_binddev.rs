@@ -2,9 +2,7 @@ use alloc::sync::Arc;
 
 use crate::addr::{IpAddr, IpProto, Ipv4Addr, Ipv6Addr, NetIfaceId};
 use crate::ipv4::IPV4_HDR_LEN;
-use crate::ipv6::{push_ipv6_header, IPV6_HDR_LEN};
 use crate::netdev::{NetDev, NetError, NetResult};
-use crate::netfilter_hook::{nf_output, NFPROTO_IPV6};
 use crate::pkt::Pkt;
 use crate::stack::{NetStack, TcpEntry, TcpKey};
 use crate::tcp_conn::{Endpoint, TcpConn};
@@ -71,16 +69,10 @@ impl NetStack {
             None => self.route6_iface(dst_ip).ok_or(NetError::Enetunreach)?,
         };
         let l4_len = crate::udp::UDP_HDR_LEN + payload.len();
-        let total = IPV6_HDR_LEN + l4_len;
-        let mut p = Pkt::with_capacity(IPV6_HDR_LEN, total + IPV6_HDR_LEN);
+        let mut p = Pkt::with_capacity(0, l4_len);
         let body = p.put(l4_len).map_err(|_| NetError::Enobufs)?;
         crate::udp::build_into_v6(src_port, dst_port, src_ip, dst_ip, payload, body);
-        push_ipv6_header(&mut p, src_ip, dst_ip, IpProto::Udp)
-            .map_err(|_| NetError::Enobufs)?;
-        p.proto = crate::addr::eth_p::IPV6;
-        p.iface = Some(iface_id);
-        if !nf_output(&p, NFPROTO_IPV6) { return Ok(()); }
-        iface.xmit(p)
+        self.xmit_ipv6_l4_on_iface(iface_id, iface, src_ip, dst_ip, IpProto::Udp, p.data())
     }
 
     /// Active TCP open with a socket-bound egress interface. # C: O(log N + payload)
@@ -137,14 +129,7 @@ impl NetStack {
             Some(id) => (id, self.ifaces.lookup(id).ok_or(NetError::Enetunreach)?),
             None => self.route6_iface(dst).ok_or(NetError::Enetunreach)?,
         };
-        let total = IPV6_HDR_LEN + l4.len();
-        let mut p = Pkt::with_capacity(IPV6_HDR_LEN, total + IPV6_HDR_LEN);
-        p.put(l4.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(l4);
-        push_ipv6_header(&mut p, src, dst, proto).map_err(|_| NetError::Enobufs)?;
-        p.proto = crate::addr::eth_p::IPV6;
-        p.iface = Some(iface_id);
-        if !nf_output(&p, NFPROTO_IPV6) { return Ok(()); }
-        iface.xmit(p)
+        self.xmit_ipv6_l4_on_iface(iface_id, iface, src, dst, proto, l4)
     }
 
     fn route_v4_iface(&self, dst: Ipv4Addr, bound: Option<NetIfaceId>)
