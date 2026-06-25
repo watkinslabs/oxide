@@ -49,7 +49,10 @@ pub(crate) fn notify_link(ifindex: i32) {
 /// (`ip addr add/del` → `ip monitor addr`). # C: O(N_listeners)
 pub(crate) fn notify_addr(is_del: bool, ifindex: u32, addr: [u8; 4], prefixlen: u8, scope: u8) {
     let label = iface_label(ifindex as i32);
-    let mut msg = rt::build_newaddr_reply(0, 0, ifindex as i32, &label, addr, prefixlen, scope, false);
+    let mut msg = rt::build_newaddr_reply(
+        0, 0, ifindex as i32, &label, addr, prefixlen, scope,
+        net::iface_addr::IFA_F_PERMANENT, rt::IfaCacheInfo::PERMANENT, false,
+    );
     if is_del { patch_type(&mut msg, rt::RTM_DELADDR); }
     crate::rtnl_multicast(grp::RTNLGRP_IPV4_IFADDR, &msg);
 }
