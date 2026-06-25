@@ -145,7 +145,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | SOL_SOCKET | SO_PASSCRED       | done   | getsockopt round-trips; recvmsg emits SCM_CREDENTIALS only when enabled |
 | IPPROTO_TCP | TCP_NODELAY      | done   | F175 |
 | IPPROTO_TCP | TCP_INFO         | done   | F188 |
-| IPPROTO_TCP | TCP_CORK         | gap    | |
+| IPPROTO_TCP | TCP_CORK         | done   | buffers partial TCP segments until uncork; full MSS chunks may transmit |
 | IPPROTO_TCP | TCP_KEEPIDLE/INTVL/CNT | done | setsockopt/getsockopt round-trip, applied to keepalive scheduler |
 | IPPROTO_IP | IP_TTL            | done   | setsockopt/getsockopt round-trip; UDP/IPv4 output stamps TTL |
 | IPPROTO_IP | IP_TOS            | done   | setsockopt/getsockopt round-trip; UDP/IPv4 output stamps TOS |

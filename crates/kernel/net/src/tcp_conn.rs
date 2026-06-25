@@ -593,16 +593,8 @@ impl TcpConn {
         }
     }
 
-    /// Drain `send_buf` into PSH+ACK segments, MSS each, in order.
-    /// Each segment is moved (not copied) into `retx_q` as the
-    /// authoritative copy until the peer ACKs it; `send_buf` is
-    /// fully drained on return when the conn is in a sending state.
-    ///
-    /// Caller wraps each returned Vec in IP+xmit. Empty result when
-    /// the conn isn't allowed to send (LISTEN, SynSent, FIN-WAIT*, etc.)
-    /// — those states require explicit handshake/close segments.
     /// # C: O(send_buf)
-    pub fn output(&mut self, mtu: usize, nodelay: bool) -> Vec<Vec<u8>> {
+    pub fn output(&mut self, mtu: usize, nodelay: bool, cork: bool) -> Vec<Vec<u8>> {
         // F173: MSS = min(local-MTU-derived, peer-advertised).
         let local_mss = mtu.saturating_sub(40).min(1460);  // 20 IP + 20 TCP
         let mss = if self.peer_mss != 0 {
@@ -618,6 +610,9 @@ impl TcpConn {
         if !nodelay && !self.retx_q.is_empty() && self.send_buf.len() < mss {
             return out;
         }
+        if cork && self.send_buf.len() < mss {
+            return out;
+        }
         // F178/F185: in-flight bound = min(snd_wnd, cwnd) − in_flight.
         // cwnd governs sender-side congestion control (slow-start /
         // CA); snd_wnd governs receiver flow control. RFC 5681 §3.1.
@@ -627,6 +622,7 @@ impl TcpConn {
         while !self.send_buf.is_empty() && avail > 0 {
             let chunk_cap = core::cmp::min(mss as u32, avail) as usize;
             let take = core::cmp::min(chunk_cap, self.send_buf.len());
+            if cork && take < mss { break; }
             if take == 0 { break; }
             // (continue with original loop body below — pop+segment)
             let mut chunk: Vec<u8> = Vec::with_capacity(take);
@@ -909,7 +905,7 @@ mod tests {
         let _      = server.input(lo_ip(), lo_ip(), &ack).unwrap();
 
         client.send(b"oxide-tcp");
-        let segs = client.output(1500, true);
+        let segs = client.output(1500, true, false);
         assert_eq!(segs.len(), 1);
         let server_ack = server.input(lo_ip(), lo_ip(), &segs[0]).unwrap().unwrap();
         let _ = client.input(lo_ip(), lo_ip(), &server_ack).unwrap();

@@ -180,7 +180,7 @@ fn tcp_data_round_trip_via_loopback() {
     ).unwrap();
     for _ in 0..3 { stack.drain_loopback(id, &lo); }
     let server = stack.tcp_accept(&listener).unwrap();
-    stack.tcp_send(&client, b"oxide-tcp-payload", 65536, true).unwrap();
+    stack.tcp_send(&client, b"oxide-tcp-payload", 65536, true, false).unwrap();
     for _ in 0..3 { stack.drain_loopback(id, &lo); }
     let got = stack.tcp_recv(&server, 1024);
     assert_eq!(&got[..], b"oxide-tcp-payload");
