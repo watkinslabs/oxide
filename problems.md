@@ -2,6 +2,7 @@
 
 ## Open
 
+- Policy routing rules are not enforced by the live IPv4 data path yet. RTM_NEWRULE/DELRULE can store and dump custom rules, but packet routing still uses the stack's simple longest-prefix route table without rule-driven table selection.
 
 ## Resolved
 

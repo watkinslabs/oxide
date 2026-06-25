@@ -355,6 +355,12 @@ impl NetlinkSocket {
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETRULE) => {
                 rtnetlink_rule::handle_getrule(hdr, msg)
             }
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWRULE) => {
+                rtnetlink_rule::handle_newrule(hdr, msg)
+            }
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_DELRULE) => {
+                rtnetlink_rule::handle_delrule(hdr, msg)
+            }
             (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWROUTE) => {
                 rtnetlink::handle_newroute(hdr, msg)
             }
