@@ -176,8 +176,8 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | IPv4 outbound fragmentation          | done     | oversize IPv4 L4 packets fragment to iface MTU |
 | IPv6 inbound reassembly              | done     | RFC 8200 Fragment headers reassemble before L4 demux |
 | IPv6 outbound fragmentation          | done     | L4 send path emits RFC 8200 Fragment headers to iface MTU |
-| IP_MULTICAST_*                       | gap      | |
-| IGMP / MLD                           | partial  | MLDv1 host behavior wired; IGMP TBD |
+| IP_MULTICAST_*                       | partial  | IF/TTL/LOOP plus ADD/DROP_MEMBERSHIP wired; source filters TBD |
+| IGMP / MLD                           | partial  | IGMPv2 and MLDv1 host behavior wired; source-specific multicast TBD |
 
 ## 11. Performance / observability
 
@@ -205,7 +205,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 1. **NETLINK_ROUTE completeness** (RTM_GETLINK / NEWADDR / GETROUTE)
    — every userspace network tool reads these (`ip`, `networkd`,
    `NetworkManager`). High impact for "real distro programs work."
-2. **IGMP socket multicast** — complete IPv4 host multicast behavior.
+2. **IPv4 multicast source filters** — IP_MSFILTER / MCAST_* source-specific filtering.
 3. **HBH / Routing / DestOpts extension headers** — needed for stricter IPv6 conformance.
 
 Items beyond #10 are tuning/perf or rare-app territory.

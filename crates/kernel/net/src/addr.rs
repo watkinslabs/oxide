@@ -161,6 +161,7 @@ pub type Port = u16;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum IpProto {
     Icmp     = 1,
+    Igmp     = 2,
     Tcp      = 6,
     Udp      = 17,
     Fragment = 44,

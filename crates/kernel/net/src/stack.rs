@@ -263,7 +263,7 @@ pub struct NetStack {
     /// IPv6 Fragment extension reassembly table.
     pub ipv6_reasm: crate::ipv6_reasm::ReasmTable,
     /// F180c: per-iface IPv6 address registry (NS responder).
-    v6_addrs: Spinlock<BTreeMap<NetIfaceId, Vec<crate::addr::Ipv6Addr>>, StackLockClass>, pub(crate) v6_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::addr::Ipv6Addr>>, StackLockClass>,
+    v6_addrs: Spinlock<BTreeMap<NetIfaceId, Vec<crate::addr::Ipv6Addr>>, StackLockClass>, pub(crate) v6_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::addr::Ipv6Addr>>, StackLockClass>, pub(crate) v4_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<(Ipv4Addr, Ipv4Addr)>>, StackLockClass>,
 }
 
 impl NetStack {
@@ -283,7 +283,7 @@ impl NetStack {
             ipv4_reasm: crate::ipv4_reasm::ReasmTable::new(),
             ipv6_reasm: crate::ipv6_reasm::ReasmTable::new(),
             v6_addrs:   Spinlock::new(BTreeMap::new()),
-            v6_mcast:   Spinlock::new(BTreeMap::new()),
+            v6_mcast:   Spinlock::new(BTreeMap::new()), v4_mcast: Spinlock::new(BTreeMap::new()),
         }
     }
 
@@ -834,6 +834,7 @@ impl NetStack {
             }
             p if p == IpProto::Tcp as u8 =>
                 self.deliver_tcp(iface, IpAddr::V4(hdr.src), IpAddr::V4(hdr.dst), payload)?,
+            p if p == IpProto::Igmp as u8 => self.handle_igmp(iface, hdr.src, hdr.dst, payload)?,
             _ => {}
         }
         Ok(())
