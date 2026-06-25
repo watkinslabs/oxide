@@ -38,6 +38,12 @@ pub unsafe extern "C" fn __write(fd: i32, buf: *const u8, n: usize) -> isize {
     // SAFETY: __write has the same ABI and pointer contract as write.
     unsafe { write(fd, buf, n) }
 }
+// # C: ssize_t __write_nocancel(int fd, const void *buf, size_t n)
+#[no_mangle]
+pub unsafe extern "C" fn __write_nocancel(fd: i32, buf: *const u8, n: usize) -> isize {
+    // SAFETY: no-cancel alias has the same ABI and pointer contract as write.
+    unsafe { write(fd, buf, n) }
+}
 
 // # C: ssize_t read(int fd, void *buf, size_t n)
 #[no_mangle]
@@ -50,6 +56,12 @@ pub unsafe extern "C" fn read(fd: i32, buf: *mut u8, n: usize) -> isize {
 #[no_mangle]
 pub unsafe extern "C" fn __read(fd: i32, buf: *mut u8, n: usize) -> isize {
     // SAFETY: __read has the same ABI and pointer contract as read.
+    unsafe { read(fd, buf, n) }
+}
+// # C: ssize_t __read_nocancel(int fd, void *buf, size_t n)
+#[no_mangle]
+pub unsafe extern "C" fn __read_nocancel(fd: i32, buf: *mut u8, n: usize) -> isize {
+    // SAFETY: no-cancel alias has the same ABI and pointer contract as read.
     unsafe { read(fd, buf, n) }
 }
 
@@ -73,6 +85,12 @@ pub unsafe extern "C" fn __open(path: *const u8, flags: i32, mode: u32) -> i32 {
     // SAFETY: __open has the same ABI and path contract as open.
     unsafe { open(path, flags, mode) }
 }
+// # C: int __open_nocancel(const char *path, int flags, mode_t mode)
+#[no_mangle]
+pub unsafe extern "C" fn __open_nocancel(path: *const u8, flags: i32, mode: u32) -> i32 {
+    // SAFETY: no-cancel alias has the same ABI and path contract as open.
+    unsafe { open(path, flags, mode) }
+}
 
 // # C: int close(int fd)
 #[no_mangle]
@@ -84,6 +102,12 @@ pub unsafe extern "C" fn close(fd: i32) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn __close(fd: i32) -> i32 {
     // SAFETY: __close has the same scalar fd contract as close.
+    unsafe { close(fd) }
+}
+// # C: int __close_nocancel(int fd)
+#[no_mangle]
+pub unsafe extern "C" fn __close_nocancel(fd: i32) -> i32 {
+    // SAFETY: no-cancel alias has the same scalar fd contract as close.
     unsafe { close(fd) }
 }
 

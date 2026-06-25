@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **195/195**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F633-glibc-internal-global-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **634**, B = **138**, D = **113**
+`F634-glibc-syscall-lfs-internal-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **635**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -448,6 +448,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   sharing the existing environment/program-name/timezone storage. Verified by
   ABI export audit, regression suite, spec-lint, and both freestanding arch
   builds.
+- **F634 DONE locally:** syscall/LFS internal compatibility aliases added for
+  `__adjtimex`, `__arch_prctl`, no-cancel open/read/write/close,
+  `__getauxval`, internal `fseeko64`/`ftello64`, and versioned `fxstatat`
+  aliases. Verified by ABI export audit, regression suite, spec-lint, and both
+  freestanding arch builds.
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need

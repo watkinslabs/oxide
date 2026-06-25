@@ -59,6 +59,12 @@ pub unsafe extern "C" fn adjtimex(buf: *mut timex) -> i32 {
     // .modes and writes the disciplined fields back in place.
     ret_isize(unsafe { sys1(nr::ADJTIMEX, buf as usize) }) as i32
 }
+// # C: int __adjtimex(struct timex *buf)
+#[no_mangle]
+pub unsafe extern "C" fn __adjtimex(buf: *mut timex) -> i32 {
+    // SAFETY: internal alias has the same struct timex contract as adjtimex.
+    unsafe { adjtimex(buf) }
+}
 
 // # C: int ntp_adjtime(struct timex *buf)
 #[no_mangle]
