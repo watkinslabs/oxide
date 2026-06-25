@@ -343,7 +343,7 @@ impl NetStack {
                 src,
                 crate::icmpv6::MLDV2_RECORD_MODE_IS_EXCLUDE,
                 group,
-                &[],
+                &q.sources,
             );
             self.xmit_ipv6(iface, src, crate::icmpv6::IPV6_MLDV2_ROUTERS, IpProto::Icmpv6, &body)?;
         }
