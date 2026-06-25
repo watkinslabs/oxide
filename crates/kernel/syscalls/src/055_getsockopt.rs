@@ -60,8 +60,10 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     const IPPROTO_TCP: u64 = 6;
     const IPPROTO_IP: u64 = 0;
+    const IPPROTO_IPV6: u64 = 41;
     const IP_TOS: u64 = 1;
     const IP_TTL: u64 = 2;
+    const IPV6_V6ONLY: u64 = 26;
     const TCP_KEEPIDLE: u64 = 4;
     const TCP_KEEPINTVL: u64 = 5;
     const TCP_KEEPCNT: u64 = 6;
@@ -94,6 +96,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (SOL_SOCKET, SO_BINDTODEVICE) => return bind_to_device_name(&s, optval, optlen_p),
             (IPPROTO_IP, IP_TOS) => return i32_back(s.opts.ip_tos.load(Ordering::Acquire)),
             (IPPROTO_IP, IP_TTL) => return i32_back(s.opts.ip_ttl.load(Ordering::Acquire)),
+            (IPPROTO_IPV6, IPV6_V6ONLY) => return i32_back(s.opts.ipv6_v6only.load(Ordering::Acquire)),
             (IPPROTO_TCP, 1) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_KEEPIDLE) => return i32_back(s.opts.tcp_keepidle_s.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_KEEPINTVL) => return i32_back(s.opts.tcp_keepintvl_s.load(Ordering::Acquire)),

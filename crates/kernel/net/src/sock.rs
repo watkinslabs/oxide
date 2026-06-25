@@ -220,6 +220,7 @@ pub struct SockOpts {
     pub mark:      core::sync::atomic::AtomicI32,
     pub ip_ttl:    core::sync::atomic::AtomicI32,
     pub ip_tos:    core::sync::atomic::AtomicI32,
+    pub ipv6_v6only: core::sync::atomic::AtomicI32,
     /// SO_BINDTODEVICE: 0 means no bound egress/ingress interface.
     pub bound_ifindex: core::sync::atomic::AtomicU32,
     /// IPPROTO_TCP / TCP_NODELAY round-trip cell.
@@ -256,6 +257,7 @@ impl Default for SockOpts {
             mark:        AtomicI32::new(0),
             ip_ttl:      AtomicI32::new(crate::ipv4::IPV4_DEFAULT_TTL as i32),
             ip_tos:      AtomicI32::new(0),
+            ipv6_v6only: AtomicI32::new(0),
             bound_ifindex: AtomicU32::new(0),
             tcp_nodelay: AtomicI32::new(0),
             tcp_keepidle_s: AtomicI32::new(crate::sock_opts::TCP_KEEPIDLE_DEFAULT_S),
@@ -266,8 +268,6 @@ impl Default for SockOpts {
     }
 }
 
-/// Linux `AF_INET` numeric value — kept here so dev_net code can tag
-/// new sockets without depending on syscall_glue_net's private const.
 pub const AF_INET:  u16 = 2;
 pub const AF_INET6: u16 = 10;
 pub const AF_UNIX:  u16 = 1;
