@@ -1,6 +1,4 @@
-// ICMPv4 — RFC 792. v1 implements ECHO request/reply only;
-// DEST_UNREACH and TIME_EXCEEDED are short-fuse follow-ups
-// (kernel needs them when a route lookup misses or TTL=0 on rx).
+// ICMPv4 — RFC 792 echo request/reply plus router-generated errors.
 
 use crate::ipv4::ip_checksum;
 
@@ -19,6 +17,12 @@ pub mod unreach_code {
     pub const PORT:       u8 = 3;
     pub const FRAG:       u8 = 4;
     pub const SRC_ROUTE:  u8 = 5;
+}
+
+/// RFC 792 code subfields for ICMP_TYPE_TIME_EXC.
+pub mod time_exceeded_code {
+    pub const TTL:      u8 = 0;
+    pub const REASSEMB: u8 = 1;
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -87,6 +91,23 @@ pub fn build_echo_reply(request: &[u8]) -> Result<alloc::vec::Vec<u8>, IcmpError
     Ok(out)
 }
 
+/// Build an ICMP error body quoting the invoking IPv4 header and first 8
+/// payload bytes. `invoking` starts at the original IPv4 header. # C: O(N)
+pub fn build_ipv4_error(typ: u8, code: u8, invoking: &[u8]) -> Result<alloc::vec::Vec<u8>, IcmpError> {
+    if invoking.len() < crate::ipv4::IPV4_HDR_LEN { return Err(IcmpError::Short); }
+    let total = u16::from_be_bytes([invoking[2], invoking[3]]) as usize;
+    if total < crate::ipv4::IPV4_HDR_LEN { return Err(IcmpError::Short); }
+    let quote_len = core::cmp::min(total, invoking.len()).min(crate::ipv4::IPV4_HDR_LEN + 8);
+    let mut out = alloc::vec![0u8; ICMP_HDR_LEN + quote_len];
+    out[0] = typ;
+    out[1] = code;
+    out[4..8].copy_from_slice(&[0, 0, 0, 0]);
+    out[ICMP_HDR_LEN..].copy_from_slice(&invoking[..quote_len]);
+    let cs = ip_checksum(&out);
+    out[2..4].copy_from_slice(&cs.to_be_bytes());
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +160,25 @@ mod tests {
         let mut hdr = IcmpEcho { typ: ICMP_TYPE_ECHO_REPLY, code: 0, checksum: 0, id: 1, seq: 1 };
         hdr.build_into(payload, &mut buf);
         assert_eq!(build_echo_reply(&buf).err().unwrap(), IcmpError::BadType);
+    }
+
+    #[test]
+    fn ipv4_error_quotes_header_and_eight_bytes() {
+        let mut invoking = [0u8; crate::ipv4::IPV4_HDR_LEN + 12];
+        let hdr = crate::ipv4::Ipv4Hdr::build(
+            crate::Ipv4Addr::new(192, 0, 2, 1),
+            crate::Ipv4Addr::new(198, 51, 100, 1),
+            crate::IpProto::Udp,
+            12,
+            99,
+        );
+        hdr.write_to(&mut invoking[..crate::ipv4::IPV4_HDR_LEN]);
+        invoking[crate::ipv4::IPV4_HDR_LEN..].copy_from_slice(b"abcdefghijkl");
+
+        let out = build_ipv4_error(ICMP_TYPE_TIME_EXC, time_exceeded_code::TTL, &invoking).unwrap();
+        assert_eq!(out[0], ICMP_TYPE_TIME_EXC);
+        assert_eq!(out[1], time_exceeded_code::TTL);
+        assert_eq!(ip_checksum(&out), 0);
+        assert_eq!(&out[ICMP_HDR_LEN..], &invoking[..crate::ipv4::IPV4_HDR_LEN + 8]);
     }
 }

@@ -2,10 +2,10 @@
 
 ## Open
 
-- IPv4 forwarding drops transit packets with expired TTL or missing routes silently instead of generating ICMP Time Exceeded / Destination Unreachable. Track as a forwarding refinement after basic router mode.
 
 ## Resolved
 
+- IPv4 forwarding dropped transit packets with expired TTL or missing routes silently. Fixed by emitting ICMP Time Exceeded or Destination Unreachable back through the ingress interface.
 - IPv4 primary-address state was split between SIOCSIFADDR and RTM_NEWADDR. Fixed by moving primary IPv4 address ownership into `net::iface_addr`, with ioctl and rtnetlink both writing the same per-interface state.
 - IPv6 addresses were not exposed through RTM_GETADDR. Fixed by dumping the stack's configured IPv6 addresses as AF_INET6 RTM_NEWADDR rows.
 - IPv6 RTM_GETADDR rows used permanent /128 lifetime metadata. Fixed by retaining IPv6 address prefix length plus SLAAC preferred/valid lifetimes and emitting them in AF_INET6 cacheinfo.
