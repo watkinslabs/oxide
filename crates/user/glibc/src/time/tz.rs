@@ -148,6 +148,15 @@ mod imp {
     #[no_mangle]
     static daylight: IntCell = IntCell(UnsafeCell::new(0));
 
+    core::arch::global_asm!(
+        ".globl __daylight",
+        ".set __daylight, daylight",
+        ".globl __timezone",
+        ".set __timezone, timezone",
+        ".globl __tzname",
+        ".set __tzname, tzname",
+    );
+
     fn st() -> *mut ZoneState { ZONE.0.get() }
 
     // Open `path` (NUL-terminated) read-only and slurp it into the zone buffer.

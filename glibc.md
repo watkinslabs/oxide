@@ -145,6 +145,11 @@ Also DONE: legacy ctype data compatibility exports (F632): `__ctype_b`,
 `__ctype_tolower`, `__ctype_toupper`, the `__ctype32_*` pointer objects, and
 `__ctype_init` exported over the existing C-locale tables. Verified by ABI
 export audit, regression suite, spec-lint, and both freestanding arch builds.
+Also DONE: internal global data aliases (F633): `__environ`, `__progname`,
+`__progname_full`, `__daylight`, `__timezone`, and `__tzname` exported as
+aliases of existing environment, program-name, and timezone globals. Verified
+by ABI export audit, regression suite, spec-lint, and both freestanding arch
+builds.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases

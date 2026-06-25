@@ -23,6 +23,14 @@ static program_invocation_name: CharP = CharP(UnsafeCell::new(ptr::null_mut()));
 #[no_mangle]
 static program_invocation_short_name: CharP = CharP(UnsafeCell::new(ptr::null_mut()));
 
+#[cfg(feature = "freestanding")]
+core::arch::global_asm!(
+    ".globl __progname",
+    ".set __progname, program_invocation_short_name",
+    ".globl __progname_full",
+    ".set __progname_full, program_invocation_name",
+);
+
 /// # C: const char *the short program name, "" if argv[0] was NULL.
 pub(crate) fn short() -> *const u8 {
     #[cfg(feature = "freestanding")]
