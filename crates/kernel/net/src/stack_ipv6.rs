@@ -11,7 +11,7 @@ use sync::{Spinlock, Socket as StackLockClass};
 
 use crate::addr::{IpAddr, IpProto, Ipv6Addr, NetIfaceId};
 use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN, push_ipv6_header};
-use crate::netdev::{NetError, NetResult};
+use crate::netdev::{NetDev, NetError, NetResult};
 use crate::pkt::Pkt;
 use crate::stack::NetStack;
 use crate::netfilter_hook::{nf_hook_eval, nf_output, NFPROTO_IPV6,
@@ -138,7 +138,8 @@ impl NetStack {
     /// F180: deliver an IPv6 L3 frame. Parses fixed header; demuxes
     /// next_header to ICMPv6 (echo + NS/NA stubs), UDP (route to
     /// bound udp6 queue), TCP (drop until F180b TcpConn refactor).
-    /// Extension headers skipped (no HBH/Routing/Fragment yet).
+    /// Receive-side extension headers are skipped (no HBH/Routing/Fragment
+    /// reassembly yet).
     /// # C: O(payload)
     pub fn deliver_rx_ipv6(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
         // Netfilter ingress: PRE_ROUTING then (host stack → local) LOCAL_IN.
@@ -277,16 +278,68 @@ impl NetStack {
                                      proto: IpProto, l4: &[u8]) -> NetResult<()>
     {
         let (iface_id, iface) = self.route6_iface(dst).ok_or(NetError::Enetunreach)?;
+        self.xmit_ipv6_l4_on_iface(iface_id, iface, src, dst, proto, l4)
+    }
+
+    /// Emit one IPv6 L4 payload on a selected iface. If the fixed IPv6
+    /// header plus L4 payload exceeds the iface MTU, emit RFC 8200 Fragment
+    /// extension headers and split the payload into 8-byte aligned fragments.
+    /// # C: O(payload)
+    pub(crate) fn xmit_ipv6_l4_on_iface(&self, iface_id: NetIfaceId,
+        iface: Arc<dyn NetDev>, src: Ipv6Addr, dst: Ipv6Addr, proto: IpProto,
+        l4: &[u8]) -> NetResult<()>
+    {
+        let mtu = iface.mtu() as usize;
         let total = IPV6_HDR_LEN + l4.len();
-        let mut p = Pkt::with_capacity(IPV6_HDR_LEN, total + IPV6_HDR_LEN);
-        p.put(l4.len()).map_err(|_| NetError::Enobufs)?
-            .copy_from_slice(l4);
-        push_ipv6_header(&mut p, src, dst, proto)
-            .map_err(|_| NetError::Enobufs)?;
-        p.proto = crate::addr::eth_p::IPV6;
-        p.iface = Some(iface_id);
-        if !nf_output(&p, NFPROTO_IPV6) { return Ok(()); }
-        iface.xmit(p)
+        if l4.len() > u16::MAX as usize {
+            return Err(NetError::Enobufs);
+        }
+        if total <= mtu {
+            let mut p = Pkt::with_capacity(IPV6_HDR_LEN, total + IPV6_HDR_LEN);
+            p.put(l4.len()).map_err(|_| NetError::Enobufs)?
+                .copy_from_slice(l4);
+            push_ipv6_header(&mut p, src, dst, proto)
+                .map_err(|_| NetError::Enobufs)?;
+            p.proto = crate::addr::eth_p::IPV6;
+            p.iface = Some(iface_id);
+            if !nf_output(&p, NFPROTO_IPV6) { return Ok(()); }
+            return iface.xmit(p);
+        }
+
+        let max_payload = mtu.saturating_sub(IPV6_HDR_LEN + 8) & !7usize;
+        if max_payload == 0 { return Err(NetError::Enobufs); }
+        let frag_id = self.next_ipv6_frag_id();
+        let mut off = 0usize;
+        while off < l4.len() {
+            let take = core::cmp::min(max_payload, l4.len() - off);
+            let more = off + take < l4.len();
+            let frag_off_units = (off / 8) as u16;
+            let off_flags = (frag_off_units << 3) | if more { 1 } else { 0 };
+            let frag_payload_len = 8 + take;
+            let total = IPV6_HDR_LEN + frag_payload_len;
+            let mut p = Pkt::with_capacity(IPV6_HDR_LEN, total + IPV6_HDR_LEN);
+            let body = p.put(frag_payload_len).map_err(|_| NetError::Enobufs)?;
+            body[0] = proto as u8;
+            body[1] = 0;
+            body[2..4].copy_from_slice(&off_flags.to_be_bytes());
+            body[4..8].copy_from_slice(&frag_id.to_be_bytes());
+            body[8..].copy_from_slice(&l4[off..off + take]);
+            push_ipv6_header(&mut p, src, dst, IpProto::Fragment)
+                .map_err(|_| NetError::Enobufs)?;
+            p.proto = crate::addr::eth_p::IPV6;
+            p.iface = Some(iface_id);
+            if nf_output(&p, NFPROTO_IPV6) {
+                iface.xmit(p)?;
+            }
+            off += take;
+        }
+        Ok(())
+    }
+
+    fn next_ipv6_frag_id(&self) -> u32 {
+        let mut s = self.next_ip_id.lock();
+        *s = s.wrapping_add(1);
+        *s as u32
     }
 
     /// F191: clamp the affected TCP conn's peer_mss after an ICMPv6

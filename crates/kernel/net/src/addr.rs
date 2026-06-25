@@ -163,6 +163,7 @@ pub enum IpProto {
     Icmp     = 1,
     Tcp      = 6,
     Udp      = 17,
+    Fragment = 44,
     Icmpv6   = 58,
     Raw      = 255,
 }

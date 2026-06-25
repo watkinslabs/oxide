@@ -1,6 +1,7 @@
 use crate::stack::*;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
 use crate::{icmp, IpAddr, IpProto, Ipv4Addr, Ipv4Hdr, Ipv6Addr, MacAddr, NetDev, NetError, NetResult, Pkt, Route6Entry, RouteEntry, IPV4_HDR_LEN};
 
 struct CountDev {
@@ -65,6 +66,20 @@ impl NetDev for CountDev {
         if pkt.data().first().map(|b| b >> 4) == Some(4) {
             let hdr = Ipv4Hdr::parse(pkt.data()).unwrap();
             self.store_hdr(idx, hdr);
+        } else if pkt.data().first().map(|b| b >> 4) == Some(6) {
+            let hdr = Ipv6Hdr::parse(pkt.data()).unwrap();
+            let (id, flags, len) = match idx {
+                0 => (&self.id0, &self.flags0, &self.len0),
+                1 => (&self.id1, &self.flags1, &self.len1),
+                2 => (&self.id2, &self.flags2, &self.len2),
+                _ => return Ok(()),
+            };
+            len.store(IPV6_HDR_LEN + hdr.payload_length as usize, Ordering::Relaxed);
+            if hdr.next_header == IpProto::Fragment as u8 && pkt.data().len() >= IPV6_HDR_LEN + 8 {
+                let frag = &pkt.data()[IPV6_HDR_LEN..IPV6_HDR_LEN + 8];
+                flags.store(u16::from_be_bytes([frag[2], frag[3]]) as usize, Ordering::Relaxed);
+                id.store(u32::from_be_bytes([frag[4], frag[5], frag[6], frag[7]]) as usize, Ordering::Relaxed);
+            }
         }
         Ok(())
     }
@@ -290,4 +305,56 @@ fn ipv6_l4_send_uses_route_table_iface() {
 
     assert_eq!(eth.tx.load(Ordering::Relaxed), 1);
     assert_eq!(stack.mss_for_dst(IpAddr::V6(dst)), 1340);
+}
+
+#[test]
+fn ipv6_l4_send_fragments_to_iface_mtu() {
+    let stack = NetStack::new();
+    let eth = Arc::new(CountDev::with_mtu(1280));
+    let eth_id = stack.ifaces.register(eth.clone());
+    let src = Ipv6Addr::from_segments([0x2001, 0xdb8, 2, 0, 0, 0, 0, 1]);
+    let dst = Ipv6Addr::from_segments([0x2001, 0xdb8, 2, 0, 0, 0, 0, 2]);
+    stack.routes6.add(Route6Entry {
+        dst: Ipv6Addr::from_segments([0x2001, 0xdb8, 2, 0, 0, 0, 0, 0]),
+        prefix_len: 48,
+        iface: eth_id,
+        gateway: None,
+        src_hint: Some(src),
+    });
+
+    let l4 = [0x6au8; 2000];
+    stack.send_l4_over_ipv6(src, dst, IpProto::Udp, &l4).unwrap();
+
+    assert_eq!(eth.tx.load(Ordering::Relaxed), 2);
+    assert_eq!(eth.len0.load(Ordering::Relaxed), 1280);
+    assert_eq!(eth.len1.load(Ordering::Relaxed), 816);
+    assert_eq!(eth.flags0.load(Ordering::Relaxed), 0x0001);
+    assert_eq!(eth.flags1.load(Ordering::Relaxed), 154 << 3);
+    assert_eq!(eth.id0.load(Ordering::Relaxed), eth.id1.load(Ordering::Relaxed));
+}
+
+#[test]
+fn ipv6_udp_send_fragments_to_iface_mtu() {
+    let stack = NetStack::new();
+    let eth = Arc::new(CountDev::with_mtu(1280));
+    let eth_id = stack.ifaces.register(eth.clone());
+    let src = Ipv6Addr::from_segments([0x2001, 0xdb8, 3, 0, 0, 0, 0, 1]);
+    let dst = Ipv6Addr::from_segments([0x2001, 0xdb8, 3, 0, 0, 0, 0, 2]);
+    stack.routes6.add(Route6Entry {
+        dst: Ipv6Addr::from_segments([0x2001, 0xdb8, 3, 0, 0, 0, 0, 0]),
+        prefix_len: 48,
+        iface: eth_id,
+        gateway: None,
+        src_hint: Some(src),
+    });
+
+    let payload = [0x7bu8; 2000];
+    stack.send_udp6_to_bound(src, 10000, dst, 10001, &payload, None).unwrap();
+
+    assert_eq!(eth.tx.load(Ordering::Relaxed), 2);
+    assert_eq!(eth.len0.load(Ordering::Relaxed), 1280);
+    assert_eq!(eth.len1.load(Ordering::Relaxed), 824);
+    assert_eq!(eth.flags0.load(Ordering::Relaxed), 0x0001);
+    assert_eq!(eth.flags1.load(Ordering::Relaxed), 154 << 3);
+    assert_eq!(eth.id0.load(Ordering::Relaxed), eth.id1.load(Ordering::Relaxed));
 }
