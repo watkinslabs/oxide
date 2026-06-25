@@ -207,6 +207,22 @@ pub unsafe extern "C" fn __sched_cpucount(setsize: usize, setp: *const c_void) -
     n as i32
 }
 
+// # C: cpu_set_t *__sched_cpualloc(size_t count)
+#[no_mangle]
+pub unsafe extern "C" fn __sched_cpualloc(count: usize) -> *mut c_void {
+    let bits = core::mem::size_of::<usize>() * 8;
+    let bytes = count.div_ceil(bits) * core::mem::size_of::<usize>();
+    // SAFETY: calloc allocates and zero-fills the computed CPU mask byte size.
+    unsafe { crate::malloc::api::calloc(1, bytes) as *mut c_void }
+}
+
+// # C: void __sched_cpufree(cpu_set_t *set)
+#[no_mangle]
+pub unsafe extern "C" fn __sched_cpufree(set: *mut c_void) {
+    // SAFETY: set is null or came from __sched_cpualloc/CPU_ALLOC.
+    unsafe { crate::malloc::api::free(set as *mut u8) }
+}
+
 // # C: int usleep(useconds_t usec) — composed from nanosleep.
 #[no_mangle]
 pub unsafe extern "C" fn usleep(usec: u32) -> i32 {
