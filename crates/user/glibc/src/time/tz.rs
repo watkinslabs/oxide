@@ -132,16 +132,19 @@ mod imp {
     static INIT: AtomicBool = AtomicBool::new(false);
 
     // mutable C globals (mirrors stdlib::env's `environ` newtype pattern)
+    #[repr(transparent)]
     struct PtrPair(UnsafeCell<[*mut u8; 2]>);
     // SAFETY: tzname[2] is a C global; written by tzset, read by callers.
     unsafe impl Sync for PtrPair {}
     #[no_mangle]
     static tzname: PtrPair = PtrPair(UnsafeCell::new([core::ptr::null_mut(); 2]));
+    #[repr(transparent)]
     struct LongCell(UnsafeCell<i64>);
     // SAFETY: timezone/daylight are C globals; written by tzset only.
     unsafe impl Sync for LongCell {}
     #[no_mangle]
     static timezone: LongCell = LongCell(UnsafeCell::new(0));
+    #[repr(transparent)]
     struct IntCell(UnsafeCell<i32>);
     // SAFETY: daylight C global; written by tzset only.
     unsafe impl Sync for IntCell {}
@@ -156,6 +159,14 @@ mod imp {
         ".globl __tzname",
         ".set __tzname, tzname",
     );
+    unsafe extern "C" {
+        #[link_name = "__tzname"]
+        static tzname_alias: PtrPair;
+        #[link_name = "__timezone"]
+        static timezone_alias: LongCell;
+        #[link_name = "__daylight"]
+        static daylight_alias: IntCell;
+    }
 
     fn st() -> *mut ZoneState { ZONE.0.get() }
 
@@ -234,9 +245,15 @@ mod imp {
             }
             if std_ab.is_null() { std_ab = b"UTC\0".as_ptr() as *mut u8; }
             if dst_ab.is_null() { dst_ab = std_ab; }
-            (*tzname.0.get()) = [std_ab, dst_ab];
-            *timezone.0.get() = -(std_off as i64); // seconds WEST of UTC
-            *daylight.0.get() = has_dst as i32;
+            let names = [std_ab, dst_ab];
+            let west = -(std_off as i64); // seconds WEST of UTC
+            let dst = has_dst as i32;
+            (*tzname.0.get()) = names;
+            (*tzname_alias.0.get()) = names;
+            *timezone.0.get() = west;
+            *timezone_alias.0.get() = west;
+            *daylight.0.get() = dst;
+            *daylight_alias.0.get() = dst;
         }
     }
 
