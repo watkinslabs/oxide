@@ -111,6 +111,11 @@ wrappers over the existing Rust libm cores plus x86_64 f80 wrappers in the C
 bridge. Host keeps these symbols compat-only here, so verified by ABI export
 audit, regression suite, both freestanding arch builds, and C-object no-PLT
 audit.
+Also DONE: glibc math classifier/complex compatibility aliases (F625):
+`__finite*`, `__isinf*`, `__isnan*`, `__issignaling*`, `__iseqsig*`,
+`__clog10*`, plus f80 `__iscanonicall`, over existing Rust math cores and the
+x86_64 f80 C bridge. Verified by ABI export audit, regression suite, both
+freestanding arch builds, and C-object no-PLT audit.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
