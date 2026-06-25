@@ -104,6 +104,47 @@ pub unsafe extern "C" fn wcstof(wcs: *const i32, endptr: *mut *mut i32) -> f32 {
     // SAFETY: delegates to wcstod (same wcs/endptr contract), narrowed to float.
     unsafe { wcstod(wcs, endptr) as f32 }
 }
+// # C: double __wcstod_internal(const wchar_t *, wchar_t **, int)
+#[no_mangle]
+pub unsafe extern "C" fn __wcstod_internal(wcs: *const i32, endptr: *mut *mut i32, _group: i32) -> f64 {
+    // SAFETY: same C contract as wcstod; the C locale parser ignores grouping.
+    unsafe { wcstod(wcs, endptr) }
+}
+// # C: float __wcstof_internal(const wchar_t *, wchar_t **, int)
+#[no_mangle]
+pub unsafe extern "C" fn __wcstof_internal(wcs: *const i32, endptr: *mut *mut i32, _group: i32) -> f32 {
+    // SAFETY: same C contract as wcstof; the C locale parser ignores grouping.
+    unsafe { wcstof(wcs, endptr) }
+}
+
+macro_rules! wint_internal {
+    ($(#[$m:meta])* $name:ident, $imp:path, $ret:ty) => {
+        $(#[$m])*
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(wcs: *const i32, endptr: *mut *mut i32, base: i32, _group: i32) -> $ret {
+            // SAFETY: same C contract as the public wide parser; C locale ignores grouping.
+            unsafe {
+                let mut buf = [0u8; 160];
+                narrow(wcs, &mut buf);
+                let mut nend: *mut u8 = core::ptr::null_mut();
+                let v = $imp(buf.as_ptr(), &mut nend, base);
+                if !endptr.is_null() {
+                    let consumed = nend as usize - buf.as_ptr() as usize;
+                    *endptr = wcs.add(consumed) as *mut i32;
+                }
+                v as $ret
+            }
+        }
+    };
+}
+wint_internal!(/// # C: long __wcstol_internal(const wchar_t *, wchar_t **, int, int)
+               __wcstol_internal, strtol_impl, i64);
+wint_internal!(/// # C: long long __wcstoll_internal(const wchar_t *, wchar_t **, int, int)
+               __wcstoll_internal, strtol_impl, i64);
+wint_internal!(/// # C: unsigned long __wcstoul_internal(const wchar_t *, wchar_t **, int, int)
+               __wcstoul_internal, strtoul_impl, u64);
+wint_internal!(/// # C: unsigned long long __wcstoull_internal(const wchar_t *, wchar_t **, int, int)
+               __wcstoull_internal, strtoul_impl, u64);
 
 #[inline]
 fn lc(c: i32) -> i32 { if (0x41..=0x5a).contains(&c) { c + 32 } else { c } }
