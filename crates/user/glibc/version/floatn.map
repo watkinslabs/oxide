@@ -70,11 +70,15 @@
     __dup2;
     __getauxval;
     __getdelim;
+    __getmntent_r;
     __getpagesize;
     __getpgid;
     __getpid;
     __getrlimit;
     __gettimeofday;
+    __gmtime_r;
+    __inet_aton_exact;
+    __inet_pton_length;
     __isoc23_fscanf;
     __isoc23_scanf;
     __isoc23_vfscanf;
@@ -97,6 +101,7 @@
     __isblank_l;
     __iscntrl_l;
     __isdigit_l;
+    __isctype;
     __libc_fork;
     __libc_pread;
     __libc_pwrite;
