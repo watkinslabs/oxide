@@ -220,6 +220,7 @@ pub struct SockOpts {
     pub mark:      core::sync::atomic::AtomicI32,
     pub ip_ttl:    core::sync::atomic::AtomicI32,
     pub ip_tos:    core::sync::atomic::AtomicI32,
+    pub ip_pktinfo: core::sync::atomic::AtomicI32,
     pub ipv6_v6only: core::sync::atomic::AtomicI32,
     /// SO_BINDTODEVICE: 0 means no bound egress/ingress interface.
     pub bound_ifindex: core::sync::atomic::AtomicU32,
@@ -231,8 +232,7 @@ pub struct SockOpts {
     pub passcred: core::sync::atomic::AtomicI32,
 }
 
-pub const TCP_SNDBUF_DEFAULT: i32 = 16384;
-pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
+pub const TCP_SNDBUF_DEFAULT: i32 = 16384; pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
 pub use crate::sock_io::compute_deadline_ns;
 
 impl Default for SockOpts {
@@ -253,6 +253,7 @@ impl Default for SockOpts {
             mark:        AtomicI32::new(0),
             ip_ttl:      AtomicI32::new(crate::ipv4::IPV4_DEFAULT_TTL as i32),
             ip_tos:      AtomicI32::new(0),
+            ip_pktinfo:  AtomicI32::new(0),
             ipv6_v6only: AtomicI32::new(0),
             bound_ifindex: AtomicU32::new(0),
             tcp_nodelay: AtomicI32::new(0),
@@ -296,8 +297,7 @@ impl InetSocket {
             local_port: Spinlock::new(None),
             local_ip:   Spinlock::new(Ipv4Addr::ANY),
             peer:       Spinlock::new(None),
-            // TcpInit (not Udp) so `connect()` routes SOCK_STREAM
-            // through the real `tcp_connect` 3WHS path instead of
+            // TcpInit makes connect() route SOCK_STREAM through the 3WHS path.
             // the UDP store-peer-and-return-Ok short-circuit.
             // listen()/connect()/accept() transition to TcpListener
             // or TcpConn.
