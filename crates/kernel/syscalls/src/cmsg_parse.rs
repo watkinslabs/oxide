@@ -11,6 +11,7 @@ use syscall::errno::Errno;
 use syscall::SyscallArgs;
 use vfs::File;
 use core::sync::atomic::Ordering;
+use crate::net_common::file_is_nonblock;
 
 const SOL_SOCKET:  i32 = 1;
 const SCM_RIGHTS:  i32 = 1;
@@ -90,12 +91,9 @@ pub fn sendmsg_unix_stream_with_fds(
             payload.len() as i64
         }
         SockKind::UnixMsgPair(pair, end) => {
-            // SEQPACKET: dgram-like framing; piggyback fds on the
-            // message. UnixMsgPair has its own send path; for v1 we
-            // route through the pair's send() and lose the fds since
-            // openssh's privsep uses STREAM not SEQPACKET. Mark TODO.
-            let n = pair.send(*end, &payload);
-            let _ = fds; // dropped per the v1 limitation above
+            // SEQPACKET/DGRAM socketpair: keep fd rights bound to
+            // this single message, matching datagram semantics.
+            let n = pair.send_with_fds(*end, &payload, fds);
             n as i64
         }
         _ => -(Errno::Einval.as_i32() as i64),
@@ -366,19 +364,13 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64) -> i64 {
 }
 
 /// recvmsg(2) for AF_UNIX SOCK_DGRAM / SOCK_SEQPACKET socketpair
-/// (`UnixMsgPair`). Reads one message via the shared recvfrom path
-/// (blocking semantics preserved), then — when the receiver set
-/// SO_PASSCRED — appends an SCM_CREDENTIALS cmsg carrying
-/// `peer_cred(end)` (the sender's {pid,uid,gid}, stamped into the
-/// writing end at `UnixMsgRing::send`). systemd's handoff-timestamp
-/// uses a SOCK_DGRAM socketpair with SO_PASSCRED and rejects messages
-/// "without valid credentials" — this delivers them. SCM_RIGHTS over
-/// a msgpair is a follow-up (same as the pre-existing generic path,
-/// which dropped fds here too).
-/// # C: O(iov + payload)
+/// (`UnixMsgPair`). Reads one message and appends SCM_RIGHTS /
+/// SCM_CREDENTIALS cmsgs when present.
+/// # C: O(iov + payload + nfds)
 pub fn recvmsg_unix_msgpair(sock: &Arc<InetSocket>, fd: u64, msgp: u64, args: &SyscallArgs) -> i64 {
+    use hal::TimerOps;
     // SAFETY: msgp validated < USER_VA_END by sys_recvmsg; reads msghdr fields.
-    let (name, iov, iovlen, control, controllen) = unsafe {
+    let (_name, iov, iovlen, control, controllen) = unsafe {
         (core::ptr::read_volatile( msgp        as *const u64),
          core::ptr::read_volatile((msgp + 16)  as *const u64),
          core::ptr::read_volatile((msgp + 24)  as *const u64),
@@ -386,8 +378,42 @@ pub fn recvmsg_unix_msgpair(sock: &Arc<InetSocket>, fd: u64, msgp: u64, args: &S
          core::ptr::read_volatile((msgp + 40)  as *const u64))
     };
     if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
-    let mut total: i64 = 0;
+    const MSG_DONTWAIT: u64 = 0x40;
+    let nonblock = (args.a2 & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
+    let timeo = sock.opts.rcvtimeo_ns.load(Ordering::Acquire);
+    #[cfg(target_arch = "x86_64")]
+    let now = || hal_x86_64::X86TimerOps::monotonic_ns().0;
+    #[cfg(target_arch = "aarch64")]
+    let now = || hal_aarch64::ArmTimerOps::monotonic_ns().0;
+    let deadline = if timeo > 0 { Some(now().saturating_add(timeo as u64)) } else { None };
+    let max_len = {
+        let mut sum = 0u64;
+        for i in 0..iovlen {
+            let iov_i = iov + i * 16;
+            if iov_i + 16 > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+            // SAFETY: iov_i+16 is validated in the caller's user address range; len is the second u64 of struct iovec.
+            let len = unsafe { core::ptr::read_volatile((iov_i + 8) as *const u64) };
+            sum = sum.saturating_add(len);
+        }
+        sum
+    };
+    let msg = loop {
+        let got = {
+            let g = sock.kind.lock();
+            match &*g {
+                SockKind::UnixMsgPair(p, e) => p.recv_msg(*e, max_len as usize),
+                _ => return -(Errno::Einval.as_i32() as i64),
+            }
+        };
+        if let Some(m) = got { break m; }
+        if nonblock { return -(Errno::Eagain.as_i32() as i64); }
+        if let Some(dl) = deadline { if now() >= dl { return -(Errno::Eagain.as_i32() as i64); } }
+        // SAFETY: recvmsg runs in process context; yielding here matches the existing blocking syscall convention.
+        unsafe { sched::live::tick_yield(); }
+    };
+    let mut total: usize = 0;
     for i in 0..iovlen {
+        if total >= msg.payload.len() { break; }
         let iov_i = iov + i * 16;
         if iov_i >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
         // SAFETY: iov_i validated < USER_VA_END; iovec base/len are 8-byte-aligned u64 fields per the Linux struct iovec ABI.
@@ -396,38 +422,95 @@ pub fn recvmsg_unix_msgpair(sock: &Arc<InetSocket>, fd: u64, msgp: u64, args: &S
              core::ptr::read_volatile((iov_i + 8) as *const u64))
         };
         if len == 0 { continue; }
-        let mut sa = *args;
-        sa.a0 = fd; sa.a1 = base; sa.a2 = len; sa.a3 = 0; sa.a4 = name; sa.a5 = 0;
-        let r = crate::net_recv::sys_recvfrom(&sa);
-        if r < 0 { if total > 0 { break; } return r; }
-        if r == 0 { break; }
-        total += r;
-        if (r as u64) < len { break; }  // SEQPACKET/DGRAM: one message per recvmsg
+        if base + len > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+        let take = core::cmp::min(len as usize, msg.payload.len() - total);
+        // SAFETY: base..base+take lies inside the validated destination iovec; source is owned message storage.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                msg.payload.as_ptr().add(total),
+                base as *mut u8,
+                take,
+            );
+        }
+        total += take;
+    }
+    let mut ctrl_written: u64 = 0;
+    let mut ctrunc = false;
+    if !msg.fds.is_empty() {
+        if control == 0 || control >= USER_VA_END || controllen < 16 {
+            ctrunc = true;
+        } else {
+            let cur = sched::live::current();
+            // SAFETY: current task owns its fd table for syscall mutation; this mirrors other fd allocation paths.
+            let fdt = match cur.as_ref().and_then(|c| unsafe { c.fd_table_ref() }) {
+                Some(t) => t.clone(), None => return total as i64,
+            };
+            let nfds = msg.fds.len();
+            let max_data = controllen.saturating_sub(16) as usize / 4;
+            if max_data < nfds { ctrunc = true; }
+            let fit_n = core::cmp::min(nfds, max_data);
+            let mut allocated_fds: Vec<i32> = Vec::with_capacity(fit_n);
+            for f in msg.fds.iter().take(fit_n) {
+                match fdt.alloc((*f).clone()) {
+                    Ok(nfd) => allocated_fds.push(nfd),
+                    Err(_) => { ctrunc = true; break; }
+                }
+            }
+            if !allocated_fds.is_empty() {
+                const SOL_SOCKET: i32 = 1;
+                const SCM_RIGHTS: i32 = 1;
+                let len = 16 + (allocated_fds.len() * 4) as u64;
+                // SAFETY: control buffer was validated against USER_VA_END and controllen before writing this cmsghdr.
+                unsafe {
+                    core::ptr::write_volatile(control as *mut u64, len);
+                    core::ptr::write_volatile((control + 8) as *mut i32, SOL_SOCKET);
+                    core::ptr::write_volatile((control + 12) as *mut i32, SCM_RIGHTS);
+                    for (i, nfd) in allocated_fds.iter().enumerate() {
+                        core::ptr::write_volatile((control + 16 + (i * 4) as u64) as *mut i32, *nfd);
+                    }
+                }
+                ctrl_written = len;
+            }
+        }
     }
     // SCM_CREDENTIALS writeback when the receiver opted in (SO_PASSCRED).
-    let mut ctrl_written: u64 = 0;
     if sock.opts.passcred.load(Ordering::Acquire) != 0
-        && control != 0 && control < USER_VA_END && controllen >= 28
+        && control != 0 && control < USER_VA_END
     {
-        let (pid, uid, gid) = {
-            let g = sock.kind.lock();
-            match &*g { SockKind::UnixMsgPair(p, e) => p.peer_cred(*e), _ => (0, 0, 0) }
-        };
-        const SOL_SOCKET: i32 = 1;
-        const SCM_CREDENTIALS: i32 = 2;
-        // SAFETY: control..control+28 ≤ controllen, validated < USER_VA_END;
-        // cmsghdr(u64 len, i32 level, i32 type) + struct ucred(pid,uid,gid) per Linux ABI.
-        unsafe {
-            core::ptr::write_volatile( control        as *mut u64, 28u64);
-            core::ptr::write_volatile((control +  8)  as *mut i32, SOL_SOCKET);
-            core::ptr::write_volatile((control + 12)  as *mut i32, SCM_CREDENTIALS);
-            core::ptr::write_volatile((control + 16)  as *mut u32, pid);
-            core::ptr::write_volatile((control + 20)  as *mut u32, uid);
-            core::ptr::write_volatile((control + 24)  as *mut u32, gid);
+        let off = (ctrl_written + 7) & !7u64;
+        let creds_total = 28u64;
+        if off + creds_total <= controllen {
+            let (pid, uid, gid) = {
+                let g = sock.kind.lock();
+                match &*g { SockKind::UnixMsgPair(p, e) => p.peer_cred(*e), _ => (0, 0, 0) }
+            };
+            const SOL_SOCKET: i32 = 1;
+            const SCM_CREDENTIALS: i32 = 2;
+            let base = control + off;
+            // SAFETY: base+creds_total fits inside the validated control buffer and uses Linux cmsghdr/ucred layout.
+            unsafe {
+                core::ptr::write_volatile( base        as *mut u64, creds_total);
+                core::ptr::write_volatile((base +  8)  as *mut i32, SOL_SOCKET);
+                core::ptr::write_volatile((base + 12)  as *mut i32, SCM_CREDENTIALS);
+                core::ptr::write_volatile((base + 16)  as *mut u32, pid);
+                core::ptr::write_volatile((base + 20)  as *mut u32, uid);
+                core::ptr::write_volatile((base + 24)  as *mut u32, gid);
+            }
+            ctrl_written = off + creds_total;
+        } else if controllen > 0 {
+            ctrunc = true;
         }
-        ctrl_written = 28;
+    } else if sock.opts.passcred.load(Ordering::Acquire) != 0 && controllen > 0 {
+        ctrunc = true;
     }
-    // SAFETY: msg_controllen at msgp+40 per Linux msghdr; msgp validated.
-    unsafe { core::ptr::write_volatile((msgp + 40) as *mut u64, ctrl_written); }
-    total
+    // SAFETY: msgp was validated by sys_recvmsg; msg_controllen and msg_flags are fixed msghdr fields.
+    unsafe {
+        core::ptr::write_volatile((msgp + 40) as *mut u64, ctrl_written);
+        const MSG_CTRUNC: i32 = 0x08;
+        let flags_at = (msgp + 48) as *mut i32;
+        let cur = core::ptr::read_volatile(flags_at);
+        let new = if ctrunc { cur | MSG_CTRUNC } else { cur };
+        core::ptr::write_volatile(flags_at, new);
+    }
+    total as i64
 }

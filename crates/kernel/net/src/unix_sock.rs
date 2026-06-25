@@ -322,8 +322,13 @@ pub struct UnixMsgPair {
     pub cred_b: EndCred,
 }
 
+pub struct UnixMsg {
+    pub payload: Vec<u8>,
+    pub fds: Vec<Arc<vfs::File>>,
+}
+
 pub struct UnixMsgRing {
-    pub msgs: VecDeque<Vec<u8>>,
+    pub msgs: VecDeque<UnixMsg>,
     pub closed_writer: bool,
 }
 
@@ -378,9 +383,15 @@ impl UnixMsgPair {
     /// per-ring read waitq + epoll parkers.
     /// # C: O(payload.len())
     pub fn send(&self, end: UnixEnd, payload: &[u8]) -> usize {
+        self.send_with_fds(end, payload, Vec::new())
+    }
+
+    /// Enqueue one message plus SCM_RIGHTS files from `end`.
+    /// # C: O(payload.len())
+    pub fn send_with_fds(&self, end: UnixEnd, payload: &[u8], fds: Vec<Arc<vfs::File>>) -> usize {
         let mut g = match end { UnixEnd::A => self.a_to_b.lock(), UnixEnd::B => self.b_to_a.lock() };
         if g.closed_writer { return 0; }
-        g.msgs.push_back(payload.to_vec());
+        g.msgs.push_back(UnixMsg { payload: payload.to_vec(), fds });
         let n = payload.len();
         drop(g);
         #[cfg(target_os = "oxide-kernel")]
@@ -412,15 +423,22 @@ impl UnixMsgPair {
     /// `Some(empty)` so the read syscall returns 0.
     /// # C: O(min(max, payload.len()))
     pub fn recv(&self, end: UnixEnd, max: usize) -> Option<Vec<u8>> {
+        self.recv_msg(end, max).map(|m| m.payload)
+    }
+
+    /// Dequeue one message plus any SCM_RIGHTS files from the ring
+    /// `end` reads from.
+    /// # C: O(min(max, payload.len()))
+    pub fn recv_msg(&self, end: UnixEnd, max: usize) -> Option<UnixMsg> {
         let mut g = match end {
             UnixEnd::A => self.b_to_a.lock(),
             UnixEnd::B => self.a_to_b.lock(),
         };
         if let Some(mut msg) = g.msgs.pop_front() {
-            if msg.len() > max { msg.truncate(max); }
+            if msg.payload.len() > max { msg.payload.truncate(max); }
             Some(msg)
         } else if g.closed_writer {
-            Some(Vec::new())
+            Some(UnixMsg { payload: Vec::new(), fds: Vec::new() })
         } else {
             None
         }
