@@ -32,6 +32,12 @@ pub unsafe extern "C" fn statfs(path: *const c_char, buf: *mut core::ffi::c_void
     // SAFETY: path NUL-terminated; buf a 120-byte struct statfs the kernel fills.
     ret_isize(unsafe { sys2(nr::STATFS, path as usize, buf as usize) }) as i32
 }
+// # C: int __statfs(const char *path, struct statfs *buf)
+#[no_mangle]
+pub unsafe extern "C" fn __statfs(path: *const c_char, buf: *mut core::ffi::c_void) -> i32 {
+    // SAFETY: internal alias has the same path/buffer contract as statfs.
+    unsafe { statfs(path, buf) }
+}
 // # C: int fstatfs(int fd, struct statfs *buf)
 #[no_mangle]
 pub unsafe extern "C" fn fstatfs(fd: i32, buf: *mut core::ffi::c_void) -> i32 {

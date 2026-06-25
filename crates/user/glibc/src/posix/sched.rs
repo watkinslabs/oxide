@@ -19,6 +19,10 @@ pub unsafe extern "C" fn sched_getparam(pid: i32, param: *mut SchedParam) -> i32
     // SAFETY: sched_getparam(2); param is a valid sched_param out-pointer.
     ret_isize(unsafe { sys2(nr::SCHED_GETPARAM, pid as usize, param as usize) }) as i32
 }
+#[no_mangle] pub unsafe extern "C" fn __sched_getparam(pid: i32, param: *mut SchedParam) -> i32 {
+    // SAFETY: internal alias has the same sched_param out-pointer contract.
+    unsafe { sched_getparam(pid, param) }
+}
 // # C: int sched_setparam(pid_t pid, const struct sched_param *param)
 #[no_mangle]
 pub unsafe extern "C" fn sched_setparam(pid: i32, param: *const SchedParam) -> i32 {
@@ -31,11 +35,19 @@ pub unsafe extern "C" fn sched_getscheduler(pid: i32) -> i32 {
     // SAFETY: sched_getscheduler(2) takes a scalar pid; no memory touched.
     ret_isize(unsafe { sys1(nr::SCHED_GETSCHEDULER, pid as usize) }) as i32
 }
+#[no_mangle] pub unsafe extern "C" fn __sched_getscheduler(pid: i32) -> i32 {
+    // SAFETY: internal alias has the same scalar pid contract.
+    unsafe { sched_getscheduler(pid) }
+}
 // # C: int sched_setscheduler(pid_t pid, int policy, const struct sched_param *param)
 #[no_mangle]
 pub unsafe extern "C" fn sched_setscheduler(pid: i32, policy: i32, param: *const SchedParam) -> i32 {
     // SAFETY: sched_setscheduler(2); param points to a valid sched_param.
     ret_isize(unsafe { sys3(nr::SCHED_SETSCHEDULER, pid as usize, policy as usize, param as usize) }) as i32
+}
+#[no_mangle] pub unsafe extern "C" fn __sched_setscheduler(pid: i32, policy: i32, param: *const SchedParam) -> i32 {
+    // SAFETY: internal alias has the same sched_param pointer contract.
+    unsafe { sched_setscheduler(pid, policy, param) }
 }
 // # C: int sched_get_priority_max(int policy)
 #[no_mangle]
@@ -43,11 +55,19 @@ pub unsafe extern "C" fn sched_get_priority_max(policy: i32) -> i32 {
     // SAFETY: sched_get_priority_max(2) takes a scalar policy; no memory touched.
     ret_isize(unsafe { sys1(nr::SCHED_GET_PRIORITY_MAX, policy as usize) }) as i32
 }
+#[no_mangle] pub unsafe extern "C" fn __sched_get_priority_max(policy: i32) -> i32 {
+    // SAFETY: internal alias has the same scalar policy contract.
+    unsafe { sched_get_priority_max(policy) }
+}
 // # C: int sched_get_priority_min(int policy)
 #[no_mangle]
 pub unsafe extern "C" fn sched_get_priority_min(policy: i32) -> i32 {
     // SAFETY: sched_get_priority_min(2) takes a scalar policy; no memory touched.
     ret_isize(unsafe { sys1(nr::SCHED_GET_PRIORITY_MIN, policy as usize) }) as i32
+}
+#[no_mangle] pub unsafe extern "C" fn __sched_get_priority_min(policy: i32) -> i32 {
+    // SAFETY: internal alias has the same scalar policy contract.
+    unsafe { sched_get_priority_min(policy) }
 }
 // # C: int sched_rr_get_interval(pid_t pid, struct timespec *tp)
 #[no_mangle]
@@ -99,4 +119,8 @@ pub unsafe extern "C" fn sched_getcpu() -> i32 {
 pub unsafe extern "C" fn sched_yield() -> i32 {
     // SAFETY: sched_yield(2) takes no args; relinquishes the cpu.
     ret_isize(unsafe { sys0(nr::SCHED_YIELD) }) as i32
+}
+#[no_mangle] pub unsafe extern "C" fn __sched_yield() -> i32 {
+    // SAFETY: internal alias has the same no-argument contract.
+    unsafe { sched_yield() }
 }

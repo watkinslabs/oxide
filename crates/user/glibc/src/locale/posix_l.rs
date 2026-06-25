@@ -87,6 +87,12 @@ pub unsafe extern "C" fn newlocale(_mask: i32, locale: *const c_char, base: usiz
         h
     }
 }
+// # C: locale_t __newlocale(int category_mask, const char *locale, locale_t base)
+#[no_mangle]
+pub unsafe extern "C" fn __newlocale(mask: i32, locale: *const c_char, base: usize) -> usize {
+    // SAFETY: internal alias has the same locale-name/base-handle contract as newlocale.
+    unsafe { newlocale(mask, locale, base) }
+}
 // # C: locale_t duplocale(locale_t loc)
 #[no_mangle]
 pub unsafe extern "C" fn duplocale(_loc: usize) -> usize {
@@ -117,6 +123,11 @@ pub extern "C" fn uselocale(newloc: usize) -> usize {
     // 0 = query (no change). All locales behave as C, so this is cosmetic.
     if newloc == 0 { return CURRENT.load(Ordering::Relaxed); }
     CURRENT.swap(newloc, Ordering::Relaxed)
+}
+// # C: locale_t __uselocale(locale_t newloc)
+#[no_mangle]
+pub extern "C" fn __uselocale(newloc: usize) -> usize {
+    uselocale(newloc)
 }
 
 // --- ctype _l (delegate to the C-locale base) ------------------------------
@@ -297,4 +308,10 @@ pub unsafe extern "C" fn strerror_l(errnum: i32, _l: usize) -> *mut c_char {
 pub unsafe extern "C" fn nl_langinfo_l(item: i32, _l: usize) -> *mut c_char {
     // SAFETY: C-locale langinfo == nl_langinfo.
     unsafe { nl_langinfo(item) }
+}
+// # C: char *__nl_langinfo_l(nl_item item, locale_t loc)
+#[no_mangle]
+pub unsafe extern "C" fn __nl_langinfo_l(item: i32, loc: usize) -> *mut c_char {
+    // SAFETY: internal alias has the same item/locale_t contract as nl_langinfo_l.
+    unsafe { nl_langinfo_l(item, loc) }
 }

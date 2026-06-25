@@ -90,6 +90,12 @@ pub mod exports {
             r
         }
     }
+    // # C: int __sigaction(int sig, const struct sigaction *act, struct sigaction *old)
+    #[no_mangle]
+    pub unsafe extern "C" fn __sigaction(sig: i32, act: *const sigaction_t, old: *mut sigaction_t) -> i32 {
+        // SAFETY: internal alias has the same sigaction pointer contract.
+        unsafe { sigaction(sig, act, old) }
+    }
 
     // # C: sighandler_t signal(int sig, sighandler_t handler)
     #[no_mangle]

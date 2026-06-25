@@ -142,6 +142,12 @@ mod exports {
         // locales, so locale_t does not change formatting.
         unsafe { strftime(s, max, fmt, t) }
     }
+    // # C: size_t __strftime_l(char *s, size_t max, const char *fmt, const struct tm *tm, locale_t loc)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strftime_l(s: *mut u8, max: usize, fmt: *const u8, t: *const tm, loc: usize) -> usize {
+        // SAFETY: internal alias has the same output buffer and tm pointer contract as strftime_l.
+        unsafe { strftime_l(s, max, fmt, t, loc) }
+    }
 }
 
 #[cfg(test)]

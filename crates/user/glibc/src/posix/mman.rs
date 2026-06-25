@@ -59,6 +59,12 @@ pub unsafe extern "C" fn mprotect(addr: *mut u8, len: usize, prot: i32) -> i32 {
     // SAFETY: mprotect(2) takes scalar addr/len/prot; no libc-side deref.
     ret_isize(unsafe { sys3(nr::MPROTECT, addr as usize, len, prot as usize) }) as i32
 }
+// # C: int __mprotect(void *addr, size_t len, int prot)
+#[no_mangle]
+pub unsafe extern "C" fn __mprotect(addr: *mut u8, len: usize, prot: i32) -> i32 {
+    // SAFETY: internal alias has the same scalar addr/len/prot contract as mprotect.
+    unsafe { mprotect(addr, len, prot) }
+}
 
 // # C: int brk(void *addr) — glibc convention: 0 on success, -1/errno.
 #[no_mangle]
