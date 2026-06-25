@@ -3,12 +3,12 @@
 // v1 implements:
 //   - Neighbor Solicitation (target_ip in question, src->llt)
 //   - Neighbor Advertisement (target_ip + flags + target_lladdr)
+//   - Router Advertisement prefix parsing for SLAAC
 //
 // Each NS/NA carries a Type-Length-Value option list. The
 // `target_lladdr` option (T=2) is the Ethernet MAC; v1 emits +
-// parses just that one type. RS/RA (router solicitation /
-// advertisement) and Redirect ride alongside the routing table
-// (P8-21+).
+// parses just that one type for NS/NA. RA parsing consumes Prefix
+// Information options so the stack can autoconfigure an address.
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
@@ -21,13 +21,19 @@ use crate::icmpv6::IPPROTO_ICMPV6;
 
 pub const NDP_NS: u8 = 135;
 pub const NDP_NA: u8 = 136;
+pub const NDP_RA: u8 = 134;
 pub const NDP_OPT_SOURCE_LLADDR: u8 = 1;
 pub const NDP_OPT_TARGET_LLADDR: u8 = 2;
+pub const NDP_OPT_PREFIX_INFO: u8 = 3;
 
 /// 24-byte fixed body for NS / NA after the 4-byte ICMPv6
 /// header words. Type 135/136, code 0, then header[4..8] = flags
 /// (NA only — bits R/S/O), header[8..24] = target_ip.
 pub const NDP_HDR_FIXED: usize = 24;
+pub const NDP_RA_FIXED: usize = 16;
+
+pub const NDP_PIO_FLAG_ONLINK: u8 = 0x80;
+pub const NDP_PIO_FLAG_AUTO: u8 = 0x40;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NdpError { Short, BadChecksum, BadType }
@@ -38,6 +44,26 @@ pub struct NdpMsg {
     pub flags:   u32,    // NA bits in low byte (R/S/O)
     pub target:  Ipv6Addr,
     pub lladdr:  Option<MacAddr>,  // option ICMPv6 source/target lladdr
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct PrefixInfo {
+    pub prefix_len: u8,
+    pub flags: u8,
+    pub valid_lifetime: u32,
+    pub preferred_lifetime: u32,
+    pub prefix: Ipv6Addr,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouterAdvertisement {
+    pub hop_limit: u8,
+    pub flags: u8,
+    pub router_lifetime: u16,
+    pub reachable_time: u32,
+    pub retrans_timer: u32,
+    pub source_lladdr: Option<MacAddr>,
+    pub prefixes: alloc::vec::Vec<PrefixInfo>,
 }
 
 impl NdpMsg {
@@ -121,6 +147,87 @@ impl NdpMsg {
             o += opt_len;
         }
         Ok(Self { typ, flags, target, lladdr })
+    }
+}
+
+impl RouterAdvertisement {
+    /// Parse an ICMPv6 Router Advertisement and Prefix Information options.
+    /// # C: O(N options)
+    pub fn parse(buf: &[u8], src: Ipv6Addr, dst: Ipv6Addr) -> Result<Self, NdpError> {
+        if buf.len() < NDP_RA_FIXED { return Err(NdpError::Short); }
+        if buf[0] != NDP_RA { return Err(NdpError::BadType); }
+        if compute_ndp_checksum_with_field(buf, src, dst, true) != 0 {
+            return Err(NdpError::BadChecksum);
+        }
+        let mut ra = Self {
+            hop_limit: buf[4],
+            flags: buf[5],
+            router_lifetime: u16::from_be_bytes([buf[6], buf[7]]),
+            reachable_time: u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]),
+            retrans_timer: u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]),
+            source_lladdr: None,
+            prefixes: alloc::vec::Vec::new(),
+        };
+        let mut off = NDP_RA_FIXED;
+        while off + 2 <= buf.len() {
+            let opt_type = buf[off];
+            let opt_len = buf[off + 1] as usize * 8;
+            if opt_len < 8 || off + opt_len > buf.len() { break; }
+            let opt = &buf[off..off + opt_len];
+            match opt_type {
+                NDP_OPT_SOURCE_LLADDR if opt_len >= 8 => {
+                    let mut mac = [0u8; 6];
+                    mac.copy_from_slice(&opt[2..8]);
+                    ra.source_lladdr = Some(MacAddr(mac));
+                }
+                NDP_OPT_PREFIX_INFO if opt_len >= 32 => {
+                    let mut prefix = [0u8; 16];
+                    prefix.copy_from_slice(&opt[16..32]);
+                    ra.prefixes.push(PrefixInfo {
+                        prefix_len: opt[2],
+                        flags: opt[3],
+                        valid_lifetime: u32::from_be_bytes([opt[4], opt[5], opt[6], opt[7]]),
+                        preferred_lifetime: u32::from_be_bytes([opt[8], opt[9], opt[10], opt[11]]),
+                        prefix: Ipv6Addr(prefix),
+                    });
+                }
+                _ => {}
+            }
+            off += opt_len;
+        }
+        Ok(ra)
+    }
+
+    /// Test/support builder for one-prefix RAs. # C: O(1)
+    pub fn build_one_prefix(
+        src: Ipv6Addr,
+        dst: Ipv6Addr,
+        mac: MacAddr,
+        router_lifetime: u16,
+        prefix: Ipv6Addr,
+        prefix_len: u8,
+        flags: u8,
+    ) -> alloc::vec::Vec<u8> {
+        let total = NDP_RA_FIXED + 8 + 32;
+        let mut buf = alloc::vec![0u8; total];
+        buf[0] = NDP_RA;
+        buf[1] = 0;
+        buf[4] = 64;
+        buf[6..8].copy_from_slice(&router_lifetime.to_be_bytes());
+        buf[16] = NDP_OPT_SOURCE_LLADDR;
+        buf[17] = 1;
+        buf[18..24].copy_from_slice(&mac.0);
+        let p = 24;
+        buf[p] = NDP_OPT_PREFIX_INFO;
+        buf[p + 1] = 4;
+        buf[p + 2] = prefix_len;
+        buf[p + 3] = flags;
+        buf[p + 4..p + 8].copy_from_slice(&3600u32.to_be_bytes());
+        buf[p + 8..p + 12].copy_from_slice(&1800u32.to_be_bytes());
+        buf[p + 16..p + 32].copy_from_slice(&prefix.0);
+        let cs = compute_ndp_checksum(&buf, src, dst);
+        buf[2..4].copy_from_slice(&cs.to_be_bytes());
+        buf
     }
 }
 
@@ -208,5 +315,22 @@ mod tests {
         let c = NdpCache::new();
         c.insert(Ipv6Addr::LOOPBACK, MacAddr([1,1,1,1,1,1]));
         assert_eq!(c.lookup(Ipv6Addr::LOOPBACK), Some(MacAddr([1,1,1,1,1,1])));
+    }
+
+    #[test]
+    fn ra_prefix_round_trip() {
+        let src = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
+        let dst = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,1]);
+        let prefix = Ipv6Addr::from_segments([0x2001,0xdb8,0x55,0,0,0,0,0]);
+        let mac = MacAddr([2,3,4,5,6,7]);
+        let buf = RouterAdvertisement::build_one_prefix(
+            src, dst, mac, 1800, prefix, 64, NDP_PIO_FLAG_ONLINK | NDP_PIO_FLAG_AUTO,
+        );
+        let ra = RouterAdvertisement::parse(&buf, src, dst).unwrap();
+        assert_eq!(ra.router_lifetime, 1800);
+        assert_eq!(ra.source_lladdr, Some(mac));
+        assert_eq!(ra.prefixes.len(), 1);
+        assert_eq!(ra.prefixes[0].prefix, prefix);
+        assert_eq!(ra.prefixes[0].prefix_len, 64);
     }
 }

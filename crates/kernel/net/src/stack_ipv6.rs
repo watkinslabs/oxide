@@ -268,9 +268,69 @@ impl NetStack {
                     }
                 }
             }
+            t if t == crate::ndp::NDP_RA => {
+                if let Ok(ra) = crate::ndp::RouterAdvertisement::parse(payload, src, dst) {
+                    self.apply_router_advertisement(iface, src, &ra);
+                }
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    /// Apply the practical SLAAC subset from an inbound Router Advertisement:
+    /// cache router L2 address, configure autonomous /64 prefixes, and install
+    /// a default route while the router lifetime is nonzero. # C: O(N prefixes + routes)
+    fn apply_router_advertisement(
+        &self,
+        iface: NetIfaceId,
+        router: Ipv6Addr,
+        ra: &crate::ndp::RouterAdvertisement,
+    ) {
+        if let Some(mac) = ra.source_lladdr {
+            self.ndp.insert(router, mac);
+        }
+
+        let our_mac = match self.ifaces.lookup(iface) {
+            Some(dev) => dev.mac(),
+            None => return,
+        };
+        let mut src_hint = None;
+        for p in &ra.prefixes {
+            if p.prefix_len != 64 || p.valid_lifetime == 0 {
+                continue;
+            }
+            let autoconf = (p.flags & crate::ndp::NDP_PIO_FLAG_AUTO) != 0;
+            let onlink = (p.flags & crate::ndp::NDP_PIO_FLAG_ONLINK) != 0;
+            let addr = slaac_eui64_addr(p.prefix, our_mac);
+            if autoconf {
+                self.add_v6_addr(iface, addr);
+                src_hint = Some(addr);
+            }
+            if onlink {
+                self.routes6.retain(|e| {
+                    !(e.iface == iface && e.prefix_len == p.prefix_len && e.dst == p.prefix)
+                });
+                self.routes6.add(crate::route6::Route6Entry {
+                    dst: p.prefix,
+                    prefix_len: p.prefix_len,
+                    iface,
+                    gateway: None,
+                    src_hint: if autoconf { Some(addr) } else { None },
+                });
+            }
+        }
+
+        self.routes6.retain(|e| !(e.iface == iface && e.prefix_len == 0));
+        if ra.router_lifetime != 0 {
+            self.routes6.add(crate::route6::Route6Entry {
+                dst: Ipv6Addr::ANY,
+                prefix_len: 0,
+                iface,
+                gateway: Some(router),
+                src_hint,
+            });
+        }
     }
 
     /// F180b: family-dispatching L4 xmit. v4 stays on v4; v6 → v6;
@@ -422,4 +482,19 @@ impl NetStack {
         if !nf_output(&p, NFPROTO_IPV6) { return Ok(()); }
         dev.xmit(p)
     }
+}
+
+/// RFC 4862 Modified EUI-64 interface identifier for Ethernet MACs.
+/// # C: O(1)
+fn slaac_eui64_addr(prefix: Ipv6Addr, mac: crate::addr::MacAddr) -> Ipv6Addr {
+    let mut out = prefix.0;
+    out[8] = mac.0[0] ^ 0x02;
+    out[9] = mac.0[1];
+    out[10] = mac.0[2];
+    out[11] = 0xff;
+    out[12] = 0xfe;
+    out[13] = mac.0[3];
+    out[14] = mac.0[4];
+    out[15] = mac.0[5];
+    Ipv6Addr(out)
 }
