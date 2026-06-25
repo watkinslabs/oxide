@@ -15,6 +15,11 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     const IP_TOS: u64 = 1;
     const IP_TTL: u64 = 2;
     const IP_PKTINFO: u64 = 8;
+    const IP_MULTICAST_IF: u64 = 32;
+    const IP_MULTICAST_TTL: u64 = 33;
+    const IP_MULTICAST_LOOP: u64 = 34;
+    const IP_ADD_MEMBERSHIP: u64 = 35;
+    const IP_DROP_MEMBERSHIP: u64 = 36;
     const IPPROTO_IPV6: u64 = 41;
     const IPV6_JOIN_GROUP: u64 = 20;
     const IPV6_LEAVE_GROUP: u64 = 21;
@@ -70,6 +75,27 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         (IPPROTO_IP, IP_PKTINFO) => {
             let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
             sock.opts.ip_pktinfo.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
+        }
+        (IPPROTO_IP, IP_MULTICAST_TTL) => {
+            let Some(v) = read_u8_or_i32(optval, optlen) else { return -(Errno::Einval.as_i32() as i64); };
+            if !(0..=255).contains(&v) { return -(Errno::Einval.as_i32() as i64); }
+            sock.opts.ip_mcast_ttl.store(v, Ordering::Release);
+        }
+        (IPPROTO_IP, IP_MULTICAST_LOOP) => {
+            let Some(v) = read_u8_or_i32(optval, optlen) else { return -(Errno::Einval.as_i32() as i64); };
+            sock.opts.ip_mcast_loop.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
+        }
+        (IPPROTO_IP, IP_MULTICAST_IF) => {
+            let rc = ipv4_mcast_if(&sock, optval, optlen);
+            if rc != 0 { return rc; }
+        }
+        (IPPROTO_IP, IP_ADD_MEMBERSHIP) => {
+            let rc = ipv4_mcast_membership(&sock, optval, optlen, true);
+            if rc != 0 { return rc; }
+        }
+        (IPPROTO_IP, IP_DROP_MEMBERSHIP) => {
+            let rc = ipv4_mcast_membership(&sock, optval, optlen, false);
+            if rc != 0 { return rc; }
         }
         (IPPROTO_IPV6, IPV6_V6ONLY) => {
             let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
@@ -164,6 +190,116 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         _ => {}
     }
     0
+}
+
+fn read_u8_or_i32(optval: u64, optlen: u32) -> Option<i32> {
+    if optlen == 1 && optval < USER_VA_END {
+        // SAFETY: caller supplied a one-byte integer option in user range.
+        return Some(unsafe { core::ptr::read_volatile(optval as *const u8) } as i32);
+    }
+    if optlen >= 4 && optval + 4 <= USER_VA_END {
+        // SAFETY: optval+4 validated in user range; Linux accepts int-shaped forms.
+        return Some(unsafe { core::ptr::read_volatile(optval as *const i32) });
+    }
+    None
+}
+
+fn read_ipv4_at(ptr: u64) -> Option<net::Ipv4Addr> {
+    if ptr + 4 > USER_VA_END { return None; }
+    // SAFETY: ptr+4 was checked; in_addr is a network-order u32.
+    let be = unsafe { core::ptr::read_volatile(ptr as *const u32) };
+    Some(net::Ipv4Addr::from_u32(u32::from_be(be)))
+}
+
+fn iface_for_v4_addr(addr: net::Ipv4Addr) -> Option<net::NetIfaceId> {
+    net::sock::stack().routes.snapshot().into_iter()
+        .find(|r| r.src_hint == Some(addr))
+        .map(|r| r.iface)
+}
+
+fn default_v4_mcast_iface(sock: &alloc::sync::Arc<net::sock::InetSocket>, group: net::Ipv4Addr)
+    -> Option<net::NetIfaceId>
+{
+    use core::sync::atomic::Ordering;
+    let raw = sock.opts.ip_mcast_ifindex.load(Ordering::Acquire);
+    if raw != 0 { return Some(net::NetIfaceId::from_raw(raw)); }
+    let addr = net::Ipv4Addr::from_u32(sock.opts.ip_mcast_ifaddr.load(Ordering::Acquire));
+    if !addr.is_unspecified() { return iface_for_v4_addr(addr); }
+    let bound = sock.opts.bound_ifindex.load(Ordering::Acquire);
+    if bound != 0 { return Some(net::NetIfaceId::from_raw(bound)); }
+    if let Some(r) = net::sock::stack().routes.lookup(group) { return Some(r.iface); }
+    let routes = net::sock::stack().routes.snapshot();
+    if routes.len() == 1 { Some(routes[0].iface) } else { None }
+}
+
+fn ipv4_mcast_if(sock: &alloc::sync::Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -> i64 {
+    use core::sync::atomic::Ordering;
+    if sock.family.load(Ordering::Acquire) != net::sock::AF_INET {
+        return -(Errno::Eafnosupport.as_i32() as i64);
+    }
+    if optlen < 4 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
+    let Some(addr) = read_ipv4_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
+    let ifindex = if optlen >= 12 {
+        // SAFETY: ip_mreqn ifindex sits at byte 8 and optlen/range were checked.
+        unsafe { core::ptr::read_volatile((optval + 8) as *const i32).max(0) as u32 }
+    } else { 0 };
+    if ifindex != 0 && net::sock::stack().ifaces.lookup(net::NetIfaceId::from_raw(ifindex)).is_none() {
+        return -(Errno::Enodev.as_i32() as i64);
+    }
+    if ifindex == 0 && !addr.is_unspecified() && iface_for_v4_addr(addr).is_none() {
+        return -(Errno::Enodev.as_i32() as i64);
+    }
+    sock.opts.ip_mcast_ifaddr.store(addr.as_u32(), Ordering::Release);
+    sock.opts.ip_mcast_ifindex.store(ifindex, Ordering::Release);
+    0
+}
+
+fn ipv4_mcast_membership(
+    sock: &alloc::sync::Arc<net::sock::InetSocket>,
+    optval: u64,
+    optlen: u32,
+    join: bool,
+) -> i64 {
+    use core::sync::atomic::Ordering;
+    if sock.family.load(Ordering::Acquire) != net::sock::AF_INET {
+        return -(Errno::Eafnosupport.as_i32() as i64);
+    }
+    if optlen < 8 || optval + optlen as u64 > USER_VA_END {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let Some(group) = read_ipv4_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
+    let Some(req_src) = read_ipv4_at(optval + 4) else { return -(Errno::Efault.as_i32() as i64); };
+    if !group.is_multicast() { return -(Errno::Einval.as_i32() as i64); }
+    let req_if = if optlen >= 12 {
+        // SAFETY: ip_mreqn ifindex sits at byte 8 and optlen/range were checked.
+        unsafe { core::ptr::read_volatile((optval + 8) as *const i32).max(0) as u32 }
+    } else { 0 };
+    let iface = if req_if != 0 {
+        net::NetIfaceId::from_raw(req_if)
+    } else if !req_src.is_unspecified() {
+        match iface_for_v4_addr(req_src) {
+            Some(i) => i,
+            None => return -(Errno::Enodev.as_i32() as i64),
+        }
+    } else {
+        match default_v4_mcast_iface(sock, group) {
+            Some(i) => i,
+            None => return -(Errno::Enodev.as_i32() as i64),
+        }
+    };
+    if net::sock::stack().ifaces.lookup(iface).is_none() {
+        return -(Errno::Enodev.as_i32() as i64);
+    }
+    let src = if !req_src.is_unspecified() { req_src } else { *sock.local_ip.lock() };
+    let result = if join {
+        net::sock::stack().join_ipv4_multicast(iface, group, src)
+    } else {
+        net::sock::stack().leave_ipv4_multicast(iface, group, src)
+    };
+    match result {
+        Ok(()) => 0,
+        Err(e) => errno_from_neterr(e),
+    }
 }
 
 fn ipv6_mcast_membership(

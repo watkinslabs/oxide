@@ -20,6 +20,8 @@ use crate::netdev::NetError;
 mod tests_perf;
 #[path = "tests_mld.rs"]
 mod tests_mld;
+#[path = "tests_igmp.rs"]
+mod tests_igmp;
 
 pub(super) fn ep(ip: Ipv4Addr, port: u16) -> Endpoint { Endpoint { ip: IpAddr::V4(ip), port } }
 
