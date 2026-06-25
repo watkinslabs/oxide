@@ -19,6 +19,7 @@ use crate::net_common::{peercred_for_fd, socket_from_fd};
 pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const SOL_SOCKET:   u64 = 1;
     const SO_BINDTODEVICE: u64 = 25;
+    const SO_PASSCRED: u64 = 16;
     const SO_TYPE:      u64 = 3;
     const SO_PEERCRED:  u64 = 17;
     let _fd     = args.a0;
@@ -90,6 +91,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (SOL_SOCKET, 6)  => return i32_back(s.opts.broadcast.load(Ordering::Acquire)),
             (SOL_SOCKET, 7)  => return i32_back(s.opts.sndbuf.load(Ordering::Acquire)),
             (SOL_SOCKET, 8)  => return i32_back(s.opts.rcvbuf.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_PASSCRED) => return i32_back(s.opts.passcred.load(Ordering::Acquire)),
             (SOL_SOCKET, 12) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
             (SOL_SOCKET, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
             (SOL_SOCKET, SO_BINDTODEVICE) => return bind_to_device_name(&s, optval, optlen_p),

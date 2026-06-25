@@ -3,7 +3,8 @@
 //
 // recvmsg on a UnixDgram socket pops one message from the per-socket
 // queue, copies its payload across the supplied iovecs, and (when
-// msg_control is provided) writes SCM_CREDENTIALS / SCM_RIGHTS cmsgs.
+// msg_control is provided) writes SCM_CREDENTIALS for SO_PASSCRED and
+// SCM_RIGHTS cmsgs.
 //
 // Linux msghdr layout (x86_64):
 //   +0  msg_name        u64
@@ -15,6 +16,8 @@
 //   +48 msg_flags       i32 + pad
 
 
+
+use core::sync::atomic::Ordering;
 
 use syscall::errno::Errno;
 use hal::USER_VA_END;
@@ -63,7 +66,9 @@ pub fn recvmsg_unix_dgram(sock: &alloc::sync::Arc<InetSocket>, msgp: u64) -> i64
     // creds first (28 B), then SCM_RIGHTS (16 + 4·nfds B). Receiver
     // allocates fresh fds in its own table for each Arc<File>.
     let mut cmsg_total: u64 = 0;
-    if control != 0 && controllen >= 28 && control < USER_VA_END {
+    if sock.opts.passcred.load(Ordering::Acquire) != 0
+        && control != 0 && controllen >= 28 && control < USER_VA_END
+    {
         const SOL_SOCKET: i32 = 1;
         const SCM_CREDENTIALS: i32 = 2;
         let (pid, uid, gid) = msg.creds;
