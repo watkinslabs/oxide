@@ -55,6 +55,13 @@ pub unsafe extern "C" fn getauxval(at_type: core::ffi::c_ulong) -> core::ffi::c_
         }
     }
 }
+// # C: unsigned long __getauxval(unsigned long type)
+#[cfg(feature = "freestanding")]
+#[no_mangle]
+pub unsafe extern "C" fn __getauxval(at_type: core::ffi::c_ulong) -> core::ffi::c_ulong {
+    // SAFETY: internal alias has the same scalar type contract as getauxval.
+    unsafe { getauxval(at_type) }
+}
 
 // Find an auxv entry's value. `envp` points at the first env word.
 pub(crate) unsafe fn find_auxval(envp: *const usize, at_type: usize) -> Option<usize> {

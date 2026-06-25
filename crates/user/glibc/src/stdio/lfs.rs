@@ -33,11 +33,23 @@ pub unsafe extern "C" fn fseeko64(f: *mut FILE, off: i64, whence: i32) -> i32 {
     // SAFETY: LP64 alias of fseeko; f is a seekable stream.
     unsafe { fseek(f, off, whence) }
 }
+// # C: int __fseeko64(FILE *f, off64_t off, int whence)
+#[no_mangle]
+pub unsafe extern "C" fn __fseeko64(f: *mut FILE, off: i64, whence: i32) -> i32 {
+    // SAFETY: internal LP64 alias of fseeko64; f is a seekable stream.
+    unsafe { fseeko64(f, off, whence) }
+}
 // # C: off64_t ftello64(FILE *f)
 #[no_mangle]
 pub unsafe extern "C" fn ftello64(f: *mut FILE) -> i64 {
     // SAFETY: LP64 alias of ftello; f is a seekable stream.
     unsafe { ftell(f) }
+}
+// # C: off64_t __ftello64(FILE *f)
+#[no_mangle]
+pub unsafe extern "C" fn __ftello64(f: *mut FILE) -> i64 {
+    // SAFETY: internal LP64 alias of ftello64; f is a seekable stream.
+    unsafe { ftello64(f) }
 }
 
 // # C: int fgetpos(FILE *f, fpos_t *pos)

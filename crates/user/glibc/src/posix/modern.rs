@@ -258,6 +258,13 @@ pub unsafe extern "C" fn arch_prctl(code: i32, addr: usize) -> i32 {
     // unsigned long out-param per `code`.
     ret_isize(unsafe { sys2(nr::ARCH_PRCTL, code as usize, addr) }) as i32
 }
+// # C: int __arch_prctl(int code, unsigned long addr)
+#[cfg(target_arch = "x86_64")]
+#[no_mangle]
+pub unsafe extern "C" fn __arch_prctl(code: i32, addr: usize) -> i32 {
+    // SAFETY: internal alias has the same scalar/out-param contract as arch_prctl.
+    unsafe { arch_prctl(code, addr) }
+}
 
 // --- memory protection keys (pkey_*) ---------------------------------------
 // # C: int pkey_alloc(unsigned flags, unsigned access_rights)

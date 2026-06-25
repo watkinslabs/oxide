@@ -150,6 +150,11 @@ Also DONE: internal global data aliases (F633): `__environ`, `__progname`,
 aliases of existing environment, program-name, and timezone globals. Verified
 by ABI export audit, regression suite, spec-lint, and both freestanding arch
 builds.
+Also DONE: syscall/LFS internal compatibility aliases (F634): `__adjtimex`,
+`__arch_prctl`, no-cancel open/read/write/close, `__getauxval`, internal
+`fseeko64`/`ftello64`, and versioned `fxstatat` aliases exported over existing
+implementations. Verified by ABI export audit, regression suite, spec-lint, and
+both freestanding arch builds.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
