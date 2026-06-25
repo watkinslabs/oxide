@@ -395,6 +395,11 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   allocation/free, signbit/signgam, and XPG sigpause. Verification: x86_64
   freestanding build, `spec-lint`, `git diff --check`, `xtask glibc-test`
   195/195, ABI audit for the 7 aliases, and aarch64 freestanding build.
+- **F643 DONE:** assertion/abort compatibility entry points plus sbrk internal
+  alias and exported `__curbrk` tracker storage. Verification: x86_64
+  freestanding build, `spec-lint`, `git diff --check`, `xtask glibc-test`
+  195/195, ABI audit for the 5 aliases/data symbols, and aarch64
+  freestanding build.
 - Re-audit (docs/59 §9 / state.md recipe) for stragglers after each batch.
 
 ## 3. DEFERRED ABI WORK: long double `*l` + `_Float128`/`_Float32x`/`_Float64x`

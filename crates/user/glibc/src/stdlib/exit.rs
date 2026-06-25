@@ -140,6 +140,15 @@ mod imp {
         exit_group(134) // 128 + SIGABRT
     }
 
+    #[repr(transparent)]
+    pub struct AbortMsg(core::cell::UnsafeCell<*mut c_void>);
+    // SAFETY: process-global abort message slot; callers may mutate it through libc.
+    unsafe impl Sync for AbortMsg {}
+
+    // # C: struct abort_msg_s *__abort_msg
+    #[no_mangle]
+    pub static __abort_msg: AbortMsg = AbortMsg(core::cell::UnsafeCell::new(core::ptr::null_mut()));
+
     // # C: void __cxa_finalize(void *dso)
     // Runs DSO destructors at dlclose/exit. We register all __cxa_atexit
     // handlers in one global list run at exit(); a per-DSO finalize is a no-op
@@ -165,6 +174,19 @@ mod imp {
             w(function); lit(b": Assertion `"); w(assertion); lit(b"' failed.\n");
         }
         abort()
+    }
+
+    // # C: _Noreturn void __assert(const char *assertion, const char *file, int line)
+    #[no_mangle]
+    pub extern "C" fn __assert(assertion: *const u8, file: *const u8, line: i32) -> ! {
+        __assert_fail(assertion, file, line as u32, core::ptr::null())
+    }
+
+    // # C: _Noreturn void __assert_perror_fail(int errnum, const char *file,
+    //                                          unsigned int line, const char *function)
+    #[no_mangle]
+    pub extern "C" fn __assert_perror_fail(_errnum: i32, file: *const u8, line: u32, function: *const u8) -> ! {
+        __assert_fail(b"unexpected error\0".as_ptr(), file, line, function)
     }
 
     // # C: _Noreturn void __fortify_fail(const char *msg)
