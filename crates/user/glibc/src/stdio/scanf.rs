@@ -67,6 +67,12 @@ pub unsafe extern "C" fn vsscanf(s: *const u8, fmt: *const u8, mut ap: VaList) -
     // SAFETY: s/fmt are NUL-terminated; ap holds matching pointer args.
     unsafe { scan_str_va(s, fmt, &mut ap) }
 }
+// # C: int __vsscanf(const char *s, const char *fmt, va_list ap)
+#[no_mangle]
+pub unsafe extern "C" fn __vsscanf(s: *const u8, fmt: *const u8, mut ap: VaList) -> i32 {
+    // SAFETY: internal alias has the same ABI contract and va_list layout as vsscanf.
+    unsafe { scan_str_va(s, fmt, &mut ap) }
+}
 
 // # C: int sscanf(const char *s, const char *fmt, ...)
 #[no_mangle]
@@ -108,6 +114,12 @@ pub unsafe extern "C" fn __isoc99_vsscanf(s: *const u8, fmt: *const u8, mut ap: 
 #[no_mangle]
 pub unsafe extern "C" fn vfscanf(f: *mut FILE, fmt: *const u8, mut ap: VaList) -> i32 {
     // SAFETY: f is a readable stream; fmt NUL-terminated; ap pointer args.
+    unsafe { scan_file_va(f, fmt, &mut ap) }
+}
+// # C: int __vfscanf(FILE *f, const char *fmt, va_list ap)
+#[no_mangle]
+pub unsafe extern "C" fn __vfscanf(f: *mut FILE, fmt: *const u8, mut ap: VaList) -> i32 {
+    // SAFETY: internal alias has the same ABI contract and va_list layout as vfscanf.
     unsafe { scan_file_va(f, fmt, &mut ap) }
 }
 // # C: int fscanf(FILE *f, const char *fmt, ...)

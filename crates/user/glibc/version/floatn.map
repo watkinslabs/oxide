@@ -29,6 +29,7 @@
     __clone;
     __clog10;
     __clog10f;
+    __chk_fail;
     __clock_gettime;
     __connect;
     __cosh_finite;
@@ -56,6 +57,7 @@
     __ffs;
     __freelocale;
     __fork;
+    __fortify_fail;
     __fmod_finite;
     __fmodf_finite;
     __fseeko64;
@@ -151,6 +153,7 @@
     __madvise;
     __mbrlen;
     __mbrtowc;
+    __memcmpeq;
     __mprotect;
     __log10_finite;
     __log10f_finite;
@@ -163,11 +166,13 @@
     __munmap;
     __nanosleep;
     __newlocale;
+    __mktemp;
     __nl_langinfo_l;
     __open64;
     __open64_nocancel;
     __open_nocancel;
     __pipe;
+    __posix_getopt;
     __pow_finite;
     __powf_finite;
     __poll;
@@ -190,6 +195,7 @@
     __sched_getscheduler;
     __sched_setscheduler;
     __sched_yield;
+    __secure_getenv;
     __select;
     __send;
     __setpgid;
@@ -269,7 +275,10 @@
     __y1f_finite;
     __yn_finite;
     __ynf_finite;
+    __vfscanf;
     __vfork;
+    __vsnprintf;
+    __vsscanf;
     __wait;
     __waitpid;
     __wcscasecmp_l;

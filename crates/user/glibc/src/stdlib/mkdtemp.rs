@@ -81,3 +81,10 @@ pub unsafe extern "C" fn mktemp(template: *mut u8) -> *mut u8 {
         template
     }
 }
+
+// # C: char *__mktemp(char *template)
+#[no_mangle]
+pub unsafe extern "C" fn __mktemp(template: *mut u8) -> *mut u8 {
+    // SAFETY: internal alias has the same writable-template contract as mktemp.
+    unsafe { mktemp(template) }
+}
