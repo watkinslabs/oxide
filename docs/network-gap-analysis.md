@@ -102,7 +102,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | ICMPv6 Packet-Too-Big → PMTUD        | done     | F191 |
 | NDP NS responder (own addr)          | done     | F180c |
 | NDP NA cache populate (inbound)      | done     | F180c |
-| NDP NS outbound on cache-miss        | gap      | needed for off-link v6 unicast |
+| NDP NS outbound on cache-miss        | partial  | virtio-net emits NS on miss; packet queue/replay TBD |
 | Router Solicitation / RA             | gap      | SLAAC config from router |
 | MLD (multicast listener discovery)   | gap      | with multicast |
 | Redirect message                     | gap      | rare; mostly disabled in Linux |
