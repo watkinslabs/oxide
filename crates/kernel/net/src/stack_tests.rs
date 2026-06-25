@@ -256,6 +256,46 @@ fn udp_send_can_stamp_ipv4_tos_and_ttl() {
 }
 
 #[test]
+fn ipv4_forwarding_sysctl_gates_transit_packets() {
+    crate::forwarding::set_ipv4_enabled(false);
+    let stack = NetStack::new();
+    let in_dev = Arc::new(CountDev::new());
+    let out_dev = Arc::new(CountDev::new());
+    let in_id = stack.ifaces.register(in_dev);
+    let out_id = stack.ifaces.register(out_dev.clone());
+    stack.routes.add(RouteEntry {
+        table: crate::policy_rule::RT_TABLE_MAIN,
+        dst: Ipv4Addr::new(198, 51, 100, 0),
+        prefix_len: 24,
+        iface: out_id,
+        gateway: None,
+        src_hint: None,
+    });
+    let mut frame = alloc::vec![0u8; IPV4_HDR_LEN];
+    let mut ip = Ipv4Hdr::build(
+        Ipv4Addr::new(192, 0, 2, 10),
+        Ipv4Addr::new(198, 51, 100, 20),
+        IpProto::Udp,
+        0,
+        55,
+    );
+    ip.ttl = 9;
+    ip.checksum = 0;
+    ip.write_to(&mut frame[..IPV4_HDR_LEN]);
+    ip.checksum = crate::ipv4::ip_checksum(&frame[..IPV4_HDR_LEN]);
+    ip.write_to(&mut frame[..IPV4_HDR_LEN]);
+
+    stack.deliver_rx(in_id, &frame).unwrap();
+    assert_eq!(out_dev.tx.load(Ordering::Relaxed), 0);
+
+    crate::forwarding::set_ipv4_enabled(true);
+    stack.deliver_rx(in_id, &frame).unwrap();
+    crate::forwarding::set_ipv4_enabled(false);
+    assert_eq!(out_dev.tx.load(Ordering::Relaxed), 1);
+    assert_eq!(out_dev.ttl0.load(Ordering::Relaxed), 8);
+}
+
+#[test]
 fn ipv4_l4_send_fragments_to_iface_mtu() {
     let stack = NetStack::new();
     let eth = Arc::new(CountDev::with_mtu(68));
