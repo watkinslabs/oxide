@@ -22,6 +22,7 @@ extern crate alloc;
 pub mod rtnetlink;
 pub mod genetlink;
 pub mod mcast;
+pub mod sock_diag;
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -363,6 +364,10 @@ impl NetlinkSocket {
             }
             (proto::NETLINK_GENERIC, _) => genetlink::handle(msg),
             (proto::NETLINK_NETFILTER, _) => invoke_netfilter(msg),
+            (proto::NETLINK_SOCK_DIAG, sock_diag::SOCK_DIAG_BY_FAMILY)
+            | (proto::NETLINK_SOCK_DIAG, sock_diag::TCPDIAG_GETSOCK) => {
+                sock_diag::handle(hdr, msg)
+            }
             _ => {
                 // A request with NLM_F_ACK expects an NLMSG_ERROR ack, not
                 // NLMSG_DONE (which terminates a dump). Without this an

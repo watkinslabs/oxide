@@ -184,7 +184,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | TCP_INFO struct                      | done     | F188 |
 | Per-conn stats counters              | partial  | retx_q + ka_count tracked; rx/tx byte counters TBD |
 | /proc/net/tcp + /proc/net/udp        | gap      | |
-| ss / netlink-sock-diag               | gap      | |
+| ss / netlink-sock-diag               | partial  | NETLINK_SOCK_DIAG inet_diag TCP/UDP dumps wired; extensions TBD |
 | eBPF / XDP / TC                      | n/a      | huge subsystem, real Linux distros work without it |
 
 ## 12. Out of v1 scope (per docs/03)
@@ -206,10 +206,9 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
    docker, X server all need it on stream sockets.
 3. **IPv6 fragmentation** (in + out) — mirror of F195 for v6.
 4. **IPv4 outbound fragmentation** — close the symmetry with F195.
-5. **AF_NETLINK sock_diag** — needed for `ss` / monitoring agents.
-6. **IPv6 route table** — flat lo/first-non-lo heuristic suffices
+5. **IPv6 route table** — flat lo/first-non-lo heuristic suffices
    until we have a second v6-capable iface.
-7. **SLAAC (RS + RA)** — autoconf for v6 networks without DHCPv6.
-8. **MLD** — required for v6 multicast groups (mostly host LL).
+6. **SLAAC (RS + RA)** — autoconf for v6 networks without DHCPv6.
+7. **MLD** — required for v6 multicast groups (mostly host LL).
 
 Items beyond #10 are tuning/perf or rare-app territory.
