@@ -7,6 +7,7 @@
    utmpname() path. Volatile parts (pid in wait3, the temp suffix) are NOT
    printed — only stable shape is. */
 #define _GNU_SOURCE
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -26,6 +27,8 @@
 #define TGT  "/tmp/oxide_procmisc_dir/target"
 #define UTPATH "/tmp/oxide_procmisc_utmp"
 
+extern int __bsd_getpgrp(int);
+
 static void child_handler(int status, void *arg){
     printf("on_exit status=%d arg=%ld\n", status, (long)(intptr_t)arg);
     fflush(stdout);
@@ -41,6 +44,17 @@ int main(void){
     char *cd = get_current_dir_name();
     printf("getcwd_name=%s\n", cd ? cd : "NULL");
     free(cd);
+
+    /* ---- legacy BSD getpgrp(pid) entry point ---- */
+    errno = 0;
+    int b0 = __bsd_getpgrp(0);
+    printf("bsd_getpgrp0_eq=%d errno=%d\n", b0 == getpgrp(), errno);
+    errno = 0;
+    int bp = __bsd_getpgrp(getpid());
+    printf("bsd_getpgrppid_pos=%d errno=%d\n", bp > 0, errno);
+    errno = 0;
+    int bn = __bsd_getpgrp(-1);
+    printf("bsd_getpgrpneg=%d errno=%d\n", bn, errno);
 
     /* ---- canonicalize_file_name on a fresh symlink ---- */
     int fd = open(TGT, O_CREAT|O_WRONLY, 0644); if (fd >= 0) close(fd);
