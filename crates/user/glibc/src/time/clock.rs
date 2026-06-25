@@ -32,6 +32,12 @@ pub unsafe extern "C" fn clock_gettime(clk: i32, ts: *mut timespec) -> i32 {
     // SAFETY: ts is a valid timespec out-param per clock_gettime(2).
     ret_isize(unsafe { sys2(nr::CLOCK_GETTIME, clk as usize, ts as usize) }) as i32
 }
+// # C: int __clock_gettime(clockid_t clk, struct timespec *ts)
+#[no_mangle]
+pub unsafe extern "C" fn __clock_gettime(clk: i32, ts: *mut timespec) -> i32 {
+    // SAFETY: __clock_gettime has the same timespec out-param contract as clock_gettime.
+    unsafe { clock_gettime(clk, ts) }
+}
 // # C: int clock_getres(clockid_t clk, struct timespec *res)
 #[no_mangle]
 pub unsafe extern "C" fn clock_getres(clk: i32, res: *mut timespec) -> i32 {

@@ -45,6 +45,12 @@ mod imp {
         // SAFETY: forwards the C strtok_r contract unchanged.
         unsafe { strtok_r_impl(s, delim, save) }
     }
+    // # C: char *__strtok_r(char *s, const char *delim, char **saveptr)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strtok_r(s: *mut u8, delim: *const u8, save: *mut *mut u8) -> *mut u8 {
+        // SAFETY: __strtok_r has the same tokenization contract as strtok_r.
+        unsafe { strtok_r(s, delim, save) }
+    }
     // # C: char *strtok(char *s, const char *delim)
     #[no_mangle]
     pub unsafe extern "C" fn strtok(s: *mut u8, delim: *const u8) -> *mut u8 {
