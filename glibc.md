@@ -137,6 +137,10 @@ endmntent, getdelim, getpid/getpgid/getpagesize/getrlimit/gettimeofday,
 duplocale/freelocale, narrow `_l` ctype, wide `_l` ctype, and wide case
 conversion aliases exported over existing implementations. Verified by ABI
 export audit, regression suite, spec-lint, and both freestanding arch builds.
+Also DONE: ISO C scanf compatibility aliases (F631): narrow and wide
+`__isoc23_*scanf`/`__isoc99_*scanf` stream, stdin, string, and `va_list`
+entry points exported over the existing scanf engines. Verified by ABI export
+audit, regression suite, spec-lint, and both freestanding arch builds.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
