@@ -411,6 +411,10 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   x86_64 freestanding build, `spec-lint`, `git diff --check`, `xtask
   glibc-test` 197/197, ABI audit for the 5 exported symbols, and aarch64
   freestanding build.
+- **F646 DONE:** legacy BSD process-group compatibility entry point
+  `__bsd_getpgrp`, forwarding to `getpgid(pid)`. Verification: x86_64
+  freestanding build, `spec-lint`, `git diff --check`, `xtask glibc-test`
+  197/197, ABI audit for the exported symbol, and aarch64 freestanding build.
 - Re-audit (docs/59 §9 / state.md recipe) for stragglers after each batch.
 
 ## 3. DEFERRED ABI WORK: long double `*l` + `_Float128`/`_Float32x`/`_Float64x`

@@ -77,6 +77,12 @@ pub unsafe extern "C" fn __getpgid(pid: i32) -> i32 {
     // SAFETY: __getpgid has the same scalar pid contract as getpgid.
     unsafe { getpgid(pid) }
 }
+// # C: pid_t __bsd_getpgrp(pid_t)
+#[no_mangle]
+pub unsafe extern "C" fn __bsd_getpgrp(pid: i32) -> i32 {
+    // SAFETY: legacy BSD entry point is exactly getpgid(pid) on glibc.
+    unsafe { getpgid(pid) }
+}
 // # C: pid_t getpgrp(void) — POSIX getpgid(0)
 #[no_mangle]
 pub unsafe extern "C" fn getpgrp() -> i32 {
