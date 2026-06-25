@@ -43,12 +43,14 @@ pub use unix_sock::{
 pub mod route;
 pub mod route6;
 pub mod policy_rule;
+pub mod forwarding;
 pub mod iface_addr;
 pub mod netfilter_hook;
 pub mod bpf_filter;
 pub mod mcast_filter;
 pub mod stack;
 pub mod stack_binddev;
+pub mod stack_forward;
 pub mod stack_diag;
 pub use stack::{NetStack, UdpRxQueue};
 pub use route::{RouteEntry, RouteTable};

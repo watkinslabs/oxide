@@ -25,6 +25,43 @@ pub struct SysctlInode {
     val: Spinlock<Vec<u8>, TaskListClass>,
 }
 
+pub struct IpForwardInode {
+    ino: Ino,
+}
+
+impl IpForwardInode {
+    /// New `/proc/sys/net/ipv4/ip_forward` inode. # C: O(1)
+    pub fn new() -> alloc::sync::Arc<Self> {
+        alloc::sync::Arc::new(Self {
+            ino: NEXT_INO.fetch_add(1, Ordering::Relaxed),
+        })
+    }
+}
+
+impl Inode for IpForwardInode {
+    fn ino(&self) -> Ino { self.ino }
+    fn file_type(&self) -> FileType { FileType::Regular }
+    fn size(&self) -> u64 { 2 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let body = if net::forwarding::ipv4_enabled() { b"1\n" } else { b"0\n" };
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body[off..off + n]);
+        Ok(n)
+    }
+    fn write(&self, off: u64, src: &[u8]) -> KResult<usize> {
+        if off == 0 {
+            let Some(enabled) = net::forwarding::parse_bool_sysctl(src) else {
+                return Err(VfsError::Einval);
+            };
+            net::forwarding::set_ipv4_enabled(enabled);
+        }
+        Ok(src.len())
+    }
+}
+
 impl SysctlInode {
     /// New writable sysctl seeded with `default`.
     /// # C: O(len default)
