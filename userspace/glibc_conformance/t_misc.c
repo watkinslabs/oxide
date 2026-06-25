@@ -12,6 +12,8 @@
 #include <fmtmsg.h>
 #include <sys/timex.h>
 
+extern FILE *__setmntent(const char *, const char *);
+
 int main(void){
     /* 1. addmntent escaping round-trip through getmntent. */
     char mtmpl[] = "/tmp/t_misc_mtab.XXXXXX";
@@ -33,6 +35,11 @@ int main(void){
     printf("hasmntopt rw=%d nope=%d\n",
            hasmntopt(r, "rw") != NULL, hasmntopt(r, "nope") != NULL);
     fclose(mf);
+
+    FILE *amf = __setmntent(mtmpl, "r");
+    struct mntent *mr = getmntent(amf);
+    printf("setmntent_alias=%d dir=%s\n", amf != NULL, mr ? mr->mnt_dir : "NULL");
+    endmntent(amf);
     unlink(mtmpl);
 
     /* 2. adjtimex read-only (modes=0): success + tick in a sane fixed band.
