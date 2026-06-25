@@ -428,6 +428,7 @@ pub(crate) fn build_newaddr6_reply(
     addr: [u8; 16],
     prefixlen: u8,
     scope: u8,
+    cacheinfo: IfaCacheInfo,
     multi: bool,
 ) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::with_capacity(96);
@@ -447,7 +448,7 @@ pub(crate) fn build_newaddr6_reply(
     put_nlattr_str(&mut body, ifa::IFA_LABEL, label);
     put_nlattr_u32(&mut body, ifa::IFA_FLAGS, flags);
     let mut ci = [0u8; IfaCacheInfo::SIZE];
-    IfaCacheInfo::PERMANENT.write_to(&mut ci);
+    cacheinfo.write_to(&mut ci);
     put_nlattr(&mut body, ifa::IFA_CACHEINFO, &ci);
 
     let total = Nlmsghdr::SIZE + body.len();
@@ -474,9 +475,6 @@ pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
     let ifaces = ifaces_snapshot();
     for row in addr_snapshot_ns(net::netdev::current_net_ns()).iter() {
-        // Only addresses on an iface in the caller's netns (ifaces is already
-        // ns-filtered); a row whose ifindex isn't present here belongs to
-        // another namespace and is skipped.
         let name = match ifaces.iter().find(|(id, _, _, _, _, _)| *id == row.ifindex) {
             Some((_, n, _, _, _, _)) => n.as_str(),
             None => continue,
@@ -490,17 +488,19 @@ pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
         reply.extend_from_slice(&one);
     }
     #[cfg(target_os = "oxide-kernel")]
-    for (iface, addr) in net::sock::stack().v6_addr_snapshot() {
+    for (iface, row) in net::sock::stack().v6_addr_snapshot() {
         let name = match ifaces.iter().find(|(id, _, _, _, _, _)| *id == iface.raw()) {
             Some((_, n, _, _, _, _)) => n.as_str(),
             None => continue,
         };
+        let addr = row.addr;
         let scope = if addr.is_loopback() { RT_SCOPE_HOST }
                     else if addr.is_link_local() { RT_SCOPE_LINK }
                     else { RT_SCOPE_UNIVERSE };
+        let cacheinfo = IfaCacheInfo { preferred: row.preferred, valid: row.valid, cstamp: 0, tstamp: 0 };
         reply.extend_from_slice(&build_newaddr6_reply(
             req.nlmsg_seq, req.nlmsg_pid,
-            iface.raw() as i32, name, addr.0, 128, scope, /*multi=*/true,
+            iface.raw() as i32, name, addr.0, row.prefixlen, scope, cacheinfo, /*multi=*/true,
         ));
     }
     reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));

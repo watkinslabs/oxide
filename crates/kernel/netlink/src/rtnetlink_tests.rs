@@ -264,14 +264,17 @@
     #[test]
     fn build_newaddr6_reply_well_formed() {
         let addr = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
-        let bytes = build_newaddr6_reply(1, 42, 2, "eth0", addr, 128, RT_SCOPE_UNIVERSE, true);
+        let ci = IfaCacheInfo { preferred: 1800, valid: 3600, cstamp: 0, tstamp: 0 };
+        let bytes = build_newaddr6_reply(1, 42, 2, "eth0", addr, 64, RT_SCOPE_UNIVERSE, ci, true);
         assert_eq!(u16::from_ne_bytes([bytes[4], bytes[5]]), RTM_NEWADDR);
         assert_eq!(bytes[Nlmsghdr::SIZE], AF_INET6);
-        assert_eq!(bytes[Nlmsghdr::SIZE + 1], 128);
+        assert_eq!(bytes[Nlmsghdr::SIZE + 1], 64);
         assert_eq!(bytes[Nlmsghdr::SIZE + 2], net::iface_addr::IFA_F_PERMANENT as u8);
         let attrs = &bytes[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
         assert_eq!(find_attr(attrs, ifa::IFA_LOCAL).expect("IFA_LOCAL"), &addr);
-        assert!(find_attr(attrs, ifa::IFA_CACHEINFO).is_some());
+        let got_ci = find_attr(attrs, ifa::IFA_CACHEINFO).expect("IFA_CACHEINFO");
+        assert_eq!(u32::from_ne_bytes(got_ci[0..4].try_into().unwrap()), 1800);
+        assert_eq!(u32::from_ne_bytes(got_ci[4..8].try_into().unwrap()), 3600);
     }
 
     #[test]
