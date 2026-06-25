@@ -2,7 +2,7 @@
 // exact glibc layout, size-asserted vs the libc crate) + freestanding syscall
 // wrappers. x86_64/aarch64 both use individual socket syscalls (not socketcall).
 #![allow(clippy::upper_case_acronyms)]
-use core::ffi::{c_char, c_void};
+use core::ffi::c_void;
 
 pub const AF_UNIX: u16 = 1;
 pub const AF_INET: u16 = 2;
@@ -74,6 +74,7 @@ const _: () = assert!(core::mem::size_of::<iovec>() == 16);
 mod exports {
     use super::*;
     use core::cell::UnsafeCell;
+    use core::ffi::c_char;
     use crate::arch::syscall::{sys1, sys3, sys4, sys5, sys6};
     use crate::internal::errno::ret_isize;
     use crate::internal::nr;

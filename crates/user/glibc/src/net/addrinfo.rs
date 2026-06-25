@@ -1,11 +1,12 @@
 // addrinfo — getaddrinfo/getnameinfo (docs/59§6 G13). Numeric + localhost
-// resolution (hosted-testable, no DNS): a node parsed by inet_pton, or
-// "localhost"/NULL → loopback. /etc/hosts parsing + a stub DNS resolver (UDP
-// to the /etc/resolv.conf nameserver) are a follow-up. The address builder is
-// pure + hosted-tested; getaddrinfo (which malloc's the result chain) is the
+// resolution (hosted-testable, no DNS): a node parsed by inet_pton,
+// /etc/hosts, or "localhost"/NULL → loopback. A stub DNS resolver (UDP to the
+// /etc/resolv.conf nameserver) is a follow-up. The address builder is pure +
+// hosted-tested; getaddrinfo (which malloc's the result chain) is the
 // freestanding C export.
 #![allow(clippy::upper_case_acronyms)]
 use super::inet;
+use super::netdb;
 use super::socket::{AF_INET, AF_INET6};
 
 pub const AI_PASSIVE: i32 = 1;
@@ -91,6 +92,39 @@ pub(crate) fn fill_sockaddr(node: &[u8], port: u16, want: i32) -> Option<(i32, [
     None
 }
 
+fn fill_sockaddr_from_host(h: &netdb::HostVal, port: u16, want: i32) -> Option<(i32, [u8; 28], u32)> {
+    if want != 0 && h.addrtype != want { return None; }
+    let mut b = [0u8; 28];
+    if h.addrtype == AF_INET as i32 && h.addrlen == 4 {
+        b[0..2].copy_from_slice(&AF_INET.to_le_bytes());
+        b[2..4].copy_from_slice(&port.to_be_bytes());
+        b[4..8].copy_from_slice(&h.addr[..4]);
+        return Some((AF_INET as i32, b, 16));
+    }
+    if h.addrtype == AF_INET6 as i32 && h.addrlen == 16 {
+        b[0..2].copy_from_slice(&AF_INET6.to_le_bytes());
+        b[2..4].copy_from_slice(&port.to_be_bytes());
+        b[8..24].copy_from_slice(&h.addr[..16]);
+        return Some((AF_INET6 as i32, b, 28));
+    }
+    None
+}
+
+/// # C: /etc/hosts bytes + name/service → sockaddr_in/in6 bytes
+pub(crate) fn fill_sockaddr_from_hosts(
+    hosts: &[u8],
+    node: &[u8],
+    port: u16,
+    want: i32,
+) -> Option<(i32, [u8; 28], u32)> {
+    if node.is_empty() { return None; }
+    let text = core::str::from_utf8(hosts).ok()?;
+    text.lines()
+        .filter_map(netdb::parse_host_line)
+        .filter(|h| h.name.as_bytes() == node || h.aliases.iter().any(|a| a.as_bytes() == node))
+        .find_map(|h| fill_sockaddr_from_host(&h, port, want))
+}
+
 #[repr(C)]
 pub struct addrinfo {
     pub ai_flags: i32,
@@ -119,6 +153,7 @@ const _: () = assert!(core::mem::size_of::<gaicb>() == 56);
 #[cfg(feature = "freestanding")]
 mod exports {
     use super::*;
+    use crate::nss::shared::read_file;
     use crate::malloc::heap;
     use crate::string::len::strlen_impl;
 
@@ -139,10 +174,19 @@ mod exports {
             let socktype = if hints.is_null() { 0 } else { (*hints).ai_socktype };
             let port = match parse_port(slice_or_empty(service)) { Some(p) => p, None => return EAI_SERVICE };
             let n = slice_or_empty(node);
-            // non-numeric, non-localhost host without DNS is unresolvable here.
             let (fam, bytes, len) = match fill_sockaddr(n, port, want) {
                 Some(t) => t,
-                None => return EAI_NONAME,
+                None => {
+                    if flags & AI_NUMERICHOST != 0 {
+                        return EAI_NONAME;
+                    }
+                    match read_file(b"/etc/hosts\0")
+                        .and_then(|hosts| fill_sockaddr_from_hosts(&hosts, n, port, want))
+                    {
+                        Some(t) => t,
+                        None => return EAI_NONAME,
+                    }
+                }
             };
             let _ = flags;
             let sa = heap::malloc(len as usize);
@@ -323,5 +367,30 @@ mod tests {
         assert_eq!([b2[4], b2[5], b2[6], b2[7]], [127, 0, 0, 1]);
         // unresolvable name without DNS
         assert!(fill_sockaddr(b"example.com", 80, 0).is_none());
+    }
+
+    #[test]
+    fn hosts_file_name_and_alias_resolution() {
+        let hosts = b"\
+            # comment\n\
+            192.0.2.5 testhost testalias\n\
+            192.0.2.6 dual\n\
+            2001:db8::6 dual\n\
+            2001:db8::9 v6host\n";
+        let (fam, b, len) = fill_sockaddr_from_hosts(hosts, b"testalias", 8080, 0).unwrap();
+        assert_eq!(fam, AF_INET as i32);
+        assert_eq!(len, 16);
+        assert_eq!([b[2], b[3]], 8080u16.to_be_bytes());
+        assert_eq!([b[4], b[5], b[6], b[7]], [192, 0, 2, 5]);
+
+        let (fam, b, len) = fill_sockaddr_from_hosts(hosts, b"v6host", 53, AF_INET6 as i32).unwrap();
+        assert_eq!(fam, AF_INET6 as i32);
+        assert_eq!(len, 28);
+        assert_eq!(b[8..24], [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
+        assert!(fill_sockaddr_from_hosts(hosts, b"v6host", 53, AF_INET as i32).is_none());
+
+        let (fam, b, _) = fill_sockaddr_from_hosts(hosts, b"dual", 53, AF_INET6 as i32).unwrap();
+        assert_eq!(fam, AF_INET6 as i32);
+        assert_eq!(b[8..24], [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6]);
     }
 }
