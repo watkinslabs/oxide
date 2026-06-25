@@ -5,6 +5,7 @@
 
 ## Resolved
 
+- RTM_GETLINK did not emit IFLA_STATS64, so rtnetlink consumers could not read interface counters from link dumps. Fixed by exporting `rtnl_link_stats64` from the existing NetDev counters.
 - IPv4 forwarding dropped transit packets with expired TTL or missing routes silently. Fixed by emitting ICMP Time Exceeded or Destination Unreachable back through the ingress interface.
 - IPv4 primary-address state was split between SIOCSIFADDR and RTM_NEWADDR. Fixed by moving primary IPv4 address ownership into `net::iface_addr`, with ioctl and rtnetlink both writing the same per-interface state.
 - IPv6 addresses were not exposed through RTM_GETADDR. Fixed by dumping the stack's configured IPv6 addresses as AF_INET6 RTM_NEWADDR rows.

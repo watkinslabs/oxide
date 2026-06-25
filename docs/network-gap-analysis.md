@@ -116,7 +116,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | IPv6 route table                     | done     | longest-prefix lookup mirrors v4 |
 | ECMP multipath                       | partial  | equal-cost duplicate IPv4 routes selected by stable destination hash; RTA_MULTIPATH import/export wired for IPv4 route dumps |
 | Policy routing / `ip rule`           | partial  | GETRULE plus NEWRULE/DELRULE custom rule storage; IPv4 route lookup applies rule table selection |
-| Routing socket (NETLINK_ROUTE)       | partial  | GETLINK/GETADDR/GETROUTE/GETRULE + namespace-scoped addr/route/rule mutation; IPv4 and IPv6 GETADDR emit cacheinfo/flags and SLAAC lifetimes |
+| Routing socket (NETLINK_ROUTE)       | partial  | GETLINK emits carrier/state plus stats64; GETADDR/GETROUTE/GETRULE + namespace-scoped addr/route/rule mutation; IPv4 and IPv6 GETADDR emit cacheinfo/flags and SLAAC lifetimes |
 | IP forwarding (sysctl net.ipv4.ip_forward) | partial | sysctl-backed IPv4 host/router mode with FORWARD/POST_ROUTING traversal and ICMP errors for TTL/no-route forwarded drops |
 
 ## 7. ARP / neighbor table
