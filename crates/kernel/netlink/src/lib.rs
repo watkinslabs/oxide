@@ -20,6 +20,7 @@
 extern crate alloc;
 
 pub mod rtnetlink;
+mod rtnetlink_lookup;
 pub mod rtnetlink_rule;
 pub mod genetlink;
 pub mod mcast;
@@ -349,7 +350,7 @@ impl NetlinkSocket {
                 rtnetlink::handle_deladdr(hdr, msg)
             }
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETROUTE) => {
-                rtnetlink::handle_getroute(hdr)
+                rtnetlink::handle_getroute(hdr, msg)
             }
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETRULE) => {
                 rtnetlink_rule::handle_getrule(hdr, msg)
