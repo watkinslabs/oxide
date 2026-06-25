@@ -7,6 +7,26 @@ use sync::{Spinlock, Socket as SockLockClass};
 
 use crate::{Ipv4Addr, NetIfaceId};
 
+pub const IFA_F_PERMANENT: u32 = 0x80;
+pub const INFINITY_LIFE_TIME: u32 = u32::MAX;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Ipv4AddrCacheInfo {
+    pub preferred: u32,
+    pub valid:     u32,
+    pub cstamp:    u32,
+    pub tstamp:    u32,
+}
+
+impl Ipv4AddrCacheInfo {
+    pub const PERMANENT: Self = Self {
+        preferred: INFINITY_LIFE_TIME,
+        valid:     INFINITY_LIFE_TIME,
+        cstamp:    0,
+        tstamp:    0,
+    };
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Ipv4IfaceAddr {
     pub ns:        u64,
@@ -15,6 +35,8 @@ pub struct Ipv4IfaceAddr {
     pub prefixlen: u8,
     pub mask:      u32,
     pub scope:     u8,
+    pub flags:     u32,
+    pub cacheinfo: Ipv4AddrCacheInfo,
 }
 
 static IPV4_ADDRS: Spinlock<Vec<Ipv4IfaceAddr>, SockLockClass> = Spinlock::new(Vec::new());
@@ -72,6 +94,8 @@ pub fn set_primary_addr(ns: u64, iface: NetIfaceId, addr: Ipv4Addr, scope: u8) {
                 prefixlen: 0,
                 mask: 0,
                 scope,
+                flags: IFA_F_PERMANENT,
+                cacheinfo: Ipv4AddrCacheInfo::PERMANENT,
             });
         }
     }
@@ -94,11 +118,26 @@ pub fn set_primary_mask(ns: u64, iface: NetIfaceId, mask: u32) {
         prefixlen: prefix_from_mask(mask),
         mask,
         scope: 0,
+        flags: IFA_F_PERMANENT,
+        cacheinfo: Ipv4AddrCacheInfo::PERMANENT,
     });
 }
 
 /// Set/replace from an rtnetlink prefix. # C: O(N)
 pub fn set_prefix(ns: u64, iface: NetIfaceId, addr: Ipv4Addr, prefixlen: u8, scope: u8) {
+    set_prefix_meta(ns, iface, addr, prefixlen, scope, IFA_F_PERMANENT, Ipv4AddrCacheInfo::PERMANENT);
+}
+
+/// Set/replace from an rtnetlink prefix with Linux address metadata. # C: O(N)
+pub fn set_prefix_meta(
+    ns: u64,
+    iface: NetIfaceId,
+    addr: Ipv4Addr,
+    prefixlen: u8,
+    scope: u8,
+    flags: u32,
+    cacheinfo: Ipv4AddrCacheInfo,
+) {
     insert(Ipv4IfaceAddr {
         ns,
         iface,
@@ -106,6 +145,8 @@ pub fn set_prefix(ns: u64, iface: NetIfaceId, addr: Ipv4Addr, prefixlen: u8, sco
         prefixlen: prefixlen.min(32),
         mask: mask_from_prefix(prefixlen),
         scope,
+        flags,
+        cacheinfo,
     });
     notify_addr_change(iface, addr);
 }

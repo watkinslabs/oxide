@@ -1,5 +1,17 @@
     use super::*;
 
+    fn find_attr(attrs: &[u8], needle: u16) -> Option<&[u8]> {
+        let mut off = 0;
+        while off + 4 <= attrs.len() {
+            let len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
+            let ty = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
+            if len < 4 || off + len > attrs.len() { break; }
+            if ty == needle { return Some(&attrs[off + 4..off + len]); }
+            off += nlmsg_align(len);
+        }
+        None
+    }
+
     #[test]
     fn rtm_constants_match_linux() {
         assert_eq!(RTM_NEWLINK,  16);
@@ -105,6 +117,8 @@
         addr_insert(IfaceAddr {
             ns: 0, ifindex: 9999, family: AF_INET,
             addr: [10, 9, 9, 9], prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
+            flags: net::iface_addr::IFA_F_PERMANENT,
+            cacheinfo: IfaCacheInfo::PERMANENT,
         });
         let after_insert = addr_snapshot().len();
         assert_eq!(after_insert, before + 1);
@@ -118,6 +132,8 @@
         let row = IfaceAddr {
             ns: 0, ifindex: 9998, family: AF_INET,
             addr: [10, 9, 9, 8], prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
+            flags: net::iface_addr::IFA_F_PERMANENT,
+            cacheinfo: IfaCacheInfo::PERMANENT,
         };
         let before = addr_snapshot().len();
         addr_insert(row);
@@ -132,6 +148,8 @@
         let row = |ns| IfaceAddr {
             ns, ifindex: 9997, family: AF_INET,
             addr: [10, 9, 9, 7], prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
+            flags: net::iface_addr::IFA_F_PERMANENT,
+            cacheinfo: IfaCacheInfo::PERMANENT,
         };
         let n0 = addr_snapshot_ns(880).len();
         let n1 = addr_snapshot_ns(881).len();
@@ -225,7 +243,8 @@
     #[test]
     fn build_newaddr_reply_well_formed() {
         let bytes = build_newaddr_reply(
-            1, 42, 2, "eth0", [10, 0, 2, 15], 24, RT_SCOPE_UNIVERSE, true,
+            1, 42, 2, "eth0", [10, 0, 2, 15], 24, RT_SCOPE_UNIVERSE,
+            net::iface_addr::IFA_F_PERMANENT, IfaCacheInfo::PERMANENT, true,
         );
         // Header nlmsg_type == RTM_NEWADDR
         let ty = u16::from_ne_bytes([bytes[4], bytes[5]]);
@@ -233,7 +252,13 @@
         // ifaddrmsg right after the 16-byte header
         assert_eq!(bytes[Nlmsghdr::SIZE], AF_INET);
         assert_eq!(bytes[Nlmsghdr::SIZE + 1], 24); // prefixlen
+        assert_eq!(bytes[Nlmsghdr::SIZE + 2], net::iface_addr::IFA_F_PERMANENT as u8);
         assert_eq!(bytes[Nlmsghdr::SIZE + 3], RT_SCOPE_UNIVERSE);
+        assert!(find_attr(&bytes[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..], ifa::IFA_FLAGS).is_some());
+        let ci = find_attr(&bytes[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..], ifa::IFA_CACHEINFO)
+            .expect("IFA_CACHEINFO");
+        assert_eq!(u32::from_ne_bytes(ci[0..4].try_into().unwrap()), u32::MAX);
+        assert_eq!(u32::from_ne_bytes(ci[4..8].try_into().unwrap()), u32::MAX);
     }
 
     #[test]

@@ -11,87 +11,12 @@ use alloc::vec::Vec;
 use crate::{flags, msg, nlmsg_align, Nlmsghdr};
 use sync::{Spinlock, Socket as SockLockClass};
 
-/// One entry in the kernel's iface→address table.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct IfaceAddr {
-    pub ns:        u64,
-    pub ifindex:   u32,
-    pub family:    u8,   // AF_INET (v1 IPv6 ride a follow-up)
-    pub addr:      [u8; 4],
-    pub prefixlen: u8,
-    pub scope:     u8,
-}
-
-fn addr_to_net(row: IfaceAddr) -> net::iface_addr::Ipv4IfaceAddr {
-    net::iface_addr::Ipv4IfaceAddr {
-        ns: row.ns,
-        iface: net::NetIfaceId::from_raw(row.ifindex),
-        addr: net::Ipv4Addr::from_u32(u32::from_be_bytes(row.addr)),
-        prefixlen: row.prefixlen,
-        mask: if row.prefixlen == 0 { 0 } else { !0u32 << (32 - row.prefixlen.min(32)) },
-        scope: row.scope,
-    }
-}
-
-fn addr_from_net(row: net::iface_addr::Ipv4IfaceAddr) -> IfaceAddr {
-    IfaceAddr {
-        ns: row.ns,
-        ifindex: row.iface.raw(),
-        family: AF_INET,
-        addr: row.addr.octets(),
-        prefixlen: row.prefixlen,
-        scope: row.scope,
-    }
-}
-
-/// Insert (or replace, by ns+ifindex+addr+prefixlen) an address row.
-/// Idempotent; same triple twice is one row.
-/// # C: O(N)
-pub fn addr_insert(row: IfaceAddr) {
-    net::iface_addr::insert(addr_to_net(row));
-}
-
-/// Remove rows matching (ns, ifindex, addr, prefixlen). Returns the
-/// number removed. # C: O(N)
-pub fn addr_remove(ns: u64, ifindex: u32, addr: [u8; 4], prefixlen: u8) -> usize {
-    net::iface_addr::remove(
-        ns,
-        net::NetIfaceId::from_raw(ifindex),
-        net::Ipv4Addr::from_u32(u32::from_be_bytes(addr)),
-        prefixlen,
-    )
-}
-
-/// Snapshot of address rows in network namespace `ns`.
-/// # C: O(N)
-pub fn addr_snapshot_ns(ns: u64) -> Vec<IfaceAddr> {
-    net::iface_addr::snapshot_ns(ns).into_iter().map(addr_from_net).collect()
-}
-
-/// Full snapshot of all address rows. # C: O(N)
-pub fn addr_snapshot() -> Vec<IfaceAddr> {
-    net::iface_addr::snapshot().into_iter().map(addr_from_net).collect()
-}
-
-/// Boot-time seed of the default v1 addresses. Idempotent — re-
-/// running with the same rows is a no-op. Called from pci_boot
-/// right after the eth0 NetDev registers so `ip addr show` works
-/// before any DHCP client runs.
-/// # C: O(1) — fixed-size insert sequence
-pub fn seed_defaults(eth0_ifindex: Option<u32>, lo_ifindex: Option<u32>) {
-    if let Some(idx) = lo_ifindex {
-        addr_insert(IfaceAddr {
-            ns: 0, ifindex: idx, family: AF_INET,
-            addr: [127, 0, 0, 1], prefixlen: 8, scope: RT_SCOPE_HOST,
-        });
-    }
-    // eth0 boots ADDRESSLESS — the Linux way. systemd-networkd's DHCPv4
-    // client obtains the lease (10.0.2.15/24 + default route via 10.0.2.2 from
-    // QEMU's user-net server) and installs it via RTM_NEWADDR. The former
-    // static-IP seed here was a façade that masked whether DHCP actually
-    // worked; it's gone now that the real client does.
-    let _ = eth0_ifindex;
-}
+#[path = "rtnetlink_addr.rs"]
+mod rtnetlink_addr;
+pub use rtnetlink_addr::{
+    addr_insert, addr_remove, addr_snapshot, addr_snapshot_ns, cache_to_net, seed_defaults,
+    IfaCacheInfo, IfaceAddr,
+};
 
 // ---- Message types -------------------------------------------------------
 
@@ -445,15 +370,15 @@ pub(crate) fn build_newaddr_reply(
     addr: [u8; 4],
     prefixlen: u8,
     scope: u8,
+    flags: u32,
+    cacheinfo: IfaCacheInfo,
     multi: bool,
 ) -> Vec<u8> {
-    let mut body: Vec<u8> = Vec::with_capacity(64);
+    let mut body: Vec<u8> = Vec::with_capacity(96);
     let ifa = Ifaddrmsg {
         ifa_family:    AF_INET,
         ifa_prefixlen: prefixlen,
-        // IFA_F_PERMANENT (0x80): the seeded boot addrs are static, not
-        // lease-bound — without it iproute2 prints them as "dynamic".
-        ifa_flags:     0x80,
+        ifa_flags:     flags as u8,
         ifa_scope:     scope,
         ifa_index:     ifindex as u32,
     };
@@ -472,6 +397,10 @@ pub(crate) fn build_newaddr_reply(
         put_nlattr(&mut body, ifa::IFA_BROADCAST, &bcast);
     }
     put_nlattr_str(&mut body, ifa::IFA_LABEL, label);
+    put_nlattr_u32(&mut body, ifa::IFA_FLAGS, flags);
+    let mut ci = [0u8; IfaCacheInfo::SIZE];
+    cacheinfo.write_to(&mut ci);
+    put_nlattr(&mut body, ifa::IFA_CACHEINFO, &ci);
 
     let total = Nlmsghdr::SIZE + body.len();
     let hdr = Nlmsghdr {
@@ -512,6 +441,7 @@ pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
         let one = build_newaddr_reply(
             req.nlmsg_seq, req.nlmsg_pid,
             row.ifindex as i32, name, row.addr, row.prefixlen, row.scope,
+            row.flags, row.cacheinfo,
             /*multi=*/true,
         );
         reply.extend_from_slice(&one);
@@ -520,13 +450,19 @@ pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
     reply
 }
 
-/// Parse the nlattr stream that follows an ifaddrmsg, looking for
-/// the four addresses we care about: IFA_LOCAL, IFA_ADDRESS,
-/// IFA_BROADCAST, IFA_LABEL. Returns IFA_LOCAL or IFA_ADDRESS as
-/// the canonical addr.
-/// # C: O(N attrs)
-fn parse_newaddr_attrs(attrs: &[u8]) -> Option<[u8; 4]> {
+#[derive(Copy, Clone)]
+struct NewAddrAttrs {
+    addr:      [u8; 4],
+    flags:     Option<u32>,
+    cacheinfo: Option<IfaCacheInfo>,
+}
+
+/// Parse address attrs from RTM_NEWADDR/DELADDR. # C: O(N attrs)
+fn parse_newaddr_attrs(attrs: &[u8]) -> Option<NewAddrAttrs> {
     let mut off = 0;
+    let mut addr = None;
+    let mut flags = None;
+    let mut cacheinfo = None;
     while off + 4 <= attrs.len() {
         let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
         let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
@@ -535,11 +471,20 @@ fn parse_newaddr_attrs(attrs: &[u8]) -> Option<[u8; 4]> {
         if (nla_type == ifa::IFA_LOCAL || nla_type == ifa::IFA_ADDRESS)
             && payload.len() == 4
         {
-            return Some([payload[0], payload[1], payload[2], payload[3]]);
+            addr = Some([payload[0], payload[1], payload[2], payload[3]]);
+        } else if nla_type == ifa::IFA_FLAGS && payload.len() >= 4 {
+            flags = Some(u32::from_ne_bytes(payload[0..4].try_into().unwrap()));
+        } else if nla_type == ifa::IFA_CACHEINFO && payload.len() >= IfaCacheInfo::SIZE {
+            cacheinfo = Some(IfaCacheInfo {
+                preferred: u32::from_ne_bytes(payload[0..4].try_into().unwrap()),
+                valid:     u32::from_ne_bytes(payload[4..8].try_into().unwrap()),
+                cstamp:    u32::from_ne_bytes(payload[8..12].try_into().unwrap()),
+                tstamp:    u32::from_ne_bytes(payload[12..16].try_into().unwrap()),
+            });
         }
         off += nlmsg_align(nla_len);
     }
-    None
+    addr.map(|addr| NewAddrAttrs { addr, flags, cacheinfo })
 }
 
 /// Build a NLMSG_ERROR reply (16 B nlmsghdr + 4 B errno + the
@@ -579,6 +524,7 @@ pub fn handle_newaddr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     }
     let family    = full_msg[ifa_off];
     let prefixlen = full_msg[ifa_off + 1];
+    let ifa_flags = full_msg[ifa_off + 2] as u32;
     let scope     = full_msg[ifa_off + 3];
     let ifindex   = u32::from_ne_bytes([
         full_msg[ifa_off + 4], full_msg[ifa_off + 5],
@@ -588,17 +534,23 @@ pub fn handle_newaddr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         return nlmsg_ack(req, -97 /* EAFNOSUPPORT */);
     }
     let attrs = &full_msg[ifa_off + Ifaddrmsg::SIZE..];
-    let addr = match parse_newaddr_attrs(attrs) {
+    let parsed = match parse_newaddr_attrs(attrs) {
         Some(a) => a,
         None    => return nlmsg_ack(req, -22 /* EINVAL */),
     };
+    let addr = parsed.addr;
+    let flags = parsed.flags.unwrap_or_else(|| {
+        if parsed.cacheinfo.is_some() { ifa_flags } else { ifa_flags | net::iface_addr::IFA_F_PERMANENT }
+    });
     let ns = net::netdev::current_net_ns();
-    net::iface_addr::set_prefix(
+    net::iface_addr::set_prefix_meta(
         ns,
         net::NetIfaceId::from_raw(ifindex),
         net::Ipv4Addr::from_u32(u32::from_be_bytes(addr)),
         prefixlen,
         scope,
+        flags,
+        cache_to_net(parsed.cacheinfo.unwrap_or(IfaCacheInfo::PERMANENT)),
     );
     crate::mcast::notify_addr(false, ifindex, addr, prefixlen, scope);
     nlmsg_ack(req, 0)
@@ -620,7 +572,7 @@ pub fn handle_deladdr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let addr = match parse_newaddr_attrs(attrs) {
         Some(a) => a,
         None    => return nlmsg_ack(req, -22),
-    };
+    }.addr;
     let n = addr_remove(net::netdev::current_net_ns(), ifindex, addr, prefixlen);
     if n > 0 { crate::mcast::notify_addr(true, ifindex, addr, prefixlen, 0); }
     nlmsg_ack(req, if n > 0 { 0 } else { -2 /* ENOENT */ })
