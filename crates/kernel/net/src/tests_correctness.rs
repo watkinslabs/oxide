@@ -319,6 +319,25 @@ fn f180c_ns_for_unowned_addr_silent() {
     assert!(lo.rx_pop().is_none(), "NS for unowned addr must not reply");
 }
 
+#[test]
+fn ipv6_router_solicitation_emits_to_all_routers() {
+    use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+    use crate::ndp::{IPV6_ALL_ROUTERS, NDP_RS, NDP_RS_FIXED};
+    let stack = NetStack::new();
+    let (id, lo) = stack.register_loopback();
+
+    stack.send_router_solicitation(id, Ipv6Addr::ANY).unwrap();
+
+    let pkt = lo.rx_pop().expect("RS should be transmitted");
+    let hdr = Ipv6Hdr::parse(pkt.data()).unwrap();
+    assert_eq!(hdr.src, Ipv6Addr::ANY);
+    assert_eq!(hdr.dst, IPV6_ALL_ROUTERS);
+    assert_eq!(hdr.next_header, IpProto::Icmpv6 as u8);
+    let body = &pkt.data()[IPV6_HDR_LEN..];
+    assert_eq!(body.len(), NDP_RS_FIXED);
+    assert_eq!(body[0], NDP_RS);
+}
+
 // ----- F180b: TCP over IPv6 -----------------------------------------
 
 #[test]
