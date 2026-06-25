@@ -405,6 +405,12 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   and small-buffer paths. Verification: x86_64 freestanding build,
   `spec-lint`, `git diff --check`, `xtask glibc-test` 196/196, ABI audit for
   the 2 exported symbols, and aarch64 freestanding build.
+- **F645 DONE:** fortify checked open-family entry points `__open_2`,
+  `__open64_2`, `__openat_2`, `__openat64_2`, and `__mq_open_2`; `mq_open`
+  now strips the leading slash before the kernel syscall like glibc. Verification:
+  x86_64 freestanding build, `spec-lint`, `git diff --check`, `xtask
+  glibc-test` 197/197, ABI audit for the 5 exported symbols, and aarch64
+  freestanding build.
 - Re-audit (docs/59 §9 / state.md recipe) for stragglers after each batch.
 
 ## 3. DEFERRED ABI WORK: long double `*l` + `_Float128`/`_Float32x`/`_Float64x`

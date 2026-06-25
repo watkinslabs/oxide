@@ -16,17 +16,47 @@ pub use imp::*;
 #[cfg(feature = "freestanding")]
 mod imp {
     use super::*;
-    use crate::rt::Timespec;
     use crate::arch::syscall::{sys1, sys2, sys3, sys4, sys5};
     use crate::internal::errno::ret_isize;
     use crate::internal::nr;
+    use crate::rt::Timespec;
+
+    const O_CREAT: i32 = 0o100;
+
+    unsafe extern "C" {
+        fn __fortify_fail(msg: *const u8) -> !;
+    }
+
+    unsafe fn kernel_mq_name(name: *const u8) -> *const u8 {
+        // SAFETY: caller supplies a NUL-terminated POSIX message-queue name.
+        if unsafe { *name } == b'/' {
+            // SAFETY: the byte after a leading slash is within the same C string.
+            unsafe { name.add(1) }
+        } else {
+            name
+        }
+    }
 
     // # C: mqd_t mq_open(const char *name, int oflag, ... [mode_t, struct mq_attr *])
     #[no_mangle]
     pub unsafe extern "C" fn mq_open(name: *const u8, oflag: i32, mode: u32, attr: *const mq_attr) -> i32 {
         // SAFETY: name is a C string; mode/attr are only consumed by the kernel
         // when O_CREAT is set (extra varargs registers, ABI-compatible).
+        let name = unsafe { kernel_mq_name(name) };
+        // SAFETY: name now follows the mq_open syscall convention; scalar
+        // flags/mode and optional attr pointer are kernel-validated.
         ret_isize(unsafe { sys4(nr::MQ_OPEN, name as usize, oflag as usize, mode as usize, attr as usize) }) as i32
+    }
+
+    // # C: mqd_t __mq_open_2(const char *name, int oflag)
+    #[no_mangle]
+    pub unsafe extern "C" fn __mq_open_2(name: *const u8, oflag: i32) -> i32 {
+        if oflag & O_CREAT != 0 {
+            // SAFETY: __fortify_fail is noreturn and accepts a static C string.
+            unsafe { __fortify_fail(b"invalid mq_open call\0".as_ptr()) }
+        }
+        // SAFETY: checked variant has the same name contract as mq_open.
+        unsafe { mq_open(name, oflag, 0, core::ptr::null()) }
     }
 
     // # C: int mq_close(mqd_t mqdes)

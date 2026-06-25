@@ -20,10 +20,19 @@ pub const O_TRUNC: i32 = 0o1000;
 pub const O_APPEND: i32 = 0o2000;
 pub const O_DIRECTORY: i32 = 0o200000;
 pub const O_CLOEXEC: i32 = 0o2000000;
+const O_TMPFILE: i32 = 0o20200000;
 // lseek(2) whence.
 pub const SEEK_SET: i32 = 0;
 pub const SEEK_CUR: i32 = 1;
 pub const SEEK_END: i32 = 2;
+
+unsafe extern "C" {
+    fn __fortify_fail(msg: *const u8) -> !;
+}
+
+fn open_needs_mode(flags: i32) -> bool {
+    flags & O_CREAT != 0 || flags & O_TMPFILE == O_TMPFILE
+}
 
 // # C: ssize_t write(int fd, const void *buf, size_t n)
 #[no_mangle]
@@ -73,6 +82,24 @@ pub unsafe extern "C" fn openat(dirfd: i32, path: *const u8, flags: i32, mode: u
     ret_isize(unsafe { sys4(nr::OPENAT, dirfd as usize, path as usize, flags as usize, mode as usize) }) as i32
 }
 
+// # C: int __openat_2(int dirfd, const char *path, int flags)
+#[no_mangle]
+pub unsafe extern "C" fn __openat_2(dirfd: i32, path: *const u8, flags: i32) -> i32 {
+    if open_needs_mode(flags) {
+        // SAFETY: __fortify_fail is noreturn and accepts a static C string.
+        unsafe { __fortify_fail(b"invalid openat call\0".as_ptr()) }
+    }
+    // SAFETY: checked variant has the same path contract as openat.
+    unsafe { openat(dirfd, path, flags, 0) }
+}
+
+// # C: int __openat64_2(int dirfd, const char *path, int flags)
+#[no_mangle]
+pub unsafe extern "C" fn __openat64_2(dirfd: i32, path: *const u8, flags: i32) -> i32 {
+    // SAFETY: LFS checked alias; same args as __openat_2 on LP64.
+    unsafe { __openat_2(dirfd, path, flags) }
+}
+
 // # C: int open(const char *path, int flags, mode_t mode)
 #[no_mangle]
 pub unsafe extern "C" fn open(path: *const u8, flags: i32, mode: u32) -> i32 {
@@ -90,6 +117,24 @@ pub unsafe extern "C" fn __open(path: *const u8, flags: i32, mode: u32) -> i32 {
 pub unsafe extern "C" fn __open_nocancel(path: *const u8, flags: i32, mode: u32) -> i32 {
     // SAFETY: no-cancel alias has the same ABI and path contract as open.
     unsafe { open(path, flags, mode) }
+}
+
+// # C: int __open_2(const char *path, int flags)
+#[no_mangle]
+pub unsafe extern "C" fn __open_2(path: *const u8, flags: i32) -> i32 {
+    if open_needs_mode(flags) {
+        // SAFETY: __fortify_fail is noreturn and accepts a static C string.
+        unsafe { __fortify_fail(b"invalid open call\0".as_ptr()) }
+    }
+    // SAFETY: checked variant has the same path contract as open.
+    unsafe { open(path, flags, 0) }
+}
+
+// # C: int __open64_2(const char *path, int flags)
+#[no_mangle]
+pub unsafe extern "C" fn __open64_2(path: *const u8, flags: i32) -> i32 {
+    // SAFETY: LFS checked alias; same args as __open_2 on LP64.
+    unsafe { __open_2(path, flags) }
 }
 
 // # C: int close(int fd)
