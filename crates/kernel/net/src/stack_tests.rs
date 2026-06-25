@@ -15,6 +15,8 @@ struct CountDev {
     len0: AtomicUsize,
     len1: AtomicUsize,
     len2: AtomicUsize,
+    tos0: AtomicUsize,
+    ttl0: AtomicUsize,
 }
 
 impl CountDev {
@@ -32,6 +34,8 @@ impl CountDev {
             len0: AtomicUsize::new(0),
             len1: AtomicUsize::new(0),
             len2: AtomicUsize::new(0),
+            tos0: AtomicUsize::new(0),
+            ttl0: AtomicUsize::new(0),
         }
     }
 
@@ -45,6 +49,10 @@ impl CountDev {
         id.store(hdr.id as usize, Ordering::Relaxed);
         flags.store(hdr.flags_frag as usize, Ordering::Relaxed);
         len.store(hdr.total_len as usize, Ordering::Relaxed);
+        if idx == 0 {
+            self.tos0.store(hdr.tos as usize, Ordering::Relaxed);
+            self.ttl0.store(hdr.ttl as usize, Ordering::Relaxed);
+        }
     }
 }
 
@@ -182,6 +190,35 @@ fn bound_udp_send_uses_requested_iface() {
     ).unwrap();
     assert_eq!(lo.rx_len(), 0);
     assert_eq!(eth.tx.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn udp_send_can_stamp_ipv4_tos_and_ttl() {
+    let stack = NetStack::new();
+    let eth = Arc::new(CountDev::new());
+    let eth_id = stack.ifaces.register(eth.clone());
+    stack.routes.add(RouteEntry {
+        dst: Ipv4Addr::new(10, 0, 0, 0),
+        prefix_len: 24,
+        iface: eth_id,
+        gateway: None,
+        src_hint: Some(Ipv4Addr::new(10, 0, 0, 1)),
+    });
+
+    stack.send_udp_to_bound_opts(
+        Ipv4Addr::new(10, 0, 0, 1),
+        1234,
+        Ipv4Addr::new(10, 0, 0, 2),
+        4321,
+        b"payload",
+        None,
+        0xb8,
+        37,
+    ).unwrap();
+
+    assert_eq!(eth.tx.load(Ordering::Relaxed), 1);
+    assert_eq!(eth.tos0.load(Ordering::Relaxed), 0xb8);
+    assert_eq!(eth.ttl0.load(Ordering::Relaxed), 37);
 }
 
 #[test]

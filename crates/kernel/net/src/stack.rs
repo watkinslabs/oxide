@@ -689,12 +689,23 @@ impl NetStack {
         iface: Arc<dyn NetDev>, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
         l4: &[u8], tos: u8, id: u16) -> NetResult<()>
     {
+        self.xmit_ipv4_l4_on_iface_opts(
+            iface_id, iface, src, dst, proto, l4, tos, crate::ipv4::IPV4_DEFAULT_TTL, id,
+        )
+    }
+
+    /// Emit one IPv4 L4 payload with explicit TOS and TTL on a selected iface,
+    /// fragmenting when `IP header + payload` exceeds the iface MTU. # C: O(payload)
+    pub(crate) fn xmit_ipv4_l4_on_iface_opts(&self, iface_id: NetIfaceId,
+        iface: Arc<dyn NetDev>, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
+        l4: &[u8], tos: u8, ttl: u8, id: u16) -> NetResult<()>
+    {
         let mtu = iface.mtu() as usize;
         if l4.len() + IPV4_HDR_LEN <= mtu {
             let total = IPV4_HDR_LEN + l4.len();
             let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
             p.put(l4.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(l4);
-            crate::ipv4::push_ipv4_header_tos(&mut p, src, dst, proto, id, tos)
+            crate::ipv4::push_ipv4_header_tos_ttl(&mut p, src, dst, proto, id, tos, ttl)
                 .map_err(|_| NetError::Enobufs)?;
             p.proto = crate::addr::eth_p::IPV4;
             p.iface = Some(iface_id);
@@ -713,7 +724,7 @@ impl NetStack {
             let total = IPV4_HDR_LEN + take;
             let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
             p.put(take).map_err(|_| NetError::Enobufs)?.copy_from_slice(&l4[off..off + take]);
-            crate::ipv4::push_ipv4_header_tos_frag(&mut p, src, dst, proto, id, tos, flags_frag)
+            crate::ipv4::push_ipv4_header_tos_ttl_frag(&mut p, src, dst, proto, id, tos, ttl, flags_frag)
                 .map_err(|_| NetError::Enobufs)?;
             p.proto = crate::addr::eth_p::IPV4;
             p.iface = Some(iface_id);

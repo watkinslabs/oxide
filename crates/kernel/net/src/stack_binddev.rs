@@ -4,7 +4,7 @@ use crate::addr::{IpAddr, IpProto, Ipv4Addr, Ipv6Addr, NetIfaceId};
 use crate::ipv4::IPV4_HDR_LEN;
 use crate::ipv6::{push_ipv6_header, IPV6_HDR_LEN};
 use crate::netdev::{NetDev, NetError, NetResult};
-use crate::netfilter_hook::{nf_output, NFPROTO_IPV4, NFPROTO_IPV6};
+use crate::netfilter_hook::{nf_output, NFPROTO_IPV6};
 use crate::pkt::Pkt;
 use crate::stack::{NetStack, TcpEntry, TcpKey};
 use crate::tcp_conn::{Endpoint, TcpConn};
@@ -37,6 +37,15 @@ impl NetStack {
         dst_ip: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>)
         -> NetResult<()>
     {
+        self.send_udp_to_bound_opts(src_ip, src_port, dst_ip, dst_port, payload, bound, 0, crate::ipv4::IPV4_DEFAULT_TTL)
+    }
+
+    /// Build + transmit UDP/IPv4 with explicit TOS/TTL. # C: O(payload + N)
+    pub fn send_udp_to_bound_opts(&self, src_ip: Ipv4Addr, src_port: u16,
+        dst_ip: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
+        tos: u8, ttl: u8)
+        -> NetResult<()>
+    {
         let (iface_id, iface) = self.route_v4_iface(dst_ip, bound)?;
         let total = crate::udp::UDP_HDR_LEN + payload.len();
         let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
@@ -44,7 +53,7 @@ impl NetStack {
         let slot = p.put(udp_total).map_err(|_| NetError::Enobufs)?;
         crate::udp::UdpHdr::build_into(src_port, dst_port, src_ip, dst_ip, payload, slot);
         let id = self.next_ipv4_id();
-        self.xmit_ipv4_l4_on_iface(iface_id, iface, src_ip, dst_ip, IpProto::Udp, p.data(), 0, id)
+        self.xmit_ipv4_l4_on_iface_opts(iface_id, iface, src_ip, dst_ip, IpProto::Udp, p.data(), tos, ttl, id)
     }
 
     /// Build + transmit UDP/IPv6, optionally pinned to an iface. # C: O(payload + N)
