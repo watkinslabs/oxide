@@ -454,6 +454,49 @@ fn ipv6_fragments_reassemble_to_udp_socket() {
 }
 
 #[test]
+fn ipv6_router_advertisement_installs_slaac_addr_and_routes() {
+    use crate::addr::{IpProto, Ipv6Addr, MacAddr};
+    use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+
+    let stack = NetStack::new();
+    let (id, _lo) = stack.register_loopback();
+    let router = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
+    let all_nodes = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,1]);
+    let prefix = Ipv6Addr::from_segments([0x2001,0xdb8,0x77,0,0,0,0,0]);
+    let router_mac = MacAddr([0x02,0xaa,0xbb,0xcc,0xdd,0xee]);
+    let ra = crate::ndp::RouterAdvertisement::build_one_prefix(
+        router,
+        all_nodes,
+        router_mac,
+        1800,
+        prefix,
+        64,
+        crate::ndp::NDP_PIO_FLAG_ONLINK | crate::ndp::NDP_PIO_FLAG_AUTO,
+    );
+    let mut frame = alloc::vec![0u8; IPV6_HDR_LEN + ra.len()];
+    let hdr = Ipv6Hdr::build(router, all_nodes, IpProto::Icmpv6, ra.len() as u16);
+    hdr.write_to(&mut frame[..IPV6_HDR_LEN]);
+    frame[IPV6_HDR_LEN..].copy_from_slice(&ra);
+
+    stack.deliver_rx_ipv6(id, &frame).unwrap();
+
+    let expected = Ipv6Addr::from_segments([0x2001,0xdb8,0x77,0,0x0200,0x00ff,0xfe00,0x0000]);
+    assert!(stack.v6_addr_owned_by(id, expected), "SLAAC address should be bound");
+    assert_eq!(stack.ndp.lookup(router), Some(router_mac));
+
+    let onlink = stack.routes6.lookup(expected).expect("on-link prefix route");
+    assert_eq!(onlink.iface, id);
+    assert_eq!(onlink.prefix_len, 64);
+    assert_eq!(onlink.src_hint, Some(expected));
+
+    let outside = Ipv6Addr::from_segments([0x2001,0xdb8,0x99,0,0,0,0,1]);
+    let default = stack.routes6.lookup(outside).expect("default route from RA");
+    assert_eq!(default.iface, id);
+    assert_eq!(default.prefix_len, 0);
+    assert_eq!(default.gateway, Some(router));
+}
+
+#[test]
 fn f180_ipv6_bad_version_rejected() {
     let stack = NetStack::new();
     let (id, _lo) = stack.register_loopback();

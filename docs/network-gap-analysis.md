@@ -103,7 +103,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | NDP NS responder (own addr)          | done     | F180c |
 | NDP NA cache populate (inbound)      | done     | F180c |
 | NDP NS outbound on cache-miss        | partial  | virtio-net emits NS on miss; packet queue/replay TBD |
-| Router Solicitation / RA             | gap      | SLAAC config from router |
+| Router Solicitation / RA             | partial  | RA prefix processing installs SLAAC /64 addr + default route; outbound RS TBD |
 | MLD (multicast listener discovery)   | gap      | with multicast |
 | Redirect message                     | gap      | rare; mostly disabled in Linux |
 
@@ -165,7 +165,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | Fragmentation extension header       | done     | outbound emission + inbound reassembly for fragmentable payloads |
 | HBH / Routing / DestOpts ext headers | gap      | |
 | Flow label                           | gap      | |
-| SLAAC (RA processing)                | gap      | with NDP RS/RA |
+| SLAAC (RA processing)                | partial  | inbound RA Prefix Info autoconfigures /64 and default route; RS emission TBD |
 
 ## 10. IP layer
 
@@ -204,7 +204,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 1. **NETLINK_ROUTE completeness** (RTM_GETLINK / NEWADDR / GETROUTE)
    — every userspace network tool reads these (`ip`, `networkd`,
    `NetworkManager`). High impact for "real distro programs work."
-2. **SLAAC (RS + RA)** — autoconf for v6 networks without DHCPv6.
+2. **Router Solicitation emission** — actively ask routers for RAs instead of waiting passively.
 3. **MLD** — required for v6 multicast groups (mostly host LL).
 
 Items beyond #10 are tuning/perf or rare-app territory.
