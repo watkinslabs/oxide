@@ -313,6 +313,7 @@ mod exports {
     // # C: extern int signgam;
     #[no_mangle]
     static signgam: Sg = Sg(UnsafeCell::new(1));
+    core::arch::global_asm!(".globl __signgam", ".set __signgam, signgam");
 
     // # C: double tgamma(double)
     #[no_mangle] pub extern "C" fn tgamma(x: f64) -> f64 { super::tgamma(x) }

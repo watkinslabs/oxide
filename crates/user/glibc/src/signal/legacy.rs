@@ -148,6 +148,21 @@ pub unsafe extern "C" fn __sigpause(mask: i32) -> i32 {
     unsafe { sigpause(mask) }
 }
 
+// # C: int __xpg_sigpause(int sig)
+#[no_mangle]
+pub unsafe extern "C" fn __xpg_sigpause(sig: i32) -> i32 {
+    // SAFETY: reads the current process mask, removes `sig`, then suspends.
+    unsafe {
+        let mut set = sigset_t { __val: [0; 16] };
+        if sigprocmask(SIG_BLOCK, core::ptr::null(), &mut set) < 0 { return -1; }
+        if sig >= 1 && sig <= 64 {
+            let n = (sig - 1) as usize;
+            set.__val[n / 64] &= !(1u64 << (n % 64));
+        }
+        sigsuspend(&set)
+    }
+}
+
 const SIG_UNBLOCK: i32 = 1;
 const SIG_HOLD: usize = 2;
 
