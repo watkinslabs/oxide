@@ -1,7 +1,6 @@
 // 055 getsockopt — one syscall, one file (docs/53 §0). Moved verbatim from net.rs.
 #![cfg(target_os = "oxide-kernel")]
 use syscall::SyscallArgs;
-use syscall::errno::Errno;
 use hal::USER_VA_END;
 use net::sock::SockKind;
 use crate::net_common::{peercred_for_fd, socket_from_fd};
@@ -66,6 +65,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     // Read-back of options stored via setsockopt.
     use core::sync::atomic::Ordering;
     const IPPROTO_TCP: u64 = 6;
+    const TCP_KEEPIDLE: u64 = 4;
+    const TCP_KEEPINTVL: u64 = 5;
+    const TCP_KEEPCNT: u64 = 6;
     let fd = args.a0;
     let sock = socket_from_fd(fd);
     let i32_back = |val: i32| -> i64 {
@@ -89,6 +91,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (SOL_SOCKET, 12) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
             (SOL_SOCKET, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
             (IPPROTO_TCP, 1) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
+            (IPPROTO_TCP, TCP_KEEPIDLE) => return i32_back(s.opts.tcp_keepidle_s.load(Ordering::Acquire)),
+            (IPPROTO_TCP, TCP_KEEPINTVL) => return i32_back(s.opts.tcp_keepintvl_s.load(Ordering::Acquire)),
+            (IPPROTO_TCP, TCP_KEEPCNT) => return i32_back(s.opts.tcp_keepcnt.load(Ordering::Acquire)),
             // F188: TCP_INFO returns the Linux tcp_info struct.
             (IPPROTO_TCP, 11) => return crate::tcp_info::write_tcp_info(&s, optval, optlen_p),
             (SOL_SOCKET, 4)  => {

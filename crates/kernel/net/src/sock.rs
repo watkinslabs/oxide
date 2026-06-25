@@ -8,6 +8,8 @@ use alloc::vec::Vec;
 use crate::{NetStack, LoopbackDev, Ipv4Addr, NetIfaceId, NetError};
 use crate::stack::{TcpEntry, TcpListenEntry};
 use sync::{Spinlock, Socket as SockLockClass};
+use crate::sock_opts::{apply_tcp_keepalive_opts, inherit_tcp_keepalive_opts};
+pub use crate::sock_opts::SenderCreds;
 
 /// Process-global stack; AF_INET ops take a `&'static` via `stack()`.
 static STACK: NetStack = NetStack::new();
@@ -222,6 +224,10 @@ pub struct SockOpts {
     pub mark:      core::sync::atomic::AtomicI32,
     /// IPPROTO_TCP / TCP_NODELAY round-trip cell.
     pub tcp_nodelay: core::sync::atomic::AtomicI32,
+    /// IPPROTO_TCP keepalive tunables, in seconds, matching Linux's ABI.
+    pub tcp_keepidle_s: core::sync::atomic::AtomicI32,
+    pub tcp_keepintvl_s: core::sync::atomic::AtomicI32,
+    pub tcp_keepcnt: core::sync::atomic::AtomicI32,
     /// SO_PASSCRED: when set, recvmsg on this AF_UNIX socket delivers an
     /// SCM_CREDENTIALS cmsg with the sender's {pid,uid,gid} (dbus auth).
     pub passcred: core::sync::atomic::AtomicI32,
@@ -230,7 +236,6 @@ pub struct SockOpts {
 /// F164: default SO_SNDBUF/SO_RCVBUF bytes (Linux tcp_wmem[1] = 16K).
 pub const TCP_SNDBUF_DEFAULT: i32 = 16384;
 pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
-
 pub use crate::sock_io::compute_deadline_ns;
 
 impl Default for SockOpts {
@@ -250,6 +255,9 @@ impl Default for SockOpts {
             priority:    AtomicI32::new(0),
             mark:        AtomicI32::new(0),
             tcp_nodelay: AtomicI32::new(0),
+            tcp_keepidle_s: AtomicI32::new(crate::sock_opts::TCP_KEEPIDLE_DEFAULT_S),
+            tcp_keepintvl_s: AtomicI32::new(crate::sock_opts::TCP_KEEPINTVL_DEFAULT_S),
+            tcp_keepcnt:    AtomicI32::new(crate::sock_opts::TCP_KEEPCNT_DEFAULT),
             passcred: AtomicI32::new(0),
         }
     }
@@ -817,6 +825,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             // F181a: bind owning fd's subscribers so deliver_tcp can
             // wake epoll without broadcasting.
             entry.register_poll_subs(&sock.poll_subs);
+            apply_tcp_keepalive_opts(sock, &entry);
             *sock.kind.lock() = SockKind::TcpConn(entry.clone());
             *sock.peer.lock() = Some((dst_ip, port));
             // F159: park on entry.rx_waiters for the SYN-ACK. The
@@ -899,7 +908,9 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
     let new_sock = alloc::sync::Arc::new(
         if listener_fam == AF_INET6 { InetSocket::new_tcp6() } else { InetSocket::new_tcp() }
     );
+    inherit_tcp_keepalive_opts(&new_sock, sock);
     entry.register_poll_subs(&new_sock.poll_subs);
+    apply_tcp_keepalive_opts(&new_sock, &entry);
     *new_sock.kind.lock() = SockKind::TcpConn(entry);
     // F180b: pin the peer slot for the family the listener was opened
     // in. v6 listeners only ever see v6 conns (deliver path keys by
@@ -911,15 +922,6 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
     Ok(Accepted { new_sock, peer: peer_v4 })
 }
 
-
-/// Sender credentials for AF_UNIX SCM_CREDENTIALS. Caller (shim
-/// shim) fetches from `sched::current()` and passes here.
-#[derive(Copy, Clone, Debug, Default)]
-pub struct SenderCreds {
-    pub pid: u32,
-    pub uid: u32,
-    pub gid: u32,
-}
 
 /// `sendto`/`send` per `sendto(2)`. work fn — ABI shim
 /// supplies the payload as a slice, the optional destination as a
@@ -995,5 +997,3 @@ pub fn sendto(
 // for the 1000-line cap; re-exported here so `net::sock::recvfrom`
 // and `net::sock::Received` call sites stay unchanged.
 pub use crate::sock_io::{recvfrom, Received};
-
-

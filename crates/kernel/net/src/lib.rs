@@ -47,6 +47,8 @@ pub use netdev::{NetDev, NetError, NetResult, IfaceRegistry, IfaceEntry, NetStat
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock;
+#[cfg(target_os = "oxide-kernel")]
+pub mod sock_opts;
 pub mod vsock;
 pub mod vsock_socket;
 #[cfg(target_os = "oxide-kernel")]

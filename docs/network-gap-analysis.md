@@ -39,7 +39,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | SO_LINGER abortive close             | done     | F194 |
 | TCP_INFO getsockopt                  | done     | F188 |
 | TCP over IPv6                        | done     | F180b |
-| TCP_KEEPIDLE/INTVL/CNT setsockopts   | gap      | constants honored, options not yet wired |
+| TCP_KEEPIDLE/INTVL/CNT setsockopts   | done     | socket-level config applied to active and accepted TCP conns |
 | SO_LINGER blocking timeout > 0       | gap      | abortive path done; blocking close in sys_close TBD |
 | TCP_DEFER_ACCEPT                     | gap      | rarely used; defer until app demand |
 | TCP_FASTOPEN (TFO, RFC 7413)         | gap      | cookies + early data; nontrivial |
@@ -144,7 +144,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | IPPROTO_TCP | TCP_NODELAY      | done   | F175 |
 | IPPROTO_TCP | TCP_INFO         | done   | F188 |
 | IPPROTO_TCP | TCP_CORK         | gap    | |
-| IPPROTO_TCP | TCP_KEEPIDLE/INTVL/CNT | gap | constants honored, options not parsed |
+| IPPROTO_TCP | TCP_KEEPIDLE/INTVL/CNT | done | setsockopt/getsockopt round-trip, applied to keepalive scheduler |
 | IPPROTO_IP | IP_TTL            | gap    | hard-coded default |
 | IPPROTO_IP | IP_TOS            | gap    | ECN goes via TCP path |
 | IPPROTO_IP | IP_PKTINFO        | gap    | cmsg writeback on recv |
@@ -205,15 +205,13 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 2. **SCM_RIGHTS over SOCK_STREAM** — systemd socket-activation,
    docker, X server all need it on stream sockets.
 3. **IPv6 fragmentation** (in + out) — mirror of F195 for v6.
-4. **TCP_KEEPIDLE/INTVL/CNT setsockopts** — small, frees apps to
-   tune keepalive without sysctl.
-5. **SO_BINDTODEVICE** — needed for any multi-NIC deployment that
+4. **SO_BINDTODEVICE** — needed for any multi-NIC deployment that
    wants per-iface socket pinning.
-6. **IPv4 outbound fragmentation** — close the symmetry with F195.
-7. **AF_NETLINK sock_diag** — needed for `ss` / monitoring agents.
-8. **IPv6 route table** — flat lo/first-non-lo heuristic suffices
+5. **IPv4 outbound fragmentation** — close the symmetry with F195.
+6. **AF_NETLINK sock_diag** — needed for `ss` / monitoring agents.
+7. **IPv6 route table** — flat lo/first-non-lo heuristic suffices
    until we have a second v6-capable iface.
-9. **SLAAC (RS + RA)** — autoconf for v6 networks without DHCPv6.
-10. **MLD** — required for v6 multicast groups (mostly host LL).
+8. **SLAAC (RS + RA)** — autoconf for v6 networks without DHCPv6.
+9. **MLD** — required for v6 multicast groups (mostly host LL).
 
 Items beyond #10 are tuning/perf or rare-app territory.
