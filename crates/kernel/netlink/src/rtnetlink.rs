@@ -22,50 +22,55 @@ pub struct IfaceAddr {
     pub scope:     u8,
 }
 
-/// Process-global iface address table. F92 replaces the previous
-/// hardcoded snapshot in `handle_getaddr` with a real table that
-/// userspace can mutate via RTM_NEWADDR / RTM_DELADDR. Boot seeds
-/// the qemu user-net default so `ip addr show` still works without
-/// a running DHCP client.
-static ADDR_TABLE: Spinlock<Vec<IfaceAddr>, SockLockClass> =
-    Spinlock::new(Vec::new());
+fn addr_to_net(row: IfaceAddr) -> net::iface_addr::Ipv4IfaceAddr {
+    net::iface_addr::Ipv4IfaceAddr {
+        ns: row.ns,
+        iface: net::NetIfaceId::from_raw(row.ifindex),
+        addr: net::Ipv4Addr::from_u32(u32::from_be_bytes(row.addr)),
+        prefixlen: row.prefixlen,
+        mask: if row.prefixlen == 0 { 0 } else { !0u32 << (32 - row.prefixlen.min(32)) },
+        scope: row.scope,
+    }
+}
+
+fn addr_from_net(row: net::iface_addr::Ipv4IfaceAddr) -> IfaceAddr {
+    IfaceAddr {
+        ns: row.ns,
+        ifindex: row.iface.raw(),
+        family: AF_INET,
+        addr: row.addr.octets(),
+        prefixlen: row.prefixlen,
+        scope: row.scope,
+    }
+}
 
 /// Insert (or replace, by ns+ifindex+addr+prefixlen) an address row.
 /// Idempotent; same triple twice is one row.
-/// # C: O(N) duplicate scan
+/// # C: O(N)
 pub fn addr_insert(row: IfaceAddr) {
-    let mut g = ADDR_TABLE.lock();
-    let dup = g.iter().position(|r|
-        r.ns == row.ns
-        && r.ifindex == row.ifindex
-        && r.addr == row.addr
-        && r.prefixlen == row.prefixlen);
-    if let Some(i) = dup { g[i] = row; }
-    else { g.push(row); }
+    net::iface_addr::insert(addr_to_net(row));
 }
 
 /// Remove rows matching (ns, ifindex, addr, prefixlen). Returns the
 /// number removed. # C: O(N)
 pub fn addr_remove(ns: u64, ifindex: u32, addr: [u8; 4], prefixlen: u8) -> usize {
-    let mut g = ADDR_TABLE.lock();
-    let before = g.len();
-    g.retain(|r|
-        !(r.ns == ns
-          && r.ifindex == ifindex
-          && r.addr == addr
-          && r.prefixlen == prefixlen));
-    before - g.len()
+    net::iface_addr::remove(
+        ns,
+        net::NetIfaceId::from_raw(ifindex),
+        net::Ipv4Addr::from_u32(u32::from_be_bytes(addr)),
+        prefixlen,
+    )
 }
 
 /// Snapshot of address rows in network namespace `ns`.
 /// # C: O(N)
 pub fn addr_snapshot_ns(ns: u64) -> Vec<IfaceAddr> {
-    ADDR_TABLE.lock().iter().filter(|r| r.ns == ns).cloned().collect()
+    net::iface_addr::snapshot_ns(ns).into_iter().map(addr_from_net).collect()
 }
 
 /// Full snapshot of all address rows. # C: O(N)
 pub fn addr_snapshot() -> Vec<IfaceAddr> {
-    ADDR_TABLE.lock().clone()
+    net::iface_addr::snapshot().into_iter().map(addr_from_net).collect()
 }
 
 /// Boot-time seed of the default v1 addresses. Idempotent — re-
@@ -587,9 +592,14 @@ pub fn handle_newaddr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         Some(a) => a,
         None    => return nlmsg_ack(req, -22 /* EINVAL */),
     };
-    addr_insert(IfaceAddr {
-        ns: net::netdev::current_net_ns(), ifindex, family, addr, prefixlen, scope,
-    });
+    let ns = net::netdev::current_net_ns();
+    net::iface_addr::set_prefix(
+        ns,
+        net::NetIfaceId::from_raw(ifindex),
+        net::Ipv4Addr::from_u32(u32::from_be_bytes(addr)),
+        prefixlen,
+        scope,
+    );
     crate::mcast::notify_addr(false, ifindex, addr, prefixlen, scope);
     nlmsg_ack(req, 0)
 }

@@ -654,6 +654,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // F150: install the iface-primary-IP hook so socket_sendto can
         // pick the right outbound src IP for routed (non-loopback) dst.
         net::sock::set_iface_primary_ip_hook(crate::syscalls::siocgif::iface_primary_ip_hook);
+        net::iface_addr::set_addr_change_hook(crate::syscalls::siocgif::ipv4_addr_change_hook);
         modules::registry::init_exports();
         // Install the VFS walk hooks + mount-ns provider + dentry resolver
         // FIRST, so each `register` below wires its dentry-identity mount
