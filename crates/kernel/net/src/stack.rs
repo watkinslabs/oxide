@@ -310,7 +310,9 @@ impl NetStack {
 
     /// F180c: register a v6 addr on `iface`; NS replies. # C: O(log N)
     pub fn add_v6_addr(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) {
-        self.v6_addrs.lock().entry(iface).or_default().push(ip);
+        let mut g = self.v6_addrs.lock();
+        let addrs = g.entry(iface).or_default();
+        if !addrs.iter().any(|a| *a == ip) { addrs.push(ip); }
     }
     /// F180c: is `ip` bound on `iface`? # C: O(N addrs)
     pub fn v6_addr_owned_by(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool {
