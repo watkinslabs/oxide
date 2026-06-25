@@ -222,6 +222,12 @@ pub unsafe extern "C" fn getdelim(lineptr: *mut *mut u8, n: *mut usize, delim: i
         len as isize
     }
 }
+// # C: ssize_t __getdelim(char **lineptr, size_t *n, int delim, FILE *f)
+#[no_mangle]
+pub unsafe extern "C" fn __getdelim(lineptr: *mut *mut u8, n: *mut usize, delim: i32, f: *mut FILE) -> isize {
+    // SAFETY: __getdelim has the same output-buffer/stream contract as getdelim.
+    unsafe { getdelim(lineptr, n, delim, f) }
+}
 // # C: ssize_t getline(char **lineptr, size_t *n, FILE *f)
 #[no_mangle]
 pub unsafe extern "C" fn getline(lineptr: *mut *mut u8, n: *mut usize, f: *mut FILE) -> isize {

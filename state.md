@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **195/195**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F629-glibc-asprintf-internal-alias`. `glibc.md` = live per-cluster TODO. F counter next = **630**, B = **138**, D = **113**
+`F630-glibc-locale-libc-internal-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **631**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -429,6 +429,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
 - **F629 DONE locally:** varargs `__asprintf` compatibility alias added beside
   `asprintf`, sharing the existing `into_alloc` worker directly. Verified by ABI
   export audit, regression suite, spec-lint, and both freestanding arch builds.
+- **F630 DONE locally:** locale/libc internal compatibility aliases added for
+  gettext, mount table close, getdelim, getpid/getpgid/getpagesize/getrlimit/
+  gettimeofday, duplocale/freelocale, narrow `_l` ctype, wide `_l` ctype, and
+  wide case conversion. Verified by ABI export audit, regression suite,
+  spec-lint, and both freestanding arch builds.
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need

@@ -76,6 +76,12 @@ pub unsafe extern "C" fn gettimeofday(tv: *mut timeval, _tz: *mut core::ffi::c_v
         r
     }
 }
+// # C: int __gettimeofday(struct timeval *tv, void *tz)
+#[no_mangle]
+pub unsafe extern "C" fn __gettimeofday(tv: *mut timeval, tz: *mut core::ffi::c_void) -> i32 {
+    // SAFETY: __gettimeofday has the same timeval/timezone pointer contract.
+    unsafe { gettimeofday(tv, tz) }
+}
 // # C: time_t time(time_t *t)
 #[no_mangle]
 pub unsafe extern "C" fn time(t: *mut i64) -> i64 {

@@ -29,6 +29,12 @@ pub unsafe extern "C" fn getrlimit(resource: i32, rlim: *mut Rlimit) -> i32 {
     // SAFETY: getrlimit via prlimit64(0, res, NULL, rlim); rlim is a valid out.
     ret_isize(unsafe { sys4(nr::PRLIMIT64, 0, resource as usize, 0, rlim as usize) }) as i32
 }
+// # C: int __getrlimit(int resource, struct rlimit *rlim)
+#[no_mangle]
+pub unsafe extern "C" fn __getrlimit(resource: i32, rlim: *mut Rlimit) -> i32 {
+    // SAFETY: __getrlimit has the same resource/out-param contract as getrlimit.
+    unsafe { getrlimit(resource, rlim) }
+}
 // # C: int setrlimit(int resource, const struct rlimit *rlim)
 #[no_mangle]
 pub unsafe extern "C" fn setrlimit(resource: i32, rlim: *const Rlimit) -> i32 {
