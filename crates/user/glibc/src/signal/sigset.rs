@@ -62,17 +62,35 @@ mod exports {
         // SAFETY: set is a valid sigset_t the caller owns.
         unsafe { add(&mut (*set).__val, sig) }
     }
+    // # C: int __sigaddset(sigset_t *set, int sig)
+    #[no_mangle]
+    pub unsafe extern "C" fn __sigaddset(set: *mut sigset_t, sig: i32) -> i32 {
+        // SAFETY: internal alias has the same sigset_t mutation contract as sigaddset.
+        unsafe { sigaddset(set, sig) }
+    }
     // # C: int sigdelset(sigset_t *set, int sig)
     #[no_mangle]
     pub unsafe extern "C" fn sigdelset(set: *mut sigset_t, sig: i32) -> i32 {
         // SAFETY: set is a valid sigset_t the caller owns.
         unsafe { del(&mut (*set).__val, sig) }
     }
+    // # C: int __sigdelset(sigset_t *set, int sig)
+    #[no_mangle]
+    pub unsafe extern "C" fn __sigdelset(set: *mut sigset_t, sig: i32) -> i32 {
+        // SAFETY: internal alias has the same sigset_t mutation contract as sigdelset.
+        unsafe { sigdelset(set, sig) }
+    }
     // # C: int sigismember(const sigset_t *set, int sig)
     #[no_mangle]
     pub unsafe extern "C" fn sigismember(set: *const sigset_t, sig: i32) -> i32 {
         // SAFETY: set is a valid sigset_t to read.
         unsafe { ismember(&(*set).__val, sig) }
+    }
+    // # C: int __sigismember(const sigset_t *set, int sig)
+    #[no_mangle]
+    pub unsafe extern "C" fn __sigismember(set: *const sigset_t, sig: i32) -> i32 {
+        // SAFETY: internal alias has the same sigset_t read contract as sigismember.
+        unsafe { sigismember(set, sig) }
     }
     // # C: int sigisemptyset(const sigset_t *set) — GNU: 1 if no signal is set.
     #[no_mangle]

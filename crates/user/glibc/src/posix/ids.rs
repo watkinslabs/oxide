@@ -59,6 +59,12 @@ pub unsafe extern "C" fn setpgid(pid: i32, pgid: i32) -> i32 {
     // SAFETY: setpgid(2) takes scalar ids; no memory is dereferenced.
     ret_isize(unsafe { sys2(nr::SETPGID, pid as usize, pgid as usize) }) as i32
 }
+// # C: int __setpgid(pid_t, pid_t)
+#[no_mangle]
+pub unsafe extern "C" fn __setpgid(pid: i32, pgid: i32) -> i32 {
+    // SAFETY: internal alias has the same scalar pid/pgid contract as setpgid.
+    unsafe { setpgid(pid, pgid) }
+}
 // # C: pid_t getpgid(pid_t)
 #[no_mangle]
 pub unsafe extern "C" fn getpgid(pid: i32) -> i32 {

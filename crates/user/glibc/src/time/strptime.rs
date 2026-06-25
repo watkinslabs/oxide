@@ -182,6 +182,12 @@ mod imp {
         // locale_t does not alter wide time formatting.
         unsafe { wcsftime(s, maxsize, format, t) }
     }
+    // # C: size_t __wcsftime_l(wchar_t *s, size_t max, const wchar_t *fmt, const struct tm *tm, locale_t loc)
+    #[no_mangle]
+    pub unsafe extern "C" fn __wcsftime_l(s: *mut i32, maxsize: usize, format: *const i32, t: *const tm, loc: usize) -> usize {
+        // SAFETY: internal alias has the same output buffer and tm pointer contract as wcsftime_l.
+        unsafe { wcsftime_l(s, maxsize, format, t, loc) }
+    }
 }
 
 #[cfg(test)]

@@ -97,6 +97,12 @@ mod imp {
             }
         }
     }
+    // # C: size_t __mbrtowc(wchar_t *pwc, const char *s, size_t n, mbstate_t *ps)
+    #[no_mangle]
+    pub unsafe extern "C" fn __mbrtowc(pwc: *mut i32, s: *const u8, n: usize, ps: *mut mbstate_t) -> usize {
+        // SAFETY: internal alias has the same multibyte input/output contract as mbrtowc.
+        unsafe { mbrtowc(pwc, s, n, ps) }
+    }
 
     // # C: int mbtowc(wchar_t *pwc, const char *s, size_t n)
     #[no_mangle]
@@ -131,6 +137,12 @@ mod imp {
     pub unsafe extern "C" fn mbrlen(s: *const u8, n: usize, ps: *mut mbstate_t) -> usize {
         // SAFETY: forwards to mbrtowc with a null wc out-param.
         unsafe { mbrtowc(core::ptr::null_mut(), s, n, ps) }
+    }
+    // # C: size_t __mbrlen(const char *s, size_t n, mbstate_t *ps)
+    #[no_mangle]
+    pub unsafe extern "C" fn __mbrlen(s: *const u8, n: usize, ps: *mut mbstate_t) -> usize {
+        // SAFETY: internal alias has the same multibyte input contract as mbrlen.
+        unsafe { mbrlen(s, n, ps) }
     }
 
     // # C: size_t wcrtomb(char *s, wchar_t wc, mbstate_t *ps)

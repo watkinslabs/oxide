@@ -19,6 +19,12 @@ pub unsafe extern "C" fn madvise(addr: *mut u8, len: usize, advice: i32) -> i32 
     // the range against the caller mapping and never writes through addr.
     ret_isize(unsafe { sys3(nr::MADVISE, addr as usize, len, advice as usize) }) as i32
 }
+// # C: int __madvise(void *addr, size_t len, int advice)
+#[no_mangle]
+pub unsafe extern "C" fn __madvise(addr: *mut u8, len: usize, advice: i32) -> i32 {
+    // SAFETY: internal alias has the same scalar range contract as madvise.
+    unsafe { madvise(addr, len, advice) }
+}
 // # C: int posix_madvise(void *addr, size_t len, int advice) — returns errno.
 #[no_mangle]
 pub unsafe extern "C" fn posix_madvise(addr: *mut u8, len: usize, advice: i32) -> i32 {
