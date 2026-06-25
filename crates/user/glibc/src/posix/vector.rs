@@ -76,6 +76,12 @@ pub unsafe extern "C" fn fcntl(fd: i32, cmd: i32, arg: usize) -> i32 {
     // writes; for the int cmds it is a scalar. The kernel validates either.
     ret_isize(unsafe { sys3(nr::FCNTL, fd as usize, cmd as usize, arg) }) as i32
 }
+// # C: int __fcntl(int fd, int cmd, ... /* arg */)
+#[no_mangle]
+pub unsafe extern "C" fn __fcntl(fd: i32, cmd: i32, arg: usize) -> i32 {
+    // SAFETY: __fcntl has the same ABI and arg contract as fcntl.
+    unsafe { fcntl(fd, cmd, arg) }
+}
 // # C: int fcntl64(int fd, int cmd, ...) — LFS alias; identical on LP64.
 #[no_mangle]
 pub unsafe extern "C" fn fcntl64(fd: i32, cmd: i32, arg: usize) -> i32 {
