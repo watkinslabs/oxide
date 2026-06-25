@@ -64,6 +64,71 @@ pub(crate) unsafe fn memmem_impl(h: *const u8, hl: usize, ne: *const u8, nl: usi
     }
 }
 
+pub(crate) unsafe fn strsep_1c_impl(stringp: *mut *mut u8, reject: u8) -> *mut u8 {
+    // SAFETY: legacy glibc inline helper; *stringp is null or a mutable C string.
+    unsafe {
+        let ret = *stringp;
+        if !ret.is_null() {
+            let mut p = ret;
+            while *p != 0 {
+                if *p == reject {
+                    *p = 0;
+                    *stringp = p.add(1);
+                    return ret;
+                }
+                p = p.add(1);
+            }
+        }
+        ret
+    }
+}
+
+pub(crate) unsafe fn strsep_2c_impl(stringp: *mut *mut u8, reject1: u8, reject2: u8) -> *mut u8 {
+    // SAFETY: legacy glibc inline helper; *stringp is null or a mutable C string.
+    unsafe {
+        let ret = *stringp;
+        if !ret.is_null() {
+            let mut p = ret;
+            loop {
+                if *p == 0 {
+                    *stringp = core::ptr::null_mut();
+                    break;
+                }
+                if *p == reject1 || *p == reject2 {
+                    *p = 0;
+                    *stringp = p.add(1);
+                    break;
+                }
+                p = p.add(1);
+            }
+        }
+        ret
+    }
+}
+
+pub(crate) unsafe fn strsep_3c_impl(stringp: *mut *mut u8, reject1: u8, reject2: u8, reject3: u8) -> *mut u8 {
+    // SAFETY: legacy glibc inline helper; *stringp is null or a mutable C string.
+    unsafe {
+        let ret = *stringp;
+        if !ret.is_null() {
+            let mut p = ret;
+            loop {
+                if *p == 0 {
+                    *stringp = core::ptr::null_mut();
+                    break;
+                }
+                if *p == reject1 || *p == reject2 || *p == reject3 {
+                    *p = 0;
+                    *stringp = p.add(1);
+                    break;
+                }
+                p = p.add(1);
+            }
+        }
+        ret
+    }
+}
+
 #[cfg(feature = "freestanding")]
 mod imp {
     use super::*;
@@ -159,6 +224,34 @@ mod imp {
                 p = p.add(1);
             }
         }
+    }
+
+    // # C: char *__strsep_1c(char **stringp, char reject)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strsep_1c(stringp: *mut *mut u8, reject: u8) -> *mut u8 {
+        // SAFETY: forwards the legacy inline helper contract unchanged.
+        unsafe { strsep_1c_impl(stringp, reject) }
+    }
+
+    // # C: char *__strsep_2c(char **stringp, char reject1, char reject2)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strsep_2c(stringp: *mut *mut u8, reject1: u8, reject2: u8) -> *mut u8 {
+        // SAFETY: forwards the legacy inline helper contract unchanged.
+        unsafe { strsep_2c_impl(stringp, reject1, reject2) }
+    }
+
+    // # C: char *__strsep_3c(char **stringp, char reject1, char reject2, char reject3)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strsep_3c(stringp: *mut *mut u8, reject1: u8, reject2: u8, reject3: u8) -> *mut u8 {
+        // SAFETY: forwards the legacy inline helper contract unchanged.
+        unsafe { strsep_3c_impl(stringp, reject1, reject2, reject3) }
+    }
+
+    // # C: char *__strsep_g(char **stringp, const char *delim)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strsep_g(stringp: *mut *mut u8, delim: *const u8) -> *mut u8 {
+        // SAFETY: generic legacy helper has the same string contract as strsep.
+        unsafe { strsep(stringp, delim) }
     }
 }
 
