@@ -223,18 +223,14 @@ pub struct SockOpts {
     pub ipv6_v6only: core::sync::atomic::AtomicI32,
     /// SO_BINDTODEVICE: 0 means no bound egress/ingress interface.
     pub bound_ifindex: core::sync::atomic::AtomicU32,
-    /// IPPROTO_TCP / TCP_NODELAY round-trip cell.
     pub tcp_nodelay: core::sync::atomic::AtomicI32,
-    /// IPPROTO_TCP keepalive tunables, in seconds, matching Linux's ABI.
+    pub tcp_cork: core::sync::atomic::AtomicI32,
     pub tcp_keepidle_s: core::sync::atomic::AtomicI32,
     pub tcp_keepintvl_s: core::sync::atomic::AtomicI32,
     pub tcp_keepcnt: core::sync::atomic::AtomicI32,
-    /// SO_PASSCRED: when set, recvmsg on this AF_UNIX socket delivers an
-    /// SCM_CREDENTIALS cmsg with the sender's {pid,uid,gid} (dbus auth).
     pub passcred: core::sync::atomic::AtomicI32,
 }
 
-/// F164: default SO_SNDBUF/SO_RCVBUF bytes (Linux tcp_wmem[1] = 16K).
 pub const TCP_SNDBUF_DEFAULT: i32 = 16384;
 pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
 pub use crate::sock_io::compute_deadline_ns;
@@ -260,6 +256,7 @@ impl Default for SockOpts {
             ipv6_v6only: AtomicI32::new(0),
             bound_ifindex: AtomicU32::new(0),
             tcp_nodelay: AtomicI32::new(0),
+            tcp_cork:    AtomicI32::new(0),
             tcp_keepidle_s: AtomicI32::new(crate::sock_opts::TCP_KEEPIDLE_DEFAULT_S),
             tcp_keepintvl_s: AtomicI32::new(crate::sock_opts::TCP_KEEPINTVL_DEFAULT_S),
             tcp_keepcnt:    AtomicI32::new(crate::sock_opts::TCP_KEEPCNT_DEFAULT),
@@ -507,7 +504,8 @@ impl vfs::Inode for InetSocket {
                 let timeo = self.opts.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
                 let deadline_ns = compute_deadline_ns(timeo);
                 let nodelay = self.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
-                crate::sock_io::write_tcp_blocking(&entry, buf, cap, deadline_ns, nodelay)
+                let cork = self.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;
+                crate::sock_io::write_tcp_blocking(&entry, buf, cap, deadline_ns, nodelay, cork)
             }
             K::Other => Err(vfs::VfsError::Einval),
         }
@@ -538,7 +536,8 @@ impl vfs::Inode for InetSocket {
                 return Err(vfs::VfsError::Epipe);
             }
             let nodelay = self.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
-            return match stack().tcp_send(&entry, buf, cap, nodelay) {
+            let cork = self.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;
+            return match stack().tcp_send(&entry, buf, cap, nodelay, cork) {
                 Ok(n) => { drain_loopback(); Ok(n) }
                 Err(crate::NetError::Eagain) => Err(vfs::VfsError::Eagain),
                 Err(_) => Err(vfs::VfsError::Eio),
@@ -980,7 +979,8 @@ pub fn sendto(
         let cap = sock.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
             .max(TCP_SNDBUF_DEFAULT) as usize;
         let nodelay = sock.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
-        let n = stack().tcp_send(&entry, payload, cap, nodelay)?;
+        let cork = sock.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let n = stack().tcp_send(&entry, payload, cap, nodelay, cork)?;
         drain_loopback();
         return Ok(n);
     }
