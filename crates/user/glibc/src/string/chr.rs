@@ -183,6 +183,12 @@ mod exports {
         // SAFETY: forwards the GNU strcasestr contract to strcasestr_impl.
         unsafe { strcasestr_impl(hay, needle) }
     }
+    // # C: char *__strcasestr(const char *hay, const char *needle)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strcasestr(hay: *const u8, needle: *const u8) -> *mut u8 {
+        // SAFETY: internal alias has the same string contract as strcasestr.
+        unsafe { strcasestr(hay, needle) }
+    }
     // # C: char *strstr(const char *hay, const char *needle)
     #[no_mangle]
     pub unsafe extern "C" fn strstr(hay: *const u8, needle: *const u8) -> *mut u8 {
