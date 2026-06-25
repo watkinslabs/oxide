@@ -187,11 +187,23 @@ pub unsafe extern "C" fn strtod_l(n: *const c_char, e: *mut *mut c_char, _l: usi
     // SAFETY: delegates to strtod; C-locale numeric parsing is locale-invariant.
     unsafe { strtod(n, e) }
 }
+// # C: double __strtod_l(const char*, char**, locale_t)
+#[no_mangle]
+pub unsafe extern "C" fn __strtod_l(n: *const c_char, e: *mut *mut c_char, l: usize) -> f64 {
+    // SAFETY: internal alias has the same NUL string/endptr/locale contract as strtod_l.
+    unsafe { strtod_l(n, e, l) }
+}
 // # C: float strtof_l(const char*, char**, locale_t)
 #[no_mangle]
 pub unsafe extern "C" fn strtof_l(n: *const c_char, e: *mut *mut c_char, _l: usize) -> f32 {
     // SAFETY: delegates to strtof under the C locale.
     unsafe { strtof(n, e) }
+}
+// # C: float __strtof_l(const char*, char**, locale_t)
+#[no_mangle]
+pub unsafe extern "C" fn __strtof_l(n: *const c_char, e: *mut *mut c_char, l: usize) -> f32 {
+    // SAFETY: internal alias has the same NUL string/endptr/locale contract as strtof_l.
+    unsafe { strtof_l(n, e, l) }
 }
 // # C: _Float32 strtof32_l(const char*, char**, locale_t)
 #[no_mangle]
@@ -211,11 +223,23 @@ pub unsafe extern "C" fn strtol_l(n: *const c_char, e: *mut *mut c_char, b: i32,
     // SAFETY: delegates to strtol under the C locale.
     unsafe { strtol(n, e, b) }
 }
+// # C: long __strtol_l(const char*, char**, int, locale_t)
+#[no_mangle]
+pub unsafe extern "C" fn __strtol_l(n: *const c_char, e: *mut *mut c_char, b: i32, l: usize) -> i64 {
+    // SAFETY: internal alias has the same NUL string/endptr/base/locale contract as strtol_l.
+    unsafe { strtol_l(n, e, b, l) }
+}
 // # C: unsigned long strtoul_l(const char*, char**, int base, locale_t)
 #[no_mangle]
 pub unsafe extern "C" fn strtoul_l(n: *const c_char, e: *mut *mut c_char, b: i32, _l: usize) -> u64 {
     // SAFETY: delegates to strtoul under the C locale.
     unsafe { strtoul(n, e, b) }
+}
+// # C: unsigned long __strtoul_l(const char*, char**, int, locale_t)
+#[no_mangle]
+pub unsafe extern "C" fn __strtoul_l(n: *const c_char, e: *mut *mut c_char, b: i32, l: usize) -> u64 {
+    // SAFETY: internal alias has the same NUL string/endptr/base/locale contract as strtoul_l.
+    unsafe { strtoul_l(n, e, b, l) }
 }
 // # C: long long strtoll_l(const char*, char**, int base, locale_t)
 #[no_mangle]
@@ -223,11 +247,23 @@ pub unsafe extern "C" fn strtoll_l(n: *const c_char, e: *mut *mut c_char, b: i32
     // SAFETY: delegates to strtoll under the C locale.
     unsafe { strtoll(n, e, b) }
 }
+// # C: long long __strtoll_l(const char*, char**, int, locale_t)
+#[no_mangle]
+pub unsafe extern "C" fn __strtoll_l(n: *const c_char, e: *mut *mut c_char, b: i32, l: usize) -> i64 {
+    // SAFETY: internal alias has the same NUL string/endptr/base/locale contract as strtoll_l.
+    unsafe { strtoll_l(n, e, b, l) }
+}
 // # C: unsigned long long strtoull_l(const char*, char**, int base, locale_t)
 #[no_mangle]
 pub unsafe extern "C" fn strtoull_l(n: *const c_char, e: *mut *mut c_char, b: i32, _l: usize) -> u64 {
     // SAFETY: delegates to strtoull under the C locale.
     unsafe { strtoull(n, e, b) }
+}
+// # C: unsigned long long __strtoull_l(const char*, char**, int, locale_t)
+#[no_mangle]
+pub unsafe extern "C" fn __strtoull_l(n: *const c_char, e: *mut *mut c_char, b: i32, l: usize) -> u64 {
+    // SAFETY: internal alias has the same NUL string/endptr/base/locale contract as strtoull_l.
+    unsafe { strtoull_l(n, e, b, l) }
 }
 
 // C23 entry points: modern GCC redirects strtol_l→__isoc23_strtol_l etc. when
@@ -264,11 +300,23 @@ pub unsafe extern "C" fn strcoll_l(a: *const c_char, b: *const c_char, _l: usize
     // SAFETY: C-locale collation == byte order == strcoll.
     unsafe { strcoll(a, b) }
 }
+// # C: int __strcoll_l(const char*, const char*, locale_t)
+#[no_mangle]
+pub unsafe extern "C" fn __strcoll_l(a: *const c_char, b: *const c_char, l: usize) -> i32 {
+    // SAFETY: internal alias has the same string/locale contract as strcoll_l.
+    unsafe { strcoll_l(a, b, l) }
+}
 // # C: size_t strxfrm_l(char*, const char*, size_t, locale_t)
 #[no_mangle]
 pub unsafe extern "C" fn strxfrm_l(d: *mut c_char, s: *const c_char, n: usize, _l: usize) -> usize {
     // SAFETY: C-locale transform == copy == strxfrm.
     unsafe { strxfrm(d, s, n) }
+}
+// # C: size_t __strxfrm_l(char*, const char*, size_t, locale_t)
+#[no_mangle]
+pub unsafe extern "C" fn __strxfrm_l(d: *mut c_char, s: *const c_char, n: usize, l: usize) -> usize {
+    // SAFETY: internal alias has the same destination/source/locale contract as strxfrm_l.
+    unsafe { strxfrm_l(d, s, n, l) }
 }
 // # C: int strcasecmp_l(const char*, const char*, locale_t)
 #[no_mangle]

@@ -118,17 +118,37 @@ cw_alias! {
     // SAFETY: C-locale collation == wcscoll.
     unsafe { wcscoll(a, b) }
 }
+// # C: int __wcscoll_l(const wchar_t*, const wchar_t*, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __wcscoll_l(a: *const i32, b: *const i32, l: usize) -> i32 {
+    // SAFETY: internal alias has the same wide-string/locale contract as wcscoll_l.
+    unsafe { wcscoll_l(a, b, l) }
+}
 #[no_mangle] pub unsafe extern "C" fn wcsxfrm_l(d: *mut i32, s: *const i32, n: usize, _l: usize) -> usize {
     // SAFETY: C-locale transform == wcsxfrm.
     unsafe { wcsxfrm(d, s, n) }
+}
+// # C: size_t __wcsxfrm_l(wchar_t*, const wchar_t*, size_t, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __wcsxfrm_l(d: *mut i32, s: *const i32, n: usize, l: usize) -> usize {
+    // SAFETY: internal alias has the same wide destination/source/locale contract as wcsxfrm_l.
+    unsafe { wcsxfrm_l(d, s, n, l) }
 }
 #[no_mangle] pub unsafe extern "C" fn wcscasecmp_l(a: *const i32, b: *const i32, _l: usize) -> i32 {
     // SAFETY: C-locale case-fold == wcscasecmp.
     unsafe { wcscasecmp(a, b) }
 }
+// # C: int __wcscasecmp_l(const wchar_t*, const wchar_t*, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __wcscasecmp_l(a: *const i32, b: *const i32, l: usize) -> i32 {
+    // SAFETY: internal alias has the same wide-string/locale contract as wcscasecmp_l.
+    unsafe { wcscasecmp_l(a, b, l) }
+}
 #[no_mangle] pub unsafe extern "C" fn wcsncasecmp_l(a: *const i32, b: *const i32, n: usize, _l: usize) -> i32 {
     // SAFETY: C-locale case-fold == wcsncasecmp.
     unsafe { wcsncasecmp(a, b, n) }
+}
+// # C: int __wcsncasecmp_l(const wchar_t*, const wchar_t*, size_t, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __wcsncasecmp_l(a: *const i32, b: *const i32, n: usize, l: usize) -> i32 {
+    // SAFETY: internal alias has the same wide-string length/locale contract as wcsncasecmp_l.
+    unsafe { wcsncasecmp_l(a, b, n, l) }
 }
 
 // --- wide numeric _l (+ C23 __isoc23_ and f32/f64 forms) ---
@@ -136,9 +156,19 @@ cw_alias! {
     // SAFETY: C-locale numeric parse == wcstod.
     unsafe { wcstod(s, e) }
 }
+// # C: double __wcstod_l(const wchar_t*, wchar_t**, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __wcstod_l(s: *const i32, e: *mut *mut i32, l: usize) -> f64 {
+    // SAFETY: internal alias has the same wide string/endptr/locale contract as wcstod_l.
+    unsafe { wcstod_l(s, e, l) }
+}
 #[no_mangle] pub unsafe extern "C" fn wcstof_l(s: *const i32, e: *mut *mut i32, _l: usize) -> f32 {
     // SAFETY: C-locale delegator forwarding to wcstof (locale-invariant).
     unsafe { wcstof(s, e) }
+}
+// # C: float __wcstof_l(const wchar_t*, wchar_t**, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __wcstof_l(s: *const i32, e: *mut *mut i32, l: usize) -> f32 {
+    // SAFETY: internal alias has the same wide string/endptr/locale contract as wcstof_l.
+    unsafe { wcstof_l(s, e, l) }
 }
 #[no_mangle] pub unsafe extern "C" fn wcstof32_l(s: *const i32, e: *mut *mut i32, _l: usize) -> f32 {
     // SAFETY: _Float32 == float; C-locale delegator forwarding to wcstof.
@@ -152,17 +182,37 @@ cw_alias! {
     // SAFETY: C-locale delegator forwarding to wcstol (locale-invariant).
     unsafe { wcstol(s, e, b) }
 }
+// # C: long __wcstol_l(const wchar_t*, wchar_t**, int, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __wcstol_l(s: *const i32, e: *mut *mut i32, b: i32, l: usize) -> i64 {
+    // SAFETY: internal alias has the same wide string/endptr/base/locale contract as wcstol_l.
+    unsafe { wcstol_l(s, e, b, l) }
+}
 #[no_mangle] pub unsafe extern "C" fn wcstoul_l(s: *const i32, e: *mut *mut i32, b: i32, _l: usize) -> u64 {
     // SAFETY: C-locale delegator forwarding to wcstoul (locale-invariant).
     unsafe { wcstoul(s, e, b) }
+}
+// # C: unsigned long __wcstoul_l(const wchar_t*, wchar_t**, int, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __wcstoul_l(s: *const i32, e: *mut *mut i32, b: i32, l: usize) -> u64 {
+    // SAFETY: internal alias has the same wide string/endptr/base/locale contract as wcstoul_l.
+    unsafe { wcstoul_l(s, e, b, l) }
 }
 #[no_mangle] pub unsafe extern "C" fn wcstoll_l(s: *const i32, e: *mut *mut i32, b: i32, _l: usize) -> i64 {
     // SAFETY: C-locale delegator forwarding to wcstoll (locale-invariant).
     unsafe { wcstoll(s, e, b) }
 }
+// # C: long long __wcstoll_l(const wchar_t*, wchar_t**, int, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __wcstoll_l(s: *const i32, e: *mut *mut i32, b: i32, l: usize) -> i64 {
+    // SAFETY: internal alias has the same wide string/endptr/base/locale contract as wcstoll_l.
+    unsafe { wcstoll_l(s, e, b, l) }
+}
 #[no_mangle] pub unsafe extern "C" fn wcstoull_l(s: *const i32, e: *mut *mut i32, b: i32, _l: usize) -> u64 {
     // SAFETY: C-locale delegator forwarding to wcstoull (locale-invariant).
     unsafe { wcstoull(s, e, b) }
+}
+// # C: unsigned long long __wcstoull_l(const wchar_t*, wchar_t**, int, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __wcstoull_l(s: *const i32, e: *mut *mut i32, b: i32, l: usize) -> u64 {
+    // SAFETY: internal alias has the same wide string/endptr/base/locale contract as wcstoull_l.
+    unsafe { wcstoull_l(s, e, b, l) }
 }
 // C23 entry points (modern GCC redirects wcstol_l → __isoc23_wcstol_l).
 #[no_mangle] pub unsafe extern "C" fn __isoc23_wcstol_l(s: *const i32, e: *mut *mut i32, b: i32, l: usize) -> i64 {

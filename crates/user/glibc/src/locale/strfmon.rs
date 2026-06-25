@@ -170,3 +170,10 @@ pub unsafe extern "C" fn strfmon_l(s: *mut u8, max: usize, _loc: *mut c_void, fo
     // SAFETY: same contract as strfmon; loc selects the C locale formatting.
     unsafe { let out = run(format, &mut ap); emit(s, max, &out) }
 }
+
+// # C: ssize_t __strfmon_l(char *s, size_t max, locale_t loc, const char *fmt,...)
+#[no_mangle]
+pub unsafe extern "C" fn __strfmon_l(s: *mut u8, max: usize, _loc: *mut c_void, format: *const u8, mut ap: ...) -> isize {
+    // SAFETY: internal alias has the same output buffer, locale, format, and varargs contract as strfmon_l.
+    unsafe { let out = run(format, &mut ap); emit(s, max, &out) }
+}
