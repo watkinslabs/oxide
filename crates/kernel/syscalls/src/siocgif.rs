@@ -351,6 +351,7 @@ fn siocaddrt(arg: u64) -> i64 {
     let iface_id = match iface_id { Some(i) => i, None => return -(Errno::Enetunreach.as_i32() as i64) };
     net::sock::stack().routes.add(net::route::RouteEntry {
         dst, prefix_len,
+        table: net::policy_rule::RT_TABLE_MAIN,
         iface: iface_id,
         gateway: if gw.as_u32() == 0 { None } else { Some(gw) },
         src_hint: None,

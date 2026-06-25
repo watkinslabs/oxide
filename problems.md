@@ -2,7 +2,6 @@
 
 ## Open
 
-- Policy routing rules are not enforced by the live IPv4 data path yet. RTM_NEWRULE/DELRULE can store and dump custom rules, but packet routing still uses the stack's simple longest-prefix route table without rule-driven table selection.
 
 ## Resolved
 
@@ -10,3 +9,5 @@
 - IPv6 addresses were not exposed through RTM_GETADDR. Fixed by dumping the stack's configured IPv6 addresses as AF_INET6 RTM_NEWADDR rows.
 - IPv6 RTM_GETADDR rows used permanent /128 lifetime metadata. Fixed by retaining IPv6 address prefix length plus SLAAC preferred/valid lifetimes and emitting them in AF_INET6 cacheinfo.
 - IGMPv3/MLDv2 source-list query handling was missing. Fixed by parsing source lists from inbound source-specific queries and reflecting them in matching listener reports.
+- Policy routing rules were not enforced by the live IPv4 data path. Fixed by moving custom rules into the net layer, making IPv4 routes table-aware, and selecting routes by effective rule priority.
+- Legacy SIOCADDRT route insertion was not table-aware after route entries gained table selection. Fixed by inserting ioctl-created routes into the main routing table.

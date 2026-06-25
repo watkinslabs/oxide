@@ -321,6 +321,7 @@ impl NetStack {
         let lo = Arc::new(LoopbackDev::new());
         let id = self.ifaces.register(lo.clone() as Arc<dyn NetDev>);
         self.routes.add(crate::route::RouteEntry {
+            table:      crate::policy_rule::RT_TABLE_LOCAL,
             dst:        Ipv4Addr::new(127, 0, 0, 0),
             prefix_len: 8,
             iface:      id,

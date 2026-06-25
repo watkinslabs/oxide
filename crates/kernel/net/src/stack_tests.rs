@@ -231,6 +231,7 @@ fn udp_send_can_stamp_ipv4_tos_and_ttl() {
     let eth = Arc::new(CountDev::new());
     let eth_id = stack.ifaces.register(eth.clone());
     stack.routes.add(RouteEntry {
+        table: crate::policy_rule::RT_TABLE_MAIN,
         dst: Ipv4Addr::new(10, 0, 0, 0),
         prefix_len: 24,
         iface: eth_id,
@@ -260,6 +261,7 @@ fn ipv4_l4_send_fragments_to_iface_mtu() {
     let eth = Arc::new(CountDev::with_mtu(68));
     let eth_id = stack.ifaces.register(eth.clone());
     stack.routes.add(RouteEntry {
+        table: crate::policy_rule::RT_TABLE_MAIN,
         dst: Ipv4Addr::new(10, 0, 0, 0),
         prefix_len: 24,
         iface: eth_id,
