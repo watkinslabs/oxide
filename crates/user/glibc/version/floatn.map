@@ -28,6 +28,7 @@
     __backtrace_symbols_fd;
     __b64_ntop;
     __b64_pton;
+    __bsd_getpgrp;
     __bzero;
     __close;
     __close_nocancel;
