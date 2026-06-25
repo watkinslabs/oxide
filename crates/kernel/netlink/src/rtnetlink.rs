@@ -13,10 +13,13 @@ use sync::{Spinlock, Socket as SockLockClass};
 
 #[path = "rtnetlink_addr.rs"]
 mod rtnetlink_addr;
+#[path = "rtnetlink_route.rs"]
+mod rtnetlink_route;
 pub use rtnetlink_addr::{
     addr_insert, addr_remove, addr_snapshot, addr_snapshot_ns, cache_to_net, seed_defaults,
     IfaCacheInfo, IfaceAddr,
 };
+use rtnetlink_route::parse_route_attrs;
 
 // ---- Message types -------------------------------------------------------
 
@@ -191,6 +194,7 @@ pub mod rta {
     pub const RTA_PRIORITY:  u16 = 6;
     pub const RTA_PREFSRC:   u16 = 7;
     pub const RTA_METRICS:   u16 = 8;
+    pub const RTA_MULTIPATH: u16 = 9;
     pub const RTA_TABLE:     u16 = 15;
 }
 
@@ -792,36 +796,6 @@ pub fn seed_default_routes(eth0_ifindex: u32) {
     });
 }
 
-/// Parse RTA_* attributes following an rtmsg, returning the
-/// destination prefix, gateway, oif_ifindex, and prefsrc as we
-/// find them.
-/// # C: O(N attrs)
-fn parse_route_attrs(attrs: &[u8])
-    -> (Option<[u8; 4]>, Option<[u8; 4]>, Option<u32>, Option<[u8; 4]>)
-{
-    let mut dst: Option<[u8; 4]> = None;
-    let mut gw:  Option<[u8; 4]> = None;
-    let mut oif: Option<u32>     = None;
-    let mut src: Option<[u8; 4]> = None;
-    let mut off = 0;
-    while off + 4 <= attrs.len() {
-        let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
-        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
-        if nla_len < 4 || off + nla_len > attrs.len() { break; }
-        let payload = &attrs[off + 4..off + nla_len];
-        match (nla_type, payload.len()) {
-            (rta::RTA_DST, 4)     => dst = Some([payload[0], payload[1], payload[2], payload[3]]),
-            (rta::RTA_GATEWAY, 4) => gw  = Some([payload[0], payload[1], payload[2], payload[3]]),
-            (rta::RTA_OIF, 4)     => oif = Some(u32::from_ne_bytes([
-                                       payload[0], payload[1], payload[2], payload[3]])),
-            (rta::RTA_PREFSRC, 4) => src = Some([payload[0], payload[1], payload[2], payload[3]]),
-            _ => {}
-        }
-        off += nlmsg_align(nla_len);
-    }
-    (dst, gw, oif, src)
-}
-
 /// Convert an rtnetlink IPv4 destination prefix into a live route key.
 /// # C: O(1)
 #[allow(dead_code)]
@@ -892,19 +866,23 @@ pub fn handle_newroute(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         return nlmsg_ack(req, -97);
     }
     let attrs = &full_msg[rtm_off + Rtmsg::SIZE..];
-    let (dst_addr, gw, oif, src) = parse_route_attrs(attrs);
-    let oif = match oif {
-        Some(o) => o,
-        None    => return nlmsg_ack(req, -22),
-    };
-    let dst = dst_addr.map(|a| (a, dst_len));
-    route_insert(RouteRow {
-        ns: net::netdev::current_net_ns(),
-        table, protocol, scope, kind,
-        dst, gateway: gw, oif_ifindex: oif, prefsrc: src,
-    });
-    sync_stack_route_add(table, dst, gw, oif, src);
-    crate::mcast::notify_route(false, table, protocol, scope, kind, dst, gw, oif, src);
+    let parsed = parse_route_attrs(attrs);
+    let dst = parsed.dst.map(|a| (a, dst_len));
+    if parsed.multipath.is_empty() {
+        let Some(oif) = parsed.oif else { return nlmsg_ack(req, -22); };
+        route_insert(RouteRow { ns: net::netdev::current_net_ns(), table, protocol, scope, kind,
+            dst, gateway: parsed.gateway, oif_ifindex: oif, prefsrc: parsed.prefsrc });
+        sync_stack_route_add(table, dst, parsed.gateway, oif, parsed.prefsrc);
+        crate::mcast::notify_route(false, table, protocol, scope, kind, dst, parsed.gateway, oif, parsed.prefsrc);
+    } else {
+        for nh in parsed.multipath {
+            let gw = nh.gateway.or(parsed.gateway);
+            route_insert(RouteRow { ns: net::netdev::current_net_ns(), table, protocol, scope, kind,
+                dst, gateway: gw, oif_ifindex: nh.oif, prefsrc: parsed.prefsrc });
+            sync_stack_route_add(table, dst, gw, nh.oif, parsed.prefsrc);
+            crate::mcast::notify_route(false, table, protocol, scope, kind, dst, gw, nh.oif, parsed.prefsrc);
+        }
+    }
     nlmsg_ack(req, 0)
 }
 
@@ -918,18 +896,28 @@ pub fn handle_delroute(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let dst_len = full_msg[rtm_off + 1];
     let table   = full_msg[rtm_off + 4];
     let attrs = &full_msg[rtm_off + Rtmsg::SIZE..];
-    let (dst_addr, _gw, oif, _src) = parse_route_attrs(attrs);
-    let oif = match oif {
-        Some(o) => o,
-        None    => return nlmsg_ack(req, -22),
-    };
-    let dst = dst_addr.map(|a| (a, dst_len));
-    let n = route_remove(net::netdev::current_net_ns(), table, dst, oif);
-    if n > 0 {
-        sync_stack_route_del(table, dst, _gw, oif);
-        crate::mcast::notify_route(true, table, 0, 0, 0, dst, _gw, oif, _src);
+    let parsed = parse_route_attrs(attrs);
+    let dst = parsed.dst.map(|a| (a, dst_len));
+    let mut removed = 0usize;
+    if parsed.multipath.is_empty() {
+        let Some(oif) = parsed.oif else { return nlmsg_ack(req, -22); };
+        removed = route_remove(net::netdev::current_net_ns(), table, dst, oif);
+        if removed > 0 {
+            sync_stack_route_del(table, dst, parsed.gateway, oif);
+            crate::mcast::notify_route(true, table, 0, 0, 0, dst, parsed.gateway, oif, parsed.prefsrc);
+        }
+    } else {
+        for nh in parsed.multipath {
+            let gw = nh.gateway.or(parsed.gateway);
+            let n = route_remove(net::netdev::current_net_ns(), table, dst, nh.oif);
+            if n > 0 {
+                sync_stack_route_del(table, dst, gw, nh.oif);
+                crate::mcast::notify_route(true, table, 0, 0, 0, dst, gw, nh.oif, parsed.prefsrc);
+            }
+            removed += n;
+        }
     }
-    nlmsg_ack(req, if n > 0 { 0 } else { -3 /* ESRCH */ })
+    nlmsg_ack(req, if removed > 0 { 0 } else { -3 /* ESRCH */ })
 }
 
 // quiet warnings for the `msg` re-export that's only used by lib.rs
