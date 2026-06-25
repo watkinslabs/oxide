@@ -471,7 +471,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 for i in 0..n {
                     if let Some((id, _)) = cpu::get(i) {
                         if id != bsp {
-                            let _ = arch_irq::lapic::send_resched_ipi(id);
+                            let _ = arch_irq::lapic::send_resched_ipi(i as u32);
                         }
                     }
                 }

@@ -116,10 +116,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // softirq drain is PER-CPU (Linux: every CPU runs its own
             // __do_softirq from irq_exit) — each CPU drains its OWN pending
             // mask below. APs that arm their own periodic timer reach here too.
-            let is_bsp = {
-                use hal::CpuOps;
-                hal_x86_64::X86CpuOps::current_cpu() == ::cpu::smp::boot_cpu_id()
-            };
+            let is_bsp = local_apic_id() == ::cpu::smp::boot_cpu_id();
             if is_bsp {
                 // TTY input poll per docs/28: scrape pending UART RX into
                 // the ringbuffer + wake stdin waiters before the picker.
@@ -268,7 +265,8 @@ pub unsafe fn enable(va: u64) -> LapicStatus {
     LapicStatus::Enabled { apic_id, version }
 }
 
-/// Send a resched IPI to the LAPIC `target_apic_id`. The receiver
+/// Send a resched IPI to logical CPU `target_cpu`. The target is translated
+/// through cpu_topology to the LAPIC APIC id before writing the ICR. The receiver
 /// vectors through `oxide_irq_vec_41`, sets need_resched, and the
 /// IRQ-exit picker switches if eligible. Returns false if the
 /// LAPIC isn't mapped yet.
@@ -277,7 +275,11 @@ pub unsafe fn enable(va: u64) -> LapicStatus {
 /// (ICR write is non-blocking -- wait_icr_idle handles serialization).
 /// # C: O(spin) bounded by hardware delivery latency
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-pub unsafe fn send_resched_ipi(target_apic_id: u32) -> bool {
+pub unsafe fn send_resched_ipi(target_cpu: u32) -> bool {
+    let target_apic_id = match ::cpu::hardware_id_for_logical(target_cpu) {
+        Some(id) => id,
+        None => return false,
+    };
     // SAFETY: LAPIC enabled per fn contract; ICR delivery completes asynchronously, wait_icr_idle bounds prior write.
     unsafe { wait_icr_idle(); }
     let lo = build_icr_lo(hal_x86_64::VEC_RESCHED, 0b000, true, false);
@@ -311,12 +313,15 @@ pub unsafe fn send_nmi_ipi(apic_id: u32) -> bool {
     ok
 }
 
-/// Poke hook (`sched::diag::nmi`): the heartbeat indexes CPUs by
-/// `current_cpu()` which on x86 is the APIC id, so the logical id passed
-/// here IS the target APIC id — send the NMI directly.
+/// Poke hook (`sched::diag::nmi`): heartbeats index CPUs by dense logical
+/// CPU id, so translate to the x86 APIC id before sending the NMI.
 /// # C: O(1)
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-fn diag_nmi_poke(apic_id: u32) {
+fn diag_nmi_poke(cpu: u32) {
+    let apic_id = match ::cpu::hardware_id_for_logical(cpu) {
+        Some(id) => id,
+        None => return,
+    };
     // SAFETY: boot enabled the LAPIC before diag hooks are installed.
     unsafe { let _ = send_nmi_ipi(apic_id); }
 }
