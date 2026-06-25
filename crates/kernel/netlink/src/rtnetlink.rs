@@ -419,13 +419,56 @@ pub(crate) fn build_newaddr_reply(
     out
 }
 
-/// RTM_GETADDR dump. One RTM_NEWADDR per iface's IPv4 address,
-/// terminated by NLMSG_DONE. v1 wires hardcoded addresses:
-/// `lo` → 127.0.0.1/8 host-scope; any non-loopback → 10.0.2.15/24
-/// universe-scope (qemu user-net default). Real per-iface address
-/// table lands when userspace tooling writes them in via
-/// RTM_NEWADDR (a follow-up; for now the kernel publishes the
-/// defaults so `ip addr show` shows sensible output).
+/// Build a single RTM_NEWADDR reply for one iface's IPv6 address.
+/// # C: O(N attrs)
+pub(crate) fn build_newaddr6_reply(
+    seq: u32, pid: u32,
+    ifindex: i32,
+    label: &str,
+    addr: [u8; 16],
+    prefixlen: u8,
+    scope: u8,
+    multi: bool,
+) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::with_capacity(96);
+    let flags = net::iface_addr::IFA_F_PERMANENT;
+    let ifa = Ifaddrmsg {
+        ifa_family:    AF_INET6,
+        ifa_prefixlen: prefixlen,
+        ifa_flags:     flags as u8,
+        ifa_scope:     scope,
+        ifa_index:     ifindex as u32,
+    };
+    let mut ifa_buf = [0u8; Ifaddrmsg::SIZE];
+    ifa.write_to(&mut ifa_buf);
+    body.extend_from_slice(&ifa_buf);
+    put_nlattr(&mut body, ifa::IFA_LOCAL, &addr);
+    put_nlattr(&mut body, ifa::IFA_ADDRESS, &addr);
+    put_nlattr_str(&mut body, ifa::IFA_LABEL, label);
+    put_nlattr_u32(&mut body, ifa::IFA_FLAGS, flags);
+    let mut ci = [0u8; IfaCacheInfo::SIZE];
+    IfaCacheInfo::PERMANENT.write_to(&mut ci);
+    put_nlattr(&mut body, ifa::IFA_CACHEINFO, &ci);
+
+    let total = Nlmsghdr::SIZE + body.len();
+    let hdr = Nlmsghdr {
+        nlmsg_len:   total as u32,
+        nlmsg_type:  RTM_NEWADDR,
+        nlmsg_flags: if multi { flags::NLM_F_MULTI } else { 0 },
+        nlmsg_seq:   seq,
+        nlmsg_pid:   pid,
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(total);
+    let mut hdr_buf = [0u8; Nlmsghdr::SIZE];
+    hdr.write_to(&mut hdr_buf);
+    out.extend_from_slice(&hdr_buf);
+    out.extend_from_slice(&body);
+    while out.len() % 4 != 0 { out.push(0); }
+    out
+}
+
+/// RTM_GETADDR dump. One RTM_NEWADDR per configured IPv4/IPv6 address,
+/// terminated by NLMSG_DONE.
 /// # C: O(N_ifaces)
 pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
@@ -445,6 +488,20 @@ pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
             /*multi=*/true,
         );
         reply.extend_from_slice(&one);
+    }
+    #[cfg(target_os = "oxide-kernel")]
+    for (iface, addr) in net::sock::stack().v6_addr_snapshot() {
+        let name = match ifaces.iter().find(|(id, _, _, _, _, _)| *id == iface.raw()) {
+            Some((_, n, _, _, _, _)) => n.as_str(),
+            None => continue,
+        };
+        let scope = if addr.is_loopback() { RT_SCOPE_HOST }
+                    else if addr.is_link_local() { RT_SCOPE_LINK }
+                    else { RT_SCOPE_UNIVERSE };
+        reply.extend_from_slice(&build_newaddr6_reply(
+            req.nlmsg_seq, req.nlmsg_pid,
+            iface.raw() as i32, name, addr.0, 128, scope, /*multi=*/true,
+        ));
     }
     reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));
     reply
