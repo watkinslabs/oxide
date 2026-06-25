@@ -127,6 +127,12 @@ pub unsafe extern "C" fn vsnprintf(s: *mut u8, n: usize, fmt: *const u8, mut ap:
     // SAFETY: forwards to the slice formatter under the C contract.
     unsafe { into_slice(s, n, fmt, &mut ap) }
 }
+// # C: int __vsnprintf(char *s, size_t n, const char *fmt, va_list ap)
+#[no_mangle]
+pub unsafe extern "C" fn __vsnprintf(s: *mut u8, n: usize, fmt: *const u8, mut ap: VaList) -> i32 {
+    // SAFETY: internal alias has the same buffer/format/va_list contract as vsnprintf.
+    unsafe { into_slice(s, n, fmt, &mut ap) }
+}
 // # C: int snprintf(char *s, size_t n, const char *fmt, ...)
 #[no_mangle]
 pub unsafe extern "C" fn snprintf(s: *mut u8, n: usize, fmt: *const u8, mut ap: ...) -> i32 {
