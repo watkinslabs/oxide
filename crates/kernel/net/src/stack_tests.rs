@@ -88,6 +88,24 @@ fn loopback_udp_round_trip() {
 }
 
 #[test]
+fn udp_recv_peek_leaves_datagram_queued() {
+    let stack = NetStack::new();
+    let (id, lo) = stack.register_loopback();
+    stack.bind_udp(Ipv4Addr::LOOPBACK, 4243).unwrap();
+    stack.send_udp_to(
+        Ipv4Addr::LOOPBACK, 5001,
+        Ipv4Addr::LOOPBACK, 4243,
+        b"peek-me",
+    ).unwrap();
+    stack.drain_loopback(id, &lo);
+    let (_, _, peeked) = stack.recv_udp_opts(4243, true).unwrap();
+    assert_eq!(peeked, b"peek-me");
+    let (_, _, popped) = stack.recv_udp_opts(4243, false).unwrap();
+    assert_eq!(popped, b"peek-me");
+    assert!(stack.recv_udp(4243).is_none());
+}
+
+#[test]
 fn icmp_echo_round_trip_via_loopback() {
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();

@@ -26,6 +26,8 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     let flags  = args.a3;
     let src_p  = args.a4;
     const MSG_DONTWAIT: u64 = 0x40;
+    const MSG_PEEK:     u64 = 0x02;
+    const MSG_TRUNC:    u64 = 0x20;
     if crate::netlink_fd::is_netlink(fd) {
         return crate::netlink_fd::recvfrom(fd, bufp, len, src_p);
     }
@@ -64,7 +66,9 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
                 }
             }
         }
-        match net::sock::recvfrom(&sock, len) {
+        match net::sock::recvfrom_opts(&sock, len, net::sock::RecvOptions {
+            peek: (flags & MSG_PEEK) != 0,
+        }) {
             Ok(r)  => break r,
             Err(net::NetError::Eagain) => {
                 if nonblock { return -(Errno::Eagain.as_i32() as i64); }
@@ -118,5 +122,5 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
             write_sockaddr_for_socket(src_p, &sock, ip, port);
         }
     }
-    take as i64
+    if (flags & MSG_TRUNC) != 0 { rcv.full_len as i64 } else { take as i64 }
 }

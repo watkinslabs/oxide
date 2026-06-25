@@ -997,4 +997,4 @@ pub fn sendto(
     socket_sendto(sock, dst_ip, dst_port, payload)
 }
 
-pub use crate::sock_io::{recvfrom, Received};
+pub use crate::sock_io::{recvfrom, recvfrom_opts, Received, RecvOptions};

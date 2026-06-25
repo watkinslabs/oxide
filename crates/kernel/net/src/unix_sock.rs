@@ -426,6 +426,28 @@ impl UnixMsgPair {
         self.recv_msg(end, max).map(|m| m.payload)
     }
 
+    /// Dequeue or peek one message payload from the ring `end` reads
+    /// from. Returns copied/truncated bytes plus the full message length.
+    /// # C: O(min(max, payload.len()))
+    pub fn recv_payload(&self, end: UnixEnd, max: usize, peek: bool) -> Option<(Vec<u8>, usize)> {
+        let mut g = match end {
+            UnixEnd::A => self.b_to_a.lock(),
+            UnixEnd::B => self.a_to_b.lock(),
+        };
+        if let Some(msg) = g.msgs.front() {
+            let full_len = msg.payload.len();
+            let take = core::cmp::min(max, full_len);
+            let mut out = Vec::with_capacity(take);
+            out.extend_from_slice(&msg.payload[..take]);
+            if !peek { g.msgs.pop_front(); }
+            Some((out, full_len))
+        } else if g.closed_writer {
+            Some((Vec::new(), 0))
+        } else {
+            None
+        }
+    }
+
     /// Dequeue one message plus any SCM_RIGHTS files from the ring
     /// `end` reads from.
     /// # C: O(min(max, payload.len()))
@@ -778,6 +800,16 @@ mod tests {
         assert_eq!(&got[..], b"abc");
         // Linux SEQPACKET drops the tail — no peek of "defgh".
         assert!(p.recv(UnixEnd::B, 64).is_none());
+    }
+
+    #[test]
+    fn msgpair_peek_truncates_without_consuming() {
+        let p = UnixMsgPair::new();
+        p.send(UnixEnd::A, b"abcdefgh");
+        let (got, full_len) = p.recv_payload(UnixEnd::B, 3, true).unwrap();
+        assert_eq!(&got[..], b"abc");
+        assert_eq!(full_len, 8);
+        assert_eq!(p.recv(UnixEnd::B, 64).unwrap(), b"abcdefgh");
     }
 
     #[test]
