@@ -7,7 +7,6 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
-use alloc::vec;
 
 use crate::{flags, msg, nlmsg_align, Nlmsghdr};
 use sync::{Spinlock, Socket as SockLockClass};
@@ -673,19 +672,7 @@ pub(crate) fn build_newroute_reply(
 ///   `10.0.2.0/24 dev eth0 proto kernel scope link src 10.0.2.15`
 ///   `default via 10.0.2.2 dev eth0 proto boot`
 /// # C: O(N_ifaces)
-pub fn handle_getroute(req: &Nlmsghdr) -> Vec<u8> {
-    let mut reply: Vec<u8> = Vec::with_capacity(256);
-    for r in route_snapshot_ns(net::netdev::current_net_ns()).iter() {
-        reply.extend_from_slice(&build_newroute_reply(
-            req.nlmsg_seq, req.nlmsg_pid,
-            r.table, r.protocol, r.scope, r.kind,
-            r.dst, r.gateway, r.oif_ifindex, r.prefsrc,
-            true,
-        ));
-    }
-    reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));
-    reply
-}
+pub fn handle_getroute(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> { crate::rtnetlink_lookup::handle_getroute(req, full_msg) }
 
 /// One row in the kernel's route table. v1 IPv4 only; IPv6
 /// equivalents (RTA_DST length=16) ride a follow-up.
