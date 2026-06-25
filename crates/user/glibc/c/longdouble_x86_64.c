@@ -2000,6 +2000,121 @@ long double dreml(long double numerator, long double denominator) {
     return x87_fprem1(numerator, denominator);
 }
 
+long double __acosl_finite(long double x) {
+    return atan2_valuel(x87_sqrtl((1.0L - x) * (1.0L + x)), x);
+}
+
+long double __acoshl_finite(long double x) {
+    return log2_valuel(x + x87_sqrtl((x - 1.0L) * (x + 1.0L))) * 0.69314718055994530941723212145817656808L;
+}
+
+long double __asinl_finite(long double x) {
+    return atan2_valuel(x, x87_sqrtl((1.0L - x) * (1.0L + x)));
+}
+
+long double __atan2l_finite(long double y, long double x) {
+    return atan2_valuel(y, x);
+}
+
+long double __atanhl_finite(long double x) {
+    return 0.5L * log2_valuel((1.0L + x) / (1.0L - x)) * 0.69314718055994530941723212145817656808L;
+}
+
+long double __coshl_finite(long double x) {
+    return coshl_valuel(x);
+}
+
+long double __exp10l_finite(long double x) {
+    return exp2_valuel(x * 3.3219280948873623478703194294893901759L);
+}
+
+long double __exp2l_finite(long double x) {
+    return exp2_valuel(x);
+}
+
+long double __expl_finite(long double x) {
+    return exp2_valuel(x * 1.4426950408889634073599246810018921374L);
+}
+
+long double __fmodl_finite(long double numerator, long double denominator) {
+    return x87_fprem(numerator, denominator);
+}
+
+long double __gammal_r_finite(long double x, int *signp) {
+    return lgammal_r_corel(x, signp);
+}
+
+long double __hypotl_finite(long double x, long double y) {
+    return hypot_valuel(x, y);
+}
+
+long double __j0l_finite(long double x) {
+    return j0l_corel(x);
+}
+
+long double __j1l_finite(long double x) {
+    return j1l_corel(x);
+}
+
+long double __jnl_finite(int n, long double x) {
+    return jnl_corel(n, x);
+}
+
+long double __lgammal_r_finite(long double x, int *signp) {
+    return lgammal_r_corel(x, signp);
+}
+
+long double __log10l_finite(long double x) {
+    return log2_valuel(x) * 0.30102999566398119521373889472449302677L;
+}
+
+long double __log2l_finite(long double x) {
+    return log2_valuel(x);
+}
+
+long double __logl_finite(long double x) {
+    return log2_valuel(x) * 0.69314718055994530941723212145817656808L;
+}
+
+long double __powl_finite(long double base, long double power) {
+    return exp2_valuel(power * log2_valuel(base));
+}
+
+long double __remainderl_finite(long double numerator, long double denominator) {
+    return x87_fprem1(numerator, denominator);
+}
+
+long double __scalbl_finite(long double value, long double exponent) {
+    if (__builtin_isfinite(exponent)) {
+        long double whole = x87_round_mode(exponent, 0x0c00u);
+        if (whole != exponent) {
+            long double zero = 0.0L;
+            return zero / zero;
+        }
+    }
+    return x87_scalbnl(value, exponent);
+}
+
+long double __sinhl_finite(long double x) {
+    return sinhl_valuel(x);
+}
+
+long double __sqrtl_finite(long double x) {
+    return x87_sqrtl(x);
+}
+
+long double __y0l_finite(long double x) {
+    return y0l_corel(x);
+}
+
+long double __y1l_finite(long double x) {
+    return y1l_corel(x);
+}
+
+long double __ynl_finite(int n, long double x) {
+    return ynl_corel(n, x);
+}
+
 static unsigned long long nan_payloadl(const char *tagp) {
     unsigned long long payload = 0;
     int base = 10;
