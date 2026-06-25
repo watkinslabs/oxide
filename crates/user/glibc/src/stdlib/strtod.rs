@@ -148,6 +148,18 @@ mod exports {
             f
         }
     }
+    // # C: double __strtod_internal(const char *s, char **endptr, int group)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strtod_internal(s: *const u8, endptr: *mut *mut u8, _group: i32) -> f64 {
+        // SAFETY: same C contract as strtod; the C locale parser ignores grouping.
+        unsafe { strtod(s, endptr) }
+    }
+    // # C: float __strtof_internal(const char *s, char **endptr, int group)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strtof_internal(s: *const u8, endptr: *mut *mut u8, _group: i32) -> f32 {
+        // SAFETY: same C contract as strtof; the C locale parser ignores grouping.
+        unsafe { strtof(s, endptr) }
+    }
     // # C: double atof(const char *s)
     #[no_mangle]
     pub unsafe extern "C" fn atof(s: *const u8) -> f64 {
