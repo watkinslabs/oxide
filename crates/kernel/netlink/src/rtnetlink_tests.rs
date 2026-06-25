@@ -5,6 +5,7 @@
         assert_eq!(RTM_NEWLINK,  16);
         assert_eq!(RTM_GETLINK,  18);
         assert_eq!(RTM_NEWADDR,  20);
+        assert_eq!(RTM_DELADDR,  21);
         assert_eq!(RTM_GETADDR,  22);
         assert_eq!(RTM_NEWROUTE, 24);
         assert_eq!(RTM_GETROUTE, 26);
@@ -102,12 +103,12 @@
         // (other tests in the binary may have seeded rows).
         let before = addr_snapshot().len();
         addr_insert(IfaceAddr {
-            ifindex: 9999, family: AF_INET,
+            ns: 0, ifindex: 9999, family: AF_INET,
             addr: [10, 9, 9, 9], prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
         });
         let after_insert = addr_snapshot().len();
         assert_eq!(after_insert, before + 1);
-        let n = addr_remove(9999, [10, 9, 9, 9], 32);
+        let n = addr_remove(0, 9999, [10, 9, 9, 9], 32);
         assert_eq!(n, 1);
         assert_eq!(addr_snapshot().len(), before);
     }
@@ -115,7 +116,7 @@
     #[test]
     fn addr_insert_dedupes_same_key() {
         let row = IfaceAddr {
-            ifindex: 9998, family: AF_INET,
+            ns: 0, ifindex: 9998, family: AF_INET,
             addr: [10, 9, 9, 8], prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
         };
         let before = addr_snapshot().len();
@@ -123,7 +124,70 @@
         addr_insert(row); // second insert should replace, not duplicate
         let after = addr_snapshot().len();
         assert_eq!(after, before + 1);
-        let _ = addr_remove(9998, [10, 9, 9, 8], 32);
+        let _ = addr_remove(0, 9998, [10, 9, 9, 8], 32);
+    }
+
+    #[test]
+    fn addrs_are_isolated_per_net_ns() {
+        let row = |ns| IfaceAddr {
+            ns, ifindex: 9997, family: AF_INET,
+            addr: [10, 9, 9, 7], prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
+        };
+        let n0 = addr_snapshot_ns(880).len();
+        let n1 = addr_snapshot_ns(881).len();
+        addr_insert(row(880));
+        assert_eq!(addr_snapshot_ns(880).len(), n0 + 1);
+        assert_eq!(addr_snapshot_ns(881).len(), n1);
+        assert_eq!(addr_remove(881, 9997, [10, 9, 9, 7], 32), 0);
+        assert_eq!(addr_remove(880, 9997, [10, 9, 9, 7], 32), 1);
+    }
+
+    fn addr_req(ty: u16, ifindex: u32, prefixlen: u8, addr: [u8; 4]) -> (crate::Nlmsghdr, Vec<u8>) {
+        let mut body = Vec::new();
+        let ifa = Ifaddrmsg {
+            ifa_family: AF_INET,
+            ifa_prefixlen: prefixlen,
+            ifa_flags: 0,
+            ifa_scope: RT_SCOPE_UNIVERSE,
+            ifa_index: ifindex,
+        };
+        let mut ifa_buf = [0u8; Ifaddrmsg::SIZE];
+        ifa.write_to(&mut ifa_buf);
+        body.extend_from_slice(&ifa_buf);
+        put_nlattr(&mut body, ifa::IFA_LOCAL, &addr);
+        let hdr = crate::Nlmsghdr {
+            nlmsg_len: (crate::Nlmsghdr::SIZE + body.len()) as u32,
+            nlmsg_type: ty,
+            nlmsg_flags: crate::flags::NLM_F_REQUEST | crate::flags::NLM_F_ACK,
+            nlmsg_seq: 31,
+            nlmsg_pid: 44,
+        };
+        let mut msg = Vec::new();
+        let mut hdr_buf = [0u8; crate::Nlmsghdr::SIZE];
+        hdr.write_to(&mut hdr_buf);
+        msg.extend_from_slice(&hdr_buf);
+        msg.extend_from_slice(&body);
+        (hdr, msg)
+    }
+
+    fn ack_errno(reply: &[u8]) -> i32 {
+        assert_eq!(u16::from_ne_bytes([reply[4], reply[5]]), crate::msg::NLMSG_ERROR);
+        i32::from_ne_bytes(reply[crate::Nlmsghdr::SIZE..crate::Nlmsghdr::SIZE + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn rtm_newaddr_and_deladdr_mutate_table() {
+        let ifindex = 9996;
+        let addr = [10, 9, 9, 6];
+        let (new_hdr, new_msg) = addr_req(RTM_NEWADDR, ifindex, 32, addr);
+        assert_eq!(ack_errno(&handle_newaddr(&new_hdr, &new_msg)), 0);
+        assert!(addr_snapshot_ns(0).iter().any(|r|
+            r.ifindex == ifindex && r.addr == addr && r.prefixlen == 32));
+
+        let (del_hdr, del_msg) = addr_req(RTM_DELADDR, ifindex, 32, addr);
+        assert_eq!(ack_errno(&handle_deladdr(&del_hdr, &del_msg)), 0);
+        assert!(!addr_snapshot_ns(0).iter().any(|r|
+            r.ifindex == ifindex && r.addr == addr && r.prefixlen == 32));
     }
 
     #[test]
