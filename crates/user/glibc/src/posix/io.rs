@@ -160,6 +160,12 @@ pub unsafe extern "C" fn __libc_pwrite(fd: i32, buf: *const u8, n: usize, off: i
 // # C: int open64(const char *, int, mode_t)
 // SAFETY: LFS alias of open; identical args on LP64. Forwards.
 #[no_mangle] pub unsafe extern "C" fn open64(path: *const u8, flags: i32, mode: u32) -> i32 { unsafe { open(path, flags, mode) } }
+// # C: int __open64(const char *, int, mode_t)
+// SAFETY: internal LFS alias; identical args on LP64. Forwards.
+#[no_mangle] pub unsafe extern "C" fn __open64(path: *const u8, flags: i32, mode: u32) -> i32 { unsafe { open64(path, flags, mode) } }
+// # C: int __open64_nocancel(const char *, int, mode_t)
+// SAFETY: no-cancel LFS alias; identical args on LP64. Forwards.
+#[no_mangle] pub unsafe extern "C" fn __open64_nocancel(path: *const u8, flags: i32, mode: u32) -> i32 { unsafe { open64(path, flags, mode) } }
 // # C: int openat64(int, const char *, int, mode_t)
 // SAFETY: LFS alias of openat; identical args on LP64. Forwards.
 #[no_mangle] pub unsafe extern "C" fn openat64(d: i32, path: *const u8, flags: i32, mode: u32) -> i32 { unsafe { openat(d, path, flags, mode) } }
@@ -175,9 +181,18 @@ pub unsafe extern "C" fn __libc_pwrite(fd: i32, buf: *const u8, n: usize, off: i
 // # C: ssize_t pread64(int, void *, size_t, off64_t)
 // SAFETY: LFS alias of pread; buf valid for n bytes per the caller. Forwards.
 #[no_mangle] pub unsafe extern "C" fn pread64(fd: i32, buf: *mut u8, n: usize, off: i64) -> isize { unsafe { pread(fd, buf, n, off) } }
+// # C: ssize_t __pread64(int, void *, size_t, off64_t)
+// SAFETY: internal LFS alias of pread64; forwards unchanged.
+#[no_mangle] pub unsafe extern "C" fn __pread64(fd: i32, buf: *mut u8, n: usize, off: i64) -> isize { unsafe { pread64(fd, buf, n, off) } }
+// # C: ssize_t __pread64_nocancel(int, void *, size_t, off64_t)
+// SAFETY: no-cancel LFS alias of pread64; forwards unchanged.
+#[no_mangle] pub unsafe extern "C" fn __pread64_nocancel(fd: i32, buf: *mut u8, n: usize, off: i64) -> isize { unsafe { pread64(fd, buf, n, off) } }
 // # C: ssize_t pwrite64(int, const void *, size_t, off64_t)
 // SAFETY: LFS alias of pwrite; buf valid for n bytes per the caller. Forwards.
 #[no_mangle] pub unsafe extern "C" fn pwrite64(fd: i32, buf: *const u8, n: usize, off: i64) -> isize { unsafe { pwrite(fd, buf, n, off) } }
+// # C: ssize_t __pwrite64(int, const void *, size_t, off64_t)
+// SAFETY: internal LFS alias of pwrite64; forwards unchanged.
+#[no_mangle] pub unsafe extern "C" fn __pwrite64(fd: i32, buf: *const u8, n: usize, off: i64) -> isize { unsafe { pwrite64(fd, buf, n, off) } }
 
 // # C: pid_t getpid(void) — always succeeds, never sets errno.
 #[no_mangle]

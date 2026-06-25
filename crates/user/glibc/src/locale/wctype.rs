@@ -142,6 +142,11 @@ mod imp {
     pub extern "C" fn towctrans(wc: u32, desc: isize) -> u32 {
         match desc { 1 => towupper_cp(wc), 2 => towlower_cp(wc), _ => wc }
     }
+    // # C: wint_t __towctrans(wint_t wc, wctrans_t desc)
+    #[no_mangle]
+    pub extern "C" fn __towctrans(wc: u32, desc: isize) -> u32 {
+        towctrans(wc, desc)
+    }
 
     fn class_bit(name: &[u8]) -> u64 {
         match name {

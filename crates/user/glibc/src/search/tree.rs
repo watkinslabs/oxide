@@ -46,6 +46,12 @@ pub unsafe extern "C" fn tsearch(key: *const c_void, rootp: *mut *mut c_void, cm
         }
     }
 }
+// # C: void *__tsearch(const void *key, void **rootp, int (*cmp)(...))
+#[no_mangle]
+pub unsafe extern "C" fn __tsearch(key: *const c_void, rootp: *mut *mut c_void, cmp: Cmp) -> *mut c_void {
+    // SAFETY: internal alias has the same tree/comparator contract as tsearch.
+    unsafe { tsearch(key, rootp, cmp) }
+}
 
 // # C: void *tfind(const void *key, void *const *rootp, int (*cmp)(...))
 #[no_mangle]
@@ -62,6 +68,12 @@ pub unsafe extern "C" fn tfind(key: *const c_void, rootp: *const *mut c_void, cm
         }
         core::ptr::null_mut()
     }
+}
+// # C: void *__tfind(const void *key, void *const *rootp, int (*cmp)(...))
+#[no_mangle]
+pub unsafe extern "C" fn __tfind(key: *const c_void, rootp: *const *mut c_void, cmp: Cmp) -> *mut c_void {
+    // SAFETY: internal alias has the same tree/comparator contract as tfind.
+    unsafe { tfind(key, rootp, cmp) }
 }
 
 // # C: void *tdelete(const void *key, void **rootp, int (*cmp)(...))
@@ -99,6 +111,12 @@ pub unsafe extern "C" fn tdelete(key: *const c_void, rootp: *mut *mut c_void, cm
         if parent.is_null() { rootp as *mut c_void } else { core::ptr::addr_of_mut!((*parent).key) as *mut c_void }
     }
 }
+// # C: void *__tdelete(const void *key, void **rootp, int (*cmp)(...))
+#[no_mangle]
+pub unsafe extern "C" fn __tdelete(key: *const c_void, rootp: *mut *mut c_void, cmp: Cmp) -> *mut c_void {
+    // SAFETY: internal alias has the same tree/comparator contract as tdelete.
+    unsafe { tdelete(key, rootp, cmp) }
+}
 
 unsafe fn walk(n: *mut Node, action: Action, level: i32) {
     // SAFETY: n is null or a valid Node; recurse in order invoking action with
@@ -123,6 +141,12 @@ unsafe fn walk(n: *mut Node, action: Action, level: i32) {
 pub unsafe extern "C" fn twalk(root: *const c_void, action: Action) {
     // SAFETY: root is null or a tree node produced by tsearch; action is valid.
     unsafe { walk(root as *mut Node, action, 0); }
+}
+// # C: void __twalk(const void *root, void (*action)(const void*, VISIT, int))
+#[no_mangle]
+pub unsafe extern "C" fn __twalk(root: *const c_void, action: Action) {
+    // SAFETY: internal alias has the same traversal callback contract as twalk.
+    unsafe { twalk(root, action) }
 }
 
 type ActionR = extern "C" fn(*const c_void, i32, *mut c_void);
@@ -150,6 +174,12 @@ pub unsafe extern "C" fn twalk_r(root: *const c_void, action: ActionR, closure: 
     // SAFETY: root is null or a tree node produced by tsearch; action is valid;
     // closure is passed through opaquely to each invocation.
     unsafe { walk_r(root as *mut Node, action, closure); }
+}
+// # C: void __twalk_r(const void *root, void (*action)(...), void *closure)
+#[no_mangle]
+pub unsafe extern "C" fn __twalk_r(root: *const c_void, action: ActionR, closure: *mut c_void) {
+    // SAFETY: internal alias has the same traversal callback contract as twalk_r.
+    unsafe { twalk_r(root, action, closure) }
 }
 
 type FreeFn = extern "C" fn(*mut c_void);

@@ -141,6 +141,12 @@ pub unsafe extern "C" fn sigpause(mask: i32) -> i32 {
         sigsuspend(&set)
     }
 }
+// # C: int __sigpause(int mask)
+#[no_mangle]
+pub unsafe extern "C" fn __sigpause(mask: i32) -> i32 {
+    // SAFETY: internal alias has the same scalar mask contract as sigpause.
+    unsafe { sigpause(mask) }
+}
 
 const SIG_UNBLOCK: i32 = 1;
 const SIG_HOLD: usize = 2;
@@ -235,6 +241,12 @@ pub unsafe extern "C" fn sysv_signal(sig: i32, handler: usize) -> usize {
         if sigaction(sig, &act, &mut old) < 0 { return SIG_ERR; }
         old.sa_handler
     }
+}
+// # C: sighandler_t __sysv_signal(int sig, sighandler_t handler)
+#[no_mangle]
+pub unsafe extern "C" fn __sysv_signal(sig: i32, handler: usize) -> usize {
+    // SAFETY: internal alias has the same handler contract as sysv_signal.
+    unsafe { sysv_signal(sig, handler) }
 }
 
 /// # C: sighandler_t bsd_signal(int sig, sighandler_t handler) — BSD signal():

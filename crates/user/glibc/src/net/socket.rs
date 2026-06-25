@@ -133,6 +133,12 @@ mod exports {
         // SAFETY: scalar args; socket(2) dereferences no memory.
         ret_isize(unsafe { sys3(nr::SOCKET, domain as usize, ty as usize, proto as usize) }) as i32
     }
+    // # C: int __socket(int domain, int type, int protocol)
+    #[no_mangle]
+    pub unsafe extern "C" fn __socket(domain: i32, ty: i32, proto: i32) -> i32 {
+        // SAFETY: internal alias has the same scalar argument contract as socket.
+        unsafe { socket(domain, ty, proto) }
+    }
     // # C: int rresvport_af(int *alport, int family)
     #[no_mangle]
     pub unsafe extern "C" fn rresvport_af(alport: *mut i32, family: i32) -> i32 {
@@ -319,11 +325,23 @@ mod exports {
         // SAFETY: buf is readable for n bytes; send is sendto with no address.
         unsafe { sendto(fd, buf, n, flags, core::ptr::null(), 0) }
     }
+    // # C: ssize_t __send(int fd, const void *buf, size_t n, int flags)
+    #[no_mangle]
+    pub unsafe extern "C" fn __send(fd: i32, buf: *const c_void, n: usize, flags: i32) -> isize {
+        // SAFETY: internal alias has the same readable buffer contract as send.
+        unsafe { send(fd, buf, n, flags) }
+    }
     // # C: ssize_t recv(int fd, void *buf, size_t n, int flags)
     #[no_mangle]
     pub unsafe extern "C" fn recv(fd: i32, buf: *mut c_void, n: usize, flags: i32) -> isize {
         // SAFETY: buf is writable for n bytes; recv is recvfrom with no address.
         unsafe { recvfrom(fd, buf, n, flags, core::ptr::null_mut(), core::ptr::null_mut()) }
+    }
+    // # C: ssize_t __recv(int fd, void *buf, size_t n, int flags)
+    #[no_mangle]
+    pub unsafe extern "C" fn __recv(fd: i32, buf: *mut c_void, n: usize, flags: i32) -> isize {
+        // SAFETY: internal alias has the same writable buffer contract as recv.
+        unsafe { recv(fd, buf, n, flags) }
     }
     // # C: ssize_t sendmsg(int fd, const struct msghdr *msg, int flags)
     #[no_mangle]

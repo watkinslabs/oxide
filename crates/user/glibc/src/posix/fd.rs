@@ -11,6 +11,12 @@ pub unsafe extern "C" fn pipe(fds: *mut i32) -> i32 {
     // SAFETY: fds is a writable array of two ints per pipe(2).
     ret_isize(unsafe { sys2(nr::PIPE2, fds as usize, 0) }) as i32
 }
+// # C: int __pipe(int fds[2])
+#[no_mangle]
+pub unsafe extern "C" fn __pipe(fds: *mut i32) -> i32 {
+    // SAFETY: internal alias has the same writable fds[2] contract as pipe.
+    unsafe { pipe(fds) }
+}
 // # C: int pipe2(int fds[2], int flags)
 #[no_mangle]
 pub unsafe extern "C" fn pipe2(fds: *mut i32, flags: i32) -> i32 {
