@@ -78,6 +78,12 @@ pub unsafe extern "C" fn sysconf(name: i32) -> i64 {
         }
     }
 }
+// # C: long __sysconf(int name)
+#[no_mangle]
+pub unsafe extern "C" fn __sysconf(name: i32) -> i64 {
+    // SAFETY: __sysconf has the same scalar-name contract as sysconf.
+    unsafe { sysconf(name) }
+}
 
 // rlim_cur of `res` (RLIM_INFINITY → fallback), else fallback on error.
 unsafe fn rlim_cur(res: i32, fallback: i64) -> i64 {

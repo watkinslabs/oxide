@@ -5,6 +5,9 @@
 // # C: int ffs(int i)
 #[no_mangle]
 pub extern "C" fn ffs(i: i32) -> i32 { if i == 0 { 0 } else { i.trailing_zeros() as i32 + 1 } }
+// # C: int __ffs(int i)
+#[no_mangle]
+pub extern "C" fn __ffs(i: i32) -> i32 { ffs(i) }
 // # C: int ffsl(long i)
 #[no_mangle]
 pub extern "C" fn ffsl(i: i64) -> i32 { if i == 0 { 0 } else { i.trailing_zeros() as i32 + 1 } }

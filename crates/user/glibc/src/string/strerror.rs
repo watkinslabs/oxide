@@ -44,6 +44,12 @@ mod imp {
         // permits returning it directly without writing the caller's buffer.
         msg(errnum).as_ptr() as *mut u8
     }
+    // # C: char *__strerror_r(int errnum, char *buf, size_t buflen)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strerror_r(errnum: i32, buf: *mut u8, buflen: usize) -> *mut u8 {
+        // SAFETY: __strerror_r has the same scratch-buffer contract as strerror_r.
+        unsafe { strerror_r(errnum, buf, buflen) }
+    }
 }
 
 #[cfg(test)]

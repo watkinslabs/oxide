@@ -26,6 +26,12 @@ pub unsafe extern "C" fn dn_skipname(src: *const u8, eom: *const u8) -> i32 {
         -1
     }
 }
+// # C: int __dn_skipname(const unsigned char *src, const unsigned char *eom)
+#[no_mangle]
+pub unsafe extern "C" fn __dn_skipname(src: *const u8, eom: *const u8) -> i32 {
+    // SAFETY: __dn_skipname has the same DNS-message bounds contract as dn_skipname.
+    unsafe { dn_skipname(src, eom) }
+}
 
 // # C: int dn_expand(const unsigned char *msg, const unsigned char *eom,
 //                    const unsigned char *src, char *dst, int dstsiz)
@@ -71,6 +77,13 @@ pub unsafe extern "C" fn dn_expand(msg: *const u8, eom: *const u8, src: *const u
         consumed as i32
     }
 }
+// # C: int __dn_expand(const unsigned char *msg, const unsigned char *eom,
+//                      const unsigned char *src, char *dst, int dstsiz)
+#[no_mangle]
+pub unsafe extern "C" fn __dn_expand(msg: *const u8, eom: *const u8, src: *const u8, dst: *mut c_char, dstsiz: i32) -> i32 {
+    // SAFETY: __dn_expand has the same message and output-buffer contract as dn_expand.
+    unsafe { dn_expand(msg, eom, src, dst, dstsiz) }
+}
 
 // # C: int dn_comp(const char *src, unsigned char *dst, int dstsiz,
 //                  unsigned char **dnptrs, unsigned char **lastdnptr)
@@ -103,4 +116,11 @@ pub unsafe extern "C" fn dn_comp(src: *const c_char, dst: *mut u8, dstsiz: i32, 
         *dst.add(out) = 0; out += 1; // root label
         out as i32
     }
+}
+// # C: int __dn_comp(const char *src, unsigned char *dst, int dstsiz,
+//                    unsigned char **dnptrs, unsigned char **lastdnptr)
+#[no_mangle]
+pub unsafe extern "C" fn __dn_comp(src: *const c_char, dst: *mut u8, dstsiz: i32, dnptrs: *mut *mut c_void, lastdnptr: *mut *mut c_void) -> i32 {
+    // SAFETY: __dn_comp has the same C-string and output-buffer contract as dn_comp.
+    unsafe { dn_comp(src, dst, dstsiz, dnptrs, lastdnptr) }
 }
