@@ -10,6 +10,9 @@
     __acoshf_finite;
     __adjtimex;
     __arch_prctl;
+    __argz_count;
+    __argz_next;
+    __argz_stringify;
     __asin_finite;
     __asinf_finite;
     __asprintf;
@@ -175,13 +178,17 @@
     __sinhf_finite;
     __sqrt_finite;
     __sqrtf_finite;
+    __strcasecmp_l;
+    __strcasestr;
     __stpcpy;
     __stpncpy;
     __strcasecmp;
     __strdup;
     __strerror_r;
     __strndup;
+    __strncasecmp_l;
     __strtok_r;
+    __strverscmp;
     __sysconf;
     __timezone;
     __toascii_l;
