@@ -77,7 +77,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | SCM_RIGHTS over SOCK_DGRAM           | done     | F189 |
 | SCM_RIGHTS over SOCK_STREAM          | done     | fd bursts queued on UnixPair recvmsg path |
 | SCM_RIGHTS over SOCK_SEQPACKET pair  | done     | fd bursts carried with UnixMsgPair messages |
-| Abstract namespace (`@/…`)           | partial  | path lookup ignores leading NUL |
+| Abstract namespace (`@/…`)           | done     | leading NUL kept distinct from filesystem paths; `/proc/net/unix` renders `@` |
 
 ## 4. AF_PACKET / raw
 

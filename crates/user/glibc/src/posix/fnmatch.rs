@@ -39,32 +39,34 @@ fn bracket(p: &[u8], start: usize, ch: u8, noescape: bool) -> Option<(bool, usiz
     while i < p.len() {
         if p[i] == b']' && i > first { return Some((matched ^ neg, i + 1)); }
         // POSIX sub-brackets: [:class:], [.coll.], [=equiv=]. Each runs to a
-        // matching `kind]` closer; absence → malformed bracket (None).
+        // matching `kind]` closer; absence inside an otherwise closed bracket
+        // falls back to literal bytes, matching glibc.
         if p[i] == b'[' && i + 1 < p.len() && matches!(p[i + 1], b':' | b'.' | b'=') {
             let kind = p[i + 1];
             let mut j = i + 2;
             while j + 1 < p.len() && !(p[j] == kind && p[j + 1] == b']') { j += 1; }
-            if !(j + 1 < p.len() && p[j] == kind && p[j + 1] == b']') { return None; }
-            let inner = &p[i + 2..j];
-            if kind == b':' {
-                if class_match(inner, ch) { matched = true; }
-                i = j + 2;
+            if j + 1 < p.len() && p[j] == kind && p[j + 1] == b']' {
+                let inner = &p[i + 2..j];
+                if kind == b':' {
+                    if class_match(inner, ch) { matched = true; }
+                    i = j + 2;
+                    continue;
+                }
+                // [.x.] / [=x=]: C-locale collating/equivalence element. Only a
+                // single-byte element is representable; treat it as that literal
+                // (and a possible range low endpoint). Multi-byte → no match.
+                if inner.len() != 1 { i = j + 2; continue; }
+                let lo = inner[0];
+                if j + 3 < p.len() && p[j + 2] == b'-' && p[j + 3] != b']' {
+                    let hi = p[j + 3];
+                    if ch >= lo && ch <= hi { matched = true; }
+                    i = j + 4;
+                } else {
+                    if ch == lo { matched = true; }
+                    i = j + 2;
+                }
                 continue;
             }
-            // [.x.] / [=x=]: C-locale collating/equivalence element. Only a
-            // single-byte element is representable; treat it as that literal
-            // (and a possible range low endpoint). Multi-byte → no match.
-            if inner.len() != 1 { i = j + 2; continue; }
-            let lo = inner[0];
-            if j + 3 < p.len() && p[j + 2] == b'-' && p[j + 3] != b']' {
-                let hi = p[j + 3];
-                if ch >= lo && ch <= hi { matched = true; }
-                i = j + 4;
-            } else {
-                if ch == lo { matched = true; }
-                i = j + 2;
-            }
-            continue;
         }
         let lo = if p[i] == b'\\' && !noescape && i + 1 < p.len() { i += 1; p[i] } else { p[i] };
         // range lo-hi (the '-' must not be the closing ']')
@@ -185,5 +187,12 @@ mod tests {
                 prop_assert_eq!(ours_pn, host(p, &s, FNM_PATHNAME), "PATHNAME p={:?} s={:?}", p, s);
             }
         }
+    }
+
+    #[test]
+    fn malformed_equiv_marker_inside_bracket_matches_host() {
+        let p = "*[[=]?";
+        let s = "=.";
+        assert_eq!(fnmatch_slice(p.as_bytes(), s.as_bytes(), 0), host(p, s, 0));
     }
 }

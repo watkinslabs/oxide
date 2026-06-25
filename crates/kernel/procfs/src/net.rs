@@ -292,6 +292,7 @@ impl ProcNetUnixInode {
         let mut num: u64 = 1;
         for (kind, path) in net::sock::UNIX_REGISTRY.snapshot_paths() {
             let flags = if kind == 0x0001 { 0x10000u32 } else { 0u32 };
+            let path = net::unix_path_display(&path);
             let _ = writeln!(s, "{:016x}: 00000002 00000000 {:08x} {:04x} 01 0 {}",
                 num, flags, kind, path);
             num += 1;
