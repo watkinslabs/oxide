@@ -147,6 +147,16 @@
     }
 
     #[test]
+    fn route_key_masks_destination_prefix() {
+        let (dst, prefix) = route_key(Some(([192, 168, 99, 123], 24)));
+        assert_eq!(dst.octets(), [192, 168, 99, 0]);
+        assert_eq!(prefix, 24);
+        let (default_dst, default_prefix) = route_key(None);
+        assert_eq!(default_dst.octets(), [0, 0, 0, 0]);
+        assert_eq!(default_prefix, 0);
+    }
+
+    #[test]
     fn build_newaddr_reply_well_formed() {
         let bytes = build_newaddr_reply(
             1, 42, 2, "eth0", [10, 0, 2, 15], 24, RT_SCOPE_UNIVERSE, true,

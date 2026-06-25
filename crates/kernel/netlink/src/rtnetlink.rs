@@ -804,6 +804,56 @@ fn parse_route_attrs(attrs: &[u8])
     (dst, gw, oif, src)
 }
 
+/// Convert an rtnetlink IPv4 destination prefix into a live route key.
+/// # C: O(1)
+#[allow(dead_code)]
+fn route_key(dst: Option<([u8; 4], u8)>) -> (net::Ipv4Addr, u8) {
+    let (addr, prefix_len) = dst.unwrap_or(([0, 0, 0, 0], 0));
+    let prefix_len = prefix_len.min(32);
+    let mask = if prefix_len == 0 { 0 } else { !0u32 << (32 - prefix_len) };
+    (net::Ipv4Addr::from_u32(u32::from_be_bytes(addr) & mask), prefix_len)
+}
+
+/// Keep RTM_NEWROUTE connected to the actual IPv4 datapath in the init netns.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn sync_stack_route_add(
+    dst: Option<([u8; 4], u8)>,
+    gateway: Option<[u8; 4]>,
+    oif: u32,
+    prefsrc: Option<[u8; 4]>,
+) {
+    if net::netdev::current_net_ns() != 0 { return; }
+    sync_stack_route_del(dst, gateway, oif);
+    let (dst, prefix_len) = route_key(dst);
+    net::sock::stack().routes.add(net::route::RouteEntry {
+        dst,
+        prefix_len,
+        iface: net::NetIfaceId::from_raw(oif),
+        gateway: gateway.map(|g| net::Ipv4Addr::from_u32(u32::from_be_bytes(g))),
+        src_hint: prefsrc.map(|s| net::Ipv4Addr::from_u32(u32::from_be_bytes(s))),
+    });
+}
+
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+fn sync_stack_route_add(_: Option<([u8; 4], u8)>, _: Option<[u8; 4]>, _: u32, _: Option<[u8; 4]>) {}
+
+/// Keep RTM_DELROUTE connected to the actual IPv4 datapath in the init netns.
+/// # C: O(N routes)
+#[cfg(target_os = "oxide-kernel")]
+fn sync_stack_route_del(dst: Option<([u8; 4], u8)>, _gateway: Option<[u8; 4]>, oif: u32) {
+    if net::netdev::current_net_ns() != 0 { return; }
+    let (dst, prefix_len) = route_key(dst);
+    net::sock::stack().routes.retain(|e| {
+        e.iface.raw() != oif || e.dst != dst || e.prefix_len != prefix_len
+    });
+}
+
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+fn sync_stack_route_del(_: Option<([u8; 4], u8)>, _: Option<[u8; 4]>, _: u32) {}
+
 /// Handle RTM_NEWROUTE. Buffer layout: nlmsghdr | rtmsg(12) | attrs.
 /// Inserts (table, dst, oif) into the global route table. Returns
 /// NLMSG_ERROR with err=0 on success.
@@ -834,6 +884,7 @@ pub fn handle_newroute(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         table, protocol, scope, kind,
         dst, gateway: gw, oif_ifindex: oif, prefsrc: src,
     });
+    sync_stack_route_add(dst, gw, oif, src);
     crate::mcast::notify_route(false, table, protocol, scope, kind, dst, gw, oif, src);
     nlmsg_ack(req, 0)
 }
@@ -855,7 +906,10 @@ pub fn handle_delroute(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     };
     let dst = dst_addr.map(|a| (a, dst_len));
     let n = route_remove(net::netdev::current_net_ns(), table, dst, oif);
-    if n > 0 { crate::mcast::notify_route(true, table, 0, 0, 0, dst, _gw, oif, _src); }
+    if n > 0 {
+        sync_stack_route_del(dst, _gw, oif);
+        crate::mcast::notify_route(true, table, 0, 0, 0, dst, _gw, oif, _src);
+    }
     nlmsg_ack(req, if n > 0 { 0 } else { -3 /* ESRCH */ })
 }
 
