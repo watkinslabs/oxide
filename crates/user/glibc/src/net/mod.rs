@@ -2,6 +2,8 @@
 //! first; socket wrappers + getaddrinfo follow.
 pub mod addrinfo;
 #[cfg(feature = "freestanding")]
+pub mod base64;
+#[cfg(feature = "freestanding")]
 pub mod ifaddrs;
 #[cfg(feature = "freestanding")]
 pub mod inet6_opt;
