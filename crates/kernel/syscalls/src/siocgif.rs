@@ -39,24 +39,10 @@ const SIOCDELRT:       u64 = 0x890C;
 
 const IFNAMSIZ: usize = 16;
 
-/// Per-iface IPv4 addr + netmask, indexed by NetIfaceId.raw().
-/// 32 slots covers any plausible v1 build. Each slot is two atomic
-/// u32s (addr + mask) so we don't need a separate spinlock for the
-/// dhcpcd post-fork read/write race.
-use core::sync::atomic::{AtomicU32, Ordering};
-struct IfAddr { addr: AtomicU32, mask: AtomicU32 }
-impl IfAddr {
-    const fn new() -> Self { Self { addr: AtomicU32::new(0), mask: AtomicU32::new(0) } }
-}
-const IFADDR_SLOTS: usize = 32;
-#[allow(clippy::declare_interior_mutable_const)]
-const IFADDR_INIT: IfAddr = IfAddr::new();
-static IFADDR: [IfAddr; IFADDR_SLOTS] = [IFADDR_INIT; IFADDR_SLOTS];
-
 fn get_ifaddr(id: net::NetIfaceId) -> (u32, u32) {
-    let idx = id.raw() as usize;
-    if idx >= IFADDR_SLOTS { return (0, 0); }
-    (IFADDR[idx].addr.load(Ordering::Acquire), IFADDR[idx].mask.load(Ordering::Acquire))
+    net::iface_addr::primary(net::netdev::current_net_ns(), id)
+        .map(|(ip, mask)| (ip.as_u32(), mask))
+        .unwrap_or((0, 0))
 }
 
 /// F150: hook installed into the net crate so socket_sendto can
@@ -67,11 +53,22 @@ pub fn iface_primary_ip_hook(id: net::NetIfaceId) -> Option<net::Ipv4Addr> {
     if ip == 0 { None } else { Some(net::Ipv4Addr::from_u32(ip)) }
 }
 
+/// Keep virtio-net's ARP responder in sync with whichever control plane
+/// changes the primary IPv4 address. # C: O(1)
+pub fn ipv4_addr_change_hook(id: net::NetIfaceId, ip: net::Ipv4Addr) {
+    if drv_virtio_net::modern::softirq_iface_id() == id.raw() {
+        drv_virtio_net::modern::set_softirq_ip(ip.octets());
+    }
+}
+
 fn set_ifaddr(id: net::NetIfaceId, ip: u32, mask: u32, set_ip: bool, set_mask: bool) {
-    let idx = id.raw() as usize;
-    if idx >= IFADDR_SLOTS { return; }
-    if set_ip   { IFADDR[idx].addr.store(ip, Ordering::Release); }
-    if set_mask { IFADDR[idx].mask.store(mask, Ordering::Release); }
+    let ns = net::netdev::current_net_ns();
+    if set_ip {
+        net::iface_addr::set_primary_addr(ns, id, net::Ipv4Addr::from_u32(ip), 0);
+    }
+    if set_mask {
+        net::iface_addr::set_primary_mask(ns, id, mask);
+    }
 }
 
 /// Dispatch a SIOC* ioctl. Returns Some(rv) when recognised;
@@ -206,12 +203,6 @@ fn siocsifaddr(arg: u64) -> i64 {
     let ip_be = unsafe { core::ptr::read_volatile((arg + 20) as *const u32) };
     let ip_host = u32::from_be(ip_be);
     set_ifaddr(id, ip_host, 0, true, false);
-    // F138: if this iface is the one the virtio-net rx softirq is
-    // bound to, update its stashed IP so the ARP responder starts
-    // answering "who-has <new-ip>" with our MAC.
-    if drv_virtio_net::modern::softirq_iface_id() == id.raw() {
-        drv_virtio_net::modern::set_softirq_ip(ip_host.to_be_bytes());
-    }
     0
 }
 
@@ -327,8 +318,8 @@ fn siocgifconf(arg: u64) -> i64 {
 ///   u16 rt_pad2; u64 rt_pad3, rt_pad4; u16 rt_metric; ...
 /// sockaddr_in layout: u16 family + u16 port + u32 addr (big-endian)
 /// + 8 bytes zero pad. addr lives at +4 of each sockaddr_in.
-/// The iface is picked by gateway-on-subnet match across the
-/// per-iface address/netmask table populated by SIOCSIFADDR.
+/// The iface is picked by gateway-on-subnet match across the shared
+/// per-iface address state populated by SIOCSIFADDR or RTM_NEWADDR.
 fn siocaddrt(arg: u64) -> i64 {
     if arg + 56 > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     // SAFETY: arg + 56 bounds-checked above; rtentry's three sockaddrs
