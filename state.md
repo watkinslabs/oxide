@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **195/195**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F630-glibc-locale-libc-internal-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **631**, B = **138**, D = **113**
+`F631-glibc-scanf-isoc-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **632**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -434,6 +434,10 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   gettimeofday, duplocale/freelocale, narrow `_l` ctype, wide `_l` ctype, and
   wide case conversion. Verified by ABI export audit, regression suite,
   spec-lint, and both freestanding arch builds.
+- **F631 DONE locally:** ISO C scanf compatibility aliases added for narrow and
+  wide `__isoc23_*scanf`/`__isoc99_*scanf` stream, stdin, string, and `va_list`
+  entry points. Verified by ABI export audit, regression suite, spec-lint, and
+  both freestanding arch builds.
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need

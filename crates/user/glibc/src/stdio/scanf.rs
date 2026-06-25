@@ -41,26 +41,38 @@ impl ScanArgs for Va<'_, '_> {
     }
 }
 
+unsafe fn scan_str_va(s: *const u8, fmt: *const u8, ap: &mut VaList) -> i32 {
+    // SAFETY: s/fmt are NUL-terminated; ap holds matching pointer args.
+    unsafe {
+        let mut src = StrSource::new(s);
+        let mut a = Va(ap);
+        scan::vscan(&mut src, fmt, &mut a)
+    }
+}
+
+unsafe fn scan_file_va(f: *mut FILE, fmt: *const u8, ap: &mut VaList) -> i32 {
+    // SAFETY: f is a readable stream; fmt NUL-terminated; ap pointer args.
+    unsafe {
+        let mut src = FileSource::new(f);
+        let mut a = Va(ap);
+        let r = scan::vscan(&mut src, fmt, &mut a);
+        src.finish();
+        r
+    }
+}
+
 // # C: int vsscanf(const char *s, const char *fmt, va_list ap)
 #[no_mangle]
 pub unsafe extern "C" fn vsscanf(s: *const u8, fmt: *const u8, mut ap: VaList) -> i32 {
     // SAFETY: s/fmt are NUL-terminated; ap holds matching pointer args.
-    unsafe {
-        let mut src = StrSource::new(s);
-        let mut a = Va(&mut ap);
-        scan::vscan(&mut src, fmt, &mut a)
-    }
+    unsafe { scan_str_va(s, fmt, &mut ap) }
 }
 
 // # C: int sscanf(const char *s, const char *fmt, ...)
 #[no_mangle]
 pub unsafe extern "C" fn sscanf(s: *const u8, fmt: *const u8, mut ap: ...) -> i32 {
     // SAFETY: s/fmt are NUL-terminated; ap supplies the pointer args.
-    unsafe {
-        let mut src = StrSource::new(s);
-        let mut a = Va(&mut ap);
-        scan::vscan(&mut src, fmt, &mut a)
-    }
+    unsafe { scan_str_va(s, fmt, &mut ap) }
 }
 
 // glibc 2.38+ headers redirect sscanf to __isoc23_sscanf (and older ones to
@@ -69,54 +81,107 @@ pub unsafe extern "C" fn sscanf(s: *const u8, fmt: *const u8, mut ap: ...) -> i3
 #[no_mangle]
 pub unsafe extern "C" fn __isoc23_sscanf(s: *const u8, fmt: *const u8, mut ap: ...) -> i32 {
     // SAFETY: s/fmt NUL-terminated; ap supplies the pointer args.
-    unsafe { let mut src = StrSource::new(s); let mut a = Va(&mut ap); scan::vscan(&mut src, fmt, &mut a) }
+    unsafe { scan_str_va(s, fmt, &mut ap) }
 }
 // # C: int __isoc99_sscanf(const char *s, const char *fmt, ...)
 #[no_mangle]
 pub unsafe extern "C" fn __isoc99_sscanf(s: *const u8, fmt: *const u8, mut ap: ...) -> i32 {
     // SAFETY: s/fmt NUL-terminated; ap supplies the pointer args.
-    unsafe { let mut src = StrSource::new(s); let mut a = Va(&mut ap); scan::vscan(&mut src, fmt, &mut a) }
+    unsafe { scan_str_va(s, fmt, &mut ap) }
+}
+
+// # C: int __isoc23_vsscanf(const char *s, const char *fmt, va_list ap)
+#[no_mangle]
+pub unsafe extern "C" fn __isoc23_vsscanf(s: *const u8, fmt: *const u8, mut ap: VaList) -> i32 {
+    // SAFETY: same ABI contract and va_list layout as vsscanf.
+    unsafe { scan_str_va(s, fmt, &mut ap) }
+}
+
+// # C: int __isoc99_vsscanf(const char *s, const char *fmt, va_list ap)
+#[no_mangle]
+pub unsafe extern "C" fn __isoc99_vsscanf(s: *const u8, fmt: *const u8, mut ap: VaList) -> i32 {
+    // SAFETY: same ABI contract and va_list layout as vsscanf.
+    unsafe { scan_str_va(s, fmt, &mut ap) }
 }
 
 // # C: int vfscanf(FILE *f, const char *fmt, va_list ap)
 #[no_mangle]
 pub unsafe extern "C" fn vfscanf(f: *mut FILE, fmt: *const u8, mut ap: VaList) -> i32 {
     // SAFETY: f is a readable stream; fmt NUL-terminated; ap pointer args.
-    unsafe {
-        let mut src = FileSource::new(f);
-        let mut a = Va(&mut ap);
-        let r = scan::vscan(&mut src, fmt, &mut a);
-        src.finish();
-        r
-    }
+    unsafe { scan_file_va(f, fmt, &mut ap) }
 }
 // # C: int fscanf(FILE *f, const char *fmt, ...)
 #[no_mangle]
 pub unsafe extern "C" fn fscanf(f: *mut FILE, fmt: *const u8, mut ap: ...) -> i32 {
     // SAFETY: f is a readable stream; ap supplies the pointer args.
-    unsafe {
-        let mut src = FileSource::new(f);
-        let mut a = Va(&mut ap);
-        let r = scan::vscan(&mut src, fmt, &mut a);
-        src.finish();
-        r
-    }
+    unsafe { scan_file_va(f, fmt, &mut ap) }
 }
+
+// # C: int __isoc23_vfscanf(FILE *f, const char *fmt, va_list ap)
+#[no_mangle]
+pub unsafe extern "C" fn __isoc23_vfscanf(f: *mut FILE, fmt: *const u8, mut ap: VaList) -> i32 {
+    // SAFETY: same ABI contract and va_list layout as vfscanf.
+    unsafe { scan_file_va(f, fmt, &mut ap) }
+}
+
+// # C: int __isoc99_vfscanf(FILE *f, const char *fmt, va_list ap)
+#[no_mangle]
+pub unsafe extern "C" fn __isoc99_vfscanf(f: *mut FILE, fmt: *const u8, mut ap: VaList) -> i32 {
+    // SAFETY: same ABI contract and va_list layout as vfscanf.
+    unsafe { scan_file_va(f, fmt, &mut ap) }
+}
+
+// # C: int __isoc23_fscanf(FILE *f, const char *fmt, ...)
+#[no_mangle]
+pub unsafe extern "C" fn __isoc23_fscanf(f: *mut FILE, fmt: *const u8, mut ap: ...) -> i32 {
+    // SAFETY: same ABI contract and varargs layout as fscanf.
+    unsafe { scan_file_va(f, fmt, &mut ap) }
+}
+
+// # C: int __isoc99_fscanf(FILE *f, const char *fmt, ...)
+#[no_mangle]
+pub unsafe extern "C" fn __isoc99_fscanf(f: *mut FILE, fmt: *const u8, mut ap: ...) -> i32 {
+    // SAFETY: same ABI contract and varargs layout as fscanf.
+    unsafe { scan_file_va(f, fmt, &mut ap) }
+}
+
 // # C: int vscanf(const char *fmt, va_list ap)
 #[no_mangle]
-pub unsafe extern "C" fn vscanf(fmt: *const u8, ap: VaList) -> i32 {
+pub unsafe extern "C" fn vscanf(fmt: *const u8, mut ap: VaList) -> i32 {
     // SAFETY: reads from stdin; fmt NUL-terminated; ap pointer args.
-    unsafe { vfscanf(stdin_ptr(), fmt, ap) }
+    unsafe { scan_file_va(stdin_ptr(), fmt, &mut ap) }
 }
 // # C: int scanf(const char *fmt, ...)
 #[no_mangle]
 pub unsafe extern "C" fn scanf(fmt: *const u8, mut ap: ...) -> i32 {
     // SAFETY: reads from stdin; ap supplies the pointer args.
-    unsafe {
-        let mut src = FileSource::new(stdin_ptr());
-        let mut a = Va(&mut ap);
-        let r = scan::vscan(&mut src, fmt, &mut a);
-        src.finish();
-        r
-    }
+    unsafe { scan_file_va(stdin_ptr(), fmt, &mut ap) }
+}
+
+// # C: int __isoc23_vscanf(const char *fmt, va_list ap)
+#[no_mangle]
+pub unsafe extern "C" fn __isoc23_vscanf(fmt: *const u8, mut ap: VaList) -> i32 {
+    // SAFETY: same ABI contract and va_list layout as vscanf.
+    unsafe { scan_file_va(stdin_ptr(), fmt, &mut ap) }
+}
+
+// # C: int __isoc99_vscanf(const char *fmt, va_list ap)
+#[no_mangle]
+pub unsafe extern "C" fn __isoc99_vscanf(fmt: *const u8, mut ap: VaList) -> i32 {
+    // SAFETY: same ABI contract and va_list layout as vscanf.
+    unsafe { scan_file_va(stdin_ptr(), fmt, &mut ap) }
+}
+
+// # C: int __isoc23_scanf(const char *fmt, ...)
+#[no_mangle]
+pub unsafe extern "C" fn __isoc23_scanf(fmt: *const u8, mut ap: ...) -> i32 {
+    // SAFETY: same ABI contract and varargs layout as scanf.
+    unsafe { scan_file_va(stdin_ptr(), fmt, &mut ap) }
+}
+
+// # C: int __isoc99_scanf(const char *fmt, ...)
+#[no_mangle]
+pub unsafe extern "C" fn __isoc99_scanf(fmt: *const u8, mut ap: ...) -> i32 {
+    // SAFETY: same ABI contract and varargs layout as scanf.
+    unsafe { scan_file_va(stdin_ptr(), fmt, &mut ap) }
 }
