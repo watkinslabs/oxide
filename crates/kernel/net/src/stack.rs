@@ -315,9 +315,9 @@ impl NetStack {
         if !addrs.iter().any(|a| *a == ip) { addrs.push(ip); }
     }
     /// F180c: is `ip` bound on `iface`? # C: O(N addrs)
-    pub fn v6_addr_owned_by(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool {
-        self.v6_addrs.lock().get(&iface).map(|v| v.iter().any(|a| *a == ip)).unwrap_or(false)
-    }
+    pub fn v6_addr_owned_by(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool { self.v6_addrs.lock().get(&iface).map(|v| v.iter().any(|a| *a == ip)).unwrap_or(false) }
+    /// Pick an IPv6 source address bound to `iface`, if one exists. # C: O(N addrs)
+    pub(crate) fn v6_src_on_iface(&self, iface: NetIfaceId) -> Option<crate::addr::Ipv6Addr> { self.v6_addrs.lock().get(&iface).and_then(|v| v.first().copied()) }
 
     /// Boot-time wiring: create + register a loopback netdev,
     /// add canonical loopback routes through it. Returns

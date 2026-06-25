@@ -104,7 +104,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | NDP NA cache populate (inbound)      | done     | F180c |
 | NDP NS outbound on cache-miss        | partial  | virtio-net emits NS on miss; packet queue/replay TBD |
 | Router Solicitation / RA             | done     | RS emission plus RA Prefix Info installs SLAAC /64 addr + default route |
-| MLD (multicast listener discovery)   | partial  | MLDv1 report/done emit on kernel and socket multicast join/leave |
+| MLD (multicast listener discovery)   | done     | MLDv1 reports on join and query; done emits on leave |
 | Redirect message                     | gap      | rare; mostly disabled in Linux |
 
 ## 6. Routing & forwarding
@@ -177,7 +177,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | IPv6 inbound reassembly              | done     | RFC 8200 Fragment headers reassemble before L4 demux |
 | IPv6 outbound fragmentation          | done     | L4 send path emits RFC 8200 Fragment headers to iface MTU |
 | IP_MULTICAST_*                       | gap      | |
-| IGMP / MLD                           | partial  | MLDv1 emit for IPv6 joins; IGMP and MLD query handling TBD |
+| IGMP / MLD                           | partial  | MLDv1 host behavior wired; IGMP TBD |
 
 ## 11. Performance / observability
 
@@ -205,7 +205,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 1. **NETLINK_ROUTE completeness** (RTM_GETLINK / NEWADDR / GETROUTE)
    — every userspace network tool reads these (`ip`, `networkd`,
    `NetworkManager`). High impact for "real distro programs work."
-2. **MLD query handling** — complete host multicast behavior.
+2. **IGMP socket multicast** — complete IPv4 host multicast behavior.
 3. **HBH / Routing / DestOpts extension headers** — needed for stricter IPv6 conformance.
 
 Items beyond #10 are tuning/perf or rare-app territory.
