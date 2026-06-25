@@ -42,6 +42,7 @@ pub use unix_sock::{
 };
 pub mod route;
 pub mod route6;
+pub mod iface_addr;
 pub mod netfilter_hook;
 pub mod bpf_filter;
 pub mod mcast_filter;
