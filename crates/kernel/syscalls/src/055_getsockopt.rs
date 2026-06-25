@@ -66,6 +66,8 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const IP_PKTINFO: u64 = 8;
     const IP_MULTICAST_TTL: u64 = 33;
     const IP_MULTICAST_LOOP: u64 = 34;
+    const IP_MSFILTER: u64 = 41;
+    const MCAST_MSFILTER: u64 = 48;
     const IPV6_V6ONLY: u64 = 26;
     const TCP_CORK: u64 = 3;
     const TCP_KEEPIDLE: u64 = 4;
@@ -103,6 +105,8 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (IPPROTO_IP, IP_PKTINFO) => return i32_back(s.opts.ip_pktinfo.load(Ordering::Acquire)),
             (IPPROTO_IP, IP_MULTICAST_TTL) => return i32_back(s.opts.ip_mcast_ttl.load(Ordering::Acquire)),
             (IPPROTO_IP, IP_MULTICAST_LOOP) => return i32_back(s.opts.ip_mcast_loop.load(Ordering::Acquire)),
+            (IPPROTO_IP, IP_MSFILTER) => return ipv4_msfilter_get(&s, optval, optlen_p),
+            (IPPROTO_IP, MCAST_MSFILTER) => return ipv4_group_filter_get(&s, optval, optlen_p),
             (IPPROTO_IPV6, IPV6_V6ONLY) => return i32_back(s.opts.ipv6_v6only.load(Ordering::Acquire)),
             (IPPROTO_TCP, 1) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_CORK) => return i32_back(s.opts.tcp_cork.load(Ordering::Acquire)),
@@ -175,6 +179,137 @@ fn bind_to_device_name(s: &alloc::sync::Arc<net::sock::InetSocket>,
         core::ptr::write_volatile((optval + name.len() as u64) as *mut u8, 0);
         core::ptr::write_volatile(optlen_p as *mut u32, need as u32);
     }
+    0
+}
+
+fn read_u32_at(ptr: u64) -> Option<u32> {
+    if ptr + 4 > USER_VA_END { return None; }
+    // SAFETY: ptr+4 was checked; scalar ABI field read.
+    Some(unsafe { core::ptr::read_volatile(ptr as *const u32) })
+}
+
+fn write_u32_at(ptr: u64, value: u32) {
+    // SAFETY: caller validated the containing user buffer.
+    unsafe { core::ptr::write_volatile(ptr as *mut u32, value); }
+}
+
+fn read_ipv4_at(ptr: u64) -> Option<net::Ipv4Addr> {
+    let be = read_u32_at(ptr)?;
+    Some(net::Ipv4Addr::from_u32(u32::from_be(be)))
+}
+
+fn write_ipv4_at(ptr: u64, addr: net::Ipv4Addr) {
+    write_u32_at(ptr, addr.as_u32().to_be());
+}
+
+fn read_sockaddr_storage_v4(ptr: u64) -> Option<net::Ipv4Addr> {
+    const AF_INET: u16 = 2;
+    if ptr + 16 > USER_VA_END { return None; }
+    // SAFETY: sockaddr_storage begins with sockaddr_in-compatible fields.
+    let family = unsafe { core::ptr::read_volatile(ptr as *const u16) };
+    if family != AF_INET { return None; }
+    read_ipv4_at(ptr + 4)
+}
+
+fn write_sockaddr_storage_v4(ptr: u64, addr: net::Ipv4Addr) {
+    const AF_INET: u16 = 2;
+    for i in 0..128u64 {
+        // SAFETY: caller validated the whole sockaddr_storage slot.
+        unsafe { core::ptr::write_volatile((ptr + i) as *mut u8, 0); }
+    }
+    // SAFETY: caller validated the slot; sockaddr_in-compatible fields.
+    unsafe { core::ptr::write_volatile(ptr as *mut u16, AF_INET); }
+    write_ipv4_at(ptr + 4, addr);
+}
+
+fn iface_for_v4_addr(addr: net::Ipv4Addr) -> Option<net::NetIfaceId> {
+    net::sock::stack().routes.snapshot().into_iter()
+        .find(|r| r.src_hint == Some(addr))
+        .map(|r| r.iface)
+}
+
+fn default_v4_mcast_iface(s: &alloc::sync::Arc<net::sock::InetSocket>, group: net::Ipv4Addr)
+    -> Option<net::NetIfaceId>
+{
+    use core::sync::atomic::Ordering;
+    let raw = s.opts.ip_mcast_ifindex.load(Ordering::Acquire);
+    if raw != 0 { return Some(net::NetIfaceId::from_raw(raw)); }
+    let addr = net::Ipv4Addr::from_u32(s.opts.ip_mcast_ifaddr.load(Ordering::Acquire));
+    if !addr.is_unspecified() { return iface_for_v4_addr(addr); }
+    let bound = s.opts.bound_ifindex.load(Ordering::Acquire);
+    if bound != 0 { return Some(net::NetIfaceId::from_raw(bound)); }
+    if let Some(r) = net::sock::stack().routes.lookup(group) { return Some(r.iface); }
+    let routes = net::sock::stack().routes.snapshot();
+    if routes.len() == 1 { Some(routes[0].iface) } else { None }
+}
+
+fn resolve_v4_mcast_iface(
+    s: &alloc::sync::Arc<net::sock::InetSocket>,
+    group: net::Ipv4Addr,
+    ifindex: u32,
+    ifaddr: net::Ipv4Addr,
+) -> Result<net::NetIfaceId, i64> {
+    let iface = if ifindex != 0 {
+        net::NetIfaceId::from_raw(ifindex)
+    } else if !ifaddr.is_unspecified() {
+        iface_for_v4_addr(ifaddr).ok_or(-(Errno::Enodev.as_i32() as i64))?
+    } else {
+        default_v4_mcast_iface(s, group).ok_or(-(Errno::Enodev.as_i32() as i64))?
+    };
+    if net::sock::stack().ifaces.lookup(iface).is_none() {
+        return Err(-(Errno::Enodev.as_i32() as i64));
+    }
+    Ok(iface)
+}
+
+fn udp_port(s: &alloc::sync::Arc<net::sock::InetSocket>) -> Result<u16, i64> {
+    match *s.local_port.lock() {
+        Some(p) => Ok(p),
+        None => Err(-(Errno::Einval.as_i32() as i64)),
+    }
+}
+
+fn ipv4_msfilter_get(s: &alloc::sync::Arc<net::sock::InetSocket>, optval: u64, optlen_p: u64) -> i64 {
+    if optval == 0 || optval >= USER_VA_END || optlen_p == 0 || optlen_p >= USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let cap = match read_u32_at(optlen_p) { Some(v) => v as u64, None => return -(Errno::Efault.as_i32() as i64) };
+    if cap < 16 || optval + cap > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
+    let Some(group) = read_ipv4_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
+    let Some(ifaddr) = read_ipv4_at(optval + 4) else { return -(Errno::Efault.as_i32() as i64); };
+    let Some(requested) = read_u32_at(optval + 12) else { return -(Errno::Efault.as_i32() as i64); };
+    if !group.is_multicast() { return -(Errno::Einval.as_i32() as i64); }
+    let iface = match resolve_v4_mcast_iface(s, group, 0, ifaddr) { Ok(i) => i, Err(e) => return e };
+    let port = match udp_port(s) { Ok(p) => p, Err(e) => return e };
+    let f = net::mcast_filter::get(port, iface, group);
+    let n = core::cmp::min(requested as usize, f.sources.len());
+    if 16u64 + n as u64 * 4 > cap { return -(Errno::Erange.as_i32() as i64); }
+    write_u32_at(optval + 8, f.mode.as_u32());
+    write_u32_at(optval + 12, f.sources.len() as u32);
+    for i in 0..n { write_ipv4_at(optval + 16 + i as u64 * 4, f.sources[i]); }
+    write_u32_at(optlen_p, (16 + n * 4) as u32);
+    0
+}
+
+fn ipv4_group_filter_get(s: &alloc::sync::Arc<net::sock::InetSocket>, optval: u64, optlen_p: u64) -> i64 {
+    if optval == 0 || optval >= USER_VA_END || optlen_p == 0 || optlen_p >= USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let cap = match read_u32_at(optlen_p) { Some(v) => v as u64, None => return -(Errno::Efault.as_i32() as i64) };
+    if cap < 144 || optval + cap > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
+    let Some(ifindex) = read_u32_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
+    let Some(group) = read_sockaddr_storage_v4(optval + 8) else { return -(Errno::Einval.as_i32() as i64); };
+    let Some(requested) = read_u32_at(optval + 140) else { return -(Errno::Efault.as_i32() as i64); };
+    if !group.is_multicast() { return -(Errno::Einval.as_i32() as i64); }
+    let iface = match resolve_v4_mcast_iface(s, group, ifindex, net::Ipv4Addr::ANY) { Ok(i) => i, Err(e) => return e };
+    let port = match udp_port(s) { Ok(p) => p, Err(e) => return e };
+    let f = net::mcast_filter::get(port, iface, group);
+    let n = core::cmp::min(requested as usize, f.sources.len());
+    if 144u64 + n as u64 * 128 > cap { return -(Errno::Erange.as_i32() as i64); }
+    write_u32_at(optval + 136, f.mode.as_u32());
+    write_u32_at(optval + 140, f.sources.len() as u32);
+    for i in 0..n { write_sockaddr_storage_v4(optval + 144 + i as u64 * 128, f.sources[i]); }
+    write_u32_at(optlen_p, (144 + n * 128) as u32);
     0
 }
 
