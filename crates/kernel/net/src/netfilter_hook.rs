@@ -35,12 +35,12 @@ pub(crate) fn nf_hook_eval(hook_id: u32, pkt: &[u8], family: u8) -> u32 {
 }
 
 // Netfilter hook ids (Linux `NF_INET_*`, uapi netfilter.h). Mirror
-// `netfilter::hook`. PRE_ROUTING + LOCAL_IN gate the RX path; LOCAL_OUT +
-// POST_ROUTING gate locally-generated TX. FORWARD has no traffic — this is
-// a host stack with no IP forwarding path, so (as in Linux with forwarding
-// off) the FORWARD chain is never traversed.
+// `netfilter::hook`. PRE_ROUTING gates RX before route selection; LOCAL_IN
+// gates local delivery; FORWARD + POST_ROUTING gate router-mode transit;
+// LOCAL_OUT + POST_ROUTING gate locally-generated TX.
 pub const NF_INET_PRE_ROUTING:  u32 = 0;
 pub const NF_INET_LOCAL_IN:     u32 = 1;
+pub const NF_INET_FORWARD:      u32 = 2;
 pub const NF_INET_LOCAL_OUT:    u32 = 3;
 pub const NF_INET_POST_ROUTING: u32 = 4;
 

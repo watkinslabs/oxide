@@ -388,7 +388,7 @@ ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n\
     );
     devfs::register(
         "/proc/sys/net/ipv4/ip_forward",
-        crate::sysctl::SysctlInode::new(b"0\n") as InodeRef,
+        crate::sysctl::IpForwardInode::new() as InodeRef,
     );
     devfs::register(
         "/proc/sys/net/ipv4/tcp_syncookies",
@@ -553,10 +553,6 @@ Inter-| sta-|   Quality        |   Discarded packets               | Missed | WE
 
     // F158: more /proc/sys entries — sysctl knobs Linux exposes that
     // glibc/systemd/networking tools probe at startup.
-    devfs::register(
-        "/proc/sys/net/ipv4/ip_forward",
-        StaticFileInode::new(b"0\n") as InodeRef,
-    );
     devfs::register(
         "/proc/sys/net/ipv4/tcp_syncookies",
         StaticFileInode::new(b"1\n") as InodeRef,

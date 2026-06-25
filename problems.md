@@ -2,6 +2,7 @@
 
 ## Open
 
+- IPv4 forwarding drops transit packets with expired TTL or missing routes silently instead of generating ICMP Time Exceeded / Destination Unreachable. Track as a forwarding refinement after basic router mode.
 
 ## Resolved
 
@@ -11,3 +12,4 @@
 - IGMPv3/MLDv2 source-list query handling was missing. Fixed by parsing source lists from inbound source-specific queries and reflecting them in matching listener reports.
 - Policy routing rules were not enforced by the live IPv4 data path. Fixed by moving custom rules into the net layer, making IPv4 routes table-aware, and selecting routes by effective rule priority.
 - Legacy SIOCADDRT route insertion was not table-aware after route entries gained table selection. Fixed by inserting ioctl-created routes into the main routing table.
+- `/proc/sys/net/ipv4/ip_forward` was registered twice, with a later read-only static file shadowing the writable sysctl. Fixed by using one inode backed by live IPv4 forwarding state.
