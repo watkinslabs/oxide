@@ -332,3 +332,42 @@
         assert_eq!(nla_len, 9);
         assert_eq!(&out[4..9], b"eth0\0");
     }
+
+    #[test]
+    fn newlink_emits_stats64_in_linux_order() {
+        let stats = LinkStats64 {
+            rx_packets: 1,
+            tx_packets: 2,
+            rx_bytes: 3,
+            tx_bytes: 4,
+            rx_errors: 5,
+            tx_errors: 6,
+            rx_dropped: 7,
+            tx_dropped: 8,
+        };
+        let msg = build_newlink_reply(
+            1,
+            2,
+            3,
+            "eth0",
+            [2, 0, 0, 0, 0, 1],
+            1500,
+            false,
+            iff::IFF_UP | iff::IFF_RUNNING,
+            stats,
+            true,
+        );
+        let attrs = &msg[Nlmsghdr::SIZE + Ifinfomsg::SIZE..];
+        let raw = find_attr(attrs, ifla::IFLA_STATS64).expect("IFLA_STATS64");
+        assert_eq!(raw.len(), LinkStats64::SIZE);
+        let field = |i: usize| u64::from_ne_bytes(raw[i * 8..i * 8 + 8].try_into().unwrap());
+        assert_eq!(field(0), 1);
+        assert_eq!(field(1), 2);
+        assert_eq!(field(2), 3);
+        assert_eq!(field(3), 4);
+        assert_eq!(field(4), 5);
+        assert_eq!(field(5), 6);
+        assert_eq!(field(6), 7);
+        assert_eq!(field(7), 8);
+        assert_eq!(field(24), 0);
+    }
