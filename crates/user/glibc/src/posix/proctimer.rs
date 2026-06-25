@@ -126,6 +126,12 @@ pub unsafe extern "C" fn select(nfds: i32, readfds: *mut fd_set, writefds: *mut 
     // timespec + NULL sigmask (the asm-generic composition, like io.rs).
     unsafe { do_select(nfds, readfds, writefds, exceptfds, timeout) }
 }
+// # C: int __select(int nfds, fd_set *r, fd_set *w, fd_set *e, struct timeval *to)
+#[no_mangle]
+pub unsafe extern "C" fn __select(nfds: i32, readfds: *mut fd_set, writefds: *mut fd_set, exceptfds: *mut fd_set, timeout: *mut timeval) -> i32 {
+    // SAFETY: __select has the same fd_set/timeval contract as select.
+    unsafe { select(nfds, readfds, writefds, exceptfds, timeout) }
+}
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn do_select(nfds: i32, r: *mut fd_set, w: *mut fd_set, e: *mut fd_set, to: *mut timeval) -> i32 {
@@ -178,6 +184,12 @@ pub unsafe extern "C" fn poll(fds: *mut pollfd, nfds: u64, timeout: i32) -> i32 
         };
         ret_isize(sys6(nr::PPOLL, fds as usize, nfds as usize, tsp as usize, 0, 8, 0)) as i32
     }
+}
+// # C: int __poll(struct pollfd *fds, nfds_t nfds, int timeout)
+#[no_mangle]
+pub unsafe extern "C" fn __poll(fds: *mut pollfd, nfds: u64, timeout: i32) -> i32 {
+    // SAFETY: __poll has the same pollfd array contract as poll.
+    unsafe { poll(fds, nfds, timeout) }
 }
 
 // # C: int ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *tmo,
