@@ -226,6 +226,26 @@ impl WArgs<'_, '_> {
     unsafe fn ptr(&mut self) -> *mut u8 { unsafe { self.0.next_arg::<*mut c_void>() as *mut u8 } }
 }
 
+unsafe fn wscan_str_va(s: *const i32, fmt: *const i32, ap: &mut VaList) -> i32 {
+    // SAFETY: s/fmt are NUL-terminated wide strings; ap holds pointer args.
+    unsafe {
+        let mut src = WStr { p: s, pos: 0 };
+        let mut a = WArgs(ap);
+        wscan(&mut src, fmt, &mut a)
+    }
+}
+
+unsafe fn wscan_file_va(f: *mut FILE, fmt: *const i32, ap: &mut VaList) -> i32 {
+    // SAFETY: f is a readable stream; fmt NUL-terminated; ap pointer args.
+    unsafe {
+        let mut src = WFile { f, ahead: WEOF, primed: false, n: 0 };
+        let mut a = WArgs(ap);
+        let r = wscan(&mut src, fmt, &mut a);
+        src.finish();
+        r
+    }
+}
+
 fn is_ws(c: i32) -> bool { matches!(c, 0x20 | 0x09 | 0x0a | 0x0b | 0x0c | 0x0d) }
 fn digit_val(c: i32, base: i64) -> Option<i64> {
     let d = match c { 0x30..=0x39 => c - 0x30, 0x61..=0x7a => c - 0x61 + 10, 0x41..=0x5a => c - 0x41 + 10, _ => return None };
@@ -380,37 +400,37 @@ unsafe fn wconv_str(src: &mut dyn WSource, args: &mut WArgs, suppress: bool, cap
 #[no_mangle]
 pub unsafe extern "C" fn vswscanf(s: *const i32, fmt: *const i32, mut ap: VaList) -> i32 {
     // SAFETY: s/fmt are NUL-terminated wide strings; ap holds pointer args.
-    unsafe { let mut src = WStr { p: s, pos: 0 }; let mut a = WArgs(&mut ap); wscan(&mut src, fmt, &mut a) }
+    unsafe { wscan_str_va(s, fmt, &mut ap) }
 }
 // # C: int swscanf(const wchar_t *s, const wchar_t *fmt, ...)
 #[no_mangle]
 pub unsafe extern "C" fn swscanf(s: *const i32, fmt: *const i32, mut ap: ...) -> i32 {
     // SAFETY: s/fmt NUL-terminated wide strings; ap supplies the pointer args.
-    unsafe { let mut src = WStr { p: s, pos: 0 }; let mut a = WArgs(&mut ap); wscan(&mut src, fmt, &mut a) }
+    unsafe { wscan_str_va(s, fmt, &mut ap) }
 }
 // # C: int vfwscanf(FILE *f, const wchar_t *fmt, va_list ap)
 #[no_mangle]
 pub unsafe extern "C" fn vfwscanf(f: *mut FILE, fmt: *const i32, mut ap: VaList) -> i32 {
     // SAFETY: f is a readable stream; fmt NUL-terminated; ap pointer args.
-    unsafe { let mut src = WFile { f, ahead: WEOF, primed: false, n: 0 }; let mut a = WArgs(&mut ap); wscan(&mut src, fmt, &mut a) }
+    unsafe { wscan_file_va(f, fmt, &mut ap) }
 }
 // # C: int fwscanf(FILE *f, const wchar_t *fmt, ...)
 #[no_mangle]
 pub unsafe extern "C" fn fwscanf(f: *mut FILE, fmt: *const i32, mut ap: ...) -> i32 {
     // SAFETY: f is a readable stream; ap supplies the pointer args.
-    unsafe { let mut src = WFile { f, ahead: WEOF, primed: false, n: 0 }; let mut a = WArgs(&mut ap); wscan(&mut src, fmt, &mut a) }
+    unsafe { wscan_file_va(f, fmt, &mut ap) }
 }
 // # C: int vwscanf(const wchar_t *fmt, va_list ap)
 #[no_mangle]
 pub unsafe extern "C" fn vwscanf(fmt: *const i32, mut ap: VaList) -> i32 {
     // SAFETY: reads from stdin; fmt NUL-terminated; ap pointer args.
-    unsafe { let mut src = WFile { f: stdin_ptr(), ahead: WEOF, primed: false, n: 0 }; let mut a = WArgs(&mut ap); wscan(&mut src, fmt, &mut a) }
+    unsafe { wscan_file_va(stdin_ptr(), fmt, &mut ap) }
 }
 // # C: int wscanf(const wchar_t *fmt, ...)
 #[no_mangle]
 pub unsafe extern "C" fn wscanf(fmt: *const i32, mut ap: ...) -> i32 {
     // SAFETY: reads from stdin; ap supplies the pointer args.
-    unsafe { let mut src = WFile { f: stdin_ptr(), ahead: WEOF, primed: false, n: 0 }; let mut a = WArgs(&mut ap); wscan(&mut src, fmt, &mut a) }
+    unsafe { wscan_file_va(stdin_ptr(), fmt, &mut ap) }
 }
 
 // glibc 2.38+ headers redirect the wide scanf family to __isoc23_* (older to
@@ -421,7 +441,7 @@ macro_rules! isoc_swscanf {
         #[no_mangle]
         pub unsafe extern "C" fn $name(s: *const i32, fmt: *const i32, mut ap: ...) -> i32 {
             // SAFETY: s/fmt NUL-terminated wide strings; ap supplies pointer args.
-            unsafe { let mut src = WStr { p: s, pos: 0 }; let mut a = WArgs(&mut ap); wscan(&mut src, fmt, &mut a) }
+            unsafe { wscan_str_va(s, fmt, &mut ap) }
         }
     };
 }
@@ -431,7 +451,7 @@ macro_rules! isoc_fwscanf {
         #[no_mangle]
         pub unsafe extern "C" fn $name(f: *mut FILE, fmt: *const i32, mut ap: ...) -> i32 {
             // SAFETY: f is a readable stream; ap supplies the pointer args.
-            unsafe { let mut src = WFile { f, ahead: WEOF, primed: false, n: 0 }; let mut a = WArgs(&mut ap); wscan(&mut src, fmt, &mut a) }
+            unsafe { wscan_file_va(f, fmt, &mut ap) }
         }
     };
 }
@@ -441,7 +461,37 @@ macro_rules! isoc_wscanf {
         #[no_mangle]
         pub unsafe extern "C" fn $name(fmt: *const i32, mut ap: ...) -> i32 {
             // SAFETY: reads from stdin; ap supplies the pointer args.
-            unsafe { let mut src = WFile { f: stdin_ptr(), ahead: WEOF, primed: false, n: 0 }; let mut a = WArgs(&mut ap); wscan(&mut src, fmt, &mut a) }
+            unsafe { wscan_file_va(stdin_ptr(), fmt, &mut ap) }
+        }
+    };
+}
+macro_rules! isoc_vswscanf {
+    ($name:ident) => {
+        /// # C: int $name(const wchar_t *s, const wchar_t *fmt, va_list ap)
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(s: *const i32, fmt: *const i32, mut ap: VaList) -> i32 {
+            // SAFETY: same ABI contract as vswscanf.
+            unsafe { wscan_str_va(s, fmt, &mut ap) }
+        }
+    };
+}
+macro_rules! isoc_vfwscanf {
+    ($name:ident) => {
+        /// # C: int $name(FILE *f, const wchar_t *fmt, va_list ap)
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(f: *mut FILE, fmt: *const i32, mut ap: VaList) -> i32 {
+            // SAFETY: same ABI contract as vfwscanf.
+            unsafe { wscan_file_va(f, fmt, &mut ap) }
+        }
+    };
+}
+macro_rules! isoc_vwscanf {
+    ($name:ident) => {
+        /// # C: int $name(const wchar_t *fmt, va_list ap)
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(fmt: *const i32, mut ap: VaList) -> i32 {
+            // SAFETY: same ABI contract and va_list layout as vwscanf.
+            unsafe { wscan_file_va(stdin_ptr(), fmt, &mut ap) }
         }
     };
 }
@@ -451,3 +501,9 @@ isoc_fwscanf!(__isoc23_fwscanf);
 isoc_fwscanf!(__isoc99_fwscanf);
 isoc_wscanf!(__isoc23_wscanf);
 isoc_wscanf!(__isoc99_wscanf);
+isoc_vswscanf!(__isoc23_vswscanf);
+isoc_vswscanf!(__isoc99_vswscanf);
+isoc_vfwscanf!(__isoc23_vfwscanf);
+isoc_vfwscanf!(__isoc99_vfwscanf);
+isoc_vwscanf!(__isoc23_vwscanf);
+isoc_vwscanf!(__isoc99_vwscanf);
