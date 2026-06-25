@@ -34,8 +34,8 @@ use crate::netfilter_hook::{nf_hook_eval, nf_output};
 pub struct UdpRxQueue {
     pub bound_ip:   Ipv4Addr,
     pub bound_port: u16,
-    /// Datagrams waiting for a reader: (src_ip, src_port, payload bytes).
-    pub q: Spinlock<VecDeque<(Ipv4Addr, u16, Vec<u8>)>, StackLockClass>,
+    /// Datagrams waiting for a reader: (src, sport, dst, iface, payload).
+    pub q: Spinlock<VecDeque<(Ipv4Addr, u16, Ipv4Addr, NetIfaceId, Vec<u8>)>, StackLockClass>,
     /// F162: blocking sys_recvfrom waiters (kernel only).
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
@@ -379,6 +379,15 @@ impl NetStack {
     /// front payload and leaves queue state unchanged.
     /// # C: O(log N + payload bytes when peeking)
     pub fn recv_udp_opts(&self, port: u16, peek: bool) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
+        let (src, sport, _, _, payload) = self.recv_udp_meta_opts(port, peek)?;
+        Some((src, sport, payload))
+    }
+
+    /// Pop or peek one queued datagram with destination/interface metadata.
+    /// # C: O(log N + payload bytes when peeking)
+    pub fn recv_udp_meta_opts(&self, port: u16, peek: bool)
+        -> Option<(Ipv4Addr, u16, Ipv4Addr, NetIfaceId, Vec<u8>)>
+    {
         let q = { self.udp.lock().get(&port)?.clone() };
         let mut g = q.q.lock();
         if peek { g.front().cloned() } else { g.pop_front() }
@@ -807,7 +816,7 @@ impl NetStack {
                     let drop = { q.bpf_filter.lock().as_ref()
                         .map(|insns| !bpf_accept(insns, body)).unwrap_or(false) };
                     if drop { return Ok(()); }
-                    q.q.lock().push_back((hdr.src, udp.src_port, body.to_vec()));
+                    q.q.lock().push_back((hdr.src, udp.src_port, hdr.dst, iface, body.to_vec()));
                     #[cfg(target_os = "oxide-kernel")]
                     {
                         q.waiters.wake_all();
