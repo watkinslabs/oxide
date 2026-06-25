@@ -149,7 +149,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | IPPROTO_TCP | TCP_KEEPIDLE/INTVL/CNT | done | setsockopt/getsockopt round-trip, applied to keepalive scheduler |
 | IPPROTO_IP | IP_TTL            | done   | setsockopt/getsockopt round-trip; UDP/IPv4 output stamps TTL |
 | IPPROTO_IP | IP_TOS            | done   | setsockopt/getsockopt round-trip; UDP/IPv4 output stamps TOS |
-| IPPROTO_IP | IP_PKTINFO        | gap    | cmsg writeback on recv |
+| IPPROTO_IP | IP_PKTINFO        | done   | recvmsg writes in_pktinfo with ingress ifindex and destination IPv4 |
 | IPPROTO_IPV6 | IPV6_V6ONLY     | done   | setsockopt/getsockopt round-trip; v4/v6 UDP and TCP listener maps are family-aware |
 
 ## 9. IPv6

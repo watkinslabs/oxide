@@ -4,6 +4,7 @@
 // `deliver_tcp.wake_all` and `tcp_retx_tick` are the wake sites.
 
 use crate::stack::TcpEntry;
+use crate::addr::NetIfaceId;
 use crate::netdev::NetError;
 use crate::sock::{drain_loopback, stack, InetSocket, SockKind, AF_INET6};
 use crate::Ipv4Addr;
@@ -294,6 +295,7 @@ pub struct Received {
     pub full_len: usize,
     pub peer: Option<(Ipv4Addr, u16)>,
     pub peer6: Option<(crate::Ipv6Addr, u16)>,
+    pub pktinfo: Option<(Ipv4Addr, NetIfaceId)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -328,7 +330,7 @@ pub fn recvfrom_opts(
         let take = core::cmp::min(max_len, full_len);
         let mut out = alloc::vec::Vec::with_capacity(take);
         out.extend_from_slice(&msg[..take]);
-        return Ok(Received { payload: out, full_len, peer: None, peer6: None });
+        return Ok(Received { payload: out, full_len, peer: None, peer6: None, pktinfo: None });
     }
     // AF_UNIX SOCK_SEQPACKET/DGRAM socketpair. The inode read() path
     // drains via read_unix_msg_blocking, but recvmsg/recvfrom landed
@@ -343,7 +345,7 @@ pub fn recvfrom_opts(
     };
     if let Some((pair, end)) = msgpair {
         return match pair.recv_payload(end, max_len, opts.peek) {
-            Some((msg, full_len)) => Ok(Received { payload: msg, full_len, peer: None, peer6: None }),
+            Some((msg, full_len)) => Ok(Received { payload: msg, full_len, peer: None, peer6: None, pktinfo: None }),
             None => Err(NetError::Eagain),
         };
     }
@@ -358,7 +360,7 @@ pub fn recvfrom_opts(
         let take = core::cmp::min(max_len, full_len);
         let mut out = alloc::vec::Vec::with_capacity(take);
         out.extend_from_slice(&frame[..take]);
-        return Ok(Received { payload: out, full_len, peer: None, peer6: None });
+        return Ok(Received { payload: out, full_len, peer: None, peer6: None, pktinfo: None });
     }
     // TCP.
     if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
@@ -368,7 +370,7 @@ pub fn recvfrom_opts(
         if payload.is_empty() { return Err(NetError::Eagain); }
         let full_len = payload.len();
         let peer = *sock.peer.lock();
-        return Ok(Received { payload, full_len, peer, peer6: None });
+        return Ok(Received { payload, full_len, peer, peer6: None, pktinfo: None });
     }
     // UDP. AF_INET6 dgram sockets bind into the v6 port map, so the
     // recv must consult recv_udp6_opts; the v4 map would always miss.
@@ -380,15 +382,15 @@ pub fn recvfrom_opts(
         let take = core::cmp::min(max_len, full_len);
         let mut out = alloc::vec::Vec::with_capacity(take);
         out.extend_from_slice(&full[..take]);
-        return Ok(Received { payload: out, full_len, peer: None, peer6: Some((src_ip6, src_port)) });
+        return Ok(Received { payload: out, full_len, peer: None, peer6: Some((src_ip6, src_port)), pktinfo: None });
     }
     // UDP / others (AF_INET).
     drain_loopback();
     let port = (*sock.local_port.lock()).ok_or(NetError::Eagain)?;
-    let (src_ip, src_port, full) = stack().recv_udp_opts(port, opts.peek).ok_or(NetError::Eagain)?;
+    let (src_ip, src_port, dst_ip, iface, full) = stack().recv_udp_meta_opts(port, opts.peek).ok_or(NetError::Eagain)?;
     let full_len = full.len();
     let take = core::cmp::min(max_len, full_len);
     let mut out = alloc::vec::Vec::with_capacity(take);
     out.extend_from_slice(&full[..take]);
-    Ok(Received { payload: out, full_len, peer: Some((src_ip, src_port)), peer6: None })
+    Ok(Received { payload: out, full_len, peer: Some((src_ip, src_port)), peer6: None, pktinfo: Some((dst_ip, iface)) })
 }

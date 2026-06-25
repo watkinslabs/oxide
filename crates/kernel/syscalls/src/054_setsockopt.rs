@@ -14,6 +14,7 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     const IPPROTO_IP: u64 = 0;
     const IP_TOS: u64 = 1;
     const IP_TTL: u64 = 2;
+    const IP_PKTINFO: u64 = 8;
     const IPPROTO_IPV6: u64 = 41;
     const IPV6_V6ONLY: u64 = 26;
     const IPPROTO_TCP: u64 = 6;
@@ -63,6 +64,10 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
                 return -(Errno::Einval.as_i32() as i64);
             }
             sock.opts.ip_ttl.store(v, Ordering::Release);
+        }
+        (IPPROTO_IP, IP_PKTINFO) => {
+            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            sock.opts.ip_pktinfo.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
         }
         (IPPROTO_IPV6, IPV6_V6ONLY) => {
             let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
