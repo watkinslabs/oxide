@@ -99,9 +99,7 @@ impl NetStack {
         self.udp6_map().lock().remove(&port);
     }
 
-    /// F180a: build + transmit a UDP/IPv6 datagram. v1 routing:
-    /// loopback → lo iface, else first non-lo. Real v6 route table
-    /// lands in F180c with prefix-len + scope support.
+    /// F180a: build + transmit a UDP/IPv6 datagram.
     /// # C: O(payload + route lookup)
     pub fn send_udp6_to(&self, src_ip: Ipv6Addr, src_port: u16,
                          dst_ip: Ipv6Addr, dst_port: u16, payload: &[u8])
@@ -117,15 +115,7 @@ impl NetStack {
         } else {
             src_ip
         };
-        let devs = self.ifaces.snapshot_devs();
-        let iface_id = if dst_ip == Ipv6Addr::LOOPBACK {
-            devs.iter().find(|(_, d)| d.name() == "lo")
-                .map(|(i, _)| *i).ok_or(NetError::Enetunreach)?
-        } else {
-            devs.iter().find(|(_, d)| d.name() != "lo")
-                .map(|(i, _)| *i).ok_or(NetError::Enetunreach)?
-        };
-        let iface = self.ifaces.lookup(iface_id).ok_or(NetError::Enetunreach)?;
+        let (iface_id, iface) = self.route6_iface(dst_ip).ok_or(NetError::Enetunreach)?;
         let l4_len = 8 + payload.len();
         let total = IPV6_HDR_LEN + l4_len;
         let mut p = Pkt::with_capacity(IPV6_HDR_LEN, total + IPV6_HDR_LEN);
@@ -275,22 +265,12 @@ impl NetStack {
         }
     }
 
-    /// F180b: build + xmit a v6-encapsulated L4 segment. v1 routes
-    /// loopback → lo, else first non-lo iface; F180c lifts to a real
-    /// v6 route table.
+    /// F180b: build + xmit a v6-encapsulated L4 segment.
     /// # C: O(payload + route lookup)
     pub(crate) fn send_l4_over_ipv6(&self, src: Ipv6Addr, dst: Ipv6Addr,
                                      proto: IpProto, l4: &[u8]) -> NetResult<()>
     {
-        let devs = self.ifaces.snapshot_devs();
-        let iface_id = if dst == Ipv6Addr::LOOPBACK {
-            devs.iter().find(|(_, d)| d.name() == "lo")
-                .map(|(i, _)| *i).ok_or(NetError::Enetunreach)?
-        } else {
-            devs.iter().find(|(_, d)| d.name() != "lo")
-                .map(|(i, _)| *i).ok_or(NetError::Enetunreach)?
-        };
-        let iface = self.ifaces.lookup(iface_id).ok_or(NetError::Enetunreach)?;
+        let (iface_id, iface) = self.route6_iface(dst).ok_or(NetError::Enetunreach)?;
         let total = IPV6_HDR_LEN + l4.len();
         let mut p = Pkt::with_capacity(IPV6_HDR_LEN, total + IPV6_HDR_LEN);
         p.put(l4.len()).map_err(|_| NetError::Enobufs)?
