@@ -333,6 +333,19 @@ impl NetStack {
         }
     }
 
+    /// Emit an ICMPv6 Router Solicitation on `iface`. Callers may pass ::
+    /// during early autoconf; in that case the source-lladdr option is
+    /// deliberately omitted. # C: O(1)
+    pub fn send_router_solicitation(&self, iface: NetIfaceId, src: Ipv6Addr) -> NetResult<()> {
+        let our_mac = if src.is_unspecified() {
+            None
+        } else {
+            Some(self.ifaces.lookup(iface).ok_or(NetError::Enetunreach)?.mac())
+        };
+        let body = crate::ndp::NdpMsg::build_rs(src, crate::ndp::IPV6_ALL_ROUTERS, our_mac);
+        self.xmit_ipv6(iface, src, crate::ndp::IPV6_ALL_ROUTERS, IpProto::Icmpv6, &body)
+    }
+
     /// F180b: family-dispatching L4 xmit. v4 stays on v4; v6 → v6;
     /// mismatched family pair fails Einval (no v4-in-v6 tunneling).
     /// # C: O(payload)
