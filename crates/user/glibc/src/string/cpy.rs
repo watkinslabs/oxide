@@ -103,6 +103,26 @@ mod exports {
         // SAFETY: forwards the C strcpy contract to strcpy_impl unchanged.
         unsafe { strcpy_impl(dst, src) }
     }
+    // # C: char *__strcpy_small(char *, uint16_t, uint16_t, uint32_t, uint32_t,
+    // size_t) — old x86 string2 inline helper.
+    #[no_mangle]
+    pub unsafe extern "C" fn __strcpy_small(dst: *mut u8, s0_2: u16, s4_2: u16, s0_4: u32, s4_4: u32, n: usize) -> *mut u8 {
+        // SAFETY: legacy helper contract; dst is writable for n <= 8 bytes.
+        unsafe {
+            match n {
+                1 => *dst = 0,
+                2 => (dst as *mut u16).write_unaligned(s0_2),
+                3 => { (dst as *mut u16).write_unaligned(s0_2); *dst.add(2) = 0; }
+                4 => (dst as *mut u32).write_unaligned(s0_4),
+                5 => { (dst as *mut u32).write_unaligned(s0_4); *dst.add(4) = 0; }
+                6 => { (dst as *mut u32).write_unaligned(s0_4); (dst.add(4) as *mut u16).write_unaligned(s4_2); }
+                7 => { (dst as *mut u32).write_unaligned(s0_4); (dst.add(4) as *mut u16).write_unaligned(s4_2); *dst.add(6) = 0; }
+                8 => { (dst as *mut u32).write_unaligned(s0_4); (dst.add(4) as *mut u32).write_unaligned(s4_4); }
+                _ => {}
+            }
+        }
+        dst
+    }
     // # C: char *strncpy(char *dst, const char *src, size_t n)
     #[no_mangle]
     pub unsafe extern "C" fn strncpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
