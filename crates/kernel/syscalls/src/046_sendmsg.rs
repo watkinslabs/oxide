@@ -5,8 +5,8 @@ use syscall::errno::Errno;
 use hal::USER_VA_END;
 
 /// `sendmsg(fd, msghdr, flags)` slot 46. F189 honors SCM_RIGHTS
-/// when the dest is an AF_UNIX SOCK_DGRAM (captures Arc<File> from
-/// current fd_table; receiver dup's via recvmsg_unix_dgram).
+/// for AF_UNIX DGRAM/STREAM/message-pair sockets (captures Arc<File>
+/// from current fd_table; receiver dup's on recvmsg).
 /// # C: O(iov + nfds)
 pub fn sys_sendmsg(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
@@ -23,7 +23,7 @@ pub fn sys_sendmsg(args: &SyscallArgs) -> i64 {
         let controllen= core::ptr::read_volatile((msgp + 40) as *const u64);
         (name, namelen, iov, iovlen, control, controllen)
     };
-    // F189: SCM_RIGHTS short-circuit for AF_UNIX SOCK_DGRAM.
+    // F189: SCM_RIGHTS short-circuit for AF_UNIX sockets.
     if let Some(r) = crate::cmsg_parse::try_sendmsg_with_fds(
         fd, name, iov, iovlen, control, controllen,
     ) { return r; }

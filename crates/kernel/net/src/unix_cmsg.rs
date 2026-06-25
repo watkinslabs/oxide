@@ -3,8 +3,7 @@
 //
 // recvmsg on a UnixDgram socket pops one message from the per-socket
 // queue, copies its payload across the supplied iovecs, and (when
-// msg_control is provided) writes a single SCM_CREDENTIALS cmsg with
-// the sender's (pid, uid, gid). SCM_RIGHTS is a follow-up (Arc<File> capture).
+// msg_control is provided) writes SCM_CREDENTIALS / SCM_RIGHTS cmsgs.
 //
 // Linux msghdr layout (x86_64):
 //   +0  msg_name        u64

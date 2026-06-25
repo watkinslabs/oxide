@@ -75,7 +75,8 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | Per-end shutdown + EOF observation   | done     | F166, F170, F171 |
 | SCM_CREDENTIALS                      | done     | F121 |
 | SCM_RIGHTS over SOCK_DGRAM           | done     | F189 |
-| SCM_RIGHTS over SOCK_STREAM          | gap      | message-boundary tracking in UnixPair |
+| SCM_RIGHTS over SOCK_STREAM          | done     | fd bursts queued on UnixPair recvmsg path |
+| SCM_RIGHTS over SOCK_SEQPACKET pair  | done     | fd bursts carried with UnixMsgPair messages |
 | Abstract namespace (`@/…`)           | partial  | path lookup ignores leading NUL |
 
 ## 4. AF_PACKET / raw
@@ -202,10 +203,8 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 1. **NETLINK_ROUTE completeness** (RTM_GETLINK / NEWADDR / GETROUTE)
    — every userspace network tool reads these (`ip`, `networkd`,
    `NetworkManager`). High impact for "real distro programs work."
-2. **SCM_RIGHTS over SOCK_STREAM** — systemd socket-activation,
-   docker, X server all need it on stream sockets.
-3. **IPv6 fragmentation** (in + out) — mirror of F195 for v6.
-4. **SLAAC (RS + RA)** — autoconf for v6 networks without DHCPv6.
-5. **MLD** — required for v6 multicast groups (mostly host LL).
+2. **IPv6 fragmentation** (in + out) — mirror of F195 for v6.
+3. **SLAAC (RS + RA)** — autoconf for v6 networks without DHCPv6.
+4. **MLD** — required for v6 multicast groups (mostly host LL).
 
 Items beyond #10 are tuning/perf or rare-app territory.
