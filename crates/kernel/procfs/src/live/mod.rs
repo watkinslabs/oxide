@@ -629,7 +629,9 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
         ProcPath::NotProc => match path {
             "/proc/net/dev" => Some(Arc::new(crate::net::ProcNetDevInode) as InodeRef),
             "/proc/net/tcp" => Some(Arc::new(crate::net::ProcNetTcpInode) as InodeRef),
+            "/proc/net/tcp6" => Some(Arc::new(crate::net::ProcNetTcp6Inode) as InodeRef),
             "/proc/net/udp" => Some(Arc::new(crate::net::ProcNetUdpInode) as InodeRef),
+            "/proc/net/udp6" => Some(Arc::new(crate::net::ProcNetUdp6Inode) as InodeRef),
             "/proc/modules" => Some(Arc::new(crate::net::ProcModulesInode) as InodeRef),
             "/proc/net/route" => Some(Arc::new(crate::net::ProcNetRouteInode) as InodeRef),
             "/proc/net/arp" => Some(Arc::new(crate::net::ProcNetArpInode) as InodeRef),
