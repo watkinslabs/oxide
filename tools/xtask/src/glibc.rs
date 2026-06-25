@@ -55,10 +55,11 @@ pub(crate) fn staticlib_path(triple: &str) -> PathBuf {
 // rust-lld directly so the same path builds x86_64 and aarch64.
 pub(crate) fn build_sharedlib(triple: &str) -> Result<(), u8> {
     eprintln!("xtask glibc: building libc.so.6 for {triple}");
-    // Supplementary version script re-promotes the global_asm `.set` _FloatN
-    // function aliases into .dynsym — rustc's cdylib filter localizes bare asm
-    // symbols otherwise (docs/59§9.1). Functions only (PLT-resolved); data
-    // aliases are NOT here (they need copy-reloc interposition, §9.4).
+    // Supplementary x86_64 version script re-promotes the global_asm `.set`
+    // _FloatN/long-double function aliases into .dynsym — rustc's cdylib filter
+    // localizes bare asm symbols otherwise (docs/59§9.1). Functions only
+    // (PLT-resolved); data aliases are NOT here (they need copy-reloc
+    // interposition, §9.4). aarch64 must not consume this x86-specific list.
     let floatn = "crates/user/glibc/version/floatn.map";
     let extra_obj = build_longdouble_bridge(triple, true)?;
     let mut c = Command::new("cargo");
@@ -66,7 +67,10 @@ pub(crate) fn build_sharedlib(triple: &str) -> Result<(), u8> {
             "--target", triple, "--crate-type", "cdylib", "--",
             "-C", "linker-flavor=ld.lld", "-C", "linker=rust-lld",
             "-C", "link-arg=--soname=libc.so.6", "-C", "relocation-model=pic",
-            "-C", "panic=abort", "-C", &format!("link-arg=--version-script={floatn}")]);
+            "-C", "panic=abort"]);
+    if triple == X86 {
+        c.args(["-C", &format!("link-arg=--version-script={floatn}")]);
+    }
     if let Some(obj) = extra_obj {
         let stamp = longdouble_bridge_stamp()?;
         c.args(["--cfg", &format!("oxide_glibc_longdouble_bridge_mtime=\"{stamp}\"")]);
