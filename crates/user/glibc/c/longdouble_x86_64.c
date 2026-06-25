@@ -56,6 +56,15 @@ int __issignalingl(long double x) {
     return __builtin_issignaling(x);
 }
 
+int __iscanonicall(long double x) {
+    (void)x;
+    return 1;
+}
+
+int __iseqsigl(long double x, long double y) {
+    return x == y;
+}
+
 long double creall(long double _Complex z) {
     return __real__ z;
 }
@@ -1842,6 +1851,14 @@ long double _Complex clogl(long double _Complex z) {
 }
 
 long double _Complex clog10l(long double _Complex z) {
+    long double _Complex l = clogl_valuel(z);
+    long double _Complex r;
+    __real__ r = (__real__ l) * 0.43429448190325182765112891891660508229L;
+    __imag__ r = (__imag__ l) * 0.43429448190325182765112891891660508229L;
+    return r;
+}
+
+long double _Complex __clog10l(long double _Complex z) {
     long double _Complex l = clogl_valuel(z);
     long double _Complex r;
     __real__ r = (__real__ l) * 0.43429448190325182765112891891660508229L;

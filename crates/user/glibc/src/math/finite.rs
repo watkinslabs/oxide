@@ -1,7 +1,7 @@
 // glibc finite libm compatibility entry points. Modern headers do not call
 // these directly, but old binaries may bind them by symbol.
 
-use super::{atrig, basic, exp, extra, extras, hyper, log, pow, special, sqrt};
+use super::{atrig, basic, complex, exp, extra, extras, hyper, log, pow, special, sqrt};
 
 macro_rules! f64_1 {
     ($name:ident, $path:path) => {
@@ -151,4 +151,74 @@ pub unsafe extern "C" fn __lgamma_r_finite(x: f64, signp: *mut i32) -> f64 {
 pub unsafe extern "C" fn __lgammaf_r_finite(x: f32, signp: *mut i32) -> f32 {
     // SAFETY: signp is the writable sign out-param required by lgammaf_r.
     unsafe { special::lgamma_r(x as f64, &mut *signp) as f32 }
+}
+
+#[no_mangle]
+pub extern "C" fn __finite(x: f64) -> i32 {
+    basic::isfinite(x) as i32
+}
+
+#[no_mangle]
+pub extern "C" fn __finitef(x: f32) -> i32 {
+    basic::isfinite(x as f64) as i32
+}
+
+#[no_mangle]
+pub extern "C" fn __isinf(x: f64) -> i32 {
+    if basic::isinf(x) {
+        if basic::signbit(x) { -1 } else { 1 }
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn __isinff(x: f32) -> i32 {
+    __isinf(x as f64)
+}
+
+#[no_mangle]
+pub extern "C" fn __isnan(x: f64) -> i32 {
+    basic::isnan(x) as i32
+}
+
+#[no_mangle]
+pub extern "C" fn __isnanf(x: f32) -> i32 {
+    basic::isnan(x as f64) as i32
+}
+
+#[no_mangle]
+pub extern "C" fn __issignaling(x: f64) -> i32 {
+    let bits = x.to_bits();
+    let exp = (bits >> 52) & 0x7ff;
+    let mant = bits & 0x000f_ffff_ffff_ffff;
+    (exp == 0x7ff && mant != 0 && (mant & (1u64 << 51)) == 0) as i32
+}
+
+#[no_mangle]
+pub extern "C" fn __issignalingf(x: f32) -> i32 {
+    let bits = x.to_bits();
+    let exp = (bits >> 23) & 0xff;
+    let mant = bits & 0x007f_ffff;
+    (exp == 0xff && mant != 0 && (mant & (1u32 << 22)) == 0) as i32
+}
+
+#[no_mangle]
+pub extern "C" fn __iseqsig(x: f64, y: f64) -> i32 {
+    (x == y) as i32
+}
+
+#[no_mangle]
+pub extern "C" fn __iseqsigf(x: f32, y: f32) -> i32 {
+    (x == y) as i32
+}
+
+#[no_mangle]
+pub extern "C" fn __clog10(z: complex::__cdouble) -> complex::__cdouble {
+    complex::clog10(z)
+}
+
+#[no_mangle]
+pub extern "C" fn __clog10f(z: complex::__cfloat) -> complex::__cfloat {
+    complex::clog10f(z)
 }
