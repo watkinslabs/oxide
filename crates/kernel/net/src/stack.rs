@@ -167,8 +167,8 @@ fn ecn_tos(c: &TcpConn) -> u8 {
     if c.ecn_enabled { 0x02 } else { 0 }
 }
 
-/// F195: bridge to tcp_conn::ka_now_ns from stack code. # C: O(1)
-fn ka_now_ns_local() -> u64 { crate::tcp_conn::ka_now_ns() }
+/// Bridge to tcp_conn::ka_now_ns from stack code. # C: O(1)
+pub(crate) fn net_now_ns() -> u64 { crate::tcp_conn::ka_now_ns() }
 
 
 fn stamp_last_sent(entry: &TcpEntry, n: usize) {
@@ -261,6 +261,8 @@ pub struct NetStack {
     pub ndp: crate::ndp::NdpCache,
     /// F195: IPv4 reassembly table.
     pub ipv4_reasm: crate::ipv4_reasm::ReasmTable,
+    /// IPv6 Fragment extension reassembly table.
+    pub ipv6_reasm: crate::ipv6_reasm::ReasmTable,
     /// F180c: per-iface IPv6 address registry (NS responder).
     v6_addrs: Spinlock<BTreeMap<NetIfaceId, Vec<crate::addr::Ipv6Addr>>, StackLockClass>,
 }
@@ -280,6 +282,7 @@ impl NetStack {
             next_isn:   Spinlock::new(0x1000_0000),
             ndp:        crate::ndp::NdpCache::new(),
             ipv4_reasm: crate::ipv4_reasm::ReasmTable::new(),
+            ipv6_reasm: crate::ipv6_reasm::ReasmTable::new(),
             v6_addrs:   Spinlock::new(BTreeMap::new()),
         }
     }
@@ -769,7 +772,7 @@ impl NetStack {
         let off8 = (hdr.flags_frag & 0x1FFF) as usize;
         let payload: &[u8] = if mf || off8 != 0 {
             let k = crate::ipv4_reasm::ReasmKey { src: hdr.src, dst: hdr.dst, proto: hdr.proto, id: hdr.id };
-            match self.ipv4_reasm.push(k, ka_now_ns_local(), off8 * 8, frag_payload, mf) {
+            match self.ipv4_reasm.push(k, net_now_ns(), off8 * 8, frag_payload, mf) {
                 Some(b) => { assembled = b; &assembled[..] }
                 None    => return Ok(()),
             }

@@ -162,7 +162,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | TCP over IPv6                        | done     | F180b |
 | NDP cache + NS responder             | done     | F180c |
 | AF_INET6 dual-stack mapped binds     | done     | sock.rs |
-| Fragmentation extension header       | gap      | tied to outbound fragmentation |
+| Fragmentation extension header       | done     | outbound emission + inbound reassembly for fragmentable payloads |
 | HBH / Routing / DestOpts ext headers | gap      | |
 | Flow label                           | gap      | |
 | SLAAC (RA processing)                | gap      | with NDP RS/RA |
@@ -173,7 +173,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 |---|---|---|
 | IPv4 inbound reassembly              | done     | F195 |
 | IPv4 outbound fragmentation          | done     | oversize IPv4 L4 packets fragment to iface MTU |
-| IPv6 inbound reassembly              | gap      | with v6 fragment extension hdr |
+| IPv6 inbound reassembly              | done     | RFC 8200 Fragment headers reassemble before L4 demux |
 | IPv6 outbound fragmentation          | done     | L4 send path emits RFC 8200 Fragment headers to iface MTU |
 | IP_MULTICAST_*                       | gap      | |
 | IGMP / MLD                           | gap      | |
@@ -204,8 +204,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 1. **NETLINK_ROUTE completeness** (RTM_GETLINK / NEWADDR / GETROUTE)
    — every userspace network tool reads these (`ip`, `networkd`,
    `NetworkManager`). High impact for "real distro programs work."
-2. **IPv6 inbound reassembly** — mirror of F195 for v6 receive path.
-3. **SLAAC (RS + RA)** — autoconf for v6 networks without DHCPv6.
-4. **MLD** — required for v6 multicast groups (mostly host LL).
+2. **SLAAC (RS + RA)** — autoconf for v6 networks without DHCPv6.
+3. **MLD** — required for v6 multicast groups (mostly host LL).
 
 Items beyond #10 are tuning/perf or rare-app territory.

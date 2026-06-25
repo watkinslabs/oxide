@@ -400,6 +400,60 @@ fn f180_ipv6_udp_dropped_silently() {
 }
 
 #[test]
+fn ipv6_fragments_reassemble_to_udp_socket() {
+    use crate::addr::{IpProto, Ipv6Addr};
+    use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+    use crate::udp::UDP_HDR_LEN;
+
+    let stack = NetStack::new();
+    let (id, _lo) = stack.register_loopback();
+    let src = Ipv6Addr::LOOPBACK;
+    let dst = Ipv6Addr::LOOPBACK;
+    let src_port = 40100;
+    let dst_port = 40101;
+    let payload = b"fragmented-ipv6-udp-payload";
+    let l4_len = UDP_HDR_LEN + payload.len();
+    let mut l4 = alloc::vec![0u8; l4_len];
+    crate::udp::build_into_v6(src_port, dst_port, src, dst, payload, &mut l4);
+
+    fn frag_frame(
+        src: Ipv6Addr,
+        dst: Ipv6Addr,
+        id: u32,
+        offset: usize,
+        more: bool,
+        bytes: &[u8],
+    ) -> Vec<u8> {
+        let payload_len = 8 + bytes.len();
+        let total = IPV6_HDR_LEN + payload_len;
+        let mut frame = alloc::vec![0u8; total];
+        let hdr = Ipv6Hdr::build(src, dst, IpProto::Fragment, payload_len as u16);
+        hdr.write_to(&mut frame[..IPV6_HDR_LEN]);
+        let frag = &mut frame[IPV6_HDR_LEN..IPV6_HDR_LEN + 8];
+        frag[0] = IpProto::Udp as u8;
+        let off_more = (((offset / 8) as u16) << 3) | u16::from(more);
+        frag[2..4].copy_from_slice(&off_more.to_be_bytes());
+        frag[4..8].copy_from_slice(&id.to_be_bytes());
+        frame[IPV6_HDR_LEN + 8..].copy_from_slice(bytes);
+        frame
+    }
+
+    stack.bind_udp6(dst, dst_port).unwrap();
+    let first_len = 16;
+    let f1 = frag_frame(src, dst, 0x1234_5678, 0, true, &l4[..first_len]);
+    let f2 = frag_frame(src, dst, 0x1234_5678, first_len, false, &l4[first_len..]);
+
+    stack.deliver_rx_ipv6(id, &f2).unwrap();
+    assert!(stack.recv_udp6(dst_port).is_none(), "last fragment alone is incomplete");
+    stack.deliver_rx_ipv6(id, &f1).unwrap();
+
+    let (peer, port, body) = stack.recv_udp6(dst_port).expect("reassembled datagram delivered");
+    assert_eq!(peer, src);
+    assert_eq!(port, src_port);
+    assert_eq!(body, payload);
+}
+
+#[test]
 fn f180_ipv6_bad_version_rejected() {
     let stack = NetStack::new();
     let (id, _lo) = stack.register_loopback();
