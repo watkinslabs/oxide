@@ -43,6 +43,7 @@ pub mod route;
 pub mod route6;
 pub mod netfilter_hook;
 pub mod bpf_filter;
+pub mod mcast_filter;
 pub mod stack;
 pub mod stack_binddev;
 pub mod stack_diag;
