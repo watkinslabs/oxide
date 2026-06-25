@@ -129,6 +129,9 @@ name codecs, string/memory helpers, dup2, connect, clock_gettime, and sysconf
 aliases exported over existing implementations. Varargs-only `__asprintf` is
 left for a dedicated follow-up. Verified by ABI export audit, regression suite,
 spec-lint, and both freestanding arch builds.
+Also DONE: varargs `__asprintf` compatibility alias (F629): exported beside
+`asprintf` and wired to the existing allocation formatter. Verified by ABI
+export audit, regression suite, spec-lint, and both freestanding arch builds.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
