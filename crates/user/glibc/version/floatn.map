@@ -8,6 +8,8 @@
     __acosf_finite;
     __acosh_finite;
     __acoshf_finite;
+    __adjtimex;
+    __arch_prctl;
     __asin_finite;
     __asinf_finite;
     __asprintf;
@@ -20,6 +22,7 @@
     __backtrace_symbols_fd;
     __bzero;
     __close;
+    __close_nocancel;
     __clone;
     __clog10;
     __clog10f;
@@ -52,6 +55,11 @@
     __fork;
     __fmod_finite;
     __fmodf_finite;
+    __fseeko64;
+    __fstat64;
+    __ftello64;
+    __fxstatat;
+    __fxstatat64;
     __gamma_r_finite;
     __gammaf_r_finite;
     __hypot_finite;
@@ -60,6 +68,7 @@
     __dn_expand;
     __dn_skipname;
     __dup2;
+    __getauxval;
     __getdelim;
     __getpagesize;
     __getpgid;
@@ -141,6 +150,7 @@
     __mmap;
     __munmap;
     __nanosleep;
+    __open_nocancel;
     __pow_finite;
     __powf_finite;
     __poll;
@@ -148,6 +158,7 @@
     __progname_full;
     __rawmemchr;
     __read;
+    __read_nocancel;
     __register_atfork;
     __remainder_finite;
     __remainderf_finite;
@@ -184,6 +195,7 @@
     __vfork;
     __wait;
     __write;
+    __write_nocancel;
     acosf32;
     acosf64;
     acoshf32;
