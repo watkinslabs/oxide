@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **195/195**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F623-long-double-bessel`. `glibc.md` = live per-cluster TODO. F counter next = **624**, B = **138**, D = **113**
+`F624-glibc-finite-math-compat`. `glibc.md` = live per-cluster TODO. F counter next = **625**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -400,6 +400,10 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
 - **F623 DONE locally:** f80 j0l, j1l, jnl, y0l, y1l, and ynl added to the C
   bridge using the existing Bessel series/asymptotic path. Host-diffed in
   t_bessel; C object checked for no PLT relocations or unresolved symbols.
+- **F624 DONE locally:** glibc `__*_finite` libm compatibility exports added for
+  double, float, and x86_64 f80 long-double forms. Host keeps these compat-only
+  here, so validation is ABI export audit plus regression suite; C object checked
+  for no PLT relocations or unresolved symbols.
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need

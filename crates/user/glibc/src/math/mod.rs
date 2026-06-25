@@ -10,6 +10,7 @@ pub mod basic;
 pub mod exp;
 pub mod extra;
 pub mod extras;
+#[cfg(feature = "freestanding")] pub mod finite;
 pub mod fma;
 #[cfg(feature = "freestanding")] pub mod legacy;
 pub mod round;

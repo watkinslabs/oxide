@@ -106,6 +106,11 @@ Also DONE: f80 C23 min/max batch (F597): fmaximum_numl, fminimum_numl,
 fmaximuml, fminimuml, fmaximum_mag_numl, fminimum_mag_numl, fmaximum_magl, and
 fminimum_magl exported from the same freestanding C object and host-diffed in
 t_longdouble.
+Also DONE: glibc `__*_finite` libm compatibility aliases (F624): double/float
+wrappers over the existing Rust libm cores plus x86_64 f80 wrappers in the C
+bridge. Host keeps these symbols compat-only here, so verified by ABI export
+audit, regression suite, both freestanding arch builds, and C-object no-PLT
+audit.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
