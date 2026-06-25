@@ -32,6 +32,12 @@ pub unsafe extern "C" fn setmntent(file: *const u8, mode: *const u8) -> *mut FIL
     // SAFETY: file/mode are NUL-terminated; a thin fopen wrapper.
     unsafe { fopen(file, mode) }
 }
+// # C: FILE *__setmntent(const char *file, const char *mode)
+#[no_mangle]
+pub unsafe extern "C" fn __setmntent(file: *const u8, mode: *const u8) -> *mut FILE {
+    // SAFETY: internal alias has the same filename/mode contract as setmntent.
+    unsafe { setmntent(file, mode) }
+}
 // # C: int endmntent(FILE *stream)
 #[no_mangle]
 pub unsafe extern "C" fn endmntent(f: *mut FILE) -> i32 {
