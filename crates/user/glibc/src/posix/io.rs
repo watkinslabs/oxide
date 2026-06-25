@@ -161,3 +161,9 @@ pub unsafe extern "C" fn getpid() -> i32 {
     // SAFETY: getpid(2) takes no args and cannot fail.
     (unsafe { sys0(nr::GETPID) }) as i32
 }
+// # C: pid_t __getpid(void)
+#[no_mangle]
+pub unsafe extern "C" fn __getpid() -> i32 {
+    // SAFETY: __getpid has the same no-argument contract as getpid.
+    unsafe { getpid() }
+}

@@ -14,9 +14,21 @@ pub unsafe extern "C" fn gettext(msgid: *const u8) -> *mut u8 { msgid as *mut u8
 // # C: char *dgettext(const char *domain, const char *msgid)
 #[no_mangle]
 pub unsafe extern "C" fn dgettext(_domain: *const u8, msgid: *const u8) -> *mut u8 { msgid as *mut u8 }
+// # C: char *__dgettext(const char *domain, const char *msgid)
+#[no_mangle]
+pub unsafe extern "C" fn __dgettext(domain: *const u8, msgid: *const u8) -> *mut u8 {
+    // SAFETY: __dgettext has the same message pointer contract as dgettext.
+    unsafe { dgettext(domain, msgid) }
+}
 // # C: char *dcgettext(const char *domain, const char *msgid, int category)
 #[no_mangle]
 pub unsafe extern "C" fn dcgettext(_domain: *const u8, msgid: *const u8, _cat: i32) -> *mut u8 { msgid as *mut u8 }
+// # C: char *__dcgettext(const char *domain, const char *msgid, int category)
+#[no_mangle]
+pub unsafe extern "C" fn __dcgettext(domain: *const u8, msgid: *const u8, cat: i32) -> *mut u8 {
+    // SAFETY: __dcgettext has the same message pointer/category contract as dcgettext.
+    unsafe { dcgettext(domain, msgid, cat) }
+}
 
 // # C: char *ngettext(const char *s, const char *p, unsigned long n)
 #[no_mangle]

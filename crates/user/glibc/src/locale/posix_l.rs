@@ -93,11 +93,23 @@ pub unsafe extern "C" fn duplocale(_loc: usize) -> usize {
     // SAFETY: returns a fresh __locale_struct (all locales are C-equivalent).
     unsafe { make_locale() }
 }
+// # C: locale_t __duplocale(locale_t loc)
+#[no_mangle]
+pub unsafe extern "C" fn __duplocale(loc: usize) -> usize {
+    // SAFETY: __duplocale has the same locale handle contract as duplocale.
+    unsafe { duplocale(loc) }
+}
 // # C: void freelocale(locale_t loc)
 #[no_mangle]
 pub unsafe extern "C" fn freelocale(loc: usize) {
     // SAFETY: loc is a handle from newlocale/duplocale (not LC_GLOBAL/null).
     unsafe { if loc != 0 && loc != LC_GLOBAL_LOCALE { heap::free(loc as *mut u8); } }
+}
+// # C: void __freelocale(locale_t loc)
+#[no_mangle]
+pub unsafe extern "C" fn __freelocale(loc: usize) {
+    // SAFETY: __freelocale has the same locale handle contract as freelocale.
+    unsafe { freelocale(loc) }
 }
 // # C: locale_t uselocale(locale_t newloc)
 #[no_mangle]
@@ -125,6 +137,36 @@ ctype_l! {
     islower_l => islower, isprint_l => isprint, ispunct_l => ispunct,
     isspace_l => isspace, isupper_l => isupper, isxdigit_l => isxdigit,
     tolower_l => tolower, toupper_l => toupper,
+}
+
+macro_rules! ctype_l_alias {
+    ($($alias:ident => $base:ident),* $(,)?) => { $(
+        // # C: int <alias>(int c, locale_t loc) — glibc internal ctype alias.
+        #[no_mangle]
+        pub unsafe extern "C" fn $alias(c: i32, loc: usize) -> i32 {
+            // SAFETY: internal alias with the same c/locale_t contract as base.
+            unsafe { $base(c, loc) }
+        }
+    )* };
+}
+ctype_l_alias! {
+    __isalnum_l => isalnum_l, __isalpha_l => isalpha_l, __isblank_l => isblank_l,
+    __iscntrl_l => iscntrl_l, __isdigit_l => isdigit_l, __isgraph_l => isgraph_l,
+    __islower_l => islower_l, __isprint_l => isprint_l, __ispunct_l => ispunct_l,
+    __isspace_l => isspace_l, __isupper_l => isupper_l, __isxdigit_l => isxdigit_l,
+    __tolower_l => tolower_l, __toupper_l => toupper_l,
+}
+
+// # C: int __isascii_l(int c, locale_t loc)
+#[no_mangle]
+pub extern "C" fn __isascii_l(c: i32, _loc: usize) -> i32 {
+    ((c & !0x7f) == 0) as i32
+}
+
+// # C: int __toascii_l(int c, locale_t loc)
+#[no_mangle]
+pub extern "C" fn __toascii_l(c: i32, _loc: usize) -> i32 {
+    c & 0x7f
 }
 
 // --- numeric _l ------------------------------------------------------------

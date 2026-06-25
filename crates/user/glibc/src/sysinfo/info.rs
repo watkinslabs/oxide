@@ -144,6 +144,12 @@ pub unsafe extern "C" fn getpagesize() -> i32 {
     // SAFETY: fixed 4096 page on the arches we ship; no syscall, no memory.
     PAGE_SIZE as i32
 }
+// # C: int __getpagesize(void)
+#[no_mangle]
+pub unsafe extern "C" fn __getpagesize() -> i32 {
+    // SAFETY: __getpagesize has the same no-argument contract as getpagesize.
+    unsafe { getpagesize() }
+}
 
 #[cfg(test)]
 mod tests {

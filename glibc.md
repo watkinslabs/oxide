@@ -132,6 +132,11 @@ spec-lint, and both freestanding arch builds.
 Also DONE: varargs `__asprintf` compatibility alias (F629): exported beside
 `asprintf` and wired to the existing allocation formatter. Verified by ABI
 export audit, regression suite, spec-lint, and both freestanding arch builds.
+Also DONE: locale/libc internal compatibility aliases (F630): gettext,
+endmntent, getdelim, getpid/getpgid/getpagesize/getrlimit/gettimeofday,
+duplocale/freelocale, narrow `_l` ctype, wide `_l` ctype, and wide case
+conversion aliases exported over existing implementations. Verified by ABI
+export audit, regression suite, spec-lint, and both freestanding arch builds.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
