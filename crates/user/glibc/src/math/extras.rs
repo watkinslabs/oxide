@@ -225,6 +225,10 @@ mod exports {
     #[no_mangle] pub extern "C" fn isnanf(x: f32) -> i32 { b::isnan(x as f64) as i32 }
     // # C: int signbit(double)
     #[no_mangle] pub extern "C" fn signbit(x: f64) -> i32 { b::signbit(x) as i32 }
+    // # C: int __signbit(double)
+    #[no_mangle] pub extern "C" fn __signbit(x: f64) -> i32 { signbit(x) }
+    // # C: int __signbitf(float)
+    #[no_mangle] pub extern "C" fn __signbitf(x: f32) -> i32 { b::signbit(x as f64) as i32 }
     // # C: int finite(double)/finitef(float) — legacy finite predicates
     #[no_mangle] pub extern "C" fn finite(x: f64) -> i32 { b::isfinite(x) as i32 }
     #[no_mangle] pub extern "C" fn finitef(x: f32) -> i32 { b::isfinite(x as f64) as i32 }

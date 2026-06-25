@@ -362,6 +362,12 @@ mod exports {
         // (msg_len out-fields); returns the count of messages sent.
         ret_isize(unsafe { sys4(nr::SENDMMSG, fd as usize, msgvec as usize, vlen as usize, flags as usize) }) as i32
     }
+    // # C: int __sendmmsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
+    #[no_mangle]
+    pub unsafe extern "C" fn __sendmmsg(fd: i32, msgvec: *mut c_void, vlen: u32, flags: i32) -> i32 {
+        // SAFETY: internal alias has the same mmsghdr array contract as sendmmsg.
+        unsafe { sendmmsg(fd, msgvec, vlen, flags) }
+    }
     // # C: int recvmmsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags, struct timespec *timeout)
     #[no_mangle]
     pub unsafe extern "C" fn recvmmsg(fd: i32, msgvec: *mut c_void, vlen: u32, flags: i32, timeout: *mut c_void) -> i32 {

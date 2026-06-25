@@ -195,9 +195,12 @@
     __sched_getscheduler;
     __sched_setscheduler;
     __sched_yield;
+    __sched_cpualloc;
+    __sched_cpufree;
     __secure_getenv;
     __select;
     __send;
+    __sendmmsg;
     __setpgid;
     __sigaction;
     __sigaddset;
@@ -208,6 +211,9 @@
     __sigsuspend;
     __sinh_finite;
     __sinhf_finite;
+    __signbit;
+    __signbitf;
+    __signgam;
     __sqrt_finite;
     __sqrtf_finite;
     __strcasecmp_l;
@@ -302,6 +308,7 @@
     __wcsxfrm_l;
     __write;
     __write_nocancel;
+    __xpg_sigpause;
     acosf32;
     acosf64;
     acoshf32;
