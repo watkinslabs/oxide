@@ -65,6 +65,12 @@ pub unsafe extern "C" fn getpgid(pid: i32) -> i32 {
     // SAFETY: getpgid(2) takes a scalar pid; no memory is dereferenced.
     ret_isize(unsafe { sys1(nr::GETPGID, pid as usize) }) as i32
 }
+// # C: pid_t __getpgid(pid_t)
+#[no_mangle]
+pub unsafe extern "C" fn __getpgid(pid: i32) -> i32 {
+    // SAFETY: __getpgid has the same scalar pid contract as getpgid.
+    unsafe { getpgid(pid) }
+}
 // # C: pid_t getpgrp(void) — POSIX getpgid(0)
 #[no_mangle]
 pub unsafe extern "C" fn getpgrp() -> i32 {
