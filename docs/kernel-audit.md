@@ -311,8 +311,8 @@ references.
 | keyring | ✅ | F76 single global ring + keyctl real. |
 | futex | ✅ | (PR-B before sweep) |
 | eventfd | 🟡 | |
-| Unix-socket SCM_RIGHTS fd-passing | 🟡 | Verify — Wayland + dbus require. |
-| Unix-socket SCM_CREDS | 🟥 | Deferred (P9-18 comment). |
+| Unix-socket SCM_RIGHTS fd-passing | ✅ | DGRAM/STREAM/message-pair cmsg paths. |
+| Unix-socket SCM_CREDS | ✅ | SCM_CREDENTIALS / SO_PASSCRED paths. |
 
 ### 11. Process management
 
