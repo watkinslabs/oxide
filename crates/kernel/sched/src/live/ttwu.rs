@@ -58,8 +58,8 @@ pub fn select_task_rq(task: &Task) -> u32 {
 pub fn resched_curr(cpu: u32) {
     crate::preempt::set_need_resched_on(cpu as usize);
     if cpu != this_cpu() {
-        // x86: CPU index == LAPIC apic_id (gs:0 stamped from the MADT id);
-        // arm: GIC SGI target. Hook installed at boot (set_send_resched_ipi_hook).
+        // Hook installed at boot (set_send_resched_ipi_hook). Arch glue
+        // translates this dense scheduler CPU id to APIC/GIC routing state.
         // SAFETY: non-blocking IPI/SGI to an online CPU; no-op if the hook is unset.
         unsafe { let _ = super::send_resched_ipi(cpu); }
     }

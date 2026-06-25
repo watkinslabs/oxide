@@ -76,6 +76,27 @@ pub fn get(idx: usize) -> Option<(u32, u32)> {
     ))
 }
 
+/// Translate a dense logical CPU index into its firmware/hardware id
+/// (x86 APIC id, arm MPIDR affinity value). Scheduler and procfs state
+/// use dense logical ids; arch interrupt controllers use this hardware id.
+/// # C: O(1)
+pub fn hardware_id_for_logical(cpu: u32) -> Option<u32> {
+    get(cpu as usize).map(|(id, _)| id)
+}
+
+/// Translate a firmware/hardware id (x86 APIC id, arm MPIDR affinity value)
+/// into the dense logical CPU index used by scheduler/per-CPU arrays.
+/// # C: O(N_cpus)
+pub fn logical_id_for_hardware(id: u32) -> Option<u32> {
+    let n = count() as usize;
+    for i in 0..n {
+        if IDS[i].load(Ordering::Acquire) == id {
+            return Some(i as u32);
+        }
+    }
+    None
+}
+
 /// Number of entries with `FLAG_ENABLED` set (i.e. bring-up
 /// candidates including the boot CPU). `13§11` / `00§3` cap on
 /// what `cpu_count()` should report once SMP enumeration is wired.
@@ -142,6 +163,21 @@ mod tests {
         // SAFETY: hosted test owns the table; u32::MAX is the empty-slot sentinel and must be rejected.
         unsafe { assert!(!add_cpu(u32::MAX, FLAG_ENABLED)); }
         assert_eq!(count(), 0);
+    }
+
+    #[test]
+    fn translates_logical_and_hardware_ids() {
+        reset();
+        // SAFETY: hosted test owns the table single-threadedly via reset() + sequential calls.
+        unsafe {
+            assert!(add_cpu(0, FLAG_ENABLED));
+            assert!(add_cpu(2, FLAG_ENABLED));
+            assert!(add_cpu(6, FLAG_ENABLED));
+        }
+        assert_eq!(hardware_id_for_logical(1), Some(2));
+        assert_eq!(hardware_id_for_logical(3), None);
+        assert_eq!(logical_id_for_hardware(6), Some(2));
+        assert_eq!(logical_id_for_hardware(5), None);
     }
 
     #[test]
