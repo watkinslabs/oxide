@@ -18,6 +18,7 @@ pub(crate) fn errno_from_neterr(e: net::NetError) -> i64 {
         net::NetError::Enobufs       => Errno::Enobufs,
         net::NetError::Enomem        => Errno::Enomem,
         net::NetError::Enetunreach   => Errno::Enetunreach,
+        net::NetError::Enodev        => Errno::Enodev,
         net::NetError::Einval        => Errno::Einval,
         net::NetError::Eio           => Errno::Eio,
         net::NetError::Eagain        => Errno::Eagain,

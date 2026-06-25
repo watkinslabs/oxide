@@ -48,7 +48,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | RACK + TLP loss detection            | gap      | improves recovery latency |
 | BBR / DCTCP                          | gap      | CUBIC is the Linux default; alternatives are tuning |
 | TCP_NOTSENT_LOWAT                    | gap      | epoll-EPOLLOUT shaping |
-| SO_BINDTODEVICE                      | gap      | needed for multi-NIC steering |
+| SO_BINDTODEVICE                      | done     | socket-level iface pinning for UDP/TCP send and receive |
 
 ## 2. UDP / datagrams
 
@@ -139,7 +139,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | SOL_SOCKET | SO_ERROR          | done   | F163 |
 | SOL_SOCKET | SO_LINGER         | done   | F194 (abortive only) |
 | SOL_SOCKET | SO_PRIORITY/MARK  | partial | stored, not data-path enforced |
-| SOL_SOCKET | SO_BINDTODEVICE   | gap    | |
+| SOL_SOCKET | SO_BINDTODEVICE   | done   | setsockopt/getsockopt by ifname; applies to UDP/TCP paths |
 | SOL_SOCKET | SO_PASSCRED       | partial | creds emitted via SCM_CREDENTIALS unconditionally |
 | IPPROTO_TCP | TCP_NODELAY      | done   | F175 |
 | IPPROTO_TCP | TCP_INFO         | done   | F188 |
@@ -205,13 +205,11 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 2. **SCM_RIGHTS over SOCK_STREAM** — systemd socket-activation,
    docker, X server all need it on stream sockets.
 3. **IPv6 fragmentation** (in + out) — mirror of F195 for v6.
-4. **SO_BINDTODEVICE** — needed for any multi-NIC deployment that
-   wants per-iface socket pinning.
-5. **IPv4 outbound fragmentation** — close the symmetry with F195.
-6. **AF_NETLINK sock_diag** — needed for `ss` / monitoring agents.
-7. **IPv6 route table** — flat lo/first-non-lo heuristic suffices
+4. **IPv4 outbound fragmentation** — close the symmetry with F195.
+5. **AF_NETLINK sock_diag** — needed for `ss` / monitoring agents.
+6. **IPv6 route table** — flat lo/first-non-lo heuristic suffices
    until we have a second v6-capable iface.
-8. **SLAAC (RS + RA)** — autoconf for v6 networks without DHCPv6.
-9. **MLD** — required for v6 multicast groups (mostly host LL).
+7. **SLAAC (RS + RA)** — autoconf for v6 networks without DHCPv6.
+8. **MLD** — required for v6 multicast groups (mostly host LL).
 
 Items beyond #10 are tuning/perf or rare-app territory.
