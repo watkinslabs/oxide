@@ -7,84 +7,14 @@ use alloc::vec::Vec;
 
 use crate::{flags, nlmsg_align, Nlmsghdr};
 use crate::rtnetlink::{
-    done_multi, put_nlattr_u32, AF_INET, AF_INET6, RTM_NEWRULE, RT_TABLE_DEFAULT, RT_TABLE_LOCAL,
-    RT_TABLE_MAIN,
+    done_multi, put_nlattr_u32, AF_INET, AF_INET6, RTM_NEWRULE,
 };
-use sync::{Spinlock, Socket as SockLockClass};
+use net::policy_rule::{self, PolicyRule as RuleRow, FR_ACT_TO_TBL};
 
-const FR_ACT_TO_TBL: u8 = 1;
 
 pub mod fra {
     pub const FRA_PRIORITY: u16 = 6;
     pub const FRA_TABLE:    u16 = 15;
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct RuleRow {
-    pub ns:       u64,
-    pub family:   u8,
-    pub dst_len:  u8,
-    pub src_len:  u8,
-    pub tos:      u8,
-    pub table:    u32,
-    pub action:   u8,
-    pub flags:    u32,
-    pub priority: u32,
-}
-
-static RULE_TABLE: Spinlock<Vec<RuleRow>, SockLockClass> = Spinlock::new(Vec::new());
-
-fn builtin_rules(family: u8) -> [RuleRow; 3] {
-    [
-        RuleRow {
-            ns: 0, family, priority: 0, table: RT_TABLE_LOCAL as u32,
-            action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0,
-        },
-        RuleRow {
-            ns: 0, family, priority: 32766, table: RT_TABLE_MAIN as u32,
-            action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0,
-        },
-        RuleRow {
-            ns: 0, family, priority: 32767, table: RT_TABLE_DEFAULT as u32,
-            action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0,
-        },
-    ]
-}
-
-/// Snapshot custom policy rules in network namespace `ns`. # C: O(N)
-pub fn rule_snapshot_ns(ns: u64) -> Vec<RuleRow> {
-    RULE_TABLE.lock().iter().filter(|r| r.ns == ns).copied().collect()
-}
-
-fn rule_exists(row: RuleRow) -> bool {
-    RULE_TABLE.lock().iter().any(|r| {
-        r.ns == row.ns && r.family == row.family && r.priority == row.priority
-    })
-}
-
-/// Insert or replace by `(ns, family, priority)`. # C: O(N)
-pub fn rule_insert(row: RuleRow) {
-    let mut g = RULE_TABLE.lock();
-    if let Some(i) = g.iter().position(|r| {
-        r.ns == row.ns && r.family == row.family && r.priority == row.priority
-    }) {
-        g[i] = row;
-    } else {
-        g.push(row);
-    }
-}
-
-/// Remove custom rules matching the optional key fields. # C: O(N)
-pub fn rule_remove(ns: u64, family: u8, priority: Option<u32>, table: Option<u32>) -> usize {
-    let mut g = RULE_TABLE.lock();
-    let before = g.len();
-    g.retain(|r| {
-        r.ns != ns
-            || r.family != family
-            || priority.is_some_and(|p| r.priority != p)
-            || table.is_some_and(|t| r.table != t)
-    });
-    before - g.len()
 }
 
 #[repr(C)]
@@ -177,13 +107,6 @@ fn parse_rule_attrs(attrs: &[u8]) -> (Option<u32>, Option<u32>) {
     (priority, table)
 }
 
-fn next_priority(ns: u64, family: u8) -> u32 {
-    let used = rule_snapshot_ns(ns);
-    (1..32766).rev()
-        .find(|p| !used.iter().any(|r| r.family == family && r.priority == *p))
-        .unwrap_or(1)
-}
-
 fn parse_rule(full_msg: &[u8]) -> Option<(RuleRow, Option<u32>)> {
     let off = Nlmsghdr::SIZE;
     if full_msg.len() < off + FibRuleHdr::SIZE { return None; }
@@ -216,10 +139,7 @@ pub fn handle_getrule(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     };
     let mut reply: Vec<u8> = Vec::with_capacity(128);
     let ns = net::netdev::current_net_ns();
-    let mut rows: Vec<RuleRow> = builtin_rules(family).into_iter().map(|mut r| { r.ns = ns; r }).collect();
-    rows.extend(rule_snapshot_ns(ns).into_iter().filter(|r| r.family == family));
-    rows.sort_by_key(|r| r.priority);
-    for row in rows {
+    for row in policy_rule::snapshot_effective(ns, family) {
         reply.extend_from_slice(&build_newrule_reply(req.nlmsg_seq, req.nlmsg_pid, row, true));
     }
     reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));
@@ -233,15 +153,15 @@ pub fn handle_newrule(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         None => return crate::rtnetlink::nlmsg_ack_pub(req, -22),
     };
     if row.table == 0 { return crate::rtnetlink::nlmsg_ack_pub(req, -22); }
-    if explicit_priority.is_none() { row.priority = next_priority(row.ns, row.family); }
-    let exists = rule_exists(row);
+    if explicit_priority.is_none() { row.priority = policy_rule::next_priority(row.ns, row.family); }
+    let exists = policy_rule::exists(row);
     if exists && (req.nlmsg_flags & flags::NLM_F_EXCL) != 0 {
         return crate::rtnetlink::nlmsg_ack_pub(req, -17);
     }
     if !exists && (req.nlmsg_flags & flags::NLM_F_REPLACE) != 0 {
         return crate::rtnetlink::nlmsg_ack_pub(req, -2);
     }
-    rule_insert(row);
+    policy_rule::insert(row);
     crate::rtnetlink::nlmsg_ack_pub(req, 0)
 }
 
@@ -255,7 +175,7 @@ pub fn handle_delrule(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     if explicit_priority.is_none() && table.is_none() {
         return crate::rtnetlink::nlmsg_ack_pub(req, -22);
     }
-    let n = rule_remove(row.ns, row.family, explicit_priority, table);
+    let n = policy_rule::remove(row.ns, row.family, explicit_priority, table);
     crate::rtnetlink::nlmsg_ack_pub(req, if n > 0 { 0 } else { -3 })
 }
 
@@ -271,14 +191,14 @@ mod tests {
 
     #[test]
     fn build_newrule_reply_has_linux_defaults() {
-        let row = builtin_rules(AF_INET)[1];
+        let row = policy_rule::builtin_rules(0, AF_INET)[1];
         let bytes = build_newrule_reply(9, 42, row, true);
         let hdr = Nlmsghdr::parse(&bytes).unwrap();
         assert_eq!(hdr.nlmsg_type, RTM_NEWRULE);
         assert_eq!(hdr.nlmsg_flags & flags::NLM_F_MULTI, flags::NLM_F_MULTI);
         assert_eq!((hdr.nlmsg_seq, hdr.nlmsg_pid), (9, 42));
         assert_eq!(bytes[Nlmsghdr::SIZE], AF_INET);
-        assert_eq!(bytes[Nlmsghdr::SIZE + 4], RT_TABLE_MAIN);
+        assert_eq!(bytes[Nlmsghdr::SIZE + 4], crate::rtnetlink::RT_TABLE_MAIN);
         assert_eq!(bytes[Nlmsghdr::SIZE + 7], FR_ACT_TO_TBL);
     }
 
@@ -370,7 +290,7 @@ mod tests {
 
         let (del_hdr, del_msg) = rule_req(crate::rtnetlink::RTM_DELRULE, AF_INET, 12345, 100);
         assert_eq!(ack_errno(&handle_delrule(&del_hdr, &del_msg)), 0);
-        assert_eq!(rule_remove(0, AF_INET, Some(12345), Some(100)), 0);
+        assert_eq!(policy_rule::remove(0, AF_INET, Some(12345), Some(100)), 0);
     }
 
     #[test]
@@ -379,6 +299,6 @@ mod tests {
         assert_eq!(ack_errno(&handle_newrule(&hdr, &msg)), 0);
         hdr.nlmsg_flags |= flags::NLM_F_EXCL;
         assert_eq!(ack_errno(&handle_newrule(&hdr, &msg)), -17);
-        assert_eq!(rule_remove(0, AF_INET6, Some(22345), Some(200)), 1);
+        assert_eq!(policy_rule::remove(0, AF_INET6, Some(22345), Some(200)), 1);
     }
 }
