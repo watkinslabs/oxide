@@ -7,7 +7,7 @@
 #![allow(clippy::upper_case_acronyms)]
 use super::inet;
 use super::netdb;
-use super::socket::{AF_INET, AF_INET6};
+use super::socket::{AF_INET, AF_INET6, SOCK_DGRAM, SOCK_STREAM};
 
 pub const AI_PASSIVE: i32 = 1;
 pub const AI_CANONNAME: i32 = 2;
@@ -38,23 +38,66 @@ const GAI_WAIT: i32 = 0;
 const GAI_NOWAIT: i32 = 1;
 const EINVAL: i32 = 22;
 
-/// Parse a service string to a port. Numeric ("80") or a small well-known
-/// table (DNS resolution of /etc/services is a follow-up). None on bad.
-/// # C: in_port_t parse_port(const char *service) — getservbyname helper
-pub(crate) fn parse_port(service: &[u8]) -> Option<u16> {
-    if service.is_empty() { return Some(0); }
+fn proto_matches_socktype(proto: &str, socktype: i32) -> bool {
+    match socktype {
+        0 => true,
+        SOCK_STREAM => proto == "tcp",
+        SOCK_DGRAM => proto == "udp",
+        _ => false,
+    }
+}
+
+fn parse_numeric_port(service: &[u8]) -> Option<u16> {
     if service.iter().all(|b| b.is_ascii_digit()) {
         let mut v: u32 = 0;
-        for &b in service { v = v * 10 + (b - b'0') as u32; if v > 65535 { return None; } }
+        for &b in service {
+            v = v * 10 + (b - b'0') as u32;
+            if v > 65535 {
+                return None;
+            }
+        }
         return Some(v as u16);
     }
-    match service {
-        b"http" => Some(80),
-        b"https" => Some(443),
-        b"domain" => Some(53),
-        b"ssh" => Some(22),
-        _ => None,
+    None
+}
+
+fn parse_builtin_port(service: &[u8], socktype: i32) -> Option<u16> {
+    let (port, proto) = match service {
+        b"http" => (80, "tcp"),
+        b"https" => (443, "tcp"),
+        b"domain" if socktype == SOCK_DGRAM => (53, "udp"),
+        b"domain" => (53, "tcp"),
+        b"ssh" => (22, "tcp"),
+        _ => return None,
+    };
+    proto_matches_socktype(proto, socktype).then_some(port)
+}
+
+/// Parse a service string to a port. Numeric ("80"), /etc/services content,
+/// or the small well-known fallback table used when /etc/services is absent.
+/// # C: in_port_t parse_port(const char *service) — getservbyname helper
+pub(crate) fn parse_port(service: &[u8]) -> Option<u16> {
+    parse_port_with_services(service, 0, &[])
+}
+
+/// # C: getaddrinfo service lookup using /etc/services and ai_socktype proto.
+pub(crate) fn parse_port_with_services(service: &[u8], socktype: i32, services: &[u8]) -> Option<u16> {
+    if service.is_empty() { return Some(0); }
+    if let Some(port) = parse_numeric_port(service) {
+        return Some(port);
     }
+
+    let text = core::str::from_utf8(services).unwrap_or("");
+    for line in text.lines() {
+        if let Some(v) = netdb::parse_serv_line(line) {
+            let name_matches = v.name.as_bytes() == service || v.aliases.iter().any(|a| a.as_bytes() == service);
+            if name_matches && proto_matches_socktype(&v.proto, socktype) {
+                return Some(v.port);
+            }
+        }
+    }
+
+    services.is_empty().then(|| parse_builtin_port(service, socktype)).flatten()
 }
 
 /// Build a sockaddr (in/in6) for a numeric `node` + `port`, honoring a family
@@ -172,7 +215,21 @@ mod exports {
             let want = if hints.is_null() { 0 } else { (*hints).ai_family };
             let flags = if hints.is_null() { 0 } else { (*hints).ai_flags };
             let socktype = if hints.is_null() { 0 } else { (*hints).ai_socktype };
-            let port = match parse_port(slice_or_empty(service)) { Some(p) => p, None => return EAI_SERVICE };
+            let service_name = slice_or_empty(service);
+            let port = if service_name.is_empty() {
+                0
+            } else if service_name.iter().all(|b| b.is_ascii_digit()) {
+                match parse_numeric_port(service_name) { Some(p) => p, None => return EAI_SERVICE }
+            } else {
+                if flags & AI_NUMERICSERV != 0 {
+                    return EAI_NONAME;
+                }
+                let services = read_file(b"/etc/services\0").unwrap_or_default();
+                match parse_port_with_services(service_name, socktype, &services) {
+                    Some(p) => p,
+                    None => return EAI_SERVICE,
+                }
+            };
             let n = slice_or_empty(node);
             let (fam, bytes, len) = match fill_sockaddr(n, port, want) {
                 Some(t) => t,
@@ -342,6 +399,21 @@ mod tests {
         assert_eq!(parse_port(b"https"), Some(443));
         assert_eq!(parse_port(b"99999"), None);
         assert_eq!(parse_port(b"nope"), None);
+    }
+
+    #[test]
+    fn port_parsing_uses_services_by_socktype() {
+        let services = b"\
+            custom 1234/tcp custom-alias\n\
+            custom 4321/udp\n\
+            onlyudp 5353/udp mdns-alias\n";
+
+        assert_eq!(parse_port_with_services(b"custom", SOCK_STREAM, services), Some(1234));
+        assert_eq!(parse_port_with_services(b"custom", SOCK_DGRAM, services), Some(4321));
+        assert_eq!(parse_port_with_services(b"custom-alias", SOCK_STREAM, services), Some(1234));
+        assert_eq!(parse_port_with_services(b"mdns-alias", SOCK_DGRAM, services), Some(5353));
+        assert_eq!(parse_port_with_services(b"onlyudp", SOCK_STREAM, services), None);
+        assert_eq!(parse_port_with_services(b"custom", 99, services), None);
     }
 
     #[test]
