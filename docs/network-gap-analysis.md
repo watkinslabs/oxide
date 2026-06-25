@@ -141,7 +141,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | SOL_SOCKET | SO_LINGER         | done   | F194 (abortive only) |
 | SOL_SOCKET | SO_PRIORITY/MARK  | partial | stored, not data-path enforced |
 | SOL_SOCKET | SO_BINDTODEVICE   | done   | setsockopt/getsockopt by ifname; applies to UDP/TCP paths |
-| SOL_SOCKET | SO_PASSCRED       | partial | creds emitted via SCM_CREDENTIALS unconditionally |
+| SOL_SOCKET | SO_PASSCRED       | done   | getsockopt round-trips; recvmsg emits SCM_CREDENTIALS only when enabled |
 | IPPROTO_TCP | TCP_NODELAY      | done   | F175 |
 | IPPROTO_TCP | TCP_INFO         | done   | F188 |
 | IPPROTO_TCP | TCP_CORK         | gap    | |
