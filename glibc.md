@@ -363,6 +363,13 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   done; mcheck_check_all DONE — F565, malloc/introspect.rs, errno-preserving
   no-op host-diffed in t_crypto.c. STILL TODO: malloc_info; mallwatch is
   compat-only/non-linkable on this host.
+- **F637 DONE:** legacy glibc string inline helpers:
+  `__strcspn_c1`, `__strcspn_c2`, `__strcspn_c3`, `__strpbrk_c2`,
+  `__strpbrk_c3`, `__strsep_1c`, `__strsep_2c`, `__strsep_3c`,
+  `__strsep_g`, `__strspn_c1`, `__strspn_c2`, `__strspn_c3`,
+  `__strtok_r_1c`. Verification: both freestanding arch builds,
+  `spec-lint`, `git diff --check`, `xtask glibc-test` 195/195, and ABI
+  audit for the thirteen symbols.
 - Re-audit (docs/59 §9 / state.md recipe) for stragglers after each batch.
 
 ## 3. DEFERRED ABI WORK: long double `*l` + `_Float128`/`_Float32x`/`_Float64x`
