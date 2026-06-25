@@ -40,8 +40,8 @@ fn iface_label(ifindex: i32) -> alloc::string::String {
 pub(crate) fn notify_link(ifindex: i32) {
     let row = rt::ifaces_snapshot().into_iter()
         .find(|(id, ..)| *id == ifindex as u32);
-    let (id, name, mac, mtu, is_lo, flags) = match row { Some(r) => r, None => return };
-    let msg = rt::build_newlink_reply(0, 0, id as i32, &name, mac, mtu, is_lo, flags, false);
+    let (id, name, mac, mtu, is_lo, flags, stats) = match row { Some(r) => r, None => return };
+    let msg = rt::build_newlink_reply(0, 0, id as i32, &name, mac, mtu, is_lo, flags, stats, false);
     crate::rtnl_multicast(grp::RTNLGRP_LINK, &msg);
 }
 

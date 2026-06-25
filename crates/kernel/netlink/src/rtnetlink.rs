@@ -13,12 +13,15 @@ use sync::{Spinlock, Socket as SockLockClass};
 
 #[path = "rtnetlink_addr.rs"]
 mod rtnetlink_addr;
+#[path = "rtnetlink_link.rs"]
+mod rtnetlink_link;
 #[path = "rtnetlink_route.rs"]
 pub(crate) mod rtnetlink_route;
 pub use rtnetlink_addr::{
     addr_insert, addr_remove, addr_snapshot, addr_snapshot_ns, cache_to_net, seed_defaults,
     IfaCacheInfo, IfaceAddr,
 };
+use rtnetlink_link::{put_link_stats64, LinkStats64};
 use rtnetlink_route::parse_route_attrs;
 
 // ---- Message types -------------------------------------------------------
@@ -78,6 +81,7 @@ pub mod ifla {
     pub const IFLA_TXQLEN:    u16 = 13;
     pub const IFLA_OPERSTATE: u16 = 16; // u8
     pub const IFLA_LINKMODE:  u16 = 17;
+    pub const IFLA_STATS64:   u16 = 23; // struct rtnl_link_stats64
     pub const IFLA_GROUP:     u16 = 27;
     pub const IFLA_CARRIER:   u16 = 33; // u8 — link-layer carrier (0/1)
 }
@@ -269,6 +273,7 @@ pub(crate) fn build_newlink_reply(
     mtu: u32,
     is_loopback: bool,
     flags: u32,
+    stats: LinkStats64,
     multi: bool,
 ) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::with_capacity(128);
@@ -301,6 +306,7 @@ pub(crate) fn build_newlink_reply(
     put_nlattr_u8(&mut body, ifla::IFLA_OPERSTATE, operstate);
     put_nlattr_u8(&mut body, ifla::IFLA_LINKMODE, 0);
     put_nlattr_u8(&mut body, ifla::IFLA_CARRIER, carrier as u8);
+    put_link_stats64(&mut body, stats);
 
     // Now serialize the leading nlmsghdr with the full length.
     let total = Nlmsghdr::SIZE + body.len();
@@ -345,7 +351,7 @@ pub fn done_multi(seq: u32, pid: u32) -> alloc::vec::Vec<u8> {
 pub fn handle_getlink(req: &Nlmsghdr) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
     let entries = ifaces_snapshot();
-    for (id, name, mac, mtu, is_lo, flags) in entries.iter() {
+    for (id, name, mac, mtu, is_lo, flags, stats) in entries.iter() {
         let one = build_newlink_reply(
             req.nlmsg_seq, req.nlmsg_pid,
             *id as i32,
@@ -354,6 +360,7 @@ pub fn handle_getlink(req: &Nlmsghdr) -> Vec<u8> {
             *mtu,
             *is_lo,
             *flags,
+            *stats,
             /*multi=*/true,
         );
         reply.extend_from_slice(&one);
@@ -479,8 +486,8 @@ pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
     let ifaces = ifaces_snapshot();
     for row in addr_snapshot_ns(net::netdev::current_net_ns()).iter() {
-        let name = match ifaces.iter().find(|(id, _, _, _, _, _)| *id == row.ifindex) {
-            Some((_, n, _, _, _, _)) => n.as_str(),
+        let name = match ifaces.iter().find(|(id, _, _, _, _, _, _)| *id == row.ifindex) {
+            Some((_, n, _, _, _, _, _)) => n.as_str(),
             None => continue,
         };
         let one = build_newaddr_reply(
@@ -493,8 +500,8 @@ pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
     }
     #[cfg(target_os = "oxide-kernel")]
     for (iface, row) in net::sock::stack().v6_addr_snapshot() {
-        let name = match ifaces.iter().find(|(id, _, _, _, _, _)| *id == iface.raw()) {
-            Some((_, n, _, _, _, _)) => n.as_str(),
+        let name = match ifaces.iter().find(|(id, _, _, _, _, _, _)| *id == iface.raw()) {
+            Some((_, n, _, _, _, _, _)) => n.as_str(),
             None => continue,
         };
         let addr = row.addr;
@@ -929,7 +936,7 @@ const _: u16 = msg::NLMSG_DONE;
 /// without dragging the runtime socket layer in.
 /// # C: O(N_ifaces)
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) fn ifaces_snapshot() -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool, u32)> {
+pub(crate) fn ifaces_snapshot() -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool, u32, LinkStats64)> {
     let stack = net::sock::stack();
     // A netns sees only its own ifaces (Linux `sock_net(skb->sk)`); the
     // host runs in ns 0 so this is identical to the old all-ns-0 dump.
@@ -939,13 +946,13 @@ pub(crate) fn ifaces_snapshot() -> Vec<(u32, alloc::string::String, [u8; 6], u32
             let is_lo = dev.name() == "lo";
             let flags = stack.ifaces.iface_flags(id).unwrap_or(0);
             (id.0, alloc::string::String::from(dev.name()),
-             dev.mac().0, dev.mtu(), is_lo, flags)
+             dev.mac().0, dev.mtu(), is_lo, flags, LinkStats64::from(dev.stats()))
         })
         .collect()
 }
 /// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
-pub(crate) fn ifaces_snapshot() -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool, u32)> {
+pub(crate) fn ifaces_snapshot() -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool, u32, LinkStats64)> {
     alloc::vec::Vec::new()
 }
 
