@@ -109,6 +109,51 @@
     }
 
     #[test]
+    fn newroute_multipath_inserts_each_nexthop() {
+        fn push_rtnh(out: &mut Vec<u8>, oif: u32, gw: [u8; 4]) {
+            let start = out.len();
+            out.extend_from_slice(&0u16.to_ne_bytes());
+            out.push(0);
+            out.push(0);
+            out.extend_from_slice(&oif.to_ne_bytes());
+            put_nlattr(out, rta::RTA_GATEWAY, &gw);
+            let len = out.len() - start;
+            out[start..start + 2].copy_from_slice(&(len as u16).to_ne_bytes());
+            let pad = nlmsg_align(len) - len;
+            for _ in 0..pad { out.push(0); }
+        }
+
+        let dst = Some(([198, 51, 77, 0], 24));
+        let _ = route_remove(0, RT_TABLE_MAIN, dst, 7711);
+        let _ = route_remove(0, RT_TABLE_MAIN, dst, 7712);
+        let mut body = alloc::vec![0u8; Rtmsg::SIZE];
+        Rtmsg {
+            rtm_family: AF_INET, rtm_dst_len: 24, rtm_table: RT_TABLE_MAIN,
+            rtm_protocol: RTPROT_STATIC, rtm_scope: RT_SCOPE_UNIVERSE,
+            rtm_type: RTN_UNICAST, ..Rtmsg::default()
+        }.write_to(&mut body[..Rtmsg::SIZE]);
+        put_nlattr(&mut body, rta::RTA_DST, &[198, 51, 77, 0]);
+        let mut mp = Vec::new();
+        push_rtnh(&mut mp, 7711, [192, 0, 2, 1]);
+        push_rtnh(&mut mp, 7712, [192, 0, 2, 2]);
+        put_nlattr(&mut body, rta::RTA_MULTIPATH, &mp);
+        let mut msg = alloc::vec![0u8; Nlmsghdr::SIZE];
+        msg.extend_from_slice(&body);
+        let req = Nlmsghdr {
+            nlmsg_len: msg.len() as u32, nlmsg_type: RTM_NEWROUTE,
+            nlmsg_flags: crate::flags::NLM_F_REQUEST, nlmsg_seq: 44, nlmsg_pid: 9,
+        };
+        req.write_to(&mut msg[..Nlmsghdr::SIZE]);
+
+        let _ack = handle_newroute(&req, &msg);
+        let rows = route_snapshot_ns(0);
+        assert!(rows.iter().any(|r| r.dst == dst && r.oif_ifindex == 7711 && r.gateway == Some([192, 0, 2, 1])));
+        assert!(rows.iter().any(|r| r.dst == dst && r.oif_ifindex == 7712 && r.gateway == Some([192, 0, 2, 2])));
+        assert_eq!(route_remove(0, RT_TABLE_MAIN, dst, 7711), 1);
+        assert_eq!(route_remove(0, RT_TABLE_MAIN, dst, 7712), 1);
+    }
+
+    #[test]
     fn addr_table_insert_remove_snapshot() {
         // Snapshot of total rows changes around our operations; we
         // capture before/after rather than asserting absolute counts
