@@ -406,9 +406,7 @@ impl NetStack {
     }
 
     /// F161: release UDP port (from Drop). # C: O(log N)
-    pub fn unbind_udp(&self, port: u16) {
-        self.udp.lock().remove(&port);
-    }
+    pub fn unbind_udp(&self, port: u16) { crate::mcast_filter::clear_port(port); self.udp.lock().remove(&port); }
 
     /// F180a: v6 UDP map accessor. # C: O(1)
     pub fn udp6_map(&self) -> &Spinlock<BTreeMap<u16, Arc<crate::stack_ipv6::Udp6RxQueue>>, StackLockClass> {
@@ -814,7 +812,7 @@ impl NetStack {
                 let q_arc = { self.udp.lock().get(&udp.dst_port).cloned() };
                 if let Some(q) = q_arc {
                     let bound = q.bound_ifindex.load(core::sync::atomic::Ordering::Acquire);
-                    if bound != 0 && bound != iface.raw() { return Ok(()); }
+                    if bound != 0 && bound != iface.raw() || hdr.dst.is_multicast() && !crate::mcast_filter::accept(udp.dst_port, iface, hdr.dst, hdr.src) { return Ok(()); }
                     let body = &payload[crate::udp::UDP_HDR_LEN .. udp.length as usize];
                     // SO_ATTACH_BPF: a 0 verdict drops the datagram.
                     let drop = { q.bpf_filter.lock().as_ref()
