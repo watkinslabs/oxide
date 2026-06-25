@@ -114,6 +114,12 @@ mod exports {
         // SAFETY: s is writable for n bytes; zero-fill via memset_impl.
         unsafe { memset_impl(s, 0, n); }
     }
+    // # C: void __bzero(void *s, size_t n)
+    #[no_mangle]
+    pub unsafe extern "C" fn __bzero(s: *mut u8, n: usize) {
+        // SAFETY: __bzero has the same writable-buffer contract as bzero.
+        unsafe { bzero(s, n) }
+    }
     // # C: void bcopy(const void *src, void *dst, size_t n) — note arg order
     #[no_mangle]
     pub unsafe extern "C" fn bcopy(src: *const u8, dst: *mut u8, n: usize) {

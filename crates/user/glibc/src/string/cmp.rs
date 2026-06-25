@@ -145,6 +145,12 @@ mod exports {
         // SAFETY: forwards the C strcasecmp contract to strcasecmp_impl.
         unsafe { strcasecmp_impl(a, b) }
     }
+    // # C: int __strcasecmp(const char *a, const char *b)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strcasecmp(a: *const u8, b: *const u8) -> i32 {
+        // SAFETY: __strcasecmp has the same C-string contract as strcasecmp.
+        unsafe { strcasecmp(a, b) }
+    }
     // # C: int strncasecmp(const char *a, const char *b, size_t n)
     #[no_mangle]
     pub unsafe extern "C" fn strncasecmp(a: *const u8, b: *const u8, n: usize) -> i32 {

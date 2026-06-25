@@ -171,6 +171,12 @@ mod exports {
         // SAFETY: forwards the GNU rawmemchr contract to rawmemchr_impl.
         unsafe { rawmemchr_impl(s, c) }
     }
+    // # C: void *__rawmemchr(const void *s, int c)
+    #[no_mangle]
+    pub unsafe extern "C" fn __rawmemchr(s: *const u8, c: i32) -> *mut u8 {
+        // SAFETY: __rawmemchr has the same readable-buffer contract as rawmemchr.
+        unsafe { rawmemchr(s, c) }
+    }
     // # C: char *strcasestr(const char *hay, const char *needle)
     #[no_mangle]
     pub unsafe extern "C" fn strcasestr(hay: *const u8, needle: *const u8) -> *mut u8 {

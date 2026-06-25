@@ -124,6 +124,11 @@ Also DONE: glibc internal syscall compatibility aliases (F627): low-level I/O,
 mmap/munmap, poll/select, nanosleep, wait, sigtimedwait, and libc pread/pwrite
 aliases exported over existing syscall wrappers. Verified by ABI export audit,
 regression suite, spec-lint, and both freestanding arch builds.
+Also DONE: common glibc internal compatibility aliases (F628): backtrace, DNS
+name codecs, string/memory helpers, dup2, connect, clock_gettime, and sysconf
+aliases exported over existing implementations. Varargs-only `__asprintf` is
+left for a dedicated follow-up. Verified by ABI export audit, regression suite,
+spec-lint, and both freestanding arch builds.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
