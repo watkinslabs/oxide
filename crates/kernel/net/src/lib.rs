@@ -39,6 +39,7 @@ pub mod route;
 pub mod netfilter_hook;
 pub mod bpf_filter;
 pub mod stack;
+pub mod stack_binddev;
 pub use stack::{NetStack, UdpRxQueue};
 pub use route::{RouteEntry, RouteTable};
 pub use ipv4::{Ipv4Hdr, Ipv4Error, push_ipv4_header, ip_checksum, IPV4_HDR_LEN};
@@ -73,6 +74,8 @@ pub use tcp_state::{transition, TcpEvent, TcpState};
 mod tests;
 #[cfg(test)]
 mod tests_correctness;
+#[cfg(test)]
+mod stack_tests;
 
 // Real bring-up runs through the module functions (stack init in kmain,
 // loopback/iface registration, the timer-driven TCP RTO below); there is

@@ -1,7 +1,4 @@
 // Kernel-side AF_INET/UNIX wrapper around `crate::NetStack`.
-
-
-
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -222,6 +219,8 @@ pub struct SockOpts {
     pub linger_s:  core::sync::atomic::AtomicI32,
     pub priority:  core::sync::atomic::AtomicI32,
     pub mark:      core::sync::atomic::AtomicI32,
+    /// SO_BINDTODEVICE: 0 means no bound egress/ingress interface.
+    pub bound_ifindex: core::sync::atomic::AtomicU32,
     /// IPPROTO_TCP / TCP_NODELAY round-trip cell.
     pub tcp_nodelay: core::sync::atomic::AtomicI32,
     /// IPPROTO_TCP keepalive tunables, in seconds, matching Linux's ABI.
@@ -254,6 +253,7 @@ impl Default for SockOpts {
             linger_s:    AtomicI32::new(0),
             priority:    AtomicI32::new(0),
             mark:        AtomicI32::new(0),
+            bound_ifindex: AtomicU32::new(0),
             tcp_nodelay: AtomicI32::new(0),
             tcp_keepidle_s: AtomicI32::new(crate::sock_opts::TCP_KEEPIDLE_DEFAULT_S),
             tcp_keepintvl_s: AtomicI32::new(crate::sock_opts::TCP_KEEPINTVL_DEFAULT_S),
@@ -377,6 +377,10 @@ impl InetSocket {
         let mut g = self.local_port.lock();
         if let Some(p) = *g { return Ok(p); }
         let p = alloc_ephemeral_port()?;
+        let iface = stack().bound_iface(
+            self.opts.bound_ifindex.load(core::sync::atomic::Ordering::Acquire),
+        )?;
+        stack().set_udp_bound_iface(p, iface);
         *g = Some(p);
         Ok(p)
     }
@@ -645,6 +649,11 @@ fn iface_primary_ip(id: Option<NetIfaceId>) -> Option<Ipv4Addr> {
     f(id)
 }
 
+/// # C: O(N_ifaces)
+pub(crate) fn bound_iface(sock: &InetSocket) -> Result<Option<NetIfaceId>, NetError> {
+    stack().bound_iface(sock.opts.bound_ifindex.load(core::sync::atomic::Ordering::Acquire))
+}
+
 /// AF_INET dgram-socket send — auto-binds an ephemeral local
 /// port if not already bound, builds + xmits the datagram,
 /// drains lo so an immediate recv on the same socket sees it.
@@ -666,32 +675,19 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
         Ipv4Addr::LOOPBACK
     } else {
         // Find the outbound iface's primary IPv4 via the route table.
+        let bound_iface = bound_iface(sock)?;
         STACK.routes.lookup(dst)
             .and_then(|r| r.src_hint)
-            .or_else(|| iface_primary_ip(STACK.routes.lookup(dst).map(|r| r.iface)))
+            .or_else(|| iface_primary_ip(bound_iface.or_else(|| STACK.routes.lookup(dst).map(|r| r.iface))))
             .unwrap_or(Ipv4Addr::LOOPBACK)
     };
-    STACK.send_udp_to(src_ip, src_port, dst, dst_port, payload)?;
+    STACK.send_udp_to_bound(src_ip, src_port, dst, dst_port, payload, bound_iface(sock)?)?;
     drain_loopback();
     Ok(payload.len())
 }
-
-
-// F164: blocking-I/O helpers moved to sock_io.rs (1000-line cap).
-
-
-// ─── work fns per `docs/53§3` ───
-// Typed bind/connect/sendto/recv operating on already-parsed
-// `BoundAddr` / `RemoteAddr` enums. ABI shims in
-// `kernel/src/syscalls/net.rs` translate user sockaddr buffers
-// into these enums.
-
 extern crate alloc;
 use alloc::string::String;
 
-/// Already-validated bind target. Per `25§5` socket address
-/// taxonomy. Variant tags reflect the socket family the caller
-/// expects to be bound to.
 pub enum BoundAddr {
     /// `bind` on an AF_UNIX SOCK_STREAM/SOCK_SEQPACKET socket —
     /// register a listener at `path`.
@@ -719,7 +715,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
             UNIX_REGISTRY.dgram_bind(path, queue).map_err(|_| NetError::Eaddrinuse)
         }
         BoundAddr::Inet { ip, port } => {
-            stack().bind_udp(ip, port)?;
+            stack().bind_udp_with_iface(ip, port, bound_iface(sock)?)?;
             *sock.local_port.lock() = Some(port);
             *sock.local_ip.lock() = ip;
             // F181a: register subscribers on the just-bound queue.
@@ -730,7 +726,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
         }
         BoundAddr::Inet6 { ip, port } => {
             // F180a: AF_INET6 UDP bind routes through udp6 map.
-            stack().bind_udp6(ip, port)?;
+            stack().bind_udp6_with_iface(ip, port, bound_iface(sock)?)?;
             *sock.local_port.lock() = Some(port);
             *sock.local_ip6.lock() = ip;
             if let Some(q) = stack().udp6_queue_arc(port) {
@@ -753,9 +749,6 @@ pub enum RemoteAddr {
     Inet6 { ip: crate::Ipv6Addr, port: u16 },
 }
 
-/// Connect a socket to a remote per `connect(2)`. work fn.
-/// Handles AF_UNIX path-lookup, AF_INET UDP peer-stash, AF_INET TCP
-/// active open + 3WHS drain.
 /// # C: O(1) for UDP/UNIX, O(drain_iterations) for TCP.
 pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<(), NetError> {
     match addr {
@@ -816,12 +809,17 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             } else if dst_ip.is_loopback() {
                 Ipv4Addr::LOOPBACK
             } else {
+                let bound_iface = bound_iface(sock)?;
                 STACK.routes.lookup(dst_ip)
                     .and_then(|r| r.src_hint)
-                    .or_else(|| iface_primary_ip(STACK.routes.lookup(dst_ip).map(|r| r.iface)))
+                    .or_else(|| iface_primary_ip(bound_iface.or_else(|| STACK.routes.lookup(dst_ip).map(|r| r.iface))))
                     .unwrap_or(Ipv4Addr::LOOPBACK)
             };
-            let entry = stack().tcp_connect(local_ip, local_port, dst_ip, port)?;
+            let entry = stack().tcp_connect_ip_bound(
+                crate::addr::IpAddr::V4(local_ip), local_port,
+                crate::addr::IpAddr::V4(dst_ip), port,
+                bound_iface(sock)?,
+            )?;
             // F181a: bind owning fd's subscribers so deliver_tcp can
             // wake epoll without broadcasting.
             entry.register_poll_subs(&sock.poll_subs);
@@ -858,6 +856,7 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
         crate::addr::IpAddr::V4(*sock.local_ip.lock())
     };
     let le = stack().tcp_listen_ip_with(local_ip, port, reuseaddr, reuseport)?;
+    le.set_bound_iface(bound_iface(sock)?);
     le.set_backlog(backlog);
     le.register_poll_subs(&sock.poll_subs);
     *sock.kind.lock() = SockKind::TcpListener(le);
@@ -993,7 +992,4 @@ pub fn sendto(
     socket_sendto(sock, dst_ip, dst_port, payload)
 }
 
-// P5-01: `recvfrom` work fn + `Received` result moved to sock_io.rs
-// for the 1000-line cap; re-exported here so `net::sock::recvfrom`
-// and `net::sock::Received` call sites stay unchanged.
 pub use crate::sock_io::{recvfrom, Received};

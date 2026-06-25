@@ -10,6 +10,7 @@ use crate::net_common::socket_from_fd;
 pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     const SOL_SOCKET: u64  = 1;
+    const SO_BINDTODEVICE: u64 = 25;
     const IPPROTO_TCP: u64 = 6;
     const TCP_KEEPIDLE: u64 = 4;
     const TCP_KEEPINTVL: u64 = 5;
@@ -46,6 +47,10 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         (SOL_SOCKET, 16) => if let Some(v) = read_i32(optval) { sock.opts.passcred.store(v, Ordering::Release); }, // SO_PASSCRED
         (SOL_SOCKET, 12) => priority_store(&sock, read_i32(optval)),
         (SOL_SOCKET, 36) => mark_store(&sock, read_i32(optval)),
+        (SOL_SOCKET, SO_BINDTODEVICE) => {
+            let rc = bind_to_device(&sock, optval, optlen);
+            if rc != 0 { return rc; }
+        }
         (SOL_SOCKET, 13) => {
             // struct linger { int l_onoff; int l_linger; } = 8 bytes
             if optlen >= 8 && optval + 8 <= USER_VA_END {
@@ -113,6 +118,48 @@ fn refresh_tcp_keepalive(sock: &alloc::sync::Arc<net::sock::InetSocket>) {
     if let net::sock::SockKind::TcpConn(entry) = &*sock.kind.lock() {
         net::sock_opts::apply_tcp_keepalive_opts(sock, entry);
     }
+}
+
+fn bind_to_device(sock: &alloc::sync::Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -> i64 {
+    use core::sync::atomic::Ordering;
+    const IFNAMSIZ: usize = 16;
+    if optlen as usize > IFNAMSIZ || optval + optlen as u64 > USER_VA_END {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let mut name = [0u8; IFNAMSIZ];
+    let n = optlen as usize;
+    for i in 0..n {
+        // SAFETY: optval + optlen validated in user range; byte reads are ABI-safe.
+        name[i] = unsafe { core::ptr::read_volatile((optval + i as u64) as *const u8) };
+    }
+    let end = name[..n].iter().position(|b| *b == 0).unwrap_or(n);
+    let iface = if end == 0 {
+        None
+    } else {
+        let s = match core::str::from_utf8(&name[..end]) {
+            Ok(s) => s,
+            Err(_) => return -(Errno::Einval.as_i32() as i64),
+        };
+        match net::sock::stack().ifaces.lookup_name(s) {
+            Some((id, _)) => Some(id),
+            None => return -(Errno::Enodev.as_i32() as i64),
+        }
+    };
+    sock.opts.bound_ifindex.store(iface.map(|i| i.raw()).unwrap_or(0), Ordering::Release);
+    if let Some(port) = *sock.local_port.lock() {
+        let fam = sock.family.load(Ordering::Acquire);
+        if fam == net::sock::AF_INET6 {
+            net::sock::stack().set_udp6_bound_iface(port, iface);
+        } else {
+            net::sock::stack().set_udp_bound_iface(port, iface);
+        }
+    }
+    match &*sock.kind.lock() {
+        net::sock::SockKind::TcpConn(entry) => entry.set_bound_iface(iface),
+        net::sock::SockKind::TcpListener(listener) => listener.set_bound_iface(iface),
+        _ => {}
+    }
+    0
 }
 
 /// Resolve a `bpf(BPF_PROG_LOAD)` program fd to its instruction bytes.

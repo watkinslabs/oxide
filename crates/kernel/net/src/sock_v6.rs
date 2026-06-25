@@ -6,7 +6,7 @@
 use crate::netdev::NetError;
 use crate::sock::{
     InetSocket, SockKind, alloc_ephemeral_port, alloc_ephemeral_port6,
-    drain_loopback, stack,
+    bound_iface, drain_loopback, stack,
 };
 use crate::sock_opts::apply_tcp_keepalive_opts;
 
@@ -34,9 +34,11 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
     } else {
         any6
     };
-    let entry = stack().tcp_connect_ip(
+    let bound = bound_iface(sock)?;
+    let entry = stack().tcp_connect_ip_bound(
         crate::addr::IpAddr::V6(local_ip), local_port,
         crate::addr::IpAddr::V6(dst_ip),   port,
+        bound,
     )?;
     entry.register_poll_subs(&sock.poll_subs);
     apply_tcp_keepalive_opts(sock, &entry);
@@ -60,11 +62,16 @@ pub fn sendto_v6(sock: &alloc::sync::Arc<InetSocket>,
         let cur = *sock.local_port.lock();
         match cur {
             Some(p) => p,
-            None    => { let p = alloc_ephemeral_port6()?; *sock.local_port.lock() = Some(p); p }
+            None    => {
+                let p = alloc_ephemeral_port6()?;
+                stack().set_udp6_bound_iface(p, bound_iface(sock)?);
+                *sock.local_port.lock() = Some(p);
+                p
+            }
         }
     };
     let src_ip = *sock.local_ip6.lock();
-    stack().send_udp6_to(src_ip, src_port, dst_ip, dst_port, payload)?;
+    stack().send_udp6_to_bound(src_ip, src_port, dst_ip, dst_port, payload, bound_iface(sock)?)?;
     drain_loopback();
     Ok(payload.len())
 }

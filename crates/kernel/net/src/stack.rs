@@ -40,6 +40,7 @@ pub struct UdpRxQueue {
     pub waiters: sched::live::WaitList,
     /// F174: per-port pending async error (Linux errno).
     pub error_eno: core::sync::atomic::AtomicI32,
+    pub bound_ifindex: core::sync::atomic::AtomicU32,
     /// F181a: per-fd epoll subscribers.
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
     /// SO_ATTACH_BPF socket-filter program bytes (run per datagram; r0==0 drops).
@@ -60,6 +61,7 @@ impl UdpRxQueue {
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
             error_eno: core::sync::atomic::AtomicI32::new(0),
+            bound_ifindex: core::sync::atomic::AtomicU32::new(0),
             poll_subs: Spinlock::new(None),
             bpf_filter: Spinlock::new(None),
         }
@@ -90,6 +92,7 @@ pub struct TcpListenKey { pub local_ip: IpAddr, pub local_port: u16 }
 /// listener table lock. Cheap to clone the Arc.
 pub struct TcpEntry {
     pub conn: Spinlock<TcpConn, StackLockClass>,
+    pub bound_ifindex: core::sync::atomic::AtomicU32,
     /// F158: blocking-read waiters (kernel only).
     #[cfg(target_os = "oxide-kernel")]
     pub rx_waiters: sched::live::WaitList,
@@ -102,6 +105,7 @@ impl TcpEntry {
     pub fn new(conn: TcpConn) -> Self {
         Self {
             conn: Spinlock::new(conn),
+            bound_ifindex: core::sync::atomic::AtomicU32::new(0),
             #[cfg(target_os = "oxide-kernel")]
             rx_waiters: sched::live::WaitList::new(),
             poll_subs: Spinlock::new(None),
@@ -113,6 +117,22 @@ impl TcpEntry {
     /// # C: O(1)
     pub fn register_poll_subs(&self, subs: &alloc::sync::Arc<vfs::PollSubscribers>) {
         *self.poll_subs.lock() = Some(alloc::sync::Arc::downgrade(subs));
+    }
+
+    /// # C: O(1)
+    pub fn set_bound_iface(&self, iface: Option<NetIfaceId>) {
+        self.bound_ifindex.store(
+            iface.map(|i| i.raw()).unwrap_or(0),
+            core::sync::atomic::Ordering::Release,
+        );
+    }
+
+    /// # C: O(1)
+    pub fn bound_iface(&self) -> Option<NetIfaceId> {
+        match self.bound_ifindex.load(core::sync::atomic::Ordering::Acquire) {
+            0 => None,
+            raw => Some(NetIfaceId::from_raw(raw)),
+        }
     }
 }
 
@@ -163,8 +183,14 @@ fn stamp_last_sent(entry: &TcpEntry, n: usize) {
     }
 }
 
+/// # C: O(n)
+pub(crate) fn stamp_last_sent_public(entry: &TcpEntry, n: usize) {
+    stamp_last_sent(entry, n);
+}
+
 pub struct TcpListenEntry {
     pub accept_q: Spinlock<VecDeque<Arc<TcpEntry>>, StackLockClass>,
+    pub bound_ifindex: core::sync::atomic::AtomicU32,
     /// F192: backlog cap (listen(2), clamped somaxconn=4096).
     pub backlog: core::sync::atomic::AtomicUsize,
     pub local: Endpoint,
@@ -180,6 +206,7 @@ impl TcpListenEntry {
     pub fn new(local: Endpoint) -> Self {
         Self {
             accept_q: Spinlock::new(VecDeque::new()),
+            bound_ifindex: core::sync::atomic::AtomicU32::new(0),
             backlog: core::sync::atomic::AtomicUsize::new(128),
             local,
             #[cfg(target_os = "oxide-kernel")]
@@ -198,6 +225,22 @@ impl TcpListenEntry {
     pub fn register_poll_subs(&self, subs: &alloc::sync::Arc<vfs::PollSubscribers>) {
         *self.poll_subs.lock() = Some(alloc::sync::Arc::downgrade(subs));
     }
+
+    /// # C: O(1)
+    pub fn set_bound_iface(&self, iface: Option<NetIfaceId>) {
+        self.bound_ifindex.store(
+            iface.map(|i| i.raw()).unwrap_or(0),
+            core::sync::atomic::Ordering::Release,
+        );
+    }
+
+    /// # C: O(1)
+    pub fn bound_iface(&self) -> Option<NetIfaceId> {
+        match self.bound_ifindex.load(core::sync::atomic::Ordering::Acquire) {
+            0 => None,
+            raw => Some(NetIfaceId::from_raw(raw)),
+        }
+    }
 }
 
 pub struct NetStack {
@@ -207,12 +250,12 @@ pub struct NetStack {
     /// F180a: IPv6 UDP socket map. Accessor `udp6_map()` exposed to
     /// `stack_ipv6` impls without making the field pub.
     udp6:       Spinlock<BTreeMap<u16, Arc<crate::stack_ipv6::Udp6RxQueue>>, StackLockClass>,
-    tcp_conns:    Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass>,
+    pub(crate) tcp_conns: Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass>,
     tcp_listens:  Spinlock<BTreeMap<TcpListenKey, Vec<Arc<TcpListenEntry>>>, StackLockClass>,
     /// Monotonic id for IP packets we emit.
-    next_ip_id: Spinlock<u16, StackLockClass>,
+    pub(crate) next_ip_id: Spinlock<u16, StackLockClass>,
     /// Monotonic ISN base for TCP active opens.
-    next_isn: Spinlock<u32, StackLockClass>,
+    pub(crate) next_isn: Spinlock<u32, StackLockClass>,
     /// F180c: global NDP cache (ip → MAC).
     pub ndp: crate::ndp::NdpCache,
     /// F195: IPv4 reassembly table.
@@ -295,10 +338,26 @@ impl NetStack {
 
     /// UDP bind. Eaddrinuse if taken. # C: O(log N)
     pub fn bind_udp(&self, bind_ip: Ipv4Addr, port: u16) -> NetResult<()> {
+        self.bind_udp_with_iface(bind_ip, port, None)
+    }
+
+    /// UDP bind with an optional SO_BINDTODEVICE filter. # C: O(log N)
+    pub fn bind_udp_with_iface(&self, bind_ip: Ipv4Addr, port: u16,
+                               iface: Option<NetIfaceId>) -> NetResult<()> {
         let mut g = self.udp.lock();
         if g.contains_key(&port) { return Err(NetError::Eaddrinuse); }
-        g.insert(port, Arc::new(UdpRxQueue::new(bind_ip, port)));
+        let q = Arc::new(UdpRxQueue::new(bind_ip, port));
+        q.bound_ifindex.store(iface.map(|i| i.raw()).unwrap_or(0), core::sync::atomic::Ordering::Release);
+        g.insert(port, q);
         Ok(())
+    }
+
+    /// Update the bound iface for an already-bound UDP port. # C: O(log N)
+    pub fn set_udp_bound_iface(&self, port: u16, iface: Option<NetIfaceId>) -> bool {
+        if let Some(q) = self.udp.lock().get(&port) {
+            q.bound_ifindex.store(iface.map(|i| i.raw()).unwrap_or(0), core::sync::atomic::Ordering::Release);
+            true
+        } else { false }
     }
 
     /// Pop one queued datagram or None. # C: O(log N)
@@ -444,27 +503,7 @@ impl NetStack {
                            remote_ip: IpAddr, remote_port: u16)
         -> NetResult<Arc<TcpEntry>>
     {
-        let isn = {
-            let mut s = self.next_isn.lock();
-            *s = s.wrapping_add(0x1000);
-            *s
-        };
-        let mut conn = TcpConn::new_client(
-            Endpoint { ip: local_ip, port: local_port },
-            Endpoint { ip: remote_ip, port: remote_port },
-            isn,
-        );
-        // F184: derive advertised MSS from the egress iface MTU minus
-        // L3+L4 header (v4=40, v6=60). 0 = fall back to OWN_MSS_DEFAULT.
-        conn.own_mss = self.mss_for_dst(remote_ip);
-        let syn = conn.active_open().map_err(|_| NetError::Eio)?;
-        let entry = Arc::new(TcpEntry::new(conn));
-        let key = TcpKey { local_ip, local_port, remote_ip, remote_port };
-        self.tcp_conns.lock().insert(key, entry.clone());
-        self.send_l4_over_ip(local_ip, remote_ip, IpProto::Tcp, &syn)?;
-        // F159: stamp SYN xmit time so retx scanner sees real RTO.
-        stamp_last_sent(&entry, 1);
-        Ok(entry)
+        self.tcp_connect_ip_bound(local_ip, local_port, remote_ip, remote_port, None)
     }
 
     /// Pop one accepted connection from listener's backlog. # C: O(1)
@@ -493,7 +532,7 @@ impl NetStack {
         };
         let n = segs.len();
         for s in &segs {
-            self.send_l4_over_ip_tos(src, dst, IpProto::Tcp, s, tos)?;
+            self.send_l4_over_ip_tos_bound(src, dst, IpProto::Tcp, s, tos, entry.bound_iface())?;
         }
         // F159: stamp the last N retx_q entries (one per emitted segment)
         // with the actual xmit time.
@@ -514,7 +553,7 @@ impl NetStack {
             let s = c.local_close().map_err(|_| NetError::Eio)?;
             (s, c.local.ip, c.remote.ip, ecn_tos(&c))
         };
-        self.send_l4_over_ip_tos(src, dst, IpProto::Tcp, &seg, tos)
+        self.send_l4_over_ip_tos_bound(src, dst, IpProto::Tcp, &seg, tos, entry.bound_iface())
     }
 
     /// F174: ICMP Destination Unreachable → SO_ERROR on origin sock.
@@ -580,7 +619,7 @@ impl NetStack {
                 }
             };
             for s in &segs {
-                let _ = self.send_l4_over_ip(src, dst, IpProto::Tcp, s);
+                let _ = self.send_l4_over_ip_bound(src, dst, IpProto::Tcp, s, entry.bound_iface());
             }
             // F193: keepalive probe scheduling. Idle for ka_idle_ns →
             // fire probes at ka_intvl_ns cadence; abort after ka_cnt_max.
@@ -595,7 +634,7 @@ impl NetStack {
                 (probe, abort_ka, c.local.ip, c.remote.ip)
             };
             if let Some(s) = &ka_seg {
-                let _ = self.send_l4_over_ip(ka_src, ka_dst, IpProto::Tcp, s);
+                let _ = self.send_l4_over_ip_bound(ka_src, ka_dst, IpProto::Tcp, s, entry.bound_iface());
             }
             if ka_abort {
                 to_drop.push(*key);
@@ -705,6 +744,8 @@ impl NetStack {
                 // not hold the udp-map lock across either.
                 let q_arc = { self.udp.lock().get(&udp.dst_port).cloned() };
                 if let Some(q) = q_arc {
+                    let bound = q.bound_ifindex.load(core::sync::atomic::Ordering::Acquire);
+                    if bound != 0 && bound != iface.raw() { return Ok(()); }
                     let body = &payload[crate::udp::UDP_HDR_LEN .. udp.length as usize];
                     // SO_ATTACH_BPF: a 0 verdict drops the datagram.
                     let drop = { q.bpf_filter.lock().as_ref()
@@ -734,7 +775,7 @@ impl NetStack {
     /// instantiate a new connection from it. Drives the matched
     /// TcpConn's `input`; xmit any returned response segment.
     /// # C: O(log N) lookup + O(payload) handler
-    pub(crate) fn deliver_tcp(&self, _iface: NetIfaceId,
+    pub(crate) fn deliver_tcp(&self, iface: NetIfaceId,
                     src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8])
         -> NetResult<()>
     {
@@ -752,6 +793,7 @@ impl NetStack {
             g.get(&key).cloned()
         };
         if let Some(entry) = entry {
+            if entry.bound_iface().is_some_and(|id| id != iface) { return Ok(()); }
             // F158: wake on either recv_buf growth or terminal state
             let (pre_len, _pre_state) = {
                 let c = entry.conn.lock();
@@ -764,7 +806,7 @@ impl NetStack {
                 (c.recv_buf.len(), c.state)
             };
             if let Some(r) = resp {
-                self.send_l4_over_ip(dst_ip, src_ip, IpProto::Tcp, &r)?;
+                self.send_l4_over_ip_bound(dst_ip, src_ip, IpProto::Tcp, &r, entry.bound_iface())?;
             }
             // F175: post-input output drain. ACK that clears retx_q
             // unblocks Nagle-held sends; pump them out now. Use
@@ -779,7 +821,7 @@ impl NetStack {
             };
             let (segs, src, dst, tos) = drain_segs;
             for s in &segs {
-                self.send_l4_over_ip_tos(src, dst, IpProto::Tcp, s, tos)?;
+                self.send_l4_over_ip_tos_bound(src, dst, IpProto::Tcp, s, tos, entry.bound_iface())?;
             }
             stamp_last_sent(&entry, segs.len());
             // F159+F181a: wake conn rx + targeted epoll.
@@ -821,7 +863,15 @@ impl NetStack {
             h = h.wrapping_add(hdr.src_port as u32).wrapping_add(hdr.dst_port as u32);
             (h as usize) % bucket.len()
         };
-        let listener = bucket[idx].clone();
+        let mut listener = None;
+        for off in 0..bucket.len() {
+            let cand = bucket[(idx + off) % bucket.len()].clone();
+            if cand.bound_iface().is_none_or(|id| id == iface) {
+                listener = Some(cand);
+                break;
+            }
+        }
+        let Some(listener) = listener else { return Ok(()); };
         // F180b: synthesise a per-conn local endpoint that pins the
         // wildcard listener to the actual delivery dst — so outbound
         // segments carry a real src, not 0.0.0.0/::.
@@ -839,14 +889,16 @@ impl NetStack {
         }
         let mut new_conn = TcpConn::new_listener(local_ep);
         // F184: SYN-ACK we're about to build advertises our MSS too.
-        new_conn.own_mss = self.mss_for_dst(src_ip);
+        let bound = listener.bound_iface();
+        new_conn.own_mss = self.mss_for_dst_on_iface(src_ip, bound);
         let resp = new_conn.input(src_ip, dst_ip, seg)
             .map_err(|_| NetError::Einval)?;
         let new_entry = Arc::new(TcpEntry::new(new_conn));
+        new_entry.set_bound_iface(bound);
         self.tcp_conns.lock().insert(key, new_entry.clone());
         listener.accept_q.lock().push_back(new_entry);
         if let Some(r) = resp {
-            self.send_l4_over_ip(dst_ip, src_ip, IpProto::Tcp, &r)?;
+            self.send_l4_over_ip_bound(dst_ip, src_ip, IpProto::Tcp, &r, bound)?;
         }
         // F160: wake any blocking accept() parked on this listener.
         #[cfg(target_os = "oxide-kernel")]
@@ -876,123 +928,3 @@ impl NetStack {
 }
 
 impl Default for NetStack { fn default() -> Self { Self::new() } }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn loopback_udp_round_trip() {
-        let stack = NetStack::new();
-        let (id, lo) = stack.register_loopback();
-        stack.bind_udp(Ipv4Addr::LOOPBACK, 4242).unwrap();
-        stack.send_udp_to(
-            Ipv4Addr::LOOPBACK, 5000,
-            Ipv4Addr::LOOPBACK, 4242,
-            b"hello-net",
-        ).unwrap();
-        stack.drain_loopback(id, &lo);
-        let (src, src_port, payload) = stack.recv_udp(4242).unwrap();
-        assert_eq!(src, Ipv4Addr::LOOPBACK);
-        assert_eq!(src_port, 5000);
-        assert_eq!(payload, b"hello-net");
-    }
-
-    #[test]
-    fn icmp_echo_round_trip_via_loopback() {
-        let stack = NetStack::new();
-        let (id, lo) = stack.register_loopback();
-        // Build an Echo Request and hand it to the stack as a
-        // received frame on lo. Stack should respond with an
-        // Echo Reply on lo's xmit, which we then drain.
-        let payload = b"oxide-icmp";
-        let mut req = alloc::vec![0u8; icmp::ICMP_HDR_LEN + payload.len()];
-        let mut hdr = icmp::IcmpEcho {
-            typ: icmp::ICMP_TYPE_ECHO_REQUEST, code: 0,
-            checksum: 0, id: 0xBEEF, seq: 1,
-        };
-        hdr.build_into(payload, &mut req);
-        let total = IPV4_HDR_LEN + req.len();
-        let mut frame = alloc::vec![0u8; total];
-        let ip = Ipv4Hdr::build(
-            Ipv4Addr::LOOPBACK, Ipv4Addr::LOOPBACK,
-            IpProto::Icmp, req.len() as u16, 1,
-        );
-        ip.write_to(&mut frame[..IPV4_HDR_LEN]);
-        frame[IPV4_HDR_LEN..].copy_from_slice(&req);
-        stack.deliver_rx(id, &frame).unwrap();
-        // lo has the reply; drain + verify.
-        let reply = lo.rx_pop().unwrap();
-        let parsed_ip = Ipv4Hdr::parse(reply.data()).unwrap();
-        assert_eq!(parsed_ip.proto, IpProto::Icmp as u8);
-        let icmp_payload = &reply.data()[IPV4_HDR_LEN .. parsed_ip.total_len as usize];
-        let echo = icmp::IcmpEcho::parse(icmp_payload).unwrap();
-        assert_eq!(echo.typ, icmp::ICMP_TYPE_ECHO_REPLY);
-        assert_eq!(echo.id, 0xBEEF);
-    }
-
-    #[test]
-    fn unbound_port_drops_silently() {
-        let stack = NetStack::new();
-        let (id, lo) = stack.register_loopback();
-        stack.send_udp_to(
-            Ipv4Addr::LOOPBACK, 1, Ipv4Addr::LOOPBACK, 9999, b"x",
-        ).unwrap();
-        stack.drain_loopback(id, &lo);
-        assert!(stack.recv_udp(9999).is_none());
-    }
-
-    #[test]
-    fn double_bind_fails() {
-        let stack = NetStack::new();
-        let _ = stack.register_loopback();
-        stack.bind_udp(Ipv4Addr::LOOPBACK, 100).unwrap();
-        assert_eq!(stack.bind_udp(Ipv4Addr::LOOPBACK, 100).err().unwrap(),
-                   NetError::Eaddrinuse);
-    }
-
-    #[test]
-    fn tcp_handshake_via_loopback() {
-        let stack = NetStack::new();
-        let (id, lo) = stack.register_loopback();
-        let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, 1234, true).unwrap();
-        let client = stack.tcp_connect(
-            Ipv4Addr::LOOPBACK, 50000,
-            Ipv4Addr::LOOPBACK, 1234,
-        ).unwrap();
-        // Drain lo a couple of times: SYN → SYN+ACK → ACK.
-        for _ in 0..3 { stack.drain_loopback(id, &lo); }
-        let server = stack.tcp_accept(&listener).expect("accepted");
-        assert_eq!(client.conn.lock().state, crate::tcp_state::TcpState::Established);
-        assert_eq!(server.conn.lock().state, crate::tcp_state::TcpState::Established);
-    }
-
-    #[test]
-    fn tcp_data_round_trip_via_loopback() {
-        let stack = NetStack::new();
-        let (id, lo) = stack.register_loopback();
-        let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, 1234, true).unwrap();
-        let client = stack.tcp_connect(
-            Ipv4Addr::LOOPBACK, 50000,
-            Ipv4Addr::LOOPBACK, 1234,
-        ).unwrap();
-        for _ in 0..3 { stack.drain_loopback(id, &lo); }
-        let server = stack.tcp_accept(&listener).unwrap();
-        stack.tcp_send(&client, b"oxide-tcp-payload", 65536, true).unwrap();
-        for _ in 0..3 { stack.drain_loopback(id, &lo); }
-        let got = stack.tcp_recv(&server, 1024);
-        assert_eq!(&got[..], b"oxide-tcp-payload");
-    }
-
-    #[test]
-    fn route_miss_is_enetunreach() {
-        let stack = NetStack::new();
-        let _ = stack.register_loopback();
-        // 8.8.8.8 has no route — expect Enetunreach.
-        assert_eq!(
-            stack.send_udp_to(Ipv4Addr::LOOPBACK, 1, Ipv4Addr::new(8,8,8,8), 1, b"x")
-                 .err().unwrap(),
-            NetError::Enetunreach,
-        );
-    }
-}
