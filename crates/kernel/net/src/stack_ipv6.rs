@@ -30,6 +30,18 @@ pub struct Udp6RxQueue {
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Ipv6IfaceAddr {
+    pub addr:      Ipv6Addr,
+    pub prefixlen: u8,
+    pub preferred: u32,
+    pub valid:     u32,
+}
+
+impl Ipv6IfaceAddr {
+    pub const PERMANENT: (u32, u32) = (u32::MAX, u32::MAX);
+}
+
 impl Udp6RxQueue {
     /// # C: O(1)
     pub fn new(bound_ip: Ipv6Addr, bound_port: u16) -> Self {
@@ -54,8 +66,26 @@ impl Udp6RxQueue {
 }
 
 impl NetStack {
+    /// F180c: register a v6 addr on `iface`; NS replies. # C: O(log N)
+    pub fn add_v6_addr(&self, iface: NetIfaceId, ip: Ipv6Addr) {
+        self.add_v6_addr_meta(iface, ip, 128, u32::MAX, u32::MAX);
+    }
+
+    /// Register a v6 addr with prefix/lifetime metadata. # C: O(log N)
+    pub fn add_v6_addr_meta(
+        &self, iface: NetIfaceId, ip: Ipv6Addr, prefixlen: u8, valid: u32, preferred: u32,
+    ) {
+        let mut g = self.v6_addrs.lock();
+        let addrs = g.entry(iface).or_default();
+        let row = Ipv6IfaceAddr { addr: ip, prefixlen, preferred, valid };
+        match addrs.iter().position(|a| a.addr == ip) {
+            Some(i) => addrs[i] = row,
+            None => addrs.push(row),
+        }
+    }
+
     /// Snapshot configured IPv6 addresses by interface. # C: O(N addrs)
-    pub fn v6_addr_snapshot(&self) -> Vec<(NetIfaceId, Ipv6Addr)> {
+    pub fn v6_addr_snapshot(&self) -> Vec<(NetIfaceId, Ipv6IfaceAddr)> {
         let mut out = Vec::new();
         for (iface, addrs) in self.v6_addrs.lock().iter() {
             for addr in addrs { out.push((*iface, *addr)); }
@@ -346,7 +376,7 @@ impl NetStack {
             let onlink = (p.flags & crate::ndp::NDP_PIO_FLAG_ONLINK) != 0;
             let addr = slaac_eui64_addr(p.prefix, our_mac);
             if autoconf {
-                self.add_v6_addr(iface, addr);
+                self.add_v6_addr_meta(iface, addr, p.prefix_len, p.valid_lifetime, p.preferred_lifetime);
                 src_hint = Some(addr);
             }
             if onlink {
