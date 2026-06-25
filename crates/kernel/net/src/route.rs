@@ -8,9 +8,11 @@ use alloc::vec::Vec;
 use sync::{Spinlock, Socket as RouteLockClass};
 
 use crate::addr::{Ipv4Addr, NetIfaceId};
+use crate::policy_rule::{self, RT_TABLE_MAIN};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct RouteEntry {
+    pub table:      u32,
     pub dst:        Ipv4Addr,    // network address (already masked)
     pub prefix_len: u8,          // 0..=32
     pub iface:      NetIfaceId,
@@ -24,6 +26,19 @@ impl RouteEntry {
     pub fn matches(&self, addr: Ipv4Addr) -> bool {
         let mask = if self.prefix_len == 0 { 0u32 } else { !0u32 << (32 - self.prefix_len) };
         (addr.as_u32() & mask) == (self.dst.as_u32() & mask)
+    }
+}
+
+impl RouteEntry {
+    /// Main-table route constructor for tests and simple callers. # C: O(1)
+    pub const fn main(
+        dst: Ipv4Addr,
+        prefix_len: u8,
+        iface: NetIfaceId,
+        gateway: Option<Ipv4Addr>,
+        src_hint: Option<Ipv4Addr>,
+    ) -> Self {
+        Self { table: RT_TABLE_MAIN, dst, prefix_len, iface, gateway, src_hint }
     }
 }
 
@@ -43,19 +58,35 @@ impl RouteTable {
         self.inner.lock().push(e);
     }
 
-    /// Longest-prefix lookup. Returns `None` if no route matches.
-    /// # C: O(N entries)
-    pub fn lookup(&self, addr: Ipv4Addr) -> Option<RouteEntry> {
-        let g = self.inner.lock();
+    fn lookup_in_table_locked(g: &[RouteEntry], table: u32, addr: Ipv4Addr) -> Option<RouteEntry> {
         let mut best: Option<RouteEntry> = None;
         for e in g.iter() {
-            if !e.matches(addr) { continue; }
+            if e.table != table || !e.matches(addr) { continue; }
             match best {
                 Some(b) if b.prefix_len >= e.prefix_len => {}
                 _ => best = Some(*e),
             }
         }
         best
+    }
+
+    /// Longest-prefix lookup in one table. Returns `None` if no route matches.
+    /// # C: O(N entries)
+    pub fn lookup_in_table(&self, table: u32, addr: Ipv4Addr) -> Option<RouteEntry> {
+        let g = self.inner.lock();
+        Self::lookup_in_table_locked(&g, table, addr)
+    }
+
+    /// Policy-rule lookup. Built-in local/main/default rules are always
+    /// present; custom rules are selected by priority. # C: O(N rules * N routes)
+    pub fn lookup(&self, addr: Ipv4Addr) -> Option<RouteEntry> {
+        let g = self.inner.lock();
+        for rule in policy_rule::snapshot_effective(0, policy_rule::AF_INET) {
+            if let Some(r) = Self::lookup_in_table_locked(&g, rule.table, addr) {
+                return Some(r);
+            }
+        }
+        None
     }
 
     /// All entries snapshot.
@@ -78,10 +109,7 @@ mod tests {
     #[test]
     fn lookup_default_matches_anything() {
         let t = RouteTable::new();
-        t.add(RouteEntry {
-            dst: Ipv4Addr::ANY, prefix_len: 0,
-            iface: NetIfaceId::from_raw(1), gateway: None, src_hint: None,
-        });
+        t.add(RouteEntry::main(Ipv4Addr::ANY, 0, NetIfaceId::from_raw(1), None, None));
         let r = t.lookup(Ipv4Addr::new(8, 8, 8, 8)).unwrap();
         assert_eq!(r.iface, NetIfaceId::from_raw(1));
     }
@@ -89,8 +117,8 @@ mod tests {
     #[test]
     fn longest_prefix_wins() {
         let t = RouteTable::new();
-        t.add(RouteEntry { dst: Ipv4Addr::ANY, prefix_len: 0, iface: NetIfaceId::from_raw(1), gateway: None, src_hint: None });
-        t.add(RouteEntry { dst: Ipv4Addr::new(127, 0, 0, 0), prefix_len: 8, iface: NetIfaceId::from_raw(2), gateway: None, src_hint: None });
+        t.add(RouteEntry::main(Ipv4Addr::ANY, 0, NetIfaceId::from_raw(1), None, None));
+        t.add(RouteEntry::main(Ipv4Addr::new(127, 0, 0, 0), 8, NetIfaceId::from_raw(2), None, None));
         let r = t.lookup(Ipv4Addr::LOOPBACK).unwrap();
         assert_eq!(r.iface, NetIfaceId::from_raw(2));
     }
@@ -98,7 +126,25 @@ mod tests {
     #[test]
     fn no_match_returns_none() {
         let t = RouteTable::new();
-        t.add(RouteEntry { dst: Ipv4Addr::new(10, 0, 0, 0), prefix_len: 8, iface: NetIfaceId::from_raw(1), gateway: None, src_hint: None });
+        t.add(RouteEntry::main(Ipv4Addr::new(10, 0, 0, 0), 8, NetIfaceId::from_raw(1), None, None));
         assert!(t.lookup(Ipv4Addr::new(8, 8, 8, 8)).is_none());
+    }
+
+    #[test]
+    fn custom_policy_rule_selects_custom_table() {
+        let t = RouteTable::new();
+        t.add(RouteEntry::main(Ipv4Addr::ANY, 0, NetIfaceId::from_raw(1), None, None));
+        t.add(RouteEntry {
+            table: 100, dst: Ipv4Addr::ANY, prefix_len: 0,
+            iface: NetIfaceId::from_raw(2), gateway: None, src_hint: None,
+        });
+        let rule = policy_rule::PolicyRule {
+            ns: 0, family: policy_rule::AF_INET, priority: 1000, table: 100,
+            action: policy_rule::FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0,
+        };
+        policy_rule::insert(rule);
+        let r = t.lookup(Ipv4Addr::new(8, 8, 8, 8)).unwrap();
+        assert_eq!(r.iface, NetIfaceId::from_raw(2));
+        assert_eq!(policy_rule::remove(0, policy_rule::AF_INET, Some(1000), Some(100)), 1);
     }
 }
