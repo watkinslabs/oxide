@@ -115,8 +115,8 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | Loopback default route               | done     | |
 | IPv6 route table                     | done     | longest-prefix lookup mirrors v4 |
 | ECMP multipath                       | gap      | |
-| Policy routing / `ip rule`           | gap      | |
-| Routing socket (NETLINK_ROUTE)       | partial  | GETLINK/GETADDR/GETROUTE + addr/route mutation; RTM route changes sync live IPv4 datapath |
+| Policy routing / `ip rule`           | partial  | RTM_GETRULE publishes default local/main/default rules; custom rule mutation TBD |
+| Routing socket (NETLINK_ROUTE)       | partial  | GETLINK/GETADDR/GETROUTE/GETRULE + addr/route mutation; RTM route changes sync live IPv4 datapath |
 | IP forwarding (sysctl net.ipv4.ip_forward) | gap | host-mode only today |
 
 ## 7. ARP / neighbor table

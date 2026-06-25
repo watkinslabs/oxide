@@ -8,6 +8,8 @@
         assert_eq!(RTM_GETADDR,  22);
         assert_eq!(RTM_NEWROUTE, 24);
         assert_eq!(RTM_GETROUTE, 26);
+        assert_eq!(RTM_NEWRULE,  32);
+        assert_eq!(RTM_GETRULE,  34);
     }
 
     // K4: an RTM_GETLINK dump must end with a well-formed NLMSG_DONE.
