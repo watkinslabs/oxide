@@ -169,6 +169,7 @@
     __log_finite;
     __logf_finite;
     __mempcpy;
+    __mempcpy_small;
     __mmap;
     __munmap;
     __nanosleep;
@@ -179,6 +180,7 @@
     __open64;
     __open64_2;
     __open64_nocancel;
+    __open_catalog;
     __open_2;
     __open_nocancel;
     __openat64_2;
@@ -244,6 +246,7 @@
     __strsep_3c;
     __strsep_g;
     __stpcpy;
+    __stpcpy_small;
     __stpncpy;
     __strcasecmp;
     __strdup;
@@ -253,9 +256,12 @@
     __strspn_c1;
     __strspn_c2;
     __strspn_c3;
+    __strcpy_small;
     __strtod_l;
+    __strtod_nan;
     __strtof_l;
     __strtof_internal;
+    __strtof_nan;
     __strtol_l;
     __strtol_internal;
     __strtoll_l;

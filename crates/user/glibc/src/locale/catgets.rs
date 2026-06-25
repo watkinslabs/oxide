@@ -21,6 +21,20 @@ pub unsafe extern "C" fn catopen(name: *const u8, _flag: i32) -> *mut core::ffi:
     NL_CAT_FAIL as *mut core::ffi::c_void
 }
 
+// # C: int __open_catalog(const char *cat_name, const char *nlspath,
+//                         const char *env_var, __nl_catd catalog)
+#[no_mangle]
+pub unsafe extern "C" fn __open_catalog(
+    _cat_name: *const u8,
+    _nlspath: *const u8,
+    _env_var: *const u8,
+    _catalog: *mut core::ffi::c_void,
+) -> i32 {
+    // SAFETY: this libc currently has no catalog-file loader; match catopen's
+    // missing-catalog path and report failure without dereferencing arguments.
+    -1
+}
+
 // # C: char *catgets(nl_catd catalog, int set, int number, const char *string)
 #[no_mangle]
 pub unsafe extern "C" fn catgets(_catalog: *mut core::ffi::c_void, _set: i32, _number: i32, string: *const u8) -> *mut u8 {

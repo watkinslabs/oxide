@@ -22,6 +22,74 @@ enum Kind { Bad, Dec, Hex, Lit } // Lit = inf/nan (no ERANGE)
 
 fn lc(b: u8) -> u8 { b | 0x20 }
 fn hexv(b: u8) -> Option<u32> { match b { b'0'..=b'9' => Some((b - b'0') as u32), b'a'..=b'f' => Some((lc(b) - b'a' + 10) as u32), b'A'..=b'F' => Some((b - b'A' + 10) as u32), _ => None } }
+fn nan_seq(b: u8) -> bool { b.is_ascii_alphanumeric() || b == b'_' }
+
+unsafe fn strtoull_payload(start: *const u8, end: *const u8) -> Option<u64> {
+    // SAFETY: [start,end) is the validated n-char-sequence within the caller's
+    // C string. Parse the same integer forms strtoull accepts for NaN payloads.
+    unsafe {
+        let mut p = start;
+        if p == end { return None; }
+        let mut base = 10u64;
+        if *p == b'0' {
+            p = p.add(1);
+            if p < end && lc(*p) == b'x' {
+                base = 16;
+                p = p.add(1);
+            } else {
+                base = 8;
+            }
+        }
+        let mut any = false;
+        let mut val = 0u64;
+        while p < end {
+            let d = match *p {
+                b'0'..=b'9' => (*p - b'0') as u64,
+                b'a'..=b'f' => (*p - b'a' + 10) as u64,
+                b'A'..=b'F' => (*p - b'A' + 10) as u64,
+                _ => break,
+            };
+            if d >= base { break; }
+            any = true;
+            val = val.wrapping_mul(base).wrapping_add(d);
+            p = p.add(1);
+        }
+        if any && p == end { Some(val) } else { None }
+    }
+}
+
+unsafe fn strtod_nan_impl(s: *const u8, endptr: *mut *mut u8, endc: u8) -> f64 {
+    // SAFETY: s is a caller C string; this scans only the initial ISO C
+    // n-char-sequence and optionally parses it as a NaN mantissa payload.
+    unsafe {
+        let mut p = s;
+        while nan_seq(*p) { p = p.add(1); }
+        let mut bits = 0x7ff8_0000_0000_0000u64;
+        if *p == endc {
+            if let Some(payload) = strtoull_payload(s, p) {
+                bits |= payload & 0x0007_ffff_ffff_ffff;
+            }
+        }
+        if !endptr.is_null() { *endptr = p as *mut u8; }
+        f64::from_bits(bits)
+    }
+}
+
+unsafe fn strtof_nan_impl(s: *const u8, endptr: *mut *mut u8, endc: u8) -> f32 {
+    // SAFETY: same contract as strtod_nan_impl, narrowed to f32 payload width.
+    unsafe {
+        let mut p = s;
+        while nan_seq(*p) { p = p.add(1); }
+        let mut bits = 0x7fc0_0000u32;
+        if *p == endc {
+            if let Some(payload) = strtoull_payload(s, p) {
+                bits |= (payload as u32) & 0x003f_ffff;
+            }
+        }
+        if !endptr.is_null() { *endptr = p as *mut u8; }
+        f32::from_bits(bits)
+    }
+}
 
 // Returns (start, end, kind, nonzero). `nonzero` = the mantissa had a nonzero
 // digit (so a result of 0 means underflow, not a literal zero).
@@ -154,11 +222,23 @@ mod exports {
         // SAFETY: same C contract as strtod; the C locale parser ignores grouping.
         unsafe { strtod(s, endptr) }
     }
+    // # C: double __strtod_nan(const char *s, char **endptr, char endc)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strtod_nan(s: *const u8, endptr: *mut *mut u8, endc: u8) -> f64 {
+        // SAFETY: forwards the internal glibc helper contract.
+        unsafe { strtod_nan_impl(s, endptr, endc) }
+    }
     // # C: float __strtof_internal(const char *s, char **endptr, int group)
     #[no_mangle]
     pub unsafe extern "C" fn __strtof_internal(s: *const u8, endptr: *mut *mut u8, _group: i32) -> f32 {
         // SAFETY: same C contract as strtof; the C locale parser ignores grouping.
         unsafe { strtof(s, endptr) }
+    }
+    // # C: float __strtof_nan(const char *s, char **endptr, char endc)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strtof_nan(s: *const u8, endptr: *mut *mut u8, endc: u8) -> f32 {
+        // SAFETY: forwards the internal glibc helper contract.
+        unsafe { strtof_nan_impl(s, endptr, endc) }
     }
     // # C: double atof(const char *s)
     #[no_mangle]
@@ -190,6 +270,21 @@ mod tests {
     }
     fn eq(a: (f64, isize), b: (f64, isize)) -> bool {
         a.1 == b.1 && (a.0.to_bits() == b.0.to_bits() || (a.0.is_nan() && b.0.is_nan()))
+    }
+    #[test]
+    fn strtod_nan_payload_helper() {
+        let s = b"0x123)\0";
+        let mut end: *mut u8 = core::ptr::null_mut();
+        // SAFETY: s is NUL-terminated and end is writable.
+        let v = unsafe { strtod_nan_impl(s.as_ptr(), &mut end, b')') };
+        assert_eq!(end as usize - s.as_ptr() as usize, 5);
+        assert_eq!(v.to_bits() & 0x0007_ffff_ffff_ffff, 0x123);
+
+        let bad = b"0x123!\0";
+        // SAFETY: bad is NUL-terminated and end is writable.
+        let v = unsafe { strtod_nan_impl(bad.as_ptr(), &mut end, b')') };
+        assert_eq!(end as usize - bad.as_ptr() as usize, 5);
+        assert_eq!(v.to_bits(), f64::NAN.to_bits());
     }
     proptest! {
         #[test]

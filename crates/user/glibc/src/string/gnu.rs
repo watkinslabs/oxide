@@ -138,6 +138,26 @@ mod imp {
     // # C: char *__stpcpy(char *, const char *)
     // SAFETY: __stpcpy has the same destination/source contract as stpcpy.
     #[no_mangle] pub unsafe extern "C" fn __stpcpy(d: *mut u8, s: *const u8) -> *mut u8 { unsafe { stpcpy(d, s) } }
+    // # C: char *__stpcpy_small(char *, uint16_t, uint16_t, uint32_t, uint32_t,
+    // size_t) — old x86 string2 inline helper.
+    #[no_mangle]
+    pub unsafe extern "C" fn __stpcpy_small(d: *mut u8, s0_2: u16, s4_2: u16, s0_4: u32, s4_4: u32, n: usize) -> *mut u8 {
+        // SAFETY: legacy helper contract; d is writable for n <= 8 bytes.
+        unsafe {
+            match n {
+                1 => *d = 0,
+                2 => (d as *mut u16).write_unaligned(s0_2),
+                3 => { (d as *mut u16).write_unaligned(s0_2); *d.add(2) = 0; }
+                4 => (d as *mut u32).write_unaligned(s0_4),
+                5 => { (d as *mut u32).write_unaligned(s0_4); *d.add(4) = 0; }
+                6 => { (d as *mut u32).write_unaligned(s0_4); (d.add(4) as *mut u16).write_unaligned(s4_2); }
+                7 => { (d as *mut u32).write_unaligned(s0_4); (d.add(4) as *mut u16).write_unaligned(s4_2); *d.add(6) = 0; }
+                8 => { (d as *mut u32).write_unaligned(s0_4); (d.add(4) as *mut u32).write_unaligned(s4_4); }
+                _ => {}
+            }
+            d.add(n.saturating_sub(1))
+        }
+    }
     // # C: char *stpncpy(char *, const char *, size_t)
     // SAFETY: d is writable for n bytes; s is a NUL-terminated C string.
     #[no_mangle] pub unsafe extern "C" fn stpncpy(d: *mut u8, s: *const u8, n: usize) -> *mut u8 { unsafe { stpncpy_impl(d, s, n) } }
@@ -150,6 +170,37 @@ mod imp {
     // # C: void *__mempcpy(void *, const void *, size_t)
     // SAFETY: __mempcpy has the same non-overlap buffer contract as mempcpy.
     #[no_mangle] pub unsafe extern "C" fn __mempcpy(d: *mut u8, s: *const u8, n: usize) -> *mut u8 { unsafe { mempcpy(d, s, n) } }
+    // # C: void *__mempcpy_small(void *, char, char, char, char, uint16_t,
+    // uint16_t, uint32_t, uint32_t, size_t) — old x86 string2 inline helper.
+    #[no_mangle]
+    pub unsafe extern "C" fn __mempcpy_small(
+        d: *mut u8,
+        s0_1: u8,
+        s2_1: u8,
+        s4_1: u8,
+        s6_1: u8,
+        s0_2: u16,
+        s4_2: u16,
+        s0_4: u32,
+        s4_4: u32,
+        n: usize,
+    ) -> *mut u8 {
+        // SAFETY: legacy helper contract; d is writable for n <= 8 bytes.
+        unsafe {
+            match n {
+                1 => *d = s0_1,
+                2 => (d as *mut u16).write_unaligned(s0_2),
+                3 => { (d as *mut u16).write_unaligned(s0_2); *d.add(2) = s2_1; }
+                4 => (d as *mut u32).write_unaligned(s0_4),
+                5 => { (d as *mut u32).write_unaligned(s0_4); *d.add(4) = s4_1; }
+                6 => { (d as *mut u32).write_unaligned(s0_4); (d.add(4) as *mut u16).write_unaligned(s4_2); }
+                7 => { (d as *mut u32).write_unaligned(s0_4); (d.add(4) as *mut u16).write_unaligned(s4_2); *d.add(6) = s6_1; }
+                8 => { (d as *mut u32).write_unaligned(s0_4); (d.add(4) as *mut u32).write_unaligned(s4_4); }
+                _ => {}
+            }
+            d.add(n)
+        }
+    }
     // # C: void *memrchr(const void *, int, size_t)
     // SAFETY: s is readable for n bytes; scans backward for the byte c.
     #[no_mangle] pub unsafe extern "C" fn memrchr(s: *const u8, c: i32, n: usize) -> *mut u8 { unsafe { memrchr_impl(s, c, n) } }
