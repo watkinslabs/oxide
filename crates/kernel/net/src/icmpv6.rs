@@ -67,16 +67,18 @@ impl Icmp6Echo {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Mldv1Query {
     pub max_resp_delay: u16,
     pub group:          Ipv6Addr,
+    pub sources:        alloc::vec::Vec<Ipv6Addr>,
 }
 
 impl Mldv1Query {
-    /// Parse an MLDv1 Listener Query. # C: O(N)
+    /// Parse an MLDv1/v2 Listener Query. # C: O(N)
     pub fn parse(buf: &[u8], src: Ipv6Addr, dst: Ipv6Addr) -> Result<Self, Icmp6Error> {
         if buf.len() < 24 { return Err(Icmp6Error::Short); }
+        if buf.len() != 24 && buf.len() < 28 { return Err(Icmp6Error::Short); }
         if compute_icmp6_checksum_with_field(buf, src, dst, true) != 0 {
             return Err(Icmp6Error::BadChecksum);
         }
@@ -85,9 +87,22 @@ impl Mldv1Query {
         }
         let mut group = [0u8; 16];
         group.copy_from_slice(&buf[8..24]);
+        let mut sources = alloc::vec::Vec::new();
+        if buf.len() >= 28 {
+            let nsrc = u16::from_be_bytes([buf[26], buf[27]]) as usize;
+            let need = 28 + 16 * nsrc;
+            if buf.len() < need { return Err(Icmp6Error::Short); }
+            sources.reserve(nsrc);
+            for chunk in buf[28..need].chunks_exact(16) {
+                let mut addr = [0u8; 16];
+                addr.copy_from_slice(chunk);
+                sources.push(Ipv6Addr(addr));
+            }
+        }
         Ok(Self {
             max_resp_delay: u16::from_be_bytes([buf[4], buf[5]]),
             group: Ipv6Addr(group),
+            sources,
         })
     }
 }
@@ -153,6 +168,28 @@ pub fn build_mldv1_query(
     out[0] = ICMPV6_TYPE_MLD_QUERY;
     out[4..6].copy_from_slice(&max_resp_delay.to_be_bytes());
     out[8..24].copy_from_slice(&group.0);
+    let cs = compute_icmp6_checksum(&out, src, dst);
+    out[2..4].copy_from_slice(&cs.to_be_bytes());
+    out
+}
+
+/// Build an MLDv2 Listener Query. # C: O(N sources)
+pub fn build_mldv2_query(
+    src: Ipv6Addr,
+    dst: Ipv6Addr,
+    group: Ipv6Addr,
+    max_resp_delay: u16,
+    sources: &[Ipv6Addr],
+) -> alloc::vec::Vec<u8> {
+    let nsrc = sources.len().min(u16::MAX as usize);
+    let mut out = alloc::vec![0u8; 28 + 16 * nsrc];
+    out[0] = ICMPV6_TYPE_MLD_QUERY;
+    out[4..6].copy_from_slice(&max_resp_delay.to_be_bytes());
+    out[8..24].copy_from_slice(&group.0);
+    out[26..28].copy_from_slice(&(nsrc as u16).to_be_bytes());
+    for (i, s) in sources.iter().take(nsrc).enumerate() {
+        out[28 + 16 * i..44 + 16 * i].copy_from_slice(&s.0);
+    }
     let cs = compute_icmp6_checksum(&out, src, dst);
     out[2..4].copy_from_slice(&cs.to_be_bytes());
     out
