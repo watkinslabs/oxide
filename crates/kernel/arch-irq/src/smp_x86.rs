@@ -19,7 +19,7 @@
 #![cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::AtomicPtr;
 
 use boot_info::BootInfo;
 
@@ -42,7 +42,7 @@ pub struct SmpInfoX86 {
 /// `SmpInfoX86::extra_argument`. Layout is read-only after publish.
 #[repr(C)]
 pub struct ApContext {
-    /// Per-CPU page (cpu_id at offset 0, then scratch).
+    /// Per-CPU page (logical cpu_id at offset 0, then scratch).
     pub percpu_base: u64,
 }
 
@@ -53,19 +53,19 @@ pub struct ApContext {
 /// active, IRQs masked, stack already set up by Limine.
 /// 64-bit landing pad the real-mode trampoline jumps to (`jmp rax`)
 /// once long mode is on. The trampoline set rdi=percpu_base,
-/// esi=lapic_id, rsp=per-AP stack top from its patched data block.
+/// esi=logical_cpu_id, rsp=per-AP stack top from its patched data block.
 /// Forwards to the shared `ap_main_x86`.
 /// # SAFETY: entered from the trampoline in 64-bit mode, kernel CR3
 /// (master) active, IRQs masked, rsp = a valid kernel stack top.
 /// # C: O(1)
 #[no_mangle]
-pub unsafe extern "C" fn oxide_ap_entry_64(percpu_base: u64, lapic_id: u64) -> ! {
+pub unsafe extern "C" fn oxide_ap_entry_64(percpu_base: u64, logical_cpu_id: u64) -> ! {
     // SAFETY: trampoline passed a freshly-allocated per-CPU page + this
-    // AP's MADT APIC id; we are the sole user of both for this AP.
-    unsafe { ap_main_x86(percpu_base, lapic_id as u32) }
+    // AP's dense scheduler CPU id; we are the sole user of both for this AP.
+    unsafe { ap_main_x86(percpu_base, logical_cpu_id as u32) }
 }
 
-/// Shared AP bring-up body: enable FSGSBASE, stamp cpu_id + GS_BASE,
+/// Shared AP bring-up body: enable FSGSBASE, stamp logical cpu_id + GS_BASE,
 /// load IDTR, enable the LAPIC, install the per-CPU runqueue, mark
 /// online, arm the LAPIC timer, then park in the `sti; hlt` idle
 /// loop. Diverges.
@@ -73,7 +73,7 @@ pub unsafe extern "C" fn oxide_ap_entry_64(percpu_base: u64, lapic_id: u64) -> !
 /// valid kernel stack installed; `percpu_base` is this AP's private
 /// 4 KiB page.
 /// # C: O(1)
-unsafe fn ap_main_x86(percpu_base: u64, lapic_id: u32) -> ! {
+unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
     let ctx = ApContext { percpu_base };
     let ctx = &ctx;
 
@@ -118,11 +118,11 @@ unsafe fn ap_main_x86(percpu_base: u64, lapic_id: u32) -> ! {
         core::arch::asm!("mov cr4, {cr4}", cr4 = in(reg) cr4, options(nomem, nostack, preserves_flags));
     }
 
-    // Stamp cpu_id at percpu offset 0 + install GS_BASE.
+    // Stamp logical cpu_id at percpu offset 0 + install GS_BASE.
     // SAFETY: ctx.percpu_base is a freshly-allocated 4 KiB page owned by this AP from publish; sole writer is this AP.
     unsafe {
         let pc = ctx.percpu_base as *mut u32;
-        core::ptr::write_volatile(pc, lapic_id);
+        core::ptr::write_volatile(pc, logical_cpu_id);
         use hal::CpuOps;
         hal_x86_64::X86CpuOps::set_percpu_base(ctx.percpu_base as *mut u8);
     }
@@ -145,22 +145,19 @@ unsafe fn ap_main_x86(percpu_base: u64, lapic_id: u32) -> ! {
     // SVR + IA32_APIC_BASE MSR.
     let _ = unsafe { crate::lapic::enable_for_ap() };
 
-    // Mark ourselves online (online_count→2).
-    let _ = ::cpu::smp::ap_arrived();
-
     // B3.4: AP scheduling participation. The per-CPU foundation is in place
     // (per-CPU TSS RSP0 = B3.2, per-CPU syscall slots = B3.3), so the AP can
     // schedule without clobbering the BSP's kernel-stack pointers.
     // SAFETY: AP at CPL=0, long mode, kernel master CR3, gs = this AP's
-    // per-CPU area (cpu_id = lapic_id at offset 0); sole owner of its state.
+    // per-CPU area (cpu_id = logical_cpu_id at offset 0); sole owner of its state.
     unsafe {
-        // 1. Per-CPU runqueue + idle task. `this_cpu()` (gs:0) = lapic_id, so
-        //    install_default_runqueue populates GLOBALS[lapic_id] — the AP's
+        // 1. Per-CPU runqueue + idle task. `this_cpu()` (gs:0) is the dense
+        //    logical CPU id, so install_default_runqueue populates GLOBALS[cpu].
         //    own slot (register_timers + schedule-hook are idempotent).
         sched::live::install_default_runqueue();
-        // 2. Load THIS AP's TSS (selector TSS_SEL + lapic_id*0x10) so a user
+        // 2. Load THIS AP's TSS (selector TSS_SEL + cpu*0x10) so a user
         //    task scheduled here lands ring3→ring0 on this CPU's RSP0.
-        hal_x86_64::install_tss_for_cpu(lapic_id as u16);
+        hal_x86_64::install_tss_for_cpu(logical_cpu_id as u16);
         // 3. Seed this AP's syscall-kstack slot (gs:[8]); per-task tops then
         //    come from set_syscall_kstack on each switch. Use this AP's stack
         //    top as the pre-first-switch scratch.
@@ -168,7 +165,11 @@ unsafe fn ap_main_x86(percpu_base: u64, lapic_id: u32) -> ! {
         // 4. Arm this AP's LAPIC timer (same period as the BSP's elf path) so
         //    it preempts + wakes from idle. The LAPIC MMIO VA aliases per-CPU.
         let _ = crate::lapic::timer_periodic(1_000_000);
-        // 5. Enter the idle→schedule loop with IRQs on (sti) — replaces the
+        // 5. Mark ourselves online only after the per-CPU scheduler and timer
+        //    state exists. The BSP may send a resched IPI immediately after
+        //    observing online_count reach the target.
+        let _ = ::cpu::smp::ap_arrived();
+        // 6. Enter the idle→schedule loop with IRQs on (sti) — replaces the
         //    cli;hlt park. The AP runs its idle task until ttwu (B2) migrates
         //    a task onto its runqueue and IPIs it.
         core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
@@ -189,7 +190,7 @@ const TRAMP_PA: u64 = 0x8000;
 // the kernel CR3 so it keeps executing once paging turns on. All
 // absolute refs use the literal TRAMP_PA base; 64-bit reads are
 // RIP-relative (load-base independent). Per-AP fields (stack/percpu/
-// lapic) + cr3/entry are patched into the data block before each SIPI.
+// cpu) + cr3/entry are patched into the data block before each SIPI.
 core::arch::global_asm!(
     ".section .text.ap_tramp,\"ax\",@progbits",
     ".code16",
@@ -236,7 +237,7 @@ core::arch::global_asm!(
     "oxide_ap_tramp_64:",
     "    mov   rsp, [rip + oxide_ap_tramp_stack]",
     "    mov   rdi, [rip + oxide_ap_tramp_percpu]",
-    "    mov   rsi, [rip + oxide_ap_tramp_lapic]",
+    "    mov   rsi, [rip + oxide_ap_tramp_cpu]",
     "    mov   rax, [rip + oxide_ap_tramp_entry]",
     "    jmp   rax",
     // Data block at fixed offset 0xf00 (so the .code16/.code32 stages
@@ -251,8 +252,8 @@ core::arch::global_asm!(
     "oxide_ap_tramp_stack:  .quad 0",   // 0xf10
     ".globl oxide_ap_tramp_percpu",
     "oxide_ap_tramp_percpu: .quad 0",   // 0xf18
-    ".globl oxide_ap_tramp_lapic",
-    "oxide_ap_tramp_lapic:  .quad 0",   // 0xf20
+    ".globl oxide_ap_tramp_cpu",
+    "oxide_ap_tramp_cpu:    .quad 0",   // 0xf20
     "    .org  0xf40",
     "oxide_ap_tramp_gdt:",               // 0xf40
     "    .quad 0x0000000000000000",     // null
@@ -276,7 +277,7 @@ extern "C" {
     static oxide_ap_tramp_entry: u8;
     static oxide_ap_tramp_stack: u8;
     static oxide_ap_tramp_percpu: u8;
-    static oxide_ap_tramp_lapic: u8;
+    static oxide_ap_tramp_cpu: u8;
 }
 
 /// Reserve the AP real-mode trampoline page (`TRAMP_PA`) from the PMM so
@@ -323,7 +324,7 @@ pub unsafe fn bring_up_aps_x86(_info: &BootInfo) -> usize {
     // 1. Copy the trampoline blob to TRAMP_PA (via its HHDM mirror).
     // SAFETY: symbols bound the global_asm blob; TRAMP_PA's HHDM mirror
     // is a kernel-writable alias of conventional low RAM; blob ≤ 4 KiB.
-    let (blob, blob_len, cr3_off, entry_off, stack_off, percpu_off, lapic_off) = unsafe {
+    let (blob, blob_len, cr3_off, entry_off, stack_off, percpu_off, cpu_off) = unsafe {
         let s = &oxide_ap_tramp as *const u8;
         let e = &oxide_ap_tramp_end as *const u8;
         let base = s as usize;
@@ -333,7 +334,7 @@ pub unsafe fn bring_up_aps_x86(_info: &BootInfo) -> usize {
          &oxide_ap_tramp_entry as *const u8 as usize - base,
          &oxide_ap_tramp_stack as *const u8 as usize - base,
          &oxide_ap_tramp_percpu as *const u8 as usize - base,
-         &oxide_ap_tramp_lapic as *const u8 as usize - base)
+         &oxide_ap_tramp_cpu as *const u8 as usize - base)
     };
     let tramp = (hhdm + TRAMP_PA) as *mut u8;
     // SAFETY: blob is the linked trampoline; tramp is its low-RAM HHDM mirror; non-overlapping, len ≤ 4 KiB.
@@ -353,7 +354,7 @@ pub unsafe fn bring_up_aps_x86(_info: &BootInfo) -> usize {
     unsafe {
         core::ptr::write_volatile(tramp.add(cr3_off) as *mut u64, cr3);
         core::ptr::write_volatile(tramp.add(entry_off) as *mut u64,
-            oxide_ap_entry_64 as usize as u64);
+            oxide_ap_entry_64 as *const () as usize as u64);
     }
 
     // 3. Identity-map the trampoline page so it keeps executing once
@@ -385,7 +386,7 @@ pub unsafe fn bring_up_aps_x86(_info: &BootInfo) -> usize {
         unsafe {
             core::ptr::write_volatile(tramp.add(stack_off) as *mut u64, stack_top & !0xf);
             core::ptr::write_volatile(tramp.add(percpu_off) as *mut u64, percpu_base);
-            core::ptr::write_volatile(tramp.add(lapic_off) as *mut u64, id as u64);
+            core::ptr::write_volatile(tramp.add(cpu_off) as *mut u64, i as u64);
         }
 
         let before = ::cpu::smp::online_count();
