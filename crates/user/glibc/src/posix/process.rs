@@ -190,6 +190,12 @@ pub unsafe extern "C" fn waitpid(pid: i32, status: *mut i32, options: i32) -> i3
     // SAFETY: status is null or a valid int out-param.
     unsafe { wait4(pid, status, options, core::ptr::null_mut()) }
 }
+// # C: pid_t __waitpid(pid_t, int *status, int options)
+#[no_mangle]
+pub unsafe extern "C" fn __waitpid(pid: i32, status: *mut i32, options: i32) -> i32 {
+    // SAFETY: internal alias has the same status out-param contract as waitpid.
+    unsafe { waitpid(pid, status, options) }
+}
 // # C: pid_t wait(int *status)
 #[no_mangle]
 pub unsafe extern "C" fn wait(status: *mut i32) -> i32 {

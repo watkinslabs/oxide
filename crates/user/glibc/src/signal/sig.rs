@@ -57,6 +57,12 @@ pub unsafe extern "C" fn sigsuspend(mask: *const sigset_t) -> i32 {
     // SAFETY: mask is a valid sigset_t; rt_sigsuspend always returns -1/EINTR.
     ret_isize(unsafe { sys2(nr::RT_SIGSUSPEND, mask as usize, KERNEL_SIGSET) }) as i32
 }
+// # C: int __sigsuspend(const sigset_t *mask)
+#[no_mangle]
+pub unsafe extern "C" fn __sigsuspend(mask: *const sigset_t) -> i32 {
+    // SAFETY: internal alias has the same sigset_t pointer contract as sigsuspend.
+    unsafe { sigsuspend(mask) }
+}
 // # C: int sigaltstack(const stack_t *ss, stack_t *old)
 #[no_mangle]
 pub unsafe extern "C" fn sigaltstack(ss: *const core::ffi::c_void, old: *mut core::ffi::c_void) -> i32 {

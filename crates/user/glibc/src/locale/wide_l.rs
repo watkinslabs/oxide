@@ -97,10 +97,20 @@ cw_alias! {
     // SAFETY: name is a NUL class name; delegates to wctype.
     unsafe { wctype(name as *const u8) }
 }
+// # C: wctype_t __wctype_l(const char*, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __wctype_l(name: *const c_char, l: usize) -> u64 {
+    // SAFETY: internal alias with the same NUL class-name contract as wctype_l.
+    unsafe { wctype_l(name, l) }
+}
 // # C: wctrans_t wctrans_l(const char*, locale_t)
 #[no_mangle] pub unsafe extern "C" fn wctrans_l(name: *const c_char, _l: usize) -> isize {
     // SAFETY: name is a NUL mapping name; delegates to wctrans.
     unsafe { wctrans(name as *const u8) }
+}
+// # C: wctrans_t __wctrans_l(const char*, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __wctrans_l(name: *const c_char, l: usize) -> isize {
+    // SAFETY: internal alias with the same NUL mapping-name contract as wctrans_l.
+    unsafe { wctrans_l(name, l) }
 }
 
 // --- wide string collation / case (C locale == code-point order) ---
