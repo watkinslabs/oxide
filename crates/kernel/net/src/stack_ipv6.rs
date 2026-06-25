@@ -54,6 +54,15 @@ impl Udp6RxQueue {
 }
 
 impl NetStack {
+    /// Snapshot configured IPv6 addresses by interface. # C: O(N addrs)
+    pub fn v6_addr_snapshot(&self) -> Vec<(NetIfaceId, Ipv6Addr)> {
+        let mut out = Vec::new();
+        for (iface, addrs) in self.v6_addrs.lock().iter() {
+            for addr in addrs { out.push((*iface, *addr)); }
+        }
+        out
+    }
+
     /// F180a: IPv6 UDP bind. `Eaddrinuse` if port taken.
     /// # C: O(log N)
     pub fn bind_udp6(&self, bind_ip: Ipv6Addr, port: u16) -> NetResult<()> {

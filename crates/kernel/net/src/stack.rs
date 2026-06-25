@@ -263,7 +263,7 @@ pub struct NetStack {
     /// IPv6 Fragment extension reassembly table.
     pub ipv6_reasm: crate::ipv6_reasm::ReasmTable,
     /// F180c: per-iface IPv6 address registry (NS responder).
-    v6_addrs: Spinlock<BTreeMap<NetIfaceId, Vec<crate::addr::Ipv6Addr>>, StackLockClass>, pub(crate) v6_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::addr::Ipv6Addr>>, StackLockClass>, pub(crate) v4_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<(Ipv4Addr, Ipv4Addr)>>, StackLockClass>,
+    pub(crate) v6_addrs: Spinlock<BTreeMap<NetIfaceId, Vec<crate::addr::Ipv6Addr>>, StackLockClass>, pub(crate) v6_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::addr::Ipv6Addr>>, StackLockClass>, pub(crate) v4_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<(Ipv4Addr, Ipv4Addr)>>, StackLockClass>,
 }
 
 impl NetStack {
@@ -314,6 +314,7 @@ impl NetStack {
         let addrs = g.entry(iface).or_default();
         if !addrs.iter().any(|a| *a == ip) { addrs.push(ip); }
     }
+
     /// F180c: is `ip` bound on `iface`? # C: O(N addrs)
     pub fn v6_addr_owned_by(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool { self.v6_addrs.lock().get(&iface).map(|v| v.iter().any(|a| *a == ip)).unwrap_or(false) }
     /// Pick an IPv6 source address bound to `iface`, if one exists. # C: O(N addrs)
