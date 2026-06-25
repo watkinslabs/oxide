@@ -16,6 +16,9 @@
     __asin_finite;
     __asinf_finite;
     __asprintf;
+    __abort_msg;
+    __assert;
+    __assert_perror_fail;
     __atan2_finite;
     __atan2f_finite;
     __atanh_finite;
@@ -41,6 +44,7 @@
     __ctype_init;
     __ctype_tolower;
     __ctype_toupper;
+    __curbrk;
     __daylight;
     __dcgettext;
     __dgettext;
@@ -202,6 +206,7 @@
     __send;
     __sendmmsg;
     __setpgid;
+    __sbrk;
     __sigaction;
     __sigaddset;
     __sigdelset;

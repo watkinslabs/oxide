@@ -75,7 +75,9 @@ pub unsafe extern "C" fn mremap(old: *mut u8, oldsz: usize, newsz: usize, flags:
 }
 
 // Program break tracker for sbrk(3). Seeded lazily from brk(0).
-static CURBRK: AtomicUsize = AtomicUsize::new(0);
+// # C: void *__curbrk
+#[no_mangle]
+static __curbrk: AtomicUsize = AtomicUsize::new(0);
 
 // # C: void *sbrk(intptr_t incr) — return old break, or (void*)-1 + errno.
 #[no_mangle]
@@ -84,18 +86,25 @@ pub unsafe extern "C" fn sbrk(incr: isize) -> *mut u8 {
     // is dereferenced. We snapshot the break, request old+incr, and verify the
     // kernel honoured it before publishing the new value.
     unsafe {
-        let mut cur = CURBRK.load(Ordering::Relaxed);
+        let mut cur = __curbrk.load(Ordering::Relaxed);
         if cur == 0 {
             cur = sys1(nr::BRK, 0) as usize;
-            CURBRK.store(cur, Ordering::Relaxed);
+            __curbrk.store(cur, Ordering::Relaxed);
         }
         if incr == 0 { return cur as *mut u8; }
         let want = (cur as isize).wrapping_add(incr) as usize;
         let got = sys1(nr::BRK, want) as usize;
         if got < want { set(ENOMEM); return usize::MAX as *mut u8; }
-        CURBRK.store(got, Ordering::Relaxed);
+        __curbrk.store(got, Ordering::Relaxed);
         cur as *mut u8
     }
+}
+
+// # C: void *__sbrk(intptr_t incr)
+#[no_mangle]
+pub unsafe extern "C" fn __sbrk(incr: isize) -> *mut u8 {
+    // SAFETY: internal alias has the same scalar increment contract as sbrk.
+    unsafe { sbrk(incr) }
 }
 
 // # C: void *valloc(size_t size) — page-aligned allocation via the crate heap.
