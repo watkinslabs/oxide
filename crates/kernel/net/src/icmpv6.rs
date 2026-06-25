@@ -10,6 +10,9 @@ pub const ICMPV6_HDR_LEN: usize = 8;
 pub const ICMPV6_TYPE_PACKET_TOO_BIG: u8 = 2;
 pub const ICMPV6_TYPE_ECHO_REQUEST:   u8 = 128;
 pub const ICMPV6_TYPE_ECHO_REPLY:     u8 = 129;
+pub const ICMPV6_TYPE_MLD_QUERY:      u8 = 130;
+pub const ICMPV6_TYPE_MLD_REPORT:     u8 = 131;
+pub const ICMPV6_TYPE_MLD_DONE:       u8 = 132;
 pub const IPPROTO_ICMPV6:          u8 = 58;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -72,6 +75,27 @@ pub fn build_echo_reply(src: Ipv6Addr, dst: Ipv6Addr, request: &[u8])
     // Reply src/dst are flipped relative to the request.
     reply.build_into(dst, src, payload, &mut out);
     Ok(out)
+}
+
+/// Build an MLDv1 Listener Report for `group`. # C: O(1)
+pub fn build_mldv1_report(src: Ipv6Addr, group: Ipv6Addr) -> alloc::vec::Vec<u8> {
+    build_mldv1(ICMPV6_TYPE_MLD_REPORT, src, group, group)
+}
+
+/// Build an MLDv1 Done message for `group`. # C: O(1)
+pub fn build_mldv1_done(src: Ipv6Addr, group: Ipv6Addr) -> alloc::vec::Vec<u8> {
+    build_mldv1(ICMPV6_TYPE_MLD_DONE, src, crate::ndp::IPV6_ALL_ROUTERS, group)
+}
+
+fn build_mldv1(typ: u8, src: Ipv6Addr, dst: Ipv6Addr, group: Ipv6Addr)
+    -> alloc::vec::Vec<u8>
+{
+    let mut out = alloc::vec![0u8; 24];
+    out[0] = typ;
+    out[8..24].copy_from_slice(&group.0);
+    let cs = compute_icmp6_checksum(&out, src, dst);
+    out[2..4].copy_from_slice(&cs.to_be_bytes());
+    out
 }
 
 fn compute_icmp6_checksum(buf: &[u8], src: Ipv6Addr, dst: Ipv6Addr) -> u16 {

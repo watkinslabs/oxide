@@ -338,6 +338,32 @@ fn ipv6_router_solicitation_emits_to_all_routers() {
     assert_eq!(body[0], NDP_RS);
 }
 
+#[test]
+fn ipv6_mld_join_and_leave_emit_reports() {
+    use crate::icmpv6::{ICMPV6_TYPE_MLD_DONE, ICMPV6_TYPE_MLD_REPORT};
+    use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+    let stack = NetStack::new();
+    let (id, lo) = stack.register_loopback();
+    let src = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
+    let group = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,0x1234]);
+
+    stack.join_ipv6_multicast(id, group, src).unwrap();
+    let report = lo.rx_pop().expect("MLD report");
+    let report_h = Ipv6Hdr::parse(report.data()).unwrap();
+    assert_eq!(report_h.dst, group);
+    let body = &report.data()[IPV6_HDR_LEN..];
+    assert_eq!(body[0], ICMPV6_TYPE_MLD_REPORT);
+    assert_eq!(&body[8..24], &group.0);
+
+    stack.leave_ipv6_multicast(id, group, src).unwrap();
+    let done = lo.rx_pop().expect("MLD done");
+    let done_h = Ipv6Hdr::parse(done.data()).unwrap();
+    assert_eq!(done_h.dst, crate::ndp::IPV6_ALL_ROUTERS);
+    let body = &done.data()[IPV6_HDR_LEN..];
+    assert_eq!(body[0], ICMPV6_TYPE_MLD_DONE);
+    assert_eq!(&body[8..24], &group.0);
+}
+
 // ----- F180b: TCP over IPv6 -----------------------------------------
 
 #[test]
