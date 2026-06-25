@@ -23,6 +23,7 @@ pub mod netdev;
 pub mod loopback;
 pub mod ipv4;
 pub mod ipv6;
+pub mod ipv6_ext;
 pub mod icmp;
 pub mod igmp;
 pub mod icmpv6;

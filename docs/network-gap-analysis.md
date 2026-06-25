@@ -164,7 +164,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | NDP cache + NS responder             | done     | F180c |
 | AF_INET6 dual-stack mapped binds     | done     | sock.rs |
 | Fragmentation extension header       | done     | outbound emission + inbound reassembly for fragmentable payloads |
-| HBH / Routing / DestOpts ext headers | gap      | |
+| HBH / Routing / DestOpts ext headers | partial  | receive demux skips HBH, zero-segments Routing, and DestOpts before L4/Fragment handling |
 | Flow label                           | gap      | |
 | SLAAC (RS + RA processing)           | done     | RS emission; inbound RA Prefix Info autoconfigures /64 and default route |
 
@@ -205,7 +205,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 1. **NETLINK_ROUTE completeness** (RTM_GETLINK / NEWADDR / GETROUTE)
    — every userspace network tool reads these (`ip`, `networkd`,
    `NetworkManager`). High impact for "real distro programs work."
-2. **HBH / Routing / DestOpts extension headers** — needed for stricter IPv6 conformance.
-3. **NETLINK_ROUTE address mutation** — RTM_NEWADDR/DELADDR plus notification coverage.
+2. **NETLINK_ROUTE address mutation** — RTM_NEWADDR/DELADDR plus notification coverage.
+3. **IGMPv3/MLDv2 report formats** — source-specific multicast on the wire.
 
 Items beyond #10 are tuning/perf or rare-app territory.
