@@ -1,22 +1,61 @@
 use crate::stack::*;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use crate::{icmp, IpProto, Ipv4Addr, Ipv4Hdr, MacAddr, NetDev, NetError, NetResult, Pkt, IPV4_HDR_LEN};
+use crate::{icmp, IpProto, Ipv4Addr, Ipv4Hdr, MacAddr, NetDev, NetError, NetResult, Pkt, RouteEntry, IPV4_HDR_LEN};
 
 struct CountDev {
     tx: AtomicUsize,
+    mtu: u32,
+    id0: AtomicUsize,
+    id1: AtomicUsize,
+    id2: AtomicUsize,
+    flags0: AtomicUsize,
+    flags1: AtomicUsize,
+    flags2: AtomicUsize,
+    len0: AtomicUsize,
+    len1: AtomicUsize,
+    len2: AtomicUsize,
 }
 
 impl CountDev {
-    fn new() -> Self { Self { tx: AtomicUsize::new(0) } }
+    fn new() -> Self { Self::with_mtu(1500) }
+    fn with_mtu(mtu: u32) -> Self {
+        Self {
+            tx: AtomicUsize::new(0),
+            mtu,
+            id0: AtomicUsize::new(0),
+            id1: AtomicUsize::new(0),
+            id2: AtomicUsize::new(0),
+            flags0: AtomicUsize::new(0),
+            flags1: AtomicUsize::new(0),
+            flags2: AtomicUsize::new(0),
+            len0: AtomicUsize::new(0),
+            len1: AtomicUsize::new(0),
+            len2: AtomicUsize::new(0),
+        }
+    }
+
+    fn store_hdr(&self, idx: usize, hdr: Ipv4Hdr) {
+        let (id, flags, len) = match idx {
+            0 => (&self.id0, &self.flags0, &self.len0),
+            1 => (&self.id1, &self.flags1, &self.len1),
+            2 => (&self.id2, &self.flags2, &self.len2),
+            _ => return,
+        };
+        id.store(hdr.id as usize, Ordering::Relaxed);
+        flags.store(hdr.flags_frag as usize, Ordering::Relaxed);
+        len.store(hdr.total_len as usize, Ordering::Relaxed);
+    }
 }
 
 impl NetDev for CountDev {
     fn name(&self) -> &str { "eth0" }
     fn mac(&self) -> MacAddr { MacAddr::ZERO }
-    fn mtu(&self) -> u32 { 1500 }
-    fn xmit(&self, _pkt: Pkt) -> NetResult<()> {
-        self.tx.fetch_add(1, Ordering::Relaxed);
+    fn mtu(&self) -> u32 { self.mtu }
+    fn xmit(&self, pkt: Pkt) -> NetResult<()> {
+        let idx = self.tx.fetch_add(1, Ordering::Relaxed);
+        let hdr = Ipv4Hdr::parse(pkt.data()).unwrap();
+        self.store_hdr(idx, hdr);
         Ok(())
     }
 }
@@ -141,4 +180,35 @@ fn bound_udp_send_uses_requested_iface() {
     ).unwrap();
     assert_eq!(lo.rx_len(), 0);
     assert_eq!(eth.tx.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn ipv4_l4_send_fragments_to_iface_mtu() {
+    let stack = NetStack::new();
+    let eth = Arc::new(CountDev::with_mtu(68));
+    let eth_id = stack.ifaces.register(eth.clone());
+    stack.routes.add(RouteEntry {
+        dst: Ipv4Addr::new(10, 0, 0, 0),
+        prefix_len: 24,
+        iface: eth_id,
+        gateway: None,
+        src_hint: Some(Ipv4Addr::new(10, 0, 0, 1)),
+    });
+
+    let l4 = [0x5au8; 100];
+    stack.send_l4_over_ipv4_pub(
+        Ipv4Addr::new(10, 0, 0, 1),
+        Ipv4Addr::new(10, 0, 0, 2),
+        &l4,
+    ).unwrap();
+
+    assert_eq!(eth.tx.load(Ordering::Relaxed), 3);
+    assert_eq!(eth.len0.load(Ordering::Relaxed), 68);
+    assert_eq!(eth.len1.load(Ordering::Relaxed), 68);
+    assert_eq!(eth.len2.load(Ordering::Relaxed), 24);
+    assert_eq!(eth.flags0.load(Ordering::Relaxed), 0x2000);
+    assert_eq!(eth.flags1.load(Ordering::Relaxed), 0x2006);
+    assert_eq!(eth.flags2.load(Ordering::Relaxed), 0x000c);
+    assert_eq!(eth.id0.load(Ordering::Relaxed), eth.id1.load(Ordering::Relaxed));
+    assert_eq!(eth.id1.load(Ordering::Relaxed), eth.id2.load(Ordering::Relaxed));
 }
