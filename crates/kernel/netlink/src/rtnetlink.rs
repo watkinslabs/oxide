@@ -92,6 +92,9 @@ pub const RTM_GETADDR:  u16 = 22;
 pub const RTM_NEWROUTE: u16 = 24;
 pub const RTM_DELROUTE: u16 = 25;
 pub const RTM_GETROUTE: u16 = 26;
+pub const RTM_NEWRULE:  u16 = 32;
+pub const RTM_DELRULE:  u16 = 33;
+pub const RTM_GETRULE:  u16 = 34;
 
 // ---- struct ifinfomsg (16 bytes) -----------------------------------------
 
