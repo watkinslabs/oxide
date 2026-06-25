@@ -44,6 +44,12 @@ pub unsafe extern "C" fn nanosleep(req: *const timespec, rem: *mut timespec) -> 
     // SAFETY: req is a valid timespec; rem is null or writable.
     ret_isize(unsafe { sys2(nr::NANOSLEEP, req as usize, rem as usize) }) as i32
 }
+// # C: int __nanosleep(const struct timespec *req, struct timespec *rem)
+#[no_mangle]
+pub unsafe extern "C" fn __nanosleep(req: *const timespec, rem: *mut timespec) -> i32 {
+    // SAFETY: __nanosleep has the same timespec pointer contract as nanosleep.
+    unsafe { nanosleep(req, rem) }
+}
 // # C: int clock_nanosleep(clockid_t, int flags, const timespec*, timespec*)
 #[no_mangle]
 pub unsafe extern "C" fn clock_nanosleep(clk: i32, flags: i32, req: *const timespec, rem: *mut timespec) -> i32 {

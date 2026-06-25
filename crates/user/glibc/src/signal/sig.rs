@@ -92,6 +92,12 @@ pub unsafe extern "C" fn sigtimedwait(set: *const sigset_t, info: *mut core::ffi
     // kernel fills; timeout null or a valid timespec. Returns the signo or -1.
     ret_isize(unsafe { sys4(nr::RT_SIGTIMEDWAIT, set as usize, info as usize, timeout as usize, KERNEL_SIGSET) }) as i32
 }
+// # C: int __sigtimedwait(const sigset_t *set, siginfo_t *info, const struct timespec *timeout)
+#[no_mangle]
+pub unsafe extern "C" fn __sigtimedwait(set: *const sigset_t, info: *mut core::ffi::c_void, timeout: *const core::ffi::c_void) -> i32 {
+    // SAFETY: __sigtimedwait has the same sigset/siginfo contract as sigtimedwait.
+    unsafe { sigtimedwait(set, info, timeout) }
+}
 
 // # C: int sigwaitinfo(const sigset_t *set, siginfo_t *info)
 #[no_mangle]
