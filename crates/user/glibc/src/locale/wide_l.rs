@@ -39,24 +39,58 @@ cw! {
     iswspace_l => iswspace, iswupper_l => iswupper, iswxdigit_l => iswxdigit,
 }
 
+macro_rules! cw_alias { ($($alias:ident => $base:ident),* $(,)?) => { $(
+    // # C: int <alias>(wint_t wc, locale_t loc) — glibc internal wide ctype alias.
+    #[no_mangle] pub unsafe extern "C" fn $alias(wc: u32, loc: usize) -> i32 {
+        // SAFETY: internal alias with the same wc/locale_t contract as base.
+        unsafe { $base(wc, loc) }
+    }
+)* }; }
+cw_alias! {
+    __iswalnum_l => iswalnum_l, __iswalpha_l => iswalpha_l, __iswblank_l => iswblank_l,
+    __iswcntrl_l => iswcntrl_l, __iswdigit_l => iswdigit_l, __iswgraph_l => iswgraph_l,
+    __iswlower_l => iswlower_l, __iswprint_l => iswprint_l, __iswpunct_l => iswpunct_l,
+    __iswspace_l => iswspace_l, __iswupper_l => iswupper_l, __iswxdigit_l => iswxdigit_l,
+}
+
 // # C: int iswctype_l(wint_t, wctype_t, locale_t)
 #[no_mangle] pub unsafe extern "C" fn iswctype_l(wc: u32, desc: u64, _l: usize) -> i32 {
     // SAFETY: C-locale delegator; forwards to iswctype, ignoring the locale arg.
     unsafe { iswctype(wc, desc) }
+}
+// # C: int __iswctype_l(wint_t, wctype_t, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __iswctype_l(wc: u32, desc: u64, l: usize) -> i32 {
+    // SAFETY: internal alias with the same wc/desc/locale_t contract as iswctype_l.
+    unsafe { iswctype_l(wc, desc, l) }
 }
 // # C: wint_t towlower_l(wint_t, locale_t) / towupper_l
 #[no_mangle] pub unsafe extern "C" fn towlower_l(wc: u32, _l: usize) -> u32 {
     // SAFETY: C-locale delegator; forwards to towlower, ignoring the locale arg.
     unsafe { towlower(wc) }
 }
+// # C: wint_t __towlower_l(wint_t, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __towlower_l(wc: u32, l: usize) -> u32 {
+    // SAFETY: internal alias with the same wc/locale_t contract as towlower_l.
+    unsafe { towlower_l(wc, l) }
+}
 #[no_mangle] pub unsafe extern "C" fn towupper_l(wc: u32, _l: usize) -> u32 {
     // SAFETY: C-locale delegator; forwards to towupper, ignoring the locale arg.
     unsafe { towupper(wc) }
+}
+// # C: wint_t __towupper_l(wint_t, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __towupper_l(wc: u32, l: usize) -> u32 {
+    // SAFETY: internal alias with the same wc/locale_t contract as towupper_l.
+    unsafe { towupper_l(wc, l) }
 }
 // # C: wint_t towctrans_l(wint_t, wctrans_t, locale_t)
 #[no_mangle] pub unsafe extern "C" fn towctrans_l(wc: u32, desc: isize, _l: usize) -> u32 {
     // SAFETY: C-locale delegator; forwards to towctrans, ignoring the locale arg.
     unsafe { towctrans(wc, desc) }
+}
+// # C: wint_t __towctrans_l(wint_t, wctrans_t, locale_t)
+#[no_mangle] pub unsafe extern "C" fn __towctrans_l(wc: u32, desc: isize, l: usize) -> u32 {
+    // SAFETY: internal alias with the same wc/desc/locale_t contract as towctrans_l.
+    unsafe { towctrans_l(wc, desc, l) }
 }
 // # C: wctype_t wctype_l(const char*, locale_t)
 #[no_mangle] pub unsafe extern "C" fn wctype_l(name: *const c_char, _l: usize) -> u64 {

@@ -38,6 +38,12 @@ pub unsafe extern "C" fn endmntent(f: *mut FILE) -> i32 {
     // SAFETY: f came from setmntent; close it. Always returns 1 (per glibc).
     unsafe { if !f.is_null() { fclose(f); } 1 }
 }
+// # C: int __endmntent(FILE *stream)
+#[no_mangle]
+pub unsafe extern "C" fn __endmntent(f: *mut FILE) -> i32 {
+    // SAFETY: __endmntent has the same stream ownership contract as endmntent.
+    unsafe { endmntent(f) }
+}
 
 // Parse one mntent out of `line` (NUL-terminating fields in place). Returns
 // false if the line is blank/comment (caller reads the next line).

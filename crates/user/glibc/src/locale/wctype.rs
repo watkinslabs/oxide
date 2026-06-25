@@ -114,6 +114,11 @@ mod imp {
     pub extern "C" fn iswctype(wc: u32, desc: u64) -> i32 {
         ((classify(wc) & desc) != 0) as i32
     }
+    // # C: int __iswctype(wint_t wc, wctype_t desc)
+    #[no_mangle]
+    pub extern "C" fn __iswctype(wc: u32, desc: u64) -> i32 {
+        iswctype(wc, desc)
+    }
 
     // # C: wctrans_t wctrans(const char *name) — 1=toupper, 2=tolower, 0=unknown
     #[no_mangle]
