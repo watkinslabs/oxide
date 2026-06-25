@@ -401,14 +401,10 @@ impl net::NetDev for VirtioNetDev {
             self.tx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err(net::NetError::Erange);
         }
-        // F149: real next-hop MAC resolution. For IPv4 frames, parse
-        // the destination IP, consult the route table for next-hop
-        // (route.gateway or the destination itself for on-link), look
-        // up MAC in arp_cache. On miss, send a single ARP request
-        // and fall back to broadcast for THIS frame (the upper
-        // protocol — TCP retransmit / UDP retry — sends again once
-        // the cache populates). Non-IPv4 frames keep the prior
-        // behavior (broadcast or first cached entry).
+        // F149/F180c: real next-hop MAC resolution. IPv4 misses send
+        // ARP; IPv6 misses send NDP NS. The current frame falls back
+        // to broadcast, matching the older one-shot behavior until the
+        // upper layer retries after the neighbor cache is warm.
         let dst = resolve_next_hop_mac(self.mac, pkt.proto, body)
             .unwrap_or(net::MacAddr([0xFF; 6]));
         let mut frame = alloc::vec![0u8; 14 + body.len()];
@@ -551,11 +547,14 @@ pub fn rx_drain_softirq() {
     let _ = poll_into_stack(id, ip);
 }
 
-/// F149: resolve next-hop MAC for an outbound IPv4 frame body.
-/// Returns Some(mac) when arp_cache has the next-hop, else None
-/// (after firing an ARP request so the next attempt can resolve).
-/// # C: O(1) cache hit; O(1) ARP request on miss.
+/// F149/F180c: resolve next-hop MAC for an outbound IP frame body.
+/// Returns Some(mac) when the neighbor cache has the next-hop, else
+/// None after firing ARP/NDP so a subsequent attempt can resolve.
+/// # C: O(1) cache hit; O(route lookup + request xmit) on miss.
 fn resolve_next_hop_mac(src_mac: [u8; 6], proto: u16, body: &[u8]) -> Option<net::MacAddr> {
+    if proto == net::eth_p::IPV6 {
+        return resolve_ipv6_next_hop_mac(src_mac, body);
+    }
     if proto != net::eth_p::IPV4 || body.len() < 20 { return None; }
     let dst_ip = net::Ipv4Addr::new(body[16], body[17], body[18], body[19]);
     let next_hop_ip = match net::sock::stack().routes.lookup(dst_ip) {
@@ -579,6 +578,79 @@ fn resolve_next_hop_mac(src_mac: [u8; 6], proto: u16, body: &[u8]) -> Option<net
         let _ = tx_frame(&frame);
     }
     None
+}
+
+fn resolve_ipv6_next_hop_mac(src_mac: [u8; 6], body: &[u8]) -> Option<net::MacAddr> {
+    let hdr = match net::ipv6::Ipv6Hdr::parse(body) {
+        Ok(h) => h,
+        Err(_) => return None,
+    };
+    let stack = net::sock::stack();
+    let route = stack.routes6.lookup(hdr.dst);
+    let (next_hop, src_ip) = match route {
+        Some(r) => (r.gateway.unwrap_or(hdr.dst), r.src_hint),
+        None => (hdr.dst, Some(hdr.src)),
+    };
+    if let Some(m) = stack.ndp.lookup(next_hop) {
+        return Some(m);
+    }
+    let src_ip = src_ip?;
+    if src_ip == net::Ipv6Addr::ANY { return None; }
+    let ns_dst = solicited_node_multicast(next_hop);
+    let ns_eth = solicited_node_ethernet(next_hop);
+    let ns = net::ndp::NdpMsg::build_ns(src_ip, ns_dst, net::MacAddr(src_mac), next_hop);
+    let total = net::ipv6::IPV6_HDR_LEN + ns.len();
+    let mut frame = alloc::vec![0u8; 14 + total];
+    net::ethernet::EthHdr::write_to(
+        ns_eth, net::MacAddr(src_mac), net::eth_p::IPV6, &mut frame[..14],
+    );
+    let v6 = net::ipv6::Ipv6Hdr::build(
+        src_ip, ns_dst, net::IpProto::Icmpv6, ns.len() as u16,
+    );
+    v6.write_to(&mut frame[14..14 + net::ipv6::IPV6_HDR_LEN]);
+    frame[14 + net::ipv6::IPV6_HDR_LEN..].copy_from_slice(&ns);
+    let _ = tx_frame(&frame);
+    None
+}
+
+fn solicited_node_multicast(ip: net::Ipv6Addr) -> net::Ipv6Addr {
+    let mut out = [0u8; 16];
+    out[0] = 0xff;
+    out[1] = 0x02;
+    out[11] = 0x01;
+    out[12] = 0xff;
+    out[13] = ip.0[13];
+    out[14] = ip.0[14];
+    out[15] = ip.0[15];
+    net::Ipv6Addr(out)
+}
+
+fn solicited_node_ethernet(ip: net::Ipv6Addr) -> net::MacAddr {
+    net::MacAddr([0x33, 0x33, 0xff, ip.0[13], ip.0[14], ip.0[15]])
+}
+
+#[cfg(test)]
+mod ndp_tests {
+    use super::*;
+
+    #[test]
+    fn solicited_node_address_uses_low_24_bits() {
+        let ip = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0x1234, 0x5678]);
+        let got = solicited_node_multicast(ip);
+        assert_eq!(
+            got,
+            net::Ipv6Addr::from_segments([0xff02, 0, 0, 0, 0, 0x0001, 0xff34, 0x5678])
+        );
+    }
+
+    #[test]
+    fn solicited_node_ethernet_uses_low_24_bits() {
+        let ip = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0x1234, 0x5678]);
+        assert_eq!(
+            solicited_node_ethernet(ip),
+            net::MacAddr([0x33, 0x33, 0xff, 0x34, 0x56, 0x78])
+        );
+    }
 }
 
 /// Find any local iface's IPv4 address (used as the ARP sender_ip).
