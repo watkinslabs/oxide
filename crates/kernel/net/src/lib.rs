@@ -68,6 +68,7 @@ pub mod stack_ipv6;
 pub mod tcp_cc;
 pub mod stack_icmp;
 pub mod ipv4_reasm;
+pub mod ipv6_reasm;
 pub use loopback::LoopbackDev;
 
 pub use addr::{

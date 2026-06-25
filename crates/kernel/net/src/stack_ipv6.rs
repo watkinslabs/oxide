@@ -135,11 +135,8 @@ impl NetStack {
         iface.xmit(p)
     }
 
-    /// F180: deliver an IPv6 L3 frame. Parses fixed header; demuxes
-    /// next_header to ICMPv6 (echo + NS/NA stubs), UDP (route to
-    /// bound udp6 queue), TCP (drop until F180b TcpConn refactor).
-    /// Receive-side extension headers are skipped (no HBH/Routing/Fragment
-    /// reassembly yet).
+    /// F180: deliver an IPv6 L3 frame. Parses fixed header; reassembles
+    /// Fragment extension headers; demuxes next_header to ICMPv6, UDP, or TCP.
     /// # C: O(payload)
     pub fn deliver_rx_ipv6(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
         // Netfilter ingress: PRE_ROUTING then (host stack → local) LOCAL_IN.
@@ -149,12 +146,49 @@ impl NetStack {
         let payload_end = IPV6_HDR_LEN + hdr.payload_length as usize;
         if payload_end > l3.len() { return Err(NetError::Einval); }
         let payload = &l3[IPV6_HDR_LEN..payload_end];
-        match hdr.next_header {
+        let assembled;
+        let (next_header, payload) = if hdr.next_header == IpProto::Fragment as u8 {
+            if payload.len() < 8 { return Err(NetError::Einval); }
+            let next = payload[0];
+            let frag = u16::from_be_bytes([payload[2], payload[3]]);
+            let off8 = ((frag >> 3) & 0x1fff) as usize;
+            let more = (frag & 1) != 0;
+            let id = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
+            let k = crate::ipv6_reasm::ReasmKey {
+                src: hdr.src,
+                dst: hdr.dst,
+                next_header: next,
+                id,
+            };
+            match self.ipv6_reasm.push(k, crate::stack::net_now_ns(), off8 * 8, &payload[8..], more) {
+                Some(bytes) => {
+                    assembled = bytes;
+                    (next, &assembled[..])
+                }
+                None => return Ok(()),
+            }
+        } else {
+            (hdr.next_header, payload)
+        };
+        self.deliver_rx_ipv6_payload(iface, hdr.src, hdr.dst, next_header, payload)
+    }
+
+    /// Demux a complete IPv6 upper-layer payload after fixed-header parsing
+    /// and any Fragment reassembly. # C: O(payload)
+    fn deliver_rx_ipv6_payload(
+        &self,
+        iface: NetIfaceId,
+        src: Ipv6Addr,
+        dst: Ipv6Addr,
+        next_header: u8,
+        payload: &[u8],
+    ) -> NetResult<()> {
+        match next_header {
             n if n == crate::icmpv6::IPPROTO_ICMPV6 => {
-                self.deliver_rx_icmpv6(iface, hdr.src, hdr.dst, payload)?;
+                self.deliver_rx_icmpv6(iface, src, dst, payload)?;
             }
             n if n == IpProto::Udp as u8 => {
-                let udp = match crate::udp::parse_v6(payload, hdr.src, hdr.dst) {
+                let udp = match crate::udp::parse_v6(payload, src, dst) {
                     Ok(h) => h, Err(_) => return Ok(()),
                 };
                 let q_arc = { self.udp6_map().lock().get(&udp.dst_port).cloned() };
@@ -162,7 +196,7 @@ impl NetStack {
                     let bound = q.bound_ifindex.load(core::sync::atomic::Ordering::Acquire);
                     if bound != 0 && bound != iface.raw() { return Ok(()); }
                     let body = &payload[crate::udp::UDP_HDR_LEN .. udp.length as usize];
-                    q.q.lock().push_back((hdr.src, udp.src_port, body.to_vec()));
+                    q.q.lock().push_back((src, udp.src_port, body.to_vec()));
                     #[cfg(target_os = "oxide-kernel")]
                     {
                         q.waiters.wake_all();
@@ -176,8 +210,8 @@ impl NetStack {
             n if n == IpProto::Tcp as u8 => {
                 // F180b: dispatch through the unified deliver_tcp; the
                 // demux table keys on IpAddr so v4 + v6 share it.
-                let src = crate::addr::IpAddr::V6(hdr.src);
-                let dst = crate::addr::IpAddr::V6(hdr.dst);
+                let src = crate::addr::IpAddr::V6(src);
+                let dst = crate::addr::IpAddr::V6(dst);
                 let _ = self.deliver_tcp(iface, src, dst, payload);
             }
             _ => {}
