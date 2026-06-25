@@ -26,6 +26,12 @@ pub unsafe extern "C" fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, 
         Err(e) => { set(e); usize::MAX as *mut u8 } // MAP_FAILED
     }
 }
+// # C: void *__mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off)
+#[no_mangle]
+pub unsafe extern "C" fn __mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8 {
+    // SAFETY: __mmap has the same ABI and scalar mapping contract as mmap.
+    unsafe { mmap(addr, len, prot, flags, fd, off) }
+}
 
 // # C: void *mmap64(...) — LFS alias (off64_t == off_t on LP64)
 #[no_mangle]
@@ -39,6 +45,12 @@ pub unsafe extern "C" fn mmap64(addr: *mut u8, len: usize, prot: i32, flags: i32
 pub unsafe extern "C" fn munmap(addr: *mut u8, len: usize) -> i32 {
     // SAFETY: munmap(2) takes scalar addr/len; no libc-side deref.
     ret_isize(unsafe { sys2(nr::MUNMAP, addr as usize, len) }) as i32
+}
+// # C: int __munmap(void *addr, size_t len)
+#[no_mangle]
+pub unsafe extern "C" fn __munmap(addr: *mut u8, len: usize) -> i32 {
+    // SAFETY: __munmap has the same scalar addr/len contract as munmap.
+    unsafe { munmap(addr, len) }
 }
 
 // # C: int mprotect(void *addr, size_t len, int prot)

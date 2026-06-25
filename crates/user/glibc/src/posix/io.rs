@@ -32,6 +32,12 @@ pub unsafe extern "C" fn write(fd: i32, buf: *const u8, n: usize) -> isize {
     // address space and faults rather than corrupting libc.
     ret_isize(unsafe { sys3(nr::WRITE, fd as usize, buf as usize, n) })
 }
+// # C: ssize_t __write(int fd, const void *buf, size_t n)
+#[no_mangle]
+pub unsafe extern "C" fn __write(fd: i32, buf: *const u8, n: usize) -> isize {
+    // SAFETY: __write has the same ABI and pointer contract as write.
+    unsafe { write(fd, buf, n) }
+}
 
 // # C: ssize_t read(int fd, void *buf, size_t n)
 #[no_mangle]
@@ -39,6 +45,12 @@ pub unsafe extern "C" fn read(fd: i32, buf: *mut u8, n: usize) -> isize {
     // SAFETY: read(2); kernel validates [buf, buf+n) is writable in the
     // caller's address space before storing.
     ret_isize(unsafe { sys3(nr::READ, fd as usize, buf as usize, n) })
+}
+// # C: ssize_t __read(int fd, void *buf, size_t n)
+#[no_mangle]
+pub unsafe extern "C" fn __read(fd: i32, buf: *mut u8, n: usize) -> isize {
+    // SAFETY: __read has the same ABI and pointer contract as read.
+    unsafe { read(fd, buf, n) }
 }
 
 // # C: int openat(int dirfd, const char *path, int flags, mode_t mode)
@@ -55,6 +67,12 @@ pub unsafe extern "C" fn open(path: *const u8, flags: i32, mode: u32) -> i32 {
     // SAFETY: forwards to openat(AT_FDCWD, ...); same pointer contract.
     unsafe { openat(AT_FDCWD, path, flags, mode) }
 }
+// # C: int __open(const char *path, int flags, mode_t mode)
+#[no_mangle]
+pub unsafe extern "C" fn __open(path: *const u8, flags: i32, mode: u32) -> i32 {
+    // SAFETY: __open has the same ABI and path contract as open.
+    unsafe { open(path, flags, mode) }
+}
 
 // # C: int close(int fd)
 #[no_mangle]
@@ -62,12 +80,24 @@ pub unsafe extern "C" fn close(fd: i32) -> i32 {
     // SAFETY: close(2) takes a scalar fd; no memory is dereferenced.
     ret_isize(unsafe { sys3(nr::CLOSE, fd as usize, 0, 0) }) as i32
 }
+// # C: int __close(int fd)
+#[no_mangle]
+pub unsafe extern "C" fn __close(fd: i32) -> i32 {
+    // SAFETY: __close has the same scalar fd contract as close.
+    unsafe { close(fd) }
+}
 
 // # C: off_t lseek(int fd, off_t off, int whence)
 #[no_mangle]
 pub unsafe extern "C" fn lseek(fd: i32, off: i64, whence: i32) -> i64 {
     // SAFETY: lseek(2) on 64-bit takes scalar args; no deref.
     ret_isize(unsafe { sys3(nr::LSEEK, fd as usize, off as usize, whence as usize) }) as i64
+}
+// # C: off_t __lseek(int fd, off_t off, int whence)
+#[no_mangle]
+pub unsafe extern "C" fn __lseek(fd: i32, off: i64, whence: i32) -> i64 {
+    // SAFETY: __lseek has the same scalar argument contract as lseek.
+    unsafe { lseek(fd, off, whence) }
 }
 
 // # C: int creat(const char *path, mode_t mode) — open O_WRONLY|O_CREAT|O_TRUNC
@@ -83,11 +113,23 @@ pub unsafe extern "C" fn pread(fd: i32, buf: *mut u8, n: usize, off: i64) -> isi
     // SAFETY: pread(2); kernel writes up to n bytes into buf at file offset off.
     ret_isize(unsafe { sys4(nr::PREAD64, fd as usize, buf as usize, n, off as usize) })
 }
+// # C: ssize_t __libc_pread(int fd, void *buf, size_t n, off_t off)
+#[no_mangle]
+pub unsafe extern "C" fn __libc_pread(fd: i32, buf: *mut u8, n: usize, off: i64) -> isize {
+    // SAFETY: __libc_pread has the same ABI and buffer contract as pread.
+    unsafe { pread(fd, buf, n, off) }
+}
 // # C: ssize_t pwrite(int fd, const void *buf, size_t n, off_t off)
 #[no_mangle]
 pub unsafe extern "C" fn pwrite(fd: i32, buf: *const u8, n: usize, off: i64) -> isize {
     // SAFETY: pwrite(2); kernel reads up to n bytes from buf, writing at off.
     ret_isize(unsafe { sys4(nr::PWRITE64, fd as usize, buf as usize, n, off as usize) })
+}
+// # C: ssize_t __libc_pwrite(int fd, const void *buf, size_t n, off_t off)
+#[no_mangle]
+pub unsafe extern "C" fn __libc_pwrite(fd: i32, buf: *const u8, n: usize, off: i64) -> isize {
+    // SAFETY: __libc_pwrite has the same ABI and buffer contract as pwrite.
+    unsafe { pwrite(fd, buf, n, off) }
 }
 
 // LFS aliases — on LP64 off64_t == off_t, so these equal the base calls.

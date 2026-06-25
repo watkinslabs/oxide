@@ -120,6 +120,10 @@ Also DONE: glibc fork/clone compatibility aliases (F626): `_Fork`, `__fork`,
 `__libc_fork`, `__vfork`, `__clone`, and `__register_atfork` exported over the
 existing process, clone, and atfork implementations. Verified by ABI export
 audit, regression suite, and both freestanding arch builds.
+Also DONE: glibc internal syscall compatibility aliases (F627): low-level I/O,
+mmap/munmap, poll/select, nanosleep, wait, sigtimedwait, and libc pread/pwrite
+aliases exported over existing syscall wrappers. Verified by ABI export audit,
+regression suite, spec-lint, and both freestanding arch builds.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases
