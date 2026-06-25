@@ -255,6 +255,18 @@ mod exports {
             1
         }
     }
+    // # C: int __inet_aton_exact(const char *cp, struct in_addr *inp)
+    #[no_mangle]
+    pub unsafe extern "C" fn __inet_aton_exact(cp: *const u8, inp: *mut in_addr) -> i32 {
+        // SAFETY: cp is NUL-terminated; inp is null or writable for in_addr.
+        unsafe {
+            let s = core::slice::from_raw_parts(cp, strlen_impl(cp));
+            let mut o = [0u8; 4];
+            if !pton4(s, &mut o) { return 0; }
+            if !inp.is_null() { (*inp).s_addr = u32::from_be_bytes(o).to_be(); }
+            1
+        }
+    }
     // # C: in_addr_t inet_addr(const char *cp)
     #[no_mangle]
     pub unsafe extern "C" fn inet_addr(cp: *const u8) -> u32 {
@@ -314,6 +326,19 @@ mod exports {
         // writable bytes per the caller's address family.
         unsafe {
             let s = core::slice::from_raw_parts(src, strlen_impl(src));
+            match af {
+                AF_INET => { let mut o = [0u8; 4]; if pton4(s, &mut o) { core::ptr::copy_nonoverlapping(o.as_ptr(), dst, 4); 1 } else { 0 } }
+                AF_INET6 => { let mut o = [0u8; 16]; if pton6(s, &mut o) { core::ptr::copy_nonoverlapping(o.as_ptr(), dst, 16); 1 } else { 0 } }
+                _ => -1,
+            }
+        }
+    }
+    // # C: int __inet_pton_length(int af, const char *src, size_t len, void *dst)
+    #[no_mangle]
+    pub unsafe extern "C" fn __inet_pton_length(af: i32, src: *const u8, len: usize, dst: *mut u8) -> i32 {
+        // SAFETY: src points to len readable bytes; dst holds 4/16 writable bytes.
+        unsafe {
+            let s = core::slice::from_raw_parts(src, len);
             match af {
                 AF_INET => { let mut o = [0u8; 4]; if pton4(s, &mut o) { core::ptr::copy_nonoverlapping(o.as_ptr(), dst, 4); 1 } else { 0 } }
                 AF_INET6 => { let mut o = [0u8; 16]; if pton6(s, &mut o) { core::ptr::copy_nonoverlapping(o.as_ptr(), dst, 16); 1 } else { 0 } }
