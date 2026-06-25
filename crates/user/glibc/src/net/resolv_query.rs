@@ -256,6 +256,14 @@ pub unsafe extern "C" fn res_mkquery(op: i32, dname: *const c_char, class: i32, 
     // SAFETY: forwards raw C pointers to the checked packet builder.
     unsafe { build(op, dname, class, ty, newrr, buf, buflen, query_flags(RES_RECURSE | RES_TRUSTAD)) }
 }
+// # C: int __res_mkquery(int op, const char *dname, int class, int type,
+//                        const unsigned char *data, int datalen,
+//                        const unsigned char *newrr, unsigned char *buf, int buflen)
+#[no_mangle]
+pub unsafe extern "C" fn __res_mkquery(op: i32, dname: *const c_char, class: i32, ty: i32, data: *const u8, datalen: i32, newrr: *const u8, buf: *mut u8, buflen: i32) -> i32 {
+    // SAFETY: internal alias for res_mkquery.
+    unsafe { res_mkquery(op, dname, class, ty, data, datalen, newrr, buf, buflen) }
+}
 
 // # C: int res_nmkquery(res_state statp, int op, const char *dname, int class,
 //                       int type, const unsigned char *data, int datalen,
@@ -273,6 +281,15 @@ pub unsafe extern "C" fn res_nmkquery(_statp: *mut c_void, op: i32, dname: *cons
     };
     // SAFETY: forwards raw C pointers to the checked packet builder.
     unsafe { build(op, dname, class, ty, newrr, buf, buflen, flags) }
+}
+// # C: int __res_nmkquery(res_state statp, int op, const char *dname,
+//                         int class, int type, const unsigned char *data,
+//                         int datalen, const unsigned char *newrr,
+//                         unsigned char *buf, int buflen)
+#[no_mangle]
+pub unsafe extern "C" fn __res_nmkquery(statp: *mut c_void, op: i32, dname: *const c_char, class: i32, ty: i32, data: *const u8, datalen: i32, newrr: *const u8, buf: *mut u8, buflen: i32) -> i32 {
+    // SAFETY: internal alias for res_nmkquery.
+    unsafe { res_nmkquery(statp, op, dname, class, ty, data, datalen, newrr, buf, buflen) }
 }
 
 // # C: void res_send_setqhook(void *hook)
@@ -294,12 +311,26 @@ pub unsafe extern "C" fn res_nsend(_statp: *mut c_void, msg: *const u8, msglen: 
     // SAFETY: forwards caller buffers to the bounded UDP DNS sender.
     unsafe { udp_send(msg, msglen, answer, anslen) }
 }
+// # C: int __res_nsend(res_state statp, const unsigned char *msg, int msglen,
+//                      unsigned char *answer, int anslen)
+#[no_mangle]
+pub unsafe extern "C" fn __res_nsend(statp: *mut c_void, msg: *const u8, msglen: i32, answer: *mut u8, anslen: i32) -> i32 {
+    // SAFETY: internal alias forwards res_nsend unchanged.
+    unsafe { res_nsend(statp, msg, msglen, answer, anslen) }
+}
 
 // # C: int res_send(const unsigned char *msg, int msglen, unsigned char *answer, int anslen)
 #[no_mangle]
 pub unsafe extern "C" fn res_send(msg: *const u8, msglen: i32, answer: *mut u8, anslen: i32) -> i32 {
     // SAFETY: resolver state defaults are not required for sending a complete packet.
     unsafe { res_nsend(core::ptr::null_mut(), msg, msglen, answer, anslen) }
+}
+// # C: int __res_send(const unsigned char *msg, int msglen,
+//                     unsigned char *answer, int anslen)
+#[no_mangle]
+pub unsafe extern "C" fn __res_send(msg: *const u8, msglen: i32, answer: *mut u8, anslen: i32) -> i32 {
+    // SAFETY: internal alias forwards res_send unchanged.
+    unsafe { res_send(msg, msglen, answer, anslen) }
 }
 
 // # C: int res_nquery(res_state statp, const char *dname, int class, int type,
@@ -309,12 +340,26 @@ pub unsafe extern "C" fn res_nquery(statp: *mut c_void, dname: *const c_char, cl
     // SAFETY: forwards the checked C-string/query buffers to query_common.
     unsafe { query_common(statp, dname, class, ty, answer, anslen) }
 }
+// # C: int __res_nquery(res_state statp, const char *dname, int class,
+//                       int type, unsigned char *answer, int anslen)
+#[no_mangle]
+pub unsafe extern "C" fn __res_nquery(statp: *mut c_void, dname: *const c_char, class: i32, ty: i32, answer: *mut u8, anslen: i32) -> i32 {
+    // SAFETY: internal alias for res_nquery.
+    unsafe { res_nquery(statp, dname, class, ty, answer, anslen) }
+}
 
 // # C: int res_query(const char *dname, int class, int type, unsigned char *answer, int anslen)
 #[no_mangle]
 pub unsafe extern "C" fn res_query(dname: *const c_char, class: i32, ty: i32, answer: *mut u8, anslen: i32) -> i32 {
     // SAFETY: default-state wrapper for res_nquery.
     unsafe { res_nquery(core::ptr::null_mut(), dname, class, ty, answer, anslen) }
+}
+// # C: int __res_query(const char *dname, int class, int type,
+//                      unsigned char *answer, int anslen)
+#[no_mangle]
+pub unsafe extern "C" fn __res_query(dname: *const c_char, class: i32, ty: i32, answer: *mut u8, anslen: i32) -> i32 {
+    // SAFETY: internal alias forwards res_query unchanged.
+    unsafe { res_query(dname, class, ty, answer, anslen) }
 }
 
 // # C: int res_nquerydomain(res_state statp, const char *name, const char *domain,
@@ -324,6 +369,14 @@ pub unsafe extern "C" fn res_nquerydomain(statp: *mut c_void, name: *const c_cha
     // SAFETY: combines name/domain into a bounded stack C string.
     unsafe { query_domain_common(statp, name, domain, class, ty, answer, anslen) }
 }
+// # C: int __res_nquerydomain(res_state statp, const char *name,
+//                             const char *domain, int class, int type,
+//                             unsigned char *answer, int anslen)
+#[no_mangle]
+pub unsafe extern "C" fn __res_nquerydomain(statp: *mut c_void, name: *const c_char, domain: *const c_char, class: i32, ty: i32, answer: *mut u8, anslen: i32) -> i32 {
+    // SAFETY: internal alias for res_nquerydomain.
+    unsafe { res_nquerydomain(statp, name, domain, class, ty, answer, anslen) }
+}
 
 // # C: int res_querydomain(const char *name, const char *domain, int class,
 //                          int type, unsigned char *answer, int anslen)
@@ -331,6 +384,14 @@ pub unsafe extern "C" fn res_nquerydomain(statp: *mut c_void, name: *const c_cha
 pub unsafe extern "C" fn res_querydomain(name: *const c_char, domain: *const c_char, class: i32, ty: i32, answer: *mut u8, anslen: i32) -> i32 {
     // SAFETY: default-state wrapper for res_nquerydomain.
     unsafe { res_nquerydomain(core::ptr::null_mut(), name, domain, class, ty, answer, anslen) }
+}
+// # C: int __res_querydomain(const char *name, const char *domain,
+//                            int class, int type, unsigned char *answer,
+//                            int anslen)
+#[no_mangle]
+pub unsafe extern "C" fn __res_querydomain(name: *const c_char, domain: *const c_char, class: i32, ty: i32, answer: *mut u8, anslen: i32) -> i32 {
+    // SAFETY: internal alias for res_querydomain.
+    unsafe { res_querydomain(name, domain, class, ty, answer, anslen) }
 }
 
 // # C: int res_nsearch(res_state statp, const char *dname, int class, int type,
@@ -340,10 +401,24 @@ pub unsafe extern "C" fn res_nsearch(statp: *mut c_void, dname: *const c_char, c
     // SAFETY: minimal search path: query the supplied name exactly.
     unsafe { res_nquery(statp, dname, class, ty, answer, anslen) }
 }
+// # C: int __res_nsearch(res_state statp, const char *dname, int class,
+//                        int type, unsigned char *answer, int anslen)
+#[no_mangle]
+pub unsafe extern "C" fn __res_nsearch(statp: *mut c_void, dname: *const c_char, class: i32, ty: i32, answer: *mut u8, anslen: i32) -> i32 {
+    // SAFETY: internal alias for res_nsearch.
+    unsafe { res_nsearch(statp, dname, class, ty, answer, anslen) }
+}
 
 // # C: int res_search(const char *dname, int class, int type, unsigned char *answer, int anslen)
 #[no_mangle]
 pub unsafe extern "C" fn res_search(dname: *const c_char, class: i32, ty: i32, answer: *mut u8, anslen: i32) -> i32 {
     // SAFETY: default-state wrapper for res_nsearch.
     unsafe { res_nsearch(core::ptr::null_mut(), dname, class, ty, answer, anslen) }
+}
+// # C: int __res_search(const char *dname, int class, int type,
+//                       unsigned char *answer, int anslen)
+#[no_mangle]
+pub unsafe extern "C" fn __res_search(dname: *const c_char, class: i32, ty: i32, answer: *mut u8, anslen: i32) -> i32 {
+    // SAFETY: internal alias for res_search.
+    unsafe { res_search(dname, class, ty, answer, anslen) }
 }
