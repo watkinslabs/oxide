@@ -375,6 +375,11 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   x86_64 freestanding build, `spec-lint`, `git diff --check`, `xtask
   glibc-test` 195/195, ABI audit for the 42 aliases, and aarch64
   freestanding build.
+- **F639 DONE:** exact-signature locale internal aliases for narrow
+  numeric/collation, monetary, and wide numeric/collation `_l` wrappers.
+  Verification: x86_64 freestanding build, `spec-lint`, `git diff --check`,
+  `xtask glibc-test` 195/195, ABI audit for the 19 aliases, and aarch64
+  freestanding build.
 - Re-audit (docs/59 §9 / state.md recipe) for stragglers after each batch.
 
 ## 3. DEFERRED ABI WORK: long double `*l` + `_Float128`/`_Float32x`/`_Float64x`
