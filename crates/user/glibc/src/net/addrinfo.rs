@@ -1,9 +1,8 @@
 // addrinfo — getaddrinfo/getnameinfo (docs/59§6 G13). Numeric + localhost
-// resolution (hosted-testable, no DNS): a node parsed by inet_pton,
-// /etc/hosts, or "localhost"/NULL → loopback. A stub DNS resolver (UDP to the
-// /etc/resolv.conf nameserver) is a follow-up. The address builder is pure +
-// hosted-tested; getaddrinfo (which malloc's the result chain) is the
-// freestanding C export.
+// resolution: a node parsed by inet_pton, /etc/hosts, DNS via the
+// /etc/resolv.conf nameserver, or "localhost"/NULL → loopback. The address
+// builders and DNS answer parser are pure + hosted-tested; getaddrinfo (which
+// malloc's the result chain) is the freestanding C export.
 #![allow(clippy::upper_case_acronyms)]
 use super::inet;
 use super::netdb;
@@ -37,6 +36,9 @@ pub const EAI_IDN_ENCODE: i32 = -105;
 const GAI_WAIT: i32 = 0;
 const GAI_NOWAIT: i32 = 1;
 const EINVAL: i32 = 22;
+const C_IN: u16 = 1;
+const T_A: u16 = 1;
+const T_AAAA: u16 = 28;
 
 fn proto_matches_socktype(proto: &str, socktype: i32) -> bool {
     match socktype {
@@ -168,6 +170,82 @@ pub(crate) fn fill_sockaddr_from_hosts(
         .find_map(|h| fill_sockaddr_from_host(&h, port, want))
 }
 
+fn skip_dns_name(msg: &[u8], mut off: usize) -> Option<usize> {
+    let mut hops = 0usize;
+    loop {
+        let b = *msg.get(off)?;
+        off += 1;
+        match b & 0xc0 {
+            0 => {
+                if b == 0 {
+                    return Some(off);
+                }
+                off = off.checked_add(b as usize)?;
+                if off > msg.len() {
+                    return None;
+                }
+            }
+            0xc0 => {
+                msg.get(off)?;
+                return Some(off + 1);
+            }
+            _ => return None,
+        }
+        hops += 1;
+        if hops > 128 {
+            return None;
+        }
+    }
+}
+
+fn be16(msg: &[u8], off: usize) -> Option<u16> {
+    Some(u16::from_be_bytes([*msg.get(off)?, *msg.get(off + 1)?]))
+}
+
+/// # C: DNS response bytes + requested family → sockaddr_in/in6 bytes
+pub(crate) fn fill_sockaddr_from_dns(answer: &[u8], port: u16, want: i32) -> Option<(i32, [u8; 28], u32)> {
+    if answer.len() < 12 {
+        return None;
+    }
+    let qd = be16(answer, 4)? as usize;
+    let an = be16(answer, 6)? as usize;
+    let mut off = 12usize;
+    for _ in 0..qd {
+        off = skip_dns_name(answer, off)?;
+        off = off.checked_add(4)?;
+        if off > answer.len() {
+            return None;
+        }
+    }
+    for _ in 0..an {
+        off = skip_dns_name(answer, off)?;
+        let ty = be16(answer, off)?;
+        let class = be16(answer, off + 2)?;
+        let rdlen = be16(answer, off + 8)? as usize;
+        off = off.checked_add(10)?;
+        let rdata_end = off.checked_add(rdlen)?;
+        if rdata_end > answer.len() {
+            return None;
+        }
+        if class == C_IN && ty == T_A && rdlen == 4 && (want == 0 || want == AF_INET as i32) {
+            let mut b = [0u8; 28];
+            b[0..2].copy_from_slice(&AF_INET.to_le_bytes());
+            b[2..4].copy_from_slice(&port.to_be_bytes());
+            b[4..8].copy_from_slice(&answer[off..off + 4]);
+            return Some((AF_INET as i32, b, 16));
+        }
+        if class == C_IN && ty == T_AAAA && rdlen == 16 && (want == 0 || want == AF_INET6 as i32) {
+            let mut b = [0u8; 28];
+            b[0..2].copy_from_slice(&AF_INET6.to_le_bytes());
+            b[2..4].copy_from_slice(&port.to_be_bytes());
+            b[8..24].copy_from_slice(&answer[off..off + 16]);
+            return Some((AF_INET6 as i32, b, 28));
+        }
+        off = rdata_end;
+    }
+    None
+}
+
 #[repr(C)]
 pub struct addrinfo {
     pub ai_flags: i32,
@@ -196,13 +274,44 @@ const _: () = assert!(core::mem::size_of::<gaicb>() == 56);
 #[cfg(feature = "freestanding")]
 mod exports {
     use super::*;
-    use crate::nss::shared::read_file;
     use crate::malloc::heap;
+    use crate::nss::shared::read_file;
     use crate::string::len::strlen_impl;
+    use core::ffi::c_char;
 
     unsafe fn slice_or_empty<'a>(p: *const u8) -> &'a [u8] {
         // SAFETY: p is null or a NUL-terminated C string.
         unsafe { if p.is_null() { &[] } else { core::slice::from_raw_parts(p, strlen_impl(p)) } }
+    }
+
+    unsafe fn query_dns_sockaddr(node: *const u8, port: u16, want: i32) -> Result<Option<(i32, [u8; 28], u32)>, i32> {
+        // SAFETY: node is a non-null NUL-terminated hostname from getaddrinfo.
+        unsafe {
+            let qtypes: &[u16] = if want == AF_INET6 as i32 {
+                &[T_AAAA]
+            } else if want == AF_INET as i32 {
+                &[T_A]
+            } else {
+                &[T_A, T_AAAA]
+            };
+            for &qtype in qtypes {
+                let mut answer = [0u8; 2048];
+                let r = crate::net::resolv_query::res_query(
+                    node as *const c_char,
+                    C_IN as i32,
+                    qtype as i32,
+                    answer.as_mut_ptr(),
+                    answer.len() as i32,
+                );
+                if r < 0 {
+                    return Err(EAI_AGAIN);
+                }
+                if let Some(t) = fill_sockaddr_from_dns(&answer[..r as usize], port, want) {
+                    return Ok(Some(t));
+                }
+            }
+            Ok(None)
+        }
     }
 
     // # C: int getaddrinfo(const char *node, const char *service,
@@ -241,7 +350,13 @@ mod exports {
                         .and_then(|hosts| fill_sockaddr_from_hosts(&hosts, n, port, want))
                     {
                         Some(t) => t,
-                        None => return EAI_NONAME,
+                        None => {
+                            match query_dns_sockaddr(node, port, want) {
+                                Ok(Some(t)) => t,
+                                Ok(None) => return EAI_NONAME,
+                                Err(e) => return e,
+                            }
+                        }
                     }
                 }
             };
@@ -464,5 +579,40 @@ mod tests {
         let (fam, b, _) = fill_sockaddr_from_hosts(hosts, b"dual", 53, AF_INET6 as i32).unwrap();
         assert_eq!(fam, AF_INET6 as i32);
         assert_eq!(b[8..24], [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6]);
+    }
+
+    #[test]
+    fn dns_answer_a_and_aaaa_resolution() {
+        let a_answer = [
+            0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, // header
+            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, // qname
+            0x00, 0x01, 0x00, 0x01, // qtype/qclass
+            0xc0, 0x0c, // compressed answer name
+            0x00, 0x01, 0x00, 0x01, // A IN
+            0x00, 0x00, 0x00, 0x3c, // ttl
+            0x00, 0x04, 203, 0, 113, 7, // rdata
+        ];
+        let (fam, b, len) = fill_sockaddr_from_dns(&a_answer, 80, 0).unwrap();
+        assert_eq!(fam, AF_INET as i32);
+        assert_eq!(len, 16);
+        assert_eq!([b[2], b[3]], 80u16.to_be_bytes());
+        assert_eq!([b[4], b[5], b[6], b[7]], [203, 0, 113, 7]);
+
+        let aaaa_answer = [
+            0x12, 0x35, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+            0x02, b'v', b'6', 0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0x00,
+            0x00, 0x1c, 0x00, 0x01,
+            0xc0, 0x0c,
+            0x00, 0x1c, 0x00, 0x01,
+            0x00, 0x00, 0x00, 0x3c,
+            0x00, 0x10,
+            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9,
+        ];
+        let (fam, b, len) = fill_sockaddr_from_dns(&aaaa_answer, 443, AF_INET6 as i32).unwrap();
+        assert_eq!(fam, AF_INET6 as i32);
+        assert_eq!(len, 28);
+        assert_eq!([b[2], b[3]], 443u16.to_be_bytes());
+        assert_eq!(b[8..24], [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
+        assert!(fill_sockaddr_from_dns(&aaaa_answer, 443, AF_INET as i32).is_none());
     }
 }
