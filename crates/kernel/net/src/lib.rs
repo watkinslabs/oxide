@@ -40,6 +40,7 @@ pub mod netfilter_hook;
 pub mod bpf_filter;
 pub mod stack;
 pub mod stack_binddev;
+pub mod stack_diag;
 pub use stack::{NetStack, UdpRxQueue};
 pub use route::{RouteEntry, RouteTable};
 pub use ipv4::{Ipv4Hdr, Ipv4Error, push_ipv4_header, ip_checksum, IPV4_HDR_LEN};
