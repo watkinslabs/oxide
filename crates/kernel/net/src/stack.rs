@@ -170,7 +170,6 @@ fn ecn_tos(c: &TcpConn) -> u8 {
 /// Bridge to tcp_conn::ka_now_ns from stack code. # C: O(1)
 pub(crate) fn net_now_ns() -> u64 { crate::tcp_conn::ka_now_ns() }
 
-
 fn stamp_last_sent(entry: &TcpEntry, n: usize) {
     if n == 0 { return; }
     let now = monotonic_ns_safe();
@@ -264,7 +263,7 @@ pub struct NetStack {
     /// IPv6 Fragment extension reassembly table.
     pub ipv6_reasm: crate::ipv6_reasm::ReasmTable,
     /// F180c: per-iface IPv6 address registry (NS responder).
-    v6_addrs: Spinlock<BTreeMap<NetIfaceId, Vec<crate::addr::Ipv6Addr>>, StackLockClass>,
+    v6_addrs: Spinlock<BTreeMap<NetIfaceId, Vec<crate::addr::Ipv6Addr>>, StackLockClass>, pub(crate) v6_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::addr::Ipv6Addr>>, StackLockClass>,
 }
 
 impl NetStack {
@@ -284,6 +283,7 @@ impl NetStack {
             ipv4_reasm: crate::ipv4_reasm::ReasmTable::new(),
             ipv6_reasm: crate::ipv6_reasm::ReasmTable::new(),
             v6_addrs:   Spinlock::new(BTreeMap::new()),
+            v6_mcast:   Spinlock::new(BTreeMap::new()),
         }
     }
 

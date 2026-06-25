@@ -34,6 +34,8 @@ pub const NDP_OPT_PREFIX_INFO: u8 = 3;
 pub const NDP_HDR_FIXED: usize = 24;
 pub const NDP_RS_FIXED: usize = 8;
 pub const NDP_RA_FIXED: usize = 16;
+pub const IPV6_ALL_NODES: Ipv6Addr =
+    Ipv6Addr::from_segments([0xff02, 0, 0, 0, 0, 0, 0, 1]);
 pub const IPV6_ALL_ROUTERS: Ipv6Addr =
     Ipv6Addr::from_segments([0xff02, 0, 0, 0, 0, 0, 0, 2]);
 

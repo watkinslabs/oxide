@@ -346,6 +346,44 @@ impl NetStack {
         self.xmit_ipv6(iface, src, crate::ndp::IPV6_ALL_ROUTERS, IpProto::Icmpv6, &body)
     }
 
+    /// Join an IPv6 multicast group and emit an MLDv1 listener report for
+    /// groups that require reports. # C: O(N groups)
+    pub fn join_ipv6_multicast(&self, iface: NetIfaceId, group: Ipv6Addr, src: Ipv6Addr)
+        -> NetResult<()>
+    {
+        if !group.is_multicast() { return Err(NetError::Einval); }
+        let fresh = {
+            let mut g = self.v6_mcast.lock();
+            let groups = g.entry(iface).or_default();
+            if groups.iter().any(|m| *m == group) { false } else { groups.push(group); true }
+        };
+        if fresh && group != crate::ndp::IPV6_ALL_NODES {
+            let body = crate::icmpv6::build_mldv1_report(src, group);
+            self.xmit_ipv6(iface, src, group, IpProto::Icmpv6, &body)?;
+        }
+        Ok(())
+    }
+
+    /// Leave an IPv6 multicast group and emit MLD Done when membership existed.
+    /// # C: O(N groups)
+    pub fn leave_ipv6_multicast(&self, iface: NetIfaceId, group: Ipv6Addr, src: Ipv6Addr)
+        -> NetResult<()>
+    {
+        let removed = {
+            let mut g = self.v6_mcast.lock();
+            if let Some(groups) = g.get_mut(&iface) {
+                let before = groups.len();
+                groups.retain(|m| *m != group);
+                before != groups.len()
+            } else { false }
+        };
+        if removed && group != crate::ndp::IPV6_ALL_NODES {
+            let body = crate::icmpv6::build_mldv1_done(src, group);
+            self.xmit_ipv6(iface, src, crate::ndp::IPV6_ALL_ROUTERS, IpProto::Icmpv6, &body)?;
+        }
+        Ok(())
+    }
+
     /// F180b: family-dispatching L4 xmit. v4 stays on v4; v6 → v6;
     /// mismatched family pair fails Einval (no v4-in-v6 tunneling).
     /// # C: O(payload)
