@@ -34,10 +34,12 @@
     __ctype_init;
     __ctype_tolower;
     __ctype_toupper;
+    __daylight;
     __dcgettext;
     __dgettext;
     __duplocale;
     __endmntent;
+    __environ;
     __exp10_finite;
     __exp10f_finite;
     __exp2_finite;
@@ -142,6 +144,8 @@
     __pow_finite;
     __powf_finite;
     __poll;
+    __progname;
+    __progname_full;
     __rawmemchr;
     __read;
     __register_atfork;
@@ -163,12 +167,14 @@
     __strndup;
     __strtok_r;
     __sysconf;
+    __timezone;
     __toascii_l;
     __tolower_l;
     __toupper_l;
     __towctrans_l;
     __towlower_l;
     __towupper_l;
+    __tzname;
     __y0_finite;
     __y0f_finite;
     __y1_finite;
