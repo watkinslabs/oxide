@@ -62,7 +62,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | UDP_CORK / batched send              | gap      | one syscall per dgram today |
 | UDP_SEGMENT (USO)                    | gap      | NIC offload variant |
 | UDP-Lite                             | n/a      | rarely used |
-| MSG_PEEK / MSG_TRUNC / MSG_DONTWAIT  | partial  | MSG_DONTWAIT honored; PEEK/TRUNC TBD |
+| MSG_PEEK / MSG_TRUNC / MSG_DONTWAIT  | partial  | DONTWAIT honored; datagram recvfrom PEEK/TRUNC done; stream recvmsg TBD |
 
 ## 3. AF_UNIX
 

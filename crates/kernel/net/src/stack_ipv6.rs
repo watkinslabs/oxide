@@ -82,9 +82,15 @@ impl NetStack {
     /// F180a: pop one queued IPv6 datagram for `port`.
     /// # C: O(log N)
     pub fn recv_udp6(&self, port: u16) -> Option<(Ipv6Addr, u16, Vec<u8>)> {
+        self.recv_udp6_opts(port, false)
+    }
+
+    /// F180a: pop or peek one queued IPv6 datagram for `port`.
+    /// # C: O(log N + payload bytes when peeking)
+    pub fn recv_udp6_opts(&self, port: u16, peek: bool) -> Option<(Ipv6Addr, u16, Vec<u8>)> {
         let q = { self.udp6_map().lock().get(&port)?.clone() };
-        let popped = q.q.lock().pop_front();
-        popped
+        let mut g = q.q.lock();
+        if peek { g.front().cloned() } else { g.pop_front() }
     }
 
     /// F180a: Arc clone for sys_recvfrom park path.
