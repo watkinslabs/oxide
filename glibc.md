@@ -160,6 +160,11 @@ Also DONE: parser/time/ctype internal aliases (F635): `__getmntent_r`,
 exported over existing mount-entry, time, ctype, and inet parser logic.
 Verified by ABI export audit, regression suite, spec-lint, and both
 freestanding arch builds.
+Also DONE: string/argz internal aliases (F636): `__argz_count`, `__argz_next`,
+`__argz_stringify`, `__strcasestr`, `__strverscmp`, `__strcasecmp_l`, and
+`__strncasecmp_l` exported over existing argz/string/locale implementations.
+Verified by ABI export audit, regression suite, spec-lint, and both
+freestanding arch builds.
 
 ## NOTE (latest): also DONE since the §-headers below were written —
 wide `_l` (isw*/tow*/wcs*/wcsto*_l + __isoc23_wcsto*_l), LFS *64 aliases

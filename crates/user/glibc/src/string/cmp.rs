@@ -175,6 +175,12 @@ mod exports {
         // SAFETY: forwards the GNU strverscmp contract to strverscmp_impl.
         unsafe { strverscmp_impl(a, b) }
     }
+    // # C: int __strverscmp(const char *, const char *)
+    #[no_mangle]
+    pub unsafe extern "C" fn __strverscmp(a: *const u8, b: *const u8) -> i32 {
+        // SAFETY: internal alias has the same string contract as strverscmp.
+        unsafe { strverscmp(a, b) }
+    }
 }
 
 #[cfg(test)]

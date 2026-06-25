@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **195/195**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F635-glibc-parser-internal-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **636**, B = **138**, D = **113**
+`F636-glibc-string-argz-internal-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **637**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -458,6 +458,11 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   `__inet_pton_length`, forwarding to existing implementations. Verified by
   ABI export audit, regression suite, spec-lint, and both freestanding arch
   builds.
+- **F636 DONE locally:** string/argz internal aliases added for
+  `__argz_count`, `__argz_next`, `__argz_stringify`, `__strcasestr`,
+  `__strverscmp`, `__strcasecmp_l`, and `__strncasecmp_l`, forwarding to
+  existing implementations. Verified by ABI export audit, regression suite,
+  spec-lint, and both freestanding arch builds.
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need

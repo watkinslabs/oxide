@@ -104,6 +104,12 @@ pub unsafe extern "C" fn argz_count(argz: *const u8, len: usize) -> usize {
         n
     }
 }
+// # C: size_t __argz_count(const char *argz, size_t len)
+#[no_mangle]
+pub unsafe extern "C" fn __argz_count(argz: *const u8, len: usize) -> usize {
+    // SAFETY: internal alias has the same argz buffer contract as argz_count.
+    unsafe { argz_count(argz, len) }
+}
 
 // # C: void argz_extract(const char *argz, size_t len, char **argv)
 #[no_mangle]
@@ -134,6 +140,12 @@ pub unsafe extern "C" fn argz_stringify(argz: *mut u8, len: usize, sep: i32) {
         while i < len - 1 { if *argz.add(i) == 0 { *argz.add(i) = sep as u8; } i += 1; }
     }
 }
+// # C: void __argz_stringify(char *argz, size_t len, int sep)
+#[no_mangle]
+pub unsafe extern "C" fn __argz_stringify(argz: *mut u8, len: usize, sep: i32) {
+    // SAFETY: internal alias has the same mutable argz contract as argz_stringify.
+    unsafe { argz_stringify(argz, len, sep) }
+}
 
 // # C: char *argz_next(const char *argz, size_t len, const char *entry)
 #[no_mangle]
@@ -146,6 +158,12 @@ pub unsafe extern "C" fn argz_next(argz: *const u8, len: usize, entry: *const u8
         let end = argz.add(len);
         if next < end { next as *mut u8 } else { core::ptr::null_mut() }
     }
+}
+// # C: char *__argz_next(const char *argz, size_t len, const char *entry)
+#[no_mangle]
+pub unsafe extern "C" fn __argz_next(argz: *const u8, len: usize, entry: *const u8) -> *mut u8 {
+    // SAFETY: internal alias has the same traversal contract as argz_next.
+    unsafe { argz_next(argz, len, entry) }
 }
 
 // # C: error_t argz_add_sep(char **argz, size_t *len, const char *str, int delim)
