@@ -22,6 +22,8 @@ mod tests_perf;
 mod tests_mld;
 #[path = "tests_igmp.rs"]
 mod tests_igmp;
+#[path = "tests_ipv6_ext.rs"]
+mod tests_ipv6_ext;
 
 pub(super) fn ep(ip: Ipv4Addr, port: u16) -> Endpoint { Endpoint { ip: IpAddr::V4(ip), port } }
 
