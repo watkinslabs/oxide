@@ -1,5 +1,8 @@
 use crate::addr::{IpProto, Ipv4Addr, NetIfaceId};
-use crate::igmp::{IgmpQuery, IGMP_TYPE_LEAVE, IGMP_TYPE_V2_REPORT, IPV4_ALL_HOSTS, IPV4_ALL_ROUTERS};
+use crate::igmp::{
+    IgmpQuery, IGMP_V3_RECORD_CHANGE_TO_INCLUDE, IGMP_V3_RECORD_CHANGE_TO_EXCLUDE,
+    IGMP_V3_RECORD_MODE_IS_EXCLUDE, IPV4_ALL_HOSTS, IPV4_IGMPV3_ROUTERS,
+};
 use crate::netdev::{NetError, NetResult};
 use crate::stack::NetStack;
 
@@ -10,13 +13,13 @@ impl NetStack {
             .and_then(|r| r.src_hint)
     }
 
-    fn emit_igmp(&self, iface: NetIfaceId, src: Ipv4Addr, dst: Ipv4Addr, typ: u8, group: Ipv4Addr)
+    fn emit_igmpv3(&self, iface: NetIfaceId, src: Ipv4Addr, record_type: u8, group: Ipv4Addr)
         -> NetResult<()>
     {
         let dev = self.ifaces.lookup(iface).ok_or(NetError::Enetunreach)?;
         let id = { let mut s = self.next_ip_id.lock(); *s = s.wrapping_add(1); *s };
-        let body = crate::igmp::build_igmp_msg(typ, group);
-        self.xmit_ipv4_l4_on_iface_opts(iface, dev, src, dst, IpProto::Igmp, &body, 0, 1, id)
+        let body = crate::igmp::build_igmpv3_report(record_type, group, &[]);
+        self.xmit_ipv4_l4_on_iface_opts(iface, dev, src, IPV4_IGMPV3_ROUTERS, IpProto::Igmp, &body, 0, 1, id)
     }
 
     /// Join an IPv4 multicast group and emit an IGMPv2 membership report.
@@ -32,7 +35,7 @@ impl NetStack {
             if groups.iter().any(|(m, _)| *m == group) { false } else { groups.push((group, src)); true }
         };
         if fresh && group != IPV4_ALL_HOSTS {
-            self.emit_igmp(iface, src, group, IGMP_TYPE_V2_REPORT, group)?;
+            self.emit_igmpv3(iface, src, IGMP_V3_RECORD_CHANGE_TO_EXCLUDE, group)?;
         }
         Ok(())
     }
@@ -57,7 +60,7 @@ impl NetStack {
             } else { false }
         };
         if removed && group != IPV4_ALL_HOSTS {
-            self.emit_igmp(iface, report_src, IPV4_ALL_ROUTERS, IGMP_TYPE_LEAVE, group)?;
+            self.emit_igmpv3(iface, report_src, IGMP_V3_RECORD_CHANGE_TO_INCLUDE, group)?;
         }
         Ok(())
     }
@@ -74,7 +77,7 @@ impl NetStack {
         for (group, src) in groups {
             if group == IPV4_ALL_HOSTS { continue; }
             if !q.group.is_unspecified() && q.group != group { continue; }
-            self.emit_igmp(iface, src, group, IGMP_TYPE_V2_REPORT, group)?;
+            self.emit_igmpv3(iface, src, IGMP_V3_RECORD_MODE_IS_EXCLUDE, group)?;
         }
         Ok(())
     }

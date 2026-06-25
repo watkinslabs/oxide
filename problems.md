@@ -2,7 +2,7 @@
 
 ## Open
 
-- None currently recorded.
+- IGMPv3/MLDv2 source-list query handling is not implemented. Report formats are wired, but inbound source-specific multicast listener queries still need parser/state handling.
 
 ## Resolved
 

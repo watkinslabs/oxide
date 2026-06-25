@@ -13,7 +13,15 @@ pub const ICMPV6_TYPE_ECHO_REPLY:     u8 = 129;
 pub const ICMPV6_TYPE_MLD_QUERY:      u8 = 130;
 pub const ICMPV6_TYPE_MLD_REPORT:     u8 = 131;
 pub const ICMPV6_TYPE_MLD_DONE:       u8 = 132;
+pub const ICMPV6_TYPE_MLDV2_REPORT:   u8 = 143;
 pub const IPPROTO_ICMPV6:          u8 = 58;
+pub const MLDV2_RECORD_MODE_IS_INCLUDE: u8 = 1;
+pub const MLDV2_RECORD_MODE_IS_EXCLUDE: u8 = 2;
+pub const MLDV2_RECORD_CHANGE_TO_INCLUDE: u8 = 3;
+pub const MLDV2_RECORD_CHANGE_TO_EXCLUDE: u8 = 4;
+pub const IPV6_MLDV2_ROUTERS: Ipv6Addr = Ipv6Addr([
+    0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x16,
+]);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Icmp6Error { Short, BadChecksum, BadType }
@@ -112,6 +120,28 @@ pub fn build_mldv1_done(src: Ipv6Addr, group: Ipv6Addr) -> alloc::vec::Vec<u8> {
     build_mldv1(ICMPV6_TYPE_MLD_DONE, src, crate::ndp::IPV6_ALL_ROUTERS, group)
 }
 
+/// Build a single-record MLDv2 Listener Report. # C: O(N sources)
+pub fn build_mldv2_report(
+    src: Ipv6Addr,
+    record_type: u8,
+    group: Ipv6Addr,
+    sources: &[Ipv6Addr],
+) -> alloc::vec::Vec<u8> {
+    let nsrc = sources.len().min(u16::MAX as usize);
+    let mut out = alloc::vec![0u8; 8 + 20 + 16 * nsrc];
+    out[0] = ICMPV6_TYPE_MLDV2_REPORT;
+    out[6..8].copy_from_slice(&1u16.to_be_bytes());
+    out[8] = record_type;
+    out[10..12].copy_from_slice(&(nsrc as u16).to_be_bytes());
+    out[12..28].copy_from_slice(&group.0);
+    for (i, s) in sources.iter().take(nsrc).enumerate() {
+        out[28 + 16 * i..44 + 16 * i].copy_from_slice(&s.0);
+    }
+    let cs = compute_icmp6_checksum(&out, src, IPV6_MLDV2_ROUTERS);
+    out[2..4].copy_from_slice(&cs.to_be_bytes());
+    out
+}
+
 /// Build an MLDv1 Listener Query. # C: O(1)
 pub fn build_mldv1_query(
     src: Ipv6Addr,
@@ -206,5 +236,20 @@ mod tests {
         let parsed = Mldv1Query::parse(&query, src, dst).unwrap();
         assert_eq!(parsed.max_resp_delay, 1000);
         assert_eq!(parsed.group, group);
+    }
+
+    #[test]
+    fn mldv2_report_layout_and_checksum() {
+        let src = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
+        let group = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,0x1234]);
+        let source = Ipv6Addr::from_segments([0x2001,0xdb8,0,0,0,0,0,1]);
+        let r = build_mldv2_report(src, MLDV2_RECORD_MODE_IS_INCLUDE, group, &[source]);
+        assert_eq!(r[0], ICMPV6_TYPE_MLDV2_REPORT);
+        assert_eq!(u16::from_be_bytes([r[6], r[7]]), 1);
+        assert_eq!(r[8], MLDV2_RECORD_MODE_IS_INCLUDE);
+        assert_eq!(u16::from_be_bytes([r[10], r[11]]), 1);
+        assert_eq!(&r[12..28], &group.0);
+        assert_eq!(&r[28..44], &source.0);
+        assert_eq!(compute_icmp6_checksum_with_field(&r, src, IPV6_MLDV2_ROUTERS, true), 0);
     }
 }
