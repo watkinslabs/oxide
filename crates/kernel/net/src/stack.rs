@@ -420,7 +420,7 @@ impl NetStack {
             }
             None => return Err(NetError::Enetunreach),
         };
-        let total = IPV4_HDR_LEN + crate::udp::UDP_HDR_LEN + payload.len();
+        let total = crate::udp::UDP_HDR_LEN + payload.len();
         let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
         let udp_total = crate::udp::UDP_HDR_LEN + payload.len();
         let slot = p.put(udp_total).map_err(|_| NetError::Enobufs)?;
@@ -430,12 +430,7 @@ impl NetStack {
             *s = s.wrapping_add(1);
             *s
         };
-        push_ipv4_header(&mut p, src_ip, dst_ip, IpProto::Udp, id)
-            .map_err(|_| NetError::Enobufs)?;
-        p.proto = crate::addr::eth_p::IPV4;
-        p.iface = Some(iface_id);
-        if !nf_output(&p, NFPROTO_IPV4) { return Ok(()); }
-        iface.xmit(p)
+        self.xmit_ipv4_l4_on_iface(iface_id, iface, src_ip, dst_ip, IpProto::Udp, p.data(), 0, id)
     }
 
     /// Open v4 listener at (ip,port). Eaddrinuse if taken or TIME_WAIT
@@ -674,17 +669,50 @@ impl NetStack {
     {
         let route = self.routes.lookup(dst).ok_or(NetError::Enetunreach)?;
         let iface = self.ifaces.lookup(route.iface).ok_or(NetError::Enetunreach)?;
-        let total = IPV4_HDR_LEN + l4.len();
-        let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
-        p.put(l4.len()).map_err(|_| NetError::Enobufs)?
-            .copy_from_slice(l4);
         let id = { let mut s = self.next_ip_id.lock(); *s = s.wrapping_add(1); *s };
-        crate::ipv4::push_ipv4_header_tos(&mut p, src, dst, proto, id, tos)
-            .map_err(|_| NetError::Enobufs)?;
-        p.proto = crate::addr::eth_p::IPV4;
-        p.iface = Some(route.iface);
-        if !nf_output(&p, NFPROTO_IPV4) { return Ok(()); }
-        iface.xmit(p)
+        self.xmit_ipv4_l4_on_iface(route.iface, iface, src, dst, proto, l4, tos, id)
+    }
+
+    /// Emit one IPv4 L4 payload on a selected iface, fragmenting when
+    /// `IP header + payload` exceeds the iface MTU. # C: O(payload)
+    pub(crate) fn xmit_ipv4_l4_on_iface(&self, iface_id: NetIfaceId,
+        iface: Arc<dyn NetDev>, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
+        l4: &[u8], tos: u8, id: u16) -> NetResult<()>
+    {
+        let mtu = iface.mtu() as usize;
+        if l4.len() + IPV4_HDR_LEN <= mtu {
+            let total = IPV4_HDR_LEN + l4.len();
+            let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
+            p.put(l4.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(l4);
+            crate::ipv4::push_ipv4_header_tos(&mut p, src, dst, proto, id, tos)
+                .map_err(|_| NetError::Enobufs)?;
+            p.proto = crate::addr::eth_p::IPV4;
+            p.iface = Some(iface_id);
+            if !nf_output(&p, NFPROTO_IPV4) { return Ok(()); }
+            return iface.xmit(p);
+        }
+
+        let max_payload = mtu.saturating_sub(IPV4_HDR_LEN) & !7usize;
+        if max_payload == 0 { return Err(NetError::Enobufs); }
+        let mut off = 0usize;
+        while off < l4.len() {
+            let take = core::cmp::min(max_payload, l4.len() - off);
+            let more = off + take < l4.len();
+            let frag_off_units = (off / 8) as u16;
+            let flags_frag = if more { 0x2000 } else { 0 } | frag_off_units;
+            let total = IPV4_HDR_LEN + take;
+            let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
+            p.put(take).map_err(|_| NetError::Enobufs)?.copy_from_slice(&l4[off..off + take]);
+            crate::ipv4::push_ipv4_header_tos_frag(&mut p, src, dst, proto, id, tos, flags_frag)
+                .map_err(|_| NetError::Enobufs)?;
+            p.proto = crate::addr::eth_p::IPV4;
+            p.iface = Some(iface_id);
+            if nf_output(&p, NFPROTO_IPV4) {
+                iface.xmit(p)?;
+            }
+            off += take;
+        }
+        Ok(())
     }
 
     // F180b: send_l4 in stack_ipv6.rs.
