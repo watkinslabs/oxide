@@ -738,6 +738,7 @@ pub fn enumerate_and_log() {
                 if let Some(lo_idx) = lo_idx {
                     ::netlink::rtnetlink::seed_default_routes_lo(lo_idx);
                 }
+                let _ = stack.send_router_solicitation(id, net::Ipv6Addr::ANY);
 
                 // F86: spawn an RX poller kthread. The driver
                 // exposes `poll_into_stack(iface, our_ip)` but

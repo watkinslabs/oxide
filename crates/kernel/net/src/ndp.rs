@@ -3,6 +3,7 @@
 // v1 implements:
 //   - Neighbor Solicitation (target_ip in question, src->llt)
 //   - Neighbor Advertisement (target_ip + flags + target_lladdr)
+//   - Router Solicitation emit (active SLAAC discovery)
 //   - Router Advertisement prefix parsing for SLAAC
 //
 // Each NS/NA carries a Type-Length-Value option list. The
@@ -19,6 +20,7 @@ use crate::addr::{Ipv6Addr, MacAddr};
 use crate::ipv4::ip_checksum;
 use crate::icmpv6::IPPROTO_ICMPV6;
 
+pub const NDP_RS: u8 = 133;
 pub const NDP_NS: u8 = 135;
 pub const NDP_NA: u8 = 136;
 pub const NDP_RA: u8 = 134;
@@ -30,7 +32,10 @@ pub const NDP_OPT_PREFIX_INFO: u8 = 3;
 /// header words. Type 135/136, code 0, then header[4..8] = flags
 /// (NA only — bits R/S/O), header[8..24] = target_ip.
 pub const NDP_HDR_FIXED: usize = 24;
+pub const NDP_RS_FIXED: usize = 8;
 pub const NDP_RA_FIXED: usize = 16;
+pub const IPV6_ALL_ROUTERS: Ipv6Addr =
+    Ipv6Addr::from_segments([0xff02, 0, 0, 0, 0, 0, 0, 2]);
 
 pub const NDP_PIO_FLAG_ONLINK: u8 = 0x80;
 pub const NDP_PIO_FLAG_AUTO: u8 = 0x40;
@@ -67,6 +72,26 @@ pub struct RouterAdvertisement {
 }
 
 impl NdpMsg {
+    /// Build a Router Solicitation. The source link-layer option is omitted
+    /// when the caller uses :: as the source, per RFC 4861.
+    /// # C: O(1)
+    pub fn build_rs(src: Ipv6Addr, dst: Ipv6Addr, our_mac: Option<MacAddr>)
+        -> alloc::vec::Vec<u8>
+    {
+        let our_mac = if src.is_unspecified() { None } else { our_mac };
+        let opt_len = if our_mac.is_some() { 8 } else { 0 };
+        let mut buf = alloc::vec![0u8; NDP_RS_FIXED + opt_len];
+        buf[0] = NDP_RS;
+        if let Some(mac) = our_mac {
+            buf[NDP_RS_FIXED] = NDP_OPT_SOURCE_LLADDR;
+            buf[NDP_RS_FIXED + 1] = 1;
+            buf[NDP_RS_FIXED + 2..NDP_RS_FIXED + 8].copy_from_slice(&mac.0);
+        }
+        let cs = compute_ndp_checksum(&buf, src, dst);
+        buf[2..4].copy_from_slice(&cs.to_be_bytes());
+        buf
+    }
+
     /// Build an NS for `target_ip`. `our_mac` populates the
     /// source-lladdr option (T=1).
     /// # C: O(1)
@@ -332,5 +357,17 @@ mod tests {
         assert_eq!(ra.prefixes.len(), 1);
         assert_eq!(ra.prefixes[0].prefix, prefix);
         assert_eq!(ra.prefixes[0].prefix_len, 64);
+    }
+
+    #[test]
+    fn router_solicitation_omits_lladdr_for_unspecified_source() {
+        let rs = NdpMsg::build_rs(Ipv6Addr::ANY, IPV6_ALL_ROUTERS, Some(MacAddr([2,3,4,5,6,7])));
+        assert_eq!(rs.len(), NDP_RS_FIXED);
+        assert_eq!(rs[0], NDP_RS);
+
+        let src = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
+        let rs_sll = NdpMsg::build_rs(src, IPV6_ALL_ROUTERS, Some(MacAddr([2,3,4,5,6,7])));
+        assert_eq!(rs_sll.len(), NDP_RS_FIXED + 8);
+        assert_eq!(rs_sll[NDP_RS_FIXED], NDP_OPT_SOURCE_LLADDR);
     }
 }
