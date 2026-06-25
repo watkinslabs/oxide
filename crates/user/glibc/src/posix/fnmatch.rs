@@ -103,6 +103,9 @@ fn rec(p: &[u8], mut pi: usize, s: &[u8], mut si: usize, pathname: bool, noescap
                 }
                 let mut k = si;
                 loop {
+                    if pathname && k < s.len() && s[k] == b'/' && p.get(pi) != Some(&b'/') {
+                        return false;
+                    }
                     if rec(p, pi, s, k, pathname, noescape, period) { return true; }
                     if k == s.len() { return false; }
                     if pathname && s[k] == b'/' { return false; }
@@ -194,5 +197,12 @@ mod tests {
         let p = "*[[=]?";
         let s = "=.";
         assert_eq!(fnmatch_slice(p.as_bytes(), s.as_bytes(), 0), host(p, s, 0));
+    }
+
+    #[test]
+    fn escaped_slash_after_star_matches_host() {
+        let p = r"*\/*";
+        let s = "/";
+        assert_eq!(fnmatch_slice(p.as_bytes(), s.as_bytes(), FNM_PATHNAME), host(p, s, FNM_PATHNAME));
     }
 }
