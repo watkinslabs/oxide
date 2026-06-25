@@ -14,18 +14,31 @@ fn special(c: u8) -> bool { matches!(c, b'"' | b'.' | b';' | b'\\' | b'(' | b')'
 // printable per glibc: strictly between SP and DEL.
 fn printable(c: u8) -> bool { c > 0x20 && c < 0x7f }
 
+// SAFETY: generated aliases preserve each target's caller contract unchanged.
+macro_rules! alias_unsafe {
+    ($name:ident($($arg:ident: $ty:ty),*) -> $ret:ty = $target:ident;) => {
+        #[no_mangle]
+        pub unsafe extern "C" fn $name($($arg: $ty),*) -> $ret {
+            // SAFETY: generated alias forwards the same C ABI contract unchanged.
+            unsafe { $target($($arg),*) }
+        }
+    };
+}
+
 // # C: unsigned ns_get16(const unsigned char *src)
 #[no_mangle]
 pub unsafe extern "C" fn ns_get16(src: *const u8) -> u32 {
     // SAFETY: src points at ≥2 readable bytes of an RR field.
     unsafe { ((*src as u32) << 8) | *src.add(1) as u32 }
 }
+alias_unsafe!(__ns_get16(src: *const u8) -> u32 = ns_get16;);
 // # C: unsigned long ns_get32(const unsigned char *src)
 #[no_mangle]
 pub unsafe extern "C" fn ns_get32(src: *const u8) -> u64 {
     // SAFETY: src points at ≥4 readable bytes of an RR field.
     unsafe { ((*src as u64) << 24) | ((*src.add(1) as u64) << 16) | ((*src.add(2) as u64) << 8) | *src.add(3) as u64 }
 }
+alias_unsafe!(__ns_get32(src: *const u8) -> u64 = ns_get32;);
 // # C: void ns_put16(unsigned src, unsigned char *dst)
 #[no_mangle]
 pub unsafe extern "C" fn ns_put16(src: u32, dst: *mut u8) {
@@ -77,7 +90,7 @@ pub unsafe extern "C" fn ns_name_ntop(src: *const u8, dst: *mut c_char, dstsiz: 
         dn as i32
     }
 }
-
+alias_unsafe!(__ns_name_ntop(src: *const u8, dst: *mut c_char, dstsiz: usize) -> i32 = ns_name_ntop;);
 // # C: int ns_name_ntol(const unsigned char *src, unsigned char *dst, size_t dstsiz)
 // Wire name → wire name, lowercasing label bytes. Compression is rejected.
 #[no_mangle]
@@ -106,7 +119,7 @@ pub unsafe extern "C" fn ns_name_ntol(src: *const u8, dst: *mut u8, dstsiz: usiz
         }
     }
 }
-
+alias_unsafe!(__ns_name_ntol(src: *const u8, dst: *mut u8, dstsiz: usize) -> i32 = ns_name_ntol;);
 // # C: int ns_name_pton(const char *src, unsigned char *dst, size_t dstsiz)
 // Presentation text → wire name. Returns 1 if fully qualified (trailing dot /
 // root), 0 if not, -1 (EMSGSIZE) on overflow or a malformed escape / "..".
@@ -166,7 +179,7 @@ pub unsafe extern "C" fn ns_name_pton(src: *const c_char, dst: *mut u8, dstsiz: 
         0
     }
 }
-
+alias_unsafe!(__ns_name_pton(src: *const c_char, dst: *mut u8, dstsiz: usize) -> i32 = ns_name_pton;);
 // # C: int ns_name_pack(const u_char *src, u_char *dst, int dstsiz,
 //                       const u_char **dnptrs, const u_char **lastdnptr)
 // Pack an uncompressed wire name into dst. Like dn_comp, no compression pointers
@@ -193,7 +206,7 @@ pub unsafe extern "C" fn ns_name_pack(src: *const u8, dst: *mut u8, dstsiz: i32,
         l as i32
     }
 }
-
+alias_unsafe!(__ns_name_pack(src: *const u8, dst: *mut u8, dstsiz: i32, dnptrs: *mut *const u8, lastdnptr: *mut *const u8) -> i32 = ns_name_pack;);
 // # C: int ns_name_compress(const char *src, u_char *dst, size_t dstsiz,
 //                           const u_char **dnptrs, const u_char **lastdnptr)
 // ns_name_pton then ns_name_pack: presentation → wire (uncompressed).
@@ -206,7 +219,7 @@ pub unsafe extern "C" fn ns_name_compress(src: *const c_char, dst: *mut u8, dsts
         ns_name_pack(tmp.as_ptr(), dst, dstsiz as i32, dnptrs, lastdnptr)
     }
 }
-
+alias_unsafe!(__ns_name_compress(src: *const c_char, dst: *mut u8, dstsiz: usize, dnptrs: *mut *const u8, lastdnptr: *mut *const u8) -> i32 = ns_name_compress;);
 // # C: void ns_name_rollback(const unsigned char *src,
 //                            const unsigned char **dnptrs,
 //                            const unsigned char **lastdnptr)
@@ -247,7 +260,7 @@ pub unsafe extern "C" fn ns_name_skip(ptrptr: *mut *const u8, eom: *const u8) ->
         0
     }
 }
-
+alias_unsafe!(__ns_name_skip(ptrptr: *mut *const u8, eom: *const u8) -> i32 = ns_name_skip;);
 // # C: int ns_name_unpack(const u_char *msg, const u_char *eom, const u_char *src,
 //                         u_char *dst, size_t dstsiz)
 // Expand the (possibly compressed) wire name at src into UNCOMPRESSED wire form
@@ -292,7 +305,7 @@ pub unsafe extern "C" fn ns_name_unpack(msg: *const u8, eom: *const u8, src: *co
         len as i32
     }
 }
-
+alias_unsafe!(__ns_name_unpack(msg: *const u8, eom: *const u8, src: *const u8, dst: *mut u8, dstsiz: usize) -> i32 = ns_name_unpack;);
 // # C: int ns_name_uncompress(const u_char *msg, const u_char *eom, const u_char *src,
 //                             char *dst, size_t dstsiz)
 // ns_name_unpack then ns_name_ntop: compressed wire → presentation text.
@@ -307,7 +320,7 @@ pub unsafe extern "C" fn ns_name_uncompress(msg: *const u8, eom: *const u8, src:
         n
     }
 }
-
+alias_unsafe!(__ns_name_uncompress(msg: *const u8, eom: *const u8, src: *const u8, dst: *mut c_char, dstsiz: usize) -> i32 = ns_name_uncompress;);
 unsafe fn nlen(s: *const u8) -> usize { let mut n = 0; unsafe { while *s.add(n) != 0 { n += 1; } } n }
 fn lc(c: u8) -> u8 { if c.is_ascii_uppercase() { c + 32 } else { c } }
 
@@ -401,7 +414,7 @@ pub unsafe extern "C" fn res_dnok(dn: *const c_char) -> i32 {
     // byte walks and rejects whitespace/control characters and bad labels.
     unsafe { domain_ok(dn, |c, _| res_printable(c)) as i32 }
 }
-
+alias_unsafe!(__res_dnok(dn: *const c_char) -> i32 = res_dnok;);
 // # C: int res_hnok(const char *dn)
 #[no_mangle]
 pub unsafe extern "C" fn res_hnok(dn: *const c_char) -> i32 {
@@ -414,7 +427,7 @@ pub unsafe extern "C" fn res_hnok(dn: *const c_char) -> i32 {
         domain_ok(dn, |c, escaped| host_char(c) && !(escaped && c == b'.')) as i32
     }
 }
-
+alias_unsafe!(__res_hnok(dn: *const c_char) -> i32 = res_hnok;);
 // # C: int res_ownok(const char *dn)
 #[no_mangle]
 pub unsafe extern "C" fn res_ownok(dn: *const c_char) -> i32 {
@@ -429,7 +442,7 @@ pub unsafe extern "C" fn res_ownok(dn: *const c_char) -> i32 {
         res_hnok(dn)
     }
 }
-
+alias_unsafe!(__res_ownok(dn: *const c_char) -> i32 = res_ownok;);
 // # C: int res_mailok(const char *dn)
 #[no_mangle]
 pub unsafe extern "C" fn res_mailok(dn: *const c_char) -> i32 {
@@ -448,7 +461,7 @@ pub unsafe extern "C" fn res_mailok(dn: *const c_char) -> i32 {
         domain_ok(s.add(dot + 1) as *const c_char, |c, escaped| host_char(c) && !(escaped && c == b'.')) as i32
     }
 }
-
+alias_unsafe!(__res_mailok(dn: *const c_char) -> i32 = res_mailok;);
 // # C: int ns_makecanon(const char *src, char *dst, size_t dstsize)
 // Strip trailing unescaped dots, then append exactly one canonical trailing dot.
 #[no_mangle]
