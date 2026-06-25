@@ -3,10 +3,13 @@
 // dispatch inside crate::lookup_dynamic remains there; only the
 // per-file Inode impls live here.
 
-
-
-use alloc::sync::Arc;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+fn read_string_body(body: alloc::string::String, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+    let off = off as usize;
+    if off >= body.len() { return Ok(0); }
+    let n = (body.len() - off).min(buf.len());
+    buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
+    Ok(n)
+}
 
 /// `/proc/net/dev` — Linux text format: header + per-iface line.
 pub struct ProcNetDevInode;
@@ -16,12 +19,7 @@ impl vfs::Inode for ProcNetDevInode {
     fn size(&self) -> u64 { self.body().len() as u64 }
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        let body = self.body();
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
-        Ok(n)
+        read_string_body(self.body(), off, buf)
     }
 }
 
@@ -54,12 +52,7 @@ impl vfs::Inode for ProcNetTcpInode {
     fn size(&self) -> u64 { self.body().len() as u64 }
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        let body = self.body();
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
-        Ok(n)
+        read_string_body(self.body(), off, buf)
     }
 }
 
@@ -99,6 +92,52 @@ impl ProcNetTcpInode {
     }
 }
 
+/// `/proc/net/tcp6` — IPv6 TCP table matching Linux tcp6 column shape.
+pub struct ProcNetTcp6Inode;
+impl vfs::Inode for ProcNetTcp6Inode {
+    fn ino(&self) -> vfs::Ino { 0xFEED_000A }
+    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
+    fn size(&self) -> u64 { self.body().len() as u64 }
+    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        read_string_body(self.body(), off, buf)
+    }
+}
+
+impl ProcNetTcp6Inode {
+    fn body(&self) -> alloc::string::String {
+        use alloc::string::String;
+        use core::fmt::Write as _;
+        use net::addr::{IpAddr, Ipv6Addr};
+
+        let mut s = String::from(
+            "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
+        );
+        let stack = net::sock::stack();
+        let mut sl: u32 = 0;
+        let listens = stack.tcp_listens_map().lock();
+        for (key, _) in listens.iter() {
+            if let IpAddr::V6(ip) = key.local_ip {
+                let _ = writeln!(s, "{:5}: {}:{:04X} {}:0000 0A 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
+                    sl, proc_ipv6_hex(ip), key.local_port, proc_ipv6_hex(Ipv6Addr::ANY));
+                sl += 1;
+            }
+        }
+        drop(listens);
+        let conns = stack.tcp_conns_map().lock();
+        for (key, entry) in conns.iter() {
+            let (IpAddr::V6(lip), IpAddr::V6(rip)) = (key.local_ip, key.remote_ip)
+                else { continue };
+            let st = linux_tcp_state(entry.conn.lock().state);
+            let _ = writeln!(s, "{:5}: {}:{:04X} {}:{:04X} {:02X} 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
+                sl, proc_ipv6_hex(lip), key.local_port,
+                proc_ipv6_hex(rip), key.remote_port, st);
+            sl += 1;
+        }
+        s
+    }
+}
+
 /// Translate our internal TcpState to Linux's /proc/net/tcp values
 /// (uapi/linux/tcp.h `enum tcp_state`). `ss`/`netstat` decode this.
 fn linux_tcp_state(s: net::tcp_state::TcpState) -> u8 {
@@ -118,6 +157,16 @@ fn linux_tcp_state(s: net::tcp_state::TcpState) -> u8 {
     }
 }
 
+fn proc_ipv6_hex(ip: net::addr::Ipv6Addr) -> alloc::string::String {
+    use alloc::format;
+    let o = ip.0;
+    let a = u32::from_be_bytes([o[0], o[1], o[2], o[3]]).to_be();
+    let b = u32::from_be_bytes([o[4], o[5], o[6], o[7]]).to_be();
+    let c = u32::from_be_bytes([o[8], o[9], o[10], o[11]]).to_be();
+    let d = u32::from_be_bytes([o[12], o[13], o[14], o[15]]).to_be();
+    format!("{a:08X}{b:08X}{c:08X}{d:08X}")
+}
+
 /// `/proc/net/udp` — UDP equivalent.
 pub struct ProcNetUdpInode;
 impl vfs::Inode for ProcNetUdpInode {
@@ -126,12 +175,7 @@ impl vfs::Inode for ProcNetUdpInode {
     fn size(&self) -> u64 { self.body().len() as u64 }
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        let body = self.body();
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
-        Ok(n)
+        read_string_body(self.body(), off, buf)
     }
 }
 
@@ -157,6 +201,39 @@ impl ProcNetUdpInode {
     }
 }
 
+/// `/proc/net/udp6` — live IPv6 UDP bind table.
+pub struct ProcNetUdp6Inode;
+impl vfs::Inode for ProcNetUdp6Inode {
+    fn ino(&self) -> vfs::Ino { 0xFEED_000B }
+    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
+    fn size(&self) -> u64 { self.body().len() as u64 }
+    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        read_string_body(self.body(), off, buf)
+    }
+}
+
+impl ProcNetUdp6Inode {
+    fn body(&self) -> alloc::string::String {
+        use alloc::string::String;
+        use core::fmt::Write as _;
+        use net::addr::Ipv6Addr;
+        let mut s = String::from(
+            "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n",
+        );
+        let stack = net::sock::stack();
+        let map = stack.udp6_map().lock();
+        let mut sl: u32 = 0;
+        for q in map.values() {
+            let rx_len: usize = q.q.lock().iter().map(|(_, _, p)| p.len()).sum();
+            let _ = writeln!(s, "{:5}: {}:{:04X} {}:0000 07 00000000:{:08X} 00:00000000 00000000     0        0 0 2 0000000000000000 0",
+                sl, proc_ipv6_hex(q.bound_ip), q.bound_port, proc_ipv6_hex(Ipv6Addr::ANY), rx_len);
+            sl += 1;
+        }
+        s
+    }
+}
+
 /// `/proc/modules` — Linux text format: "<name> <size> <refcnt> <holders> <state> <addr>\n".
 /// v1 uses synthetic name "module_<idx>" since .modinfo parsing
 /// hasn't landed.
@@ -167,12 +244,7 @@ impl vfs::Inode for ProcModulesInode {
     fn size(&self) -> u64 { self.body().len() as u64 }
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        let body = self.body();
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
-        Ok(n)
+        read_string_body(self.body(), off, buf)
     }
 }
 

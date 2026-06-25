@@ -294,7 +294,7 @@ references.
 | /proc/version | ✅ | VERSION_BODY. |
 | /proc/<pid>/* for live tasks | ✅ | ProcRootInode enumerates live tids. |
 | /proc/sys/kernel/* | ✅ | hostname/ostype/osrelease/random/uuid. |
-| /proc/net/{dev,tcp,udp,route,arp} | ✅ | P9-02/P9-31. |
+| /proc/net/{dev,tcp,tcp6,udp,udp6,route,arp} | ✅ | P9-02/P9-31 plus live IPv6 socket tables. |
 | /proc/modules | ✅ | P10-06. |
 | /proc/mounts | ✅ | MOUNTS_BODY. |
 | /proc/filesystems | ✅ | FILESYSTEMS static. |

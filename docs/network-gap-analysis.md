@@ -185,7 +185,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | Per-fd targeted epoll wake           | done     | F181a |
 | TCP_INFO struct                      | done     | F188 |
 | Per-conn stats counters              | partial  | retx_q + ka_count tracked; rx/tx byte counters TBD |
-| /proc/net/tcp + /proc/net/udp        | gap      | |
+| /proc/net/tcp{,6} + /proc/net/udp{,6} | partial  | live TCP/UDP bind and connection tables; advanced per-socket counters TBD |
 | ss / netlink-sock-diag               | partial  | NETLINK_SOCK_DIAG inet_diag TCP/UDP dumps wired; extensions TBD |
 | eBPF / XDP / TC                      | n/a      | huge subsystem, real Linux distros work without it |
 
