@@ -44,26 +44,35 @@ fn run_one(src: &Path, name: &str, lib: &Path) -> Result<bool, u8> {
     let obj = format!("target/glibc-conf/{name}.o");
     let hbin = format!("target/glibc-conf/{name}.host");
     let obin = format!("target/glibc-conf/{name}.oxide");
+    let copy_reloc = name == "t_copyreloc_globals";
 
     // 1. compile once (host headers; glibc-ABI-compatible).
     let mut cc = Command::new("cc");
-    cc.args(["-c", "-O2", "-fPIE", "-fno-builtin", src.to_str().unwrap(), "-o", &obj]);
+    cc.args(["-c", "-O2", "-fno-builtin"]);
+    cc.arg(if copy_reloc { "-fno-pie" } else { "-fPIE" });
+    cc.args([src.to_str().unwrap(), "-o", &obj]);
     run(cc)?;
 
     // 2. host-glibc link + run (the oracle). -lresolv for the inet_net_*/nsap
     // and resolver compat symbols; -lcrypt for libxcrypt symbols that host
     // glibc keeps outside libc proper.
     let mut hl = Command::new("cc");
+    if copy_reloc { hl.arg("-no-pie"); }
     hl.args([&obj, "-lm", "-lresolv", "-lcrypt", "-o", &hbin]);
     run(hl)?;
     let (ho, hc) = capture(&format!("./{hbin}"), None);
 
     // 3. oxide-sysroot link (Scrt1.o + libc.so.6 via our ld-linux) + run.
     let mut ol = Command::new("cc");
-    ol.args(["-fPIE", "-pie", "-nostdlib", "-Wl,--allow-shlib-undefined",
-             &format!("-Wl,--dynamic-linker={}", lib.join("ld-linux-x86-64.so.2").display()),
-             &format!("-Wl,-rpath,{}", lib.display()),
-             &obj]);
+    if copy_reloc {
+        ol.arg("-no-pie");
+    } else {
+        ol.args(["-fPIE", "-pie"]);
+    }
+    ol.args(["-nostdlib", "-Wl,--allow-shlib-undefined",
+        &format!("-Wl,--dynamic-linker={}", lib.join("ld-linux-x86-64.so.2").display()),
+        &format!("-Wl,-rpath,{}", lib.display()),
+        &obj]);
     ol.arg(lib.join("Scrt1.o"));
     ol.args([&format!("-L{}", lib.display()), "-l:libc.so.6", "-o", &obin]);
     run(ol)?;

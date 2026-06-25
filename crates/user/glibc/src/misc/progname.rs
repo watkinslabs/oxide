@@ -31,6 +31,14 @@ core::arch::global_asm!(
     ".set __progname_full, program_invocation_name",
 );
 
+#[cfg(feature = "freestanding")]
+unsafe extern "C" {
+    #[link_name = "__progname_full"]
+    static program_invocation_name_alias: CharP;
+    #[link_name = "__progname"]
+    static program_invocation_short_name_alias: CharP;
+}
+
 /// # C: const char *the short program name, "" if argv[0] was NULL.
 pub(crate) fn short() -> *const u8 {
     #[cfg(feature = "freestanding")]
@@ -59,10 +67,12 @@ pub(crate) unsafe fn seed(argv0: *mut u8) {
     // scan to the final '/' to find the basename, both stay inside it.
     unsafe {
         *program_invocation_name.0.get() = argv0;
+        *program_invocation_name_alias.0.get() = argv0;
         let len = crate::string::len::strlen_impl(argv0);
         let mut base = argv0;
         let mut i = 0usize;
         while i < len { if *argv0.add(i) == b'/' { base = argv0.add(i + 1); } i += 1; }
         *program_invocation_short_name.0.get() = base;
+        *program_invocation_short_name_alias.0.get() = base;
     }
 }

@@ -56,11 +56,11 @@ pub(crate) fn staticlib_path(triple: &str) -> PathBuf {
 pub(crate) fn build_sharedlib(triple: &str) -> Result<(), u8> {
     eprintln!("xtask glibc: building libc.so.6 for {triple}");
     // Supplementary x86_64 version script re-promotes the global_asm `.set`
-    // _FloatN/long-double function aliases into .dynsym — rustc's cdylib filter
-    // localizes bare asm symbols otherwise (docs/59§9.1). Functions only
-    // (PLT-resolved); data aliases are NOT here (they need copy-reloc
-    // interposition, §9.4). aarch64 must not consume this x86-specific list.
+    // _FloatN/long-double function aliases and x86-visible data aliases into
+    // .dynsym — rustc's cdylib filter localizes bare asm symbols otherwise
+    // (docs/59§9.1/§9.4). aarch64 must not consume this x86-specific list.
     let floatn = "crates/user/glibc/version/floatn.map";
+    let data_aliases = "crates/user/glibc/version/data-aliases.map";
     let extra_obj = build_longdouble_bridge(triple, true)?;
     let mut c = Command::new("cargo");
     c.args(["rustc", "-p", "glibc", "--release", "--features", "freestanding",
@@ -70,6 +70,9 @@ pub(crate) fn build_sharedlib(triple: &str) -> Result<(), u8> {
             "-C", "panic=abort"]);
     if triple == X86 {
         c.args(["-C", &format!("link-arg=--version-script={floatn}")]);
+    }
+    if triple == ARM {
+        c.args(["-C", &format!("link-arg=--version-script={data_aliases}")]);
     }
     if let Some(obj) = extra_obj {
         let stamp = longdouble_bridge_stamp()?;

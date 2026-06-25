@@ -54,6 +54,7 @@
     __duplocale;
     __endmntent;
     __environ;
+    _environ;
     __exp10_finite;
     __exp10f_finite;
     __exp2_finite;
