@@ -262,6 +262,19 @@
     }
 
     #[test]
+    fn build_newaddr6_reply_well_formed() {
+        let addr = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let bytes = build_newaddr6_reply(1, 42, 2, "eth0", addr, 128, RT_SCOPE_UNIVERSE, true);
+        assert_eq!(u16::from_ne_bytes([bytes[4], bytes[5]]), RTM_NEWADDR);
+        assert_eq!(bytes[Nlmsghdr::SIZE], AF_INET6);
+        assert_eq!(bytes[Nlmsghdr::SIZE + 1], 128);
+        assert_eq!(bytes[Nlmsghdr::SIZE + 2], net::iface_addr::IFA_F_PERMANENT as u8);
+        let attrs = &bytes[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
+        assert_eq!(find_attr(attrs, ifa::IFA_LOCAL).expect("IFA_LOCAL"), &addr);
+        assert!(find_attr(attrs, ifa::IFA_CACHEINFO).is_some());
+    }
+
+    #[test]
     fn put_nlattr_str_nul_terminates() {
         let mut out = Vec::new();
         put_nlattr_str(&mut out, ifla::IFLA_IFNAME, "eth0");
