@@ -14,7 +14,7 @@ use sync::{Spinlock, Socket as SockLockClass};
 #[path = "rtnetlink_addr.rs"]
 mod rtnetlink_addr;
 #[path = "rtnetlink_route.rs"]
-mod rtnetlink_route;
+pub(crate) mod rtnetlink_route;
 pub use rtnetlink_addr::{
     addr_insert, addr_remove, addr_snapshot, addr_snapshot_ns, cache_to_net, seed_defaults,
     IfaCacheInfo, IfaceAddr,

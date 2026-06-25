@@ -114,7 +114,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | RouteTable add/lookup (v4)           | done     | longest-prefix-first |
 | Loopback default route               | done     | |
 | IPv6 route table                     | done     | longest-prefix lookup mirrors v4 |
-| ECMP multipath                       | partial  | equal-cost duplicate IPv4 routes selected by stable destination hash; RTA_MULTIPATH parser TBD |
+| ECMP multipath                       | partial  | equal-cost duplicate IPv4 routes selected by stable destination hash; RTA_MULTIPATH import/export wired for IPv4 route dumps |
 | Policy routing / `ip rule`           | partial  | GETRULE plus NEWRULE/DELRULE custom rule storage; IPv4 route lookup applies rule table selection |
 | Routing socket (NETLINK_ROUTE)       | partial  | GETLINK/GETADDR/GETROUTE/GETRULE + namespace-scoped addr/route/rule mutation; IPv4 and IPv6 GETADDR emit cacheinfo/flags and SLAAC lifetimes |
 | IP forwarding (sysctl net.ipv4.ip_forward) | partial | sysctl-backed IPv4 host/router mode with FORWARD/POST_ROUTING traversal |
@@ -205,7 +205,6 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 1. **NETLINK_ROUTE completeness** (RTM_GETLINK / NEWADDR / GETROUTE)
    — every userspace network tool reads these (`ip`, `networkd`,
    `NetworkManager`). High impact for "real distro programs work."
-2. **RTA_MULTIPATH route parsing** — netlink multipath nexthop import/export.
-3. **IPv4 forwarding refinements** — ICMP Time Exceeded / unreachable generation for forwarded drops.
+2. **IPv4 forwarding refinements** — ICMP Time Exceeded / unreachable generation for forwarded drops.
 
 Items beyond #10 are tuning/perf or rare-app territory.

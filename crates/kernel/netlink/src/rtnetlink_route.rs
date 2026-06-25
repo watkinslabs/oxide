@@ -82,3 +82,23 @@ pub fn parse_route_attrs(attrs: &[u8]) -> RouteAttrs {
     }
     out
 }
+
+/// Append an `RTA_MULTIPATH` attr from `(ifindex, gateway)` nexthops. # C: O(N)
+pub fn put_multipath_attr(out: &mut Vec<u8>, nexthops: &[(u32, Option<[u8; 4]>)]) {
+    let mut payload = Vec::new();
+    for (oif, gw) in nexthops.iter().copied() {
+        let start = payload.len();
+        payload.extend_from_slice(&0u16.to_ne_bytes());
+        payload.push(0);
+        payload.push(0);
+        payload.extend_from_slice(&oif.to_ne_bytes());
+        if let Some(g) = gw {
+            crate::rtnetlink::put_nlattr(&mut payload, rta::RTA_GATEWAY, &g);
+        }
+        let len = payload.len() - start;
+        payload[start..start + 2].copy_from_slice(&(len as u16).to_ne_bytes());
+        let pad = nlmsg_align(len) - len;
+        for _ in 0..pad { payload.push(0); }
+    }
+    crate::rtnetlink::put_nlattr(out, rta::RTA_MULTIPATH, &payload);
+}
