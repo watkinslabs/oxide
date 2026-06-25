@@ -147,28 +147,32 @@ impl NetStack {
         if payload_end > l3.len() { return Err(NetError::Einval); }
         let payload = &l3[IPV6_HDR_LEN..payload_end];
         let assembled;
-        let (next_header, payload) = if hdr.next_header == IpProto::Fragment as u8 {
-            if payload.len() < 8 { return Err(NetError::Einval); }
-            let next = payload[0];
-            let frag = u16::from_be_bytes([payload[2], payload[3]]);
-            let off8 = ((frag >> 3) & 0x1fff) as usize;
-            let more = (frag & 1) != 0;
-            let id = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
-            let k = crate::ipv6_reasm::ReasmKey {
-                src: hdr.src,
-                dst: hdr.dst,
-                next_header: next,
-                id,
-            };
-            match self.ipv6_reasm.push(k, crate::stack::net_now_ns(), off8 * 8, &payload[8..], more) {
-                Some(bytes) => {
-                    assembled = bytes;
-                    (next, &assembled[..])
+        let (next_header, payload) = match crate::ipv6_ext::walk(hdr.next_header, payload)
+            .map_err(|_| NetError::Einval)?
+        {
+            crate::ipv6_ext::ExtWalk::Done { next_header, payload } => (next_header, payload),
+            crate::ipv6_ext::ExtWalk::Fragment { next_header, offset, more, id, payload } => {
+                let k = crate::ipv6_reasm::ReasmKey {
+                    src: hdr.src,
+                    dst: hdr.dst,
+                    next_header,
+                    id,
+                };
+                match self.ipv6_reasm.push(k, crate::stack::net_now_ns(), offset, payload, more) {
+                    Some(bytes) => {
+                        assembled = bytes;
+                        match crate::ipv6_ext::walk(next_header, &assembled[..])
+                            .map_err(|_| NetError::Einval)?
+                        {
+                            crate::ipv6_ext::ExtWalk::Done { next_header, payload } => {
+                                (next_header, payload)
+                            }
+                            crate::ipv6_ext::ExtWalk::Fragment { .. } => return Err(NetError::Einval),
+                        }
+                    }
+                    None => return Ok(()),
                 }
-                None => return Ok(()),
             }
-        } else {
-            (hdr.next_header, payload)
         };
         self.deliver_rx_ipv6_payload(iface, hdr.src, hdr.dst, next_header, payload)
     }

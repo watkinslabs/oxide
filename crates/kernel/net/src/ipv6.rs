@@ -1,6 +1,6 @@
 // IPv6 fixed header per RFC 8200 §3. 40-byte fixed shape. The send path can
-// emit Fragment extension headers; receive-side extension-header parsing is
-// still limited. Each field is big-endian.
+// emit Fragment extension headers; receive-side extension-header parsing lives
+// in ipv6_ext.rs. Each field is big-endian.
 //
 // Layout:
 //   [0]    bits 0..4: version (=6); 4..12: traffic_class; 12..32: flow_label
