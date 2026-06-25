@@ -22,6 +22,8 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const SO_PASSCRED: u64 = 16;
     const SO_TYPE:      u64 = 3;
     const SO_PEERCRED:  u64 = 17;
+    const SO_PROTOCOL:  u64 = 38;
+    const SO_DOMAIN:    u64 = 39;
     let _fd     = args.a0;
     let level   = args.a1;
     let optname = args.a2;
@@ -51,17 +53,6 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             core::ptr::write_volatile((optval +  4)  as *mut u32, uid);
             core::ptr::write_volatile((optval +  8)  as *mut u32, gid);
             core::ptr::write_volatile(optlen_p as *mut u32, 12);
-        }
-        return 0;
-    }
-    if level == SOL_SOCKET && optname == SO_TYPE
-       && optval != 0 && optval < USER_VA_END
-       && optlen_p != 0 && optlen_p < USER_VA_END
-    {
-        // SAFETY: optval+optlen_p validated < USER_VA_END; CPL=0 writes through caller's AS.
-        unsafe {
-            core::ptr::write_volatile(optval as *mut u32, 1 /* SOCK_STREAM */);
-            core::ptr::write_volatile(optlen_p as *mut u32, 4);
         }
         return 0;
     }
@@ -97,6 +88,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (SOL_SOCKET, SO_PASSCRED) => return i32_back(s.opts.passcred.load(Ordering::Acquire)),
             (SOL_SOCKET, 12) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
             (SOL_SOCKET, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_TYPE) => return i32_back(socket_type(&s)),
+            (SOL_SOCKET, SO_DOMAIN) => return i32_back(s.family.load(Ordering::Acquire) as i32),
+            (SOL_SOCKET, SO_PROTOCOL) => return i32_back(socket_protocol(&s)),
             (SOL_SOCKET, SO_BINDTODEVICE) => return bind_to_device_name(&s, optval, optlen_p),
             (IPPROTO_IP, IP_TOS) => return i32_back(s.opts.ip_tos.load(Ordering::Acquire)),
             (IPPROTO_IP, IP_TTL) => return i32_back(s.opts.ip_ttl.load(Ordering::Acquire)),
@@ -171,4 +165,36 @@ fn bind_to_device_name(s: &alloc::sync::Arc<net::sock::InetSocket>,
         core::ptr::write_volatile(optlen_p as *mut u32, need as u32);
     }
     0
+}
+
+fn socket_type(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
+    use core::sync::atomic::Ordering;
+    const SOCK_STREAM: i32 = 1;
+    const SOCK_DGRAM: i32 = 2;
+    const SOCK_SEQPACKET: i32 = 5;
+    match &*s.kind.lock() {
+        SockKind::Udp | SockKind::UnixDgram(_) => SOCK_DGRAM,
+        SockKind::Packet { sock_type, .. } => sock_type.load(Ordering::Acquire) as i32,
+        SockKind::UnixMsgPair(_, _) => SOCK_SEQPACKET,
+        SockKind::TcpInit
+        | SockKind::TcpListener(_)
+        | SockKind::TcpConn(_)
+        | SockKind::Unix(_, _)
+        | SockKind::UnixListener(_) => SOCK_STREAM,
+    }
+}
+
+fn socket_protocol(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
+    use core::sync::atomic::Ordering;
+    const IPPROTO_TCP: i32 = 6;
+    const IPPROTO_UDP: i32 = 17;
+    if s.family.load(Ordering::Acquire) == net::sock::AF_UNIX {
+        return 0;
+    }
+    match &*s.kind.lock() {
+        SockKind::Packet { protocol, .. } => protocol.load(Ordering::Acquire) as i32,
+        SockKind::Udp => IPPROTO_UDP,
+        SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::TcpConn(_) => IPPROTO_TCP,
+        _ => 0,
+    }
 }
