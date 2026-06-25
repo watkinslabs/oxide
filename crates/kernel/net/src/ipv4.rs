@@ -1,6 +1,5 @@
 // IPv4 header parse + build + checksum per RFC 791. v1 only does
-// fixed-IHL (5 = 20-byte header, no options); fragmentation is
-// out of scope (DF bit forced).
+// fixed-IHL (5 = 20-byte header, no options).
 
 use crate::addr::{IpProto, Ipv4Addr};
 use crate::pkt::Pkt;
@@ -37,13 +36,22 @@ impl Ipv4Hdr {
     /// it. Computes the checksum.
     /// # C: O(1)
     pub fn build(src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto, payload_len: u16, id: u16) -> Self {
+        Self::build_with_flags(src, dst, proto, payload_len, id, 0x4000)
+    }
+
+    /// Build a 20-byte header with explicit flags/fragment-offset bits.
+    /// `flags_frag` is the RFC 791 field in host byte order.
+    /// # C: O(1)
+    pub fn build_with_flags(src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
+        payload_len: u16, id: u16, flags_frag: u16) -> Self
+    {
         let total = IPV4_HDR_LEN as u16 + payload_len;
         let mut h = Self {
             version_ihl: 0x45,
             tos:         0,
             total_len:   total,
             id,
-            flags_frag:  0x4000,  // DF set
+            flags_frag,
             ttl:         IPV4_DEFAULT_TTL,
             proto:       proto as u8,
             checksum:    0,
@@ -129,17 +137,16 @@ pub fn push_ipv4_header(
     push_ipv4_header_tos(pkt, src, dst, proto, id, 0)
 }
 
-/// F190: ECN-aware push — `tos` lets the caller stamp ECT(0)=0x02
-/// (or ECT(1)=0x01) into the TOS byte for ECN-enabled flows.
+/// Push an IPv4 header with explicit TOS and flags/fragment-offset bits.
 /// # C: O(payload_len) for the checksum
-pub fn push_ipv4_header_tos(
-    pkt: &mut Pkt, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto, id: u16, tos: u8,
+pub fn push_ipv4_header_tos_frag(
+    pkt: &mut Pkt, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto, id: u16,
+    tos: u8, flags_frag: u16,
 ) -> Result<(), crate::pkt::PktError> {
     let payload_len = pkt.len() as u16;
-    let mut hdr = Ipv4Hdr::build(src, dst, proto, payload_len, id);
+    let mut hdr = Ipv4Hdr::build_with_flags(src, dst, proto, payload_len, id, flags_frag);
     if tos != 0 {
         hdr.tos = tos;
-        // Rebuild checksum after the TOS mutation.
         hdr.checksum = 0;
         let mut buf = [0u8; IPV4_HDR_LEN];
         hdr.write_to(&mut buf);
@@ -148,6 +155,15 @@ pub fn push_ipv4_header_tos(
     let slot = pkt.push(IPV4_HDR_LEN)?;
     hdr.write_to(slot);
     Ok(())
+}
+
+/// F190: ECN-aware push — `tos` lets the caller stamp ECT(0)=0x02
+/// (or ECT(1)=0x01) into the TOS byte for ECN-enabled flows.
+/// # C: O(payload_len) for the checksum
+pub fn push_ipv4_header_tos(
+    pkt: &mut Pkt, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto, id: u16, tos: u8,
+) -> Result<(), crate::pkt::PktError> {
+    push_ipv4_header_tos_frag(pkt, src, dst, proto, id, tos, 0x4000)
 }
 
 #[cfg(test)]

@@ -40,18 +40,13 @@ impl NetStack {
         -> NetResult<()>
     {
         let (iface_id, iface) = self.route_v4_iface(dst_ip, bound)?;
-        let total = IPV4_HDR_LEN + crate::udp::UDP_HDR_LEN + payload.len();
+        let total = crate::udp::UDP_HDR_LEN + payload.len();
         let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
         let udp_total = crate::udp::UDP_HDR_LEN + payload.len();
         let slot = p.put(udp_total).map_err(|_| NetError::Enobufs)?;
         crate::udp::UdpHdr::build_into(src_port, dst_port, src_ip, dst_ip, payload, slot);
         let id = self.next_ipv4_id();
-        crate::ipv4::push_ipv4_header(&mut p, src_ip, dst_ip, IpProto::Udp, id)
-            .map_err(|_| NetError::Enobufs)?;
-        p.proto = crate::addr::eth_p::IPV4;
-        p.iface = Some(iface_id);
-        if !nf_output(&p, NFPROTO_IPV4) { return Ok(()); }
-        iface.xmit(p)
+        self.xmit_ipv4_l4_on_iface(iface_id, iface, src_ip, dst_ip, IpProto::Udp, p.data(), 0, id)
     }
 
     /// Build + transmit UDP/IPv6, optionally pinned to an iface. # C: O(payload + N)
@@ -125,15 +120,7 @@ impl NetStack {
         proto: IpProto, l4: &[u8], tos: u8, bound: Option<NetIfaceId>) -> NetResult<()>
     {
         let (iface_id, iface) = self.route_v4_iface(dst, bound)?;
-        let total = IPV4_HDR_LEN + l4.len();
-        let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
-        p.put(l4.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(l4);
-        crate::ipv4::push_ipv4_header_tos(&mut p, src, dst, proto, self.next_ipv4_id(), tos)
-            .map_err(|_| NetError::Enobufs)?;
-        p.proto = crate::addr::eth_p::IPV4;
-        p.iface = Some(iface_id);
-        if !nf_output(&p, NFPROTO_IPV4) { return Ok(()); }
-        iface.xmit(p)
+        self.xmit_ipv4_l4_on_iface(iface_id, iface, src, dst, proto, l4, tos, self.next_ipv4_id())
     }
 
     fn send_l4_over_ipv6_bound(&self, src: Ipv6Addr, dst: Ipv6Addr,

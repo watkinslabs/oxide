@@ -170,7 +170,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 | Feature                              | Status   | Notes |
 |---|---|---|
 | IPv4 inbound reassembly              | done     | F195 |
-| IPv4 outbound fragmentation          | gap      | currently DF=1 + rely on PMTUD |
+| IPv4 outbound fragmentation          | done     | oversize IPv4 L4 packets fragment to iface MTU |
 | IPv6 inbound reassembly              | gap      | with v6 fragment extension hdr |
 | IPv6 outbound fragmentation          | gap      | |
 | IP_MULTICAST_*                       | gap      | |
@@ -205,10 +205,9 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 2. **SCM_RIGHTS over SOCK_STREAM** — systemd socket-activation,
    docker, X server all need it on stream sockets.
 3. **IPv6 fragmentation** (in + out) — mirror of F195 for v6.
-4. **IPv4 outbound fragmentation** — close the symmetry with F195.
-5. **IPv6 route table** — flat lo/first-non-lo heuristic suffices
+4. **IPv6 route table** — flat lo/first-non-lo heuristic suffices
    until we have a second v6-capable iface.
-6. **SLAAC (RS + RA)** — autoconf for v6 networks without DHCPv6.
-7. **MLD** — required for v6 multicast groups (mostly host LL).
+5. **SLAAC (RS + RA)** — autoconf for v6 networks without DHCPv6.
+6. **MLD** — required for v6 multicast groups (mostly host LL).
 
 Items beyond #10 are tuning/perf or rare-app territory.
