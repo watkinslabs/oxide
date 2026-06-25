@@ -525,7 +525,7 @@ impl NetStack {
 
     /// F164: send `data`; bounded by `sndbuf_cap`. Returns Eagain
     /// when full. # C: O(data + N segments)
-    pub fn tcp_send(&self, entry: &TcpEntry, data: &[u8], sndbuf_cap: usize, nodelay: bool)
+    pub fn tcp_send(&self, entry: &TcpEntry, data: &[u8], sndbuf_cap: usize, nodelay: bool, cork: bool)
         -> NetResult<usize>
     {
         let (segs, accepted, src, dst, tos) = {
@@ -536,10 +536,10 @@ impl NetStack {
             let in_flight: usize = c.retx_q.iter().map(|s| s.payload.len()).sum();
             let used = c.send_buf.len() + in_flight;
             let avail = sndbuf_cap.saturating_sub(used);
-            if avail == 0 { return Err(NetError::Eagain); }
+            if avail == 0 && !data.is_empty() { return Err(NetError::Eagain); }
             let accept = core::cmp::min(avail, data.len());
             c.send(&data[..accept]);
-            let segs = c.output(1500, nodelay);
+            let segs = c.output(1500, nodelay, cork);
             (segs, accept, c.local.ip, c.remote.ip, ecn_tos(&c))
         };
         let n = segs.len();
@@ -872,7 +872,7 @@ impl NetStack {
             let drain_segs = {
                 let mut c = entry.conn.lock();
                 let (src, dst, tos) = (c.local.ip, c.remote.ip, ecn_tos(&c));
-                let segs = c.output(1500, true);
+                let segs = c.output(1500, true, false);
                 (segs, src, dst, tos)
             };
             let (segs, src, dst, tos) = drain_segs;

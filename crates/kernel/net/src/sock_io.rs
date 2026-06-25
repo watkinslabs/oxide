@@ -58,10 +58,11 @@ pub(crate) fn write_tcp_blocking(
     sndbuf_cap: usize,
     deadline_ns: u64,
     nodelay: bool,
+    cork: bool,
 ) -> vfs::KResult<usize> {
     let mut total = 0usize;
     while total < buf.len() {
-        match stack().tcp_send(entry, &buf[total..], sndbuf_cap, nodelay) {
+        match stack().tcp_send(entry, &buf[total..], sndbuf_cap, nodelay, cork) {
             Ok(n) if n > 0 => {
                 total += n;
                 drain_loopback();

@@ -487,7 +487,7 @@ fn f182_no_ts_in_synack_keeps_disabled() {
 fn f182_post_negotiation_data_segments_carry_ts() {
     let mut c = client_established_with_ts();
     c.send(b"x");
-    let segs = c.output(1500, true);
+    let segs = c.output(1500, true, false);
     let ts = crate::tcp_hdr::parse_ts_option(&segs[0]);
     assert!(ts.is_some(), "data segment must carry TSopt once enabled");
 }
@@ -627,7 +627,7 @@ fn f179a_apply_sack_marks_retx_entries() {
     let mut c = client_established();
     c.peer_mss = 10;
     c.send(b"hello-world-12345");  // 17 bytes → 2 segs (10 + 7)
-    let _ = c.output(1500, true);
+    let _ = c.output(1500, true, false);
     assert_eq!(c.retx_q.len(), 2);
     // Synthesize SACK that covers the FIRST segment only.
     let first = &c.retx_q[0];
@@ -645,7 +645,7 @@ fn f179a_retransmit_due_skips_sacked() {
     let mut c = client_established();
     c.peer_mss = 10;
     c.send(b"hello-world-12345");
-    let _ = c.output(1500, true);
+    let _ = c.output(1500, true, false);
     // Force last_sent_ns to expire RTO; sacked must still skip.
     for s in c.retx_q.iter_mut() { s.last_sent_ns = 1; }
     c.retx_q[0].sacked = true;
@@ -713,9 +713,9 @@ fn f164_tcp_send_accepts_up_to_cap_then_eagain() {
     for _ in 0..3 { stack.drain_loopback(id, &lo_dev); }
     // After 3WHS: cap = 100 → first 100 bytes accepted, next call Eagain.
     let big: Vec<u8> = (0..200).map(|i| (i & 0xFF) as u8).collect();
-    let n = stack.tcp_send(&entry, &big, 100, true).unwrap();
+    let n = stack.tcp_send(&entry, &big, 100, true, false).unwrap();
     assert_eq!(n, 100, "tcp_send capped at sndbuf_cap=100");
-    let err = stack.tcp_send(&entry, &big, 100, true).err().unwrap();
+    let err = stack.tcp_send(&entry, &big, 100, true, false).err().unwrap();
     assert_eq!(err, NetError::Eagain,
         "tcp_send at-cap must return Eagain (caller blocks / O_NONBLOCK)");
 }
@@ -727,7 +727,7 @@ fn f165_output_drains_send_buf_into_multiple_segments() {
     let mut c = client_established();
     c.peer_mss = 100;  // force MSS=100 so 350 bytes → 4 segs
     c.send(&[0u8; 350]);
-    let segs = c.output(1500, true);
+    let segs = c.output(1500, true, false);
     assert_eq!(segs.len(), 4, "350 bytes / mss 100 → 4 segments (3*100 + 50)");
     assert!(c.send_buf.is_empty(), "output() must fully drain send_buf");
     assert_eq!(c.retx_q.len(), 4, "retx_q must own one entry per emitted segment");
@@ -739,10 +739,26 @@ fn f165_retx_q_single_source_of_bytes() {
     // ACK handling only touches retx_q. Validates F165's fix.
     let mut c = client_established();
     c.send(b"abc");
-    let _ = c.output(1500, true);
+    let _ = c.output(1500, true, false);
     assert!(c.send_buf.is_empty());
     let in_flight: usize = c.retx_q.iter().map(|s| s.payload.len()).sum();
     assert_eq!(in_flight, 3);
+}
+
+#[test]
+fn tcp_cork_holds_partial_segment_until_uncork() {
+    let mut c = client_established();
+    c.peer_mss = 100;
+    c.send(&[1u8; 50]);
+    assert!(c.output(1500, true, true).is_empty());
+    assert_eq!(c.send_buf.len(), 50);
+    c.send(&[2u8; 100]);
+    let segs = c.output(1500, true, true);
+    assert_eq!(segs.len(), 1);
+    assert_eq!(c.send_buf.len(), 50);
+    let tail = c.output(1500, true, false);
+    assert_eq!(tail.len(), 1);
+    assert!(c.send_buf.is_empty());
 }
 
 // ----- F178: snd_wnd bounds output ----------------------------------
@@ -753,7 +769,7 @@ fn f178_output_respects_peer_window() {
     c.snd_wnd = 50;  // peer offers only 50 bytes
     c.peer_mss = 100;
     c.send(&[0u8; 200]);
-    let segs = c.output(1500, true);
+    let segs = c.output(1500, true, false);
     let bytes_emitted: usize = segs.iter().map(|s| s.len() - TCP_HDR_MIN_LEN).sum();
     assert!(bytes_emitted <= 50, "must not exceed snd_wnd; got {bytes_emitted}");
 }
@@ -828,4 +844,3 @@ pub(super) fn client_established() -> TcpConn {
     assert_eq!(c.state, TcpState::Established);
     c
 }
-

@@ -17,6 +17,7 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     const IPPROTO_IPV6: u64 = 41;
     const IPV6_V6ONLY: u64 = 26;
     const IPPROTO_TCP: u64 = 6;
+    const TCP_CORK: u64 = 3;
     const TCP_KEEPIDLE: u64 = 4;
     const TCP_KEEPINTVL: u64 = 5;
     const TCP_KEEPCNT: u64 = 6;
@@ -97,6 +98,22 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             }
         }
         (IPPROTO_TCP, 1) => if let Some(v) = read_i32(optval) { sock.opts.tcp_nodelay.store(v, Ordering::Release); },
+        (IPPROTO_TCP, TCP_CORK) => {
+            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let new = if v != 0 { 1 } else { 0 };
+            let old = sock.opts.tcp_cork.swap(new, Ordering::AcqRel);
+            if old != 0 && new == 0 {
+                let entry = match &*sock.kind.lock() {
+                    net::sock::SockKind::TcpConn(entry) => Some(entry.clone()),
+                    _ => None,
+                };
+                if let Some(entry) = entry {
+                    let nodelay = sock.opts.tcp_nodelay.load(Ordering::Acquire) != 0;
+                    let _ = net::sock::stack().tcp_send(&entry, &[], usize::MAX, nodelay, false);
+                    net::sock::drain_loopback();
+                }
+            }
+        }
         (IPPROTO_TCP, TCP_KEEPIDLE) => {
             let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
             if v <= 0 { return -(Errno::Einval.as_i32() as i64); }
