@@ -25,9 +25,7 @@ impl NetStack {
                 IpAddr::V4(d) => self.routes.lookup(d)
                     .and_then(|r| self.ifaces.lookup(r.iface))
                     .map(|i| i.mtu()),
-                IpAddr::V6(d) => self.default_v6_iface(d)
-                    .and_then(|(id, _)| self.ifaces.lookup(id))
-                    .map(|i| i.mtu()),
+                IpAddr::V6(d) => self.route6_iface(d).map(|(_, i)| i.mtu()),
             },
         };
         let overhead = if matches!(dst, IpAddr::V6(_)) { 60 } else { 40 };
@@ -61,7 +59,7 @@ impl NetStack {
         };
         let (iface_id, iface) = match bound {
             Some(id) => (id, self.ifaces.lookup(id).ok_or(NetError::Enetunreach)?),
-            None => self.default_v6_iface(dst_ip).ok_or(NetError::Enetunreach)?,
+            None => self.route6_iface(dst_ip).ok_or(NetError::Enetunreach)?,
         };
         let l4_len = crate::udp::UDP_HDR_LEN + payload.len();
         let total = IPV6_HDR_LEN + l4_len;
@@ -128,7 +126,7 @@ impl NetStack {
     {
         let (iface_id, iface) = match bound {
             Some(id) => (id, self.ifaces.lookup(id).ok_or(NetError::Enetunreach)?),
-            None => self.default_v6_iface(dst).ok_or(NetError::Enetunreach)?,
+            None => self.route6_iface(dst).ok_or(NetError::Enetunreach)?,
         };
         let total = IPV6_HDR_LEN + l4.len();
         let mut p = Pkt::with_capacity(IPV6_HDR_LEN, total + IPV6_HDR_LEN);
@@ -156,16 +154,6 @@ impl NetStack {
             }
             None => Err(NetError::Enetunreach),
         }
-    }
-
-    fn default_v6_iface(&self, dst: Ipv6Addr) -> Option<(NetIfaceId, Arc<dyn NetDev>)> {
-        let devs = self.ifaces.snapshot_devs();
-        let pick = if dst == Ipv6Addr::LOOPBACK {
-            devs.iter().find(|(_, d)| d.name() == "lo")
-        } else {
-            devs.iter().find(|(_, d)| d.name() != "lo")
-        }?;
-        Some((pick.0, pick.1.clone()))
     }
 
     fn next_ipv4_id(&self) -> u16 {
