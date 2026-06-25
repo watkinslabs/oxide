@@ -13,6 +13,8 @@
     __atan2f_finite;
     __atanh_finite;
     __atanhf_finite;
+    __clog10;
+    __clog10f;
     __cosh_finite;
     __coshf_finite;
     __exp10_finite;
@@ -27,6 +29,16 @@
     __gammaf_r_finite;
     __hypot_finite;
     __hypotf_finite;
+    __finite;
+    __finitef;
+    __iseqsig;
+    __iseqsigf;
+    __isinf;
+    __isinff;
+    __isnan;
+    __isnanf;
+    __issignaling;
+    __issignalingf;
     __j0_finite;
     __j0f_finite;
     __j1_finite;
@@ -307,6 +319,9 @@
     /* x86_64 SysV f80 long-double ABI bridge. */
     __finitel;
     __fpclassifyl;
+    __clog10l;
+    __iscanonicall;
+    __iseqsigl;
     __isinfl;
     __isnanl;
     __issignalingl;

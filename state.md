@@ -4,7 +4,7 @@
 **glibc full-compliance build-out** (docs/59 §9). Conformance **195/195**
 (`cargo run -q -p xtask -- glibc-test`). Both arches boot to `oxide login:`
 (x86 KVM ~34s; arm `make smoke-arm SMOKE_TIMEOUT=800` ~58s). Active branch:
-`F624-glibc-finite-math-compat`. `glibc.md` = live per-cluster TODO. F counter next = **625**, B = **138**, D = **113**
+`F625-glibc-math-classifier-aliases`. `glibc.md` = live per-cluster TODO. F counter next = **626**, B = **138**, D = **113**
 (metadata/index.md).
 
 ## Done this run (merged to main, F524–F536, 13 PRs)
@@ -404,6 +404,12 @@ The ~431 still-missing symbols are MOSTLY not achievable-and-verifiable here:
   double, float, and x86_64 f80 long-double forms. Host keeps these compat-only
   here, so validation is ABI export audit plus regression suite; C object checked
   for no PLT relocations or unresolved symbols.
+- **F625 DONE locally:** glibc math classifier/complex compatibility aliases
+  (`__finite*`, `__isinf*`, `__isnan*`, `__issignaling*`, `__iseqsig*`,
+  `__clog10*`, plus f80 `__iscanonicall`) added over existing Rust math cores
+  and the f80 C bridge. Host keeps several compat-only here, so validation is ABI
+  export audit plus regression suite; C object checked for no PLT relocations or
+  unresolved symbols.
 
 ## DEFERRED (hard, not skipped)
 - **C23 narrowing math** f32add/f32sub/f32mul/f32div/f32sqrt/f32fma(+f64x) — need
