@@ -166,6 +166,18 @@ mod imp {
         }
         abort()
     }
+
+    // # C: _Noreturn void __fortify_fail(const char *msg)
+    #[no_mangle]
+    pub extern "C" fn __fortify_fail(_msg: *const u8) -> ! {
+        abort()
+    }
+
+    // # C: _Noreturn void __chk_fail(void)
+    #[no_mangle]
+    pub extern "C" fn __chk_fail() -> ! {
+        abort()
+    }
 }
 
 #[cfg(test)]

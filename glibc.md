@@ -385,6 +385,12 @@ Conformance 162/162. So §2.4 (wide _l) and the LFS/stdbit/misc parts are CLOSED
   `spec-lint`, `git diff --check`, `xtask glibc-test` 195/195, ABI audit for
   the 12 aliases, and aarch64 freestanding build. Long-double and f128 variants
   remain deferred to ABI bridge work.
+- **F641 DONE:** simple compatibility aliases for fortify failure hooks, memcmp
+  equality, secure getenv, mktemp, POSIX getopt, and internal vscanf/vsnprintf
+  entry points. Verification: x86_64 freestanding build, `spec-lint`,
+  `git diff --check`, `xtask glibc-test` 195/195, ABI audit for the 9 aliases,
+  and aarch64 freestanding build. The `*_small` copy helpers are left for
+  separate ABI verification.
 - Re-audit (docs/59 §9 / state.md recipe) for stragglers after each batch.
 
 ## 3. DEFERRED ABI WORK: long double `*l` + `_Float128`/`_Float32x`/`_Float64x`
