@@ -10,6 +10,7 @@
     __acoshf_finite;
     __asin_finite;
     __asinf_finite;
+    __asprintf;
     __atan2_finite;
     __atan2f_finite;
     __atanh_finite;
