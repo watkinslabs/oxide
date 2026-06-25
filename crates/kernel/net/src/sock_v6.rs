@@ -4,7 +4,11 @@
 // v1 source-address pick (LOOPBACK for ::1 else ANY).
 
 use crate::netdev::NetError;
-use crate::sock::{InetSocket, SockKind, alloc_ephemeral_port, alloc_ephemeral_port6, drain_loopback, stack};
+use crate::sock::{
+    InetSocket, SockKind, alloc_ephemeral_port, alloc_ephemeral_port6,
+    drain_loopback, stack,
+};
+use crate::sock_opts::apply_tcp_keepalive_opts;
 
 /// v6 connect dispatch. # C: O(1) UDP, O(RTT) TCP.
 pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
@@ -35,6 +39,7 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
         crate::addr::IpAddr::V6(dst_ip),   port,
     )?;
     entry.register_poll_subs(&sock.poll_subs);
+    apply_tcp_keepalive_opts(sock, &entry);
     *sock.kind.lock() = SockKind::TcpConn(entry.clone());
     *sock.peer6.lock() = Some((dst_ip, port));
     crate::sock_io::connect_wait_established(&entry)

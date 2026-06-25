@@ -11,6 +11,9 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     const SOL_SOCKET: u64  = 1;
     const IPPROTO_TCP: u64 = 6;
+    const TCP_KEEPIDLE: u64 = 4;
+    const TCP_KEEPINTVL: u64 = 5;
+    const TCP_KEEPCNT: u64 = 6;
     let fd       = args.a0;
     let level    = args.a1;
     let optname  = args.a2;
@@ -34,7 +37,7 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         (SOL_SOCKET, 9)  => if let Some(v) = read_i32(optval) {
             sock.opts.keepalive.store(v, Ordering::Release);
             if let net::sock::SockKind::TcpConn(entry) = &*sock.kind.lock() {
-                entry.conn.lock().ka_enabled = v != 0;
+                net::sock_opts::apply_tcp_keepalive_opts(&sock, entry);
             }
         },
         (SOL_SOCKET, 6)  => if let Some(v) = read_i32(optval) { sock.opts.broadcast.store(v, Ordering::Release); },
@@ -69,6 +72,24 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             }
         }
         (IPPROTO_TCP, 1) => if let Some(v) = read_i32(optval) { sock.opts.tcp_nodelay.store(v, Ordering::Release); },
+        (IPPROTO_TCP, TCP_KEEPIDLE) => {
+            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            if v <= 0 { return -(Errno::Einval.as_i32() as i64); }
+            sock.opts.tcp_keepidle_s.store(v, Ordering::Release);
+            refresh_tcp_keepalive(&sock);
+        }
+        (IPPROTO_TCP, TCP_KEEPINTVL) => {
+            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            if v <= 0 { return -(Errno::Einval.as_i32() as i64); }
+            sock.opts.tcp_keepintvl_s.store(v, Ordering::Release);
+            refresh_tcp_keepalive(&sock);
+        }
+        (IPPROTO_TCP, TCP_KEEPCNT) => {
+            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            if v <= 0 { return -(Errno::Einval.as_i32() as i64); }
+            sock.opts.tcp_keepcnt.store(v, Ordering::Release);
+            refresh_tcp_keepalive(&sock);
+        }
         // SO_ATTACH_BPF (50): attach an eBPF program (by its bpf() prog fd) as
         // a socket filter on the bound UDP port. SO_DETACH_BPF/FILTER (27): clear.
         (SOL_SOCKET, 50) => {
@@ -86,6 +107,12 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         _ => {}
     }
     0
+}
+
+fn refresh_tcp_keepalive(sock: &alloc::sync::Arc<net::sock::InetSocket>) {
+    if let net::sock::SockKind::TcpConn(entry) = &*sock.kind.lock() {
+        net::sock_opts::apply_tcp_keepalive_opts(sock, entry);
+    }
 }
 
 /// Resolve a `bpf(BPF_PROG_LOAD)` program fd to its instruction bytes.
