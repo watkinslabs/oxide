@@ -36,6 +36,7 @@ pub use tcp_conn::{TcpConn, TcpConnError, Endpoint};
 pub mod unix_sock;
 pub use unix_sock::{UnixDgram, UnixDgramQueue, UnixEnd, UnixListener, UnixMsgPair, UnixPair, UnixRegistry};
 pub mod route;
+pub mod route6;
 pub mod netfilter_hook;
 pub mod bpf_filter;
 pub mod stack;
@@ -43,6 +44,7 @@ pub mod stack_binddev;
 pub mod stack_diag;
 pub use stack::{NetStack, UdpRxQueue};
 pub use route::{RouteEntry, RouteTable};
+pub use route6::{Route6Entry, Route6Table};
 pub use ipv4::{Ipv4Hdr, Ipv4Error, push_ipv4_header, ip_checksum, IPV4_HDR_LEN};
 
 pub use netdev::{NetDev, NetError, NetResult, IfaceRegistry, IfaceEntry, NetStats, STAT_FIELDS};

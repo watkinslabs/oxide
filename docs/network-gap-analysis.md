@@ -112,7 +112,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 |---|---|---|
 | RouteTable add/lookup (v4)           | done     | longest-prefix-first |
 | Loopback default route               | done     | |
-| IPv6 route table                     | gap      | currently uses "lo for ::1 else first iface" |
+| IPv6 route table                     | done     | longest-prefix lookup mirrors v4 |
 | ECMP multipath                       | gap      | |
 | Policy routing / `ip rule`           | gap      | |
 | Routing socket (NETLINK_ROUTE)       | partial  | rtnetlink crate exists; not all RTM_* served |
@@ -205,9 +205,7 @@ on Linux 6.x; n/a means a Linux feature we explicitly don't ship.
 2. **SCM_RIGHTS over SOCK_STREAM** — systemd socket-activation,
    docker, X server all need it on stream sockets.
 3. **IPv6 fragmentation** (in + out) — mirror of F195 for v6.
-4. **IPv6 route table** — flat lo/first-non-lo heuristic suffices
-   until we have a second v6-capable iface.
-5. **SLAAC (RS + RA)** — autoconf for v6 networks without DHCPv6.
-6. **MLD** — required for v6 multicast groups (mostly host LL).
+4. **SLAAC (RS + RA)** — autoconf for v6 networks without DHCPv6.
+5. **MLD** — required for v6 multicast groups (mostly host LL).
 
 Items beyond #10 are tuning/perf or rare-app territory.

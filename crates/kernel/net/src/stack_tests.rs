@@ -1,7 +1,7 @@
 use crate::stack::*;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use crate::{icmp, IpProto, Ipv4Addr, Ipv4Hdr, MacAddr, NetDev, NetError, NetResult, Pkt, RouteEntry, IPV4_HDR_LEN};
+use crate::{icmp, IpAddr, IpProto, Ipv4Addr, Ipv4Hdr, Ipv6Addr, MacAddr, NetDev, NetError, NetResult, Pkt, Route6Entry, RouteEntry, IPV4_HDR_LEN};
 
 struct CountDev {
     tx: AtomicUsize,
@@ -54,8 +54,10 @@ impl NetDev for CountDev {
     fn mtu(&self) -> u32 { self.mtu }
     fn xmit(&self, pkt: Pkt) -> NetResult<()> {
         let idx = self.tx.fetch_add(1, Ordering::Relaxed);
-        let hdr = Ipv4Hdr::parse(pkt.data()).unwrap();
-        self.store_hdr(idx, hdr);
+        if pkt.data().first().map(|b| b >> 4) == Some(4) {
+            let hdr = Ipv4Hdr::parse(pkt.data()).unwrap();
+            self.store_hdr(idx, hdr);
+        }
         Ok(())
     }
 }
@@ -211,4 +213,26 @@ fn ipv4_l4_send_fragments_to_iface_mtu() {
     assert_eq!(eth.flags2.load(Ordering::Relaxed), 0x000c);
     assert_eq!(eth.id0.load(Ordering::Relaxed), eth.id1.load(Ordering::Relaxed));
     assert_eq!(eth.id1.load(Ordering::Relaxed), eth.id2.load(Ordering::Relaxed));
+}
+
+#[test]
+fn ipv6_l4_send_uses_route_table_iface() {
+    let stack = NetStack::new();
+    let _ = stack.register_loopback();
+    let eth = Arc::new(CountDev::with_mtu(1400));
+    let eth_id = stack.ifaces.register(eth.clone());
+    let src = Ipv6Addr::from_segments([0x2001, 0xdb8, 1, 0, 0, 0, 0, 1]);
+    let dst = Ipv6Addr::from_segments([0x2001, 0xdb8, 1, 0, 0, 0, 0, 2]);
+    stack.routes6.add(Route6Entry {
+        dst: Ipv6Addr::from_segments([0x2001, 0xdb8, 1, 0, 0, 0, 0, 0]),
+        prefix_len: 48,
+        iface: eth_id,
+        gateway: None,
+        src_hint: Some(src),
+    });
+
+    stack.send_l4_over_ipv6(src, dst, IpProto::Udp, b"hello6").unwrap();
+
+    assert_eq!(eth.tx.load(Ordering::Relaxed), 1);
+    assert_eq!(stack.mss_for_dst(IpAddr::V6(dst)), 1340);
 }

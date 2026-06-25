@@ -16,6 +16,7 @@ use crate::loopback::LoopbackDev;
 use crate::netdev::{IfaceRegistry, NetDev, NetError, NetResult};
 use crate::pkt::Pkt;
 use crate::route::RouteTable;
+use crate::route6::Route6Table;
 use crate::udp::UdpHdr;
 use crate::tcp_hdr::{TcpHdr, flags as tcp_flags, TCP_HDR_MIN_LEN};
 use crate::tcp_conn::{TcpConn, Endpoint};
@@ -246,6 +247,7 @@ impl TcpListenEntry {
 pub struct NetStack {
     pub ifaces: IfaceRegistry,
     pub routes: RouteTable,
+    pub routes6: Route6Table,
     udp:        Spinlock<BTreeMap<u16, Arc<UdpRxQueue>>, StackLockClass>,
     /// F180a: IPv6 UDP socket map. Accessor `udp6_map()` exposed to
     /// `stack_ipv6` impls without making the field pub.
@@ -270,6 +272,7 @@ impl NetStack {
         Self {
             ifaces: IfaceRegistry::new(),
             routes: RouteTable::new(),
+            routes6: Route6Table::new(),
             udp:    Spinlock::new(BTreeMap::new()),
             udp6:   Spinlock::new(BTreeMap::new()),
             tcp_conns:   Spinlock::new(BTreeMap::new()),
@@ -289,18 +292,18 @@ impl NetStack {
             IpAddr::V4(d) => self.routes.lookup(d)
                 .and_then(|r| self.ifaces.lookup(r.iface))
                 .map(|i| i.mtu()),
-            IpAddr::V6(d) => {
-                let devs = self.ifaces.snapshot_devs();
-                let iface_id = if d == Ipv6Addr::LOOPBACK {
-                    devs.iter().find(|(_, dev)| dev.name() == "lo").map(|(i, _)| *i)
-                } else {
-                    devs.iter().find(|(_, dev)| dev.name() != "lo").map(|(i, _)| *i)
-                };
-                iface_id.and_then(|i| self.ifaces.lookup(i)).map(|i| i.mtu())
-            }
+            IpAddr::V6(d) => self.route6_iface(d).map(|(_, i)| i.mtu()),
         };
         let overhead = if matches!(dst, IpAddr::V6(_)) { 60 } else { 40 };
         mtu.map(|m| (m.saturating_sub(overhead)).min(0xFFFF) as u16).unwrap_or(0)
+    }
+
+    /// Resolve the IPv6 egress interface using longest-prefix match.
+    /// # C: O(N routes)
+    pub(crate) fn route6_iface(&self, dst: Ipv6Addr) -> Option<(NetIfaceId, Arc<dyn NetDev>)> {
+        let route = self.routes6.lookup(dst)?;
+        let iface = self.ifaces.lookup(route.iface)?;
+        Some((route.iface, iface))
     }
 
     /// F180c: register a v6 addr on `iface`; NS replies. # C: O(log N)
@@ -313,7 +316,7 @@ impl NetStack {
     }
 
     /// Boot-time wiring: create + register a loopback netdev,
-    /// add the canonical 127.0.0.0/8 route through it. Returns
+    /// add canonical loopback routes through it. Returns
     /// the assigned iface id.
     /// # C: O(1)
     pub fn register_loopback(&self) -> (NetIfaceId, Arc<LoopbackDev>) {
@@ -325,6 +328,13 @@ impl NetStack {
             iface:      id,
             gateway:    None,
             src_hint:   Some(Ipv4Addr::LOOPBACK),
+        });
+        self.routes6.add(crate::route6::Route6Entry {
+            dst:        Ipv6Addr::LOOPBACK,
+            prefix_len: 128,
+            iface:      id,
+            gateway:    None,
+            src_hint:   Some(Ipv6Addr::LOOPBACK),
         });
         (id, lo)
     }
