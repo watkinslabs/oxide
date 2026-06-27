@@ -22,6 +22,7 @@ pub use static_file::StaticFileInode;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
+pub mod dcache;
 pub mod dentry;
 pub mod dirent;
 pub mod fdtable;
@@ -32,10 +33,13 @@ pub mod namei;
 pub mod path;
 pub mod fs;
 pub mod mount;
+pub mod superblock;
 pub mod types;
 pub mod poll_subs;
 
-pub use dentry::Dentry;
+pub use dcache::{d_add, d_add_negative, d_alloc, d_drop, d_instantiate, d_lookup, d_make_root, d_move, d_splice_alias, dget, dput};
+pub use dentry::{Dentry, D_HASHED, D_NEGATIVE, D_ROOT};
+pub use superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
 pub use namei::{path_lookup, path_lookup_path, set_mount_whole_path, set_root_dentry_provider, LookupFlags, VfsPath, MAX_SYMLINK_DEPTH};
 pub use dirent::{dirent64_pack, dirent64_reclen, DIRENT64_HEADER};
 pub use fdtable::{FdTable, FD_TABLE_MAX};

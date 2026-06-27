@@ -31,16 +31,23 @@ pub trait Inode: Send + Sync {
     /// # C: O(1)
     fn ino(&self) -> Ino;
 
+    /// `i_sb` — owning superblock backref (Linux `inode->i_sb`). `None`
+    /// during the WP6 migration (backends not yet converted to own a
+    /// `SuperBlock`); converted FSes return `Some(sb)` so `fsid()` and
+    /// `statfs` derive from the real superblock. # C: O(1)
+    fn i_sb(&self) -> Option<alloc::sync::Arc<crate::superblock::SuperBlock>> { None }
+
     /// Superblock / mount identity (Linux `st_dev` analog). Inodes on
     /// the same filesystem return the same value; distinct filesystems
     /// return distinct values. Used by `name_to_handle_at`'s `mount_id`
     /// and mount-point detection (`is_mount_point` compares a path's id
-    /// to its parent's). Default `0` = the root/ext4 domain; pseudo
-    /// filesystems mounted elsewhere (cgroup2, proc, …) override it so a
-    /// mount boundary is observable. Without this, systemd's cgroup
-    /// walk never finds the `/sys/fs/cgroup` boundary and loops forever.
+    /// to its parent's). Derives from `i_sb().s_dev` once the FS owns a
+    /// SuperBlock; default `0` = the root/ext4 domain. Pseudo filesystems
+    /// not yet SB-backed override it directly so a mount boundary is
+    /// observable — without it, systemd's cgroup walk never finds the
+    /// `/sys/fs/cgroup` boundary and loops forever.
     /// # C: O(1)
-    fn fsid(&self) -> u64 { 0 }
+    fn fsid(&self) -> u64 { self.i_sb().map(|s| s.s_dev).unwrap_or(0) }
 
     /// Link count reported through stat/statx. Filesystems with real
     /// metadata should override this with their stored inode link count.

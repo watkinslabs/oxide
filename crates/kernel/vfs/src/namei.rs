@@ -1,6 +1,7 @@
 //! `path_lookup` per `docs/16§3` — the single component-walking name
-//! resolver. Walks a path one component at a time via the dentry cache
-//! (`Dentry::cached_child`) falling back to `Inode::lookup(name)`,
+//! resolver. Walks a path one component at a time via the dcache
+//! (`dcache::d_lookup`, (parent,name)-keyed) falling back to
+//! `Inode::lookup(name)` + `dcache::d_add`,
 //! crosses mount points, follows symlinks with a depth limit, and
 //! honors dirfd-relative bases + RESOLVE flags. Returns the final
 //! `(InodeRef, Dentry)`.
@@ -122,13 +123,13 @@ pub fn walk_to_mount(path: &str) -> Option<u64> {
             }
             continue;
         }
-        let child = match cur_dentry.cached_child(&comp) {
-            Some(d) => d,
+        // dcache fast path (d_lookup) then slow path (i_op->lookup + d_add).
+        // Keyed by (parent,name); no global path→dentry map.
+        let child = match crate::dcache::d_lookup(&cur_dentry, &comp) {
+            Some(d) if !d.is_negative() => d,
+            Some(_) => return Some(cur_mnt), // cached negative: current mount owns it
             None => match cur_inode.lookup(&comp) {
-                Ok(ci) => {
-                    let d = Dentry::new(Some(cur_dentry.clone()), comp.clone(), ci);
-                    cur_dentry.cache_child(&comp, d)
-                }
+                Ok(ci) => crate::dcache::d_add(&cur_dentry, &comp, ci),
                 // Missing leaf or whole-path fs: stop; current mount owns it.
                 Err(_) => return Some(cur_mnt),
             },
@@ -245,16 +246,15 @@ pub fn path_lookup_path(
             continue;
         }
 
-        // Resolve the named child: dentry-cache hit, else Inode::lookup.
+        // Resolve the named child via the dcache: fast path `d_lookup`
+        // (parent,name)-keyed, else slow path `i_op->lookup` + `d_add`.
         // The cache lock is never held across the Inode lookup (lock
-        // order Inode < Dentry per 06§3.6).
-        let child = match cur_dentry.cached_child(&comp) {
-            Some(d) => d,
+        // order Inode < Dentry per 06§3.6). NO global path→dentry map.
+        let child = match crate::dcache::d_lookup(&cur_dentry, &comp) {
+            Some(d) if !d.is_negative() => d,
+            Some(_) => return Err(VfsError::Enoent), // cached negative dentry: confirmed miss
             None => match cur_inode.lookup(&comp) {
-                Ok(ci) => {
-                    let d = Dentry::new(Some(cur_dentry.clone()), comp.clone(), ci);
-                    cur_dentry.cache_child(&comp, d)
-                }
+                Ok(ci) => crate::dcache::d_add(&cur_dentry, &comp, ci),
                 Err(e) => {
                     // Per-component lookup failed. If the current
                     // filesystem resolves whole-path (procfs synthesises
@@ -263,6 +263,7 @@ pub fn path_lookup_path(
                     // path to the owning mount's lookup — the mount
                     // resolving its own subtree. A genuinely-missing name
                     // makes the delegate also miss, so the error stands.
+                    // WP6-pending: removed once procfs resolves per-component.
                     let full = join_abs(&cur_dentry.absolute_path(), &comp, &queue[idx..]);
                     if let Some(i) = whole_path(&full) {
                         let d = Dentry::new(None, full, i.clone());
