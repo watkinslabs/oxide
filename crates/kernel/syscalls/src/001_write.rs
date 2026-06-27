@@ -17,6 +17,26 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
     let slice: &[u8] = unsafe { core::slice::from_raw_parts(buf as *const u8, cnt) };
     match file.write(slice) {
         Ok(n)  => n as i64,
-        Err(e) => -(e as i64),
+        Err(e) => {
+            if e == vfs::VfsError::Erofs {
+                klog::write_raw(b"[WRITE-EROFS] pid=");
+                klog::write_dec_u64(cur.tid as u64);
+                klog::write_raw(b" name=");
+                klog::write_raw(cur.name.as_bytes());
+                klog::write_raw(b" fd=");
+                klog::write_dec_u64(fd as u64);
+                klog::write_raw(b" path=\"");
+                let path = file.dentry().absolute_path();
+                klog::write_raw(&path);
+                klog::write_raw(b"\" ino=");
+                klog::write_dec_u64(file.inode().ino());
+                klog::write_raw(b" type=");
+                klog::write_dec_u64(file.inode().file_type() as u64);
+                klog::write_raw(b" cnt=");
+                klog::write_dec_u64(cnt as u64);
+                klog::write_raw(b"\n");
+            }
+            -(e as i64)
+        },
     }
 }

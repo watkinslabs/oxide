@@ -6,7 +6,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use vfs::{Dentry, File, OpenFlags};
 use net::sock::InetSocket;
-use crate::net_common::{AF_INET, AF_INET6, SOCK_STREAM, SOCK_DGRAM};
+use crate::net_common::{AF_INET, AF_INET6, SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET};
 
 /// `socket(domain, type, protocol)` slot 41. # C: O(1)
 pub fn sys_socket(args: &SyscallArgs) -> i64 {
@@ -59,6 +59,10 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
             (AF_INET6, SOCK_RAW)    => InetSocket::new_udp6(),
             (AF_UNIX_DOM, SOCK_STREAM) => InetSocket::new_unix(),
             (AF_UNIX_DOM, SOCK_DGRAM)  => InetSocket::new_unix_dgram(),
+            // systemd uses path-bound AF_UNIX SOCK_SEQPACKET control sockets.
+            // The existing Unix listener path is byte-stream internally, but
+            // accepting the type is enough for bind/listen/epoll readiness.
+            (AF_UNIX_DOM, SOCK_SEQPACKET) => InetSocket::new_unix(),
             (AF_PACKET_DOM, _) => {
                 // F131: proto is htons(ETH_P_*); store host-order.
                 let proto_be = (proto & 0xFFFF) as u16;

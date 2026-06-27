@@ -51,6 +51,13 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
                     cur.sigpending.fetch_and(!bit, Ordering::Release);
                 }
             }
+            #[cfg(feature = "debug-boot")]
+            {
+                klog::write_raw(b"[wait4 reap] parent="); klog::write_dec_u64(parent_tid as u64);
+                klog::write_raw(b" reaped_tid="); klog::write_dec_u64(tid as u64);
+                klog::write_raw(b" reqpid="); klog::write_dec_u64(pid as u64);
+                klog::write_raw(b"\n");
+            }
             debug_sched! { klog::write_raw(b"[INFO]  sys_wait4: reaped\n"); }
             debug_ssh! {
                 klog::write_raw(b"[INFO]  ssh-trace: wait4 reaped tid=");
@@ -62,6 +69,20 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
             return tid as i64;
         }
         if !sched::live::registry::has_children(parent_tid) {
+            #[cfg(feature = "debug-boot")]
+            {
+                klog::write_raw(b"[wait4 ECHILD] parent="); klog::write_dec_u64(parent_tid as u64);
+                klog::write_raw(b" reqpid="); klog::write_hex_u64(pid as u32 as u64);
+                // exe of the caller — names WHICH process holds the garbage pid
+                // (generator post-exec vs systemd vs a pre-exec fork child).
+                if let Some(c) = sched::live::current() {
+                    // SAFETY: running task; single-mutator read of exe_path per 13§5.
+                    if let Some(p) = unsafe { &*c.exe_path.get() } {
+                        klog::write_raw(b" exe="); klog::write_raw(p.as_bytes());
+                    }
+                }
+                klog::write_raw(b"\n");
+            }
             debug_ssh! {
                 klog::write_raw(b"[INFO]  ssh-trace: wait4 ECHILD parent=");
                 klog::write_dec_u64(parent_tid as u64);

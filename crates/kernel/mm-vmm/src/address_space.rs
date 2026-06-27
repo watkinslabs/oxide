@@ -313,6 +313,23 @@ impl AddressSpace {
         }
         for vma in src.iter() {
             let writable = vma.prot.contains(VmaProt::WRITE);
+            // MAP_SHARED VMAs are NOT copy-on-write: parent and child keep
+            // writing the SAME frame (Linux shmem / MAP_SHARED|MAP_ANON). The
+            // child maps it writable and the parent stays writable — no W-strip,
+            // no COW split. Critical now that tmpfs/memfd MAP_SHARED aliases real
+            // frames: COW-splitting them on fork would silently fork the journal
+            // page away from journald's shared view.
+            // REVERTED fix #8: keeping VMAs writable-across-fork for the SHARED
+            // flag caused WRITE-WHILE-SHARED corruption — a private page stayed
+            // writable in both parent and child, so parallel-forked children
+            // (systemd's generators) clobbered each other's memory (garbage
+            // syscall args, futex wedge). PROOF: forcing COW for all VMAs made
+            // the garbage corruption vanish (no PID1 crash either). Linux maps
+            // EVERY fork-shared anon/private page READ-ONLY and copies on first
+            // write; genuine MAP_SHARED needs a real shared backing object (the
+            // tmpfs/memfd path, fix #7), NOT in-place writable COW frames. So
+            // every VMA goes through the COW path here.
+            let shared = false;
             // B18 fix: COW-share Anonymous + KernelBytes + File-backed
             // frames. File backings are required so child processes
             // inherit their parent's mmap'd shared-library mappings
@@ -342,7 +359,7 @@ impl AddressSpace {
                     // strip the W bit so first-write triggers
                     // copy-on-write split. Else use the VMA prot
                     // verbatim (RO/RX pages stay shared forever).
-                    let child_prot = if writable {
+                    let child_prot = if writable && !shared {
                         let mut p = vma.prot;
                         p.remove(VmaProt::WRITE);
                         p
@@ -359,7 +376,7 @@ impl AddressSpace {
                     // M::map writes through the active CR3 (parent's
                     // root). M::map's own implementation flushes the
                     // VA on x86; aarch64 may need an explicit flush.
-                    if writable {
+                    if writable && !shared {
                         // SAFETY: parent's CR3 is active; same-PA remap
                         // with W bit cleared; pa is current mapping per
                         // translate above.
@@ -772,24 +789,52 @@ impl AddressSpace {
             let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
             // SAFETY: va_page is in user-half; M::translate reads the active PT for the running task's CR3 / TTBR0; vma is the live snapshot for `va`.
             let cur = unsafe { M::translate(Va(va_page)) };
-            // COW fast path: if we're the sole owner of the frame
-            // (refcount==1), no copy needed — flip the W bit in
-            // place. Linux `mm/memory.c` `wp_page_copy` short-circuit.
-            if let Some((src_pa, _)) = cur {
-                let pa = src_pa.0 & !0xfff;
-                if frame_refcount(pa) <= 1 {
-                    let pte_flags = vma.prot.to_page_flags();
-                    // SAFETY: same-PA remap with W bit set; no other
-                    // AS holds this frame per refcount==1; flush_va
-                    // ensures hardware re-walks.
-                    unsafe {
-                        M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K);
-                        M::flush_va(Va(va_page));
-                    }
-                    let _ = hhdm_offset;
-                    return Ok(());
+            // DIAG (debug-mount): trace COW write to the libc lock page. If a
+            // fork-shared lock page takes the fast path (refcount<=1 → flip W
+            // in place) while a peer still maps it, the write corrupts the
+            // peer's lock → the wedge. Logs the refcount + fast/slow decision.
+            #[cfg(feature = "debug-mount")]
+            if let VmaBacking::File { backing, off } = &vma.backing {
+                let foff = off.wrapping_add(va_page - vma.start.as_u64());
+                if foff == 0x1e7000 && backing.ino() == 0x6e54000000062076 {
+                    let srcpa = cur.map(|(p, _)| p.0 & !0xfff).unwrap_or(0);
+                    let rc = if srcpa != 0 { frame_refcount(srcpa) } else { 0 };
+                    // Read the actual stuck lock word (glibc .bss `lock`,
+                    // page offset 0xb68 — uaddr 0x..db68) from the old COW
+                    // frame. Non-zero ⇒ the page holds stale FILE bytes
+                    // (ld.so's .bss memset was reverted) → glibc sees the
+                    // lock held → futex_wait forever, no waker.
+                    let lockw = if srcpa != 0 { unsafe {
+                        core::ptr::read_volatile((hhdm_offset + srcpa + 0xb68) as *const u32)
+                    } } else { 0 };
+                    klog::write_raw(b"[mnt] COW-LOCK va="); klog::write_hex_u64(va_page);
+                    klog::write_raw(b" srcpa=");             klog::write_hex_u64(srcpa);
+                    klog::write_raw(b" rc=");                klog::write_dec_u64(rc as u64);
+                    klog::write_raw(b" lockw=");             klog::write_hex_u64(lockw as u64);
+                    klog::write_raw(if rc <= 1 { b" FAST\n" } else { b" slow\n" });
                 }
             }
+            // COW fast path: reuse the frame in place (flip W, no copy) ONLY
+            // for an exclusively-owned ANONYMOUS page — Linux `wp_page_reuse`
+            // requires `PageAnonExclusive`. A private File/KernelBytes page is
+            // NEVER reused in place: it must COW-copy, because the frame can be
+            // aliased through the page cache or a fork peer in ways the bare
+            // struct-page refcount doesn't capture. Reusing a file page in
+            // place let one process's loader-scratch write land in a fork
+            // peer's still-shared libc page (the .bss lock → glibc deadlock).
+            // COW in-place reuse (Linux `wp_page_reuse`) is DISABLED: it
+            // requires proof the page is exclusively owned (Linux's
+            // `PageAnonExclusive`), and our only proxy — `frame_refcount(pa)
+            // <= 1` — is UNRELIABLE. Some map path under-counts the refcount,
+            // so an actually-shared anon frame can read refcount 1; reusing it
+            // in place then lets this AS's write land in a fork peer's still-
+            // shared page (write-while-shared corruption — the random
+            // glibc-.data byte flips / "Failed to spawn executor" storm /
+            // intermittent futex wedge). Measured: re-enabling this path raises
+            // systemd executor-spawn failures from ~1 to ~50 per boot. Until
+            // the under-count is found and a real PageAnonExclusive flag is
+            // tracked, every write-fault COW-copies — always correct, just an
+            // extra 4 KiB copy per first-write on a private anon page.
             // Shared frame (refcount > 1) or no current mapping:
             // alloc fresh + copy + install writable + dec_ref shared.
             let new_pa = alloc_frame().ok_or(Error::NoMem)?;
@@ -909,17 +954,54 @@ impl AddressSpace {
                 // File-backed demand-fault per `11§5` + `17§5`. The
                 // backing impl reads through the page cache; bytes
                 // past file end zero-fill.
-                let pa = alloc_frame().ok_or(Error::NoMem)?;
                 let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
                 let vma_off = (va_page - vma.start.as_u64()) as u64;
                 let file_off = backing_off.saturating_add(vma_off);
                 let page = PAGE_SIZE_BYTES as usize;
+                // MAP_SHARED of a page-frame-backed file (tmpfs/memfd): install
+                // the backing's PERSISTENT frame directly so user writes alias
+                // the file's storage and propagate to read/write + every other
+                // mapper (Linux shmem). The read_at-copy below is MAP_PRIVATE-
+                // only (a COW snapshot). The frame stays alive while mapped: the
+                // FileBacking Arc in this VMA pins the inode (which holds the
+                // frame's base refcount), and our inc_ref here is balanced by
+                // the AS-teardown dec on this leaf.
+                if vma.flags.contains(VmaFlags::SHARED) && !cfg!(feature = "debug-no-shmem") {
+                    if let Some(spa) = backing.shared_frame(file_off) {
+                        #[cfg(feature = "debug-boot")]
+                        {
+                            klog::write_raw(b"[shmem map] va="); klog::write_hex_u64(va_page);
+                            klog::write_raw(b" pa="); klog::write_hex_u64(spa);
+                            klog::write_raw(b" ino="); klog::write_hex_u64(backing.ino());
+                            klog::write_raw(b"\n");
+                        }
+                        inc_ref(spa);
+                        let pte_flags = vma.prot.to_page_flags();
+                        // SAFETY: va_page page-aligned per find_containing; spa is
+                        // the inode-owned shared frame whose refcount we just
+                        // bumped; flags carry USER per `11§5`.
+                        unsafe { M::map(Va(va_page), Pa(spa), pte_flags, PageSize::P4K); }
+                        return Ok(());
+                    }
+                }
+                let pa = alloc_frame().ok_or(Error::NoMem)?;
                 // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at hhdm_offset+pa is mapped writable; full page owned exclusively until M::map below makes it user-visible.
                 unsafe {
                     let dst = (hhdm_offset + pa) as *mut u8;
                     core::ptr::write_bytes(dst, 0, page);
                     let slice = core::slice::from_raw_parts_mut(dst, page);
                     let _ = backing.read_at(file_off, slice);
+                }
+                // DIAG (debug-mount): log the libc lock page's VA on File-fault
+                // so a spurious zap+refault (re-read of file content over ld.so's
+                // memset) is correlatable with the EVICT/MUNMAP zap tracer.
+                #[cfg(feature = "debug-mount")]
+                #[cfg(feature = "debug-mount")]
+                if file_off == 0x1e7000 && backing.ino() == 0x6e54000000062076 {
+                    klog::write_raw(b"[mnt] FFAULT-LOCK root="); klog::write_hex_u64(self.root_pa);
+                    klog::write_raw(b" va=");  klog::write_hex_u64(va_page);
+                    klog::write_raw(b" pa=");  klog::write_hex_u64(pa);
+                    klog::write_raw(b"\n");
                 }
                 let pte_flags = vma.prot.to_page_flags();
                 // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.

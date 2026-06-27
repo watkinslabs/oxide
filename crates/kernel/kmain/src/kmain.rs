@@ -122,6 +122,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     unsafe { GLOBAL_ALLOC.init_static() };
 
+    #[cfg(target_os = "oxide-kernel")]
+    klog::set_clock_fn(syscalls::vvar::monotonic_now_ns);
+
     debug_boot! { klog::kinfo!("init started"); }
     debug_boot! {
         if info.hhdm_offset != 0 {
@@ -335,6 +338,19 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // SAFETY: boot-only single-writer, pre-userspace; install_arch_default is idempotent (no-op if the slot is set) and cannot race a procfs reader here.
         unsafe { crate::boot_cmdline::install_arch_default(); }
         console::register_devnodes(); ::devfs::boot::set_dir_overlay(ext4::dir::read_dir_overlay); ::devfs::boot::populate_defaults(); procfs::init();
+        // DIAG (debug-mount): one-shot ns-0 resolution probe — does the
+        // registered /proc/sys/kernel/domainname resolve right after init?
+        // Distinguishes a basic resolution bug (fails here) from a sandbox/ns
+        // bug (resolves here, ENOENTs only inside a service mount-ns).
+        #[cfg(feature = "debug-mount")]
+        {
+            let dn = "/proc/sys/kernel/domainname";
+            klog::write_raw(b"[mnt] PROBE devfs::lookup domainname=");
+            klog::write_dec_u64(if ::devfs::lookup(dn).is_some() {1} else {0});
+            klog::write_raw(b" tree0=");
+            klog::write_dec_u64(0);
+            klog::write_raw(b"\n");
+        }
         drm::node::register();
         fs::tmpfs::init(); tracefs::init(); drv_virtio_input::devfs::init();
         fbdev::devfs::init(); devpts::init();
@@ -647,6 +663,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     unsafe {
         let root_dev = block::registry::by_serial("oxide-root")
+            .or_else(block::registry::first_device)
             .expect("root disk (virtio-blk serial=oxide-root) not found");
         ext4::rootfs::init_from_dev(root_dev)
             .expect("ext4 root mount (oxide-root) failed to open");
@@ -852,11 +869,16 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
 
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     {
+        debug_boot! { klog::write_raw(b"[INFO]  init: handoff begin\n"); }
         // F50: install per-arch user-trap hook BEFORE any user task
         // runs so PTRACE_SINGLESTEP #DB delivers SIGTRAP instead of
         // halting the kernel via the default fault path.
         // SAFETY: pre-init single-CPU; ptrace_singlestep::install is idempotent and only swaps a 'static fn pointer.
         unsafe { fs::ptrace::install(); }
+        // DIAG (debug-mount): chain the libc-lock-page single-step write-trap
+        // #DB hook AFTER ptrace's so it delegates to ptrace when idle.
+        #[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+        pmm::user_as::install_lock_step_hook();
         // SAFETY: every prerequisite established above — kernel-owned
         // GDT (P1-93), TSS+ltr (P1-94), interior-U=1 walker (P1-95),
         // PMM + MmuOps + per-AS PT root (P2-19) + ELF loader (P2-16)

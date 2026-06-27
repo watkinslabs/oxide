@@ -400,6 +400,7 @@ dependencies = [
  "elf",
  "ext4",
  "hal",
+ "klog",
  "vmm",
 ]
 
@@ -433,6 +434,7 @@ version = "0.1.0"
 dependencies = [
  "block",
  "crc",
+ "klog",
  "sync",
  "vfs",
 ]
@@ -625,6 +627,8 @@ version = "0.1.0"
 dependencies = [
  "devfs",
  "hal",
+ "hal-aarch64",
+ "hal-x86_64",
  "klog",
  "sched",
  "sync",
@@ -1342,6 +1346,7 @@ dependencies = [
  "sound",
  "sync",
  "syscall",
+ "sysfs",
  "tracefs",
  "tty",
  "vfs",

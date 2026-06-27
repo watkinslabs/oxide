@@ -14,6 +14,28 @@ use crate::execve_common::{
     reset_caught_signals, reset_per_execve_state, resolve_shebang_chain,
 };
 
+fn unshare_fd_table_and_close_on_exec(cur: &sched::Task) {
+    let shared = unsafe {
+        cur.fd_table_ref()
+            .map(|fdt| alloc::sync::Arc::strong_count(fdt) > 1)
+            .unwrap_or(false)
+    };
+    if shared {
+        let new_fdt = unsafe {
+            cur.fd_table_ref()
+                .map(|fdt| alloc::sync::Arc::new(fdt.fork_clone()))
+        };
+        if let Some(fdt) = new_fdt {
+            // SAFETY: execve is the sole fd-table mutator for this task.
+            unsafe { cur.replace_fd_table(Some(fdt)); }
+        }
+    }
+    // SAFETY: execve is the sole fd-table mutator for this task.
+    if let Some(fdt) = unsafe { cur.fd_table_ref() } {
+        fdt.close_on_exec();
+    }
+}
+
 /// `sys_execve(path, argv, envp)` per `15§5` / `31§4`. Thin wrapper
 /// that reads the user-space path then delegates to `execve_inner`.
 /// # SAFETY: dispatch ctx, IRQs masked.
@@ -50,7 +72,15 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
     let v = match crate::pathresolve::read_exec(&path_owned)
         .or_else(|| ext4::rootfs::read_file(&path_owned)) {
         Some(v) => v,
-        None    => return -(Errno::Enoent.as_i32() as i64),
+        None    => {
+            #[cfg(feature = "debug-boot")]
+            {
+                klog::write_raw(b"[execve ENOENT] path=");
+                klog::write_raw(&path_owned);
+                klog::write_raw(b"\n");
+            }
+            return -(Errno::Enoent.as_i32() as i64);
+        }
     };
     ext4_blob = Some(v);
     // SAFETY: ext4_blob just-set; outlives the load_static_blob call below.
@@ -215,11 +245,8 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
         (*ctx_ptr).fs_base = 0;
     }
 
-    // P3-61: drop FD_CLOEXEC fds before the new program runs.
-    // SAFETY: same single-mutator invariant on fd_table as mm.
-    if let Some(fdt) = unsafe { cur.fd_table_ref() } {
-        fdt.close_on_exec();
-    }
+    // P3-61: Linux execve unshares CLONE_FILES, then drops FD_CLOEXEC fds.
+    unshare_fd_table_and_close_on_exec(&cur);
     reset_caught_signals(&cur);
     reset_per_execve_state(&cur);
     // F156: clear CLONE_VFORK rendezvous so the parent (suspended in
@@ -304,6 +331,21 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
     frame[0] = img.user_ip();
     frame[1] = 0x202;                  // RFLAGS = IF=1 + reserved bit 1
     frame[2] = new_sp;
+    // Linux ABI (`fs/binfmt_elf.c` start_thread / ELF_PLAT_INIT): every GP
+    // register is 0 at process entry except RSP. Our syscall epilogue restores
+    // rax/rdi/rsi/rdx/r10/r8/r9 from the saved frame (the 7 slots immediately
+    // below this RIP/RFLAGS/RSP triple) — left un-zeroed, the new program (and
+    // ld.so) inherit stale register garbage. RDX especially is the
+    // `rtld_fini`/atexit pointer glibc's _start forwards to __libc_start_main
+    // and registers via __cxa_atexit — a garbage value there poisons the
+    // exit-handler list (the same .bss the boot wedge corrupts).
+    // SAFETY: current_user_frame() points at base+0x38 (RIP); base+0x00..0x30
+    // are the 7 GP-arg slots the epilogue pops. Same per-task syscall stack,
+    // single mutator, IRQs/preempt-off in the syscall body.
+    unsafe {
+        let base = (frame as *mut [u64; 3] as *mut u64).sub(7);
+        for i in 0..7 { core::ptr::write_volatile(base.add(i), 0); }
+    }
 
     debug_sched! {
         klog::write_raw(b"[INFO]  sys_execve: argc=");
@@ -474,11 +516,8 @@ pub(crate) fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u
     // SAFETY: we are the running task; preempt-off; UP single-CPU so no concurrent reader of cur.mm.
     unsafe { cur.replace_mm(Some(new_as)); }
 
-    // P3-61: drop FD_CLOEXEC fds before the new program runs.
-    // SAFETY: same single-mutator invariant on fd_table as mm.
-    if let Some(fdt) = unsafe { cur.fd_table_ref() } {
-        fdt.close_on_exec();
-    }
+    // P3-61: Linux execve unshares CLONE_FILES, then drops FD_CLOEXEC fds.
+    unshare_fd_table_and_close_on_exec(&cur);
     reset_caught_signals(&cur);
     reset_per_execve_state(&cur);
     // F156: clear CLONE_VFORK rendezvous so the parent (suspended in

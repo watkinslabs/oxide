@@ -34,15 +34,32 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             Ok(n) => { if cmd == F_DUPFD_CLOEXEC { let _ = fdt.set_cloexec(n, true); } n as i64 }
             Err(e) => -(e as i64),
         },
-        F_GETFD => match fdt.cloexec(fd) { Ok(true) => 1, Ok(false) => 0, Err(_) => 0 },
-        F_SETFD => { let _ = fdt.set_cloexec(fd, (arg & 1) != 0); 0 }
+        F_GETFD => match fdt.cloexec(fd) {
+            Ok(true) => 1,
+            Ok(false) => 0,
+            Err(e) => -(e as i64),
+        },
+        F_SETFD => match fdt.set_cloexec(fd, (arg & 1) != 0) {
+            Ok(()) => 0,
+            Err(e) => -(e as i64),
+        },
         F_GETFL => file.flags().bits() as i64,
         F_SETFL => {
             let nb = (file.flags().bits() & !SETTABLE_FL) | ((arg as u32) & SETTABLE_FL);
             file.set_flags(vfs::OpenFlags::from_bits_retain(nb));
             0
         }
-        F_GETPIPE_SZ | F_SETPIPE_SZ => 4096,
+        F_GETPIPE_SZ => match file.inode().as_any().and_then(|a| a.downcast_ref::<fs::pipe::PipeInode>()) {
+            Some(pipe) => pipe.pipe_size() as i64,
+            None => -(Errno::Einval.as_i32() as i64),
+        },
+        F_SETPIPE_SZ => match file.inode().as_any().and_then(|a| a.downcast_ref::<fs::pipe::PipeInode>()) {
+            Some(pipe) => match pipe.set_pipe_size(arg as usize) {
+                Ok(size) => size as i64,
+                Err(e) => -(e as i64),
+            },
+            None => -(Errno::Einval.as_i32() as i64),
+        },
         // memfd seals (`fcntl.h`, docs/19). Only a sealable memfd exposes
         // seals; everything else → EINVAL.
         F_GET_SEALS => match file.inode().fcntl_seals() {

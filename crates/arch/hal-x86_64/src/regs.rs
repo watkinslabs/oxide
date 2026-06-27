@@ -7,6 +7,37 @@
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 use core::arch::asm;
 
+/// DIAG: arm DR0 as an 8-byte WRITE data-watchpoint at `va`. A guest user
+/// (or kernel) write to those 8 bytes raises #DB (trap-type, after the store).
+/// DR7: L0=1 (enable DR0), R/W0=01 (write), LEN0=10 (8 bytes). `va` must be
+/// 8-aligned. # SAFETY: privileged; legal at CPL=0.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn set_data_watchpoint(va: u64) {
+    // L0=1 (bit0), GE=1 (bit9, exact data-bp), reserved bit10=1, R/W0=01
+    // (write, bits16-17), LEN0=10 (8 bytes, bits18-19).
+    let dr7: u64 = 1 | (1u64 << 9) | (1u64 << 10) | (0b01u64 << 16) | (0b10u64 << 18);
+    // SAFETY: mov to dr0/dr7 is privileged, legal at CPL=0; no memory effects.
+    unsafe {
+        asm!("mov dr0, {}", in(reg) va,  options(nostack, preserves_flags));
+        asm!("mov dr7, {}", in(reg) dr7, options(nostack, preserves_flags));
+    }
+}
+
+/// DIAG: read DR6 (debug status) and clear it (write 0). Bit 0 set ⇒ DR0 hit.
+/// # SAFETY: privileged; legal at CPL=0.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn read_clear_dr6() -> u64 {
+    let v: u64;
+    // SAFETY: mov from/to dr6 is privileged, legal at CPL=0.
+    unsafe {
+        asm!("mov {}, dr6", out(reg) v, options(nostack, preserves_flags));
+        asm!("mov dr6, {}", in(reg) 0u64, options(nostack, preserves_flags));
+    }
+    v
+}
+
 /// Read CR3 — page-table base + PCID per Intel SDM Vol. 3 §4.5.
 /// # SAFETY: privileged read; legal at CPL=0.
 /// # C: O(1)

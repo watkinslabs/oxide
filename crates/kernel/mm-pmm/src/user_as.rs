@@ -352,7 +352,22 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     // F157: leaves go through dec_and_maybe_free so COW-shared frames
     // (multiple AS map them) only release once the last AS drops.
     // Tables (intermediate PT levels) are always per-AS — direct free.
-    let mut free_leaf = |pa: u64| {
+    let mut free_leaf = |_va: u64, pa: u64| {
+        // debug-fwm (LIGHT): only check refcount-1 frames in the high
+        // library/lock VA window (≥0x7000_0000_0000) — where the free-while-
+        // mapped corruption lands (libc/systemd .data, glibc locks). Skipping
+        // bulk heap/stack frames keeps teardown cheap (no boot regression).
+        #[cfg(feature = "debug-fwm")]
+        if _va >= 0x7000_0000_0000 && crate::setup::frame_refcount(pa) == 1 {
+            let n = crate::setup::fwm_peer_maps(_va, pa, root_pa, hhdm);
+            if n > 0 {
+                klog::write_raw(b"[FWM] teardown va="); klog::write_hex_u64(_va);
+                klog::write_raw(b" pa=");               klog::write_hex_u64(pa);
+                klog::write_raw(b" peers=");            klog::write_dec_u64(n as u64);
+                klog::write_raw(b" exiting_root=");     klog::write_hex_u64(root_pa);
+                klog::write_raw(b"\n");
+            }
+        }
         // SAFETY: `pa` was a leaf reachable from this AS's PT; AS root
         // quiesced per fn contract; crate::setup::dec_and_maybe_free drops
         // refcount and frees on zero.
@@ -378,7 +393,7 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
 pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
-    let mut free_leaf = |pa: u64| {
+    let mut free_leaf = |_va: u64, pa: u64| {
         // SAFETY: leaf was reachable from this AS's PT; F157 dec-and-free.
         unsafe { crate::setup::dec_and_maybe_free_frame(pa); }
     };
@@ -480,6 +495,78 @@ pub fn classify_arm_abort(esr: u64, far: u64) -> Option<FaultKind> {
 /// the faulting instruction); false otherwise. The caller (typically
 /// a smoke fault handler) decides whether to deliver SIGSEGV via
 /// `sigsegv_terminate_<arch>` or treat as a smoke landmark.
+// DIAG (debug-mount): single-step write-trap state for the libc lock page.
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+static STEP_VA:   AtomicU64 = AtomicU64::new(0);
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+static STEP_RIP:  AtomicU64 = AtomicU64::new(0);
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+static STEP_ROOT: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+static PREV_TRAP_HOOK: AtomicU64 = AtomicU64::new(0);
+
+/// Linear address of glibc's `initial` atexit list (next page after the
+/// __exit_funcs_lock page) — deterministic (no ASLR). The boot wedge
+/// overwrites this region with a library-path string.
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+const WATCH_VA: u64 = 0x0000_7fff_fe88_e000;
+
+/// #DB hook: a DR0 hardware write-watchpoint on WATCH_VA fires here (no
+/// page-protection slowdown). Reads the 8 bytes just written; if they're a
+/// stray ASCII path ("/lib…") logs the writing RIP — the corruptor. Chains
+/// the previous (ptrace) hook for non-DR #DBs.
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+pub fn lock_step_hook(frame: &mut hal_x86_64::FaultFrame) -> bool {
+    // SAFETY: privileged DR6 read+clear at CPL=0.
+    let dr6 = unsafe { hal_x86_64::read_clear_dr6() };
+    if dr6 & 0x1 == 0 {
+        // Not our DR0 hit — delegate to the chained (ptrace) hook.
+        let p = PREV_TRAP_HOOK.load(Ordering::Acquire);
+        if p != 0 {
+            // SAFETY: PREV_TRAP_HOOK holds a valid UserTrapHook fn pointer captured at install.
+            let prev: hal_x86_64::UserTrapHook = unsafe { core::mem::transmute(p as *const ()) };
+            return prev(frame);
+        }
+        return false;
+    }
+    // Read what was just written via the current task's AS.
+    let mut buf = [0u8; 16];
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: single-mutator mm slot per 13§5.
+        if let Some(mm) = unsafe { cur.mm_ref() } {
+            let root = mm.root_pa();
+            let hhdm = hhdm_offset();
+            // SAFETY: root is the live AS; HHDM read of the just-written bytes.
+            if let Some(pa) = unsafe { read_foreign_leaf_pa(root, WATCH_VA & !0xFFF, hhdm) } {
+                let src = (hhdm + (pa & !0xFFF) + (WATCH_VA & 0xFFF)) as *const u8;
+                for i in 0..16 { buf[i] = unsafe { core::ptr::read_volatile(src.add(i)) }; }
+            }
+        }
+    }
+    if buf[0] == b'/' || (buf[0] >= 0x20 && buf[0] < 0x7f && buf[1] >= 0x20 && buf[1] < 0x7f) {
+        klog::write_raw(b"[mnt] WATCHHIT rip=");
+        klog::write_hex_u64(frame.rip);            // trap-type #DB: RIP is just past the store
+        klog::write_raw(b" data=");
+        for i in 0..16 { klog::write_hex_u64(buf[i] as u64); klog::write_raw(b","); }
+        klog::write_raw(b"\n");
+    }
+    true        // consumed; iretq back to user (DR6 already cleared)
+}
+
+/// Install the DR0 write-watchpoint #DB hook (chaining the previous) + arm
+/// the watchpoint on the atexit list.
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+pub fn install_lock_step_hook() {
+    // SAFETY: boot-time install; hook lives for the kernel lifetime.
+    let prev = unsafe { hal_x86_64::install_user_trap_hook(lock_step_hook) };
+    PREV_TRAP_HOOK.store(prev as *const () as u64, Ordering::Release);
+    // DR0 disabled: the #DB on the first atexit-list write deterministically
+    // wedges the process (both DR7 encodings) — the #DB delivery path is unsafe
+    // for data breakpoints here / the atexit section can't tolerate the trap.
+    let _ = WATCH_VA;
+    // unsafe { hal_x86_64::set_data_watchpoint(WATCH_VA); }
+}
+
 /// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1) reject
 #[cfg(target_arch = "x86_64")]
 pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
@@ -505,6 +592,46 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
         Some(k) => k,
         None    => return false,
     };
+    // DIAG (debug-mount): the libc lock page is mapped RO (File arm) so its
+    // first write traps here — log the writing instruction's RIP. RIP inside
+    // glibc lll_lock = the lock pointer is right (a different bug); RIP inside
+    // a str/mem* or a stray addr (cr2 != the lock word) = the corruptor.
+    #[cfg(feature = "debug-mount")]
+    if matches!(kind, FaultKind::Protection { access: FaultAccess::Write }) {
+        if let Some(cur) = sched::live::current() {
+            // SAFETY: single-mutator mm slot per 13§5; read-only VMA query.
+            if let Some(mm) = unsafe { cur.mm_ref() } {
+                if let Some(uva) = UserVirtAddr::new(cr2 & !0xfff) {
+                    if let Some(v) = mm.find_vma(uva) {
+                        if let VmaBacking::File { off, backing } = &v.backing {
+                            let foff = off.wrapping_add((cr2 & !0xfff).wrapping_sub(v.start.as_u64()));
+                            if foff == 0x1e7000 && backing.ino() == 0x6e54000000062076
+                                && STEP_VA.load(Ordering::Acquire) == 0 {
+                                // Single-step write-trap: make the page writable
+                                // in place, arm RFLAGS.TF so a #DB fires right
+                                // after THIS write instruction, and stash the
+                                // target/RIP. The #DB hook (lock_step_hook) then
+                                // reads the bytes just written — when they're an
+                                // ASCII path ("/lib…") that RIP is the corruptor
+                                // — re-protects the page RO, and clears TF.
+                                let root = mm.root_pa();
+                                unsafe { mprotect_pages(root, cr2 & !0xfff, 0x1000, VmaProt::READ | VmaProt::WRITE); }
+                                let f = hal_x86_64::current_fault_frame();
+                                if !f.is_null() {
+                                    // SAFETY: live FaultFrame on the kernel stack; set TF (bit 8).
+                                    unsafe { (*f).rflags |= 0x100; }
+                                    STEP_ROOT.store(root, Ordering::Release);
+                                    STEP_RIP.store(_rip, Ordering::Release);
+                                    STEP_VA.store(cr2, Ordering::Release);
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     if handle(cr2, kind) {
         return true;
     }
@@ -819,6 +946,16 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
     if addr.checked_add(len_aligned).map_or(true, |e| e > USER_VA_END) {
         return -(Errno::Einval.as_i32() as i64);
     }
+    // DIAG (debug-mount): trace the MADV_DONTNEED range so a spurious zap of a
+    // dirtied private-file page (e.g. libc's .bss lock) is visible.
+    #[cfg(feature = "debug-mount")]
+    {
+        let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);
+        klog::write_raw(b"[mnt] EVICT addr=");  klog::write_hex_u64(addr);
+        klog::write_raw(b" len=");              klog::write_hex_u64(len_aligned);
+        klog::write_raw(b" tid=");              klog::write_dec_u64(tid as u64);
+        klog::write_raw(b"\n");
+    }
     let mut va = addr;
     let end = addr + len_aligned;
     while va < end {
@@ -859,6 +996,15 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
     let len_aligned = (len + 0xfff) & !0xfff;
     if addr.checked_add(len_aligned).map_or(true, |e| e > USER_VA_END) {
         return -(Errno::Einval.as_i32() as i64);
+    }
+    // DIAG (debug-mount): trace munmap range (the other PTE-zapping path).
+    #[cfg(feature = "debug-mount")]
+    {
+        let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);
+        klog::write_raw(b"[mnt] MUNMAP addr="); klog::write_hex_u64(addr);
+        klog::write_raw(b" len=");              klog::write_hex_u64(len_aligned);
+        klog::write_raw(b" tid=");              klog::write_dec_u64(tid as u64);
+        klog::write_raw(b"\n");
     }
 
     let mut va = addr;

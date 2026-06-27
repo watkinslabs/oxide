@@ -465,7 +465,7 @@ pub unsafe fn free_user_tree_leafmap<W, FL, FT>(
 )
 where
     W: PtWalker,
-    FL: FnMut(u64),
+    FL: FnMut(u64, u64),
     FT: FnMut(u64),
 {
     // SAFETY: per-fn contract — HHDM maps the root + child tables read/write.
@@ -492,7 +492,14 @@ where
                     for i_l3 in 0..ENTRIES_PER_TABLE {
                         let leaf = ptr::read_volatile(l3.add(i_l3));
                         if !W::is_valid(leaf) { continue; }
-                        free_leaf(leaf & W::PHYS_MASK);
+                        // Reconstruct the user VA from the 4-level indices so
+                        // the leaf callback can identify the mapping (free-
+                        // while-mapped detection). User half ⇒ no sign-extend.
+                        let va = ((i_l0 as u64) << L0_SHIFT)
+                               | ((i_l1 as u64) << L1_SHIFT)
+                               | ((i_l2 as u64) << L2_SHIFT)
+                               | ((i_l3 as u64) << L3_SHIFT);
+                        free_leaf(va, leaf & W::PHYS_MASK);
                     }
                     free_table(l3_pa);
                 }

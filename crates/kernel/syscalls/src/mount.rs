@@ -26,4 +26,7 @@ pub fn install_vfs_hooks() {
     // `vfs::mount::register*` the resolver that maps a mount-point path to
     // its canonical dentry so it can mark that dentry a mount point.
     vfs::mount::set_dentry_resolver(crate::pathresolve::resolve_dentry);
+    // The owning-mount identification walk (`resolve_mount` → namei
+    // `walk_to_mount`) starts at the global root dentry; supply it.
+    vfs::set_root_dentry_provider(crate::pathresolve::root_dentry);
 }

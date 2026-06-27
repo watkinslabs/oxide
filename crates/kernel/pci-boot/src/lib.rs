@@ -589,27 +589,29 @@ fn cap_dump_arch(d: &pci::PciDevice) {
 /// + `ECAM_BASE_VA` published on aarch64).
 /// # C: O(N_bdfs probed)
 pub fn enumerate_and_log() {
+    let devs = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let r = hal_x86_64::pci::LegacyPci;
+            pci::enumerate(&r)
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            match hal_aarch64::pci::EcamPci::from_published() {
+                // ECAM mapping is bus 0 only on aarch64 v1 (1 MiB
+                // device-mapped at boot); enumerate cap matches.
+                Some(r) => pci::enumerate_buses(&r, 1),
+                None    => alloc::vec::Vec::new(),
+            }
+        }
+    };
     debug_boot! {
-        let devs = {
-            #[cfg(target_arch = "x86_64")]
-            {
-                let r = hal_x86_64::pci::LegacyPci;
-                pci::enumerate(&r)
-            }
-            #[cfg(target_arch = "aarch64")]
-            {
-                match hal_aarch64::pci::EcamPci::from_published() {
-                    // ECAM mapping is bus 0 only on aarch64 v1 (1 MiB
-                    // device-mapped at boot); enumerate cap matches.
-                    Some(r) => pci::enumerate_buses(&r, 1),
-                    None    => alloc::vec::Vec::new(),
-                }
-            }
-        };
         klog::write_raw(b"[INFO]  pci: devices=");
         klog::write_dec_u64(devs.len() as u64);
         klog::write_raw(b"\n");
-        for d in devs.iter().take(16) {
+    }
+    for d in devs.iter().take(16) {
+        debug_boot! {
             klog::write_raw(b"[INFO]  pci ");
             klog::write_dec_u64(d.bdf.bus as u64);
             klog::write_raw(b":");
@@ -623,65 +625,47 @@ pub fn enumerate_and_log() {
             klog::write_raw(b" class=");
             klog::write_hex_u64(d.class_code as u64);
             klog::write_raw(b"\n");
-            // F38 ordering fix: enable Memory + BusMaster bits in the
-            // PCI command reg BEFORE cap_dump_arch tries to read or
-            // write the MSI-X table BAR. Previously this only happened
-            // inside virtio_probe_arch (which runs LAST), so MSI-X
-            // table writes from cap_dump bounced as 0xFF reads.
-            enable_pci_mem_bm(d.bdf);
-            // Capability list — modern devices always advertise MSI-X
-            // + (for virtio) vendor-specific virtio-pci caps. Foundation
-            // for upcoming MSI-X routing + virtio modern-transport work.
-            bar_dump_arch(d.bdf);
-            cap_dump_arch(d);
-            // drivers-plan D1a: publish every enumerated PCI function in
-            // the drv device model (→ /sys/bus/pci/devices/<addr> +
-            // /sys/devices/pci0000:00/<addr>). Done AFTER cap/MSI dump so
-            // the device's PCI state is settled. ADDITIVE: bring-up below
-            // is unchanged; a device whose driver fails bring-up still
-            // appears here, unbound (no `driver` symlink).
-            let class24 = ((d.class_code as u32) << 16)
-                | ((d.subclass as u32) << 8) | (d.prog_if as u32);
-            let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
-                0u16, d.bdf.bus, d.bdf.device, d.bdf.function);
+        }
+        // F38 ordering fix: enable Memory + BusMaster bits before touching
+        // BAR-backed capability state or handing the device to a driver.
+        enable_pci_mem_bm(d.bdf);
+        bar_dump_arch(d.bdf);
+        cap_dump_arch(d);
+
+        let class24 = ((d.class_code as u32) << 16)
+            | ((d.subclass as u32) << 8) | (d.prog_if as u32);
+        let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
+            0u16, d.bdf.bus, d.bdf.device, d.bdf.function);
+        drv::register_device(alloc::sync::Arc::new(drv::Device::new(
+            "pci", addr, d.vendor_id, d.device_id, class24)));
+        if virtio::is_modern(d.vendor_id, d.device_id) {
+            let vaddr = alloc::format!("virtio{}", virtio_seq());
+            let vdev_id = d.device_id.wrapping_sub(0x1040);
             drv::register_device(alloc::sync::Arc::new(drv::Device::new(
-                "pci", addr, d.vendor_id, d.device_id, class24)));
-            // virtio bus alias: a modern virtio-pci function also exists on
-            // the synthetic virtio bus as virtioN (N = enumeration order).
-            if virtio::is_modern(d.vendor_id, d.device_id) {
-                let vaddr = alloc::format!("virtio{}", virtio_seq());
-                let vdev_id = d.device_id.wrapping_sub(0x1040);
-                drv::register_device(alloc::sync::Arc::new(drv::Device::new(
-                    "virtio", vaddr, d.vendor_id, vdev_id, 0)));
-            }
-            virtio_probe_arch(d);
-            nvme_probe(d);
-            ahci_probe(d);
+                "virtio", vaddr, d.vendor_id, vdev_id, 0)));
         }
-        // F40 + F57: brief IRQ unmask window so any MSIs queued
-        // during the closed-loop drain through the per-arch IRQ
-        // dispatcher and bump MSI_FIRES. Without this the counter
-        // stays 0 (canary.rs leaves IRQs masked on the boot CPU
-        // before pci_boot runs on both arches).
-        #[cfg(target_arch = "aarch64")]
-        {
-            // SAFETY: boot phase, GIC enabled by smoke_device_map_arm; brief unmask window mirrors arm-timer smoke; we re-mask immediately after the spin.
-            unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack)); }
-            for _ in 0..2_000_000 { core::hint::spin_loop(); }
-            // SAFETY: pairs with daifclr above, restoring boot-mask state.
-            unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack)); }
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            // SAFETY: boot phase; LAPIC enabled by device_map_smoke; brief STI window drains queued MSI IRRs into the IDT vec=0x50 stub which bumps MSI_FIRES.
-            unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-            for _ in 0..2_000_000 { core::hint::spin_loop(); }
-            // F57 self-fire: write LAPIC ICR-LO with self-shorthand
-            // (bits 19:18 = 01) + vec 0x50 + Fixed delivery + level
-            // assert. If MSI_FIRES bumps post this write, the IDT
-            // entry for 0x50 + dispatcher arm + LAPIC EOI path are
-            // all correct end-to-end and any device-driven MSI gap
-            // is in the PCI MSI write path, not kernel.
+        virtio_probe_arch(d);
+        nvme_probe(d);
+        ahci_probe(d);
+    }
+
+    // F40 + F57: brief IRQ unmask window so any MSIs queued during
+    // the closed-loop drain through the per-arch IRQ dispatcher.
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: boot phase, GIC enabled by smoke_device_map_arm; brief
+        // unmask window mirrors arm-timer smoke; restore boot-mask state.
+        unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack)); }
+        for _ in 0..2_000_000 { core::hint::spin_loop(); }
+        unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack)); }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: boot phase; LAPIC enabled by device_map_smoke; brief STI
+        // window drains queued MSI IRRs into the IDT vec=0x50 stub.
+        unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+        for _ in 0..2_000_000 { core::hint::spin_loop(); }
+        debug_boot! {
             let pre = arch_irq::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
             // SAFETY: LAPIC mapped+enabled; ICR write is well-defined; self-shorthand targets this CPU; IF=1 from the sti above.
             unsafe {
@@ -700,94 +684,64 @@ pub fn enumerate_and_log() {
             klog::write_raw(b" delta=");
             klog::write_dec_u64((post - pre) as u64);
             klog::write_raw(b"\n");
-            // SAFETY: pairs with sti above; restores canary's boot-mask state.
-            unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
         }
+        // SAFETY: pairs with sti above; restores canary's boot-mask state.
+        unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
+    }
+    debug_boot! {
         let fires = arch_irq::MSI_FIRES
             .load(core::sync::atomic::Ordering::Acquire);
         klog::write_raw(b"[INFO]  msi-fires-post-enum=");
         klog::write_dec_u64(fires as u64);
         klog::write_raw(b"\n");
+    }
 
-        // F59-15: register the modern virtio-net device as a NetDev
-        // and install a default L2 route. ARP/ICMP-request/DHCP
-        // belong in user-space (`dhclient`, `ping`, etc.) — the
-        // kernel only provides the iface + protocol stack via the
-        // AF_INET socket API. Userspace gets the iface up via
-        // ioctl/netlink (TODO) and runs DHCP from there.
-        if drv_virtio_net::modern::is_modern_present() {
-            if let Some(dev) = drv_virtio_net::modern::VirtioNetDev::new() {
-                let stack = net::sock::stack();
-                let id = stack.ifaces.register(
-                    dev as alloc::sync::Arc<dyn net::NetDev>,
-                );
+    // F59-15: register the modern virtio-net device as a NetDev and install
+    // the default L2/netlink route state. Logging is optional; setup is not.
+    if drv_virtio_net::modern::is_modern_present() {
+        if let Some(dev) = drv_virtio_net::modern::VirtioNetDev::new() {
+            let stack = net::sock::stack();
+            let id = stack.ifaces.register(
+                dev as alloc::sync::Arc<dyn net::NetDev>,
+            );
+            debug_boot! {
                 klog::write_raw(b"[INFO]  virtio-net-iface registered id=");
                 klog::write_dec_u64(id.0 as u64);
                 klog::write_raw(b" name=eth0\n");
+            }
 
-                // F92/F93: seed the netlink address + route tables
-                // with the boot-time defaults. Userspace tools /
-                // DHCP can mutate via RTM_NEWADDR / RTM_NEWROUTE
-                // later. F95: lo's ifindex comes from the live iface
-                // registry — `register_loopback()` runs from sock.rs
-                // on first stack() access (which we just did), so
-                // "lo" is reachable by name.
-                let lo_idx = stack.ifaces.lookup_name("lo").map(|(id, _)| id.0);
-                ::netlink::rtnetlink::seed_defaults(Some(id.0), lo_idx);
-                ::netlink::rtnetlink::seed_default_routes(id.0);
-                if let Some(lo_idx) = lo_idx {
-                    ::netlink::rtnetlink::seed_default_routes_lo(lo_idx);
-                }
-                let _ = stack.send_router_solicitation(id, net::Ipv6Addr::ANY);
+            let lo_idx = stack.ifaces.lookup_name("lo").map(|(id, _)| id.0);
+            ::netlink::rtnetlink::seed_defaults(Some(id.0), lo_idx);
+            ::netlink::rtnetlink::seed_default_routes(id.0);
+            if let Some(lo_idx) = lo_idx {
+                ::netlink::rtnetlink::seed_default_routes_lo(lo_idx);
+            }
+            let _ = stack.send_router_solicitation(id, net::Ipv6Addr::ANY);
 
-                // F86: spawn an RX poller kthread. The driver
-                // exposes `poll_into_stack(iface, our_ip)` but
-                // nobody was calling it — inbound frames piled
-                // up in q0.used. 10.0.2.15 is the qemu user-net
-                // default guest IP; userspace DHCP rewrites at
-                // runtime once the iface goes up.
-                //
-                // F87: install the softirq RX path. MSI fires raise
-                // Slot::NetRx (both arches) → drain handler calls
-                // poll_into_stack with the stashed iface/IP. The
-                // kthread stays as fallback in case an MSI is missed.
-                //
-                // F58: also install a PER-VECTOR handler on the
-                // device's MSI vector (x86) / SPI (arm). The arch-irq
-                // dispatcher routes that specific vector directly to
-                // rx_drain_softirq, skipping the shared softirq raise
-                // entirely for this device. If alloc-msi-id stashing
-                // failed (vector pool exhausted), the softirq path
-                // still works because the dispatcher falls back to
-                // raising the shared-vector slots when no per-vector
-                // handler is registered.
-                let our_ip: [u8; 4] = [10, 0, 2, 15];
-                drv_virtio_net::modern::set_softirq_iface(id, our_ip);
-                softirq::set_handler(
-                    softirq::Slot::NetRx,
+            let our_ip: [u8; 4] = [10, 0, 2, 15];
+            drv_virtio_net::modern::set_softirq_iface(id, our_ip);
+            softirq::set_handler(
+                softirq::Slot::NetRx,
+                drv_virtio_net::modern::rx_drain_softirq,
+            );
+            let msi_id = VIRTIO_NET_MSI_ID.load(core::sync::atomic::Ordering::Acquire);
+            if msi_id != 0 {
+                #[cfg(target_arch = "x86_64")]
+                let _ = arch_irq::register_msi_handler(
+                    msi_id as u8,
                     drv_virtio_net::modern::rx_drain_softirq,
                 );
-                let msi_id = VIRTIO_NET_MSI_ID.load(core::sync::atomic::Ordering::Acquire);
-                if msi_id != 0 {
-                    #[cfg(target_arch = "x86_64")]
-                    let _ = arch_irq::register_msi_handler(
-                        msi_id as u8,
-                        drv_virtio_net::modern::rx_drain_softirq,
-                    );
-                    #[cfg(target_arch = "aarch64")]
-                    let _ = arch_irq::register_msi_handler(
-                        msi_id,
-                        drv_virtio_net::modern::rx_drain_softirq,
-                    );
-                }
-                let our_ip_be = u32::from_be_bytes(our_ip);
-                // F152: RX poller kthread retired — tick_poll_combined →
-                // rx_drain_softirq pumps the rx ring every timer tick, and
-                // the MSI handler fires rx_drain_softirq on each edge.
-                let _ = our_ip_be;
+                #[cfg(target_arch = "aarch64")]
+                let _ = arch_irq::register_msi_handler(
+                    msi_id,
+                    drv_virtio_net::modern::rx_drain_softirq,
+                );
             }
+            let _ = u32::from_be_bytes(our_ip);
         }
+    }
 
+    debug_boot! {
         // F46: read GICD_ISPENDR2 (covers SPIs 64..95). If SPI 81 or
         // 82 is pending here, the device-driven MSI write reached
         // the GIC but didn't deliver to CPU (mask/priority issue).

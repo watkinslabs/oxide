@@ -29,11 +29,14 @@ pub fn sys_chdir(args: &SyscallArgs) -> i64 {
     let s = resolved.as_str();
     // chdir(2) follows symlinks to a directory — resolve via the
     // path-walk and require a directory.
-    let resolves = crate::pathresolve::resolve(s, false)
-        .map(|i| matches!(i.file_type(), vfs::FileType::Directory))
-        .unwrap_or(false);
-    if !resolves { return -(Errno::Enoent.as_i32() as i64); }
+    let path_obj = match crate::pathresolve::resolve_path(s, false) {
+        Some(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
+        _ => return -(Errno::Enoent.as_i32() as i64),
+    };
     // SAFETY: single-mutator per `13§5`; current task is sole writer.
-    unsafe { *cur.cwd.get() = alloc::string::String::from(s); }
+    unsafe {
+        *cur.cwd.get() = alloc::string::String::from(s);
+        *cur.cwd_vfs.get() = Some(path_obj);
+    }
     0
 }

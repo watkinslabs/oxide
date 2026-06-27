@@ -41,8 +41,9 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
             // real dirfd; the old `else { raw.into() }` ignored the dirfd.
             let _ = AT_FDCWD;
             let resolved: alloc::string::String =
-                crate::pathresolve::resolve_at(dirfd, raw)
-                    .unwrap_or_else(|| crate::pathresolve::resolve_cwd(raw));
+                match crate::pathresolve::resolve_at_result(dirfd, raw) {
+                    Ok(p) => p, Err(rv) => return rv,
+                };
             let s = resolved.as_str();
             // THE resolver (path-walk). statx(2) follows symlinks unless
             // AT_SYMLINK_NOFOLLOW. aarch64 musl routes stat()/lstat()
@@ -72,8 +73,8 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     };
 
     let (mode_type, rdev): (u16, u32) = match inode.file_type() {
-        FileType::CharDev   => (0o020000, 0x0103),
-        FileType::BlockDev  => (0o060000, 0),
+        FileType::CharDev   => (0o020000, inode.rdev()),
+        FileType::BlockDev  => (0o060000, inode.rdev()),
         FileType::Directory => (0o040000, 0),
         FileType::Regular   => (0o100000, 0),
         FileType::Symlink   => (0o120000, 0),
@@ -84,10 +85,11 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     let overlay = vfs::inode_times::get(&inode).unwrap_or_default();
     let mode_perm = inode.perm()
         .or_else(|| if overlay.owner_set && overlay.mode_bits != 0 { Some(overlay.mode_bits) } else { None })
-        .unwrap_or(0o755);
+        .unwrap_or_else(|| crate::namei_common::default_perm_for(inode.file_type()));
     let mode = mode_type | mode_perm;
     let stx_uid = inode.uid().unwrap_or(if overlay.owner_set { overlay.uid } else { 0 });
     let stx_gid = inode.gid().unwrap_or(if overlay.owner_set { overlay.gid } else { 0 });
+    let dev = crate::namei_common::fsid_to_dev(inode.fsid());
     let (ia, im, ic) = (inode.atime(), inode.mtime(), inode.ctime());
     // statx layout per linux/stat.h. Zero everything then fill the fields we have.
     // SAFETY: buf validated 256-byte 8-aligned range below USER_VA_END; CPL=0 writes through caller's AS.
@@ -104,8 +106,8 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         // file as \"not executable for caller\" → \"Permission denied\".
         const STATX_BASIC_STATS: u32 = 0x7ff;
         core::ptr::write_volatile(buf as *mut u32, STATX_BASIC_STATS);
-        core::ptr::write_volatile((buf +   4)     as *mut u32, 4096);                                // stx_blksize
-        core::ptr::write_volatile((buf +  16)     as *mut u32, 1);                                   // stx_nlink
+        core::ptr::write_volatile((buf +   4)     as *mut u32, inode.blksize());                     // stx_blksize
+        core::ptr::write_volatile((buf +  16)     as *mut u32, inode.nlink());                       // stx_nlink
         core::ptr::write_volatile((buf +  20)     as *mut u32, stx_uid);                             // stx_uid
         core::ptr::write_volatile((buf +  24)     as *mut u32, stx_gid);                             // stx_gid
         core::ptr::write_volatile((buf +  28)     as *mut u16, mode);                                // stx_mode
@@ -125,6 +127,8 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         write_ts(120, im.unwrap_or(overlay.mtime_ns));
         core::ptr::write_volatile((buf + 128)     as *mut u32, (rdev >> 8)  & 0xfff);                // stx_rdev_major
         core::ptr::write_volatile((buf + 132)     as *mut u32,  rdev        & 0xff);                 // stx_rdev_minor
+        core::ptr::write_volatile((buf + 136)     as *mut u32, crate::namei_common::dev_major(dev)); // stx_dev_major
+        core::ptr::write_volatile((buf + 140)     as *mut u32, crate::namei_common::dev_minor(dev)); // stx_dev_minor
     }
     0
 }

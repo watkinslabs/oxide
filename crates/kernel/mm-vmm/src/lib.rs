@@ -76,3 +76,7 @@ mod torture_tests;
 #[cfg(test)]
 mod tests_rmap_cow;
 
+// fork+COW data-isolation + refcount-accuracy reproduction (multi-AS PTs).
+#[cfg(test)]
+mod tests_cow_isolation;
+

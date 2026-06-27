@@ -224,6 +224,14 @@ pub fn register_uevent_listener(sock: &alloc::sync::Arc<NetlinkSocket>) {
 /// device model. Returns the number of subscribers reached.
 /// # C: O(N_listeners)
 pub fn emit_uevent(action: &str, devpath: &str, subsystem: &str) -> usize {
+    emit_uevent_with_env(action, devpath, subsystem, &[])
+}
+
+/// Broadcast a kobject uevent with extra environment key/value strings such
+/// as `DEVNAME=ttyS0` or `MAJOR=4`. Extra entries must already be formatted
+/// as `KEY=value`.
+/// # C: O(N_listeners + N_extra)
+pub fn emit_uevent_with_env(action: &str, devpath: &str, subsystem: &str, extra: &[&str]) -> usize {
     let seq = UEVENT_SEQNUM.fetch_add(1, Ordering::Relaxed);
     let mut msg: Vec<u8> = Vec::with_capacity(96);
     let push = |m: &mut Vec<u8>, s: &str| { m.extend_from_slice(s.as_bytes()); m.push(0); };
@@ -235,6 +243,7 @@ pub fn emit_uevent(action: &str, devpath: &str, subsystem: &str) -> usize {
     push(&mut msg, &alloc::format!("ACTION={}", action));
     push(&mut msg, &alloc::format!("DEVPATH={}", devpath));
     push(&mut msg, &alloc::format!("SUBSYSTEM={}", subsystem));
+    for entry in extra { push(&mut msg, entry); }
     push(&mut msg, &alloc::format!("SEQNUM={}", seq));
     let mut g = UEVENT_LISTENERS.lock();
     g.retain(|w| w.strong_count() > 0);

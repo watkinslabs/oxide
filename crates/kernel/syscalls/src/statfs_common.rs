@@ -25,9 +25,10 @@ fn under(path: &str, m: &str) -> bool {
 /// falls back to the ext4 rootfs.
 /// # C: O(N_mounts)
 pub(crate) fn magic_for_path(path: &str) -> u64 {
-    // A registered mount that isn't the root wins (longest-prefix).
+    // A registered mount that isn't the root wins (longest-prefix). Root
+    // identity is mount-object derived (`is_root`), not a "/" string compare.
     if let Some((mnt, _)) = vfs::mount::resolve_mount(path) {
-        if mnt.mount_point != "/" {
+        if !mnt.is_root() {
             let m = mnt.fs.magic();
             if m != 0 { return m; }
         }

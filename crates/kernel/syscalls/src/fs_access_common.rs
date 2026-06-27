@@ -23,8 +23,9 @@ pub(crate) fn do_access(dirfd: i32, path_ptr: u64) -> i64 {
     };
     // BUG D follow-up: honour a real fd-relative dirfd; resolve_at(AT_FDCWD,raw)
     // == resolve_cwd(raw) so plain access(2) is unchanged.
-    let resolved = crate::pathresolve::resolve_at(dirfd, raw)
-        .unwrap_or_else(|| crate::pathresolve::resolve_cwd(raw));
+    let resolved = match crate::pathresolve::resolve_at_result(dirfd, raw) {
+        Ok(p) => p, Err(rv) => return rv,
+    };
     let s = resolved.as_str();
     if crate::pathresolve::resolve(s, false).is_some() {
         0

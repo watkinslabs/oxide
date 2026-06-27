@@ -40,6 +40,8 @@ pub use cpuid::{brand as cpuid_brand, vendor as cpuid_vendor, family_model as cp
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub use cpuid::tsc_khz_from_cpuid;
 pub use regs::{enable_sse, read_cr0, read_cr3, read_cr4, read_efer};
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub use regs::{set_data_watchpoint, read_clear_dr6};
 pub use fault::{
     install_fault_handler, install_user_trap_hook, vector_stub_addr,
     current_fault_frame, current_fault_gprs,

@@ -264,6 +264,18 @@ impl UnixPair {
         out
     }
 
+    /// MSG_PEEK variant of `read`: copy up to `max` leading bytes WITHOUT
+    /// draining the ring. Used by `recvmsg(MSG_PEEK)` on a stream socketpair.
+    /// # C: O(min(max, queued))
+    pub fn peek(&self, end: UnixEnd, max: usize) -> Vec<u8> {
+        let g = match end {
+            UnixEnd::A => self.b_to_a.lock(),
+            UnixEnd::B => self.a_to_b.lock(),
+        };
+        let take = core::cmp::min(max, g.buf.len());
+        g.buf.iter().take(take).copied().collect()
+    }
+
     /// Mark this end's writer side closed. The peer's next read
     /// on this ring returns 0 once the queue drains (EOF).
     /// F125: wake epoll_wait parkers so a peer blocked on POLL_HUP
@@ -514,6 +526,10 @@ impl UnixMsgPair {
 /// queue + payload path; F121 wires creds + fd-passing.
 pub struct UnixDgramQueue {
     pub msgs: Spinlock<VecDeque<UnixDgram>, UnixLockClass>,
+    /// Connected peer path for AF_UNIX SOCK_DGRAM. Linux permits
+    /// connect() on datagram sockets; later send/sendmsg calls may
+    /// omit msg_name and use this peer.
+    pub peer: Spinlock<Option<String>, UnixLockClass>,
     /// F171: single per-queue read waitlist (only one reader on a
     /// SOCK_DGRAM socket today — no per-direction split needed).
     #[cfg(target_os = "oxide-kernel")]
@@ -544,6 +560,7 @@ impl UnixDgramQueue {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             msgs: Spinlock::new(VecDeque::new()),
+            peer: Spinlock::new(None),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
             subs: Spinlock::new(None),
@@ -554,6 +571,18 @@ impl UnixDgramQueue {
     /// # C: O(1)
     pub fn register_subs(&self, subs: &Arc<vfs::PollSubscribers>) {
         *self.subs.lock() = Some(Arc::downgrade(subs));
+    }
+
+    /// Store the connected datagram peer.
+    /// # C: O(N path)
+    pub fn set_peer(&self, path: String) {
+        *self.peer.lock() = Some(path);
+    }
+
+    /// Return the connected datagram peer, if any.
+    /// # C: O(N path)
+    pub fn peer(&self) -> Option<String> {
+        self.peer.lock().clone()
     }
 
     /// Push a complete dgram onto the queue.

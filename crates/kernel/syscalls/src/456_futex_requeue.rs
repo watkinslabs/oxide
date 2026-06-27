@@ -22,11 +22,13 @@ pub fn sys_futex_requeue(args: &SyscallArgs) -> i64 {
     }
     // SAFETY: waiters[0..2] range-checked < USER_VA_END; the 2 futex_waitv are
     // read from the caller's active AS; uaddr is at offset 8 within each entry.
-    let (src_uaddr, dst_uaddr) = unsafe {
+    // struct futex_waitv: val@0, uaddr@8, flags@16. FUTEX2_PRIVATE = 0x80.
+    let (src_uaddr, dst_uaddr, private) = unsafe {
         let p = waiters as *const u8;
         let src = core::ptr::read_unaligned(p.add(8) as *const u64);
         let dst = core::ptr::read_unaligned(p.add((WAITV_SZ + 8) as usize) as *const u64);
-        (src, dst)
+        let sflags = core::ptr::read_unaligned(p.add(16) as *const u32);
+        (src, dst, (sflags & ::ipc::live::futex::FUTEX_PRIVATE_FLAG) != 0)
     };
-    ::ipc::live::futex::requeue(src_uaddr, dst_uaddr, nr_wake as usize, nr_requeue as usize)
+    ::ipc::live::futex::requeue(src_uaddr, dst_uaddr, nr_wake as usize, nr_requeue as usize, private)
 }

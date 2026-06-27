@@ -51,12 +51,19 @@ fn pt_with<R, F: FnOnce(&mut HostPt) -> R>(f: F) -> R {
 }
 
 fn fresh_pa() -> u64 {
-    ALLOC_PA_NEXT.with(|n| {
-        let mut g = n.borrow_mut();
-        let pa = *g;
-        *g += 0x1000;
-        pa
-    })
+    // Back each "physical frame" with a REAL 4 KiB-aligned host allocation so
+    // the COW slow-path's copy_nonoverlapping (which dereferences hhdm+pa, with
+    // the tests passing hhdm=0) reads/writes valid memory instead of a fake
+    // address. This lets Miri exercise the actual COW/fork/rmap LOGIC for UB
+    // (use-after-free, double-free of the AnonVma Arc) rather than crashing on
+    // a dangling pointer. Leaked intentionally — test process is short-lived.
+    let _ = &ALLOC_PA_NEXT;
+    use std::alloc::{alloc_zeroed, Layout};
+    let layout = Layout::from_size_align(4096, 4096).unwrap();
+    // SAFETY: non-zero 4 KiB layout; alloc_zeroed returns a valid 4 KiB-aligned
+    // zeroed block (or null, which `as u64` faithfully forwards to the caller).
+    let ptr = unsafe { alloc_zeroed(layout) };
+    ptr as u64
 }
 
 /// Wraps `fresh_pa` for callers that want the `Option<u64>` shape

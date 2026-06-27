@@ -83,6 +83,12 @@ pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64, sys_exit_fn: &
                 if default_is_core(p.sig) {
                     ::fs::coredump::write_for_current(p.sig as i32);
                 }
+                // Linux: a fatal signal terminates the WHOLE thread group
+                // (`get_signal` → `do_group_exit`), not just the thread that
+                // took it. SIGKILL the siblings first so a multi-threaded
+                // process can't leave threads alive holding the dead thread's
+                // libc locks (the deadlock/wedge), then exit the caller.
+                sched::live::zap_other_threads();
                 // Encode wait4(2) "killed by signal" byte: low 7 = signo,
                 // bit 7 set on core dump (we approximate with bit 8 the
                 // way mark_done's exit_status decodes it).

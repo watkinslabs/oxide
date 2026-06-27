@@ -4,7 +4,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_path, resolve, errno_from_vfs, resolve_parent};
+use crate::namei_common::{read_path, errno_from_vfs, resolve_parent, unlink_unix_socket_path};
 
 /// `unlink(path)` slot 87.
 /// # C: O(N parent entries)
@@ -12,14 +12,20 @@ pub fn sys_unlink(args: &SyscallArgs) -> i64 {
     let raw = match read_path(args.a0) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let p = resolve(&raw).unwrap_or(raw);
+    let p = match crate::pathresolve::resolve_at_result(crate::pathresolve::AT_FDCWD, &raw) {
+        Ok(p) => p, Err(rv) => return rv,
+    };
     if let Err(rv) = crate::landlock::check(&p,
         ::security::landlock::access::REMOVE_FILE) { return rv; }
+    if vfs::mount::is_readonly_path(&p) {
+        return -(Errno::Erofs.as_i32() as i64);
+    }
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
     match pino.unlink_child(&name) {
         // d_delete: drop the cached dentry so a stale positive isn't reused
         // (stat/open after unlink must miss). See pathresolve::forget_path.
-        Ok(())  => { crate::pathresolve::forget_path(&p); 0 }
+        Ok(())  => { unlink_unix_socket_path(&p); crate::pathresolve::forget_path(&p); 0 }
+        Err(vfs::VfsError::Enoent) if unlink_unix_socket_path(&p) => 0,
         Err(e)  => errno_from_vfs(e),
     }
 }

@@ -146,6 +146,15 @@ impl MmuOps for ArmMmu {
                 kassert!(false, "MmuOps::map walker failure");
             }
         }
+        // Invalidate the local TLB for this VA — `map` mutates the ACTIVE
+        // TTBR0's tables, so a present→present permission change (fork's
+        // W-strip) or a cached not-present entry must be flushed or the CPU
+        // keeps the stale translation. Mirrors x86; `map_at` (non-active
+        // child root) deliberately does NOT flush. Without this, fork's
+        // parent RO-remap left a stale writable entry → write-while-shared
+        // corruption of COW frames.
+        // SAFETY: EL1; TLBI VAE1IS invalidates matching inner-shareable entries.
+        unsafe { <PtWalkerArm as pt_walker::PtWalker>::flush_va(va.0); }
     }
 
     /// Tear down a 4 KiB leaf at `va`. v1 only supports

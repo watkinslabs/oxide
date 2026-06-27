@@ -30,7 +30,7 @@ hal-x86_64 = { path = "../../arch/hal-x86_64" }
 hal-aarch64 = { path = "../../arch/hal-aarch64" }
 
 [features]
-debug-boot   = ["kmacros/debug-boot"]
+debug-boot   = ["kmacros/debug-boot", "elf-load/debug-boot"]
 debug-trace  = ["kmacros/debug-trace"]
 debug-sched  = ["kmacros/debug-sched"]
 debug-pmm    = ["kmacros/debug-pmm"]

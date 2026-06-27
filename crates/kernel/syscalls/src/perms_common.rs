@@ -39,8 +39,7 @@ pub(crate) fn resolve_path_inode(dirfd: i32, path_ptr: u64, follow: bool) -> Res
     // BUG D: resolve against the dirfd's directory for a real fd-relative
     // dirfd (fchmodat/fchownat); resolve_at(AT_FDCWD, raw) == resolve_cwd(raw)
     // so legacy chmod/chown are unchanged.
-    let resolved = crate::pathresolve::resolve_at(dirfd, raw)
-        .unwrap_or_else(|| crate::pathresolve::resolve_cwd(raw));
+    let resolved = crate::pathresolve::resolve_at_result(dirfd, raw)?;
     let s = resolved.as_str();
     // THE resolver (path-walk): crosses mounts, follows symlinks unless
     // `!follow` (chmod/chown follow; AT_SYMLINK_NOFOLLOW / lchown don't).

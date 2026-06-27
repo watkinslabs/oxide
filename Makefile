@@ -15,6 +15,7 @@ FEATURES ?=
 # `make ci`              — what PR gate runs: spec-lint, test, both arches default + debug-all.
 # `make qemu-x86 / qemu-arm` — boot under QEMU with `--features debug-all`.
 # `make qemu-mcp`        — print the MCP tool list (interactive QEMU debug).
+# `make artifacts`       — export stable packaging artifacts to target/artifacts.
 # `make clean`           — `cargo clean`.
 
 .PHONY: all build x86 arm \
@@ -212,6 +213,9 @@ smoke-vsock: smoke-vsock-x86
 # the new bytes on the next kernel build.
 rootfs:
 	$(XTASK) rootfs
+
+artifacts:
+	$(XTASK) artifacts
 
 # Interactive QEMU + GDB debugging via MCP. Claude Code auto-loads
 # `tools/qemu-mcp/server.py` per `.mcp.json` at the repo root; this

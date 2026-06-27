@@ -147,6 +147,11 @@ pub struct Task {
     pub sum_exec_runtime_ns: AtomicU64,
     pub last_syscall_nr: AtomicU32, // diag: last syscall nr entered (u32::MAX=none); stamped in diag::note_syscall
     pub nsyscalls: AtomicU64,        // diag: monotonic syscall-entry count (sysrq/watchdog dump)
+    /// diag: user VA this task is parked on in a futex WAIT (0 = not waiting).
+    /// Set under the WAITERS lock before schedule(), cleared on resume; the
+    /// watchdog dump prints it so a wedge shows exactly which lock each task
+    /// blocks on (and whether a holder exists).
+    pub futex_uaddr: AtomicU64,
     /// Live CFS load weight (mutable, unlike the `SchedClass::Normal`
     /// seed). `update_curr` divides by this; `setpriority`/nice and
     /// cgroup `cpu.weight` rewrite it. Seeded from `class` at creation.
@@ -290,6 +295,11 @@ pub struct Task {
     /// `sys_getcwd` reads. Default "/" for boot tasks; fork inherits
     /// from parent. Same single-mutator invariant per `13§5`.
     pub cwd: UnsafeCell<alloc::string::String>,
+    /// Current working directory as a VFS path object. This is the Linux
+    /// ownership shape (`fs_struct::pwd`): path operations should use this
+    /// instead of re-resolving `cwd` as a string. `cwd` remains the rendered
+    /// user-visible pathname for getcwd/proc while callers migrate.
+    pub cwd_vfs: UnsafeCell<Option<vfs::VfsPath>>,
 
     /// User-side envp string per `19§4` for `/proc/<pid>/environ`.
     /// NUL-separated copy of `envp[0..envc]`, written at execve time.
@@ -454,6 +464,10 @@ pub struct Task {
     /// `13§5`. Inherited by fork/clone (children share parent's
     /// chroot view); cleared on execve only via explicit chroot.
     pub root: UnsafeCell<alloc::string::String>,
+    /// Per-task resolution root as a VFS path object (`fs_struct::root`).
+    /// Absolute path walks should start here after chroot instead of treating
+    /// root as a string prefix.
+    pub root_vfs: UnsafeCell<Option<vfs::VfsPath>>,
 
     /// IPC namespace id (CLONE_NEWIPC). Default 0 (init NS).
     /// SysV shm/sem/msg + POSIX MQ tables are virtualised by this id
@@ -790,6 +804,7 @@ impl Task {
             sum_exec_runtime_ns: AtomicU64::new(0),
             last_syscall_nr: AtomicU32::new(u32::MAX),
             nsyscalls: AtomicU64::new(0),
+            futex_uaddr: AtomicU64::new(0),
             load_weight: AtomicU32::new(match class {
                 SchedClass::Normal { weight } => weight,
                 _ => crate::cputime::NICE_0_WEIGHT,
@@ -827,6 +842,7 @@ impl Task {
             ctty:       UnsafeCell::new(None),
             exe_path:   UnsafeCell::new(None),
             cwd:        UnsafeCell::new(alloc::string::String::from("/")),
+            cwd_vfs:    UnsafeCell::new(None),
             environ:    UnsafeCell::new(None),
             rlimits:    UnsafeCell::new(crate::rlimit::DEFAULT_RLIMITS),
             nice:       AtomicI8::new(0),
@@ -861,6 +877,7 @@ impl Task {
             child_subreaper: AtomicBool::new(false),
             personality:    AtomicU32::new(0),
             root:           UnsafeCell::new(alloc::string::String::from("/")),
+            root_vfs:       UnsafeCell::new(None),
             ipc_ns:         AtomicU64::new(0),
             net_ns:         AtomicU64::new(0),
             pid_ns:         AtomicU64::new(0),

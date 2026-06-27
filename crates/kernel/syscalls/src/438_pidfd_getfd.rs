@@ -30,11 +30,8 @@ pub fn sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
     let pidfd_file = match cur_fdt.get(pidfd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let tid = match crate::pidfd::tid_from_ino(pidfd_file.inode().ino()) {
+    let target = match crate::pidfd::task_from_inode(&pidfd_file.inode()) {
         Some(t) => t, None => return -(Errno::Einval.as_i32() as i64),
-    };
-    let target = match sched::live::registry::lookup(tid) {
-        Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
     // SAFETY: target task may be running on another CPU but fd_table
     // pointer is set once at spawn (or via replace_fd_table at execve);

@@ -23,9 +23,16 @@ pub fn sys_fstatfs(args: &SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
-    // open(2) stores the full open path as the (flat) dentry name.
-    let name = file.dentry().name();
-    let magic = if name.starts_with('/') { magic_for_path(name) } else { M_TMPFS };
+    // Anonymous descriptor families (pidfd, eventfd-like inodes) have no
+    // meaningful path to classify. Let the inode report a superblock magic
+    // first; ordinary path-backed files fall back to mount/path resolution.
+    let im = file.inode().statfs_magic();
+    let magic = if im != 0 {
+        im
+    } else {
+        let name = file.dentry().name();
+        if name.starts_with('/') { magic_for_path(name) } else { M_TMPFS }
+    };
     let (blocks, bfree, files) = usage_for(magic);
     write_statfs(buf, magic, blocks, bfree, files);
     0

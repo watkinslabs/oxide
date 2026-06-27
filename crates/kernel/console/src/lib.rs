@@ -76,6 +76,8 @@ pub struct ConsoleInode {
     vt: u8,
 }
 
+pub struct SystemConsoleInode;
+
 impl ConsoleInode {
     /// Build an inode pinned to `vt`. Use 0 for foreground-alias
     /// (`/dev/console`, `/dev/tty`, `/dev/tty0`); 1..=N_VT for
@@ -94,7 +96,14 @@ impl Inode for ConsoleInode {
         if self.vt == 0 { TTY_INO_BASE | FG_VT_INO_LB as Ino }
         else { TTY_INO_BASE | self.vt as Ino }
     }
+    fn fsid(&self) -> u64 { devfs::DEVFS_FSID }
     fn file_type(&self) -> FileType { FileType::CharDev }
+    fn rdev(&self) -> u32 {
+        if self.vt == 0 { 0x0500 } else { 0x0400 | self.vt as u32 }
+    }
+    fn perm(&self) -> Option<u16> {
+        if self.vt == 0 { Some(0o666) } else { Some(0o620) }
+    }
     fn size(&self) -> u64 { 0 }
 
     fn lookup(&self, _name: &str) -> KResult<InodeRef> {
@@ -180,6 +189,53 @@ impl Inode for ConsoleInode {
     }
 }
 
+impl Inode for SystemConsoleInode {
+    fn ino(&self) -> Ino { TTY_INO_BASE | 0x01 }
+    fn fsid(&self) -> u64 { devfs::DEVFS_FSID }
+    fn file_type(&self) -> FileType { FileType::CharDev }
+    fn rdev(&self) -> u32 { 0x0501 }
+    fn perm(&self) -> Option<u16> { Some(0o600) }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Serial => Inode::read(&SerialInode, off, buf),
+            cmdline::ConsoleKind::Vt(_) => Inode::read(&ConsoleInode::new(0), off, buf),
+        }
+    }
+    fn read_nonblock(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Serial => Inode::read_nonblock(&SerialInode, off, buf),
+            cmdline::ConsoleKind::Vt(_) => Inode::read_nonblock(&ConsoleInode::new(0), off, buf),
+        }
+    }
+    fn write(&self, off: u64, buf: &[u8]) -> KResult<usize> {
+        match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Serial => Inode::write(&SerialInode, off, buf),
+            cmdline::ConsoleKind::Vt(_) => Inode::write(&ConsoleInode::new(0), off, buf),
+        }
+    }
+    fn write_nonblock(&self, off: u64, buf: &[u8]) -> KResult<usize> {
+        match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Serial => Inode::write_nonblock(&SerialInode, off, buf),
+            cmdline::ConsoleKind::Vt(_) => Inode::write_nonblock(&ConsoleInode::new(0), off, buf),
+        }
+    }
+    fn poll(&self) -> u32 {
+        match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Serial => Inode::poll(&SerialInode),
+            cmdline::ConsoleKind::Vt(_) => Inode::poll(&ConsoleInode::new(0)),
+        }
+    }
+    fn poll_file(&self, pos: u64) -> u32 {
+        match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Serial => Inode::poll_file(&SerialInode, pos),
+            cmdline::ConsoleKind::Vt(_) => Inode::poll_file(&ConsoleInode::new(0), pos),
+        }
+    }
+}
+
 /// `/dev/ttyS0` — the serial UART tty, a SEPARATE device from the video
 /// console. Serial-only: never renders to the framebuffer. Its winsize is
 /// the serial-terminal default (80×24 until the remote sends SIGWINCH),
@@ -202,7 +258,13 @@ impl SerialInode {
 
 impl Inode for SerialInode {
     fn ino(&self) -> Ino { TTY_INO_BASE | SERIAL_INO_LB as Ino }
+    fn fsid(&self) -> u64 { devfs::DEVFS_FSID }
     fn file_type(&self) -> FileType { FileType::CharDev }
+    #[cfg(target_arch = "x86_64")]
+    fn rdev(&self) -> u32 { 0x0440 }
+    #[cfg(target_arch = "aarch64")]
+    fn rdev(&self) -> u32 { 0xcc40 }
+    fn perm(&self) -> Option<u16> { Some(0o660) }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
 
@@ -288,7 +350,10 @@ impl Inode for VcsInode {
     // Distinct, collision-free inos (low byte 0 ⇒ the VT/fbdev ioctl routers
     // skip these): 0x7600 = vcs, 0x7700 = vcsa.
     fn ino(&self) -> Ino { if self.with_attr { 0x7700 } else { 0x7600 } }
+    fn fsid(&self) -> u64 { devfs::DEVFS_FSID }
     fn file_type(&self) -> FileType { FileType::CharDev }
+    fn rdev(&self) -> u32 { if self.with_attr { 0x0780 } else { 0x0700 } }
+    fn perm(&self) -> Option<u16> { Some(0o644) }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
@@ -308,10 +373,7 @@ impl Inode for VcsInode {
 /// `console=ttyS0`/`ttyAMA0` as the preferred console ⇒ the serial tty;
 /// `console=tty<n>`/none ⇒ the foreground video VT. # C: O(cmdline length)
 pub fn system_console_inode() -> InodeRef {
-    match cmdline::preferred_console() {
-        cmdline::ConsoleKind::Serial => Arc::new(SerialInode) as InodeRef,
-        cmdline::ConsoleKind::Vt(_)  => Arc::new(ConsoleInode::new(0)) as InodeRef,
-    }
+    Arc::new(SystemConsoleInode) as InodeRef
 }
 
 /// Register the console/tty char-device nodes into devfs (self-registration
