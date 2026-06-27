@@ -11,7 +11,10 @@
 
 use alloc::string::String;
 use alloc::sync::Arc;
+use syscall::errno::Errno;
 use sync::{MountTable as RootClass, Spinlock};
+
+pub const AT_FDCWD: i32 = -100;
 
 /// Cached root dentry — the start of every absolute `path_lookup`. Built
 /// lazily from the ext4 root inode (ext4 is mounted at `/`). One global
@@ -19,7 +22,7 @@ use sync::{MountTable as RootClass, Spinlock};
 /// cwd/root pointers are per-task). chroot/dirfd bases ride later stages.
 static ROOT_DENTRY: Spinlock<Option<Arc<vfs::Dentry>>, RootClass> = Spinlock::new(None);
 
-fn root_dentry() -> Option<Arc<vfs::Dentry>> {
+pub fn root_dentry() -> Option<Arc<vfs::Dentry>> {
     {
         let g = ROOT_DENTRY.lock();
         if let Some(d) = g.as_ref() { return Some(d.clone()); }
@@ -40,6 +43,11 @@ fn root_dentry() -> Option<Arc<vfs::Dentry>> {
 fn resolution_root() -> Option<(Arc<vfs::Dentry>, bool)> {
     let global = root_dentry()?;
     let Some(cur) = sched::live::current() else { return Some((global, false)); };
+    // SAFETY: task.root_vfs single-mutator per 13§5; the running task on
+    // this CPU is the sole writer.
+    if let Some(p) = unsafe { (*cur.root_vfs.get()).clone() } {
+        return Some((p.dentry, true));
+    }
     // SAFETY: task.root single-mutator per 13§5; the running task on this
     // CPU is the sole writer (chroot only mutates the calling task's root).
     let rp = unsafe { (*cur.root.get()).clone() };
@@ -59,9 +67,21 @@ fn resolution_root() -> Option<(Arc<vfs::Dentry>, bool)> {
 /// `no_follow_final` = O_NOFOLLOW / AT_SYMLINK_NOFOLLOW (lstat).
 /// # C: O(components × dir-lookup)
 pub fn resolve(abs: &str, no_follow_final: bool) -> Option<vfs::InodeRef> {
+    resolve_path(abs, no_follow_final).map(|p| p.inode)
+}
+
+/// Resolve absolute `abs` to its full VFS path object.
+/// # C: O(components × dir-lookup)
+pub fn resolve_path(abs: &str, no_follow_final: bool) -> Option<vfs::VfsPath> {
     let (root, beneath) = resolution_root()?;
     let flags = vfs::LookupFlags { no_follow_final, beneath, ..Default::default() };
-    vfs::path_lookup(root.clone(), root, abs, flags).ok().map(|(i, _)| i)
+    let Some(cur) = sched::live::current() else {
+        return vfs::path_lookup_path(root.clone(), root, abs, flags).ok();
+    };
+    // SAFETY: single-mutator per 13§5; current task is the sole writer.
+    let start = unsafe { (*cur.cwd_vfs.get()).clone().map(|p| p.dentry) }
+        .unwrap_or_else(|| root.clone());
+    vfs::path_lookup_path(start, root, abs, flags).ok()
 }
 
 /// Resolve absolute `abs` to its canonical DENTRY (not just the inode)
@@ -75,7 +95,7 @@ pub fn resolve(abs: &str, no_follow_final: bool) -> Option<vfs::InodeRef> {
 pub fn resolve_dentry(abs: &str) -> Option<Arc<vfs::Dentry>> {
     let (root, beneath) = resolution_root()?;
     let flags = vfs::LookupFlags { beneath, ..Default::default() };
-    vfs::path_lookup(root.clone(), root, abs, flags).ok().map(|(_, d)| d)
+    vfs::path_lookup_path(root.clone(), root, abs, flags).ok().map(|p| p.dentry)
 }
 
 /// Invalidate the cached dentry for absolute `abs` (Linux `d_delete`).
@@ -114,7 +134,7 @@ pub fn read_exec(path: &[u8]) -> Option<alloc::vec::Vec<u8>> {
     if root_dentry().is_none() { return None; }       // pre-mount: caller falls back
     let s = core::str::from_utf8(path).ok()?;
     let abs = resolve_cwd(s);
-    let inode = resolve(abs.as_str(), false)?;        // execve follows symlinks
+    let inode = resolve_path(abs.as_str(), false)?.inode;        // execve follows symlinks
     if inode.file_type() != vfs::FileType::Regular { return None; }
     let total = inode.size() as usize;
     let mut out = alloc::vec::Vec::with_capacity(total);
@@ -141,26 +161,35 @@ pub fn read_exec(path: &[u8]) -> Option<alloc::vec::Vec<u8>> {
 ///     File's dentry absolute path), as `openat` does.
 /// `None` on a bad dirfd / no current task.
 /// # C: O(N_path) + O(1) fd lookup
-pub fn resolve_at(dirfd: i32, raw: &str) -> Option<String> {
-    const AT_FDCWD: i32 = -100;
+pub fn resolve_at_result(dirfd: i32, raw: &str) -> Result<String, i64> {
     if raw.starts_with('/') {
-        return Some(vfs::path::lexical_normalize(raw).unwrap_or_else(|| raw.into()));
+        return Ok(vfs::path::lexical_normalize(raw).unwrap_or_else(|| raw.into()));
     }
     if dirfd == AT_FDCWD {
-        return Some(resolve_cwd(raw));
+        return Ok(resolve_cwd(raw));
     }
-    let cur = sched::live::current()?;
+    let cur = sched::live::current().ok_or(-(Errno::Ebadf.as_i32() as i64))?;
     // SAFETY: running task on this CPU; sole reader of its fd_table slot.
-    let fdt = unsafe { cur.fd_table_ref() }?.clone();
-    let f = fdt.get(dirfd).ok()?;
+    let fdt = unsafe { cur.fd_table_ref() }
+        .ok_or(-(Errno::Ebadf.as_i32() as i64))?
+        .clone();
+    let f = fdt.get(dirfd).map_err(|_| -(Errno::Ebadf.as_i32() as i64))?;
+    if f.inode().file_type() != vfs::FileType::Directory {
+        return Err(-(Errno::Enotdir.as_i32() as i64));
+    }
     let base_bytes = f.dentry().absolute_path();
-    let base = core::str::from_utf8(&base_bytes).ok()?;
-    Some(vfs::path::resolve_against_cwd(base, raw).unwrap_or_else(|| {
+    let base = core::str::from_utf8(&base_bytes)
+        .map_err(|_| -(Errno::Enotdir.as_i32() as i64))?;
+    Ok(vfs::path::resolve_against_cwd(base, raw).unwrap_or_else(|| {
         let mut s = String::from(base);
         if !s.ends_with('/') { s.push('/'); }
         s.push_str(raw);
         s
     }))
+}
+
+pub fn resolve_at(dirfd: i32, raw: &str) -> Option<String> {
+    resolve_at_result(dirfd, raw).ok()
 }
 
 /// Resolve `raw` against the running task's cwd. Absolute paths

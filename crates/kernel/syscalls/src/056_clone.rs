@@ -92,7 +92,14 @@ pub fn sys_clone_dispatch(
         // PT, bumps struct-page refcount via inc_ref, maps same PA
         // RO in child + remaps parent RO. First write on either
         // side triggers handle_page_fault_cow which copies+splits.
-        #[cfg(target_arch = "x86_64")]
+        // TEST (debug-eager-fork): copy every page into a fresh private frame
+        // instead of COW-sharing — eliminates ALL parent/child frame sharing.
+        // If the garbage corruption vanishes under this, the bug is in COW page
+        // sharing (a shared frame mapped writable); if not, fork is exonerated.
+        #[cfg(all(target_arch = "x86_64", feature = "debug-eager-fork"))]
+        let res = parent_mm.fork_copy_pages::<hal_x86_64::mmu_ops::X86Mmu, _>(
+            new_root, hhdm, pmm::setup::alloc_one_frame);
+        #[cfg(all(target_arch = "x86_64", not(feature = "debug-eager-fork")))]
         let res = parent_mm.fork_cow_pages::<hal_x86_64::mmu_ops::X86Mmu, _>(
             new_root, hhdm,
             // SAFETY: pa is a current PMM-allocated frame mapped in parent's PT; inc_ref bumps the per-page refcount.
@@ -148,6 +155,9 @@ pub fn sys_clone_dispatch(
     // parent reads are the running task on this CPU per single-mutator invariant.
     unsafe {
         *child.cwd.get() = (*cur.cwd.get()).clone();
+        *child.cwd_vfs.get() = (*cur.cwd_vfs.get()).clone();
+        *child.root_vfs.get() = (*cur.root_vfs.get()).clone();
+        *child.root.get() = (*cur.root.get()).clone();
         *child.rlimits.get() = *cur.rlimits.get();
         // F200: ctty inherits across fork(2) per POSIX §11.1.3.
         *child.ctty.get() = (*cur.ctty.get()).clone();

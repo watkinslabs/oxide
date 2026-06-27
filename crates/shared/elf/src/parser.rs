@@ -197,8 +197,12 @@ pub fn parse(file: &[u8], arch_machine: u16) -> KResult<ParsedElf<'_>> {
                 let end = p_offset.checked_add(p_filesz as usize).ok_or(ElfError::Einval)?;
                 if end > file.len() || p_filesz == 0 { return Err(ElfError::Einval); }
                 let mut s = &file[p_offset..end];
-                // Trim trailing NUL per ELF convention.
-                if let Some(&0) = s.last() { s = &s[..s.len() - 1]; }
+                // PT_INTERP is a NUL-terminated string. Some image tooling
+                // patches the field in place and leaves extra zero padding
+                // after the terminator, so stop at the first NUL.
+                if let Some(nul) = s.iter().position(|&b| b == 0) {
+                    s = &s[..nul];
+                }
                 interp = Some(s);
             }
             x if x == PType::GnuStack as u32 => {

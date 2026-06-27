@@ -98,7 +98,25 @@ impl LoadedImage {
 /// # C: O(file size) — one ext4 read.
 #[cfg(target_os = "oxide-kernel")]
 fn read_interp_blob(path: &[u8]) -> Option<alloc::vec::Vec<u8>> {
-    ext4::rootfs::read_file(path)
+    if let Some(blob) = ext4::rootfs::read_file(path) {
+        return Some(blob);
+    }
+    // The early interpreter reader still uses the raw ext4 rootfs helper,
+    // which does not follow intermediate symlinks. Fedora-style merged-/usr
+    // roots commonly expose `/lib` and `/lib64` as symlinks into `/usr`.
+    if let Some(rest) = path.strip_prefix(b"/lib64/") {
+        let mut p = alloc::vec::Vec::with_capacity(b"/usr/lib64/".len() + rest.len());
+        p.extend_from_slice(b"/usr/lib64/");
+        p.extend_from_slice(rest);
+        return ext4::rootfs::read_file(&p);
+    }
+    if let Some(rest) = path.strip_prefix(b"/lib/") {
+        let mut p = alloc::vec::Vec::with_capacity(b"/usr/lib/".len() + rest.len());
+        p.extend_from_slice(b"/usr/lib/");
+        p.extend_from_slice(rest);
+        return ext4::rootfs::read_file(&p);
+    }
+    None
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
@@ -161,9 +179,40 @@ pub fn load_static_blob(
     let mut interp_base: u64 = 0;
     let mut interp_entry: u64 = 0;
     if let Some(interp_path) = parsed.interp {
-        let interp_blob = read_interp_blob(interp_path)
-            .ok_or(LoadError::Enoexec)?;
-        let interp = place_image(&interp_blob, as_, Some(INTERP_LOAD_BIAS), false)?;
+        #[cfg(feature = "debug-boot")]
+        {
+            klog::write_raw(b"[INFO]  elf-load: interp ");
+            klog::write_raw(interp_path);
+            klog::write_raw(b"\n");
+        }
+        let interp_blob = match read_interp_blob(interp_path) {
+            Some(blob) => {
+                #[cfg(feature = "debug-boot")]
+                klog::write_raw(b"[INFO]  elf-load: interp read ok\n");
+                blob
+            }
+            None => {
+                #[cfg(feature = "debug-boot")]
+                klog::write_raw(b"[ERROR] elf-load: interp read failed\n");
+                return Err(LoadError::Enoexec);
+            }
+        };
+        let interp = match place_image(&interp_blob, as_, Some(INTERP_LOAD_BIAS), false) {
+            Ok(img) => {
+                #[cfg(feature = "debug-boot")]
+                klog::write_raw(b"[INFO]  elf-load: interp place ok\n");
+                img
+            }
+            Err(err) => {
+                #[cfg(feature = "debug-boot")]
+                {
+                    klog::write_raw(b"[ERROR] elf-load: interp place failed err=");
+                    klog::write_raw(load_error_name(err));
+                    klog::write_raw(b"\n");
+                }
+                return Err(err);
+            }
+        };
         interp_base  = INTERP_LOAD_BIAS;
         interp_entry = interp.entry.as_u64();
     }
@@ -177,6 +226,15 @@ pub fn load_static_blob(
         interp_base,
         interp_entry,
     })
+}
+
+#[cfg(feature = "debug-boot")]
+fn load_error_name(err: LoadError) -> &'static [u8] {
+    match err {
+        LoadError::Enoexec => b"Enoexec",
+        LoadError::Einval => b"Einval",
+        LoadError::Enomem => b"Enomem",
+    }
 }
 
 /// Inner placement: parse `blob`, lay out PT_LOADs, apply ET_DYN

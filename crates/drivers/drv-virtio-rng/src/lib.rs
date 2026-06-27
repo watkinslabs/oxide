@@ -159,6 +159,9 @@ pub fn fill(buf: &mut [u8]) -> usize {
         core::hint::spin_loop();
     }
     ctx.used_idx_seen = target;
+    // virtio 1.2 §2.7.13.2: acquire barrier after observing used.idx so the
+    // used-element `len` + random bytes are not read ahead of the idx load.
+    core::sync::atomic::fence(Ordering::Acquire);
 
     // Read the completed used element's `len` (bytes the device wrote).
     // used ring layout: flags(u16) idx(u16) then ring[]: each elem is

@@ -111,6 +111,12 @@ pub fn pid_resolve_hook(vpid: u64) -> u64 {
     }
 }
 
+/// global tid → visible pid for cgroup.procs/threads reads.
+/// # C: O(N) registry lookup
+pub fn pid_display_hook(tid: u64) -> u64 {
+    crate::live::registry::display_vpid(tid as u32)
+}
+
 /// Register the scheduler's cgroup controllers with the cgroup crate.
 /// Called once at boot.
 /// # C: O(1)
@@ -120,4 +126,5 @@ pub fn install() {
     cgroup::set_weight_hook(weight_hook);
     cgroup::set_cpuset_hook(cpuset_hook);
     cgroup::set_pid_resolve_hook(pid_resolve_hook);
+    cgroup::set_pid_display_hook(pid_display_hook);
 }

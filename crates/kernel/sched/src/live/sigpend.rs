@@ -75,6 +75,28 @@ pub fn send_signal_self(sig: Signum) {
     }
 }
 
+/// Linux `zap_other_threads` (kernel/signal.c): on `exit_group(2)` or a
+/// fatal signal, EVERY thread in the caller's thread-group dies — the whole
+/// process terminates, not just the calling thread. We post an unblockable
+/// SIGKILL to each sibling (same `tgid`, excluding self) and wake it, so the
+/// sibling runs its own SIG_DFL-terminate at the next signal-delivery point.
+/// Without this, a fatal signal (SIGSEGV/SIGABRT) in one thread of a
+/// multi-threaded process leaves the siblings alive — and any libc-internal
+/// lock the dying thread held leaks, deadlocking a sibling that waits on it.
+/// # C: O(N_threads)
+pub fn zap_other_threads() {
+    let cur = match super::schedule::current() { Some(c) => c, None => return };
+    let tgid = cur.tgid.load(Ordering::Acquire);
+    let self_tid = cur.tid;
+    for (_vtid, tid) in crate::registry::thread_entries(tgid) {
+        if tid == self_tid { continue; }
+        if let Some(t) = crate::registry::lookup(tid) {
+            t.sigpending.fetch_or(Signum::Sigkill.bit(), Ordering::Release);
+            wake_if_sleeping(&t);
+        }
+    }
+}
+
 /// F168: bits in `task.sigpending` that are not masked by
 /// `task.sigmask`. Zero when every pending signal is currently
 /// blocked. Blocking syscalls treat a non-zero result as "wake

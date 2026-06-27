@@ -333,6 +333,16 @@ impl BlkState {
         // Wait for the device to consume our chain (used.idx == target).
         self.wait_for_completion(h, target)?;
 
+        // virtio_rmb (spec §2.7.13.2): a read/acquire barrier AFTER observing
+        // used.idx and BEFORE reading the device-written bounce frame (status +
+        // data). Without it the device's DMA writes to the bounce region can be
+        // read stale/out-of-order vs the used.idx update — intermittently
+        // returning a PREVIOUS request's bytes. That silently corrupted extent
+        // metadata reads in resolve_pblock (-> wrong physical block -> a file
+        // page served another block's content), poisoning libc's cached image
+        // and deadlocking glibc on a garbage .bss lock (the boot wedge).
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+
         // Decode status; copy device-filled data back for reads.
         // SAFETY: HHDM-mapped bounce frame; aligned u8 read of the
         // status byte the device wrote, and the device-filled data

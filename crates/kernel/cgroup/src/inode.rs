@@ -75,6 +75,14 @@ impl Inode for CgDir {
     }
 
     fn mkdir(&self, name: &str, _mode: u32) -> KResult<InodeRef> {
+        #[cfg(feature = "debug-cgroup")]
+        {
+            klog::write_raw(b"[cg] mkdir parent=");
+            klog::write_dec_u64(self.cgid);
+            klog::write_raw(b" name=");
+            klog::write_raw(name.as_bytes());
+            klog::write_raw(b"\n");
+        }
         let id = crate::mkdir_child(self.cgid, name)?;
         Ok(Arc::new(CgDir::new(id)) as InodeRef)
     }
@@ -126,7 +134,7 @@ impl Inode for CgFile {
             "cgroup.controllers" | "cgroup.events" | "cgroup.stat"
             | "cgroup.type" | "pids.current" | "pids.peak" | "pids.events"
             | "memory.current" | "memory.swap.current" | "memory.events"
-            | "memory.stat" | "cpu.stat" | "io.stat"
+            | "memory.stat" | "memory.pressure_level" | "cpu.stat" | "io.stat"
             | "cpuset.cpus.effective" | "cpuset.mems.effective" => Some(0o444),
             _ => Some(0o644),
         }

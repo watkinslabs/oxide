@@ -777,7 +777,7 @@ ExecStart=/bin/g19_glibc_pthread
 b"::sysinit:/etc/init.d/rcS
 ::ctrlaltdel:/sbin/reboot
 ::shutdown:/bin/umount -a -r
-ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
+ttyS0::respawn:/sbin/getty --noreset --noclear -L 115200 ttyS0 vt100
 ")?,
         "/etc/inittab")?;
 

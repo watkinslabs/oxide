@@ -109,7 +109,7 @@ fn dump_recent_for(tid: u32) {
     let pos = RING_POS.load(Ordering::Relaxed);
     let mut shown = 0u32;
     let mut k = 0usize;
-    while k < RING_N && shown < 16 {
+    while k < RING_N && shown < 40 {
         // newest is at (pos-1); walk backwards.
         let i = (pos + RING_N - 1 - k) % RING_N;
         k += 1;
@@ -136,6 +136,35 @@ fn dump_recent_for(tid: u32) {
         klog::write_raw(b"    <none recorded>\n");
     }
 }
+
+/// Dump the current task's recent syscalls when it exits non-zero — pins the
+/// failing syscall behind a service's `status=1/FAILURE` (e.g. systemd-udevd /
+/// systemd-journald failing init). No-op for clean (code 0) exits. Rides
+/// `debug-watchdog`.
+/// # C: O(RING_N)
+#[cfg(feature = "debug-watchdog")]
+pub fn dump_exit_recent(name: &str, code: u64) {
+    if code == 0 { return; }
+    klog::write_raw(b"[EXIT] name=");
+    klog::write_raw(name.as_bytes());
+    if let Some(t) = current_task() {
+        // SAFETY: running task on this CPU; single-mutator read of the exe_path
+        // slot per `13§5`. Identifies WHICH binary exited (name is the static
+        // "fork-child" — exe_path is the execve'd path, e.g. systemd-journald).
+        if let Some(p) = unsafe { &*t.exe_path.get() } {
+            klog::write_raw(b" exe=");
+            klog::write_raw(p.as_bytes());
+        }
+    }
+    klog::write_raw(b" code=");
+    klog::write_dec_u64(code);
+    klog::write_raw(b"\n");
+    if let Some(t) = current_task() { dump_recent_for(t.tid); }
+}
+/// Off-watchdog no-op.
+/// # C: O(1)
+#[cfg(not(feature = "debug-watchdog"))]
+pub fn dump_exit_recent(_name: &str, _code: u64) {}
 
 impl Task {
     /// Record entry into syscall `nr` (x86_64 table key). Always-on
@@ -267,7 +296,40 @@ pub fn watchdog_tick(now_ns: u64) {
         #[cfg(feature = "debug-watchdog")]
         report_lockup(_secs, beat.tid, cur);
     }
+
+    // No-progress detector: catches a PARKED wedge (everything Sleeping,
+    // a lost wakeup — the soft-lockup detector above disarms on !runnable
+    // and never sees it). If the global switch count hasn't advanced for
+    // NOPROG_NS, dump every task's state once so a parked deadlock is not
+    // silent. Re-arms when switches advance again.
+    let sw = beat.switches;
+    let last_sw = WD_NOPROG_SW.load(Ordering::Relaxed);
+    if sw != last_sw {
+        WD_NOPROG_SW.store(sw, Ordering::Relaxed);
+        WD_NOPROG_NS.store(now_ns, Ordering::Relaxed);
+        WD_NOPROG_FIRED.store(false, Ordering::Relaxed);
+    } else {
+        let since = now_ns.wrapping_sub(WD_NOPROG_NS.load(Ordering::Relaxed));
+        if since >= NOPROG_NS && !WD_NOPROG_FIRED.swap(true, Ordering::Relaxed) {
+            #[cfg(feature = "debug-watchdog")]
+            {
+                klog::write_raw(b"\n[WATCHDOG] no-progress: 0 context switches for ");
+                klog::write_dec_u64(since / 1_000_000_000);
+                klog::write_raw(b"s (parked wedge?) task dump:\n");
+                dump_tasks();
+            }
+        }
+    }
 }
+
+/// No-progress threshold for the parked-wedge detector. Longer than the
+/// soft-lockup STALL_NS since a healthy boot can legitimately have brief
+/// all-parked windows (e.g. waiting on a disk read); 15 s with zero
+/// context switches during boot is a genuine deadlock.
+const NOPROG_NS: u64 = 40_000_000_000;
+static WD_NOPROG_SW: AtomicU64 = AtomicU64::new(0);
+static WD_NOPROG_NS: AtomicU64 = AtomicU64::new(0);
+static WD_NOPROG_FIRED: AtomicBool = AtomicBool::new(false);
 
 /// Emit the soft-lockup banner + task dump. Gated: the watchdog *logic*
 /// (counters, state machine) is always-on and silent; only this report
@@ -338,6 +400,24 @@ fn dump_tasks_emit() {
         col_dec(t.nsyscalls.load(Ordering::Relaxed), 10);
         klog::write_raw(b" ");
         col_dec(t.sum_exec_runtime_ns.load(Ordering::Relaxed) / 1_000_000, 10);
+        // tgid/vtid/parent_tid expose thread-group structure: rows sharing a
+        // `tgid` are sibling threads of one process. Lets the wedge dump prove
+        // multi-threaded vs single-threaded (and which thread holds a lock).
+        klog::write_raw(b" tgid=");  col_dec(t.tgid.load(Ordering::Relaxed) as u64, 6);
+        klog::write_raw(b" vtid=");  col_dec(t.vtid.load(Ordering::Relaxed) as u64, 6);
+        klog::write_raw(b" ptid="); col_dec(t.parent_tid.load(Ordering::Relaxed) as u64, 6);
+        // Futex wait address (0 = not parked in a futex). On a wedge this shows
+        // which lock each blocked task waits on — a holder for that address
+        // among the runnable/other rows pinpoints the deadlock.
+        let fux = t.futex_uaddr.load(Ordering::Relaxed);
+        if fux != 0 { klog::write_raw(b" fux="); klog::write_hex_u64(fux); }
+        // exe= identifies the binary behind the static "fork-child" name — on a
+        // futex wedge this names WHICH program deadlocked on the inherited lock.
+        // SAFETY: dump runs with scheduling effectively quiesced (watchdog/sysrq
+        // context); single-mutator read of the exe_path slot per `13§5`.
+        if let Some(p) = unsafe { &*t.exe_path.get() } {
+            klog::write_raw(b" exe="); klog::write_raw(p.as_bytes());
+        }
         klog::write_raw(b"\n");
     }
 }

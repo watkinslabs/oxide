@@ -366,12 +366,22 @@ pub fn reap_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(u32, i32)> {
 /// # C: O(N_zombies × N_tasks).
 pub fn reap_orphans() {
     use crate::registry;
-    let mut q = ZOMBIES.lock();
-    q.retain(|t| {
+    let q = ZOMBIES.lock();
+    for t in q.iter() {
         let pt = t.parent_tid.load(Ordering::Acquire);
-        if pt == 0 { return true; }
-        registry::lookup(pt).is_some()
-    });
+        if pt == 0 { continue; }
+        if registry::lookup(pt).is_none() {
+            // Parent vanished without reparenting this zombie. Linux NEVER
+            // destroys an unreaped zombie — forget_original_parent reparents
+            // orphans to init (PID 1, the subreaper) which then wait4()s them.
+            // The old code DROPPED such zombies every tick, so a child that
+            // exited during sd-executor setup (before systemd's post-clone3
+            // pidref) became unresolvable → systemd's pidfd_open returned ESRCH
+            // → "Failed to spawn executor: No such process" → udevd never ran.
+            // Reparent to init instead; it stays pidfd-resolvable until reaped.
+            t.parent_tid.store(1, Ordering::Release);
+        }
+    }
 }
 
 /// Linux `forget_original_parent` — walk live children of the
@@ -383,11 +393,78 @@ pub fn reap_orphans() {
 /// # C: O(N_tasks).
 pub fn reparent_children(dying_tid: u32) {
     use crate::registry;
+    // B-reparent: reparent to PID 1 (init) by its INTERNAL tid, not the
+    // literal vpid `1`. parent_tid is the kernel-internal tid used by
+    // wake_wait4_parent / reap_one / wait_pid_matches; init's vtgid is 1
+    // but its internal tid is the kernel-assigned value (e.g. 0xC0DE_0002).
+    // Storing `1` pointed every orphan at a non-existent task, so when a
+    // double-forked service's orphaned grandchild later exited, its
+    // SIGCHLD + wake targeted nobody and it became an unreapable zombie —
+    // a lost-wakeup boot hang under systemd (which double-forks heavily).
+    // Also rewrite parent_arc to init's Weak so signal_child_exit can
+    // upgrade it and post SIGCHLD into init's signalfd (its reap path).
+    let init = registry::lookup_by_vpid(1);
+    let init_tid = init.as_ref().map(|t| t.tid).unwrap_or(1);
+    let init_weak = init.as_ref().map(alloc::sync::Arc::downgrade);
     for tid in registry::live_tids() {
         if let Some(t) = registry::lookup(tid) {
             if t.parent_tid.load(Ordering::Acquire) == dying_tid {
-                t.parent_tid.store(1, Ordering::Release);
+                // PR_SET_PDEATHSIG (Linux `forget_original_parent`): when the
+                // real parent thread exits, every child that armed a
+                // parent-death signal receives it. systemd's exec helpers
+                // (`(sd-pam)`/`(sd-userns)`/`FORK_DEATHSIG_*`) arm this and
+                // then `pause()` for a barrier; if the executor dies they MUST
+                // get the signal and exit. Without delivery the helper lingered
+                // as an orphan, PID 1 later SIGKILLed it, and the executor's
+                // barrier/pidref handshake reported the helper as vanished
+                // (EXIT_RUNTIME_DIRECTORY "No such process"). Deliver before
+                // reparenting, exactly like the kernel sends it from the
+                // original parent's exit. `pdeathsig` holds the raw signal
+                // number (1..=64); 0 means disarmed.
+                let pds = t.pdeathsig.load(Ordering::Acquire);
+                if (1..=64).contains(&pds) {
+                    t.sigpending.fetch_or(1u64 << (pds - 1), Ordering::Release);
+                    crate::live::wake_if_sleeping(&t);
+                }
+                t.parent_tid.store(init_tid, Ordering::Release);
+                if let Some(ref w) = init_weak {
+                    // SAFETY: single-CPU UP, preempt-off in sys_exit; the
+                    // reparented child is not running on any CPU, so we are the
+                    // sole writer to its parent_arc cell during this rewrite.
+                    unsafe { *t.parent_arc.get() = Some(w.clone()); }
+                }
             }
         }
     }
+}
+
+/// Terminate the CURRENT task as if killed by signal `sig` (default fatal
+/// action) and schedule away — DIVERGES. The page-fault handler calls this
+/// when a USER-mode fault is unresolvable: Linux delivers SIGSEGV/SIGBUS whose
+/// default action terminates the faulting process; the kernel must kill that
+/// ONE task, never halt the machine. Mirrors `sys_exit`'s teardown so the
+/// parent reaps it (wait status = `sig | 0x100`, "killed by signal") and the
+/// system keeps running past a single service's bad-pointer crash.
+/// # SAFETY: caller is the exception handler running on the faulting task's
+/// kernel stack, IRQs off, runqueue installed.
+/// # C: O(N_tasks) reparent + O(log N) schedule
+pub fn terminate_current_with_signal(sig: u8) -> ! {
+    if let Some(rq) = crate::live::global() {
+        let raw = rq.current.load(Ordering::Acquire);
+        if !raw.is_null() {
+            // SAFETY: rq.current installed via Arc::into_raw, non-null; we run
+            // ON this task so no concurrent freer; reads/atomic-stores only.
+            let task: &Task = unsafe { &*raw };
+            task.exit_status.store((sig as i32) | 0x100, Ordering::Release);
+            task.vfork_pending.store(false, Ordering::Release);
+            ::cgroup::on_exit(task.tid as u64);
+            // SAFETY: exiting task on this CPU; sole writer per single-mutator.
+            unsafe { task.replace_fd_table(None); task.replace_mm(None); reparent_children(task.tid); }
+            crate::live::mark_done(task);
+            signal_child_exit(task);
+        }
+    }
+    // SAFETY: exception ctx; preempt-off; Zombie state means no re-enqueue.
+    unsafe { crate::live::schedule(); }
+    loop { core::hint::spin_loop(); }
 }

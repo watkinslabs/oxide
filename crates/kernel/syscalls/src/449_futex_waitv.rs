@@ -8,10 +8,33 @@ use ::syscall::SyscallArgs;
 use ::syscall::errno::Errno;
 use ::hal::USER_VA_END;
 
+fn absolute_deadline_ns(timeout: u64, clockid: u64) -> Result<u64, i64> {
+    if timeout == 0 { return Ok(0); }
+    if timeout.checked_add(16).map_or(true, |end| end > USER_VA_END) {
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    if !crate::time_common::clock_id_known(clockid) {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    // SAFETY: timeout+16 range checked above; timespec is two i64 fields.
+    let secs = unsafe { core::ptr::read_volatile(timeout as *const i64) };
+    // SAFETY: timeout+8 is inside the validated timespec.
+    let nsec = unsafe { core::ptr::read_volatile((timeout + 8) as *const i64) };
+    if secs < 0 || nsec < 0 || nsec >= 1_000_000_000 {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    let abs = (secs as u64)
+        .saturating_mul(crate::time_common::NS_PER_SEC)
+        .saturating_add(nsec as u64);
+    let now = crate::time_common::ns_for_clock(clockid);
+    if abs <= now { return Err(-(Errno::Etimedout.as_i32() as i64)); }
+    Ok(abs.saturating_sub(now).saturating_add(crate::time_common::monotonic_ns()).max(1))
+}
+
 /// `sys_futex_waitv(waiters, nr_futexes, flags, timeout, clockid)`.
 /// Reads N `struct futex_waitv { u64 val; u64 uaddr; u32 flags;
 /// u32 _rsvd }` from a0, parks until ANY key is woken, returns
-/// the index. `timeout` ignored (matches sys_futex).
+/// the index.
 /// # C: O(N) pre-flight + O(N) park-enqueue
 pub fn sys_futex_waitv(args: &SyscallArgs) -> i64 {
     const FUTEX_WAITV_MAX: u64 = 128;
@@ -20,21 +43,29 @@ pub fn sys_futex_waitv(args: &SyscallArgs) -> i64 {
     if ptr == 0 || n == 0 || n > FUTEX_WAITV_MAX {
         return -(Errno::Einval.as_i32() as i64);
     }
+    let deadline_ns = match absolute_deadline_ns(args.a3, args.a4) {
+        Ok(dl) => dl,
+        Err(e) => return e,
+    };
     match ptr.checked_add(n * ENTRY_BYTES) {
         Some(e) if e <= USER_VA_END => {},
         _ => return -(Errno::Efault.as_i32() as i64),
     }
     let mut uaddrs: ::alloc::vec::Vec<u64> = ::alloc::vec::Vec::with_capacity(n as usize);
     let mut vals:   ::alloc::vec::Vec<u32> = ::alloc::vec::Vec::with_capacity(n as usize);
+    let mut private = true; // FUTEX2_PRIVATE per-waiter; AND across the set.
     for i in 0..n {
         let base = ptr + i * ENTRY_BYTES;
         // SAFETY: base+24 ≤ ptr+n*24 ≤ USER_VA_END; CR3 is current's.
         let val   = unsafe { core::ptr::read_volatile(base as *const u64) };
         // SAFETY: base+24 ≤ ptr+n*24 ≤ USER_VA_END; CR3 is current's.
         let uaddr = unsafe { core::ptr::read_volatile((base + 8) as *const u64) };
+        // SAFETY: flags at +16 within the 24-byte struct, in range.
+        let flags = unsafe { core::ptr::read_volatile((base + 16) as *const u32) };
+        if (flags & ::ipc::live::futex::FUTEX_PRIVATE_FLAG) == 0 { private = false; }
         if val > u32::MAX as u64 { return -(Errno::Einval.as_i32() as i64); }
         uaddrs.push(uaddr);
         vals.push(val as u32);
     }
-    ::ipc::live::futex::dispatch_waitv(&uaddrs, &vals)
+    ::ipc::live::futex::dispatch_waitv_timed(&uaddrs, &vals, private, deadline_ns)
 }

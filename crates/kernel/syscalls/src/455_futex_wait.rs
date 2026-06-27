@@ -1,10 +1,7 @@
 // 455 futex_wait — one syscall, one file (docs/53 §0).
 //
 // futex2 wait: park if *uaddr == val. Maps onto the shared futex queue (same
-// FUTEX_WAIT path as the classic NR_FUTEX). 32-bit futexes only. The absolute
-// timeout (a4/clockid) is not yet honored — the futex queue has no timed park
-// for EITHER the classic or futex2 path; that is a shared follow-up, not a
-// futex2-specific gap. Callers loop on a wake (glibc's low-level locks do).
+// FUTEX_WAIT path as the classic NR_FUTEX). 32-bit futexes only.
 
 use syscall::{errno::Errno, SyscallArgs};
 
@@ -12,6 +9,29 @@ const FUTEX2_SIZE_U32:  u32 = 0x02;
 const FUTEX2_SIZE_MASK: u32 = 0x03;
 const FUTEX2_PRIVATE:   u32 = 0x80;
 const FUTEX_WAIT:       u32 = 0;
+
+fn absolute_deadline_ns(timeout: u64, clockid: u64) -> Result<u64, i64> {
+    if timeout == 0 { return Ok(0); }
+    if timeout.checked_add(16).map_or(true, |end| end > hal::USER_VA_END) {
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    if !crate::time_common::clock_id_known(clockid) {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    // SAFETY: timeout+16 range checked above; timespec is two i64 fields.
+    let secs = unsafe { core::ptr::read_volatile(timeout as *const i64) };
+    // SAFETY: timeout+8 is inside the validated timespec.
+    let nsec = unsafe { core::ptr::read_volatile((timeout + 8) as *const i64) };
+    if secs < 0 || nsec < 0 || nsec >= 1_000_000_000 {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    let abs = (secs as u64)
+        .saturating_mul(crate::time_common::NS_PER_SEC)
+        .saturating_add(nsec as u64);
+    let now = crate::time_common::ns_for_clock(clockid);
+    if abs <= now { return Err(-(Errno::Etimedout.as_i32() as i64)); }
+    Ok(abs.saturating_sub(now).saturating_add(crate::time_common::monotonic_ns()).max(1))
+}
 
 /// `sys_futex_wait(uaddr, val, mask, flags, timeout, clockid)` — slot 455.
 /// # C: O(1) park
@@ -23,5 +43,9 @@ pub fn sys_futex_wait(args: &SyscallArgs) -> i64 {
         || (flags & !(FUTEX2_SIZE_MASK | FUTEX2_PRIVATE)) != 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
-    ::ipc::live::futex::dispatch(uaddr, FUTEX_WAIT, val)
+    let deadline_ns = match absolute_deadline_ns(args.a4, args.a5) {
+        Ok(dl) => dl,
+        Err(e) => return e,
+    };
+    ::ipc::live::futex::dispatch_timed(uaddr, FUTEX_WAIT | (flags & FUTEX2_PRIVATE), val, deadline_ns)
 }

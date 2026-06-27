@@ -16,4 +16,11 @@ bitflags  = { version = "2", default-features = false }
 [features]
 default = []
 hosted  = []
+debug-mount = []  # [mnt] FFAULT-LOCK: log libc lock-page VA on File-fault (correlate with zap tracer)
 
+
+debug-no-cow-fast = []  # TEST: disable COW in-place fast-path (always slow-copy) to isolate write-while-shared corruption
+
+debug-no-fork-shared = []  # TEST: force COW for all VMAs on fork
+
+debug-no-shmem = []  # TEST: disable MAP_SHARED shared_frame path

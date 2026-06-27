@@ -26,7 +26,105 @@ pub(crate) static NEXT_FSCTX_INO: AtomicU64 = AtomicU64::new(0x4600_0000);
 /// fstypes the new mount API can materialise (mirrors `sys_mount`).
 /// # C: O(1)
 pub(crate) fn fstype_ok(t: &str) -> bool {
-    matches!(t, "tmpfs" | "proc" | "sysfs" | "devtmpfs" | "devpts" | "cgroup2" | "ramfs")
+    matches!(t,
+        "tmpfs" | "ramfs" | "proc" | "sysfs" | "devtmpfs" | "devpts" | "cgroup2"
+        | "ext4"
+        | "securityfs" | "efivarfs" | "pstore" | "bpf" | "configfs" | "debugfs"
+        | "tracefs" | "fusectl" | "mqueue" | "hugetlbfs")
+}
+
+fn source_disk_name(source: &str) -> &str {
+    source.rsplit('/').next().unwrap_or(source)
+}
+
+/// Materialise a filesystem type at `target`. This is the single fstype
+/// dispatcher shared by old mount(2) and the new fsopen/fsmount/move_mount
+/// API path.
+/// # C: O(N_mounts + optional block-registry lookup)
+pub(crate) fn mount_fstype(source: &str, fstype: &str, target: &str) -> i64 {
+    match fstype {
+        "tmpfs" | "ramfs" => {
+            let root: InodeRef = Arc::new(::fs::tmpfs::TmpfsRootInode::new(target.to_string()));
+            let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(::fs::tmpfs::TmpfsFs);
+            let _ = vfs::mount::register_bind(target, fs, root);
+            let _ = vfs::mount::propagate_mount(target);
+            0
+        }
+        "ext4" => {
+            let name = source_disk_name(source);
+            if name.is_empty() { return -(Errno::Einval.as_i32() as i64); }
+            let dev = block::registry::by_name(name)
+                .map(|d| d.dev.clone())
+                .or_else(|| block::registry::by_serial(name));
+            let dev = match dev {
+                Some(d) => d,
+                None => return -(Errno::Enoent.as_i32() as i64),
+            };
+            let fs = match ext4::rootfs::Ext4Mount::open(dev) {
+                Ok(f) => f,
+                Err(_) => return -(Errno::Einval.as_i32() as i64),
+            };
+            match vfs::mount::register(target, fs) {
+                Ok(()) => {
+                    let _ = vfs::mount::propagate_mount(target);
+                    0
+                }
+                Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
+                Err(e) => crate::namei_common::errno_from_vfs(e),
+            }
+        }
+        "cgroup2" => match cgroup::mount_at(target) {
+            Ok(()) => 0,
+            Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
+            Err(e) => crate::namei_common::errno_from_vfs(e),
+        }
+        "proc" => {
+            let _ = vfs::mount::register(target, Arc::new(procfs::fs_impl::ProcfsFs));
+            let _ = vfs::mount::propagate_mount(target);
+            0
+        }
+        // A fresh sysfs INSTANCE must enter the unified mount table, exactly
+        // like procfs/debugfs/tracefs above. systemd's `mount_private_sysfs`
+        // (namespace.c `mount_private_apivfs`) mounts a new sysfs at a unique
+        // mkdtemp staging dir, then `mount(staging, entry, MS_MOVE)` relocates
+        // it into the sandbox root. The old `=> 0` admit-noop registered
+        // NOTHING, so the staging path was not an exact mount → the follow-up
+        // MS_MOVE hit `move_mount`'s `mount_exact_at … ok_or(Einval)` and the
+        // executor failed step NAMESPACE (status=226). Registering the real
+        // SysfsFs (the same fs kmain mounts at /sys) makes the staging mount
+        // resolvable; after the executor's pivot_root re-roots staging→/, its
+        // `mount_point` lands back at /sys and `SysfsFs::lookup("/sys/…")`
+        // resolves normally. Boot never re-mounts /sys (the kernel mounted it),
+        // so this never stacks a duplicate at /sys.
+        "sysfs" => {
+            let _ = vfs::mount::register(target, Arc::new(sysfs::SysfsFs));
+            let _ = vfs::mount::propagate_mount(target);
+            0
+        }
+        // devtmpfs/devpts/cgroup(v1) instances still admit-noop: their content
+        // lives in the devfs registry (no standalone whole-path FileSystem to
+        // register), and systemd's private-dev path uses a tmpfs (registered
+        // above), not devtmpfs — so the captured NAMESPACE failure does not
+        // exercise them. They share sysfs's old latent MS_MOVE/umount2 gap and
+        // want a real DevfsFs/DevptsFs superblock once one exists (residual).
+        "devtmpfs" | "devpts" | "cgroup" => 0,
+        // Real (devfs-delegating) superblocks so the mount enters the unified
+        // table and passes libmount's post-mount verify + statfs f_type magic.
+        // The old `=> 0` admit-noop made these invisible → helper exit 32.
+        "debugfs" => {
+            let _ = vfs::mount::register(target, Arc::new(tracefs::fs_impl::DebugfsFs));
+            let _ = vfs::mount::propagate_mount(target);
+            0
+        }
+        "tracefs" => {
+            let _ = vfs::mount::register(target, Arc::new(tracefs::fs_impl::TracefsFs));
+            let _ = vfs::mount::propagate_mount(target);
+            0
+        }
+        "securityfs" | "efivarfs" | "pstore" | "bpf" | "configfs"
+            | "fusectl" | "mqueue" | "hugetlbfs" => 0,
+        _ => -(Errno::Eopnotsupp.as_i32() as i64),
+    }
 }
 
 /// fd-backed `fs_context` builder created by `fsopen`.

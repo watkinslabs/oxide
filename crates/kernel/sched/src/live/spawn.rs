@@ -288,6 +288,12 @@ pub unsafe fn spawn_user_thread_for_fork(
         unsafe { task.creds = parent.creds.snapshot(); }
         // ioprio_set/get(2): I/O priority is inherited across fork.
         task.ioprio.store(parent.ioprio.load(Ordering::Acquire), Ordering::Release);
+        // /proc/<pid>/exe is inherited across fork until the child execs (Linux
+        // dup_mm carries exe_file). Also lets the wedge / [EXIT] dumps name a
+        // pre-exec fork-child by the program that forked it.
+        // SAFETY: parent is the running task on this CPU (single-mutator read);
+        // `task` is local and not yet scheduled (single-mutator write) per `13§5`.
+        unsafe { *task.exe_path.get() = (*parent.exe_path.get()).clone(); }
         // F105: PID NS inheritance. If parent's unshare_pid_pending
         // is set, allocate a fresh pid_ns for the child + give it
         // vtgid=1 (it becomes the NS's "init"). Else inherit parent's

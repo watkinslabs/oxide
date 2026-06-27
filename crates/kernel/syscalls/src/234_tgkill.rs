@@ -18,14 +18,30 @@ pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
+    let want_tgid = tgid as u32;
+    let want_tid = tid as u32;
+    if (want_tgid == cur.vtgid.load(Ordering::Acquire)
+            || want_tgid == cur.tgid.load(Ordering::Acquire))
+        && (want_tid == cur.vtid.load(Ordering::Acquire) || want_tid == cur.tid)
+    {
+        if sig != 0 {
+            cur.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
+        }
+        return 0;
+    }
     let cur_ns = cur.pid_ns.load(Ordering::Acquire);
     // F109: in non-init pid_ns, `tid` is a vtid in caller's NS.
-    match sched::live::registry::lookup_in_ns(cur_ns, tid as u32) {
+    match sched::live::registry::lookup_in_ns(cur_ns, want_tid) {
         Some(t) => {
-            // Validate the tgid matches as well (vtgid in NS, real otherwise).
-            let want_tgid = tgid as u32;
-            let got_tgid = if cur_ns == 0 { t.tgid.load(Ordering::Acquire) }
-                           else { t.vtgid.load(Ordering::Acquire) };
+            // Validate the tgid matches what userspace sees. Boot PID1 lives
+            // in init ns but is stamped vtgid/vtid=1; compare that visible id
+            // before falling back to the opaque internal scheduler tgid.
+            let visible_tgid = t.vtgid.load(Ordering::Acquire);
+            let got_tgid = if visible_tgid != 0 {
+                visible_tgid
+            } else {
+                t.tgid.load(Ordering::Acquire)
+            };
             if got_tgid != want_tgid {
                 return -(Errno::Esrch.as_i32() as i64);
             }
@@ -35,6 +51,7 @@ pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
             if sig != 0 {
                 t.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
                 if sig == 18 { sched::live::registry::wake_if_stopped(&t); }
+                sched::live::wake_if_sleeping(&t);
             }
             0
         }

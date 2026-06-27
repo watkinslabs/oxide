@@ -68,7 +68,10 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
         match vfs::mount::resolve_mount(path_str) {
             Some((mnt, rel)) => match mnt.fs.create(&rel, final_mode) {
                 Ok(i) => i,
-                Err(_) => return -(Errno::Enoent.as_i32() as i64),
+                Err(e) => {
+            crate::namei_common::trace_run_vfs_error(b"open-create", path_str, e);
+                    return -(Errno::Enoent.as_i32() as i64);
+                }
             },
             None => return -(Errno::Enoent.as_i32() as i64),
         }

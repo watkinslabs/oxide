@@ -292,15 +292,64 @@ pub fn pmm_static() -> Option<&'static Pmm<HhdmBacking>> {
 /// (during boot before `init_page_meta`), refcount is implicit.
 /// # C: O(1) amortised (PMM buddy alloc).
 pub fn alloc_one_frame() -> Option<u64> {
+    use core::sync::atomic::Ordering;
     let p = pmm_static()?;
-    let pa = p.alloc(crate::Order(0)).ok().map(|pfn| pfn.0 * 4096)?;
-    // F157: stamp refcount=1 if metadata installed.
-    if let Some(meta) = page_meta() {
-        let _ = meta.get(hal::Pfn(pa / 4096)).map(|m| {
-            m.refcount.store(1, core::sync::atomic::Ordering::Release);
-        });
+    // Linux page-allocator invariant (`mm/page_alloc.c` `check_new_page`):
+    // a frame on the free list is unreferenced — its struct-page refcount
+    // is 0. If the buddy hands back a frame whose refcount is non-zero it
+    // is still mapped in some live AS (a buddy/struct-page desync — e.g. a
+    // frame that re-entered the free list while a peer mapping still holds
+    // it). Returning it would alias two unrelated pages onto one frame
+    // (the wedge: libc's .bss lock frame reused for another libc page →
+    // garbage lock → glibc deadlock). Skip such a frame — consume it off
+    // the free list, leave it to its real owner — and try the next.
+    // Bounded so a fully-corrupt heap still terminates with NoMem.
+    for _ in 0..64 {
+        let pa = p.alloc(crate::Order(0)).ok().map(|pfn| pfn.0 * 4096)?;
+        // PAGE POISONING check (debug-watchdog): if this frame's tail still
+        // carries the 0xAA poison (so it WAS freed via free_one_frame, not
+        // boot-fresh) but some earlier byte differs, something wrote to it
+        // WHILE FREE — a use-after-free / write-while-mapped the PT-walk FWM
+        // detector can't catch (e.g. a stale TLB write). Names pa + offset.
+        #[cfg(feature = "debug-watchdog")]
+        {
+            let hhdm = crate::user_as::hhdm_offset();
+            if hhdm != 0 {
+                let base = (hhdm + pa) as *const u8;
+                // SAFETY: pa freshly off the free list; HHDM mirror readable; 4 KiB.
+                let tail_poison = (0..16).all(|i| unsafe { core::ptr::read_volatile(base.add(4080 + i)) } == 0xAA);
+                if tail_poison {
+                    for off in 0..4080usize {
+                        // SAFETY: within the 4 KiB frame's HHDM mirror.
+                        let b = unsafe { core::ptr::read_volatile(base.add(off)) };
+                        if b != 0xAA {
+                            klog::write_raw(b"[POISON] write-while-free pa="); klog::write_hex_u64(pa);
+                            klog::write_raw(b" off="); klog::write_hex_u64(off as u64);
+                            klog::write_raw(b" val="); klog::write_hex_u64(b as u64);
+                            klog::write_raw(b"\n");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(meta) = page_meta() {
+            if let Some(m) = meta.get(hal::Pfn(pa / 4096)) {
+                let rc = m.refcount.load(Ordering::Acquire);
+                if rc != 0 {
+                    klog::write_raw(b"[PMM] alloc skipped in-use frame pa=");
+                    klog::write_hex_u64(pa);
+                    klog::write_raw(b" rc=");
+                    klog::write_dec_u64(rc as u64);
+                    klog::write_raw(b"\n");
+                    continue; // never hand out a live frame
+                }
+                m.refcount.store(1, Ordering::Release);
+            }
+        }
+        return Some(pa);
     }
-    Some(pa)
+    None
 }
 
 /// F157: bump refcount on a frame already returned by `alloc_one_frame`.
@@ -339,7 +388,31 @@ pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
     let pfn = hal::Pfn(pa / 4096);
     if let Some(meta) = page_meta() {
         if let Some(new) = meta.dec_ref(pfn) {
+            // LOUD over-dec detection: dec on a refcount-0 frame wraps to a huge
+            // value — a PTE was torn down whose inc_ref was never paired (the
+            // under-count root) OR a frame was dec'd twice. Names the frame.
+            #[cfg(feature = "debug-watchdog")]
+            if new > 0x8000_0000 {
+                klog::write_raw(b"[REFBUG] dec-underflow pa="); klog::write_hex_u64(pa);
+                klog::write_raw(b" new="); klog::write_hex_u64(new as u64);
+                klog::write_raw(b"\n");
+                if let Some(m) = meta.get(pfn) { m.refcount.store(0, core::sync::atomic::Ordering::Release); }
+                return;
+            }
             if new == 0 {
+                // DIAG (debug-noreclaim): leak instead of freeing. If this
+                // makes the boot wedge vanish, the wedge is a free-while-mapped
+                // aliasing (a frame dec'd to 0 while a peer still maps it, then
+                // realloc'd onto another page).
+                // BISECT (debug-leak-teardown): leak ONLY frees coming from
+                // as_teardown (caller file user_as.rs); munmap/COW go through
+                // rmap_aware_dec (caller file setup.rs) and still reclaim. If
+                // this clears the corruption, the bad free is at teardown.
+                #[cfg(feature = "debug-leak-teardown")]
+                if core::panic::Location::caller().file().contains("user_as") {
+                    return;
+                }
+                #[cfg(not(feature = "debug-noreclaim"))]
                 // SAFETY: refcount hit zero — no other AS holds this
                 // frame; caller asserts the leaf PTE was already torn
                 // down. Same preconditions as free_one_frame.
@@ -347,8 +420,18 @@ pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
             }
             return;
         }
+        // PageMeta is installed but this pfn has NO slot ⇒ it is OUTSIDE the
+        // PMM-managed RAM range: device/MMIO memory mapped via
+        // `VmaBacking::PhysRange` (remap_pfn_range / VM_PFNMAP) — e.g. the
+        // virtio-gpu scanout. Such mappings are NEVER refcounted and MUST NOT
+        // be returned to the buddy (Linux `vm_normal_page` returns NULL for
+        // PFNMAP, so zap_pte_range never frees them). Freeing it would hand a
+        // live device frame to the allocator → free-while-mapped aliasing.
+        return;
     }
-    // Pre-init or out-of-range PFN: fall back to unconditional free.
+    // Pre-init only (no PageMeta yet): the buddy isn't refcount-tracked, so a
+    // direct free is the documented fallback. Post-init, the branch above
+    // handles both in-range (dec) and out-of-range (skip) frames.
     // SAFETY: same as free_one_frame; caller assertion stands.
     unsafe { free_one_frame(pa); }
 }
@@ -453,6 +536,40 @@ pub fn page_index_for_pa(pa: u64) -> u32 {
         .unwrap_or(0)
 }
 
+/// debug-fwm: count live address spaces OTHER than `exclude_root` that still
+/// map VA `va` to physical frame `pa`. Used at as_teardown free-to-zero to
+/// catch free-while-mapped aliasing — a frame about to return to PMM while a
+/// peer task's PTE still maps it (refcount under-counted). Works for ALL
+/// backings (not just anon, unlike an rmap walk) by enumerating live tasks'
+/// address spaces. `hhdm` is the HHDM offset for foreign-PT reads.
+/// # C: O(N_tasks)
+#[cfg(feature = "debug-fwm")]
+pub fn fwm_peer_maps(va: u64, pa: u64, exclude_root: u64, hhdm: u64) -> usize {
+    let target = pa & !0xfff;
+    let tasks = match sched::registry::try_snapshot() { Some(t) => t, None => return 0 };
+    let mut count = 0usize;
+    let mut seen: [u64; 96] = [0; 96];
+    let mut n_seen = 0usize;
+    for t in tasks.iter() {
+        // SAFETY: smp=1 debug detector; no other task executes during this
+        // teardown, so reading a peer task's mm root is a stable read.
+        let root = match unsafe { t.mm_ref() } { Some(mm) => mm.root_pa(), None => continue };
+        if root == exclude_root || root == 0 { continue; }
+        if seen[..n_seen].contains(&root) { continue; } // dedup threads sharing an mm
+        if n_seen < seen.len() { seen[n_seen] = root; n_seen += 1; }
+        // SAFETY: read-only foreign-mm PT walk; root is a live AS root frame;
+        // HHDM covers page-table memory.
+        #[cfg(target_arch = "x86_64")]
+        let tr = unsafe { hal::pt_walker::translate_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(root, va, hhdm) };
+        #[cfg(target_arch = "aarch64")]
+        let tr = unsafe { hal::pt_walker::translate_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(root, va, hhdm) };
+        if let Some((mapped, _)) = tr {
+            if (mapped & !0xfff) == target { count += 1; }
+        }
+    }
+    count
+}
+
 /// F156-rmap: drop the rmap edge before the frame returns to PMM.
 /// Wraps `dec_and_maybe_free_frame` so callers that don't carry an
 /// AnonVma reference still keep the chain consistent. Intended for
@@ -519,6 +636,47 @@ pub fn alloc_contig(order: crate::Order) -> Option<u64> {
 pub unsafe fn free_one_frame(pa: u64) {
     let p = match pmm_static() { Some(p) => p, None => return };
     let pfn = hal::Pfn(pa / 4096);
+    // Defense in depth: once PageMeta is installed, a pfn with no slot is
+    // outside PMM-managed RAM (device/MMIO PhysRange) and must never reach the
+    // buddy — returning it would corrupt the allocator and alias live device
+    // memory. `dec_and_maybe_free_frame` already filters these, but a stray
+    // direct caller must not slip one through.
+    if let Some(meta) = page_meta() {
+        if meta.get(pfn).is_none() { return; }
+    }
+    // Reset struct-page refcount to 0 before the frame re-enters the free
+    // list, so the buddy free-list and per-page refcount stay in sync and
+    // the alloc-side `check_new_page` invariant (free frame ⇒ refcount 0)
+    // holds for frames freed directly (PT tables, AS root) as well as via
+    // dec_and_maybe_free. Mirrors Linux `free_pages_prepare` zeroing.
+    if let Some(meta) = page_meta() {
+        if let Some(m) = meta.get(pfn) {
+            // LOUD free-while-referenced: a RAW free (PT table / AS root / direct
+            // caller) of a frame whose refcount is still >1 means it's freed
+            // while another reference (PTE) maps it → free-while-mapped aliasing.
+            #[cfg(feature = "debug-watchdog")]
+            {
+                let rc = m.refcount.load(core::sync::atomic::Ordering::Acquire);
+                if rc > 1 {
+                    klog::write_raw(b"[REFBUG] free-while-ref pa="); klog::write_hex_u64(pa);
+                    klog::write_raw(b" rc="); klog::write_dec_u64(rc as u64);
+                    klog::write_raw(b"\n");
+                }
+            }
+            m.refcount.store(0, core::sync::atomic::Ordering::Release);
+        }
+    }
+    // PAGE POISONING (debug-watchdog): fill the freed frame with 0xAA so a
+    // later alloc can detect a write-while-free (use-after-free / stale-TLB
+    // write that the PT-walk-based FWM detector can't see). Linux PAGE_POISONING.
+    #[cfg(feature = "debug-watchdog")]
+    {
+        let hhdm = crate::user_as::hhdm_offset();
+        if hhdm != 0 {
+            // SAFETY: pa is a just-freed PMM frame; HHDM mirror is kernel-writable; 4 KiB granule.
+            unsafe { core::ptr::write_bytes((hhdm + pa) as *mut u8, 0xAA, 4096); }
+        }
+    }
     // SAFETY: caller asserts pa was a prior alloc and is no longer mapped per fn contract; crate::Buddy::free's preconditions reduce to "page aligned + within range" which alloc_one_frame guarantees.
     unsafe { p.free(pfn, crate::Order(0)); }
 }

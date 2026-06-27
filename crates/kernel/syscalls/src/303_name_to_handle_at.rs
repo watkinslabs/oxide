@@ -36,7 +36,6 @@ const HANDLE_HDR: usize = 8; // handle_bytes(4) + handle_type(4)
 pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
     const AT_EMPTY_PATH: u32 = 0x1000;
     const AT_SYMLINK_FOLLOW: u32 = 0x400;
-    const AT_FDCWD: i32 = -100;
     let dirfd = args.a0 as i32;
     let path_ptr = args.a1;
     let handle_ptr = args.a2;
@@ -57,15 +56,21 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
         return -(Errno::Eoverflow.as_i32() as i64);
     }
 
-    // Resolve the target inode.
-    let inode = if (flags & AT_EMPTY_PATH) != 0 && !path_has_bytes(path_ptr) {
+    // Resolve the target inode and the owning mount id.
+    let (inode, mount_id) = if (flags & AT_EMPTY_PATH) != 0 && !path_has_bytes(path_ptr) {
         let cur = match sched::live::current() { Some(c) => c, None => return einval };
         // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot per the single-mutator invariant in `13§5`.
         let fdt = match unsafe { cur.fd_table_ref() } {
             Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
         };
         match fdt.get(dirfd) {
-            Ok(f) => f.inode().clone(),
+            Ok(f) => {
+                let path_bytes = f.dentry().absolute_path();
+                let mid = core::str::from_utf8(&path_bytes).ok()
+                    .and_then(|p| vfs::mount::resolve_mount(p).map(|(m, _)| m.mnt_id as i32))
+                    .unwrap_or(1);
+                (f.inode().clone(), mid)
+            }
             Err(_) => return -(Errno::Ebadf.as_i32() as i64),
         }
     } else {
@@ -75,18 +80,17 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
             _ => return einval,
         };
         let raw = match core::str::from_utf8(p) { Ok(s) => s, Err(_) => return einval };
-        let resolved: alloc::string::String = if raw.starts_with('/') {
-            vfs::path::lexical_normalize(raw).unwrap_or_else(|| raw.into())
-        } else if dirfd == AT_FDCWD {
-            let cur = match sched::live::current() { Some(c) => c, None => return einval };
-            // SAFETY: cwd slot single-mutator per `13§5`; running task on this CPU.
-            let cwd = unsafe { (*cur.cwd.get()).clone() };
-            vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
-        } else { raw.into() };
+        let resolved = match crate::pathresolve::resolve_at_result(dirfd, raw) {
+            Ok(p) => p,
+            Err(rv) => return rv,
+        };
         // name_to_handle_at follows the final symlink only with AT_SYMLINK_FOLLOW.
         let nofollow = (flags & AT_SYMLINK_FOLLOW) == 0;
+        let mid = vfs::mount::resolve_mount(resolved.as_str())
+            .map(|(m, _)| m.mnt_id as i32)
+            .unwrap_or(1);
         match crate::pathresolve::resolve(resolved.as_str(), nofollow) {
-            Some(i) => i,
+            Some(i) => (i, mid),
             None => return -(Errno::Enoent.as_i32() as i64),
         }
     };
@@ -105,16 +109,10 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
     }
     if mnt_id_ptr != 0 && mnt_id_ptr < USER_VA_END {
         if validate_user_buf_writable(mnt_id_ptr, 4, 1).is_ok() {
-            // Per-filesystem mount id (Linux st_dev analog). The root/ext4
-            // domain reports a stable nonzero `1`; pseudo filesystems
-            // mounted elsewhere (cgroup2, …) report their distinct fsid so
-            // systemd's is_mount_point sees the boundary. A constant id made
-            // every path look like the same mount → systemd's cgroup walk
-            // never terminated (infinite statx+name_to_handle_at loop).
-            let fsid = inode.fsid();
-            let mid: i32 = if fsid == 0 { 1 } else { fsid as i32 };
-            // SAFETY: mnt_id_ptr validated writable for 4 bytes; single aligned i32 write of the per-fs mount id.
-            unsafe { core::ptr::write_volatile(mnt_id_ptr as *mut i32, mid); }
+            // Linux returns the mount table id here, not st_dev/fsid. systemd
+            // compares this with mountinfo and asserts it is non-negative.
+            // SAFETY: mnt_id_ptr validated writable for 4 bytes; single aligned i32 write of the mount id.
+            unsafe { core::ptr::write_volatile(mnt_id_ptr as *mut i32, mount_id); }
         }
     }
     0

@@ -53,8 +53,7 @@ pub(crate) fn resolve_inode(dirfd: i32, path_ptr: u64) -> Result<InodeRef, i64> 
     // BUG D: resolve against the dirfd's directory for a real fd-relative
     // dirfd; resolve_at(AT_FDCWD, raw) == resolve_cwd(raw) so the common
     // AT_FDCWD/absolute callers are unchanged.
-    let resolved = crate::pathresolve::resolve_at(dirfd, raw)
-        .unwrap_or_else(|| crate::pathresolve::resolve_cwd(raw));
+    let resolved = crate::pathresolve::resolve_at_result(dirfd, raw)?;
     let s = resolved.as_str();
     // utimensat/utimes follow symlinks (AT_SYMLINK_NOFOLLOW handling
     // rides the dirfd rewrite); resolve via the path-walk.

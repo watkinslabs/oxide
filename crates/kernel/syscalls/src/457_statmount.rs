@@ -50,7 +50,7 @@ pub fn sys_statmount(args: &SyscallArgs) -> i64 {
     let mut strs: Vec<u8> = Vec::new();
     let fs_off    = strs.len() as u32; strs.extend_from_slice(m.fs.name().as_bytes());   strs.push(0);
     let root_off  = strs.len() as u32; strs.extend_from_slice(b"/");                      strs.push(0);
-    let point_off = strs.len() as u32; strs.extend_from_slice(m.mount_point.as_bytes());  strs.push(0);
+    let point_off = strs.len() as u32; strs.extend_from_slice(m.mount_point_str().as_bytes()); strs.push(0);
 
     let total = SM_HDR_SIZE + strs.len();
     if bufsize < total { return -(Errno::Eoverflow.as_i32() as i64); }

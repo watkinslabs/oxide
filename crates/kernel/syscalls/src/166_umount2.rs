@@ -22,6 +22,16 @@ use crate::mount_common::read_user_cstr_owned;
 /// open-fd refcounts on registry entries (see `26§3.1` follow-up).
 /// # C: O(N) over devfs registry.
 pub fn sys_umount2(args: &SyscallArgs) -> i64 {
+    let rv = sys_umount2_impl(args);
+    #[cfg(feature = "debug-mount")]
+    {
+        let tgt = read_user_cstr_owned(args.a0, 256).unwrap_or_default();
+        crate::mount_common::mnt_log("umount2", &tgt, rv);
+    }
+    rv
+}
+
+fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
@@ -30,31 +40,76 @@ pub fn sys_umount2(args: &SyscallArgs) -> i64 {
         return -(Errno::Eperm.as_i32() as i64);
     }
     let target_ptr = args.a0;
-    let path = match read_user_cstr_owned(target_ptr, 256) {
+    let path_raw = match read_user_cstr_owned(target_ptr, 256) {
         Ok(p) => p, Err(rv) => return rv,
     };
+    let path = crate::pathresolve::resolve_cwd(&path_raw);
     let trimmed: &str = match path.as_str() {
         s if s.len() > 1 && s.ends_with('/') => &s[..s.len() - 1],
         s => s,
     };
-    // Reject kernel-managed roots: detaching /proc /sys /dev would
-    // brick procfs/sysfs/devfs lookups for every task. Linux
-    // typically returns EINVAL or EBUSY for these.
-    match trimmed {
-        "/" | "/proc" | "/sys" | "/dev" | "/dev/pts" | "/dev/shm"
-        | "/sys/kernel/tracing" | "/sys/fs/cgroup" => {
-            return -(Errno::Ebusy.as_i32() as i64);
-        }
-        _ => {}
-    }
     let ns = cur.mount_ns.load(Ordering::Acquire);
+    const MNT_DETACH: u64 = 2;
+    let lazy = (args.a1 & MNT_DETACH) != 0;
+
+    // Linux `do_umount` semantics (fs/namespace.c), NO path blacklist:
+    //
+    //  * The namespace root `/` can never be unmounted → EINVAL.
+    //  * A mount that has CHILD MOUNTS stacked under it is busy → EBUSY,
+    //    unless MNT_DETACH (lazy) was requested. This is what protects the
+    //    init ns's /dev (its real /dev/shm tmpfs submount makes it busy),
+    //    /sys (cgroup2), etc. — exactly as Linux does, via the mount tree,
+    //    not a hardcoded list. Plain device-node *files* under /dev are fs
+    //    content, not mounts, so they correctly don't block the unmount.
+    //  * Otherwise detach. The unmount is namespace-LOCAL: it only touches
+    //    THIS task's mount_ns (its copy-on-unshare snapshot), never another
+    //    namespace — so a private-ns service unmounting /dev/proc/sys for
+    //    PrivateDevices=/ProtectKernelTunables= no longer fails the sandbox
+    //    (was status=226/NAMESPACE).
+    if trimmed == "/" && !lazy {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    // Linux umount(2) detaches a mount; it NEVER destroys the filesystem's
+    // backing data. For the synthetic pseudo-filesystems (procfs/sysfs/
+    // devtmpfs) the "data" is generated from kernel state — sysctl ctl_tables
+    // (/proc/sys/*), the device list (/dev/*), kobjects (/sys/*) — which lives
+    // independent of any mount and persists across umount/remount. Our
+    // INITIAL-namespace (ns 0) devfs tree IS that kernel-side backing store.
+    // So umounting one of these in ns 0 must detach the mount WITHOUT deleting
+    // the tree; deleting it (the old devfs::unregister_subtree path) permanently
+    // wiped /proc/sys/* after systemd's early `umount /proc`, breaking every
+    // later sandbox that binds /proc/sys/kernel/domainname (status 226). Treat
+    // it as a successful no-op: a (re)mount re-exposes the same synthetic
+    // content, exactly as procfs regenerates it on Linux. Per-namespace (ns>0)
+    // sandbox copies remain real mount content and tear down normally below.
+    if ns == 0 {
+        // Confirm `trimmed` is EXACTLY a synthetic mount (not a path under
+        // one) by mount-object identity: `mount_at_path_exact` resolves the
+        // target dentry and reads its covering-mount link, so this is the
+        // mount whose mountpoint dentry IS `trimmed` — not the longest-prefix
+        // owner `resolve_mount` would return.
+        if let Some(m) = vfs::mount::mount_at_path_exact(trimmed) {
+            if matches!(m.fs.name(), "procfs" | "sysfs" | "devtmpfs" | "devfs") {
+                return 0;
+            }
+        }
+    }
+    if !lazy && vfs::mount::has_child_mounts(trimmed, ns) {
+        return -(Errno::Ebusy.as_i32() as i64);
+    }
     // Detach from BOTH the unified mount table (bind mounts + any
-    // TABLE-resident mount) and the devfs registry (tmpfs etc). Before
-    // U3, only the registry was touched, so unmounting a bind mount was a
-    // silent no-op that left it resolving forever.
-    let removed_tab = vfs::mount::unregister(trimmed);
+    // TABLE-resident mount) and the devfs registry (procfs/sysfs/devtmpfs
+    // content + tmpfs). Both are namespace-scoped.
+    let removed_tab = vfs::mount::unregister_top(trimmed, lazy);
     let removed_reg = devfs::unregister_subtree(ns, trimmed);
     if removed_tab == 0 && removed_reg == 0 {
+        #[cfg(feature = "debug-boot")]
+        {
+            klog::write_raw(b"[umount EINVAL] ns="); klog::write_dec_u64(ns);
+            klog::write_raw(b" lazy="); klog::write_dec_u64(lazy as u64);
+            klog::write_raw(b" path="); klog::write_raw(trimmed.as_bytes());
+            klog::write_raw(b"\n");
+        }
         return -(Errno::Einval.as_i32() as i64);
     }
     0

@@ -29,9 +29,28 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     let s = match core::str::from_utf8(path) {
         Ok(s)  => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
+    #[cfg(feature = "debug-syscall")]
+    {
+        klog::write_raw(b"[OPENAT] dirfd=");
+        let dirfd = args.a0 as i64;
+        if dirfd < 0 {
+            klog::write_raw(b"-");
+            klog::write_dec_u64(dirfd.wrapping_neg() as u64);
+        } else {
+            klog::write_dec_u64(dirfd as u64);
+        }
+        klog::write_raw(b" flags=");
+        klog::write_hex_u64(flags as u64);
+        klog::write_raw(b" path=\"");
+        klog::write_raw(s.as_bytes());
+        klog::write_raw(b"\"\n");
+    }
     // openat(2): resolve relative `s` against the dirfd's directory (a0).
-    let resolved = crate::pathresolve::resolve_at(args.a0 as i32, s);
-    let path_str: &str = resolved.as_deref().unwrap_or(s);
+    let resolved = match crate::pathresolve::resolve_at_result(args.a0 as i32, s) {
+        Ok(p) => p,
+        Err(rv) => return rv,
+    };
+    let path_str: &str = resolved.as_str();
     {
         use ::security::landlock::access as la;
         let mut op = la::READ_FILE;
@@ -51,9 +70,22 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
         };
         let umask = cur.umask.load(core::sync::atomic::Ordering::Acquire);
         let final_mode = (mode & 0o777 & !umask) as u16;
-        match ext4::rootfs::create_anonymous_at(path_str.as_bytes(), final_mode) {
-            Some(i) => i,
-            None    => return -(Errno::Enospc.as_i32() as i64),
+        // O_TMPFILE creates the anonymous inode on the filesystem that
+        // actually backs the target directory — tmpfs for /run|/tmp|/dev/shm,
+        // ext4 for the rootfs. Routing every O_TMPFILE to ext4 returned ENOSPC
+        // for tmpfs paths, which made journald (O_TMPFILE on /run/log/journal)
+        // abort and cascaded to udevd/device units.
+        match vfs::mount::resolve_mount(path_str) {
+            Some((mnt, rel)) => {
+                if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
+                    return -(Errno::Erofs.as_i32() as i64);
+                }
+                match mnt.fs.create_anonymous(&rel, final_mode as u32) {
+                    Ok(i)  => i,
+                    Err(_) => return -(Errno::Enospc.as_i32() as i64),
+                }
+            }
+            None => return -(Errno::Enoent.as_i32() as i64),
         }
     } else if path_str == "/dev/ptmx" {
         let (master, _n) = devpts::allocate_pair();
@@ -77,13 +109,40 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
         let umask = cur.umask.load(core::sync::atomic::Ordering::Acquire);
         let final_mode = mode & 0o777 & !umask;
         match vfs::mount::resolve_mount(path_str) {
-            Some((mnt, rel)) => match mnt.fs.create(&rel, final_mode) {
-                Ok(i) => i,
-                Err(_) => return -(Errno::Enoent.as_i32() as i64),
-            },
+            Some((mnt, rel)) => {
+                if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
+                    return -(Errno::Erofs.as_i32() as i64);
+                }
+                match mnt.fs.create(&rel, final_mode) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        crate::namei_common::trace_run_vfs_error(b"openat-create", path_str, e);
+                        return -(Errno::Enoent.as_i32() as i64);
+                    }
+                }
+            }
             None => return -(Errno::Enoent.as_i32() as i64),
         }
     } else {
+        // DIAG (debug-mount): surface ENOENT opens of the paths whose chase
+        // fails the service sandbox (domainname / credentials / RuntimeDir /
+        // StateDir), so the exact missing path is visible without flooding.
+        #[cfg(feature = "debug-mount")]
+        if path_str.contains("domainname") || path_str.contains("osrelease")
+            || path_str.contains("cap_last_cap")
+        {
+            // Isolate the failure layer: ns of the caller + whether a DIRECT
+            // devfs::lookup finds it (resolve() bug if dl=1; devfs ns/chroot
+            // bug if dl=0).
+            let ns = sched::live::current().map(|c| c.mount_ns.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
+            let dl = if devfs::lookup(path_str).is_some() { 1u64 } else { 0 };
+            let mut tag = alloc::string::String::from(path_str);
+            tag.push_str(" ns=");
+            tag.push_str(&alloc::format!("{}", ns));
+            tag.push_str(" dl=");
+            tag.push_str(&alloc::format!("{}", dl));
+            crate::mount_common::mnt_log("openat_ENOENT", &tag, -(Errno::Enoent.as_i32() as i64));
+        }
         return -(Errno::Enoent.as_i32() as i64);
     };
     // O_TMPFILE = __O_TMPFILE | O_DIRECTORY, so skip the dir check for it.

@@ -70,6 +70,10 @@ pub(crate) fn reset_per_execve_state(cur: &sched::Task) {
     // robust futex list dropped — stale user-VA into the old AS.
     cur.robust_list_head.store(0, Ordering::Release);
     cur.robust_list_len.store(0, Ordering::Release);
+    // rseq registration points into the old userspace image.
+    cur.rseq_ptr.store(0, Ordering::Release);
+    cur.rseq_len.store(0, Ordering::Release);
+    cur.rseq_sig.store(0, Ordering::Release);
     // parent-death signal cleared — handler would be in the old text.
     cur.pdeathsig.store(0, Ordering::Release);
     // ITIMER_REAL / alarm() armed against the dying image.

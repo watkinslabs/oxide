@@ -4,7 +4,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_path, resolve, is_ext4_path, errno_from_vfs};
+use crate::namei_common::{read_path, errno_from_vfs};
 
 /// `linkat(odir, target, ndir, link, flags)` slot 265. Supports
 /// `AT_EMPTY_PATH` (flag bit 0x1000): when set and `target` is the
@@ -21,10 +21,11 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
     let link = match read_path(link_p) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let l = resolve(&link).unwrap_or(link);
+    let l = match crate::pathresolve::resolve_at_result(args.a2 as i32, &link) {
+        Ok(p) => p, Err(rv) => return rv,
+    };
     if let Err(rv) = crate::landlock::check(&l,
         ::security::landlock::access::MAKE_REG) { return rv; }
-    if !is_ext4_path(&l) { return -(Errno::Erofs.as_i32() as i64); }
 
     if (flags & AT_EMPTY_PATH) != 0 {
         // target must be empty (NULL ptr or "").
@@ -46,14 +47,14 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
         let file = match fdt.get(odir_fd) {
             Ok(f)  => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
         };
-        let vfs_ino = file.inode().ino();
-        // Only ext4-resident inodes (high-32 EXT4_INO_MARK) can be
-        // linked into the ext4 dir tree.
-        if !ext4::rootfs::is_ext4_ino(vfs_ino) {
-            return -(Errno::Exdev.as_i32() as i64);
+        let inode = file.inode();
+        let (lm, _) = match vfs::mount::resolve_mount(&l) {
+            Some(v) => v, None => return -(Errno::Enoent.as_i32() as i64),
+        };
+        if (lm.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
+            return -(Errno::Erofs.as_i32() as i64);
         }
-        let ino = ext4::rootfs::ext4_unwrap_ino(vfs_ino);
-        return match ext4::rootfs::link_inode_at(ino, l.as_bytes()) {
+        return match lm.fs.link_inode(inode.clone(), &l) {
             Ok(())  => 0,
             Err(e)  => errno_from_vfs(e),
         };
@@ -63,9 +64,22 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
     let target = match read_path(target_p) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let t = resolve(&target).unwrap_or(target);
-    if !is_ext4_path(&t) { return -(Errno::Erofs.as_i32() as i64); }
-    match ext4::rootfs::link_at(t.as_bytes(), l.as_bytes()) {
+    let t = match crate::pathresolve::resolve_at_result(odir_fd, &target) {
+        Ok(p) => p, Err(rv) => return rv,
+    };
+    let (tm, _) = match vfs::mount::resolve_mount(&t) {
+        Some(v) => v, None => return -(Errno::Enoent.as_i32() as i64),
+    };
+    let (lm, _) = match vfs::mount::resolve_mount(&l) {
+        Some(v) => v, None => return -(Errno::Enoent.as_i32() as i64),
+    };
+    if (lm.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
+        return -(Errno::Erofs.as_i32() as i64);
+    }
+    if tm.mnt_id != lm.mnt_id {
+        return -(Errno::Exdev.as_i32() as i64);
+    }
+    match tm.fs.link(&t, &l) {
         Ok(())  => 0,
         Err(e)  => errno_from_vfs(e),
     }

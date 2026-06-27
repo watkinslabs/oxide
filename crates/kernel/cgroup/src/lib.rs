@@ -15,6 +15,7 @@ pub mod selftest;
 pub mod inode;
 pub mod tree;
 
+use alloc::fmt::Write;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -31,7 +32,20 @@ use tree::Tree;
 /// OWNS its inodes: `lookup` strips the mount prefix, resolves the
 /// relative cgroup path through the hierarchy (`tree.rs`), and SYNTHESIZES
 /// a `CgDir`/`CgFile` inode — no registry, ZERO devfs dependency.
-pub struct CgroupFs;
+pub struct CgroupFs {
+    mount_point: String,
+}
+
+impl CgroupFs {
+    /// Create a cgroup2 filesystem instance mounted at `mount_point`.
+    /// The backing hierarchy is global, but each mount instance must know
+    /// its own prefix so whole-path lookups work after bind/new-mount API
+    /// attachment into service mount namespaces.
+    /// # C: O(1)
+    pub fn new(mount_point: &str) -> Self {
+        Self { mount_point: mount_point.to_string() }
+    }
+}
 
 impl FileSystem for CgroupFs {
     /// # C: O(1)
@@ -45,7 +59,22 @@ impl FileSystem for CgroupFs {
     /// last component may be a child cgroup (→ `CgDir`) or a control
     /// file of its parent cgroup (→ `CgFile`).
     /// # C: O(components · log n)
-    fn lookup(&self, path: &str) -> Option<InodeRef> { resolve_path(path) }
+    fn root(&self) -> Option<InodeRef> {
+        if !is_mounted() { return None; }
+        Some(Arc::new(inode::CgDir::new(tree::ROOT)) as InodeRef)
+    }
+    fn lookup(&self, path: &str) -> Option<InodeRef> {
+        let out = resolve_path_at(&self.mount_point, path);
+        #[cfg(feature = "debug-cgroup")]
+        if out.is_none() {
+            klog::write_raw(b"[cg] lookup miss mp=");
+            klog::write_raw(self.mount_point.as_bytes());
+            klog::write_raw(b" path=");
+            klog::write_raw(path.as_bytes());
+            klog::write_raw(b"\n");
+        }
+        out
+    }
     /// # C: O(1)
     fn mounts_line(&self, mp: &str) -> alloc::string::String {
         let mut s = alloc::string::String::from("cgroup2 ");
@@ -89,6 +118,12 @@ static CPUSET_HOOK: Spinlock<Option<fn(u64, u64)>, TaskListClass> = Spinlock::ne
 /// installs this so the leaf crate can translate without a `sched`
 /// dependency. Identity fallback when the pid can't be resolved.
 static PID_RESOLVE_HOOK: Spinlock<Option<fn(u64) -> u64>, TaskListClass> = Spinlock::new(None);
+
+/// canonical tid → visible pid formatter for cgroup.procs reads. The
+/// hierarchy stores canonical tids for kernel accounting, but Linux's
+/// cgroupfs ABI exposes PIDs in userspace's PID view. Identity fallback
+/// preserves hosted tests and early boot before sched installs the hook.
+static PID_DISPLAY_HOOK: Spinlock<Option<fn(u64) -> u64>, TaskListClass> = Spinlock::new(None);
 
 /// `cgroup.events` change-notification: `fn(events_file_path)`. The
 /// kernel installs `fs::inotify::fire_modify_path` so a `populated`/
@@ -188,6 +223,10 @@ pub fn cpu_bandwidth_decision(
 /// # C: O(1)
 pub fn set_pid_resolve_hook(f: fn(u64) -> u64) { *PID_RESOLVE_HOOK.lock() = Some(f); }
 
+/// Install the tid→visible-pid formatter. Boot path.
+/// # C: O(1)
+pub fn set_pid_display_hook(f: fn(u64) -> u64) { *PID_DISPLAY_HOOK.lock() = Some(f); }
+
 /// Install the `cgroup.events` inotify hook. Boot path.
 /// # C: O(1)
 pub fn set_notify_hook(f: fn(&str)) { *NOTIFY_HOOK.lock() = Some(f); }
@@ -233,30 +272,37 @@ fn resolve_pid(vpid: u64) -> u64 {
     match *PID_RESOLVE_HOOK.lock() { Some(f) => f(vpid), None => vpid }
 }
 
-/// Mount the unified hierarchy: seed the root cgroup in `tree.rs` and
-/// register `CgroupFs` in the unified mount table. cgroupfs synthesizes
-/// every inode on lookup, so there is nothing to register into a registry.
-/// Idempotent (re-mount is a no-op success). Returns true on first mount.
+/// Mount the unified hierarchy at the canonical boot location.
+/// Idempotent from the boot caller's perspective.
 /// # C: O(1)
 pub fn mount_root() -> bool {
+    mount_at(MOUNT).is_ok()
+}
+
+/// Mount the shared unified cgroup2 hierarchy at `mount_point`.
+/// Multiple mount instances share the same tree, as Linux does for the
+/// unified hierarchy, but each mount shadows its own target dentry.
+/// # C: O(N_mounts)
+pub fn mount_at(mount_point: &str) -> KResult<()> {
     let first = TREE.lock().mount_root();
-    if first {
-        // Route /sys/fs/cgroup/* through CgroupFs in the unified mount
-        // table so open()/read/write reach the synthesized inodes (`16§7`).
-        let _ = vfs::mount::register(MOUNT, Arc::new(CgroupFs));
+    let fs = Arc::new(CgroupFs::new(mount_point));
+    let root = Arc::new(inode::CgDir::new(tree::ROOT)) as InodeRef;
+    match vfs::mount::register_bind(mount_point, fs, root) {
+        Ok(()) => Ok(()),
+        Err(vfs::VfsError::Eexist) if !first => Ok(()),
+        Err(e) => Err(e),
     }
-    first
 }
 
 /// Resolve a full `/sys/fs/cgroup/...` path to a synthesized inode.
 /// Returns `None` if unmounted or the path names nothing. The mount root
 /// itself (`/sys/fs/cgroup`) → the root `CgDir`.
 /// # C: O(components · log n)
-fn resolve_path(path: &str) -> Option<InodeRef> {
+fn resolve_path_at(mount_point: &str, path: &str) -> Option<InodeRef> {
     if !is_mounted() { return None; }
     // Strip the mount prefix → relative cgroup path ("" for the root).
-    let rel = if path == MOUNT { "" }
-        else { path.strip_prefix(MOUNT)?.strip_prefix('/')? };
+    let rel = if path == mount_point { "" }
+        else { path.strip_prefix(mount_point)?.strip_prefix('/')? };
     if rel.is_empty() {
         return Some(Arc::new(inode::CgDir::new(tree::ROOT)) as InodeRef);
     }
@@ -266,13 +312,27 @@ fn resolve_path(path: &str) -> Option<InodeRef> {
         None => ("", rel),
     };
     let t = TREE.lock();
-    let parent = t.resolve(dir)?;
+    let parent = match t.resolve(dir) {
+        Some(p) => p,
+        None => {
+            #[cfg(feature = "debug-cgroup")]
+            { klog::write_raw(b"[cg] miss-reason=dir-unresolved dir="); klog::write_raw(dir.as_bytes()); klog::write_raw(b"\n"); }
+            return None;
+        }
+    };
     // Last component is either a child cgroup or a control file.
     if let Some(child) = t.child_id(parent, last) {
         return Some(Arc::new(inode::CgDir::new(child)) as InodeRef);
     }
     if t.has_file(parent, last) {
         return Some(Arc::new(inode::CgFile::new(parent, last)) as InodeRef);
+    }
+    #[cfg(feature = "debug-cgroup")]
+    {
+        klog::write_raw(b"[cg] miss-reason=no-child-no-file parent="); klog::write_dec_u64(parent);
+        klog::write_raw(b" last="); klog::write_raw(last.as_bytes());
+        klog::write_raw(b" nkids="); klog::write_dec_u64(t.child_names(parent).len() as u64);
+        klog::write_raw(b"\n");
     }
     None
 }
@@ -300,7 +360,46 @@ pub fn is_mounted() -> bool { TREE.lock().is_mounted() }
 /// Read a control file `(cgid, file)`.
 /// # C: O(subtree) for populated/pids; O(members) for procs
 pub fn read_file(cgid: u64, file: &str) -> KResult<Vec<u8>> {
+    if file == "cgroup.procs" || file == "cgroup.threads" {
+        let t = TREE.lock();
+        let n = t.node(cgid).ok_or(VfsError::Enoent)?;
+        let display = *PID_DISPLAY_HOOK.lock();
+        let mut out = String::new();
+        for pid in &n.procs {
+            let shown = display.map(|f| f(*pid)).unwrap_or(*pid);
+            let _ = writeln!(out, "{shown}");
+        }
+        return Ok(out.into_bytes());
+    }
     TREE.lock().read_file(cgid, file)
+}
+
+/// CLONE_INTO_CGROUP (clone3): place the just-cloned child `vpid` into `cgid`.
+/// Mirrors a `cgroup.procs` write but takes the vpid directly — used by the
+/// clone3 ABI shim when the caller passes a cgroup fd. systemd's pidfd_spawn
+/// relies on this to land service executors in the right cgroup v2 node.
+/// # C: O(members)
+pub fn attach_into(cgid: u64, vpid: u64) {
+    let tid = resolve_pid(vpid);
+    let src = TREE.lock().cgroup_of(tid);
+    TREE.lock().add_proc(cgid, tid);
+    if src != cgid { notify_events_chain(src); }
+    notify_events_chain(cgid);
+}
+
+/// Recover the cgroup id from a cgroup2 DIRECTORY inode's `(ino, fsid)`.
+/// `None` when the inode is not a cgroup2 directory. Lets the clone3 shim
+/// resolve the caller's `CLONE_INTO_CGROUP` cgroup fd to a `cgid` without the
+/// shim depending on cgroup-internal inode constants. # C: O(1)
+pub fn cgid_from_dir_inode(ino: u64, fsid: u64) -> Option<u64> {
+    // Mirrors inode.rs: CgDir::ino() = DIR_INO_BASE + cgid; fsid = CGROUP2_FSID.
+    const CGROUP2_FSID: u64 = 0x6367_7270;
+    const DIR_INO_BASE: u64 = 0x6000_0000;
+    if fsid == CGROUP2_FSID && ino >= DIR_INO_BASE && ino < DIR_INO_BASE + 0x0100_0000 {
+        Some(ino - DIR_INO_BASE)
+    } else {
+        None
+    }
 }
 
 /// Write a control file. Handles the cross-subsystem files
@@ -310,6 +409,16 @@ pub fn read_file(cgid: u64, file: &str) -> KResult<Vec<u8>> {
 pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
     match file {
         "cgroup.procs" | "cgroup.threads" => {
+            #[cfg(feature = "debug-cgroup")]
+            {
+                klog::write_raw(b"[cg] write ");
+                klog::write_raw(file.as_bytes());
+                klog::write_raw(b" cgid=");
+                klog::write_dec_u64(cgid);
+                klog::write_raw(b" buf=");
+                klog::write_raw(buf.as_bytes());
+                klog::write_raw(b"\n");
+            }
             let vpid: u64 = buf.trim().parse().map_err(|_| VfsError::Einval)?;
             // Membership keys on the canonical tid (what `current().tid`
             // and fork-inheritance use); the written value is a vpid in

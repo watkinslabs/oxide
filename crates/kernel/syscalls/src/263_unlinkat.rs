@@ -4,7 +4,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_path, resolve, errno_from_vfs, resolve_parent};
+use crate::namei_common::{read_path, errno_from_vfs, resolve_parent, unlink_unix_socket_path};
 
 const AT_REMOVEDIR: u32 = 0x200;
 
@@ -17,8 +17,8 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
     // BUG D follow-up: resolve against the real dirfd (a0).
-    let p = match crate::pathresolve::resolve_at(args.a0 as i32, &raw) {
-        Some(rp) => rp, None => resolve(&raw).unwrap_or(raw),
+    let p = match crate::pathresolve::resolve_at_result(args.a0 as i32, &raw) {
+        Ok(rp) => rp, Err(rv) => return rv,
     };
     let flags = args.a2 as u32;
     let op = if (flags & AT_REMOVEDIR) != 0 {
@@ -34,10 +34,14 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
     if (flags & AT_REMOVEDIR) != 0 {
         return crate::s084_rmdir::do_rmdir(&p);
     }
+    if vfs::mount::is_readonly_path(&p) {
+        return -(Errno::Erofs.as_i32() as i64);
+    }
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
     match pino.unlink_child(&name) {
         // d_delete: invalidate the cached dentry (see pathresolve::forget_path).
-        Ok(())  => { crate::pathresolve::forget_path(&p); 0 }
+        Ok(())  => { unlink_unix_socket_path(&p); crate::pathresolve::forget_path(&p); 0 }
+        Err(vfs::VfsError::Enoent) if unlink_unix_socket_path(&p) => 0,
         Err(e)  => errno_from_vfs(e),
     }
 }

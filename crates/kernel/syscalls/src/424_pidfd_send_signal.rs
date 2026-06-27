@@ -21,11 +21,8 @@ pub fn sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
     let file = match fdt.get(fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let tid = match crate::pidfd::tid_from_ino(file.inode().ino()) {
+    let task = match crate::pidfd::task_from_inode(&file.inode()) {
         Some(t) => t, None => return -(Errno::Einval.as_i32() as i64),
-    };
-    let task = match sched::live::registry::lookup(tid) {
-        Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
     if !crate::signal::sig_perm_check(cur, &task, sig) {
         return -(Errno::Eperm.as_i32() as i64);

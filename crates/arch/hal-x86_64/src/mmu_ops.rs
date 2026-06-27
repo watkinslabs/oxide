@@ -240,6 +240,18 @@ impl MmuOps for X86Mmu {
                 kassert!(false, "MmuOps::map walker failure");
             }
         }
+        // Invalidate the local TLB for this VA. `map` mutates the ACTIVE
+        // CR3's tables, so any stale entry (a present→present permission
+        // change like fork's W-strip, or a cached not-present/negative
+        // entry from a prior demand-fault) MUST be flushed or the CPU keeps
+        // using the old translation. Linux flushes on every such PTE update
+        // (ptep_set_wrprotect + flush_tlb_page). Omitting it let fork's
+        // parent-side RO-remap leave a stale WRITABLE entry, so the parent
+        // wrote straight into the now-COW-shared frame — write-while-shared
+        // corruption invisible to refcount/poison/FWM detectors. `map_at`
+        // (non-active child root) deliberately does NOT flush.
+        // SAFETY: CPL=0; INVLPG affects only the local TLB for this VA.
+        unsafe { <PtWalkerX86 as pt_walker::PtWalker>::flush_va(va.0); }
     }
 
     /// Tear down a 4 KiB leaf at `va`. v1 only supports

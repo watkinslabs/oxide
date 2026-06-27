@@ -5,7 +5,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_path, resolve, errno_from_vfs, resolve_parent};
+use crate::namei_common::{read_path, errno_from_vfs, resolve_parent};
 
 /// Single rmdir core — both `rmdir(2)` (slot 84, x86 legacy) and
 /// `unlinkat(…, AT_REMOVEDIR)` (the only form aarch64 has) delegate
@@ -16,6 +16,9 @@ use crate::namei_common::{read_path, resolve, errno_from_vfs, resolve_parent};
 /// ext4 backend; everything else is read-only.
 /// # C: O(1)
 pub(crate) fn do_rmdir(p: &str) -> i64 {
+    if vfs::mount::is_readonly_path(p) {
+        return -(Errno::Erofs.as_i32() as i64);
+    }
     let (pino, name) = match resolve_parent(p) { Ok(x) => x, Err(rv) => return rv };
     match pino.rmdir(&name) {
         // d_delete: drop the cached dentry for the removed directory.
@@ -30,7 +33,9 @@ pub fn sys_rmdir(args: &SyscallArgs) -> i64 {
     let raw = match read_path(args.a0) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let p = resolve(&raw).unwrap_or(raw);
+    let p = match crate::pathresolve::resolve_at_result(crate::pathresolve::AT_FDCWD, &raw) {
+        Ok(p) => p, Err(rv) => return rv,
+    };
     if let Err(rv) = crate::landlock::check(&p,
         ::security::landlock::access::REMOVE_DIR) { return rv; }
     do_rmdir(&p)

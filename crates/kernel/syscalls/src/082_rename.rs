@@ -6,7 +6,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_path, resolve, errno_from_vfs};
+use crate::namei_common::{read_path, errno_from_vfs};
 
 /// `rename(from, to)` slot 82 / `renameat(odir, from, ndir, to)`
 /// slot 264 / `renameat2` slot 316. We collapse all three into
@@ -16,13 +16,16 @@ pub fn sys_rename(args: &SyscallArgs) -> i64 {
     rename_impl(-100, args.a0, -100, args.a1)
 }
 
-/// Route a path-write operation through the mount table per
-/// `docs/16`. Replaces the `is_ext4_path` gate + `ext4::rootfs::*`
-/// hardcoded chain. Returns the resolved (mount, relative_path) or
-/// EROFS-like errno if no mount matches.
+/// Route a path-write operation through the mount table per `docs/16`.
+/// Returns the resolved (mount, relative_path), or the Linux errno for a
+/// missing/read-only mount.
 /// # C: O(N path components)
 fn mount_for_write(path: &str) -> Result<(alloc::sync::Arc<vfs::mount::Mount>, alloc::string::String), i64> {
-    vfs::mount::resolve_mount(path).ok_or(-(Errno::Enoent.as_i32() as i64))
+    let (mnt, rel) = vfs::mount::resolve_mount(path).ok_or(-(Errno::Enoent.as_i32() as i64))?;
+    if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
+        return Err(-(Errno::Erofs.as_i32() as i64));
+    }
+    Ok((mnt, rel))
 }
 
 /// # C: O(1)
@@ -34,11 +37,11 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
     // BUG D follow-up: resolve each side against its dirfd (renameat).
-    let f = match crate::pathresolve::resolve_at(from_dirfd, &from_raw) {
-        Some(rp) => rp, None => resolve(&from_raw).unwrap_or(from_raw),
+    let f = match crate::pathresolve::resolve_at_result(from_dirfd, &from_raw) {
+        Ok(rp) => rp, Err(rv) => return rv,
     };
-    let t = match crate::pathresolve::resolve_at(to_dirfd, &to_raw) {
-        Some(rp) => rp, None => resolve(&to_raw).unwrap_or(to_raw),
+    let t = match crate::pathresolve::resolve_at_result(to_dirfd, &to_raw) {
+        Ok(rp) => rp, Err(rv) => return rv,
     };
     // Landlock: from-side needs REMOVE_FILE | REMOVE_DIR | REFER;
     // to-side needs MAKE_REG. Approximate as REMOVE_FILE+MAKE_REG.

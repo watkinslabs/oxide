@@ -66,7 +66,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     if let Some(c) = sched::current() { c.note_syscall(nr as u32); }
     // sys_enter tracepoint (no-op unless tracefs enabled it).
     syscall::tracepoint::fire_sys_enter(nr as u32);
-    debug_syscall! { sched::trace::entry(nr, a0, a1, a2); }
+    debug_syscall! { sched::trace::entry(nr, a0, a1, a2, a3); }
     // seccomp KILL/TRAP/ERRNO/ALLOW filter check.
     if let Err(rv) = security::seccomp::check(nr, &[a0, a1, a2, a3, a4, 0]) { return rv as u64; }
     // F108: PTRACE_SYSCALL — if a tracer armed us, self-stop at entry.
@@ -213,8 +213,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_EPOLL_CTL
                                  => ::fs::epoll::sys_epoll_ctl(&args),
         syscall::nrs::NR_EPOLL_WAIT | syscall::nrs::NR_EPOLL_PWAIT
-            | syscall::nrs::NR_EPOLL_PWAIT2
                                  => ::fs::epoll::sys_epoll_wait(&args),
+        syscall::nrs::NR_EPOLL_PWAIT2
+                                 => ::fs::epoll::sys_epoll_pwait2(&args),
         syscall::nrs::NR_GETPGID   => crate::s121_getpgid::sys_getpgid(&args),
         syscall::nrs::NR_GETSID    => crate::s124_getsid::sys_getsid(&args),
         syscall::nrs::NR_SETPGID       => crate::s109_setpgid::sys_setpgid(&args),
@@ -396,7 +397,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             crate::s293_pipe2::sys_pipe2(&a)
         }
         syscall::nrs::NR_CREAT         => crate::s002_open::sys_open(&args),
-        syscall::nrs::NR_EXIT_GROUP    => crate::s060_exit::sys_exit(&args),
+        syscall::nrs::NR_EXIT_GROUP    => crate::s060_exit::sys_exit_group(&args),
         syscall::nrs::NR_INIT_MODULE   => crate::s175_init_module::sys_init_module(&args),
         syscall::nrs::NR_FINIT_MODULE  => crate::s313_finit_module::sys_finit_module(&args),
         syscall::nrs::NR_DELETE_MODULE => crate::s176_delete_module::sys_delete_module(&args),
@@ -455,6 +456,78 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             }
         }
     };
+    debug_syscall! { sched::trace::ret(nr, rv); }
+    if rv == -(syscall::errno::Errno::Erofs.as_i32() as i64) {
+        klog::write_raw(b"[EROFS] pid=");
+        if let Some(cur) = sched::live::current() {
+            klog::write_dec_u64(cur.tid as u64);
+            klog::write_raw(b" name=");
+            klog::write_raw(cur.name.as_bytes());
+        } else {
+            klog::write_raw(b"none");
+        }
+        klog::write_raw(b" nr=");
+        klog::write_dec_u64(nr);
+        klog::write_raw(b" a0=");
+        klog::write_hex_u64(a0);
+        klog::write_raw(b" a1=");
+        klog::write_hex_u64(a1);
+        klog::write_raw(b" a2=");
+        klog::write_hex_u64(a2);
+        klog::write_raw(b"\n");
+    }
+    #[cfg(feature = "debug-syscall")]
+    if rv == -(syscall::errno::Errno::Enotty.as_i32() as i64)
+        && !(nr == syscall::nrs::NR_IOCTL && a1 == 0x5401)
+    {
+        klog::write_raw(b"[ENOTTY] pid=");
+        if let Some(cur) = sched::live::current() {
+            klog::write_dec_u64(cur.tid as u64);
+            klog::write_raw(b" name=");
+            klog::write_raw(cur.name.as_bytes());
+            if nr == syscall::nrs::NR_IOCTL {
+                if let Some(fdt) = unsafe { cur.fd_table_ref() } {
+                    if let Ok(file) = fdt.get(a0 as i32) {
+                        klog::write_raw(b" fdpath=");
+                        let p = file.dentry().absolute_path();
+                        klog::write_raw(&p);
+                        klog::write_raw(b" ftype=");
+                        klog::write_dec_u64(file.inode().file_type() as u64);
+                    }
+                }
+            }
+        } else {
+            klog::write_raw(b"none");
+        }
+        klog::write_raw(b" nr=");
+        klog::write_dec_u64(nr);
+        klog::write_raw(b" a0=");
+        klog::write_hex_u64(a0);
+        klog::write_raw(b" a1=");
+        klog::write_hex_u64(a1);
+        klog::write_raw(b" a2=");
+        klog::write_hex_u64(a2);
+        klog::write_raw(b"\n");
+    }
+    // [ESRCH] catch: systemd's executor fails service spawn with "No such
+    // process" (ESRCH). Log the exact syscall+args that returns -ESRCH so the
+    // failing op (waitid/kill/pidfd/sched) is unambiguous. NR_WAIT4/WAITID
+    // legitimately return ESRCH when no child matches — still useful to see.
+    #[cfg(feature = "debug-syscall")]
+    if rv == -(syscall::errno::Errno::Esrch.as_i32() as i64) {
+        klog::write_raw(b"[ESRCH] pid=");
+        if let Some(cur) = sched::live::current() {
+            klog::write_dec_u64(cur.tid as u64);
+            klog::write_raw(b" name=");
+            klog::write_raw(cur.name.as_bytes());
+        } else { klog::write_raw(b"none"); }
+        klog::write_raw(b" nr=");      klog::write_dec_u64(nr);
+        klog::write_raw(b" a0=");      klog::write_hex_u64(a0);
+        klog::write_raw(b" a1=");      klog::write_hex_u64(a1);
+        klog::write_raw(b" a2=");      klog::write_hex_u64(a2);
+        klog::write_raw(b" a3=");      klog::write_hex_u64(a3);
+        klog::write_raw(b"\n");
+    }
     // sys_exit tracepoint (no-op unless tracefs enabled it).
     syscall::tracepoint::fire_sys_exit(nr as u32, rv);
     debug_sched! {
