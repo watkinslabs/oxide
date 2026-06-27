@@ -14,13 +14,18 @@ use vfs::fs::FileSystem;
 use vfs::inode::Inode;
 use vfs::{FileType, InodeRef, KResult, VfsError};
 
+mod common;
+
 static SERIAL: Mutex<()> = Mutex::new(());
 
 /// Serialize + reset the ns provider to 0. Poison-tolerant so one failing
-/// test doesn't cascade.
+/// test doesn't cascade. Also installs the hosted DentryResolver fixture
+/// so the engine resolves parent/child/exact-mount by dentry identity
+/// (the real-kernel path), not the table's rendered string column.
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     vfs::mount::set_current_ns_provider(|| 0);
+    common::install_dentry_resolver();
     g
 }
 
@@ -85,13 +90,13 @@ fn move_mount_relocates_preserving_mnt_id() {
     let _g = guard();
     vfs::mount::register("/mv-src", Arc::new(TestFs { root_ino: 0xABCD })).expect("register");
     let before = vfs::mount::snapshot();
-    let id = before.iter().find(|m| m.mount_point == "/mv-src").expect("present").mnt_id;
+    let id = before.iter().find(|m| m.mount_point_str() == "/mv-src").expect("present").mnt_id;
     vfs::mount::move_mount("/mv-src", "/mv-dst").expect("move");
     assert!(vfs::mount::mount_root_at("/mv-src").is_none(), "old point cleared");
     let r = vfs::mount::mount_root_at("/mv-dst").expect("cross into new point");
     assert_eq!(r.ino(), 0xABCD, "same fs root after move");
     let after = vfs::mount::snapshot();
-    let m = after.iter().find(|m| m.mount_point == "/mv-dst").expect("moved present");
+    let m = after.iter().find(|m| m.mount_point_str() == "/mv-dst").expect("moved present");
     assert_eq!(m.mnt_id, id, "mnt_id stable across MS_MOVE");
     assert!(matches!(vfs::mount::move_mount("/nope-mv", "/x2"), Err(VfsError::Einval)));
     vfs::mount::register("/occupied", Arc::new(TestFs { root_ino: 1 })).expect("register2");
@@ -137,6 +142,23 @@ fn ms_rec_clones_submounts() {
     assert_eq!(sub.ino(), 0x200, "cloned submount keeps the source fs root");
 }
 
+#[test]
+fn ms_rec_from_root_clones_absolute_submounts() {
+    let _g = guard();
+    vfs::mount::set_current_ns_provider(|| 0x5151);
+    vfs::mount::register("/", Arc::new(TestFs { root_ino: 0x100 })).expect("root");
+    vfs::mount::register("/proc", Arc::new(TestFs { root_ino: 0x200 })).expect("proc");
+    vfs::mount::register("/sys/fs/cgroup", Arc::new(TestFs { root_ino: 0x300 })).expect("cgroup");
+    let r = vfs::mount::mount_root_at("/proc").expect("proc root");
+    vfs::mount::register_bind("/stage", Arc::new(TestFs { root_ino: 0xDEAD }), r).expect("bind top");
+    let n = vfs::mount::bind_submounts_rec("/", "/stage");
+    assert_eq!(n, 2, "root recursive bind clones every non-root mount");
+    let proc = vfs::mount::mount_root_at("/stage/proc").expect("cloned /proc");
+    let cgroup = vfs::mount::mount_root_at("/stage/sys/fs/cgroup").expect("cloned /sys/fs/cgroup");
+    assert_eq!(proc.ino(), 0x200);
+    assert_eq!(cgroup.ino(), 0x300);
+}
+
 // K2V V7-d: propagation peer-group ids.
 #[test]
 fn ms_shared_assigns_distinct_peer_groups() {
@@ -148,15 +170,15 @@ fn ms_shared_assigns_distinct_peer_groups() {
     vfs::mount::set_propagation("/pg-a", Propagation::Shared).expect("share a");
     vfs::mount::set_propagation("/pg-b", Propagation::Shared).expect("share b");
     let snap = vfs::mount::snapshot();
-    let ga = snap.iter().find(|m| m.mount_point == "/pg-a").unwrap().peer_group.load(Ordering::Acquire);
-    let gb = snap.iter().find(|m| m.mount_point == "/pg-b").unwrap().peer_group.load(Ordering::Acquire);
+    let ga = snap.iter().find(|m| m.mount_point_str() == "/pg-a").unwrap().peer_group.load(Ordering::Acquire);
+    let gb = snap.iter().find(|m| m.mount_point_str() == "/pg-b").unwrap().peer_group.load(Ordering::Acquire);
     assert!(ga != 0 && gb != 0, "shared mounts get a peer group");
     assert!(ga != gb, "distinct shared mounts get distinct peer groups");
     vfs::mount::set_propagation("/pg-a", Propagation::Shared).expect("reshare a");
-    let ga2 = vfs::mount::snapshot().iter().find(|m| m.mount_point == "/pg-a").unwrap().peer_group.load(Ordering::Acquire);
+    let ga2 = vfs::mount::snapshot().iter().find(|m| m.mount_point_str() == "/pg-a").unwrap().peer_group.load(Ordering::Acquire);
     assert_eq!(ga, ga2, "re-MS_SHARED keeps the peer group");
     vfs::mount::set_propagation("/pg-a", Propagation::Private).expect("priv a");
-    let ga3 = vfs::mount::snapshot().iter().find(|m| m.mount_point == "/pg-a").unwrap().peer_group.load(Ordering::Acquire);
+    let ga3 = vfs::mount::snapshot().iter().find(|m| m.mount_point_str() == "/pg-a").unwrap().peer_group.load(Ordering::Acquire);
     assert_eq!(ga3, 0, "MS_PRIVATE clears the peer group");
 }
 
@@ -167,12 +189,12 @@ fn register_stamps_mount_ns_from_provider() {
     let _g = guard();
     vfs::mount::register("/ns-default", Arc::new(TestFs { root_ino: 1 })).expect("a");
     let m0 = vfs::mount::snapshot_all();
-    let m0 = m0.iter().find(|m| m.mount_point == "/ns-default").unwrap();
+    let m0 = m0.iter().find(|m| m.mount_point_str() == "/ns-default").unwrap();
     assert_eq!(m0.ns, 0, "no provider ⇒ ns 0");
     vfs::mount::set_current_ns_provider(|| 42);
     vfs::mount::register("/ns-42", Arc::new(TestFs { root_ino: 2 })).expect("b");
     let m1 = vfs::mount::snapshot_all();
-    let m1 = m1.iter().find(|m| m.mount_point == "/ns-42").unwrap();
+    let m1 = m1.iter().find(|m| m.mount_point_str() == "/ns-42").unwrap();
     assert_eq!(m1.ns, 42, "provider ns stamped onto the new mount");
 }
 
@@ -185,7 +207,7 @@ fn per_ns_isolation_and_copy_on_unshare() {
     // Register a base mount in ns 0.
     vfs::mount::register("/u2b-base", Arc::new(TestFs { root_ino: 0x7001 })).expect("base");
     let base_id = vfs::mount::snapshot_all().iter()
-        .find(|m| m.mount_point == "/u2b-base").unwrap().mnt_id;
+        .find(|m| m.mount_point_str() == "/u2b-base").unwrap().mnt_id;
     // From ns 7 (before any copy) the base mount is INVISIBLE.
     vfs::mount::set_current_ns_provider(|| 7);
     assert!(vfs::mount::mount_root_at("/u2b-base").is_none(), "ns 7 can't see ns 0 mount");
@@ -197,7 +219,7 @@ fn per_ns_isolation_and_copy_on_unshare() {
     assert_eq!(r.ino(), 0x7001, "copy preserves the fs root");
     // The copy is an independent mount (fresh mnt_id).
     let copy = vfs::mount::snapshot_all().iter()
-        .find(|m| m.mount_point == "/u2b-base" && m.ns == 7).map(|m| m.mnt_id).unwrap();
+        .find(|m| m.mount_point_str() == "/u2b-base" && m.ns == 7).map(|m| m.mnt_id).unwrap();
     assert_ne!(copy, base_id, "copy-on-unshare assigns a fresh mnt_id");
     // Divergence: a new mount in ns 7 is invisible to ns 0.
     vfs::mount::register("/u2b-only7", Arc::new(TestFs { root_ino: 0x7002 })).expect("only7");
@@ -228,7 +250,7 @@ fn move_mount_relocates_subtree() {
     vfs::mount::register("/sm-src", Arc::new(TestFs { root_ino: 0x10 })).expect("src");
     vfs::mount::register("/sm-src/inner", Arc::new(TestFs { root_ino: 0x20 })).expect("sub");
     let sub_id = vfs::mount::snapshot().iter()
-        .find(|m| m.mount_point == "/sm-src/inner").unwrap().mnt_id;
+        .find(|m| m.mount_point_str() == "/sm-src/inner").unwrap().mnt_id;
     vfs::mount::move_mount("/sm-src", "/sm-dst").expect("move subtree");
     // Both the root and the submount relocated.
     assert!(vfs::mount::mount_root_at("/sm-src").is_none(), "old root gone");
@@ -238,7 +260,7 @@ fn move_mount_relocates_subtree() {
     let s = vfs::mount::mount_root_at("/sm-dst/inner").expect("submount relocated");
     assert_eq!(s.ino(), 0x20, "submount keeps its fs root");
     let new_sub_id = vfs::mount::snapshot().iter()
-        .find(|m| m.mount_point == "/sm-dst/inner").unwrap().mnt_id;
+        .find(|m| m.mount_point_str() == "/sm-dst/inner").unwrap().mnt_id;
     assert_eq!(new_sub_id, sub_id, "submount mnt_id preserved across move");
 }
 
@@ -260,7 +282,7 @@ fn join_peer_group_shares_group() {
     assert_eq!(vfs::mount::peer_group_of("/pi-dst"), pg, "joined the source's peer group");
     // And it's now Shared.
     let snap = vfs::mount::snapshot();
-    let m = snap.iter().find(|m| m.mount_point == "/pi-dst").unwrap();
+    let m = snap.iter().find(|m| m.mount_point_str() == "/pi-dst").unwrap();
     assert_eq!(Propagation::from_u8(m.propagation.load(Ordering::Acquire)), Propagation::Shared);
     // peer_group_of a non-mount is 0.
     assert_eq!(vfs::mount::peer_group_of("/pi-nope"), 0);
@@ -306,7 +328,7 @@ fn pivot_root_swaps_namespace_root() {
     vfs::mount::register("/etc", Arc::new(TestFs { root_ino: 0xD })).expect("oldtree");
     vfs::mount::pivot_root("/nr", "/nr/old").expect("pivot");
     let snap = vfs::mount::snapshot();
-    let ino_at = |mp: &str| snap.iter().find(|m| m.mount_point == mp)
+    let ino_at = |mp: &str| snap.iter().find(|m| m.mount_point_str() == mp)
         .and_then(|m| m.fs.root()).map(|i| i.ino());
     assert_eq!(ino_at("/"), Some(0xB), "new_root is now /");
     assert_eq!(ino_at("/sub"), Some(0xC), "new_root submount rebased to /sub");

@@ -117,9 +117,10 @@ fn lexical_normalize_resolves_dotdot() {
 }
 
 #[test]
-fn lexical_normalize_rejects_dotdot_above_absolute_root() {
-    assert!(lexical_normalize("/..").is_none());
-    assert!(lexical_normalize("/a/../..").is_none());
+fn lexical_normalize_clamps_dotdot_at_absolute_root() {
+    assert_eq!(lexical_normalize("/..").as_deref(), Some("/"));
+    assert_eq!(lexical_normalize("/a/../..").as_deref(), Some("/"));
+    assert_eq!(lexical_normalize("/../../a").as_deref(), Some("/a"));
 }
 
 // ---------------------------------------------------------------------------
@@ -509,7 +510,7 @@ fn resolve_against_cwd_handles_dotdot() {
     use crate::path::resolve_against_cwd;
     assert_eq!(resolve_against_cwd("/tmp/sub", "../x").as_deref(), Some("/tmp/x"));
     assert_eq!(resolve_against_cwd("/tmp", "..").as_deref(),       Some("/"));
-    assert_eq!(resolve_against_cwd("/", ".."), None, "above-root must reject");
+    assert_eq!(resolve_against_cwd("/", "..").as_deref(), Some("/"));
 }
 
 #[test]

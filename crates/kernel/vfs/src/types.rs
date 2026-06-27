@@ -87,6 +87,7 @@ pub enum VfsError {
     Eacces  = 13,
     Efault  = 14,
     Eexist  = 17,
+    Exdev   = 18,
     Enotdir = 20,
     Eisdir  = 21,
     Einval  = 22,

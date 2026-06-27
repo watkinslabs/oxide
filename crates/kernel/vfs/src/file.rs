@@ -269,6 +269,12 @@ impl File {
         if !(f.contains(OpenFlags::O_WRONLY) || f.contains(OpenFlags::O_RDWR)) {
             return Err(VfsError::Ebadf);
         }
+        let path = self.dentry.absolute_path();
+        if let Ok(path) = core::str::from_utf8(&path) {
+            if crate::mount::is_readonly_path(path) {
+                return Err(VfsError::Erofs);
+            }
+        }
         let off = if f.contains(OpenFlags::O_APPEND) {
             self.inode.size()
         } else {
@@ -350,6 +356,9 @@ pub fn install_open(
     }
     inode.on_open()?;
     if flags.contains(OpenFlags::O_TRUNC) {
+        if crate::mount::is_readonly_path(path) {
+            return Err(VfsError::Erofs);
+        }
         let _ = inode.truncate(0);
     }
     let dentry = Dentry::new(None, path.to_string(), Arc::clone(&inode));

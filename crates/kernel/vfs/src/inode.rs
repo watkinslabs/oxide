@@ -42,6 +42,28 @@ pub trait Inode: Send + Sync {
     /// # C: O(1)
     fn fsid(&self) -> u64 { 0 }
 
+    /// Link count reported through stat/statx. Filesystems with real
+    /// metadata should override this with their stored inode link count.
+    /// The default matches Linux's baseline shape: non-directories have
+    /// one link, an empty directory has "." and its parent's entry.
+    /// # C: O(1)
+    fn nlink(&self) -> u32 {
+        if matches!(self.file_type(), FileType::Directory) { 2 } else { 1 }
+    }
+
+    /// Preferred I/O block size reported through stat/statx. Filesystems
+    /// with a superblock or device block size should override it.
+    /// # C: O(1)
+    fn blksize(&self) -> u32 { 4096 }
+
+    /// Filesystem magic for anonymous or pathless inodes reported by
+    /// `fstatfs(2)`. Mounted filesystems normally report through their mount's
+    /// `FileSystem::magic`; anonymous descriptor families such as pidfd have no
+    /// stable pathname, so the inode itself supplies the superblock magic.
+    /// `0` means "use the path/mount based fallback".
+    /// # C: O(1)
+    fn statfs_magic(&self) -> u64 { 0 }
+
     /// # C: O(1)
     fn file_type(&self) -> FileType;
 
@@ -178,6 +200,31 @@ pub trait Inode: Send + Sync {
     /// # C: O(1)
     fn poll(&self) -> u32 { POLL_IN | POLL_OUT }
 
+    /// Readiness query that knows the caller's per-fd read cursor (`File::pos`).
+    /// Needed for append-only streams whose readability depends on whether the
+    /// reader has caught up to the head — notably `/dev/kmsg`, where the
+    /// position-less `poll()` defaults to always-`POLL_IN` and busy-loops
+    /// systemd's journald epoll. Default forwards to `poll()`.
+    /// # C: O(1)
+    fn poll_file(&self, pos: u64) -> u32 { let _ = pos; self.poll() }
+
+    /// Linux per-file `show_fdinfo`: file-type-specific lines appended to
+    /// `/proc/<pid>/fdinfo/<n>` AFTER the generic `pos/flags/mnt_id/ino`.
+    /// A pidfd emits `Pid:`/`NSpid:` (kernel/pid.c `pidfd_show_fdinfo`);
+    /// glibc/systemd `pidfd_get_pid()` parses the `Pid:` line and reports
+    /// ENOTTY when it is missing. Default = no extra lines. # C: O(1)
+    fn fdinfo_extra(&self, _out: &mut alloc::vec::Vec<u8>) {}
+
+    /// `MAP_SHARED` page-cache frame for page-aligned file offset `off`.
+    /// Returns the persistent backing PMM frame so a shared mapping aliases
+    /// the file's own storage (Linux shmem / page cache) — user writes
+    /// propagate to the file and to every other mapper. `None` (the default)
+    /// = no shareable frame, so the fault handler copies via `read` into a
+    /// fresh private frame (correct for `MAP_PRIVATE`; the only option for
+    /// backings without page-frame storage). tmpfs/memfd override this.
+    /// # C: O(log N_pages)
+    fn mmap_shared_frame(&self, _off: u64) -> Option<u64> { None }
+
     /// F181: per-Inode subscriber list for targeted epoll wakes.
     /// Default `None` falls back to the global epoll-broadcast wake
     /// (notify_epoll_waiters). Inodes whose event sites can issue
@@ -215,6 +262,14 @@ pub trait Inode: Send + Sync {
     /// `None` = no per-FS override; statx applies its 0o600 fallback.
     /// # C: O(1)
     fn perm(&self) -> Option<u16> { None }
+
+    /// Device number (`dev_t`, packed `(major<<8)|minor` Linux legacy
+    /// encoding) for a char/block device node. `0` = not a device / no
+    /// number. Linux devtmpfs nodes carry their real `dev_t` from the
+    /// driver model; `stat`/`fstat`/`statx` report it as `st_rdev`.
+    /// Non-device inodes leave this 0.
+    /// # C: O(1)
+    fn rdev(&self) -> u32 { 0 }
 
     /// Owner uid. `None` = no per-FS override.
     /// # C: O(1)

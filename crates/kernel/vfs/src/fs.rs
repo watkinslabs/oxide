@@ -55,10 +55,42 @@ pub trait FileSystem: Send + Sync {
         Err(VfsError::Erofs)
     }
 
+    /// Create an anonymous (`O_TMPFILE`) regular inode on THIS fs. `dir`
+    /// is the directory (relative to this mount) the file would live in —
+    /// disk FSes use it to pick an allocation group; in-memory FSes
+    /// ignore it. The inode has no directory entry (nlink=0) and is
+    /// reclaimed when its last fd drops. Must be dispatched on the fs that
+    /// actually backs the path: `O_TMPFILE` on /run|/tmp|/dev/shm is tmpfs,
+    /// not the ext4 rootfs. Default: read-only/unsupported FS returns Erofs.
+    /// # C: depends on FS.
+    fn create_anonymous(&self, dir: &str, mode: u32) -> KResult<InodeRef> {
+        let _ = (dir, mode);
+        Err(VfsError::Erofs)
+    }
+
     /// Remove the regular file at `path`. Default: `Erofs`.
     /// # C: depends on FS.
     fn unlink(&self, path: &str) -> KResult<()> {
         let _ = path;
+        Err(VfsError::Erofs)
+    }
+
+    /// Hardlink `target` to `link` within this filesystem. Both paths are
+    /// absolute during the mount-table transition; mature backends may treat
+    /// them as mount-relative once every caller passes stripped names.
+    /// Default: read-only / unsupported FS returns `Erofs`.
+    /// # C: depends on FS.
+    fn link(&self, target: &str, link: &str) -> KResult<()> {
+        let _ = (target, link);
+        Err(VfsError::Erofs)
+    }
+
+    /// Materialize an unnamed inode, e.g. `linkat(fd, "", path,
+    /// AT_EMPTY_PATH)`, into this filesystem. Backends must reject inodes
+    /// from another filesystem with `Exdev`.
+    /// # C: depends on FS.
+    fn link_inode(&self, inode: InodeRef, link: &str) -> KResult<()> {
+        let _ = (inode, link);
         Err(VfsError::Erofs)
     }
 

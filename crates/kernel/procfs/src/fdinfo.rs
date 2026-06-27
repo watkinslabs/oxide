@@ -84,6 +84,9 @@ impl ProcFdInfoInode {
             self.file.flags().bits(),
             self.file.inode().ino(),
         ));
+        // Linux appends each fd type's own `show_fdinfo` lines after the
+        // generic header — pidfd emits `Pid:`/`NSpid:` here (systemd reads it).
+        self.file.inode().fdinfo_extra(&mut out);
         out
     }
 }

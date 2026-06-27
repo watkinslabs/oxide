@@ -24,7 +24,7 @@ pub enum Component<'a> {
 pub fn components(path: &str) -> Vec<Component<'_>> {
     let mut out = Vec::new();
     let mut start = 0usize;
-    if path.starts_with('/') {
+    if path.as_bytes().first() == Some(&b'/') {
         out.push(Component::Root);
     }
     let bytes = path.as_bytes();
@@ -57,7 +57,7 @@ fn push_segment<'a>(out: &mut Vec<Component<'a>>, seg: &'a str) {
 /// True iff `path` is absolute (begins with `/`).
 /// # C: O(1)
 pub fn is_absolute(path: &str) -> bool {
-    path.starts_with('/')
+    path.as_bytes().first() == Some(&b'/')
 }
 
 /// Trim trailing newlines + NULs from a hostname-shaped byte slice
@@ -91,8 +91,16 @@ pub fn resolve_against_cwd(cwd: &str, path: &str) -> Option<String> {
 /// or stat-ing this path acts on the open file description fd `<n>`
 /// already holds. Returns `None` when the shape doesn't match.
 /// # C: O(N_path)
+/// `Some(rest)` if `s` begins with the literal `p` (byte compare, no
+/// string-prefix combinator). Magic pseudo-path parsing only — never a
+/// mount-tree containment test. # C: O(len p)
+fn rest_after<'a>(s: &'a str, p: &str) -> Option<&'a str> {
+    let (sb, pb) = (s.as_bytes(), p.as_bytes());
+    if sb.len() >= pb.len() && &sb[..pb.len()] == pb { Some(&s[pb.len()..]) } else { None }
+}
+
 pub fn parse_proc_fd(path: &str) -> Option<(Option<u32>, i32)> {
-    let rest = path.strip_prefix("/proc/")?;
+    let rest = rest_after(path, "/proc/")?;
     let mut it = rest.splitn(3, '/');
     let who = it.next()?;
     if it.next()? != "fd" { return None; }
@@ -113,15 +121,15 @@ pub fn dup_fd_target(path: &str) -> Option<(Option<u32>, i32)> {
         "/dev/stderr" => return Some((None, 2)),
         _ => {}
     }
-    if let Some(rest) = path.strip_prefix("/dev/fd/") {
+    if let Some(rest) = rest_after(path, "/dev/fd/") {
         return rest.parse::<i32>().ok().map(|n| (None, n));
     }
     parse_proc_fd(path)
 }
 
 /// Normalize a path lexically (resolve `..` and `.` against an
-/// absolute prefix). Does NOT consult the FS. Returns `None` if a
-/// `..` would escape the root.
+/// absolute prefix). Does NOT consult the FS. Absolute paths clamp
+/// parent walks at `/`, matching Linux path walk (`/.. == /`).
 /// # C: O(len)
 pub fn lexical_normalize(path: &str) -> Option<String> {
     let mut stack: Vec<&str> = Vec::new();
@@ -131,8 +139,10 @@ pub fn lexical_normalize(path: &str) -> Option<String> {
             Component::Root      => {} // absolute already implied; ignore
             Component::Normal(s) => stack.push(s),
             Component::ParentDir => {
-                if stack.pop().is_none() && abs {
-                    return None;
+                if stack.pop().is_none() {
+                    if !abs {
+                        stack.push("..");
+                    }
                 }
             }
         }

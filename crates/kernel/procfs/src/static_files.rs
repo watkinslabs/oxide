@@ -3,7 +3,7 @@
 // defined in `procfs.rs`; this module only carries the boot-time
 // `register()` walk.
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use vfs::InodeRef;
 use sync::{Spinlock, MountTable as RootClass};
 
@@ -13,6 +13,94 @@ use crate::{
     ProcSelfStatusInode, ProcUptimeInode, StaticFileInode, FILESYSTEMS, IO_BODY,
     LIMITS_BODY, VERSION_BODY,
 };
+
+fn hex_nibble(n: u8) -> u8 {
+    match n & 0x0f {
+        v @ 0..=9 => b'0' + v,
+        v => b'a' + (v - 10),
+    }
+}
+
+fn fill_hex(dst: &mut [u8], bytes: &[u8]) {
+    for (i, b) in bytes.iter().copied().enumerate() {
+        dst[i * 2] = hex_nibble(b >> 4);
+        dst[i * 2 + 1] = hex_nibble(b);
+    }
+}
+
+fn random_uuid_bytes() -> [u8; 16] {
+    let mut out = [0u8; 16];
+    let a = devfs::misc::lcg_next().to_le_bytes();
+    let b = devfs::misc::lcg_next().to_le_bytes();
+    out[..8].copy_from_slice(&a);
+    out[8..].copy_from_slice(&b);
+    out[6] = (out[6] & 0x0f) | 0x40;
+    out[8] = (out[8] & 0x3f) | 0x80;
+    out
+}
+
+fn leak_uuid_line(bytes: [u8; 16]) -> &'static [u8] {
+    let mut s = Vec::with_capacity(37);
+    let mut hex = [0u8; 32];
+    fill_hex(&mut hex, &bytes);
+    s.extend_from_slice(&hex[0..8]);
+    s.push(b'-');
+    s.extend_from_slice(&hex[8..12]);
+    s.push(b'-');
+    s.extend_from_slice(&hex[12..16]);
+    s.push(b'-');
+    s.extend_from_slice(&hex[16..20]);
+    s.push(b'-');
+    s.extend_from_slice(&hex[20..32]);
+    s.push(b'\n');
+    Box::leak(s.into_boxed_slice())
+}
+
+fn leak_machine_id_line(bytes: [u8; 16]) -> &'static [u8] {
+    let mut s = Vec::with_capacity(33);
+    let mut hex = [0u8; 32];
+    fill_hex(&mut hex, &bytes);
+    s.extend_from_slice(&hex);
+    s.push(b'\n');
+    Box::leak(s.into_boxed_slice())
+}
+
+fn register_ipv4_conf_sysctl(path: &'static str, value: &'static [u8]) {
+    devfs::register(path, crate::sysctl::SysctlInode::new(value) as InodeRef);
+}
+
+fn register_ipv4_conf_sysctls(base: &'static str) {
+    let entries: &[(&str, &[u8])] = match base {
+        "/proc/sys/net/ipv4/conf/all" => &[
+            ("/proc/sys/net/ipv4/conf/all/rp_filter", b"0\n"),
+            ("/proc/sys/net/ipv4/conf/all/arp_ignore", b"0\n"),
+            ("/proc/sys/net/ipv4/conf/all/arp_announce", b"0\n"),
+            ("/proc/sys/net/ipv4/conf/all/accept_redirects", b"1\n"),
+            ("/proc/sys/net/ipv4/conf/all/send_redirects", b"1\n"),
+            ("/proc/sys/net/ipv4/conf/all/forwarding", b"0\n"),
+        ],
+        "/proc/sys/net/ipv4/conf/default" => &[
+            ("/proc/sys/net/ipv4/conf/default/rp_filter", b"0\n"),
+            ("/proc/sys/net/ipv4/conf/default/arp_ignore", b"0\n"),
+            ("/proc/sys/net/ipv4/conf/default/arp_announce", b"0\n"),
+            ("/proc/sys/net/ipv4/conf/default/accept_redirects", b"1\n"),
+            ("/proc/sys/net/ipv4/conf/default/send_redirects", b"1\n"),
+            ("/proc/sys/net/ipv4/conf/default/forwarding", b"0\n"),
+        ],
+        "/proc/sys/net/ipv4/conf/eth0" => &[
+            ("/proc/sys/net/ipv4/conf/eth0/rp_filter", b"0\n"),
+            ("/proc/sys/net/ipv4/conf/eth0/arp_ignore", b"0\n"),
+            ("/proc/sys/net/ipv4/conf/eth0/arp_announce", b"0\n"),
+            ("/proc/sys/net/ipv4/conf/eth0/accept_redirects", b"1\n"),
+            ("/proc/sys/net/ipv4/conf/eth0/send_redirects", b"1\n"),
+            ("/proc/sys/net/ipv4/conf/eth0/forwarding", b"0\n"),
+        ],
+        _ => &[],
+    };
+    for (path, value) in entries.iter().copied() {
+        register_ipv4_conf_sysctl(path, value);
+    }
+}
 
 /// Build the `/proc` root directory's static children — the Linux `proc_create`
 /// set (cpuinfo/meminfo/stat/…). Each is a real child inode the directory OWNS
@@ -71,6 +159,10 @@ pub fn proc_root() -> Arc<ProcRootInode> {
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(N_files)
 pub fn register_static_files() {
+    let random_uuid = leak_uuid_line(random_uuid_bytes());
+    let boot_id = leak_uuid_line(random_uuid_bytes());
+    let machine_id = leak_machine_id_line(random_uuid_bytes());
+
     // /proc/self/cgroup resolves the calling task's real cgroup path at read time.
     devfs::register(
         "/proc/self/cgroup",
@@ -121,11 +213,11 @@ pub fn register_static_files() {
     );
     devfs::register(
         "/sys/kernel/random/uuid",
-        StaticFileInode::new(b"00000000-0000-0000-0000-000000000001\n") as InodeRef,
+        StaticFileInode::new(random_uuid) as InodeRef,
     );
     devfs::register(
         "/sys/kernel/random/boot_id",
-        StaticFileInode::new(b"00000000-0000-0000-0000-000000000002\n") as InodeRef,
+        StaticFileInode::new(boot_id) as InodeRef,
     );
     devfs::register(
         "/sys/kernel/random/entropy_avail",
@@ -152,7 +244,7 @@ pub fn register_static_files() {
     );
     devfs::register(
         "/etc/machine-id",
-        StaticFileInode::new(b"00000000000000000000000000000001\n") as InodeRef,
+        StaticFileInode::new(machine_id) as InodeRef,
     );
     devfs::register(
         "/etc/hostname",
@@ -240,7 +332,7 @@ ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n\
     );
     devfs::register(
         "/proc/self/oom_adj",
-        StaticFileInode::new(b"0\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"0\n") as InodeRef,
     );
     devfs::register(
         "/proc/self/loginuid",
@@ -281,7 +373,7 @@ ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n\
     );
     devfs::register(
         "/proc/self/oom_score_adj",
-        StaticFileInode::new(b"0\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"0\n") as InodeRef,
     );
     devfs::register(
         "/proc/self/limits",
@@ -298,15 +390,15 @@ ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n\
     );
     devfs::register(
         "/proc/sys/kernel/random/boot_id",
-        StaticFileInode::new(b"00000000-0000-0000-0000-000000000002\n") as InodeRef,
+        StaticFileInode::new(boot_id) as InodeRef,
     );
     devfs::register(
         "/proc/sys/kernel/pid_max",
-        StaticFileInode::new(b"32768\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"32768\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/kernel/random/uuid",
-        StaticFileInode::new(b"00000000-0000-0000-0000-000000000001\n") as InodeRef,
+        StaticFileInode::new(random_uuid) as InodeRef,
     );
     devfs::register(
         "/proc/sys/kernel/ngroups_max",
@@ -350,7 +442,7 @@ ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n\
     );
     devfs::register(
         "/proc/sys/fs/nr_open",
-        StaticFileInode::new(b"1048576\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"1048576\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/fs/inotify/max_user_watches",
@@ -575,7 +667,18 @@ Inter-| sta-|   Quality        |   Discarded packets               | Missed | WE
     );
     devfs::register(
         "/proc/sys/net/ipv4/icmp_echo_ignore_all",
-        StaticFileInode::new(b"0\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"0\n") as InodeRef,
+    );
+    register_ipv4_conf_sysctls("/proc/sys/net/ipv4/conf/all");
+    register_ipv4_conf_sysctls("/proc/sys/net/ipv4/conf/default");
+    register_ipv4_conf_sysctls("/proc/sys/net/ipv4/conf/eth0");
+    devfs::register(
+        "/proc/sys/fs/protected_regular",
+        crate::sysctl::SysctlInode::new(b"2\n") as InodeRef,
+    );
+    devfs::register(
+        "/proc/sys/fs/protected_fifos",
+        crate::sysctl::SysctlInode::new(b"1\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/net/ipv6/conf/all/disable_ipv6",
@@ -607,75 +710,75 @@ Inter-| sta-|   Quality        |   Discarded packets               | Missed | WE
     );
     devfs::register(
         "/proc/sys/vm/min_free_kbytes",
-        StaticFileInode::new(b"4096\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"4096\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/vm/overcommit_ratio",
-        StaticFileInode::new(b"50\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"50\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/vm/dirty_ratio",
-        StaticFileInode::new(b"20\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"20\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/vm/dirty_background_ratio",
-        StaticFileInode::new(b"10\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"10\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/vm/page-cluster",
-        StaticFileInode::new(b"3\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"3\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/vm/max_map_count",
-        StaticFileInode::new(b"65530\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"65530\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/vm/nr_hugepages",
-        StaticFileInode::new(b"0\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"0\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/vm/mmap_min_addr",
-        StaticFileInode::new(b"65536\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"65536\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/kernel/sched_rr_timeslice_ms",
-        StaticFileInode::new(b"100\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"100\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/kernel/randomize_va_space",
-        StaticFileInode::new(b"2\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"2\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/kernel/yama/ptrace_scope",
-        StaticFileInode::new(b"1\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"1\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/kernel/perf_event_paranoid",
-        StaticFileInode::new(b"2\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"2\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/kernel/dmesg_restrict",
-        StaticFileInode::new(b"0\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"0\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/kernel/kptr_restrict",
-        StaticFileInode::new(b"0\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"0\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/kernel/threads-max",
-        StaticFileInode::new(b"32768\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"32768\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/kernel/io_uring_disabled",
-        StaticFileInode::new(b"0\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"0\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/fs/file-max",
-        StaticFileInode::new(b"4096\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"4096\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/fs/nr_open",
-        StaticFileInode::new(b"1048576\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"1048576\n") as InodeRef,
     );
     devfs::register(
         "/proc/sys/fs/protected_hardlinks",
@@ -687,6 +790,6 @@ Inter-| sta-|   Quality        |   Discarded packets               | Missed | WE
     );
     devfs::register(
         "/proc/sys/fs/suid_dumpable",
-        StaticFileInode::new(b"0\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"0\n") as InodeRef,
     );
 }

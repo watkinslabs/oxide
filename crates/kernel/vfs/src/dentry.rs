@@ -24,15 +24,12 @@ pub struct Dentry {
     /// spec describes — same invariants, simpler; the global hash + RCU
     /// is a perf follow-up. Lock class `Dentry` (`06§3.6`).
     children: RwLock<BTreeMap<String, Arc<Dentry>>, DentryClass>,
-    /// Mount link (`docs/16§3` mount crossing). `Some(root_inode)` when a
-    /// filesystem is mounted ON this dentry — the path walk switches to
-    /// that inode on reaching this node, keyed by dentry IDENTITY (not by
-    /// path string). This is the Linux `dentry → vfsmount` mountpoint
-    /// link; `vfs::mount::register` sets it after resolving the
-    /// mount-point path to its canonical dentry once. A mount stack
-    /// (mount-on-mount) chains via the mounted root inode's own dentry,
-    /// but v1 records only the topmost root here. Lock class `Dentry`.
-    mounted_root: RwLock<Option<InodeRef>, DentryClass>,
+    /// Namespace-scoped mount link. Linux mount crossing is not a property
+    /// of a dentry alone: the same dentry can be covered differently in
+    /// different mount namespaces. This table records the covering mount id
+    /// for each namespace. The mount table, not the dentry, owns the mounted
+    /// filesystem/root object.
+    mounted_mounts: RwLock<BTreeMap<u64, u64>, DentryClass>,
 }
 
 impl Dentry {
@@ -44,7 +41,7 @@ impl Dentry {
             name,
             inode: RwLock::new(Some(inode)),
             children: RwLock::new(BTreeMap::new()),
-            mounted_root: RwLock::new(None),
+            mounted_mounts: RwLock::new(BTreeMap::new()),
         })
     }
 
@@ -56,7 +53,7 @@ impl Dentry {
             name,
             inode: RwLock::new(None),
             children: RwLock::new(BTreeMap::new()),
-            mounted_root: RwLock::new(None),
+            mounted_mounts: RwLock::new(BTreeMap::new()),
         })
     }
 
@@ -115,24 +112,26 @@ impl Dentry {
         self.children.write().remove(name);
     }
 
-    /// Mounted-fs root inode if a filesystem is mounted on this dentry,
-    /// else `None`. The path walk consults this by dentry identity to
-    /// cross into the mount (`docs/16§3`). # C: O(1)
-    pub fn mounted_root(&self) -> Option<InodeRef> {
-        self.mounted_root.read().clone()
+    /// Covering mount id for mount namespace `ns`, if this dentry is a
+    /// mountpoint in that namespace. # C: O(log N_ns_coverings)
+    pub fn mounted_mount(&self, ns: u64) -> Option<u64> {
+        self.mounted_mounts.read().get(&ns).copied()
     }
 
-    /// Install / clear the mount link on this dentry. `Some(root)` marks
-    /// it a mount point whose contents resolve through `root`; `None`
-    /// detaches (umount). Set by `vfs::mount` after it resolves a
-    /// mount-point path to this canonical dentry. # C: O(1)
-    pub fn set_mounted_root(&self, root: Option<InodeRef>) {
-        *self.mounted_root.write() = root;
+    /// Install / clear the namespace-scoped covering mount id. This is the
+    /// real VFS mount-crossing identity. # C: O(log N_ns_coverings)
+    pub fn set_mounted_mount(&self, ns: u64, mnt_id: Option<u64>) {
+        let mut mounts = self.mounted_mounts.write();
+        if let Some(id) = mnt_id {
+            mounts.insert(ns, id);
+        } else {
+            mounts.remove(&ns);
+        }
     }
 
     /// True iff a filesystem is mounted on this dentry. # C: O(1)
     pub fn is_mountpoint(&self) -> bool {
-        self.mounted_root.read().is_some()
+        !self.mounted_mounts.read().is_empty()
     }
 
     /// Absolute path for this dentry — walk the parent chain to the
@@ -160,7 +159,7 @@ impl Dentry {
         if parts.is_empty() { return alloc::vec![b'/']; }
         // Single-component dentry whose name already encodes an
         // absolute path (install_open shape today). Return verbatim.
-        if parts.len() == 1 && parts[0].starts_with('/') {
+        if parts.len() == 1 && parts[0].as_bytes().first() == Some(&b'/') {
             return parts[0].as_bytes().to_vec();
         }
         let mut out: Vec<u8> = Vec::new();

@@ -18,6 +18,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::collections::BTreeMap;
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
@@ -32,9 +33,23 @@ pub const F_SEAL_SHRINK: u32 = 0x0002;
 pub const F_SEAL_GROW:   u32 = 0x0004;
 pub const F_SEAL_WRITE:  u32 = 0x0008;
 
-/// In-memory file body.
+const PG: usize = 4096;
+const TMPFS_FSID: u64 = 0x0102_1994;
+
+/// In-memory file body, Linux-shmem style: data lives in PMM page FRAMES
+/// (sparse `page_idx -> pa`), NOT a `Vec<u8>`. This is load-bearing for
+/// `MAP_SHARED`: a shared mmap aliases the SAME frames the file's
+/// `read`/`write` use, so writes propagate both ways (the prior `Vec<u8>`
+/// body forced `read_at` to COPY into a fresh per-fault frame, silently
+/// turning every `MAP_SHARED` — e.g. journald's sealed-memfd journals —
+/// into a private snapshot). Each frame carries the inode's own refcount
+/// reference (alloc=1); shared mappers `inc_ref` on fault and the AS
+/// teardown `dec`s, so a frame outlives every mapping until the inode drops.
 pub struct TmpfsFileInode {
-    body: Spinlock<Vec<u8>, TaskListClass>,
+    /// `page_idx -> frame pa`. Sparse: a hole reads as zero.
+    pages: Spinlock<BTreeMap<u64, u64>, TaskListClass>,
+    /// Logical size (Linux `i_size`); may exceed the populated pages.
+    len:  AtomicU64,
     ino:  Ino,
     /// memfd seals (0 = none). `sealable` gates `fcntl_seals`: only a
     /// memfd created with `MFD_ALLOW_SEALING` exposes them.
@@ -42,63 +57,160 @@ pub struct TmpfsFileInode {
     sealable: bool,
 }
 
+/// Frame for `idx`, allocating + zeroing on first touch. The frame holds
+/// the inode's single reference (alloc_one_frame = refcount 1).
+/// # C: O(log N_pages)
+fn ensure_page(g: &mut BTreeMap<u64, u64>, idx: u64) -> Option<u64> {
+    if let Some(&pa) = g.get(&idx) { return Some(pa); }
+    let pa = pmm::setup::alloc_one_frame()?;
+    let hhdm = pmm::user_as::hhdm_offset();
+    // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at hhdm+pa is
+    // kernel-writable (Limine-installed); PG is the page granule.
+    unsafe { core::ptr::write_bytes((hhdm + pa) as *mut u8, 0, PG); }
+    g.insert(idx, pa);
+    Some(pa)
+}
+
 impl TmpfsFileInode {
     /// # C: O(1)
-    pub fn new() -> Arc<Self> {
-        let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-        Arc::new(Self { body: Spinlock::new(Vec::new()), ino,
-                        seals: core::sync::atomic::AtomicU32::new(0), sealable: false })
-    }
+    pub fn new() -> Arc<Self> { Self::make(false) }
     /// A sealable memfd file (`memfd_create(MFD_ALLOW_SEALING)`).
     /// # C: O(1)
-    pub fn new_sealable() -> Arc<Self> {
+    pub fn new_sealable() -> Arc<Self> { Self::make(true) }
+
+    /// # C: O(1)
+    fn make(sealable: bool) -> Arc<Self> {
         let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-        Arc::new(Self { body: Spinlock::new(Vec::new()), ino,
-                        seals: core::sync::atomic::AtomicU32::new(0), sealable: true })
+        Arc::new(Self {
+            pages: Spinlock::new(BTreeMap::new()),
+            len:   AtomicU64::new(0),
+            ino,
+            seals: core::sync::atomic::AtomicU32::new(0),
+            sealable,
+        })
+    }
+}
+
+impl Drop for TmpfsFileInode {
+    /// Release the inode's reference on every backing frame. No mapping can
+    /// outlive the inode (a `MAP_SHARED` VMA pins it through the
+    /// `FileBacking` Arc), so each frame is at refcount 1 here → freed.
+    /// # C: O(N_pages)
+    fn drop(&mut self) {
+        let g = self.pages.lock();
+        for (_idx, &pa) in g.iter() {
+            // SAFETY: pa was alloc_one_frame'd for this inode (refcount ref
+            // held since); dec returns it to the buddy when the count hits 0.
+            unsafe { pmm::setup::dec_and_maybe_free_frame(pa); }
+        }
     }
 }
 
 impl Inode for TmpfsFileInode {
     fn ino(&self) -> Ino { self.ino }
+    fn fsid(&self) -> u64 { TMPFS_FSID }
     fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { self.body.lock().len() as u64 }
+    fn size(&self) -> u64 { self.len.load(Ordering::Acquire) }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
 
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let g = self.body.lock();
-        let off = off as usize;
-        if off >= g.len() { return Ok(0); }
-        let avail = &g[off..];
-        let n = avail.len().min(buf.len());
-        buf[..n].copy_from_slice(&avail[..n]);
+        let len = self.len.load(Ordering::Acquire);
+        if off >= len { return Ok(0); }
+        let n = buf.len().min((len - off) as usize);
+        let g = self.pages.lock();
+        let hhdm = pmm::user_as::hhdm_offset();
+        let mut done = 0usize;
+        while done < n {
+            let cur   = off as usize + done;
+            let idx   = (cur / PG) as u64;
+            let pgoff = cur % PG;
+            let chunk = (PG - pgoff).min(n - done);
+            match g.get(&idx) {
+                Some(&pa) => {
+                    // SAFETY: pa is an inode-owned frame; HHDM mirror readable;
+                    // [pgoff..pgoff+chunk] is within the page granule.
+                    unsafe {
+                        let src = (hhdm + pa + pgoff as u64) as *const u8;
+                        core::ptr::copy_nonoverlapping(src, buf[done..].as_mut_ptr(), chunk);
+                    }
+                }
+                None => { buf[done..done + chunk].fill(0); } // sparse hole
+            }
+            done += chunk;
+        }
         Ok(n)
     }
 
     fn write(&self, off: u64, src: &[u8]) -> KResult<usize> {
         let s = self.seals.load(Ordering::Acquire);
         if s & F_SEAL_WRITE != 0 { return Err(VfsError::Eperm); }
-        let mut g = self.body.lock();
-        let off = off as usize;
-        if off + src.len() > g.len() {
-            if s & F_SEAL_GROW != 0 { return Err(VfsError::Eperm); }
-            g.resize(off + src.len(), 0);
+        let end = off + src.len() as u64;
+        if end > self.len.load(Ordering::Acquire) && s & F_SEAL_GROW != 0 {
+            return Err(VfsError::Eperm);
         }
-        g[off..off + src.len()].copy_from_slice(src);
+        let mut g = self.pages.lock();
+        let hhdm = pmm::user_as::hhdm_offset();
+        let mut done = 0usize;
+        while done < src.len() {
+            let cur   = off as usize + done;
+            let idx   = (cur / PG) as u64;
+            let pgoff = cur % PG;
+            let chunk = (PG - pgoff).min(src.len() - done);
+            let pa = ensure_page(&mut g, idx).ok_or(VfsError::Enospc)?;
+            // SAFETY: pa is an inode-owned frame; HHDM mirror writable;
+            // [pgoff..pgoff+chunk] within the page granule; non-overlapping.
+            unsafe {
+                let dst = (hhdm + pa + pgoff as u64) as *mut u8;
+                core::ptr::copy_nonoverlapping(src[done..].as_ptr(), dst, chunk);
+            }
+            done += chunk;
+        }
+        drop(g);
+        if end > self.len.load(Ordering::Acquire) { self.len.store(end, Ordering::Release); }
         Ok(src.len())
     }
+
     fn truncate(&self, len: u64) -> KResult<()> {
         let s = self.seals.load(Ordering::Acquire);
-        let mut g = self.body.lock();
-        let len = len as usize;
-        if len < g.len() {
-            if s & F_SEAL_SHRINK != 0 { return Err(VfsError::Eperm); }
-            g.truncate(len);
-        } else if len > g.len() {
-            if s & F_SEAL_GROW != 0 { return Err(VfsError::Eperm); }
-            g.resize(len, 0);
+        let old = self.len.load(Ordering::Acquire);
+        if len < old && s & F_SEAL_SHRINK != 0 { return Err(VfsError::Eperm); }
+        if len > old && s & F_SEAL_GROW   != 0 { return Err(VfsError::Eperm); }
+        let mut g = self.pages.lock();
+        if len < old {
+            // Drop whole pages past the new end; zero the tail of a partial
+            // last page so a later grow re-reads zeros (Linux truncate).
+            let keep = (len as usize).div_ceil(PG) as u64;
+            let stale: Vec<u64> = g.range(keep..).map(|(&k, _)| k).collect();
+            for idx in stale {
+                if let Some(pa) = g.remove(&idx) {
+                    // SAFETY: inode-owned frame past the truncation point; dec
+                    // frees it when no mapper holds a reference.
+                    unsafe { pmm::setup::dec_and_maybe_free_frame(pa); }
+                }
+            }
+            let tail = len as usize % PG;
+            if tail != 0 {
+                if let Some(&pa) = g.get(&((len / PG as u64))) {
+                    let hhdm = pmm::user_as::hhdm_offset();
+                    // SAFETY: inode-owned frame; zero [tail..PG] within the granule.
+                    unsafe { core::ptr::write_bytes((hhdm + pa + tail as u64) as *mut u8, 0, PG - tail); }
+                }
+            }
         }
+        self.len.store(len, Ordering::Release);
         Ok(())
     }
+
+    /// MAP_SHARED backing: hand back the inode's persistent frame for the
+    /// page at file offset `off` (page-aligned), allocating on first touch.
+    /// A shared mapping installs THIS pa (refcount-bumped), so user writes
+    /// land in the file's storage and are visible to read/write + peers.
+    /// # C: O(log N_pages)
+    fn mmap_shared_frame(&self, off: u64) -> Option<u64> {
+        let mut g = self.pages.lock();
+        ensure_page(&mut g, off / PG as u64)
+    }
+
     fn fcntl_seals(&self) -> Option<&core::sync::atomic::AtomicU32> {
         if self.sealable { Some(&self.seals) } else { None }
     }
@@ -122,6 +234,7 @@ impl TmpfsSymlinkInode {
 
 impl Inode for TmpfsSymlinkInode {
     fn ino(&self) -> Ino { self.ino }
+    fn fsid(&self) -> u64 { TMPFS_FSID }
     fn file_type(&self) -> FileType { FileType::Symlink }
     fn size(&self) -> u64 { self.target.len() as u64 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
@@ -147,7 +260,40 @@ impl TmpfsSockInode {
 
 impl Inode for TmpfsSockInode {
     fn ino(&self) -> Ino { self.ino }
+    fn fsid(&self) -> u64 { TMPFS_FSID }
     fn file_type(&self) -> FileType { FileType::Socket }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, _off: u64, _buf: &mut [u8]) -> KResult<usize> { Err(VfsError::Eio) }
+    fn write(&self, _off: u64, _src: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+}
+
+/// Special tmpfs inode created by mknod(2), mainly FIFO nodes under /run.
+pub struct TmpfsSpecialInode {
+    ino:  Ino,
+    ft:   FileType,
+    perm: u16,
+    rdev: u32,
+}
+
+impl TmpfsSpecialInode {
+    /// # C: O(1)
+    pub fn new(ft: FileType, perm: u16, rdev: u32) -> Arc<Self> {
+        let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
+        Arc::new(Self { ino, ft, perm, rdev })
+    }
+}
+
+impl Inode for TmpfsSpecialInode {
+    fn ino(&self) -> Ino { self.ino }
+    fn fsid(&self) -> u64 { TMPFS_FSID }
+    fn file_type(&self) -> FileType { self.ft }
+    // mknod(2) gave this node its permission bits + device number; report
+    // them. Discarding the mode made systemd's fifo_address_create reject
+    // the dm-event FIFO ((st_mode & 0007)!=0 against the 0o755 fallback),
+    // failing dm-event.socket -> lvm2-monitor dependency.
+    fn perm(&self) -> Option<u16> { Some(self.perm) }
+    fn rdev(&self) -> u32 { self.rdev }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, _off: u64, _buf: &mut [u8]) -> KResult<usize> { Err(VfsError::Eio) }
@@ -218,6 +364,7 @@ impl TmpfsRootInode {
 
 impl Inode for TmpfsRootInode {
     fn ino(&self) -> Ino { 0x4000_0000 }
+    fn fsid(&self) -> u64 { TMPFS_FSID }
     fn file_type(&self) -> FileType { FileType::Directory }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, name: &str) -> KResult<InodeRef> {
@@ -294,6 +441,27 @@ impl Inode for TmpfsRootInode {
         register(path, TmpfsSymlinkInode::new(target) as InodeRef);
         Ok(())
     }
+
+    /// `mknod(2)` into tmpfs. systemd creates FIFOs under /run during early boot.
+    /// # C: O(N_tmpfs_entries)
+    fn mknod_child(&self, name: &str, mode: u16, _rdev: u32) -> KResult<()> {
+        const S_IFMT:  u16 = 0xF000;
+        const S_IFCHR: u16 = 0x2000;
+        const S_IFBLK: u16 = 0x6000;
+        const S_IFIFO: u16 = 0x1000;
+        const S_IFSOCK: u16 = 0xC000;
+        let ft = match mode & S_IFMT {
+            S_IFIFO => FileType::Fifo,
+            S_IFSOCK => FileType::Socket,
+            S_IFCHR => FileType::CharDev,
+            S_IFBLK => FileType::BlockDev,
+            _ => return Err(VfsError::Einval),
+        };
+        let path = self.child_path(name);
+        if lookup(&path).is_some() { return Err(VfsError::Eexist); }
+        register(path, TmpfsSpecialInode::new(ft, mode & 0o7777, _rdev) as InodeRef);
+        Ok(())
+    }
 }
 
 /// Boot-time registry seeding. Registers the `/tmp` directory inode
@@ -353,6 +521,17 @@ impl vfs::fs::FileSystem for TmpfsFs {
         Ok(lookup_or_create(path))
     }
 
+    /// `O_TMPFILE`: a fresh in-memory inode with no registry (directory)
+    /// entry — reclaimed when its last fd closes, like Linux shmem's
+    /// anonymous inodes. `dir` is irrelevant for an in-memory FS. This is
+    /// what makes `O_TMPFILE` on /run, /tmp, /dev/shm work (those are
+    /// tmpfs); previously every `O_TMPFILE` was wrongly routed to ext4 and
+    /// returned ENOSPC, which made journald abort.
+    /// # C: O(1)
+    fn create_anonymous(&self, _dir: &str, _mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
+        Ok(TmpfsFileInode::new() as vfs::InodeRef)
+    }
+
     /// Drop the registry entry for `path`. Returns ENOENT if absent.
     /// F225: GNU patch's atomic-rename pattern needs unlink (sometimes
     /// it removes the dest before renaming the .tmp file in).
@@ -362,6 +541,22 @@ impl vfs::fs::FileSystem for TmpfsFs {
         let len = g.len();
         g.retain(|(p, _)| p != path);
         if g.len() == len { Err(vfs::VfsError::Enoent) } else { Ok(()) }
+    }
+
+    /// Hardlink within tmpfs: register another name for the same inode.
+    /// # C: O(N_tmpfs_entries)
+    fn link(&self, target: &str, link: &str) -> vfs::fs::KResult<()> {
+        let inode = lookup(target).ok_or(vfs::VfsError::Enoent)?;
+        self.link_inode(inode, link)
+    }
+
+    /// Materialize an unnamed tmpfs inode at `link`.
+    /// # C: O(N_tmpfs_entries)
+    fn link_inode(&self, inode: vfs::InodeRef, link: &str) -> vfs::fs::KResult<()> {
+        if inode.fsid() != TMPFS_FSID { return Err(vfs::VfsError::Exdev); }
+        if lookup(link).is_some() { return Err(vfs::VfsError::Eexist); }
+        register(link.into(), inode);
+        Ok(())
     }
 
     /// rename(from, to) — atomic-write idiom used by every editor +

@@ -51,7 +51,10 @@ use hal::kassert;
 pub struct NullInode;
 impl Inode for NullInode {
     fn ino(&self) -> Ino { 0x2000_0001 }
+    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
     fn file_type(&self) -> FileType { FileType::CharDev }
+    fn rdev(&self) -> u32 { 0x0103 }               // 1:3 mem/null
+    fn perm(&self) -> Option<u16> { Some(0o666) }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
@@ -69,6 +72,7 @@ pub struct SymlinkInode {
 }
 impl Inode for SymlinkInode {
     fn ino(&self) -> Ino { self.ino }
+    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
     fn file_type(&self) -> FileType { FileType::Symlink }
     fn size(&self) -> u64 { self.target.len() as u64 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
@@ -84,12 +88,24 @@ impl Inode for SymlinkInode {
 pub struct KmsgInode;
 impl Inode for KmsgInode {
     fn ino(&self) -> Ino { 0x2000_000A }
+    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
     fn file_type(&self) -> FileType { FileType::CharDev }
+    fn rdev(&self) -> u32 { 0x010b }               // 1:11 mem/kmsg
+    fn perm(&self) -> Option<u16> { Some(0o644) }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, b: &mut [u8]) -> KResult<usize> {
         let (n, _next) = klog::ring_read(off as usize, b);
         Ok(n)
+    }
+    /// `/dev/kmsg` is always writable; POLL_IN only when the reader's cursor
+    /// (`File::pos`) is behind the ring head (unread messages). Without this,
+    /// the default always-`POLL_IN` poll() busy-looped journald's epoll on
+    /// /dev/kmsg ("Looping too fast"). # C: O(1)
+    fn poll_file(&self, pos: u64) -> u32 {
+        let mut mask = vfs::POLL_OUT;
+        if (pos as usize) < klog::ring_total() { mask |= vfs::POLL_IN; }
+        mask
     }
     /// `/dev/kmsg` write injects the message into the kernel log ring (the
     /// kmsg contract: early systemd + userspace `logger`/journald-forward
@@ -117,7 +133,10 @@ impl Inode for KmsgInode {
 pub struct ZeroInode;
 impl Inode for ZeroInode {
     fn ino(&self) -> Ino { 0x2000_0002 }
+    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
     fn file_type(&self) -> FileType { FileType::CharDev }
+    fn rdev(&self) -> u32 { 0x0105 }               // 1:5 mem/zero
+    fn perm(&self) -> Option<u16> { Some(0o666) }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, _o: u64, b: &mut [u8]) -> KResult<usize> {
@@ -133,7 +152,10 @@ impl Inode for ZeroInode {
 pub struct FullInode;
 impl Inode for FullInode {
     fn ino(&self) -> Ino { 0x2000_0003 }
+    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
     fn file_type(&self) -> FileType { FileType::CharDev }
+    fn rdev(&self) -> u32 { 0x0107 }               // 1:7 mem/full
+    fn perm(&self) -> Option<u16> { Some(0o666) }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, _o: u64, b: &mut [u8]) -> KResult<usize> {
@@ -200,7 +222,10 @@ pub fn set_hwrng_source(f: HwRngFn) {
 pub struct HwRngInode;
 impl Inode for HwRngInode {
     fn ino(&self) -> Ino { 0x2000_0005 }
+    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
     fn file_type(&self) -> FileType { FileType::CharDev }
+    fn rdev(&self) -> u32 { 0x0ab7 }               // 10:183 misc/hw_random
+    fn perm(&self) -> Option<u16> { Some(0o644) }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, _o: u64, b: &mut [u8]) -> KResult<usize> {
@@ -221,7 +246,10 @@ impl Inode for HwRngInode {
 pub struct RandomInode;
 impl Inode for RandomInode {
     fn ino(&self) -> Ino { 0x2000_0004 }
+    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
     fn file_type(&self) -> FileType { FileType::CharDev }
+    fn rdev(&self) -> u32 { 0x0108 }               // 1:8 mem/random
+    fn perm(&self) -> Option<u16> { Some(0o666) }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, _o: u64, b: &mut [u8]) -> KResult<usize> {

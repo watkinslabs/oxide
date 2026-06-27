@@ -51,6 +51,11 @@ pub struct Ext4FileInode {
 }
 
 impl Ext4FileInode {
+    /// Raw ext4 inode number for fs-local operations like linkat
+    /// AT_EMPTY_PATH.
+    /// # C: O(1)
+    pub fn ext4_ino(&self) -> u32 { self.ino }
+
     fn refresh(&self) {
         if let Some(b) = self.st.read_full_file(self.ino) {
             self.size_hint.store(b.len() as u64, Ordering::Release);
@@ -73,6 +78,11 @@ impl Ext4FileInode {
 impl vfs::Inode for Ext4FileInode {
     fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
     fn ino(&self) -> vfs::Ino { ext4_wrap_ino(self.ino) }
+    fn fsid(&self) -> u64 { self.st.fsid() }
+    fn nlink(&self) -> u32 {
+        self.st.mount.read_inode(self.ino).map(|i| i.links_count as u32).unwrap_or(1)
+    }
+    fn blksize(&self) -> u32 { self.st.mount.sb.block_size }
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
     fn size(&self) -> u64 { self.size_hint.load(Ordering::Acquire) }
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
@@ -125,6 +135,13 @@ pub struct Ext4StatInode {
 impl vfs::Inode for Ext4StatInode {
     fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
     fn ino(&self) -> vfs::Ino { ext4_wrap_ino(self.ino) }
+    fn fsid(&self) -> u64 { self.st.fsid() }
+    fn nlink(&self) -> u32 {
+        self.st.mount.read_inode(self.ino).map(|i| i.links_count as u32).unwrap_or_else(|_| {
+            if matches!(self.ft, vfs::FileType::Directory) { 2 } else { 1 }
+        })
+    }
+    fn blksize(&self) -> u32 { self.st.mount.sb.block_size }
     fn file_type(&self) -> vfs::FileType { self.ft }
     fn size(&self) -> u64 { self.size }
     fn perm(&self) -> Option<u16> { Some(self.perm) }
