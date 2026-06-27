@@ -24,6 +24,12 @@ use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 const EPOLL_INO_BASE: Ino = 0x7400_0000;
 const EPOLL_INO_MASK: Ino = 0x00FF_FFFF;
 
+/// DIAG bound: cap on `[epoll-lvl]` lines so the busy-loop trace can't flood.
+/// Gated behind the off-by-default `debug-epoll` feature (NOT `debug-boot`),
+/// so it ships only when explicitly diagnosing a level-triggered epoll spin.
+#[cfg(feature = "debug-epoll")]
+static EPOLL_DIAG_N: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 const EPOLL_CTL_ADD: i32 = 1;
 const EPOLL_CTL_DEL: i32 = 2;
 const EPOLL_CTL_MOD: i32 = 3;
@@ -276,11 +282,45 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
 /// and the producer never gets to send.
 /// # C: O(N_entries) per scan; one park+wake per blocked round-trip.
 pub fn sys_epoll_wait(args: &syscall::SyscallArgs) -> i64 {
+    let timeout = args.a3 as i32;
+    let timeout_ns = if timeout < 0 {
+        None
+    } else {
+        Some((timeout as u64).saturating_mul(1_000_000))
+    };
+    sys_epoll_wait_timeout(args, timeout_ns)
+}
+
+/// `sys_epoll_pwait2(epfd, events*, maxevents, timeout*, sigmask, sigsetsize)`.
+/// Unlike epoll_wait/epoll_pwait, arg4 is a pointer to `struct timespec`.
+pub fn sys_epoll_pwait2(args: &syscall::SyscallArgs) -> i64 {
+    use syscall::errno::Errno;
+    let timeout_ns = if args.a3 == 0 {
+        None
+    } else {
+        if args.a3 >= hal::USER_VA_END || args.a3.saturating_add(16) > hal::USER_VA_END {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        // SAFETY: timespec pointer range validated above; CPL=0 reads through caller's AS.
+        let (sec, nsec) = unsafe {
+            (
+                core::ptr::read_volatile(args.a3 as *const i64),
+                core::ptr::read_volatile((args.a3 + 8) as *const i64),
+            )
+        };
+        if sec < 0 || !(0..1_000_000_000).contains(&nsec) {
+            return -(Errno::Einval.as_i32() as i64);
+        }
+        Some((sec as u64).saturating_mul(1_000_000_000).saturating_add(nsec as u64))
+    };
+    sys_epoll_wait_timeout(args, timeout_ns)
+}
+
+fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) -> i64 {
     use syscall::errno::Errno;
     let epfd = args.a0 as i32;
     let evp  = args.a1;
     let maxevents = args.a2 as i32;
-    let timeout   = args.a3 as i32;
     if maxevents <= 0 { return -(Errno::Einval.as_i32() as i64); }
     if evp == 0 || evp >= hal::USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
@@ -300,13 +340,12 @@ pub fn sys_epoll_wait(args: &syscall::SyscallArgs) -> i64 {
     };
     // First scan: report any already-ready entries without parking.
     let out = scan_once(&ep, &fdt, evp, maxevents);
-    if out > 0 || timeout == 0 {
+    if out > 0 || timeout_ns == Some(0) {
         return out as i64;
     }
-    // B47: honour the caller's timeout (ms). Without this, dhcpcd's
+    // B47: honour the caller's timeout. Without this, dhcpcd's
     // eloop blocks forever on its 10 s lease-attempt poll because
-    // we'd just park-on-empty and never wake. timeout < 0 means
-    // wait forever (epoll_wait(2)).
+    // we'd just park-on-empty and never wake. None means wait forever.
     #[cfg(target_os = "oxide-kernel")]
     {
         use hal::TimerOps;
@@ -314,11 +353,7 @@ pub fn sys_epoll_wait(args: &syscall::SyscallArgs) -> i64 {
             #[cfg(target_arch = "x86_64")] { hal_x86_64::X86TimerOps::monotonic_ns().0 }
             #[cfg(target_arch = "aarch64")] { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
         };
-        let deadline_ns: Option<u64> = if timeout < 0 {
-            None
-        } else {
-            Some(now().saturating_add((timeout as u64).saturating_mul(1_000_000)))
-        };
+        let deadline_ns = timeout_ns.map(|ns| now().saturating_add(ns));
         // Safety-net re-scan interval. Even with timeout < 0 (block
         // forever), park with a bounded deadline so the per-tick
         // `tick_wake_expired` scanner rouses us periodically to re-scan
@@ -372,7 +407,10 @@ fn scan_once(ep: &Arc<EpollInode>, fdt: &Arc<vfs::FdTable>, evp: u64, maxevents:
         for e in list.iter_mut() {
             if reports.len() as i32 >= maxevents { break; }
             let f = match fdt.get(e.fd) { Ok(f) => f, Err(_) => continue };
-            let ready = f.inode().poll() & e.events;
+            // poll_file passes the per-fd read cursor so append-only streams
+            // (/dev/kmsg) report POLL_IN only with unread data — the default
+            // always-ready poll() busy-loops journald's epoll otherwise.
+            let ready = f.inode().poll_file(f.pos()) & e.events;
             if e.events & EPOLLET != 0 {
                 // Drop edges that went not-ready so a later re-ready re-fires.
                 e.et_seen &= ready;
@@ -381,6 +419,27 @@ fn scan_once(ep: &Arc<EpollInode>, fdt: &Arc<vfs::FdTable>, evp: u64, maxevents:
                 e.et_seen |= ready;
             } else if ready == 0 {
                 continue;
+            } else {
+                // DIAG (`debug-epoll`): a level-triggered fd reporting ready
+                // every scan is what spins systemd's event loop ("Looping too
+                // fast"). Log the first N so the culprit fd/type/name shows.
+                #[cfg(feature = "debug-epoll")]
+                {
+                    let n = EPOLL_DIAG_N.fetch_add(1, Ordering::Relaxed);
+                    if n < 200 {
+                        klog::write_raw(b"[epoll-lvl] fd=");
+                        klog::write_dec_u64(e.fd as u64);
+                        klog::write_raw(b" type=");
+                        klog::write_dec_u64(f.inode().file_type() as u64);
+                        klog::write_raw(b" poll=");
+                        klog::write_hex_u64(f.inode().poll() as u64);
+                        klog::write_raw(b" want=");
+                        klog::write_hex_u64(e.events as u64);
+                        klog::write_raw(b" name=");
+                        klog::write_raw(f.dentry().name().as_bytes());
+                        klog::write_raw(b"\n");
+                    }
+                }
             }
             reports.push((ready, e.data));
         }

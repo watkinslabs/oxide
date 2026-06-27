@@ -409,12 +409,12 @@ pub fn install_write_hook() {
 /// is visible via SIZE_UNREAD-style probes); name carriage rides v3
 /// alongside the read() format extension.
 fn vfs_dirent_create(parent: &str, _leaf: &str) {
-    if let Some(parent_inode) = devfs::lookup(parent) {
+    if let Ok(parent_inode) = vfs::mount::lookup(parent) {
         fire_event(&parent_inode, IN_CREATE);
     }
 }
 fn vfs_dirent_delete(parent: &str, _leaf: &str) {
-    if let Some(parent_inode) = devfs::lookup(parent) {
+    if let Ok(parent_inode) = vfs::mount::lookup(parent) {
         fire_event(&parent_inode, IN_DELETE);
     }
 }
@@ -428,6 +428,19 @@ pub const IN_MOVED_TO:   u32 = 0x80;
 fn inode_key(inode: &InodeRef) -> usize {
     let raw: *const dyn Inode = Arc::as_ptr(inode);
     raw as *const u8 as usize
+}
+
+fn resolve_watch_path(raw: &str) -> Option<InodeRef> {
+    let resolved = if raw.starts_with('/') {
+        vfs::path::lexical_normalize(raw).unwrap_or_else(|| raw.into())
+    } else if let Some(cur) = sched::current() {
+        // SAFETY: current task is the sole writer of its cwd slot on this CPU.
+        let cwd = unsafe { (*cur.cwd.get()).clone() };
+        vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
+    } else {
+        raw.into()
+    };
+    vfs::mount::lookup(&resolved).ok()
 }
 
 /// `sys_inotify_init(flags=0)` / `sys_inotify_init1(flags)`.
@@ -540,11 +553,7 @@ pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
     let s = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    // Resolve via devfs first (/dev/*), then the full mount tree so watches
-    // on ext4 paths (/etc, /run/...) work. inotify previously only knew
-    // devfs → systemd's timezone (/etc) + other ext4 watches failed
-    // ("Failed to acquire watch file descriptor: No such file").
-    let inode = match devfs::lookup(s).or_else(|| vfs::mount::lookup(s).ok()) {
+    let inode = match resolve_watch_path(s) {
         Some(i) => i, None => return -(Errno::Enoent.as_i32() as i64),
     };
     let key = inode_key(&inode);
@@ -625,9 +634,7 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
     let s = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    // Resolve via devfs + the mount table (tmpfs/ext4), matching
-    // inotify_add_watch — was devfs-only, so marks on real files missed.
-    let inode = match devfs::lookup(s).or_else(|| vfs::mount::lookup(s).ok()) {
+    let inode = match resolve_watch_path(s) {
         Some(i) => i, None => return -(Errno::Enoent.as_i32() as i64),
     };
     let key = inode_key(&inode);

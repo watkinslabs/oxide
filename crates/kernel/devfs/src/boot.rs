@@ -34,6 +34,9 @@ pub fn populate_defaults() {
     // /sys/fs/cgroup is the cgroupfs mount point — it has no registered leaves,
     // so create the dir chain explicitly or the mount can't be walked to.
     crate::register_dir("/sys/fs/cgroup");
+    crate::register_dir("/sys/fs/bpf");
+    crate::register_dir("/sys/fs/pstore");
+    crate::register_dir("/sys/kernel/security");
     register("/dev/null",    Arc::new(crate::misc::NullInode)   as InodeRef);
     register("/dev/kmsg",    Arc::new(crate::misc::KmsgInode)   as InodeRef);
     register("/dev/zero",    Arc::new(crate::misc::ZeroInode)   as InodeRef);

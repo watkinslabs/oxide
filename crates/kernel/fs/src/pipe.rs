@@ -19,7 +19,7 @@
 
 
 use alloc::sync::Arc;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(target_os = "oxide-kernel")]
 use sched::live::wait_list::WaitList;
@@ -218,6 +218,7 @@ pub struct PipeInode {
     /// writability transition calls `subs.notify()` to wake ONLY the
     /// tasks polling THIS pipe — no global broadcast.
     subs: vfs::PollSubscribers,
+    capacity: AtomicUsize,
 }
 
 static NEXT_PIPE_INO: core::sync::atomic::AtomicU64
@@ -235,7 +236,25 @@ impl PipeInode {
             read_waiters:  WaitList::new(),
             write_waiters: WaitList::new(),
             subs: vfs::PollSubscribers::new(),
+            capacity: AtomicUsize::new(PIPE_CAP),
         })
+    }
+
+    pub fn pipe_size(&self) -> usize {
+        self.capacity.load(Ordering::Acquire)
+    }
+
+    pub fn set_pipe_size(&self, requested: usize) -> Result<usize, VfsError> {
+        let new_cap = requested.clamp(1, PIPE_CAP);
+        let len = self.buf.lock().len;
+        if new_cap < len {
+            return Err(VfsError::Ebusy);
+        }
+        if requested > PIPE_CAP {
+            return Err(VfsError::Eperm);
+        }
+        self.capacity.store(new_cap, Ordering::Release);
+        Ok(new_cap)
     }
 
     /// Drain whatever bytes are available without blocking. Returns
@@ -253,9 +272,11 @@ impl PipeInode {
     /// Push as many bytes as fit; returns the byte count written.
     fn try_fill(&self, buf: &[u8]) -> usize {
         let mut g = self.buf.lock();
-        if g.len == PIPE_CAP { return 0; }
+        let cap = self.capacity.load(Ordering::Acquire);
+        if g.len >= cap { return 0; }
         let mut n = 0;
         while n < buf.len() {
+            if g.len >= cap { break; }
             if !g.push(buf[n]) { break; }
             n += 1;
         }

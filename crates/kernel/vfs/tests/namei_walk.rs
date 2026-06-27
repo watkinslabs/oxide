@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
 use vfs::inode::Inode;
+use vfs::fs::FileSystem;
 use vfs::{Dentry, FileType, InodeRef, LookupFlags, VfsError};
 
 struct Dir { ino: u64, kids: BTreeMap<String, InodeRef> }
@@ -43,6 +44,22 @@ fn dir(ino: u64, kids: &[(&str, InodeRef)]) -> InodeRef {
 }
 fn file(ino: u64) -> InodeRef { Arc::new(F { ino }) }
 fn sym(ino: u64, t: &str) -> InodeRef { Arc::new(Sym { ino, target: t.to_string() }) }
+
+struct TestMountFs;
+impl FileSystem for TestMountFs {
+    fn name(&self) -> &str { "testfs" }
+    fn lookup(&self, _path: &str) -> Option<InodeRef> { None }
+}
+
+fn mount_id_for(path: &str, root: InodeRef) -> u64 {
+    vfs::mount::register_bind(path, Arc::new(TestMountFs), root).expect("register test mount");
+    vfs::mount::snapshot_all()
+        .into_iter()
+        .filter(|m| m.mount_point_str() == path)
+        .last()
+        .expect("registered mount visible")
+        .mnt_id
+}
 
 // Synthetic tree:
 //   /etc/hostname            (file, ino 11)
@@ -138,7 +155,7 @@ fn missing_component_enoent() {
 }
 
 // Mount crossing: /mnt whose root holds `file` is crossed by DENTRY
-// IDENTITY (`Dentry::set_mounted_root`); /proc is a whole-path
+// IDENTITY plus namespace-scoped covering mount id; /proc is a whole-path
 // filesystem (its root rejects per-component lookup) reached via the
 // whole-path delegate.
 static PROC_TARGET: OnceLock<InodeRef> = OnceLock::new();
@@ -166,11 +183,13 @@ fn crosses_mount_point() {
     let root_inode = dir(2, &[("mnt", empty_mnt)]);
     let root = Dentry::new_root(root_inode);
 
-    // Resolve /mnt to its canonical dentry, then mount mnt_root ON it by
-    // identity — the real crossing mechanism (`Dentry::set_mounted_root`).
+    // Resolve /mnt to its canonical dentry, then mark it covered by the
+    // test mount id. The dentry stores only the covering mount identity;
+    // the mount table owns the mounted root.
     let (_, mnt_d) = vfs::path_lookup(root.clone(), root.clone(), "/mnt", LookupFlags::default())
         .expect("resolve /mnt");
-    mnt_d.set_mounted_root(Some(mnt_root));
+    let mnt_id = mount_id_for("/mnt", mnt_root);
+    mnt_d.set_mounted_mount(0, Some(mnt_id));
 
     let (i, _) = vfs::path_lookup(root.clone(), root.clone(), "/mnt/file", LookupFlags::default())
         .expect("cross into mount");
@@ -198,7 +217,7 @@ fn delegates_whole_path_for_procfs_style_fs() {
 // FIRST crossing an outer mount — the `/sys` (devfs sub-tree) → then
 // `/sys/fs/cgroup` (cgroupfs) shape. The inner mountpoint dentry is
 // produced lazily during the walk (cached under the crossed-into
-// sub-tree's dentry), so marking it via `set_mounted_root` must be
+// sub-tree's dentry), so marking it via the covering mount id must be
 // visible to a SUBSEQUENT walk of a CHILD path — proving the dcache is
 // canonical: one dentry per (parent,name) shared by the marking walk and
 // the child-resolving walk. This is exactly what the boot cgroupfs
@@ -220,7 +239,8 @@ fn crosses_mount_on_tree_backed_subtree() {
     // Mount the sub-tree fs ON `/sys` by dentry identity (outer mount).
     let (_, sys_d) = vfs::path_lookup(root.clone(), root.clone(), "/sys", LookupFlags::default())
         .expect("resolve /sys");
-    sys_d.set_mounted_root(Some(sys_tree_fs));
+    let sys_mnt = mount_id_for("/sys", sys_tree_fs);
+    sys_d.set_mounted_mount(0, Some(sys_mnt));
 
     // Now resolve the INNER mountpoint dentry the way the late
     // rewire does — a full walk that crosses `/sys` then descends the
@@ -228,7 +248,8 @@ fn crosses_mount_on_tree_backed_subtree() {
     // sub-tree's `fs` dentry.
     let (_, cg_mp) = vfs::path_lookup(root.clone(), root.clone(), "/sys/fs/cgroup", LookupFlags::default())
         .expect("resolve /sys/fs/cgroup mountpoint");
-    cg_mp.set_mounted_root(Some(cg_root));
+    let cg_mnt = mount_id_for("/sys/fs/cgroup", cg_root);
+    cg_mp.set_mounted_mount(0, Some(cg_mnt));
 
     // A SUBSEQUENT child-path walk must cross into cgroupfs by hitting the
     // SAME cached dentry — proving the mark is canonical / visible.

@@ -66,6 +66,19 @@ impl RootfsState {
         (self.cache_hits.load(Ordering::Relaxed), self.cache_misses.load(Ordering::Relaxed))
     }
 
+    /// Stable filesystem identity for stat(2) `st_dev`. Linux uses a
+    /// block-device dev_t or anonymous bdev per mount; for this VFS bridge
+    /// the ext4 superblock UUID gives the same per-filesystem identity.
+    /// # C: O(1)
+    pub fn fsid(&self) -> u64 {
+        let uuid = self.mount.sb.uuid;
+        let mut h = 0xef53_u64;
+        for b in uuid {
+            h = h.wrapping_mul(0x100_0000_01b3).wrapping_add(b as u64);
+        }
+        h
+    }
+
     /// Whole-path lookup → ext4 inode number.
     /// # C: O(path components × dir size)
     pub fn lookup_path(&self, path: &[u8]) -> Option<u32> { self.mount.lookup_path(path).ok() }
@@ -147,6 +160,28 @@ impl RootfsState {
                 Err(crate::MountError::NotFound) => alloc::vec![0u8; bs],
                 Err(_) => return None,
             };
+            // DIAG (debug-mount): for LARGE files (libc.so.6 ~2.4 MB) log the
+            // content of block 487 (file off 0x1e7000 — where libc's .bss lock
+            // lives). On a clean boot this is libc's real .data bytes; on a
+            // wedged boot, if read_full_file mis-maps the block, it shows
+            // ANOTHER block's bytes (e.g. "/lib64/..."). Names which block read
+            // returned wrong content.
+            #[cfg(feature = "debug-mount")]
+            if total > 0x180000 && k == 487 {
+                // Also resolve the physical block: if PHYS varies across reads
+                // → extent-mapping race; if PHYS is stable but the bytes vary →
+                // data-read race in virtio-blk.
+                let phys = self.mount.resolve_pblock(&inode.i_block, k as u32).unwrap_or(0);
+                klog::write_raw(b"[mnt] LIBCBLK ino=");
+                klog::write_dec_u64(ino as u64);
+                klog::write_raw(b" phys=");
+                klog::write_dec_u64(phys);
+                klog::write_raw(b" b0_3=");
+                for i in 0..4usize { klog::write_hex_u64(blk.get(i).copied().unwrap_or(0) as u64); klog::write_raw(b","); }
+                klog::write_raw(b" b0xfe8=");
+                klog::write_hex_u64(blk.get(0xfe8).copied().unwrap_or(0) as u64);
+                klog::write_raw(b"\n");
+            }
             let take = core::cmp::min(bs, total - out.len());
             out.extend_from_slice(&blk[..take]);
         }

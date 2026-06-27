@@ -92,7 +92,16 @@ fn resolve_path_inode(p: u64) -> Result<InodeRef, i64> {
     let bytes = unsafe { devfs::read_user_cstr(p, 256) };
     let s = bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() })
         .ok_or(-(Errno::Einval.as_i32() as i64))?;
-    devfs::lookup(s).ok_or(-(Errno::Enoent.as_i32() as i64))
+    let resolved = if s.starts_with('/') {
+        vfs::path::lexical_normalize(s).unwrap_or_else(|| s.into())
+    } else if let Some(cur) = sched::current() {
+        // SAFETY: current task is the sole writer of its cwd slot on this CPU.
+        let cwd = unsafe { (*cur.cwd.get()).clone() };
+        vfs::path::resolve_against_cwd(&cwd, s).unwrap_or_else(|| s.into())
+    } else {
+        s.into()
+    };
+    vfs::mount::lookup(&resolved).map_err(|_| -(Errno::Enoent.as_i32() as i64))
 }
 
 fn resolve_fd_inode(fd: i32) -> Result<InodeRef, i64> {

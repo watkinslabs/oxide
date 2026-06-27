@@ -1,6 +1,7 @@
 #![no_std]
 extern crate alloc;
 
+pub mod fs_impl;
 pub mod percpu_ring;
 pub mod ring;
 
@@ -27,6 +28,15 @@ use vfs::StaticFileInode;
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
+    // Mountpoint directories must exist as walkable dentries BEFORE systemd
+    // mounts debugfs/tracefs on them: `vfs::mount::register` resolves the
+    // target dentry to wire crossing + compute the parent mount id. An
+    // unresolvable mountpoint yields a self-parent mountinfo line that systemd
+    // rejects ("no mount") and journald's libmount parse crashes on. `/sys/
+    // kernel/tracing` already materialises via its control files below, but
+    // `/sys/kernel/debug` has no static files, so register the bare dir.
+    devfs::register_dir("/sys/kernel/tracing");
+    devfs::register_dir("/sys/kernel/debug");
     // Real trace buffer: trace / trace_marker / trace_pipe / tracing_on are
     // live inodes (record + render + drain + gate); the rest stay nop-tracer
     // static defaults.

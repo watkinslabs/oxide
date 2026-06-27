@@ -37,6 +37,20 @@ pub struct DevDir {
     children: Spinlock<BTreeMap<String, DevEntry>, TaskListClass>,
 }
 
+struct DevSymlink {
+    ino: Ino,
+    target: Vec<u8>,
+}
+
+impl Inode for DevSymlink {
+    fn ino(&self) -> Ino { self.ino }
+    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
+    fn file_type(&self) -> FileType { FileType::Symlink }
+    fn size(&self) -> u64 { self.target.len() as u64 }
+    fn lookup(&self, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn readlink(&self) -> KResult<Vec<u8>> { Ok(self.target.clone()) }
+}
+
 /// Deterministic inode number from a path (FNV-1a, tagged into the
 /// synthetic-dir range so it never collides with leaf inodes).
 fn dir_ino(path: &str) -> Ino {
@@ -82,6 +96,8 @@ impl Inode for DevDir {
     /// # C: O(1)
     fn ino(&self) -> Ino { self.ino }
     /// # C: O(1)
+    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
+    /// # C: O(1)
     fn file_type(&self) -> FileType { FileType::Directory }
     /// # C: O(1)
     fn size(&self) -> u64 { 0 }
@@ -89,6 +105,33 @@ impl Inode for DevDir {
     fn lookup(&self, name: &str) -> KResult<InodeRef> {
         let g = self.children.lock();
         g.get(name).map(|e| e.as_inode()).ok_or(VfsError::Enoent)
+    }
+    /// devtmpfs is mutable: systemd/tmpfiles create mountpoint dirs and
+    /// runtime symlinks such as /dev/log during early boot.
+    /// # C: O(log children)
+    fn mkdir(&self, name: &str, _mode: u32) -> KResult<InodeRef> {
+        let mut g = self.children.lock();
+        if g.contains_key(name) { return Err(VfsError::Eexist); }
+        let mut cp = self.path.clone();
+        cp.push('/');
+        cp.push_str(name);
+        let d = DevDir::new(cp);
+        g.insert(String::from(name), DevEntry::Dir(Arc::clone(&d)));
+        Ok(d as InodeRef)
+    }
+    /// # C: O(log children + target length)
+    fn symlink_child(&self, name: &str, target: &[u8]) -> KResult<()> {
+        let mut g = self.children.lock();
+        if g.contains_key(name) { return Err(VfsError::Eexist); }
+        let mut cp = self.path.clone();
+        cp.push('/');
+        cp.push_str(name);
+        let link = Arc::new(DevSymlink {
+            ino: dir_ino(&cp),
+            target: target.to_vec(),
+        }) as InodeRef;
+        g.insert(String::from(name), DevEntry::Leaf(link));
+        Ok(())
     }
     /// # C: O(children + overlay)
     fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
@@ -237,4 +280,3 @@ pub fn snapshot_ns(src_ns: u64, dst_ns: u64) {
     let cloned = src.deep_clone();
     ROOTS.lock().insert(dst_ns, cloned);
 }
-

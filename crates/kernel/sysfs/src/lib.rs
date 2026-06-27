@@ -21,6 +21,151 @@ pub mod net_stats;
 const ARPHRD_LOOPBACK: u16 = 772;
 const ARPHRD_ETHER:    u16 =   1;
 
+#[cfg(target_arch = "aarch64")]
+const SERIAL_TTY_MAJOR: u32 = 204;
+#[cfg(not(target_arch = "aarch64"))]
+const SERIAL_TTY_MAJOR: u32 = 4;
+
+const TTY_DEVICES: &[(&str, u32, u32)] = &[
+    ("console", 5, 1),
+    ("tty",     5, 0),
+    ("tty0",    4, 0),
+    ("ttyS0",   SERIAL_TTY_MAJOR, 64),
+];
+
+fn tty_dev(name: &str) -> Option<(u32, u32)> {
+    TTY_DEVICES.iter()
+        .find(|(n, _, _)| *n == name)
+        .map(|(_, maj, min)| (*maj, *min))
+}
+
+fn emit_tty_uevent(action: &str, name: &str, major: u32, minor: u32) {
+    let devpath = alloc::format!("/devices/virtual/tty/{}", name);
+    let devname = alloc::format!("DEVNAME={}", name);
+    let maj = alloc::format!("MAJOR={}", major);
+    let min = alloc::format!("MINOR={}", minor);
+    ::netlink::emit_uevent_with_env(action, &devpath, "tty", &[&devname, &maj, &min]);
+}
+
+/// `/sys/class/tty` directory. Entries are symlinks to the canonical virtual
+/// tty device directories, matching Linux's class-device layout.
+pub struct SysClassTtyInode;
+
+impl Inode for SysClassTtyInode {
+    fn ino(&self) -> Ino { 0x5101_0001 }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        if tty_dev(name).is_none() { return Err(VfsError::Enoent); }
+        let mut target = alloc::string::String::from("../../devices/virtual/tty/");
+        target.push_str(name);
+        Ok(Arc::new(SysClassNetSymlinkInode { target: target.into_bytes() }) as InodeRef)
+    }
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+        let mut idx = off as usize;
+        while idx < TTY_DEVICES.len() {
+            let next = idx as u64 + 1;
+            if !f(next, TTY_DEVICES[idx].0, FileType::Symlink) { return Ok(next); }
+            idx += 1;
+        }
+        Ok(idx as u64)
+    }
+}
+
+/// `/sys/devices/virtual/tty` directory.
+pub struct SysDevicesVirtualTtyInode;
+
+impl Inode for SysDevicesVirtualTtyInode {
+    fn ino(&self) -> Ino { 0x5101_0002 }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        let (major, minor) = tty_dev(name).ok_or(VfsError::Enoent)?;
+        Ok(Arc::new(SysTtyDeviceInode {
+            name: alloc::string::String::from(name),
+            major,
+            minor,
+        }) as InodeRef)
+    }
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+        let mut idx = off as usize;
+        while idx < TTY_DEVICES.len() {
+            let next = idx as u64 + 1;
+            if !f(next, TTY_DEVICES[idx].0, FileType::Directory) { return Ok(next); }
+            idx += 1;
+        }
+        Ok(idx as u64)
+    }
+}
+
+struct SysTtyDeviceInode {
+    name: alloc::string::String,
+    major: u32,
+    minor: u32,
+}
+
+impl Inode for SysTtyDeviceInode {
+    fn ino(&self) -> Ino { 0x5101_1000 + self.minor as Ino }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        match name {
+            "dev" => {
+                let body = alloc::format!("{}:{}\n", self.major, self.minor).into_bytes();
+                Ok(Arc::new(BodyInode::new(body, 0x5101_2000 + self.minor as Ino)) as InodeRef)
+            }
+            "uevent" => Ok(Arc::new(TtyUeventInode {
+                name: self.name.clone(),
+                major: self.major,
+                minor: self.minor,
+            }) as InodeRef),
+            _ => Err(VfsError::Enoent),
+        }
+    }
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+        const ENTRIES: &[&str] = &["dev", "uevent"];
+        let mut idx = off as usize;
+        while idx < ENTRIES.len() {
+            let next = idx as u64 + 1;
+            if !f(next, ENTRIES[idx], FileType::Regular) { return Ok(next); }
+            idx += 1;
+        }
+        Ok(idx as u64)
+    }
+}
+
+struct TtyUeventInode {
+    name: alloc::string::String,
+    major: u32,
+    minor: u32,
+}
+
+impl Inode for TtyUeventInode {
+    fn ino(&self) -> Ino { 0x5101_3000 + self.minor as Ino }
+    fn file_type(&self) -> FileType { FileType::Regular }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let body = alloc::format!(
+            "MAJOR={}\nMINOR={}\nDEVNAME={}\n",
+            self.major, self.minor, self.name
+        ).into_bytes();
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body[off..off + n]);
+        Ok(n)
+    }
+    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> {
+        let action = core::str::from_utf8(b).ok()
+            .and_then(|s| s.split_whitespace().next())
+            .filter(|a| !a.is_empty())
+            .unwrap_or("change");
+        emit_tty_uevent(action, &self.name, self.major, self.minor);
+        Ok(b.len())
+    }
+}
+
 /// `/sys/class/net` directory. `readdir` enumerates
 /// `net::sock::stack().ifaces` and emits each entry as a symlink per
 /// docs/19§2 invariant 2 (`/sys/class/<class>/<name>` → `/sys/devices/
@@ -319,6 +464,10 @@ pub fn init() {
         Arc::new(SysClassNetInode) as InodeRef);
     devfs::register("/sys/devices/virtual/net",
         Arc::new(SysDevicesVirtualNetInode) as InodeRef);
+    devfs::register("/sys/class/tty",
+        Arc::new(SysClassTtyInode) as InodeRef);
+    devfs::register("/sys/devices/virtual/tty",
+        Arc::new(SysDevicesVirtualTtyInode) as InodeRef);
     bus::init();
     block::init();
 }
@@ -358,7 +507,7 @@ impl vfs::fs::FileSystem for SysfsFs {
 /// # C: O(N_components × N_devfs_entries)
 fn sysfs_walk(path: &str, depth: u32) -> Option<InodeRef> {
     if depth > 8 { return None; }
-    if let Some(i) = devfs::lookup(path) { return Some(i); }
+    if let Some(i) = devfs::lookup_no_chroot(path) { return Some(i); }
     let mut tail: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
     let mut cur = alloc::string::String::from(path);
     loop {
@@ -367,7 +516,7 @@ fn sysfs_walk(path: &str, depth: u32) -> Option<InodeRef> {
         let child = alloc::string::String::from(&cur[idx + 1..]);
         cur.truncate(idx);
         tail.push(child);
-        if let Some(parent_inode) = devfs::lookup(&cur) {
+        if let Some(parent_inode) = devfs::lookup_no_chroot(&cur) {
             let mut node = parent_inode;
             while let Some(name) = tail.pop() {
                 node = node.lookup(&name).ok()?;

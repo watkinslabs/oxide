@@ -28,6 +28,9 @@ use alloc::string::String;
 
 use vfs::InodeRef;
 
+/// devtmpfs filesystem identity for stat(2) `st_dev`.
+pub const DEVFS_FSID: u64 = 0x0102_1994_0000_0001;
+
 /// Register `path` → `inode` in the init namespace (`ns == 0`).
 /// Used by the boot bootstrap; takes a `'static` path so we don't
 
@@ -92,10 +95,38 @@ pub fn register_in_ns(ns: u64, path: String, inode: InodeRef) {
 pub fn lookup(path: &str) -> Option<InodeRef> {
     let resolved = chroot_resolve(path);
     let cur_ns = current_mount_ns();
-    if cur_ns != 0 {
-        if let Some(i) = tree::lookup(cur_ns, &resolved) { return Some(i); }
+    let r = if cur_ns != 0 {
+        tree::lookup(cur_ns, &resolved).or_else(|| tree::lookup(0, &resolved))
+    } else {
+        tree::lookup(0, &resolved)
+    };
+    // DIAG (debug-boot): the 226/NAMESPACE blocker — does a sandbox lookup of
+    // /proc/sys/kernel/domainname get chroot-prefixed so the registered key no
+    // longer matches? Log path→resolved + ns + hit so we see the mangling.
+    #[cfg(feature = "debug-boot")]
+    if path.contains("domainname") {
+        klog::write_raw(b"[mnt] DEVLK ns="); klog::write_dec_u64(cur_ns);
+        klog::write_raw(if r.is_some() { b" HIT in=" } else { b" MISS in=" });
+        klog::write_raw(path.as_bytes());
+        klog::write_raw(b" resolved="); klog::write_raw(resolved.as_bytes());
+        klog::write_raw(b"\n");
     }
-    tree::lookup(0, &resolved)
+    r
+}
+
+/// Like `lookup` but WITHOUT chroot translation, for a filesystem (procfs/
+/// sysfs) resolving its OWN mount content. The path is already mount-absolute
+/// (e.g. `/proc/sys/kernel/domainname`), reached via the mount itself, so
+/// applying `chroot_resolve` would wrongly re-prefix it with the caller's
+/// chroot root and break sandbox resolution (status 226/NAMESPACE). Linux's
+/// proc_sys_lookup is chroot-independent for the same reason.
+/// # C: O(components)
+pub fn lookup_no_chroot(path: &str) -> Option<InodeRef> {
+    let cur_ns = current_mount_ns();
+    if cur_ns != 0 {
+        if let Some(i) = tree::lookup(cur_ns, path) { return Some(i); }
+    }
+    tree::lookup(0, path)
 }
 
 /// Detach the entry at `mount_point` (and its subtree) from `mount_ns`.
@@ -118,7 +149,7 @@ pub fn snapshot_ns(src_ns: u64, dst_ns: u64) {
 /// through unchanged.
 /// # C: O(len)
 fn chroot_resolve(path: &str) -> String {
-    if !path.starts_with('/') { return String::from(path); }
+    if path.as_bytes().first() != Some(&b'/') { return String::from(path); }
     let root = match current_chroot_root() { Some(r) => r, None => return String::from(path) };
     let mut out = root;
     if out.ends_with('/') { out.pop(); }

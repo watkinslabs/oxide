@@ -203,7 +203,20 @@ impl vfs::fs::FileSystem for Ext4RootfsFs {
     fn create(&self, path: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
         create_at(path.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enoent)
     }
+    fn create_anonymous(&self, dir: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
+        create_anonymous_at(dir.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enospc)
+    }
     fn unlink(&self, path: &str) -> vfs::fs::KResult<()> { unlink_at(path.as_bytes()) }
+    fn link(&self, target: &str, link: &str) -> vfs::fs::KResult<()> {
+        link_at(target.as_bytes(), link.as_bytes())
+    }
+    fn link_inode(&self, inode: vfs::InodeRef, link: &str) -> vfs::fs::KResult<()> {
+        let ino = inode.as_any()
+            .and_then(|a| a.downcast_ref::<crate::rootfs::inode::Ext4FileInode>())
+            .map(|i| i.ext4_ino())
+            .ok_or(vfs::VfsError::Exdev)?;
+        link_inode_at(ino, link.as_bytes())
+    }
     fn rename(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
         rename_at(from.as_bytes(), to.as_bytes())
     }

@@ -54,6 +54,18 @@ impl Inode for ProcRootInode {
                 allow_task_dir: true,
             }) as InodeRef);
         }
+        // Bridge to procfs subtrees held in the devfs tree: /proc/sys (the
+        // sysctl interface — kernel/domainname, kernel/hostname, …), /proc/net,
+        // etc. procfs OWNS /proc and resolves these through its OWN mount tree,
+        // chroot-INDEPENDENT (Linux proc_sys_lookup). Without this the component
+        // walk fell through to the PID parse below, ENOENTd /proc/sys/*, and
+        // every sandboxed service died at status 226/NAMESPACE.
+        {
+            let mut p = alloc::string::String::with_capacity(6 + name.len());
+            p.push_str("/proc/");
+            p.push_str(name);
+            if let Some(i) = devfs::lookup_no_chroot(&p) { return Ok(i); }
+        }
         // `name` is a Linux PID (vtgid); translate via pid_to_kernel_tid.
         let vpid: u32 = name.parse().map_err(|_| VfsError::Enoent)?;
         let tid = pid_to_kernel_tid(vpid).ok_or(VfsError::Enoent)?;
@@ -151,7 +163,7 @@ impl Inode for ProcPidDirInode {
             "statm" => Ok(Arc::new(ProcPidStatmInode { tid }) as InodeRef),
             "wchan" => Ok(StaticFileInode::new(b"0") as InodeRef),
             "oom_score" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
-            "oom_score_adj" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
+            "oom_score_adj" => Ok(crate::sysctl::SysctlInode::new(b"0\n") as InodeRef),
             "loginuid" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
             "sessionid" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
             "io" => {
@@ -172,9 +184,9 @@ impl Inode for ProcPidDirInode {
             // current id snapshot for that NS kind.
             "ns" => Ok(Arc::new(ProcPidNsDirInode { tid }) as InodeRef),
             "uid_map" | "gid_map" => {
-                Ok(StaticFileInode::new(b"         0          0 4294967295\n") as InodeRef)
+                Ok(crate::sysctl::SysctlInode::new(b"         0          0 4294967295\n") as InodeRef)
             }
-            "setgroups" => Ok(StaticFileInode::new(b"allow\n") as InodeRef),
+            "setgroups" => Ok(crate::sysctl::SysctlInode::new(b"allow\n") as InodeRef),
             "syscall" => Ok(StaticFileInode::new(b"running\n") as InodeRef),
             "mounts" => Ok(Arc::new(crate::mounts::ProcMountsInode) as InodeRef),
             "mountinfo" => Ok(Arc::new(crate::mounts::ProcMountinfoInode) as InodeRef),
@@ -184,7 +196,8 @@ impl Inode for ProcPidDirInode {
             "coredump_filter" => Ok(StaticFileInode::new(b"00000033\n") as InodeRef),
             "smaps_rollup" => Ok(Arc::new(crate::smaps::ProcPidSmapsInode { tid }) as InodeRef),
             "numa_maps" => Ok(Arc::new(ProcPidMapsInode { tid }) as InodeRef),
-            "stack" | "mountstats" | "make-it-fail" | "fail-nth" | "projid_map" | "pagemap"
+            "projid_map" => Ok(crate::sysctl::SysctlInode::new(b"         0          0 4294967295\n") as InodeRef),
+            "stack" | "mountstats" | "make-it-fail" | "fail-nth" | "pagemap"
             | "kpagecount" | "kpageflags" | "attr" => Ok(StaticFileInode::new(b"") as InodeRef),
             "wakeups_count" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
             // exe/cwd/root: magic symlinks (followed by stat/O_PATH) per ProcPidLinkInode.
@@ -656,14 +669,29 @@ pub fn init() {
 pub fn smoke_test() {
     use hal::kassert;
     use vfs::Inode;
+    fn is_hex(b: u8) -> bool {
+        b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+    }
+    fn is_uuid_line(buf: &[u8]) -> bool {
+        if buf.len() < 37 || buf[36] != b'\n' { return false; }
+        for i in 0..36 {
+            match i {
+                8 | 13 | 18 | 23 => {
+                    if buf[i] != b'-' { return false; }
+                }
+                _ => {
+                    if !is_hex(buf[i]) { return false; }
+                }
+            }
+        }
+        buf[..36].iter().any(|&b| b != b'0' && b != b'-')
+    }
     let entries: &[(&str, &[u8])] = &[
         ("/proc/version", b"Linux"),
         ("/proc/cpuinfo", b"processor"),
         ("/proc/meminfo", b"MemTotal:"),
         // /proc/uptime is dynamic now (P3-111) — skipped from smoke (its body is
         // a function of monotonic_ns, not a static prefix).
-        ("/sys/kernel/random/uuid", b"00000000"),
-        ("/sys/kernel/random/boot_id", b"00000000"),
         ("/etc/os-release", b"NAME=oxide"),
     ];
     for (path, prefix) in entries {
@@ -674,6 +702,13 @@ pub fn smoke_test() {
         let n = inode.read(0, &mut buf).expect("procfs read");
         kassert!(n >= prefix.len(), "procfs read short");
         kassert!(&buf[..prefix.len()] == *prefix, "procfs body mismatch");
+    }
+    for path in ["/sys/kernel/random/uuid", "/sys/kernel/random/boot_id"] {
+        let inode = crate::fs_impl::instance().lookup(path).expect("procfs lookup");
+        let mut buf = [0u8; 40];
+        let n = inode.read(0, &mut buf).expect("procfs read");
+        kassert!(n == 37, "procfs uuid length mismatch");
+        kassert!(is_uuid_line(&buf[..n]), "procfs uuid shape mismatch");
     }
     debug_boot! { klog::write_raw(b"[INFO]  procfs-smoke: ok\n"); }
 }

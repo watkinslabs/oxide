@@ -35,8 +35,11 @@ impl vfs::fs::FileSystem for ProcfsFs {
             }
         }
         // Multi-component: /proc/<pid>/<leaf> + /proc/self/<leaf> synthesized;
-        // /proc/net/* + /sys/* + /etc/* resolve via the devfs tree fallback.
-        if let Some(i) = devfs::lookup(path) { return Some(i); }
+        // /proc/net/* and /proc/sys/* resolve via the procfs-owned subtree.
+        // Do not apply the caller's chroot here: this lookup is already inside
+        // the mounted procfs instance, so chroot-prefixing would hide
+        // `/proc/sys/kernel/domainname` from sandboxed services.
+        if let Some(i) = devfs::lookup_no_chroot(path) { return Some(i); }
         lookup_dynamic(path)
     }
 }
