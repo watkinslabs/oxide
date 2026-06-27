@@ -8,21 +8,40 @@
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use sync::{Dentry as DentryClass, Inode as InodeClass, RwLock};
 
 use crate::inode::InodeRef;
+use crate::superblock::SuperBlock;
 
-/// Single path-component cache node.
+/// `d_flags` bits (Linux `include/linux/dcache.h` subset).
+pub const D_ROOT:     u32 = 0x0001; // this dentry is a superblock root
+pub const D_NEGATIVE: u32 = 0x0002; // d_inode == None
+pub const D_HASHED:   u32 = 0x0004; // present in parent.children
+
+/// Single path-component cache node — Linux `struct dentry`. Keyed by
+/// `(d_parent, d_name)` via the owning superblock's per-parent hash;
+/// NEVER by an absolute path string.
 pub struct Dentry {
+    /// `d_parent`. None = root / floating.
     parent: Option<Arc<Dentry>>,
+    /// `d_name.name` (no precomputed qstr hash yet).
     name:   String,
+    /// `d_inode`. None = NEGATIVE dentry (`16§4`).
     inode:  RwLock<Option<InodeRef>, InodeClass>,
-    /// Resolved children by component name (`16§4` dentry cache). A
-    /// per-dentry map rather than the global open-addressed hash the
-    /// spec describes — same invariants, simpler; the global hash + RCU
-    /// is a perf follow-up. Lock class `Dentry` (`06§3.6`).
+    /// `d_sb` — owning superblock backref. NON-owning `Weak`: the SB owns
+    /// `s_root` (strong) and outlives every dentry; making this strong
+    /// would form an Arc cycle that leaks the tree at umount. Default
+    /// `Weak::new()` for dentries built before their fs owns a SuperBlock
+    /// (WP6-pending backends, anon-fd factories).
+    sb: Weak<SuperBlock>,
+    /// `d_flags`.
+    d_flags: AtomicU32,
+    /// `d_subdirs` / dentry_hashtable analog: resolved children by
+    /// component name (`16§4`). Per-(parent,name) — this IS the dcache
+    /// key; there is no global path→dentry map. Lock class `Dentry`.
     children: RwLock<BTreeMap<String, Arc<Dentry>>, DentryClass>,
     /// Namespace-scoped mount link. Linux mount crossing is not a property
     /// of a dentry alone: the same dentry can be covered differently in
@@ -33,35 +52,63 @@ pub struct Dentry {
 }
 
 impl Dentry {
-    /// Construct a positive dentry — name resolves to `inode`.
+    /// Shared builder. `sb` is the owning-superblock `Weak` (default
+    /// `Weak::new()` for sb-less dentries during the WP6 migration).
     /// # C: O(1)
-    pub fn new(parent: Option<Arc<Dentry>>, name: String, inode: InodeRef) -> Arc<Self> {
+    fn build(parent: Option<Arc<Dentry>>, name: String, inode: Option<InodeRef>, sb: Weak<SuperBlock>, mut flags: u32) -> Arc<Self> {
+        if inode.is_none() { flags |= D_NEGATIVE; }
         Arc::new(Self {
             parent,
             name,
-            inode: RwLock::new(Some(inode)),
+            inode: RwLock::new(inode),
+            sb,
+            d_flags: AtomicU32::new(flags),
             children: RwLock::new(BTreeMap::new()),
             mounted_mounts: RwLock::new(BTreeMap::new()),
         })
+    }
+
+    /// Construct a positive dentry — name resolves to `inode`. sb-less
+    /// (`Weak::new()`); use `new_child` to inherit a parent's superblock.
+    /// # C: O(1)
+    pub fn new(parent: Option<Arc<Dentry>>, name: String, inode: InodeRef) -> Arc<Self> {
+        Self::build(parent, name, Some(inode), Weak::new(), 0)
     }
 
     /// Construct a negative dentry — `name` is known to be absent.
     /// # C: O(1)
     pub fn new_negative(parent: Option<Arc<Dentry>>, name: String) -> Arc<Self> {
-        Arc::new(Self {
-            parent,
-            name,
-            inode: RwLock::new(None),
-            children: RwLock::new(BTreeMap::new()),
-            mounted_mounts: RwLock::new(BTreeMap::new()),
-        })
+        Self::build(parent, name, None, Weak::new(), 0)
     }
 
     /// Construct a free-floating root dentry. No parent; inode required.
     /// # C: O(1)
     pub fn new_root(inode: InodeRef) -> Arc<Self> {
-        Self::new(None, String::new(), inode)
+        Self::build(None, String::new(), Some(inode), Weak::new(), D_ROOT)
     }
+
+    /// Construct a child dentry under `parent`, inheriting `parent.d_sb`.
+    /// `inode == None` builds a negative dentry. This is how the dcache
+    /// primitives (`d_alloc`/`d_add`) propagate the superblock down the
+    /// tree. # C: O(1)
+    pub fn new_child(parent: &Arc<Dentry>, name: &str, inode: Option<InodeRef>) -> Arc<Self> {
+        Self::build(Some(parent.clone()), String::from(name), inode, parent.sb.clone(), 0)
+    }
+
+    /// Construct a superblock root dentry whose `d_sb` points at `sb`
+    /// (Linux `d_make_root`). # C: O(1)
+    pub fn new_root_in_sb(inode: InodeRef, sb: &Arc<SuperBlock>) -> Arc<Self> {
+        Self::build(None, String::new(), Some(inode), Arc::downgrade(sb), D_ROOT)
+    }
+
+    /// `d_sb` — owning superblock, if any. # C: O(1)
+    pub fn d_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
+
+    /// `d_flags` snapshot. # C: O(1)
+    pub fn flags(&self) -> u32 { self.d_flags.load(Ordering::Relaxed) }
+
+    /// True iff this dentry is a superblock root (`D_ROOT`). # C: O(1)
+    pub fn is_root(&self) -> bool { self.flags() & D_ROOT != 0 }
 
     /// # C: O(1)
     pub fn name(&self) -> &str { &self.name }
@@ -85,7 +132,12 @@ impl Dentry {
     /// `create` / `unlink`).
     /// # C: O(1)
     pub fn set_inode(&self, inode: Option<InodeRef>) {
+        let neg = inode.is_none();
         *self.inode.write() = inode;
+        // Keep D_NEGATIVE consistent (Linux d_instantiate clears it).
+        let mut f = self.d_flags.load(Ordering::Relaxed);
+        if neg { f |= D_NEGATIVE; } else { f &= !D_NEGATIVE; }
+        self.d_flags.store(f, Ordering::Relaxed);
     }
 
     /// Cached child dentry for `name`, if previously resolved. Brief
