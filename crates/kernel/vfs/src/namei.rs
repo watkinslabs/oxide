@@ -39,6 +39,18 @@ pub const MAY_EXEC:  u32 = 0x01;
 pub const MAY_WRITE: u32 = 0x02;
 pub const MAY_READ:  u32 = 0x04;
 
+/// Mode bits that carry privilege (Linux `include/uapi/linux/stat.h`).
+/// `S_ISUID`/`S_ISGID` are killed on chown of a regular file; `S_ISGID`
+/// is killed on chmod when the caller is outside the file's group.
+pub const S_ISUID: u16 = 0o4000;
+pub const S_ISGID: u16 = 0o2000;
+pub const S_IXGRP: u16 = 0o0010;
+
+/// Supplementary-group slots carried inline in a `Cred` snapshot. Matches
+/// `sched::Creds::NGROUPS_V1` (the small-process tail Linux historically
+/// stored inline) so `current_cred()` can copy the task's full set.
+pub const CRED_NGROUPS: usize = 32;
+
 /// Resolution modifiers (`openat2(2)` RESOLVE_* + LOOKUP_* + O_NOFOLLOW).
 #[derive(Clone, Copy, Default)]
 pub struct LookupFlags {
@@ -66,11 +78,12 @@ pub struct LookupFlags {
     pub no_magiclinks: bool,
 }
 
-/// Caller credentials for `may_lookup` permission checks — Linux `struct cred`
-/// subset: fsuid/fsgid + the two DAC-bypass capabilities. The vfs crate is
-/// task-agnostic, so the cred is threaded in by the caller (the syscall layer
-/// supplies the task's; `Cred::root()` is the default-allow used by the compat
-/// `path_lookup` wrappers and internal resolves).
+/// Caller credentials for the VFS permission checks — Linux `struct cred`
+/// subset: fsuid/fsgid + supplementary groups + the DAC/owner/chown-bypass
+/// capabilities. The vfs crate is task-agnostic, so the cred is threaded in
+/// by the caller (the syscall layer supplies the task's via `current_cred()`;
+/// `Cred::root()` is the default-allow used by the compat `path_lookup`
+/// wrappers and internal resolves).
 #[derive(Clone, Copy)]
 pub struct Cred {
     pub uid: u32,
@@ -79,12 +92,35 @@ pub struct Cred {
     pub cap_dac_override: bool,
     /// CAP_DAC_READ_SEARCH: bypass read + directory-search DAC.
     pub cap_dac_read_search: bool,
+    /// CAP_FOWNER: bypass the owner check on chmod / utime / etc.
+    pub cap_fowner: bool,
+    /// CAP_CHOWN: change file ownership arbitrarily.
+    pub cap_chown: bool,
+    /// CAP_FSETID: keep S_ISGID across chmod / write by a non-group member.
+    pub cap_fsetid: bool,
+    /// Number of valid entries in `groups` (clamped to `CRED_NGROUPS`).
+    pub ngroups: u32,
+    /// Supplementary group ids (Linux `cred->group_info`).
+    pub groups: [u32; CRED_NGROUPS],
 }
 
 impl Cred {
     /// The all-powerful root cred (default-allow). # C: O(1)
     pub const fn root() -> Self {
-        Cred { uid: 0, gid: 0, cap_dac_override: true, cap_dac_read_search: true }
+        Cred {
+            uid: 0, gid: 0,
+            cap_dac_override: true, cap_dac_read_search: true,
+            cap_fowner: true, cap_chown: true, cap_fsetid: true,
+            ngroups: 0, groups: [0u32; CRED_NGROUPS],
+        }
+    }
+
+    /// True when `gid` is the cred's primary group or one of its
+    /// supplementary groups (Linux `in_group_p`). # C: O(ngroups)
+    pub fn in_group(&self, gid: u32) -> bool {
+        if self.gid == gid { return true; }
+        let n = (self.ngroups as usize).min(CRED_NGROUPS);
+        self.groups[..n].contains(&gid)
     }
 }
 
@@ -106,15 +142,17 @@ pub struct VfsPath {
 
 /// `generic_permission` (Linux `fs/namei.c`) for the access `mask`. Inodes
 /// with no per-fs perm info (`perm() == None`: pseudo-fs / synthetic) are
-/// default-allow, preserving the pre-permission behaviour. # C: O(1)
-fn permission(inode: &InodeRef, mask: u32, cred: &Cred) -> KResult<()> {
+/// default-allow, preserving the pre-permission behaviour. Owner/group/other
+/// class selection uses the cred's primary + supplementary groups
+/// (`in_group`). # C: O(ngroups)
+pub fn inode_permission(inode: &InodeRef, mask: u32, cred: &Cred) -> KResult<()> {
     let Some(mode) = inode.perm() else { return Ok(()); };
     let mode = mode as u32;
     let uid = inode.uid().unwrap_or(0);
     let gid = inode.gid().unwrap_or(0);
     let granted = if cred.uid == uid {
         (mode >> 6) & 0o7
-    } else if cred.gid == gid {
+    } else if cred.in_group(gid) {
         (mode >> 3) & 0o7
     } else {
         mode & 0o7
@@ -136,7 +174,88 @@ fn permission(inode: &InodeRef, mask: u32, cred: &Cred) -> KResult<()> {
 /// `may_lookup` (Linux): search permission (MAY_EXEC) on a directory before
 /// resolving a component within it. # C: O(1)
 fn may_lookup(inode: &InodeRef, cred: &Cred) -> KResult<()> {
-    permission(inode, MAY_EXEC, cred)
+    inode_permission(inode, MAY_EXEC, cred)
+}
+
+/// `may_open` (Linux `fs/namei.c`): DAC check for opening `inode` with the
+/// requested read/write access. Writing to a directory is `EISDIR`; otherwise
+/// the requested access classes are checked via `inode_permission` (EACCES on
+/// deny). The EROFS-on-RO-mount and O_CREAT parent checks live at the syscall
+/// layer (they need the resolved mount + parent inode). A freshly O_CREAT'd
+/// file skips this entirely (Linux sets acc_mode=0), as does an O_PATH open.
+/// # C: O(ngroups)
+pub fn may_open(inode: &InodeRef, want_read: bool, want_write: bool, cred: &Cred) -> KResult<()> {
+    if want_write && matches!(inode.file_type(), FileType::Directory) {
+        return Err(VfsError::Eisdir);
+    }
+    let mut mask = 0u32;
+    if want_read  { mask |= MAY_READ; }
+    if want_write { mask |= MAY_WRITE; }
+    if mask == 0 { return Ok(()); }
+    inode_permission(inode, mask, cred)
+}
+
+/// `may_create` (Linux): a new entry in directory `dir` needs write + search
+/// on the parent. Used for the O_CREAT path. # C: O(ngroups)
+pub fn may_create(dir: &InodeRef, cred: &Cred) -> KResult<()> {
+    inode_permission(dir, MAY_WRITE | MAY_EXEC, cred)
+}
+
+/// `chmod` ownership check (Linux `setattr_prepare`): the caller must own the
+/// inode (`fsuid == i_uid`) or hold CAP_FOWNER, else `EPERM`. Owner is read
+/// from the per-fs `uid()` (consistent with `inode_permission`). # C: O(1)
+pub fn may_chmod(inode: &InodeRef, cred: &Cred) -> KResult<()> {
+    let owner = inode.uid().unwrap_or(0);
+    if cred.uid == owner || cred.cap_fowner { Ok(()) } else { Err(VfsError::Eperm) }
+}
+
+/// `chown` ownership check (Linux `setattr_prepare` / `chown_common`).
+/// `new_uid`/`new_gid` are `None` for the `(uid_t)-1` "leave unchanged"
+/// sentinel. Changing the uid requires CAP_CHOWN; changing the gid requires
+/// either CAP_CHOWN or (owning the file AND being a member of the target
+/// group). `EPERM` otherwise. # C: O(ngroups)
+pub fn may_chown(
+    inode: &InodeRef,
+    new_uid: Option<u32>,
+    new_gid: Option<u32>,
+    cred: &Cred,
+) -> KResult<()> {
+    let cur_uid = inode.uid().unwrap_or(0);
+    let cur_gid = inode.gid().unwrap_or(0);
+    if let Some(nu) = new_uid {
+        if nu != cur_uid && !cred.cap_chown { return Err(VfsError::Eperm); }
+    }
+    if let Some(ng) = new_gid {
+        if ng != cur_gid {
+            let owner_member = cred.uid == cur_uid && cred.in_group(ng);
+            if !owner_member && !cred.cap_chown { return Err(VfsError::Eperm); }
+        }
+    }
+    Ok(())
+}
+
+/// Adjust a chmod target `mode`: strip `S_ISGID` when the caller is not in the
+/// file's owning group and lacks CAP_FSETID (Linux `setattr_prepare`). Prevents
+/// a non-member from setting set-group-ID. # C: O(ngroups)
+pub fn chmod_sgid_strip(mode: u16, inode: &InodeRef, cred: &Cred) -> u16 {
+    let gid = inode.gid().unwrap_or(0);
+    if mode & S_ISGID != 0 && !cred.cap_fsetid && !cred.in_group(gid) {
+        mode & !S_ISGID
+    } else {
+        mode
+    }
+}
+
+/// New mode after a chown drops the set-user-ID bit and (when group-executable)
+/// the set-group-ID bit, for a non-directory (Linux `chown_common` sets
+/// `ATTR_KILL_SUID|ATTR_KILL_SGID`). Returns `None` when nothing changes.
+/// # C: O(1)
+pub fn chown_kill_priv(mode: u16, is_dir: bool) -> Option<u16> {
+    if is_dir { return None; }
+    let mut m = mode;
+    m &= !S_ISUID;
+    if m & S_IXGRP != 0 { m &= !S_ISGID; }
+    if m != mode { Some(m) } else { None }
 }
 
 /// Follow stacked mountpoints DOWN from `d`: while `d` is a mountpoint, switch

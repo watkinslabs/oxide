@@ -6,8 +6,8 @@ use syscall::errno::Errno;
 use hal::USER_VA_END;
 use vfs::{File, OpenFlags};
 
-use crate::open_common::{dup_fd_target, open_proc_fd, O_CREAT, O_TRUNC, O_DIRECTORY,
-    O_NOFOLLOW, O_TMPFILE};
+use crate::open_common::{dup_fd_target, open_proc_fd, enforce_open_perm, O_CREAT, O_TRUNC,
+    O_DIRECTORY, O_NOFOLLOW, O_TMPFILE};
 
 /// `sys_openat(dirfd, path, flags, mode)` — slot 257.
 /// # C: O(N_path)
@@ -63,7 +63,7 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     // O_TMPFILE short-circuits to anonymous inode creation. Each branch
     // also yields the `mnt_id` the file is opened through (Linux
     // `f_path.mnt`): the resolved mount for FS paths, 0 for anon devices.
-    let (inode, mnt_id) = if (flags & O_TMPFILE) != 0 {
+    let (inode, mnt_id, created) = if (flags & O_TMPFILE) != 0 {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
@@ -80,7 +80,7 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
                     return -(Errno::Erofs.as_i32() as i64);
                 }
                 match mnt.fs().create_anonymous(&rel, final_mode as u32) {
-                    Ok(i)  => (i, mnt.mnt_id),
+                    Ok(i)  => (i, mnt.mnt_id, true),
                     Err(_) => return -(Errno::Enospc.as_i32() as i64),
                 }
             }
@@ -88,19 +88,19 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
         }
     } else if path_str == "/dev/ptmx" {
         let (master, _n) = devpts::allocate_pair();
-        (master, 0)
+        (master, 0, false)
     } else if path_str == "/dev/tty" {
         // F200: caller's controlling terminal; ENXIO when none.
         match sched::live::current() {
             // SAFETY: single-mutator per `13§5` — current task on this CPU.
             Some(t) => match unsafe { (*t.ctty.get()).clone() } {
-                Some(i) => (i, 0),
+                Some(i) => (i, 0, false),
                 None    => return -(Errno::Enxio.as_i32() as i64),
             },
             None => return -(Errno::Enxio.as_i32() as i64),
         }
     } else if let Some(vp) = crate::pathresolve::resolve_path(path_str, (flags & O_NOFOLLOW) != 0) {
-        (vp.inode, vp.mnt_id)
+        (vp.inode, vp.mnt_id, false)
     } else if (flags & O_CREAT) != 0 {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -113,7 +113,7 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
                     return -(Errno::Erofs.as_i32() as i64);
                 }
                 match mnt.fs().create(&rel, final_mode) {
-                    Ok(i) => (i, mnt.mnt_id),
+                    Ok(i) => (i, mnt.mnt_id, true),
                     Err(e) => {
                         crate::namei_common::trace_run_vfs_error(b"openat-create", path_str, e);
                         return -(Errno::Enoent.as_i32() as i64);
@@ -150,6 +150,8 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
         return -(Errno::Enotdir.as_i32() as i64);
     }
     if let Err(e) = inode.on_open() { return -(e as i64); }
+    // DAC + EROFS enforcement (Linux `may_open`), before the O_TRUNC truncate.
+    if let Some(rv) = enforce_open_perm(&inode, mnt_id, flags, created) { return rv; }
     // fanotify FAN_OPEN_PERM (fast no-op without perm marks; deny → EACCES).
     if !::fs::inotify::check_open_perm(&inode) { return -(Errno::Eacces.as_i32() as i64); }
     if (flags & O_TRUNC) != 0 { let _ = inode.truncate(0); }

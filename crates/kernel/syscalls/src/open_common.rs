@@ -17,6 +17,46 @@ pub(crate) const O_NOFOLLOW:  u32 = 0o400000;
 pub(crate) const O_NOFOLLOW:  u32 = 0o100000;
 /// `__O_TMPFILE` per Linux fcntl.h (full O_TMPFILE = this | O_DIRECTORY).
 pub(crate) const O_TMPFILE:   u32 = 0o20000000;
+/// `O_PATH` (asm-generic, both arches): an fd-reference open with no read/write
+/// access — bypasses `may_open`'s access-mode permission check.
+pub(crate) const O_PATH:      u32 = 0o10000000;
+/// `O_ACCMODE` mask + the writable access modes.
+pub(crate) const O_ACCMODE:   u32 = 0o3;
+pub(crate) const O_WRONLY:    u32 = 0o1;
+pub(crate) const O_RDWR:      u32 = 0o2;
+
+/// Linux `do_open` access enforcement, run after path resolution: `EROFS` for a
+/// write through a read-only mount (`mnt_want_write`), then the `may_open` DAC
+/// check (EACCES / EISDIR). The DAC check is skipped for a freshly `O_CREAT`'d
+/// file (Linux passes acc_mode=0), for `O_PATH` descriptors, and for anonymous
+/// inodes (`mnt_id == 0`: ptmx/tty/pipe — governed by their own open hooks).
+/// Returns `Some(neg_errno)` to fail the open, `None` to allow it.
+/// # C: O(ngroups)
+pub(crate) fn enforce_open_perm(
+    inode: &vfs::InodeRef,
+    mnt_id: u64,
+    flags: u32,
+    created: bool,
+) -> Option<i64> {
+    use core::sync::atomic::Ordering;
+    if (flags & O_PATH) != 0 { return None; }
+    let accmode    = flags & O_ACCMODE;
+    let want_write = accmode == O_WRONLY || accmode == O_RDWR || (flags & O_TRUNC) != 0;
+    let want_read  = accmode != O_WRONLY;
+    // EROFS: writing through a read-only mount (Linux `mnt_want_write`).
+    if want_write && mnt_id != 0 {
+        if let Some(m) = vfs::mount::mount_by_id(mnt_id) {
+            if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
+                return Some(-(Errno::Erofs.as_i32() as i64));
+            }
+        }
+    }
+    if created || mnt_id == 0 { return None; }
+    if let Err(e) = vfs::may_open(inode, want_read, want_write, &crate::pathresolve::current_cred()) {
+        return Some(-(e as i64));
+    }
+    None
+}
 
 /// Map a path that resolves by **duplicating an existing open file
 /// description** → `(tid_opt, fd)`: `/dev/std{in,out,err}`, `/dev/fd/<n>`,

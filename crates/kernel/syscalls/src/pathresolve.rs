@@ -63,21 +63,48 @@ fn resolution_root() -> Option<(Arc<vfs::Dentry>, bool)> {
 /// there is no current task (early boot / host paths).
 /// # C: O(1)
 pub fn current_cred() -> vfs::Cred {
+    cred_for(false)
+}
+
+/// Like `current_cred()` but built from the task's REAL uid/gid rather than
+/// the fsuid/fsgid. `access(2)` (without `AT_EACCESS`) checks against the
+/// real ids per POSIX; `faccessat2(AT_EACCESS)` and every other path use the
+/// effective (fs) ids. # C: O(NGROUPS)
+pub fn current_cred_real() -> vfs::Cred {
+    cred_for(true)
+}
+
+/// Snapshot the running task's credentials into the VFS `Cred`: fsuid/fsgid
+/// (or ruid/rgid when `real`), supplementary groups, and the DAC/owner/chown
+/// bypass caps. Falls back to root when there is no current task (early boot /
+/// host paths). # C: O(NGROUPS)
+fn cred_for(real: bool) -> vfs::Cred {
     use core::sync::atomic::Ordering;
-    // Linux capability.h cap NUMBERS (bit positions in the effective mask).
-    const CAP_DAC_OVERRIDE: u64    = 1;
-    const CAP_DAC_READ_SEARCH: u64 = 2;
-    match sched::live::current() {
-        Some(c) => {
-            let eff = c.creds.cap_effective.load(Ordering::Acquire);
-            vfs::Cred {
-                uid: c.creds.fsuid.load(Ordering::Acquire),
-                gid: c.creds.fsgid.load(Ordering::Acquire),
-                cap_dac_override:     eff & (1u64 << CAP_DAC_OVERRIDE)    != 0,
-                cap_dac_read_search:  eff & (1u64 << CAP_DAC_READ_SEARCH) != 0,
-            }
-        }
-        None => vfs::Cred::root(),
+    let Some(c) = sched::live::current() else { return vfs::Cred::root(); };
+    let eff = c.creds.cap_effective.load(Ordering::Acquire);
+    let (uid, gid) = if real {
+        (c.creds.ruid.load(Ordering::Acquire), c.creds.rgid.load(Ordering::Acquire))
+    } else {
+        (c.creds.fsuid.load(Ordering::Acquire), c.creds.fsgid.load(Ordering::Acquire))
+    };
+    let ng = (c.creds.ngroups.load(Ordering::Acquire) as usize).min(vfs::CRED_NGROUPS);
+    let mut groups = [0u32; vfs::CRED_NGROUPS];
+    // SAFETY: groups slot is single-mutator per `13§5`; the running task on
+    // this CPU is the sole writer, so this read of its own group list is sound.
+    unsafe {
+        let g = &*c.creds.groups.get();
+        groups[..ng].copy_from_slice(&g[..ng]);
+    }
+    let has = |cap: u32| eff & (1u64 << cap) != 0;
+    vfs::Cred {
+        uid, gid,
+        cap_dac_override:    has(sched::cap::DAC_OVERRIDE),
+        cap_dac_read_search: has(sched::cap::DAC_READ_SEARCH),
+        cap_fowner:          has(sched::cap::FOWNER),
+        cap_chown:           has(sched::cap::CHOWN),
+        cap_fsetid:          has(sched::cap::FSETID),
+        ngroups: ng as u32,
+        groups,
     }
 }
 
@@ -114,12 +141,16 @@ pub fn resolve_path_result(abs: &str, no_follow_final: bool) -> Result<vfs::VfsP
     let (root, beneath) = resolution_root().ok_or(vfs::VfsError::Enoent)?;
     let flags = vfs::LookupFlags { no_follow_final, beneath, ..Default::default() };
     let Some(cur) = sched::live::current() else {
-        return vfs::path_lookup_path(root.clone(), root, abs, flags);
+        // No task (early boot / kernel-internal resolve): default-allow root cred.
+        return vfs::path_lookup_cred(root.clone(), root, abs, flags, vfs::Cred::root());
     };
     // SAFETY: cwd_vfs slot single-mutator per 13§5; current task is the sole writer.
     let start = unsafe { (*cur.cwd_vfs.get()).clone().map(|p| p.dentry) }
         .unwrap_or_else(|| root.clone());
-    vfs::path_lookup_path(start, root, abs, flags)
+    // Enforce per-directory search permission (`may_lookup`, MAY_EXEC) against
+    // the caller's cred (Linux `link_path_walk`). Root keeps CAP_DAC_OVERRIDE
+    // so early boot / privileged services are unaffected.
+    vfs::path_lookup_cred(start, root, abs, flags, current_cred())
 }
 
 /// Resolve a mount-point path `abs` to the `Arc<Dentry>` the mount engine

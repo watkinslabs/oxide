@@ -393,7 +393,8 @@ fn may_lookup_denies_non_exec_dir() {
     let root_inode = perm_dir(2, 0o755, &[("priv", priv_dir), ("open", open_dir)]);
     let root = Dentry::new_root(root_inode);
 
-    let user = vfs::namei::Cred { uid: 1000, gid: 1000, cap_dac_override: false, cap_dac_read_search: false };
+    let user = vfs::namei::Cred { uid: 1000, gid: 1000, cap_dac_override: false, cap_dac_read_search: false,
+        cap_fowner: false, cap_chown: false, cap_fsetid: false, ngroups: 0, groups: [0u32; vfs::CRED_NGROUPS] };
 
     // Non-root user: search through /priv (no exec bit) is EACCES.
     let denied = vfs::namei::path_lookup_cred(root.clone(), root.clone(), "/priv/secret",
