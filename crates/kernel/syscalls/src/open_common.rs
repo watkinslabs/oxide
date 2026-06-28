@@ -77,7 +77,8 @@ pub(crate) fn parse_proc_fd(path: &str) -> Option<(Option<u32>, i32)> {
 /// Open `/proc/<pid>/fd/<n>` by duplicating the target fd's open file
 /// description into the caller's fd table (Linux magic-symlink reopen).
 /// # C: O(1)
-pub(crate) fn open_proc_fd(tid_opt: Option<u32>, fd: i32) -> i64 {
+pub(crate) fn open_proc_fd(tid_opt: Option<u32>, fd: i32, flags: u32) -> i64 {
+    const O_CLOEXEC: u32 = 0o2000000;
     let file = match sched::proclink::proc_fd_file(tid_opt, fd) {
         Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -88,7 +89,15 @@ pub(crate) fn open_proc_fd(tid_opt: Option<u32>, fd: i32) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    match fdt.alloc(file) { Ok(n) => n as i64, Err(e) => -(e as i64) }
+    match fdt.alloc(file) {
+        Ok(n) => {
+            if (flags & O_CLOEXEC) != 0 {
+                if let Err(e) = fdt.set_cloexec(n, true) { return -(e as i64); }
+            }
+            n as i64
+        }
+        Err(e) => -(e as i64),
+    }
 }
 
 /// Resolve a user path for open/openat: absolute lexically normalised,

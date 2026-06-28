@@ -570,6 +570,23 @@ fn fdtable_close_range_closes_span() {
 }
 
 #[test]
+fn install_open_o_cloexec_sets_fd_flag_not_file_flag() {
+    let t = FdTable::new();
+    let i: InodeRef = MemFile::new(2);
+    let fd = crate::file::install_open(
+        &t,
+        Arc::clone(&i),
+        "/tmp/created",
+        OpenFlags::O_RDWR | OpenFlags::O_CLOEXEC,
+        0,
+        crate::namei::Cred::root(),
+    ).unwrap();
+    assert!(t.cloexec(fd).unwrap());
+    assert!(!t.get(fd).unwrap().flags().contains(OpenFlags::O_CLOEXEC));
+    assert!(t.get(fd).unwrap().flags().contains(OpenFlags::O_RDWR));
+}
+
+#[test]
 fn fdtable_bitmap_alloc_min_skips_full_words() {
     // Allocate past the first 64-fd word, free one in word 0, and a
     // min-bounded alloc must respect `min` (F_DUPFD semantics) — exercising

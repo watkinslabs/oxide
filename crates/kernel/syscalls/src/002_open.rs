@@ -41,7 +41,7 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     // /dev/{stdin,stdout,stderr}, /dev/fd/<n>, /proc/<pid>/fd/<n>: dup the
     // existing open file description (Linux fd-link semantics).
     if let Some((tid_opt, n)) = dup_fd_target(path_str) {
-        return open_proc_fd(tid_opt, n);
+        return open_proc_fd(tid_opt, n, flags);
     }
     // Unified mount-table lookup (R67). /dev/ptmx allocates a new pair per open.
     // Each branch also yields the `mnt_id` the file is opened through (Linux
@@ -91,6 +91,7 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     // fanotify FAN_OPEN_PERM: blocks here until a daemon allows/denies (fast
     // no-op when no perm marks exist). Deny → EACCES, no fd created.
     if !::fs::inotify::check_open_perm(&inode) { return -(Errno::Eacces.as_i32() as i64); }
+    if let Err(rv) = ::security::bpf_lsm::file_open(&inode) { return rv; }
     if (flags & O_TRUNC) != 0 { let _ = inode.truncate(0); }
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.

@@ -21,6 +21,10 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_GETPIPE_SZ: u64 = 1032; const F_SETPIPE_SZ: u64 = 1031;
     const F_ADD_SEALS: u64 = 1033; const F_GET_SEALS: u64 = 1034;
     const F_SEAL_SEAL: u32 = 0x0001;
+    const F_SEAL_SHRINK: u32 = 0x0002;
+    const F_SEAL_GROW: u32 = 0x0004;
+    const F_SEAL_WRITE: u32 = 0x0008;
+    const F_SEAL_FUTURE_WRITE: u32 = 0x0010;
     const F_GETOWN: u64 = 9; const F_SETOWN: u64 = 8;
     const SETTABLE_FL: u32 = 0o4_004_000 | 0o0_004_000; // O_APPEND | O_NONBLOCK
     let fd = args.a0 as i32; let cmd = args.a1; let arg = args.a2;
@@ -69,10 +73,13 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         F_ADD_SEALS => match file.inode().fcntl_seals() {
             Some(s) => {
                 use core::sync::atomic::Ordering;
+                let requested = arg as u32;
+                let valid = F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_FUTURE_WRITE;
+                if requested & !valid != 0 { return -(Errno::Einval.as_i32() as i64); }
                 let cur_seals = s.load(Ordering::Acquire);
                 // F_SEAL_SEAL already set ⇒ no further sealing (EPERM).
                 if cur_seals & F_SEAL_SEAL != 0 { return -(Errno::Eperm.as_i32() as i64); }
-                s.fetch_or(arg as u32, Ordering::AcqRel);
+                s.fetch_or(requested, Ordering::AcqRel);
                 0
             }
             None => -(Errno::Einval.as_i32() as i64),

@@ -365,9 +365,12 @@ impl Dentry {
         if let Some(id) = mnt_id { mounts.insert(ns, id); } else { mounts.remove(&ns); }
     }
 
-    /// True iff a filesystem is mounted on this dentry. # C: O(1)
-    pub fn is_mountpoint(&self) -> bool {
-        !self.mounted_mounts.read().is_empty()
+    /// True iff a filesystem is mounted on this dentry IN namespace `ns`
+    /// (Linux mount crossing is per-mount-namespace: the same dentry can be
+    /// covered in one ns and bare in another, so an any-ns test is a cross-ns
+    /// false positive). # C: O(log N_ns_coverings)
+    pub fn is_mountpoint(&self, ns: u64) -> bool {
+        self.mounted_mounts.read().contains_key(&ns)
     }
 
     /// Absolute (GLOBAL) path for this dentry — Linux `d_path` / `prepend_path`:

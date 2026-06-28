@@ -38,6 +38,26 @@ static NEXT_ANON_DEV: AtomicU64 = AtomicU64::new(0x0000_0001_0000_0000);
 /// Allocate a fresh anonymous device id (`get_anon_bdev`). # C: O(1)
 pub fn next_anon_dev() -> u64 { NEXT_ANON_DEV.fetch_add(1, Ordering::Relaxed) }
 
+// `s_flags` bits (Linux include/linux/fs.h). User-visible mount RO/option
+// flags in the low range; lifecycle bits (`SB_BORN`/`SB_ACTIVE`) in the high
+// range. `MS_*` (mount syscall) flags map onto these one-to-one in the low bits.
+pub const SB_RDONLY:      u64 = 1;
+pub const SB_NOSUID:      u64 = 1 << 1;
+pub const SB_NODEV:       u64 = 1 << 2;
+pub const SB_NOEXEC:      u64 = 1 << 3;
+pub const SB_SYNCHRONOUS: u64 = 1 << 4;
+pub const SB_MANDLOCK:    u64 = 1 << 6;
+pub const SB_DIRSYNC:     u64 = 1 << 7;
+pub const SB_NOATIME:     u64 = 1 << 10;
+pub const SB_NODIRATIME:  u64 = 1 << 11;
+/// Internal lifecycle bits: `SB_BORN` (fill_super done), `SB_ACTIVE` (mounted).
+pub const SB_BORN:   u64 = 1 << 29;
+pub const SB_ACTIVE: u64 = 1 << 30;
+
+/// `MAX_LFS_FILESIZE` on a 64-bit kernel (Linux include/linux/fs.h) — the
+/// default `s_maxbytes` a large-file backend reports. # C: O(1)
+pub const MAX_LFS_FILESIZE: u64 = i64::MAX as u64;
+
 /// Placeholder backend for an `s_fs`-less superblock built via
 /// [`SuperBlock::new`] (the object-model unit tests). Production superblocks
 /// are built via [`SuperBlock::for_backend`] and carry their real backend.
@@ -54,7 +74,7 @@ impl FileSystem for NullFs {
 struct FsBackedSuperOps { fs: Arc<dyn FileSystem> }
 impl SuperOps for FsBackedSuperOps {
     fn statfs(&self) -> KResult<SbStatFs> {
-        Ok(SbStatFs { f_type: self.fs.magic(), f_bsize: 4096, ..Default::default() })
+        Ok(SbStatFs { f_type: self.fs.magic(), f_bsize: self.fs.block_size(), ..Default::default() })
     }
 }
 
@@ -81,6 +101,9 @@ pub struct SbStatFs {
     pub f_bavail: u64,
     pub f_files:  u64,
     pub f_ffree:  u64,
+    /// `f_fsid` — the filesystem identity (Linux packs `s_dev` here). `0` ⇒
+    /// `SuperBlock::statfs` defaults it from `s_dev`.
+    pub f_fsid:   u64,
 }
 
 /// `super_operations` (Linux `struct super_operations`) — the per-SB
@@ -118,6 +141,14 @@ pub struct SuperBlock {
     pub s_dev: u64,
     /// `s_blocksize`.
     pub s_blocksize: u32,
+    /// `s_flags` — mount RO/option bits + lifecycle (`SB_BORN`/`SB_ACTIVE`).
+    /// Atomic so a future sb-level remount (`remount_fs`) flips `SB_RDONLY`
+    /// without rebuilding the SB. # consumers: D16 remount.
+    s_flags: AtomicU64,
+    /// `s_maxbytes` — largest file size this fs can represent (write-path cap).
+    pub s_maxbytes: u64,
+    /// `s_time_gran` — timestamp granularity in ns (inode setattr rounding).
+    pub s_time_gran: u32,
     /// `s_id` — `"/dev/vda1"`, `"tmpfs"`; `/proc/mounts` source column.
     pub s_id: String,
     /// `s_root` — the ROOT DENTRY (strong; see CYCLE NOTE).
@@ -167,7 +198,11 @@ impl SuperBlock {
         s_fs_info: Arc<dyn Any + Send + Sync>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            s_op, s_type, s_magic, s_dev, s_blocksize, s_id,
+            s_op, s_type, s_magic, s_dev, s_blocksize,
+            s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
+            s_maxbytes: MAX_LFS_FILESIZE,
+            s_time_gran: 1,
+            s_id,
             s_root: RwLock::new(None),
             s_fs_info,
             s_fs: Arc::new(NullFs),
@@ -187,11 +222,20 @@ impl SuperBlock {
         s_dev: u64,
         s_id: String,
     ) -> Arc<Self> {
-        let s_op: Arc<dyn SuperOps> = Arc::new(FsBackedSuperOps { fs: fs.clone() });
+        // `fill_super` installs the backend's own `super_operations` when it
+        // publishes one (ext4 → live on-disk block/inode accounting); else the
+        // generic adapter reporting `f_type`/`f_bsize` only.
+        let s_op: Arc<dyn SuperOps> = fs.super_ops()
+            .unwrap_or_else(|| Arc::new(FsBackedSuperOps { fs: fs.clone() }));
         let s_type: Arc<dyn FileSystemType> = Arc::new(FsBackedType { fs: fs.clone() });
         let s_magic = fs.magic();
+        let s_blocksize = fs.block_size();
         let sb = Arc::new(Self {
-            s_op, s_type, s_magic, s_dev, s_blocksize: 4096, s_id,
+            s_op, s_type, s_magic, s_dev, s_blocksize,
+            s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
+            s_maxbytes: MAX_LFS_FILESIZE,
+            s_time_gran: 1,
+            s_id,
             s_root: RwLock::new(None),
             s_fs_info: Arc::new(()),
             s_fs: fs,
@@ -310,8 +354,32 @@ impl SuperBlock {
         let mut st = self.s_op.statfs()?;
         if st.f_type == 0 { st.f_type = self.s_magic; }
         if st.f_bsize == 0 { st.f_bsize = self.s_blocksize; }
+        if st.f_fsid == 0 { st.f_fsid = self.s_dev; }
         Ok(st)
     }
+
+    /// `s_flags` snapshot (Linux `sb->s_flags`). # C: O(1)
+    pub fn s_flags(&self) -> u64 { self.s_flags.load(Ordering::Acquire) }
+
+    /// Set/clear `s_flags` bits (sb-level remount; `SB_RDONLY` toggle). # C: O(1)
+    pub fn set_s_flags(&self, set: u64, clear: u64) {
+        let mut cur = self.s_flags.load(Ordering::Acquire);
+        loop {
+            let new = (cur & !clear) | set;
+            match self.s_flags.compare_exchange_weak(cur, new, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => break, Err(v) => cur = v,
+            }
+        }
+    }
+
+    /// True iff this superblock is mounted read-only (`SB_RDONLY`). # C: O(1)
+    pub fn is_readonly(&self) -> bool { (self.s_flags() & SB_RDONLY) != 0 }
+
+    /// `s_maxbytes` — largest representable file size. # C: O(1)
+    pub fn s_maxbytes(&self) -> u64 { self.s_maxbytes }
+
+    /// `s_time_gran` — timestamp granularity (ns). # C: O(1)
+    pub fn s_time_gran(&self) -> u32 { self.s_time_gran }
 
     /// Umount teardown: `put_super` then drop the dentry tree. # C: O(tree)
     pub fn put_super(&self) {

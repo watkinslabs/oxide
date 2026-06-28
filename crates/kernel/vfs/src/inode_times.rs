@@ -59,6 +59,9 @@ pub fn get(inode: &InodeRef) -> Option<InodeTimes> {
     g.get(&key(inode)).copied()
 }
 
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn get(_inode: &crate::InodeRef) -> Option<InodeTimes> { None }
+
 /// Update atime/mtime; ctime always advances to `now_ns` on any update.
 /// `None` for a field means "leave existing alone" (utimensat UTIME_OMIT).
 /// # C: O(log N)
@@ -71,6 +74,9 @@ pub fn set(inode: &InodeRef, atime_ns: Option<u64>, mtime_ns: Option<u64>, now_n
     if let Some(t) = mtime_ns { entry.mtime_ns = t; }
     entry.ctime_ns = now_ns;
 }
+
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn set(_inode: &crate::InodeRef, _atime_ns: Option<u64>, _mtime_ns: Option<u64>, _now_ns: u64) {}
 
 /// Set mode bits (low 12 — perm + suid/sgid/sticky). Used by chmod/
 /// fchmod/fchmodat. Bumps ctime.
@@ -85,6 +91,9 @@ pub fn set_mode(inode: &InodeRef, mode_bits: u16, now_ns: u64) {
     entry.ctime_ns = now_ns;
 }
 
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn set_mode(_inode: &crate::InodeRef, _mode_bits: u16, _now_ns: u64) {}
+
 /// Set owner uid/gid. `u32::MAX` (i.e. `(uid_t)-1`) means leave alone.
 /// # C: O(log N)
 #[cfg(target_os = "oxide-kernel")]
@@ -97,3 +106,6 @@ pub fn set_owner(inode: &InodeRef, uid: u32, gid: u32, now_ns: u64) {
     entry.owner_set = true;
     entry.ctime_ns = now_ns;
 }
+
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn set_owner(_inode: &crate::InodeRef, _uid: u32, _gid: u32, _now_ns: u64) {}

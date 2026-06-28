@@ -53,10 +53,11 @@ impl Inode for CgDir {
     fn readdir(
         &self,
         off: u64,
-        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         // Stable order: control files first, then child cgroups. The
-        // offset is an index into that concatenated sequence.
+        // offset is an index into that concatenated sequence. The child's real
+        // ino (resolved via `lookup` — no lock held here) feeds getdents `d_ino`.
         let files = crate::node_file_names(self.cgid);
         let kids = crate::node_child_names(self.cgid);
         let total = files.len() + kids.len();
@@ -64,10 +65,12 @@ impl Inode for CgDir {
         while idx < total {
             let next = idx as u64 + 1;
             if idx < files.len() {
-                if !f(next, files[idx], FileType::Regular) { return Ok(next); }
+                let ino = self.lookup(files[idx]).map(|i| i.ino()).unwrap_or(0);
+                if !f(ino, next, files[idx], FileType::Regular) { return Ok(next); }
             } else {
                 let name = &kids[idx - files.len()];
-                if !f(next, name, FileType::Directory) { return Ok(next); }
+                let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+                if !f(ino, next, name, FileType::Directory) { return Ok(next); }
             }
             idx += 1;
         }

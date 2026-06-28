@@ -85,7 +85,11 @@ pub fn generic_fillattr<I: Inode + ?Sized>(inode: &I, idmap: &Idmap, overlay: Op
         gid:      idmap.map_out_gid(raw_gid),
         rdev,
         size:     inode.size(),
-        blksize:  inode.blksize(),
+        // `st_blksize` is a SUPERBLOCK property (Linux `s_blocksize`), not a
+        // per-inode one: route through the owning SB so every inode on one fs
+        // reports its mount's block size. `blksize()` is only the fallback for
+        // SB-less anon inodes (pidfd/pipe/socket — pending D35's anon SB).
+        blksize:  inode.i_sb().map(|s| s.s_blocksize).unwrap_or_else(|| inode.blksize()),
         blocks:   (inode.size() + 511) / 512,
         atime_ns: inode.atime().unwrap_or(ov.atime_ns),
         mtime_ns: inode.mtime().unwrap_or(ov.mtime_ns),

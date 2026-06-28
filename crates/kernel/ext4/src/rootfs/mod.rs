@@ -197,6 +197,13 @@ impl vfs::fs::FileSystem for Ext4RootfsFs {
     fn name(&self) -> &str { "ext4" }
     /// EXT4_SUPER_MAGIC (linux/magic.h).
     fn magic(&self) -> u64 { crate::EXT4_SUPER_MAGIC as u64 }
+    /// On-disk `s_blocksize` of the published root mount. # C: O(1)
+    fn block_size(&self) -> u32 { root().map(|st| st.mount.sb.block_size).unwrap_or(4096) }
+    /// Install live ext4 statfs accounting (root mount's state) as `s_op`.
+    /// # C: O(1)
+    fn super_ops(&self) -> Option<Arc<dyn vfs::SuperOps>> {
+        root().map(|st| Arc::new(ops::Ext4SuperOps::new(st.clone())) as Arc<dyn vfs::SuperOps>)
+    }
     /// ext4 root is always inode 2 (`docs/16§2`).
     fn root(&self) -> Option<vfs::InodeRef> { wrap_any_ino(2) }
     /// Back-stamp the SB into the published ROOT state so root-fs inodes'

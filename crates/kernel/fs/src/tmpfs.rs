@@ -33,6 +33,7 @@ pub const F_SEAL_SEAL:   u32 = 0x0001;
 pub const F_SEAL_SHRINK: u32 = 0x0002;
 pub const F_SEAL_GROW:   u32 = 0x0004;
 pub const F_SEAL_WRITE:  u32 = 0x0008;
+pub const F_SEAL_FUTURE_WRITE: u32 = 0x0010;
 
 const PG: usize = 4096;
 /// TMPFS_MAGIC (linux/magic.h) — statfs `f_type`.
@@ -84,10 +85,9 @@ pub struct TmpfsFileInode {
 fn ensure_page(g: &mut BTreeMap<u64, u64>, idx: u64) -> Option<u64> {
     if let Some(&pa) = g.get(&idx) { return Some(pa); }
     let pa = pmm::setup::alloc_one_frame()?;
-    let hhdm = pmm::user_as::hhdm_offset();
-    // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at hhdm+pa is
-    // kernel-writable (Limine-installed); PG is the page granule.
-    unsafe { core::ptr::write_bytes((hhdm + pa) as *mut u8, 0, PG); }
+    let ptr = pmm::setup::frame_ptr(pa)?;
+    // SAFETY: pa is a freshly-allocated PMM frame; PG is the page granule.
+    unsafe { core::ptr::write_bytes(ptr, 0, PG); }
     g.insert(idx, pa);
     Some(pa)
 }
@@ -143,7 +143,6 @@ impl Inode for TmpfsFileInode {
         if off >= len { return Ok(0); }
         let n = buf.len().min((len - off) as usize);
         let g = self.pages.lock();
-        let hhdm = pmm::user_as::hhdm_offset();
         let mut done = 0usize;
         while done < n {
             let cur   = off as usize + done;
@@ -152,10 +151,11 @@ impl Inode for TmpfsFileInode {
             let chunk = (PG - pgoff).min(n - done);
             match g.get(&idx) {
                 Some(&pa) => {
+                    let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
                     // SAFETY: pa is an inode-owned frame; HHDM mirror readable;
                     // [pgoff..pgoff+chunk] is within the page granule.
                     unsafe {
-                        let src = (hhdm + pa + pgoff as u64) as *const u8;
+                        let src = base.add(pgoff) as *const u8;
                         core::ptr::copy_nonoverlapping(src, buf[done..].as_mut_ptr(), chunk);
                     }
                 }
@@ -168,13 +168,12 @@ impl Inode for TmpfsFileInode {
 
     fn write(&self, off: u64, src: &[u8]) -> KResult<usize> {
         let s = self.seals.load(Ordering::Acquire);
-        if s & F_SEAL_WRITE != 0 { return Err(VfsError::Eperm); }
+        if s & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) != 0 { return Err(VfsError::Eperm); }
         let end = off + src.len() as u64;
         if end > self.len.load(Ordering::Acquire) && s & F_SEAL_GROW != 0 {
             return Err(VfsError::Eperm);
         }
         let mut g = self.pages.lock();
-        let hhdm = pmm::user_as::hhdm_offset();
         let mut done = 0usize;
         while done < src.len() {
             let cur   = off as usize + done;
@@ -182,10 +181,11 @@ impl Inode for TmpfsFileInode {
             let pgoff = cur % PG;
             let chunk = (PG - pgoff).min(src.len() - done);
             let pa = ensure_page(&mut g, idx).ok_or(VfsError::Enospc)?;
+            let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
             // SAFETY: pa is an inode-owned frame; HHDM mirror writable;
             // [pgoff..pgoff+chunk] within the page granule; non-overlapping.
             unsafe {
-                let dst = (hhdm + pa + pgoff as u64) as *mut u8;
+                let dst = base.add(pgoff);
                 core::ptr::copy_nonoverlapping(src[done..].as_ptr(), dst, chunk);
             }
             done += chunk;
@@ -216,13 +216,40 @@ impl Inode for TmpfsFileInode {
             let tail = len as usize % PG;
             if tail != 0 {
                 if let Some(&pa) = g.get(&((len / PG as u64))) {
-                    let hhdm = pmm::user_as::hhdm_offset();
+                    let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
                     // SAFETY: inode-owned frame; zero [tail..PG] within the granule.
-                    unsafe { core::ptr::write_bytes((hhdm + pa + tail as u64) as *mut u8, 0, PG - tail); }
+                    unsafe { core::ptr::write_bytes(base.add(tail), 0, PG - tail); }
                 }
             }
         }
         self.len.store(len, Ordering::Release);
+        Ok(())
+    }
+
+    fn fallocate(&self, off: u64, len: u64, keep_size: bool, zero_range: bool) -> KResult<()> {
+        let end = off.checked_add(len).ok_or(VfsError::Einval)?;
+        let old = self.len.load(Ordering::Acquire);
+        let s = self.seals.load(Ordering::Acquire);
+        if !keep_size && end > old && s & F_SEAL_GROW != 0 { return Err(VfsError::Eperm); }
+        if zero_range && s & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) != 0 { return Err(VfsError::Eperm); }
+        let mut g = self.pages.lock();
+        let mut pos = off;
+        while pos < end {
+            let idx = pos / PG as u64;
+            let pgoff = (pos as usize) % PG;
+            let chunk = (PG - pgoff).min((end - pos) as usize);
+            let pa = ensure_page(&mut g, idx).ok_or(VfsError::Enospc)?;
+            if zero_range {
+                let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
+                // SAFETY: pa is an inode-owned frame; range lies within page.
+                unsafe { core::ptr::write_bytes(base.add(pgoff), 0, chunk); }
+            }
+            pos += chunk as u64;
+        }
+        drop(g);
+        if !keep_size && end > old {
+            self.len.store(end, Ordering::Release);
+        }
         Ok(())
     }
 
@@ -430,12 +457,12 @@ impl Inode for TmpfsDir {
         self.kids.lock().get(name).cloned().ok_or(VfsError::Enoent)
     }
 
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let g = self.kids.lock();
         let mut idx = off as usize;
         for (name, inode) in g.iter().skip(off as usize) {
             let next = idx as u64 + 1;
-            if !f(next, name, inode.file_type()) { return Ok(next); }
+            if !f(inode.ino(), next, name, inode.file_type()) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)

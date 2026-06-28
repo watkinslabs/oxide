@@ -25,8 +25,10 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     // Unknown flag bits / reserved mask bit → EINVAL (Linux do_statx).
     if flags & !AT_VALID != 0 { return -(Errno::Einval.as_i32() as i64); }
     if mask & STATX_RESERVED != 0 { return -(Errno::Einval.as_i32() as i64); }
-    // X3: kernel writes into buf in CPL=0 — require it user-writable.
-    if let Err(rv) = validate_user_buf_writable(buf, 256, 8) { return rv; }
+    // X3: kernel writes into buf in CPL=0 — require it user-writable. Linux
+    // copy_to_user accepts unaligned user statx buffers, so only validate the
+    // byte range here.
+    if let Err(rv) = validate_user_buf_writable(buf, 256, 1) { return rv; }
 
     // Probe path emptiness (path may be NULL with AT_EMPTY_PATH).
     let empty_or_null = path_ptr == 0 || {
@@ -76,10 +78,11 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     let stx_gid = st.gid;
     let dev = crate::namei_common::fsid_to_dev(st.fsid);
     // statx layout per linux/stat.h. Zero everything then fill the fields we have.
-    // SAFETY: buf validated 256-byte 8-aligned range below USER_VA_END; CPL=0 writes through caller's AS.
+    // SAFETY: buf validated 256-byte writable range below USER_VA_END;
+    // unaligned stores match Linux copy_to_user semantics.
     unsafe {
         for off in (0..256u64).step_by(8) {
-            core::ptr::write_volatile((buf + off) as *mut u64, 0);
+            core::ptr::write_unaligned((buf + off) as *mut u64, 0);
         }
         // stx_mask = STATX_BASIC_STATS — tell the caller all base
         // fields (type/mode/nlink/uid/gid/atime/mtime/ctime/ino/size/
@@ -89,30 +92,30 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         // unmasked fields, and the shell's perm check rejected the
         // file as \"not executable for caller\" → \"Permission denied\".
         const STATX_BASIC_STATS: u32 = 0x7ff;
-        core::ptr::write_volatile(buf as *mut u32, STATX_BASIC_STATS);
-        core::ptr::write_volatile((buf +   4)     as *mut u32, st.blksize);                          // stx_blksize
-        core::ptr::write_volatile((buf +  16)     as *mut u32, st.nlink);                            // stx_nlink
-        core::ptr::write_volatile((buf +  20)     as *mut u32, stx_uid);                             // stx_uid
-        core::ptr::write_volatile((buf +  24)     as *mut u32, stx_gid);                             // stx_gid
-        core::ptr::write_volatile((buf +  28)     as *mut u16, mode);                                // stx_mode
-        core::ptr::write_volatile((buf +  32)     as *mut u64, st.ino);                              // stx_ino
-        core::ptr::write_volatile((buf +  40)     as *mut u64, st.size);                             // stx_size
-        core::ptr::write_volatile((buf +  48)     as *mut u64, st.blocks);                           // stx_blocks (512-byte units)
+        core::ptr::write_unaligned(buf as *mut u32, STATX_BASIC_STATS);
+        core::ptr::write_unaligned((buf +   4)     as *mut u32, st.blksize);                          // stx_blksize
+        core::ptr::write_unaligned((buf +  16)     as *mut u32, st.nlink);                            // stx_nlink
+        core::ptr::write_unaligned((buf +  20)     as *mut u32, stx_uid);                             // stx_uid
+        core::ptr::write_unaligned((buf +  24)     as *mut u32, stx_gid);                             // stx_gid
+        core::ptr::write_unaligned((buf +  28)     as *mut u16, mode);                                // stx_mode
+        core::ptr::write_unaligned((buf +  32)     as *mut u64, st.ino);                              // stx_ino
+        core::ptr::write_unaligned((buf +  40)     as *mut u64, st.size);                             // stx_size
+        core::ptr::write_unaligned((buf +  48)     as *mut u64, st.blocks);                           // stx_blocks (512-byte units)
         // Timestamp slots: each 16 B = (i64 sec, i32 nsec, i32 reserved).
         // Linux statx layout: atime@72, btime@88, ctime@104, mtime@120.
         let write_ts = |off: u64, ns: u64| {
             let sec  = (ns / 1_000_000_000) as i64;
             let nsec = (ns % 1_000_000_000) as i32;
-            core::ptr::write_volatile((buf + off)      as *mut i64, sec);
-            core::ptr::write_volatile((buf + off + 8)  as *mut i32, nsec);
+            core::ptr::write_unaligned((buf + off)      as *mut i64, sec);
+            core::ptr::write_unaligned((buf + off + 8)  as *mut i32, nsec);
         };
         write_ts(72,  st.atime_ns);
         write_ts(104, st.ctime_ns);
         write_ts(120, st.mtime_ns);
-        core::ptr::write_volatile((buf + 128)     as *mut u32, (rdev >> 8)  & 0xfff);                // stx_rdev_major
-        core::ptr::write_volatile((buf + 132)     as *mut u32,  rdev        & 0xff);                 // stx_rdev_minor
-        core::ptr::write_volatile((buf + 136)     as *mut u32, crate::namei_common::dev_major(dev)); // stx_dev_major
-        core::ptr::write_volatile((buf + 140)     as *mut u32, crate::namei_common::dev_minor(dev)); // stx_dev_minor
+        core::ptr::write_unaligned((buf + 128)     as *mut u32, (rdev >> 8)  & 0xfff);                // stx_rdev_major
+        core::ptr::write_unaligned((buf + 132)     as *mut u32,  rdev        & 0xff);                 // stx_rdev_minor
+        core::ptr::write_unaligned((buf + 136)     as *mut u32, crate::namei_common::dev_major(dev)); // stx_dev_major
+        core::ptr::write_unaligned((buf + 140)     as *mut u32, crate::namei_common::dev_minor(dev)); // stx_dev_minor
     }
     0
 }

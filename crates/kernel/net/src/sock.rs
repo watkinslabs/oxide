@@ -230,6 +230,7 @@ pub struct SockOpts {
     pub tcp_keepintvl_s: core::sync::atomic::AtomicI32,
     pub tcp_keepcnt: core::sync::atomic::AtomicI32,
     pub passcred: core::sync::atomic::AtomicI32,
+    pub timestamping: core::sync::atomic::AtomicI32,
 }
 
 pub const TCP_SNDBUF_DEFAULT: i32 = 16384; pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
@@ -262,6 +263,7 @@ impl Default for SockOpts {
             tcp_keepintvl_s: AtomicI32::new(crate::sock_opts::TCP_KEEPINTVL_DEFAULT_S),
             tcp_keepcnt:    AtomicI32::new(crate::sock_opts::TCP_KEEPCNT_DEFAULT),
             passcred: AtomicI32::new(0),
+            timestamping: AtomicI32::new(0),
         }
     }
 }

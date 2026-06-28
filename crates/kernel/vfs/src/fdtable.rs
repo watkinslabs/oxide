@@ -130,12 +130,20 @@ impl FdTable {
 
     /// Snapshot of live fd indices in ascending order. Used by
     /// procfs `/proc/<pid>/fd` enumeration per `19§4`.
-    /// # C: O(N)
+    /// # C: O(N/64 + open_fds)
     pub fn live_fds(&self) -> Vec<i32> {
         let g = self.inner.lock();
-        let mut v = Vec::with_capacity(g.files.len());
-        for (i, s) in g.files.iter().enumerate() {
-            if s.is_some() { v.push(i as i32); }
+        let mut v = Vec::with_capacity(g.open_fds.iter().map(|w| w.count_ones() as usize).sum());
+        for (wi, word) in g.open_fds.iter().copied().enumerate() {
+            let mut bits = word;
+            while bits != 0 {
+                let b = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let fd = wi * WORD_BITS + b;
+                if fd < g.files.len() && g.files[fd].is_some() {
+                    v.push(fd as i32);
+                }
+            }
         }
         v
     }

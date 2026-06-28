@@ -21,11 +21,13 @@ use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 const BPF_INO_BASE: Ino = 0x7300_0000;
 const BPF_INO_PROG: Ino = BPF_INO_BASE | 0x01;
 const BPF_INO_MAP:  Ino = BPF_INO_BASE | 0x02;
+const BPF_INO_LINK: Ino = BPF_INO_BASE | 0x03;
 
 /// cBPF program — 8-byte instructions per `linux/filter.h`. v1
 /// stores the prog as opaque bytes; runtime evaluation rides
 /// the existing `seccomp` cBPF interpreter.
 pub struct BpfProgInode {
+    pub prog_type: u32,
     pub insns: Vec<u8>,
 }
 
@@ -56,6 +58,33 @@ impl Inode for BpfMapInode {
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
 }
 
+/// fd-backed BPF LSM link. The link keeps the program inode alive and removes
+/// its registry entry when the last fd reference is dropped.
+pub struct BpfLsmLinkInode {
+    id: u64,
+    hook: crate::bpf_lsm::Hook,
+    _prog: InodeRef,
+}
+
+impl Drop for BpfLsmLinkInode {
+    fn drop(&mut self) {
+        crate::bpf_lsm::unregister(self.id);
+    }
+}
+
+impl Inode for BpfLsmLinkInode {
+    fn as_any(&self) -> Option<&dyn Any> { Some(self) }
+    fn ino(&self) -> Ino { BPF_INO_LINK }
+    fn file_type(&self) -> FileType { FileType::CharDev }
+    fn perm(&self) -> Option<u16> { Some(0o600) }
+    fn size(&self) -> u64 {
+        match self.hook {
+            crate::bpf_lsm::Hook::FileOpen => 0,
+        }
+    }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+}
+
 const BPF_MAP_CREATE:    u64 = 0;
 const BPF_PROG_LOAD:     u64 = 5;
 const BPF_MAP_LOOKUP_ELEM: u64 = 1;
@@ -65,6 +94,10 @@ const BPF_MAP_GET_NEXT_KEY: u64 = 4;
 const BPF_PROG_ATTACH: u64 = 8;
 const BPF_PROG_DETACH: u64 = 9;
 const BPF_MAP_FREEZE: u64 = 22;
+const BPF_LINK_CREATE: u64 = 28;
+
+const BPF_PROG_TYPE_LSM: u32 = 29;
+const BPF_LSM_MAC: u32 = 27;
 
 /// `sys_bpf(cmd, attr, size)` — slot 321.
 /// # C: O(1) for admit; O(log N) for map ops
@@ -85,6 +118,7 @@ pub fn sys_bpf(args: &SyscallArgs) -> i64 {
         BPF_MAP_GET_NEXT_KEY => handle_map_get_next_key(args.a1, args.a2),
         BPF_MAP_FREEZE => handle_map_freeze(args.a1, args.a2),
         BPF_PROG_ATTACH | BPF_PROG_DETACH => handle_prog_attach(args.a1, args.a2),
+        BPF_LINK_CREATE => handle_link_create(args.a1, args.a2),
         _ => -(Errno::Einval.as_i32() as i64),
     }
 }
@@ -117,6 +151,70 @@ fn handle_prog_attach(attr_ptr: u64, attr_size: u64) -> i64 {
         return -(Errno::Ebadf.as_i32() as i64);
     }
     0
+}
+
+/// `bpf_attr` LINK_CREATE prefix:
+/// { u32 prog_fd; u32 target_fd; u32 attach_type; u32 flags;
+///   u32 target_btf_id }.
+const BPF_ATTR_LINK_CREATE_SIZE: u64 = 20;
+
+fn handle_link_create(attr_ptr: u64, attr_size: u64) -> i64 {
+    use hal::USER_VA_END;
+    if attr_ptr == 0 || attr_size < BPF_ATTR_LINK_CREATE_SIZE {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    if attr_ptr.checked_add(BPF_ATTR_LINK_CREATE_SIZE).map_or(true, |e| e > USER_VA_END) {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: attr range validated for the fixed LINK_CREATE prefix.
+    let (prog_fd, target_fd, attach_type, flags, target_btf_id) = unsafe {
+        (
+            core::ptr::read_volatile(attr_ptr as *const u32),
+            core::ptr::read_volatile((attr_ptr + 4) as *const u32),
+            core::ptr::read_volatile((attr_ptr + 8) as *const u32),
+            core::ptr::read_volatile((attr_ptr + 12) as *const u32),
+            core::ptr::read_volatile((attr_ptr + 16) as *const u32),
+        )
+    };
+    if attach_type != BPF_LSM_MAC || flags != 0 || target_fd != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let hook = match crate::bpf_lsm::hook_from_target_btf_id(target_btf_id) {
+        Some(h) => h,
+        None => return -(Errno::Eopnotsupp.as_i32() as i64),
+    };
+    let prog_inode = match bpf_prog_inode_from_fd(prog_fd as i32) {
+        Some(i) => i,
+        None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let prog = match prog_inode.as_any().and_then(|a| a.downcast_ref::<BpfProgInode>()) {
+        Some(p) => p,
+        None => return -(Errno::Einval.as_i32() as i64),
+    };
+    if prog.prog_type != BPF_PROG_TYPE_LSM {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+
+    let id = crate::bpf_lsm::register(hook);
+    let inode: InodeRef = Arc::new(BpfLsmLinkInode {
+        id,
+        hook,
+        _prog: prog_inode,
+    });
+    install_fd(inode, "[bpf-lsm-link]")
+}
+
+fn bpf_prog_inode_from_fd(fd: i32) -> Option<InodeRef> {
+    let cur = sched::current()?;
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = unsafe { cur.fd_table_ref() }?.clone();
+    let file = fdt.get(fd).ok()?;
+    let inode = Arc::clone(file.inode());
+    if inode.as_any()?.downcast_ref::<BpfProgInode>().is_some() {
+        Some(inode)
+    } else {
+        None
+    }
 }
 
 /// `bpf_attr` MAP_CREATE prefix:
@@ -434,7 +532,6 @@ fn handle_prog_load(attr_ptr: u64, attr_size: u64) -> i64 {
         let ip  = core::ptr::read_volatile((attr_ptr + 8) as *const u64);
         (pt, cnt, ip)
     };
-    let _ = prog_type;
     if insn_cnt == 0 || insn_cnt > BPF_MAXINSNS {
         return -(Errno::Einval.as_i32() as i64);
     }
@@ -456,7 +553,7 @@ fn handle_prog_load(attr_ptr: u64, attr_size: u64) -> i64 {
     if crate::bpf_verify::verify(&insns).is_err() {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let inode: InodeRef = Arc::new(BpfProgInode { insns });
+    let inode: InodeRef = Arc::new(BpfProgInode { prog_type, insns });
     install_fd(inode, "[bpf-prog]")
 }
 

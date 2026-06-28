@@ -218,6 +218,39 @@ fn split_parent_and_name(path: &[u8]) -> Option<(&[u8], &[u8])> {
     Some((parent, name))
 }
 
+/// `super_operations` for an ext4 mount (Linux `ext4_statfs`): live on-disk
+/// block/inode accounting read from the per-mount `RootfsState`. Installed as
+/// the SB's `s_op` by `FileSystem::super_ops`, replacing the generic
+/// `FsBackedSuperOps` (which reported only `f_type`/`f_bsize`).
+pub struct Ext4SuperOps { st: Arc<RootfsState> }
+
+impl Ext4SuperOps {
+    /// # C: O(1)
+    pub fn new(st: Arc<RootfsState>) -> Self { Self { st } }
+}
+
+impl vfs::SuperOps for Ext4SuperOps {
+    /// Report this mount's real totals (parsed superblock) + live free
+    /// counters (`state_free_blocks`/`state_free_inodes`, which mirror
+    /// `s_free_blocks_count`/`s_free_inodes_count`). `f_fsid` is left 0 →
+    /// `SuperBlock::statfs` fills it from `s_dev`. # C: O(1)
+    fn statfs(&self) -> vfs::KResult<vfs::SbStatFs> {
+        let m = &self.st.mount;
+        let free_blocks = m.state_free_blocks();
+        let free_inodes = m.state_free_inodes() as u64;
+        Ok(vfs::SbStatFs {
+            f_type:   crate::EXT4_SUPER_MAGIC as u64,
+            f_bsize:  m.sb.block_size,
+            f_blocks: m.sb.blocks_count_lo as u64,
+            f_bfree:  free_blocks,
+            f_bavail: free_blocks,
+            f_files:  m.sb.inodes_count as u64,
+            f_ffree:  free_inodes,
+            f_fsid:   0,
+        })
+    }
+}
+
 /// FileSystem instance over a single, non-root ext4 mount. Carries its
 /// own `RootfsState`; all methods route through `self.st` — the
 /// de-singletonised counterpart to the root `Ext4RootfsFs`. Built via
@@ -239,6 +272,12 @@ impl Ext4Mount {
 impl vfs::fs::FileSystem for Ext4Mount {
     fn name(&self) -> &str { "ext4" }
     fn magic(&self) -> u64 { crate::EXT4_SUPER_MAGIC as u64 }
+    /// On-disk `s_blocksize` (`1024 << s_log_block_size`). # C: O(1)
+    fn block_size(&self) -> u32 { self.st.mount.sb.block_size }
+    /// Install live ext4 statfs accounting as this SB's `s_op`. # C: O(1)
+    fn super_ops(&self) -> Option<Arc<dyn vfs::SuperOps>> {
+        Some(Arc::new(Ext4SuperOps::new(self.st.clone())))
+    }
     fn root(&self) -> Option<vfs::InodeRef> { self.st.wrap_any_ino(2) }
     /// Back-stamp the SB into this mount's own state (Linux `s_fs_info ↔ sb`).
     /// # C: O(1)

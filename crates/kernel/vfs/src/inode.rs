@@ -164,6 +164,14 @@ pub trait Inode: Send + Sync {
         Err(VfsError::Erofs)
     }
 
+    /// Ensure backing storage exists for `[offset, offset + len)`.
+    /// `keep_size` preserves `i_size`; `zero_range` also overwrites existing
+    /// bytes in the range with zeroes.
+    /// # C: depends on FS impl
+    fn fallocate(&self, _offset: u64, _len: u64, _keep_size: bool, _zero_range: bool) -> KResult<()> {
+        Err(VfsError::Eopnotsupp)
+    }
+
     /// Create a child directory `name` with permission `mode` within
     /// this directory inode (Linux `inode_operations->mkdir`). Returns
     /// the new directory's inode. Default returns `Erofs` so static /
@@ -214,15 +222,18 @@ pub trait Inode: Send + Sync {
         Err(VfsError::Erofs)
     }
 
-    /// Iterate child entries of a directory. `off` is the cookie from
-    /// a previous call; `0` starts from the beginning. The callback
-    /// returns `false` to stop early. Default impl returns
+    /// Iterate child entries of a directory (Linux `i_op->iterate`/`dir_emit`).
+    /// `off` is the cookie from a previous call; `0` starts from the beginning.
+    /// The callback receives `(ino, next_off, name, file_type)` — `ino` is the
+    /// child's REAL inode number (Linux `dir_emit`'s `ino`), which `getdents`
+    /// packs as `d_ino`; emitting `0` breaks `ls -i` / `find -inum`. The
+    /// callback returns `false` to stop early. Default impl returns
     /// `Err(Enotdir)`.
     /// # C: depends on FS impl
     fn readdir(
         &self,
         _off: u64,
-        _f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+        _f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         Err(VfsError::Enotdir)
     }
@@ -333,6 +344,15 @@ pub trait Inode: Send + Sync {
     /// `chown(2)` backend. Default `Erofs` → overlay handles it.
     /// # C: O(1)
     fn set_owner(&self, _uid: u32, _gid: u32) -> KResult<()> { Err(VfsError::Erofs) }
+
+    /// `i_op->permission` (Linux `fs/namei.c`) — DAC check for the access
+    /// `mask` (`MAY_READ`/`MAY_WRITE`/`MAY_EXEC`). Default `generic_permission`
+    /// reads the mode/owner bits; a filesystem with POSIX ACLs or custom DAC
+    /// overrides this to intercept. The whole `inode_permission` family
+    /// (lookup/open/create/setattr) dispatches here. # C: O(ngroups)
+    fn permission(&self, mask: u32, cred: &crate::namei::Cred) -> KResult<()> {
+        crate::namei::generic_permission(self, mask, cred)
+    }
 
     /// `i_op->getattr` (Linux `fs/stat.c`) — assemble the `Kstat` stat/statx
     /// report. Default `generic_fillattr` reads the trait accessors, merges the

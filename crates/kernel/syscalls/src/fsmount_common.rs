@@ -30,11 +30,36 @@ pub(crate) fn fstype_ok(t: &str) -> bool {
         "tmpfs" | "ramfs" | "proc" | "sysfs" | "devtmpfs" | "devpts" | "cgroup2"
         | "ext4"
         | "securityfs" | "efivarfs" | "pstore" | "bpf" | "configfs" | "debugfs"
-        | "tracefs" | "fusectl" | "mqueue" | "hugetlbfs")
+        | "tracefs" | "fusectl" | "mqueue" | "hugetlbfs" | "autofs" | "binfmt_misc")
 }
 
 fn source_disk_name(source: &str) -> &str {
     source.rsplit('/').next().unwrap_or(source)
+}
+
+// `s_magic` (linux/magic.h) for the simple kernfs/ramfs-class api-fses that
+// mount EMPTY then get populated by the kernel/userspace. Named (not bare
+// literals) so the statfs `f_type` a tool reads is the real Linux magic.
+const SECURITYFS_MAGIC: u64 = 0x7363_6673;
+const EFIVARFS_MAGIC:   u64 = 0xde5e_81e4;
+const PSTOREFS_MAGIC:   u64 = 0x6165_676C;
+const BPF_FS_MAGIC:     u64 = 0xcafe_4a11;
+const CONFIGFS_MAGIC:   u64 = 0x6265_6570;
+const FUSE_CTL_MAGIC:   u64 = 0x6573_5546;
+const MQUEUE_MAGIC:     u64 = 0x1980_0202;
+const HUGETLBFS_MAGIC:  u64 = 0x9584_58f6;
+
+/// Register a fresh empty kernfs-class instance (`kernfs::PseudoFs`) of fstype
+/// `t` (magic `magic`) at the caller-walked mountpoint dentry, exactly as
+/// procfs/sysfs/debugfs/tracefs are registered. Returns the `move_mount`/
+/// `mount(2)` success/errno. # C: O(depth)
+fn register_pseudofs(t: &'static str, magic: u64, target: &str, target_d: &Arc<Dentry>) -> i64 {
+    let fs: Arc<dyn vfs::fs::FileSystem> = kernfs::PseudoFs::new(t, magic, target);
+    match vfs::mount::register(Some(target_d.clone()), fs) {
+        Ok(()) => { let _ = vfs::mount::propagate_mount(target_d); 0 }
+        Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
+        Err(e) => crate::namei_common::errno_from_vfs(e),
+    }
 }
 
 /// Materialise a filesystem type at `target` (the walked mountpoint dentry
@@ -44,6 +69,18 @@ fn source_disk_name(source: &str) -> &str {
 /// used only as fs INPUT (tmpfs root-inode path, ext4/cgroup naming).
 /// # C: O(N_mounts + optional block-registry lookup)
 pub(crate) fn mount_fstype(source: &str, fstype: &str, target: &str, target_d: &Arc<Dentry>) -> i64 {
+    mount_fstype_with_data(source, fstype, target, target_d, "")
+}
+
+/// Same dispatcher as `mount_fstype`, with the old mount(2) data string
+/// passed through for filesystems that have Linux option protocols.
+pub(crate) fn mount_fstype_with_data(
+    source: &str,
+    fstype: &str,
+    target: &str,
+    target_d: &Arc<Dentry>,
+    data: &str,
+) -> i64 {
     match fstype {
         "tmpfs" | "ramfs" => {
             // Each `mount -t tmpfs` is a fresh instance owning its own tree.
@@ -125,8 +162,44 @@ pub(crate) fn mount_fstype(source: &str, fstype: &str, target: &str, target_d: &
             let _ = vfs::mount::propagate_mount(target_d);
             0
         }
-        "securityfs" | "efivarfs" | "pstore" | "bpf" | "configfs"
-            | "fusectl" | "mqueue" | "hugetlbfs" => 0,
+        // Simple kernfs/ramfs-class api-fses: each gets a REAL empty
+        // `PseudoFs` instance (own SB + magic + directory root) so it enters
+        // the unified mount table, shows in mountinfo, and reports its true
+        // `statfs` f_type — the old `=> 0` admit-noop registered nothing
+        // (mount succeeded but was invisible → libmount verify failed).
+        "securityfs" => register_pseudofs("securityfs", SECURITYFS_MAGIC, target, target_d),
+        "efivarfs"   => register_pseudofs("efivarfs",   EFIVARFS_MAGIC,   target, target_d),
+        "pstore"     => register_pseudofs("pstore",     PSTOREFS_MAGIC,   target, target_d),
+        "bpf"        => register_pseudofs("bpf",        BPF_FS_MAGIC,     target, target_d),
+        "configfs"   => register_pseudofs("configfs",   CONFIGFS_MAGIC,   target, target_d),
+        "fusectl"    => register_pseudofs("fusectl",    FUSE_CTL_MAGIC,   target, target_d),
+        "mqueue"     => register_pseudofs("mqueue",     MQUEUE_MAGIC,     target, target_d),
+        "hugetlbfs"  => register_pseudofs("hugetlbfs",  HUGETLBFS_MAGIC,  target, target_d),
+        "autofs" => {
+            let fs: Arc<dyn vfs::fs::FileSystem> = match ::fs::autofs::AutofsFs::new(data) {
+                Ok(fs) => fs,
+                Err(e) => return crate::namei_common::errno_from_vfs(e),
+            };
+            match vfs::mount::register(Some(target_d.clone()), fs) {
+                Ok(()) => {
+                    let _ = vfs::mount::propagate_mount(target_d);
+                    0
+                }
+                Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
+                Err(e) => crate::namei_common::errno_from_vfs(e),
+            }
+        }
+        "binfmt_misc" => {
+            let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::binfmt_misc::BinfmtMiscFs::new();
+            match vfs::mount::register(Some(target_d.clone()), fs) {
+                Ok(()) => {
+                    let _ = vfs::mount::propagate_mount(target_d);
+                    0
+                }
+                Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
+                Err(e) => crate::namei_common::errno_from_vfs(e),
+            }
+        }
         _ => -(Errno::Eopnotsupp.as_i32() as i64),
     }
 }

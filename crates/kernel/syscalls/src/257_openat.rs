@@ -58,7 +58,7 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
         if let Err(rv) = crate::landlock::check(path_str, op) { return rv; }
     }
     if let Some((tid_opt, n)) = dup_fd_target(path_str) {
-        return open_proc_fd(tid_opt, n);
+        return open_proc_fd(tid_opt, n, flags);
     }
     // O_TMPFILE short-circuits to anonymous inode creation. Each branch
     // also yields the `mnt_id` the file is opened through (Linux
@@ -154,6 +154,7 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     if let Some(rv) = enforce_open_perm(&inode, mnt_id, flags, created) { return rv; }
     // fanotify FAN_OPEN_PERM (fast no-op without perm marks; deny → EACCES).
     if !::fs::inotify::check_open_perm(&inode) { return -(Errno::Eacces.as_i32() as i64); }
+    if let Err(rv) = ::security::bpf_lsm::file_open(&inode) { return rv; }
     if (flags & O_TRUNC) != 0 { let _ = inode.truncate(0); }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -167,10 +168,15 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     // O_TMPFILE inodes have no directory entry — their path is the *directory*.
     let dentry_path = if (flags & O_TMPFILE) != 0 { "/" } else { path_str };
     let dentry = vfs::file::open_dentry(dentry_path, &inode);
-    let oflags = OpenFlags::from_bits_truncate(flags);
+    let oflags = OpenFlags::from_bits_truncate(flags) - OpenFlags::O_CLOEXEC;
     let file = File::new_at(inode, dentry, oflags, mnt_id, crate::pathresolve::current_cred());
     match fdt.alloc(file) {
-        Ok(fd)  => fd as i64,
+        Ok(fd)  => {
+            if (flags & OpenFlags::O_CLOEXEC.bits()) != 0 {
+                if let Err(e) = fdt.set_cloexec(fd, true) { return -(e as i64); }
+            }
+            fd as i64
+        }
         Err(e)  => -(e as i64),
     }
 }

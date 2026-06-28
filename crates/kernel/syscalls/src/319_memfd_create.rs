@@ -14,8 +14,14 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
     const MFD_CLOEXEC:       u64 = 0x0001;
     const MFD_ALLOW_SEALING: u64 = 0x0002;
     const MFD_HUGETLB:       u64 = 0x0004;
+    const MFD_NOEXEC_SEAL:   u64 = 0x0008;
+    const MFD_EXEC:          u64 = 0x0010;
     let name_ptr = args.a0;
     let flags    = args.a1;
+    let known = MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_HUGETLB | MFD_NOEXEC_SEAL | MFD_EXEC;
+    if flags & !known != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
     if (flags & MFD_HUGETLB) != 0 {
         return -(Errno::Enosys.as_i32() as i64);
     }

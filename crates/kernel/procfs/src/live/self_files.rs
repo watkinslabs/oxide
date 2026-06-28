@@ -414,7 +414,7 @@ CPU revision\t: 4\n\
 
 // Canonical static bodies retained for documentation; live impls
 // build dynamic versions above.
-pub(crate) const FILESYSTEMS:  &[u8] = b"nodev\tsysfs\nnodev\tproc\nnodev\tdevtmpfs\nnodev\ttmpfs\nnodev\tdevpts\nnodev\tcgroup\nnodev\tcgroup2\nnodev\tpipefs\nnodev\tsockfs\nnodev\tbpf\nnodev\tmqueue\nnodev\trpc_pipefs\n\text4\n\text2\n\text3\n\tiso9660\n\tvfat\n\tmsdos\n\tfuseblk\n";
+pub(crate) const FILESYSTEMS:  &[u8] = b"nodev\tsysfs\nnodev\tproc\nnodev\tdevtmpfs\nnodev\ttmpfs\nnodev\tdevpts\nnodev\tcgroup\nnodev\tcgroup2\nnodev\tpipefs\nnodev\tsockfs\nnodev\tbpf\nnodev\tmqueue\nnodev\tautofs\nnodev\tbinfmt_misc\nnodev\trpc_pipefs\n\text4\n\text2\n\text3\n\tiso9660\n\tvfat\n\tmsdos\n\tfuseblk\n";
 // /proc/mounts + /proc/<pid>/mountinfo are now generated dynamically
 // from the live `vfs::mount` table — see `crate::mounts`.
 pub(crate) const IO_BODY:      &[u8] = b"rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\nread_bytes: 0\nwrite_bytes: 0\ncancelled_write_bytes: 0\n";
@@ -740,7 +740,7 @@ impl Inode for ProcSelfFdInode {
             fd,
         ))
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let cur = match sched::live::current() {
             Some(c) => c,
             None => return Ok(off),
@@ -770,7 +770,8 @@ impl Inode for ProcSelfFdInode {
             }
             buf[..n].reverse();
             let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
-            if !f(next, s, FileType::Symlink) {
+            let ino = self.lookup(s).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, s, FileType::Symlink) {
                 return Ok(next);
             }
             idx += 1;
@@ -790,4 +791,3 @@ impl Inode for ProcSelfFdInode {
 pub use crate::proc_links::{
     ProcFdLinkInode, ProcSelfCwdInode, ProcSelfExeInode, ProcSelfRootInode,
 };
-

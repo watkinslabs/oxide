@@ -171,19 +171,82 @@ pub fn mount_dentry(abs: &str) -> Option<Arc<vfs::Dentry>> {
 /// exists), e.g. Info-ZIP's `replace()` LSTATs the just-unlinked output
 /// and then fails to re-unlink it. Splits `abs` into parent + final
 /// component, resolves the PARENT via the chroot-aware namei walk (NOT a
-/// mount-engine resolver), and drops the child from its dentry cache.
+/// mount-engine resolver), and `d_drop`s the child — UNHASHING it from the
+/// global `DENTRY_HASHTABLE` (which `d_lookup` reads) and dropping its inode
+/// alias, not merely forgetting the per-parent `d_subdirs` entry. A bare
+/// `forget_child` left the child hashed, so `d_lookup` (the walker fast path)
+/// still returned the dead positive dentry after unlink.
 /// # C: O(components)
 pub fn d_delete_path(abs: &str) {
+    drop_cached_child(abs);
+}
+
+/// Split absolute `abs` into `(parent, name)` for the dcache mutation
+/// helpers. `None` for `/`, an empty path, or a trailing-slash-only path.
+/// # C: O(len)
+fn split_parent_name(abs: &str) -> Option<(&str, &str)> {
     let trimmed = abs.trim_end_matches('/');
-    if trimmed.is_empty() { return; }
+    if trimmed.is_empty() { return None; }
     let (parent, name) = match trimmed.rfind('/') {
         Some(0) => ("/", &trimmed[1..]),
         Some(i) => (&trimmed[..i], &trimmed[i + 1..]),
-        None    => return,
+        None    => return None,
     };
-    if name.is_empty() { return; }
+    if name.is_empty() { return None; }
+    Some((parent, name))
+}
+
+/// Resolve `abs`'s parent and `d_drop` the cached child (unhash from the
+/// global `DENTRY_HASHTABLE` + drop its inode alias), else forget the bare
+/// `d_subdirs` index entry. The shared core of `d_delete_path` (unlink/rmdir/
+/// rename) and `d_drop_path` (post-create negative flush). # C: O(components)
+fn drop_cached_child(abs: &str) {
+    let Some((parent, name)) = split_parent_name(abs) else { return; };
     if let Some(pd) = resolve_path(parent, false).map(|p| p.dentry) {
-        pd.forget_child(name);
+        match pd.cached_child(name).or_else(|| vfs::d_lookup(&pd, name)) {
+            Some(child) => vfs::d_drop(&child),
+            None        => pd.forget_child(name),
+        }
+    }
+}
+
+/// Invalidate `abs`'s whole cached subtree (Linux `d_invalidate`): unhash the
+/// dentry AND every cached descendant (e.g. negative dentries that accumulated
+/// inside a now-removed directory). Used on rmdir success — a plain
+/// single-name `d_drop` would leave those descendants hashed and reachable.
+/// # C: O(subtree)
+pub fn d_invalidate_path(abs: &str) {
+    let Some((parent, name)) = split_parent_name(abs) else { return; };
+    if let Some(pd) = resolve_path(parent, false).map(|p| p.dentry) {
+        match pd.cached_child(name).or_else(|| vfs::d_lookup(&pd, name)) {
+            Some(child) => vfs::d_invalidate(&child),
+            None        => pd.forget_child(name),
+        }
+    }
+}
+
+/// Rehome the cached dentry for `from_abs` to `to_abs` (Linux `d_move`), the
+/// dcache half of `rename(2)`. Resolves both parents, `d_drop`s any stale dentry
+/// already cached at the destination name (so `d_move`'s `d_add` is not lost to
+/// the `or_insert` race-winner), then `d_move`s the source child under the new
+/// (parent,name). When nothing is cached at the source, falls back to dropping
+/// both names so a later walk re-resolves. # C: O(components)
+pub fn d_move_path(from_abs: &str, to_abs: &str) {
+    let (Some((fp, fname)), Some((tp, tname))) =
+        (split_parent_name(from_abs), split_parent_name(to_abs))
+    else { drop_cached_child(from_abs); drop_cached_child(to_abs); return; };
+    let from_pd = resolve_path(fp, false).map(|p| p.dentry);
+    let to_pd   = resolve_path(tp, false).map(|p| p.dentry);
+    let (Some(from_pd), Some(to_pd)) = (from_pd, to_pd) else {
+        drop_cached_child(from_abs); drop_cached_child(to_abs); return;
+    };
+    // Drop any stale dentry sitting at the destination name first.
+    if let Some(old) = to_pd.cached_child(tname).or_else(|| vfs::d_lookup(&to_pd, tname)) {
+        vfs::d_drop(&old);
+    }
+    match from_pd.cached_child(fname).or_else(|| vfs::d_lookup(&from_pd, fname)) {
+        Some(child) => { vfs::d_move(&child, &to_pd, tname); }
+        None        => { from_pd.forget_child(fname); }
     }
 }
 

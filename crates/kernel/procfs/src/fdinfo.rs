@@ -45,7 +45,7 @@ impl Inode for ProcFdInfoDirInode {
     fn readdir(
         &self,
         off: u64,
-        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         let task = match self.tid_opt {
             None    => sched::live::current().and_then(|c|
@@ -67,7 +67,8 @@ impl Inode for ProcFdInfoDirInode {
             else { while t > 0 { buf[n] = b'0' + (t % 10) as u8; t /= 10; n += 1; } }
             buf[..n].reverse();
             let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
-            if !f(next, s, FileType::Regular) { return Ok(next); }
+            let ino = self.lookup(s).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, s, FileType::Regular) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)

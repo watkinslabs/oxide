@@ -422,6 +422,18 @@ pub fn alloc_one_frame() -> Option<u64> {
     None
 }
 
+/// Kernel/hosted pointer for a frame owned by the caller.
+///
+/// In the kernel this resolves through the HHDM-backed PMM; in hosted tests it
+/// resolves through the test backing. Callers must own the frame.
+/// # C: O(1)
+pub fn frame_ptr(pa: u64) -> Option<*mut u8> {
+    let p = pmm_static()?;
+    // SAFETY: caller owns the frame; Pmm::page_ptr validates only by backing
+    // arithmetic and is the common kernel/hosted translation point.
+    Some(unsafe { p.page_ptr(crate::Pfn(pa / 4096)) })
+}
+
 /// F157: bump refcount on a frame already returned by `alloc_one_frame`.
 /// Called by COW fork when adding a second mapping of the same physical
 /// page. Mirrors Linux `get_page()`. No-op pre-init.

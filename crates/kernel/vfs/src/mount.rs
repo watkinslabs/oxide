@@ -629,6 +629,18 @@ fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>)
     mntns::bump_gen(ns);
 }
 
+/// Last-umount teardown (Linux `deactivate_super` → `put_super`): run
+/// `put_super` on `sb` IFF no other live mount still references it. The O(N)
+/// `Arc::ptr_eq` scan stands in for the not-yet-built `s_active` refcount (D6):
+/// every mount today builds a unique SB via `for_backend`, so a victim's SB is
+/// shared only by bind clones of the SAME `Arc<Mount>` (none today) — the scan
+/// is exact. Call AFTER the victim is removed from `MOUNTS` so it is not
+/// self-counted. # C: O(N_mounts)
+fn put_super_if_last(sb: &Arc<SuperBlock>) {
+    let still_used = MOUNTS.lock().values().any(|m| Arc::ptr_eq(&m.sb, sb));
+    if !still_used { sb.put_super(); }
+}
+
 /// Unlink `id` from its parent's intrusive child list. # C: O(siblings)
 fn unlink_from_parent(m: &Arc<Mount>) {
     if let Some(p) = m.mnt_parent.lock().upgrade() {
@@ -644,6 +656,7 @@ pub fn unregister(d: &Arc<Dentry>) -> usize {
     let id = target.mnt_id;
     let mp = target.mountpoint();
     let parent = target.parent_id.load(Ordering::Acquire);
+    let sb = target.sb.clone();
     unlink_from_parent(&target);
     if let Some(o) = target.mnt_mp.lock().take() { put_mountpoint(&o); }
     MOUNTS.lock().remove(&id);
@@ -651,6 +664,8 @@ pub fn unregister(d: &Arc<Dentry>) -> usize {
         hash_remove(ns, parent, dptr(d), id);
         rewire_crossing_top(ns, d, parent);
     }
+    // Last-mount of this SB → `put_super` (flush + drop s_root + clear icache).
+    put_super_if_last(&sb);
     mntns::bump_gen(ns);
     1
 }
@@ -702,6 +717,9 @@ pub fn unregister_top(d: &Arc<Dentry>, detach_subtree: bool) -> usize {
             hash_remove(ns, parent, dptr(dd), m.mnt_id);
             rewire_crossing_top(ns, dd, parent);
         }
+        // Last-mount of this victim's SB → `put_super`. Done per-victim AFTER
+        // removal so a still-present sibling sharing the SB blocks teardown.
+        put_super_if_last(&m.sb);
         removed += 1;
     }
     mntns::bump_gen(ns);

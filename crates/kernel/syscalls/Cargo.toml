@@ -27,6 +27,7 @@ console   = { path = "../console" }
 smoke     = { path = "../smoke" }
 devpts    = { path = "../devpts" }
 tracefs   = { path = "../tracefs" }
+kernfs    = { path = "../kernfs" }
 kmacros   = { path = "../../shared/kmacros" }
 kalloc  = { path = "../../shared/kalloc" }
 pmm     = { path = "../mm-pmm" }

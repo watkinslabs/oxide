@@ -319,18 +319,19 @@ impl Inode for PseudoDir {
         Ok(())
     }
     /// # C: O(children + overlay)
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
-        // Synthetic children first (BTreeMap → sorted, stable order).
-        let kids: Vec<(String, FileType)> = {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+        // Synthetic children first (BTreeMap → sorted, stable order). Capture
+        // each child's real ino so getdents reports a non-zero `d_ino`.
+        let kids: Vec<(String, u64, FileType)> = {
             let g = self.children.lock();
-            g.iter().map(|(k, v)| (k.clone(), v.file_type())).collect()
+            g.iter().map(|(k, v)| (k.clone(), v.as_inode().ino(), v.file_type())).collect()
         };
         let r_len = kids.len() as u64;
         let mut idx = off as usize;
         while idx < kids.len() {
-            let (name, ft) = &kids[idx];
+            let (name, ino, ft) = &kids[idx];
             let next = idx as u64 + 1;
-            if !f(next, name, *ft) { return Ok(next); }
+            if !f(*ino, next, name, *ft) { return Ok(next); }
             idx += 1;
         }
         if !self.overlay { return Ok(r_len); }
@@ -344,13 +345,62 @@ impl Inode for PseudoDir {
             ext4_seen += 1;
             if r_len + ext4_seen <= off { return; }
             let name = match core::str::from_utf8(name_bytes) { Ok(s) => s, Err(_) => return };
-            if kids.iter().any(|(k, _)| k.as_str() == name) { return; }
+            if kids.iter().any(|(k, _, _)| k.as_str() == name) { return; }
             let next = r_len + ext4_seen;
-            if !f(next, name, ftype) { stopped = true; stop_off = next; }
+            // Resolve the overlay child's real (ext4) ino for `d_ino`; the
+            // children lock is already released, so this lookup is deadlock-free.
+            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, name, ftype) { stopped = true; stop_off = next; }
         });
         if stopped { return Ok(stop_off); }
         Ok(r_len + ext4_seen)
     }
+}
+
+// ---------------------------------------------------------------------------
+// PseudoFs — a whole kernfs-class filesystem instance (Linux ramfs/kernfs
+// `mount_nodev` + `simple_fill_super` shape).
+// ---------------------------------------------------------------------------
+
+/// A whole pseudo-filesystem instance: a fresh empty `PseudoDir` root under
+/// its own `SuperBlock`, carrying the fstype's `s_magic`. The Linux shape for
+/// the simple kernfs/ramfs-class api-fses (securityfs, bpf, configfs, mqueue,
+/// hugetlbfs, pstore, efivarfs, fusectl) — mounted EMPTY, then populated by
+/// the kernel/userspace after mount. Implementing `FileSystem` (non-`None`
+/// `root()`) is what makes such a mount enter the unified mount table, appear
+/// in `/proc/self/mountinfo`, and report its `s_magic` via `statfs` `f_type` —
+/// replacing the old admit-noop `=> 0` that registered NOTHING (mount(2)
+/// returned 0 but the mount was invisible → libmount post-mount verify failed).
+pub struct PseudoFs {
+    name: &'static str,
+    magic: u64,
+    root: Arc<PseudoDir>,
+}
+
+impl PseudoFs {
+    /// Build a fresh instance. `name` is the fstype string, `magic` its
+    /// `linux/magic.h` `s_magic`, `root_path` seeds the deterministic root
+    /// inode number so two distinct mounts get distinct root inos. # C: O(1)
+    pub fn new(name: &'static str, magic: u64, root_path: &str) -> Arc<Self> {
+        let root = PseudoDir::new_root(dir_ino(root_path), magic, false);
+        Arc::new(Self { name, magic, root })
+    }
+
+    /// The mount's root directory (tree-population entry point). # C: O(1)
+    pub fn root_dir(&self) -> &Arc<PseudoDir> { &self.root }
+}
+
+impl vfs::fs::FileSystem for PseudoFs {
+    /// # C: O(1)
+    fn name(&self) -> &str { self.name }
+    /// # C: O(1)
+    fn magic(&self) -> u64 { self.magic }
+    /// Non-`None` directory root: the walk crosses into the mount and the
+    /// post-mount verify accepts it. # C: O(1)
+    fn root(&self) -> Option<InodeRef> { Some(self.root.clone() as InodeRef) }
+    /// Back-stamp the SB so the tree's inodes report `s_dev` (`fill_super`).
+    /// # C: O(tree)
+    fn set_sb(&self, sb: Weak<SuperBlock>) { self.root.set_sb(sb); }
 }
 
 #[cfg(test)]
@@ -390,7 +440,7 @@ mod tests {
         r.insert_path("/a", PseudoSymlink::new(4, 0, b"a") as InodeRef);
         r.insert_path("/m", PseudoSymlink::new(5, 0, b"m") as InodeRef);
         let mut names = std::vec::Vec::new();
-        r.readdir(0, &mut |_n, name, _ft| { names.push(std::string::String::from(name)); true }).unwrap();
+        r.readdir(0, &mut |_ino, _n, name, _ft| { names.push(std::string::String::from(name)); true }).unwrap();
         // BTreeMap → sorted; overlay off → exactly the 3 synthetic children.
         assert_eq!(names, std::vec!["a", "m", "z"]);
     }

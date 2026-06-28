@@ -1,20 +1,21 @@
-// File-data RW path: append one filesystem block of data to a
-// regular file by allocating a fresh data block, writing it, and
-// either growing the trailing extent (when the new block is
-// contiguous with the previous tail's `start_lba + len`) or
-// adding a new inline extent leaf.
-//
-// Inline-only (depth=0). When the inline leaf array (4 slots)
-// is full + the trailing extent isn't contiguous, surfaces
-// `MountError::ExtentTreeFull`. External index nodes are a
-// follow-up arc; v1 does not need them for the userspace write
-// surface (every user file in our images fits in 4 extents).
+// File-data RW path: append, sparse allocation, write, and truncate.
+// Allocation inserts extents in logical-block order, grows adjacent physical
+// runs when possible, and splits inline/external extent nodes instead of
+// relying on append-only metadata layout.
 
 use crate::inode::{self, Extent, I_BLOCK_LEN};
 use crate::mount::{Mount, MountError, write_byte_range, read_byte_range_pub};
 
 extern crate alloc;
 use alloc::vec::Vec;
+
+const EXT4_MAX_EXTENT_DEPTH: u16 = 5;
+
+struct ExtentInsertResult {
+    first_block: u32,
+    split: Option<inode::ExtentIdx>,
+    extra_meta_sectors: u32,
+}
 
 impl Mount {
     /// Append `data` to the file at `ino`. `data.len()` must equal
@@ -36,415 +37,596 @@ impl Mount {
             return Err(MountError::Inode(inode::InodeError::BadLen));
         }
         let (mut ino_bytes, ino_byte_off) = self.read_inode_bytes(ino)?;
+        let cur_size = u32::from_le_bytes([ino_bytes[0x04], ino_bytes[0x05], ino_bytes[0x06], ino_bytes[0x07]]) as u64
+            | ((u32::from_le_bytes([ino_bytes[0x6C], ino_bytes[0x6D], ino_bytes[0x6E], ino_bytes[0x6F]]) as u64) << 32);
+        let new_logical = ((cur_size + bs as u64 - 1) / bs as u64) as u32;
+        let new_size = cur_size + bs as u64;
+        self.insert_logical_block_with_inode_bytes(ino, &mut ino_bytes, ino_byte_off, new_logical, data, new_size)
+    }
+
+    fn append_logical_block_inner(&self, ino: u32, logical: u32, data: &[u8], new_size: u64) -> Result<u32, MountError> {
+        let bs = self.sb.block_size as usize;
+        if data.len() != bs {
+            return Err(MountError::Inode(inode::InodeError::BadLen));
+        }
+        let (mut ino_bytes, ino_byte_off) = self.read_inode_bytes(ino)?;
+        self.insert_logical_block_with_inode_bytes(ino, &mut ino_bytes, ino_byte_off, logical, data, new_size)
+    }
+
+    fn insert_logical_block_with_inode_bytes(
+        &self,
+        ino: u32,
+        ino_bytes: &mut alloc::vec::Vec<u8>,
+        ino_byte_off: u64,
+        logical: u32,
+        data: &[u8],
+        new_size: u64,
+    ) -> Result<u32, MountError> {
         let mut i_block: [u8; I_BLOCK_LEN] = {
             let mut b = [0u8; I_BLOCK_LEN];
             b.copy_from_slice(&ino_bytes[0x28..0x28 + I_BLOCK_LEN]);
             b
         };
         let hdr = inode::parse_extent_header(&i_block)?;
-        if hdr.depth > 1 { return Err(MountError::DepthUnsupported); }
-
-        let cur_size = u32::from_le_bytes([ino_bytes[0x04], ino_bytes[0x05], ino_bytes[0x06], ino_bytes[0x07]]) as u64
-            | ((u32::from_le_bytes([ino_bytes[0x6C], ino_bytes[0x6D], ino_bytes[0x6E], ino_bytes[0x6F]]) as u64) << 32);
-        let new_logical = ((cur_size + bs as u64 - 1) / bs as u64) as u32;
-
-        match hdr.depth {
-            0 => self.append_inline (ino, &mut ino_bytes, ino_byte_off, &mut i_block, hdr, cur_size, new_logical, data),
-            1 => self.append_depth1 (ino, &mut ino_bytes, ino_byte_off, &mut i_block, hdr, cur_size, new_logical, data),
-            2 => self.append_depth2 (ino, &mut ino_bytes, ino_byte_off, &mut i_block, hdr, cur_size, new_logical, data),
-            _ => Err(MountError::DepthUnsupported),
+        if hdr.depth > EXT4_MAX_EXTENT_DEPTH { return Err(MountError::DepthUnsupported); }
+        if hdr.depth == 0 {
+            return self.insert_inline_sorted(ino, ino_bytes, ino_byte_off, &mut i_block, hdr, new_size, logical, data);
         }
-    }
 
-    /// Inline (depth=0) append. Handles contiguous-grow-trailing,
-    /// new-leaf-in-inline, and inline-full-promote-to-depth-1.
-    fn append_inline(
-        &self, ino: u32, ino_bytes: &mut alloc::vec::Vec<u8>, ino_byte_off: u64,
-        i_block: &mut [u8; I_BLOCK_LEN], mut hdr: inode::ExtentHeader,
-        cur_size: u64, new_logical: u32, data: &[u8],
-    ) -> Result<u32, MountError> {
         let bs = self.sb.block_size as usize;
         let gen = Self::inode_generation(ino_bytes);
-        let mut extra_meta_sectors = 0u32;
-        let spb = (self.sb.block_size / 512) as u32;
-
-        // Allocate hint = trailing extent's group, else 0.
-        let hint_group = if hdr.entries > 0 {
-            let last = inode::parse_inline_extent(i_block, &hdr, hdr.entries - 1).unwrap();
-            self.group_of_block(last.start_lba())
-        } else { 0 };
-        let phys = self.alloc_block(hint_group)?;
-        let byte_off = phys * (self.sb.block_size as u64);
-        write_byte_range(&*self.dev, byte_off, data)?;
-
-        // Try contiguous grow first.
-        let mut grew = false;
-        if hdr.entries > 0 {
-            let mut last = inode::parse_inline_extent(i_block, &hdr, hdr.entries - 1).unwrap();
-            if last.start_lba() + last.len as u64 == phys
-                && last.block + last.len as u32 == new_logical
-                && last.len < EXTENT_LEN_MAX
-            {
-                last.len += 1;
-                inode::write_inline_extent(i_block, hdr.entries - 1, &last);
-                grew = true;
-            }
-        }
-        if !grew {
-            if hdr.entries < 4 {
-                let new_leaf = Extent {
-                    block: new_logical, len: 1,
-                    start_hi: (phys >> 32) as u16, start_lo: (phys & 0xFFFF_FFFF) as u32,
-                };
-                inode::write_inline_extent(i_block, hdr.entries, &new_leaf);
-                hdr.entries += 1;
-                inode::write_extent_header(i_block, &hdr);
-            } else {
-                // Inline full + can't grow → promote to depth=1.
-                // Allocate a leaf block, copy existing 4 leaves +
-                // new leaf into it, replace inline with one idx.
-                let leaf_lba = self.alloc_block(hint_group)?;
-                extra_meta_sectors += spb;
-                let mut leaf_buf = alloc::vec![0u8; bs];
-                let leaf_max = crate::csum::extent_block_max(&self.sb, bs);
-                let leaf_hdr = inode::ExtentHeader {
-                    magic: inode::EXT4_EXT_MAGIC,
-                    entries: 5, max: leaf_max, depth: 0, generation: 0,
-                };
-                inode::write_extent_header_slice(&mut leaf_buf, &leaf_hdr);
-                for i in 0..4u16 {
-                    let e = inode::parse_inline_extent(i_block, &hdr, i).unwrap();
-                    inode::write_inline_extent_slice(&mut leaf_buf, i, &e);
-                }
-                let last5 = Extent {
-                    block: new_logical, len: 1,
-                    start_hi: (phys >> 32) as u16, start_lo: (phys & 0xFFFF_FFFF) as u32,
-                };
-                inode::write_inline_extent_slice(&mut leaf_buf, 4, &last5);
-                self.write_extent_block(ino, gen, leaf_lba, &mut leaf_buf)?;
-                // Rewrite inline: header(entries=1, max=4, depth=1) + 1 idx.
-                for b in i_block.iter_mut() { *b = 0; }
-                let new_hdr = inode::ExtentHeader {
-                    magic: inode::EXT4_EXT_MAGIC, entries: 1, max: 4, depth: 1, generation: 0,
-                };
-                inode::write_extent_header(i_block, &new_hdr);
-                let idx0 = inode::ExtentIdx {
-                    block: 0,
-                    leaf_lo: (leaf_lba & 0xFFFF_FFFF) as u32,
-                    leaf_hi: (leaf_lba >> 32) as u16,
-                    _unused: 0,
-                };
-                inode::write_extent_idx(i_block, 0, &idx0);
-                hdr.depth = 1;
-            }
+        let leaf_extents = self.leaf_extents_for_insert(&i_block, &hdr, logical)?;
+        if Self::extent_vec_contains(&leaf_extents, logical) {
+            return Ok(logical);
         }
 
-        self.persist_inode_after_append(ino, ino_bytes, ino_byte_off, i_block, cur_size, extra_meta_sectors)?;
-        Ok(new_logical)
-    }
-
-    /// Depth=1 append. Find last idx, walk to its leaf block,
-    /// either contiguous-grow or add a new leaf inside that block;
-    /// if leaf full, allocate another leaf block + new idx (if
-    /// inline idx records < 4) or `ExtentTreeFull` (depth=2 not
-    /// yet implemented).
-    fn append_depth1(
-        &self, ino: u32, ino_bytes: &mut alloc::vec::Vec<u8>, ino_byte_off: u64,
-        i_block: &mut [u8; I_BLOCK_LEN], hdr: inode::ExtentHeader,
-        cur_size: u64, new_logical: u32, data: &[u8],
-    ) -> Result<u32, MountError> {
-        let bs = self.sb.block_size as usize;
-        let gen = Self::inode_generation(ino_bytes);
-        let mut extra_meta_sectors = 0u32;
-        let spb = (self.sb.block_size / 512) as u32;
-        let last_idx_n = hdr.entries - 1;
-        let last_idx = inode::parse_extent_idx(i_block, &hdr, last_idx_n).unwrap();
-        let leaf_lba = last_idx.leaf_lba();
-        let mut leaf_buf = read_byte_range_pub(&*self.dev, leaf_lba * bs as u64, bs)?;
-        let mut leaf_hdr = inode::parse_extent_header_slice(&leaf_buf)?;
-        if leaf_hdr.depth != 0 { return Err(MountError::DepthUnsupported); }
-
-        // Allocate the data block in the same group as the
-        // trailing leaf for locality.
-        let hint_group = if leaf_hdr.entries > 0 {
-            let last = inode::parse_inline_extent_slice(&leaf_buf, &leaf_hdr, leaf_hdr.entries - 1).unwrap();
-            self.group_of_block(last.start_lba())
-        } else { 0 };
+        let hint_group = Self::extent_hint_group(self, &leaf_extents, logical);
         let phys = self.alloc_block(hint_group)?;
         write_byte_range(&*self.dev, phys * bs as u64, data)?;
+        let new_extent = Self::extent_for(logical, phys);
 
-        // Try contiguous grow first.
-        let mut grew = false;
-        if leaf_hdr.entries > 0 {
-            let mut last = inode::parse_inline_extent_slice(&leaf_buf, &leaf_hdr, leaf_hdr.entries - 1).unwrap();
-            if last.start_lba() + last.len as u64 == phys
-                && last.block + last.len as u32 == new_logical
-                && last.len < EXTENT_LEN_MAX
-            {
-                last.len += 1;
-                inode::write_inline_extent_slice(&mut leaf_buf, leaf_hdr.entries - 1, &last);
-                grew = true;
-            }
-        }
-        if !grew {
-            if leaf_hdr.entries < leaf_hdr.max {
-                let new_leaf = Extent {
-                    block: new_logical, len: 1,
-                    start_hi: (phys >> 32) as u16, start_lo: (phys & 0xFFFF_FFFF) as u32,
-                };
-                inode::write_inline_extent_slice(&mut leaf_buf, leaf_hdr.entries, &new_leaf);
-                leaf_hdr.entries += 1;
-                inode::write_extent_header_slice(&mut leaf_buf, &leaf_hdr);
-            } else if hdr.entries < 4 {
-                // Inline idx has room. Allocate a fresh leaf block +
-                // add a new inline idx pointing at it.
-                let new_leaf_lba = self.alloc_block(hint_group)?;
-                extra_meta_sectors += spb;
-                let mut new_leaf_buf = alloc::vec![0u8; bs];
-                let leaf_max = crate::csum::extent_block_max(&self.sb, bs);
-                let new_leaf_hdr = inode::ExtentHeader {
-                    magic: inode::EXT4_EXT_MAGIC,
-                    entries: 1, max: leaf_max, depth: 0, generation: 0,
-                };
-                inode::write_extent_header_slice(&mut new_leaf_buf, &new_leaf_hdr);
-                let new_leaf_ext = Extent {
-                    block: new_logical, len: 1,
-                    start_hi: (phys >> 32) as u16, start_lo: (phys & 0xFFFF_FFFF) as u32,
-                };
-                inode::write_inline_extent_slice(&mut new_leaf_buf, 0, &new_leaf_ext);
-                self.write_extent_block(ino, gen, new_leaf_lba, &mut new_leaf_buf)?;
-                let new_idx = inode::ExtentIdx {
-                    block: new_logical,
-                    leaf_lo: (new_leaf_lba & 0xFFFF_FFFF) as u32,
-                    leaf_hi: (new_leaf_lba >> 32) as u16,
-                    _unused: 0,
-                };
-                inode::write_extent_idx(i_block, hdr.entries, &new_idx);
-                let mut new_hdr = hdr;
-                new_hdr.entries += 1;
-                inode::write_extent_header(i_block, &new_hdr);
-            } else {
-                // Inline idx full AND trailing leaf full → promote
-                // the tree to depth=2. The 4 inline idx records
-                // become the first 4 entries of a new interior
-                // block; inline is rewritten as a single idx pointing
-                // at that interior block; a fresh leaf block holds
-                // the new extent, and its idx becomes interior[4].
-                let interior_lba = self.alloc_block(hint_group)?;
-                extra_meta_sectors += spb;
-                let mut interior_buf = alloc::vec![0u8; bs];
-                let interior_max = crate::csum::extent_block_max(&self.sb, bs);
-                let interior_hdr = inode::ExtentHeader {
-                    magic: inode::EXT4_EXT_MAGIC,
-                    entries: 5, max: interior_max, depth: 1, generation: 0,
-                };
-                inode::write_extent_header_slice(&mut interior_buf, &interior_hdr);
-                for i in 0..4u16 {
-                    let idx = inode::parse_extent_idx(i_block, &hdr, i).unwrap();
-                    inode::write_extent_idx_slice(&mut interior_buf, i, &idx);
-                }
-                // Fresh leaf for the new data extent.
-                let new_leaf_lba = self.alloc_block(hint_group)?;
-                extra_meta_sectors += spb;
-                let mut new_leaf_buf = alloc::vec![0u8; bs];
-                let leaf_max = crate::csum::extent_block_max(&self.sb, bs);
-                let new_leaf_hdr = inode::ExtentHeader {
-                    magic: inode::EXT4_EXT_MAGIC,
-                    entries: 1, max: leaf_max, depth: 0, generation: 0,
-                };
-                inode::write_extent_header_slice(&mut new_leaf_buf, &new_leaf_hdr);
-                let new_leaf_ext = Extent {
-                    block: new_logical, len: 1,
-                    start_hi: (phys >> 32) as u16, start_lo: (phys & 0xFFFF_FFFF) as u32,
-                };
-                inode::write_inline_extent_slice(&mut new_leaf_buf, 0, &new_leaf_ext);
-                self.write_extent_block(ino, gen, new_leaf_lba, &mut new_leaf_buf)?;
-                let new_idx = inode::ExtentIdx {
-                    block: new_logical,
-                    leaf_lo: (new_leaf_lba & 0xFFFF_FFFF) as u32,
-                    leaf_hi: (new_leaf_lba >> 32) as u16,
-                    _unused: 0,
-                };
-                inode::write_extent_idx_slice(&mut interior_buf, 4, &new_idx);
-                self.write_extent_block(ino, gen, interior_lba, &mut interior_buf)?;
-                // Rewrite inline → depth=2, one idx pointing at the
-                // interior block.
-                for b in i_block.iter_mut() { *b = 0; }
-                let new_hdr = inode::ExtentHeader {
-                    magic: inode::EXT4_EXT_MAGIC,
-                    entries: 1, max: 4, depth: 2, generation: 0,
-                };
-                inode::write_extent_header(i_block, &new_hdr);
-                let inline_idx0 = inode::ExtentIdx {
-                    block: 0,
-                    leaf_lo: (interior_lba & 0xFFFF_FFFF) as u32,
-                    leaf_hi: (interior_lba >> 32) as u16,
-                    _unused: 0,
-                };
-                inode::write_extent_idx(i_block, 0, &inline_idx0);
-            }
-        }
-        // Persist the (possibly mutated) trailing leaf block. After
-        // a promotion this is a no-op overwrite of the unchanged
-        // block, which is harmless.
-        self.write_extent_block(ino, gen, leaf_lba, &mut leaf_buf)?;
-        self.persist_inode_after_append(ino, ino_bytes, ino_byte_off, i_block, cur_size, extra_meta_sectors)?;
-        Ok(new_logical)
-    }
-
-    /// Depth=2 append. Inline has up to 4 idx records each pointing
-    /// at an interior (depth=1) block; each interior holds up to
-    /// `(bs-12)/12` idx records pointing at leaves. Walk the last
-    /// inline idx → its interior → the interior's last idx → that
-    /// leaf, then apply the same grow / new-leaf / new-interior-
-    /// idx / new-inline-idx ladder used at shallower depths. When
-    /// every level is exhausted, return `ExtentTreeFull` (depth=3
-    /// is in the ext4 spec but not implemented here — files this
-    /// large don't appear in our v1 image set).
-    /// # C: O(1) extent walk + small constant block I/Os
-    #[allow(clippy::too_many_arguments)]
-    fn append_depth2(
-        &self, ino: u32, ino_bytes: &mut alloc::vec::Vec<u8>, ino_byte_off: u64,
-        i_block: &mut [u8; I_BLOCK_LEN], hdr: inode::ExtentHeader,
-        cur_size: u64, new_logical: u32, data: &[u8],
-    ) -> Result<u32, MountError> {
-        let bs = self.sb.block_size as usize;
-        let gen = Self::inode_generation(ino_bytes);
-        let mut extra_meta_sectors = 0u32;
-        let spb = (self.sb.block_size / 512) as u32;
-        // Last inline idx → its interior block.
-        let last_inline_n = hdr.entries - 1;
-        let last_inline_idx = inode::parse_extent_idx(i_block, &hdr, last_inline_n).unwrap();
-        let interior_lba = last_inline_idx.leaf_lba();
-        let mut interior_buf = read_byte_range_pub(&*self.dev, interior_lba * bs as u64, bs)?;
-        let mut interior_hdr = inode::parse_extent_header_slice(&interior_buf)?;
-        if interior_hdr.depth != 1 { return Err(MountError::DepthUnsupported); }
-        // Last interior idx → its leaf block.
-        let last_interior_n = interior_hdr.entries - 1;
-        let last_interior_idx = inode::parse_extent_idx_slice(&interior_buf, &interior_hdr, last_interior_n)
-            .ok_or(MountError::NotFound)?;
-        let leaf_lba = last_interior_idx.leaf_lba();
-        let mut leaf_buf = read_byte_range_pub(&*self.dev, leaf_lba * bs as u64, bs)?;
-        let mut leaf_hdr = inode::parse_extent_header_slice(&leaf_buf)?;
-        if leaf_hdr.depth != 0 { return Err(MountError::DepthUnsupported); }
-
-        let hint_group = if leaf_hdr.entries > 0 {
-            let last = inode::parse_inline_extent_slice(&leaf_buf, &leaf_hdr, leaf_hdr.entries - 1).unwrap();
-            self.group_of_block(last.start_lba())
-        } else { 0 };
-        let phys = self.alloc_block(hint_group)?;
-        write_byte_range(&*self.dev, phys * bs as u64, data)?;
-
-        // Try contiguous grow on the trailing leaf extent.
-        let mut grew = false;
-        if leaf_hdr.entries > 0 {
-            let mut last = inode::parse_inline_extent_slice(&leaf_buf, &leaf_hdr, leaf_hdr.entries - 1).unwrap();
-            if last.start_lba() + last.len as u64 == phys
-                && last.block + last.len as u32 == new_logical
-                && last.len < EXTENT_LEN_MAX
-            {
-                last.len += 1;
-                inode::write_inline_extent_slice(&mut leaf_buf, leaf_hdr.entries - 1, &last);
-                grew = true;
-            }
-        }
-        let mut interior_dirty = false;
-        if !grew {
-            if leaf_hdr.entries < leaf_hdr.max {
-                // Add a new extent to the existing leaf.
-                let new_leaf = Extent {
-                    block: new_logical, len: 1,
-                    start_hi: (phys >> 32) as u16, start_lo: (phys & 0xFFFF_FFFF) as u32,
-                };
-                inode::write_inline_extent_slice(&mut leaf_buf, leaf_hdr.entries, &new_leaf);
-                leaf_hdr.entries += 1;
-                inode::write_extent_header_slice(&mut leaf_buf, &leaf_hdr);
-            } else if interior_hdr.entries < interior_hdr.max {
-                // Leaf full but interior has room → allocate a new
-                // leaf block and add an idx for it in the interior.
-                let new_leaf_lba = self.alloc_block(hint_group)?;
-                extra_meta_sectors += spb;
-                let mut new_leaf_buf = alloc::vec![0u8; bs];
-                let leaf_max = crate::csum::extent_block_max(&self.sb, bs);
-                let new_leaf_hdr = inode::ExtentHeader {
-                    magic: inode::EXT4_EXT_MAGIC,
-                    entries: 1, max: leaf_max, depth: 0, generation: 0,
-                };
-                inode::write_extent_header_slice(&mut new_leaf_buf, &new_leaf_hdr);
-                let new_leaf_ext = Extent {
-                    block: new_logical, len: 1,
-                    start_hi: (phys >> 32) as u16, start_lo: (phys & 0xFFFF_FFFF) as u32,
-                };
-                inode::write_inline_extent_slice(&mut new_leaf_buf, 0, &new_leaf_ext);
-                self.write_extent_block(ino, gen, new_leaf_lba, &mut new_leaf_buf)?;
-                let new_idx = inode::ExtentIdx {
-                    block: new_logical,
-                    leaf_lo: (new_leaf_lba & 0xFFFF_FFFF) as u32,
-                    leaf_hi: (new_leaf_lba >> 32) as u16,
-                    _unused: 0,
-                };
-                inode::write_extent_idx_slice(&mut interior_buf, interior_hdr.entries, &new_idx);
-                interior_hdr.entries += 1;
-                inode::write_extent_header_slice(&mut interior_buf, &interior_hdr);
-                interior_dirty = true;
-            } else if hdr.entries < 4 {
-                // Interior full but inline has room → allocate a new
-                // interior block (with one initial idx → fresh leaf)
-                // and add an idx for it in the inline header.
-                let new_interior_lba = self.alloc_block(hint_group)?;
-                let new_leaf_lba = self.alloc_block(hint_group)?;
-                extra_meta_sectors += 2 * spb;
-                let leaf_max = crate::csum::extent_block_max(&self.sb, bs);
-                let int_max = leaf_max;
-                let mut new_leaf_buf = alloc::vec![0u8; bs];
-                let new_leaf_hdr = inode::ExtentHeader {
-                    magic: inode::EXT4_EXT_MAGIC,
-                    entries: 1, max: leaf_max, depth: 0, generation: 0,
-                };
-                inode::write_extent_header_slice(&mut new_leaf_buf, &new_leaf_hdr);
-                let new_leaf_ext = Extent {
-                    block: new_logical, len: 1,
-                    start_hi: (phys >> 32) as u16, start_lo: (phys & 0xFFFF_FFFF) as u32,
-                };
-                inode::write_inline_extent_slice(&mut new_leaf_buf, 0, &new_leaf_ext);
-                self.write_extent_block(ino, gen, new_leaf_lba, &mut new_leaf_buf)?;
-                let mut new_int_buf = alloc::vec![0u8; bs];
-                let new_int_hdr = inode::ExtentHeader {
-                    magic: inode::EXT4_EXT_MAGIC,
-                    entries: 1, max: int_max, depth: 1, generation: 0,
-                };
-                inode::write_extent_header_slice(&mut new_int_buf, &new_int_hdr);
-                let new_leaf_idx = inode::ExtentIdx {
-                    block: new_logical,
-                    leaf_lo: (new_leaf_lba & 0xFFFF_FFFF) as u32,
-                    leaf_hi: (new_leaf_lba >> 32) as u16,
-                    _unused: 0,
-                };
-                inode::write_extent_idx_slice(&mut new_int_buf, 0, &new_leaf_idx);
-                self.write_extent_block(ino, gen, new_interior_lba, &mut new_int_buf)?;
-                let new_inline_idx = inode::ExtentIdx {
-                    block: new_logical,
-                    leaf_lo: (new_interior_lba & 0xFFFF_FFFF) as u32,
-                    leaf_hi: (new_interior_lba >> 32) as u16,
-                    _unused: 0,
-                };
-                inode::write_extent_idx(i_block, hdr.entries, &new_inline_idx);
-                let mut new_hdr = hdr;
-                new_hdr.entries += 1;
-                inode::write_extent_header(i_block, &new_hdr);
-            } else {
-                // Inline full + last interior full + last leaf full —
-                // would require depth=3, not implemented.
+        let mut simulated_extents = leaf_extents;
+        Self::insert_extent_record(&mut simulated_extents, new_extent)?;
+        match self.insert_would_exceed_max_depth(&i_block, &hdr, logical, simulated_extents.len()) {
+            Ok(false) => {}
+            Ok(true) => {
+                let _ = self.free_block(phys);
                 return Err(MountError::ExtentTreeFull);
             }
+            Err(e) => {
+                let _ = self.free_block(phys);
+                return Err(e);
+            }
         }
-        // Persist the leaf (and interior if it changed).
-        self.write_extent_block(ino, gen, leaf_lba, &mut leaf_buf)?;
-        if interior_dirty {
-            self.write_extent_block(ino, gen, interior_lba, &mut interior_buf)?;
+
+        let extra_meta_sectors =
+            self.insert_into_inline_root(ino, gen, &mut i_block, hdr, logical, new_extent, hint_group)?;
+        self.persist_inode_after_append(ino, ino_bytes, ino_byte_off, &i_block, new_size, extra_meta_sectors)?;
+        Ok(logical)
+    }
+
+    fn insert_into_inline_root(
+        &self,
+        ino: u32,
+        gen: u32,
+        i_block: &mut [u8; I_BLOCK_LEN],
+        hdr: inode::ExtentHeader,
+        logical: u32,
+        new_extent: Extent,
+        hint_group: u32,
+    ) -> Result<u32, MountError> {
+        let bs = self.sb.block_size as usize;
+        let spb = (self.sb.block_size / 512) as u32;
+        let child_n = Self::inline_child_index_for_insert(i_block, &hdr, logical)?;
+        let child_idx = inode::parse_extent_idx(i_block, &hdr, child_n).ok_or(MountError::NotFound)?;
+        let child = self.insert_into_extent_node(ino, gen, child_idx.leaf_lba(), hdr.depth - 1, logical, new_extent, hint_group)?;
+
+        let mut idxs = Self::inline_indices(i_block, &hdr)?;
+        idxs[child_n as usize].block = child.first_block;
+        if let Some(right) = child.split {
+            idxs.push(right);
         }
-        self.persist_inode_after_append(ino, ino_bytes, ino_byte_off, i_block, cur_size, extra_meta_sectors)?;
-        Ok(new_logical)
+        idxs.sort_by_key(|idx| idx.block);
+
+        let mut extra_meta_sectors = child.extra_meta_sectors;
+        if idxs.len() <= hdr.max as usize {
+            Self::write_inline_indices(i_block, hdr, &idxs);
+            return Ok(extra_meta_sectors);
+        }
+
+        if hdr.depth >= EXT4_MAX_EXTENT_DEPTH {
+            return Err(MountError::ExtentTreeFull);
+        }
+
+        let (left_idxs, right_idxs) = Self::split_indices_for_node(&idxs);
+        let node_max = crate::csum::extent_block_max(&self.sb, bs);
+        if left_idxs.len() > node_max as usize || right_idxs.len() > node_max as usize {
+            return Err(MountError::ExtentTreeFull);
+        }
+
+        let left_lba = self.alloc_block(hint_group)?;
+        let right_lba = self.alloc_block(hint_group)?;
+        extra_meta_sectors += spb * 2;
+
+        let mut left_buf = alloc::vec![0u8; bs];
+        let left_hdr = inode::ExtentHeader {
+            magic: inode::EXT4_EXT_MAGIC,
+            entries: left_idxs.len() as u16,
+            max: node_max,
+            depth: hdr.depth,
+            generation: 0,
+        };
+        Self::write_slice_indices(&mut left_buf, left_hdr, &left_idxs);
+        self.write_extent_block(ino, gen, left_lba, &mut left_buf)?;
+
+        let mut right_buf = alloc::vec![0u8; bs];
+        let right_hdr = inode::ExtentHeader {
+            magic: inode::EXT4_EXT_MAGIC,
+            entries: right_idxs.len() as u16,
+            max: node_max,
+            depth: hdr.depth,
+            generation: 0,
+        };
+        Self::write_slice_indices(&mut right_buf, right_hdr, &right_idxs);
+        self.write_extent_block(ino, gen, right_lba, &mut right_buf)?;
+
+        for b in i_block.iter_mut() { *b = 0; }
+        let new_root_hdr = inode::ExtentHeader {
+            magic: inode::EXT4_EXT_MAGIC,
+            entries: 2,
+            max: 4,
+            depth: hdr.depth + 1,
+            generation: 0,
+        };
+        inode::write_extent_header(i_block, &new_root_hdr);
+        inode::write_extent_idx(i_block, 0, &Self::idx_for_lba(left_idxs[0].block, left_lba));
+        inode::write_extent_idx(i_block, 1, &Self::idx_for_lba(right_idxs[0].block, right_lba));
+
+        Ok(extra_meta_sectors)
+    }
+
+    fn insert_into_extent_node(
+        &self,
+        ino: u32,
+        gen: u32,
+        lba: u64,
+        depth: u16,
+        logical: u32,
+        new_extent: Extent,
+        hint_group: u32,
+    ) -> Result<ExtentInsertResult, MountError> {
+        let bs = self.sb.block_size as usize;
+        let spb = (self.sb.block_size / 512) as u32;
+        let mut buf = self.read_metadata_block(lba)?;
+        let hdr = inode::parse_extent_header_slice(&buf)?;
+        if hdr.depth != depth {
+            return Err(MountError::DepthUnsupported);
+        }
+
+        if depth == 0 {
+            let mut extents = Self::slice_extents(&buf, &hdr)?;
+            if Self::extent_vec_contains(&extents, logical) {
+                return Ok(ExtentInsertResult {
+                    first_block: extents.first().map(|e| e.block).unwrap_or(logical),
+                    split: None,
+                    extra_meta_sectors: 0,
+                });
+            }
+            Self::insert_extent_record(&mut extents, new_extent)?;
+            if extents.len() <= hdr.max as usize {
+                let mut new_hdr = hdr;
+                new_hdr.entries = extents.len() as u16;
+                Self::write_slice_extents(&mut buf, new_hdr, &extents);
+                self.write_extent_block(ino, gen, lba, &mut buf)?;
+                return Ok(ExtentInsertResult {
+                    first_block: extents[0].block,
+                    split: None,
+                    extra_meta_sectors: 0,
+                });
+            }
+
+            let (left, right) = Self::split_extents_for_leaf(&extents);
+            let mut left_hdr = hdr;
+            left_hdr.entries = left.len() as u16;
+            Self::write_slice_extents(&mut buf, left_hdr, &left);
+            self.write_extent_block(ino, gen, lba, &mut buf)?;
+
+            let right_lba = self.alloc_block(hint_group)?;
+            let mut right_buf = alloc::vec![0u8; bs];
+            let right_hdr = inode::ExtentHeader {
+                magic: inode::EXT4_EXT_MAGIC,
+                entries: right.len() as u16,
+                max: hdr.max,
+                depth: 0,
+                generation: 0,
+            };
+            Self::write_slice_extents(&mut right_buf, right_hdr, &right);
+            self.write_extent_block(ino, gen, right_lba, &mut right_buf)?;
+
+            return Ok(ExtentInsertResult {
+                first_block: left[0].block,
+                split: Some(Self::idx_for_lba(right[0].block, right_lba)),
+                extra_meta_sectors: spb,
+            });
+        }
+
+        let child_n = Self::slice_child_index_for_insert(&buf, &hdr, logical)?;
+        let child_idx = inode::parse_extent_idx_slice(&buf, &hdr, child_n).ok_or(MountError::NotFound)?;
+        let child = self.insert_into_extent_node(
+            ino,
+            gen,
+            child_idx.leaf_lba(),
+            depth - 1,
+            logical,
+            new_extent,
+            hint_group,
+        )?;
+
+        let mut idxs = Self::slice_indices(&buf, &hdr)?;
+        idxs[child_n as usize].block = child.first_block;
+        if let Some(right) = child.split {
+            idxs.push(right);
+        }
+        idxs.sort_by_key(|idx| idx.block);
+
+        let mut extra_meta_sectors = child.extra_meta_sectors;
+        if idxs.len() <= hdr.max as usize {
+            let mut new_hdr = hdr;
+            new_hdr.entries = idxs.len() as u16;
+            Self::write_slice_indices(&mut buf, new_hdr, &idxs);
+            self.write_extent_block(ino, gen, lba, &mut buf)?;
+            return Ok(ExtentInsertResult {
+                first_block: idxs[0].block,
+                split: None,
+                extra_meta_sectors,
+            });
+        }
+
+        let (left_idxs, right_idxs) = Self::split_indices_for_node(&idxs);
+        let mut left_hdr = hdr;
+        left_hdr.entries = left_idxs.len() as u16;
+        Self::write_slice_indices(&mut buf, left_hdr, &left_idxs);
+        self.write_extent_block(ino, gen, lba, &mut buf)?;
+
+        let right_lba = self.alloc_block(hint_group)?;
+        extra_meta_sectors += spb;
+        let mut right_buf = alloc::vec![0u8; bs];
+        let right_hdr = inode::ExtentHeader {
+            magic: inode::EXT4_EXT_MAGIC,
+            entries: right_idxs.len() as u16,
+            max: hdr.max,
+            depth,
+            generation: 0,
+        };
+        Self::write_slice_indices(&mut right_buf, right_hdr, &right_idxs);
+        self.write_extent_block(ino, gen, right_lba, &mut right_buf)?;
+
+        Ok(ExtentInsertResult {
+            first_block: left_idxs[0].block,
+            split: Some(Self::idx_for_lba(right_idxs[0].block, right_lba)),
+            extra_meta_sectors,
+        })
+    }
+
+    fn leaf_extents_for_insert(
+        &self,
+        i_block: &[u8; I_BLOCK_LEN],
+        hdr: &inode::ExtentHeader,
+        logical: u32,
+    ) -> Result<Vec<Extent>, MountError> {
+        if hdr.depth == 0 {
+            return Self::inline_extents(i_block, hdr);
+        }
+
+        let mut child_lba = {
+            let child_n = Self::inline_child_index_for_insert(i_block, hdr, logical)?;
+            inode::parse_extent_idx(i_block, hdr, child_n).ok_or(MountError::NotFound)?.leaf_lba()
+        };
+        let mut depth = hdr.depth - 1;
+        loop {
+            let buf = self.read_metadata_block(child_lba)?;
+            let child_hdr = inode::parse_extent_header_slice(&buf)?;
+            if child_hdr.depth != depth {
+                return Err(MountError::DepthUnsupported);
+            }
+            if depth == 0 {
+                return Self::slice_extents(&buf, &child_hdr);
+            }
+            let child_n = Self::slice_child_index_for_insert(&buf, &child_hdr, logical)?;
+            child_lba = inode::parse_extent_idx_slice(&buf, &child_hdr, child_n)
+                .ok_or(MountError::NotFound)?
+                .leaf_lba();
+            depth -= 1;
+        }
+    }
+
+    fn insert_would_exceed_max_depth(
+        &self,
+        i_block: &[u8; I_BLOCK_LEN],
+        hdr: &inode::ExtentHeader,
+        logical: u32,
+        inserted_leaf_entries: usize,
+    ) -> Result<bool, MountError> {
+        let mut ancestors: Vec<(u16, u16)> = Vec::new();
+        ancestors.push((hdr.entries, hdr.max));
+
+        let mut child_lba = {
+            let child_n = Self::inline_child_index_for_insert(i_block, hdr, logical)?;
+            inode::parse_extent_idx(i_block, hdr, child_n).ok_or(MountError::NotFound)?.leaf_lba()
+        };
+        let mut depth = hdr.depth - 1;
+        loop {
+            let buf = self.read_metadata_block(child_lba)?;
+            let child_hdr = inode::parse_extent_header_slice(&buf)?;
+            if child_hdr.depth != depth {
+                return Err(MountError::DepthUnsupported);
+            }
+            if depth == 0 {
+                if inserted_leaf_entries <= child_hdr.max as usize {
+                    return Ok(false);
+                }
+                break;
+            }
+            ancestors.push((child_hdr.entries, child_hdr.max));
+            let child_n = Self::slice_child_index_for_insert(&buf, &child_hdr, logical)?;
+            child_lba = inode::parse_extent_idx_slice(&buf, &child_hdr, child_n)
+                .ok_or(MountError::NotFound)?
+                .leaf_lba();
+            depth -= 1;
+        }
+
+        for (level, (entries, max)) in ancestors.iter().rev().enumerate() {
+            if (*entries as usize) < (*max as usize) {
+                return Ok(false);
+            }
+            if level == ancestors.len() - 1 {
+                return Ok(hdr.depth >= EXT4_MAX_EXTENT_DEPTH);
+            }
+        }
+        Ok(false)
+    }
+
+    fn insert_inline_sorted(
+        &self, ino: u32, ino_bytes: &mut alloc::vec::Vec<u8>, ino_byte_off: u64,
+        i_block: &mut [u8; I_BLOCK_LEN], hdr: inode::ExtentHeader,
+        new_size: u64, logical: u32, data: &[u8],
+    ) -> Result<u32, MountError> {
+        let bs = self.sb.block_size as usize;
+        let gen = Self::inode_generation(ino_bytes);
+        let spb = (self.sb.block_size / 512) as u32;
+        let mut extents = Self::inline_extents(i_block, &hdr)?;
+        if Self::extent_vec_contains(&extents, logical) {
+            return Ok(logical);
+        }
+        let hint_group = Self::extent_hint_group(self, &extents, logical);
+        let phys = self.alloc_block(hint_group)?;
+        write_byte_range(&*self.dev, phys * bs as u64, data)?;
+        Self::insert_extent_record(&mut extents, Self::extent_for(logical, phys))?;
+
+        let mut extra_meta_sectors = 0;
+        if extents.len() <= 4 {
+            Self::write_inline_extents(i_block, hdr, &extents);
+        } else {
+            let leaf_max = crate::csum::extent_block_max(&self.sb, bs);
+            if extents.len() > leaf_max as usize {
+                return Err(MountError::ExtentTreeFull);
+            }
+            let leaf_lba = self.alloc_block(hint_group)?;
+            extra_meta_sectors += spb;
+            let mut leaf_buf = alloc::vec![0u8; bs];
+            let leaf_hdr = inode::ExtentHeader {
+                magic: inode::EXT4_EXT_MAGIC,
+                entries: extents.len() as u16,
+                max: leaf_max,
+                depth: 0,
+                generation: 0,
+            };
+            Self::write_slice_extents(&mut leaf_buf, leaf_hdr, &extents);
+            self.write_extent_block(ino, gen, leaf_lba, &mut leaf_buf)?;
+            for b in i_block.iter_mut() { *b = 0; }
+            let root_hdr = inode::ExtentHeader {
+                magic: inode::EXT4_EXT_MAGIC,
+                entries: 1,
+                max: 4,
+                depth: 1,
+                generation: 0,
+            };
+            inode::write_extent_header(i_block, &root_hdr);
+            let idx0 = inode::ExtentIdx {
+                block: extents[0].block,
+                leaf_lo: (leaf_lba & 0xFFFF_FFFF) as u32,
+                leaf_hi: (leaf_lba >> 32) as u16,
+                _unused: 0,
+            };
+            inode::write_extent_idx(i_block, 0, &idx0);
+        }
+        self.persist_inode_after_append(ino, ino_bytes, ino_byte_off, i_block, new_size, extra_meta_sectors)?;
+        Ok(logical)
+    }
+
+    fn extent_for(logical: u32, phys: u64) -> Extent {
+        Extent {
+            block: logical,
+            len: 1,
+            start_hi: (phys >> 32) as u16,
+            start_lo: (phys & 0xFFFF_FFFF) as u32,
+        }
+    }
+
+    fn idx_for_lba(block: u32, lba: u64) -> inode::ExtentIdx {
+        inode::ExtentIdx {
+            block,
+            leaf_lo: (lba & 0xFFFF_FFFF) as u32,
+            leaf_hi: (lba >> 32) as u16,
+            _unused: 0,
+        }
+    }
+
+    fn extent_end(e: &Extent) -> u64 {
+        e.block as u64 + e.len as u64
+    }
+
+    fn extent_vec_contains(extents: &[Extent], logical: u32) -> bool {
+        extents.iter().any(|e| {
+            logical as u64 >= e.block as u64 && (logical as u64) < Self::extent_end(e)
+        })
+    }
+
+    fn extent_hint_group(&self, extents: &[Extent], logical: u32) -> u32 {
+        if let Some(e) = extents.iter().rev().find(|e| e.block <= logical) {
+            self.group_of_block(e.start_lba())
+        } else if let Some(e) = extents.first() {
+            self.group_of_block(e.start_lba())
+        } else {
+            0
+        }
+    }
+
+    fn can_merge(a: &Extent, b: &Extent) -> bool {
+        Self::extent_end(a) == b.block as u64
+            && a.start_lba() + a.len as u64 == b.start_lba()
+            && (a.len as u32 + b.len as u32) <= EXTENT_LEN_MAX as u32
+    }
+
+    fn insert_extent_record(extents: &mut Vec<Extent>, new_extent: Extent) -> Result<(), MountError> {
+        let new_start = new_extent.block as u64;
+        let new_end = Self::extent_end(&new_extent);
+        for e in extents.iter() {
+            if new_start < Self::extent_end(e) && (e.block as u64) < new_end {
+                return Err(MountError::NotFound);
+            }
+        }
+        extents.push(new_extent);
+        extents.sort_by_key(|e| e.block);
+
+        let mut merged: Vec<Extent> = Vec::with_capacity(extents.len());
+        for e in extents.iter().copied() {
+            if let Some(last) = merged.last_mut() {
+                if Self::can_merge(last, &e) {
+                    last.len = last.len.saturating_add(e.len);
+                    continue;
+                }
+            }
+            merged.push(e);
+        }
+        *extents = merged;
+        Ok(())
+    }
+
+    fn inline_extents(i_block: &[u8; I_BLOCK_LEN], hdr: &inode::ExtentHeader) -> Result<Vec<Extent>, MountError> {
+        let mut extents = Vec::with_capacity(hdr.entries as usize);
+        for i in 0..hdr.entries {
+            extents.push(inode::parse_inline_extent(i_block, hdr, i).ok_or(MountError::NotFound)?);
+        }
+        extents.sort_by_key(|e| e.block);
+        Ok(extents)
+    }
+
+    fn slice_extents(buf: &[u8], hdr: &inode::ExtentHeader) -> Result<Vec<Extent>, MountError> {
+        let mut extents = Vec::with_capacity(hdr.entries as usize);
+        for i in 0..hdr.entries {
+            extents.push(inode::parse_inline_extent_slice(buf, hdr, i).ok_or(MountError::NotFound)?);
+        }
+        extents.sort_by_key(|e| e.block);
+        Ok(extents)
+    }
+
+    fn inline_indices(i_block: &[u8; I_BLOCK_LEN], hdr: &inode::ExtentHeader) -> Result<Vec<inode::ExtentIdx>, MountError> {
+        let mut idxs = Vec::with_capacity(hdr.entries as usize);
+        for i in 0..hdr.entries {
+            idxs.push(inode::parse_extent_idx(i_block, hdr, i).ok_or(MountError::NotFound)?);
+        }
+        idxs.sort_by_key(|idx| idx.block);
+        Ok(idxs)
+    }
+
+    fn slice_indices(buf: &[u8], hdr: &inode::ExtentHeader) -> Result<Vec<inode::ExtentIdx>, MountError> {
+        let mut idxs = Vec::with_capacity(hdr.entries as usize);
+        for i in 0..hdr.entries {
+            idxs.push(inode::parse_extent_idx_slice(buf, hdr, i).ok_or(MountError::NotFound)?);
+        }
+        idxs.sort_by_key(|idx| idx.block);
+        Ok(idxs)
+    }
+
+    fn write_inline_extents(i_block: &mut [u8; I_BLOCK_LEN], mut hdr: inode::ExtentHeader, extents: &[Extent]) {
+        for b in i_block.iter_mut() { *b = 0; }
+        hdr.entries = extents.len() as u16;
+        hdr.depth = 0;
+        inode::write_extent_header(i_block, &hdr);
+        for (i, e) in extents.iter().enumerate() {
+            inode::write_inline_extent(i_block, i as u16, e);
+        }
+    }
+
+    fn write_slice_extents(buf: &mut [u8], mut hdr: inode::ExtentHeader, extents: &[Extent]) {
+        for b in buf.iter_mut() { *b = 0; }
+        hdr.entries = extents.len() as u16;
+        hdr.depth = 0;
+        inode::write_extent_header_slice(buf, &hdr);
+        for (i, e) in extents.iter().enumerate() {
+            inode::write_inline_extent_slice(buf, i as u16, e);
+        }
+    }
+
+    fn write_inline_indices(i_block: &mut [u8; I_BLOCK_LEN], mut hdr: inode::ExtentHeader, idxs: &[inode::ExtentIdx]) {
+        for b in i_block.iter_mut() { *b = 0; }
+        hdr.entries = idxs.len() as u16;
+        inode::write_extent_header(i_block, &hdr);
+        for (i, idx) in idxs.iter().enumerate() {
+            inode::write_extent_idx(i_block, i as u16, idx);
+        }
+    }
+
+    fn write_slice_indices(buf: &mut [u8], mut hdr: inode::ExtentHeader, idxs: &[inode::ExtentIdx]) {
+        for b in buf.iter_mut() { *b = 0; }
+        hdr.entries = idxs.len() as u16;
+        inode::write_extent_header_slice(buf, &hdr);
+        for (i, idx) in idxs.iter().enumerate() {
+            inode::write_extent_idx_slice(buf, i as u16, idx);
+        }
+    }
+
+    fn inline_child_index_for_insert(i_block: &[u8; I_BLOCK_LEN], hdr: &inode::ExtentHeader, logical: u32)
+        -> Result<u16, MountError>
+    {
+        if hdr.entries == 0 { return Err(MountError::NotFound); }
+        let mut chosen = 0u16;
+        for i in 0..hdr.entries {
+            let idx = inode::parse_extent_idx(i_block, hdr, i).ok_or(MountError::NotFound)?;
+            if idx.block <= logical {
+                chosen = i;
+            } else {
+                break;
+            }
+        }
+        Ok(chosen)
+    }
+
+    fn slice_child_index_for_insert(buf: &[u8], hdr: &inode::ExtentHeader, logical: u32)
+        -> Result<u16, MountError>
+    {
+        if hdr.entries == 0 { return Err(MountError::NotFound); }
+        let mut chosen = 0u16;
+        for i in 0..hdr.entries {
+            let idx = inode::parse_extent_idx_slice(buf, hdr, i).ok_or(MountError::NotFound)?;
+            if idx.block <= logical {
+                chosen = i;
+            } else {
+                break;
+            }
+        }
+        Ok(chosen)
+    }
+
+    fn split_extents_for_leaf(extents: &[Extent]) -> (Vec<Extent>, Vec<Extent>) {
+        let split = extents.len() / 2;
+        (extents[..split].to_vec(), extents[split..].to_vec())
+    }
+
+    fn split_indices_for_node(idxs: &[inode::ExtentIdx]) -> (Vec<inode::ExtentIdx>, Vec<inode::ExtentIdx>) {
+        let split = idxs.len() / 2;
+        (idxs[..split].to_vec(), idxs[split..].to_vec())
     }
 
     /// Splice the (possibly mutated) i_block + new size + i_blocks
@@ -455,11 +637,9 @@ impl Mount {
     /// matching Linux which counts metadata blocks in i_blocks.
     fn persist_inode_after_append(
         &self, ino: u32, ino_bytes: &mut alloc::vec::Vec<u8>, _ino_byte_off: u64,
-        i_block: &[u8; I_BLOCK_LEN], cur_size: u64, extra_meta_sectors: u32,
+        i_block: &[u8; I_BLOCK_LEN], new_size: u64, extra_meta_sectors: u32,
     ) -> Result<(), MountError> {
-        let bs = self.sb.block_size as usize;
         ino_bytes[0x28..0x28 + I_BLOCK_LEN].copy_from_slice(i_block);
-        let new_size = cur_size + bs as u64;
         ino_bytes[0x04..0x08].copy_from_slice(&((new_size & 0xFFFF_FFFF) as u32).to_le_bytes());
         ino_bytes[0x6C..0x70].copy_from_slice(&((new_size >> 32) as u32).to_le_bytes());
         let prev_i_blocks = u32::from_le_bytes([ino_bytes[0x1C], ino_bytes[0x1D], ino_bytes[0x1E], ino_bytes[0x1F]]);
@@ -556,6 +736,35 @@ impl Mount {
     /// # C: O(file growth + N_blocks_in_range) I/O
     pub fn write_at(&self, ino: u32, off: u64, data: &[u8]) -> Result<(), MountError> {
         self.run_journaled(|m| m.write_at_inner(ino, off, data))
+    }
+
+    /// Allocate backing blocks through `offset + len`. With `keep_size`, the
+    /// original `i_size` is restored after allocation without freeing extents.
+    /// # C: O(file growth)
+    pub fn fallocate_inode(&self, ino: u32, offset: u64, len: u64, keep_size: bool) -> Result<(), MountError> {
+        let end = offset.checked_add(len).ok_or(MountError::Inode(inode::InodeError::BadLen))?;
+        if len == 0 { return Ok(()); }
+        self.run_journaled(|m| {
+            let old_size = m.read_inode(ino)?.size;
+            let bs = m.sb.block_size as u64;
+            let first_lb64 = offset / bs;
+            let last_lb64 = (end - 1) / bs;
+            if first_lb64 > u32::MAX as u64 || last_lb64 > u32::MAX as u64 {
+                return Err(MountError::Inode(inode::InodeError::BadLen));
+            }
+            let first_lb = first_lb64 as u32;
+            let last_lb = last_lb64 as u32;
+            let final_size = if keep_size { old_size } else { core::cmp::max(old_size, end) };
+            let zero_blk = alloc::vec![0u8; bs as usize];
+
+            for lb in first_lb..=last_lb {
+                let inode = m.read_inode(ino)?;
+                let visible_size = core::cmp::max(inode.size, (lb as u64 + 1) * bs);
+                m.append_logical_block_inner(ino, lb, &zero_blk, visible_size)?;
+            }
+            m.set_inode_size(ino, final_size)?;
+            Ok(())
+        })
     }
 
     fn write_at_inner(&self, ino: u32, off: u64, data: &[u8]) -> Result<(), MountError> {
