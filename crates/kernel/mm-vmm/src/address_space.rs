@@ -459,12 +459,16 @@ impl AddressSpace {
                         unsafe { M::map(Va(va), Pa(pa), child_flags, PageSize::P4K); }
                         // SAFETY: privileged TLB invalidation is legal at CPL=0/EL1.
                         unsafe { M::flush_va(Va(va)); }
-                        // debug-cow: this ANON frame is now RO-shared between
+                        // debug-cow: this frame is now RO-shared between
                         // parent + child. Snapshot its content; any later
                         // change before a COW copy = a peer wrote a RO-shared
-                        // page (stale TLB / wrong frame). No-op when feature off.
+                        // page (stale TLB / wrong frame). No-op when feature
+                        // off. ANON → [COW-CORRUPT]; FILE-private (shared-lib
+                        // .data/GOT/.bss W-stripped at fork) → [FILE-CORRUPT].
                         if matches!(vma.backing, VmaBacking::Anonymous) {
                             crate::debug_cow::record(pa, _hhdm_offset);
+                        } else if matches!(vma.backing, VmaBacking::File { .. }) {
+                            crate::debug_cow::record_file(pa, _hhdm_offset);
                         }
                     }
                 }
@@ -1287,6 +1291,30 @@ impl AddressSpace {
                     core::ptr::write_bytes(dst, 0, page);
                     let slice = core::slice::from_raw_parts_mut(dst, page);
                     let _ = backing.read_at(file_off, slice);
+                }
+                // debug-cow (this arm is MAP_PRIVATE: the SHARED branch
+                // returned above). `pa` is a FRESH private copy of the file
+                // bytes — writes to it must never reach shared storage.
+                //   * If a frame-backed file (tmpfs/memfd) exposes a cache
+                //     frame for this offset, we just handed its content to a
+                //     private mapper: snapshot the cache frame so a later
+                //     private write that wrongly mutates it surfaces as
+                //     [PC-SHARED-WRITE]. Re-verify first (an earlier private
+                //     mapper may already have corrupted it). tid/cpu unknown
+                //     in mm-vmm here (=0); the authoritative tid is logged at
+                //     the cache frame's free in pmm `check_free`.
+                //   * If this private page is installed READ-ONLY (no WRITE in
+                //     prot, e.g. a private RX/RO file map), track the copy for
+                //     [FILE-CORRUPT] — it must stay byte-stable until COW.
+                #[cfg(feature = "debug-cow")]
+                {
+                    if let Some(cpa) = backing.shared_frame(file_off) {
+                        crate::debug_cow::check_pagecache(cpa, va_page, hhdm_offset, 0, 0);
+                        crate::debug_cow::record_pagecache(cpa, hhdm_offset);
+                    }
+                    if !vma.flags.contains(VmaFlags::SHARED) && !vma.prot.contains(VmaProt::WRITE) {
+                        crate::debug_cow::record_file(pa, hhdm_offset);
+                    }
                 }
                 // DIAG (debug-mount): log the libc lock page's VA on File-fault
                 // so a spurious zap+refault (re-read of file content over ld.so's

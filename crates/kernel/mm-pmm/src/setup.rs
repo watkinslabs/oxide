@@ -419,15 +419,32 @@ pub unsafe fn inc_ref(pa: u64) {
 /// F157-A3: the `wp_page_reuse` predicate. True iff `pa` is an
 /// exclusively-owned anonymous frame — Linux `wp_can_reuse_anon_folio`'s
 /// proof that a write fault may reuse the frame in place (flip W, no
-/// copy) instead of COW-splitting it. Three conjuncts, all read from
+/// copy) instead of COW-splitting it. Four conjuncts, all read from
 /// `PageMeta`:
 ///   * `ANON`            — never reuse a file / page-cache-aliased frame.
 ///   * `ANON_EXCLUSIVE`  — set at anon birth, CLEARED on every fork-share
 ///                         (`inc_ref`); proves no fork ever shared it.
-///   * `mapcount == 1`   — exactly one live PTE references it (belt-and-
-///                         suspenders against a single-bit accounting bug:
-///                         a stale exclusive bit with mapcount>1 fails safe
-///                         to an extra copy rather than peer corruption).
+///   * `mapcount == 1`   — exactly one live PTE references it.
+///   * `refcount == 1`   — exactly one *reference* exists. Linux's
+///                         `wp_can_reuse_anon_folio` bails on
+///                         `folio_ref_count(folio) > 1`: a non-PTE
+///                         reference (GUP/io_uring pin, an in-flight
+///                         drop not yet observed, or any path that
+///                         bumped refcount) means another holder may
+///                         still read/write the frame, so reusing it in
+///                         place corrupts that holder. This was MISSING
+///                         (only mapcount was checked) — an asymmetry
+///                         with the sole-survivor RESTORE in
+///                         `dec_and_maybe_free_frame`, which already
+///                         requires `refcount == 1` before re-setting
+///                         ANON_EXCLUSIVE. Restoring the symmetry: the
+///                         exclusive bit may be set with refcount>1 only
+///                         transiently (a peer dropped its PTE but its
+///                         refcount dec is not yet visible / ordered
+///                         after this read); the refcount guard fails
+///                         such a window safe to a copy rather than a
+///                         cross-process peer corruption — the residual
+///                         non-COW SEGV signature.
 /// Returns false pre-init / out-of-range (→ copy path, always correct).
 /// # C: O(1)
 pub fn can_reuse_anon_exclusive(pa: u64) -> bool {
@@ -437,6 +454,7 @@ pub fn can_reuse_anon_exclusive(pa: u64) -> bool {
     f.contains(crate::PageFlags::ANON)
         && f.contains(crate::PageFlags::ANON_EXCLUSIVE)
         && meta.mapcount(pfn) == Some(1)
+        && meta.refcount(pfn) == Some(1)
 }
 
 /// F157: refcount snapshot. Returns 0 if pre-init or out-of-range.
@@ -815,9 +833,15 @@ pub unsafe fn free_one_frame(pa: u64) {
                 let mc = m.mapcount.load(core::sync::atomic::Ordering::Acquire);
                 let rc = m.refcount.load(core::sync::atomic::Ordering::Acquire);
                 if mc != 0 {
+                    // flags: ANON(1<<4)/ANON_EXCLUSIVE(1<<9) distinguish a real
+                    // data-page free-while-mapped (ANON set ⇒ a leaf user page
+                    // freed with a live PTE = corruption) from a benign recycled
+                    // PT-table/file frame carrying a stale mapcount (ANON clear).
+                    let fl = meta.flags(pfn).map(|f| f.bits()).unwrap_or(0);
                     klog::write_raw(b"[COW-LEAK] free-while-mapped pa="); klog::write_hex_u64(pa);
                     klog::write_raw(b" mapcount="); klog::write_dec_u64(mc as u64);
                     klog::write_raw(b" refcount="); klog::write_dec_u64(rc as u64);
+                    klog::write_raw(b" flags="); klog::write_hex_u64(fl as u64);
                     klog::write_raw(b"\n");
                     // Sampled rmap cross-check: name a concrete still-mapping VA
                     // (the O(1) mapcount may itself be under-counted; the rmap
