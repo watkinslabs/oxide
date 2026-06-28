@@ -35,7 +35,7 @@ fn on_prune(_d: &Dentry) { PRUNE_COUNT.fetch_add(1, Ordering::SeqCst); }
 
 static OPS: DentryOps = DentryOps {
     d_init: Some(on_init), d_prune: Some(on_prune),
-    d_hash: None, d_compare: None, d_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None,
+    d_hash: None, d_compare: None, d_revalidate: None, d_weak_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None,
 };
 
 #[test]

@@ -46,9 +46,10 @@ pub const D_DONTCACHE:  u32 = 0x1000;
 // `__d_lookup` tests `parent->d_flags & DCACHE_OP_COMPARE` before calling
 // `d_compare`; `dput`/`dentry_kill` test `DCACHE_OP_DELETE` before `d_delete`.
 // Bit positions are this file's own layout (the rest of `d_flags` already
-// diverges from Linux's numeric bits — see the `D_ROOT..D_DISCONNECTED` block);
-// only the four hooks the dcache exposes get a presence bit (Linux additionally
-// has PRUNE/WEAK_REVALIDATE/REAL, which have no hook here).
+// diverges from Linux's numeric bits — see the `D_ROOT..D_DISCONNECTED` block).
+// Every dcache-exposed hook gets a presence bit; the only `dentry_operations`
+// members WITHOUT a hook here are the mount-trigger pair (`d_automount`/
+// `d_manage`, mount-coupled) and overlayfs `d_real`.
 // ---------------------------------------------------------------------------
 /// `d_op->d_hash` present (Linux `DCACHE_OP_HASH`).
 pub const D_OP_HASH:       u32 = 0x0040;
@@ -66,8 +67,13 @@ pub const D_OP_DNAME:      u32 = 0x0400;
 /// this bit before firing `d_prune` on a dentry about to leave the cache, so
 /// the eviction hot path skips the `d_op` deref for the common no-prune fs.
 pub const D_OP_PRUNE:      u32 = 0x0800;
+/// `d_op->d_weak_revalidate` present (Linux `DCACHE_OP_WEAK_REVALIDATE`).
+/// `complete_walk` tests this on the FINAL path component (post-jump, e.g. a
+/// `..`/procfs-symlink hop that changed mount) before the one-shot weak
+/// revalidation, so the check stays off the per-component hot path.
+pub const D_OP_WEAK_REVALIDATE: u32 = 0x2000;
 /// All `d_op` presence bits (cleared together before a re-stamp).
-pub const D_OP_MASK: u32 = D_OP_HASH | D_OP_COMPARE | D_OP_REVALIDATE | D_OP_DELETE | D_OP_DNAME | D_OP_PRUNE;
+pub const D_OP_MASK: u32 = D_OP_HASH | D_OP_COMPARE | D_OP_REVALIDATE | D_OP_DELETE | D_OP_DNAME | D_OP_PRUNE | D_OP_WEAK_REVALIDATE;
 
 /// Presence-bit set for `d_op` (Linux `d_set_d_op`): a `D_OP_*` bit per
 /// non-NULL hook, so the hot path branches on `d_flags` not a pointer deref.
@@ -78,6 +84,7 @@ fn op_flags_for(d_op: Option<&'static DentryOps>) -> u32 {
     if o.d_hash.is_some()       { f |= D_OP_HASH; }
     if o.d_compare.is_some()    { f |= D_OP_COMPARE; }
     if o.d_revalidate.is_some() { f |= D_OP_REVALIDATE; }
+    if o.d_weak_revalidate.is_some() { f |= D_OP_WEAK_REVALIDATE; }
     if o.d_delete.is_some()     { f |= D_OP_DELETE; }
     if o.d_dname.is_some()      { f |= D_OP_DNAME; }
     if o.d_prune.is_some()      { f |= D_OP_PRUNE; }
@@ -258,6 +265,14 @@ pub type DCompareFn = fn(name: &str, cand: &Dentry) -> bool;
 /// ordinary walk must re-check against its backing store when `reval` is set
 /// (NFS/FUSE/AFS `flags & LOOKUP_REVAL`).
 pub type DRevalidateFn = fn(d: &Arc<Dentry>, reval: bool) -> bool;
+/// `d_weak_revalidate`: the one-shot weak counterpart of `d_revalidate`,
+/// invoked by Linux `complete_walk` on the FINAL resolved dentry when the walk
+/// reached it via a jump (`..` out of a mount, a procfs magic symlink) rather
+/// than a per-component `d_revalidate`. `false` ⇒ the result is stale (Linux
+/// returns `-ESTALE` → the caller retries with `LOOKUP_REVAL`); UNLIKE
+/// `d_revalidate` the dentry is NOT dropped here — it remains a valid cache node,
+/// only this resolution is rejected. `reval` threads `LOOKUP_REVAL`.
+pub type DWeakRevalidateFn = fn(d: &Arc<Dentry>, reval: bool) -> bool;
 /// `d_delete`: true ⇒ on final `dput` free immediately (don't LRU-cache).
 pub type DDeleteFn = fn(d: &Dentry) -> bool;
 /// `d_release`: dentry is being freed (final `Arc` drop).
@@ -288,6 +303,7 @@ pub struct DentryOps {
     pub d_hash:       Option<DHashFn>,
     pub d_compare:    Option<DCompareFn>,
     pub d_revalidate: Option<DRevalidateFn>,
+    pub d_weak_revalidate: Option<DWeakRevalidateFn>,
     pub d_delete:     Option<DDeleteFn>,
     pub d_release:    Option<DReleaseFn>,
     pub d_iput:       Option<DIputFn>,
@@ -299,7 +315,7 @@ pub struct DentryOps {
 impl DentryOps {
     /// All-default ops vector. # C: O(1)
     pub const fn empty() -> Self {
-        DentryOps { d_hash: None, d_compare: None, d_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None }
+        DentryOps { d_hash: None, d_compare: None, d_revalidate: None, d_weak_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None }
     }
 }
 
@@ -520,6 +536,10 @@ impl Dentry {
     pub fn d_has_op_compare(&self) -> bool { self.flags() & D_OP_COMPARE != 0 }
     /// `d_op->d_revalidate` present (Linux `DCACHE_OP_REVALIDATE`). # C: O(1)
     pub fn d_has_op_revalidate(&self) -> bool { self.flags() & D_OP_REVALIDATE != 0 }
+    /// `d_op->d_weak_revalidate` present (Linux `DCACHE_OP_WEAK_REVALIDATE`).
+    /// `complete_walk` tests this on the final dentry before the one-shot weak
+    /// revalidation. # C: O(1)
+    pub fn d_has_op_weak_revalidate(&self) -> bool { self.flags() & D_OP_WEAK_REVALIDATE != 0 }
     /// `d_op->d_delete` present (Linux `DCACHE_OP_DELETE`). `dput` tests this
     /// before consulting `d_delete` on the final put. # C: O(1)
     pub fn d_has_op_delete(&self) -> bool { self.flags() & D_OP_DELETE != 0 }

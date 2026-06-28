@@ -371,6 +371,27 @@ pub fn d_lookup_reval(parent: &Arc<Dentry>, name: &str, reval: bool) -> Option<A
     Some(d)
 }
 
+/// One-shot WEAK revalidation of an already-resolved final dentry (Linux
+/// `complete_walk` → `d_op->d_weak_revalidate`). The per-component `d_lookup`
+/// fast path consults `d_revalidate`; this is the counterpart Linux fires ONCE,
+/// on the LAST component, only when the walk reached it via a jump (`..` out of
+/// the starting mount, a procfs magic symlink) and so skipped the ordinary
+/// per-step revalidation. `true` ⇒ the result is valid; `false` ⇒ stale (the
+/// caller returns `-ESTALE` and retries the walk with `LOOKUP_REVAL`, threaded
+/// here as `reval`). UNLIKE [`d_lookup_reval`], a stale weak result does NOT
+/// `d_drop` the dentry — it stays a valid cache node, only THIS resolution is
+/// rejected (Linux `complete_walk` returns the error without unhashing). A
+/// dentry without the `D_OP_WEAK_REVALIDATE` hook is always valid — the common
+/// case, gated on the presence bit so no `d_op` deref happens for it.
+/// # C: O(1) (+ the fs hook)
+pub fn d_weak_revalidate(d: &Arc<Dentry>, reval: bool) -> bool {
+    if !d.d_has_op_weak_revalidate() { return true; }
+    match d.d_op().and_then(|o| o.d_weak_revalidate) {
+        Some(f) => f(d, reval),
+        None    => true,
+    }
+}
+
 /// Attach `inode` to a negative `dentry`, making it positive (post
 /// create / lookup success), and record the dentry as an alias of the inode
 /// in the owning SB's icache (Linux `d_instantiate` → `inode->i_dentry`).
@@ -577,7 +598,8 @@ pub fn d_invalidate(d: &Arc<Dentry>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dentry::{DentryOps, D_HASHED, D_NEGATIVE};
+    use crate::dentry::{DentryOps, D_HASHED, D_NEGATIVE, D_OP_WEAK_REVALIDATE};
+    use core::sync::atomic::AtomicBool;
     use crate::inode::Inode;
     use crate::types::{FileType, KResult, VfsError};
     use alloc::string::String;
@@ -654,7 +676,7 @@ mod tests {
             (h ^ (h >> 32)) as u32
         }),
         d_compare: Some(|name, cand| name.eq_ignore_ascii_case(cand.name())),
-        d_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None,
+        d_revalidate: None, d_weak_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None,
     };
     #[test]
     fn d_compare_case_insensitive() {
@@ -669,6 +691,7 @@ mod tests {
     // d_revalidate: a stale dentry is dropped on lookup.
     static STALE_OPS: DentryOps = DentryOps {
         d_revalidate: Some(|_d, _reval| false), // everything is stale
+        d_weak_revalidate: None,
         d_hash: None, d_compare: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None,
     };
     #[test]
@@ -793,5 +816,51 @@ mod tests {
         c.set_inode(Some(dir(30)));
         assert_eq!(c.flags() & D_NEGATIVE, 0);
         assert!(!c.is_negative());
+    }
+
+    // d_weak_revalidate (Linux `complete_walk` final-dentry hook): the presence
+    // bit is stamped, the hook fires with the `LOOKUP_REVAL` flag threaded, and a
+    // STALE weak result does NOT drop the dentry (unlike per-component
+    // d_revalidate) — only this resolution is rejected.
+    static WEAK_SAW_REVAL: AtomicBool = AtomicBool::new(false);
+    static WEAK_VALID:     AtomicBool = AtomicBool::new(true);
+    fn weak_rev(_d: &Arc<Dentry>, reval: bool) -> bool {
+        WEAK_SAW_REVAL.store(reval, Ordering::SeqCst);
+        WEAK_VALID.load(Ordering::SeqCst)
+    }
+    static WEAK_OPS: DentryOps = DentryOps {
+        d_weak_revalidate: Some(weak_rev),
+        d_hash: None, d_compare: None, d_revalidate: None, d_delete: None,
+        d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None,
+    };
+    #[test]
+    fn d_weak_revalidate_hook_and_no_drop() {
+        // Presence bit stamped from the non-NULL hook (d_set_d_op).
+        let r = Dentry::new_root(dir(1)).set_d_op(&WEAK_OPS);
+        assert_ne!(r.flags() & D_OP_WEAK_REVALIDATE, 0);
+        assert!(r.d_has_op_weak_revalidate());
+        let c = d_add(&r, "leaf", dir(40)); // child inherits WEAK_OPS via new_child
+        assert!(c.d_has_op_weak_revalidate());
+        assert!(c.is_hashed());
+
+        // Valid path: hook returns true; `reval` flag is threaded through.
+        WEAK_VALID.store(true, Ordering::SeqCst);
+        assert!(d_weak_revalidate(&c, true));
+        assert!(WEAK_SAW_REVAL.load(Ordering::SeqCst), "LOOKUP_REVAL threaded");
+        assert!(d_weak_revalidate(&c, false));
+        assert!(!WEAK_SAW_REVAL.load(Ordering::SeqCst));
+
+        // Stale path: hook returns false, but the dentry stays a valid cache node
+        // (still hashed, still found by d_lookup) — complete_walk rejects the
+        // resolution without unhashing, unlike d_lookup_reval's d_drop.
+        WEAK_VALID.store(false, Ordering::SeqCst);
+        assert!(!d_weak_revalidate(&c, false));
+        assert!(c.is_hashed(), "weak-stale must NOT unhash the dentry");
+        assert!(d_lookup(&r, "leaf").is_some(), "dentry still cached after weak-stale");
+
+        // A dentry with no weak hook is always valid, no deref.
+        let plain = root();
+        assert!(!plain.d_has_op_weak_revalidate());
+        assert!(d_weak_revalidate(&plain, true));
     }
 }
