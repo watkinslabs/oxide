@@ -44,21 +44,23 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
         return open_proc_fd(tid_opt, n);
     }
     // Unified mount-table lookup (R67). /dev/ptmx allocates a new pair per open.
-    let inode = if path_str == "/dev/ptmx" {
+    // Each branch also yields the `mnt_id` the file is opened through (Linux
+    // `f_path.mnt`): the resolved mount for FS paths, 0 for anon devices.
+    let (inode, mnt_id) = if path_str == "/dev/ptmx" {
         let (master, _n) = devpts::allocate_pair();
-        master
+        (master, 0)
     } else if path_str == "/dev/tty" {
         // F200: /dev/tty resolves to caller's ctty (POSIX §11.1.3); ENXIO when none.
         match sched::live::current() {
             // SAFETY: single-mutator per `13§5`; current task on this CPU.
             Some(t) => match unsafe { (*t.ctty.get()).clone() } {
-                Some(i) => i,
+                Some(i) => (i, 0),
                 None    => return -(Errno::Enxio.as_i32() as i64),
             },
             None => return -(Errno::Enxio.as_i32() as i64),
         }
-    } else if let Some(i) = crate::pathresolve::resolve(path_str, (flags & O_NOFOLLOW) != 0) {
-        i
+    } else if let Some(vp) = crate::pathresolve::resolve_path(path_str, (flags & O_NOFOLLOW) != 0) {
+        (vp.inode, vp.mnt_id)
     } else if (flags & O_CREAT) != 0 {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -67,7 +69,7 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
         let final_mode = mode & 0o777 & !umask;
         match vfs::mount::resolve_mount(path_str) {
             Some((mnt, rel)) => match mnt.fs().create(&rel, final_mode) {
-                Ok(i) => i,
+                Ok(i) => (i, mnt.mnt_id),
                 Err(e) => {
             crate::namei_common::trace_run_vfs_error(b"open-create", path_str, e);
                     return -(Errno::Enoent.as_i32() as i64);
@@ -85,7 +87,8 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
-    match vfs::file::install_open(&fdt, inode, path_str, OpenFlags::from_bits_truncate(flags)) {
+    match vfs::file::install_open(&fdt, inode, path_str, OpenFlags::from_bits_truncate(flags),
+        mnt_id, crate::pathresolve::current_cred()) {
         Ok(fd) => fd as i64,
         Err(e) => -(e as i64),
     }

@@ -9,13 +9,62 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::dentry::Dentry;
 use crate::inode::InodeRef;
+use crate::namei::Cred;
 use crate::types::{KResult, OpenFlags, VfsError};
+
+bitflags::bitflags! {
+    /// `file->f_mode` access bits (Linux `include/linux/fs.h` `FMODE_*`).
+    /// Derived once from the open access mode at `File` construction so
+    /// permission checks read the canonical capability rather than
+    /// re-deriving from `O_*` flags at each call. Numeric values match
+    /// Linux exactly.
+    #[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
+    pub struct Fmode: u32 {
+        /// FMODE_READ — file is readable.
+        const READ  = 0x0000_0001;
+        /// FMODE_WRITE — file is writable.
+        const WRITE = 0x0000_0002;
+        /// FMODE_EXEC — opened for execution (`do_open_execat`).
+        const EXEC  = 0x0000_0020;
+        /// FMODE_PATH — O_PATH descriptor (no read/write, fd-ref only).
+        const PATH  = 0x0000_4000;
+    }
+}
+
+/// Map an open's access mode (`O_RDONLY`/`O_WRONLY`/`O_RDWR`) to the
+/// canonical `Fmode` capability bits. Mirrors Linux `OPEN_FMODE`.
+/// # C: O(1)
+fn fmode_from_flags(f: OpenFlags) -> Fmode {
+    let mut m = Fmode::empty();
+    if f.contains(OpenFlags::O_RDWR) {
+        m |= Fmode::READ | Fmode::WRITE;
+    } else if f.contains(OpenFlags::O_WRONLY) {
+        m |= Fmode::WRITE;
+    } else {
+        m |= Fmode::READ; // O_RDONLY (access mode 0)
+    }
+    m
+}
 
 /// Backing handle for an open file. Stored as `Arc<File>` so dup / fork
 /// share the position cursor per POSIX (`15§2`).
 pub struct File {
     inode:  InodeRef,
     dentry: Arc<Dentry>,
+    /// `f_path.vfsmount` resolved by id (Linux `struct path.mnt`). The
+    /// mount the file was opened through, recovered from the lookup's
+    /// `VfsPath.mnt_id`. `0` = anonymous inode (pipe/eventfd/socket/…)
+    /// with no vfsmount, matching Linux `anon_inode` files.
+    mnt_id: u64,
+    /// `f_mode` (FMODE_*), derived from the open access mode once at
+    /// construction. Immutable for the life of the open description.
+    f_mode: Fmode,
+    /// `f_cred` — opener's credentials snapshot (Linux `file->f_cred`).
+    /// Lets a deferred read/write enforce without re-reading task creds.
+    f_cred: Cred,
+    /// `file->private_data` — per-fd driver/anon-inode state slot.
+    /// Default 0; opaque to the VFS core.
+    private_data: AtomicU64,
     pos:    AtomicU64,
     flags:  AtomicU32,
     /// Currently-held flock kind: 0=none, 1=LOCK_SH, 2=LOCK_EX. Used
@@ -189,17 +238,42 @@ impl Drop for File {
 }
 
 impl File {
+    /// Anonymous-inode / early-boot constructor: no vfsmount (`mnt_id=0`)
+    /// and root credentials. Used by every anon fd (pipe/eventfd/socket/
+    /// memfd/timerfd/…) where there is no mount the file was opened
+    /// through — exactly Linux's `anon_inode` files.
     /// # C: O(1)
     pub fn new(inode: InodeRef, dentry: Arc<Dentry>, flags: OpenFlags) -> Arc<Self> {
+        Self::new_at(inode, dentry, flags, 0, Cred::root())
+    }
+
+    /// Full `f_path`-carrying constructor (Linux `struct file` with
+    /// `f_path = {mnt, dentry}`): records the `mnt_id` the file was
+    /// opened through plus the opener's credentials. The real-FS open
+    /// paths (`openat`/`open`/`install_open`) call this with the
+    /// resolved `VfsPath.mnt_id`.
+    /// # C: O(1)
+    pub fn new_at(
+        inode: InodeRef,
+        dentry: Arc<Dentry>,
+        flags: OpenFlags,
+        mnt_id: u64,
+        cred: Cred,
+    ) -> Arc<Self> {
         let h = OPEN_HOOK.load(Ordering::Acquire);
         if h != 0 {
             // SAFETY: h was installed by `set_open_hook` with a real fn(&InodeRef) pointer.
             let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
             f(&inode);
         }
+        let f_mode = fmode_from_flags(flags);
         Arc::new(Self {
             inode,
             dentry,
+            mnt_id,
+            f_mode,
+            f_cred: cred,
+            private_data: AtomicU64::new(0),
             pos:   AtomicU64::new(0),
             flags: AtomicU32::new(flags.bits()),
             flock_op: AtomicU32::new(0),
@@ -207,11 +281,44 @@ impl File {
         })
     }
 
-    /// # C: O(1)
+    /// `f_inode` cache (Linux `file->f_inode`). # C: O(1)
     pub fn inode(&self) -> &InodeRef { &self.inode }
+
+    /// Alias for `inode()` matching Linux `file_inode()` naming. # C: O(1)
+    pub fn f_inode(&self) -> &InodeRef { &self.inode }
 
     /// # C: O(1)
     pub fn dentry(&self) -> &Arc<Dentry> { &self.dentry }
+
+    /// `f_path` = (vfsmount id, dentry) per Linux `struct path`. # C: O(1)
+    pub fn f_path(&self) -> (u64, &Arc<Dentry>) { (self.mnt_id, &self.dentry) }
+
+    /// The id of the vfsmount this file was opened through; 0 = anon. # C: O(1)
+    pub fn mnt_id(&self) -> u64 { self.mnt_id }
+
+    /// Resolve `f_path.mnt` to its `Mount`, if still mounted. # C: O(log N)
+    pub fn vfsmount(&self) -> Option<Arc<crate::mount::Mount>> {
+        if self.mnt_id == 0 { return None; }
+        crate::mount::mount_by_id(self.mnt_id)
+    }
+
+    /// `f_mode` (FMODE_* capability bits). # C: O(1)
+    pub fn f_mode(&self) -> Fmode { self.f_mode }
+
+    /// `f_cred` — opener's credential snapshot. # C: O(1)
+    pub fn f_cred(&self) -> &Cred { &self.f_cred }
+
+    /// `file->private_data` slot read. # C: O(1)
+    pub fn private_data(&self) -> u64 { self.private_data.load(Ordering::Acquire) }
+
+    /// `file->private_data` slot write. # C: O(1)
+    pub fn set_private_data(&self, v: u64) { self.private_data.store(v, Ordering::Release); }
+
+    /// Per-close flush (Linux `file_operations->flush`, fired by
+    /// `filp_close` on every `close(2)`/`dup2`-replace/cloexec drop —
+    /// NOT only the last). Distinct from `on_release` (last-ref). Default
+    /// inode impl is a no-op. # C: depends on inode impl
+    pub fn flush(&self) { self.inode.on_flush(); }
 
     /// Snapshot of the file position.
     /// # C: O(1)
@@ -345,6 +452,8 @@ pub fn install_open(
     inode: InodeRef,
     path: &str,
     flags: OpenFlags,
+    mnt_id: u64,
+    cred: Cred,
 ) -> Result<i32, VfsError> {
     if flags.contains(OpenFlags::O_DIRECTORY)
         && !matches!(inode.file_type(), crate::types::FileType::Directory)
@@ -359,7 +468,7 @@ pub fn install_open(
         let _ = inode.truncate(0);
     }
     let dentry = open_dentry(path, &inode);
-    let file = File::new(inode, dentry, flags);
+    let file = File::new_at(inode, dentry, flags, mnt_id, cred);
     fdt.alloc(file).map_err(|_| VfsError::Emfile)
 }
 

@@ -60,8 +60,10 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     if let Some((tid_opt, n)) = dup_fd_target(path_str) {
         return open_proc_fd(tid_opt, n);
     }
-    // O_TMPFILE short-circuits to anonymous inode creation.
-    let inode = if (flags & O_TMPFILE) != 0 {
+    // O_TMPFILE short-circuits to anonymous inode creation. Each branch
+    // also yields the `mnt_id` the file is opened through (Linux
+    // `f_path.mnt`): the resolved mount for FS paths, 0 for anon devices.
+    let (inode, mnt_id) = if (flags & O_TMPFILE) != 0 {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
@@ -78,7 +80,7 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
                     return -(Errno::Erofs.as_i32() as i64);
                 }
                 match mnt.fs().create_anonymous(&rel, final_mode as u32) {
-                    Ok(i)  => i,
+                    Ok(i)  => (i, mnt.mnt_id),
                     Err(_) => return -(Errno::Enospc.as_i32() as i64),
                 }
             }
@@ -86,19 +88,19 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
         }
     } else if path_str == "/dev/ptmx" {
         let (master, _n) = devpts::allocate_pair();
-        master
+        (master, 0)
     } else if path_str == "/dev/tty" {
         // F200: caller's controlling terminal; ENXIO when none.
         match sched::live::current() {
             // SAFETY: single-mutator per `13§5` — current task on this CPU.
             Some(t) => match unsafe { (*t.ctty.get()).clone() } {
-                Some(i) => i,
+                Some(i) => (i, 0),
                 None    => return -(Errno::Enxio.as_i32() as i64),
             },
             None => return -(Errno::Enxio.as_i32() as i64),
         }
-    } else if let Some(i) = crate::pathresolve::resolve(path_str, (flags & O_NOFOLLOW) != 0) {
-        i
+    } else if let Some(vp) = crate::pathresolve::resolve_path(path_str, (flags & O_NOFOLLOW) != 0) {
+        (vp.inode, vp.mnt_id)
     } else if (flags & O_CREAT) != 0 {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -111,7 +113,7 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
                     return -(Errno::Erofs.as_i32() as i64);
                 }
                 match mnt.fs().create(&rel, final_mode) {
-                    Ok(i) => i,
+                    Ok(i) => (i, mnt.mnt_id),
                     Err(e) => {
                         crate::namei_common::trace_run_vfs_error(b"openat-create", path_str, e);
                         return -(Errno::Enoent.as_i32() as i64);
@@ -165,7 +167,7 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     let dentry_path = if (flags & O_TMPFILE) != 0 { "/" } else { path_str };
     let dentry = vfs::file::open_dentry(dentry_path, &inode);
     let oflags = OpenFlags::from_bits_truncate(flags);
-    let file = File::new(inode, dentry, oflags);
+    let file = File::new_at(inode, dentry, oflags, mnt_id, crate::pathresolve::current_cred());
     match fdt.alloc(file) {
         Ok(fd)  => fd as i64,
         Err(e)  => -(e as i64),

@@ -334,6 +334,13 @@ pub trait Inode: Send + Sync {
     /// # C: O(1)
     fn on_release(&self) {}
 
+    /// Per-close flush hook per Linux `file_operations->flush`. Fired by
+    /// `FdTable::close`/`dup2`-replace/cloexec-drop on EVERY `close(2)`
+    /// of an fd referencing this open description (not only the last —
+    /// that is `on_release`). Default no-op. MUST NOT panic or block.
+    /// # C: O(1)
+    fn on_flush(&self) {}
+
     /// memfd file-sealing state (`fcntl(F_ADD_SEALS/F_GET_SEALS)`,
     /// `docs/19`). `Some(&seals)` only for a sealable memfd (created with
     /// `MFD_ALLOW_SEALING`); `None` for every other inode, where

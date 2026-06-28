@@ -57,6 +57,30 @@ fn resolution_root() -> Option<(Arc<vfs::Dentry>, bool)> {
     Some((d, true))
 }
 
+/// Snapshot the running task's credentials into the VFS `Cred` (Linux
+/// `current_cred()` subset: fsuid/fsgid + the two DAC-bypass caps).
+/// Used at open to populate `file->f_cred`. Falls back to root when
+/// there is no current task (early boot / host paths).
+/// # C: O(1)
+pub fn current_cred() -> vfs::Cred {
+    use core::sync::atomic::Ordering;
+    // Linux capability.h cap NUMBERS (bit positions in the effective mask).
+    const CAP_DAC_OVERRIDE: u64    = 1;
+    const CAP_DAC_READ_SEARCH: u64 = 2;
+    match sched::live::current() {
+        Some(c) => {
+            let eff = c.creds.cap_effective.load(Ordering::Acquire);
+            vfs::Cred {
+                uid: c.creds.fsuid.load(Ordering::Acquire),
+                gid: c.creds.fsgid.load(Ordering::Acquire),
+                cap_dac_override:     eff & (1u64 << CAP_DAC_OVERRIDE)    != 0,
+                cap_dac_read_search:  eff & (1u64 << CAP_DAC_READ_SEARCH) != 0,
+            }
+        }
+        None => vfs::Cred::root(),
+    }
+}
+
 /// Resolve absolute `abs` to its inode via the dentry path-walk
 /// (`vfs::path_lookup`) — THE resolver (`docs/16§3`): ALWAYS per-component
 /// (`d_lookup → i_op->lookup → d_add`), crossing mounts at each mount root
