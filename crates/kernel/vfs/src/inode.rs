@@ -576,6 +576,54 @@ pub fn inode_owner_or_capable<I: Inode + ?Sized>(
     cred.cap_fowner && vfsuid != crate::idmap::INVALID_ID
 }
 
+/// `inode_init_owner` (Linux `fs/inode.c`) — assign owner ids + finalize the
+/// mode for a NEWLY created inode under parent directory `dir`. Returns the
+/// `(i_uid, i_gid, i_mode)` the caller stamps onto the fresh inode.
+///
+/// * `i_uid` is always the creator's fsuid (`cred.uid`).
+/// * `i_gid` follows the BSD-style SGID-directory rule: if `dir` has its
+///   `S_ISGID` bit set, the new inode inherits the *directory's* gid (group
+///   inheritance); otherwise it takes the creator's fsgid (`cred.gid`).
+/// * SGID propagation on `mode`:
+///   - a new **directory** under an SGID parent always inherits `S_ISGID`
+///     (so the whole subtree keeps the group), regardless of caller group;
+///   - a new **group-executable setgid file** (`mode & (S_ISGID|S_IXGRP)` both
+///     set) under an SGID parent has `S_ISGID` STRIPPED unless the caller is in
+///     the inherited group (`in_group`) or holds `CAP_FSETID` — an unprivileged
+///     non-member must not mint a setgid binary running as a group it is not in.
+///
+/// `mode` is the full `umode_t` (S_IFMT type bits OR'd with the permission
+/// bits) and is taken AS GIVEN — umask is applied by the syscall layer
+/// (`do_mkdirat`/`do_mknodat` mask `mode & ~current_umask()`) BEFORE this runs,
+/// so this function neither reads nor re-applies umask (a double-mask bug).
+/// # C: O(ngroups)
+pub fn inode_init_owner<D: Inode + ?Sized>(
+    dir: &D,
+    mode: crate::types::Umode,
+    cred: &crate::namei::Cred,
+) -> (u32, u32, crate::types::Umode) {
+    let uid = cred.uid;
+    let mut m = mode;
+    let gid = if dir.i_mode() & crate::namei::S_ISGID != 0 {
+        let dgid = dir.gid().unwrap_or(0);
+        if m & crate::types::S_IFMT == crate::types::S_IFDIR {
+            // Directories always inherit S_ISGID so the subtree keeps the group.
+            m |= crate::namei::S_ISGID;
+        } else if m & (crate::namei::S_ISGID | crate::namei::S_IXGRP)
+            == crate::namei::S_ISGID | crate::namei::S_IXGRP
+            && !cred.in_group(dgid)
+            && !cred.cap_fsetid
+        {
+            // Non-member, non-CAP_FSETID caller may not create a setgid binary.
+            m &= !crate::namei::S_ISGID;
+        }
+        dgid
+    } else {
+        cred.gid
+    };
+    (uid, gid, m)
+}
+
 /// errno for a default (no-data-op) `read`/`write` keyed on the inode's
 /// `S_IFMT` type. A directory is `Eisdir` — Linux routes directory
 /// `read(2)`/`write(2)` to `generic_read_dir`/the write guard, both `-EISDIR`.
