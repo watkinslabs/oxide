@@ -202,10 +202,15 @@ impl FdTable {
 
     /// `fcntl F_DUPFD(fd, arg)` — install the same `Arc<File>` at the
     /// lowest free fd >= `min`. F_DUPFD_CLOEXEC sets cloexec on top.
+    /// `oldfd` is validated first (bad/negative → Ebadf, matching the
+    /// syscall-layer fdget); then `min` is range-checked: negative OR
+    /// `>= FD_TABLE_MAX` (the RLIMIT_NOFILE ceiling) → Einval, NOT
+    /// Emfile — Linux `do_fcntl` F_DUPFD returns EINVAL for an `arg`
+    /// outside the allowed fd range before attempting allocation.
     /// # C: O(N/64)
     pub fn dup_min(&self, fd: i32, min: i32) -> KResult<i32> {
-        if min < 0 { return Err(VfsError::Einval); }
         let f = self.get(fd)?;
+        if min < 0 || min as usize >= FD_TABLE_MAX { return Err(VfsError::Einval); }
         crate::file::fire_clone_hook(&f);
         self.inner.lock().alloc_fd_min(f, min as usize)
     }
