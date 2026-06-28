@@ -465,13 +465,24 @@ fn no_data_op_errno(ft: FileType) -> VfsError {
 /// `i_state` bits (Linux `include/linux/fs.h`). Stored per-ino in the owning
 /// superblock's inode cache (see `SuperBlock::i_state`), NOT on the trait
 /// object — the trait-object inodes carry no shared state block, so lifecycle
-/// state lives icache-side (one place, zero per-FS-impl churn).
+/// state lives icache-side (one place, zero per-FS-impl churn). Numeric reps
+/// match Linux exactly.
 /// `I_NEW` is set by `iget` on a build-miss and cleared once the inode is
 /// installed (Linux `unlock_new_inode`); a concurrent `ilookup` upgrades the
 /// fully-built `Arc` regardless, so `I_NEW` is the build-race marker only.
-pub const I_DIRTY:   u32 = 0x0007; // I_DIRTY_SYNC|DATASYNC|PAGES
-pub const I_NEW:     u32 = 0x0008; // 1<<3 — being constructed
-pub const I_FREEING: u32 = 0x0020; // 1<<5 — being evicted
+/// `I_WILL_FREE`/`I_FREEING` are the two dying-inode markers Linux tests
+/// together in `find_inode_fast` (see `SuperBlock::i_is_freeing`): `iput_final`
+/// raises `I_WILL_FREE` for the pre-evict writeback window, then swaps it for
+/// `I_FREEING` across `evict`; `clear_inode` finishes with `I_FREEING|I_CLEAR`.
+pub const I_DIRTY_SYNC:     u32 = 1 << 0; // metadata dirty, fsync-relevant
+pub const I_DIRTY_DATASYNC: u32 = 1 << 1; // metadata dirty, fdatasync-relevant
+pub const I_DIRTY_PAGES:    u32 = 1 << 2; // data pages dirty
+pub const I_NEW:            u32 = 1 << 3; // 0x08 — being constructed
+pub const I_WILL_FREE:      u32 = 1 << 4; // 0x10 — iput_final pre-evict writeback
+pub const I_FREEING:        u32 = 1 << 5; // 0x20 — being evicted
+pub const I_CLEAR:          u32 = 1 << 6; // 0x40 — clear_inode finished (evicted)
+/// `I_DIRTY` aggregate (Linux `I_DIRTY_SYNC|I_DIRTY_DATASYNC|I_DIRTY_PAGES`). 0x07.
+pub const I_DIRTY: u32 = I_DIRTY_SYNC | I_DIRTY_DATASYNC | I_DIRTY_PAGES;
 
 /// `i_flags` `S_*` bits (Linux `include/linux/fs.h`) — the VFS inode flag set
 /// returned by `Inode::i_flags`, distinct from the `S_IF*`/perm mode bits.

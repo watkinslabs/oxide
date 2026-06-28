@@ -24,7 +24,7 @@ use sync::{RwLock, Spinlock, Superblock as SbClass};
 
 use crate::dentry::Dentry;
 use crate::fs::FileSystem;
-use crate::inode::{Inode, InodeRef, I_NEW};
+use crate::inode::{Inode, InodeRef, I_CLEAR, I_DIRTY, I_FREEING, I_NEW, I_WILL_FREE};
 use crate::types::{Ino, KResult};
 
 /// `get_anon_bdev` (Linux `fs/super.c`) — per-instance anonymous block-dev
@@ -320,10 +320,16 @@ impl SuperBlock {
     /// Backend-private state downcast. # C: O(1)
     pub fn fs_info(&self) -> &Arc<dyn Any + Send + Sync> { &self.s_fs_info }
 
-    /// `ilookup` — hit the inode cache. `None` if absent or reclaimed.
+    /// `ilookup` — hit the inode cache. `None` if absent, reclaimed, OR dying
+    /// (`I_FREEING`/`I_WILL_FREE`): Linux `find_inode_fast` skips a dying inode
+    /// and waits for it to leave the cache rather than handing back a
+    /// half-evicted object, so a freeing slot reads as a miss here too.
     /// # C: O(log N_ino)
     pub fn ilookup(&self, ino: Ino) -> Option<InodeRef> {
-        self.icache.lock().get(&ino).and_then(|e| e.inode.upgrade())
+        let c = self.icache.lock();
+        let e = c.get(&ino)?;
+        if e.state & (I_FREEING | I_WILL_FREE) != 0 { return None; }
+        e.inode.upgrade()
     }
 
     /// `iget` — cache hit (SAME `Arc` → shared inode identity), else build via
@@ -337,7 +343,12 @@ impl SuperBlock {
         let inode = build();
         let mut c = self.icache.lock();
         if let Some(e) = c.get(&ino) {
-            if let Some(existing) = e.inode.upgrade() { return existing; }
+            // A dying slot (`I_FREEING`/`I_WILL_FREE`) is past resurrection
+            // (Linux `find_inode_fast` skips it); rebuild over it instead of
+            // handing back the half-evicted inode.
+            if e.state & (I_FREEING | I_WILL_FREE) == 0 {
+                if let Some(existing) = e.inode.upgrade() { return existing; }
+            }
         }
         // Preserve any still-live aliases recorded against this ino while the
         // inode was momentarily un-cached; they re-bind to the rebuilt inode.
@@ -364,6 +375,30 @@ impl SuperBlock {
         if let Some(e) = self.icache.lock().get_mut(&ino) {
             e.state = (e.state & !clear) | set;
         }
+    }
+
+    /// True iff `ino` is being evicted — Linux's pervasive
+    /// `(i_state & (I_FREEING | I_WILL_FREE))` dying-inode predicate
+    /// (`find_inode_fast`, `iput`, `evict`). A slot in this state is past
+    /// resurrection: `ilookup` reports it as a miss and `iget` rebuilds over it.
+    /// `false` for an uncached ino (`i_state` reads `0`). # C: O(log N_ino)
+    pub fn i_is_freeing(&self, ino: Ino) -> bool {
+        self.i_state(ino) & (I_FREEING | I_WILL_FREE) != 0
+    }
+
+    /// `mark_inode_dirty` (Linux `__mark_inode_dirty`): OR the requested
+    /// `I_DIRTY_*` bits into `ino`'s state. `flags` is masked to `I_DIRTY` so a
+    /// caller cannot smuggle a lifecycle bit (`I_NEW`/`I_FREEING`/…) through the
+    /// dirtying path. No-op if uncached. # C: O(log N_ino)
+    pub fn mark_inode_dirty(&self, ino: Ino, flags: u32) {
+        self.i_set_state(ino, flags & I_DIRTY, 0);
+    }
+
+    /// `clear_inode` (Linux fs/inode.c): the terminal eviction state. Sets
+    /// `I_FREEING | I_CLEAR` and drops every dirty bit — the inode's metadata is
+    /// gone and no writeback will follow. # C: O(log N_ino)
+    pub fn clear_inode(&self, ino: Ino) {
+        self.i_set_state(ino, I_FREEING | I_CLEAR, I_DIRTY);
     }
 
     /// Record `d` as an alias of `inode` (Linux `d_instantiate` →
