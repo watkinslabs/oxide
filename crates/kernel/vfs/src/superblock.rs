@@ -437,6 +437,23 @@ impl SuperBlock {
             .unwrap_or_default()
     }
 
+    /// `evict_inodes` (Linux fs/inode.c, run from `generic_shutdown_super`):
+    /// sweep the per-SB inode cache evicting every inode with no remaining
+    /// reference. In this `Weak`-keyed icache a referenceless inode is one whose
+    /// `Weak::upgrade` already fails (Linux `i_count == 0`); its slot — and any
+    /// dead alias `Weak`s — are dropped. Returns the count of BUSY inodes:
+    /// slots whose inode still upgrades, i.e. a live reference outlived the
+    /// unmount (Linux's "VFS: Busy inodes after unmount" WARN). A clean unmount
+    /// returns `0`. Busy slots are retained, not force-freed: their owners drop
+    /// them on their own ref release. # C: O(N_ino)
+    pub fn evict_inodes(&self) -> u32 {
+        let mut busy = 0u32;
+        self.icache.lock().retain(|_, e| {
+            if e.inode.upgrade().is_some() { busy += 1; true } else { false }
+        });
+        busy
+    }
+
     /// statfs via `s_op`, defaulting `f_type`/`f_bsize` from the SB.
     /// # C: O(1)
     pub fn statfs(&self) -> KResult<SbStatFs> {
@@ -500,7 +517,7 @@ impl SuperBlock {
                 Ok(_) => break, Err(v) => cur = v,
             }
         }
-        if cur == 1 { let _ = self.sync_fs(true); self.put_super(); true } else { false }
+        if cur == 1 { let _ = self.generic_shutdown_super(); true } else { false }
     }
 
     /// `s_maxbytes` — largest representable file size. # C: O(1)
@@ -606,6 +623,23 @@ impl SuperBlock {
         self.s_op.thaw_fs()?;
         self.s_writers_frozen.store(SB_UNFROZEN, Ordering::Release);
         Ok(())
+    }
+
+    /// `generic_shutdown_super` (Linux fs/super.c): the last-`s_active`-drop
+    /// teardown sequence. Flush dirty state (`sync_filesystem`), clear the live
+    /// `SB_ACTIVE` flag bit so no operation treats the instance as mounted from
+    /// here on (Linux `sb->s_flags &= ~SB_ACTIVE`), `evict_inodes` the now-idle
+    /// inode cache, then run `put_super` (backend teardown + drop root dentry +
+    /// clear icache). Returns the busy-inode count `evict_inodes` found — `0` on
+    /// a clean unmount, nonzero is the "Busy inodes after unmount" leak the
+    /// caller may WARN on. Invoked once by the final [`Self::deactivate_super`].
+    /// # C: O(tree + N_ino)
+    pub fn generic_shutdown_super(&self) -> u32 {
+        let _ = self.sync_fs(true);
+        self.set_s_flags(0, SB_ACTIVE);
+        let busy = self.evict_inodes();
+        self.put_super();
+        busy
     }
 
     /// Umount teardown: `put_super` then drop the dentry tree. # C: O(tree)
