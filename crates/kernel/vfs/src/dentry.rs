@@ -127,6 +127,12 @@ impl QStr {
 // is the obvious later optimization.)
 // ---------------------------------------------------------------------------
 
+/// Sentinel `d_count` for a dentry whose kill is in progress (Linux
+/// `LOCKREF_DEAD`, `lib/lockref.c`). A dead lockref is `< 0`, so every
+/// `get_not_dead` / `get_not_zero` resurrection attempt fails and a concurrent
+/// `__d_lookup_rcu` skips a dentry mid-`__dentry_kill`. Value matches Linux.
+pub const LOCKREF_DEAD: i64 = -128;
+
 pub struct Lockref {
     count: AtomicI64,
 }
@@ -140,6 +146,45 @@ impl Lockref {
     pub fn put(&self) -> i64 { self.count.fetch_sub(1, Ordering::AcqRel) - 1 }
     /// # C: O(1)
     pub fn read(&self) -> i64 { self.count.load(Ordering::Acquire) }
+
+    /// `lockref_get_not_zero`: pin only a currently-pinned ref (count `> 0`),
+    /// returning false when the count is 0 (unused — on the LRU/shrinker) or
+    /// dead. Distinct from `get_not_dead`: this REFUSES to resurrect a count-0
+    /// dentry. CAS retry loop models Linux's `CMPXCHG_LOOP`. # C: O(1) amortized
+    pub fn get_not_zero(&self) -> bool {
+        let mut old = self.count.load(Ordering::Acquire);
+        loop {
+            if old <= 0 { return false; }
+            match self.count.compare_exchange_weak(old, old + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_)    => return true,
+                Err(cur) => old = cur,
+            }
+        }
+    }
+
+    /// `lockref_get_not_dead`: pin unless the ref is being killed (count `< 0`,
+    /// i.e. `LOCKREF_DEAD`). Unlike `get_not_zero` this DOES resurrect a count-0
+    /// (unused) ref — exactly Linux `__d_lookup_rcu`, which legitimately
+    /// re-pins an LRU dentry but must never grab one mid-`__dentry_kill`.
+    /// # C: O(1) amortized
+    pub fn get_not_dead(&self) -> bool {
+        let mut old = self.count.load(Ordering::Acquire);
+        loop {
+            if old < 0 { return false; }
+            match self.count.compare_exchange_weak(old, old + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_)    => return true,
+                Err(cur) => old = cur,
+            }
+        }
+    }
+
+    /// `lockref_mark_dead`: stamp the kill sentinel (`LOCKREF_DEAD`). Linux does
+    /// this under `d_lock` at the top of `__dentry_kill`, after which no `get`
+    /// can resurrect the ref. # C: O(1)
+    pub fn mark_dead(&self) { self.count.store(LOCKREF_DEAD, Ordering::Release); }
+
+    /// True iff the lockref is dead (`< 0`) — kill in progress. # C: O(1)
+    pub fn is_dead(&self) -> bool { self.count.load(Ordering::Acquire) < 0 }
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +418,34 @@ impl Dentry {
     /// `dput` accounting — drop `d_count`, returning the new value.
     /// # C: O(1)
     pub fn dec_count(&self) -> i64 { self.d_count.put() }
+
+    /// `dget` variant that refuses a dentry mid-kill (Linux `lockref_get_not_dead`,
+    /// the `__d_lookup_rcu` pin): returns true when the reference was taken,
+    /// false when the dentry is dead (`__dentry_kill` ran `mark_dead`) and the
+    /// caller must fall back to the slow `i_op->lookup`. On success marks
+    /// referenced (two-hand clock), like `inc_count`. # C: O(1)
+    pub fn inc_count_not_dead(&self) -> bool {
+        let ok = self.d_count.get_not_dead();
+        if ok { self.set_referenced(true); }
+        ok
+    }
+
+    /// `dget` variant that pins only an already-in-use dentry (Linux
+    /// `lockref_get_not_zero`): false when `d_count == 0` (unused, reclaimable)
+    /// or dead. # C: O(1)
+    pub fn inc_count_not_zero(&self) -> bool {
+        let ok = self.d_count.get_not_zero();
+        if ok { self.set_referenced(true); }
+        ok
+    }
+
+    /// Stamp the kill sentinel on `d_count` (Linux `lockref_mark_dead`, at the
+    /// top of `__dentry_kill`): after this no `inc_count_not_dead` /
+    /// `inc_count_not_zero` can resurrect the dentry. # C: O(1)
+    pub fn mark_dead(&self) { self.d_count.mark_dead(); }
+
+    /// True iff this dentry's lockref is dead — a kill is in progress. # C: O(1)
+    pub fn is_dead(&self) -> bool { self.d_count.is_dead() }
 
     /// True iff this dentry is a superblock root (`D_ROOT`). # C: O(1)
     pub fn is_root(&self) -> bool { self.flags() & D_ROOT != 0 }
