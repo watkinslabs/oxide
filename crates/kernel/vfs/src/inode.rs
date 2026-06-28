@@ -451,6 +451,91 @@ pub trait Inode: Send + Sync {
     /// WRITE on `write`, SHRINK/GROW on `truncate`.
     /// # C: O(1)
     fn fcntl_seals(&self) -> Option<&core::sync::atomic::AtomicU32> { None }
+
+    /// `i_version` change counter (Linux `struct inode::i_version`,
+    /// `include/linux/iversion.h`) — the per-inode 64-bit monotone version the
+    /// VFS bumps on every data/metadata change, queried by NFS/IMA and statx
+    /// `STATX_CHANGE_COOKIE` to detect modification without re-reading content.
+    /// Returns the backing atomic so the `inode_*_iversion` free functions can
+    /// run the lazy QUERIED-bit cmpxchg protocol against it (bit 0 is the
+    /// `I_VERSION_QUERIED` flag; the real version is the stored word `>> 1`).
+    /// `None` (default) = the FS tracks no change counter, so
+    /// `inode_query_iversion` reports `0` and the bump helpers no-op.
+    /// Filesystems that opt in (Linux `SB_I_VERSION`) store an `AtomicU64` and
+    /// return it here, exactly as `fcntl_seals` exposes its seal word.
+    /// # C: O(1)
+    fn i_version_raw(&self) -> Option<&core::sync::atomic::AtomicU64> { None }
+}
+
+/// `i_version` lazy-counter bit layout (Linux `include/linux/iversion.h`). The
+/// low bit of the stored 64-bit word is the `I_VERSION_QUERIED` flag (set by a
+/// reader so the next change knows it must actually bump); the real version is
+/// the word `>> I_VERSION_QUERIED_SHIFT`. A bump adds `I_VERSION_INCREMENT` (2)
+/// so it never collides with the flag bit. Numeric reps match Linux exactly.
+pub const I_VERSION_QUERIED_SHIFT: u32 = 1;
+pub const I_VERSION_QUERIED:       u64 = 1 << (I_VERSION_QUERIED_SHIFT - 1); // 0x1
+pub const I_VERSION_INCREMENT:     u64 = 1 << I_VERSION_QUERIED_SHIFT;       // 0x2
+
+/// `inode_peek_iversion_raw` (Linux) — read the raw stored version word (flag
+/// bit included) without latching the QUERIED flag. `0` when the inode tracks
+/// no counter. # C: O(1)
+pub fn inode_peek_iversion_raw<I: Inode + ?Sized>(inode: &I) -> u64 {
+    match inode.i_version_raw() {
+        Some(v) => v.load(core::sync::atomic::Ordering::Relaxed),
+        None    => 0,
+    }
+}
+
+/// `inode_set_iversion_raw` (Linux) — store the raw version word verbatim (a FS
+/// seeds the on-disk `i_version` at `iget` time). No-op when the inode tracks no
+/// counter. # C: O(1)
+pub fn inode_set_iversion_raw<I: Inode + ?Sized>(inode: &I, val: u64) {
+    if let Some(v) = inode.i_version_raw() { v.store(val, core::sync::atomic::Ordering::Relaxed); }
+}
+
+/// `inode_maybe_inc_iversion` (Linux `include/linux/iversion.h`) — bump the
+/// change counter on a data/metadata modification, but ONLY when a reader has
+/// queried it since the last bump (the lazy NFS-friendly behaviour) unless
+/// `force`. Clears the QUERIED flag and adds `I_VERSION_INCREMENT` via cmpxchg.
+/// Returns `true` iff the stored version actually changed (`false` for no
+/// counter, or nobody queried and `!force`). # C: O(1) amortized
+pub fn inode_maybe_inc_iversion<I: Inode + ?Sized>(inode: &I, force: bool) -> bool {
+    use core::sync::atomic::Ordering;
+    let store = match inode.i_version_raw() { Some(v) => v, None => return false };
+    let mut cur = store.load(Ordering::Relaxed);
+    loop {
+        // Nobody queried since the last bump ⇒ a reader cannot observe the
+        // difference, so skip the write (Linux's lazy `i_version` optimization).
+        if !force && (cur & I_VERSION_QUERIED) == 0 { return false; }
+        let new = (cur & !I_VERSION_QUERIED) + I_VERSION_INCREMENT;
+        match store.compare_exchange_weak(cur, new, Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_)       => return true,
+            Err(actual) => cur = actual,
+        }
+    }
+}
+
+/// `inode_inc_iversion` (Linux) — unconditional counter bump (`force = true`).
+/// # C: O(1) amortized
+pub fn inode_inc_iversion<I: Inode + ?Sized>(inode: &I) { inode_maybe_inc_iversion(inode, true); }
+
+/// `inode_query_iversion` (Linux) — read the current version a change-detector
+/// compares against, AND latch the QUERIED flag so the next modification is
+/// guaranteed to bump. Returns the real version (`stored >> 1`); `0` for an
+/// inode without a counter. # C: O(1) amortized
+pub fn inode_query_iversion<I: Inode + ?Sized>(inode: &I) -> u64 {
+    use core::sync::atomic::Ordering;
+    let store = match inode.i_version_raw() { Some(v) => v, None => return 0 };
+    let mut cur = store.load(Ordering::Relaxed);
+    loop {
+        if (cur & I_VERSION_QUERIED) != 0 { break; }      // already latched
+        let new = cur | I_VERSION_QUERIED;
+        match store.compare_exchange_weak(cur, new, Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_)       => break,
+            Err(actual) => cur = actual,
+        }
+    }
+    cur >> I_VERSION_QUERIED_SHIFT
 }
 
 /// errno for a default (no-data-op) `read`/`write` keyed on the inode's
