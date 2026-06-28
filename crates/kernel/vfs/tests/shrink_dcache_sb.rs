@@ -8,7 +8,7 @@
 //! UNUSED (`d_count == 0`) dentry whose `d_sb` is the target sb, and leaves
 //! in-use dentries AND dentries of OTHER superblocks untouched.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use vfs::dcache::{dget, dput, shrink_dcache_sb};
 use vfs::fs::FileSystem;
@@ -42,6 +42,11 @@ fn sb() -> Arc<SuperBlock> {
     SuperBlock::for_backend(Arc::new(Fs), None, next_anon_dev(), String::from("shrinksb"))
 }
 
+// These tests share the process-global dcache LRU list; serialize so concurrent
+// d_add/dput LRU mutations from sibling tests can't race the per-sb eviction count.
+static SERIAL: Mutex<()> = Mutex::new(());
+fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_inner()) }
+
 /// Build a root dentry whose `d_sb` is `sb`; children inherit the sb.
 fn root_in(sb: &Arc<SuperBlock>) -> Arc<Dentry> {
     vfs::dcache::d_make_root(dir(1), sb)
@@ -51,6 +56,7 @@ fn root_in(sb: &Arc<SuperBlock>) -> Arc<Dentry> {
 // evicts every such dentry of the target sb and reports the count.
 #[test]
 fn evicts_all_unused_dentries_of_sb() {
+    let _g = guard();
     let sb = sb();
     let r = root_in(&sb);
     let mut kids = Vec::new();
@@ -71,6 +77,7 @@ fn evicts_all_unused_dentries_of_sb() {
 // An IN-USE dentry (d_count > 0) of the target sb is NOT evicted.
 #[test]
 fn in_use_dentry_survives() {
+    let _g = guard();
     let sb = sb();
     let r = root_in(&sb);
     let pinned = vfs::dcache::d_add_negative(&r, "pinned");
@@ -88,6 +95,7 @@ fn in_use_dentry_survives() {
 // Dentries of a DIFFERENT superblock are left untouched.
 #[test]
 fn other_sb_dentries_untouched() {
+    let _g = guard();
     let sb_a = sb();
     let sb_b = sb();
     let ra = root_in(&sb_a);
