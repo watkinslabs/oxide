@@ -146,5 +146,5 @@ impl Inode for QueueDirInode {
 /// no further work.
 /// # C: O(1)
 pub fn init() {
-    devfs::register("/sys/block", Arc::new(SysBlockInode) as InodeRef);
+    crate::register("/sys/block", Arc::new(SysBlockInode) as InodeRef);
 }

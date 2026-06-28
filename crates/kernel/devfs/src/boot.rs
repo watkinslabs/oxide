@@ -18,12 +18,9 @@ pub fn set_dir_overlay(f: fn(&[u8], &mut dyn FnMut(&[u8], FileType))) {
 /// overlay. Boot, once (idempotent — re-registration overwrites).
 /// # C: O(N nodes)
 pub fn populate_defaults() {
-    // /sys/fs/cgroup is the cgroupfs mount point — it has no registered leaves,
-    // so create the dir chain explicitly or the mount can't be walked to.
-    crate::register_dir("/sys/fs/cgroup");
-    crate::register_dir("/sys/fs/bpf");
-    crate::register_dir("/sys/fs/pstore");
-    crate::register_dir("/sys/kernel/security");
+    // The `/sys/*` mount-point dirs (cgroup/bpf/pstore/security/tracing/debug)
+    // are created in sysfs's OWN tree by `sysfs::init` (D1c) — devfs no longer
+    // writes into the `/sys` subtree.
     // /dev/shm is the POSIX-shm tmpfs mount point (devtmpfs ships it); create
     // the underlay dir so the boot tmpfs mount resolves its mountpoint dentry
     // (the mount engine takes the walked dentry, no path-string resolve).

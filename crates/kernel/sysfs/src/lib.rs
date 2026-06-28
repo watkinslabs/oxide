@@ -17,6 +17,9 @@ use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 pub mod block;
 pub mod bus;
 pub mod net_stats;
+pub mod root;
+
+pub use root::{register, register_dir, sys_root, SYSFS_FSID};
 
 const ARPHRD_LOOPBACK: u16 = 772;
 const ARPHRD_ETHER:    u16 =   1;
@@ -460,13 +463,24 @@ impl<'a> core::fmt::Write for VecFmt<'a> {
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    devfs::register("/sys/class/net",
+    // Mount-point dirs that other filesystems mount onto (cgroup2, bpf,
+    // pstore, securityfs). They must exist as walkable dentries in sysfs's
+    // own tree BEFORE those mounts attach (moved here from devfs::boot —
+    // devfs can't depend on sysfs without a cycle). # C: O(1)
+    register_dir("/sys/fs/cgroup");
+    register_dir("/sys/fs/bpf");
+    register_dir("/sys/fs/pstore");
+    register_dir("/sys/kernel/security");
+    // tracefs/debugfs mount points (content lives in tracefs's own roots).
+    register_dir("/sys/kernel/tracing");
+    register_dir("/sys/kernel/debug");
+    register("/sys/class/net",
         Arc::new(SysClassNetInode) as InodeRef);
-    devfs::register("/sys/devices/virtual/net",
+    register("/sys/devices/virtual/net",
         Arc::new(SysDevicesVirtualNetInode) as InodeRef);
-    devfs::register("/sys/class/tty",
+    register("/sys/class/tty",
         Arc::new(SysClassTtyInode) as InodeRef);
-    devfs::register("/sys/devices/virtual/tty",
+    register("/sys/devices/virtual/tty",
         Arc::new(SysDevicesVirtualTtyInode) as InodeRef);
     bus::init();
     block::init();
@@ -485,11 +499,11 @@ impl vfs::fs::FileSystem for SysfsFs {
     /// SYSFS_MAGIC (linux/magic.h).
     /// # C: O(1)
     fn magic(&self) -> u64 { 0x6265_6572 }
-    /// Mount root = the `/sys` `DevDir` (devfs-backed). The walk crosses
-    /// into the sysfs mount and resolves `/sys/*` per-component via
-    /// `DevDir::lookup` + the dynamic `SysClassNetInode::lookup`.
+    /// Mount root = sysfs's OWN `kernfs::PseudoDir` (`SYS_ROOT`). The walk
+    /// crosses into the sysfs mount and resolves `/sys/*` per-component via
+    /// `PseudoDir::lookup` + the dynamic `SysClassNetInode::lookup`.
     /// # C: O(1)
-    fn root(&self) -> Option<InodeRef> { devfs::lookup_no_chroot("/sys") }
+    fn root(&self) -> Option<InodeRef> { Some(sys_root() as InodeRef) }
 }
 
 /// Singleton accessor for the mount table.

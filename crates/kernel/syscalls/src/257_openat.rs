@@ -130,11 +130,10 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
         if path_str.contains("domainname") || path_str.contains("osrelease")
             || path_str.contains("cap_last_cap")
         {
-            // Isolate the failure layer: ns of the caller + whether a DIRECT
-            // devfs::lookup finds it (resolve() bug if dl=1; devfs ns/chroot
-            // bug if dl=0).
+            // Isolate the failure layer: ns of the caller + whether the namei
+            // walk finds it (resolve() bug if dl=1; ns/chroot bug if dl=0).
             let ns = sched::live::current().map(|c| c.mount_ns.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
-            let dl = if devfs::lookup(path_str).is_some() { 1u64 } else { 0 };
+            let dl = if crate::pathresolve::resolve(path_str, false).is_some() { 1u64 } else { 0 };
             let mut tag = alloc::string::String::from(path_str);
             tag.push_str(" ns=");
             tag.push_str(&alloc::format!("{}", ns));

@@ -209,12 +209,12 @@ impl Inode for DriverDirInode {
 /// resolve through these dynamic inodes immediately.
 /// # C: O(1)
 pub fn init() {
-    devfs::register("/sys/bus/pci/devices",    Arc::new(BusDevicesInode { bus: "pci" }) as InodeRef);
-    devfs::register("/sys/bus/pci/drivers",    Arc::new(BusDriversInode { bus: "pci" }) as InodeRef);
-    devfs::register("/sys/bus/virtio/devices", Arc::new(BusDevicesInode { bus: "virtio" }) as InodeRef);
-    devfs::register("/sys/bus/virtio/drivers", Arc::new(BusDriversInode { bus: "virtio" }) as InodeRef);
-    devfs::register("/sys/devices/pci0000:00", Arc::new(DevicesRootInode { bus: "pci" }) as InodeRef);
-    devfs::register("/sys/devices/virtio",     Arc::new(DevicesRootInode { bus: "virtio" }) as InodeRef);
+    crate::register("/sys/bus/pci/devices",    Arc::new(BusDevicesInode { bus: "pci" }) as InodeRef);
+    crate::register("/sys/bus/pci/drivers",    Arc::new(BusDriversInode { bus: "pci" }) as InodeRef);
+    crate::register("/sys/bus/virtio/devices", Arc::new(BusDevicesInode { bus: "virtio" }) as InodeRef);
+    crate::register("/sys/bus/virtio/drivers", Arc::new(BusDriversInode { bus: "virtio" }) as InodeRef);
+    crate::register("/sys/devices/pci0000:00", Arc::new(DevicesRootInode { bus: "pci" }) as InodeRef);
+    crate::register("/sys/devices/virtio",     Arc::new(DevicesRootInode { bus: "virtio" }) as InodeRef);
 }
 
 // --- drv-hook callbacks the kernel wires via drv::set_*_hook --------------

@@ -418,6 +418,29 @@ mod tests {
     }
 
     #[test]
+    fn own_roots_are_isolated() {
+        // D1c property the shared ROOTS write-bus violated: a write into one
+        // fs's own root is NOT visible from another fs's root. Mirrors sysfs
+        // SYS_ROOT vs tracefs TRACE_ROOT (each `new_root`, distinct fsid).
+        let sys = PseudoDir::new_root(dir_ino("/sys"), 0x2, false);
+        let trace = PseudoDir::new_root(dir_ino("/sys/kernel/tracing"), 0x3, false);
+        // sysfs-style writers insert mount-relative (the "/sys" prefix stripped).
+        sys.insert_path("class/net", PseudoSymlink::new(10, 0x2, b"net") as InodeRef);
+        sys.insert_path("kernel/osrelease", PseudoSymlink::new(11, 0x2, b"v") as InodeRef);
+        // tracefs-style writer inserts into its OWN root.
+        trace.insert_path("current_tracer", PseudoSymlink::new(12, 0x3, b"nop") as InodeRef);
+        // Multi-component resolution from each own root.
+        assert!(sys.lookup_path("class/net").is_some());
+        assert!(sys.lookup_path("kernel/osrelease").is_some());
+        assert!(trace.lookup_path("current_tracer").is_some());
+        // Isolation: neither root sees the other's entries.
+        assert!(sys.lookup_path("current_tracer").is_none());
+        assert!(trace.lookup_path("class/net").is_none());
+        // Distinct identity (the per-fs st_dev the shared tree collapsed).
+        assert_ne!(sys.fsid(), trace.fsid());
+    }
+
+    #[test]
     fn remove_subtree_drops_branch() {
         let r = root();
         r.insert_path("/dev/pts/0", PseudoSymlink::new(8, 0, b"0") as InodeRef);

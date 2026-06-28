@@ -290,13 +290,13 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
         } else { None }
     };
     // Cap transition: root regains the full set on exec (unconditional —
-    // Linux applies this even with no file-caps; the devfs::lookup below only
-    // covers file-cap xattrs on devfs nodes, not ext4 binaries).
+    // Linux applies this even with no file-caps; the pathresolve below reads
+    // file-cap xattrs from the resolved inode, devfs node or ext4 binary).
     regain_root_caps_at_execve(cur);
     // F103: file capabilities — apply security.capability xattr from the
     // exec path's inode to the calling task's cap_permitted / cap_effective.
     if let Some(p) = exec_path_for_caps {
-        if let Some(inode) = devfs::lookup(&p) {
+        if let Some(inode) = crate::pathresolve::resolve(&p, true) {
             apply_file_caps_at_execve(&inode, cur);
         }
     }
@@ -568,7 +568,7 @@ pub(crate) fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u
     };
     regain_root_caps_at_execve(cur);
     if let Some(p) = exec_path_for_caps {
-        if let Some(inode) = devfs::lookup(&p) {
+        if let Some(inode) = crate::pathresolve::resolve(&p, true) {
             apply_file_caps_at_execve(&inode, cur);
         }
     }
