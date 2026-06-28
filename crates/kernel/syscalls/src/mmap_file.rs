@@ -37,6 +37,15 @@ impl FileBacking for InodeFileBacking {
     /// number of bytes copied into `dst` (may be short at end-of-
     /// file — the handler zero-fills the tail).
     fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, ()> {
+        // Per-inode address_space (Linux `i_mapping`): when the inode owns a
+        // frame-backed page cache (tmpfs/shmem), read THROUGH it so every
+        // mapper of this inode shares one address space (MM6) — not this
+        // backing's private `PageCache`. Inodes without an `i_mapping`
+        // (ext4 regular files, until they opt in) keep the per-backing cache
+        // path below.
+        if let Some(m) = self.inode.i_mapping() {
+            return m.read_at(off, dst);
+        }
         let mut written = 0usize;
         let inode_id = InodeId(self.inode.ino());
         // DIAG (debug-mount): every File-fault re-read of the libc .data/.bss

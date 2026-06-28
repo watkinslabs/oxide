@@ -21,7 +21,7 @@ use alloc::string::String;
 use alloc::collections::BTreeMap;
 
 use sync::{Spinlock, Inode as InodeClass, TaskList as TaskListClass};
-use vfs::{DeviceNodeInode, Devt, FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{AddressSpaceOps, DeviceNodeInode, Devt, FileType, Ino, Inode, InodeRef, KResult, VfsError};
 use vfs::superblock::SuperBlock;
 
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -226,19 +226,47 @@ impl Inode for TmpfsFileInode {
         Ok(())
     }
 
-    /// MAP_SHARED backing: hand back the inode's persistent frame for the
-    /// page at file offset `off` (page-aligned), allocating on first touch.
-    /// A shared mapping installs THIS pa (refcount-bumped), so user writes
-    /// land in the file's storage and are visible to read/write + peers.
-    /// # C: O(log N_pages)
-    fn mmap_shared_frame(&self, off: u64) -> Option<u64> {
-        let mut g = self.pages.lock();
-        ensure_page(&mut g, off / PG as u64)
-    }
+    /// `i_mapping` — this inode IS its own `address_space` (Linux shmem:
+    /// `inode->i_mapping` points at the inode's shmem mapping). The `pages`
+    /// frame set, keyed by page index and shared by every mapper, is exactly
+    /// that object. The default `mmap_shared_frame` now forwards through here,
+    /// so a shared mmap installs `AddressSpaceOps::shared_frame` directly.
+    /// # C: O(1)
+    fn i_mapping(&self) -> Option<&dyn AddressSpaceOps> { Some(self) }
 
     fn fcntl_seals(&self) -> Option<&core::sync::atomic::AtomicU32> {
         if self.sealable { Some(&self.seals) } else { None }
     }
+}
+
+/// The tmpfs inode's `address_space` (Linux shmem mapping). Persistent,
+/// frame-backed, per-inode, sparse (hole = zero) — every mapper of this
+/// inode shares THESE frames, so `MAP_SHARED` writes propagate to
+/// `read`/`write` and to all peers, and `fork` keeps the page shared
+/// (no COW-split) because the backing object, not the PTE, owns the frame.
+impl AddressSpaceOps for TmpfsFileInode {
+    /// MAP_SHARED backing: the inode's persistent frame for the page at file
+    /// offset `off` (page-aligned), allocating on first touch. A shared
+    /// mapping installs THIS pa (refcount-bumped), so user writes land in the
+    /// file's storage and are visible to read/write + peers.
+    /// # C: O(log N_pages)
+    fn shared_frame(&self, off: u64) -> Option<u64> {
+        let mut g = self.pages.lock();
+        ensure_page(&mut g, off / PG as u64)
+    }
+
+    /// Read-fault / MAP_PRIVATE fill: copy cache bytes (sparse holes read as
+    /// zero, tail past `i_size` short-reads) — the same bytes `Inode::read`
+    /// serves. # C: O(dst.len)
+    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, ()> {
+        Inode::read(self, off, dst).map_err(|_| ())
+    }
+
+    /// shmem pages ARE the store — nothing to flush. # C: O(1)
+    fn writeback(&self) -> Result<(), ()> { Ok(()) }
+
+    /// # C: O(1)
+    fn size(&self) -> u64 { self.len.load(Ordering::Acquire) }
 }
 
 /// Symlink-type tmpfs inode — stores the target text; `readlink` returns

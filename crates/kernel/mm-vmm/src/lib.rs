@@ -80,6 +80,11 @@ mod tests_rmap_cow;
 #[cfg(test)]
 mod tests_cow_isolation;
 
+// Phase C: per-inode address_space (i_mapping) + shmem MAP_SHARED/MAP_PRIVATE
+// fault behaviour against the production file-fault arms.
+#[cfg(test)]
+mod tests_pagecache;
+
 // fork+COW GLOBAL refcount-invariant proptest: refcount(pa) == live PTEs + base
 // across all ASes, asserted after every op over 200k randomized fork/COW/
 // munmap/teardown operations. Catches refcount UNDER-COUNT (free-while-mapped).

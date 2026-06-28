@@ -242,15 +242,28 @@ pub trait Inode: Send + Sync {
     /// ENOTTY when it is missing. Default = no extra lines. # C: O(1)
     fn fdinfo_extra(&self, _out: &mut alloc::vec::Vec<u8>) {}
 
+    /// `i_mapping` — the inode's `address_space` (Linux `inode->i_mapping`):
+    /// the ONE per-inode page cache, keyed by page index, shared by every
+    /// mapper of this inode. `Some` for inodes whose data lives in persistent
+    /// page-cache frames (tmpfs/shmem now; regular files as ext4 opts in);
+    /// `None` (default) for inodes without a frame-backed cache. The mmap
+    /// fault path and `InodeFileBacking` route through this so two `mmap()`s
+    /// of one inode share one address space (not two per-backing caches).
+    /// # C: O(1)
+    fn i_mapping(&self) -> Option<&dyn crate::mapping::AddressSpaceOps> { None }
+
     /// `MAP_SHARED` page-cache frame for page-aligned file offset `off`.
     /// Returns the persistent backing PMM frame so a shared mapping aliases
     /// the file's own storage (Linux shmem / page cache) — user writes
-    /// propagate to the file and to every other mapper. `None` (the default)
-    /// = no shareable frame, so the fault handler copies via `read` into a
-    /// fresh private frame (correct for `MAP_PRIVATE`; the only option for
-    /// backings without page-frame storage). tmpfs/memfd override this.
+    /// propagate to the file and to every other mapper. The default forwards
+    /// to `i_mapping()` (the per-inode address space): `Some(pa)` when the
+    /// inode has a frame-backed cache, else `None` → the fault handler copies
+    /// via `read` into a fresh private frame (correct for `MAP_PRIVATE`; the
+    /// only option for backings without page-frame storage).
     /// # C: O(log N_pages)
-    fn mmap_shared_frame(&self, _off: u64) -> Option<u64> { None }
+    fn mmap_shared_frame(&self, off: u64) -> Option<u64> {
+        self.i_mapping().and_then(|m| m.shared_frame(off))
+    }
 
     /// F181: per-Inode subscriber list for targeted epoll wakes.
     /// Default `None` falls back to the global epoll-broadcast wake
