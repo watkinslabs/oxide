@@ -21,6 +21,46 @@ pub enum FileType {
     Socket,
 }
 
+/// Linux `umode_t` — the unified mode word: `S_IFMT` type bits OR'd with the
+/// low-12 permission/setid/sticky bits. This is `i_mode` in Linux `struct
+/// inode`; the VFS `FileType` enum + `Inode::perm()` are its internal split.
+/// `Inode::i_mode()` (inode.rs) reassembles the umode_t view.
+pub type Umode = u16;
+
+/// `S_IF*` file-type bits (Linux `include/uapi/linux/stat.h`), canonical typed
+/// `Umode` defs for the whole vfs crate. The `u32` `Kstat`/ABI surface in
+/// `getattr` re-derives from these (single source of truth, no magic literals).
+pub const S_IFMT:   Umode = 0o170000;
+pub const S_IFSOCK: Umode = 0o140000;
+pub const S_IFLNK:  Umode = 0o120000;
+pub const S_IFREG:  Umode = 0o100000;
+pub const S_IFBLK:  Umode = 0o060000;
+pub const S_IFDIR:  Umode = 0o040000;
+pub const S_IFCHR:  Umode = 0o020000;
+pub const S_IFIFO:  Umode = 0o010000;
+
+/// Set-uid / set-gid / sticky bits (Linux `S_ISUID`/`S_ISGID`/`S_ISVTX`).
+/// `S_ISUID`/`S_ISGID` canonical defs live in `namei` (their consumer = the
+/// chown/chmod privilege-kill logic) and are re-exported there; `S_ISVTX`
+/// (sticky) is defined here. All three are `Umode`.
+pub const S_ISVTX: Umode = 0o1000;
+
+impl FileType {
+    /// `S_IFMT` type bits for this file type — the high half of the Linux
+    /// `umode_t`/`i_mode` word. Inverse of `i_mode & S_IFMT`. # C: O(1)
+    pub fn to_ifmt(&self) -> Umode {
+        match self {
+            FileType::Socket    => S_IFSOCK,
+            FileType::Symlink   => S_IFLNK,
+            FileType::Regular   => S_IFREG,
+            FileType::BlockDev  => S_IFBLK,
+            FileType::Directory => S_IFDIR,
+            FileType::CharDev   => S_IFCHR,
+            FileType::Fifo      => S_IFIFO,
+        }
+    }
+}
+
 bitflags::bitflags! {
     /// `open(2)` flag bits per `15§6.1`. Numeric values match Linux
     /// x86_64 exactly. Subset for v1; expand alongside their first

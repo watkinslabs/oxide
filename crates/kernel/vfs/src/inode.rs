@@ -321,6 +321,19 @@ pub trait Inode: Send + Sync {
     /// # C: O(1)
     fn perm(&self) -> Option<u16> { None }
 
+    /// Linux `umode_t` view (`i_mode` in `struct inode`): the `S_IFMT` type
+    /// bits (`file_type().to_ifmt()`) OR'd with the low-12 permission bits in
+    /// ONE value. `perm() == None` (pseudo-fs default-allow) falls back to the
+    /// same `default_perm_for(file_type())` `generic_fillattr` uses, so
+    /// `i_mode()` and the `Kstat.mode` low bits agree for any inode without a
+    /// kernel `inode_times` overlay (the overlay is a syscall-layer concern
+    /// outside the inode, so it does not enter this pure-inode view).
+    /// # C: O(1)
+    fn i_mode(&self) -> crate::types::Umode {
+        let ft = self.file_type();
+        ft.to_ifmt() | self.perm().unwrap_or_else(|| crate::getattr::default_perm_for(ft))
+    }
+
     /// Device number (`dev_t`, packed `(major<<8)|minor` Linux legacy
     /// encoding) for a char/block device node. `0` = not a device / no
     /// number. Linux devtmpfs nodes carry their real `dev_t` from the
