@@ -189,15 +189,19 @@ fn may_lookup(inode: &InodeRef, cred: &Cred) -> KResult<()> {
 }
 
 /// `may_open` (Linux `fs/namei.c`): DAC check for opening `inode` with the
-/// requested read/write access. Writing to a directory is `EISDIR`; otherwise
-/// the requested access classes are checked via `inode_permission` (EACCES on
-/// deny). The EROFS-on-RO-mount and O_CREAT parent checks live at the syscall
-/// layer (they need the resolved mount + parent inode). A freshly O_CREAT'd
-/// file skips this entirely (Linux sets acc_mode=0), as does an O_PATH open.
-/// # C: O(ngroups)
+/// requested read/write access. A SYMLINK final inode is `ELOOP` — it only
+/// reaches `may_open` when `open(O_NOFOLLOW)` (without `O_PATH`) left the
+/// trailing symlink unfollowed (Linux `may_open` `case S_IFLNK: return -ELOOP`).
+/// Writing to a directory is `EISDIR`; otherwise the requested access classes
+/// are checked via `inode_permission` (EACCES on deny). The EROFS-on-RO-mount
+/// and O_CREAT parent checks live at the syscall layer (they need the resolved
+/// mount + parent inode). A freshly O_CREAT'd file skips this entirely (Linux
+/// sets acc_mode=0), as does an O_PATH open. # C: O(ngroups)
 pub fn may_open(inode: &InodeRef, want_read: bool, want_write: bool, cred: &Cred) -> KResult<()> {
-    if want_write && matches!(inode.file_type(), FileType::Directory) {
-        return Err(VfsError::Eisdir);
+    match inode.file_type() {
+        FileType::Symlink => return Err(VfsError::Eloop),
+        FileType::Directory if want_write => return Err(VfsError::Eisdir),
+        _ => {}
     }
     let mut mask = 0u32;
     if want_read  { mask |= MAY_READ; }
