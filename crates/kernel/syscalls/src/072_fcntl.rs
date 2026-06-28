@@ -26,7 +26,6 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_SEAL_WRITE: u32 = 0x0008;
     const F_SEAL_FUTURE_WRITE: u32 = 0x0010;
     const F_GETOWN: u64 = 9; const F_SETOWN: u64 = 8;
-    const SETTABLE_FL: u32 = 0o4_004_000 | 0o0_004_000; // O_APPEND | O_NONBLOCK
     let fd = args.a0 as i32; let cmd = args.a1; let arg = args.a2;
     let ebadf = -(Errno::Ebadf.as_i32() as i64);
     let cur = match sched::live::current() { Some(c) => c, None => return ebadf };
@@ -49,8 +48,10 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         },
         F_GETFL => file.flags().bits() as i64,
         F_SETFL => {
-            let nb = (file.flags().bits() & !SETTABLE_FL) | ((arg as u32) & SETTABLE_FL);
-            file.set_flags(vfs::OpenFlags::from_bits_retain(nb));
+            // SETFL masking (preserve access mode + creation flags, update only
+            // O_APPEND/O_NONBLOCK/O_DIRECT/O_NOATIME) lives in the VFS work fn
+            // `File::set_fl` per `53§3`; the shim forwards the raw `arg`.
+            file.set_fl(vfs::OpenFlags::from_bits_retain(arg as u32));
             0
         }
         F_GETPIPE_SZ => match file.inode().as_any().and_then(|a| a.downcast_ref::<fs::pipe::PipeInode>()) {

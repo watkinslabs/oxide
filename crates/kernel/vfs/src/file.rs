@@ -52,6 +52,21 @@ bitflags::bitflags! {
 /// `from_bits_retain`) for the gate to see it.
 const O_PATH: u32 = 0o10000000;
 
+/// `O_DIRECT` (asm-generic, 0o40000) and `O_NOATIME` (0o1000000) — settable
+/// via `F_SETFL` but not declared in `OpenFlags` (no in-`vfs` consumer yet),
+/// so they're matched here by raw value so the mask can preserve/update them
+/// exactly like Linux. `O_NDELAY` aliases `O_NONBLOCK` on both arches.
+const O_DIRECT:  u32 = 0o40000;
+const O_NOATIME: u32 = 0o1000000;
+
+/// Linux `SETFL_MASK` (`fs/fcntl.c`): the only `f_flags` bits `fcntl(F_SETFL)`
+/// may change on an already-open file description. The access mode
+/// (`O_RDONLY`/`O_WRONLY`/`O_RDWR`) and the creation-time flags
+/// (`O_CREAT`/`O_EXCL`/`O_TRUNC`/`O_CLOEXEC`/`O_DIRECTORY`/…) are fixed at open
+/// and silently ignored by `F_SETFL`, so they are excluded here.
+const SETFL_MASK: u32 =
+    OpenFlags::O_APPEND.bits() | OpenFlags::O_NONBLOCK.bits() | O_DIRECT | O_NOATIME;
+
 /// Map an open's access mode (`O_RDONLY`/`O_WRONLY`/`O_RDWR`) to the
 /// canonical `Fmode` capability bits. Mirrors Linux `OPEN_FMODE`. An `O_PATH`
 /// open yields `FMODE_PATH` only (no read/write) regardless of the access-mode
@@ -398,6 +413,23 @@ impl File {
     /// # C: O(1)
     pub fn set_flags(&self, f: OpenFlags) {
         self.flags.store(f.bits(), Ordering::Release);
+    }
+
+    /// `fcntl(F_SETFL, arg)` (Linux `setfl`): update ONLY the `SETFL_MASK`
+    /// bits (`O_APPEND`/`O_NONBLOCK`/`O_DIRECT`/`O_NOATIME`) of `f_flags`
+    /// from `arg`, preserving the access mode and the creation-time flags
+    /// which are fixed for the life of the open file description. The caller
+    /// passes the full requested flag word (as glibc/musl forward the user's
+    /// `arg` verbatim); the masking is done here so the syscall shim carries
+    /// no flag logic (`53§3`). Returns the resulting `f_flags`. Concurrent
+    /// `F_SETFL` on a shared description is last-writer-wins on the atomic,
+    /// matching Linux's `f_lock`-guarded single store.
+    /// # C: O(1)
+    pub fn set_fl(&self, arg: OpenFlags) -> OpenFlags {
+        let old = self.flags.load(Ordering::Acquire);
+        let new = (arg.bits() & SETFL_MASK) | (old & !SETFL_MASK);
+        self.flags.store(new, Ordering::Release);
+        OpenFlags::from_bits_retain(new)
     }
 
     /// `read(2)` — advances the cursor by the byte count returned by
