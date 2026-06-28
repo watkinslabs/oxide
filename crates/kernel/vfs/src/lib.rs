@@ -30,6 +30,7 @@ pub mod fdtable;
 pub mod file;
 pub mod inode;
 pub mod inode_times;
+pub mod mapping;
 pub mod namei;
 pub mod path;
 pub mod fs;
@@ -49,6 +50,7 @@ pub use path::{path_from_bytes, path_into_bytes};
 pub use fdtable::{FdTable, FD_TABLE_MAX};
 pub use file::{File, Fmode, SeekFrom, fire_clone_hook, fire_dirent_create, fire_dirent_delete, set_clone_hook, set_close_hook, set_dirent_create_hook, set_dirent_delete_hook, set_drop_hook, set_open_hook, set_read_hook, set_write_hook};
 pub use inode::{Inode, InodeRef, I_DIRTY, I_NEW, I_FREEING, POLL_IN, POLL_OUT, POLL_HUP, POLL_ERR, POLL_PRI, POLL_RDHUP};
+pub use mapping::AddressSpaceOps;
 pub use types::{FileMode, FileType, Ino, KResult, OpenFlags, PollMask, StatxMask, VfsError};
 pub use poll_subs::{EpollNotify, PollSubscribers};
 
