@@ -5,6 +5,34 @@
 
 use alloc::vec::Vec;
 
+use crate::types::FileType;
+
+/// `DT_*` directory-entry type tags (Linux `include/uapi/linux/fcntl.h` via
+/// `include/linux/fs_types.h`). These land in `linux_dirent64.d_type` (offset
+/// 18) / `linux_dirent`'s trailing byte and tell `ls`/`readdir(3)` the child's
+/// type without a per-entry `stat`. Numerically `DT_x == (S_IFx >> 12)` — the
+/// Linux `IFTODT` shift — so the type byte is derivable straight from the
+/// inode's `S_IFMT` bits (`dtype_from_file_type`).
+pub const DT_UNKNOWN: u8 = 0;
+pub const DT_FIFO:    u8 = 1;
+pub const DT_CHR:     u8 = 2;
+pub const DT_DIR:     u8 = 4;
+pub const DT_BLK:     u8 = 6;
+pub const DT_REG:     u8 = 8;
+pub const DT_LNK:     u8 = 10;
+pub const DT_SOCK:    u8 = 12;
+
+/// Map a VFS `FileType` to its `linux_dirent*` `d_type` byte. Linux derives
+/// this from the inode mode with `IFTODT(mode) = (mode & S_IFMT) >> 12`; we
+/// reuse `FileType::to_ifmt` as the single source of truth for the `S_IFMT`
+/// bits so the dirent type byte can never drift from `stat`'s mode word. The
+/// emitter (`getdents`/`getdents64`) packs this instead of a hand-rolled
+/// `DT_REG == 8` match, so no magic literals leak into the syscall shim.
+/// # C: O(1)
+pub fn dtype_from_file_type(ft: FileType) -> u8 {
+    (ft.to_ifmt() >> 12) as u8
+}
+
 /// Linux `linux_dirent64` record layout:
 ///
 /// ```text

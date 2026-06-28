@@ -63,15 +63,7 @@ fn getdents_common(args: &SyscallArgs, legacy: bool) -> i64 {
             if written == 0 { overflow_first = true; }
             return false;
         }
-        let dt: u8 = match ft {
-            FileType::Regular   => 8,
-            FileType::Directory => 4,
-            FileType::CharDev   => 2,
-            FileType::BlockDev  => 6,
-            FileType::Symlink   => 10,
-            FileType::Fifo      => 1,
-            FileType::Socket    => 12,
-        };
+        let dt: u8 = vfs::dirent::dtype_from_file_type(ft);
         let mut tmp = [0u8; 320];
         let n = if legacy {
             vfs::dirent_pack(&mut tmp[..reclen], d_ino, cookie, dt, name.as_bytes())
