@@ -57,6 +57,24 @@ pub(crate) fn detach_mounts_on(d: &Arc<Dentry>) -> usize {
     removed
 }
 
+/// Like [`super::descend`] but resolves to the MOUNTPOINT dentry of `rel`'s
+/// final component WITHOUT crossing a mount attached there — intermediate
+/// components still cross. propagate_umount needs the mirror's mountpoint (so
+/// [`unregister`] → `mount_exact_at` finds the mirror mount); a plain `descend`
+/// would cross INTO the now-present mirror and return its root, which is not a
+/// mountpoint. `rel` empty ⇒ `base`. # C: O(components)
+fn descend_mountpoint(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
+    let comps: Vec<&str> = rel.split('/').filter(|c| !c.is_empty()).collect();
+    let Some((last, parents)) = comps.split_last() else { return Some(base.clone()); };
+    let parent = if parents.is_empty() { base.clone() }
+                 else { super::descend(base, &parents.join("/"))? };
+    let pinode = parent.inode()?;
+    match crate::dcache::d_lookup(&parent, last) {
+        Some(d) if !d.is_negative() => Some(d),
+        _ => { let ci = pinode.lookup(last).ok()?; Some(crate::dcache::d_add(&parent, last, ci)) }
+    }
+}
+
 /// Re-point the dentry crossing link to the new hash top after a detach.
 /// # C: O(log N)
 fn rewire_crossing_top(ns: u64, d: &Arc<Dentry>, parent: u64) {
@@ -83,8 +101,13 @@ pub fn unregister_top(d: &Arc<Dentry>, detach_subtree: bool) -> usize {
                     for peer in propagation_targets(&parent) {
                         if peer.ns != ns { continue; }
                         let base = match peer.mountpoint().or_else(global_root) { Some(b) => b, None => continue };
-                        if let Some(mirror) = descend(&base, &rel) {
-                            let _ = unregister(&mirror);
+                        // Resolve the mirror's MOUNTPOINT dentry WITHOUT the
+                        // final cross: the mirror is mounted there, so a crossing
+                        // `descend` would return the mirror ROOT — not a
+                        // mountpoint, so `unregister`'s `mount_exact_at` could not
+                        // find the mount and the peer mirror would leak.
+                        if let Some(mp) = descend_mountpoint(&base, &rel) {
+                            let _ = unregister(&mp);
                         }
                     }
                 }

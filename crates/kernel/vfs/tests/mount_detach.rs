@@ -86,6 +86,31 @@ fn unregister_detaches_propagated_mirror() {
     assert!(common::mount_at_path_exact("/sa/x").is_none(), "primary gone");
 }
 
+// (4) propagate_umount: `unregister_top` of a mount under a SHARED parent must
+// ALSO detach the propagated mirror at every peer (Linux `propagate_umount`),
+// without the caller umounting the mirror by hand. Guards the descend-crossing
+// asymmetry: at create the mirror dentry is bare (descend lands on it), but at
+// umount the mirror is mounted there, so a crossing descend lands on the mirror
+// ROOT (not a mountpoint) and `unregister` cannot find the mount.
+#[test]
+fn unregister_top_propagates_umount_to_peer_mirror() {
+    let _g = guard();
+    vfs::mount::set_current_ns_provider(|| 0xD4);
+    common::register("/", fs(0x1)).expect("root");
+    common::register("/sa", fs(0xA)).expect("sa");
+    common::set_propagation("/sa", Propagation::Shared).expect("share sa");
+    let pg = common::peer_group_of("/sa");
+    common::register("/sb", fs(0xB)).expect("sb");
+    common::join_peer_group("/sb", pg);                 // peer of sa
+    common::register("/sa/x", fs(0x11)).expect("under sa");
+    assert_eq!(common::propagate_mount("/sa/x"), 1, "mirrored to one peer");
+    assert!(common::mount_at_path_exact("/sb/x").is_some(), "peer mirror present pre-umount");
+    // Detach the primary; propagate_umount must take the peer mirror with it.
+    assert_eq!(vfs::mount::unregister_top(&common::dentry("/sa/x"), false), 1, "primary detached");
+    assert!(common::mount_at_path_exact("/sa/x").is_none(), "primary gone");
+    assert!(common::mount_at_path_exact("/sb/x").is_none(), "peer mirror detached by propagate_umount");
+}
+
 // (3) unregister_top refuses to detach the namespace root mount (returns 0).
 #[test]
 fn unregister_top_refuses_ns_root() {
