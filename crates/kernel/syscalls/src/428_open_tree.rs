@@ -36,10 +36,10 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
                 return -(Errno::Enoent.as_i32() as i64);
             }
         };
-        let root = match mnt.root.clone().or_else(|| mnt.fs.root()) {
+        let root = match mnt.root.clone().or_else(|| mnt.fs().root()) {
             Some(r) => r, None => return -(Errno::Einval.as_i32() as i64),
         };
-        let mo = MountObjectInode::new_clone(mnt.fs.clone(), root) as InodeRef;
+        let mo = MountObjectInode::new_clone(mnt.fs().clone(), root) as InodeRef;
         return install_fd(mo, "open_tree", cloexec);
     }
     // Non-clone: an fd referring to the path's inode (O_PATH-ish).

@@ -54,7 +54,7 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
         if (lm.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
             return -(Errno::Erofs.as_i32() as i64);
         }
-        return match lm.fs.link_inode(inode.clone(), &l) {
+        return match lm.fs().link_inode(inode.clone(), &l) {
             Ok(())  => 0,
             Err(e)  => errno_from_vfs(e),
         };
@@ -79,7 +79,7 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
     if tm.mnt_id != lm.mnt_id {
         return -(Errno::Exdev.as_i32() as i64);
     }
-    match tm.fs.link(&t, &l) {
+    match tm.fs().link(&t, &l) {
         Ok(())  => 0,
         Err(e)  => errno_from_vfs(e),
     }

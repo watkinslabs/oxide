@@ -56,7 +56,7 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     if !alloc::sync::Arc::ptr_eq(&mnt_f, &mnt_t) {
         return -(Errno::Exdev.as_i32() as i64);
     }
-    match mnt_f.fs.rename(&rel_f, &rel_t) {
+    match mnt_f.fs().rename(&rel_f, &rel_t) {
         // d_delete both names: the source name is gone and the dest name now
         // resolves to a different inode — drop stale cached dentries for both.
         Ok(())  => { crate::pathresolve::d_delete_path(&f); crate::pathresolve::d_delete_path(&t); 0 }

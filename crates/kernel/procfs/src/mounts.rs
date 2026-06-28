@@ -19,7 +19,7 @@ fn build_mounts() -> Vec<u8> {
     use core::sync::atomic::Ordering;
     let mut s = String::new();
     for m in vfs::mount::snapshot() {
-        let mut line = m.fs.mounts_line(m.mount_point_str());
+        let mut line = m.fs().mounts_line(m.mount_point_str());
         if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
             if let Some(idx) = line.find(" rw,") {
                 line.replace_range(idx..idx + 4, " ro,");
@@ -50,7 +50,7 @@ fn build_mountinfo() -> Vec<u8> {
         // scan. Root mounts render parent 0 (Linux mountinfo: the root has no
         // parent mount), every other mount its real parent mnt_id.
         let parent = if m.is_root() { 0 } else { vfs::mount::parent_mnt_id(&m) };
-        let name = m.fs.name();
+        let name = m.fs().name();
         let pg = m.peer_group.load(Ordering::Acquire);
         let rw = if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
             "ro"
