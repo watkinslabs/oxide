@@ -18,7 +18,7 @@ use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::any::Any;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use sync::{RwLock, Spinlock, Superblock as SbClass};
 
@@ -78,6 +78,15 @@ pub const MAX_LFS_FILESIZE: u64 = i64::MAX as u64;
 /// the per-second denominator [`SuperBlock::timestamp_truncate`] floors the
 /// sub-second field against. # C: O(1)
 pub const NSEC_PER_SEC: u64 = 1_000_000_000;
+
+/// `TIME64_MIN`/`TIME64_MAX` (Linux include/linux/time64.h) — the widest
+/// representable `time64_t` seconds-since-epoch range, the default
+/// `s_time_min`/`s_time_max` `alloc_super` installs before a backend narrows it
+/// to its on-disk timestamp field width (ext4 32-bit: 1901..2446). With these
+/// defaults [`SuperBlock::timestamp_truncate`]'s clamp is a no-op. # C: O(1)
+pub const TIME64_MIN: i64 = i64::MIN;
+/// See [`TIME64_MIN`]. # C: O(1)
+pub const TIME64_MAX: i64 = i64::MAX;
 
 /// Placeholder backend for an `s_fs`-less superblock built via
 /// [`SuperBlock::new`] (the object-model unit tests). Production superblocks
@@ -195,6 +204,20 @@ pub struct SuperBlock {
     /// this struct's other mount-time-mutable fields and allow a remount/fill to
     /// publish it without rebuilding the SB. # consumers: inode setattr rounding.
     s_time_gran: AtomicU32,
+    /// `s_time_min` — earliest seconds-since-epoch this fs can store (Linux
+    /// `sb->s_time_min`). A backend whose on-disk timestamp field is narrower
+    /// than `time64_t` (ext4 = -0x80000000 ≈ year 1901) publishes it at
+    /// `fill_super` ([`SuperBlock::set_time_range`]); [`Self::timestamp_truncate`]
+    /// CLAMPS a setattr time up to it so an out-of-range timestamp is pinned to
+    /// the representable floor rather than wrapping on disk. Default
+    /// [`TIME64_MIN`] (no clamp). # consumers: inode setattr clamping.
+    s_time_min: AtomicI64,
+    /// `s_time_max` — latest seconds-since-epoch this fs can store (Linux
+    /// `sb->s_time_max`; ext4 32-bit = 0x37fffffff ≈ year 2446). The upper
+    /// counterpart to [`Self::s_time_min`]: [`Self::timestamp_truncate`] clamps a
+    /// future-dated setattr DOWN to it. Default [`TIME64_MAX`] (no clamp).
+    /// # consumers: inode setattr clamping.
+    s_time_max: AtomicI64,
     /// `s_writers.frozen` — current freeze level (`SB_UNFROZEN`..`SB_FREEZE_COMPLETE`).
     /// `freeze_super`/`thaw_super` ratchet it; `sb_start_write` gates on it.
     s_writers_frozen: AtomicU32,
@@ -270,6 +293,8 @@ impl SuperBlock {
             s_active: AtomicU32::new(1),
             s_maxbytes: MAX_LFS_FILESIZE,
             s_time_gran: AtomicU32::new(1),
+            s_time_min: AtomicI64::new(TIME64_MIN),
+            s_time_max: AtomicI64::new(TIME64_MAX),
             s_writers_frozen: AtomicU32::new(SB_UNFROZEN),
             s_writers_count: AtomicU32::new(0),
             s_id,
@@ -307,6 +332,8 @@ impl SuperBlock {
             s_active: AtomicU32::new(1),
             s_maxbytes: MAX_LFS_FILESIZE,
             s_time_gran: AtomicU32::new(1),
+            s_time_min: AtomicI64::new(TIME64_MIN),
+            s_time_max: AtomicI64::new(TIME64_MAX),
             s_writers_frozen: AtomicU32::new(SB_UNFROZEN),
             s_writers_count: AtomicU32::new(0),
             s_id,
@@ -748,22 +775,55 @@ impl SuperBlock {
         self.s_time_gran.store(if gran == 0 { 1 } else { gran }, Ordering::Release);
     }
 
+    /// `s_time_min` — earliest representable seconds-since-epoch. # C: O(1)
+    pub fn s_time_min(&self) -> i64 { self.s_time_min.load(Ordering::Acquire) }
+
+    /// `s_time_max` — latest representable seconds-since-epoch. # C: O(1)
+    pub fn s_time_max(&self) -> i64 { self.s_time_max.load(Ordering::Acquire) }
+
+    /// Publish the fs timestamp range (Linux `fill_super` writing
+    /// `sb->s_time_min`/`sb->s_time_max` from the on-disk timestamp field width).
+    /// A backend whose epoch window is narrower than `time64_t` calls this once
+    /// after [`SuperBlock::for_backend`] so [`Self::timestamp_truncate`] clamps
+    /// out-of-range setattr times. `min > max` is normalized by swapping so the
+    /// clamp window is never inverted. # C: O(1)
+    pub fn set_time_range(&self, min: i64, max: i64) {
+        let (min, max) = if min > max { (max, min) } else { (min, max) };
+        self.s_time_min.store(min, Ordering::Release);
+        self.s_time_max.store(max, Ordering::Release);
+    }
+
     /// `timestamp_truncate` (Linux fs/inode.c): round a wall-clock timestamp
     /// (`t_ns`, nanoseconds since the epoch — the inode atime/mtime/ctime
-    /// representation) DOWN to this superblock's `s_time_gran`, so a setattr
-    /// never records sub-granularity precision the backend cannot persist.
-    /// `gran <= 1` is the identity (full ns); `gran >= NSEC_PER_SEC` floors to a
-    /// whole second; an in-between granularity truncates the sub-second
-    /// remainder to a `gran` multiple. Truncation is confined to the sub-second
-    /// field (Linux truncates `tv_nsec` only), so a coarse `gran` whose value is
-    /// not a divisor of `NSEC_PER_SEC` never perturbs the seconds count.
-    /// # C: O(1)
+    /// representation) DOWN to this superblock's `s_time_gran`, THEN clamp the
+    /// seconds field to `[s_time_min, s_time_max]`, so a setattr never records
+    /// either sub-granularity precision OR an out-of-epoch-window timestamp the
+    /// backend cannot persist. `gran <= 1` is the granularity identity (full ns);
+    /// `gran >= NSEC_PER_SEC` floors to a whole second; an in-between granularity
+    /// truncates the sub-second remainder to a `gran` multiple. The granularity
+    /// truncation is confined to the sub-second field (Linux truncates `tv_nsec`
+    /// only). The range clamp pins an out-of-window time to the boundary second
+    /// with a zeroed sub-second field (Linux sets `tv_nsec = 0` when it clamps);
+    /// with the default [`TIME64_MIN`]/[`TIME64_MAX`] window it is a no-op. Since
+    /// `t_ns` is unsigned (≥ epoch), the floor clamp only fires for a backend
+    /// whose `s_time_min` is itself post-epoch. # C: O(1)
     pub fn timestamp_truncate(&self, t_ns: u64) -> u64 {
         let gran = self.s_time_gran() as u64;
-        if gran <= 1 { return t_ns; }
         let sec = t_ns / NSEC_PER_SEC;
         let nsec = t_ns % NSEC_PER_SEC;
-        let nsec = if gran >= NSEC_PER_SEC { 0 } else { nsec - nsec % gran };
+        let nsec = if gran <= 1 { nsec }
+                   else if gran >= NSEC_PER_SEC { 0 }
+                   else { nsec - nsec % gran };
+        let sec_i = sec as i64; // t_ns unsigned ⇒ sec_i ≥ 0
+        let smax = self.s_time_max();
+        if sec_i > smax {
+            return if smax < 0 { 0 } else { (smax as u64).saturating_mul(NSEC_PER_SEC) };
+        }
+        let smin = self.s_time_min();
+        if sec_i < smin {
+            // Reachable only when smin > 0 (sec_i ≥ 0); the floor is post-epoch.
+            return (smin as u64).saturating_mul(NSEC_PER_SEC);
+        }
         sec * NSEC_PER_SEC + nsec
     }
 
