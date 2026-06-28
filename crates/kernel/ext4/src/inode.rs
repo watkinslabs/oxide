@@ -46,6 +46,13 @@ pub struct Inode {
     pub mode:        u16,
     pub size:        u64,
     pub links_count: u16,
+    /// On-disk `i_blocks` in 512-byte sectors (Linux `i_blocks_lo` @0x1C
+    /// merged with `l_i_blocks_high` @0x74). The REAL allocation count —
+    /// includes extent-tree metadata blocks and preallocated/`fallocate`d
+    /// extents, so it diverges from `ceil(size / blocksize)` for sparse or
+    /// preallocated files. Drives `st_blocks` (`getattr`) exactly as Linux
+    /// `ext4_getattr`, not the size-derived `blocks_for` estimate.
+    pub i_blocks:    u64,
     /// Inline extent tree root + leaves (60 bytes verbatim).
     pub i_block:     [u8; I_BLOCK_LEN],
 }
@@ -62,6 +69,13 @@ impl Inode {
         let mode  = u16::from_le_bytes([buf[0x00], buf[0x01]]);
         let size_lo = u32::from_le_bytes([buf[0x04], buf[0x05], buf[0x06], buf[0x07]]) as u64;
         let links = u16::from_le_bytes([buf[0x1A], buf[0x1B]]);
+        // i_blocks_lo @0x1C (512-byte sectors) + l_i_blocks_high @0x74 (osd2,
+        // u16). 0x74..0x76 is inside even a 128-byte inode, so the read is
+        // always in range. HUGE_FILE (fs-block units) is not advertised by the
+        // images we mount, so the count stays in 512-byte sectors.
+        let blocks_lo = u32::from_le_bytes([buf[0x1C], buf[0x1D], buf[0x1E], buf[0x1F]]) as u64;
+        let blocks_hi = u16::from_le_bytes([buf[0x74], buf[0x75]]) as u64;
+        let i_blocks  = blocks_lo | (blocks_hi << 32);
         let mut i_block = [0u8; I_BLOCK_LEN];
         i_block.copy_from_slice(&buf[0x28..0x28 + I_BLOCK_LEN]);
         // i_size_high lives in the EXT4_FEATURE_RO_COMPAT_LARGE_FILE
@@ -73,6 +87,7 @@ impl Inode {
             mode,
             size: size_lo | (size_hi << 32),
             links_count: links,
+            i_blocks,
             i_block,
         })
     }
@@ -92,6 +107,23 @@ impl Inode {
     /// True iff this inode is a symlink.
     /// # C: O(1)
     pub fn is_link(&self) -> bool { self.file_type() == S_IFLNK }
+
+    /// True iff this inode is a character device.
+    /// # C: O(1)
+    pub fn is_chr(&self) -> bool { self.file_type() == S_IFCHR }
+
+    /// True iff this inode is a block device.
+    /// # C: O(1)
+    pub fn is_blk(&self) -> bool { self.file_type() == S_IFBLK }
+
+    /// Device number for a CHR/BLK node (`st_rdev`). ext4 stores the
+    /// device in the inline `i_block` area: the Linux "small dev" layout
+    /// (`create_mknod` here, matching the common case) writes it verbatim
+    /// in `i_block[0..4]`. Meaningful only when `is_chr()`/`is_blk()`.
+    /// # C: O(1)
+    pub fn rdev(&self) -> u32 {
+        u32::from_le_bytes([self.i_block[0], self.i_block[1], self.i_block[2], self.i_block[3]])
+    }
 
     /// For a fast symlink (target length ≤ 60 bytes) the target text
     /// lives inline in `i_block`. Returns the target bytes if this is

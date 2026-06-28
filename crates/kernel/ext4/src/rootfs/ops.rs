@@ -17,9 +17,19 @@ impl RootfsState {
     pub fn wrap_any_ino(self: &Arc<Self>, ino: u32) -> Option<vfs::InodeRef> {
         let inode = self.mount.read_inode(ino).ok()?;
         if inode.is_reg() { return self.wrap_file(ino); }
-        let ft = if inode.is_dir() { vfs::FileType::Directory }
-                 else if inode.is_link() { vfs::FileType::Symlink }
-                 else { vfs::FileType::Regular };
+        // Map every ext4 `S_IFMT` type to its VFS `FileType` (not just
+        // dir/link → Regular): a char/block node must surface as CharDev/
+        // BlockDev so `getattr` reports `st_rdev`, and FIFO/SOCK so stat's
+        // mode type-bits are correct.
+        let ft = match inode.mode & crate::inode::S_IFMT {
+            crate::inode::S_IFDIR  => vfs::FileType::Directory,
+            crate::inode::S_IFLNK  => vfs::FileType::Symlink,
+            crate::inode::S_IFCHR  => vfs::FileType::CharDev,
+            crate::inode::S_IFBLK  => vfs::FileType::BlockDev,
+            crate::inode::S_IFIFO  => vfs::FileType::Fifo,
+            crate::inode::S_IFSOCK => vfs::FileType::Socket,
+            _                     => vfs::FileType::Regular,
+        };
         let size = inode.size as u64;
         let perm = (inode.mode & 0o7777) as u16;
         let st = self.clone();
@@ -249,6 +259,33 @@ impl vfs::SuperOps for Ext4SuperOps {
             f_fsid:   0,
             f_flags:  0, // per-MOUNT ST_* filled at the syscall layer (calculate_f_flags)
         })
+    }
+
+    /// `sync_fs` (Linux `ext4_sync_fs`): the journal commits each
+    /// `run_journaled` transaction synchronously, so there is no open
+    /// transaction to force — push any pending tx, then barrier the backing
+    /// device so committed metadata is durable. # C: O(1) + 1 device flush
+    fn sync_fs(&self, _wait: bool) -> vfs::KResult<()> {
+        self.st.mount.flush_pending_tx().map_err(|_| vfs::VfsError::Eio)?;
+        self.st.mount.dev.flush().map_err(|_| vfs::VfsError::Eio)?;
+        Ok(())
+    }
+
+    /// `freeze_fs` (Linux `ext4_freeze`, FIFREEZE): writers are already
+    /// blocked by the VFS `freeze_super` (B155); flush + barrier the journal
+    /// to leave a consistent on-disk image, then mark the mount frozen so a
+    /// double freeze is rejected at the VFS layer. # C: O(1) + 1 device flush
+    fn freeze_fs(&self) -> vfs::KResult<()> {
+        self.sync_fs(true)?;
+        self.st.frozen.store(true, core::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    /// `thaw_fs`/`unfreeze_fs` (Linux `ext4_unfreeze`, FITHAW): resume normal
+    /// operation. # C: O(1)
+    fn thaw_fs(&self) -> vfs::KResult<()> {
+        self.st.frozen.store(false, core::sync::atomic::Ordering::Release);
+        Ok(())
     }
 }
 
