@@ -53,6 +53,21 @@ pub fn mountinfo_poll_mask(last_seen: &AtomicU64) -> u32 {
     if cur != prev { POLL_IN | POLL_PRI | POLL_ERR } else { POLL_IN }
 }
 
+/// Per-NAMESPACE `/proc/.../mountinfo` poll mask (Linux `mounts_poll`, which
+/// compares the reader's saved `m_seq` against `p->ns->event`, NOT a global
+/// counter). Wakes (`POLLPRI|POLLERR`) only when THIS namespace's change seq
+/// advanced past `last_seen`; a mount change confined to a FOREIGN namespace
+/// does NOT spuriously wake this reader — unlike `mountinfo_poll_mask`, which
+/// signals on any namespace's mutation via the global generation. Always
+/// `POLLIN` (mountinfo always readable). `last_seen` is updated to the ns seq
+/// (edge-triggered per reader) and should be seeded from `ns_seq(ns)` at open.
+/// # C: O(log N)
+pub fn mountinfo_poll_mask_ns(ns: u64, last_seen: &AtomicU64) -> u32 {
+    let cur = ns_seq(ns);
+    let prev = last_seen.swap(cur, Ordering::AcqRel);
+    if cur != prev { POLL_IN | POLL_PRI | POLL_ERR } else { POLL_IN }
+}
+
 // ---------------------------------------------------------------------------
 // MntNamespace — Linux `struct mnt_namespace`.
 // ---------------------------------------------------------------------------
@@ -102,6 +117,13 @@ pub fn ns_set_root(ns: u64, mnt_id: u64) {
 /// Root mount id for namespace `ns` (Linux `mnt_ns->root`). # C: O(log N)
 pub fn ns_root_id(ns: u64) -> Option<u64> {
     ns_by_id(ns).map(|n| n.root.load(Ordering::Acquire)).filter(|&r| r != 0)
+}
+
+/// Current mount-change seq for namespace `ns` (Linux `mnt_ns->event`), bumped
+/// by `bump_gen`. 0 when the ns has no object yet. Seed for a mountinfo
+/// reader's `last_seen` cell (see `mountinfo_poll_mask_ns`). # C: O(log N)
+pub fn ns_seq(ns: u64) -> u64 {
+    ns_by_id(ns).map(|n| n.seq.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 /// Remove the namespace object for `id` (final reap). # C: O(log N)
