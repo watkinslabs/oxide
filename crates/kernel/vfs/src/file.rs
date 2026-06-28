@@ -234,6 +234,10 @@ impl Drop for File {
         // is held here (only atomics read above); on_release must not
         // block or panic. pty MASTER uses this to hang up the slave.
         self.inode.on_release();
+        // D11: release the `d_count` ref taken in `new_at` (Linux `dput` in
+        // `__fput`). At zero the dentry is unused — `d_op->d_delete` may evict
+        // it (pseudo-fs), otherwise it joins the dcache LRU for the shrinker.
+        crate::dcache::dput(self.dentry.clone());
     }
 }
 
@@ -267,6 +271,11 @@ impl File {
             f(&inode);
         }
         let f_mode = fmode_from_flags(flags);
+        // D11 (`16§97` lockref): the open file description pins its dentry with
+        // a `d_count` ref (Linux `struct file` holds a `dget`'d `f_path.dentry`).
+        // The matching `dput` is in `File::drop`. Until this, `d_count` was
+        // permanently 0 in production — no dentry ever entered the LRU.
+        let dentry = crate::dcache::dget(&dentry);
         Arc::new(Self {
             inode,
             dentry,
@@ -467,9 +476,15 @@ pub fn install_open(
         }
         let _ = inode.truncate(0);
     }
+    let cloexec = flags.contains(OpenFlags::O_CLOEXEC);
+    let file_flags = flags - OpenFlags::O_CLOEXEC;
     let dentry = open_dentry(path, &inode);
-    let file = File::new_at(inode, dentry, flags, mnt_id, cred);
-    fdt.alloc(file).map_err(|_| VfsError::Emfile)
+    let file = File::new_at(inode, dentry, file_flags, mnt_id, cred);
+    let fd = fdt.alloc(file).map_err(|_| VfsError::Emfile)?;
+    if cloexec {
+        fdt.set_cloexec(fd, true)?;
+    }
+    Ok(fd)
 }
 
 /// Build the `Dentry` for an opened file as a properly-PARENTED node (Linux
@@ -496,7 +511,19 @@ pub fn open_dentry(path: &str, inode: &InodeRef) -> alloc::sync::Arc<crate::dent
         None    => ("", trimmed),
     };
     if let Some(pd) = crate::namei::resolve_path_dentry(parent) {
-        return Dentry::new_child(&pd, name, Some(Arc::clone(inode)));
+        // D3: hand the fd the CANONICAL hashed dentry the walk produced, not a
+        // fresh unhashed Arc. `d_lookup` returns the object already in the
+        // global table (so a wired `d_move`/`d_drop` reaches the fd's dentry);
+        // a miss `d_add`s the canonical positive.
+        return match crate::dcache::d_lookup(&pd, name) {
+            // Defensive: if a negative dentry is ever cached for this name
+            // (e.g. once D5/D6 negative-caching lands), splice the real inode
+            // onto it (Linux `d_splice_alias` / `d_instantiate`) → positive
+            // rather than handing the fd a negative dentry.
+            Some(d) if d.is_negative() => crate::dcache::d_splice_alias(Arc::clone(inode), &d),
+            Some(d) => d,
+            None    => crate::dcache::d_add(&pd, name, Arc::clone(inode)),
+        };
     }
     Dentry::new(None, String::from(name), Arc::clone(inode))
 }

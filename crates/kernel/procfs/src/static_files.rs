@@ -109,7 +109,7 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
     c.insert("filesystems".to_string(), StaticFileInode::new(FILESYSTEMS) as InodeRef);
     c.insert("cmdline".to_string(),     Arc::new(crate::ProcCmdlineInode) as InodeRef);
     c.insert("devices".to_string(),     Arc::new(crate::devices::ProcDevicesInode) as InodeRef);
-    c.insert("modules".to_string(),     StaticFileInode::new(b"") as InodeRef);
+    c.insert("modules".to_string(),     Arc::new(crate::net::ProcModulesInode) as InodeRef);
     c.insert("swaps".to_string(),       StaticFileInode::new(b"Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n") as InodeRef);
     c.insert("diskstats".to_string(),   Arc::new(crate::diskstats::ProcDiskstatsInode) as InodeRef);
     c.insert("partitions".to_string(),  Arc::new(crate::partitions::ProcPartitionsInode) as InodeRef);
@@ -127,6 +127,11 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
     c.insert("execdomains".to_string(), StaticFileInode::new(b"0-0\tLinux           \t[kernel]\n") as InodeRef);
     c.insert("cgroups".to_string(),     StaticFileInode::new(b"#subsys_name\thierarchy\tnum_cgroups\tenabled\ncpuset\t0\t1\t1\ncpu\t0\t1\t1\nio\t0\t1\t1\nmemory\t0\t1\t1\npids\t0\t1\t1\n") as InodeRef);
     c.insert("mounts".to_string(),      Arc::new(crate::mounts::ProcMountsInode) as InodeRef);
+    let reg = crate::reg::proc_reg();
+    reg.ensure_dir_path("sys");
+    reg.ensure_dir_path("net");
+    c.insert("sys".to_string(),         reg.lookup_path("sys").unwrap() as InodeRef);
+    c.insert("net".to_string(),         reg.lookup_path("net").unwrap() as InodeRef);
     c
 }
 
@@ -222,6 +227,11 @@ pub fn register_static_files() {
     sysfs::register(
         "/sys/devices/system/cpu",
         Arc::new(crate::syscpu::SysCpuRootInode) as InodeRef,
+    );
+    sysfs::register_dir("/sys/class/misc/autofs");
+    sysfs::register(
+        "/sys/class/misc/autofs/dev",
+        StaticFileInode::new(b"10:236\n") as InodeRef,
     );
     // /sys/class/net dynamic — readdir walks the live netdev registry,
     // lookup synthesises per-iface attribute files from the NetDev trait
@@ -339,6 +349,14 @@ pub fn register_static_files() {
         StaticFileInode::new(b"#1 SMP PREEMPT oxide v0.1.0\n") as InodeRef,
     );
     crate::reg::register(
+        "/proc/sys/fs/binfmt_misc",
+        kernfs::PseudoDir::new_root(
+            kernfs::dir_ino("/proc/sys/fs/binfmt_misc"),
+            crate::reg::PROCFS_FSID,
+            false,
+        ) as InodeRef,
+    );
+    crate::reg::register(
         "/proc/sys/kernel/hostname",
         Arc::new(ProcHostnameInode) as InodeRef,
     );
@@ -413,48 +431,23 @@ pub fn register_static_files() {
         crate::sysctl::SysctlInode::new(b"65530\n") as InodeRef,
     );
 
-    // F158: /proc/net/* — Linux networking surface. v1 has loopback
-    // only, no real protocol stack tables; we emit the headers + a
-    // single 'lo' row so iproute2 / netstat / ifconfig / ss find
-    // something parseable.
-    crate::reg::register("/proc/net/dev", StaticFileInode::new(b"\
-Inter-|   Receive                                                |  Transmit\n\
- face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n\
-    lo:       0       0    0    0    0     0          0         0       0       0    0    0    0     0       0          0\n\
-") as InodeRef);
+    // /proc/net/* — Linux networking surface. Entries with live kernel table
+    // backing use procfs inodes, not static header snapshots.
+    crate::reg::register("/proc/net/dev", Arc::new(crate::net::ProcNetDevInode) as InodeRef);
     crate::reg::register(
         "/proc/net/route",
-        StaticFileInode::new(
-            b"\
-Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
-lo\t0000007F\t00000000\t0001\t0\t0\t0\t000000FF\t0\t0\t0\n\
-",
-        ) as InodeRef,
+        Arc::new(crate::net::ProcNetRouteInode) as InodeRef,
     );
     crate::reg::register(
         "/proc/net/tcp",
-        StaticFileInode::new(
-            b"\
-  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
-",
-        ) as InodeRef,
+        Arc::new(crate::net::ProcNetTcpInode) as InodeRef,
     );
-    crate::reg::register("/proc/net/tcp6", StaticFileInode::new(b"\
-  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
-") as InodeRef);
-    crate::reg::register("/proc/net/udp", StaticFileInode::new(b"\
-  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n\
-") as InodeRef);
-    crate::reg::register("/proc/net/udp6", StaticFileInode::new(b"\
-  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n\
-") as InodeRef);
+    crate::reg::register("/proc/net/tcp6", Arc::new(crate::net::ProcNetTcp6Inode) as InodeRef);
+    crate::reg::register("/proc/net/udp", Arc::new(crate::net::ProcNetUdpInode) as InodeRef);
+    crate::reg::register("/proc/net/udp6", Arc::new(crate::net::ProcNetUdp6Inode) as InodeRef);
     crate::reg::register(
         "/proc/net/unix",
-        StaticFileInode::new(
-            b"\
-Num       RefCount Protocol Flags    Type St Inode Path\n\
-",
-        ) as InodeRef,
+        Arc::new(crate::net::ProcNetUnixInode) as InodeRef,
     );
     crate::reg::register("/proc/net/raw", StaticFileInode::new(b"\
   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n\
@@ -478,16 +471,7 @@ sk       RefCnt Type Proto  Iface R Rmem   User   Inode\n\
 ",
         ) as InodeRef,
     );
-    crate::reg::register("/proc/net/snmp", StaticFileInode::new(b"\
-Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates\n\
-Ip: 1 64 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n\
-Icmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps\n\
-Icmp: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n\
-Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors\n\
-Tcp: 1 200 120000 -1 0 0 0 0 0 0 0 0 0 0 0\n\
-Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti\n\
-Udp: 0 0 0 0 0 0 0 0\n\
-") as InodeRef);
+    crate::reg::register("/proc/net/snmp", Arc::new(crate::net::ProcNetSnmpInode) as InodeRef);
     crate::reg::register("/proc/net/snmp6", StaticFileInode::new(b"") as InodeRef);
     crate::reg::register(
         "/proc/net/netstat",
@@ -527,22 +511,8 @@ TCP6: inuse 0\nUDP6: inuse 0\nUDPLITE6: inuse 0\nRAW6: inuse 0\nFRAG6: inuse 0 m
 ",
         ) as InodeRef,
     );
-    crate::reg::register(
-        "/proc/net/arp",
-        StaticFileInode::new(
-            b"\
-IP address       HW type     Flags       HW address            Mask     Device\n\
-",
-        ) as InodeRef,
-    );
-    crate::reg::register(
-        "/proc/net/if_inet6",
-        StaticFileInode::new(
-            b"\
-00000000000000000000000000000001 01 80 10 80       lo\n\
-",
-        ) as InodeRef,
-    );
+    crate::reg::register("/proc/net/arp", Arc::new(crate::net::ProcNetArpInode) as InodeRef);
+    crate::reg::register("/proc/net/if_inet6", Arc::new(crate::net::ProcNetIfInet6Inode) as InodeRef);
     crate::reg::register(
         "/proc/net/igmp",
         StaticFileInode::new(

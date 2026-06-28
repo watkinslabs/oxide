@@ -74,6 +74,7 @@ pub(crate) fn write_statfs(buf: u64, st: &SbStatFs) {
         core::ptr::write_volatile((buf + 32)  as *mut u64, st.f_bavail);        // f_bavail @32
         core::ptr::write_volatile((buf + 40)  as *mut u64, st.f_files);         // f_files  @40
         core::ptr::write_volatile((buf + 48)  as *mut u64, st.f_ffree);         // f_ffree  @48
+        core::ptr::write_volatile((buf + 56)  as *mut u64, st.f_fsid);          // f_fsid   @56 (__fsid_t)
         core::ptr::write_volatile((buf + 64)  as *mut u64, 255);                // f_namelen@64 (NAME_MAX)
         core::ptr::write_volatile((buf + 72)  as *mut u64, st.f_bsize as u64);  // f_frsize @72
     }

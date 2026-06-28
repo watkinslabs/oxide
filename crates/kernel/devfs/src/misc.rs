@@ -240,6 +240,18 @@ impl Inode for HwRngInode {
     fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
 
+/// `/dev/autofs` — misc char device for the built-in autofs control ABI.
+pub struct AutofsInode;
+impl Inode for AutofsInode {
+    fn ino(&self) -> Ino { 0x2000_0006 }
+    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
+    fn file_type(&self) -> FileType { FileType::CharDev }
+    fn rdev(&self) -> u32 { 0x0aec }               // 10:236 misc/autofs
+    fn perm(&self) -> Option<u16> { Some(0o600) }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+}
+
 /// `/dev/random` and `/dev/urandom` — fill with LCG bytes.
 /// SECURITY: NOT cryptographic; v1 placeholder until docs/26
 /// CPRNG lands.

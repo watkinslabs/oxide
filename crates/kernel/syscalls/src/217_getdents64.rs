@@ -56,7 +56,7 @@ fn getdents_common(args: &SyscallArgs, legacy: bool) -> i64 {
     // Set when the first record overflows the buffer: distinguishes a
     // genuinely empty result (return 0) from a too-small buffer (EINVAL).
     let mut overflow_first = false;
-    let r = inode.readdir(off, &mut |cookie, name, ft| {
+    let r = inode.readdir(off, &mut |d_ino, cookie, name, ft| {
         let reclen = if legacy { vfs::dirent_reclen(name.len()) }
                      else      { vfs::dirent64_reclen(name.len()) };
         if written + reclen > count {
@@ -74,9 +74,9 @@ fn getdents_common(args: &SyscallArgs, legacy: bool) -> i64 {
         };
         let mut tmp = [0u8; 320];
         let n = if legacy {
-            vfs::dirent_pack(&mut tmp[..reclen], 0, cookie, dt, name.as_bytes())
+            vfs::dirent_pack(&mut tmp[..reclen], d_ino, cookie, dt, name.as_bytes())
         } else {
-            vfs::dirent64_pack(&mut tmp[..reclen], 0, cookie, dt, name.as_bytes())
+            vfs::dirent64_pack(&mut tmp[..reclen], d_ino, cookie, dt, name.as_bytes())
         }.expect("dirent pack: tmp buf sized to reclen");
         // SAFETY: validate_user_buf above bounded [dirp, dirp+count) < USER_VA_END; CPL=0; caller's AS active.
         unsafe {

@@ -107,6 +107,7 @@ pub enum VfsError {
     Enotempty = 39,
     Enosys  = 38,
     Eloop   = 40,
+    Eopnotsupp = 95,
     Enametoolong = 36,
     /// ENOTCONN — read/write on a stream socket with no connection.
     Enotconn = 107,

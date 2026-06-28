@@ -281,6 +281,13 @@ fn proc_sys_resolves_own_tree() {
     let mut buf = [0u8; 8];
     let n = leaf.read(0, &mut buf).unwrap();
     assert_eq!(&buf[..n], b"32768\n");
+    crate::reg::register(
+        "/proc/sys/kernel/domainname",
+        vfs::StaticFileInode::new(b"(none)\n") as vfs::InodeRef,
+    );
+    assert!(crate::reg::proc_reg()
+        .lookup_path("sys/kernel/domainname")
+        .is_some());
     // /proc/net resolves the same way (multi-component chain auto-created).
     crate::reg::register(
         "/proc/net/dev",

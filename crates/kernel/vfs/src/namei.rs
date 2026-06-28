@@ -144,8 +144,9 @@ pub struct VfsPath {
 /// with no per-fs perm info (`perm() == None`: pseudo-fs / synthetic) are
 /// default-allow, preserving the pre-permission behaviour. Owner/group/other
 /// class selection uses the cred's primary + supplementary groups
-/// (`in_group`). # C: O(ngroups)
-pub fn inode_permission(inode: &InodeRef, mask: u32, cred: &Cred) -> KResult<()> {
+/// (`in_group`). Generic over `?Sized` so the `Inode::permission` op hook can
+/// call it on `&self` (the trait object). # C: O(ngroups)
+pub fn generic_permission<I: crate::inode::Inode + ?Sized>(inode: &I, mask: u32, cred: &Cred) -> KResult<()> {
     let Some(mode) = inode.perm() else { return Ok(()); };
     let mode = mode as u32;
     let uid = inode.uid().unwrap_or(0);
@@ -169,6 +170,15 @@ pub fn inode_permission(inode: &InodeRef, mask: u32, cred: &Cred) -> KResult<()>
         return Ok(());
     }
     Err(VfsError::Eacces)
+}
+
+/// `inode_permission` (Linux `fs/namei.c`) — the VFS entry every permission
+/// check routes through. Dispatches to the inode's `i_op->permission` override
+/// (`Inode::permission`, default `generic_permission`), so a filesystem with
+/// ACLs / custom DAC can intercept WITHOUT every call-site changing.
+/// # C: O(ngroups)
+pub fn inode_permission(inode: &InodeRef, mask: u32, cred: &Cred) -> KResult<()> {
+    inode.permission(mask, cred)
 }
 
 /// `may_lookup` (Linux): search permission (MAY_EXEC) on a directory before
@@ -381,6 +391,13 @@ impl Nameidata {
 
             // Resolve the named child via the dcache: fast path `d_lookup`
             // (parent,name)-keyed, else slow path `i_op->lookup` + `d_add`.
+            // D6 NOTE: a confirmed miss is NOT cached as a negative dentry here.
+            // Negative caching is only Linux-correct with per-fs `d_revalidate`
+            // / `d_delete` (the deferred D5 work) — without it, a negative
+            // cached for a dynamically-appearing pseudo-fs entry (`/proc/<pid>`,
+            // `/sys` hotplug nodes, `/dev/pts/N`) that materialises WITHOUT a
+            // create syscall would mask it forever. So the miss propagates
+            // un-cached (re-walks `i_op->lookup` next time, as before).
             let child = match crate::dcache::d_lookup(&self.cur_dentry, &comp) {
                 Some(d) if !d.is_negative() => d,
                 Some(_) => return Err(VfsError::Enoent), // cached negative

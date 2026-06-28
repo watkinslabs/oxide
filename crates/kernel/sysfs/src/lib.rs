@@ -64,11 +64,13 @@ impl Inode for SysClassTtyInode {
         target.push_str(name);
         Ok(Arc::new(SysClassNetSymlinkInode { target: target.into_bytes() }) as InodeRef)
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let mut idx = off as usize;
         while idx < TTY_DEVICES.len() {
             let next = idx as u64 + 1;
-            if !f(next, TTY_DEVICES[idx].0, FileType::Symlink) { return Ok(next); }
+            let name = TTY_DEVICES[idx].0;
+            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, name, FileType::Symlink) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -90,11 +92,13 @@ impl Inode for SysDevicesVirtualTtyInode {
             minor,
         }) as InodeRef)
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let mut idx = off as usize;
         while idx < TTY_DEVICES.len() {
             let next = idx as u64 + 1;
-            if !f(next, TTY_DEVICES[idx].0, FileType::Directory) { return Ok(next); }
+            let name = TTY_DEVICES[idx].0;
+            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, name, FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -125,12 +129,13 @@ impl Inode for SysTtyDeviceInode {
             _ => Err(VfsError::Enoent),
         }
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         const ENTRIES: &[&str] = &["dev", "uevent"];
         let mut idx = off as usize;
         while idx < ENTRIES.len() {
             let next = idx as u64 + 1;
-            if !f(next, ENTRIES[idx], FileType::Regular) { return Ok(next); }
+            let ino = self.lookup(ENTRIES[idx]).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, ENTRIES[idx], FileType::Regular) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -198,13 +203,15 @@ impl Inode for SysClassNetInode {
     fn readdir(
         &self,
         off: u64,
-        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         let snap = net::sock::stack().ifaces.snapshot_devs();
         let mut idx = off as usize;
         while idx < snap.len() {
             let next = idx as u64 + 1;
-            if !f(next, snap[idx].1.name(), FileType::Symlink) { return Ok(next); }
+            let name = snap[idx].1.name();
+            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, name, FileType::Symlink) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -252,13 +259,15 @@ impl Inode for SysDevicesVirtualNetInode {
     fn readdir(
         &self,
         off: u64,
-        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         let snap = net::sock::stack().ifaces.snapshot_devs();
         let mut idx = off as usize;
         while idx < snap.len() {
             let next = idx as u64 + 1;
-            if !f(next, snap[idx].1.name(), FileType::Directory) { return Ok(next); }
+            let name = snap[idx].1.name();
+            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, name, FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -403,7 +412,7 @@ impl Inode for SysClassNetIfaceInode {
     fn readdir(
         &self,
         off: u64,
-        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         let mut idx = off as usize;
         // `statistics` (a subdir) is emitted as the final entry, after
@@ -412,12 +421,14 @@ impl Inode for SysClassNetIfaceInode {
         let nfiles = IFACE_ENTRIES.len();
         while idx < nfiles {
             let next = idx as u64 + 1;
-            if !f(next, IFACE_ENTRIES[idx], FileType::Regular) { return Ok(next); }
+            let ino = self.lookup(IFACE_ENTRIES[idx]).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, IFACE_ENTRIES[idx], FileType::Regular) { return Ok(next); }
             idx += 1;
         }
         if idx == nfiles {
             let next = idx as u64 + 1;
-            if !f(next, "statistics", FileType::Directory) { return Ok(next); }
+            let ino = self.lookup("statistics").map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, "statistics", FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)

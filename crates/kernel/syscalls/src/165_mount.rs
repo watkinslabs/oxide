@@ -18,7 +18,7 @@ use vfs::fs::FileSystem;
 use vfs::InodeRef;
 
 use crate::mount_common::read_user_cstr_owned;
-use crate::fsmount_common::mount_fstype;
+use crate::fsmount_common::mount_fstype_with_data;
 
 // mount(2) flag bits (linux/mount.h).
 const MS_REMOUNT:    u64 = 0x20;
@@ -127,7 +127,7 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     let target_p = args.a1;
     let fstype_p = args.a2;
     let flags    = args.a3;
-    let _data    = args.a4;
+    let data_p   = args.a4;
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
@@ -262,5 +262,10 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     let target_d = match crate::pathresolve::mount_dentry(&target) {
         Some(d) => d, None => return -(Errno::Enoent.as_i32() as i64),
     };
-    mount_fstype(&source, &fstype, &target, &target_d)
+    let data = if data_p != 0 {
+        read_user_cstr_owned(data_p, 4096).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    mount_fstype_with_data(&source, &fstype, &target, &target_d, &data)
 }

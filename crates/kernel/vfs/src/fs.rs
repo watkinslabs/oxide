@@ -10,9 +10,9 @@
 
 extern crate alloc;
 use alloc::string::String;
-use alloc::sync::Weak;
+use alloc::sync::{Arc, Weak};
 use crate::inode::InodeRef;
-use crate::superblock::SuperBlock;
+use crate::superblock::{SuperBlock, SuperOps};
 use crate::types::VfsError;
 
 /// `KResult<T>` is the VFS error envelope. Aliased here for
@@ -46,6 +46,20 @@ pub trait FileSystem: Send + Sync {
     /// classifier then falls through to its path-prefix table.
     /// # C: O(1)
     fn magic(&self) -> u64 { 0 }
+
+    /// `s_blocksize` (Linux `super_block::s_blocksize`) the mount reports as
+    /// `statfs(2)` `f_bsize`. On-disk backends override from their parsed
+    /// superblock (ext4 `1024 << s_log_block_size`, 1–64 KiB); pseudo /
+    /// in-memory fses keep the 4096 page default. # C: O(1)
+    fn block_size(&self) -> u32 { 4096 }
+
+    /// Per-instance `super_operations` (Linux `sb->s_op`). `Some(_)` installs a
+    /// backend-specific `SuperOps` — e.g. ext4 reports live on-disk block /
+    /// inode accounting through its own `statfs` — instead of the generic
+    /// `FsBackedSuperOps` (which reports only `f_type`/`f_bsize`). `None` keeps
+    /// the generic adapter. Consulted once by [`SuperBlock::for_backend`] at
+    /// fill_super. # C: O(1)
+    fn super_ops(&self) -> Option<Arc<dyn SuperOps>> { None }
 
     /// Root inode of this mounted filesystem — the `super_block::s_root`
     /// of `docs/16§2`. The dentry path-walk (`docs/16§3`) switches to this

@@ -29,6 +29,7 @@ pub fn populate_defaults() {
     register("/dev/kmsg",    Arc::new(crate::misc::KmsgInode)   as InodeRef);
     register("/dev/zero",    Arc::new(crate::misc::ZeroInode)   as InodeRef);
     register("/dev/full",    Arc::new(crate::misc::FullInode)   as InodeRef);
+    register("/dev/autofs",  Arc::new(crate::misc::AutofsInode) as InodeRef);
     let rand: InodeRef = Arc::new(crate::misc::RandomInode);
     register("/dev/random",  Arc::clone(&rand));
     register("/dev/urandom", rand);
@@ -58,16 +59,17 @@ fn machine_id_line() -> &'static [u8] {
     alloc::boxed::Box::leak(s.into_boxed_slice())
 }
 
-/// Register the `/etc/*` overlay nodes (os-release, machine-id, passwd, group,
+/// Register the `/etc/*` overlay nodes (machine-id, passwd, group,
 /// hosts, services, …) into devfs's own ns-0 tree. devfs owns `/etc` as an
 /// ext4-overlay subtree in the SAME ns-keyed tree as `/dev` (root `overlay =
 /// true`), so userspace `/etc/*` resolution merges synthetic + on-disk rootfs
 /// entries exactly as before — without the shared cross-fs path registry (the
-/// `/etc` writes used to live in procfs `register_static_files`, D1d). Boot,
-/// once, at the same phase `populate_defaults` runs. # C: O(N nodes)
+/// `/etc` writes used to live in procfs `register_static_files`, D1d).
+/// `/etc/os-release` is intentionally not registered here: the rootfs image
+/// builders provide the real file, and a kernel synthetic identity would
+/// incorrectly shadow the distro/profile identity selected by userspace.
+/// Boot, once, at the same phase `populate_defaults` runs. # C: O(N nodes)
 pub fn register_etc_overlay() {
-    register("/etc/os-release",
-        StaticFileInode::new(b"NAME=oxide\nID=oxide\nVERSION=\"0.1.0-pre\"\n") as InodeRef);
     register("/etc/machine-id", StaticFileInode::new(machine_id_line()) as InodeRef);
     register("/etc/hostname", StaticFileInode::new(b"oxide\n") as InodeRef);
     register("/etc/passwd", StaticFileInode::new(b"root:x:0:0:root:/:/bin/sh\n") as InodeRef);

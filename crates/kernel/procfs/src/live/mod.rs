@@ -69,14 +69,14 @@ impl Inode for ProcRootInode {
             allow_task_dir: true,
         }) as InodeRef)
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         // Order: static children (sorted, the subdir tree) → self → live pids.
         let mut idx = off as usize;
         let nstat = self.children.len();
         while idx < nstat {
             let (name, inode) = self.children.iter().nth(idx).unwrap();
             let next = idx as u64 + 1;
-            if !f(next, name.as_str(), inode.file_type()) { return Ok(next); }
+            if !f(inode.ino(), next, name.as_str(), inode.file_type()) { return Ok(next); }
             idx += 1;
         }
         let vpids = sched::live::registry::live_vpids();
@@ -103,7 +103,8 @@ impl Inode for ProcRootInode {
                 buf[..n].reverse();
                 core::str::from_utf8(&buf[..n]).unwrap_or("0")
             };
-            if !f(next, s, FileType::Directory) {
+            let ino = self.lookup(s).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, s, FileType::Directory) {
                 return Ok(next);
             }
             idx += 1;
@@ -211,7 +212,7 @@ impl Inode for ProcPidDirInode {
             _ => Err(VfsError::Enoent),
         }
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         const ENTRIES: &[&str] = &[
             "status",
             "cmdline",
@@ -266,7 +267,8 @@ impl Inode for ProcPidDirInode {
                 "fd" | "fdinfo" | "task" => FileType::Directory,
                 _ => FileType::Regular,
             };
-            if !f(next, name, ft) {
+            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, name, ft) {
                 return Ok(next);
             }
             idx += 1;
@@ -301,7 +303,7 @@ impl Inode for ProcPidTaskDirInode {
             allow_task_dir: false,
         }) as InodeRef)
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let tids = sched::live::registry::thread_entries(self.tgid);
         let mut idx = off as usize;
         while idx < tids.len() {
@@ -321,7 +323,8 @@ impl Inode for ProcPidTaskDirInode {
             }
             buf[..n].reverse();
             let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
-            if !f(next, s, FileType::Directory) {
+            let ino = self.lookup(s).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, s, FileType::Directory) {
                 return Ok(next);
             }
             idx += 1;
@@ -640,6 +643,7 @@ pub fn smoke_test() {
         // a function of monotonic_ns, not a static prefix).
         // /proc/sys + /proc/net now resolve from procfs's own PROC_REG tree.
         ("/proc/sys/kernel/pid_max", b"32768"),
+        ("/proc/sys/kernel/domainname", b"(none)"),
         ("/proc/net/dev", b"Inter-|"),
     ];
     for (path, prefix) in entries {
@@ -651,6 +655,8 @@ pub fn smoke_test() {
         kassert!(n >= prefix.len(), "procfs read short");
         kassert!(&buf[..prefix.len()] == *prefix, "procfs body mismatch");
     }
+    let binfmt = smoke_resolve("/proc/sys/fs/binfmt_misc").expect("procfs binfmt_misc dir");
+    kassert!(binfmt.file_type() == vfs::FileType::Directory, "procfs binfmt_misc not dir");
     for path in ["/sys/kernel/random/uuid", "/sys/kernel/random/boot_id"] {
         let inode = smoke_resolve(path).expect("procfs lookup");
         let mut buf = [0u8; 40];
@@ -689,7 +695,7 @@ impl Inode for ProcPidNsDirInode {
         };
         Ok(nscg::proc_ns::ns_inode_for(&task, kind))
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         const NAMES: &[&str] = &[
             "mnt",
             "cgroup",
@@ -703,7 +709,8 @@ impl Inode for ProcPidNsDirInode {
         let mut idx = off as usize;
         while idx < NAMES.len() {
             let next = idx as u64 + 1;
-            if !f(next, NAMES[idx], FileType::Symlink) {
+            let ino = self.lookup(NAMES[idx]).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, NAMES[idx], FileType::Symlink) {
                 return Ok(next);
             }
             idx += 1;

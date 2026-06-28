@@ -1342,6 +1342,7 @@ dependencies = [
  "hal-x86_64",
  "ipc",
  "kalloc",
+ "kernfs",
  "klog",
  "kmacros",
  "modules",

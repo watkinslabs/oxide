@@ -260,7 +260,13 @@ pub fn dget(d: &Arc<Dentry>) -> Arc<Dentry> { d.inc_count(); Arc::clone(d) }
 pub fn dput(d: Arc<Dentry>) {
     if d.dec_count() == 0 {
         let delete = d.d_op().and_then(|o| o.d_delete).map(|f| f(&d)).unwrap_or(false);
-        if delete { d_drop(&d); } else { lru_add(&d); }
+        // Linux `retain_dentry`: only a HASHED (cacheable) dentry is retained on
+        // the LRU for the shrinker. An unhashed dentry — every anon-inode fd
+        // (pipe/eventfd/signalfd/socket/memfd), or one already `d_drop`-ed by
+        // unlink — is killed at count 0 instead, so it never leaks a dangling
+        // `Weak` into the (currently un-driven, D10) LRU. `d_delete` forces the
+        // same immediate eviction for pseudo-fs that opt in.
+        if delete || !d.is_hashed() { d_drop(&d); } else { lru_add(&d); }
     }
     drop(d);
 }

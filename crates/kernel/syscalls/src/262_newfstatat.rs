@@ -33,8 +33,10 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
 
     // Unknown flag bits → EINVAL (Linux vfs_fstatat).
     if flags & !AT_VALID != 0 { return -(Errno::Einval.as_i32() as i64); }
-    // X3: kernel writes into buf in CPL=0 — require it user-writable.
-    if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 8) { return rv; }
+    // X3: kernel writes into buf in CPL=0 — require it user-writable. Linux
+    // copy_to_user does not require the caller's struct stat pointer to be
+    // naturally aligned, so only validate the byte range.
+    if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 1) { return rv; }
 
     // Probe path emptiness (path may be NULL with AT_EMPTY_PATH; glibc/musl
     // pass ""). Linux allows path=NULL when AT_EMPTY_PATH is set.
@@ -91,30 +93,31 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
     let mt = st.mtime_ns;
     let ct = st.ctime_ns;
 
-    // SAFETY: buf validated STAT_BYTES writable below USER_VA_END + 8-aligned; CPL=0 writes through caller's AS.
+    // SAFETY: buf validated STAT_BYTES writable below USER_VA_END; unaligned
+    // stores match Linux copy_to_user semantics for user-provided buffers.
     unsafe {
         for off in (0..STAT_BYTES).step_by(8) {
-            core::ptr::write_volatile((buf + off) as *mut u64, 0);
+            core::ptr::write_unaligned((buf + off) as *mut u64, 0);
         }
         // st_dev@0 — distinct per filesystem (both arch layouts have dev@0).
-        core::ptr::write_volatile(buf as *mut u64, dev);
+        core::ptr::write_unaligned(buf as *mut u64, dev);
         let write_ts = |sec_off: u64, ns: u64| {
-            core::ptr::write_volatile((buf + sec_off)     as *mut i64, (ns / 1_000_000_000) as i64);
-            core::ptr::write_volatile((buf + sec_off + 8) as *mut i64, (ns % 1_000_000_000) as i64);
+            core::ptr::write_unaligned((buf + sec_off)     as *mut i64, (ns / 1_000_000_000) as i64);
+            core::ptr::write_unaligned((buf + sec_off + 8) as *mut i64, (ns % 1_000_000_000) as i64);
         };
         #[cfg(target_arch = "x86_64")] {
             // x86_64 struct stat (144 B): dev@0 ino@8 nlink@16 mode@24
             // uid@28 gid@32 rdev@40 size@48 blksize@56 blocks@64
             // atime@72 mtime@88 ctime@104.
-            core::ptr::write_volatile((buf +   8)     as *mut u64, ino);
-            core::ptr::write_volatile((buf +  16)     as *mut u64, nlink as u64);
-            core::ptr::write_volatile((buf +  24)     as *mut u32, mode);
-            core::ptr::write_volatile((buf +  28)     as *mut u32, uid);
-            core::ptr::write_volatile((buf +  32)     as *mut u32, gid);
-            core::ptr::write_volatile((buf +  40)     as *mut u64, rdev);
-            core::ptr::write_volatile((buf +  48)     as *mut i64, size);
-            core::ptr::write_volatile((buf +  56)     as *mut i64, blksize as i64);
-            core::ptr::write_volatile((buf +  64)     as *mut i64, blocks as i64);
+            core::ptr::write_unaligned((buf +   8)     as *mut u64, ino);
+            core::ptr::write_unaligned((buf +  16)     as *mut u64, nlink as u64);
+            core::ptr::write_unaligned((buf +  24)     as *mut u32, mode);
+            core::ptr::write_unaligned((buf +  28)     as *mut u32, uid);
+            core::ptr::write_unaligned((buf +  32)     as *mut u32, gid);
+            core::ptr::write_unaligned((buf +  40)     as *mut u64, rdev);
+            core::ptr::write_unaligned((buf +  48)     as *mut i64, size);
+            core::ptr::write_unaligned((buf +  56)     as *mut i64, blksize as i64);
+            core::ptr::write_unaligned((buf +  64)     as *mut i64, blocks as i64);
             write_ts(72, at);
             write_ts(88, mt);
             write_ts(104, ct);
@@ -123,15 +126,15 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
             // asm-generic struct stat (128 B): ino@8 mode@16 nlink@20
             // uid@24 gid@28 rdev@32 size@48 blksize@56 blocks@64
             // atime@72 mtime@88 ctime@104.
-            core::ptr::write_volatile((buf +   8)     as *mut u64, ino);
-            core::ptr::write_volatile((buf +  16)     as *mut u32, mode);
-            core::ptr::write_volatile((buf +  20)     as *mut u32, nlink);
-            core::ptr::write_volatile((buf +  24)     as *mut u32, uid);
-            core::ptr::write_volatile((buf +  28)     as *mut u32, gid);
-            core::ptr::write_volatile((buf +  32)     as *mut u64, rdev);
-            core::ptr::write_volatile((buf +  48)     as *mut i64, size);
-            core::ptr::write_volatile((buf +  56)     as *mut i32, blksize as i32);
-            core::ptr::write_volatile((buf +  64)     as *mut i64, blocks as i64);
+            core::ptr::write_unaligned((buf +   8)     as *mut u64, ino);
+            core::ptr::write_unaligned((buf +  16)     as *mut u32, mode);
+            core::ptr::write_unaligned((buf +  20)     as *mut u32, nlink);
+            core::ptr::write_unaligned((buf +  24)     as *mut u32, uid);
+            core::ptr::write_unaligned((buf +  28)     as *mut u32, gid);
+            core::ptr::write_unaligned((buf +  32)     as *mut u64, rdev);
+            core::ptr::write_unaligned((buf +  48)     as *mut i64, size);
+            core::ptr::write_unaligned((buf +  56)     as *mut i32, blksize as i32);
+            core::ptr::write_unaligned((buf +  64)     as *mut i64, blocks as i64);
             write_ts(72, at);
             write_ts(88, mt);
             write_ts(104, ct);

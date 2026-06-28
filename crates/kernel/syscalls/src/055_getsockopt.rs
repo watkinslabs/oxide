@@ -24,10 +24,17 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const SO_PEERCRED:  u64 = 17;
     const SO_PROTOCOL:  u64 = 38;
     const SO_DOMAIN:    u64 = 39;
+    const SO_ACCEPTCONN: u64 = 30;
     const SO_SNDBUF: u64 = 7;
     const SO_RCVBUF: u64 = 8;
     const SO_SNDBUFFORCE: u64 = 32;
     const SO_RCVBUFFORCE: u64 = 33;
+    const SO_TIMESTAMP_OLD: u64 = 29;
+    const SO_TIMESTAMPNS_OLD: u64 = 35;
+    const SO_TIMESTAMPING_OLD: u64 = 37;
+    const SO_TIMESTAMP_NEW: u64 = 63;
+    const SO_TIMESTAMPNS_NEW: u64 = 64;
+    const SO_TIMESTAMPING_NEW: u64 = 65;
     let _fd     = args.a0;
     let level   = args.a1;
     let optname = args.a2;
@@ -100,9 +107,14 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (SOL_SOCKET, SO_RCVBUF) | (SOL_SOCKET, SO_RCVBUFFORCE) =>
                 return i32_back(s.opts.rcvbuf.load(Ordering::Acquire)),
             (SOL_SOCKET, SO_PASSCRED) => return i32_back(s.opts.passcred.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_TIMESTAMP_OLD) | (SOL_SOCKET, SO_TIMESTAMPNS_OLD)
+            | (SOL_SOCKET, SO_TIMESTAMPING_OLD) | (SOL_SOCKET, SO_TIMESTAMP_NEW)
+            | (SOL_SOCKET, SO_TIMESTAMPNS_NEW) | (SOL_SOCKET, SO_TIMESTAMPING_NEW) =>
+                return i32_back(s.opts.timestamping.load(Ordering::Acquire)),
             (SOL_SOCKET, 12) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
             (SOL_SOCKET, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
             (SOL_SOCKET, SO_TYPE) => return i32_back(socket_type(&s)),
+            (SOL_SOCKET, SO_ACCEPTCONN) => return i32_back(socket_acceptconn(&s)),
             (SOL_SOCKET, SO_DOMAIN) => return i32_back(s.family.load(Ordering::Acquire) as i32),
             (SOL_SOCKET, SO_PROTOCOL) => return i32_back(socket_protocol(&s)),
             (SOL_SOCKET, SO_BINDTODEVICE) => return bind_to_device_name(&s, optval, optlen_p),
@@ -330,6 +342,13 @@ fn socket_type(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
         | SockKind::TcpConn(_)
         | SockKind::Unix(_, _)
         | SockKind::UnixListener(_) => SOCK_STREAM,
+    }
+}
+
+fn socket_acceptconn(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
+    match &*s.kind.lock() {
+        SockKind::TcpListener(_) | SockKind::UnixListener(_) => 1,
+        _ => 0,
     }
 }
 

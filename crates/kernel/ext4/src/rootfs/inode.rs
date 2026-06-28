@@ -11,6 +11,16 @@ use block::types::InodeId;
 use ::sync as sync;
 use super::state::RootfsState;
 
+fn vfs_error_from_mount(e: crate::MountError) -> vfs::VfsError {
+    match e {
+        crate::MountError::NoSpace => vfs::VfsError::Enospc,
+        crate::MountError::Inode(crate::InodeError::BadLen) => vfs::VfsError::Einval,
+        crate::MountError::NotFound => vfs::VfsError::Eopnotsupp,
+        crate::MountError::DepthUnsupported | crate::MountError::ExtentTreeFull => vfs::VfsError::Eopnotsupp,
+        _ => vfs::VfsError::Eio,
+    }
+}
+
 /// High-32 marker baked into every ext4 VFS `ino()`:
 /// `EXT4_INO_MARK | (ext4_ino as u64)`. Lets `close_hook` / `linkat` /
 /// `265_linkat.rs` recognise an ext4-resident inode without a mount
@@ -122,6 +132,27 @@ impl vfs::Inode for Ext4FileInode {
         self.refresh();
         Ok(())
     }
+    fn fallocate(&self, off: u64, len: u64, keep_size: bool, zero_range: bool) -> vfs::KResult<()> {
+        if zero_range {
+            let old = self.size();
+            let end = off.checked_add(len).ok_or(vfs::VfsError::Einval)?;
+            let zeros = alloc::vec![0u8; self.blksize().max(1) as usize];
+            let mut pos = off;
+            while pos < end {
+                let n = core::cmp::min((end - pos) as usize, zeros.len());
+                self.st.mount.write_at(self.ino, pos, &zeros[..n]).map_err(vfs_error_from_mount)?;
+                pos += n as u64;
+            }
+            if keep_size && end > old {
+                self.st.mount.set_inode_size(self.ino, old).map_err(vfs_error_from_mount)?;
+            }
+        } else {
+            self.st.mount.fallocate_inode(self.ino, off, len, keep_size).map_err(vfs_error_from_mount)?;
+        }
+        self.st.page_cache.invalidate(InodeId(self.ino as u64));
+        self.refresh();
+        Ok(())
+    }
 }
 
 /// Stat-only VFS Inode for any ext4 inode (regular, dir, symlink, …).
@@ -176,7 +207,7 @@ impl vfs::Inode for Ext4StatInode {
     fn readdir(
         &self,
         off: u64,
-        f: &mut dyn FnMut(u64, &str, vfs::FileType) -> bool,
+        f: &mut dyn FnMut(u64, u64, &str, vfs::FileType) -> bool,
     ) -> vfs::KResult<u64> {
         if !matches!(self.ft, vfs::FileType::Directory) {
             return Err(vfs::VfsError::Enotdir);
@@ -208,7 +239,7 @@ impl vfs::Inode for Ext4StatInode {
                     7 => vfs::FileType::Symlink,
                     _ => vfs::FileType::Regular,
                 };
-                let keep = f(idx, name, ft);
+                let keep = f(e.inode as u64, idx, name, ft);
                 if keep { next = idx; } else { keep_going = false; }
                 keep
             });
@@ -232,6 +263,21 @@ impl vfs::Inode for Ext4StatInode {
         let target = self.st.lookup_child_ino(self.ino, name).ok_or(vfs::VfsError::Enoent)?;
         let inode = mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
         if !inode.is_dir() { return Err(vfs::VfsError::Enotdir); }
+        // Emptiness check (Linux `ext4_rmdir` → `ext4_empty_dir`): reject with
+        // ENOTEMPTY if the victim holds any entry other than "." / "..".
+        // Without this, rmdir on a populated directory orphaned its children.
+        let bs = mount.sb.block_size as u64;
+        let nblocks = ((inode.size + bs - 1) / bs) as u32;
+        for blk_idx in 0..nblocks {
+            let Ok(blk) = mount.read_file_block(&inode, blk_idx) else { break };
+            let mut nonempty = false;
+            let _ = crate::iter_active(&blk, |e| {
+                if e.name.is_empty() || e.name == b"." || e.name == b".." { return true; }
+                nonempty = true;
+                false
+            });
+            if nonempty { return Err(vfs::VfsError::Enotempty); }
+        }
         mount.dir_unlink(self.ino, name.as_bytes()).map_err(|_| vfs::VfsError::Eio)?;
         let _ = mount.free_inode(target);
         Ok(())

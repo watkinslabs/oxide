@@ -95,10 +95,23 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
         mnt_f.fs().rename(&rel_f, &rel_t)
     };
     match r {
-        // d_delete both names: the source name is gone (or now a whiteout)
-        // and the dest name now resolves to a different inode — drop stale
-        // cached dentries for both.
-        Ok(())  => { crate::pathresolve::d_delete_path(&f); crate::pathresolve::d_delete_path(&t); 0 }
+        Ok(())  => {
+            if flags & RENAME_EXCHANGE != 0 {
+                // EXCHANGE swaps two inodes under two surviving names — neither
+                // d_moves; both cached dentries now point at the wrong inode, so
+                // drop both and let the next walk re-resolve.
+                crate::pathresolve::d_delete_path(&f);
+                crate::pathresolve::d_delete_path(&t);
+            } else {
+                // D9: plain/whiteout rename → `d_move` the source dentry onto the
+                // destination (parent,name) (Linux `d_move`), instead of
+                // discarding it via two `d_delete`s. d_move_path also drops any
+                // stale dentry already at the dest. WHITEOUT's leftover source
+                // node re-resolves on the next walk (d_move d_drops the source).
+                crate::pathresolve::d_move_path(&f, &t);
+            }
+            0
+        }
         Err(e)  => errno_from_vfs(e),
     }
 }
