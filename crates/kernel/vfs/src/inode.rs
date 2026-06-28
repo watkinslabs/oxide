@@ -480,7 +480,174 @@ pub trait Inode: Send + Sync {
     /// return it here, exactly as `fcntl_seals` exposes its seal word.
     /// # C: O(1)
     fn i_version_raw(&self) -> Option<&core::sync::atomic::AtomicU64> { None }
+
+    /// `i_generation` (Linux `struct inode::i_generation`) — the per-inode
+    /// generation number a filesystem stamps so a reused inode NUMBER is
+    /// distinguishable across delete + reallocate. `name_to_handle_at(2)` FIDs
+    /// and NFS file handles pack `(i_ino, i_generation)`; a stale handle to a
+    /// freed-and-recycled inode is rejected because the stored generation no
+    /// longer matches (Linux `generic_fh_to_dentry` compares it). ext4 reads it
+    /// from disk (`ext4_inode::i_generation`); pseudo filesystems that never
+    /// recycle an inode number leave it `0` (default).
+    /// # C: O(1)
+    fn i_generation(&self) -> u32 { 0 }
+
+    /// `i_op->fiemap` (Linux `fs/ioctl.c` `ioctl_fiemap`) — report the physical
+    /// extent layout of the byte range `[start, start + len)`. The backend calls
+    /// `emit` once per extent in increasing `fe_logical` order; `emit` returns
+    /// `false` to stop early (the caller's extent buffer is full, Linux
+    /// `fiemap_fill_next_extent` returning 1). The LAST extent must carry
+    /// `FIEMAP_EXTENT_LAST`. Default `Err(Eopnotsupp)` matches Linux: a
+    /// filesystem with no `->fiemap` makes `FS_IOC_FIEMAP` return `-EOPNOTSUPP`.
+    /// # C: O(extents)
+    fn fiemap(
+        &self,
+        _start: u64,
+        _len: u64,
+        _emit: &mut dyn FnMut(FiemapExtent) -> bool,
+    ) -> KResult<()> {
+        Err(VfsError::Eopnotsupp)
+    }
+
+    /// `bmap` (Linux `fs/inode.c`) — map the logical file block `block` (in
+    /// units of the fs block size) to its physical device block number, the
+    /// `FIBMAP` ioctl primitive (`a_ops->bmap`). Returns `0` for a hole (sparse
+    /// region with no allocation), the physical block otherwise. Default
+    /// `Err(Einval)` matches Linux `bmap()` when `->bmap` is absent (`FIBMAP`
+    /// then returns `-EINVAL`). # C: O(1) amortized
+    fn bmap(&self, _block: u64) -> KResult<u64> { Err(VfsError::Einval) }
+
+    /// `i_op->fileattr_get` (Linux `fs/ioctl.c`) — the inode-flag / extended
+    /// attribute view behind `FS_IOC_GETFLAGS` (`chattr`/`lsattr`) and
+    /// `FS_IOC_FSGETXATTR`. Default `Err(Eopnotsupp)` matches Linux: an inode
+    /// whose `i_op` has no `fileattr_get` makes the ioctl unsupported (the
+    /// in-kernel `-ENOIOCTLCMD` surfaces to userspace as failure). A backend
+    /// that stores `FS_*_FL` flags overrides it; the generic translation of the
+    /// VFS `i_flags` word into that view is `FileAttr::from_i_flags`.
+    /// # C: O(1)
+    fn fileattr_get(&self) -> KResult<FileAttr> { Err(VfsError::Eopnotsupp) }
+
+    /// `i_op->fileattr_set` (Linux `fs/ioctl.c`) — apply a `chattr` flag change
+    /// (`FS_IOC_SETFLAGS`/`FS_IOC_FSSETXATTR`). Default `Err(Eopnotsupp)`: an
+    /// inode with no native flag store rejects the change. Backends translate
+    /// the `FS_*_FL` bits into their on-disk attribute word and into `i_flags`.
+    /// # C: O(1)
+    fn fileattr_set(&self, _fa: &FileAttr) -> KResult<()> { Err(VfsError::Eopnotsupp) }
 }
+
+/// One physical extent reported by `Inode::fiemap` (Linux `struct
+/// fiemap_extent`). Byte offsets/lengths, not blocks. `flags` is the
+/// `FIEMAP_EXTENT_*` set (`FIEMAP_EXTENT_LAST` on the final extent,
+/// `FIEMAP_EXTENT_UNKNOWN`/`_DELALLOC`/`_ENCODED`/… as applicable).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct FiemapExtent {
+    /// `fe_logical` — byte offset of the extent within the file.
+    pub logical: u64,
+    /// `fe_physical` — byte offset of the extent on the underlying device.
+    pub physical: u64,
+    /// `fe_length` — byte length of the extent.
+    pub length: u64,
+    /// `fe_flags` — `FIEMAP_EXTENT_*` bitmask.
+    pub flags: u32,
+}
+
+/// Inode attribute view shared by `fileattr_get`/`fileattr_set` (Linux `struct
+/// fileattr`, `include/linux/fileattr.h`). Carries BOTH the legacy
+/// `FS_IOC_GETFLAGS` `FS_*_FL` word and the `FS_IOC_FSGETXATTR` `xflags`/projid
+/// view so one struct serves both ioctls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct FileAttr {
+    /// `FS_IOC_GETFLAGS` `FS_*_FL` flag word (`FS_IMMUTABLE_FL`…).
+    pub flags: u32,
+    /// `FS_IOC_FSGETXATTR` `fsx_xflags` (`FS_XFLAG_*`); `0` when unused.
+    pub fsx_xflags: u32,
+    /// `FS_IOC_FSGETXATTR` `fsx_projid` (project quota id); `0` = default.
+    pub fsx_projid: u32,
+}
+
+impl FileAttr {
+    /// Translate the VFS `i_flags` (`S_*`) word into the `FS_*_FL` view a
+    /// generic `fileattr_get` reports — the inverse of `ext4_set_inode_flags`'s
+    /// `FS_*_FL → S_*` map. Only the VFS-representable bits cross over
+    /// (`S_IMMUTABLE`/`S_APPEND`/`S_NOATIME`/`S_SYNC`); FS-private flags
+    /// (compression, journal-data, …) are not derivable from `i_flags` and stay
+    /// clear. # C: O(1)
+    pub fn from_i_flags(i_flags: u32) -> Self {
+        let mut flags = 0;
+        if i_flags & S_IMMUTABLE != 0 { flags |= FS_IMMUTABLE_FL; }
+        if i_flags & S_APPEND    != 0 { flags |= FS_APPEND_FL; }
+        if i_flags & S_NOATIME   != 0 { flags |= FS_NOATIME_FL; }
+        if i_flags & S_SYNC      != 0 { flags |= FS_SYNC_FL; }
+        FileAttr { flags, fsx_xflags: 0, fsx_projid: 0 }
+    }
+}
+
+/// `FIEMAP_EXTENT_*` flags (Linux `include/uapi/linux/fiemap.h`). Numeric reps
+/// match Linux exactly. `LAST` marks the final extent of the file; `UNKNOWN`
+/// means the location is not (yet) known (e.g. delayed allocation); `DELALLOC`
+/// implies `UNKNOWN`; `ENCODED`/`DATA_ENCRYPTED` mark transformed data.
+pub const FIEMAP_EXTENT_LAST:           u32 = 0x0001;
+pub const FIEMAP_EXTENT_UNKNOWN:        u32 = 0x0002;
+pub const FIEMAP_EXTENT_DELALLOC:       u32 = 0x0004;
+pub const FIEMAP_EXTENT_ENCODED:        u32 = 0x0008;
+pub const FIEMAP_EXTENT_DATA_ENCRYPTED: u32 = 0x0080;
+pub const FIEMAP_EXTENT_NOT_ALIGNED:    u32 = 0x0100;
+pub const FIEMAP_EXTENT_DATA_INLINE:    u32 = 0x0200;
+pub const FIEMAP_EXTENT_UNWRITTEN:      u32 = 0x0800;
+pub const FIEMAP_EXTENT_MERGED:         u32 = 0x1000;
+pub const FIEMAP_EXTENT_SHARED:         u32 = 0x2000;
+
+/// `FS_*_FL` inode flags (Linux `include/uapi/linux/fs.h`) — the
+/// `FS_IOC_GETFLAGS`/`FS_IOC_SETFLAGS` (`chattr`) bit set. Numeric reps match
+/// Linux exactly. Only the VFS-representable subset is enforced by the VFS
+/// (`FS_IMMUTABLE_FL`↔`S_IMMUTABLE`, `FS_APPEND_FL`↔`S_APPEND`,
+/// `FS_NOATIME_FL`↔`S_NOATIME`, `FS_SYNC_FL`↔`S_SYNC`); the rest are FS-private.
+pub const FS_SECRM_FL:     u32 = 0x0000_0001; // secure deletion
+pub const FS_UNRM_FL:      u32 = 0x0000_0002; // undelete
+pub const FS_COMPR_FL:     u32 = 0x0000_0004; // compress file
+pub const FS_SYNC_FL:      u32 = 0x0000_0008; // synchronous updates
+pub const FS_IMMUTABLE_FL: u32 = 0x0000_0010; // immutable file
+pub const FS_APPEND_FL:    u32 = 0x0000_0020; // append-only
+pub const FS_NODUMP_FL:    u32 = 0x0000_0040; // do not dump
+pub const FS_NOATIME_FL:   u32 = 0x0000_0080; // do not update atime
+
+/// `get_next_ino` (Linux `fs/inode.c`) — the process-wide anonymous-inode
+/// number allocator for pseudo inodes that have no on-disk number: pipes,
+/// sockets, `eventfd`/`signalfd`/`timerfd`, `anon_inode`, and other internal
+/// filesystems built on `alloc_anon_inode`. Returns a monotone `u32`, NEVER
+/// `0` — `0` is reserved as "no inode" (`d_ino == 0` hides an entry from
+/// `getdents`), so on the 32-bit wrap the allocator skips past it. Distinct
+/// pseudo inodes therefore get distinct `(s_dev, i_ino)` identities and never
+/// collide on `0`. Linux batches the global counter per-CPU to cut contention;
+/// the net contract — strictly increasing, non-zero — is identical here.
+/// # C: O(1)
+pub fn get_next_ino() -> u32 {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static LAST_INO: AtomicU32 = AtomicU32::new(0);
+    loop {
+        // `fetch_add` returns the prior value; the allocated number is prior+1.
+        let next = LAST_INO.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        if next != 0 { return next; } // skip 0 on the u32 wrap (reserved id)
+    }
+}
+
+/// `IS_IMMUTABLE` (Linux `include/linux/fs.h`) — the inode carries `S_IMMUTABLE`
+/// (`chattr +i`): no writer, rename, unlink, or attribute change, not even with
+/// `CAP_DAC_OVERRIDE`. # C: O(1)
+pub fn is_immutable<I: Inode + ?Sized>(inode: &I) -> bool { inode.i_flags() & S_IMMUTABLE != 0 }
+
+/// `IS_APPEND` (Linux `include/linux/fs.h`) — the inode carries `S_APPEND`
+/// (`chattr +a`): a write open must be `O_APPEND`-only and the file may not be
+/// truncated, renamed, or unlinked. # C: O(1)
+pub fn is_append<I: Inode + ?Sized>(inode: &I) -> bool { inode.i_flags() & S_APPEND != 0 }
+
+/// `IS_NOATIME` (Linux, modulo the mount flag) — the inode carries `S_NOATIME`:
+/// the access-time update path is suppressed for it. # C: O(1)
+pub fn is_noatime<I: Inode + ?Sized>(inode: &I) -> bool { inode.i_flags() & S_NOATIME != 0 }
+
+/// `IS_SYNC` (Linux, inode portion) — the inode carries `S_SYNC`: writes are
+/// forced synchronously to backing store. # C: O(1)
+pub fn is_sync<I: Inode + ?Sized>(inode: &I) -> bool { inode.i_flags() & S_SYNC != 0 }
 
 /// `i_version` lazy-counter bit layout (Linux `include/linux/iversion.h`). The
 /// low bit of the stored 64-bit word is the `I_VERSION_QUERIED` flag (set by a
@@ -666,10 +833,16 @@ pub const I_DIRTY: u32 = I_DIRTY_SYNC | I_DIRTY_DATASYNC | I_DIRTY_PAGES;
 /// Numeric reps match Linux exactly. `S_IMMUTABLE` blocks every write (see
 /// `Inode::permission`); `S_APPEND` forces append-only opens; `S_NOATIME`
 /// suppresses access-time updates; `S_SYNC` forces synchronous writeback.
-pub const S_SYNC:      u32 = 1 << 0; // synchronous writes
-pub const S_NOATIME:   u32 = 1 << 1; // do not update access time
-pub const S_APPEND:    u32 = 1 << 2; // append-only (chattr +a)
-pub const S_IMMUTABLE: u32 = 1 << 3; // immutable (chattr +i)
+pub const S_SYNC:      u32 = 1 << 0;  // synchronous writes
+pub const S_NOATIME:   u32 = 1 << 1;  // do not update access time
+pub const S_APPEND:    u32 = 1 << 2;  // append-only (chattr +a)
+pub const S_IMMUTABLE: u32 = 1 << 3;  // immutable (chattr +i)
+pub const S_DEAD:      u32 = 1 << 4;  // removed, but still open directory
+pub const S_DIRSYNC:   u32 = 1 << 6;  // directory modifications are synchronous
+pub const S_DAX:       u32 = 1 << 13; // direct access (dax-mapped)
+pub const S_ENCRYPTED: u32 = 1 << 14; // encrypted file (fscrypt)
+pub const S_CASEFOLD:  u32 = 1 << 15; // case-insensitive lookups
+pub const S_VERITY:    u32 = 1 << 16; // fs-verity protected (read-only, hashed)
 
 /// `poll(2)` event bitmasks. Numeric reps match Linux exactly.
 pub const POLL_IN:    u32 = 0x0001;  // POLLIN  — readable
