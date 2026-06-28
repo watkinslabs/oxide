@@ -81,6 +81,20 @@ impl DirtyPages {
         core::mem::take(&mut self.dirty).into_iter().collect()
     }
 
+    /// `__filemap_fdatawrite_range` collection step — the range-limited form of
+    /// [`Self::take_writeback`] behind `sync_file_range(2)` and a range `fsync`
+    /// (Linux `wbc->range_start`/`range_end`). Returns the dirty page indices in
+    /// the half-open range `[start_idx, end_idx)` in ascending writeback order
+    /// and clears ONLY those tags — dirty pages outside the window stay dirty
+    /// for a later flush, so a small `sync_file_range` does not silently clean
+    /// (and thus fail to ever write back) the rest of the file. `end_idx ==
+    /// u64::MAX` collects from `start_idx` to the end. # C: O(N dirty in range)
+    pub fn take_writeback_range(&mut self, start_idx: u64, end_idx: u64) -> Vec<u64> {
+        let hit: Vec<u64> = self.dirty.range(start_idx..end_idx).copied().collect();
+        for i in &hit { self.dirty.remove(i); }
+        hit
+    }
+
     /// `mapping_set_error` (Linux `include/linux/pagemap.h`): record a deferred
     /// writeback error. `ENOSPC` sets `AS_ENOSPC`, any other nonzero errno sets
     /// the generic `AS_EIO`; `0`/success is a no-op. The flag is sticky until
@@ -133,6 +147,20 @@ pub trait AddressSpaceOps: Send + Sync {
     /// Flush dirty cache pages to the backing store (`msync`/`fsync`).
     /// No-op for shmem (pages ARE the store). # C: O(N_dirty)
     fn writeback(&self) -> Result<(), ()> { Ok(()) }
+
+    /// Flush dirty cache pages overlapping the byte range `[start, end)` to the
+    /// backing store (Linux `filemap_write_and_wait_range`, the engine behind a
+    /// range `fsync`/`fdatasync` and `sync_file_range`). `end == u64::MAX` means
+    /// "to EOF". The default flushes the WHOLE file — a correct superset of any
+    /// range — by forwarding to [`AddressSpaceOps::writeback`]; a backend that
+    /// tracks per-page dirtiness (via [`DirtyPages::take_writeback_range`])
+    /// overrides this to flush only the dirty pages intersecting the range, so a
+    /// `sync_file_range` over a small window does not rewrite the entire file.
+    /// # C: O(N_dirty in range)
+    fn writeback_range(&self, start: u64, end: u64) -> Result<(), ()> {
+        let _ = (start, end);
+        self.writeback()
+    }
 
     /// Evict resident cache frames whose whole page lies in the byte range
     /// `[start, end)` (Linux `truncate_inode_pages_range`). A page is a
