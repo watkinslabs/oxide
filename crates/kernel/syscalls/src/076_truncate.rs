@@ -24,9 +24,26 @@ pub fn sys_truncate(args: &SyscallArgs) -> i64 {
     };
     if let Err(rv) = crate::landlock::check(s,
         ::security::landlock::access::TRUNCATE) { return rv; }
-    let inode = match vfs::mount::lookup(s) {
-        Ok(i)  => i,
-        Err(_) => return -(Errno::Enoent.as_i32() as i64),
+    // truncate(2) follows symlinks; resolve to the inode + owning mount.
+    let vp = match crate::pathresolve::resolve_path_result(s, false) {
+        Ok(p)  => p,
+        Err(e) => return -(e as i64),
     };
-    match inode.truncate(len) { Ok(_) => 0, Err(e) => -(e as i64) }
+    // EISDIR on a directory (Linux do_sys_truncate).
+    if matches!(vp.inode.file_type(), vfs::FileType::Directory) {
+        return -(Errno::Eisdir.as_i32() as i64);
+    }
+    // EROFS for a read-only mount (mnt_want_write).
+    if vp.mnt_id != 0 {
+        if let Some(m) = vfs::mount::mount_by_id(vp.mnt_id) {
+            if (m.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
+                return -(Errno::Erofs.as_i32() as i64);
+            }
+        }
+    }
+    // MAY_WRITE on the inode (Linux inode_permission).
+    if let Err(e) = vfs::inode_permission(&vp.inode, vfs::MAY_WRITE, &crate::pathresolve::current_cred()) {
+        return -(e as i64);
+    }
+    match vp.inode.truncate(len) { Ok(_) => 0, Err(e) => -(e as i64) }
 }
