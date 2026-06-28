@@ -87,6 +87,12 @@ pub struct LookupFlags {
     /// attribute-cache timeout normally re-checks its backing store on this
     /// pass; set by the retry path after a stale-handle failure.
     pub reval: bool,
+    /// RESOLVE_CACHED (`openat2(2)`): resolve ONLY from the dcache — never
+    /// invoke a filesystem `i_op->lookup` (which may block on I/O). A dcache
+    /// miss that would take the slow path is `EAGAIN`, telling the caller to
+    /// retry on a blocking path (Linux `try_to_unlazy`/`LOOKUP_CACHED` →
+    /// `-EAGAIN`). A cached NEGATIVE dentry is still a definitive `ENOENT`.
+    pub cached: bool,
 }
 
 /// Caller credentials for the VFS permission checks — Linux `struct cred`
@@ -585,7 +591,12 @@ impl Nameidata {
             // un-cached (re-walks `i_op->lookup` next time, as before).
             let child = match crate::dcache::d_lookup_reval(&self.cur_dentry, &comp, self.flags.reval) {
                 Some(d) if !d.is_negative() => d,
-                Some(_) => return Err(VfsError::Enoent), // cached negative
+                Some(_) => return Err(VfsError::Enoent), // cached negative (definitive)
+                // RESOLVE_CACHED: a dcache miss would take the (possibly
+                // blocking) `i_op->lookup` slow path — refuse with EAGAIN
+                // instead (Linux `LOOKUP_CACHED`). Without the flag, fall to
+                // the slow path + `d_add` as before.
+                None if self.flags.cached => return Err(VfsError::Eagain),
                 None => crate::dcache::d_add(&self.cur_dentry, &comp, self.cur_inode.lookup(&comp)?),
             };
 
