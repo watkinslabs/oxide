@@ -327,9 +327,25 @@ impl AddressSpace {
             // the garbage corruption vanish (no PID1 crash either). Linux maps
             // EVERY fork-shared anon/private page READ-ONLY and copies on first
             // write; genuine MAP_SHARED needs a real shared backing object (the
-            // tmpfs/memfd path, fix #7), NOT in-place writable COW frames. So
-            // every VMA goes through the COW path here.
-            let shared = false;
+            // tmpfs/memfd path, fix #7), NOT in-place writable COW frames.
+            //
+            // CORRECTED (refcount-safe, Linux mm/memory.c): the blanket
+            // `shared=false` ALSO caught genuine inode-backed MAP_SHARED
+            // (memfd/tmpfs File VMAs whose pages ARE the inode's shared
+            // frames). Forcing those through COW W-stripped the shared frame
+            // and copied it private on first write, so a forked peer silently
+            // froze its shared view at fork time and never saw later writes
+            // (lost-write / stale-read corruption — a random journald/systemd
+            // shared-memfd page read garbage -> SIGSEGV). Linux DOES share
+            // these across fork (one backing object, no anon_vma, no COW).
+            // Restrict the share decision to File-backed SHARED VMAs: anon
+            // (incl. MAP_SHARED|ANON, which we lack a shmem backing for) stays
+            // on the COW path so the reverted anon write-while-shared bug stays
+            // fixed; only true file backings keep their frame writable+shared.
+            // Refcount is unaffected — `inc_ref` + `map_at` below run for both
+            // branches; `shared` only gates the W-strip + parent RO-remap.
+            let shared = vma.flags.contains(VmaFlags::SHARED)
+                && matches!(vma.backing, VmaBacking::File { .. });
             // B18 fix: COW-share Anonymous + KernelBytes + File-backed
             // frames. File backings are required so child processes
             // inherit their parent's mmap'd shared-library mappings
@@ -835,6 +851,30 @@ impl AddressSpace {
             // the under-count is found and a real PageAnonExclusive flag is
             // tracked, every write-fault COW-copies — always correct, just an
             // extra 4 KiB copy per first-write on a private anon page.
+            // MAP_SHARED of a page-frame-backed file (memfd/tmpfs): a write
+            // fault must make the SHARED frame itself writable in place (Linux
+            // shmem dirty path) — never COW-copy, or this write diverges from
+            // the file + every peer mapper (lost-write corruption). The page is
+            // RO here only because a prior fork W-stripped it (or mprotect did);
+            // re-install the SAME inode frame writable. No alloc, no copy, no
+            // refcount change (we keep our existing reference to `cur`).
+            if vma.flags.contains(VmaFlags::SHARED) && !cfg!(feature = "debug-no-shmem") {
+                if let (VmaBacking::File { backing, off }, Some((src_pa, _))) = (&vma.backing, cur) {
+                    let cur_pa = src_pa.0 & !(PAGE_SIZE_BYTES - 1);
+                    let foff = off.wrapping_add(va_page - vma.start.as_u64());
+                    if backing.shared_frame(foff) == Some(cur_pa) {
+                        let pte_flags = vma.prot.to_page_flags();
+                        // SAFETY: va_page page-aligned per find_containing; cur_pa is the
+                        // inode-owned shared frame already mapped here (refcount held);
+                        // flags carry USER+WRITE since vma.prot.WRITE checked above.
+                        unsafe {
+                            M::map(Va(va_page), Pa(cur_pa), pte_flags, PageSize::P4K);
+                            M::flush_va(Va(va_page));
+                        }
+                        return Ok(());
+                    }
+                }
+            }
             // Shared frame (refcount > 1) or no current mapping:
             // alloc fresh + copy + install writable + dec_ref shared.
             let new_pa = alloc_frame().ok_or(Error::NoMem)?;

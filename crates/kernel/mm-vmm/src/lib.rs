@@ -80,3 +80,9 @@ mod tests_rmap_cow;
 #[cfg(test)]
 mod tests_cow_isolation;
 
+// fork+COW GLOBAL refcount-invariant proptest: refcount(pa) == live PTEs + base
+// across all ASes, asserted after every op over 200k randomized fork/COW/
+// munmap/teardown operations. Catches refcount UNDER-COUNT (free-while-mapped).
+#[cfg(test)]
+mod tests_cow_invariant;
+

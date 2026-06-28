@@ -74,17 +74,15 @@ struct HostMmu;
 
 impl MmuOps for HostMmu {
     unsafe fn map(va: Va, pa: Pa, flags: PageFlags, _size: PageSize) {
-        pt_with(|pt| {
-            if let Some((cur_pa, _)) = pt.leaves.get(&va.0) {
-                if *cur_pa != pa.0 {
-                    panic!(
-                        "HostMmu::map AlreadyMapped without unmap: va=0x{:x} cur_pa=0x{:x} new_pa=0x{:x}",
-                        va.0, cur_pa, pa.0,
-                    );
-                }
-            }
-            pt.leaves.insert(va.0, (pa.0, flags.bits()));
-        });
+        // Model the REAL per-arch walker (`hal_x86_64::mmu_ops::map` /
+        // `hal_aarch64`): an install over a present leaf at the same VA tears
+        // down the displaced leaf and installs the new PA (the
+        // `WalkErr::AlreadyMapped` -> `unmap_at_va` + `map_at_level` path).
+        // The COW handler relies on this silent replace — the in-place reuse
+        // fast-path is disabled, so every COW write installs a FRESH PA over
+        // the (RO) present leaf. Modelling it as a plain overwrite keeps the
+        // host PT faithful to production.
+        pt_with(|pt| { pt.leaves.insert(va.0, (pa.0, flags.bits())); });
     }
 
     unsafe fn unmap(va: Va, _size: PageSize) {
