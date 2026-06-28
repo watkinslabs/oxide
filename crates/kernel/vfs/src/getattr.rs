@@ -46,6 +46,19 @@ pub struct Kstat {
     pub fsid: u64,
 }
 
+/// `new_encode_dev` (Linux `include/linux/kdev_t.h`): pack a `(major, minor)`
+/// pair into the 32-bit `st_rdev` ABI surface with the huge-dev split — minor's
+/// low 8 bits in `[0..8)`, the 12-bit major in `[8..20)`, and minor's HIGH bits
+/// in `[20..32)`. The high-minor split is what lets a minor exceed 255 (e.g.
+/// dynamic char minors, loop/dm devices) without clobbering the major field;
+/// the naive `(major<<8)|minor` legacy form silently truncates those. Byte-
+/// identical to `Devt::new(major, minor).raw()` — the one encoding every
+/// `Inode::rdev()` impl reports, so `generic_fillattr` copies it through
+/// verbatim for device nodes and reports 0 for everything else. # C: O(1)
+pub const fn encode_dev(major: u32, minor: u32) -> u32 {
+    (minor & 0xff) | ((major & 0xfff) << 8) | ((minor & !0xff) << 12)
+}
+
 /// Linux-shaped permission fallback for inodes without a native mode
 /// (`Inode::perm() == None` and no overlay). # C: O(1)
 pub fn default_perm_for(ft: FileType) -> u16 {
