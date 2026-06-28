@@ -96,6 +96,39 @@ pub fn atime_needs_update(c: &AtimeCtx, now_ns: u64) -> bool {
     true
 }
 
+/// `current_time` (Linux fs/inode.c) — the wall-clock timestamp `now_ns`
+/// (nanoseconds since the epoch; the syscall layer reads the clock, `vfs` owns
+/// no time source) floored to the inode's superblock `s_time_gran` via
+/// [`crate::superblock::SuperBlock::timestamp_truncate`], so a stamped
+/// atime/mtime/ctime never carries sub-granularity precision the backend cannot
+/// persist. An SB-less inode (anon pidfd/pipe/socket) gets the raw `now_ns`
+/// (ns precision). # C: O(1)
+pub fn current_time<I: crate::inode::Inode + ?Sized>(inode: &I, now_ns: u64) -> u64 {
+    inode.i_sb().map(|sb| sb.timestamp_truncate(now_ns)).unwrap_or(now_ns)
+}
+
+/// `inode_set_ctime_current` (Linux fs/inode.c) — floor `now_ns` to the inode's
+/// granularity ([`current_time`]), stamp it as the inode's ctime (recorded in
+/// the metadata overlay until per-inode timespec fields land, D17), and return
+/// the value stored, so a metadata mutator both updates and reports the change
+/// time in one call. # C: O(log N)
+#[cfg(target_os = "oxide-kernel")]
+pub fn inode_set_ctime_current(inode: &crate::InodeRef, now_ns: u64) -> u64 {
+    let t = current_time(&**inode, now_ns);
+    let k = key(inode);
+    let mut g = TIMES.lock();
+    g.entry(k).or_insert(InodeTimes::default()).ctime_ns = t;
+    t
+}
+
+/// Hosted build: no global overlay store, so the stamp is a no-op; the
+/// granularity-floored value is still returned (the half the hosted tests
+/// exercise). # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn inode_set_ctime_current(inode: &crate::InodeRef, now_ns: u64) -> u64 {
+    current_time(&**inode, now_ns)
+}
+
 #[cfg(target_os = "oxide-kernel")]
 use alloc::collections::BTreeMap;
 #[cfg(target_os = "oxide-kernel")]
