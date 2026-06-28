@@ -400,6 +400,31 @@ pub fn d_drop(d: &Arc<Dentry>) {
     if let Some(p) = d.parent() { p.forget_child(d.name()); }
 }
 
+/// Tell the dcache an inode behind `d` was unlinked (Linux `d_delete`,
+/// `fs/dcache.c`): the FS calls this after a successful `unlink`/`rmdir` so the
+/// stale positive dentry isn't reused. Two Linux-faithful outcomes:
+///   * SOLE-USER, FS caches negatives — turn `d` NEGATIVE but keep it HASHED
+///     (Linux `dentry_unlink_inode`): drop its inode alias and clear the inode,
+///     leaving a cached miss so a later `d_lookup` of the now-absent name hits
+///     the negative WITHOUT re-running `i_op->lookup`.
+///   * SHARED (`d_count > 1`, another walker holds the positive view) OR the FS
+///     opts out of caching negatives via `d_op->d_delete` returning true (Linux
+///     `DCACHE_OP_DELETE`, e.g. a pseudo-fs that never wants stale names) —
+///     UNHASH it (`d_drop`) so new lookups re-walk and the node is freed at the
+///     last `dput`. A shared dentry can't be turned negative underneath its
+///     other users, so it is dropped, not made negative. # C: O(d_drop)
+pub fn d_delete(d: &Arc<Dentry>) {
+    let want_drop = d.d_op().and_then(|o| o.d_delete).map(|f| f(d)).unwrap_or(false);
+    if d.d_count() > 1 || want_drop {
+        d_drop(d);
+    } else {
+        if let Some(inode) = d.inode() {
+            if let Some(sb) = inode.i_sb() { sb.i_drop_alias(inode.ino(), d); }
+        }
+        d.set_inode(None);
+    }
+}
+
 /// Rename `old` to `(new_parent, new_name)` (Linux `d_move`). Unhashes
 /// `old` from its current parent and rehomes its inode under the new
 /// (parent,name) key, so `d_lookup(old_parent, old_name)` misses and
