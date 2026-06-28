@@ -153,6 +153,46 @@ impl vfs::Inode for Ext4FileInode {
         self.refresh();
         Ok(())
     }
+    /// `i_op->getattr` (Linux `ext4_getattr`): the generic fill, then
+    /// `st_blocks` overwritten with the REAL on-disk `i_blocks` (512-byte
+    /// sectors). The generic path derives blocks from the logical size, so a
+    /// preallocated/`fallocate`d or sparse file is indistinguishable; ext4's
+    /// `i_blocks` counts the actually-allocated extents (+ tree metadata).
+    /// # C: O(1) inode read
+    fn getattr(&self, idmap: &vfs::idmap::Idmap, overlay: Option<vfs::inode_times::InodeTimes>)
+        -> vfs::getattr::Kstat
+    {
+        let mut k = vfs::getattr::generic_fillattr(self, idmap, overlay);
+        if let Ok(i) = self.st.mount.read_inode(self.ino) { k.blocks = i.i_blocks; }
+        k
+    }
+    /// Per-inode `address_space` (Linux `inode->i_mapping`): the owning
+    /// mount's `page_cache`, keyed by this inode's id. Every mapper/reader of
+    /// the same ino routes `read_at` THROUGH this one cache instead of each
+    /// `InodeFileBacking` filling its own private `PageCache` (the mmap_file
+    /// comment): two `mmap()`s of one file share ONE page set. The MAP_SHARED
+    /// frame half (`shared_frame`) stays `None` — handing out a writable PMM
+    /// frame + dirty-writeback to extents is the deferred half; this wires the
+    /// read-side shared mapping. # C: O(1)
+    fn i_mapping(&self) -> Option<&dyn vfs::mapping::AddressSpaceOps> { Some(self) }
+}
+
+/// ext4 file `address_space`: reads route through the owning mount's shared
+/// `page_cache` (keyed by inode id), so all mappers/readers of one inode hit
+/// the SAME cached pages. # C: O(1)
+impl vfs::mapping::AddressSpaceOps for Ext4FileInode {
+    /// MAP_SHARED writable frame: deferred (no PMM-frame store + extent
+    /// writeback yet) → `None`, so the fault path copies into a private frame
+    /// (correct for MAP_PRIVATE; unchanged from the pre-i_mapping default).
+    /// # C: O(1)
+    fn shared_frame(&self, _off: u64) -> Option<u64> { None }
+    /// Read-fault / MAP_PRIVATE fill: copy from the per-mount page cache,
+    /// shared by every mapper of this inode. # C: O(dst.len)
+    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, ()> {
+        self.st.read_cached(self.ino, off, dst)
+    }
+    /// # C: O(1)
+    fn size(&self) -> u64 { vfs::Inode::size(self) }
 }
 
 /// Stat-only VFS Inode for any ext4 inode (regular, dir, symlink, …).
@@ -180,6 +220,24 @@ impl vfs::Inode for Ext4StatInode {
     fn file_type(&self) -> vfs::FileType { self.ft }
     fn size(&self) -> u64 { self.size }
     fn perm(&self) -> Option<u16> { Some(self.perm) }
+    /// `st_rdev` for a CHR/BLK node — the device number ext4 stores inline in
+    /// `i_block`. Non-device inodes report 0 (Linux). `generic_fillattr` only
+    /// reads this for CHR/BLK file types. # C: O(1) inode read
+    fn rdev(&self) -> u32 {
+        if !matches!(self.ft, vfs::FileType::CharDev | vfs::FileType::BlockDev) { return 0; }
+        self.st.mount.read_inode(self.ino).map(|i| i.rdev()).unwrap_or(0)
+    }
+    /// `i_op->getattr` (Linux `ext4_getattr`): generic fill with `st_blocks`
+    /// replaced by the real on-disk `i_blocks` (512-byte sectors) so dirs /
+    /// preallocated nodes report their true allocation, not a size estimate.
+    /// # C: O(1) inode read
+    fn getattr(&self, idmap: &vfs::idmap::Idmap, overlay: Option<vfs::inode_times::InodeTimes>)
+        -> vfs::getattr::Kstat
+    {
+        let mut k = vfs::getattr::generic_fillattr(self, idmap, overlay);
+        if let Ok(i) = self.st.mount.read_inode(self.ino) { k.blocks = i.i_blocks; }
+        k
+    }
     /// Per-component child lookup the dentry path-walk (`docs/16§3`) drives.
     /// # C: O(N_entries in dir)
     fn lookup(&self, name: &str) -> vfs::KResult<vfs::InodeRef> {

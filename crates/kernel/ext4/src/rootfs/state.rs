@@ -35,6 +35,9 @@ pub struct RootfsState {
     /// Page-cache hit / miss counters (boot trace proof of cache use).
     pub cache_hits:   core::sync::atomic::AtomicU64,
     pub cache_misses: core::sync::atomic::AtomicU64,
+    /// FIFREEZE state (Linux `sb->s_writers.frozen`). Set by
+    /// `Ext4SuperOps::freeze_fs`, cleared by `thaw_fs`. PER MOUNT.
+    pub frozen: core::sync::atomic::AtomicBool,
 }
 
 impl RootfsState {
@@ -48,6 +51,7 @@ impl RootfsState {
             orphans: sync::Spinlock::new(Vec::new()),
             cache_hits:   core::sync::atomic::AtomicU64::new(0),
             cache_misses: core::sync::atomic::AtomicU64::new(0),
+            frozen:       core::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -200,6 +204,47 @@ impl RootfsState {
             out.extend_from_slice(&blk[..take]);
         }
         Some(out)
+    }
+
+    /// Page-cache-backed read of regular file `ino` into `dst` starting at
+    /// byte `off` (Linux `address_space` fill). Pages are keyed by `InodeId`
+    /// in this mount's shared `page_cache`, so every mapper/reader of one
+    /// inode hits the SAME cached pages — the `i_mapping` read-side share.
+    /// Short read past EOF; holes read as zero. # C: O(dst.len)
+    pub fn read_cached(&self, ino: u32, off: u64, dst: &mut [u8]) -> Result<usize, ()> {
+        let inode = self.mount.read_inode(ino).map_err(|_| ())?;
+        if !inode.is_reg() { return Err(()); }
+        let inode_id = InodeId(ino as u64);
+        let total = inode.size;
+        let mut written = 0usize;
+        while written < dst.len() {
+            let cur = off + written as u64;
+            if cur >= total { break; }
+            let page_off = cur & !((PAGE_BYTES as u64) - 1);
+            let in_page  = (cur - page_off) as usize;
+            let cached = self.page_cache.read_page_with(inode_id, page_off, || {
+                let bs = self.mount.sb.block_size as u64;
+                let blocks_per_page = (PAGE_BYTES as u64 / bs).max(1) as u32;
+                let first_blk = (page_off / bs) as u32;
+                let mut buf = Vec::with_capacity(PAGE_BYTES);
+                for i in 0..blocks_per_page {
+                    let blk = match self.mount.read_file_block(&inode, first_blk + i) {
+                        Ok(b)  => b,
+                        Err(crate::MountError::NotFound) => alloc::vec![0u8; bs as usize],
+                        Err(_) => return Err(BlockError::Eio),
+                    };
+                    buf.extend_from_slice(&blk);
+                }
+                Ok(buf)
+            }).map_err(|_| ())?;
+            let g = cached.data.lock();
+            let avail_in_page = g.len().saturating_sub(in_page);
+            let want = (dst.len() - written).min(avail_in_page).min((total - cur) as usize);
+            if want == 0 { break; }
+            dst[written..written + want].copy_from_slice(&g[in_page..in_page + want]);
+            written += want;
+        }
+        Ok(written)
     }
 
     /// In-place first-block write (Phase 7b minimum).
