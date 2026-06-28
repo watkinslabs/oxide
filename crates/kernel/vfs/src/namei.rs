@@ -363,6 +363,15 @@ impl Nameidata {
         let ns = crate::mount::current_ns();
         if path.as_bytes().first() == Some(&b'/') { self.to_root()?; }
 
+        // A trailing `/` on a non-root path (`foo/`) means LOOKUP_DIRECTORY:
+        // the final component must resolve to a directory (else ENOTDIR via the
+        // check below), AND the final symlink is followed even under
+        // `no_follow_final` (Linux `link_path_walk`: a trailing slash adds
+        // LOOKUP_FOLLOW|LOOKUP_DIRECTORY to the last component). "/" itself
+        // (len 1) is the root directory and resolves normally.
+        let trailing_slash = path.len() > 1 && path.as_bytes().last() == Some(&b'/');
+        if trailing_slash { self.flags.directory = true; }
+
         let mut queue: Vec<String> = components(path);
         let mut idx = 0usize;
         let mut last_component: Option<String> = None;
@@ -408,7 +417,10 @@ impl Nameidata {
             // directory, never a symlink, so this precedes mount crossing).
             if matches!(child.inode().map(|i| i.file_type()), Some(FileType::Symlink)) {
                 if self.flags.no_symlinks { return Err(VfsError::Eloop); }
-                if is_final && self.flags.no_follow_final {
+                // A trailing slash forces the FINAL symlink to be followed even
+                // under no_follow_final (Linux: `link/` follows `link`, then the
+                // target must be a directory).
+                if is_final && self.flags.no_follow_final && !trailing_slash {
                     let inode = child.inode().ok_or(VfsError::Enoent)?;
                     return Ok(VfsPath { mnt_id: self.cur_mnt_id, dentry: child, inode, last_component: None });
                 }
