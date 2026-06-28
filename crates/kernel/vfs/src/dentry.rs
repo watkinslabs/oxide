@@ -22,6 +22,7 @@ use sync::{Dentry as DentryClass, Inode as InodeClass, RwLock};
 
 use crate::inode::InodeRef;
 use crate::superblock::SuperBlock;
+use crate::types::FileType;
 
 /// `d_flags` bits (Linux `include/linux/dcache.h` subset).
 pub const D_ROOT:       u32 = 0x0001; // this dentry is a superblock root
@@ -30,6 +31,42 @@ pub const D_HASHED:     u32 = 0x0004; // present in the global dentry_hashtable
 pub const D_REFERENCED: u32 = 0x0008; // recently used — LRU two-hand-clock bit
 pub const D_LRU:        u32 = 0x0010; // currently linked on the dcache LRU
 pub const D_DISCONNECTED: u32 = 0x0020; // anonymous (parentless) alias, on s_anon
+
+// ---------------------------------------------------------------------------
+// DCACHE_ENTRY_TYPE — cached inode type, stamped into `d_flags` the moment an
+// inode is associated (`build` / `set_inode`). Linux keeps these so the hot
+// path (`d_is_dir` in the walker, `d_is_symlink` before a symlink follow)
+// branches on the dentry WITHOUT read-locking + dereferencing `d_inode`.
+// Layout mirrors Linux `include/linux/dcache.h`: the type occupies bits 20..22
+// (`7 << 20`), `MISS == 0` so a negative dentry's type field is naturally clear.
+// ---------------------------------------------------------------------------
+/// Mask selecting the cached-type field (Linux `DCACHE_ENTRY_TYPE`).
+pub const D_TYPE_MASK:      u32 = 0x0070_0000;
+/// Negative dentry — no inode (Linux `DCACHE_MISS_TYPE`).
+pub const D_MISS_TYPE:      u32 = 0x0000_0000;
+/// Directory (Linux `DCACHE_DIRECTORY_TYPE`).
+pub const D_DIRECTORY_TYPE: u32 = 0x0020_0000;
+/// Regular file (Linux `DCACHE_REGULAR_TYPE`).
+pub const D_REGULAR_TYPE:   u32 = 0x0040_0000;
+/// char/block/fifo/socket (Linux `DCACHE_SPECIAL_TYPE`).
+pub const D_SPECIAL_TYPE:   u32 = 0x0050_0000;
+/// Symlink (Linux `DCACHE_SYMLINK_TYPE`).
+pub const D_SYMLINK_TYPE:   u32 = 0x0060_0000;
+
+/// Cached-type bits for an optional inode (Linux `__d_entry_type`): the
+/// `S_IFMT` class folded to a `D_*_TYPE`, or `D_MISS_TYPE` when negative.
+/// # C: O(1)
+fn type_bits_for(inode: &Option<InodeRef>) -> u32 {
+    match inode {
+        None => D_MISS_TYPE,
+        Some(i) => match i.file_type() {
+            FileType::Directory => D_DIRECTORY_TYPE,
+            FileType::Regular   => D_REGULAR_TYPE,
+            FileType::Symlink   => D_SYMLINK_TYPE,
+            FileType::CharDev | FileType::BlockDev | FileType::Fifo | FileType::Socket => D_SPECIAL_TYPE,
+        },
+    }
+}
 
 // ---------------------------------------------------------------------------
 // QStr — Linux `struct qstr`: name + precomputed `full_name_hash` (`16§96`).
@@ -217,6 +254,7 @@ impl Dentry {
     /// # C: O(name.len())
     fn build(parent: Option<Arc<Dentry>>, name: &str, inode: Option<InodeRef>, sb: Weak<SuperBlock>, d_op: Option<&'static DentryOps>, mut flags: u32) -> Arc<Self> {
         if inode.is_none() { flags |= D_NEGATIVE; }
+        flags = (flags & !D_TYPE_MASK) | type_bits_for(&inode); // DCACHE_ENTRY_TYPE stamp
         let qname = QStr::new(parent.as_ref(), name);
         Arc::new(Self {
             parent,
@@ -344,6 +382,37 @@ impl Dentry {
     /// # C: O(1)
     pub fn is_disconnected(&self) -> bool { self.flags() & D_DISCONNECTED != 0 }
 
+    /// Replace the `DCACHE_ENTRY_TYPE` field with `bits` (one of `D_*_TYPE`),
+    /// preserving every other `d_flags` bit. Linux `__d_set_inode_and_type`.
+    /// # C: O(1)
+    fn set_type(&self, bits: u32) {
+        let mut f = self.d_flags.load(Ordering::Relaxed);
+        f = (f & !D_TYPE_MASK) | (bits & D_TYPE_MASK);
+        self.d_flags.store(f, Ordering::Relaxed);
+    }
+
+    /// Cached `DCACHE_ENTRY_TYPE` field — a `D_*_TYPE` value. # C: O(1)
+    pub fn d_type(&self) -> u32 { self.flags() & D_TYPE_MASK }
+
+    /// Cached "this dentry has no inode" (Linux `d_is_negative`). Reads the
+    /// stamped type bits — no `d_inode` deref, unlike `is_negative`. # C: O(1)
+    pub fn d_is_miss(&self) -> bool { self.d_type() == D_MISS_TYPE }
+    /// Cached "this dentry has an inode" (Linux `d_is_positive`). # C: O(1)
+    pub fn d_is_positive(&self) -> bool { !self.d_is_miss() }
+    /// Cached "directory" (Linux `d_is_dir`). The walker branches on this
+    /// without locking + dereferencing `d_inode`. # C: O(1)
+    pub fn d_is_dir(&self) -> bool { self.d_type() == D_DIRECTORY_TYPE }
+    /// Cached "a lookup may descend here" (Linux `d_can_lookup`) — directory.
+    /// # C: O(1)
+    pub fn d_can_lookup(&self) -> bool { self.d_is_dir() }
+    /// Cached "regular file" (Linux `d_is_reg`). # C: O(1)
+    pub fn d_is_reg(&self) -> bool { self.d_type() == D_REGULAR_TYPE }
+    /// Cached "symlink" (Linux `d_is_symlink`) — gate before a symlink follow.
+    /// # C: O(1)
+    pub fn d_is_symlink(&self) -> bool { self.d_type() == D_SYMLINK_TYPE }
+    /// Cached "char/block/fifo/socket" (Linux `d_is_special`). # C: O(1)
+    pub fn d_is_special(&self) -> bool { self.d_type() == D_SPECIAL_TYPE }
+
     /// # C: O(1)
     pub fn name(&self) -> &str { self.name.name() }
 
@@ -377,11 +446,13 @@ impl Dentry {
     /// disassociated. # C: O(1)
     pub fn set_inode(&self, inode: Option<InodeRef>) {
         let neg = inode.is_none();
+        let type_bits = type_bits_for(&inode);
         let old = { let mut g = self.inode.write(); core::mem::replace(&mut *g, inode) };
         if let (Some(old_inode), Some(f)) = (old, self.d_op.and_then(|o| o.d_iput)) {
             f(self, old_inode);
         }
         self.set_flag(D_NEGATIVE, neg);
+        self.set_type(type_bits); // re-stamp DCACHE_ENTRY_TYPE (Linux __d_set_inode_and_type)
     }
 
     /// Cached child dentry for `name`, if previously resolved (the
