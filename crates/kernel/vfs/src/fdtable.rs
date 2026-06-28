@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 use sync::{FdTable as FdTableClass, Spinlock};
 
 use crate::file::File;
-use crate::types::{KResult, VfsError};
+use crate::types::{KResult, OpenFlags, VfsError};
 
 /// Soft limit on FDs per process. Linux's default `RLIMIT_NOFILE` is
 /// 1024; raise to 64 KiB once cgroup-tracked rlimits land.
@@ -234,6 +234,39 @@ impl FdTable {
             g.files[nf] = Some(f);
             g.set_open(nf, true);
             g.set_cloexec_bit(nf, false);
+            old
+        };
+        if let Some(old) = replaced { old.flush(); }
+        Ok(new_fd)
+    }
+
+    /// `dup3(2)` — install `old_fd` at exactly `new_fd`, closing (and
+    /// flushing) whatever was there, with FD_CLOEXEC set per `flags`.
+    /// Differs from `dup2` on two points Linux `ksys_dup3` enforces:
+    ///   * `old_fd == new_fd` → `Einval` (NOT a no-op — `dup2` returns
+    ///     `new_fd`, `dup3` rejects); checked before fd validity, so an
+    ///     equal-but-bad pair is `Einval`, not `Ebadf`.
+    ///   * the new fd's FD_CLOEXEC is set from `O_CLOEXEC` in `flags`
+    ///     atomically with the install (no follow-up `set_cloexec`).
+    /// Flag bits other than `O_CLOEXEC` → `Einval`. Order mirrors
+    /// `ksys_dup3`: bad flags (Einval) → equal fds (Einval) → `new_fd`
+    /// out of range (Ebadf) → `old_fd` invalid (Ebadf).
+    /// # C: O(1) + close
+    pub fn dup3(&self, old_fd: i32, new_fd: i32, flags: OpenFlags) -> KResult<i32> {
+        if flags.bits() & !OpenFlags::O_CLOEXEC.bits() != 0 { return Err(VfsError::Einval); }
+        if old_fd == new_fd { return Err(VfsError::Einval); }
+        if new_fd < 0 || (new_fd as usize) >= FD_TABLE_MAX { return Err(VfsError::Ebadf); }
+        let f = self.get(old_fd)?;
+        crate::file::fire_clone_hook(&f);
+        let cloexec = flags.contains(OpenFlags::O_CLOEXEC);
+        let nf = new_fd as usize;
+        let replaced = {
+            let mut g = self.inner.lock();
+            g.ensure_capacity(nf);
+            let old = g.files[nf].take();
+            g.files[nf] = Some(f);
+            g.set_open(nf, true);
+            g.set_cloexec_bit(nf, cloexec);
             old
         };
         if let Some(old) = replaced { old.flush(); }
