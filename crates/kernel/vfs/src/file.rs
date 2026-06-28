@@ -7,10 +7,23 @@ use alloc::sync::Arc;
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use sync::Spinlock;
+
 use crate::dentry::Dentry;
 use crate::inode::InodeRef;
 use crate::namei::Cred;
-use crate::types::{KResult, OpenFlags, VfsError};
+use crate::types::{FileType, KResult, OpenFlags, VfsError};
+
+/// Lock class for `File::f_pos_lock` (`06§3.6`). Ranked below `Inode`
+/// (40): the pos lock is acquired in `read`/`write` BEFORE the inode I/O
+/// that takes the inode lock, mirroring Linux `__fdget_pos` preceding
+/// `vfs_read`/`vfs_write`. Defined locally (not in the shared `sync`
+/// taxonomy) so this change stays self-contained.
+struct FilePos;
+impl sync::LockClass for FilePos {
+    /// # C: O(1)
+    fn rank() -> u16 { 35 }
+}
 
 bitflags::bitflags! {
     /// `file->f_mode` access bits (Linux `include/linux/fs.h` `FMODE_*`).
@@ -79,6 +92,13 @@ pub struct File {
     /// Default 0; opaque to the VFS core.
     private_data: AtomicU64,
     pos:    AtomicU64,
+    /// `f_pos_lock` (Linux `struct file.f_pos_lock`, set for FMODE_ATOMIC_POS
+    /// files). Serializes the pos-read -> I/O -> pos-update region in
+    /// `read`/`write` so concurrent ops on a shared (dup / CLONE_FILES) open
+    /// file description cannot interleave the cursor. Guards the separate
+    /// `pos` atomic — payload is `()`. Only taken for seekable files
+    /// (regular/directory); non-seekable I/O may park and ignores `pos`.
+    f_pos_lock: Spinlock<(), FilePos>,
     flags:  AtomicU32,
     /// Currently-held flock kind: 0=none, 1=LOCK_SH, 2=LOCK_EX. Used
     /// by the kernel-side flock registry to find which lock to drop
@@ -297,6 +317,7 @@ impl File {
             f_cred: cred,
             private_data: AtomicU64::new(0),
             pos:   AtomicU64::new(0),
+            f_pos_lock: Spinlock::new(()),
             flags: AtomicU32::new(flags.bits()),
             flock_op: AtomicU32::new(0),
             owner: core::sync::atomic::AtomicI32::new(0),
@@ -342,6 +363,16 @@ impl File {
     /// inode impl is a no-op. # C: depends on inode impl
     pub fn flush(&self) { self.inode.on_flush(); }
 
+    /// FMODE_ATOMIC_POS predicate (Linux `do_dentry_open`: set only for
+    /// `S_ISREG`/`S_ISDIR`). Seekable files carry a real cursor whose
+    /// pos-read -> I/O -> pos-update must be serialized against a shared
+    /// fd; non-seekable files (pipe/socket/fifo) ignore `pos` and their
+    /// I/O may park, so they skip the (non-sleeping) pos lock entirely.
+    /// # C: O(1)
+    fn atomic_pos(&self) -> bool {
+        matches!(self.inode.file_type(), FileType::Regular | FileType::Directory)
+    }
+
     /// Snapshot of the file position.
     /// # C: O(1)
     pub fn pos(&self) -> u64 { self.pos.load(Ordering::Acquire) }
@@ -373,6 +404,10 @@ impl File {
         if !self.f_mode.contains(Fmode::READ) {
             return Err(VfsError::Ebadf);
         }
+        // FMODE_ATOMIC_POS: hold `f_pos_lock` across pos-read -> I/O ->
+        // pos-update so a dup'd / CLONE_FILES-shared fd can't interleave the
+        // cursor (Linux `__fdget_pos`). `None` for non-seekable files.
+        let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
         let pos = self.pos.load(Ordering::Acquire);
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
             self.inode.read_nonblock(pos, buf)?
@@ -380,6 +415,7 @@ impl File {
             self.inode.read(pos, buf)?
         };
         self.pos.store(pos + n as u64, Ordering::Release);
+        drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         if n > 0 {
             let h = READ_HOOK.load(Ordering::Acquire);
             if h != 0 {
@@ -408,6 +444,12 @@ impl File {
                 return Err(VfsError::Erofs);
             }
         }
+        // FMODE_ATOMIC_POS: hold `f_pos_lock` across the offset pick (incl.
+        // the O_APPEND size read) -> I/O -> pos-update so a shared fd can't
+        // interleave the cursor (Linux `__fdget_pos`). `None` for
+        // non-seekable files. O_APPEND atomicity vs other writers is the
+        // inode lock's job; this serializes only this description's `pos`.
+        let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
         let off = if f.contains(OpenFlags::O_APPEND) {
             self.inode.size()
         } else {
@@ -419,6 +461,7 @@ impl File {
             self.inode.write(off, buf)?
         };
         self.pos.store(off + n as u64, Ordering::Release);
+        drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         // inotify IN_MODIFY hook (no-op when nothing installed).
         if n > 0 {
             let h = WRITE_HOOK.load(Ordering::Acquire);
