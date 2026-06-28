@@ -106,6 +106,23 @@ pub fn is_absolute(path: &str) -> bool {
     path.as_bytes().first() == Some(&b'/')
 }
 
+/// Linux `LOOKUP_DIRECTORY` derived from pathname *syntax*: true when `path`
+/// forces its resolved target to be a directory by construction. Three forms
+/// (`link_path_walk`): a trailing `/` (one or more — `foo/`), or a final `.`
+/// (`foo/.`), or a final `..` (`foo/..`). Each only resolves against a
+/// directory, so a non-dir leaf is `ENOTDIR` (`/etc/passwd/`, `/etc/passwd/.`,
+/// `/etc/passwd/..` all fail). The bare root `/` (len 1) IS the root directory
+/// and imposes nothing extra. Companion to [`components`], which drops the
+/// trailing `/` and `.` and so cannot itself carry this requirement.
+/// # C: O(len)
+pub fn requires_dir(path: &str) -> bool {
+    match path.as_bytes().last() {
+        None        => false,              // empty path
+        Some(&b'/') => path.len() > 1,     // trailing slash, non-root
+        Some(_)     => matches!(path.rsplit('/').next(), Some("." | "..")),
+    }
+}
+
 /// Private-use code-point base for escaped non-UTF-8 path bytes. Each
 /// raw byte `b` of an invalid UTF-8 sequence maps to `U+EE00 + b`
 /// (PUA-A, valid Rust scalar values). `path_into_bytes` reverses it.

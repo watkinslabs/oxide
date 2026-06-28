@@ -373,13 +373,16 @@ impl Nameidata {
         let ns = crate::mount::current_ns();
         if path.as_bytes().first() == Some(&b'/') { self.to_root()?; }
 
-        // A trailing `/` on a non-root path (`foo/`) means LOOKUP_DIRECTORY:
-        // the final component must resolve to a directory (else ENOTDIR via the
-        // check below), AND the final symlink is followed even under
+        // LOOKUP_DIRECTORY from pathname syntax (`path::requires_dir`): a
+        // trailing `/` (`foo/`), or a final `.` / `..` (`foo/.`, `foo/..`)
+        // forces the final component to resolve to a directory (else ENOTDIR via
+        // the check below), AND makes the final symlink be followed even under
         // `no_follow_final` (Linux `link_path_walk`: a trailing slash adds
         // LOOKUP_FOLLOW|LOOKUP_DIRECTORY to the last component). "/" itself
-        // (len 1) is the root directory and resolves normally.
-        let trailing_slash = path.len() > 1 && path.as_bytes().last() == Some(&b'/');
+        // (len 1) is the root directory and resolves normally. The lexical
+        // splitter drops the trailing `/` and `.`, so this requirement cannot be
+        // recovered from `queue` alone — `requires_dir` reads the raw path.
+        let trailing_slash = crate::path::requires_dir(path);
         if trailing_slash { self.flags.directory = true; }
 
         let mut queue: Vec<String> = components(path);
@@ -391,19 +394,22 @@ impl Nameidata {
             idx += 1;
             let is_final = idx == queue.len();
 
-            // `.` and empty segments are already dropped by `components`
-            // (single splitter in `path.rs`); only `..` and names reach here.
-            if comp == ".." { self.handle_dotdot(); continue; }
-
-            // ENOTDIR: `comp` is resolved WITHIN `cur_inode`, so `cur_inode`
-            // must be a directory — including the PARENT of a LOOKUP_PARENT
-            // leaf (Linux `link_path_walk` `!d_can_lookup` → ENOTDIR). The
-            // walker enforces this itself rather than trusting `i_op->lookup`
-            // to reject a non-dir, so a non-directory prefix (`/a/file/b`) and a
-            // non-dir LOOKUP_PARENT parent (`mknod("/a/file/leaf")`) both fail.
+            // ENOTDIR: `comp` (a name OR `..`) is resolved WITHIN `cur_inode`,
+            // so `cur_inode` must be a directory — including the PARENT of a
+            // LOOKUP_PARENT leaf (Linux `link_path_walk` `!d_can_lookup` →
+            // ENOTDIR). Checked BEFORE the `..` short-circuit so `foo/..` on a
+            // non-dir `foo` is ENOTDIR rather than a silent walk-up (Linux
+            // resolves `..` only from a directory). The walker enforces this
+            // itself rather than trusting `i_op->lookup` to reject a non-dir, so
+            // a non-directory prefix (`/a/file/b`) and a non-dir LOOKUP_PARENT
+            // parent (`mknod("/a/file/leaf")`) both fail.
             if !matches!(self.cur_inode.file_type(), FileType::Directory) {
                 return Err(VfsError::Enotdir);
             }
+
+            // `.` and empty segments are already dropped by `components`
+            // (single splitter in `path.rs`); only `..` and names reach here.
+            if comp == ".." { self.handle_dotdot(); continue; }
 
             // `may_lookup`: search permission (MAY_EXEC) on the current
             // directory, enforced BEFORE the LOOKUP_PARENT stop — Linux calls
