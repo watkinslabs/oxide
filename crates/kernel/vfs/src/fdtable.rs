@@ -86,11 +86,11 @@ impl FdTableInner {
         self.alloc_fd_below(file, min, FD_TABLE_MAX)
     }
 
-    /// First-fit allocate at the lowest free fd in `[min, max)`. `max`
-    /// is the effective ceiling = min(RLIMIT_NOFILE soft, FD_TABLE_MAX);
-    /// reaching it → `Emfile` (Linux `alloc_fd` against
-    /// `rlimit(RLIMIT_NOFILE)`). Scans `open_fds` a word at a time.
-    fn alloc_fd_below(&mut self, file: Arc<File>, min: usize, max: usize) -> KResult<i32> {
+    /// Lowest free fd index in `[min, max)` (i.e. the lowest fd whose
+    /// `open_fds` bit is clear), or `Emfile` if none below `max`. Scans
+    /// `open_fds` a word (64 fds) at a time via `trailing_zeros`. Pure
+    /// query — does not mutate; callers commit with `set_open`.
+    fn find_free_fd(&self, min: usize, max: usize) -> KResult<usize> {
         let mut fd = min;
         loop {
             if fd >= max { return Err(VfsError::Emfile); }
@@ -107,10 +107,34 @@ impl FdTableInner {
             break;
         }
         if fd >= max { return Err(VfsError::Emfile); }
+        Ok(fd)
+    }
+
+    /// First-fit allocate at the lowest free fd in `[min, max)`. `max`
+    /// is the effective ceiling = min(RLIMIT_NOFILE soft, FD_TABLE_MAX);
+    /// reaching it → `Emfile` (Linux `alloc_fd` against
+    /// `rlimit(RLIMIT_NOFILE)`). Installs `file` in one shot.
+    fn alloc_fd_below(&mut self, file: Arc<File>, min: usize, max: usize) -> KResult<i32> {
+        let fd = self.find_free_fd(min, max)?;
         self.ensure_capacity(fd);
         self.files[fd] = Some(file);
         self.set_open(fd, true);
         self.set_cloexec_bit(fd, false);
+        Ok(fd as i32)
+    }
+
+    /// Reserve (but do not install) the lowest free fd in `[min, max)`:
+    /// mark the `open_fds` bit so no concurrent allocation can hand out
+    /// the same fd, leave `files[fd] == None`, and set FD_CLOEXEC per
+    /// `cloexec`. Linux `alloc_fd`/`get_unused_fd_flags` first half; the
+    /// matching `fd_install` publishes the file, `put_unused_fd` rolls
+    /// the reservation back on the open error path.
+    fn reserve_fd_below(&mut self, min: usize, max: usize, cloexec: bool) -> KResult<i32> {
+        let fd = self.find_free_fd(min, max)?;
+        self.ensure_capacity(fd);
+        self.files[fd] = None; // reserved, awaiting fd_install
+        self.set_open(fd, true);
+        self.set_cloexec_bit(fd, cloexec);
         Ok(fd as i32)
     }
 }
@@ -171,6 +195,58 @@ impl FdTable {
     pub fn alloc_limit(&self, file: Arc<File>, limit: usize) -> KResult<i32> {
         let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
         self.inner.lock().alloc_fd_below(file, 0, max)
+    }
+
+    /// Reserve the lowest free fd below `limit` (the caller's
+    /// `RLIMIT_NOFILE` soft limit, clamped to `FD_TABLE_MAX`) without
+    /// installing a file, setting FD_CLOEXEC from `O_CLOEXEC` in `flags`
+    /// atomically with the reservation. Linux `get_unused_fd_flags`:
+    /// the returned fd's `open_fds` bit is set (so a concurrent
+    /// `CLONE_FILES` sibling's `alloc`/reserve skips it), but `files[fd]`
+    /// stays `None` until `fd_install`, so `get(fd)` still yields `Ebadf`
+    /// in the reserved window. The open-path contract is reserve →
+    /// build the `File` (may sleep in path resolution) → `fd_install` on
+    /// success / `put_unused_fd` on error. Only `O_CLOEXEC` is consulted;
+    /// other flag bits belong to the open file description, not the fd.
+    /// # C: O(N/64)
+    pub fn get_unused_fd_flags(&self, flags: OpenFlags, limit: usize) -> KResult<i32> {
+        let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
+        let cloexec = flags.contains(OpenFlags::O_CLOEXEC);
+        self.inner.lock().reserve_fd_below(0, max, cloexec)
+    }
+
+    /// Publish `file` at a fd previously handed out by
+    /// `get_unused_fd_flags`, completing the two-phase install (Linux
+    /// `fd_install`). The reservation's FD_CLOEXEC bit (set at reserve
+    /// time) is preserved. Infallible by contract: the caller must pass
+    /// a reserved-but-uninstalled fd; misuse (unreserved slot or an fd
+    /// already carrying a file) is a kernel bug.
+    /// # C: O(1)
+    pub fn fd_install(&self, fd: i32, file: Arc<File>) {
+        hal::kassert!(fd >= 0, "fd_install: fd from get_unused_fd_flags is never negative");
+        let i = fd as usize;
+        let mut g = self.inner.lock();
+        hal::kassert!(g.is_open(i), "fd_install: target fd must be a live reservation");
+        hal::kassert!(g.files.get(i).is_some_and(|s| s.is_none()),
+            "fd_install: reserved slot must be empty before publishing the file");
+        g.files[i] = Some(file);
+    }
+
+    /// Release a reservation from `get_unused_fd_flags` whose `fd_install`
+    /// never happened (the open failed): clear the `open_fds` and cloexec
+    /// bits so the fd is free again (Linux `put_unused_fd`). The slot is
+    /// already `None`, so no file is dropped; calling this on an
+    /// installed fd would clear the bitmap without flushing, so it is
+    /// reserved for the error path only.
+    /// # C: O(1)
+    pub fn put_unused_fd(&self, fd: i32) {
+        if fd < 0 { return; }
+        let i = fd as usize;
+        let mut g = self.inner.lock();
+        if g.is_open(i) {
+            g.set_open(i, false);
+            g.set_cloexec_bit(i, false);
+        }
     }
 
     /// Snapshot the file at `fd`, or `Err(Ebadf)`.
