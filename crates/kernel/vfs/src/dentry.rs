@@ -370,24 +370,37 @@ impl Dentry {
         !self.mounted_mounts.read().is_empty()
     }
 
-    /// Absolute path for this dentry — Linux `d_path`: walk the parent
-    /// chain to the root and join `d_name`s with `/`. Used by
-    /// `/proc/<pid>/fd/N` readlink + `execveat(fd, "", AT_EMPTY_PATH)` to
-    /// materialise an open fd's pathname. Every dentry is properly
-    /// parented (the open path builds a child under the resolved parent —
-    /// `file::open_dentry`), so reconstruction is purely the parent walk;
-    /// there is no whole-path-in-one-name special case.
+    /// Absolute (GLOBAL) path for this dentry — Linux `d_path` / `prepend_path`:
+    /// walk the parent chain to the global root and join `d_name`s with `/`,
+    /// CROSSING mount boundaries. After the namei keystone (`__follow_mount`) a
+    /// dentry resolved inside a mount is parented under that mount's `s_root`
+    /// (parentless `D_ROOT`), NOT under the covered underlay; a pure parent walk
+    /// would therefore collapse `/dev/null` to `/null`. So at each parentless
+    /// mounted-fs root we bridge to the mount's mountpoint dentry in the parent
+    /// mount (`mount::mountpoint_for_root_ptr`) and continue — exactly what
+    /// Linux `prepend_path` does with `mnt_mountpoint`.
     ///
-    /// Returns `b"/"` for the root dentry; otherwise `b"/sbin/init"`.
-    /// Empty-named ancestors (the root sentinel) contribute no slash so we
-    /// never emit `//sbin/init`. # C: O(depth)
+    /// Used by `/proc/<pid>/fd/N` readlink + `execveat(fd, "", AT_EMPTY_PATH)`
+    /// + mountinfo source rendering. Returns `b"/"` for the root dentry;
+    /// otherwise `b"/sbin/init"`. Empty-named roots contribute no slash so we
+    /// never emit `//sbin/init`. # C: O(depth × N_mounts)
     pub fn absolute_path(&self) -> Vec<u8> {
-        let mut parts: Vec<&str> = Vec::new();
-        if !self.name.name().is_empty() { parts.push(self.name.name()); }
-        let mut cur = self.parent.as_ref();
-        while let Some(p) = cur {
-            if !p.name.name().is_empty() { parts.push(p.name.name()); }
-            cur = p.parent.as_ref();
+        let mut parts: Vec<String> = Vec::new();
+        if !self.name.name().is_empty() { parts.push(String::from(self.name.name())); }
+        // First ancestor: `d_parent`, or — if this dentry is itself a mounted
+        // fs root — the mountpoint it covers.
+        let mut cur: Option<Arc<Dentry>> = match self.parent.clone() {
+            Some(p) => Some(p),
+            None if self.is_root() => crate::mount::mountpoint_for_root_ptr(self as *const Dentry),
+            None => None,
+        };
+        while let Some(d) = cur {
+            if !d.name.name().is_empty() { parts.push(String::from(d.name.name())); }
+            cur = match d.parent.clone() {
+                Some(p) => Some(p),
+                None if d.is_root() => crate::mount::mountpoint_for_root_ptr(Arc::as_ptr(&d)),
+                None => None,
+            };
         }
         if parts.is_empty() { return alloc::vec![b'/']; }
         let mut out: Vec<u8> = Vec::new();
