@@ -890,10 +890,11 @@ impl AddressSpace {
             }
             let pte_flags = vma.prot.to_page_flags();
             // SAFETY: va_page page-aligned in user-half; new_pa fresh PMM frame; flags carry USER + WRITE since vma.prot.WRITE checked above.
-            unsafe {
-                M::map(Va(va_page), Pa(new_pa), pte_flags, PageSize::P4K);
+            let displaced = unsafe {
+                let d = M::map(Va(va_page), Pa(new_pa), pte_flags, PageSize::P4K);
                 M::flush_va(Va(va_page));
-            }
+                d
+            };
             // F156-rmap: bind new private page to the VMA's anon_vma
             // family with the page-offset index per Linux
             // `page_add_anon_rmap`. Caller's `set_rmap` is the kernel
@@ -902,12 +903,17 @@ impl AddressSpace {
                 let idx = ((va_page - vma.start.as_u64()) / PAGE_SIZE_BYTES) as u32;
                 set_rmap(new_pa, av, idx);
             }
-            // F157: drop our reference to the shared frame. If its
-            // refcount hits zero (other AS already unmapped), the
-            // dec_ref callback chains into pmm::setup::dec_and_maybe_free
-            // and returns the page to the allocator.
-            if let Some((src_pa, _)) = cur {
-                dec_ref(src_pa.0 & !0xfff);
+            // F157-A1: drop our reference to the displaced (formerly
+            // W-stripped shared) frame. `M::map` above tore the old leaf down
+            // and returned its PA; `dec_ref` chains into
+            // pmm::setup::dec_and_maybe_free, freeing the frame iff no peer AS
+            // still maps it. This REPLACES the previous manual `dec_ref(cur)`:
+            // the displaced return is the authoritative torn-down PA (== `cur`
+            // on UP), so accounting it here — and ONLY here — keeps refcount ==
+            // live-PTE count. (Keeping both would double-dec → free-while-
+            // mapped, the inverse RANK-1 corruption.)
+            if let Some(old) = displaced {
+                dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
             }
             return Ok(());
         }
@@ -941,7 +947,12 @@ impl AddressSpace {
                 let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
                 let pte_flags = vma.prot.to_page_flags();
                 // SAFETY: va_page is the page-aligned faulting user-half VA per find_containing; pa is a fresh PMM frame; flags carry USER for the leaf U bit per `11§5` to_pte_flags; MmuOps state initialised by the live per-arch impl.
-                unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K); }
+                // F157-A1: a demand fault normally installs over an empty slot
+                // (`None`); if a stale present leaf is displaced, dec_ref it so
+                // refcount stays == live-PTE count (the RANK-1 fix).
+                if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                    dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                }
                 // F156-rmap: bind the freshly-allocated anonymous
                 // page to its VMA family per `page_add_anon_rmap`.
                 if let Some(av) = vma.anon_vma.as_ref() {
@@ -987,7 +998,10 @@ impl AddressSpace {
                 }
                 let pte_flags = vma.prot.to_page_flags();
                 // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
-                unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K); }
+                // F157-A1: dec_ref any frame displaced by a stale present leaf.
+                if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                    dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                }
                 Ok(())
             }
             VmaBacking::File { backing, off: backing_off } => {
@@ -1020,7 +1034,13 @@ impl AddressSpace {
                         // SAFETY: va_page page-aligned per find_containing; spa is
                         // the inode-owned shared frame whose refcount we just
                         // bumped; flags carry USER per `11§5`.
-                        unsafe { M::map(Va(va_page), Pa(spa), pte_flags, PageSize::P4K); }
+                        // F157-A1: dec_ref any frame displaced by a stale leaf
+                        // (e.g. a private COW snapshot being replaced by the
+                        // shared inode frame). `inc_ref(spa)` above is balanced
+                        // by AS-teardown; the displaced frame is separate.
+                        if let Some(old) = unsafe { M::map(Va(va_page), Pa(spa), pte_flags, PageSize::P4K) } {
+                            dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                        }
                         return Ok(());
                     }
                 }
@@ -1045,7 +1065,10 @@ impl AddressSpace {
                 }
                 let pte_flags = vma.prot.to_page_flags();
                 // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
-                unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K); }
+                // F157-A1: dec_ref any frame displaced by a stale present leaf.
+                if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                    dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                }
                 Ok(())
             }
             VmaBacking::KernelFrame { pa } => {
@@ -1053,7 +1076,11 @@ impl AddressSpace {
                 let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
                 let pte_flags = vma.prot.to_page_flags();
                 // SAFETY: pa is a kernel-owned frame whose lifetime exceeds every user mapping; va_page is page-aligned per find_containing; flags carry USER per `11§5`.
-                unsafe { M::map(Va(va_page), Pa(*pa), pte_flags, PageSize::P4K); }
+                // F157-A1: dec_ref any frame displaced by a stale present leaf
+                // (separate from the KernelFrame's own `inc_ref(*pa)` below).
+                if let Some(old) = unsafe { M::map(Va(va_page), Pa(*pa), pte_flags, PageSize::P4K) } {
+                    dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                }
                 inc_ref(*pa);
                 Ok(())
             }
@@ -1066,7 +1093,13 @@ impl AddressSpace {
                 let off = va_page - vma.start.as_u64();
                 let pte_flags = vma.prot.to_page_flags();
                 // SAFETY: base_pa+off is device fb memory owned by the GPU driver for the kernel lifetime; va_page is page-aligned per find_containing; flags carry USER per `11§5`.
-                unsafe { M::map(Va(va_page), Pa(*base_pa + off), pte_flags, PageSize::P4K); }
+                // F157-A1: the device frame itself is never refcounted, but a
+                // real PMM frame previously mapped at this VA (displaced here)
+                // must still be dec_ref'd. `dec_ref` no-ops on out-of-range
+                // (device) PAs, so this is safe even if `old` is device memory.
+                if let Some(old) = unsafe { M::map(Va(va_page), Pa(*base_pa + off), pte_flags, PageSize::P4K) } {
+                    dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                }
                 Ok(())
             }
             VmaBacking::Special => Err(Error::NotImplemented),

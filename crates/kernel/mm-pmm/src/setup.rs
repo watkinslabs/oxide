@@ -345,6 +345,14 @@ pub fn alloc_one_frame() -> Option<u64> {
                     continue; // never hand out a live frame
                 }
                 m.refcount.store(1, Ordering::Release);
+                // F157-A1: a freshly-allocated frame is about to receive its
+                // first user PTE (anon zero-fill / file-private snapshot /
+                // KernelBytes copy / COW destination). Seed mapcount to 1 to
+                // match the pending mapping, mirroring rc=1. Shmem inode base
+                // frames also alloc here; their later `inc_ref` per mapper and
+                // the inode-drop `dec_and_maybe_free_frame` keep the count
+                // self-consistent (every inc paired with a dec).
+                m.mapcount.store(1, Ordering::Release);
             }
         }
         return Some(pa);
@@ -361,7 +369,12 @@ pub fn alloc_one_frame() -> Option<u64> {
 /// # C: O(1)
 pub unsafe fn inc_ref(pa: u64) {
     if let Some(meta) = page_meta() {
-        let _ = meta.inc_ref(hal::Pfn(pa / 4096));
+        let pfn = hal::Pfn(pa / 4096);
+        let _ = meta.inc_ref(pfn);
+        // F157-A1: every `inc_ref` call adds one user PTE to an existing
+        // frame (fork child install, shmem MAP_SHARED fault, KernelFrame
+        // vvar fault), so the live-mapping count rises in lock-step.
+        let _ = meta.inc_map(pfn);
     }
 }
 
@@ -387,6 +400,12 @@ pub fn frame_refcount(pa: u64) -> u32 {
 pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
     let pfn = hal::Pfn(pa / 4096);
     if let Some(meta) = page_meta() {
+        // F157-A1: this drop corresponds to one user PTE being torn down
+        // (munmap / AS-teardown leaf / madvise DONTNEED / COW-displaced
+        // frame). Decrement the live-mapping count alongside the refcount.
+        // Out-of-range pfns (device/MMIO PhysRange) return `None` here, same
+        // as `dec_ref` below, so the early-return path is unaffected.
+        let _ = meta.dec_map(pfn);
         if let Some(new) = meta.dec_ref(pfn) {
             // LOUD over-dec detection: dec on a refcount-0 frame wraps to a huge
             // value — a PTE was torn down whose inc_ref was never paired (the
@@ -396,7 +415,10 @@ pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
                 klog::write_raw(b"[REFBUG] dec-underflow pa="); klog::write_hex_u64(pa);
                 klog::write_raw(b" new="); klog::write_hex_u64(new as u64);
                 klog::write_raw(b"\n");
-                if let Some(m) = meta.get(pfn) { m.refcount.store(0, core::sync::atomic::Ordering::Release); }
+                if let Some(m) = meta.get(pfn) {
+                    m.refcount.store(0, core::sync::atomic::Ordering::Release);
+                    m.mapcount.store(0, core::sync::atomic::Ordering::Release);
+                }
                 return;
             }
             if new == 0 {
@@ -664,6 +686,11 @@ pub unsafe fn free_one_frame(pa: u64) {
                 }
             }
             m.refcount.store(0, core::sync::atomic::Ordering::Release);
+            // F157-A1: a frame re-entering the free list has no mappings —
+            // reset mapcount to 0 so the next `alloc_one_frame` starts clean
+            // (Linux `free_pages_prepare` zeroes `_mapcount`). Direct frees
+            // (PT tables, AS root) never had a mapcount; this is idempotent.
+            m.mapcount.store(0, core::sync::atomic::Ordering::Release);
         }
     }
     // PAGE POISONING (debug-watchdog): fill the freed frame with 0xAA so a

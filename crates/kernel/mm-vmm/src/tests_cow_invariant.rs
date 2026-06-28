@@ -52,6 +52,12 @@ thread_local! {
     /// pa -> struct-page refcount (the thing pmm tracks). Only inc/dec/alloc
     /// touch this — map/unmap NEVER do, exactly like the real kernel.
     static RC: RefCell<HashMap<u64, i64>> = RefCell::new(HashMap::new());
+    /// pa -> mapcount (live user-PTE count; `PageMeta::mapcount`). Mutated by
+    /// the SAME closures that move refcount for PTE-boundary events
+    /// (alloc=+1, inc_ref=+1, dec_ref=-1), mirroring `setup.rs`. The inode
+    /// base hold (shmem) does NOT touch this — a base pin is not a PTE — so
+    /// `mapcount` stays exactly equal to the live-PTE count.
+    static MC: RefCell<HashMap<u64, i64>> = RefCell::new(HashMap::new());
     /// pa -> base holds (inode pin for shmem/memfd frames). Constant per frame.
     static BASE: RefCell<HashMap<u64, i64>> = RefCell::new(HashMap::new());
     /// Frames currently on the free list (refcount hit 0). Reuse models the
@@ -66,6 +72,7 @@ thread_local! {
 fn reset() {
     ROOTS.with(|r| r.borrow_mut().clear());
     RC.with(|r| r.borrow_mut().clear());
+    MC.with(|r| r.borrow_mut().clear());
     BASE.with(|r| r.borrow_mut().clear());
     POOL.with(|r| r.borrow_mut().clear());
     SHFRAMES.with(|r| r.borrow_mut().clear());
@@ -106,16 +113,30 @@ fn alloc_frame() -> Option<u64> {
         None
     }).unwrap_or_else(fresh_pa);
     RC.with(|r| { r.borrow_mut().insert(pa, 1); });
+    // F157-A1: fresh frame = one pending PTE (matches `setup.rs` alloc mc=1).
+    MC.with(|r| { r.borrow_mut().insert(pa, 1); });
     Some(pa)
 }
 
 fn rc_inc(pa: u64) {
     RC.with(|r| { *r.borrow_mut().entry(pa).or_insert(0) += 1; });
+    // F157-A1: every inc_ref adds one user PTE (`setup::inc_ref` -> inc_map).
+    MC.with(|r| { *r.borrow_mut().entry(pa).or_insert(0) += 1; });
 }
 
 /// Model of `pmm::setup::dec_and_maybe_free_frame`: drop one ref; on 0 the
-/// frame returns to the free list (reusable).
+/// frame returns to the free list (reusable). F157-A1: also drops one
+/// mapcount (a PTE is being torn down), mirroring `dec_map` then `dec_ref`.
 fn rc_dec(pa: u64) {
+    let mnew = MC.with(|r| {
+        let mut m = r.borrow_mut();
+        let e = m.entry(pa).or_insert(0);
+        *e -= 1;
+        *e
+    });
+    if mnew < 0 {
+        record_bug(std::format!("MAP-OVER-DEC: pa={:#x} mapcount went to {}", pa, mnew));
+    }
     let new = RC.with(|r| {
         let mut m = r.borrow_mut();
         let e = m.entry(pa).or_insert(0);
@@ -138,9 +159,17 @@ fn rc_get(pa: u64) -> u32 {
 
 struct MultiMmu;
 impl MmuOps for MultiMmu {
-    unsafe fn map(va: Va, pa: Pa, flags: PageFlags, _s: PageSize) {
+    unsafe fn map(va: Va, pa: Pa, flags: PageFlags, _s: PageSize) -> Option<Pa> {
         let root = ACTIVE.with(|a| *a.borrow());
-        ROOTS.with(|r| { r.borrow_mut().entry(root).or_default().insert(va.0, (pa.0, flags.bits())); });
+        // F157-A1: the real per-arch `map` tears down a present leaf at the
+        // same VA and RETURNS the displaced PA (different frame) so the mm
+        // layer can dec_ref it. Modelling that here — instead of the old
+        // silent `insert` that hid map-over-present — is what surfaces the
+        // RANK-1 displaced-frame accounting to `check_invariant`.
+        ROOTS.with(|r| {
+            let prev = r.borrow_mut().entry(root).or_default().insert(va.0, (pa.0, flags.bits()));
+            prev.filter(|(old, _)| (old >> 12) != (pa.0 >> 12)).map(|(old, _)| Pa(old))
+        })
     }
     unsafe fn unmap(va: Va, _s: PageSize) {
         let root = ACTIVE.with(|a| *a.borrow());
@@ -153,8 +182,11 @@ impl MmuOps for MultiMmu {
     }
     unsafe fn flush_va(_va: Va) {}
     fn flush_all_local() {}
-    unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, _s: PageSize) {
-        ROOTS.with(|r| { r.borrow_mut().entry(root_pa).or_default().insert(va.0, (pa.0, flags.bits())); });
+    unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, _s: PageSize) -> Option<Pa> {
+        ROOTS.with(|r| {
+            let prev = r.borrow_mut().entry(root_pa).or_default().insert(va.0, (pa.0, flags.bits()));
+            prev.filter(|(old, _)| (old >> 12) != (pa.0 >> 12)).map(|(old, _)| Pa(old))
+        })
     }
     unsafe fn activate(root_pa: u64) { activate(root_pa); }
 }
@@ -228,7 +260,31 @@ fn check_invariant(label: &str) {
                 "[{}] {}: pa={:#x} refcount={} but live_ptes={} + base={} = {}",
                 label, dir, pa, rc, cnt, base, expect));
         }
+        // (3) F157-A1: mapcount == live-PTE count, EXACTLY (both directions).
+        // A frame displaced by a map-over-present install whose mapcount was
+        // NOT decremented shows here as mapcount > live_ptes; a double-dec
+        // (e.g. COW arm decrementing both the manual `cur` AND the displaced
+        // return) shows as mapcount < live_ptes.
+        let mc = MC.with(|m| *m.borrow().get(pa).unwrap_or(&0));
+        if mc != *cnt {
+            let dir = if mc < *cnt { "MAPCOUNT-UNDER" } else { "MAPCOUNT-OVER" };
+            record_bug(std::format!(
+                "[{}] {}: pa={:#x} mapcount={} but live_ptes={}",
+                label, dir, pa, mc, cnt));
+        }
     }
+    // (4) F157-A1: a frame with NO live PTE must have mapcount 0 (a leaked
+    // displaced frame would sit at mapcount>0 with zero mappings). Scan every
+    // frame the mapcount model knows about that isn't in `live`.
+    MC.with(|m| {
+        for (pa, mc) in m.borrow().iter() {
+            if *mc != 0 && !live.contains_key(pa) {
+                record_bug(std::format!(
+                    "[{}] MAPCOUNT-LEAK: pa={:#x} mapcount={} but 0 live PTEs",
+                    label, pa, mc));
+            }
+        }
+    });
 }
 
 // ---- harness driver ----
@@ -550,6 +606,62 @@ fn fork_does_cow_split_private_anon() {
     assert_eq!(&read_tag(cur_pa(va)), b"CH1_", "PRIVATE anon: child sees its own write");
     check_invariant("anon-isolation");
     BUG.with(|b| { if let Some(m) = b.borrow().as_ref() { panic!("invariant: {}", m); } });
+}
+
+// ---- RANK-1 regression: map-over-present must account the displaced frame --
+//
+// The randomized proptest gates demand faults to empty slots (`pte_at == None`)
+// and only exercises map-over-present through the COW arm (which always dec'd
+// the displaced frame). The NON-COW installers (anon/file/kernelbytes/
+// kernelframe demand) used `M::map` over a possibly-present leaf and SILENTLY
+// dropped the displaced frame — refcount/mapcount > live-PTE count → leak, then
+// realloc-while-mapped aliasing → the non-deterministic boot SIGSEGV. This test
+// drives the REAL anon demand-fault path over an already-present leaf and
+// asserts the displaced frame is fully released.
+//
+// FAIL-BEFORE / PASS-AFTER: with the displaced-PTE return wired
+// (`MmuOps::map -> Option<Pa>` + the `if let Some(old)=… { dec_ref(old) }` at
+// the anon install site), `check_invariant` is clean. Revert EITHER the
+// `MultiMmu::map` displaced return OR the anon-site `dec_ref` and this test
+// panics with `MAPCOUNT-LEAK` / `over-count` on the displaced frame.
+#[test]
+fn anon_demand_over_present_leaf_accounts_displaced() {
+    reset();
+    let root = 0x7_0000_0000u64;
+    let mm = AddressSpace::new(root).expect("AS::new");
+    let _ = mm.mmap(None, PAGE as usize,
+        VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+        VmaBacking::Anonymous, false);
+    let slot = AsSlot { root, mm };
+    let va = slot.mm.vmas_for_test().iter().next().unwrap().start.as_u64();
+    activate(root);
+
+    // First demand fault installs frame A over an EMPTY slot.
+    do_fault(&slot.mm, va, DEMAND_WRITE);
+    check_invariant("first-install");
+    let a = pte_at(root, va).expect("A mapped").0 & !(PAGE - 1);
+    assert_eq!(rc_get(a), 1, "A: alloc refcount 1");
+
+    // Second demand fault at the SAME (now PRESENT) va: the anon arm allocs a
+    // fresh frame B and installs it OVER the present leaf A. The displaced A
+    // must be dec_ref'd (refcount AND mapcount → 0), else over-count / leak.
+    do_fault(&slot.mm, va, DEMAND_WRITE);
+    let b = pte_at(root, va).expect("B mapped").0 & !(PAGE - 1);
+    assert_ne!(a, b, "second demand fault installed a fresh frame over the present leaf");
+
+    check_invariant("over-present");
+    BUG.with(|bug| {
+        if let Some(m) = bug.borrow().as_ref() {
+            panic!("map-over-present displaced-frame accounting bug: {}", m);
+        }
+    });
+    // A is displaced with no remaining mapping → fully released.
+    assert_eq!(rc_get(a), 0, "displaced frame A refcount returns to 0");
+    let a_mc = MC.with(|m| *m.borrow().get(&a).unwrap_or(&0));
+    assert_eq!(a_mc, 0, "displaced frame A mapcount returns to 0");
+    // B is the sole live mapping.
+    assert_eq!(rc_get(b), 1, "B: sole live mapping refcount 1");
 }
 
 #[test]
