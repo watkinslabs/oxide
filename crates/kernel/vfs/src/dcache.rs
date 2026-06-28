@@ -317,6 +317,21 @@ pub fn d_alloc(parent: &Arc<Dentry>, name: &str) -> Arc<Dentry> {
     Dentry::new_child(parent, name, None)
 }
 
+/// Allocate a PSEUDO dentry for an anonymous/internal inode (Linux
+/// `d_alloc_pseudo`, `fs/dcache.c`) — the constructor pipefs/sockfs/anon-inodefs
+/// and every `anon_inode_getfd` consumer (pipe, eventfd, signalfd, timerfd,
+/// memfd, epoll, bpf, io_uring) use for an fd with no path. The dentry is
+/// parentless, positive, UNHASHED (no (parent,name) key — it never enters the
+/// global table or any `d_subdirs`), and carries `d_op` so `d_op->d_dname`
+/// renders its displayed path dynamically (`pipe:[ino]`, `[eventfd]`). `name` is
+/// the static fallback `d_name`. Records the inode alias when the inode has an
+/// owning SB, mirroring the other instantiating builders. # C: O(name.len())
+pub fn d_alloc_pseudo(name: &str, inode: InodeRef, d_op: &'static crate::dentry::DentryOps) -> Arc<Dentry> {
+    let d = Dentry::new_pseudo(name, inode.clone(), d_op);
+    if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, &d); }
+    d
+}
+
 /// Cache read (Linux `d_lookup`): the child dentry for `name` under
 /// `parent`, positive OR cached-negative, via the global hash table — RCU
 /// (seqcount) read with a locked ref-walk fallback. Fires `d_op->d_revalidate`
@@ -617,7 +632,7 @@ mod tests {
             (h ^ (h >> 32)) as u32
         }),
         d_compare: Some(|name, cand| name.eq_ignore_ascii_case(cand.name())),
-        d_revalidate: None, d_delete: None, d_release: None, d_iput: None,
+        d_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None,
     };
     #[test]
     fn d_compare_case_insensitive() {
@@ -632,7 +647,7 @@ mod tests {
     // d_revalidate: a stale dentry is dropped on lookup.
     static STALE_OPS: DentryOps = DentryOps {
         d_revalidate: Some(|_d, _reval| false), // everything is stale
-        d_hash: None, d_compare: None, d_delete: None, d_release: None, d_iput: None,
+        d_hash: None, d_compare: None, d_delete: None, d_release: None, d_iput: None, d_dname: None,
     };
     #[test]
     fn d_revalidate_drops_stale() {
