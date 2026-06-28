@@ -655,7 +655,8 @@ fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>)
 /// self-counted. # C: O(N_mounts)
 fn put_super_if_last(sb: &Arc<SuperBlock>) {
     let still_used = MOUNTS.lock().values().any(|m| Arc::ptr_eq(&m.sb, sb));
-    if !still_used { sb.put_super(); }
+    // Linux generic_shutdown_super: sync_filesystem before put_super.
+    if !still_used { let _ = sb.sync_fs(true); sb.put_super(); }
 }
 
 /// Unlink `id` from its parent's intrusive child list. # C: O(siblings)

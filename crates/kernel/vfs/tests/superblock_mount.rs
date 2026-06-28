@@ -99,3 +99,19 @@ fn bind_keeps_mnt_root_with_own_sb() {
         "mnt_root is the bind source subtree root");
     assert!(m.sb().s_root().is_some(), "bind still carries its own SuperBlock");
 }
+
+/// T-put-super-umount (D17): the last umount of an SB runs `put_super`
+/// (Linux `deactivate_super`/`generic_shutdown_super`) — s_root + icache are
+/// torn down deterministically, not left dangling on Arc-refcount timing.
+#[test]
+fn last_umount_runs_put_super() {
+    let _g = guard();
+    let fs = Arc::new(TestFs { magic: 0xEF53, root_ino: 0xD4 });
+    common::register("/sb_pu", fs.clone()).expect("register");
+    let m = common::mount_at_path_exact("/sb_pu").expect("mount present");
+    let sb = m.sb(); // hold a strong ref so we can observe post-umount teardown
+    assert!(sb.s_root().is_some(), "s_root present before umount");
+    assert_eq!(common::unregister("/sb_pu"), 1, "umount detached one mount");
+    assert!(sb.s_root().is_none(),
+        "put_super cleared s_root on last umount (deterministic teardown)");
+}

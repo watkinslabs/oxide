@@ -13,7 +13,11 @@ Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
 | Type | next | meaning |
 |---|---|---|
 | F | 650 | new functionality |
-| B | 139 | bug fix |
+<<<<<<< HEAD
+| B | 152 | bug fix |
+=======
+| B | 152 | bug fix |
+>>>>>>> B139-sb-put-super
 | D | 113 | spec/doc edits (no code) |
 | R | 83  | revision block on FROZEN spec |
 | Z | 19  | freeze a DRAFT spec |
