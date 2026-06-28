@@ -123,6 +123,28 @@ pub fn ns_get_or_create(id: u64) -> Arc<MntNamespace> {
     g.entry(id).or_insert_with(|| MntNamespace::new(id)).clone()
 }
 
+// Monotonic mount-namespace id source (Linux `fs/namespace.c` `mnt_ns_seq`,
+// bumped by `atomic64_add_return(1, &mnt_ns_seq)` in `alloc_mnt_ns`). Strictly
+// increasing and NEVER reused: even after a namespace is reaped (`ns_forget`)
+// the counter keeps climbing, so a freshly allocated id can never alias the
+// init namespace (id 0) nor a since-freed sibling whose id might still be
+// cached in a stale `task.mount_ns` / `/proc/PID/ns/mnt` link.
+static NEXT_NS_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Allocate a fresh, globally-unique, never-reused mount-namespace id and
+/// register its `MntNamespace` object (Linux `alloc_mnt_ns`: `mnt_ns_seq` bump
+/// + `ns_alloc_inum`). The counter starts at 1, so the result never collides
+/// with the init mount namespace (id 0) every task starts in. The returned ns
+/// is empty (zero tasks/mounts/seq); the caller adopts it via `task.mount_ns`
+/// and pins it against reap with `mnt_ns_enter`. Single canonical allocator for
+/// `clone(CLONE_NEWNS)` / `unshare(CLONE_NEWNS)` — the work-fn layer owns the
+/// id source, never the syscall shim (`docs/53`). # C: O(log N)
+pub fn alloc_ns_id() -> u64 {
+    let id = NEXT_NS_ID.fetch_add(1, Ordering::AcqRel);
+    ns_get_or_create(id);
+    id
+}
+
 /// Record `mnt_id` as namespace `ns`'s root mount (Linux `mnt_ns->root`).
 /// # C: O(log N)
 pub fn ns_set_root(ns: u64, mnt_id: u64) {
