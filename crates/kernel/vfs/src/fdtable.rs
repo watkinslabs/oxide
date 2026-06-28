@@ -77,15 +77,23 @@ impl FdTableInner {
     }
 
     fn alloc_fd(&mut self, file: Arc<File>) -> KResult<i32> {
-        self.alloc_fd_min(file, 0)
+        self.alloc_fd_below(file, 0, FD_TABLE_MAX)
     }
 
-    /// First-fit allocate at the lowest free fd >= `min`. Backs
-    /// `fcntl F_DUPFD(arg)`. Scans `open_fds` a word at a time.
+    /// First-fit allocate at the lowest free fd >= `min`, ceiling at
+    /// the hard `FD_TABLE_MAX`. Backs `fcntl F_DUPFD(arg)`.
     fn alloc_fd_min(&mut self, file: Arc<File>, min: usize) -> KResult<i32> {
+        self.alloc_fd_below(file, min, FD_TABLE_MAX)
+    }
+
+    /// First-fit allocate at the lowest free fd in `[min, max)`. `max`
+    /// is the effective ceiling = min(RLIMIT_NOFILE soft, FD_TABLE_MAX);
+    /// reaching it → `Emfile` (Linux `alloc_fd` against
+    /// `rlimit(RLIMIT_NOFILE)`). Scans `open_fds` a word at a time.
+    fn alloc_fd_below(&mut self, file: Arc<File>, min: usize, max: usize) -> KResult<i32> {
         let mut fd = min;
         loop {
-            if fd >= FD_TABLE_MAX { return Err(VfsError::Emfile); }
+            if fd >= max { return Err(VfsError::Emfile); }
             let wi = word_idx(fd);
             if wi >= self.open_fds.len() { break; } // beyond bitmap → free
             let word = self.open_fds[wi];
@@ -98,7 +106,7 @@ impl FdTableInner {
             fd = wi * WORD_BITS + cand.trailing_zeros() as usize;
             break;
         }
-        if fd >= FD_TABLE_MAX { return Err(VfsError::Emfile); }
+        if fd >= max { return Err(VfsError::Emfile); }
         self.ensure_capacity(fd);
         self.files[fd] = Some(file);
         self.set_open(fd, true);
@@ -152,6 +160,17 @@ impl FdTable {
     /// # C: O(N/64)
     pub fn alloc(&self, file: Arc<File>) -> KResult<i32> {
         self.inner.lock().alloc_fd(file)
+    }
+
+    /// Install `file` at the lowest free fd below `limit` (the caller's
+    /// `RLIMIT_NOFILE` soft limit), clamped to the hard `FD_TABLE_MAX`
+    /// table ceiling. Reaching the effective ceiling → `Emfile` (Linux
+    /// `__alloc_fd(files, 0, rlimit(RLIMIT_NOFILE), flags)`). A `limit`
+    /// of 0 always yields `Emfile` (no fd is permitted).
+    /// # C: O(N/64)
+    pub fn alloc_limit(&self, file: Arc<File>, limit: usize) -> KResult<i32> {
+        let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
+        self.inner.lock().alloc_fd_below(file, 0, max)
     }
 
     /// Snapshot the file at `fd`, or `Err(Ebadf)`.

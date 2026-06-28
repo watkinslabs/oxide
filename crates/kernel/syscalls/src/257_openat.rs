@@ -170,7 +170,11 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     let dentry = vfs::file::open_dentry(dentry_path, &inode);
     let oflags = OpenFlags::from_bits_truncate(flags) - OpenFlags::O_CLOEXEC;
     let file = File::new_at(inode, dentry, oflags, mnt_id, crate::pathresolve::current_cred());
-    match fdt.alloc(file) {
+    // RLIMIT_NOFILE soft limit caps fd allocation (Linux `__alloc_fd`
+    // against `rlimit(RLIMIT_NOFILE)`); exceeding it → EMFILE.
+    // SAFETY: rlimits slot single-mutator per `13§5`; cur is the running task on this CPU.
+    let nofile = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::NOFILE].0 } as usize;
+    match fdt.alloc_limit(file, nofile) {
         Ok(fd)  => {
             if (flags & OpenFlags::O_CLOEXEC.bits()) != 0 {
                 if let Err(e) = fdt.set_cloexec(fd, true) { return -(e as i64); }
