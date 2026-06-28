@@ -381,6 +381,10 @@ impl SuperBlock {
     /// `s_time_gran` — timestamp granularity (ns). # C: O(1)
     pub fn s_time_gran(&self) -> u32 { self.s_time_gran }
 
+    /// Flush dirty fs state (Linux `sync_filesystem`, run before `put_super`
+    /// in `generic_shutdown_super`). # C: O(dirty)
+    pub fn sync_fs(&self, wait: bool) -> KResult<()> { self.s_op.sync_fs(wait) }
+
     /// Umount teardown: `put_super` then drop the dentry tree. # C: O(tree)
     pub fn put_super(&self) {
         self.s_op.put_super();
