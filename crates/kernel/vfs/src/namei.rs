@@ -647,14 +647,25 @@ impl Nameidata {
             // Symlink handling — use the child's OWN inode (a mountpoint is a
             // directory, never a symlink, so this precedes mount crossing).
             if matches!(child.inode().map(|i| i.file_type()), Some(FileType::Symlink)) {
-                if self.flags.no_symlinks { return Err(VfsError::Eloop); }
-                // A trailing slash forces the FINAL symlink to be followed even
+                // O_NOFOLLOW / AT_SYMLINK_NOFOLLOW: the FINAL symlink is returned
+                // UNFOLLOWED (Linux `step_into` with LOOKUP_FOLLOW clear). The link
+                // is NOT resolved, so RESOLVE_NO_SYMLINKS does not apply to it —
+                // this short-circuit precedes the `no_symlinks` ELOOP gate so
+                // `open(symlink, O_PATH|O_NOFOLLOW)` under RESOLVE_NO_SYMLINKS
+                // yields the link itself, not ELOOP (Linux `pick_link`'s
+                // NO_SYMLINKS gate fires only when a link is actually followed).
+                // A trailing slash forces the final symlink to be followed even
                 // under no_follow_final (Linux: `link/` follows `link`, then the
-                // target must be a directory).
+                // target must be a directory), so it does NOT short-circuit here.
                 if is_final && self.flags.no_follow_final && !trailing_slash {
                     let inode = child.inode().ok_or(VfsError::Enoent)?;
                     return Ok(VfsPath { mnt_id: self.cur_mnt_id, dentry: child, inode, last_component: None });
                 }
+                // About to FOLLOW the link → RESOLVE_NO_SYMLINKS forbids it
+                // (Linux `pick_link`: `if (nd->flags & LOOKUP_NO_SYMLINKS) -ELOOP`).
+                // Reaches here for every intermediate symlink, and for a final
+                // symlink that IS being followed (no O_NOFOLLOW, or trailing `/`).
+                if self.flags.no_symlinks { return Err(VfsError::Eloop); }
                 self.depth += 1;
                 if self.depth > MAX_SYMLINK_DEPTH { return Err(VfsError::Eloop); }
                 let target = child.inode().ok_or(VfsError::Enoent)?.get_link()?;
