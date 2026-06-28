@@ -37,9 +37,9 @@ const DEL_FN: DDeleteFn = del;
 
 // d_op vectors covering the relevant presence combinations.
 static OPS_NONE: DentryOps = DentryOps::empty();
-static OPS_CMP: DentryOps = DentryOps { d_hash: None, d_compare: Some(CMP_FN), d_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None };
-static OPS_CI: DentryOps = DentryOps { d_hash: None, d_compare: Some(CMP_CI_FN), d_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None };
-static OPS_ALL4: DentryOps = DentryOps { d_hash: Some(HASH_FN), d_compare: Some(CMP_FN), d_revalidate: Some(REV_FN), d_delete: Some(DEL_FN), d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None };
+static OPS_CMP: DentryOps = DentryOps { d_hash: None, d_compare: Some(CMP_FN), d_revalidate: None, d_weak_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None };
+static OPS_CI: DentryOps = DentryOps { d_hash: None, d_compare: Some(CMP_CI_FN), d_revalidate: None, d_weak_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None };
+static OPS_ALL4: DentryOps = DentryOps { d_hash: Some(HASH_FN), d_compare: Some(CMP_FN), d_revalidate: Some(REV_FN), d_weak_revalidate: None, d_delete: Some(DEL_FN), d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None };
 
 fn root_with(ops: &'static DentryOps) -> Arc<Dentry> {
     Dentry::new_root(dir()).set_d_op(ops)

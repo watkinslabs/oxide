@@ -48,6 +48,7 @@ impl Inode for Leaf {
 fn rev_always_stale(_d: &Arc<Dentry>, _reval: bool) -> bool { false }
 static OPS_STALE: DentryOps = DentryOps {
     d_revalidate: Some(rev_always_stale),
+    d_weak_revalidate: None,
     d_hash: None, d_compare: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None,
 };
 
@@ -59,6 +60,7 @@ fn rev_on_reval(_d: &Arc<Dentry>, reval: bool) -> bool {
 }
 static OPS_REVAL: DentryOps = DentryOps {
     d_revalidate: Some(rev_on_reval),
+    d_weak_revalidate: None,
     d_hash: None, d_compare: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None,
 };
 
