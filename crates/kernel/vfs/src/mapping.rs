@@ -11,6 +11,104 @@
 // frame store out of the foundational crate while letting the page-fault
 // handler and `InodeFileBacking` route through one per-inode object.
 
+use alloc::collections::BTreeSet;
+use alloc::vec::Vec;
+
+/// `address_space->flags` writeback-error bits (Linux `enum mapping_flags`,
+/// `include/linux/pagemap.h`) — recorded by `mapping_set_error` and harvested by
+/// `filemap_check_errors` so a deferred writeback failure surfaces at the next
+/// `fsync`/`close`. Exposed as OR-able masks (the kernel keeps them as bit
+/// numbers tested via `test_bit`; the mask form is the idiomatic Rust shape).
+/// `AS_EIO` is a generic write-back I/O error; `AS_ENOSPC` is the
+/// out-of-space variant `fsync` maps to `ENOSPC`.
+pub const AS_EIO:    u32 = 1 << 0;
+pub const AS_ENOSPC: u32 = 1 << 1;
+
+/// Dirty-page tag set for one address space (Linux page-cache xarray
+/// `PAGECACHE_TAG_DIRTY`). Tracks which page indices hold modifications not yet
+/// written back, so `writeback`/`fsync` flush exactly the dirty pages and
+/// `truncate` drops their tags. State only — the embedding inode serialises
+/// access under its own mapping lock (Linux `xa_lock(&mapping->i_pages)`), so
+/// the methods take `&mut self` and the foundational `vfs` crate stays
+/// lock-policy-free. tmpfs/ext4 embed one per regular-file inode.
+#[derive(Default)]
+pub struct DirtyPages {
+    /// Dirty page indices in ascending order (BTreeSet iterates sorted, which
+    /// is the writeback order the flush wants).
+    dirty: BTreeSet<u64>,
+    /// `mapping->flags` AS_* error accumulator (sticky until harvested).
+    err: u32,
+}
+
+impl DirtyPages {
+    /// Empty dirty set (a freshly faulted-in clean mapping). # C: O(1)
+    pub const fn new() -> DirtyPages { DirtyPages { dirty: BTreeSet::new(), err: 0 } }
+
+    /// `filemap_dirty_folio` — tag page `idx` dirty. Returns `true` iff it was
+    /// previously clean (Linux returns whether the dirty state changed, the
+    /// signal `__mark_inode_dirty` keys on). # C: O(log N)
+    pub fn set_dirty(&mut self, idx: u64) -> bool { self.dirty.insert(idx) }
+
+    /// Clear page `idx`'s dirty tag (writeback completion /
+    /// `folio_clear_dirty_for_io`). Returns `true` iff it had been dirty.
+    /// # C: O(log N)
+    pub fn clear_dirty(&mut self, idx: u64) -> bool { self.dirty.remove(&idx) }
+
+    /// Is page `idx` currently dirty? # C: O(log N)
+    pub fn is_dirty(&self, idx: u64) -> bool { self.dirty.contains(&idx) }
+
+    /// Count of dirty pages (Linux `mapping->nrpages` dirty subset — the
+    /// writeback/throttle accounting input). # C: O(1)
+    pub fn count(&self) -> usize { self.dirty.len() }
+
+    /// No dirty pages outstanding (the `fsync` fast-path / clean-inode test).
+    /// # C: O(1)
+    pub fn is_empty(&self) -> bool { self.dirty.is_empty() }
+
+    /// Drop dirty tags for every page index in the half-open range
+    /// `[start_idx, end_idx)` (Linux `truncate_inode_pages_range`, which clears
+    /// the dirty tag as it evicts). `end_idx == u64::MAX` clears from `start_idx`
+    /// to the end. # C: O(N in range)
+    pub fn clear_range(&mut self, start_idx: u64, end_idx: u64) {
+        self.dirty.retain(|&i| i < start_idx || i >= end_idx);
+    }
+
+    /// `write_cache_pages` collection step: return the dirty page indices in
+    /// ascending (writeback) order and clear the tags — the writer then flushes
+    /// each and, on failure, re-marks via `set_dirty` / records `set_error`.
+    /// # C: O(N dirty)
+    pub fn take_writeback(&mut self) -> Vec<u64> {
+        core::mem::take(&mut self.dirty).into_iter().collect()
+    }
+
+    /// `mapping_set_error` (Linux `include/linux/pagemap.h`): record a deferred
+    /// writeback error. `ENOSPC` sets `AS_ENOSPC`, any other nonzero errno sets
+    /// the generic `AS_EIO`; `0`/success is a no-op. The flag is sticky until
+    /// [`Self::check_errors`] harvests it. `errno` is the POSIX positive code
+    /// (e.g. `28` for ENOSPC). # C: O(1)
+    pub fn set_error(&mut self, errno: i32) {
+        if errno == 0 { return; }
+        if errno == ENOSPC { self.err |= AS_ENOSPC; } else { self.err |= AS_EIO; }
+    }
+
+    /// `filemap_check_errors` (Linux `mm/filemap.c`): test-and-clear BOTH
+    /// accumulated writeback errors in one pass, returning the errno `fsync`/
+    /// `close` reports. Matching Linux, the `AS_EIO` assignment runs last, so
+    /// `EIO` is the return value when both flags are set, `ENOSPC` when only it
+    /// is, `0` when clean — but either way both bits are cleared. # C: O(1)
+    pub fn check_errors(&mut self) -> i32 {
+        let mut ret = 0;
+        if self.err & AS_ENOSPC != 0 { self.err &= !AS_ENOSPC; ret = ENOSPC; }
+        if self.err & AS_EIO != 0 { self.err &= !AS_EIO; ret = EIO; }
+        ret
+    }
+}
+
+/// POSIX `ENOSPC` / `EIO` positive codes (Linux uapi) — the writeback-error
+/// pair `set_error`/`check_errors` translate to/from the AS_* flags.
+const ENOSPC: i32 = 28;
+const EIO:    i32 = 5;
+
 /// Per-inode address space (Linux `struct address_space`, reached via
 /// `inode->i_mapping`). Implemented by inodes whose data lives in
 /// persistent page-cache frames (tmpfs/shmem now; regular files as ext4
