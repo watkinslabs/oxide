@@ -54,7 +54,7 @@ fn mount_id_for(mp: &Arc<Dentry>, root: InodeRef) -> u64 {
     vfs::mount::register_bind(Some(mp.clone()), Arc::new(TestMountFs), root).expect("register test mount");
     vfs::mount::snapshot_all()
         .into_iter()
-        .filter(|m| m.mountpoint.as_ref().map(|d| Arc::ptr_eq(d, mp)).unwrap_or(false))
+        .filter(|m| m.mountpoint().map(|d| Arc::ptr_eq(&d, mp)).unwrap_or(false))
         .last()
         .expect("registered mount visible")
         .mnt_id

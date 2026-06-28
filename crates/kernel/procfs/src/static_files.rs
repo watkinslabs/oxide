@@ -382,7 +382,7 @@ ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n\
     devfs::register("/proc/self/io", StaticFileInode::new(IO_BODY) as InodeRef);
     devfs::register(
         "/proc/self/mountinfo",
-        Arc::new(crate::mounts::ProcMountinfoInode) as InodeRef,
+        Arc::new(crate::mounts::ProcMountinfoInode::new()) as InodeRef,
     );
     devfs::register(
         "/proc/self/mounts",

@@ -19,7 +19,7 @@ fn build_mounts() -> Vec<u8> {
     use core::sync::atomic::Ordering;
     let mut s = String::new();
     for m in vfs::mount::snapshot() {
-        let mut line = m.fs().mounts_line(m.mount_point_str());
+        let mut line = m.fs().mounts_line(&m.mount_point_str());
         if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
             if let Some(idx) = line.find(" rw,") {
                 line.replace_range(idx..idx + 4, " ro,");
@@ -95,8 +95,17 @@ impl Inode for ProcMountsInode {
     }
 }
 
-/// `/proc/self/mountinfo` and `/proc/<pid>/mountinfo`.
-pub struct ProcMountinfoInode;
+/// `/proc/self/mountinfo` and `/proc/<pid>/mountinfo`. `last_seen` holds the
+/// reader's last-observed mount generation so `poll` can return POLLPRI when
+/// the mount table changed (libmount's mount-change wakeup, `19§4`).
+pub struct ProcMountinfoInode { last_seen: core::sync::atomic::AtomicU64 }
+impl ProcMountinfoInode {
+    /// # C: O(1)
+    pub fn new() -> Self {
+        ProcMountinfoInode { last_seen: core::sync::atomic::AtomicU64::new(vfs::mount::mount_generation()) }
+    }
+}
+impl Default for ProcMountinfoInode { fn default() -> Self { Self::new() } }
 impl Inode for ProcMountinfoInode {
     fn ino(&self) -> Ino { 0x3000_0D02 }
     fn file_type(&self) -> FileType { FileType::Regular }
@@ -105,4 +114,7 @@ impl Inode for ProcMountinfoInode {
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
         Ok(read_body(&build_mountinfo(), off, buf))
     }
+    /// POLLPRI|POLLERR when the mount generation advanced since the last poll
+    /// (always POLLIN — mountinfo is always readable). # C: O(1)
+    fn poll(&self) -> u32 { vfs::mount::mountinfo_poll_mask(&self.last_seen) }
 }
