@@ -17,6 +17,26 @@ use crate::types::{FileType, Ino, KResult, VfsError};
 pub type InodeRef = Arc<dyn Inode>;
 
 /// `16§2` Inode trait — v1 subset.
+///
+/// CONCEPTUAL `i_op` / `i_fop` SPLIT (Linux `inode_operations` vs
+/// `file_operations`). This kernel keeps ONE trait object per inode (the
+/// trait-object model: `Arc<dyn Inode>`), so the two Linux vtables are not
+/// separate types — but the methods group into the same two families and a
+/// reader/auditor should treat them as such:
+///   * `i_op` (inode_operations — namespace/metadata ops keyed on a DIRECTORY
+///     or the inode's identity): `lookup`, `mkdir`, `rmdir`, `create_child`,
+///     `unlink_child`, `symlink_child`, `mknod_child`, `readlink`,
+///     `set_perm`/`set_owner`/`set_times`, `truncate`, and the metadata
+///     accessors (`perm`/`uid`/`gid`/`mtime`/`atime`/`ctime`/`rdev`/`nlink`/
+///     `size`/`fsid`/`blksize`/`statfs_magic`).
+///   * `i_fop` (file_operations — per-open data-path ops): `read`/`write`,
+///     `read_nonblock`/`write_nonblock`, `readdir`, `poll`/`poll_file`,
+///     `mmap_shared_frame`, `on_open`/`on_release`, `fdinfo_extra`,
+///     `fcntl_seals`, `poll_subscribers`.
+/// `i_sb`/`ino`/`as_any` are the shared object-model identity (Linux `struct
+/// inode` core). Splitting into two physical traits is deferred — it buys no
+/// behaviour and doubles the per-FS impl surface (131 impls). Documented here
+/// so the grouping is explicit without over-refactoring.
 pub trait Inode: Send + Sync {
     /// Optional downcast hook. Returns `Some(self)` for inode
     /// types whose syscall handlers need to recover a concrete
@@ -323,6 +343,17 @@ pub trait Inode: Send + Sync {
     /// # C: O(1)
     fn fcntl_seals(&self) -> Option<&core::sync::atomic::AtomicU32> { None }
 }
+
+/// `i_state` bits (Linux `include/linux/fs.h`). Stored per-ino in the owning
+/// superblock's inode cache (see `SuperBlock::i_state`), NOT on the trait
+/// object — the trait-object inodes carry no shared state block, so lifecycle
+/// state lives icache-side (one place, zero per-FS-impl churn).
+/// `I_NEW` is set by `iget` on a build-miss and cleared once the inode is
+/// installed (Linux `unlock_new_inode`); a concurrent `ilookup` upgrades the
+/// fully-built `Arc` regardless, so `I_NEW` is the build-race marker only.
+pub const I_DIRTY:   u32 = 0x0007; // I_DIRTY_SYNC|DATASYNC|PAGES
+pub const I_NEW:     u32 = 0x0008; // 1<<3 — being constructed
+pub const I_FREEING: u32 = 0x0020; // 1<<5 — being evicted
 
 /// `poll(2)` event bitmasks. Numeric reps match Linux exactly.
 pub const POLL_IN:    u32 = 0x0001;  // POLLIN  — readable

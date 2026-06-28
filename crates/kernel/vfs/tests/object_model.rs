@@ -229,6 +229,75 @@ fn t8_d_make_root_s_root_positive_parentless() {
 }
 
 #[test]
+fn t10_iget_returns_same_arc_builds_once() {
+    // B2: per-sb inode cache. Two `iget` of the same ino return the SAME
+    // `Arc` (shared inode identity); the build closure runs exactly once.
+    let sb = mount_ramfs(1);
+    let builds = Arc::new(AtomicUsize::new(0));
+    let b = builds.clone();
+    let i1 = sb.iget(11, || { b.fetch_add(1, Ordering::SeqCst); file(&sb, 11) });
+    let b2 = builds.clone();
+    let i2 = sb.iget(11, || { b2.fetch_add(1, Ordering::SeqCst); file(&sb, 11) });
+    assert!(Arc::ptr_eq(&i1, &i2), "iget(same ino) → same Arc");
+    assert_eq!(builds.load(Ordering::SeqCst), 1, "build ran exactly once");
+    assert_eq!(sb.ilookup(11).map(|i| i.ino()), Some(11), "ilookup hits");
+    // Distinct ino → distinct Arc.
+    let i3 = sb.iget(12, || file(&sb, 12));
+    assert!(!Arc::ptr_eq(&i1, &i3), "different ino → different inode");
+}
+
+#[test]
+fn t11_i_sb_s_dev_equals_mount_s_dev() {
+    // B2: inode.i_sb().s_dev == its mount's s_dev; fsid() derives from it.
+    let sb = mount_ramfs(0x77);
+    let root_inode = sb.s_root().unwrap().inode().unwrap();
+    let isb = root_inode.i_sb().expect("i_sb resolves");
+    assert!(Arc::ptr_eq(&isb, &sb), "i_sb upgrades to the owning SB");
+    assert_eq!(isb.s_dev, 0x77, "i_sb().s_dev == mount s_dev");
+    assert_eq!(root_inode.fsid(), 0x77, "fsid() derives from s_dev (no constant)");
+}
+
+#[test]
+fn t12_d_instantiate_adds_to_inode_alias_list() {
+    // B2: d_instantiate / d_add record the dentry in the inode's i_dentry
+    // alias list; a hardlink adds a second alias; d_drop removes one.
+    let sb = mount_ramfs(1);
+    let root = sb.s_root().unwrap();
+    let inode = sb.iget(11, || file(&sb, 11)); // one shared inode
+    assert_eq!(sb.i_aliases(11).len(), 0, "no aliases before instantiate");
+
+    let d1 = vfs::d_add(&root, "a", inode.clone());
+    assert_eq!(sb.i_aliases(11).len(), 1, "d_add recorded one alias");
+
+    // Hardlink: a second dentry for the SAME inode.
+    let d2 = vfs::d_add(&root, "b", inode.clone());
+    let aliases = sb.i_aliases(11);
+    assert_eq!(aliases.len(), 2, "hardlink → two aliases for one inode");
+    assert!(aliases.iter().any(|d| Arc::ptr_eq(d, &d1)));
+    assert!(aliases.iter().any(|d| Arc::ptr_eq(d, &d2)));
+
+    // d_drop one alias → list shrinks; the inode stays (other alias holds it).
+    vfs::d_drop(&d1);
+    assert_eq!(sb.i_aliases(11).len(), 1, "d_drop removed one alias");
+
+    // Idempotent: re-instantiating the same (dentry,inode) does not double-add.
+    vfs::d_instantiate(&d2, inode.clone());
+    assert_eq!(sb.i_aliases(11).len(), 1, "no duplicate alias on re-instantiate");
+}
+
+#[test]
+fn t13_iget_clears_i_new() {
+    // B2: i_state. A build-miss slot is created with I_NEW then cleared
+    // (Linux unlock_new_inode), so a post-iget state read has I_NEW clear.
+    let sb = mount_ramfs(1);
+    assert_eq!(sb.i_state(11) & vfs::I_NEW, 0, "uncached: no state");
+    let _i = sb.iget(11, || file(&sb, 11));
+    assert_eq!(sb.i_state(11) & vfs::I_NEW, 0, "I_NEW cleared after iget");
+    sb.i_set_state(11, vfs::I_DIRTY, 0);
+    assert_ne!(sb.i_state(11) & vfs::I_DIRTY, 0, "i_set_state sets bits");
+}
+
+#[test]
 fn t9_unlink_flips_positive_to_negative() {
     let sb = mount_ramfs(1);
     let root = sb.s_root().unwrap();

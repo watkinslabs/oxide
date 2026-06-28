@@ -6,7 +6,7 @@ use alloc::sync::Arc;
 
 use block::types::InodeId;
 use ::sync as sync;
-use super::inode::{Ext4FileInode, Ext4StatInode};
+use super::inode::{Ext4FileInode, Ext4StatInode, ext4_wrap_ino};
 use super::state::RootfsState;
 
 impl RootfsState {
@@ -20,10 +20,17 @@ impl RootfsState {
         let ft = if inode.is_dir() { vfs::FileType::Directory }
                  else if inode.is_link() { vfs::FileType::Symlink }
                  else { vfs::FileType::Regular };
-        Some(Arc::new(Ext4StatInode {
-            st: self.clone(), ino, ft,
-            size: inode.size as u64, perm: (inode.mode & 0o7777) as u16,
-        }) as vfs::InodeRef)
+        let size = inode.size as u64;
+        let perm = (inode.mode & 0o7777) as u16;
+        let st = self.clone();
+        let build = move || Arc::new(Ext4StatInode { st, ino, ft, size, perm }) as vfs::InodeRef;
+        // Route through the SB inode cache so a repeated lookup of the same ino
+        // returns the SAME `Arc` (shared inode identity, Linux `iget`). Before
+        // the SB is back-stamped (during `fs.root()`) build directly.
+        Some(match self.i_sb() {
+            Some(sb) => sb.iget(ext4_wrap_ino(ino), build),
+            None => build(),
+        })
     }
 
     /// Wrap regular-file `ino` in a deferred-bytes `Ext4FileInode`.
@@ -31,12 +38,18 @@ impl RootfsState {
     pub fn wrap_file(self: &Arc<Self>, ino: u32) -> Option<vfs::InodeRef> {
         let inode = self.mount.read_inode(ino).ok()?;
         if !inode.is_reg() { return None; }
-        Some(Arc::new(Ext4FileInode {
-            st: self.clone(),
-            ino,
-            size_hint: core::sync::atomic::AtomicU64::new(inode.size),
+        let size = inode.size;
+        let st = self.clone();
+        let build = move || Arc::new(Ext4FileInode {
+            st, ino,
+            size_hint: core::sync::atomic::AtomicU64::new(size),
             bytes: sync::Spinlock::new(None),
-        }) as vfs::InodeRef)
+        }) as vfs::InodeRef;
+        // Shared identity via the SB inode cache (Linux `iget`).
+        Some(match self.i_sb() {
+            Some(sb) => sb.iget(ext4_wrap_ino(ino), build),
+            None => build(),
+        })
     }
 
     /// Resolve `path` to a stat tuple for any file type.
@@ -227,6 +240,9 @@ impl vfs::fs::FileSystem for Ext4Mount {
     fn name(&self) -> &str { "ext4" }
     fn magic(&self) -> u64 { crate::EXT4_SUPER_MAGIC as u64 }
     fn root(&self) -> Option<vfs::InodeRef> { self.st.wrap_any_ino(2) }
+    /// Back-stamp the SB into this mount's own state (Linux `s_fs_info ↔ sb`).
+    /// # C: O(1)
+    fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) { self.st.set_sb(sb); }
     fn create(&self, path: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
         self.st.create_at(path.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enoent)
     }

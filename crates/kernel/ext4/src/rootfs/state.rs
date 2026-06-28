@@ -5,7 +5,7 @@
 // mount's device nor corrupt its orphan tracking — Stage 3 of the
 // disk-rootfs de-singletonisation.
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
@@ -18,6 +18,13 @@ use crate::Mount;
 pub struct RootfsState {
     /// Owning mount (its own dev/sb/state — `mount.rs`).
     pub mount: Arc<Mount>,
+    /// `i_sb` backref (Linux `inode->i_sb` / `s_fs_info ↔ sb`). Back-stamped
+    /// by `FileSystem::set_sb` once the VFS `SuperBlock` is built (a transient
+    /// empty `Weak` exists only between `fs.root()` and `for_backend`'s
+    /// `set_sb`). Every `Ext4*Inode::i_sb()` upgrades this, so `fsid()`
+    /// derives from the per-instance `sb.s_dev` (Linux `st_dev`), not a
+    /// hardcoded constant. PER MOUNT.
+    pub sb: sync::Spinlock<Weak<vfs::SuperBlock>, sync::Inode>,
     /// Page cache keyed by (inode_id, page_offset). PER MOUNT, so inode
     /// numbers that collide across mounts don't alias cached pages.
     pub page_cache: PageCache,
@@ -36,12 +43,19 @@ impl RootfsState {
     pub fn new(mount: Arc<Mount>) -> Arc<Self> {
         Arc::new(Self {
             mount,
+            sb: sync::Spinlock::new(Weak::new()),
             page_cache: PageCache::new(),
             orphans: sync::Spinlock::new(Vec::new()),
             cache_hits:   core::sync::atomic::AtomicU64::new(0),
             cache_misses: core::sync::atomic::AtomicU64::new(0),
         })
     }
+
+    /// Back-stamp the owning VFS `SuperBlock` (`FileSystem::set_sb`). # C: O(1)
+    pub fn set_sb(&self, sb: Weak<vfs::SuperBlock>) { *self.sb.lock() = sb; }
+
+    /// Owning `SuperBlock` (`i_sb`), if the SB is built and live. # C: O(1)
+    pub fn i_sb(&self) -> Option<Arc<vfs::SuperBlock>> { self.sb.lock().upgrade() }
 
     /// Open `dev` as a fresh ext4 mount + state.
     /// # C: O(N_groups + 1024)
