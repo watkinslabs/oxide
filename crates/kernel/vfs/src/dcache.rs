@@ -210,6 +210,28 @@ pub fn shrink_dcache_parent(parent: &Arc<Dentry>) -> usize {
     freed
 }
 
+/// Prune every UNUSED dentry alias of `inode` (Linux `d_prune_aliases`,
+/// `fs/dcache.c`) — drop the cached dentries naming an inode that an FS is
+/// forcing out of cache (NFS post-`silly-rename` / `nfs_zap_caches`, FUSE
+/// `fuse_reverse_inval_entry`, generic invalidation) WITHOUT requiring the
+/// inode itself to be freed. An alias is prunable only when UNUSED
+/// (`d_count == 0`; Linux skips `d_lockref.count != 0`); each is `d_drop`-ed —
+/// unhash + forget from its parent's `d_subdirs` + remove from this inode's
+/// `i_dentry` alias list — releasing the last `Arc` so the dentry frees. In-use
+/// aliases (`d_count > 0`) are pinned by their holders and left intact, which
+/// for a hard-linked file leaves only the open/CWD-held names cached. Iterates
+/// a snapshot of `i_aliases` so the in-loop `i_drop_alias` mutation that
+/// `d_drop` performs is race-free. An `i_sb()`-less inode tracks no aliases —
+/// nothing to prune. Returns the count pruned. # C: O(N_aliases)
+pub fn d_prune_aliases(inode: &InodeRef) -> usize {
+    let sb = match inode.i_sb() { Some(sb) => sb, None => return 0 };
+    let mut freed = 0;
+    for alias in sb.i_aliases(inode.ino()) {
+        if alias.d_count() == 0 { d_drop(&alias); freed += 1; }
+    }
+    freed
+}
+
 // ---------------------------------------------------------------------------
 // Primitives.
 // ---------------------------------------------------------------------------
