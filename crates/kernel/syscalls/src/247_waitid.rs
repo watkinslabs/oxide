@@ -99,6 +99,19 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
                     // Blocking WNOWAIT without WNOHANG: park until a child
                     // exits, then re-peek. systemd always pairs WNOHANG,
                     // so this path is rare but POSIX-correct.
+                    // Interruptible like sys_wait4: a deliverable signal —
+                    // and ALWAYS unblockable SIGKILL/SIGSTOP — aborts with
+                    // -EINTR so the dispatch tail can terminate a SIGKILL'd
+                    // task instead of re-parking it forever (see 061_wait4).
+                    if let Some(cur) = sched::live::current() {
+                        use core::sync::atomic::Ordering;
+                        use sched::live::sigpend::Signum;
+                        let forced  = Signum::Sigkill.bit() | Signum::Sigstop.bit();
+                        let pending = cur.sigpending.load(Ordering::Acquire);
+                        let masked  = cur.sigmask.load(Ordering::Acquire);
+                        let deliver = (pending & !masked) | (pending & forced);
+                        if deliver != 0 { return -(syscall::errno::Errno::Eintr.as_i32() as i64); }
+                    }
                     // SAFETY: process ctx; runqueue installed; preempt-off; park+reschedule per `13§8`.
                     unsafe { sched::live::park_for_wait4(); sched::live::schedule(); }
                     match sched::live::peek_one(parent_tid, pid_for_wait4, parent_pgid) {
