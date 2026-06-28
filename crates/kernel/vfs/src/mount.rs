@@ -760,10 +760,26 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
 pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
     let ns = current_ns();
     let from_m = mount_exact_at(ns, from).ok_or(VfsError::Einval)?;
+    let from_id = from_m.mnt_id;
     let to_root = is_global_root(to);
+    // Linux `do_move_mount` validation (all -EINVAL). NOTE: moving ONTO `/` is
+    // NOT rejected here — systemd `mount_move_root` (`mount(new, "/", MS_MOVE)`
+    // then `chroot(".")`) depends on it, and Linux permits overmounting the
+    // root this way; only the two checks below are universal:
+    //   * cannot move the namespace ROOT mount itself (`!mnt_has_parent(old)`);
+    //   * cannot move a mount INTO its own subtree (`for(p=dest;...) if p==old`).
+    if root_mount_id(ns) == Some(from_id) { return Err(VfsError::Einval); }
+    if !to_root {
+        let mut anc = Some(parent_by_dentry(ns, to));
+        while let Some(a) = anc {
+            if a == from_id { return Err(VfsError::Einval); }
+            let Some(am) = mount_by_id(a) else { break; };
+            let p = am.parent_id.load(Ordering::Acquire);
+            anc = if p == a { None } else { Some(p) };
+        }
+    }
     if !to_root && to.mounted_mount(ns).is_some() { return Err(VfsError::Ebusy); }
     let to_abs = if to_root { String::from("/") } else { abs_string(to) };
-    let from_id = from_m.mnt_id;
     let old_mp = from_m.mountpoint();
     let old_parent = from_m.parent_id.load(Ordering::Acquire);
     let snap: Vec<Arc<Mount>> = subtree_ids(ns, from_id).iter()
@@ -837,9 +853,77 @@ pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
     Ok(())
 }
 
-/// Retune the propagation type of the mount at dentry `d` (`docs/16§6`).
-/// MS_SLAVE on a shared mount links it as a slave of its current peer group
-/// (Linux `change_mnt_propagation` → `CL_SLAVE`). # C: O(N_mounts)
+/// Linux `do_make_slave`: re-home `m` as a slave, TRANSFERRING its own slave
+/// list to the inheriting master so no slave is left pointing at a mount that
+/// is about to stop originating events. Master selection mirrors upstream:
+///   * `m` shared WITH a surviving peer ⇒ master = a remaining peer in the
+///     group (`m` slaves to the peer group it is leaving), and `m` drops its
+///     own group id (`mnt_release_group_id` + `CLEAR_MNT_SHARED`);
+///   * `m` not shared but already a slave ⇒ master = its existing master
+///     (`m`'s sub-slaves rise one level to that master);
+///   * neither ⇒ no master: `m`'s slaves are ORPHANED (master cleared) and `m`
+///     is left masterless.
+/// On return `m` is `Slave` with `mnt_slave_list` empty. Callers that want
+/// PRIVATE/UNBINDABLE then detach `m` from its master. # C: O(slaves + peers)
+fn do_make_slave(m: &Arc<Mount>) {
+    let pg = m.peer_group.load(Ordering::Acquire);
+    let shared_with_peers = Propagation::from_u8(m.propagation.load(Ordering::Acquire)) == Propagation::Shared
+        && pg != 0;
+    // Choose the master that inherits `m` and its slaves.
+    let master: Option<Arc<Mount>> = if shared_with_peers {
+        mounts_in_ns(m.ns).into_iter().find(|p| {
+            p.mnt_id != m.mnt_id
+                && Propagation::from_u8(p.propagation.load(Ordering::Acquire)) == Propagation::Shared
+                && p.peer_group.load(Ordering::Acquire) == pg
+        })
+    } else {
+        m.mnt_master.lock().upgrade()
+    };
+    // Leaving the peer group: drop the shared group id (Linux CLEAR_MNT_SHARED).
+    if shared_with_peers { m.peer_group.store(0, Ordering::Release); }
+    // Detach `m`'s own slave list once; re-home each entry onto the master.
+    let slaves: Vec<Weak<Mount>> = core::mem::take(&mut *m.mnt_slave_list.lock());
+    match master {
+        Some(master) => {
+            for w in slaves.iter() {
+                if let Some(s) = w.upgrade() { *s.mnt_master.lock() = Arc::downgrade(&master); }
+            }
+            {
+                let mut ml = master.mnt_slave_list.lock();
+                ml.extend(slaves);
+                // `m` itself becomes a slave of `master` (exactly once).
+                ml.retain(|w| w.upgrade().map(|x| x.mnt_id != m.mnt_id).unwrap_or(true));
+                ml.push(Arc::downgrade(m));
+            }
+            *m.mnt_master.lock() = Arc::downgrade(&master);
+        }
+        None => {
+            // No master to inherit: orphan the slaves (Linux while-loop clears
+            // each slave's `mnt_master`).
+            for w in slaves.iter() {
+                if let Some(s) = w.upgrade() { *s.mnt_master.lock() = Weak::new(); }
+            }
+            *m.mnt_master.lock() = Weak::new();
+        }
+    }
+    m.propagation.store(Propagation::Slave as u8, Ordering::Release);
+}
+
+/// Detach `m` from its master's slave list, then drop the master link.
+/// # C: O(master slaves)
+fn unlink_from_master(m: &Arc<Mount>) {
+    if let Some(master) = m.mnt_master.lock().upgrade() {
+        master.mnt_slave_list.lock()
+            .retain(|w| w.upgrade().map(|x| x.mnt_id != m.mnt_id).unwrap_or(false));
+    }
+    *m.mnt_master.lock() = Weak::new();
+}
+
+/// Retune the propagation type of the mount at dentry `d` (`docs/16§6`),
+/// faithful to Linux `change_mnt_propagation`: MS_SHARED assigns/keeps a peer
+/// group; MS_SLAVE/MS_PRIVATE/MS_UNBINDABLE all funnel through [`do_make_slave`]
+/// first (re-homing this mount's slaves to its inheriting master), then
+/// PRIVATE/UNBINDABLE additionally detach from that master. # C: O(N_mounts)
 pub fn set_propagation(d: &Arc<Dentry>, kind: Propagation) -> KResult<()> {
     let m = mount_exact_at(current_ns(), d).ok_or(VfsError::Einval)?;
     match kind {
@@ -850,25 +934,17 @@ pub fn set_propagation(d: &Arc<Dentry>, kind: Propagation) -> KResult<()> {
             m.propagation.store(Propagation::Shared as u8, Ordering::Release);
         }
         Propagation::Slave => {
-            // Become a slave of the current peer group: pick a master from the
-            // group (another shared peer) and link master↔slave. Keep
-            // peer_group for the `master:<pg>` mountinfo render.
-            let pg = m.peer_group.load(Ordering::Acquire);
-            if pg != 0 {
-                if let Some(master) = mounts_in_ns(m.ns).into_iter().find(|p| {
-                    p.mnt_id != m.mnt_id
-                        && Propagation::from_u8(p.propagation.load(Ordering::Acquire)) == Propagation::Shared
-                        && p.peer_group.load(Ordering::Acquire) == pg
-                }) {
-                    *m.mnt_master.lock() = Arc::downgrade(&master);
-                    master.mnt_slave_list.lock().push(Arc::downgrade(&m));
-                }
-            }
+            do_make_slave(&m);
+            // `master:<pg>` mountinfo render reads the MASTER's group id.
+            let mpg = m.mnt_master.lock().upgrade()
+                .map(|x| x.peer_group.load(Ordering::Acquire)).unwrap_or(0);
+            m.peer_group.store(mpg, Ordering::Release);
             m.propagation.store(Propagation::Slave as u8, Ordering::Release);
         }
         Propagation::Private | Propagation::Unbindable => {
+            do_make_slave(&m);
+            unlink_from_master(&m);
             m.peer_group.store(0, Ordering::Release);
-            *m.mnt_master.lock() = Weak::new();
             m.propagation.store(kind as u8, Ordering::Release);
         }
     }
