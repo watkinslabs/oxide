@@ -76,6 +76,37 @@ const O_NOATIME: u32 = 0o1000000;
 const SETFL_MASK: u32 =
     OpenFlags::O_APPEND.bits() | OpenFlags::O_NONBLOCK.bits() | O_DIRECT | O_NOATIME;
 
+/// Default readahead window (Linux `VM_READAHEAD_PAGES`, 128 KiB = 32 pages at
+/// 4 KiB) — the per-open `f_ra.ra_pages` ceiling.
+const DEFAULT_RA_PAGES: u32 = 32;
+
+/// Lock class for `File::f_ra` (never nested with the inode lock). # C: O(1)
+struct FileRa;
+impl sync::LockClass for FileRa { fn rank() -> u16 { 36 } }
+
+/// `struct file_ra_state` (Linux): per-open sequential readahead window —
+/// `start`/`size` in PAGE units, `async_size` the async-trigger margin,
+/// `ra_pages` the ceiling. State + Linux window arithmetic; the page-cache fill
+/// is the block lane, the mmap `prev_pos`/`mmap_miss` heuristics the mmap lane.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct FileRaState { pub start: u64, pub size: u32, pub async_size: u32, pub ra_pages: u32 }
+
+impl FileRaState {
+    /// Initial window for a `req`-page read, ≤ `max` (Linux `get_init_ra_size`:
+    /// roundup pow2 → 4x small / 2x medium / clamp). # C: O(1)
+    pub fn init_ra_size(req: u32, max: u32) -> u32 {
+        let mut n = req.max(1).next_power_of_two();
+        if n <= max / 32 { n = n.saturating_mul(4); } else if n <= max / 4 { n = n.saturating_mul(2); } else { n = max; }
+        n.clamp(1, max.max(1))
+    }
+    /// Grown window from the current, ≤ `max` (Linux `get_next_ra_size`). # C: O(1)
+    pub fn next_ra_size(&self, max: u32) -> u32 {
+        let cur = self.size.max(1);
+        let n = if cur < max / 16 { cur.saturating_mul(4) } else if cur <= max / 2 { cur.saturating_mul(2) } else { max };
+        n.clamp(1, max.max(1))
+    }
+}
+
 /// Map an open's access mode (`O_RDONLY`/`O_WRONLY`/`O_RDWR`) to the
 /// canonical `Fmode` capability bits. Mirrors Linux `OPEN_FMODE`. An `O_PATH`
 /// open yields `FMODE_PATH` only (no read/write) regardless of the access-mode
@@ -123,6 +154,9 @@ pub struct File {
     /// `pos` atomic — payload is `()`. Only taken for seekable files
     /// (regular/directory); non-seekable I/O may park and ignores `pos`.
     f_pos_lock: Spinlock<(), FilePos>,
+    /// `f_ra` readahead window (Linux `struct file.f_ra`). Spinlock-guarded so
+    /// the on-demand advance is atomic against a dup'd / shared description.
+    f_ra: Spinlock<FileRaState, FileRa>,
     flags:  AtomicU32,
     /// Currently-held flock kind: 0=none, 1=LOCK_SH, 2=LOCK_EX. Used
     /// by the kernel-side flock registry to find which lock to drop
@@ -364,6 +398,7 @@ impl File {
             private_data: AtomicU64::new(0),
             pos:   AtomicU64::new(0),
             f_pos_lock: Spinlock::new(()),
+            f_ra: Spinlock::new(FileRaState { ra_pages: DEFAULT_RA_PAGES, ..FileRaState::default() }),
             flags: AtomicU32::new(flags.bits()),
             flock_op: AtomicU32::new(0),
             owner: core::sync::atomic::AtomicI32::new(0),
@@ -466,6 +501,37 @@ impl File {
     pub fn fasync_signal(&self, dfl: i32) -> i32 {
         let s = self.f_sig.load(Ordering::Acquire);
         if s != 0 { s } else { dfl }
+    }
+
+    /// Snapshot of the `f_ra` readahead window state. # C: O(1)
+    pub fn ra_state(&self) -> FileRaState { *self.f_ra.lock() }
+
+    /// Set the readahead window ceiling in pages (Linux `POSIX_FADV_SEQUENTIAL`
+    /// doubles the default, `POSIX_FADV_RANDOM` zeroes it to disable RA). # C: O(1)
+    pub fn set_ra_pages(&self, pages: u32) { self.f_ra.lock().ra_pages = pages; }
+
+    /// On-demand readahead advance (Linux `ondemand_readahead` core): from the
+    /// read's first page `index`, page count `req`, and whether the PG_readahead
+    /// marker was hit, update `f_ra` and return the `(start, size, async_size)`
+    /// window to submit (page-cache fill is the block lane). `ra_pages == 0`
+    /// (FADV_RANDOM) disables RA; a sequential continuation (`index==start+size`)
+    /// or marker hit grows via `next_ra_size`; SOF / a jump re-seeds via
+    /// `init_ra_size`. # C: O(1)
+    pub fn ra_ondemand(&self, index: u64, req: u32, hit_marker: bool) -> (u64, u32, u32) {
+        let mut ra = self.f_ra.lock();
+        let max = ra.ra_pages;
+        if max == 0 { *ra = FileRaState { start: index, ..*ra }; return (index, 0, 0); }
+        let sequential = index == ra.start + ra.size as u64;
+        if index != 0 && (sequential || hit_marker) {
+            ra.start = if sequential { ra.start + ra.size as u64 } else { index + 1 };
+            ra.size = ra.next_ra_size(max);
+            ra.async_size = ra.size;
+        } else {
+            ra.start = index;
+            ra.size = FileRaState::init_ra_size(req, max);
+            ra.async_size = if ra.size > req { ra.size - req } else { ra.size };
+        }
+        (ra.start, ra.size, ra.async_size)
     }
 
     /// Per-close flush (Linux `file_operations->flush`, fired by
@@ -712,20 +778,14 @@ impl File {
         Ok(n)
     }
 
-    /// `readv(2)` core (Linux `vfs_readv` -> `do_iter_read`): aggregate a slice
-    /// of destination buffers into ONE cursor-advancing read against the file,
-    /// holding `f_pos_lock` for the WHOLE walk so a dup'd / CLONE_FILES-shared
-    /// fd cannot interleave the cursor between buffers, and advancing `f_pos`
-    /// ONCE by the grand total — matching Linux taking `f_pos_lock` once in
-    /// `__fdget_pos` and writing `file->f_pos` back a single time. The buffers
-    /// form one logical region: buffer `i` is filled at the running offset
-    /// `pos + total`. A short fill (inode `read` returns fewer bytes than the
-    /// buffer length, `0` = EOF) terminates the walk per `iov_iter` semantics.
-    /// An inode error propagates only when NO bytes have been read yet; once
-    /// progress is made the partial count is returned (Linux generic-read
-    /// `written ? written : error`). Empty buffers are skipped. O_NONBLOCK
-    /// routes through `read_nonblock`, exactly as scalar `read`.
-    /// # C: O(sum of buf lens)
+    /// `readv(2)` core (Linux `vfs_readv` -> `do_iter_read`): aggregate the
+    /// destination buffers into ONE cursor-advancing read, holding `f_pos_lock`
+    /// for the WHOLE walk so a dup'd / shared fd cannot interleave the cursor,
+    /// and advancing `f_pos` ONCE by the grand total (Linux `__fdget_pos`).
+    /// Buffer `i` fills at the running offset `pos + total`; a short fill (`0` =
+    /// EOF) ends the walk per `iov_iter`. An inode error propagates only when NO
+    /// bytes were read yet, else the partial count is returned. Empty buffers
+    /// skipped; O_NONBLOCK routes through `read_nonblock`. # C: O(sum of buf lens)
     pub fn read_iter(&self, bufs: &mut [&mut [u8]]) -> KResult<usize> {
         if !self.f_mode.contains(Fmode::READ) {
             return Err(VfsError::Ebadf);
@@ -762,18 +822,14 @@ impl File {
         Ok(total as usize)
     }
 
-    /// `writev(2)` core (Linux `vfs_writev` -> `do_iter_write`): aggregate a
-    /// slice of source buffers into ONE cursor-advancing write, holding
-    /// `f_pos_lock` for the whole walk and advancing `f_pos` ONCE by the total
-    /// (Linux `__fdget_pos`). With `O_APPEND` the base offset is forced to the
-    /// current size ONCE (Linux `IOCB_APPEND` overriding `ki_pos` for the whole
-    /// iocb), then buffers are written sequentially at `base + total`; the
-    /// inter-writer append atomicity is the inode lock's job — this serializes
-    /// only this description's cursor. A short write terminates the walk per
-    /// `iov_iter` semantics. An inode error propagates only when NO bytes have
-    /// been written yet; otherwise the partial count is returned. Empty buffers
-    /// are skipped. O_NONBLOCK routes through `write_nonblock`.
-    /// # C: O(sum of buf lens)
+    /// `writev(2)` core (Linux `vfs_writev` -> `do_iter_write`): aggregate the
+    /// source buffers into ONE cursor-advancing write, holding `f_pos_lock` for
+    /// the whole walk and advancing `f_pos` ONCE by the total (Linux
+    /// `__fdget_pos`). `O_APPEND` forces the base to i_size ONCE (Linux
+    /// `IOCB_APPEND` for the whole iocb); inter-writer append atomicity is the
+    /// inode lock's job. A short write ends the walk per `iov_iter`; an inode
+    /// error propagates only with no prior progress, else the partial count.
+    /// Empty buffers skipped; O_NONBLOCK → `write_nonblock`. # C: O(sum of buf lens)
     pub fn write_iter(&self, bufs: &[&[u8]]) -> KResult<usize> {
         if !self.f_mode.contains(Fmode::WRITE) {
             return Err(VfsError::Ebadf);
