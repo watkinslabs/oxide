@@ -11,7 +11,7 @@
 
 extern crate alloc;
 use crate::idmap::Idmap;
-use crate::inode::{Inode, InodeRef};
+use crate::inode::{Inode, InodeRef, inode_owner_or_capable};
 use crate::getattr::default_perm_for;
 use crate::inode::S_APPEND;
 use crate::namei::{Cred, inode_permission, MAY_WRITE, S_ISGID, S_ISUID, S_IXGRP};
@@ -53,7 +53,13 @@ pub struct Iattr {
 pub fn setattr_prepare(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &Cred) -> KResult<()> {
     let vfsuid = idmap.map_out_uid(inode.uid().unwrap_or(0));
     let vfsgid = idmap.map_out_gid(inode.gid().unwrap_or(0));
-    let is_owner = cred.uid == vfsuid || cred.cap_fowner;
+    // `inode_owner_or_capable` (Linux), NOT the open-coded `uid == vfsuid ||
+    // cap_fowner`: on an idmapped mount whose extents do not cover the inode's
+    // fs owner, the vfsuid is INVALID and the CAP_FOWNER path must be DENIED
+    // (privilege cannot be exercised over an owner with no mapping in the
+    // caller's namespace, Linux `vfsuid_has_mapping`). The inline form silently
+    // granted it — the correctness edge this helper exists to close.
+    let is_owner = inode_owner_or_capable(idmap, inode.as_ref(), cred);
 
     // chmod: owner or CAP_FOWNER, then S_ISGID strip for a non-member.
     if ia.valid & ATTR_MODE != 0 {
