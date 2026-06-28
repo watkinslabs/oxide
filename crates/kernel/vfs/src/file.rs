@@ -34,13 +34,22 @@ bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
     pub struct Fmode: u32 {
         /// FMODE_READ — file is readable.
-        const READ  = 0x0000_0001;
+        const READ   = 0x0000_0001;
         /// FMODE_WRITE — file is writable.
-        const WRITE = 0x0000_0002;
+        const WRITE  = 0x0000_0002;
+        /// FMODE_LSEEK — file is seekable (`do_dentry_open`: `f_op->llseek`
+        /// present and not `no_llseek`). Gates `lseek(2)`.
+        const LSEEK  = 0x0000_0004;
+        /// FMODE_PREAD — positional read supported (`f_op->read_iter`). Gates
+        /// `pread(2)`.
+        const PREAD  = 0x0000_0008;
+        /// FMODE_PWRITE — positional write supported (`f_op->write_iter`).
+        /// Gates `pwrite(2)`.
+        const PWRITE = 0x0000_0010;
         /// FMODE_EXEC — opened for execution (`do_open_execat`).
-        const EXEC  = 0x0000_0020;
+        const EXEC   = 0x0000_0020;
         /// FMODE_PATH — O_PATH descriptor (no read/write, fd-ref only).
-        const PATH  = 0x0000_4000;
+        const PATH   = 0x0000_4000;
     }
 }
 
@@ -318,7 +327,18 @@ impl File {
             let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
             f(&inode);
         }
-        let f_mode = fmode_from_flags(flags);
+        let mut f_mode = fmode_from_flags(flags);
+        // FMODE_LSEEK/PREAD/PWRITE (Linux `do_dentry_open`): a seekable backing
+        // (anything but an inherently streaming pipe/socket/fifo) carries a real
+        // cursor and positional I/O, so it gets all three capability bits; an
+        // O_PATH fd (`empty_fops`) and a streaming file get none. Computed once
+        // here so `seek`/`pread`/`pwrite` read the canonical `f_mode` bit rather
+        // than re-deriving the file type at every call.
+        if !f_mode.contains(Fmode::PATH)
+            && !matches!(inode.file_type(), FileType::Fifo | FileType::Socket)
+        {
+            f_mode |= Fmode::LSEEK | Fmode::PREAD | Fmode::PWRITE;
+        }
         // D11 (`16§97` lockref): the open file description pins its dentry with
         // a `d_count` ref (Linux `struct file` holds a `dget`'d `f_path.dentry`).
         // The matching `dput` is in `File::drop`. Until this, `d_count` was
@@ -367,6 +387,25 @@ impl File {
     pub fn vfsmount(&self) -> Option<Arc<crate::mount::Mount>> {
         if self.mnt_id == 0 { return None; }
         crate::mount::mount_by_id(self.mnt_id)
+    }
+
+    /// True iff a write through this open file description must be refused
+    /// `EROFS` because its mount or backing superblock is read-only (Linux
+    /// `mnt_want_write` → `__mnt_want_write` + `sb_rdonly`). Reads the mount
+    /// the file was opened THROUGH (the captured `f_path.vfsmount`, recovered
+    /// by `mnt_id`) — O(1) by mount-id lookup — instead of re-deriving the
+    /// absolute pathname and re-walking it on every write (the old
+    /// `is_readonly_path(absolute_path())` round-trip, which could also resolve
+    /// a DIFFERENT mount than the one the file was opened through if the tree
+    /// changed since open). An anon file (`mnt_id == 0`: pipe/socket/eventfd/…)
+    /// has no vfsmount and is never mount-RO-blocked; its backend governs
+    /// writability directly.
+    /// # C: O(log N)
+    fn mnt_readonly(&self) -> bool {
+        match self.vfsmount() {
+            Some(m) => (m.flags() & crate::mount::MNT_RDONLY) != 0 || m.sb().is_readonly(),
+            None    => false,
+        }
     }
 
     /// `f_mode` (FMODE_* capability bits). # C: O(1)
@@ -479,11 +518,8 @@ impl File {
         if !self.f_mode.contains(Fmode::WRITE) {
             return Err(VfsError::Ebadf);
         }
-        let path = self.dentry.absolute_path();
-        if let Ok(path) = core::str::from_utf8(&path) {
-            if crate::mount::is_readonly_path(path) {
-                return Err(VfsError::Erofs);
-            }
+        if self.mnt_readonly() {
+            return Err(VfsError::Erofs);
         }
         // FMODE_ATOMIC_POS: hold `f_pos_lock` across the offset pick (incl.
         // the O_APPEND size read) -> I/O -> pos-update so a shared fd can't
@@ -523,16 +559,14 @@ impl File {
     /// (the old `off as u64` cast turned a negative offset into a huge value).
     ///
     /// FMODE_LSEEK gate (Linux `vfs_llseek`): a file without FMODE_LSEEK is
-    /// `ESPIPE` ("illegal seek") before any offset math. Two cases lack it
-    /// here — an `O_PATH` fd (FMODE_PATH only, `empty_fops`, no `llseek`) and an
-    /// inherently non-seekable `pipe`/`socket`/`fifo` — exactly the files Linux
-    /// `do_dentry_open` leaves without FMODE_LSEEK. Regular/dir/char/block keep
-    /// a real cursor and seek.
+    /// `ESPIPE` ("illegal seek") before any offset math. The bit is computed
+    /// once at open (`new_at`): an `O_PATH` fd (FMODE_PATH only, `empty_fops`,
+    /// no `llseek`) and an inherently non-seekable `pipe`/`socket`/`fifo` lack
+    /// it — exactly the files Linux `do_dentry_open` leaves without
+    /// FMODE_LSEEK. Regular/dir/char/block keep a real cursor and seek.
     /// # C: O(1)
     pub fn seek(&self, whence: SeekFrom, off: i64) -> KResult<u64> {
-        if self.f_mode.contains(Fmode::PATH)
-            || matches!(self.inode.file_type(), FileType::Fifo | FileType::Socket)
-        {
+        if !self.f_mode.contains(Fmode::LSEEK) {
             return Err(VfsError::Espipe);
         }
         let base = match whence {
@@ -561,10 +595,9 @@ impl File {
     pub fn pread(&self, buf: &mut [u8], off: i64) -> KResult<usize> {
         if off < 0 { return Err(VfsError::Einval); }
         // FMODE_PREAD gate (Linux `do_dentry_open`): only seekable files carry
-        // it; pipe/socket/fifo and O_PATH fds do not → ESPIPE.
-        if self.f_mode.contains(Fmode::PATH)
-            || matches!(self.inode.file_type(), FileType::Fifo | FileType::Socket)
-        {
+        // it; pipe/socket/fifo and O_PATH fds do not → ESPIPE. The bit is set
+        // once at open, so no per-call file-type re-derivation.
+        if !self.f_mode.contains(Fmode::PREAD) {
             return Err(VfsError::Espipe);
         }
         if !self.f_mode.contains(Fmode::READ) {
@@ -600,19 +633,16 @@ impl File {
     /// # C: depends on inode impl
     pub fn pwrite(&self, buf: &[u8], off: i64) -> KResult<usize> {
         if off < 0 { return Err(VfsError::Einval); }
-        if self.f_mode.contains(Fmode::PATH)
-            || matches!(self.inode.file_type(), FileType::Fifo | FileType::Socket)
-        {
+        // FMODE_PWRITE gate (Linux `do_dentry_open`): set once at open for
+        // seekable files only; pipe/socket/fifo and O_PATH lack it → ESPIPE.
+        if !self.f_mode.contains(Fmode::PWRITE) {
             return Err(VfsError::Espipe);
         }
         if !self.f_mode.contains(Fmode::WRITE) {
             return Err(VfsError::Ebadf);
         }
-        let path = self.dentry.absolute_path();
-        if let Ok(path) = core::str::from_utf8(&path) {
-            if crate::mount::is_readonly_path(path) {
-                return Err(VfsError::Erofs);
-            }
+        if self.mnt_readonly() {
+            return Err(VfsError::Erofs);
         }
         let f = self.flags();
         // Linux pwrite + O_APPEND: IOCB_APPEND forces ki_pos = i_size,
@@ -700,11 +730,8 @@ impl File {
         if !self.f_mode.contains(Fmode::WRITE) {
             return Err(VfsError::Ebadf);
         }
-        let path = self.dentry.absolute_path();
-        if let Ok(path) = core::str::from_utf8(&path) {
-            if crate::mount::is_readonly_path(path) {
-                return Err(VfsError::Erofs);
-            }
+        if self.mnt_readonly() {
+            return Err(VfsError::Erofs);
         }
         let f = self.flags();
         let nonblock = f.contains(OpenFlags::O_NONBLOCK);

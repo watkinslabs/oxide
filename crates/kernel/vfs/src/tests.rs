@@ -477,12 +477,18 @@ fn file_f_mode_derivation() {
     use crate::file::Fmode;
     let i: InodeRef = MemFile::new(1);
     let d = Dentry::new_root(Arc::clone(&i));
+    // MemFile is a regular (seekable) file, so every open also carries the
+    // FMODE_LSEEK|PREAD|PWRITE capability bits (`do_dentry_open`). Mask them
+    // out to assert the access-mode derivation in isolation, then assert the
+    // seekability bits are present.
+    let seek = Fmode::LSEEK | Fmode::PREAD | Fmode::PWRITE;
     let ro = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDONLY, 0, Cred::root());
-    assert_eq!(ro.f_mode(), Fmode::READ);
+    assert_eq!(ro.f_mode() - seek, Fmode::READ);
+    assert!(ro.f_mode().contains(seek), "regular file is seekable");
     let wo = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_WRONLY, 0, Cred::root());
-    assert_eq!(wo.f_mode(), Fmode::WRITE);
+    assert_eq!(wo.f_mode() - seek, Fmode::WRITE);
     let rw = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDWR, 0, Cred::root());
-    assert_eq!(rw.f_mode(), Fmode::READ | Fmode::WRITE);
+    assert_eq!(rw.f_mode() - seek, Fmode::READ | Fmode::WRITE);
 }
 
 #[test]
