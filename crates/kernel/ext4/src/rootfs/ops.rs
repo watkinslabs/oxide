@@ -247,6 +247,7 @@ impl vfs::SuperOps for Ext4SuperOps {
             f_files:  m.sb.inodes_count as u64,
             f_ffree:  free_inodes,
             f_fsid:   0,
+            f_flags:  0, // per-MOUNT ST_* filled at the syscall layer (calculate_f_flags)
         })
     }
 }

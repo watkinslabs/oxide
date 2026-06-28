@@ -72,6 +72,19 @@ fn statfs_reads_superblock_magic() {
     assert_eq!(st.f_bsize, 4096, "f_bsize defaulted from s_blocksize");
 }
 
+/// T-statfs-fsid: `SuperBlock::statfs` defaults `f_fsid` from `s_dev` (Linux
+/// packs the device id into `__fsid_t`) when the backend reports none.
+#[test]
+fn statfs_defaults_fsid_from_s_dev() {
+    let _g = guard();
+    let fs = Arc::new(TestFs { magic: 0x0102_1994, root_ino: 0xC3 });
+    common::register("/sb_fsid", fs).expect("register");
+    let m = common::mount_at_path_exact("/sb_fsid").expect("mount present");
+    let st = m.sb().statfs().expect("statfs");
+    assert_eq!(st.f_fsid, m.sb().s_dev, "f_fsid defaulted from s_dev");
+    assert_ne!(st.f_fsid, 0, "f_fsid is a real (nonzero) fs identity");
+}
+
 /// T-anon-dev-unique: two instances of the same fs type get distinct s_dev,
 /// the thing a per-fs-type constant could not express.
 #[test]

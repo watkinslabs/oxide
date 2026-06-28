@@ -104,6 +104,11 @@ pub struct SbStatFs {
     /// `f_fsid` — the filesystem identity (Linux packs `s_dev` here). `0` ⇒
     /// `SuperBlock::statfs` defaults it from `s_dev`.
     pub f_fsid:   u64,
+    /// `f_flags` — statvfs(3) `ST_*` mount flags. Per-MOUNT, not an
+    /// `s_op->statfs` output (Linux `calculate_f_flags`, fs/statfs.c): left `0`
+    /// by `SuperBlock::statfs`, filled at the syscall layer where the owning
+    /// mount is in hand.
+    pub f_flags:  u64,
 }
 
 /// `super_operations` (Linux `struct super_operations`) — the per-SB
