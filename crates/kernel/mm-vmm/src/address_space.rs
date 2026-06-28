@@ -459,6 +459,13 @@ impl AddressSpace {
                         unsafe { M::map(Va(va), Pa(pa), child_flags, PageSize::P4K); }
                         // SAFETY: privileged TLB invalidation is legal at CPL=0/EL1.
                         unsafe { M::flush_va(Va(va)); }
+                        // debug-cow: this ANON frame is now RO-shared between
+                        // parent + child. Snapshot its content; any later
+                        // change before a COW copy = a peer wrote a RO-shared
+                        // page (stale TLB / wrong frame). No-op when feature off.
+                        if matches!(vma.backing, VmaBacking::Anonymous) {
+                            crate::debug_cow::record(pa, _hhdm_offset);
+                        }
                     }
                 }
                 va += PAGE_SIZE_BYTES;
@@ -1022,6 +1029,11 @@ impl AddressSpace {
                             M::map(Va(va_page), Pa(cur_pa), pte_flags, PageSize::P4K);
                             M::flush_va(Va(va_page));
                         }
+                        // debug-cow: the frame is now writable + exclusively
+                        // owned (Linux wp_page_reuse) — it will legitimately be
+                        // mutated, so drop any RO-shared snapshot to avoid a
+                        // false [COW-CORRUPT] at free. No-op when feature off.
+                        crate::debug_cow::forget(cur_pa);
                         return Ok(());
                     }
                 }
@@ -1047,6 +1059,26 @@ impl AddressSpace {
                             M::flush_va(Va(va_page));
                         }
                         return Ok(());
+                    }
+                }
+            }
+            // debug-cow: we are about to COW-copy this anon frame, i.e. we
+            // treat it as still RO-shared (reuse_ok was false). If the
+            // struct-page refcount says it is exclusively owned (rc<=1) the
+            // accounting under-counted a live PTE — the residual-bug signature
+            // (a peer still maps a frame we believe nobody else holds). Cheap
+            // O(1) read; no walk. Anonymous-only: File/KernelBytes private
+            // pages legitimately copy while rc==1.
+            #[cfg(feature = "debug-cow")]
+            if matches!(vma.backing, VmaBacking::Anonymous) {
+                if let Some((src_pa, _)) = cur {
+                    let cur_pa = src_pa.0 & !(PAGE_SIZE_BYTES - 1);
+                    let rc = frame_refcount(cur_pa);
+                    if rc <= 1 {
+                        klog::write_raw(b"[COW-RC] under-count frame="); klog::write_hex_u64(cur_pa);
+                        klog::write_raw(b" va="); klog::write_hex_u64(va_page);
+                        klog::write_raw(b" rc="); klog::write_dec_u64(rc as u64);
+                        klog::write_raw(b"\n");
                     }
                 }
             }
