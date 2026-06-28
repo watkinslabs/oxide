@@ -13,32 +13,6 @@ use crate::signal::PendingSignal;
 const SIG_DFL: u64 = 0;
 const SIG_IGN: u64 = 1;
 
-/// Default action = IGNORE per signal(7).
-#[inline]
-fn default_is_ignore(sig: u32) -> bool {
-    let s = sig as u8;
-    s == Signum::Sigchld as u8
-        || s == Signum::Sigurg as u8
-        || s == Signum::Sigwinch as u8
-}
-
-/// Default action = TERMINATE-WITH-CORE per signal(7) — produces a
-/// core file on top of the kill.
-#[inline]
-fn default_is_core(sig: u32) -> bool {
-    let s = sig as u8;
-    s == Signum::Sigquit as u8
-        || s == Signum::Sigill  as u8
-        || s == Signum::Sigtrap as u8
-        || s == Signum::Sigabrt as u8
-        || s == Signum::Sigbus  as u8
-        || s == Signum::Sigfpe  as u8
-        || s == Signum::Sigsegv as u8
-        || s == Signum::Sigxcpu as u8
-        || s == Signum::Sigxfsz as u8
-        || s == Signum::Sigsys  as u8
-}
-
 /// B117: build the `hal::SigChld` siginfo payload for a SIGCHLD
 /// PendingSignal, mapping the dequeued `sched::SigInfo` child event
 /// (pid=child VPID, value=child exit status, code=CLD_*) onto the
@@ -78,22 +52,28 @@ pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64, sys_exit_fn: &
     }
     match p.handler {
         SIG_DFL => {
-            // SIG_DFL — signal(7) default action triage.
-            if !default_is_ignore(p.sig) {
-                if default_is_core(p.sig) {
-                    ::fs::coredump::write_for_current(p.sig as i32);
-                }
+            // SIG_DFL — signal(7) default action triage. Single source of
+            // truth in sched::signum so the policy is hosted-tested. Job-control
+            // STOP signals are handled in the dispatch tail (dispatch.rs) before
+            // we get here; CONT/IGN are no-ops. Only TERM/CORE terminate.
+            use sched::signum::{default_action, DefaultAction, killed_status};
+            let action = default_action(p.sig);
+            if action == DefaultAction::Core {
+                ::fs::coredump::write_for_current(p.sig as i32);
+            }
+            if action == DefaultAction::Core || action == DefaultAction::Term {
                 // Linux: a fatal signal terminates the WHOLE thread group
                 // (`get_signal` → `do_group_exit`), not just the thread that
                 // took it. SIGKILL the siblings first so a multi-threaded
                 // process can't leave threads alive holding the dead thread's
                 // libc locks (the deadlock/wedge), then exit the caller.
                 sched::live::zap_other_threads();
-                // Encode wait4(2) "killed by signal" byte: low 7 = signo,
-                // bit 7 set on core dump (we approximate with bit 8 the
-                // way mark_done's exit_status decodes it).
+                // killed_status encodes the wait4/waitid "killed by signal"
+                // status (signo + WSTATUS_SIGNALED, + WSTATUS_CORE for the
+                // core-dumping signals) so the parent reaps WIFSIGNALED /
+                // WCOREDUMP / CLD_KILLED-vs-CLD_DUMPED correctly.
                 let exit_args = SyscallArgs {
-                    a0: (p.sig | 0x100) as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0,
+                    a0: killed_status(p.sig) as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0,
                 };
                 let _ = sys_exit_fn(&exit_args);
             }
