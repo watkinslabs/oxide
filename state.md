@@ -1,40 +1,37 @@
 # state.md — session hand-off
 
 ## Headline
-Branch **F649-vfs-object-model** (off `main` via F648 checkpoint `8eca76b8`). Goal: make the **VFS 100% Linux-compliant** (zero string-path lookups) and get a **bootable GNOME live** system. Full plan + 612-item audit ledger in `/home/nd/oxide/fix.md` (live WP tracker at top). Driven by a self-pacing `/loop` (dynamic ScheduleWakeup; wakes on background-workflow completions).
+Branch **F649-vfs-object-model**. Goal: VFS/FS/MM 100% Linux-compliant + bootable GNOME. Master checklist: **/home/nd/oxide/TASKS.md** (check-off + SHAs); audit ledger: /home/nd/oxide/fix-ledger.md; MM plan: /home/nd/oxide/fix-mm.md. Self-paced /loop drives parallel background Workflow passes (disjoint crates; one boot/QEMU at a time).
 
-## Done & committed on F649 (each WP a commit; NO Co-Authored-By — repo CI rule; counters in metadata/index.md, F next=650)
-- `099d16ca` WP1 — Linux object model: `superblock.rs` (struct super_block: s_root dentry, s_op, s_type, magic, dev, inode cache), `dcache.rs` (fs/dcache.c prims d_alloc/d_lookup/d_instantiate/d_add/dget/dput/d_move, real negative dentries, (parent,name)-keyed), Dentry.d_sb + d_flags, Inode.i_sb(). namei walks via d_lookup→i_op->lookup→d_add.
-- `6326681e` WP2 — every fs (ext4/tmpfs/devfs/sysfs/procfs/cgroup/tracefs/debugfs/BindFs) SuperBlock-owned + per-component lookup; DELETED whole-path FileSystem::lookup (all 8) + namei whole-path delegate + install_open abspath + Dentry::absolute_path.
-- `ac94bb4f` WP4 — mount engine re-seated on Arc<Dentry> (register/move_mount/pivot_root take caller's walked dentry, Linux mnt_set_mountpoint); DELETED record_dentry/DENTRY_RESOLVER/resolve_dentry/forget_path/rewire_all_crossings. **Acceptance grep EMPTY — zero path→dentry resolver anywhere.** Boot-order fix (cgroup after /sys, /dev/shm underlay).
-- `34565349` exec — execve/execveat of a /proc/self/fd memfd read the fd (Linux do_execveat_common), not a path. sd-executor spawns ("Failed to spawn" 50→0).
-- `29f5db2b` mount — engine-internal descend() now CROSSES mounts like namei (a WP4 regression); fixed udevd NAMESPACE/domainname/EINVAL/226.
-
-All committed work: vfs 91 + net 232 hosted tests green, x86_64 + aarch64 build green.
+## Done & committed (F649; NO Co-Authored-By; ~28 SHAs)
+- VFS object model PHASE B COMPLETE: super_block (45a4304a), inode i_sb+iget (fd4dad65), dcache hash/RCU/d_op/LRU (289495a3), namei Nameidata+mnt_root crossing (f4315239), intrusive mount tree+mnt_ns+propagation+POLLPRI (b4234591), struct file f_path+fdtable (598ceb63).
+- MM: page _mapcount + MmuOps displaced-PTE (d554cdaa); PageAnonExclusive+rmap (ef258f8c); **cross-CPU TLB shootdown = the boot-corruption ROOT CAUSE (245dd00b)**; per-mm cpumask targeted shootdown (74da2658).
+- Per-fs kernfs trees D1 a-d: kernfs::PseudoDir + tmpfs/chrdev-bdev (974fcd7e/b96448f6), sysfs/tracefs own roots (6b7efa4b), procfs PROC_REG + /etc overlay (f8ccd078). devfs registry reduced to /dev+/etc.
+- Syscalls: D3 stat owner/times+errno+AT flags (1a369116); D3b rename EXCHANGE/byte-paths/legacy-getdents (eececd4b); D4 permission/cred enforcement live (82299937).
+- Sched: wait4/waitid interruptible (95301ddb); pidfd_send_signal wake + SIG_DFL fatal-terminate (d5bbf604).
+All committed work builds x86_64+aarch64 green; vfs/sched/mm hosted tests pass.
 
 ## Boot status
-F649 **reaches graphical.target** (smoke boot, "Startup finished 50.2s") — the clean VFS rebuild ELIMINATED the old deterministic COW/futex generator wedge. BUT boot is **non-deterministic**: a fork-COW page-refcount **under-count** randomly corrupts one process's shared page each boot → that process SEGVs (seen: lvm2-monitor / tmpfiles-setup-dev-early / initctl / udev-load-credentials / debugfs-mount-helper — different each boot) → usually stalls at getty; occasionally misses and reaches graphical. Confirmed via 4-boot determinism measurement (oxide-images/output/live-gnome-det-3.log, det-4.log).
+The long-standing non-deterministic boot corruption was ROOT-CAUSED: missing cross-CPU TLB shootdown on SMP (stale writable TLB on peer CPUs after fork-COW write-protect). Fixed (245dd00b+74da2658) -> journald 55s timeout gone. Remaining boot is blocked at **getty.target** (never reaches sysinit/basic/local-fs/multi-user/graphical) by:
+- BOOT-C: journald executor RUNTIME_DIRECTORY ESRCH "No such process" (deterministic 4/4) — a process-mgmt syscall returns ESRCH during the executor /run setup (executor-spawn ESRCH family).
+- BOOT-A: residual intermittent COW corruption -> random-process SEGV + sd-executor parked on a corrupted futex word (0 ctx switches). A source the TLB+cpumask passes missed (GAP-1 / wrong-frame copy); hosted harness is green so it's production-only — needs a runtime detector.
 
 ## In flight
-- **wgh6x888l** (COW refcount hunt): hosted cargo-test harness asserting `frame refcount == live mapping count` across 100k+ randomized fork/COW-write/exit seqs to catch the under-count deterministically → fix at root → verify hosted + 4-boot loop (goal 4/4 graphical, 0 SEGV). Editing mm-vmm/mm-pmm. THE gating blocker for a stable bootable GNOME.
+- wbu3tpimn BOOT-C/A: capture-first on what kills journald's executor (ESRCH vs futex-corruption), fix. Owns boot.
+- wzxn4gude D2: ext4 data-path completeness (extents/alloc/htree/truncate). ext4 crate.
 
-## Open (after COW fix), priority order
-1. COW page-refcount under-count (in flight) — stable-boot blocker.
-2. Remaining FS-compliance WPs for true 100%: WP3 namei (RCU walk, d_hash/d_compare, LOOKUP_ flags, symlink/ELOOP), WP5 struct file = f_path{vfsmount,dentry}, WP7 syscall surface (57 items: stat/statx/open/getdents/xattr exact errno + AT_*/O_*).
-3. Deferred FS items (from WP2/udevd passes, NOT blind-shipped): debug/tracing mount 'protocol' = need mount-change notification (libmount POLLPRI on /proc/self/mountinfo + a vfs mount-generation counter); reap a ns-child's per-ns mount table on exit (2nd-attempt MS_MOVE/pivot EINVAL).
-4. Confirm GNOME actually starts (gdm/gnome-shell) once boot is reliable.
+## Open (TASKS.md): BOOT-A, BOOT-C, zombie-reap (PID1 not reaping zombies per BOOT-B2 verify), Phase C page-cache (MM5/6 shmem+inode pagecache), A5 fault-path split, D2 ext4, D4b idmap/getattr-setattr, E final verify (re-run 303-ledger; 4-boot graphical+greeter; aarch64 boot lockstep).
 
 ## First command next session
 ```
-cd /home/nd/oxide/kernel && git branch --show-current   # expect F649-vfs-object-model
-git log --oneline -6
-# check the in-flight COW hunt result, commit its fix on F649, update /home/nd/oxide/fix.md
+cd /home/nd/oxide/kernel && git branch --show-current   # F649-vfs-object-model
+git log --oneline -12 ; cat /home/nd/oxide/TASKS.md | head -60
+# check in-flight wbu3tpimn (BOOT-C/A) + wzxn4gude (D2); commit precisely (only that workflow's files), tick TASKS.md
 ```
 
 ## Gotchas
-- Repo is /home/nd/oxide/**kernel** (parent /home/nd/oxide is NOT a git repo; fix.md/now.md live there; oxide-images/ holds boot logs + runboot.sh).
-- NO Co-Authored-By on commits (CI lint rejects). Author = Chris Watkins <chris@watkinslabs.com>.
-- Boot verify: `cd oxide-images; cargo run -q -p imagectl -- build-boot --profile live-gnome --arch x86_64; timeout -k 10s 150s ./runboot.sh 135 <log>`. The `-k` is required (QEMU ignores SIGTERM). debug-syscall/debug-mnt features can trigger the COW wedge — use default build for boot verify.
-- Acceptance invariant (keep green): `grep -rnE 'record_dentry|DENTRY_RESOLVER|resolve_dentry|forget_path|fn lookup\(&self, path: ?&str' crates/kernel` must be EMPTY.
-
-## Prior session work (glibc 197/197) — superseded by this branch's VFS rebuild; see git history on main.
+- Repo = /home/nd/oxide/**kernel** (parent not a git repo; TASKS.md/fix*.md live in parent; oxide-images/ has runboot.sh + boot logs).
+- NO Co-Authored-By (CI lint). Author Chris Watkins <chris@watkinslabs.com>.
+- Parallel workflows OK on DISJOINT crates; only ONE may boot/QEMU. Commit each workflow's files separately (others' may be mid-edit). NEVER `pkill -f qemu-system` (self-matches the shell) -> use `pgrep -f qemu-system-x86 | xargs -r kill -9`.
+- Boot verify: cd oxide-images; cargo run -q -p imagectl -- build-boot --profile live-gnome --arch x86_64; timeout -k 10s 150s ./runboot.sh 135 <log>. debug-syscall/debug-mnt features can trigger the residual COW wedge.
+- Invariant (keep): grep -rnE 'record_dentry|DENTRY_RESOLVER|resolve_dentry|fn lookup\(&self, path: ?&str' crates/kernel = empty (zero path->dentry resolver).
