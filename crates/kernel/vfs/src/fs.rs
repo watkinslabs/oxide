@@ -19,6 +19,36 @@ use crate::types::VfsError;
 /// convenience inside trait bodies.
 pub type KResult<T> = core::result::Result<T, VfsError>;
 
+bitflags::bitflags! {
+    /// `file_system_type::fs_flags` (Linux `include/linux/fs.h`). A
+    /// type-LEVEL property of the backend (NOT a per-mount `MNT_*` bit):
+    /// it governs how the VFS mounts and classifies the fs. Numeric
+    /// values match Linux exactly. Subset for v1; expand alongside their
+    /// first real consumer.
+    #[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
+    pub struct FsFlags: u32 {
+        /// fs is backed by a block device — `mount(2)` needs a `dev`
+        /// source (`mount_bdev`). Cleared on pseudo / in-memory fses
+        /// (`mount_nodev`), which `/proc/filesystems` then tags `nodev`.
+        const FS_REQUIRES_DEV       = 1;
+        /// On-disk mount options are an opaque binary blob, not a comma
+        /// string (Linux `FS_BINARY_MOUNTDATA`).
+        const FS_BINARY_MOUNTDATA   = 2;
+        /// fs name carries a `.subtype` suffix (`fuse.sshfs`).
+        const FS_HAS_SUBTYPE        = 4;
+        /// Mountable by a non-init user-namespace root (Linux
+        /// `FS_USERNS_MOUNT`: tmpfs, proc, sysfs, …).
+        const FS_USERNS_MOUNT       = 8;
+        /// fanotify permission events are refused on this fs.
+        const FS_DISALLOW_NOTIFY_PERM = 16;
+        /// fs understands vfs idmappings (`FS_ALLOW_IDMAP`).
+        const FS_ALLOW_IDMAP        = 32;
+        /// `->rename` performs the `d_move` itself; the VFS must NOT
+        /// (Linux `FS_RENAME_DOES_D_MOVE`, e.g. NFS).
+        const FS_RENAME_DOES_D_MOVE = 32768;
+    }
+}
+
 /// Append the decimal digits of `n` to `s` (no_std, no `format!`).
 /// # C: O(log10 n)
 fn push_u32(s: &mut String, n: u32) {
@@ -46,6 +76,43 @@ pub trait FileSystem: Send + Sync {
     /// classifier then falls through to its path-prefix table.
     /// # C: O(1)
     fn magic(&self) -> u64 { 0 }
+
+    /// `file_system_type::fs_flags` for this backend (Linux
+    /// `include/linux/fs.h`). Default `empty()` = a pseudo / in-memory fs:
+    /// not block-device-backed, so `/proc/filesystems` tags it `nodev`.
+    /// On-disk backends override with [`FsFlags::FS_REQUIRES_DEV`] (ext4,
+    /// ext2/3, vfat, iso9660); pseudo fses that nonetheless want
+    /// userns-mountability set [`FsFlags::FS_USERNS_MOUNT`].
+    /// # C: O(1)
+    fn fs_flags(&self) -> FsFlags { FsFlags::empty() }
+
+    /// fs is backed by a block device (`mount(2)` requires a `dev` source).
+    /// Mirrors Linux's `fs_flags & FS_REQUIRES_DEV` predicate used by
+    /// `mount_bdev` vs `mount_nodev` and by `filesystems_proc_show`.
+    /// # C: O(1)
+    fn requires_dev(&self) -> bool { self.fs_flags().contains(FsFlags::FS_REQUIRES_DEV) }
+
+    /// `->rename` drives `d_move` itself, so the VFS rename path must skip
+    /// the generic dentry move (Linux `FS_RENAME_DOES_D_MOVE`). # C: O(1)
+    fn rename_does_d_move(&self) -> bool {
+        self.fs_flags().contains(FsFlags::FS_RENAME_DOES_D_MOVE)
+    }
+
+    /// One `/proc/filesystems` row for this backend, byte-identical to
+    /// Linux `filesystems_proc_show` (`fs/filesystems.c`): a leading
+    /// `"nodev"` for non-`FS_REQUIRES_DEV` fses (else empty), a TAB, the fs
+    /// name, and `'\n'`. Replaces the hardcoded `/proc/filesystems` table:
+    /// the `nodev` column is now DERIVED from `fs_flags`, not a string
+    /// literal. # C: O(len name)
+    fn proc_filesystems_line(&self) -> String {
+        let mut s = String::new();
+        if self.requires_dev() { /* FS_REQUIRES_DEV ⇒ no "nodev" prefix */ }
+        else { s.push_str("nodev"); }
+        s.push('\t');
+        s.push_str(self.name());
+        s.push('\n');
+        s
+    }
 
     /// `s_blocksize` (Linux `super_block::s_blocksize`) the mount reports as
     /// `statfs(2)` `f_bsize`. On-disk backends override from their parsed
