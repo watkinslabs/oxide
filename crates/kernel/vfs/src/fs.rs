@@ -481,3 +481,32 @@ pub fn get_tree_single<F>(fc: &mut fs_context::FsContext, fill: F) -> KResult<Ar
 where F: FnOnce(&mut fs_context::FsContext) -> KResult<Arc<SuperBlock>> {
     get_tree_keyed(fc, "", fill)
 }
+
+/// `reconfigure_single` (Linux `fs/super.c`) — reconfigure a single-instance
+/// pseudo-fs's LIVE superblock from monolithic remount data. Builds a throwaway
+/// `FS_CONTEXT_FOR_RECONFIGURE` context over `sb`'s root, replays each parsed
+/// `param` through [`fs_context::vfs_parse_fs_param`], runs
+/// [`fs_context::reconfigure_super`] to apply them plus the masked `sb_flags`,
+/// then tears the context down ([`fs_context::put_fs_context`], running the LSM +
+/// backend `free` hooks). This is the remount path a single-instance fs uses
+/// instead of threading an `fs_context` through `mount_single`. A parse failure
+/// fails the context and surfaces the errno; the live SB is left untouched until
+/// `reconfigure_super` commits. # C: O(N params)
+pub fn reconfigure_single(
+    sb: Arc<SuperBlock>,
+    sb_flags: u64,
+    params: &[fs_context::FsParameter],
+) -> KResult<()> {
+    let root = sb.s_root().ok_or(VfsError::Einval)?;
+    let mut fc = fs_context::FsContext::for_reconfigure(sb, root, sb_flags, SB_FLAGS_USER_MASK);
+    for p in params {
+        if let Err(e) = fs_context::vfs_parse_fs_param(&mut fc, p) {
+            fc.fail();
+            fs_context::put_fs_context(fc);
+            return Err(e);
+        }
+    }
+    let r = fs_context::reconfigure_super(&mut fc);
+    fs_context::put_fs_context(fc);
+    r
+}
