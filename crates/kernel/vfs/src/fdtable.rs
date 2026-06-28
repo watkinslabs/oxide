@@ -337,6 +337,45 @@ impl FdTable {
         };
         for f in removed { f.flush(); }
     }
+
+    /// `close_range(2)` (Linux `__range_close`) — over the inclusive fd
+    /// range `[first, last]`, close every open fd, OR — when
+    /// `cloexec_only` (CLOSE_RANGE_CLOEXEC) — set FD_CLOEXEC on each
+    /// instead of closing. `first`/`last` are `u32` to match the uapi
+    /// (a `last` of `u32::MAX` means "to the table end"); the syscall
+    /// layer rejects `first > last` (Einval), so here it is a no-op.
+    /// Scans the `open_fds` bitmap a word at a time, starting at the
+    /// word holding `first`; closed Files are flushed outside the table
+    /// lock (Linux `filp_close` per fd). The bit walk reads a per-word
+    /// snapshot, so clearing `open_fds` mid-walk does not skip fds.
+    /// # C: O(N/64 + closed)
+    pub fn close_range(&self, first: u32, last: u32, cloexec_only: bool) {
+        let removed = {
+            let mut g = self.inner.lock();
+            let mut removed: Vec<Arc<File>> = Vec::new();
+            let start_word = word_idx(first as usize);
+            for wi in start_word..g.open_fds.len() {
+                let mut bits = g.open_fds[wi];
+                while bits != 0 {
+                    let b = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    let fd = wi * WORD_BITS + b;
+                    if (fd as u64) < first as u64 || (fd as u64) > last as u64 { continue; }
+                    if cloexec_only {
+                        g.set_cloexec_bit(fd, true);
+                    } else {
+                        if let Some(f) = g.files.get_mut(fd).and_then(|s| s.take()) {
+                            removed.push(f);
+                        }
+                        g.set_open(fd, false);
+                        g.set_cloexec_bit(fd, false);
+                    }
+                }
+            }
+            removed
+        };
+        for f in removed { f.flush(); }
+    }
 }
 
 impl Default for FdTable {
