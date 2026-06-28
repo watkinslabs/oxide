@@ -238,6 +238,42 @@ pub fn shrink_dcache_parent(parent: &Arc<Dentry>) -> usize {
     freed
 }
 
+/// FORCE-detach the ENTIRE dentry tree of `sb` on unmount (Linux
+/// `shrink_dcache_for_umount` → `do_one_tree`, `fs/dcache.c`), run from
+/// `generic_shutdown_super` once the mount is going away. Unlike the gentle
+/// [`shrink_dcache_sb`] (which evicts only UNUSED `d_count == 0` dentries and
+/// leaves in-use ones on the LRU), this tears down EVERY dentry rooted at
+/// `sb->s_root` REGARDLESS of `d_count`: an in-use dentry (a holder still owns
+/// an `Arc`) is `mark_dead`-stamped + `d_drop`-ed (unhashed, dropped from its
+/// inode alias list, forgotten from its parent's `d_subdirs`) so it can never
+/// be looked up again — its memory frees when the last holder's `dput` releases
+/// the `Arc`. The whole subtree (root included) is detached deepest-first so a
+/// parent is forgotten only after its children, and a node is stamped dead
+/// before unhashing so a racing `d_lookup` mid-umount fails the not-dead gate
+/// instead of resurrecting a doomed dentry (Linux marks under `d_lock` ahead of
+/// `__d_drop`). An `s_root`-less sb (never fully mounted, or already torn down)
+/// detaches nothing. Returns the count detached (an in-use remainder is the
+/// "Busy inodes after unmount" leak the caller may WARN on). The strong `s_root`
+/// owning ref is released separately by `put_super`. # C: O(tree)
+pub fn shrink_dcache_for_umount(sb: &Arc<SuperBlock>) -> usize {
+    let root = match sb.s_root() { Some(r) => r, None => return 0 };
+    // BFS-collect the whole tree INCLUDING the root; `order` is shallow→deep.
+    let mut order: Vec<Arc<Dentry>> = alloc::vec![root];
+    let mut i = 0;
+    while i < order.len() {
+        for kid in order[i].children_snapshot() { order.push(kid); }
+        i += 1;
+    }
+    // Deepest-first: detach each node (stamp dead, then unhash + forget from
+    // parent) regardless of `d_count`, so an in-use child is gone from its
+    // parent's `d_subdirs` before the parent itself is processed.
+    for d in order.iter().rev() {
+        d.mark_dead();
+        d_drop(d);
+    }
+    order.len()
+}
+
 /// Prune every UNUSED dentry alias of `inode` (Linux `d_prune_aliases`,
 /// `fs/dcache.c`) — drop the cached dentries naming an inode that an FS is
 /// forcing out of cache (NFS post-`silly-rename` / `nfs_zap_caches`, FUSE
