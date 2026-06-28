@@ -203,11 +203,19 @@ pub(crate) fn unlink_unix_socket_path(p: &str) -> bool {
     true
 }
 
-/// Strip a trailing `/` (POSIX: `mkdir /var/` ≡ `mkdir /var`). Root
-/// `/` is preserved. GNU `mkdir -p` walks ancestors with a
-/// trailing slash on each prefix; without this the ext4 backend
-/// resolves `/var/` to a missing child and returns ENOENT for a dir
+/// Strip a trailing `/` for the PARENT-SPLIT of create ops (`mkdir`/`mkdirat`):
+/// `mkdir /var/` ≡ `mkdir /var` (POSIX). Root `/` is preserved. GNU `mkdir -p`
+/// walks ancestors with a trailing slash on each prefix; without this the ext4
+/// backend resolves `/var/` to a missing child and returns ENOENT for a dir
 /// that exists.
+///
+/// NOTE — the trailing-slash DIRECTORY semantics (Linux LOOKUP_DIRECTORY: a
+/// `foo/` pathname's final component must resolve to a directory, else ENOTDIR,
+/// and a final symlink is followed even under O_NOFOLLOW) are NOT discarded by
+/// stripping here: they are enforced authoritatively in the vfs walker
+/// (`vfs::namei::Nameidata::walk` detects the trailing slash on the INPUT path
+/// and sets `LookupFlags::directory`). This helper exists ONLY to compute the
+/// parent for the create family; it does not gate the resolution itself.
 /// # C: O(1)
 pub(crate) fn strip_trailing_slash(p: &str) -> &str {
     if p.len() > 1 { p.strip_suffix('/').unwrap_or(p) } else { p }
