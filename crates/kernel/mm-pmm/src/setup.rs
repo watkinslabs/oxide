@@ -364,6 +364,40 @@ pub fn alloc_one_frame() -> Option<u64> {
         if let Some(meta) = page_meta() {
             if let Some(m) = meta.get(hal::Pfn(pa / 4096)) {
                 let rc = m.refcount.load(Ordering::Acquire);
+                // debug-cow probe 1 (ALLOCATOR INTEGRITY): a frame the buddy
+                // just returned MUST be unreferenced (rc==0), unmapped
+                // (mapcount==0), and NOT still marked allocated in the shadow
+                // bitmap. A violation is a FRAME DOUBLE-ALLOCATION the content
+                // checksum cannot see: the buddy handed out a frame a live AS
+                // still owns/maps, so two address spaces map one physical page
+                // writable and one's normal writes corrupt the other's random
+                // code/data/stack page -> random-victim SEGV. The shadow bitmap
+                // (test_and_set here, cleared in free_one_frame) catches a frame
+                // handed out twice WITHOUT ever being freed — which POISON, an
+                // rc check, and the checksum all miss. Marking happens even on
+                // the rc!=0 skip path below: the bit then reflects the real
+                // owner's allocation and its eventual free clears it.
+                #[cfg(feature = "debug-cow")]
+                {
+                    let pfn = pa / 4096;
+                    let mc = m.mapcount.load(Ordering::Acquire);
+                    let still = alloc_integrity::test_and_set(pfn);
+                    if still || rc != 0 || mc != 0 {
+                        klog::write_raw(b"[DOUBLE-ALLOC] pa=");
+                        klog::write_hex_u64(pa);
+                        klog::write_raw(b" rc=");
+                        klog::write_dec_u64(rc as u64);
+                        klog::write_raw(b" mapcount=");
+                        klog::write_dec_u64(mc as u64);
+                        klog::write_raw(b" still-marked-allocated=");
+                        klog::write_dec_u64(still as u64);
+                        klog::write_raw(b"\n");
+                        // Name who still maps it (rmap walk over the anon_vma
+                        // chain, PTE-verified). Same authoritative oracle the
+                        // [COW-LEAK] free-while-mapped path uses.
+                        cow_dbg_rmap_report(pa);
+                    }
+                }
                 if rc != 0 {
                     klog::write_raw(b"[PMM] alloc skipped in-use frame pa=");
                     klog::write_hex_u64(pa);
@@ -575,6 +609,11 @@ pub fn init_page_meta(pfn_max: u64) {
     let arr_box = alloc::boxed::Box::new(arr);
     let raw = alloc::boxed::Box::leak(arr_box) as *mut _;
     PAGE_META_PTR.store(raw, Ordering::Release);
+    // debug-cow probe 1: size the allocated-frame shadow bitmap to the same
+    // [0, pfn_max) span as the PageMeta array, so every frame the buddy can
+    // hand out has a tracking bit. Idempotent.
+    #[cfg(feature = "debug-cow")]
+    alloc_integrity::init(pfn_max);
 }
 
 /// F156-rmap: install the AnonVma reference for a frame. Mirrors
@@ -883,6 +922,11 @@ pub unsafe fn free_one_frame(pa: u64) {
     // distinct from debug-watchdog's 0xAA so the two probes don't alias.
     #[cfg(feature = "debug-cow")]
     {
+        // debug-cow probe 1: the frame is leaving for the free list — clear
+        // its allocated bit so a later alloc that finds the bit still set
+        // (test_and_set returns true) is a genuine double-alloc, not a stale
+        // mark from this frame's previous life.
+        alloc_integrity::clear(pa / 4096);
         let hhdm = crate::user_as::hhdm_offset();
         if hhdm != 0 {
             // SAFETY: pa is a just-freed PMM frame; HHDM mirror is kernel-writable; 4 KiB granule.
@@ -891,6 +935,71 @@ pub unsafe fn free_one_frame(pa: u64) {
     }
     // SAFETY: caller asserts pa was a prior alloc and is no longer mapped per fn contract; crate::Buddy::free's preconditions reduce to "page aligned + within range" which alloc_one_frame guarantees.
     unsafe { p.free(pfn, crate::Order(0)); }
+}
+
+/// debug-cow probe 1 (ALLOCATOR INTEGRITY): authoritative allocated-frame
+/// shadow bitmap. One bit per PFN — SET the instant `alloc_one_frame` hands
+/// the frame out, CLEARED when `free_one_frame` returns it. The PMM buddy
+/// free-list + per-page refcount are the production truth; this independent
+/// bitmap catches a FRAME DOUBLE-ALLOCATION that neither the 0xCC poison
+/// (only sees a frame dirtied WHILE FREE, not one never freed) nor a content
+/// checksum (a never-freed frame's content is self-consistent) can detect:
+/// the buddy returns a frame still owned/mapped by a live AS — its bit is
+/// still set — so `test_and_set` reports the prior bit and `alloc_one_frame`
+/// fires [DOUBLE-ALLOC].
+#[cfg(feature = "debug-cow")]
+mod alloc_integrity {
+    use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+
+    /// Data pointer to the leaked `[AtomicU64]` shadow bitmap (null until init).
+    static BITS: AtomicPtr<AtomicU64> = AtomicPtr::new(core::ptr::null_mut());
+    /// Word count of the bitmap (ceil(pfn_max/64)).
+    static WORDS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Allocate the shadow bitmap covering [0, pfn_max). Idempotent (first
+    /// caller wins). Called from `init_page_meta` once pfn_max is known.
+    /// # C: O(pfn_max / 64)
+    pub fn init(pfn_max: u64) {
+        if pfn_max == 0 || !BITS.load(Ordering::Acquire).is_null() { return; }
+        let words = ((pfn_max + 63) / 64) as usize;
+        let mut v: alloc::vec::Vec<AtomicU64> = alloc::vec::Vec::with_capacity(words);
+        for _ in 0..words { v.push(AtomicU64::new(0)); }
+        let leaked: &'static [AtomicU64] = alloc::boxed::Box::leak(v.into_boxed_slice());
+        // Publish WORDS before BITS so any reader that observes a non-null
+        // BITS also observes the correct length.
+        WORDS.store(words, Ordering::Release);
+        BITS.store(leaked.as_ptr() as *mut AtomicU64, Ordering::Release);
+    }
+
+    /// `&AtomicU64` for `pfn`'s word, or `None` pre-init / out-of-range.
+    /// # C: O(1)
+    fn word(pfn: u64) -> Option<&'static AtomicU64> {
+        let p = BITS.load(Ordering::Acquire);
+        if p.is_null() { return None; }
+        let w = (pfn >> 6) as usize;
+        if w >= WORDS.load(Ordering::Acquire) { return None; }
+        // SAFETY: BITS is a Box::leak'd 'static [AtomicU64] of WORDS elements;
+        // `w` is bounds-checked above; a shared &AtomicU64 is sound (atomics).
+        Some(unsafe { &*p.add(w) })
+    }
+
+    /// Mark `pfn` allocated; return the PRIOR bit (true ⇒ already allocated
+    /// = double-alloc). No-op (returns false) pre-init / out-of-range.
+    /// # C: O(1)
+    pub fn test_and_set(pfn: u64) -> bool {
+        let bit = 1u64 << (pfn & 63);
+        match word(pfn) {
+            Some(w) => (w.fetch_or(bit, Ordering::AcqRel) & bit) != 0,
+            None    => false,
+        }
+    }
+
+    /// Mark `pfn` free. Idempotent; no-op pre-init / out-of-range.
+    /// # C: O(1)
+    pub fn clear(pfn: u64) {
+        let bit = 1u64 << (pfn & 63);
+        if let Some(w) = word(pfn) { w.fetch_and(!bit, Ordering::AcqRel); }
+    }
 }
 
 #[cfg(test)]
