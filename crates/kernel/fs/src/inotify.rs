@@ -370,9 +370,9 @@ fn fire_event(inode: &InodeRef, mask_bit: u32) {
 /// change-notification Linux's `cgroup_file_notify` provides — e.g.
 /// `cgroup.events` when `populated`/`frozen` flips. No-op if `path`
 /// resolves to nothing (cgroup already rmdir'd).
-/// # C: O(N_inotify * N_watches) + O(N_devfs)
+/// # C: O(N_inotify * N_watches) + O(path components)
 pub fn fire_modify_path(path: &str) {
-    if let Some(inode) = devfs::lookup(path) {
+    if let Ok(inode) = vfs::resolve_abs(path) {
         fire_event(&inode, IN_MODIFY);
     }
 }
@@ -401,7 +401,7 @@ pub fn install_write_hook() {
 
 /// Dirent-mutation event firing (F123 / `16§R02`). For each live
 /// inotify instance whose watch list mentions the parent path's
-/// inode (resolved via devfs::lookup), push an event with the leaf
+/// inode (resolved via the VFS namei walk), push an event with the leaf
 /// name in the trailing `name[]` field of inotify_event.
 ///
 /// V1 limit: events still emit `len=0` because read() encoding hasn't

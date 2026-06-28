@@ -4,6 +4,9 @@ extern crate alloc;
 pub mod fs_impl;
 pub mod percpu_ring;
 pub mod ring;
+pub mod root;
+
+pub use root::{debug_root, register, trace_root};
 
 // Boot-time tracefs registration per `37§R01` and v2-arch-plan §1.8.
 //
@@ -28,31 +31,27 @@ use vfs::StaticFileInode;
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    // Mountpoint directories must exist as walkable dentries BEFORE systemd
-    // mounts debugfs/tracefs on them: `vfs::mount::register` resolves the
-    // target dentry to wire crossing + compute the parent mount id. An
-    // unresolvable mountpoint yields a self-parent mountinfo line that systemd
-    // rejects ("no mount") and journald's libmount parse crashes on. `/sys/
-    // kernel/tracing` already materialises via its control files below, but
-    // `/sys/kernel/debug` has no static files, so register the bare dir.
-    devfs::register_dir("/sys/kernel/tracing");
-    devfs::register_dir("/sys/kernel/debug");
+    // Mount-point dirs (`/sys/kernel/tracing`, `/sys/kernel/debug`) are
+    // created in sysfs's own tree by `sysfs::init` (D1c) so systemd can mount
+    // tracefs/debugfs on them; the content below lives in tracefs's OWN
+    // `trace_root()` (mount root returned by `TracefsFs::root()`).
+    //
     // Real trace buffer: trace / trace_marker / trace_pipe / tracing_on are
     // live inodes (record + render + drain + gate); the rest stay nop-tracer
     // static defaults.
     ring::register();
-    devfs::register("/sys/kernel/tracing/current_tracer",
+    register("/sys/kernel/tracing/current_tracer",
         StaticFileInode::new(b"nop\n") as InodeRef);
-    devfs::register("/sys/kernel/tracing/available_tracers",
+    register("/sys/kernel/tracing/available_tracers",
         StaticFileInode::new(b"nop\n") as InodeRef);
-    devfs::register("/sys/kernel/tracing/available_events",
+    register("/sys/kernel/tracing/available_events",
         StaticFileInode::new(b"sched:sched_switch\nsyscalls:sys_enter\nsyscalls:sys_exit\n") as InodeRef);
-    devfs::register("/sys/kernel/tracing/trace_options",
+    register("/sys/kernel/tracing/trace_options",
         StaticFileInode::new(b"") as InodeRef);
-    devfs::register("/sys/kernel/tracing/buffer_size_kb",
+    register("/sys/kernel/tracing/buffer_size_kb",
         StaticFileInode::new(b"1408\n") as InodeRef);
     // Per-event control directory placeholder. Real per-event
     // enable is a follow-up.
-    devfs::register("/sys/kernel/tracing/events/header_event",
+    register("/sys/kernel/tracing/events/header_event",
         StaticFileInode::new(b"") as InodeRef);
 }

@@ -338,19 +338,6 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // SAFETY: boot-only single-writer, pre-userspace; install_arch_default is idempotent (no-op if the slot is set) and cannot race a procfs reader here.
         unsafe { crate::boot_cmdline::install_arch_default(); }
         console::register_devnodes(); ::devfs::boot::set_dir_overlay(ext4::dir::read_dir_overlay); ::devfs::boot::populate_defaults(); procfs::init();
-        // DIAG (debug-mount): one-shot ns-0 resolution probe — does the
-        // registered /proc/sys/kernel/domainname resolve right after init?
-        // Distinguishes a basic resolution bug (fails here) from a sandbox/ns
-        // bug (resolves here, ENOENTs only inside a service mount-ns).
-        #[cfg(feature = "debug-mount")]
-        {
-            let dn = "/proc/sys/kernel/domainname";
-            klog::write_raw(b"[mnt] PROBE devfs::lookup domainname=");
-            klog::write_dec_u64(if ::devfs::lookup(dn).is_some() {1} else {0});
-            klog::write_raw(b" tree0=");
-            klog::write_dec_u64(0);
-            klog::write_raw(b"\n");
-        }
         drm::node::register();
         fs::tmpfs::init(); tracefs::init(); drv_virtio_input::devfs::init();
         fbdev::devfs::init(); devpts::init();
@@ -466,6 +453,12 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             sched::live::install_default_runqueue();
             sched::live::set_send_resched_ipi_hook(arch_irq::lapic::send_resched_ipi);
             pmm::user_as::set_coredump_hook(fs::coredump::write_for_current);
+            // SMP TLB coherence (`20§5`): install the x86 cross-CPU TLB
+            // shootdown so PTE downgrades/removals (fork COW W-strip,
+            // mprotect, munmap, COW split) flush every OTHER online CPU's
+            // stale translation — x86 has no hardware TLB broadcast. The
+            // IDT 0x42 vector + every AP's online bit are live by here.
+            arch_irq::tlb::install();
         }
         // Cross-CPU IPI smoke per `13§9`. Wait for every AP to
         // come online (smp::online_count() reaches smp_count) so

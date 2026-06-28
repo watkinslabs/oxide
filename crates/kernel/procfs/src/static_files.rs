@@ -203,23 +203,23 @@ pub fn register_static_files() {
 
     // /sys hierarchy (P3-19). Same Static inode shape; libc/systemd
     // probes look these up before falling back.
-    devfs::register(
+    sysfs::register(
         "/sys/kernel/osrelease",
         StaticFileInode::new(b"0.1.0-pre\n") as InodeRef,
     );
-    devfs::register(
+    sysfs::register(
         "/sys/kernel/ostype",
         StaticFileInode::new(b"oxide\n") as InodeRef,
     );
-    devfs::register(
+    sysfs::register(
         "/sys/kernel/random/uuid",
         StaticFileInode::new(random_uuid) as InodeRef,
     );
-    devfs::register(
+    sysfs::register(
         "/sys/kernel/random/boot_id",
         StaticFileInode::new(boot_id) as InodeRef,
     );
-    devfs::register(
+    sysfs::register(
         "/sys/kernel/random/entropy_avail",
         StaticFileInode::new(b"4096\n") as InodeRef,
     );
@@ -229,7 +229,7 @@ pub fn register_static_files() {
     // readdir time so the set tracks the live online_count() rather than a
     // boot-time snapshot taken before the APs are up. nproc / htop /
     // lscpu (`_SC_NPROCESSORS_CONF` reads the cpuN dirs) walk this.
-    devfs::register(
+    sysfs::register(
         "/sys/devices/system/cpu",
         Arc::new(crate::syscpu::SysCpuRootInode) as InodeRef,
     );
@@ -343,27 +343,27 @@ ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n\
     // bare minimum: tracing_on, current_tracer, available_tracers,
     // and the trace pipe placeholder. Real ftrace event delivery
     // rides a follow-up.
-    devfs::register(
+    sysfs::register(
         "/sys/kernel/tracing/tracing_on",
         StaticFileInode::new(b"0\n") as InodeRef,
     );
-    devfs::register(
+    sysfs::register(
         "/sys/kernel/tracing/current_tracer",
         StaticFileInode::new(b"nop\n") as InodeRef,
     );
-    devfs::register(
+    sysfs::register(
         "/sys/kernel/tracing/available_tracers",
         StaticFileInode::new(b"nop\n") as InodeRef,
     );
-    devfs::register(
+    sysfs::register(
         "/sys/kernel/tracing/trace",
         StaticFileInode::new(b"# tracer: nop\n#\n") as InodeRef,
     );
-    devfs::register(
+    sysfs::register(
         "/sys/kernel/debug/tracing/tracing_on",
         StaticFileInode::new(b"0\n") as InodeRef,
     );
-    devfs::register(
+    sysfs::register(
         "/sys/kernel/debug/tracing/current_tracer",
         StaticFileInode::new(b"nop\n") as InodeRef,
     );

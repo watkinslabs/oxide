@@ -357,18 +357,18 @@ impl Inode for TracePipeInode {
 /// Register the dynamic trace inodes. Replaces the static placeholders for
 /// `trace` / `trace_marker` / `trace_pipe` / `tracing_on`. # C: O(1)
 pub fn register() {
-    devfs::register("/sys/kernel/tracing/trace_marker",
+    crate::register("/sys/kernel/tracing/trace_marker",
         Arc::new(TraceMarkerInode { ino: alloc_ino() }) as InodeRef);
-    devfs::register("/sys/kernel/tracing/trace",
+    crate::register("/sys/kernel/tracing/trace",
         Arc::new(TraceInode { ino: alloc_ino() }) as InodeRef);
-    devfs::register("/sys/kernel/tracing/trace_pipe",
+    crate::register("/sys/kernel/tracing/trace_pipe",
         Arc::new(TracePipeInode { ino: alloc_ino(), pending: Spinlock::new(Vec::new()) }) as InodeRef);
-    devfs::register("/sys/kernel/tracing/tracing_on",
+    crate::register("/sys/kernel/tracing/tracing_on",
         Arc::new(TracingOnInode { ino: alloc_ino() }) as InodeRef);
-    devfs::register("/sys/kernel/tracing/events/sched/sched_switch/enable",
+    crate::register("/sys/kernel/tracing/events/sched/sched_switch/enable",
         Arc::new(EnableInode { ino: alloc_ino(), get: sched_switch_on, set: set_sched_switch }) as InodeRef);
-    devfs::register("/sys/kernel/tracing/events/syscalls/sys_enter/enable",
+    crate::register("/sys/kernel/tracing/events/syscalls/sys_enter/enable",
         Arc::new(EnableInode { ino: alloc_ino(), get: sys_enter_on, set: set_sys_enter }) as InodeRef);
-    devfs::register("/sys/kernel/tracing/events/syscalls/sys_exit/enable",
+    crate::register("/sys/kernel/tracing/events/syscalls/sys_exit/enable",
         Arc::new(EnableInode { ino: alloc_ino(), get: sys_exit_on, set: set_sys_exit }) as InodeRef);
 }

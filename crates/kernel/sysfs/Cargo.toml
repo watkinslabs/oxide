@@ -6,8 +6,9 @@ publish = false
 [lib]
 path = "src/lib.rs"
 [dependencies]
-vfs   = { path = "../vfs" }
-devfs = { path = "../devfs" }
+vfs    = { path = "../vfs" }
+kernfs = { path = "../kernfs" }
+sync   = { path = "../../shared/sync" }
 net   = { path = "../net" }
 block = { path = "../block" }
 netlink = { path = "../netlink" }
