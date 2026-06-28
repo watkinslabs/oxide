@@ -316,6 +316,9 @@ impl Mount {
 
     /// Active writer count (Linux `mnt_writers`). # C: O(1)
     pub fn writers(&self) -> i32 { self.mnt_writers.load(Ordering::Acquire) }
+
+    /// Per-mount `MNT_*` option bits (Linux `mnt->mnt_flags`). # C: O(1)
+    pub fn flags(&self) -> u64 { self.flags.load(Ordering::Acquire) }
 }
 
 /// Global by-id mount map (Linux's mount arena), replacing the flat Vec.
