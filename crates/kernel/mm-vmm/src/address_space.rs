@@ -1285,12 +1285,67 @@ impl AddressSpace {
                     }
                 }
                 let pa = alloc_frame().ok_or(Error::NoMem)?;
+                // B240: a non-EOF page MUST be filled completely before its PTE
+                // is installed. `read_at` is permitted to return SHORT (page-
+                // cache build race, block/extent boundary, or a short
+                // `Inode::read`); discarding that count and installing the leaf
+                // anyway left the unread bytes ZERO — ld.so then read zeros where
+                // library code / relocation data belonged and exit(127)'d ("error
+                // while loading shared libraries"). Retry-fill the file-valid
+                // extent until full, a real EOF (no progress), or an FS error;
+                // only the genuine-EOF tail is legitimately zero. On an
+                // unrecoverable short, surface a fatal fault (Linux
+                // filemap_fault VM_FAULT_SIGBUS leg, `17§5`) — never a partial page.
+                let fsize = backing.size_hint();
+                // Bytes that genuinely belong to the file in this page: whole
+                // PAGE for an in-file page, `fsize - file_off` for a page
+                // straddling EOF, 0 for a page wholly past EOF (pure BSS).
+                let valid = if file_off >= fsize { 0usize }
+                            else { core::cmp::min(page as u64, fsize - file_off) as usize };
                 // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at hhdm_offset+pa is mapped writable; full page owned exclusively until M::map below makes it user-visible.
-                unsafe {
+                let short = unsafe {
                     let dst = (hhdm_offset + pa) as *mut u8;
                     core::ptr::write_bytes(dst, 0, page);
                     let slice = core::slice::from_raw_parts_mut(dst, page);
-                    let _ = backing.read_at(file_off, slice);
+                    let mut filled = 0usize;
+                    let mut err = false;
+                    while filled < valid {
+                        match backing.read_at(file_off + filled as u64, &mut slice[filled..valid]) {
+                            Ok(0)   => break,                 // no progress → real short/EOF
+                            Ok(n)   => {
+                                #[cfg(feature = "debug-shortfill")]
+                                if filled + n < valid {
+                                    // A non-EOF region returned short — the exact B240 symptom,
+                                    // caught here even when the retry below recovers it.
+                                    klog::write_raw(b"[SHORT-FILE-FAULT ino="); klog::write_hex_u64(backing.ino());
+                                    klog::write_raw(b" off="); klog::write_hex_u64(file_off + filled as u64);
+                                    klog::write_raw(b" n="); klog::write_hex_u64(n as u64);
+                                    klog::write_raw(b" valid="); klog::write_hex_u64(valid as u64);
+                                    klog::write_raw(b" size="); klog::write_hex_u64(fsize);
+                                    klog::write_raw(b"]\n");
+                                }
+                                filled += n;
+                            }
+                            Err(()) => { err = true; break; }
+                        }
+                    }
+                    err || filled < valid
+                };
+                if short {
+                    // Unrecoverable: the backing could not supply the full
+                    // file-valid extent. Do NOT install a partially-zero page
+                    // (silent corruption). Free the fresh frame and fail the
+                    // fault → SIGBUS-equivalent at the dispatcher (false→fatal).
+                    #[cfg(feature = "debug-shortfill")]
+                    {
+                        klog::write_raw(b"[SHORT-FILE-FAULT-FATAL ino="); klog::write_hex_u64(backing.ino());
+                        klog::write_raw(b" off="); klog::write_hex_u64(file_off);
+                        klog::write_raw(b" valid="); klog::write_hex_u64(valid as u64);
+                        klog::write_raw(b" size="); klog::write_hex_u64(fsize);
+                        klog::write_raw(b"]\n");
+                    }
+                    dec_ref(pa);
+                    return Err(Error::Io);
                 }
                 // debug-cow (this arm is MAP_PRIVATE: the SHARED branch
                 // returned above). `pa` is a FRESH private copy of the file
