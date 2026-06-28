@@ -612,9 +612,47 @@ impl SuperBlock {
         sec * NSEC_PER_SEC + nsec
     }
 
-    /// Flush dirty fs state (Linux `sync_filesystem`, run before `put_super`
-    /// in `generic_shutdown_super`). # C: O(dirty)
+    /// `s_op->sync_fs` one pass (Linux `__sync_filesystem` inner call). The
+    /// two-phase [`Self::sync_filesystem`] wrapper drives the async-then-wait
+    /// sequence; the freeze path issues the wait pass directly. # C: O(dirty)
     pub fn sync_fs(&self, wait: bool) -> KResult<()> { self.s_op.sync_fs(wait) }
+
+    /// `sync_filesystem` (Linux fs/sync.c): flush this superblock's dirty state
+    /// to the backend in the canonical two-phase order — an async kick
+    /// (`sync_fs(wait=0)`, Linux `writeback_inodes_sb` + `sync_fs(0)`) followed by
+    /// the blocking pass (`sync_fs(wait=1)`, Linux `sync_inodes_sb` + `sync_fs(1)`)
+    /// that waits for the queued writeback to reach stable storage. A read-only
+    /// superblock has nothing to flush (Linux `if (sb_rdonly(sb)) return 0`), so
+    /// the call short-circuits `Ok`. An async-pass error aborts before the wait
+    /// pass (Linux returns the first error). Run by `generic_shutdown_super`
+    /// before `put_super` and by `freeze_super`/`sync(2)`. # C: O(dirty)
+    pub fn sync_filesystem(&self) -> KResult<()> {
+        if self.is_readonly() { return Ok(()); }
+        self.sync_fs(false)?;
+        self.sync_fs(true)
+    }
+
+    /// `invalidate_inodes` / per-sb `drop_caches` (Linux fs/inode.c
+    /// `invalidate_inodes`, fs/drop_caches.c): sweep the inode cache dropping
+    /// every CLEAN, UNREFERENCED slot so a `drop_caches`/remount reclaim shrinks
+    /// the icache without touching live or dirty state. A slot is reclaimable
+    /// only when its inode is UNUSED — in this `Weak`-keyed cache that is a slot
+    /// whose `Weak::upgrade` already fails (Linux `i_count == 0`, no dentry alias
+    /// pinning it) — AND it carries no `I_DIRTY`/`I_NEW`/`I_FREEING`/`I_WILL_FREE`
+    /// bit (Linux skips dirty and in-flight inodes: writeback or an in-progress
+    /// evict still owns them). Busy and dirty slots are RETAINED. Dead alias
+    /// `Weak`s are pruned from every surviving slot on the way past. Returns the
+    /// count of slots dropped. # C: O(N_ino)
+    pub fn drop_caches(&self) -> u32 {
+        let mut dropped = 0u32;
+        self.icache.lock().retain(|_, e| {
+            e.aliases.retain(|w| w.upgrade().is_some());
+            let busy = e.inode.upgrade().is_some();
+            let pinned = e.state & (I_DIRTY | I_NEW | I_FREEING | I_WILL_FREE) != 0;
+            if busy || pinned { true } else { dropped += 1; false }
+        });
+        dropped
+    }
 
     /// Current `s_writers.frozen` level (`SB_UNFROZEN`..`SB_FREEZE_COMPLETE`).
     /// # C: O(1)
@@ -695,7 +733,7 @@ impl SuperBlock {
     /// caller may WARN on. Invoked once by the final [`Self::deactivate_super`].
     /// # C: O(tree + N_ino)
     pub fn generic_shutdown_super(&self) -> u32 {
-        let _ = self.sync_fs(true);
+        let _ = self.sync_filesystem();
         self.set_s_flags(0, SB_ACTIVE);
         let busy = self.evict_inodes();
         self.put_super();
