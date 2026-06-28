@@ -3,7 +3,7 @@
 //! `filemap_check_errors`). Pure state object an inode embeds under its own
 //! mapping lock; the `vfs` crate provides the primitive, `fs`/`ext4` embed it.
 
-use vfs::mapping::{DirtyPages, AS_EIO, AS_ENOSPC};
+use vfs::mapping::{AddressSpaceOps, DirtyPages, AS_EIO, AS_ENOSPC};
 
 #[test]
 fn set_dirty_reports_state_change() {
@@ -55,6 +55,59 @@ fn clear_range_to_eof() {
     assert!(d.is_dirty(0) && d.is_dirty(1));
     for i in 2u64..5 { assert!(!d.is_dirty(i)); }
     assert_eq!(d.count(), 2);
+}
+
+#[test]
+fn take_writeback_range_collects_only_window_and_clears_only_it() {
+    let mut d = DirtyPages::new();
+    for i in 0..10u64 { d.set_dirty(i); }
+    // sync_file_range over pages [3, 7): flush 3,4,5,6 in ascending order.
+    let wb = d.take_writeback_range(3, 7);
+    assert_eq!(wb, vec![3, 4, 5, 6], "only in-range dirty pages, ascending");
+    // Out-of-window pages stay dirty for a later flush.
+    for i in [0u64, 1, 2, 7, 8, 9] { assert!(d.is_dirty(i), "page {i} still dirty"); }
+    for i in 3u64..7 { assert!(!d.is_dirty(i), "page {i} cleared after its writeback"); }
+    assert_eq!(d.count(), 6);
+}
+
+#[test]
+fn take_writeback_range_to_eof() {
+    let mut d = DirtyPages::new();
+    for i in [0u64, 4, 8, 12] { d.set_dirty(i); }
+    let wb = d.take_writeback_range(4, u64::MAX);
+    assert_eq!(wb, vec![4, 8, 12], "from page 4 to EOF");
+    assert!(d.is_dirty(0) && d.is_empty() == false);
+    assert_eq!(d.count(), 1, "only page 0 remains dirty");
+}
+
+#[test]
+fn take_writeback_range_empty_window_is_noop() {
+    let mut d = DirtyPages::new();
+    for i in [0u64, 5] { d.set_dirty(i); }
+    // A window covering no dirty page returns empty and clears nothing.
+    assert_eq!(d.take_writeback_range(1, 5), Vec::<u64>::new());
+    assert!(d.is_dirty(0) && d.is_dirty(5));
+    assert_eq!(d.count(), 2);
+}
+
+/// The address-space `writeback_range` default forwards to `writeback()` — a
+/// whole-file flush is a correct superset of any byte range. A backend with a
+/// per-page dirty store overrides to flush only the in-range pages.
+#[test]
+fn writeback_range_default_forwards_to_writeback() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Wb { whole: AtomicUsize }
+    impl AddressSpaceOps for Wb {
+        fn shared_frame(&self, _off: u64) -> Option<u64> { None }
+        fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> { Ok(0) }
+        fn size(&self) -> u64 { 0 }
+        fn writeback(&self) -> Result<(), ()> { self.whole.fetch_add(1, Ordering::SeqCst); Ok(()) }
+    }
+    let a = Wb { whole: AtomicUsize::new(0) };
+    assert!(a.writeback_range(0, 4096).is_ok());
+    assert_eq!(a.whole.load(Ordering::SeqCst), 1, "default range writeback flushed the whole file once");
+    assert!(a.writeback_range(0, u64::MAX).is_ok());
+    assert_eq!(a.whole.load(Ordering::SeqCst), 2);
 }
 
 #[test]
