@@ -29,7 +29,7 @@ fn pipe_dname(d: &Dentry) -> String {
 }
 static PIPE_OPS: DentryOps = DentryOps {
     d_dname: Some(pipe_dname),
-    d_hash: None, d_compare: None, d_revalidate: None, d_delete: None, d_release: None, d_iput: None,
+    d_hash: None, d_compare: None, d_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_init: None, d_prune: None,
 };
 
 #[test]

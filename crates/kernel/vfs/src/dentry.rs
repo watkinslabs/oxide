@@ -56,8 +56,12 @@ pub const D_OP_DELETE:     u32 = 0x0200;
 /// OWN path string dynamically (pipefs `pipe:[ino]`, sockfs `socket:[ino]`,
 /// anon-inode `[name]`), so `d_path`/`dentry_path` must NOT parent-walk it.
 pub const D_OP_DNAME:      u32 = 0x0400;
+/// `d_op->d_prune` present (Linux `DCACHE_OP_PRUNE`). `__dentry_kill` tests
+/// this bit before firing `d_prune` on a dentry about to leave the cache, so
+/// the eviction hot path skips the `d_op` deref for the common no-prune fs.
+pub const D_OP_PRUNE:      u32 = 0x0800;
 /// All `d_op` presence bits (cleared together before a re-stamp).
-pub const D_OP_MASK: u32 = D_OP_HASH | D_OP_COMPARE | D_OP_REVALIDATE | D_OP_DELETE | D_OP_DNAME;
+pub const D_OP_MASK: u32 = D_OP_HASH | D_OP_COMPARE | D_OP_REVALIDATE | D_OP_DELETE | D_OP_DNAME | D_OP_PRUNE;
 
 /// Presence-bit set for `d_op` (Linux `d_set_d_op`): a `D_OP_*` bit per
 /// non-NULL hook, so the hot path branches on `d_flags` not a pointer deref.
@@ -70,6 +74,7 @@ fn op_flags_for(d_op: Option<&'static DentryOps>) -> u32 {
     if o.d_revalidate.is_some() { f |= D_OP_REVALIDATE; }
     if o.d_delete.is_some()     { f |= D_OP_DELETE; }
     if o.d_dname.is_some()      { f |= D_OP_DNAME; }
+    if o.d_prune.is_some()      { f |= D_OP_PRUNE; }
     f
 }
 
@@ -259,6 +264,19 @@ pub type DIputFn = fn(d: &Dentry, inode: InodeRef);
 /// the parent walk. Returns the full displayed name (no leading-slash logic —
 /// it IS the whole path, like Linux's `dynamic_dname` buffer).
 pub type DDnameFn = fn(d: &Dentry) -> String;
+/// `d_init`: a dentry has just been allocated for this fs (Linux
+/// `dentry_operations::d_init`, fired by `__d_alloc` right after `d_set_d_op`).
+/// The fs initializes its per-dentry private state here (typically stamping
+/// `d_fsdata`). Infallible in this model — `build` cannot fail — so it returns
+/// `()` rather than Linux's `int` ENOMEM path (allocation lives in the fs token,
+/// not the dentry).
+pub type DInitFn = fn(d: &Dentry);
+/// `d_prune`: a dentry is about to be pruned/killed out of the cache (Linux
+/// `dentry_operations::d_prune`, fired by `__dentry_kill` before the unhash).
+/// The fs drops any cache-side bookkeeping keyed on this dentry. Fires for every
+/// eviction route — final `dput`, the LRU / per-sb / subtree shrinkers, and
+/// `d_prune_aliases` — since all funnel through `dentry_kill`.
+pub type DPruneFn = fn(d: &Dentry);
 
 pub struct DentryOps {
     pub d_hash:       Option<DHashFn>,
@@ -268,12 +286,14 @@ pub struct DentryOps {
     pub d_release:    Option<DReleaseFn>,
     pub d_iput:       Option<DIputFn>,
     pub d_dname:      Option<DDnameFn>,
+    pub d_init:       Option<DInitFn>,
+    pub d_prune:      Option<DPruneFn>,
 }
 
 impl DentryOps {
     /// All-default ops vector. # C: O(1)
     pub const fn empty() -> Self {
-        DentryOps { d_hash: None, d_compare: None, d_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None }
+        DentryOps { d_hash: None, d_compare: None, d_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None }
     }
 }
 
@@ -362,7 +382,7 @@ impl Dentry {
         flags = (flags & !D_TYPE_MASK) | type_bits_for(&inode); // DCACHE_ENTRY_TYPE stamp
         flags = (flags & !D_OP_MASK) | op_flags_for(d_op);      // DCACHE_OP_* stamp (d_set_d_op)
         let qname = QStr::new(parent.as_ref(), name);
-        Arc::new(Self {
+        let d = Arc::new(Self {
             parent,
             name: qname,
             inode: RwLock::new(inode),
@@ -375,7 +395,11 @@ impl Dentry {
             d_time: AtomicU64::new(0),
             d_fsdata: AtomicU64::new(0),
             d_seq: AtomicU32::new(0),
-        })
+        });
+        // Linux `__d_alloc`: after `d_set_d_op`, fire `d_op->d_init` so the fs
+        // can stamp its per-dentry private state (`d_fsdata`) at allocation.
+        if let Some(f) = d_op.and_then(|o| o.d_init) { f(&d); }
+        d
     }
 
     /// `d_time` — fs-private revalidation stamp (Linux `d_time`). # C: O(1)
@@ -497,6 +521,10 @@ impl Dentry {
     /// test this to render the name dynamically instead of parent-walking — set
     /// only on `d_alloc_pseudo` dentries (pipe/socket/anon-inode). # C: O(1)
     pub fn d_has_op_dname(&self) -> bool { self.flags() & D_OP_DNAME != 0 }
+    /// `d_op->d_prune` present (Linux `DCACHE_OP_PRUNE`). `dentry_kill` tests
+    /// this before firing `d_prune` on a dentry about to leave the cache.
+    /// # C: O(1)
+    pub fn d_has_op_prune(&self) -> bool { self.flags() & D_OP_PRUNE != 0 }
 
     /// Dynamic path string from `d_op->d_dname`, if this is a pseudo dentry that
     /// renders its own name (Linux `dentry->d_op->d_dname`). `None` ⇒ ordinary
