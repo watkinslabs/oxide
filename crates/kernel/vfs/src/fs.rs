@@ -274,10 +274,24 @@ pub trait FileSystem: Send + Sync {
     /// # C: O(1)
     fn set_sb(&self, _sb: Weak<SuperBlock>) {}
 
-    /// `/proc/mounts`-style description: `<src> <mnt> <fstype> <opts>`.
-    /// Default uses the fs name as the source and `rw,relatime` opts
-    /// (our boot mounts are all writable); override for richer opts.
-    /// # C: O(1)
+    /// Filesystem-specific mount options for `/proc/mounts` &
+    /// `/proc/self/mountinfo`, mirroring Linux `super_operations::show_options`
+    /// (`fs/*/super.c`). The VFS renders the generic per-mount flags first
+    /// (`rw`/`ro`, `relatime`, …); this hook then APPENDS the backend's own
+    /// options — tmpfs `size=`/`nr_inodes=`/`mode=`, ext4 `data=ordered`,
+    /// cgroup2 controller list, etc. Each option carries its own leading comma
+    /// exactly as Linux emits them via `seq_puts(m, ",size=…")`, so the result
+    /// concatenates directly after the generic flags with no separator fixup.
+    /// Default `""` = no fs-specific options. # C: O(len opts)
+    fn show_options(&self) -> String { String::new() }
+
+    /// `/proc/mounts`-style description: `<src> <mnt> <fstype> <opts> 0 0`.
+    /// Source and fstype default to the fs name; `<opts>` is the generic
+    /// `rw,relatime` per-mount flags followed by [`Self::show_options`] (the
+    /// procfs reader swaps the leading ` rw,` → ` ro,` for a read-only mount,
+    /// Linux's per-mount `MNT_RDONLY` rendering). Backends with extra options
+    /// override `show_options` ONLY — not this whole line — so the
+    /// `<src> <mnt> <fstype> … 0 0` framing stays in one place. # C: O(1)
     fn mounts_line(&self, mount_point: &str) -> String {
         let mut s = String::new();
         s.push_str(self.name());
@@ -285,7 +299,9 @@ pub trait FileSystem: Send + Sync {
         s.push_str(mount_point);
         s.push(' ');
         s.push_str(self.name());
-        s.push_str(" rw,relatime 0 0\n");
+        s.push_str(" rw,relatime");
+        s.push_str(&self.show_options());
+        s.push_str(" 0 0\n");
         s
     }
 }
