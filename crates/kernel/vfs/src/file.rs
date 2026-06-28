@@ -480,8 +480,20 @@ impl File {
     /// SEEK_CUR/END whose base+`off` is negative. The base+offset is computed
     /// in `i64` so a negative result can be detected before the unsigned store
     /// (the old `off as u64` cast turned a negative offset into a huge value).
+    ///
+    /// FMODE_LSEEK gate (Linux `vfs_llseek`): a file without FMODE_LSEEK is
+    /// `ESPIPE` ("illegal seek") before any offset math. Two cases lack it
+    /// here — an `O_PATH` fd (FMODE_PATH only, `empty_fops`, no `llseek`) and an
+    /// inherently non-seekable `pipe`/`socket`/`fifo` — exactly the files Linux
+    /// `do_dentry_open` leaves without FMODE_LSEEK. Regular/dir/char/block keep
+    /// a real cursor and seek.
     /// # C: O(1)
     pub fn seek(&self, whence: SeekFrom, off: i64) -> KResult<u64> {
+        if self.f_mode.contains(Fmode::PATH)
+            || matches!(self.inode.file_type(), FileType::Fifo | FileType::Socket)
+        {
+            return Err(VfsError::Espipe);
+        }
         let base = match whence {
             SeekFrom::Start   => 0i64,
             SeekFrom::Current => self.pos.load(Ordering::Acquire) as i64,
