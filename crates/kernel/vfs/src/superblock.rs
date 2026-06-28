@@ -168,6 +168,14 @@ pub struct SuperBlock {
     /// Atomic so a future sb-level remount (`remount_fs`) flips `SB_RDONLY`
     /// without rebuilding the SB. # consumers: D16 remount.
     s_flags: AtomicU64,
+    /// `s_active` — active reference count (Linux `super_block.s_active`). A
+    /// freshly filled+mounted SB starts at 1; each extra live mount sharing this
+    /// instance (sget reuse / bind clone) grabs one via [`SuperBlock::grab_active`]
+    /// (`atomic_inc_not_zero`). [`SuperBlock::deactivate_super`] drops one, and
+    /// the LAST drop (1→0) runs `generic_shutdown_super` (sync + `put_super`).
+    /// This is the refcount the mount table's O(N) `Arc::ptr_eq` scan stands in
+    /// for (mount.rs D6). # consumers: D6 last-umount teardown, sget sb sharing.
+    s_active: AtomicU32,
     /// `s_maxbytes` — largest file size this fs can represent (write-path cap).
     pub s_maxbytes: u64,
     /// `s_time_gran` — timestamp granularity in ns (inode setattr rounding).
@@ -230,6 +238,7 @@ impl SuperBlock {
         Arc::new(Self {
             s_op, s_type, s_magic, s_dev, s_blocksize,
             s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
+            s_active: AtomicU32::new(1),
             s_maxbytes: MAX_LFS_FILESIZE,
             s_time_gran: 1,
             s_writers_frozen: AtomicU32::new(SB_UNFROZEN),
@@ -265,6 +274,7 @@ impl SuperBlock {
         let sb = Arc::new(Self {
             s_op, s_type, s_magic, s_dev, s_blocksize,
             s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
+            s_active: AtomicU32::new(1),
             s_maxbytes: MAX_LFS_FILESIZE,
             s_time_gran: 1,
             s_writers_frozen: AtomicU32::new(SB_UNFROZEN),
@@ -408,6 +418,45 @@ impl SuperBlock {
 
     /// True iff this superblock is mounted read-only (`SB_RDONLY`). # C: O(1)
     pub fn is_readonly(&self) -> bool { (self.s_flags() & SB_RDONLY) != 0 }
+
+    /// `s_active` snapshot — live active references (Linux `s->s_active`).
+    /// `0` ⇒ the SB is being / has been torn down. # C: O(1)
+    pub fn s_active(&self) -> u32 { self.s_active.load(Ordering::Acquire) }
+
+    /// `grab_super` (Linux `atomic_inc_not_zero(&s->s_active)`): take one extra
+    /// active reference IFF the SB is still live (count != 0). Returns `false`
+    /// once teardown has begun so an sget-style lookup never resurrects a dying
+    /// instance and bind/sharing callers fall through to a fresh `for_backend`.
+    /// Each `true` MUST be paired with a [`SuperBlock::deactivate_super`].
+    /// # C: O(1)
+    pub fn grab_active(&self) -> bool {
+        let mut cur = self.s_active.load(Ordering::Acquire);
+        loop {
+            if cur == 0 { return false; }
+            match self.s_active.compare_exchange_weak(
+                cur, cur + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return true, Err(v) => cur = v,
+            }
+        }
+    }
+
+    /// `deactivate_super` (Linux `atomic_dec_and_test(&s->s_active)`): drop one
+    /// active reference. The LAST drop (1 → 0) runs `generic_shutdown_super`
+    /// (`sync_filesystem` then `put_super`, clearing `s_root`+icache) and returns
+    /// `true`; a non-last drop returns `false`. Idempotent at 0 (a redundant
+    /// deactivate is a no-op returning `false`, never an unsigned underflow), so
+    /// the teardown body fires exactly once. # C: O(tree) on last, else O(1)
+    pub fn deactivate_super(&self) -> bool {
+        let mut cur = self.s_active.load(Ordering::Acquire);
+        loop {
+            if cur == 0 { return false; }
+            match self.s_active.compare_exchange_weak(
+                cur, cur - 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => break, Err(v) => cur = v,
+            }
+        }
+        if cur == 1 { let _ = self.sync_fs(true); self.put_super(); true } else { false }
+    }
 
     /// `s_maxbytes` — largest representable file size. # C: O(1)
     pub fn s_maxbytes(&self) -> u64 { self.s_maxbytes }
