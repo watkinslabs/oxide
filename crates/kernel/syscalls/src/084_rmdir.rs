@@ -22,7 +22,7 @@ pub(crate) fn do_rmdir(p: &str) -> i64 {
     let (pino, name) = match resolve_parent(p) { Ok(x) => x, Err(rv) => return rv };
     match pino.rmdir(&name) {
         // d_delete: drop the cached dentry for the removed directory.
-        Ok(())  => { crate::pathresolve::forget_path(p); 0 }
+        Ok(())  => { crate::pathresolve::d_delete_path(p); 0 }
         Err(e)  => errno_from_vfs(e),
     }
 }

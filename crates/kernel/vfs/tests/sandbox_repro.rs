@@ -16,7 +16,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     vfs::mount::set_current_ns_provider(|| 0);
-    common::install_dentry_resolver();
+    common::install();
     g
 }
 
@@ -44,22 +44,22 @@ fn sandbox_pivot_staging_under_run() {
     vfs::mount::set_current_ns_provider(|| NS);
     let ns = NS;
     // Host root tree in this ns.
-    vfs::mount::register("/", Arc::new(TestFs { root_ino: 0xA })).expect("root");
-    vfs::mount::register("/proc", Arc::new(TestFs { root_ino: 0xB })).expect("proc");
+    common::register("/", Arc::new(TestFs { root_ino: 0xA })).expect("root");
+    common::register("/proc", Arc::new(TestFs { root_ino: 0xB })).expect("proc");
     // /run is a tmpfs; staging dir lives under it.
-    vfs::mount::register("/run", Arc::new(TestFs { root_ino: 0xC })).expect("run");
+    common::register("/run", Arc::new(TestFs { root_ino: 0xC })).expect("run");
 
     let staging = "/run/systemd/mount-rootfs";
-    let host_root = vfs::mount::mount_root_at("/").or_else(|| Some(Arc::new(TDir { ino: 0xA }) as InodeRef)).unwrap();
-    vfs::mount::register_bind(staging, Arc::new(TestFs { root_ino: 0xA }), host_root).expect("stage bind");
-    vfs::mount::bind_submounts_rec("/", staging);
+    let host_root = common::mount_root_at("/").or_else(|| Some(Arc::new(TDir { ino: 0xA }) as InodeRef)).unwrap();
+    common::register_bind(staging, Arc::new(TestFs { root_ino: 0xA }), host_root).expect("stage bind");
+    common::bind_submounts_rec("/", staging);
 
     // The mount MUST be findable as an exact mount (pivot_root/MS_MOVE/umount2
     // all key on this).
-    assert!(vfs::mount::is_mount_in_ns(staging, ns), "staging is an exact mount");
+    assert!(common::is_mount_in_ns(staging, ns), "staging is an exact mount");
 
     // systemd's preferred pivot.
-    let pivot = vfs::mount::pivot_root(staging, staging);
+    let pivot = common::pivot_root(staging, staging);
     assert!(pivot.is_ok(), "pivot_root(staging,staging) must succeed, got {:?}", pivot);
 }
 
@@ -69,11 +69,11 @@ fn sandbox_ms_move_staging_to_root() {
     const NS: u64 = 0x8888;
     vfs::mount::set_current_ns_provider(|| NS);
     let ns = NS; let _ = ns;
-    vfs::mount::register("/", Arc::new(TestFs { root_ino: 0xA })).expect("root");
-    vfs::mount::register("/run", Arc::new(TestFs { root_ino: 0xC })).expect("run");
+    common::register("/", Arc::new(TestFs { root_ino: 0xA })).expect("root");
+    common::register("/run", Arc::new(TestFs { root_ino: 0xC })).expect("run");
     let staging = "/run/systemd/mount-rootfs";
     let host_root: InodeRef = Arc::new(TDir { ino: 0xA });
-    vfs::mount::register_bind(staging, Arc::new(TestFs { root_ino: 0xA }), host_root).expect("stage bind");
-    let mv = vfs::mount::move_mount(staging, "/");
+    common::register_bind(staging, Arc::new(TestFs { root_ino: 0xA }), host_root).expect("stage bind");
+    let mv = common::move_mount(staging, "/");
     assert!(mv.is_ok(), "MS_MOVE(staging, /) must succeed, got {:?}", mv);
 }

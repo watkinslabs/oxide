@@ -23,8 +23,8 @@ pub fn sys_unlink(args: &SyscallArgs) -> i64 {
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
     match pino.unlink_child(&name) {
         // d_delete: drop the cached dentry so a stale positive isn't reused
-        // (stat/open after unlink must miss). See pathresolve::forget_path.
-        Ok(())  => { unlink_unix_socket_path(&p); crate::pathresolve::forget_path(&p); 0 }
+        // (stat/open after unlink must miss). See pathresolve::d_delete_path.
+        Ok(())  => { unlink_unix_socket_path(&p); crate::pathresolve::d_delete_path(&p); 0 }
         Err(vfs::VfsError::Enoent) if unlink_unix_socket_path(&p) => 0,
         Err(e)  => errno_from_vfs(e),
     }

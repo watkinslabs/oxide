@@ -709,10 +709,11 @@ impl UnixRegistry {
     /// Release a bound dgram path. # C: O(log N)
     pub fn dgram_unbind(&self, path: &str) { self.dgrams.lock().remove(path); }
 
-    /// Look up a listener; returns `None` if no listener is bound.
-    /// # C: O(log N)
-    pub fn lookup(&self, path: &str) -> Option<Arc<UnixListener>> {
-        self.inner.lock().get(path).cloned()
+    /// Look up a bound stream-listener by its AF_UNIX address (pathname or
+    /// abstract `\0`/`@` name — NOT a VFS filesystem path). `None` if no
+    /// listener is bound. # C: O(log N)
+    pub fn lookup_listener(&self, addr: &str) -> Option<Arc<UnixListener>> {
+        self.inner.lock().get(addr).cloned()
     }
 
     /// True if `path` is registered as a SOCK_STREAM listener or a
@@ -744,7 +745,7 @@ impl UnixRegistry {
     /// `None` if no listener bound to `path`.
     /// # C: O(log N)
     pub fn connect(&self, path: &str) -> Option<Arc<UnixPair>> {
-        let listener = self.lookup(path)?;
+        let listener = self.lookup_listener(path)?;
         let pair = UnixPair::new();
         listener.accept_q.lock().push_back(pair.clone());
         // F170: wake any blocking accept() parked on this listener.
@@ -765,8 +766,8 @@ mod tests {
         registry.bind(String::from("\0svc")).unwrap();
         registry.bind(String::from("@svc")).unwrap();
 
-        assert!(registry.lookup("\0svc").is_some());
-        assert!(registry.lookup("@svc").is_some());
+        assert!(registry.lookup_listener("\0svc").is_some());
+        assert!(registry.lookup_listener("@svc").is_some());
         assert_eq!(registry.snapshot_paths().len(), 2);
     }
 

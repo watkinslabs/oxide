@@ -552,7 +552,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // userspace from boot. A later `mount -t cgroup2` is idempotent.
     sched::cgroup::install();
     cgroup::set_notify_hook(fs::inotify::fire_modify_path); // cgroup.events → inotify
-    cgroup::mount_root();
+    // cgroup2 mount moved BELOW (after the `/sys` register + root-dentry
+    // provider install): the mount engine takes the walked mountpoint dentry,
+    // so `/sys/fs/cgroup` must be resolvable first.
     // Permanent, `debug-cgroup`-gated boot self-test (`26§8`,
     // `docs/41`): exercise the cgroup v2 VFS path end-to-end via the
     // real mount-table lookup + inode read/write the userspace shell
@@ -679,26 +681,34 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // left boot mounts un-wired for dentry crossing.)
         crate::syscalls::mount::install_vfs_hooks();
         // Register every FS backend with the unified mount table per docs/16.
-        // Order matters only for human readability; lookup uses longest-prefix-match.
-        let _ = vfs::mount::register("/",     alloc::sync::Arc::new(ext4::rootfs::Ext4RootfsFs));
-        let _ = vfs::mount::register("/dev",  alloc::sync::Arc::new(::devfs::DevfsFs));
-        let _ = vfs::mount::register("/proc", alloc::sync::Arc::new(procfs::fs_impl::ProcfsFs));
-        let _ = vfs::mount::register("/sys",  alloc::sync::Arc::new(crate::sysfs::SysfsFs));
+        // The mount engine takes the WALKED mountpoint dentry (Linux
+        // `mnt_set_mountpoint`), NOT a path string — `boot_register*` below do
+        // the single namei walk (`vfs::resolve_path_dentry`) each handler does
+        // and hand the dentry in. Order matters: each mountpoint's underlay
+        // must already be resolvable (`/` first; `/dev/shm` underlay dir is
+        // pre-created in devfs::boot). `/` has no mountpoint dentry → `None`.
+        let _ = vfs::mount::register(None, alloc::sync::Arc::new(ext4::rootfs::Ext4RootfsFs));
+        boot_register("/dev",  alloc::sync::Arc::new(::devfs::DevfsFs));
+        boot_register("/proc", alloc::sync::Arc::new(procfs::fs_impl::ProcfsFs));
+        boot_register("/sys",  alloc::sync::Arc::new(crate::sysfs::SysfsFs));
+        // cgroup2 at /sys/fs/cgroup — now that `/sys` is mounted and the root
+        // provider is installed, its mountpoint dentry resolves (was an early
+        // pre-provider mount repaired by the now-deleted `rewire_all_crossings`).
+        cgroup::mount_root();
         // tmpfs boot mounts carry their per-mount root inode (Linux
         // `sb->s_root`) so the path walk crosses into them and resolves
         // per-component via `TmpfsRootInode::lookup` — no whole-path
         // `FileSystem::lookup` fallback. Same shape `mount_fstype` uses for
         // userspace `mount -t tmpfs`.
-        let _ = vfs::mount::register_bind("/tmp",  alloc::sync::Arc::new(fs::tmpfs::TmpfsFs),
+        boot_register_bind("/tmp", alloc::sync::Arc::new(fs::tmpfs::TmpfsFs),
             alloc::sync::Arc::new(fs::tmpfs::TmpfsRootInode::new(alloc::string::String::from("/tmp"))));
-        // POSIX shm + systemd /run live on tmpfs. Longest-prefix-match
-        // gives them precedence over the /dev devfs mount, so paths
-        // resolve through the tmpfs root inode populated in
-        // `fs::tmpfs::init`. Without this `shm_open(3)` (which musl
-        // routes to `/dev/shm/<name>`) hits DevfsFs and ENOENTs.
-        let _ = vfs::mount::register_bind("/dev/shm", alloc::sync::Arc::new(fs::tmpfs::TmpfsFs),
+        // POSIX shm + systemd /run live on tmpfs. The walk crosses into them
+        // by dentry identity, so paths resolve through the tmpfs root inode.
+        // Without this `shm_open(3)` (which musl routes to `/dev/shm/<name>`)
+        // hits DevfsFs and ENOENTs.
+        boot_register_bind("/dev/shm", alloc::sync::Arc::new(fs::tmpfs::TmpfsFs),
             alloc::sync::Arc::new(fs::tmpfs::TmpfsRootInode::new(alloc::string::String::from("/dev/shm"))));
-        let _ = vfs::mount::register_bind("/run",     alloc::sync::Arc::new(fs::tmpfs::TmpfsFs),
+        boot_register_bind("/run", alloc::sync::Arc::new(fs::tmpfs::TmpfsFs),
             alloc::sync::Arc::new(fs::tmpfs::TmpfsRootInode::new(alloc::string::String::from("/run"))));
         // /home from its own virtio-blk disk (serial `oxide-home`), as a
         // self-contained `Ext4Mount` (own device/cache/orphan set, never
@@ -707,19 +717,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // not required for login.
         if let Some(home_dev) = block::registry::by_serial("oxide-home") {
             if let Ok(home_fs) = ext4::rootfs::Ext4Mount::open(home_dev) {
-                let _ = vfs::mount::register("/home", home_fs);
+                boot_register("/home", home_fs);
             }
         }
-        // Re-wire dentry-identity crossings for EVERY table mount now that
-        // the resolver is installed AND `/sys` is mounted (so the walk can
-        // cross `/sys` into devfs to reach the `/sys/fs/cgroup` dentry).
-        // The boot cgroupfs mounted at line ~500 — before the resolver
-        // existed — so its crossing never got stamped; without this its
-        // mkdir-able root stays hidden behind the read-only devfs DevDir
-        // and systemd's `mkdir("/sys/fs/cgroup/init.scope")` hits EROFS.
-        // General mechanism: any early mount is wired here, not a cgroup
-        // special-case (`docs/16§3`).
-        vfs::mount::rewire_all_crossings();
         // cgroup v2 self-test runs here — after /proc + /sys/fs/cgroup
         // are in the mount table so `/proc/self/cgroup` resolves.
         debug_cgroup! { cgroup::selftest::run(); }
@@ -922,6 +922,27 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
 #[cfg(target_os = "oxide-kernel")] pub use pci_boot;
 
 /// Cooperative-yield hook for fbdev's FBIO_WAITFORVSYNC wait loop: voluntarily
+/// Boot mount registration: do the single namei walk to the mountpoint
+/// dentry (the mount engine takes the WALKED dentry, Linux
+/// `mnt_set_mountpoint` — never a path string) and register only if it
+/// resolves. A missing underlay is SKIPPED rather than passed as `None`,
+/// which the engine reads as the namespace root. # C: O(path components)
+#[cfg(target_os = "oxide-kernel")]
+fn boot_register(path: &str, fs: alloc::sync::Arc<dyn vfs::fs::FileSystem>) {
+    if let Some(d) = vfs::resolve_path_dentry(path) {
+        let _ = vfs::mount::register(Some(d), fs);
+    }
+}
+
+/// Boot bind-mount registration (per-mount root inode), same walk-then-attach
+/// contract as `boot_register`. # C: O(path components)
+#[cfg(target_os = "oxide-kernel")]
+fn boot_register_bind(path: &str, fs: alloc::sync::Arc<dyn vfs::fs::FileSystem>, root: vfs::InodeRef) {
+    if let Some(d) = vfs::resolve_path_dentry(path) {
+        let _ = vfs::mount::register_bind(Some(d), fs, root);
+    }
+}
+
 /// reschedule + park the CPU until the next IRQ (the timer tick that advances
 /// the pseudo-vblank counter), so the waiter doesn't hot-spin. Runs in process
 /// context (the ioctl syscall path), satisfying `tick_yield`'s contract.

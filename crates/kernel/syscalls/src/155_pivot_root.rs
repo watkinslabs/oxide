@@ -26,7 +26,16 @@ pub fn sys_pivot_root(args: &SyscallArgs) -> i64 {
     let po = crate::pathresolve::resolve_cwd(&put_old);
     let nr = if nr.len() > 1 { nr.trim_end_matches('/').to_string() } else { nr };
     let po = if po.len() > 1 { po.trim_end_matches('/').to_string() } else { po };
-    match vfs::mount::pivot_root(&nr, &po) {
+    // The two namei walks pivot_root(2) hands the engine: new_root + put_old
+    // mountpoint dentries (Linux `struct path.dentry`). The SAME `Arc`s the
+    // engine compares by identity (the `pivot_root(".",".")` stacking case).
+    let nr_d = match crate::pathresolve::mount_dentry(&nr) {
+        Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    let po_d = match crate::pathresolve::mount_dentry(&po) {
+        Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    match vfs::mount::pivot_root(&nr_d, &po_d) {
         Ok(())                    => 0,
         Err(vfs::VfsError::Ebusy) => -(Errno::Ebusy.as_i32() as i64),
         Err(_)                    => -(Errno::Einval.as_i32() as i64),

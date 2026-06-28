@@ -83,29 +83,27 @@ pub fn resolve_path(abs: &str, no_follow_final: bool) -> Option<vfs::VfsPath> {
     vfs::path_lookup_path(start, root, abs, flags).ok()
 }
 
-/// Resolve absolute `abs` to its canonical DENTRY (not just the inode)
-/// via the dentry path-walk, following the final symlink. Installed as
-/// `vfs::mount`'s mount-point dentry resolver so `register`/`register_bind`
-/// can mark the mounted-on dentry by identity (`docs/16§3`). A bind target
-/// of `/proc/self/fd/N` follows the magic symlink to the real file's
-/// dentry (e.g. /etc/machine-id) — the Linux mount-target semantics.
-/// `None` pre-mount (root dentry not built yet) or if `abs` doesn't
-/// resolve. # C: O(components × dir-lookup)
-pub fn resolve_dentry(abs: &str) -> Option<Arc<vfs::Dentry>> {
-    let (root, beneath) = resolution_root()?;
-    let flags = vfs::LookupFlags { beneath, ..Default::default() };
-    vfs::path_lookup_path(root.clone(), root, abs, flags).ok().map(|p| p.dentry)
+/// Resolve a mount-point path `abs` to the `Arc<Dentry>` the mount engine
+/// takes (the single namei walk Linux `do_mount` hands `mnt_set_mountpoint`
+/// as `struct path.dentry`). Follows the final symlink — a bind target of
+/// `/proc/self/fd/N` lands on the real file's dentry (e.g. /etc/machine-id),
+/// the Linux mount-target semantics. `None` pre-mount (root dentry not built
+/// yet) or if `abs` doesn't resolve (target missing → caller ENOENT).
+/// # C: O(components × dir-lookup)
+pub fn mount_dentry(abs: &str) -> Option<Arc<vfs::Dentry>> {
+    resolve_path(abs, false).map(|p| p.dentry)
 }
 
-/// Invalidate the cached dentry for absolute `abs` (Linux `d_delete`).
+/// Invalidate the cached child dentry for absolute `abs` (Linux `d_delete`).
 /// MUST be called after a successful unlink / rmdir / rename so a stale
 /// POSITIVE dentry isn't reused: without it, `stat`/`open` after `unlink`
 /// resolve the dead inode through the dcache (reporting the file still
 /// exists), e.g. Info-ZIP's `replace()` LSTATs the just-unlinked output
 /// and then fails to re-unlink it. Splits `abs` into parent + final
-/// component and drops the child from the parent dentry's cache.
+/// component, resolves the PARENT via the chroot-aware namei walk (NOT a
+/// mount-engine resolver), and drops the child from its dentry cache.
 /// # C: O(components)
-pub fn forget_path(abs: &str) {
+pub fn d_delete_path(abs: &str) {
     let trimmed = abs.trim_end_matches('/');
     if trimmed.is_empty() { return; }
     let (parent, name) = match trimmed.rfind('/') {
@@ -114,7 +112,7 @@ pub fn forget_path(abs: &str) {
         None    => return,
     };
     if name.is_empty() { return; }
-    if let Some(pd) = resolve_dentry(parent) {
+    if let Some(pd) = resolve_path(parent, false).map(|p| p.dentry) {
         pd.forget_child(name);
     }
 }

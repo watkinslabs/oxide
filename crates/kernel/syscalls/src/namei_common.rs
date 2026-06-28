@@ -165,7 +165,7 @@ pub(crate) fn unlink_unix_socket_path(p: &str) -> bool {
     }
     net::sock::UNIX_REGISTRY.unbind(p);
     net::sock::UNIX_REGISTRY.dgram_unbind(p);
-    crate::pathresolve::forget_path(p);
+    crate::pathresolve::d_delete_path(p);
     true
 }
 

@@ -150,7 +150,10 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     // machine-id bind read-only with MS_RDONLY|MS_REMOUNT|MS_BIND; the
     // bind branch would read a NULL source and EFAULT).
     if flags & MS_REMOUNT != 0 {
-        return match vfs::mount::remount_flags(&target, flags & MS_REMOUNTABLE) {
+        let td = match crate::pathresolve::mount_dentry(&target) {
+            Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
+        };
+        return match vfs::mount::remount_flags(&td, flags & MS_REMOUNTABLE) {
             Ok(()) => 0,
             Err(vfs::VfsError::Einval) => -(Errno::Einval.as_i32() as i64),
             Err(_) => -(Errno::Ebusy.as_i32() as i64),
@@ -172,22 +175,30 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
             Some(i) => i,
             None    => return -(Errno::Enoent.as_i32() as i64),
         };
+        // The single namei walk `do_mount` hands the engine: source + target
+        // mountpoint dentries (Linux `struct path.dentry`).
+        let source_d = match crate::pathresolve::mount_dentry(&source) {
+            Some(d) => d, None => return -(Errno::Enoent.as_i32() as i64),
+        };
+        let target_d = match crate::pathresolve::mount_dentry(&target) {
+            Some(d) => d, None => return -(Errno::Enoent.as_i32() as i64),
+        };
         // Peer-group inheritance (docs/16§6): binding a SHARED source
         // makes the new mount a peer of the source's group (same shared:N,
         // future propagation events reach it). Captured before the bind.
-        let src_pg = vfs::mount::peer_group_of(&source);
+        let src_pg = vfs::mount::peer_group_of(&source_d);
         let bind = Arc::new(BindFs { source: source.clone() });
         // Global mount table (per-NS bind rides the per-ns mount tree).
-        let _ = vfs::mount::register_bind(&target, bind, root);
-        vfs::mount::join_peer_group(&target, src_pg);
+        let _ = vfs::mount::register_bind(Some(target_d.clone()), bind, root);
+        vfs::mount::join_peer_group(&target_d, src_pg);
         // MS_REC: also clone every mount nested under `source` to the
         // matching path under `target` (recursive bind, docs/16§6).
         if flags & MS_REC != 0 {
-            let _ = vfs::mount::bind_submounts_rec(&source, &target);
+            let _ = vfs::mount::bind_submounts_rec(&source_d, &target_d);
         }
         // Propagation: if `target`'s parent is a shared mount, replicate
         // this bind to the parent's peers (docs/16§6).
-        let _ = vfs::mount::propagate_mount(&target);
+        let _ = vfs::mount::propagate_mount(&target_d);
         let _ = ns;
         return 0;
     }
@@ -209,7 +220,9 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         // registry rather than vfs::mount::TABLE (fragmented table —
         // unified in later K2/K3 work); for those, accept-and-noop as
         // before rather than spuriously EINVAL and regress systemd.
-        let _ = vfs::mount::set_propagation(&target, kind);
+        if let Some(td) = crate::pathresolve::mount_dentry(&target) {
+            let _ = vfs::mount::set_propagation(&td, kind);
+        }
         return 0;
     }
     // MS_MOVE: relocate the mount currently at `source` to `target`.
@@ -222,7 +235,13 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         let source = crate::pathresolve::resolve_cwd(&source_raw);
         if !source.starts_with('/') { return -(Errno::Einval.as_i32() as i64); }
         let source = if source.len() > 1 { source.trim_end_matches('/').to_string() } else { source };
-        return match vfs::mount::move_mount(&source, &target) {
+        let source_d = match crate::pathresolve::mount_dentry(&source) {
+            Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
+        };
+        let target_d = match crate::pathresolve::mount_dentry(&target) {
+            Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
+        };
+        return match vfs::mount::move_mount(&source_d, &target_d) {
             Ok(())                    => 0,
             Err(vfs::VfsError::Ebusy) => -(Errno::Ebusy.as_i32() as i64),
             Err(_)                    => -(Errno::Einval.as_i32() as i64),
@@ -240,5 +259,8 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         klog::write_raw(b" path="); klog::write_raw(target.as_bytes());
         klog::write_raw(b"\n");
     }
-    mount_fstype(&source, &fstype, &target)
+    let target_d = match crate::pathresolve::mount_dentry(&target) {
+        Some(d) => d, None => return -(Errno::Enoent.as_i32() as i64),
+    };
+    mount_fstype(&source, &fstype, &target, &target_d)
 }

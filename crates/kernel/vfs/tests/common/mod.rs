@@ -1,74 +1,124 @@
-//! Hosted-test DentryResolver fixture (`docs/16§3`). The real kernel
-//! installs `pathresolve::resolve_dentry` (a full `path_lookup` to the
-//! canonical mountpoint dentry) via `set_dentry_resolver`; without an
-//! equivalent here, `Mount.mountpoint` is always `None` and the
-//! dentry-identity mount engine (parent/child/exact-mount-here, mount
-//! crossing) has nothing to key on. This fixture builds a REAL global
-//! Dentry tree on demand: every absolute path maps to ONE canonical
-//! `Arc<Dentry>` with a correct parent chain, so `resolve_dentry(p)` is
-//! stable by identity and ancestor walks find covering mounts — exactly
-//! what the migrated engine needs to be exercised in `cargo test`.
+//! Hosted-test mount-engine fixture (`docs/16§3`). After WP4 the mount
+//! engine NEVER resolves a mount-point path STRING to a dentry — every
+//! caller hands it the `Arc<Dentry>` its namei walk produced, and the
+//! engine's internal `descend` materialises SYNTHESIZED positions
+//! (propagation mirrors / move-pivot relocations) from a dentry it already
+//! holds. This fixture mirrors the real boot wiring: it installs a global
+//! ROOT-DENTRY PROVIDER over a directory-factory inode tree, so both
+//! `common::dentry(path)` (the caller's walk) and the engine's `descend`
+//! resolve through ONE shared dcache (`parent.children`), giving stable
+//! dentry identity by (parent,name) — exactly what the dentry-identity
+//! engine needs to be exercised in `cargo test`.
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
+use vfs::fs::FileSystem;
 use vfs::inode::Inode;
+use vfs::mount::Propagation;
 use vfs::{Dentry, FileType, InodeRef, KResult, VfsError};
 
-/// A plain directory inode for fixture dentries. Per-component `lookup`
-/// is unused: the fixture resolver synthesises the whole tree itself, so
-/// resolution never falls through to `Inode::lookup`.
+static NEXT_INO: AtomicU64 = AtomicU64::new(0x1000);
+
+/// Directory-factory inode: every name resolves to a fresh child directory,
+/// so the engine's `descend` / `path_lookup` can materialise ANY mountpoint
+/// position. Mount routing keys on dentry identity (not inode identity), and
+/// the dcache (`parent.children`) dedups the dentry, so a fresh inode per
+/// lookup is fine.
 struct FixDir(u64);
 impl Inode for FixDir {
     fn ino(&self) -> vfs::Ino { self.0 }
     fn file_type(&self) -> FileType { FileType::Directory }
     fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
-}
-
-/// Process-global canonical dentry tree, keyed by absolute path. One node
-/// per path, parent-linked, so identity is stable across `resolve_dentry`
-/// calls — the dcache invariant the engine relies on.
-static TREE: Mutex<Option<BTreeMap<String, Arc<Dentry>>>> = Mutex::new(None);
-
-/// Split an absolute path into (parent, final-component).
-fn split_parent(path: &str) -> (&str, &str) {
-    let t = path.trim_end_matches('/');
-    match t.rfind('/') {
-        Some(0) => ("/", &t[1..]),
-        Some(i) => (&t[..i], &t[i + 1..]),
-        _ => ("/", t),
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> {
+        Ok(Arc::new(FixDir(NEXT_INO.fetch_add(1, Ordering::Relaxed))))
     }
 }
 
-/// Get-or-build the canonical dentry for `path`, building the parent
-/// chain first so `dentry.parent()` is a real link.
-fn build(map: &mut BTreeMap<String, Arc<Dentry>>, path: &str) -> Arc<Dentry> {
-    if let Some(d) = map.get(path) { return d.clone(); }
-    if path == "/" {
-        let d = Dentry::new_root(Arc::new(FixDir(2)));
-        map.insert(String::from("/"), d.clone());
-        return d;
+/// One process-global root dentry, shared by `dentry()` and the engine's
+/// `descend` via the root-dentry provider.
+static ROOT: OnceLock<Arc<Dentry>> = OnceLock::new();
+fn root() -> Arc<Dentry> {
+    ROOT.get_or_init(|| Dentry::new_root(Arc::new(FixDir(2)))).clone()
+}
+fn root_provider() -> Option<Arc<Dentry>> { Some(root()) }
+
+/// Canonical dentry for absolute `path`, built by descending from the root
+/// via the dcache (`d_lookup → i_op->lookup → d_add`) — the SAME per-
+/// component walk the engine's `descend` uses, so identity is shared.
+pub fn dentry(path: &str) -> Arc<Dentry> {
+    let mut cur = root();
+    for comp in path.split('/').filter(|c| !c.is_empty()) {
+        cur = match vfs::d_lookup(&cur, comp) {
+            Some(d) if !d.is_negative() => d,
+            _ => {
+                let ci = cur.inode().unwrap().lookup(comp).unwrap();
+                vfs::d_add(&cur, comp, ci)
+            }
+        };
     }
-    let (parent, name) = split_parent(path);
-    let pd = build(map, parent);
-    let ino = 0x1000 + map.len() as u64;
-    let d = Dentry::new(Some(pd), String::from(name), Arc::new(FixDir(ino)));
-    map.insert(String::from(path), d.clone());
-    d
+    cur
 }
 
-/// The installed `DentryResolver`: absolute path → canonical dentry.
-pub fn resolver(path: &str) -> Option<Arc<Dentry>> {
-    if !path.starts_with('/') { return None; }
-    let mut g = TREE.lock().unwrap_or_else(|e| e.into_inner());
-    let map = g.get_or_insert_with(BTreeMap::new);
-    Some(build(map, path))
+/// `None` for the root path "/", else `Some(dentry(p))` — the
+/// `Option<Arc<Dentry>>` an attach/register caller hands the engine.
+fn opt(p: &str) -> Option<Arc<Dentry>> {
+    if p == "/" { None } else { Some(dentry(p)) }
 }
 
-/// Install the fixture resolver (idempotent; last wins). Call from every
-/// test entry so the engine runs against dentry identity, not the table
-/// string column.
-pub fn install_dentry_resolver() {
-    vfs::mount::set_dentry_resolver(resolver);
+/// Install the root-dentry provider so the engine's internal walks resolve
+/// against this fixture tree. Idempotent (last wins).
+pub fn install() {
+    vfs::set_root_dentry_provider(root_provider);
 }
+
+// --- thin string→dentry test wrappers over the dentry-form mount API. These
+// live in the FIXTURE (a caller), never in the engine: each does the single
+// namei-equivalent walk (`dentry`) the real syscall handler does, then calls
+// the dentry-form engine fn. ----------------------------------------------
+
+#[allow(dead_code)]
+pub fn register(p: &str, fs: Arc<dyn FileSystem>) -> KResult<()> {
+    vfs::mount::register(opt(p), fs)
+}
+#[allow(dead_code)]
+pub fn register_bind(p: &str, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
+    vfs::mount::register_bind(opt(p), fs, root)
+}
+#[allow(dead_code)]
+pub fn unregister(p: &str) -> usize { vfs::mount::unregister(&dentry(p)) }
+#[allow(dead_code)]
+pub fn move_mount(from: &str, to: &str) -> KResult<()> {
+    vfs::mount::move_mount(&dentry(from), &dentry(to))
+}
+#[allow(dead_code)]
+pub fn pivot_root(nr: &str, po: &str) -> KResult<()> {
+    vfs::mount::pivot_root(&dentry(nr), &dentry(po))
+}
+#[allow(dead_code)]
+pub fn bind_submounts_rec(src: &str, tgt: &str) -> usize {
+    vfs::mount::bind_submounts_rec(&dentry(src), &dentry(tgt))
+}
+#[allow(dead_code)]
+pub fn set_propagation(p: &str, kind: Propagation) -> KResult<()> {
+    vfs::mount::set_propagation(&dentry(p), kind)
+}
+#[allow(dead_code)]
+pub fn peer_group_of(p: &str) -> u64 { vfs::mount::peer_group_of(&dentry(p)) }
+#[allow(dead_code)]
+pub fn join_peer_group(p: &str, pg: u64) { vfs::mount::join_peer_group(&dentry(p), pg) }
+#[allow(dead_code)]
+pub fn propagate_mount(p: &str) -> usize { vfs::mount::propagate_mount(&dentry(p)) }
+#[allow(dead_code)]
+pub fn is_mount_in_ns(p: &str, ns: u64) -> bool { vfs::mount::is_mount_in_ns(&dentry(p), ns) }
+#[allow(dead_code)]
+pub fn mount_root_at(p: &str) -> Option<InodeRef> { vfs::mount::mount_root_at(&dentry(p)) }
+#[allow(dead_code)]
+pub fn mount_at_path_exact(p: &str) -> Option<Arc<vfs::mount::Mount>> {
+    vfs::mount::mount_at_path_exact(&dentry(p))
+}
+
+// Silence unused-import warnings in test binaries that pull in `common` but
+// exercise only a subset of the wrappers.
+#[allow(dead_code)]
+fn _unused(_: VfsError) {}

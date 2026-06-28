@@ -82,25 +82,30 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     // it as a successful no-op: a (re)mount re-exposes the same synthetic
     // content, exactly as procfs regenerates it on Linux. Per-namespace (ns>0)
     // sandbox copies remain real mount content and tear down normally below.
+    // The single namei walk umount2(2) does to validate the target: its
+    // mountpoint dentry (Linux `user_path → path.dentry`). All three engine
+    // queries below key on it by identity. `None` (target gone) ⇒ no TABLE
+    // mount, but the devfs-registry detach below may still match.
+    let target_d = crate::pathresolve::mount_dentry(trimmed);
     if ns == 0 {
         // Confirm `trimmed` is EXACTLY a synthetic mount (not a path under
-        // one) by mount-object identity: `mount_at_path_exact` resolves the
-        // target dentry and reads its covering-mount link, so this is the
-        // mount whose mountpoint dentry IS `trimmed` — not the longest-prefix
-        // owner `resolve_mount` would return.
-        if let Some(m) = vfs::mount::mount_at_path_exact(trimmed) {
+        // one) by mount-object identity: `mount_at_path_exact` reads the
+        // target dentry's covering-mount link, so this is the mount whose
+        // mountpoint dentry IS `trimmed` — not the longest-prefix owner
+        // `resolve_mount` would return.
+        if let Some(m) = target_d.as_ref().and_then(|d| vfs::mount::mount_at_path_exact(d)) {
             if matches!(m.fs.name(), "procfs" | "sysfs" | "devtmpfs" | "devfs") {
                 return 0;
             }
         }
     }
-    if !lazy && vfs::mount::has_child_mounts(trimmed, ns) {
+    if !lazy && target_d.as_ref().map(|d| vfs::mount::has_child_mounts(d, ns)).unwrap_or(false) {
         return -(Errno::Ebusy.as_i32() as i64);
     }
     // Detach from BOTH the unified mount table (bind mounts + any
     // TABLE-resident mount) and the devfs registry (procfs/sysfs/devtmpfs
     // content + tmpfs). Both are namespace-scoped.
-    let removed_tab = vfs::mount::unregister_top(trimmed, lazy);
+    let removed_tab = target_d.as_ref().map(|d| vfs::mount::unregister_top(d, lazy)).unwrap_or(0);
     let removed_reg = devfs::unregister_subtree(ns, trimmed);
     if removed_tab == 0 && removed_reg == 0 {
         #[cfg(feature = "debug-boot")]

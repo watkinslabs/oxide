@@ -21,7 +21,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     vfs::mount::set_current_ns_provider(|| 0);
-    common::install_dentry_resolver();
+    common::install();
     g
 }
 
@@ -48,25 +48,25 @@ fn udevd_sysfs_move_from_mkdtemp_temp_path() {
 
     // Host tree. In the private mount-ns sandbox `/sys` is an empty
     // mountpoint dir (not yet a mount); udevd moves its private sysfs onto it.
-    vfs::mount::register("/", Arc::new(TestFs { root_ino: 0x1 })).expect("root");
-    vfs::mount::register("/tmp", Arc::new(TestFs { root_ino: 0x7 })).expect("tmp");
+    common::register("/", Arc::new(TestFs { root_ino: 0x1 })).expect("root");
+    common::register("/tmp", Arc::new(TestFs { root_ino: 0x7 })).expect("tmp");
 
     // udevd: mount fresh sysfs at a mkdtemp temp path that was NEVER a
     // pre-known mount.
     let temp = "/tmp/ns/sysfs-Xa9f3";
-    vfs::mount::register(temp, Arc::new(TestFs { root_ino: 0x55 })).expect("temp sysfs");
+    common::register(temp, Arc::new(TestFs { root_ino: 0x55 })).expect("temp sysfs");
 
     // The temp mount MUST be findable as an exact mount by identity.
-    assert!(vfs::mount::is_mount_in_ns(temp, ns), "temp sysfs is an exact mount");
+    assert!(common::is_mount_in_ns(temp, ns), "temp sysfs is an exact mount");
     let temp_id = vfs::mount::snapshot().iter()
         .find(|m| m.mount_point_str() == temp).expect("temp present").mnt_id;
 
     // The move that used to EINVAL.
-    let mv = vfs::mount::move_mount(temp, "/sys");
+    let mv = common::move_mount(temp, "/sys");
     assert!(mv.is_ok(), "MS_MOVE(temp -> /sys) must succeed, got {:?}", mv);
 
     // The moved mount is now resolvable at /sys (top of the stack), same id.
-    let at_sys = vfs::mount::mount_at_path_exact("/sys").expect("mount at /sys");
+    let at_sys = common::mount_at_path_exact("/sys").expect("mount at /sys");
     assert_eq!(at_sys.mnt_id, temp_id, "the moved sysfs is now the mount at /sys");
     assert_eq!(at_sys.fs.root().map(|i| i.ino()), Some(0x55), "moved sysfs root inode");
 
@@ -75,7 +75,7 @@ fn udevd_sysfs_move_from_mkdtemp_temp_path() {
     assert_eq!(vfs::mount::parent_mnt_id(&at_sys), root_id, "/sys parent is the root mount");
 
     // The temp path is no longer a mount.
-    assert!(!vfs::mount::is_mount_in_ns(temp, ns), "temp path cleared after move");
+    assert!(!common::is_mount_in_ns(temp, ns), "temp path cleared after move");
 
     // mountinfo render: no non-root line self-parents (the journald-SIGSEGV
     // / libmount cyclic-line guard).

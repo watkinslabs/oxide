@@ -37,6 +37,10 @@ pub fn populate_defaults() {
     crate::register_dir("/sys/fs/bpf");
     crate::register_dir("/sys/fs/pstore");
     crate::register_dir("/sys/kernel/security");
+    // /dev/shm is the POSIX-shm tmpfs mount point (devtmpfs ships it); create
+    // the underlay dir so the boot tmpfs mount resolves its mountpoint dentry
+    // (the mount engine takes the walked dentry, no path-string resolve).
+    crate::register_dir("/dev/shm");
     register("/dev/null",    Arc::new(crate::misc::NullInode)   as InodeRef);
     register("/dev/kmsg",    Arc::new(crate::misc::KmsgInode)   as InodeRef);
     register("/dev/zero",    Arc::new(crate::misc::ZeroInode)   as InodeRef);

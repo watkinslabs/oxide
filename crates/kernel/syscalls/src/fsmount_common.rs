@@ -37,17 +37,19 @@ fn source_disk_name(source: &str) -> &str {
     source.rsplit('/').next().unwrap_or(source)
 }
 
-/// Materialise a filesystem type at `target`. This is the single fstype
+/// Materialise a filesystem type at `target` (the walked mountpoint dentry
+/// `target_d` + its rendered path string `target`). The single fstype
 /// dispatcher shared by old mount(2) and the new fsopen/fsmount/move_mount
-/// API path.
+/// API path. The engine takes the caller-walked dentry; `target` (string) is
+/// used only as fs INPUT (tmpfs root-inode path, ext4/cgroup naming).
 /// # C: O(N_mounts + optional block-registry lookup)
-pub(crate) fn mount_fstype(source: &str, fstype: &str, target: &str) -> i64 {
+pub(crate) fn mount_fstype(source: &str, fstype: &str, target: &str, target_d: &Arc<Dentry>) -> i64 {
     match fstype {
         "tmpfs" | "ramfs" => {
             let root: InodeRef = Arc::new(::fs::tmpfs::TmpfsRootInode::new(target.to_string()));
             let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(::fs::tmpfs::TmpfsFs);
-            let _ = vfs::mount::register_bind(target, fs, root);
-            let _ = vfs::mount::propagate_mount(target);
+            let _ = vfs::mount::register_bind(Some(target_d.clone()), fs, root);
+            let _ = vfs::mount::propagate_mount(target_d);
             0
         }
         "ext4" => {
@@ -64,23 +66,23 @@ pub(crate) fn mount_fstype(source: &str, fstype: &str, target: &str) -> i64 {
                 Ok(f) => f,
                 Err(_) => return -(Errno::Einval.as_i32() as i64),
             };
-            match vfs::mount::register(target, fs) {
+            match vfs::mount::register(Some(target_d.clone()), fs) {
                 Ok(()) => {
-                    let _ = vfs::mount::propagate_mount(target);
+                    let _ = vfs::mount::propagate_mount(target_d);
                     0
                 }
                 Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
                 Err(e) => crate::namei_common::errno_from_vfs(e),
             }
         }
-        "cgroup2" => match cgroup::mount_at(target) {
+        "cgroup2" => match cgroup::mount_at(target, Some(target_d.clone())) {
             Ok(()) => 0,
             Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
             Err(e) => crate::namei_common::errno_from_vfs(e),
         }
         "proc" => {
-            let _ = vfs::mount::register(target, Arc::new(procfs::fs_impl::ProcfsFs));
-            let _ = vfs::mount::propagate_mount(target);
+            let _ = vfs::mount::register(Some(target_d.clone()), Arc::new(procfs::fs_impl::ProcfsFs));
+            let _ = vfs::mount::propagate_mount(target_d);
             0
         }
         // A fresh sysfs INSTANCE must enter the unified mount table, exactly
@@ -97,8 +99,8 @@ pub(crate) fn mount_fstype(source: &str, fstype: &str, target: &str) -> i64 {
         // resolves normally. Boot never re-mounts /sys (the kernel mounted it),
         // so this never stacks a duplicate at /sys.
         "sysfs" => {
-            let _ = vfs::mount::register(target, Arc::new(sysfs::SysfsFs));
-            let _ = vfs::mount::propagate_mount(target);
+            let _ = vfs::mount::register(Some(target_d.clone()), Arc::new(sysfs::SysfsFs));
+            let _ = vfs::mount::propagate_mount(target_d);
             0
         }
         // devtmpfs/devpts/cgroup(v1) instances still admit-noop: their content
@@ -112,13 +114,13 @@ pub(crate) fn mount_fstype(source: &str, fstype: &str, target: &str) -> i64 {
         // table and passes libmount's post-mount verify + statfs f_type magic.
         // The old `=> 0` admit-noop made these invisible → helper exit 32.
         "debugfs" => {
-            let _ = vfs::mount::register(target, Arc::new(tracefs::fs_impl::DebugfsFs));
-            let _ = vfs::mount::propagate_mount(target);
+            let _ = vfs::mount::register(Some(target_d.clone()), Arc::new(tracefs::fs_impl::DebugfsFs));
+            let _ = vfs::mount::propagate_mount(target_d);
             0
         }
         "tracefs" => {
-            let _ = vfs::mount::register(target, Arc::new(tracefs::fs_impl::TracefsFs));
-            let _ = vfs::mount::propagate_mount(target);
+            let _ = vfs::mount::register(Some(target_d.clone()), Arc::new(tracefs::fs_impl::TracefsFs));
+            let _ = vfs::mount::propagate_mount(target_d);
             0
         }
         "securityfs" | "efivarfs" | "pstore" | "bpf" | "configfs"

@@ -21,11 +21,11 @@ fn current_mount_ns() -> u64 {
 /// # C: O(1)
 pub fn install_vfs_hooks() {
     vfs::mount::set_current_ns_provider(current_mount_ns);
-    // Mount crossing is dentry-identity-keyed (`docs/16§3`): give
-    // `vfs::mount::register*` the resolver that maps a mount-point path to
-    // its canonical dentry so it can mark that dentry a mount point.
-    vfs::mount::set_dentry_resolver(crate::pathresolve::resolve_dentry);
-    // The owning-mount identification walk (`resolve_mount` → namei
-    // `walk_to_mount`) starts at the global root dentry; supply it.
+    // The mount engine NEVER resolves a mount-point STRING to a dentry
+    // (`docs/16§3`): every caller hands `register*`/`move_mount`/… the
+    // `Arc<Dentry>` its namei walk produced. The only provider needed is the
+    // global root dentry — the start of the owning-mount identification walk
+    // (`resolve_mount` → namei `walk_to_mount`) AND of the engine-internal
+    // `descend` that materialises SYNTHESIZED mount positions.
     vfs::set_root_dentry_provider(crate::pathresolve::root_dentry);
 }
