@@ -171,6 +171,32 @@ pub struct VfsPath {
     pub last_component: Option<String>,
 }
 
+/// Linux `nd->last_type` (`fs/namei.c`) — the classification of a LOOKUP_PARENT
+/// walk's final segment, derived from `VfsPath.last_component`. A caller
+/// (`do_rmdir`/`do_unlinkat`/`do_renameat2`) matches on this to reject the
+/// dot-forms WITHOUT re-parsing the pathname: `rmdir(".")` → `EINVAL` (`Dot`),
+/// `rmdir("..")` → `ENOTEMPTY` (`Dotdot`), removing/renaming the root → `EBUSY`
+/// (`Root`). `Norm` is an ordinary name (the only form a create/remove may act
+/// on). `Bind` (Linux `LAST_BIND`, a procfs-style magic link as the leaf) is
+/// not produced by this walker — magic links are handled at the open/dup layer
+/// (`path::dup_fd_target`), so they never surface as a parent-walk leaf here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LastType { Norm, Dot, Dotdot, Root }
+
+impl VfsPath {
+    /// Classify the LOOKUP_PARENT leaf (`last_component`) as Linux `last_type`.
+    /// `Root` when there is no leaf — a full (non-PARENT) walk, or a PARENT walk
+    /// of `/` whose leaf clamps at the resolution root. # C: O(1)
+    pub fn last_type(&self) -> LastType {
+        match self.last_component.as_deref() {
+            None       => LastType::Root,
+            Some(".")  => LastType::Dot,
+            Some("..") => LastType::Dotdot,
+            Some(_)    => LastType::Norm,
+        }
+    }
+}
+
 /// `generic_permission` (Linux `fs/namei.c`) for the access `mask`. Inodes
 /// with no per-fs perm info (`perm() == None`: pseudo-fs / synthetic) are
 /// default-allow, preserving the pre-permission behaviour. Owner/group/other
