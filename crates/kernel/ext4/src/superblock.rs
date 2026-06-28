@@ -70,6 +70,11 @@ pub struct Superblock {
     /// Stored-seed override (when RO_COMPAT_METADATA_CSUM_SEED on).
     /// Otherwise zero; caller derives from `uuid` instead.
     pub stored_csum_seed: u32,
+    /// `s_hash_seed[4]` (htree directory hash seed). Read as 4 le32
+    /// words from offset 0xEC. All-zero ⇒ use the built-in default.
+    pub hash_seed: [u32; 4],
+    /// `s_def_hash_version` (offset 0xFC) — default htree hash algo.
+    pub def_hash_version: u8,
 }
 
 /// Field offsets we mutate when persisting counter updates back to
@@ -134,6 +139,11 @@ impl Superblock {
                 u
             },
             stored_csum_seed:  rd_u32(buf, SB_OFF_CHECKSUM_SEED),
+            hash_seed: [
+                rd_u32(buf, 0xEC), rd_u32(buf, 0xF0),
+                rd_u32(buf, 0xF4), rd_u32(buf, 0xF8),
+            ],
+            def_hash_version: buf[0xFC],
         })
     }
 

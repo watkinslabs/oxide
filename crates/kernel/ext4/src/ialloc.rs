@@ -20,6 +20,14 @@ use crate::superblock::SB_OFF_FREE_INODES;
 extern crate alloc;
 use alloc::vec;
 
+/// `i_dtime` stamped on a freed inode. e2fsck requires a deleted
+/// (links_count==0) inode to carry a deletion time that looks like a
+/// timestamp — specifically `>= s_inodes_count`, otherwise it is
+/// mistaken for an orphan-list "next inode" pointer. Without an
+/// in-crate wall clock we use a fixed plausible Unix time (2023-11-14);
+/// the exact value is immaterial to validity as long as it is large.
+const DELETED_DTIME: u32 = 1_700_000_000;
+
 impl Mount {
     /// Allocate one previously-free inode. Searches groups from
     /// `hint` forward. Returns the 1-indexed inode number with
@@ -68,6 +76,11 @@ impl Mount {
         {
             let mut s = self.state.lock();
             gdt::write_descriptor_counters(&mut s.gdt_buf, group, &self.sb, &gd)?;
+            crate::csum::set_inode_bitmap_csum(&self.sb, &mut s.gdt_buf, group, &bitmap);
+            // Maintain bg_itable_unused (clamp to the new high-water) and
+            // clear EXT4_BG_INODE_UNINIT — exactly as Linux ext4_new_inode.
+            gdt::on_inode_allocated(&mut s.gdt_buf, group, &self.sb, final_bit as u32);
+            crate::csum::stamp_group_desc_csum(&self.sb, &mut s.gdt_buf, group);
             s.sb_free_inodes = s.sb_free_inodes.saturating_sub(1);
         }
         self.metadata_write(ibm_byte_off, &bitmap)?;
@@ -103,6 +116,8 @@ impl Mount {
             {
                 let mut s = m.state.lock();
                 gdt::write_descriptor_counters(&mut s.gdt_buf, group, &m.sb, &gd)?;
+                crate::csum::set_inode_bitmap_csum(&m.sb, &mut s.gdt_buf, group, &bitmap);
+                crate::csum::stamp_group_desc_csum(&m.sb, &mut s.gdt_buf, group);
                 s.sb_free_inodes = s.sb_free_inodes.saturating_add(1);
             }
             m.metadata_write(ibm_byte_off, &bitmap)?;
@@ -122,6 +137,7 @@ impl Mount {
         )?;
         sb_buf[SB_OFF_FREE_INODES..SB_OFF_FREE_INODES+4]
             .copy_from_slice(&count.to_le_bytes());
+        crate::csum::stamp_superblock_csum(&self.sb, &mut sb_buf);
         self.metadata_write(crate::superblock::SUPERBLOCK_OFFSET, &sb_buf)
     }
 
@@ -174,8 +190,10 @@ impl Mount {
             bytes[0x04..0x08].copy_from_slice(&0u32.to_le_bytes());
             bytes[0x6C..0x70].copy_from_slice(&0u32.to_le_bytes());
             bytes[0x1C..0x20].copy_from_slice(&0u32.to_le_bytes());
+            bytes[0x14..0x18].copy_from_slice(&DELETED_DTIME.to_le_bytes()); // i_dtime != 0
             for b in &mut bytes[0x28..0x28 + I_BLOCK_LEN] { *b = 0; }
-            m.metadata_write(off, &bytes)?;
+            let _ = off;
+            m.write_inode_bytes(ino, &bytes)?;
             m.free_inode(ino)?;
             Ok(())
         })
@@ -204,11 +222,19 @@ impl Mount {
     pub fn unlink(&self, parent_ino: u32, name: &[u8]) -> Result<(), MountError> {
         self.run_journaled(|m| {
             let target_ino = m.dir_unlink(parent_ino, name)?;
-            let (mut bytes, off) = m.read_inode_bytes(target_ino)?;
+            let (mut bytes, _off) = m.read_inode_bytes(target_ino)?;
+            let is_dir = (u16::from_le_bytes([bytes[0x00], bytes[0x01]]) & S_IFMT) == S_IFDIR;
             let mut links = u16::from_le_bytes([bytes[0x1A], bytes[0x1B]]);
             links = links.saturating_sub(1);
             bytes[0x1A..0x1C].copy_from_slice(&links.to_le_bytes());
             if links == 0 {
+                // Freeing a directory inode → it no longer counts toward
+                // its group's bg_used_dirs_count.
+                if is_dir {
+                    let g = (target_ino - 1) / m.sb.inodes_per_group;
+                    { let mut s = m.state.lock(); gdt::adjust_used_dirs(&mut s.gdt_buf, g, &m.sb, -1)?; }
+                    m.persist_gdt_slot_meta(g)?;
+                }
                 let mut i_block = [0u8; I_BLOCK_LEN];
                 i_block.copy_from_slice(&bytes[0x28..0x28 + I_BLOCK_LEN]);
                 if let Ok(hdr) = inode::parse_extent_header(&i_block) {
@@ -225,11 +251,12 @@ impl Mount {
                 bytes[0x04..0x08].copy_from_slice(&0u32.to_le_bytes());
                 bytes[0x6C..0x70].copy_from_slice(&0u32.to_le_bytes());
                 bytes[0x1C..0x20].copy_from_slice(&0u32.to_le_bytes());
+                bytes[0x14..0x18].copy_from_slice(&DELETED_DTIME.to_le_bytes()); // i_dtime != 0
                 for b in &mut bytes[0x28..0x28 + I_BLOCK_LEN] { *b = 0; }
-                m.metadata_write(off, &bytes)?;
+                m.write_inode_bytes(target_ino, &bytes)?;
                 m.free_inode(target_ino)?;
             } else {
-                m.metadata_write(off, &bytes)?;
+                m.write_inode_bytes(target_ino, &bytes)?;
             }
             Ok(())
         })
@@ -242,11 +269,25 @@ impl Mount {
         let mut bytes = vec![0u8; self.sb.inode_size as usize];
         bytes[0x00..0x02].copy_from_slice(&mode.to_le_bytes());
         bytes[0x1A..0x1C].copy_from_slice(&nlink.to_le_bytes());
+        // i_extra_isize: required when inode_size > 128 (the fs advertises
+        // EXTRA_ISIZE). 32 is the universal value for 256-byte inodes and
+        // is what mke2fs writes; it also makes i_checksum_hi covered.
+        if self.sb.inode_size as usize > crate::csum::EXT4_GOOD_OLD_INODE_SIZE {
+            bytes[0x80..0x82].copy_from_slice(&32u16.to_le_bytes());
+        }
+        // EXT4_EXTENTS_FL (0x80000): set only for regular files and
+        // directories — they map data via the extent tree rooted in
+        // i_block. Fast symlinks + device nodes store data inline and
+        // must NOT carry the flag (create_symlink sets it on the slow
+        // path; create_mknod never does).
+        let ftype = mode & S_IFMT;
+        if ftype == S_IFREG || ftype == S_IFDIR {
+            bytes[0x20..0x24].copy_from_slice(&0x0008_0000u32.to_le_bytes());
+        }
         let hdr = ExtentHeader { magic: EXT4_EXT_MAGIC, entries: 0, max: 4, depth: 0, generation: 0 };
         let mut i_block = [0u8; I_BLOCK_LEN];
         inode::write_extent_header(&mut i_block, &hdr);
         bytes[0x28..0x28 + I_BLOCK_LEN].copy_from_slice(&i_block);
-        // Goes through write_inode_bytes → metadata_write (after refactor below).
         self.write_inode_bytes(ino, &bytes)
     }
 
@@ -271,24 +312,38 @@ impl Mount {
             // entries. Without this the dir has no block 0 and any later
             // dir_link into it fails NotFound (systemd's enable symlink
             // into a runtime-mkdir'd <target>.wants/ dir hit exactly this).
+            // The ".." entry's rec_len spans to the end of the *usable*
+            // area; under metadata_csum the trailing 12 bytes hold the
+            // dir_entry_tail (stamped below), so ".." must stop short of
+            // it. Without csum, usable == bs.
+            let usable = crate::csum::dir_usable_len(&m.sb, bs);
             let mut blk = alloc::vec![0u8; bs];
             // "." — inode | rec_len=12 | name_len=1 | DT_DIR | "."
             blk[0..4].copy_from_slice(&new_ino.to_le_bytes());
             blk[4..6].copy_from_slice(&12u16.to_le_bytes());
             blk[6] = 1; blk[7] = dir::DT_DIR; blk[8] = b'.';
-            // ".." — inode | rec_len=bs-12 | name_len=2 | DT_DIR | ".."
+            // ".." — inode | rec_len=usable-12 | name_len=2 | DT_DIR | ".."
             blk[12..16].copy_from_slice(&parent_ino.to_le_bytes());
-            blk[16..18].copy_from_slice(&((bs - 12) as u16).to_le_bytes());
+            blk[16..18].copy_from_slice(&((usable - 12) as u16).to_le_bytes());
             blk[18] = 2; blk[19] = dir::DT_DIR; blk[20] = b'.'; blk[21] = b'.';
+            let (_pf, ngen) = m.inode_flags_gen(new_ino)?;
+            crate::csum::stamp_dirent_tail(&m.sb, new_ino, ngen, &mut blk);
             m.append_block(new_ino, &blk)?;
             m.set_inode_size(new_ino, bs as u64)?;
             m.dir_link(parent_ino, name, new_ino, dir::DT_DIR)?;
+            // The new directory counts toward its group's bg_used_dirs_count.
+            let ng = (new_ino - 1) / m.sb.inodes_per_group;
+            {
+                let mut s = m.state.lock();
+                gdt::adjust_used_dirs(&mut s.gdt_buf, ng, &m.sb, 1)?;
+            }
+            m.persist_gdt_slot_meta(ng)?;
             // Parent gains a subdirectory ".." backref → bump its
             // i_links_count (inode offset 0x1A, u16), per Linux mkdir.
-            let (mut pb, poff) = m.read_inode_bytes(parent_ino)?;
+            let (mut pb, _poff) = m.read_inode_bytes(parent_ino)?;
             let pl = u16::from_le_bytes([pb[0x1A], pb[0x1B]]).saturating_add(1);
             pb[0x1A..0x1C].copy_from_slice(&pl.to_le_bytes());
-            m.metadata_write(poff, &pb)?;
+            m.write_inode_bytes(parent_ino, &pb)?;
             Ok(new_ino)
         })
     }
@@ -310,14 +365,20 @@ impl Mount {
             let new_ino = m.alloc_inode(parent_group)?;
             m.init_inode(new_ino, S_IFLNK | 0o777, 1)?;
             if target.len() <= I_BLOCK_LEN {
-                let (mut bytes, off) = m.read_inode_bytes(new_ino)?;
+                let (mut bytes, _off) = m.read_inode_bytes(new_ino)?;
                 for b in &mut bytes[0x28..0x28 + I_BLOCK_LEN] { *b = 0; }
                 bytes[0x28..0x28 + target.len()].copy_from_slice(target);
                 let n = target.len() as u64;
                 bytes[0x04..0x08].copy_from_slice(&((n & 0xFFFF_FFFF) as u32).to_le_bytes());
                 bytes[0x6C..0x70].copy_from_slice(&((n >> 32) as u32).to_le_bytes());
-                m.metadata_write(off, &bytes)?;
+                m.write_inode_bytes(new_ino, &bytes)?;
             } else {
+                // Slow symlink: target lives in one data block mapped by
+                // the extent tree → the inode needs EXT4_EXTENTS_FL.
+                let (mut b, _o) = m.read_inode_bytes(new_ino)?;
+                let fl = u32::from_le_bytes([b[0x20], b[0x21], b[0x22], b[0x23]]) | 0x0008_0000;
+                b[0x20..0x24].copy_from_slice(&fl.to_le_bytes());
+                m.write_inode_bytes(new_ino, &b)?;
                 let mut buf = vec![0u8; bs];
                 buf[..target.len()].copy_from_slice(target);
                 m.append_block(new_ino, &buf)?;
@@ -351,6 +412,9 @@ impl Mount {
             let mut bytes = vec![0u8; m.sb.inode_size as usize];
             bytes[0x00..0x02].copy_from_slice(&mode.to_le_bytes());
             bytes[0x1A..0x1C].copy_from_slice(&1u16.to_le_bytes());
+            if m.sb.inode_size as usize > crate::csum::EXT4_GOOD_OLD_INODE_SIZE {
+                bytes[0x80..0x82].copy_from_slice(&32u16.to_le_bytes());
+            }
             if matches!(ftype, S_IFCHR | S_IFBLK) {
                 bytes[0x28..0x2C].copy_from_slice(&rdev.to_le_bytes());
             }
