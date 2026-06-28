@@ -334,7 +334,7 @@ impl Nameidata {
     /// fs). # C: O(start/root mount stack)
     pub fn new(start: Arc<Dentry>, root: Arc<Dentry>, flags: LookupFlags, cred: Cred) -> KResult<Self> {
         let ns = crate::mount::current_ns();
-        let base_mnt = crate::mount::root_mount_id(ns).unwrap_or(0);
+        let base_mnt = crate::mount::root_mount_id(ns).unwrap_or(crate::mount::MNT_ID_NONE);
         let (root_dentry, _ri, root_mnt_id) = follow_mount_down(root, base_mnt, ns)?;
         let (cur_dentry, cur_inode, cur_mnt_id) = follow_mount_down(start, root_mnt_id, ns)?;
         Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, depth: 0, flags, cred })
@@ -510,7 +510,7 @@ pub fn root_dentry() -> Option<Arc<Dentry>> {
 pub fn walk_to_mount(path: &str) -> Option<u64> {
     let root = root_dentry()?;
     let ns = crate::mount::current_ns();
-    let root_mnt = crate::mount::root_mount_id(ns).unwrap_or(0);
+    let root_mnt = crate::mount::root_mount_id(ns).unwrap_or(crate::mount::MNT_ID_NONE);
     let (mut cur_dentry, mut cur_inode, mut cur_mnt) =
         follow_mount_down(root.clone(), root_mnt, ns).ok()?;
     for comp in components(path) {
