@@ -59,8 +59,13 @@ pub struct LookupFlags {
     pub no_follow_final: bool,
     /// RESOLVE_NO_SYMLINKS: any symlink anywhere → ELOOP.
     pub no_symlinks: bool,
-    /// RESOLVE_BENEATH: `..` may not ascend above `root`, and an absolute
-    /// symlink target is rejected (Linux EXDEV; surfaced here as ELOOP).
+    /// Confined-root marker (chroot, wired by `pathresolve::resolution_root`):
+    /// the walk is scoped to `root`, so `..` cannot ascend above it and an
+    /// absolute path / absolute symlink target restarts AT `root` (the clamp is
+    /// performed by the `root`-relative `to_root`/`dotdot_step` machinery, so
+    /// this field is currently informational). NOTE: Linux's openat2
+    /// RESOLVE_BENEATH instead ERRORS `-EXDEV` on an escape attempt rather than
+    /// clamping; that distinct behaviour needs its own flag (fix-ledger D20).
     pub beneath: bool,
     /// LOOKUP_DIRECTORY: the final component must resolve to a directory
     /// (else ENOTDIR).
@@ -513,6 +518,15 @@ impl Nameidata {
         let trailing_slash = crate::path::requires_dir(path);
         if trailing_slash { self.flags.directory = true; }
 
+        // LOOKUP_PARENT leaf type (Linux `nd->last_type`): a trailing `.`
+        // (`dir/.`) is dropped by `components`, so the parent walk must resolve
+        // `dir` FULLY and report `.` as the leaf — not stop before `dir`.
+        // Detected from the raw path (the queue cannot carry the dropped `.`);
+        // when set, the parent-stop is suppressed and `last_component` is fixed
+        // to `.` after the loop. A trailing `..` survives in the queue and is
+        // reported verbatim at the stop below (Linux `LAST_DOTDOT`).
+        let trailing_dot = self.flags.parent && crate::path::last_segment(path) == ".";
+
         let mut queue: Vec<String> = components(path);
         let mut idx = 0usize;
         let mut last_component: Option<String> = None;
@@ -535,22 +549,30 @@ impl Nameidata {
                 return Err(VfsError::Enotdir);
             }
 
+            // LOOKUP_PARENT: stop BEFORE the final component, reporting it as
+            // the leaf (Linux `path_parentat` / `nd->last`). `may_lookup`
+            // (search permission, MAY_EXEC) runs FIRST — `link_path_walk` checks
+            // it at the top of every component iteration, the final parent
+            // included, so creating in a non-searchable dir is EACCES. The leaf
+            // is reported VERBATIM: a trailing `..` surfaces as
+            // `last_component == ".."` (Linux `LAST_DOTDOT`) instead of silently
+            // walking up, a normal name as itself (`LAST_NORM`), letting the
+            // caller reject `rmdir("..")` / `rename(.., "..")`. A trailing `.`
+            // (`trailing_dot`, dropped by the splitter) is excluded here and
+            // resolved fully, with `.` restored as the leaf after the loop.
+            if is_final && self.flags.parent && !trailing_dot {
+                may_lookup(&self.cur_inode, &self.cred)?;
+                last_component = Some(comp);
+                break;
+            }
+
             // `.` and empty segments are already dropped by `components`
             // (single splitter in `path.rs`); only `..` and names reach here.
             if comp == ".." { self.handle_dotdot(); continue; }
 
             // `may_lookup`: search permission (MAY_EXEC) on the current
-            // directory, enforced BEFORE the LOOKUP_PARENT stop — Linux calls
-            // `may_lookup` at the top of every component iteration, the final
-            // parent included, so creating in a non-searchable dir is EACCES.
+            // directory before resolving a child within it (Linux).
             may_lookup(&self.cur_inode, &self.cred)?;
-
-            // LOOKUP_PARENT: stop at the last component, returning the parent
-            // dir + the leaf name (Linux `path_parentat`).
-            if is_final && self.flags.parent {
-                last_component = Some(comp);
-                break;
-            }
 
             // Resolve the named child via the dcache: fast path `d_lookup`
             // (parent,name)-keyed, else slow path `i_op->lookup` + `d_add`.
@@ -588,10 +610,16 @@ impl Nameidata {
                 queue = next;
                 idx = 0;
                 if target.as_bytes().first() == Some(&b'/') {
-                    // Absolute target: restart at the resolution root. BENEATH
-                    // forbids the escape (Linux EXDEV → surfaced as ELOOP);
-                    // IN_ROOT confines it (restart at `root`, the default).
-                    if self.flags.beneath { return Err(VfsError::Eloop); }
+                    // Absolute target jumps to the resolution root (Linux
+                    // `nd_jump_root`), exactly as an absolute pathname does
+                    // (`to_root` at the top of `walk`). Under a CONFINED root —
+                    // chroot (`beneath`, wired by `pathresolve::resolution_root`)
+                    // or RESOLVE_IN_ROOT — `root` IS the jail/dirfd, so the
+                    // target restarts there and cannot escape: a chroot'd
+                    // `/etc/foo` symlink resolves to `<jail>/etc/foo`, NOT the
+                    // global tree. (Linux's openat2 RESOLVE_BENEATH, which
+                    // ERRORS `-EXDEV` on such an escape rather than clamping, is
+                    // a distinct unwired flag — see fix-ledger namei D20.)
                     self.to_root()?;
                 }
                 // Relative target keeps walking from the symlink's directory.
@@ -611,6 +639,12 @@ impl Nameidata {
         if self.flags.directory && !matches!(self.cur_inode.file_type(), FileType::Directory) {
             return Err(VfsError::Enotdir);
         }
+
+        // Trailing `.` under LOOKUP_PARENT: the parent is the fully-resolved
+        // directory and the leaf is `.` (Linux `LAST_DOT`) — `components`
+        // dropped the `.`, so it is restored here so the caller can reject
+        // `rmdir(".")` / `unlink(".")` without re-parsing the path.
+        if trailing_dot { last_component = Some(String::from(".")); }
 
         Ok(VfsPath {
             mnt_id: self.cur_mnt_id,
