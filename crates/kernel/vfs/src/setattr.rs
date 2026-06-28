@@ -124,7 +124,17 @@ pub fn apply_kill_priv(valid: u32, mut mode: u16) -> u16 {
 /// (the kernel `notify_change` then falls back to its metadata overlay).
 /// # C: O(1)
 pub fn simple_setattr<I: Inode + ?Sized>(inode: &I, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
-    if ia.valid & ATTR_SIZE != 0 { inode.truncate(ia.size)?; }
+    if ia.valid & ATTR_SIZE != 0 {
+        inode.truncate(ia.size)?;
+        // `truncate_pagecache` (Linux `mm/truncate.c`, via `truncate_setsize`):
+        // after the backend updates `i_size`, evict resident cache pages lying
+        // WHOLLY beyond the new size so a later refault re-reads zeros/backing,
+        // never stale post-EOF bytes. `invalidate_range` retains the page that
+        // straddles the new size (the backend `truncate` zeroed its tail). On
+        // grow nothing is resident past the new size, so this is a no-op — exactly
+        // Linux. Inodes without an `i_mapping` (no page cache) skip it.
+        if let Some(m) = inode.i_mapping() { m.invalidate_range(ia.size, u64::MAX); }
+    }
     if ia.valid & (ATTR_UID | ATTR_GID) != 0 {
         let uid = if ia.valid & ATTR_UID != 0 { idmap.map_in_uid(ia.uid) } else { inode.uid().unwrap_or(0) };
         let gid = if ia.valid & ATTR_GID != 0 { idmap.map_in_gid(ia.gid) } else { inode.gid().unwrap_or(0) };
