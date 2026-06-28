@@ -19,6 +19,18 @@ use alloc::vec::Vec;
 /// later munges it to overflowuid (65534).
 pub const INVALID_ID: u32 = u32::MAX;
 
+/// Linux global `overflowuid` (`kernel/sys.c`, `/proc/sys/kernel/overflowuid`,
+/// default `65534`): the placeholder id `from_kuid_munged`/`from_kgid_munged`
+/// (`kernel/user_namespace.c`) substitute when a kernel id has NO mapping in the
+/// target user namespace — the stat copy-out boundary turns the INVALID
+/// sentinel into this "nobody" id so an unmapped owner surfaces as `65534`
+/// rather than leaking `(uid_t)-1`. Distinct from [`INVALID_ID`]: INVALID is the
+/// in-kernel miss sentinel, OVERFLOW is what userspace observes.
+pub const OVERFLOW_UID: u32 = 65534;
+/// Linux global `overflowgid` (default `65534`); the gid counterpart of
+/// [`OVERFLOW_UID`] used by `from_kgid_munged`.
+pub const OVERFLOW_GID: u32 = 65534;
+
 /// One id-translation extent (Linux `uid_gid_extent`): the half-open fs-id
 /// range `[fs_lo, fs_lo+count)` corresponds to vfs-id range
 /// `[vfs_lo, vfs_lo+count)`.
@@ -77,4 +89,22 @@ impl Idmap {
     pub fn map_in_uid(&self, vfs: u32) -> u32 { self.inn(&self.uid_ext, vfs) }
     /// vfsgid (chown/create arg) → fs `i_gid` stored. # C: O(extents)
     pub fn map_in_gid(&self, vfs: u32) -> u32 { self.inn(&self.gid_ext, vfs) }
+
+    /// `from_kuid_munged` (Linux `kernel/user_namespace.c`): fs `i_uid` → the
+    /// uid userspace observes through `stat(2)`'s `st_uid` copy-out, mapping the
+    /// INVALID miss result to [`OVERFLOW_UID`] (65534) instead of leaking
+    /// `(uid_t)-1`. The plain [`map_out_uid`](Self::map_out_uid) keeps INVALID so
+    /// in-kernel callers can still detect the miss; this munged form is the one
+    /// `cp_new_stat`/`cp_statx` use at the user boundary. Identity maps never
+    /// miss, so this is a pass-through for a non-idmapped mount. # C: O(extents)
+    pub fn map_out_uid_munged(&self, fs: u32) -> u32 {
+        let v = self.map_out_uid(fs);
+        if v == INVALID_ID { OVERFLOW_UID } else { v }
+    }
+    /// `from_kgid_munged`: fs `i_gid` → `st_gid` copy-out, INVALID → [`OVERFLOW_GID`].
+    /// # C: O(extents)
+    pub fn map_out_gid_munged(&self, fs: u32) -> u32 {
+        let v = self.map_out_gid(fs);
+        if v == INVALID_ID { OVERFLOW_GID } else { v }
+    }
 }
