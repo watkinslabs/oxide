@@ -22,11 +22,15 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// `fn(va_or_sentinel: u64)`: invalidate `va` on every OTHER online CPU
-/// and wait for completion. `va == ALL` ⇒ full remote TLB flush. Stored
-/// as `usize` (fn pointer) because `AtomicPtr<fn(u64)>` isn't a stable
-/// atomic form; the transmute back is sound — only `set_shootdown_hook`
-/// writes it and only with a `fn(u64)` value.
+/// `fn(va_or_sentinel: u64, targets: u64)`: invalidate `va` on the CPUs
+/// named in the `targets` bitmask (minus this CPU, which the arch impl
+/// excludes) and wait for completion. `va == ALL` ⇒ full remote TLB
+/// flush. `targets` is the owning mm's `cpumask` — only CPUs that may
+/// hold the mm's user TLB entries, NOT every online CPU (Linux
+/// `flush_tlb_others(mm_cpumask)`). Stored as `usize` (fn pointer)
+/// because `AtomicPtr<fn(u64,u64)>` isn't a stable atomic form; the
+/// transmute back is sound — only `set_shootdown_hook` writes it and
+/// only with a `fn(u64,u64)` value.
 static HOOK: AtomicUsize = AtomicUsize::new(0);
 
 /// Sentinel passed as the VA to request a full remote TLB flush rather
@@ -39,31 +43,34 @@ pub const ALL: u64 = u64::MAX;
 /// # SAFETY: caller is the boot path; `f` lives for the kernel lifetime;
 /// single-CPU at install time (no concurrent shootdown caller yet).
 /// # C: O(1)
-pub unsafe fn set_shootdown_hook(f: fn(u64)) {
+pub unsafe fn set_shootdown_hook(f: fn(u64, u64)) {
     HOOK.store(f as usize, Ordering::Release);
 }
 
-/// Invalidate `va` on every other online CPU and wait for completion.
-/// No-op until `set_shootdown_hook` runs (UP boot / hosted harness) and
-/// on aarch64. The CALLER must already have flushed its OWN TLB for
-/// `va` (the mm sites do, via `MmuOps::flush_va`).
-/// # C: O(online_cpus) + IPI round-trip
+/// Invalidate `va` on the CPUs in `targets` (minus this CPU, excluded by
+/// the arch impl) and wait for completion. `targets` is the owning mm's
+/// `cpumask` (Linux `mm_cpumask`): a `0` mask — the common single-CPU-
+/// runs-this-mm case — means there is no peer to flush, so the arch impl
+/// short-circuits to zero IPIs. No-op until `set_shootdown_hook` runs (UP
+/// boot / hosted harness) and on aarch64. The CALLER must already have
+/// flushed its OWN TLB for `va` (the mm sites do, via `MmuOps::flush_va`).
+/// # C: O(popcount(targets)) + IPI round-trip
 #[inline]
-pub fn shootdown_others_va(va: u64) {
+pub fn shootdown_others_va(va: u64, targets: u64) {
     let p = HOOK.load(Ordering::Acquire);
     if p == 0 { return; }
     // SAFETY: only `set_shootdown_hook` writes HOOK, and only with a
-    // `fn(u64)`; the transmute back to the same type is sound.
-    let f: fn(u64) = unsafe { core::mem::transmute(p) };
-    f(va);
+    // `fn(u64,u64)`; the transmute back to the same type is sound.
+    let f: fn(u64, u64) = unsafe { core::mem::transmute(p) };
+    f(va, targets);
 }
 
-/// Full remote TLB flush on every other online CPU (used by batched
-/// PTE rewrites — fork COW W-strip, mprotect a range — where a per-page
-/// IPI would be far costlier than one broadcast full flush). No-op
-/// until installed / on aarch64.
-/// # C: O(online_cpus) + IPI round-trip
+/// Full remote TLB flush on the CPUs in `targets` (used by batched PTE
+/// rewrites — fork COW W-strip, mprotect a range — where a per-page IPI
+/// would be far costlier than one broadcast full flush). `targets` is the
+/// owning mm's `cpumask`. No-op until installed / on aarch64.
+/// # C: O(popcount(targets)) + IPI round-trip
 #[inline]
-pub fn shootdown_others_all() {
-    shootdown_others_va(ALL);
+pub fn shootdown_others_all(targets: u64) {
+    shootdown_others_va(ALL, targets);
 }

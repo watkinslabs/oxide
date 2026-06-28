@@ -23,6 +23,36 @@ static GLOBAL_AS_PTR: AtomicPtr<AddressSpace> = AtomicPtr::new(core::ptr::null_m
 /// HHDM offset captured at init for demand-paging zero-fill.
 static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
 
+/// Current logical CPU index (clamped to `MAX_CPUS`), matching the
+/// shootdown sender's `this_cpu()` so a bit set here is the bit the
+/// sender clears from its target set. Host builds are UP → 0.
+/// # C: O(1)
+#[inline]
+fn current_cpu_idx() -> usize {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) }
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
+}
+
+/// Snapshot the running task's mm `cpumask` (Linux `mm_cpumask`) for
+/// `flush_tlb_others` targeting at the PT-mutating glue sites. Returns 0
+/// when there is no current user task (boot context / kthread) — the
+/// shootdown then becomes a no-op, which is correct: no peer CPU holds a
+/// user mm that isn't the current one.
+/// # C: O(1)
+#[inline]
+fn current_mm_cpumask() -> u64 {
+    // SAFETY: read-only borrow of the running task's mm slot; the fault /
+    // syscall caller runs preempt-off in IRQ context per `13§5`, so no
+    // concurrent execve mutates this CPU's mm slot during the read.
+    sched::live::current()
+        .and_then(|c| unsafe { c.mm_ref() }.map(|m| m.cpumask()))
+        .unwrap_or(0)
+}
+
 /// Initialise the global user AS, allocate its private page-table
 /// root, copy kernel-half mappings from the captured master, and
 /// activate it as the live CR3 / TTBR0_EL1 per `13§8`. Idempotent —
@@ -107,6 +137,11 @@ pub unsafe fn init(hhdm_offset: u64) {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: TTBR1_EL1 (kernel half) is untouched; only TTBR0_EL1 is rewritten so user-half walks now target the AS-private L0. Single-CPU pre-init; preempt-off.
     unsafe { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::activate(root_pa); }
+
+    // mm_cpumask: this CPU just loaded the global AS via the activate
+    // above, so record its bit (Linux sets mm_cpumask on CR3 load). A
+    // later cross-CPU shootdown against this AS then targets this CPU.
+    arc.mark_cpu(current_cpu_idx());
 
     let raw = Arc::into_raw(arc) as *mut AddressSpace;
     GLOBAL_AS_PTR.store(raw, Ordering::Release);
@@ -338,7 +373,9 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
     // broadcast a remote flush so the new protection is enforced everywhere.
     // x86-only effect (no hardware TLB broadcast); no-op on UP / aarch64 /
     // hosted. No frame is freed here, so a post-loop broadcast is sufficient.
-    hal::tlb::shootdown_others_all();
+    // Target only the CPUs that have this mm loaded (cpumask), not every
+    // online CPU, per Linux flush_tlb_others.
+    hal::tlb::shootdown_others_all(current_mm_cpumask());
     let _ = (root_pa, new_flags, hhdm); // touch on host/test build
 }
 
@@ -390,6 +427,19 @@ pub fn rmap_walk_anon_pa<F: FnMut(u64, u64)>(pa: u64, mut f: F) -> usize {
 /// # SAFETY: caller is `AddressSpace::drop` after the last Arc strong
 /// ref hit zero — the root is no longer active on any CPU and no
 /// concurrent walker / writer remains.
+///
+/// GAP-2 (tracked follow-up, lazy-TLB / Linux `mmdrop`): the
+/// "no longer active on any CPU" precondition holds only because a CPU
+/// that goes lazy-TLB on this root (scheduler skips `activate` when the
+/// next task has `mm == None`) keeps its `mm_cpumask` bit set, but does
+/// NOT hold an `Arc<AddressSpace>` — so the strong count can hit zero and
+/// run this teardown while a peer CPU still has the root in CR3. A bare
+/// `flush_tlb_others(cpumask)` here is INSUFFICIENT: a TLB flush does not
+/// change CR3, so the peer's next user walk would still traverse the
+/// just-freed tables. The correct fix is the Linux `mmgrab`/`mmdrop`
+/// lazy-TLB reference (force peers onto the kernel/init root before the
+/// free). The `cpumask` is now available to implement it; until then this
+/// path relies on the same UP/quiesced assumption as before.
 /// # C: O(N_present_leaves + N_present_tables)
 #[cfg(target_arch = "x86_64")]
 pub unsafe extern "C" fn as_teardown(root_pa: u64) {
@@ -1006,6 +1056,8 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
         klog::write_raw(b" tid=");              klog::write_dec_u64(tid as u64);
         klog::write_raw(b"\n");
     }
+    // mm_cpumask snapshot for flush_tlb_others (read once, not per page).
+    let mask = current_mm_cpumask();
     let mut va = addr;
     let end = addr + len_aligned;
     while va < end {
@@ -1030,7 +1082,8 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
             // the same mm with a stale TLB entry would otherwise touch the
             // frame after it returns to the allocator (use-after-free
             // aliasing). x86-only effect; no-op on UP / aarch64 / hosted.
-            hal::tlb::shootdown_others_va(va);
+            // cpumask-targeted (only CPUs that have this mm), not all online.
+            hal::tlb::shootdown_others_va(va, mask);
             // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free checks struct-page refcount and only releases when the last mapping drops.
             unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
         }
@@ -1063,6 +1116,8 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
         klog::write_raw(b"\n");
     }
 
+    // mm_cpumask snapshot for flush_tlb_others (read once, not per page).
+    let mask = current_mm_cpumask();
     let mut va = addr;
     let end = addr + len_aligned;
     while va < end {
@@ -1094,7 +1149,8 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             // CPU BEFORE the frame is freed below, so a peer thread of the
             // same mm can't touch a freed+realloc'd frame through a stale TLB
             // entry. x86-only effect; no-op on UP / aarch64 / hosted.
-            hal::tlb::shootdown_others_va(va);
+            // cpumask-targeted (only CPUs that have this mm), not all online.
+            hal::tlb::shootdown_others_va(va, mask);
             // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free only releases to PMM when struct-page refcount drops to zero (no other AS maps this frame).
             unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
         }

@@ -43,6 +43,20 @@ type ActiveMmu = hal_x86_64::mmu_ops::X86Mmu;
 #[cfg(target_arch = "aarch64")]
 type ActiveMmu = hal_aarch64::mmu_ops::ArmMmu;
 
+/// This CPU's logical index (clamped to `MAX_CPUS`), matching the TLB
+/// shootdown sender's `this_cpu()` so the `mm_cpumask` bit set/cleared in
+/// the switch path is the bit the sender targets. Host builds are UP → 0.
+/// # C: O(1)
+#[inline]
+fn sched_current_cpu() -> usize {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) }
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
+}
+
 /// `sched_switch` tracepoint hook (Linux `trace_sched_switch`). tracefs
 /// installs it when the event is enabled and clears it when disabled, so the
 /// switch hot path pays only one atomic load + null check while OFF. Fires on
@@ -436,9 +450,27 @@ pub unsafe fn schedule() {
     // live here; no-op (one atomic load) unless tracefs enabled the event.
     fire_sched_switch(prev_ref.tgid.load(Ordering::Relaxed), prev_ref.name,
                       next_arc.tgid.load(Ordering::Relaxed), next_arc.name);
+    // mm_cpumask (Linux): record THIS CPU on the incoming mm BEFORE the CR3
+    // reload that loads it, so a concurrent peer TLB shootdown can never skip
+    // a CPU that holds the mm. Over-marking costs at worst one spurious IPI;
+    // under-marking is write-while-shared / use-after-free corruption.
+    let me = sched_current_cpu();
+    if next_root != 0 {
+        // SAFETY: next_arc is owned by this schedule scope; runqueue invariant for the picked task; no concurrent execve writer on this CPU.
+        if let Some(m) = unsafe { next_arc.mm_ref() } { m.mark_cpu(me); }
+    }
     if next_root != 0 && next_root != prev_root {
         // SAFETY: root_pa is the AS-private root populated with kernel-half mappings per P2-19; activate writes CR3/TTBR0 + flushes user TLB; preempt-off + single-CPU.
         unsafe { ActiveMmu::activate(next_root); }
+        // Clear our bit on the OUTGOING mm only now that the CR3 reload above
+        // flushed this CPU's old user TLB. Gated on an actual switch to a
+        // DIFFERENT real root: a kthread / lazy-TLB switch (next_root == 0, no
+        // activate) keeps prev's root in CR3, so prev's bit MUST stay set —
+        // this CPU still caches it and a peer must still shoot it down.
+        if prev_root != 0 {
+            // SAFETY: prev_ref aliases the outgoing Task; runqueue invariant; preempt-off + single-CPU; no concurrent execve writer on this CPU.
+            if let Some(pm) = unsafe { prev_ref.mm_ref() } { pm.clear_cpu(me); }
+        }
     }
 
     // Pointers for the asm switch BEFORE we mutate `current`.

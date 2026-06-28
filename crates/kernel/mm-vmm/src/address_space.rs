@@ -91,6 +91,17 @@ pub struct AddressSpace {
     /// never-forked anon page invisible to the rmap walk). `munmap` /
     /// `mprotect` use it to detach + re-attach split fragments.
     self_weak: Weak<Self>,
+    /// Linux `mm_cpumask` analogue: bit `c` set ⇔ logical CPU `c` may
+    /// hold this mm's user-half TLB entries (it has the root in CR3 /
+    /// TTBR0, or is lazy-TLB on it). The context-switch path sets this
+    /// CPU's bit BEFORE the CR3 reload that loads the mm and clears it
+    /// AFTER the reload that leaves it; `execve` does the same around its
+    /// direct activate. The cross-CPU TLB shootdown targets ONLY these
+    /// CPUs (`flush_tlb_others`), not every online CPU — over-inclusion
+    /// is a harmless spurious flush, under-inclusion is corruption, so
+    /// the set/clear ordering (mark-before-activate, clear-after-activate)
+    /// is load-bearing. `u64` exactly covers `cpu::MAX_CPUS == 64`.
+    cpumask: core::sync::atomic::AtomicU64,
 }
 
 impl Drop for AddressSpace {
@@ -130,6 +141,9 @@ impl AddressSpace {
             exe_path: Spinlock::new(None),
             mmap_base: core::sync::atomic::AtomicU64::new(0),
             self_weak: w.clone(),
+            // Fresh/forked AS: no CPU has loaded it yet (Linux clears
+            // mm_cpumask on mm init; the activating CPU sets its bit).
+            cpumask: core::sync::atomic::AtomicU64::new(0),
         }))
     }
 
@@ -254,6 +268,39 @@ impl AddressSpace {
         self.exe_path.lock().clone()
     }
 
+    /// Snapshot of this mm's `cpumask` (Linux `mm_cpumask`): the set of
+    /// logical CPUs that may hold its user TLB entries. The TLB-shootdown
+    /// sender intersects this with the online set to target only the CPUs
+    /// that actually need invalidating.
+    /// # C: O(1)
+    pub fn cpumask(&self) -> u64 {
+        self.cpumask.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Set logical CPU `cpu`'s bit. Called BEFORE the CR3/TTBR0 reload
+    /// that loads this mm on `cpu` (context switch / execve). Over-marking
+    /// only costs a spurious IPI; the strict before-activate ordering
+    /// guarantees a peer shootdown never skips a CPU that has the mm.
+    /// # C: O(1)
+    pub fn mark_cpu(&self, cpu: usize) {
+        if cpu < 64 {
+            self.cpumask.fetch_or(1u64 << cpu, core::sync::atomic::Ordering::AcqRel);
+        }
+    }
+
+    /// Clear logical CPU `cpu`'s bit. Called AFTER the CR3/TTBR0 reload
+    /// that leaves this mm on `cpu` (the reload flushes that CPU's old
+    /// user TLB first, so clearing afterwards is sound). Must be gated on
+    /// an actual switch to a DIFFERENT real root — clearing while the CPU
+    /// still holds the root in CR3 (lazy-TLB) reintroduces the
+    /// write-while-shared / use-after-free corruption.
+    /// # C: O(1)
+    pub fn clear_cpu(&self, cpu: usize) {
+        if cpu < 64 {
+            self.cpumask.fetch_and(!(1u64 << cpu), core::sync::atomic::Ordering::AcqRel);
+        }
+    }
+
     /// Clone VMA tree into a new AS with the supplied PT root.
     /// Mapped pages are NOT copied; child entries demand-page on
     /// first access (KernelBytes copy, Anonymous zero-fill).
@@ -275,6 +322,9 @@ impl AddressSpace {
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
             self_weak: w.clone(),
+            // Fresh/forked AS: no CPU has loaded it yet (Linux clears
+            // mm_cpumask on mm init; the activating CPU sets its bit).
+            cpumask: core::sync::atomic::AtomicU64::new(0),
         }))
     }
 
@@ -422,7 +472,9 @@ impl AddressSpace {
         // x86 invlpg is local-only (no hardware broadcast like aarch64
         // tlbi-is), so broadcast a full remote flush. No-op on UP / aarch64 /
         // hosted. One full flush beats a per-page IPI across the whole AS.
-        hal::tlb::shootdown_others_all();
+        // Target only the CPUs that have THIS mm loaded (the parent's
+        // cpumask) per Linux flush_tlb_others — not every online CPU.
+        hal::tlb::shootdown_others_all(self.cpumask());
         let child = Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(dst),
             root_pa: new_root_pa,
@@ -432,6 +484,9 @@ impl AddressSpace {
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
             self_weak: w.clone(),
+            // Fresh/forked AS: no CPU has loaded it yet (Linux clears
+            // mm_cpumask on mm init; the activating CPU sets its bit).
+            cpumask: core::sync::atomic::AtomicU64::new(0),
         });
         // Linux `anon_vma_fork`: each anonymous VMA in the child
         // inherits the parent's `Arc<AnonVma>` (already cloned by
@@ -516,6 +571,9 @@ impl AddressSpace {
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
             self_weak: w.clone(),
+            // Fresh/forked AS: no CPU has loaded it yet (Linux clears
+            // mm_cpumask on mm init; the activating CPU sets its bit).
+            cpumask: core::sync::atomic::AtomicU64::new(0),
         }))
     }
 
@@ -1027,8 +1085,9 @@ impl AddressSpace {
             // reference below — otherwise `old` can be freed + realloc'd while
             // a peer still reads/writes it through the stale entry. Local
             // flush already happened in `M::map`; broadcast to the others.
-            // No-op on UP / aarch64 / hosted.
-            hal::tlb::shootdown_others_va(va_page);
+            // No-op on UP / aarch64 / hosted. Target only the CPUs that
+            // have this mm loaded (self.cpumask), per flush_tlb_others.
+            hal::tlb::shootdown_others_va(va_page, self.cpumask());
             // F157-A1: drop our reference to the displaced (formerly
             // W-stripped shared) frame. `M::map` above tore the old leaf down
             // and returned its PA; `dec_ref` chains into
@@ -1077,6 +1136,13 @@ impl AddressSpace {
                 // (`None`); if a stale present leaf is displaced, dec_ref it so
                 // refcount stays == live-PTE count (the RANK-1 fix).
                 if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                    // GAP-1 (displaced-frame UAF): this fault displaced a
+                    // present leaf; dec_ref below may free `old`. A peer CPU
+                    // of the same mm with a stale TLB entry for va_page->old
+                    // could touch a freed+realloc'd frame. Flush peers (this
+                    // mm's cpumask only) BEFORE dropping our reference. No-op
+                    // on UP / aarch64 / hosted.
+                    hal::tlb::shootdown_others_va(va_page, self.cpumask());
                     dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
                 }
                 // F156-rmap: bind the freshly-allocated anonymous
@@ -1126,6 +1192,13 @@ impl AddressSpace {
                 // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
                 // F157-A1: dec_ref any frame displaced by a stale present leaf.
                 if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                    // GAP-1 (displaced-frame UAF): this fault displaced a
+                    // present leaf; dec_ref below may free `old`. A peer CPU
+                    // of the same mm with a stale TLB entry for va_page->old
+                    // could touch a freed+realloc'd frame. Flush peers (this
+                    // mm's cpumask only) BEFORE dropping our reference. No-op
+                    // on UP / aarch64 / hosted.
+                    hal::tlb::shootdown_others_va(va_page, self.cpumask());
                     dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
                 }
                 Ok(())
@@ -1165,6 +1238,11 @@ impl AddressSpace {
                         // shared inode frame). `inc_ref(spa)` above is balanced
                         // by AS-teardown; the displaced frame is separate.
                         if let Some(old) = unsafe { M::map(Va(va_page), Pa(spa), pte_flags, PageSize::P4K) } {
+                            // GAP-1 (displaced-frame UAF): a private COW snapshot
+                            // displaced here may be freed by dec_ref; flush peers
+                            // holding a stale va_page->old entry first. cpumask-
+                            // targeted; no-op on UP / aarch64 / hosted.
+                            hal::tlb::shootdown_others_va(va_page, self.cpumask());
                             dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
                         }
                         return Ok(());
@@ -1193,6 +1271,13 @@ impl AddressSpace {
                 // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
                 // F157-A1: dec_ref any frame displaced by a stale present leaf.
                 if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                    // GAP-1 (displaced-frame UAF): this fault displaced a
+                    // present leaf; dec_ref below may free `old`. A peer CPU
+                    // of the same mm with a stale TLB entry for va_page->old
+                    // could touch a freed+realloc'd frame. Flush peers (this
+                    // mm's cpumask only) BEFORE dropping our reference. No-op
+                    // on UP / aarch64 / hosted.
+                    hal::tlb::shootdown_others_va(va_page, self.cpumask());
                     dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
                 }
                 Ok(())
@@ -1205,6 +1290,13 @@ impl AddressSpace {
                 // F157-A1: dec_ref any frame displaced by a stale present leaf
                 // (separate from the KernelFrame's own `inc_ref(*pa)` below).
                 if let Some(old) = unsafe { M::map(Va(va_page), Pa(*pa), pte_flags, PageSize::P4K) } {
+                    // GAP-1 (displaced-frame UAF): this fault displaced a
+                    // present leaf; dec_ref below may free `old`. A peer CPU
+                    // of the same mm with a stale TLB entry for va_page->old
+                    // could touch a freed+realloc'd frame. Flush peers (this
+                    // mm's cpumask only) BEFORE dropping our reference. No-op
+                    // on UP / aarch64 / hosted.
+                    hal::tlb::shootdown_others_va(va_page, self.cpumask());
                     dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
                 }
                 inc_ref(*pa);
@@ -1224,6 +1316,13 @@ impl AddressSpace {
                 // must still be dec_ref'd. `dec_ref` no-ops on out-of-range
                 // (device) PAs, so this is safe even if `old` is device memory.
                 if let Some(old) = unsafe { M::map(Va(va_page), Pa(*base_pa + off), pte_flags, PageSize::P4K) } {
+                    // GAP-1 (displaced-frame UAF): this fault displaced a
+                    // present leaf; dec_ref below may free `old`. A peer CPU
+                    // of the same mm with a stale TLB entry for va_page->old
+                    // could touch a freed+realloc'd frame. Flush peers (this
+                    // mm's cpumask only) BEFORE dropping our reference. No-op
+                    // on UP / aarch64 / hosted.
+                    hal::tlb::shootdown_others_va(va_page, self.cpumask());
                     dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
                 }
                 Ok(())
