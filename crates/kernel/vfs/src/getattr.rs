@@ -12,15 +12,18 @@ use crate::inode::Inode;
 use crate::inode_times::InodeTimes;
 use crate::types::FileType;
 
-/// `S_IF*` file-type bits (Linux `include/uapi/linux/stat.h`).
-pub const S_IFMT:   u32 = 0o170000;
-pub const S_IFSOCK: u32 = 0o140000;
-pub const S_IFLNK:  u32 = 0o120000;
-pub const S_IFREG:  u32 = 0o100000;
-pub const S_IFBLK:  u32 = 0o060000;
-pub const S_IFDIR:  u32 = 0o040000;
-pub const S_IFCHR:  u32 = 0o020000;
-pub const S_IFIFO:  u32 = 0o010000;
+/// `S_IF*` file-type bits as the `u32` `Kstat`/stat-ABI surface. Re-derived
+/// from the canonical `Umode` (`u16`) defs in `types` — single source of
+/// truth, no duplicated magic literals. `mode` (`Kstat`) is `u32`, so these
+/// stay `u32` for byte-identical OR-packing with the permission bits.
+pub const S_IFMT:   u32 = crate::types::S_IFMT   as u32;
+pub const S_IFSOCK: u32 = crate::types::S_IFSOCK as u32;
+pub const S_IFLNK:  u32 = crate::types::S_IFLNK  as u32;
+pub const S_IFREG:  u32 = crate::types::S_IFREG  as u32;
+pub const S_IFBLK:  u32 = crate::types::S_IFBLK  as u32;
+pub const S_IFDIR:  u32 = crate::types::S_IFDIR  as u32;
+pub const S_IFCHR:  u32 = crate::types::S_IFCHR  as u32;
+pub const S_IFIFO:  u32 = crate::types::S_IFIFO  as u32;
 
 /// Resolved inode attributes (Linux `struct kstat`). `mode` carries the
 /// `S_IF*` type bits OR'd with the permission bits. `fsid` is the raw
@@ -63,14 +66,13 @@ pub fn default_perm_for(ft: FileType) -> u16 {
 pub fn generic_fillattr<I: Inode + ?Sized>(inode: &I, idmap: &Idmap, overlay: Option<InodeTimes>) -> Kstat {
     let ov = overlay.unwrap_or_default();
     let ft = inode.file_type();
-    let (type_bits, rdev): (u32, u32) = match ft {
-        FileType::CharDev   => (S_IFCHR,  inode.rdev()),
-        FileType::BlockDev  => (S_IFBLK,  inode.rdev()),
-        FileType::Directory => (S_IFDIR,  0),
-        FileType::Regular   => (S_IFREG,  0),
-        FileType::Symlink   => (S_IFLNK,  0),
-        FileType::Fifo      => (S_IFIFO,  0),
-        FileType::Socket    => (S_IFSOCK, 0),
+    // ONE place builds the `S_IFMT` half of the mode: `FileType::to_ifmt`
+    // (shared with `Inode::i_mode`). `st_rdev` is only meaningful for device
+    // nodes — Linux leaves it 0 for everything else.
+    let type_bits: u32 = ft.to_ifmt() as u32;
+    let rdev: u32 = match ft {
+        FileType::CharDev | FileType::BlockDev => inode.rdev(),
+        _ => 0,
     };
     let perm = inode.perm()
         .or_else(|| if ov.owner_set && ov.mode_bits != 0 { Some(ov.mode_bits) } else { None })
