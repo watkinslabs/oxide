@@ -91,6 +91,25 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
             return -(Errno::Echild.as_i32() as i64);
         }
         if (options & WNOHANG) != 0 { return 0; }
+        // Interruptible wait: Linux `do_wait` runs at TASK_INTERRUPTIBLE.
+        // A deliverable (unmasked) signal — and ALWAYS SIGKILL/SIGSTOP
+        // regardless of mask, since signal(7) makes both unblockable —
+        // aborts the blocking wait with -EINTR. The syscall-return tail
+        // (dispatch.rs `take_lowest_pending`) then runs the fatal-signal
+        // default action (SIG_DFL terminate). Ordered AFTER reap_one above
+        // (Linux reaps an available zombie even with a signal pending) and
+        // BEFORE park: without it a task parked here is unkillable —
+        // kill() wakes it (wake_if_sleeping) but it just re-parks, never
+        // returning to the dispatch tail that converts SIGKILL→terminate.
+        if let Some(cur) = sched::live::current() {
+            use core::sync::atomic::Ordering;
+            use sched::live::sigpend::Signum;
+            let forced  = Signum::Sigkill.bit() | Signum::Sigstop.bit();
+            let pending = cur.sigpending.load(Ordering::Acquire);
+            let masked  = cur.sigmask.load(Ordering::Acquire);
+            let deliver = (pending & !masked) | (pending & forced);
+            if deliver != 0 { return -(Errno::Eintr.as_i32() as i64); }
+        }
         // SAFETY: process ctx; runqueue installed; preempt-off; park+schedule per `13§8`.
         unsafe { sched::live::park_for_wait4(); }
         // F143: post-park reap recheck closes the missed-wakeup race
