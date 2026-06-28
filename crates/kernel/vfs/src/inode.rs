@@ -340,6 +340,18 @@ pub trait Inode: Send + Sync {
         ft.to_ifmt() | self.perm().unwrap_or_else(|| crate::getattr::default_perm_for(ft))
     }
 
+    /// `i_flags` (Linux `struct inode::i_flags`) — the VFS-level inode flag
+    /// set: the `S_*` bits (`S_IMMUTABLE`/`S_APPEND`/`S_NOATIME`/`S_SYNC`),
+    /// distinct from the `S_IF*`/perm bits in `i_mode`. Each FS translates its
+    /// on-disk attribute flags into these (ext4 `FS_IMMUTABLE_FL`/`FS_APPEND_FL`
+    /// → `S_IMMUTABLE`/`S_APPEND` in `ext4_set_inode_flags`). The write path
+    /// consults `S_IMMUTABLE` (no writer ever, not even via CAP_DAC_OVERRIDE —
+    /// enforced in `permission`); the open path consults `S_APPEND` (a write
+    /// open must be append-only, `chattr +a`); the atime path consults
+    /// `S_NOATIME`. Default `0` = no special flags.
+    /// # C: O(1)
+    fn i_flags(&self) -> u32 { 0 }
+
     /// Device number (`dev_t`, packed `(major<<8)|minor` Linux legacy
     /// encoding) for a char/block device node. `0` = not a device / no
     /// number. Linux devtmpfs nodes carry their real `dev_t` from the
@@ -370,6 +382,12 @@ pub trait Inode: Send + Sync {
     /// overrides this to intercept. The whole `inode_permission` family
     /// (lookup/open/create/setattr) dispatches here. # C: O(ngroups)
     fn permission(&self, mask: u32, cred: &crate::namei::Cred) -> KResult<()> {
+        // Linux `inode_permission`: "Nobody gets write access to an immutable
+        // file" — checked BEFORE the DAC/`do_inode_permission` class check, so
+        // not even CAP_DAC_OVERRIDE bypasses S_IMMUTABLE on a write.
+        if mask & crate::namei::MAY_WRITE != 0 && self.i_flags() & S_IMMUTABLE != 0 {
+            return Err(VfsError::Eperm);
+        }
         crate::namei::generic_permission(self, mask, cred)
     }
 
@@ -454,6 +472,16 @@ fn no_data_op_errno(ft: FileType) -> VfsError {
 pub const I_DIRTY:   u32 = 0x0007; // I_DIRTY_SYNC|DATASYNC|PAGES
 pub const I_NEW:     u32 = 0x0008; // 1<<3 — being constructed
 pub const I_FREEING: u32 = 0x0020; // 1<<5 — being evicted
+
+/// `i_flags` `S_*` bits (Linux `include/linux/fs.h`) — the VFS inode flag set
+/// returned by `Inode::i_flags`, distinct from the `S_IF*`/perm mode bits.
+/// Numeric reps match Linux exactly. `S_IMMUTABLE` blocks every write (see
+/// `Inode::permission`); `S_APPEND` forces append-only opens; `S_NOATIME`
+/// suppresses access-time updates; `S_SYNC` forces synchronous writeback.
+pub const S_SYNC:      u32 = 1 << 0; // synchronous writes
+pub const S_NOATIME:   u32 = 1 << 1; // do not update access time
+pub const S_APPEND:    u32 = 1 << 2; // append-only (chattr +a)
+pub const S_IMMUTABLE: u32 = 1 << 3; // immutable (chattr +i)
 
 /// `poll(2)` event bitmasks. Numeric reps match Linux exactly.
 pub const POLL_IN:    u32 = 0x0001;  // POLLIN  — readable
