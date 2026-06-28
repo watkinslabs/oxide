@@ -14,7 +14,7 @@ use crate::idmap::Idmap;
 use crate::inode::{Inode, InodeRef};
 use crate::getattr::default_perm_for;
 use crate::namei::{Cred, inode_permission, MAY_WRITE, S_ISGID, S_ISUID, S_IXGRP};
-use crate::types::{KResult, VfsError};
+use crate::types::{FileType, KResult, VfsError};
 
 /// `ATTR_*` valid-mask bits (Linux `include/linux/fs.h`, subset). `*_SET`
 /// distinguish a *specific* time from "set to now" (UTIME_NOW / NULL), which
@@ -127,6 +127,21 @@ pub fn simple_setattr<I: Inode + ?Sized>(inode: &I, idmap: &Idmap, ia: &Iattr) -
         inode.set_times(a, m, ia.ctime_ns)?;
     }
     Ok(())
+}
+
+/// `setattr_should_drop_suidgid` (Linux `fs/attr.c`): the write-path companion
+/// to [`apply_kill_priv`]. Returns the `ATTR_KILL_SUID`/`ATTR_KILL_SGID` mask a
+/// modifying write (or content/size change) must fold into the inode mode:
+/// S_ISUID is always killed; S_ISGID only when group-executable (a bare S_ISGID
+/// is a mandatory-lock mark — left alone). A caller holding CAP_FSETID over the
+/// inode keeps the bits, and the drop applies to regular files only (Linux
+/// `file_remove_privs` / `dentry_needs_remove_privs`). # C: O(1)
+pub fn setattr_should_drop_suidgid<I: Inode + ?Sized>(inode: &I, cred: &Cred) -> u32 {
+    let mode = inode.perm().unwrap_or_else(|| default_perm_for(inode.file_type()));
+    let mut kill = 0u32;
+    if mode & S_ISUID != 0 { kill |= ATTR_KILL_SUID; }
+    if mode & S_ISGID != 0 && mode & S_IXGRP != 0 { kill |= ATTR_KILL_SGID; }
+    if kill != 0 && !cred.cap_fsetid && matches!(inode.file_type(), FileType::Regular) { kill } else { 0 }
 }
 
 /// `notify_change` (Linux `fs/attr.c`): `setattr_prepare` then `i_op->setattr`.
