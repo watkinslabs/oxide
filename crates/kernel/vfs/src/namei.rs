@@ -82,6 +82,13 @@ pub struct LookupFlags {
     /// The magic-link reopen lives at the open/dup layer (`path::dup_fd_target`),
     /// which gates on this flag; the walker carries it for completeness.
     pub no_magiclinks: bool,
+    /// RESOLVE_NO_XDEV (`openat2(2)`): forbid mount-point traversal during
+    /// resolution. A component that would descend INTO a mounted filesystem, or
+    /// a `..` that would ascend OUT of the current mount, is rejected with
+    /// `EXDEV` (Linux `LOOKUP_NO_XDEV`). The START position's own over-mount is
+    /// normalised by `Nameidata::new` BEFORE the walk and is exempt — only
+    /// crossings made WHILE walking are blocked.
+    pub no_xdev: bool,
     /// LOOKUP_REVAL: forced revalidation (Linux's ESTALE-retry walk). Threaded
     /// to each cached dentry's `d_op->d_revalidate` so a fs that trusts an
     /// attribute-cache timeout normally re-checks its backing store on this
@@ -574,7 +581,14 @@ impl Nameidata {
 
             // `.` and empty segments are already dropped by `components`
             // (single splitter in `path.rs`); only `..` and names reach here.
-            if comp == ".." { self.handle_dotdot(); continue; }
+            if comp == ".." {
+                let from_mnt = self.cur_mnt_id;
+                self.handle_dotdot();
+                // RESOLVE_NO_XDEV: a `..` that ascends OUT of the current mount
+                // (back to the mountpoint in the parent mount) is rejected.
+                if self.flags.no_xdev && self.cur_mnt_id != from_mnt { return Err(VfsError::Exdev); }
+                continue;
+            }
 
             // `may_lookup`: search permission (MAY_EXEC) on the current
             // directory before resolving a child within it (Linux).
@@ -641,6 +655,9 @@ impl Nameidata {
             // current dentry to the mounted fs's `s_root`, looping for stacked
             // overmounts. `VfsPath.dentry` thus becomes the mounted-fs dentry.
             let (nd, ni, nm) = follow_mount_down(child, self.cur_mnt_id, ns)?;
+            // RESOLVE_NO_XDEV: a component that descends INTO a mount (the
+            // crossed mount id differs) is rejected (Linux `LOOKUP_NO_XDEV`).
+            if self.flags.no_xdev && nm != self.cur_mnt_id { return Err(VfsError::Exdev); }
             self.cur_dentry = nd;
             self.cur_inode = ni;
             self.cur_mnt_id = nm;
