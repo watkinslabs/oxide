@@ -255,6 +255,37 @@ impl FsContextOps for LegacyFsContextOps {
     }
 }
 
+/// LSM hook object for the fs_context lifecycle (Linux `security/security.c`:
+/// `security_fs_context_parse_param`, `security_sb_set_mnt_opts`,
+/// `security_free_mnt_opts`). An LSM (SELinux, SMACK, AppArmor) registers one on
+/// the context so it gets FIRST refusal on LSM-prefixed mount options
+/// (`context=`, `fscontext=`, `defcontext=`, `rootcontext=`, `seclabel`) before
+/// the fs sees them, and stamps the parsed label onto the superblock once
+/// `get_tree` materialises it. No LSM is wired by default (`fc.security ==
+/// None`): every hook is a no-op and all options fall through to the fs, exactly
+/// as a kernel built with no LSM behaves. Placeholder: the trait + lifecycle
+/// wiring are real; no concrete in-tree LSM implements it yet.
+pub trait FsContextSecurity: Send + Sync {
+    /// `security_fs_context_parse_param` — the LSM's first crack at one option.
+    /// [`ParamResult::Consumed`] = an LSM option the fs must NOT see;
+    /// [`ParamResult::Declined`] (Linux `-ENOPARAM`) = not an LSM option, pass it
+    /// on to the fs; `Err(e)` = an LSM option the policy forbids (rejected
+    /// mount). Default declines everything. # C: LSM-dependent
+    fn parse_param(&self, _fc: &mut FsContext, _param: &FsParameter) -> KResult<ParamResult> {
+        Ok(ParamResult::Declined)
+    }
+
+    /// `security_sb_set_mnt_opts` — apply the accumulated LSM mount options to the
+    /// freshly built superblock (label the sb). Called once by [`vfs_get_tree`]
+    /// after the backend installs `fc->root`; an `Err` fails the mount. Default
+    /// no-op. # C: LSM-dependent
+    fn set_mnt_opts(&self, _fc: &mut FsContext, _sb: &Arc<SuperBlock>) -> KResult<()> { Ok(()) }
+
+    /// `security_free_mnt_opts` — release the LSM's per-context blob on teardown
+    /// (`put_fs_context`). Default no-op. # C: O(1)
+    fn free(&self, _fc: &mut FsContext) {}
+}
+
 /// Stamp the masked user `sb_flags` onto a superblock (the `SB_RDONLY` slice
 /// also drives the dedicated RO writer-gate). # C: O(1)
 fn apply_sb_flags(sb: &SuperBlock, sb_flags: u64, mask: u64) {
@@ -299,6 +330,10 @@ pub struct FsContext {
     /// when full (Linux drops the message rather than grow unbounded). # consumers:
     /// fsconfig error reporting.
     log: Vec<String>,
+    /// `fc->security` — the LSM hook object (Linux's opaque `fc->security` blob +
+    /// its hook table). `None` = no LSM wired: every security hook is skipped and
+    /// all options reach the fs. Installed by [`FsContext::set_security`].
+    security: Option<Arc<dyn FsContextSecurity>>,
 }
 
 /// `fc_log` ring capacity (Linux `struct fc_log` carries 8 message slots). # C: O(1)
@@ -348,12 +383,20 @@ impl FsContext {
             sb: None,
             fs_private: Arc::new(()),
             log: Vec::new(),
+            security: None,
         }
     }
 
     /// Install a backend-specific `fc->ops` (Linux `init_fs_context` replacing the
     /// legacy default). # C: O(1)
     pub fn set_ops(&mut self, ops: Arc<dyn FsContextOps>) { self.ops = ops; }
+
+    /// Install the LSM hook object `fc->security` (Linux `security_fs_context_*`
+    /// init). Absent one, the security hooks are skipped. # C: O(1)
+    pub fn set_security(&mut self, sec: Arc<dyn FsContextSecurity>) { self.security = Some(sec); }
+
+    /// The installed LSM hook object, if any. # C: O(1)
+    pub fn security(&self) -> Option<&Arc<dyn FsContextSecurity>> { self.security.as_ref() }
 
     /// `fc->fs_type`. # C: O(1)
     pub fn fs_type(&self) -> &Arc<dyn FileSystemType> { &self.fs_type }
@@ -453,6 +496,16 @@ pub fn vfs_parse_fs_param(fc: &mut FsContext, param: &FsParameter) -> KResult<()
     // A reconfigure context flips to its param-collecting phase on first param.
     if fc.phase == FsContextPhase::AwaitingReconf { fc.phase = FsContextPhase::ReconfParams; }
 
+    // LSM gets first refusal on the option (Linux `security_fs_context_parse_param`,
+    // returning `-ENOPARAM` for a non-LSM key so the fs still sees it). A consumed
+    // LSM option (`context=`, …) never reaches the backend's `parse_param`.
+    if let Some(sec) = fc.security.clone() {
+        match sec.parse_param(fc, param)? {
+            ParamResult::Consumed => return Ok(()),
+            ParamResult::Declined => {}
+        }
+    }
+
     let ops = fc.ops.clone();
     match ops.parse_param(fc, param)? {
         ParamResult::Consumed => return Ok(()),
@@ -508,8 +561,17 @@ pub fn vfs_get_tree(fc: &mut FsContext) -> KResult<()> {
         Some(r) => r,
         None => { fc.phase = FsContextPhase::Failed; return Err(VfsError::Einval); }
     };
-    fc.sb = Some(sb);
+    fc.sb = Some(sb.clone());
     fc.root = Some(root);
+    // LSM stamps its parsed label onto the just-built sb (Linux
+    // `security_sb_set_mnt_opts` inside `vfs_get_tree`); a policy rejection here
+    // fails the mount.
+    if let Some(sec) = fc.security.clone() {
+        if let Err(e) = sec.set_mnt_opts(fc, &sb) {
+            fc.phase = FsContextPhase::Failed;
+            return Err(e);
+        }
+    }
     fc.phase = FsContextPhase::AwaitingMount;
     Ok(())
 }
@@ -539,8 +601,10 @@ pub fn reconfigure_super(fc: &mut FsContext) -> KResult<()> {
     Ok(())
 }
 
-/// Run `fc->ops->free` then drop the context (Linux `put_fs_context`). # C: O(1)
+/// Run the LSM `free` hook then `fc->ops->free`, then drop the context (Linux
+/// `put_fs_context`: `security_free_mnt_opts` before `fc->ops->free`). # C: O(1)
 pub fn put_fs_context(mut fc: FsContext) {
+    if let Some(sec) = fc.security.clone() { sec.free(&mut fc); }
     let ops = fc.ops.clone();
     ops.free(&mut fc);
 }
