@@ -89,7 +89,11 @@ pub(crate) fn open_proc_fd(tid_opt: Option<u32>, fd: i32, flags: u32) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    match fdt.alloc(file) {
+    // RLIMIT_NOFILE soft limit caps fd allocation (Linux `__alloc_fd`
+    // against `rlimit(RLIMIT_NOFILE)`); exceeding it → EMFILE.
+    // SAFETY: rlimits slot single-mutator per `13§5`; cur is the running task on this CPU.
+    let nofile = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::NOFILE].0 } as usize;
+    match fdt.alloc_limit(file, nofile) {
         Ok(n) => {
             if (flags & O_CLOEXEC) != 0 {
                 if let Err(e) = fdt.set_cloexec(n, true) { return -(e as i64); }
