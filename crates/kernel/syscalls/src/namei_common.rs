@@ -25,7 +25,9 @@ pub(crate) const PATH_MAX: usize = 4096;
 ///   * NULL / out-of-range ptr  → **EFAULT**
 ///   * empty string (`""`)      → **ENOENT** (callers without AT_EMPTY_PATH)
 ///   * pathname ≥ PATH_MAX bytes → **ENAMETOOLONG**
-///   * non-UTF-8 bytes          → EINVAL (D3b: byte-wise resolution pending)
+///   * non-UTF-8 bytes          → byte-preserved (Linux paths are opaque
+///     byte strings, `path_resolution(7)`); decoded via
+///     `vfs::path_from_bytes` so a non-UTF-8 component still resolves.
 /// Returns `Ok(empty)` is impossible — empty maps to ENOENT here; callers
 /// that allow AT_EMPTY_PATH must probe emptiness before calling.
 /// # C: O(strlen)
@@ -43,9 +45,7 @@ pub(crate) fn read_user_path(ptr: u64) -> Result<String, i64> {
     if bytes.is_empty() {
         return Err(-(Errno::Enoent.as_i32() as i64));
     }
-    core::str::from_utf8(bytes)
-        .map(String::from)
-        .map_err(|_| -(Errno::Einval.as_i32() as i64))
+    Ok(vfs::path_from_bytes(bytes))
 }
 
 /// # C: O(1)

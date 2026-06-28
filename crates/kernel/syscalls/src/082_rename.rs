@@ -66,12 +66,11 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     if (flags & RENAME_NOREPLACE != 0) && path_exists(&t) {
         return -(Errno::Eexist.as_i32() as i64);
     }
-    // RENAME_EXCHANGE / RENAME_WHITEOUT need atomic backend support the
-    // ext4 `rename(from,to)` shim does not expose; returning EINVAL
-    // (fs-does-not-support-flag, Linux vfs_rename) is correct and avoids
-    // a non-atomic emulation that could lose data. Tracked D3b.
-    if flags & (RENAME_EXCHANGE | RENAME_WHITEOUT) != 0 {
-        return -(Errno::Einval.as_i32() as i64);
+    // RENAME_EXCHANGE: both names must already exist (Linux ENOENT else).
+    // Pre-check here so the missing-side errno is reported against the
+    // dirfd-resolved path, not the backend's relative one.
+    if (flags & RENAME_EXCHANGE != 0) && (!path_exists(&f) || !path_exists(&t)) {
+        return -(Errno::Enoent.as_i32() as i64);
     }
     // Landlock: from-side needs REMOVE_FILE | REMOVE_DIR | REFER;
     // to-side needs MAKE_REG. Approximate as REMOVE_FILE+MAKE_REG.
@@ -86,9 +85,19 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     if !alloc::sync::Arc::ptr_eq(&mnt_f, &mnt_t) {
         return -(Errno::Exdev.as_i32() as i64);
     }
-    match mnt_f.fs().rename(&rel_f, &rel_t) {
-        // d_delete both names: the source name is gone and the dest name now
-        // resolves to a different inode — drop stale cached dentries for both.
+    // EXCHANGE atomically swaps; WHITEOUT renames then leaves a whiteout
+    // char-dev (0,0) at the source; plain rename is link-then-replace.
+    let r = if flags & RENAME_EXCHANGE != 0 {
+        mnt_f.fs().exchange(&rel_f, &rel_t)
+    } else if flags & RENAME_WHITEOUT != 0 {
+        mnt_f.fs().whiteout(&rel_f, &rel_t)
+    } else {
+        mnt_f.fs().rename(&rel_f, &rel_t)
+    };
+    match r {
+        // d_delete both names: the source name is gone (or now a whiteout)
+        // and the dest name now resolves to a different inode — drop stale
+        // cached dentries for both.
         Ok(())  => { crate::pathresolve::d_delete_path(&f); crate::pathresolve::d_delete_path(&t); 0 }
         Err(e)  => errno_from_vfs(e),
     }

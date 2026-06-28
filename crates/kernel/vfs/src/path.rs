@@ -60,6 +60,68 @@ pub fn is_absolute(path: &str) -> bool {
     path.as_bytes().first() == Some(&b'/')
 }
 
+/// Private-use code-point base for escaped non-UTF-8 path bytes. Each
+/// raw byte `b` of an invalid UTF-8 sequence maps to `U+EE00 + b`
+/// (PUA-A, valid Rust scalar values). `path_into_bytes` reverses it.
+const BYTE_ESCAPE_BASE: u32 = 0xEE00;
+
+/// Decode an opaque pathname byte string (Linux paths are byte strings,
+/// NOT guaranteed UTF-8 — see `path_resolution(7)`) into a Rust `String`
+/// that round-trips back to the exact bytes via [`path_into_bytes`].
+///
+/// Valid UTF-8 is kept verbatim, so a backend comparing `name.as_bytes()`
+/// against an on-disk name still matches byte-for-byte in the common case.
+/// Each byte of an *invalid* UTF-8 sequence is escaped to `U+EE00 + byte`
+/// (a "lossy-but-byte-preserving" surrogate-escape; Rust `String` cannot
+/// hold bare invalid bytes or surrogates). Ambiguity only arises if the
+/// input legitimately contained a `U+EE00..=U+EEFF` scalar, which is
+/// vanishingly rare in real pathnames.
+/// # C: O(n)
+pub fn path_from_bytes(bytes: &[u8]) -> String {
+    // Fast path: already valid UTF-8 → no allocation churn beyond the copy.
+    if let Ok(s) = core::str::from_utf8(bytes) { return String::from(s); }
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match core::str::from_utf8(&bytes[i..]) {
+            Ok(s) => { out.push_str(s); break; }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                // SAFETY: from_utf8 validated bytes[i..i+valid] as UTF-8 above.
+                out.push_str(unsafe { core::str::from_utf8_unchecked(&bytes[i..i + valid]) });
+                i += valid;
+                let bad = e.error_len().unwrap_or(bytes.len() - i);
+                for j in 0..bad {
+                    let b = bytes[i + j];
+                    // unwrap: BASE+255 = 0xEEFF, a valid scalar value.
+                    out.push(char::from_u32(BYTE_ESCAPE_BASE + b as u32).unwrap());
+                }
+                i += bad;
+            }
+        }
+    }
+    out
+}
+
+/// Inverse of [`path_from_bytes`]: turn an escaped path `String` back into
+/// the original opaque pathname bytes a backend compares against on-disk
+/// names. Escaped scalars (`U+EE00..=U+EEFF`) collapse to their single
+/// byte; every other char emits its UTF-8 encoding.
+/// # C: O(n)
+pub fn path_into_bytes(s: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len());
+    for c in s.chars() {
+        let u = c as u32;
+        if (BYTE_ESCAPE_BASE..=BYTE_ESCAPE_BASE + 0xFF).contains(&u) {
+            out.push((u - BYTE_ESCAPE_BASE) as u8);
+        } else {
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        }
+    }
+    out
+}
+
 /// Trim trailing newlines + NULs from a hostname-shaped byte slice
 /// and clamp to `max`. Used by the global hostname slot per
 /// `28§4` / sethostname(2). `echo "host" > /proc/sys/kernel/hostname`

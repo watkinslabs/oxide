@@ -667,6 +667,173 @@ fn dirent64_pack_many_stops_at_first_overflow() {
     assert_eq!(&buf[24+8..24+16], &2u64.to_le_bytes());
 }
 
+// ---------------------------------------------------------------------------
+// legacy linux_dirent packing (getdents(2), NR 78) — distinct from dirent64
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dirent_legacy_reclen_pads_to_8_bytes() {
+    // header(18) + name + NUL + d_type byte, padded to multiple of 8.
+    assert_eq!(crate::dirent::dirent_reclen(0),  24); // 18+0+2=20 → 24
+    assert_eq!(crate::dirent::dirent_reclen(3),  24); // 18+3+2=23 → 24
+    assert_eq!(crate::dirent::dirent_reclen(4),  24); // 18+4+2=24 → 24
+    assert_eq!(crate::dirent::dirent_reclen(5),  32); // 18+5+2=25 → 32
+    assert_eq!(crate::dirent::dirent_reclen(13), 40); // 18+13+2=33 → 40
+}
+
+#[test]
+fn dirent_legacy_pack_layout_matches_linux_abi() {
+    let mut buf = [0xAAu8; 64];
+    let n = crate::dirent::dirent_pack(&mut buf, 0x1122_3344_5566_7788, 0x42, 8, b"foo")
+        .unwrap();
+    assert_eq!(n, 24);
+    assert_eq!(&buf[0..8],  &0x1122_3344_5566_7788u64.to_le_bytes()); // d_ino
+    assert_eq!(&buf[8..16], &0x42u64.to_le_bytes());                  // d_off
+    assert_eq!(&buf[16..18], &24u16.to_le_bytes());                   // d_reclen
+    assert_eq!(&buf[18..21], b"foo");                                 // d_name @18
+    assert_eq!(buf[21], 0);                                           // NUL term
+    // zero padding between NUL and the trailing d_type byte
+    assert_eq!(&buf[22..23], &[0]);
+    // d_type lives in the LAST byte of the record (legacy ABI wart).
+    assert_eq!(buf[n - 1], 8);
+}
+
+#[test]
+fn dirent_legacy_pack_returns_none_when_buf_too_small() {
+    // The handler relies on this None → first-record-overflow → EINVAL.
+    let mut buf = [0u8; 8];
+    assert_eq!(crate::dirent::dirent_pack(&mut buf, 0, 0, 8, b"x"), None);
+}
+
+// ---------------------------------------------------------------------------
+// byte-wise (non-UTF-8) path handling — Linux paths are opaque byte strings
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_from_bytes_keeps_valid_utf8_verbatim() {
+    assert_eq!(crate::path::path_from_bytes(b"/etc/passwd"), "/etc/passwd");
+    // multi-byte UTF-8 stays intact and round-trips.
+    let s = crate::path::path_from_bytes("/café".as_bytes());
+    assert_eq!(crate::path::path_into_bytes(&s), "/café".as_bytes());
+}
+
+#[test]
+fn path_from_bytes_roundtrips_non_utf8() {
+    let raw = b"file\xff\xfename";
+    let s = crate::path::path_from_bytes(raw);
+    assert_eq!(crate::path::path_into_bytes(&s), raw);
+}
+
+// ---------------------------------------------------------------------------
+// RENAME_EXCHANGE / RENAME_WHITEOUT + non-UTF-8 resolution against a mock FS
+// ---------------------------------------------------------------------------
+
+use alloc::collections::BTreeMap;
+
+/// Single-level directory inode storing byte-exact entry names. Lookups
+/// decode the escaped `&str` back to its on-disk bytes, exercising the
+/// byte-wise resolution contract.
+struct TestDir {
+    ino:  u64,
+    ents: RwLock<BTreeMap<Vec<u8>, (u64, FileType, u32)>, InodeClass>,
+}
+
+impl TestDir {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { ino: 1, ents: RwLock::new(BTreeMap::new()) })
+    }
+    fn insert(&self, name: &[u8], ino: u64, ft: FileType, rdev: u32) {
+        self.ents.write().insert(name.to_vec(), (ino, ft, rdev));
+    }
+    fn get(&self, name: &[u8]) -> Option<(u64, FileType, u32)> {
+        self.ents.read().get(name).copied()
+    }
+}
+
+impl Inode for TestDir {
+    fn ino(&self) -> u64 { self.ino }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        let key = crate::path::path_into_bytes(name);
+        match self.ents.read().get(&key) {
+            Some(&(ino, _, _)) => { let r: InodeRef = MemFile::new(ino); Ok(r) }
+            None => Err(VfsError::Enoent),
+        }
+    }
+    fn mknod_child(&self, name: &str, mode: u16, rdev: u32) -> KResult<()> {
+        let key = crate::path::path_into_bytes(name);
+        let ft = match mode & 0xF000 {
+            0x2000 => FileType::CharDev,
+            0x6000 => FileType::BlockDev,
+            0x1000 => FileType::Fifo,
+            0xC000 => FileType::Socket,
+            _      => FileType::Regular,
+        };
+        self.ents.write().insert(key, (0, ft, rdev));
+        Ok(())
+    }
+}
+
+struct TestFs { dir: Arc<TestDir> }
+
+impl crate::fs::FileSystem for TestFs {
+    fn name(&self) -> &str { "testfs" }
+    fn root(&self) -> Option<InodeRef> { let r: InodeRef = self.dir.clone(); Some(r) }
+    fn rename(&self, from: &str, to: &str) -> KResult<()> {
+        let fk = crate::path::path_into_bytes(from);
+        let tk = crate::path::path_into_bytes(to);
+        let mut e = self.dir.ents.write();
+        let v = e.remove(&fk).ok_or(VfsError::Enoent)?;
+        e.insert(tk, v);
+        Ok(())
+    }
+}
+
+#[test]
+fn rename_exchange_swaps_two_files() {
+    use crate::fs::FileSystem;
+    let fs = TestFs { dir: TestDir::new() };
+    fs.dir.insert(b"a", 11, FileType::Regular, 0);
+    fs.dir.insert(b"b", 22, FileType::Regular, 0);
+    fs.exchange("a", "b").unwrap();
+    assert_eq!(fs.dir.get(b"a").unwrap().0, 22);
+    assert_eq!(fs.dir.get(b"b").unwrap().0, 11);
+    assert_eq!(fs.dir.ents.read().len(), 2); // temp name cleaned up
+}
+
+#[test]
+fn rename_exchange_missing_side_is_enoent() {
+    use crate::fs::FileSystem;
+    let fs = TestFs { dir: TestDir::new() };
+    fs.dir.insert(b"a", 11, FileType::Regular, 0);
+    assert_eq!(fs.exchange("a", "nope"), Err(VfsError::Enoent));
+}
+
+#[test]
+fn rename_whiteout_plants_chardev_at_source() {
+    use crate::fs::FileSystem;
+    let fs = TestFs { dir: TestDir::new() };
+    fs.dir.insert(b"src", 11, FileType::Regular, 0);
+    fs.whiteout("src", "dst").unwrap();
+    assert_eq!(fs.dir.get(b"dst").unwrap().0, 11); // file moved to dest
+    let (_, ft, rdev) = fs.dir.get(b"src").unwrap();
+    assert_eq!(ft, FileType::CharDev);             // whiteout = char dev
+    assert_eq!(rdev, 0);                           //          rdev 0/0
+}
+
+#[test]
+fn non_utf8_filename_resolves_and_stats() {
+    use crate::fs::FileSystem;
+    let fs = TestFs { dir: TestDir::new() };
+    let name = b"caf\xe9"; // trailing 0xE9 — invalid UTF-8
+    fs.dir.insert(name, 77, FileType::Regular, 0);
+    // userspace handed these raw bytes; decode as read_user_path does.
+    let path = crate::path::path_from_bytes(name);
+    let ino = fs.lookup_path(&path).expect("non-utf8 name resolves");
+    assert_eq!(ino.ino(), 77); // stat reads the resolved inode number
+}
+
 // Touch the warning-silencer.
 #[allow(dead_code)]
 fn _unused_silence() {
