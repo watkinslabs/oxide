@@ -65,7 +65,7 @@ fn d_lookup_is_refcount_neutral_and_marks_referenced() {
 // final `dput` called bare `d_drop` and left `is_dead() == false`.
 static DEL_OPS: DentryOps = DentryOps {
     d_delete: Some(|_d| true),
-    d_hash: None, d_compare: None, d_revalidate: None, d_release: None, d_iput: None,
+    d_hash: None, d_compare: None, d_revalidate: None, d_release: None, d_iput: None, d_dname: None,
 };
 #[test]
 fn dput_to_zero_marks_dead_before_unhash() {

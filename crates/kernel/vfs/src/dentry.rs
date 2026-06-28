@@ -52,8 +52,12 @@ pub const D_OP_COMPARE:    u32 = 0x0080;
 pub const D_OP_REVALIDATE: u32 = 0x0100;
 /// `d_op->d_delete` present (Linux `DCACHE_OP_DELETE`).
 pub const D_OP_DELETE:     u32 = 0x0200;
+/// `d_op->d_dname` present (Linux `DCACHE_OP_DNAME`) — the dentry renders its
+/// OWN path string dynamically (pipefs `pipe:[ino]`, sockfs `socket:[ino]`,
+/// anon-inode `[name]`), so `d_path`/`dentry_path` must NOT parent-walk it.
+pub const D_OP_DNAME:      u32 = 0x0400;
 /// All `d_op` presence bits (cleared together before a re-stamp).
-pub const D_OP_MASK: u32 = D_OP_HASH | D_OP_COMPARE | D_OP_REVALIDATE | D_OP_DELETE;
+pub const D_OP_MASK: u32 = D_OP_HASH | D_OP_COMPARE | D_OP_REVALIDATE | D_OP_DELETE | D_OP_DNAME;
 
 /// Presence-bit set for `d_op` (Linux `d_set_d_op`): a `D_OP_*` bit per
 /// non-NULL hook, so the hot path branches on `d_flags` not a pointer deref.
@@ -65,6 +69,7 @@ fn op_flags_for(d_op: Option<&'static DentryOps>) -> u32 {
     if o.d_compare.is_some()    { f |= D_OP_COMPARE; }
     if o.d_revalidate.is_some() { f |= D_OP_REVALIDATE; }
     if o.d_delete.is_some()     { f |= D_OP_DELETE; }
+    if o.d_dname.is_some()      { f |= D_OP_DNAME; }
     f
 }
 
@@ -248,6 +253,12 @@ pub type DDeleteFn = fn(d: &Dentry) -> bool;
 pub type DReleaseFn = fn(d: &Dentry);
 /// `d_iput`: an inode is being disassociated from the dentry.
 pub type DIputFn = fn(d: &Dentry, inode: InodeRef);
+/// `d_dname`: render this dentry's path string dynamically (Linux
+/// `dentry_operations::d_dname`, e.g. pipefs `pipe:[%lu]`). Set ONLY on
+/// `d_alloc_pseudo` dentries; consulted by `d_path`/`dentry_path` in place of
+/// the parent walk. Returns the full displayed name (no leading-slash logic —
+/// it IS the whole path, like Linux's `dynamic_dname` buffer).
+pub type DDnameFn = fn(d: &Dentry) -> String;
 
 pub struct DentryOps {
     pub d_hash:       Option<DHashFn>,
@@ -256,12 +267,13 @@ pub struct DentryOps {
     pub d_delete:     Option<DDeleteFn>,
     pub d_release:    Option<DReleaseFn>,
     pub d_iput:       Option<DIputFn>,
+    pub d_dname:      Option<DDnameFn>,
 }
 
 impl DentryOps {
     /// All-default ops vector. # C: O(1)
     pub const fn empty() -> Self {
-        DentryOps { d_hash: None, d_compare: None, d_revalidate: None, d_delete: None, d_release: None, d_iput: None }
+        DentryOps { d_hash: None, d_compare: None, d_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None }
     }
 }
 
@@ -409,6 +421,18 @@ impl Dentry {
         Self::build(None, "/", Some(inode), sb, None, D_DISCONNECTED)
     }
 
+    /// Construct a PSEUDO dentry (Linux `d_alloc_pseudo`): a parentless,
+    /// positive dentry carrying a `d_op` whose `d_dname` renders the displayed
+    /// path dynamically (pipefs `pipe:[ino]`, sockfs `socket:[ino]`, anon-inode
+    /// `[eventfd]`). `name` is the static fallback `d_name` (Linux keeps it for
+    /// the rare no-`d_dname` reader); the live path comes from `d_op->d_dname`.
+    /// NOT hashed and NOT a superblock root — these never participate in the
+    /// (parent,name) lookup table. # C: O(name.len())
+    pub fn new_pseudo(name: &str, inode: InodeRef, d_op: &'static DentryOps) -> Arc<Self> {
+        let sb = match inode.i_sb() { Some(s) => Arc::downgrade(&s), None => Weak::new() };
+        Self::build(None, name, Some(inode), sb, Some(d_op), 0)
+    }
+
     /// `d_sb` — owning superblock, if any. # C: O(1)
     pub fn d_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
 
@@ -426,6 +450,18 @@ impl Dentry {
     /// `d_op->d_delete` present (Linux `DCACHE_OP_DELETE`). `dput` tests this
     /// before consulting `d_delete` on the final put. # C: O(1)
     pub fn d_has_op_delete(&self) -> bool { self.flags() & D_OP_DELETE != 0 }
+    /// `d_op->d_dname` present (Linux `DCACHE_OP_DNAME`). `d_path`/`dentry_path`
+    /// test this to render the name dynamically instead of parent-walking — set
+    /// only on `d_alloc_pseudo` dentries (pipe/socket/anon-inode). # C: O(1)
+    pub fn d_has_op_dname(&self) -> bool { self.flags() & D_OP_DNAME != 0 }
+
+    /// Dynamic path string from `d_op->d_dname`, if this is a pseudo dentry that
+    /// renders its own name (Linux `dentry->d_op->d_dname`). `None` ⇒ ordinary
+    /// dentry, reconstruct by the parent walk. # C: O(d_dname)
+    pub fn d_dname(&self) -> Option<String> {
+        if self.flags() & D_OP_DNAME == 0 { return None; }
+        self.d_op.and_then(|o| o.d_dname).map(|f| f(self))
+    }
 
     /// Install `d_op` on a freshly built dentry (Linux `d_set_d_op`). Used to
     /// give a subtree root case-insensitive ops before children are spliced.
@@ -682,6 +718,11 @@ impl Dentry {
     /// otherwise `b"/sbin/init"`. Empty-named roots contribute no slash so we
     /// never emit `//sbin/init`. # C: O(depth × N_mounts)
     pub fn absolute_path(&self) -> Vec<u8> {
+        // Pseudo dentries (`d_alloc_pseudo`) render their own path via
+        // `d_op->d_dname` (Linux `prepend_path`: `if (dentry->d_op &&
+        // dentry->d_op->d_dname) return dentry->d_op->d_dname(...)`) — never
+        // parent-walk a `pipe:[ino]`/`[eventfd]` into a bogus `/eventfd`.
+        if let Some(dyn_name) = self.d_dname() { return dyn_name.into_bytes(); }
         let mut parts: Vec<String> = Vec::new();
         if !self.name.name().is_empty() { parts.push(String::from(self.name.name())); }
         // First ancestor: `d_parent`, or — if this dentry is itself a mounted
@@ -723,6 +764,9 @@ impl Dentry {
     /// suffixed " (deleted)" exactly as Linux `dentry_path_raw` marks it.
     /// # C: O(depth)
     pub fn dentry_path(&self, root: Option<&Arc<Dentry>>) -> String {
+        // Pseudo dentries render their own name (Linux `__dentry_path` defers to
+        // `d_dname` for these) — return it verbatim, no parent walk / "(deleted)".
+        if let Some(dyn_name) = self.d_dname() { return dyn_name; }
         let root_ptr = root.map(Arc::as_ptr);
         let me_ptr = self as *const Dentry;
         let mut parts: Vec<String> = Vec::new();
