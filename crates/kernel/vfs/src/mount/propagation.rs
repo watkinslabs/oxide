@@ -49,9 +49,29 @@ pub(super) fn propagation_targets(parent: &Arc<Mount>) -> Vec<Arc<Mount>> {
     out
 }
 
+/// Assign the source new mount a peer group and mark it SHARED, returning the
+/// group id (Linux `invent_group_ids` + `set_mnt_shared` over the propagated
+/// source subtree). Reuses an existing group if the source already had one — a
+/// fresh group otherwise, DISTINCT from the parent's so the new tree forms its
+/// own peer group (`propagate_one` makes copies peers of the SOURCE, not of the
+/// parent group). # C: O(1)
+fn make_shared_group(m: &Arc<Mount>) -> u64 {
+    let mut grp = m.peer_group.load(Ordering::Acquire);
+    if grp == 0 {
+        grp = super::NEXT_PEER_GROUP.fetch_add(1, Ordering::Relaxed);
+        m.peer_group.store(grp, Ordering::Release);
+    }
+    m.propagation.store(Propagation::Shared as u8, Ordering::Release);
+    grp
+}
+
 /// Propagation event delivery (`docs/16§6`): replicate the mount just created
-/// at dentry `at` to every propagation target of its PARENT mount. Returns the
-/// count propagated. # C: O(N_mounts × depth)
+/// at dentry `at` to every propagation target of its PARENT mount, mirroring
+/// Linux `propagate_mnt`/`propagate_one`. The source mount and each PEER copy
+/// join ONE new peer group (`CL_MAKE_SHARED`) so a later mount under any peer
+/// propagates back; a copy landing on a SLAVE of the group becomes a SLAVE of
+/// the source (`CL_SLAVE`) — it receives master events but never originates.
+/// Returns the count propagated. # C: O(N_mounts × depth)
 pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
     let ns = current_ns();
     let newm = match mount_exact_at(ns, at) { Some(m) => m, None => return 0 };
@@ -67,12 +87,28 @@ pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
     let root = match newm.root.clone().or_else(|| newm.fs().root()) {
         Some(r) => r, None => return 0,
     };
+    // CL_MAKE_SHARED over the source: it and its peer copies form a new group.
+    let parent_pg = parent.peer_group.load(Ordering::Acquire);
+    let grp = make_shared_group(&newm);
     let mut n = 0;
     for peer in targets {
         if peer.ns != ns { continue; }
         let base = match peer.mountpoint().or_else(global_root) { Some(b) => b, None => continue };
         let Some(dst) = descend(&base, &rel) else { continue; };
-        if register_bind(Some(dst), newm.fs().clone(), root.clone()).is_ok() { n += 1; }
+        if register_bind(Some(dst.clone()), newm.fs().clone(), root.clone()).is_err() { continue; }
+        n += 1;
+        // Tag the freshly created copy by target propagation type.
+        let Some(copy) = mount_exact_at(ns, &dst) else { continue; };
+        let is_peer = Propagation::from_u8(peer.propagation.load(Ordering::Acquire)) == Propagation::Shared
+            && peer.peer_group.load(Ordering::Acquire) == parent_pg;
+        if is_peer {
+            copy.peer_group.store(grp, Ordering::Release);
+            copy.propagation.store(Propagation::Shared as u8, Ordering::Release);
+        } else {
+            *copy.mnt_master.lock() = Arc::downgrade(&newm);
+            newm.mnt_slave_list.lock().push(Arc::downgrade(&copy));
+            copy.propagation.store(Propagation::Slave as u8, Ordering::Release);
+        }
     }
     n
 }
