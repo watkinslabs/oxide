@@ -531,6 +531,14 @@ impl SuperBlock {
     /// True iff this superblock is mounted read-only (`SB_RDONLY`). # C: O(1)
     pub fn is_readonly(&self) -> bool { (self.s_flags() & SB_RDONLY) != 0 }
 
+    /// Flip the `SB_RDONLY` bit (sb-level `remount` RO↔RW toggle, Linux
+    /// `reconfigure_super` rewriting `sb->s_flags`). Once set, [`sb_start_write`]
+    /// refuses every new writer so a write(2)/page-fault path cannot dirty a
+    /// read-only mount. # C: O(1)
+    pub fn set_readonly(&self, ro: bool) {
+        if ro { self.set_s_flags(SB_RDONLY, 0); } else { self.set_s_flags(0, SB_RDONLY); }
+    }
+
     /// `s_active` snapshot — live active references (Linux `s->s_active`).
     /// `0` ⇒ the SB is being / has been torn down. # C: O(1)
     pub fn s_active(&self) -> u32 { self.s_active.load(Ordering::Acquire) }
@@ -617,13 +625,15 @@ impl SuperBlock {
     pub fn is_frozen(&self) -> bool { self.sb_freeze_level() != SB_UNFROZEN }
 
     /// `sb_start_write` (trylock variant, Linux `__sb_start_write_trylock`):
-    /// admit a write(2)/page-fault writer iff unfrozen. On success the caller
-    /// MUST pair with [`sb_end_write`]. Returns `false` if frozen so the
-    /// syscall layer can block/retry. The post-increment re-check mirrors the
-    /// percpu_rwsem reader/writer barrier: a freeze racing in between backs the
-    /// writer out so `freeze_super` never proceeds with a leaked writer.
-    /// # C: O(1)
+    /// admit a write(2)/page-fault writer iff the sb is both writable and
+    /// unfrozen. On success the caller MUST pair with [`sb_end_write`]. Returns
+    /// `false` if `SB_RDONLY` (Linux `mnt_want_write` → `-EROFS`) or frozen so
+    /// the syscall layer can fail `EROFS`/block-retry. The post-increment
+    /// re-check mirrors the percpu_rwsem reader/writer barrier: a freeze racing
+    /// in between backs the writer out so `freeze_super` never proceeds with a
+    /// leaked writer. # C: O(1)
     pub fn sb_start_write(&self) -> bool {
+        if self.is_readonly() { return false; }
         if self.is_frozen() { return false; }
         self.s_writers_count.fetch_add(1, Ordering::AcqRel);
         if self.is_frozen() {
