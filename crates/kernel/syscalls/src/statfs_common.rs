@@ -19,15 +19,53 @@ pub(crate) const M_EXT4: u64 = 0xEF53;
 // not an absolute path (memfd, pipe-like) and supplies no `statfs_magic`.
 pub(crate) const M_TMPFS: u64 = 0x0102_1994;
 
+// statvfs(3) `ST_*` mount flags (sys/statvfs.h) reported in statfs `f_flags`.
+// These are a SEPARATE bit-space from the kernel `MNT_*`/`SB_*` bits and are
+// mapped BY NAME below (e.g. `MNT_RELATIME`=1<<21 → `ST_RELATIME`=1<<12 — same
+// concept, different bit), exactly as Linux `calculate_f_flags` does.
+const ST_RDONLY:      u64 = 1;
+const ST_NOSUID:      u64 = 2;
+const ST_NODEV:       u64 = 4;
+const ST_NOEXEC:      u64 = 8;
+const ST_SYNCHRONOUS: u64 = 16;
+const ST_MANDLOCK:    u64 = 64;
+const ST_NOATIME:     u64 = 1024;
+const ST_NODIRATIME:  u64 = 2048;
+const ST_RELATIME:    u64 = 4096;
+
+/// Map per-mount `MNT_*` bits + superblock `SB_*` bits to statvfs `ST_*`
+/// (Linux `calculate_f_flags` = `flags_by_mnt` | `flags_by_sb`). Bit-for-bit
+/// name mapping — never a raw integer copy. # C: O(1)
+fn st_flags(mnt: u64, sb: u64) -> u64 {
+    use vfs::mount::{MNT_NOATIME, MNT_NODEV, MNT_NODIRATIME, MNT_NOEXEC, MNT_NOSUID, MNT_RDONLY, MNT_RELATIME};
+    use vfs::superblock::{SB_MANDLOCK, SB_RDONLY, SB_SYNCHRONOUS};
+    let mut f = 0u64;
+    if mnt & MNT_RDONLY     != 0 { f |= ST_RDONLY; }
+    if mnt & MNT_NOSUID     != 0 { f |= ST_NOSUID; }
+    if mnt & MNT_NODEV      != 0 { f |= ST_NODEV; }
+    if mnt & MNT_NOEXEC     != 0 { f |= ST_NOEXEC; }
+    if mnt & MNT_NOATIME    != 0 { f |= ST_NOATIME; }
+    if mnt & MNT_NODIRATIME != 0 { f |= ST_NODIRATIME; }
+    if mnt & MNT_RELATIME   != 0 { f |= ST_RELATIME; }
+    if sb  & SB_SYNCHRONOUS != 0 { f |= ST_SYNCHRONOUS; }
+    if sb  & SB_MANDLOCK    != 0 { f |= ST_MANDLOCK; }
+    if sb  & SB_RDONLY      != 0 { f |= ST_RDONLY; }
+    f
+}
+
 /// `kstatfs` for the filesystem backing absolute `path`, read from that
 /// mount's SuperBlock (`s_magic` → `f_type`, `s_blocksize` → `f_bsize`,
 /// `SuperOps::statfs` → usage). `resolve_mount` returns the owning mount by
 /// dentry-identity crossing (root mount for paths not under a distinct
 /// mount), so there is no path-prefix guesswork. # C: O(N_mounts)
 pub(crate) fn statfs_for_path(path: &str) -> SbStatFs {
-    let mut st = vfs::mount::resolve_mount(path)
-        .and_then(|(m, _)| m.sb().statfs().ok())
-        .unwrap_or_default();
+    let mut st = SbStatFs::default();
+    if let Some((m, _)) = vfs::mount::resolve_mount(path) {
+        if let Ok(s) = m.sb().statfs() { st = s; }
+        // `f_flags` is the per-MOUNT statvfs `ST_*` view (Linux
+        // `calculate_f_flags`), not an `s_op->statfs` output.
+        st.f_flags = st_flags(m.flags(), m.sb().s_flags());
+    }
     fill_usage(&mut st);
     st
 }
@@ -77,5 +115,6 @@ pub(crate) fn write_statfs(buf: u64, st: &SbStatFs) {
         core::ptr::write_volatile((buf + 56)  as *mut u64, st.f_fsid);          // f_fsid   @56 (__fsid_t)
         core::ptr::write_volatile((buf + 64)  as *mut u64, 255);                // f_namelen@64 (NAME_MAX)
         core::ptr::write_volatile((buf + 72)  as *mut u64, st.f_bsize as u64);  // f_frsize @72
+        core::ptr::write_volatile((buf + 80)  as *mut u64, st.f_flags);         // f_flags  @80 (ST_*)
     }
 }
