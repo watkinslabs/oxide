@@ -375,7 +375,40 @@ pub unsafe fn inc_ref(pa: u64) {
         // frame (fork child install, shmem MAP_SHARED fault, KernelFrame
         // vvar fault), so the live-mapping count rises in lock-step.
         let _ = meta.inc_map(pfn);
+        // F157-A3 (THE load-bearing CLEAR, Linux `copy_present_pte` ->
+        // `folio_clear_anon_exclusive`): `inc_ref` is precisely "a second
+        // reference now exists for this frame" — a fork child installing
+        // the parent's page, a second MAP_SHARED mapper, etc. The frame is
+        // therefore no longer exclusively owned, so the COW-reuse fast path
+        // must not fire for it. Clearing here covers EVERY fork-shared anon
+        // page (fork_cow_pages calls inc_ref per shared PTE). Clearing on
+        // non-anon frames (shmem/KernelFrame) is a harmless no-op — the bit
+        // was never set on them.
+        let _ = meta.clear_flags(pfn, crate::PageFlags::ANON_EXCLUSIVE);
     }
+}
+
+/// F157-A3: the `wp_page_reuse` predicate. True iff `pa` is an
+/// exclusively-owned anonymous frame — Linux `wp_can_reuse_anon_folio`'s
+/// proof that a write fault may reuse the frame in place (flip W, no
+/// copy) instead of COW-splitting it. Three conjuncts, all read from
+/// `PageMeta`:
+///   * `ANON`            — never reuse a file / page-cache-aliased frame.
+///   * `ANON_EXCLUSIVE`  — set at anon birth, CLEARED on every fork-share
+///                         (`inc_ref`); proves no fork ever shared it.
+///   * `mapcount == 1`   — exactly one live PTE references it (belt-and-
+///                         suspenders against a single-bit accounting bug:
+///                         a stale exclusive bit with mapcount>1 fails safe
+///                         to an extra copy rather than peer corruption).
+/// Returns false pre-init / out-of-range (→ copy path, always correct).
+/// # C: O(1)
+pub fn can_reuse_anon_exclusive(pa: u64) -> bool {
+    let meta = match page_meta() { Some(m) => m, None => return false };
+    let pfn = hal::Pfn(pa / 4096);
+    let f = match meta.flags(pfn) { Some(f) => f, None => return false };
+    f.contains(crate::PageFlags::ANON)
+        && f.contains(crate::PageFlags::ANON_EXCLUSIVE)
+        && meta.mapcount(pfn) == Some(1)
 }
 
 /// F157: refcount snapshot. Returns 0 if pre-init or out-of-range.
@@ -405,8 +438,21 @@ pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
         // frame). Decrement the live-mapping count alongside the refcount.
         // Out-of-range pfns (device/MMIO PhysRange) return `None` here, same
         // as `dec_ref` below, so the early-return path is unaffected.
-        let _ = meta.dec_map(pfn);
+        let new_mc = meta.dec_map(pfn);
         if let Some(new) = meta.dec_ref(pfn) {
+            // F157-A3 (RESTORE, Linux do_wp_page's reuse-path re-marks the
+            // sole survivor exclusive): one mapper of a fork-shared anon
+            // frame just went away. If exactly one PTE and one reference
+            // remain, the survivor is the exclusive owner again — re-set
+            // ANON_EXCLUSIVE so its next write fault can reuse in place
+            // instead of pointlessly COW-copying a page nobody else maps.
+            // Requires refcount==1 too so a GUP/io_uring pin (a non-PTE
+            // reference that could still write) keeps the page non-exclusive.
+            if new_mc == Some(1) && new == 1 {
+                if meta.flags(pfn).map_or(false, |f| f.contains(crate::PageFlags::ANON)) {
+                    let _ = meta.set_flags(pfn, crate::PageFlags::ANON_EXCLUSIVE);
+                }
+            }
             // LOUD over-dec detection: dec on a refcount-0 frame wraps to a huge
             // value — a PTE was torn down whose inc_ref was never paired (the
             // under-count root) OR a frame was dec'd twice. Names the frame.
@@ -509,6 +555,15 @@ pub unsafe fn set_anon_rmap_for_pa(
         }
     }
     let _ = meta.set_page_index(pfn, page_index);
+    // F157-A3 (Linux `page_add_new_anon_rmap` -> the folio is born
+    // exclusive): `set_anon_rmap_for_pa` is called exactly at the two
+    // sites that mint a freshly-owned anon frame — the do_anonymous_page
+    // zero-fill and the COW-copy destination — and only for VMAs that
+    // carry an anon_vma (`VmaBacking::Anonymous`). Both produce a page
+    // mapped by exactly one writable owner, so mark it ANON +
+    // ANON_EXCLUSIVE. The exclusivity is revoked later by `inc_ref` the
+    // moment a fork shares it.
+    let _ = meta.set_flags(pfn, crate::PageFlags::ANON | crate::PageFlags::ANON_EXCLUSIVE);
 }
 
 /// Inverse of `set_anon_rmap_for_pa`. Loads the stored raw pointer,
@@ -691,6 +746,14 @@ pub unsafe fn free_one_frame(pa: u64) {
             // (Linux `free_pages_prepare` zeroes `_mapcount`). Direct frees
             // (PT tables, AS root) never had a mapcount; this is idempotent.
             m.mapcount.store(0, core::sync::atomic::Ordering::Release);
+            // F157-A3: clear the page-class bits (Linux `free_pages_prepare`
+            // -> `__folio_clear_anon`/`PAGE_FLAGS_CHECK_AT_FREE`). A recycled
+            // frame must not inherit a stale ANON / ANON_EXCLUSIVE from its
+            // previous life, or the COW-reuse fast path could fire on a fresh
+            // non-anon allocation. set_anon_rmap_for_pa re-establishes them
+            // for the next anon owner.
+            let _ = meta.clear_flags(pfn,
+                crate::PageFlags::ANON | crate::PageFlags::ANON_EXCLUSIVE);
         }
     }
     // PAGE POISONING (debug-watchdog): fill the freed frame with 0xAA so a

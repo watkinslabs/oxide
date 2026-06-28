@@ -15,7 +15,7 @@
 //   land in subsequent P1-N branches alongside HAL `MmuOps`.
 
 use alloc::boxed::Box;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
 use hal::{MmuOps, Pa, PageSize, UserVirtAddr, Va, PAGE_SIZE_BYTES, USER_VA_END};
@@ -83,6 +83,14 @@ pub struct AddressSpace {
     /// — `find_hole` falls back to the legacy `MMAP_TOP` constant
     /// (used by boot-anchor AS + hosted tests).
     mmap_base: core::sync::atomic::AtomicU64,
+    /// A4-rmap: this AS's own `Weak<Self>`, captured at construction via
+    /// `Arc::new_cyclic`. Linux's `vma->vm_mm` back-pointer analogue:
+    /// `mmap` uses it to attach the owning VMA's anon_vma chain edge so
+    /// `rmap_walk_anon` can enumerate the originating mapping (GAP A4-1
+    /// — previously only fork children attached edges, leaving a
+    /// never-forked anon page invisible to the rmap walk). `munmap` /
+    /// `mprotect` use it to detach + re-attach split fragments.
+    self_weak: Weak<Self>,
 }
 
 impl Drop for AddressSpace {
@@ -113,7 +121,7 @@ impl AddressSpace {
     /// VMA-tree behaviour and never activate the AS.
     /// # C: O(1)
     pub fn new(root_pa: u64) -> KResult<Arc<Self>> {
-        Ok(Arc::new(Self {
+        Ok(Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(VmaTree::new()),
             root_pa,
             brk:     core::sync::atomic::AtomicU64::new(0),
@@ -121,6 +129,7 @@ impl AddressSpace {
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(None),
             mmap_base: core::sync::atomic::AtomicU64::new(0),
+            self_weak: w.clone(),
         }))
     }
 
@@ -257,7 +266,7 @@ impl AddressSpace {
         for vma in src.iter() {
             dst.insert(vma.clone()).map_err(|_| Error::NoMem)?;
         }
-        Ok(Arc::new(Self {
+        Ok(Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(dst),
             root_pa: new_root_pa,
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
@@ -265,6 +274,7 @@ impl AddressSpace {
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
+            self_weak: w.clone(),
         }))
     }
 
@@ -404,7 +414,7 @@ impl AddressSpace {
                 va += PAGE_SIZE_BYTES;
             }
         }
-        let child = Arc::new(Self {
+        let child = Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(dst),
             root_pa: new_root_pa,
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
@@ -412,6 +422,7 @@ impl AddressSpace {
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
+            self_weak: w.clone(),
         });
         // Linux `anon_vma_fork`: each anonymous VMA in the child
         // inherits the parent's `Arc<AnonVma>` (already cloned by
@@ -487,7 +498,7 @@ impl AddressSpace {
                 va += PAGE_SIZE_BYTES;
             }
         }
-        Ok(Arc::new(Self {
+        Ok(Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(dst),
             root_pa: new_root_pa,
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
@@ -495,6 +506,7 @@ impl AddressSpace {
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
+            self_weak: w.clone(),
         }))
     }
 
@@ -594,8 +606,24 @@ impl AddressSpace {
         };
 
         let end_va = end_of(start_va, len_u64)?;
+        let is_anon_vma = matches!(backing, VmaBacking::Anonymous);
         tree.insert(Vma::new(start_va, end_va, prot, flags, backing))
             .map_err(|_| Error::Inval)?;
+        // A4-rmap (GAP A4-1): attach the owning-AS chain edge for the
+        // newly mapped range. Linux `anon_vma_prepare`: the originating
+        // mapping MUST be on the chain, or `rmap_walk_anon` enumerates
+        // zero targets for a never-forked page (the AS that owns it is
+        // invisible). Previously only `fork_cow_pages` attached edges,
+        // and only for the child — the parent self-edge was attached
+        // nowhere. Bind to the VMA actually in the tree at `start_va`
+        // (which may have absorbed `[start_va,end_va)` via an abutting
+        // merge), attaching only the newly added sub-range so a merged
+        // family never gets an overlapping (double-counting) edge.
+        if is_anon_vma {
+            if let Some(av) = tree.find_containing(start_va).and_then(|v| v.anon_vma.clone()) {
+                av.attach(self.self_weak.clone(), start_va.as_u64(), end_va.as_u64());
+            }
+        }
         Ok(start_va)
     }
 
@@ -608,7 +636,54 @@ impl AddressSpace {
         validate_aligned(addr)?;
         let end = end_of(addr, len as u64)?;
         let mut tree = self.vmas.write();
-        let _ = tree.remove_range(addr, end);
+        // A4-rmap (GAP A4-2): detach the anon_vma chain edges of every
+        // VMA the unmap touches (their pre-split ranges), then re-attach
+        // the surviving fragments' new ranges after the tree mutation.
+        // Linux `unlink_anon_vmas` / `__split_vma` keep the chain in
+        // lock-step with the VMA tree; lazy weak-pruning alone leaves
+        // stale wide edges (still PTE-checked by the walker, so this is
+        // hygiene, not a soundness fix — but it keeps the chain bounded).
+        self.rmap_resplit(&mut tree, addr.as_u64(), end.as_u64(), |t, s, e| { let _ = t.remove_range(
+            UserVirtAddr::new(s).expect("uva"), UserVirtAddr::new(e).expect("uva")); Ok(()) })?;
+        Ok(())
+    }
+
+    /// A4-rmap helper: snapshot the anon edges overlapping `[s,e)`,
+    /// detach them, run `op` (the tree mutation), then re-attach every
+    /// anon VMA fragment still present in the touched super-range. Used
+    /// by `munmap` and `mprotect` so VMA splits keep precise rmap edges.
+    /// # C: O(K_touched · N_edges)
+    fn rmap_resplit<O>(&self, tree: &mut VmaTree, s: u64, e: u64, op: O) -> KResult<()>
+    where O: FnOnce(&mut VmaTree, u64, u64) -> KResult<()> {
+        // Pass 1: the super-range [lo,hi) spanned by every VMA the op
+        // touches (overlaps [s,e)). Splits stay within this span.
+        let (mut lo, mut hi) = (u64::MAX, 0u64);
+        for v in tree.iter() {
+            if v.end.as_u64() > s && v.start.as_u64() < e {
+                lo = lo.min(v.start.as_u64());
+                hi = hi.max(v.end.as_u64());
+            }
+        }
+        if lo > hi { return op(tree, s, e); } // nothing anon to re-key
+        // Pass 2: detach EVERY anon edge inside [lo,hi) (not just the
+        // [s,e)-overlapping ones) so a fully-contained but untouched VMA
+        // is detached and re-attached with the SAME range (net no-op) —
+        // never double-attached. Detach matches one (weak,start,end).
+        let detach: Vec<(Arc<crate::AnonVma>, u64, u64)> = tree.iter()
+            .filter(|v| v.end.as_u64() > lo && v.start.as_u64() < hi)
+            .filter_map(|v| v.anon_vma.as_ref()
+                .map(|av| (Arc::clone(av), v.start.as_u64(), v.end.as_u64())))
+            .collect();
+        for (av, vs, ve) in &detach { av.detach(&self.self_weak, *vs, *ve); }
+        op(tree, s, e)?;
+        // Pass 3: re-attach every surviving anon fragment in [lo,hi).
+        for v in tree.iter() {
+            if v.end.as_u64() > lo && v.start.as_u64() < hi {
+                if let Some(av) = v.anon_vma.as_ref() {
+                    av.attach(self.self_weak.clone(), v.start.as_u64(), v.end.as_u64());
+                }
+            }
+        }
         Ok(())
     }
 
@@ -627,7 +702,13 @@ impl AddressSpace {
         validate_aligned(addr)?;
         let end = end_of(addr, len as u64)?;
         let mut tree = self.vmas.write();
-        tree.mprotect_range(addr, end, prot)
+        // A4-rmap: mprotect splits VMAs at the range boundaries; keep the
+        // anon_vma chain edges in step with the new fragments.
+        self.rmap_resplit(&mut tree, addr.as_u64(), end.as_u64(), |t, s, e| {
+            t.mprotect_range(
+                UserVirtAddr::new(s).expect("uva"),
+                UserVirtAddr::new(e).expect("uva"), prot)
+        })
     }
 
     /// True if any VMA in `[addr, addr+len)` is mseal'd. The syscall layer
@@ -743,11 +824,12 @@ impl AddressSpace {
         // user-fault dispatcher uses `handle_page_fault_cow_rmap`.
         // SAFETY: forwarded preconditions per `handle_page_fault_cow_rmap`.
         unsafe {
-            self.handle_page_fault_cow_rmap::<M, _, _, _, _, _>(
+            self.handle_page_fault_cow_rmap::<M, _, _, _, _, _, _>(
                 va, fault, hhdm_offset,
                 alloc_frame, frame_refcount, dec_ref,
                 |_pa, _av, _idx| {},
                 |_pa| {},
+                |_pa| false, // no PageMeta exclusivity proof → copy-always
             )
         }
     }
@@ -759,7 +841,7 @@ impl AddressSpace {
     /// `page_add_anon_rmap`. Hosted tests pin no-op `set_rmap`.
     /// # SAFETY: per `handle_page_fault_cow`.
     /// # C: O(N_vmas) on lookup + O(walk) on install.
-    pub unsafe fn handle_page_fault_cow_rmap<M, A, RC, DR, SR, IR>(
+    pub unsafe fn handle_page_fault_cow_rmap<M, A, RC, DR, SR, IR, XR>(
         &self,
         va: UserVirtAddr,
         fault: FaultKind,
@@ -769,6 +851,7 @@ impl AddressSpace {
         mut dec_ref: DR,
         mut set_rmap: SR,
         mut inc_ref: IR,
+        mut reuse_ok: XR,
     ) -> KResult<()>
     where
         M:  MmuOps,
@@ -777,6 +860,14 @@ impl AddressSpace {
         DR: FnMut(u64),
         SR: FnMut(u64, &Arc<crate::AnonVma>, u32),
         IR: FnMut(u64),
+        // A3: `reuse_ok(pa)` returns true iff `pa` is an exclusively-owned
+        // anonymous frame (Linux `PageAnonExclusive` + mapcount==1) — the
+        // sole-mapper proof that lets a write fault reuse the frame in
+        // place (`wp_page_reuse`) instead of COW-copying. The kernel
+        // adapter implements it as `is_anon && is_anon_exclusive &&
+        // mapcount==1` over `PageMeta`; hosted no-op callers pass
+        // `|_| false` (copy-always, the previous behaviour).
+        XR: FnMut(u64) -> bool,
     {
         // Protection write to a writable VMA — CoW-style
         // upgrade. Three causes hit this:
@@ -838,19 +929,36 @@ impl AddressSpace {
             // struct-page refcount doesn't capture. Reusing a file page in
             // place let one process's loader-scratch write land in a fork
             // peer's still-shared libc page (the .bss lock → glibc deadlock).
-            // COW in-place reuse (Linux `wp_page_reuse`) is DISABLED: it
-            // requires proof the page is exclusively owned (Linux's
-            // `PageAnonExclusive`), and our only proxy — `frame_refcount(pa)
-            // <= 1` — is UNRELIABLE. Some map path under-counts the refcount,
-            // so an actually-shared anon frame can read refcount 1; reusing it
-            // in place then lets this AS's write land in a fork peer's still-
-            // shared page (write-while-shared corruption — the random
-            // glibc-.data byte flips / "Failed to spawn executor" storm /
-            // intermittent futex wedge). Measured: re-enabling this path raises
-            // systemd executor-spawn failures from ~1 to ~50 per boot. Until
-            // the under-count is found and a real PageAnonExclusive flag is
-            // tracked, every write-fault COW-copies — always correct, just an
-            // extra 4 KiB copy per first-write on a private anon page.
+            // A3 (re-enabled, Linux `wp_page_reuse`): reuse the frame in
+            // place — flip W, no alloc/copy/refcount-change — iff `reuse_ok`
+            // proves the page is exclusively owned. The kernel adapter
+            // computes that from `PageMeta` as `is_anon && PageAnonExclusive
+            // && mapcount==1`, the reliable replacement for the old
+            // `frame_refcount<=1` proxy that under-counted and corrupted a
+            // fork peer (random glibc-.data byte flips / "Failed to spawn
+            // executor" storm / futex wedge). The exclusive bit is CLEARED on
+            // every fork-share (`pmm::setup::inc_ref`), so a still-shared frame
+            // never satisfies `reuse_ok` and always COW-copies below. Gated on
+            // an Anonymous backing: File/KernelBytes private pages can alias
+            // the page cache / fork peers in ways struct-page state misses, so
+            // they must always copy.
+            if matches!(vma.backing, VmaBacking::Anonymous) {
+                if let Some((src_pa, _)) = cur {
+                    let cur_pa = src_pa.0 & !(PAGE_SIZE_BYTES - 1);
+                    if reuse_ok(cur_pa) {
+                        let pte_flags = vma.prot.to_page_flags();
+                        // SAFETY: va_page page-aligned per find_containing; cur_pa is the
+                        // sole-owned anon frame already mapped here (mapcount==1, exclusive);
+                        // flags carry USER+WRITE since vma.prot.WRITE checked above. No
+                        // refcount/mapcount change: the same frame keeps its single mapping.
+                        unsafe {
+                            M::map(Va(va_page), Pa(cur_pa), pte_flags, PageSize::P4K);
+                            M::flush_va(Va(va_page));
+                        }
+                        return Ok(());
+                    }
+                }
+            }
             // MAP_SHARED of a page-frame-backed file (memfd/tmpfs): a write
             // fault must make the SHARED frame itself writable in place (Linux
             // shmem dirty path) — never COW-copy, or this write diverges from
