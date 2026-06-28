@@ -186,6 +186,23 @@ fn join_names(names: &[String]) -> String {
     out
 }
 
+/// Relative path of `mp` beneath `stop` via PLAIN parent links only (NO mount
+/// crossing). Distinguishes an UNDERLAY child (mounted on a dentry beneath
+/// `stop` in the SAME fs — an MS_MOVE of `stop` relocates it) from an IN-FS
+/// child (mounted on a dentry INSIDE the moved fs, reached only by crossing
+/// `stop`; Linux `copy_tree` keeps it in place). `None` ⇒ not a plain-parent
+/// descendant of `stop`. # C: O(depth)
+fn plain_rel_under(mp: &Arc<Dentry>, stop: &Arc<Dentry>) -> Option<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut cur = Some(mp.clone());
+    while let Some(d) = cur {
+        if Arc::ptr_eq(&d, stop) { return Some(join_names(&names)); }
+        if !d.name().is_empty() { names.push(d.name().to_string()); }
+        cur = d.parent().cloned();
+    }
+    None
+}
+
 /// Mark `mp_d`'s dentry covered by `mnt_id` in `ns` (mount crossing). # C: O(1)
 fn wire_crossing(ns: u64, mp_d: &Arc<Dentry>, mnt_id: u64) {
     mp_d.set_mounted_mount(ns, Some(mnt_id));
@@ -815,57 +832,90 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
 }
 
 /// `mount(MS_MOVE)`: relocate the mount at dentry `from` (plus its subtree) to
-/// dentry `to`. # C: O(N × depth)
+/// dentry `to`. Linux `do_move_mount`/`attach_recursive_mnt`: ONLY the moved
+/// root's attachment (`mnt_parent`+`mnt_mountpoint`) changes; every internal
+/// mount keeps its mountpoint DENTRY + parent link, since those dentries live
+/// inside the moved filesystems and travel WITH them (`copy_tree`). An UNDERLAY
+/// child (attached on a dentry beneath `from`'s mountpoint in the SAME fs, not
+/// crossed into `from`) instead follows `from` to the mirrored spot under `to`.
+/// Re-deriving every internal position via a global-PATH `descend` was the bug:
+/// a child INSIDE the moved fs cannot be re-found before the root's new crossing
+/// exists (and a shared/singleton `s_root` descends into the underlay), so the
+/// child is orphaned and its leaf ENOENTs. # C: O(N × depth)
 pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
     let ns = current_ns();
     let from_m = mount_exact_at(ns, from).ok_or(VfsError::Einval)?;
     let to_root = is_global_root(to);
     if !to_root && to.mounted_mount(ns).is_some() { return Err(VfsError::Ebusy); }
-    let to_abs = if to_root { String::new() } else { abs_string(to) };
+    let to_abs = if to_root { String::from("/") } else { abs_string(to) };
     let from_id = from_m.mnt_id;
-    let from_mp = from_m.mountpoint();
-    let moved = subtree_ids(ns, from_id);
-    let snap: Vec<Arc<Mount>> = moved.iter().filter_map(|id| mount_by_id(*id)).collect();
-    let mut new_paths: Vec<(u64, String)> = Vec::new();
-    for m in snap.iter() {
-        let np = if m.mnt_id == from_id {
-            if to_root { String::from("/") } else { to_abs.clone() }
-        } else {
-            match m.mountpoint().and_then(|d| rel_under(&d, from_mp.as_ref())) {
-                Some(rel) if !rel.is_empty() => alloc::format!("{}{}", to_abs, rel),
-                _ => m.mount_point_str(),
-            }
-        };
-        new_paths.push((m.mnt_id, np));
+    let old_mp = from_m.mountpoint();
+    let old_parent = from_m.parent_id.load(Ordering::Acquire);
+    let snap: Vec<Arc<Mount>> = subtree_ids(ns, from_id).iter()
+        .filter_map(|id| mount_by_id(*id)).collect();
+
+    // --- 1) Re-seat the moved ROOT mount (the only attachment that changes). ---
+    if let Some(d) = &old_mp {
+        hash_remove(ns, old_parent, dptr(d), from_id);
+        d.set_mounted_mount(ns, None);
     }
-    // Detach moved crossings + hash, then materialise + re-seat new dentries.
-    for m in snap.iter() {
-        if let Some(d) = m.mountpoint() {
-            let parent = m.parent_id.load(Ordering::Acquire);
-            hash_remove(ns, parent, dptr(&d), m.mnt_id);
-            d.set_mounted_mount(ns, None);
+    unlink_from_parent(&from_m);
+    let new_root_d = if to_root { None } else { Some(to.clone()) };
+    set_mountpoint_dentry(&from_m, new_root_d.clone(), to_abs.clone());
+    match &new_root_d {
+        None => {
+            from_m.parent_id.store(from_id, Ordering::Release);
+            *from_m.mnt_parent.lock() = Weak::new();
+        }
+        Some(d) => {
+            let new_parent = parent_by_dentry(ns, d);
+            from_m.parent_id.store(new_parent, Ordering::Release);
+            if let Some(p) = mount_by_id(new_parent) {
+                *from_m.mnt_parent.lock() = Arc::downgrade(&p);
+                p.mnt_mounts.lock().push(from_m.clone());
+            }
+            wire_crossing(ns, d, from_id);
+            hash_insert(ns, new_parent, dptr(d), from_id);
         }
     }
-    let root = global_root();
-    for (id, p) in new_paths.iter() {
-        let Some(m) = mount_by_id(*id) else { continue; };
-        let d = if p == "/" { None } else { root.as_ref().and_then(|r| descend(r, p)) };
-        set_mountpoint_dentry(&m, d, p.clone());
-    }
-    // Re-wire crossings + parent/child links + hash for the moved set.
+
+    // --- 2) Descendants: relocate UNDERLAY children (mirrored beneath `to`);
+    //        keep IN-FS children in place (dentry/crossing/parent untouched).
+    //        Both get their rendered (display) path re-based onto `to`. ---
+    let to_base = new_root_d.clone().or_else(global_root);
     for m in snap.iter() {
-        if let Some(d) = m.mountpoint() { wire_crossing(ns, &d, m.mnt_id); }
-        m.mnt_mounts.lock().clear();
-    }
-    for m in snap.iter() {
-        if let Some(d) = m.mountpoint() {
-            let parent = parent_by_dentry(ns, &d);
-            m.parent_id.store(parent, Ordering::Release);
-            if let Some(p) = mount_by_id(parent) {
-                *m.mnt_parent.lock() = Arc::downgrade(&p);
-                p.mnt_mounts.lock().push(m.clone());
+        if m.mnt_id == from_id { continue; }
+        let Some(child_mp) = m.mountpoint() else { continue; };
+        let disp_rel = rel_under(&child_mp, old_mp.as_ref()).unwrap_or_default();
+        let new_rendered = if disp_rel.is_empty() { to_abs.clone() }
+                           else { alloc::format!("{}{}", to_abs, disp_rel) };
+        match old_mp.as_ref().and_then(|omp| plain_rel_under(&child_mp, omp)) {
+            Some(rel) => {
+                // UNDERLAY child: relocate its mountpoint dentry to the mirrored
+                // underlay position beneath `to`, by an underlay descent (NOT
+                // crossing the moved root) from `to`.
+                let m_parent = m.parent_id.load(Ordering::Acquire);
+                hash_remove(ns, m_parent, dptr(&child_mp), m.mnt_id);
+                child_mp.set_mounted_mount(ns, None);
+                let new_d = to_base.as_ref().and_then(|b| descend(b, rel.trim_start_matches('/')));
+                set_mountpoint_dentry(m, new_d.clone(), new_rendered);
+                unlink_from_parent(m);
+                if let Some(d) = &new_d {
+                    let np = parent_by_dentry(ns, d);
+                    m.parent_id.store(np, Ordering::Release);
+                    if let Some(p) = mount_by_id(np) {
+                        *m.mnt_parent.lock() = Arc::downgrade(&p);
+                        p.mnt_mounts.lock().push(m.clone());
+                    }
+                    wire_crossing(ns, d, m.mnt_id);
+                    hash_insert(ns, np, dptr(d), m.mnt_id);
+                }
             }
-            hash_insert(ns, parent, dptr(&d), m.mnt_id);
+            None => {
+                // IN-FS child: its mountpoint dentry is inside a moved fs and
+                // travels unchanged — only the rendered path follows the move.
+                *m.rendered_path.lock() = new_rendered;
+            }
         }
     }
     mntns::bump_gen(ns);
