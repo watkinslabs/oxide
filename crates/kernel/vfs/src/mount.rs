@@ -261,7 +261,11 @@ impl Propagation {
     }
 }
 
-/// Monotonic mount-id source (mountinfo field 1). Starts at 1.
+/// Reserved "no mount" mnt_id sentinel. `NEXT_MNT_ID` starts at 1, so `0` is
+/// never assigned to a real `Mount` and can stand for "no covering mount" (the
+/// namei base fallback before any root mount exists). # C: const
+pub const MNT_ID_NONE: u64 = 0;
+/// Monotonic mount-id source (mountinfo field 1). Starts at 1 (`MNT_ID_NONE`+1).
 static NEXT_MNT_ID: AtomicU64 = AtomicU64::new(1);
 /// Monotonic peer-group id source. Starts at 1 (0 = none).
 static NEXT_PEER_GROUP: AtomicU64 = AtomicU64::new(1);
