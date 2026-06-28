@@ -18,7 +18,7 @@ use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::any::Any;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use sync::{RwLock, Spinlock, Superblock as SbClass};
 
@@ -53,6 +53,17 @@ pub const SB_NODIRATIME:  u64 = 1 << 11;
 /// Internal lifecycle bits: `SB_BORN` (fill_super done), `SB_ACTIVE` (mounted).
 pub const SB_BORN:   u64 = 1 << 29;
 pub const SB_ACTIVE: u64 = 1 << 30;
+
+// `s_writers.frozen` freeze levels (Linux include/linux/fs.h). `freeze_super`
+// ratchets UNFROZEN → WRITE (block new write(2)) → PAGEFAULT (block mmap
+// faults) → FS (on-disk `freeze_fs`) → COMPLETE; `thaw_super` resets to
+// UNFROZEN. `sb_start_write` admits a writer only at UNFROZEN. Drives FIFREEZE
+// + consistent-snapshot quiesce.
+pub const SB_UNFROZEN:         u32 = 0;
+pub const SB_FREEZE_WRITE:     u32 = 1;
+pub const SB_FREEZE_PAGEFAULT: u32 = 2;
+pub const SB_FREEZE_FS:        u32 = 3;
+pub const SB_FREEZE_COMPLETE:  u32 = 4;
 
 /// `MAX_LFS_FILESIZE` on a 64-bit kernel (Linux include/linux/fs.h) — the
 /// default `s_maxbytes` a large-file backend reports. # C: O(1)
@@ -120,6 +131,13 @@ pub trait SuperOps: Send + Sync {
     fn statfs(&self) -> KResult<SbStatFs>;
     /// `sync_fs` — flush dirty state. Default no-op (pseudo-fs). # C: FS-dependent
     fn sync_fs(&self, _wait: bool) -> KResult<()> { Ok(()) }
+    /// `freeze_fs` — quiesce on-disk state for a consistent snapshot (FIFREEZE).
+    /// Called once writers are blocked and dirty state synced. Default no-op
+    /// (pseudo-fs with no backing store). # C: FS-dependent
+    fn freeze_fs(&self) -> KResult<()> { Ok(()) }
+    /// `unfreeze_fs`/`thaw_fs` — resume after a freeze (FITHAW). Default no-op.
+    /// # C: FS-dependent
+    fn thaw_fs(&self) -> KResult<()> { Ok(()) }
     /// `put_super` — last-umount teardown. Default no-op. # C: O(1)
     fn put_super(&self) {}
 }
@@ -154,6 +172,13 @@ pub struct SuperBlock {
     pub s_maxbytes: u64,
     /// `s_time_gran` — timestamp granularity in ns (inode setattr rounding).
     pub s_time_gran: u32,
+    /// `s_writers.frozen` — current freeze level (`SB_UNFROZEN`..`SB_FREEZE_COMPLETE`).
+    /// `freeze_super`/`thaw_super` ratchet it; `sb_start_write` gates on it.
+    s_writers_frozen: AtomicU32,
+    /// In-flight `sb_start_write` holders (write/pagefault). `freeze_super`
+    /// blocks NEW writers via the level then drains these (Linux percpu_rwsem
+    /// write-side); a future blocking layer waits on it. # consumers: freeze drain.
+    s_writers_count: AtomicU32,
     /// `s_id` — `"/dev/vda1"`, `"tmpfs"`; `/proc/mounts` source column.
     pub s_id: String,
     /// `s_root` — the ROOT DENTRY (strong; see CYCLE NOTE).
@@ -207,6 +232,8 @@ impl SuperBlock {
             s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
             s_maxbytes: MAX_LFS_FILESIZE,
             s_time_gran: 1,
+            s_writers_frozen: AtomicU32::new(SB_UNFROZEN),
+            s_writers_count: AtomicU32::new(0),
             s_id,
             s_root: RwLock::new(None),
             s_fs_info,
@@ -240,6 +267,8 @@ impl SuperBlock {
             s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
             s_maxbytes: MAX_LFS_FILESIZE,
             s_time_gran: 1,
+            s_writers_frozen: AtomicU32::new(SB_UNFROZEN),
+            s_writers_count: AtomicU32::new(0),
             s_id,
             s_root: RwLock::new(None),
             s_fs_info: Arc::new(()),
@@ -389,6 +418,73 @@ impl SuperBlock {
     /// Flush dirty fs state (Linux `sync_filesystem`, run before `put_super`
     /// in `generic_shutdown_super`). # C: O(dirty)
     pub fn sync_fs(&self, wait: bool) -> KResult<()> { self.s_op.sync_fs(wait) }
+
+    /// Current `s_writers.frozen` level (`SB_UNFROZEN`..`SB_FREEZE_COMPLETE`).
+    /// # C: O(1)
+    pub fn sb_freeze_level(&self) -> u32 { self.s_writers_frozen.load(Ordering::Acquire) }
+
+    /// True iff a freeze is in progress or complete (no writers admitted).
+    /// # C: O(1)
+    pub fn is_frozen(&self) -> bool { self.sb_freeze_level() != SB_UNFROZEN }
+
+    /// `sb_start_write` (trylock variant, Linux `__sb_start_write_trylock`):
+    /// admit a write(2)/page-fault writer iff unfrozen. On success the caller
+    /// MUST pair with [`sb_end_write`]. Returns `false` if frozen so the
+    /// syscall layer can block/retry. The post-increment re-check mirrors the
+    /// percpu_rwsem reader/writer barrier: a freeze racing in between backs the
+    /// writer out so `freeze_super` never proceeds with a leaked writer.
+    /// # C: O(1)
+    pub fn sb_start_write(&self) -> bool {
+        if self.is_frozen() { return false; }
+        self.s_writers_count.fetch_add(1, Ordering::AcqRel);
+        if self.is_frozen() {
+            self.s_writers_count.fetch_sub(1, Ordering::AcqRel);
+            return false;
+        }
+        true
+    }
+
+    /// `sb_end_write`: release a writer admitted by [`sb_start_write`].
+    /// # C: O(1)
+    pub fn sb_end_write(&self) { self.s_writers_count.fetch_sub(1, Ordering::AcqRel); }
+
+    /// Live `sb_start_write` holder count (the freeze drain target). # C: O(1)
+    pub fn sb_writers(&self) -> u32 { self.s_writers_count.load(Ordering::Acquire) }
+
+    /// `freeze_super` (Linux fs/super.c): quiesce the fs for a consistent
+    /// snapshot. Ratchets UNFROZEN → WRITE (block new writers) → sync → FS
+    /// (`s_op->freeze_fs`) → COMPLETE. `Ebusy` if already frozen. On a
+    /// `freeze_fs` error the level is unwound to UNFROZEN (writers resume).
+    /// The caller is responsible for draining in-flight writers (the level
+    /// gate stops NEW ones; existing holders drop on their syscall return).
+    /// # C: O(dirty)
+    pub fn freeze_super(&self) -> KResult<()> {
+        if self.s_writers_frozen.compare_exchange(
+            SB_UNFROZEN, SB_FREEZE_WRITE, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return Err(crate::types::VfsError::Ebusy);
+        }
+        // New writers now rejected; flush dirty state before sealing on-disk.
+        self.s_writers_frozen.store(SB_FREEZE_PAGEFAULT, Ordering::Release);
+        if let Err(e) = self.sync_fs(true) {
+            self.s_writers_frozen.store(SB_UNFROZEN, Ordering::Release);
+            return Err(e);
+        }
+        self.s_writers_frozen.store(SB_FREEZE_FS, Ordering::Release);
+        match self.s_op.freeze_fs() {
+            Ok(()) => { self.s_writers_frozen.store(SB_FREEZE_COMPLETE, Ordering::Release); Ok(()) }
+            Err(e) => { self.s_writers_frozen.store(SB_UNFROZEN, Ordering::Release); Err(e) }
+        }
+    }
+
+    /// `thaw_super` (Linux fs/super.c): resume after a freeze. `s_op->thaw_fs`
+    /// then drop the level back to UNFROZEN (writers re-admitted). `Einval` if
+    /// not frozen. # C: O(1)
+    pub fn thaw_super(&self) -> KResult<()> {
+        if !self.is_frozen() { return Err(crate::types::VfsError::Einval); }
+        self.s_op.thaw_fs()?;
+        self.s_writers_frozen.store(SB_UNFROZEN, Ordering::Release);
+        Ok(())
+    }
 
     /// Umount teardown: `put_super` then drop the dentry tree. # C: O(tree)
     pub fn put_super(&self) {
