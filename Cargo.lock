@@ -1371,10 +1371,11 @@ name = "sysfs"
 version = "0.1.0"
 dependencies = [
  "block",
- "devfs",
  "drv",
+ "kernfs",
  "net",
  "netlink",
+ "sync",
  "vfs",
 ]
 
@@ -1403,10 +1404,10 @@ name = "tracefs"
 version = "0.1.0"
 dependencies = [
  "cpu",
- "devfs",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
+ "kernfs",
  "sched",
  "sync",
  "syscall",

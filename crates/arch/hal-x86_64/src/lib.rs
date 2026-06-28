@@ -49,7 +49,7 @@ pub use fault::{
 };
 pub use irq::{
     irq_stub_addr,
-    VEC_MSI, VEC_RESCHED, VEC_TIMER,
+    VEC_MSI, VEC_RESCHED, VEC_TIMER, VEC_TLB_SHOOTDOWN,
     VEC_MSI_POOL_FIRST, VEC_MSI_POOL_LAST, VEC_MSI_POOL_LEN,
 };
 pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateX86_64, FPU_OWNER, FPU_STATE_BYTES};

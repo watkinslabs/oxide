@@ -332,6 +332,13 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
             p = p.wrapping_add(0x1000);
         }
     }
+    // SMP TLB coherence (`20§5`): the loops above rewrote PTE permissions
+    // (e.g. RELRO RO-downgrade) + flushed only THIS CPU's TLB. Peer threads
+    // of the same mm on other CPUs still cache the old (writable) entries;
+    // broadcast a remote flush so the new protection is enforced everywhere.
+    // x86-only effect (no hardware TLB broadcast); no-op on UP / aarch64 /
+    // hosted. No frame is freed here, so a post-loop broadcast is sufficient.
+    hal::tlb::shootdown_others_all();
     let _ = (root_pa, new_flags, hhdm); // touch on host/test build
 }
 
@@ -1015,11 +1022,17 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
                 #[cfg(target_arch = "aarch64")]
                 <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::unmap(Va(va), PageSize::P4K);
             }
-            // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free checks struct-page refcount and only releases when the last mapping drops.
-            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
             // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
             #[cfg(target_arch = "x86_64")]
             unsafe { hal_x86_64::flush_local_va(va); }
+            // SMP TLB coherence (`20§5`): invalidate this VA on every OTHER
+            // online CPU BEFORE the frame is freed below — a peer thread of
+            // the same mm with a stale TLB entry would otherwise touch the
+            // frame after it returns to the allocator (use-after-free
+            // aliasing). x86-only effect; no-op on UP / aarch64 / hosted.
+            hal::tlb::shootdown_others_va(va);
+            // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free checks struct-page refcount and only releases when the last mapping drops.
+            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
         }
         va += 0x1000;
     }
@@ -1074,11 +1087,16 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             // free → munmap → unmap_pte for the if_options heap was
             // freeing pages still mapped in the grandchild's AS,
             // corrupting grandchild's view of the same struct.
-            // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free only releases to PMM when struct-page refcount drops to zero (no other AS maps this frame).
-            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
             // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
             #[cfg(target_arch = "x86_64")]
             unsafe { hal_x86_64::flush_local_va(va); }
+            // SMP TLB coherence (`20§5`): flush this VA on every OTHER online
+            // CPU BEFORE the frame is freed below, so a peer thread of the
+            // same mm can't touch a freed+realloc'd frame through a stale TLB
+            // entry. x86-only effect; no-op on UP / aarch64 / hosted.
+            hal::tlb::shootdown_others_va(va);
+            // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free only releases to PMM when struct-page refcount drops to zero (no other AS maps this frame).
+            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
         }
         va += 0x1000;
     }
