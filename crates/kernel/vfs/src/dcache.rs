@@ -1,25 +1,185 @@
 // dcache primitives per `fs/dcache.c` — the (parent,name)-keyed dentry
 // cache. NO global path→dentry map: every primitive reaches a child only
-// through its parent's per-SB `children` map keyed by component name.
+// through its parent + the global `dentry_hashtable` keyed by
+// `(d_parent ptr, d_name.hash)`. The per-parent `d_subdirs` map is retained
+// as the subtree-teardown / `d_invalidate` index, not as the lookup path.
+//
+// B3 layers (this file):
+//   - `DentryHashTable`: fixed power-of-2 bucket array, `(parent,hash)`-keyed,
+//     O(1) lookup (`16§96`). Buckets hold `Weak<Dentry>` so the table never
+//     pins dentries — the shrinker / `dput`-to-zero frees them and the bucket
+//     self-prunes dead weaks on probe.
+//   - `__d_lookup_rcu` analog: per-bucket seqcount-gated read that does the
+//     `Weak::upgrade` + `d_compare` lock-free, validated by the seqcount;
+//     falls back to the locked ref-walk on a writer race (`16§124`).
+//   - dcache LRU + `shrink_dcache` (`16§98`): unused negatives are the
+//     unbounded-growth risk; the shrinker evicts them.
+//   - `d_invalidate`: subtree drop via the `d_subdirs` index.
 //
 // Linux analogs:
-//   d_make_root      — alloc the root dentry, set sb->s_root
-//   d_alloc          — NEGATIVE dentry (d_inode == None), not yet hashed
-//   d_lookup         — rcu/hash read; Some(positive|negative) | None(uncached)
-//   d_instantiate    — attach inode: negative -> positive
-//   d_add            — d_alloc + d_instantiate + hash insert (race-safe)
-//   d_add_negative   — cache a confirmed miss
-//   dget / dput      — refcount via Arc strong count
-//   d_move           — rename: rehome under a new (parent,name)
-//   d_drop           — unhash from parent.children
-//   d_splice_alias   — directory alias merge (positive child of a dir)
+//   d_make_root / d_alloc / d_lookup / d_instantiate / d_add / d_add_negative
+//   dget / dput / d_drop / d_move / d_splice_alias / d_invalidate
 
 extern crate alloc;
-use alloc::sync::Arc;
+use alloc::collections::VecDeque;
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+use sync::{Dentry as DentryClass, Spinlock};
 
 use crate::dentry::Dentry;
 use crate::inode::InodeRef;
 use crate::superblock::SuperBlock;
+
+// ---------------------------------------------------------------------------
+// Global dentry hash table (`16§96`). Power-of-2 buckets; index = low bits of
+// the precomputed `full_name_hash` (parent already folded into the hash by
+// `Dentry::compute_hash`, so bucketing on `hash` alone keys on (parent,name)).
+// ---------------------------------------------------------------------------
+
+const DHASH_BITS:     usize = 8;            // 256 buckets — hosted/test scale
+const DHASH_NBUCKETS: usize = 1 << DHASH_BITS;
+const DHASH_MASK:     u32   = (DHASH_NBUCKETS - 1) as u32;
+
+/// One hash bucket: a seqcount (even = quiescent, odd = writer in progress)
+/// + the spinlock-guarded `Weak` chain. The seqcount lets the read path
+/// validate a lock-free probe (Linux `__d_lookup_rcu` seqcount).
+struct Bucket {
+    seq:     AtomicU32,
+    entries: Spinlock<Vec<Weak<Dentry>>, DentryClass>,
+}
+
+pub struct DentryHashTable {
+    buckets: [Bucket; DHASH_NBUCKETS],
+}
+
+/// Result of the lock-free (`rcu`) probe: `Ok` = authoritative (hit/miss),
+/// `Err` = writer raced, retry under the bucket lock.
+enum RcuProbe { Done(Option<Arc<Dentry>>), Retry }
+
+impl DentryHashTable {
+    const fn new() -> Self {
+        DentryHashTable {
+            buckets: [const { Bucket { seq: AtomicU32::new(0), entries: Spinlock::new(Vec::new()) } }; DHASH_NBUCKETS],
+        }
+    }
+
+    fn bucket(&self, hash: u32) -> &Bucket { &self.buckets[(hash & DHASH_MASK) as usize] }
+
+    /// Hash `d` into the table (idempotent by `Arc` identity) and prune any
+    /// dead weaks sharing the bucket. Sets `D_HASHED`. # C: O(bucket_len)
+    fn insert(&self, d: &Arc<Dentry>) {
+        let b = self.bucket(d.d_hash());
+        let dptr = Arc::as_ptr(d);
+        let mut g = b.entries.lock();
+        b.seq.fetch_add(1, Ordering::Release); // begin (odd)
+        let mut present = false;
+        g.retain(|w| match w.upgrade() {
+            Some(e) => { if Arc::as_ptr(&e) == dptr { present = true; } true }
+            None    => false,
+        });
+        if !present { g.push(Arc::downgrade(d)); }
+        b.seq.fetch_add(1, Ordering::Release); // end (even)
+        drop(g);
+        d.set_hashed(true);
+    }
+
+    /// Unhash `d` (Linux `__d_drop`). Clears `D_HASHED`. # C: O(bucket_len)
+    fn remove(&self, d: &Dentry) {
+        let b = self.bucket(d.d_hash());
+        let dptr = d as *const Dentry;
+        let mut g = b.entries.lock();
+        b.seq.fetch_add(1, Ordering::Release);
+        g.retain(|w| match w.upgrade() { Some(e) => Arc::as_ptr(&e) != dptr, None => false });
+        b.seq.fetch_add(1, Ordering::Release);
+        drop(g);
+        d.set_hashed(false);
+    }
+
+    /// Locked ref-walk (Linux `__d_lookup`). # C: O(bucket_len)
+    fn lookup_locked(&self, parent: *const Dentry, qhash: u32, name: &str) -> Option<Arc<Dentry>> {
+        let b = self.bucket(qhash);
+        let g = b.entries.lock();
+        for w in g.iter() {
+            if let Some(e) = w.upgrade() {
+                if e.key_matches(parent, qhash, name) { return Some(e); }
+            }
+        }
+        None
+    }
+
+    /// Lock-free seqcount-gated probe (Linux `__d_lookup_rcu`). The bucket
+    /// lock is held only to snapshot the `Weak` chain (cheap refcount bumps);
+    /// the `upgrade` + `key_matches` walk runs lock-free and is validated by
+    /// the seqcount — if a writer mutated the bucket meanwhile, retry under
+    /// the lock. `Weak::upgrade` is the no_std substitute for `call_rcu`:
+    /// `Arc`'s atomic strong count makes the deref safe without a grace
+    /// period, and a concurrently-freed dentry simply fails to upgrade.
+    /// # C: O(bucket_len)
+    fn lookup_rcu(&self, parent: *const Dentry, qhash: u32, name: &str) -> RcuProbe {
+        let b = self.bucket(qhash);
+        let (s1, snap) = {
+            let g = b.entries.lock();
+            (b.seq.load(Ordering::Acquire), g.clone())
+        };
+        if s1 & 1 != 0 { return RcuProbe::Retry; } // snapshot taken mid-write
+        let mut found = None;
+        for w in snap.iter() {
+            if let Some(e) = w.upgrade() {
+                if e.key_matches(parent, qhash, name) { found = Some(e); break; }
+            }
+        }
+        if b.seq.load(Ordering::Acquire) != s1 { return RcuProbe::Retry; }
+        RcuProbe::Done(found)
+    }
+}
+
+static DENTRY_HASHTABLE: DentryHashTable = DentryHashTable::new();
+
+// ---------------------------------------------------------------------------
+// dcache LRU (`16§98`). `dput`-to-zero pushes a `Weak` here; `shrink_dcache`
+// evicts unused (d_count==0, unreferenced) entries — primarily the otherwise
+// unbounded unused negatives.
+// ---------------------------------------------------------------------------
+
+static DENTRY_LRU: Spinlock<VecDeque<Weak<Dentry>>, DentryClass> = Spinlock::new(VecDeque::new());
+
+fn lru_add(d: &Arc<Dentry>) {
+    if d.is_on_lru() { return; }
+    d.set_on_lru(true);
+    DENTRY_LRU.lock().push_back(Arc::downgrade(d));
+}
+
+/// Reclaim up to `target` unused dentries from the LRU head (Linux
+/// `shrink_dcache_sb` / `prune_dcache`). Referenced entries get their bit
+/// cleared and rotate to the tail (two-hand clock); entries that regained a
+/// ref (`d_count>0`) leave the LRU; evictable entries are `d_drop`-ed (unhash
+/// + forget child + drop alias), which releases the last `Arc` for unused
+/// negatives and frees them. Returns the count evicted. # C: O(scanned)
+pub fn shrink_dcache(target: usize) -> usize {
+    let mut freed = 0;
+    let mut scan = DENTRY_LRU.lock().len();
+    while freed < target && scan > 0 {
+        scan -= 1;
+        let w = match DENTRY_LRU.lock().pop_front() { Some(w) => w, None => break };
+        let d = match w.upgrade() { Some(d) => d, None => continue }; // already freed
+        if d.d_count() > 0 { d.set_on_lru(false); continue; }         // back in use
+        if d.is_referenced() {
+            d.set_referenced(false);
+            DENTRY_LRU.lock().push_back(Arc::downgrade(&d)); // rotate
+            continue;
+        }
+        d.set_on_lru(false);
+        d_drop(&d);
+        freed += 1;
+    }
+    freed
+}
+
+// ---------------------------------------------------------------------------
+// Primitives.
+// ---------------------------------------------------------------------------
 
 /// Allocate the root dentry for `sb` (no parent, empty name, positive)
 /// and install it as `sb->s_root`. Records the root dentry as an alias of the
@@ -32,17 +192,30 @@ pub fn d_make_root(inode: InodeRef, sb: &Arc<SuperBlock>) -> Arc<Dentry> {
 }
 
 /// Allocate a NEGATIVE child dentry under `parent` (d_inode == None),
-/// inheriting `parent`'s superblock. NOT inserted into the cache (Linux
-/// `d_alloc` does not hash). # C: O(1)
+/// inheriting `parent`'s superblock + d_op. NOT hashed (Linux `d_alloc` does
+/// not hash). # C: O(name.len())
 pub fn d_alloc(parent: &Arc<Dentry>, name: &str) -> Arc<Dentry> {
     Dentry::new_child(parent, name, None)
 }
 
-/// Cache read: the child dentry for `name` under `parent`, positive OR
-/// cached-negative. `None` = not cached (caller must do the slow
-/// `i_op->lookup`). # C: O(log N_children)
+/// Cache read (Linux `d_lookup`): the child dentry for `name` under
+/// `parent`, positive OR cached-negative, via the global hash table — RCU
+/// (seqcount) read with a locked ref-walk fallback. Fires `d_op->d_revalidate`
+/// on a hit and drops a stale dentry. `None` = not cached (caller must do the
+/// slow `i_op->lookup`). # C: O(1) expected
 pub fn d_lookup(parent: &Arc<Dentry>, name: &str) -> Option<Arc<Dentry>> {
-    parent.cached_child(name)
+    let qhash = Dentry::compute_hash(Some(parent), name);
+    let pptr = Arc::as_ptr(parent);
+    let cand = match DENTRY_HASHTABLE.lookup_rcu(pptr, qhash, name) {
+        RcuProbe::Done(c) => c,
+        RcuProbe::Retry   => DENTRY_HASHTABLE.lookup_locked(pptr, qhash, name),
+    };
+    if let Some(d) = &cand {
+        if let Some(rev) = d.d_op().and_then(|o| o.d_revalidate) {
+            if !rev(d) { d_drop(d); return None; }
+        }
+    }
+    cand
 }
 
 /// Attach `inode` to a negative `dentry`, making it positive (post
@@ -56,34 +229,48 @@ pub fn d_instantiate(dentry: &Arc<Dentry>, inode: InodeRef) {
 
 /// `d_alloc` + `d_instantiate` + hash-insert, race-safe: an existing
 /// cached entry wins so all walkers share one dentry per (parent,name).
-/// Records the (race-winning) dentry as an alias of `inode`.
-/// # C: O(log N_children)
+/// Inserts the (race-winning) dentry into the global hash table and records
+/// it as an alias of `inode`. # C: O(1) expected
 pub fn d_add(parent: &Arc<Dentry>, name: &str, inode: InodeRef) -> Arc<Dentry> {
     let child = Dentry::new_child(parent, name, Some(inode.clone()));
     let canon = parent.cache_child(name, child);
     if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, &canon); }
+    DENTRY_HASHTABLE.insert(&canon);
     canon
 }
 
-/// Cache a confirmed miss as a negative dentry under `parent`. A later
-/// `d_lookup` hit returns it so the walker can return `Enoent` WITHOUT
-/// re-invoking `i_op->lookup`. # C: O(log N_children)
+/// Cache a confirmed miss as a negative dentry under `parent`, hashed so a
+/// later `d_lookup` hit returns it WITHOUT re-invoking `i_op->lookup`.
+/// # C: O(1) expected
 pub fn d_add_negative(parent: &Arc<Dentry>, name: &str) -> Arc<Dentry> {
     let child = Dentry::new_child(parent, name, None);
-    parent.cache_child(name, child)
+    let canon = parent.cache_child(name, child);
+    DENTRY_HASHTABLE.insert(&canon);
+    canon
 }
 
-/// Take a reference (Linux `dget`). # C: O(1)
-pub fn dget(d: &Arc<Dentry>) -> Arc<Dentry> { Arc::clone(d) }
+/// Take a reference (Linux `dget`): bump the VFS `d_count` lockref and clone
+/// the `Arc`. # C: O(1)
+pub fn dget(d: &Arc<Dentry>) -> Arc<Dentry> { d.inc_count(); Arc::clone(d) }
 
-/// Drop a reference (Linux `dput`). # C: O(1)
-pub fn dput(d: Arc<Dentry>) { drop(d); }
+/// Drop a reference (Linux `dput`). Decrements `d_count`; at zero the dentry
+/// is unused — `d_op->d_delete` may request immediate eviction (`d_drop`),
+/// otherwise it joins the LRU for the shrinker. The `Arc` strong count, not
+/// `d_count`, is the actual free trigger. # C: O(1)
+pub fn dput(d: Arc<Dentry>) {
+    if d.dec_count() == 0 {
+        let delete = d.d_op().and_then(|o| o.d_delete).map(|f| f(&d)).unwrap_or(false);
+        if delete { d_drop(&d); } else { lru_add(&d); }
+    }
+    drop(d);
+}
 
-/// Unhash `d` from its parent's children (Linux `d_drop` / `d_delete`):
-/// a stale positive dentry isn't reused after unlink/rmdir/rename. Also drops
-/// `d` from its inode's alias list (`inode->i_dentry`).
-/// # C: O(log N_children)
+/// Unhash `d` from the global table and its parent's `d_subdirs` (Linux
+/// `d_drop`): a stale positive dentry isn't reused after unlink/rmdir/rename.
+/// Also drops `d` from its inode's alias list (`inode->i_dentry`).
+/// # C: O(bucket_len + log N_children)
 pub fn d_drop(d: &Arc<Dentry>) {
+    DENTRY_HASHTABLE.remove(d);
     if let Some(inode) = d.inode() {
         if let Some(sb) = inode.i_sb() { sb.i_drop_alias(inode.ino(), d); }
     }
@@ -93,21 +280,229 @@ pub fn d_drop(d: &Arc<Dentry>) {
 /// Rename `old` to `(new_parent, new_name)` (Linux `d_move`). Unhashes
 /// `old` from its current parent and rehomes its inode under the new
 /// (parent,name) key, so `d_lookup(old_parent, old_name)` misses and
-/// `d_lookup(new_parent, new_name)` hits.
-/// # C: O(log N_children)
+/// `d_lookup(new_parent, new_name)` hits. # C: O(1) expected
 pub fn d_move(old: &Arc<Dentry>, new_parent: &Arc<Dentry>, new_name: &str) -> Arc<Dentry> {
     d_drop(old);
     match old.inode() {
         Some(inode) => d_add(new_parent, new_name, inode),
-        None => d_add_negative(new_parent, new_name),
+        None        => d_add_negative(new_parent, new_name),
     }
 }
 
 /// Directory alias merge (Linux `d_splice_alias`): attach `inode` to the
-/// dentry, returning the now-positive dentry. The full disconnected-alias
-/// reattach (real dir hardlink resolution) is WP-pending; this handles
-/// the common negative→positive splice. # C: O(1)
+/// dentry and ensure it is hashed, returning the now-positive dentry. The
+/// full disconnected-alias reattach (real dir hardlink resolution) is
+/// WP-pending; this handles the common negative→positive splice. # C: O(1)
 pub fn d_splice_alias(inode: InodeRef, d: &Arc<Dentry>) -> Arc<Dentry> {
-    d_instantiate(d, inode); // records the i_dentry alias
+    d_instantiate(d, inode);
+    if !d.is_hashed() { DENTRY_HASHTABLE.insert(d); }
     d.clone()
+}
+
+/// Invalidate `d` and its whole subtree (Linux `d_invalidate`): unhash every
+/// node so live descendants become disconnected and re-lookup re-walks the
+/// FS. Iterative over the `d_subdirs` index to bound stack depth. Used on
+/// remount / staleness and rmdir of a populated-but-invalidated dir.
+/// # C: O(subtree)
+pub fn d_invalidate(d: &Arc<Dentry>) {
+    let mut stack: Vec<Arc<Dentry>> = alloc::vec![d.clone()];
+    while let Some(cur) = stack.pop() {
+        for kid in cur.children_snapshot() { stack.push(kid); }
+        d_drop(&cur);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dentry::{DentryOps, D_HASHED, D_NEGATIVE};
+    use crate::inode::Inode;
+    use crate::types::{FileType, KResult, VfsError};
+    use alloc::string::String;
+    use alloc::format;
+
+    // Minimal directory inode for positive-dentry tests. `i_sb()` defaults to
+    // None so no superblock/alias machinery is needed.
+    struct Dir { ino: u64 }
+    impl Inode for Dir {
+        fn ino(&self) -> u64 { self.ino }
+        fn file_type(&self) -> FileType { FileType::Directory }
+        fn size(&self) -> u64 { 0 }
+        fn lookup(&self, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+    }
+    fn dir(ino: u64) -> InodeRef { Arc::new(Dir { ino }) }
+
+    fn root() -> Arc<Dentry> { Dentry::new_root(dir(1)) }
+
+    // hashed == tree: every (parent,name) added is found by the global table
+    // and the table returns the SAME Arc as the per-parent d_subdirs index.
+    #[test]
+    fn global_hash_agrees_with_tree() {
+        let r = root();
+        let mut names: Vec<String> = Vec::new();
+        for i in 0..200u32 { names.push(format!("child{i}")); }
+        for (i, n) in names.iter().enumerate() {
+            if i % 2 == 0 { d_add(&r, n, dir(100 + i as u64)); } else { d_add_negative(&r, n); }
+        }
+        for n in &names {
+            let via_table = d_lookup(&r, n).expect("table hit");
+            let via_tree  = r.cached_child(n).expect("tree hit");
+            assert!(Arc::ptr_eq(&via_table, &via_tree), "table != tree for {n}");
+            assert!(via_table.is_hashed());
+        }
+        // Uncached name misses.
+        assert!(d_lookup(&r, "absent").is_none());
+    }
+
+    // The locked walk and the rcu (seqcount) probe return the same dentry.
+    #[test]
+    fn rcu_path_agrees_with_locked() {
+        let r = root();
+        for i in 0..64u32 { d_add(&r, &format!("f{i}"), dir(200 + i as u64)); }
+        for i in 0..64u32 {
+            let n = format!("f{i}");
+            let qhash = Dentry::compute_hash(Some(&r), &n);
+            let pptr = Arc::as_ptr(&r);
+            let locked = DENTRY_HASHTABLE.lookup_locked(pptr, qhash, &n).unwrap();
+            let rcu = match DENTRY_HASHTABLE.lookup_rcu(pptr, qhash, &n) {
+                RcuProbe::Done(c) => c.unwrap(),
+                RcuProbe::Retry   => DENTRY_HASHTABLE.lookup_locked(pptr, qhash, &n).unwrap(),
+            };
+            assert!(Arc::ptr_eq(&locked, &rcu));
+        }
+    }
+
+    // O(1): with 256 buckets and 256 random keys, no bucket should hold more
+    // than a small constant chain (uniform hash ⇒ bounded chain length).
+    #[test]
+    fn lookup_is_o1_bounded_chains() {
+        let r = root();
+        for i in 0..256u32 { d_add_negative(&r, &format!("e{i}")); }
+        let max = DENTRY_HASHTABLE.buckets.iter()
+            .map(|b| b.entries.lock().iter().filter(|w| w.upgrade().is_some()).count())
+            .max().unwrap_or(0);
+        assert!(max <= 12, "max chain {max} too long — not O(1)");
+    }
+
+    // d_compare / d_hash hook: case-insensitive lookup hits a lower-case entry.
+    static CI_OPS: DentryOps = DentryOps {
+        d_hash:    Some(|name| {
+            let mut h: u64 = 0xcbf29ce484222325;
+            for b in name.bytes() { h = (h ^ (b.to_ascii_lowercase() as u64)).wrapping_mul(0x100000001B3); }
+            (h ^ (h >> 32)) as u32
+        }),
+        d_compare: Some(|name, cand| name.eq_ignore_ascii_case(cand.name())),
+        d_revalidate: None, d_delete: None, d_release: None, d_iput: None,
+    };
+    #[test]
+    fn d_compare_case_insensitive() {
+        let r = Dentry::new_root(dir(1)).set_d_op(&CI_OPS);
+        d_add(&r, "foo", dir(7));
+        let hit = d_lookup(&r, "FOO").expect("case-insensitive hit");
+        assert_eq!(hit.name(), "foo");
+        let hit2 = d_lookup(&r, "FoO").expect("case-insensitive hit2");
+        assert!(Arc::ptr_eq(&hit, &hit2));
+    }
+
+    // d_revalidate: a stale dentry is dropped on lookup.
+    static STALE_OPS: DentryOps = DentryOps {
+        d_revalidate: Some(|_d| false), // everything is stale
+        d_hash: None, d_compare: None, d_delete: None, d_release: None, d_iput: None,
+    };
+    #[test]
+    fn d_revalidate_drops_stale() {
+        let r = Dentry::new_root(dir(1)).set_d_op(&STALE_OPS);
+        d_add_negative(&r, "x");
+        assert!(d_lookup(&r, "x").is_none(), "stale dentry must be dropped");
+        // and it was unhashed
+        let qhash = Dentry::compute_hash(Some(&r), "x");
+        assert!(DENTRY_HASHTABLE.lookup_locked(Arc::as_ptr(&r), qhash, "x").is_none());
+    }
+
+    // lockref d_count: dget/dput balance; at 0 the dentry joins the LRU.
+    #[test]
+    fn lockref_count_and_lru() {
+        let r = root();
+        let c = d_add_negative(&r, "n");
+        assert_eq!(c.d_count(), 0);
+        let g = dget(&c);
+        assert_eq!(c.d_count(), 1);
+        assert!(!c.is_on_lru());
+        dput(g);
+        assert_eq!(c.d_count(), 0);
+        assert!(c.is_on_lru(), "unused dentry must be on the LRU");
+    }
+
+    // shrink_dcache evicts unused negatives; referenced/in-use survive.
+    #[test]
+    fn shrink_evicts_unused_negatives() {
+        let r = root();
+        // 100 unused negatives -> all eligible after dput-to-0.
+        let mut kids = Vec::new();
+        for i in 0..100u32 {
+            let c = d_add_negative(&r, &format!("neg{i}"));
+            let g = dget(&c);  // count 1
+            dput(g);           // back to 0 -> LRU, referenced bit set by dget
+            kids.push(c);
+        }
+        // First shrink pass: all are referenced (dget set the bit) -> rotated,
+        // bit cleared, nothing freed.
+        let first = shrink_dcache(100);
+        assert_eq!(first, 0);
+        // One in-use dentry must never be evicted.
+        let pinned = d_add_negative(&r, "pinned");
+        let _hold = dget(&pinned); // count 1
+        // Second pass: bits cleared -> evict unused negatives.
+        let freed = shrink_dcache(200);
+        assert!(freed >= 90, "expected most negatives evicted, got {freed}");
+        // Evicted ones are unhashed + forgotten by the parent.
+        let mut gone = 0;
+        for (i, _c) in kids.iter().enumerate() {
+            if r.cached_child(&format!("neg{i}")).is_none() { gone += 1; }
+        }
+        assert!(gone >= 90);
+        assert!(pinned.d_count() > 0);
+        assert!(r.cached_child("pinned").is_some(), "in-use dentry survived");
+    }
+
+    // d_invalidate unhashes a whole subtree.
+    #[test]
+    fn d_invalidate_subtree() {
+        let r = root();
+        let a = d_add(&r, "a", dir(10));
+        let b = d_add(&a, "b", dir(11));
+        let _c = d_add(&b, "c", dir(12));
+        assert!(d_lookup(&r, "a").is_some());
+        assert!(d_lookup(&a, "b").is_some());
+        assert!(d_lookup(&b, "c").is_some());
+        d_invalidate(&a);
+        assert!(d_lookup(&r, "a").is_none());
+        assert!(d_lookup(&a, "b").is_none());
+        assert!(d_lookup(&b, "c").is_none());
+        assert_eq!(a.flags() & D_HASHED, 0);
+    }
+
+    // d_move rehomes under a new (parent,name) key.
+    #[test]
+    fn d_move_rehomes() {
+        let r = root();
+        let p2 = d_add(&r, "dst", dir(20));
+        d_add(&r, "old", dir(21));
+        assert!(d_lookup(&r, "old").is_some());
+        let moved = d_move(&d_lookup(&r, "old").unwrap(), &p2, "new");
+        assert!(d_lookup(&r, "old").is_none());
+        let hit = d_lookup(&p2, "new").unwrap();
+        assert!(Arc::ptr_eq(&hit, &moved));
+    }
+
+    // set_inode flips D_NEGATIVE and fires d_iput on disassociation.
+    #[test]
+    fn negative_to_positive_flags() {
+        let r = root();
+        let c = d_add_negative(&r, "z");
+        assert_ne!(c.flags() & D_NEGATIVE, 0);
+        c.set_inode(Some(dir(30)));
+        assert_eq!(c.flags() & D_NEGATIVE, 0);
+        assert!(!c.is_negative());
+    }
 }
