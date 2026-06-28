@@ -87,10 +87,21 @@ pub fn setattr_prepare(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &C
         if inode.i_flags() & S_APPEND != 0 { return Err(VfsError::Eperm); }
     }
 
-    // utimes: a *specific* time needs owner/CAP_FOWNER (EPERM); "now"/NULL
-    // needs MAY_WRITE or owner/CAP_FOWNER (EACCES).
+    // utimes (Linux fs/utimes.c `utimes_common` + fs/attr.c `setattr_prepare`):
+    // owner/CAP_FOWNER (EPERM) is required for any *explicit* `times[]` that is
+    // not "set BOTH to now". Linux marks that case with `ATTR_TIMES_SET` (set
+    // whenever `times != NULL` and not both UTIME_NOW). The sole MAY_WRITE/owner
+    // (EACCES) path is setting BOTH atime AND mtime to now (NULL `times` or both
+    // UTIME_NOW), which always arrives as `ATTR_ATIME | ATTR_MTIME` with no
+    // `*_SET` bit. The equivalent signal here is: a *specific* time (`*_SET`),
+    // OR a per-field selection touching only one of atime/mtime (the other
+    // UTIME_OMIT) — e.g. `{UTIME_NOW, UTIME_OMIT}`, which Linux still gates on
+    // ownership even though the live field is "now". A non-owner with mere write
+    // access may only set BOTH timestamps to now.
     if ia.valid & (ATTR_ATIME | ATTR_MTIME) != 0 {
-        if ia.valid & (ATTR_ATIME_SET | ATTR_MTIME_SET) != 0 {
+        let both_now = ia.valid & (ATTR_ATIME | ATTR_MTIME) == ATTR_ATIME | ATTR_MTIME
+            && ia.valid & (ATTR_ATIME_SET | ATTR_MTIME_SET) == 0;
+        if !both_now {
             if !is_owner { return Err(VfsError::Eperm); }
         } else if !is_owner {
             inode_permission(inode, MAY_WRITE, cred)?;
