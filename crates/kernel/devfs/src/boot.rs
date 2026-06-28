@@ -5,25 +5,12 @@
 use alloc::sync::Arc;
 use vfs::{FileType, InodeRef};
 use crate::register;
-use core::sync::atomic::{AtomicPtr, Ordering};
-/// Directory-overlay hook: emits real on-disk children (the rootfs) under a
-/// prefix, so synthetic /dev dirs overlay ext4 without devfs depending on a
-/// filesystem driver (would cycle devfs->ext4->block->cgroup->devfs). The
-/// kernel installs an ext4 adapter at boot (docs/56).
-static DIR_OVERLAY: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-type OverlayFn = fn(&[u8], &mut dyn FnMut(&[u8], FileType));
-/// Install the rootfs directory-overlay adapter. Boot, once.
-/// # C: O(1)
-pub fn set_dir_overlay(f: OverlayFn) { DIR_OVERLAY.store(f as *mut (), Ordering::Release); }
-/// Emit on-disk ext4 children under `prefix` via the installed adapter.
-/// Called by `DevDir::readdir` to merge real entries with synthetic ones.
-/// # C: O(N ext4 children)
-pub(crate) fn dir_overlay(prefix: &[u8], emit: &mut dyn FnMut(&[u8], FileType)) {
-    let p = DIR_OVERLAY.load(Ordering::Acquire);
-    if p.is_null() { return; }
-    // SAFETY: p was stored from an OverlayFn via set_dir_overlay.
-    let f: OverlayFn = unsafe { core::mem::transmute(p) };
-    f(prefix, emit);
+/// Directory-overlay hook (the ext4 rootfs merge under `/dev` + `/etc`) now
+/// lives in `kernfs`; `PseudoDir::readdir` consults it directly. This thin
+/// re-export keeps the kmain boot wiring (`devfs::boot::set_dir_overlay`)
+/// unchanged. # C: O(1)
+pub fn set_dir_overlay(f: fn(&[u8], &mut dyn FnMut(&[u8], FileType))) {
+    kernfs::set_dir_overlay(f);
 }
 
 
