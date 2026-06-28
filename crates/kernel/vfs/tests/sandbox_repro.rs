@@ -32,7 +32,6 @@ struct TestFs { root_ino: u64 }
 impl FileSystem for TestFs {
     fn name(&self) -> &str { "testfs" }
     fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir { ino: self.root_ino })) }
-    fn lookup(&self, _path: &str) -> Option<InodeRef> { None }
 }
 
 // systemd setup_namespace for a no-RootDirectory service:

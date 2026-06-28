@@ -731,7 +731,7 @@ pub fn bind_submounts_rec(src: &str, tgt: &str) -> usize {
         let Some(rel) = rel_under(mp, src_mp.as_ref()) else { continue; };
         if rel.is_empty() { continue; }
         let new_mp = alloc::format!("{}{}", tgt, rel);
-        let root = m.root.clone().or_else(|| m.fs.root()).or_else(|| m.fs.lookup(&m.rendered_path));
+        let root = m.root.clone().or_else(|| m.fs.root());
         if let Some(r) = root {
             if register_bind(&new_mp, m.fs.clone(), r).is_ok() { n += 1; }
         }
@@ -856,11 +856,14 @@ pub fn is_readonly_path(path: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Unified path lookup: identify the owning mount, then call its FS lookup.
-/// # C: O(path) + O(FS-impl)
+/// Whole-path → inode resolver, now implemented PURELY per-component: walk
+/// `path` from the global root dentry via `d_lookup → i_op->lookup → d_add`,
+/// crossing mounts by dentry identity (`docs/16§3`). No `FileSystem::lookup`.
+/// Retained only as a convenience for callers (inotify dirent hooks) that
+/// hold a path string rather than a walked dentry.
+/// # C: O(path components)
 pub fn lookup(path: &str) -> KResult<InodeRef> {
-    let (mnt, _rel) = resolve_mount(path).ok_or(VfsError::Enoent)?;
-    mnt.fs.lookup(path).ok_or(VfsError::Enoent)
+    crate::namei::resolve_abs(path)
 }
 
 /// Root inode of the mount rooted EXACTLY at `abs` in the caller's ns, or
@@ -870,26 +873,17 @@ pub fn mount_root_at(abs: &str) -> Option<InodeRef> {
     if is_root_path(abs) { return None; }
     let m = mount_at_path_exact(abs)?;
     if let Some(r) = m.root.as_ref() { return Some(r.clone()); }
-    m.fs.root().or_else(|| m.fs.lookup(abs))
+    m.fs.root()
 }
 
 /// Root inode of a concrete mount id (the path walk's crossing primitive).
+/// Every mounted fs publishes its `s_root` inode via `m.root` (bind/tmpfs)
+/// or `FileSystem::root()` — never a whole-path lookup.
 /// # C: O(N_mounts)
 pub fn root_for_mount_id(mnt_id: u64) -> Option<InodeRef> {
     let t = TABLE.lock();
     let m = t.iter().find(|m| m.mnt_id == mnt_id)?;
-    m.root.clone().or_else(|| m.fs.root()).or_else(|| m.fs.lookup(&m.rendered_path))
-}
-
-/// Whole-path in-mount resolver for the dentry walk's delegation path
-/// (procfs synthesising from a full path). # C: O(N) + O(FS-impl)
-pub fn mount_whole_path(abs: &str) -> Option<InodeRef> {
-    lookup(abs).ok()
-}
-
-/// Install the whole-path delegation hook into `vfs::namei`. # C: O(1)
-pub fn install_resolvers() {
-    crate::namei::set_mount_whole_path(mount_whole_path);
+    m.root.clone().or_else(|| m.fs.root())
 }
 
 /// Snapshot the caller's mount-namespace view (for /proc mounts +

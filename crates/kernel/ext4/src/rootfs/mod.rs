@@ -199,7 +199,6 @@ impl vfs::fs::FileSystem for Ext4RootfsFs {
     fn magic(&self) -> u64 { crate::EXT4_SUPER_MAGIC as u64 }
     /// ext4 root is always inode 2 (`docs/16§2`).
     fn root(&self) -> Option<vfs::InodeRef> { wrap_any_ino(2) }
-    fn lookup(&self, path: &str) -> Option<vfs::InodeRef> { lookup_inode_any(path.as_bytes()) }
     fn create(&self, path: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
         create_at(path.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enoent)
     }

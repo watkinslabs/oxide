@@ -192,8 +192,11 @@ impl vfs::fs::FileSystem for DevfsFs {
     /// TMPFS_MAGIC — devtmpfs shares the tmpfs superblock magic.
     /// # C: O(1)
     fn magic(&self) -> u64 { 0x0102_1994 }
-    /// # C: O(N_devfs_entries)
-    fn lookup(&self, path: &str) -> Option<vfs::InodeRef> { lookup(path) }
+    /// Mount root = the `/dev` `DevDir` (a real per-component `vfs::Inode`).
+    /// The path walk crosses into the devfs mount and resolves every
+    /// `/dev/*` component via `DevDir::lookup` — no whole-path lookup.
+    /// # C: O(1)
+    fn root(&self) -> Option<vfs::InodeRef> { lookup_no_chroot("/dev") }
 }
 
 /// Singleton accessor for the mount-table to register.

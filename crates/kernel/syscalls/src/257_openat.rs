@@ -1,13 +1,10 @@
 // 257 openat — one syscall, one file (docs/53 §0).
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::string::ToString;
-use alloc::sync::Arc;
-
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
-use vfs::{Dentry, File, OpenFlags};
+use vfs::{File, OpenFlags};
 
 use crate::open_common::{dup_fd_target, open_proc_fd, O_CREAT, O_TRUNC, O_DIRECTORY,
     O_NOFOLLOW, O_TMPFILE};
@@ -162,7 +159,11 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let dentry = Dentry::new(None, path_str.to_string(), Arc::clone(&inode));
+    // Parented dentry (Linux `f_path.dentry`): the fd's path reconstructs by
+    // parent-walk (`Dentry::absolute_path`), not a stored whole string.
+    // O_TMPFILE inodes have no directory entry — their path is the *directory*.
+    let dentry_path = if (flags & O_TMPFILE) != 0 { "/" } else { path_str };
+    let dentry = vfs::file::open_dentry(dentry_path, &inode);
     let oflags = OpenFlags::from_bits_truncate(flags);
     let file = File::new(inode, dentry, oflags);
     match fdt.alloc(file) {

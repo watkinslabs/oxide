@@ -571,12 +571,18 @@ fn dentry_absolute_path_nested_components() {
 }
 
 #[test]
-fn dentry_absolute_path_install_open_shape() {
-    // install_open today builds a single dentry whose name is the
-    // full path — preserve it verbatim instead of prepending '/'.
+fn dentry_absolute_path_open_dentry_shape() {
+    // WP2: an opened file's dentry is PARENTED (the basename hangs off the
+    // resolved parent dentry — `file::open_dentry`), so the pathname is
+    // reconstructed by the parent walk. There is NO whole-path-in-one-name
+    // special case: a parentless dentry whose name contains slashes would be
+    // an invalid shape and is never built by the open path.
     let i: InodeRef = MemFile::new(1);
-    let d = Dentry::new(None, String::from("/dev/pts/3"), i);
-    assert_eq!(d.absolute_path(), b"/dev/pts/3");
+    let root = Dentry::new_root(Arc::clone(&i));
+    let dev  = Dentry::new(Some(root),            String::from("dev"), Arc::clone(&i));
+    let pts  = Dentry::new(Some(Arc::clone(&dev)), String::from("pts"), Arc::clone(&i));
+    let three = Dentry::new_child(&pts, "3", Some(Arc::clone(&i)));
+    assert_eq!(three.absolute_path(), b"/dev/pts/3");
 }
 
 #[test]

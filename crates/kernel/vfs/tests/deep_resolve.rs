@@ -50,22 +50,13 @@ impl Inode for Reg {
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
 }
 
-/// A procfs-style directory: per-component lookup is unsupported, so the
-/// owning mount resolves the whole path instead.
-struct WholeDir { ino: u64 }
-impl Inode for WholeDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-}
-
 const ROOT_INO: u64 = 2;
 const DIR_A: u64 = 10;
 const DIR_B: u64 = 11;
 const FILE_C: u64 = 0xABC;     // /a/b/c
 const PROC_UNDERLAY: u64 = 60; // empty /proc dir on the root fs
-const PROC_ROOT: u64 = 70;     // procfs mount root (whole-path)
+const PROC_ROOT: u64 = 70;     // procfs mount root (per-component)
+const PROC_PID1: u64 = 71;     // /proc/1
 const PROC_STAT: u64 = 0x501;  // /proc/1/stat
 
 /// Materialise an inode by ino — the shared backing the root tree + fs lookups
@@ -77,7 +68,9 @@ fn node(ino: u64) -> InodeRef {
         DIR_B => Arc::new(Dir { ino: DIR_B, kids: &[("c", FILE_C)] }),
         FILE_C => Arc::new(Reg { ino: FILE_C }),
         PROC_UNDERLAY => Arc::new(Dir { ino: PROC_UNDERLAY, kids: &[] }),
-        PROC_ROOT => Arc::new(WholeDir { ino: PROC_ROOT }),
+        // procfs mount root resolves per-component: /proc → 1 → stat.
+        PROC_ROOT => Arc::new(Dir { ino: PROC_ROOT, kids: &[("1", PROC_PID1)] }),
+        PROC_PID1 => Arc::new(Dir { ino: PROC_PID1, kids: &[("stat", PROC_STAT)] }),
         other => Arc::new(Reg { ino: other }),
     }
 }
@@ -105,18 +98,12 @@ struct RootFs;
 impl FileSystem for RootFs {
     fn name(&self) -> &str { "rootfs" }
     fn root(&self) -> Option<InodeRef> { Some(node(ROOT_INO)) }
-    fn lookup(&self, path: &str) -> Option<InodeRef> {
-        if path == "/a/b/c" { Some(node(FILE_C)) } else { None }
-    }
 }
 
 struct ProcFs;
 impl FileSystem for ProcFs {
     fn name(&self) -> &str { "procfs" }
     fn root(&self) -> Option<InodeRef> { Some(node(PROC_ROOT)) }
-    fn lookup(&self, path: &str) -> Option<InodeRef> {
-        if path == "/proc/1/stat" { Some(node(PROC_STAT)) } else { None }
-    }
 }
 
 /// Install the real boot wiring (providers + a `/` and `/proc` mount), once.
@@ -148,15 +135,16 @@ fn deep_path_into_root_fs_resolves_to_inode() {
 }
 
 #[test]
-fn deep_path_into_whole_path_fs_crosses_and_resolves() {
+fn deep_path_into_mounted_fs_crosses_and_resolves() {
     let _g = setup();
     // walk_to_mount crosses at /proc by DENTRY IDENTITY (the dentry register
-    // marked), then the procfs whole-path lookup completes /proc/1/stat.
+    // marked), then per-component lookup (proc_root→1→stat) completes the path
+    // — NO whole-path delegate; resolution is `d_lookup → i_op->lookup`.
     let (m, abs) = vfs::mount::resolve_mount("/proc/1/stat").expect("owning mount");
     assert_eq!(m.mount_point_str(), "/proc", "deep proc path is owned by the /proc mount");
     assert_eq!(abs, "/proc/1/stat");
-    let i = vfs::mount::lookup("/proc/1/stat").expect("deep lookup in whole-path fs");
-    assert_eq!(i.ino(), PROC_STAT, "whole-path fs resolved /proc/1/stat to its inode");
+    let i = vfs::mount::lookup("/proc/1/stat").expect("per-component lookup across mount");
+    assert_eq!(i.ino(), PROC_STAT, "crossed /proc and resolved /proc/1/stat per-component");
 }
 
 #[test]

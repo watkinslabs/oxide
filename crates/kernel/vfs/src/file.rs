@@ -346,9 +346,6 @@ pub fn install_open(
     path: &str,
     flags: OpenFlags,
 ) -> Result<i32, VfsError> {
-    use alloc::sync::Arc;
-    use alloc::string::ToString;
-    use crate::dentry::Dentry;
     if flags.contains(OpenFlags::O_DIRECTORY)
         && !matches!(inode.file_type(), crate::types::FileType::Directory)
     {
@@ -361,7 +358,36 @@ pub fn install_open(
         }
         let _ = inode.truncate(0);
     }
-    let dentry = Dentry::new(None, path.to_string(), Arc::clone(&inode));
+    let dentry = open_dentry(path, &inode);
     let file = File::new(inode, dentry, flags);
     fdt.alloc(file).map_err(|_| VfsError::Emfile)
+}
+
+/// Build the `Dentry` for an opened file as a properly-PARENTED node (Linux
+/// `f->f_path.dentry`): resolve the parent directory's dentry via the
+/// per-component walk and hang the basename child off it, carrying the
+/// opened inode. `Dentry::absolute_path` then reconstructs the pathname by
+/// walking the parent chain — there is no whole-path-in-one-dentry shape.
+/// Falls back to a basename-only dentry only when the root dentry isn't
+/// built yet (very early boot) or the parent doesn't resolve.
+/// # C: O(path components)
+pub fn open_dentry(path: &str, inode: &InodeRef) -> alloc::sync::Arc<crate::dentry::Dentry> {
+    use alloc::sync::Arc;
+    use alloc::string::String;
+    use crate::dentry::Dentry;
+    // Root itself: reuse the canonical root dentry when available.
+    if path == "/" {
+        if let Some(r) = crate::namei::resolve_path_dentry("/") { return r; }
+        return Dentry::new(None, String::new(), Arc::clone(inode));
+    }
+    let trimmed = path.trim_end_matches('/');
+    let (parent, name) = match trimmed.rfind('/') {
+        Some(0) => ("/", &trimmed[1..]),
+        Some(i) => (&trimmed[..i], &trimmed[i + 1..]),
+        None    => ("", trimmed),
+    };
+    if let Some(pd) = crate::namei::resolve_path_dentry(parent) {
+        return Dentry::new_child(&pd, name, Some(Arc::clone(inode)));
+    }
+    Dentry::new(None, String::from(name), Arc::clone(inode))
 }

@@ -186,18 +186,17 @@ impl Dentry {
         !self.mounted_mounts.read().is_empty()
     }
 
-    /// Absolute path for this dentry — walk the parent chain to the
-    /// root and join names with `/`. Used by `/proc/<pid>/fd/N`
-    /// readlink + by `execveat(fd, "", AT_EMPTY_PATH)` to materialise
-    /// the path of an open file descriptor.
+    /// Absolute path for this dentry — Linux `d_path`: walk the parent
+    /// chain to the root and join `d_name`s with `/`. Used by
+    /// `/proc/<pid>/fd/N` readlink + `execveat(fd, "", AT_EMPTY_PATH)` to
+    /// materialise an open fd's pathname. Every dentry is properly
+    /// parented (the open path builds a child under the resolved parent —
+    /// `file::open_dentry`), so reconstruction is purely the parent walk;
+    /// there is no whole-path-in-one-name special case.
     ///
-    /// Returns `b"/"` for the root dentry; otherwise an absolute path
-    /// like `b"/sbin/init"`. Empty-named ancestors (the root sentinel)
-    /// don't contribute a slash so we don't emit `//sbin/init`. If a
-    /// dentry's `name` already contains slashes (the legacy
-    /// `install_open` path stores the entire pathname in a single
-    /// dentry with no parent), that name is returned as-is —
-    /// guarding against `//dev/pts/3` from `b"/" + name`.
+    /// Returns `b"/"` for the root dentry; otherwise `b"/sbin/init"`.
+    /// Empty-named ancestors (the root sentinel) contribute no slash so we
+    /// never emit `//sbin/init`.
     /// # C: O(depth)
     pub fn absolute_path(&self) -> alloc::vec::Vec<u8> {
         use alloc::vec::Vec;
@@ -209,11 +208,6 @@ impl Dentry {
             cur = p.parent.as_ref();
         }
         if parts.is_empty() { return alloc::vec![b'/']; }
-        // Single-component dentry whose name already encodes an
-        // absolute path (install_open shape today). Return verbatim.
-        if parts.len() == 1 && parts[0].as_bytes().first() == Some(&b'/') {
-            return parts[0].as_bytes().to_vec();
-        }
         let mut out: Vec<u8> = Vec::new();
         for name in parts.iter().rev() {
             out.push(b'/');

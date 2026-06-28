@@ -41,7 +41,6 @@ struct TestFs { root_ino: u64 }
 impl FileSystem for TestFs {
     fn name(&self) -> &str { "testfs" }
     fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir { ino: self.root_ino })) }
-    fn lookup(&self, _path: &str) -> Option<InodeRef> { None }
 }
 
 #[test]
@@ -63,23 +62,21 @@ fn resolver_skips_root_and_missing() {
     assert!(vfs::mount::mount_root_at("/nope-xyz").is_none());
 }
 
-// A fallback fs that exposes no root() but resolves the mountpoint via
-// whole-path lookup — mount_root_at must still return its root (the
-// tmpfs/proc/sys shape during the transition).
-struct LookupOnlyFs;
-impl FileSystem for LookupOnlyFs {
-    fn name(&self) -> &str { "lookuponly" }
-    fn lookup(&self, path: &str) -> Option<InodeRef> {
-        if path == "/y" { Some(Arc::new(TDir { ino: 0x5678 })) } else { None }
-    }
+// WP2: there is NO whole-path `FileSystem::lookup` fallback. Every mounted
+// fs publishes its root inode via `FileSystem::root()` or, for bind/tmpfs,
+// the per-mount `m.root` (`register_bind`). A fs exposing neither has no
+// crossable root — `mount_root_at` returns `None`.
+struct NoRootFs;
+impl FileSystem for NoRootFs {
+    fn name(&self) -> &str { "norootfs" }
 }
 
 #[test]
-fn resolver_falls_back_to_whole_path_lookup() {
+fn resolver_without_root_has_no_crossable_inode() {
     let _g = guard();
-    vfs::mount::register("/y", Arc::new(LookupOnlyFs)).expect("register");
-    let r = vfs::mount::mount_root_at("/y").expect("cross into /y via lookup");
-    assert_eq!(r.ino(), 0x5678);
+    vfs::mount::register("/y", Arc::new(NoRootFs)).expect("register");
+    assert!(vfs::mount::mount_root_at("/y").is_none(),
+        "no root() and no m.root → nothing to cross into (no whole-path fallback)");
 }
 
 // K2V V7: MS_MOVE relocates a mount's mount_point in place, preserving

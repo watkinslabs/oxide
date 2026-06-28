@@ -592,70 +592,6 @@ fn lookup_child_path(mut node: InodeRef, leaf: &str) -> Option<InodeRef> {
     Some(node)
 }
 
-/// # C: O(N_tasks)
-pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
-    use crate::paths::{parse_proc_path, ProcPath};
-    if let Some(i) = crate::proc_links::lookup_fd_path(path) {
-        return Some(i);
-    }
-    if let Some(i) = crate::fdinfo::lookup_fdinfo_path(path) {
-        return Some(i);
-    }
-    match parse_proc_path(path) {
-        ProcPath::SelfDir => Some(Arc::new(ProcPidDirInode {
-            tid: 0,
-            is_self: true,
-            allow_task_dir: true,
-        }) as InodeRef),
-        ProcPath::SelfChild(leaf) => {
-            // Static devfs registrations take priority (already tried by
-            // caller). Fall back to the same per-pid synthesis as
-            // /proc/<pid>/<leaf> via the is_self dispatch.
-            lookup_child_path(
-                Arc::new(ProcPidDirInode {
-                    tid: 0,
-                    is_self: true,
-                    allow_task_dir: true,
-                }) as InodeRef,
-                leaf,
-            )
-        }
-        ProcPath::PidDir(name_pid) => {
-            let tid = pid_to_kernel_tid(name_pid)?;
-            Some(Arc::new(ProcPidDirInode {
-                tid,
-                is_self: false,
-                allow_task_dir: true,
-            }) as InodeRef)
-        }
-        ProcPath::PidChild(name_pid, leaf) => {
-            let tid = pid_to_kernel_tid(name_pid)?;
-            lookup_child_path(
-                Arc::new(ProcPidDirInode {
-                    tid,
-                    is_self: false,
-                    allow_task_dir: true,
-                }) as InodeRef,
-                leaf,
-            )
-        }
-        ProcPath::NotProc => match path {
-            "/proc/net/dev" => Some(Arc::new(crate::net::ProcNetDevInode) as InodeRef),
-            "/proc/net/tcp" => Some(Arc::new(crate::net::ProcNetTcpInode) as InodeRef),
-            "/proc/net/tcp6" => Some(Arc::new(crate::net::ProcNetTcp6Inode) as InodeRef),
-            "/proc/net/udp" => Some(Arc::new(crate::net::ProcNetUdpInode) as InodeRef),
-            "/proc/net/udp6" => Some(Arc::new(crate::net::ProcNetUdp6Inode) as InodeRef),
-            "/proc/modules" => Some(Arc::new(crate::net::ProcModulesInode) as InodeRef),
-            "/proc/net/route" => Some(Arc::new(crate::net::ProcNetRouteInode) as InodeRef),
-            "/proc/net/arp" => Some(Arc::new(crate::net::ProcNetArpInode) as InodeRef),
-            "/proc/net/unix" => Some(Arc::new(crate::net::ProcNetUnixInode) as InodeRef),
-            "/proc/net/if_inet6" => Some(Arc::new(crate::net::ProcNetIfInet6Inode) as InodeRef),
-            "/proc/net/snmp" => Some(Arc::new(crate::net::ProcNetSnmpInode) as InodeRef),
-            _ => None,
-        },
-    }
-}
-
 /// Register the v1 procfs entries (delegated to procfs_static).
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(N_files)
@@ -669,6 +605,15 @@ pub fn init() {
 pub fn smoke_test() {
     use hal::kassert;
     use vfs::Inode;
+    // Per-component resolve: `/proc/<leaf>` via the procfs root inode tree
+    // (`ProcRootInode::lookup` → `i_op->lookup`), everything else via the
+    // devfs key/value tree. No whole-path `FileSystem::lookup`.
+    fn smoke_resolve(path: &str) -> Option<InodeRef> {
+        if let Some(rest) = path.strip_prefix("/proc/") {
+            return lookup_child_path(crate::static_files::proc_root() as InodeRef, rest);
+        }
+        devfs::lookup_no_chroot(path)
+    }
     fn is_hex(b: u8) -> bool {
         b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
     }
@@ -697,14 +642,14 @@ pub fn smoke_test() {
     for (path, prefix) in entries {
         // Resolve through the procfs filesystem (the /proc dir tree owns its
         // static children now; /sys + /etc still fall to devfs inside it).
-        let inode = crate::fs_impl::instance().lookup(path).expect("procfs lookup");
+        let inode = smoke_resolve(path).expect("procfs lookup");
         let mut buf = [0u8; 32];
         let n = inode.read(0, &mut buf).expect("procfs read");
         kassert!(n >= prefix.len(), "procfs read short");
         kassert!(&buf[..prefix.len()] == *prefix, "procfs body mismatch");
     }
     for path in ["/sys/kernel/random/uuid", "/sys/kernel/random/boot_id"] {
-        let inode = crate::fs_impl::instance().lookup(path).expect("procfs lookup");
+        let inode = smoke_resolve(path).expect("procfs lookup");
         let mut buf = [0u8; 40];
         let n = inode.read(0, &mut buf).expect("procfs read");
         kassert!(n == 37, "procfs uuid length mismatch");

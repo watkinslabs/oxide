@@ -58,13 +58,12 @@ fn resolution_root() -> Option<(Arc<vfs::Dentry>, bool)> {
 }
 
 /// Resolve absolute `abs` to its inode via the dentry path-walk
-/// (`vfs::path_lookup`) — THE resolver (`docs/16§3`): per-component,
-/// crossing mounts (`mount_root_at`) and delegating whole-path
-/// filesystems (`mount_whole_path`) to their owning mount, following
-/// symlinks (intermediate always; final unless `no_follow_final`) with
-/// ELOOP at depth>40, confined to the task's chroot root. Returns `None`
-/// if unresolved or ext4 isn't mounted yet (very early boot).
-/// `no_follow_final` = O_NOFOLLOW / AT_SYMLINK_NOFOLLOW (lstat).
+/// (`vfs::path_lookup`) — THE resolver (`docs/16§3`): ALWAYS per-component
+/// (`d_lookup → i_op->lookup → d_add`), crossing mounts at each mount root
+/// (`mount_root_at`), following symlinks (intermediate always; final unless
+/// `no_follow_final`) with ELOOP at depth>40, confined to the task's chroot
+/// root. Returns `None` if unresolved or ext4 isn't mounted yet (very early
+/// boot). `no_follow_final` = O_NOFOLLOW / AT_SYMLINK_NOFOLLOW (lstat).
 /// # C: O(components × dir-lookup)
 pub fn resolve(abs: &str, no_follow_final: bool) -> Option<vfs::InodeRef> {
     resolve_path(abs, no_follow_final).map(|p| p.inode)

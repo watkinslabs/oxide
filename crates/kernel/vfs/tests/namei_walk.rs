@@ -4,7 +4,7 @@
 //! isolation.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use vfs::inode::Inode;
 use vfs::fs::FileSystem;
@@ -48,7 +48,6 @@ fn sym(ino: u64, t: &str) -> InodeRef { Arc::new(Sym { ino, target: t.to_string(
 struct TestMountFs;
 impl FileSystem for TestMountFs {
     fn name(&self) -> &str { "testfs" }
-    fn lookup(&self, _path: &str) -> Option<InodeRef> { None }
 }
 
 fn mount_id_for(path: &str, root: InodeRef) -> u64 {
@@ -155,24 +154,8 @@ fn missing_component_enoent() {
 }
 
 // Mount crossing: /mnt whose root holds `file` is crossed by DENTRY
-// IDENTITY plus namespace-scoped covering mount id; /proc is a whole-path
-// filesystem (its root rejects per-component lookup) reached via the
-// whole-path delegate.
-static PROC_TARGET: OnceLock<InodeRef> = OnceLock::new();
-fn test_whole_path(abs: &str) -> Option<InodeRef> {
-    if abs == "/proc/123/stat" { PROC_TARGET.get().cloned() } else { None }
-}
-
-// A whole-path-only directory inode: per-component lookup is unsupported
-// (Enotdir), like procfs's synthesised dirs.
-struct WholePathDir { ino: u64 }
-impl Inode for WholePathDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(VfsError::Enotdir) }
-}
-
+// IDENTITY plus namespace-scoped covering mount id; resolution below the
+// mount root is per-component (`d_lookup → i_op->lookup`).
 #[test]
 fn crosses_mount_point() {
     let mnt_file = file(99);
@@ -196,22 +179,66 @@ fn crosses_mount_point() {
     assert_eq!(i.ino(), 99, "resolved file inside the mounted fs, not the underlay");
 }
 
-// Crossing into a whole-path filesystem (procfs): per-component lookup
-// of `/proc/123` fails (Enotdir), so the walker delegates the remaining
-// absolute path to the owning mount's whole-path lookup.
+// Deep crossing into a mounted (procfs-style) filesystem: the walker
+// crosses at `/proc` by dentry identity, then resolves `123 → stat`
+// per-component through the mount root's inode tree — NO whole-path
+// delegate (WP2 deleted it).
 #[test]
-fn delegates_whole_path_for_procfs_style_fs() {
-    PROC_TARGET.set(file(301)).ok();
-    vfs::set_mount_whole_path(test_whole_path);
+fn crosses_into_mount_and_resolves_per_component() {
+    let stat = file(301);
+    let pid_dir = dir(124, &[("stat", stat)]);
+    let proc_root = dir(123, &[("123", pid_dir)]);
 
     let empty_proc = dir(60, &[]);
     let root_inode = dir(2, &[("proc", empty_proc)]);
     let root = Dentry::new_root(root_inode);
 
+    let (_, proc_d) = vfs::path_lookup(root.clone(), root.clone(), "/proc", LookupFlags::default())
+        .expect("resolve /proc");
+    let mnt_id = mount_id_for("/proc", proc_root);
+    proc_d.set_mounted_mount(0, Some(mnt_id));
+
     let (i, _) = vfs::path_lookup(root.clone(), root, "/proc/123/stat", LookupFlags::default())
-        .expect("delegate whole-path into procfs");
-    assert_eq!(i.ino(), 301, "whole-path delegate resolved /proc/123/stat");
+        .expect("cross into procfs mount + resolve per-component");
+    assert_eq!(i.ino(), 301, "resolved /proc/123/stat per-component across the mount");
 }
+
+// Per-fs conformance: a multi-component path resolves PURELY via
+// `d_lookup → i_op->lookup → d_add`. This is the WP2 end-state contract for
+// every SuperBlock-owned fs (ext4/tmpfs/devfs/sysfs/procfs/cgroup): the first
+// walk populates the (parent,name)-keyed dcache from each directory inode's
+// per-component `lookup`, and a second walk is served from that cache.
+#[test]
+fn multi_component_resolves_via_dlookup_iop_lookup_dadd() {
+    // A real fs-root shape: / → a → b → c (regular file), all per-component.
+    let c = file(0xC);
+    let b = dir(0xB, &[("c", c)]);
+    let a = dir(0xA, &[("b", b)]);
+    let root_inode = dir(2, &[("a", a)]);
+    let root = Dentry::new_root(root_inode);
+
+    // First walk: the dcache for each component starts empty, so each step
+    // takes the slow path `i_op->lookup(parent_inode, name)` then `d_add`.
+    assert!(vfs::d_lookup(&root, "a").is_none(), "cache cold before the walk");
+    let (i, leaf_d) = vfs::path_lookup(root.clone(), root.clone(), "/a/b/c", LookupFlags::default())
+        .expect("multi-component per-component resolve");
+    assert_eq!(i.ino(), 0xC, "resolved /a/b/c to the file inode");
+
+    // d_add populated every (parent,name) edge along the path: the dcache
+    // fast path `d_lookup` now returns the SAME dentry objects (by identity).
+    let a_d = vfs::d_lookup(&root, "a").expect("a cached by d_add");
+    assert!(!a_d.is_negative());
+    let b_d = vfs::d_lookup(&a_d, "b").expect("b cached by d_add");
+    let c_d = vfs::d_lookup(&b_d, "c").expect("c cached by d_add");
+    assert!(alloc_ptr_eq(&c_d, &leaf_d), "second lookup returns the walk's leaf dentry");
+
+    // Second walk is served from the dcache (fast path) and agrees.
+    let (i2, _) = vfs::path_lookup(root.clone(), root, "/a/b/c", LookupFlags::default())
+        .expect("cached re-resolve");
+    assert_eq!(i2.ino(), 0xC, "cached resolution matches");
+}
+
+fn alloc_ptr_eq(a: &Arc<Dentry>, b: &Arc<Dentry>) -> bool { Arc::ptr_eq(a, b) }
 
 // Regression (B53): a mount on a TREE-BACKED directory reached only by
 // FIRST crossing an outer mount — the `/sys` (devfs sub-tree) → then

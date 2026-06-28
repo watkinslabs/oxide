@@ -49,28 +49,30 @@ pub struct VfsPath {
     pub inode: InodeRef,
 }
 
-/// Whole-path delegate: resolves an absolute path within its owning
-/// mount by that mount's own lookup (`vfs::mount::lookup`). Used when a
-/// per-component `Inode::lookup` returns Enotdir/Eopnotsupp because the
-/// filesystem at that point resolves whole-path, not per-component
-/// (procfs synthesises `/proc/<pid>/<file>` from the full path). This is
-/// the OWNING MOUNT resolving its own subtree — not a global legacy
-/// fallback (which would bypass per-component symlink resolution).
-type WholePath = fn(&str) -> Option<InodeRef>;
-static MOUNT_WHOLE_PATH: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-
-/// Install the whole-path in-mount delegate. Called once at boot.
-/// # C: O(1)
-pub fn set_mount_whole_path(f: WholePath) {
-    MOUNT_WHOLE_PATH.store(f as *mut (), Ordering::Release);
+/// Resolve absolute `path` to its inode by a PURE per-component walk from
+/// the global root dentry (`d_lookup → i_op->lookup → d_add`, crossing
+/// mounts by dentry identity). The per-component replacement for the
+/// deleted whole-path `FileSystem::lookup`; used by `vfs::mount::lookup`
+/// for callers (inotify dirent hooks) that hold a path string.
+/// # C: O(path components)
+pub fn resolve_abs(path: &str) -> KResult<InodeRef> {
+    let root = root_dentry().ok_or(VfsError::Enoent)?;
+    let p = path_lookup_path(root.clone(), root, path, LookupFlags::default())?;
+    Ok(p.inode)
 }
 
-fn whole_path(abs: &str) -> Option<InodeRef> {
-    let p = MOUNT_WHOLE_PATH.load(Ordering::Acquire);
-    if p.is_null() { return None; }
-    // SAFETY: only ever stores a `WholePath` fn pointer via the setter.
-    let f: WholePath = unsafe { core::mem::transmute(p) };
-    f(abs)
+/// Resolve absolute `path` to its canonical DENTRY (parent chain intact) by
+/// the per-component walk from the global root. Used by `install_open` to
+/// obtain the real parent dentry for an opened file, so the file's path is
+/// reconstructed by parent-walk (`Dentry::absolute_path`) rather than stored
+/// as a whole string. `None` if the root dentry isn't built yet (early boot)
+/// or the path doesn't resolve.
+/// # C: O(path components)
+pub fn resolve_path_dentry(path: &str) -> Option<Arc<Dentry>> {
+    let root = root_dentry()?;
+    path_lookup_path(root.clone(), root, path, LookupFlags::default())
+        .ok()
+        .map(|p| p.dentry)
 }
 
 /// Global root-dentry provider — supplies the start of an absolute mount-
@@ -142,18 +144,6 @@ pub fn walk_to_mount(path: &str) -> Option<u64> {
         cur_inode = ci;
     }
     Some(cur_mnt)
-}
-
-/// Join `base` (an absolute dir path) + `comp` + `rest` into one
-/// absolute path, for delegating the remaining walk to the owning
-/// mount's whole-path lookup.
-/// # C: O(total len)
-fn join_abs(base: &[u8], comp: &str, rest: &[String]) -> String {
-    let mut s = String::from_utf8_lossy(base).into_owned();
-    if !s.ends_with('/') { s.push('/'); }
-    s.push_str(comp);
-    for c in rest { s.push('/'); s.push_str(c); }
-    s
 }
 
 /// Split `path` into non-empty components, preserving `.`/`..` (the
@@ -253,25 +243,12 @@ pub fn path_lookup_path(
         let child = match crate::dcache::d_lookup(&cur_dentry, &comp) {
             Some(d) if !d.is_negative() => d,
             Some(_) => return Err(VfsError::Enoent), // cached negative dentry: confirmed miss
-            None => match cur_inode.lookup(&comp) {
-                Ok(ci) => crate::dcache::d_add(&cur_dentry, &comp, ci),
-                Err(e) => {
-                    // Per-component lookup failed. If the current
-                    // filesystem resolves whole-path (procfs synthesises
-                    // from the full path; its dir inodes return Enotdir
-                    // on Inode::lookup), delegate the remaining absolute
-                    // path to the owning mount's lookup — the mount
-                    // resolving its own subtree. A genuinely-missing name
-                    // makes the delegate also miss, so the error stands.
-                    // WP6-pending: removed once procfs resolves per-component.
-                    let full = join_abs(&cur_dentry.absolute_path(), &comp, &queue[idx..]);
-                    if let Some(i) = whole_path(&full) {
-                        let d = Dentry::new(None, full, i.clone());
-                        return Ok(VfsPath { mnt_id: cur_mnt_id, dentry: d, inode: i });
-                    }
-                    return Err(e);
-                }
-            },
+            // Per-component slow path: `i_op->lookup(parent_inode, name)`
+            // then `d_add`. EVERY filesystem resolves per-component now
+            // (ext4/tmpfs/devfs/sysfs/procfs/cgroup), so a missing name
+            // (`Enoent`) or a non-directory (`Enotdir`) is the final answer
+            // — there is no whole-path `FileSystem::lookup` delegate.
+            None => crate::dcache::d_add(&cur_dentry, &comp, cur_inode.lookup(&comp)?),
         };
         let mut child_inode = child.inode().ok_or(VfsError::Enoent)?;
 
