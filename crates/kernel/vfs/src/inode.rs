@@ -538,6 +538,29 @@ pub fn inode_query_iversion<I: Inode + ?Sized>(inode: &I) -> u64 {
     cur >> I_VERSION_QUERIED_SHIFT
 }
 
+/// `inode_owner_or_capable` (Linux `fs/inode.c`) — the canonical
+/// owner-or-`CAP_FOWNER` predicate gating operations only the file owner (or a
+/// privileged caller) may perform: chmod, a *specific*-time `utimes`, `chattr`,
+/// and the `setattr_prepare` owner branch all reduce to this test. The inode's
+/// `i_uid` is mapped THROUGH the mount idmap (`i_uid_into_vfsuid`) before the
+/// comparison, so an idmapped mount compares the caller's fsuid against the
+/// file's *vfsuid*, not the raw on-disk id. Returns `true` when the caller owns
+/// the file (`fsuid == vfsuid`), OR holds `CAP_FOWNER` AND the file's owner is
+/// representable in the caller's id space (Linux `vfsuid_has_mapping`): an idmap
+/// miss (`INVALID_ID`) denies the capability path, because privilege cannot be
+/// exercised over an owner with no mapping in the caller's namespace — the
+/// correctness edge the open-coded `cred.uid == vfsuid || cred.cap_fowner`
+/// inline (setattr_prepare / may_chmod) silently grants. # C: O(extents)
+pub fn inode_owner_or_capable<I: Inode + ?Sized>(
+    idmap: &crate::idmap::Idmap,
+    inode: &I,
+    cred: &crate::namei::Cred,
+) -> bool {
+    let vfsuid = idmap.map_out_uid(inode.uid().unwrap_or(0));
+    if vfsuid == cred.uid { return true; }
+    cred.cap_fowner && vfsuid != crate::idmap::INVALID_ID
+}
+
 /// errno for a default (no-data-op) `read`/`write` keyed on the inode's
 /// `S_IFMT` type. A directory is `Eisdir` — Linux routes directory
 /// `read(2)`/`write(2)` to `generic_read_dir`/the write guard, both `-EISDIR`.
