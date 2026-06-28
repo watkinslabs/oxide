@@ -81,14 +81,22 @@ unsafe fn send_ipi(logical_cpu: u32) {
     }
 }
 
-/// The `hal::tlb` hook: invalidate `va` (or ALL) on every OTHER online
-/// CPU and wait for completion. The CALLER already flushed its own TLB.
-/// No-op when only this CPU is online (UP / pre-AP boot).
-/// # C: O(online_cpus) + IPI round-trip
-fn shootdown(va: u64) {
+/// The `hal::tlb` hook: invalidate `va` (or ALL) on the CPUs named in
+/// `mask` (the owning mm's `cpumask`, Linux `flush_tlb_others`) — minus
+/// this CPU and any not-yet-online AP — and wait for completion. The
+/// CALLER already flushed its own TLB. No-op when only this CPU is online
+/// (UP / pre-AP boot) or when `mask` names no other CPU that has the mm
+/// loaded (the common single-threaded-process fault path ⇒ zero IPIs,
+/// killing the over-broadcast storm that the old all-online-CPU target
+/// caused on every COW fault / mprotect / munmap).
+/// # C: O(popcount(targets)) + IPI round-trip
+fn shootdown(va: u64, mask: u64) {
     if cpu::smp::online_count() <= 1 { return; }
     let me = this_cpu();
-    let targets = cpu::smp::online_mask() & !(1u64 << me);
+    // Intersect the mm's cpumask with the online set and drop self: a CPU
+    // that never loaded this mm has no stale entry to flush, and our own
+    // TLB was already flushed by the caller.
+    let targets = mask & cpu::smp::online_mask() & !(1u64 << me);
     if targets == 0 { return; }
 
     // Acquire the single in-flight slot, servicing any shootdown aimed at

@@ -223,8 +223,17 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
     //    if drop runs concurrently — but on UP single-CPU the
     //    order is purely defensive.
     use hal::MmuOps;
+    // mm_cpumask (Linux): execve swaps the mm on the running CPU via a
+    // DIRECT activate (bypassing the scheduler), so it must do its own
+    // set/clear. Mark THIS CPU on the new AS BEFORE the CR3 reload so a peer
+    // shootdown can't skip us; clear the OLD mm's bit AFTER the reload (which
+    // flushed our old user TLB) and before replace_mm drops it.
+    let me = { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) };
+    new_as.mark_cpu(me);
     // SAFETY: new_root carries kernel-half cloned from master per P2-19; activate writes CR3 + flushes user TLB; preempt-off; single-CPU.
     unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::activate(new_root); }
+    // SAFETY: we are the running task on this CPU; preempt-off; no concurrent execve writer; reading the still-current old mm before replace.
+    if let Some(old) = unsafe { cur.mm_ref() } { old.clear_cpu(me); }
     // SAFETY: we are the running task on this CPU; preempt-off; no concurrent reader of mm on another CPU (UP v1).
     unsafe { cur.replace_mm(Some(new_as)); }
 
@@ -511,8 +520,16 @@ pub(crate) fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u
     new_as.set_mmap_base(EXEC_USER_STACK_VA.saturating_sub(vmm::MMAP_BASE_GAP));
 
     // 3. Replace cur.mm + activate the new AS.
+    // mm_cpumask (Linux): execve's direct activate bypasses the scheduler, so
+    // it sets/clears the cpumask itself. Mark THIS CPU on the new AS before
+    // the TTBR0 reload; clear the old mm's bit after it (TLB flushed) and
+    // before replace_mm drops it.
+    let me = { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) };
+    new_as.mark_cpu(me);
     // SAFETY: new_root carries kernel-half cloned from master at new_user_l0; activate writes TTBR0_EL1 + flushes user TLB; preempt-off; single-CPU.
     unsafe { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::activate(new_root); }
+    // SAFETY: running task on this CPU; preempt-off; no concurrent execve writer; reading the still-current old mm before replace.
+    if let Some(old) = unsafe { cur.mm_ref() } { old.clear_cpu(me); }
     // SAFETY: we are the running task; preempt-off; UP single-CPU so no concurrent reader of cur.mm.
     unsafe { cur.replace_mm(Some(new_as)); }
 

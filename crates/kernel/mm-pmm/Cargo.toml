@@ -21,6 +21,9 @@ proptest = "1"
 [dependencies.sched]
 path = "../sched"
 
+[dependencies.cpu]
+path = "../cpu"
+
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
 
