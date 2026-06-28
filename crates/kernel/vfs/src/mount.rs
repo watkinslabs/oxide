@@ -78,22 +78,54 @@ fn abs_string(d: &Arc<Dentry>) -> String {
     String::from_utf8(d.absolute_path()).unwrap_or_else(|_| String::from("/"))
 }
 
-/// Materialise the dentry at `rel` beneath `base` by a pure dentry→dentry
-/// descent: each component via `d_lookup` (cache) then `i_op->lookup` +
-/// `d_add` (Linux `lookup_one_len` under a held parent). The engine-internal
-/// resolver for SYNTHESIZED mount positions (propagation mirrors, MS_MOVE /
-/// pivot_root relocations) — NEVER a global path-string resolve. `rel`
-/// empty ⇒ `base` itself. # C: O(components)
+/// Materialise the dentry at `rel` beneath `base` by a dentry→dentry descent
+/// that CROSSES MOUNTS at each component exactly as `namei::path_lookup_path`
+/// does (`namei.rs` mount-crossing): each component via `d_lookup` (cache)
+/// then `i_op->lookup` + `d_add` (Linux `lookup_one_len` under a held parent),
+/// and after resolving a child dentry that is itself a mountpoint, lookups for
+/// the REMAINING components continue in that mount's root inode — never the
+/// covered underlay. The engine-internal resolver for SYNTHESIZED mount
+/// positions (propagation mirrors, MS_MOVE / pivot_root relocations); still
+/// NEVER a global path-string resolve. `rel` empty ⇒ `base` itself.
+///
+/// Crossing is REQUIRED: a relocated subtree's new mountpoint dentry, or a
+/// propagation mirror under a peer, lives INSIDE the mounted fs at every
+/// intermediate mount the path traverses (e.g. a staging dir under a `/run`
+/// tmpfs, or a bind clone of `/` under a peer). The old pure dentry walk read
+/// each mountpoint's covered underlay inode, so the synthesized dentry was NOT
+/// identity-equal to the one `namei` later visits — `/proc/sys/kernel/*` then
+/// ENOENT'd inside udevd's mount-ns sandbox. # C: O(components)
 fn descend(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
+    let ns = current_ns();
     let mut cur = base.clone();
+    // Effective inode for the NEXT child lookup. `None` ⇒ derive from `cur`
+    // (the first component looks up in `base`'s OWN inode — `base` is NOT
+    // crossed, so callers basing a SYNTHESIZED position at a mountpoint dentry
+    // — propagation mirror under a peer, recursive-bind mirror under the bind
+    // target — place it at the dcache-tree dentry directly beneath, never
+    // inside the covering mount's fs). `rel` empty ⇒ `base` itself, no inode
+    // needed (preserves the pre-crossing contract).
+    let mut cur_inode: Option<crate::inode::InodeRef> = None;
     for comp in rel.split('/').filter(|c| !c.is_empty()) {
+        let parent_inode = match cur_inode.take() { Some(i) => i, None => cur.inode()? };
         let child = match crate::dcache::d_lookup(&cur, comp) {
             Some(d) if !d.is_negative() => d,
             _ => {
-                let ci = cur.inode()?.lookup(comp).ok()?;
+                let ci = parent_inode.lookup(comp).ok()?;
                 crate::dcache::d_add(&cur, comp, ci)
             }
         };
+        // Mount crossing by dentry identity (`docs/16§3`): if `child` is a
+        // mountpoint, the REMAINING components resolve in the mount's root
+        // inode, not the covered underlay — exactly as `namei.rs` crosses per
+        // component. This is the udevd fix: a staging mountpoint dentry under a
+        // `/run`/`/tmp` tmpfs is now materialised identity-equal to the one
+        // `namei` later walks, so post-MS_MOVE / pivot_root `/proc/sys/kernel/*`
+        // resolves inside the sandbox instead of ENOENTing on the underlay.
+        cur_inode = Some(match child.mounted_mount(ns) {
+            Some(mnt_id) => root_for_mount_id(mnt_id)?,
+            None => child.inode()?,
+        });
         cur = child;
     }
     Some(cur)
