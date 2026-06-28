@@ -26,7 +26,7 @@ fn dir() -> InodeRef { Arc::new(TInode { ino: 1, ft: FileType::Directory }) }
 fn h(_n: &str) -> u32 { 0 }
 fn cmp(name: &str, cand: &Dentry) -> bool { cand.name() == name }
 fn cmp_ci(name: &str, cand: &Dentry) -> bool { cand.name().eq_ignore_ascii_case(name) }
-fn rev(_d: &Arc<Dentry>) -> bool { true }
+fn rev(_d: &Arc<Dentry>, _reval: bool) -> bool { true }
 fn del(_d: &Dentry) -> bool { true }
 
 const HASH_FN: DHashFn = h;

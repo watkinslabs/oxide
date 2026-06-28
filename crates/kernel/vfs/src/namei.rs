@@ -77,6 +77,11 @@ pub struct LookupFlags {
     /// The magic-link reopen lives at the open/dup layer (`path::dup_fd_target`),
     /// which gates on this flag; the walker carries it for completeness.
     pub no_magiclinks: bool,
+    /// LOOKUP_REVAL: forced revalidation (Linux's ESTALE-retry walk). Threaded
+    /// to each cached dentry's `d_op->d_revalidate` so a fs that trusts an
+    /// attribute-cache timeout normally re-checks its backing store on this
+    /// pass; set by the retry path after a stale-handle failure.
+    pub reval: bool,
 }
 
 /// Caller credentials for the VFS permission checks — Linux `struct cred`
@@ -478,7 +483,7 @@ impl Nameidata {
             // `/sys` hotplug nodes, `/dev/pts/N`) that materialises WITHOUT a
             // create syscall would mask it forever. So the miss propagates
             // un-cached (re-walks `i_op->lookup` next time, as before).
-            let child = match crate::dcache::d_lookup(&self.cur_dentry, &comp) {
+            let child = match crate::dcache::d_lookup_reval(&self.cur_dentry, &comp, self.flags.reval) {
                 Some(d) if !d.is_negative() => d,
                 Some(_) => return Err(VfsError::Enoent), // cached negative
                 None => crate::dcache::d_add(&self.cur_dentry, &comp, self.cur_inode.lookup(&comp)?),
