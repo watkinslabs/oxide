@@ -105,10 +105,13 @@ pub trait Inode: Send + Sync {
 
     /// Read into `buf` starting at byte offset `off`. Returns the
     /// number of bytes actually read; `0` indicates EOF. Default impl
-    /// returns `Err(Eisdir)` for directory inodes.
+    /// binds to the inode's `S_IFMT` type via `no_data_op_errno`: a
+    /// directory yields `Eisdir` (Linux `generic_read_dir`), any other
+    /// type with no overridden data op yields `Einval` (Linux `vfs_read`
+    /// when `f_op->read`/`read_iter` are both absent).
     /// # C: depends on FS impl
     fn read(&self, _off: u64, _buf: &mut [u8]) -> KResult<usize> {
-        Err(VfsError::Eisdir)
+        Err(no_data_op_errno(self.file_type()))
     }
 
     /// Non-blocking read variant per `15§5` (O_NONBLOCK). Returns
@@ -133,10 +136,13 @@ pub trait Inode: Send + Sync {
     }
 
     /// Write `buf` starting at byte offset `off`. Returns the number
-    /// of bytes actually written. Default impl returns `Err(Eisdir)`.
+    /// of bytes actually written. Default impl binds to the inode's
+    /// `S_IFMT` type via `no_data_op_errno`: a directory yields `Eisdir`
+    /// (Linux `vfs_write` rejects directory writes with EISDIR), any
+    /// other type with no overridden data op yields `Einval`.
     /// # C: depends on FS impl
     fn write(&self, _off: u64, _buf: &[u8]) -> KResult<usize> {
-        Err(VfsError::Eisdir)
+        Err(no_data_op_errno(self.file_type()))
     }
 
     /// Resolve a symbolic link to its target path bytes. Returns
@@ -421,6 +427,21 @@ pub trait Inode: Send + Sync {
     /// WRITE on `write`, SHRINK/GROW on `truncate`.
     /// # C: O(1)
     fn fcntl_seals(&self) -> Option<&core::sync::atomic::AtomicU32> { None }
+}
+
+/// errno for a default (no-data-op) `read`/`write` keyed on the inode's
+/// `S_IFMT` type. A directory is `Eisdir` — Linux routes directory
+/// `read(2)`/`write(2)` to `generic_read_dir`/the write guard, both `-EISDIR`.
+/// Every other type with no `f_op->read`/`read_iter` (resp. write) installed
+/// is `Einval` — Linux `vfs_read`/`vfs_write` return `-EINVAL` when the op is
+/// absent, NOT `-EISDIR`. The old unconditional `Eisdir` mislabelled
+/// non-directory backends (e.g. a socket/anon inode lacking a data op).
+/// # C: O(1)
+fn no_data_op_errno(ft: FileType) -> VfsError {
+    match ft {
+        FileType::Directory => VfsError::Eisdir,
+        _                   => VfsError::Einval,
+    }
 }
 
 /// `i_state` bits (Linux `include/linux/fs.h`). Stored per-ino in the owning
