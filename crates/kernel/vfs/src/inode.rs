@@ -155,12 +155,27 @@ pub trait Inode: Send + Sync {
         Err(VfsError::Einval)
     }
 
+    /// `inode->i_link` (Linux `struct inode`) — the inline "fast symlink" body:
+    /// a borrow of the target bytes a backend stores INSIDE the inode (Linux
+    /// ext4 fast symlinks ≤60 bytes, the `simple_symlink` family). `get_link`
+    /// consults this BEFORE the per-inode `readlink` op, matching Linux
+    /// `get_link()`'s `READ_ONCE(inode->i_link)` fast path — no allocation, no
+    /// block read. `None` (default) = no inline body, so `get_link` falls
+    /// through to `readlink`. Set ONLY on symlink inodes; a non-symlink leaves
+    /// it `None` so `get_link`/`readlink` still yield `Einval`.
+    /// # C: O(1)
+    fn i_link(&self) -> Option<&[u8]> { None }
+
     /// `i_op->get_link` (Linux `fs/namei.c`) — the VFS symlink-resolution entry
-    /// the path walker and `readlink(2)` call. Default delegates to `readlink`
-    /// (the storage primitive), so backends overriding `readlink` need no
-    /// further change; a backend with a page-cached or RCU link can override
+    /// the path walker and `readlink(2)` call. Mirrors Linux `get_link()`: the
+    /// inline `i_link()` fast path is checked FIRST, then the per-inode
+    /// `readlink` storage primitive (so backends overriding only `readlink` need
+    /// no further change). A backend with a page-cached or RCU link can override
     /// `get_link` directly. # C: O(target_len)
-    fn get_link(&self) -> KResult<alloc::vec::Vec<u8>> { self.readlink() }
+    fn get_link(&self) -> KResult<alloc::vec::Vec<u8>> {
+        if let Some(link) = self.i_link() { return Ok(link.to_vec()); }
+        self.readlink()
+    }
 
     /// Truncate the file to `len` bytes per `truncate(2)` /
     /// `ftruncate(2)`. Default impl returns `Erofs`. tmpfs honours
