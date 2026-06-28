@@ -54,18 +54,12 @@ impl Inode for ProcRootInode {
                 allow_task_dir: true,
             }) as InodeRef);
         }
-        // Bridge to procfs subtrees held in the devfs tree: /proc/sys (the
-        // sysctl interface — kernel/domainname, kernel/hostname, …), /proc/net,
-        // etc. procfs OWNS /proc and resolves these through its OWN mount tree,
-        // chroot-INDEPENDENT (Linux proc_sys_lookup). Without this the component
-        // walk fell through to the PID parse below, ENOENTd /proc/sys/*, and
-        // every sandboxed service died at status 226/NAMESPACE.
-        {
-            let mut p = alloc::string::String::with_capacity(6 + name.len());
-            p.push_str("/proc/");
-            p.push_str(name);
-            if let Some(i) = devfs::lookup_no_chroot(&p) { return Ok(i); }
-        }
+        // procfs OWNS its `/proc/{sys,net,...}` subtrees as kernfs PseudoDirs
+        // hung under PROC_REG (D1d) — the sysctl interface (kernel/domainname,
+        // kernel/hostname, …), /proc/net, etc. Resolved through procfs's OWN
+        // tree (chroot-INDEPENDENT, Linux proc_sys_lookup), no longer the
+        // shared devfs registry. Must win over the numeric-PID parse below.
+        if let Some(i) = crate::reg::proc_reg().lookup_path(name) { return Ok(i); }
         // `name` is a Linux PID (vtgid); translate via pid_to_kernel_tid.
         let vpid: u32 = name.parse().map_err(|_| VfsError::Enoent)?;
         let tid = pid_to_kernel_tid(vpid).ok_or(VfsError::Enoent)?;
@@ -140,10 +134,11 @@ impl Inode for ProcPidDirInode {
         // root symlinks, /fd dir) take priority; else resolve `self` to
         // the running task's tid and fall through.
         let tid = if self.is_self {
-            let mut p = alloc::string::String::with_capacity(11 + name.len());
-            p.push_str("/proc/self/");
-            p.push_str(name);
-            if let Some(i) = devfs::lookup(&p) {
+            // Static `/proc/self/<file>` entries live under PROC_REG key
+            // `self/<name>` (procfs's own tree, D1d) — exe/cwd/root symlinks,
+            // /fd dir, auxv, limits, etc. take priority; else resolve `self`
+            // to the running task's tid and fall through to the match arms.
+            if let Some(i) = crate::reg::proc_reg().lookup_path(&alloc::format!("self/{name}")) {
                 return Ok(i);
             }
             sched::live::current()
@@ -609,10 +604,16 @@ pub fn smoke_test() {
     // (`ProcRootInode::lookup` → `i_op->lookup`), everything else via the
     // devfs key/value tree. No whole-path `FileSystem::lookup`.
     fn smoke_resolve(path: &str) -> Option<InodeRef> {
+        // /proc/* walks procfs's own root inode tree; /sys/* sysfs's own
+        // SYS_ROOT (D1c) — devfs no longer backs either. /etc is devfs's own
+        // overlay and is smoked in `devfs::boot` now (D1d).
         if let Some(rest) = path.strip_prefix("/proc/") {
             return lookup_child_path(crate::static_files::proc_root() as InodeRef, rest);
         }
-        devfs::lookup_no_chroot(path)
+        if let Some(rest) = path.strip_prefix("/sys/") {
+            return sysfs::sys_root().lookup_path(rest);
+        }
+        None
     }
     fn is_hex(b: u8) -> bool {
         b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
@@ -637,7 +638,9 @@ pub fn smoke_test() {
         ("/proc/meminfo", b"MemTotal:"),
         // /proc/uptime is dynamic now (P3-111) — skipped from smoke (its body is
         // a function of monotonic_ns, not a static prefix).
-        ("/etc/os-release", b"NAME=oxide"),
+        // /proc/sys + /proc/net now resolve from procfs's own PROC_REG tree.
+        ("/proc/sys/kernel/pid_max", b"32768"),
+        ("/proc/net/dev", b"Inter-|"),
     ];
     for (path, prefix) in entries {
         // Resolve through the procfs filesystem (the /proc dir tree owns its

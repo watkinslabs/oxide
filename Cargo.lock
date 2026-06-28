@@ -194,6 +194,7 @@ dependencies = [
  "hal",
  "klog",
  "pmm",
+ "procfs",
  "sync",
  "syscall",
  "vfs",
@@ -940,6 +941,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "boot-info",
+ "cpu",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
@@ -999,6 +1001,7 @@ dependencies = [
  "hal",
  "hal-aarch64",
  "hal-x86_64",
+ "kernfs",
  "klog",
  "kmacros",
  "modules",

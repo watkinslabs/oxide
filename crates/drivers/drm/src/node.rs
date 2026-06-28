@@ -142,7 +142,7 @@ pub fn register() {
     devfs::register("/dev/dri/card0",     Arc::new(DrmCardInode)   as vfs::InodeRef);
     devfs::register("/dev/dri/renderD128", Arc::new(DrmRenderInode) as vfs::InodeRef);
     devfs::register("/dev/input/event0",  Arc::new(EvdevInode)     as vfs::InodeRef);
-    devfs::register("/proc/bus/input/devices",
+    procfs::register("/proc/bus/input/devices",
         vfs::StaticFileInode::new(b"\
 I: Bus=0019 Vendor=0000 Product=0000 Version=0000\n\
 N: Name=\"Oxide synthetic evdev\"\n\

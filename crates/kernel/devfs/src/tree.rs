@@ -1,12 +1,19 @@
-//! Per-namespace devfs directory tree (Linux devtmpfs shape), now backed by
-//! the generic `kernfs::PseudoDir` (D1b). Each namespace owns an
-//! `Arc<PseudoDir>` root (path = ""); `register` walks/creates intermediate
-//! dirs and inserts a `Leaf` at the last component, `lookup` walks from the
-//! ns root, `readdir` enumerates children (sorted) THEN the ext4 overlay for
-//! the dir's own path. devfs's tree keeps `overlay = true` on every dir so
-//! `/dev` + `/etc` synthetic nodes merge with the on-disk rootfs exactly as
-//! before. The `DevDir`/`DevSymlink` inodes were lifted verbatim into
-//! `kernfs::{PseudoDir, PseudoSymlink}`.
+//! Per-namespace devfs directory tree (Linux devtmpfs shape), backed by the
+//! generic `kernfs::PseudoDir` (D1b). DEVFS-PRIVATE as of D1d: this tree holds
+//! ONLY devfs's own content — `/dev` (devtmpfs nodes) + the `/etc` overlay.
+//! procfs (`/proc`) and sysfs (`/sys`) own their OWN `PseudoDir` roots now
+//! (D1c/D1d); this is no longer a shared cross-filesystem path registry.
+//! Each namespace owns an `Arc<PseudoDir>` root (path = ""); `register`
+//! walks/creates intermediate dirs and inserts a `Leaf` at the last component,
+//! `lookup` walks from the ns root, `readdir` enumerates children (sorted)
+//! THEN the ext4 overlay for the dir's own path. `overlay = true` on every dir
+//! so `/dev` + `/etc` synthetic nodes merge with the on-disk rootfs. The
+//! ns-keyed `ROOTS` map is RETAINED (not collapsed to a single root): it is
+//! load-bearing for mount-namespace `/dev` — `snapshot_ns` (CLONE_NEWNS, used
+//! by unshare 272/F119) deep-clones the per-ns `/dev`, `unregister_subtree`
+//! (umount2 166) detaches a per-ns mount point; collapsing to one root would
+//! regress private `/dev` in a mount namespace. The `DevDir`/`DevSymlink`
+//! inodes were lifted verbatim into `kernfs::{PseudoDir, PseudoSymlink}`.
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use kernfs::PseudoDir;
@@ -33,7 +40,7 @@ pub fn register(ns: u64, full_path: &str, inode: InodeRef) {
 }
 
 /// Create the directory chain `path` as empty dirs (mount points without
-/// registered leaves, e.g. `/sys/fs/cgroup`). # C: O(components)
+/// registered leaves, e.g. `/dev/shm`, `/dev/pts`). # C: O(components)
 pub fn register_dir(ns: u64, path: &str) {
     ns_root(ns).ensure_dir_path(path);
 }

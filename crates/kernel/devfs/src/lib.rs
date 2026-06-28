@@ -1,5 +1,13 @@
 // Devfs registry surface per `52§3` domain layer.
 //
+// DEVFS-PRIVATE (D1d): this table holds ONLY devfs's own `/dev` devtmpfs
+// nodes + the `/etc` overlay. It is no longer a shared cross-filesystem path
+// bus — procfs (`/proc`, see `procfs::reg`) and sysfs (`/sys`, see
+// `sysfs::root`) own their OWN `kernfs::PseudoDir` roots. The remaining
+// `register*`/`lookup*` callers are device drivers (`/dev/*`) + the `/etc`
+// boot overlay; `snapshot_ns`/`unregister_subtree` serve mount-namespace
+// `/dev` (CLONE_NEWNS / umount2).
+//
 // Owns the namespace-aware (`ns`, `path`) → `InodeRef` table that
 // `register*` writes and `lookup` reads. The boot-time bootstrap
 // (`devfs::init`) that POPULATES this table with /dev/console,
