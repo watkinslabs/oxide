@@ -236,7 +236,7 @@ impl FsContextOps for LegacyFsContextOps {
         match &param.value {
             FsValue::Flag | FsValue::String(_) => {}
             FsValue::File(_) | FsValue::Filename { .. } | FsValue::Blob(_) => {
-                return Err(VfsError::Einval);
+                return fc.invalf("VFS: Legacy: unsupported value type for parameter");
             }
         }
         fc.params.push(param.clone());
@@ -291,7 +291,18 @@ pub struct FsContext {
     sb: Option<Arc<SuperBlock>>,
     /// `fc->fs_private` — backend scratch state. Default `()`.
     fs_private: Arc<dyn Any + Send + Sync>,
+    /// `fc->log` — the diagnostic ring (Linux `struct fc_log`). Each entry is a
+    /// level-tagged message (`"e …"`/`"w …"`/`"i …"`) pushed by
+    /// [`FsContext::errorf`]/[`warnf`](FsContext::warnf)/[`infof`](FsContext::infof);
+    /// `fsconfig(FSCONFIG_CMD_CREATE)` failures surface these to userspace via the
+    /// fd's read buffer. Bounded to [`FC_LOG_MAX`]: the oldest entry is dropped
+    /// when full (Linux drops the message rather than grow unbounded). # consumers:
+    /// fsconfig error reporting.
+    log: Vec<String>,
 }
+
+/// `fc_log` ring capacity (Linux `struct fc_log` carries 8 message slots). # C: O(1)
+pub const FC_LOG_MAX: usize = 8;
 
 impl FsContext {
     /// `fs_context_for_mount` (Linux `fs/fs_context.c`) — a context for a NEW
@@ -336,6 +347,7 @@ impl FsContext {
             root: None,
             sb: None,
             fs_private: Arc::new(()),
+            log: Vec::new(),
         }
     }
 
@@ -384,6 +396,45 @@ impl FsContext {
         }
         s
     }
+
+    /// `logfc` (Linux `fs/fs_context.c`) — push one level-tagged message onto the
+    /// `fc->log` ring, dropping the OLDEST entry when at [`FC_LOG_MAX`] (Linux
+    /// discards rather than grow). `level` is the leading char Linux prefixes
+    /// (`'e'` error / `'w'` warning / `'i'` info). # C: O(len msg)
+    fn logfc(&mut self, level: char, msg: &str) {
+        let mut e = String::with_capacity(msg.len() + 2);
+        e.push(level);
+        e.push(' ');
+        e.push_str(msg);
+        if self.log.len() >= FC_LOG_MAX { self.log.remove(0); }
+        self.log.push(e);
+    }
+
+    /// `errorf` (Linux `fs/fs_context.c`) — record a `'e'`-tagged error message on
+    /// the context's log. # C: O(len msg)
+    pub fn errorf(&mut self, msg: &str) { self.logfc('e', msg); }
+
+    /// `warnf` (Linux `fs/fs_context.c`) — record a `'w'`-tagged warning. # C: O(len msg)
+    pub fn warnf(&mut self, msg: &str) { self.logfc('w', msg); }
+
+    /// `infof` (Linux `fs/fs_context.c`) — record an `'i'`-tagged info message.
+    /// # C: O(len msg)
+    pub fn infof(&mut self, msg: &str) { self.logfc('i', msg); }
+
+    /// `invalf` (Linux `fs/fs_context.c`) — log an error AND return `Einval`. The
+    /// idiom for a rejected parameter: `return fc.invalf("…")`. # C: O(len msg)
+    pub fn invalf<T>(&mut self, msg: &str) -> KResult<T> {
+        self.errorf(msg);
+        Err(VfsError::Einval)
+    }
+
+    /// The accumulated `fc->log` messages, oldest first (each `"<level> <text>"`).
+    /// What `fsconfig`'s reader returns to userspace on a failed build. # C: O(1)
+    pub fn log_messages(&self) -> &[String] { &self.log }
+
+    /// Drain `fc->log` (Linux's read-side empties the ring as it copies out).
+    /// # C: O(N)
+    pub fn take_log(&mut self) -> Vec<String> { core::mem::take(&mut self.log) }
 }
 
 /// `vfs_parse_fs_param` (Linux `fs/fs_context.c`) — feed ONE option to the
@@ -398,7 +449,7 @@ pub fn vfs_parse_fs_param(fc: &mut FsContext, param: &FsParameter) -> KResult<()
         | FsContextPhase::ReconfParams => {}
         _ => return Err(VfsError::Ebusy),
     }
-    if param.key.is_empty() { return Err(VfsError::Einval); }
+    if param.key.is_empty() { return fc.invalf("VFS: Empty parameter name"); }
     // A reconfigure context flips to its param-collecting phase on first param.
     if fc.phase == FsContextPhase::AwaitingReconf { fc.phase = FsContextPhase::ReconfParams; }
 
@@ -415,17 +466,17 @@ pub fn vfs_parse_fs_param(fc: &mut FsContext, param: &FsParameter) -> KResult<()
 /// (unknown parameter); a duplicate `source` is `Einval` (multiple sources); a
 /// `source` flag with no string value is `Einval`. # C: O(len value)
 pub fn vfs_parse_fs_param_source(fc: &mut FsContext, param: &FsParameter) -> KResult<()> {
-    if param.key != "source" { return Err(VfsError::Einval); }
+    if param.key != "source" { return fc.invalf("VFS: Unknown parameter"); }
     match &param.value {
         FsValue::String(s) => {
-            if fc.source.is_some() { return Err(VfsError::Einval); }
+            if fc.source.is_some() { return fc.invalf("VFS: Multiple sources"); }
             fc.source = Some(s.clone());
             Ok(())
         }
         // A bare flag / fd / path / blob is not a valid `source` (Linux
         // `vfs_parse_fs_param_source` accepts only `fs_value_is_string`).
         FsValue::Flag | FsValue::File(_) | FsValue::Filename { .. } | FsValue::Blob(_) => {
-            Err(VfsError::Einval)
+            fc.invalf("VFS: source needs a string value")
         }
     }
 }
