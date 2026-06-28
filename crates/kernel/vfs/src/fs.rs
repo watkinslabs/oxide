@@ -10,7 +10,9 @@
 
 extern crate alloc;
 use alloc::string::String;
+use alloc::sync::Weak;
 use crate::inode::InodeRef;
+use crate::superblock::SuperBlock;
 use crate::types::VfsError;
 
 /// `KResult<T>` is the VFS error envelope. Aliased here for
@@ -97,6 +99,15 @@ pub trait FileSystem: Send + Sync {
         let _ = (from, to);
         Err(VfsError::Erofs)
     }
+
+    /// Back-stamp the owning `SuperBlock` (Linux `fill_super` setting up
+    /// `s_fs_info ↔ sb`). Called by [`SuperBlock::for_backend`] once the SB is
+    /// built, BEFORE `d_make_root`, so the backend's per-mount state can hand
+    /// the `Weak<SuperBlock>` to its inodes (their `i_sb()` then resolves and
+    /// `fsid()` derives from `sb.s_dev` instead of a hardcoded constant).
+    /// Default no-op for backends not yet SB-aware (registry-based pseudo-fs).
+    /// # C: O(1)
+    fn set_sb(&self, _sb: Weak<SuperBlock>) {}
 
     /// `/proc/mounts`-style description: `<src> <mnt> <fstype> <opts>`.
     /// Default uses the fs name as the source and `rw,relatime` opts

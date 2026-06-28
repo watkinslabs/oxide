@@ -199,6 +199,11 @@ impl vfs::fs::FileSystem for Ext4RootfsFs {
     fn magic(&self) -> u64 { crate::EXT4_SUPER_MAGIC as u64 }
     /// ext4 root is always inode 2 (`docs/16§2`).
     fn root(&self) -> Option<vfs::InodeRef> { wrap_any_ino(2) }
+    /// Back-stamp the SB into the published ROOT state so root-fs inodes'
+    /// `i_sb()` resolves and `fsid()` reports `sb.s_dev`. # C: O(1)
+    fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) {
+        if let Some(st) = root() { st.set_sb(sb); }
+    }
     fn create(&self, path: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
         create_at(path.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enoent)
     }

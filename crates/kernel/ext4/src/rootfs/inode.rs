@@ -78,7 +78,9 @@ impl Ext4FileInode {
 impl vfs::Inode for Ext4FileInode {
     fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
     fn ino(&self) -> vfs::Ino { ext4_wrap_ino(self.ino) }
-    fn fsid(&self) -> u64 { self.st.fsid() }
+    /// `i_sb` backref → `fsid()` (default) returns `sb.s_dev` (Linux `st_dev`),
+    /// the per-instance anon-bdev, NOT a hardcoded constant. # C: O(1)
+    fn i_sb(&self) -> Option<alloc::sync::Arc<vfs::SuperBlock>> { self.st.i_sb() }
     fn nlink(&self) -> u32 {
         self.st.mount.read_inode(self.ino).map(|i| i.links_count as u32).unwrap_or(1)
     }
@@ -135,7 +137,9 @@ pub struct Ext4StatInode {
 impl vfs::Inode for Ext4StatInode {
     fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
     fn ino(&self) -> vfs::Ino { ext4_wrap_ino(self.ino) }
-    fn fsid(&self) -> u64 { self.st.fsid() }
+    /// `i_sb` backref → `fsid()` (default) returns `sb.s_dev` (Linux `st_dev`).
+    /// # C: O(1)
+    fn i_sb(&self) -> Option<alloc::sync::Arc<vfs::SuperBlock>> { self.st.i_sb() }
     fn nlink(&self) -> u32 {
         self.st.mount.read_inode(self.ino).map(|i| i.links_count as u32).unwrap_or_else(|_| {
             if matches!(self.ft, vfs::FileType::Directory) { 2 } else { 1 }

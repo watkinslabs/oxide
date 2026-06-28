@@ -16,6 +16,7 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 use core::any::Any;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -23,7 +24,7 @@ use sync::{RwLock, Spinlock, Superblock as SbClass};
 
 use crate::dentry::Dentry;
 use crate::fs::FileSystem;
-use crate::inode::{Inode, InodeRef};
+use crate::inode::{Inode, InodeRef, I_NEW};
 use crate::types::{Ino, KResult};
 
 /// `get_anon_bdev` (Linux `fs/super.c`) — per-instance anonymous block-dev
@@ -128,10 +129,27 @@ pub struct SuperBlock {
     /// `SuperOps`/`FileSystemType` do not. The mount table reaches the
     /// backend through `sb.fs()`. `NullFs` for an `s_fs`-less test SB.
     s_fs: Arc<dyn FileSystem>,
-    /// Per-instance inode cache (`iget`/`ilookup`/`iput`). `Weak` so an
-    /// inode is reclaimed when its last `Arc` drops; a stale `Weak` is
-    /// re-inserted on the next `iget`.
-    icache: Spinlock<BTreeMap<Ino, Weak<dyn Inode>>, SbClass>,
+    /// Per-instance inode cache (`iget`/`ilookup`/`iput`) keyed by `ino`.
+    /// Each slot is an [`IcacheEntry`] carrying a `Weak` to the inode (so it
+    /// reclaims when its last `Arc` drops), the inode's `i_dentry` ALIAS list
+    /// (the dentries pointing at this inode, Linux `inode->i_dentry`), and
+    /// the `i_state` lifecycle bits — all kept icache-side so the trait-object
+    /// inodes need no shared state block.
+    icache: Spinlock<BTreeMap<Ino, IcacheEntry>, SbClass>,
+}
+
+/// One inode-cache slot. `Weak` everywhere so the cache never keeps an inode
+/// or dentry alive past its last strong ref (Linux dcache/icache are weak
+/// w.r.t. their objects). A stale slot (dead inode + no live aliases) is
+/// reclaimed on the next touch.
+struct IcacheEntry {
+    /// The cached inode (Linux `struct inode`). `Weak` → reclaim on last drop.
+    inode:   Weak<dyn Inode>,
+    /// `i_dentry` — the dentry aliases for this inode (hardlinks share one
+    /// inode, many dentries). `Weak` so `d_drop` / dentry teardown reclaims.
+    aliases: Vec<Weak<Dentry>>,
+    /// `i_state` (`I_NEW`/`I_DIRTY`/`I_FREEING`).
+    state:   u32,
 }
 
 impl SuperBlock {
@@ -179,6 +197,10 @@ impl SuperBlock {
             s_fs: fs,
             icache: Spinlock::new(BTreeMap::new()),
         });
+        // `fill_super`: back-stamp the SB into the backend's per-mount state
+        // BEFORE building the root dentry, so the root inode's `i_sb()` (and
+        // every inode the backend builds afterwards) resolves to this SB.
+        sb.s_fs.set_sb(Arc::downgrade(&sb));
         if let Some(i) = root_inode { crate::dcache::d_make_root(i, &sb); }
         sb
     }
@@ -203,23 +225,84 @@ impl SuperBlock {
     /// `ilookup` — hit the inode cache. `None` if absent or reclaimed.
     /// # C: O(log N_ino)
     pub fn ilookup(&self, ino: Ino) -> Option<InodeRef> {
-        self.icache.lock().get(&ino).and_then(Weak::upgrade)
+        self.icache.lock().get(&ino).and_then(|e| e.inode.upgrade())
     }
 
-    /// `iget` — cache hit, else build via the backend closure and cache a
-    /// `Weak`. Race-safe: a concurrent inserter wins. # C: O(log N_ino)
+    /// `iget` — cache hit (SAME `Arc` → shared inode identity), else build via
+    /// the backend closure and cache a `Weak`. The build-miss slot is created
+    /// with `I_NEW` then immediately cleared (Linux `unlock_new_inode`); a
+    /// concurrent `ilookup` upgrades the fully-built `Arc` and wins. A slot
+    /// whose `Weak` went stale (existing aliases all dead too) is replaced.
+    /// # C: O(log N_ino)
     pub fn iget(&self, ino: Ino, build: impl FnOnce() -> InodeRef) -> InodeRef {
         if let Some(i) = self.ilookup(ino) { return i; }
         let inode = build();
         let mut c = self.icache.lock();
-        if let Some(existing) = c.get(&ino).and_then(Weak::upgrade) { return existing; }
-        c.insert(ino, Arc::downgrade(&inode));
+        if let Some(e) = c.get(&ino) {
+            if let Some(existing) = e.inode.upgrade() { return existing; }
+        }
+        // Preserve any still-live aliases recorded against this ino while the
+        // inode was momentarily un-cached; they re-bind to the rebuilt inode.
+        let aliases = c.get(&ino).map(|e| {
+            e.aliases.iter().filter(|w| w.upgrade().is_some()).cloned().collect::<Vec<_>>()
+        }).unwrap_or_default();
+        c.insert(ino, IcacheEntry { inode: Arc::downgrade(&inode), aliases, state: I_NEW });
+        if let Some(e) = c.get_mut(&ino) { e.state &= !I_NEW; } // unlock_new_inode
         inode
     }
 
     /// `iput`/reclaim hook — drop a cache slot whose inode is gone.
     /// # C: O(log N_ino)
     pub fn iforget(&self, ino: Ino) { self.icache.lock().remove(&ino); }
+
+    /// `i_state` bits for `ino` (`I_NEW`/`I_DIRTY`/`I_FREEING`); `0` if not
+    /// cached. # C: O(log N_ino)
+    pub fn i_state(&self, ino: Ino) -> u32 {
+        self.icache.lock().get(&ino).map(|e| e.state).unwrap_or(0)
+    }
+
+    /// Set/clear `i_state` bits for `ino` (no-op if uncached). # C: O(log N_ino)
+    pub fn i_set_state(&self, ino: Ino, set: u32, clear: u32) {
+        if let Some(e) = self.icache.lock().get_mut(&ino) {
+            e.state = (e.state & !clear) | set;
+        }
+    }
+
+    /// Record `d` as an alias of `inode` (Linux `d_instantiate` →
+    /// `inode->i_dentry`). Creates/refreshes the icache slot if needed so an
+    /// inode that was built ad-hoc (not via `iget`) still tracks its dentries.
+    /// Idempotent: an already-listed live alias is not duplicated; dead alias
+    /// `Weak`s are pruned on touch. # C: O(N_aliases)
+    pub fn i_add_alias(&self, inode: &InodeRef, d: &Arc<Dentry>) {
+        let ino = inode.ino();
+        let mut c = self.icache.lock();
+        let e = c.entry(ino).or_insert_with(|| IcacheEntry {
+            inode: Arc::downgrade(inode), aliases: Vec::new(), state: 0,
+        });
+        if e.inode.upgrade().is_none() { e.inode = Arc::downgrade(inode); }
+        e.aliases.retain(|w| match w.upgrade() { Some(a) => !Arc::ptr_eq(&a, d), None => false });
+        e.aliases.push(Arc::downgrade(d));
+    }
+
+    /// Drop `d` from `ino`'s alias list (Linux `d_drop`/dentry teardown). If
+    /// the slot is then empty AND the inode is gone, reclaim it.
+    /// # C: O(N_aliases)
+    pub fn i_drop_alias(&self, ino: Ino, d: &Arc<Dentry>) {
+        let mut c = self.icache.lock();
+        let gone = if let Some(e) = c.get_mut(&ino) {
+            e.aliases.retain(|w| match w.upgrade() { Some(a) => !Arc::ptr_eq(&a, d), None => false });
+            e.aliases.is_empty() && e.inode.upgrade().is_none()
+        } else { false };
+        if gone { c.remove(&ino); }
+    }
+
+    /// Live dentry aliases of `ino` (Linux walk of `inode->i_dentry`).
+    /// # C: O(N_aliases)
+    pub fn i_aliases(&self, ino: Ino) -> Vec<Arc<Dentry>> {
+        self.icache.lock().get(&ino)
+            .map(|e| e.aliases.iter().filter_map(Weak::upgrade).collect())
+            .unwrap_or_default()
+    }
 
     /// statfs via `s_op`, defaulting `f_type`/`f_bsize` from the SB.
     /// # C: O(1)
