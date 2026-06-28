@@ -84,16 +84,14 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         for off in (0..256u64).step_by(8) {
             core::ptr::write_unaligned((buf + off) as *mut u64, 0);
         }
-        // stx_mask = STATX_BASIC_STATS — tell the caller all base
-        // fields (type/mode/nlink/uid/gid/atime/mtime/ctime/ino/size/
-        // blocks) are valid. Pre-fix mask omitted NLINK/UID/GID/SIZE,
-        // which broke ARM musl's stat() wrapper: it returned a struct
-        // stat with st_uid/st_gid/st_size synthesised from the
-        // unmasked fields, and the shell's perm check rejected the
-        // file as \"not executable for caller\" → \"Permission denied\".
-        const STATX_BASIC_STATS: u32 = 0x7ff;
-        core::ptr::write_unaligned(buf as *mut u32, STATX_BASIC_STATS);
+        // stx_mask comes straight from `generic_fillattr` (STATX_BASIC_STATS,
+        // plus STATX_BTIME when the inode carries a real creation time) so the
+        // mask reflects exactly the valid fields. Pre-fix it was a hardcoded
+        // 0x7ff that omitted BTIME entirely; the base set is unchanged so the
+        // ARM-musl stat() wrapper still sees NLINK/UID/GID/SIZE valid.
+        core::ptr::write_unaligned(buf as *mut u32, st.result_mask);                                  // stx_mask
         core::ptr::write_unaligned((buf +   4)     as *mut u32, st.blksize);                          // stx_blksize
+        core::ptr::write_unaligned((buf +   8)     as *mut u64, st.attributes);                       // stx_attributes
         core::ptr::write_unaligned((buf +  16)     as *mut u32, st.nlink);                            // stx_nlink
         core::ptr::write_unaligned((buf +  20)     as *mut u32, stx_uid);                             // stx_uid
         core::ptr::write_unaligned((buf +  24)     as *mut u32, stx_gid);                             // stx_gid
@@ -101,17 +99,21 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         core::ptr::write_unaligned((buf +  32)     as *mut u64, st.ino);                              // stx_ino
         core::ptr::write_unaligned((buf +  40)     as *mut u64, st.size);                             // stx_size
         core::ptr::write_unaligned((buf +  48)     as *mut u64, st.blocks);                           // stx_blocks (512-byte units)
+        core::ptr::write_unaligned((buf +  56)     as *mut u64, st.attributes_mask);                  // stx_attributes_mask
         // Timestamp slots: each 16 B = (i64 sec, i32 nsec, i32 reserved).
-        // Linux statx layout: atime@72, btime@88, ctime@104, mtime@120.
+        // Linux statx layout (stx_attributes_mask@56 precedes them): atime@64,
+        // btime@80, ctime@96, mtime@112. The +8-shifted offsets used before
+        // wrote each stamp into the next field and clobbered stx_rdev_major.
         let write_ts = |off: u64, ns: u64| {
             let sec  = (ns / 1_000_000_000) as i64;
             let nsec = (ns % 1_000_000_000) as i32;
             core::ptr::write_unaligned((buf + off)      as *mut i64, sec);
             core::ptr::write_unaligned((buf + off + 8)  as *mut i32, nsec);
         };
-        write_ts(72,  st.atime_ns);
-        write_ts(104, st.ctime_ns);
-        write_ts(120, st.mtime_ns);
+        write_ts(64,  st.atime_ns);
+        write_ts(80,  st.btime_ns);   // 0 when STATX_BTIME absent in stx_mask
+        write_ts(96,  st.ctime_ns);
+        write_ts(112, st.mtime_ns);
         core::ptr::write_unaligned((buf + 128)     as *mut u32, (rdev >> 8)  & 0xfff);                // stx_rdev_major
         core::ptr::write_unaligned((buf + 132)     as *mut u32,  rdev        & 0xff);                 // stx_rdev_minor
         core::ptr::write_unaligned((buf + 136)     as *mut u32, crate::namei_common::dev_major(dev)); // stx_dev_major
