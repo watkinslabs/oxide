@@ -39,6 +39,12 @@ pub use crate::mntns::{
     ChrootRefsHook, MntNamespace, Mountpoint as MountpointObj, NsProvider,
 };
 
+// Mount-propagation engine (peer/slave fan-out) lives in a submodule to hold
+// the line cap; its public surface stays `vfs::mount::*` verbatim.
+mod propagation;
+pub use propagation::{join_peer_group, peer_group_of, propagate_mount};
+use propagation::propagation_targets;
+
 pub const MNT_RDONLY: u64 = 1;
 pub const MNT_NOSUID: u64 = 2;
 pub const MNT_NODEV: u64 = 4;
@@ -97,7 +103,7 @@ fn abs_string(d: &Arc<Dentry>) -> String {
 /// engine-internal resolver for SYNTHESIZED mount positions (propagation
 /// mirrors, MS_MOVE / pivot_root relocations). NEVER a global path-string
 /// resolve. `rel` empty ⇒ `base` itself. # C: O(components)
-fn descend(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
+pub(super) fn descend(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
     let ns = current_ns();
     let mut cur = base.clone();
     let mut cur_inode: Option<crate::inode::InodeRef> = None;
@@ -121,7 +127,7 @@ fn descend(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
 }
 
 /// The global namespace-root dentry. # C: O(1)
-fn global_root() -> Option<Arc<Dentry>> { crate::namei::root_dentry() }
+pub(super) fn global_root() -> Option<Arc<Dentry>> { crate::namei::root_dentry() }
 
 // ---------------------------------------------------------------------------
 // (ns, parent_mnt_id, mountpoint_dentry_ptr) -> mnt_id stack — Linux
@@ -164,7 +170,7 @@ fn parent_by_dentry(ns: u64, mp_d: &Arc<Dentry>) -> u64 {
 
 /// Relative path of `mp` beneath `stop` (exclusive), identity-bounded.
 /// # C: O(depth)
-fn rel_under(mp: &Arc<Dentry>, stop: Option<&Arc<Dentry>>) -> Option<String> {
+pub(super) fn rel_under(mp: &Arc<Dentry>, stop: Option<&Arc<Dentry>>) -> Option<String> {
     let ns = current_ns();
     let mut names: Vec<String> = Vec::new();
     let mut cur = Some(mp.clone());
@@ -193,7 +199,7 @@ fn wire_crossing(ns: u64, mp_d: &Arc<Dentry>, mnt_id: u64) {
 
 /// All mounts in `ns`, sorted by `mnt_id` ascending (= attach order, the
 /// overmount stack order). # C: O(N_mounts)
-fn mounts_in_ns(ns: u64) -> Vec<Arc<Mount>> {
+pub(super) fn mounts_in_ns(ns: u64) -> Vec<Arc<Mount>> {
     MOUNTS.lock().values().filter(|m| m.ns == ns).cloned().collect()
 }
 
@@ -286,7 +292,7 @@ pub struct Mount {
     /// Slave → master link (Linux `mnt_master`). Set when this becomes a slave.
     mnt_master: Spinlock<Weak<Mount>, MountClass>,
     /// Master → slaves list (Linux `mnt_slave_list`).
-    mnt_slave_list: Spinlock<Vec<Weak<Mount>>, MountClass>,
+    pub(super) mnt_slave_list: Spinlock<Vec<Weak<Mount>>, MountClass>,
     /// Active writer count (Linux `mnt_writers`); blocks remount-RO.
     mnt_writers: AtomicI32,
     /// Per-mount id mapping (Linux `mnt_idmap`). Identity by default — a
@@ -327,7 +333,7 @@ pub fn all_mounts() -> Vec<Arc<Mount>> { MOUNTS.lock().values().cloned().collect
 
 /// The (top) mount attached EXACTLY at mountpoint dentry `d` in `ns`, by
 /// IDENTITY. # C: O(log N)
-fn mount_exact_at(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
+pub(super) fn mount_exact_at(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
     if is_global_root(d) { return root_mount_id(ns).and_then(mount_by_id); }
     let parent = parent_by_dentry(ns, d);
     let id = hash_top(ns, parent, dptr(d))?;
@@ -441,90 +447,6 @@ pub fn register(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()>
 /// Bind-as-clone (`mount(src, tgt, NULL, MS_BIND)`). # C: O(depth)
 pub fn register_bind(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
     attach(mp, fs, Some(root))
-}
-
-/// Collect propagation targets for a mount created under `parent`: every peer
-/// of `parent`'s peer group, plus the transitive slaves of `parent` and those
-/// peers (Linux `propagate_mnt`: events flow to peers and down to slaves, but
-/// a slave never propagates back to its master). # C: O(N_mounts)
-fn propagation_targets(parent: &Arc<Mount>) -> Vec<Arc<Mount>> {
-    let ns = parent.ns;
-    // A mount only has PEERS if it is itself shared; a pure slave delivers to
-    // its own sub-slaves but never back up to its master's peer group.
-    let pg = if Propagation::from_u8(parent.propagation.load(Ordering::Acquire)) == Propagation::Shared {
-        parent.peer_group.load(Ordering::Acquire)
-    } else { 0 };
-    let mut out: Vec<Arc<Mount>> = Vec::new();
-    let mut seen: Vec<u64> = alloc::vec![parent.mnt_id];
-    // Peers: shared mounts in the same group (excluding parent).
-    if pg != 0 {
-        for m in mounts_in_ns(ns) {
-            if m.mnt_id == parent.mnt_id { continue; }
-            if Propagation::from_u8(m.propagation.load(Ordering::Acquire)) == Propagation::Shared
-                && m.peer_group.load(Ordering::Acquire) == pg {
-                seen.push(m.mnt_id); out.push(m);
-            }
-        }
-    }
-    // Transitive slaves of {parent} ∪ peers, restricted to the same ns (a
-    // cross-ns slave clone receives via its own ns's machinery, not here).
-    let mut frontier: Vec<Arc<Mount>> = alloc::vec![parent.clone()];
-    frontier.extend(out.iter().cloned());
-    while let Some(m) = frontier.pop() {
-        for w in m.mnt_slave_list.lock().iter() {
-            if let Some(s) = w.upgrade() {
-                if s.ns != ns || seen.contains(&s.mnt_id) { continue; }
-                seen.push(s.mnt_id);
-                frontier.push(s.clone());
-                out.push(s);
-            }
-        }
-    }
-    out
-}
-
-/// Propagation event delivery (`docs/16§6`): replicate the mount just created
-/// at dentry `at` to every propagation target of its PARENT mount. Returns the
-/// count propagated. # C: O(N_mounts × depth)
-pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
-    let ns = current_ns();
-    let newm = match mount_exact_at(ns, at) { Some(m) => m, None => return 0 };
-    let parent = match mount_by_id(newm.parent_id.load(Ordering::Acquire)) {
-        Some(p) => p, None => return 0,
-    };
-    let targets = propagation_targets(&parent);
-    if targets.is_empty() { return 0; }
-    let new_mp = match newm.mountpoint() { Some(d) => d, None => return 0 };
-    let rel = match rel_under(&new_mp, parent.mountpoint().as_ref()) {
-        Some(r) if !r.is_empty() => r, _ => return 0,
-    };
-    let root = match newm.root.clone().or_else(|| newm.fs().root()) {
-        Some(r) => r, None => return 0,
-    };
-    let mut n = 0;
-    for peer in targets {
-        if peer.ns != ns { continue; }
-        let base = match peer.mountpoint().or_else(global_root) { Some(b) => b, None => continue };
-        let Some(dst) = descend(&base, &rel) else { continue; };
-        if register_bind(Some(dst), newm.fs().clone(), root.clone()).is_ok() { n += 1; }
-    }
-    n
-}
-
-/// Peer group id of the mount rooted exactly at dentry `d`, or 0. # C: O(log N)
-pub fn peer_group_of(d: &Arc<Dentry>) -> u64 {
-    mount_exact_at(current_ns(), d)
-        .map(|m| m.peer_group.load(Ordering::Acquire)).unwrap_or(0)
-}
-
-/// MS_SHARED peer-group inheritance (`docs/16§6`). # C: O(log N)
-pub fn join_peer_group(d: &Arc<Dentry>, pg: u64) {
-    if pg == 0 { return; }
-    if let Some(m) = mount_exact_at(current_ns(), d) {
-        m.peer_group.store(pg, Ordering::Release);
-        m.propagation.store(Propagation::Shared as u8, Ordering::Release);
-        mntns::bump_gen(m.ns);
-    }
 }
 
 /// `mnt_id`s of `top` plus its transitive children via the intrusive child
