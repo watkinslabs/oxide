@@ -204,6 +204,13 @@ pub struct SuperBlock {
     s_writers_count: AtomicU32,
     /// `s_id` — `"/dev/vda1"`, `"tmpfs"`; `/proc/mounts` source column.
     pub s_id: String,
+    /// `s_uuid` (Linux `super_block.s_uuid`, a `uuid_t`) + `s_uuid_len` — the
+    /// on-disk filesystem UUID a backend reads from its superblock at
+    /// `fill_super` ([`SuperBlock::set_uuid`]). All-zero / `len == 0` ⇒ the fs
+    /// has no UUID (the `for_backend` default). Consumed by `name_to_handle_at`
+    /// FID generation and the `STATX_ATTR`/`/proc` UUID display. Locked because
+    /// it is set after construction (like `s_root`) without rebuilding the SB.
+    s_uuid: Spinlock<([u8; 16], u8), SbClass>,
     /// `s_root` — the ROOT DENTRY (strong; see CYCLE NOTE).
     s_root: RwLock<Option<Arc<Dentry>>, SbClass>,
     /// `s_fs_info` — backend-private state (ext4 sb / tmpfs arena).
@@ -266,6 +273,7 @@ impl SuperBlock {
             s_writers_frozen: AtomicU32::new(SB_UNFROZEN),
             s_writers_count: AtomicU32::new(0),
             s_id,
+            s_uuid: Spinlock::new(([0u8; 16], 0)),
             s_root: RwLock::new(None),
             s_fs_info,
             s_fs: Arc::new(NullFs),
@@ -302,6 +310,7 @@ impl SuperBlock {
             s_writers_frozen: AtomicU32::new(SB_UNFROZEN),
             s_writers_count: AtomicU32::new(0),
             s_id,
+            s_uuid: Spinlock::new(([0u8; 16], 0)),
             s_root: RwLock::new(None),
             s_fs_info: Arc::new(()),
             s_fs: fs,
@@ -649,6 +658,30 @@ impl SuperBlock {
 
     /// `s_maxbytes` — largest representable file size. # C: O(1)
     pub fn s_maxbytes(&self) -> u64 { self.s_maxbytes }
+
+    /// `s_uuid` snapshot (Linux `super_block.s_uuid`). All-zero when the fs has
+    /// no UUID; pair with [`Self::has_uuid`] to distinguish "no UUID" from the
+    /// (legitimate but vanishingly rare) all-zero UUID. # C: O(1)
+    pub fn s_uuid(&self) -> [u8; 16] { self.s_uuid.lock().0 }
+
+    /// `s_uuid_len` — the significant byte length of `s_uuid` (`16` for a v4
+    /// UUID, `0` when unset). Linux `super_block.s_uuid_len`. # C: O(1)
+    pub fn s_uuid_len(&self) -> u8 { self.s_uuid.lock().1 }
+
+    /// True iff a non-empty UUID has been published (`s_uuid_len != 0`). # C: O(1)
+    pub fn has_uuid(&self) -> bool { self.s_uuid.lock().1 != 0 }
+
+    /// Publish the filesystem UUID (Linux `super_set_uuid` / a `fill_super`
+    /// writing `sb->s_uuid` from the on-disk superblock). `len` is clamped to
+    /// the 16-byte `uuid_t` width; the unused tail is zero-filled so a short
+    /// UUID never leaks stale bytes. # C: O(1)
+    pub fn set_uuid(&self, uuid: [u8; 16], len: u8) {
+        let len = if len > 16 { 16 } else { len };
+        let mut g = self.s_uuid.lock();
+        g.0 = [0u8; 16];
+        g.0[..len as usize].copy_from_slice(&uuid[..len as usize]);
+        g.1 = len;
+    }
 
     /// `s_time_gran` — timestamp granularity (ns). # C: O(1)
     pub fn s_time_gran(&self) -> u32 { self.s_time_gran.load(Ordering::Acquire) }
