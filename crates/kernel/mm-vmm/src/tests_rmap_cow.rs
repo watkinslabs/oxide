@@ -73,16 +73,17 @@ fn fresh_pa_opt() -> Option<u64> { Some(fresh_pa()) }
 struct HostMmu;
 
 impl MmuOps for HostMmu {
-    unsafe fn map(va: Va, pa: Pa, flags: PageFlags, _size: PageSize) {
+    unsafe fn map(va: Va, pa: Pa, flags: PageFlags, _size: PageSize) -> Option<Pa> {
         // Model the REAL per-arch walker (`hal_x86_64::mmu_ops::map` /
         // `hal_aarch64`): an install over a present leaf at the same VA tears
         // down the displaced leaf and installs the new PA (the
         // `WalkErr::AlreadyMapped` -> `unmap_at_va` + `map_at_level` path).
-        // The COW handler relies on this silent replace — the in-place reuse
-        // fast-path is disabled, so every COW write installs a FRESH PA over
-        // the (RO) present leaf. Modelling it as a plain overwrite keeps the
-        // host PT faithful to production.
-        pt_with(|pt| { pt.leaves.insert(va.0, (pa.0, flags.bits())); });
+        // F157-A1: return the displaced PA (different frame) so the COW handler
+        // can dec_ref it, matching the production trait contract.
+        pt_with(|pt| {
+            let prev = pt.leaves.insert(va.0, (pa.0, flags.bits()));
+            prev.filter(|(old, _)| (old >> 12) != (pa.0 >> 12)).map(|(old, _)| Pa(old))
+        })
     }
 
     unsafe fn unmap(va: Va, _size: PageSize) {
@@ -98,10 +99,14 @@ impl MmuOps for HostMmu {
     unsafe fn flush_va(_va: Va) {}
     fn flush_all_local() {}
 
-    unsafe fn map_at(_root_pa: u64, va: Va, pa: Pa, flags: PageFlags, _size: PageSize) {
+    unsafe fn map_at(_root_pa: u64, va: Va, pa: Pa, flags: PageFlags, _size: PageSize) -> Option<Pa> {
         // For tests we have a single PT. Treat map_at like map; if a
-        // different PA is at the slot, overwrite (Linux semantics).
-        pt_with(|pt| { pt.leaves.insert(va.0, (pa.0, flags.bits())); });
+        // different PA is at the slot, overwrite (Linux semantics) and
+        // return the displaced PA per the F157-A1 trait contract.
+        pt_with(|pt| {
+            let prev = pt.leaves.insert(va.0, (pa.0, flags.bits()));
+            prev.filter(|(old, _)| (old >> 12) != (pa.0 >> 12)).map(|(old, _)| Pa(old))
+        })
     }
 
     unsafe fn activate(_root_pa: u64) {}

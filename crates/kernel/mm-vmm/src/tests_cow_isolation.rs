@@ -73,9 +73,13 @@ fn read_tag(pa: u64) -> [u8; 4] {
 
 struct MultiMmu;
 impl MmuOps for MultiMmu {
-    unsafe fn map(va: Va, pa: Pa, flags: PageFlags, _s: PageSize) {
+    unsafe fn map(va: Va, pa: Pa, flags: PageFlags, _s: PageSize) -> Option<Pa> {
         let root = ACTIVE.with(|a| *a.borrow());
-        ROOTS.with(|r| { r.borrow_mut().entry(root).or_default().insert(va.0, (pa.0, flags.bits())); });
+        ROOTS.with(|r| {
+            let prev = r.borrow_mut().entry(root).or_default().insert(va.0, (pa.0, flags.bits()));
+            // F157-A1: surface the displaced frame (different PA) like the real walker.
+            prev.filter(|(old, _)| (old >> 12) != (pa.0 >> 12)).map(|(old, _)| Pa(old))
+        })
     }
     unsafe fn unmap(va: Va, _s: PageSize) {
         let root = ACTIVE.with(|a| *a.borrow());
@@ -88,8 +92,11 @@ impl MmuOps for MultiMmu {
     }
     unsafe fn flush_va(_va: Va) {}
     fn flush_all_local() {}
-    unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, _s: PageSize) {
-        ROOTS.with(|r| { r.borrow_mut().entry(root_pa).or_default().insert(va.0, (pa.0, flags.bits())); });
+    unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, _s: PageSize) -> Option<Pa> {
+        ROOTS.with(|r| {
+            let prev = r.borrow_mut().entry(root_pa).or_default().insert(va.0, (pa.0, flags.bits()));
+            prev.filter(|(old, _)| (old >> 12) != (pa.0 >> 12)).map(|(old, _)| Pa(old))
+        })
     }
     unsafe fn activate(root_pa: u64) { activate_root(root_pa); }
 }
