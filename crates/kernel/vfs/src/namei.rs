@@ -581,6 +581,14 @@ impl Nameidata {
                 return Err(VfsError::Enotdir);
             }
 
+            // ENAMETOOLONG: a single component longer than NAME_MAX (255 bytes)
+            // is rejected lexically as the walk consumes it (Linux
+            // `link_path_walk` `hash_name` → `-ENAMETOOLONG`), even when the
+            // whole pathname is well under PATH_MAX and even for a LOOKUP_PARENT
+            // leaf (checked before the parent-stop below). `..` is a control
+            // segment (≤2 bytes), never over-length, so it is exempt.
+            if comp != ".." { crate::path::check_component(&comp)?; }
+
             // LOOKUP_PARENT: stop BEFORE the final component, reporting it as
             // the leaf (Linux `path_parentat` / `nd->last`). `may_lookup`
             // (search permission, MAY_EXEC) runs FIRST — `link_path_walk` checks
