@@ -24,6 +24,7 @@ extern crate std;
 
 pub mod dcache;
 pub mod dentry;
+pub mod devnode;
 pub mod dirent;
 pub mod fdtable;
 pub mod file;
@@ -40,6 +41,7 @@ pub mod poll_subs;
 
 pub use dcache::{d_add, d_add_negative, d_alloc, d_drop, d_instantiate, d_lookup, d_make_root, d_move, d_splice_alias, dget, dput};
 pub use dentry::{Dentry, D_HASHED, D_NEGATIVE, D_ROOT};
+pub use devnode::{BlockDevOps, CharDevOps, DeviceNodeInode, Devt, lookup_blkdev, lookup_chrdev, register_blkdev, register_chrdev, unregister_blkdev, unregister_chrdev};
 pub use superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
 pub use namei::{path_lookup, path_lookup_path, path_lookup_cred, resolve_abs, resolve_path_dentry, set_root_dentry_provider, Cred, LookupFlags, Nameidata, VfsPath, MAX_SYMLINK_DEPTH, MAY_EXEC, MAY_READ, MAY_WRITE};
 pub use dirent::{dirent64_pack, dirent64_reclen, DIRENT64_HEADER};

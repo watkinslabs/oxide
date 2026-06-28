@@ -82,12 +82,17 @@ pub enum VfsError {
     Enoent  = 2,
     Eintr   = 4,
     Eio     = 5,
+    /// ENXIO — `open(2)` of a device node whose `(major,minor)` has no
+    /// registered driver (Linux `chrdev_open`/`blkdev_open` miss).
+    Enxio   = 6,
     Ebadf   = 9,
     Enomem  = 12,
     Eacces  = 13,
     Efault  = 14,
     Eexist  = 17,
     Exdev   = 18,
+    /// ENODEV — operation on a node whose device class is unknown.
+    Enodev  = 19,
     Enotdir = 20,
     Eisdir  = 21,
     Einval  = 22,

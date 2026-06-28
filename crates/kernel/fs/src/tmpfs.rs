@@ -15,13 +15,14 @@
 
 
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::collections::BTreeMap;
 
-use sync::{Spinlock, TaskList as TaskListClass};
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use sync::{Spinlock, Inode as InodeClass, TaskList as TaskListClass};
+use vfs::{DeviceNodeInode, Devt, FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::superblock::SuperBlock;
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -34,7 +35,25 @@ pub const F_SEAL_GROW:   u32 = 0x0004;
 pub const F_SEAL_WRITE:  u32 = 0x0008;
 
 const PG: usize = 4096;
+/// TMPFS_MAGIC (linux/magic.h) — statfs `f_type`.
+const TMPFS_MAGIC: u64 = 0x0102_1994;
+/// Fallback `fsid` for an anonymous inode (memfd / coredump) with no owning
+/// SuperBlock; tree inodes derive `fsid` from `i_sb().s_dev`.
 const TMPFS_FSID: u64 = 0x0102_1994;
+/// Root-inode number of every instance (distinct `s_dev` keeps `(dev,ino)`
+/// unique across mounts).
+const ROOT_INO: Ino = 2;
+
+const S_IFMT:  u16 = 0xF000;
+const S_IFCHR: u16 = 0x2000;
+const S_IFBLK: u16 = 0x6000;
+const S_IFIFO: u16 = 0x1000;
+const S_IFSOCK: u16 = 0xC000;
+
+/// `fsid` from an inode's owning SB, else the tmpfs fallback. # C: O(1)
+fn fsid_of(sb: &Weak<SuperBlock>) -> u64 {
+    sb.upgrade().map(|s| s.s_dev).unwrap_or(TMPFS_FSID)
+}
 
 /// In-memory file body, Linux-shmem style: data lives in PMM page FRAMES
 /// (sparse `page_idx -> pa`), NOT a `Vec<u8>`. This is load-bearing for
@@ -55,6 +74,8 @@ pub struct TmpfsFileInode {
     /// memfd created with `MFD_ALLOW_SEALING` exposes them.
     seals:    core::sync::atomic::AtomicU32,
     sealable: bool,
+    /// `i_sb` — owning SuperBlock (empty for an anonymous memfd/coredump body).
+    sb:       Weak<SuperBlock>,
 }
 
 /// Frame for `idx`, allocating + zeroing on first touch. The frame holds
@@ -72,14 +93,16 @@ fn ensure_page(g: &mut BTreeMap<u64, u64>, idx: u64) -> Option<u64> {
 }
 
 impl TmpfsFileInode {
-    /// # C: O(1)
-    pub fn new() -> Arc<Self> { Self::make(false) }
+    /// Anonymous body (memfd / coredump), no owning SuperBlock. # C: O(1)
+    pub fn new() -> Arc<Self> { Self::make(false, Weak::new()) }
     /// A sealable memfd file (`memfd_create(MFD_ALLOW_SEALING)`).
     /// # C: O(1)
-    pub fn new_sealable() -> Arc<Self> { Self::make(true) }
+    pub fn new_sealable() -> Arc<Self> { Self::make(true, Weak::new()) }
+    /// A tree file owned by `sb` (`fsid` derives from `sb.s_dev`). # C: O(1)
+    pub fn new_in_sb(sb: Weak<SuperBlock>) -> Arc<Self> { Self::make(false, sb) }
 
     /// # C: O(1)
-    fn make(sealable: bool) -> Arc<Self> {
+    fn make(sealable: bool, sb: Weak<SuperBlock>) -> Arc<Self> {
         let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
         Arc::new(Self {
             pages: Spinlock::new(BTreeMap::new()),
@@ -87,6 +110,7 @@ impl TmpfsFileInode {
             ino,
             seals: core::sync::atomic::AtomicU32::new(0),
             sealable,
+            sb,
         })
     }
 }
@@ -108,7 +132,8 @@ impl Drop for TmpfsFileInode {
 
 impl Inode for TmpfsFileInode {
     fn ino(&self) -> Ino { self.ino }
-    fn fsid(&self) -> u64 { TMPFS_FSID }
+    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
+    fn fsid(&self) -> u64 { fsid_of(&self.sb) }
     fn file_type(&self) -> FileType { FileType::Regular }
     fn size(&self) -> u64 { self.len.load(Ordering::Acquire) }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
@@ -222,19 +247,23 @@ impl Inode for TmpfsFileInode {
 pub struct TmpfsSymlinkInode {
     target: Vec<u8>,
     ino:    Ino,
+    sb:     Weak<SuperBlock>,
 }
 
 impl TmpfsSymlinkInode {
     /// # C: O(1)
-    pub fn new(target: &[u8]) -> Arc<Self> {
+    pub fn new(target: &[u8]) -> Arc<Self> { Self::new_in_sb(target, Weak::new()) }
+    /// Tree symlink owned by `sb`. # C: O(1)
+    pub fn new_in_sb(target: &[u8], sb: Weak<SuperBlock>) -> Arc<Self> {
         let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-        Arc::new(Self { target: target.to_vec(), ino })
+        Arc::new(Self { target: target.to_vec(), ino, sb })
     }
 }
 
 impl Inode for TmpfsSymlinkInode {
     fn ino(&self) -> Ino { self.ino }
-    fn fsid(&self) -> u64 { TMPFS_FSID }
+    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
+    fn fsid(&self) -> u64 { fsid_of(&self.sb) }
     fn file_type(&self) -> FileType { FileType::Symlink }
     fn size(&self) -> u64 { self.target.len() as u64 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
@@ -248,19 +277,23 @@ impl Inode for TmpfsSymlinkInode {
 /// in `net::UnixDgramQueue` / SockKind::UnixDgram.
 pub struct TmpfsSockInode {
     ino: Ino,
+    sb:  Weak<SuperBlock>,
 }
 
 impl TmpfsSockInode {
     /// # C: O(1)
-    pub fn new() -> Arc<Self> {
+    pub fn new() -> Arc<Self> { Self::new_in_sb(Weak::new()) }
+    /// Tree socket node owned by `sb`. # C: O(1)
+    pub fn new_in_sb(sb: Weak<SuperBlock>) -> Arc<Self> {
         let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-        Arc::new(Self { ino })
+        Arc::new(Self { ino, sb })
     }
 }
 
 impl Inode for TmpfsSockInode {
     fn ino(&self) -> Ino { self.ino }
-    fn fsid(&self) -> u64 { TMPFS_FSID }
+    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
+    fn fsid(&self) -> u64 { fsid_of(&self.sb) }
     fn file_type(&self) -> FileType { FileType::Socket }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
@@ -274,19 +307,25 @@ pub struct TmpfsSpecialInode {
     ft:   FileType,
     perm: u16,
     rdev: u32,
+    sb:   Weak<SuperBlock>,
 }
 
 impl TmpfsSpecialInode {
     /// # C: O(1)
     pub fn new(ft: FileType, perm: u16, rdev: u32) -> Arc<Self> {
+        Self::new_in_sb(ft, perm, rdev, Weak::new())
+    }
+    /// Tree special node (FIFO) owned by `sb`. # C: O(1)
+    pub fn new_in_sb(ft: FileType, perm: u16, rdev: u32, sb: Weak<SuperBlock>) -> Arc<Self> {
         let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-        Arc::new(Self { ino, ft, perm, rdev })
+        Arc::new(Self { ino, ft, perm, rdev, sb })
     }
 }
 
 impl Inode for TmpfsSpecialInode {
     fn ino(&self) -> Ino { self.ino }
-    fn fsid(&self) -> u64 { TMPFS_FSID }
+    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
+    fn fsid(&self) -> u64 { fsid_of(&self.sb) }
     fn file_type(&self) -> FileType { self.ft }
     // mknod(2) gave this node its permission bits + device number; report
     // them. Discarding the mode made systemd's fifo_address_create reject
@@ -300,194 +339,167 @@ impl Inode for TmpfsSpecialInode {
     fn write(&self, _off: u64, _src: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
 }
 
-/// Path → tmpfs inode registry. Same `&str → InodeRef` shape as
-/// devfs but mutable (callers can register new files on demand).
-static REGISTRY: Spinlock<Vec<(String, InodeRef)>, TaskListClass>
-    = Spinlock::new(Vec::new());
+/// Downcast an `InodeRef` to `&TmpfsDir` (every tmpfs dir is one). # C: O(1)
+fn as_dir(i: &InodeRef) -> Option<&TmpfsDir> {
+    i.as_any()?.downcast_ref::<TmpfsDir>()
+}
 
-/// Register a path (idempotent). Boot path uses this to seed
-/// well-known files; `lookup_or_create` for runtime O_CREAT.
-/// # SAFETY: caller is the boot path; single-CPU pre-init or holds
-/// the registry's own spinlock for runtime use.
-/// # C: O(N)
-pub fn register(path: String, inode: InodeRef) {
-    let mut g = REGISTRY.lock();
-    if let Some(slot) = g.iter_mut().find(|(p, _)| *p == path) {
-        slot.1 = inode;
-    } else {
-        g.push((path, inode));
+/// Per-instance tmpfs directory inode (Linux `shmem` dir). Its `kids` map IS
+/// the directory — resolution is per-component `i_op->lookup`, no whole-path
+/// key, no global registry. Every child it creates inherits this dir's `sb`
+/// weak, so `fsid` derives from the mount's `s_dev`.
+pub struct TmpfsDir {
+    ino:  Ino,
+    sb:   Spinlock<Weak<SuperBlock>, InodeClass>,
+    kids: Spinlock<BTreeMap<String, InodeRef>, InodeClass>,
+}
+
+impl TmpfsDir {
+    /// # C: O(1)
+    pub fn new(ino: Ino, sb: Weak<SuperBlock>) -> Arc<Self> {
+        Arc::new(Self { ino, sb: Spinlock::new(sb), kids: Spinlock::new(BTreeMap::new()) })
+    }
+    /// This dir's owning-SB weak (handed to every child). # C: O(1)
+    fn sb_weak(&self) -> Weak<SuperBlock> { self.sb.lock().clone() }
+    /// Stamp the owning SB (`TmpfsFs::set_sb` at `fill_super`). # C: O(1)
+    pub fn set_sb(&self, sb: Weak<SuperBlock>) { *self.sb.lock() = sb; }
+    /// Raw insert of an existing inode (rename / hardlink). # C: O(log N)
+    fn insert(&self, name: &str, inode: InodeRef) { self.kids.lock().insert(name.into(), inode); }
+    /// Raw remove (rename). # C: O(log N)
+    fn remove(&self, name: &str) -> Option<InodeRef> { self.kids.lock().remove(name) }
+    /// Resolve a tree-relative path per-component. # C: O(components·log N)
+    fn resolve(self: &Arc<Self>, rel: &str) -> Option<InodeRef> {
+        let mut cur: InodeRef = self.clone();
+        for comp in rel.split('/').filter(|c| !c.is_empty()) {
+            cur = cur.lookup(comp).ok()?;
+        }
+        Some(cur)
+    }
+    /// Resolve the PARENT dir of `rel` to `(parent_inode, leaf_name)`.
+    /// # C: O(components·log N)
+    fn parent_of<'a>(self: &Arc<Self>, rel: &'a str) -> Option<(InodeRef, &'a str)> {
+        let mut parts = rel.split('/').filter(|c| !c.is_empty()).peekable();
+        let mut cur: InodeRef = self.clone();
+        let mut name = "";
+        while let Some(c) = parts.next() {
+            if parts.peek().is_none() { name = c; break; }
+            cur = cur.lookup(c).ok()?;
+        }
+        if name.is_empty() { return None; }
+        Some((cur, name))
     }
 }
 
-/// Look up a path; returns `Some(inode)` on hit.
-/// # C: O(N)
-pub fn lookup(path: &str) -> Option<InodeRef> {
-    let g = REGISTRY.lock();
-    g.iter().find(|(p, _)| p == path).map(|(_, i)| Arc::clone(i))
-}
-
-/// Look up `path`; if missing, create an empty `TmpfsFileInode`,
-/// register, and return. Used by `sys_open(O_CREAT)`.
-/// # C: O(N) lookup + O(1) insert
-pub fn lookup_or_create(path: &str) -> InodeRef {
-    if let Some(i) = lookup(path) { return i; }
-    let inode = TmpfsFileInode::new() as InodeRef;
-    register(path.into(), Arc::clone(&inode));
-    inode
-}
-
-/// Tmpfs directory inode rooted at `mount_path` (e.g. "/tmp" for the
-/// default boot mount, or "/var/lock" for a runtime-mounted instance).
-/// readdir filters the flat registry by path-prefix; lookup composes
-/// `<mount_path>/<name>`. F110 made this parameterised so `mount(2)`
-/// can spawn multiple tmpfs instances at different mount points.
-pub struct TmpfsRootInode {
-    pub mount_path: String,
-}
-
-impl TmpfsRootInode {
-    /// # C: O(1)
-    pub fn new(mount_path: String) -> Self { Self { mount_path } }
-    /// Construct the canonical root for the boot-time `/tmp`.
-    /// # C: O(1)
-    pub fn at_tmp() -> Self { Self::new(String::from("/tmp")) }
-    /// Compose `<mount_path>/<name>` — the flat-registry key for a child.
-    /// # C: O(len)
-    fn child_path(&self, name: &str) -> String {
-        let mut p = String::with_capacity(self.mount_path.len() + 1 + name.len());
-        p.push_str(&self.mount_path);
-        p.push('/');
-        p.push_str(name);
-        p
-    }
-}
-
-impl Inode for TmpfsRootInode {
-    fn ino(&self) -> Ino { 0x4000_0000 }
-    fn fsid(&self) -> u64 { TMPFS_FSID }
+impl Inode for TmpfsDir {
+    fn ino(&self) -> Ino { self.ino }
+    fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
+    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.lock().upgrade() }
+    fn fsid(&self) -> u64 { fsid_of(&self.sb.lock()) }
     fn file_type(&self) -> FileType { FileType::Directory }
     fn size(&self) -> u64 { 0 }
+
     fn lookup(&self, name: &str) -> KResult<InodeRef> {
-        let mut p = String::with_capacity(self.mount_path.len() + 1 + name.len());
-        p.push_str(&self.mount_path);
-        p.push('/');
-        p.push_str(name);
-        lookup(&p).ok_or(VfsError::Enoent)
+        self.kids.lock().get(name).cloned().ok_or(VfsError::Enoent)
     }
-    fn readdir(
-        &self,
-        off: u64,
-        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
-    ) -> KResult<u64> {
-        let g = REGISTRY.lock();
+
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+        let g = self.kids.lock();
         let mut idx = off as usize;
-        while idx < g.len() {
-            let (path, inode) = &g[idx];
-            if let Some(name) = procfs::paths::child_under(&self.mount_path, path) {
-                let next = idx as u64 + 1;
-                if !f(next, name, inode.file_type()) {
-                    return Ok(next);
-                }
-            }
+        for (name, inode) in g.iter().skip(off as usize) {
+            let next = idx as u64 + 1;
+            if !f(next, name, inode.file_type()) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
     }
 
-    /// `mkdir` — register a nested `TmpfsRootInode` at `<mp>/<name>`.
-    /// The namei walker dispatches here after resolving the parent.
-    /// # C: O(N_tmpfs_entries)
+    /// `mkdir` — a fresh child `TmpfsDir` in this instance's tree. # C: O(log N)
     fn mkdir(&self, name: &str, _mode: u32) -> KResult<InodeRef> {
-        let path = self.child_path(name);
-        if lookup(&path).is_some() { return Err(VfsError::Eexist); }
-        let inode = Arc::new(TmpfsRootInode::new(path.clone())) as InodeRef;
-        register(path, Arc::clone(&inode));
-        Ok(inode)
+        let mut g = self.kids.lock();
+        if g.contains_key(name) { return Err(VfsError::Eexist); }
+        let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
+        let d = TmpfsDir::new(ino, self.sb_weak()) as InodeRef;
+        g.insert(name.into(), d.clone());
+        Ok(d)
     }
 
-    /// # C: O(N_tmpfs_entries)
+    /// `rmdir` — ENOTEMPTY when the child dir still has entries. # C: O(log N)
     fn rmdir(&self, name: &str) -> KResult<()> {
-        let path = self.child_path(name);
-        let mut g = REGISTRY.lock();
-        let len = g.len();
-        g.retain(|(p, _)| *p != path);
-        if g.len() == len { Err(VfsError::Enoent) } else { Ok(()) }
-    }
-
-    /// # C: O(N_tmpfs_entries)
-    fn create_child(&self, name: &str, _mode: u32) -> KResult<InodeRef> {
-        let path = self.child_path(name);
-        if lookup(&path).is_some() { return Err(VfsError::Eexist); }
-        let inode = TmpfsFileInode::new() as InodeRef;
-        register(path, Arc::clone(&inode));
-        Ok(inode)
-    }
-
-    /// # C: O(N_tmpfs_entries)
-    fn unlink_child(&self, name: &str) -> KResult<()> {
-        let path = self.child_path(name);
-        let mut g = REGISTRY.lock();
-        let len = g.len();
-        g.retain(|(p, _)| *p != path);
-        if g.len() == len { Err(VfsError::Enoent) } else { Ok(()) }
-    }
-
-    /// `symlink(2)` into tmpfs — registers a `TmpfsSymlinkInode` holding
-    /// `target` (e.g. systemd's `/run` symlinks). The path-walk follows it.
-    /// # C: O(N_tmpfs_entries)
-    fn symlink_child(&self, name: &str, target: &[u8]) -> KResult<()> {
-        let path = self.child_path(name);
-        if lookup(&path).is_some() { return Err(VfsError::Eexist); }
-        register(path, TmpfsSymlinkInode::new(target) as InodeRef);
+        let mut g = self.kids.lock();
+        match g.get(name) {
+            None => return Err(VfsError::Enoent),
+            Some(i) if i.file_type() != FileType::Directory => return Err(VfsError::Enotdir),
+            Some(i) => {
+                if let Some(d) = as_dir(i) {
+                    if !d.kids.lock().is_empty() { return Err(VfsError::Enotempty); }
+                }
+            }
+        }
+        g.remove(name);
         Ok(())
     }
 
-    /// `mknod(2)` into tmpfs. systemd creates FIFOs under /run during early boot.
-    /// # C: O(N_tmpfs_entries)
-    fn mknod_child(&self, name: &str, mode: u16, _rdev: u32) -> KResult<()> {
-        const S_IFMT:  u16 = 0xF000;
-        const S_IFCHR: u16 = 0x2000;
-        const S_IFBLK: u16 = 0x6000;
-        const S_IFIFO: u16 = 0x1000;
-        const S_IFSOCK: u16 = 0xC000;
-        let ft = match mode & S_IFMT {
-            S_IFIFO => FileType::Fifo,
-            S_IFSOCK => FileType::Socket,
-            S_IFCHR => FileType::CharDev,
-            S_IFBLK => FileType::BlockDev,
+    /// # C: O(log N)
+    fn create_child(&self, name: &str, _mode: u32) -> KResult<InodeRef> {
+        let mut g = self.kids.lock();
+        if g.contains_key(name) { return Err(VfsError::Eexist); }
+        let inode = TmpfsFileInode::new_in_sb(self.sb_weak()) as InodeRef;
+        g.insert(name.into(), inode.clone());
+        Ok(inode)
+    }
+
+    /// # C: O(log N)
+    fn unlink_child(&self, name: &str) -> KResult<()> {
+        if self.kids.lock().remove(name).is_some() { Ok(()) } else { Err(VfsError::Enoent) }
+    }
+
+    /// `symlink(2)` — a followable `TmpfsSymlinkInode` child. # C: O(log N)
+    fn symlink_child(&self, name: &str, target: &[u8]) -> KResult<()> {
+        let mut g = self.kids.lock();
+        if g.contains_key(name) { return Err(VfsError::Eexist); }
+        g.insert(name.into(), TmpfsSymlinkInode::new_in_sb(target, self.sb_weak()) as InodeRef);
+        Ok(())
+    }
+
+    /// `mknod(2)` — FIFO/socket stay tmpfs special inodes; CHR/BLK become a
+    /// `vfs::DeviceNodeInode` that dispatches I/O to the driver registered by
+    /// `(major,minor)` (so `mknod /dev/zero c 1 5` then read returns zeros).
+    /// # C: O(log N)
+    fn mknod_child(&self, name: &str, mode: u16, rdev: u32) -> KResult<()> {
+        let mut g = self.kids.lock();
+        if g.contains_key(name) { return Err(VfsError::Eexist); }
+        let sb = self.sb_weak();
+        let perm = mode & 0o7777;
+        let inode: InodeRef = match mode & S_IFMT {
+            S_IFIFO  => TmpfsSpecialInode::new_in_sb(FileType::Fifo, perm, rdev, sb) as InodeRef,
+            S_IFSOCK => TmpfsSockInode::new_in_sb(sb) as InodeRef,
+            S_IFCHR  => DeviceNodeInode::new(
+                NEXT_INO.fetch_add(1, Ordering::Relaxed), FileType::CharDev,
+                Devt::from_raw(rdev), perm, sb) as InodeRef,
+            S_IFBLK  => DeviceNodeInode::new(
+                NEXT_INO.fetch_add(1, Ordering::Relaxed), FileType::BlockDev,
+                Devt::from_raw(rdev), perm, sb) as InodeRef,
             _ => return Err(VfsError::Einval),
         };
-        let path = self.child_path(name);
-        if lookup(&path).is_some() { return Err(VfsError::Eexist); }
-        register(path, TmpfsSpecialInode::new(ft, mode & 0o7777, _rdev) as InodeRef);
+        g.insert(name.into(), inode);
         Ok(())
     }
 }
 
-/// Boot-time registry seeding. Registers the `/tmp` directory inode
-/// so `open("/tmp", O_DIRECTORY)` + `getdents64` enumerate.
-/// # SAFETY: caller is the boot path; single-CPU pre-init.
+/// Boot-time hook (kept for the boot sequence). The per-instance trees are
+/// now built by the boot `register_bind` calls (each `TmpfsFs::new` owns its
+/// own root `TmpfsDir`), so there is nothing to seed into a global registry.
 /// # C: O(1)
-pub fn init() {
-    register("/tmp".into(), Arc::new(TmpfsRootInode::at_tmp()) as InodeRef);
-    // F111: POSIX shared memory backing — POSIX `shm_open(name, ...)`
-    // resolves to `/dev/shm/<name>` per `shm_open(3)` linker contract.
-    // Pre-mount tmpfs there so glibc/musl shm_open works without an
-    // explicit mount(2) call from userspace at boot.
-    register("/dev/shm".into(), Arc::new(TmpfsRootInode::new(String::from("/dev/shm"))) as InodeRef);
-    // /run is the modern systemd-class tmpfs root (replaces /var/run).
-    // Pre-mount so init scripts that write /run/<service>.pid don't
-    // fail before the userspace mount sequence runs.
-    register("/run".into(), Arc::new(TmpfsRootInode::new(String::from("/run"))) as InodeRef);
-}
+pub fn init() {}
 
-/// Boot-time round-trip smoke for the tmpfs path. Creates an
-/// inode, writes "shell-test", reads back, verifies, drops.
+/// Boot-time round-trip smoke for the tmpfs body: build a fresh instance,
+/// create a file in its tree, write/read-back/partial-overwrite.
 /// # SAFETY: caller is the boot path; PMM up; pre-userspace.
 /// # C: O(1)
 pub fn smoke_test() {
     use hal::kassert;
-    let inode = lookup_or_create("/tmp/.smoke");
+    let root = TmpfsDir::new(ROOT_INO, Weak::new());
+    let inode = root.create_child(".smoke", 0o644).expect("tmpfs.create");
     let n = inode.write(0, b"shell-test").expect("tmpfs.write");
     kassert!(n == 10, "tmpfs write len");
     let mut buf = [0u8; 16];
@@ -504,87 +516,106 @@ pub fn smoke_test() {
     }
 }
 
+/// One mounted tmpfs instance. Owns its OWN inode tree (`root: TmpfsDir`)
+/// under its SuperBlock — there is no shared global registry. `mount_path`
+/// is the prefix stripped from the whole-path `FileSystem` write ops
+/// (`create`/`unlink`/`rename`/`link`) to address the tree; the per-component
+/// ops (`mknod_child`/`unlink_child` via the resolved parent inode) need no
+/// path at all. Built fresh per mount by [`TmpfsFs::new`].
+pub struct TmpfsFs {
+    mount_path: String,
+    root:       Arc<TmpfsDir>,
+    sb:         Spinlock<Weak<SuperBlock>, InodeClass>,
+}
 
-/// FileSystem trait impl per `vfs::fs::FileSystem`.
-pub struct TmpfsFs;
+impl TmpfsFs {
+    /// A fresh empty tmpfs instance mounted at `mount_path`. `set_sb` stamps
+    /// `s_dev` at `fill_super`, after which children derive `fsid` from it.
+    /// # C: O(1)
+    pub fn new(mount_path: String) -> Arc<Self> {
+        let root = TmpfsDir::new(ROOT_INO, Weak::new());
+        Arc::new(Self { mount_path, root, sb: Spinlock::new(Weak::new()) })
+    }
+    /// This instance's root inode (`sb->s_root->d_inode`), handed to
+    /// `register_bind` so the path walk crosses into the tree. # C: O(1)
+    pub fn root_inode(&self) -> InodeRef { self.root.clone() }
+    /// Strip the mount-point prefix → tree-relative path. # C: O(len)
+    fn rel<'a>(&self, abs: &'a str) -> &'a str {
+        let mp = self.mount_path.trim_end_matches('/');
+        if !mp.is_empty() {
+            if let Some(r) = abs.strip_prefix(mp) {
+                if r.is_empty() || r.starts_with('/') { return r.trim_start_matches('/'); }
+            }
+        }
+        abs.trim_start_matches('/')
+    }
+}
 
 impl vfs::fs::FileSystem for TmpfsFs {
     /// # C: O(1)
     fn name(&self) -> &str { "tmpfs" }
-    /// TMPFS_MAGIC (linux/magic.h).
-    /// # C: O(1)
-    fn magic(&self) -> u64 { 0x0102_1994 }
-    /// # C: O(N_tmpfs_entries) — auto-creates regular files.
-    fn create(&self, path: &str, _mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
-        Ok(lookup_or_create(path))
+    /// TMPFS_MAGIC (linux/magic.h). # C: O(1)
+    fn magic(&self) -> u64 { TMPFS_MAGIC }
+    /// This instance's root inode (mount table per-mount root). # C: O(1)
+    fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
+
+    /// `fill_super` back-stamp: record the SB so the root + every child
+    /// derives `fsid` from `s_dev` (per-instance, not a constant). # C: O(1)
+    fn set_sb(&self, sb: Weak<SuperBlock>) {
+        *self.sb.lock() = sb.clone();
+        self.root.set_sb(sb);
     }
 
-    /// `O_TMPFILE`: a fresh in-memory inode with no registry (directory)
-    /// entry — reclaimed when its last fd closes, like Linux shmem's
-    /// anonymous inodes. `dir` is irrelevant for an in-memory FS. This is
-    /// what makes `O_TMPFILE` on /run, /tmp, /dev/shm work (those are
-    /// tmpfs); previously every `O_TMPFILE` was wrongly routed to ext4 and
-    /// returned ENOSPC, which made journald abort.
-    /// # C: O(1)
+    /// `open(O_CREAT)`: return the existing inode or create a regular file in
+    /// the tree (lookup-or-create). `path` is mount-absolute. # C: O(components)
+    fn create(&self, path: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
+        let rel = self.rel(path);
+        if let Some(i) = self.root.resolve(rel) { return Ok(i); }
+        let (p, name) = self.root.parent_of(rel).ok_or(VfsError::Enoent)?;
+        p.create_child(name, mode)
+    }
+
+    /// `O_TMPFILE`: a fresh in-memory inode with no directory entry — reclaimed
+    /// when its last fd closes (Linux shmem anonymous inode). It carries this
+    /// instance's SB so `fsid` is the mount's `s_dev`. # C: O(1)
     fn create_anonymous(&self, _dir: &str, _mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
-        Ok(TmpfsFileInode::new() as vfs::InodeRef)
+        Ok(TmpfsFileInode::new_in_sb(self.sb.lock().clone()) as vfs::InodeRef)
     }
 
-    /// Drop the registry entry for `path`. Returns ENOENT if absent.
-    /// F225: GNU patch's atomic-rename pattern needs unlink (sometimes
-    /// it removes the dest before renaming the .tmp file in).
-    /// # C: O(N_tmpfs_entries)
+    /// `unlink(2)` by whole path (atomic-rename idiom). # C: O(components)
     fn unlink(&self, path: &str) -> vfs::fs::KResult<()> {
-        let mut g = REGISTRY.lock();
-        let len = g.len();
-        g.retain(|(p, _)| p != path);
-        if g.len() == len { Err(vfs::VfsError::Enoent) } else { Ok(()) }
+        let (p, name) = self.root.parent_of(self.rel(path)).ok_or(VfsError::Enoent)?;
+        p.unlink_child(name)
     }
 
-    /// Hardlink within tmpfs: register another name for the same inode.
-    /// # C: O(N_tmpfs_entries)
+    /// Hardlink: add another name in the tree for `target`'s inode. # C: O(components)
     fn link(&self, target: &str, link: &str) -> vfs::fs::KResult<()> {
-        let inode = lookup(target).ok_or(vfs::VfsError::Enoent)?;
+        let inode = self.root.resolve(self.rel(target)).ok_or(VfsError::Enoent)?;
         self.link_inode(inode, link)
     }
 
-    /// Materialize an unnamed tmpfs inode at `link`.
-    /// # C: O(N_tmpfs_entries)
+    /// Materialize `inode` at `link` (linkat AT_EMPTY_PATH). # C: O(components)
     fn link_inode(&self, inode: vfs::InodeRef, link: &str) -> vfs::fs::KResult<()> {
-        if inode.fsid() != TMPFS_FSID { return Err(vfs::VfsError::Exdev); }
-        if lookup(link).is_some() { return Err(vfs::VfsError::Eexist); }
-        register(link.into(), inode);
+        let (p, name) = self.root.parent_of(self.rel(link)).ok_or(VfsError::Enoent)?;
+        let dir = as_dir(&p).ok_or(VfsError::Enotdir)?;
+        if dir.kids.lock().contains_key(name) { return Err(VfsError::Eexist); }
+        dir.insert(name, inode);
         Ok(())
     }
 
-    /// rename(from, to) — atomic-write idiom used by every editor +
-    /// package manager + GNU patch. Replaces the destination entry
-    /// (if any) with the source inode, then drops the source entry.
-    /// F225: required for GNU patch's `patch foo.txt < diff` flow,
-    /// which writes patched content to `foo.txt.<temp>` then renames
-    /// it over the original.
-    /// # C: O(N_tmpfs_entries)
+    /// `rename(from, to)` — the editor/package-manager atomic-write idiom:
+    /// detach the source from its parent dir, attach it under the dest name.
+    /// # C: O(components)
     fn rename(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
-        let mut g = REGISTRY.lock();
-        // Find source.
-        let src_idx = match g.iter().position(|(p, _)| p == from) {
-            Some(i) => i, None => return Err(vfs::VfsError::Enoent),
-        };
-        let src_inode = Arc::clone(&g[src_idx].1);
-        // Replace dest (if it exists) or push a new entry, then drop source.
-        if let Some(dst_idx) = g.iter().position(|(p, _)| p == to) {
-            g[dst_idx].1 = src_inode;
-        } else {
-            g.push((to.into(), src_inode));
-        }
-        g.swap_remove(src_idx);
+        let (sp, sname) = self.root.parent_of(self.rel(from)).ok_or(VfsError::Enoent)?;
+        let (dp, dname) = self.root.parent_of(self.rel(to)).ok_or(VfsError::Enoent)?;
+        let sdir = as_dir(&sp).ok_or(VfsError::Enotdir)?;
+        let ddir = as_dir(&dp).ok_or(VfsError::Enotdir)?;
+        let inode = sdir.remove(sname).ok_or(VfsError::Enoent)?;
+        ddir.insert(dname, inode);
         Ok(())
     }
 }
-
-/// Singleton accessor.
-/// # C: O(1)
-pub fn instance() -> &'static dyn vfs::fs::FileSystem { &TmpfsFs }
 
 #[cfg(test)]
 mod symlink_tests {
@@ -597,12 +628,13 @@ mod symlink_tests {
         assert_eq!(s.size(), 23);
         assert_eq!(s.readlink().unwrap(), b"/usr/share/zoneinfo/UTC".to_vec());
     }
-    // symlink_child registers a followable symlink at <mount>/<name>.
+    // symlink_child creates a followable symlink resolved per-component from
+    // the dir's own kids map (no global registry).
     #[test]
-    fn root_symlink_child_creates_followable_link() {
-        let root = TmpfsRootInode::new(String::from("/run-test-xyz"));
+    fn dir_symlink_child_creates_followable_link() {
+        let root = TmpfsDir::new(ROOT_INO, Weak::new());
         root.symlink_child("tz", b"/etc/localtime").expect("create symlink");
-        let resolved = lookup("/run-test-xyz/tz").expect("symlink registered");
+        let resolved = root.lookup("tz").expect("symlink in tree");
         assert_eq!(resolved.file_type(), FileType::Symlink);
         assert_eq!(resolved.readlink().unwrap(), b"/etc/localtime".to_vec());
         // Eexist on a second create.
