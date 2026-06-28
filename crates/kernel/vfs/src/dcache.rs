@@ -295,6 +295,26 @@ pub fn d_move(old: &Arc<Dentry>, new_parent: &Arc<Dentry>, new_name: &str) -> Ar
     }
 }
 
+/// Obtain a dentry referring to `inode` WITHOUT a path/parent (Linux
+/// `d_obtain_alias`, `fs/dcache.c`). Used by exportfs / `open_by_handle_at`
+/// and by `d_splice_alias`'s disconnected-reattach. REUSE first: if `inode`
+/// already has a live alias, return it — mandatory for DIRECTORIES, which have
+/// at most one dentry (a second dir dentry would split the dcache subtree).
+/// Else allocate a NEW anonymous dentry: parentless, `D_DISCONNECTED`,
+/// instantiated with `inode` and recorded on its `i_dentry` alias list via the
+/// SAME `i_add_alias` path the other builders use. NOT hashed into the global
+/// `dentry_hashtable` — a disconnected dentry has no (parent,name) key; Linux
+/// keeps it on `s_anon`, not the main hash. An `i_sb()`-less inode still gets a
+/// valid anon dentry (the alias just can't be recorded). # C: O(N_aliases)
+pub fn d_obtain_alias(inode: InodeRef) -> Arc<Dentry> {
+    if let Some(sb) = inode.i_sb() {
+        if let Some(existing) = sb.i_aliases(inode.ino()).into_iter().next() { return existing; }
+    }
+    let anon = Dentry::new_anon(inode.clone());
+    if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, &anon); }
+    anon
+}
+
 /// Directory alias merge (Linux `d_splice_alias`): attach `inode` to the
 /// dentry and ensure it is hashed, returning the now-positive dentry. The
 /// full disconnected-alias reattach (real dir hardlink resolution) is
