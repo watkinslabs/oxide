@@ -455,7 +455,7 @@ pub fn terminate_current_with_signal(sig: u8) -> ! {
             // SAFETY: rq.current installed via Arc::into_raw, non-null; we run
             // ON this task so no concurrent freer; reads/atomic-stores only.
             let task: &Task = unsafe { &*raw };
-            task.exit_status.store((sig as i32) | 0x100, Ordering::Release);
+            task.exit_status.store(crate::signum::killed_status(sig as u32), Ordering::Release);
             task.vfork_pending.store(false, Ordering::Release);
             ::cgroup::on_exit(task.tid as u64);
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.

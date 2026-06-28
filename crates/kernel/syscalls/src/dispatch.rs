@@ -225,8 +225,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_FACCESSAT     => crate::fs_access::sys_faccessat(&args),
         syscall::nrs::NR_EVENTFD | syscall::nrs::NR_EVENTFD2
                                  => crate::s290_eventfd2::sys_eventfd2(&args),
-        syscall::nrs::NR_GETDENTS | syscall::nrs::NR_GETDENTS64
-                                 => crate::s217_getdents64::sys_getdents64(&args),
+        syscall::nrs::NR_GETDENTS   => crate::s217_getdents64::sys_getdents(&args),
+        syscall::nrs::NR_GETDENTS64 => crate::s217_getdents64::sys_getdents64(&args),
         syscall::nrs::NR_PREAD64       => crate::s017_pread64::sys_pread64(&args),
         syscall::nrs::NR_PWRITE64      => crate::s018_pwrite64::sys_pwrite64(&args),
         syscall::nrs::NR_PREADV  => crate::s295_preadv::sys_preadv(&args),
@@ -273,7 +273,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             }
             crate::s257_openat::sys_openat(&sa)
         }
-        syscall::nrs::NR_FACCESSAT2    => crate::fs_access::sys_faccessat(&args),
+        syscall::nrs::NR_FACCESSAT2    => crate::fs_access::sys_faccessat2(&args),
         syscall::nrs::NR_SYNC => 0,
         syscall::nrs::NR_REBOOT => crate::misc::sys_reboot(&args),
         nr if matches!(nr, syscall::nrs::NR_FSYNC | syscall::nrs::NR_FDATASYNC
