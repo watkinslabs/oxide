@@ -27,8 +27,8 @@ pub type KResult<T> = core::result::Result<T, VfsError>;
 pub mod fs_context;
 pub use fs_context::{
     put_fs_context, reconfigure_super, vfs_get_tree, vfs_parse_fs_param, vfs_parse_fs_param_source,
-    vfs_parse_fs_string, FsContext, FsContextOps, FsContextPhase, FsContextPurpose, FsParameter,
-    FsValue, LegacyFsContextOps, ParamResult, SB_FLAGS_USER_MASK,
+    vfs_parse_fs_string, FsContext, FsContextOps, FsContextPhase, FsContextPurpose,
+    FsContextSecurity, FsParameter, FsValue, LegacyFsContextOps, ParamResult, SB_FLAGS_USER_MASK,
 };
 
 bitflags::bitflags! {
