@@ -387,6 +387,33 @@ impl SuperBlock {
     /// # C: O(log N_ino)
     pub fn iforget(&self, ino: Ino) { self.icache.lock().remove(&ino); }
 
+    /// `s_inodes` (Linux `super_block.s_inodes`) — every LIVE inode resident on
+    /// this superblock, in `ino` order (the icache is an `ino`-keyed `BTreeMap`,
+    /// so iteration is naturally ordered). Slots whose `Weak` no longer upgrades
+    /// (the inode's last `Arc` already dropped) are skipped — Linux's list holds
+    /// only resident inodes. This is the set the per-sb sweeps walk
+    /// ([`Self::evict_inodes`], [`Self::drop_caches`], writeback, quota,
+    /// fsnotify). # C: O(N_ino)
+    pub fn s_inodes(&self) -> Vec<InodeRef> {
+        self.icache.lock().values().filter_map(|e| e.inode.upgrade()).collect()
+    }
+
+    /// Cached inode-slot count on this superblock (Linux per-sb `nr_inodes`).
+    /// Counts every slot including a stale `Weak` not yet reclaimed, so it is the
+    /// icache occupancy, not the live-inode count ([`Self::s_inodes`]`.len()`).
+    /// # C: O(1)
+    pub fn nr_cached_inodes(&self) -> usize { self.icache.lock().len() }
+
+    /// Walk the `s_inodes` list applying `f` to every LIVE inode in `ino` order
+    /// (Linux `inode_sb_list` walk behind quota/fsnotify/`sync` sweeps). Snapshots
+    /// the live set FIRST and releases the icache lock before invoking `f`, so a
+    /// callback may safely re-enter the SB (`iget`/`ilookup`) without
+    /// self-deadlock — Linux's equivalent `igrab`s then drops `s_inode_list_lock`
+    /// across the body. # C: O(N_ino)
+    pub fn for_each_inode(&self, mut f: impl FnMut(&InodeRef)) {
+        for i in self.s_inodes() { f(&i); }
+    }
+
     /// `i_state` bits for `ino` (`I_NEW`/`I_DIRTY`/`I_FREEING`); `0` if not
     /// cached. # C: O(log N_ino)
     pub fn i_state(&self, ino: Ino) -> u32 {
