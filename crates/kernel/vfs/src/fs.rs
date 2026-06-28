@@ -19,6 +19,16 @@ use crate::types::VfsError;
 /// convenience inside trait bodies.
 pub type KResult<T> = core::result::Result<T, VfsError>;
 
+/// `struct fs_context` — the modern mount-API context (`docs/16§6`). Lives in a
+/// submodule of `fs` so it re-exports through `vfs::fs::fs_context::*` without a
+/// new top-level `lib.rs` module declaration. See [`fs_context::FsContext`].
+pub mod fs_context;
+pub use fs_context::{
+    put_fs_context, reconfigure_super, vfs_get_tree, vfs_parse_fs_param, vfs_parse_fs_param_source,
+    vfs_parse_fs_string, FsContext, FsContextOps, FsContextPhase, FsContextPurpose, FsParameter,
+    FsValue, LegacyFsContextOps, ParamResult, SB_FLAGS_USER_MASK,
+};
+
 bitflags::bitflags! {
     /// `file_system_type::fs_flags` (Linux `include/linux/fs.h`). A
     /// type-LEVEL property of the backend (NOT a per-mount `MNT_*` bit):
