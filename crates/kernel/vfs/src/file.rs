@@ -130,8 +130,19 @@ pub struct File {
     /// away (Drop impl below).
     pub flock_op: AtomicU32,
     /// F_GETOWN/F_SETOWN target: positive = tid, negative = -pgid, 0 = none.
-    /// SIGIO/SIGURG delivery routes to this id when fasync fires.
+    /// SIGIO/SIGURG delivery routes to this id when fasync fires. The bare id
+    /// slot of Linux `f_owner.pid`; the credential snapshot lives in
+    /// `owner_creds`, the delivery signal in `f_sig`.
     pub owner: core::sync::atomic::AtomicI32,
+    /// `f_owner` credential snapshot (Linux `struct fown_struct.uid/.euid`)
+    /// captured at `F_SETOWN`, so a deferred SIGIO permission-checks against
+    /// the credentials that requested ownership, not those current when the
+    /// signal fires. Packed `uid << 32 | euid`. The `Cred` subset carries one
+    /// id, so uid==euid here until a separate euid lands.
+    owner_creds: AtomicU64,
+    /// `F_SETSIG`/`F_GETSIG` (Linux `f_owner.signum`): the signal delivered on
+    /// async-I/O readiness; `0` = the default `SIGIO` (data) / `SIGURG` (OOB).
+    f_sig: core::sync::atomic::AtomicI32,
 }
 
 /// Kernel-side hook installed at boot. Called from `File::drop` for
@@ -356,6 +367,8 @@ impl File {
             flags: AtomicU32::new(flags.bits()),
             flock_op: AtomicU32::new(0),
             owner: core::sync::atomic::AtomicI32::new(0),
+            owner_creds: AtomicU64::new(0),
+            f_sig: core::sync::atomic::AtomicI32::new(0),
         })
     }
 
@@ -419,6 +432,41 @@ impl File {
 
     /// `file->private_data` slot write. # C: O(1)
     pub fn set_private_data(&self, v: u64) { self.private_data.store(v, Ordering::Release); }
+
+    /// `F_SETOWN` (Linux `f_setown`): set the SIGIO/SIGURG delivery target
+    /// (`>0` a task, `<0` a `-pgrp`, `0` clears) AND snapshot the requesting
+    /// credentials for the later delivery permission check. Stores the bare id
+    /// in `owner` (what `F_GETOWN` returns) and the packed uid/euid in
+    /// `owner_creds`. # C: O(1)
+    pub fn f_setown(&self, id: i32, cred: &Cred) {
+        self.owner.store(id, Ordering::Release);
+        self.owner_creds.store(((cred.uid as u64) << 32) | cred.uid as u64, Ordering::Release);
+    }
+
+    /// `F_GETOWN` (Linux `f_getown`): the delivery target id. # C: O(1)
+    pub fn f_getown(&self) -> i32 { self.owner.load(Ordering::Acquire) }
+
+    /// `f_owner` credential snapshot `(uid, euid)` from the last `F_SETOWN`
+    /// (Linux `struct fown_struct.uid/.euid`). # C: O(1)
+    pub fn f_owner_creds(&self) -> (u32, u32) {
+        let v = self.owner_creds.load(Ordering::Acquire);
+        ((v >> 32) as u32, v as u32)
+    }
+
+    /// `F_SETSIG` (Linux): choose the signal delivered on async-I/O readiness;
+    /// `0` restores the default (SIGIO for data, SIGURG for OOB). # C: O(1)
+    pub fn set_sig(&self, sig: i32) { self.f_sig.store(sig, Ordering::Release); }
+
+    /// `F_GETSIG` (Linux). # C: O(1)
+    pub fn sig(&self) -> i32 { self.f_sig.load(Ordering::Acquire) }
+
+    /// Resolve the signal to actually deliver for an async-I/O event: the
+    /// `F_SETSIG` value if set, else `dfl` (the default `SIGIO`/`SIGURG`).
+    /// Linux `send_sigio_to_task`: `signum ? signum : SIGIO`. # C: O(1)
+    pub fn fasync_signal(&self, dfl: i32) -> i32 {
+        let s = self.f_sig.load(Ordering::Acquire);
+        if s != 0 { s } else { dfl }
+    }
 
     /// Per-close flush (Linux `file_operations->flush`, fired by
     /// `filp_close` on every `close(2)`/`dup2`-replace/cloexec drop —
