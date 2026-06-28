@@ -33,6 +33,20 @@ fn word_idx(fd: usize) -> usize { fd / WORD_BITS }
 #[inline]
 fn bit_mask(fd: usize) -> u64 { 1u64 << (fd % WORD_BITS) }
 
+/// Linux `sane_fdtable_size` at word granularity: number of `open_fds` WORDS a
+/// forked child needs to cover the parent's currently-open fds — the highest
+/// set-bit word index + 1 (`u64`-word aligned, mirroring `ALIGN(count,
+/// BITS_PER_LONG)`). `0` when no fd is open, so a parent that opened then
+/// CLOSED a high fd hands the child a SMALL table — the shrink Linux performs
+/// in `dup_fd`, vs our live table that otherwise only ever grows.
+/// # C: O(N/64)
+fn sane_fdtable_words(open_fds: &[u64]) -> usize {
+    for wi in (0..open_fds.len()).rev() {
+        if open_fds[wi] != 0 { return wi + 1; }
+    }
+    0
+}
+
 #[derive(Default)]
 struct FdTableInner {
     files:    Vec<Option<Arc<File>>>,
@@ -159,6 +173,13 @@ impl FdTable {
     pub fn count(&self) -> usize {
         self.inner.lock().open_fds.iter().map(|w| w.count_ones() as usize).sum()
     }
+
+    /// Backing `fd[]` slot capacity (Linux `fdtable->max_fds`) — the number of
+    /// fd slots allocated, NOT the number open. Grows on `alloc`/`dup2` and
+    /// SHRINKS on `fork_clone` (Linux `sane_fdtable_size`); exposed so the
+    /// shrink-on-fork right-sizing is observable.
+    /// # C: O(1)
+    pub fn capacity(&self) -> usize { self.inner.lock().files.len() }
 
     /// Snapshot of live fd indices in ascending order. Used by
     /// procfs `/proc/<pid>/fd` enumeration per `19§4`.
@@ -385,25 +406,35 @@ impl FdTable {
         if g.is_open(i) { Ok(g.get_cloexec(i)) } else { Err(VfsError::Ebadf) }
     }
 
-    /// `fork(2)` semantics — produce a new `FdTable` whose entries
-    /// are Arc-clones of the parent's, with both bitmaps copied.
-    /// Subsequent close/dup/etc. in either table don't disturb the
-    /// other (the underlying `Arc<File>` is still shared, which matches
-    /// POSIX: parent and child share the open-file description but not
-    /// the fd-table slots).
-    /// # C: O(N)
+    /// `fork(2)` semantics — produce a new `FdTable` whose entries are
+    /// Arc-clones of the parent's. Subsequent close/dup/etc. in either table
+    /// don't disturb the other (the underlying `Arc<File>` is still shared,
+    /// which matches POSIX: parent and child share the open-file description
+    /// but not the fd-table slots).
+    ///
+    /// The child table is RIGHT-SIZED to the parent's currently-open fds
+    /// (Linux `dup_fd` → `sane_fdtable_size`), NOT to the parent's high-water
+    /// capacity: a parent that opened fd 900 then closed it hands the child a
+    /// 64-slot table, not a 1024-slot one. This is the only path that produces
+    /// a SMALLER table — the live table (`ensure_capacity`) only ever grows.
+    /// The whole-table swap under `Arc` (and spinlock-guarded live mutation) is
+    /// the no_std substitute for Linux's RCU-published `fdtable` replacement.
+    /// # C: O(open fds)
     pub fn fork_clone(&self) -> Self {
         let g = self.inner.lock();
-        // F205: fire the clone hook for every duplicated File reference.
-        for slot in g.files.iter() {
-            if let Some(f) = slot.as_ref() {
-                crate::file::fire_clone_hook(f);
-            }
+        let words = sane_fdtable_words(&g.open_fds);
+        let nfiles = words * WORD_BITS;
+        let mut files: Vec<Option<Arc<File>>> = Vec::with_capacity(nfiles);
+        for slot in g.files.iter().take(nfiles) {
+            // F205: fire the clone hook for every duplicated File reference.
+            if let Some(f) = slot.as_ref() { crate::file::fire_clone_hook(f); }
+            files.push(slot.clone());
         }
+        files.resize_with(nfiles, || None); // pad to the word-aligned slot count
         Self { inner: Spinlock::new(FdTableInner {
-            files:    g.files.clone(),
-            open_fds: g.open_fds.clone(),
-            cloexec:  g.cloexec.clone(),
+            files,
+            open_fds: g.open_fds[..words].to_vec(),
+            cloexec:  g.cloexec[..words].to_vec(),
         }) }
     }
 
