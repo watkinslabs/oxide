@@ -391,18 +391,27 @@ impl Nameidata {
             // (single splitter in `path.rs`); only `..` and names reach here.
             if comp == ".." { self.handle_dotdot(); continue; }
 
+            // ENOTDIR: `comp` is resolved WITHIN `cur_inode`, so `cur_inode`
+            // must be a directory — including the PARENT of a LOOKUP_PARENT
+            // leaf (Linux `link_path_walk` `!d_can_lookup` → ENOTDIR). The
+            // walker enforces this itself rather than trusting `i_op->lookup`
+            // to reject a non-dir, so a non-directory prefix (`/a/file/b`) and a
+            // non-dir LOOKUP_PARENT parent (`mknod("/a/file/leaf")`) both fail.
+            if !matches!(self.cur_inode.file_type(), FileType::Directory) {
+                return Err(VfsError::Enotdir);
+            }
+
+            // `may_lookup`: search permission (MAY_EXEC) on the current
+            // directory, enforced BEFORE the LOOKUP_PARENT stop — Linux calls
+            // `may_lookup` at the top of every component iteration, the final
+            // parent included, so creating in a non-searchable dir is EACCES.
+            may_lookup(&self.cur_inode, &self.cred)?;
+
             // LOOKUP_PARENT: stop at the last component, returning the parent
             // dir + the leaf name (Linux `path_parentat`).
             if is_final && self.flags.parent {
                 last_component = Some(comp);
                 break;
-            }
-
-            // `may_lookup`: search permission (MAY_EXEC) on the current
-            // directory before resolving a name within it. Only meaningful on
-            // directories — a non-dir mid-path yields ENOTDIR from `lookup`.
-            if matches!(self.cur_inode.file_type(), FileType::Directory) {
-                may_lookup(&self.cur_inode, &self.cred)?;
             }
 
             // Resolve the named child via the dcache: fast path `d_lookup`
