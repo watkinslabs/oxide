@@ -21,7 +21,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI32, AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, Ordering};
 use sync::{MountTable as MountClass, Spinlock};
 
 use crate::dentry::Dentry;
@@ -321,6 +321,16 @@ pub struct Mount {
     pub(super) mnt_slave_list: Spinlock<Vec<Weak<Mount>>, MountClass>,
     /// Active writer count (Linux `mnt_writers`); blocks remount-RO.
     mnt_writers: AtomicI32,
+    /// Long-lived reference count (Linux `mnt_count`): external pins held BEYOND
+    /// the mount's presence in the namespace tree — an open file's `f_path.mnt`,
+    /// an in-flight path walk, an fd-based mount handle. `0` ⇒ no external
+    /// holder. A lazy (`MNT_DETACH`) umount unlinks the mount from the tree at
+    /// once but DEFERS the superblock teardown until this drops to `0`.
+    mnt_count: AtomicI32,
+    /// `MNT_DETACHED` (Linux `mnt->mnt_flags & MNT_DETACHED`): set once the mount
+    /// has been unlinked from its namespace tree by an umount. While set, the
+    /// final [`mntput`] (`mnt_count` 1 → 0) runs the deferred `deactivate_super`.
+    detached: AtomicBool,
     /// Per-mount id mapping (Linux `mnt_idmap`). Identity by default — a
     /// non-idmapped mount maps every uid/gid to itself, so stat-out and
     /// chown/create-in are byte-identical to the non-idmapped kernel.
@@ -351,6 +361,18 @@ impl Mount {
 
     /// Per-mount `MNT_*` option bits (Linux `mnt->mnt_flags`). # C: O(1)
     pub fn flags(&self) -> u64 { self.flags.load(Ordering::Acquire) }
+
+    /// Long-lived external reference count (Linux `mnt_count`). # C: O(1)
+    pub fn mnt_count(&self) -> i32 { self.mnt_count.load(Ordering::Acquire) }
+
+    /// True once unlinked from its namespace tree by an umount (Linux
+    /// `MNT_DETACHED`). The final [`mntput`] on a detached mount runs the
+    /// deferred superblock teardown. # C: O(1)
+    pub fn is_detached(&self) -> bool { self.detached.load(Ordering::Acquire) }
+
+    /// Mark this mount unlinked from the tree (Linux `mnt_flags |=
+    /// MNT_DETACHED`). Idempotent. # C: O(1)
+    pub(super) fn mark_detached(&self) { self.detached.store(true, Ordering::Release); }
 }
 
 /// Global by-id mount map (Linux's mount arena), replacing the flat Vec.
@@ -420,6 +442,8 @@ fn new_mount(sb: Arc<SuperBlock>, rendered: String, mountpoint: Option<Arc<Dentr
         mnt_master: Spinlock::new(Weak::new()),
         mnt_slave_list: Spinlock::new(Vec::new()),
         mnt_writers: AtomicI32::new(0),
+        mnt_count: AtomicI32::new(0),
+        detached: AtomicBool::new(false),
         mnt_idmap: Arc::new(crate::idmap::Idmap::identity()),
     })
 }
@@ -590,10 +614,32 @@ fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>)
 /// alive. Replaces the old O(N) `Arc::ptr_eq` mount-table scan, which could not
 /// see refs held by mounts already removed from `MOUNTS`. Call AFTER the victim
 /// is unlinked so the drop accounts for itself. # C: O(1) (O(tree) on last drop)
-fn put_super_if_last(sb: &Arc<SuperBlock>) {
+pub(super) fn put_super_if_last(sb: &Arc<SuperBlock>) {
     // deactivate_super = atomic_dec_and_test; on the 1→0 transition it runs
     // sync_fs + put_super internally (idempotent once already at 0).
     sb.deactivate_super();
+}
+
+/// `mntget` (Linux `mntget`): pin a long-lived external reference on `m` — the
+/// `f_path.mnt` an open file carries, an in-flight path-walk hold, an fd-based
+/// mount handle. Keeps the mount (and, while it is the last detached holder,
+/// its superblock) alive across a concurrent lazy umount. Each `mntget` MUST be
+/// balanced by exactly one [`mntput`]. # C: O(1)
+pub fn mntget(m: &Arc<Mount>) {
+    m.mnt_count.fetch_add(1, Ordering::AcqRel);
+}
+
+/// `mntput` (Linux `mntput_no_expire`): drop a long-lived reference taken by
+/// [`mntget`]. When this is the LAST external reference (`mnt_count` 1 → 0) AND
+/// the mount was already lazily detached from the tree (`MNT_DETACHED`), run the
+/// deferred superblock teardown (`deactivate_super` → `put_super` on the last SB
+/// user) — the busy-mount lazy-umount completion. # C: O(1) (O(tree) on last)
+pub fn mntput(m: &Arc<Mount>) {
+    let prev = m.mnt_count.fetch_sub(1, Ordering::AcqRel);
+    hal::kassert!(prev > 0, "mntput: mnt_count underflow below zero");
+    if prev == 1 && m.detached.load(Ordering::Acquire) {
+        put_super_if_last(&m.sb);
+    }
 }
 
 /// Unlink `id` from its parent's intrusive child list. # C: O(siblings)
