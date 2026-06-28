@@ -25,10 +25,41 @@ pub const S_IFDIR:  u32 = crate::types::S_IFDIR  as u32;
 pub const S_IFCHR:  u32 = crate::types::S_IFCHR  as u32;
 pub const S_IFIFO:  u32 = crate::types::S_IFIFO  as u32;
 
+/// `STATX_*` result-mask bits (Linux `include/uapi/linux/stat.h`) — set in
+/// `Kstat::result_mask` for each field the backend actually filled, so the
+/// `statx(2)` ABI can report `stx_mask` exactly. `generic_fillattr` always
+/// populates the `STATX_BASIC_STATS` set; `STATX_BTIME` is added only when the
+/// inode carries a real creation time.
+pub const STATX_TYPE:        u32 = 0x0000_0001;
+pub const STATX_MODE:        u32 = 0x0000_0002;
+pub const STATX_NLINK:       u32 = 0x0000_0004;
+pub const STATX_UID:         u32 = 0x0000_0008;
+pub const STATX_GID:         u32 = 0x0000_0010;
+pub const STATX_ATIME:       u32 = 0x0000_0020;
+pub const STATX_MTIME:       u32 = 0x0000_0040;
+pub const STATX_CTIME:       u32 = 0x0000_0080;
+pub const STATX_INO:         u32 = 0x0000_0100;
+pub const STATX_SIZE:        u32 = 0x0000_0200;
+pub const STATX_BLOCKS:      u32 = 0x0000_0400;
+/// The eleven base fields every `vfs_getattr` resolves (Linux `STATX_BASIC_STATS`).
+pub const STATX_BASIC_STATS: u32 = STATX_TYPE | STATX_MODE | STATX_NLINK | STATX_UID
+    | STATX_GID | STATX_ATIME | STATX_MTIME | STATX_CTIME | STATX_INO | STATX_SIZE | STATX_BLOCKS;
+pub const STATX_BTIME:       u32 = 0x0000_0800;
+
+/// `STATX_ATTR_*` bits (Linux `include/uapi/linux/stat.h`) — reported in
+/// `Kstat::attributes`, masked by `Kstat::attributes_mask` (the set of
+/// attributes the backend understands). `generic_fillattr` translates the VFS
+/// `i_flags` `S_IMMUTABLE`/`S_APPEND` bits into the matching attr bits.
+pub const STATX_ATTR_IMMUTABLE: u64 = 0x0000_0010;
+pub const STATX_ATTR_APPEND:    u64 = 0x0000_0020;
+
 /// Resolved inode attributes (Linux `struct kstat`). `mode` carries the
 /// `S_IF*` type bits OR'd with the permission bits. `fsid` is the raw
 /// filesystem identity (`Inode::fsid`); the syscall layer encodes it into the
-/// ABI `dev_t`.
+/// ABI `dev_t`. `result_mask` reports exactly which fields are valid (statx
+/// `stx_mask`); `attributes`/`attributes_mask` carry the `STATX_ATTR_*`
+/// flag report (statx `stx_attributes`/`stx_attributes_mask`); `btime_ns` is
+/// the creation time, valid only when `STATX_BTIME` is set in `result_mask`.
 #[derive(Clone, Copy, Default)]
 pub struct Kstat {
     pub ino: u64,
@@ -43,7 +74,11 @@ pub struct Kstat {
     pub atime_ns: u64,
     pub mtime_ns: u64,
     pub ctime_ns: u64,
+    pub btime_ns: u64,
     pub fsid: u64,
+    pub result_mask: u32,
+    pub attributes: u64,
+    pub attributes_mask: u64,
 }
 
 /// `new_encode_dev` (Linux `include/linux/kdev_t.h`): pack a `(major, minor)`
@@ -98,6 +133,22 @@ pub fn generic_fillattr<I: Inode + ?Sized>(inode: &I, idmap: &Idmap, overlay: Op
     // SB-less anon inodes (pidfd/pipe/socket — pending D35's anon SB). The same
     // effective allocation unit also drives `st_blocks` (see `blocks_for`).
     let bsize: u32 = inode.i_sb().map(|s| s.s_blocksize).unwrap_or_else(|| inode.blksize());
+    // `stx_btime` is only valid when the inode stores a real creation time.
+    // Linux omits `STATX_BTIME` from `stx_mask` otherwise (it does NOT fall
+    // back to ctime) — pseudo-fs without an `i_crtime` leave the bit clear.
+    let (btime_ns, btime_bit) = match inode.btime() {
+        Some(b) => (b, STATX_BTIME),
+        None    => (0, 0),
+    };
+    // `stx_attributes` mirrors the VFS `i_flags` (Linux `generic_fillattr` does
+    // not set them; `vfs_getattr` ORs the per-fs `stx_attributes` reported via
+    // `request_mask`). The generic backend understands exactly the two flags
+    // the VFS itself enforces — immutable (write-deny) and append-only — so the
+    // `attributes_mask` advertises only those as authoritative.
+    let iflags = inode.i_flags();
+    let mut attributes = 0u64;
+    if iflags & crate::inode::S_IMMUTABLE != 0 { attributes |= STATX_ATTR_IMMUTABLE; }
+    if iflags & crate::inode::S_APPEND    != 0 { attributes |= STATX_ATTR_APPEND; }
     Kstat {
         ino:      inode.ino(),
         mode:     type_bits | perm as u32,
@@ -111,7 +162,13 @@ pub fn generic_fillattr<I: Inode + ?Sized>(inode: &I, idmap: &Idmap, overlay: Op
         atime_ns: inode.atime().unwrap_or(ov.atime_ns),
         mtime_ns: inode.mtime().unwrap_or(ov.mtime_ns),
         ctime_ns: inode.ctime().unwrap_or(ov.ctime_ns),
+        btime_ns,
         fsid:     inode.fsid(),
+        // Every base field above is filled; add BTIME only when present so
+        // `stx_mask` reflects exactly the valid fields, no more.
+        result_mask: STATX_BASIC_STATS | btime_bit,
+        attributes,
+        attributes_mask: STATX_ATTR_IMMUTABLE | STATX_ATTR_APPEND,
     }
 }
 

@@ -312,6 +312,12 @@ pub trait Inode: Send + Sync {
     fn atime(&self) -> Option<u64> { None }
     /// # C: O(1)
     fn ctime(&self) -> Option<u64> { None }
+    /// Creation time (`i_crtime` / statx `stx_btime`). `None` = the fs has no
+    /// birth time; `generic_fillattr` then leaves `STATX_BTIME` clear in
+    /// `stx_mask` (Linux does NOT substitute ctime). Only filesystems with an
+    /// on-disk birth time (ext4 `i_crtime`) override this.
+    /// # C: O(1)
+    fn btime(&self) -> Option<u64> { None }
 
     /// Update the inode's atime/mtime/ctime. `None` for a time field
     /// means "leave alone" (UTIME_OMIT). Default returns `Erofs` so
