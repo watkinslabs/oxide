@@ -61,15 +61,16 @@ fn push_segment<'a>(out: &mut Vec<Component<'a>>, seg: &'a str) {
 /// total-length gate, enforced separately at the syscall boundary).
 pub const NAME_MAX: usize = 255;
 
-/// On-disk byte length of a (possibly escape-decoded) component name. Each
-/// escaped non-UTF-8 byte (`U+EE00..=U+EEFF`, see [`path_from_bytes`])
-/// collapses to the one byte it stands for; every other char counts its UTF-8
-/// length. Matches what a backend compares against on-disk names, so the
-/// `NAME_MAX` check is byte-accurate even for non-UTF-8 names — no allocation.
+/// On-disk byte length of a (possibly escape-decoded) string. Each escaped
+/// non-UTF-8 byte (`U+EE00..=U+EEFF`, see [`path_from_bytes`]) collapses to the
+/// one byte it stands for; every other char counts its UTF-8 length. Equal to
+/// `path_into_bytes(s).len()` without the allocation, so both the per-component
+/// `NAME_MAX` gate and the total-pathname `PATH_MAX` gate measure the bytes the
+/// original user buffer / an on-disk name holds — byte-accurate for non-UTF-8.
 /// # C: O(n)
-fn component_byte_len(name: &str) -> usize {
+fn on_disk_byte_len(s: &str) -> usize {
     let mut n = 0usize;
-    for c in name.chars() {
+    for c in s.chars() {
         let u = c as u32;
         if (BYTE_ESCAPE_BASE..=BYTE_ESCAPE_BASE + 0xFF).contains(&u) { n += 1; }
         else { n += c.len_utf8(); }
@@ -83,7 +84,24 @@ fn component_byte_len(name: &str) -> usize {
 /// component at a time as it descends.
 /// # C: O(name.len())
 pub fn check_component(name: &str) -> Result<(), crate::types::VfsError> {
-    if component_byte_len(name) > NAME_MAX { Err(crate::types::VfsError::Enametoolong) } else { Ok(()) }
+    if on_disk_byte_len(name) > NAME_MAX { Err(crate::types::VfsError::Enametoolong) } else { Ok(()) }
+}
+
+/// Linux total-pathname limit (`PATH_MAX`, `linux/limits.h`): the kernel's
+/// `getname` pathname buffer is 4096 bytes INCLUDING the terminating NUL, so
+/// the longest pathname a syscall accepts is `PATH_MAX - 1` = 4095 on-disk
+/// bytes. A pathname of `PATH_MAX` bytes (or longer) is `ENAMETOOLONG` before
+/// any walk. Distinct from the per-component [`NAME_MAX`] gate (`16§3`).
+pub const PATH_MAX: usize = 4096;
+
+/// Enforce the Linux `getname` TOTAL-length limit on a whole pathname, the
+/// companion to [`check_component`]'s per-component gate. `Ok(())` when `path`
+/// is ≤ `PATH_MAX - 1` on-disk bytes, else `Enametoolong`. Byte-accurate
+/// (escape-decoded bytes count as one), so it matches the raw user buffer
+/// length the syscall boundary (`read_user_path`) measured before decoding.
+/// # C: O(path.len())
+pub fn check_path_len(path: &str) -> Result<(), crate::types::VfsError> {
+    if on_disk_byte_len(path) >= PATH_MAX { Err(crate::types::VfsError::Enametoolong) } else { Ok(()) }
 }
 
 /// [`components`] plus the Linux per-component `NAME_MAX` gate: split `path`
