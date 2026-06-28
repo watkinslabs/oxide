@@ -492,6 +492,30 @@ impl Dentry {
     /// # C: O(1)
     pub fn parent(&self) -> Option<&Arc<Dentry>> { self.parent.as_ref() }
 
+    /// Linux `d_ancestor(p1, p2)` (`fs/dcache.c`): if `self` (`p1`) is a STRICT
+    /// ancestor of `descendant` (`p2`) in the same dentry tree, return the
+    /// direct child of `self` lying on the path down to `descendant`; else
+    /// `None`. Walks `d_parent` from `descendant` up to its tree root, matching
+    /// parents by `Arc` pointer identity. `self == descendant` returns `None`
+    /// (not a strict ancestor) — mirrors Linux's `!IS_ROOT(p)` loop. # C: O(depth)
+    pub fn d_ancestor(self: &Arc<Self>, descendant: &Arc<Self>) -> Option<Arc<Self>> {
+        let mut p = descendant.clone();
+        while let Some(parent) = p.parent.clone() {
+            if Arc::ptr_eq(&parent, self) { return Some(p); }
+            p = parent;
+        }
+        None
+    }
+
+    /// Linux `is_subdir(new_dentry, old_dentry)` (`fs/dcache.c`): true iff
+    /// `self` (`new`) IS `ancestor` (`old`) or lies inside `ancestor`'s subtree
+    /// (`ancestor` is a strict ancestor of `self`). The rename keystone loop
+    /// check — `do_rename` rejects moving a directory into its own descendant
+    /// with `EINVAL` — plus `is_path_reachable`. # C: O(depth)
+    pub fn is_subdir_of(self: &Arc<Self>, ancestor: &Arc<Self>) -> bool {
+        Arc::ptr_eq(self, ancestor) || ancestor.d_ancestor(self).is_some()
+    }
+
     /// Identity key match for the global hash table: parent pointer eq +
     /// precomputed hash eq + name compare (`d_op->d_compare` or byte-exact).
     /// `parent` is the raw `*const Dentry` of the query parent.
