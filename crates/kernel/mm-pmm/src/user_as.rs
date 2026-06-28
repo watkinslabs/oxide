@@ -663,6 +663,99 @@ pub fn install_lock_step_hook() {
     // unsafe { hal_x86_64::set_data_watchpoint(WATCH_VA); }
 }
 
+/// debug-cow probe 2 (SEGV-FAULT DUMP): emitted the instant a user fault
+/// becomes fatal (no VMA / protection violation / not-present that can't be
+/// filled → SIGSEGV). Pins the failing VA + the covering VMA [lo,hi,prot] +
+/// whether a live PTE/frame exists there. `rip`/`cr2`/`err` are the arch
+/// fault triple (x86: RIP / CR2 / PFEC; aarch64: ELR / FAR / ESR). The `err`
+/// bits distinguish a CODE fault (bad text page — instruction-fetch) from a
+/// DATA / stack fault, which tells whether the wrong-frame / double-alloc
+/// victim was an executable page or a data page. No-op when the feature is
+/// off (returns before any work).
+/// # C: O(log N_vmas) + O(walk depth)
+#[cfg(feature = "debug-cow")]
+fn segv_dump(rip: u64, cr2: u64, err: u64) {
+    let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);
+    klog::write_raw(b"[SEGV] rip="); klog::write_hex_u64(rip);
+    klog::write_raw(b" cr2=");       klog::write_hex_u64(cr2);
+    klog::write_raw(b" err=");       klog::write_hex_u64(err);
+    klog::write_raw(b" pid=");       klog::write_dec_u64(tid as u64);
+    let mut root = 0u64;
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: single-mutator mm slot per 13§5; fault ctx with IRQs off; read-only VMA query.
+        if let Some(mm) = unsafe { cur.mm_ref() } {
+            root = mm.root_pa();
+            match UserVirtAddr::new(cr2 & !0xfff).and_then(|u| mm.find_vma(u)) {
+                Some(v) => {
+                    klog::write_raw(b" vma=[");  klog::write_hex_u64(v.start.as_u64());
+                    klog::write_raw(b",");        klog::write_hex_u64(v.end.as_u64());
+                    klog::write_raw(b",prot=");   klog::write_hex_u64(v.prot.bits() as u64);
+                    klog::write_raw(b"]");
+                }
+                None => klog::write_raw(b" vma=none"),
+            }
+        }
+    }
+    // Live PTE + frame at the faulting page, walked from this AS's root. A
+    // present PTE on a fatal fault = protection/wrong-frame; absent = a
+    // not-present nobody could fill (no backing).
+    if root != 0 {
+        let hhdm = hhdm_offset();
+        // SAFETY: read-only foreign-leaf PT walk of the current AS root; HHDM covers PT memory; single-CPU fault ctx.
+        match unsafe { read_foreign_leaf(root, cr2 & !0xfff, hhdm) } {
+            Some((pa, raw)) => {
+                klog::write_raw(b" pte=");   klog::write_hex_u64(raw);
+                klog::write_raw(b" frame="); klog::write_hex_u64(pa & !0xfff);
+            }
+            None => klog::write_raw(b" pte=none frame=none"),
+        }
+    }
+    // DISAMBIGUATION (bootA4): the residual fault is a near-NULL DATA read at a
+    // deterministic libc site. Two surviving hypotheses produce a tiny cr2:
+    //   (3a) `%fs:offset` with FS_BASE==0  → TLS/context-switch hole, OR
+    //   (2)  a register holds a wrong/zero base read out of a mis-installed
+    //        frame → plain near-null deref.
+    // The TLS-base value + the faulting instruction bytes + the GP register
+    // file pin which one: a `64`(fs-prefix) opcode with fsbase==0 ⇒ (3a); a
+    // plain `mov` whose base register is ~0 ⇒ (2). Decoded offline from this
+    // line. x86: TLS base = IA32_FS_BASE; arm: TLS base = TPIDR_EL0.
+    {
+        // TLS base register (the `%fs`/TPIDR pointer userspace TLS rides).
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: rdmsr IA32_FS_BASE at CPL=0 is unconditionally legal; pure read of the live per-CPU FS base.
+        let tls_base = unsafe { hal_x86_64::get_user_fs_base() };
+        #[cfg(target_arch = "aarch64")]
+        let tls_base = {
+            let v: u64;
+            // SAFETY: mrs tpidr_el0 at EL1 reads the live user TLS base; pure read, no side effects.
+            unsafe { core::arch::asm!("mrs {v}, tpidr_el0", v = out(reg) v, options(nomem, nostack, preserves_flags)); }
+            v
+        };
+        klog::write_raw(b" fsbase="); klog::write_hex_u64(tls_base);
+        // GP register file at fault — the base register holding ~0 names the
+        // wrong-frame victim; for a `%fs:` access the GPRs are irrelevant and
+        // fsbase==0 is the tell.
+        #[cfg(target_arch = "x86_64")]
+        {
+            let g = hal_x86_64::current_fault_gprs();
+            if !g.is_null() {
+                // SAFETY: current_fault_gprs() returns the live FaultGprs the per-vector stub pushed on the kernel stack; we only read.
+                let g = unsafe { &*g };
+                klog::write_raw(b" rax="); klog::write_hex_u64(g.rax);
+                klog::write_raw(b" rbx="); klog::write_hex_u64(g.rbx);
+                klog::write_raw(b" rcx="); klog::write_hex_u64(g.rcx);
+                klog::write_raw(b" rdx="); klog::write_hex_u64(g.rdx);
+                klog::write_raw(b" rsi="); klog::write_hex_u64(g.rsi);
+                klog::write_raw(b" rdi="); klog::write_hex_u64(g.rdi);
+                klog::write_raw(b" rbp="); klog::write_hex_u64(g.rbp);
+                klog::write_raw(b" r8=");  klog::write_hex_u64(g.r8);
+                klog::write_raw(b" r12="); klog::write_hex_u64(g.r12);
+            }
+        }
+    }
+    klog::write_raw(b"\n");
+}
+
 /// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1) reject
 #[cfg(target_arch = "x86_64")]
 pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
@@ -731,6 +824,10 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
     if handle(cr2, kind) {
         return true;
     }
+    // debug-cow probe 2: the fault is now fatal (the demand-page resolver
+    // refused it). Dump the failing VA + VMA + PTE/frame before SIGSEGV.
+    #[cfg(feature = "debug-cow")]
+    segv_dump(_rip, cr2, err);
     // Unhandled fault from user mode. F158: try Linux-style
     // catchable SIGSEGV — rewrite the live FaultFrame to call
     // the user-installed handler. If no handler is installed
@@ -754,6 +851,10 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
     if handle(far, kind) {
         return true;
     }
+    // debug-cow probe 2: fatal fault — dump VA/VMA/PTE before SIGSEGV.
+    // (ELR / FAR / ESR map to the rip / cr2 / err columns.)
+    #[cfg(feature = "debug-cow")]
+    segv_dump(_elr, far, esr);
     // Same SIGSEGV-on-user-fault contract as x86. ESR EC bits 26..31
     // distinguish lower-EL (user) from same-EL (kernel-mode user-buf
     // access): EC=0x20/0x24 are EL0 (user), EC=0x21/0x25 are EL1
