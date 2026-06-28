@@ -171,7 +171,7 @@ pub fn shrink_dcache(target: usize) -> usize {
             continue;
         }
         d.set_on_lru(false);
-        d_drop(&d);
+        dentry_kill(&d);
         freed += 1;
     }
     freed
@@ -196,7 +196,7 @@ pub fn shrink_dcache_sb(sb: &Arc<SuperBlock>) -> usize {
         let ours = d.d_sb().map(|s| Arc::ptr_eq(&s, sb)).unwrap_or(false);
         if ours && d.d_count() == 0 {
             d.set_on_lru(false);
-            d_drop(&d);
+            dentry_kill(&d);
             freed += 1;
         } else {
             DENTRY_LRU.lock().push_back(Arc::downgrade(&d)); // not ours / in use
@@ -231,7 +231,7 @@ pub fn shrink_dcache_parent(parent: &Arc<Dentry>) -> usize {
     let mut freed = 0;
     for d in order.iter().rev() {
         if d.d_count() == 0 && d.children_snapshot().is_empty() {
-            d_drop(d);
+            dentry_kill(d);
             freed += 1;
         }
     }
@@ -255,7 +255,7 @@ pub fn d_prune_aliases(inode: &InodeRef) -> usize {
     let sb = match inode.i_sb() { Some(sb) => sb, None => return 0 };
     let mut freed = 0;
     for alias in sb.i_aliases(inode.ino()) {
-        if alias.d_count() == 0 { d_drop(&alias); freed += 1; }
+        if alias.d_count() == 0 { dentry_kill(&alias); freed += 1; }
     }
     freed
 }
@@ -293,12 +293,22 @@ pub fn d_lookup(parent: &Arc<Dentry>, name: &str) -> Option<Arc<Dentry>> {
         RcuProbe::Done(c) => c,
         RcuProbe::Retry   => DENTRY_HASHTABLE.lookup_locked(pptr, qhash, name),
     };
-    if let Some(d) = &cand {
-        if let Some(rev) = d.d_op().and_then(|o| o.d_revalidate) {
-            if !rev(d) { d_drop(d); return None; }
-        }
+    let d = cand?;
+    // Linux `__d_lookup` lockref gate (`lockref_get_not_dead`): atomically
+    // pin-unless-dead. `dentry_kill` stamps `LOCKREF_DEAD` BEFORE a dying dentry
+    // leaves the hash table, so a probe that still found it in the bucket must
+    // read it as a cache MISS and re-walk the slow `i_op->lookup`, never
+    // resurrect a dentry mid-kill. The pin is released before returning: this
+    // dcache hands the walker an `Arc` (which alone keeps the node alive — no
+    // RCU grace period), not a counted dput-owed reference, so the bump is
+    // purely the not-dead test; its `set_referenced` side effect doubles as the
+    // two-hand-clock access stamp the shrinker honors.
+    if !d.inc_count_not_dead() { return None; }
+    if let Some(rev) = d.d_op().and_then(|o| o.d_revalidate) {
+        if !rev(&d) { d.dec_count(); d_drop(&d); return None; }
     }
-    cand
+    d.dec_count();
+    Some(d)
 }
 
 /// Attach `inode` to a negative `dentry`, making it positive (post
@@ -349,9 +359,24 @@ pub fn dput(d: Arc<Dentry>) {
         // unlink — is killed at count 0 instead, so it never leaks a dangling
         // `Weak` into the (currently un-driven, D10) LRU. `d_delete` forces the
         // same immediate eviction for pseudo-fs that opt in.
-        if delete || !d.is_hashed() { d_drop(&d); } else { lru_add(&d); }
+        if delete || !d.is_hashed() { dentry_kill(&d); } else { lru_add(&d); }
     }
     drop(d);
+}
+
+/// Final kill of an UNUSED dentry (Linux `__dentry_kill`, `fs/dcache.c`): stamp
+/// the lockref `LOCKREF_DEAD` sentinel BEFORE unhashing, so a concurrent
+/// `d_lookup` whose `inc_count_not_dead` races the kill fails the not-dead gate
+/// (Linux marks dead under `d_lock` at the top of `__dentry_kill`, ahead of
+/// `__d_drop`) and re-walks the slow path instead of resurrecting a dying
+/// dentry. Routed to by every genuine eviction site — final `dput`, the LRU /
+/// per-sb / subtree shrinkers, and `d_prune_aliases`. The non-kill unhash paths
+/// keep the bare `d_drop`: `d_move` rehomes a live dentry, `d_invalidate`
+/// disconnects a subtree whose nodes may still be in use, and a stale
+/// `d_revalidate` miss re-walks without a refcount kill. # C: O(d_drop)
+fn dentry_kill(d: &Arc<Dentry>) {
+    d.mark_dead();
+    d_drop(d);
 }
 
 /// Unhash `d` from the global table and its parent's `d_subdirs` (Linux
