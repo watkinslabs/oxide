@@ -216,6 +216,51 @@ pub fn may_create(dir: &InodeRef, cred: &Cred) -> KResult<()> {
     inode_permission(dir, MAY_WRITE | MAY_EXEC, cred)
 }
 
+/// `check_sticky` (Linux `fs/namei.c`) — restricted-deletion test for a child
+/// in a sticky (`S_ISVTX`) directory. Returns `true` when the deletion is
+/// FORBIDDEN: the parent `dir` carries the sticky bit AND the caller neither
+/// owns the victim (`fsuid == victim.uid`) nor owns the directory
+/// (`fsuid == dir.uid`) nor holds CAP_FOWNER (`capable_wrt_inode_uidgid`).
+/// A directory with no per-fs perm info (`perm() == None`: pseudo-fs) is never
+/// sticky, so deletion is allowed. # C: O(1)
+fn check_sticky(dir: &InodeRef, victim: &InodeRef, cred: &Cred) -> bool {
+    let Some(dmode) = dir.perm() else { return false; };
+    if dmode & crate::types::S_ISVTX == 0 { return false; }
+    let fsuid = cred.uid;
+    if victim.uid().unwrap_or(0) == fsuid { return false; }
+    if dir.uid().unwrap_or(0) == fsuid { return false; }
+    !cred.cap_fowner
+}
+
+/// `may_delete` (Linux `fs/namei.c`) — DAC + restriction gate for removing the
+/// child `victim` (an existing entry) from directory `dir` via
+/// unlink/rmdir/rename-overwrite. Mirrors Linux ordering:
+///   1. write + search (`MAY_WRITE | MAY_EXEC`) on the parent `dir`;
+///   2. an append-only parent (`S_APPEND` in `dir.i_flags`) forbids removal;
+///   3. the sticky-dir owner-match (`check_sticky`), or an append-only / immutable
+///      `victim` (`S_APPEND` / `S_IMMUTABLE`), is `EPERM`;
+///   4. type agreement — `isdir` requires the victim be a directory (else
+///      `ENOTDIR`); a non-`isdir` delete of a directory is `EISDIR`.
+/// `isdir` is the caller's intent (rmdir / `AT_REMOVEDIR` → `true`, unlink →
+/// `false`). # C: O(ngroups)
+pub fn may_delete(dir: &InodeRef, victim: &InodeRef, isdir: bool, cred: &Cred) -> KResult<()> {
+    inode_permission(dir, MAY_WRITE | MAY_EXEC, cred)?;
+    if dir.i_flags() & crate::inode::S_APPEND != 0 { return Err(VfsError::Eperm); }
+    if check_sticky(dir, victim, cred)
+        || victim.i_flags() & crate::inode::S_APPEND != 0
+        || victim.i_flags() & crate::inode::S_IMMUTABLE != 0
+    {
+        return Err(VfsError::Eperm);
+    }
+    let victim_is_dir = matches!(victim.file_type(), FileType::Directory);
+    if isdir {
+        if !victim_is_dir { return Err(VfsError::Enotdir); }
+    } else if victim_is_dir {
+        return Err(VfsError::Eisdir);
+    }
+    Ok(())
+}
+
 /// `chmod` ownership check (Linux `setattr_prepare`): the caller must own the
 /// inode (`fsuid == i_uid`) or hold CAP_FOWNER, else `EPERM`. Owner is read
 /// from the per-fs `uid()` (consistent with `inode_permission`). # C: O(1)
