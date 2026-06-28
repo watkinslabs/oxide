@@ -13,6 +13,7 @@ extern crate alloc;
 use crate::idmap::Idmap;
 use crate::inode::{Inode, InodeRef};
 use crate::getattr::default_perm_for;
+use crate::inode::S_APPEND;
 use crate::namei::{Cred, inode_permission, MAY_WRITE, S_ISGID, S_ISUID, S_IXGRP};
 use crate::types::{FileType, KResult, VfsError};
 
@@ -76,9 +77,14 @@ pub fn setattr_prepare(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &C
         }
     }
 
-    // truncate: MAY_WRITE on the inode.
+    // truncate: MAY_WRITE on the inode (Linux `inode_permission` rejects an
+    // S_IMMUTABLE inode with EPERM here), then the S_APPEND reject (Linux
+    // `vfs_truncate`: `if (IS_APPEND(inode)) error = -EPERM`). An append-only
+    // file can only ever grow at its end, so any size change is forbidden —
+    // not even CAP_FOWNER bypasses it.
     if ia.valid & ATTR_SIZE != 0 {
         inode_permission(inode, MAY_WRITE, cred)?;
+        if inode.i_flags() & S_APPEND != 0 { return Err(VfsError::Eperm); }
     }
 
     // utimes: a *specific* time needs owner/CAP_FOWNER (EPERM); "now"/NULL
