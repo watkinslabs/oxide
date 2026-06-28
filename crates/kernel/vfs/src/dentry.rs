@@ -16,7 +16,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use sync::{Dentry as DentryClass, Inode as InodeClass, RwLock};
 
@@ -151,6 +151,13 @@ pub struct Dentry {
     /// for each namespace. The mount table, not the dentry, owns the mounted
     /// filesystem/root object.
     mounted_mounts: RwLock<BTreeMap<u64, u64>, DentryClass>,
+    /// `d_time` — fs-private revalidation stamp (Linux `d_time`). The owning fs
+    /// sets it in lookup/`d_revalidate` (a version/generation); the VFS only
+    /// stores it. Atomic — a dentry is shared via `Arc`. # consumers: d_revalidate.
+    d_time: AtomicU64,
+    /// `d_fsdata` — fs-private per-dentry token (Linux `d_fsdata` void*). A
+    /// pointer-sized opaque value the owning fs interprets (`0` = unset).
+    d_fsdata: AtomicU64,
 }
 
 impl Dentry {
@@ -194,8 +201,19 @@ impl Dentry {
             d_flags: AtomicU32::new(flags),
             children: RwLock::new(BTreeMap::new()),
             mounted_mounts: RwLock::new(BTreeMap::new()),
+            d_time: AtomicU64::new(0),
+            d_fsdata: AtomicU64::new(0),
         })
     }
+
+    /// `d_time` — fs-private revalidation stamp (Linux `d_time`). # C: O(1)
+    pub fn d_time(&self) -> u64 { self.d_time.load(Ordering::Acquire) }
+    /// Set `d_time` (owning fs, in lookup/`d_revalidate`). # C: O(1)
+    pub fn set_d_time(&self, v: u64) { self.d_time.store(v, Ordering::Release); }
+    /// `d_fsdata` — fs-private per-dentry token (`0` = unset). # C: O(1)
+    pub fn d_fsdata(&self) -> u64 { self.d_fsdata.load(Ordering::Acquire) }
+    /// Set `d_fsdata` (owning fs). # C: O(1)
+    pub fn set_d_fsdata(&self, v: u64) { self.d_fsdata.store(v, Ordering::Release); }
 
     /// Construct a positive dentry — name resolves to `inode`. sb-less
     /// (`Weak::new()`); use `new_child` to inherit a parent's superblock.
