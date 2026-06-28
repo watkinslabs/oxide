@@ -21,7 +21,6 @@ const AT_VALID: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT;
 /// "Permission denied" for every probe.
 /// # C: O(1)
 pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
-    use vfs::FileType;
     let dirfd    = args.a0 as i32;
     let path_ptr = args.a1;
     let buf      = args.a2;
@@ -45,7 +44,7 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
             && unsafe { devfs::read_user_cstr(path_ptr, 1) }.map_or(true, |b| b.is_empty())
     };
 
-    let inode = if (flags & AT_EMPTY_PATH) != 0 && empty_or_null {
+    let (inode, mnt_id) = if (flags & AT_EMPTY_PATH) != 0 && empty_or_null {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
@@ -56,7 +55,7 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
         let f = match fdt.get(dirfd) {
             Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
         };
-        f.inode().clone()
+        (f.inode().clone(), f.mnt_id())
     } else {
         // X2/X4/X5: PATH_MAX read with EFAULT/ENOENT/ENAMETOOLONG.
         let raw = match crate::namei_common::read_user_path(path_ptr) {
@@ -69,37 +68,28 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
         };
         let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
         // X1: preserve ENOTDIR/ELOOP/EACCES from the path-walk.
-        match crate::pathresolve::resolve_result(resolved.as_str(), nofollow) {
-            Ok(i)  => i,
+        match crate::pathresolve::resolve_path_result(resolved.as_str(), nofollow) {
+            Ok(p)  => (p.inode, p.mnt_id),
             Err(e) => return crate::namei_common::errno_from_vfs(e),
         }
     };
 
-    let (mode_type, rdev): (u32, u64) = match inode.file_type() {
-        FileType::CharDev   => (0o020000, inode.rdev() as u64),
-        FileType::BlockDev  => (0o060000, inode.rdev() as u64),
-        FileType::Directory => (0o040000, 0),
-        FileType::Regular   => (0o100000, 0),
-        FileType::Symlink   => (0o120000, 0),
-        FileType::Fifo      => (0o010000, 0),
-        FileType::Socket    => (0o140000, 0),
-    };
-    let overlay   = vfs::inode_times::get(&inode).unwrap_or_default();
-    let mode_perm = inode.perm()
-        .or_else(|| if overlay.owner_set && overlay.mode_bits != 0 { Some(overlay.mode_bits) } else { None })
-        .unwrap_or_else(|| crate::namei_common::default_perm_for(inode.file_type()));
-    let mode = mode_type | (mode_perm as u32);
-    let uid  = inode.uid().unwrap_or(if overlay.owner_set { overlay.uid } else { 0 });
-    let gid  = inode.gid().unwrap_or(if overlay.owner_set { overlay.gid } else { 0 });
-    let ino  = inode.ino();
-    let size = inode.size() as i64;
-    let blocks = (inode.size() + 511) / 512;
-    let dev = crate::namei_common::fsid_to_dev(inode.fsid());
-    let nlink = inode.nlink();
-    let blksize = inode.blksize();
-    let at = inode.atime().unwrap_or(overlay.atime_ns);
-    let mt = inode.mtime().unwrap_or(overlay.mtime_ns);
-    let ct = inode.ctime().unwrap_or(overlay.ctime_ns);
+    // vfs_getattr → i_op->getattr: S_IF* mapping + overlay merge + idmap-out.
+    let idmap = vfs::mount::idmap_for(mnt_id);
+    let st = vfs::vfs_getattr(&inode, &idmap, vfs::inode_times::get(&inode));
+    let mode = st.mode;
+    let rdev = st.rdev as u64;
+    let uid  = st.uid;
+    let gid  = st.gid;
+    let ino  = st.ino;
+    let size = st.size as i64;
+    let blocks = st.blocks;
+    let dev = crate::namei_common::fsid_to_dev(st.fsid);
+    let nlink = st.nlink;
+    let blksize = st.blksize;
+    let at = st.atime_ns;
+    let mt = st.mtime_ns;
+    let ct = st.ctime_ns;
 
     // SAFETY: buf validated STAT_BYTES writable below USER_VA_END + 8-aligned; CPL=0 writes through caller's AS.
     unsafe {

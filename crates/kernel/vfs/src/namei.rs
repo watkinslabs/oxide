@@ -397,7 +397,7 @@ impl Nameidata {
                 }
                 self.depth += 1;
                 if self.depth > MAX_SYMLINK_DEPTH { return Err(VfsError::Eloop); }
-                let target = child.inode().ok_or(VfsError::Enoent)?.readlink()?;
+                let target = child.inode().ok_or(VfsError::Enoent)?.get_link()?;
                 let target = String::from_utf8_lossy(&target).into_owned();
                 // Splice the target's components ahead of whatever remains.
                 let mut next: Vec<String> = components(&target);

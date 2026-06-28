@@ -4,21 +4,22 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::utime_common::{now_ns, resolve_inode, AT_FDCWD};
+use crate::utime_common::{now_ns, resolve_target, AT_FDCWD};
 
-/// `sys_utimes(path, times[2])` — slot 235. Same as utimensat but
-/// the times are 16-byte timeval (sec, usec) pairs and there is no
-/// dirfd / flags. NULL ⇒ both = now.
-/// # C: O(N_path)
+/// `sys_utimes(path, times[2])` — slot 235. Times are 16-byte timeval
+/// (sec, usec) pairs; no dirfd / flags. NULL ⇒ both = now. Routes through
+/// `notify_change` (owner/CAP_FOWNER for the explicit times, EROFS). Always
+/// follows symlinks. # C: O(N_path)
 pub fn sys_utimes(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let times_ptr = args.a1;
-    let inode = match resolve_inode(AT_FDCWD, path_ptr) {
-        Ok(i) => i, Err(rv) => return rv,
+    let (inode, mnt_id) = match resolve_target(AT_FDCWD, path_ptr, false) {
+        Ok(t) => t, Err(rv) => return rv,
     };
     let now = now_ns();
-    let (atime, mtime) = if times_ptr == 0 {
-        (Some(now), Some(now))
+    let mut ia = vfs::Iattr { valid: vfs::ATTR_ATIME | vfs::ATTR_MTIME, ctime_ns: now, ..Default::default() };
+    if times_ptr == 0 {
+        ia.atime_ns = now; ia.mtime_ns = now;
     } else {
         if times_ptr.checked_add(32).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
             return -(Errno::Efault.as_i32() as i64);
@@ -34,12 +35,9 @@ pub fn sys_utimes(args: &SyscallArgs) -> i64 {
             || ausec >= 1_000_000 || musec >= 1_000_000 {
             return -(Errno::Einval.as_i32() as i64);
         }
-        let atime_ns = (asec as u64) * 1_000_000_000 + (ausec as u64) * 1_000;
-        let mtime_ns = (msec as u64) * 1_000_000_000 + (musec as u64) * 1_000;
-        (Some(atime_ns), Some(mtime_ns))
-    };
-    if inode.set_times(atime, mtime, now).is_err() {
-        vfs::inode_times::set(&inode, atime, mtime, now);
+        ia.atime_ns = (asec as u64) * 1_000_000_000 + (ausec as u64) * 1_000;
+        ia.mtime_ns = (msec as u64) * 1_000_000_000 + (musec as u64) * 1_000;
+        ia.valid |= vfs::ATTR_ATIME_SET | vfs::ATTR_MTIME_SET;
     }
-    0
+    crate::perms_common::notify_change(&inode, mnt_id, ia)
 }

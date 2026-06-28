@@ -10,13 +10,7 @@
 // the inode's lifetime; pointer reuse after free is theoretically
 // possible but rare on a kernel-uptime timeline.
 
-#![cfg(target_os = "oxide-kernel")]
-
 extern crate alloc;
-use alloc::collections::BTreeMap;
-use sync::{Spinlock, TaskList as TaskListClass};
-
-use crate::InodeRef;
 
 /// Per-inode metadata overlay: timestamps + mode + owner. Tracks
 /// real values for inodes whose backing FS doesn't carry them yet
@@ -38,11 +32,20 @@ pub struct InodeTimes {
     pub owner_set: bool,
 }
 
+#[cfg(target_os = "oxide-kernel")]
+use alloc::collections::BTreeMap;
+#[cfg(target_os = "oxide-kernel")]
+use sync::{Spinlock, TaskList as TaskListClass};
+#[cfg(target_os = "oxide-kernel")]
+use crate::InodeRef;
+
+#[cfg(target_os = "oxide-kernel")]
 static TIMES: Spinlock<BTreeMap<usize, InodeTimes>, TaskListClass> =
     Spinlock::new(BTreeMap::new());
 
 /// Pointer-identity key for an inode reference.
 /// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
 pub fn key(inode: &InodeRef) -> usize {
     let raw: *const dyn crate::Inode = alloc::sync::Arc::as_ptr(inode);
     raw as *const u8 as usize
@@ -50,6 +53,7 @@ pub fn key(inode: &InodeRef) -> usize {
 
 /// Fetch the stored times for `inode`, or `None` if never set.
 /// # C: O(log N)
+#[cfg(target_os = "oxide-kernel")]
 pub fn get(inode: &InodeRef) -> Option<InodeTimes> {
     let g = TIMES.lock();
     g.get(&key(inode)).copied()
@@ -58,6 +62,7 @@ pub fn get(inode: &InodeRef) -> Option<InodeTimes> {
 /// Update atime/mtime; ctime always advances to `now_ns` on any update.
 /// `None` for a field means "leave existing alone" (utimensat UTIME_OMIT).
 /// # C: O(log N)
+#[cfg(target_os = "oxide-kernel")]
 pub fn set(inode: &InodeRef, atime_ns: Option<u64>, mtime_ns: Option<u64>, now_ns: u64) {
     let k = key(inode);
     let mut g = TIMES.lock();
@@ -70,6 +75,7 @@ pub fn set(inode: &InodeRef, atime_ns: Option<u64>, mtime_ns: Option<u64>, now_n
 /// Set mode bits (low 12 — perm + suid/sgid/sticky). Used by chmod/
 /// fchmod/fchmodat. Bumps ctime.
 /// # C: O(log N)
+#[cfg(target_os = "oxide-kernel")]
 pub fn set_mode(inode: &InodeRef, mode_bits: u16, now_ns: u64) {
     let k = key(inode);
     let mut g = TIMES.lock();
@@ -81,6 +87,7 @@ pub fn set_mode(inode: &InodeRef, mode_bits: u16, now_ns: u64) {
 
 /// Set owner uid/gid. `u32::MAX` (i.e. `(uid_t)-1`) means leave alone.
 /// # C: O(log N)
+#[cfg(target_os = "oxide-kernel")]
 pub fn set_owner(inode: &InodeRef, uid: u32, gid: u32, now_ns: u64) {
     let k = key(inode);
     let mut g = TIMES.lock();

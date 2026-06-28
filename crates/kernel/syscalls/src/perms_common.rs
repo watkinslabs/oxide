@@ -125,40 +125,73 @@ fn effective_mode(inode: &InodeRef) -> u16 {
     0o600
 }
 
-/// `chmod` work-fn shared by chmod/fchmod/fchmodat(2): EROFS, owner-or-FOWNER
-/// check, S_ISGID strip for non-members, then apply. # C: O(N_path)
-pub(crate) fn do_chmod(inode: &InodeRef, mnt_id: u64, mode: u16) -> i64 {
+/// Kernel `notify_change` (Linux `fs/attr.c`): the single convergence point for
+/// chmod/chown/truncate/utimes. EROFS gate on the owning mount, then the vfs
+/// `setattr_prepare` DAC+idmap decision, then apply each changed attribute via
+/// the inode's native op — falling back to the `inode_times` metadata overlay
+/// for pseudo-fs without native storage. ATTR_SIZE truncates directly (no
+/// overlay; its EROFS propagates). Owner ids in `ia` are vfs ids; `map_in_*`
+/// stores them as fs ids. # C: O(N_path)
+pub(crate) fn notify_change(inode: &InodeRef, mnt_id: u64, mut ia: vfs::Iattr) -> i64 {
     if let Err(rv) = check_rofs(mnt_id) { return rv; }
+    let idmap = vfs::mount::idmap_for(mnt_id);
     let cred = crate::pathresolve::current_cred();
-    if let Err(e) = vfs::may_chmod(inode, &cred) { return -(e as i64); }
-    let m = vfs::chmod_sgid_strip(mode & 0o7777, inode, &cred);
-    if inode.set_perm(m).is_err() { vfs::inode_times::set_mode(inode, m, now_ns()); }
+    if let Err(e) = vfs::setattr_prepare(&idmap, inode, &mut ia, &cred) { return -(e as i64); }
+    let now = now_ns();
+    // ATTR_SIZE — truncate; no overlay equivalent, propagate EROFS/errors.
+    if ia.valid & vfs::ATTR_SIZE != 0 {
+        if let Err(e) = inode.truncate(ia.size) { return -(e as i64); }
+    }
+    // ATTR_UID/GID — native set_owner with idmap-in ids, else overlay
+    // (the overlay keeps `u32::MAX` for an unchanged field).
+    if ia.valid & (vfs::ATTR_UID | vfs::ATTR_GID) != 0 {
+        let uid = if ia.valid & vfs::ATTR_UID != 0 { idmap.map_in_uid(ia.uid) } else { inode.uid().unwrap_or(0) };
+        let gid = if ia.valid & vfs::ATTR_GID != 0 { idmap.map_in_gid(ia.gid) } else { inode.gid().unwrap_or(0) };
+        if inode.set_owner(uid, gid).is_err() {
+            let ov_uid = if ia.valid & vfs::ATTR_UID != 0 { uid } else { u32::MAX };
+            let ov_gid = if ia.valid & vfs::ATTR_GID != 0 { gid } else { u32::MAX };
+            vfs::inode_times::set_owner(inode, ov_uid, ov_gid, now);
+        }
+    }
+    // ATTR_MODE and/or ATTR_KILL_* — fold into one final mode.
+    let mut mode = ia.mode;
+    let mut set_mode = ia.valid & vfs::ATTR_MODE != 0;
+    if ia.valid & (vfs::ATTR_KILL_SUID | vfs::ATTR_KILL_SGID) != 0 {
+        let base = if set_mode { mode } else { effective_mode(inode) };
+        mode = vfs::apply_kill_priv(ia.valid, base);
+        set_mode = true;
+    }
+    if set_mode {
+        let m = mode & 0o7777;
+        if inode.set_perm(m).is_err() { vfs::inode_times::set_mode(inode, m, now); }
+    }
+    // ATTR_ATIME/MTIME — native set_times (ctime stamped now) else overlay.
+    if ia.valid & (vfs::ATTR_ATIME | vfs::ATTR_MTIME) != 0 {
+        let a  = if ia.valid & vfs::ATTR_ATIME != 0 { Some(ia.atime_ns) } else { None };
+        let mt = if ia.valid & vfs::ATTR_MTIME != 0 { Some(ia.mtime_ns) } else { None };
+        if inode.set_times(a, mt, now).is_err() { vfs::inode_times::set(inode, a, mt, now); }
+    }
     0
 }
 
-/// `chown` work-fn shared by chown/fchown/fchownat: EROFS, CAP_CHOWN / owner+
-/// group rules, then apply (`(uid_t)-1` ⇒ leave-alone) and drop set-uid/set-gid
-/// on a regular file. # C: O(N_path)
+/// `chmod` work-fn shared by chmod/fchmod/fchmodat(2): routes through
+/// `notify_change` (EROFS, owner-or-FOWNER, S_ISGID strip, apply). # C: O(N_path)
+pub(crate) fn do_chmod(inode: &InodeRef, mnt_id: u64, mode: u16) -> i64 {
+    notify_change(inode, mnt_id, vfs::Iattr { valid: vfs::ATTR_MODE, mode: mode & 0o7777, ..Default::default() })
+}
+
+/// `chown` work-fn shared by chown/fchown/fchownat: routes through
+/// `notify_change` (EROFS, CAP_CHOWN / owner+group rules, `(uid_t)-1` leave-
+/// alone, set-uid/set-gid drop on a non-directory — set unconditionally for a
+/// non-dir, matching Linux `chown_common`). # C: O(N_path)
 pub(crate) fn do_chown(inode: &InodeRef, mnt_id: u64, uid_arg: u32, gid_arg: u32) -> i64 {
-    if let Err(rv) = check_rofs(mnt_id) { return rv; }
-    let new_uid = if uid_arg == u32::MAX { None } else { Some(uid_arg) };
-    let new_gid = if gid_arg == u32::MAX { None } else { Some(gid_arg) };
-    if new_uid.is_none() && new_gid.is_none() {
-        // Pure no-op chown still drops priv bits on a non-dir (Linux chown_common).
+    let mut valid = 0u32;
+    if uid_arg != u32::MAX { valid |= vfs::ATTR_UID; }
+    if gid_arg != u32::MAX { valid |= vfs::ATTR_GID; }
+    // Linux drops S_ISUID and (group-exec) S_ISGID on any chown of a non-dir,
+    // including the no-op `chown(-1,-1)`.
+    if !matches!(inode.file_type(), vfs::FileType::Directory) {
+        valid |= vfs::ATTR_KILL_SUID | vfs::ATTR_KILL_SGID;
     }
-    let cred = crate::pathresolve::current_cred();
-    if let Err(e) = vfs::may_chown(inode, new_uid, new_gid, &cred) { return -(e as i64); }
-    // Apply. Native `set_owner` (none exist yet) gets resolved ids; the overlay
-    // handles the `u32::MAX` leave-alone sentinel itself.
-    let eff_uid = new_uid.unwrap_or_else(|| inode.uid().unwrap_or(0));
-    let eff_gid = new_gid.unwrap_or_else(|| inode.gid().unwrap_or(0));
-    if inode.set_owner(eff_uid, eff_gid).is_err() {
-        vfs::inode_times::set_owner(inode, uid_arg, gid_arg, now_ns());
-    }
-    // Drop S_ISUID / (group-exec) S_ISGID on a regular file after the chown.
-    let is_dir = matches!(inode.file_type(), vfs::FileType::Directory);
-    if let Some(nm) = vfs::chown_kill_priv(effective_mode(inode), is_dir) {
-        if inode.set_perm(nm).is_err() { vfs::inode_times::set_mode(inode, nm, now_ns()); }
-    }
-    0
+    notify_change(inode, mnt_id, vfs::Iattr { valid, uid: uid_arg, gid: gid_arg, ..Default::default() })
 }

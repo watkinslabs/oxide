@@ -28,9 +28,12 @@ pub mod devnode;
 pub mod dirent;
 pub mod fdtable;
 pub mod file;
+pub mod getattr;
+pub mod idmap;
 pub mod inode;
 pub mod inode_times;
 pub mod mapping;
+pub mod setattr;
 pub mod namei;
 pub mod path;
 pub mod fs;
@@ -50,12 +53,17 @@ pub use path::{path_from_bytes, path_into_bytes};
 pub use fdtable::{FdTable, FD_TABLE_MAX};
 pub use file::{File, Fmode, SeekFrom, fire_clone_hook, fire_dirent_create, fire_dirent_delete, set_clone_hook, set_close_hook, set_dirent_create_hook, set_dirent_delete_hook, set_drop_hook, set_open_hook, set_read_hook, set_write_hook};
 pub use inode::{Inode, InodeRef, I_DIRTY, I_NEW, I_FREEING, POLL_IN, POLL_OUT, POLL_HUP, POLL_ERR, POLL_PRI, POLL_RDHUP};
+pub use getattr::{generic_fillattr, vfs_getattr, default_perm_for, Kstat, S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIFO};
+pub use idmap::{Idmap, IdExtent, IDENTITY};
+pub use setattr::{setattr_prepare, simple_setattr, notify_change, apply_kill_priv, Iattr, ATTR_MODE, ATTR_UID, ATTR_GID, ATTR_SIZE, ATTR_ATIME, ATTR_MTIME, ATTR_CTIME, ATTR_ATIME_SET, ATTR_MTIME_SET, ATTR_KILL_SUID, ATTR_KILL_SGID};
 pub use mapping::AddressSpaceOps;
 pub use types::{FileMode, FileType, Ino, KResult, OpenFlags, PollMask, StatxMask, VfsError};
 pub use poll_subs::{EpollNotify, PollSubscribers};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_d4b;
 
 /// Subsystem-level error per `38`. Kept for the existing skeleton
 /// `init` shim; the canonical VFS error is `VfsError` above.

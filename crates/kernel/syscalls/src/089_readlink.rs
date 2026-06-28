@@ -43,7 +43,7 @@ pub(crate) fn readlink_resolved_path(path_s: &str, buf_ptr: u64, bufsize: u64) -
     // isn't a symlink (Inode::readlink errors), ENOENT when it doesn't resolve.
     let target: alloc::vec::Vec<u8> = if let Some(t) = sched::proclink::resolve_proc_link(path_s) { t }
         else if let Some(inode) = crate::pathresolve::resolve(path_s, true) {
-            match inode.readlink() { Ok(v) => v, Err(_) => return -(Errno::Einval.as_i32() as i64) }
+            match inode.get_link() { Ok(v) => v, Err(_) => return -(Errno::Einval.as_i32() as i64) }
         } else { return -(Errno::Enoent.as_i32() as i64); };
     let n = (target.len() as u64).min(bufsize) as usize;
     // SAFETY: buf range validated < USER_VA_END; CPL=0 writes through caller's AS.
