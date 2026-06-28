@@ -50,6 +50,11 @@ pub const SB_MANDLOCK:    u64 = 1 << 6;
 pub const SB_DIRSYNC:     u64 = 1 << 7;
 pub const SB_NOATIME:     u64 = 1 << 10;
 pub const SB_NODIRATIME:  u64 = 1 << 11;
+pub const SB_SILENT:      u64 = 1 << 15;
+pub const SB_POSIXACL:    u64 = 1 << 16;
+pub const SB_KERNMOUNT:   u64 = 1 << 22;
+pub const SB_I_VERSION:   u64 = 1 << 23;
+pub const SB_LAZYTIME:    u64 = 1 << 25;
 /// Internal lifecycle bits: `SB_BORN` (fill_super done), `SB_ACTIVE` (mounted).
 pub const SB_BORN:   u64 = 1 << 29;
 pub const SB_ACTIVE: u64 = 1 << 30;
@@ -530,6 +535,70 @@ impl SuperBlock {
 
     /// True iff this superblock is mounted read-only (`SB_RDONLY`). # C: O(1)
     pub fn is_readonly(&self) -> bool { (self.s_flags() & SB_RDONLY) != 0 }
+
+    /// `sb_rdonly` (Linux include/linux/fs.h) — explicit-name alias of
+    /// [`Self::is_readonly`] for call sites that read better as the kernel
+    /// predicate. # C: O(1)
+    pub fn sb_rdonly(&self) -> bool { self.is_readonly() }
+
+    /// True iff `flag` (any `SB_*` bit, e.g. `SB_NOSUID`) is set in `s_flags`.
+    /// The generic form behind the named `is_*` predicates. # C: O(1)
+    pub fn sb_has_flag(&self, flag: u64) -> bool { (self.s_flags() & flag) != 0 }
+
+    /// `SB_NOSUID` — setuid/setgid bits ignored on this mount (Linux `IS_NOSUID`,
+    /// consulted by exec credential elevation). # C: O(1)
+    pub fn is_nosuid(&self) -> bool { self.sb_has_flag(SB_NOSUID) }
+
+    /// `SB_NODEV` — device-special files do not function on this mount
+    /// (Linux `may_open` rejects opening a dev node). # C: O(1)
+    pub fn is_nodev(&self) -> bool { self.sb_has_flag(SB_NODEV) }
+
+    /// `SB_NOEXEC` — no `execve` from this mount (Linux `path_noexec`). # C: O(1)
+    pub fn is_noexec(&self) -> bool { self.sb_has_flag(SB_NOEXEC) }
+
+    /// `SB_SYNCHRONOUS` — writes commit synchronously (Linux `IS_SYNC`). # C: O(1)
+    pub fn is_synchronous(&self) -> bool { self.sb_has_flag(SB_SYNCHRONOUS) }
+
+    /// `SB_MANDLOCK` — mandatory locking permitted (Linux `IS_MANDLOCK`). # C: O(1)
+    pub fn is_mandlock(&self) -> bool { self.sb_has_flag(SB_MANDLOCK) }
+
+    /// `SB_DIRSYNC` — directory updates commit synchronously (Linux `IS_DIRSYNC`).
+    /// # C: O(1)
+    pub fn is_dirsync(&self) -> bool { self.sb_has_flag(SB_DIRSYNC) }
+
+    /// `SB_NOATIME` — never update access times on this mount (Linux the
+    /// `MNT_NOATIME`/`SB_NOATIME` half of `atime_needs_update`). # C: O(1)
+    pub fn is_noatime(&self) -> bool { self.sb_has_flag(SB_NOATIME) }
+
+    /// `SB_NODIRATIME` — never update directory access times. # C: O(1)
+    pub fn is_nodiratime(&self) -> bool { self.sb_has_flag(SB_NODIRATIME) }
+
+    /// `SB_POSIXACL` — backend honours POSIX ACLs (Linux `IS_POSIXACL`, gates
+    /// the `acl`-aware permission path). # C: O(1)
+    pub fn is_posixacl(&self) -> bool { self.sb_has_flag(SB_POSIXACL) }
+
+    /// `SB_I_VERSION` — auto-maintain the inode change cookie (Linux
+    /// `IS_I_VERSION`, gates `inode_maybe_inc_iversion`). # C: O(1)
+    pub fn is_i_version(&self) -> bool { self.sb_has_flag(SB_I_VERSION) }
+
+    /// `SB_LAZYTIME` — defer on-disk timestamp writeback (Linux `IS_LAZYTIME`).
+    /// # C: O(1)
+    pub fn is_lazytime(&self) -> bool { self.sb_has_flag(SB_LAZYTIME) }
+
+    /// `SB_KERNMOUNT` — internal kernel mount, not user-initiated (Linux
+    /// `kern_mount`); excluded from user umount accounting. # C: O(1)
+    pub fn is_kernmount(&self) -> bool { self.sb_has_flag(SB_KERNMOUNT) }
+
+    /// `SB_BORN` — `fill_super` has completed; the instance is fully built and
+    /// safe to publish (Linux `super_block.SB_BORN`). # C: O(1)
+    pub fn is_born(&self) -> bool { self.sb_has_flag(SB_BORN) }
+
+    /// `SB_ACTIVE` — the instance is mounted/live; cleared by
+    /// `generic_shutdown_super` at last-umount so no operation treats a tearing-
+    /// down SB as mounted (Linux `super_block.SB_ACTIVE`). Distinct from the
+    /// `s_active` REFCOUNT ([`Self::s_active`]): this is the published mounted
+    /// FLAG. # C: O(1)
+    pub fn is_mounted(&self) -> bool { self.sb_has_flag(SB_ACTIVE) }
 
     /// Flip the `SB_RDONLY` bit (sb-level `remount` RO↔RW toggle, Linux
     /// `reconfigure_super` rewriting `sb->s_flags`). Once set, [`sb_start_write`]
