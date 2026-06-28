@@ -177,5 +177,19 @@ pub fn setattr_should_drop_suidgid<I: Inode + ?Sized>(inode: &I, cred: &Cred) ->
 /// hosted tests. # C: O(ngroups)
 pub fn notify_change(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &Cred) -> KResult<()> {
     setattr_prepare(idmap, inode, ia, cred)?;
+    // Floor the timestamp fields to the backing superblock's `s_time_gran`
+    // (Linux `fs/attr.c` `notify_change`, which sets each `ia_*time` through
+    // `timestamp_truncate`): a setattr must never record sub-granularity
+    // precision the filesystem cannot persist (ext4 1 ns vs a coarse-time
+    // backend). `ctime` is stamped on every change, so it is floored whenever
+    // any time field is applied. Inodes without an `i_sb` (anon/pseudo) keep
+    // full-ns values — their granularity is implicitly 1 ns.
+    if let Some(sb) = inode.i_sb() {
+        if ia.valid & ATTR_ATIME != 0 { ia.atime_ns = sb.timestamp_truncate(ia.atime_ns); }
+        if ia.valid & ATTR_MTIME != 0 { ia.mtime_ns = sb.timestamp_truncate(ia.mtime_ns); }
+        if ia.valid & (ATTR_ATIME | ATTR_MTIME | ATTR_CTIME) != 0 {
+            ia.ctime_ns = sb.timestamp_truncate(ia.ctime_ns);
+        }
+    }
     inode.setattr(idmap, ia)
 }
