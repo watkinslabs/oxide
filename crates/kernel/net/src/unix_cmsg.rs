@@ -97,9 +97,12 @@ pub fn recvmsg_unix_dgram(sock: &alloc::sync::Arc<InetSocket>, msgp: u64) -> i64
                     let fdt = fdt.clone();
                     let mut written = 0u64;
                     for f in &msg.fds {
-                        let dentry = f.dentry().clone();
-                        let inode = f.inode().clone();
-                        let new_f = vfs::File::new(inode, dentry, f.flags());
+                        // SCM_RIGHTS: the received fd refers to the SAME open
+                        // file description (Linux `scm_detach_fds` installs the
+                        // sender's `struct file`), so install the shared Arc —
+                        // preserving position, flags, AND `f_path.mnt_id`.
+                        let new_f = f.clone();
+                        vfs::fire_clone_hook(&new_f);
                         if let Ok(fd) = fdt.alloc(new_f) {
                             // SAFETY: cmsg payload area inside controllen-bounded buf.
                             unsafe { core::ptr::write_volatile((base + 16 + written * 4) as *mut i32, fd); }

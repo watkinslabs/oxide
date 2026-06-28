@@ -445,6 +445,174 @@ fn fdtable_live_fds_cloexec_only_range() {
 }
 
 // ---------------------------------------------------------------------------
+// B6 — f_path / f_mode / f_cred / private_data + bitmap fd flags
+// ---------------------------------------------------------------------------
+
+#[test]
+fn file_new_at_carries_mnt_id_in_f_path() {
+    let i: InodeRef = MemFile::new(1);
+    let d = Dentry::new_root(Arc::clone(&i));
+    let f = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDWR, 42, Cred::root());
+    assert_eq!(f.mnt_id(), 42);
+    let (mnt, dentry) = f.f_path();
+    assert_eq!(mnt, 42);
+    assert!(Arc::ptr_eq(dentry, &d));
+    // The plain `new` ctor is the anonymous-inode form: no vfsmount.
+    let anon = File::new(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDWR);
+    assert_eq!(anon.mnt_id(), 0);
+    assert!(anon.vfsmount().is_none());
+}
+
+#[test]
+fn file_f_inode_matches_dentry_inode() {
+    let i: InodeRef = MemFile::new(7);
+    let d = Dentry::new_root(Arc::clone(&i));
+    let f = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDONLY, 1, Cred::root());
+    assert_eq!(f.f_inode().ino(), 7);
+    assert_eq!(f.f_inode().ino(), f.dentry().inode().unwrap().ino());
+}
+
+#[test]
+fn file_f_mode_derivation() {
+    use crate::file::Fmode;
+    let i: InodeRef = MemFile::new(1);
+    let d = Dentry::new_root(Arc::clone(&i));
+    let ro = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDONLY, 0, Cred::root());
+    assert_eq!(ro.f_mode(), Fmode::READ);
+    let wo = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_WRONLY, 0, Cred::root());
+    assert_eq!(wo.f_mode(), Fmode::WRITE);
+    let rw = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDWR, 0, Cred::root());
+    assert_eq!(rw.f_mode(), Fmode::READ | Fmode::WRITE);
+}
+
+#[test]
+fn file_f_cred_snapshot() {
+    let i: InodeRef = MemFile::new(1);
+    let d = Dentry::new_root(Arc::clone(&i));
+    let cred = Cred { uid: 1000, gid: 1001, cap_dac_override: false, cap_dac_read_search: true };
+    let f = File::new_at(i, d, OpenFlags::O_RDONLY, 0, cred);
+    assert_eq!(f.f_cred().uid, 1000);
+    assert_eq!(f.f_cred().gid, 1001);
+    assert!(!f.f_cred().cap_dac_override);
+    assert!(f.f_cred().cap_dac_read_search);
+}
+
+#[test]
+fn file_private_data_round_trip() {
+    let i: InodeRef = MemFile::new(1);
+    let d = Dentry::new_root(Arc::clone(&i));
+    let f = File::new(i, d, OpenFlags::O_RDONLY);
+    assert_eq!(f.private_data(), 0);
+    f.set_private_data(0xDEAD_BEEF);
+    assert_eq!(f.private_data(), 0xDEAD_BEEF);
+}
+
+#[test]
+fn fdtable_dup_shares_file_and_mnt() {
+    let i: InodeRef = MemFile::new(1);
+    let d = Dentry::new_root(Arc::clone(&i));
+    let f = File::new_at(i, d, OpenFlags::O_RDWR, 7, Cred::root());
+    let t = FdTable::new();
+    let a = t.alloc(f).unwrap();
+    let b = t.dup(a).unwrap();
+    assert_ne!(a, b);
+    assert!(Arc::ptr_eq(&t.get(a).unwrap(), &t.get(b).unwrap()));
+    // The mount rides along with the shared open file description.
+    assert_eq!(t.get(b).unwrap().mnt_id(), 7);
+}
+
+#[test]
+fn fdtable_dup_has_independent_cloexec() {
+    // dup* share the File (Arc) but the FD_CLOEXEC flag is per-fd.
+    let t = FdTable::new();
+    let a = t.alloc(mk_file()).unwrap();
+    let b = t.dup(a).unwrap();
+    t.set_cloexec(b, true).unwrap();
+    assert!(!t.cloexec(a).unwrap(), "original fd keeps its own (clear) flag");
+    assert!(t.cloexec(b).unwrap(),  "dup'd fd has its own (set) flag");
+}
+
+#[test]
+fn fdtable_f_setfd_sets_close_on_exec() {
+    // Models fcntl(F_SETFD, FD_CLOEXEC) → set_cloexec, then execve drop.
+    let t = FdTable::new();
+    let keep = t.alloc(mk_file()).unwrap();
+    let drop = t.alloc(mk_file()).unwrap();
+    t.set_cloexec(drop, true).unwrap();
+    assert!(t.cloexec(drop).unwrap());
+    t.close_on_exec();
+    assert!(t.get(keep).is_ok(), "non-cloexec fd survives execve");
+    assert_eq!(t.get(drop).err(), Some(VfsError::Ebadf), "cloexec fd dropped");
+    // The flag was cleared on the surviving fd too.
+    assert!(!t.cloexec(keep).unwrap());
+}
+
+#[test]
+fn fdtable_close_range_closes_span() {
+    // Models close_range(first,last): close the inclusive [first,last] span.
+    let t = FdTable::new();
+    let f0 = t.alloc(mk_file()).unwrap(); // 0
+    let f1 = t.alloc(mk_file()).unwrap(); // 1
+    let f2 = t.alloc(mk_file()).unwrap(); // 2
+    let f3 = t.alloc(mk_file()).unwrap(); // 3
+    let f4 = t.alloc(mk_file()).unwrap(); // 4
+    let (first, last) = (f1, f3);
+    for fd in t.live_fds() {
+        if fd >= first && fd <= last { t.close(fd).unwrap(); }
+    }
+    assert!(t.get(f0).is_ok());
+    assert_eq!(t.get(f1).err(), Some(VfsError::Ebadf));
+    assert_eq!(t.get(f2).err(), Some(VfsError::Ebadf));
+    assert_eq!(t.get(f3).err(), Some(VfsError::Ebadf));
+    assert!(t.get(f4).is_ok());
+    assert_eq!(t.live_fds(), alloc::vec![f0, f4]);
+}
+
+#[test]
+fn fdtable_bitmap_alloc_min_skips_full_words() {
+    // Allocate past the first 64-fd word, free one in word 0, and a
+    // min-bounded alloc must respect `min` (F_DUPFD semantics) — exercising
+    // the word-scan free-fd search across word boundaries.
+    let t = FdTable::new();
+    let mut fds = alloc::vec::Vec::new();
+    for _ in 0..70 { fds.push(t.alloc(mk_file()).unwrap()); }
+    assert_eq!(fds.last().copied(), Some(69));
+    t.close(3).unwrap();
+    // Lowest free is now 3.
+    assert_eq!(t.alloc(mk_file()).unwrap(), 3);
+    // A min-bounded dup lands at >= 70 (all of 0..=69 occupied).
+    let dd = t.dup_min(0, 70).unwrap();
+    assert_eq!(dd, 70);
+}
+
+#[test]
+fn fdtable_flush_fires_on_close() {
+    use core::sync::atomic::{AtomicUsize, Ordering as O};
+    static FLUSHED: AtomicUsize = AtomicUsize::new(0);
+    struct FlushInode { ino: u64 }
+    impl Inode for FlushInode {
+        fn ino(&self) -> u64 { self.ino }
+        fn file_type(&self) -> FileType { FileType::Regular }
+        fn size(&self) -> u64 { 0 }
+        fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+        fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
+        fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
+        fn on_flush(&self) { FLUSHED.fetch_add(1, O::Relaxed); }
+    }
+    FLUSHED.store(0, O::Relaxed);
+    let i: InodeRef = Arc::new(FlushInode { ino: 9 });
+    let d = Dentry::new_root(Arc::clone(&i));
+    let f = File::new(i, d, OpenFlags::O_RDWR);
+    let t = FdTable::new();
+    let a = t.alloc(f).unwrap();
+    let b = t.dup(a).unwrap();
+    // Each close(2) flushes (per-fd), even though the Arc is shared.
+    t.close(a).unwrap();
+    t.close(b).unwrap();
+    assert_eq!(FLUSHED.load(O::Relaxed), 2);
+}
+
+// ---------------------------------------------------------------------------
 // dirent64 packing — `19§4` Linux ABI byte layout
 // ---------------------------------------------------------------------------
 
