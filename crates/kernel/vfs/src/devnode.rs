@@ -12,6 +12,8 @@
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
+use alloc::vec;
+use alloc::vec::Vec;
 
 use sync::{Devices as DevClass, Spinlock};
 
@@ -80,36 +82,126 @@ pub trait BlockDevOps: Send + Sync {
     }
 }
 
-/// `chrdevs[]` — `major -> driver`. A driver claims a whole major (every
-/// minor routes to the same `CharDevOps`, which discriminates by `devt`).
-static CHRDEV: Spinlock<BTreeMap<u32, Arc<dyn CharDevOps>>, DevClass>
+/// Number of minor numbers in a major (Linux `MINORBITS == 20`, so a major
+/// spans `1 << 20` minors). A legacy whole-major claim covers `[0, MINOR_SPAN)`.
+pub const MINOR_SPAN: u32 = 1 << 20;
+
+/// One registered `(baseminor, count)` slice of a major and the driver that
+/// backs it — Linux `cdev_add(cdev, MKDEV(major,baseminor), count)`. Distinct
+/// drivers share a major by claiming disjoint minor ranges (e.g. major 10
+/// "misc", major 4 ttys), so the registry maps a major to a LIST of ranges,
+/// not a single driver. `covers(minor)` is the half-open `[base, base+count)`
+/// containment test `chrdev_open`/`blkdev_open` use to pick the driver.
+struct Region<T: ?Sized> {
+    base:  u32,
+    count: u32,
+    ops:   Arc<T>,
+}
+
+impl<T: ?Sized> Region<T> {
+    /// `[base, base+count)` containment (u64 math: `base+count` can reach
+    /// `1<<20` and must not wrap a `u32`). # C: O(1)
+    fn covers(&self, minor: u32) -> bool {
+        let (s, e) = (self.base as u64, self.base as u64 + self.count as u64);
+        (minor as u64) >= s && (minor as u64) < e
+    }
+    /// Half-open overlap with another `[base, base+count)` range. # C: O(1)
+    fn overlaps(&self, base: u32, count: u32) -> bool {
+        let (s, e)   = (self.base as u64, self.base as u64 + self.count as u64);
+        let (os, oe) = (base as u64, base as u64 + count as u64);
+        s < oe && os < e
+    }
+}
+
+/// `chrdevs[]` — `major -> [region]`. Each region is a `(baseminor, count)`
+/// slice owned by one `CharDevOps` (Linux `cdev_map`), so several drivers can
+/// share a major with disjoint minor ranges.
+static CHRDEV: Spinlock<BTreeMap<u32, Vec<Region<dyn CharDevOps>>>, DevClass>
     = Spinlock::new(BTreeMap::new());
 
-/// `blkdevs[]` — `major -> driver`.
-static BLKDEV: Spinlock<BTreeMap<u32, Arc<dyn BlockDevOps>>, DevClass>
+/// `blkdevs[]` — `major -> [region]`.
+static BLKDEV: Spinlock<BTreeMap<u32, Vec<Region<dyn BlockDevOps>>>, DevClass>
     = Spinlock::new(BTreeMap::new());
 
-/// `register_chrdev(major, ops)` — claim a char major. # C: O(log N)
+/// Insert `(base, count, ops)` into a major's region list, `Ebusy` on overlap
+/// (Linux `__register_chrdev_region` returns `-EBUSY`). `count == 0` is
+/// `Einval`. # C: O(R) in regions on the major.
+fn region_insert<T: ?Sized>(
+    map:   &mut BTreeMap<u32, Vec<Region<T>>>,
+    major: u32,
+    base:  u32,
+    count: u32,
+    ops:   Arc<T>,
+) -> KResult<()> {
+    if count == 0 { return Err(VfsError::Einval); }
+    let regs = map.entry(major).or_default();
+    if regs.iter().any(|r| r.overlaps(base, count)) { return Err(VfsError::Ebusy); }
+    regs.push(Region { base, count, ops });
+    Ok(())
+}
+
+/// Drop the exact `(base, count)` region from a major; prune the major when its
+/// last region leaves. # C: O(R).
+fn region_remove<T: ?Sized>(map: &mut BTreeMap<u32, Vec<Region<T>>>, major: u32, base: u32, count: u32) {
+    if let Some(regs) = map.get_mut(&major) {
+        regs.retain(|r| !(r.base == base && r.count == count));
+        if regs.is_empty() { map.remove(&major); }
+    }
+}
+
+/// `register_chrdev(major, ops)` — legacy whole-major claim (Linux
+/// `register_chrdev`, minors `[0, MINOR_SPAN)`). Replaces any existing regions
+/// on the major. For disjoint minor ranges use [`register_chrdev_region`].
+/// # C: O(R)
 pub fn register_chrdev(major: u32, ops: Arc<dyn CharDevOps>) {
-    CHRDEV.lock().insert(major, ops);
+    CHRDEV.lock().insert(major, vec![Region { base: 0, count: MINOR_SPAN, ops }]);
 }
-/// `lookup_chrdev(devt)` — the driver for this number, if any. # C: O(log N)
+/// `register_chrdev_region(major, baseminor, count, ops)` — claim a minor
+/// SLICE of a major (Linux `__register_chrdev_region` + `cdev_add`). `Ebusy`
+/// if `[baseminor, baseminor+count)` overlaps a region already on the major;
+/// `Einval` if `count == 0`. # C: O(R)
+pub fn register_chrdev_region(major: u32, baseminor: u32, count: u32, ops: Arc<dyn CharDevOps>) -> KResult<()> {
+    region_insert(&mut CHRDEV.lock(), major, baseminor, count, ops)
+}
+/// `lookup_chrdev(devt)` — the driver whose region covers this exact
+/// `(major,minor)`, if any (Linux `kobj_lookup` of `cdev_map`). # C: O(R)
 pub fn lookup_chrdev(devt: Devt) -> Option<Arc<dyn CharDevOps>> {
-    CHRDEV.lock().get(&devt.major()).cloned()
+    let g = CHRDEV.lock();
+    let regs = g.get(&devt.major())?;
+    regs.iter().find(|r| r.covers(devt.minor())).map(|r| r.ops.clone())
 }
-/// `unregister_chrdev(major)`. # C: O(log N)
+/// `unregister_chrdev(major)` — drop every region on the major. # C: O(log N)
 pub fn unregister_chrdev(major: u32) { CHRDEV.lock().remove(&major); }
+/// `unregister_chrdev_region(major, baseminor, count)` — drop one registered
+/// slice (Linux `unregister_chrdev_region`). # C: O(R)
+pub fn unregister_chrdev_region(major: u32, baseminor: u32, count: u32) {
+    region_remove(&mut CHRDEV.lock(), major, baseminor, count);
+}
 
-/// `register_blkdev(major, ops)`. # C: O(log N)
+/// `register_blkdev(major, ops)` — legacy whole-major claim. # C: O(R)
 pub fn register_blkdev(major: u32, ops: Arc<dyn BlockDevOps>) {
-    BLKDEV.lock().insert(major, ops);
+    BLKDEV.lock().insert(major, vec![Region { base: 0, count: MINOR_SPAN, ops }]);
 }
-/// `lookup_blkdev(devt)`. # C: O(log N)
+/// `register_blkdev_region(major, baseminor, count, ops)` — claim a minor
+/// slice (Linux `blk_register_region`). `Ebusy` on overlap, `Einval` on
+/// `count == 0`. # C: O(R)
+pub fn register_blkdev_region(major: u32, baseminor: u32, count: u32, ops: Arc<dyn BlockDevOps>) -> KResult<()> {
+    region_insert(&mut BLKDEV.lock(), major, baseminor, count, ops)
+}
+/// `lookup_blkdev(devt)` — the driver whose region covers `(major,minor)`.
+/// # C: O(R)
 pub fn lookup_blkdev(devt: Devt) -> Option<Arc<dyn BlockDevOps>> {
-    BLKDEV.lock().get(&devt.major()).cloned()
+    let g = BLKDEV.lock();
+    let regs = g.get(&devt.major())?;
+    regs.iter().find(|r| r.covers(devt.minor())).map(|r| r.ops.clone())
 }
-/// `unregister_blkdev(major)`. # C: O(log N)
+/// `unregister_blkdev(major)` — drop every region on the major. # C: O(log N)
 pub fn unregister_blkdev(major: u32) { BLKDEV.lock().remove(&major); }
+/// `unregister_blkdev_region(major, baseminor, count)` — drop one slice.
+/// # C: O(R)
+pub fn unregister_blkdev_region(major: u32, baseminor: u32, count: u32) {
+    region_remove(&mut BLKDEV.lock(), major, baseminor, count);
+}
 
 /// A `mknod(2)` device node (Linux `S_ISCHR`/`S_ISBLK` inode). Carries the
 /// `dev_t` + perm; every operation dispatches to the registered driver by
