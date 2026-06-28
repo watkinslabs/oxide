@@ -414,6 +414,15 @@ impl AddressSpace {
                 va += PAGE_SIZE_BYTES;
             }
         }
+        // SMP TLB coherence (`20§5`): we just write-protected the parent's
+        // own PTEs (the W-strip above) on THIS CPU only. Other CPUs running
+        // a peer thread of the SAME mm still hold the old WRITABLE entries in
+        // their TLB and would write straight into frames now COW-shared with
+        // the child — write-while-shared corruption invisible to refcount.
+        // x86 invlpg is local-only (no hardware broadcast like aarch64
+        // tlbi-is), so broadcast a full remote flush. No-op on UP / aarch64 /
+        // hosted. One full flush beats a per-page IPI across the whole AS.
+        hal::tlb::shootdown_others_all();
         let child = Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(dst),
             root_pa: new_root_pa,
@@ -1011,6 +1020,15 @@ impl AddressSpace {
                 let idx = ((va_page - vma.start.as_u64()) / PAGE_SIZE_BYTES) as u32;
                 set_rmap(new_pa, av, idx);
             }
+            // SMP TLB coherence (`20§5`): this COW split rewrote the shared
+            // page-table entry `va_page -> new_pa` (writable). Peer threads of
+            // the SAME mm on other CPUs still cache `va_page -> old` (the
+            // shared frame) and must invalidate it BEFORE we drop our
+            // reference below — otherwise `old` can be freed + realloc'd while
+            // a peer still reads/writes it through the stale entry. Local
+            // flush already happened in `M::map`; broadcast to the others.
+            // No-op on UP / aarch64 / hosted.
+            hal::tlb::shootdown_others_va(va_page);
             // F157-A1: drop our reference to the displaced (formerly
             // W-stripped shared) frame. `M::map` above tore the old leaf down
             // and returned its PA; `dec_ref` chains into

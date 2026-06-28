@@ -16,9 +16,31 @@
 
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate as cpu_topology;
+
+/// Bitmask of logical CPUs that have completed bring-up (`bit i` ⇒ logical
+/// CPU `i` is online). The boot CPU sets its bit in `set_boot_cpu_id`; each
+/// AP sets its bit in `mark_online`. Read by the x86 TLB-shootdown sender to
+/// target only CPUs that can actually ACK the IPI (sending to a not-yet-online
+/// AP would spin forever waiting for an ACK that never comes). `MAX_CPUS == 64`
+/// fits exactly in a `u64`.
+static ONLINE_MASK: AtomicU64 = AtomicU64::new(0);
+
+/// Bitmask of online logical CPUs. # C: O(1)
+pub fn online_mask() -> u64 { ONLINE_MASK.load(Ordering::Acquire) }
+
+/// Mark logical CPU `cpu` online in the bitmap. Boot CPU + each AP call this
+/// as they finish bring-up. Idempotent.
+/// # SAFETY: caller is the boot CPU (for itself) or an arriving AP (for
+/// itself) — a single distinct writer per bit.
+/// # C: O(1)
+pub unsafe fn mark_online(cpu: u32) {
+    if (cpu as usize) < crate::MAX_CPUS {
+        ONLINE_MASK.fetch_or(1u64 << cpu, Ordering::AcqRel);
+    }
+}
 
 /// Boot-CPU id snapshot — captured at boot via `set_boot_cpu_id`.
 /// Used by `enumerate_aps` to filter the boot CPU out of the
@@ -41,6 +63,12 @@ pub unsafe fn set_boot_cpu_id(id: u32) {
     // Boot CPU itself counts as online from the moment we enter
     // kernel_main. Stamp here so observers see online_count()>=1.
     ONLINE.store(1, Ordering::Release);
+    // Mark the boot CPU's logical id online for the shootdown bitmap. The
+    // ACPI walk has populated the topology by now, so logical_id_for_hardware
+    // resolves; fall back to logical 0 (the boot CPU's conventional slot).
+    let boot_logical = cpu_topology::logical_id_for_hardware(id).unwrap_or(0);
+    // SAFETY: boot path, sole writer for the boot CPU's bit.
+    unsafe { mark_online(boot_logical); }
 }
 
 /// Boot CPU's APIC id / MPIDR. `u32::MAX` if `set_boot_cpu_id`

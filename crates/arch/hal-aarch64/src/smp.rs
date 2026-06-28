@@ -308,6 +308,13 @@ pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
     }
     // Mark ourselves online via the boot CPU's cpu::smp::ap_arrived.
     let _ = cpu::smp::ap_arrived();
+    // Publish this AP's logical id in the online bitmap (symmetry with x86;
+    // aarch64 uses hardware-broadcast `tlbi vae1is` so no shootdown IPI runs,
+    // but keeping the bitmap correct costs nothing).
+    if let Some(lg) = cpu::logical_id_for_hardware(aff0) {
+        // SAFETY: this AP is the sole writer for its own online bit.
+        unsafe { cpu::smp::mark_online(lg); }
+    }
     #[cfg(feature = "debug-irq")]
     {
         klog::write_raw(b"[ap] online aff=");

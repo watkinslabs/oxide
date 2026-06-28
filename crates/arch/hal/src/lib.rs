@@ -154,6 +154,8 @@ pub trait Context: Sized {
 
 pub mod pt_walker;
 
+pub mod tlb;
+
 /// Local `kassert!` per `07§5` — bridges to `crates/err`'s real
 /// implementation once that crate ships per `38`. Form: `kassert!(cond,
 /// "literal")` only; no `panic!(fmt)` per CLAUDE.md hard rules.
