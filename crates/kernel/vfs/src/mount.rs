@@ -58,6 +58,12 @@ pub use mnt_flags::{
     AtimePolicy, MNT_DOOMED, MNT_EXPIRE_MARK, MNT_INTERNAL, MNT_LOCKED, MNT_MARKED, MNT_UMOUNT,
 };
 
+// Mount expiry list (Linux `mark_mounts_for_expiry`, autofs/NFS auto-umount):
+// a two-sweep grace where an unused, unmarked mount is marked on one pass and
+// reaped on the next if still idle.
+mod expiry;
+pub use expiry::{expire_list_create, mark_mounts_for_expiry, mnt_expire_add, mnt_expire_remove};
+
 pub const MNT_RDONLY: u64 = 1;
 pub const MNT_NOSUID: u64 = 2;
 pub const MNT_NODEV: u64 = 4;
