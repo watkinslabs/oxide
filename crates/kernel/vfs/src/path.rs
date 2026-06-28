@@ -54,6 +54,52 @@ fn push_segment<'a>(out: &mut Vec<Component<'a>>, seg: &'a str) {
     }
 }
 
+/// Linux per-component name limit (`NAME_MAX`, `linux/limits.h`): the longest
+/// single pathname component a filesystem accepts is 255 *bytes* (not scalar
+/// values). `link_path_walk`/`walk_component` reject a longer component with
+/// `ENAMETOOLONG` even when the whole pathname is well under `PATH_MAX` (the
+/// total-length gate, enforced separately at the syscall boundary).
+pub const NAME_MAX: usize = 255;
+
+/// On-disk byte length of a (possibly escape-decoded) component name. Each
+/// escaped non-UTF-8 byte (`U+EE00..=U+EEFF`, see [`path_from_bytes`])
+/// collapses to the one byte it stands for; every other char counts its UTF-8
+/// length. Matches what a backend compares against on-disk names, so the
+/// `NAME_MAX` check is byte-accurate even for non-UTF-8 names — no allocation.
+/// # C: O(n)
+fn component_byte_len(name: &str) -> usize {
+    let mut n = 0usize;
+    for c in name.chars() {
+        let u = c as u32;
+        if (BYTE_ESCAPE_BASE..=BYTE_ESCAPE_BASE + 0xFF).contains(&u) { n += 1; }
+        else { n += c.len_utf8(); }
+    }
+    n
+}
+
+/// Enforce `NAME_MAX` on a single pathname component, mirroring the Linux
+/// walk's per-component check. `Ok(())` when `name` is ≤ `NAME_MAX` on-disk
+/// bytes, else `Enametoolong`. Reusable primitive: the walker validates one
+/// component at a time as it descends.
+/// # C: O(name.len())
+pub fn check_component(name: &str) -> Result<(), crate::types::VfsError> {
+    if component_byte_len(name) > NAME_MAX { Err(crate::types::VfsError::Enametoolong) } else { Ok(()) }
+}
+
+/// [`components`] plus the Linux per-component `NAME_MAX` gate: split `path`
+/// and reject (`Enametoolong`) the moment any `Normal` component exceeds
+/// `NAME_MAX` bytes. `/`, `.`, `..` control segments are exempt (none names a
+/// file). Total-path length is NOT checked here — that is `PATH_MAX`'s job at
+/// the syscall boundary (`read_user_path`).
+/// # C: O(len)
+pub fn components_checked(path: &str) -> Result<Vec<Component<'_>>, crate::types::VfsError> {
+    let parts = components(path);
+    for c in &parts {
+        if let Component::Normal(s) = c { check_component(s)?; }
+    }
+    Ok(parts)
+}
+
 /// True iff `path` is absolute (begins with `/`).
 /// # C: O(1)
 pub fn is_absolute(path: &str) -> bool {
