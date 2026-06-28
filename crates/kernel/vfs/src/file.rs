@@ -546,6 +546,93 @@ impl File {
         self.pos.store(new_pos, Ordering::Release);
         Ok(new_pos)
     }
+
+    /// `pread(2)` / `pread64` — positional read at the explicit `off` that
+    /// does NOT touch `f_pos` (Linux `ksys_pread64` → `vfs_read(file, buf,
+    /// count, &pos)` over a LOCAL `pos`, bypassing `__fdget_pos`). Because no
+    /// shared cursor is consulted or mutated, `f_pos_lock` is NOT taken —
+    /// concurrent `pread`s on a dup'd / CLONE_FILES-shared fd are independent.
+    /// Gate order mirrors Linux: a negative `off` is `EINVAL` before `fdget`;
+    /// a file lacking FMODE_PREAD (a non-seekable pipe/socket/fifo, or an
+    /// `O_PATH` fd with `empty_fops`) is `ESPIPE`; only then does the read
+    /// capability (`FMODE_READ`) gate apply (`EBADF` for an `O_WRONLY` open).
+    /// O_NONBLOCK routes through `read_nonblock` exactly as `read` does.
+    /// # C: depends on inode impl
+    pub fn pread(&self, buf: &mut [u8], off: i64) -> KResult<usize> {
+        if off < 0 { return Err(VfsError::Einval); }
+        // FMODE_PREAD gate (Linux `do_dentry_open`): only seekable files carry
+        // it; pipe/socket/fifo and O_PATH fds do not → ESPIPE.
+        if self.f_mode.contains(Fmode::PATH)
+            || matches!(self.inode.file_type(), FileType::Fifo | FileType::Socket)
+        {
+            return Err(VfsError::Espipe);
+        }
+        if !self.f_mode.contains(Fmode::READ) {
+            return Err(VfsError::Ebadf);
+        }
+        let f = self.flags();
+        let n = if f.contains(OpenFlags::O_NONBLOCK) {
+            self.inode.read_nonblock(off as u64, buf)?
+        } else {
+            self.inode.read(off as u64, buf)?
+        };
+        if n > 0 {
+            let h = READ_HOOK.load(Ordering::Acquire);
+            if h != 0 {
+                // SAFETY: h was installed by `set_read_hook` with a real fn(&InodeRef) pointer.
+                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
+                f(&self.inode);
+            }
+        }
+        Ok(n)
+    }
+
+    /// `pwrite(2)` / `pwrite64` — positional write at the explicit `off` that
+    /// does NOT touch `f_pos` (Linux `ksys_pwrite64` → `vfs_write` over a
+    /// LOCAL `pos`, bypassing `__fdget_pos`), so `f_pos_lock` is NOT taken.
+    /// Gate order mirrors Linux: negative `off` → `EINVAL`; a file lacking
+    /// FMODE_PWRITE (pipe/socket/fifo or `O_PATH`) → `ESPIPE`; an unwritable
+    /// open (`O_RDONLY`) → `EBADF`; a read-only mount → `EROFS`. The
+    /// documented Linux O_APPEND quirk is preserved: with `O_APPEND` the
+    /// effective offset is forced to the current size and `off` is IGNORED
+    /// (`generic_write_checks` `IOCB_APPEND` overrides `ki_pos`) — see
+    /// `pwrite(2)` BUGS. O_NONBLOCK routes through `write_nonblock`.
+    /// # C: depends on inode impl
+    pub fn pwrite(&self, buf: &[u8], off: i64) -> KResult<usize> {
+        if off < 0 { return Err(VfsError::Einval); }
+        if self.f_mode.contains(Fmode::PATH)
+            || matches!(self.inode.file_type(), FileType::Fifo | FileType::Socket)
+        {
+            return Err(VfsError::Espipe);
+        }
+        if !self.f_mode.contains(Fmode::WRITE) {
+            return Err(VfsError::Ebadf);
+        }
+        let path = self.dentry.absolute_path();
+        if let Ok(path) = core::str::from_utf8(&path) {
+            if crate::mount::is_readonly_path(path) {
+                return Err(VfsError::Erofs);
+            }
+        }
+        let f = self.flags();
+        // Linux pwrite + O_APPEND: IOCB_APPEND forces ki_pos = i_size,
+        // ignoring the caller's offset (documented quirk, pwrite(2) BUGS).
+        let pos = if f.contains(OpenFlags::O_APPEND) { self.inode.size() } else { off as u64 };
+        let n = if f.contains(OpenFlags::O_NONBLOCK) {
+            self.inode.write_nonblock(pos, buf)?
+        } else {
+            self.inode.write(pos, buf)?
+        };
+        if n > 0 {
+            let h = WRITE_HOOK.load(Ordering::Acquire);
+            if h != 0 {
+                // SAFETY: h was installed by `set_write_hook` with a real fn(&InodeRef) pointer.
+                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
+                f(&self.inode);
+            }
+        }
+        Ok(n)
+    }
 }
 
 /// Linux `get_file()` — take an additional reference to an open file
