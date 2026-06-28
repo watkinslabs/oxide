@@ -24,8 +24,13 @@ pub fn unregister(d: &Arc<Dentry>) -> usize {
         super::hash_remove(ns, parent, super::dptr(d), id);
         rewire_crossing_top(ns, d, parent);
     }
-    // Last-mount of this SB → `put_super` (flush + drop s_root + clear icache).
-    super::put_super_if_last(&sb);
+    // Lazy-umount deferral (Linux `umount_tree` + `mntput_no_expire`): the mount
+    // is now unlinked from the tree (`MNT_DETACHED`). If an external reference
+    // still pins it (`mnt_count > 0` — an open file's `f_path.mnt`), DEFER the
+    // SB teardown to the final `mntput`; otherwise `put_super` now (flush + drop
+    // s_root + clear icache, gated so a sibling sharing the SB blocks teardown).
+    target.mark_detached();
+    if target.mnt_count() == 0 { super::put_super_if_last(&sb); }
     mntns::bump_gen(ns);
     1
 }
@@ -50,7 +55,10 @@ pub(crate) fn detach_mounts_on(d: &Arc<Dentry>) -> usize {
         super::MOUNTS.lock().remove(&m.mnt_id);
         super::hash_remove(ns, parent, dp, m.mnt_id);
         rewire_crossing_top(ns, d, parent);
-        super::put_super_if_last(&m.sb);
+        // Detached now (Linux `MNT_DETACHED`); defer SB teardown to the final
+        // `mntput` while an external `mnt_count` pin remains.
+        m.mark_detached();
+        if m.mnt_count() == 0 { super::put_super_if_last(&m.sb); }
         mntns::bump_gen(ns);
         removed += 1;
     }
@@ -127,9 +135,14 @@ pub fn unregister_top(d: &Arc<Dentry>, detach_subtree: bool) -> usize {
             super::hash_remove(ns, parent, super::dptr(dd), m.mnt_id);
             rewire_crossing_top(ns, dd, parent);
         }
-        // Last-mount of this victim's SB → `put_super`. Done per-victim AFTER
-        // removal so a still-present sibling sharing the SB blocks teardown.
-        super::put_super_if_last(&m.sb);
+        // Lazy-umount deferral (Linux `umount_tree` + `mntput_no_expire`): the
+        // victim is now unlinked from the tree (`MNT_DETACHED`). If an external
+        // reference still pins it (`mnt_count > 0` — an open file's `f_path.mnt`
+        // surviving the lazy umount), DEFER its SB teardown to the final
+        // `mntput`; otherwise `put_super` now. Done per-victim AFTER removal so a
+        // still-present sibling sharing the SB blocks teardown.
+        m.mark_detached();
+        if m.mnt_count() == 0 { super::put_super_if_last(&m.sb); }
         removed += 1;
     }
     mntns::bump_gen(ns);
