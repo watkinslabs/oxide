@@ -324,6 +324,15 @@ impl File {
         })
     }
 
+    /// `f_count` snapshot (Linux `atomic_long_read(&file->f_count)`): the
+    /// number of open-file-description references currently alive — fd-table
+    /// slots, dups, and in-flight `get_file` takers all count. The reference
+    /// count IS the backing `Arc<File>` strong count; the LAST one to drop
+    /// (its `fput`) runs the backend release hook chain exactly once. `1`
+    /// means this is the sole owner. Advisory under concurrent get_file/fput.
+    /// # C: O(1)
+    pub fn f_count(self: &Arc<Self>) -> usize { Arc::strong_count(self) }
+
     /// `f_inode` cache (Linux `file->f_inode`). # C: O(1)
     pub fn inode(&self) -> &InodeRef { &self.inode }
 
@@ -506,6 +515,30 @@ impl File {
         Ok(new_pos)
     }
 }
+
+/// Linux `get_file()` — take an additional reference to an open file
+/// description, bumping `f_count` (here the `Arc<File>` strong count), and
+/// return the new owning handle. A caller handing the SAME open file
+/// description to a second owner (installing it at a second fd, stashing it
+/// in a deferred-I/O request, …) uses this so the description stays alive
+/// until BOTH owners `fput`; the last drop still runs `->release` once. This
+/// is the open-file-description refcount only — it does NOT fire the
+/// per-reference clone hook (`fire_clone_hook`), which the fd-table dup paths
+/// invoke separately for pipe writer/reader accounting.
+/// # C: O(1)
+pub fn get_file(file: &Arc<File>) -> Arc<File> { Arc::clone(file) }
+
+/// Linux `fput()` — drop one reference to an open file description,
+/// decrementing `f_count`. Taking the handle BY MOVE makes the decrement
+/// explicit at the call site (mirrors `void fput(struct file *)`); the
+/// reference cannot be used afterward. When this was the last reference the
+/// `File` `Drop` runs the backend release hook chain (flock release, close
+/// hooks, `inode->on_release`, dentry `dput`) — Linux `__fput` /
+/// `file_operations->release` — exactly once. Per-`close(2)` flush is NOT
+/// done here; that is `filp_close`'s job (`FdTable::close` calls `flush`
+/// before the final `fput`).
+/// # C: O(1) amortized; last-ref also runs the release hook chain
+pub fn fput(file: Arc<File>) { drop(file); }
 
 impl core::fmt::Debug for File {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
