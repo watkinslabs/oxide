@@ -50,6 +50,57 @@ pub fn dirent64_pack(
     Some(reclen)
 }
 
+/// Legacy `linux_dirent` (getdents(2), NR 78) record layout — distinct
+/// from `linux_dirent64`:
+///
+/// ```text
+///   off  size  field
+///     0     8  d_ino       (unsigned long, 64-bit)
+///     8     8  d_off       (unsigned long, cookie of next record)
+///    16     2  d_reclen    (this record length, long-aligned)
+///    18     N  d_name      (NUL-terminated)
+///   ...        zero padding
+///  rl-1     1  d_type      (DT_*, stored in the LAST byte — Linux
+///                           glibc reads it at `d_reclen - 1`)
+/// ```
+///
+/// The d_type-as-trailing-byte placement is the wart that separates this
+/// from `linux_dirent64` (where d_type is a fixed field at offset 18).
+pub const DIRENT_HEADER: usize = 8 + 8 + 2; // 18
+
+/// reclen for legacy `linux_dirent`: header + name + NUL + d_type byte,
+/// rounded up to `sizeof(long)` (8 on 64-bit). Matches the kernel
+/// `ALIGN(offsetof(d_name) + namlen + 2, sizeof(long))`.
+/// # C: O(1)
+pub const fn dirent_reclen(name_len: usize) -> usize {
+    let raw = DIRENT_HEADER + name_len + 2; // +NUL +d_type
+    (raw + 7) & !7
+}
+
+/// Pack a single legacy `linux_dirent` record into `buf` at offset 0.
+/// Returns the record length (multiple of 8) or `None` if `buf` is too
+/// small. d_type is written into the last byte of the record per the
+/// legacy ABI; bytes between the name's NUL and that last byte are zero.
+/// # C: O(name.len())
+pub fn dirent_pack(
+    buf: &mut [u8],
+    ino: u64,
+    cookie: u64,
+    d_type: u8,
+    name: &[u8],
+) -> Option<usize> {
+    let reclen = dirent_reclen(name.len());
+    if buf.len() < reclen { return None; }
+    buf[0..8].copy_from_slice(&ino.to_le_bytes());
+    buf[8..16].copy_from_slice(&cookie.to_le_bytes());
+    buf[16..18].copy_from_slice(&(reclen as u16).to_le_bytes());
+    let name_off = DIRENT_HEADER;
+    buf[name_off..name_off + name.len()].copy_from_slice(name);
+    for b in &mut buf[name_off + name.len()..reclen - 1] { *b = 0; }
+    buf[reclen - 1] = d_type;
+    Some(reclen)
+}
+
 /// Pack a sequence of dirents into `buf`, stopping when the next
 /// record wouldn't fit. Returns total bytes written.
 /// # C: O(N_records * name.len())

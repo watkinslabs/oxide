@@ -19,6 +19,18 @@ use crate::types::VfsError;
 /// convenience inside trait bodies.
 pub type KResult<T> = core::result::Result<T, VfsError>;
 
+/// Append the decimal digits of `n` to `s` (no_std, no `format!`).
+/// # C: O(log10 n)
+fn push_u32(s: &mut String, n: u32) {
+    if n == 0 { s.push('0'); return; }
+    let mut buf = [0u8; 10];
+    let mut i = buf.len();
+    let mut v = n;
+    while v > 0 { i -= 1; buf[i] = b'0' + (v % 10) as u8; v /= 10; }
+    // SAFETY: buf[i..] holds only ASCII '0'..='9', valid UTF-8.
+    s.push_str(unsafe { core::str::from_utf8_unchecked(&buf[i..]) });
+}
+
 /// Filesystem instance per `16§2`. One impl per backend; one or
 /// more instances per kernel (each registered to a mount point).
 pub trait FileSystem: Send + Sync {
@@ -98,6 +110,78 @@ pub trait FileSystem: Send + Sync {
     fn rename(&self, from: &str, to: &str) -> KResult<()> {
         let _ = (from, to);
         Err(VfsError::Erofs)
+    }
+
+    /// Resolve a mount-relative `path` to its inode by walking from this
+    /// FS root via `Inode::lookup`. `None` if any component is missing or
+    /// the FS publishes no `root()`. Helper for [`exchange`]/[`whiteout`].
+    /// # C: O(N components)
+    fn lookup_path(&self, path: &str) -> Option<InodeRef> {
+        let mut cur = self.root()?;
+        for comp in path.split('/').filter(|c| !c.is_empty() && *c != ".") {
+            cur = cur.lookup(comp).ok()?;
+        }
+        Some(cur)
+    }
+
+    /// `RENAME_EXCHANGE`: atomically swap the two existing paths `a` and
+    /// `b`. Both must already exist (Linux `ENOENT` otherwise). Default is
+    /// a non-atomic 3-step via `rename` through a fresh temp name in `a`'s
+    /// directory, rolled back on partial failure; a backend with a
+    /// journalled dirent swap should override for true atomicity.
+    /// # C: O(N components)
+    fn exchange(&self, a: &str, b: &str) -> KResult<()> {
+        if self.lookup_path(a).is_none() || self.lookup_path(b).is_none() {
+            return Err(VfsError::Enoent);
+        }
+        // Pick a temp name that does not currently exist on this FS.
+        let mut tmp = alloc::string::String::new();
+        let mut n: u32 = 0;
+        loop {
+            tmp.clear();
+            tmp.push_str(a);
+            tmp.push_str(".oxexch");
+            push_u32(&mut tmp, n);
+            if self.lookup_path(&tmp).is_none() { break; }
+            n = n.checked_add(1).ok_or(VfsError::Eexist)?;
+            if n > 65536 { return Err(VfsError::Eexist); }
+        }
+        self.rename(a, &tmp)?;                 // a -> tmp
+        if let Err(e) = self.rename(b, a) {    // b -> a
+            let _ = self.rename(&tmp, a);      // rollback: tmp -> a
+            return Err(e);
+        }
+        if let Err(e) = self.rename(&tmp, b) { // tmp -> b
+            let _ = self.rename(a, b);         // rollback: a -> b
+            let _ = self.rename(&tmp, a);      //           tmp -> a
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// `RENAME_WHITEOUT`: rename `from` to `to`, then plant a whiteout at
+    /// `from` — an overlayfs whiteout is a character device with rdev 0/0
+    /// (`mknod_child(S_IFCHR|0, 0)`). On whiteout-create failure the rename
+    /// is rolled back. Default works on any backend whose dir inode honours
+    /// `mknod_child`; others surface that inode's error (e.g. `Erofs`).
+    /// # C: O(N components)
+    fn whiteout(&self, from: &str, to: &str) -> KResult<()> {
+        const S_IFCHR: u16 = 0x2000;
+        self.rename(from, to)?;
+        // Parent dir + basename of `from` (now vacated by the rename).
+        let from = from.strip_suffix('/').unwrap_or(from);
+        let (parent, name) = match from.rfind('/') {
+            Some(i) => (&from[..i], &from[i + 1..]),
+            None    => ("", from),
+        };
+        let pino = match self.lookup_path(parent) {
+            Some(p) => p, None => { let _ = self.rename(to, from); return Err(VfsError::Enoent); }
+        };
+        if let Err(e) = pino.mknod_child(name, S_IFCHR, 0) {
+            let _ = self.rename(to, from); // rollback the move
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Back-stamp the owning `SuperBlock` (Linux `fill_super` setting up
