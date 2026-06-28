@@ -69,6 +69,11 @@ pub const SB_FREEZE_COMPLETE:  u32 = 4;
 /// default `s_maxbytes` a large-file backend reports. # C: O(1)
 pub const MAX_LFS_FILESIZE: u64 = i64::MAX as u64;
 
+/// `NSEC_PER_SEC` (Linux include/vdso/time64.h) — nanoseconds in one second,
+/// the per-second denominator [`SuperBlock::timestamp_truncate`] floors the
+/// sub-second field against. # C: O(1)
+pub const NSEC_PER_SEC: u64 = 1_000_000_000;
+
 /// Placeholder backend for an `s_fs`-less superblock built via
 /// [`SuperBlock::new`] (the object-model unit tests). Production superblocks
 /// are built via [`SuperBlock::for_backend`] and carry their real backend.
@@ -178,8 +183,13 @@ pub struct SuperBlock {
     s_active: AtomicU32,
     /// `s_maxbytes` — largest file size this fs can represent (write-path cap).
     pub s_maxbytes: u64,
-    /// `s_time_gran` — timestamp granularity in ns (inode setattr rounding).
-    pub s_time_gran: u32,
+    /// `s_time_gran` — timestamp granularity in ns (Linux `sb->s_time_gran`),
+    /// set at `fill_super` ([`SuperBlock::set_time_gran`]) and consulted by
+    /// [`SuperBlock::timestamp_truncate`] to floor inode atime/mtime/ctime to
+    /// what the backend can persist (ext4 1ns, ext2/FAT 1s/2s). Atomic to match
+    /// this struct's other mount-time-mutable fields and allow a remount/fill to
+    /// publish it without rebuilding the SB. # consumers: inode setattr rounding.
+    s_time_gran: AtomicU32,
     /// `s_writers.frozen` — current freeze level (`SB_UNFROZEN`..`SB_FREEZE_COMPLETE`).
     /// `freeze_super`/`thaw_super` ratchet it; `sb_start_write` gates on it.
     s_writers_frozen: AtomicU32,
@@ -240,7 +250,7 @@ impl SuperBlock {
             s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
             s_active: AtomicU32::new(1),
             s_maxbytes: MAX_LFS_FILESIZE,
-            s_time_gran: 1,
+            s_time_gran: AtomicU32::new(1),
             s_writers_frozen: AtomicU32::new(SB_UNFROZEN),
             s_writers_count: AtomicU32::new(0),
             s_id,
@@ -276,7 +286,7 @@ impl SuperBlock {
             s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
             s_active: AtomicU32::new(1),
             s_maxbytes: MAX_LFS_FILESIZE,
-            s_time_gran: 1,
+            s_time_gran: AtomicU32::new(1),
             s_writers_frozen: AtomicU32::new(SB_UNFROZEN),
             s_writers_count: AtomicU32::new(0),
             s_id,
@@ -462,7 +472,35 @@ impl SuperBlock {
     pub fn s_maxbytes(&self) -> u64 { self.s_maxbytes }
 
     /// `s_time_gran` — timestamp granularity (ns). # C: O(1)
-    pub fn s_time_gran(&self) -> u32 { self.s_time_gran }
+    pub fn s_time_gran(&self) -> u32 { self.s_time_gran.load(Ordering::Acquire) }
+
+    /// Publish the fs timestamp granularity (Linux `fill_super` writing
+    /// `sb->s_time_gran`). A backend that persists coarser-than-ns times calls
+    /// this once after [`SuperBlock::for_backend`] so [`Self::timestamp_truncate`]
+    /// floors to it. `0` is normalized to `1` (ns precision) so the truncation
+    /// math never divides by zero. # C: O(1)
+    pub fn set_time_gran(&self, gran: u32) {
+        self.s_time_gran.store(if gran == 0 { 1 } else { gran }, Ordering::Release);
+    }
+
+    /// `timestamp_truncate` (Linux fs/inode.c): round a wall-clock timestamp
+    /// (`t_ns`, nanoseconds since the epoch — the inode atime/mtime/ctime
+    /// representation) DOWN to this superblock's `s_time_gran`, so a setattr
+    /// never records sub-granularity precision the backend cannot persist.
+    /// `gran <= 1` is the identity (full ns); `gran >= NSEC_PER_SEC` floors to a
+    /// whole second; an in-between granularity truncates the sub-second
+    /// remainder to a `gran` multiple. Truncation is confined to the sub-second
+    /// field (Linux truncates `tv_nsec` only), so a coarse `gran` whose value is
+    /// not a divisor of `NSEC_PER_SEC` never perturbs the seconds count.
+    /// # C: O(1)
+    pub fn timestamp_truncate(&self, t_ns: u64) -> u64 {
+        let gran = self.s_time_gran() as u64;
+        if gran <= 1 { return t_ns; }
+        let sec = t_ns / NSEC_PER_SEC;
+        let nsec = t_ns % NSEC_PER_SEC;
+        let nsec = if gran >= NSEC_PER_SEC { 0 } else { nsec - nsec % gran };
+        sec * NSEC_PER_SEC + nsec
+    }
 
     /// Flush dirty fs state (Linux `sync_filesystem`, run before `put_super`
     /// in `generic_shutdown_super`). # C: O(dirty)
