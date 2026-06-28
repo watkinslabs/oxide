@@ -79,6 +79,12 @@ pub fn generic_fillattr<I: Inode + ?Sized>(inode: &I, idmap: &Idmap, overlay: Op
         .unwrap_or_else(|| default_perm_for(ft));
     let raw_uid = inode.uid().unwrap_or(if ov.owner_set { ov.uid } else { 0 });
     let raw_gid = inode.gid().unwrap_or(if ov.owner_set { ov.gid } else { 0 });
+    // `st_blksize` is a SUPERBLOCK property (Linux `s_blocksize`), not a
+    // per-inode one: route through the owning SB so every inode on one fs
+    // reports its mount's block size. `blksize()` is only the fallback for
+    // SB-less anon inodes (pidfd/pipe/socket — pending D35's anon SB). The same
+    // effective allocation unit also drives `st_blocks` (see `blocks_for`).
+    let bsize: u32 = inode.i_sb().map(|s| s.s_blocksize).unwrap_or_else(|| inode.blksize());
     Kstat {
         ino:      inode.ino(),
         mode:     type_bits | perm as u32,
@@ -87,17 +93,28 @@ pub fn generic_fillattr<I: Inode + ?Sized>(inode: &I, idmap: &Idmap, overlay: Op
         gid:      idmap.map_out_gid(raw_gid),
         rdev,
         size:     inode.size(),
-        // `st_blksize` is a SUPERBLOCK property (Linux `s_blocksize`), not a
-        // per-inode one: route through the owning SB so every inode on one fs
-        // reports its mount's block size. `blksize()` is only the fallback for
-        // SB-less anon inodes (pidfd/pipe/socket — pending D35's anon SB).
-        blksize:  inode.i_sb().map(|s| s.s_blocksize).unwrap_or_else(|| inode.blksize()),
-        blocks:   (inode.size() + 511) / 512,
+        blksize:  bsize,
+        blocks:   blocks_for(inode.size(), bsize),
         atime_ns: inode.atime().unwrap_or(ov.atime_ns),
         mtime_ns: inode.mtime().unwrap_or(ov.mtime_ns),
         ctime_ns: inode.ctime().unwrap_or(ov.ctime_ns),
         fsid:     inode.fsid(),
     }
+}
+
+/// `st_blocks` (Linux `stat.st_blocks`): the count of 512-byte units the file
+/// occupies. With no stored `i_blocks` field (D20 remainder), the best generic
+/// estimate of a NON-sparse file is `size` rounded UP to the filesystem
+/// allocation unit (`s_blocksize`/`blksize`) and re-expressed in 512-byte
+/// sectors — so a sub-block file reports a whole block (a 1-byte file on a 4 KiB
+/// fs = 8 sectors), matching `stat(1)` on ext4/tmpfs instead of the
+/// `ceil(size/512)` under-count that reported a single sector. Sparse /
+/// preallocated extents still need a real per-inode `i_blocks` (and `i_bytes`)
+/// to be exact — that is the unaddressed half of D20. # C: O(1)
+pub fn blocks_for(size: u64, bsize: u32) -> u64 {
+    let unit = (bsize as u64).max(512);          // allocation unit, ≥ one sector
+    let units = (size + unit - 1) / unit;         // blocks occupied, rounded up
+    units * (unit / 512)                          // → 512-byte sectors
 }
 
 /// `vfs_getattr` (Linux `fs/stat.c`): the stat-family entry that dispatches to
