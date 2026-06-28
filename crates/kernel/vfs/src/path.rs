@@ -189,9 +189,12 @@ pub fn dup_fd_target(path: &str) -> Option<(Option<u32>, i32)> {
     parse_proc_fd(path)
 }
 
-/// Normalize a path lexically (resolve `..` and `.` against an
-/// absolute prefix). Does NOT consult the FS. Absolute paths clamp
-/// parent walks at `/`, matching Linux path walk (`/.. == /`).
+/// Normalize a path lexically (collapse `.` and interior `x/..`).
+/// Does NOT consult the FS. Absolute paths clamp parent walks at `/`,
+/// matching Linux path walk (`/.. == /`). Relative paths PRESERVE
+/// leading `..` components (`../../a` stays `../../a`): on a relative
+/// path `..` is only resolvable per-component against the live tree
+/// after mount/symlink crossing, never lexically (`path_resolution(7)`).
 /// # C: O(len)
 pub fn lexical_normalize(path: &str) -> Option<String> {
     let mut stack: Vec<&str> = Vec::new();
@@ -201,10 +204,14 @@ pub fn lexical_normalize(path: &str) -> Option<String> {
             Component::Root      => {} // absolute already implied; ignore
             Component::Normal(s) => stack.push(s),
             Component::ParentDir => {
-                if stack.pop().is_none() {
-                    if !abs {
-                        stack.push("..");
-                    }
+                // Only collapse `..` against a *real* preceding name. A
+                // leading `..` on a relative path is NOT lexically
+                // resolvable (Linux resolves `..` per-component AFTER
+                // mount/symlink against the live tree), so it must be
+                // preserved — and a later `..` must NOT pop it.
+                match stack.last() {
+                    Some(&top) if top != ".." => { stack.pop(); }
+                    _ => { if !abs { stack.push(".."); } } // abs: clamp at root
                 }
             }
         }
