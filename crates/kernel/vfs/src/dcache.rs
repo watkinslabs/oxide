@@ -307,13 +307,16 @@ pub fn d_splice_alias(inode: InodeRef, d: &Arc<Dentry>) -> Arc<Dentry> {
 
 /// Invalidate `d` and its whole subtree (Linux `d_invalidate`): unhash every
 /// node so live descendants become disconnected and re-lookup re-walks the
-/// FS. Iterative over the `d_subdirs` index to bound stack depth. Used on
-/// remount / staleness and rmdir of a populated-but-invalidated dir.
-/// # C: O(subtree)
+/// FS, AND detach any mount(s) covering a dentry in the subtree (Linux
+/// `detach_mounts(child)`) in every namespace — the subtree is going away, so
+/// overmounts must go with it. Iterative over the `d_subdirs` index to bound
+/// stack depth. Used on remount / staleness and rmdir of a populated-but-
+/// invalidated dir. # C: O(subtree)
 pub fn d_invalidate(d: &Arc<Dentry>) {
     let mut stack: Vec<Arc<Dentry>> = alloc::vec![d.clone()];
     while let Some(cur) = stack.pop() {
         for kid in cur.children_snapshot() { stack.push(kid); }
+        crate::mount::detach_mounts_on(&cur);
         d_drop(&cur);
     }
 }
