@@ -96,15 +96,30 @@ pub fn resolve(abs: &str, no_follow_final: bool) -> Option<vfs::InodeRef> {
 /// Resolve absolute `abs` to its full VFS path object.
 /// # C: O(components × dir-lookup)
 pub fn resolve_path(abs: &str, no_follow_final: bool) -> Option<vfs::VfsPath> {
-    let (root, beneath) = resolution_root()?;
+    resolve_path_result(abs, no_follow_final).ok()
+}
+
+/// Like `resolve` but preserves the path-walk `VfsError` so the caller can
+/// surface the true errno (ENOTDIR / ELOOP / ENAMETOOLONG / EACCES) per the
+/// Linux contract instead of collapsing every miss to ENOENT.
+/// # C: O(components × dir-lookup)
+pub fn resolve_result(abs: &str, no_follow_final: bool) -> Result<vfs::InodeRef, vfs::VfsError> {
+    resolve_path_result(abs, no_follow_final).map(|p| p.inode)
+}
+
+/// Resolve absolute `abs` to its full VFS path object, preserving the
+/// path-walk error.
+/// # C: O(components × dir-lookup)
+pub fn resolve_path_result(abs: &str, no_follow_final: bool) -> Result<vfs::VfsPath, vfs::VfsError> {
+    let (root, beneath) = resolution_root().ok_or(vfs::VfsError::Enoent)?;
     let flags = vfs::LookupFlags { no_follow_final, beneath, ..Default::default() };
     let Some(cur) = sched::live::current() else {
-        return vfs::path_lookup_path(root.clone(), root, abs, flags).ok();
+        return vfs::path_lookup_path(root.clone(), root, abs, flags);
     };
-    // SAFETY: single-mutator per 13§5; current task is the sole writer.
+    // SAFETY: cwd_vfs slot single-mutator per 13§5; current task is the sole writer.
     let start = unsafe { (*cur.cwd_vfs.get()).clone().map(|p| p.dentry) }
         .unwrap_or_else(|| root.clone());
-    vfs::path_lookup_path(start, root, abs, flags).ok()
+    vfs::path_lookup_path(start, root, abs, flags)
 }
 
 /// Resolve a mount-point path `abs` to the `Arc<Dentry>` the mount engine

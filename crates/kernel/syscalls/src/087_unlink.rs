@@ -4,13 +4,14 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_path, errno_from_vfs, resolve_parent, unlink_unix_socket_path};
+use crate::namei_common::{read_user_path, errno_from_vfs, resolve_parent, unlink_unix_socket_path};
 
 /// `unlink(path)` slot 87.
 /// # C: O(N parent entries)
 pub fn sys_unlink(args: &SyscallArgs) -> i64 {
-    let raw = match read_path(args.a0) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    // X4: EFAULT(bad ptr) / ENOENT(empty) / ENAMETOOLONG, not EINVAL.
+    let raw = match read_user_path(args.a0) {
+        Ok(s) => s, Err(rv) => return rv,
     };
     let p = match crate::pathresolve::resolve_at_result(crate::pathresolve::AT_FDCWD, &raw) {
         Ok(p) => p, Err(rv) => return rv,

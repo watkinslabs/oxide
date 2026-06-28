@@ -5,7 +5,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::userbuf::validate_user_buf;
+use crate::userbuf::validate_user_buf_writable;
 
 /// `sys_fstat(fd, statbuf)` — slot 5. 144-byte Linux x86_64 struct stat.
 /// # C: O(1)
@@ -20,7 +20,7 @@ pub fn sys_fstat(args: &SyscallArgs) -> i64 {
     const STAT_BYTES: u64 = 144;
     #[cfg(target_arch = "aarch64")]
     const STAT_BYTES: u64 = 128;
-    if let Err(rv) = validate_user_buf(buf, STAT_BYTES, 8) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 8) { return rv; }
     let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
@@ -57,9 +57,15 @@ pub fn sys_fstat(args: &SyscallArgs) -> i64 {
     let gid = inode.gid().unwrap_or(if overlay.owner_set { overlay.gid } else { 0 });
     let ino  = inode.ino();
     let size = inode.size() as i64;
+    let blocks = (inode.size() + 511) / 512;
     let dev = crate::namei_common::fsid_to_dev(inode.fsid());
     let nlink = inode.nlink();
     let blksize = inode.blksize();
+    // Timestamps (overlay-aware) — previously left zero, so every fstat
+    // reported epoch 1970, breaking make/tar/ls -l.
+    let at = inode.atime().unwrap_or(overlay.atime_ns);
+    let mt = inode.mtime().unwrap_or(overlay.mtime_ns);
+    let ct = inode.ctime().unwrap_or(overlay.ctime_ns);
     // SAFETY: buf validated STAT_BYTES below USER_VA_END + 8-byte aligned; CPL=0 writes through user mapping per the active CR3/TTBR0 = caller's AS.
     unsafe {
         for off in (0..STAT_BYTES).step_by(8) {
@@ -67,8 +73,13 @@ pub fn sys_fstat(args: &SyscallArgs) -> i64 {
         }
         // st_dev@0 — distinct per filesystem (both arch layouts have dev@0).
         core::ptr::write_volatile(buf as *mut u64, dev);
+        let write_ts = |sec_off: u64, ns: u64| {
+            core::ptr::write_volatile((buf + sec_off)     as *mut i64, (ns / 1_000_000_000) as i64);
+            core::ptr::write_volatile((buf + sec_off + 8) as *mut i64, (ns % 1_000_000_000) as i64);
+        };
         #[cfg(target_arch = "x86_64")] {
-            // x86_64: dev@0 ino@8 nlink@16 mode@24 uid@28 gid@32 rdev@40 size@48 blksize@56 blocks@64.
+            // x86_64: dev@0 ino@8 nlink@16 mode@24 uid@28 gid@32 rdev@40
+            // size@48 blksize@56 blocks@64 atime@72 mtime@88 ctime@104.
             core::ptr::write_volatile((buf +   8)     as *mut u64, ino);
             core::ptr::write_volatile((buf +  16)     as *mut u64, nlink as u64);
             core::ptr::write_volatile((buf +  24)     as *mut u32, mode);
@@ -77,9 +88,14 @@ pub fn sys_fstat(args: &SyscallArgs) -> i64 {
             core::ptr::write_volatile((buf +  40)     as *mut u64, rdev);
             core::ptr::write_volatile((buf +  48)     as *mut i64, size);
             core::ptr::write_volatile((buf +  56)     as *mut i64, blksize as i64);
+            core::ptr::write_volatile((buf +  64)     as *mut i64, blocks as i64);
+            write_ts(72, at);
+            write_ts(88, mt);
+            write_ts(104, ct);
         }
         #[cfg(target_arch = "aarch64")] {
-            // asm-generic: dev@0 ino@8 mode@16 nlink@20 uid@24 gid@28 rdev@32 size@48 blksize@56 blocks@64.
+            // asm-generic: dev@0 ino@8 mode@16 nlink@20 uid@24 gid@28 rdev@32
+            // size@48 blksize@56 blocks@64 atime@72 mtime@88 ctime@104.
             core::ptr::write_volatile((buf +   8)     as *mut u64, ino);
             core::ptr::write_volatile((buf +  16)     as *mut u32, mode);
             core::ptr::write_volatile((buf +  20)     as *mut u32, nlink);
@@ -88,6 +104,10 @@ pub fn sys_fstat(args: &SyscallArgs) -> i64 {
             core::ptr::write_volatile((buf +  32)     as *mut u64, rdev);
             core::ptr::write_volatile((buf +  48)     as *mut i64, size);
             core::ptr::write_volatile((buf +  56)     as *mut i32, blksize as i32);
+            core::ptr::write_volatile((buf +  64)     as *mut i64, blocks as i64);
+            write_ts(72, at);
+            write_ts(88, mt);
+            write_ts(104, ct);
         }
     }
     0
