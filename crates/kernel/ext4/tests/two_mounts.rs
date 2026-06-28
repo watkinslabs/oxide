@@ -91,10 +91,10 @@ fn page_caches_are_per_mount() {
 fn fs_trait_routes_per_instance() {
     let a: Arc<dyn FileSystem> = open(MINI);
     let b: Arc<dyn FileSystem> = open(WALK);
-    assert!(a.lookup("/hello.txt").is_some());
-    assert!(a.lookup("/usr/bin/realtool").is_none());
-    assert!(b.lookup("/usr/bin/realtool").is_some());
-    assert!(b.lookup("/hello.txt").is_none());
+    assert!(a.lookup_path("/hello.txt").is_some());
+    assert!(a.lookup_path("/usr/bin/realtool").is_none());
+    assert!(b.lookup_path("/usr/bin/realtool").is_some());
+    assert!(b.lookup_path("/hello.txt").is_none());
     assert!(a.root().is_some() && b.root().is_some());
 }
 

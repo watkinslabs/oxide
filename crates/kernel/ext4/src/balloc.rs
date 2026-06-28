@@ -60,6 +60,8 @@ impl Mount {
             {
                 let mut s = m.state.lock();
                 gdt::write_descriptor_counters(&mut s.gdt_buf, group, &m.sb, &gd)?;
+                crate::csum::set_block_bitmap_csum(&m.sb, &mut s.gdt_buf, group, &bitmap);
+                crate::csum::stamp_group_desc_csum(&m.sb, &mut s.gdt_buf, group);
                 s.sb_free_blocks = s.sb_free_blocks.saturating_add(1);
             }
             m.metadata_write(bbm_byte_off, &bitmap)?;
@@ -92,6 +94,9 @@ impl Mount {
         {
             let mut s = self.state.lock();
             gdt::write_descriptor_counters(&mut s.gdt_buf, group, &self.sb, &gd)?;
+            crate::csum::set_block_bitmap_csum(&self.sb, &mut s.gdt_buf, group, &bitmap);
+            gdt::on_block_allocated(&mut s.gdt_buf, group, &self.sb);
+            crate::csum::stamp_group_desc_csum(&self.sb, &mut s.gdt_buf, group);
             s.sb_free_blocks = s.sb_free_blocks.saturating_sub(1);
         }
         self.metadata_write(bbm_byte_off, &bitmap)?;
@@ -159,6 +164,7 @@ impl Mount {
         )?;
         sb_buf[SB_OFF_FREE_BLOCKS_LO..SB_OFF_FREE_BLOCKS_LO+4].copy_from_slice(&lo_v.to_le_bytes());
         sb_buf[SB_OFF_FREE_BLOCKS_HI..SB_OFF_FREE_BLOCKS_HI+4].copy_from_slice(&hi_v.to_le_bytes());
+        crate::csum::stamp_superblock_csum(&self.sb, &mut sb_buf);
         self.metadata_write(crate::superblock::SUPERBLOCK_OFFSET, &sb_buf)
     }
 }

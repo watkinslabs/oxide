@@ -111,6 +111,80 @@ pub fn write_descriptor_counters(buf: &mut [u8], n: u32, sb: &Superblock, gd: &G
     Ok(())
 }
 
+/// `bg_flags` byte offset within a descriptor.
+pub const GD_OFF_FLAGS:           usize = 0x12;
+/// `bg_itable_unused` lo/hi offsets.
+pub const GD_OFF_ITABLE_UNUSED_LO: usize = 0x1C;
+pub const GD_OFF_ITABLE_UNUSED_HI: usize = 0x32;
+/// `bg_flags` bits per ext4 spec.
+pub const EXT4_BG_INODE_UNINIT: u16 = 0x0001;
+pub const EXT4_BG_BLOCK_UNINIT: u16 = 0x0002;
+
+/// Read `bg_itable_unused` (merging hi half for 64-bit descriptors).
+/// # C: O(1)
+fn read_itable_unused(buf: &[u8], off: usize, dsize: usize) -> u32 {
+    let lo = u16::from_le_bytes([buf[off + GD_OFF_ITABLE_UNUSED_LO],
+                                 buf[off + GD_OFF_ITABLE_UNUSED_LO + 1]]) as u32;
+    if dsize > 32 {
+        let hi = u16::from_le_bytes([buf[off + GD_OFF_ITABLE_UNUSED_HI],
+                                     buf[off + GD_OFF_ITABLE_UNUSED_HI + 1]]) as u32;
+        (hi << 16) | lo
+    } else { lo }
+}
+
+fn write_itable_unused(buf: &mut [u8], off: usize, dsize: usize, v: u32) {
+    buf[off + GD_OFF_ITABLE_UNUSED_LO..off + GD_OFF_ITABLE_UNUSED_LO + 2]
+        .copy_from_slice(&((v & 0xFFFF) as u16).to_le_bytes());
+    if dsize > 32 {
+        buf[off + GD_OFF_ITABLE_UNUSED_HI..off + GD_OFF_ITABLE_UNUSED_HI + 2]
+            .copy_from_slice(&((v >> 16) as u16).to_le_bytes());
+    }
+}
+
+/// Post-inode-allocation descriptor upkeep for group `n`: clear the
+/// EXT4_BG_INODE_UNINIT flag and clamp `bg_itable_unused` to the new
+/// high-water mark `inodes_per_group - (bit + 1)` (never increases).
+/// Caller restamps `bg_checksum` afterward.
+/// # C: O(1)
+pub fn on_inode_allocated(buf: &mut [u8], n: u32, sb: &Superblock, bit: u32) {
+    let dsize = desc_size_for(sb) as usize;
+    let off = (n as usize) * dsize;
+    if off + dsize > buf.len() { return; }
+    let flags = u16::from_le_bytes([buf[off + GD_OFF_FLAGS], buf[off + GD_OFF_FLAGS + 1]])
+        & !EXT4_BG_INODE_UNINIT;
+    buf[off + GD_OFF_FLAGS..off + GD_OFF_FLAGS + 2].copy_from_slice(&flags.to_le_bytes());
+    let cur = read_itable_unused(buf, off, dsize);
+    let want = sb.inodes_per_group.saturating_sub(bit + 1);
+    if want < cur { write_itable_unused(buf, off, dsize, want); }
+}
+
+/// Post-block-allocation descriptor upkeep: clear EXT4_BG_BLOCK_UNINIT
+/// for group `n`. Caller restamps `bg_checksum`.
+/// # C: O(1)
+pub fn on_block_allocated(buf: &mut [u8], n: u32, sb: &Superblock) {
+    let dsize = desc_size_for(sb) as usize;
+    let off = (n as usize) * dsize;
+    if off + dsize > buf.len() { return; }
+    let flags = u16::from_le_bytes([buf[off + GD_OFF_FLAGS], buf[off + GD_OFF_FLAGS + 1]])
+        & !EXT4_BG_BLOCK_UNINIT;
+    buf[off + GD_OFF_FLAGS..off + GD_OFF_FLAGS + 2].copy_from_slice(&flags.to_le_bytes());
+}
+
+/// Adjust `bg_used_dirs_count` for group `n` by `delta` and restamp
+/// `bg_checksum`. Used on directory create/remove (Linux maintains
+/// the per-group directory count; e2fsck verifies it).
+/// # C: O(desc_size)
+pub fn adjust_used_dirs(buf: &mut [u8], n: u32, sb: &Superblock, delta: i32)
+    -> Result<(), GdtError>
+{
+    let mut gd = parse_descriptor(buf, n, sb)?;
+    if delta >= 0 { gd.used_dirs_count = gd.used_dirs_count.saturating_add(delta as u32); }
+    else { gd.used_dirs_count = gd.used_dirs_count.saturating_sub((-delta) as u32); }
+    write_descriptor_counters(buf, n, sb, &gd)?;
+    crate::csum::stamp_group_desc_csum(sb, buf, n);
+    Ok(())
+}
+
 /// Locate inode `ino` (1-indexed) on the FS. Returns
 /// `(group, index_in_group)`. Caller reads
 /// `gd[group].inode_table` at `index_in_group * sb.inode_size`
