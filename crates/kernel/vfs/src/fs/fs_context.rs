@@ -86,14 +86,32 @@ pub enum FsContextPhase {
 }
 
 /// `enum fs_value_type` payload of one [`FsParameter`] (Linux
-/// `include/linux/fs_parser.h`). v1 carries the two shapes `fsconfig` produces
-/// from `SET_FLAG`/`SET_STRING`; blob/path/fd variants are noted for later.
+/// `include/linux/fs_parser.h`). One variant per `fsconfig(2)` command that
+/// carries a value: the bare flag (`SET_FLAG`), the `key=value` string
+/// (`SET_STRING`), an open fd (`SET_FD`), a path string with its
+/// `LOOKUP_EMPTY` bit (`SET_PATH`/`SET_PATH_EMPTY`), and an opaque binary blob
+/// (`SET_BINARY`). The syscall layer resolves the fd into a `struct file` and
+/// the path into a `struct path` before dispatch; this enum is the typed value
+/// the VFS `parse_param` model consumes — it no longer collapses every command
+/// to a string the way the old string-bag did.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FsValue {
     /// `fs_value_is_flag` — a bare key with no value (`fsconfig(SET_FLAG)`).
     Flag,
     /// `fs_value_is_string` — a `key=value` string (`fsconfig(SET_STRING)`).
     String(String),
+    /// `fs_value_is_file` — an open file descriptor (`fsconfig(SET_FD)`), e.g.
+    /// overlayfs `lowerdir+`/`upperdir` fds or a loop-source fd. The VFS keeps
+    /// only the raw number here; the syscall layer fetches the `struct file`.
+    File(i32),
+    /// `fs_value_is_filename` / `_filename_empty` — a path string
+    /// (`fsconfig(SET_PATH)` / `SET_PATH_EMPTY`). `empty` records the
+    /// `LOOKUP_EMPTY`/`AT_EMPTY_PATH` bit so an empty path resolves to the
+    /// supplied `dfd` itself.
+    Filename { path: String, empty: bool },
+    /// `fs_value_is_blob` — an opaque binary mount-option blob
+    /// (`fsconfig(SET_BINARY)`, Linux `FS_BINARY_MOUNTDATA` backends).
+    Blob(Vec<u8>),
 }
 
 /// `struct fs_parameter` (Linux `include/linux/fs_parser.h`) — ONE mount option
@@ -117,9 +135,48 @@ impl FsParameter {
         Self { key: key.to_string(), value: FsValue::String(value.to_string()) }
     }
 
-    /// The string payload, or `None` for a bare flag. # C: O(1)
+    /// A `fs_value_is_file` parameter (`fsconfig(SET_FD, key, fd)`). # C: O(len key)
+    pub fn fd(key: &str, fd: i32) -> Self {
+        Self { key: key.to_string(), value: FsValue::File(fd) }
+    }
+
+    /// A `fs_value_is_filename` parameter (`fsconfig(SET_PATH, key, path)`).
+    /// # C: O(len key + len path)
+    pub fn path(key: &str, path: &str) -> Self {
+        Self { key: key.to_string(), value: FsValue::Filename { path: path.to_string(), empty: false } }
+    }
+
+    /// A `fs_value_is_filename_empty` parameter (`fsconfig(SET_PATH_EMPTY)`) —
+    /// carries the `LOOKUP_EMPTY` bit. # C: O(len key + len path)
+    pub fn path_empty(key: &str, path: &str) -> Self {
+        Self { key: key.to_string(), value: FsValue::Filename { path: path.to_string(), empty: true } }
+    }
+
+    /// A `fs_value_is_blob` parameter (`fsconfig(SET_BINARY, key, blob)`).
+    /// # C: O(len key + len blob)
+    pub fn blob(key: &str, blob: &[u8]) -> Self {
+        Self { key: key.to_string(), value: FsValue::Blob(blob.to_vec()) }
+    }
+
+    /// The string payload, or `None` for any non-string value. # C: O(1)
     pub fn as_str(&self) -> Option<&str> {
-        match &self.value { FsValue::String(s) => Some(s), FsValue::Flag => None }
+        match &self.value { FsValue::String(s) => Some(s), _ => None }
+    }
+
+    /// The fd payload (`fs_value_is_file`), or `None`. # C: O(1)
+    pub fn as_fd(&self) -> Option<i32> {
+        match &self.value { FsValue::File(fd) => Some(*fd), _ => None }
+    }
+
+    /// The path payload + its `LOOKUP_EMPTY` bit (`fs_value_is_filename*`), or
+    /// `None`. # C: O(1)
+    pub fn as_path(&self) -> Option<(&str, bool)> {
+        match &self.value { FsValue::Filename { path, empty } => Some((path, *empty)), _ => None }
+    }
+
+    /// The binary blob payload (`fs_value_is_blob`), or `None`. # C: O(1)
+    pub fn as_blob(&self) -> Option<&[u8]> {
+        match &self.value { FsValue::Blob(b) => Some(b), _ => None }
     }
 }
 
@@ -172,6 +229,16 @@ impl FsContextOps for LegacyFsContextOps {
     /// accumulated param list. # C: O(len key+val)
     fn parse_param(&self, fc: &mut FsContext, param: &FsParameter) -> KResult<ParamResult> {
         if param.key == "source" { return Ok(ParamResult::Declined); }
+        // A legacy backend's option blob is a comma string: it can only carry
+        // `fs_value_is_flag`/`_string`. An fd/path/blob value has no string form
+        // a legacy `->mount` could parse (Linux `legacy_parse_param` `default:
+        // return invalf(...)` ⇒ -EINVAL).
+        match &param.value {
+            FsValue::Flag | FsValue::String(_) => {}
+            FsValue::File(_) | FsValue::Filename { .. } | FsValue::Blob(_) => {
+                return Err(VfsError::Einval);
+            }
+        }
         fc.params.push(param.clone());
         Ok(ParamResult::Consumed)
     }
@@ -355,7 +422,11 @@ pub fn vfs_parse_fs_param_source(fc: &mut FsContext, param: &FsParameter) -> KRe
             fc.source = Some(s.clone());
             Ok(())
         }
-        FsValue::Flag => Err(VfsError::Einval),
+        // A bare flag / fd / path / blob is not a valid `source` (Linux
+        // `vfs_parse_fs_param_source` accepts only `fs_value_is_string`).
+        FsValue::Flag | FsValue::File(_) | FsValue::Filename { .. } | FsValue::Blob(_) => {
+            Err(VfsError::Einval)
+        }
     }
 }
 
