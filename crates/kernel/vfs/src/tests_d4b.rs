@@ -10,7 +10,7 @@ use crate::getattr::{generic_fillattr, S_IFREG};
 use crate::idmap::Idmap;
 use crate::inode::{Inode, InodeRef};
 use crate::namei::Cred;
-use crate::setattr::{notify_change, setattr_prepare, Iattr, ATTR_MTIME, ATTR_MTIME_SET, ATTR_UID};
+use crate::setattr::{notify_change, setattr_prepare, Iattr, ATTR_ATIME, ATTR_MTIME, ATTR_MTIME_SET, ATTR_UID};
 use crate::types::{FileType, KResult, VfsError};
 
 // Mutable test inode recording perm/owner/times so apply paths are observable.
@@ -108,7 +108,10 @@ fn t1b_idmap_chown_in() {
 }
 
 // T2: setattr_prepare non-owner specific-time utimes -> EPERM; owner -> Ok;
-//     non-owner "now" with MAY_WRITE granted -> Ok via the write branch.
+//     non-owner BOTH-to-now with MAY_WRITE granted -> Ok via the write branch.
+//     A single-field "now" (e.g. {UTIME_OMIT, UTIME_NOW}) is owner-gated like a
+//     specific time (Linux ATTR_TIMES_SET), so the write branch covers only the
+//     both-atime+mtime-to-now case (NULL times / both UTIME_NOW).
 #[test]
 fn t2_setattr_prepare_utimes_eperm() {
     let inode: InodeRef = MetaInode::reg(0o666, 1000, 1000); // other-write set
@@ -118,12 +121,15 @@ fn t2_setattr_prepare_utimes_eperm() {
     // owner, specific mtime -> Ok
     let mut ia2 = Iattr { valid: ATTR_MTIME | ATTR_MTIME_SET, mtime_ns: 123, ..Default::default() };
     assert!(setattr_prepare(&Idmap::identity(), &inode, &mut ia2, &cred_with(1000)).is_ok());
-    // non-owner, "now" (no _SET), write permitted by other-write -> Ok
-    let mut ia3 = Iattr { valid: ATTR_MTIME, mtime_ns: 999, ..Default::default() };
+    // non-owner, BOTH-to-now (no _SET), write permitted by other-write -> Ok
+    let mut ia3 = Iattr { valid: ATTR_ATIME | ATTR_MTIME, atime_ns: 999, mtime_ns: 999, ..Default::default() };
     assert!(setattr_prepare(&Idmap::identity(), &inode, &mut ia3, &cred_with(2000)).is_ok());
-    // non-owner, "now", no write perm -> EACCES
+    // non-owner, single-field "now" {UTIME_OMIT, UTIME_NOW} -> EPERM (ATTR_TIMES_SET)
+    let mut ia3b = Iattr { valid: ATTR_MTIME, mtime_ns: 999, ..Default::default() };
+    assert_eq!(setattr_prepare(&Idmap::identity(), &inode, &mut ia3b, &cred_with(2000)), Err(VfsError::Eperm));
+    // non-owner, BOTH-to-now, no write perm -> EACCES
     let ro: InodeRef = MetaInode::reg(0o644, 1000, 1000);
-    let mut ia4 = Iattr { valid: ATTR_MTIME, mtime_ns: 999, ..Default::default() };
+    let mut ia4 = Iattr { valid: ATTR_ATIME | ATTR_MTIME, atime_ns: 999, mtime_ns: 999, ..Default::default() };
     assert_eq!(setattr_prepare(&Idmap::identity(), &ro, &mut ia4, &cred_with(2000)), Err(VfsError::Eacces));
 }
 
