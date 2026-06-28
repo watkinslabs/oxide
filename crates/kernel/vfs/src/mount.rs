@@ -575,17 +575,20 @@ fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>)
     mntns::bump_gen(ns);
 }
 
-/// Last-umount teardown (Linux `deactivate_super` → `put_super`): run
-/// `put_super` on `sb` IFF no other live mount still references it. The O(N)
-/// `Arc::ptr_eq` scan stands in for the not-yet-built `s_active` refcount (D6):
-/// every mount today builds a unique SB via `for_backend`, so a victim's SB is
-/// shared only by bind clones of the SAME `Arc<Mount>` (none today) — the scan
-/// is exact. Call AFTER the victim is removed from `MOUNTS` so it is not
-/// self-counted. # C: O(N_mounts)
+/// Last-umount teardown (Linux `mntput` → `deactivate_super`): drop THIS
+/// mount's active reference on `sb` via the [`SuperBlock`] `s_active` refcount
+/// (D6). Each live mount holds exactly one active ref — `for_backend` seeds the
+/// first (`s_active == 1`) and every SB-sharing clone (`copy_mnt_ns`, the Linux
+/// `clone_mnt` path) grabs one via [`SuperBlock::grab_active`] — so the LAST
+/// drop (1 → 0) runs `generic_shutdown_super` (sync_filesystem + `put_super`)
+/// exactly once, and a still-mounted sibling/ns-clone keeps the shared instance
+/// alive. Replaces the old O(N) `Arc::ptr_eq` mount-table scan, which could not
+/// see refs held by mounts already removed from `MOUNTS`. Call AFTER the victim
+/// is unlinked so the drop accounts for itself. # C: O(1) (O(tree) on last drop)
 fn put_super_if_last(sb: &Arc<SuperBlock>) {
-    let still_used = MOUNTS.lock().values().any(|m| Arc::ptr_eq(&m.sb, sb));
-    // Linux generic_shutdown_super: sync_filesystem before put_super.
-    if !still_used { let _ = sb.sync_fs(true); sb.put_super(); }
+    // deactivate_super = atomic_dec_and_test; on the 1→0 transition it runs
+    // sync_fs + put_super internally (idempotent once already at 0).
+    sb.deactivate_super();
 }
 
 /// Unlink `id` from its parent's intrusive child list. # C: O(siblings)
@@ -711,6 +714,11 @@ pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
     mntns::ns_get_or_create(to_ns);
     for m in src.iter() {
         let new_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
+        // Linux `clone_mnt`: the clone shares the source SB, so take an extra
+        // active ref (`atomic_inc(&sb->s_active)`). The source mount is live in
+        // `MOUNTS`, so its SB is active and `grab_active` always succeeds.
+        let grabbed = m.sb.grab_active();
+        hal::kassert!(grabbed, "copy_mnt_ns: live source SB must grab an active ref");
         let clone = new_mount(
             m.sb.clone(), m.mount_point_str(), m.mountpoint(),
             0, m.root.clone(), new_id, to_ns,
@@ -744,7 +752,9 @@ pub fn snapshot_ns(from_ns: u64, to_ns: u64) { copy_mnt_ns(from_ns, to_ns); }
 
 /// Reap every mount belonging to `ns` (Linux `free_mnt_ns` at last task
 /// exit). Drops the per-ns crossings, the hash, the `struct mountpoint`
-/// refcounts, and the global-map entries. # C: O(N_ns_mounts)
+/// refcounts, and the global-map entries, and `mntput`s each mount's active
+/// reference so a ns-private SB (no peer ns sharing it) runs `put_super` on
+/// its last drop. # C: O(N_ns_mounts)
 pub(crate) fn reap_ns(ns: u64) {
     let mounts = mounts_in_ns(ns);
     for m in mounts.iter() {
@@ -752,6 +762,8 @@ pub(crate) fn reap_ns(ns: u64) {
         if let Some(o) = m.mnt_mp.lock().take() { put_mountpoint(&o); }
         m.mnt_mounts.lock().clear();
         MOUNTS.lock().remove(&m.mnt_id);
+        // free_mnt_ns → mntput → deactivate_super: drop this mount's active ref.
+        put_super_if_last(&m.sb);
     }
     hash_drop_ns(ns);
     mntns::bump_gen(ns);
