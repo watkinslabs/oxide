@@ -17,12 +17,57 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use core::any::Any;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use sync::{RwLock, Spinlock, Superblock as SbClass};
 
 use crate::dentry::Dentry;
+use crate::fs::FileSystem;
 use crate::inode::{Inode, InodeRef};
 use crate::types::{Ino, KResult};
+
+/// `get_anon_bdev` (Linux `fs/super.c`) — per-instance anonymous block-dev
+/// id source for filesystems with no real backing device. Each mounted
+/// instance gets a distinct `s_dev` so two `mount -t tmpfs` report
+/// different `st_dev` (the thing a per-fs-type constant cannot express).
+/// Starts above the legacy `dev_t` minor range to avoid colliding with a
+/// real block device's packed `(major<<20)|minor`. # C: O(1)
+static NEXT_ANON_DEV: AtomicU64 = AtomicU64::new(0x0000_0001_0000_0000);
+
+/// Allocate a fresh anonymous device id (`get_anon_bdev`). # C: O(1)
+pub fn next_anon_dev() -> u64 { NEXT_ANON_DEV.fetch_add(1, Ordering::Relaxed) }
+
+/// Placeholder backend for an `s_fs`-less superblock built via
+/// [`SuperBlock::new`] (the object-model unit tests). Production superblocks
+/// are built via [`SuperBlock::for_backend`] and carry their real backend.
+struct NullFs;
+impl FileSystem for NullFs {
+    fn name(&self) -> &str { "none" }
+}
+
+/// Adapter exposing a legacy `Arc<dyn FileSystem>` as `super_operations`
+/// (`s_op`). `statfs` reports the backend `magic` as `f_type`; the inode
+/// `SuperBlock::statfs` then defaults `f_bsize` from `s_blocksize`. This is
+/// the generic `fill_super` glue so every backend gets a working superblock
+/// without a per-fs `SuperOps` impl (richer per-fs `SuperOps` layer on top).
+struct FsBackedSuperOps { fs: Arc<dyn FileSystem> }
+impl SuperOps for FsBackedSuperOps {
+    fn statfs(&self) -> KResult<SbStatFs> {
+        Ok(SbStatFs { f_type: self.fs.magic(), f_bsize: 4096, ..Default::default() })
+    }
+}
+
+/// Adapter exposing a legacy `Arc<dyn FileSystem>` as `file_system_type`
+/// (`s_type`). `mount` is `fill_super`: build a fresh superblock over the
+/// backend's root inode.
+struct FsBackedType { fs: Arc<dyn FileSystem> }
+impl FileSystemType for FsBackedType {
+    fn name(&self) -> &str { self.fs.name() }
+    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> {
+        Ok(SuperBlock::for_backend(self.fs.clone(), self.fs.root(),
+            next_anon_dev(), String::from(self.fs.name())))
+    }
+}
 
 /// `statfs(2)` payload a superblock reports (Linux `struct kstatfs`
 /// subset). `f_type` mirrors `s_magic`.
@@ -78,6 +123,11 @@ pub struct SuperBlock {
     s_root: RwLock<Option<Arc<Dentry>>, SbClass>,
     /// `s_fs_info` — backend-private state (ext4 sb / tmpfs arena).
     s_fs_info: Arc<dyn Any + Send + Sync>,
+    /// The legacy `Arc<dyn FileSystem>` backend carrying the write/inode ops
+    /// (`create`/`unlink`/`link`/`rename`/`root`/`mounts_line`) that
+    /// `SuperOps`/`FileSystemType` do not. The mount table reaches the
+    /// backend through `sb.fs()`. `NullFs` for an `s_fs`-less test SB.
+    s_fs: Arc<dyn FileSystem>,
     /// Per-instance inode cache (`iget`/`ilookup`/`iput`). `Weak` so an
     /// inode is reclaimed when its last `Arc` drops; a stale `Weak` is
     /// re-inserted on the next `iget`.
@@ -102,12 +152,47 @@ impl SuperBlock {
             s_op, s_type, s_magic, s_dev, s_blocksize, s_id,
             s_root: RwLock::new(None),
             s_fs_info,
+            s_fs: Arc::new(NullFs),
             icache: Spinlock::new(BTreeMap::new()),
         })
     }
 
+    /// `fill_super` for a legacy `Arc<dyn FileSystem>` backend: build a fresh
+    /// superblock whose `s_op`/`s_type` adapt the backend, `s_magic` is
+    /// `fs.magic()`, `s_dev` is the per-instance anon dev, and whose `s_root`
+    /// dentry is installed over `root_inode` (the bind/whole-fs root). Every
+    /// production mount is allocated here (Linux `mount_bdev`/`mount_nodev`).
+    /// # C: O(1)
+    pub fn for_backend(
+        fs: Arc<dyn FileSystem>,
+        root_inode: Option<InodeRef>,
+        s_dev: u64,
+        s_id: String,
+    ) -> Arc<Self> {
+        let s_op: Arc<dyn SuperOps> = Arc::new(FsBackedSuperOps { fs: fs.clone() });
+        let s_type: Arc<dyn FileSystemType> = Arc::new(FsBackedType { fs: fs.clone() });
+        let s_magic = fs.magic();
+        let sb = Arc::new(Self {
+            s_op, s_type, s_magic, s_dev, s_blocksize: 4096, s_id,
+            s_root: RwLock::new(None),
+            s_fs_info: Arc::new(()),
+            s_fs: fs,
+            icache: Spinlock::new(BTreeMap::new()),
+        });
+        if let Some(i) = root_inode { crate::dcache::d_make_root(i, &sb); }
+        sb
+    }
+
+    /// The backend (Linux: the SB's write/inode-op carrier). # C: O(1)
+    pub fn fs(&self) -> &Arc<dyn FileSystem> { &self.s_fs }
+
     /// The root dentry of this instance (Linux `sb->s_root`). # C: O(1)
     pub fn s_root(&self) -> Option<Arc<Dentry>> { self.s_root.read().clone() }
+
+    /// Root inode behind `s_root` (Linux `sb->s_root->d_inode`). # C: O(1)
+    pub fn s_root_inode(&self) -> Option<InodeRef> {
+        self.s_root().and_then(|d| d.inode())
+    }
 
     /// Install `s_root` (called by `d_make_root`). # C: O(1)
     pub fn set_s_root(&self, root: Arc<Dentry>) { *self.s_root.write() = Some(root); }

@@ -94,7 +94,7 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
         // mountpoint dentry IS `trimmed` — not the longest-prefix owner
         // `resolve_mount` would return.
         if let Some(m) = target_d.as_ref().and_then(|d| vfs::mount::mount_at_path_exact(d)) {
-            if matches!(m.fs.name(), "procfs" | "sysfs" | "devtmpfs" | "devfs") {
+            if matches!(m.fs().name(), "procfs" | "sysfs" | "devtmpfs" | "devfs") {
                 return 0;
             }
         }

@@ -326,7 +326,7 @@ fn pivot_root_swaps_namespace_root() {
     common::pivot_root("/nr", "/nr/old").expect("pivot");
     let snap = vfs::mount::snapshot();
     let ino_at = |mp: &str| snap.iter().find(|m| m.mount_point_str() == mp)
-        .and_then(|m| m.fs.root()).map(|i| i.ino());
+        .and_then(|m| m.fs().root()).map(|i| i.ino());
     assert_eq!(ino_at("/"), Some(0xB), "new_root is now /");
     assert_eq!(ino_at("/sub"), Some(0xC), "new_root submount rebased to /sub");
     assert_eq!(ino_at("/old"), Some(0xA), "old root relocated under put_old");

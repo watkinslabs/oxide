@@ -66,7 +66,7 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
         let umask = cur.umask.load(core::sync::atomic::Ordering::Acquire);
         let final_mode = mode & 0o777 & !umask;
         match vfs::mount::resolve_mount(path_str) {
-            Some((mnt, rel)) => match mnt.fs.create(&rel, final_mode) {
+            Some((mnt, rel)) => match mnt.fs().create(&rel, final_mode) {
                 Ok(i) => i,
                 Err(e) => {
             crate::namei_common::trace_run_vfs_error(b"open-create", path_str, e);

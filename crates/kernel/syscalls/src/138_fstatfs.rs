@@ -6,7 +6,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::userbuf::validate_user_buf;
-use crate::statfs_common::{magic_for_path, usage_for, write_statfs, M_TMPFS};
+use crate::statfs_common::{statfs_for_path, statfs_for_magic, write_statfs};
 
 /// `sys_fstatfs(fd, buf)` — slot 138. Reports the backing fs magic for
 /// an open fd, classified by the path the fd was opened with.
@@ -27,13 +27,16 @@ pub fn sys_fstatfs(args: &SyscallArgs) -> i64 {
     // meaningful path to classify. Let the inode report a superblock magic
     // first; ordinary path-backed files fall back to mount/path resolution.
     let im = file.inode().statfs_magic();
-    let magic = if im != 0 {
-        im
+    let st = if im != 0 {
+        statfs_for_magic(im)
     } else {
         let name = file.dentry().name();
-        if name.starts_with('/') { magic_for_path(name) } else { M_TMPFS }
+        if name.starts_with('/') {
+            statfs_for_path(name)
+        } else {
+            statfs_for_magic(crate::statfs_common::M_TMPFS)
+        }
     };
-    let (blocks, bfree, files) = usage_for(magic);
-    write_statfs(buf, magic, blocks, bfree, files);
+    write_statfs(buf, &st);
     0
 }

@@ -68,7 +68,7 @@ fn udevd_sysfs_move_from_mkdtemp_temp_path() {
     // The moved mount is now resolvable at /sys (top of the stack), same id.
     let at_sys = common::mount_at_path_exact("/sys").expect("mount at /sys");
     assert_eq!(at_sys.mnt_id, temp_id, "the moved sysfs is now the mount at /sys");
-    assert_eq!(at_sys.fs.root().map(|i| i.ino()), Some(0x55), "moved sysfs root inode");
+    assert_eq!(at_sys.fs().root().map(|i| i.ino()), Some(0x55), "moved sysfs root inode");
 
     // Parent of /sys is the mount owning '/' (root mount), by identity.
     let root_id = vfs::mount::root_mount_id(ns).expect("root id");

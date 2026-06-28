@@ -25,6 +25,7 @@ use sync::{MountTable as MountClass, Spinlock};
 use crate::dentry::Dentry;
 use crate::fs::{FileSystem, KResult};
 use crate::inode::InodeRef;
+use crate::superblock::{next_anon_dev, SuperBlock};
 use crate::types::VfsError;
 
 pub const MNT_RDONLY: u64 = 1;
@@ -245,7 +246,7 @@ fn rebuild_ns_index(ns: u64) {
 /// has no Clone; atomics copied explicitly). # C: O(1)
 fn rebuild(m: &Mount, mountpoint: Option<Arc<Dentry>>, rendered: String) -> Arc<Mount> {
     Arc::new(Mount {
-        fs: m.fs.clone(),
+        sb: m.sb.clone(),
         rendered_path: rendered,
         mountpoint,
         parent_id: AtomicU64::new(m.parent_id.load(Ordering::Acquire)),
@@ -311,7 +312,11 @@ static NEXT_PEER_GROUP: AtomicU64 = AtomicU64::new(1);
 /// attach: `parent_id` (= `mnt_parent`) + `mountpoint` (= `mnt_mountpoint`).
 /// `rendered_path` is render-only (mountinfo/statmount), never a decision.
 pub struct Mount {
-    pub fs: Arc<dyn FileSystem>,
+    /// The mounted-instance superblock (Linux `mnt_sb`). Owns `s_root`,
+    /// `s_op`, `s_dev`, `s_magic`, and reaches the backend via `sb.fs()`.
+    /// Every mount carries a real `SuperBlock` (built by
+    /// `SuperBlock::for_backend` in `attach`).
+    pub sb: Arc<SuperBlock>,
     /// Rendered mount path — WRITE at attach/move, READ only by /proc
     /// mountinfo, /proc mounts, statmount (`mount_point_str`). NEVER a
     /// routing/parent/child input. Renamed from `mount_point` so any
@@ -348,6 +353,13 @@ impl Mount {
     pub fn is_root(&self) -> bool {
         ROOTS.lock().get(&self.ns) == Some(&self.mnt_id)
     }
+
+    /// The mounted-instance superblock (Linux `mnt_sb`). # C: O(1)
+    pub fn sb(&self) -> &Arc<SuperBlock> { &self.sb }
+
+    /// The backend behind this mount's superblock (Linux `mnt_sb->s_fs`).
+    /// # C: O(1)
+    pub fn fs(&self) -> &Arc<dyn FileSystem> { self.sb.fs() }
 }
 
 static TABLE: Spinlock<Vec<Arc<Mount>>, MountClass> = Spinlock::new(Vec::new());
@@ -419,9 +431,14 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
     // The global root dentry, like `None`, attaches the namespace root.
     let mp = mp.filter(|d| !is_global_root(d));
     let Some(d) = mp else {
+        // `fill_super` (Linux): allocate the mounted-instance superblock with
+        // its own `s_dev` and an `s_root` dentry over the fs root inode (the
+        // bind/whole-fs root). The ns root has rendered path "/".
+        let root_inode = root.clone().or_else(|| fs.root());
+        let sb = SuperBlock::for_backend(fs, root_inode, next_anon_dev(), String::from("/"));
         ROOTS.lock().insert(ns, mnt_id);
         TABLE.lock().push(Arc::new(Mount {
-            fs, rendered_path: String::from("/"), mountpoint: None,
+            sb, rendered_path: String::from("/"), mountpoint: None,
             parent_id: AtomicU64::new(mnt_id), root, mnt_id,
             propagation: AtomicU8::new(Propagation::Private as u8),
             peer_group: AtomicU64::new(0), flags: AtomicU64::new(0), ns,
@@ -431,8 +448,11 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
     // Parent = the covering mount of the mountpoint dentry's nearest mounted
     // ancestor — by identity.
     let parent_id = parent_by_dentry(ns, &d);
+    let rendered = abs_string(&d);
+    let root_inode = root.clone().or_else(|| fs.root());
+    let sb = SuperBlock::for_backend(fs, root_inode, next_anon_dev(), rendered.clone());
     TABLE.lock().push(Arc::new(Mount {
-        fs, rendered_path: abs_string(&d), mountpoint: Some(d.clone()),
+        sb, rendered_path: rendered, mountpoint: Some(d.clone()),
         parent_id: AtomicU64::new(parent_id), root, mnt_id,
         propagation: AtomicU8::new(Propagation::Private as u8),
         peer_group: AtomicU64::new(0), flags: AtomicU64::new(0), ns,
@@ -476,7 +496,7 @@ pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
     let rel = match rel_under(new_mp, parent.mountpoint.as_ref()) {
         Some(r) if !r.is_empty() => r, _ => return 0,
     };
-    let root = match newm.root.clone().or_else(|| newm.fs.root()) {
+    let root = match newm.root.clone().or_else(|| newm.fs().root()) {
         Some(r) => r, None => return 0,
     };
     let peers: Vec<Arc<Mount>> = TABLE.lock().iter()
@@ -492,7 +512,7 @@ pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
             Some(b) => b, None => continue,
         };
         let Some(dst) = descend(&base, &rel) else { continue; };
-        if register_bind(Some(dst), newm.fs.clone(), root.clone()).is_ok() { n += 1; }
+        if register_bind(Some(dst), newm.fs().clone(), root.clone()).is_ok() { n += 1; }
     }
     n
 }
@@ -696,7 +716,7 @@ pub fn snapshot_ns(from_ns: u64, to_ns: u64) {
         t.iter().filter(|m| m.ns == from_ns).map(|m| {
             let new_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
             Arc::new(Mount {
-                fs: m.fs.clone(),
+                sb: m.sb.clone(),
                 rendered_path: m.rendered_path.clone(),
                 mountpoint: m.mountpoint.clone(),
                 parent_id: AtomicU64::new(0),
@@ -743,9 +763,9 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
         // Mirror position = the bind target dentry descended by `rel`
         // (engine-internal synthesis, not a string resolve).
         let Some(new_mp) = descend(tgt, &rel) else { continue; };
-        let root = m.root.clone().or_else(|| m.fs.root());
+        let root = m.root.clone().or_else(|| m.fs().root());
         if let Some(r) = root {
-            if register_bind(Some(new_mp), m.fs.clone(), r).is_ok() { n += 1; }
+            if register_bind(Some(new_mp), m.fs().clone(), r).is_ok() { n += 1; }
         }
     }
     n
@@ -889,7 +909,7 @@ pub fn mount_root_at(d: &Arc<Dentry>) -> Option<InodeRef> {
     if is_global_root(d) { return None; }
     let m = mount_at_path_exact(d)?;
     if let Some(r) = m.root.as_ref() { return Some(r.clone()); }
-    m.fs.root()
+    m.fs().root()
 }
 
 /// Root inode of a concrete mount id (the path walk's crossing primitive).
@@ -899,7 +919,7 @@ pub fn mount_root_at(d: &Arc<Dentry>) -> Option<InodeRef> {
 pub fn root_for_mount_id(mnt_id: u64) -> Option<InodeRef> {
     let t = TABLE.lock();
     let m = t.iter().find(|m| m.mnt_id == mnt_id)?;
-    m.root.clone().or_else(|| m.fs.root())
+    m.root.clone().or_else(|| m.fs().root())
 }
 
 /// Snapshot the caller's mount-namespace view (for /proc mounts +

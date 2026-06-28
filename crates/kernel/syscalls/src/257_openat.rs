@@ -77,7 +77,7 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
                 if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
                     return -(Errno::Erofs.as_i32() as i64);
                 }
-                match mnt.fs.create_anonymous(&rel, final_mode as u32) {
+                match mnt.fs().create_anonymous(&rel, final_mode as u32) {
                     Ok(i)  => i,
                     Err(_) => return -(Errno::Enospc.as_i32() as i64),
                 }
@@ -110,7 +110,7 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
                 if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
                     return -(Errno::Erofs.as_i32() as i64);
                 }
-                match mnt.fs.create(&rel, final_mode) {
+                match mnt.fs().create(&rel, final_mode) {
                     Ok(i) => i,
                     Err(e) => {
                         crate::namei_common::trace_run_vfs_error(b"openat-create", path_str, e);

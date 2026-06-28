@@ -79,7 +79,7 @@ impl FileSystem for BindFs {
     /// # C: O(N_mounts)
     fn magic(&self) -> u64 {
         vfs::mount::resolve_mount(&self.source)
-            .map(|(m, _)| m.fs.magic())
+            .map(|(m, _)| m.fs().magic())
             .filter(|&m| m != 0)
             .unwrap_or(0xEF53)
     }
