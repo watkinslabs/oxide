@@ -17,35 +17,32 @@ pub(crate) fn read_path(ptr: u64) -> Option<String> {
     core::str::from_utf8(bytes).ok().map(|s| s.into())
 }
 
-/// Linux PATH_MAX (includes the terminating NUL); the longest pathname a
-/// syscall accepts is `PATH_MAX - 1` bytes.
-pub(crate) const PATH_MAX: usize = 4096;
-
 /// Read a user-space pathname with the full Linux errno contract:
 ///   * NULL / out-of-range ptr  → **EFAULT**
 ///   * empty string (`""`)      → **ENOENT** (callers without AT_EMPTY_PATH)
-///   * pathname ≥ PATH_MAX bytes → **ENAMETOOLONG**
+///   * pathname ≥ PATH_MAX bytes → **ENAMETOOLONG** (`vfs::path::check_path_len`)
 ///   * non-UTF-8 bytes          → byte-preserved (Linux paths are opaque
 ///     byte strings, `path_resolution(7)`); decoded via
 ///     `vfs::path_from_bytes` so a non-UTF-8 component still resolves.
 /// Returns `Ok(empty)` is impossible — empty maps to ENOENT here; callers
-/// that allow AT_EMPTY_PATH must probe emptiness before calling.
+/// that allow AT_EMPTY_PATH must probe emptiness before calling. The
+/// total-length limit + its gate are owned by `vfs::path` (the work-fn crate
+/// per `53`); this shim only fetches the bytes and applies the gate.
 /// # C: O(strlen)
 pub(crate) fn read_user_path(ptr: u64) -> Result<String, i64> {
     if ptr == 0 || ptr >= USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
     }
     // SAFETY: ptr in user range; user page mapped (caller's AS); PATH_MAX bound.
-    let bytes = unsafe { devfs::read_user_cstr(ptr, PATH_MAX) }
+    let bytes = unsafe { devfs::read_user_cstr(ptr, vfs::path::PATH_MAX) }
         .ok_or(-(Errno::Efault.as_i32() as i64))?;
-    // No NUL within PATH_MAX bytes → pathname too long (Linux ENAMETOOLONG).
-    if bytes.len() >= PATH_MAX {
-        return Err(-(Errno::Enametoolong.as_i32() as i64));
-    }
     if bytes.is_empty() {
         return Err(-(Errno::Enoent.as_i32() as i64));
     }
-    Ok(vfs::path_from_bytes(bytes))
+    let path = vfs::path_from_bytes(bytes);
+    // No NUL within PATH_MAX bytes → pathname too long (Linux ENAMETOOLONG).
+    vfs::path::check_path_len(&path).map_err(errno_from_vfs)?;
+    Ok(path)
 }
 
 /// # C: O(1)
