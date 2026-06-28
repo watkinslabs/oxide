@@ -177,6 +177,34 @@ pub fn shrink_dcache(target: usize) -> usize {
     freed
 }
 
+/// Evict EVERY unused dentry belonging to `sb` from the LRU (Linux
+/// `shrink_dcache_sb`, `fs/dcache.c`) — the per-superblock aggressive prune
+/// driven by remount (`reconfigure_super`) and per-sb `drop_caches`. Unlike the
+/// periodic [`shrink_dcache`] two-hand clock, this IGNORES the `D_REFERENCED`
+/// bit: a matching UNUSED (`d_count == 0`) dentry is `d_drop`-ed in one pass
+/// (Linux loops `list_lru_walk(&sb->s_dentry_lru, …)` until that sb's LRU
+/// drains). In-use dentries (`d_count > 0`) and dentries of OTHER superblocks
+/// are kept on the LRU untouched — sb identity is `Arc::ptr_eq` on `d_sb()`, so
+/// an `sb`-less anon dentry never matches. Drains the LRU into a snapshot first
+/// so the in-loop `d_drop` (which takes the hash-bucket + parent `d_subdirs`
+/// locks) never reenters the LRU lock. Returns the count evicted. # C: O(LRU)
+pub fn shrink_dcache_sb(sb: &Arc<SuperBlock>) -> usize {
+    let snapshot: Vec<Weak<Dentry>> = DENTRY_LRU.lock().drain(..).collect();
+    let mut freed = 0;
+    for w in snapshot {
+        let d = match w.upgrade() { Some(d) => d, None => continue }; // already freed
+        let ours = d.d_sb().map(|s| Arc::ptr_eq(&s, sb)).unwrap_or(false);
+        if ours && d.d_count() == 0 {
+            d.set_on_lru(false);
+            d_drop(&d);
+            freed += 1;
+        } else {
+            DENTRY_LRU.lock().push_back(Arc::downgrade(&d)); // not ours / in use
+        }
+    }
+    freed
+}
+
 /// Prune the UNUSED dentries in the subtree under `parent` (Linux
 /// `shrink_dcache_parent`, `fs/dcache.c`) — the per-subtree counterpart of the
 /// global `shrink_dcache`, used on remount / umount of a subtree / before a
