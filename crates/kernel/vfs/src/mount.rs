@@ -670,6 +670,33 @@ pub fn unregister(d: &Arc<Dentry>) -> usize {
     1
 }
 
+/// Detach EVERY mount whose mountpoint dentry == `d` (pointer identity), in
+/// ALL namespaces (Linux `detach_mounts`): invoked from `d_invalidate` when the
+/// covered dentry is going away, so any mount(s) overmounting it must be torn
+/// down regardless of ns. Cleans crossing/hash/parent-link and `put_super`s the
+/// last user of each SB exactly like `unregister`. Returns count removed.
+/// # C: O(N_mounts)
+pub(crate) fn detach_mounts_on(d: &Arc<Dentry>) -> usize {
+    let dp = dptr(d);
+    let victims: Vec<Arc<Mount>> = MOUNTS.lock().values()
+        .filter(|m| m.mountpoint().map(|mp| dptr(&mp) == dp).unwrap_or(false))
+        .cloned().collect();
+    let mut removed = 0;
+    for m in victims.iter() {
+        let ns = m.ns;
+        let parent = m.parent_id.load(Ordering::Acquire);
+        unlink_from_parent(m);
+        if let Some(o) = m.mnt_mp.lock().take() { put_mountpoint(&o); }
+        MOUNTS.lock().remove(&m.mnt_id);
+        hash_remove(ns, parent, dp, m.mnt_id);
+        rewire_crossing_top(ns, d, parent);
+        put_super_if_last(&m.sb);
+        mntns::bump_gen(ns);
+        removed += 1;
+    }
+    removed
+}
+
 /// Re-point the dentry crossing link to the new hash top after a detach.
 /// # C: O(log N)
 fn rewire_crossing_top(ns: u64, d: &Arc<Dentry>, parent: u64) {
