@@ -659,6 +659,32 @@ impl SuperBlock {
     /// `s_maxbytes` — largest representable file size. # C: O(1)
     pub fn s_maxbytes(&self) -> u64 { self.s_maxbytes }
 
+    /// `generic_write_check_limits` (Linux fs/read_write.c), the `s_maxbytes`
+    /// half: bound a write of `count` bytes starting at byte offset `pos`
+    /// against the largest file size this filesystem can represent.
+    /// - `Some(n)` ⇒ the write is admissible; `n` is `count` CLAMPED so
+    ///   `pos + n <= s_maxbytes` (a write that would straddle the cap is
+    ///   shortened, exactly like Linux clamps `iov_iter` to `max_size - pos`).
+    /// - `None` ⇒ `pos >= s_maxbytes`: there is no room at or beyond the cap,
+    ///   which the write(2) shim maps to `EFBIG` (+ `SIGXFSZ`). A zero-length
+    ///   write short-circuits to `Some(0)` (Linux returns `0` before the cap
+    ///   check), so an empty write at the cap is not spuriously rejected.
+    /// The per-task `RLIMIT_FSIZE` half of `generic_write_check_limits` lives at
+    /// the syscall layer (it needs the caller's rlimits); this is the SB-level
+    /// physical-size cap only. # C: O(1)
+    pub fn generic_write_check_limits(&self, pos: u64, count: usize) -> Option<usize> {
+        if count == 0 { return Some(0); }
+        let max = self.s_maxbytes;
+        if pos >= max { return None; }
+        let room = max - pos; // > 0
+        Some(core::cmp::min(count as u64, room) as usize)
+    }
+
+    /// True iff a write STARTING at byte offset `pos` must fail `EFBIG` —
+    /// `pos >= s_maxbytes`, no representable room remains (Linux the
+    /// `pos >= max_size` arm of `generic_write_check_limits`). # C: O(1)
+    pub fn write_exceeds_maxbytes(&self, pos: u64) -> bool { pos >= self.s_maxbytes }
+
     /// `s_uuid` snapshot (Linux `super_block.s_uuid`). All-zero when the fs has
     /// no UUID; pair with [`Self::has_uuid`] to distinguish "no UUID" from the
     /// (legitimate but vanishingly rare) all-zero UUID. # C: O(1)
