@@ -9,12 +9,12 @@
 //! `sched::current()`, returns `KResult<T>` with typed `T`.
 
 extern crate alloc;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use sync::{Devices as FsClass, Spinlock};
 use crate::inode::InodeRef;
-use crate::superblock::{FileSystemType, SuperBlock, SuperOps};
+use crate::superblock::{FileSystemType, SuperBlock, SuperOps, SB_RDONLY};
 use crate::types::VfsError;
 
 /// `KResult<T>` is the VFS error envelope. Aliased here for
@@ -371,4 +371,113 @@ pub fn get_fs_type(name: &str) -> Option<Arc<dyn FileSystemType>> {
 /// source `filesystems_proc_show` (`/proc/filesystems`) iterates. # C: O(N)
 pub fn registered_filesystems() -> Vec<Arc<dyn FileSystemType>> {
     FILESYSTEMS.lock().iter().cloned().collect()
+}
+
+// ---------------------------------------------------------------------------
+// `get_tree_*` superblock-sharing helpers — Linux `fs/super.c`.
+//
+// A backend's `FsContextOps::get_tree` calls one of these to materialise (or
+// re-share) its superblock during `vfs_get_tree`:
+//   * `get_tree_nodev`  — never share: a fresh SB per mount (tmpfs, ramfs).
+//   * `get_tree_single` — share ONE SB across every mount of this fs_type
+//     (sysfs, debugfs, the kernel's single-instance pseudo-fses).
+//   * `get_tree_keyed`  — share an SB across mounts that present the same key
+//     (mqueue per-netns, cgroup per-hierarchy).
+//   * `get_tree_bdev`   — block-device-keyed sharing; NOT here (needs
+//     `lookup_bdev` + the block-device registry — block-crate coupled).
+//
+// Sharing goes through a global registry (Linux's per-`file_system_type`
+// `fs_supers` hlist) scoped by `(fs_type-name, key)`; a `sget_fc`-style probe
+// bumps `s_active` on a live match instead of re-running fill_super.
+// ---------------------------------------------------------------------------
+
+/// One shared-superblock registry slot. `Weak` so a fully-unmounted SB (its last
+/// live `Arc` gone after the final umount) reclaims its slot on the next probe;
+/// the `(fs_name, key)` pair is the `sget` test predicate. # consumers: D6 sget.
+struct SharedSuper {
+    fs_name: String,
+    key:     String,
+    sb:      Weak<SuperBlock>,
+}
+
+/// `fs_supers` analogue — the live shared superblocks `get_tree_single`/
+/// `get_tree_keyed` probe. A leaf lock (nothing else taken under it; the
+/// fill_super closure runs OUTSIDE it, matching Linux `sget_fc`'s drop of
+/// `sb_lock` around `alloc_super`).
+static SHARED_SUPERS: Spinlock<Vec<SharedSuper>, FsClass> = Spinlock::new(Vec::new());
+
+/// Stamp a context's user-settable `sb_flags` slice onto a freshly built SB
+/// (Linux `sb->s_flags = (s_flags & ~mask) | (sb_flags & mask)` in
+/// `sget`/`alloc_super`), keeping the dedicated `SB_RDONLY` writer-gate in sync.
+/// # C: O(1)
+fn stamp_sb_flags(sb: &SuperBlock, fc: &fs_context::FsContext) {
+    let mask = fc.sb_flags_mask();
+    let set = fc.sb_flags() & mask;
+    let clear = !fc.sb_flags() & mask;
+    sb.set_s_flags(set, clear);
+    sb.set_readonly(set & SB_RDONLY != 0);
+}
+
+/// Probe the registry for a live SB matching `(fs_name, key)`, pruning dead
+/// `Weak`s. On a hit, bumps `s_active` (`atomic_inc_not_zero`) and returns the
+/// shared instance. # C: O(N live supers)
+fn sget_probe(fs_name: &str, key: &str) -> Option<Arc<SuperBlock>> {
+    let mut list = SHARED_SUPERS.lock();
+    list.retain(|e| e.sb.strong_count() > 0);
+    for e in list.iter() {
+        if e.fs_name == fs_name && e.key == key {
+            if let Some(sb) = e.sb.upgrade() {
+                if sb.grab_active() { return Some(sb); }
+            }
+        }
+    }
+    None
+}
+
+/// `get_tree_nodev` (Linux `fs/super.c`) — materialise a BRAND-NEW superblock for
+/// this mount with no sharing (every `mount -t tmpfs` is an independent
+/// instance). Runs `fill` to build the SB, then stamps the context's `sb_flags`.
+/// # C: FS-dependent
+pub fn get_tree_nodev<F>(fc: &mut fs_context::FsContext, fill: F) -> KResult<Arc<SuperBlock>>
+where F: FnOnce(&mut fs_context::FsContext) -> KResult<Arc<SuperBlock>> {
+    let sb = fill(fc)?;
+    stamp_sb_flags(&sb, fc);
+    Ok(sb)
+}
+
+/// `get_tree_keyed` (Linux `fs/super.c`) — share a superblock across every mount
+/// of this fs_type that presents the same `key` (e.g. mqueue per-netns). A live
+/// match is returned with `s_active` bumped and `fill` is NOT re-run; otherwise
+/// `fill` builds a fresh SB, its `sb_flags` are stamped, and it is registered
+/// under `(fs_type, key)`. A `sget_fc`-style re-probe after `fill` resolves a
+/// race where a sibling registered the same key meanwhile. # C: FS-dependent
+pub fn get_tree_keyed<F>(fc: &mut fs_context::FsContext, key: &str, fill: F)
+    -> KResult<Arc<SuperBlock>>
+where F: FnOnce(&mut fs_context::FsContext) -> KResult<Arc<SuperBlock>> {
+    let fs_name = fc.fs_type().name().to_string();
+    if let Some(sb) = sget_probe(&fs_name, key) { return Ok(sb); }
+    // No live match — build (fill_super runs outside the registry lock).
+    let sb = fill(fc)?;
+    stamp_sb_flags(&sb, fc);
+    let mut list = SHARED_SUPERS.lock();
+    // Re-probe: a concurrent mount may have registered the same key meanwhile.
+    list.retain(|e| e.sb.strong_count() > 0);
+    for e in list.iter() {
+        if e.fs_name == fs_name && e.key == key {
+            if let Some(shared) = e.sb.upgrade() {
+                if shared.grab_active() { return Ok(shared); }
+            }
+        }
+    }
+    list.push(SharedSuper { fs_name, key: key.to_string(), sb: Arc::downgrade(&sb) });
+    Ok(sb)
+}
+
+/// `get_tree_single` (Linux `fs/super.c`) — share ONE superblock across EVERY
+/// mount of this fs_type (sysfs, debugfs, the single-instance pseudo-fses). The
+/// keyed sharing with an empty key: all mounts of the type collapse to one SB.
+/// # C: FS-dependent
+pub fn get_tree_single<F>(fc: &mut fs_context::FsContext, fill: F) -> KResult<Arc<SuperBlock>>
+where F: FnOnce(&mut fs_context::FsContext) -> KResult<Arc<SuperBlock>> {
+    get_tree_keyed(fc, "", fill)
 }
