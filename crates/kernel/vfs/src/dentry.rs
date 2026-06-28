@@ -29,6 +29,7 @@ pub const D_NEGATIVE:   u32 = 0x0002; // d_inode == None
 pub const D_HASHED:     u32 = 0x0004; // present in the global dentry_hashtable
 pub const D_REFERENCED: u32 = 0x0008; // recently used — LRU two-hand-clock bit
 pub const D_LRU:        u32 = 0x0010; // currently linked on the dcache LRU
+pub const D_DISCONNECTED: u32 = 0x0020; // anonymous (parentless) alias, on s_anon
 
 // ---------------------------------------------------------------------------
 // QStr — Linux `struct qstr`: name + precomputed `full_name_hash` (`16§96`).
@@ -274,6 +275,16 @@ impl Dentry {
         Self::build(None, "", Some(inode), Arc::downgrade(sb), None, D_ROOT)
     }
 
+    /// Construct an ANONYMOUS disconnected dentry (Linux `__d_obtain_alias`
+    /// → `__d_alloc(sb, &anonstring)` with the "/" name + `DCACHE_DISCONNECTED`).
+    /// Parentless, positive, flagged `D_DISCONNECTED`; NOT a superblock root
+    /// (`D_ROOT` stays clear). `d_sb` is the inode's owning SB if it has one.
+    /// # C: O(1)
+    pub fn new_anon(inode: InodeRef) -> Arc<Self> {
+        let sb = match inode.i_sb() { Some(s) => Arc::downgrade(&s), None => Weak::new() };
+        Self::build(None, "/", Some(inode), sb, None, D_DISCONNECTED)
+    }
+
     /// `d_sb` — owning superblock, if any. # C: O(1)
     pub fn d_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
 
@@ -327,6 +338,11 @@ impl Dentry {
 
     /// True iff this dentry is a superblock root (`D_ROOT`). # C: O(1)
     pub fn is_root(&self) -> bool { self.flags() & D_ROOT != 0 }
+
+    /// True iff this is an anonymous disconnected dentry (`D_DISCONNECTED`):
+    /// parentless, no path, on the SB's `s_anon` list (Linux `d_obtain_alias`).
+    /// # C: O(1)
+    pub fn is_disconnected(&self) -> bool { self.flags() & D_DISCONNECTED != 0 }
 
     /// # C: O(1)
     pub fn name(&self) -> &str { self.name.name() }
