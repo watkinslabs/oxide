@@ -28,15 +28,6 @@ pub fn sys_close_range(args: &SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let cloexec_only = (flags & CLOSE_RANGE_CLOEXEC) != 0;
-    for fd in fdt.live_fds() {
-        if fd < 0 { continue; }
-        let fd = fd as u32;
-        if fd < first || fd > last { continue; }
-        if cloexec_only {
-            let _ = fdt.set_cloexec(fd as i32, true);
-        } else {
-            let _ = fdt.close(fd as i32);
-        }
-    }
+    fdt.close_range(first, last, cloexec_only);
     0
 }
