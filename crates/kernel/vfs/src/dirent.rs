@@ -33,6 +33,45 @@ pub fn dtype_from_file_type(ft: FileType) -> u8 {
     (ft.to_ifmt() >> 12) as u8
 }
 
+/// Count of synthetic directory entries (".", "..") Linux's `dir_emit_dots`
+/// (`fs/libfs.c`) prepends to EVERY directory's `readdir` stream before any
+/// real child. The dots occupy readdir cursors `0` (".") and `1` (".."), so a
+/// dots-aware filesystem's real-child cookies begin at this value: child `i`
+/// (0-based) lands at cursor `DOTS_RESERVED + i`.
+pub const DOTS_RESERVED: u64 = 2;
+
+/// Emit the synthetic "." and ".." entries Linux's `dir_emit_dots`
+/// (`fs/libfs.c`) prepends to every directory's `readdir` stream, before the
+/// caller iterates real children. Linux guarantees these two records lead the
+/// listing of every directory with the correct inode numbers, so `getcwd(3)`
+/// (which `..`-walks comparing inos), `find`, and `ls -ai` work.
+///
+/// `off` is the readdir cursor (`File::pos`): `0` → both dots pending, `1` →
+/// only ".." pending, `>= DOTS_RESERVED` → both dots already consumed (no-op).
+/// `self_ino` is this directory's own inode number (the "." `d_ino`);
+/// `parent_ino` is the parent directory's inode number (the ".." `d_ino`). For
+/// the filesystem ROOT, Linux makes ".." resolve back to the root itself, so
+/// the caller passes `parent_ino == self_ino`.
+///
+/// `f` is the readdir fill callback `(d_ino, next_off, name, file_type)`;
+/// returning `false` requests a stop (user buffer full). Both dots are emitted
+/// as `FileType::Directory` (`DT_DIR`) with next-cursor cookies `1` then
+/// `DOTS_RESERVED`, matching the kernel's fixed dot offsets. Returns `true`
+/// once both dots are past (caller proceeds to real children, skipping
+/// `off.saturating_sub(DOTS_RESERVED)` of them), `false` if the callback asked
+/// to stop part-way (caller stops without emitting children).
+/// # C: O(1)
+pub fn emit_dots(
+    off: u64,
+    self_ino: u64,
+    parent_ino: u64,
+    f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
+) -> bool {
+    if off == 0 && !f(self_ino, 1, ".", FileType::Directory) { return false; }
+    if off <= 1 && !f(parent_ino, DOTS_RESERVED, "..", FileType::Directory) { return false; }
+    true
+}
+
 /// Linux `linux_dirent64` record layout:
 ///
 /// ```text
