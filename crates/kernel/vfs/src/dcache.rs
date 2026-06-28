@@ -435,6 +435,12 @@ pub fn dput(d: Arc<Dentry>) {
 /// disconnects a subtree whose nodes may still be in use, and a stale
 /// `d_revalidate` miss re-walks without a refcount kill. # C: O(d_drop)
 fn dentry_kill(d: &Arc<Dentry>) {
+    // Linux `__dentry_kill`: fire `d_op->d_prune` (gated by the `DCACHE_OP_PRUNE`
+    // presence bit) BEFORE unhashing, so the fs can drop cache bookkeeping while
+    // the dentry's name/parent binding is still intact.
+    if d.d_has_op_prune() {
+        if let Some(f) = d.d_op().and_then(|o| o.d_prune) { f(d); }
+    }
     d.mark_dead();
     d_drop(d);
 }
@@ -638,7 +644,7 @@ mod tests {
             (h ^ (h >> 32)) as u32
         }),
         d_compare: Some(|name, cand| name.eq_ignore_ascii_case(cand.name())),
-        d_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None,
+        d_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None,
     };
     #[test]
     fn d_compare_case_insensitive() {
@@ -653,7 +659,7 @@ mod tests {
     // d_revalidate: a stale dentry is dropped on lookup.
     static STALE_OPS: DentryOps = DentryOps {
         d_revalidate: Some(|_d, _reval| false), // everything is stale
-        d_hash: None, d_compare: None, d_delete: None, d_release: None, d_iput: None, d_dname: None,
+        d_hash: None, d_compare: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None,
     };
     #[test]
     fn d_revalidate_drops_stale() {

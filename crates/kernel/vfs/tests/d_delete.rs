@@ -60,7 +60,7 @@ fn mount_ramfs(s_dev: u64) -> Arc<SuperBlock> {
 // so d_delete must DROP (unhash) rather than keep the dentry negative.
 static DROP_OPS: DentryOps = DentryOps {
     d_delete: Some(|_d| true),
-    d_hash: None, d_compare: None, d_revalidate: None, d_release: None, d_iput: None, d_dname: None,
+    d_hash: None, d_compare: None, d_revalidate: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None,
 };
 
 // SOLE-USER + default ops: d_delete turns the dentry NEGATIVE and keeps it
