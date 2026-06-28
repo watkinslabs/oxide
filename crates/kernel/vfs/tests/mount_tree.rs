@@ -95,6 +95,33 @@ fn propagation_peers_and_slave() {
     assert!(common::mount_root_at("/sa/y").is_none(), "master unaffected by slave event");
 }
 
+// (2b) regression: propagation ORIGINATES only from a SHARED parent (Linux
+// IS_MNT_SHARED(dest) gate in attach_recursive_mnt/propagate_umount). A master
+// demoted to a pure SLAVE keeps a stale mnt_slave_list, but a mount under it
+// must NOT reach those slaves — a slave receives from its master, never sends.
+#[test]
+fn slave_parent_does_not_originate_propagation() {
+    let _g = guard();
+    vfs::mount::set_current_ns_provider(|| 0xC2B);
+    common::register("/", fs(0x1)).expect("root");
+    common::register("/m1", fs(0xA1)).expect("m1");
+    common::set_propagation("/m1", Propagation::Shared).expect("share m1");
+    let pg = common::peer_group_of("/m1");
+    common::register("/m2", fs(0xA2)).expect("m2");
+    common::join_peer_group("/m2", pg);                                    // peer of m1
+    common::set_propagation("/m2", Propagation::Slave).expect("slave m2"); // → m1.slave_list=[m2]
+    // While m1 is SHARED the slave link is live: a mount under m1 reaches m2.
+    common::register("/m1/probe", fs(0x99)).expect("probe under m1");
+    assert_eq!(common::propagate_mount("/m1/probe"), 1, "shared master reaches its slave");
+    assert_eq!(common::mount_root_at("/m2/probe").map(|i| i.ino()), Some(0x99), "slave got probe");
+    // Demote the master to a PURE SLAVE (its stale mnt_slave_list still holds m2).
+    common::set_propagation("/m1", Propagation::Slave).expect("demote m1");
+    // Same topology, only m1's propagation type changed: it must NOT originate.
+    common::register("/m1/x", fs(0x11)).expect("under demoted m1");
+    assert_eq!(common::propagate_mount("/m1/x"), 0, "pure slave does not originate propagation");
+    assert!(common::mount_root_at("/m2/x").is_none(), "stale slave must not receive a non-shared parent's event");
+}
+
 // (3) MNT_RDONLY → EROFS on write; mnt_writers blocks remount-RO.
 #[test]
 fn rdonly_blocks_write_and_remount_holds_writers() {

@@ -7,14 +7,19 @@ use super::*;
 /// Collect propagation targets for a mount created under `parent`: every peer
 /// of `parent`'s peer group, plus the transitive slaves of `parent` and those
 /// peers (Linux `propagate_mnt`: events flow to peers and down to slaves, but
-/// a slave never propagates back to its master). # C: O(N_mounts)
+/// a slave never propagates back to its master). Linux gates this on
+/// `IS_MNT_SHARED(dest)` (`attach_recursive_mnt`/`propagate_umount`): an event
+/// originates ONLY when `parent` is itself SHARED. A pure SLAVE receives from
+/// its master but never SENDS; PRIVATE/UNBINDABLE drop all propagation. Empty
+/// otherwise — this also defends a former master demoted to slave/private whose
+/// stale `mnt_slave_list` must no longer receive its events. # C: O(N_mounts)
 pub(super) fn propagation_targets(parent: &Arc<Mount>) -> Vec<Arc<Mount>> {
     let ns = parent.ns;
-    // A mount only has PEERS if it is itself shared; a pure slave delivers to
-    // its own sub-slaves but never back up to its master's peer group.
-    let pg = if Propagation::from_u8(parent.propagation.load(Ordering::Acquire)) == Propagation::Shared {
-        parent.peer_group.load(Ordering::Acquire)
-    } else { 0 };
+    // IS_MNT_SHARED(dest) gate: only a SHARED parent originates propagation.
+    if Propagation::from_u8(parent.propagation.load(Ordering::Acquire)) != Propagation::Shared {
+        return Vec::new();
+    }
+    let pg = parent.peer_group.load(Ordering::Acquire);
     let mut out: Vec<Arc<Mount>> = Vec::new();
     let mut seen: Vec<u64> = alloc::vec![parent.mnt_id];
     // Peers: shared mounts in the same group (excluding parent).
