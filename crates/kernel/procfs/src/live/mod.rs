@@ -189,7 +189,7 @@ impl Inode for ProcPidDirInode {
             "setgroups" => Ok(crate::sysctl::SysctlInode::new(b"allow\n") as InodeRef),
             "syscall" => Ok(StaticFileInode::new(b"running\n") as InodeRef),
             "mounts" => Ok(Arc::new(crate::mounts::ProcMountsInode) as InodeRef),
-            "mountinfo" => Ok(Arc::new(crate::mounts::ProcMountinfoInode) as InodeRef),
+            "mountinfo" => Ok(Arc::new(crate::mounts::ProcMountinfoInode::new()) as InodeRef),
             "cgroup" => Ok(Arc::new(ProcCgroupInode { tid: Some(tid) }) as InodeRef),
             "auxv" => Ok(StaticFileInode::new(&[0u8; 16]) as InodeRef),
             "timerslack_ns" => Ok(StaticFileInode::new(b"50000\n") as InodeRef),

@@ -33,6 +33,7 @@ pub mod namei;
 pub mod path;
 pub mod fs;
 pub mod mount;
+pub mod mntns;
 pub mod superblock;
 pub mod types;
 pub mod poll_subs;
