@@ -163,10 +163,9 @@ pub struct File {
     /// when the last reference to this open-file-description goes
     /// away (Drop impl below).
     pub flock_op: AtomicU32,
-    /// F_GETOWN/F_SETOWN target: positive = tid, negative = -pgid, 0 = none.
-    /// SIGIO/SIGURG delivery routes to this id when fasync fires. The bare id
-    /// slot of Linux `f_owner.pid`; the credential snapshot lives in
-    /// `owner_creds`, the delivery signal in `f_sig`.
+    /// F_GETOWN/F_SETOWN target: positive = tid, negative = -pgid, 0 = none
+    /// (Linux `f_owner.pid`). SIGIO/SIGURG routes here on fasync; the credential
+    /// snapshot lives in `owner_creds`, the delivery signal in `f_sig`.
     pub owner: core::sync::atomic::AtomicI32,
     /// `f_owner` credential snapshot (Linux `struct fown_struct.uid/.euid`)
     /// captured at `F_SETOWN`, so a deferred SIGIO permission-checks against
@@ -177,6 +176,9 @@ pub struct File {
     /// `F_SETSIG`/`F_GETSIG` (Linux `f_owner.signum`): the signal delivered on
     /// async-I/O readiness; `0` = the default `SIGIO` (data) / `SIGURG` (OOB).
     f_sig: core::sync::atomic::AtomicI32,
+    /// `file->f_version` (Linux): inode change-version this open last observed;
+    /// directory readers compare it vs `inode->i_version` to drop a stale cursor.
+    f_version: AtomicU64,
 }
 
 /// Kernel-side hook installed at boot. Called from `File::drop` for
@@ -374,20 +376,17 @@ impl File {
         }
         let mut f_mode = fmode_from_flags(flags);
         // FMODE_LSEEK/PREAD/PWRITE (Linux `do_dentry_open`): a seekable backing
-        // (anything but an inherently streaming pipe/socket/fifo) carries a real
-        // cursor and positional I/O, so it gets all three capability bits; an
-        // O_PATH fd (`empty_fops`) and a streaming file get none. Computed once
-        // here so `seek`/`pread`/`pwrite` read the canonical `f_mode` bit rather
-        // than re-deriving the file type at every call.
+        // (anything but a streaming pipe/socket/fifo) carries a real cursor +
+        // positional I/O → all three bits; an O_PATH (`empty_fops`) / streaming
+        // file gets none. Computed once so `seek`/`pread`/`pwrite` read `f_mode`.
         if !f_mode.contains(Fmode::PATH)
             && !matches!(inode.file_type(), FileType::Fifo | FileType::Socket)
         {
             f_mode |= Fmode::LSEEK | Fmode::PREAD | Fmode::PWRITE;
         }
-        // D11 (`16§97` lockref): the open file description pins its dentry with
-        // a `d_count` ref (Linux `struct file` holds a `dget`'d `f_path.dentry`).
-        // The matching `dput` is in `File::drop`. Until this, `d_count` was
-        // permanently 0 in production — no dentry ever entered the LRU.
+        // D11 (`16§97` lockref): the open file description pins its dentry with a
+        // `d_count` ref (Linux `struct file` holds a `dget`'d `f_path.dentry`);
+        // the matching `dput` is in `File::drop`.
         let dentry = crate::dcache::dget(&dentry);
         Arc::new(Self {
             inode,
@@ -404,6 +403,7 @@ impl File {
             owner: core::sync::atomic::AtomicI32::new(0),
             owner_creds: AtomicU64::new(0),
             f_sig: core::sync::atomic::AtomicI32::new(0),
+            f_version: AtomicU64::new(0),
         })
     }
 
@@ -501,6 +501,17 @@ impl File {
     pub fn fasync_signal(&self, dfl: i32) -> i32 {
         let s = self.f_sig.load(Ordering::Acquire);
         if s != 0 { s } else { dfl }
+    }
+
+    /// `file->f_version` read — the change-version a `readdir` cursor was built against. # C: O(1)
+    pub fn f_version(&self) -> u64 { self.f_version.load(Ordering::Acquire) }
+    /// `file->f_version` stamp (Linux: from `inode_query_iversion` at cursor setup). # C: O(1)
+    pub fn set_f_version(&self, v: u64) { self.f_version.store(v, Ordering::Release); }
+    /// True when the inode's change-version advanced past the last `f_version`
+    /// stamp — the cached `readdir` position is stale (Linux `file->f_version !=
+    /// inode->i_version`). # C: O(1)
+    pub fn dir_version_changed(&self) -> bool {
+        crate::inode::inode_query_iversion(&*self.inode) != self.f_version.load(Ordering::Acquire)
     }
 
     /// Snapshot of the `f_ra` readahead window state. # C: O(1)
