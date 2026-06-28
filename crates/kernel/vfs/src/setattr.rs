@@ -171,6 +171,25 @@ pub fn setattr_should_drop_suidgid<I: Inode + ?Sized>(inode: &I, cred: &Cred) ->
     if kill != 0 && !cred.cap_fsetid && matches!(inode.file_type(), FileType::Regular) { kill } else { 0 }
 }
 
+/// `setattr_should_drop_sgid` (Linux `fs/attr.c`) — the idmap-aware S_ISGID
+/// strip used by the chown / `setattr_copy` path (distinct from the write-path
+/// [`setattr_should_drop_suidgid`], which preserves a bare mandatory-lock
+/// S_ISGID). Returns `ATTR_KILL_SGID` when the inode is set-group-id AND either
+/// (a) it is group-executable, or (b) the caller is NOT in the inode's *vfsgid*
+/// group and lacks CAP_FSETID over it — an ownership/permission change that
+/// would hand a setgid bit to a process outside the file's group drops it. The
+/// inode gid is mapped THROUGH the mount idmap before the group test (Linux
+/// `i_gid_into_vfsgid` + `in_group_or_capable`), so an idmapped mount compares
+/// against the id the caller actually observes. # C: O(ngroups)
+pub fn setattr_should_drop_sgid<I: Inode + ?Sized>(idmap: &Idmap, inode: &I, cred: &Cred) -> u32 {
+    let mode = inode.perm().unwrap_or_else(|| default_perm_for(inode.file_type()));
+    if mode & S_ISGID == 0 { return 0; }
+    if mode & S_IXGRP != 0 { return ATTR_KILL_SGID; }
+    // in_group_or_capable: caller in the inode's vfsgid group, or CAP_FSETID.
+    let vfsgid = idmap.map_out_gid(inode.gid().unwrap_or(0));
+    if cred.in_group(vfsgid) || cred.cap_fsetid { 0 } else { ATTR_KILL_SGID }
+}
+
 /// `notify_change` (Linux `fs/attr.c`): `setattr_prepare` then `i_op->setattr`.
 /// The kernel syscall layer adds an `Erofs`→metadata-overlay fallback for
 /// pseudo-fs; this native form serves backends with real storage and the
