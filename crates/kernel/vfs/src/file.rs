@@ -31,10 +31,23 @@ bitflags::bitflags! {
     }
 }
 
+/// `O_PATH` bit (asm-generic, both arches — Linux `fcntl.h` `010000000`). Not
+/// declared in `OpenFlags` (which only carries bits with an in-`vfs` consumer),
+/// so it's matched here by raw value. An `O_PATH` fd is an fd-reference with
+/// NEITHER `FMODE_READ` nor `FMODE_WRITE`; read/write on it are `EBADF`.
+/// Caller (`openat`) must preserve this bit into the `File` flags (e.g.
+/// `from_bits_retain`) for the gate to see it.
+const O_PATH: u32 = 0o10000000;
+
 /// Map an open's access mode (`O_RDONLY`/`O_WRONLY`/`O_RDWR`) to the
-/// canonical `Fmode` capability bits. Mirrors Linux `OPEN_FMODE`.
+/// canonical `Fmode` capability bits. Mirrors Linux `OPEN_FMODE`. An `O_PATH`
+/// open yields `FMODE_PATH` only (no read/write) regardless of the access-mode
+/// bits, matching Linux `do_dentry_open`.
 /// # C: O(1)
 fn fmode_from_flags(f: OpenFlags) -> Fmode {
+    if (f.bits() & O_PATH) != 0 {
+        return Fmode::PATH; // fd-reference only: no READ, no WRITE
+    }
     let mut m = Fmode::empty();
     if f.contains(OpenFlags::O_RDWR) {
         m |= Fmode::READ | Fmode::WRITE;
@@ -355,7 +368,9 @@ impl File {
     /// # C: depends on inode impl
     pub fn read(&self, buf: &mut [u8]) -> KResult<usize> {
         let f = self.flags();
-        if f.contains(OpenFlags::O_WRONLY) {
+        // Gate on the canonical `f_mode` capability (Linux `rw_verify_area` /
+        // `FMODE_READ`): O_WRONLY and O_PATH both lack FMODE_READ → EBADF.
+        if !self.f_mode.contains(Fmode::READ) {
             return Err(VfsError::Ebadf);
         }
         let pos = self.pos.load(Ordering::Acquire);
@@ -382,7 +397,9 @@ impl File {
     /// # C: depends on inode impl
     pub fn write(&self, buf: &[u8]) -> KResult<usize> {
         let f = self.flags();
-        if !(f.contains(OpenFlags::O_WRONLY) || f.contains(OpenFlags::O_RDWR)) {
+        // Gate on the canonical `f_mode` capability (Linux `FMODE_WRITE`):
+        // O_RDONLY and O_PATH both lack FMODE_WRITE → EBADF.
+        if !self.f_mode.contains(Fmode::WRITE) {
             return Err(VfsError::Ebadf);
         }
         let path = self.dentry.absolute_path();
