@@ -58,7 +58,9 @@ pub fn sys_mount_setattr(args: &SyscallArgs) -> i64 {
             else if propagation & MS_SHARED != 0 { Propagation::Shared }
             else if propagation & MS_PRIVATE != 0 { Propagation::Private }
             else { Propagation::Private };
-        let _ = vfs::mount::set_propagation(&abs, kind);
+        if let Some(d) = crate::pathresolve::mount_dentry(&abs) {
+            let _ = vfs::mount::set_propagation(&d, kind);
+        }
     }
     0
 }

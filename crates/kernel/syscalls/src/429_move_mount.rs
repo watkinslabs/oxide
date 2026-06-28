@@ -45,6 +45,11 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
         klog::write_raw(b" to="); klog::write_raw(target.as_bytes());
         klog::write_raw(b"\n");
     }
+    // The single namei walk move_mount(2) hands the engine: the target
+    // mountpoint dentry (Linux `struct path.dentry`).
+    let target_d = match crate::pathresolve::mount_dentry(&target) {
+        Some(d) => d, None => return -(Errno::Enoent.as_i32() as i64),
+    };
     // Mode (a): from_fd refers to a detached fsmount object.
     if from_path.is_empty() {
         let inode = match fd_inode(from_fd) {
@@ -53,10 +58,10 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
         if let Some(mo) = inode.as_any().and_then(|a| a.downcast_ref::<MountObjectInode>()) {
             // open_tree clone: bind the captured (fs, root) at the target.
             if let Some((fs, root)) = mo.clone_of.as_ref() {
-                let _ = vfs::mount::register_bind(&target, fs.clone(), root.clone());
+                let _ = vfs::mount::register_bind(Some(target_d.clone()), fs.clone(), root.clone());
                 return 0;
             }
-            return mount_fstype(&mo.source, &mo.fstype, &target);
+            return mount_fstype(&mo.source, &mo.fstype, &target, &target_d);
         }
         return -(Errno::Einval.as_i32() as i64);
     }
@@ -65,7 +70,10 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
         Ok(p) => p, Err(rv) => return rv,
     };
     let from = if from.len() > 1 { from.trim_end_matches('/').to_string() } else { from };
-    match vfs::mount::move_mount(&from, &target) {
+    let from_d = match crate::pathresolve::mount_dentry(&from) {
+        Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    match vfs::mount::move_mount(&from_d, &target_d) {
         Ok(())                    => 0,
         Err(vfs::VfsError::Ebusy) => -(Errno::Ebusy.as_i32() as i64),
         Err(_)                    => -(Errno::Einval.as_i32() as i64),

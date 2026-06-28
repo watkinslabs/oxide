@@ -23,7 +23,7 @@ use alloc::sync::Arc;
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::fs::FileSystem;
-use vfs::{InodeRef, KResult, VfsError};
+use vfs::{Dentry, InodeRef, KResult, VfsError};
 
 use tree::Tree;
 
@@ -255,22 +255,29 @@ fn resolve_pid(vpid: u64) -> u64 {
     match *PID_RESOLVE_HOOK.lock() { Some(f) => f(vpid), None => vpid }
 }
 
-/// Mount the unified hierarchy at the canonical boot location.
-/// Idempotent from the boot caller's perspective.
-/// # C: O(1)
+/// Mount the unified hierarchy at the canonical boot location. Resolves the
+/// mountpoint dentry via the namei walk (the root-dentry provider must be
+/// installed and `/sys` mounted first, so this runs AFTER the boot `/sys`
+/// register). Idempotent from the boot caller's perspective.
+/// # C: O(path components)
 pub fn mount_root() -> bool {
-    mount_at(MOUNT).is_ok()
+    let mp = vfs::resolve_path_dentry(MOUNT);
+    mount_at(MOUNT, mp).is_ok()
 }
 
-/// Mount the shared unified cgroup2 hierarchy at `mount_point`.
+/// Mount the shared unified cgroup2 hierarchy on the caller-walked mountpoint
+/// dentry `mp` (`mount_point` is its rendered path string, fs INPUT only).
 /// Multiple mount instances share the same tree, as Linux does for the
 /// unified hierarchy, but each mount shadows its own target dentry.
 /// # C: O(N_mounts)
-pub fn mount_at(mount_point: &str) -> KResult<()> {
+pub fn mount_at(mount_point: &str, mp: Option<Arc<Dentry>>) -> KResult<()> {
+    // Guard against a missing/unresolved non-root target turning into an
+    // accidental namespace-root mount (`mp == None` ⇒ ns root in the engine).
+    if mount_point != "/" && mp.is_none() { return Err(vfs::VfsError::Enoent); }
     let first = TREE.lock().mount_root();
     let fs = Arc::new(CgroupFs::new(mount_point));
     let root = Arc::new(inode::CgDir::new(tree::ROOT)) as InodeRef;
-    match vfs::mount::register_bind(mount_point, fs, root) {
+    match vfs::mount::register_bind(mp, fs, root) {
         Ok(()) => Ok(()),
         Err(vfs::VfsError::Eexist) if !first => Ok(()),
         Err(e) => Err(e),

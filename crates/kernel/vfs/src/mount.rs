@@ -43,48 +43,65 @@ pub const MNT_OPTION_MASK: u64 = MNT_RDONLY | MNT_NOSUID | MNT_NODEV | MNT_NOEXE
     | MNT_SYNCHRONOUS | MNT_MANDLOCK | MNT_DIRSYNC | MNT_NOATIME | MNT_NODIRATIME
     | MNT_RELATIME | MNT_STRICTATIME | MNT_LAZYTIME;
 
-/// Mount-point dentry resolver (`docs/16§3`): the kernel installs a fn that
-/// resolves an absolute path to its CANONICAL dentry in the global dentry
-/// tree (the single namei resolution at the syscall boundary). This is used
-/// ONLY to RECORD a mount's `mountpoint` dentry at attach / move time — the
-/// Linux `user_path_at` that hands `mnt_set_mountpoint` its `struct path`.
-/// Decisions never resolve a string; they compare the recorded dentry by
-/// identity. The fixture in `vfs/tests/common` installs an equivalent for
-/// hosted tests, so the resolver is ALWAYS present — there is no
-/// "no resolver" code path.
-static DENTRY_RESOLVER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-
-/// Signature of the mount-point dentry resolver.
-pub type DentryResolver = fn(&str) -> Option<Arc<Dentry>>;
-
-/// Install the mount-point dentry resolver (kernel boot). Last wins.
-/// # C: O(1)
-pub fn set_dentry_resolver(f: DentryResolver) {
-    DENTRY_RESOLVER.store(f as *mut (), Ordering::Release);
-}
-
-/// Resolve an absolute path to its canonical dentry via the installed
-/// boundary resolver (attach/move RECORDING only — never a decision).
-/// `None` only before the resolver is installed (the earliest boot mounts,
-/// repaired by `rewire_all_crossings`). # C: O(path components)
-fn record_dentry(path: &str) -> Option<Arc<Dentry>> {
-    let p = DENTRY_RESOLVER.load(Ordering::Acquire);
-    if p.is_null() { return None; }
-    // SAFETY: DENTRY_RESOLVER only ever holds a value stored by
-    // set_dentry_resolver, which takes a `DentryResolver` fn pointer; the
-    // round-trip through *mut () preserves the fn's address.
-    let f: DentryResolver = unsafe { core::mem::transmute::<*mut (), DentryResolver>(p) };
-    f(path)
-}
+/// The mount engine NEVER resolves a mount-point path STRING to a dentry
+/// (`docs/16§3`). Every caller-boundary entry point (`register`,
+/// `register_bind`, `mount_exact_at`, `move_mount`, `pivot_root`, …) RECEIVES
+/// the mountpoint `Arc<Dentry>` the caller's single namei walk already
+/// produced — the Linux `user_path_at`/`kern_path` `struct path.dentry` that
+/// `do_mount` hands `mnt_set_mountpoint`. The engine stores it directly and
+/// makes every tree decision by dentry/mount IDENTITY.
+///
+/// The only residual path→dentry work is engine-INTERNAL SYNTHESIS — the
+/// mirror position of a propagated mount under a peer, or the relocated
+/// position of a subtree under a move/pivot target. Those positions were
+/// walked by NO caller, so the engine materialises them with `descend`
+/// (`docs/16§3`): a pure dentry→dentry descent from a dentry the engine
+/// ALREADY holds, component-by-component via `d_lookup → i_op->lookup →
+/// d_add`. It is never a global path-string decision at the syscall boundary.
 
 /// A dentry's identity key (stable address of the `Arc<Dentry>` allocation).
-/// The global dcache is per-(absolute path) unique, so one dentry == one
-/// mountpoint location; this is the hash's dentry half. # C: O(1)
+/// The dcache is per-(parent,name) unique, so one dentry == one mountpoint
+/// location; this is the hash's dentry half. # C: O(1)
 fn dptr(d: &Arc<Dentry>) -> usize { Arc::as_ptr(d) as *const () as usize }
 
-/// True iff `path` is the root path "/" (byte test, not a tree decision —
-/// used only to classify the attach INPUT, never to route). # C: O(1)
-fn is_root_path(path: &str) -> bool { path.as_bytes() == b"/" }
+/// True iff `d` is the global namespace-root dentry (no parent, empty name —
+/// Linux `mnt_ns->root` dentry). The only mountpoint the engine treats as a
+/// namespace root. Identity test, not a string compare. # C: O(1)
+fn is_global_root(d: &Arc<Dentry>) -> bool {
+    d.parent().is_none() && d.name().is_empty()
+}
+
+/// Absolute path rendered from a mountpoint dentry's parent chain (Linux
+/// `d_path`) — the WRITE-ONLY `rendered_path` for /proc mountinfo/mounts +
+/// statmount. Derived, never a routing input. # C: O(depth)
+fn abs_string(d: &Arc<Dentry>) -> String {
+    String::from_utf8(d.absolute_path()).unwrap_or_else(|_| String::from("/"))
+}
+
+/// Materialise the dentry at `rel` beneath `base` by a pure dentry→dentry
+/// descent: each component via `d_lookup` (cache) then `i_op->lookup` +
+/// `d_add` (Linux `lookup_one_len` under a held parent). The engine-internal
+/// resolver for SYNTHESIZED mount positions (propagation mirrors, MS_MOVE /
+/// pivot_root relocations) — NEVER a global path-string resolve. `rel`
+/// empty ⇒ `base` itself. # C: O(components)
+fn descend(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
+    let mut cur = base.clone();
+    for comp in rel.split('/').filter(|c| !c.is_empty()) {
+        let child = match crate::dcache::d_lookup(&cur, comp) {
+            Some(d) if !d.is_negative() => d,
+            _ => {
+                let ci = cur.inode()?.lookup(comp).ok()?;
+                crate::dcache::d_add(&cur, comp, ci)
+            }
+        };
+        cur = child;
+    }
+    Some(cur)
+}
+
+/// The global namespace-root dentry, for basing a SYNTHESIZED position whose
+/// peer/target is the ns root (no mountpoint dentry). # C: O(1)
+fn global_root() -> Option<Arc<Dentry>> { crate::namei::root_dentry() }
 
 // ---------------------------------------------------------------------------
 // (ns, parent_mnt_id, mountpoint_dentry_ptr) -> mnt_id stack — Linux
@@ -167,43 +184,6 @@ fn wire_crossing(ns: u64, mp_d: &Arc<Dentry>, mnt_id: u64) {
     mp_d.set_mounted_mount(ns, Some(mnt_id));
 }
 
-/// (Re)record dentry + parent + hash for EVERY mount once the resolver is
-/// installed (the earliest boot mounts — cgroupfs/devfs/sysfs — attach
-/// before it exists, so their `mountpoint` is `None`). This is the one-shot
-/// repair: re-resolve each mount's recorded path to its now-available
-/// dentry, then re-derive parent + hash + crossing by identity, exactly as
-/// a late mount would. Idempotent. # C: O(N_mounts × path)
-pub fn rewire_all_crossings() {
-    let snap: Vec<Arc<Mount>> = TABLE.lock().clone();
-    let roots: BTreeMap<u64, u64> = ROOTS.lock().clone();
-    // Re-record the mountpoint dentry of any non-root mount left `None`
-    // (attached before the resolver existed) from its rendered path — the
-    // attach-time RECORDING, run with no table lock held (the resolver
-    // re-enters the table). Not a routing decision.
-    let repoints: Vec<(u64, Option<Arc<Dentry>>)> = snap.iter()
-        .filter(|m| m.mountpoint.is_none()
-                 && roots.get(&m.ns) != Some(&m.mnt_id)
-                 && !is_root_path(&m.rendered_path))
-        .map(|m| (m.mnt_id, record_dentry(&m.rendered_path)))
-        .collect();
-    {
-        let mut t = TABLE.lock();
-        for i in 0..t.len() {
-            if let Some((_, Some(d))) = repoints.iter().find(|(id, _)| *id == t[i].mnt_id) {
-                t[i] = with_mountpoint(&t[i], Some(d.clone()));
-            }
-        }
-    }
-    // Rebuild crossings + parent + hash per namespace from the now-recorded
-    // mountpoint dentries (identity).
-    let mut seen: Vec<u64> = Vec::new();
-    for ns in snap.iter().map(|m| m.ns) {
-        if seen.contains(&ns) { continue; }
-        seen.push(ns);
-        rebuild_ns_index(ns);
-    }
-}
-
 /// Rebuild the crossing links + `parent_id` + hash for namespace `ns` from
 /// each mount's recorded `mountpoint` dentry (identity only). # C: O(N×depth)
 fn rebuild_ns_index(ns: u64) {
@@ -244,12 +224,6 @@ fn rebuild(m: &Mount, mountpoint: Option<Arc<Dentry>>, rendered: String) -> Arc<
         flags: AtomicU64::new(m.flags.load(Ordering::Acquire)),
         ns: m.ns,
     })
-}
-
-/// Clone `m` with a replaced `mountpoint` dentry, keeping its rendered path.
-/// # C: O(1)
-fn with_mountpoint(m: &Mount, mountpoint: Option<Arc<Dentry>>) -> Arc<Mount> {
-    rebuild(m, mountpoint, m.rendered_path.clone())
 }
 
 /// Clone `m` with a replaced `mountpoint` dentry AND rendered path. # C: O(1)
@@ -349,28 +323,28 @@ static TABLE: Spinlock<Vec<Arc<Mount>>, MountClass> = Spinlock::new(Vec::new());
 /// Snapshot of all registered mounts (cheap Arc clones). # C: O(N_mounts)
 pub fn all_mounts() -> Vec<Arc<Mount>> { TABLE.lock().clone() }
 
-/// The (top) mount attached EXACTLY at `path` in `ns`, by IDENTITY: resolve
-/// `path` to its dentry (boundary recording), derive its parent mount by
-/// dentry ancestry, then read the `(ns, parent, dptr)` hash top. No string
-/// scan, no path-equality fallback. # C: O(path) + O(log N)
-fn mount_exact_at(ns: u64, path: &str) -> Option<Arc<Mount>> {
-    if is_root_path(path) { return root_mount_id(ns).and_then(mount_by_id); }
-    let d = record_dentry(path)?;
-    let parent = parent_by_dentry(ns, &d);
-    let id = hash_top(ns, parent, dptr(&d))?;
+/// The (top) mount attached EXACTLY at mountpoint dentry `d` in `ns`, by
+/// IDENTITY: derive `d`'s parent mount by dentry ancestry, then read the
+/// `(ns, parent, dptr)` hash top. The global root dentry resolves to the ns
+/// root mount. No string scan, no path-equality fallback. # C: O(log N)
+fn mount_exact_at(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
+    if is_global_root(d) { return root_mount_id(ns).and_then(mount_by_id); }
+    let parent = parent_by_dentry(ns, d);
+    let id = hash_top(ns, parent, dptr(d))?;
     mount_by_id(id)
 }
 
-/// True iff a mount is attached exactly at `mount_point` in `ns`. # C: O(path)
-pub fn is_mount_in_ns(mount_point: &str, ns: u64) -> bool {
-    mount_exact_at(ns, mount_point).is_some()
+/// True iff a mount is attached exactly at mountpoint dentry `d` in `ns`.
+/// # C: O(log N)
+pub fn is_mount_in_ns(d: &Arc<Dentry>, ns: u64) -> bool {
+    mount_exact_at(ns, d).is_some()
 }
 
-/// True iff some mount in `ns` is a CHILD of the mount at `mount_point` (the
+/// True iff some mount in `ns` is a CHILD of the mount at dentry `d` (the
 /// umount(2) EBUSY busy-test). Childhood is by `parent_id` (dentry tree).
-/// # C: O(path) + O(N_mounts)
-pub fn has_child_mounts(mount_point: &str, ns: u64) -> bool {
-    let Some(target) = mount_exact_at(ns, mount_point) else { return false; };
+/// # C: O(N_mounts)
+pub fn has_child_mounts(d: &Arc<Dentry>, ns: u64) -> bool {
+    let Some(target) = mount_exact_at(ns, d) else { return false; };
     let tid = target.mnt_id;
     TABLE.lock().iter().any(|m| {
         m.ns == ns && m.mnt_id != tid && m.parent_id.load(Ordering::Acquire) == tid
@@ -382,12 +356,11 @@ pub fn mount_by_id(id: u64) -> Option<Arc<Mount>> {
     TABLE.lock().iter().find(|m| m.mnt_id == id).cloned()
 }
 
-/// The mount rooted EXACTLY at `path` in the caller's ns, by the dentry
-/// crossing link (Linux `lookup_mnt`). # C: O(path) + O(N_mounts)
-pub fn mount_at_path_exact(path: &str) -> Option<Arc<Mount>> {
+/// The mount rooted EXACTLY at mountpoint dentry `d` in the caller's ns, by
+/// the dentry crossing link (Linux `lookup_mnt`). # C: O(N_mounts)
+pub fn mount_at_path_exact(d: &Arc<Dentry>) -> Option<Arc<Mount>> {
     let ns = current_ns();
-    if is_root_path(path) { return root_mount_id(ns).and_then(mount_by_id); }
-    let d = record_dentry(path)?;
+    if is_global_root(d) { return root_mount_id(ns).and_then(mount_by_id); }
     let id = d.mounted_mount(ns)?;
     mount_by_id(id)
 }
@@ -403,62 +376,61 @@ pub fn parent_mnt_id(m: &Mount) -> u64 {
     m.parent_id.load(Ordering::Acquire)
 }
 
-/// Build a `Mount` and attach it: record parent + mountpoint dentry + hash
-/// at attach time (Linux `mnt_set_mountpoint`/`commit_tree`). `root` is the
-/// bind-clone root inode (`None` = whole-fs). # C: O(path) + O(N_mounts)
-fn attach(mount_point: &str, fs: Arc<dyn FileSystem>, root: Option<InodeRef>) -> KResult<()> {
+/// Build a `Mount` and attach it on the caller-supplied mountpoint dentry
+/// `mp` (Linux `mnt_set_mountpoint`/`commit_tree`). `mp == None` ⇒ the
+/// namespace root mount (Linux `mnt_ns->root`, no mountpoint dentry). `root`
+/// is the bind-clone root inode (`None` = whole-fs). The rendered path is
+/// derived from the dentry's parent chain (render-only). # C: O(N_mounts)
+fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRef>) -> KResult<()> {
     let ns = current_ns();
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
-    if is_root_path(mount_point) {
+    // The global root dentry, like `None`, attaches the namespace root.
+    let mp = mp.filter(|d| !is_global_root(d));
+    let Some(d) = mp else {
         ROOTS.lock().insert(ns, mnt_id);
         TABLE.lock().push(Arc::new(Mount {
-            fs, rendered_path: mount_point.to_string(), mountpoint: None,
+            fs, rendered_path: String::from("/"), mountpoint: None,
             parent_id: AtomicU64::new(mnt_id), root, mnt_id,
             propagation: AtomicU8::new(Propagation::Private as u8),
             peer_group: AtomicU64::new(0), flags: AtomicU64::new(0), ns,
         }));
         return Ok(());
-    }
-    // Boundary RECORDING of the mountpoint dentry (the one Linux `do_mount`
-    // hands `mnt_set_mountpoint`). Parent = the covering mount of that
-    // dentry's nearest mounted ancestor — by identity.
-    let mountpoint = record_dentry(mount_point);
-    let parent_id = match mountpoint.as_ref() {
-        Some(d) => parent_by_dentry(ns, d),
-        None => root_mount_id(ns).unwrap_or(mnt_id),
     };
+    // Parent = the covering mount of the mountpoint dentry's nearest mounted
+    // ancestor — by identity.
+    let parent_id = parent_by_dentry(ns, &d);
     TABLE.lock().push(Arc::new(Mount {
-        fs, rendered_path: mount_point.to_string(), mountpoint: mountpoint.clone(),
+        fs, rendered_path: abs_string(&d), mountpoint: Some(d.clone()),
         parent_id: AtomicU64::new(parent_id), root, mnt_id,
         propagation: AtomicU8::new(Propagation::Private as u8),
         peer_group: AtomicU64::new(0), flags: AtomicU64::new(0), ns,
     }));
-    if let Some(d) = mountpoint.as_ref() {
-        wire_crossing(ns, d, mnt_id);
-        hash_insert(ns, parent_id, dptr(d), mnt_id);
-    }
+    wire_crossing(ns, &d, mnt_id);
+    hash_insert(ns, parent_id, dptr(&d), mnt_id);
     Ok(())
 }
 
-/// Register a FileSystem at `mount_point` (Linux `do_new_mount`). Stacks on
-/// any existing mount at the same dentry (last attached wins). # C: O(N)
-pub fn register(mount_point: &str, fs: Arc<dyn FileSystem>) -> KResult<()> {
-    attach(mount_point, fs, None)
+/// Register a FileSystem on mountpoint dentry `mp` (Linux `do_new_mount`).
+/// `mp == None` ⇒ the namespace root. Stacks on any existing mount at the
+/// same dentry (last attached wins). # C: O(N)
+pub fn register(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()> {
+    attach(mp, fs, None)
 }
 
 /// Bind-as-clone (`mount(src, tgt, NULL, MS_BIND)`, `docs/16§6`): attach a
-/// mount at `mount_point` whose root is the resolved source inode `root`.
+/// mount on dentry `mp` whose root is the resolved source inode `root`.
 /// # C: O(N_mounts)
-pub fn register_bind(mount_point: &str, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
-    attach(mount_point, fs, Some(root))
+pub fn register_bind(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
+    attach(mp, fs, Some(root))
 }
 
 /// Propagation event delivery (`docs/16§6`): replicate the mount just
-/// created at `at` to every peer of its PARENT mount. Returns the count
-/// propagated. Mirrored child path is built from each peer's mountpoint
-/// dentry + the relative dentry path of `at` under its parent — identity,
-/// not string prefix. # C: O(N_mounts)
-pub fn propagate_mount(at: &str) -> usize {
+/// created at dentry `at` to every peer of its PARENT mount. Returns the
+/// count propagated. Each mirror position is the peer's mountpoint dentry
+/// (or the global root) DESCENDED by the relative dentry path of `at` under
+/// its parent — engine-internal synthesis (`descend`), never a string
+/// resolve. # C: O(N_mounts)
+pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
     let ns = current_ns();
     let newm = match mount_exact_at(ns, at) { Some(m) => m, None => return 0 };
     let parent = match mount_by_id(newm.parent_id.load(Ordering::Acquire)) {
@@ -482,27 +454,28 @@ pub fn propagate_mount(at: &str) -> usize {
         .cloned().collect();
     let mut n = 0;
     for peer in peers {
-        let base = match peer.mountpoint.as_ref() {
-            Some(d) => rel_under(d, None).unwrap_or_default(),
-            None => String::new(),
+        // Base the mirror under the peer's mountpoint dentry, or the ns root
+        // when the peer IS a root mount (no mountpoint dentry).
+        let base = match peer.mountpoint.clone().or_else(global_root) {
+            Some(b) => b, None => continue,
         };
-        let dst = alloc::format!("{}{}", base, rel);
-        if register_bind(&dst, newm.fs.clone(), root.clone()).is_ok() { n += 1; }
+        let Some(dst) = descend(&base, &rel) else { continue; };
+        if register_bind(Some(dst), newm.fs.clone(), root.clone()).is_ok() { n += 1; }
     }
     n
 }
 
-/// Peer group id of the mount rooted exactly at `mount_point`, or 0.
+/// Peer group id of the mount rooted exactly at dentry `d`, or 0.
 /// # C: O(N_mounts)
-pub fn peer_group_of(mount_point: &str) -> u64 {
-    mount_exact_at(current_ns(), mount_point)
+pub fn peer_group_of(d: &Arc<Dentry>) -> u64 {
+    mount_exact_at(current_ns(), d)
         .map(|m| m.peer_group.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 /// MS_SHARED peer-group inheritance (`docs/16§6`). # C: O(N_mounts)
-pub fn join_peer_group(mount_point: &str, pg: u64) {
+pub fn join_peer_group(d: &Arc<Dentry>, pg: u64) {
     if pg == 0 { return; }
-    if let Some(m) = mount_exact_at(current_ns(), mount_point) {
+    if let Some(m) = mount_exact_at(current_ns(), d) {
         m.peer_group.store(pg, Ordering::Release);
         m.propagation.store(Propagation::Shared as u8, Ordering::Release);
     }
@@ -532,13 +505,13 @@ fn subtree_ids(ns: u64, top: u64) -> Vec<u64> {
 /// Identity-checked (new_root must be a mount; put_old must lie under
 /// new_root and not be a mount). After the move, the namespace index is
 /// rebuilt from the re-recorded mountpoint dentries. # C: O(N_mounts × depth)
-pub fn pivot_root(new_root: &str, put_old: &str) -> KResult<()> {
+pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> {
     let ns = current_ns();
     let nr_m = mount_exact_at(ns, new_root).ok_or(VfsError::Einval)?;
     let nr_mp = nr_m.mountpoint.clone();
     let nr_id = nr_m.mnt_id;
     let nr_subtree = subtree_ids(ns, nr_id);
-    let po_d = record_dentry(put_old).ok_or(VfsError::Einval)?;
+    let po_d = put_old.clone();
     let root_id = root_mount_id(ns);
     let mounts: Vec<Arc<Mount>> = TABLE.lock().iter().filter(|m| m.ns == ns).cloned().collect();
     // pivot_root(".", ".") — put_old IS new_root's location: the old root
@@ -589,10 +562,12 @@ pub fn pivot_root(new_root: &str, put_old: &str) -> KResult<()> {
     Ok(())
 }
 
-/// Commit a whole-namespace path rewrite: install the new rendered paths,
-/// clear old crossings, re-record each mount's mountpoint dentry from its
-/// new path, then rebuild the ns index (crossings + parent + hash) by
-/// identity. `new_root_id`, when given, becomes the ns root. # C: O(N×depth)
+/// Commit a whole-namespace path rewrite: clear old crossings, MATERIALISE
+/// each mount's new mountpoint dentry by descending its new absolute-from-
+/// new-root path from the global root (`descend` — engine-internal synthesis,
+/// not a string resolver), install it + the derived rendered path, then
+/// rebuild the ns index (crossings + parent + hash) by identity.
+/// `new_root_id`, when given, becomes the ns root. # C: O(N×depth)
 fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>) {
     // Clear old crossings for this ns (snapshot dentries first so the dentry
     // locks aren't taken while the table lock is held).
@@ -600,9 +575,13 @@ fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>)
         .filter(|m| m.ns == ns).filter_map(|m| m.mountpoint.clone()).collect();
     for d in old_dents.iter() { d.set_mounted_mount(ns, None); }
     if let Some(rid) = new_root_id { ROOTS.lock().insert(ns, rid); }
-    // Re-record dentries from new paths (boundary resolution).
+    // Materialise each new mountpoint dentry by descending from the ns root
+    // (positions are absolute-from-new-root); the new-root mount itself has
+    // no mountpoint dentry.
+    let root = global_root();
     let dents: Vec<(u64, String, Option<Arc<Dentry>>)> = new_paths.iter().map(|(id, p)| {
-        let d = if is_root_path(p) { None } else { record_dentry(p) };
+        let is_root = Some(*id) == new_root_id;
+        let d = if is_root { None } else { root.as_ref().and_then(|r| descend(r, p)) };
         (*id, p.clone(), d)
     }).collect();
     let mut t = TABLE.lock();
@@ -617,11 +596,11 @@ fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>)
     rebuild_ns_index(ns);
 }
 
-/// `umount`: remove the mount rooted exactly at `mount_point` (and detach
-/// its crossing). Returns the count removed. # C: O(N_mounts)
-pub fn unregister(mount_point: &str) -> usize {
+/// `umount`: remove the mount rooted exactly at mountpoint dentry `d` (and
+/// detach its crossing). Returns the count removed. # C: O(N_mounts)
+pub fn unregister(d: &Arc<Dentry>) -> usize {
     let ns = current_ns();
-    let Some(target) = mount_exact_at(ns, mount_point) else { return 0; };
+    let Some(target) = mount_exact_at(ns, d) else { return 0; };
     let id = target.mnt_id;
     let mp = target.mountpoint.clone();
     let parent = target.parent_id.load(Ordering::Acquire);
@@ -645,12 +624,12 @@ fn rewire_crossing_top(ns: u64, d: &Arc<Dentry>, parent: u64) {
     }
 }
 
-/// Detach the top mount at `mount_point`; with `detach_subtree`, also its
-/// transitive children by `parent_id`. Stacked overmounts at the same dentry
-/// are NOT children and survive (re-exposed). # C: O(N_mounts)
-pub fn unregister_top(mount_point: &str, detach_subtree: bool) -> usize {
+/// Detach the top mount at mountpoint dentry `d`; with `detach_subtree`, also
+/// its transitive children by `parent_id`. Stacked overmounts at the same
+/// dentry are NOT children and survive (re-exposed). # C: O(N_mounts)
+pub fn unregister_top(d: &Arc<Dentry>, detach_subtree: bool) -> usize {
     let ns = current_ns();
-    let Some(top) = mount_exact_at(ns, mount_point) else { return 0; };
+    let Some(top) = mount_exact_at(ns, d) else { return 0; };
     let top_id = top.mnt_id;
     // Never detach the sole namespace root (there is exactly one root id per
     // ns in ROOTS, so the root is never removable here).
@@ -710,68 +689,69 @@ pub fn snapshot_ns(from_ns: u64, to_ns: u64) {
 /// MS_REC recursive bind (`docs/16§6`): after `src`→`tgt` is bound, clone
 /// every mount nested under `src` to the matching path under `tgt`. Submounts
 /// are found by dentry ancestry (identity), not string prefix. # C: O(N)
-pub fn bind_submounts_rec(src: &str, tgt: &str) -> usize {
+pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
     let ns = current_ns();
     // src's mountpoint dentry bounds "strict submount". The ns root has none
     // (mount_exact_at returns the root mount whose `mountpoint` is None), in
     // which case every non-root mount's absolute path is its relative path.
     let src_m = mount_exact_at(ns, src);
-    if src_m.is_none() && !is_root_path(src) { return 0; }
+    if src_m.is_none() && !is_global_root(src) { return 0; }
     let src_id = src_m.as_ref().map(|m| m.mnt_id);
     let src_mp = src_m.and_then(|m| m.mountpoint.clone());
-    let tgt_d = record_dentry(tgt);
     let snap: Vec<Arc<Mount>> = TABLE.lock().clone();
     let mut n = 0;
     for m in snap.iter() {
         if m.ns != ns || Some(m.mnt_id) == src_id { continue; }
         let Some(mp) = m.mountpoint.as_ref() else { continue; };
         // Skip mounts already at/under the target (don't clone onto self).
-        if tgt_d.as_ref().map(|t| rel_under(mp, Some(t)).is_some()).unwrap_or(false) { continue; }
+        if rel_under(mp, Some(tgt)).is_some() { continue; }
         // Strict submount: mp under src's mountpoint dentry (identity).
         let Some(rel) = rel_under(mp, src_mp.as_ref()) else { continue; };
         if rel.is_empty() { continue; }
-        let new_mp = alloc::format!("{}{}", tgt, rel);
+        // Mirror position = the bind target dentry descended by `rel`
+        // (engine-internal synthesis, not a string resolve).
+        let Some(new_mp) = descend(tgt, &rel) else { continue; };
         let root = m.root.clone().or_else(|| m.fs.root());
         if let Some(r) = root {
-            if register_bind(&new_mp, m.fs.clone(), r).is_ok() { n += 1; }
+            if register_bind(Some(new_mp), m.fs.clone(), r).is_ok() { n += 1; }
         }
     }
     n
 }
 
-/// `mount(MS_MOVE)`: relocate the mount at `from` (plus its subtree) to `to`.
-/// `Einval` if no mount at `from`; `Ebusy` if `to`'s dentry is already
-/// covered. The moved set's rendered paths + mountpoint dentries are
-/// re-recorded; the ns index rebuilt by identity. The ns root `/` has no
-/// covering dentry, so MS_MOVE-onto-`/` is permitted. # C: O(N × depth)
-pub fn move_mount(from: &str, to: &str) -> KResult<()> {
+/// `mount(MS_MOVE)`: relocate the mount at dentry `from` (plus its subtree)
+/// to dentry `to`. `Einval` if no mount at `from`; `Ebusy` if `to` is already
+/// covered. Each moved mount's NEW mountpoint dentry is MATERIALISED by
+/// descending from the ns root (`descend` — engine-internal synthesis), and
+/// the rendered path derived from it; the ns index rebuilt by identity. The
+/// ns root `/` has no covering dentry, so MS_MOVE-onto-`/` is permitted.
+/// # C: O(N × depth)
+pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
     let ns = current_ns();
     let from_m = mount_exact_at(ns, from).ok_or(VfsError::Einval)?;
-    if !is_root_path(to) {
-        if let Some(td) = record_dentry(to) {
-            if td.mounted_mount(ns).is_some() { return Err(VfsError::Ebusy); }
-        }
-    }
+    let to_root = is_global_root(to);
+    if !to_root && to.mounted_mount(ns).is_some() { return Err(VfsError::Ebusy); }
+    let to_abs = if to_root { String::new() } else { abs_string(to) };
     let from_id = from_m.mnt_id;
     let from_mp = from_m.mountpoint.clone();
     let moved = subtree_ids(ns, from_id);
-    // Build new paths for the moved set: top → `to`; child → `to` + child's
-    // relative dentry path under `from`'s mountpoint.
+    // Build new absolute-from-root paths for the moved set: top → `to`; child
+    // → `to` + child's relative dentry path under `from`'s mountpoint.
     let snap: Vec<Arc<Mount>> = TABLE.lock().iter()
         .filter(|m| m.ns == ns && moved.contains(&m.mnt_id)).cloned().collect();
     let mut new_paths: Vec<(u64, String)> = Vec::new();
     for m in snap.iter() {
         let np = if m.mnt_id == from_id {
-            to.to_string()
+            if to_root { String::from("/") } else { to_abs.clone() }
         } else {
             match m.mountpoint.as_ref().and_then(|d| rel_under(d, from_mp.as_ref())) {
-                Some(rel) if !rel.is_empty() => alloc::format!("{}{}", to, rel),
+                Some(rel) if !rel.is_empty() => alloc::format!("{}{}", to_abs, rel),
                 _ => m.rendered_path.clone(),
             }
         };
         new_paths.push((m.mnt_id, np));
     }
-    // Detach moved crossings + hash, re-record dentries, re-attach.
+    // Detach moved crossings + hash, materialise new dentries, re-attach.
     for m in snap.iter() {
         if let Some(d) = m.mountpoint.as_ref() {
             let parent = m.parent_id.load(Ordering::Acquire);
@@ -779,8 +759,12 @@ pub fn move_mount(from: &str, to: &str) -> KResult<()> {
             d.set_mounted_mount(ns, None);
         }
     }
+    let root = global_root();
     let dents: Vec<(u64, String, Option<Arc<Dentry>>)> = new_paths.iter()
-        .map(|(id, p)| (*id, p.clone(), if is_root_path(p) { None } else { record_dentry(p) }))
+        .map(|(id, p)| {
+            let d = if p == "/" { None } else { root.as_ref().and_then(|r| descend(r, p)) };
+            (*id, p.clone(), d)
+        })
         .collect();
     {
         let mut t = TABLE.lock();
@@ -807,9 +791,9 @@ pub fn move_mount(from: &str, to: &str) -> KResult<()> {
     Ok(())
 }
 
-/// Retune the propagation type of the mount at `mount_point`. # C: O(N)
-pub fn set_propagation(mount_point: &str, kind: Propagation) -> KResult<()> {
-    let m = mount_exact_at(current_ns(), mount_point).ok_or(VfsError::Einval)?;
+/// Retune the propagation type of the mount at dentry `d`. # C: O(N)
+pub fn set_propagation(d: &Arc<Dentry>, kind: Propagation) -> KResult<()> {
+    let m = mount_exact_at(current_ns(), d).ok_or(VfsError::Einval)?;
     m.propagation.store(kind as u8, Ordering::Release);
     match kind {
         Propagation::Shared => {
@@ -825,9 +809,9 @@ pub fn set_propagation(mount_point: &str, kind: Propagation) -> KResult<()> {
     Ok(())
 }
 
-/// Update the per-mount option bits on an existing mount. # C: O(N_mounts)
-pub fn remount_flags(mount_point: &str, flags: u64) -> KResult<()> {
-    let m = mount_exact_at(current_ns(), mount_point).ok_or(VfsError::Einval)?;
+/// Update the per-mount option bits on the mount at dentry `d`. # C: O(N_mounts)
+pub fn remount_flags(d: &Arc<Dentry>, flags: u64) -> KResult<()> {
+    let m = mount_exact_at(current_ns(), d).ok_or(VfsError::Einval)?;
     let old = m.flags.load(Ordering::Acquire);
     let new = (old & !MNT_OPTION_MASK) | (flags & MNT_OPTION_MASK);
     m.flags.store(new, Ordering::Release);
@@ -866,12 +850,12 @@ pub fn lookup(path: &str) -> KResult<InodeRef> {
     crate::namei::resolve_abs(path)
 }
 
-/// Root inode of the mount rooted EXACTLY at `abs` in the caller's ns, or
-/// `None` if nothing is mounted there (or it's `/`). By dentry identity.
-/// # C: O(N_mounts)
-pub fn mount_root_at(abs: &str) -> Option<InodeRef> {
-    if is_root_path(abs) { return None; }
-    let m = mount_at_path_exact(abs)?;
+/// Root inode of the mount rooted EXACTLY at mountpoint dentry `d` in the
+/// caller's ns, or `None` if nothing is mounted there (or it's the global
+/// root). By dentry identity. # C: O(N_mounts)
+pub fn mount_root_at(d: &Arc<Dentry>) -> Option<InodeRef> {
+    if is_global_root(d) { return None; }
+    let m = mount_at_path_exact(d)?;
     if let Some(r) = m.root.as_ref() { return Some(r.clone()); }
     m.fs.root()
 }

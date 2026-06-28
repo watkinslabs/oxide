@@ -87,7 +87,12 @@ pub fn set_root_dentry_provider(f: RootDentry) {
     ROOT_DENTRY.store(f as *mut (), Ordering::Release);
 }
 
-fn root_dentry() -> Option<Arc<Dentry>> {
+/// The installed global root dentry (start of an absolute walk), or `None`
+/// before the provider is installed. Used by the mount engine to base
+/// SYNTHESIZED mount positions (propagation mirrors / pivot relocations
+/// under the namespace root) — a dentry→dentry descent, never a string
+/// resolve. # C: O(1)
+pub fn root_dentry() -> Option<Arc<Dentry>> {
     let p = ROOT_DENTRY.load(Ordering::Acquire);
     if p.is_null() { return None; }
     // SAFETY: only ever stores a `RootDentry` fn pointer via the setter.

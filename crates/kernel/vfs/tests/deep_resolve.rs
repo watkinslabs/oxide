@@ -83,13 +83,13 @@ fn root() -> Arc<Dentry> { ROOT.get_or_init(|| Dentry::new_root(node(ROOT_INO)))
 /// Root-dentry provider (`walk_to_mount`'s start). # fn pointer, no capture.
 fn root_provider() -> Option<Arc<Dentry>> { Some(root()) }
 
-/// Dentry resolver (`register`'s attach-time RECORDING) — resolves an absolute
-/// path to its canonical dentry by the SAME walk as the kernel's
-/// `pathresolve::resolve_dentry`, so the dentry `register` marks as a mount
-/// point is identity-equal to the one `walk_to_mount` later crosses.
-fn dentry_resolver(p: &str) -> Option<Arc<Dentry>> {
+/// Resolve an absolute path to its canonical dentry by the SAME walk the
+/// real syscall handler does (the namei walk the caller hands the mount
+/// engine), so the dentry `register` attaches on is identity-equal to the
+/// one `walk_to_mount` later crosses.
+fn dentry(p: &str) -> Arc<Dentry> {
     let r = root();
-    vfs::path_lookup(r.clone(), r, p, vfs::LookupFlags::default()).ok().map(|(_, d)| d)
+    vfs::path_lookup(r.clone(), r, p, vfs::LookupFlags::default()).ok().map(|(_, d)| d).unwrap()
 }
 
 // --- filesystems -----------------------------------------------------------
@@ -110,12 +110,11 @@ impl FileSystem for ProcFs {
 fn setup() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     vfs::mount::set_current_ns_provider(|| NS);
-    vfs::mount::set_dentry_resolver(dentry_resolver);
     vfs::set_root_dentry_provider(root_provider);
     static MOUNTED: OnceLock<()> = OnceLock::new();
     MOUNTED.get_or_init(|| {
-        vfs::mount::register("/", Arc::new(RootFs)).expect("mount root fs");
-        vfs::mount::register("/proc", Arc::new(ProcFs)).expect("mount procfs");
+        vfs::mount::register(None, Arc::new(RootFs)).expect("mount root fs");
+        vfs::mount::register(Some(dentry("/proc")), Arc::new(ProcFs)).expect("mount procfs");
     });
     g
 }

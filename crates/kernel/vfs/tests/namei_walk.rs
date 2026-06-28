@@ -50,11 +50,11 @@ impl FileSystem for TestMountFs {
     fn name(&self) -> &str { "testfs" }
 }
 
-fn mount_id_for(path: &str, root: InodeRef) -> u64 {
-    vfs::mount::register_bind(path, Arc::new(TestMountFs), root).expect("register test mount");
+fn mount_id_for(mp: &Arc<Dentry>, root: InodeRef) -> u64 {
+    vfs::mount::register_bind(Some(mp.clone()), Arc::new(TestMountFs), root).expect("register test mount");
     vfs::mount::snapshot_all()
         .into_iter()
-        .filter(|m| m.mount_point_str() == path)
+        .filter(|m| m.mountpoint.as_ref().map(|d| Arc::ptr_eq(d, mp)).unwrap_or(false))
         .last()
         .expect("registered mount visible")
         .mnt_id
@@ -171,7 +171,7 @@ fn crosses_mount_point() {
     // the mount table owns the mounted root.
     let (_, mnt_d) = vfs::path_lookup(root.clone(), root.clone(), "/mnt", LookupFlags::default())
         .expect("resolve /mnt");
-    let mnt_id = mount_id_for("/mnt", mnt_root);
+    let mnt_id = mount_id_for(&mnt_d, mnt_root);
     mnt_d.set_mounted_mount(0, Some(mnt_id));
 
     let (i, _) = vfs::path_lookup(root.clone(), root.clone(), "/mnt/file", LookupFlags::default())
@@ -195,7 +195,7 @@ fn crosses_into_mount_and_resolves_per_component() {
 
     let (_, proc_d) = vfs::path_lookup(root.clone(), root.clone(), "/proc", LookupFlags::default())
         .expect("resolve /proc");
-    let mnt_id = mount_id_for("/proc", proc_root);
+    let mnt_id = mount_id_for(&proc_d, proc_root);
     proc_d.set_mounted_mount(0, Some(mnt_id));
 
     let (i, _) = vfs::path_lookup(root.clone(), root, "/proc/123/stat", LookupFlags::default())
@@ -266,7 +266,7 @@ fn crosses_mount_on_tree_backed_subtree() {
     // Mount the sub-tree fs ON `/sys` by dentry identity (outer mount).
     let (_, sys_d) = vfs::path_lookup(root.clone(), root.clone(), "/sys", LookupFlags::default())
         .expect("resolve /sys");
-    let sys_mnt = mount_id_for("/sys", sys_tree_fs);
+    let sys_mnt = mount_id_for(&sys_d, sys_tree_fs);
     sys_d.set_mounted_mount(0, Some(sys_mnt));
 
     // Now resolve the INNER mountpoint dentry the way the late
@@ -275,7 +275,7 @@ fn crosses_mount_on_tree_backed_subtree() {
     // sub-tree's `fs` dentry.
     let (_, cg_mp) = vfs::path_lookup(root.clone(), root.clone(), "/sys/fs/cgroup", LookupFlags::default())
         .expect("resolve /sys/fs/cgroup mountpoint");
-    let cg_mnt = mount_id_for("/sys/fs/cgroup", cg_root);
+    let cg_mnt = mount_id_for(&cg_mp, cg_root);
     cg_mp.set_mounted_mount(0, Some(cg_mnt));
 
     // A SUBSEQUENT child-path walk must cross into cgroupfs by hitting the
