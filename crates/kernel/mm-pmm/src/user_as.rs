@@ -787,6 +787,28 @@ fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
             as_.try_grow_stack(uva);
         }
     }
+    // debug-cow item 1: re-verify the RO-shared anon checksum at the COW
+    // write-fault, BEFORE the handler copies/reuses the frame. Translate the
+    // faulting VA to its current frame and hand it to the vmm side, which
+    // logs [COW-CORRUPT] iff that frame's content changed while it was
+    // supposed to be RO-shared (a peer wrote it via a stale writable TLB, or
+    // the wrong frame was installed). Done here (not in vmm) so the log can
+    // name the running task (pid==tid) + CPU. No-op when the feature is off.
+    #[cfg(feature = "debug-cow")]
+    if let FaultKind::Protection { access: FaultAccess::Write } = fault {
+        use hal::MmuOps;
+        let va_page = uva.as_u64() & !(hal::PAGE_SIZE_BYTES - 1);
+        // SAFETY: read-only translate of the active CR3/TTBR0 for the faulting VA.
+        #[cfg(target_arch = "x86_64")]
+        let cur = unsafe { hal_x86_64::mmu_ops::X86Mmu::translate(hal::Va(va_page)) };
+        #[cfg(target_arch = "aarch64")]
+        let cur = unsafe { hal_aarch64::mmu_ops::ArmMmu::translate(hal::Va(va_page)) };
+        if let Some((p, _)) = cur {
+            let tid = sched::current().map(|t| t.tid).unwrap_or(0);
+            let cpu = current_cpu_idx() as u32;
+            vmm::debug_cow::check_write(p.0 & !0xfff, va_page, hhdm, tid, cpu);
+        }
+    }
     // SAFETY: live per-arch MmuOps state initialised by kernel_main; alloc closure wraps the global PMM; fault context has IRQs masked; `as_` is borrowed read-only at entry (the AS takes its own RwLock internally). `set_rmap` invokes Linux-shape `page_add_anon_rmap` against the kernel's PageMeta-backed AnonVma slot.
     unsafe {
         #[cfg(target_arch = "x86_64")]

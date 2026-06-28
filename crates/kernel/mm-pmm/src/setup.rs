@@ -333,6 +333,34 @@ pub fn alloc_one_frame() -> Option<u64> {
                 }
             }
         }
+        // debug-cow item 3: same write-while-free check against the 0xCC
+        // poison that free_one_frame stamps. A freed frame must read back all
+        // 0xCC; the first byte that differs was written after the frame was
+        // freed = free-while-mapped (stale TLB), double-alloc, or the buddy
+        // returned a frame still in use. Tail-gated so a boot-fresh (never
+        // poisoned) frame isn't flagged.
+        #[cfg(feature = "debug-cow")]
+        {
+            let hhdm = crate::user_as::hhdm_offset();
+            if hhdm != 0 {
+                let base = (hhdm + pa) as *const u8;
+                // SAFETY: pa freshly off the free list; HHDM mirror readable; 4 KiB.
+                let tail_poison = (0..16).all(|i| unsafe { core::ptr::read_volatile(base.add(4080 + i)) } == 0xCC);
+                if tail_poison {
+                    for off in 0..4080usize {
+                        // SAFETY: within the 4 KiB frame's HHDM mirror.
+                        let b = unsafe { core::ptr::read_volatile(base.add(off)) };
+                        if b != 0xCC {
+                            klog::write_raw(b"[POISON] frame="); klog::write_hex_u64(pa);
+                            klog::write_raw(b" dirtied-while-free off="); klog::write_hex_u64(off as u64);
+                            klog::write_raw(b" val="); klog::write_hex_u64(b as u64);
+                            klog::write_raw(b"\n");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
         if let Some(meta) = page_meta() {
             if let Some(m) = meta.get(hal::Pfn(pa / 4096)) {
                 let rc = m.refcount.load(Ordering::Acquire);
@@ -451,6 +479,11 @@ pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
             if new_mc == Some(1) && new == 1 {
                 if meta.flags(pfn).map_or(false, |f| f.contains(crate::PageFlags::ANON)) {
                     let _ = meta.set_flags(pfn, crate::PageFlags::ANON_EXCLUSIVE);
+                    // debug-cow: sole survivor is exclusive again and may
+                    // legitimately write the page in place — drop its RO-shared
+                    // snapshot so a later free doesn't false-positive.
+                    #[cfg(feature = "debug-cow")]
+                    vmm::debug_cow::forget(pa);
                 }
             }
             // LOUD over-dec detection: dec on a refcount-0 frame wraps to a huge
@@ -682,6 +715,36 @@ pub fn pfn_max_from_boot_info(info: &BootInfo) -> u64 {
     pfn_max
 }
 
+/// debug-cow: identify the current task (Linux pid == kernel tid) and CPU
+/// for [COW-CORRUPT] / [COW-LEAK] attribution. Returns (0,0) pre-sched.
+/// # C: O(1)
+#[cfg(feature = "debug-cow")]
+fn cow_dbg_who() -> (u32, u32) {
+    let tid = sched::current().map(|t| t.tid).unwrap_or(0);
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    let cpu = { use hal::CpuOps; hal_x86_64::X86CpuOps::current_cpu() };
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    let cpu = { use hal::CpuOps; hal_aarch64::ArmCpuOps::current_cpu() };
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let cpu = 0u32;
+    (tid, cpu)
+}
+
+/// debug-cow item 2: authoritative "who still maps this frame" report.
+/// The O(1) mapcount check can itself be under-counted (the residual-bug
+/// hypothesis), so on a [COW-LEAK] hit we walk the frame's anon_vma rmap
+/// chain and PTE-verify each candidate, naming a concrete still-mapping
+/// (AS-root, VA) pair: `[COW-LEAK]  still-mapped-by root=R va=V`.
+/// # C: O(N_chain) page-table walks
+#[cfg(feature = "debug-cow")]
+fn cow_dbg_rmap_report(pa: u64) {
+    crate::user_as::rmap_walk_anon_pa(pa, |root, va| {
+        klog::write_raw(b"[COW-LEAK]  still-mapped-by root="); klog::write_hex_u64(root);
+        klog::write_raw(b" va="); klog::write_hex_u64(va);
+        klog::write_raw(b"\n");
+    });
+}
+
 /// Internal: snapshot the metadata array if installed.
 fn page_meta() -> Option<&'static crate::PageMetaArr> {
     let p = PAGE_META_PTR.load(core::sync::atomic::Ordering::Acquire);
@@ -740,6 +803,28 @@ pub unsafe fn free_one_frame(pa: u64) {
                     klog::write_raw(b"\n");
                 }
             }
+            // debug-cow item 1: re-verify the RO-shared anon checksum before
+            // the frame is recycled (a peer may have written it after the last
+            // mapper's view was taken). item 2: refcount==live-PTE assert —
+            // mapcount MUST be 0 at free; a non-zero mapcount means a live PTE
+            // still points here (free-while-mapped, the inverse RANK-1 bug).
+            #[cfg(feature = "debug-cow")]
+            {
+                let (tid, cpu) = cow_dbg_who();
+                vmm::debug_cow::check_free(pa, crate::user_as::hhdm_offset(), tid, cpu);
+                let mc = m.mapcount.load(core::sync::atomic::Ordering::Acquire);
+                let rc = m.refcount.load(core::sync::atomic::Ordering::Acquire);
+                if mc != 0 {
+                    klog::write_raw(b"[COW-LEAK] free-while-mapped pa="); klog::write_hex_u64(pa);
+                    klog::write_raw(b" mapcount="); klog::write_dec_u64(mc as u64);
+                    klog::write_raw(b" refcount="); klog::write_dec_u64(rc as u64);
+                    klog::write_raw(b"\n");
+                    // Sampled rmap cross-check: name a concrete still-mapping VA
+                    // (the O(1) mapcount may itself be under-counted; the rmap
+                    // walk over the anon_vma chain is the authoritative oracle).
+                    cow_dbg_rmap_report(pa);
+                }
+            }
             m.refcount.store(0, core::sync::atomic::Ordering::Release);
             // F157-A1: a frame re-entering the free list has no mappings —
             // reset mapcount to 0 so the next `alloc_one_frame` starts clean
@@ -765,6 +850,19 @@ pub unsafe fn free_one_frame(pa: u64) {
         if hhdm != 0 {
             // SAFETY: pa is a just-freed PMM frame; HHDM mirror is kernel-writable; 4 KiB granule.
             unsafe { core::ptr::write_bytes((hhdm + pa) as *mut u8, 0xAA, 4096); }
+        }
+    }
+    // debug-cow item 3: poison freed frames with 0xCC. `alloc_one_frame`
+    // checks the pattern; any non-0xCC byte on a frame coming off the free
+    // list = it was written WHILE FREE (free-while-mapped via a stale TLB,
+    // double-alloc, or the allocator handed out an in-use frame). 0xCC is
+    // distinct from debug-watchdog's 0xAA so the two probes don't alias.
+    #[cfg(feature = "debug-cow")]
+    {
+        let hhdm = crate::user_as::hhdm_offset();
+        if hhdm != 0 {
+            // SAFETY: pa is a just-freed PMM frame; HHDM mirror is kernel-writable; 4 KiB granule.
+            unsafe { core::ptr::write_bytes((hhdm + pa) as *mut u8, 0xCC, 4096); }
         }
     }
     // SAFETY: caller asserts pa was a prior alloc and is no longer mapped per fn contract; crate::Buddy::free's preconditions reduce to "page aligned + within range" which alloc_one_frame guarantees.

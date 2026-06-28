@@ -24,3 +24,5 @@ debug-no-cow-fast = []  # TEST: disable COW in-place fast-path (always slow-copy
 debug-no-fork-shared = []  # TEST: force COW for all VMAs on fork
 
 debug-no-shmem = []  # TEST: disable MAP_SHARED shared_frame path
+
+debug-cow = []  # [COW-CORRUPT] runtime detector: checksum RO-shared anon frames at fork_cow, re-verify at COW write-fault + at free (catch peer write to a RO-shared page = stale TLB / wrong frame)

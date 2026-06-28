@@ -95,6 +95,9 @@ pub fn read_cr4() -> u64 {
 /// to #UD/#NM, and sets CR0.MP (bit 1 — task-switched FPU is
 /// monitored). musl's libc startup uses `movq %rbx, %xmm0` and
 /// similar SSE2 instructions; without this they raise #UD.
+/// Also sets CR0.WP (bit 16) so CPL=0 writes honor the user-PTE
+/// read-only bit: kernel writes into a COW-shared user page fault
+/// into do_wp_page instead of silently mutating the shared frame.
 /// # SAFETY: privileged CR0/CR4 writes legal at CPL=0; called once
 /// per CPU at boot (BSP `_start_rust` + each AP `ap_main_x86`) before
 /// that CPU runs user code. CR0/CR4 are per-CPU registers.
@@ -107,6 +110,7 @@ pub unsafe fn enable_sse() {
         asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
         cr0 &= !(1u64 << 2); // clear EM
         cr0 |=  (1u64 << 1); // set MP
+        cr0 |=  (1u64 << 16); // set WP — CPL=0 honors user PTE RO so kernel writes to COW-shared user pages take #PF into do_wp_page instead of silently mutating the shared frame (Linux X86_CR0_WP)
         asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack, preserves_flags));
         let mut cr4: u64;
         asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
