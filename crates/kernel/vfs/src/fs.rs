@@ -11,8 +11,10 @@
 extern crate alloc;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
+use sync::{Devices as FsClass, Spinlock};
 use crate::inode::InodeRef;
-use crate::superblock::{SuperBlock, SuperOps};
+use crate::superblock::{FileSystemType, SuperBlock, SuperOps};
 use crate::types::VfsError;
 
 /// `KResult<T>` is the VFS error envelope. Aliased here for
@@ -314,4 +316,59 @@ pub trait FileSystem: Send + Sync {
         s.push_str(" 0 0\n");
         s
     }
+}
+
+// ---------------------------------------------------------------------------
+// `file_systems` registry — Linux `fs/filesystems.c`.
+//
+// A global, name-keyed list of `file_system_type`s. `register_filesystem`
+// links a type in at module/boot init; `get_fs_type(name)` is the lookup
+// `mount(2)` uses to resolve `-t <type>` to a `FileSystemType` instead of a
+// hard-coded `match fstype { … }`. Insertion order is preserved (Linux keeps
+// a singly linked list, `/proc/filesystems` renders it in registration
+// order) and lookup is a linear scan — both matching Linux exactly.
+// ---------------------------------------------------------------------------
+
+/// `file_systems` — the registered `file_system_type` list (Linux `fs/filesystems.c`).
+/// Insertion-ordered `Vec` (not a `BTreeMap`) to render `/proc/filesystems` in
+/// registration order like Linux. A leaf lock: nothing else is acquired under
+/// it (lookups only clone an `Arc`).
+static FILESYSTEMS: Spinlock<Vec<Arc<dyn FileSystemType>>, FsClass>
+    = Spinlock::new(Vec::new());
+
+/// `register_filesystem` (Linux `fs/filesystems.c`) — link a `file_system_type`
+/// into the global registry so `mount(2)` can resolve it by name. Rejects a
+/// duplicate type name with `Ebusy` exactly as Linux (`-EBUSY`).
+/// # C: O(N) over registered types
+pub fn register_filesystem(fs: Arc<dyn FileSystemType>) -> KResult<()> {
+    let mut list = FILESYSTEMS.lock();
+    if list.iter().any(|t| t.name() == fs.name()) { return Err(VfsError::Ebusy); }
+    list.push(fs);
+    Ok(())
+}
+
+/// `unregister_filesystem` (Linux `fs/filesystems.c`) — unlink a type by name.
+/// `Einval` if no type with that name is registered (Linux `-EINVAL`).
+/// # C: O(N) over registered types
+pub fn unregister_filesystem(name: &str) -> KResult<()> {
+    let mut list = FILESYSTEMS.lock();
+    match list.iter().position(|t| t.name() == name) {
+        Some(i) => { list.remove(i); Ok(()) }
+        None    => Err(VfsError::Einval),
+    }
+}
+
+/// `get_fs_type` (Linux `fs/filesystems.c`) — resolve a `file_system_type` by
+/// name. A `name.subtype` form (FUSE `fuse.sshfs`) resolves on the base name
+/// before the first `'.'`, mirroring Linux `__get_fs_type`'s `.subtype` split.
+/// `None` if no type is registered under that name. # C: O(N) over registered types
+pub fn get_fs_type(name: &str) -> Option<Arc<dyn FileSystemType>> {
+    let base = match name.find('.') { Some(i) => &name[..i], None => name };
+    FILESYSTEMS.lock().iter().find(|t| t.name() == base).cloned()
+}
+
+/// Snapshot of every registered `file_system_type` in registration order — the
+/// source `filesystems_proc_show` (`/proc/filesystems`) iterates. # C: O(N)
+pub fn registered_filesystems() -> Vec<Arc<dyn FileSystemType>> {
+    FILESYSTEMS.lock().iter().cloned().collect()
 }
