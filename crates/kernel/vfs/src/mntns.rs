@@ -6,7 +6,10 @@
 //! `struct mount` tree (parent/child links, the `(ns,parent,dptr)` hash, the
 //! dentry crossing links); this module owns the OBJECTS those links point at:
 //!   - `MntNamespace` — Linux `struct mnt_namespace` (root mount id + task
-//!     refcount + per-ns change seq), replacing the bare `ROOTS` id map.
+//!     refcount + per-ns change seq + `nr_mounts`/`pending_mounts` cap state),
+//!     replacing the bare `ROOTS` id map.
+//!   - `count_mounts`/`sysctl_mount_max` — the per-ns mount ceiling that bounds
+//!     a single `mount(2)` propagation/rbind fan-out (Linux `count_mounts`).
 //!   - `Mountpoint` — Linux `struct mountpoint` (dentry → mount refcount),
 //!     keyed by dentry identity so "is this dentry a mountpoint" + the
 //!     m_count drive umount/overmount accounting.
@@ -21,7 +24,9 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use sync::{MountTable as MountClass, Spinlock};
 
 use crate::dentry::Dentry;
+use crate::fs::KResult;
 use crate::inode::{POLL_ERR, POLL_IN, POLL_PRI};
+use crate::types::VfsError;
 
 // ---------------------------------------------------------------------------
 // Mount-generation notify counter (Linux `mnt_namespace->event` / the global
@@ -84,12 +89,22 @@ pub struct MntNamespace {
     pub nr_tasks: AtomicU64,
     /// Per-ns mount-change seq (mountinfo).
     pub seq: AtomicU64,
+    /// Live mounts committed into this ns (Linux `mnt_ns->nr_mounts`). Bounded
+    /// by `sysctl_mount_max`; the umount path decrements it.
+    pub nr_mounts: AtomicU64,
+    /// Mounts admitted but not yet committed in an in-flight graft (Linux
+    /// `mnt_ns->pending_mounts`): `count_mounts` reserves here so concurrent /
+    /// propagation-expanded grafts cannot each pass the limit then collectively
+    /// blow past `sysctl_mount_max`. `commit_mounts` rolls it into `nr_mounts`;
+    /// `abort_mounts` releases it on the failure unwind.
+    pub pending_mounts: AtomicU64,
 }
 
 impl MntNamespace {
     fn new(id: u64) -> Arc<Self> {
         Arc::new(MntNamespace {
             id, root: AtomicU64::new(0), nr_tasks: AtomicU64::new(0), seq: AtomicU64::new(0),
+            nr_mounts: AtomicU64::new(0), pending_mounts: AtomicU64::new(0),
         })
     }
 }
@@ -128,6 +143,102 @@ pub fn ns_seq(ns: u64) -> u64 {
 
 /// Remove the namespace object for `id` (final reap). # C: O(log N)
 pub fn ns_forget(id: u64) { NAMESPACES.lock().remove(&id); }
+
+// ---------------------------------------------------------------------------
+// Per-ns mount cap (Linux `sysctl_mount_max` + `mnt_ns->nr_mounts`). Without
+// it, MS_SHARED propagation across a deep peer group, or a malicious
+// rbind/move loop, can fan a single `mount(2)` into an unbounded number of
+// `struct mount`s — Linux added `count_mounts` (commit d29216842a85) precisely
+// to bound this. Mirrors `fs/namespace.c::count_mounts`: admit `num` mounts
+// into `ns` iff `nr_mounts + pending_mounts + num <= sysctl_mount_max`,
+// reserving in `pending_mounts`; commit rolls the reservation into `nr_mounts`.
+// ---------------------------------------------------------------------------
+
+/// Default per-namespace mount ceiling (Linux `sysctl_mount_max`, kernel
+/// `fs/namespace.c` `#define DEFAULT_MOUNT_MAX 100000`).
+pub const DEFAULT_MOUNT_MAX: u64 = 100_000;
+
+static SYSCTL_MOUNT_MAX: AtomicU64 = AtomicU64::new(DEFAULT_MOUNT_MAX);
+
+/// Current per-ns mount ceiling (`/proc/sys/fs/mount-max`). # C: O(1)
+pub fn sysctl_mount_max() -> u64 { SYSCTL_MOUNT_MAX.load(Ordering::Acquire) }
+
+/// Set the per-ns mount ceiling (`/proc/sys/fs/mount-max` write). Linux floors
+/// the sysctl at 0; a value below current `nr_mounts` simply blocks further
+/// grafts (existing mounts are not torn down). # C: O(1)
+pub fn set_sysctl_mount_max(v: u64) { SYSCTL_MOUNT_MAX.store(v, Ordering::Release); }
+
+/// Live committed mount count for namespace `ns` (Linux `mnt_ns->nr_mounts`).
+/// 0 when the ns has no object yet. # C: O(log N)
+pub fn ns_nr_mounts(ns: u64) -> u64 {
+    ns_by_id(ns).map(|n| n.nr_mounts.load(Ordering::Acquire)).unwrap_or(0)
+}
+
+/// In-flight (admitted, uncommitted) mount reservation for `ns`
+/// (Linux `mnt_ns->pending_mounts`). # C: O(log N)
+pub fn ns_pending_mounts(ns: u64) -> u64 {
+    ns_by_id(ns).map(|n| n.pending_mounts.load(Ordering::Acquire)).unwrap_or(0)
+}
+
+/// Admit `num` mounts into namespace `ns` (Linux `count_mounts`): reserve them
+/// in `pending_mounts` iff `nr_mounts + pending_mounts + num` stays within
+/// `sysctl_mount_max`, else `ENOSPC` with NO reservation. The reservation is a
+/// CAS so two concurrent grafts cannot both pass the test against a stale
+/// total. `num == 0` is a no-op (Linux admits an empty subtree). On success the
+/// caller MUST follow with exactly one `commit_mounts(ns, num)` (graft wired)
+/// or `abort_mounts(ns, num)` (graft unwound). # C: O(log N)
+pub fn count_mounts(ns: u64, num: u64) -> KResult<()> {
+    if num == 0 { return Ok(()); }
+    let n = ns_get_or_create(ns);
+    let max = sysctl_mount_max();
+    loop {
+        let pend = n.pending_mounts.load(Ordering::Acquire);
+        let live = n.nr_mounts.load(Ordering::Acquire);
+        // Saturating add: a `num`/`live` near u64::MAX must read as "over cap",
+        // never wrap to a small total that spuriously passes.
+        let total = live.saturating_add(pend).saturating_add(num);
+        if total > max { return Err(VfsError::Enospc); }
+        if n.pending_mounts
+            .compare_exchange(pend, pend + num, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        { return Ok(()); }
+        // Lost the race; another graft moved pending_mounts — retry the test.
+    }
+}
+
+/// Commit a prior `count_mounts(ns, num)` reservation (Linux `commit_tree`:
+/// `n->nr_mounts += n->pending_mounts`): move `num` from `pending_mounts` into
+/// the live `nr_mounts`. # C: O(log N)
+pub fn commit_mounts(ns: u64, num: u64) {
+    if num == 0 { return; }
+    if let Some(n) = ns_by_id(ns) {
+        let pend = n.pending_mounts.load(Ordering::Acquire);
+        n.pending_mounts.store(pend.saturating_sub(num), Ordering::Release);
+        n.nr_mounts.fetch_add(num, Ordering::AcqRel);
+    }
+}
+
+/// Release a `count_mounts(ns, num)` reservation on the graft failure unwind
+/// (Linux clears `pending_mounts` on the `attach_recursive_mnt` error path):
+/// give the `num` reserved slots back without committing them. # C: O(log N)
+pub fn abort_mounts(ns: u64, num: u64) {
+    if num == 0 { return; }
+    if let Some(n) = ns_by_id(ns) {
+        let pend = n.pending_mounts.load(Ordering::Acquire);
+        n.pending_mounts.store(pend.saturating_sub(num), Ordering::Release);
+    }
+}
+
+/// Drop `num` live mounts from namespace `ns` on umount/detach (Linux
+/// `umount_tree`: `mnt->mnt_ns = NULL; ns->nr_mounts--`). Saturates at 0 so a
+/// double-detach cannot underflow the count. # C: O(log N)
+pub fn dec_mounts(ns: u64, num: u64) {
+    if num == 0 { return; }
+    if let Some(n) = ns_by_id(ns) {
+        let cur = n.nr_mounts.load(Ordering::Acquire);
+        n.nr_mounts.store(cur.saturating_sub(num), Ordering::Release);
+    }
+}
 
 /// A task entered mount-namespace `ns` (clone/unshare into it). Pins the ns
 /// alive against reap. # C: O(log N)
