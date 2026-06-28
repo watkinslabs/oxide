@@ -21,6 +21,7 @@ modules = { path = "../modules" }
 sched = { path = "../sched" }
 vmm   = { path = "../mm-vmm" }
 devfs = { path = "../devfs" }
+kernfs = { path = "../kernfs" }
 nscg  = { path = "../nscg" }
 sysfs = { path = "../sysfs" }
 cgroup = { path = "../cgroup" }

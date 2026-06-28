@@ -262,3 +262,43 @@ fn child_under_nested() {
     assert_eq!(child_under("/dev", "/devnull"),      None);
     assert_eq!(child_under("/dev", "/etc/passwd"),   None);
 }
+
+// ---------------------------------------------------------------------------
+// D1d: procfs owns /proc/{sys,net,self} in its OWN kernfs PROC_REG tree.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn proc_sys_resolves_own_tree() {
+    // register() strips the /proc prefix and inserts into PROC_REG; the
+    // mount-relative walk resolves it (NOT the shared devfs registry).
+    crate::reg::register(
+        "/proc/sys/kernel/pid_max",
+        vfs::StaticFileInode::new(b"32768\n") as vfs::InodeRef,
+    );
+    let leaf = crate::reg::proc_reg()
+        .lookup_path("sys/kernel/pid_max")
+        .expect("own-tree leaf");
+    let mut buf = [0u8; 8];
+    let n = leaf.read(0, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"32768\n");
+    // /proc/net resolves the same way (multi-component chain auto-created).
+    crate::reg::register(
+        "/proc/net/dev",
+        vfs::StaticFileInode::new(b"Inter-|\n") as vfs::InodeRef,
+    );
+    assert!(crate::reg::proc_reg().lookup_path("net/dev").is_some());
+    // Isolation: a fresh foreign root does NOT see procfs's entries.
+    let foreign = kernfs::PseudoDir::new_root(kernfs::dir_ino("/x"), 0xABCD, false);
+    assert!(foreign.lookup_path("sys/kernel/pid_max").is_none());
+}
+
+#[test]
+fn procfs_fsid_distinct_from_dev_and_sys() {
+    // Per-fs st_dev identity: /proc, /dev, /sys must not alias (the property
+    // the shared ROOTS tree collapsed). Mirrors kernfs `own_roots_are_isolated`.
+    // sysfs is fully `#![cfg(target_os = "oxide-kernel")]` (absent in host
+    // tests), so its FSID (0x0102_1994_0000_0002) is compared as a literal.
+    assert_eq!(crate::reg::PROCFS_FSID, 0x0102_1994_0000_0003);
+    assert_ne!(crate::reg::PROCFS_FSID, devfs::DEVFS_FSID);
+    assert_ne!(crate::reg::PROCFS_FSID, 0x0102_1994_0000_0002u64);
+}

@@ -14,4 +14,5 @@ sync    = { path = "../../shared/sync" }
 pmm     = { path = "../../kernel/mm-pmm" }
 vfs     = { path = "../../kernel/vfs" }
 devfs   = { path = "../../kernel/devfs" }
+procfs  = { path = "../../kernel/procfs" }
 syscall = { path = "../../kernel/syscall" }
