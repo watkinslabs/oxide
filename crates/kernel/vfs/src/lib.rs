@@ -43,7 +43,7 @@ pub mod superblock;
 pub mod types;
 pub mod poll_subs;
 
-pub use dcache::{d_add, d_add_negative, d_alloc, d_drop, d_instantiate, d_invalidate, d_lookup, d_make_root, d_move, d_splice_alias, dget, dput};
+pub use dcache::{d_add, d_add_negative, d_alloc, d_drop, d_instantiate, d_invalidate, d_lookup, d_make_root, d_move, d_obtain_alias, d_splice_alias, dget, dput};
 pub use dentry::{Dentry, D_HASHED, D_NEGATIVE, D_ROOT};
 pub use devnode::{BlockDevOps, CharDevOps, DeviceNodeInode, Devt, lookup_blkdev, lookup_chrdev, register_blkdev, register_chrdev, unregister_blkdev, unregister_chrdev};
 pub use superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
