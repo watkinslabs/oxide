@@ -17,6 +17,37 @@ pub(crate) fn read_path(ptr: u64) -> Option<String> {
     core::str::from_utf8(bytes).ok().map(|s| s.into())
 }
 
+/// Linux PATH_MAX (includes the terminating NUL); the longest pathname a
+/// syscall accepts is `PATH_MAX - 1` bytes.
+pub(crate) const PATH_MAX: usize = 4096;
+
+/// Read a user-space pathname with the full Linux errno contract:
+///   * NULL / out-of-range ptr  → **EFAULT**
+///   * empty string (`""`)      → **ENOENT** (callers without AT_EMPTY_PATH)
+///   * pathname ≥ PATH_MAX bytes → **ENAMETOOLONG**
+///   * non-UTF-8 bytes          → EINVAL (D3b: byte-wise resolution pending)
+/// Returns `Ok(empty)` is impossible — empty maps to ENOENT here; callers
+/// that allow AT_EMPTY_PATH must probe emptiness before calling.
+/// # C: O(strlen)
+pub(crate) fn read_user_path(ptr: u64) -> Result<String, i64> {
+    if ptr == 0 || ptr >= USER_VA_END {
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    // SAFETY: ptr in user range; user page mapped (caller's AS); PATH_MAX bound.
+    let bytes = unsafe { devfs::read_user_cstr(ptr, PATH_MAX) }
+        .ok_or(-(Errno::Efault.as_i32() as i64))?;
+    // No NUL within PATH_MAX bytes → pathname too long (Linux ENAMETOOLONG).
+    if bytes.len() >= PATH_MAX {
+        return Err(-(Errno::Enametoolong.as_i32() as i64));
+    }
+    if bytes.is_empty() {
+        return Err(-(Errno::Enoent.as_i32() as i64));
+    }
+    core::str::from_utf8(bytes)
+        .map(String::from)
+        .map_err(|_| -(Errno::Einval.as_i32() as i64))
+}
+
 /// # C: O(1)
 pub(crate) fn resolve(path_raw: &str) -> Option<String> {
     if path_raw.starts_with('/') { return Some(path_raw.into()); }
@@ -79,25 +110,41 @@ pub(crate) fn default_perm_for(ft: vfs::FileType) -> u16 {
     }
 }
 
+/// Map a `VfsError` to the negative Linux errno the ABI returns. Complete
+/// over every `VfsError` discriminant so a path-walk error (ELOOP /
+/// ENAMETOOLONG / ENOTDIR / EACCES) propagates with its true errno instead
+/// of collapsing to EIO/ENOENT.
 /// # C: O(1)
 pub(crate) fn errno_from_vfs(e: vfs::VfsError) -> i64 {
     -(match e {
-        vfs::VfsError::Enoent  => Errno::Enoent  as i32,
-        vfs::VfsError::Eisdir  => Errno::Eisdir  as i32,
-        vfs::VfsError::Enotdir => Errno::Enotdir as i32,
-        vfs::VfsError::Erofs   => Errno::Erofs   as i32,
-        vfs::VfsError::Eio     => Errno::Eio     as i32,
         vfs::VfsError::Eperm   => Errno::Eperm   as i32,
+        vfs::VfsError::Enoent  => Errno::Enoent  as i32,
+        vfs::VfsError::Eintr   => Errno::Eintr   as i32,
+        vfs::VfsError::Eio     => Errno::Eio     as i32,
+        vfs::VfsError::Enxio   => Errno::Enxio   as i32,
+        vfs::VfsError::Ebadf   => Errno::Ebadf   as i32,
+        vfs::VfsError::Enomem  => Errno::Enomem  as i32,
+        vfs::VfsError::Eacces  => Errno::Eacces  as i32,
+        vfs::VfsError::Efault  => Errno::Efault  as i32,
         vfs::VfsError::Eexist  => Errno::Eexist  as i32,
         vfs::VfsError::Exdev   => Errno::Exdev   as i32,
+        vfs::VfsError::Enodev  => Errno::Enodev  as i32,
+        vfs::VfsError::Enotdir => Errno::Enotdir as i32,
+        vfs::VfsError::Eisdir  => Errno::Eisdir  as i32,
         vfs::VfsError::Einval  => Errno::Einval  as i32,
-        vfs::VfsError::Eacces  => Errno::Eacces  as i32,
-        vfs::VfsError::Enomem  => Errno::Enomem  as i32,
-        vfs::VfsError::Enospc  => Errno::Enospc  as i32,
+        vfs::VfsError::Emfile  => Errno::Emfile  as i32,
+        vfs::VfsError::Enotty  => Errno::Enotty  as i32,
+        vfs::VfsError::Espipe  => Errno::Espipe  as i32,
+        vfs::VfsError::Eagain  => Errno::Eagain  as i32,
+        vfs::VfsError::Epipe   => Errno::Epipe   as i32,
+        vfs::VfsError::Erofs   => Errno::Erofs   as i32,
         vfs::VfsError::Ebusy   => Errno::Ebusy   as i32,
+        vfs::VfsError::Enospc  => Errno::Enospc  as i32,
         vfs::VfsError::Enotempty => Errno::Enotempty as i32,
         vfs::VfsError::Enosys  => Errno::Enosys  as i32,
-        _                      => Errno::Eio     as i32,
+        vfs::VfsError::Eloop   => Errno::Eloop   as i32,
+        vfs::VfsError::Enametoolong => Errno::Enametoolong as i32,
+        vfs::VfsError::Enotconn => Errno::Enotconn as i32,
     } as i64)
 }
 

@@ -4,72 +4,67 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
 
-use crate::userbuf::validate_user_buf;
+use crate::userbuf::validate_user_buf_writable;
+
+const AT_EMPTY_PATH: u32       = 0x1000;
+const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
+const AT_NO_AUTOMOUNT: u32     = 0x800;
+const AT_STATX_SYNC_TYPE: u32  = 0x6000; // FORCE_SYNC|DONT_SYNC
+const AT_VALID: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_STATX_SYNC_TYPE;
+const STATX_RESERVED: u32 = 0x8000_0000;
 
 /// `sys_statx(dirfd, path, flags, mask, statxbuf)` — slot 332.
 /// # C: O(1)
 pub fn sys_statx(args: &SyscallArgs) -> i64 {
     use vfs::FileType;
-    const AT_EMPTY_PATH: u32 = 0x1000;
     let dirfd     = args.a0 as i32;
     let path_ptr  = args.a1;
     let flags     = args.a2 as u32;
-    let _mask     = args.a3 as u32;
+    let mask      = args.a3 as u32;
     let buf       = args.a4;
-    if let Err(rv) = validate_user_buf(buf, 256, 8) { return rv; }
+    // Unknown flag bits / reserved mask bit → EINVAL (Linux do_statx).
+    if flags & !AT_VALID != 0 { return -(Errno::Einval.as_i32() as i64); }
+    if mask & STATX_RESERVED != 0 { return -(Errno::Einval.as_i32() as i64); }
+    // X3: kernel writes into buf in CPL=0 — require it user-writable.
+    if let Err(rv) = validate_user_buf_writable(buf, 256, 8) { return rv; }
 
-    if path_ptr == 0 || path_ptr >= USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: ptr in user range; user page mapped (caller's AS); bounded read.
-    let path_opt = unsafe { devfs::read_user_cstr(path_ptr, 256) };
-    const AT_FDCWD: i32 = -100;
-    let inode = match path_opt {
-        Some(p) if !p.is_empty() => {
-            let raw = match core::str::from_utf8(p) {
-                Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
-            };
-            // Resolve relative path against cwd (statx semantics for AT_FDCWD).
-            // Absolute paths must also be lexically normalised so trailing
-            // slashes (`/proc/self/fd/`) and `.`/`..` collapse to the
-            // registered devfs key.
-            // BUG D: route through resolve_at so a real fd-relative dirfd
-            // resolves against the dirfd's directory (statx(dirfd, name) from
-            // `ls`/`find`), not cwd. resolve_at handles absolute / AT_FDCWD /
-            // real dirfd; the old `else { raw.into() }` ignored the dirfd.
-            let _ = AT_FDCWD;
-            let resolved: alloc::string::String =
-                match crate::pathresolve::resolve_at_result(dirfd, raw) {
-                    Ok(p) => p, Err(rv) => return rv,
-                };
-            let s = resolved.as_str();
-            // THE resolver (path-walk). statx(2) follows symlinks unless
-            // AT_SYMLINK_NOFOLLOW. aarch64 musl routes stat()/lstat()
-            // here (no legacy stat/lstat syscalls), so this is the arm
-            // symlink-follow path.
-            const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
-            let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
-            match crate::pathresolve::resolve(s, nofollow) {
-                Some(i) => i,
-                None    => return -(Errno::Enoent.as_i32() as i64),
-            }
+    // Probe path emptiness (path may be NULL with AT_EMPTY_PATH).
+    let empty_or_null = path_ptr == 0 || {
+        // SAFETY: path_ptr in user range guarded; 1-byte probe only.
+        path_ptr < hal::USER_VA_END
+            && unsafe { devfs::read_user_cstr(path_ptr, 1) }.map_or(true, |b| b.is_empty())
+    };
+
+    let inode = if (flags & AT_EMPTY_PATH) != 0 && empty_or_null {
+        let cur = match sched::live::current() {
+            Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+        let fdt = match unsafe { cur.fd_table_ref() } {
+            Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        let f = match fdt.get(dirfd) {
+            Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        f.inode().clone()
+    } else {
+        // X2/X4/X5: PATH_MAX read with EFAULT/ENOENT/ENAMETOOLONG.
+        let raw = match crate::namei_common::read_user_path(path_ptr) {
+            Ok(s) => s, Err(rv) => return rv,
+        };
+        // Resolve relative path against the dirfd's directory (real `*at`
+        // semantics, same as openat). aarch64 musl routes stat()/lstat()
+        // here.
+        let resolved = match crate::pathresolve::resolve_at_result(dirfd, &raw) {
+            Ok(p) => p, Err(rv) => return rv,
+        };
+        let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
+        // X1: preserve ENOTDIR/ELOOP/EACCES from the path-walk.
+        match crate::pathresolve::resolve_result(resolved.as_str(), nofollow) {
+            Ok(i)  => i,
+            Err(e) => return crate::namei_common::errno_from_vfs(e),
         }
-        _ if (flags & AT_EMPTY_PATH) != 0 => {
-            let cur = match sched::live::current() {
-                Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-            };
-            // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-            let fdt = match unsafe { cur.fd_table_ref() } {
-                Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-            };
-            let f = match fdt.get(dirfd) {
-                Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
-            };
-            f.inode().clone()
-        }
-        _ => return -(Errno::Einval.as_i32() as i64),
     };
 
     let (mode_type, rdev): (u16, u32) = match inode.file_type() {
