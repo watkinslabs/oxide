@@ -36,6 +36,20 @@ pub trait AddressSpaceOps: Send + Sync {
     /// No-op for shmem (pages ARE the store). # C: O(N_dirty)
     fn writeback(&self) -> Result<(), ()> { Ok(()) }
 
+    /// Evict resident cache frames whose whole page lies in the byte range
+    /// `[start, end)` (Linux `truncate_inode_pages_range`). A page is a
+    /// victim only when fully covered: index `i` (page `[i·PG, (i+1)·PG)`)
+    /// drops iff `i·PG >= start && (i+1)·PG <= end`; a page straddling
+    /// either boundary is retained (the caller zeroes the partial bytes, as
+    /// `truncate` zeroes the last page's tail). `end == u64::MAX` means
+    /// "to EOF" — drop every resident page at/after `start`'s rounded-up
+    /// page. Returns the count of whole frames dropped. Default `0` = an
+    /// address space with no evictable resident frames (frames computed on
+    /// demand / no droppable store). Callers invoke this on
+    /// `ftruncate`/hole-punch so a later refault re-reads zeros, never
+    /// stale post-EOF bytes. # C: O(pages in range)
+    fn invalidate_range(&self, start: u64, end: u64) -> usize { let _ = (start, end); 0 }
+
     /// Logical size (Linux `i_size`) the cache reflects. # C: O(1)
     fn size(&self) -> u64;
 }
