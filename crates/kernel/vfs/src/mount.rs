@@ -72,6 +72,37 @@ fn is_global_root(d: &Arc<Dentry>) -> bool {
     d.parent().is_none() && d.name().is_empty()
 }
 
+/// The mount in `ns` whose superblock root DENTRY is `d` (i.e. `d` is that
+/// mount's `mnt_root`), by `s_root` IDENTITY. After the namei keystone
+/// (`__follow_mount`) a crossed path's dentry chain ends at a mounted fs's
+/// `s_root`, not the covered underlay — so every parent-chain walk in the
+/// engine (`rel_under`, `parent_by_dentry`, `cross_up`) must recognise that
+/// `s_root` and bridge to the mount it roots. # C: O(N_mounts)
+fn mount_with_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
+    let dp = dptr(d);
+    TABLE.lock().iter()
+        .find(|m| m.ns == ns && m.sb.s_root().map(|r| dptr(&r) == dp).unwrap_or(false))
+        .cloned()
+}
+
+/// `mnt_id` of the mount in `ns` rooted at dentry `d` (Linux: the mount whose
+/// `mnt_root == d`). # C: O(N_mounts)
+fn mnt_id_of_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<u64> {
+    mount_with_root_dentry(ns, d).map(|m| m.mnt_id)
+}
+
+/// One ancestor step in a CROSSING-AWARE parent walk (Linux `prepend_path` /
+/// `follow_dotdot` ascent). A normal dentry yields `d_parent`; a mounted-fs
+/// `s_root` (parentless `D_ROOT`) yields the mount's `mountpoint` dentry in
+/// the parent mount, bridging the dentry chain back into the underlay tree.
+/// `None` at the namespace root (a root mount has no mountpoint dentry) or at
+/// an sb-less floating root. # C: O(N_mounts) at a mount root, else O(1)
+fn cross_up(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Dentry>> {
+    if let Some(p) = d.parent() { return Some(p.clone()); }
+    if d.is_root() { return mount_with_root_dentry(ns, d).and_then(|m| m.mountpoint.clone()); }
+    None
+}
+
 /// Absolute path rendered from a mountpoint dentry's parent chain (Linux
 /// `d_path`) — the WRITE-ONLY `rendered_path` for /proc mountinfo/mounts +
 /// statmount. Derived, never a routing input. # C: O(depth)
@@ -116,17 +147,19 @@ fn descend(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
                 crate::dcache::d_add(&cur, comp, ci)
             }
         };
-        // Mount crossing by dentry identity (`docs/16§3`): if `child` is a
-        // mountpoint, the REMAINING components resolve in the mount's root
-        // inode, not the covered underlay — exactly as `namei.rs` crosses per
-        // component. This is the udevd fix: a staging mountpoint dentry under a
-        // `/run`/`/tmp` tmpfs is now materialised identity-equal to the one
-        // `namei` later walks, so post-MS_MOVE / pivot_root `/proc/sys/kernel/*`
-        // resolves inside the sandbox instead of ENOENTing on the underlay.
-        cur_inode = Some(match child.mounted_mount(ns) {
-            Some(mnt_id) => root_for_mount_id(mnt_id)?,
-            None => child.inode()?,
-        });
+        // Mount crossing by dentry identity (`docs/16§3` / Linux `__follow_mount`):
+        // if `child` is a mountpoint, switch to the mounted fs's `s_root` DENTRY
+        // and resolve the REMAINING components there — IDENTICAL to the namei
+        // keystone. Loop for stacked overmounts. Switching the dentry (not just
+        // re-seating the inode) is what keeps a synthesized mountpoint dentry
+        // identity-equal to the one `namei` later walks: both descend under the
+        // same shared `s_root` Arc, so the (parent,name) dcache dedups to ONE
+        // dentry — the udevd MS_MOVE / pivot_root `/proc/sys/kernel/*` fix.
+        let mut child = child;
+        while let Some(mnt_id) = child.mounted_mount(ns) {
+            match root_dentry_for_mount_id(mnt_id) { Some(sr) => child = sr, None => break }
+        }
+        cur_inode = Some(child.inode()?);
         cur = child;
     }
     Some(cur)
@@ -178,6 +211,17 @@ fn parent_by_dentry(ns: u64, mp_d: &Arc<Dentry>) -> u64 {
     let mut cur = mp_d.parent().cloned();
     while let Some(a) = cur {
         if let Some(id) = a.mounted_mount(ns) { return id; }
+        // After the namei keystone, climbing through a covered subtree reaches
+        // the covering mount's `s_root` (parentless `D_ROOT`) rather than the
+        // underlay mountpoint that carries the crossing link. The mount whose
+        // root is `a` IS `mp_d`'s covering (parent) mount — Linux derives this
+        // from `path.mnt`; we recover it from `s_root` identity.
+        if a.is_root() {
+            if let Some(id) = mnt_id_of_root_dentry(ns, &a) { return id; }
+            // sb-less floating root (e.g. the test walk-start) — bridge to a
+            // mountpoint if one exists, else stop at the namespace root.
+            match cross_up(ns, &a) { Some(p) => { cur = Some(p); continue; } None => break }
+        }
         cur = a.parent().cloned();
     }
     root_mount_id(ns).unwrap_or(0)
@@ -189,15 +233,19 @@ fn parent_by_dentry(ns: u64, mp_d: &Arc<Dentry>) -> u64 {
 /// returns `mp`'s whole absolute path. Returns `None` if `stop` is not an
 /// ancestor of `mp`. # C: O(depth)
 fn rel_under(mp: &Arc<Dentry>, stop: Option<&Arc<Dentry>>) -> Option<String> {
+    let ns = current_ns();
     let mut names: Vec<String> = Vec::new();
     let mut cur = Some(mp.clone());
     while let Some(d) = cur {
         if let Some(s) = stop {
             if Arc::ptr_eq(&d, s) { return Some(join_names(&names)); }
         }
-        match d.parent() {
+        match cross_up(ns, &d) {
             None => return if stop.is_none() { Some(join_names(&names)) } else { None },
-            Some(p) => { names.push(d.name().to_string()); cur = Some(p.clone()); }
+            // Skip the empty `s_root` name when bridging a mount boundary, so a
+            // crossing chain renders `/a/b` not `//a/b` (Linux `prepend_path`
+            // emits the mountpoint name, never the mounted root's empty name).
+            Some(p) => { if !d.name().is_empty() { names.push(d.name().to_string()); } cur = Some(p); }
         }
     }
     None
@@ -920,6 +968,46 @@ pub fn root_for_mount_id(mnt_id: u64) -> Option<InodeRef> {
     let t = TABLE.lock();
     let m = t.iter().find(|m| m.mnt_id == mnt_id)?;
     m.root.clone().or_else(|| m.fs().root())
+}
+
+/// The mounted fs's ROOT DENTRY for `mnt_id` (Linux `mnt->mnt_root` =
+/// `mnt_sb->s_root`). THE namei keystone primitive: crossing a mountpoint
+/// switches the walk's current dentry to this, not just the root inode, so
+/// `VfsPath.dentry` becomes the mounted-fs dentry (Linux `__follow_mount`).
+/// # C: O(N_mounts)
+pub fn root_dentry_for_mount_id(mnt_id: u64) -> Option<Arc<Dentry>> {
+    mount_by_id(mnt_id).and_then(|m| m.sb().s_root())
+}
+
+/// The mountpoint dentry `mnt_id` is attached on, plus its parent mount id
+/// (Linux `mnt->mnt_mountpoint` + `mnt->mnt_parent`). THE `..`-across-a-mount
+/// primitive (`follow_dotdot`): at a mounted fs root, ascend by crossing back
+/// to the mountpoint in the parent mount. `None` for a namespace root mount
+/// (no mountpoint dentry). # C: O(N_mounts)
+pub fn mountpoint_of(mnt_id: u64) -> Option<(Arc<Dentry>, u64)> {
+    let m = mount_by_id(mnt_id)?;
+    Some((m.mountpoint.clone()?, m.parent_id.load(Ordering::Acquire)))
+}
+
+/// The mountpoint dentry of the mount whose `s_root` is the dentry at raw
+/// pointer `d` (Linux `prepend_path` mount bridge). Used by
+/// `Dentry::absolute_path` (`d_path`) to cross from a mounted fs root back to
+/// its mountpoint when reconstructing a GLOBAL pathname — the keystone makes a
+/// crossed path's dentry chain end at `s_root`, so a pure parent walk would
+/// otherwise collapse `/dev/null` to `/null`. Prefers the caller's ns, falling
+/// back to any ns (an `s_root` is shared by a mount's per-ns clones). `None` at
+/// a namespace root or for a non-mount root. # C: O(N_mounts)
+pub fn mountpoint_for_root_ptr(d: *const Dentry) -> Option<Arc<Dentry>> {
+    let ns = current_ns();
+    let t = TABLE.lock();
+    let mut found: Option<&Arc<Mount>> = None;
+    for m in t.iter() {
+        if m.sb.s_root().map(|r| Arc::as_ptr(&r) == d).unwrap_or(false) {
+            if m.ns == ns { found = Some(m); break; }
+            if found.is_none() { found = Some(m); }
+        }
+    }
+    found.and_then(|m| m.mountpoint.clone())
 }
 
 /// Snapshot the caller's mount-namespace view (for /proc mounts +

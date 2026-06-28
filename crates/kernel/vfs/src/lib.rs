@@ -40,7 +40,7 @@ pub mod poll_subs;
 pub use dcache::{d_add, d_add_negative, d_alloc, d_drop, d_instantiate, d_lookup, d_make_root, d_move, d_splice_alias, dget, dput};
 pub use dentry::{Dentry, D_HASHED, D_NEGATIVE, D_ROOT};
 pub use superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
-pub use namei::{path_lookup, path_lookup_path, resolve_abs, resolve_path_dentry, set_root_dentry_provider, LookupFlags, VfsPath, MAX_SYMLINK_DEPTH};
+pub use namei::{path_lookup, path_lookup_path, path_lookup_cred, resolve_abs, resolve_path_dentry, set_root_dentry_provider, Cred, LookupFlags, Nameidata, VfsPath, MAX_SYMLINK_DEPTH, MAY_EXEC, MAY_READ, MAY_WRITE};
 pub use dirent::{dirent64_pack, dirent64_reclen, DIRENT64_HEADER};
 pub use fdtable::{FdTable, FD_TABLE_MAX};
 pub use file::{File, SeekFrom, fire_clone_hook, fire_dirent_create, fire_dirent_delete, set_clone_hook, set_close_hook, set_dirent_create_hook, set_dirent_delete_hook, set_drop_hook, set_open_hook, set_read_hook, set_write_hook};
