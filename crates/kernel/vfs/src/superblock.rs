@@ -157,6 +157,16 @@ pub trait SuperOps: Send + Sync {
     /// `unfreeze_fs`/`thaw_fs` — resume after a freeze (FITHAW). Default no-op.
     /// # C: FS-dependent
     fn thaw_fs(&self) -> KResult<()> { Ok(()) }
+    /// `remount_fs` (Linux classic `super_operations.remount_fs`) — apply a
+    /// filesystem-level reconfigure (RO↔RW, on-disk journal mode, mount options)
+    /// to a LIVE superblock. `sb_flags` is the PROPOSED post-remount `s_flags`
+    /// the backend may validate (e.g. refuse RW on a fs with un-replayed
+    /// journal). Driven by [`SuperBlock::reconfigure_super`]; default Ok (a
+    /// pseudo-fs flag-only remount needs no backend work). Returning Err aborts
+    /// the remount with `s_flags` UNCHANGED. The new mount API's richer
+    /// `fs_context_operations.reconfigure` supersedes this for converted
+    /// filesystems; this is the classic hook for the rest. # C: FS-dependent
+    fn remount_fs(&self, _sb_flags: u64) -> KResult<()> { Ok(()) }
     /// `put_super` — last-umount teardown. Default no-op. # C: O(1)
     fn put_super(&self) {}
 }
@@ -669,6 +679,30 @@ impl SuperBlock {
     /// read-only mount. # C: O(1)
     pub fn set_readonly(&self, ro: bool) {
         if ro { self.set_s_flags(SB_RDONLY, 0); } else { self.set_s_flags(0, SB_RDONLY); }
+    }
+
+    /// `reconfigure_super` (Linux fs/super.c) — apply a flag-delta remount to
+    /// this LIVE superblock in place, without rebuilding it (`mount(2) MS_REMOUNT`
+    /// / `fsconfig(CMD_RECONFIGURE)` sb-flag half). `set`/`clear` are the
+    /// `s_flags` bits to add/remove; the proposed result is
+    /// `(s_flags & !clear) | set`. When the remount turns the fs READ-ONLY
+    /// (RW→RO) the dirty state is flushed FIRST ([`Self::sync_filesystem`], Linux
+    /// syncs before sealing RO so no buffered write is lost). The backend hook
+    /// `s_op->remount_fs(proposed_flags)` then runs and ONLY on its success are
+    /// `s_flags` rewritten — a hook error leaves the SB untouched (Linux returns
+    /// the error with the old flags intact), so a backend that refuses (e.g.
+    /// RW on a fs needing recovery) cleanly aborts. Re-applying the current flags
+    /// is idempotent. The per-MOUNT `MNT_*` bits and `fs_context` param parse
+    /// live at their own layers ([`crate::fs::reconfigure_super`]); this is the
+    /// sb-flag + classic-backend-hook core. # C: O(dirty) on RW→RO, else O(1)
+    pub fn reconfigure_super(&self, set: u64, clear: u64) -> KResult<()> {
+        let cur = self.s_flags();
+        let proposed = (cur & !clear) | set;
+        let going_ro = (proposed & SB_RDONLY) != 0 && (cur & SB_RDONLY) == 0;
+        if going_ro { self.sync_filesystem()?; }
+        self.s_op.remount_fs(proposed)?;
+        self.set_s_flags(set, clear);
+        Ok(())
     }
 
     /// `s_active` snapshot — live active references (Linux `s->s_active`).
