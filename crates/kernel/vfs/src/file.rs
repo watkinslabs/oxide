@@ -633,6 +633,109 @@ impl File {
         }
         Ok(n)
     }
+
+    /// `readv(2)` core (Linux `vfs_readv` -> `do_iter_read`): aggregate a slice
+    /// of destination buffers into ONE cursor-advancing read against the file,
+    /// holding `f_pos_lock` for the WHOLE walk so a dup'd / CLONE_FILES-shared
+    /// fd cannot interleave the cursor between buffers, and advancing `f_pos`
+    /// ONCE by the grand total — matching Linux taking `f_pos_lock` once in
+    /// `__fdget_pos` and writing `file->f_pos` back a single time. The buffers
+    /// form one logical region: buffer `i` is filled at the running offset
+    /// `pos + total`. A short fill (inode `read` returns fewer bytes than the
+    /// buffer length, `0` = EOF) terminates the walk per `iov_iter` semantics.
+    /// An inode error propagates only when NO bytes have been read yet; once
+    /// progress is made the partial count is returned (Linux generic-read
+    /// `written ? written : error`). Empty buffers are skipped. O_NONBLOCK
+    /// routes through `read_nonblock`, exactly as scalar `read`.
+    /// # C: O(sum of buf lens)
+    pub fn read_iter(&self, bufs: &mut [&mut [u8]]) -> KResult<usize> {
+        if !self.f_mode.contains(Fmode::READ) {
+            return Err(VfsError::Ebadf);
+        }
+        let f = self.flags();
+        let nonblock = f.contains(OpenFlags::O_NONBLOCK);
+        // FMODE_ATOMIC_POS: one lock across the whole vectored op (Linux
+        // `__fdget_pos`), so the cursor advances atomically over all buffers.
+        let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
+        let pos = self.pos.load(Ordering::Acquire);
+        let mut total: u64 = 0;
+        for buf in bufs.iter_mut() {
+            if buf.is_empty() { continue; }
+            let want = buf.len();
+            let off = pos + total;
+            let r = if nonblock { self.inode.read_nonblock(off, buf) } else { self.inode.read(off, buf) };
+            match r {
+                Ok(0)                => break,                   // EOF
+                Ok(n)                => { total += n as u64; if n < want { break; } }
+                Err(e) if total == 0 => return Err(e),
+                Err(_)               => break,                   // partial progress: keep it
+            }
+        }
+        self.pos.store(pos + total, Ordering::Release);
+        drop(pos_guard); // release before the (possibly lock-taking) inotify hook
+        if total > 0 {
+            let h = READ_HOOK.load(Ordering::Acquire);
+            if h != 0 {
+                // SAFETY: h was installed by `set_read_hook` with a real fn(&InodeRef) pointer.
+                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
+                f(&self.inode);
+            }
+        }
+        Ok(total as usize)
+    }
+
+    /// `writev(2)` core (Linux `vfs_writev` -> `do_iter_write`): aggregate a
+    /// slice of source buffers into ONE cursor-advancing write, holding
+    /// `f_pos_lock` for the whole walk and advancing `f_pos` ONCE by the total
+    /// (Linux `__fdget_pos`). With `O_APPEND` the base offset is forced to the
+    /// current size ONCE (Linux `IOCB_APPEND` overriding `ki_pos` for the whole
+    /// iocb), then buffers are written sequentially at `base + total`; the
+    /// inter-writer append atomicity is the inode lock's job — this serializes
+    /// only this description's cursor. A short write terminates the walk per
+    /// `iov_iter` semantics. An inode error propagates only when NO bytes have
+    /// been written yet; otherwise the partial count is returned. Empty buffers
+    /// are skipped. O_NONBLOCK routes through `write_nonblock`.
+    /// # C: O(sum of buf lens)
+    pub fn write_iter(&self, bufs: &[&[u8]]) -> KResult<usize> {
+        if !self.f_mode.contains(Fmode::WRITE) {
+            return Err(VfsError::Ebadf);
+        }
+        let path = self.dentry.absolute_path();
+        if let Ok(path) = core::str::from_utf8(&path) {
+            if crate::mount::is_readonly_path(path) {
+                return Err(VfsError::Erofs);
+            }
+        }
+        let f = self.flags();
+        let nonblock = f.contains(OpenFlags::O_NONBLOCK);
+        let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
+        // O_APPEND forces the base to i_size ONCE for the whole vectored write.
+        let base = if f.contains(OpenFlags::O_APPEND) { self.inode.size() } else { self.pos.load(Ordering::Acquire) };
+        let mut total: u64 = 0;
+        for buf in bufs.iter() {
+            if buf.is_empty() { continue; }
+            let want = buf.len();
+            let off = base + total;
+            let r = if nonblock { self.inode.write_nonblock(off, buf) } else { self.inode.write(off, buf) };
+            match r {
+                Ok(0)                => break,
+                Ok(n)                => { total += n as u64; if n < want { break; } }
+                Err(e) if total == 0 => return Err(e),
+                Err(_)               => break,
+            }
+        }
+        self.pos.store(base + total, Ordering::Release);
+        drop(pos_guard); // release before the (possibly lock-taking) inotify hook
+        if total > 0 {
+            let h = WRITE_HOOK.load(Ordering::Acquire);
+            if h != 0 {
+                // SAFETY: h was installed by `set_write_hook` with a real fn(&InodeRef) pointer.
+                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
+                f(&self.inode);
+            }
+        }
+        Ok(total as usize)
+    }
 }
 
 /// Linux `get_file()` — take an additional reference to an open file
