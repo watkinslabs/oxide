@@ -432,19 +432,21 @@ impl File {
     }
 
     /// `lseek(2)` SEEK_SET / CUR / END. Returns the new position.
+    /// A resulting offset < 0 is rejected with `EINVAL`, matching Linux
+    /// `vfs_setpos` / `default_llseek`: SEEK_SET with a negative `off`, or
+    /// SEEK_CUR/END whose base+`off` is negative. The base+offset is computed
+    /// in `i64` so a negative result can be detected before the unsigned store
+    /// (the old `off as u64` cast turned a negative offset into a huge value).
     /// # C: O(1)
     pub fn seek(&self, whence: SeekFrom, off: i64) -> KResult<u64> {
-        let new_pos = match whence {
-            SeekFrom::Start   => off as u64,
-            SeekFrom::Current => {
-                let cur = self.pos.load(Ordering::Acquire) as i64;
-                cur.checked_add(off).ok_or(VfsError::Einval)? as u64
-            }
-            SeekFrom::End => {
-                let end = self.inode.size() as i64;
-                end.checked_add(off).ok_or(VfsError::Einval)? as u64
-            }
+        let base = match whence {
+            SeekFrom::Start   => 0i64,
+            SeekFrom::Current => self.pos.load(Ordering::Acquire) as i64,
+            SeekFrom::End     => self.inode.size() as i64,
         };
+        let new = base.checked_add(off).ok_or(VfsError::Einval)?;
+        if new < 0 { return Err(VfsError::Einval); }
+        let new_pos = new as u64;
         self.pos.store(new_pos, Ordering::Release);
         Ok(new_pos)
     }
