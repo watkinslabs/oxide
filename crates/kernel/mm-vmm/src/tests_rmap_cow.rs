@@ -229,9 +229,12 @@ fn dropped_child_removed_from_chain_walks() {
         let cv = tree.iter().next().unwrap();
         Arc::clone(cv.anon_vma.as_ref().unwrap())
     };
-    // child Arc dropped here; weak entry on chain dangles.
-    assert_eq!(av.live_target_count(), 0,
-        "after child drop no live targets remain (parent never attached in v1)");
+    // child Arc dropped here; its weak entry on the chain dangles. A4-1:
+    // the parent's OWN self-edge (attached by `mmap`) survives, so exactly
+    // one live target remains. Pre-A4 the parent edge was never attached
+    // and this read 0 — that was the rmap-invisibility bug A4 closes.
+    assert_eq!(av.live_target_count(), 1,
+        "parent self-edge (A4-1) survives child drop");
 }
 
 #[test]
@@ -243,19 +246,20 @@ fn repeat_fork_cow_chain_grows_then_settles() {
         let c = parent.fork_cow_pages::<HostMmu, _>(0, 0, |_pa| {}).unwrap();
         children.push(c);
     }
-    // Pick one child's anon_vma and verify chain has 5 live targets
-    // (one per fork). All 5 children share the same anon_vma family.
+    // Pick one child's anon_vma and verify the chain has 6 live targets:
+    // the parent self-edge (A4-1, attached by `mmap`) + one per fork. All
+    // 5 children share the same anon_vma family.
     let av = {
         let tree = children[0].vmas_for_test();
         let cv = tree.iter().next().unwrap();
         Arc::clone(cv.anon_vma.as_ref().unwrap())
     };
-    assert_eq!(av.live_target_count(), 5);
+    assert_eq!(av.live_target_count(), 6);
 
     // Drop two children — chain raw_len stays the same, live count
-    // drops by 2.
+    // drops by 2 (parent + 3 surviving children = 4).
     children.truncate(3);
-    assert_eq!(av.live_target_count(), 3);
+    assert_eq!(av.live_target_count(), 4);
     av.gc_dangling();
-    assert_eq!(av.raw_chain_len(), 3);
+    assert_eq!(av.raw_chain_len(), 4);
 }

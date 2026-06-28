@@ -335,6 +335,45 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
     let _ = (root_pa, new_flags, hhdm); // touch on host/test build
 }
 
+/// A4-rmap: walk every (root_pa, va) that maps the anonymous frame `pa`,
+/// PTE-verified against each target AS. Linux `rmap_walk_anon`: reads
+/// `page->mapping` (the AnonVma) + `page->index` (page offset within the
+/// originating VMA) from `PageMeta`, enumerates the family's chain
+/// edges, computes each candidate VA, and CONFIRMS the leaf actually
+/// maps `pa` before yielding — chain edges can be stale (a peer unmapped
+/// locally without pruning) so the PTE check is authoritative. Invokes
+/// `f(root_pa, va)` per confirmed mapper and returns the count, which
+/// equals `PageMeta.mapcount(pa)` once the chain is complete (the parent
+/// self-edge from `AddressSpace::mmap` + child edges from
+/// `fork_cow_pages`). The runtime "who maps this page" oracle for
+/// migration / pageout and the COW-reuse cross-check.
+/// # C: O(N_chain_edges) page-table walks
+pub fn rmap_walk_anon_pa<F: FnMut(u64, u64)>(pa: u64, mut f: F) -> usize {
+    let av = match crate::setup::anon_vma_for_pa(pa) { Some(a) => a, None => return 0 };
+    let page_idx = crate::setup::page_index_for_pa(pa) as u64;
+    let hhdm = hhdm_offset();
+    let target = pa & !0xfff;
+    let mut count = 0usize;
+    av.walk(|mm, start, end| {
+        let va = start + page_idx * 4096;
+        if va < start || va >= end { return; }
+        let root = mm.root_pa();
+        if root == 0 { return; }
+        // SAFETY: read-only foreign-mm PT walk; `root` is a live AS root
+        // frame kept alive by the AnonVma edge's upgraded Arc; HHDM covers
+        // page-table memory; single-mutator-per-CPU per `13§5`.
+        #[cfg(target_arch = "x86_64")]
+        let tr = unsafe { hal::pt_walker::translate_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(root, va, hhdm) };
+        // SAFETY: as above; aarch64 PtWalker over the AS's L0 root.
+        #[cfg(target_arch = "aarch64")]
+        let tr = unsafe { hal::pt_walker::translate_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(root, va, hhdm) };
+        if let Some((mapped, _)) = tr {
+            if (mapped & !0xfff) == target { f(root, va); count += 1; }
+        }
+    });
+    count
+}
+
 /// `extern "C"` teardown invoked from `Arc<AddressSpace>::drop`:
 /// walks the user-half page tables rooted at `root_pa`, hands every
 /// present leaf frame and intermediate-table page back to PMM, then
@@ -694,7 +733,7 @@ fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
     // SAFETY: live per-arch MmuOps state initialised by kernel_main; alloc closure wraps the global PMM; fault context has IRQs masked; `as_` is borrowed read-only at entry (the AS takes its own RwLock internally). `set_rmap` invokes Linux-shape `page_add_anon_rmap` against the kernel's PageMeta-backed AnonVma slot.
     unsafe {
         #[cfg(target_arch = "x86_64")]
-        let r = as_.handle_page_fault_cow_rmap::<hal_x86_64::mmu_ops::X86Mmu, _, _, _, _, _>(
+        let r = as_.handle_page_fault_cow_rmap::<hal_x86_64::mmu_ops::X86Mmu, _, _, _, _, _, _>(
             uva, fault, hhdm,
             || crate::setup::alloc_one_frame(),
             |pa| crate::setup::frame_refcount(pa),
@@ -703,9 +742,11 @@ fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
             // SAFETY: live AnonVma; pa is freshly-installed PTE frame.
             |pa, av, idx| crate::setup::set_anon_rmap_for_pa(pa, av, idx),
             // SAFETY: inc_ref for KernelFrame (vvar) so AS-drop dec balances to kernel's reference.
-            |pa| unsafe { crate::setup::inc_ref(pa); });
+            |pa| unsafe { crate::setup::inc_ref(pa); },
+            // F157-A3 wp_page_reuse predicate: anon && PageAnonExclusive && mapcount==1.
+            |pa| crate::setup::can_reuse_anon_exclusive(pa));
         #[cfg(target_arch = "aarch64")]
-        let r = as_.handle_page_fault_cow_rmap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _, _>(
+        let r = as_.handle_page_fault_cow_rmap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _, _, _>(
             uva, fault, hhdm,
             || crate::setup::alloc_one_frame(),
             |pa| crate::setup::frame_refcount(pa),
@@ -713,7 +754,9 @@ fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
             |pa| crate::setup::rmap_aware_dec_and_maybe_free(pa),
             |pa, av, idx| crate::setup::set_anon_rmap_for_pa(pa, av, idx),
             // SAFETY: inc_ref for KernelFrame (vvar); balances AS-drop dec.
-            |pa| unsafe { crate::setup::inc_ref(pa); });
+            |pa| unsafe { crate::setup::inc_ref(pa); },
+            // F157-A3 wp_page_reuse predicate: anon && PageAnonExclusive && mapcount==1.
+            |pa| crate::setup::can_reuse_anon_exclusive(pa));
         r
     }
 }

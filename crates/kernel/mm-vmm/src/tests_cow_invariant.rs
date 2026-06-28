@@ -40,6 +40,7 @@ use std::vec::Vec;
 use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 
 use crate::address_space::AddressSpace;
+use crate::anon_vma::AnonVma;
 use crate::vma::{FaultAccess, FaultKind, FileBacking, VmaBacking, VmaFlags, VmaProt};
 
 const PAGE: u64 = 0x1000;
@@ -65,6 +66,20 @@ thread_local! {
     static POOL: RefCell<Vec<u64>> = RefCell::new(Vec::new());
     /// memfd backing: file_off -> persistent shared frame pa.
     static SHFRAMES: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
+    /// A3 model of `PageFlags::ANON_EXCLUSIVE`: an anon frame born from a
+    /// fresh fault / COW-copy is exclusive; `inc_ref` (fork-share) clears
+    /// it; a dec back to (mapcount==1, refcount==1) restores it. Mirrors
+    /// `pmm::setup` exactly so the harness can assert the COW-reuse fast
+    /// path only fires when the kernel's `can_reuse_anon_exclusive` would.
+    static EXCL: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
+    /// A4 rmap model: pa -> the real `Arc<AnonVma>` bound at the fault
+    /// (`set_anon_rmap_for_pa`). `check_invariant` walks THIS family's
+    /// real chain edges — the self-edge `AddressSpace::mmap` attaches plus
+    /// the child edges `fork_cow_pages` attaches — and PTE-checks each
+    /// target against `ROOTS`, an rmap-derived mapper count INDEPENDENT of
+    /// the mapcount model. Three-way equality (rmap == mapcount == Σ live
+    /// PTEs) breaks the self-consistency that let the under-count hide.
+    static RMAP: RefCell<HashMap<u64, Arc<AnonVma>>> = RefCell::new(HashMap::new());
     /// Recorded invariant violation (first one wins). None = clean.
     static BUG: RefCell<Option<std::string::String>> = RefCell::new(None);
 }
@@ -76,6 +91,8 @@ fn reset() {
     BASE.with(|r| r.borrow_mut().clear());
     POOL.with(|r| r.borrow_mut().clear());
     SHFRAMES.with(|r| r.borrow_mut().clear());
+    EXCL.with(|r| r.borrow_mut().clear());
+    RMAP.with(|r| r.borrow_mut().clear());
     ACTIVE.with(|a| *a.borrow_mut() = 0);
     BUG.with(|b| *b.borrow_mut() = None);
 }
@@ -115,6 +132,10 @@ fn alloc_frame() -> Option<u64> {
     RC.with(|r| { r.borrow_mut().insert(pa, 1); });
     // F157-A1: fresh frame = one pending PTE (matches `setup.rs` alloc mc=1).
     MC.with(|r| { r.borrow_mut().insert(pa, 1); });
+    // A3: a recycled frame starts non-exclusive + rmap-clear (mirrors
+    // `free_one_frame` clearing ANON_EXCLUSIVE); set_anon_rmap re-marks it.
+    EXCL.with(|r| { r.borrow_mut().remove(&pa); });
+    RMAP.with(|r| { r.borrow_mut().remove(&pa); });
     Some(pa)
 }
 
@@ -122,6 +143,9 @@ fn rc_inc(pa: u64) {
     RC.with(|r| { *r.borrow_mut().entry(pa).or_insert(0) += 1; });
     // F157-A1: every inc_ref adds one user PTE (`setup::inc_ref` -> inc_map).
     MC.with(|r| { *r.borrow_mut().entry(pa).or_insert(0) += 1; });
+    // A3 (load-bearing clear): a second reference now exists → no longer
+    // exclusively owned. Mirrors `pmm::setup::inc_ref`'s clear_flags.
+    EXCL.with(|r| { r.borrow_mut().remove(&pa); });
 }
 
 /// Model of `pmm::setup::dec_and_maybe_free_frame`: drop one ref; on 0 the
@@ -146,7 +170,17 @@ fn rc_dec(pa: u64) {
     if new < 0 {
         record_bug(std::format!("OVER-DEC: pa={:#x} refcount went to {}", pa, new));
     }
+    // A3 (restore): a fork peer's mapping went away; if exactly one PTE and
+    // one reference remain on an anon (rmap-tracked) frame, the survivor is
+    // exclusive again. Mirrors `dec_and_maybe_free_frame`'s restore arm.
+    if mnew == 1 && new == 1 && RMAP.with(|r| r.borrow().contains_key(&pa)) {
+        EXCL.with(|r| { r.borrow_mut().insert(pa); });
+    }
     if new == 0 {
+        // A3/A4: frame returns to the pool — clear its page-class + rmap
+        // state (mirrors free_one_frame + clear_anon_rmap_for_pa).
+        EXCL.with(|r| { r.borrow_mut().remove(&pa); });
+        RMAP.with(|r| { r.borrow_mut().remove(&pa); });
         POOL.with(|p| p.borrow_mut().push(pa));
     }
 }
@@ -233,12 +267,16 @@ impl FileBacking for PrivFileBacking {
 fn check_invariant(label: &str) {
     // Tally live PTEs across all roots.
     let mut live: HashMap<u64, i64> = HashMap::new();
+    // (root, pa) -> the VAs in that AS mapping pa. Built once here so the
+    // rmap walk (5) is O(edges) not O(edges·leaves).
+    let mut by_rp: HashMap<(u64, u64), Vec<u64>> = HashMap::new();
     let freed: HashSet<u64> = POOL.with(|p| p.borrow().iter().copied().collect());
     ROOTS.with(|roots| {
         for (root, leaves) in roots.borrow().iter() {
             for (va, (pa, _)) in leaves.iter() {
                 let pa = *pa & !(PAGE - 1);
                 *live.entry(pa).or_insert(0) += 1;
+                by_rp.entry((*root, pa)).or_default().push(*va);
                 // (1) free-while-mapped: a live PTE points at a pooled frame.
                 let rc = RC.with(|r| *r.borrow().get(&pa).unwrap_or(&0));
                 if rc <= 0 || freed.contains(&pa) {
@@ -282,6 +320,37 @@ fn check_invariant(label: &str) {
                 record_bug(std::format!(
                     "[{}] MAPCOUNT-LEAK: pa={:#x} mapcount={} but 0 live PTEs",
                     label, pa, mc));
+            }
+        }
+    });
+    // (5) A4 STRONG rmap invariant: rmap-walk count == mapcount == Σ live
+    // PTEs, three INDEPENDENTLY-derived numbers. For each anon frame, walk
+    // its REAL `AnonVma` chain (the self-edge `mmap` attaches + the child
+    // edges `fork_cow_pages` attaches) and PTE-check each candidate
+    // against `ROOTS`. This is the tier the old harness lacked: the prior
+    // checks compared the mapcount MODEL against ROOTS, but both moved in
+    // lock-step so a path that under-edged the rmap was invisible. Walking
+    // the actual chain surfaces a missing self-edge (GAP A4-1): a
+    // never-forked page is mapped (live_pte=1, mapcount=1) yet the chain
+    // yields 0 → FAIL until `mmap` attaches the owning edge.
+    RMAP.with(|rm| {
+        for (pa, av) in rm.borrow().iter() {
+            let live_ct = *live.get(pa).unwrap_or(&0);
+            if live_ct == 0 { continue; } // freed/unmapped anon frame
+            let mut rmap_ct: i64 = 0;
+            av.walk(|mm, start, end| {
+                let root = mm.root_pa();
+                if let Some(vas) = by_rp.get(&(root, *pa)) {
+                    for va in vas {
+                        if *va >= start && *va < end { rmap_ct += 1; }
+                    }
+                }
+            });
+            let mc = MC.with(|m| *m.borrow().get(pa).unwrap_or(&0));
+            if rmap_ct != live_ct || rmap_ct != mc {
+                record_bug(std::format!(
+                    "[{}] RMAP-MISMATCH: pa={:#x} rmap_walk={} but live_ptes={} mapcount={}",
+                    label, pa, rmap_ct, live_ct, mc));
             }
         }
     });
@@ -334,13 +403,23 @@ fn do_fault(mm: &AddressSpace, va: u64, fault: FaultKind) {
     // SAFETY: hosted harness; MultiMmu active root set to `mm`; closures mirror
     // the kernel fault dispatcher's real inc/dec/refcount/alloc/rmap wiring.
     let _ = unsafe {
-        mm.handle_page_fault_cow_rmap::<MultiMmu, _, _, _, _, _>(
+        mm.handle_page_fault_cow_rmap::<MultiMmu, _, _, _, _, _, _>(
             uva, fault, 0,
             alloc_frame,
             rc_get,
             rc_dec,
-            |_pa, _av, _idx| {},
+            // A4 set_rmap: record the page's real AnonVma family + mark it
+            // born-exclusive (A3), mirroring `set_anon_rmap_for_pa`.
+            |pa, av, _idx| {
+                RMAP.with(|r| { r.borrow_mut().insert(pa, Arc::clone(av)); });
+                EXCL.with(|r| { r.borrow_mut().insert(pa); });
+            },
             rc_inc,
+            // A3 wp_page_reuse predicate: anon (rmap-tracked) && exclusive &&
+            // mapcount==1 — the exact `can_reuse_anon_exclusive` conjuncts.
+            |pa| EXCL.with(|e| e.borrow().contains(&pa))
+                && MC.with(|m| *m.borrow().get(&pa).unwrap_or(&0)) == 1
+                && RMAP.with(|r| r.borrow().contains_key(&pa)),
         )
     };
 }
@@ -662,6 +741,80 @@ fn anon_demand_over_present_leaf_accounts_displaced() {
     assert_eq!(a_mc, 0, "displaced frame A mapcount returns to 0");
     // B is the sole live mapping.
     assert_eq!(rc_get(b), 1, "B: sole live mapping refcount 1");
+}
+
+// ---- A3 PageAnonExclusive: wp_page_reuse fires iff exclusive ----------
+//
+// The fast path (reuse the frame in place on a write fault) must fire ONLY
+// for a sole-owned anon page and NEVER for a fork-shared one — the exact
+// write-while-shared corruption that disabled the path. These two tests
+// pin both directions of `can_reuse_anon_exclusive`.
+
+#[test]
+fn cow_reuse_in_place_when_sole_anon_owner() {
+    reset();
+    let proot = 0x8_0000_0000u64;
+    let pmm = AddressSpace::new(proot).expect("AS::new");
+    let _ = pmm.mmap(None, PAGE as usize,
+        VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS, VmaBacking::Anonymous, false);
+    let pslot = AsSlot { root: proot, mm: pmm };
+    let va = pslot.mm.vmas_for_test().iter().next().unwrap().start.as_u64();
+    activate(proot);
+    do_fault(&pslot.mm, va, DEMAND_WRITE);
+    let a = cur_pa(va);
+    assert!(EXCL.with(|e| e.borrow().contains(&a)), "fresh anon page is exclusive");
+
+    // Fork then drop the child: A is shared (exclusive cleared, parent PTE
+    // W-stripped) then returns to a sole mapper (exclusive RESTORED).
+    let croot = 0x8_1000_0000u64;
+    activate(proot);
+    let child = pslot.mm.fork_cow_pages::<MultiMmu, _>(croot, 0, rc_inc).expect("fork");
+    let cslot = AsSlot { root: croot, mm: child };
+    assert!(!EXCL.with(|e| e.borrow().contains(&a)), "fork-shared page is NOT exclusive");
+    do_exit(&cslot);
+    drop(cslot.mm);
+    assert!(EXCL.with(|e| e.borrow().contains(&a)), "sole survivor is exclusive again");
+
+    // Parent's PTE is still W-stripped from the fork; a write faults into
+    // the COW handler, which now REUSES A in place (no new frame).
+    store(&pslot, va, b"PAR1");
+    activate(proot);
+    assert_eq!(cur_pa(va), a, "wp_page_reuse: exclusive sole owner reuses the SAME frame");
+    check_invariant("reuse-positive");
+    BUG.with(|b| { if let Some(m) = b.borrow().as_ref() { panic!("invariant: {}", m); } });
+}
+
+#[test]
+fn cow_no_reuse_while_fork_shared() {
+    reset();
+    let proot = 0x9_0000_0000u64;
+    let pmm = AddressSpace::new(proot).expect("AS::new");
+    let _ = pmm.mmap(None, PAGE as usize,
+        VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS, VmaBacking::Anonymous, false);
+    let pslot = AsSlot { root: proot, mm: pmm };
+    let va = pslot.mm.vmas_for_test().iter().next().unwrap().start.as_u64();
+    activate(proot);
+    do_fault(&pslot.mm, va, DEMAND_WRITE);
+    let a = cur_pa(va);
+    store(&pslot, va, b"PAR0");
+
+    // Fork; A is now shared (non-exclusive). A parent write MUST copy, not
+    // reuse — reusing in place would corrupt the child's still-shared view.
+    let croot = 0x9_1000_0000u64;
+    activate(proot);
+    let child = pslot.mm.fork_cow_pages::<MultiMmu, _>(croot, 0, rc_inc).expect("fork");
+    let cslot = AsSlot { root: croot, mm: child };
+    store(&pslot, va, b"PAR1");
+    activate(proot);
+    assert_ne!(cur_pa(va), a, "non-exclusive shared page must COW-copy, never reuse");
+    activate(croot);
+    assert_eq!(cur_pa(va), a, "child keeps the original frame");
+    assert_eq!(&read_tag(a), b"PAR0", "child's shared frame is NOT clobbered by parent");
+    check_invariant("reuse-negative");
+    BUG.with(|b| { if let Some(m) = b.borrow().as_ref() { panic!("invariant: {}", m); } });
+    let _ = cslot;
 }
 
 #[test]
