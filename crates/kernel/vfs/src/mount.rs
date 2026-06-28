@@ -21,7 +21,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use sync::{MountTable as MountClass, Spinlock};
 
 use crate::dentry::Dentry;
@@ -49,6 +49,14 @@ pub use propagation::{join_peer_group, peer_group_of, propagate_mount, set_propa
 mod detach;
 pub use detach::{unregister, unregister_top};
 pub(crate) use detach::detach_mounts_on;
+
+// mnt_flags model: the kernel-internal `mnt_flags` bit set (MNT_LOCKED /
+// MNT_INTERNAL / MNT_DOOMED / …, Linux `include/linux/mount.h`) distinct from
+// the MS_*-valued option mask, plus typed option-mask + atime-policy readback.
+mod mnt_flags;
+pub use mnt_flags::{
+    AtimePolicy, MNT_DOOMED, MNT_EXPIRE_MARK, MNT_INTERNAL, MNT_LOCKED, MNT_MARKED, MNT_UMOUNT,
+};
 
 pub const MNT_RDONLY: u64 = 1;
 pub const MNT_NOSUID: u64 = 2;
@@ -331,6 +339,12 @@ pub struct Mount {
     /// has been unlinked from its namespace tree by an umount. While set, the
     /// final [`mntput`] (`mnt_count` 1 → 0) runs the deferred `deactivate_super`.
     detached: AtomicBool,
+    /// Kernel-internal `mnt_flags` (Linux `include/linux/mount.h`): MNT_LOCKED,
+    /// MNT_INTERNAL, MNT_DOOMED, MNT_MARKED, MNT_UMOUNT, plus the synthetic
+    /// MNT_EXPIRE_MARK standing in for Linux's separate `mnt_expiry_mark` int.
+    /// SEPARATE namespace from the MS_*-valued option mask in `flags` — see
+    /// [`mnt_flags`]. Accessed via per-bit atomic fetch_or/and (xchg semantics).
+    pub(super) mnt_internal_flags: AtomicU32,
     /// Per-mount id mapping (Linux `mnt_idmap`). Identity by default — a
     /// non-idmapped mount maps every uid/gid to itself, so stat-out and
     /// chown/create-in are byte-identical to the non-idmapped kernel.
@@ -444,6 +458,7 @@ fn new_mount(sb: Arc<SuperBlock>, rendered: String, mountpoint: Option<Arc<Dentr
         mnt_writers: AtomicI32::new(0),
         mnt_count: AtomicI32::new(0),
         detached: AtomicBool::new(false),
+        mnt_internal_flags: AtomicU32::new(0),
         mnt_idmap: Arc::new(crate::idmap::Idmap::identity()),
     })
 }
@@ -627,6 +642,10 @@ pub(super) fn put_super_if_last(sb: &Arc<SuperBlock>) {
 /// balanced by exactly one [`mntput`]. # C: O(1)
 pub fn mntget(m: &Arc<Mount>) {
     m.mnt_count.fetch_add(1, Ordering::AcqRel);
+    // A fresh pin = the mount is in use again: reset its expiry grace so a
+    // pending [`mark_mounts_for_expiry`] sweep does not reap it (Linux clears
+    // `mnt_expiry_mark` when a mount is referenced).
+    m.mnt_internal_flags.fetch_and(!MNT_EXPIRE_MARK, Ordering::AcqRel);
 }
 
 /// `mntput` (Linux `mntput_no_expire`): drop a long-lived reference taken by
@@ -670,6 +689,10 @@ pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
             0, m.root.clone(), new_id, to_ns,
         );
         clone.flags.store(m.flags.load(Ordering::Acquire), Ordering::Release);
+        // Linux `clone_mnt` keeps MNT_LOCKED on the copy so a child userns cannot
+        // reveal a locked submount by unmounting it; transient marks are dropped.
+        clone.mnt_internal_flags.store(
+            m.mnt_internal_flags.load(Ordering::Acquire) & MNT_LOCKED, Ordering::Release);
         let prop = Propagation::from_u8(m.propagation.load(Ordering::Acquire));
         match prop {
             Propagation::Shared => {
