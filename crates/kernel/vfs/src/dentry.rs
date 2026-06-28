@@ -33,6 +33,42 @@ pub const D_LRU:        u32 = 0x0010; // currently linked on the dcache LRU
 pub const D_DISCONNECTED: u32 = 0x0020; // anonymous (parentless) alias, on s_anon
 
 // ---------------------------------------------------------------------------
+// DCACHE_OP_* — `d_op` presence cache, stamped into `d_flags` at construction
+// from the inherited `d_op` vector (Linux `d_set_d_op`). Each bit records that
+// the corresponding `d_op` hook is non-NULL so the hot path can branch on a
+// `d_flags` bit WITHOUT dereferencing `d_op` and probing the `Option` hook:
+// `__d_lookup` tests `parent->d_flags & DCACHE_OP_COMPARE` before calling
+// `d_compare`; `dput`/`dentry_kill` test `DCACHE_OP_DELETE` before `d_delete`.
+// Bit positions are this file's own layout (the rest of `d_flags` already
+// diverges from Linux's numeric bits — see the `D_ROOT..D_DISCONNECTED` block);
+// only the four hooks the dcache exposes get a presence bit (Linux additionally
+// has PRUNE/WEAK_REVALIDATE/REAL, which have no hook here).
+// ---------------------------------------------------------------------------
+/// `d_op->d_hash` present (Linux `DCACHE_OP_HASH`).
+pub const D_OP_HASH:       u32 = 0x0040;
+/// `d_op->d_compare` present (Linux `DCACHE_OP_COMPARE`).
+pub const D_OP_COMPARE:    u32 = 0x0080;
+/// `d_op->d_revalidate` present (Linux `DCACHE_OP_REVALIDATE`).
+pub const D_OP_REVALIDATE: u32 = 0x0100;
+/// `d_op->d_delete` present (Linux `DCACHE_OP_DELETE`).
+pub const D_OP_DELETE:     u32 = 0x0200;
+/// All `d_op` presence bits (cleared together before a re-stamp).
+pub const D_OP_MASK: u32 = D_OP_HASH | D_OP_COMPARE | D_OP_REVALIDATE | D_OP_DELETE;
+
+/// Presence-bit set for `d_op` (Linux `d_set_d_op`): a `D_OP_*` bit per
+/// non-NULL hook, so the hot path branches on `d_flags` not a pointer deref.
+/// `None` ⇒ no bits (all-default ops). # C: O(1)
+fn op_flags_for(d_op: Option<&'static DentryOps>) -> u32 {
+    let o = match d_op { Some(o) => o, None => return 0 };
+    let mut f = 0;
+    if o.d_hash.is_some()       { f |= D_OP_HASH; }
+    if o.d_compare.is_some()    { f |= D_OP_COMPARE; }
+    if o.d_revalidate.is_some() { f |= D_OP_REVALIDATE; }
+    if o.d_delete.is_some()     { f |= D_OP_DELETE; }
+    f
+}
+
+// ---------------------------------------------------------------------------
 // DCACHE_ENTRY_TYPE — cached inode type, stamped into `d_flags` the moment an
 // inode is associated (`build` / `set_inode`). Linux keeps these so the hot
 // path (`d_is_dir` in the walker, `d_is_symlink` before a symlink follow)
@@ -300,6 +336,7 @@ impl Dentry {
     fn build(parent: Option<Arc<Dentry>>, name: &str, inode: Option<InodeRef>, sb: Weak<SuperBlock>, d_op: Option<&'static DentryOps>, mut flags: u32) -> Arc<Self> {
         if inode.is_none() { flags |= D_NEGATIVE; }
         flags = (flags & !D_TYPE_MASK) | type_bits_for(&inode); // DCACHE_ENTRY_TYPE stamp
+        flags = (flags & !D_OP_MASK) | op_flags_for(d_op);      // DCACHE_OP_* stamp (d_set_d_op)
         let qname = QStr::new(parent.as_ref(), name);
         Arc::new(Self {
             parent,
@@ -373,6 +410,18 @@ impl Dentry {
 
     /// `d_op` — per-dentry operation vector, if any. # C: O(1)
     pub fn d_op(&self) -> Option<&'static DentryOps> { self.d_op }
+
+    /// `d_op->d_hash` present, from the `D_OP_HASH` presence bit — no `d_op`
+    /// deref (Linux `d_flags & DCACHE_OP_HASH`). # C: O(1)
+    pub fn d_has_op_hash(&self) -> bool { self.flags() & D_OP_HASH != 0 }
+    /// `d_op->d_compare` present (Linux `DCACHE_OP_COMPARE`). The `__d_lookup`
+    /// hot path tests this before calling `d_compare`. # C: O(1)
+    pub fn d_has_op_compare(&self) -> bool { self.flags() & D_OP_COMPARE != 0 }
+    /// `d_op->d_revalidate` present (Linux `DCACHE_OP_REVALIDATE`). # C: O(1)
+    pub fn d_has_op_revalidate(&self) -> bool { self.flags() & D_OP_REVALIDATE != 0 }
+    /// `d_op->d_delete` present (Linux `DCACHE_OP_DELETE`). `dput` tests this
+    /// before consulting `d_delete` on the final put. # C: O(1)
+    pub fn d_has_op_delete(&self) -> bool { self.flags() & D_OP_DELETE != 0 }
 
     /// Install `d_op` on a freshly built dentry (Linux `d_set_d_op`). Used to
     /// give a subtree root case-insensitive ops before children are spliced.
@@ -526,6 +575,10 @@ impl Dentry {
             Some(p) => if Arc::as_ptr(p) != parent { return false; },
             None    => return false, // root/floating dentries aren't parent-keyed
         }
+        // Fast path branches on the `D_OP_COMPARE` presence bit (Linux
+        // `__d_lookup`: `parent->d_flags & DCACHE_OP_COMPARE`), skipping the
+        // `d_op` deref entirely for the all-default common case.
+        if self.flags() & D_OP_COMPARE == 0 { return self.name.name() == name; }
         match self.d_op.and_then(|o| o.d_compare) {
             Some(cmp) => cmp(name, self),
             None      => self.name.name() == name,
