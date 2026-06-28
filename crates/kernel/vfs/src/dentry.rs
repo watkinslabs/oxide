@@ -453,6 +453,15 @@ impl Dentry {
     pub fn set_hashed(&self, on: bool) { self.set_flag(D_HASHED, on); }
     /// # C: O(1)
     pub fn is_hashed(&self) -> bool { self.flags() & D_HASHED != 0 }
+    /// True iff this dentry is absent from the global hashtable (Linux
+    /// `d_unhashed` — `!(d_flags & DCACHE_HASHED)`). # C: O(1)
+    pub fn is_unhashed(&self) -> bool { self.flags() & D_HASHED == 0 }
+    /// True iff this dentry was unlinked while still pinned open (Linux
+    /// `d_unlinked`: `d_unhashed(d) && !IS_ROOT(d)`). A removed-but-open file
+    /// keeps its parent link but drops out of the hash; `dentry_path` suffixes
+    /// its reconstructed name with " (deleted)". A superblock root is never
+    /// "unlinked" even while unhashed. # C: O(1)
+    pub fn is_unlinked(&self) -> bool { self.is_unhashed() && !self.is_root() }
 
     /// LRU bookkeeping bits (`16§98`). # C: O(1)
     pub fn set_on_lru(&self, on: bool) { self.set_flag(D_LRU, on); }
@@ -696,6 +705,43 @@ impl Dentry {
             out.push(b'/');
             out.extend_from_slice(name.as_bytes());
         }
+        out
+    }
+
+    /// Filesystem-internal path string for this dentry — Linux `__dentry_path`
+    /// / `dentry_path_raw` (`fs/d_path.c`): walk the `d_parent` chain toward the
+    /// root, prepending each `d_name`, and STOP the instant the cursor reaches
+    /// `root` (when supplied) or a filesystem root (`D_ROOT` / parentless). The
+    /// stop dentry's own name is NOT prepended — the leading "/" stands in for
+    /// it, so the root walk renders "/".
+    ///
+    /// Unlike `absolute_path` this does NOT cross mount boundaries: it is the
+    /// within-one-superblock reconstructor that `getcwd`, `/proc/<pid>/fd/N`
+    /// readlink, and the `/proc/<pid>/maps` path column build on relative to a
+    /// known root. An unlinked-but-open dentry (`is_unlinked`) or an anonymous
+    /// `D_DISCONNECTED` alias is unreachable from any root, so the result is
+    /// suffixed " (deleted)" exactly as Linux `dentry_path_raw` marks it.
+    /// # C: O(depth)
+    pub fn dentry_path(&self, root: Option<&Arc<Dentry>>) -> String {
+        let root_ptr = root.map(Arc::as_ptr);
+        let me_ptr = self as *const Dentry;
+        let mut parts: Vec<String> = Vec::new();
+        // The start dentry contributes its name only when it is neither the
+        // stop `root` nor a tree terminus (`D_ROOT` / disconnected). A terminus
+        // start yields no components → "/".
+        if root_ptr != Some(me_ptr) && !self.is_root() && !self.is_disconnected() {
+            if !self.name().is_empty() { parts.push(String::from(self.name())); }
+            let mut cur = self.parent.clone();
+            while let Some(d) = cur {
+                if root_ptr == Some(Arc::as_ptr(&d)) || d.is_root() || d.is_disconnected() { break; }
+                if !d.name().is_empty() { parts.push(String::from(d.name())); }
+                cur = d.parent.clone();
+            }
+        }
+        let mut out = String::new();
+        if parts.is_empty() { out.push('/'); }
+        else { for name in parts.iter().rev() { out.push('/'); out.push_str(name); } }
+        if self.is_unlinked() || self.is_disconnected() { out.push_str(" (deleted)"); }
         out
     }
 }
