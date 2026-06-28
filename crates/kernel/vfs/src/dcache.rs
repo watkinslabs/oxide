@@ -481,11 +481,17 @@ pub fn d_delete(d: &Arc<Dentry>) {
 /// (parent,name) key, so `d_lookup(old_parent, old_name)` misses and
 /// `d_lookup(new_parent, new_name)` hits. # C: O(1) expected
 pub fn d_move(old: &Arc<Dentry>, new_parent: &Arc<Dentry>, new_name: &str) -> Arc<Dentry> {
+    // Linux `__d_move` brackets the rehome in `write_seqcount_begin/end(&d_seq)`
+    // so a lock-free walker holding `old` detects the move (`read_seqretry`) and
+    // re-looks-up the new (parent,name) instead of trusting the stale binding.
+    old.seq_write_begin();
     d_drop(old);
-    match old.inode() {
+    let moved = match old.inode() {
         Some(inode) => d_add(new_parent, new_name, inode),
         None        => d_add_negative(new_parent, new_name),
-    }
+    };
+    old.seq_write_end();
+    moved
 }
 
 /// Obtain a dentry referring to `inode` WITHOUT a path/parent (Linux

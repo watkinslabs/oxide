@@ -319,6 +319,14 @@ pub struct Dentry {
     /// `d_fsdata` — fs-private per-dentry token (Linux `d_fsdata` void*). A
     /// pointer-sized opaque value the owning fs interprets (`0` = unset).
     d_fsdata: AtomicU64,
+    /// `d_seq` — per-dentry seqcount (Linux `dentry->d_seq`) guarding the
+    /// `d_parent`/`d_name` binding against a concurrent `d_move` (rename) during
+    /// a lock-free walk. EVEN = stable, ODD = a `d_move` is rehoming this name.
+    /// A lockless reader snapshots it (`read_seqbegin`), reads parent/name, then
+    /// `read_seqretry`s; an odd value or a changed generation means "renamed
+    /// under me — retry the walk". The bucket seqcount (`dcache.rs`) protects the
+    /// hash chain; THIS protects an individual dentry's identity across a move.
+    d_seq: AtomicU32,
 }
 
 impl Dentry {
@@ -366,6 +374,7 @@ impl Dentry {
             mounted_mounts: RwLock::new(BTreeMap::new()),
             d_time: AtomicU64::new(0),
             d_fsdata: AtomicU64::new(0),
+            d_seq: AtomicU32::new(0),
         })
     }
 
@@ -377,6 +386,40 @@ impl Dentry {
     pub fn d_fsdata(&self) -> u64 { self.d_fsdata.load(Ordering::Acquire) }
     /// Set `d_fsdata` (owning fs). # C: O(1)
     pub fn set_d_fsdata(&self, v: u64) { self.d_fsdata.store(v, Ordering::Release); }
+
+    /// `d_seq` raw snapshot — the per-dentry rename seqcount. # C: O(1)
+    pub fn d_seq(&self) -> u32 { self.d_seq.load(Ordering::Acquire) }
+
+    /// Begin a lock-free read of `d_parent`/`d_name` (Linux
+    /// `read_seqcount_begin`): spin until the seqcount is EVEN (no `d_move` in
+    /// flight) and return that even snapshot. Pair with `read_seqretry` after
+    /// reading the name/parent. # C: O(1) amortized
+    pub fn read_seqbegin(&self) -> u32 {
+        loop {
+            let s = self.d_seq.load(Ordering::Acquire);
+            if s & 1 == 0 { return s; }
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Validate a lock-free read (Linux `read_seqcount_retry`): `true` ⇒ a
+    /// `d_move` raced the read (seqcount advanced or is mid-write), so the caller
+    /// must retry the walk. # C: O(1)
+    pub fn read_seqretry(&self, start: u32) -> bool {
+        core::sync::atomic::fence(Ordering::Acquire);
+        self.d_seq.load(Ordering::Acquire) != start
+    }
+
+    /// Open the rename write window on this dentry's name binding (Linux
+    /// `write_seqcount_begin` at the top of `__d_move`): advance `d_seq` to ODD
+    /// so a concurrent lock-free reader sees the in-flight rename and retries.
+    /// MUST be paired with `seq_write_end`. # C: O(1)
+    pub fn seq_write_begin(&self) { self.d_seq.fetch_add(1, Ordering::Release); }
+
+    /// Close the rename write window (Linux `write_seqcount_end`): advance
+    /// `d_seq` back to EVEN — a new generation, so any reader that snapshotted
+    /// the pre-move value fails `read_seqretry`. # C: O(1)
+    pub fn seq_write_end(&self) { self.d_seq.fetch_add(1, Ordering::Release); }
 
     /// Construct a positive dentry — name resolves to `inode`. sb-less
     /// (`Weak::new()`); use `new_child` to inherit a parent's superblock.
