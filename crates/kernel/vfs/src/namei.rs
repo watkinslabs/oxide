@@ -65,8 +65,15 @@ pub struct LookupFlags {
     /// performed by the `root`-relative `to_root`/`dotdot_step` machinery, so
     /// this field is currently informational). NOTE: Linux's openat2
     /// RESOLVE_BENEATH instead ERRORS `-EXDEV` on an escape attempt rather than
-    /// clamping; that distinct behaviour needs its own flag (fix-ledger D20).
+    /// clamping; that distinct behaviour is `beneath_exdev` below.
     pub beneath: bool,
+    /// RESOLVE_BENEATH (`openat2(2)`, Linux `LOOKUP_BENEATH`): the START dirfd
+    /// is the scoped resolution root and any attempt to escape ABOVE it ERRORS
+    /// `EXDEV` rather than clamping (the distinction from the chroot `beneath`
+    /// field). Three escapes are rejected: an absolute pathname, a `..` at the
+    /// scoped root, and an absolute symlink target. `Nameidata::new` pins the
+    /// resolution root to START (like `in_root`), so the boundary is the dirfd.
+    pub beneath_exdev: bool,
     /// LOOKUP_DIRECTORY: the final component must resolve to a directory
     /// (else ENOTDIR).
     pub directory: bool,
@@ -437,16 +444,18 @@ fn follow_mount_down(mut d: Arc<Dentry>, mut mnt_id: u64, ns: u64) -> KResult<(A
 /// resolution root (`/.. == /`, chroot/BENEATH/IN_ROOT confinement). At a
 /// mounted fs root that is not the resolution root, cross back to the
 /// mountpoint in the parent mount (looping for stacked roots), THEN take the
-/// normal parent step. # C: O(stack)
+/// normal parent step. Returns `true` when the step was an ESCAPE attempt —
+/// `..` at the resolution root, which is clamped (held at root) here but which
+/// `RESOLVE_BENEATH` (`beneath_exdev`) turns into `EXDEV`. # C: O(stack)
 fn dotdot_step(
     cur_dentry: &mut Arc<Dentry>,
     cur_mnt: &mut u64,
     cur_inode: &mut InodeRef,
     root_dentry: &Arc<Dentry>,
     root_mnt: u64,
-) {
+) -> bool {
     loop {
-        if Arc::ptr_eq(cur_dentry, root_dentry) { return; }
+        if Arc::ptr_eq(cur_dentry, root_dentry) { return true; }
         if cur_dentry.is_root() && *cur_mnt != root_mnt {
             if let Some((mp, parent_mnt)) = crate::mount::mountpoint_of(*cur_mnt) {
                 *cur_dentry = mp;
@@ -461,6 +470,7 @@ fn dotdot_step(
         let par = par.clone();
         if let Some(pi) = par.inode() { *cur_inode = pi; *cur_dentry = par; }
     }
+    false
 }
 
 /// Linux `struct nameidata` — the walk's mutable resolution state: current
@@ -492,7 +502,9 @@ impl Nameidata {
         // root, so `to_root()` (absolute paths / absolute symlink restarts) and
         // `dotdot_step` (`..` clamp) all confine to it, overriding the passed
         // `root` (Linux sets `nd->root = nd->path` for LOOKUP_IS_SCOPED+IN_ROOT).
-        if flags.in_root { root_dentry = cur_dentry.clone(); root_mnt_id = cur_mnt_id; }
+        // RESOLVE_BENEATH (`beneath_exdev`) likewise scopes resolution to the
+        // dirfd, but ERRORS on escape (handled in `walk`) instead of clamping.
+        if flags.in_root || flags.beneath_exdev { root_dentry = cur_dentry.clone(); root_mnt_id = cur_mnt_id; }
         Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, depth: 0, flags, cred })
     }
 
@@ -505,19 +517,26 @@ impl Nameidata {
         Ok(())
     }
 
-    /// `..` — `follow_dotdot` clamped at the resolution root. # C: O(stack)
-    fn handle_dotdot(&mut self) {
+    /// `..` — `follow_dotdot` clamped at the resolution root. Returns `true`
+    /// when the step was an escape attempt clamped at the root (the caller
+    /// turns this into `EXDEV` under `beneath_exdev`). # C: O(stack)
+    fn handle_dotdot(&mut self) -> bool {
         dotdot_step(
             &mut self.cur_dentry, &mut self.cur_mnt_id, &mut self.cur_inode,
             &self.root_dentry, self.root_mnt_id,
-        );
+        )
     }
 
     /// Resolve `path` from the current state to a final `VfsPath`. # C:
     /// O(components × dir-lookup) + O(symlinks)
     pub fn walk(&mut self, path: &str) -> KResult<VfsPath> {
         let ns = crate::mount::current_ns();
-        if path.as_bytes().first() == Some(&b'/') { self.to_root()?; }
+        if path.as_bytes().first() == Some(&b'/') {
+            // RESOLVE_BENEATH: an absolute pathname would jump to the (real)
+            // root ABOVE the scoped dirfd → EXDEV (Linux `LOOKUP_BENEATH`).
+            if self.flags.beneath_exdev { return Err(VfsError::Exdev); }
+            self.to_root()?;
+        }
 
         // LOOKUP_DIRECTORY from pathname syntax (`path::requires_dir`): a
         // trailing `/` (`foo/`), or a final `.` / `..` (`foo/.`, `foo/..`)
@@ -583,7 +602,10 @@ impl Nameidata {
             // (single splitter in `path.rs`); only `..` and names reach here.
             if comp == ".." {
                 let from_mnt = self.cur_mnt_id;
-                self.handle_dotdot();
+                let escaped = self.handle_dotdot();
+                // RESOLVE_BENEATH: a `..` at the scoped root is an escape above
+                // the dirfd → EXDEV (Linux), not a silent clamp.
+                if self.flags.beneath_exdev && escaped { return Err(VfsError::Exdev); }
                 // RESOLVE_NO_XDEV: a `..` that ascends OUT of the current mount
                 // (back to the mountpoint in the parent mount) is rejected.
                 if self.flags.no_xdev && self.cur_mnt_id != from_mnt { return Err(VfsError::Exdev); }
@@ -635,6 +657,10 @@ impl Nameidata {
                 queue = next;
                 idx = 0;
                 if target.as_bytes().first() == Some(&b'/') {
+                    // RESOLVE_BENEATH (`beneath_exdev`): an absolute symlink
+                    // target escapes above the scoped dirfd → EXDEV (Linux),
+                    // checked BEFORE the jump-to-root.
+                    if self.flags.beneath_exdev { return Err(VfsError::Exdev); }
                     // Absolute target jumps to the resolution root (Linux
                     // `nd_jump_root`), exactly as an absolute pathname does
                     // (`to_root` at the top of `walk`). Under a CONFINED root —
@@ -642,9 +668,7 @@ impl Nameidata {
                     // or RESOLVE_IN_ROOT — `root` IS the jail/dirfd, so the
                     // target restarts there and cannot escape: a chroot'd
                     // `/etc/foo` symlink resolves to `<jail>/etc/foo`, NOT the
-                    // global tree. (Linux's openat2 RESOLVE_BENEATH, which
-                    // ERRORS `-EXDEV` on such an escape rather than clamping, is
-                    // a distinct unwired flag — see fix-ledger namei D20.)
+                    // global tree.
                     self.to_root()?;
                 }
                 // Relative target keeps walking from the symlink's directory.
@@ -744,7 +768,9 @@ pub fn walk_to_mount(path: &str) -> Option<u64> {
     for comp in components(path) {
         // `.`/empty already dropped by `components` (single splitter, path.rs).
         if comp == ".." {
-            dotdot_step(&mut cur_dentry, &mut cur_mnt, &mut cur_inode, &root, root_mnt);
+            // Mount-identification walk: the root-clamp escape signal is
+            // irrelevant here (no RESOLVE_BENEATH on this internal walk).
+            let _ = dotdot_step(&mut cur_dentry, &mut cur_mnt, &mut cur_inode, &root, root_mnt);
             continue;
         }
         // dcache fast path (d_lookup) then slow path (i_op->lookup + d_add).
