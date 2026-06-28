@@ -32,19 +32,14 @@ use tree::Tree;
 /// OWNS its inodes: `lookup` strips the mount prefix, resolves the
 /// relative cgroup path through the hierarchy (`tree.rs`), and SYNTHESIZES
 /// a `CgDir`/`CgFile` inode — no registry, ZERO devfs dependency.
-pub struct CgroupFs {
-    mount_point: String,
-}
+pub struct CgroupFs;
 
 impl CgroupFs {
-    /// Create a cgroup2 filesystem instance mounted at `mount_point`.
-    /// The backing hierarchy is global, but each mount instance must know
-    /// its own prefix so whole-path lookups work after bind/new-mount API
-    /// attachment into service mount namespaces.
+    /// Create a cgroup2 filesystem instance. The backing hierarchy is
+    /// global; resolution is per-component from the mount root `CgDir`
+    /// (`root()` → `CgDir::lookup`), so the instance carries no path prefix.
     /// # C: O(1)
-    pub fn new(mount_point: &str) -> Self {
-        Self { mount_point: mount_point.to_string() }
-    }
+    pub fn new(_mount_point: &str) -> Self { Self }
 }
 
 impl FileSystem for CgroupFs {
@@ -62,18 +57,6 @@ impl FileSystem for CgroupFs {
     fn root(&self) -> Option<InodeRef> {
         if !is_mounted() { return None; }
         Some(Arc::new(inode::CgDir::new(tree::ROOT)) as InodeRef)
-    }
-    fn lookup(&self, path: &str) -> Option<InodeRef> {
-        let out = resolve_path_at(&self.mount_point, path);
-        #[cfg(feature = "debug-cgroup")]
-        if out.is_none() {
-            klog::write_raw(b"[cg] lookup miss mp=");
-            klog::write_raw(self.mount_point.as_bytes());
-            klog::write_raw(b" path=");
-            klog::write_raw(path.as_bytes());
-            klog::write_raw(b"\n");
-        }
-        out
     }
     /// # C: O(1)
     fn mounts_line(&self, mp: &str) -> alloc::string::String {
@@ -292,49 +275,6 @@ pub fn mount_at(mount_point: &str) -> KResult<()> {
         Err(vfs::VfsError::Eexist) if !first => Ok(()),
         Err(e) => Err(e),
     }
-}
-
-/// Resolve a full `/sys/fs/cgroup/...` path to a synthesized inode.
-/// Returns `None` if unmounted or the path names nothing. The mount root
-/// itself (`/sys/fs/cgroup`) → the root `CgDir`.
-/// # C: O(components · log n)
-fn resolve_path_at(mount_point: &str, path: &str) -> Option<InodeRef> {
-    if !is_mounted() { return None; }
-    // Strip the mount prefix → relative cgroup path ("" for the root).
-    let rel = if path == mount_point { "" }
-        else { path.strip_prefix(mount_point)?.strip_prefix('/')? };
-    if rel.is_empty() {
-        return Some(Arc::new(inode::CgDir::new(tree::ROOT)) as InodeRef);
-    }
-    // Split into the parent-cgroup path + the last component.
-    let (dir, last) = match rel.rfind('/') {
-        Some(i) => (&rel[..i], &rel[i + 1..]),
-        None => ("", rel),
-    };
-    let t = TREE.lock();
-    let parent = match t.resolve(dir) {
-        Some(p) => p,
-        None => {
-            #[cfg(feature = "debug-cgroup")]
-            { klog::write_raw(b"[cg] miss-reason=dir-unresolved dir="); klog::write_raw(dir.as_bytes()); klog::write_raw(b"\n"); }
-            return None;
-        }
-    };
-    // Last component is either a child cgroup or a control file.
-    if let Some(child) = t.child_id(parent, last) {
-        return Some(Arc::new(inode::CgDir::new(child)) as InodeRef);
-    }
-    if t.has_file(parent, last) {
-        return Some(Arc::new(inode::CgFile::new(parent, last)) as InodeRef);
-    }
-    #[cfg(feature = "debug-cgroup")]
-    {
-        klog::write_raw(b"[cg] miss-reason=no-child-no-file parent="); klog::write_dec_u64(parent);
-        klog::write_raw(b" last="); klog::write_raw(last.as_bytes());
-        klog::write_raw(b" nkids="); klog::write_dec_u64(t.child_names(parent).len() as u64);
-        klog::write_raw(b"\n");
-    }
-    None
 }
 
 /// True iff cgroup `cgid` has a control file named `name`.

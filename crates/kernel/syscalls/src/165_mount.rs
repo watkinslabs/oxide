@@ -60,15 +60,16 @@ fn canonical_mount_path(path: String) -> String {
     }
 }
 
-/// Bind mount: a FileSystem at `target` whose lookups redirect into
-/// the `source` subtree. `mount(src, tgt, NULL, MS_BIND)` makes
-/// `tgt/<x>` resolve to `src/<x>` — what shells, systemd `PrivateTmp=`/
-/// `ProtectSystem=`, and container tooling rely on. Lookups re-enter
-/// the unified resolver against the rewritten path.
-/// # C: O(path)
+/// Bind mount MARKER (Linux: a bind has no superblock of its own — it is
+/// `(vfsmount, mnt_root = source dentry)` sharing the source SB). The mount
+/// table stores the resolved SOURCE root inode in `Mount.root` (via
+/// `register_bind`), so the path walk crosses into the bind and then
+/// resolves every component on the source's REAL inodes per-component
+/// (`d_lookup → i_op->lookup → d_add`). This struct only carries the
+/// fstype name / statfs magic / `/proc/mounts` line — NO path lookup.
+/// # C: O(1)
 pub struct BindFs {
     source: String,
-    target: String,
 }
 
 impl FileSystem for BindFs {
@@ -81,18 +82,6 @@ impl FileSystem for BindFs {
             .map(|(m, _)| m.fs.magic())
             .filter(|&m| m != 0)
             .unwrap_or(0xEF53)
-    }
-    fn lookup(&self, path: &str) -> Option<InodeRef> {
-        // Rewrite the target-prefixed path onto the source subtree.
-        let rel = path.strip_prefix(self.target.as_str()).unwrap_or("");
-        let mut src = self.source.clone();
-        src.push_str(rel);
-        // Re-resolve via the unified path resolver, then the devfs/ext4
-        // backends — mirrors the open(2) lookup order. (Source must not
-        // live under the target; callers don't bind a dir onto itself.)
-        vfs::mount::lookup(&src).ok()
-            .or_else(|| devfs::lookup(&src))
-            .or_else(|| ext4::rootfs::lookup_inode_any(src.as_bytes()))
     }
     fn mounts_line(&self, mount_point: &str) -> String {
         let mut s = String::new();
@@ -187,7 +176,7 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         // makes the new mount a peer of the source's group (same shared:N,
         // future propagation events reach it). Captured before the bind.
         let src_pg = vfs::mount::peer_group_of(&source);
-        let bind = Arc::new(BindFs { source: source.clone(), target: target.clone() });
+        let bind = Arc::new(BindFs { source: source.clone() });
         // Global mount table (per-NS bind rides the per-ns mount tree).
         let _ = vfs::mount::register_bind(&target, bind, root);
         vfs::mount::join_peer_group(&target, src_pg);

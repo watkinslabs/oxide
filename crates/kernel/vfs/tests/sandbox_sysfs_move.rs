@@ -37,7 +37,6 @@ struct TestFs { root_ino: u64 }
 impl FileSystem for TestFs {
     fn name(&self) -> &str { "sysfs" }
     fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir { ino: self.root_ino })) }
-    fn lookup(&self, _path: &str) -> Option<InodeRef> { None }
 }
 
 #[test]

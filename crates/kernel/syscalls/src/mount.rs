@@ -14,13 +14,12 @@ fn current_mount_ns() -> u64 {
     sched::live::current().map(|c| c.mount_ns.load(Ordering::Acquire)).unwrap_or(0)
 }
 
-/// Install the VFS path-walk hooks (mount-crossing + whole-path
-/// delegation) AND the mount-ns provider at boot. Replaces the bare
-/// `vfs::mount::install_resolvers()` call so lib.rs stays net-zero at the
-/// 1000-line cap while gaining ns stamping.
+/// Install the VFS path-walk hooks (mount-crossing) AND the mount-ns
+/// provider at boot. Resolution is now always per-component
+/// (`d_lookup → i_op->lookup → d_add`); there is no whole-path delegate to
+/// install (WP2 deleted `FileSystem::lookup`).
 /// # C: O(1)
 pub fn install_vfs_hooks() {
-    vfs::mount::install_resolvers();
     vfs::mount::set_current_ns_provider(current_mount_ns);
     // Mount crossing is dentry-identity-keyed (`docs/16§3`): give
     // `vfs::mount::register*` the resolver that maps a mount-point path to

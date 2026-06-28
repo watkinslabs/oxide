@@ -28,12 +28,6 @@ impl vfs::fs::FileSystem for TracefsFs {
     fn root(&self) -> Option<InodeRef> {
         devfs::lookup_no_chroot("/sys/kernel/tracing")
     }
-    /// Delegate to the devfs `/sys/kernel/tracing/*` subtree (same shape
-    /// `ProcfsFs::lookup` uses).
-    /// # C: O(components)
-    fn lookup(&self, path: &str) -> Option<InodeRef> {
-        devfs::lookup_no_chroot(path)
-    }
 }
 
 /// debugfs. `DEBUGFS_MAGIC` (linux/magic.h).
@@ -51,10 +45,5 @@ impl vfs::fs::FileSystem for DebugfsFs {
     /// accepts it. # C: O(components)
     fn root(&self) -> Option<InodeRef> {
         devfs::lookup_no_chroot("/sys/kernel/debug")
-    }
-    /// Delegate to the devfs `/sys/kernel/debug/*` subtree.
-    /// # C: O(components)
-    fn lookup(&self, path: &str) -> Option<InodeRef> {
-        devfs::lookup_no_chroot(path)
     }
 }

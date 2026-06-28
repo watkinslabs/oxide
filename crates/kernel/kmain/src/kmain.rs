@@ -684,14 +684,22 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         let _ = vfs::mount::register("/dev",  alloc::sync::Arc::new(::devfs::DevfsFs));
         let _ = vfs::mount::register("/proc", alloc::sync::Arc::new(procfs::fs_impl::ProcfsFs));
         let _ = vfs::mount::register("/sys",  alloc::sync::Arc::new(crate::sysfs::SysfsFs));
-        let _ = vfs::mount::register("/tmp",  alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
+        // tmpfs boot mounts carry their per-mount root inode (Linux
+        // `sb->s_root`) so the path walk crosses into them and resolves
+        // per-component via `TmpfsRootInode::lookup` — no whole-path
+        // `FileSystem::lookup` fallback. Same shape `mount_fstype` uses for
+        // userspace `mount -t tmpfs`.
+        let _ = vfs::mount::register_bind("/tmp",  alloc::sync::Arc::new(fs::tmpfs::TmpfsFs),
+            alloc::sync::Arc::new(fs::tmpfs::TmpfsRootInode::new(alloc::string::String::from("/tmp"))));
         // POSIX shm + systemd /run live on tmpfs. Longest-prefix-match
         // gives them precedence over the /dev devfs mount, so paths
         // resolve through the tmpfs root inode populated in
         // `fs::tmpfs::init`. Without this `shm_open(3)` (which musl
         // routes to `/dev/shm/<name>`) hits DevfsFs and ENOENTs.
-        let _ = vfs::mount::register("/dev/shm", alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
-        let _ = vfs::mount::register("/run",     alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
+        let _ = vfs::mount::register_bind("/dev/shm", alloc::sync::Arc::new(fs::tmpfs::TmpfsFs),
+            alloc::sync::Arc::new(fs::tmpfs::TmpfsRootInode::new(alloc::string::String::from("/dev/shm"))));
+        let _ = vfs::mount::register_bind("/run",     alloc::sync::Arc::new(fs::tmpfs::TmpfsFs),
+            alloc::sync::Arc::new(fs::tmpfs::TmpfsRootInode::new(alloc::string::String::from("/run"))));
         // /home from its own virtio-blk disk (serial `oxide-home`), as a
         // self-contained `Ext4Mount` (own device/cache/orphan set, never
         // aliasing the root). Graceful: a missing home disk leaves /home

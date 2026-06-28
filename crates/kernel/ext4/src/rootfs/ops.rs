@@ -227,7 +227,6 @@ impl vfs::fs::FileSystem for Ext4Mount {
     fn name(&self) -> &str { "ext4" }
     fn magic(&self) -> u64 { crate::EXT4_SUPER_MAGIC as u64 }
     fn root(&self) -> Option<vfs::InodeRef> { self.st.wrap_any_ino(2) }
-    fn lookup(&self, path: &str) -> Option<vfs::InodeRef> { self.st.lookup_inode_any(path.as_bytes()) }
     fn create(&self, path: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
         self.st.create_at(path.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enoent)
     }

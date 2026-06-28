@@ -485,63 +485,11 @@ impl vfs::fs::FileSystem for SysfsFs {
     /// SYSFS_MAGIC (linux/magic.h).
     /// # C: O(1)
     fn magic(&self) -> u64 { 0x6265_6572 }
-    /// Try the path-keyed devfs entry first (static /sys/kernel/*,
-    /// /sys/devices/system/cpu/*, the SysClassNetInode at /sys/class/net,
-    /// …). On miss, peel one component at a time and ask the ancestor
-    /// inode to `lookup(child)` — that's how the dynamic per-iface inodes
-    /// under /sys/class/net resolve.
-    /// # C: O(N_devfs_entries × N_path_components)
-    fn lookup(&self, path: &str) -> Option<InodeRef> {
-        sysfs_walk(path, 0)
-    }
-}
-
-/// SysfsFs path walk. Tries devfs::lookup first; on miss, peels one
-/// component at a time until a registered ancestor inode is found,
-/// then walks back down via `Inode::lookup`. Intermediate symlinks
-/// (the /sys/class/<class>/<name> → /sys/devices/... convention)
-/// resolve transparently: when the walk lands on a Symlink with more
-/// path left, we re-enter `sysfs_walk` against the lexically resolved
-/// target + the remaining tail. `depth` bounds symlink recursion at
-/// 8 (Linux SYMLOOP_MAX heuristic).
-/// # C: O(N_components × N_devfs_entries)
-fn sysfs_walk(path: &str, depth: u32) -> Option<InodeRef> {
-    if depth > 8 { return None; }
-    if let Some(i) = devfs::lookup_no_chroot(path) { return Some(i); }
-    let mut tail: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
-    let mut cur = alloc::string::String::from(path);
-    loop {
-        let idx = cur.rfind('/')?;
-        if idx == 0 { return None; }
-        let child = alloc::string::String::from(&cur[idx + 1..]);
-        cur.truncate(idx);
-        tail.push(child);
-        if let Some(parent_inode) = devfs::lookup_no_chroot(&cur) {
-            let mut node = parent_inode;
-            while let Some(name) = tail.pop() {
-                node = node.lookup(&name).ok()?;
-                if matches!(node.file_type(), FileType::Symlink) && !tail.is_empty() {
-                    let target = node.readlink().ok()?;
-                    let target = core::str::from_utf8(&target).ok()?;
-                    let mut joined = cur.clone();
-                    joined.push('/');
-                    joined.push_str(target);
-                    let resolved = vfs::path::lexical_normalize(&joined)
-                        .unwrap_or(joined);
-                    // Tail held the unconsumed sub-components in
-                    // reverse order; rebuild as path suffix and
-                    // recurse with the resolved base.
-                    let mut new_path = resolved;
-                    while let Some(seg) = tail.pop() {
-                        new_path.push('/');
-                        new_path.push_str(&seg);
-                    }
-                    return sysfs_walk(&new_path, depth + 1);
-                }
-            }
-            return Some(node);
-        }
-    }
+    /// Mount root = the `/sys` `DevDir` (devfs-backed). The walk crosses
+    /// into the sysfs mount and resolves `/sys/*` per-component via
+    /// `DevDir::lookup` + the dynamic `SysClassNetInode::lookup`.
+    /// # C: O(1)
+    fn root(&self) -> Option<InodeRef> { devfs::lookup_no_chroot("/sys") }
 }
 
 /// Singleton accessor for the mount table.
