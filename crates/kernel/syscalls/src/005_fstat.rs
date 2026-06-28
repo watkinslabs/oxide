@@ -35,37 +35,24 @@ pub fn sys_fstat(args: &SyscallArgs) -> i64 {
         Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode = file.inode();
-    let (mode_type, rdev): (u32, u64) = match inode.file_type() {
-        vfs::FileType::CharDev   => (0o020000, inode.rdev() as u64),
-        vfs::FileType::BlockDev  => (0o060000, inode.rdev() as u64),
-        vfs::FileType::Directory => (0o040000, 0),
-        vfs::FileType::Regular   => (0o100000, 0),
-        vfs::FileType::Symlink   => (0o120000, 0),
-        vfs::FileType::Fifo      => (0o010000, 0),
-        vfs::FileType::Socket    => (0o140000, 0),
-    };
-    // Real perms via the inode (overlay-aware), matching sys_statx/sys_stat.
-    // Hardcoding 0o600 here made systemd see every unit file as
-    // world-inaccessible (it opens then fstat()s the fd), and broke any
-    // group/other-read check on fstat'd files.
-    let overlay = vfs::inode_times::get(&inode).unwrap_or_default();
-    let mode_perm = inode.perm()
-        .or_else(|| if overlay.owner_set && overlay.mode_bits != 0 { Some(overlay.mode_bits) } else { None })
-        .unwrap_or_else(|| crate::namei_common::default_perm_for(inode.file_type()));
-    let mode: u32 = mode_type | mode_perm as u32;
-    let uid = inode.uid().unwrap_or(if overlay.owner_set { overlay.uid } else { 0 });
-    let gid = inode.gid().unwrap_or(if overlay.owner_set { overlay.gid } else { 0 });
-    let ino  = inode.ino();
-    let size = inode.size() as i64;
-    let blocks = (inode.size() + 511) / 512;
-    let dev = crate::namei_common::fsid_to_dev(inode.fsid());
-    let nlink = inode.nlink();
-    let blksize = inode.blksize();
-    // Timestamps (overlay-aware) — previously left zero, so every fstat
-    // reported epoch 1970, breaking make/tar/ls -l.
-    let at = inode.atime().unwrap_or(overlay.atime_ns);
-    let mt = inode.mtime().unwrap_or(overlay.mtime_ns);
-    let ct = inode.ctime().unwrap_or(overlay.ctime_ns);
+    // vfs_getattr → i_op->getattr (default generic_fillattr): S_IF* mapping +
+    // inode_times overlay merge + idmap-out owner ids, identical to the other
+    // stat-family handlers. The fd carries the owning mount for the idmap.
+    let idmap = vfs::mount::idmap_for(file.mnt_id());
+    let st = vfs::vfs_getattr(inode, &idmap, vfs::inode_times::get(inode));
+    let mode: u32 = st.mode;
+    let rdev = st.rdev as u64;
+    let uid = st.uid;
+    let gid = st.gid;
+    let ino  = st.ino;
+    let size = st.size as i64;
+    let blocks = st.blocks;
+    let dev = crate::namei_common::fsid_to_dev(st.fsid);
+    let nlink = st.nlink;
+    let blksize = st.blksize;
+    let at = st.atime_ns;
+    let mt = st.mtime_ns;
+    let ct = st.ctime_ns;
     // SAFETY: buf validated STAT_BYTES below USER_VA_END + 8-byte aligned; CPL=0 writes through user mapping per the active CR3/TTBR0 = caller's AS.
     unsafe {
         for off in (0..STAT_BYTES).step_by(8) {

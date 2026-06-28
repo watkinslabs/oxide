@@ -26,8 +26,12 @@ pub(crate) fn now_ns() -> u64 {
     { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
 }
 
+/// Resolve a utimes target to `(inode, mnt_id)`. `path_ptr == 0` updates the
+/// `dirfd` open fd directly (utimensat NULL path). `no_follow` honours
+/// AT_SYMLINK_NOFOLLOW on the final component (U2: utimensat operates on the
+/// symlink itself). The owning `mnt_id` lets `notify_change` enforce EROFS.
 /// # C: O(N_path)
-pub(crate) fn resolve_inode(dirfd: i32, path_ptr: u64) -> Result<InodeRef, i64> {
+pub(crate) fn resolve_target(dirfd: i32, path_ptr: u64, no_follow: bool) -> Result<(InodeRef, u64), i64> {
     if path_ptr == 0 {
         // utimensat with NULL path = update by fd.
         let cur = match sched::live::current() {
@@ -40,7 +44,7 @@ pub(crate) fn resolve_inode(dirfd: i32, path_ptr: u64) -> Result<InodeRef, i64> 
         let f = match fdt.get(dirfd) {
             Ok(f) => f, Err(_) => return Err(-(Errno::Ebadf.as_i32() as i64)),
         };
-        return Ok(f.inode().clone());
+        return Ok((f.inode().clone(), f.mnt_id()));
     }
     if path_ptr >= hal::USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
@@ -55,8 +59,8 @@ pub(crate) fn resolve_inode(dirfd: i32, path_ptr: u64) -> Result<InodeRef, i64> 
     // AT_FDCWD/absolute callers are unchanged.
     let resolved = crate::pathresolve::resolve_at_result(dirfd, raw)?;
     let s = resolved.as_str();
-    // utimensat/utimes follow symlinks (AT_SYMLINK_NOFOLLOW handling
-    // rides the dirfd rewrite); resolve via the path-walk.
-    crate::pathresolve::resolve(s, false)
-        .ok_or(-(Errno::Enoent.as_i32() as i64))
+    match crate::pathresolve::resolve_path_result(s, no_follow) {
+        Ok(p)  => Ok((p.inode, p.mnt_id)),
+        Err(e) => Err(crate::namei_common::errno_from_vfs(e)),
+    }
 }

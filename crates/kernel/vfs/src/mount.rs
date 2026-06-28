@@ -289,6 +289,11 @@ pub struct Mount {
     mnt_slave_list: Spinlock<Vec<Weak<Mount>>, MountClass>,
     /// Active writer count (Linux `mnt_writers`); blocks remount-RO.
     mnt_writers: AtomicI32,
+    /// Per-mount id mapping (Linux `mnt_idmap`). Identity by default — a
+    /// non-idmapped mount maps every uid/gid to itself, so stat-out and
+    /// chown/create-in are byte-identical to the non-idmapped kernel.
+    /// `mount_setattr(MOUNT_ATTR_IDMAP)` would install a non-identity map.
+    pub mnt_idmap: Arc<crate::idmap::Idmap>,
 }
 
 impl Mount {
@@ -380,7 +385,17 @@ fn new_mount(sb: Arc<SuperBlock>, rendered: String, mountpoint: Option<Arc<Dentr
         mnt_master: Spinlock::new(Weak::new()),
         mnt_slave_list: Spinlock::new(Vec::new()),
         mnt_writers: AtomicI32::new(0),
+        mnt_idmap: Arc::new(crate::idmap::Idmap::identity()),
     })
+}
+
+/// The `mnt_idmap` of mount `mnt_id`, or the identity map for an unknown /
+/// anonymous (`0`) id. Threaded into `getattr` (stat-out) and `notify_change`
+/// (chown/create-in); identity ⇒ no-op. # C: O(log N)
+pub fn idmap_for(mnt_id: u64) -> Arc<crate::idmap::Idmap> {
+    mount_by_id(mnt_id)
+        .map(|m| m.mnt_idmap.clone())
+        .unwrap_or_else(|| Arc::new(crate::idmap::Idmap::identity()))
 }
 
 /// Build a `Mount` and attach it on the caller-supplied mountpoint dentry

@@ -13,7 +13,6 @@ use crate::userbuf::validate_user_buf_writable;
 /// route here on x86_64 (aarch64 musl uses statx).
 /// # C: O(path components × dir-lookup)
 pub(crate) fn stat_impl(args: &SyscallArgs, follow: bool) -> i64 {
-    use vfs::FileType;
     let path_ptr = args.a0;
     let buf      = args.a1;
 
@@ -34,40 +33,28 @@ pub(crate) fn stat_impl(args: &SyscallArgs, follow: bool) -> i64 {
     // THE resolver: the dentry path-walk (crosses mounts, delegates
     // whole-path fs, follows symlinks). stat(2) follows a final symlink;
     // lstat(2) does not (`follow`). X1: preserve ENOTDIR/ELOOP/EACCES.
-    let inode = match crate::pathresolve::resolve_result(s, !follow) {
-        Ok(i)  => i,
+    // THE resolver returns the owning mount so the mount idmap can map the
+    // owner ids out (identity for non-idmapped mounts ⇒ raw fs ids).
+    let vp = match crate::pathresolve::resolve_path_result(s, !follow) {
+        Ok(p)  => p,
         Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
-    let (mode_type, rdev): (u32, u64) = match inode.file_type() {
-        FileType::CharDev   => (0o020000, inode.rdev() as u64),
-        FileType::BlockDev  => (0o060000, inode.rdev() as u64),
-        FileType::Directory => (0o040000, 0),
-        FileType::Regular   => (0o100000, 0),
-        FileType::Symlink   => (0o120000, 0),
-        FileType::Fifo      => (0o010000, 0),
-        FileType::Socket    => (0o140000, 0),
-    };
-    // Real perms/owner/times via the inode (overlay-aware), matching
-    // sys_fstat/sys_newfstatat/sys_statx — previously stat()/lstat()
-    // wrote only mode/size and left uid/gid/timestamps/blocks zero, so
-    // every file reported root:root at epoch 1970.
-    let overlay   = vfs::inode_times::get(&inode).unwrap_or_default();
-    let mode_perm = inode.perm()
-        .or_else(|| if overlay.owner_set && overlay.mode_bits != 0 { Some(overlay.mode_bits) } else { None })
-        .unwrap_or_else(|| crate::namei_common::default_perm_for(inode.file_type()));
-    let mode = mode_type | mode_perm as u32;
-    let uid  = inode.uid().unwrap_or(if overlay.owner_set { overlay.uid } else { 0 });
-    let gid  = inode.gid().unwrap_or(if overlay.owner_set { overlay.gid } else { 0 });
-    let ino  = inode.ino();
-    let size = inode.size() as i64;
-    let blocks = (inode.size() + 511) / 512;
-    let dev = crate::namei_common::fsid_to_dev(inode.fsid());
-    let nlink = inode.nlink();
-    let blksize = inode.blksize();
-    let (ia, im, ic) = (inode.atime(), inode.mtime(), inode.ctime());
-    let at = ia.unwrap_or(overlay.atime_ns);
-    let mt = im.unwrap_or(overlay.mtime_ns);
-    let ct = ic.unwrap_or(overlay.ctime_ns);
+    let inode = vp.inode;
+    // vfs_getattr → i_op->getattr (default generic_fillattr): one place for
+    // the S_IF* mapping + inode_times overlay merge + idmap-out owner ids.
+    let idmap = vfs::mount::idmap_for(vp.mnt_id);
+    let st = vfs::vfs_getattr(&inode, &idmap, vfs::inode_times::get(&inode));
+    let mode = st.mode;
+    let rdev = st.rdev as u64;
+    let uid  = st.uid;
+    let gid  = st.gid;
+    let ino  = st.ino;
+    let size = st.size as i64;
+    let blocks = st.blocks;
+    let dev = crate::namei_common::fsid_to_dev(st.fsid);
+    let nlink = st.nlink;
+    let blksize = st.blksize;
+    let (at, mt, ct) = (st.atime_ns, st.mtime_ns, st.ctime_ns);
     // SAFETY: buf validated STAT_BYTES writable 8-aligned below USER_VA_END; CPL=0 writes through caller's AS.
     unsafe {
         for off in (0..STAT_BYTES).step_by(8) {

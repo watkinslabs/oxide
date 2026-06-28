@@ -96,20 +96,6 @@ pub(crate) fn fsid_to_dev(fsid: u64) -> u64 {
     encode_dev(major, minor)
 }
 
-/// Linux-shaped permission fallback for inodes that do not expose a native
-/// mode. Filesystems should override `Inode::perm()`; this only covers old
-/// synthetic inodes during stat-family encoding.
-/// # C: O(1)
-pub(crate) fn default_perm_for(ft: vfs::FileType) -> u16 {
-    match ft {
-        vfs::FileType::Directory => 0o755,
-        vfs::FileType::Symlink   => 0o777,
-        vfs::FileType::CharDev | vfs::FileType::BlockDev => 0o666,
-        vfs::FileType::Fifo | vfs::FileType::Socket => 0o666,
-        vfs::FileType::Regular   => 0o644,
-    }
-}
-
 /// Map a `VfsError` to the negative Linux errno the ABI returns. Complete
 /// over every `VfsError` discriminant so a path-walk error (ELOOP /
 /// ENAMETOOLONG / ENOTDIR / EACCES) propagates with its true errno instead

@@ -149,6 +149,13 @@ pub trait Inode: Send + Sync {
         Err(VfsError::Einval)
     }
 
+    /// `i_op->get_link` (Linux `fs/namei.c`) — the VFS symlink-resolution entry
+    /// the path walker and `readlink(2)` call. Default delegates to `readlink`
+    /// (the storage primitive), so backends overriding `readlink` need no
+    /// further change; a backend with a page-cached or RCU link can override
+    /// `get_link` directly. # C: O(target_len)
+    fn get_link(&self) -> KResult<alloc::vec::Vec<u8>> { self.readlink() }
+
     /// Truncate the file to `len` bytes per `truncate(2)` /
     /// `ftruncate(2)`. Default impl returns `Erofs`. tmpfs honours
     /// it; static / pseudo inodes don't.
@@ -326,6 +333,25 @@ pub trait Inode: Send + Sync {
     /// `chown(2)` backend. Default `Erofs` → overlay handles it.
     /// # C: O(1)
     fn set_owner(&self, _uid: u32, _gid: u32) -> KResult<()> { Err(VfsError::Erofs) }
+
+    /// `i_op->getattr` (Linux `fs/stat.c`) — assemble the `Kstat` stat/statx
+    /// report. Default `generic_fillattr` reads the trait accessors, merges the
+    /// kernel `inode_times` overlay, and applies the mount idmap to the owner
+    /// ids. Backends with native metadata (ext4) override. # C: O(1)
+    fn getattr(&self, idmap: &crate::idmap::Idmap, overlay: Option<crate::inode_times::InodeTimes>)
+        -> crate::getattr::Kstat
+    {
+        crate::getattr::generic_fillattr(self, idmap, overlay)
+    }
+
+    /// `i_op->setattr` (Linux `fs/attr.c`) — apply a prepared `Iattr` to the
+    /// inode's native metadata. Default `simple_setattr` (via the existing
+    /// `set_perm`/`set_owner`/`set_times`/`truncate` primitives) returns `Erofs`
+    /// for inodes without native storage, so the kernel `notify_change` falls
+    /// back to its metadata overlay. # C: O(1)
+    fn setattr(&self, idmap: &crate::idmap::Idmap, ia: &crate::setattr::Iattr) -> KResult<()> {
+        crate::setattr::simple_setattr(self, idmap, ia)
+    }
 
     /// Open-time hook per Linux `file_operations->open`. Fired by the
     /// open path after path resolution, before the `File`/fd is built, so

@@ -17,7 +17,6 @@ const STATX_RESERVED: u32 = 0x8000_0000;
 /// `sys_statx(dirfd, path, flags, mask, statxbuf)` — slot 332.
 /// # C: O(1)
 pub fn sys_statx(args: &SyscallArgs) -> i64 {
-    use vfs::FileType;
     let dirfd     = args.a0 as i32;
     let path_ptr  = args.a1;
     let flags     = args.a2 as u32;
@@ -36,7 +35,7 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
             && unsafe { devfs::read_user_cstr(path_ptr, 1) }.map_or(true, |b| b.is_empty())
     };
 
-    let inode = if (flags & AT_EMPTY_PATH) != 0 && empty_or_null {
+    let (inode, mnt_id) = if (flags & AT_EMPTY_PATH) != 0 && empty_or_null {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
@@ -47,7 +46,7 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         let f = match fdt.get(dirfd) {
             Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
         };
-        f.inode().clone()
+        (f.inode().clone(), f.mnt_id())
     } else {
         // X2/X4/X5: PATH_MAX read with EFAULT/ENOENT/ENAMETOOLONG.
         let raw = match crate::namei_common::read_user_path(path_ptr) {
@@ -61,31 +60,21 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         };
         let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
         // X1: preserve ENOTDIR/ELOOP/EACCES from the path-walk.
-        match crate::pathresolve::resolve_result(resolved.as_str(), nofollow) {
-            Ok(i)  => i,
+        match crate::pathresolve::resolve_path_result(resolved.as_str(), nofollow) {
+            Ok(p)  => (p.inode, p.mnt_id),
             Err(e) => return crate::namei_common::errno_from_vfs(e),
         }
     };
 
-    let (mode_type, rdev): (u16, u32) = match inode.file_type() {
-        FileType::CharDev   => (0o020000, inode.rdev()),
-        FileType::BlockDev  => (0o060000, inode.rdev()),
-        FileType::Directory => (0o040000, 0),
-        FileType::Regular   => (0o100000, 0),
-        FileType::Symlink   => (0o120000, 0),
-        FileType::Fifo      => (0o010000, 0),
-        FileType::Socket    => (0o140000, 0),
-    };
-    // F98+F99: Inode trait first via Option<>; overlay fallback per pseudo-fs.
-    let overlay = vfs::inode_times::get(&inode).unwrap_or_default();
-    let mode_perm = inode.perm()
-        .or_else(|| if overlay.owner_set && overlay.mode_bits != 0 { Some(overlay.mode_bits) } else { None })
-        .unwrap_or_else(|| crate::namei_common::default_perm_for(inode.file_type()));
-    let mode = mode_type | mode_perm;
-    let stx_uid = inode.uid().unwrap_or(if overlay.owner_set { overlay.uid } else { 0 });
-    let stx_gid = inode.gid().unwrap_or(if overlay.owner_set { overlay.gid } else { 0 });
-    let dev = crate::namei_common::fsid_to_dev(inode.fsid());
-    let (ia, im, ic) = (inode.atime(), inode.mtime(), inode.ctime());
+    // vfs_getattr → i_op->getattr (default generic_fillattr): S_IF* mapping +
+    // inode_times overlay merge + idmap-out owner ids (identity ⇒ raw ids).
+    let idmap = vfs::mount::idmap_for(mnt_id);
+    let st = vfs::vfs_getattr(&inode, &idmap, vfs::inode_times::get(&inode));
+    let mode = st.mode as u16;
+    let rdev = st.rdev;
+    let stx_uid = st.uid;
+    let stx_gid = st.gid;
+    let dev = crate::namei_common::fsid_to_dev(st.fsid);
     // statx layout per linux/stat.h. Zero everything then fill the fields we have.
     // SAFETY: buf validated 256-byte 8-aligned range below USER_VA_END; CPL=0 writes through caller's AS.
     unsafe {
@@ -101,14 +90,14 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         // file as \"not executable for caller\" → \"Permission denied\".
         const STATX_BASIC_STATS: u32 = 0x7ff;
         core::ptr::write_volatile(buf as *mut u32, STATX_BASIC_STATS);
-        core::ptr::write_volatile((buf +   4)     as *mut u32, inode.blksize());                     // stx_blksize
-        core::ptr::write_volatile((buf +  16)     as *mut u32, inode.nlink());                       // stx_nlink
+        core::ptr::write_volatile((buf +   4)     as *mut u32, st.blksize);                          // stx_blksize
+        core::ptr::write_volatile((buf +  16)     as *mut u32, st.nlink);                            // stx_nlink
         core::ptr::write_volatile((buf +  20)     as *mut u32, stx_uid);                             // stx_uid
         core::ptr::write_volatile((buf +  24)     as *mut u32, stx_gid);                             // stx_gid
         core::ptr::write_volatile((buf +  28)     as *mut u16, mode);                                // stx_mode
-        core::ptr::write_volatile((buf +  32)     as *mut u64, inode.ino());                         // stx_ino
-        core::ptr::write_volatile((buf +  40)     as *mut u64, inode.size());                        // stx_size
-        core::ptr::write_volatile((buf +  48)     as *mut u64, (inode.size() + 511) / 512);          // stx_blocks (512-byte units)
+        core::ptr::write_volatile((buf +  32)     as *mut u64, st.ino);                              // stx_ino
+        core::ptr::write_volatile((buf +  40)     as *mut u64, st.size);                             // stx_size
+        core::ptr::write_volatile((buf +  48)     as *mut u64, st.blocks);                           // stx_blocks (512-byte units)
         // Timestamp slots: each 16 B = (i64 sec, i32 nsec, i32 reserved).
         // Linux statx layout: atime@72, btime@88, ctime@104, mtime@120.
         let write_ts = |off: u64, ns: u64| {
@@ -117,9 +106,9 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
             core::ptr::write_volatile((buf + off)      as *mut i64, sec);
             core::ptr::write_volatile((buf + off + 8)  as *mut i32, nsec);
         };
-        write_ts(72,  ia.unwrap_or(overlay.atime_ns));
-        write_ts(104, ic.unwrap_or(overlay.ctime_ns));
-        write_ts(120, im.unwrap_or(overlay.mtime_ns));
+        write_ts(72,  st.atime_ns);
+        write_ts(104, st.ctime_ns);
+        write_ts(120, st.mtime_ns);
         core::ptr::write_volatile((buf + 128)     as *mut u32, (rdev >> 8)  & 0xfff);                // stx_rdev_major
         core::ptr::write_volatile((buf + 132)     as *mut u32,  rdev        & 0xff);                 // stx_rdev_minor
         core::ptr::write_volatile((buf + 136)     as *mut u32, crate::namei_common::dev_major(dev)); // stx_dev_major
