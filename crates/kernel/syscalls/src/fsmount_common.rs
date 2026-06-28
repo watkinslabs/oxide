@@ -46,8 +46,10 @@ fn source_disk_name(source: &str) -> &str {
 pub(crate) fn mount_fstype(source: &str, fstype: &str, target: &str, target_d: &Arc<Dentry>) -> i64 {
     match fstype {
         "tmpfs" | "ramfs" => {
-            let root: InodeRef = Arc::new(::fs::tmpfs::TmpfsRootInode::new(target.to_string()));
-            let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(::fs::tmpfs::TmpfsFs);
+            // Each `mount -t tmpfs` is a fresh instance owning its own tree.
+            let tfs = ::fs::tmpfs::TmpfsFs::new(target.to_string());
+            let root: InodeRef = tfs.root_inode();
+            let fs: Arc<dyn vfs::fs::FileSystem> = tfs;
             let _ = vfs::mount::register_bind(Some(target_d.clone()), fs, root);
             let _ = vfs::mount::propagate_mount(target_d);
             0

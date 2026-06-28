@@ -700,16 +700,21 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // per-component via `TmpfsRootInode::lookup` — no whole-path
         // `FileSystem::lookup` fallback. Same shape `mount_fstype` uses for
         // userspace `mount -t tmpfs`.
-        boot_register_bind("/tmp", alloc::sync::Arc::new(fs::tmpfs::TmpfsFs),
-            alloc::sync::Arc::new(fs::tmpfs::TmpfsRootInode::new(alloc::string::String::from("/tmp"))));
+        // Each tmpfs mount is its own instance owning its own `TmpfsDir` tree
+        // under its SuperBlock (per-instance `s_dev`, no shared registry).
+        let tmp = fs::tmpfs::TmpfsFs::new(alloc::string::String::from("/tmp"));
+        let tmp_root = tmp.root_inode();
+        boot_register_bind("/tmp", tmp, tmp_root);
         // POSIX shm + systemd /run live on tmpfs. The walk crosses into them
         // by dentry identity, so paths resolve through the tmpfs root inode.
         // Without this `shm_open(3)` (which musl routes to `/dev/shm/<name>`)
         // hits DevfsFs and ENOENTs.
-        boot_register_bind("/dev/shm", alloc::sync::Arc::new(fs::tmpfs::TmpfsFs),
-            alloc::sync::Arc::new(fs::tmpfs::TmpfsRootInode::new(alloc::string::String::from("/dev/shm"))));
-        boot_register_bind("/run", alloc::sync::Arc::new(fs::tmpfs::TmpfsFs),
-            alloc::sync::Arc::new(fs::tmpfs::TmpfsRootInode::new(alloc::string::String::from("/run"))));
+        let shm = fs::tmpfs::TmpfsFs::new(alloc::string::String::from("/dev/shm"));
+        let shm_root = shm.root_inode();
+        boot_register_bind("/dev/shm", shm, shm_root);
+        let run = fs::tmpfs::TmpfsFs::new(alloc::string::String::from("/run"));
+        let run_root = run.root_inode();
+        boot_register_bind("/run", run, run_root);
         // /home from its own virtio-blk disk (serial `oxide-home`), as a
         // self-contained `Ext4Mount` (own device/cache/orphan set, never
         // aliasing the root). Graceful: a missing home disk leaves /home
