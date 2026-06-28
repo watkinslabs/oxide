@@ -908,13 +908,23 @@ pub fn mnt_want_write(m: &Mount) -> KResult<()> {
 /// `mnt_drop_write` (Linux): end a write begun by `mnt_want_write`. # C: O(1)
 pub fn mnt_drop_write(m: &Mount) { m.mnt_writers.fetch_sub(1, Ordering::AcqRel); }
 
+/// `check_mnt` (Linux `fs/namespace.c`): true iff mount `m` belongs to the
+/// CALLER's mount namespace. The uniform guard that keeps a by-id / by-fd /
+/// resolved mount handle from operating across a namespace boundary — every
+/// mount-tree op handed a mount the caller did not freshly resolve in its own
+/// ns must gate on it before acting. # C: O(1)
+pub fn check_mnt(m: &Mount) -> bool { m.ns == current_ns() }
+
 /// The mount that OWNS `path`, by dentry-identity crossing (Linux
-/// `path_lookup`), NOT a longest-`mount_point` string scan. # C: O(components)
+/// `path_lookup`), NOT a longest-`mount_point` string scan. A walk that lands
+/// on a mount in ANOTHER namespace is rejected (Linux `check_mnt`): the caller
+/// sees only its own ns's tree, so the result falls back to the caller's root
+/// mount, never the foreign mount. # C: O(components)
 pub fn resolve_mount(path: &str) -> Option<(Arc<Mount>, String)> {
     let ns = current_ns();
     let id = crate::namei::walk_to_mount(path).or_else(|| root_mount_id(ns))?;
     let m = mount_by_id(id)?;
-    if m.ns != ns { return root_mount_id(ns).and_then(mount_by_id).map(|r| (r, path.to_string())); }
+    if !check_mnt(&m) { return root_mount_id(ns).and_then(mount_by_id).map(|r| (r, path.to_string())); }
     Some((m, path.to_string()))
 }
 
