@@ -237,7 +237,11 @@ pub type DHashFn = fn(name: &str) -> u32;
 /// unicode-normalize, …). Default = byte-exact `cand.name() == name`.
 pub type DCompareFn = fn(name: &str, cand: &Dentry) -> bool;
 /// `d_revalidate`: false ⇒ the cached dentry is stale, drop + slow-path.
-pub type DRevalidateFn = fn(d: &Arc<Dentry>) -> bool;
+/// `reval` carries Linux `LOOKUP_REVAL` (the ESTALE-retry / forced
+/// revalidation flag): a fs that trusts an attribute-cache timeout on the
+/// ordinary walk must re-check against its backing store when `reval` is set
+/// (NFS/FUSE/AFS `flags & LOOKUP_REVAL`).
+pub type DRevalidateFn = fn(d: &Arc<Dentry>, reval: bool) -> bool;
 /// `d_delete`: true ⇒ on final `dput` free immediately (don't LRU-cache).
 pub type DDeleteFn = fn(d: &Dentry) -> bool;
 /// `d_release`: dentry is being freed (final `Arc` drop).

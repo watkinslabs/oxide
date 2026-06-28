@@ -285,8 +285,17 @@ pub fn d_alloc(parent: &Arc<Dentry>, name: &str) -> Arc<Dentry> {
 /// `parent`, positive OR cached-negative, via the global hash table — RCU
 /// (seqcount) read with a locked ref-walk fallback. Fires `d_op->d_revalidate`
 /// on a hit and drops a stale dentry. `None` = not cached (caller must do the
-/// slow `i_op->lookup`). # C: O(1) expected
+/// slow `i_op->lookup`). The ordinary fast-path walk (`reval == false`);
+/// `d_lookup_reval` threads Linux `LOOKUP_REVAL`. # C: O(1) expected
 pub fn d_lookup(parent: &Arc<Dentry>, name: &str) -> Option<Arc<Dentry>> {
+    d_lookup_reval(parent, name, false)
+}
+
+/// `d_lookup` with the Linux `LOOKUP_REVAL` flag threaded to the
+/// `d_op->d_revalidate` hook, so a forced-revalidation walk (`reval == true`,
+/// the ESTALE retry) re-checks a cached dentry against its backing store
+/// instead of trusting an attribute-cache timeout. # C: O(1) expected
+pub fn d_lookup_reval(parent: &Arc<Dentry>, name: &str, reval: bool) -> Option<Arc<Dentry>> {
     let qhash = Dentry::compute_hash(Some(parent), name);
     let pptr = Arc::as_ptr(parent);
     let cand = match DENTRY_HASHTABLE.lookup_rcu(pptr, qhash, name) {
@@ -305,7 +314,7 @@ pub fn d_lookup(parent: &Arc<Dentry>, name: &str) -> Option<Arc<Dentry>> {
     // two-hand-clock access stamp the shrinker honors.
     if !d.inc_count_not_dead() { return None; }
     if let Some(rev) = d.d_op().and_then(|o| o.d_revalidate) {
-        if !rev(&d) { d.dec_count(); d_drop(&d); return None; }
+        if !rev(&d, reval) { d.dec_count(); d_drop(&d); return None; }
     }
     d.dec_count();
     Some(d)
@@ -561,7 +570,7 @@ mod tests {
 
     // d_revalidate: a stale dentry is dropped on lookup.
     static STALE_OPS: DentryOps = DentryOps {
-        d_revalidate: Some(|_d| false), // everything is stale
+        d_revalidate: Some(|_d, _reval| false), // everything is stale
         d_hash: None, d_compare: None, d_delete: None, d_release: None, d_iput: None,
     };
     #[test]
