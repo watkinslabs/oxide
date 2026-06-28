@@ -177,6 +177,39 @@ pub fn shrink_dcache(target: usize) -> usize {
     freed
 }
 
+/// Prune the UNUSED dentries in the subtree under `parent` (Linux
+/// `shrink_dcache_parent`, `fs/dcache.c`) — the per-subtree counterpart of the
+/// global `shrink_dcache`, used on remount / umount of a subtree / before a
+/// populated-dir rmdir to reclaim its cached children. `parent` itself is never
+/// pruned. A descendant is prunable only when it is UNUSED (`d_count == 0`) AND
+/// has no surviving child, so an in-use leaf pins the whole path of ancestors up
+/// to `parent` (Linux: the `dget` on each path component holds the chain); the
+/// unused siblings/leaves around it are still reclaimed. Each prunable dentry is
+/// `d_drop`-ed (unhash + drop inode alias + forget from its parent's
+/// `d_subdirs`). Bounds stack depth via an explicit BFS collect; processes
+/// deepest-first so a parent observes its children's survival. Returns the count
+/// pruned. # C: O(subtree)
+pub fn shrink_dcache_parent(parent: &Arc<Dentry>) -> usize {
+    // BFS-collect the subtree (EXCLUDING `parent`); `order` is shallow→deep.
+    let mut order: Vec<Arc<Dentry>> = parent.children_snapshot();
+    let mut i = 0;
+    while i < order.len() {
+        for kid in order[i].children_snapshot() { order.push(kid); }
+        i += 1;
+    }
+    // Deepest-first: by the time a node is visited every descendant has been
+    // processed, so a `d_drop`-ed child is already gone from this node's
+    // `d_subdirs` — an empty child set means "no survivor", the prune gate.
+    let mut freed = 0;
+    for d in order.iter().rev() {
+        if d.d_count() == 0 && d.children_snapshot().is_empty() {
+            d_drop(d);
+            freed += 1;
+        }
+    }
+    freed
+}
+
 // ---------------------------------------------------------------------------
 // Primitives.
 // ---------------------------------------------------------------------------
@@ -522,6 +555,33 @@ mod tests {
         assert!(d_lookup(&r, "old").is_none());
         let hit = d_lookup(&p2, "new").unwrap();
         assert!(Arc::ptr_eq(&hit, &moved));
+    }
+
+    // shrink_dcache_parent prunes the unused subtree but pins the path to an
+    // in-use descendant.
+    #[test]
+    fn shrink_dcache_parent_prunes_unused_pins_in_use() {
+        let r = root();
+        let a = d_add(&r, "a", dir(10));
+        let b = d_add(&a, "b", dir(11));
+        let c = d_add(&b, "c", dir(12));
+        let _d = d_add(&a, "d", dir(13));
+        // Nothing held -> whole subtree under `a` pruned, `a` survives.
+        let r2 = root();
+        let a2 = d_add(&r2, "a", dir(20));
+        let b2 = d_add(&a2, "b", dir(21));
+        let _c2 = d_add(&b2, "c", dir(22));
+        assert_eq!(shrink_dcache_parent(&a2), 2);
+        assert!(a2.children_snapshot().is_empty());
+        assert!(d_lookup(&r2, "a").is_some());
+        // Pin `c` -> `b` survives, sibling `d` pruned.
+        let hold = dget(&c);
+        let freed = shrink_dcache_parent(&a);
+        assert_eq!(freed, 1, "only unused sibling d");
+        assert!(a.cached_child("b").is_some());
+        assert!(b.cached_child("c").is_some());
+        assert!(a.cached_child("d").is_none());
+        dput(hold);
     }
 
     // set_inode flips D_NEGATIVE and fires d_iput on disassociation.
