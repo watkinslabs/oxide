@@ -381,7 +381,8 @@ impl Nameidata {
             idx += 1;
             let is_final = idx == queue.len();
 
-            if comp == "." { continue; }
+            // `.` and empty segments are already dropped by `components`
+            // (single splitter in `path.rs`); only `..` and names reach here.
             if comp == ".." { self.handle_dotdot(); continue; }
 
             // LOOKUP_PARENT: stop at the last component, returning the parent
@@ -526,7 +527,7 @@ pub fn walk_to_mount(path: &str) -> Option<u64> {
     let (mut cur_dentry, mut cur_inode, mut cur_mnt) =
         follow_mount_down(root.clone(), root_mnt, ns).ok()?;
     for comp in components(path) {
-        if comp == "." { continue; }
+        // `.`/empty already dropped by `components` (single splitter, path.rs).
         if comp == ".." {
             dotdot_step(&mut cur_dentry, &mut cur_mnt, &mut cur_inode, &root, root_mnt);
             continue;
@@ -549,9 +550,18 @@ pub fn walk_to_mount(path: &str) -> Option<u64> {
     Some(cur_mnt)
 }
 
-/// Split `path` into non-empty components, preserving `.`/`..`. # C: O(len)
+/// Split `path` into the walk queue's OWNED component strings by DELEGATING to
+/// the single lexical classifier `path::components` (one splitter, no divergence):
+/// `Root` is dropped (leading `/` is handled by the walk's `to_root()`), empty
+/// and `.` segments are already skipped by `path::push_segment`, `..` and normal
+/// names survive. The queue stays owned `String`s so symlink-target expansion can
+/// splice into it mid-walk. # C: O(len)
 fn components(path: &str) -> Vec<String> {
-    path.split('/').filter(|c| !c.is_empty()).map(String::from).collect()
+    crate::path::components(path).into_iter().filter_map(|c| match c {
+        crate::path::Component::Root      => None,                  // leading '/' → walk's to_root()
+        crate::path::Component::ParentDir => Some(String::from("..")),
+        crate::path::Component::Normal(s) => Some(String::from(s)),
+    }).collect()
 }
 
 /// Resolve `path` from `start` (dirfd base / cwd) with `root` as the
