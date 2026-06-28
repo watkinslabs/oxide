@@ -69,8 +69,9 @@ pub struct LookupFlags {
     /// directory in `VfsPath` and the leaf name in `VfsPath.last_component`
     /// (the shape mknod/rename/link/create-open need).
     pub parent: bool,
-    /// RESOLVE_IN_ROOT: treat `root` as "/" for absolute restarts + `..`
-    /// (`..` and absolute symlink targets are confined to `root`).
+    /// RESOLVE_IN_ROOT: treat the START directory (dirfd) as "/" — `..`,
+    /// absolute paths, and absolute symlink targets are all confined to it,
+    /// overriding the passed resolution `root` (Linux `nd->root = nd->path`).
     pub in_root: bool,
     /// RESOLVE_NO_MAGICLINKS: magic links (`/proc/self/fd/N`, …) → ELOOP.
     /// The magic-link reopen lives at the open/dup layer (`path::dup_fd_target`),
@@ -335,8 +336,13 @@ impl Nameidata {
     pub fn new(start: Arc<Dentry>, root: Arc<Dentry>, flags: LookupFlags, cred: Cred) -> KResult<Self> {
         let ns = crate::mount::current_ns();
         let base_mnt = crate::mount::root_mount_id(ns).unwrap_or(crate::mount::MNT_ID_NONE);
-        let (root_dentry, _ri, root_mnt_id) = follow_mount_down(root, base_mnt, ns)?;
+        let (mut root_dentry, _ri, mut root_mnt_id) = follow_mount_down(root, base_mnt, ns)?;
         let (cur_dentry, cur_inode, cur_mnt_id) = follow_mount_down(start, root_mnt_id, ns)?;
+        // RESOLVE_IN_ROOT (openat2): the dirfd (START) becomes the resolution
+        // root, so `to_root()` (absolute paths / absolute symlink restarts) and
+        // `dotdot_step` (`..` clamp) all confine to it, overriding the passed
+        // `root` (Linux sets `nd->root = nd->path` for LOOKUP_IS_SCOPED+IN_ROOT).
+        if flags.in_root { root_dentry = cur_dentry.clone(); root_mnt_id = cur_mnt_id; }
         Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, depth: 0, flags, cred })
     }
 
