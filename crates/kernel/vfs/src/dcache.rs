@@ -413,13 +413,15 @@ pub fn dget(d: &Arc<Dentry>) -> Arc<Dentry> { d.inc_count(); Arc::clone(d) }
 pub fn dput(d: Arc<Dentry>) {
     if d.dec_count() == 0 {
         let delete = d.d_op().and_then(|o| o.d_delete).map(|f| f(&d)).unwrap_or(false);
-        // Linux `retain_dentry`: only a HASHED (cacheable) dentry is retained on
-        // the LRU for the shrinker. An unhashed dentry — every anon-inode fd
-        // (pipe/eventfd/signalfd/socket/memfd), or one already `d_drop`-ed by
-        // unlink — is killed at count 0 instead, so it never leaks a dangling
-        // `Weak` into the (currently un-driven, D10) LRU. `d_delete` forces the
-        // same immediate eviction for pseudo-fs that opt in.
-        if delete || !d.is_hashed() { dentry_kill(&d); } else { lru_add(&d); }
+        // Linux `retain_dentry`: only a HASHED (cacheable) dentry that is NOT
+        // marked `DCACHE_DONTCACHE` is retained on the LRU for the shrinker. An
+        // unhashed dentry — every anon-inode fd (pipe/eventfd/signalfd/socket/
+        // memfd), or one already `d_drop`-ed by unlink — is killed at count 0
+        // instead, so it never leaks a dangling `Weak` into the (currently
+        // un-driven, D10) LRU. `d_delete` forces the same immediate eviction for
+        // pseudo-fs that opt in; `DCACHE_DONTCACHE` (from an `I_DONTCACHE` inode)
+        // forces it for a hashed dentry the fs wants evicted promptly.
+        if delete || !d.is_hashed() || d.is_dontcache() { dentry_kill(&d); } else { lru_add(&d); }
     }
     drop(d);
 }

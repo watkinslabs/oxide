@@ -31,6 +31,12 @@ pub const D_HASHED:     u32 = 0x0004; // present in the global dentry_hashtable
 pub const D_REFERENCED: u32 = 0x0008; // recently used — LRU two-hand-clock bit
 pub const D_LRU:        u32 = 0x0010; // currently linked on the dcache LRU
 pub const D_DISCONNECTED: u32 = 0x0020; // anonymous (parentless) alias, on s_anon
+/// Drop this dentry the instant it goes unused — Linux `DCACHE_DONTCACHE`
+/// (`d_mark_dontcache`, propagated from `I_DONTCACHE`). `retain_dentry` returns
+/// false for it, so the final `dput` `dentry_kill`s instead of LRU-caching;
+/// repeated lookups of a `DONTCACHE` name therefore never accumulate idle
+/// dentries (DAX / on-demand fs that want their inodes evicted promptly).
+pub const D_DONTCACHE:  u32 = 0x1000;
 
 // ---------------------------------------------------------------------------
 // DCACHE_OP_* — `d_op` presence cache, stamped into `d_flags` at construction
@@ -623,6 +629,13 @@ impl Dentry {
     /// parentless, no path, on the SB's `s_anon` list (Linux `d_obtain_alias`).
     /// # C: O(1)
     pub fn is_disconnected(&self) -> bool { self.flags() & D_DISCONNECTED != 0 }
+
+    /// Mark/clear "drop when unused" (Linux `d_mark_dontcache` sets the bit on
+    /// every alias of an `I_DONTCACHE` inode). # C: O(1)
+    pub fn set_dontcache(&self, on: bool) { self.set_flag(D_DONTCACHE, on); }
+    /// True iff `D_DONTCACHE` — the final `dput` must kill, not LRU-cache, this
+    /// dentry (Linux `retain_dentry` returns false). # C: O(1)
+    pub fn is_dontcache(&self) -> bool { self.flags() & D_DONTCACHE != 0 }
 
     /// Replace the `DCACHE_ENTRY_TYPE` field with `bits` (one of `D_*_TYPE`),
     /// preserving every other `d_flags` bit. Linux `__d_set_inode_and_type`.
