@@ -158,6 +158,7 @@ name = "devfs"
 version = "0.1.0"
 dependencies = [
  "hal",
+ "kernfs",
  "klog",
  "sync",
  "vfs",
@@ -663,6 +664,16 @@ version = "0.1.0"
 dependencies = [
  "boot-x86_64",
  "klog",
+]
+
+[[package]]
+name = "kernfs"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+ "sync",
+ "vfs",
 ]
 
 [[package]]
