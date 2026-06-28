@@ -778,6 +778,17 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
 fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
     -> Result<(), vmm::Error>
 {
+    // debug-cow item 2: task-struct integrity. Validate the running task's
+    // head fields on every fault entry (the cheapest place that already has
+    // `current()`); a clobbered struct head (the sched task corruption
+    // candidate) surfaces as [TASK-CORRUPT]. The task struct is sched-owned,
+    // so we hand its already-read `tid` + `name` fat-pointer to the detector
+    // rather than add a magic field across the crate boundary. No-op off.
+    #[cfg(feature = "debug-cow")]
+    if let Some(t) = sched::current() {
+        let n = t.name;
+        vmm::debug_cow::check_task(t.tid, n.as_ptr() as u64, n.len() as u64);
+    }
     // F158: stack auto-grow. If the fault lands just below a
     // GROWSDOWN VMA's start (within Linux's 64 KiB guard distance),
     // extend the VMA to cover the faulting address. Subsequent
