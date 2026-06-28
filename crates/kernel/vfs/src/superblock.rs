@@ -229,6 +229,13 @@ struct IcacheEntry {
     aliases: Vec<Weak<Dentry>>,
     /// `i_state` (`I_NEW`/`I_DIRTY`/`I_FREEING`).
     state:   u32,
+    /// `i_nlink` (Linux `inode->__i_nlink`) — the inode's authoritative hard-link
+    /// count. The trait-object inode carries no shared count field, so the live
+    /// link count lives icache-side here, seeded from `Inode::nlink()` when the
+    /// slot is built and thereafter maintained by `set_nlink`/`inc_nlink`/
+    /// `drop_nlink`. A drop to `0` is the Linux "no names left → evict on last
+    /// `iput`" predicate (`i_nlink == 0`).
+    nlink:   u32,
 }
 
 impl SuperBlock {
@@ -355,7 +362,9 @@ impl SuperBlock {
         let aliases = c.get(&ino).map(|e| {
             e.aliases.iter().filter(|w| w.upgrade().is_some()).cloned().collect::<Vec<_>>()
         }).unwrap_or_default();
-        c.insert(ino, IcacheEntry { inode: Arc::downgrade(&inode), aliases, state: I_NEW });
+        c.insert(ino, IcacheEntry {
+            inode: Arc::downgrade(&inode), aliases, state: I_NEW, nlink: inode.nlink(),
+        });
         if let Some(e) = c.get_mut(&ino) { e.state &= !I_NEW; } // unlock_new_inode
         inode
     }
@@ -386,6 +395,47 @@ impl SuperBlock {
         self.i_state(ino) & (I_FREEING | I_WILL_FREE) != 0
     }
 
+    /// `inode->i_nlink` — the cached hard-link count for `ino`. `None` if the
+    /// inode is not cached. The slot is seeded from `Inode::nlink()` when built,
+    /// then maintained by [`Self::set_nlink`]/[`Self::inc_nlink`]/
+    /// [`Self::drop_nlink`]. A `Some(0)` result is the Linux evict predicate
+    /// (`i_nlink == 0`): the inode has no remaining names and is freed on its
+    /// last `iput`. # C: O(log N_ino)
+    pub fn i_nlink(&self, ino: Ino) -> Option<u32> {
+        self.icache.lock().get(&ino).map(|e| e.nlink)
+    }
+
+    /// True iff `ino` is an eviction candidate — cached with `i_nlink == 0`
+    /// (Linux `iput_final` drops/evicts an inode whose last reference goes while
+    /// `i_nlink == 0`). `false` for an uncached ino. # C: O(log N_ino)
+    pub fn i_nlink_zero(&self, ino: Ino) -> bool {
+        self.i_nlink(ino) == Some(0)
+    }
+
+    /// `set_nlink` (Linux fs/inode.c): set `ino`'s stored link count to `nlink`.
+    /// `0` clears it to the dead state (Linux `clear_nlink`); a nonzero value
+    /// directly installs the count, including the legitimate `0 → 1` revival some
+    /// filesystems perform. No-op if uncached. # C: O(log N_ino)
+    pub fn set_nlink(&self, ino: Ino, nlink: u32) {
+        if let Some(e) = self.icache.lock().get_mut(&ino) { e.nlink = nlink; }
+    }
+
+    /// `inc_nlink` (Linux fs/inode.c): add one hard link to `ino`'s stored count,
+    /// reviving a `0`-count inode (the O_TMPFILE `linkat` `I_LINKABLE` case). The
+    /// count saturates rather than wrapping. No-op if uncached. # C: O(log N_ino)
+    pub fn inc_nlink(&self, ino: Ino) {
+        if let Some(e) = self.icache.lock().get_mut(&ino) { e.nlink = e.nlink.saturating_add(1); }
+    }
+
+    /// `drop_nlink` (Linux fs/inode.c): remove one hard link from `ino`'s stored
+    /// count. Reaching `0` makes the inode an eviction candidate (observable via
+    /// [`Self::i_nlink_zero`] / [`Self::i_nlink`]). Saturates at `0` rather than
+    /// underflowing (Linux WARNs on a drop below zero; the count never wraps).
+    /// No-op if uncached. # C: O(log N_ino)
+    pub fn drop_nlink(&self, ino: Ino) {
+        if let Some(e) = self.icache.lock().get_mut(&ino) { e.nlink = e.nlink.saturating_sub(1); }
+    }
+
     /// `mark_inode_dirty` (Linux `__mark_inode_dirty`): OR the requested
     /// `I_DIRTY_*` bits into `ino`'s state. `flags` is masked to `I_DIRTY` so a
     /// caller cannot smuggle a lifecycle bit (`I_NEW`/`I_FREEING`/…) through the
@@ -410,7 +460,7 @@ impl SuperBlock {
         let ino = inode.ino();
         let mut c = self.icache.lock();
         let e = c.entry(ino).or_insert_with(|| IcacheEntry {
-            inode: Arc::downgrade(inode), aliases: Vec::new(), state: 0,
+            inode: Arc::downgrade(inode), aliases: Vec::new(), state: 0, nlink: inode.nlink(),
         });
         if e.inode.upgrade().is_none() { e.inode = Arc::downgrade(inode); }
         e.aliases.retain(|w| match w.upgrade() { Some(a) => !Arc::ptr_eq(&a, d), None => false });
