@@ -161,6 +161,22 @@ fn dup_fd_target_proc_self_and_pid_fd() {
 }
 
 #[test]
+fn dup_fd_target_execve_magic_fd_forms() {
+    // execve("/proc/self/fd/N") and execveat(fd,"",AT_EMPTY_PATH) (the
+    // latter synthesises "/proc/self/fd/<dirfd>") both route through
+    // dup_fd_target so the exec loader reads the OPEN file description's
+    // backing inode — the only way a sealed memfd (whose d_path can't be
+    // re-resolved) is exec-able, matching Linux do_execveat_common.
+    use crate::path::dup_fd_target;
+    // The exact strings execve / execveat hand the loader.
+    assert_eq!(dup_fd_target("/proc/self/fd/3"),  Some((None, 3)));
+    assert_eq!(dup_fd_target("/proc/self/fd/17"), Some((None, 17)));
+    assert_eq!(dup_fd_target("/dev/fd/3"),        Some((None, 3)));
+    // Per-pid form (/proc/<pid>/fd/<n>) is exec-able too.
+    assert_eq!(dup_fd_target("/proc/42/fd/3"),    Some((Some(42), 3)));
+}
+
+#[test]
 fn dup_fd_target_rejects_non_fd_links() {
     use crate::path::dup_fd_target;
     // Real device + regular paths must resolve via the normal walk.

@@ -128,10 +128,32 @@ pub fn d_delete_path(abs: &str) {
 /// a regular file.
 /// # C: O(components) + O(size/PAGE)
 pub fn read_exec(path: &[u8]) -> Option<alloc::vec::Vec<u8>> {
-    if root_dentry().is_none() { return None; }       // pre-mount: caller falls back
     let s = core::str::from_utf8(path).ok()?;
     let abs = resolve_cwd(s);
+    // Magic fd-link exec: `/proc/{self|<pid>}/fd/<n>`, `/dev/fd/<n>`,
+    // `/dev/std{in,out,err}` exec the OPEN file description's backing
+    // inode directly — mirroring open(2)'s `dup_fd_target` fast-path
+    // (`open_common::dup_fd_target` → `proc_fd_file`). Linux
+    // `do_execveat_common` execs a `struct file`, never a path re-resolve;
+    // a sealed memfd's d_path (`/memfd:NAME (deleted)`) can never
+    // re-resolve, so the per-component walk below would wrongly return
+    // ENOENT. fd-based load is also valid pre-mount (no root dentry yet).
+    if let Some((tid_opt, fd)) = vfs::path::dup_fd_target(&abs) {
+        let file = sched::proclink::proc_fd_file(tid_opt, fd)?;
+        return read_exec_inode(file.inode());
+    }
+    if root_dentry().is_none() { return None; }       // pre-mount: caller falls back
     let inode = resolve_path(abs.as_str(), false)?.inode;        // execve follows symlinks
+    read_exec_inode(&inode)
+}
+
+/// Read a regular-file inode's full contents (the exec read loop). Shared
+/// by `read_exec`'s path walk and its magic-fd fast-path so the byte read
+/// is identical whether the executable came from a pathname or an open
+/// file description (memfd / `/proc/self/fd/N` / `fexecve`). `None` if the
+/// inode isn't a regular file or a read errors mid-stream.
+/// # C: O(size/PAGE)
+pub fn read_exec_inode(inode: &vfs::InodeRef) -> Option<alloc::vec::Vec<u8>> {
     if inode.file_type() != vfs::FileType::Regular { return None; }
     let total = inode.size() as usize;
     let mut out = alloc::vec::Vec::with_capacity(total);

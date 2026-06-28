@@ -40,11 +40,24 @@ pub fn sys_execveat(args: &SyscallArgs) -> i64 {
         let fdt = match unsafe { cur.fd_table_ref() } {
             Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
         };
-        let f = match fdt.get(dirfd) {
-            Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
-        };
-        let kpath = f.dentry().absolute_path();
-        if kpath.is_empty() { return -(Errno::Enoent.as_i32() as i64); }
+        // EBADF for a bad dirfd before exec (Linux fexecve contract).
+        if fdt.get(dirfd).is_err() { return -(Errno::Ebadf.as_i32() as i64); }
+        // fexecve(fd): exec the fd's backing inode DIRECTLY, never by
+        // re-resolving a pathname. Route through the magic-fd loader path
+        // by handing execve_inner `/proc/self/fd/<dirfd>`: `read_exec`'s
+        // `dup_fd_target` fast-path then loads the open file description's
+        // inode (`proc_fd_file`). This is the only way a sealed memfd is
+        // exec-able — its synthetic d_path (`/memfd:NAME (deleted)`) can
+        // never re-resolve on any filesystem (Linux do_open_execat uses
+        // the fd's file for AT_EMPTY_PATH, not a path walk).
+        let mut kpath = alloc::vec::Vec::new();
+        kpath.extend_from_slice(b"/proc/self/fd/");
+        {
+            use core::fmt::Write as _;
+            let mut n = alloc::string::String::new();
+            let _ = write!(n, "{}", dirfd);
+            kpath.extend_from_slice(n.as_bytes());
+        }
         // Synthesise SyscallArgs where execve_inner sees argv/envp
         // in their familiar slots (a1, a2).
         let sa = SyscallArgs { a0: 0, a1: argv, a2: envp, a3: 0, a4: 0, a5: 0 };
