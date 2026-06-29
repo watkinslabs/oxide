@@ -53,6 +53,13 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     let to_raw = match read_user_path(to_ptr) {
         Ok(s) => s, Err(rv) => return rv,
     };
+    // D26: Linux do_renameat2 rejects a `.`/`..`/root final component on either
+    // side with EBUSY (only LAST_NORM is renameable) — checked on the raw path
+    // before resolution normalises the dots away.
+    if crate::namei_common::rename_component_busy(&from_raw)
+        || crate::namei_common::rename_component_busy(&to_raw) {
+        return -(Errno::Ebusy.as_i32() as i64);
+    }
     // BUG D follow-up: resolve each side against its dirfd (renameat).
     let f = match crate::pathresolve::resolve_at_result(from_dirfd, &from_raw) {
         Ok(rp) => rp, Err(rv) => return rv,
@@ -60,6 +67,13 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     let t = match crate::pathresolve::resolve_at_result(to_dirfd, &to_raw) {
         Ok(rp) => rp, Err(rv) => return rv,
     };
+    // D26: an attempt to make a directory a subdirectory of itself → EINVAL
+    // (Linux is_subdir / d_ancestor). `t` strictly under `f` ⇒ `t` == `f` + "/…".
+    if f != "/" {
+        if let Some(rest) = t.strip_prefix(f.as_str()) {
+            if rest.starts_with('/') { return -(Errno::Einval.as_i32() as i64); }
+        }
+    }
     // RENAME_NOREPLACE: fail with EEXIST if the target already exists
     // (mv -n, dpkg atomic installs). Pre-check before the backend rename,
     // which would otherwise silently overwrite → data loss.

@@ -45,8 +45,14 @@ pub(crate) fn readlink_resolved_path(path_s: &str, buf_ptr: u64, bufsize: u64) -
         else if let Some(inode) = crate::pathresolve::resolve(path_s, true) {
             match inode.get_link() { Ok(v) => v, Err(_) => return -(Errno::Einval.as_i32() as i64) }
         } else { return -(Errno::Enoent.as_i32() as i64); };
+    write_link_target(&target, buf_ptr, bufsize)
+}
+
+/// Copy a symlink target into the caller's `buf` (truncated to `bufsize`),
+/// returning the byte count — shared by `readlink`/`readlinkat`. # C: O(n)
+pub(crate) fn write_link_target(target: &[u8], buf_ptr: u64, bufsize: u64) -> i64 {
     let n = (target.len() as u64).min(bufsize) as usize;
-    // SAFETY: buf range validated < USER_VA_END; CPL=0 writes through caller's AS.
+    // SAFETY: buf range validated < USER_VA_END by the caller; CPL=0 writes through caller's AS.
     unsafe {
         for i in 0..n {
             core::ptr::write_volatile((buf_ptr + i as u64) as *mut u8, target[i]);
