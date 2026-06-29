@@ -52,6 +52,16 @@ bitflags::bitflags! {
         const EXEC   = 0x0000_0020;
         /// FMODE_PATH — O_PATH descriptor (no read/write, fd-ref only).
         const PATH   = 0x0000_4000;
+        /// FMODE_OPENED — `do_dentry_open` reached the point past `f_op->open`
+        /// (the description is fully opened). Linux `(1 << 19)`.
+        const OPENED  = 0x0008_0000;
+        /// FMODE_CREATED — this open CREATED the file (`O_CREAT` hit the
+        /// negative-dentry path), distinguishing create-vs-existing for events
+        /// / audit after the open returns. Linux `(1 << 20)`.
+        const CREATED = 0x0010_0000;
+        /// FMODE_NONOTIFY — suppress fsnotify events on this description
+        /// (fanotify's own fds avoid self-notification loops). Linux `(1 << 26)`.
+        const NONOTIFY = 0x0400_0000;
     }
 }
 
@@ -229,117 +239,137 @@ pub fn set_drop_hook(f: fn(usize, &InodeRef)) {
     FLOCK_RELEASE_HOOK.store(f as u64, Ordering::Release);
 }
 
-/// Kernel-side write hook called from `File::write` after a successful
-/// inode write. Used by the inotify subsystem to fire IN_MODIFY events.
-/// `0` = no hook installed.
-static WRITE_HOOK: AtomicU64 = AtomicU64::new(0);
+/// Close-hook slot count per `16§R02`. Multiple subsystems register a
+/// close hook (inotify IN_CLOSE_*, pipe writer/reader-count tracking,
+/// posix-lock cleanup, ext4 orphan reap); every occupied slot fires in
+/// `File::Drop`. Fixed N=4 covers the in-kernel consumers; extend if a new
+/// one arrives.
+const CLOSE_HOOK_SLOTS: usize = 4;
 
-/// Install the post-write hook used by inotify(7) to fire IN_MODIFY.
-/// # C: O(1)
-pub fn set_write_hook(f: fn(&InodeRef)) {
-    WRITE_HOOK.store(f as u64, Ordering::Release);
+/// D30: typed inotify/fsnotify + pipe-accounting hook registry. Replaces the
+/// old per-slot transmuted `AtomicU64` storage (every load reinterpreted a
+/// `u64` as a `fn` of an assumed signature via `core::mem::transmute`). Each
+/// entry is now a typed `Option<fn(..)>` carrying its exact signature, so
+/// installing AND firing a hook needs NO transmute — the compiler checks the
+/// call. Hooks are installed once at boot (inotify / pipe / posix-lock / ext4
+/// rootfs modules); the data path copies the relevant `Option<fn>` out under
+/// the registry lock, RELEASES it, then calls, so no foreign hook ever runs
+/// while the lock is held. # C: O(1) per fire (+ short critical section)
+#[derive(Copy, Clone)]
+struct InodeHooks {
+    /// IN_OPEN — fired at `File::new_at` (Linux `fsnotify_open`).
+    open:  Option<fn(&InodeRef)>,
+    /// IN_ACCESS — fired after a `read` returns >0 (Linux `fsnotify_access`).
+    read:  Option<fn(&InodeRef)>,
+    /// IN_MODIFY — fired after a `write` returns >0 (Linux `fsnotify_modify`).
+    write: Option<fn(&InodeRef)>,
+    /// Per-reference clone (fork_clone / dup / dup2): pipe writer-count++.
+    /// `bool` = opened-writable.
+    clone: Option<fn(&InodeRef, bool)>,
+    /// IN_CLOSE_* + pipe close accounting, fired in `File::Drop`. Multiple
+    /// subsystems register; every occupied slot fires. `bool` = was-writable.
+    close: [Option<fn(&InodeRef, bool)>; CLOSE_HOOK_SLOTS],
+    /// IN_CREATE — dirent created in a watched parent. Args: (parent, leaf).
+    dirent_create: Option<fn(&str, &str)>,
+    /// IN_DELETE — dirent removed from a watched parent. Args: (parent, leaf).
+    dirent_delete: Option<fn(&str, &str)>,
 }
 
-static OPEN_HOOK:  AtomicU64 = AtomicU64::new(0);
-static READ_HOOK:  AtomicU64 = AtomicU64::new(0);
+impl InodeHooks {
+    /// # C: O(1)
+    const fn new() -> Self {
+        Self { open: None, read: None, write: None, clone: None,
+               close: [None; CLOSE_HOOK_SLOTS], dirent_create: None, dirent_delete: None }
+    }
+}
 
-/// Close-hook slot table per `16§R02`. Multiple subsystems register
-/// here (inotify IN_CLOSE_*, pipe writer/reader-count tracking, …);
-/// every slot fires in `File::Drop`. Fixed N=4 covers the in-kernel
-/// subsystems we have; extend if a new consumer arrives.
-const CLOSE_HOOK_SLOTS: usize = 4;
-static CLOSE_HOOKS: [AtomicU64; CLOSE_HOOK_SLOTS] =
-    [const { AtomicU64::new(0) }; CLOSE_HOOK_SLOTS];
+/// Lock class for the typed hook registry. Taken standalone — the fire path
+/// copies the `Option<fn>` out and releases the lock BEFORE calling, so it
+/// never nests under the inode / pos / ra locks. # C: O(1)
+struct HookReg;
+impl sync::LockClass for HookReg { fn rank() -> u16 { 33 } }
 
-/// Install the open hook (fires IN_OPEN at File::new).
-/// # C: O(1)
-pub fn set_open_hook(f: fn(&InodeRef))  { OPEN_HOOK.store(f as u64, Ordering::Release); }
+static HOOKS: Spinlock<InodeHooks, HookReg> = Spinlock::new(InodeHooks::new());
 
-/// Install the read hook (fires IN_ACCESS after File::read returns >0).
-/// # C: O(1)
-pub fn set_read_hook(f: fn(&InodeRef))  { READ_HOOK.store(f as u64, Ordering::Release); }
+/// Install the open hook (fires IN_OPEN at `File::new_at`). # C: O(1)
+pub fn set_open_hook(f: fn(&InodeRef))  { HOOKS.lock().open = Some(f); }
 
-/// Install a close hook (fires at `File::Drop`). Bool argument is
-/// true when the closed File was opened writable. Picks the next
-/// free slot in the registry; panics if full so misconfiguration
-/// is loud rather than silent.
-/// # C: O(N) slot scan; N=4 fixed.
+/// Install the read hook (fires IN_ACCESS after `File::read` returns >0). # C: O(1)
+pub fn set_read_hook(f: fn(&InodeRef))  { HOOKS.lock().read = Some(f); }
+
+/// Install the post-write hook used by inotify(7) to fire IN_MODIFY. # C: O(1)
+pub fn set_write_hook(f: fn(&InodeRef)) { HOOKS.lock().write = Some(f); }
+
+/// Install a close hook (fires at `File::Drop`; `bool` = opened-writable).
+/// Takes the next free slot; panics if the table is full so a misconfiguration
+/// is loud rather than silent. # C: O(N) slot scan, N=4 fixed.
 pub fn set_close_hook(f: fn(&InodeRef, bool)) {
-    for slot in CLOSE_HOOKS.iter() {
-        if slot.compare_exchange(0, f as u64, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-            return;
-        }
+    let mut h = HOOKS.lock();
+    for slot in h.close.iter_mut() {
+        if slot.is_none() { *slot = Some(f); return; }
     }
     hal::kassert!(false, "CLOSE_HOOKS table full");
 }
 
-/// Clone-hook slot: fires when a Fd-table reference to an existing
-/// File is duplicated (fork_clone, dup, dup2). Conceptually mirrors
-/// CLOSE_HOOKS — every "open count++" event has a matching "open
-/// count--" on close. Without this, fork_clone bumps the Arc<File>
-/// refcount but the pipe writer/reader counts stay at 1; closing
-/// the original drops the Arc to 1 (File alive), no close hook fires,
-/// pipe POLL_HUP never propagates. F205. Bool: writable flag, same
-/// convention as the close hook.
-static CLONE_HOOK: AtomicU64 = AtomicU64::new(0);
-/// # C: O(1)
-pub fn set_clone_hook(f: fn(&InodeRef, bool)) {
-    CLONE_HOOK.store(f as u64, Ordering::Release);
-}
-/// Fire the clone hook for a File reference being duplicated. Caller
-/// is fork_clone / dup / dup2 right after the Arc::clone — they have
-/// already produced the new reference; we just announce it to any
-/// subscriber that tracks per-reference state (e.g. pipe writer count).
-/// # C: O(1)
+/// Install the clone hook (fires when an fd-table reference to a `File` is
+/// duplicated: fork_clone / dup / dup2). Every "open count++" event thus has a
+/// matching close-hook "open count--". Without it, fork_clone bumps the
+/// `Arc<File>` refcount but the pipe writer/reader counts stay at 1; closing
+/// the original drops the Arc to 1 (File alive), no close hook fires, pipe
+/// POLL_HUP never propagates. F205. `bool` = opened-writable. # C: O(1)
+pub fn set_clone_hook(f: fn(&InodeRef, bool)) { HOOKS.lock().clone = Some(f); }
+
+/// Fire the clone hook for a `File` reference being duplicated. The caller
+/// (fork_clone / dup / dup2) has already produced the new `Arc<File>`
+/// reference; this announces it to any subscriber tracking per-reference state
+/// (e.g. the pipe writer count). # C: O(1)
 pub fn fire_clone_hook(file: &File) {
-    let h = CLONE_HOOK.load(Ordering::Acquire);
-    if h == 0 { return; }
-    let was_writable = {
-        let bits = file.flags.load(Ordering::Acquire);
-        let f = OpenFlags::from_bits_retain(bits);
-        f.contains(OpenFlags::O_WRONLY) || f.contains(OpenFlags::O_RDWR)
-    };
-    // SAFETY: h was installed by `set_clone_hook` with the documented signature.
-    let f: fn(&InodeRef, bool) = unsafe { core::mem::transmute(h) };
-    f(&file.inode, was_writable);
+    let h = HOOKS.lock().clone;
+    if let Some(f) = h {
+        let was_writable = {
+            let bits = file.flags.load(Ordering::Acquire);
+            let fl = OpenFlags::from_bits_retain(bits);
+            fl.contains(OpenFlags::O_WRONLY) || fl.contains(OpenFlags::O_RDWR)
+        };
+        f(&file.inode, was_writable);
+    }
 }
 
-/// Dirent-mutation hooks per `16§R02`. Fired by devfs / tmpfs path-
-/// registry mutations so inotify watches on the parent directory
-/// can dispatch IN_CREATE / IN_DELETE / IN_MOVED with the new dirent
-/// name. Args: (parent_path, leaf_name).
-static DIRENT_CREATE_HOOK: AtomicU64 = AtomicU64::new(0);
-static DIRENT_DELETE_HOOK: AtomicU64 = AtomicU64::new(0);
+/// Install the dirent-create hook (fires IN_CREATE; args (parent, leaf)).
+/// Fired by devfs / tmpfs path-registry mutations so inotify watches on the
+/// parent directory can dispatch IN_CREATE. # C: O(1)
+pub fn set_dirent_create_hook(f: fn(&str, &str)) { HOOKS.lock().dirent_create = Some(f); }
+/// Install the dirent-delete hook (fires IN_DELETE; args (parent, leaf)). # C: O(1)
+pub fn set_dirent_delete_hook(f: fn(&str, &str)) { HOOKS.lock().dirent_delete = Some(f); }
 
-/// # C: O(1)
-pub fn set_dirent_create_hook(f: fn(&str, &str)) {
-    DIRENT_CREATE_HOOK.store(f as u64, Ordering::Release);
-}
-/// # C: O(1)
-pub fn set_dirent_delete_hook(f: fn(&str, &str)) {
-    DIRENT_DELETE_HOOK.store(f as u64, Ordering::Release);
-}
-
-/// Fire the dirent-create hook (no-op when not installed).
-/// # C: O(1)
+/// Fire the dirent-create hook (no-op when not installed). # C: O(1)
 pub fn fire_dirent_create(parent: &str, leaf: &str) {
-    let h = DIRENT_CREATE_HOOK.load(Ordering::Acquire);
-    if h == 0 { return; }
-    // SAFETY: h was installed by `set_dirent_create_hook` with the
-    // documented signature.
-    let f: fn(&str, &str) = unsafe { core::mem::transmute(h) };
-    f(parent, leaf);
+    let h = HOOKS.lock().dirent_create;
+    if let Some(f) = h { f(parent, leaf); }
 }
 
-/// Fire the dirent-delete hook (no-op when not installed).
-/// # C: O(1)
+/// Fire the dirent-delete hook (no-op when not installed). # C: O(1)
 pub fn fire_dirent_delete(parent: &str, leaf: &str) {
-    let h = DIRENT_DELETE_HOOK.load(Ordering::Acquire);
-    if h == 0 { return; }
-    // SAFETY: h was installed by `set_dirent_delete_hook` with the
-    // documented signature.
-    let f: fn(&str, &str) = unsafe { core::mem::transmute(h) };
-    f(parent, leaf);
+    let h = HOOKS.lock().dirent_delete;
+    if let Some(f) = h { f(parent, leaf); }
+}
+
+/// Fire the IN_OPEN hook (no-op when not installed). # C: O(1)
+fn fire_open_hook(inode: &InodeRef) {
+    let h = HOOKS.lock().open;
+    if let Some(f) = h { f(inode); }
+}
+
+/// Fire the IN_ACCESS hook (no-op when not installed). # C: O(1)
+fn fire_read_hook(inode: &InodeRef) {
+    let h = HOOKS.lock().read;
+    if let Some(f) = h { f(inode); }
+}
+
+/// Fire the IN_MODIFY hook (no-op when not installed). # C: O(1)
+fn fire_write_hook(inode: &InodeRef) {
+    let h = HOOKS.lock().write;
+    if let Some(f) = h { f(inode); }
 }
 
 /// SIGIO delivery hook (Linux `send_sigio`/`kill_pid_info`): installed at boot
@@ -441,12 +471,11 @@ impl Drop for File {
             let f = OpenFlags::from_bits_retain(bits);
             f.contains(OpenFlags::O_WRONLY) || f.contains(OpenFlags::O_RDWR)
         };
-        for slot in CLOSE_HOOKS.iter() {
-            let h = slot.load(Ordering::Acquire);
-            if h == 0 { continue; }
-            // SAFETY: slot value installed via set_close_hook with the documented fn(&InodeRef, bool) signature; reinterpret round-trips that exact type.
-            let f: fn(&InodeRef, bool) = unsafe { core::mem::transmute(h) };
-            f(&self.inode, was_writable);
+        // Copy the close-hook slots out under the registry lock, release it,
+        // then fire each — no foreign hook runs while the lock is held.
+        let close = HOOKS.lock().close;
+        for slot in close.iter() {
+            if let Some(f) = slot { f(&self.inode, was_writable); }
         }
         // Last-close release per Linux `file_operations->release`: a
         // File == one open file description; dup'd fds share this Arc,
@@ -495,12 +524,7 @@ impl File {
         mnt_id: u64,
         cred: Cred,
     ) -> Arc<Self> {
-        let h = OPEN_HOOK.load(Ordering::Acquire);
-        if h != 0 {
-            // SAFETY: h was installed by `set_open_hook` with a real fn(&InodeRef) pointer.
-            let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
-            f(&inode);
-        }
+        fire_open_hook(&inode);
         let mut f_mode = fmode_from_flags(flags);
         // FMODE_LSEEK/PREAD/PWRITE (Linux `do_dentry_open`): a seekable backing
         // (anything but a streaming pipe/socket/fifo) carries a real cursor +
@@ -816,12 +840,7 @@ impl File {
         self.pos.store(pos + n as u64, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         if n > 0 {
-            let h = READ_HOOK.load(Ordering::Acquire);
-            if h != 0 {
-                // SAFETY: h was installed by `set_read_hook` with a real fn(&InodeRef) pointer.
-                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
-                f(&self.inode);
-            }
+            fire_read_hook(&self.inode);
         }
         Ok(n)
     }
@@ -861,12 +880,7 @@ impl File {
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         // inotify IN_MODIFY hook (no-op when nothing installed).
         if n > 0 {
-            let h = WRITE_HOOK.load(Ordering::Acquire);
-            if h != 0 {
-                // SAFETY: h was installed by `set_write_hook` with a real fn(&InodeRef) pointer; the cast back to that signature is the documented-shape contract.
-                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
-                f(&self.inode);
-            }
+            fire_write_hook(&self.inode);
         }
         Ok(n)
     }
@@ -931,12 +945,7 @@ impl File {
             self.f_op.read(&self.inode, off as u64, buf)?
         };
         if n > 0 {
-            let h = READ_HOOK.load(Ordering::Acquire);
-            if h != 0 {
-                // SAFETY: h was installed by `set_read_hook` with a real fn(&InodeRef) pointer.
-                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
-                f(&self.inode);
-            }
+            fire_read_hook(&self.inode);
         }
         Ok(n)
     }
@@ -976,12 +985,7 @@ impl File {
             self.f_op.write(&self.inode, pos, buf)?
         };
         if n > 0 {
-            let h = WRITE_HOOK.load(Ordering::Acquire);
-            if h != 0 {
-                // SAFETY: h was installed by `set_write_hook` with a real fn(&InodeRef) pointer.
-                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
-                f(&self.inode);
-            }
+            fire_write_hook(&self.inode);
         }
         Ok(n)
     }
@@ -1030,12 +1034,7 @@ impl File {
         self.pos.store(pos + total, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         if total > 0 {
-            let h = READ_HOOK.load(Ordering::Acquire);
-            if h != 0 {
-                // SAFETY: h was installed by `set_read_hook` with a real fn(&InodeRef) pointer.
-                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
-                f(&self.inode);
-            }
+            fire_read_hook(&self.inode);
         }
         Ok(total as usize)
     }
@@ -1077,12 +1076,7 @@ impl File {
         self.pos.store(base + total, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         if total > 0 {
-            let h = WRITE_HOOK.load(Ordering::Acquire);
-            if h != 0 {
-                // SAFETY: h was installed by `set_write_hook` with a real fn(&InodeRef) pointer.
-                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
-                f(&self.inode);
-            }
+            fire_write_hook(&self.inode);
         }
         Ok(total as usize)
     }

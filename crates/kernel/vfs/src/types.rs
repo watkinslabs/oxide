@@ -94,6 +94,28 @@ bitflags::bitflags! {
         const O_DIRECTORY = 0o200000;
         const O_NOFOLLOW  = 0o400000;
         const O_CLOEXEC   = 0o2000000;
+        // D22: status / open-time bits with no VFS data-path consumer YET, but
+        // declared so the typed set is the single source of truth and
+        // `from_bits_truncate` no longer SILENTLY STRIPS them off the open word
+        // (Linux keeps them in `f_flags`). Values = x86_64 / asm-generic uapi
+        // (`include/uapi/asm-generic/fcntl.h`); aarch64 shares them.
+        /// `O_NOCTTY` — don't make this terminal the process's controlling tty.
+        const O_NOCTTY    = 0o400;
+        /// `O_DSYNC` — synchronised I/O data integrity (data + size metadata).
+        const O_DSYNC     = 0o10000;
+        /// `O_DIRECT` — minimise page-cache buffering for this fd.
+        const O_DIRECT    = 0o40000;
+        /// `O_LARGEFILE` — allow >2 GiB offsets (kernel-implicit on 64-bit).
+        const O_LARGEFILE = 0o100000;
+        /// `O_NOATIME` — don't update `i_atime` on read through this fd.
+        const O_NOATIME   = 0o1000000;
+        /// `O_SYNC` — synchronised I/O file integrity (`__O_SYNC | O_DSYNC`).
+        const O_SYNC      = 0o4010000;
+        /// `O_PATH` — fd-reference only (no read/write; resolves the path).
+        const O_PATH      = 0o10000000;
+        /// `O_TMPFILE` — create an unnamed temp inode (`__O_TMPFILE |
+        /// O_DIRECTORY`); the dir operand names the host directory.
+        const O_TMPFILE   = 0o20200000;
     }
 }
 
