@@ -345,8 +345,14 @@ pub struct SuperBlock {
     s_uuid: Spinlock<([u8; 16], u8), SbClass>,
     /// `s_root` — the ROOT DENTRY (strong; see CYCLE NOTE).
     s_root: RwLock<Option<Arc<Dentry>>, SbClass>,
-    /// `s_fs_info` — backend-private state (ext4 sb / tmpfs arena).
-    s_fs_info: Arc<dyn Any + Send + Sync>,
+    /// `s_fs_info` — backend-private state slot (Linux `super_block.s_fs_info`):
+    /// the ext4 on-disk-sb struct / tmpfs arena / pseudo-fs context a backend
+    /// hangs off its instance. Typed `Arc<dyn Any>` like `inode.i_private`;
+    /// `fill_super` installs the concrete state via [`Self::set_fs_info`] and a
+    /// backend reads it back through the downcasting [`Self::fs_info_as`]. Locked
+    /// because Linux sets it AFTER `alloc_super` (post-construction), so the slot
+    /// is replaceable without rebuilding the SB. # consumers: per-fs state.
+    s_fs_info: Spinlock<Arc<dyn Any + Send + Sync>, SbClass>,
     /// The legacy `Arc<dyn FileSystem>` backend carrying the write/inode ops
     /// (`create`/`unlink`/`link`/`rename`/`root`/`mounts_line`) that
     /// `SuperOps`/`FileSystemType` do not. The mount table reaches the
@@ -405,7 +411,7 @@ impl SuperBlock {
             s_id,
             s_uuid: Spinlock::new(([0u8; 16], 0)),
             s_root: RwLock::new(None),
-            s_fs_info,
+            s_fs_info: Spinlock::new(s_fs_info),
             s_fs: Arc::new(NullFs),
             icache: Spinlock::new(BTreeMap::new()),
             s_wb: Spinlock::new(BTreeMap::new()),
@@ -446,7 +452,7 @@ impl SuperBlock {
             s_id,
             s_uuid: Spinlock::new(([0u8; 16], 0)),
             s_root: RwLock::new(None),
-            s_fs_info: Arc::new(()),
+            s_fs_info: Spinlock::new(Arc::new(())),
             s_fs: fs,
             icache: Spinlock::new(BTreeMap::new()),
             s_wb: Spinlock::new(BTreeMap::new()),
@@ -473,8 +479,28 @@ impl SuperBlock {
     /// Install `s_root` (called by `d_make_root`). # C: O(1)
     pub fn set_s_root(&self, root: Arc<Dentry>) { *self.s_root.write() = Some(root); }
 
-    /// Backend-private state downcast. # C: O(1)
-    pub fn fs_info(&self) -> &Arc<dyn Any + Send + Sync> { &self.s_fs_info }
+    /// `s_fs_info` snapshot — the raw backend-private state `Arc` (Linux
+    /// `sb->s_fs_info`). Clones the slot so the lock is not held across use;
+    /// prefer the typed [`Self::fs_info_as`] when the concrete type is known.
+    /// # C: O(1)
+    pub fn fs_info(&self) -> Arc<dyn Any + Send + Sync> { self.s_fs_info.lock().clone() }
+
+    /// `sb->s_fs_info = info` (Linux `fill_super`) — install the backend's
+    /// per-superblock private state. Typed: a backend passes its concrete
+    /// `Arc<Ext4SbInfo>`/`Arc<TmpfsArena>` and reads it back via
+    /// [`Self::fs_info_as`], replacing the `Arc::new(())` placeholder
+    /// `for_backend` seeds. # C: O(1)
+    pub fn set_fs_info<T: Any + Send + Sync>(&self, info: Arc<T>) {
+        *self.s_fs_info.lock() = info;
+    }
+
+    /// Downcast `s_fs_info` to the backend's concrete state type (Linux casting
+    /// `sb->s_fs_info` to its private struct), returning a counted reference.
+    /// `None` if the slot holds a different type or the `()` placeholder. Mirrors
+    /// `inode.private::<T>()`. # C: O(1)
+    pub fn fs_info_as<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.s_fs_info.lock().clone().downcast::<T>().ok()
+    }
 
     /// `ilookup` — hit the inode cache. `None` if absent, reclaimed, OR dying
     /// (`I_FREEING`/`I_WILL_FREE`): Linux `find_inode_fast` skips a dying inode
@@ -875,6 +901,12 @@ impl SuperBlock {
 
     /// `s_maxbytes` — largest representable file size. # C: O(1)
     pub fn s_maxbytes(&self) -> u64 { self.s_maxbytes }
+
+    /// `s_blocksize_bits` (Linux `super_block.s_blocksize_bits`) —
+    /// `log2(s_blocksize)`, the shift for byte↔block conversion. Derived from
+    /// `s_blocksize` (always a power of two) rather than stored, so it cannot
+    /// drift from it. # C: O(1)
+    pub fn s_blocksize_bits(&self) -> u32 { self.s_blocksize.trailing_zeros() }
 
     /// `generic_write_check_limits` (Linux fs/read_write.c), the `s_maxbytes`
     /// half: bound a write of `count` bytes starting at byte offset `pos`
