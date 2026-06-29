@@ -107,6 +107,18 @@ pub struct LookupFlags {
     /// retry on a blocking path (Linux `try_to_unlazy`/`LOOKUP_CACHED` →
     /// `-EAGAIN`). A cached NEGATIVE dentry is still a definitive `ENOENT`.
     pub cached: bool,
+    /// LOOKUP_RCU (Linux `fs/namei.c`) — OPT-IN lock-free "lazy" walk.
+    /// DEFAULT OFF: the proven, D22-validated ref/Arc walk is the
+    /// default-correct path. When set, the walk runs in rcu (lazy) mode,
+    /// resolving components from the seqcount-gated dcache probe and only
+    /// "legitimizing" (taking real references via `unlazy_walk`) at a
+    /// complication point (symlink, mount crossing, the final component, a
+    /// dcache miss). On ANY uncertainty it falls back to the ref/Arc walk
+    /// (`unlazy_walk` failure → restart with rcu cleared), so the rcu mode can
+    /// never produce a different result than the Arc walk — it is a pure
+    /// fast-path overlay. A later lane flips the default to rcu after boot +
+    /// stress; this lane lands it opt-in with the mandatory fallback.
+    pub rcu: bool,
 }
 
 /// Caller credentials for the VFS permission checks — Linux `struct cred`
@@ -541,7 +553,25 @@ pub struct Nameidata {
     pub depth: u32,
     pub flags: LookupFlags,
     pub cred: Cred,
+    /// LOOKUP_RCU live state (Linux `nd->flags & LOOKUP_RCU`). Seeded from
+    /// `flags.rcu`; CLEARED by `unlazy_walk` (legitimized → ref walk) or by
+    /// `terminate_walk` (error/teardown exit). Persists across a bounded
+    /// rename-seqretry restart so a still-lazy walk re-attempts in rcu mode;
+    /// a fallback restart clears it so the retry is a plain ref walk.
+    pub rcu: bool,
 }
+
+/// Bounded number of whole-walk restarts (Linux retries the lock-free walk a
+/// bounded number of times before falling to the ref walk). On exhaustion the
+/// walk PROCEEDS with the Arc-walk result (seqretries ignored) — the `Arc`
+/// already guarantees memory safety, so this bounded-degrade valve can never
+/// livelock the walk (the apex boot-safety property of the D22 work).
+const MAX_WALK_RESTARTS: u32 = 16;
+
+/// One pass of the component walk either RESOLVED a final `VfsPath`, or hit a
+/// rename-seqretry / rcu-legitimize failure that demands a bounded RESTART
+/// (Linux `retry_estale` / `try_to_unlazy` failure → re-walk).
+enum WalkOutcome { Done(VfsPath), Restart }
 
 impl Nameidata {
     /// Build the walk state from a `start` (dirfd/cwd base) and a resolution
@@ -569,7 +599,8 @@ impl Nameidata {
         // RESOLVE_BENEATH (`beneath_exdev`) likewise scopes resolution to the
         // dirfd, but ERRORS on escape (handled in `walk`) instead of clamping.
         if flags.in_root || flags.beneath_exdev { root_dentry = cur_dentry.clone(); root_mnt_id = cur_mnt_id; }
-        Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, depth: 0, flags, cred })
+        let rcu = flags.rcu;
+        Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, depth: 0, flags, cred, rcu })
     }
 
     /// Reset the current position to the resolution root (absolute path /
@@ -591,10 +622,103 @@ impl Nameidata {
         )
     }
 
-    /// Resolve `path` from the current state to a final `VfsPath`. # C:
-    /// O(components × dir-lookup) + O(symlinks)
+    /// `terminate_walk` (Linux `fs/namei.c`) — the SINGLE error/teardown exit
+    /// of the walk. In the default ref/Arc walk the resolver pins NOTHING via
+    /// `d_count` (the `Arc` in `cur_dentry` is the only hold and drops on
+    /// return), so the body is the rcu-mode unwind: leave LOOKUP_RCU
+    /// (`nd->flags &= ~LOOKUP_RCU`) so any restart begins as a clean ref walk
+    /// and no lazy read-side leaks out of the failed resolution. Returns `e`
+    /// unchanged so every error site funnels through one exit
+    /// (`Err(self.terminate_walk(e))`). D28: lands the single-exit plumbing —
+    /// load-bearing once a real rcu read-side / saved-link `d_count` stack is
+    /// held (Step C / a later lane); a no-op net effect on the Arc walk today.
+    /// # C: O(1)
+    fn terminate_walk(&mut self, e: VfsError) -> VfsError {
+        self.rcu = false;
+        e
+    }
+
+    /// `unlazy_walk` / `try_to_unlazy` (Linux `fs/namei.c`) — leave LOOKUP_RCU
+    /// at a point that must block or take a lock (symlink `get_link`, mount
+    /// crossing, the final component, a blocking permission check, or a dcache
+    /// miss that needs `i_op->lookup` under `i_rwsem`). LEGITIMIZE the freshly
+    /// resolved `child`: pin it (`inc_count_not_zero`) THEN re-validate the
+    /// per-dentry (`cseq`) and global (`m_seq`) rename seqcounts — the
+    /// reference-BEFORE-recheck order. On success drop rcu mode and continue as
+    /// a ref/Arc walk (the `Arc` is the durable hold; the transient pin was
+    /// only the not-zero legitimize test, released here). On ANY failure return
+    /// `false` so the caller restarts the walk in ref mode (`self.rcu` is left
+    /// cleared). In this lane's Arc-walk substrate the dcache `d_count` is
+    /// DORMANT (an unheld cache dentry rests at 0 — the dput/dget lockref
+    /// lifecycle is built-but-unwired, dcache D11), so `inc_count_not_zero`
+    /// conservatively fails and rcu mode legitimizes by FALLING BACK to the
+    /// proven ref walk at the first complication — provably == the Arc walk.
+    /// # C: O(1)
+    fn unlazy_walk(&mut self, child: &Arc<Dentry>, cseq: u32, m_seq: u32) -> bool {
+        if !self.rcu { return true; }
+        // EVERY failure path leaves LOOKUP_RCU (the fallback IS dropping rcu),
+        // so the caller's restart re-walks as a plain ref walk and can never
+        // re-enter rcu to fail again — the termination guarantee of the
+        // fast-path overlay (a missed `self.rcu` clear here is an infinite
+        // restart). The legitimize succeeds only when the pin AND both
+        // seqcounts hold; otherwise fall back.
+        self.rcu = false;
+        if !child.inc_count_not_zero() { return false; }
+        let raced = child.read_seqretry(cseq) || crate::dcache::rename_lock_retry(m_seq);
+        child.dec_count(); // Arc pins; the bump was only the not-zero legitimize test
+        !raced
+    }
+
+    /// Resolve `path` from the current state to a final `VfsPath`. Drives a
+    /// BOUNDED restart loop over [`walk_inner`]: a rename raced mid-walk (the
+    /// D22 per-component `d_seq` / global `rename_lock` seqretry) or an rcu
+    /// legitimize failure restarts the walk from the snapshotted start, up to
+    /// [`MAX_WALK_RESTARTS`]; on exhaustion a final un-validated pass PROCEEDS
+    /// with the Arc-walk result (the bounded-degrade valve — cannot livelock).
+    /// All errors exit through the single [`terminate_walk`]. # C:
+    /// O(restarts × components × dir-lookup) + O(symlinks)
     pub fn walk(&mut self, path: &str) -> KResult<VfsPath> {
+        // Snapshot the start position so a restart re-walks from scratch.
+        let s_mnt = self.cur_mnt_id;
+        let s_dentry = self.cur_dentry.clone();
+        let s_inode = self.cur_inode.clone();
+        let mut attempt = 0u32;
+        loop {
+            let validate = attempt < MAX_WALK_RESTARTS;
+            match self.walk_inner(path, validate) {
+                Ok(WalkOutcome::Done(p)) => return Ok(p),
+                Ok(WalkOutcome::Restart) => {
+                    attempt += 1;
+                    self.cur_mnt_id = s_mnt;
+                    self.cur_dentry = s_dentry.clone();
+                    self.cur_inode = s_inode.clone();
+                    self.depth = 0;
+                    // `self.rcu` persists (a seqretry restart re-attempts lazily);
+                    // a fallback restart already cleared it in `unlazy_walk`.
+                    continue;
+                }
+                Err(e) => return Err(self.terminate_walk(e)),
+            }
+        }
+    }
+
+    /// ONE component-walk pass. `validate` gates the D22 seqretry restarts (the
+    /// final degraded pass passes `false` so the Arc result is taken as-is).
+    /// Returns `Done(path)` or a `Restart` request. # C: O(components) + O(symlinks)
+    fn walk_inner(&mut self, path: &str, validate: bool) -> KResult<WalkOutcome> {
         let ns = crate::mount::current_ns();
+        // D22: snapshot the GLOBAL rename seqcount at the walk top (Linux
+        // `read_seqbegin(&rename_lock)`). Any `d_move` anywhere advances it, so a
+        // multi-component walk that raced a directory rename detects it via
+        // `rename_lock_retry(m_seq)` and restarts — catching a sibling component
+        // shifting under a rename that the per-dentry `d_seq` alone would miss.
+        let m_seq = crate::dcache::rename_lock_read_begin();
+        // Closure: a resolved `child` (snapshot `cseq`) was renamed under us iff
+        // its per-dentry seqcount advanced OR the global rename seqcount did.
+        // Only consulted when `validate` (the degraded final pass ignores it).
+        let renamed = |child: &Arc<Dentry>, cseq: u32| -> bool {
+            validate && (child.read_seqretry(cseq) || crate::dcache::rename_lock_retry(m_seq))
+        };
         if path.as_bytes().first() == Some(&b'/') {
             // RESOLVE_BENEATH: an absolute pathname would jump to the (real)
             // root ABOVE the scoped dirfd → EXDEV (Linux `LOOKUP_BENEATH`).
@@ -733,6 +857,11 @@ impl Nameidata {
                 // instead (Linux `LOOKUP_CACHED`). Without the flag, fall to
                 // the slow path + `d_add` as before.
                 None if self.flags.cached => return Err(VfsError::Eagain),
+                // rcu (lazy) walk: a dcache MISS must take the blocking
+                // `i_op->lookup` slow path under `i_rwsem`, which an rcu read-side
+                // may not hold — leave LOOKUP_RCU and restart the walk in ref mode
+                // (Linux `lookup_slow` is reached only after `try_to_unlazy`).
+                None if self.rcu => { self.rcu = false; return Ok(WalkOutcome::Restart); }
                 None => {
                   // `lookup_slow` (Linux `fs/namei.c`): take the PARENT
                   // directory's `i_rwsem` SHARED across the blocking
@@ -777,6 +906,13 @@ impl Nameidata {
                 }
             };
 
+            // D22: snapshot the resolved child's per-dentry rename seqcount
+            // BEFORE reading its name/inode/crossing (Linux `read_seqcount_begin(
+            // &child->d_seq)`). Re-checked (`renamed`) after the child is USED —
+            // an advanced `d_seq` (or global `rename_lock`) means a `d_move`
+            // rehomed it under us, so the result would be torn: restart the walk.
+            let cseq = child.read_seqbegin();
+
             // Symlink handling — use the child's OWN inode (a mountpoint is a
             // directory, never a symlink, so this precedes mount crossing).
             if matches!(child.inode().map(|i| i.file_type()), Some(FileType::Symlink)) {
@@ -791,9 +927,16 @@ impl Nameidata {
                 // under no_follow_final (Linux: `link/` follows `link`, then the
                 // target must be a directory), so it does NOT short-circuit here.
                 if is_final && self.flags.no_follow_final && !trailing_slash {
+                    // Final component complication: legitimize (rcu → ref) and
+                    // validate the rename seqcounts before returning the link.
+                    if !self.unlazy_walk(&child, cseq, m_seq) { return Ok(WalkOutcome::Restart); }
+                    if renamed(&child, cseq) { return Ok(WalkOutcome::Restart); }
                     let inode = child.inode().ok_or(VfsError::Enoent)?;
-                    return Ok(VfsPath { mnt_id: self.cur_mnt_id, dentry: child, inode, last_component: None });
+                    return Ok(WalkOutcome::Done(VfsPath { mnt_id: self.cur_mnt_id, dentry: child, inode, last_component: None }));
                 }
+                // About to FOLLOW the link (a blocking `get_link` + jump): leave
+                // LOOKUP_RCU first (Linux `try_to_unlazy` before `get_link`).
+                if !self.unlazy_walk(&child, cseq, m_seq) { return Ok(WalkOutcome::Restart); }
                 // About to FOLLOW the link → RESOLVE_NO_SYMLINKS forbids it
                 // (Linux `pick_link`: `if (nd->flags & LOOKUP_NO_SYMLINKS) -ELOOP`).
                 // Reaches here for every intermediate symlink, and for a final
@@ -828,17 +971,29 @@ impl Nameidata {
                     // global tree.
                     self.to_root()?;
                 }
+                // D22: the link's name/target was consumed — a `d_move` of the
+                // symlink dentry under us taints the target read, so restart.
+                if renamed(&child, cseq) { return Ok(WalkOutcome::Restart); }
                 // Relative target keeps walking from the symlink's directory.
                 continue;
             }
 
+            // Mount crossing / final component are complications: legitimize
+            // (leave LOOKUP_RCU) when crossing into a mount (reads the mount
+            // tables) or at the trailing component (Linux `complete_walk`).
+            if self.rcu && (is_final || child.is_mounted())
+                && !self.unlazy_walk(&child, cseq, m_seq) { return Ok(WalkOutcome::Restart); }
+
             // KEYSTONE — mount crossing (Linux `__follow_mount`): switch the
             // current dentry to the mounted fs's `s_root`, looping for stacked
             // overmounts. `VfsPath.dentry` thus becomes the mounted-fs dentry.
-            let (nd, ni, nm) = follow_mount_down(child, self.cur_mnt_id, ns)?;
+            let (nd, ni, nm) = follow_mount_down(child.clone(), self.cur_mnt_id, ns)?;
             // RESOLVE_NO_XDEV: a component that descends INTO a mount (the
             // crossed mount id differs) is rejected (Linux `LOOKUP_NO_XDEV`).
             if self.flags.no_xdev && nm != self.cur_mnt_id { return Err(VfsError::Exdev); }
+            // D22: validate the child's binding survived our use (name read +
+            // mount crossing) before committing it as the new walk position.
+            if renamed(&child, cseq) { return Ok(WalkOutcome::Restart); }
             self.cur_dentry = nd;
             self.cur_inode = ni;
             self.cur_mnt_id = nm;
@@ -855,12 +1010,17 @@ impl Nameidata {
         // `rmdir(".")` / `unlink(".")` without re-parsing the path.
         if trailing_dot { last_component = Some(String::from(".")); }
 
-        Ok(VfsPath {
+        // D22: a final whole-path consistency gate (Linux `read_seqretry(
+        // &rename_lock)` at walk end) — a directory rename anywhere along the
+        // resolved path during the walk taints the result; restart.
+        if validate && crate::dcache::rename_lock_retry(m_seq) { return Ok(WalkOutcome::Restart); }
+
+        Ok(WalkOutcome::Done(VfsPath {
             mnt_id: self.cur_mnt_id,
             dentry: self.cur_dentry.clone(),
             inode: self.cur_inode.clone(),
             last_component,
-        })
+        }))
     }
 }
 
