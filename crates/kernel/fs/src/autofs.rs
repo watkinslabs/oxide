@@ -73,6 +73,7 @@ impl vfs::fs::FileSystem for AutofsFs {
             // the ioctl returned ENOENT and wedged PID1 in an endless umount
             // retry of `proc-sys-fs-binfmt_misc.automount`.
             self.state.dev.store(sb.s_dev, Ordering::Release);
+            self.root.set_fsid(sb.s_dev);
             register_mount(vfs::fsid_to_dev(sb.s_dev), Arc::clone(&self.state));
         }
     }
