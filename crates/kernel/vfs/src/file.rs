@@ -10,6 +10,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::Spinlock;
 
 use crate::dentry::Dentry;
+use crate::file_ops::FileOps;
 use crate::inode::InodeRef;
 use crate::namei::Cred;
 use crate::types::{FileType, KResult, OpenFlags, VfsError};
@@ -80,6 +81,11 @@ const SETFL_MASK: u32 =
 /// 4 KiB) — the per-open `f_ra.ra_pages` ceiling.
 const DEFAULT_RA_PAGES: u32 = 32;
 
+/// Page size used to convert a byte offset/length into the PAGE-unit index +
+/// request count [`File::ra_ondemand`] works in (Linux readahead is page-
+/// granular). 4 KiB on both arches' base page. # C: O(1)
+const PAGE_SIZE: u64 = 4096;
+
 /// Lock class for `File::f_ra` (never nested with the inode lock). # C: O(1)
 struct FileRa;
 impl sync::LockClass for FileRa { fn rank() -> u16 { 36 } }
@@ -131,6 +137,13 @@ fn fmode_from_flags(f: OpenFlags) -> Fmode {
 /// share the position cursor per POSIX (`15§2`).
 pub struct File {
     inode:  InodeRef,
+    /// `file->f_op` (Linux `struct file.f_op`) — the `file_operations` vtable
+    /// SNAPSHOTTED from `inode->i_fop` at open. The data path
+    /// (read/write/read_iter/…) dispatches through this cached `Arc` rather than
+    /// re-reading `inode.i_fop()` each call, matching Linux's per-`struct file`
+    /// `f_op` (a device open may even install a different `f_op` than the
+    /// inode's; the snapshot is the open-time binding). # C: O(1)
+    f_op: Arc<dyn FileOps>,
     dentry: Arc<Dentry>,
     /// `f_path.vfsmount` resolved by id (Linux `struct path.mnt`). The
     /// mount the file was opened through, recovered from the lookup's
@@ -342,6 +355,17 @@ impl Drop for File {
         // `__fput`). At zero the dentry is unused — `d_op->d_delete` may evict
         // it (pseudo-fs), otherwise it joins the dcache LRU for the shrinker.
         crate::dcache::dput(self.dentry.clone());
+        // D3: release the `i_count` reference this open file description took on
+        // its inode at construction (Linux `iput` reached via `__fput`→`dput`).
+        // Routed through the owning superblock so a 1→0 drop runs the
+        // `drop_inode`/`evict_inode` lifecycle; an anon inode (no superblock /
+        // icache: pipe/eventfd/socket/…) just balances the count in place. The
+        // matching `igrab` is in `new_at`, so this is always balanced and never
+        // underflows regardless of how the inode was obtained.
+        match self.inode.i_sb() {
+            Some(sb) => sb.iput(self.inode.clone()),
+            None     => { self.inode.i_count_dec(); }
+        }
     }
 }
 
@@ -388,8 +412,17 @@ impl File {
         // `d_count` ref (Linux `struct file` holds a `dget`'d `f_path.dentry`);
         // the matching `dput` is in `File::drop`.
         let dentry = crate::dcache::dget(&dentry);
+        // D2: snapshot `inode->i_fop` into `file->f_op` so the data path
+        // dispatches through the per-open cached vtable (Linux do_dentry_open:
+        // `f->f_op = fops_get(inode->i_fop)`).
+        let f_op = inode.i_fop().clone();
+        // D3: the open file description takes an `i_count` reference on its inode
+        // (Linux `struct file` pins the inode; iget/igrab supplies the ref). The
+        // matching `iput`/dec is in `File::drop`.
+        inode.igrab();
         Arc::new(Self {
             inode,
+            f_op,
             dentry,
             mnt_id,
             f_mode,
@@ -614,10 +647,21 @@ impl File {
         // cursor (Linux `__fdget_pos`). `None` for non-seekable files.
         let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
         let pos = self.pos.load(Ordering::Acquire);
+        // D31: advance the per-open readahead window on the buffered read path
+        // (Linux `page_cache_sync_readahead`). Regular files only; the window
+        // state drives the block lane's page-cache fill. Pure state update — the
+        // byte count returned is still bounded by `buf`, so there is no
+        // over-read past EOF.
+        if !f.contains(OpenFlags::O_NONBLOCK) && matches!(self.inode.file_type(), FileType::Regular) {
+            let index = pos / PAGE_SIZE;
+            let req = (((buf.len() as u64) + PAGE_SIZE - 1) / PAGE_SIZE).max(1) as u32;
+            let _ = self.ra_ondemand(index, req, false);
+        }
+        // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
-            self.inode.read_nonblock(pos, buf)?
+            self.f_op.read_nonblock(&self.inode, pos, buf)?
         } else {
-            self.inode.read(pos, buf)?
+            self.f_op.read(&self.inode, pos, buf)?
         };
         self.pos.store(pos + n as u64, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
@@ -657,10 +701,11 @@ impl File {
         } else {
             self.pos.load(Ordering::Acquire)
         };
+        // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
-            self.inode.write_nonblock(off, buf)?
+            self.f_op.write_nonblock(&self.inode, off, buf)?
         } else {
-            self.inode.write(off, buf)?
+            self.f_op.write(&self.inode, off, buf)?
         };
         self.pos.store(off + n as u64, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
@@ -729,10 +774,11 @@ impl File {
             return Err(VfsError::Ebadf);
         }
         let f = self.flags();
+        // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
-            self.inode.read_nonblock(off as u64, buf)?
+            self.f_op.read_nonblock(&self.inode, off as u64, buf)?
         } else {
-            self.inode.read(off as u64, buf)?
+            self.f_op.read(&self.inode, off as u64, buf)?
         };
         if n > 0 {
             let h = READ_HOOK.load(Ordering::Acquire);
@@ -773,10 +819,11 @@ impl File {
         // Linux pwrite + O_APPEND: IOCB_APPEND forces ki_pos = i_size,
         // ignoring the caller's offset (documented quirk, pwrite(2) BUGS).
         let pos = if f.contains(OpenFlags::O_APPEND) { self.inode.size() } else { off as u64 };
+        // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
-            self.inode.write_nonblock(pos, buf)?
+            self.f_op.write_nonblock(&self.inode, pos, buf)?
         } else {
-            self.inode.write(pos, buf)?
+            self.f_op.write(&self.inode, pos, buf)?
         };
         if n > 0 {
             let h = WRITE_HOOK.load(Ordering::Acquire);
@@ -807,12 +854,22 @@ impl File {
         // `__fdget_pos`), so the cursor advances atomically over all buffers.
         let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
         let pos = self.pos.load(Ordering::Acquire);
+        // D31: advance the readahead window once for the whole vectored read
+        // (Linux `page_cache_sync_readahead`). Regular files only; the request
+        // size is the grand total of the destination buffers. Pure state update.
+        if !nonblock && matches!(self.inode.file_type(), FileType::Regular) {
+            let bytes: u64 = bufs.iter().map(|b| b.len() as u64).sum();
+            let index = pos / PAGE_SIZE;
+            let req = ((bytes + PAGE_SIZE - 1) / PAGE_SIZE).max(1) as u32;
+            let _ = self.ra_ondemand(index, req, false);
+        }
         let mut total: u64 = 0;
         for buf in bufs.iter_mut() {
             if buf.is_empty() { continue; }
             let want = buf.len();
             let off = pos + total;
-            let r = if nonblock { self.inode.read_nonblock(off, buf) } else { self.inode.read(off, buf) };
+            // D2: dispatch through the cached `file->f_op` (snapshotted at open).
+            let r = if nonblock { self.f_op.read_nonblock(&self.inode, off, buf) } else { self.f_op.read(&self.inode, off, buf) };
             match r {
                 Ok(0)                => break,                   // EOF
                 Ok(n)                => { total += n as u64; if n < want { break; } }
@@ -858,7 +915,8 @@ impl File {
             if buf.is_empty() { continue; }
             let want = buf.len();
             let off = base + total;
-            let r = if nonblock { self.inode.write_nonblock(off, buf) } else { self.inode.write(off, buf) };
+            // D2: dispatch through the cached `file->f_op` (snapshotted at open).
+            let r = if nonblock { self.f_op.write_nonblock(&self.inode, off, buf) } else { self.f_op.write(&self.inode, off, buf) };
             match r {
                 Ok(0)                => break,
                 Ok(n)                => { total += n as u64; if n < want { break; } }
