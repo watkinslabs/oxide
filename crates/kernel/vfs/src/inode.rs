@@ -283,6 +283,14 @@ impl Inode {
         self.i_op.rename(self, old, new_dir, new, flags, ctx)
     }
 
+    /// `i_op->tmpfile` (`open(O_TMPFILE)`) — an unlinked child inode of this
+    /// directory's fs. # C: backend-dependent
+    pub fn tmpfile(&self, mode: u32, ctx: &crate::CreateCtx) -> KResult<InodeRef> { self.i_op.tmpfile(self, mode, ctx) }
+
+    /// `i_op->update_time` — apply the timestamp-update policy (`S_ATIME`/`S_MTIME`/
+    /// `S_CTIME`/`S_VERSION`) to `now`. # C: O(1)
+    pub fn update_time(&self, now: u64, flags: u32) -> KResult<()> { self.i_op.update_time(self, now, flags) }
+
     /// `i_op->readlink` (the storage primitive). # C: O(target_len)
     pub fn readlink(&self) -> KResult<Vec<u8>> { self.i_op.readlink(self) }
 
@@ -592,6 +600,33 @@ pub fn inode_query_iversion(inode: &Inode) -> u64 {
         }
     }
     cur >> I_VERSION_QUERIED_SHIFT
+}
+
+/// `update_time`/`inode_update_time` selector flags (Linux `include/linux/fs.h`
+/// — the `S_ATIME`/`S_MTIME`/`S_CTIME`/`S_VERSION` set passed as the `flags`
+/// arg to `->update_time`). Numerically distinct *namespace* from the `i_flags`
+/// `S_*` set below (which describes the inode), even though both spell `S_`:
+/// these say WHICH timestamp a touch updates.
+pub const S_ATIME:    u32 = 1 << 0;
+pub const S_MTIME:    u32 = 1 << 1;
+pub const S_CTIME:    u32 = 1 << 2;
+pub const S_VERSION:  u32 = 1 << 3;
+
+/// `generic_update_time` (Linux `fs/inode.c`) — the default `i_op->update_time`:
+/// write the atime/mtime/ctime selected by `flags` to `now` (ns) and, on
+/// `S_VERSION`, lazily bump `i_version`. `set_times` always stamps ctime, so a
+/// touch that does NOT carry `S_CTIME` re-writes the inode's CURRENT ctime
+/// (leaving it unchanged); a touch with no time bit at all skips the write.
+/// # C: O(1)
+pub fn generic_update_time(inode: &Inode, now: u64, flags: u32) -> KResult<()> {
+    let a = if flags & S_ATIME != 0 { Some(now) } else { None };
+    let m = if flags & S_MTIME != 0 { Some(now) } else { None };
+    if flags & (S_ATIME | S_MTIME | S_CTIME) != 0 {
+        let ctime = if flags & S_CTIME != 0 { now } else { inode.ctime().unwrap_or(0) };
+        inode.set_times(a, m, ctime)?;
+    }
+    if flags & S_VERSION != 0 { inode_maybe_inc_iversion(inode, false); }
+    Ok(())
 }
 
 /// `inode_owner_or_capable` (Linux `fs/inode.c`) — owner-or-`CAP_FOWNER`,
