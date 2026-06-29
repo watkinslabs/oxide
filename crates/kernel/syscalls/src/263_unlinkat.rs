@@ -19,6 +19,11 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
     let raw = match read_user_path(args.a1) {
         Ok(s) => s, Err(rv) => return rv,
     };
+    // do_rmdirat: AT_REMOVEDIR with a `.`/`..` final component → EINVAL/ENOTEMPTY
+    // (LAST_DOT/LAST_DOTDOT). Plain unlink of `.`/`..` is EISDIR via the backend.
+    if (flags & AT_REMOVEDIR) != 0 {
+        if let Some(rv) = crate::namei_common::rmdir_dot_errno(&raw) { return rv; }
+    }
     // BUG D follow-up: resolve against the real dirfd (a0).
     let p = match crate::pathresolve::resolve_at_result(args.a0 as i32, &raw) {
         Ok(rp) => rp, Err(rv) => return rv,
