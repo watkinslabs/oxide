@@ -552,12 +552,38 @@ pub fn init() {
 /// /sys/class/net inode live) and fall back to ENOENT.
 pub struct SysfsFs;
 
+/// SYSFS_MAGIC (linux/magic.h) — sysfs `f_type`/`s_magic`.
+const SYSFS_MAGIC: u64 = 0x6265_6572;
+/// `PAGE_SIZE` — sysfs statfs `f_bsize` (kernfs `s_blocksize = PAGE_SIZE`).
+/// # C: O(1)
+const PAGE_SIZE: u32 = 4096;
+
+/// `super_operations` for sysfs. sysfs is a zero-sized kernfs pseudo
+/// filesystem: `statfs(2)` reports the magic + `PAGE_SIZE` block size and zero
+/// block/inode counts (Linux `simple_statfs`, used by kernfs `kernfs_fill_super`).
+struct SysfsSuperOps;
+impl vfs::SuperOps for SysfsSuperOps {
+    /// `simple_statfs`: f_type=SYSFS_MAGIC, f_bsize=PAGE_SIZE, all block/inode
+    /// counts 0 (f_namelen=NAME_MAX is filled by the syscall layer). # C: O(1)
+    fn statfs(&self) -> KResult<vfs::SbStatFs> {
+        Ok(vfs::SbStatFs {
+            f_type:  SYSFS_MAGIC,
+            f_bsize: PAGE_SIZE,
+            ..Default::default()
+        })
+    }
+}
+
 impl vfs::fs::FileSystem for SysfsFs {
     /// # C: O(1)
     fn name(&self) -> &str { "sysfs" }
     /// SYSFS_MAGIC (linux/magic.h).
     /// # C: O(1)
-    fn magic(&self) -> u64 { 0x6265_6572 }
+    fn magic(&self) -> u64 { SYSFS_MAGIC }
+    /// Install zero-sized pseudo-fs statfs (`simple_statfs`) as this SB's `s_op`
+    /// so `statfs(2)`/`df` report SYSFS_MAGIC + PAGE_SIZE, not the generic
+    /// synthetic figures. # C: O(1)
+    fn super_ops(&self) -> Option<Arc<dyn vfs::SuperOps>> { Some(Arc::new(SysfsSuperOps)) }
     /// Mount root = sysfs's OWN `kernfs::PseudoDir` (`SYS_ROOT`). The walk
     /// crosses into the sysfs mount and resolves `/sys/*` per-component via
     /// `PseudoDir::lookup` + the dynamic `SysClassNetOps::lookup`.
