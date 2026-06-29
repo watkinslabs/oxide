@@ -35,7 +35,10 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
         Ok(x) => x,
         Err(rv) => { crate::mount_common::mnt_log("mkdirat_noparent", &p, rv); return rv; }
     };
-    match pino.mkdir(&name, mode) {
+    // Thread the mount idmap + caller cred + umask for the new dir's owner.
+    let cred = crate::pathresolve::current_cred();
+    let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
+    match pino.mkdir(&name, mode, &ctx) {
         Ok(_) => { crate::pathresolve::d_drop_path(&p); 0 }
         Err(e) => {
             crate::namei_common::trace_run_vfs_error(b"mkdirat", &p, e);

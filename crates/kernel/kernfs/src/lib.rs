@@ -392,8 +392,8 @@ fn pdir(inode: &Inode) -> KResult<&PseudoDir> {
 
 impl InodeOps for PseudoDirOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> { pdir(inode)?.op_lookup(name) }
-    fn mkdir(&self, inode: &Inode, name: &str, _mode: u32) -> KResult<InodeRef> { pdir(inode)?.op_mkdir(name) }
-    fn symlink(&self, inode: &Inode, name: &str, target: &[u8]) -> KResult<()> { pdir(inode)?.op_symlink(name, target) }
+    fn mkdir(&self, inode: &Inode, name: &str, _mode: u32, _ctx: &vfs::CreateCtx) -> KResult<InodeRef> { pdir(inode)?.op_mkdir(name) }
+    fn symlink(&self, inode: &Inode, name: &str, target: &[u8], _ctx: &vfs::CreateCtx) -> KResult<()> { pdir(inode)?.op_symlink(name, target) }
 }
 
 /// `file_operations` for a `PseudoDir` — only the directory iterate path.
