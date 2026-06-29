@@ -6,22 +6,14 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use alloc::vec::Vec;
+use vfs::{Ino, InodeRef};
 
-pub struct ProcCmdlineInode;
+const PROC_CMDLINE_INO: Ino = 0x3000_1010;
 
-impl Inode for ProcCmdlineInode {
-    fn ino(&self) -> Ino { 0x3000_1010 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body = crate::hooks::cmdline();
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
-}
+/// Body builder for `/proc/cmdline` — the bootloader-passed cmdline bytes.
+/// # C: O(len)
+fn body() -> Vec<u8> { crate::hooks::cmdline().to_vec() }
+
+/// `/proc/cmdline` inode (KEYSTONE struct-`Inode`). # C: O(1)
+pub fn make_proc_cmdline() -> InodeRef { crate::dyn_file::make_gen_file(PROC_CMDLINE_INO, body) }

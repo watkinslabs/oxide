@@ -5,9 +5,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::vec::Vec;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
-
-pub struct ProcCpuinfoInode;
+use vfs::{Ino, InodeRef};
 
 struct VecFmt<'a>(&'a mut Vec<u8>);
 impl<'a> core::fmt::Write for VecFmt<'a> {
@@ -23,15 +21,14 @@ fn trim(b: &[u8]) -> &str {
     core::str::from_utf8(&b[..end]).unwrap_or("").trim()
 }
 
-impl ProcCpuinfoInode {
-    fn body() -> Vec<u8> {
-        let ncpu = (cpu::smp::online_count() as usize).clamp(1, cpu::MAX_CPUS);
-        let mut out: Vec<u8> = Vec::with_capacity(ncpu * 256);
-        for i in 0..ncpu {
-            Self::block(&mut out, i);
-        }
-        out
+fn body() -> Vec<u8> {
+    let ncpu = (cpu::smp::online_count() as usize).clamp(1, cpu::MAX_CPUS);
+    let mut out: Vec<u8> = Vec::with_capacity(ncpu * 256);
+    for i in 0..ncpu {
+        block(&mut out, i);
     }
+    out
+}
 
     #[cfg(target_arch = "x86_64")]
     fn block(out: &mut Vec<u8>, i: usize) {
@@ -81,20 +78,6 @@ impl ProcCpuinfoInode {
              CPU revision\t: {revision}\n\
              \n");
     }
-}
 
-impl Inode for ProcCpuinfoInode {
-    fn ino(&self) -> Ino { 0x3000_1021 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body = Self::body();
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
-}
+/// `/proc/cpuinfo` inode (KEYSTONE struct-`Inode`). # C: O(1)
+pub fn make_proc_cpuinfo() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1021 as Ino, body) }
