@@ -35,6 +35,9 @@ pub fn sys_rmdir(args: &SyscallArgs) -> i64 {
     let raw = match read_path(args.a0) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
+    // do_rmdirat: `.` final component → EINVAL, `..` → ENOTEMPTY (checked on
+    // the raw path before resolution normalises the dots away).
+    if let Some(rv) = crate::namei_common::rmdir_dot_errno(&raw) { return rv; }
     let p = match crate::pathresolve::resolve_at_result(crate::pathresolve::AT_FDCWD, &raw) {
         Ok(p) => p, Err(rv) => return rv,
     };

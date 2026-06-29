@@ -23,18 +23,23 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
     let p = String::from(strip_trailing_slash(&p));
     if let Err(rv) = crate::landlock::check(&p,
         ::security::landlock::access::MAKE_DIR) { return rv; }
-    if vfs::mount::is_readonly_path(&p) {
-        return -(Errno::Erofs.as_i32() as i64);
-    }
     // Linux do_mkdirat: `mode &= ~current_umask()` (D23).
     let umask = sched::live::current()
         .map(|c| c.umask.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
     let mode = (args.a2 as u32) & 0o7777 & !umask;
-    if path_exists(&p) { return -(Errno::Eexist.as_i32() as i64); }
+    // D57: parent walk (ENOTDIR) → EEXIST → EROFS, matching Linux ordering
+    // (see 083_mkdir for the rationale + the systemd cg_create constraint).
     let (pino, name) = match resolve_parent(&p) {
         Ok(x) => x,
         Err(rv) => { crate::mount_common::mnt_log("mkdirat_noparent", &p, rv); return rv; }
     };
+    if !matches!(pino.file_type(), vfs::FileType::Directory) {
+        return -(Errno::Enotdir.as_i32() as i64);
+    }
+    if path_exists(&p) { return -(Errno::Eexist.as_i32() as i64); }
+    if vfs::mount::is_readonly_path(&p) {
+        return -(Errno::Erofs.as_i32() as i64);
+    }
     // Thread the mount idmap + caller cred + umask for the new dir's owner.
     let cred = crate::pathresolve::current_cred();
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };

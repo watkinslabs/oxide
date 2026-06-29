@@ -21,15 +21,25 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
     let p = String::from(strip_trailing_slash(&p));
     if let Err(rv) = crate::landlock::check(&p,
         ::security::landlock::access::MAKE_DIR) { return rv; }
-    if vfs::mount::is_readonly_path(&p) {
-        return -(Errno::Erofs.as_i32() as i64);
-    }
     // Linux do_mkdirat: `mode &= ~current_umask()` (D23).
     let umask = sched::live::current()
         .map(|c| c.umask.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
     let mode = (args.a1 as u32) & 0o7777 & !umask;
-    if path_exists(&p) { return -(Errno::Eexist.as_i32() as i64); }
+    // D57: walk the parent FIRST so a non-directory path component surfaces
+    // ENOTDIR (Linux filename_create), then EEXIST (target present) BEFORE
+    // EROFS — Linux returns EEXIST before mnt_want_write, and systemd's
+    // cg_create relies on mkdir of an existing dir under a RO pseudo-fs
+    // returning EEXIST (success), not EROFS. resolve_parent is a read-only
+    // walk, so reordering it ahead of these checks cannot leak the parent's
+    // EROFS.
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
+    if !matches!(pino.file_type(), vfs::FileType::Directory) {
+        return -(Errno::Enotdir.as_i32() as i64);
+    }
+    if path_exists(&p) { return -(Errno::Eexist.as_i32() as i64); }
+    if vfs::mount::is_readonly_path(&p) {
+        return -(Errno::Erofs.as_i32() as i64);
+    }
     // Thread the mount idmap + caller cred + umask so the new dir gets the right
     // owner (Linux `->mkdir(struct mnt_idmap *, ...)`).
     let cred = crate::pathresolve::current_cred();
