@@ -7,7 +7,7 @@ use syscall::errno::Errno;
 use hal::USER_VA_END;
 
 use crate::userbuf::validate_user_buf;
-use crate::statfs_common::{magic_for_path, usage_for, write_statfs};
+use crate::statfs_common::{statfs_for_path, write_statfs};
 
 /// `sys_statfs(path, buf)` — slot 137. Reports the `f_type` magic of
 /// the filesystem backing `path`.
@@ -20,14 +20,13 @@ pub fn sys_statfs(args: &SyscallArgs) -> i64 {
         return -(Errno::Efault.as_i32() as i64);
     }
     // SAFETY: ptr in user range; user page mapped (caller's user code ran from this AS); read bounded at 256 B.
-    let magic = match unsafe { devfs::read_user_cstr(path_ptr, 256) } {
+    let st = match unsafe { devfs::read_user_cstr(path_ptr, 256) } {
         Some(p) => match core::str::from_utf8(p) {
-            Ok(s) => magic_for_path(s),
+            Ok(s) => statfs_for_path(s),
             Err(_) => return -(Errno::Einval.as_i32() as i64),
         },
         None => return -(Errno::Efault.as_i32() as i64),
     };
-    let (blocks, bfree, files) = usage_for(magic);
-    write_statfs(buf, magic, blocks, bfree, files);
+    write_statfs(buf, &st);
     0
 }

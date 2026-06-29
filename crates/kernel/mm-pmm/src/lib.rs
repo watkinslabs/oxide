@@ -324,6 +324,20 @@ impl PmmInner {
         let hp = unsafe { backing.page_ptr(Pfn(head)) };
         // SAFETY: header lives in first 32B of a PMM-owned page.
         let next = unsafe { read_u64(hp, OFF_NEXT) };
+        // debug-cow probe 1 (FREELIST CANARY): a free node's `next` link is
+        // either PFN_NULL or an in-range PFN. A `next` that is neither means
+        // the freed frame's FreeNode header was overwritten while it sat on
+        // the free list (a stale-TLB write, a write-while-free, or a buddy
+        // desync) — the same aliasing class as a double-alloc, seen from the
+        // link side. Name the corrupted node by its PA.
+        #[cfg(feature = "debug-cow")]
+        if next != PFN_NULL && next >= self.pfn_max {
+            klog::write_raw(b"[FREELIST-CORRUPT] pa=");
+            klog::write_hex_u64(head * PAGE_SIZE_BYTES);
+            klog::write_raw(b" bad-next=");
+            klog::write_hex_u64(next);
+            klog::write_raw(b"\n");
+        }
         if next != PFN_NULL {
             // SAFETY: `next` is on the free-list ⇒ PMM-owned page.
             let np = unsafe { backing.page_ptr(Pfn(next)) };

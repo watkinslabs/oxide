@@ -95,7 +95,19 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     if rv == 0 {
         if let Some(p) = unix_path {
             if !net::unix_path_is_abstract(&p) {
-                fs::tmpfs::register(p, fs::tmpfs::TmpfsSockInode::new() as vfs::InodeRef);
+                // Materialise the AF_UNIX path as an S_IFSOCK node in whatever
+                // fs owns its parent dir (the tmpfs tree under /run, etc.), via
+                // the per-component `mknod_child` — no global path registry.
+                let (parent, name) = match p.rsplit_once('/') {
+                    Some((d, n)) if !n.is_empty() => (if d.is_empty() { "/" } else { d }, n),
+                    _ => ("", ""),
+                };
+                if !name.is_empty() {
+                    if let Ok(pino) = vfs::mount::lookup(parent) {
+                        const S_IFSOCK: u16 = 0xC000;
+                        let _ = pino.mknod_child(name, S_IFSOCK, 0);
+                    }
+                }
             }
         }
     }

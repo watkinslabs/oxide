@@ -21,8 +21,11 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_GETPIPE_SZ: u64 = 1032; const F_SETPIPE_SZ: u64 = 1031;
     const F_ADD_SEALS: u64 = 1033; const F_GET_SEALS: u64 = 1034;
     const F_SEAL_SEAL: u32 = 0x0001;
+    const F_SEAL_SHRINK: u32 = 0x0002;
+    const F_SEAL_GROW: u32 = 0x0004;
+    const F_SEAL_WRITE: u32 = 0x0008;
+    const F_SEAL_FUTURE_WRITE: u32 = 0x0010;
     const F_GETOWN: u64 = 9; const F_SETOWN: u64 = 8;
-    const SETTABLE_FL: u32 = 0o4_004_000 | 0o0_004_000; // O_APPEND | O_NONBLOCK
     let fd = args.a0 as i32; let cmd = args.a1; let arg = args.a2;
     let ebadf = -(Errno::Ebadf.as_i32() as i64);
     let cur = match sched::live::current() { Some(c) => c, None => return ebadf };
@@ -34,15 +37,34 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             Ok(n) => { if cmd == F_DUPFD_CLOEXEC { let _ = fdt.set_cloexec(n, true); } n as i64 }
             Err(e) => -(e as i64),
         },
-        F_GETFD => match fdt.cloexec(fd) { Ok(true) => 1, Ok(false) => 0, Err(_) => 0 },
-        F_SETFD => { let _ = fdt.set_cloexec(fd, (arg & 1) != 0); 0 }
+        F_GETFD => match fdt.cloexec(fd) {
+            Ok(true) => 1,
+            Ok(false) => 0,
+            Err(e) => -(e as i64),
+        },
+        F_SETFD => match fdt.set_cloexec(fd, (arg & 1) != 0) {
+            Ok(()) => 0,
+            Err(e) => -(e as i64),
+        },
         F_GETFL => file.flags().bits() as i64,
         F_SETFL => {
-            let nb = (file.flags().bits() & !SETTABLE_FL) | ((arg as u32) & SETTABLE_FL);
-            file.set_flags(vfs::OpenFlags::from_bits_retain(nb));
+            // SETFL masking (preserve access mode + creation flags, update only
+            // O_APPEND/O_NONBLOCK/O_DIRECT/O_NOATIME) lives in the VFS work fn
+            // `File::set_fl` per `53§3`; the shim forwards the raw `arg`.
+            file.set_fl(vfs::OpenFlags::from_bits_retain(arg as u32));
             0
         }
-        F_GETPIPE_SZ | F_SETPIPE_SZ => 4096,
+        F_GETPIPE_SZ => match file.inode().as_any().and_then(|a| a.downcast_ref::<fs::pipe::PipeInode>()) {
+            Some(pipe) => pipe.pipe_size() as i64,
+            None => -(Errno::Einval.as_i32() as i64),
+        },
+        F_SETPIPE_SZ => match file.inode().as_any().and_then(|a| a.downcast_ref::<fs::pipe::PipeInode>()) {
+            Some(pipe) => match pipe.set_pipe_size(arg as usize) {
+                Ok(size) => size as i64,
+                Err(e) => -(e as i64),
+            },
+            None => -(Errno::Einval.as_i32() as i64),
+        },
         // memfd seals (`fcntl.h`, docs/19). Only a sealable memfd exposes
         // seals; everything else → EINVAL.
         F_GET_SEALS => match file.inode().fcntl_seals() {
@@ -52,10 +74,13 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         F_ADD_SEALS => match file.inode().fcntl_seals() {
             Some(s) => {
                 use core::sync::atomic::Ordering;
+                let requested = arg as u32;
+                let valid = F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_FUTURE_WRITE;
+                if requested & !valid != 0 { return -(Errno::Einval.as_i32() as i64); }
                 let cur_seals = s.load(Ordering::Acquire);
                 // F_SEAL_SEAL already set ⇒ no further sealing (EPERM).
                 if cur_seals & F_SEAL_SEAL != 0 { return -(Errno::Eperm.as_i32() as i64); }
-                s.fetch_or(arg as u32, Ordering::AcqRel);
+                s.fetch_or(requested, Ordering::AcqRel);
                 0
             }
             None => -(Errno::Einval.as_i32() as i64),

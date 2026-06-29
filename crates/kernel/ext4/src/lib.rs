@@ -32,6 +32,11 @@ pub use dir::{DirEntry, DirError, next_entry, iter_active, lookup,
 pub mod gdt;
 pub use gdt::{GroupDesc, GdtError, desc_size_for, parse_descriptor, locate_inode};
 
+pub mod csum;
+
+pub mod htree;
+pub use htree::EXT4_INDEX_FL;
+
 pub mod mount;
 pub use mount::{Mount, MountError, MountState, MountStateGuard};
 

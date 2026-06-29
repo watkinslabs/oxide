@@ -8,6 +8,15 @@ use crate::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
 static NEXT_INO: AtomicU64 = AtomicU64::new(0x3100_0000);
 
+/// `0o444` — world-readable, no write bit. A [`StaticFileInode`] body is a
+/// fixed `&'static [u8]` and `write` is unconditionally `Erofs`, so its
+/// reported mode must NOT advertise an owner-write bit. The generic `Regular`
+/// fallback (`getattr::default_perm_for`) returns `0o644`, which would lie
+/// about being writable; Linux read-only pseudo files (`/proc/version`,
+/// `/proc/filesystems`, …) are `-r--r--r--`, keeping `i_mode`/`stat` honest
+/// with the `Erofs` write path.
+const STATIC_PERM: u16 = 0o444;
+
 pub struct StaticFileInode {
     body: &'static [u8],
     ino:  Ino,
@@ -23,6 +32,8 @@ impl StaticFileInode {
 impl Inode for StaticFileInode {
     fn ino(&self) -> Ino { self.ino }
     fn file_type(&self) -> FileType { FileType::Regular }
+    /// Read-only `0o444` (see [`STATIC_PERM`]) — matches the `Erofs` write. # C: O(1)
+    fn perm(&self) -> Option<u16> { Some(STATIC_PERM) }
     fn size(&self) -> u64 { self.body.len() as u64 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {

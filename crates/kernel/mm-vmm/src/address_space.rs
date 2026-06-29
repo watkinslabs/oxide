@@ -15,7 +15,7 @@
 //   land in subsequent P1-N branches alongside HAL `MmuOps`.
 
 use alloc::boxed::Box;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
 use hal::{MmuOps, Pa, PageSize, UserVirtAddr, Va, PAGE_SIZE_BYTES, USER_VA_END};
@@ -83,6 +83,25 @@ pub struct AddressSpace {
     /// — `find_hole` falls back to the legacy `MMAP_TOP` constant
     /// (used by boot-anchor AS + hosted tests).
     mmap_base: core::sync::atomic::AtomicU64,
+    /// A4-rmap: this AS's own `Weak<Self>`, captured at construction via
+    /// `Arc::new_cyclic`. Linux's `vma->vm_mm` back-pointer analogue:
+    /// `mmap` uses it to attach the owning VMA's anon_vma chain edge so
+    /// `rmap_walk_anon` can enumerate the originating mapping (GAP A4-1
+    /// — previously only fork children attached edges, leaving a
+    /// never-forked anon page invisible to the rmap walk). `munmap` /
+    /// `mprotect` use it to detach + re-attach split fragments.
+    self_weak: Weak<Self>,
+    /// Linux `mm_cpumask` analogue: bit `c` set ⇔ logical CPU `c` may
+    /// hold this mm's user-half TLB entries (it has the root in CR3 /
+    /// TTBR0, or is lazy-TLB on it). The context-switch path sets this
+    /// CPU's bit BEFORE the CR3 reload that loads the mm and clears it
+    /// AFTER the reload that leaves it; `execve` does the same around its
+    /// direct activate. The cross-CPU TLB shootdown targets ONLY these
+    /// CPUs (`flush_tlb_others`), not every online CPU — over-inclusion
+    /// is a harmless spurious flush, under-inclusion is corruption, so
+    /// the set/clear ordering (mark-before-activate, clear-after-activate)
+    /// is load-bearing. `u64` exactly covers `cpu::MAX_CPUS == 64`.
+    cpumask: core::sync::atomic::AtomicU64,
 }
 
 impl Drop for AddressSpace {
@@ -113,7 +132,7 @@ impl AddressSpace {
     /// VMA-tree behaviour and never activate the AS.
     /// # C: O(1)
     pub fn new(root_pa: u64) -> KResult<Arc<Self>> {
-        Ok(Arc::new(Self {
+        Ok(Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(VmaTree::new()),
             root_pa,
             brk:     core::sync::atomic::AtomicU64::new(0),
@@ -121,6 +140,10 @@ impl AddressSpace {
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(None),
             mmap_base: core::sync::atomic::AtomicU64::new(0),
+            self_weak: w.clone(),
+            // Fresh/forked AS: no CPU has loaded it yet (Linux clears
+            // mm_cpumask on mm init; the activating CPU sets its bit).
+            cpumask: core::sync::atomic::AtomicU64::new(0),
         }))
     }
 
@@ -245,6 +268,39 @@ impl AddressSpace {
         self.exe_path.lock().clone()
     }
 
+    /// Snapshot of this mm's `cpumask` (Linux `mm_cpumask`): the set of
+    /// logical CPUs that may hold its user TLB entries. The TLB-shootdown
+    /// sender intersects this with the online set to target only the CPUs
+    /// that actually need invalidating.
+    /// # C: O(1)
+    pub fn cpumask(&self) -> u64 {
+        self.cpumask.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Set logical CPU `cpu`'s bit. Called BEFORE the CR3/TTBR0 reload
+    /// that loads this mm on `cpu` (context switch / execve). Over-marking
+    /// only costs a spurious IPI; the strict before-activate ordering
+    /// guarantees a peer shootdown never skips a CPU that has the mm.
+    /// # C: O(1)
+    pub fn mark_cpu(&self, cpu: usize) {
+        if cpu < 64 {
+            self.cpumask.fetch_or(1u64 << cpu, core::sync::atomic::Ordering::AcqRel);
+        }
+    }
+
+    /// Clear logical CPU `cpu`'s bit. Called AFTER the CR3/TTBR0 reload
+    /// that leaves this mm on `cpu` (the reload flushes that CPU's old
+    /// user TLB first, so clearing afterwards is sound). Must be gated on
+    /// an actual switch to a DIFFERENT real root — clearing while the CPU
+    /// still holds the root in CR3 (lazy-TLB) reintroduces the
+    /// write-while-shared / use-after-free corruption.
+    /// # C: O(1)
+    pub fn clear_cpu(&self, cpu: usize) {
+        if cpu < 64 {
+            self.cpumask.fetch_and(!(1u64 << cpu), core::sync::atomic::Ordering::AcqRel);
+        }
+    }
+
     /// Clone VMA tree into a new AS with the supplied PT root.
     /// Mapped pages are NOT copied; child entries demand-page on
     /// first access (KernelBytes copy, Anonymous zero-fill).
@@ -257,7 +313,7 @@ impl AddressSpace {
         for vma in src.iter() {
             dst.insert(vma.clone()).map_err(|_| Error::NoMem)?;
         }
-        Ok(Arc::new(Self {
+        Ok(Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(dst),
             root_pa: new_root_pa,
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
@@ -265,6 +321,10 @@ impl AddressSpace {
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
+            self_weak: w.clone(),
+            // Fresh/forked AS: no CPU has loaded it yet (Linux clears
+            // mm_cpumask on mm init; the activating CPU sets its bit).
+            cpumask: core::sync::atomic::AtomicU64::new(0),
         }))
     }
 
@@ -313,6 +373,39 @@ impl AddressSpace {
         }
         for vma in src.iter() {
             let writable = vma.prot.contains(VmaProt::WRITE);
+            // MAP_SHARED VMAs are NOT copy-on-write: parent and child keep
+            // writing the SAME frame (Linux shmem / MAP_SHARED|MAP_ANON). The
+            // child maps it writable and the parent stays writable — no W-strip,
+            // no COW split. Critical now that tmpfs/memfd MAP_SHARED aliases real
+            // frames: COW-splitting them on fork would silently fork the journal
+            // page away from journald's shared view.
+            // REVERTED fix #8: keeping VMAs writable-across-fork for the SHARED
+            // flag caused WRITE-WHILE-SHARED corruption — a private page stayed
+            // writable in both parent and child, so parallel-forked children
+            // (systemd's generators) clobbered each other's memory (garbage
+            // syscall args, futex wedge). PROOF: forcing COW for all VMAs made
+            // the garbage corruption vanish (no PID1 crash either). Linux maps
+            // EVERY fork-shared anon/private page READ-ONLY and copies on first
+            // write; genuine MAP_SHARED needs a real shared backing object (the
+            // tmpfs/memfd path, fix #7), NOT in-place writable COW frames.
+            //
+            // CORRECTED (refcount-safe, Linux mm/memory.c): the blanket
+            // `shared=false` ALSO caught genuine inode-backed MAP_SHARED
+            // (memfd/tmpfs File VMAs whose pages ARE the inode's shared
+            // frames). Forcing those through COW W-stripped the shared frame
+            // and copied it private on first write, so a forked peer silently
+            // froze its shared view at fork time and never saw later writes
+            // (lost-write / stale-read corruption — a random journald/systemd
+            // shared-memfd page read garbage -> SIGSEGV). Linux DOES share
+            // these across fork (one backing object, no anon_vma, no COW).
+            // Restrict the share decision to File-backed SHARED VMAs: anon
+            // (incl. MAP_SHARED|ANON, which we lack a shmem backing for) stays
+            // on the COW path so the reverted anon write-while-shared bug stays
+            // fixed; only true file backings keep their frame writable+shared.
+            // Refcount is unaffected — `inc_ref` + `map_at` below run for both
+            // branches; `shared` only gates the W-strip + parent RO-remap.
+            let shared = vma.flags.contains(VmaFlags::SHARED)
+                && matches!(vma.backing, VmaBacking::File { .. });
             // B18 fix: COW-share Anonymous + KernelBytes + File-backed
             // frames. File backings are required so child processes
             // inherit their parent's mmap'd shared-library mappings
@@ -342,7 +435,7 @@ impl AddressSpace {
                     // strip the W bit so first-write triggers
                     // copy-on-write split. Else use the VMA prot
                     // verbatim (RO/RX pages stay shared forever).
-                    let child_prot = if writable {
+                    let child_prot = if writable && !shared {
                         let mut p = vma.prot;
                         p.remove(VmaProt::WRITE);
                         p
@@ -359,19 +452,41 @@ impl AddressSpace {
                     // M::map writes through the active CR3 (parent's
                     // root). M::map's own implementation flushes the
                     // VA on x86; aarch64 may need an explicit flush.
-                    if writable {
+                    if writable && !shared {
                         // SAFETY: parent's CR3 is active; same-PA remap
                         // with W bit cleared; pa is current mapping per
                         // translate above.
                         unsafe { M::map(Va(va), Pa(pa), child_flags, PageSize::P4K); }
                         // SAFETY: privileged TLB invalidation is legal at CPL=0/EL1.
                         unsafe { M::flush_va(Va(va)); }
+                        // debug-cow: this frame is now RO-shared between
+                        // parent + child. Snapshot its content; any later
+                        // change before a COW copy = a peer wrote a RO-shared
+                        // page (stale TLB / wrong frame). No-op when feature
+                        // off. ANON → [COW-CORRUPT]; FILE-private (shared-lib
+                        // .data/GOT/.bss W-stripped at fork) → [FILE-CORRUPT].
+                        if matches!(vma.backing, VmaBacking::Anonymous) {
+                            crate::debug_cow::record(pa, _hhdm_offset);
+                        } else if matches!(vma.backing, VmaBacking::File { .. }) {
+                            crate::debug_cow::record_file(pa, _hhdm_offset);
+                        }
                     }
                 }
                 va += PAGE_SIZE_BYTES;
             }
         }
-        let child = Arc::new(Self {
+        // SMP TLB coherence (`20§5`): we just write-protected the parent's
+        // own PTEs (the W-strip above) on THIS CPU only. Other CPUs running
+        // a peer thread of the SAME mm still hold the old WRITABLE entries in
+        // their TLB and would write straight into frames now COW-shared with
+        // the child — write-while-shared corruption invisible to refcount.
+        // x86 invlpg is local-only (no hardware broadcast like aarch64
+        // tlbi-is), so broadcast a full remote flush. No-op on UP / aarch64 /
+        // hosted. One full flush beats a per-page IPI across the whole AS.
+        // Target only the CPUs that have THIS mm loaded (the parent's
+        // cpumask) per Linux flush_tlb_others — not every online CPU.
+        hal::tlb::shootdown_others_all(self.cpumask());
+        let child = Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(dst),
             root_pa: new_root_pa,
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
@@ -379,6 +494,10 @@ impl AddressSpace {
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
+            self_weak: w.clone(),
+            // Fresh/forked AS: no CPU has loaded it yet (Linux clears
+            // mm_cpumask on mm init; the activating CPU sets its bit).
+            cpumask: core::sync::atomic::AtomicU64::new(0),
         });
         // Linux `anon_vma_fork`: each anonymous VMA in the child
         // inherits the parent's `Arc<AnonVma>` (already cloned by
@@ -454,7 +573,7 @@ impl AddressSpace {
                 va += PAGE_SIZE_BYTES;
             }
         }
-        Ok(Arc::new(Self {
+        Ok(Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(dst),
             root_pa: new_root_pa,
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
@@ -462,6 +581,10 @@ impl AddressSpace {
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
+            self_weak: w.clone(),
+            // Fresh/forked AS: no CPU has loaded it yet (Linux clears
+            // mm_cpumask on mm init; the activating CPU sets its bit).
+            cpumask: core::sync::atomic::AtomicU64::new(0),
         }))
     }
 
@@ -561,8 +684,24 @@ impl AddressSpace {
         };
 
         let end_va = end_of(start_va, len_u64)?;
+        let is_anon_vma = matches!(backing, VmaBacking::Anonymous);
         tree.insert(Vma::new(start_va, end_va, prot, flags, backing))
             .map_err(|_| Error::Inval)?;
+        // A4-rmap (GAP A4-1): attach the owning-AS chain edge for the
+        // newly mapped range. Linux `anon_vma_prepare`: the originating
+        // mapping MUST be on the chain, or `rmap_walk_anon` enumerates
+        // zero targets for a never-forked page (the AS that owns it is
+        // invisible). Previously only `fork_cow_pages` attached edges,
+        // and only for the child — the parent self-edge was attached
+        // nowhere. Bind to the VMA actually in the tree at `start_va`
+        // (which may have absorbed `[start_va,end_va)` via an abutting
+        // merge), attaching only the newly added sub-range so a merged
+        // family never gets an overlapping (double-counting) edge.
+        if is_anon_vma {
+            if let Some(av) = tree.find_containing(start_va).and_then(|v| v.anon_vma.clone()) {
+                av.attach(self.self_weak.clone(), start_va.as_u64(), end_va.as_u64());
+            }
+        }
         Ok(start_va)
     }
 
@@ -575,7 +714,54 @@ impl AddressSpace {
         validate_aligned(addr)?;
         let end = end_of(addr, len as u64)?;
         let mut tree = self.vmas.write();
-        let _ = tree.remove_range(addr, end);
+        // A4-rmap (GAP A4-2): detach the anon_vma chain edges of every
+        // VMA the unmap touches (their pre-split ranges), then re-attach
+        // the surviving fragments' new ranges after the tree mutation.
+        // Linux `unlink_anon_vmas` / `__split_vma` keep the chain in
+        // lock-step with the VMA tree; lazy weak-pruning alone leaves
+        // stale wide edges (still PTE-checked by the walker, so this is
+        // hygiene, not a soundness fix — but it keeps the chain bounded).
+        self.rmap_resplit(&mut tree, addr.as_u64(), end.as_u64(), |t, s, e| { let _ = t.remove_range(
+            UserVirtAddr::new(s).expect("uva"), UserVirtAddr::new(e).expect("uva")); Ok(()) })?;
+        Ok(())
+    }
+
+    /// A4-rmap helper: snapshot the anon edges overlapping `[s,e)`,
+    /// detach them, run `op` (the tree mutation), then re-attach every
+    /// anon VMA fragment still present in the touched super-range. Used
+    /// by `munmap` and `mprotect` so VMA splits keep precise rmap edges.
+    /// # C: O(K_touched · N_edges)
+    fn rmap_resplit<O>(&self, tree: &mut VmaTree, s: u64, e: u64, op: O) -> KResult<()>
+    where O: FnOnce(&mut VmaTree, u64, u64) -> KResult<()> {
+        // Pass 1: the super-range [lo,hi) spanned by every VMA the op
+        // touches (overlaps [s,e)). Splits stay within this span.
+        let (mut lo, mut hi) = (u64::MAX, 0u64);
+        for v in tree.iter() {
+            if v.end.as_u64() > s && v.start.as_u64() < e {
+                lo = lo.min(v.start.as_u64());
+                hi = hi.max(v.end.as_u64());
+            }
+        }
+        if lo > hi { return op(tree, s, e); } // nothing anon to re-key
+        // Pass 2: detach EVERY anon edge inside [lo,hi) (not just the
+        // [s,e)-overlapping ones) so a fully-contained but untouched VMA
+        // is detached and re-attached with the SAME range (net no-op) —
+        // never double-attached. Detach matches one (weak,start,end).
+        let detach: Vec<(Arc<crate::AnonVma>, u64, u64)> = tree.iter()
+            .filter(|v| v.end.as_u64() > lo && v.start.as_u64() < hi)
+            .filter_map(|v| v.anon_vma.as_ref()
+                .map(|av| (Arc::clone(av), v.start.as_u64(), v.end.as_u64())))
+            .collect();
+        for (av, vs, ve) in &detach { av.detach(&self.self_weak, *vs, *ve); }
+        op(tree, s, e)?;
+        // Pass 3: re-attach every surviving anon fragment in [lo,hi).
+        for v in tree.iter() {
+            if v.end.as_u64() > lo && v.start.as_u64() < hi {
+                if let Some(av) = v.anon_vma.as_ref() {
+                    av.attach(self.self_weak.clone(), v.start.as_u64(), v.end.as_u64());
+                }
+            }
+        }
         Ok(())
     }
 
@@ -594,7 +780,13 @@ impl AddressSpace {
         validate_aligned(addr)?;
         let end = end_of(addr, len as u64)?;
         let mut tree = self.vmas.write();
-        tree.mprotect_range(addr, end, prot)
+        // A4-rmap: mprotect splits VMAs at the range boundaries; keep the
+        // anon_vma chain edges in step with the new fragments.
+        self.rmap_resplit(&mut tree, addr.as_u64(), end.as_u64(), |t, s, e| {
+            t.mprotect_range(
+                UserVirtAddr::new(s).expect("uva"),
+                UserVirtAddr::new(e).expect("uva"), prot)
+        })
     }
 
     /// True if any VMA in `[addr, addr+len)` is mseal'd. The syscall layer
@@ -710,11 +902,12 @@ impl AddressSpace {
         // user-fault dispatcher uses `handle_page_fault_cow_rmap`.
         // SAFETY: forwarded preconditions per `handle_page_fault_cow_rmap`.
         unsafe {
-            self.handle_page_fault_cow_rmap::<M, _, _, _, _, _>(
+            self.handle_page_fault_cow_rmap::<M, _, _, _, _, _, _>(
                 va, fault, hhdm_offset,
                 alloc_frame, frame_refcount, dec_ref,
                 |_pa, _av, _idx| {},
                 |_pa| {},
+                |_pa| false, // no PageMeta exclusivity proof → copy-always
             )
         }
     }
@@ -726,7 +919,7 @@ impl AddressSpace {
     /// `page_add_anon_rmap`. Hosted tests pin no-op `set_rmap`.
     /// # SAFETY: per `handle_page_fault_cow`.
     /// # C: O(N_vmas) on lookup + O(walk) on install.
-    pub unsafe fn handle_page_fault_cow_rmap<M, A, RC, DR, SR, IR>(
+    pub unsafe fn handle_page_fault_cow_rmap<M, A, RC, DR, SR, IR, XR>(
         &self,
         va: UserVirtAddr,
         fault: FaultKind,
@@ -736,6 +929,7 @@ impl AddressSpace {
         mut dec_ref: DR,
         mut set_rmap: SR,
         mut inc_ref: IR,
+        mut reuse_ok: XR,
     ) -> KResult<()>
     where
         M:  MmuOps,
@@ -744,6 +938,14 @@ impl AddressSpace {
         DR: FnMut(u64),
         SR: FnMut(u64, &Arc<crate::AnonVma>, u32),
         IR: FnMut(u64),
+        // A3: `reuse_ok(pa)` returns true iff `pa` is an exclusively-owned
+        // anonymous frame (Linux `PageAnonExclusive` + mapcount==1) — the
+        // sole-mapper proof that lets a write fault reuse the frame in
+        // place (`wp_page_reuse`) instead of COW-copying. The kernel
+        // adapter implements it as `is_anon && is_anon_exclusive &&
+        // mapcount==1` over `PageMeta`; hosted no-op callers pass
+        // `|_| false` (copy-always, the previous behaviour).
+        XR: FnMut(u64) -> bool,
     {
         // Protection write to a writable VMA — CoW-style
         // upgrade. Three causes hit this:
@@ -772,22 +974,116 @@ impl AddressSpace {
             let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
             // SAFETY: va_page is in user-half; M::translate reads the active PT for the running task's CR3 / TTBR0; vma is the live snapshot for `va`.
             let cur = unsafe { M::translate(Va(va_page)) };
-            // COW fast path: if we're the sole owner of the frame
-            // (refcount==1), no copy needed — flip the W bit in
-            // place. Linux `mm/memory.c` `wp_page_copy` short-circuit.
-            if let Some((src_pa, _)) = cur {
-                let pa = src_pa.0 & !0xfff;
-                if frame_refcount(pa) <= 1 {
-                    let pte_flags = vma.prot.to_page_flags();
-                    // SAFETY: same-PA remap with W bit set; no other
-                    // AS holds this frame per refcount==1; flush_va
-                    // ensures hardware re-walks.
-                    unsafe {
-                        M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K);
-                        M::flush_va(Va(va_page));
+            // DIAG (debug-mount): trace COW write to the libc lock page. If a
+            // fork-shared lock page takes the fast path (refcount<=1 → flip W
+            // in place) while a peer still maps it, the write corrupts the
+            // peer's lock → the wedge. Logs the refcount + fast/slow decision.
+            #[cfg(feature = "debug-mount")]
+            if let VmaBacking::File { backing, off } = &vma.backing {
+                let foff = off.wrapping_add(va_page - vma.start.as_u64());
+                if foff == 0x1e7000 && backing.ino() == 0x6e54000000062076 {
+                    let srcpa = cur.map(|(p, _)| p.0 & !0xfff).unwrap_or(0);
+                    let rc = if srcpa != 0 { frame_refcount(srcpa) } else { 0 };
+                    // Read the actual stuck lock word (glibc .bss `lock`,
+                    // page offset 0xb68 — uaddr 0x..db68) from the old COW
+                    // frame. Non-zero ⇒ the page holds stale FILE bytes
+                    // (ld.so's .bss memset was reverted) → glibc sees the
+                    // lock held → futex_wait forever, no waker.
+                    let lockw = if srcpa != 0 { unsafe {
+                        core::ptr::read_volatile((hhdm_offset + srcpa + 0xb68) as *const u32)
+                    } } else { 0 };
+                    klog::write_raw(b"[mnt] COW-LOCK va="); klog::write_hex_u64(va_page);
+                    klog::write_raw(b" srcpa=");             klog::write_hex_u64(srcpa);
+                    klog::write_raw(b" rc=");                klog::write_dec_u64(rc as u64);
+                    klog::write_raw(b" lockw=");             klog::write_hex_u64(lockw as u64);
+                    klog::write_raw(if rc <= 1 { b" FAST\n" } else { b" slow\n" });
+                }
+            }
+            // COW fast path: reuse the frame in place (flip W, no copy) ONLY
+            // for an exclusively-owned ANONYMOUS page — Linux `wp_page_reuse`
+            // requires `PageAnonExclusive`. A private File/KernelBytes page is
+            // NEVER reused in place: it must COW-copy, because the frame can be
+            // aliased through the page cache or a fork peer in ways the bare
+            // struct-page refcount doesn't capture. Reusing a file page in
+            // place let one process's loader-scratch write land in a fork
+            // peer's still-shared libc page (the .bss lock → glibc deadlock).
+            // A3 (re-enabled, Linux `wp_page_reuse`): reuse the frame in
+            // place — flip W, no alloc/copy/refcount-change — iff `reuse_ok`
+            // proves the page is exclusively owned. The kernel adapter
+            // computes that from `PageMeta` as `is_anon && PageAnonExclusive
+            // && mapcount==1`, the reliable replacement for the old
+            // `frame_refcount<=1` proxy that under-counted and corrupted a
+            // fork peer (random glibc-.data byte flips / "Failed to spawn
+            // executor" storm / futex wedge). The exclusive bit is CLEARED on
+            // every fork-share (`pmm::setup::inc_ref`), so a still-shared frame
+            // never satisfies `reuse_ok` and always COW-copies below. Gated on
+            // an Anonymous backing: File/KernelBytes private pages can alias
+            // the page cache / fork peers in ways struct-page state misses, so
+            // they must always copy.
+            if matches!(vma.backing, VmaBacking::Anonymous) {
+                if let Some((src_pa, _)) = cur {
+                    let cur_pa = src_pa.0 & !(PAGE_SIZE_BYTES - 1);
+                    if reuse_ok(cur_pa) {
+                        let pte_flags = vma.prot.to_page_flags();
+                        // SAFETY: va_page page-aligned per find_containing; cur_pa is the
+                        // sole-owned anon frame already mapped here (mapcount==1, exclusive);
+                        // flags carry USER+WRITE since vma.prot.WRITE checked above. No
+                        // refcount/mapcount change: the same frame keeps its single mapping.
+                        unsafe {
+                            M::map(Va(va_page), Pa(cur_pa), pte_flags, PageSize::P4K);
+                            M::flush_va(Va(va_page));
+                        }
+                        // debug-cow: the frame is now writable + exclusively
+                        // owned (Linux wp_page_reuse) — it will legitimately be
+                        // mutated, so drop any RO-shared snapshot to avoid a
+                        // false [COW-CORRUPT] at free. No-op when feature off.
+                        crate::debug_cow::forget(cur_pa);
+                        return Ok(());
                     }
-                    let _ = hhdm_offset;
-                    return Ok(());
+                }
+            }
+            // MAP_SHARED of a page-frame-backed file (memfd/tmpfs): a write
+            // fault must make the SHARED frame itself writable in place (Linux
+            // shmem dirty path) — never COW-copy, or this write diverges from
+            // the file + every peer mapper (lost-write corruption). The page is
+            // RO here only because a prior fork W-stripped it (or mprotect did);
+            // re-install the SAME inode frame writable. No alloc, no copy, no
+            // refcount change (we keep our existing reference to `cur`).
+            if vma.flags.contains(VmaFlags::SHARED) && !cfg!(feature = "debug-no-shmem") {
+                if let (VmaBacking::File { backing, off }, Some((src_pa, _))) = (&vma.backing, cur) {
+                    let cur_pa = src_pa.0 & !(PAGE_SIZE_BYTES - 1);
+                    let foff = off.wrapping_add(va_page - vma.start.as_u64());
+                    if backing.shared_frame(foff) == Some(cur_pa) {
+                        let pte_flags = vma.prot.to_page_flags();
+                        // SAFETY: va_page page-aligned per find_containing; cur_pa is the
+                        // inode-owned shared frame already mapped here (refcount held);
+                        // flags carry USER+WRITE since vma.prot.WRITE checked above.
+                        unsafe {
+                            M::map(Va(va_page), Pa(cur_pa), pte_flags, PageSize::P4K);
+                            M::flush_va(Va(va_page));
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+            // debug-cow: we are about to COW-copy this anon frame, i.e. we
+            // treat it as still RO-shared (reuse_ok was false). If the
+            // struct-page refcount says it is exclusively owned (rc<=1) the
+            // accounting under-counted a live PTE — the residual-bug signature
+            // (a peer still maps a frame we believe nobody else holds). Cheap
+            // O(1) read; no walk. Anonymous-only: File/KernelBytes private
+            // pages legitimately copy while rc==1.
+            #[cfg(feature = "debug-cow")]
+            if matches!(vma.backing, VmaBacking::Anonymous) {
+                if let Some((src_pa, _)) = cur {
+                    let cur_pa = src_pa.0 & !(PAGE_SIZE_BYTES - 1);
+                    let rc = frame_refcount(cur_pa);
+                    if rc <= 1 {
+                        klog::write_raw(b"[COW-RC] under-count frame="); klog::write_hex_u64(cur_pa);
+                        klog::write_raw(b" va="); klog::write_hex_u64(va_page);
+                        klog::write_raw(b" rc="); klog::write_dec_u64(rc as u64);
+                        klog::write_raw(b"\n");
+                    }
                 }
             }
             // Shared frame (refcount > 1) or no current mapping:
@@ -805,10 +1101,11 @@ impl AddressSpace {
             }
             let pte_flags = vma.prot.to_page_flags();
             // SAFETY: va_page page-aligned in user-half; new_pa fresh PMM frame; flags carry USER + WRITE since vma.prot.WRITE checked above.
-            unsafe {
-                M::map(Va(va_page), Pa(new_pa), pte_flags, PageSize::P4K);
+            let displaced = unsafe {
+                let d = M::map(Va(va_page), Pa(new_pa), pte_flags, PageSize::P4K);
                 M::flush_va(Va(va_page));
-            }
+                d
+            };
             // F156-rmap: bind new private page to the VMA's anon_vma
             // family with the page-offset index per Linux
             // `page_add_anon_rmap`. Caller's `set_rmap` is the kernel
@@ -817,12 +1114,27 @@ impl AddressSpace {
                 let idx = ((va_page - vma.start.as_u64()) / PAGE_SIZE_BYTES) as u32;
                 set_rmap(new_pa, av, idx);
             }
-            // F157: drop our reference to the shared frame. If its
-            // refcount hits zero (other AS already unmapped), the
-            // dec_ref callback chains into pmm::setup::dec_and_maybe_free
-            // and returns the page to the allocator.
-            if let Some((src_pa, _)) = cur {
-                dec_ref(src_pa.0 & !0xfff);
+            // SMP TLB coherence (`20§5`): this COW split rewrote the shared
+            // page-table entry `va_page -> new_pa` (writable). Peer threads of
+            // the SAME mm on other CPUs still cache `va_page -> old` (the
+            // shared frame) and must invalidate it BEFORE we drop our
+            // reference below — otherwise `old` can be freed + realloc'd while
+            // a peer still reads/writes it through the stale entry. Local
+            // flush already happened in `M::map`; broadcast to the others.
+            // No-op on UP / aarch64 / hosted. Target only the CPUs that
+            // have this mm loaded (self.cpumask), per flush_tlb_others.
+            hal::tlb::shootdown_others_va(va_page, self.cpumask());
+            // F157-A1: drop our reference to the displaced (formerly
+            // W-stripped shared) frame. `M::map` above tore the old leaf down
+            // and returned its PA; `dec_ref` chains into
+            // pmm::setup::dec_and_maybe_free, freeing the frame iff no peer AS
+            // still maps it. This REPLACES the previous manual `dec_ref(cur)`:
+            // the displaced return is the authoritative torn-down PA (== `cur`
+            // on UP), so accounting it here — and ONLY here — keeps refcount ==
+            // live-PTE count. (Keeping both would double-dec → free-while-
+            // mapped, the inverse RANK-1 corruption.)
+            if let Some(old) = displaced {
+                dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
             }
             return Ok(());
         }
@@ -856,7 +1168,19 @@ impl AddressSpace {
                 let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
                 let pte_flags = vma.prot.to_page_flags();
                 // SAFETY: va_page is the page-aligned faulting user-half VA per find_containing; pa is a fresh PMM frame; flags carry USER for the leaf U bit per `11§5` to_pte_flags; MmuOps state initialised by the live per-arch impl.
-                unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K); }
+                // F157-A1: a demand fault normally installs over an empty slot
+                // (`None`); if a stale present leaf is displaced, dec_ref it so
+                // refcount stays == live-PTE count (the RANK-1 fix).
+                if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                    // GAP-1 (displaced-frame UAF): this fault displaced a
+                    // present leaf; dec_ref below may free `old`. A peer CPU
+                    // of the same mm with a stale TLB entry for va_page->old
+                    // could touch a freed+realloc'd frame. Flush peers (this
+                    // mm's cpumask only) BEFORE dropping our reference. No-op
+                    // on UP / aarch64 / hosted.
+                    hal::tlb::shootdown_others_va(va_page, self.cpumask());
+                    dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                }
                 // F156-rmap: bind the freshly-allocated anonymous
                 // page to its VMA family per `page_add_anon_rmap`.
                 if let Some(av) = vma.anon_vma.as_ref() {
@@ -902,28 +1226,175 @@ impl AddressSpace {
                 }
                 let pte_flags = vma.prot.to_page_flags();
                 // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
-                unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K); }
+                // F157-A1: dec_ref any frame displaced by a stale present leaf.
+                if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                    // GAP-1 (displaced-frame UAF): this fault displaced a
+                    // present leaf; dec_ref below may free `old`. A peer CPU
+                    // of the same mm with a stale TLB entry for va_page->old
+                    // could touch a freed+realloc'd frame. Flush peers (this
+                    // mm's cpumask only) BEFORE dropping our reference. No-op
+                    // on UP / aarch64 / hosted.
+                    hal::tlb::shootdown_others_va(va_page, self.cpumask());
+                    dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                }
                 Ok(())
             }
             VmaBacking::File { backing, off: backing_off } => {
                 // File-backed demand-fault per `11§5` + `17§5`. The
                 // backing impl reads through the page cache; bytes
                 // past file end zero-fill.
-                let pa = alloc_frame().ok_or(Error::NoMem)?;
                 let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
                 let vma_off = (va_page - vma.start.as_u64()) as u64;
                 let file_off = backing_off.saturating_add(vma_off);
                 let page = PAGE_SIZE_BYTES as usize;
+                // MAP_SHARED of a page-frame-backed file (tmpfs/memfd): install
+                // the backing's PERSISTENT frame directly so user writes alias
+                // the file's storage and propagate to read/write + every other
+                // mapper (Linux shmem). The read_at-copy below is MAP_PRIVATE-
+                // only (a COW snapshot). The frame stays alive while mapped: the
+                // FileBacking Arc in this VMA pins the inode (which holds the
+                // frame's base refcount), and our inc_ref here is balanced by
+                // the AS-teardown dec on this leaf.
+                if vma.flags.contains(VmaFlags::SHARED) && !cfg!(feature = "debug-no-shmem") {
+                    if let Some(spa) = backing.shared_frame(file_off) {
+                        #[cfg(feature = "debug-boot")]
+                        {
+                            klog::write_raw(b"[shmem map] va="); klog::write_hex_u64(va_page);
+                            klog::write_raw(b" pa="); klog::write_hex_u64(spa);
+                            klog::write_raw(b" ino="); klog::write_hex_u64(backing.ino());
+                            klog::write_raw(b"\n");
+                        }
+                        inc_ref(spa);
+                        let pte_flags = vma.prot.to_page_flags();
+                        // SAFETY: va_page page-aligned per find_containing; spa is
+                        // the inode-owned shared frame whose refcount we just
+                        // bumped; flags carry USER per `11§5`.
+                        // F157-A1: dec_ref any frame displaced by a stale leaf
+                        // (e.g. a private COW snapshot being replaced by the
+                        // shared inode frame). `inc_ref(spa)` above is balanced
+                        // by AS-teardown; the displaced frame is separate.
+                        if let Some(old) = unsafe { M::map(Va(va_page), Pa(spa), pte_flags, PageSize::P4K) } {
+                            // GAP-1 (displaced-frame UAF): a private COW snapshot
+                            // displaced here may be freed by dec_ref; flush peers
+                            // holding a stale va_page->old entry first. cpumask-
+                            // targeted; no-op on UP / aarch64 / hosted.
+                            hal::tlb::shootdown_others_va(va_page, self.cpumask());
+                            dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                        }
+                        return Ok(());
+                    }
+                }
+                let pa = alloc_frame().ok_or(Error::NoMem)?;
+                // B240: a non-EOF page MUST be filled completely before its PTE
+                // is installed. `read_at` is permitted to return SHORT (page-
+                // cache build race, block/extent boundary, or a short
+                // `Inode::read`); discarding that count and installing the leaf
+                // anyway left the unread bytes ZERO — ld.so then read zeros where
+                // library code / relocation data belonged and exit(127)'d ("error
+                // while loading shared libraries"). Retry-fill the file-valid
+                // extent until full, a real EOF (no progress), or an FS error;
+                // only the genuine-EOF tail is legitimately zero. On an
+                // unrecoverable short, surface a fatal fault (Linux
+                // filemap_fault VM_FAULT_SIGBUS leg, `17§5`) — never a partial page.
+                let fsize = backing.size_hint();
+                // Bytes that genuinely belong to the file in this page: whole
+                // PAGE for an in-file page, `fsize - file_off` for a page
+                // straddling EOF, 0 for a page wholly past EOF (pure BSS).
+                let valid = if file_off >= fsize { 0usize }
+                            else { core::cmp::min(page as u64, fsize - file_off) as usize };
                 // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at hhdm_offset+pa is mapped writable; full page owned exclusively until M::map below makes it user-visible.
-                unsafe {
+                let short = unsafe {
                     let dst = (hhdm_offset + pa) as *mut u8;
                     core::ptr::write_bytes(dst, 0, page);
                     let slice = core::slice::from_raw_parts_mut(dst, page);
-                    let _ = backing.read_at(file_off, slice);
+                    let mut filled = 0usize;
+                    let mut err = false;
+                    while filled < valid {
+                        match backing.read_at(file_off + filled as u64, &mut slice[filled..valid]) {
+                            Ok(0)   => break,                 // no progress → real short/EOF
+                            Ok(n)   => {
+                                #[cfg(feature = "debug-shortfill")]
+                                if filled + n < valid {
+                                    // A non-EOF region returned short — the exact B240 symptom,
+                                    // caught here even when the retry below recovers it.
+                                    klog::write_raw(b"[SHORT-FILE-FAULT ino="); klog::write_hex_u64(backing.ino());
+                                    klog::write_raw(b" off="); klog::write_hex_u64(file_off + filled as u64);
+                                    klog::write_raw(b" n="); klog::write_hex_u64(n as u64);
+                                    klog::write_raw(b" valid="); klog::write_hex_u64(valid as u64);
+                                    klog::write_raw(b" size="); klog::write_hex_u64(fsize);
+                                    klog::write_raw(b"]\n");
+                                }
+                                filled += n;
+                            }
+                            Err(()) => { err = true; break; }
+                        }
+                    }
+                    err || filled < valid
+                };
+                if short {
+                    // Unrecoverable: the backing could not supply the full
+                    // file-valid extent. Do NOT install a partially-zero page
+                    // (silent corruption). Free the fresh frame and fail the
+                    // fault → SIGBUS-equivalent at the dispatcher (false→fatal).
+                    #[cfg(feature = "debug-shortfill")]
+                    {
+                        klog::write_raw(b"[SHORT-FILE-FAULT-FATAL ino="); klog::write_hex_u64(backing.ino());
+                        klog::write_raw(b" off="); klog::write_hex_u64(file_off);
+                        klog::write_raw(b" valid="); klog::write_hex_u64(valid as u64);
+                        klog::write_raw(b" size="); klog::write_hex_u64(fsize);
+                        klog::write_raw(b"]\n");
+                    }
+                    dec_ref(pa);
+                    return Err(Error::Io);
+                }
+                // debug-cow (this arm is MAP_PRIVATE: the SHARED branch
+                // returned above). `pa` is a FRESH private copy of the file
+                // bytes — writes to it must never reach shared storage.
+                //   * If a frame-backed file (tmpfs/memfd) exposes a cache
+                //     frame for this offset, we just handed its content to a
+                //     private mapper: snapshot the cache frame so a later
+                //     private write that wrongly mutates it surfaces as
+                //     [PC-SHARED-WRITE]. Re-verify first (an earlier private
+                //     mapper may already have corrupted it). tid/cpu unknown
+                //     in mm-vmm here (=0); the authoritative tid is logged at
+                //     the cache frame's free in pmm `check_free`.
+                //   * If this private page is installed READ-ONLY (no WRITE in
+                //     prot, e.g. a private RX/RO file map), track the copy for
+                //     [FILE-CORRUPT] — it must stay byte-stable until COW.
+                #[cfg(feature = "debug-cow")]
+                {
+                    if let Some(cpa) = backing.shared_frame(file_off) {
+                        crate::debug_cow::check_pagecache(cpa, va_page, hhdm_offset, 0, 0);
+                        crate::debug_cow::record_pagecache(cpa, hhdm_offset);
+                    }
+                    if !vma.flags.contains(VmaFlags::SHARED) && !vma.prot.contains(VmaProt::WRITE) {
+                        crate::debug_cow::record_file(pa, hhdm_offset);
+                    }
+                }
+                // DIAG (debug-mount): log the libc lock page's VA on File-fault
+                // so a spurious zap+refault (re-read of file content over ld.so's
+                // memset) is correlatable with the EVICT/MUNMAP zap tracer.
+                #[cfg(feature = "debug-mount")]
+                #[cfg(feature = "debug-mount")]
+                if file_off == 0x1e7000 && backing.ino() == 0x6e54000000062076 {
+                    klog::write_raw(b"[mnt] FFAULT-LOCK root="); klog::write_hex_u64(self.root_pa);
+                    klog::write_raw(b" va=");  klog::write_hex_u64(va_page);
+                    klog::write_raw(b" pa=");  klog::write_hex_u64(pa);
+                    klog::write_raw(b"\n");
                 }
                 let pte_flags = vma.prot.to_page_flags();
                 // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
-                unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K); }
+                // F157-A1: dec_ref any frame displaced by a stale present leaf.
+                if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                    // GAP-1 (displaced-frame UAF): this fault displaced a
+                    // present leaf; dec_ref below may free `old`. A peer CPU
+                    // of the same mm with a stale TLB entry for va_page->old
+                    // could touch a freed+realloc'd frame. Flush peers (this
+                    // mm's cpumask only) BEFORE dropping our reference. No-op
+                    // on UP / aarch64 / hosted.
+                    hal::tlb::shootdown_others_va(va_page, self.cpumask());
+                    dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                }
                 Ok(())
             }
             VmaBacking::KernelFrame { pa } => {
@@ -931,7 +1402,18 @@ impl AddressSpace {
                 let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
                 let pte_flags = vma.prot.to_page_flags();
                 // SAFETY: pa is a kernel-owned frame whose lifetime exceeds every user mapping; va_page is page-aligned per find_containing; flags carry USER per `11§5`.
-                unsafe { M::map(Va(va_page), Pa(*pa), pte_flags, PageSize::P4K); }
+                // F157-A1: dec_ref any frame displaced by a stale present leaf
+                // (separate from the KernelFrame's own `inc_ref(*pa)` below).
+                if let Some(old) = unsafe { M::map(Va(va_page), Pa(*pa), pte_flags, PageSize::P4K) } {
+                    // GAP-1 (displaced-frame UAF): this fault displaced a
+                    // present leaf; dec_ref below may free `old`. A peer CPU
+                    // of the same mm with a stale TLB entry for va_page->old
+                    // could touch a freed+realloc'd frame. Flush peers (this
+                    // mm's cpumask only) BEFORE dropping our reference. No-op
+                    // on UP / aarch64 / hosted.
+                    hal::tlb::shootdown_others_va(va_page, self.cpumask());
+                    dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                }
                 inc_ref(*pa);
                 Ok(())
             }
@@ -944,7 +1426,20 @@ impl AddressSpace {
                 let off = va_page - vma.start.as_u64();
                 let pte_flags = vma.prot.to_page_flags();
                 // SAFETY: base_pa+off is device fb memory owned by the GPU driver for the kernel lifetime; va_page is page-aligned per find_containing; flags carry USER per `11§5`.
-                unsafe { M::map(Va(va_page), Pa(*base_pa + off), pte_flags, PageSize::P4K); }
+                // F157-A1: the device frame itself is never refcounted, but a
+                // real PMM frame previously mapped at this VA (displaced here)
+                // must still be dec_ref'd. `dec_ref` no-ops on out-of-range
+                // (device) PAs, so this is safe even if `old` is device memory.
+                if let Some(old) = unsafe { M::map(Va(va_page), Pa(*base_pa + off), pte_flags, PageSize::P4K) } {
+                    // GAP-1 (displaced-frame UAF): this fault displaced a
+                    // present leaf; dec_ref below may free `old`. A peer CPU
+                    // of the same mm with a stale TLB entry for va_page->old
+                    // could touch a freed+realloc'd frame. Flush peers (this
+                    // mm's cpumask only) BEFORE dropping our reference. No-op
+                    // on UP / aarch64 / hosted.
+                    hal::tlb::shootdown_others_va(va_page, self.cpumask());
+                    dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                }
                 Ok(())
             }
             VmaBacking::Special => Err(Error::NotImplemented),

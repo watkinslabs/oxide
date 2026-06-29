@@ -4,23 +4,25 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_path, resolve, errno_from_vfs, resolve_parent};
+use crate::namei_common::{read_user_path, errno_from_vfs, resolve_parent, unlink_unix_socket_path};
 
 const AT_REMOVEDIR: u32 = 0x200;
 
-/// `unlinkat(dirfd, path, flags)` slot 263. We currently honour
-/// the `AT_REMOVEDIR` flag → rmdir; ignore dirfd (no per-fd
-/// directory state yet — paths are absolute or cwd-relative).
+/// `unlinkat(dirfd, path, flags)` slot 263. Honours `AT_REMOVEDIR`
+/// (→ rmdir) and resolves `path` against `dirfd`.
 /// # C: O(N parent entries)
 pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
-    let raw = match read_path(args.a1) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    let flags = args.a2 as u32;
+    // Unknown flag bits → EINVAL (Linux do_unlinkat: only AT_REMOVEDIR valid).
+    if flags & !AT_REMOVEDIR != 0 { return -(Errno::Einval.as_i32() as i64); }
+    // X4: EFAULT(bad ptr) / ENOENT(empty) / ENAMETOOLONG, not EINVAL.
+    let raw = match read_user_path(args.a1) {
+        Ok(s) => s, Err(rv) => return rv,
     };
     // BUG D follow-up: resolve against the real dirfd (a0).
-    let p = match crate::pathresolve::resolve_at(args.a0 as i32, &raw) {
-        Some(rp) => rp, None => resolve(&raw).unwrap_or(raw),
+    let p = match crate::pathresolve::resolve_at_result(args.a0 as i32, &raw) {
+        Ok(rp) => rp, Err(rv) => return rv,
     };
-    let flags = args.a2 as u32;
     let op = if (flags & AT_REMOVEDIR) != 0 {
         ::security::landlock::access::REMOVE_DIR
     } else {
@@ -34,10 +36,14 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
     if (flags & AT_REMOVEDIR) != 0 {
         return crate::s084_rmdir::do_rmdir(&p);
     }
+    if vfs::mount::is_readonly_path(&p) {
+        return -(Errno::Erofs.as_i32() as i64);
+    }
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
     match pino.unlink_child(&name) {
-        // d_delete: invalidate the cached dentry (see pathresolve::forget_path).
-        Ok(())  => { crate::pathresolve::forget_path(&p); 0 }
+        // d_delete: invalidate the cached dentry (see pathresolve::d_delete_path).
+        Ok(())  => { unlink_unix_socket_path(&p); crate::pathresolve::d_delete_path(&p); 0 }
+        Err(vfs::VfsError::Enoent) if unlink_unix_socket_path(&p) => 0,
         Err(e)  => errno_from_vfs(e),
     }
 }

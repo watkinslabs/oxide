@@ -31,14 +31,21 @@ impl Inode for ProcFdInfoDirInode {
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, name: &str) -> KResult<InodeRef> {
         let fd: i32 = name.parse().map_err(|_| VfsError::Enoent)?;
-        let file = sched::proclink::proc_fd_file(self.tid_opt, fd)
-            .ok_or(VfsError::Enoent)?;
-        Ok(Arc::new(ProcFdInfoInode { file }) as InodeRef)
+        // Validate the fd exists for the resolved task now (ENOENT like
+        // Linux on a stale fd), but DON'T capture the `Arc<File>`: the
+        // resulting inode may be dcache-cached under the literal path
+        // `/proc/self/fdinfo/<n>` and reused by a *different* process, so
+        // a frozen File would serve the first opener's open-file (and its
+        // pidfd `Pid:`) to everyone. Store `(tid_opt, fd)` and re-resolve
+        // live in `body()` — matches Linux seq_file fdinfo (reads the live
+        // `files_struct` at read() time).
+        sched::proclink::proc_fd_file(self.tid_opt, fd).ok_or(VfsError::Enoent)?;
+        Ok(Arc::new(ProcFdInfoInode { tid_opt: self.tid_opt, fd }) as InodeRef)
     }
     fn readdir(
         &self,
         off: u64,
-        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         let task = match self.tid_opt {
             None    => sched::live::current().and_then(|c|
@@ -60,7 +67,8 @@ impl Inode for ProcFdInfoDirInode {
             else { while t > 0 { buf[n] = b'0' + (t % 10) as u8; t /= 10; n += 1; } }
             buf[..n].reverse();
             let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
-            if !f(next, s, FileType::Regular) { return Ok(next); }
+            let ino = self.lookup(s).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, s, FileType::Regular) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -68,22 +76,41 @@ impl Inode for ProcFdInfoDirInode {
 }
 
 /// Body inode for /proc/<pid>/fdinfo/<n>.
+///
+/// Holds `(tid_opt, fd)`, NOT a captured `Arc<File>`: the File is
+/// re-resolved against the live task on every `read()` (Linux seq_file
+/// fdinfo reads the live `files_struct` at read time). Capturing the
+/// File froze the first opener's open-file into a dcache-cached
+/// `/proc/self/fdinfo/<n>` inode, which a later process then read back
+/// — yielding a stale pidfd `Pid:` and a synthetic systemd ESRCH.
 pub struct ProcFdInfoInode {
-    pub file: Arc<vfs::File>,
+    /// `None` ⇒ resolve `self` (live `current()`) at every read.
+    pub tid_opt: Option<u32>,
+    pub fd: i32,
 }
 
 impl ProcFdInfoInode {
     fn body(&self) -> Vec<u8> {
         let mut out: Vec<u8> = Vec::with_capacity(64);
+        // Re-resolve live: a cached `self` inode reflects the reading
+        // task, not the first opener. Closed fd / gone task ⇒ empty body
+        // (Linux revalidates the dentry away; an empty read is benign).
+        let file = match sched::proclink::proc_fd_file(self.tid_opt, self.fd) {
+            Some(f) => f,
+            None    => return out,
+        };
         let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut out), format_args!(
             "pos:\t{}\n\
              flags:\t0{:o}\n\
              mnt_id:\t0\n\
              ino:\t{}\n",
-            self.file.pos(),
-            self.file.flags().bits(),
-            self.file.inode().ino(),
+            file.pos(),
+            file.flags().bits(),
+            file.inode().ino(),
         ));
+        // Linux appends each fd type's own `show_fdinfo` lines after the
+        // generic header — pidfd emits `Pid:`/`NSpid:` here (systemd reads it).
+        file.inode().fdinfo_extra(&mut out);
         out
     }
 }
@@ -118,8 +145,10 @@ pub fn lookup_fdinfo_path(path: &str) -> Option<InodeRef> {
         None => Some(Arc::new(ProcFdInfoDirInode { tid_opt }) as InodeRef),
         Some(n_str) => {
             let fd: i32 = n_str.parse().ok()?;
-            let file = sched::proclink::proc_fd_file(tid_opt, fd)?;
-            Some(Arc::new(ProcFdInfoInode { file }) as InodeRef)
+            // Validate existence only; re-resolve the File live in body()
+            // (see ProcFdInfoInode — never capture across processes).
+            sched::proclink::proc_fd_file(tid_opt, fd)?;
+            Some(Arc::new(ProcFdInfoInode { tid_opt, fd }) as InodeRef)
         }
     }
 }

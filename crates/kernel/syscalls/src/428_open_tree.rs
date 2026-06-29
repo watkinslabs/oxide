@@ -21,19 +21,25 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
     let path = match read_cstr(args.a1, 256) {
         Some(s) => s, None => return -(Errno::Efault.as_i32() as i64),
     };
-    let abs = crate::pathresolve::resolve_cwd(&path);
+    let abs = match crate::pathresolve::resolve_at_result(args.a0 as i32, &path) {
+        Ok(p) => p, Err(rv) => return rv,
+    };
     let abs = if abs.len() > 1 { abs.trim_end_matches('/').to_string() } else { abs };
     let cloexec = (args.a2 & OPEN_TREE_CLOEXEC) != 0;
     if (args.a2 & OPEN_TREE_CLONE) != 0 {
         // Capture the mount rooted at `abs` (fs + root inode) into a
         // detached clone object.
         let (mnt, _) = match vfs::mount::resolve_mount(&abs) {
-            Some(m) => m, None => return -(Errno::Enoent.as_i32() as i64),
+            Some(m) => m,
+            None => {
+                crate::mount_common::mnt_log("open_tree_clone_NONE", &abs, -(Errno::Enoent.as_i32() as i64));
+                return -(Errno::Enoent.as_i32() as i64);
+            }
         };
-        let root = match mnt.root.clone().or_else(|| mnt.fs.root()) {
+        let root = match mnt.root.clone().or_else(|| mnt.fs().root()) {
             Some(r) => r, None => return -(Errno::Einval.as_i32() as i64),
         };
-        let mo = MountObjectInode::new_clone(mnt.fs.clone(), root) as InodeRef;
+        let mo = MountObjectInode::new_clone(mnt.fs().clone(), root) as InodeRef;
         return install_fd(mo, "open_tree", cloexec);
     }
     // Non-clone: an fd referring to the path's inode (O_PATH-ish).

@@ -6,6 +6,8 @@
     _environ;
     __daylight;
     __environ;
+    __mbrlen;
+    __mbrtowc;
     __progname;
     __progname_full;
     __signgam;

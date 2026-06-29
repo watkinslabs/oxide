@@ -24,7 +24,7 @@ pub enum Component<'a> {
 pub fn components(path: &str) -> Vec<Component<'_>> {
     let mut out = Vec::new();
     let mut start = 0usize;
-    if path.starts_with('/') {
+    if path.as_bytes().first() == Some(&b'/') {
         out.push(Component::Root);
     }
     let bytes = path.as_bytes();
@@ -54,10 +54,165 @@ fn push_segment<'a>(out: &mut Vec<Component<'a>>, seg: &'a str) {
     }
 }
 
+/// Linux per-component name limit (`NAME_MAX`, `linux/limits.h`): the longest
+/// single pathname component a filesystem accepts is 255 *bytes* (not scalar
+/// values). `link_path_walk`/`walk_component` reject a longer component with
+/// `ENAMETOOLONG` even when the whole pathname is well under `PATH_MAX` (the
+/// total-length gate, enforced separately at the syscall boundary).
+pub const NAME_MAX: usize = 255;
+
+/// On-disk byte length of a (possibly escape-decoded) string. Each escaped
+/// non-UTF-8 byte (`U+EE00..=U+EEFF`, see [`path_from_bytes`]) collapses to the
+/// one byte it stands for; every other char counts its UTF-8 length. Equal to
+/// `path_into_bytes(s).len()` without the allocation, so both the per-component
+/// `NAME_MAX` gate and the total-pathname `PATH_MAX` gate measure the bytes the
+/// original user buffer / an on-disk name holds — byte-accurate for non-UTF-8.
+/// # C: O(n)
+fn on_disk_byte_len(s: &str) -> usize {
+    let mut n = 0usize;
+    for c in s.chars() {
+        let u = c as u32;
+        if (BYTE_ESCAPE_BASE..=BYTE_ESCAPE_BASE + 0xFF).contains(&u) { n += 1; }
+        else { n += c.len_utf8(); }
+    }
+    n
+}
+
+/// Enforce `NAME_MAX` on a single pathname component, mirroring the Linux
+/// walk's per-component check. `Ok(())` when `name` is ≤ `NAME_MAX` on-disk
+/// bytes, else `Enametoolong`. Reusable primitive: the walker validates one
+/// component at a time as it descends.
+/// # C: O(name.len())
+pub fn check_component(name: &str) -> Result<(), crate::types::VfsError> {
+    if on_disk_byte_len(name) > NAME_MAX { Err(crate::types::VfsError::Enametoolong) } else { Ok(()) }
+}
+
+/// Linux total-pathname limit (`PATH_MAX`, `linux/limits.h`): the kernel's
+/// `getname` pathname buffer is 4096 bytes INCLUDING the terminating NUL, so
+/// the longest pathname a syscall accepts is `PATH_MAX - 1` = 4095 on-disk
+/// bytes. A pathname of `PATH_MAX` bytes (or longer) is `ENAMETOOLONG` before
+/// any walk. Distinct from the per-component [`NAME_MAX`] gate (`16§3`).
+pub const PATH_MAX: usize = 4096;
+
+/// Enforce the Linux `getname` TOTAL-length limit on a whole pathname, the
+/// companion to [`check_component`]'s per-component gate. `Ok(())` when `path`
+/// is ≤ `PATH_MAX - 1` on-disk bytes, else `Enametoolong`. Byte-accurate
+/// (escape-decoded bytes count as one), so it matches the raw user buffer
+/// length the syscall boundary (`read_user_path`) measured before decoding.
+/// # C: O(path.len())
+pub fn check_path_len(path: &str) -> Result<(), crate::types::VfsError> {
+    if on_disk_byte_len(path) >= PATH_MAX { Err(crate::types::VfsError::Enametoolong) } else { Ok(()) }
+}
+
+/// [`components`] plus the Linux per-component `NAME_MAX` gate: split `path`
+/// and reject (`Enametoolong`) the moment any `Normal` component exceeds
+/// `NAME_MAX` bytes. `/`, `.`, `..` control segments are exempt (none names a
+/// file). Total-path length is NOT checked here — that is `PATH_MAX`'s job at
+/// the syscall boundary (`read_user_path`).
+/// # C: O(len)
+pub fn components_checked(path: &str) -> Result<Vec<Component<'_>>, crate::types::VfsError> {
+    let parts = components(path);
+    for c in &parts {
+        if let Component::Normal(s) = c { check_component(s)?; }
+    }
+    Ok(parts)
+}
+
 /// True iff `path` is absolute (begins with `/`).
 /// # C: O(1)
 pub fn is_absolute(path: &str) -> bool {
-    path.starts_with('/')
+    path.as_bytes().first() == Some(&b'/')
+}
+
+/// Linux `LOOKUP_DIRECTORY` derived from pathname *syntax*: true when `path`
+/// forces its resolved target to be a directory by construction. Three forms
+/// (`link_path_walk`): a trailing `/` (one or more — `foo/`), or a final `.`
+/// (`foo/.`), or a final `..` (`foo/..`). Each only resolves against a
+/// directory, so a non-dir leaf is `ENOTDIR` (`/etc/passwd/`, `/etc/passwd/.`,
+/// `/etc/passwd/..` all fail). The bare root `/` (len 1) IS the root directory
+/// and imposes nothing extra. Companion to [`components`], which drops the
+/// trailing `/` and `.` and so cannot itself carry this requirement.
+/// # C: O(len)
+pub fn requires_dir(path: &str) -> bool {
+    match path.as_bytes().last() {
+        None        => false,              // empty path
+        Some(&b'/') => path.len() > 1,     // trailing slash, non-root
+        Some(_)     => matches!(path.rsplit('/').next(), Some("." | "..")),
+    }
+}
+
+/// The final pathname segment after stripping trailing `/` (Linux `nd->last`
+/// as a string): `"a/b" → "b"`, `"a/." → "."`, `"a/.." → ".."`, `"a/b/" → "b"`,
+/// `"/" → ""`, `"" → ""`. Companion to [`components`], which DROPS a trailing
+/// `.` and so cannot report it as the LOOKUP_PARENT leaf — the walk uses this to
+/// classify the parent-walk leaf type (Linux `LAST_DOT`/`LAST_DOTDOT`/`LAST_NORM`)
+/// so a caller can reject `rmdir("..")` / `unlink(".")` without re-parsing.
+/// # C: O(len)
+pub fn last_segment(path: &str) -> &str {
+    let t = path.trim_end_matches('/');
+    match t.rfind('/') { Some(i) => &t[i + 1..], None => t }
+}
+
+/// Private-use code-point base for escaped non-UTF-8 path bytes. Each
+/// raw byte `b` of an invalid UTF-8 sequence maps to `U+EE00 + b`
+/// (PUA-A, valid Rust scalar values). `path_into_bytes` reverses it.
+const BYTE_ESCAPE_BASE: u32 = 0xEE00;
+
+/// Decode an opaque pathname byte string (Linux paths are byte strings,
+/// NOT guaranteed UTF-8 — see `path_resolution(7)`) into a Rust `String`
+/// that round-trips back to the exact bytes via [`path_into_bytes`].
+///
+/// Valid UTF-8 is kept verbatim, so a backend comparing `name.as_bytes()`
+/// against an on-disk name still matches byte-for-byte in the common case.
+/// Each byte of an *invalid* UTF-8 sequence is escaped to `U+EE00 + byte`
+/// (a "lossy-but-byte-preserving" surrogate-escape; Rust `String` cannot
+/// hold bare invalid bytes or surrogates). Ambiguity only arises if the
+/// input legitimately contained a `U+EE00..=U+EEFF` scalar, which is
+/// vanishingly rare in real pathnames.
+/// # C: O(n)
+pub fn path_from_bytes(bytes: &[u8]) -> String {
+    // Fast path: already valid UTF-8 → no allocation churn beyond the copy.
+    if let Ok(s) = core::str::from_utf8(bytes) { return String::from(s); }
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match core::str::from_utf8(&bytes[i..]) {
+            Ok(s) => { out.push_str(s); break; }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                // SAFETY: from_utf8 validated bytes[i..i+valid] as UTF-8 above.
+                out.push_str(unsafe { core::str::from_utf8_unchecked(&bytes[i..i + valid]) });
+                i += valid;
+                let bad = e.error_len().unwrap_or(bytes.len() - i);
+                for j in 0..bad {
+                    let b = bytes[i + j];
+                    // unwrap: BASE+255 = 0xEEFF, a valid scalar value.
+                    out.push(char::from_u32(BYTE_ESCAPE_BASE + b as u32).unwrap());
+                }
+                i += bad;
+            }
+        }
+    }
+    out
+}
+
+/// Inverse of [`path_from_bytes`]: turn an escaped path `String` back into
+/// the original opaque pathname bytes a backend compares against on-disk
+/// names. Escaped scalars (`U+EE00..=U+EEFF`) collapse to their single
+/// byte; every other char emits its UTF-8 encoding.
+/// # C: O(n)
+pub fn path_into_bytes(s: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len());
+    for c in s.chars() {
+        let u = c as u32;
+        if (BYTE_ESCAPE_BASE..=BYTE_ESCAPE_BASE + 0xFF).contains(&u) {
+            out.push((u - BYTE_ESCAPE_BASE) as u8);
+        } else {
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        }
+    }
+    out
 }
 
 /// Trim trailing newlines + NULs from a hostname-shaped byte slice
@@ -91,8 +246,16 @@ pub fn resolve_against_cwd(cwd: &str, path: &str) -> Option<String> {
 /// or stat-ing this path acts on the open file description fd `<n>`
 /// already holds. Returns `None` when the shape doesn't match.
 /// # C: O(N_path)
+/// `Some(rest)` if `s` begins with the literal `p` (byte compare, no
+/// string-prefix combinator). Magic pseudo-path parsing only — never a
+/// mount-tree containment test. # C: O(len p)
+fn rest_after<'a>(s: &'a str, p: &str) -> Option<&'a str> {
+    let (sb, pb) = (s.as_bytes(), p.as_bytes());
+    if sb.len() >= pb.len() && &sb[..pb.len()] == pb { Some(&s[pb.len()..]) } else { None }
+}
+
 pub fn parse_proc_fd(path: &str) -> Option<(Option<u32>, i32)> {
-    let rest = path.strip_prefix("/proc/")?;
+    let rest = rest_after(path, "/proc/")?;
     let mut it = rest.splitn(3, '/');
     let who = it.next()?;
     if it.next()? != "fd" { return None; }
@@ -113,15 +276,18 @@ pub fn dup_fd_target(path: &str) -> Option<(Option<u32>, i32)> {
         "/dev/stderr" => return Some((None, 2)),
         _ => {}
     }
-    if let Some(rest) = path.strip_prefix("/dev/fd/") {
+    if let Some(rest) = rest_after(path, "/dev/fd/") {
         return rest.parse::<i32>().ok().map(|n| (None, n));
     }
     parse_proc_fd(path)
 }
 
-/// Normalize a path lexically (resolve `..` and `.` against an
-/// absolute prefix). Does NOT consult the FS. Returns `None` if a
-/// `..` would escape the root.
+/// Normalize a path lexically (collapse `.` and interior `x/..`).
+/// Does NOT consult the FS. Absolute paths clamp parent walks at `/`,
+/// matching Linux path walk (`/.. == /`). Relative paths PRESERVE
+/// leading `..` components (`../../a` stays `../../a`): on a relative
+/// path `..` is only resolvable per-component against the live tree
+/// after mount/symlink crossing, never lexically (`path_resolution(7)`).
 /// # C: O(len)
 pub fn lexical_normalize(path: &str) -> Option<String> {
     let mut stack: Vec<&str> = Vec::new();
@@ -131,8 +297,14 @@ pub fn lexical_normalize(path: &str) -> Option<String> {
             Component::Root      => {} // absolute already implied; ignore
             Component::Normal(s) => stack.push(s),
             Component::ParentDir => {
-                if stack.pop().is_none() && abs {
-                    return None;
+                // Only collapse `..` against a *real* preceding name. A
+                // leading `..` on a relative path is NOT lexically
+                // resolvable (Linux resolves `..` per-component AFTER
+                // mount/symlink against the live tree), so it must be
+                // preserved — and a later `..` must NOT pop it.
+                match stack.last() {
+                    Some(&top) if top != ".." => { stack.pop(); }
+                    _ => { if !abs { stack.push(".."); } } // abs: clamp at root
                 }
             }
         }

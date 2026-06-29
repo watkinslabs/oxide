@@ -18,6 +18,17 @@ pub fn sys_rt_sigaction(args: &SyscallArgs) -> i64 {
     if sig == 0 || sig > 64 {
         return -(Errno::Einval.as_i32() as i64);
     }
+    // Linux do_sigaction: SIGKILL/SIGSTOP are sig_kernel_only — installing
+    // (act != NULL) a disposition for them is -EINVAL, so a program can
+    // never catch/ignore them and make itself unkillable. Querying oldact
+    // (act == NULL) is still allowed. Checked before oldact is written, as
+    // in Linux. Pairs with the wait4 EINTR fix: SIGKILL must stay fatal.
+    if act != 0 {
+        use sched::live::sigpend::Signum;
+        if sig == Signum::Sigkill.as_u8() as usize || sig == Signum::Sigstop.as_u8() as usize {
+            return -(Errno::Einval.as_i32() as i64);
+        }
+    }
     let cur = match sched::live::current() {
         Some(c) => c, None => return 0,
     };

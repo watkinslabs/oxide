@@ -51,6 +51,13 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
                     cur.sigpending.fetch_and(!bit, Ordering::Release);
                 }
             }
+            #[cfg(feature = "debug-boot")]
+            {
+                klog::write_raw(b"[wait4 reap] parent="); klog::write_dec_u64(parent_tid as u64);
+                klog::write_raw(b" reaped_tid="); klog::write_dec_u64(tid as u64);
+                klog::write_raw(b" reqpid="); klog::write_dec_u64(pid as u64);
+                klog::write_raw(b"\n");
+            }
             debug_sched! { klog::write_raw(b"[INFO]  sys_wait4: reaped\n"); }
             debug_ssh! {
                 klog::write_raw(b"[INFO]  ssh-trace: wait4 reaped tid=");
@@ -62,6 +69,20 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
             return tid as i64;
         }
         if !sched::live::registry::has_children(parent_tid) {
+            #[cfg(feature = "debug-boot")]
+            {
+                klog::write_raw(b"[wait4 ECHILD] parent="); klog::write_dec_u64(parent_tid as u64);
+                klog::write_raw(b" reqpid="); klog::write_hex_u64(pid as u32 as u64);
+                // exe of the caller — names WHICH process holds the garbage pid
+                // (generator post-exec vs systemd vs a pre-exec fork child).
+                if let Some(c) = sched::live::current() {
+                    // SAFETY: running task; single-mutator read of exe_path per 13§5.
+                    if let Some(p) = unsafe { &*c.exe_path.get() } {
+                        klog::write_raw(b" exe="); klog::write_raw(p.as_bytes());
+                    }
+                }
+                klog::write_raw(b"\n");
+            }
             debug_ssh! {
                 klog::write_raw(b"[INFO]  ssh-trace: wait4 ECHILD parent=");
                 klog::write_dec_u64(parent_tid as u64);
@@ -70,6 +91,25 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
             return -(Errno::Echild.as_i32() as i64);
         }
         if (options & WNOHANG) != 0 { return 0; }
+        // Interruptible wait: Linux `do_wait` runs at TASK_INTERRUPTIBLE.
+        // A deliverable (unmasked) signal — and ALWAYS SIGKILL/SIGSTOP
+        // regardless of mask, since signal(7) makes both unblockable —
+        // aborts the blocking wait with -EINTR. The syscall-return tail
+        // (dispatch.rs `take_lowest_pending`) then runs the fatal-signal
+        // default action (SIG_DFL terminate). Ordered AFTER reap_one above
+        // (Linux reaps an available zombie even with a signal pending) and
+        // BEFORE park: without it a task parked here is unkillable —
+        // kill() wakes it (wake_if_sleeping) but it just re-parks, never
+        // returning to the dispatch tail that converts SIGKILL→terminate.
+        if let Some(cur) = sched::live::current() {
+            use core::sync::atomic::Ordering;
+            use sched::live::sigpend::Signum;
+            let forced  = Signum::Sigkill.bit() | Signum::Sigstop.bit();
+            let pending = cur.sigpending.load(Ordering::Acquire);
+            let masked  = cur.sigmask.load(Ordering::Acquire);
+            let deliver = (pending & !masked) | (pending & forced);
+            if deliver != 0 { return -(Errno::Eintr.as_i32() as i64); }
+        }
         // SAFETY: process ctx; runqueue installed; preempt-off; park+schedule per `13§8`.
         unsafe { sched::live::park_for_wait4(); }
         // F143: post-park reap recheck closes the missed-wakeup race

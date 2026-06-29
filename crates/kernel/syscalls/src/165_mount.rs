@@ -18,9 +18,22 @@ use vfs::fs::FileSystem;
 use vfs::InodeRef;
 
 use crate::mount_common::read_user_cstr_owned;
+use crate::fsmount_common::mount_fstype_with_data;
 
 // mount(2) flag bits (linux/mount.h).
 const MS_REMOUNT:    u64 = 0x20;
+const MS_RDONLY:     u64 = 0x1;
+const MS_NOSUID:     u64 = 0x2;
+const MS_NODEV:      u64 = 0x4;
+const MS_NOEXEC:     u64 = 0x8;
+const MS_SYNCHRONOUS: u64 = 0x10;
+const MS_MANDLOCK:   u64 = 0x40;
+const MS_DIRSYNC:    u64 = 0x80;
+const MS_NOATIME:    u64 = 0x400;
+const MS_NODIRATIME: u64 = 0x800;
+const MS_RELATIME:   u64 = 1 << 21;
+const MS_STRICTATIME: u64 = 1 << 24;
+const MS_LAZYTIME:   u64 = 1 << 25;
 const MS_BIND:       u64 = 0x1000;
 const MS_MOVE:       u64 = 0x2000;
 const MS_REC:        u64 = 0x4000;
@@ -29,16 +42,34 @@ const MS_PRIVATE:    u64 = 1 << 18;
 const MS_SLAVE:      u64 = 1 << 19;
 const MS_SHARED:     u64 = 1 << 20;
 const MS_PROPAGATION: u64 = MS_UNBINDABLE | MS_PRIVATE | MS_SLAVE | MS_SHARED;
+const MS_REMOUNTABLE: u64 = MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC | MS_SYNCHRONOUS
+    | MS_MANDLOCK | MS_DIRSYNC | MS_NOATIME | MS_NODIRATIME | MS_RELATIME | MS_STRICTATIME
+    | MS_LAZYTIME;
 
-/// Bind mount: a FileSystem at `target` whose lookups redirect into
-/// the `source` subtree. `mount(src, tgt, NULL, MS_BIND)` makes
-/// `tgt/<x>` resolve to `src/<x>` — what shells, systemd `PrivateTmp=`/
-/// `ProtectSystem=`, and container tooling rely on. Lookups re-enter
-/// the unified resolver against the rewritten path.
-/// # C: O(path)
+fn canonical_mount_path(path: String) -> String {
+    let Some((tid_opt, fd)) = vfs::path::dup_fd_target(&path) else {
+        return path;
+    };
+    let Some(file) = sched::proclink::proc_fd_file(tid_opt, fd) else {
+        return path;
+    };
+    let bytes = file.dentry().absolute_path();
+    match core::str::from_utf8(&bytes) {
+        Ok(s) if s.starts_with('/') => String::from(s),
+        _ => path,
+    }
+}
+
+/// Bind mount MARKER (Linux: a bind has no superblock of its own — it is
+/// `(vfsmount, mnt_root = source dentry)` sharing the source SB). The mount
+/// table stores the resolved SOURCE root inode in `Mount.root` (via
+/// `register_bind`), so the path walk crosses into the bind and then
+/// resolves every component on the source's REAL inodes per-component
+/// (`d_lookup → i_op->lookup → d_add`). This struct only carries the
+/// fstype name / statfs magic / `/proc/mounts` line — NO path lookup.
+/// # C: O(1)
 pub struct BindFs {
     source: String,
-    target: String,
 }
 
 impl FileSystem for BindFs {
@@ -48,21 +79,9 @@ impl FileSystem for BindFs {
     /// # C: O(N_mounts)
     fn magic(&self) -> u64 {
         vfs::mount::resolve_mount(&self.source)
-            .map(|(m, _)| m.fs.magic())
+            .map(|(m, _)| m.fs().magic())
             .filter(|&m| m != 0)
             .unwrap_or(0xEF53)
-    }
-    fn lookup(&self, path: &str) -> Option<InodeRef> {
-        // Rewrite the target-prefixed path onto the source subtree.
-        let rel = path.strip_prefix(self.target.as_str()).unwrap_or("");
-        let mut src = self.source.clone();
-        src.push_str(rel);
-        // Re-resolve via the unified path resolver, then the devfs/ext4
-        // backends — mirrors the open(2) lookup order. (Source must not
-        // live under the target; callers don't bind a dir onto itself.)
-        vfs::mount::lookup(&src).ok()
-            .or_else(|| devfs::lookup(&src))
-            .or_else(|| ext4::rootfs::lookup_inode_any(src.as_bytes()))
     }
     fn mounts_line(&self, mount_point: &str) -> String {
         let mut s = String::new();
@@ -77,18 +96,46 @@ impl FileSystem for BindFs {
 /// `sys_mount(source, target, fstype, flags, data)` — slot 165.
 /// # C: O(N_path)
 pub fn sys_mount(args: &SyscallArgs) -> i64 {
+    let rv = sys_mount_impl(args);
+    // Failure-only trace: logging every successful mount floods the UART and
+    // shifts boot timing into the intermittent wedge before logind runs. Only
+    // failures matter for 226/NAMESPACE diagnosis.
+    #[cfg(feature = "debug-mount")]
+    {
+        let tgt0 = crate::mount_common::read_user_cstr_owned(args.a1, 256).unwrap_or_default();
+        // Log failures AND any mount that touches /proc or /sys (success too) —
+        // the 226 is a shadowing /proc mount in the sandbox hiding the static
+        // /proc/sys/kernel/domainname leaf. Need to see what gets mounted there.
+        if rv < 0 || tgt0.contains("/proc") || tgt0.contains("/sys") {
+        let tgt = tgt0;
+        let src = crate::mount_common::read_user_cstr_owned(args.a0, 128).unwrap_or_default();
+        let fst = crate::mount_common::read_user_cstr_owned(args.a2, 32).unwrap_or_default();
+        // src/fstype/flags inline so a failing /proc/self/fd/N mount shows what
+        // it actually is (bind vs fstype vs the unknown-fstype EOPNOTSUPP path).
+        let mut tag = alloc::string::String::from(tgt.as_str());
+        tag.push_str(" src="); tag.push_str(&src);
+        tag.push_str(" fst="); tag.push_str(&fst);
+        tag.push_str(" fl=");
+        crate::mount_common::mnt_log_hex("mount", &tag, args.a3, rv);
+        }
+    }
+    rv
+}
+
+fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     let source_p = args.a0;
     let target_p = args.a1;
     let fstype_p = args.a2;
     let flags    = args.a3;
-    let _data    = args.a4;
+    let data_p   = args.a4;
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     if !cur.has_cap(sched::cap::SYS_ADMIN) {
         return -(Errno::Eperm.as_i32() as i64);
     }
-    let target = match read_user_cstr_owned(target_p, 256) { Ok(s) => s, Err(rv) => return rv };
+    let target_raw = match read_user_cstr_owned(target_p, 256) { Ok(s) => s, Err(rv) => return rv };
+    let target = crate::pathresolve::resolve_cwd(&target_raw);
     if !target.starts_with('/') {
         return -(Errno::Einval.as_i32() as i64);
     }
@@ -96,21 +143,28 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
 
     // Normalize a trailing slash so `/x/` and `/x` register identically.
     let target = if target.len() > 1 { target.trim_end_matches('/').to_string() } else { target };
+    let target = canonical_mount_path(target);
 
     // MS_REMOUNT changes options on an EXISTING mount — it carries no
     // source, so it MUST be handled before MS_BIND (systemd remounts the
     // machine-id bind read-only with MS_RDONLY|MS_REMOUNT|MS_BIND; the
-    // bind branch would read a NULL source and EFAULT). We keep no
-    // remountable options yet, so admit-and-noop (don't EFAULT on the
-    // NULL fstype/source a remount passes).
+    // bind branch would read a NULL source and EFAULT).
     if flags & MS_REMOUNT != 0 {
-        return 0;
+        let td = match crate::pathresolve::mount_dentry(&target) {
+            Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
+        };
+        return match vfs::mount::remount_flags(&td, flags & MS_REMOUNTABLE) {
+            Ok(()) => 0,
+            Err(vfs::VfsError::Einval) => -(Errno::Einval.as_i32() as i64),
+            Err(_) => -(Errno::Ebusy.as_i32() as i64),
+        };
     }
 
     // MS_BIND: redirect `target` into the `source` subtree. fstype is
     // ignored (may be NULL). Source is required.
     if flags & MS_BIND != 0 {
-        let source = match read_user_cstr_owned(source_p, 256) { Ok(s) => s, Err(rv) => return rv };
+        let source_raw = match read_user_cstr_owned(source_p, 256) { Ok(s) => s, Err(rv) => return rv };
+        let source = crate::pathresolve::resolve_cwd(&source_raw);
         if !source.starts_with('/') { return -(Errno::Einval.as_i32() as i64); }
         let source = if source.len() > 1 { source.trim_end_matches('/').to_string() } else { source };
         // Bind-as-clone (docs/16§6): resolve the source subtree's root
@@ -121,22 +175,30 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
             Some(i) => i,
             None    => return -(Errno::Enoent.as_i32() as i64),
         };
+        // The single namei walk `do_mount` hands the engine: source + target
+        // mountpoint dentries (Linux `struct path.dentry`).
+        let source_d = match crate::pathresolve::mount_dentry(&source) {
+            Some(d) => d, None => return -(Errno::Enoent.as_i32() as i64),
+        };
+        let target_d = match crate::pathresolve::mount_dentry(&target) {
+            Some(d) => d, None => return -(Errno::Enoent.as_i32() as i64),
+        };
         // Peer-group inheritance (docs/16§6): binding a SHARED source
         // makes the new mount a peer of the source's group (same shared:N,
         // future propagation events reach it). Captured before the bind.
-        let src_pg = vfs::mount::peer_group_of(&source);
-        let bind = Arc::new(BindFs { source: source.clone(), target: target.clone() });
+        let src_pg = vfs::mount::peer_group_of(&source_d);
+        let bind = Arc::new(BindFs { source: source.clone() });
         // Global mount table (per-NS bind rides the per-ns mount tree).
-        let _ = vfs::mount::register_bind(&target, bind, root);
-        vfs::mount::join_peer_group(&target, src_pg);
+        let _ = vfs::mount::register_bind(Some(target_d.clone()), bind, root);
+        vfs::mount::join_peer_group(&target_d, src_pg);
         // MS_REC: also clone every mount nested under `source` to the
         // matching path under `target` (recursive bind, docs/16§6).
         if flags & MS_REC != 0 {
-            let _ = vfs::mount::bind_submounts_rec(&source, &target);
+            let _ = vfs::mount::bind_submounts_rec(&source_d, &target_d);
         }
         // Propagation: if `target`'s parent is a shared mount, replicate
         // this bind to the parent's peers (docs/16§6).
-        let _ = vfs::mount::propagate_mount(&target);
+        let _ = vfs::mount::propagate_mount(&target_d);
         let _ = ns;
         return 0;
     }
@@ -158,7 +220,9 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
         // registry rather than vfs::mount::TABLE (fragmented table —
         // unified in later K2/K3 work); for those, accept-and-noop as
         // before rather than spuriously EINVAL and regress systemd.
-        let _ = vfs::mount::set_propagation(&target, kind);
+        if let Some(td) = crate::pathresolve::mount_dentry(&target) {
+            let _ = vfs::mount::set_propagation(&td, kind);
+        }
         return 0;
     }
     // MS_MOVE: relocate the mount currently at `source` to `target`.
@@ -167,10 +231,17 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
     // propagation; the new parent_id falls out of the recompute. Source
     // is the existing mount point (required, absolute).
     if flags & MS_MOVE != 0 {
-        let source = match read_user_cstr_owned(source_p, 256) { Ok(s) => s, Err(rv) => return rv };
+        let source_raw = match read_user_cstr_owned(source_p, 256) { Ok(s) => s, Err(rv) => return rv };
+        let source = crate::pathresolve::resolve_cwd(&source_raw);
         if !source.starts_with('/') { return -(Errno::Einval.as_i32() as i64); }
         let source = if source.len() > 1 { source.trim_end_matches('/').to_string() } else { source };
-        return match vfs::mount::move_mount(&source, &target) {
+        let source_d = match crate::pathresolve::mount_dentry(&source) {
+            Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
+        };
+        let target_d = match crate::pathresolve::mount_dentry(&target) {
+            Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
+        };
+        return match vfs::mount::move_mount(&source_d, &target_d) {
             Ok(())                    => 0,
             Err(vfs::VfsError::Ebusy) => -(Errno::Ebusy.as_i32() as i64),
             Err(_)                    => -(Errno::Einval.as_i32() as i64),
@@ -178,32 +249,23 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
     }
 
     // New mount by fstype.
+    let source = read_user_cstr_owned(source_p, 256).unwrap_or_default();
     let fstype = match read_user_cstr_owned(fstype_p, 32)  { Ok(s) => s, Err(rv) => return rv };
-    match fstype.as_str() {
-        "tmpfs" => {
-            // U3-b: tmpfs mounts live in the unified per-ns mount table,
-            // not the devfs registry. register_bind installs the
-            // TmpfsRootInode as the mount root; path_lookup crosses in and
-            // resolves files via the inode's tmpfs file store. So
-            // `mount -t tmpfs` now appears in /proc/mounts and obeys
-            // MS_MOVE/MS_REC/umount uniformly. The caller's mount-ns is
-            // stamped automatically by the register_bind ns provider.
-            let root: InodeRef = Arc::new(::fs::tmpfs::TmpfsRootInode::new(target.clone()));
-            let bind: Arc<dyn FileSystem> = Arc::new(::fs::tmpfs::TmpfsFs);
-            let _ = vfs::mount::register_bind(&target, bind, root);
-            // Propagation: replicate to the parent's peers if shared.
-            let _ = vfs::mount::propagate_mount(&target);
-            0
-        }
-        // cgroup v2 unified hierarchy per `26§4`: mount the real tree
-        // at /sys/fs/cgroup (fixed mount point, invariant 4 — single
-        // hierarchy, no v1). Idempotent.
-        "cgroup2" => { cgroup::mount_root(); 0 }
-        // proc and sysfs are already registered at boot; admit-and-noop
-        // for these fstypes so userspace remount probes (systemd, /etc/
-        // mtab tooling) don't choke. cgroup v1 is never mounted (26§2
-        // invariant 4) — admit-noop so legacy probes don't error.
-        "proc" | "sysfs" | "devtmpfs" | "devpts" | "cgroup" => 0,
-        _ => -(Errno::Eopnotsupp.as_i32() as i64),
+    #[cfg(feature = "debug-boot")]
+    if target.contains("credentials") {
+        let ns = sched::live::current().map(|c| c.mount_ns.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
+        klog::write_raw(b"[cred mount] fstype="); klog::write_raw(fstype.as_bytes());
+        klog::write_raw(b" ns="); klog::write_dec_u64(ns);
+        klog::write_raw(b" path="); klog::write_raw(target.as_bytes());
+        klog::write_raw(b"\n");
     }
+    let target_d = match crate::pathresolve::mount_dentry(&target) {
+        Some(d) => d, None => return -(Errno::Enoent.as_i32() as i64),
+    };
+    let data = if data_p != 0 {
+        read_user_cstr_owned(data_p, 4096).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    mount_fstype_with_data(&source, &fstype, &target, &target_d, &data)
 }

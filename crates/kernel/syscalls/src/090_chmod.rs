@@ -5,7 +5,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
-use crate::perms_common::{resolve_path_inode, now_ns, AT_FDCWD};
+use crate::perms_common::{resolve_path_mnt, do_chmod, AT_FDCWD};
 
 /// `sys_chmod(path, mode)` — slot 90.
 /// # C: O(N_path)
@@ -23,8 +23,6 @@ pub fn sys_chmod(args: &SyscallArgs) -> i64 {
             if net::sock::UNIX_REGISTRY.is_bound(s) { return 0; }
         }
     }
-    let inode = match resolve_path_inode(AT_FDCWD, args.a0, true) { Ok(i) => i, Err(rv) => return rv };
-    let m = args.a1 as u16;
-    if inode.set_perm(m).is_err() { vfs::inode_times::set_mode(&inode, m, now_ns()); }
-    0
+    let (inode, mnt_id) = match resolve_path_mnt(AT_FDCWD, args.a0, true) { Ok(p) => p, Err(rv) => return rv };
+    do_chmod(&inode, mnt_id, args.a1 as u16)
 }

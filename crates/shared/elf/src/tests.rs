@@ -202,6 +202,19 @@ fn extracts_pt_interp_path() {
 }
 
 #[test]
+fn extracts_pt_interp_path_with_zero_padding() {
+    let interp_off: u64 = 0x1000;
+    let interp_str = b"/lib/ld-oxide.so.1\0\0\0\0";
+    let phdrs = [pinterp(interp_off, interp_str.len() as u64)];
+    let mut buf = build_elf(ElfType::Dyn, EM_X86_64, 0x2000, &phdrs);
+    buf.resize(interp_off as usize + interp_str.len(), 0);
+    buf[interp_off as usize..interp_off as usize + interp_str.len()]
+        .copy_from_slice(interp_str);
+    let p = parse(&buf, EM_X86_64).unwrap();
+    assert_eq!(p.interp.unwrap(), b"/lib/ld-oxide.so.1");
+}
+
+#[test]
 fn pt_gnu_stack_executable_rejected() {
     let phdrs = [pgnustack(PFlags::R.bits() | PFlags::W.bits() | PFlags::X.bits())];
     let buf = build_elf(ElfType::Dyn, EM_X86_64, 0x1000, &phdrs);

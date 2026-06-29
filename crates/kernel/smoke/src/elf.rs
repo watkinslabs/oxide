@@ -42,7 +42,22 @@ const USER_STACK_TOP: u64 = EXEC_USER_STACK_TOP;
 /// User-page fault handler: demand-paging for PIE relocs + stack/heap growth.
 /// # C: O(1) typical
 fn user_fault_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
-    pmm::user_as::user_fault_handler(vec, err, rip, cr2)
+    if pmm::user_as::user_fault_handler(vec, err, rip, cr2) {
+        return true; // resolved: demand-page / COW / stack-grow → retry the insn
+    }
+    // Unresolvable. err bit 2 (PF_USER) set ⇒ the access came from ring 3: a
+    // genuine userspace bad pointer. Linux delivers SIGSEGV, whose default
+    // action terminates the process — it does NOT halt the kernel. Kill the
+    // faulting task and schedule away so init reaps it (status 11/SEGV) and the
+    // boot continues; a single service's wild pointer must not take down the
+    // machine. A kernel-mode (PF_USER clear) unresolved fault IS fatal — fall
+    // through to `false` so the asm halt loop surfaces the real kernel bug.
+    const PF_USER: u64 = 0x4;
+    if err & PF_USER != 0 {
+        sched::live::terminate_current_with_signal(11 /* SIGSEGV */);
+        // terminate_current_with_signal diverges (schedules away).
+    }
+    false
 }
 
 /// Boot PID 1: install the runqueue + user-fault handler, arm the LAPIC timer,
@@ -73,15 +88,33 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // recent-syscall ring: writev=-9 before exit_group(127)). `sti` moves
     // to AFTER the spawn so PID 1 is fully formed before its first schedule.
 
-    // PID 1 = systemd (oxide distro init), loaded from the rootfs; falls back
-    // to /sbin/init then /init. Dynamically linked — load_static_blob
-    // resolves PT_INTERP (musl loader); we enter at user_ip().
-    let init_blob_opt = lookup_blob_by_path(b"/lib/systemd/systemd")
-        .or_else(|| lookup_blob_by_path(b"/sbin/init"))
-        .or_else(|| lookup_blob_by_path(b"/init"));
+    // PID 1 = systemd (oxide distro init), loaded from the rootfs. Prefer
+    // /init when present: imagectl's desktop roots install it as a regular
+    // fallback copy with a patched PT_INTERP that avoids early symlink-heavy
+    // loader paths. CLI roots without /init still use the distro locations.
+    let init_candidates: &[&[u8]] = &[
+        b"/init",
+        b"/lib/systemd/systemd",
+        b"/sbin/init",
+    ];
+    let mut init_path: &[u8] = b"/init";
+    let mut init_blob_opt = None;
+    for path in init_candidates {
+        if let Some(blob) = lookup_blob_by_path(path) {
+            init_path = path;
+            init_blob_opt = Some(blob);
+            break;
+        }
+    }
     hal::kassert!(init_blob_opt.is_some(),
         "no /lib/systemd/systemd, /sbin/init or /init in rootfs (51§2 invariant 1)");
     let init_blob = init_blob_opt.unwrap_or(b"");
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[INFO]  init: selected ");
+        klog::write_raw(init_path);
+        klog::write_raw(b"\n");
+    }
     // systemd init requires getpid()==1: stamp vtgid=1/vtid=1 before the
     // task is registry/runqueue-visible.
     // SAFETY: boot-path discipline; user_as / runqueue installed.
@@ -89,7 +122,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         spawn_user_blob_with_vpid(
             init_blob, "init",
             0xC0DE_0002, /* vtgid */ 1, /* vtid */ 1,
-            &[b"/lib/systemd/systemd" as &[u8]],
+            &[init_path],
         );
     }
     // PID 1 is now fully formed (fd table installed). Enable IRQs: the
@@ -164,6 +197,12 @@ unsafe fn spawn_user_blob_with_vpid(
     // SAFETY: per-AS PML4 was constructed with kernel-half shared from master so kernel mappings remain valid; CR3 swap legal at CPL=0 IRQ-off.
     unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::activate(root_pa); }
 
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[INFO]  user-blob: load begin ");
+        klog::write_raw(name.as_bytes());
+        klog::write_raw(b"\n");
+    }
     let img = match (|| -> Result<_, elf_load::LoadError> {
         let img = load_static_blob(blob, &mm)?;
         let stack_hint = UserVirtAddr::new(USER_STACK_VA)
@@ -180,11 +219,24 @@ unsafe fn spawn_user_blob_with_vpid(
         Ok(img)
     })() {
         Ok(i)  => i,
-        Err(_) => {
-            debug_irq! { klog::write_raw(b"[ERROR] user-blob load failed: "); klog::write_raw(name.as_bytes()); klog::write_raw(b"\n"); }
+        Err(e) => {
+            #[cfg(feature = "debug-boot")]
+            {
+                klog::write_raw(b"[ERROR] user-blob load failed: ");
+                klog::write_raw(name.as_bytes());
+                klog::write_raw(b" err=");
+                klog::write_raw(match e {
+                    elf_load::LoadError::Enoexec => b"Enoexec",
+                    elf_load::LoadError::Einval => b"Einval",
+                    elf_load::LoadError::Enomem => b"Enomem",
+                });
+                klog::write_raw(b"\n");
+            }
             return;
         }
     };
+    #[cfg(feature = "debug-boot")]
+    klog::write_raw(b"[INFO]  user-blob: load ok\n");
 
     let random16 = {
         use hal::TimerOps;
@@ -196,6 +248,8 @@ unsafe fn spawn_user_blob_with_vpid(
     // setup_arg_pages: eagerly map the initial stack into the new AS so the
     // stack build below doesn't demand-fault in boot context (current()==None).
     pmm::user_as::prefault_stack(&mm, USER_STACK_TOP, USER_STACK_LEN);
+    #[cfg(feature = "debug-boot")]
+    klog::write_raw(b"[INFO]  user-blob: stack prefault ok\n");
     // Default argv = ['/init']; otherwise caller-provided.
     let default_argv: &[&[u8]] = &[b"/init"];
     let argv_ref: &[&[u8]] = if argv.is_empty() { default_argv } else { argv };
@@ -211,6 +265,8 @@ unsafe fn spawn_user_blob_with_vpid(
             <hal_x86_64::X86CpuOps as hal::CpuOps>::cpu_hwcap(),
         )
     }.unwrap_or(USER_STACK_TOP);
+    #[cfg(feature = "debug-boot")]
+    klog::write_raw(b"[INFO]  user-blob: stack build ok\n");
 
     // SAFETY: runqueue installed; mm matches active CR3; entry/sp in user range; vpid stamped pre-enqueue so musl's __init_main_thread sees PID 1 on its very first syscall.
     let task = match unsafe {
@@ -219,8 +275,14 @@ unsafe fn spawn_user_blob_with_vpid(
         )
     } {
         Ok(t)  => t,
-        Err(_) => { debug_irq! { klog::kerror!("user-blob: spawn failed"); } return; }
+        Err(_) => {
+            #[cfg(feature = "debug-boot")]
+            klog::write_raw(b"[ERROR] user-blob: spawn failed\n");
+            return;
+        }
     };
+    #[cfg(feature = "debug-boot")]
+    klog::write_raw(b"[INFO]  user-blob: spawn ok\n");
 
     let fdt = console::init_console_fd_table();
     // SAFETY: task isn't yet scheduled; we are sole writer.
@@ -249,4 +311,3 @@ unsafe fn spawn_user_blob_with_vpid(
     // SAFETY: process ctx; runqueue installed; preempt-off.
     unsafe { sched::live::schedule(); }
 }
-

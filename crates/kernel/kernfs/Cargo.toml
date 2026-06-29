@@ -1,0 +1,25 @@
+[package]
+name = "kernfs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+# Generic pseudo-filesystem tree node (Linux fs/kernfs). A per-component
+# (parent,name) child-tree `vfs::Inode` reused by devfs/sysfs/procfs/
+# tracefs/devpts so each pseudo-fs owns its own tree under its SuperBlock
+# instead of a shared global path registry (D1b). Depends only on vfs +
+# sync + klog + hal — a leaf edge below every fs-impl crate (no cycle).
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+hal   = { path = "../../arch/hal" }
+sync  = { path = "../../shared/sync" }
+vfs   = { path = "../vfs" }
+klog  = { path = "../../shared/klog" }
+
+[features]
+default = []
+hosted  = []

@@ -6,9 +6,17 @@ use syscall::SyscallArgs;
 
 use crate::fs_access_common::do_access;
 
-/// `sys_faccessat(dirfd, path, mode, flags)` — slot 269 (+ faccessat2 326).
-/// Resolves `path` against `dirfd`.
+/// `sys_faccessat(dirfd, path, mode)` — slot 269. The raw `faccessat(2)`
+/// syscall takes NO flags (glibc emulates AT_EACCESS via faccessat2); a3 is
+/// undefined here, so flags are forced to 0 (real-uid check).
 /// # C: O(N_path)
 pub fn sys_faccessat(args: &SyscallArgs) -> i64 {
-    do_access(args.a0 as i32, args.a1)
+    do_access(args.a0 as i32, args.a1, args.a2 as u32, 0)
+}
+
+/// `sys_faccessat2(dirfd, path, mode, flags)` — slot 439. Honors AT_EACCESS
+/// (effective-id check) / AT_SYMLINK_NOFOLLOW; bad flags → EINVAL.
+/// # C: O(N_path)
+pub fn sys_faccessat2(args: &SyscallArgs) -> i64 {
+    do_access(args.a0 as i32, args.a1, args.a2 as u32, args.a3 as u32)
 }

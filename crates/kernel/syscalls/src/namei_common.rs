@@ -17,6 +17,34 @@ pub(crate) fn read_path(ptr: u64) -> Option<String> {
     core::str::from_utf8(bytes).ok().map(|s| s.into())
 }
 
+/// Read a user-space pathname with the full Linux errno contract:
+///   * NULL / out-of-range ptr  → **EFAULT**
+///   * empty string (`""`)      → **ENOENT** (callers without AT_EMPTY_PATH)
+///   * pathname ≥ PATH_MAX bytes → **ENAMETOOLONG** (`vfs::path::check_path_len`)
+///   * non-UTF-8 bytes          → byte-preserved (Linux paths are opaque
+///     byte strings, `path_resolution(7)`); decoded via
+///     `vfs::path_from_bytes` so a non-UTF-8 component still resolves.
+/// Returns `Ok(empty)` is impossible — empty maps to ENOENT here; callers
+/// that allow AT_EMPTY_PATH must probe emptiness before calling. The
+/// total-length limit + its gate are owned by `vfs::path` (the work-fn crate
+/// per `53`); this shim only fetches the bytes and applies the gate.
+/// # C: O(strlen)
+pub(crate) fn read_user_path(ptr: u64) -> Result<String, i64> {
+    if ptr == 0 || ptr >= USER_VA_END {
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    // SAFETY: ptr in user range; user page mapped (caller's AS); PATH_MAX bound.
+    let bytes = unsafe { devfs::read_user_cstr(ptr, vfs::path::PATH_MAX) }
+        .ok_or(-(Errno::Efault.as_i32() as i64))?;
+    if bytes.is_empty() {
+        return Err(-(Errno::Enoent.as_i32() as i64));
+    }
+    let path = vfs::path_from_bytes(bytes);
+    // No NUL within PATH_MAX bytes → pathname too long (Linux ENAMETOOLONG).
+    vfs::path::check_path_len(&path).map_err(errno_from_vfs)?;
+    Ok(path)
+}
+
 /// # C: O(1)
 pub(crate) fn resolve(path_raw: &str) -> Option<String> {
     if path_raw.starts_with('/') { return Some(path_raw.into()); }
@@ -27,40 +55,92 @@ pub(crate) fn resolve(path_raw: &str) -> Option<String> {
 }
 
 /// # C: O(1)
-pub(crate) fn is_ext4_path(p: &str) -> bool {
-    p.starts_with("/bin/")  || p.starts_with("/etc/")  || p.starts_with("/usr/")
- || p.starts_with("/sbin/") || p.starts_with("/lib/")  || p.starts_with("/opt/")
- || p.starts_with("/home/") || p.starts_with("/root/") || p == "/init"
- || p == "/hello.txt"
- // B47: /var and /tmp host writable state for daemons (dhcpcd's
- // lease + control socket dirs, /tmp for temporary files). We
- // pre-create the parent dirs in the ext4 image and mount tmpfs
- // over /var/{run,db} + /tmp; dhcpcd does mkdir('/var/db/dhcpcd')
- // (EEXIST is fine) which our gate was returning EROFS for. Route
- // those to ext4 too — the overlay-mount machinery rides a
- // follow-up; for now the tmpfs mount silently shadows the dir.
- || p.starts_with("/var/") || p.starts_with("/tmp/") || p.starts_with("/run/")
+/// Distinct `st_dev` per filesystem, derived from the inode-number namespace
+/// each FS allocates from: ext4 stamps `EXT4_INO_MARK` (0x6E54..) in the top
+/// 32 bits; the synthetic FSes use distinct high nibbles (devfs 0x2xxx_xxxx,
+/// procfs 0x3xxx_xxxx, tmpfs 0x4xxx_xxxx+, sysfs/bpf above). systemd's
+/// mount-boundary detection compares `st_dev` across a path — with every
+/// `st_dev == 0` it cannot tell one filesystem from another, which breaks its
+/// cgroup/credentials/os-release boundary walks. Linux gives each mount its
+/// own `dev_t` (a block dev_t or an anon-bdev); this is the stable analogue.
+/// # C: O(1)
+pub(crate) fn encode_dev(major: u32, minor: u32) -> u64 {
+    ((minor & 0xff) as u64)
+        | (((major & 0xfff) as u64) << 8)
+        | (((minor & !0xff) as u64) << 12)
+        | (((major & !0xfff) as u64) << 32)
 }
 
+pub(crate) fn dev_major(dev: u64) -> u32 {
+    (((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfff)) as u32
+}
+
+pub(crate) fn dev_minor(dev: u64) -> u32 {
+    ((dev & 0xff) | ((dev >> 12) & !0xff)) as u32
+}
+
+/// Encode a filesystem identity into Linux `dev_t`. The source identity is
+/// owned by the filesystem (`Inode::fsid()`); this helper only gives it the
+/// ABI shape expected by stat/statx.
+/// # C: O(1)
+pub(crate) fn fsid_to_dev(fsid: u64) -> u64 {
+    let mut x = fsid;
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xff51afd7ed558ccd);
+    x ^= x >> 33;
+    let major = (((x >> 20) & 0x0fff) as u32).max(1);
+    let minor = (x & 0x000f_ffff) as u32;
+    encode_dev(major, minor)
+}
+
+/// Map a `VfsError` to the negative Linux errno the ABI returns. Complete
+/// over every `VfsError` discriminant so a path-walk error (ELOOP /
+/// ENAMETOOLONG / ENOTDIR / EACCES) propagates with its true errno instead
+/// of collapsing to EIO/ENOENT.
 /// # C: O(1)
 pub(crate) fn errno_from_vfs(e: vfs::VfsError) -> i64 {
     -(match e {
-        vfs::VfsError::Enoent  => Errno::Enoent  as i32,
-        vfs::VfsError::Eisdir  => Errno::Eisdir  as i32,
-        vfs::VfsError::Enotdir => Errno::Enotdir as i32,
-        vfs::VfsError::Erofs   => Errno::Erofs   as i32,
-        vfs::VfsError::Eio     => Errno::Eio     as i32,
         vfs::VfsError::Eperm   => Errno::Eperm   as i32,
-        vfs::VfsError::Eexist  => Errno::Eexist  as i32,
-        vfs::VfsError::Einval  => Errno::Einval  as i32,
-        vfs::VfsError::Eacces  => Errno::Eacces  as i32,
+        vfs::VfsError::Enoent  => Errno::Enoent  as i32,
+        vfs::VfsError::Eintr   => Errno::Eintr   as i32,
+        vfs::VfsError::Eio     => Errno::Eio     as i32,
+        vfs::VfsError::Enxio   => Errno::Enxio   as i32,
+        vfs::VfsError::Ebadf   => Errno::Ebadf   as i32,
         vfs::VfsError::Enomem  => Errno::Enomem  as i32,
-        vfs::VfsError::Enospc  => Errno::Enospc  as i32,
+        vfs::VfsError::Eacces  => Errno::Eacces  as i32,
+        vfs::VfsError::Efault  => Errno::Efault  as i32,
+        vfs::VfsError::Eexist  => Errno::Eexist  as i32,
+        vfs::VfsError::Exdev   => Errno::Exdev   as i32,
+        vfs::VfsError::Enodev  => Errno::Enodev  as i32,
+        vfs::VfsError::Enotdir => Errno::Enotdir as i32,
+        vfs::VfsError::Eisdir  => Errno::Eisdir  as i32,
+        vfs::VfsError::Einval  => Errno::Einval  as i32,
+        vfs::VfsError::Emfile  => Errno::Emfile  as i32,
+        vfs::VfsError::Enotty  => Errno::Enotty  as i32,
+        vfs::VfsError::Espipe  => Errno::Espipe  as i32,
+        vfs::VfsError::Eagain  => Errno::Eagain  as i32,
+        vfs::VfsError::Epipe   => Errno::Epipe   as i32,
+        vfs::VfsError::Erofs   => Errno::Erofs   as i32,
         vfs::VfsError::Ebusy   => Errno::Ebusy   as i32,
+        vfs::VfsError::Enospc  => Errno::Enospc  as i32,
         vfs::VfsError::Enotempty => Errno::Enotempty as i32,
         vfs::VfsError::Enosys  => Errno::Enosys  as i32,
-        _                      => Errno::Eio     as i32,
+        vfs::VfsError::Eloop   => Errno::Eloop   as i32,
+        vfs::VfsError::Eopnotsupp => Errno::Eopnotsupp as i32,
+        vfs::VfsError::Enametoolong => Errno::Enametoolong as i32,
+        vfs::VfsError::Enotconn => Errno::Enotconn as i32,
     } as i64)
+}
+
+/// Boot diagnostic for namespace mutation failures during systemd setup.
+pub(crate) fn trace_run_vfs_error(op: &[u8], path: &str, e: vfs::VfsError) {
+    klog::write_raw(b"[NAMEI] ");
+    klog::write_raw(op);
+    klog::write_raw(b" path=\"");
+    klog::write_raw(path.as_bytes());
+    klog::write_raw(b"\" err=");
+    klog::write_dec_u64(e as u64);
+    klog::write_raw(b"\n");
 }
 
 /// Split an absolute path into `(parent, basename)`. `None` for `/`
@@ -79,7 +159,7 @@ fn split_parent(p: &str) -> Option<(&str, &str)> {
 /// (`pathresolve::resolve` = `vfs::path_lookup`; follows intermediate
 /// symlinks + crosses mounts) and return `(parent_inode, basename)` —
 /// THE resolver feeding every namespace mutation per `docs/16§3`,
-/// replacing the is_ext4_path / mount_for_write / pseudo_* string gates.
+/// replacing the old path-prefix / pseudo-fs string gates.
 /// The owning mount's inode then services the op (ext4 dir → ext4
 /// create/unlink; tmpfs dir → tmpfs; cgroupfs → cgroupfs; read-only
 /// pseudo-fs → Erofs), exactly as Linux `inode_operations`.
@@ -105,11 +185,34 @@ pub(crate) fn path_exists(p: &str) -> bool {
     crate::pathresolve::resolve(p, true).is_some()
 }
 
-/// Strip a trailing `/` (POSIX: `mkdir /var/` ≡ `mkdir /var`). Root
-/// `/` is preserved. GNU `mkdir -p` walks ancestors with a
-/// trailing slash on each prefix; without this the ext4 backend
-/// resolves `/var/` to a missing child and returns ENOENT for a dir
+/// Linux pathname AF_UNIX sockets are removed from the filesystem namespace by
+/// unlink(2). Existing socket objects stay alive, but a later bind to the same
+/// pathname must be allowed. Our socket registry is separate from tmpfs, so
+/// unlink has to drop the registry key as well as the socket inode.
+/// # C: O(log N)
+pub(crate) fn unlink_unix_socket_path(p: &str) -> bool {
+    if net::unix_path_is_abstract(p) || !net::sock::UNIX_REGISTRY.is_bound(p) {
+        return false;
+    }
+    net::sock::UNIX_REGISTRY.unbind(p);
+    net::sock::UNIX_REGISTRY.dgram_unbind(p);
+    crate::pathresolve::d_delete_path(p);
+    true
+}
+
+/// Strip a trailing `/` for the PARENT-SPLIT of create ops (`mkdir`/`mkdirat`):
+/// `mkdir /var/` ≡ `mkdir /var` (POSIX). Root `/` is preserved. GNU `mkdir -p`
+/// walks ancestors with a trailing slash on each prefix; without this the ext4
+/// backend resolves `/var/` to a missing child and returns ENOENT for a dir
 /// that exists.
+///
+/// NOTE — the trailing-slash DIRECTORY semantics (Linux LOOKUP_DIRECTORY: a
+/// `foo/` pathname's final component must resolve to a directory, else ENOTDIR,
+/// and a final symlink is followed even under O_NOFOLLOW) are NOT discarded by
+/// stripping here: they are enforced authoritatively in the vfs walker
+/// (`vfs::namei::Nameidata::walk` detects the trailing slash on the INPUT path
+/// and sets `LookupFlags::directory`). This helper exists ONLY to compute the
+/// parent for the create family; it does not gate the resolution itself.
 /// # C: O(1)
 pub(crate) fn strip_trailing_slash(p: &str) -> &str {
     if p.len() > 1 { p.strip_suffix('/').unwrap_or(p) } else { p }

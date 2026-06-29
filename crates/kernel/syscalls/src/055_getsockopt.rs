@@ -24,6 +24,17 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const SO_PEERCRED:  u64 = 17;
     const SO_PROTOCOL:  u64 = 38;
     const SO_DOMAIN:    u64 = 39;
+    const SO_ACCEPTCONN: u64 = 30;
+    const SO_SNDBUF: u64 = 7;
+    const SO_RCVBUF: u64 = 8;
+    const SO_SNDBUFFORCE: u64 = 32;
+    const SO_RCVBUFFORCE: u64 = 33;
+    const SO_TIMESTAMP_OLD: u64 = 29;
+    const SO_TIMESTAMPNS_OLD: u64 = 35;
+    const SO_TIMESTAMPING_OLD: u64 = 37;
+    const SO_TIMESTAMP_NEW: u64 = 63;
+    const SO_TIMESTAMPNS_NEW: u64 = 64;
+    const SO_TIMESTAMPING_NEW: u64 = 65;
     let _fd     = args.a0;
     let level   = args.a1;
     let optname = args.a2;
@@ -91,12 +102,19 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (SOL_SOCKET, 15) => return i32_back(s.opts.reuseport.load(Ordering::Acquire)),
             (SOL_SOCKET, 9)  => return i32_back(s.opts.keepalive.load(Ordering::Acquire)),
             (SOL_SOCKET, 6)  => return i32_back(s.opts.broadcast.load(Ordering::Acquire)),
-            (SOL_SOCKET, 7)  => return i32_back(s.opts.sndbuf.load(Ordering::Acquire)),
-            (SOL_SOCKET, 8)  => return i32_back(s.opts.rcvbuf.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_SNDBUF) | (SOL_SOCKET, SO_SNDBUFFORCE) =>
+                return i32_back(s.opts.sndbuf.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_RCVBUF) | (SOL_SOCKET, SO_RCVBUFFORCE) =>
+                return i32_back(s.opts.rcvbuf.load(Ordering::Acquire)),
             (SOL_SOCKET, SO_PASSCRED) => return i32_back(s.opts.passcred.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_TIMESTAMP_OLD) | (SOL_SOCKET, SO_TIMESTAMPNS_OLD)
+            | (SOL_SOCKET, SO_TIMESTAMPING_OLD) | (SOL_SOCKET, SO_TIMESTAMP_NEW)
+            | (SOL_SOCKET, SO_TIMESTAMPNS_NEW) | (SOL_SOCKET, SO_TIMESTAMPING_NEW) =>
+                return i32_back(s.opts.timestamping.load(Ordering::Acquire)),
             (SOL_SOCKET, 12) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
             (SOL_SOCKET, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
             (SOL_SOCKET, SO_TYPE) => return i32_back(socket_type(&s)),
+            (SOL_SOCKET, SO_ACCEPTCONN) => return i32_back(socket_acceptconn(&s)),
             (SOL_SOCKET, SO_DOMAIN) => return i32_back(s.family.load(Ordering::Acquire) as i32),
             (SOL_SOCKET, SO_PROTOCOL) => return i32_back(socket_protocol(&s)),
             (SOL_SOCKET, SO_BINDTODEVICE) => return bind_to_device_name(&s, optval, optlen_p),
@@ -135,14 +153,11 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
                 };
                 return i32_back(e);
             }
-            _ => {}
+            _ => return -(Errno::Enoprotoopt.as_i32() as i64),
         }
+    } else {
+        return -(Errno::Enotsock.as_i32() as i64);
     }
-    if optlen_p != 0 && optlen_p < USER_VA_END {
-        // SAFETY: optlen_p validated < USER_VA_END; CPL=0 write through caller's AS.
-        unsafe { core::ptr::write_volatile(optlen_p as *mut u32, 0); }
-    }
-    0
 }
 
 fn bind_to_device_name(s: &alloc::sync::Arc<net::sock::InetSocket>,
@@ -327,6 +342,13 @@ fn socket_type(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
         | SockKind::TcpConn(_)
         | SockKind::Unix(_, _)
         | SockKind::UnixListener(_) => SOCK_STREAM,
+    }
+}
+
+fn socket_acceptconn(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
+    match &*s.kind.lock() {
+        SockKind::TcpListener(_) | SockKind::UnixListener(_) => 1,
+        _ => 0,
     }
 }
 

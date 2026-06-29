@@ -33,3 +33,5 @@ debug-boot = []
 debug-sched = []
 # F205 SSH-relay diagnostic — forwarded from kernel/Cargo.toml.
 debug-ssh = []
+# Level-triggered epoll readiness trace ([epoll-lvl]) — busy-loop diagnosis.
+debug-epoll = []

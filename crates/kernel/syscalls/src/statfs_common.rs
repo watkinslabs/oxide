@@ -1,83 +1,120 @@
 // statfs shared helpers — used by ≥2 statfs handlers (docs/53 §0).
-// Moved verbatim from statfs.rs.
+//
+// `f_type`/`f_bsize`/usage now derive from the mounted-instance SuperBlock
+// (`vfs::mount::resolve_mount(path).sb().statfs()`), the Linux source of
+// truth — NOT a hardcoded path-prefix magic table. Every production mount
+// carries a real `SuperBlock` (built by `SuperBlock::for_backend` in the
+// mount engine), so the `s_magic`/`s_op::statfs` reported here is the
+// instance's own identity.
 
 #![cfg(target_os = "oxide-kernel")]
 
-// struct statfs `f_type` magics (linux/magic.h).
-pub(crate) const M_PROC:    u64 = 0x9fa0;
-pub(crate) const M_SYSFS:   u64 = 0x6265_6572;
-pub(crate) const M_TMPFS:   u64 = 0x0102_1994;
-pub(crate) const M_CGROUP2: u64 = 0x6367_7270;
-pub(crate) const M_DEVPTS:  u64 = 0x1cd1;
-pub(crate) const M_EXT4:    u64 = 0xEF53;
+use vfs::SbStatFs;
 
-/// True when `m` equals `path` or is a path-prefix of it (`m` + `/…`).
-/// # C: O(len(path))
-fn under(path: &str, m: &str) -> bool {
-    path == m || (path.starts_with(m) && path.as_bytes().get(m.len()) == Some(&b'/'))
+// struct statfs `f_type` magic for the on-disk rootfs (linux/magic.h) — the
+// usage-shape fallback for a fs whose `SuperOps::statfs` reports no block
+// accounting yet. Real per-fs accounting layers on via per-fs `SuperOps`.
+pub(crate) const M_EXT4: u64 = 0xEF53;
+// tmpfs magic — the reported fs for an anon/pathless fd whose dentry name is
+// not an absolute path (memfd, pipe-like) and supplies no `statfs_magic`.
+pub(crate) const M_TMPFS: u64 = 0x0102_1994;
+
+// statvfs(3) `ST_*` mount flags (sys/statvfs.h) reported in statfs `f_flags`.
+// These are a SEPARATE bit-space from the kernel `MNT_*`/`SB_*` bits and are
+// mapped BY NAME below (e.g. `MNT_RELATIME`=1<<21 → `ST_RELATIME`=1<<12 — same
+// concept, different bit), exactly as Linux `calculate_f_flags` does.
+const ST_RDONLY:      u64 = 1;
+const ST_NOSUID:      u64 = 2;
+const ST_NODEV:       u64 = 4;
+const ST_NOEXEC:      u64 = 8;
+const ST_SYNCHRONOUS: u64 = 16;
+const ST_MANDLOCK:    u64 = 64;
+const ST_NOATIME:     u64 = 1024;
+const ST_NODIRATIME:  u64 = 2048;
+const ST_RELATIME:    u64 = 4096;
+
+/// Map per-mount `MNT_*` bits + superblock `SB_*` bits to statvfs `ST_*`
+/// (Linux `calculate_f_flags` = `flags_by_mnt` | `flags_by_sb`). Bit-for-bit
+/// name mapping — never a raw integer copy. # C: O(1)
+fn st_flags(mnt: u64, sb: u64) -> u64 {
+    use vfs::mount::{MNT_NOATIME, MNT_NODEV, MNT_NODIRATIME, MNT_NOEXEC, MNT_NOSUID, MNT_RDONLY, MNT_RELATIME};
+    use vfs::superblock::{SB_MANDLOCK, SB_RDONLY, SB_SYNCHRONOUS};
+    let mut f = 0u64;
+    if mnt & MNT_RDONLY     != 0 { f |= ST_RDONLY; }
+    if mnt & MNT_NOSUID     != 0 { f |= ST_NOSUID; }
+    if mnt & MNT_NODEV      != 0 { f |= ST_NODEV; }
+    if mnt & MNT_NOEXEC     != 0 { f |= ST_NOEXEC; }
+    if mnt & MNT_NOATIME    != 0 { f |= ST_NOATIME; }
+    if mnt & MNT_NODIRATIME != 0 { f |= ST_NODIRATIME; }
+    if mnt & MNT_RELATIME   != 0 { f |= ST_RELATIME; }
+    if sb  & SB_SYNCHRONOUS != 0 { f |= ST_SYNCHRONOUS; }
+    if sb  & SB_MANDLOCK    != 0 { f |= ST_MANDLOCK; }
+    if sb  & SB_RDONLY      != 0 { f |= ST_RDONLY; }
+    f
 }
 
-/// Resolve an absolute path to its backing filesystem's `s_magic`.
-/// Consults the live mount table first (so user `mount -t tmpfs|cgroup2`
-/// and bind mounts report correctly — the Linux way), then a prefix
-/// table for the fixed synthetic trees not registered as mounts
-/// (sysfs `/sys`, devpts `/dev/pts`, tmpfs `/run` + `/dev/shm`), then
-/// falls back to the ext4 rootfs.
-/// # C: O(N_mounts)
-pub(crate) fn magic_for_path(path: &str) -> u64 {
-    // A registered mount that isn't the root wins (longest-prefix).
-    if let Some((mnt, _)) = vfs::mount::resolve_mount(path) {
-        if mnt.mount_point != "/" {
-            let m = mnt.fs.magic();
-            if m != 0 { return m; }
+/// `kstatfs` for the filesystem backing absolute `path`, read from that
+/// mount's SuperBlock (`s_magic` → `f_type`, `s_blocksize` → `f_bsize`,
+/// `SuperOps::statfs` → usage). `resolve_mount` returns the owning mount by
+/// dentry-identity crossing (root mount for paths not under a distinct
+/// mount), so there is no path-prefix guesswork. # C: O(N_mounts)
+pub(crate) fn statfs_for_path(path: &str) -> SbStatFs {
+    let mut st = SbStatFs::default();
+    if let Some((m, _)) = vfs::mount::resolve_mount(path) {
+        if let Ok(s) = m.sb().statfs() { st = s; }
+        // `f_flags` is the per-MOUNT statvfs `ST_*` view (Linux
+        // `calculate_f_flags`), not an `s_op->statfs` output.
+        st.f_flags = st_flags(m.flags(), m.sb().s_flags());
+    }
+    fill_usage(&mut st);
+    st
+}
+
+/// `kstatfs` for an anonymous/pathless inode that supplies its own
+/// superblock magic via `Inode::statfs_magic` (pidfd, eventfd-like). # C: O(1)
+pub(crate) fn statfs_for_magic(magic: u64) -> SbStatFs {
+    let mut st = SbStatFs { f_type: magic, ..Default::default() };
+    fill_usage(&mut st);
+    st
+}
+
+/// Default the block-accounting + bsize fields so `df` keeps the row (df
+/// drops entries with `f_blocks == 0`). Real per-fs `SuperOps::statfs`
+/// accounting (ext4 on-disk superblock counts) overrides these once wired.
+/// # C: O(1)
+fn fill_usage(st: &mut SbStatFs) {
+    if st.f_bsize == 0 { st.f_bsize = 4096; }
+    if st.f_blocks == 0 {
+        if st.f_type == M_EXT4 {
+            // 32 MiB rootfs image (xtask builder); half-free is plausible
+            // until real on-disk accounting lands in ext4's `SuperOps`.
+            st.f_blocks = 8192; st.f_bfree = 4096; st.f_bavail = 4096;
+            st.f_files = 8192;  st.f_ffree = 4096;
+        } else {
+            st.f_blocks = 1; st.f_bfree = 0; st.f_bavail = 0;
+            st.f_files = 1;  st.f_ffree = 0;
         }
     }
-    // Fixed synthetic mounts not in the table. cgroup before sysfs.
-    if under(path, "/sys/fs/cgroup")             { return M_CGROUP2; }
-    if under(path, "/proc")                      { return M_PROC; }
-    if under(path, "/sys")                       { return M_SYSFS; }
-    if under(path, "/dev/pts")                   { return M_DEVPTS; }
-    if under(path, "/dev/shm") || under(path, "/run") || under(path, "/tmp") { return M_TMPFS; }
-    if under(path, "/dev")                       { return M_TMPFS; }
-    M_EXT4
 }
 
-/// Fill a 120-byte `struct statfs` (identical LP64 layout on x86_64
-/// and aarch64). `magic` is `f_type`; `blocks`/`bfree`/`bavail`/`files`
-/// fill the usage fields so `df` keeps the entry (df drops
-/// rows with f_blocks==0).
-/// # C: O(1)
-pub(crate) fn write_statfs(buf: u64, magic: u64, blocks: u64, bfree: u64, files: u64) {
+/// Fill a 120-byte `struct statfs` (identical LP64 layout on x86_64 and
+/// aarch64) from a `SbStatFs`. # C: O(1)
+pub(crate) fn write_statfs(buf: u64, st: &SbStatFs) {
     // SAFETY: caller validated 120-byte user buf < USER_VA_END, 8-aligned; CPL=0 writes through caller's AS.
     unsafe {
         for off in (0..120u64).step_by(8) {
             core::ptr::write_volatile((buf + off) as *mut u64, 0);
         }
-        core::ptr::write_volatile( buf        as *mut u64, magic);  // f_type   @0
-        core::ptr::write_volatile((buf +  8)  as *mut u64, 4096);   // f_bsize  @8
-        core::ptr::write_volatile((buf + 16)  as *mut u64, blocks); // f_blocks @16
-        core::ptr::write_volatile((buf + 24)  as *mut u64, bfree);  // f_bfree  @24
-        core::ptr::write_volatile((buf + 32)  as *mut u64, bfree);  // f_bavail @32
-        core::ptr::write_volatile((buf + 40)  as *mut u64, files);  // f_files  @40
-        core::ptr::write_volatile((buf + 48)  as *mut u64, files);  // f_ffree  @48
-        core::ptr::write_volatile((buf + 64)  as *mut u64, 255);    // f_namelen@64 (NAME_MAX)
-        core::ptr::write_volatile((buf + 72)  as *mut u64, 4096);   // f_frsize @72
-    }
-}
-
-/// Plausible (blocks, bfree, files) by magic. Real ext4 usage comes
-/// from the rootfs blob size; synthetic fses report a token nonzero
-/// so `df` doesn't drop them. v1: not real per-fs accounting.
-/// # C: O(1)
-pub(crate) fn usage_for(magic: u64) -> (u64, u64, u64) {
-    match magic {
-        M_EXT4 => {
-            // Image is 32 MiB today (xtask rootfs builder); inode count
-            // matches mkfs.ext4 default. Reporting half-free is plausible
-            // until real per-fs accounting lands.
-            let blocks: u64 = 8192;
-            (blocks, blocks / 2, 8192)
-        }
-        _ => (1, 0, 1),
+        core::ptr::write_volatile( buf        as *mut u64, st.f_type);          // f_type   @0
+        core::ptr::write_volatile((buf +  8)  as *mut u64, st.f_bsize as u64);  // f_bsize  @8
+        core::ptr::write_volatile((buf + 16)  as *mut u64, st.f_blocks);        // f_blocks @16
+        core::ptr::write_volatile((buf + 24)  as *mut u64, st.f_bfree);         // f_bfree  @24
+        core::ptr::write_volatile((buf + 32)  as *mut u64, st.f_bavail);        // f_bavail @32
+        core::ptr::write_volatile((buf + 40)  as *mut u64, st.f_files);         // f_files  @40
+        core::ptr::write_volatile((buf + 48)  as *mut u64, st.f_ffree);         // f_ffree  @48
+        core::ptr::write_volatile((buf + 56)  as *mut u64, st.f_fsid);          // f_fsid   @56 (__fsid_t)
+        core::ptr::write_volatile((buf + 64)  as *mut u64, 255);                // f_namelen@64 (NAME_MAX)
+        core::ptr::write_volatile((buf + 72)  as *mut u64, st.f_bsize as u64);  // f_frsize @72
+        core::ptr::write_volatile((buf + 80)  as *mut u64, st.f_flags);         // f_flags  @80 (ST_*)
     }
 }

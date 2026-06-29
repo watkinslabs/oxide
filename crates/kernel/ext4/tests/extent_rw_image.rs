@@ -24,6 +24,85 @@ fn build_disk() -> Arc<dyn BlockDevice> {
     disk
 }
 
+fn read_fs_block(disk: &Arc<dyn BlockDevice>, fs_lba: u64, fs_bs: u32) -> std::vec::Vec<u8> {
+    let sectors = fs_bs / SECTOR;
+    let mut req = BlockRequest {
+        op: BlockOp::Read,
+        start_block: fs_lba * sectors as u64,
+        len_blocks: sectors,
+        buffer: std::vec![0u8; fs_bs as usize],
+    };
+    disk.submit_sync(&mut req).unwrap();
+    req.buffer
+}
+
+fn write_fs_block(disk: &Arc<dyn BlockDevice>, fs_lba: u64, fs_bs: u32, buffer: std::vec::Vec<u8>) {
+    let sectors = fs_bs / SECTOR;
+    let mut req = BlockRequest {
+        op: BlockOp::Write,
+        start_block: fs_lba * sectors as u64,
+        len_blocks: sectors,
+        buffer,
+    };
+    disk.submit_sync(&mut req).unwrap();
+}
+
+fn inline_idx_lba(i_block: &[u8], idx: usize) -> u64 {
+    let off = 12 + idx * 12;
+    let leaf_lo = u32::from_le_bytes([i_block[off + 4], i_block[off + 5], i_block[off + 6], i_block[off + 7]]);
+    let leaf_hi = u16::from_le_bytes([i_block[off + 8], i_block[off + 9]]);
+    ((leaf_hi as u64) << 32) | leaf_lo as u64
+}
+
+fn slice_idx_lba(buf: &[u8], idx: usize) -> u64 {
+    let off = 12 + idx * 12;
+    let leaf_lo = u32::from_le_bytes([buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7]]);
+    let leaf_hi = u16::from_le_bytes([buf[off + 8], buf[off + 9]]);
+    ((leaf_hi as u64) << 32) | leaf_lo as u64
+}
+
+fn extent_header_entries(buf: &[u8]) -> u16 {
+    u16::from_le_bytes([buf[2], buf[3]])
+}
+
+fn extent_header_depth(buf: &[u8]) -> u16 {
+    u16::from_le_bytes([buf[6], buf[7]])
+}
+
+fn force_external_extent_maxes(disk: &Arc<dyn BlockDevice>, fs_lba: u64, fs_bs: u32, max: u16) {
+    let mut buf = read_fs_block(disk, fs_lba, fs_bs);
+    let entries = extent_header_entries(&buf) as usize;
+    let depth = extent_header_depth(&buf);
+    buf[4..6].copy_from_slice(&max.to_le_bytes());
+    write_fs_block(disk, fs_lba, fs_bs, buf.clone());
+
+    if depth > 0 {
+        for i in 0..entries {
+            force_external_extent_maxes(disk, slice_idx_lba(&buf, i), fs_bs, max);
+        }
+    }
+}
+
+fn force_tree_external_maxes(disk: &Arc<dyn BlockDevice>, i_block: &[u8], fs_bs: u32, max: u16) {
+    let depth = extent_header_depth(i_block);
+    if depth == 0 {
+        return;
+    }
+    for i in 0..extent_header_entries(i_block) as usize {
+        force_external_extent_maxes(disk, inline_idx_lba(i_block, i), fs_bs, max);
+    }
+}
+
+fn leaf_extent_blocks(buf: &[u8]) -> std::vec::Vec<u32> {
+    let entries = u16::from_le_bytes([buf[2], buf[3]]) as usize;
+    let mut out = std::vec::Vec::with_capacity(entries);
+    for i in 0..entries {
+        let off = 12 + i * 12;
+        out.push(u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]));
+    }
+    out
+}
+
 #[test]
 fn append_block_then_read_back() {
     let disk = build_disk();
@@ -85,6 +164,136 @@ fn write_at_extends_and_round_trips() {
     got.extend_from_slice(&blk0[off as usize..]);
     got.extend_from_slice(&blk1[..(payload.len() - 8)]);
     assert_eq!(got, payload, "spliced bytes match");
+}
+
+#[test]
+fn fallocate_extends_size_and_allocates_zeroed_blocks() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let n = m.create_file(2, b"falloc.bin", 0o644).unwrap();
+    let bs = m.sb.block_size as usize;
+
+    m.fallocate_inode(n, 0, (bs * 3) as u64, false).unwrap();
+
+    let inode = m.read_inode(n).unwrap();
+    assert_eq!(inode.size, (bs * 3) as u64);
+    for lb in 0..3 {
+        let blk = m.read_file_block(&inode, lb).unwrap();
+        assert!(blk.iter().all(|&b| b == 0), "allocated block {} is zeroed", lb);
+    }
+}
+
+#[test]
+fn fallocate_keep_size_allocates_without_extending_size() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let n = m.create_file(2, b"falloc_keep.bin", 0o644).unwrap();
+    let bs = m.sb.block_size as usize;
+
+    m.fallocate_inode(n, bs as u64, (bs * 2) as u64, true).unwrap();
+
+    let inode = m.read_inode(n).unwrap();
+    assert_eq!(inode.size, 0);
+    for lb in 1..3 {
+        let blk = m.read_file_block(&inode, lb).unwrap();
+        assert!(blk.iter().all(|&b| b == 0), "keep-size block {} is allocated and zeroed", lb);
+    }
+}
+
+#[test]
+fn fallocate_keep_size_inserts_sparse_inline_extents_sorted() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let n = m.create_file(2, b"falloc_sparse.bin", 0o644).unwrap();
+    let bs = m.sb.block_size as usize;
+
+    m.fallocate_inode(n, (bs * 2) as u64, bs as u64, true).unwrap();
+    m.fallocate_inode(n, bs as u64, bs as u64, true).unwrap();
+
+    let inode = m.read_inode(n).unwrap();
+    assert_eq!(inode.size, 0, "KEEP_SIZE preserves i_size");
+    let hdr = ext4::parse_extent_header(&inode.i_block).unwrap();
+    assert_eq!(hdr.depth, 0, "two sparse extents stay inline");
+    assert_eq!(hdr.entries, 2);
+    let e0 = ext4::parse_inline_extent(&inode.i_block, &hdr, 0).unwrap();
+    let e1 = ext4::parse_inline_extent(&inode.i_block, &hdr, 1).unwrap();
+    assert_eq!((e0.block, e1.block), (1, 2), "inline extents are sorted by logical block");
+    for lb in 1..=2 {
+        let blk = m.read_file_block(&inode, lb).unwrap();
+        assert!(blk.iter().all(|&b| b == 0), "block {} is allocated and zeroed", lb);
+    }
+}
+
+#[test]
+fn fallocate_keep_size_inserts_sparse_depth1_leaf_sorted() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk.clone()).unwrap();
+    let n = m.create_file(2, b"falloc_d1.bin", 0o644).unwrap();
+    let bs = m.sb.block_size as usize;
+
+    for lb in [8u32, 6, 4, 2, 0] {
+        m.fallocate_inode(n, lb as u64 * bs as u64, bs as u64, true).unwrap();
+    }
+    let inode = m.read_inode(n).unwrap();
+    let hdr = ext4::parse_extent_header(&inode.i_block).unwrap();
+    assert_eq!(hdr.depth, 1, "five sparse extents promote to one depth-1 leaf");
+
+    m.fallocate_inode(n, bs as u64, bs as u64, true).unwrap();
+    let inode = m.read_inode(n).unwrap();
+    assert_eq!(inode.size, 0, "KEEP_SIZE remains intact after depth-1 insert");
+    let hdr = ext4::parse_extent_header(&inode.i_block).unwrap();
+    assert_eq!(hdr.depth, 1);
+    assert_eq!(hdr.entries, 1);
+    let leaf_lba = inline_idx_lba(&inode.i_block, 0);
+    let leaf = read_fs_block(&disk, leaf_lba, m.sb.block_size);
+    assert_eq!(leaf_extent_blocks(&leaf), std::vec![0, 1, 2, 4, 6, 8]);
+    for lb in [0u32, 1, 2, 4, 6, 8] {
+        let blk = m.read_file_block(&inode, lb).unwrap();
+        assert!(blk.iter().all(|&b| b == 0), "block {} is allocated and zeroed", lb);
+    }
+}
+
+#[test]
+fn fallocate_sparse_extents_promotes_full_root_to_depth3() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk.clone()).unwrap();
+    let n = m.create_file(2, b"falloc_d3.bin", 0o644).unwrap();
+    let bs = m.sb.block_size as usize;
+    let mut logicals = std::vec::Vec::new();
+
+    for lb in [0u32, 2, 4, 6, 8] {
+        m.fallocate_inode(n, lb as u64 * bs as u64, bs as u64, true).unwrap();
+        logicals.push(lb);
+    }
+    assert_eq!(ext4::parse_extent_header(&m.read_inode(n).unwrap().i_block).unwrap().depth, 1);
+
+    // mini.img has 1 KiB blocks, so real external extent nodes hold ~84
+    // entries. Constrain only this test-created tree's external eh_max fields
+    // to 4 so the same split propagation reaches depth 3 within the fixture.
+    force_tree_external_maxes(&disk, &m.read_inode(n).unwrap().i_block, m.sb.block_size, 4);
+
+    let mut next_lb = 10u32;
+    while ext4::parse_extent_header(&m.read_inode(n).unwrap().i_block).unwrap().depth < 3 {
+        m.fallocate_inode(n, next_lb as u64 * bs as u64, bs as u64, true).unwrap();
+        logicals.push(next_lb);
+        force_tree_external_maxes(&disk, &m.read_inode(n).unwrap().i_block, m.sb.block_size, 4);
+        next_lb += 2;
+        assert!(logicals.len() < 96, "test should reach depth 3 with constrained fanout");
+    }
+
+    let at_depth3 = next_lb;
+    m.fallocate_inode(n, at_depth3 as u64 * bs as u64, bs as u64, true).unwrap();
+    logicals.push(at_depth3);
+
+    let inode = m.read_inode(n).unwrap();
+    let hdr = ext4::parse_extent_header(&inode.i_block).unwrap();
+    assert!(hdr.depth >= 3, "root promoted past depth 2 instead of returning ExtentTreeFull");
+    assert_eq!(inode.size, 0, "KEEP_SIZE still preserves i_size on deep insert");
+
+    for lb in logicals {
+        let blk = m.read_file_block(&inode, lb).unwrap();
+        assert!(blk.iter().all(|&b| b == 0), "logical block {} remains readable", lb);
+    }
 }
 
 #[test]

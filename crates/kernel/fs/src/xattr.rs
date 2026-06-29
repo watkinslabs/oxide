@@ -27,19 +27,103 @@ use vfs::InodeRef;
 
 const ENODATA: i32 = 61;
 const EEXIST:  i32 = 17;
+const EOPNOTSUPP: i32 = 95;
 
 pub const XATTR_CREATE:  u32 = 1;
 pub const XATTR_REPLACE: u32 = 2;
 
+/// Linux XATTR_NAME_MAX (255) / XATTR_SIZE_MAX (64 KiB).
+const XATTR_NAME_MAX: usize = 255;
+const XATTR_SIZE_MAX: usize = 65536;
+
 #[derive(Default)]
 struct InodeXattrs(BTreeMap<String, Vec<u8>>);
 
-static TABLE: Spinlock<BTreeMap<usize, InodeXattrs>, TaskListClass> =
+/// Keyed by `(fsid, ino)` — a STABLE filesystem identity. The old
+/// Arc-pointer-address key leaked xattrs to an unrelated file when an
+/// inode Arc was freed and its address reused.
+static TABLE: Spinlock<BTreeMap<(u64, u64), InodeXattrs>, TaskListClass> =
     Spinlock::new(BTreeMap::new());
 
-fn inode_key(inode: &InodeRef) -> usize {
-    let raw: *const dyn vfs::Inode = alloc::sync::Arc::as_ptr(inode);
-    raw as *const u8 as usize
+fn inode_key(inode: &InodeRef) -> (u64, u64) {
+    (inode.fsid(), inode.ino())
+}
+
+/// Effective fsuid + the file-related caps for the running task. Early
+/// boot (no task) is treated as fully privileged (root).
+fn cred_snapshot() -> (u32, bool /*sys_admin*/, bool /*setfcap*/, bool /*fowner*/) {
+    use core::sync::atomic::Ordering;
+    match sched::current() {
+        Some(c) => (
+            c.creds.fsuid.load(Ordering::Acquire),
+            c.has_cap(sched::cap::SYS_ADMIN),
+            c.has_cap(sched::cap::SETFCAP),
+            c.has_cap(sched::cap::FOWNER),
+        ),
+        None => (0, true, true, true),
+    }
+}
+
+/// Owning uid of `inode` (per-FS first, then the inode_times overlay, then 0).
+fn inode_owner(inode: &InodeRef) -> u32 {
+    if let Some(u) = inode.uid() { return u; }
+    vfs::inode_times::get(inode)
+        .map(|o| if o.owner_set { o.uid } else { 0 })
+        .unwrap_or(0)
+}
+
+/// Validate xattr name length (Linux ERANGE past XATTR_NAME_MAX).
+fn check_name_len(name: &str) -> Result<(), i64> {
+    if name.is_empty() || name.len() > XATTR_NAME_MAX {
+        return Err(-(Errno::Erange.as_i32() as i64));
+    }
+    Ok(())
+}
+
+/// Enforce the Linux xattr namespace permission model for a WRITE
+/// (setxattr/removexattr):
+///   * `security.capability` → CAP_SETFCAP; other `security.*` → CAP_SYS_ADMIN
+///   * `trusted.*`           → CAP_SYS_ADMIN
+///   * `system.*` / `user.*` → owner (fsuid==i_uid) or CAP_FOWNER;
+///     `user.*` is further restricted to regular files and directories
+///   * any other namespace    → EOPNOTSUPP
+/// Without this, an unprivileged `setxattr(file,"security.capability",…)`
+/// is a privilege-escalation vector (execve reads file caps).
+/// # C: O(1)
+fn check_write_perm(inode: &InodeRef, name: &str) -> Result<(), i64> {
+    let (fsuid, sys_admin, setfcap, fowner) = cred_snapshot();
+    let owner_ok = fowner || fsuid == inode_owner(inode);
+    if name == "security.capability" {
+        return if setfcap { Ok(()) } else { Err(-(Errno::Eperm.as_i32() as i64)) };
+    }
+    if name.starts_with("security.") {
+        return if sys_admin { Ok(()) } else { Err(-(Errno::Eperm.as_i32() as i64)) };
+    }
+    if name.starts_with("trusted.") {
+        return if sys_admin { Ok(()) } else { Err(-(Errno::Eperm.as_i32() as i64)) };
+    }
+    if name.starts_with("system.") {
+        return if owner_ok { Ok(()) } else { Err(-(Errno::Eperm.as_i32() as i64)) };
+    }
+    if name.starts_with("user.") {
+        match inode.file_type() {
+            vfs::FileType::Regular | vfs::FileType::Directory => {}
+            _ => return Err(-(Errno::Eperm.as_i32() as i64)),
+        }
+        return if owner_ok { Ok(()) } else { Err(-(Errno::Eperm.as_i32() as i64)) };
+    }
+    Err(-(EOPNOTSUPP as i64))
+}
+
+/// `trusted.*` xattrs are invisible to a task without CAP_SYS_ADMIN
+/// (Linux): a read reports ENODATA as if absent.
+/// # C: O(1)
+fn read_hidden(name: &str) -> bool {
+    if name.starts_with("trusted.") {
+        let (_, sys_admin, _, _) = cred_snapshot();
+        return !sys_admin;
+    }
+    false
 }
 
 fn read_user_cstr_owned(p: u64, max: usize) -> Result<String, i64> {
@@ -92,7 +176,16 @@ fn resolve_path_inode(p: u64) -> Result<InodeRef, i64> {
     let bytes = unsafe { devfs::read_user_cstr(p, 256) };
     let s = bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() })
         .ok_or(-(Errno::Einval.as_i32() as i64))?;
-    devfs::lookup(s).ok_or(-(Errno::Enoent.as_i32() as i64))
+    let resolved = if s.starts_with('/') {
+        vfs::path::lexical_normalize(s).unwrap_or_else(|| s.into())
+    } else if let Some(cur) = sched::current() {
+        // SAFETY: current task is the sole writer of its cwd slot on this CPU.
+        let cwd = unsafe { (*cur.cwd.get()).clone() };
+        vfs::path::resolve_against_cwd(&cwd, s).unwrap_or_else(|| s.into())
+    } else {
+        s.into()
+    };
+    vfs::mount::lookup(&resolved).map_err(|_| -(Errno::Enoent.as_i32() as i64))
 }
 
 fn resolve_fd_inode(fd: i32) -> Result<InodeRef, i64> {
@@ -104,6 +197,13 @@ fn resolve_fd_inode(fd: i32) -> Result<InodeRef, i64> {
 }
 
 fn do_set(inode: &InodeRef, name: String, value: Vec<u8>, flags: u32) -> i64 {
+    // XATTR_CREATE | XATTR_REPLACE together is invalid (Linux EINVAL).
+    if flags & XATTR_CREATE != 0 && flags & XATTR_REPLACE != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    if let Err(rv) = check_name_len(&name) { return rv; }
+    if value.len() > XATTR_SIZE_MAX { return -(Errno::E2big.as_i32() as i64); }
+    if let Err(rv) = check_write_perm(inode, &name) { return rv; }
     let k = inode_key(inode);
     let mut g = TABLE.lock();
     let entry = g.entry(k).or_insert_with(InodeXattrs::default);
@@ -115,6 +215,8 @@ fn do_set(inode: &InodeRef, name: String, value: Vec<u8>, flags: u32) -> i64 {
 }
 
 fn do_get(inode: &InodeRef, name: &str, buf_p: u64, buflen: usize) -> i64 {
+    if let Err(rv) = check_name_len(name) { return rv; }
+    if read_hidden(name) { return -(ENODATA as i64); }
     let g = TABLE.lock();
     let entry = match g.get(&inode_key(inode)) {
         Some(e) => e, None => return -(ENODATA as i64),
@@ -131,8 +233,9 @@ fn do_get(inode: &InodeRef, name: &str, buf_p: u64, buflen: usize) -> i64 {
 
 fn do_list(inode: &InodeRef, buf_p: u64, buflen: usize) -> i64 {
     let g = TABLE.lock();
+    // Hide trusted.* names from a task lacking CAP_SYS_ADMIN (Linux).
     let names: Vec<&String> = match g.get(&inode_key(inode)) {
-        Some(e) => e.0.keys().collect(),
+        Some(e) => e.0.keys().filter(|n| !read_hidden(n)).collect(),
         None    => return 0,
     };
     let mut total = 0usize;
@@ -146,6 +249,8 @@ fn do_list(inode: &InodeRef, buf_p: u64, buflen: usize) -> i64 {
 }
 
 fn do_remove(inode: &InodeRef, name: &str) -> i64 {
+    if let Err(rv) = check_name_len(name) { return rv; }
+    if let Err(rv) = check_write_perm(inode, name) { return rv; }
     let mut g = TABLE.lock();
     let entry = match g.get_mut(&inode_key(inode)) {
         Some(e) => e, None => return -(ENODATA as i64),

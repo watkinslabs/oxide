@@ -59,6 +59,34 @@ pub fn sys_clone3(args: &SyscallArgs) -> i64 {
         );
         (rv, flags, pidfd_uptr)
     };
+    // CLONE_INTO_CGROUP (Linux 5.7+): clone_args.cgroup is an fd to a cgroup v2
+    // directory; the child is created directly inside it. systemd's pidfd_spawn
+    // uses this to place service executors in the right cgroup — ignoring it
+    // left children in PID1's cgroup and desynced systemd's cgroup bookkeeping
+    // (the executor's later cg_attach then raced the empty-cgroup cleanup). The
+    // cgroup field is at struct offset 80 (u64 #10); present only when the
+    // caller's `size` covers it.
+    const CLONE_INTO_CGROUP: u64 = 0x2_0000_0000;
+    if rv > 0 && (flags & CLONE_INTO_CGROUP) != 0 && size >= 88 {
+        // SAFETY: cl_args+size validated ≥88 above; u64 #10 (offset 80) is in
+        // range and 8-byte aligned; CPL=0 read via caller's AS.
+        let cg_fd = unsafe { core::ptr::read_volatile((cl_args as *const u64).add(10)) } as i32;
+        if cg_fd >= 0 {
+            if let Some(cur) = sched::live::current() {
+                // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+                if let Some(fdt) = unsafe { cur.fd_table_ref() } {
+                    if let Ok(file) = fdt.get(cg_fd) {
+                        let inode = file.inode();
+                        if inode.file_type() == vfs::FileType::Directory {
+                            if let Some(cgid) = cgroup::cgid_from_dir_inode(inode.ino(), inode.fsid()) {
+                                cgroup::attach_into(cgid, rv as u64);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     // CLONE_PIDFD: open a pidfd bound to the child and write the fd
     // number to *pidfd_uptr in caller's AS.
     if rv > 0 && (flags & CLONE_PIDFD) != 0
@@ -67,6 +95,14 @@ pub fn sys_clone3(args: &SyscallArgs) -> i64 {
         sa.a0 = rv as u64;
         sa.a1 = 0;
         let pidfd = crate::s434_pidfd_open::sys_pidfd_open(&sa);
+        #[cfg(feature = "debug-boot")]
+        {
+            klog::write_raw(b"[clone3 PIDFD] child_vpid="); klog::write_dec_u64(rv as u64);
+            klog::write_raw(b" pidfd=");
+            if pidfd < 0 { klog::write_raw(b"-"); klog::write_dec_u64((-pidfd) as u64); }
+            else { klog::write_dec_u64(pidfd as u64); }
+            klog::write_raw(b"\n");
+        }
         if pidfd >= 0 {
             // SAFETY: pidfd_uptr+4 validated < USER_VA_END; CPL=0 4-byte int write in caller AS.
             unsafe { core::ptr::write_volatile(pidfd_uptr as *mut i32, pidfd as i32); }

@@ -29,7 +29,7 @@ pub fn sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let inode = crate::pidfd::new_pidfd_inode(target.tid);
+    let inode = crate::pidfd::new_pidfd_inode(target);
     let dentry = Dentry::new(None, "pidfd".to_string(), Arc::clone(&inode));
     let mut fl = OpenFlags::O_RDWR;
     if (flags & PIDFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }

@@ -54,6 +54,12 @@ impl Inode for ProcRootInode {
                 allow_task_dir: true,
             }) as InodeRef);
         }
+        // procfs OWNS its `/proc/{sys,net,...}` subtrees as kernfs PseudoDirs
+        // hung under PROC_REG (D1d) — the sysctl interface (kernel/domainname,
+        // kernel/hostname, …), /proc/net, etc. Resolved through procfs's OWN
+        // tree (chroot-INDEPENDENT, Linux proc_sys_lookup), no longer the
+        // shared devfs registry. Must win over the numeric-PID parse below.
+        if let Some(i) = crate::reg::proc_reg().lookup_path(name) { return Ok(i); }
         // `name` is a Linux PID (vtgid); translate via pid_to_kernel_tid.
         let vpid: u32 = name.parse().map_err(|_| VfsError::Enoent)?;
         let tid = pid_to_kernel_tid(vpid).ok_or(VfsError::Enoent)?;
@@ -63,14 +69,14 @@ impl Inode for ProcRootInode {
             allow_task_dir: true,
         }) as InodeRef)
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         // Order: static children (sorted, the subdir tree) → self → live pids.
         let mut idx = off as usize;
         let nstat = self.children.len();
         while idx < nstat {
             let (name, inode) = self.children.iter().nth(idx).unwrap();
             let next = idx as u64 + 1;
-            if !f(next, name.as_str(), inode.file_type()) { return Ok(next); }
+            if !f(inode.ino(), next, name.as_str(), inode.file_type()) { return Ok(next); }
             idx += 1;
         }
         let vpids = sched::live::registry::live_vpids();
@@ -97,7 +103,8 @@ impl Inode for ProcRootInode {
                 buf[..n].reverse();
                 core::str::from_utf8(&buf[..n]).unwrap_or("0")
             };
-            if !f(next, s, FileType::Directory) {
+            let ino = self.lookup(s).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, s, FileType::Directory) {
                 return Ok(next);
             }
             idx += 1;
@@ -128,10 +135,11 @@ impl Inode for ProcPidDirInode {
         // root symlinks, /fd dir) take priority; else resolve `self` to
         // the running task's tid and fall through.
         let tid = if self.is_self {
-            let mut p = alloc::string::String::with_capacity(11 + name.len());
-            p.push_str("/proc/self/");
-            p.push_str(name);
-            if let Some(i) = devfs::lookup(&p) {
+            // Static `/proc/self/<file>` entries live under PROC_REG key
+            // `self/<name>` (procfs's own tree, D1d) — exe/cwd/root symlinks,
+            // /fd dir, auxv, limits, etc. take priority; else resolve `self`
+            // to the running task's tid and fall through to the match arms.
+            if let Some(i) = crate::reg::proc_reg().lookup_path(&alloc::format!("self/{name}")) {
                 return Ok(i);
             }
             sched::live::current()
@@ -151,7 +159,7 @@ impl Inode for ProcPidDirInode {
             "statm" => Ok(Arc::new(ProcPidStatmInode { tid }) as InodeRef),
             "wchan" => Ok(StaticFileInode::new(b"0") as InodeRef),
             "oom_score" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
-            "oom_score_adj" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
+            "oom_score_adj" => Ok(crate::sysctl::SysctlInode::new(b"0\n") as InodeRef),
             "loginuid" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
             "sessionid" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
             "io" => {
@@ -172,19 +180,20 @@ impl Inode for ProcPidDirInode {
             // current id snapshot for that NS kind.
             "ns" => Ok(Arc::new(ProcPidNsDirInode { tid }) as InodeRef),
             "uid_map" | "gid_map" => {
-                Ok(StaticFileInode::new(b"         0          0 4294967295\n") as InodeRef)
+                Ok(crate::sysctl::SysctlInode::new(b"         0          0 4294967295\n") as InodeRef)
             }
-            "setgroups" => Ok(StaticFileInode::new(b"allow\n") as InodeRef),
+            "setgroups" => Ok(crate::sysctl::SysctlInode::new(b"allow\n") as InodeRef),
             "syscall" => Ok(StaticFileInode::new(b"running\n") as InodeRef),
             "mounts" => Ok(Arc::new(crate::mounts::ProcMountsInode) as InodeRef),
-            "mountinfo" => Ok(Arc::new(crate::mounts::ProcMountinfoInode) as InodeRef),
+            "mountinfo" => Ok(Arc::new(crate::mounts::ProcMountinfoInode::new()) as InodeRef),
             "cgroup" => Ok(Arc::new(ProcCgroupInode { tid: Some(tid) }) as InodeRef),
             "auxv" => Ok(StaticFileInode::new(&[0u8; 16]) as InodeRef),
             "timerslack_ns" => Ok(StaticFileInode::new(b"50000\n") as InodeRef),
             "coredump_filter" => Ok(StaticFileInode::new(b"00000033\n") as InodeRef),
             "smaps_rollup" => Ok(Arc::new(crate::smaps::ProcPidSmapsInode { tid }) as InodeRef),
             "numa_maps" => Ok(Arc::new(ProcPidMapsInode { tid }) as InodeRef),
-            "stack" | "mountstats" | "make-it-fail" | "fail-nth" | "projid_map" | "pagemap"
+            "projid_map" => Ok(crate::sysctl::SysctlInode::new(b"         0          0 4294967295\n") as InodeRef),
+            "stack" | "mountstats" | "make-it-fail" | "fail-nth" | "pagemap"
             | "kpagecount" | "kpageflags" | "attr" => Ok(StaticFileInode::new(b"") as InodeRef),
             "wakeups_count" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
             // exe/cwd/root: magic symlinks (followed by stat/O_PATH) per ProcPidLinkInode.
@@ -203,7 +212,7 @@ impl Inode for ProcPidDirInode {
             _ => Err(VfsError::Enoent),
         }
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         const ENTRIES: &[&str] = &[
             "status",
             "cmdline",
@@ -258,7 +267,8 @@ impl Inode for ProcPidDirInode {
                 "fd" | "fdinfo" | "task" => FileType::Directory,
                 _ => FileType::Regular,
             };
-            if !f(next, name, ft) {
+            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, name, ft) {
                 return Ok(next);
             }
             idx += 1;
@@ -293,7 +303,7 @@ impl Inode for ProcPidTaskDirInode {
             allow_task_dir: false,
         }) as InodeRef)
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let tids = sched::live::registry::thread_entries(self.tgid);
         let mut idx = off as usize;
         while idx < tids.len() {
@@ -313,7 +323,8 @@ impl Inode for ProcPidTaskDirInode {
             }
             buf[..n].reverse();
             let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
-            if !f(next, s, FileType::Directory) {
+            let ino = self.lookup(s).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, s, FileType::Directory) {
                 return Ok(next);
             }
             idx += 1;
@@ -579,70 +590,6 @@ fn lookup_child_path(mut node: InodeRef, leaf: &str) -> Option<InodeRef> {
     Some(node)
 }
 
-/// # C: O(N_tasks)
-pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
-    use crate::paths::{parse_proc_path, ProcPath};
-    if let Some(i) = crate::proc_links::lookup_fd_path(path) {
-        return Some(i);
-    }
-    if let Some(i) = crate::fdinfo::lookup_fdinfo_path(path) {
-        return Some(i);
-    }
-    match parse_proc_path(path) {
-        ProcPath::SelfDir => Some(Arc::new(ProcPidDirInode {
-            tid: 0,
-            is_self: true,
-            allow_task_dir: true,
-        }) as InodeRef),
-        ProcPath::SelfChild(leaf) => {
-            // Static devfs registrations take priority (already tried by
-            // caller). Fall back to the same per-pid synthesis as
-            // /proc/<pid>/<leaf> via the is_self dispatch.
-            lookup_child_path(
-                Arc::new(ProcPidDirInode {
-                    tid: 0,
-                    is_self: true,
-                    allow_task_dir: true,
-                }) as InodeRef,
-                leaf,
-            )
-        }
-        ProcPath::PidDir(name_pid) => {
-            let tid = pid_to_kernel_tid(name_pid)?;
-            Some(Arc::new(ProcPidDirInode {
-                tid,
-                is_self: false,
-                allow_task_dir: true,
-            }) as InodeRef)
-        }
-        ProcPath::PidChild(name_pid, leaf) => {
-            let tid = pid_to_kernel_tid(name_pid)?;
-            lookup_child_path(
-                Arc::new(ProcPidDirInode {
-                    tid,
-                    is_self: false,
-                    allow_task_dir: true,
-                }) as InodeRef,
-                leaf,
-            )
-        }
-        ProcPath::NotProc => match path {
-            "/proc/net/dev" => Some(Arc::new(crate::net::ProcNetDevInode) as InodeRef),
-            "/proc/net/tcp" => Some(Arc::new(crate::net::ProcNetTcpInode) as InodeRef),
-            "/proc/net/tcp6" => Some(Arc::new(crate::net::ProcNetTcp6Inode) as InodeRef),
-            "/proc/net/udp" => Some(Arc::new(crate::net::ProcNetUdpInode) as InodeRef),
-            "/proc/net/udp6" => Some(Arc::new(crate::net::ProcNetUdp6Inode) as InodeRef),
-            "/proc/modules" => Some(Arc::new(crate::net::ProcModulesInode) as InodeRef),
-            "/proc/net/route" => Some(Arc::new(crate::net::ProcNetRouteInode) as InodeRef),
-            "/proc/net/arp" => Some(Arc::new(crate::net::ProcNetArpInode) as InodeRef),
-            "/proc/net/unix" => Some(Arc::new(crate::net::ProcNetUnixInode) as InodeRef),
-            "/proc/net/if_inet6" => Some(Arc::new(crate::net::ProcNetIfInet6Inode) as InodeRef),
-            "/proc/net/snmp" => Some(Arc::new(crate::net::ProcNetSnmpInode) as InodeRef),
-            _ => None,
-        },
-    }
-}
-
 /// Register the v1 procfs entries (delegated to procfs_static).
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(N_files)
@@ -656,24 +603,66 @@ pub fn init() {
 pub fn smoke_test() {
     use hal::kassert;
     use vfs::Inode;
+    // Per-component resolve: `/proc/<leaf>` via the procfs root inode tree
+    // (`ProcRootInode::lookup` → `i_op->lookup`), everything else via the
+    // devfs key/value tree. No whole-path `FileSystem::lookup`.
+    fn smoke_resolve(path: &str) -> Option<InodeRef> {
+        // /proc/* walks procfs's own root inode tree; /sys/* sysfs's own
+        // SYS_ROOT (D1c) — devfs no longer backs either. /etc is devfs's own
+        // overlay and is smoked in `devfs::boot` now (D1d).
+        if let Some(rest) = path.strip_prefix("/proc/") {
+            return lookup_child_path(crate::static_files::proc_root() as InodeRef, rest);
+        }
+        if let Some(rest) = path.strip_prefix("/sys/") {
+            return sysfs::sys_root().lookup_path(rest);
+        }
+        None
+    }
+    fn is_hex(b: u8) -> bool {
+        b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+    }
+    fn is_uuid_line(buf: &[u8]) -> bool {
+        if buf.len() < 37 || buf[36] != b'\n' { return false; }
+        for i in 0..36 {
+            match i {
+                8 | 13 | 18 | 23 => {
+                    if buf[i] != b'-' { return false; }
+                }
+                _ => {
+                    if !is_hex(buf[i]) { return false; }
+                }
+            }
+        }
+        buf[..36].iter().any(|&b| b != b'0' && b != b'-')
+    }
     let entries: &[(&str, &[u8])] = &[
         ("/proc/version", b"Linux"),
         ("/proc/cpuinfo", b"processor"),
         ("/proc/meminfo", b"MemTotal:"),
         // /proc/uptime is dynamic now (P3-111) — skipped from smoke (its body is
         // a function of monotonic_ns, not a static prefix).
-        ("/sys/kernel/random/uuid", b"00000000"),
-        ("/sys/kernel/random/boot_id", b"00000000"),
-        ("/etc/os-release", b"NAME=oxide"),
+        // /proc/sys + /proc/net now resolve from procfs's own PROC_REG tree.
+        ("/proc/sys/kernel/pid_max", b"32768"),
+        ("/proc/sys/kernel/domainname", b"(none)"),
+        ("/proc/net/dev", b"Inter-|"),
     ];
     for (path, prefix) in entries {
         // Resolve through the procfs filesystem (the /proc dir tree owns its
         // static children now; /sys + /etc still fall to devfs inside it).
-        let inode = crate::fs_impl::instance().lookup(path).expect("procfs lookup");
+        let inode = smoke_resolve(path).expect("procfs lookup");
         let mut buf = [0u8; 32];
         let n = inode.read(0, &mut buf).expect("procfs read");
         kassert!(n >= prefix.len(), "procfs read short");
         kassert!(&buf[..prefix.len()] == *prefix, "procfs body mismatch");
+    }
+    let binfmt = smoke_resolve("/proc/sys/fs/binfmt_misc").expect("procfs binfmt_misc dir");
+    kassert!(binfmt.file_type() == vfs::FileType::Directory, "procfs binfmt_misc not dir");
+    for path in ["/sys/kernel/random/uuid", "/sys/kernel/random/boot_id"] {
+        let inode = smoke_resolve(path).expect("procfs lookup");
+        let mut buf = [0u8; 40];
+        let n = inode.read(0, &mut buf).expect("procfs read");
+        kassert!(n == 37, "procfs uuid length mismatch");
+        kassert!(is_uuid_line(&buf[..n]), "procfs uuid shape mismatch");
     }
     debug_boot! { klog::write_raw(b"[INFO]  procfs-smoke: ok\n"); }
 }
@@ -706,7 +695,7 @@ impl Inode for ProcPidNsDirInode {
         };
         Ok(nscg::proc_ns::ns_inode_for(&task, kind))
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         const NAMES: &[&str] = &[
             "mnt",
             "cgroup",
@@ -720,7 +709,8 @@ impl Inode for ProcPidNsDirInode {
         let mut idx = off as usize;
         while idx < NAMES.len() {
             let next = idx as u64 + 1;
-            if !f(next, NAMES[idx], FileType::Symlink) {
+            let ino = self.lookup(NAMES[idx]).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, NAMES[idx], FileType::Symlink) {
                 return Ok(next);
             }
             idx += 1;

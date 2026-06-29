@@ -197,13 +197,37 @@ impl vfs::fs::FileSystem for Ext4RootfsFs {
     fn name(&self) -> &str { "ext4" }
     /// EXT4_SUPER_MAGIC (linux/magic.h).
     fn magic(&self) -> u64 { crate::EXT4_SUPER_MAGIC as u64 }
+    /// On-disk `s_blocksize` of the published root mount. # C: O(1)
+    fn block_size(&self) -> u32 { root().map(|st| st.mount.sb.block_size).unwrap_or(4096) }
+    /// Install live ext4 statfs accounting (root mount's state) as `s_op`.
+    /// # C: O(1)
+    fn super_ops(&self) -> Option<Arc<dyn vfs::SuperOps>> {
+        root().map(|st| Arc::new(ops::Ext4SuperOps::new(st.clone())) as Arc<dyn vfs::SuperOps>)
+    }
     /// ext4 root is always inode 2 (`docs/16§2`).
     fn root(&self) -> Option<vfs::InodeRef> { wrap_any_ino(2) }
-    fn lookup(&self, path: &str) -> Option<vfs::InodeRef> { lookup_inode_any(path.as_bytes()) }
+    /// Back-stamp the SB into the published ROOT state so root-fs inodes'
+    /// `i_sb()` resolves and `fsid()` reports `sb.s_dev`. # C: O(1)
+    fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) {
+        if let Some(st) = root() { st.set_sb(sb); }
+    }
     fn create(&self, path: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
         create_at(path.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enoent)
     }
+    fn create_anonymous(&self, dir: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
+        create_anonymous_at(dir.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enospc)
+    }
     fn unlink(&self, path: &str) -> vfs::fs::KResult<()> { unlink_at(path.as_bytes()) }
+    fn link(&self, target: &str, link: &str) -> vfs::fs::KResult<()> {
+        link_at(target.as_bytes(), link.as_bytes())
+    }
+    fn link_inode(&self, inode: vfs::InodeRef, link: &str) -> vfs::fs::KResult<()> {
+        let ino = inode.as_any()
+            .and_then(|a| a.downcast_ref::<crate::rootfs::inode::Ext4FileInode>())
+            .map(|i| i.ext4_ino())
+            .ok_or(vfs::VfsError::Exdev)?;
+        link_inode_at(ino, link.as_bytes())
+    }
     fn rename(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
         rename_at(from.as_bytes(), to.as_bytes())
     }

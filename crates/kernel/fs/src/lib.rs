@@ -21,6 +21,8 @@ pub mod xattr;
 pub mod keyring;
 pub mod perf;
 pub mod tmpfs;
+pub mod autofs;
+pub mod binfmt_misc;
 pub mod coredump;
 pub mod ptrace;
 pub mod sig_dispatch;

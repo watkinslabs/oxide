@@ -158,6 +158,7 @@ name = "devfs"
 version = "0.1.0"
 dependencies = [
  "hal",
+ "kernfs",
  "klog",
  "sync",
  "vfs",
@@ -193,6 +194,7 @@ dependencies = [
  "hal",
  "klog",
  "pmm",
+ "procfs",
  "sync",
  "syscall",
  "vfs",
@@ -400,6 +402,7 @@ dependencies = [
  "elf",
  "ext4",
  "hal",
+ "klog",
  "vmm",
 ]
 
@@ -433,6 +436,7 @@ version = "0.1.0"
 dependencies = [
  "block",
  "crc",
+ "klog",
  "sync",
  "vfs",
 ]
@@ -625,6 +629,8 @@ version = "0.1.0"
 dependencies = [
  "devfs",
  "hal",
+ "hal-aarch64",
+ "hal-x86_64",
  "klog",
  "sched",
  "sync",
@@ -659,6 +665,16 @@ version = "0.1.0"
 dependencies = [
  "boot-x86_64",
  "klog",
+]
+
+[[package]]
+name = "kernfs"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+ "sync",
+ "vfs",
 ]
 
 [[package]]
@@ -925,6 +941,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "boot-info",
+ "cpu",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
@@ -984,6 +1001,7 @@ dependencies = [
  "hal",
  "hal-aarch64",
  "hal-x86_64",
+ "kernfs",
  "klog",
  "kmacros",
  "modules",
@@ -1324,6 +1342,7 @@ dependencies = [
  "hal-x86_64",
  "ipc",
  "kalloc",
+ "kernfs",
  "klog",
  "kmacros",
  "modules",
@@ -1342,6 +1361,7 @@ dependencies = [
  "sound",
  "sync",
  "syscall",
+ "sysfs",
  "tracefs",
  "tty",
  "vfs",
@@ -1355,10 +1375,11 @@ name = "sysfs"
 version = "0.1.0"
 dependencies = [
  "block",
- "devfs",
  "drv",
+ "kernfs",
  "net",
  "netlink",
+ "sync",
  "vfs",
 ]
 
@@ -1387,10 +1408,10 @@ name = "tracefs"
 version = "0.1.0"
 dependencies = [
  "cpu",
- "devfs",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
+ "kernfs",
  "sched",
  "sync",
  "syscall",

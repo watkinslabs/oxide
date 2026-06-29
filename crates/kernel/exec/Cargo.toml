@@ -9,4 +9,8 @@ license = "MPL-2.0"
 ext4 = { path = "../ext4" }
 elf      = { path = "../../shared/elf" }
 hal      = { path = "../../arch/hal" }
+klog     = { path = "../../shared/klog" }
 vmm      = { path = "../mm-vmm" }
+
+[features]
+debug-boot = []

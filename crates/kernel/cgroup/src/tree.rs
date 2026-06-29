@@ -107,6 +107,8 @@ pub struct Node {
     pub mem_low: u64,
     pub mem_min: u64,
     pub swap_max: Option<u64>,
+    pub mem_oom_group: bool,
+    pub zswap_max: Option<u64>,
     pub mem_current: u64,
     // cpu controller
     pub cpu_weight: u32,
@@ -140,7 +142,7 @@ impl Node {
             subtree_control: 0, avail, frozen: false,
             pids_max: None,
             mem_max: None, mem_high: None, mem_low: 0, mem_min: 0,
-            swap_max: None, mem_current: 0,
+            swap_max: None, mem_oom_group: false, zswap_max: None, mem_current: 0,
             cpu_weight: 100, cpu_quota: None, cpu_period: 100_000,
             cpu_runtime_base_ns: 0, cpu_period_start_ns: 0, cpu_throttled: false,
             io_max: String::new(), io_weight: 100,
@@ -544,6 +546,9 @@ impl Tree {
             "memory.min" => format!("{}\n", n.mem_min),
             "memory.swap.max" => { let mut o = fmt_max(n.swap_max); o.push('\n'); o }
             "memory.swap.current" => "0\n".to_string(),
+            "memory.oom.group" => format!("{}\n", n.mem_oom_group as u8),
+            "memory.zswap.max" => { let mut o = fmt_max(n.zswap_max); o.push('\n'); o }
+            "memory.pressure_level" => "0\n".to_string(),
             "memory.events" => "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n".to_string(),
             "memory.stat" => format!("anon {}\nfile 0\nkernel_stack 0\nslab 0\n", self.subtree_mem(id)),
             "cpu.weight" => format!("{}\n", n.cpu_weight),
@@ -588,6 +593,14 @@ impl Tree {
             "memory.low" => n.mem_low = t.parse().map_err(|_| VfsError::Einval)?,
             "memory.min" => n.mem_min = t.parse().map_err(|_| VfsError::Einval)?,
             "memory.swap.max" => n.swap_max = parse_max(t).ok_or(VfsError::Einval)?,
+            "memory.oom.group" => {
+                n.mem_oom_group = match t {
+                    "0" => false,
+                    "1" => true,
+                    _ => return Err(VfsError::Einval),
+                };
+            }
+            "memory.zswap.max" => n.zswap_max = parse_max(t).ok_or(VfsError::Einval)?,
             "cpu.weight" => {
                 let w: u32 = t.parse().map_err(|_| VfsError::Einval)?;
                 if !(1..=10_000).contains(&w) { return Err(VfsError::Einval); }
@@ -673,6 +686,7 @@ pub fn controller_files(avail: u8) -> Vec<&'static str> {
     if avail & MEMORY != 0 {
         v.extend(["memory.current", "memory.max", "memory.high", "memory.low",
             "memory.min", "memory.swap.max", "memory.swap.current",
+            "memory.oom.group", "memory.zswap.max", "memory.pressure_level",
             "memory.events", "memory.stat"]);
     }
     if avail & CPU != 0 {

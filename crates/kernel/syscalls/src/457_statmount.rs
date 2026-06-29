@@ -48,9 +48,9 @@ pub fn sys_statmount(args: &SyscallArgs) -> i64 {
 
     // str[] area: fs-type name, mount root, mount point (each NUL-terminated).
     let mut strs: Vec<u8> = Vec::new();
-    let fs_off    = strs.len() as u32; strs.extend_from_slice(m.fs.name().as_bytes());   strs.push(0);
+    let fs_off    = strs.len() as u32; strs.extend_from_slice(m.fs().name().as_bytes());   strs.push(0);
     let root_off  = strs.len() as u32; strs.extend_from_slice(b"/");                      strs.push(0);
-    let point_off = strs.len() as u32; strs.extend_from_slice(m.mount_point.as_bytes());  strs.push(0);
+    let point_off = strs.len() as u32; strs.extend_from_slice(m.mount_point_str().as_bytes()); strs.push(0);
 
     let total = SM_HDR_SIZE + strs.len();
     if bufsize < total { return -(Errno::Eoverflow.as_i32() as i64); }
@@ -63,7 +63,7 @@ pub fn sys_statmount(args: &SyscallArgs) -> i64 {
     let mut buf = alloc::vec![0u8; total];
     buf[SM_OFF_SIZE..SM_OFF_SIZE + U32].copy_from_slice(&(total as u32).to_le_bytes());
     buf[SM_OFF_MASK..SM_OFF_MASK + U64].copy_from_slice(&mask.to_le_bytes());
-    buf[SM_OFF_SB_MAGIC..SM_OFF_SB_MAGIC + U64].copy_from_slice(&m.fs.magic().to_le_bytes());
+    buf[SM_OFF_SB_MAGIC..SM_OFF_SB_MAGIC + U64].copy_from_slice(&m.fs().magic().to_le_bytes());
     buf[SM_OFF_FS_TYPE..SM_OFF_FS_TYPE + U32].copy_from_slice(&fs_off.to_le_bytes());
     buf[SM_OFF_MNT_ID..SM_OFF_MNT_ID + U64].copy_from_slice(&mnt_id.to_le_bytes());
     buf[SM_OFF_MNT_PARENT_ID..SM_OFF_MNT_PARENT_ID + U64].copy_from_slice(&parent.to_le_bytes());

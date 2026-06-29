@@ -18,6 +18,8 @@ pub fn sys_symlinkat(args: &SyscallArgs) -> i64 {
     };
     // BUG D follow-up: resolve linkpath against newdirfd (a1). The symlink
     // target is stored verbatim (never resolved at creation).
-    let link = crate::pathresolve::resolve_at(args.a1 as i32, &link).unwrap_or(link);
+    let link = match crate::pathresolve::resolve_at_result(args.a1 as i32, &link) {
+        Ok(p) => p, Err(rv) => return rv,
+    };
     crate::s088_symlink::symlink_impl(target, link)
 }

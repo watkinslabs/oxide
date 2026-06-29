@@ -7,6 +7,37 @@
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 use core::arch::asm;
 
+/// DIAG: arm DR0 as an 8-byte WRITE data-watchpoint at `va`. A guest user
+/// (or kernel) write to those 8 bytes raises #DB (trap-type, after the store).
+/// DR7: L0=1 (enable DR0), R/W0=01 (write), LEN0=10 (8 bytes). `va` must be
+/// 8-aligned. # SAFETY: privileged; legal at CPL=0.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn set_data_watchpoint(va: u64) {
+    // L0=1 (bit0), GE=1 (bit9, exact data-bp), reserved bit10=1, R/W0=01
+    // (write, bits16-17), LEN0=10 (8 bytes, bits18-19).
+    let dr7: u64 = 1 | (1u64 << 9) | (1u64 << 10) | (0b01u64 << 16) | (0b10u64 << 18);
+    // SAFETY: mov to dr0/dr7 is privileged, legal at CPL=0; no memory effects.
+    unsafe {
+        asm!("mov dr0, {}", in(reg) va,  options(nostack, preserves_flags));
+        asm!("mov dr7, {}", in(reg) dr7, options(nostack, preserves_flags));
+    }
+}
+
+/// DIAG: read DR6 (debug status) and clear it (write 0). Bit 0 set ⇒ DR0 hit.
+/// # SAFETY: privileged; legal at CPL=0.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn read_clear_dr6() -> u64 {
+    let v: u64;
+    // SAFETY: mov from/to dr6 is privileged, legal at CPL=0.
+    unsafe {
+        asm!("mov {}, dr6", out(reg) v, options(nostack, preserves_flags));
+        asm!("mov dr6, {}", in(reg) 0u64, options(nostack, preserves_flags));
+    }
+    v
+}
+
 /// Read CR3 — page-table base + PCID per Intel SDM Vol. 3 §4.5.
 /// # SAFETY: privileged read; legal at CPL=0.
 /// # C: O(1)
@@ -64,6 +95,9 @@ pub fn read_cr4() -> u64 {
 /// to #UD/#NM, and sets CR0.MP (bit 1 — task-switched FPU is
 /// monitored). musl's libc startup uses `movq %rbx, %xmm0` and
 /// similar SSE2 instructions; without this they raise #UD.
+/// Also sets CR0.WP (bit 16) so CPL=0 writes honor the user-PTE
+/// read-only bit: kernel writes into a COW-shared user page fault
+/// into do_wp_page instead of silently mutating the shared frame.
 /// # SAFETY: privileged CR0/CR4 writes legal at CPL=0; called once
 /// per CPU at boot (BSP `_start_rust` + each AP `ap_main_x86`) before
 /// that CPU runs user code. CR0/CR4 are per-CPU registers.
@@ -76,6 +110,7 @@ pub unsafe fn enable_sse() {
         asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
         cr0 &= !(1u64 << 2); // clear EM
         cr0 |=  (1u64 << 1); // set MP
+        cr0 |=  (1u64 << 16); // set WP — CPL=0 honors user PTE RO so kernel writes to COW-shared user pages take #PF into do_wp_page instead of silently mutating the shared frame (Linux X86_CR0_WP)
         asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack, preserves_flags));
         let mut cr4: u64;
         asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));

@@ -6,7 +6,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::userbuf::validate_user_buf;
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 /// VT_WAITACTIVE sleep queue: a task blocks here until a VT switch completes
 /// (Linux `vt_event` / `vt_waitactive`). Woken by `vt_switch_wake`, which the
@@ -28,6 +28,8 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     const TCSETSF:    u64 = 0x5404; // TCSETS + flush unread input
     const TCXONC:     u64 = 0x540A; // tcflow(): 0=TCOOFF 1=TCOON 2=TCIOFF 3=TCION
     const TCFLSH:     u64 = 0x540B; // tcflush(): arg 0=TCIFLUSH 1=TCOFLUSH 2=TCIOFLUSH
+    const TIOCEXCL:   u64 = 0x540C;
+    const TIOCNXCL:   u64 = 0x540D;
     const TIOCGWINSZ: u64 = 0x5413;
     const TIOCSWINSZ: u64 = 0x5414;
     const TIOCGPTN:   u64 = 0x80045430;
@@ -47,6 +49,10 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     const TIOCMBIS:   u64 = 0x5416;
     const TIOCMBIC:   u64 = 0x5417;
     const TIOCMSET:   u64 = 0x5418;
+    // Linux TCGETS/TCSETS use the kernel UAPI `struct termios`, not glibc's
+    // public 60-byte `struct termios`. On x86_64 the ioctl payload is:
+    // c_iflag/c_oflag/c_cflag/c_lflag (4*4), c_line (1), c_cc[19] = 36 B.
+    const KERNEL_TERMIOS_BYTES: usize = tty::pty::TERMIOS_OFF_CC + tty::pty::NCCS;
     let fd  = args.a0 as i32;
     // ioctl request numbers are conventionally 32-bit (Linux's
     // `_IO*` macros encode them in 32 bits). musl's userspace stub
@@ -69,8 +75,17 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     // pidfd ioctls (PIDFD_GET_INFO): route before the CharDev gate.
     // systemd verifies a forked service is its child via this ioctl;
     // ENOTTY makes it SIGKILL the child (console-getty respawn).
-    if let Some(id) = crate::pidfd::tid_from_ino(file.inode().ino()) {
-        return crate::pidfd::handle_pidfd_ioctl(id, req, arg);
+    if let Some(target) = crate::pidfd::task_from_inode(&file.inode()) {
+        let rv = crate::pidfd::handle_pidfd_ioctl(target, req, arg);
+        #[cfg(feature = "debug-syscall")]
+        if rv == -(Errno::Enotty.as_i32() as i64) {
+            klog::write_raw(b"[ioctl] pidfd ENOTTY req=");
+            klog::write_hex_u64(req);
+            klog::write_raw(b" ino=");
+            klog::write_dec_u64(file.inode().ino());
+            klog::write_raw(b"\n");
+        }
+        return rv;
     }
     // userfaultfd / perf ioctls: route through the dedicated handlers
     // before the CharDev gate (those inodes are tagged Regular).
@@ -93,6 +108,9 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     }
     // ALSA /dev/snd/* + OSS /dev/dsp,/dev/mixer — the `sound` ALSA core.
     if let Some(rv) = sound::handle_ioctl(file.inode(), req, arg) { return rv; }
+    if let Some(rv) = handle_autofs_dev_ioctl(file.inode(), req, arg) {
+        return rv;
+    }
     // B48: SIOC* network-iface ioctls on AF_INET / AF_INET6 sockets.
     // dhcpcd's whole bring-up dance uses SIOCGIFFLAGS / SIOCSIFFLAGS
     // / SIOCGIFADDR / SIOCSIFADDR / SIOCGIFINDEX / SIOCGIFHWADDR
@@ -104,6 +122,19 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         }
     }
     if file.inode().file_type() != vfs::FileType::CharDev {
+        #[cfg(feature = "debug-syscall")]
+        if req != TCGETS {
+            klog::write_raw(b"[ioctl] non-char ENOTTY fd=");
+            klog::write_dec_u64(fd as u64);
+            klog::write_raw(b" req=");
+            klog::write_hex_u64(req);
+            klog::write_raw(b" ino=");
+            klog::write_dec_u64(file.inode().ino());
+            klog::write_raw(b" path=");
+            let p = file.dentry().absolute_path();
+            klog::write_raw(&p);
+            klog::write_raw(b"\n");
+        }
         return -(Errno::Enotty.as_i32() as i64);
     }
     // KD_*/VT_* ioctls on /dev/tty<N> + /dev/tty0 + /dev/console
@@ -181,7 +212,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             0
         }
         TCGETS => {
-            if let Err(rv) = validate_user_buf(arg, tty::pty::TERMIOS_BYTES as u64, 4) { return rv; }
+            if let Err(rv) = validate_user_buf_writable(arg, KERNEL_TERMIOS_BYTES as u64, 4) { return rv; }
             // For pty fds copy the pair's termios image; for the
             // boot UART /dev/console + /dev/tty<N> read the per-VT
             // termios state. The vt id is the inode number — devfs
@@ -194,20 +225,23 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                     console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).termios(),
                 },
             };
-            // SAFETY: arg validated 60-byte aligned; CPL=0 writes through caller's AS.
+            // SAFETY: arg validated kernel-termios-sized and aligned; CPL=0
+            // writes through caller's AS. glibc converts this 36-byte kernel
+            // UAPI image to its public 60-byte struct termios in userspace.
             unsafe {
-                for i in 0..tty::pty::TERMIOS_BYTES {
+                for i in 0..KERNEL_TERMIOS_BYTES {
                     core::ptr::write_volatile((arg + i as u64) as *mut u8, snap[i]);
                 }
             }
             0
         }
         TCSETS | TCSETSW | TCSETSF => {
-            if let Err(rv) = validate_user_buf(arg, tty::pty::TERMIOS_BYTES as u64, 4) { return rv; }
+            if let Err(rv) = validate_user_buf(arg, KERNEL_TERMIOS_BYTES as u64, 4) { return rv; }
             let mut buf = [0u8; tty::pty::TERMIOS_BYTES];
-            // SAFETY: arg validated 60-byte buffer; CPL=0 reads through caller's AS.
+            // SAFETY: arg validated kernel-termios-sized; CPL=0 reads through
+            // caller's AS. Preserve the internal speed/padding tail.
             unsafe {
-                for i in 0..tty::pty::TERMIOS_BYTES {
+                for i in 0..KERNEL_TERMIOS_BYTES {
                     buf[i] = core::ptr::read_volatile((arg + i as u64) as *const u8);
                 }
             }
@@ -247,6 +281,12 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                     console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).flush(sel),
                 }
             }
+            0
+        }
+        TIOCEXCL | TIOCNXCL => {
+            // Linux accepts exclusive-mode toggles on tty fds. We do not
+            // enforce TIOCEXCL yet, but returning ENOTTY is observably wrong:
+            // systemd and getty use TIOCNXCL during console setup.
             0
         }
         TCXONC => {
@@ -467,8 +507,135 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                 console::TtyTarget::Vt(_) => -(Errno::Enotty.as_i32() as i64),
             }
         }
-        _ => -(Errno::Enotty.as_i32() as i64),
+        _ => {
+            #[cfg(feature = "debug-syscall")]
+            {
+                klog::write_raw(b"[ioctl] char ENOTTY fd=");
+                klog::write_dec_u64(fd as u64);
+                klog::write_raw(b" req=");
+                klog::write_hex_u64(req);
+                klog::write_raw(b" ino=");
+                klog::write_dec_u64(file.inode().ino());
+                klog::write_raw(b" path=");
+                let p = file.dentry().absolute_path();
+                klog::write_raw(&p);
+                klog::write_raw(b"\n");
+            }
+            -(Errno::Enotty.as_i32() as i64)
+        },
     }
+}
+
+fn handle_autofs_dev_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64> {
+    let is_dev = inode.rdev() == 0x0aec;
+    let ctl = ::fs::autofs::ctl_from_inode(inode);
+    if !is_dev && ctl.is_none() {
+        return None;
+    }
+    const AUTOFS_IOCTL: u64 = 0x93;
+    const VERSION: u64 = 0x71;
+    const PROTOVER: u64 = 0x72;
+    const PROTOSUBVER: u64 = 0x73;
+    const OPENMOUNT: u64 = 0x74;
+    const CLOSEMOUNT: u64 = 0x75;
+    const READY: u64 = 0x76;
+    const FAIL: u64 = 0x77;
+    const SETPIPEFD: u64 = 0x78;
+    const CATATONIC: u64 = 0x79;
+    const TIMEOUT: u64 = 0x7a;
+    const REQUESTER: u64 = 0x7b;
+    const EXPIRE: u64 = 0x7c;
+    const ASKUMOUNT: u64 = 0x7d;
+    const ISMOUNTPOINT: u64 = 0x7e;
+    const DEV_IOCTL_SIZE: u64 = 24;
+
+    let ty = (req >> 8) & 0xff;
+    let nr = req & 0xff;
+    if ty != AUTOFS_IOCTL || !(VERSION..=ISMOUNTPOINT).contains(&nr) {
+        return Some(-(Errno::Enotty.as_i32() as i64));
+    }
+    if let Err(rv) = validate_user_buf_writable(arg, DEV_IOCTL_SIZE, 1) {
+        return Some(rv);
+    }
+
+    unsafe {
+        core::ptr::write_volatile(arg as *mut u32, 1);
+        core::ptr::write_volatile((arg + 4) as *mut u32, 1);
+    }
+
+    let rv = match nr {
+        VERSION => 0,
+        OPENMOUNT if is_dev => {
+            let devid = unsafe { core::ptr::read_volatile((arg + 16) as *const u32) };
+            let Some(ctl_inode) = ::fs::autofs::openmount(devid) else {
+                return Some(-(Errno::Enoent.as_i32() as i64));
+            };
+            crate::fsmount_common::install_fd(ctl_inode, "[autofs]", true)
+        }
+        PROTOVER => {
+            let version = ctl.map(::fs::autofs::ctl_protover).unwrap_or(5);
+            unsafe { core::ptr::write_volatile((arg + 16) as *mut u32, version); }
+            0
+        }
+        PROTOSUBVER => {
+            let sub = ctl.map(::fs::autofs::ctl_protosubver).unwrap_or(6);
+            unsafe { core::ptr::write_volatile((arg + 16) as *mut u32, sub); }
+            0
+        }
+        TIMEOUT => {
+            let cur = unsafe { core::ptr::read_volatile((arg + 16) as *const u64) };
+            let out = match ctl {
+                Some(c) => ::fs::autofs::ctl_timeout(c, cur),
+                None => if cur == 0 { 300 } else { cur },
+            };
+            unsafe {
+                core::ptr::write_volatile((arg + 16) as *mut u64, out);
+            }
+            0
+        }
+        ASKUMOUNT => {
+            unsafe { core::ptr::write_volatile((arg + 16) as *mut u32, 1); }
+            0
+        }
+        ISMOUNTPOINT => {
+            unsafe {
+                core::ptr::write_volatile((arg + 16) as *mut u32, 0);
+                core::ptr::write_volatile((arg + 20) as *mut u32, ::fs::autofs::AUTOFS_SUPER_MAGIC as u32);
+            }
+            0
+        }
+        READY => match ctl {
+            Some(c) => {
+                let token = unsafe { core::ptr::read_volatile((arg + 16) as *const u32) };
+                ::fs::autofs::ctl_ready(c, token)
+            }
+            None => -(Errno::Einval.as_i32() as i64),
+        },
+        FAIL => match ctl {
+            Some(c) => {
+                let token = unsafe { core::ptr::read_volatile((arg + 16) as *const u32) };
+                let status = unsafe { core::ptr::read_volatile((arg + 20) as *const i32) };
+                ::fs::autofs::ctl_fail(c, token, status)
+            }
+            None => -(Errno::Einval.as_i32() as i64),
+        },
+        SETPIPEFD => match ctl {
+            Some(c) => {
+                let fd = unsafe { core::ptr::read_volatile((arg + 16) as *const i32) };
+                match ::fs::autofs::ctl_setpipefd(c, fd) {
+                    Ok(()) => 0,
+                    Err(e) => crate::namei_common::errno_from_vfs(e),
+                }
+            }
+            None => -(Errno::Einval.as_i32() as i64),
+        },
+        CLOSEMOUNT | CATATONIC => 0,
+        REQUESTER | EXPIRE => {
+            -(Errno::Enoent.as_i32() as i64)
+        }
+        _ => -(Errno::Enotty.as_i32() as i64),
+    };
+    Some(rv)
 }
 
 /// KD_*/VT_* ioctls on /dev/tty<N> via the vt crate. Returns

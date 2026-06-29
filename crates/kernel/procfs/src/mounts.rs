@@ -16,9 +16,16 @@ use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 /// each FileSystem's `mounts_line`.
 /// # C: O(N_mounts)
 fn build_mounts() -> Vec<u8> {
+    use core::sync::atomic::Ordering;
     let mut s = String::new();
     for m in vfs::mount::snapshot() {
-        s.push_str(&m.fs.mounts_line(&m.mount_point));
+        let mut line = m.fs().mounts_line(&m.mount_point_str());
+        if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
+            if let Some(idx) = line.find(" rw,") {
+                line.replace_range(idx..idx + 4, " ro,");
+            }
+        }
+        s.push_str(&line);
     }
     s.into_bytes()
 }
@@ -31,7 +38,7 @@ fn build_mounts() -> Vec<u8> {
 /// carries propagation: `shared:<id>` for a shared mount (its own
 /// peer group until propagation events land), `unbindable` for an
 /// unbindable mount, empty otherwise.
-/// # C: O(N_mounts²) (parent_id_of is O(N) per mount)
+/// # C: O(N_mounts) (parent_mnt_id reads the attach-time stored parent id)
 fn build_mountinfo() -> Vec<u8> {
     use core::sync::atomic::Ordering;
     use vfs::mount::Propagation;
@@ -39,9 +46,17 @@ fn build_mountinfo() -> Vec<u8> {
     let mut s = String::new();
     for m in mounts.iter() {
         let id = m.mnt_id;
-        let parent = vfs::mount::parent_id_of(&m.mount_point);
-        let name = m.fs.name();
+        // Parent from mount-object identity (`parent_id`), not a string-prefix
+        // scan. Root mounts render parent 0 (Linux mountinfo: the root has no
+        // parent mount), every other mount its real parent mnt_id.
+        let parent = if m.is_root() { 0 } else { vfs::mount::parent_mnt_id(&m) };
+        let name = m.fs().name();
         let pg = m.peer_group.load(Ordering::Acquire);
+        let rw = if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
+            "ro"
+        } else {
+            "rw"
+        };
         let opt = match Propagation::from_u8(m.propagation.load(Ordering::Acquire)) {
             // Real peer-group id (`docs/16§6`), distinct from mnt_id.
             Propagation::Shared => format!(" shared:{}", pg),
@@ -52,8 +67,8 @@ fn build_mountinfo() -> Vec<u8> {
             Propagation::Slave | Propagation::Private => String::new(),
         };
         s.push_str(&format!(
-            "{} {} 0:{} / {} rw,relatime{} - {} {} rw\n",
-            id, parent, id, m.mount_point, opt, name, name,
+            "{} {} 0:{} / {} {},relatime{} - {} {} {}\n",
+            id, parent, id, m.mount_point_str(), rw, opt, name, name, rw,
         ));
     }
     s.into_bytes()
@@ -80,8 +95,17 @@ impl Inode for ProcMountsInode {
     }
 }
 
-/// `/proc/self/mountinfo` and `/proc/<pid>/mountinfo`.
-pub struct ProcMountinfoInode;
+/// `/proc/self/mountinfo` and `/proc/<pid>/mountinfo`. `last_seen` holds the
+/// reader's last-observed mount generation so `poll` can return POLLPRI when
+/// the mount table changed (libmount's mount-change wakeup, `19§4`).
+pub struct ProcMountinfoInode { last_seen: core::sync::atomic::AtomicU64 }
+impl ProcMountinfoInode {
+    /// # C: O(1)
+    pub fn new() -> Self {
+        ProcMountinfoInode { last_seen: core::sync::atomic::AtomicU64::new(vfs::mount::mount_generation()) }
+    }
+}
+impl Default for ProcMountinfoInode { fn default() -> Self { Self::new() } }
 impl Inode for ProcMountinfoInode {
     fn ino(&self) -> Ino { 0x3000_0D02 }
     fn file_type(&self) -> FileType { FileType::Regular }
@@ -90,4 +114,7 @@ impl Inode for ProcMountinfoInode {
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
         Ok(read_body(&build_mountinfo(), off, buf))
     }
+    /// POLLPRI|POLLERR when the mount generation advanced since the last poll
+    /// (always POLLIN — mountinfo is always readable). # C: O(1)
+    fn poll(&self) -> u32 { vfs::mount::mountinfo_poll_mask(&self.last_seen) }
 }

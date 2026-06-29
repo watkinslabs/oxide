@@ -332,6 +332,29 @@ pub fn recvfrom_opts(
         out.extend_from_slice(&msg[..take]);
         return Ok(Received { payload: out, full_len, peer: None, peer6: None, pktinfo: None });
     }
+    // AF_UNIX SOCK_STREAM socketpair (UnixPair byte rings). Same bug as the
+    // SEQPACKET case below: recvmsg/recvfrom had no SockKind::Unix branch and
+    // fell through to UDP → EAGAIN, never draining. systemd's sd-event reads
+    // its STREAM socketpairs (notify/private bus) via recvmsg, so the fd
+    // stayed perpetually POLLIN and PID1 spun ("Looping too fast"). Drain the
+    // read ring here (peek leaves it intact for MSG_PEEK).
+    let stream = match &*sock.kind.lock() {
+        SockKind::Unix(p, e) => Some((p.clone(), *e)),
+        _ => None,
+    };
+    if let Some((pair, end)) = stream {
+        let got = if opts.peek { pair.peek(end, max_len) } else { pair.read(end, max_len) };
+        if !got.is_empty() {
+            let full_len = got.len();
+            return Ok(Received { payload: got, full_len, peer: None, peer6: None, pktinfo: None });
+        }
+        // Empty: EOF (peer closed + drained) → 0-byte read; else EAGAIN so the
+        // caller blocks/retries rather than seeing a false EOF.
+        if pair.is_eof(end) {
+            return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None });
+        }
+        return Err(NetError::Eagain);
+    }
     // AF_UNIX SOCK_SEQPACKET/DGRAM socketpair. The inode read() path
     // drains via read_unix_msg_blocking, but recvmsg/recvfrom landed
     // here with NO UnixMsgPair branch — so it fell through to the UDP

@@ -39,7 +39,12 @@ impl Inode for SignalfdInode {
         let cur = match sched::current() { Some(c) => c, None => return Ok(0) };
         let pending = cur.sigpending.load(Ordering::Acquire);
         let deliver = pending & mask;
-        if deliver == 0 { return Ok(0); }
+        // Empty signalfd: Linux returns EAGAIN (nonblocking) rather than a
+        // 0-byte read. systemd's event loop logs "Truncated read from signal
+        // fd (0 bytes)" on a 0 return and can busy-spin re-reading; EAGAIN is
+        // the correct "nothing to read" answer. v1 signalfds are effectively
+        // nonblocking (read never parks), so EAGAIN is always right here.
+        if deliver == 0 { return Err(VfsError::Eagain); }
         let sig = (deliver.trailing_zeros() + 1) as u32;
         cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
         // Zero the buffer, write ssi_signo at offset 0 (u32 LE).
