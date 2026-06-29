@@ -150,10 +150,15 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     // machine-id bind read-only with MS_RDONLY|MS_REMOUNT|MS_BIND; the
     // bind branch would read a NULL source and EFAULT).
     if flags & MS_REMOUNT != 0 {
-        let td = match crate::pathresolve::mount_dentry(&target) {
-            Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
+        // Identify the mount by the `mnt_id` the walk CROSSED INTO (Linux
+        // `path->mnt`), not a re-derived dentry: the walk follows the mount at
+        // the final component and lands on the mounted-fs ROOT, which is not a
+        // mountpoint (and a pseudo-fs `s_root` is shared) — re-derivation
+        // EINVAL'd and broke systemd's RO bind-remount of the sandbox /proc/sys.
+        let vp = match crate::pathresolve::resolve_path(&target, false) {
+            Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
-        return match vfs::mount::remount_flags(&td, flags & MS_REMOUNTABLE) {
+        return match vfs::mount::remount_flags_by_id(vp.mnt_id, flags & MS_REMOUNTABLE) {
             Ok(()) => 0,
             Err(vfs::VfsError::Einval) => -(Errno::Einval.as_i32() as i64),
             Err(_) => -(Errno::Ebusy.as_i32() as i64),
@@ -235,13 +240,16 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         let source = crate::pathresolve::resolve_cwd(&source_raw);
         if !source.starts_with('/') { return -(Errno::Einval.as_i32() as i64); }
         let source = if source.len() > 1 { source.trim_end_matches('/').to_string() } else { source };
-        let source_d = match crate::pathresolve::mount_dentry(&source) {
-            Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
+        // Identify the SOURCE mount by the `mnt_id` the walk crossed into (Linux
+        // `path->mnt`), not a re-derived dentry: the source resolves THROUGH the
+        // moved mount onto its (shared) root, which can't map back to a mount.
+        let src_vp = match crate::pathresolve::resolve_path(&source, false) {
+            Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
         let target_d = match crate::pathresolve::mount_dentry(&target) {
             Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
         };
-        return match vfs::mount::move_mount(&source_d, &target_d) {
+        return match vfs::mount::move_mount_by_id(src_vp.mnt_id, &target_d) {
             Ok(())                    => 0,
             Err(vfs::VfsError::Ebusy) => -(Errno::Ebusy.as_i32() as i64),
             Err(_)                    => -(Errno::Einval.as_i32() as i64),

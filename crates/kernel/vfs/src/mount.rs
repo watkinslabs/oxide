@@ -775,6 +775,19 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
     }
     let src_id = src_m.as_ref().map(|m| m.mnt_id);
     let src_mp = src_m.and_then(|m| m.mountpoint());
+    // Mirror submounts under the TARGET's mounted ROOT, not its bare mountpoint
+    // dentry: the top-level bind already covers `tgt`, and a submount's slot
+    // lives INSIDE that clone — where namei lands after crossing `tgt` (Linux
+    // `attach_recursive_mnt` grafts relative to the dest mount's root). The bare
+    // `tgt` underlay is the empty staging dir; descending it ENOENT'd `proc`,
+    // dropping the procfs clone so udevd's private-ns open of
+    // `<stage>/proc/sys/kernel/domainname` failed (step NAMESPACE 226). Fall
+    // back to the bare `tgt` subtree when the clone root can't resolve the slot
+    // (degenerate dest) so a plain-dir recursive bind still mirrors.
+    let mut tgt_base = tgt.clone();
+    while let Some(id) = tgt_base.mounted_mount(ns) {
+        match root_dentry_for_mount_id(id) { Some(sr) => tgt_base = sr, None => break }
+    }
     let snap = mounts_in_ns(ns);
     let mut n = 0;
     for m in snap.iter() {
@@ -784,7 +797,9 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
         if rel_under(&mp, Some(tgt)).is_some() { continue; }
         let Some(rel) = rel_under(&mp, src_mp.as_ref()) else { continue; };
         if rel.is_empty() { continue; }
-        let Some(new_mp) = descend(tgt, &rel) else { continue; };
+        let Some(new_mp) = descend(&tgt_base, &rel)
+            .or_else(|| if Arc::ptr_eq(&tgt_base, tgt) { None } else { descend(tgt, &rel) })
+        else { continue; };
         let root = m.root.clone().or_else(|| m.fs().root());
         if let Some(r) = root {
             if register_bind(Some(new_mp), m.fs().clone(), r).is_ok() { n += 1; }
@@ -805,8 +820,25 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
 /// exists (and a shared/singleton `s_root` descends into the underlay), so the
 /// child is orphaned and its leaf ENOENTs. # C: O(N × depth)
 pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
+    let from_m = mount_exact_at(current_ns(), from).ok_or(VfsError::Einval)?;
+    move_mount_m(from_m, to)
+}
+
+/// As [`move_mount`] but identifies the SOURCE mount by the `mnt_id` the path
+/// walk CROSSED INTO (Linux `do_move_mount` keys on `path->mnt`). The MS_MOVE
+/// source resolves THROUGH the mount being moved, landing on its (often shared)
+/// `s_root`, which `mount_exact_at` cannot map back to a mount — so systemd's
+/// `mount_move_root` (`mount(".", "/", MS_MOVE)`, the final pivot of the
+/// assembled sandbox root) got EINVAL at step NAMESPACE. # C: O(N × depth)
+pub fn move_mount_by_id(from_id: u64, to: &Arc<Dentry>) -> KResult<()> {
+    let from_m = mount_by_id(from_id).ok_or(VfsError::Einval)?;
+    if from_m.ns != current_ns() { return Err(VfsError::Einval); }
+    move_mount_m(from_m, to)
+}
+
+/// Shared MS_MOVE body for both [`move_mount`] variants. # C: O(N × depth)
+fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>) -> KResult<()> {
     let ns = current_ns();
-    let from_m = mount_exact_at(ns, from).ok_or(VfsError::Einval)?;
     let from_id = from_m.mnt_id;
     let to_root = is_global_root(to);
     // Linux `do_move_mount` validation (all -EINVAL). NOTE: moving ONTO `/` is
@@ -905,6 +937,26 @@ pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
 /// `mnt_hold_writers`). # C: O(log N)
 pub fn remount_flags(d: &Arc<Dentry>, flags: u64) -> KResult<()> {
     let m = mount_exact_at(current_ns(), d).ok_or(VfsError::Einval)?;
+    apply_remount(&m, flags)
+}
+
+/// As [`remount_flags`] but identifies the mount by the `mnt_id` the path walk
+/// CROSSED INTO (Linux `do_reconfigure_mnt` keys on `path->mnt`, not a
+/// re-derived dentry). The MS_REMOUNT walk follows the mount at its final
+/// component, so the resolved dentry is the mounted-fs ROOT — which
+/// `mount_exact_at` cannot map back to a mount (a root is not a mountpoint) and
+/// a pseudo-fs `s_root` is SHARED across instances. The crossed-into `mnt_id`
+/// is unambiguous: systemd's `ProtectKernelTunables=` RO-remount of the sandbox
+/// `/proc/sys` bind then succeeds instead of EINVAL (step NAMESPACE status=226
+/// once the procfs replication exposed the remount). # C: O(log N)
+pub fn remount_flags_by_id(mnt_id: u64, flags: u64) -> KResult<()> {
+    let m = mount_by_id(mnt_id).ok_or(VfsError::Einval)?;
+    if m.ns != current_ns() { return Err(VfsError::Einval); }
+    apply_remount(&m, flags)
+}
+
+/// Shared MNT_* option update for both [`remount_flags`] variants. # C: O(1)
+fn apply_remount(m: &Arc<Mount>, flags: u64) -> KResult<()> {
     let old = m.flags.load(Ordering::Acquire);
     let new = (old & !MNT_OPTION_MASK) | (flags & MNT_OPTION_MASK);
     if (new & MNT_RDONLY) != 0 && (old & MNT_RDONLY) == 0 && m.mnt_writers.load(Ordering::Acquire) > 0 {
