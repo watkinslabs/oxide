@@ -28,7 +28,7 @@ impl FileOps for CgroupFileOps {
 
 /// `/proc/<pid>/cgroup` (and `/proc/self/cgroup`) inode. # C: O(1)
 pub fn make_proc_cgroup(tid: Option<u32>) -> InodeRef {
-    let ino: Ino = 0x3000_0C00 | tid.unwrap_or(0) as Ino;
+    let ino: Ino = crate::live::pid_ino(0x0C, tid.unwrap_or(0));
     InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(CgroupFileOps))
         .private(Arc::new(ProcCgroupInode { tid }))
         .build()
