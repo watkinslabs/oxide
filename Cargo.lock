@@ -170,6 +170,7 @@ version = "0.1.0"
 dependencies = [
  "devfs",
  "hal",
+ "kernfs",
  "klog",
  "kmacros",
  "sched",
