@@ -78,8 +78,8 @@ fn get_tree_then_attach_sb_is_visible_and_ro() {
     vfs::mount::attach_sb(Some(common::dentry("/fc_attach")), sb.clone()).expect("attach_sb");
     let m = common::mount_at_path_exact("/fc_attach").expect("realized mount present in table");
     assert!(Arc::ptr_eq(m.sb(), &sb), "the grafted mount carries the SAME realized SuperBlock");
-    assert_eq!(m.root.as_ref().map(|i| i.ino()), Some(0xCAFE),
-        "Mount.root derived from sb.s_root_inode() (byte-equivalent to register)");
+    assert_eq!(m.mnt_root().and_then(|r| r.inode()).map(|i| i.ino()), Some(0xCAFE),
+        "mnt_root().inode() derived from sb.s_root (byte-equivalent to register)");
     assert!(m.sb().is_readonly(), "grafted mount's SB stays read-only");
 }
 

@@ -40,7 +40,9 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
                 return -(Errno::Enoent.as_i32() as i64);
             }
         };
-        let root = match mnt.root.clone().or_else(|| mnt.fs().root()) {
+        // [D5] derive the mount root inode from `mnt_root` (the single source of
+        // truth), the legacy `Mount.root` field having been dropped.
+        let root = match mnt.mnt_root().and_then(|r| r.inode()).or_else(|| mnt.fs().root()) {
             Some(r) => r, None => return -(Errno::Einval.as_i32() as i64),
         };
         let mo: InodeRef = MountObjectInode::new_clone(mnt.fs().clone(), root);
