@@ -65,14 +65,6 @@ bitflags::bitflags! {
     }
 }
 
-/// `O_PATH` bit (asm-generic, both arches — Linux `fcntl.h` `010000000`). Not
-/// declared in `OpenFlags` (which only carries bits with an in-`vfs` consumer),
-/// so it's matched here by raw value. An `O_PATH` fd is an fd-reference with
-/// NEITHER `FMODE_READ` nor `FMODE_WRITE`; read/write on it are `EBADF`.
-/// Caller (`openat`) must preserve this bit into the `File` flags (e.g.
-/// `from_bits_retain`) for the gate to see it.
-const O_PATH: u32 = 0o10000000;
-
 /// `O_DIRECT` (asm-generic, 0o40000) and `O_NOATIME` (0o1000000) — settable
 /// via `F_SETFL` but not declared in `OpenFlags` (no in-`vfs` consumer yet),
 /// so they're matched here by raw value so the mask can preserve/update them
@@ -135,10 +127,13 @@ impl FileRaState {
 /// Map an open's access mode (`O_RDONLY`/`O_WRONLY`/`O_RDWR`) to the
 /// canonical `Fmode` capability bits. Mirrors Linux `OPEN_FMODE`. An `O_PATH`
 /// open yields `FMODE_PATH` only (no read/write) regardless of the access-mode
-/// bits, matching Linux `do_dentry_open`.
+/// bits, matching Linux `do_dentry_open`. `O_PATH` is a declared `OpenFlags`
+/// bit (single source of truth, `types.rs`), so the open path's
+/// `from_bits_truncate(flags)` preserves it through to here — it is no longer
+/// silently stripped (Linux keeps it in `f_flags`).
 /// # C: O(1)
 fn fmode_from_flags(f: OpenFlags) -> Fmode {
-    if (f.bits() & O_PATH) != 0 {
+    if f.contains(OpenFlags::O_PATH) {
         return Fmode::PATH; // fd-reference only: no READ, no WRITE
     }
     let mut m = Fmode::empty();
