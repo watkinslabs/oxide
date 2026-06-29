@@ -108,8 +108,8 @@ fn umount_expired(m: &Arc<Mount>) {
     if let Some(o) = m.mnt_mp.lock().take() { put_mountpoint(&o); }
     super::MOUNTS.lock().remove(&id);
     if let Some(d) = mp.as_ref() {
-        super::hash_remove(ns, parent, super::dptr(d), id);
-        match super::hash_top(ns, parent, super::dptr(d)) {
+        super::hash_remove(parent, super::dptr(d), id);
+        match super::hash_top(parent, super::dptr(d)) {
             Some(top) => d.set_mounted_mount(ns, Some(top)),
             None => d.set_mounted_mount(ns, None),
         }
