@@ -862,10 +862,19 @@ impl File {
         // FMODE_ATOMIC_POS: hold `f_pos_lock` across the offset pick (incl.
         // the O_APPEND size read) -> I/O -> pos-update so a shared fd can't
         // interleave the cursor (Linux `__fdget_pos`). `None` for
-        // non-seekable files. O_APPEND atomicity vs other writers is the
-        // inode lock's job; this serializes only this description's `pos`.
+        // non-seekable files. This serializes only THIS description's `pos`.
         let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
-        let off = if f.contains(OpenFlags::O_APPEND) {
+        // D37: O_APPEND cross-writer atomicity — hold the inode's `i_rwsem`
+        // EXCLUSIVE across size-read -> write -> pos so two DIFFERENT open file
+        // descriptions appending to the SAME inode are mutually atomic (Linux
+        // `file_start_write` + the i_size append path's inode lock), not merely
+        // per-description-serialized by `f_pos_lock`. Acquired AFTER `f_pos_lock`
+        // (rank 35) — `i_rwsem` is rank 40, so the order is ascending. Gated on
+        // `atomic_pos` (regular/dir) so the spin-rwsem is never held across a
+        // parking pipe/socket write.
+        let is_append = f.contains(OpenFlags::O_APPEND);
+        let append_guard = if is_append && self.atomic_pos() { Some(self.inode.inode_lock()) } else { None };
+        let off = if is_append {
             self.inode.size()
         } else {
             self.pos.load(Ordering::Acquire)
@@ -877,6 +886,7 @@ impl File {
             self.f_op.write(&self.inode, off, buf)?
         };
         self.pos.store(off + n as u64, Ordering::Release);
+        drop(append_guard); // release i_rwsem (rank 40) before f_pos_lock (rank 35)
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         // inotify IN_MODIFY hook (no-op when nothing installed).
         if n > 0 {
@@ -1057,8 +1067,16 @@ impl File {
         let f = self.flags();
         let nonblock = f.contains(OpenFlags::O_NONBLOCK);
         let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
+        // D37: O_APPEND cross-writer atomicity — hold `i_rwsem` EXCLUSIVE across
+        // the size-read base pick -> the whole vectored write -> pos so two
+        // DIFFERENT open descriptions appending stay mutually atomic (Linux
+        // `IOCB_APPEND` under the append path's inode lock). Acquired after
+        // `f_pos_lock` (35 -> 40, ascending); gated on `atomic_pos` so the
+        // spin-rwsem is never held across a parking non-seekable write.
+        let is_append = f.contains(OpenFlags::O_APPEND);
+        let append_guard = if is_append && self.atomic_pos() { Some(self.inode.inode_lock()) } else { None };
         // O_APPEND forces the base to i_size ONCE for the whole vectored write.
-        let base = if f.contains(OpenFlags::O_APPEND) { self.inode.size() } else { self.pos.load(Ordering::Acquire) };
+        let base = if is_append { self.inode.size() } else { self.pos.load(Ordering::Acquire) };
         let mut total: u64 = 0;
         for buf in bufs.iter() {
             if buf.is_empty() { continue; }
@@ -1074,6 +1092,7 @@ impl File {
             }
         }
         self.pos.store(base + total, Ordering::Release);
+        drop(append_guard); // release i_rwsem (rank 40) before f_pos_lock (rank 35)
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         if total > 0 {
             fire_write_hook(&self.inode);

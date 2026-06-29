@@ -712,7 +712,22 @@ impl Nameidata {
                 // instead (Linux `LOOKUP_CACHED`). Without the flag, fall to
                 // the slow path + `d_add` as before.
                 None if self.flags.cached => return Err(VfsError::Eagain),
-                None => match self.cur_inode.lookup(&comp) {
+                None => {
+                  // `lookup_slow` (Linux `fs/namei.c`): take the PARENT
+                  // directory's `i_rwsem` SHARED across the blocking
+                  // `i_op->lookup` + dcache install, so the (parent,name)
+                  // resolution is consistent against a concurrent mutator that
+                  // holds the SAME `i_rwsem` EXCLUSIVE (create/unlink/rename, in
+                  // the syscall layer). DEADLOCK-FREE: a single shared acquire,
+                  // no other `i_rwsem` nested under it, dropped at the end of
+                  // THIS component (RAII) — never spanning two components — so no
+                  // cycle is possible; the only same-rank lock `d_add` takes is a
+                  // DIFFERENT dentry's `d_inode` pointer lock, always acquired
+                  // after (never before) this one. Rank: `i_rwsem` (40) is below
+                  // the dcache Dentry (50)/Superblock (60) locks `d_add` takes,
+                  // so the chain is ascending.
+                  let _dir_lk = self.cur_inode.inode_lock_shared();
+                  match self.cur_inode.lookup(&comp) {
                     Ok(ci) => {
                         // D3/D37: `lookup` returned `ci` carrying the iget/build
                         // hold; `d_add` takes the dentry's OWN counted hold
@@ -737,7 +752,8 @@ impl Nameidata {
                         return Err(VfsError::Enoent);
                     }
                     Err(e) => return Err(e),
-                },
+                  }
+                }
             };
 
             // Symlink handling — use the child's OWN inode (a mountpoint is a
