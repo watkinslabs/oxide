@@ -471,6 +471,7 @@ impl FileSystemType for FsType {
         Ok(SuperBlock::for_backend(spec.fs, root, crate::superblock::next_anon_dev(),
             self.name.clone()))
     }
+    fn fs_flags(&self) -> FsFlags { self.flags }
 }
 
 /// Constructor-bearing `file_system_type` list (D40), parallel to [`FILESYSTEMS`]

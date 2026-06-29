@@ -313,6 +313,9 @@ impl Ext4Mount {
 impl vfs::fs::FileSystem for Ext4Mount {
     fn name(&self) -> &str { "ext4" }
     fn magic(&self) -> u64 { crate::EXT4_SUPER_MAGIC as u64 }
+    /// ext4 is block-device backed (Linux `FS_REQUIRES_DEV`): drives the D23
+    /// new-mount-API source check + `/proc/filesystems` (no `nodev`). # C: O(1)
+    fn fs_flags(&self) -> vfs::fs::FsFlags { vfs::fs::FsFlags::FS_REQUIRES_DEV }
     /// On-disk `s_blocksize` (`1024 << s_log_block_size`). # C: O(1)
     fn block_size(&self) -> u32 { self.st.mount.sb.block_size }
     /// Install live ext4 statfs accounting as this SB's `s_op`. # C: O(1)
