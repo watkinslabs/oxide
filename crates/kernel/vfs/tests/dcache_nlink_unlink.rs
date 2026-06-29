@@ -1,10 +1,15 @@
 //! dcache/inode D30: couple `Inode::i_nlink` to the per-inode `i_dentry` alias
-//! list on unlink. `d_unlink` (Linux `vfs_unlink` tail) drops one hard-link
-//! name (`Inode::drop_link`) then tears the dentry down (`d_delete`); when the
-//! LAST name goes, remaining unused aliases are pruned and the inode is retired
-//! through the existing `iput`/`drop_inode`/`evict_inode` lifecycle — no
-//! double-evict. Driven against a real ramfs SuperBlock so `i_sb()` resolves
-//! and the alias list / icache eviction are exercised end to end.
+//! list on unlink. AUTHORITY model (Linux): the FILESYSTEM's `i_op->unlink`/
+//! `rmdir` owns the in-memory `drop_nlink` and runs FIRST; `d_unlink` (the
+//! `vfs_unlink` tail, dentry side) then tears the dentry down (`d_delete`) and,
+//! when the LAST name went (`inode.nlink() == 0`), prunes remaining unused
+//! aliases and lets the inode retire through the existing
+//! `iput`/`drop_inode`/`evict_inode` lifecycle — no double-evict, no
+//! double-decrement. These tests drive `d_unlink` directly against a ramfs
+//! inode, so they call `inode.drop_link()` first to STAND IN for the backend
+//! `i_op->unlink` having run (exactly as the syscall handlers order it).
+//! Driven against a real ramfs SuperBlock so `i_sb()` resolves and the alias
+//! list / icache eviction are exercised end to end.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -64,6 +69,7 @@ fn hardlink_unlink_one_keeps_other_then_retires_on_last() {
     assert_eq!(inode.i_count(), 2, "born ref released; two aliases remain");
 
     // --- unlink "a": NOT the last name ---------------------------------------
+    inode.drop_link(); // backend `i_op->unlink` owns the in-memory drop (ran first)
     let last = d_unlink(&a);
     assert!(!last, "two names → unlink one is not the last");
     assert_eq!(inode.nlink(), 1, "drop_link took nlink 2 → 1");
@@ -77,6 +83,7 @@ fn hardlink_unlink_one_keeps_other_then_retires_on_last() {
     assert!(Arc::ptr_eq(&hit_inode, &inode), "b still names the same inode");
 
     // --- unlink "b": the LAST name → retire ----------------------------------
+    inode.drop_link(); // backend drop (ran first): nlink 1 → 0
     let last = d_unlink(&b);
     assert!(last, "removing the only remaining name is the last");
     assert_eq!(inode.nlink(), 0, "nlink fully dropped");
@@ -99,6 +106,7 @@ fn last_unlink_with_open_fd_defers_eviction() {
     assert_eq!(inode.i_count(), 2, "alias + open file");
 
     // Unlink the only name: nlink → 0, alias dropped, but the open fd holds it.
+    inode.drop_link(); // backend `i_op->unlink` owns the in-memory drop (ran first)
     let last = d_unlink(&d);
     assert!(last, "the sole name was the last");
     assert_eq!(inode.nlink(), 0, "no names remain");
