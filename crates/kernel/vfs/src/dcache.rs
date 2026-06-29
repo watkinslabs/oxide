@@ -366,6 +366,7 @@ pub fn d_make_root(inode: InodeRef, sb: &Arc<SuperBlock>) -> Arc<Dentry> {
     let root = Dentry::new_root_in_sb(inode.clone(), sb);
     sb.set_s_root(root.clone());
     if let Some(s) = inode.i_sb() { s.i_add_alias(&inode, &root); }
+    root.grab_inode_hold(); // D3/D37: root dentry counts its inode hold
     root
 }
 
@@ -388,6 +389,7 @@ pub fn d_alloc(parent: &Arc<Dentry>, name: &str) -> Arc<Dentry> {
 pub fn d_alloc_pseudo(name: &str, inode: InodeRef, d_op: &'static crate::dentry::DentryOps) -> Arc<Dentry> {
     let d = Dentry::new_pseudo(name, inode.clone(), d_op);
     if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, &d); }
+    d.grab_inode_hold(); // D3/D37: pseudo dentry counts its inode hold
     d
 }
 
@@ -458,6 +460,7 @@ pub fn d_weak_revalidate(d: &Arc<Dentry>, reval: bool) -> bool {
 pub fn d_instantiate(dentry: &Arc<Dentry>, inode: InodeRef) {
     if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, dentry); }
     dentry.set_inode(Some(inode));
+    dentry.grab_inode_hold(); // D3/D37: positive dentry counts its inode hold
 }
 
 /// `d_alloc` + `d_instantiate` + hash-insert, race-safe: an existing
@@ -468,6 +471,7 @@ pub fn d_add(parent: &Arc<Dentry>, name: &str, inode: InodeRef) -> Arc<Dentry> {
     let child = Dentry::new_child(parent, name, Some(inode.clone()));
     let canon = parent.cache_child(name, child);
     if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, &canon); }
+    canon.grab_inode_hold(); // D3/D37: positive (race-winning) dentry counts its inode hold
     DENTRY_HASHTABLE.insert(&canon);
     canon
 }
@@ -691,6 +695,7 @@ pub fn d_obtain_alias(inode: InodeRef) -> Arc<Dentry> {
     }
     let anon = Dentry::new_anon(inode.clone());
     if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, &anon); }
+    anon.grab_inode_hold(); // D3/D37: anonymous alias counts its inode hold
     anon
 }
 
