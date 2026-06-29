@@ -654,14 +654,20 @@ pub fn d_delete(d: &Arc<Dentry>) {
     }
 }
 
-/// Unlink the name at `d` (Linux `vfs_unlink` tail: `drop_nlink(inode)` then
-/// the dentry teardown) — the D30 coupling between `Inode::i_nlink` and the
-/// per-inode `i_dentry` alias list. Steps, Linux-faithful:
-///   1. [`Inode::drop_link`] removes one hard-link name and reports whether it
-///      was the LAST (nlink reached 0).
+/// Unlink the name at `d` (Linux `vfs_unlink` tail, dentry side) — the D30
+/// coupling between `Inode::i_nlink` and the per-inode `i_dentry` alias list.
+///
+/// AUTHORITY: the FILESYSTEM's `i_op->unlink`/`rmdir` owns the in-memory
+/// `drop_nlink` on the victim inode (Linux: `ext4_unlink`→`ext4_dec_count`,
+/// `shmem`/`simple_unlink`→`drop_nlink`), and it runs BEFORE this — the unlink/
+/// rmdir syscall handlers call the backend op first, then this. So by the time
+/// `d_unlink` runs, `inode.i_nlink` ALREADY reflects the drop; this function
+/// does NOT touch nlink (no double-decrement). It only tears down the dcache
+/// side. Steps:
+///   1. Read whether the backed-out name was the LAST (`inode.nlink() == 0`).
 ///   2. [`d_delete`] tears down THIS name: a sole-user dentry goes negative
 ///      (its alias dropped + inode detached via `dentry_iput`→`iput`), a shared
-///      one is unhashed — exactly as before.
+///      one is unhashed.
 ///   3. If that was the last name, [`d_prune_aliases`] drops every remaining
 ///      UNUSED sibling alias so no stale cached name resolves to the now-dead
 ///      inode (Linux `d_prune_aliases` on the final unlink), and the last
@@ -674,7 +680,8 @@ pub fn d_delete(d: &Arc<Dentry>) {
 /// # C: O(N_aliases)
 pub fn d_unlink(d: &Arc<Dentry>) -> bool {
     let inode = match d.inode() { Some(i) => i, None => return false };
-    let last = inode.drop_link();
+    // Backend `i_op->unlink`/`rmdir` already dropped the in-memory link.
+    let last = inode.nlink() == 0;
     d_delete(d);
     if last { d_prune_aliases(&inode); }
     last
