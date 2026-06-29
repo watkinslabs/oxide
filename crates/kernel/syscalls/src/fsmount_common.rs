@@ -345,25 +345,54 @@ pub struct MountObjectInode {
     /// mount-table state — deferred behind a boot-verify (see move_mount).
     pub mnt_attrs: u64,
     /// Some for an `open_tree` clone: the captured (fs, root) to bind at the
-    /// target. None otherwise.
+    /// target. None otherwise. (Legacy non-recursive path; superseded by
+    /// `detached_tree` for the D24 recursive clone.)
     pub clone_of: Option<(Arc<dyn vfs::fs::FileSystem>, InodeRef)>,
+    /// D24 Stage 1a: an `open_tree(OPEN_TREE_CLONE)` detaches a CLONE of the
+    /// source mount SUBTREE (recursive when `AT_RECURSIVE`) here as an UNLINKED
+    /// node list. `move_mount` TAKEs it and commits hash-only
+    /// ([`vfs::mount::commit_tree_hashonly`]); the [`Drop`] below releases an
+    /// uncommitted list ([`vfs::mount::release_clone_tree`]) so an `open_tree`
+    /// fd closed without a `move_mount` balances the clones' SB active refs.
+    pub detached_tree: Spinlock<Option<Vec<vfs::mount::CloneNode>>, LockClass>,
+}
+
+impl Drop for MountObjectInode {
+    /// Release an UNCOMMITTED detached clone tree (fd closed without move_mount).
+    /// # C: O(N × master slaves)
+    fn drop(&mut self) {
+        if let Some(tree) = self.detached_tree.lock().take() {
+            vfs::mount::release_clone_tree(&tree);
+        }
+    }
 }
 
 impl MountObjectInode {
     /// `fsmount` LEGACY: materialise-by-fstype at attach time. # C: O(1)
     pub fn new(fstype: String, source: String, mnt_attrs: u64) -> InodeRef {
-        Self::build(Self { fstype, source, realized: None, mnt_attrs, clone_of: None })
+        Self::build(Self { fstype, source, realized: None, mnt_attrs, clone_of: None,
+            detached_tree: Spinlock::new(None) })
     }
     /// `fsmount` CONVERTED: carry the already-realized (sb, root dentry). # C: O(1)
     pub fn new_realized(sb: Arc<vfs::SuperBlock>, root: Arc<Dentry>, fstype: String,
         source: String, mnt_attrs: u64) -> InodeRef {
-        Self::build(Self { fstype, source, realized: Some((sb, root)), mnt_attrs, clone_of: None })
+        Self::build(Self { fstype, source, realized: Some((sb, root)), mnt_attrs, clone_of: None,
+            detached_tree: Spinlock::new(None) })
     }
     /// `open_tree(OPEN_TREE_CLONE)`: capture an existing mount's (fs, root).
     /// # C: O(1)
     pub fn new_clone(fs: Arc<dyn vfs::fs::FileSystem>, root: InodeRef) -> InodeRef {
         Self::build(Self { fstype: String::new(), source: String::new(),
-            realized: None, mnt_attrs: 0, clone_of: Some((fs, root)) })
+            realized: None, mnt_attrs: 0, clone_of: Some((fs, root)),
+            detached_tree: Spinlock::new(None) })
+    }
+    /// D24 Stage 1a `open_tree(OPEN_TREE_CLONE[, AT_RECURSIVE])`: carry a DETACHED
+    /// clone of the source mount subtree ([`vfs::mount::clone_mount_tree`]).
+    /// # C: O(1)
+    pub fn new_clone_tree(tree: Vec<vfs::mount::CloneNode>) -> InodeRef {
+        Self::build(Self { fstype: String::new(), source: String::new(),
+            realized: None, mnt_attrs: 0, clone_of: None,
+            detached_tree: Spinlock::new(Some(tree)) })
     }
     /// Wrap the mount-object state into a concrete `vfs::Inode`. # C: O(1)
     fn build(data: Self) -> InodeRef {
