@@ -14,8 +14,7 @@ use crate::io_uring::{
 /// `sys_io_uring_setup(entries, *params)` — slot 425.
 /// # C: O(1)
 pub fn sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
-    use alloc::string::ToString;
-    use vfs::{Dentry, File, OpenFlags};
+    use vfs::{File, OpenFlags};
     use syscall::errno::Errno;
     let entries = args.a0 as u32;
     let params  = args.a1;
@@ -56,7 +55,7 @@ pub fn sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode_ref: vfs::InodeRef = make_io_uring_inode(inode);
-    let dentry = Dentry::new(None, "[io_uring]".to_string(), inode_ref.clone());
+    let dentry = vfs::dcache::d_alloc_pseudo("[io_uring]", inode_ref.clone(), &crate::anon_dname::ANON_INODE_OPS);
     let file = File::new(inode_ref, dentry, OpenFlags::O_RDWR);
     match fdt.alloc(file) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
 }

@@ -4,9 +4,7 @@
 /// `sys_pidfd_open(pid, flags)` — allocates a pidfd bound to `pid`.
 /// # C: O(N_fds)
 pub fn sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
-    use alloc::string::ToString;
-    use alloc::sync::Arc;
-    use vfs::{Dentry, File, OpenFlags};
+    use vfs::{File, OpenFlags};
     use syscall::errno::Errno;
     const PIDFD_NONBLOCK: u64 = 0o0_004_000;
     let pid = args.a0 as u32;
@@ -30,7 +28,7 @@ pub fn sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode = crate::pidfd::new_pidfd_inode(target);
-    let dentry = Dentry::new(None, "pidfd".to_string(), Arc::clone(&inode));
+    let dentry = vfs::dcache::d_alloc_pseudo("[pidfd]", inode.clone(), &crate::anon_dname::ANON_INODE_OPS);
     let mut fl = OpenFlags::O_RDWR;
     if (flags & PIDFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);

@@ -5,7 +5,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use ::security::landlock::{self as ll};
-use vfs::{Dentry, File, InodeRef, OpenFlags};
+use vfs::{File, InodeRef, OpenFlags};
 
 use crate::landlock::make_landlock_inode;
 
@@ -29,7 +29,7 @@ pub fn sys_landlock_create_ruleset(args: &SyscallArgs) -> i64 {
     let handled = unsafe { core::ptr::read_volatile(attr as *const u64) };
     let id = ll::create_ruleset(handled);
     let inode: InodeRef = make_landlock_inode(id);
-    let dentry = Dentry::new(None, alloc::string::String::from("landlock"), inode.clone());
+    let dentry = vfs::dcache::d_alloc_pseudo("[landlock-ruleset]", inode.clone(), &crate::anon_dname::ANON_INODE_OPS);
     let file = File::new(inode, dentry, OpenFlags::O_RDONLY);
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64) };
     // SAFETY: running task; preempt-off; sole writer of fd_table slot.

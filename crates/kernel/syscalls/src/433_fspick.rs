@@ -25,5 +25,5 @@ pub fn sys_fspick(args: &SyscallArgs) -> i64 {
         Some(m) => m, None => return -(Errno::Enoent.as_i32() as i64),
     };
     let inode: InodeRef = FsContextInode::new(mnt.fs().name().to_string());
-    install_fd(inode, "fspick", (args.a2 & FSPICK_CLOEXEC) != 0)
+    install_fd(inode, "[fscontext]", (args.a2 & FSPICK_CLOEXEC) != 0)
 }
