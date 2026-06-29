@@ -7,7 +7,7 @@ use hal::USER_VA_END;
 use vfs::OpenFlags;
 
 use crate::open_common::{dup_fd_target, open_proc_fd, resolve_path_for_open,
-    enforce_open_perm, O_CREAT, O_TRUNC, O_NOFOLLOW};
+    enforce_open_perm, O_CREAT, O_EXCL, O_TRUNC, O_DIRECTORY, O_NOFOLLOW};
 
 /// `sys_open(path, flags, mode)` — slot 2.
 /// # C: O(N_path)
@@ -60,6 +60,11 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
             None => return -(Errno::Enxio.as_i32() as i64),
         }
     } else if let Some(vp) = crate::pathresolve::resolve_path(path_str, (flags & O_NOFOLLOW) != 0) {
+        // O_CREAT|O_EXCL: an existing final component is a hard error (Linux
+        // `do_last`/`lookup_open`: `if (open_flag & O_EXCL) → -EEXIST`).
+        if (flags & O_CREAT) != 0 && (flags & O_EXCL) != 0 {
+            return -(Errno::Eexist.as_i32() as i64);
+        }
         (vp.inode, vp.mnt_id, false)
     } else if (flags & O_CREAT) != 0 {
         let cur = match sched::live::current() {
@@ -80,7 +85,9 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
                     Ok(i) => (i, mnt.mnt_id, true),
                     Err(e) => {
                         crate::namei_common::trace_run_vfs_error(b"open-create", path_str, e);
-                        return -(Errno::Enoent.as_i32() as i64);
+                        // D7: surface the real VfsError→errno (EACCES/EROFS/
+                        // ENOSPC/ENOTDIR/…) instead of collapsing to ENOENT.
+                        return crate::namei_common::errno_from_vfs(e);
                     }
                 }
             }
@@ -93,6 +100,13 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     // resolve above so `install_open`'s path-walk re-resolves to the NEW inode
     // rather than the stale negative (Linux instantiates the create's own leaf).
     if created { crate::pathresolve::d_drop_path(path_str); }
+    // D6: O_DIRECTORY on a non-directory final → ENOTDIR (Linux `do_open`
+    // `if ((open_flag & O_DIRECTORY) && !S_ISDIR) → -ENOTDIR`).
+    if (flags & O_DIRECTORY) != 0 && !matches!(inode.file_type(), vfs::FileType::Directory) {
+        return -(Errno::Enotdir.as_i32() as i64);
+    }
+    // FileOps on_open() hook (Linux `file_operations::open`), at open(2).
+    if let Err(e) = inode.on_open() { return -(e as i64); }
     // DAC + EROFS enforcement (Linux `may_open`), before the O_TRUNC truncate.
     if let Some(rv) = enforce_open_perm(&inode, mnt_id, flags, created) { return rv; }
     // fanotify FAN_OPEN_PERM: blocks here until a daemon allows/denies (fast
