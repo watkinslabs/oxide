@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::Spinlock;
 
 use crate::dentry::Dentry;
-use crate::file_ops::FileOps;
+use crate::file_ops::{FileOps, HoleOrData};
 use crate::inode::InodeRef;
 use crate::namei::Cred;
 use crate::types::{FileType, KResult, OpenFlags, VfsError};
@@ -913,10 +913,23 @@ impl File {
         if !self.f_mode.contains(Fmode::LSEEK) {
             return Err(VfsError::Espipe);
         }
+        // SEEK_DATA(3)/SEEK_HOLE(4): the `off` arg is the START byte to scan
+        // from (Linux `lseek` whence 3/4). A negative start is EINVAL; the
+        // backend's `seek_hole_data` (generic: non-sparse, single EOF hole)
+        // resolves it and returns ENXIO at/past EOF.
+        if let SeekFrom::Data | SeekFrom::Hole = whence {
+            if off < 0 { return Err(VfsError::Einval); }
+            let which = if matches!(whence, SeekFrom::Hole) { HoleOrData::Hole } else { HoleOrData::Data };
+            let new_pos = self.f_op.seek_hole_data(&self.inode, off as u64, which)?;
+            self.pos.store(new_pos, Ordering::Release);
+            return Ok(new_pos);
+        }
         let base = match whence {
             SeekFrom::Start   => 0i64,
             SeekFrom::Current => self.pos.load(Ordering::Acquire) as i64,
             SeekFrom::End     => self.inode.size() as i64,
+            // Data/Hole handled above and returned.
+            SeekFrom::Data | SeekFrom::Hole => unreachable!(),
         };
         let new = base.checked_add(off).ok_or(VfsError::Einval)?;
         if new < 0 { return Err(VfsError::Einval); }
@@ -1156,9 +1169,18 @@ impl core::fmt::Debug for File {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SeekFrom {
+    /// `SEEK_SET` — base 0; the `off` arg is the absolute position.
     Start,
+    /// `SEEK_CUR` — base the current cursor.
     Current,
+    /// `SEEK_END` — base `i_size`.
     End,
+    /// `SEEK_DATA` (whence 3) — the `off` arg is the start byte; resolve to the
+    /// next data byte via `f_op->seek_hole_data`.
+    Data,
+    /// `SEEK_HOLE` (whence 4) — the `off` arg is the start byte; resolve to the
+    /// next hole via `f_op->seek_hole_data`.
+    Hole,
 }
 
 
