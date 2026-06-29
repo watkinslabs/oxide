@@ -4,7 +4,6 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
 
 use crate::userbuf::validate_user_buf_writable;
 
@@ -18,19 +17,14 @@ pub fn sys_readlink(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let buf_ptr  = args.a1;
     let bufsize  = args.a2;
-    if path_ptr == 0 || path_ptr >= USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
     if bufsize == 0 { return -(Errno::Einval.as_i32() as i64); }
     if let Err(rv) = validate_user_buf_writable(buf_ptr, bufsize, 1) { return rv; }
-    // SAFETY: ptr in user range; user page mapped (caller already executed user code from this AS); bounded read.
-    let path = match unsafe { devfs::read_user_cstr(path_ptr, 256) } {
-        Some(p) if !p.is_empty() => p,
-        _                        => return -(Errno::Einval.as_i32() as i64),
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    let path = match crate::namei_common::read_user_path(path_ptr) {
+        Ok(s)   => s,
+        Err(rv) => return rv,
     };
-    let raw = match core::str::from_utf8(path) {
-        Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
-    };
+    let raw: &str = path.as_str();
     let resolved = crate::pathresolve::resolve_cwd(raw);
     readlink_resolved_path(resolved.as_str(), buf_ptr, bufsize)
 }

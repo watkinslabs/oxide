@@ -3,7 +3,6 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
 use vfs::{File, OpenFlags};
 
 use crate::open_common::{dup_fd_target, open_proc_fd, enforce_open_perm, O_CREAT, O_EXCL, O_TRUNC,
@@ -60,17 +59,12 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     let path_ptr = args.a1;
     let flags    = args.a2 as u32;
     let mode     = args.a3 as u32;
-    if path_ptr == 0 || path_ptr >= USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: ptr in user range; user page mapped (caller's AS); bounded read.
-    let path = match unsafe { devfs::read_user_cstr(path_ptr, 256) } {
-        Some(p) if !p.is_empty() => p,
-        _                        => return -(Errno::Einval.as_i32() as i64),
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    let path = match crate::namei_common::read_user_path(path_ptr) {
+        Ok(p)   => p,
+        Err(rv) => return rv,
     };
-    let s = match core::str::from_utf8(path) {
-        Ok(s)  => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
-    };
+    let s: &str = path.as_str();
     #[cfg(feature = "debug-atexit")]
     if dyn_trace_path(s) {
         klog::write_raw(b"[DYNOPEN] raw dirfd=");

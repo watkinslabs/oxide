@@ -6,15 +6,16 @@ use alloc::string::String;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::namei_common::{
-    read_path, errno_from_vfs, resolve_parent, path_exists, strip_trailing_slash,
+    read_user_path, errno_from_vfs, resolve_parent, path_exists, strip_trailing_slash,
 };
 
 /// `mkdirat(dirfd, path, mode)` slot 258. Ignores dirfd (paths
 /// resolved absolute or cwd-relative).
 /// # C: O(1)
 pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
-    let raw = match read_path(args.a1) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    let raw = match read_user_path(args.a1) {
+        Ok(s) => s, Err(rv) => return rv,
     };
     // BUG D follow-up: resolve against the real dirfd (a0).
     let p = match crate::pathresolve::resolve_at_result(args.a0 as i32, &raw) {
