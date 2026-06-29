@@ -59,8 +59,10 @@ impl FileOps for FbFileOps {
 /// lookup → `ENOTDIR` (default i_op). # C: O(1)
 pub fn make_fb_inode(idx: u32) -> InodeRef {
     let ino = FB0_INO_BASE | idx as Ino;
+    // fbdev: major 29, minor = idx (Linux FB_MAJOR). DVR-0015.
     InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(FbFileOps))
         .size(crate::kva_of(idx).map(|(_, n)| n).unwrap_or(0))
+        .rdev(vfs::Devt::new(29, idx).raw())
         .private(Arc::new(FbData { idx }))
         .build()
 }
@@ -258,5 +260,6 @@ pub fn mmap_backing(inode: &InodeRef) -> Option<(u64, u64)> {
 /// # SAFETY: caller is the boot path; pre-init.
 /// # C: O(1)
 pub fn init() {
+    vfs::register_chrdev_name(29, "fb");
     devfs::register("/dev/fb0", make_fb_inode(0));
 }
