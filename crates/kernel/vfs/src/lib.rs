@@ -42,6 +42,7 @@ pub mod fs;
 pub mod mount;
 pub mod mntns;
 pub mod superblock;
+mod superblock_wb;
 pub mod types;
 pub mod poll_subs;
 
