@@ -11,12 +11,15 @@
 use std::sync::Arc;
 
 use vfs::file::SeekFrom;
+use vfs::idmap::Idmap;
 use vfs::inode::Inode;
 use vfs::{Dentry, File, FileOps, FileType, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError,
           default_inode_ops, mk_mode};
 
-/// `O_PATH` (asm-generic) — undeclared in `OpenFlags`, set as a raw bit and
-/// preserved via `from_bits_retain`, exactly how the syscall layer hands it in.
+/// `O_PATH` (asm-generic, both arches — Linux `fcntl.h` `010000000`). Now a
+/// DECLARED `OpenFlags` bit (single source of truth, vfs `types.rs`), so the
+/// open path's `from_bits_truncate(flags)` preserves it instead of stripping
+/// it (pinned by `opath_bit_not_truncated`).
 const O_PATH: u32 = 0o10000000;
 
 /// Regular-file `i_fop` whose every I/O op succeeds — so any error returned by a
@@ -68,4 +71,38 @@ fn opath_seek_pread_pwrite_espipe() {
     assert_eq!(f.seek(SeekFrom::Start, 0), Err(VfsError::Espipe), "O_PATH lseek → ESPIPE");
     assert_eq!(f.pread(&mut [0u8; 8], 0), Err(VfsError::Espipe), "O_PATH pread → ESPIPE");
     assert_eq!(f.pwrite(b"x", 0), Err(VfsError::Espipe), "O_PATH pwrite → ESPIPE");
+}
+
+/// The syscall path converts the raw open word via `OpenFlags::from_bits_truncate`
+/// (002_open / 257_openat). Pin that O_PATH is now a DECLARED bit, so truncation
+/// PRESERVES it (the ledger's "257_openat strips the bit" is closed) and an open
+/// built from the truncated flags still yields FMODE_PATH. Without the declaration
+/// `from_bits_truncate` would silently drop O_PATH and the fd would behave as a
+/// normal read fd.
+#[test]
+fn opath_bit_not_truncated() {
+    // The exact transform the open handlers apply to the user `flags` word.
+    let truncated = OpenFlags::from_bits_truncate(O_PATH);
+    assert!(truncated.contains(OpenFlags::O_PATH), "from_bits_truncate keeps O_PATH (not stripped)");
+    assert_eq!(OpenFlags::O_PATH.bits(), O_PATH, "typed O_PATH matches the asm-generic value");
+
+    // An open built from the truncated flags (as the syscall layer does) is FMODE_PATH.
+    let ino: InodeRef = InodeBuilder::new(0x9a8, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(AlwaysOkOps))
+        .size(4096).build();
+    let d = Dentry::new(None, "p".into(), Arc::clone(&ino));
+    let f = File::new(ino, d, truncated);
+    assert!(f.f_mode().contains(vfs::Fmode::PATH), "open via from_bits_truncate(O_PATH) → FMODE_PATH");
+    assert!(!f.f_mode().contains(vfs::Fmode::READ), "O_PATH fd is not readable");
+}
+
+/// `fstat(2)` is one of the operations Linux PERMITS on an O_PATH fd (it reads
+/// the referenced inode's attributes). Confirm the inode behind an O_PATH File
+/// still answers `getattr` with the real size/mode — the FMODE_PATH gate refuses
+/// data ops but never the stat path.
+#[test]
+fn opath_fstat_works() {
+    let f = opath_file();
+    let st = f.inode().getattr(&Idmap::identity(), None);
+    assert_eq!(st.size, 4096, "fstat on O_PATH fd reports the real size");
+    assert_eq!(st.mode & 0o7777, 0o644, "fstat on O_PATH fd reports the real mode");
 }
