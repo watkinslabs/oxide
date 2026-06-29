@@ -100,7 +100,7 @@ fn attach_recursive_grafts_mount() {
         .expect("attach_recursive_mnt");
     assert_eq!(mirrors, 0, "private graft propagates no mirror copies");
     let m = common::mount_at_path_exact("/d14_bind").expect("graft present in table");
-    assert_eq!(m.root.as_ref().map(|i| i.ino()), Some(0xBEEF),
+    assert_eq!(m.mnt_root().and_then(|r| r.inode()).map(|i| i.ino()), Some(0xBEEF),
         "graft keeps the bind source-subtree root (mnt_root)");
     assert!(m.sb().s_root().is_some(), "graft carries its own SuperBlock");
 }

@@ -816,6 +816,13 @@ impl File {
         if !self.f_mode.contains(Fmode::READ) {
             return Err(VfsError::Ebadf);
         }
+        // [D19] A directory fd has no readable byte stream: read(2)/readv(2) on
+        // it is EISDIR (Linux `generic_read_dir`); getdents(2) is the only way to
+        // read a directory. An O_RDONLY dir open carries FMODE_READ, so the EBADF
+        // gate above passes — the EISDIR guard belongs here, after it.
+        if matches!(self.inode.file_type(), FileType::Directory) {
+            return Err(VfsError::Eisdir);
+        }
         // FMODE_ATOMIC_POS: hold `f_pos_lock` across pos-read -> I/O ->
         // pos-update so a dup'd / CLONE_FILES-shared fd can't interleave the
         // cursor (Linux `__fdget_pos`). `None` for non-seekable files.

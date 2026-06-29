@@ -108,7 +108,7 @@ fn bind_keeps_mnt_root_with_own_sb() {
     let source_root: InodeRef = make_tdir(0xDEAD);
     common::register_bind("/sb_bind", fs.clone(), source_root.clone()).expect("bind");
     let m = common::mount_at_path_exact("/sb_bind").expect("bind present");
-    assert_eq!(m.root.as_ref().map(|i| i.ino()), Some(0xDEAD),
+    assert_eq!(m.mnt_root().and_then(|r| r.inode()).map(|i| i.ino()), Some(0xDEAD),
         "mnt_root is the bind source subtree root");
     assert!(m.sb().s_root().is_some(), "bind still carries its own SuperBlock");
 }
