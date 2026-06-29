@@ -21,7 +21,7 @@ fn build_mounts() -> Vec<u8> {
     use core::sync::atomic::Ordering;
     let mut s = String::new();
     for m in vfs::mount::snapshot() {
-        let mut line = m.fs().mounts_line(&m.mount_point_str());
+        let mut line = m.fs().mounts_line(&m.mount_point_str(), Some(&**m.sb()));
         if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
             if let Some(idx) = line.find(" rw,") {
                 line.replace_range(idx..idx + 4, " ro,");
