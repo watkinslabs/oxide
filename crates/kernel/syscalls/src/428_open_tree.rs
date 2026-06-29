@@ -25,6 +25,17 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
         Ok(p) => p, Err(rv) => return rv,
     };
     let abs = if abs.len() > 1 { abs.trim_end_matches('/').to_string() } else { abs };
+    // TEMP (D24, debug-mnt): mount-creating syscall ENTRY trace (Stage-1a
+    // replication source) — pair with vfs [MNTCREATE] clone/commit_hashonly.
+    #[cfg(feature = "debug-mount")]
+    {
+        klog::write_raw(b"[MNTCREATE] syscall=open_tree flags=0x");
+        klog::write_hex_u64(args.a2);
+        klog::write_raw(b" recursive=");
+        klog::write_raw(if args.a2 & AT_RECURSIVE != 0 { b"true" } else { b"false" });
+        klog::write_raw(b" source="); klog::write_raw(abs.as_bytes());
+        klog::write_raw(b" target=<none>\n");
+    }
     let cloexec = (args.a2 & OPEN_TREE_CLOEXEC) != 0;
     if (args.a2 & OPEN_TREE_CLONE) != 0 {
         // OPEN_TREE_CLONE creates a detached mount → requires CAP_SYS_ADMIN

@@ -23,6 +23,14 @@ pub fn sys_chroot(args: &SyscallArgs) -> i64 {
         Err(rv) => return rv,
     };
     let s: &str = path.as_str();
+    // TEMP (D24, debug-mnt): mount-creating syscall ENTRY trace — chroot into the
+    // assembled sandbox root that pins cur_mnt_id 10/11 for the api-mount walks.
+    #[cfg(feature = "debug-mount")]
+    {
+        klog::write_raw(b"[MNTCREATE] syscall=chroot flags=0x0 recursive=false source=<none> target=");
+        klog::write_raw(s.as_bytes());
+        klog::write_raw(b"\n");
+    }
     // chroot(2) accepts a RELATIVE path (resolved against cwd) — Linux
     // `set_fs_root` takes `user_path_at(AT_FDCWD, ...)`. systemd's
     // `mount_switch_root` does `chroot(".")` after MS_MOVE-ing the assembled

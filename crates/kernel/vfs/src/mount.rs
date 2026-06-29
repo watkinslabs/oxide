@@ -128,6 +128,30 @@ pub fn ms_to_mnt(ms: u64) -> u64 {
 /// # C: O(1)
 fn dptr(d: &Arc<Dentry>) -> usize { Arc::as_ptr(d) as *const () as usize }
 
+/// TEMP (D24, `debug-mnt`): emit ONE grep-able `[MNTCREATE]` line at a mount
+/// create/attach/clone/graft site, via the same raw klog sink the `[MNTDIVERGE]`
+/// probe uses. Lets the boot log reconstruct the exact sequence + via-tag that
+/// builds the sandbox-root mounts (mnt_id 10/11) and whether the api-mounts
+/// (/proc,/sys,/dev,/run) are re-created beneath them. Prod-inert (feature-off ⇒
+/// no call sites). # C: O(name len)
+#[cfg(feature = "debug-mnt")]
+fn mntcreate_log(via: &str, new_id: u64, parent: u64, mp: Option<&Arc<Dentry>>,
+                 root: Option<&Arc<Dentry>>, sb: Option<&Arc<SuperBlock>>) {
+    klog::write_raw(b"[MNTCREATE] via=");
+    klog::write_raw(via.as_bytes());
+    klog::write_raw(b" new_id="); klog::write_dec_u64(new_id);
+    klog::write_raw(b" parent="); klog::write_dec_u64(parent);
+    klog::write_raw(b" mp_dentry=ptr:0x");
+    klog::write_hex_u64(mp.map(|d| dptr(d) as u64).unwrap_or(0));
+    klog::write_raw(b" name:");
+    klog::write_raw(mp.map(|d| d.name()).unwrap_or("<none>").as_bytes());
+    klog::write_raw(b" root_dentry=ptr:0x");
+    klog::write_hex_u64(root.map(|d| dptr(d) as u64).unwrap_or(0));
+    klog::write_raw(b" sb=ptr:0x");
+    klog::write_hex_u64(sb.map(|s| Arc::as_ptr(s) as *const () as u64).unwrap_or(0));
+    klog::write_raw(b"\n");
+}
+
 /// True iff `d` is the global namespace-root dentry. # C: O(1)
 fn is_global_root(d: &Arc<Dentry>) -> bool {
     d.parent().is_none() && d.name().is_empty()
@@ -594,6 +618,8 @@ pub fn parent_mnt_id(m: &Mount) -> u64 { m.parent_id.load(Ordering::Acquire) }
 fn new_mount(sb: Arc<SuperBlock>, rendered: String, mountpoint: Option<Arc<Dentry>>,
              parent_id: u64, mnt_id: u64, ns: u64) -> Arc<Mount> {
     let mnt_root = sb.s_root();
+    #[cfg(feature = "debug-mnt")]
+    mntcreate_log("new_mount", mnt_id, parent_id, mountpoint.as_ref(), mnt_root.as_ref(), Some(&sb));
     Arc::new(Mount {
         sb, rendered_path: Spinlock::new(rendered), mountpoint: Spinlock::new(mountpoint),
         parent_id: AtomicU64::new(parent_id), mnt_id,
@@ -651,6 +677,8 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
     // anywhere — keep it for an exact byte match with the prior behaviour.
     let s_id = match &mp { Some(d) => abs_string(d), None => String::from("/") };
     let sb = build_sb(fs, root_inode, s_id);
+    #[cfg(feature = "debug-mnt")]
+    mntcreate_log("attach", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
     graft_realized(mp, sb)
 }
 
@@ -662,6 +690,8 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
 /// the equivalent `register`/`register_bind` graft byte-for-byte (both resolve
 /// the SAME root inode + root dentry). # C: O(depth)
 pub fn attach_sb(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>) -> KResult<()> {
+    #[cfg(feature = "debug-mnt")]
+    mntcreate_log("attach_sb", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
     graft_realized(mp, sb)
 }
 
@@ -686,6 +716,8 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>)
         // [D11] The namespace ROOT mount is a kernel-internal producer (Linux
         // marks rootfs / kern_mount mounts MNT_INTERNAL): never user-expirable.
         m.set_internal_flag(MNT_INTERNAL);
+        #[cfg(feature = "debug-mnt")]
+        mntcreate_log("graft", mnt_id, mnt_id, None, m.mnt_root().as_ref(), Some(&m.sb));
         mntns::ns_set_root(ns, mnt_id);
         MOUNTS.lock().insert(mnt_id, m);
         mntns::commit_mounts(ns, 1);
@@ -695,6 +727,8 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>)
     let parent_id = parent_by_dentry(ns, &d);
     let rendered = abs_string(&d);
     let m = new_mount(sb, rendered, Some(d.clone()), parent_id, mnt_id, ns);
+    #[cfg(feature = "debug-mnt")]
+    mntcreate_log("graft", mnt_id, parent_id, Some(&d), m.mnt_root().as_ref(), Some(&m.sb));
     // struct mountpoint (dentry refcount) + intrusive parent/child links.
     *m.mnt_mp.lock() = Some(get_mountpoint(&d));
     if let Some(p) = mount_by_id(parent_id) {
@@ -717,6 +751,8 @@ pub fn register(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()>
 
 /// Bind-as-clone (`mount(src, tgt, NULL, MS_BIND)`). # C: O(depth)
 pub fn register_bind(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
+    #[cfg(feature = "debug-mnt")]
+    mntcreate_log("register_bind", 0, 0, mp.as_ref(), None, None);
     attach(mp, fs, Some(root))
 }
 
@@ -788,6 +824,8 @@ pub(super) fn clone_mnt(src: &Arc<Mount>, ty: CloneType, pg: u64, master: &Arc<M
             clone.propagation.store(Propagation::Private as u8, Ordering::Release);
         }
     }
+    #[cfg(feature = "debug-mnt")]
+    mntcreate_log("clone", new_id, 0, None, clone.mnt_root().as_ref(), Some(&clone.sb));
     clone
 }
 
@@ -899,6 +937,8 @@ pub(super) fn commit_tree(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>,
         MOUNTS.lock().insert(m.mnt_id, m.clone());
         wire_crossing(ns, &mp_d, m.mnt_id);
         hash_insert(parent_id, dptr(&mp_d), m.mnt_id);
+        #[cfg(feature = "debug-mnt")]
+        mntcreate_log("commit", m.mnt_id, parent_id, Some(&mp_d), m.mnt_root().as_ref(), Some(&m.sb));
         mntns::commit_mounts(ns, 1);
         committed += 1;
     }
@@ -1024,6 +1064,8 @@ pub fn commit_tree_hashonly(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>) -> u
         // HASH-ONLY: strict (parent,dentry) hash, WITHOUT `wire_crossing` — the
         // legacy `dentry.mounted_mounts` map (the walk oracle) stays untouched.
         hash_insert(parent_id, dptr(&mp_d), m.mnt_id);
+        #[cfg(feature = "debug-mnt")]
+        mntcreate_log("commit_hashonly", m.mnt_id, parent_id, Some(&mp_d), m.mnt_root().as_ref(), Some(&m.sb));
         mntns::commit_mounts(ns, 1);
         let mroot = m.mnt_root().unwrap_or_else(|| mp_d.clone());
         placed.push((rel, m.mnt_id, mroot));
