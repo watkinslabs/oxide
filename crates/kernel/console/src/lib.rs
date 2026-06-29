@@ -24,7 +24,8 @@ use alloc::string::ToString;
 use alloc::sync::Arc;
 
 use tty::ReadOutcome;
-use vfs::{Dentry, FdTable, File, FileType, Ino, Inode, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{Dentry, FdTable, File, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{FileOps, default_inode_ops, mk_mode};
 
 // --- device routing (Linux serial-vs-VT split) -------------------------
 //
@@ -67,231 +68,228 @@ pub fn route(ino: u64) -> TtyTarget {
 /// follow this. # C: O(1)
 pub fn foreground_vt() -> u8 { tty::live::foreground().max(1) }
 
-/// `/dev/tty<N>` + foreground-VT inode. `vt == 0` = foreground video VT
-/// (`/dev/console`,`/dev/tty`,`/dev/tty0`), resolved at I/O time; vt 1..=N_VT
-/// pin a specific VT. The serial line is a SEPARATE device — see
-/// [`SerialInode`]. Output renders to the framebuffer via the VT console
-/// driver; it does NOT touch the serial UART (no mirroring).
-pub struct ConsoleInode {
-    vt: u8,
+// ---- VT console device: per-inode `vt` in `i_private`, shared `i_fop` ----
+
+/// Backend-private state (`i_private`) for a VT console inode: which VT it
+/// pins. `vt == 0` = foreground video VT (`/dev/console`/`/dev/tty`/
+/// `/dev/tty0`), resolved at I/O time; `vt 1..=N_VT` pin a specific VT.
+pub struct ConsoleData { vt: u8 }
+
+/// Distinct inode numbers per VT so VFS-level introspection (`stat`/
+/// `getdents` ino fields) reflects the underlying device. vt=0 = the
+/// foreground-VT alias (low byte 0xFD); vt N = that VT (low byte N). # C: O(1)
+fn console_ino(vt: u8) -> Ino {
+    if vt == 0 { TTY_INO_BASE | FG_VT_INO_LB as Ino } else { TTY_INO_BASE | vt as Ino }
+}
+fn console_rdev(vt: u8) -> u32 { if vt == 0 { 0x0500 } else { 0x0400 | vt as u32 } }
+fn console_perm(vt: u8) -> u16 { if vt == 0 { 0o666 } else { 0o620 } }
+
+/// Build a VT console inode pinned to `vt`. Use 0 for the foreground-alias
+/// (`/dev/console`, `/dev/tty`, `/dev/tty0`); 1..=N_VT for the per-VT slots.
+/// # C: O(1)
+pub fn make_console_inode(vt: u8) -> InodeRef {
+    InodeBuilder::new(console_ino(vt), mk_mode(FileType::CharDev, console_perm(vt)),
+        default_inode_ops(), Arc::new(ConsoleFileOps))
+        .fsid(devfs::DEVFS_FSID).rdev(console_rdev(vt))
+        .private(Arc::new(ConsoleData { vt }))
+        .build()
 }
 
-pub struct SystemConsoleInode;
-
-impl ConsoleInode {
-    /// Build an inode pinned to `vt`. Use 0 for foreground-alias
-    /// (`/dev/console`, `/dev/tty`, `/dev/tty0`); 1..=N_VT for
-    /// the per-VT slots.
-    /// # C: O(1)
-    pub const fn new(vt: u8) -> Self { Self { vt } }
-}
-
-impl Inode for ConsoleInode {
-    /// Distinct inode numbers per VT so VFS-level introspection
-    /// (`stat` / `getdents` ino fields) reflects the underlying
-    /// device. vt=0 keeps ino=1 for backwards compatibility with
-    /// existing /dev/console callers.
-    fn ino(&self) -> Ino {
-        // vt 0 = foreground-VT alias (low byte 0xFD); vt N = that VT (low byte N).
-        if self.vt == 0 { TTY_INO_BASE | FG_VT_INO_LB as Ino }
-        else { TTY_INO_BASE | self.vt as Ino }
-    }
-    fn fsid(&self) -> u64 { devfs::DEVFS_FSID }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn rdev(&self) -> u32 {
-        if self.vt == 0 { 0x0500 } else { 0x0400 | self.vt as u32 }
-    }
-    fn perm(&self) -> Option<u16> {
-        if self.vt == 0 { Some(0o666) } else { Some(0o620) }
-    }
-    fn size(&self) -> u64 { 0 }
-
-    fn lookup(&self, _name: &str) -> KResult<InodeRef> {
-        Err(VfsError::Enotdir)
-    }
-
-    /// Blocking read. vt==0 (the system console: /dev/console, /dev/tty,
-    /// /dev/tty0) resolves to the foreground VT's `TtyStruct`; numbered VT
-    /// nodes pin their own `TtyStruct`. `/dev/ttyS0` is a separate serial
-    /// inode and never reaches this path.
-    fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
-        if buf.is_empty() { return Ok(0); }
-        // TtyStruct::read parks lost-wakeup-free and returns a cooked line
-        // (Bytes), 0 on ^D (Eof), or Interrupted when an unblocked signal
-        // lands during the blocking wait → -EINTR (Linux n_tty_read).
-        // vt 0 = foreground video VT; vt N = that VT. The serial line is a
-        // separate device (SerialInode) — never reached here.
-        let vt = if self.vt == 0 { foreground_vt() } else { self.vt };
-        let tty = vt_tty::vt_tty(vt);
-        jobctl::check(tty.fg_pgrp(), tty.sid(), self.ino(),
-            tty::pty::read_lflag(&tty.termios()), jobctl::Access::Read)?;
-        let outcome = tty.read(buf);
-        match outcome {
-            ReadOutcome::Bytes(n) => Ok(n),
-            ReadOutcome::Eof => Ok(0),
-            ReadOutcome::Interrupted => Err(VfsError::Eintr),
-        }
-    }
-
-    /// Non-blocking read per `15§5` / `28§3`. systemd PID1 opens
-    /// `/dev/console` with `O_NONBLOCK` and runs a `ppoll`+`read` loop: it
-    /// expects `read` to return `EAGAIN` on an empty input queue, NOT to
-    /// park. vt==0 delegates to the foreground VT `TtyStruct`'s non-blocking
-    /// drain; the numbered VTs drain their own tty. Either way, empty ⇒
-    /// `Eagain`.
-    /// # C: O(buf.len())
-    fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
-        if buf.is_empty() { return Ok(0); }
-        let vt = if self.vt == 0 { foreground_vt() } else { self.vt };
-        let tty = vt_tty::vt_tty(vt);
-        jobctl::check(tty.fg_pgrp(), tty.sid(), self.ino(),
-            tty::pty::read_lflag(&tty.termios()), jobctl::Access::Read)?;
-        let n = tty.read_nonblock(buf);
-        if n == 0 { return Err(VfsError::Eagain); }
-        Ok(n)
-    }
-
-    /// Readiness for poll/ppoll/select. POLLIN only when input is actually
-    /// queued (the default Inode::poll claims always readable, which makes
-    /// a `ppoll(console, POLLIN, timeout)` loop spin on EAGAIN — systemd's
-    /// DSR terminal-size probe does exactly that). Always writable.
-    /// # C: O(1)
-    fn poll(&self) -> u32 {
-        // vt 0 = foreground video VT; vt N = that VT. The per-VT TtyStruct
-        // owns readiness; pollmask bits (POLLIN=1, POLLOUT=4) match Linux uapi.
-        let vt = if self.vt == 0 { foreground_vt() } else { self.vt };
-        vt_tty::vt_tty(vt).poll()
-    }
-
-    /// The per-VT tty's poll/select/epoll wait queue — poll/select/epoll
-    /// subscribe here and the VT's RX/hangup `notify()`s it (Linux
-    /// `->poll` wait queue). # C: O(1)
-    fn poll_subscribers(&self) -> Option<&vfs::PollSubscribers> {
-        let vt = if self.vt == 0 { foreground_vt() } else { self.vt };
-        Some(vt_tty::vt_tty(vt).poll_subs())
-    }
-
-    /// Write `buf` to the video VT. The per-VT `TtyStruct` owns OPOST: its
-    /// N_TTY runs ONLCR, then `VtConsoleDriver::write` feeds the post-OPOST
-    /// bytes to the fbcon emulator (→ vc_data → consw cell-blit) — rendered
-    /// ONCE. This device does NOT touch the serial UART; `/dev/ttyS0` is a
-    /// separate device (no mirroring → no double-print). printk still reaches
-    /// the framebuffer via its own klog sink, independent of this path.
-    fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
-        dtrace!(b"CW_IN", buf.len() as u64);
-        let vt = if self.vt == 0 { foreground_vt() } else { self.vt };
-        let tty = vt_tty::vt_tty(vt);
-        jobctl::check(tty.fg_pgrp(), tty.sid(), self.ino(),
-            tty::pty::read_lflag(&tty.termios()), jobctl::Access::Write)?;
-        let n = tty.write(buf);
-        dtrace!(b"CW_OUT", n as u64);
-        Ok(n)
+/// Blocking read of VT `vt` (vt 0 → foreground VT). `ino` is the device's own
+/// inode number (job-control gate). # C: backend-dependent
+fn vt_read(vt: u8, ino: Ino, buf: &mut [u8]) -> KResult<usize> {
+    if buf.is_empty() { return Ok(0); }
+    // TtyStruct::read parks lost-wakeup-free and returns a cooked line
+    // (Bytes), 0 on ^D (Eof), or Interrupted when an unblocked signal lands
+    // during the blocking wait → -EINTR (Linux n_tty_read).
+    let v = if vt == 0 { foreground_vt() } else { vt };
+    let tty = vt_tty::vt_tty(v);
+    jobctl::check(tty.fg_pgrp(), tty.sid(), ino,
+        tty::pty::read_lflag(&tty.termios()), jobctl::Access::Read)?;
+    match tty.read(buf) {
+        ReadOutcome::Bytes(n) => Ok(n),
+        ReadOutcome::Eof => Ok(0),
+        ReadOutcome::Interrupted => Err(VfsError::Eintr),
     }
 }
 
-impl Inode for SystemConsoleInode {
-    fn ino(&self) -> Ino { TTY_INO_BASE | 0x01 }
-    fn fsid(&self) -> u64 { devfs::DEVFS_FSID }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn rdev(&self) -> u32 { 0x0501 }
-    fn perm(&self) -> Option<u16> { Some(0o600) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// Non-blocking read of VT `vt` (empty ⇒ `Eagain`). # C: O(buf.len())
+fn vt_read_nonblock(vt: u8, ino: Ino, buf: &mut [u8]) -> KResult<usize> {
+    if buf.is_empty() { return Ok(0); }
+    let v = if vt == 0 { foreground_vt() } else { vt };
+    let tty = vt_tty::vt_tty(v);
+    jobctl::check(tty.fg_pgrp(), tty.sid(), ino,
+        tty::pty::read_lflag(&tty.termios()), jobctl::Access::Read)?;
+    let n = tty.read_nonblock(buf);
+    if n == 0 { return Err(VfsError::Eagain); }
+    Ok(n)
+}
 
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+/// Readiness for poll/ppoll/select on VT `vt`. POLLIN only when input is
+/// actually queued; always writable. # C: O(1)
+fn vt_poll(vt: u8) -> u32 {
+    let v = if vt == 0 { foreground_vt() } else { vt };
+    vt_tty::vt_tty(v).poll()
+}
+
+/// Write `buf` to VT `vt`. The per-VT `TtyStruct` owns OPOST (ONLCR), then
+/// `VtConsoleDriver::write` feeds the post-OPOST bytes to the fbcon emulator.
+/// Does NOT touch the serial UART. # C: backend-dependent
+fn vt_write(vt: u8, ino: Ino, buf: &[u8]) -> KResult<usize> {
+    dtrace!(b"CW_IN", buf.len() as u64);
+    let v = if vt == 0 { foreground_vt() } else { vt };
+    let tty = vt_tty::vt_tty(v);
+    jobctl::check(tty.fg_pgrp(), tty.sid(), ino,
+        tty::pty::read_lflag(&tty.termios()), jobctl::Access::Write)?;
+    let n = tty.write(buf);
+    dtrace!(b"CW_OUT", n as u64);
+    Ok(n)
+}
+
+/// `file_operations` for a VT console inode — recovers `vt` off `i_private`.
+/// NOTE(kp2): the per-VT tty's `PollSubscribers` is NOT exposed (the struct
+/// `Inode` only carries an OWNED `Option<PollSubscribers>`; there is no
+/// FileOps hook to return a borrowed external list). epoll/poll targeted
+/// wakes therefore fall back to the poll-loop's bounded 20 ms rescan net
+/// (`007_poll.rs`) rather than instant `notify()`. Restoring the old
+/// targeted wake needs a vfs follow-up: a `FileOps::poll_subscribers` hook
+/// or an `Arc<PollSubscribers>`-shared inode field.
+struct ConsoleFileOps;
+impl FileOps for ConsoleFileOps {
+    fn read(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let vt = console_data(inode)?.vt;
+        vt_read(vt, inode.ino(), buf)
+    }
+    fn read_nonblock(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let vt = console_data(inode)?.vt;
+        vt_read_nonblock(vt, inode.ino(), buf)
+    }
+    fn poll(&self, inode: &Inode) -> u32 {
+        match console_data(inode) { Ok(d) => vt_poll(d.vt), Err(_) => vfs::POLL_ERR }
+    }
+    fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
+        let vt = console_data(inode)?.vt;
+        vt_write(vt, inode.ino(), buf)
+    }
+}
+
+/// Recover the VT console state from an inode's `i_private`. # C: O(1)
+fn console_data(inode: &Inode) -> KResult<&ConsoleData> {
+    inode.private::<ConsoleData>().ok_or(VfsError::Einval)
+}
+
+// ---- system console (`/dev/console` = the preferred `console=`) ----
+
+/// `file_operations` for `/dev/console` — dispatches each op to the serial
+/// tty or the foreground VT (vt 0) per the last `console=` on the cmdline.
+struct SystemConsoleFileOps;
+impl FileOps for SystemConsoleFileOps {
+    fn read(&self, _i: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         match cmdline::preferred_console() {
-            cmdline::ConsoleKind::Serial => Inode::read(&SerialInode, off, buf),
-            cmdline::ConsoleKind::Vt(_) => Inode::read(&ConsoleInode::new(0), off, buf),
+            cmdline::ConsoleKind::Serial => serial_read(buf),
+            cmdline::ConsoleKind::Vt(_)  => vt_read(0, console_ino(0), buf),
         }
     }
-    fn read_nonblock(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+    fn read_nonblock(&self, _i: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         match cmdline::preferred_console() {
-            cmdline::ConsoleKind::Serial => Inode::read_nonblock(&SerialInode, off, buf),
-            cmdline::ConsoleKind::Vt(_) => Inode::read_nonblock(&ConsoleInode::new(0), off, buf),
+            cmdline::ConsoleKind::Serial => serial_read_nonblock(buf),
+            cmdline::ConsoleKind::Vt(_)  => vt_read_nonblock(0, console_ino(0), buf),
         }
     }
-    fn write(&self, off: u64, buf: &[u8]) -> KResult<usize> {
+    fn write(&self, _i: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
         match cmdline::preferred_console() {
-            cmdline::ConsoleKind::Serial => Inode::write(&SerialInode, off, buf),
-            cmdline::ConsoleKind::Vt(_) => Inode::write(&ConsoleInode::new(0), off, buf),
+            cmdline::ConsoleKind::Serial => serial_write(buf),
+            cmdline::ConsoleKind::Vt(_)  => vt_write(0, console_ino(0), buf),
         }
     }
-    fn write_nonblock(&self, off: u64, buf: &[u8]) -> KResult<usize> {
+    fn write_nonblock(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
+        // Default FileOps::write_nonblock forwards to write; keep that, but
+        // serial write must still pass the job-control gate it owns.
+        self.write(inode, off, buf)
+    }
+    fn poll(&self, _i: &Inode) -> u32 {
         match cmdline::preferred_console() {
-            cmdline::ConsoleKind::Serial => Inode::write_nonblock(&SerialInode, off, buf),
-            cmdline::ConsoleKind::Vt(_) => Inode::write_nonblock(&ConsoleInode::new(0), off, buf),
+            cmdline::ConsoleKind::Serial => static_console::poll(),
+            cmdline::ConsoleKind::Vt(_)  => vt_poll(0),
         }
     }
-    fn poll(&self) -> u32 {
-        match cmdline::preferred_console() {
-            cmdline::ConsoleKind::Serial => Inode::poll(&SerialInode),
-            cmdline::ConsoleKind::Vt(_) => Inode::poll(&ConsoleInode::new(0)),
-        }
-    }
-    fn poll_file(&self, pos: u64) -> u32 {
-        match cmdline::preferred_console() {
-            cmdline::ConsoleKind::Serial => Inode::poll_file(&SerialInode, pos),
-            cmdline::ConsoleKind::Vt(_) => Inode::poll_file(&ConsoleInode::new(0), pos),
-        }
-    }
+}
+
+/// Build the `/dev/console` (preferred-console, 5:1) inode. # C: O(1)
+pub fn make_system_console_inode() -> InodeRef {
+    InodeBuilder::new(TTY_INO_BASE | 0x01, mk_mode(FileType::CharDev, 0o600),
+        default_inode_ops(), Arc::new(SystemConsoleFileOps))
+        .fsid(devfs::DEVFS_FSID).rdev(0x0501)
+        .build()
 }
 
 /// `/dev/ttyS0` — the serial UART tty, a SEPARATE device from the video
 /// console. Serial-only: never renders to the framebuffer. Its winsize is
 /// the serial-terminal default (80×24 until the remote sends SIGWINCH),
 /// independent of the framebuffer geometry.
-pub struct SerialInode;
+/// `/dev/ttyS0` inode number. # C: O(1)
+fn serial_ino() -> Ino { TTY_INO_BASE | SERIAL_INO_LB as Ino }
 
-impl SerialInode {
-    /// Job-control gate for ttyS0 (background-pgrp read/write of the
-    /// controlling serial tty). # C: O(pgrp size).
-    fn jobctl(&self, access: jobctl::Access) -> KResult<()> {
-        jobctl::check(
-            static_console::foreground_pgid(),
-            static_console::session(),
-            self.ino(),
-            tty::pty::read_lflag(&static_console::termios_get()),
-            access,
-        )
-    }
+#[cfg(target_arch = "x86_64")]
+const SERIAL_RDEV: u32 = 0x0440;
+#[cfg(target_arch = "aarch64")]
+const SERIAL_RDEV: u32 = 0xcc40;
+
+/// Job-control gate for ttyS0 (background-pgrp read/write of the controlling
+/// serial tty). # C: O(pgrp size).
+fn serial_jobctl(access: jobctl::Access) -> KResult<()> {
+    jobctl::check(
+        static_console::foreground_pgid(),
+        static_console::session(),
+        serial_ino(),
+        tty::pty::read_lflag(&static_console::termios_get()),
+        access,
+    )
 }
 
-impl Inode for SerialInode {
-    fn ino(&self) -> Ino { TTY_INO_BASE | SERIAL_INO_LB as Ino }
-    fn fsid(&self) -> u64 { devfs::DEVFS_FSID }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    #[cfg(target_arch = "x86_64")]
-    fn rdev(&self) -> u32 { 0x0440 }
-    #[cfg(target_arch = "aarch64")]
-    fn rdev(&self) -> u32 { 0xcc40 }
-    fn perm(&self) -> Option<u16> { Some(0o660) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// Blocking read of the serial tty. # C: backend-dependent
+fn serial_read(buf: &mut [u8]) -> KResult<usize> {
+    if buf.is_empty() { return Ok(0); }
+    serial_jobctl(jobctl::Access::Read)?;
+    match static_console::read(buf) {
+        ReadOutcome::Bytes(n) => Ok(n),
+        ReadOutcome::Eof => Ok(0),
+        ReadOutcome::Interrupted => Err(VfsError::Eintr),
+    }
+}
+/// Non-blocking read of the serial tty (empty ⇒ `Eagain`). # C: backend-dependent
+fn serial_read_nonblock(buf: &mut [u8]) -> KResult<usize> {
+    if buf.is_empty() { return Ok(0); }
+    serial_jobctl(jobctl::Access::Read)?;
+    let n = static_console::read_nonblock(buf);
+    if n == 0 { return Err(VfsError::Eagain); }
+    Ok(n)
+}
+/// Write to the serial tty (job-control gated). # C: backend-dependent
+fn serial_write(buf: &[u8]) -> KResult<usize> {
+    serial_jobctl(jobctl::Access::Write)?;
+    Ok(static_console::write(buf))
+}
 
-    fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
-        if buf.is_empty() { return Ok(0); }
-        self.jobctl(jobctl::Access::Read)?;
-        match static_console::read(buf) {
-            ReadOutcome::Bytes(n) => Ok(n),
-            ReadOutcome::Eof => Ok(0),
-            ReadOutcome::Interrupted => Err(VfsError::Eintr),
-        }
-    }
-    fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
-        if buf.is_empty() { return Ok(0); }
-        self.jobctl(jobctl::Access::Read)?;
-        let n = static_console::read_nonblock(buf);
-        if n == 0 { return Err(VfsError::Eagain); }
-        Ok(n)
-    }
-    fn poll(&self) -> u32 { static_console::poll() }
-    fn poll_subscribers(&self) -> Option<&vfs::PollSubscribers> {
-        static_console::poll_subscribers()
-    }
-    fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
-        self.jobctl(jobctl::Access::Write)?;
-        Ok(static_console::write(buf))
-    }
+/// `file_operations` for `/dev/ttyS0` — the serial UART tty. NOTE(kp2): the
+/// serial tty's `PollSubscribers` is not exposed (same vfs gap as the VT
+/// console — see [`ConsoleFileOps`]); targeted epoll wakes degrade to the
+/// poll-loop rescan net.
+struct SerialFileOps;
+impl FileOps for SerialFileOps {
+    fn read(&self, _i: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> { serial_read(buf) }
+    fn read_nonblock(&self, _i: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> { serial_read_nonblock(buf) }
+    fn poll(&self, _i: &Inode) -> u32 { static_console::poll() }
+    fn write(&self, _i: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> { serial_write(buf) }
+}
+
+/// Build the `/dev/ttyS0` serial UART inode (`0o660`, arch-specific rdev).
+/// A SEPARATE device from the video console (serial-only, own winsize).
+/// # C: O(1)
+pub fn make_serial_inode() -> InodeRef {
+    InodeBuilder::new(serial_ino(), mk_mode(FileType::CharDev, 0o660), default_inode_ops(), Arc::new(SerialFileOps))
+        .fsid(devfs::DEVFS_FSID).rdev(SERIAL_RDEV)
+        .build()
 }
 
 /// Keyboard input sink: deliver one byte to the FOREGROUND video VT's tty
@@ -339,32 +337,36 @@ pub fn init_console_fd_table() -> Arc<FdTable> {
 /// screen: `vcs` = `rows*cols` glyph bytes; `vcsa` = a 4-byte header
 /// `[rows, cols, cursor_x, cursor_y]` then `[glyph, attr]` pairs. Read-only
 /// here (writing the screen via vcs is not supported → EINVAL).
-pub struct VcsInode { with_attr: bool }
+/// Backend-private state (`i_private`) for a vcs inode: `with_attr` selects
+/// `/dev/vcsa` (text+attr) over `/dev/vcs` (text). # C: O(1)
+pub struct VcsData { with_attr: bool }
 
-impl VcsInode {
-    /// `attr=false` → /dev/vcs(0); `attr=true` → /dev/vcsa(0). # C: O(1)
-    pub const fn new(attr: bool) -> Self { Self { with_attr: attr } }
-}
-
-impl Inode for VcsInode {
-    // Distinct, collision-free inos (low byte 0 ⇒ the VT/fbdev ioctl routers
-    // skip these): 0x7600 = vcs, 0x7700 = vcsa.
-    fn ino(&self) -> Ino { if self.with_attr { 0x7700 } else { 0x7600 } }
-    fn fsid(&self) -> u64 { devfs::DEVFS_FSID }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn rdev(&self) -> u32 { if self.with_attr { 0x0780 } else { 0x0700 } }
-    fn perm(&self) -> Option<u16> { Some(0o644) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let data = fbcon::kernel::screen_dump(self.with_attr);
+/// `file_operations` for `/dev/vcs{,a}` — read snapshots the foreground VT's
+/// screen; write is unsupported (`EINVAL`).
+struct VcsFileOps;
+impl FileOps for VcsFileOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let with_attr = inode.private::<VcsData>().ok_or(VfsError::Einval)?.with_attr;
+        let data = fbcon::kernel::screen_dump(with_attr);
         let off = off as usize;
         if off >= data.len() { return Ok(0); }
         let n = (data.len() - off).min(buf.len());
         buf[..n].copy_from_slice(&data[off..off + n]);
         Ok(n)
     }
-    fn write(&self, _off: u64, _buf: &[u8]) -> KResult<usize> { Err(VfsError::Einval) }
+    fn write(&self, _i: &Inode, _off: u64, _buf: &[u8]) -> KResult<usize> { Err(VfsError::Einval) }
+}
+
+/// Build a vcs screen-dump inode. `attr=false` → `/dev/vcs(0)`; `attr=true`
+/// → `/dev/vcsa(0)`. Distinct, collision-free inos (low byte 0 ⇒ the VT/fbdev
+/// ioctl routers skip these): 0x7600 = vcs, 0x7700 = vcsa. # C: O(1)
+pub fn make_vcs_inode(attr: bool) -> InodeRef {
+    let ino: Ino = if attr { 0x7700 } else { 0x7600 };
+    let rdev: u32 = if attr { 0x0780 } else { 0x0700 };
+    InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o644), default_inode_ops(), Arc::new(VcsFileOps))
+        .fsid(devfs::DEVFS_FSID).rdev(rdev)
+        .private(Arc::new(VcsData { with_attr: attr }))
+        .build()
 }
 
 /// The backing inode for `/dev/console` — the *preferred console* named by
@@ -373,7 +375,7 @@ impl Inode for VcsInode {
 /// `console=ttyS0`/`ttyAMA0` as the preferred console ⇒ the serial tty;
 /// `console=tty<n>`/none ⇒ the foreground video VT. # C: O(cmdline length)
 pub fn system_console_inode() -> InodeRef {
-    Arc::new(SystemConsoleInode) as InodeRef
+    make_system_console_inode()
 }
 
 /// Register the console/tty char-device nodes into devfs (self-registration
@@ -391,23 +393,23 @@ pub fn register_devnodes() {
     devfs::register("/dev/console", system_console_inode());
     // /dev/tty, /dev/tty0 = the foreground video VT (always video; distinct
     // from /dev/console, which the console= cmdline may point at serial).
-    let fg: vfs::InodeRef = Arc::new(ConsoleInode::new(0));
+    let fg: vfs::InodeRef = make_console_inode(0);
     devfs::register("/dev/tty",     Arc::clone(&fg));
     devfs::register("/dev/tty0",    fg);
     // Serial line — a SEPARATE device (its own tty, serial-only, own winsize).
-    devfs::register("/dev/ttyS0",   Arc::new(SerialInode) as vfs::InodeRef);
+    devfs::register("/dev/ttyS0",   make_serial_inode());
     for vt in 1..=tty::live::N_VT as u8 {
         let mut path = String::with_capacity(10);
         path.push_str("/dev/tty");
         if vt >= 10 { path.push((b'0' + (vt / 10)) as char); }
         path.push((b'0' + (vt % 10)) as char);
-        devfs::register_owned(path, Arc::new(ConsoleInode::new(vt)) as vfs::InodeRef);
+        devfs::register_owned(path, make_console_inode(vt));
     }
     // VT screen-dump devices (vc_screen.c). 0 = current foreground VT.
-    let vcs: vfs::InodeRef = Arc::new(VcsInode::new(false));
+    let vcs: vfs::InodeRef = make_vcs_inode(false);
     devfs::register("/dev/vcs",  Arc::clone(&vcs));
     devfs::register("/dev/vcs0", vcs);
-    let vcsa: vfs::InodeRef = Arc::new(VcsInode::new(true));
+    let vcsa: vfs::InodeRef = make_vcs_inode(true);
     devfs::register("/dev/vcsa",  Arc::clone(&vcsa));
     devfs::register("/dev/vcsa0", vcsa);
 }
