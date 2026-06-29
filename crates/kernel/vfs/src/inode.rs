@@ -273,6 +273,21 @@ impl Inode {
     /// `drop_nlink` (saturating at 0). # C: O(1)
     pub fn drop_nlink(&self) { let _ = self.i_nlink.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| Some(n.saturating_sub(1))); }
 
+    /// Unlink-name coupling (`16§2`; Linux `drop_nlink` + the `i_nlink == 0`
+    /// evict test): atomically remove one hard-link name and report whether it
+    /// was the LAST (`i_nlink` reached 0). This is the coupling the per-inode
+    /// `i_dentry` alias list lacked — it ties `Inode::nlink` to the name set so
+    /// the dcache can drive retirement. A `true` return is Linux's "no names
+    /// remain → the inode must be retired once its last reference (`i_count`)
+    /// drops" signal; the eviction itself is driven SOLELY by the `iput`/
+    /// `drop_inode`/`evict_inode` lifecycle (no double-evict). The dcache pairs
+    /// this with alias-list teardown in [`crate::dcache::d_unlink`] /
+    /// [`crate::dcache::d_prune_aliases`]. Saturates at 0. # C: O(1)
+    pub fn drop_link(&self) -> bool {
+        let prev = self.i_nlink.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| Some(n.saturating_sub(1)));
+        matches!(prev, Ok(n) if n <= 1)
+    }
+
     // ---- i_rwsem (Linux inode->i_rwsem) ------------------------------------
 
     /// `inode_lock` (Linux `fs/inode.c`) — take `i_rwsem` EXCLUSIVE. The write

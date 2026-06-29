@@ -654,6 +654,32 @@ pub fn d_delete(d: &Arc<Dentry>) {
     }
 }
 
+/// Unlink the name at `d` (Linux `vfs_unlink` tail: `drop_nlink(inode)` then
+/// the dentry teardown) — the D30 coupling between `Inode::i_nlink` and the
+/// per-inode `i_dentry` alias list. Steps, Linux-faithful:
+///   1. [`Inode::drop_link`] removes one hard-link name and reports whether it
+///      was the LAST (nlink reached 0).
+///   2. [`d_delete`] tears down THIS name: a sole-user dentry goes negative
+///      (its alias dropped + inode detached via `dentry_iput`→`iput`), a shared
+///      one is unhashed — exactly as before.
+///   3. If that was the last name, [`d_prune_aliases`] drops every remaining
+///      UNUSED sibling alias so no stale cached name resolves to the now-dead
+///      inode (Linux `d_prune_aliases` on the final unlink), and the last
+///      held reference's `iput` retires the inode through the EXISTING
+///      `drop_inode`/`evict_inode` window. Eviction is driven solely by `iput`
+///      (whose `drop_inode` default is `nlink == 0 && i_count == 0`) — this
+///      function never frees the inode itself, so there is NO double-evict.
+/// A negative `d` (no inode) is a no-op. Returns true iff the inode lost its
+/// last name (caller may observe retirement once references drain).
+/// # C: O(N_aliases)
+pub fn d_unlink(d: &Arc<Dentry>) -> bool {
+    let inode = match d.inode() { Some(i) => i, None => return false };
+    let last = inode.drop_link();
+    d_delete(d);
+    if last { d_prune_aliases(&inode); }
+    last
+}
+
 /// Rename `old` to `(new_parent, new_name)` (Linux `d_move`). Unhashes
 /// `old` from its current parent and rehomes its inode under the new
 /// (parent,name) key, so `d_lookup(old_parent, old_name)` misses and
