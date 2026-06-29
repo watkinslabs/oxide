@@ -26,6 +26,7 @@
 
 
 pub mod balance;
+pub mod chroot_refs;
 pub mod registry;
 pub mod runqueue;
 pub mod schedule;
@@ -36,6 +37,7 @@ pub mod zombies;
 pub mod sigpend;
 pub mod tick_deadline;
 
+pub use chroot_refs::chroot_fs_refs;
 pub use ttwu::{try_to_wake_up, select_task_rq, resched_curr, relocate_for_affinity};
 
 pub use runqueue::{global, Runqueue};
