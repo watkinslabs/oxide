@@ -581,7 +581,7 @@ pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> 
             };
             (m.mnt_id, np)
         }).collect();
-        commit_retree(ns, &new_paths, Some(nr_id));
+        commit_retree(ns, &new_paths, Some(nr_id), &nr_subtree);
         if let Some(old) = old_root_id { mntns::chroot_fs_refs(old, nr_id); }
         return Ok(());
     }
@@ -606,22 +606,35 @@ pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> 
         };
         (m.mnt_id, np)
     }).collect();
-    commit_retree(ns, &new_paths, Some(nr_id));
+    commit_retree(ns, &new_paths, Some(nr_id), &nr_subtree);
     if let Some(old) = old_root_id { mntns::chroot_fs_refs(old, nr_id); }
     Ok(())
 }
 
-/// Commit a whole-namespace path rewrite: MATERIALISE each mount's new
-/// mountpoint dentry by descending from the ns root, mutate it in place, then
-/// rebuild the ns index (links + crossings + hash) by identity. # C: O(N×depth)
-fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>) {
+/// Commit a whole-namespace path rewrite (pivot_root): re-root the ns, then
+/// for each mount mutate its position in place and rebuild the ns index (links
+/// + crossings + hash) by identity. Mounts listed in `preserve` (the new root's
+/// own subtree) KEEP their existing mountpoint dentry — they live INSIDE the
+/// moved filesystems and travel unchanged (Linux `copy_tree`); only their
+/// rendered path is re-based. Re-deriving their dentry by a global-path
+/// `descend` was the 203/EXEC bug: a bind/clone submount's `s_root` is a
+/// DISTINCT dentry the global-root descent NEVER reaches, so the descent
+/// re-seated the crossing onto the OLD tree's dentry — after the executor's
+/// `pivot_root` the relocated `/usr`,`/lib64` were unreachable from the new
+/// root, so `execve(/usr/lib/systemd/systemd-udevd)` ENOENT'd → status 203.
+/// Mounts OUTSIDE the new-root subtree (the old root + its tree, relocated
+/// under `put_old`) are still reachable from the global root, so their position
+/// is materialised by `descend`. # C: O(N×depth)
+fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>, preserve: &[u64]) {
     let mounts = mounts_in_ns(ns);
     for m in mounts.iter() { if let Some(d) = m.mountpoint() { d.set_mounted_mount(ns, None); } }
     if let Some(rid) = new_root_id { mntns::ns_set_root(ns, rid); }
     let root = global_root();
     let dents: Vec<(u64, String, Option<Arc<Dentry>>)> = new_paths.iter().map(|(id, p)| {
         let is_root = Some(*id) == new_root_id;
-        let d = if is_root { None } else { root.as_ref().and_then(|r| descend(r, p)) };
+        let d = if is_root { None }
+                else if preserve.contains(id) { mount_by_id(*id).and_then(|m| m.mountpoint()) }
+                else { root.as_ref().and_then(|r| descend(r, p)) };
         (*id, p.clone(), d)
     }).collect();
     for m in mounts.iter() {
