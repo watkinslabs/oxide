@@ -5,7 +5,6 @@ use alloc::string::ToString;
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use vfs::InodeRef;
 
 use crate::fsmount_common::*;
 
@@ -18,6 +17,7 @@ use crate::fsmount_common::*;
 pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
     const OPEN_TREE_CLONE:   u64 = 1;
     const OPEN_TREE_CLOEXEC: u64 = 0o2_000_000;     // O_CLOEXEC
+    const AT_RECURSIVE:      u64 = 0x8000;          // clone the whole subtree
     let path = match read_cstr(args.a1, 256) {
         Some(s) => s, None => return -(Errno::Efault.as_i32() as i64),
     };
@@ -31,8 +31,12 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
         // (Linux open_detached_copy/may_mount); the non-clone O_PATH-like form
         // below is unprivileged (D49).
         if let Some(rv) = require_sys_admin() { return rv; }
-        // Capture the mount rooted at `abs` (fs + root inode) into a
-        // detached clone object.
+        // D24 Stage 1a: RECURSIVELY clone the mount SUBTREE rooted at `abs`
+        // (AT_RECURSIVE ⇒ whole bindable subtree; else root-only) into a
+        // DETACHED node list stored in the mount-object fd. `move_mount` later
+        // commits it hash-only; fd-close releases it. This replaces the prior
+        // single-(fs,root) capture that never replicated submounts.
+        let recursive = (args.a2 & AT_RECURSIVE) != 0;
         let (mnt, _) = match vfs::mount::resolve_mount(&abs) {
             Some(m) => m,
             None => {
@@ -40,12 +44,9 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
                 return -(Errno::Enoent.as_i32() as i64);
             }
         };
-        // [D5] derive the mount root inode from `mnt_root` (the single source of
-        // truth), the legacy `Mount.root` field having been dropped.
-        let root = match mnt.mnt_root().and_then(|r| r.inode()).or_else(|| mnt.fs().root()) {
-            Some(r) => r, None => return -(Errno::Einval.as_i32() as i64),
-        };
-        let mo: InodeRef = MountObjectInode::new_clone(mnt.fs().clone(), root);
+        let tree = vfs::mount::clone_mount_tree(&mnt, recursive);
+        if tree.is_empty() { return -(Errno::Einval.as_i32() as i64); }
+        let mo = MountObjectInode::new_clone_tree(tree);
         return install_fd(mo, "open_tree", cloexec);
     }
     // Non-clone: an fd referring to the path's inode (O_PATH-ish).
