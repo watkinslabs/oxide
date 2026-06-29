@@ -62,7 +62,15 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
             // systemd uses path-bound AF_UNIX SOCK_SEQPACKET control sockets.
             // The existing Unix listener path is byte-stream internally, but
             // accepting the type is enough for bind/listen/epoll readiness.
-            (AF_UNIX_DOM, SOCK_SEQPACKET) => InetSocket::new_unix(),
+            (AF_UNIX_DOM, SOCK_SEQPACKET) => {
+                // SOCK_SEQPACKET is byte-ring-backed internally, but it MUST
+                // report SO_TYPE=SOCK_SEQPACKET: systemd-udevd's listen_fds()
+                // does sd_is_socket(fd, AF_UNIX, SOCK_SEQPACKET) on its
+                // inherited control socket and returns -EINVAL on mismatch.
+                let s = InetSocket::new_unix();
+                s.opts.so_type.store(SOCK_SEQPACKET as u8, core::sync::atomic::Ordering::Release);
+                s
+            }
             (AF_PACKET_DOM, _) => {
                 // F131: proto is htons(ETH_P_*); store host-order.
                 let proto_be = (proto & 0xFFFF) as u16;

@@ -30,3 +30,4 @@ hal-aarch64 = { path = "../../arch/hal-aarch64", package = "hal-aarch64" }
 [features]
 default = []
 hosted  = []
+debug-boot = []
