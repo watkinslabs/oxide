@@ -657,6 +657,20 @@ impl InodeOps for TmpfsDirOps {
         Ok(child)
     }
 
+    /// `tmpfile` — `open(O_TMPFILE)`: a fresh anonymous regular inode in this
+    /// instance's fs with NO directory entry and `i_nlink == 0` (Linux
+    /// `shmem_tmpfile` → `d_tmpfile`, which drops the link), so it is reclaimed
+    /// when its last fd closes; a later `linkat(AT_EMPTY_PATH)` re-links it.
+    /// Owner = caller fsuid/fsgid (idmap-mapped), perm = `mode` with umask
+    /// cleared. Like `create_anonymous` it is not inode-charged (no name). # C: O(1)
+    fn tmpfile(&self, inode: &Inode, mode: u32, ctx: &CreateCtx) -> KResult<InodeRef> {
+        let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
+        let perm = (ctx.apply_umask(mode) & 0o7777) as u16;
+        let child = make_tmpfs_file_inode(false, perm, ctx.fsuid(), ctx.fsgid(), dd.sb_weak(), dd.acct.clone());
+        child.set_nlink(0); // O_TMPFILE: unlinked until linkat gives it a name
+        Ok(child)
+    }
+
     /// `unlink` — remove a non-directory child. A directory victim is rejected
     /// with `EISDIR` (Linux `unlink(2)`; directories go through `rmdir`).
     /// Dropping the name decrements the victim's `i_nlink` (Linux
@@ -1095,6 +1109,37 @@ mod nlink_mode_tests {
         let ctx2 = CreateCtx { idmap: &idmap, cred: &cred, umask: 0 };
         let g = root.create_child("g", 0o600, &ctx2).expect("create g");
         assert_eq!((g.uid(), g.gid()), (Some(11000), Some(12000)));
+    }
+
+    // D24: `i_op->tmpfile` (open(O_TMPFILE)) yields an UNLINKED regular inode in
+    // the tree — nlink 0, no directory entry, caller owner, umask-cleared perm —
+    // that reads/writes like any file and is reclaimed when its fd closes.
+    #[test]
+    fn tmpfile_is_anonymous_writable_inode() {
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), TmpfsSb::unlimited());
+        let mut cred = vfs::Cred::root();
+        cred.uid = 7; cred.gid = 9;
+        let ctx = CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0o022 };
+        let t = root.tmpfile(0o666, &ctx).expect("tmpfile");
+        assert_eq!(t.file_type(), FileType::Regular);
+        assert_eq!(t.nlink(), 0, "O_TMPFILE inode is unlinked");
+        assert_eq!(t.perm(), Some(0o644), "0o666 & ~umask 0o022");
+        assert_eq!((t.uid(), t.gid()), (Some(7), Some(9)), "owner from caller cred");
+        // No directory entry was created for it (the tree stays empty).
+        assert!(matches!(root.lookup("f"), Err(VfsError::Enoent)));
+        // It carries this instance's SB so its fsid is the mount's, and it has a
+        // page-cache mapping like any regular tmpfs file (data I/O itself needs
+        // the PMM, exercised in the boot smoke, not hosted).
+        assert!(t.i_mapping().is_some(), "tmpfile has an address_space");
+    }
+
+    // D24: a non-directory inode has no `tmpfile` op (the default), so the dir
+    // ops' override is what makes O_TMPFILE work only on a directory.
+    #[test]
+    fn tmpfile_on_file_is_eopnotsupp() {
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), TmpfsSb::unlimited());
+        let f = root.create_child("f", 0o644, &CreateCtx::root()).expect("create f");
+        assert!(matches!(f.tmpfile(0o644, &CreateCtx::root()), Err(VfsError::Eopnotsupp)));
     }
 
     // D28: unlink of a directory returns EISDIR (Linux unlink(2); rmdir is the

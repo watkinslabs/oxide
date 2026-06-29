@@ -208,7 +208,13 @@ pub fn generic_fillattr(inode: &Inode, idmap: &Idmap, overlay: Option<InodeTimes
         rdev,
         size:     inode.size(),
         blksize:  bsize,
-        blocks:   blocks_for(inode.size(), bsize),
+        // Linux `generic_fillattr`: `stat->blocks = inode->i_blocks`. A backend
+        // that maintains a real `i_blocks` (sparse/preallocated extents) reports
+        // it verbatim; only an inode that never set it (`0`) falls back to the
+        // size-rounded estimate (`blocks_for`). The old code ALWAYS estimated,
+        // silently discarding a stored `i_blocks` — wrong for a sparse file
+        // (over-count) or a file with preallocation past EOF (under-count). D20.
+        blocks:   if inode.blocks() != 0 { inode.blocks() } else { blocks_for(inode.size(), bsize) },
         atime_ns: inode.atime().unwrap_or(0),
         mtime_ns: inode.mtime().unwrap_or(0),
         ctime_ns: inode.ctime().unwrap_or(0),

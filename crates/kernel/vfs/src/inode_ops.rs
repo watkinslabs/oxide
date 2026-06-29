@@ -116,6 +116,21 @@ pub trait InodeOps: Send + Sync {
     fn rename(&self, _inode: &Inode, _old_name: &str, _new_dir: &Inode, _new_name: &str, _flags: u32, _ctx: &CreateCtx)
         -> KResult<()> { Err(VfsError::Erofs) }
 
+    /// `i_op->tmpfile` (Linux `->tmpfile(mnt_idmap, dir, file, mode)`) —
+    /// `open(O_TMPFILE)`: materialise an UNLINKED regular inode in this directory
+    /// inode's filesystem (`i_nlink == 0`, no directory entry) that a later
+    /// `linkat(AT_EMPTY_PATH)` can give a name. `mode` is the full umode_t; `ctx`
+    /// supplies the mount idmap + caller cred + umask for owner/mode (exactly the
+    /// create-family contract). The default is `Eopnotsupp` — the errno
+    /// `do_tmpfile` reports for a filesystem without the op — so a backend
+    /// compiles unchanged until it overrides. Distinct from the legacy
+    /// path/string `FileSystem::create_anonymous`: this acts on the parent
+    /// dir-inode, takes the idmap, and stamps the caller owner.
+    /// # C: backend-dependent
+    fn tmpfile(&self, _inode: &Inode, _mode: u32, _ctx: &CreateCtx) -> KResult<InodeRef> {
+        Err(VfsError::Eopnotsupp)
+    }
+
     /// `i_op->get_link`/`readlink` — symlink target bytes. Default `Einval`
     /// (Linux readlink on a non-symlink). The inline `i_link` fast path is
     /// consulted by [`Inode::get_link`] BEFORE this. # C: O(target_len)
@@ -132,6 +147,17 @@ pub trait InodeOps: Send + Sync {
     /// (writes the inode's own metadata fields). # C: O(1)
     fn setattr(&self, inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
         crate::setattr::simple_setattr(inode, idmap, ia)
+    }
+
+    /// `i_op->update_time` (Linux `->update_time(inode, now, flags)`) — apply the
+    /// VFS timestamp-update policy: write the atime/mtime/ctime selected by
+    /// `flags` (`S_ATIME`/`S_MTIME`/`S_CTIME`) to `now` (ns), and on `S_VERSION`
+    /// lazily bump `i_version`. Default `generic_update_time` over the concrete
+    /// inode fields; a backend overrides only to journal the change (ext4). The
+    /// caller supplies `now` (the vfs crate is clock-free / `no_std`).
+    /// # C: O(1)
+    fn update_time(&self, inode: &Inode, now: u64, flags: u32) -> KResult<()> {
+        crate::inode::generic_update_time(inode, now, flags)
     }
 
     /// `i_op->permission` — DAC check for `mask` (`MAY_*`). Default the immutable
