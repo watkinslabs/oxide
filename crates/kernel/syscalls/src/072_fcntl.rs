@@ -54,16 +54,13 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             file.set_fl(vfs::OpenFlags::from_bits_retain(arg as u32));
             0
         }
-        F_GETPIPE_SZ => match file.inode().private::<fs::pipe::PipeInode>() {
-            Some(pipe) => pipe.pipe_size() as i64,
+        F_GETPIPE_SZ => match fs::pipe::pipe_size(file.inode()) {
+            Some(size) => size as i64,
             None => -(Errno::Einval.as_i32() as i64),
         },
-        F_SETPIPE_SZ => match file.inode().private::<fs::pipe::PipeInode>() {
-            Some(pipe) => match pipe.set_pipe_size(arg as usize) {
-                Ok(size) => size as i64,
-                Err(e) => -(e as i64),
-            },
-            None => -(Errno::Einval.as_i32() as i64),
+        F_SETPIPE_SZ => match fs::pipe::set_pipe_size(file.inode(), arg as usize) {
+            Ok(size) => size as i64,
+            Err(e) => -(e as i64),
         },
         // memfd seals (`fcntl.h`, docs/19). Only a sealable memfd exposes
         // seals; everything else → EINVAL.
