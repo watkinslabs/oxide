@@ -30,7 +30,7 @@ use sync::{Spinlock, TaskList as MqLockClass};
 use vfs::inode::InodeBuilder;
 use vfs::inode_ops::{default_inode_ops, mk_mode};
 use vfs::file_ops::default_file_ops;
-use vfs::{Dentry, File, FileType, Ino, InodeRef, OpenFlags};
+use vfs::{File, FileType, Ino, InodeRef, OpenFlags};
 
 const MQ_DEFAULT_MAXMSG:  usize = 10;
 const MQ_DEFAULT_MSGSIZE: usize = 8192;
@@ -188,7 +188,8 @@ pub fn sys_mq_open(args: &syscall::SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     const O_CLOEXEC: u64 = 0o2_000_000;
-    let dentry = Dentry::new(None, name, inode.clone());
+    // Linux mqueuefs dentry name = queue name minus the leading `/` (`do_mq_open`).
+    let dentry = vfs::dcache::d_alloc_pseudo(name.strip_prefix('/').unwrap_or(&name), inode.clone(), &crate::live::anon_dname::MQUEUE_OPS);
     let mut fl = OpenFlags::O_RDWR;
     if (oflag & O_NONBLOCK_BIT) != 0 { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);

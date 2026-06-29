@@ -13,6 +13,7 @@
 
 extern crate alloc;
 
+mod anon_dname;
 pub mod seccomp;
 pub mod bpf;
 pub mod bpf_lsm;
