@@ -257,18 +257,25 @@ pub struct SuperBlock {
     /// [`IcacheEntry`] is a `Weak<Inode>` + the inode's `i_dentry` ALIAS list;
     /// the lifecycle state (`i_state`/`i_count`/`__i_nlink`) lives on the
     /// concrete inode itself (post-KEYSTONE), not in the slot.
-    icache: Spinlock<BTreeMap<Ino, IcacheEntry>, SbClass>,
+    pub(crate) icache: Spinlock<BTreeMap<Ino, IcacheEntry>, SbClass>,
+    /// `s_inodes_wb` — STRONG-pin list of every inode carrying an `I_DIRTY` bit
+    /// (Linux's per-bdi/`sb` writeback list holds a reference until writeback
+    /// cleans it, so a dirty inode is NOT freed before its metadata hits the
+    /// backend). Keyed by `ino`; the `Arc` here is the writeback ref, not any
+    /// caller's. `mark_inode_dirty` (clean→dirty) inserts, writeback /
+    /// `clear_inode` / `iput` (dirty→clean) removes. Driven from `superblock_wb.rs`.
+    pub(crate) s_wb: Spinlock<BTreeMap<Ino, InodeRef>, SbClass>,
 }
 
 /// One inode-cache slot. `Weak` everywhere so the cache never keeps an inode or
 /// dentry alive past its last strong ref. The lifecycle state Linux keeps on
 /// `struct inode` (`i_state`/`__i_nlink`/`i_count`) now lives IN the concrete
 /// [`crate::inode::Inode`] — this slot is a pure `Weak<Inode>` + alias list.
-struct IcacheEntry {
+pub(crate) struct IcacheEntry {
     /// The cached inode (Linux `struct inode`). `Weak` → reclaim on last drop.
-    inode:   Weak<Inode>,
+    pub(crate) inode:   Weak<Inode>,
     /// `i_dentry` — the dentry aliases (hardlinks: one inode, many dentries).
-    aliases: Vec<Weak<Dentry>>,
+    pub(crate) aliases: Vec<Weak<Dentry>>,
 }
 
 impl SuperBlock {
@@ -301,6 +308,7 @@ impl SuperBlock {
             s_fs_info,
             s_fs: Arc::new(NullFs),
             icache: Spinlock::new(BTreeMap::new()),
+            s_wb: Spinlock::new(BTreeMap::new()),
         })
     }
 
@@ -340,6 +348,7 @@ impl SuperBlock {
             s_fs_info: Arc::new(()),
             s_fs: fs,
             icache: Spinlock::new(BTreeMap::new()),
+            s_wb: Spinlock::new(BTreeMap::new()),
         });
         // `fill_super`: back-stamp the SB into the backend's per-mount state
         // BEFORE building the root dentry, so the root inode's `i_sb()` (and
@@ -419,6 +428,7 @@ impl SuperBlock {
         let _ = self.sync_fs(false); // writeback-if-dirty
         inode.set_state(I_FREEING, I_WILL_FREE);
         inode.set_state(I_FREEING | I_CLEAR, I_DIRTY); // clear_inode
+        self.wb_forget(ino); // dirty bits gone → drop the writeback pin
         self.icache.lock().remove(&ino);
     }
 
@@ -459,9 +469,11 @@ impl SuperBlock {
         self.icache_upgrade(ino).map(|i| i.i_state()).unwrap_or(0)
     }
 
-    /// Set/clear `i_state` bits for `ino` (no-op if uncached). # C: O(log N_ino)
+    /// Set/clear `i_state` bits for `ino` (no-op if uncached). After the change
+    /// the writeback pin is reconciled ([`Self::wb_reconcile`]): a now-`I_DIRTY`
+    /// inode is STRONG-pinned, a fully-clean one released. # C: O(log N_ino)
     pub fn i_set_state(&self, ino: Ino, set: u32, clear: u32) {
-        if let Some(i) = self.icache_upgrade(ino) { i.set_state(set, clear); }
+        if let Some(i) = self.icache_upgrade(ino) { i.set_state(set, clear); self.wb_reconcile(ino, &i); }
     }
 
     /// True iff `ino` is being evicted — Linux's pervasive
@@ -878,30 +890,9 @@ impl SuperBlock {
     pub fn sync_filesystem(&self) -> KResult<()> {
         if self.is_readonly() { return Ok(()); }
         self.sync_fs(false)?;
-        self.sync_fs(true)
-    }
-
-    /// `invalidate_inodes` / per-sb `drop_caches` (Linux fs/inode.c
-    /// `invalidate_inodes`, fs/drop_caches.c): sweep the inode cache dropping
-    /// every CLEAN, UNREFERENCED slot so a `drop_caches`/remount reclaim shrinks
-    /// the icache without touching live or dirty state. A slot is reclaimable
-    /// only when its inode is UNUSED — in this `Weak`-keyed cache that is a slot
-    /// whose `Weak::upgrade` already fails (Linux `i_count == 0`, no dentry alias
-    /// pinning it) — AND it carries no `I_DIRTY`/`I_NEW`/`I_FREEING`/`I_WILL_FREE`
-    /// bit (Linux skips dirty and in-flight inodes: writeback or an in-progress
-    /// evict still owns them). Busy and dirty slots are RETAINED. Dead alias
-    /// `Weak`s are pruned from every surviving slot on the way past. Returns the
-    /// count of slots dropped. # C: O(N_ino)
-    pub fn drop_caches(&self) -> u32 {
-        let mut dropped = 0u32;
-        self.icache.lock().retain(|_, e| {
-            e.aliases.retain(|w| w.upgrade().is_some());
-            // Reclaimable = the inode's last `Arc` already dropped (Linux
-            // `i_count == 0`); a live inode is BUSY (its `i_state` carries any
-            // dirty/in-flight pin), a dead `Weak` cannot be dirty.
-            if e.inode.upgrade().is_some() { true } else { dropped += 1; false }
-        });
-        dropped
+        self.sync_fs(true)?;
+        self.wb_writeback(); // wait pass cleaned the inodes → clear I_DIRTY + unpin
+        Ok(())
     }
 
     /// Current `s_writers.frozen` level (`SB_UNFROZEN`..`SB_FREEZE_COMPLETE`).

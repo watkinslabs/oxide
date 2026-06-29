@@ -71,26 +71,25 @@ fn sync_filesystem_aborts_before_wait_on_async_error() {
         "wait pass skipped after the async pass failed");
 }
 
-// NOTE (B280b): under the B280a Weak-keyed icache a `struct Inode` is freed the
-// instant its last external `Arc` drops, taking its `i_state` (dirty bits) with
-// it. This test drops the ino-13 `Arc` and THEN `mark_inode_dirty(13)`, so the
-// dirty OR lands on an already-evicted inode (`icache_upgrade` → None, a no-op)
-// and `drop_caches` reclaims the now-clean slot. Retaining a dirty-but-
-// unreferenced inode requires the superblock to STRONG-pin dirty inodes (Linux's
-// writeback list holds a reference) — a superblock-lifecycle change out of scope
-// for the test-fixture migration. Assertions kept verbatim; ignored pending that
-// dirty-inode pin.
+// B284: the superblock STRONG-pins dirty inodes on its `s_inodes_wb` writeback
+// list (Linux: `__mark_inode_dirty` adds a writeback reference, `iput_final`
+// declines to free a dirty inode). `mark_inode_dirty` is issued while ino 13 is
+// still held — the clean→dirty transition installs the pin — and only THEN is the
+// caller's `Arc` dropped: the writeback pin keeps the inode resident exactly as
+// Linux keeps a dirty-but-unreferenced inode alive until writeback cleans it.
+// Clearing the dirty bit drops the pin → the now-clean idle inode reclaims.
 #[test]
-#[ignore = "B280a Weak-keyed icache frees an inode on last Arc drop; dirty-but-unreferenced retention needs an SB strong-pin (separate work)"]
 fn drop_caches_reclaims_clean_keeps_busy_and_dirty() {
     let (sb, _ops) = build();
     // held: clean + referenced → busy, retained.
     let held: InodeRef = sb.iget(11, || make_ramfile(11));
     // clean + unreferenced → reclaimable.
     drop(sb.iget(12, || make_ramfile(12)));
-    // dirty + unreferenced → retained (writeback still owes it).
-    drop(sb.iget(13, || make_ramfile(13)));
+    // dirty + unreferenced → retained: dirty it while held, then drop the caller's
+    // `Arc` — the sb writeback list's strong pin (not the caller's) keeps it alive.
+    let dirty13: InodeRef = sb.iget(13, || make_ramfile(13));
     sb.mark_inode_dirty(13, I_DIRTY_SYNC);
+    drop(dirty13);
 
     assert_eq!(sb.drop_caches(), 1, "only the clean idle ino 12 dropped");
     assert!(sb.ilookup(11).is_some(), "busy inode kept");
