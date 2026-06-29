@@ -25,16 +25,16 @@ pub fn populate_defaults() {
     // the underlay dir so the boot tmpfs mount resolves its mountpoint dentry
     // (the mount engine takes the walked dentry, no path-string resolve).
     crate::register_dir("/dev/shm");
-    register("/dev/null",    Arc::new(crate::misc::NullInode)   as InodeRef);
-    register("/dev/kmsg",    Arc::new(crate::misc::KmsgInode)   as InodeRef);
-    register("/dev/zero",    Arc::new(crate::misc::ZeroInode)   as InodeRef);
-    register("/dev/full",    Arc::new(crate::misc::FullInode)   as InodeRef);
-    register("/dev/autofs",  Arc::new(crate::misc::AutofsInode) as InodeRef);
-    let rand: InodeRef = Arc::new(crate::misc::RandomInode);
+    register("/dev/null",    crate::misc::make_null_inode());
+    register("/dev/kmsg",    crate::misc::make_kmsg_inode());
+    register("/dev/zero",    crate::misc::make_zero_inode());
+    register("/dev/full",    crate::misc::make_full_inode());
+    register("/dev/autofs",  crate::misc::make_autofs_inode());
+    let rand = crate::misc::make_random_inode();
     register("/dev/random",  Arc::clone(&rand));
     register("/dev/urandom", rand);
     let sym = |target: &'static [u8], ino: u64| -> InodeRef {
-        Arc::new(crate::misc::SymlinkInode { target, ino }) as InodeRef
+        crate::misc::make_symlink_inode(target, ino)
     };
     register("/dev/stdin",  sym(b"/proc/self/fd/0", 0x2000_0010));
     register("/dev/stdout", sym(b"/proc/self/fd/1", 0x2000_0011));
