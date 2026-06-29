@@ -23,8 +23,10 @@ use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 use sync::{RwLock, Spinlock, Superblock as SbClass};
 
 use crate::dentry::Dentry;
+use crate::file_ops::FileOps;
 use crate::fs::FileSystem;
-use crate::inode::{Inode, InodeRef, I_CLEAR, I_DIRTY, I_FREEING, I_NEW, I_WILL_FREE};
+use crate::inode::{Inode, InodeBuilder, InodeRef, I_CLEAR, I_DIRTY, I_FREEING, I_NEW, I_WILL_FREE};
+use crate::inode_ops::InodeOps;
 use crate::types::{Ino, KResult};
 
 /// `get_anon_bdev` (Linux `fs/super.c`) — per-instance anonymous block-dev
@@ -37,6 +39,50 @@ static NEXT_ANON_DEV: AtomicU64 = AtomicU64::new(0x0000_0001_0000_0000);
 
 /// Allocate a fresh anonymous device id (`get_anon_bdev`). # C: O(1)
 pub fn next_anon_dev() -> u64 { NEXT_ANON_DEV.fetch_add(1, Ordering::Relaxed) }
+
+/// `super_blocks` (Linux `fs/super.c` global `super_blocks` list) — the registry
+/// of every live `SuperBlock` instance, held by `Weak` so it never keeps an SB
+/// alive past its last reference. [`sget`] scans this to SHARE an existing
+/// instance for the same backing device instead of building a duplicate. # C: O(1)
+static FS_SUPERS: Spinlock<Vec<Weak<SuperBlock>>, SbClass> = Spinlock::new(Vec::new());
+
+/// `fs_supers`/`super_blocks` snapshot — every live registered superblock
+/// instance (dead `Weak`s skipped). # C: O(N_sb)
+pub fn fs_supers() -> Vec<Arc<SuperBlock>> {
+    FS_SUPERS.lock().iter().filter_map(Weak::upgrade).collect()
+}
+
+/// Register `sb` in the global `fs_supers` list (Linux `fill_super` →
+/// `list_add(&s->s_list, &super_blocks)`). Prunes dead `Weak`s and de-dups an
+/// already-registered live instance on the way. # C: O(N_sb)
+pub fn register_super(sb: &Arc<SuperBlock>) {
+    let mut g = FS_SUPERS.lock();
+    g.retain(|w| w.upgrade().map(|e| !Arc::ptr_eq(&e, sb)).unwrap_or(false));
+    g.push(Arc::downgrade(sb));
+}
+
+/// `sget` (Linux `fs/super.c`) — find-or-create a superblock for the backing
+/// device `dev`. If a LIVE registered instance already serves `dev` AND is still
+/// active ([`SuperBlock::grab_active`]), SHARE it: bump `s_count` and return it
+/// (the caller owns one extra active ref to pair with `deactivate_super` at
+/// umount). Otherwise `build()` a fresh instance, register it, and return it.
+/// This is the dedup the mount table's `next_anon_dev`-per-mount path lacks;
+/// wiring `register`/`register_bind` (mount.rs, another lane) to call `sget`
+/// instead of always `for_backend(next_anon_dev())` is the cross-lane
+/// follow-up. # C: O(N_sb)
+pub fn sget(dev: u64, build: impl FnOnce() -> Arc<SuperBlock>) -> Arc<SuperBlock> {
+    {
+        let g = FS_SUPERS.lock();
+        for w in g.iter() {
+            if let Some(sb) = w.upgrade() {
+                if sb.s_dev == dev && sb.grab_active() { sb.s_count_inc(); return sb; }
+            }
+        }
+    }
+    let sb = build();
+    register_super(&sb);
+    sb
+}
 
 // `s_flags` bits (Linux include/linux/fs.h). User-visible mount RO/option
 // flags in the low range; lifecycle bits (`SB_BORN`/`SB_ACTIVE`) in the high
@@ -169,6 +215,53 @@ pub trait SuperOps: Send + Sync {
     fn remount_fs(&self, _sb_flags: u64) -> KResult<()> { Ok(()) }
     /// `put_super` — last-umount teardown. Default no-op. # C: O(1)
     fn put_super(&self) {}
+
+    /// `s_op->write_inode` (Linux `super_operations.write_inode`) — flush this
+    /// inode's dirty metadata to the backend. `wait` requests a synchronous
+    /// commit. Default `Ok` (a pseudo-fs with no backing store has nothing to
+    /// write). Called by [`SuperBlock::iput`] on the last-ref pre-evict window.
+    /// # C: FS-dependent
+    fn write_inode(&self, _inode: &Inode, _wait: bool) -> KResult<()> { Ok(()) }
+
+    /// `s_op->drop_inode` (Linux `super_operations.drop_inode`) — decide, when an
+    /// inode's last reference drops (`i_count` reached 0), whether to EVICT it now
+    /// rather than retain it cached for reuse. Default = `generic_drop_inode`:
+    /// evict iff the inode has no remaining links AND no references
+    /// (`i_nlink == 0 && i_count == 0`). A backend may override to e.g. always
+    /// evict (`generic_delete_inode`). # C: O(1)
+    fn drop_inode(&self, inode: &Inode) -> bool {
+        inode.nlink() == 0 && inode.i_count() == 0
+    }
+
+    /// `s_op->evict_inode` (Linux `super_operations.evict_inode`) — the terminal
+    /// per-inode teardown: drop the inode's data/blocks and clear it. Default =
+    /// `clear_inode` (mark `I_FREEING | I_CLEAR`, drop every dirty bit). A backend
+    /// (ext4) overrides to free on-disk blocks first. Run by [`SuperBlock::iput`]
+    /// after `drop_inode` returns true. # C: FS-dependent
+    fn evict_inode(&self, inode: &Inode) {
+        inode.set_state(I_FREEING | I_CLEAR, I_DIRTY);
+    }
+
+    /// `s_op->alloc_inode` (Linux `super_operations.alloc_inode`) — allocate a
+    /// fresh in-core inode. Default funnels through [`InodeBuilder`] (the one
+    /// constructor every `make_*_inode`/iget-build closure uses), born with
+    /// `i_count == 1`. A backend overrides to embed the inode in its own
+    /// per-inode container (`ext4_inode_info`); the generic path keeps the
+    /// builder funnel. # C: O(1)
+    fn alloc_inode(&self, ino: Ino, mode: u32,
+                   i_op: Arc<dyn InodeOps>, i_fop: Arc<dyn FileOps>) -> InodeRef {
+        InodeBuilder::new(ino, mode, i_op, i_fop).build()
+    }
+
+    /// `s_op->free_inode` (Linux `super_operations.free_inode`) — the RCU
+    /// free callback releasing the in-core inode allocation. Default = drop
+    /// (the moved-in `Arc` releases when this returns). # C: O(1)
+    fn free_inode(&self, _inode: InodeRef) {}
+
+    /// `s_op->destroy_inode` (Linux `super_operations.destroy_inode`) — tear down
+    /// a no-longer-referenced in-core inode (schedules the RCU `free_inode`).
+    /// Default = drop. # C: O(1)
+    fn destroy_inode(&self, _inode: InodeRef) {}
 }
 
 /// `file_system_type` (Linux `struct file_system_type`) — the registry
@@ -205,6 +298,12 @@ pub struct SuperBlock {
     /// This is the refcount the mount table's O(N) `Arc::ptr_eq` scan stands in
     /// for (mount.rs D6). # consumers: D6 last-umount teardown, sget sb sharing.
     s_active: AtomicU32,
+    /// `s_count` — the existence/lookup refcount (Linux `super_block.s_count`),
+    /// distinct from `s_active`: it counts references that merely keep the SB
+    /// OBJECT alive (an [`sget`] lookup walking `fs_supers`, a `grab_super`
+    /// retry), whereas `s_active` counts live mounts. Born at 1; an `sget` hit
+    /// bumps it ([`SuperBlock::s_count_inc`]). # consumers: D6 sget sb sharing.
+    s_count: AtomicU32,
     /// `s_maxbytes` — largest file size this fs can represent (write-path cap).
     pub s_maxbytes: u64,
     /// `s_time_gran` — timestamp granularity in ns (Linux `sb->s_time_gran`),
@@ -296,6 +395,7 @@ impl SuperBlock {
             s_op, s_type, s_magic, s_dev, s_blocksize,
             s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
             s_active: AtomicU32::new(1),
+            s_count: AtomicU32::new(1),
             s_maxbytes: MAX_LFS_FILESIZE,
             s_time_gran: AtomicU32::new(1),
             s_time_min: AtomicI64::new(TIME64_MIN),
@@ -336,6 +436,7 @@ impl SuperBlock {
             s_op, s_type, s_magic, s_dev, s_blocksize,
             s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
             s_active: AtomicU32::new(1),
+            s_count: AtomicU32::new(1),
             s_maxbytes: MAX_LFS_FILESIZE,
             s_time_gran: AtomicU32::new(1),
             s_time_min: AtomicI64::new(TIME64_MIN),
@@ -418,16 +519,23 @@ impl SuperBlock {
     }
 
     /// `iput` (Linux `fs/inode.c`) — drop one `i_count` reference. On the LAST
-    /// drop (1 → 0): flush dirty state, mark `I_WILL_FREE` → `I_FREEING`, run
-    /// `clear_inode`, and drop the icache `Weak` so a later `iget` rebuilds.
-    /// # C: O(log N_ino)
+    /// drop (1 → 0, `iput_final`) the `s_op->drop_inode` decision runs: when it
+    /// says evict (default: `i_nlink == 0`), the inode goes through the pre-evict
+    /// window — `I_WILL_FREE`, `s_op->write_inode` (flush dirty metadata),
+    /// `I_FREEING`, `s_op->evict_inode` (default `clear_inode`) — then the
+    /// writeback pin and icache `Weak` are dropped so a later `iget` rebuilds.
+    /// When `drop_inode` declines (a still-linked inode), the inode is RETAINED
+    /// cached for reuse (Linux leaves it on the LRU), exactly mirroring the
+    /// kernel's keep-vs-evict split. # C: O(log N_ino)
     pub fn iput(&self, inode: InodeRef) {
-        if inode.i_count_dec() != 1 { return; }
+        if inode.i_count_dec() != 1 { return; } // not the last reference
+        // i_count is now 0 (iput_final). Consult the backend keep/evict policy.
+        if !self.s_op.drop_inode(&inode) { return; } // retain cached for reuse
         let ino = inode.ino();
         inode.set_state(I_WILL_FREE, 0);
-        let _ = self.sync_fs(false); // writeback-if-dirty
+        let _ = self.s_op.write_inode(&inode, false); // flush dirty metadata
         inode.set_state(I_FREEING, I_WILL_FREE);
-        inode.set_state(I_FREEING | I_CLEAR, I_DIRTY); // clear_inode
+        self.s_op.evict_inode(&inode); // default: clear_inode (I_FREEING|I_CLEAR)
         self.wb_forget(ino); // dirty bits gone → drop the writeback pin
         self.icache.lock().remove(&ino);
     }
@@ -720,6 +828,15 @@ impl SuperBlock {
     /// `s_active` snapshot — live active references (Linux `s->s_active`).
     /// `0` ⇒ the SB is being / has been torn down. # C: O(1)
     pub fn s_active(&self) -> u32 { self.s_active.load(Ordering::Acquire) }
+
+    /// `s_count` snapshot — existence/lookup references (Linux `s->s_count`).
+    /// # C: O(1)
+    pub fn s_count(&self) -> u32 { self.s_count.load(Ordering::Acquire) }
+
+    /// Take one extra `s_count` (Linux `grab_super`/`__put_super` pairing).
+    /// Bumped by an [`sget`] hit; the matching drop is the SB's own teardown.
+    /// # C: O(1)
+    pub fn s_count_inc(&self) { self.s_count.fetch_add(1, Ordering::AcqRel); }
 
     /// `grab_super` (Linux `atomic_inc_not_zero(&s->s_active)`): take one extra
     /// active reference IFF the SB is still live (count != 0). Returns `false`
