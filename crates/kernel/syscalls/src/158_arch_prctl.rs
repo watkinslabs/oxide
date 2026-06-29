@@ -4,6 +4,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
+use crate::userbuf::validate_user_buf_writable;
 
 /// arch_prctl: ARCH_SET_FS=wrmsr, ARCH_GET_FS=rdmsr+writeback,
 /// else EINVAL. GS-base is a follow-up (kernel GS-base reserved).
@@ -45,9 +46,10 @@ pub fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
             if val == 0 || val >= USER_VA_END {
                 return -(Errno::Efault.as_i32() as i64);
             }
+            if let Err(rv) = validate_user_buf_writable(val, 8, 8) { return rv; }
             // SAFETY: rdmsr IA32_FS_BASE is privileged; no memory effect.
             let base = unsafe { hal_x86_64::get_user_fs_base() };
-            // SAFETY: val validated < USER_VA_END; CPL=0 writes through caller's AS.
+            // SAFETY: val validated writable; CPL=0 writes through caller's AS.
             unsafe { core::ptr::write_volatile(val as *mut u64, base); }
             0
         }

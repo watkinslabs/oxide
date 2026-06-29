@@ -6,6 +6,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::userbuf::validate_user_buf;
+use crate::userbuf::validate_user_buf_writable;
 
 /// `sys_readv(fd, iov, iovcnt)` — slot 19. Mirror of writev for
 /// reads. Each iov buffer gets one call into `File::read`; a
@@ -44,7 +45,7 @@ pub fn sys_readv(args: &SyscallArgs) -> i64 {
         // SAFETY: same validated range; iov_len at offset +8 is 8-byte aligned.
         let len  = unsafe { core::ptr::read_volatile((iov_i + 8) as *const u64) };
         if len == 0 { continue; }
-        if let Err(rv) = validate_user_buf(base, len, 1) { return rv; }
+        if let Err(rv) = validate_user_buf_writable(base, len, 1) { return rv; }
         // SAFETY: range validated < USER_VA_END; CPL=0 writes through caller's AS.
         let buf: &mut [u8] = unsafe {
             core::slice::from_raw_parts_mut(base as *mut u8, len as usize)

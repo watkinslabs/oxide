@@ -349,14 +349,6 @@ pub fn register_static_files() {
         StaticFileInode::new(b"#1 SMP PREEMPT oxide v0.1.0\n") as InodeRef,
     );
     crate::reg::register(
-        "/proc/sys/fs/binfmt_misc",
-        kernfs::PseudoDir::new_root(
-            kernfs::dir_ino("/proc/sys/fs/binfmt_misc"),
-            crate::reg::PROCFS_FSID,
-            false,
-        ) as InodeRef,
-    );
-    crate::reg::register(
         "/proc/sys/kernel/hostname",
         Arc::new(ProcHostnameInode) as InodeRef,
     );

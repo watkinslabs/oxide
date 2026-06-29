@@ -4,8 +4,12 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use syscall::errno::Errno;
+
+fn efault() -> i64 { -(Errno::Efault.as_i32() as i64) }
+fn einval() -> i64 { -(Errno::Einval.as_i32() as i64) }
 
 /// `debug-mount`: log a mount-family syscall outcome (op label + path + rv) so
 /// 226/NAMESPACE sandbox failures show the exact failing op + errno. Mount ops
@@ -46,12 +50,29 @@ pub(crate) fn mnt_log_hex(_op: &str, _path: &str, _flags: u64, _rv: i64) {
 /// into an owned `String`. Faults map to EFAULT, invalid UTF-8 to EINVAL.
 /// # C: O(max)
 pub(crate) fn read_user_cstr_owned(p: u64, max: usize) -> Result<String, i64> {
-    if p == 0 || p >= hal::USER_VA_END {
-        return Err(-(Errno::Efault.as_i32() as i64));
+    if p == 0 || p >= hal::USER_VA_END { return Err(efault()); }
+    let cur = sched::live::current().ok_or_else(efault)?;
+    // SAFETY: syscall context; the running task owns this mm slot.
+    let mm = unsafe { cur.mm_ref() }.ok_or_else(efault)?;
+    let mut out = Vec::with_capacity(max.min(256));
+    let mut checked_page = u64::MAX;
+    for i in 0..max {
+        let addr = p.checked_add(i as u64).ok_or_else(efault)?;
+        if addr >= hal::USER_VA_END { return Err(efault()); }
+        let page = addr & !0xfff;
+        if page != checked_page {
+            let uva = hal::UserVirtAddr::new(page).ok_or_else(efault)?;
+            match mm.find_vma(uva) {
+                Some(vma) if vma.prot.contains(vmm::VmaProt::READ) => {}
+                _ => return Err(efault()),
+            }
+            checked_page = page;
+        }
+        // SAFETY: addr is below USER_VA_END and its containing VMA permits read.
+        // Not-present pages are demand-faulted by the active user address space.
+        let b = unsafe { core::ptr::read_volatile(addr as *const u8) };
+        if b == 0 { break; }
+        out.push(b);
     }
-    // SAFETY: p validated < USER_VA_END; bounded read via existing helper.
-    let bytes = unsafe { devfs::read_user_cstr(p, max) };
-    let s = bytes.and_then(|b| core::str::from_utf8(b).ok())
-        .ok_or(-(Errno::Einval.as_i32() as i64))?;
-    Ok(String::from(s))
+    String::from_utf8(out).map_err(|_| einval())
 }

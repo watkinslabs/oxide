@@ -63,9 +63,9 @@ pub(super) fn program_queue(cfg_va: u64, qi: u16, msix_vec: u16, hhdm: u64) -> O
     let size = r16(CFG_QUEUE_SIZE);
     if size == 0 { return None; }
 
-    let desc_pa   = pmm::setup::alloc_one_frame()?;
-    let driver_pa = pmm::setup::alloc_one_frame()?;
-    let device_pa = pmm::setup::alloc_one_frame()?;
+    let desc_pa   = pmm::setup::alloc_raw_frame()?;
+    let driver_pa = pmm::setup::alloc_raw_frame()?;
+    let device_pa = pmm::setup::alloc_raw_frame()?;
 
     // Zero the 3 ring frames via HHDM BEFORE queue_enable so the device
     // sees deterministic ring state — PMM doesn't guarantee zero-init.

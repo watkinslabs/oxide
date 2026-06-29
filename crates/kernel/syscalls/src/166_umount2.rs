@@ -2,6 +2,8 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::sync::Arc;
+
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
@@ -82,31 +84,52 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     // it as a successful no-op: a (re)mount re-exposes the same synthetic
     // content, exactly as procfs regenerates it on Linux. Per-namespace (ns>0)
     // sandbox copies remain real mount content and tear down normally below.
-    // The single namei walk umount2(2) does to validate the target: its
-    // mountpoint dentry (Linux `user_path → path.dentry`). All three engine
-    // queries below key on it by identity. `None` (target gone) ⇒ no TABLE
-    // mount, but the devfs-registry detach below may still match.
-    let target_d = crate::pathresolve::mount_dentry(trimmed);
-    if ns == 0 {
-        // Confirm `trimmed` is EXACTLY a synthetic mount (not a path under
-        // one) by mount-object identity: `mount_at_path_exact` reads the
-        // target dentry's covering-mount link, so this is the mount whose
-        // mountpoint dentry IS `trimmed` — not the longest-prefix owner
-        // `resolve_mount` would return.
-        if let Some(m) = target_d.as_ref().and_then(|d| vfs::mount::mount_at_path_exact(d)) {
+    // The single namei walk umount2(2) does to validate the target crosses
+    // into a mounted fs, so `/proc` resolves to procfs's root dentry. The
+    // mount engine, however, detaches by the covered mountpoint dentry. If the
+    // resolved final dentry is exactly the mounted fs root, translate the
+    // VfsPath's mnt_id back to that mountpoint; otherwise it is not an exact
+    // mount root and unregister_top() must fail with EINVAL.
+    let resolved = crate::pathresolve::resolve_path(trimmed, false);
+    let exact_mountpoint = resolved.as_ref().and_then(|p| {
+        let root = vfs::mount::root_dentry_for_mount_id(p.mnt_id)?;
+        if !Arc::ptr_eq(&p.dentry, &root) {
+            return None;
+        }
+        vfs::mount::mountpoint_of(p.mnt_id).map(|(mp, _)| mp)
+    });
+    // Exact-root umount of a synthetic pseudo-filesystem (procfs/sysfs/
+    // devtmpfs/devfs) is a successful no-op in ANY mount namespace, not only
+    // ns 0. The content is kernel-generated and a (re)mount re-exposes it, so
+    // tearing it down would strand later accessors — e.g. systemd/udevd in a
+    // PRIVATE mount namespace umounts /proc during sandbox setup and must keep
+    // seeing procfs afterward. The `exact_mountpoint` identity check fires
+    // ONLY for the mounted fs ROOT: a descendant like /proc/sys/fs/binfmt_misc
+    // keeps the same mnt_id but fails the root-dentry check, so it falls
+    // through to normal teardown below.
+    if exact_mountpoint.is_some() {
+        if let Some(m) = resolved.as_ref().and_then(|p| vfs::mount::mount_by_id(p.mnt_id)) {
             if matches!(m.fs().name(), "procfs" | "sysfs" | "devtmpfs" | "devfs") {
                 return 0;
             }
         }
     }
+    // `None` (target gone or not a mount root) ⇒ no TABLE mount, but the
+    // devfs-registry detach below may still match legacy devfs-owned paths.
+    let target_d = exact_mountpoint.or_else(|| crate::pathresolve::mount_dentry(trimmed));
     if !lazy && target_d.as_ref().map(|d| vfs::mount::has_child_mounts(d, ns)).unwrap_or(false) {
         return -(Errno::Ebusy.as_i32() as i64);
     }
     // Detach from BOTH the unified mount table (bind mounts + any
-    // TABLE-resident mount) and the devfs registry (procfs/sysfs/devtmpfs
-    // content + tmpfs). Both are namespace-scoped.
+    // TABLE-resident mount) and the legacy devfs registry for the paths devfs
+    // actually owns. Do not apply the devfs fallback to `/proc` or `/sys`:
+    // those are separate pseudo-filesystems now, and a non-mounted descendant
+    // such as `/proc/sys/fs/binfmt_misc` must report EINVAL. Returning success
+    // there makes systemd's automount cleanup spin on umount2 forever.
     let removed_tab = target_d.as_ref().map(|d| vfs::mount::unregister_top(d, lazy)).unwrap_or(0);
-    let removed_reg = devfs::unregister_subtree(ns, trimmed);
+    let is_devfs_path = trimmed == "/dev" || trimmed.starts_with("/dev/")
+        || trimmed == "/etc" || trimmed.starts_with("/etc/");
+    let removed_reg = if is_devfs_path { devfs::unregister_subtree(ns, trimmed) } else { 0 };
     if removed_tab == 0 && removed_reg == 0 {
         #[cfg(feature = "debug-boot")]
         {

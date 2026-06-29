@@ -103,5 +103,6 @@ debug-no-cow-fast = ["vmm/debug-no-cow-fast"]  # TEST: disable COW fast-path
 debug-no-fork-shared = ["vmm/debug-no-fork-shared"]  # TEST
 debug-no-shmem = ["vmm/debug-no-shmem"]  # TEST
 debug-eager-fork = ["syscalls/debug-eager-fork"]  # TEST
+debug-atexit = ["syscalls/debug-atexit"]  # targeted dynamic-loader stderr / atexit probes
 debug-trace = ["kmacros/debug-trace", "console/debug-trace", "smoke/debug-trace", "syscalls/debug-trace", "pci-boot/debug-trace"]  # structured dtrace! probes — direct UART emit bypassing klog/lock (CAT-wedge-class debugging)
 debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-cgroup","debug-modules","debug-syscall","sched/debug-syscall"]
