@@ -70,31 +70,31 @@ fn write_path_produces_e2fsck_clean_image() {
         let bs = m.sb.block_size as usize;
 
         // 1) create file + write across an extent/block boundary.
-        let f = m.create_file(2, b"newfile.bin", 0o644).unwrap();
+        let f = m.create_file(2, b"newfile.bin", 0o644, 0, 0).unwrap();
         let payload: std::vec::Vec<u8> = (0..(bs as u32 * 2 + 100)).map(|i| (i & 0xFF) as u8).collect();
         m.write_at(f, bs as u64 - 50, &payload).unwrap();
 
         // 2) mkdir + populate it (grows the new dir, exercises tail csum).
-        let d = m.create_dir(2, b"newdir", 0o755).unwrap();
+        let d = m.create_dir(2, b"newdir", 0o755, 0, 0).unwrap();
         for i in 0..40u32 {
             let mut name = std::vec::Vec::new();
             name.extend_from_slice(b"child_");
             name.extend_from_slice(std::format!("{:03}", i).as_bytes());
-            let c = m.create_file(d, &name, 0o644).unwrap();
+            let c = m.create_file(d, &name, 0o644, 0, 0).unwrap();
             m.append_block(c, &std::vec![0xEE; bs]).unwrap();
         }
 
         // 3) truncate grow then shrink.
-        let t = m.create_file(2, b"trunc.bin", 0o644).unwrap();
+        let t = m.create_file(2, b"trunc.bin", 0o644, 0, 0).unwrap();
         for _ in 0..3 { m.append_block(t, &std::vec![0x11; bs]).unwrap(); }
         m.truncate_inode(t, 5 * bs as u64).unwrap();         // grow (zero-fill)
         m.truncate_inode(t, bs as u64 + 10).unwrap();        // shrink
 
         // 4) symlinks (fast + slow) and a device node.
-        m.create_symlink(2, b"fastln", b"target").unwrap();
+        m.create_symlink(2, b"fastln", b"target", 0, 0).unwrap();
         let long: std::vec::Vec<u8> = std::vec![b'a'; 120];
-        m.create_symlink(2, b"slowln", &long).unwrap();
-        m.create_mknod(2, b"nulldev", ext4::inode::S_IFCHR | 0o666, (1 << 8) | 3).unwrap();
+        m.create_symlink(2, b"slowln", &long, 0, 0).unwrap();
+        m.create_mknod(2, b"nulldev", ext4::inode::S_IFCHR | 0o666, (1 << 8) | 3, 0, 0).unwrap();
 
         // 5) unlink one file (frees inode + blocks).
         m.unlink(2, b"newfile.bin").unwrap();
@@ -116,7 +116,7 @@ fn deep_extent_tree_file_is_e2fsck_clean() {
     {
         let m = ext4::Mount::open(disk.clone()).unwrap();
         let bs = m.sb.block_size as usize;
-        let n = m.create_file(2, b"deep.bin", 0o644).unwrap();
+        let n = m.create_file(2, b"deep.bin", 0o644, 0, 0).unwrap();
         // A spacer held allocated between appends breaks contiguity → many
         // separate extents → inline root (4) overflows → promote to depth 1.
         let mut spacers = std::vec::Vec::new();
@@ -145,7 +145,7 @@ fn enospc_surfaces_and_leaves_fs_clean() {
     {
         let m = ext4::Mount::open(disk.clone()).unwrap();
         let bs = m.sb.block_size as usize;
-        let f = m.create_file(2, b"filler.bin", 0o644).unwrap();
+        let f = m.create_file(2, b"filler.bin", 0o644, 0, 0).unwrap();
         // Append until the block allocator runs dry.
         let mut hit_enospc = false;
         for _ in 0..(m.sb.blocks_count_lo as usize + 16) {
@@ -182,7 +182,7 @@ fn htree_insert_lands_in_correct_leaf_and_stays_clean() {
         // Create a brand-new file *inside* the htree dir — create_file's
         // dir_link routes through the htree hash-descent insert path and
         // maintains the child's link count correctly.
-        let child = m.create_file(dino, new_name, 0o644).unwrap();
+        let child = m.create_file(dino, new_name, 0o644, 0, 0).unwrap();
         // The linear leaf scan must find it (Linux's hash lookup will too,
         // because we inserted into the hash-covering leaf).
         let found = m.lookup_in_dir(&dnode, new_name).unwrap();

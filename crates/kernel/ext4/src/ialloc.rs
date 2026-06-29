@@ -28,6 +28,17 @@ use alloc::vec;
 /// the exact value is immaterial to validity as long as it is large.
 const DELETED_DTIME: u32 = 1_700_000_000;
 
+/// Stamp owner ids into a fresh on-disk inode buffer: low u16 into `i_uid`
+/// @0x02 / `i_gid` @0x18, high u16 into osd2 `l_i_uid_high` @0x78 /
+/// `l_i_gid_high` @0x7A (matching `Inode::parse`). `bytes` must be a full
+/// inode (≥128 B; 0x7A..0x7C is in range for every inode size). # C: O(1)
+fn stamp_owner(bytes: &mut [u8], uid: u32, gid: u32) {
+    bytes[0x02..0x04].copy_from_slice(&((uid & 0xFFFF) as u16).to_le_bytes());
+    bytes[0x18..0x1A].copy_from_slice(&((gid & 0xFFFF) as u16).to_le_bytes());
+    bytes[0x78..0x7A].copy_from_slice(&((uid >> 16) as u16).to_le_bytes());
+    bytes[0x7A..0x7C].copy_from_slice(&((gid >> 16) as u16).to_le_bytes());
+}
+
 impl Mount {
     /// Allocate one previously-free inode. Searches groups from
     /// `hint` forward. Returns the 1-indexed inode number with
@@ -155,7 +166,7 @@ impl Mount {
         self.run_journaled(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(new_ino, S_IFREG | (mode_perm & 0x0FFF), 0)?;
+            m.init_inode(new_ino, S_IFREG | (mode_perm & 0x0FFF), 0, 0, 0)?;
             Ok(new_ino)
         })
     }
@@ -203,14 +214,16 @@ impl Mount {
     /// Allocates an inode, writes a fresh on-disk inode (mode
     /// `S_IFREG | mode_perm`, nlink=1, empty extent tree, size 0),
     /// and adds a directory entry. Returns the new inode number.
+    /// `uid`/`gid` are the fs-domain owner ids stamped on the new inode
+    /// (Linux `ext4_new_inode`).
     /// # C: O(N parent entries) + 1 inode-alloc + 2 block I/Os
-    pub fn create_file(&self, parent_ino: u32, name: &[u8], mode_perm: u16)
+    pub fn create_file(&self, parent_ino: u32, name: &[u8], mode_perm: u16, uid: u32, gid: u32)
         -> Result<u32, MountError>
     {
         self.run_journaled(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(new_ino, S_IFREG | (mode_perm & 0x0FFF), 1)?;
+            m.init_inode(new_ino, S_IFREG | (mode_perm & 0x0FFF), 1, uid, gid)?;
             m.dir_link(parent_ino, name, new_ino, dir::DT_REG)?;
             Ok(new_ino)
         })
@@ -262,13 +275,19 @@ impl Mount {
         })
     }
 
-    /// Write a fresh inode struct (mode + nlink + empty extent
-    /// tree, size=0, blocks=0). Other timestamps/uid/gid stay 0.
+    /// Write a fresh inode struct (mode + nlink + owner + empty extent
+    /// tree, size=0, blocks=0). `uid`/`gid` are the fs-domain owner ids
+    /// (Linux `ext4_new_inode` stamps `current_fsuid`/`current_fsgid` mapped
+    /// through the mount idmap) — split into the low u16 (0x02/0x18) and the
+    /// osd2 high u16 (0x78/0x7A). Other timestamps stay 0.
     /// # C: O(1) I/O
-    pub fn init_inode(&self, ino: u32, mode: u16, nlink: u16) -> Result<(), MountError> {
+    pub fn init_inode(&self, ino: u32, mode: u16, nlink: u16, uid: u32, gid: u32)
+        -> Result<(), MountError>
+    {
         let mut bytes = vec![0u8; self.sb.inode_size as usize];
         bytes[0x00..0x02].copy_from_slice(&mode.to_le_bytes());
         bytes[0x1A..0x1C].copy_from_slice(&nlink.to_le_bytes());
+        stamp_owner(&mut bytes, uid, gid);
         // i_extra_isize: required when inode_size > 128 (the fs advertises
         // EXTRA_ISIZE). 32 is the universal value for 256-byte inodes and
         // is what mke2fs writes; it also makes i_checksum_hi covered.
@@ -298,14 +317,14 @@ impl Mount {
     /// data block yet — callers that need to populate it should
     /// follow with `append_block`.
     /// # C: O(parent entries) + 1 inode alloc + 2 I/Os
-    pub fn create_dir(&self, parent_ino: u32, name: &[u8], mode_perm: u16)
+    pub fn create_dir(&self, parent_ino: u32, name: &[u8], mode_perm: u16, uid: u32, gid: u32)
         -> Result<u32, MountError>
     {
         self.run_journaled(|m| {
             let bs = m.sb.block_size as usize;
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(new_ino, S_IFDIR | (mode_perm & 0x0FFF), 2)?;
+            m.init_inode(new_ino, S_IFDIR | (mode_perm & 0x0FFF), 2, uid, gid)?;
             // A freshly created directory MUST have a data block holding
             // "." (→ self) and ".." (→ parent); the ".." entry's rec_len
             // spans the rest of the block as the free slot for future
@@ -353,7 +372,7 @@ impl Mount {
     /// directly into `i_block`; slow path allocates one data block.
     /// `target` must be non-empty and ≤ one filesystem block.
     /// # C: O(N parent entries) + 1 inode-alloc + (target>60 ? 1 block-alloc + 2 block I/Os : 1 inode I/O)
-    pub fn create_symlink(&self, parent_ino: u32, name: &[u8], target: &[u8])
+    pub fn create_symlink(&self, parent_ino: u32, name: &[u8], target: &[u8], uid: u32, gid: u32)
         -> Result<u32, MountError>
     {
         let bs = self.sb.block_size as usize;
@@ -363,7 +382,7 @@ impl Mount {
         self.run_journaled(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(new_ino, S_IFLNK | 0o777, 1)?;
+            m.init_inode(new_ino, S_IFLNK | 0o777, 1, uid, gid)?;
             if target.len() <= I_BLOCK_LEN {
                 let (mut bytes, _off) = m.read_inode_bytes(new_ino)?;
                 for b in &mut bytes[0x28..0x28 + I_BLOCK_LEN] { *b = 0; }
@@ -395,7 +414,7 @@ impl Mount {
     /// `i_block[0..4]` for CHR/BLK (Linux "small dev" layout) and
     /// ignored for FIFO/SOCK.
     /// # C: O(N parent entries) + 1 inode-alloc + 1 inode I/O
-    pub fn create_mknod(&self, parent_ino: u32, name: &[u8], mode: u16, rdev: u32)
+    pub fn create_mknod(&self, parent_ino: u32, name: &[u8], mode: u16, rdev: u32, uid: u32, gid: u32)
         -> Result<u32, MountError>
     {
         let ftype = mode & S_IFMT;
@@ -412,6 +431,7 @@ impl Mount {
             let mut bytes = vec![0u8; m.sb.inode_size as usize];
             bytes[0x00..0x02].copy_from_slice(&mode.to_le_bytes());
             bytes[0x1A..0x1C].copy_from_slice(&1u16.to_le_bytes());
+            stamp_owner(&mut bytes, uid, gid);
             if m.sb.inode_size as usize > crate::csum::EXT4_GOOD_OLD_INODE_SIZE {
                 bytes[0x80..0x82].copy_from_slice(&32u16.to_le_bytes());
             }

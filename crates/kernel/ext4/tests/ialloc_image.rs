@@ -24,7 +24,7 @@ fn build_disk() -> Arc<dyn BlockDevice> {
 fn create_file_visible_to_lookup() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
-    let n = m.create_file(2, b"newfile", 0o644).unwrap();
+    let n = m.create_file(2, b"newfile", 0o644, 0, 0).unwrap();
     let got = m.lookup_path(b"/newfile").unwrap();
     assert_eq!(got, n);
     let inode = m.read_inode(n).unwrap();
@@ -37,7 +37,7 @@ fn create_file_visible_to_lookup() {
 fn create_then_append_then_read() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
-    let n = m.create_file(2, b"data.bin", 0o644).unwrap();
+    let n = m.create_file(2, b"data.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
     let payload: std::vec::Vec<u8> = (0..bs).map(|i| (i & 0xFF) as u8).collect();
     m.append_block(n, &payload).unwrap();
@@ -53,7 +53,7 @@ fn unlink_frees_inode_and_blocks() {
     let m = ext4::Mount::open(disk).unwrap();
     let pre_blocks = m.state_free_blocks();
     let pre_inodes = m.state_free_inodes();
-    let n = m.create_file(2, b"toremove", 0o644).unwrap();
+    let n = m.create_file(2, b"toremove", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
     m.append_block(n, &std::vec![0u8; bs]).unwrap();
     m.append_block(n, &std::vec![0u8; bs]).unwrap();
@@ -68,7 +68,7 @@ fn create_symlink_fast_inline_target() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
     let target: &[u8] = b"/etc/passwd";
-    let n = m.create_symlink(2, b"shortlink", target).unwrap();
+    let n = m.create_symlink(2, b"shortlink", target, 0, 0).unwrap();
     let got = m.lookup_path(b"/shortlink").unwrap();
     assert_eq!(got, n);
     let inode = m.read_inode(n).unwrap();
@@ -84,7 +84,7 @@ fn create_symlink_slow_via_data_block() {
     let m = ext4::Mount::open(disk).unwrap();
     // 80 B target ⇒ > I_BLOCK_LEN(60), forces slow path.
     let target: std::vec::Vec<u8> = (0..80).map(|i| b'A' + ((i % 26) as u8)).collect();
-    let n = m.create_symlink(2, b"longlink", &target).unwrap();
+    let n = m.create_symlink(2, b"longlink", &target, 0, 0).unwrap();
     let inode = m.read_inode(n).unwrap();
     assert!(inode.is_link());
     assert_eq!(inode.size, target.len() as u64);
@@ -101,11 +101,11 @@ fn create_dir_has_block_and_is_linkable() {
     // it (e.g. systemd's enable symlink into <target>.wants/) failed NotFound.
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
-    let d = m.create_dir(2, b"subdir", 0o755).unwrap();
+    let d = m.create_dir(2, b"subdir", 0o755, 0, 0).unwrap();
     let inode = m.read_inode(d).unwrap();
     assert!(inode.is_dir());
     assert_eq!(inode.size, m.sb.block_size as u64, "new dir has its initial . / .. block");
-    let link = m.create_symlink(d, b"inside", b"/etc/passwd").unwrap();
+    let link = m.create_symlink(d, b"inside", b"/etc/passwd", 0, 0).unwrap();
     assert_eq!(m.lookup_path(b"/subdir/inside").unwrap(), link);
 }
 
@@ -115,7 +115,7 @@ fn create_mknod_char_device_persists_rdev() {
     let m = ext4::Mount::open(disk).unwrap();
     // /dev/null encoded as makedev(1,3) ⇒ small-dev = (major<<8) | minor.
     let rdev: u32 = (1u32 << 8) | 3;
-    let n = m.create_mknod(2, b"nullnode", 0x2000 | 0o666, rdev).unwrap();
+    let n = m.create_mknod(2, b"nullnode", 0x2000 | 0o666, rdev, 0, 0).unwrap();
     let got = m.lookup_path(b"/nullnode").unwrap();
     assert_eq!(got, n);
     let inode = m.read_inode(n).unwrap();
@@ -129,7 +129,7 @@ fn create_mknod_char_device_persists_rdev() {
 fn create_mknod_fifo_no_rdev() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
-    let n = m.create_mknod(2, b"myfifo", 0x1000 | 0o644, 0).unwrap();
+    let n = m.create_mknod(2, b"myfifo", 0x1000 | 0o644, 0, 0, 0).unwrap();
     let inode = m.read_inode(n).unwrap();
     assert_eq!(inode.mode & 0xF000, 0x1000); // S_IFIFO
     assert_eq!(inode.links_count, 1);
@@ -140,7 +140,7 @@ fn create_mknod_rejects_bad_type() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
     // mode = S_IFREG should not be accepted by mknod() ext4 helper.
-    assert!(m.create_mknod(2, b"bogus", 0x8000 | 0o644, 0).is_err());
+    assert!(m.create_mknod(2, b"bogus", 0x8000 | 0o644, 0, 0, 0).is_err());
 }
 
 #[test]
@@ -168,7 +168,7 @@ fn create_anonymous_then_free_round_trip() {
 fn free_orphan_inode_refuses_named_file() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
-    let n = m.create_file(2, b"named", 0o644).unwrap();
+    let n = m.create_file(2, b"named", 0o644, 0, 0).unwrap();
     // create_file gives nlink=1. free_orphan_inode must be a no-op
     // here so a caller racing with linkat doesn't blow away a still-
     // named file.
@@ -183,7 +183,7 @@ fn create_persists_across_remount() {
     let disk = build_disk();
     {
         let m = ext4::Mount::open(disk.clone()).unwrap();
-        m.create_file(2, b"persist", 0o644).unwrap();
+        m.create_file(2, b"persist", 0o644, 0, 0).unwrap();
     }
     let m2 = ext4::Mount::open(disk).unwrap();
     assert!(m2.lookup_path(b"/persist").is_ok(), "create survived remount");

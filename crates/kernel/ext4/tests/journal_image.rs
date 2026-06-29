@@ -94,7 +94,7 @@ fn create_file_inside_scope_atomically() {
     // share the same shadow + commit as one transaction.
     let disk = build_disk();
     let m = ext4::Mount::open(disk.clone()).unwrap();
-    let n = m.run_journaled(|mm| mm.create_file(2, b"atomic", 0o644)).unwrap();
+    let n = m.run_journaled(|mm| mm.create_file(2, b"atomic", 0o644, 0, 0)).unwrap();
     assert!(n > 0);
     // Re-open: file is visible (transaction committed).
     drop(m);
@@ -135,7 +135,7 @@ fn journaled_image_supports_writes() {
     // to work. Replay is no-op, then we exercise the live writes.
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
-    let n = m.create_file(2, b"jt.bin", 0o644).unwrap();
+    let n = m.create_file(2, b"jt.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
     m.append_block(n, &std::vec![0xEE; bs]).unwrap();
     let inode = m.read_inode(n).unwrap();
