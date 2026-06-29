@@ -15,10 +15,10 @@ pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
     const FSMOUNT_CLOEXEC: u64 = 1;
     let fd = args.a0 as i32;
     let inode = match fd_inode(fd) { Some(i) => i, None => return -(Errno::Ebadf.as_i32() as i64) };
-    let ctx = match inode.as_any().and_then(|a| a.downcast_ref::<FsContextInode>()) {
+    let ctx = match inode.private::<FsContextInode>() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
     };
     let source = ctx.source.lock().clone();
-    let mo = MountObjectInode::new(ctx.fstype.clone(), source) as InodeRef;
+    let mo: InodeRef = MountObjectInode::new(ctx.fstype.clone(), source);
     install_fd(mo, "fsmount", (args.a1 & FSMOUNT_CLOEXEC) != 0)
 }

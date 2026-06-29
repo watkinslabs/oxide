@@ -1,15 +1,13 @@
 // 444 landlock_create_ruleset — one syscall, one file (docs/53 §0). Moved verbatim from landlock.rs.
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::sync::Arc;
-
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use ::security::landlock::{self as ll};
 use vfs::{Dentry, File, InodeRef, OpenFlags};
 
-use crate::landlock::LandlockRulesetInode;
+use crate::landlock::make_landlock_inode;
 
 /// `sys_landlock_create_ruleset(attr, size, flags)` — slot 444.
 /// `attr` points to `struct landlock_ruleset_attr { __u64 handled_access_fs; }`;
@@ -30,7 +28,7 @@ pub fn sys_landlock_create_ruleset(args: &SyscallArgs) -> i64 {
     // SAFETY: attr validated < USER_VA_END; 8-byte read of handled_access_fs from caller's AS.
     let handled = unsafe { core::ptr::read_volatile(attr as *const u64) };
     let id = ll::create_ruleset(handled);
-    let inode: InodeRef = Arc::new(LandlockRulesetInode { ruleset_id: id });
+    let inode: InodeRef = make_landlock_inode(id);
     let dentry = Dentry::new(None, alloc::string::String::from("landlock"), inode.clone());
     let file = File::new(inode, dentry, OpenFlags::O_RDONLY);
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64) };

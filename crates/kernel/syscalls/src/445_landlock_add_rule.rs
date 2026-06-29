@@ -39,8 +39,7 @@ pub fn sys_landlock_add_rule(args: &SyscallArgs) -> i64 {
     let rs_file = match fdt.get(fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let rs_any = match rs_file.inode().as_any() { Some(a) => a, None => return -(Errno::Einval.as_i32() as i64) };
-    let rs_inode = match rs_any.downcast_ref::<LandlockRulesetInode>() {
+    let rs_inode = match rs_file.inode().private::<LandlockRulesetInode>() {
         Some(r) => r, None => return -(Errno::Einval.as_i32() as i64),
     };
     let ruleset = match ll::lookup(rs_inode.ruleset_id) {

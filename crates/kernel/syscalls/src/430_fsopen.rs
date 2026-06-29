@@ -16,6 +16,6 @@ pub fn sys_fsopen(args: &SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Efault.as_i32() as i64),
     };
     if !fstype_ok(&fsname) { return -(Errno::Enodev.as_i32() as i64); }
-    let inode = FsContextInode::new(fsname) as InodeRef;
+    let inode: InodeRef = FsContextInode::new(fsname);
     install_fd(inode, "fscontext", (args.a1 & FSOPEN_CLOEXEC) != 0)
 }
