@@ -105,6 +105,13 @@ pub fn unregister_top(d: &Arc<Dentry>, detach_subtree: bool) -> usize {
     let Some(top) = mount_exact_at(ns, d) else { return 0; };
     let top_id = top.mnt_id;
     if root_mount_id(ns) == Some(top_id) { return 0; }
+    // [D11] A MNT_LOCKED mount cannot be unmounted on its own (Linux
+    // `do_umount`: `mnt->mnt_flags & MNT_LOCKED` → -EINVAL): an unprivileged
+    // userns must not detach a mount its parent pinned to hide an underlay.
+    // Returning 0 (nothing removed) surfaces as EINVAL at the umount2 syscall.
+    // A locked submount is still torn down when its PARENT subtree is removed
+    // (the per-victim loop below does not re-check the lock).
+    if top.is_locked() { return 0; }
     // propagate_umount: detach the mirror at every propagation target of the
     // parent before removing the primary (Linux unmounts propagated copies).
     if let Some(parent) = mount_by_id(top.parent_id.load(Ordering::Acquire)) {
