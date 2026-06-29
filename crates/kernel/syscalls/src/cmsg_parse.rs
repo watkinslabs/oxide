@@ -189,13 +189,14 @@ pub fn sendmsg_unix_dgram_with_fds(
     }
     let creds = match sched::live::current() {
         Some(t) => SenderCreds {
-            pid: t.tgid.load(core::sync::atomic::Ordering::Acquire),
+            pid: t.visible_pid(),
             uid: t.creds.euid.load(core::sync::atomic::Ordering::Acquire),
             gid: t.creds.egid.load(core::sync::atomic::Ordering::Acquire),
         },
         None => SenderCreds::default(),
     };
     let n = payload.len();
+    net::trace_dgram_journal(&path, &payload);
     q.push(net::UnixDgram {
         payload,
         creds: (creds.pid, creds.uid, creds.gid),

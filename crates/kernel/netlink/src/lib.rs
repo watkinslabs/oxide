@@ -499,7 +499,11 @@ impl vfs::FileOps for NetlinkFileOps {
 /// # C: O(1)
 pub fn make_netlink_socket_inode(sock: alloc::sync::Arc<NetlinkSocket>) -> vfs::InodeRef {
     let ino = NETLINK_INO_TAG | (alloc::sync::Arc::as_ptr(&sock) as u64 & 0xFFFF_FFFF);
-    vfs::InodeBuilder::new(ino, vfs::mk_mode(vfs::FileType::Regular, 0o600),
+    // S_IFSOCK so fstat()/sd_is_socket() recognise the netlink fd as a
+    // socket — systemd-udevd's listen_fds() rejects the inherited
+    // NETLINK_KOBJECT_UEVENT fd otherwise (-EINVAL). Linux netlink fds
+    // are S_IFSOCK.
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(vfs::FileType::Socket, 0o600),
         vfs::default_inode_ops(), alloc::sync::Arc::new(NetlinkFileOps))
         .private(sock)
         .build()
