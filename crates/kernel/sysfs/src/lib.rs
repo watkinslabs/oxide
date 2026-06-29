@@ -25,6 +25,7 @@ use vfs::{default_file_ops, default_inode_ops, mk_mode, DirContext, FileOps, Fil
 
 pub mod block;
 pub mod bus;
+pub mod kobject;
 pub mod net_stats;
 pub mod root;
 
@@ -67,7 +68,7 @@ fn emit_tty_uevent(action: &str, name: &str, major: u32, minor: u32) {
 }
 
 /// Windowed copy of `body[off..]` into `buf` (the shared sysfs attr read). # C: O(n)
-fn read_window(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
+pub(crate) fn read_window(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
     let off = off as usize;
     if off >= body.len() { return 0; }
     let avail = &body[off..];
@@ -389,48 +390,91 @@ fn iface_body(d: &NetIfaceData, leaf: &str) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-const IFACE_ENTRIES: &[&str] = &[
-    "address", "broadcast", "mtu", "operstate", "type", "flags",
-    "carrier", "speed", "duplex", "ifindex", "tx_queue_len",
-    "addr_len", "name_assign_type", "dev_id", "uevent",
+use kobject::{Attribute, AttrGroup, SysfsOps};
+
+/// The `/sys/class/net/<if>` default attribute group (Linux `net_class_attrs`).
+/// Read-only attributes plus the writable `uevent` trigger; `statistics` is a
+/// subdirectory added separately (not a leaf attribute). # C: n/a
+const NET_IFACE_ATTRS: &[Attribute] = &[
+    Attribute { name: "address",          mode: RO_PERM },
+    Attribute { name: "broadcast",        mode: RO_PERM },
+    Attribute { name: "mtu",              mode: RO_PERM },
+    Attribute { name: "operstate",        mode: RO_PERM },
+    Attribute { name: "type",             mode: RO_PERM },
+    Attribute { name: "flags",            mode: RO_PERM },
+    Attribute { name: "carrier",          mode: RO_PERM },
+    Attribute { name: "speed",            mode: RO_PERM },
+    Attribute { name: "duplex",           mode: RO_PERM },
+    Attribute { name: "ifindex",          mode: RO_PERM },
+    Attribute { name: "tx_queue_len",     mode: RO_PERM },
+    Attribute { name: "addr_len",         mode: RO_PERM },
+    Attribute { name: "name_assign_type", mode: RO_PERM },
+    Attribute { name: "dev_id",           mode: RO_PERM },
+    Attribute { name: "uevent",           mode: RW_PERM },
 ];
+static NET_IFACE_GROUP: AttrGroup = AttrGroup { attrs: NET_IFACE_ATTRS };
+
+/// `sysfs_ops` for a net-iface kobject: `show` renders each attribute (the
+/// `uevent` env or a `net_device` field via `iface_body`); `store` consumes a
+/// `udevadm trigger` write to `uevent` by re-emitting the kobject uevent.
+impl SysfsOps for NetIfaceData {
+    fn show(&self, attr: &str) -> Option<Vec<u8>> {
+        if attr == "uevent" {
+            let mut body: Vec<u8> = Vec::new();
+            let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut body),
+                format_args!("DEVTYPE=\nINTERFACE={}\nIFINDEX={}\n", self.name,
+                    net::sock::stack().ifaces.lookup_name(&self.name).map(|(id, _)| id.raw()).unwrap_or(0)));
+            return Some(body);
+        }
+        iface_body(self, attr)
+    }
+    fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
+        if attr == "uevent" {
+            let devpath = alloc::format!("/devices/virtual/net/{}", self.name);
+            ::netlink::emit_uevent(uevent_action(buf), &devpath, "net");
+            return Ok(buf.len());
+        }
+        Err(VfsError::Erofs)
+    }
+}
 
 struct NetIfaceOps;
+impl NetIfaceOps {
+    /// A fresh `sysfs_ops` handle for this iface kobject (the attribute file's
+    /// backref). # C: O(1)
+    fn ops(d: &NetIfaceData) -> Arc<dyn SysfsOps> {
+        Arc::new(NetIfaceData { name: d.name.clone(), dev: Arc::clone(&d.dev) })
+    }
+}
 impl InodeOps for NetIfaceOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let d = inode.private::<NetIfaceData>().ok_or(VfsError::Einval)?;
-        // The `uevent` node is writable: `udevadm trigger` (and udev
-        // coldplug) write "add"/"change" to re-emit the device's uevent.
-        if name == "uevent" {
-            return Ok(make_uevent_trigger_inode(d.name.clone()));
-        }
         // `statistics` is a subdirectory, not a leaf attribute file.
         if name == "statistics" {
             return Ok(net_stats::make_net_stats_inode(d.name.clone(), Arc::clone(&d.dev)));
         }
-        if !IFACE_ENTRIES.contains(&name) { return Err(VfsError::Enoent); }
-        let body = iface_body(d, name).unwrap_or_default();
-        Ok(make_body_inode(body, 0x5100_2000))
+        let attr = NET_IFACE_GROUP.find(name).ok_or(VfsError::Enoent)?;
+        let ino: Ino = if name == "uevent" { 0x5100_3000 } else { 0x5100_2000 };
+        Ok(kobject::make_attr_inode(attr, NetIfaceOps::ops(d), ino))
     }
 }
 impl FileOps for NetIfaceOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let mut idx = ctx.pos as usize;
-        // `statistics` (a subdir) is emitted as the final entry, after
-        // the regular attribute files. Treat the offset space as
-        // IFACE_ENTRIES.len() files followed by the one stats dir.
-        let nfiles = IFACE_ENTRIES.len();
+        // The default attribute group, then `statistics` (a subdir) as the
+        // final entry. Offset space = group.len() attrs followed by the dir.
+        let nfiles = NET_IFACE_GROUP.attrs.len();
         while idx < nfiles {
             let next = idx as u64 + 1;
-            let ino = inode.lookup(IFACE_ENTRIES[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(IFACE_ENTRIES[idx], ino, FileType::Regular, next) { return Ok(()); }
+            let name = NET_IFACE_GROUP.attrs[idx].name;
+            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !ctx.emit(name, ino, FileType::Regular, next) { return Ok(()); }
             idx += 1;
         }
         if idx == nfiles {
             let next = idx as u64 + 1;
             let ino = inode.lookup("statistics").map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit("statistics", ino, FileType::Directory, next) { return Ok(()); }
-            idx += 1;
         }
         Ok(())
     }
@@ -441,38 +485,6 @@ pub(crate) fn make_net_iface_inode(name: String, dev: Arc<dyn net::NetDev>) -> I
     InodeBuilder::new(0x5100_1000, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(NetIfaceOps), Arc::new(NetIfaceOps))
         .private(Arc::new(NetIfaceData { name, dev }))
-        .build()
-}
-
-// ---- /sys/class/net/<if>/uevent (rw trigger) ------------------------------
-
-struct UeventTriggerData { name: String }
-
-/// `/sys/class/net/<if>/uevent` — read returns the device's uevent env;
-/// write of an action ("add"/"change"/"remove") broadcasts a kobject
-/// uevent on NETLINK_KOBJECT_UEVENT (the `udevadm trigger` path → udev).
-struct UeventTriggerFileOps;
-impl FileOps for UeventTriggerFileOps {
-    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let d = inode.private::<UeventTriggerData>().ok_or(VfsError::Einval)?;
-        // uevent read yields the device's env vars (one per line).
-        let mut body: Vec<u8> = Vec::new();
-        let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut body),
-            format_args!("DEVTYPE=\nINTERFACE={}\nIFINDEX={}\n", d.name,
-                net::sock::stack().ifaces.lookup_name(&d.name).map(|(id, _)| id.raw()).unwrap_or(0)));
-        Ok(read_window(&body, off, buf))
-    }
-    fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
-        let d = inode.private::<UeventTriggerData>().ok_or(VfsError::Einval)?;
-        let devpath = alloc::format!("/devices/virtual/net/{}", d.name);
-        ::netlink::emit_uevent(uevent_action(b), &devpath, "net");
-        Ok(b.len())
-    }
-}
-fn make_uevent_trigger_inode(name: String) -> InodeRef {
-    InodeBuilder::new(0x5100_3000, mk_mode(FileType::Regular, RW_PERM),
-        default_inode_ops(), Arc::new(UeventTriggerFileOps))
-        .private(Arc::new(UeventTriggerData { name }))
         .build()
 }
 
