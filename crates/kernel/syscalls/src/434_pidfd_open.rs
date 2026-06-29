@@ -32,7 +32,7 @@ pub fn sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
     let mut fl = OpenFlags::O_RDWR;
     if (flags & PIDFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);
-    match fdt.alloc(file) {
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd)  => fd as i64,
         Err(e)  => -(e as i64),
     }

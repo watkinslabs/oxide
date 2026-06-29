@@ -41,8 +41,8 @@ pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
     if (flags & O_NONBLOCK) != 0 { r_oflags |= OpenFlags::O_NONBLOCK; w_oflags |= OpenFlags::O_NONBLOCK; }
     let r_file = File::new(inode.clone(), dentry.clone(), r_oflags);
     let w_file = File::new(inode, dentry, w_oflags);
-    let r_fd = match fdt.alloc(r_file)  { Ok(f) => f, Err(e) => return -(e as i64) };
-    let w_fd = match fdt.alloc(w_file)  { Ok(f) => f, Err(e) => {
+    let r_fd = match fdt.alloc_limit(r_file, cur.nofile_soft())  { Ok(f) => f, Err(e) => return -(e as i64) };
+    let w_fd = match fdt.alloc_limit(w_file, cur.nofile_soft())  { Ok(f) => f, Err(e) => {
         let _ = fdt.close(r_fd);
         return -(e as i64);
     }};

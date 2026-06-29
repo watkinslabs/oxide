@@ -108,7 +108,7 @@ pub fn sys_perf_event_open(_args: &syscall::SyscallArgs) -> i64 {
     };
     let dentry = vfs::dcache::d_alloc_pseudo("[perf_event]", inode_ref.clone(), &crate::anon_dname::ANON_INODE_OPS);
     let file = File::new(inode_ref, dentry, OpenFlags::O_RDWR);
-    match fdt.alloc(file) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    match fdt.alloc_limit(file, cur.nofile_soft()) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
 }
 
 fn as_perf(inode: &vfs::InodeRef) -> Option<Arc<PerfData>> {
