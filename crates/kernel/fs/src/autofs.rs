@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as LockClass};
 
 use vfs::{File, FileType, Inode, InodeOps, InodeRef, KResult, VfsError};
-use vfs::{FileOps, InodeBuilder, default_file_ops, default_inode_ops, mk_mode};
+use vfs::{DirContext, FileOps, InodeBuilder, default_file_ops, default_inode_ops, mk_mode};
 
 #[cfg(target_os = "oxide-kernel")]
 use sched::live::WaitList;
@@ -103,9 +103,8 @@ impl InodeOps for AutofsRootInodeOps {
 /// `i_fop` for the autofs root: an empty directory. # C: O(1)
 struct AutofsRootFileOps;
 impl FileOps for AutofsRootFileOps {
-    fn iterate(&self, _inode: &Inode, _off: u64,
-               _f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
-        Ok(0)
+    fn iterate(&self, _inode: &Inode, _ctx: &mut DirContext) -> KResult<()> {
+        Ok(())
     }
 }
 

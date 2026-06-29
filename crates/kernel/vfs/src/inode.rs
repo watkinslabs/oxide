@@ -332,9 +332,9 @@ impl Inode {
     pub fn read_nonblock(&self, off: u64, buf: &mut [u8]) -> KResult<usize> { self.i_fop.read_nonblock(self, off, buf) }
     /// Non-blocking write. # C: backend-dependent
     pub fn write_nonblock(&self, off: u64, buf: &[u8]) -> KResult<usize> { self.i_fop.write_nonblock(self, off, buf) }
-    /// `f_op->iterate`/readdir. # C: backend-dependent
-    pub fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
-        self.i_fop.iterate(self, off, f)
+    /// `f_op->iterate`/readdir — drive the backend through `ctx`. # C: backend-dependent
+    pub fn readdir(&self, ctx: &mut crate::file_ops::DirContext) -> KResult<()> {
+        self.i_fop.iterate(self, ctx)
     }
     /// `f_op->poll`. # C: O(1)
     pub fn poll(&self) -> u32 { self.i_fop.poll(self) }

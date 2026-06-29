@@ -23,12 +23,52 @@ pub fn sys_getdents(args: &SyscallArgs) -> i64 {
     getdents_common(args, true)
 }
 
+/// `dir_context` actor (Linux `filldir`/`filldir64`) for getdents: packs each
+/// emitted entry as a `linux_dirent`(`legacy`)/`linux_dirent64` record into the
+/// user buffer `[dirp, dirp+count)`, stopping (returns `false`) once the next
+/// record would overflow. `overflow_first` records a too-small buffer so the
+/// caller can distinguish it (EINVAL) from a genuinely empty dir (return 0).
+struct GetdentsActor {
+    dirp: u64,
+    count: usize,
+    legacy: bool,
+    written: usize,
+    overflow_first: bool,
+}
+
+impl vfs::DirEmit for GetdentsActor {
+    fn emit(&mut self, name: &str, ino: u64, d_type: vfs::FileType, next_pos: u64) -> bool {
+        let reclen = if self.legacy { vfs::dirent_reclen(name.len()) }
+                     else          { vfs::dirent64_reclen(name.len()) };
+        if self.written + reclen > self.count {
+            if self.written == 0 { self.overflow_first = true; }
+            return false;
+        }
+        let dt: u8 = vfs::dirent::dtype_from_file_type(d_type);
+        let mut tmp = [0u8; 320];
+        let n = if self.legacy {
+            vfs::dirent_pack(&mut tmp[..reclen], ino, next_pos, dt, name.as_bytes())
+        } else {
+            vfs::dirent64_pack(&mut tmp[..reclen], ino, next_pos, dt, name.as_bytes())
+        }.expect("dirent pack: tmp buf sized to reclen");
+        // SAFETY: validate_user_buf bounded [dirp, dirp+count) < USER_VA_END; CPL=0; caller's AS active.
+        unsafe {
+            for i in 0..n {
+                core::ptr::write_volatile((self.dirp + (self.written + i) as u64) as *mut u8, tmp[i]);
+            }
+        }
+        self.written += n;
+        true
+    }
+}
+
 /// Shared getdents core. `legacy` selects the `linux_dirent` (true) vs
-/// `linux_dirent64` (false) record layout. Walks the inode `readdir`,
-/// packs records into the user buffer. Returns bytes written; **EINVAL**
-/// if the buffer cannot hold even the first entry (Linux `filldir`
-/// contract — returning 0 there would be read as end-of-dir, silently
-/// truncating the directory listing). ENOTDIR for non-dirs.
+/// `linux_dirent64` (false) record layout. Drives `f_op->iterate` through a
+/// [`vfs::DirContext`] whose actor ([`GetdentsActor`]) packs the user buffer;
+/// `ctx.pos` is the resume cookie persisted into `file->f_pos`. Returns bytes
+/// written; **EINVAL** if the buffer cannot hold even the first entry (Linux
+/// `filldir` contract — returning 0 there would be read as end-of-dir, silently
+/// truncating the listing). ENOTDIR for non-dirs.
 /// # C: O(N_dirents)
 fn getdents_common(args: &SyscallArgs, legacy: bool) -> i64 {
     use vfs::FileType;
@@ -50,43 +90,27 @@ fn getdents_common(args: &SyscallArgs, legacy: bool) -> i64 {
     if !matches!(inode.file_type(), FileType::Directory) {
         return -(Errno::Enotdir.as_i32() as i64);
     }
-    let off = file.pos();
-    let mut written: usize = 0;
-    let mut new_off = off;
-    // Set when the first record overflows the buffer: distinguishes a
-    // genuinely empty result (return 0) from a too-small buffer (EINVAL).
-    let mut overflow_first = false;
-    let r = inode.readdir(off, &mut |d_ino, cookie, name, ft| {
-        let reclen = if legacy { vfs::dirent_reclen(name.len()) }
-                     else      { vfs::dirent64_reclen(name.len()) };
-        if written + reclen > count {
-            if written == 0 { overflow_first = true; }
-            return false;
-        }
-        let dt: u8 = vfs::dirent::dtype_from_file_type(ft);
-        let mut tmp = [0u8; 320];
-        let n = if legacy {
-            vfs::dirent_pack(&mut tmp[..reclen], d_ino, cookie, dt, name.as_bytes())
-        } else {
-            vfs::dirent64_pack(&mut tmp[..reclen], d_ino, cookie, dt, name.as_bytes())
-        }.expect("dirent pack: tmp buf sized to reclen");
-        // SAFETY: validate_user_buf above bounded [dirp, dirp+count) < USER_VA_END; CPL=0; caller's AS active.
-        unsafe {
-            for i in 0..n {
-                core::ptr::write_volatile((dirp + (written + i) as u64) as *mut u8, tmp[i]);
-            }
-        }
-        written += n;
-        new_off = cookie;
-        true
-    });
+    // readdir cursor validity (file D32): a fresh cursor (pos==0) stamps
+    // `f_version` from the inode's change-cookie; a non-zero cursor whose
+    // directory has changed since this open last read it is stale → drop it
+    // (restart from 0) and re-stamp (Linux `file->f_version` invalidation).
+    let mut start = file.pos();
+    if start == 0 || file.dir_version_changed() {
+        if start != 0 { start = 0; }
+        file.set_f_version(vfs::inode::inode_query_iversion(&inode));
+    }
+    let mut actor = GetdentsActor { dirp, count, legacy, written: 0, overflow_first: false };
+    let r = {
+        let mut ctx = vfs::DirContext::new(start, &mut actor);
+        inode.readdir(&mut ctx).map(|()| ctx.pos)
+    };
     match r {
-        Ok(_) => {
-            if written == 0 && overflow_first {
+        Ok(new_off) => {
+            if actor.written == 0 && actor.overflow_first {
                 return -(Errno::Einval.as_i32() as i64);
             }
             file.set_pos(new_off);
-            written as i64
+            actor.written as i64
         }
         Err(e) => -(e as i64),
     }

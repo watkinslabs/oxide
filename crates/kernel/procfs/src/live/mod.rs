@@ -5,7 +5,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use vfs::{default_file_ops, mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{default_file_ops, mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 pub static NEXT_INO: AtomicU64 = AtomicU64::new(0x3000_0000);
 
@@ -61,15 +61,15 @@ impl InodeOps for ProcRootOps {
     }
 }
 impl FileOps for ProcRootOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<ProcRootInode>().ok_or(VfsError::Einval)?;
         // Order: static children (sorted, the subdir tree) → self → live pids.
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         let nstat = d.children.len();
         while idx < nstat {
             let (name, child) = d.children.iter().nth(idx).unwrap();
             let next = idx as u64 + 1;
-            if !f(child.ino(), next, name.as_str(), child.file_type()) { return Ok(next); }
+            if !ctx.emit(name.as_str(), child.ino(), child.file_type(), next) { return Ok(()); }
             idx += 1;
         }
         let vpids = sched::live::registry::live_vpids();
@@ -97,12 +97,12 @@ impl FileOps for ProcRootOps {
                 core::str::from_utf8(&buf[..n]).unwrap_or("0")
             };
             let ino = inode.lookup(s).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, s, FileType::Directory) {
-                return Ok(next);
+            if !ctx.emit(s, ino, FileType::Directory, next) {
+                return Ok(());
             }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 
@@ -254,9 +254,9 @@ impl InodeOps for ProcPidDirOps {
     }
 }
 impl FileOps for ProcPidDirOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<ProcPidDirInode>().ok_or(VfsError::Einval)?;
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         let total = PID_ENTRIES.len() + usize::from(d.allow_task_dir);
         while idx < total {
             let next = idx as u64 + 1;
@@ -266,12 +266,12 @@ impl FileOps for ProcPidDirOps {
                 ("task", FileType::Directory)
             };
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, name, ft) {
-                return Ok(next);
+            if !ctx.emit(name, ino, ft, next) {
+                return Ok(());
             }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 
@@ -303,10 +303,10 @@ impl InodeOps for ProcPidTaskDirOps {
     }
 }
 impl FileOps for ProcPidTaskDirOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<ProcPidTaskDirInode>().ok_or(VfsError::Einval)?;
         let tids = sched::live::registry::thread_entries(d.tgid);
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < tids.len() {
             let next = idx as u64 + 1;
             let mut buf = [0u8; 11];
@@ -325,12 +325,12 @@ impl FileOps for ProcPidTaskDirOps {
             buf[..n].reverse();
             let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
             let ino = inode.lookup(s).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, s, FileType::Directory) {
-                return Ok(next);
+            if !ctx.emit(s, ino, FileType::Directory, next) {
+                return Ok(());
             }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 
@@ -645,7 +645,7 @@ impl InodeOps for ProcPidNsDirOps {
     }
 }
 impl FileOps for ProcPidNsDirOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         const NAMES: &[&str] = &[
             "mnt",
             "cgroup",
@@ -656,16 +656,16 @@ impl FileOps for ProcPidNsDirOps {
             "net",
             "pid_for_children",
         ];
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < NAMES.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup(NAMES[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, NAMES[idx], FileType::Symlink) {
-                return Ok(next);
+            if !ctx.emit(NAMES[idx], ino, FileType::Symlink, next) {
+                return Ok(());
             }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 

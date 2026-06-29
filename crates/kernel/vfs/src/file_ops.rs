@@ -18,6 +18,41 @@ use alloc::vec::Vec;
 use crate::inode::{Inode, no_data_op_errno, POLL_IN, POLL_OUT};
 use crate::types::{FileType, KResult};
 
+/// `filldir`-style sink (Linux `struct dir_context.actor` / `filldir_t`): the
+/// callback `getdents` installs to pack one directory entry into the user
+/// buffer. `emit` returns `false` when the buffer cannot hold the entry — the
+/// driving `iterate` then stops. # C: backend-dependent
+pub trait DirEmit {
+    /// Pack one entry `(name, ino, d_type)` whose resume cookie is `next_pos`.
+    /// Return `false` (buffer full) to stop the walk. # C: O(reclen)
+    fn emit(&mut self, name: &str, ino: u64, d_type: FileType, next_pos: u64) -> bool;
+}
+
+/// `struct dir_context` (Linux `include/linux/fs.h`): the readdir cursor +
+/// actor threaded through [`FileOps::iterate`]. `pos` is the resume cookie the
+/// backend reads to know where to start and that [`Self::emit`] advances as
+/// each entry is accepted; `actor` is the buffer-packing sink. # C: O(1)
+pub struct DirContext<'a> {
+    /// `ctx->pos` — current readdir cursor / resume cookie. The backend reads it
+    /// to skip already-emitted entries; `emit` advances it. # C: O(1)
+    pub pos: u64,
+    actor: &'a mut dyn DirEmit,
+}
+
+impl<'a> DirContext<'a> {
+    /// Build a context resuming at cookie `pos`, packing through `actor`. # C: O(1)
+    pub fn new(pos: u64, actor: &'a mut dyn DirEmit) -> Self { Self { pos, actor } }
+
+    /// `dir_emit` — offer one entry to the actor. On accept (`true`), advance
+    /// `pos` to `next_pos` (the resume cookie just past this entry) so a stop on
+    /// the FOLLOWING entry leaves `pos` at the correct resume point. On reject
+    /// (`false`, buffer full) leave `pos` unchanged and return `false` so the
+    /// backend stops. # C: O(reclen)
+    pub fn emit(&mut self, name: &str, ino: u64, d_type: FileType, next_pos: u64) -> bool {
+        if self.actor.emit(name, ino, d_type, next_pos) { self.pos = next_pos; true } else { false }
+    }
+}
+
 /// `file_operations` — the inode's `i_fop` data-path vtable. # Lk: callers hold
 /// no inode lock; an op serialises its own backend state.
 pub trait FileOps: Send + Sync {
@@ -46,15 +81,14 @@ pub trait FileOps: Send + Sync {
         self.write(inode, off, buf)
     }
 
-    /// `f_op->iterate`/`dir_emit` — emit child entries from cookie `off`. The
-    /// callback gets `(ino, next_off, name, file_type)` and returns `false` to
-    /// stop. Default `ENOTDIR` (Linux non-directory). # C: backend-dependent
-    fn iterate(
-        &self,
-        _inode: &Inode,
-        _off: u64,
-        _f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
-    ) -> KResult<u64> {
+    /// `f_op->iterate_shared` — emit child entries through `ctx`, resuming at the
+    /// cursor `ctx.pos` (the readdir cookie). The backend walks its entries from
+    /// `ctx.pos`, calling [`DirContext::emit`] per entry with that entry's
+    /// `next_pos` cookie; `emit` returns `false` once the actor's buffer is full,
+    /// at which point the backend stops. On stop, `ctx.pos` holds the resume
+    /// cookie of the LAST emitted entry (Linux: the actor advances `ctx->pos`).
+    /// Default `ENOTDIR` (Linux non-directory). # C: backend-dependent
+    fn iterate(&self, _inode: &Inode, _ctx: &mut DirContext) -> KResult<()> {
         Err(crate::types::VfsError::Enotdir)
     }
 

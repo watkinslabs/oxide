@@ -20,7 +20,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use vfs::{default_file_ops, default_inode_ops, mk_mode, FileOps, FileType, Ino, Inode,
+use vfs::{default_file_ops, default_inode_ops, mk_mode, DirContext, FileOps, FileType, Ino, Inode,
           InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 pub mod block;
@@ -98,16 +98,16 @@ impl InodeOps for SysClassTtyOps {
     }
 }
 impl FileOps for SysClassTtyOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
-        let mut idx = off as usize;
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let mut idx = ctx.pos as usize;
         while idx < TTY_DEVICES.len() {
             let next = idx as u64 + 1;
             let name = TTY_DEVICES[idx].0;
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, name, FileType::Symlink) { return Ok(next); }
+            if !ctx.emit(name, ino, FileType::Symlink, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 fn make_sys_class_tty_inode() -> InodeRef {
@@ -126,16 +126,16 @@ impl InodeOps for SysDevicesVirtualTtyOps {
     }
 }
 impl FileOps for SysDevicesVirtualTtyOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
-        let mut idx = off as usize;
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let mut idx = ctx.pos as usize;
         while idx < TTY_DEVICES.len() {
             let next = idx as u64 + 1;
             let name = TTY_DEVICES[idx].0;
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, name, FileType::Directory) { return Ok(next); }
+            if !ctx.emit(name, ino, FileType::Directory, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 fn make_sys_devices_virtual_tty_inode() -> InodeRef {
@@ -162,16 +162,16 @@ impl InodeOps for TtyDeviceOps {
     }
 }
 impl FileOps for TtyDeviceOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         const ENTRIES: &[&str] = &["dev", "uevent"];
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < ENTRIES.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup(ENTRIES[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, ENTRIES[idx], FileType::Regular) { return Ok(next); }
+            if !ctx.emit(ENTRIES[idx], ino, FileType::Regular, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 fn make_tty_device_inode(name: String, major: u32, minor: u32) -> InodeRef {
@@ -229,17 +229,17 @@ impl InodeOps for SysClassNetOps {
     }
 }
 impl FileOps for SysClassNetOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let snap = net::sock::stack().ifaces.snapshot_devs();
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < snap.len() {
             let next = idx as u64 + 1;
             let name = snap[idx].1.name();
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, name, FileType::Symlink) { return Ok(next); }
+            if !ctx.emit(name, ino, FileType::Symlink, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 fn make_sys_class_net_inode() -> InodeRef {
@@ -297,17 +297,17 @@ impl InodeOps for SysDevicesVirtualNetOps {
     }
 }
 impl FileOps for SysDevicesVirtualNetOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let snap = net::sock::stack().ifaces.snapshot_devs();
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < snap.len() {
             let next = idx as u64 + 1;
             let name = snap[idx].1.name();
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, name, FileType::Directory) { return Ok(next); }
+            if !ctx.emit(name, ino, FileType::Directory, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 fn make_sys_devices_virtual_net_inode() -> InodeRef {
@@ -414,8 +414,8 @@ impl InodeOps for NetIfaceOps {
     }
 }
 impl FileOps for NetIfaceOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
-        let mut idx = off as usize;
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let mut idx = ctx.pos as usize;
         // `statistics` (a subdir) is emitted as the final entry, after
         // the regular attribute files. Treat the offset space as
         // IFACE_ENTRIES.len() files followed by the one stats dir.
@@ -423,16 +423,16 @@ impl FileOps for NetIfaceOps {
         while idx < nfiles {
             let next = idx as u64 + 1;
             let ino = inode.lookup(IFACE_ENTRIES[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, IFACE_ENTRIES[idx], FileType::Regular) { return Ok(next); }
+            if !ctx.emit(IFACE_ENTRIES[idx], ino, FileType::Regular, next) { return Ok(()); }
             idx += 1;
         }
         if idx == nfiles {
             let next = idx as u64 + 1;
             let ino = inode.lookup("statistics").map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, "statistics", FileType::Directory) { return Ok(next); }
+            if !ctx.emit("statistics", ino, FileType::Directory, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 /// Build a `/sys/class/net/<if>` (and `/sys/devices/virtual/net/<if>`) dir
