@@ -260,6 +260,21 @@ pub fn d_delete_path(abs: &str) {
     drop_cached_child(abs);
 }
 
+/// Flush the cached NEGATIVE dentry for absolute `abs` after a SUCCESSFUL
+/// create (open O_CREAT / mknod / mkdir / symlink / hardlink) so a negative
+/// planted by the pre-create existence probe (`path_exists`) — or by an earlier
+/// `stat`/`open` of the not-yet-existing name — does NOT mask the freshly
+/// created file. The next walk then misses the dcache and re-resolves via
+/// `i_op->lookup`, finding the new inode. Linux instantiates the create's OWN
+/// leaf dentry (`d_instantiate`); these create handlers bypass the leaf dentry
+/// and call the backend on the parent inode, so the stale negative must be
+/// dropped explicitly. Shares `drop_cached_child` with `d_delete_path` (it
+/// `d_drop`s any cached child — positive or negative — unhashing it).
+/// # C: O(components)
+pub fn d_drop_path(abs: &str) {
+    drop_cached_child(abs);
+}
+
 /// Split absolute `abs` into `(parent, name)` for the dcache mutation
 /// helpers. `None` for `/`, an empty path, or a trailing-slash-only path.
 /// # C: O(len)

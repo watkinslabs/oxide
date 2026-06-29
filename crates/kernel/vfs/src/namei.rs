@@ -452,6 +452,23 @@ pub fn chown_kill_priv(mode: u16, is_dir: bool) -> Option<u16> {
     if m != mode { Some(m) } else { None }
 }
 
+/// Negative-dentry caching (D5/D6) is correct ONLY on a filesystem whose
+/// directory namespace mutates EXCLUSIVELY through the VFS create/unlink/rename
+/// syscalls — each of which flushes the leaf's cached negative (create →
+/// `pathresolve::d_drop_path`, remove → `d_delete_path`, rename → `d_move_path`,
+/// the dest stale-drop). A pseudo-fs whose entries appear WITHOUT a syscall
+/// (`/proc/<pid>`, `/sys` hotplug, devpts, devtmpfs auto-nodes) has no such
+/// flush, so a stale negative would MASK the node forever; Linux relies on
+/// per-fs `d_revalidate`/`d_delete` there (not yet wired). Gate on the fs-type
+/// name — the same pseudo-fs discriminator `umount2` uses. A SB-less synthetic
+/// inode (no `i_sb`) is never cached. # C: O(1)
+fn neg_cache_ok(dir: &InodeRef) -> bool {
+    match dir.i_sb() {
+        Some(sb) => matches!(sb.s_type.name(), "ext4" | "tmpfs" | "ramfs"),
+        None => false,
+    }
+}
+
 /// Follow stacked mountpoints DOWN from `d`: while `d` is a mountpoint, switch
 /// to the mounted fs's `s_root` dentry (Linux `__follow_mount`). Returns the
 /// final dentry, its inode, and the deepest crossed mount id. # C: O(stack)
@@ -680,13 +697,13 @@ impl Nameidata {
 
             // Resolve the named child via the dcache: fast path `d_lookup`
             // (parent,name)-keyed, else slow path `i_op->lookup` + `d_add`.
-            // D6 NOTE: a confirmed miss is NOT cached as a negative dentry here.
-            // Negative caching is only Linux-correct with per-fs `d_revalidate`
-            // / `d_delete` (the deferred D5 work) — without it, a negative
-            // cached for a dynamically-appearing pseudo-fs entry (`/proc/<pid>`,
-            // `/sys` hotplug nodes, `/dev/pts/N`) that materialises WITHOUT a
-            // create syscall would mask it forever. So the miss propagates
-            // un-cached (re-walks `i_op->lookup` next time, as before).
+            // D5/D6: a confirmed MISS is cached as a NEGATIVE dentry (so a
+            // repeated lookup/stat of the same name is served from the dcache
+            // WITHOUT re-walking the blocking slow path), but ONLY on a
+            // filesystem that is `neg_cache_ok` — one whose namespace mutates
+            // exclusively through the flushed create/unlink/rename syscalls.
+            // On a pseudo-fs the miss propagates un-cached (re-walks next time),
+            // so a dynamically-appearing entry is never masked.
             let child = match crate::dcache::d_lookup_reval(&self.cur_dentry, &comp, self.flags.reval) {
                 Some(d) if !d.is_negative() => d,
                 Some(_) => return Err(VfsError::Enoent), // cached negative (definitive)
@@ -695,7 +712,20 @@ impl Nameidata {
                 // instead (Linux `LOOKUP_CACHED`). Without the flag, fall to
                 // the slow path + `d_add` as before.
                 None if self.flags.cached => return Err(VfsError::Eagain),
-                None => crate::dcache::d_add(&self.cur_dentry, &comp, self.cur_inode.lookup(&comp)?),
+                None => match self.cur_inode.lookup(&comp) {
+                    Ok(ci) => crate::dcache::d_add(&self.cur_dentry, &comp, ci),
+                    Err(VfsError::Enoent) => {
+                        // D5/D6 negative-on-miss, gated for safety (see
+                        // `neg_cache_ok`): the create syscalls flush this leaf
+                        // negative via `pathresolve::d_drop_path`, so a
+                        // subsequently-created file is never masked.
+                        if neg_cache_ok(&self.cur_inode) {
+                            crate::dcache::d_add_negative(&self.cur_dentry, &comp);
+                        }
+                        return Err(VfsError::Enoent);
+                    }
+                    Err(e) => return Err(e),
+                },
             };
 
             // Symlink handling — use the child's OWN inode (a mountpoint is a
