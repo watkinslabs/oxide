@@ -490,6 +490,11 @@ impl Mount {
     /// The dentry this mount is attached on (Linux `mnt_mountpoint`). # C: O(1)
     pub fn mountpoint(&self) -> Option<Arc<Dentry>> { self.mountpoint.lock().clone() }
 
+    /// The mounted fs ROOT dentry (Linux `mnt_root` = `mnt_sb->s_root`). # C: O(1)
+    pub fn mnt_root(&self) -> Option<Arc<Dentry>> {
+        self.mnt_root.lock().clone().or_else(|| self.sb.s_root())
+    }
+
     /// True iff this is its namespace's root mount. # C: O(log N)
     pub fn is_root(&self) -> bool {
         root_mount_id(self.ns) == Some(self.mnt_id)
@@ -716,6 +721,185 @@ pub fn register(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()>
 /// Bind-as-clone (`mount(src, tgt, NULL, MS_BIND)`). # C: O(depth)
 pub fn register_bind(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
     attach(mp, fs, Some(root))
+}
+
+// ---------------------------------------------------------------------------
+// copy_tree / clone_mnt / commit_tree — Linux `fs/namespace.c` subtree clone
+// (`copy_tree`/`clone_mnt`/`commit_tree`), the structural primitive shared by
+// mount propagation (`propagate_mnt`) and the MS_REC recursive bind. A clone
+// SHARES the source superblock (one extra `s_active`), copies its option flags
+// + MNT_LOCKED, and carries the requested propagation (CL_MAKE_SHARED / CL_SLAVE
+// / private). POSITION is resolved by the engine's unified crossing-aware
+// resolver (`rel_under` for capture, `descend` for placement) — NOT by reusing
+// the source mountpoint dentry: this engine (and every hosted fixture) positions
+// nested mounts on UNDERLAY dentries reached by descent, so a peer/target lives
+// at a DISTINCT dentry the same-dentry Linux shortcut cannot name. `rel_under`
+// is the same in-fs/underlay-unifying resolver MS_MOVE/pivot_root retain.
+// ---------------------------------------------------------------------------
+
+/// Propagation type stamped on a [`clone_mnt`] copy (Linux `CL_*` clone flags).
+#[derive(Clone, Copy)]
+pub(super) enum CloneType { MakeShared, Slave, Private }
+
+/// A node of a [`copy_tree`] result: the cloned mount plus its mountpoint
+/// position RELATIVE to the copy's base mountpoint (so [`commit_tree`] can
+/// `descend` it under any destination base). # C: field
+pub(super) struct CloneNode { pub m: Arc<Mount>, pub rel: String }
+
+/// Linux `clone_mnt`: build a NEW mount over `src`'s backend, copy its option
+/// flags + MNT_LOCKED, and stamp the requested propagation. UNLINKED — no
+/// mountpoint, parent, hash or `MOUNTS` entry yet (`commit_tree` wires those).
+/// MakeShared joins peer group `pg`; Slave chains onto `master`'s slave list;
+/// Private stands alone.
+///
+/// SB handling follows THIS engine's [`build_sb`] (not Linux's literal
+/// `sb->s_active++` share): a dev-backed backend SHARES one `SuperBlock` via
+/// `sget` (the Linux `s_active` share for the same device), while a pseudo /
+/// anon backend gets a FRESH per-clone `SuperBlock` with a DISTINCT `s_root`.
+/// Sharing one anon `s_root` across clones would re-introduce the singleton-
+/// `s_root` ambiguity `rel_under`/`pivot_root` cannot disambiguate (the 203/EXEC
+/// executor-pivot repro) — distinct identity per clone is what this dentry-
+/// identity engine relies on, exactly as `register_bind` already does. # C: O(1)
+pub(super) fn clone_mnt(src: &Arc<Mount>, ty: CloneType, pg: u64, master: &Arc<Mount>, ns: u64)
+    -> Arc<Mount> {
+    let new_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
+    let root_inode = src.root.clone().or_else(|| src.fs().root());
+    let sb = build_sb(src.fs().clone(), root_inode, src.mount_point_str());
+    let clone = new_mount(sb, src.mount_point_str(), None, 0, src.root.clone(), new_id, ns);
+    clone.flags.store(src.flags.load(Ordering::Acquire), Ordering::Release);
+    // Keep only MNT_LOCKED on the copy (Linux `clone_mnt`); drop transient marks.
+    clone.mnt_internal_flags.store(
+        src.mnt_internal_flags.load(Ordering::Acquire) & MNT_LOCKED, Ordering::Release);
+    match ty {
+        CloneType::MakeShared => {
+            clone.propagation.store(Propagation::Shared as u8, Ordering::Release);
+            clone.peer_group.store(pg, Ordering::Release);
+        }
+        CloneType::Slave => {
+            clone.propagation.store(Propagation::Slave as u8, Ordering::Release);
+            *clone.mnt_master.lock() = Arc::downgrade(master);
+            master.mnt_slave_list.lock().push(Arc::downgrade(&clone));
+        }
+        CloneType::Private => {
+            clone.propagation.store(Propagation::Private as u8, Ordering::Release);
+        }
+    }
+    clone
+}
+
+/// Release a [`clone_mnt`] copy that will NOT be committed: unlink it from any
+/// master's slave list and drop its `SuperBlock` active ref ([`build_sb`]
+/// seeded one), so a skipped/failed clone leaves the SB active count and slave
+/// links balanced. # C: O(master slaves)
+fn release_clone(m: &Arc<Mount>) {
+    if let Some(master) = m.mnt_master.lock().upgrade() {
+        master.mnt_slave_list.lock()
+            .retain(|w| w.upgrade().map(|x| x.mnt_id != m.mnt_id).unwrap_or(false));
+    }
+    *m.mnt_master.lock() = Weak::new();
+    m.sb.deactivate_super();
+}
+
+/// Linux `copy_tree`: recursively CLONE the mount subtree at `src` — the root
+/// itself when `include_root`, plus every BINDABLE submount whose mountpoint
+/// lies under `base_mp` — preserving peer-group / slave relations per `ty`.
+/// UNBINDABLE submounts are dropped (Linux `IS_MNT_UNBINDABLE`, D15). Each clone
+/// records its position relative to `base_mp` via [`rel_under`] (the crossing
+/// resolver handling both in-fs and underlay children) for later `descend`.
+/// Returns the clones in PRE-ORDER (parents first), UNLINKED from the live tree.
+/// # C: O(N_subtree × depth)
+pub(super) fn copy_tree(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ty: CloneType, pg: u64,
+                        master: &Arc<Mount>, ns: u64, include_root: bool,
+                        exclude: Option<&Arc<Dentry>>) -> Vec<CloneNode> {
+    let mut out: Vec<CloneNode> = Vec::new();
+    copy_tree_into(src, base_mp, ty, pg, master, ns, include_root, exclude, &mut out);
+    out
+}
+
+fn copy_tree_into(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ty: CloneType, pg: u64,
+                  master: &Arc<Mount>, ns: u64, include_root: bool,
+                  exclude: Option<&Arc<Dentry>>, out: &mut Vec<CloneNode>) {
+    if include_root {
+        let rel = src.mountpoint().and_then(|d| rel_under(&d, Some(base_mp))).unwrap_or_default();
+        out.push(CloneNode { m: clone_mnt(src, ty, pg, master, ns), rel });
+    }
+    // Snapshot children OUT of the lock before recursing (recursion re-locks).
+    let children: Vec<Arc<Mount>> = src.mnt_mounts.lock().iter().cloned().collect();
+    for child in children.iter() {
+        if is_unbindable(child) { continue; }                       // D15
+        let Some(child_mp) = child.mountpoint() else { continue; };
+        // Skip a submount that lives under `exclude` (the recursive-bind DESTINATION):
+        // never clone the staging tree into itself, and prune its whole subtree.
+        if let Some(ex) = exclude {
+            if rel_under(&child_mp, Some(ex)).is_some() { continue; }
+        }
+        let Some(rel) = rel_under(&child_mp, Some(base_mp)) else { continue; };
+        if rel.is_empty() { continue; }
+        out.push(CloneNode { m: clone_mnt(child, ty, pg, master, ns), rel });
+        copy_tree_into(child, base_mp, ty, pg, master, ns, false, exclude, out);
+    }
+}
+
+/// Mark `rel`'s subtree dead so every later [`commit_tree`] node beneath a
+/// failed/skipped parent is skipped too. # C: O(1)
+fn mark_dead(dead: &mut Vec<String>, rel: &str) {
+    let mut p = String::from(rel); p.push('/'); dead.push(p);
+}
+
+/// Linux `commit_tree`: splice a pre-built [`copy_tree`] clone subtree under the
+/// destination — root at `dest_base`, each descendant at `descend(dest_base,
+/// rel)` (falling back to `fallback` for a degenerate dest whose mounted root
+/// cannot resolve the slot). Per node, in pre-order: RESERVE a per-ns slot
+/// ([`mntns::count_mounts`]) BEFORE any visible state; take the `struct
+/// mountpoint` D_MOUNTED hold ([`get_mountpoint`], EXACTLY ONE per crossing —
+/// the refcount-sensitive line); wire intrusive parent/child + crossing-hash
+/// links by dentry identity ([`parent_by_dentry`], as [`graft_realized`]);
+/// insert into `MOUNTS`; `commit_mounts`. A node that cannot be positioned or
+/// fails the cap is SKIPPED with its descendants (their clones' active SB ref +
+/// slave link are released via [`release_clone`]) — never half-attached. One
+/// [`mntns::bump_gen`] at the end. Returns the count committed. # C: O(N × depth)
+pub(super) fn commit_tree(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>,
+                          fallback: Option<&Arc<Dentry>>, ns: u64) -> usize {
+    let mut committed = 0usize;
+    let mut dead: Vec<String> = Vec::new();
+    'node: for node in nodes.into_iter() {
+        let CloneNode { m, rel } = node;
+        for d in dead.iter() {
+            if rel.starts_with(d.as_str()) { release_clone(&m); continue 'node; }
+        }
+        let mp_d = if rel.is_empty() {
+            dest_base.clone()
+        } else {
+            let resolved = descend(dest_base, &rel).or_else(|| fallback.and_then(|f| {
+                if Arc::ptr_eq(f, dest_base) { None } else { descend(f, &rel) }
+            }));
+            match resolved {
+                Some(d) => d,
+                None => { mark_dead(&mut dead, &rel); release_clone(&m); continue; }
+            }
+        };
+        // RESERVE before any visible state (Linux `count_mounts` in
+        // `attach_recursive_mnt`); over the per-ns cap ⇒ skip this node+subtree.
+        if mntns::count_mounts(ns, 1).is_err() { mark_dead(&mut dead, &rel); release_clone(&m); continue; }
+        let parent_id = parent_by_dentry(ns, &mp_d);
+        let rendered = abs_string(&mp_d);
+        *m.mountpoint.lock() = Some(mp_d.clone());
+        *m.rendered_path.lock() = rendered;
+        m.parent_id.store(parent_id, Ordering::Release);
+        // The D_MOUNTED hold — ONE `get_mountpoint` per cloned crossing.
+        *m.mnt_mp.lock() = Some(get_mountpoint(&mp_d));
+        if let Some(p) = mount_by_id(parent_id) {
+            *m.mnt_parent.lock() = Arc::downgrade(&p);
+            p.mnt_mounts.lock().push(m.clone());
+        }
+        MOUNTS.lock().insert(m.mnt_id, m.clone());
+        wire_crossing(ns, &mp_d, m.mnt_id);
+        hash_insert(parent_id, dptr(&mp_d), m.mnt_id);
+        mntns::commit_mounts(ns, 1);
+        committed += 1;
+    }
+    if committed > 0 { mntns::bump_gen(ns); }
+    committed
 }
 
 /// [D14] `attach_recursive_mnt` (Linux `fs/namespace.c`): graft a new mount on
@@ -1014,50 +1198,34 @@ pub(crate) fn reap_ns(ns: u64) {
     mntns::bump_gen(ns);
 }
 
-/// MS_REC recursive bind (`docs/16§6`). # C: O(N×depth)
+/// MS_REC recursive bind (`docs/16§6`): mirror the SUBMOUNTS of the source tree
+/// under `tgt` (the source ROOT itself is bound separately by the caller). Linux
+/// `copy_tree`+`commit_tree`: each submount is CLONED (sharing its SB, copying
+/// flags+MNT_LOCKED) as a PRIVATE bind, UNBINDABLE submounts dropped, the whole
+/// subtree spliced under the destination in one engine pass with a single
+/// D_MOUNTED hold per crossing. Mirror under the TARGET's mounted ROOT (the bind
+/// already covers `tgt`, and a submount's slot lives INSIDE that clone — where
+/// namei lands after crossing `tgt`); fall back to the bare `tgt` underlay for a
+/// degenerate dest whose mounted root cannot resolve the slot, so a plain-dir
+/// recursive bind still mirrors (the NAMESPACE-226 procfs-clone case). # C: O(N×depth)
 pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
     let ns = current_ns();
-    let src_m = mount_exact_at(ns, src);
-    if src_m.is_none() && !is_global_root(src) { return 0; }
-    // Unbindable sources are not cloned (Linux `IS_MNT_UNBINDABLE`).
-    if let Some(ref sm) = src_m {
-        if Propagation::from_u8(sm.propagation.load(Ordering::Acquire)) == Propagation::Unbindable {
-            return 0;
-        }
-    }
-    let src_id = src_m.as_ref().map(|m| m.mnt_id);
-    let src_mp = src_m.and_then(|m| m.mountpoint());
-    // Mirror submounts under the TARGET's mounted ROOT, not its bare mountpoint
-    // dentry: the top-level bind already covers `tgt`, and a submount's slot
-    // lives INSIDE that clone — where namei lands after crossing `tgt` (Linux
-    // `attach_recursive_mnt` grafts relative to the dest mount's root). The bare
-    // `tgt` underlay is the empty staging dir; descending it ENOENT'd `proc`,
-    // dropping the procfs clone so udevd's private-ns open of
-    // `<stage>/proc/sys/kernel/domainname` failed (step NAMESPACE 226). Fall
-    // back to the bare `tgt` subtree when the clone root can't resolve the slot
-    // (degenerate dest) so a plain-dir recursive bind still mirrors.
+    let Some(src_m) = mount_exact_at(ns, src) else { return 0; };
+    // Unbindable source root is not cloned (Linux `IS_MNT_UNBINDABLE`, D15).
+    if is_unbindable(&src_m) { return 0; }
+    // Base mountpoint to capture relative positions against: the source root's
+    // own mountpoint, or the global root for the namespace-root source.
+    let Some(base_mp) = src_m.mountpoint().or_else(global_root) else { return 0; };
+    // Mirror under the TARGET's mounted ROOT, not its bare mountpoint dentry.
     let mut tgt_base = tgt.clone();
     while let Some(id) = tgt_base.mounted_mount(ns) {
         match root_dentry_for_mount_id(id) { Some(sr) => tgt_base = sr, None => break }
     }
-    let snap = mounts_in_ns(ns);
-    let mut n = 0;
-    for m in snap.iter() {
-        if Some(m.mnt_id) == src_id { continue; }
-        if Propagation::from_u8(m.propagation.load(Ordering::Acquire)) == Propagation::Unbindable { continue; }
-        let Some(mp) = m.mountpoint() else { continue; };
-        if rel_under(&mp, Some(tgt)).is_some() { continue; }
-        let Some(rel) = rel_under(&mp, src_mp.as_ref()) else { continue; };
-        if rel.is_empty() { continue; }
-        let Some(new_mp) = descend(&tgt_base, &rel)
-            .or_else(|| if Arc::ptr_eq(&tgt_base, tgt) { None } else { descend(tgt, &rel) })
-        else { continue; };
-        let root = m.root.clone().or_else(|| m.fs().root());
-        if let Some(r) = root {
-            if register_bind(Some(new_mp), m.fs().clone(), r).is_ok() { n += 1; }
-        }
-    }
-    n
+    // Clone the source's submount SUBTREE (root EXCLUDED — already bound) as
+    // private binds, then splice it under the destination base, falling back to
+    // the bare `tgt` underlay when the mounted root cannot resolve a slot.
+    let nodes = copy_tree(&src_m, &base_mp, CloneType::Private, 0, &src_m, ns, false, Some(tgt));
+    commit_tree(nodes, &tgt_base, Some(tgt), ns)
 }
 
 /// `mount(MS_MOVE)`: relocate the mount at dentry `from` (plus its subtree) to

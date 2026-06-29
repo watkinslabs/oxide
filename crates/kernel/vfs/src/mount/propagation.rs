@@ -79,15 +79,18 @@ pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
         Some(p) => p, None => return 0,
     };
     let targets = propagation_targets(&parent);
+    // Private/root parent (the common boot case) originates nothing — early-out
+    // BEFORE any copy_tree clone (boot-safety).
     if targets.is_empty() { return 0; }
     let new_mp = match newm.mountpoint() { Some(d) => d, None => return 0 };
+    // Position of the source under its parent — replicated at the same relative
+    // position under each propagation target (peers/targets live at DISTINCT
+    // dentries, so the Linux same-mountpoint-dentry shortcut does not apply in
+    // this engine; `descend` re-materialises the slot per target).
     let rel = match rel_under(&new_mp, parent.mountpoint().as_ref()) {
         Some(r) if !r.is_empty() => r, _ => return 0,
     };
-    let root = match newm.root.clone().or_else(|| newm.fs().root()) {
-        Some(r) => r, None => return 0,
-    };
-    // CL_MAKE_SHARED over the source: it and its peer copies form a new group.
+    // CL_MAKE_SHARED over the source: it and its peer copies form a NEW group.
     let parent_pg = parent.peer_group.load(Ordering::Acquire);
     let grp = make_shared_group(&newm);
     let mut n = 0;
@@ -95,20 +98,16 @@ pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
         if peer.ns != ns { continue; }
         let base = match peer.mountpoint().or_else(global_root) { Some(b) => b, None => continue };
         let Some(dst) = descend(&base, &rel) else { continue; };
-        if register_bind(Some(dst.clone()), newm.fs().clone(), root.clone()).is_err() { continue; }
-        n += 1;
-        // Tag the freshly created copy by target propagation type.
-        let Some(copy) = mount_exact_at(ns, &dst) else { continue; };
+        // A copy landing on a PEER of the parent group is itself shared in the
+        // new group (CL_MAKE_SHARED); a copy on a SLAVE becomes a slave of the
+        // source (CL_SLAVE) — receives master events, never originates.
         let is_peer = Propagation::from_u8(peer.propagation.load(Ordering::Acquire)) == Propagation::Shared
             && peer.peer_group.load(Ordering::Acquire) == parent_pg;
-        if is_peer {
-            copy.peer_group.store(grp, Ordering::Release);
-            copy.propagation.store(Propagation::Shared as u8, Ordering::Release);
-        } else {
-            *copy.mnt_master.lock() = Arc::downgrade(&newm);
-            newm.mnt_slave_list.lock().push(Arc::downgrade(&copy));
-            copy.propagation.store(Propagation::Slave as u8, Ordering::Release);
-        }
+        let ty = if is_peer { CloneType::MakeShared } else { CloneType::Slave };
+        // Clone the source subtree (freshly-created `newm` is childless at this
+        // point, so this is one node) and splice it at `dst` under the target.
+        let nodes = copy_tree(&newm, &new_mp, ty, grp, &newm, ns, true, None);
+        n += commit_tree(nodes, &dst, None, ns);
     }
     n
 }
