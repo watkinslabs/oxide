@@ -197,6 +197,31 @@ pub(crate) fn unlink_unix_socket_path(p: &str) -> bool {
     true
 }
 
+/// Final path component of a raw user pathname (Linux `last` of
+/// `filename_parentat`). Trailing slashes are stripped first; the root `/`
+/// and a bare empty string yield `""`. # C: O(N)
+pub(crate) fn last_component(raw: &str) -> &str {
+    let trimmed = raw.trim_end_matches('/');
+    trimmed.rsplit('/').next().unwrap_or(trimmed)
+}
+
+/// Linux `do_rmdirat`: a final component of `.` → EINVAL, `..` → ENOTEMPTY
+/// (the `LAST_DOT` / `LAST_DOTDOT` cases). Checked on the raw path before
+/// resolution, which would otherwise normalise the dots away. # C: O(N)
+pub(crate) fn rmdir_dot_errno(raw: &str) -> Option<i64> {
+    match last_component(raw) {
+        "."  => Some(-(Errno::Einval.as_i32() as i64)),
+        ".." => Some(-(Errno::Enotempty.as_i32() as i64)),
+        _    => None,
+    }
+}
+
+/// Linux `do_renameat2`: EBUSY when either side's final component is not
+/// `LAST_NORM` — i.e. `.`, `..`, or the root (`""` after trimming). # C: O(N)
+pub(crate) fn rename_component_busy(raw: &str) -> bool {
+    matches!(last_component(raw), "" | "." | "..")
+}
+
 /// Strip a trailing `/` for the PARENT-SPLIT of create ops (`mkdir`/`mkdirat`):
 /// `mkdir /var/` ≡ `mkdir /var` (POSIX). Root `/` is preserved. GNU `mkdir -p`
 /// walks ancestors with a trailing slash on each prefix; without this the ext4
