@@ -328,11 +328,7 @@ pub fn register_static_files() {
     );
     crate::reg::register(
         "/proc/sys/fs/binfmt_misc",
-        kernfs::PseudoDir::new_root(
-            kernfs::dir_ino("/proc/sys/fs/binfmt_misc"),
-            crate::reg::PROCFS_FSID,
-            false,
-        ) as InodeRef,
+        kernfs::PseudoDir::new_root(kernfs::dir_ino("/proc/sys/fs/binfmt_misc"), crate::reg::PROCFS_FSID, false).as_inode(),
     );
     crate::reg::register(
         "/proc/sys/kernel/hostname",
