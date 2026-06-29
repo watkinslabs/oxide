@@ -6,7 +6,7 @@ use syscall::errno::Errno;
 use hal::USER_VA_END;
 use vfs::{File, OpenFlags};
 
-use crate::open_common::{dup_fd_target, open_proc_fd, enforce_open_perm, O_CREAT, O_TRUNC,
+use crate::open_common::{dup_fd_target, open_proc_fd, enforce_open_perm, O_CREAT, O_EXCL, O_TRUNC,
     O_DIRECTORY, O_NOFOLLOW, O_TMPFILE};
 
 /// `sys_openat(dirfd, path, flags, mode)` — slot 257. No openat2 RESOLVE_*
@@ -192,6 +192,12 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         }
     } else if let Some(vp) = extra_resolved
         .unwrap_or_else(|| crate::pathresolve::resolve_path(path_str, nofollow)) {
+        // O_CREAT|O_EXCL: an existing final component is a hard error (Linux
+        // `do_last`/`lookup_open`: `if (open_flag & O_EXCL) → -EEXIST`).
+        // O_TMPFILE short-circuited above, so this is the ordinary-open path.
+        if (flags & O_CREAT) != 0 && (flags & O_EXCL) != 0 {
+            return -(Errno::Eexist.as_i32() as i64);
+        }
         (vp.inode, vp.mnt_id, false)
     } else if (flags & O_CREAT) != 0 {
         let cur = match sched::live::current() {
@@ -209,7 +215,9 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
                     Ok(i) => (i, mnt.mnt_id, true),
                     Err(e) => {
                         crate::namei_common::trace_run_vfs_error(b"openat-create", path_str, e);
-                        return -(Errno::Enoent.as_i32() as i64);
+                        // D7: surface the real VfsError→errno (EACCES/EROFS/
+                        // ENOSPC/ENOTDIR/…) instead of collapsing to ENOENT.
+                        return crate::namei_common::errno_from_vfs(e);
                     }
                 }
             }
