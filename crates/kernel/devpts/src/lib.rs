@@ -21,7 +21,8 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use sync::{Spinlock, Tty as TtyClass};
 use tty::Pair as TtyPair;
 use tty::Sig;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError};
+use vfs::{FileOps, default_inode_ops, mk_mode};
 
 /// Spinlock-wrapped pair shared between the master and slave inodes.
 pub struct LockedPair {
@@ -55,26 +56,42 @@ impl LockedPair {
     pub fn set_locked(&self, v: bool) { self.locked.store(v, Ordering::Release); }
 }
 
-/// `/dev/ptmx`-side inode. Each Arc<LockedPair> backs exactly one
-/// master inode (created at open-time by `allocate_pair`) and one
-/// slave inode (registered at /dev/pts/<n>).
-pub struct PtyMasterInode { pub pair: Arc<LockedPair> }
-pub struct PtySlaveInode  { pub pair: Arc<LockedPair> }
+/// Recover the backing `LockedPair` from a pty inode's `i_private`. # C: O(1)
+fn pair_of(inode: &Inode) -> KResult<&LockedPair> {
+    inode.private::<LockedPair>().ok_or(VfsError::Einval)
+}
 
-impl Inode for PtyMasterInode {
-    fn ino(&self) -> Ino { self.pair.ino_master }
-    fn fsid(&self) -> u64 { devfs::DEVFS_FSID }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn rdev(&self) -> u32 { 0x8000 | (self.pair.pts_num() & 0xff) as u32 }
-    fn perm(&self) -> Option<u16> { Some(0o666) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
-        // Yield-block until the slave has written something. Mirrors
-        // PtySlaveInode::read.
+/// Build the master-side (`/dev/ptmx`) inode for `pair`. CharDev `0o666`,
+/// rdev `0x8000|pts`, `i_private` = the shared `Arc<LockedPair>`. # C: O(1)
+pub fn make_master_inode(pair: Arc<LockedPair>) -> InodeRef {
+    let ino = pair.ino_master;
+    let rdev = 0x8000 | (pair.pts_num() & 0xff) as u32;
+    InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtyMasterFileOps))
+        .fsid(devfs::DEVFS_FSID).rdev(rdev)
+        .private(pair as Arc<dyn core::any::Any + Send + Sync>)
+        .build()
+}
+
+/// Build the slave-side (`/dev/pts/<n>`) inode for `pair`. CharDev `0o620`,
+/// rdev `0x8800|pts`. # C: O(1)
+pub fn make_slave_inode(pair: Arc<LockedPair>) -> InodeRef {
+    let ino = pair.ino_slave;
+    let rdev = 0x8800 | (pair.pts_num() & 0xff) as u32;
+    InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o620), default_inode_ops(), Arc::new(PtySlaveFileOps))
+        .fsid(devfs::DEVFS_FSID).rdev(rdev)
+        .private(pair as Arc<dyn core::any::Any + Send + Sync>)
+        .build()
+}
+
+/// `file_operations` for the master (`/dev/ptmx`) side of a pty pair.
+struct PtyMasterFileOps;
+impl FileOps for PtyMasterFileOps {
+    fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+        let pair = pair_of(inode)?;
+        // Yield-block until the slave has written something. Mirrors the slave.
         loop {
             let n = {
-                let mut g = self.pair.inner.lock();
+                let mut g = pair.inner.lock();
                 if g.master_readable() { g.master_read(buf) } else { 0 }
             };
             if n > 0 { return Ok(n); }
@@ -84,13 +101,15 @@ impl Inode for PtyMasterInode {
     }
     /// F201: O_NONBLOCK read — EAGAIN when no data, so select()+read
     /// loops (dropbear's session pump) don't spin or block forever.
-    fn read_nonblock(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
-        let mut g = self.pair.inner.lock();
+    fn read_nonblock(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+        let pair = pair_of(inode)?;
+        let mut g = pair.inner.lock();
         if g.master_readable() { Ok(g.master_read(buf)) } else { Err(VfsError::Eagain) }
     }
-    fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
+    fn write(&self, inode: &Inode, _o: u64, buf: &[u8]) -> KResult<usize> {
+        let pair = pair_of(inode)?;
         let (n, signals, fg) = {
-            let mut g = self.pair.inner.lock();
+            let mut g = pair.inner.lock();
             let n = g.master_write(buf);
             let mut bits = 0u64;
             if g.pending_sigint  { bits |= 1u64 << 1;  g.pending_sigint  = false; }
@@ -104,8 +123,9 @@ impl Inode for PtyMasterInode {
     /// F201: readiness for select/poll. POLLIN when slave→master
     /// queue has bytes; POLLOUT always (we don't backpressure on
     /// master writes today).
-    fn poll(&self) -> u32 {
-        let g = self.pair.inner.lock();
+    fn poll(&self, inode: &Inode) -> u32 {
+        let pair = match pair_of(inode) { Ok(p) => p, Err(_) => return vfs::POLL_ERR };
+        let g = pair.inner.lock();
         let mut mask = vfs::POLL_OUT;
         if g.master_readable() { mask |= vfs::POLL_IN; }
         mask
@@ -117,9 +137,10 @@ impl Inode for PtyMasterInode {
     /// `slave_readable()` each tick, which `master_hangup` flips true via
     /// `hung_up`, so it wakes and sees EOF without an explicit nudge.
     /// # C: O(1)
-    fn on_release(&self) {
+    fn on_release(&self, inode: &Inode) {
+        let pair = match pair_of(inode) { Ok(p) => p, Err(_) => return };
         let fg = {
-            let mut g = self.pair.inner.lock();
+            let mut g = pair.inner.lock();
             g.master_hangup();
             g.foreground_pgid
         };
@@ -134,27 +155,24 @@ impl Inode for PtyMasterInode {
     }
 }
 
-impl Inode for PtySlaveInode {
-    fn ino(&self) -> Ino { self.pair.ino_slave }
-    fn fsid(&self) -> u64 { devfs::DEVFS_FSID }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn rdev(&self) -> u32 { 0x8800 | (self.pair.pts_num() & 0xff) as u32 }
-    fn perm(&self) -> Option<u16> { Some(0o620) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// `file_operations` for the slave (`/dev/pts/<n>`) side of a pty pair.
+struct PtySlaveFileOps;
+impl FileOps for PtySlaveFileOps {
     /// Linux `pts_unix98_lookup`: a `TIOCSPTLCK`-locked slave can't be
     /// opened (`-EIO`) — the master must `unlockpt` first.
     /// # C: O(1)
-    fn on_open(&self) -> KResult<()> {
-        if self.pair.is_locked() { Err(VfsError::Eio) } else { Ok(()) }
+    fn on_open(&self, inode: &Inode) -> KResult<()> {
+        let pair = pair_of(inode)?;
+        if pair.is_locked() { Err(VfsError::Eio) } else { Ok(()) }
     }
-    fn read(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+    fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+        let pair = pair_of(inode)?;
         // Yield-block until at least one byte (or a complete line under
         // ICANON) is available on the master→slave queue. Matches the
         // ConsoleInode pattern; v1 has no proper waitqueue + IRQ wake.
         loop {
             let n = {
-                let mut g = self.pair.inner.lock();
+                let mut g = pair.inner.lock();
                 if g.slave_readable() { g.slave_read(buf) } else { 0 }
             };
             if n > 0 { return Ok(n); }
@@ -163,12 +181,14 @@ impl Inode for PtySlaveInode {
         }
     }
     /// F201: O_NONBLOCK read — EAGAIN when master→slave queue empty.
-    fn read_nonblock(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
-        let mut g = self.pair.inner.lock();
+    fn read_nonblock(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+        let pair = pair_of(inode)?;
+        let mut g = pair.inner.lock();
         if g.slave_readable() { Ok(g.slave_read(buf)) } else { Err(VfsError::Eagain) }
     }
-    fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
-        let mut g = self.pair.inner.lock();
+    fn write(&self, inode: &Inode, _o: u64, buf: &[u8]) -> KResult<usize> {
+        let pair = pair_of(inode)?;
+        let mut g = pair.inner.lock();
         // Master hung up → slave writes fail with EIO (Linux pty semantics).
         if g.slave_hung_up() { return Err(VfsError::Eio); }
         Ok(g.slave_write(buf))
@@ -176,8 +196,9 @@ impl Inode for PtySlaveInode {
     /// F201: readiness for select/poll. POLLIN when master→slave
     /// queue has bytes; POLLOUT always (slave→master is bounded by
     /// pty buffer but we don't surface backpressure yet).
-    fn poll(&self) -> u32 {
-        let g = self.pair.inner.lock();
+    fn poll(&self, inode: &Inode) -> u32 {
+        let pair = match pair_of(inode) { Ok(p) => p, Err(_) => return vfs::POLL_ERR };
+        let g = pair.inner.lock();
         let mut mask = vfs::POLL_OUT;
         if g.slave_readable() { mask |= vfs::POLL_IN; }
         mask
@@ -232,8 +253,8 @@ pub fn allocate_pair() -> (InodeRef, u32) {
         if g.len() <= n as usize { g.resize_with(n as usize + 1, || Arc::clone(&pair)); }
         else { g[n as usize] = Arc::clone(&pair); }
     }
-    let master: InodeRef = Arc::new(PtyMasterInode { pair: Arc::clone(&pair) });
-    let slave:  InodeRef = Arc::new(PtySlaveInode  { pair });
+    let master = make_master_inode(Arc::clone(&pair));
+    let slave  = make_slave_inode(pair);
     let path = format!("/dev/pts/{}", n);
     devfs::register_owned(path, slave);
     (master, n)
@@ -255,7 +276,7 @@ impl LockedPair {
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    devfs::register("/dev/ptmx", Arc::new(PtmxSentinelInode) as InodeRef);
+    devfs::register("/dev/ptmx", make_ptmx_sentinel_inode());
     devfs::register_dir("/dev/pts");
 }
 
@@ -390,20 +411,20 @@ fn push_dec(s: &mut alloc::string::String, mut n: u32) {
     while i > 0 { i -= 1; s.push(buf[i] as char); }
 }
 
+/// `file_operations` for the `/dev/ptmx` sentinel — read/write return EIO
+/// (the real factory work is the open-path special-case → `allocate_pair`).
+struct PtmxSentinelFileOps;
+impl FileOps for PtmxSentinelFileOps {
+    fn read(&self, _i: &Inode, _o: u64, _b: &mut [u8]) -> KResult<usize> { Err(VfsError::Eio) }
+    fn write(&self, _i: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+}
+
 /// Sentinel inode for `/dev/ptmx`. Its only role is to surface a
 /// CharDev type at lookup-time — the open path detects this exact
 /// path and routes to `allocate_pair`. read/write on the sentinel
-/// itself return EIO (caller used the wrong fd).
-pub struct PtmxSentinelInode;
-
-impl Inode for PtmxSentinelInode {
-    fn ino(&self) -> Ino { 0x6000_FFFF }
-    fn fsid(&self) -> u64 { devfs::DEVFS_FSID }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn rdev(&self) -> u32 { 0x0502 }
-    fn perm(&self) -> Option<u16> { Some(0o666) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Err(VfsError::Eio) }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+/// itself return EIO (caller used the wrong fd). # C: O(1)
+pub fn make_ptmx_sentinel_inode() -> InodeRef {
+    InodeBuilder::new(0x6000_FFFF, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
+        .fsid(devfs::DEVFS_FSID).rdev(0x0502)
+        .build()
 }
