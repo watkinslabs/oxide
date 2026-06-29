@@ -25,32 +25,17 @@ pub(crate) fn do_access(dirfd: i32, path_ptr: u64, mode: u32, flags: u32) -> i64
     const VALID_FLAGS: u32 = AT_EACCESS | AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH;
     if flags & !VALID_FLAGS != 0 { return -(Errno::Einval.as_i32() as i64); }
     let no_follow = flags & AT_SYMLINK_NOFOLLOW != 0;
-    let vp = if (flags & AT_EMPTY_PATH) != 0 && (path_ptr == 0 || {
-        path_ptr < hal::USER_VA_END
-            && unsafe { devfs::read_user_cstr(path_ptr, 1) }.map_or(true, |b| b.is_empty())
-    }) {
-        let cur = match sched::live::current() {
-            Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-        };
-        // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot per 13§5.
-        let fdt = match unsafe { cur.fd_table_ref() } {
-            Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-        };
-        let f = match fdt.get(dirfd) {
-            Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
-        };
-        vfs::VfsPath { mnt_id: f.mnt_id(), dentry: f.dentry().clone(), inode: f.inode().clone(), last_component: None }
-    } else {
-        let raw = match crate::namei_common::read_user_path(path_ptr) {
-            Ok(s) => s,
-            Err(rv) => return rv,
-        };
-        let resolved = match crate::pathresolve::resolve_at_result(dirfd, &raw) {
-            Ok(p) => p, Err(rv) => return rv,
-        };
-        match crate::pathresolve::resolve_path_result(resolved.as_str(), no_follow) {
-            Ok(p) => p, Err(e) => return crate::namei_common::errno_from_vfs(e),
-        }
+    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty/NULL
+    // path operates on the dirfd, ENOENT without it); faccessat FOLLOWS the
+    // trailing symlink (LOOKUP_FOLLOW) unless AT_SYMLINK_NOFOLLOW.
+    let lf = vfs::LookupFlags {
+        empty: (flags & AT_EMPTY_PATH) != 0,
+        no_follow_final: no_follow,
+        follow: !no_follow,
+        ..Default::default()
+    };
+    let vp = match crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf) {
+        Ok(p) => p, Err(rv) => return rv,
     };
     // W_OK on a read-only mount → EROFS (Linux access(2)).
     if mode & W_OK != 0 && vp.mnt_id != 0 {

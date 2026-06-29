@@ -90,12 +90,16 @@ pub(crate) fn resolve_xattr_at(dirfd: i32, path_ptr: u64, at_flags: u32) -> Resu
     if at_flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH) != 0 {
         return Err(-(Errno::Einval.as_i32() as i64));
     }
-    if at_flags & AT_EMPTY_PATH != 0 {
-        // SAFETY: bounded 1-byte probe via the validated helper; only checks emptiness.
-        let empty = unsafe { devfs::read_user_cstr(path_ptr, 1) }.map_or(true, |b| b.is_empty());
-        if empty { return Ok(resolve_fd_file(dirfd)?.inode().clone()); }
-    }
-    resolve_path_inode(dirfd, path_ptr, at_flags & AT_SYMLINK_NOFOLLOW == 0)
+    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty path
+    // operates on the dirfd, ENOENT without it); FOLLOW unless AT_SYMLINK_NOFOLLOW.
+    let follow = at_flags & AT_SYMLINK_NOFOLLOW == 0;
+    let lf = vfs::LookupFlags {
+        empty: at_flags & AT_EMPTY_PATH != 0,
+        no_follow_final: !follow,
+        follow,
+        ..Default::default()
+    };
+    crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf).map(|p| p.inode)
 }
 
 /// Resolve an open fd to its `Arc<File>` (carries `mnt_id` for EROFS). # C: O(1)
@@ -110,15 +114,16 @@ pub(crate) fn resolve_fd_file(fd: i32) -> Result<Arc<File>, i64> {
 pub(crate) fn resolve_at_target_mnt(dirfd: i32, path_ptr: u64, flags: u32, follow: bool)
     -> Result<(InodeRef, u64), i64>
 {
-    if (flags & AT_EMPTY_PATH) != 0 {
-        // SAFETY: bounded 1-byte probe via the validated helper; only checks emptiness.
-        let empty = unsafe { devfs::read_user_cstr(path_ptr, 1) }.map_or(true, |b| b.is_empty());
-        if empty {
-            let f = resolve_fd_file(dirfd)?;
-            return Ok((f.inode().clone(), f.mnt_id()));
-        }
-    }
-    resolve_path_mnt(dirfd, path_ptr, follow)
+    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty path
+    // operates on the dirfd, ENOENT without it); FOLLOW unless AT_SYMLINK_NOFOLLOW.
+    let lf = vfs::LookupFlags {
+        empty: (flags & AT_EMPTY_PATH) != 0,
+        no_follow_final: !follow,
+        follow,
+        ..Default::default()
+    };
+    let p = crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf)?;
+    Ok((p.inode, p.mnt_id))
 }
 
 /// EROFS when `mnt_id` names a read-only mount (Linux `mnt_want_write`). A
