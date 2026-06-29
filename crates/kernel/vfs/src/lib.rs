@@ -48,7 +48,7 @@ pub mod poll_subs;
 
 pub use dcache::{d_add, d_add_negative, d_alloc, d_drop, d_instantiate, d_invalidate, d_lookup, d_make_root, d_move, d_obtain_alias, d_splice_alias, dget, dput};
 pub use dentry::{Dentry, D_HASHED, D_NEGATIVE, D_ROOT};
-pub use devnode::{BlockDevOps, CharDevOps, Devt, DeviceNodeData, init_special_inode, make_device_node_inode, make_fifo_inode, make_socket_inode, device_inode_open, device_inode_ioctl, device_inode_devt, lookup_blkdev, lookup_chrdev, register_blkdev, register_chrdev, unregister_blkdev, unregister_chrdev, register_chrdev_name, chrdev_major_names, seed_builtin_chrdev_names, proc_devices_char};
+pub use devnode::{BlockDevOps, CharDevOps, Devt, DeviceNodeData, init_special_inode, make_device_node_inode, make_fifo_inode, make_socket_inode, device_inode_open, device_inode_ioctl, device_inode_devt, lookup_blkdev, lookup_chrdev, register_blkdev, register_chrdev, unregister_blkdev, unregister_chrdev};
 pub use superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
 pub use namei::{path_lookup, path_lookup_path, path_lookup_cred, resolve_abs, resolve_path_dentry, set_root_dentry_provider, inode_permission, generic_permission, may_open, may_create, may_chmod, may_chown, chmod_sgid_strip, chown_kill_priv, Cred, LookupFlags, Nameidata, VfsPath, CRED_NGROUPS, MAX_SYMLINK_DEPTH, MAY_EXEC, MAY_READ, MAY_WRITE, S_ISUID, S_ISGID, S_IXGRP};
 pub use dirent::{dirent64_pack, dirent64_reclen, DIRENT64_HEADER, dirent_pack, dirent_reclen, DIRENT_HEADER};

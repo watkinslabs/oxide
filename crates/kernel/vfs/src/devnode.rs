@@ -125,49 +125,6 @@ static CHRDEV: Spinlock<BTreeMap<u32, Vec<Region<dyn CharDevOps>>>, DevClass>
 static BLKDEV: Spinlock<BTreeMap<u32, Vec<Region<dyn BlockDevOps>>>, DevClass>
     = Spinlock::new(BTreeMap::new());
 
-/// Legacy char-major NAME table the `/proc/devices` "Character devices:"
-/// section lists (Linux `chrdevs[].name`). A `(major, name)` list — several
-/// names can share a major (e.g. `5 /dev/tty` + `5 ptmx`), and `/proc/devices`
-/// prints each, so this is a list, not a `major -> name` map. DVR-0016.
-static CHRMAJOR_NAMES: Spinlock<Vec<(u32, alloc::string::String)>, DevClass>
-    = Spinlock::new(Vec::new());
-
-/// Register a `(major, name)` entry for `/proc/devices`. Idempotent on the
-/// exact pair; call from each char driver's init so its major appears without
-/// a hard-coded `/proc/devices` edit. # C: O(N_majors)
-pub fn register_chrdev_name(major: u32, name: &str) {
-    let mut t = CHRMAJOR_NAMES.lock();
-    if t.iter().any(|(m, n)| *m == major && n == name) { return; }
-    t.push((major, alloc::string::String::from(name)));
-}
-
-/// Snapshot of `(major, name)` char entries, sorted by major (stable within a
-/// major, preserving registration order). # C: O(N log N)
-pub fn chrdev_major_names() -> Vec<(u32, alloc::string::String)> {
-    let mut v = CHRMAJOR_NAMES.lock().clone();
-    v.sort_by_key(|(m, _)| *m);
-    v
-}
-
-/// Seed the core kernel char majors the boot path mknods (mem/tty/console/
-/// ptmx/misc/pts). Idempotent — safe to call before each `/proc/devices`
-/// render. # C: O(1)
-pub fn seed_builtin_chrdev_names() {
-    for (m, n) in [(1u32, "mem"), (4, "tty"), (5, "/dev/tty"), (5, "ptmx"), (10, "misc"), (136, "pts")] {
-        register_chrdev_name(m, n);
-    }
-}
-
-/// Render the `/proc/devices` "Character devices:" lines (`%3d %s\n` per
-/// registered major-name), excluding the section header. DVR-0016. # C: O(N)
-pub fn proc_devices_char() -> alloc::string::String {
-    let mut s = alloc::string::String::new();
-    for (major, name) in chrdev_major_names() {
-        s.push_str(&alloc::format!("{:>3} {}\n", major, name));
-    }
-    s
-}
-
 /// Insert `(base, count, ops)` into a major's region list, `Ebusy` on overlap
 /// (Linux `__register_chrdev_region` returns `-EBUSY`). `count == 0` is
 /// `Einval`. # C: O(R) in regions on the major.
