@@ -24,6 +24,16 @@ use tty::Sig;
 use vfs::{FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError};
 use vfs::{FileOps, default_inode_ops, mk_mode};
 
+/// `DEVPTS_SUPER_MAGIC` (linux/magic.h) — `statfs` `f_type` for the devpts
+/// instance mounted at `/dev/pts`.
+pub const DEVPTS_MAGIC: u64 = 0x1cd1;
+/// devpts `st_dev`/`fsid`. Linux mounts devpts as its OWN filesystem at
+/// `/dev/pts` (distinct from devtmpfs at `/dev`), so its inodes must report a
+/// dev number distinct from `devfs::DEVFS_FSID` for `(dev, ino)` uniqueness
+/// across the two mounts. (A first-class `SuperBlock`+mount registration for
+/// this fs is a vfs-lane hook; the per-inode `fsid` is the devpts-confined part.)
+pub const DEVPTS_FSID: u64 = 0x0102_1994_0000_0002;
+
 /// Spinlock-wrapped pair shared between the master and slave inodes.
 pub struct LockedPair {
     inner: Spinlock<TtyPair, TtyClass>,
@@ -67,7 +77,7 @@ pub fn make_master_inode(pair: Arc<LockedPair>) -> InodeRef {
     let ino = pair.ino_master;
     let rdev = 0x8000 | (pair.pts_num() & 0xff) as u32;
     InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtyMasterFileOps))
-        .fsid(devfs::DEVFS_FSID).rdev(rdev)
+        .fsid(DEVPTS_FSID).rdev(rdev)
         .private(pair as Arc<dyn core::any::Any + Send + Sync>)
         .build()
 }
@@ -78,7 +88,7 @@ pub fn make_slave_inode(pair: Arc<LockedPair>) -> InodeRef {
     let ino = pair.ino_slave;
     let rdev = 0x8800 | (pair.pts_num() & 0xff) as u32;
     InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o620), default_inode_ops(), Arc::new(PtySlaveFileOps))
-        .fsid(devfs::DEVFS_FSID).rdev(rdev)
+        .fsid(DEVPTS_FSID).rdev(rdev)
         .private(pair as Arc<dyn core::any::Any + Send + Sync>)
         .build()
 }
@@ -422,7 +432,10 @@ impl FileOps for PtmxSentinelFileOps {
 /// Sentinel inode for `/dev/ptmx`. Its only role is to surface a
 /// CharDev type at lookup-time — the open path detects this exact
 /// path and routes to `allocate_pair`. read/write on the sentinel
-/// itself return EIO (caller used the wrong fd). # C: O(1)
+/// itself return EIO (caller used the wrong fd). Stays on
+/// `devfs::DEVFS_FSID`: the `/dev/ptmx` directory entry lives in
+/// devtmpfs (`/dev`), only the allocated master/slave pair inodes are
+/// on the devpts fs (`DEVPTS_FSID`). # C: O(1)
 pub fn make_ptmx_sentinel_inode() -> InodeRef {
     InodeBuilder::new(0x6000_FFFF, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
         .fsid(devfs::DEVFS_FSID).rdev(0x0502)
