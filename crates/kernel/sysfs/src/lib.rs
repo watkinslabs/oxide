@@ -8,11 +8,20 @@ extern crate alloc;
 // duplex). Static /sys/kernel/* and tracefs entries still live as
 // devfs key registrations; this module owns the entries whose
 // content depends on runtime state.
+//
+// kp2: migrated off the deleted god-trait `vfs::Inode` to the concrete
+// `struct Inode` + `i_op`/`i_fop` vtables. Each former `impl Inode for X`
+// becomes a (ZST) ops object implementing `InodeOps` (lookup/readlink) and/or
+// `FileOps` (read/write/iterate); the per-inode state moves into `i_private`
+// (`XData`), and a `make_*_inode` constructor stamps mode + ops + data via
+// `InodeBuilder`.
 
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, FileOps, FileType, Ino, Inode,
+          InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 pub mod block;
 pub mod bus;
@@ -28,6 +37,13 @@ const ARPHRD_ETHER:    u16 =   1;
 const SERIAL_TTY_MAJOR: u32 = 204;
 #[cfg(not(target_arch = "aarch64"))]
 const SERIAL_TTY_MAJOR: u32 = 4;
+
+// sysfs perm conventions (Linux): dirs r-xr-xr-x, attr files r--r--r--,
+// writable attrs (`uevent`) rw-r--r--, symlinks rwxrwxrwx.
+pub(crate) const DIR_PERM: u16 = 0o555;
+pub(crate) const RO_PERM:  u16 = 0o444;
+pub(crate) const RW_PERM:  u16 = 0o644;
+pub(crate) const LNK_PERM: u16 = 0o777;
 
 const TTY_DEVICES: &[(&str, u32, u32)] = &[
     ("console", 5, 1),
@@ -50,302 +66,327 @@ fn emit_tty_uevent(action: &str, name: &str, major: u32, minor: u32) {
     ::netlink::emit_uevent_with_env(action, &devpath, "tty", &[&devname, &maj, &min]);
 }
 
+/// Windowed copy of `body[off..]` into `buf` (the shared sysfs attr read). # C: O(n)
+fn read_window(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
+    let off = off as usize;
+    if off >= body.len() { return 0; }
+    let avail = &body[off..];
+    let n = avail.len().min(buf.len());
+    buf[..n].copy_from_slice(&avail[..n]);
+    n
+}
+
+/// First whitespace token of a uevent write = the action ("add"/"change"/…). # C: O(n)
+fn uevent_action(b: &[u8]) -> &str {
+    core::str::from_utf8(b).ok()
+        .and_then(|s| s.split_whitespace().next())
+        .filter(|a| !a.is_empty())
+        .unwrap_or("change")
+}
+
+// ---- /sys/class/tty (directory of symlinks) -------------------------------
+
 /// `/sys/class/tty` directory. Entries are symlinks to the canonical virtual
 /// tty device directories, matching Linux's class-device layout.
-pub struct SysClassTtyInode;
-
-impl Inode for SysClassTtyInode {
-    fn ino(&self) -> Ino { 0x5101_0001 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+struct SysClassTtyOps;
+impl InodeOps for SysClassTtyOps {
+    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
         if tty_dev(name).is_none() { return Err(VfsError::Enoent); }
-        let mut target = alloc::string::String::from("../../devices/virtual/tty/");
+        let mut target = String::from("../../devices/virtual/tty/");
         target.push_str(name);
-        Ok(Arc::new(SysClassNetSymlinkInode { target: target.into_bytes() }) as InodeRef)
+        Ok(make_symlink_inode(target.into_bytes()))
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+}
+impl FileOps for SysClassTtyOps {
+    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let mut idx = off as usize;
         while idx < TTY_DEVICES.len() {
             let next = idx as u64 + 1;
             let name = TTY_DEVICES[idx].0;
-            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, name, FileType::Symlink) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
     }
 }
+fn make_sys_class_tty_inode() -> InodeRef {
+    InodeBuilder::new(0x5101_0001, mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(SysClassTtyOps), Arc::new(SysClassTtyOps)).build()
+}
+
+// ---- /sys/devices/virtual/tty (directory of device dirs) ------------------
 
 /// `/sys/devices/virtual/tty` directory.
-pub struct SysDevicesVirtualTtyInode;
-
-impl Inode for SysDevicesVirtualTtyInode {
-    fn ino(&self) -> Ino { 0x5101_0002 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+struct SysDevicesVirtualTtyOps;
+impl InodeOps for SysDevicesVirtualTtyOps {
+    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
         let (major, minor) = tty_dev(name).ok_or(VfsError::Enoent)?;
-        Ok(Arc::new(SysTtyDeviceInode {
-            name: alloc::string::String::from(name),
-            major,
-            minor,
-        }) as InodeRef)
+        Ok(make_tty_device_inode(String::from(name), major, minor))
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+}
+impl FileOps for SysDevicesVirtualTtyOps {
+    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let mut idx = off as usize;
         while idx < TTY_DEVICES.len() {
             let next = idx as u64 + 1;
             let name = TTY_DEVICES[idx].0;
-            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, name, FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
     }
 }
-
-struct SysTtyDeviceInode {
-    name: alloc::string::String,
-    major: u32,
-    minor: u32,
+fn make_sys_devices_virtual_tty_inode() -> InodeRef {
+    InodeBuilder::new(0x5101_0002, mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(SysDevicesVirtualTtyOps), Arc::new(SysDevicesVirtualTtyOps)).build()
 }
 
-impl Inode for SysTtyDeviceInode {
-    fn ino(&self) -> Ino { 0x5101_1000 + self.minor as Ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+// ---- /sys/devices/virtual/tty/<name> (per-device dir) ---------------------
+
+struct TtyDeviceData { name: String, major: u32, minor: u32 }
+
+struct TtyDeviceOps;
+impl InodeOps for TtyDeviceOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<TtyDeviceData>().ok_or(VfsError::Einval)?;
         match name {
             "dev" => {
-                let body = alloc::format!("{}:{}\n", self.major, self.minor).into_bytes();
-                Ok(Arc::new(BodyInode::new(body, 0x5101_2000 + self.minor as Ino)) as InodeRef)
+                let body = alloc::format!("{}:{}\n", d.major, d.minor).into_bytes();
+                Ok(make_body_inode(body, 0x5101_2000 + d.minor as Ino))
             }
-            "uevent" => Ok(Arc::new(TtyUeventInode {
-                name: self.name.clone(),
-                major: self.major,
-                minor: self.minor,
-            }) as InodeRef),
+            "uevent" => Ok(make_tty_uevent_inode(d.name.clone(), d.major, d.minor)),
             _ => Err(VfsError::Enoent),
         }
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+}
+impl FileOps for TtyDeviceOps {
+    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         const ENTRIES: &[&str] = &["dev", "uevent"];
         let mut idx = off as usize;
         while idx < ENTRIES.len() {
             let next = idx as u64 + 1;
-            let ino = self.lookup(ENTRIES[idx]).map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup(ENTRIES[idx]).map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, ENTRIES[idx], FileType::Regular) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
     }
 }
-
-struct TtyUeventInode {
-    name: alloc::string::String,
-    major: u32,
-    minor: u32,
+fn make_tty_device_inode(name: String, major: u32, minor: u32) -> InodeRef {
+    InodeBuilder::new(0x5101_1000 + minor as Ino, mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(TtyDeviceOps), Arc::new(TtyDeviceOps))
+        .private(Arc::new(TtyDeviceData { name, major, minor }))
+        .build()
 }
 
-impl Inode for TtyUeventInode {
-    fn ino(&self) -> Ino { 0x5101_3000 + self.minor as Ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+// ---- /sys/devices/virtual/tty/<name>/uevent (rw attr) ---------------------
+
+struct TtyUeventData { name: String, major: u32, minor: u32 }
+
+struct TtyUeventFileOps;
+impl FileOps for TtyUeventFileOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = inode.private::<TtyUeventData>().ok_or(VfsError::Einval)?;
         let body = alloc::format!(
-            "MAJOR={}\nMINOR={}\nDEVNAME={}\n",
-            self.major, self.minor, self.name
-        ).into_bytes();
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
+            "MAJOR={}\nMINOR={}\nDEVNAME={}\n", d.major, d.minor, d.name).into_bytes();
+        Ok(read_window(&body, off, buf))
     }
-    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> {
-        let action = core::str::from_utf8(b).ok()
-            .and_then(|s| s.split_whitespace().next())
-            .filter(|a| !a.is_empty())
-            .unwrap_or("change");
-        emit_tty_uevent(action, &self.name, self.major, self.minor);
+    fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
+        let d = inode.private::<TtyUeventData>().ok_or(VfsError::Einval)?;
+        emit_tty_uevent(uevent_action(b), &d.name, d.major, d.minor);
         Ok(b.len())
     }
 }
+fn make_tty_uevent_inode(name: String, major: u32, minor: u32) -> InodeRef {
+    InodeBuilder::new(0x5101_3000 + minor as Ino, mk_mode(FileType::Regular, RW_PERM),
+        default_inode_ops(), Arc::new(TtyUeventFileOps))
+        .private(Arc::new(TtyUeventData { name, major, minor }))
+        .build()
+}
 
-/// `/sys/class/net` directory. `readdir` enumerates
+// ---- /sys/class/net (directory of symlinks) -------------------------------
+
+/// `/sys/class/net` directory. `iterate` enumerates
 /// `net::sock::stack().ifaces` and emits each entry as a symlink per
 /// docs/19§2 invariant 2 (`/sys/class/<class>/<name>` → `/sys/devices/
-/// .../<name>`). `lookup(name)` returns a `SysClassNetSymlinkInode`
-/// whose readlink target is the canonical devices path; the real
-/// attribute set lives under `/sys/devices/virtual/net/<name>` and is
-/// served by `SysDevicesVirtualNetInode`.
-pub struct SysClassNetInode;
-
-impl Inode for SysClassNetInode {
-    fn ino(&self) -> Ino { 0x5100_0001 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+/// .../<name>`). `lookup(name)` returns a symlink whose readlink target is the
+/// canonical devices path; the real attribute set lives under
+/// `/sys/devices/virtual/net/<name>` and is served by the iface dir.
+struct SysClassNetOps;
+impl InodeOps for SysClassNetOps {
+    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
         let snap = net::sock::stack().ifaces.snapshot_devs();
         for (_, dev) in snap.iter() {
             if dev.name() == name {
-                let mut target = alloc::string::String::from("../../devices/virtual/net/");
+                let mut target = String::from("../../devices/virtual/net/");
                 target.push_str(name);
-                return Ok(Arc::new(SysClassNetSymlinkInode {
-                    target: target.into_bytes(),
-                }) as InodeRef);
+                return Ok(make_symlink_inode(target.into_bytes()));
             }
         }
         Err(VfsError::Enoent)
     }
-    fn readdir(
-        &self,
-        off: u64,
-        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
-    ) -> KResult<u64> {
+}
+impl FileOps for SysClassNetOps {
+    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let snap = net::sock::stack().ifaces.snapshot_devs();
         let mut idx = off as usize;
         while idx < snap.len() {
             let next = idx as u64 + 1;
             let name = snap[idx].1.name();
-            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, name, FileType::Symlink) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
     }
 }
-
-/// `/sys/class/net/<if>` symlink — readlink target is the canonical
-/// /sys/devices path that holds the attribute set. udev/networkd
-/// readlink this to discover the bus path; subsequent attribute
-/// reads go through the resolved /sys/devices/.../<attr> path which
-/// SysfsFs follows transparently (component-walk follows the link).
-pub struct SysClassNetSymlinkInode {
-    pub target: alloc::vec::Vec<u8>,
+fn make_sys_class_net_inode() -> InodeRef {
+    InodeBuilder::new(0x5100_0001, mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(SysClassNetOps), Arc::new(SysClassNetOps)).build()
 }
 
-impl Inode for SysClassNetSymlinkInode {
-    fn ino(&self) -> Ino { 0x5100_0080 }
-    fn file_type(&self) -> FileType { FileType::Symlink }
-    fn size(&self) -> u64 { self.target.len() as u64 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn readlink(&self) -> KResult<alloc::vec::Vec<u8>> { Ok(self.target.clone()) }
+// ---- symlink leaf (fixed readlink target) ---------------------------------
+
+/// A symlink leaf whose readlink target is a fixed byte string. Used by the
+/// tty + net class dirs (`/sys/class/<class>/<if>` → canonical /sys/devices
+/// path). udev/networkd readlink this to discover the bus path; subsequent
+/// attribute reads go through the resolved /sys/devices/.../<attr> path which
+/// the component walk follows transparently.
+pub(crate) struct SymlinkData { pub target: Vec<u8> }
+
+pub(crate) struct SymlinkOps;
+impl InodeOps for SymlinkOps {
+    fn readlink(&self, inode: &Inode) -> KResult<Vec<u8>> {
+        let d = inode.private::<SymlinkData>().ok_or(VfsError::Einval)?;
+        Ok(d.target.clone())
+    }
 }
 
-/// `/sys/devices/virtual/net` directory. Same readdir/lookup as
-/// SysClassNetInode but returns the actual SysClassNetIfaceInode
-/// directory (the canonical home for per-iface attributes).
-pub struct SysDevicesVirtualNetInode;
+/// Build a symlink inode (ino `0x5100_0080`) with a fixed readlink target. # C: O(1)
+pub(crate) fn make_symlink_inode(target: Vec<u8>) -> InodeRef {
+    make_symlink_inode_ino(target, 0x5100_0080)
+}
 
-impl Inode for SysDevicesVirtualNetInode {
-    fn ino(&self) -> Ino { 0x5100_0002 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+/// Build a symlink inode with an explicit inode number. # C: O(1)
+pub(crate) fn make_symlink_inode_ino(target: Vec<u8>, ino: Ino) -> InodeRef {
+    let size = target.len() as u64;
+    InodeBuilder::new(ino, mk_mode(FileType::Symlink, LNK_PERM),
+        Arc::new(SymlinkOps), default_file_ops())
+        .size(size)
+        .private(Arc::new(SymlinkData { target }))
+        .build()
+}
+
+// ---- /sys/devices/virtual/net (directory of iface dirs) -------------------
+
+/// `/sys/devices/virtual/net` directory. Same iterate/lookup as the class dir
+/// but returns the actual iface directory (the canonical home for per-iface
+/// attributes).
+struct SysDevicesVirtualNetOps;
+impl InodeOps for SysDevicesVirtualNetOps {
+    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
         let snap = net::sock::stack().ifaces.snapshot_devs();
         for (_, dev) in snap.iter() {
             if dev.name() == name {
-                return Ok(Arc::new(SysClassNetIfaceInode {
-                    name: alloc::string::String::from(name),
-                    dev:  Arc::clone(dev),
-                }) as InodeRef);
+                return Ok(make_net_iface_inode(String::from(name), Arc::clone(dev)));
             }
         }
         Err(VfsError::Enoent)
     }
-    fn readdir(
-        &self,
-        off: u64,
-        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
-    ) -> KResult<u64> {
+}
+impl FileOps for SysDevicesVirtualNetOps {
+    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let snap = net::sock::stack().ifaces.snapshot_devs();
         let mut idx = off as usize;
         while idx < snap.len() {
             let next = idx as u64 + 1;
             let name = snap[idx].1.name();
-            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, name, FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
     }
 }
+fn make_sys_devices_virtual_net_inode() -> InodeRef {
+    InodeBuilder::new(0x5100_0002, mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(SysDevicesVirtualNetOps), Arc::new(SysDevicesVirtualNetOps)).build()
+}
 
-/// `/sys/class/net/<if>` directory. Synthesises per-iface attributes
-/// that ip/iproute2/networkd/udev probe.
-pub struct SysClassNetIfaceInode {
-    pub name: alloc::string::String,
+// ---- /sys/class/net/<if> (per-iface attribute dir) ------------------------
+
+/// Per-iface state (Linux `net_device` backref). # C: n/a
+pub(crate) struct NetIfaceData {
+    pub name: String,
     pub dev:  Arc<dyn net::NetDev>,
 }
 
-impl SysClassNetIfaceInode {
-    fn arphrd(&self) -> u16 {
-        // No NetDev::kind() in v1 — infer from name. `lo` → loopback;
-        // everything else (eth*, en*) treats as ARPHRD_ETHER.
-        if self.name == "lo" { ARPHRD_LOOPBACK } else { ARPHRD_ETHER }
-    }
+fn arphrd(name: &str) -> u16 {
+    // No NetDev::kind() in v1 — infer from name. `lo` → loopback;
+    // everything else (eth*, en*) treats as ARPHRD_ETHER.
+    if name == "lo" { ARPHRD_LOOPBACK } else { ARPHRD_ETHER }
+}
 
-    fn body(&self, leaf: &str) -> Option<Vec<u8>> {
-        let mut buf: Vec<u8> = Vec::with_capacity(32);
-        match leaf {
-            "address" => {
-                let m = self.dev.mac().0;
-                let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut buf),
-                    format_args!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
-                        m[0], m[1], m[2], m[3], m[4], m[5]));
-            }
-            "broadcast" => {
-                buf.extend_from_slice(b"ff:ff:ff:ff:ff:ff\n");
-            }
-            "mtu" => {
-                let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut buf),
-                    format_args!("{}\n", self.dev.mtu()));
-            }
-            "operstate" => {
-                // Linux: "up" / "down" / "unknown". Loopback reports
-                // "unknown" (no carrier abstraction); real ifaces "up".
-                buf.extend_from_slice(if self.arphrd() == ARPHRD_LOOPBACK {
-                    b"unknown\n" } else { b"up\n" });
-            }
-            "type" => {
-                let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut buf),
-                    format_args!("{}\n", self.arphrd()));
-            }
-            "flags" => {
-                // IFF_UP|IFF_BROADCAST|IFF_RUNNING|IFF_MULTICAST = 0x1003 for ether,
-                // IFF_UP|IFF_LOOPBACK|IFF_RUNNING                = 0x49   for lo.
-                buf.extend_from_slice(if self.arphrd() == ARPHRD_LOOPBACK {
-                    b"0x49\n" } else { b"0x1003\n" });
-            }
-            "carrier" => {
-                buf.extend_from_slice(b"1\n");
-            }
-            "speed" => {
-                // Loopback returns -1 per Linux; ether reports 10000.
-                buf.extend_from_slice(if self.arphrd() == ARPHRD_LOOPBACK {
-                    b"-1\n" } else { b"10000\n" });
-            }
-            "duplex" => {
-                buf.extend_from_slice(if self.arphrd() == ARPHRD_LOOPBACK {
-                    b"unknown\n" } else { b"full\n" });
-            }
-            "ifindex" => {
-                let id = net::sock::stack().ifaces.lookup_name(&self.name)
-                    .map(|(id, _)| id.raw()).unwrap_or(0);
-                let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut buf),
-                    format_args!("{}\n", id));
-            }
-            "tx_queue_len" => buf.extend_from_slice(b"1000\n"),
-            "addr_len"     => buf.extend_from_slice(b"6\n"),
-            "name_assign_type" => buf.extend_from_slice(b"4\n"),
-            "dev_id"       => buf.extend_from_slice(b"0x0\n"),
-            _ => return None,
+fn iface_body(d: &NetIfaceData, leaf: &str) -> Option<Vec<u8>> {
+    let mut buf: Vec<u8> = Vec::with_capacity(32);
+    let hw = arphrd(&d.name);
+    match leaf {
+        "address" => {
+            let m = d.dev.mac().0;
+            let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut buf),
+                format_args!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
+                    m[0], m[1], m[2], m[3], m[4], m[5]));
         }
-        Some(buf)
+        "broadcast" => {
+            buf.extend_from_slice(b"ff:ff:ff:ff:ff:ff\n");
+        }
+        "mtu" => {
+            let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut buf),
+                format_args!("{}\n", d.dev.mtu()));
+        }
+        "operstate" => {
+            // Linux: "up" / "down" / "unknown". Loopback reports
+            // "unknown" (no carrier abstraction); real ifaces "up".
+            buf.extend_from_slice(if hw == ARPHRD_LOOPBACK {
+                b"unknown\n" } else { b"up\n" });
+        }
+        "type" => {
+            let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut buf),
+                format_args!("{}\n", hw));
+        }
+        "flags" => {
+            // IFF_UP|IFF_BROADCAST|IFF_RUNNING|IFF_MULTICAST = 0x1003 for ether,
+            // IFF_UP|IFF_LOOPBACK|IFF_RUNNING                = 0x49   for lo.
+            buf.extend_from_slice(if hw == ARPHRD_LOOPBACK {
+                b"0x49\n" } else { b"0x1003\n" });
+        }
+        "carrier" => {
+            buf.extend_from_slice(b"1\n");
+        }
+        "speed" => {
+            // Loopback returns -1 per Linux; ether reports 10000.
+            buf.extend_from_slice(if hw == ARPHRD_LOOPBACK {
+                b"-1\n" } else { b"10000\n" });
+        }
+        "duplex" => {
+            buf.extend_from_slice(if hw == ARPHRD_LOOPBACK {
+                b"unknown\n" } else { b"full\n" });
+        }
+        "ifindex" => {
+            let id = net::sock::stack().ifaces.lookup_name(&d.name)
+                .map(|(id, _)| id.raw()).unwrap_or(0);
+            let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut buf),
+                format_args!("{}\n", id));
+        }
+        "tx_queue_len" => buf.extend_from_slice(b"1000\n"),
+        "addr_len"     => buf.extend_from_slice(b"6\n"),
+        "name_assign_type" => buf.extend_from_slice(b"4\n"),
+        "dev_id"       => buf.extend_from_slice(b"0x0\n"),
+        _ => return None,
     }
+    Some(buf)
 }
 
 const IFACE_ENTRIES: &[&str] = &[
@@ -354,66 +395,26 @@ const IFACE_ENTRIES: &[&str] = &[
     "addr_len", "name_assign_type", "dev_id", "uevent",
 ];
 
-/// `/sys/class/net/<if>/uevent` — read returns the device's uevent env;
-/// write of an action ("add"/"change"/"remove") broadcasts a kobject
-/// uevent on NETLINK_KOBJECT_UEVENT (the `udevadm trigger` path → udev).
-struct UeventTriggerInode { name: alloc::string::String }
-
-impl Inode for UeventTriggerInode {
-    fn ino(&self) -> Ino { 0x5100_3000 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        // uevent read yields the device's env vars (one per line).
-        let mut body: Vec<u8> = Vec::new();
-        let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut body),
-            format_args!("DEVTYPE=\nINTERFACE={}\nIFINDEX={}\n", self.name,
-                net::sock::stack().ifaces.lookup_name(&self.name).map(|(id, _)| id.raw()).unwrap_or(0)));
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
-    }
-    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> {
-        // First whitespace-delimited token is the action ("add"/"change"/…).
-        let action = core::str::from_utf8(b).ok()
-            .and_then(|s| s.split_whitespace().next())
-            .filter(|a| !a.is_empty())
-            .unwrap_or("change");
-        let devpath = alloc::format!("/devices/virtual/net/{}", self.name);
-        ::netlink::emit_uevent(action, &devpath, "net");
-        Ok(b.len())
-    }
-}
-
-impl Inode for SysClassNetIfaceInode {
-    fn ino(&self) -> Ino { 0x5100_1000 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+struct NetIfaceOps;
+impl InodeOps for NetIfaceOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<NetIfaceData>().ok_or(VfsError::Einval)?;
         // The `uevent` node is writable: `udevadm trigger` (and udev
         // coldplug) write "add"/"change" to re-emit the device's uevent.
         if name == "uevent" {
-            return Ok(Arc::new(UeventTriggerInode { name: self.name.clone() }) as InodeRef);
+            return Ok(make_uevent_trigger_inode(d.name.clone()));
         }
         // `statistics` is a subdirectory, not a leaf attribute file.
         if name == "statistics" {
-            return Ok(Arc::new(net_stats::SysNetStatsInode {
-                name: self.name.clone(),
-                dev:  Arc::clone(&self.dev),
-            }) as InodeRef);
+            return Ok(net_stats::make_net_stats_inode(d.name.clone(), Arc::clone(&d.dev)));
         }
         if !IFACE_ENTRIES.contains(&name) { return Err(VfsError::Enoent); }
-        let body = self.body(name).unwrap_or_default();
-        Ok(Arc::new(BodyInode { body, ino: 0x5100_2000 }) as InodeRef)
+        let body = iface_body(d, name).unwrap_or_default();
+        Ok(make_body_inode(body, 0x5100_2000))
     }
-    fn readdir(
-        &self,
-        off: u64,
-        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
-    ) -> KResult<u64> {
+}
+impl FileOps for NetIfaceOps {
+    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let mut idx = off as usize;
         // `statistics` (a subdir) is emitted as the final entry, after
         // the regular attribute files. Treat the offset space as
@@ -421,43 +422,84 @@ impl Inode for SysClassNetIfaceInode {
         let nfiles = IFACE_ENTRIES.len();
         while idx < nfiles {
             let next = idx as u64 + 1;
-            let ino = self.lookup(IFACE_ENTRIES[idx]).map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup(IFACE_ENTRIES[idx]).map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, IFACE_ENTRIES[idx], FileType::Regular) { return Ok(next); }
             idx += 1;
         }
         if idx == nfiles {
             let next = idx as u64 + 1;
-            let ino = self.lookup("statistics").map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup("statistics").map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, "statistics", FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
     }
 }
-
-/// Owned-byte regular-file inode. Body is built at lookup time so
-/// it reflects current iface state; read() serves windowed slices.
-pub struct BodyInode { body: Vec<u8>, ino: Ino }
-
-impl BodyInode {
-    /// Build a read-only attribute inode serving `body`. # C: O(1)
-    pub fn new(body: Vec<u8>, ino: Ino) -> Self { Self { body, ino } }
+/// Build a `/sys/class/net/<if>` (and `/sys/devices/virtual/net/<if>`) dir
+/// inode synthesising per-iface attributes. # C: O(1)
+pub(crate) fn make_net_iface_inode(name: String, dev: Arc<dyn net::NetDev>) -> InodeRef {
+    InodeBuilder::new(0x5100_1000, mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(NetIfaceOps), Arc::new(NetIfaceOps))
+        .private(Arc::new(NetIfaceData { name, dev }))
+        .build()
 }
 
-impl Inode for BodyInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { self.body.len() as u64 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let off = off as usize;
-        if off >= self.body.len() { return Ok(0); }
-        let avail = &self.body[off..];
-        let n = avail.len().min(buf.len());
-        buf[..n].copy_from_slice(&avail[..n]);
-        Ok(n)
+// ---- /sys/class/net/<if>/uevent (rw trigger) ------------------------------
+
+struct UeventTriggerData { name: String }
+
+/// `/sys/class/net/<if>/uevent` — read returns the device's uevent env;
+/// write of an action ("add"/"change"/"remove") broadcasts a kobject
+/// uevent on NETLINK_KOBJECT_UEVENT (the `udevadm trigger` path → udev).
+struct UeventTriggerFileOps;
+impl FileOps for UeventTriggerFileOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = inode.private::<UeventTriggerData>().ok_or(VfsError::Einval)?;
+        // uevent read yields the device's env vars (one per line).
+        let mut body: Vec<u8> = Vec::new();
+        let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut body),
+            format_args!("DEVTYPE=\nINTERFACE={}\nIFINDEX={}\n", d.name,
+                net::sock::stack().ifaces.lookup_name(&d.name).map(|(id, _)| id.raw()).unwrap_or(0)));
+        Ok(read_window(&body, off, buf))
     }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+    fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
+        let d = inode.private::<UeventTriggerData>().ok_or(VfsError::Einval)?;
+        let devpath = alloc::format!("/devices/virtual/net/{}", d.name);
+        ::netlink::emit_uevent(uevent_action(b), &devpath, "net");
+        Ok(b.len())
+    }
+}
+fn make_uevent_trigger_inode(name: String) -> InodeRef {
+    InodeBuilder::new(0x5100_3000, mk_mode(FileType::Regular, RW_PERM),
+        default_inode_ops(), Arc::new(UeventTriggerFileOps))
+        .private(Arc::new(UeventTriggerData { name }))
+        .build()
+}
+
+// ---- read-only owned-byte attribute file ----------------------------------
+
+/// Per-inode body for a read-only sysfs attribute (Linux `attr->show` result).
+pub(crate) struct BodyData { pub body: Vec<u8> }
+
+/// `f_op` for a read-only attribute: windowed `read`, `write` → `EROFS`.
+pub(crate) struct BodyFileOps;
+impl FileOps for BodyFileOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = inode.private::<BodyData>().ok_or(VfsError::Einval)?;
+        Ok(read_window(&d.body, off, buf))
+    }
+    fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+}
+
+/// Build a read-only attribute inode serving `body`. Body is built at lookup
+/// time so it reflects current state; read() serves windowed slices. # C: O(1)
+pub fn make_body_inode(body: Vec<u8>, ino: Ino) -> InodeRef {
+    let size = body.len() as u64;
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, RO_PERM),
+        default_inode_ops(), Arc::new(BodyFileOps))
+        .size(size)
+        .private(Arc::new(BodyData { body }))
+        .build()
 }
 
 pub(crate) struct VecFmt<'a>(pub(crate) &'a mut Vec<u8>);
@@ -485,23 +527,17 @@ pub fn init() {
     // tracefs/debugfs mount points (content lives in tracefs's own roots).
     register_dir("/sys/kernel/tracing");
     register_dir("/sys/kernel/debug");
-    register("/sys/class/net",
-        Arc::new(SysClassNetInode) as InodeRef);
-    register("/sys/devices/virtual/net",
-        Arc::new(SysDevicesVirtualNetInode) as InodeRef);
-    register("/sys/class/tty",
-        Arc::new(SysClassTtyInode) as InodeRef);
-    register("/sys/devices/virtual/tty",
-        Arc::new(SysDevicesVirtualTtyInode) as InodeRef);
+    register("/sys/class/net", make_sys_class_net_inode());
+    register("/sys/devices/virtual/net", make_sys_devices_virtual_net_inode());
+    register("/sys/class/tty", make_sys_class_tty_inode());
+    register("/sys/devices/virtual/tty", make_sys_devices_virtual_tty_inode());
     bus::init();
     block::init();
 }
 
-/// `vfs::fs::FileSystem` impl mounted at `/sys`. Lookups consult the
-/// devfs key registry (where /sys/kernel/*, /sys/devices/*, the
-/// dynamic /sys/class/net inode live) and fall back to ENOENT.
-/// Static-prefix dir inodes (PrefixDirInode in devfs::init) are also
-/// registered there, so readdir of /sys works the same way.
+/// `vfs::fs::FileSystem` impl mounted at `/sys`. Lookups consult sysfs's own
+/// `kernfs::PseudoDir` tree (where /sys/kernel/*, /sys/devices/*, the dynamic
+/// /sys/class/net inode live) and fall back to ENOENT.
 pub struct SysfsFs;
 
 impl vfs::fs::FileSystem for SysfsFs {
@@ -512,9 +548,9 @@ impl vfs::fs::FileSystem for SysfsFs {
     fn magic(&self) -> u64 { 0x6265_6572 }
     /// Mount root = sysfs's OWN `kernfs::PseudoDir` (`SYS_ROOT`). The walk
     /// crosses into the sysfs mount and resolves `/sys/*` per-component via
-    /// `PseudoDir::lookup` + the dynamic `SysClassNetInode::lookup`.
+    /// `PseudoDir::lookup` + the dynamic `SysClassNetOps::lookup`.
     /// # C: O(1)
-    fn root(&self) -> Option<InodeRef> { Some(sys_root() as InodeRef) }
+    fn root(&self) -> Option<InodeRef> { sys_root().lookup_path("") }
 }
 
 /// Singleton accessor for the mount table.

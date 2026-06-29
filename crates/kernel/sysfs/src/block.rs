@@ -25,9 +25,9 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
-use crate::BodyInode;
+use crate::{make_body_inode, DIR_PERM};
 
 const INO_BLOCK_ROOT: Ino = 0x5103_0001;
 const INO_DISK_DIR:   Ino = 0x5103_1000;
@@ -64,91 +64,110 @@ const QUEUE_ATTRS: &[&str] = &["logical_block_size", "physical_block_size"];
 
 /// `/sys/block` directory — readdir/lookup enumerates the live
 /// `block::registry`. One entry per registered disk.
-pub struct SysBlockInode;
-impl Inode for SysBlockInode {
-    fn ino(&self) -> Ino { INO_BLOCK_ROOT }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+struct SysBlockOps;
+impl InodeOps for SysBlockOps {
+    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
         if block::registry::by_name(name).is_some() {
-            return Ok(Arc::new(DiskDirInode { name: String::from(name) }) as InodeRef);
+            return Ok(make_disk_dir_inode(String::from(name)));
         }
         Err(VfsError::Enoent)
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+}
+impl FileOps for SysBlockOps {
+    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let disks = block::registry::snapshot();
         let mut idx = off as usize;
         while idx < disks.len() {
             let next = idx as u64 + 1;
-            let ino = self.lookup(&disks[idx].name).map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup(&disks[idx].name).map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, &disks[idx].name, FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
     }
 }
+fn make_sys_block_inode() -> InodeRef {
+    InodeBuilder::new(INO_BLOCK_ROOT, mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(SysBlockOps), Arc::new(SysBlockOps)).build()
+}
 
 /// `/sys/block/<dev>` directory — per-disk attribute set + `queue/`.
-struct DiskDirInode { name: String }
-impl Inode for DiskDirInode {
-    fn ino(&self) -> Ino { INO_DISK_DIR }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+struct DiskDirData { name: String }
+
+struct DiskDirOps;
+impl InodeOps for DiskDirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<DiskDirData>().ok_or(VfsError::Einval)?;
         if name == "queue" {
-            return Ok(Arc::new(QueueDirInode { name: self.name.clone() }) as InodeRef);
+            return Ok(make_queue_dir_inode(d.name.clone()));
         }
-        let disk = block::registry::by_name(&self.name).ok_or(VfsError::Enoent)?;
+        let disk = block::registry::by_name(&d.name).ok_or(VfsError::Enoent)?;
         let body = disk_attr(&disk, name).ok_or(VfsError::Enoent)?;
-        Ok(Arc::new(BodyInode::new(body, INO_ATTR)) as InodeRef)
+        Ok(make_body_inode(body, INO_ATTR))
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+}
+impl FileOps for DiskDirOps {
+    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let mut idx = off as usize;
         while idx < DISK_ATTRS.len() {
             let next = idx as u64 + 1;
-            let ino = self.lookup(DISK_ATTRS[idx]).map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup(DISK_ATTRS[idx]).map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, DISK_ATTRS[idx], FileType::Regular) { return Ok(next); }
             idx += 1;
         }
         if idx == DISK_ATTRS.len() {
             let next = idx as u64 + 1;
-            let ino = self.lookup("queue").map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup("queue").map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, "queue", FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
     }
 }
+fn make_disk_dir_inode(name: String) -> InodeRef {
+    InodeBuilder::new(INO_DISK_DIR, mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(DiskDirOps), Arc::new(DiskDirOps))
+        .private(Arc::new(DiskDirData { name }))
+        .build()
+}
 
 /// `/sys/block/<dev>/queue` directory — block-queue limits.
-struct QueueDirInode { name: String }
-impl Inode for QueueDirInode {
-    fn ino(&self) -> Ino { INO_QUEUE_DIR }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+struct QueueDirData { name: String }
+
+struct QueueDirOps;
+impl InodeOps for QueueDirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<QueueDirData>().ok_or(VfsError::Einval)?;
         if !QUEUE_ATTRS.contains(&name) { return Err(VfsError::Enoent); }
-        let disk = block::registry::by_name(&self.name).ok_or(VfsError::Enoent)?;
+        let disk = block::registry::by_name(&d.name).ok_or(VfsError::Enoent)?;
         let body = alloc::format!("{}\n", disk.dev.block_size()).into_bytes();
-        Ok(Arc::new(BodyInode::new(body, INO_ATTR)) as InodeRef)
+        Ok(make_body_inode(body, INO_ATTR))
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+}
+impl FileOps for QueueDirOps {
+    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let mut idx = off as usize;
         while idx < QUEUE_ATTRS.len() {
             let next = idx as u64 + 1;
-            let ino = self.lookup(QUEUE_ATTRS[idx]).map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup(QUEUE_ATTRS[idx]).map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, QUEUE_ATTRS[idx], FileType::Regular) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
     }
 }
+fn make_queue_dir_inode(name: String) -> InodeRef {
+    InodeBuilder::new(INO_QUEUE_DIR, mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(QueueDirOps), Arc::new(QueueDirOps))
+        .private(Arc::new(QueueDirData { name }))
+        .build()
+}
 
-/// Register the dynamic `/sys/block` directory in the devfs key
-/// registry. Called from `sysfs::init`. The per-disk + queue dirs are
+/// Register the dynamic `/sys/block` directory in sysfs's own tree.
+/// Called from `sysfs::init`. The per-disk + queue dirs are
 /// synthesised on demand, so disks registered after boot appear with
 /// no further work.
 /// # C: O(1)
 pub fn init() {
-    crate::register("/sys/block", Arc::new(SysBlockInode) as InodeRef);
+    crate::register("/sys/block", make_sys_block_inode());
 }
