@@ -26,12 +26,9 @@ fn block_major_name(major: u32) -> &'static str {
 fn body() -> Vec<u8> {
         use core::fmt::Write;
         let mut out: Vec<u8> = Vec::with_capacity(256);
-        // Character devices: the live char-major name registry (DVR-0016).
-        // Seeding is idempotent; drivers (drm/input/fb/…) register their major
-        // at init so it appears here without a hard-coded edit.
-        vfs::seed_builtin_chrdev_names();
+        // Character devices: the fixed kernel-created set (real majors).
         out.extend_from_slice(b"Character devices:\n");
-        out.extend_from_slice(vfs::proc_devices_char().as_bytes());
+        out.extend_from_slice(b"  1 mem\n  4 tty\n  5 /dev/tty\n  5 ptmx\n 10 misc\n136 pts\n");
         // Block devices: dedup majors from the live registry.
         out.extend_from_slice(b"\nBlock devices:\n");
         let disks = block::registry::snapshot();

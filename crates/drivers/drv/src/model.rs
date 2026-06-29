@@ -20,29 +20,6 @@ use sync::{Spinlock, TaskList as DriverListClass};
 
 use crate::KResult;
 
-/// One BAR region as the sysfs `resource` file reports it (DVR-0009):
-/// inclusive `[start,end]` in bytes + the Linux `IORESOURCE_*` flag set.
-/// Empty BAR (and 64-bit high half) = all zero.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-pub struct Resource { pub start: u64, pub end: u64, pub flags: u64 }
-
-/// PCI config-space snapshot captured at enumeration, backing the sysfs
-/// attribute files udev/libpci read (DVR-0009..0011). Only the pci-bus
-/// `Device` carries one; virtio/synthetic devices leave it `None`.
-#[derive(Clone)]
-pub struct PciCfg {
-    /// Config-space revision id (offset 0x08 low byte).
-    pub revision:         u8,
-    /// Subsystem vendor id (offset 0x2C).
-    pub subsystem_vendor: u16,
-    /// Subsystem device id (offset 0x2E).
-    pub subsystem_device: u16,
-    /// Interrupt line (offset 0x3C low byte) — the `irq` attribute.
-    pub irq:              u8,
-    /// Decoded + sized BAR regions for `resource`/`resourceN`.
-    pub bars:             [Resource; 6],
-}
-
 /// One enumerated device on a bus. `driver` names the bound driver
 /// (None = unbound). Held as `Arc<Device>` so the registry, the bound
 /// driver, and the sysfs inode tree all share one instance.
@@ -57,31 +34,17 @@ pub struct Device {
     pub device_id: u16,
     /// 24-bit PCI class/subclass/prog-if (class<<16|sub<<8|progif).
     pub class:     u32,
-    /// PCI config snapshot (pci bus only) for sysfs attrs. # DVR-0009..0011
-    pub pci:       Option<PciCfg>,
-    /// `driver_override` sysfs attr (DVR-0011): admin-forced driver match.
-    pub driver_override: Spinlock<Option<String>, DriverListClass>,
     /// Bound driver name, None when unbound.
     pub driver:    Spinlock<Option<&'static str>, DriverListClass>,
 }
 
 impl Device {
-    /// Construct an unbound device (no PCI snapshot). # C: O(1)
+    /// Construct an unbound device. # C: O(1)
     pub fn new(bus: &'static str, addr: String, vendor_id: u16, device_id: u16, class: u32) -> Self {
-        Self { bus, addr, vendor_id, device_id, class, pci: None,
-               driver_override: Spinlock::new(None), driver: Spinlock::new(None) }
+        Self { bus, addr, vendor_id, device_id, class, driver: Spinlock::new(None) }
     }
-    /// Attach a PCI config snapshot (builder). # C: O(1)
-    pub fn with_pci(mut self, cfg: PciCfg) -> Self { self.pci = Some(cfg); self }
     /// Currently-bound driver name, if any. # C: O(1)
     pub fn bound(&self) -> Option<&'static str> { *self.driver.lock() }
-    /// Read the `driver_override` string (Linux empty = `"\n"`). # C: O(1)
-    pub fn driver_override(&self) -> Option<String> { self.driver_override.lock().clone() }
-    /// Set/clear `driver_override`; empty/`"(null)"` clears it. # C: O(1)
-    pub fn set_driver_override(&self, s: &str) {
-        let t = s.trim_matches(|c| c == '\n' || c == '\0');
-        *self.driver_override.lock() = if t.is_empty() || t == "(null)" { None } else { Some(String::from(t)) };
-    }
 }
 
 /// The driver contract (drivers-plan: Driver/DriverInstance/Device +
@@ -234,24 +197,6 @@ mod tests {
         let other = Device::new("pci", alloc::string::String::from("0000:00:0b.0"), 0x1AF4, 0x1041, 0);
         assert_eq!(match_driver(&other), None);
         assert!(driver_names().contains(&"fake-virtio-blk"));
-    }
-
-    #[test]
-    fn pci_snapshot_and_driver_override() {
-        let cfg = PciCfg { revision: 0x01, subsystem_vendor: 0x1AF4, subsystem_device: 0x0001,
-            irq: 11, bars: [Resource::default(); 6] };
-        let d = Device::new("pci", alloc::string::String::from("0000:00:0d.0"), 0x1AF4, 0x1041, 0x020000)
-            .with_pci(cfg);
-        let p = d.pci.as_ref().expect("snapshot present");
-        assert_eq!(p.revision, 0x01);
-        assert_eq!(p.subsystem_vendor, 0x1AF4);
-        assert_eq!(p.irq, 11);
-        // driver_override: starts None, set, then cleared by empty/(null).
-        assert!(d.driver_override().is_none());
-        d.set_driver_override("vfio-pci\n");
-        assert_eq!(d.driver_override().as_deref(), Some("vfio-pci"));
-        d.set_driver_override("(null)\n");
-        assert!(d.driver_override().is_none());
     }
 
     #[test]
