@@ -457,12 +457,14 @@ fn inode_key(inode: &InodeRef) -> usize {
 }
 
 fn resolve_watch_path(raw: &str) -> Option<InodeRef> {
+    // D26-fs: a lexical-normalization miss resolves to nothing (caller maps to
+    // ENOENT), never a nondeterministic raw-string fallback.
     let resolved = if raw.starts_with('/') {
-        vfs::path::lexical_normalize(raw).unwrap_or_else(|| raw.into())
+        vfs::path::lexical_normalize(raw)?
     } else if let Some(cur) = sched::current() {
         // SAFETY: current task is the sole writer of its cwd slot on this CPU.
         let cwd = unsafe { (*cur.cwd.get()).clone() };
-        vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
+        vfs::path::resolve_against_cwd(&cwd, raw)?
     } else {
         raw.into()
     };
