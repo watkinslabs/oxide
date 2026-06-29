@@ -140,6 +140,18 @@ pub trait FileBacking: Send + Sync {
     /// Stale values are harmless: the worst case is a non-zero tail
     /// that gets zero-filled anyway because `read_at` returned short.
     fn size_hint(&self) -> u64;
+
+    /// Backing inode number — diagnostics only (identify which file a
+    /// file-backed VMA maps). Default 0 for non-inode backings.
+    fn ino(&self) -> u64 { 0 }
+
+    /// MAP_SHARED page-cache frame for page-aligned file offset `off`. Some =
+    /// the persistent backing frame a shared mapping installs directly (Linux
+    /// shmem); None (default) = no shareable frame → the fault handler copies
+    /// via `read_at` (MAP_PRIVATE / non-page-frame backings). tmpfs/memfd
+    /// supply a real frame so writes propagate to the file and other mappers.
+    /// # C: O(log N_pages)
+    fn shared_frame(&self, _off: u64) -> Option<u64> { None }
 }
 
 /// VMA backing per `11§4`. `File` carries the file/inode ref via

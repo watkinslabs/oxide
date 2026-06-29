@@ -6,7 +6,7 @@
 use alloc::string::String;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_path, resolve, errno_from_vfs, resolve_parent};
+use crate::namei_common::{read_path, errno_from_vfs, resolve_parent};
 
 /// `mknod(path, mode, dev)` slot 133.
 /// # C: O(N parent entries)
@@ -19,7 +19,9 @@ pub fn sys_mknod(args: &SyscallArgs) -> i64 {
 
 /// # C: O(N parent entries)
 pub(crate) fn mknod_impl(raw: String, mode: u16, dev: u32) -> i64 {
-    let p = resolve(&raw).unwrap_or(raw);
+    let p = match crate::pathresolve::resolve_at_result(crate::pathresolve::AT_FDCWD, &raw) {
+        Ok(p) => p, Err(rv) => return rv,
+    };
     // Map mode's type bits to the Landlock access needed.
     const S_IFMT:  u16 = 0xF000;
     const S_IFREG: u16 = 0x8000;
@@ -39,6 +41,9 @@ pub(crate) fn mknod_impl(raw: String, mode: u16, dev: u32) -> i64 {
         _        => return -(Errno::Einval.as_i32() as i64),
     };
     if let Err(rv) = crate::landlock::check(&p, la) { return rv; }
+    if vfs::mount::is_readonly_path(&p) {
+        return -(Errno::Erofs.as_i32() as i64);
+    }
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
     let r = if real_ftype == S_IFREG {
         // POSIX-compat: mknod-with-regular-type = open(O_CREAT) equivalent.
@@ -46,5 +51,11 @@ pub(crate) fn mknod_impl(raw: String, mode: u16, dev: u32) -> i64 {
     } else {
         pino.mknod_child(&name, (real_ftype | (mode & 0x0FFF)) as u16, dev)
     };
-    match r { Ok(())  => 0, Err(e)  => errno_from_vfs(e) }
+    match r {
+        Ok(())  => 0,
+        Err(e)  => {
+            crate::namei_common::trace_run_vfs_error(b"mknod", &p, e);
+            errno_from_vfs(e)
+        }
+    }
 }

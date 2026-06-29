@@ -14,6 +14,28 @@ use crate::execve_common::{
     reset_caught_signals, reset_per_execve_state, resolve_shebang_chain,
 };
 
+fn unshare_fd_table_and_close_on_exec(cur: &sched::Task) {
+    let shared = unsafe {
+        cur.fd_table_ref()
+            .map(|fdt| alloc::sync::Arc::strong_count(fdt) > 1)
+            .unwrap_or(false)
+    };
+    if shared {
+        let new_fdt = unsafe {
+            cur.fd_table_ref()
+                .map(|fdt| alloc::sync::Arc::new(fdt.fork_clone()))
+        };
+        if let Some(fdt) = new_fdt {
+            // SAFETY: execve is the sole fd-table mutator for this task.
+            unsafe { cur.replace_fd_table(Some(fdt)); }
+        }
+    }
+    // SAFETY: execve is the sole fd-table mutator for this task.
+    if let Some(fdt) = unsafe { cur.fd_table_ref() } {
+        fdt.close_on_exec();
+    }
+}
+
 /// `sys_execve(path, argv, envp)` per `15§5` / `31§4`. Thin wrapper
 /// that reads the user-space path then delegates to `execve_inner`.
 /// # SAFETY: dispatch ctx, IRQs masked.
@@ -50,7 +72,15 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
     let v = match crate::pathresolve::read_exec(&path_owned)
         .or_else(|| ext4::rootfs::read_file(&path_owned)) {
         Some(v) => v,
-        None    => return -(Errno::Enoent.as_i32() as i64),
+        None    => {
+            #[cfg(feature = "debug-boot")]
+            {
+                klog::write_raw(b"[execve ENOENT] path=");
+                klog::write_raw(&path_owned);
+                klog::write_raw(b"\n");
+            }
+            return -(Errno::Enoent.as_i32() as i64);
+        }
     };
     ext4_blob = Some(v);
     // SAFETY: ext4_blob just-set; outlives the load_static_blob call below.
@@ -193,8 +223,17 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
     //    if drop runs concurrently — but on UP single-CPU the
     //    order is purely defensive.
     use hal::MmuOps;
+    // mm_cpumask (Linux): execve swaps the mm on the running CPU via a
+    // DIRECT activate (bypassing the scheduler), so it must do its own
+    // set/clear. Mark THIS CPU on the new AS BEFORE the CR3 reload so a peer
+    // shootdown can't skip us; clear the OLD mm's bit AFTER the reload (which
+    // flushed our old user TLB) and before replace_mm drops it.
+    let me = { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) };
+    new_as.mark_cpu(me);
     // SAFETY: new_root carries kernel-half cloned from master per P2-19; activate writes CR3 + flushes user TLB; preempt-off; single-CPU.
     unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::activate(new_root); }
+    // SAFETY: we are the running task on this CPU; preempt-off; no concurrent execve writer; reading the still-current old mm before replace.
+    if let Some(old) = unsafe { cur.mm_ref() } { old.clear_cpu(me); }
     // SAFETY: we are the running task on this CPU; preempt-off; no concurrent reader of mm on another CPU (UP v1).
     unsafe { cur.replace_mm(Some(new_as)); }
 
@@ -215,11 +254,8 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
         (*ctx_ptr).fs_base = 0;
     }
 
-    // P3-61: drop FD_CLOEXEC fds before the new program runs.
-    // SAFETY: same single-mutator invariant on fd_table as mm.
-    if let Some(fdt) = unsafe { cur.fd_table_ref() } {
-        fdt.close_on_exec();
-    }
+    // P3-61: Linux execve unshares CLONE_FILES, then drops FD_CLOEXEC fds.
+    unshare_fd_table_and_close_on_exec(&cur);
     reset_caught_signals(&cur);
     reset_per_execve_state(&cur);
     // F156: clear CLONE_VFORK rendezvous so the parent (suspended in
@@ -263,13 +299,13 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
         } else { None }
     };
     // Cap transition: root regains the full set on exec (unconditional —
-    // Linux applies this even with no file-caps; the devfs::lookup below only
-    // covers file-cap xattrs on devfs nodes, not ext4 binaries).
+    // Linux applies this even with no file-caps; the pathresolve below reads
+    // file-cap xattrs from the resolved inode, devfs node or ext4 binary).
     regain_root_caps_at_execve(cur);
     // F103: file capabilities — apply security.capability xattr from the
     // exec path's inode to the calling task's cap_permitted / cap_effective.
     if let Some(p) = exec_path_for_caps {
-        if let Some(inode) = devfs::lookup(&p) {
+        if let Some(inode) = crate::pathresolve::resolve(&p, true) {
             apply_file_caps_at_execve(&inode, cur);
         }
     }
@@ -304,6 +340,21 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
     frame[0] = img.user_ip();
     frame[1] = 0x202;                  // RFLAGS = IF=1 + reserved bit 1
     frame[2] = new_sp;
+    // Linux ABI (`fs/binfmt_elf.c` start_thread / ELF_PLAT_INIT): every GP
+    // register is 0 at process entry except RSP. Our syscall epilogue restores
+    // rax/rdi/rsi/rdx/r10/r8/r9 from the saved frame (the 7 slots immediately
+    // below this RIP/RFLAGS/RSP triple) — left un-zeroed, the new program (and
+    // ld.so) inherit stale register garbage. RDX especially is the
+    // `rtld_fini`/atexit pointer glibc's _start forwards to __libc_start_main
+    // and registers via __cxa_atexit — a garbage value there poisons the
+    // exit-handler list (the same .bss the boot wedge corrupts).
+    // SAFETY: current_user_frame() points at base+0x38 (RIP); base+0x00..0x30
+    // are the 7 GP-arg slots the epilogue pops. Same per-task syscall stack,
+    // single mutator, IRQs/preempt-off in the syscall body.
+    unsafe {
+        let base = (frame as *mut [u64; 3] as *mut u64).sub(7);
+        for i in 0..7 { core::ptr::write_volatile(base.add(i), 0); }
+    }
 
     debug_sched! {
         klog::write_raw(b"[INFO]  sys_execve: argc=");
@@ -469,16 +520,21 @@ pub(crate) fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u
     new_as.set_mmap_base(EXEC_USER_STACK_VA.saturating_sub(vmm::MMAP_BASE_GAP));
 
     // 3. Replace cur.mm + activate the new AS.
+    // mm_cpumask (Linux): execve's direct activate bypasses the scheduler, so
+    // it sets/clears the cpumask itself. Mark THIS CPU on the new AS before
+    // the TTBR0 reload; clear the old mm's bit after it (TLB flushed) and
+    // before replace_mm drops it.
+    let me = { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) };
+    new_as.mark_cpu(me);
     // SAFETY: new_root carries kernel-half cloned from master at new_user_l0; activate writes TTBR0_EL1 + flushes user TLB; preempt-off; single-CPU.
     unsafe { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::activate(new_root); }
+    // SAFETY: running task on this CPU; preempt-off; no concurrent execve writer; reading the still-current old mm before replace.
+    if let Some(old) = unsafe { cur.mm_ref() } { old.clear_cpu(me); }
     // SAFETY: we are the running task; preempt-off; UP single-CPU so no concurrent reader of cur.mm.
     unsafe { cur.replace_mm(Some(new_as)); }
 
-    // P3-61: drop FD_CLOEXEC fds before the new program runs.
-    // SAFETY: same single-mutator invariant on fd_table as mm.
-    if let Some(fdt) = unsafe { cur.fd_table_ref() } {
-        fdt.close_on_exec();
-    }
+    // P3-61: Linux execve unshares CLONE_FILES, then drops FD_CLOEXEC fds.
+    unshare_fd_table_and_close_on_exec(&cur);
     reset_caught_signals(&cur);
     reset_per_execve_state(&cur);
     // F156: clear CLONE_VFORK rendezvous so the parent (suspended in
@@ -529,7 +585,7 @@ pub(crate) fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u
     };
     regain_root_caps_at_execve(cur);
     if let Some(p) = exec_path_for_caps {
-        if let Some(inode) = devfs::lookup(&p) {
+        if let Some(inode) = crate::pathresolve::resolve(&p, true) {
             apply_file_caps_at_execve(&inode, cur);
         }
     }

@@ -23,5 +23,5 @@ pub fn sys_futex_wake(args: &SyscallArgs) -> i64 {
     }
     // mask (bitset) is treated as match-any — the shared queue is not bitset-
     // partitioned, same as the classic FUTEX_WAKE.
-    ::ipc::live::futex::dispatch(uaddr, FUTEX_WAKE, nr)
+    ::ipc::live::futex::dispatch(uaddr, FUTEX_WAKE | (flags & FUTEX2_PRIVATE), nr)
 }

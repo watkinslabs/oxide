@@ -27,10 +27,12 @@ console   = { path = "../console" }
 smoke     = { path = "../smoke" }
 devpts    = { path = "../devpts" }
 tracefs   = { path = "../tracefs" }
+kernfs    = { path = "../kernfs" }
 kmacros   = { path = "../../shared/kmacros" }
 kalloc  = { path = "../../shared/kalloc" }
 pmm     = { path = "../mm-pmm" }
 procfs  = { path = "../procfs" }
+sysfs   = { path = "../sysfs" }
 sched   = { path = "../sched" }
 softirq = { path = "../softirq" }
 netlink = { path = "../netlink" }
@@ -58,11 +60,14 @@ sound             = { path = "../sound" }
 drv-virtio-snd    = { path = "../../drivers/drv-virtio-snd" }
 
 [features]
+debug-eager-fork = []  # TEST: eager-copy fork instead of COW
 debug-boot = ["kmacros/debug-boot"]
 debug-trace = ["kmacros/debug-trace"]
 debug-syscall = ["kmacros/debug-syscall", "sched/debug-syscall"]
 debug-ssh = ["kmacros/debug-ssh"]
 debug-cgroup = ["kmacros/debug-cgroup"]
+debug-mount = []  # [mnt] log of mount-family syscall failures (path+errno) — 226/NAMESPACE diagnosis
+debug-atexit = []  # abandoned atexit-corruption FILEREAD/LOCKBYTE probes (kept, off)
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }

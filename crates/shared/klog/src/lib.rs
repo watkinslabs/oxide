@@ -98,6 +98,8 @@ pub type ClockFn = fn() -> u64;
 
 static CLOCK_FN: core::sync::atomic::AtomicPtr<()>
     = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+static LINE_START: core::sync::atomic::AtomicBool
+    = core::sync::atomic::AtomicBool::new(true);
 
 /// Install a `now_ns` callback. Subsequent klog records get a
 /// `[<sec>.<ms>] ` prefix before the level marker.
@@ -129,7 +131,7 @@ fn now_ns() -> Option<u64> {
 pub fn write_dec_u64(v: u64) {
     let mut buf = [0u8; 20];
     let n = write_dec(&mut buf, v, false);
-    invoke_sink(&buf[..n]);
+    emit_bytes(&buf[..n]);
 }
 
 /// Write decimal `v` into `out`. If `pad3` is true, zero-pads to 3
@@ -184,6 +186,36 @@ fn invoke_sink(bytes: &[u8]) {
     // `register_console` slots) in order. The transmute safety lives in
     // `console::fan_out`.
     console::fan_out(bytes);
+}
+
+fn emit_bytes(bytes: &[u8]) {
+    let Some(_) = now_ns() else {
+        invoke_sink(bytes);
+        return;
+    };
+    if bytes.is_empty() { return; }
+
+    let mut start = 0usize;
+    while start < bytes.len() {
+        if LINE_START.swap(false, core::sync::atomic::Ordering::AcqRel) {
+            if let Some(ns) = now_ns() {
+                emit_timestamp(ns);
+            }
+        }
+
+        let mut end = start;
+        while end < bytes.len() && bytes[end] != b'\n' {
+            end += 1;
+        }
+        if end < bytes.len() {
+            end += 1;
+            invoke_sink(&bytes[start..end]);
+            LINE_START.store(true, core::sync::atomic::Ordering::Release);
+        } else {
+            invoke_sink(&bytes[start..end]);
+        }
+        start = end;
+    }
 }
 
 // ---------------------------------------------------------------
@@ -282,7 +314,7 @@ pub fn ring_read(cursor: usize, out: &mut [u8]) -> (usize, usize) {
 /// which carry the InternedFormat metadata.
 /// # C: O(len(bytes))
 pub fn write_raw(bytes: &[u8]) {
-    invoke_sink(bytes);
+    emit_bytes(bytes);
 }
 
 /// `/dev/kmsg` write path: inject a userspace-originated record into the
@@ -292,7 +324,7 @@ pub fn write_raw(bytes: &[u8]) {
 /// per-subsystem debug trace gated to zero bytes by default.
 /// # C: O(len(bytes))
 pub fn kmsg_write(bytes: &[u8]) {
-    invoke_sink(bytes);
+    emit_bytes(bytes);
 }
 
 /// Emit a 64-bit value as 16 lower-case hex digits, no `0x` prefix,
@@ -307,7 +339,7 @@ pub fn write_hex_u64(v: u64) {
         buf[i as usize] = if nibble < 10 { b'0' + nibble } else { b'a' + (nibble - 10) };
         i += 1;
     }
-    invoke_sink(&buf);
+    emit_bytes(&buf);
 }
 
 /// Format and emit one klog event: `[LEVEL] msg\n`. Falls through to
@@ -316,9 +348,6 @@ pub fn write_hex_u64(v: u64) {
 #[doc(hidden)]
 #[inline(always)]
 pub fn __klog_emit(entry: &'static InternedFormat) {
-    if let Some(ns) = now_ns() {
-        emit_timestamp(ns);
-    }
     let prefix: &[u8] = match entry.level {
         Level::Error => b"[ERROR] ",
         Level::Warn  => b"[WARN]  ",
@@ -326,9 +355,9 @@ pub fn __klog_emit(entry: &'static InternedFormat) {
         Level::Debug => b"[DEBUG] ",
         Level::Trace => b"[TRACE] ",
     };
-    invoke_sink(prefix);
-    invoke_sink(entry.bytes);
-    invoke_sink(b"\n");
+    emit_bytes(prefix);
+    emit_bytes(entry.bytes);
+    emit_bytes(b"\n");
 }
 
 /// Emit an interned format string at the given level. `$msg` must be

@@ -154,6 +154,8 @@ pub trait Context: Sized {
 
 pub mod pt_walker;
 
+pub mod tlb;
+
 /// Local `kassert!` per `07§5` — bridges to `crates/err`'s real
 /// implementation once that crate ships per `38`. Form: `kassert!(cond,
 /// "literal")` only; no `panic!(fmt)` per CLAUDE.md hard rules.
@@ -170,11 +172,20 @@ macro_rules! kassert {
 ///
 /// # C: see method-level annotations
 pub trait MmuOps {
-    /// Map `va -> pa` with `flags` at `size`.
+    /// Map `va -> pa` with `flags` at `size`. Returns `Some(old_pa)` iff a
+    /// *different* present frame was torn down to make room (the displaced
+    /// leaf the caller must `dec_ref`/`put_page` per `11§8`); `None` when the
+    /// slot was empty or already mapped the SAME `pa` (a pure permission
+    /// rewrite, e.g. fork's W-strip or a shmem RO→RW upgrade — no PTE-count
+    /// change). F157-A1: replaces the old silent-replace that leaked the
+    /// displaced frame's refcount.
     /// # SAFETY: `va` and `pa` aligned to `size`; the mapping does not alias
     /// existing kernel mappings; caller holds the relevant PT lock per 06.
+    /// Displaced-frame accounting is the mm layer's responsibility
+    /// (`vmm::AddressSpace` install sites); device/identity/SMP maps that
+    /// never run over a PMM-tracked user frame may ignore the result.
     /// # C: O(1) for 4 KiB; O(1) for 2 MiB / 1 GiB
-    unsafe fn map(va: Va, pa: Pa, flags: PageFlags, size: PageSize);
+    unsafe fn map(va: Va, pa: Pa, flags: PageFlags, size: PageSize) -> Option<Pa>;
 
     /// Tear down the mapping at `va` of `size`.
     /// # SAFETY: caller holds the relevant PT lock; `va` aligned to `size`.
@@ -198,12 +209,16 @@ pub trait MmuOps {
     /// `root_pa` instead of the active CR3 / TTBR0. Used by
     /// `AddressSpace::fork` per docs/11§7 to populate child page
     /// tables without temporarily activating them.
+    /// Returns the displaced frame like [`MmuOps::map`] (`Some(old_pa)` iff a
+    /// different present leaf was torn down). Fork populates a FRESH child
+    /// root, so in practice this is always `None`; the return keeps the two
+    /// installers symmetric for callers that account displaced frames.
     /// # SAFETY: caller asserts `root_pa` is a valid kernel-owned
     /// PT root frame; `va` and `pa` aligned per `size`; per-AS PT
     /// lock held.
     /// # C: O(1)
     /// # Ctx: under PT lock per `06§3.6`
-    unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, size: PageSize);
+    unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, size: PageSize) -> Option<Pa>;
 
     /// Install `root_pa` as this CPU's active user-half page-table root.
     ///

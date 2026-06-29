@@ -27,11 +27,25 @@ bitflags::bitflags! {
         const REFERENCED = 1 << 1;
         const LOCKED     = 1 << 2;
         const RESERVED   = 1 << 3;
+        // F157-A1: page-class + state bits mirroring Linux `page->flags`
+        // (PageAnon / PageSwapBacked / PG_uptodate) + the folio
+        // `PageAnonExclusive` proxy used by the COW-reuse fast path. Only
+        // 4 of 32 bits were used; these claim 6 more (26 still free).
+        const ANON           = 1 << 4;
+        const FILE           = 1 << 5;
+        const SHMEM          = 1 << 6;
+        const PFNMAP         = 1 << 7;
+        const UPTODATE       = 1 << 8;
+        /// Linux `PageAnonExclusive`: the page is mapped by exactly one
+        /// AS and may be reused in place on a write fault (`wp_page_reuse`)
+        /// instead of COW-copied. A3 will set/clear this; today it's a
+        /// placeholder so the bit position is reserved.
+        const ANON_EXCLUSIVE = 1 << 9;
     }
 }
 
 /// One metadata slot per PFN. Layout per `11§8`: 24 bytes
-/// (refcount 4 + flags 4 + mapping 8 + page_index 4 + pad 4).
+/// (refcount 4 + flags 4 + mapping 8 + page_index 4 + mapcount 4).
 ///
 /// `mapping` is a type-erased pointer per Linux `struct page->mapping`:
 /// for anonymous pages it's an `Arc<vmm::AnonVma>` raw pointer with
@@ -39,13 +53,25 @@ bitflags::bitflags! {
 /// adapter — `pmm::setup::set_anon_rmap_for_pfn` — owns the typed
 /// dance). `page_index` is the page-aligned offset within the
 /// originating VMA, used by `rmap_walk_anon` to compute the VA.
+///
+/// F157-A1: `refcount` and `mapcount` are now SEPARATE, mirroring Linux
+/// `page->_refcount` vs `page->_mapcount`:
+///   * `mapcount` = count of live user PTEs pointing at this frame.
+///   * `refcount` = `mapcount` + object holds (inode base pin for shmem)
+///     + transient kernel pins (io_uring fixed buffers, GUP).
+/// A frame is freed only when `refcount` hits 0 (`setup.rs` free path),
+/// by which point `mapcount` is already 0. The split lets a future
+/// `wp_page_reuse` fast path test `mapcount == 1` (sole mapper) without
+/// being fooled by a transient refcount pin.
 #[repr(C)]
 pub struct PageMeta {
     pub refcount:   AtomicU32,
     pub flags:      AtomicU32,
     pub mapping:    AtomicPtr<()>,
     pub page_index: AtomicU32,
-    _pad:           u32,
+    /// Live user-PTE count (Linux `page->_mapcount`). Distinct from
+    /// `refcount`; reuses the former 4-byte pad so layout stays 24 B.
+    pub mapcount:   AtomicU32,
 }
 
 impl PageMeta {
@@ -56,7 +82,7 @@ impl PageMeta {
             flags:      AtomicU32::new(0),
             mapping:    AtomicPtr::new(core::ptr::null_mut()),
             page_index: AtomicU32::new(0),
-            _pad:       0,
+            mapcount:   AtomicU32::new(0),
         }
     }
 }
@@ -118,6 +144,31 @@ impl PageMetaArr {
     /// # C: O(1)
     pub fn refcount(&self, pfn: Pfn) -> Option<u32> {
         Some(self.get(pfn)?.refcount.load(Ordering::Acquire))
+    }
+
+    /// Atomic mapcount increment (a new user PTE now points here).
+    /// Returns the old value, or `None` if `pfn` is out of range.
+    /// Mirrors Linux `page_add_*_rmap` `atomic_inc(&page->_mapcount)`.
+    /// # C: O(1)
+    pub fn inc_map(&self, pfn: Pfn) -> Option<u32> {
+        Some(self.get(pfn)?.mapcount.fetch_add(1, Ordering::AcqRel))
+    }
+
+    /// Atomic mapcount decrement (a user PTE was torn down). Returns the
+    /// NEW value, or `None` if `pfn` is out of range. Underflows panic in
+    /// `debug` builds; `release` wraps silently. Mirrors Linux
+    /// `page_remove_rmap` `atomic_add_negative` shape.
+    /// # C: O(1)
+    pub fn dec_map(&self, pfn: Pfn) -> Option<u32> {
+        let prev = self.get(pfn)?.mapcount.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(prev > 0, "PageMeta::dec_map underflow at pfn {}", pfn.0);
+        Some(prev.wrapping_sub(1))
+    }
+
+    /// Snapshot of the mapcount (live user-PTE count).
+    /// # C: O(1)
+    pub fn mapcount(&self, pfn: Pfn) -> Option<u32> {
+        Some(self.get(pfn)?.mapcount.load(Ordering::Acquire))
     }
 
     /// Set the given flag bits. Returns the previous full flag word.
@@ -278,12 +329,29 @@ mod tests {
     }
 
     #[test]
+    fn mapcount_inc_dec_roundtrip() {
+        let a = leak_arr(0, 8);
+        assert_eq!(a.mapcount(Pfn(5)), Some(0));
+        assert_eq!(a.inc_map(Pfn(5)), Some(0)); // returns old
+        assert_eq!(a.mapcount(Pfn(5)), Some(1));
+        assert_eq!(a.inc_map(Pfn(5)), Some(1));
+        assert_eq!(a.mapcount(Pfn(5)), Some(2));
+        assert_eq!(a.dec_map(Pfn(5)), Some(1)); // returns new
+        assert_eq!(a.dec_map(Pfn(5)), Some(0));
+        assert_eq!(a.mapcount(Pfn(5)), Some(0));
+        // mapcount and refcount are independent fields.
+        a.inc_ref(Pfn(5)).unwrap();
+        assert_eq!(a.refcount(Pfn(5)), Some(1));
+        assert_eq!(a.mapcount(Pfn(5)), Some(0));
+    }
+
+    #[test]
     fn meta_size_matches_spec() {
         // `11§8`: per-page metadata. 24 B = refcount(4) + flags(4) +
-        // mapping(8) + page_index(4) + pad(4). Bumped from 16 to 24
-        // when F156-rmap added page_index for `rmap_walk_anon`.
-        // 24 B/page ≈ 0.6% RAM overhead — still well under the
-        // 1%-of-RAM budget per `04§*`.
+        // mapping(8) + page_index(4) + mapcount(4). F157-A1 renamed the
+        // former 4-byte pad to `mapcount` (Linux `page->_mapcount`); size
+        // is unchanged at 24 B/page ≈ 0.6% RAM overhead — still well under
+        // the 1%-of-RAM budget per `04§*`.
         assert_eq!(core::mem::size_of::<PageMeta>(), 24);
     }
 }

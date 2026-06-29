@@ -63,7 +63,10 @@ pub struct PtySlaveInode  { pub pair: Arc<LockedPair> }
 
 impl Inode for PtyMasterInode {
     fn ino(&self) -> Ino { self.pair.ino_master }
+    fn fsid(&self) -> u64 { devfs::DEVFS_FSID }
     fn file_type(&self) -> FileType { FileType::CharDev }
+    fn rdev(&self) -> u32 { 0x8000 | (self.pair.pts_num() & 0xff) as u32 }
+    fn perm(&self) -> Option<u16> { Some(0o666) }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
@@ -133,7 +136,10 @@ impl Inode for PtyMasterInode {
 
 impl Inode for PtySlaveInode {
     fn ino(&self) -> Ino { self.pair.ino_slave }
+    fn fsid(&self) -> u64 { devfs::DEVFS_FSID }
     fn file_type(&self) -> FileType { FileType::CharDev }
+    fn rdev(&self) -> u32 { 0x8800 | (self.pair.pts_num() & 0xff) as u32 }
+    fn perm(&self) -> Option<u16> { Some(0o620) }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     /// Linux `pts_unix98_lookup`: a `TIOCSPTLCK`-locked slave can't be
@@ -250,6 +256,7 @@ impl LockedPair {
 /// # C: O(1)
 pub fn init() {
     devfs::register("/dev/ptmx", Arc::new(PtmxSentinelInode) as InodeRef);
+    devfs::register_dir("/dev/pts");
 }
 
 /// Boot-time smoke for the PTY pair surface. Allocates a fresh
@@ -391,7 +398,10 @@ pub struct PtmxSentinelInode;
 
 impl Inode for PtmxSentinelInode {
     fn ino(&self) -> Ino { 0x6000_FFFF }
+    fn fsid(&self) -> u64 { devfs::DEVFS_FSID }
     fn file_type(&self) -> FileType { FileType::CharDev }
+    fn rdev(&self) -> u32 { 0x0502 }
+    fn perm(&self) -> Option<u16> { Some(0o666) }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Err(VfsError::Eio) }

@@ -117,9 +117,10 @@ fn lexical_normalize_resolves_dotdot() {
 }
 
 #[test]
-fn lexical_normalize_rejects_dotdot_above_absolute_root() {
-    assert!(lexical_normalize("/..").is_none());
-    assert!(lexical_normalize("/a/../..").is_none());
+fn lexical_normalize_clamps_dotdot_at_absolute_root() {
+    assert_eq!(lexical_normalize("/..").as_deref(), Some("/"));
+    assert_eq!(lexical_normalize("/a/../..").as_deref(), Some("/"));
+    assert_eq!(lexical_normalize("/../../a").as_deref(), Some("/a"));
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +158,22 @@ fn dup_fd_target_proc_self_and_pid_fd() {
     assert_eq!(parse_proc_fd("/proc/123/fd/7"),  Some((Some(123), 7)));
     // The /proc/self/fd dir itself (no <n>) is not an fd-link target.
     assert_eq!(parse_proc_fd("/proc/self/fd"), None);
+}
+
+#[test]
+fn dup_fd_target_execve_magic_fd_forms() {
+    // execve("/proc/self/fd/N") and execveat(fd,"",AT_EMPTY_PATH) (the
+    // latter synthesises "/proc/self/fd/<dirfd>") both route through
+    // dup_fd_target so the exec loader reads the OPEN file description's
+    // backing inode — the only way a sealed memfd (whose d_path can't be
+    // re-resolved) is exec-able, matching Linux do_execveat_common.
+    use crate::path::dup_fd_target;
+    // The exact strings execve / execveat hand the loader.
+    assert_eq!(dup_fd_target("/proc/self/fd/3"),  Some((None, 3)));
+    assert_eq!(dup_fd_target("/proc/self/fd/17"), Some((None, 17)));
+    assert_eq!(dup_fd_target("/dev/fd/3"),        Some((None, 3)));
+    // Per-pid form (/proc/<pid>/fd/<n>) is exec-able too.
+    assert_eq!(dup_fd_target("/proc/42/fd/3"),    Some((Some(42), 3)));
 }
 
 #[test]
@@ -428,6 +445,198 @@ fn fdtable_live_fds_cloexec_only_range() {
 }
 
 // ---------------------------------------------------------------------------
+// B6 — f_path / f_mode / f_cred / private_data + bitmap fd flags
+// ---------------------------------------------------------------------------
+
+#[test]
+fn file_new_at_carries_mnt_id_in_f_path() {
+    let i: InodeRef = MemFile::new(1);
+    let d = Dentry::new_root(Arc::clone(&i));
+    let f = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDWR, 42, Cred::root());
+    assert_eq!(f.mnt_id(), 42);
+    let (mnt, dentry) = f.f_path();
+    assert_eq!(mnt, 42);
+    assert!(Arc::ptr_eq(dentry, &d));
+    // The plain `new` ctor is the anonymous-inode form: no vfsmount.
+    let anon = File::new(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDWR);
+    assert_eq!(anon.mnt_id(), 0);
+    assert!(anon.vfsmount().is_none());
+}
+
+#[test]
+fn file_f_inode_matches_dentry_inode() {
+    let i: InodeRef = MemFile::new(7);
+    let d = Dentry::new_root(Arc::clone(&i));
+    let f = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDONLY, 1, Cred::root());
+    assert_eq!(f.f_inode().ino(), 7);
+    assert_eq!(f.f_inode().ino(), f.dentry().inode().unwrap().ino());
+}
+
+#[test]
+fn file_f_mode_derivation() {
+    use crate::file::Fmode;
+    let i: InodeRef = MemFile::new(1);
+    let d = Dentry::new_root(Arc::clone(&i));
+    // MemFile is a regular (seekable) file, so every open also carries the
+    // FMODE_LSEEK|PREAD|PWRITE capability bits (`do_dentry_open`). Mask them
+    // out to assert the access-mode derivation in isolation, then assert the
+    // seekability bits are present.
+    let seek = Fmode::LSEEK | Fmode::PREAD | Fmode::PWRITE;
+    let ro = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDONLY, 0, Cred::root());
+    assert_eq!(ro.f_mode() - seek, Fmode::READ);
+    assert!(ro.f_mode().contains(seek), "regular file is seekable");
+    let wo = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_WRONLY, 0, Cred::root());
+    assert_eq!(wo.f_mode() - seek, Fmode::WRITE);
+    let rw = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDWR, 0, Cred::root());
+    assert_eq!(rw.f_mode() - seek, Fmode::READ | Fmode::WRITE);
+}
+
+#[test]
+fn file_f_cred_snapshot() {
+    let i: InodeRef = MemFile::new(1);
+    let d = Dentry::new_root(Arc::clone(&i));
+    let cred = Cred { uid: 1000, gid: 1001, cap_dac_override: false, cap_dac_read_search: true,
+        cap_fowner: false, cap_chown: false, cap_fsetid: false, ngroups: 0, groups: [0u32; CRED_NGROUPS] };
+    let f = File::new_at(i, d, OpenFlags::O_RDONLY, 0, cred);
+    assert_eq!(f.f_cred().uid, 1000);
+    assert_eq!(f.f_cred().gid, 1001);
+    assert!(!f.f_cred().cap_dac_override);
+    assert!(f.f_cred().cap_dac_read_search);
+}
+
+#[test]
+fn file_private_data_round_trip() {
+    let i: InodeRef = MemFile::new(1);
+    let d = Dentry::new_root(Arc::clone(&i));
+    let f = File::new(i, d, OpenFlags::O_RDONLY);
+    assert_eq!(f.private_data(), 0);
+    f.set_private_data(0xDEAD_BEEF);
+    assert_eq!(f.private_data(), 0xDEAD_BEEF);
+}
+
+#[test]
+fn fdtable_dup_shares_file_and_mnt() {
+    let i: InodeRef = MemFile::new(1);
+    let d = Dentry::new_root(Arc::clone(&i));
+    let f = File::new_at(i, d, OpenFlags::O_RDWR, 7, Cred::root());
+    let t = FdTable::new();
+    let a = t.alloc(f).unwrap();
+    let b = t.dup(a).unwrap();
+    assert_ne!(a, b);
+    assert!(Arc::ptr_eq(&t.get(a).unwrap(), &t.get(b).unwrap()));
+    // The mount rides along with the shared open file description.
+    assert_eq!(t.get(b).unwrap().mnt_id(), 7);
+}
+
+#[test]
+fn fdtable_dup_has_independent_cloexec() {
+    // dup* share the File (Arc) but the FD_CLOEXEC flag is per-fd.
+    let t = FdTable::new();
+    let a = t.alloc(mk_file()).unwrap();
+    let b = t.dup(a).unwrap();
+    t.set_cloexec(b, true).unwrap();
+    assert!(!t.cloexec(a).unwrap(), "original fd keeps its own (clear) flag");
+    assert!(t.cloexec(b).unwrap(),  "dup'd fd has its own (set) flag");
+}
+
+#[test]
+fn fdtable_f_setfd_sets_close_on_exec() {
+    // Models fcntl(F_SETFD, FD_CLOEXEC) → set_cloexec, then execve drop.
+    let t = FdTable::new();
+    let keep = t.alloc(mk_file()).unwrap();
+    let drop = t.alloc(mk_file()).unwrap();
+    t.set_cloexec(drop, true).unwrap();
+    assert!(t.cloexec(drop).unwrap());
+    t.close_on_exec();
+    assert!(t.get(keep).is_ok(), "non-cloexec fd survives execve");
+    assert_eq!(t.get(drop).err(), Some(VfsError::Ebadf), "cloexec fd dropped");
+    // The flag was cleared on the surviving fd too.
+    assert!(!t.cloexec(keep).unwrap());
+}
+
+#[test]
+fn fdtable_close_range_closes_span() {
+    // Models close_range(first,last): close the inclusive [first,last] span.
+    let t = FdTable::new();
+    let f0 = t.alloc(mk_file()).unwrap(); // 0
+    let f1 = t.alloc(mk_file()).unwrap(); // 1
+    let f2 = t.alloc(mk_file()).unwrap(); // 2
+    let f3 = t.alloc(mk_file()).unwrap(); // 3
+    let f4 = t.alloc(mk_file()).unwrap(); // 4
+    let (first, last) = (f1, f3);
+    for fd in t.live_fds() {
+        if fd >= first && fd <= last { t.close(fd).unwrap(); }
+    }
+    assert!(t.get(f0).is_ok());
+    assert_eq!(t.get(f1).err(), Some(VfsError::Ebadf));
+    assert_eq!(t.get(f2).err(), Some(VfsError::Ebadf));
+    assert_eq!(t.get(f3).err(), Some(VfsError::Ebadf));
+    assert!(t.get(f4).is_ok());
+    assert_eq!(t.live_fds(), alloc::vec![f0, f4]);
+}
+
+#[test]
+fn install_open_o_cloexec_sets_fd_flag_not_file_flag() {
+    let t = FdTable::new();
+    let i: InodeRef = MemFile::new(2);
+    let fd = crate::file::install_open(
+        &t,
+        Arc::clone(&i),
+        "/tmp/created",
+        OpenFlags::O_RDWR | OpenFlags::O_CLOEXEC,
+        0,
+        crate::namei::Cred::root(),
+    ).unwrap();
+    assert!(t.cloexec(fd).unwrap());
+    assert!(!t.get(fd).unwrap().flags().contains(OpenFlags::O_CLOEXEC));
+    assert!(t.get(fd).unwrap().flags().contains(OpenFlags::O_RDWR));
+}
+
+#[test]
+fn fdtable_bitmap_alloc_min_skips_full_words() {
+    // Allocate past the first 64-fd word, free one in word 0, and a
+    // min-bounded alloc must respect `min` (F_DUPFD semantics) — exercising
+    // the word-scan free-fd search across word boundaries.
+    let t = FdTable::new();
+    let mut fds = alloc::vec::Vec::new();
+    for _ in 0..70 { fds.push(t.alloc(mk_file()).unwrap()); }
+    assert_eq!(fds.last().copied(), Some(69));
+    t.close(3).unwrap();
+    // Lowest free is now 3.
+    assert_eq!(t.alloc(mk_file()).unwrap(), 3);
+    // A min-bounded dup lands at >= 70 (all of 0..=69 occupied).
+    let dd = t.dup_min(0, 70).unwrap();
+    assert_eq!(dd, 70);
+}
+
+#[test]
+fn fdtable_flush_fires_on_close() {
+    use core::sync::atomic::{AtomicUsize, Ordering as O};
+    static FLUSHED: AtomicUsize = AtomicUsize::new(0);
+    struct FlushInode { ino: u64 }
+    impl Inode for FlushInode {
+        fn ino(&self) -> u64 { self.ino }
+        fn file_type(&self) -> FileType { FileType::Regular }
+        fn size(&self) -> u64 { 0 }
+        fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+        fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
+        fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
+        fn on_flush(&self) { FLUSHED.fetch_add(1, O::Relaxed); }
+    }
+    FLUSHED.store(0, O::Relaxed);
+    let i: InodeRef = Arc::new(FlushInode { ino: 9 });
+    let d = Dentry::new_root(Arc::clone(&i));
+    let f = File::new(i, d, OpenFlags::O_RDWR);
+    let t = FdTable::new();
+    let a = t.alloc(f).unwrap();
+    let b = t.dup(a).unwrap();
+    // Each close(2) flushes (per-fd), even though the Arc is shared.
+    t.close(a).unwrap();
+    t.close(b).unwrap();
+    assert_eq!(FLUSHED.load(O::Relaxed), 2);
+}
+
+// ---------------------------------------------------------------------------
 // dirent64 packing — `19§4` Linux ABI byte layout
 // ---------------------------------------------------------------------------
 
@@ -481,6 +690,173 @@ fn dirent64_pack_many_stops_at_first_overflow() {
     assert_eq!(&buf[24+8..24+16], &2u64.to_le_bytes());
 }
 
+// ---------------------------------------------------------------------------
+// legacy linux_dirent packing (getdents(2), NR 78) — distinct from dirent64
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dirent_legacy_reclen_pads_to_8_bytes() {
+    // header(18) + name + NUL + d_type byte, padded to multiple of 8.
+    assert_eq!(crate::dirent::dirent_reclen(0),  24); // 18+0+2=20 → 24
+    assert_eq!(crate::dirent::dirent_reclen(3),  24); // 18+3+2=23 → 24
+    assert_eq!(crate::dirent::dirent_reclen(4),  24); // 18+4+2=24 → 24
+    assert_eq!(crate::dirent::dirent_reclen(5),  32); // 18+5+2=25 → 32
+    assert_eq!(crate::dirent::dirent_reclen(13), 40); // 18+13+2=33 → 40
+}
+
+#[test]
+fn dirent_legacy_pack_layout_matches_linux_abi() {
+    let mut buf = [0xAAu8; 64];
+    let n = crate::dirent::dirent_pack(&mut buf, 0x1122_3344_5566_7788, 0x42, 8, b"foo")
+        .unwrap();
+    assert_eq!(n, 24);
+    assert_eq!(&buf[0..8],  &0x1122_3344_5566_7788u64.to_le_bytes()); // d_ino
+    assert_eq!(&buf[8..16], &0x42u64.to_le_bytes());                  // d_off
+    assert_eq!(&buf[16..18], &24u16.to_le_bytes());                   // d_reclen
+    assert_eq!(&buf[18..21], b"foo");                                 // d_name @18
+    assert_eq!(buf[21], 0);                                           // NUL term
+    // zero padding between NUL and the trailing d_type byte
+    assert_eq!(&buf[22..23], &[0]);
+    // d_type lives in the LAST byte of the record (legacy ABI wart).
+    assert_eq!(buf[n - 1], 8);
+}
+
+#[test]
+fn dirent_legacy_pack_returns_none_when_buf_too_small() {
+    // The handler relies on this None → first-record-overflow → EINVAL.
+    let mut buf = [0u8; 8];
+    assert_eq!(crate::dirent::dirent_pack(&mut buf, 0, 0, 8, b"x"), None);
+}
+
+// ---------------------------------------------------------------------------
+// byte-wise (non-UTF-8) path handling — Linux paths are opaque byte strings
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_from_bytes_keeps_valid_utf8_verbatim() {
+    assert_eq!(crate::path::path_from_bytes(b"/etc/passwd"), "/etc/passwd");
+    // multi-byte UTF-8 stays intact and round-trips.
+    let s = crate::path::path_from_bytes("/café".as_bytes());
+    assert_eq!(crate::path::path_into_bytes(&s), "/café".as_bytes());
+}
+
+#[test]
+fn path_from_bytes_roundtrips_non_utf8() {
+    let raw = b"file\xff\xfename";
+    let s = crate::path::path_from_bytes(raw);
+    assert_eq!(crate::path::path_into_bytes(&s), raw);
+}
+
+// ---------------------------------------------------------------------------
+// RENAME_EXCHANGE / RENAME_WHITEOUT + non-UTF-8 resolution against a mock FS
+// ---------------------------------------------------------------------------
+
+use alloc::collections::BTreeMap;
+
+/// Single-level directory inode storing byte-exact entry names. Lookups
+/// decode the escaped `&str` back to its on-disk bytes, exercising the
+/// byte-wise resolution contract.
+struct TestDir {
+    ino:  u64,
+    ents: RwLock<BTreeMap<Vec<u8>, (u64, FileType, u32)>, InodeClass>,
+}
+
+impl TestDir {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { ino: 1, ents: RwLock::new(BTreeMap::new()) })
+    }
+    fn insert(&self, name: &[u8], ino: u64, ft: FileType, rdev: u32) {
+        self.ents.write().insert(name.to_vec(), (ino, ft, rdev));
+    }
+    fn get(&self, name: &[u8]) -> Option<(u64, FileType, u32)> {
+        self.ents.read().get(name).copied()
+    }
+}
+
+impl Inode for TestDir {
+    fn ino(&self) -> u64 { self.ino }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        let key = crate::path::path_into_bytes(name);
+        match self.ents.read().get(&key) {
+            Some(&(ino, _, _)) => { let r: InodeRef = MemFile::new(ino); Ok(r) }
+            None => Err(VfsError::Enoent),
+        }
+    }
+    fn mknod_child(&self, name: &str, mode: u16, rdev: u32) -> KResult<()> {
+        let key = crate::path::path_into_bytes(name);
+        let ft = match mode & 0xF000 {
+            0x2000 => FileType::CharDev,
+            0x6000 => FileType::BlockDev,
+            0x1000 => FileType::Fifo,
+            0xC000 => FileType::Socket,
+            _      => FileType::Regular,
+        };
+        self.ents.write().insert(key, (0, ft, rdev));
+        Ok(())
+    }
+}
+
+struct TestFs { dir: Arc<TestDir> }
+
+impl crate::fs::FileSystem for TestFs {
+    fn name(&self) -> &str { "testfs" }
+    fn root(&self) -> Option<InodeRef> { let r: InodeRef = self.dir.clone(); Some(r) }
+    fn rename(&self, from: &str, to: &str) -> KResult<()> {
+        let fk = crate::path::path_into_bytes(from);
+        let tk = crate::path::path_into_bytes(to);
+        let mut e = self.dir.ents.write();
+        let v = e.remove(&fk).ok_or(VfsError::Enoent)?;
+        e.insert(tk, v);
+        Ok(())
+    }
+}
+
+#[test]
+fn rename_exchange_swaps_two_files() {
+    use crate::fs::FileSystem;
+    let fs = TestFs { dir: TestDir::new() };
+    fs.dir.insert(b"a", 11, FileType::Regular, 0);
+    fs.dir.insert(b"b", 22, FileType::Regular, 0);
+    fs.exchange("a", "b").unwrap();
+    assert_eq!(fs.dir.get(b"a").unwrap().0, 22);
+    assert_eq!(fs.dir.get(b"b").unwrap().0, 11);
+    assert_eq!(fs.dir.ents.read().len(), 2); // temp name cleaned up
+}
+
+#[test]
+fn rename_exchange_missing_side_is_enoent() {
+    use crate::fs::FileSystem;
+    let fs = TestFs { dir: TestDir::new() };
+    fs.dir.insert(b"a", 11, FileType::Regular, 0);
+    assert_eq!(fs.exchange("a", "nope"), Err(VfsError::Enoent));
+}
+
+#[test]
+fn rename_whiteout_plants_chardev_at_source() {
+    use crate::fs::FileSystem;
+    let fs = TestFs { dir: TestDir::new() };
+    fs.dir.insert(b"src", 11, FileType::Regular, 0);
+    fs.whiteout("src", "dst").unwrap();
+    assert_eq!(fs.dir.get(b"dst").unwrap().0, 11); // file moved to dest
+    let (_, ft, rdev) = fs.dir.get(b"src").unwrap();
+    assert_eq!(ft, FileType::CharDev);             // whiteout = char dev
+    assert_eq!(rdev, 0);                           //          rdev 0/0
+}
+
+#[test]
+fn non_utf8_filename_resolves_and_stats() {
+    use crate::fs::FileSystem;
+    let fs = TestFs { dir: TestDir::new() };
+    let name = b"caf\xe9"; // trailing 0xE9 — invalid UTF-8
+    fs.dir.insert(name, 77, FileType::Regular, 0);
+    // userspace handed these raw bytes; decode as read_user_path does.
+    let path = crate::path::path_from_bytes(name);
+    let ino = fs.lookup_path(&path).expect("non-utf8 name resolves");
+    assert_eq!(ino.ino(), 77); // stat reads the resolved inode number
+}
+
 // Touch the warning-silencer.
 #[allow(dead_code)]
 fn _unused_silence() {
@@ -509,7 +885,7 @@ fn resolve_against_cwd_handles_dotdot() {
     use crate::path::resolve_against_cwd;
     assert_eq!(resolve_against_cwd("/tmp/sub", "../x").as_deref(), Some("/tmp/x"));
     assert_eq!(resolve_against_cwd("/tmp", "..").as_deref(),       Some("/"));
-    assert_eq!(resolve_against_cwd("/", ".."), None, "above-root must reject");
+    assert_eq!(resolve_against_cwd("/", "..").as_deref(), Some("/"));
 }
 
 #[test]
@@ -570,12 +946,18 @@ fn dentry_absolute_path_nested_components() {
 }
 
 #[test]
-fn dentry_absolute_path_install_open_shape() {
-    // install_open today builds a single dentry whose name is the
-    // full path — preserve it verbatim instead of prepending '/'.
+fn dentry_absolute_path_open_dentry_shape() {
+    // WP2: an opened file's dentry is PARENTED (the basename hangs off the
+    // resolved parent dentry — `file::open_dentry`), so the pathname is
+    // reconstructed by the parent walk. There is NO whole-path-in-one-name
+    // special case: a parentless dentry whose name contains slashes would be
+    // an invalid shape and is never built by the open path.
     let i: InodeRef = MemFile::new(1);
-    let d = Dentry::new(None, String::from("/dev/pts/3"), i);
-    assert_eq!(d.absolute_path(), b"/dev/pts/3");
+    let root = Dentry::new_root(Arc::clone(&i));
+    let dev  = Dentry::new(Some(root),            String::from("dev"), Arc::clone(&i));
+    let pts  = Dentry::new(Some(Arc::clone(&dev)), String::from("pts"), Arc::clone(&i));
+    let three = Dentry::new_child(&pts, "3", Some(Arc::clone(&i)));
+    assert_eq!(three.absolute_path(), b"/dev/pts/3");
 }
 
 #[test]

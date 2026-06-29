@@ -169,6 +169,11 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
         //    state exists. The BSP may send a resched IPI immediately after
         //    observing online_count reach the target.
         let _ = ::cpu::smp::ap_arrived();
+        // Publish this AP's logical id in the online bitmap so the TLB
+        // shootdown sender targets it (and waits for its ACK). Set AFTER the
+        // LAPIC + IDT are live so the AP can actually service a shootdown IPI.
+        // SAFETY: this AP is the sole writer for its own online bit.
+        unsafe { ::cpu::smp::mark_online(logical_cpu_id as u32); }
         // 6. Enter the idle→schedule loop with IRQs on (sti) — replaces the
         //    cli;hlt park. The AP runs its idle task until ttwu (B2) migrates
         //    a task onto its runqueue and IPIs it.

@@ -34,7 +34,11 @@ pub fn sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
         SIG_SETMASK => new_set,
         _           => return -(Errno::Einval.as_i32() as i64),
     };
-    let new_mask = new_mask & !(1u64 << 8) & !(1u64 << 18);
+    // signal(7): SIGKILL and SIGSTOP can never be blocked — strip them from
+    // any new mask. Without this a task could mask SIGKILL and then wedge in
+    // a blocking syscall (see the wait4 EINTR fix), unkillable.
+    use sched::live::sigpend::Signum;
+    let new_mask = new_mask & !(Signum::Sigkill.bit() | Signum::Sigstop.bit());
     cur.sigmask.store(new_mask, Ordering::Release);
     debug_ssh! { crate::signal_trace::sigprocmask(cur.tid, how, prior, new_mask); }
     0

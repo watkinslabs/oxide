@@ -116,7 +116,7 @@ impl Inode for SysCpuRootInode {
             },
         }
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let mut idx = off as usize;
         let n = ncpu();
         let total = ROOT_FILES.len() + n;
@@ -132,7 +132,8 @@ impl Inode for SysCpuRootInode {
                 name = buf.as_str();
                 ft = FileType::Directory;
             }
-            if !f(next, name, ft) {
+            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, name, ft) {
                 return Ok(next);
             }
             idx += 1;
@@ -165,7 +166,7 @@ impl Inode for SysCpuNInode {
             _ => Err(VfsError::Enoent),
         }
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let mut idx = off as usize;
         let total = CPUN_FILES.len() + 1; // + topology dir
         while idx < total {
@@ -175,7 +176,8 @@ impl Inode for SysCpuNInode {
             } else {
                 ("topology", FileType::Directory)
             };
-            if !f(next, name, ft) {
+            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, name, ft) {
                 return Ok(next);
             }
             idx += 1;
@@ -232,11 +234,12 @@ impl Inode for SysCpuTopologyInode {
             None => Err(VfsError::Enoent),
         }
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let mut idx = off as usize;
         while idx < TOPO_FILES.len() {
             let next = idx as u64 + 1;
-            if !f(next, TOPO_FILES[idx], FileType::Regular) {
+            let ino = self.lookup(TOPO_FILES[idx]).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, TOPO_FILES[idx], FileType::Regular) {
                 return Ok(next);
             }
             idx += 1;

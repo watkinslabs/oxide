@@ -11,7 +11,10 @@
 
 use alloc::string::String;
 use alloc::sync::Arc;
+use syscall::errno::Errno;
 use sync::{MountTable as RootClass, Spinlock};
+
+pub const AT_FDCWD: i32 = -100;
 
 /// Cached root dentry — the start of every absolute `path_lookup`. Built
 /// lazily from the ext4 root inode (ext4 is mounted at `/`). One global
@@ -19,7 +22,7 @@ use sync::{MountTable as RootClass, Spinlock};
 /// cwd/root pointers are per-task). chroot/dirfd bases ride later stages.
 static ROOT_DENTRY: Spinlock<Option<Arc<vfs::Dentry>>, RootClass> = Spinlock::new(None);
 
-fn root_dentry() -> Option<Arc<vfs::Dentry>> {
+pub fn root_dentry() -> Option<Arc<vfs::Dentry>> {
     {
         let g = ROOT_DENTRY.lock();
         if let Some(d) = g.as_ref() { return Some(d.clone()); }
@@ -40,6 +43,11 @@ fn root_dentry() -> Option<Arc<vfs::Dentry>> {
 fn resolution_root() -> Option<(Arc<vfs::Dentry>, bool)> {
     let global = root_dentry()?;
     let Some(cur) = sched::live::current() else { return Some((global, false)); };
+    // SAFETY: task.root_vfs single-mutator per 13§5; the running task on
+    // this CPU is the sole writer.
+    if let Some(p) = unsafe { (*cur.root_vfs.get()).clone() } {
+        return Some((p.dentry, true));
+    }
     // SAFETY: task.root single-mutator per 13§5; the running task on this
     // CPU is the sole writer (chroot only mutates the calling task's root).
     let rp = unsafe { (*cur.root.get()).clone() };
@@ -49,54 +57,196 @@ fn resolution_root() -> Option<(Arc<vfs::Dentry>, bool)> {
     Some((d, true))
 }
 
+/// Snapshot the running task's credentials into the VFS `Cred` (Linux
+/// `current_cred()` subset: fsuid/fsgid + the two DAC-bypass caps).
+/// Used at open to populate `file->f_cred`. Falls back to root when
+/// there is no current task (early boot / host paths).
+/// # C: O(1)
+pub fn current_cred() -> vfs::Cred {
+    cred_for(false)
+}
+
+/// Like `current_cred()` but built from the task's REAL uid/gid rather than
+/// the fsuid/fsgid. `access(2)` (without `AT_EACCESS`) checks against the
+/// real ids per POSIX; `faccessat2(AT_EACCESS)` and every other path use the
+/// effective (fs) ids. # C: O(NGROUPS)
+pub fn current_cred_real() -> vfs::Cred {
+    cred_for(true)
+}
+
+/// Snapshot the running task's credentials into the VFS `Cred`: fsuid/fsgid
+/// (or ruid/rgid when `real`), supplementary groups, and the DAC/owner/chown
+/// bypass caps. Falls back to root when there is no current task (early boot /
+/// host paths). # C: O(NGROUPS)
+fn cred_for(real: bool) -> vfs::Cred {
+    use core::sync::atomic::Ordering;
+    let Some(c) = sched::live::current() else { return vfs::Cred::root(); };
+    let eff = c.creds.cap_effective.load(Ordering::Acquire);
+    let (uid, gid) = if real {
+        (c.creds.ruid.load(Ordering::Acquire), c.creds.rgid.load(Ordering::Acquire))
+    } else {
+        (c.creds.fsuid.load(Ordering::Acquire), c.creds.fsgid.load(Ordering::Acquire))
+    };
+    let ng = (c.creds.ngroups.load(Ordering::Acquire) as usize).min(vfs::CRED_NGROUPS);
+    let mut groups = [0u32; vfs::CRED_NGROUPS];
+    // SAFETY: groups slot is single-mutator per `13§5`; the running task on
+    // this CPU is the sole writer, so this read of its own group list is sound.
+    unsafe {
+        let g = &*c.creds.groups.get();
+        groups[..ng].copy_from_slice(&g[..ng]);
+    }
+    let has = |cap: u32| eff & (1u64 << cap) != 0;
+    vfs::Cred {
+        uid, gid,
+        cap_dac_override:    has(sched::cap::DAC_OVERRIDE),
+        cap_dac_read_search: has(sched::cap::DAC_READ_SEARCH),
+        cap_fowner:          has(sched::cap::FOWNER),
+        cap_chown:           has(sched::cap::CHOWN),
+        cap_fsetid:          has(sched::cap::FSETID),
+        ngroups: ng as u32,
+        groups,
+    }
+}
+
 /// Resolve absolute `abs` to its inode via the dentry path-walk
-/// (`vfs::path_lookup`) — THE resolver (`docs/16§3`): per-component,
-/// crossing mounts (`mount_root_at`) and delegating whole-path
-/// filesystems (`mount_whole_path`) to their owning mount, following
-/// symlinks (intermediate always; final unless `no_follow_final`) with
-/// ELOOP at depth>40, confined to the task's chroot root. Returns `None`
-/// if unresolved or ext4 isn't mounted yet (very early boot).
-/// `no_follow_final` = O_NOFOLLOW / AT_SYMLINK_NOFOLLOW (lstat).
+/// (`vfs::path_lookup`) — THE resolver (`docs/16§3`): ALWAYS per-component
+/// (`d_lookup → i_op->lookup → d_add`), crossing mounts at each mount root
+/// (`mount_root_at`), following symlinks (intermediate always; final unless
+/// `no_follow_final`) with ELOOP at depth>40, confined to the task's chroot
+/// root. Returns `None` if unresolved or ext4 isn't mounted yet (very early
+/// boot). `no_follow_final` = O_NOFOLLOW / AT_SYMLINK_NOFOLLOW (lstat).
 /// # C: O(components × dir-lookup)
 pub fn resolve(abs: &str, no_follow_final: bool) -> Option<vfs::InodeRef> {
-    let (root, beneath) = resolution_root()?;
+    resolve_path(abs, no_follow_final).map(|p| p.inode)
+}
+
+/// Resolve absolute `abs` to its full VFS path object.
+/// # C: O(components × dir-lookup)
+pub fn resolve_path(abs: &str, no_follow_final: bool) -> Option<vfs::VfsPath> {
+    resolve_path_result(abs, no_follow_final).ok()
+}
+
+/// Like `resolve` but preserves the path-walk `VfsError` so the caller can
+/// surface the true errno (ENOTDIR / ELOOP / ENAMETOOLONG / EACCES) per the
+/// Linux contract instead of collapsing every miss to ENOENT.
+/// # C: O(components × dir-lookup)
+pub fn resolve_result(abs: &str, no_follow_final: bool) -> Result<vfs::InodeRef, vfs::VfsError> {
+    resolve_path_result(abs, no_follow_final).map(|p| p.inode)
+}
+
+/// Resolve absolute `abs` to its full VFS path object, preserving the
+/// path-walk error.
+/// # C: O(components × dir-lookup)
+pub fn resolve_path_result(abs: &str, no_follow_final: bool) -> Result<vfs::VfsPath, vfs::VfsError> {
+    let (root, beneath) = resolution_root().ok_or(vfs::VfsError::Enoent)?;
     let flags = vfs::LookupFlags { no_follow_final, beneath, ..Default::default() };
-    vfs::path_lookup(root.clone(), root, abs, flags).ok().map(|(i, _)| i)
+    let Some(cur) = sched::live::current() else {
+        // No task (early boot / kernel-internal resolve): default-allow root cred.
+        return vfs::path_lookup_cred(root.clone(), root, abs, flags, vfs::Cred::root());
+    };
+    // SAFETY: cwd_vfs slot single-mutator per 13§5; current task is the sole writer.
+    let start = unsafe { (*cur.cwd_vfs.get()).clone().map(|p| p.dentry) }
+        .unwrap_or_else(|| root.clone());
+    // Enforce per-directory search permission (`may_lookup`, MAY_EXEC) against
+    // the caller's cred (Linux `link_path_walk`). Root keeps CAP_DAC_OVERRIDE
+    // so early boot / privileged services are unaffected.
+    vfs::path_lookup_cred(start, root, abs, flags, current_cred())
 }
 
-/// Resolve absolute `abs` to its canonical DENTRY (not just the inode)
-/// via the dentry path-walk, following the final symlink. Installed as
-/// `vfs::mount`'s mount-point dentry resolver so `register`/`register_bind`
-/// can mark the mounted-on dentry by identity (`docs/16§3`). A bind target
-/// of `/proc/self/fd/N` follows the magic symlink to the real file's
-/// dentry (e.g. /etc/machine-id) — the Linux mount-target semantics.
-/// `None` pre-mount (root dentry not built yet) or if `abs` doesn't
-/// resolve. # C: O(components × dir-lookup)
-pub fn resolve_dentry(abs: &str) -> Option<Arc<vfs::Dentry>> {
-    let (root, beneath) = resolution_root()?;
-    let flags = vfs::LookupFlags { beneath, ..Default::default() };
-    vfs::path_lookup(root.clone(), root, abs, flags).ok().map(|(_, d)| d)
+/// Resolve a mount-point path `abs` to the `Arc<Dentry>` the mount engine
+/// takes (the single namei walk Linux `do_mount` hands `mnt_set_mountpoint`
+/// as `struct path.dentry`). Follows the final symlink — a bind target of
+/// `/proc/self/fd/N` lands on the real file's dentry (e.g. /etc/machine-id),
+/// the Linux mount-target semantics. `None` pre-mount (root dentry not built
+/// yet) or if `abs` doesn't resolve (target missing → caller ENOENT).
+/// # C: O(components × dir-lookup)
+pub fn mount_dentry(abs: &str) -> Option<Arc<vfs::Dentry>> {
+    resolve_path(abs, false).map(|p| p.dentry)
 }
 
-/// Invalidate the cached dentry for absolute `abs` (Linux `d_delete`).
+/// Invalidate the cached child dentry for absolute `abs` (Linux `d_delete`).
 /// MUST be called after a successful unlink / rmdir / rename so a stale
 /// POSITIVE dentry isn't reused: without it, `stat`/`open` after `unlink`
 /// resolve the dead inode through the dcache (reporting the file still
 /// exists), e.g. Info-ZIP's `replace()` LSTATs the just-unlinked output
 /// and then fails to re-unlink it. Splits `abs` into parent + final
-/// component and drops the child from the parent dentry's cache.
+/// component, resolves the PARENT via the chroot-aware namei walk (NOT a
+/// mount-engine resolver), and `d_drop`s the child — UNHASHING it from the
+/// global `DENTRY_HASHTABLE` (which `d_lookup` reads) and dropping its inode
+/// alias, not merely forgetting the per-parent `d_subdirs` entry. A bare
+/// `forget_child` left the child hashed, so `d_lookup` (the walker fast path)
+/// still returned the dead positive dentry after unlink.
 /// # C: O(components)
-pub fn forget_path(abs: &str) {
+pub fn d_delete_path(abs: &str) {
+    drop_cached_child(abs);
+}
+
+/// Split absolute `abs` into `(parent, name)` for the dcache mutation
+/// helpers. `None` for `/`, an empty path, or a trailing-slash-only path.
+/// # C: O(len)
+fn split_parent_name(abs: &str) -> Option<(&str, &str)> {
     let trimmed = abs.trim_end_matches('/');
-    if trimmed.is_empty() { return; }
+    if trimmed.is_empty() { return None; }
     let (parent, name) = match trimmed.rfind('/') {
         Some(0) => ("/", &trimmed[1..]),
         Some(i) => (&trimmed[..i], &trimmed[i + 1..]),
-        None    => return,
+        None    => return None,
     };
-    if name.is_empty() { return; }
-    if let Some(pd) = resolve_dentry(parent) {
-        pd.forget_child(name);
+    if name.is_empty() { return None; }
+    Some((parent, name))
+}
+
+/// Resolve `abs`'s parent and `d_drop` the cached child (unhash from the
+/// global `DENTRY_HASHTABLE` + drop its inode alias), else forget the bare
+/// `d_subdirs` index entry. The shared core of `d_delete_path` (unlink/rmdir/
+/// rename) and `d_drop_path` (post-create negative flush). # C: O(components)
+fn drop_cached_child(abs: &str) {
+    let Some((parent, name)) = split_parent_name(abs) else { return; };
+    if let Some(pd) = resolve_path(parent, false).map(|p| p.dentry) {
+        match pd.cached_child(name).or_else(|| vfs::d_lookup(&pd, name)) {
+            Some(child) => vfs::d_drop(&child),
+            None        => pd.forget_child(name),
+        }
+    }
+}
+
+/// Invalidate `abs`'s whole cached subtree (Linux `d_invalidate`): unhash the
+/// dentry AND every cached descendant (e.g. negative dentries that accumulated
+/// inside a now-removed directory). Used on rmdir success — a plain
+/// single-name `d_drop` would leave those descendants hashed and reachable.
+/// # C: O(subtree)
+pub fn d_invalidate_path(abs: &str) {
+    let Some((parent, name)) = split_parent_name(abs) else { return; };
+    if let Some(pd) = resolve_path(parent, false).map(|p| p.dentry) {
+        match pd.cached_child(name).or_else(|| vfs::d_lookup(&pd, name)) {
+            Some(child) => vfs::d_invalidate(&child),
+            None        => pd.forget_child(name),
+        }
+    }
+}
+
+/// Rehome the cached dentry for `from_abs` to `to_abs` (Linux `d_move`), the
+/// dcache half of `rename(2)`. Resolves both parents, `d_drop`s any stale dentry
+/// already cached at the destination name (so `d_move`'s `d_add` is not lost to
+/// the `or_insert` race-winner), then `d_move`s the source child under the new
+/// (parent,name). When nothing is cached at the source, falls back to dropping
+/// both names so a later walk re-resolves. # C: O(components)
+pub fn d_move_path(from_abs: &str, to_abs: &str) {
+    let (Some((fp, fname)), Some((tp, tname))) =
+        (split_parent_name(from_abs), split_parent_name(to_abs))
+    else { drop_cached_child(from_abs); drop_cached_child(to_abs); return; };
+    let from_pd = resolve_path(fp, false).map(|p| p.dentry);
+    let to_pd   = resolve_path(tp, false).map(|p| p.dentry);
+    let (Some(from_pd), Some(to_pd)) = (from_pd, to_pd) else {
+        drop_cached_child(from_abs); drop_cached_child(to_abs); return;
+    };
+    // Drop any stale dentry sitting at the destination name first.
+    if let Some(old) = to_pd.cached_child(tname).or_else(|| vfs::d_lookup(&to_pd, tname)) {
+        vfs::d_drop(&old);
+    }
+    match from_pd.cached_child(fname).or_else(|| vfs::d_lookup(&from_pd, fname)) {
+        Some(child) => { vfs::d_move(&child, &to_pd, tname); }
+        None        => { from_pd.forget_child(fname); }
     }
 }
 
@@ -111,10 +261,32 @@ pub fn forget_path(abs: &str) {
 /// a regular file.
 /// # C: O(components) + O(size/PAGE)
 pub fn read_exec(path: &[u8]) -> Option<alloc::vec::Vec<u8>> {
-    if root_dentry().is_none() { return None; }       // pre-mount: caller falls back
     let s = core::str::from_utf8(path).ok()?;
     let abs = resolve_cwd(s);
-    let inode = resolve(abs.as_str(), false)?;        // execve follows symlinks
+    // Magic fd-link exec: `/proc/{self|<pid>}/fd/<n>`, `/dev/fd/<n>`,
+    // `/dev/std{in,out,err}` exec the OPEN file description's backing
+    // inode directly — mirroring open(2)'s `dup_fd_target` fast-path
+    // (`open_common::dup_fd_target` → `proc_fd_file`). Linux
+    // `do_execveat_common` execs a `struct file`, never a path re-resolve;
+    // a sealed memfd's d_path (`/memfd:NAME (deleted)`) can never
+    // re-resolve, so the per-component walk below would wrongly return
+    // ENOENT. fd-based load is also valid pre-mount (no root dentry yet).
+    if let Some((tid_opt, fd)) = vfs::path::dup_fd_target(&abs) {
+        let file = sched::proclink::proc_fd_file(tid_opt, fd)?;
+        return read_exec_inode(file.inode());
+    }
+    if root_dentry().is_none() { return None; }       // pre-mount: caller falls back
+    let inode = resolve_path(abs.as_str(), false)?.inode;        // execve follows symlinks
+    read_exec_inode(&inode)
+}
+
+/// Read a regular-file inode's full contents (the exec read loop). Shared
+/// by `read_exec`'s path walk and its magic-fd fast-path so the byte read
+/// is identical whether the executable came from a pathname or an open
+/// file description (memfd / `/proc/self/fd/N` / `fexecve`). `None` if the
+/// inode isn't a regular file or a read errors mid-stream.
+/// # C: O(size/PAGE)
+pub fn read_exec_inode(inode: &vfs::InodeRef) -> Option<alloc::vec::Vec<u8>> {
     if inode.file_type() != vfs::FileType::Regular { return None; }
     let total = inode.size() as usize;
     let mut out = alloc::vec::Vec::with_capacity(total);
@@ -141,26 +313,35 @@ pub fn read_exec(path: &[u8]) -> Option<alloc::vec::Vec<u8>> {
 ///     File's dentry absolute path), as `openat` does.
 /// `None` on a bad dirfd / no current task.
 /// # C: O(N_path) + O(1) fd lookup
-pub fn resolve_at(dirfd: i32, raw: &str) -> Option<String> {
-    const AT_FDCWD: i32 = -100;
+pub fn resolve_at_result(dirfd: i32, raw: &str) -> Result<String, i64> {
     if raw.starts_with('/') {
-        return Some(vfs::path::lexical_normalize(raw).unwrap_or_else(|| raw.into()));
+        return Ok(vfs::path::lexical_normalize(raw).unwrap_or_else(|| raw.into()));
     }
     if dirfd == AT_FDCWD {
-        return Some(resolve_cwd(raw));
+        return Ok(resolve_cwd(raw));
     }
-    let cur = sched::live::current()?;
+    let cur = sched::live::current().ok_or(-(Errno::Ebadf.as_i32() as i64))?;
     // SAFETY: running task on this CPU; sole reader of its fd_table slot.
-    let fdt = unsafe { cur.fd_table_ref() }?.clone();
-    let f = fdt.get(dirfd).ok()?;
+    let fdt = unsafe { cur.fd_table_ref() }
+        .ok_or(-(Errno::Ebadf.as_i32() as i64))?
+        .clone();
+    let f = fdt.get(dirfd).map_err(|_| -(Errno::Ebadf.as_i32() as i64))?;
+    if f.inode().file_type() != vfs::FileType::Directory {
+        return Err(-(Errno::Enotdir.as_i32() as i64));
+    }
     let base_bytes = f.dentry().absolute_path();
-    let base = core::str::from_utf8(&base_bytes).ok()?;
-    Some(vfs::path::resolve_against_cwd(base, raw).unwrap_or_else(|| {
+    let base = core::str::from_utf8(&base_bytes)
+        .map_err(|_| -(Errno::Enotdir.as_i32() as i64))?;
+    Ok(vfs::path::resolve_against_cwd(base, raw).unwrap_or_else(|| {
         let mut s = String::from(base);
         if !s.ends_with('/') { s.push('/'); }
         s.push_str(raw);
         s
     }))
+}
+
+pub fn resolve_at(dirfd: i32, raw: &str) -> Option<String> {
+    resolve_at_result(dirfd, raw).ok()
 }
 
 /// Resolve `raw` against the running task's cwd. Absolute paths

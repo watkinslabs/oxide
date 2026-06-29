@@ -147,6 +147,13 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // (`oxide_irq_resched_on_exit` → `schedule()`) does the switch.
             sched::live::preempt::set_need_resched();
         }
+        hal_x86_64::VEC_TLB_SHOOTDOWN => {
+            // Cross-CPU TLB shootdown: another CPU downgraded/removed a
+            // user PTE in an mm we may have cached. Invalidate the
+            // requested VA (or full-flush) locally and ACK. EOI already
+            // issued above. No resched implied.
+            crate::tlb::service();
+        }
         v if v >= hal_x86_64::VEC_MSI_POOL_FIRST
           && v <= hal_x86_64::VEC_MSI_POOL_LAST => {
             // F58: per-vector MSI delivery. EOI already issued above.

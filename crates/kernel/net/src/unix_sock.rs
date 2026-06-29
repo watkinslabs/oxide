@@ -264,6 +264,18 @@ impl UnixPair {
         out
     }
 
+    /// MSG_PEEK variant of `read`: copy up to `max` leading bytes WITHOUT
+    /// draining the ring. Used by `recvmsg(MSG_PEEK)` on a stream socketpair.
+    /// # C: O(min(max, queued))
+    pub fn peek(&self, end: UnixEnd, max: usize) -> Vec<u8> {
+        let g = match end {
+            UnixEnd::A => self.b_to_a.lock(),
+            UnixEnd::B => self.a_to_b.lock(),
+        };
+        let take = core::cmp::min(max, g.buf.len());
+        g.buf.iter().take(take).copied().collect()
+    }
+
     /// Mark this end's writer side closed. The peer's next read
     /// on this ring returns 0 once the queue drains (EOF).
     /// F125: wake epoll_wait parkers so a peer blocked on POLL_HUP
@@ -514,6 +526,10 @@ impl UnixMsgPair {
 /// queue + payload path; F121 wires creds + fd-passing.
 pub struct UnixDgramQueue {
     pub msgs: Spinlock<VecDeque<UnixDgram>, UnixLockClass>,
+    /// Connected peer path for AF_UNIX SOCK_DGRAM. Linux permits
+    /// connect() on datagram sockets; later send/sendmsg calls may
+    /// omit msg_name and use this peer.
+    pub peer: Spinlock<Option<String>, UnixLockClass>,
     /// F171: single per-queue read waitlist (only one reader on a
     /// SOCK_DGRAM socket today — no per-direction split needed).
     #[cfg(target_os = "oxide-kernel")]
@@ -544,6 +560,7 @@ impl UnixDgramQueue {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             msgs: Spinlock::new(VecDeque::new()),
+            peer: Spinlock::new(None),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
             subs: Spinlock::new(None),
@@ -554,6 +571,18 @@ impl UnixDgramQueue {
     /// # C: O(1)
     pub fn register_subs(&self, subs: &Arc<vfs::PollSubscribers>) {
         *self.subs.lock() = Some(Arc::downgrade(subs));
+    }
+
+    /// Store the connected datagram peer.
+    /// # C: O(N path)
+    pub fn set_peer(&self, path: String) {
+        *self.peer.lock() = Some(path);
+    }
+
+    /// Return the connected datagram peer, if any.
+    /// # C: O(N path)
+    pub fn peer(&self) -> Option<String> {
+        self.peer.lock().clone()
     }
 
     /// Push a complete dgram onto the queue.
@@ -680,10 +709,11 @@ impl UnixRegistry {
     /// Release a bound dgram path. # C: O(log N)
     pub fn dgram_unbind(&self, path: &str) { self.dgrams.lock().remove(path); }
 
-    /// Look up a listener; returns `None` if no listener is bound.
-    /// # C: O(log N)
-    pub fn lookup(&self, path: &str) -> Option<Arc<UnixListener>> {
-        self.inner.lock().get(path).cloned()
+    /// Look up a bound stream-listener by its AF_UNIX address (pathname or
+    /// abstract `\0`/`@` name — NOT a VFS filesystem path). `None` if no
+    /// listener is bound. # C: O(log N)
+    pub fn lookup_listener(&self, addr: &str) -> Option<Arc<UnixListener>> {
+        self.inner.lock().get(addr).cloned()
     }
 
     /// True if `path` is registered as a SOCK_STREAM listener or a
@@ -715,7 +745,7 @@ impl UnixRegistry {
     /// `None` if no listener bound to `path`.
     /// # C: O(log N)
     pub fn connect(&self, path: &str) -> Option<Arc<UnixPair>> {
-        let listener = self.lookup(path)?;
+        let listener = self.lookup_listener(path)?;
         let pair = UnixPair::new();
         listener.accept_q.lock().push_back(pair.clone());
         // F170: wake any blocking accept() parked on this listener.
@@ -736,8 +766,8 @@ mod tests {
         registry.bind(String::from("\0svc")).unwrap();
         registry.bind(String::from("@svc")).unwrap();
 
-        assert!(registry.lookup("\0svc").is_some());
-        assert!(registry.lookup("@svc").is_some());
+        assert!(registry.lookup_listener("\0svc").is_some());
+        assert!(registry.lookup_listener("@svc").is_some());
         assert_eq!(registry.snapshot_paths().len(), 2);
     }
 

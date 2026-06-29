@@ -23,6 +23,36 @@ static GLOBAL_AS_PTR: AtomicPtr<AddressSpace> = AtomicPtr::new(core::ptr::null_m
 /// HHDM offset captured at init for demand-paging zero-fill.
 static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
 
+/// Current logical CPU index (clamped to `MAX_CPUS`), matching the
+/// shootdown sender's `this_cpu()` so a bit set here is the bit the
+/// sender clears from its target set. Host builds are UP → 0.
+/// # C: O(1)
+#[inline]
+fn current_cpu_idx() -> usize {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) }
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
+}
+
+/// Snapshot the running task's mm `cpumask` (Linux `mm_cpumask`) for
+/// `flush_tlb_others` targeting at the PT-mutating glue sites. Returns 0
+/// when there is no current user task (boot context / kthread) — the
+/// shootdown then becomes a no-op, which is correct: no peer CPU holds a
+/// user mm that isn't the current one.
+/// # C: O(1)
+#[inline]
+fn current_mm_cpumask() -> u64 {
+    // SAFETY: read-only borrow of the running task's mm slot; the fault /
+    // syscall caller runs preempt-off in IRQ context per `13§5`, so no
+    // concurrent execve mutates this CPU's mm slot during the read.
+    sched::live::current()
+        .and_then(|c| unsafe { c.mm_ref() }.map(|m| m.cpumask()))
+        .unwrap_or(0)
+}
+
 /// Initialise the global user AS, allocate its private page-table
 /// root, copy kernel-half mappings from the captured master, and
 /// activate it as the live CR3 / TTBR0_EL1 per `13§8`. Idempotent —
@@ -107,6 +137,11 @@ pub unsafe fn init(hhdm_offset: u64) {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: TTBR1_EL1 (kernel half) is untouched; only TTBR0_EL1 is rewritten so user-half walks now target the AS-private L0. Single-CPU pre-init; preempt-off.
     unsafe { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::activate(root_pa); }
+
+    // mm_cpumask: this CPU just loaded the global AS via the activate
+    // above, so record its bit (Linux sets mm_cpumask on CR3 load). A
+    // later cross-CPU shootdown against this AS then targets this CPU.
+    arc.mark_cpu(current_cpu_idx());
 
     let raw = Arc::into_raw(arc) as *mut AddressSpace;
     GLOBAL_AS_PTR.store(raw, Ordering::Release);
@@ -332,7 +367,55 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
             p = p.wrapping_add(0x1000);
         }
     }
+    // SMP TLB coherence (`20§5`): the loops above rewrote PTE permissions
+    // (e.g. RELRO RO-downgrade) + flushed only THIS CPU's TLB. Peer threads
+    // of the same mm on other CPUs still cache the old (writable) entries;
+    // broadcast a remote flush so the new protection is enforced everywhere.
+    // x86-only effect (no hardware TLB broadcast); no-op on UP / aarch64 /
+    // hosted. No frame is freed here, so a post-loop broadcast is sufficient.
+    // Target only the CPUs that have this mm loaded (cpumask), not every
+    // online CPU, per Linux flush_tlb_others.
+    hal::tlb::shootdown_others_all(current_mm_cpumask());
     let _ = (root_pa, new_flags, hhdm); // touch on host/test build
+}
+
+/// A4-rmap: walk every (root_pa, va) that maps the anonymous frame `pa`,
+/// PTE-verified against each target AS. Linux `rmap_walk_anon`: reads
+/// `page->mapping` (the AnonVma) + `page->index` (page offset within the
+/// originating VMA) from `PageMeta`, enumerates the family's chain
+/// edges, computes each candidate VA, and CONFIRMS the leaf actually
+/// maps `pa` before yielding — chain edges can be stale (a peer unmapped
+/// locally without pruning) so the PTE check is authoritative. Invokes
+/// `f(root_pa, va)` per confirmed mapper and returns the count, which
+/// equals `PageMeta.mapcount(pa)` once the chain is complete (the parent
+/// self-edge from `AddressSpace::mmap` + child edges from
+/// `fork_cow_pages`). The runtime "who maps this page" oracle for
+/// migration / pageout and the COW-reuse cross-check.
+/// # C: O(N_chain_edges) page-table walks
+pub fn rmap_walk_anon_pa<F: FnMut(u64, u64)>(pa: u64, mut f: F) -> usize {
+    let av = match crate::setup::anon_vma_for_pa(pa) { Some(a) => a, None => return 0 };
+    let page_idx = crate::setup::page_index_for_pa(pa) as u64;
+    let hhdm = hhdm_offset();
+    let target = pa & !0xfff;
+    let mut count = 0usize;
+    av.walk(|mm, start, end| {
+        let va = start + page_idx * 4096;
+        if va < start || va >= end { return; }
+        let root = mm.root_pa();
+        if root == 0 { return; }
+        // SAFETY: read-only foreign-mm PT walk; `root` is a live AS root
+        // frame kept alive by the AnonVma edge's upgraded Arc; HHDM covers
+        // page-table memory; single-mutator-per-CPU per `13§5`.
+        #[cfg(target_arch = "x86_64")]
+        let tr = unsafe { hal::pt_walker::translate_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(root, va, hhdm) };
+        // SAFETY: as above; aarch64 PtWalker over the AS's L0 root.
+        #[cfg(target_arch = "aarch64")]
+        let tr = unsafe { hal::pt_walker::translate_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(root, va, hhdm) };
+        if let Some((mapped, _)) = tr {
+            if (mapped & !0xfff) == target { f(root, va); count += 1; }
+        }
+    });
+    count
 }
 
 /// `extern "C"` teardown invoked from `Arc<AddressSpace>::drop`:
@@ -344,6 +427,19 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
 /// # SAFETY: caller is `AddressSpace::drop` after the last Arc strong
 /// ref hit zero — the root is no longer active on any CPU and no
 /// concurrent walker / writer remains.
+///
+/// GAP-2 (tracked follow-up, lazy-TLB / Linux `mmdrop`): the
+/// "no longer active on any CPU" precondition holds only because a CPU
+/// that goes lazy-TLB on this root (scheduler skips `activate` when the
+/// next task has `mm == None`) keeps its `mm_cpumask` bit set, but does
+/// NOT hold an `Arc<AddressSpace>` — so the strong count can hit zero and
+/// run this teardown while a peer CPU still has the root in CR3. A bare
+/// `flush_tlb_others(cpumask)` here is INSUFFICIENT: a TLB flush does not
+/// change CR3, so the peer's next user walk would still traverse the
+/// just-freed tables. The correct fix is the Linux `mmgrab`/`mmdrop`
+/// lazy-TLB reference (force peers onto the kernel/init root before the
+/// free). The `cpumask` is now available to implement it; until then this
+/// path relies on the same UP/quiesced assumption as before.
 /// # C: O(N_present_leaves + N_present_tables)
 #[cfg(target_arch = "x86_64")]
 pub unsafe extern "C" fn as_teardown(root_pa: u64) {
@@ -352,7 +448,22 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     // F157: leaves go through dec_and_maybe_free so COW-shared frames
     // (multiple AS map them) only release once the last AS drops.
     // Tables (intermediate PT levels) are always per-AS — direct free.
-    let mut free_leaf = |pa: u64| {
+    let mut free_leaf = |_va: u64, pa: u64| {
+        // debug-fwm (LIGHT): only check refcount-1 frames in the high
+        // library/lock VA window (≥0x7000_0000_0000) — where the free-while-
+        // mapped corruption lands (libc/systemd .data, glibc locks). Skipping
+        // bulk heap/stack frames keeps teardown cheap (no boot regression).
+        #[cfg(feature = "debug-fwm")]
+        if _va >= 0x7000_0000_0000 && crate::setup::frame_refcount(pa) == 1 {
+            let n = crate::setup::fwm_peer_maps(_va, pa, root_pa, hhdm);
+            if n > 0 {
+                klog::write_raw(b"[FWM] teardown va="); klog::write_hex_u64(_va);
+                klog::write_raw(b" pa=");               klog::write_hex_u64(pa);
+                klog::write_raw(b" peers=");            klog::write_dec_u64(n as u64);
+                klog::write_raw(b" exiting_root=");     klog::write_hex_u64(root_pa);
+                klog::write_raw(b"\n");
+            }
+        }
         // SAFETY: `pa` was a leaf reachable from this AS's PT; AS root
         // quiesced per fn contract; crate::setup::dec_and_maybe_free drops
         // refcount and frees on zero.
@@ -378,7 +489,7 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
 pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
-    let mut free_leaf = |pa: u64| {
+    let mut free_leaf = |_va: u64, pa: u64| {
         // SAFETY: leaf was reachable from this AS's PT; F157 dec-and-free.
         unsafe { crate::setup::dec_and_maybe_free_frame(pa); }
     };
@@ -480,6 +591,171 @@ pub fn classify_arm_abort(esr: u64, far: u64) -> Option<FaultKind> {
 /// the faulting instruction); false otherwise. The caller (typically
 /// a smoke fault handler) decides whether to deliver SIGSEGV via
 /// `sigsegv_terminate_<arch>` or treat as a smoke landmark.
+// DIAG (debug-mount): single-step write-trap state for the libc lock page.
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+static STEP_VA:   AtomicU64 = AtomicU64::new(0);
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+static STEP_RIP:  AtomicU64 = AtomicU64::new(0);
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+static STEP_ROOT: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+static PREV_TRAP_HOOK: AtomicU64 = AtomicU64::new(0);
+
+/// Linear address of glibc's `initial` atexit list (next page after the
+/// __exit_funcs_lock page) — deterministic (no ASLR). The boot wedge
+/// overwrites this region with a library-path string.
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+const WATCH_VA: u64 = 0x0000_7fff_fe88_e000;
+
+/// #DB hook: a DR0 hardware write-watchpoint on WATCH_VA fires here (no
+/// page-protection slowdown). Reads the 8 bytes just written; if they're a
+/// stray ASCII path ("/lib…") logs the writing RIP — the corruptor. Chains
+/// the previous (ptrace) hook for non-DR #DBs.
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+pub fn lock_step_hook(frame: &mut hal_x86_64::FaultFrame) -> bool {
+    // SAFETY: privileged DR6 read+clear at CPL=0.
+    let dr6 = unsafe { hal_x86_64::read_clear_dr6() };
+    if dr6 & 0x1 == 0 {
+        // Not our DR0 hit — delegate to the chained (ptrace) hook.
+        let p = PREV_TRAP_HOOK.load(Ordering::Acquire);
+        if p != 0 {
+            // SAFETY: PREV_TRAP_HOOK holds a valid UserTrapHook fn pointer captured at install.
+            let prev: hal_x86_64::UserTrapHook = unsafe { core::mem::transmute(p as *const ()) };
+            return prev(frame);
+        }
+        return false;
+    }
+    // Read what was just written via the current task's AS.
+    let mut buf = [0u8; 16];
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: single-mutator mm slot per 13§5.
+        if let Some(mm) = unsafe { cur.mm_ref() } {
+            let root = mm.root_pa();
+            let hhdm = hhdm_offset();
+            // SAFETY: root is the live AS; HHDM read of the just-written bytes.
+            if let Some(pa) = unsafe { read_foreign_leaf_pa(root, WATCH_VA & !0xFFF, hhdm) } {
+                let src = (hhdm + (pa & !0xFFF) + (WATCH_VA & 0xFFF)) as *const u8;
+                for i in 0..16 { buf[i] = unsafe { core::ptr::read_volatile(src.add(i)) }; }
+            }
+        }
+    }
+    if buf[0] == b'/' || (buf[0] >= 0x20 && buf[0] < 0x7f && buf[1] >= 0x20 && buf[1] < 0x7f) {
+        klog::write_raw(b"[mnt] WATCHHIT rip=");
+        klog::write_hex_u64(frame.rip);            // trap-type #DB: RIP is just past the store
+        klog::write_raw(b" data=");
+        for i in 0..16 { klog::write_hex_u64(buf[i] as u64); klog::write_raw(b","); }
+        klog::write_raw(b"\n");
+    }
+    true        // consumed; iretq back to user (DR6 already cleared)
+}
+
+/// Install the DR0 write-watchpoint #DB hook (chaining the previous) + arm
+/// the watchpoint on the atexit list.
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+pub fn install_lock_step_hook() {
+    // SAFETY: boot-time install; hook lives for the kernel lifetime.
+    let prev = unsafe { hal_x86_64::install_user_trap_hook(lock_step_hook) };
+    PREV_TRAP_HOOK.store(prev as *const () as u64, Ordering::Release);
+    // DR0 disabled: the #DB on the first atexit-list write deterministically
+    // wedges the process (both DR7 encodings) — the #DB delivery path is unsafe
+    // for data breakpoints here / the atexit section can't tolerate the trap.
+    let _ = WATCH_VA;
+    // unsafe { hal_x86_64::set_data_watchpoint(WATCH_VA); }
+}
+
+/// debug-cow probe 2 (SEGV-FAULT DUMP): emitted the instant a user fault
+/// becomes fatal (no VMA / protection violation / not-present that can't be
+/// filled → SIGSEGV). Pins the failing VA + the covering VMA [lo,hi,prot] +
+/// whether a live PTE/frame exists there. `rip`/`cr2`/`err` are the arch
+/// fault triple (x86: RIP / CR2 / PFEC; aarch64: ELR / FAR / ESR). The `err`
+/// bits distinguish a CODE fault (bad text page — instruction-fetch) from a
+/// DATA / stack fault, which tells whether the wrong-frame / double-alloc
+/// victim was an executable page or a data page. No-op when the feature is
+/// off (returns before any work).
+/// # C: O(log N_vmas) + O(walk depth)
+#[cfg(feature = "debug-cow")]
+fn segv_dump(rip: u64, cr2: u64, err: u64) {
+    let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);
+    klog::write_raw(b"[SEGV] rip="); klog::write_hex_u64(rip);
+    klog::write_raw(b" cr2=");       klog::write_hex_u64(cr2);
+    klog::write_raw(b" err=");       klog::write_hex_u64(err);
+    klog::write_raw(b" pid=");       klog::write_dec_u64(tid as u64);
+    let mut root = 0u64;
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: single-mutator mm slot per 13§5; fault ctx with IRQs off; read-only VMA query.
+        if let Some(mm) = unsafe { cur.mm_ref() } {
+            root = mm.root_pa();
+            match UserVirtAddr::new(cr2 & !0xfff).and_then(|u| mm.find_vma(u)) {
+                Some(v) => {
+                    klog::write_raw(b" vma=[");  klog::write_hex_u64(v.start.as_u64());
+                    klog::write_raw(b",");        klog::write_hex_u64(v.end.as_u64());
+                    klog::write_raw(b",prot=");   klog::write_hex_u64(v.prot.bits() as u64);
+                    klog::write_raw(b"]");
+                }
+                None => klog::write_raw(b" vma=none"),
+            }
+        }
+    }
+    // Live PTE + frame at the faulting page, walked from this AS's root. A
+    // present PTE on a fatal fault = protection/wrong-frame; absent = a
+    // not-present nobody could fill (no backing).
+    if root != 0 {
+        let hhdm = hhdm_offset();
+        // SAFETY: read-only foreign-leaf PT walk of the current AS root; HHDM covers PT memory; single-CPU fault ctx.
+        match unsafe { read_foreign_leaf(root, cr2 & !0xfff, hhdm) } {
+            Some((pa, raw)) => {
+                klog::write_raw(b" pte=");   klog::write_hex_u64(raw);
+                klog::write_raw(b" frame="); klog::write_hex_u64(pa & !0xfff);
+            }
+            None => klog::write_raw(b" pte=none frame=none"),
+        }
+    }
+    // DISAMBIGUATION (bootA4): the residual fault is a near-NULL DATA read at a
+    // deterministic libc site. Two surviving hypotheses produce a tiny cr2:
+    //   (3a) `%fs:offset` with FS_BASE==0  → TLS/context-switch hole, OR
+    //   (2)  a register holds a wrong/zero base read out of a mis-installed
+    //        frame → plain near-null deref.
+    // The TLS-base value + the faulting instruction bytes + the GP register
+    // file pin which one: a `64`(fs-prefix) opcode with fsbase==0 ⇒ (3a); a
+    // plain `mov` whose base register is ~0 ⇒ (2). Decoded offline from this
+    // line. x86: TLS base = IA32_FS_BASE; arm: TLS base = TPIDR_EL0.
+    {
+        // TLS base register (the `%fs`/TPIDR pointer userspace TLS rides).
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: rdmsr IA32_FS_BASE at CPL=0 is unconditionally legal; pure read of the live per-CPU FS base.
+        let tls_base = unsafe { hal_x86_64::get_user_fs_base() };
+        #[cfg(target_arch = "aarch64")]
+        let tls_base = {
+            let v: u64;
+            // SAFETY: mrs tpidr_el0 at EL1 reads the live user TLS base; pure read, no side effects.
+            unsafe { core::arch::asm!("mrs {v}, tpidr_el0", v = out(reg) v, options(nomem, nostack, preserves_flags)); }
+            v
+        };
+        klog::write_raw(b" fsbase="); klog::write_hex_u64(tls_base);
+        // GP register file at fault — the base register holding ~0 names the
+        // wrong-frame victim; for a `%fs:` access the GPRs are irrelevant and
+        // fsbase==0 is the tell.
+        #[cfg(target_arch = "x86_64")]
+        {
+            let g = hal_x86_64::current_fault_gprs();
+            if !g.is_null() {
+                // SAFETY: current_fault_gprs() returns the live FaultGprs the per-vector stub pushed on the kernel stack; we only read.
+                let g = unsafe { &*g };
+                klog::write_raw(b" rax="); klog::write_hex_u64(g.rax);
+                klog::write_raw(b" rbx="); klog::write_hex_u64(g.rbx);
+                klog::write_raw(b" rcx="); klog::write_hex_u64(g.rcx);
+                klog::write_raw(b" rdx="); klog::write_hex_u64(g.rdx);
+                klog::write_raw(b" rsi="); klog::write_hex_u64(g.rsi);
+                klog::write_raw(b" rdi="); klog::write_hex_u64(g.rdi);
+                klog::write_raw(b" rbp="); klog::write_hex_u64(g.rbp);
+                klog::write_raw(b" r8=");  klog::write_hex_u64(g.r8);
+                klog::write_raw(b" r12="); klog::write_hex_u64(g.r12);
+            }
+        }
+    }
+    klog::write_raw(b"\n");
+}
+
 /// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1) reject
 #[cfg(target_arch = "x86_64")]
 pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
@@ -505,9 +781,53 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
         Some(k) => k,
         None    => return false,
     };
+    // DIAG (debug-mount): the libc lock page is mapped RO (File arm) so its
+    // first write traps here — log the writing instruction's RIP. RIP inside
+    // glibc lll_lock = the lock pointer is right (a different bug); RIP inside
+    // a str/mem* or a stray addr (cr2 != the lock word) = the corruptor.
+    #[cfg(feature = "debug-mount")]
+    if matches!(kind, FaultKind::Protection { access: FaultAccess::Write }) {
+        if let Some(cur) = sched::live::current() {
+            // SAFETY: single-mutator mm slot per 13§5; read-only VMA query.
+            if let Some(mm) = unsafe { cur.mm_ref() } {
+                if let Some(uva) = UserVirtAddr::new(cr2 & !0xfff) {
+                    if let Some(v) = mm.find_vma(uva) {
+                        if let VmaBacking::File { off, backing } = &v.backing {
+                            let foff = off.wrapping_add((cr2 & !0xfff).wrapping_sub(v.start.as_u64()));
+                            if foff == 0x1e7000 && backing.ino() == 0x6e54000000062076
+                                && STEP_VA.load(Ordering::Acquire) == 0 {
+                                // Single-step write-trap: make the page writable
+                                // in place, arm RFLAGS.TF so a #DB fires right
+                                // after THIS write instruction, and stash the
+                                // target/RIP. The #DB hook (lock_step_hook) then
+                                // reads the bytes just written — when they're an
+                                // ASCII path ("/lib…") that RIP is the corruptor
+                                // — re-protects the page RO, and clears TF.
+                                let root = mm.root_pa();
+                                unsafe { mprotect_pages(root, cr2 & !0xfff, 0x1000, VmaProt::READ | VmaProt::WRITE); }
+                                let f = hal_x86_64::current_fault_frame();
+                                if !f.is_null() {
+                                    // SAFETY: live FaultFrame on the kernel stack; set TF (bit 8).
+                                    unsafe { (*f).rflags |= 0x100; }
+                                    STEP_ROOT.store(root, Ordering::Release);
+                                    STEP_RIP.store(_rip, Ordering::Release);
+                                    STEP_VA.store(cr2, Ordering::Release);
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     if handle(cr2, kind) {
         return true;
     }
+    // debug-cow probe 2: the fault is now fatal (the demand-page resolver
+    // refused it). Dump the failing VA + VMA + PTE/frame before SIGSEGV.
+    #[cfg(feature = "debug-cow")]
+    segv_dump(_rip, cr2, err);
     // Unhandled fault from user mode. F158: try Linux-style
     // catchable SIGSEGV — rewrite the live FaultFrame to call
     // the user-installed handler. If no handler is installed
@@ -531,6 +851,10 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
     if handle(far, kind) {
         return true;
     }
+    // debug-cow probe 2: fatal fault — dump VA/VMA/PTE before SIGSEGV.
+    // (ELR / FAR / ESR map to the rip / cr2 / err columns.)
+    #[cfg(feature = "debug-cow")]
+    segv_dump(_elr, far, esr);
     // Same SIGSEGV-on-user-fault contract as x86. ESR EC bits 26..31
     // distinguish lower-EL (user) from same-EL (kernel-mode user-buf
     // access): EC=0x20/0x24 are EL0 (user), EC=0x21/0x25 are EL1
@@ -555,6 +879,17 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
 fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
     -> Result<(), vmm::Error>
 {
+    // debug-cow item 2: task-struct integrity. Validate the running task's
+    // head fields on every fault entry (the cheapest place that already has
+    // `current()`); a clobbered struct head (the sched task corruption
+    // candidate) surfaces as [TASK-CORRUPT]. The task struct is sched-owned,
+    // so we hand its already-read `tid` + `name` fat-pointer to the detector
+    // rather than add a magic field across the crate boundary. No-op off.
+    #[cfg(feature = "debug-cow")]
+    if let Some(t) = sched::current() {
+        let n = t.name;
+        vmm::debug_cow::check_task(t.tid, n.as_ptr() as u64, n.len() as u64);
+    }
     // F158: stack auto-grow. If the fault lands just below a
     // GROWSDOWN VMA's start (within Linux's 64 KiB guard distance),
     // extend the VMA to cover the faulting address. Subsequent
@@ -564,10 +899,32 @@ fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
             as_.try_grow_stack(uva);
         }
     }
+    // debug-cow item 1: re-verify the RO-shared anon checksum at the COW
+    // write-fault, BEFORE the handler copies/reuses the frame. Translate the
+    // faulting VA to its current frame and hand it to the vmm side, which
+    // logs [COW-CORRUPT] iff that frame's content changed while it was
+    // supposed to be RO-shared (a peer wrote it via a stale writable TLB, or
+    // the wrong frame was installed). Done here (not in vmm) so the log can
+    // name the running task (pid==tid) + CPU. No-op when the feature is off.
+    #[cfg(feature = "debug-cow")]
+    if let FaultKind::Protection { access: FaultAccess::Write } = fault {
+        use hal::MmuOps;
+        let va_page = uva.as_u64() & !(hal::PAGE_SIZE_BYTES - 1);
+        // SAFETY: read-only translate of the active CR3/TTBR0 for the faulting VA.
+        #[cfg(target_arch = "x86_64")]
+        let cur = unsafe { hal_x86_64::mmu_ops::X86Mmu::translate(hal::Va(va_page)) };
+        #[cfg(target_arch = "aarch64")]
+        let cur = unsafe { hal_aarch64::mmu_ops::ArmMmu::translate(hal::Va(va_page)) };
+        if let Some((p, _)) = cur {
+            let tid = sched::current().map(|t| t.tid).unwrap_or(0);
+            let cpu = current_cpu_idx() as u32;
+            vmm::debug_cow::check_write(p.0 & !0xfff, va_page, hhdm, tid, cpu);
+        }
+    }
     // SAFETY: live per-arch MmuOps state initialised by kernel_main; alloc closure wraps the global PMM; fault context has IRQs masked; `as_` is borrowed read-only at entry (the AS takes its own RwLock internally). `set_rmap` invokes Linux-shape `page_add_anon_rmap` against the kernel's PageMeta-backed AnonVma slot.
     unsafe {
         #[cfg(target_arch = "x86_64")]
-        let r = as_.handle_page_fault_cow_rmap::<hal_x86_64::mmu_ops::X86Mmu, _, _, _, _, _>(
+        let r = as_.handle_page_fault_cow_rmap::<hal_x86_64::mmu_ops::X86Mmu, _, _, _, _, _, _>(
             uva, fault, hhdm,
             || crate::setup::alloc_one_frame(),
             |pa| crate::setup::frame_refcount(pa),
@@ -576,9 +933,11 @@ fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
             // SAFETY: live AnonVma; pa is freshly-installed PTE frame.
             |pa, av, idx| crate::setup::set_anon_rmap_for_pa(pa, av, idx),
             // SAFETY: inc_ref for KernelFrame (vvar) so AS-drop dec balances to kernel's reference.
-            |pa| unsafe { crate::setup::inc_ref(pa); });
+            |pa| unsafe { crate::setup::inc_ref(pa); },
+            // F157-A3 wp_page_reuse predicate: anon && PageAnonExclusive && mapcount==1.
+            |pa| crate::setup::can_reuse_anon_exclusive(pa));
         #[cfg(target_arch = "aarch64")]
-        let r = as_.handle_page_fault_cow_rmap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _, _>(
+        let r = as_.handle_page_fault_cow_rmap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _, _, _>(
             uva, fault, hhdm,
             || crate::setup::alloc_one_frame(),
             |pa| crate::setup::frame_refcount(pa),
@@ -586,7 +945,9 @@ fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
             |pa| crate::setup::rmap_aware_dec_and_maybe_free(pa),
             |pa, av, idx| crate::setup::set_anon_rmap_for_pa(pa, av, idx),
             // SAFETY: inc_ref for KernelFrame (vvar); balances AS-drop dec.
-            |pa| unsafe { crate::setup::inc_ref(pa); });
+            |pa| unsafe { crate::setup::inc_ref(pa); },
+            // F157-A3 wp_page_reuse predicate: anon && PageAnonExclusive && mapcount==1.
+            |pa| crate::setup::can_reuse_anon_exclusive(pa));
         r
     }
 }
@@ -819,6 +1180,18 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
     if addr.checked_add(len_aligned).map_or(true, |e| e > USER_VA_END) {
         return -(Errno::Einval.as_i32() as i64);
     }
+    // DIAG (debug-mount): trace the MADV_DONTNEED range so a spurious zap of a
+    // dirtied private-file page (e.g. libc's .bss lock) is visible.
+    #[cfg(feature = "debug-mount")]
+    {
+        let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);
+        klog::write_raw(b"[mnt] EVICT addr=");  klog::write_hex_u64(addr);
+        klog::write_raw(b" len=");              klog::write_hex_u64(len_aligned);
+        klog::write_raw(b" tid=");              klog::write_dec_u64(tid as u64);
+        klog::write_raw(b"\n");
+    }
+    // mm_cpumask snapshot for flush_tlb_others (read once, not per page).
+    let mask = current_mm_cpumask();
     let mut va = addr;
     let end = addr + len_aligned;
     while va < end {
@@ -835,11 +1208,18 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
                 #[cfg(target_arch = "aarch64")]
                 <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::unmap(Va(va), PageSize::P4K);
             }
-            // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free checks struct-page refcount and only releases when the last mapping drops.
-            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
             // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
             #[cfg(target_arch = "x86_64")]
             unsafe { hal_x86_64::flush_local_va(va); }
+            // SMP TLB coherence (`20§5`): invalidate this VA on every OTHER
+            // online CPU BEFORE the frame is freed below — a peer thread of
+            // the same mm with a stale TLB entry would otherwise touch the
+            // frame after it returns to the allocator (use-after-free
+            // aliasing). x86-only effect; no-op on UP / aarch64 / hosted.
+            // cpumask-targeted (only CPUs that have this mm), not all online.
+            hal::tlb::shootdown_others_va(va, mask);
+            // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free checks struct-page refcount and only releases when the last mapping drops.
+            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
         }
         va += 0x1000;
     }
@@ -860,7 +1240,18 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
     if addr.checked_add(len_aligned).map_or(true, |e| e > USER_VA_END) {
         return -(Errno::Einval.as_i32() as i64);
     }
+    // DIAG (debug-mount): trace munmap range (the other PTE-zapping path).
+    #[cfg(feature = "debug-mount")]
+    {
+        let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);
+        klog::write_raw(b"[mnt] MUNMAP addr="); klog::write_hex_u64(addr);
+        klog::write_raw(b" len=");              klog::write_hex_u64(len_aligned);
+        klog::write_raw(b" tid=");              klog::write_dec_u64(tid as u64);
+        klog::write_raw(b"\n");
+    }
 
+    // mm_cpumask snapshot for flush_tlb_others (read once, not per page).
+    let mask = current_mm_cpumask();
     let mut va = addr;
     let end = addr + len_aligned;
     while va < end {
@@ -885,11 +1276,17 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             // free → munmap → unmap_pte for the if_options heap was
             // freeing pages still mapped in the grandchild's AS,
             // corrupting grandchild's view of the same struct.
-            // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free only releases to PMM when struct-page refcount drops to zero (no other AS maps this frame).
-            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
             // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
             #[cfg(target_arch = "x86_64")]
             unsafe { hal_x86_64::flush_local_va(va); }
+            // SMP TLB coherence (`20§5`): flush this VA on every OTHER online
+            // CPU BEFORE the frame is freed below, so a peer thread of the
+            // same mm can't touch a freed+realloc'd frame through a stale TLB
+            // entry. x86-only effect; no-op on UP / aarch64 / hosted.
+            // cpumask-targeted (only CPUs that have this mm), not all online.
+            hal::tlb::shootdown_others_va(va, mask);
+            // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free only releases to PMM when struct-page refcount drops to zero (no other AS maps this frame).
+            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
         }
         va += 0x1000;
     }

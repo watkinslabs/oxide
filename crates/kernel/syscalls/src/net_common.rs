@@ -9,6 +9,7 @@ pub(crate) const AF_INET:     u32 = 2;
 pub(crate) const AF_INET6:    u32 = 10;
 pub(crate) const SOCK_STREAM: u32 = 1;
 pub(crate) const SOCK_DGRAM:  u32 = 2;
+pub(crate) const SOCK_SEQPACKET: u32 = 5;
 
 /// Map net::NetError → Linux errno (negated, ABI-ready). # C: O(1)
 pub(crate) fn errno_from_neterr(e: net::NetError) -> i64 {

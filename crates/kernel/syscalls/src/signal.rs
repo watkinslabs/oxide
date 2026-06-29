@@ -13,6 +13,10 @@
 
 pub(crate) use crate::signal_common::sig_perm_check;
 
+/// SIG_DFL sentinel (Linux uapi sa_handler convention). NEVER inline as a
+/// bare 0 at call sites (`07§5`); mirrors the const in signal_dispatch.rs.
+const SIG_DFL: u64 = 0;
+
 /// One signal ready for delivery.
 #[derive(Copy, Clone, Debug)]
 pub struct PendingSignal {
@@ -39,9 +43,10 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
     let cur = sched::live::current()?;
     let pending = cur.sigpending.load(Ordering::Acquire);
     let masked  = cur.sigmask.load(Ordering::Acquire);
-    let deliver = pending & !masked;
-    if deliver == 0 { return None; }
-    let sig = deliver.trailing_zeros() + 1;
+    // signal(7): SIGKILL/SIGSTOP bypass the mask, so a masked fatal signal can
+    // never wedge a task unkillable; everything else honours the mask. Lowest
+    // pending wins (Linux next_signal).
+    let sig = sched::signum::next_deliverable(pending, masked)?;
     let mut info: Option<sched::SigInfo> = None;
     if sig >= 33 && sig <= 64 {
         let (rec, empty) = cur.rt_pop(sig);
@@ -71,5 +76,13 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
     // SAFETY: running task on this CPU; preempt-off; sole reader of sigactions slot per single-mutator invariant in `13§5`.
     let table = unsafe { &*cur.sigactions.get() };
     let h = table[(sig - 1) as usize];
-    Some(PendingSignal { sig, handler: h.handler, flags: h.flags, restorer: h.restorer, info })
+    // SIGKILL/SIGSTOP can never be caught or ignored (signal(7)): force SIG_DFL
+    // so a stale/buggy handler-table slot can't intercept them. rt_sigaction
+    // (013) already rejects installing a disposition for them — defense in depth.
+    let (handler, flags, restorer) = if sched::signum::is_unblockable(sig) {
+        (SIG_DFL, 0, 0)
+    } else {
+        (h.handler, h.flags, h.restorer)
+    };
+    Some(PendingSignal { sig, handler, flags, restorer, info })
 }

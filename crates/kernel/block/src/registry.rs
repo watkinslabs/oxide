@@ -87,6 +87,14 @@ pub fn by_serial(serial: &str) -> Option<Arc<dyn BlockDevice>> {
         .map(|d| d.dev.clone())
 }
 
+/// Return the first registered block device in probe order. Boot uses this
+/// only as a fallback when the root disk's virtio serial has not been stamped
+/// yet; serial lookup remains the preferred binding.
+/// # C: O(1)
+pub fn first_device() -> Option<Arc<dyn BlockDevice>> {
+    TABLE.lock().first().map(|d| d.dev.clone())
+}
+
 /// Snapshot the disk table for /proc/partitions, /sys/block, etc.
 /// # C: O(N_disks)
 pub fn snapshot() -> Vec<Arc<Disk>> {

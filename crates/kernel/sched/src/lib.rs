@@ -28,6 +28,7 @@ pub mod rlimit;
 pub mod rt;
 pub mod runqueue;
 pub mod task;
+pub mod signum;
 mod sigqueue;
 mod sched_enc;
 

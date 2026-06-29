@@ -52,6 +52,32 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
         let bytes: &[u8] = unsafe {
             core::slice::from_raw_parts(base as *const u8, len as usize)
         };
+        #[cfg(feature = "debug-syscall")]
+        if fd == 1 || fd == 2 {
+            klog::write_raw(b"[WRITEV] fd=");
+            klog::write_dec_u64(fd as u64);
+            klog::write_raw(b" bytes=\"");
+            let mut j = 0usize;
+            let cap = bytes.len().min(160);
+            while j < cap {
+                let b = bytes[j];
+                if b == b'\n' {
+                    klog::write_raw(b"\\n");
+                } else if b == b'\r' {
+                    klog::write_raw(b"\\r");
+                } else if b >= 0x20 && b < 0x7f {
+                    let one = [b];
+                    klog::write_raw(&one);
+                } else {
+                    klog::write_raw(b".");
+                }
+                j += 1;
+            }
+            if bytes.len() > cap {
+                klog::write_raw(b"...")
+            }
+            klog::write_raw(b"\"\n");
+        }
         dtrace!(b"WV_PRE_W");
         match file.write(bytes) {
             Ok(n)  => { dtrace!(b"WV_OK", n as u64); total = total.saturating_add(n as u64); }

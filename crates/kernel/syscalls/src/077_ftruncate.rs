@@ -20,5 +20,11 @@ pub fn sys_ftruncate(args: &SyscallArgs) -> i64 {
     let file = match fdt.get(fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
+    // ftruncate(2) requires the open file description be WRITABLE; a read-only
+    // fd is EINVAL (Linux do_sys_ftruncate). The fd already cleared EROFS at
+    // open, so no path/mount re-check.
+    if !file.f_mode().contains(vfs::Fmode::WRITE) {
+        return -(Errno::Einval.as_i32() as i64);
+    }
     match file.inode().truncate(len) { Ok(_) => 0, Err(e) => -(e as i64) }
 }

@@ -17,9 +17,162 @@ use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 pub mod block;
 pub mod bus;
 pub mod net_stats;
+pub mod root;
+
+pub use root::{register, register_dir, sys_root, SYSFS_FSID};
 
 const ARPHRD_LOOPBACK: u16 = 772;
 const ARPHRD_ETHER:    u16 =   1;
+
+#[cfg(target_arch = "aarch64")]
+const SERIAL_TTY_MAJOR: u32 = 204;
+#[cfg(not(target_arch = "aarch64"))]
+const SERIAL_TTY_MAJOR: u32 = 4;
+
+const TTY_DEVICES: &[(&str, u32, u32)] = &[
+    ("console", 5, 1),
+    ("tty",     5, 0),
+    ("tty0",    4, 0),
+    ("ttyS0",   SERIAL_TTY_MAJOR, 64),
+];
+
+fn tty_dev(name: &str) -> Option<(u32, u32)> {
+    TTY_DEVICES.iter()
+        .find(|(n, _, _)| *n == name)
+        .map(|(_, maj, min)| (*maj, *min))
+}
+
+fn emit_tty_uevent(action: &str, name: &str, major: u32, minor: u32) {
+    let devpath = alloc::format!("/devices/virtual/tty/{}", name);
+    let devname = alloc::format!("DEVNAME={}", name);
+    let maj = alloc::format!("MAJOR={}", major);
+    let min = alloc::format!("MINOR={}", minor);
+    ::netlink::emit_uevent_with_env(action, &devpath, "tty", &[&devname, &maj, &min]);
+}
+
+/// `/sys/class/tty` directory. Entries are symlinks to the canonical virtual
+/// tty device directories, matching Linux's class-device layout.
+pub struct SysClassTtyInode;
+
+impl Inode for SysClassTtyInode {
+    fn ino(&self) -> Ino { 0x5101_0001 }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        if tty_dev(name).is_none() { return Err(VfsError::Enoent); }
+        let mut target = alloc::string::String::from("../../devices/virtual/tty/");
+        target.push_str(name);
+        Ok(Arc::new(SysClassNetSymlinkInode { target: target.into_bytes() }) as InodeRef)
+    }
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+        let mut idx = off as usize;
+        while idx < TTY_DEVICES.len() {
+            let next = idx as u64 + 1;
+            let name = TTY_DEVICES[idx].0;
+            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, name, FileType::Symlink) { return Ok(next); }
+            idx += 1;
+        }
+        Ok(idx as u64)
+    }
+}
+
+/// `/sys/devices/virtual/tty` directory.
+pub struct SysDevicesVirtualTtyInode;
+
+impl Inode for SysDevicesVirtualTtyInode {
+    fn ino(&self) -> Ino { 0x5101_0002 }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        let (major, minor) = tty_dev(name).ok_or(VfsError::Enoent)?;
+        Ok(Arc::new(SysTtyDeviceInode {
+            name: alloc::string::String::from(name),
+            major,
+            minor,
+        }) as InodeRef)
+    }
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+        let mut idx = off as usize;
+        while idx < TTY_DEVICES.len() {
+            let next = idx as u64 + 1;
+            let name = TTY_DEVICES[idx].0;
+            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, name, FileType::Directory) { return Ok(next); }
+            idx += 1;
+        }
+        Ok(idx as u64)
+    }
+}
+
+struct SysTtyDeviceInode {
+    name: alloc::string::String,
+    major: u32,
+    minor: u32,
+}
+
+impl Inode for SysTtyDeviceInode {
+    fn ino(&self) -> Ino { 0x5101_1000 + self.minor as Ino }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        match name {
+            "dev" => {
+                let body = alloc::format!("{}:{}\n", self.major, self.minor).into_bytes();
+                Ok(Arc::new(BodyInode::new(body, 0x5101_2000 + self.minor as Ino)) as InodeRef)
+            }
+            "uevent" => Ok(Arc::new(TtyUeventInode {
+                name: self.name.clone(),
+                major: self.major,
+                minor: self.minor,
+            }) as InodeRef),
+            _ => Err(VfsError::Enoent),
+        }
+    }
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+        const ENTRIES: &[&str] = &["dev", "uevent"];
+        let mut idx = off as usize;
+        while idx < ENTRIES.len() {
+            let next = idx as u64 + 1;
+            let ino = self.lookup(ENTRIES[idx]).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, ENTRIES[idx], FileType::Regular) { return Ok(next); }
+            idx += 1;
+        }
+        Ok(idx as u64)
+    }
+}
+
+struct TtyUeventInode {
+    name: alloc::string::String,
+    major: u32,
+    minor: u32,
+}
+
+impl Inode for TtyUeventInode {
+    fn ino(&self) -> Ino { 0x5101_3000 + self.minor as Ino }
+    fn file_type(&self) -> FileType { FileType::Regular }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let body = alloc::format!(
+            "MAJOR={}\nMINOR={}\nDEVNAME={}\n",
+            self.major, self.minor, self.name
+        ).into_bytes();
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body[off..off + n]);
+        Ok(n)
+    }
+    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> {
+        let action = core::str::from_utf8(b).ok()
+            .and_then(|s| s.split_whitespace().next())
+            .filter(|a| !a.is_empty())
+            .unwrap_or("change");
+        emit_tty_uevent(action, &self.name, self.major, self.minor);
+        Ok(b.len())
+    }
+}
 
 /// `/sys/class/net` directory. `readdir` enumerates
 /// `net::sock::stack().ifaces` and emits each entry as a symlink per
@@ -50,13 +203,15 @@ impl Inode for SysClassNetInode {
     fn readdir(
         &self,
         off: u64,
-        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         let snap = net::sock::stack().ifaces.snapshot_devs();
         let mut idx = off as usize;
         while idx < snap.len() {
             let next = idx as u64 + 1;
-            if !f(next, snap[idx].1.name(), FileType::Symlink) { return Ok(next); }
+            let name = snap[idx].1.name();
+            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, name, FileType::Symlink) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -104,13 +259,15 @@ impl Inode for SysDevicesVirtualNetInode {
     fn readdir(
         &self,
         off: u64,
-        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         let snap = net::sock::stack().ifaces.snapshot_devs();
         let mut idx = off as usize;
         while idx < snap.len() {
             let next = idx as u64 + 1;
-            if !f(next, snap[idx].1.name(), FileType::Directory) { return Ok(next); }
+            let name = snap[idx].1.name();
+            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, name, FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -255,7 +412,7 @@ impl Inode for SysClassNetIfaceInode {
     fn readdir(
         &self,
         off: u64,
-        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         let mut idx = off as usize;
         // `statistics` (a subdir) is emitted as the final entry, after
@@ -264,12 +421,14 @@ impl Inode for SysClassNetIfaceInode {
         let nfiles = IFACE_ENTRIES.len();
         while idx < nfiles {
             let next = idx as u64 + 1;
-            if !f(next, IFACE_ENTRIES[idx], FileType::Regular) { return Ok(next); }
+            let ino = self.lookup(IFACE_ENTRIES[idx]).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, IFACE_ENTRIES[idx], FileType::Regular) { return Ok(next); }
             idx += 1;
         }
         if idx == nfiles {
             let next = idx as u64 + 1;
-            if !f(next, "statistics", FileType::Directory) { return Ok(next); }
+            let ino = self.lookup("statistics").map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, "statistics", FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -315,10 +474,25 @@ impl<'a> core::fmt::Write for VecFmt<'a> {
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    devfs::register("/sys/class/net",
+    // Mount-point dirs that other filesystems mount onto (cgroup2, bpf,
+    // pstore, securityfs). They must exist as walkable dentries in sysfs's
+    // own tree BEFORE those mounts attach (moved here from devfs::boot —
+    // devfs can't depend on sysfs without a cycle). # C: O(1)
+    register_dir("/sys/fs/cgroup");
+    register_dir("/sys/fs/bpf");
+    register_dir("/sys/fs/pstore");
+    register_dir("/sys/kernel/security");
+    // tracefs/debugfs mount points (content lives in tracefs's own roots).
+    register_dir("/sys/kernel/tracing");
+    register_dir("/sys/kernel/debug");
+    register("/sys/class/net",
         Arc::new(SysClassNetInode) as InodeRef);
-    devfs::register("/sys/devices/virtual/net",
+    register("/sys/devices/virtual/net",
         Arc::new(SysDevicesVirtualNetInode) as InodeRef);
+    register("/sys/class/tty",
+        Arc::new(SysClassTtyInode) as InodeRef);
+    register("/sys/devices/virtual/tty",
+        Arc::new(SysDevicesVirtualTtyInode) as InodeRef);
     bus::init();
     block::init();
 }
@@ -336,63 +510,11 @@ impl vfs::fs::FileSystem for SysfsFs {
     /// SYSFS_MAGIC (linux/magic.h).
     /// # C: O(1)
     fn magic(&self) -> u64 { 0x6265_6572 }
-    /// Try the path-keyed devfs entry first (static /sys/kernel/*,
-    /// /sys/devices/system/cpu/*, the SysClassNetInode at /sys/class/net,
-    /// …). On miss, peel one component at a time and ask the ancestor
-    /// inode to `lookup(child)` — that's how the dynamic per-iface inodes
-    /// under /sys/class/net resolve.
-    /// # C: O(N_devfs_entries × N_path_components)
-    fn lookup(&self, path: &str) -> Option<InodeRef> {
-        sysfs_walk(path, 0)
-    }
-}
-
-/// SysfsFs path walk. Tries devfs::lookup first; on miss, peels one
-/// component at a time until a registered ancestor inode is found,
-/// then walks back down via `Inode::lookup`. Intermediate symlinks
-/// (the /sys/class/<class>/<name> → /sys/devices/... convention)
-/// resolve transparently: when the walk lands on a Symlink with more
-/// path left, we re-enter `sysfs_walk` against the lexically resolved
-/// target + the remaining tail. `depth` bounds symlink recursion at
-/// 8 (Linux SYMLOOP_MAX heuristic).
-/// # C: O(N_components × N_devfs_entries)
-fn sysfs_walk(path: &str, depth: u32) -> Option<InodeRef> {
-    if depth > 8 { return None; }
-    if let Some(i) = devfs::lookup(path) { return Some(i); }
-    let mut tail: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
-    let mut cur = alloc::string::String::from(path);
-    loop {
-        let idx = cur.rfind('/')?;
-        if idx == 0 { return None; }
-        let child = alloc::string::String::from(&cur[idx + 1..]);
-        cur.truncate(idx);
-        tail.push(child);
-        if let Some(parent_inode) = devfs::lookup(&cur) {
-            let mut node = parent_inode;
-            while let Some(name) = tail.pop() {
-                node = node.lookup(&name).ok()?;
-                if matches!(node.file_type(), FileType::Symlink) && !tail.is_empty() {
-                    let target = node.readlink().ok()?;
-                    let target = core::str::from_utf8(&target).ok()?;
-                    let mut joined = cur.clone();
-                    joined.push('/');
-                    joined.push_str(target);
-                    let resolved = vfs::path::lexical_normalize(&joined)
-                        .unwrap_or(joined);
-                    // Tail held the unconsumed sub-components in
-                    // reverse order; rebuild as path suffix and
-                    // recurse with the resolved base.
-                    let mut new_path = resolved;
-                    while let Some(seg) = tail.pop() {
-                        new_path.push('/');
-                        new_path.push_str(&seg);
-                    }
-                    return sysfs_walk(&new_path, depth + 1);
-                }
-            }
-            return Some(node);
-        }
-    }
+    /// Mount root = sysfs's OWN `kernfs::PseudoDir` (`SYS_ROOT`). The walk
+    /// crosses into the sysfs mount and resolves `/sys/*` per-component via
+    /// `PseudoDir::lookup` + the dynamic `SysClassNetInode::lookup`.
+    /// # C: O(1)
+    fn root(&self) -> Option<InodeRef> { Some(sys_root() as InodeRef) }
 }
 
 /// Singleton accessor for the mount table.

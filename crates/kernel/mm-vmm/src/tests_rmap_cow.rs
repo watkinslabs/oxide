@@ -51,12 +51,19 @@ fn pt_with<R, F: FnOnce(&mut HostPt) -> R>(f: F) -> R {
 }
 
 fn fresh_pa() -> u64 {
-    ALLOC_PA_NEXT.with(|n| {
-        let mut g = n.borrow_mut();
-        let pa = *g;
-        *g += 0x1000;
-        pa
-    })
+    // Back each "physical frame" with a REAL 4 KiB-aligned host allocation so
+    // the COW slow-path's copy_nonoverlapping (which dereferences hhdm+pa, with
+    // the tests passing hhdm=0) reads/writes valid memory instead of a fake
+    // address. This lets Miri exercise the actual COW/fork/rmap LOGIC for UB
+    // (use-after-free, double-free of the AnonVma Arc) rather than crashing on
+    // a dangling pointer. Leaked intentionally — test process is short-lived.
+    let _ = &ALLOC_PA_NEXT;
+    use std::alloc::{alloc_zeroed, Layout};
+    let layout = Layout::from_size_align(4096, 4096).unwrap();
+    // SAFETY: non-zero 4 KiB layout; alloc_zeroed returns a valid 4 KiB-aligned
+    // zeroed block (or null, which `as u64` faithfully forwards to the caller).
+    let ptr = unsafe { alloc_zeroed(layout) };
+    ptr as u64
 }
 
 /// Wraps `fresh_pa` for callers that want the `Option<u64>` shape
@@ -66,18 +73,17 @@ fn fresh_pa_opt() -> Option<u64> { Some(fresh_pa()) }
 struct HostMmu;
 
 impl MmuOps for HostMmu {
-    unsafe fn map(va: Va, pa: Pa, flags: PageFlags, _size: PageSize) {
+    unsafe fn map(va: Va, pa: Pa, flags: PageFlags, _size: PageSize) -> Option<Pa> {
+        // Model the REAL per-arch walker (`hal_x86_64::mmu_ops::map` /
+        // `hal_aarch64`): an install over a present leaf at the same VA tears
+        // down the displaced leaf and installs the new PA (the
+        // `WalkErr::AlreadyMapped` -> `unmap_at_va` + `map_at_level` path).
+        // F157-A1: return the displaced PA (different frame) so the COW handler
+        // can dec_ref it, matching the production trait contract.
         pt_with(|pt| {
-            if let Some((cur_pa, _)) = pt.leaves.get(&va.0) {
-                if *cur_pa != pa.0 {
-                    panic!(
-                        "HostMmu::map AlreadyMapped without unmap: va=0x{:x} cur_pa=0x{:x} new_pa=0x{:x}",
-                        va.0, cur_pa, pa.0,
-                    );
-                }
-            }
-            pt.leaves.insert(va.0, (pa.0, flags.bits()));
-        });
+            let prev = pt.leaves.insert(va.0, (pa.0, flags.bits()));
+            prev.filter(|(old, _)| (old >> 12) != (pa.0 >> 12)).map(|(old, _)| Pa(old))
+        })
     }
 
     unsafe fn unmap(va: Va, _size: PageSize) {
@@ -93,10 +99,14 @@ impl MmuOps for HostMmu {
     unsafe fn flush_va(_va: Va) {}
     fn flush_all_local() {}
 
-    unsafe fn map_at(_root_pa: u64, va: Va, pa: Pa, flags: PageFlags, _size: PageSize) {
+    unsafe fn map_at(_root_pa: u64, va: Va, pa: Pa, flags: PageFlags, _size: PageSize) -> Option<Pa> {
         // For tests we have a single PT. Treat map_at like map; if a
-        // different PA is at the slot, overwrite (Linux semantics).
-        pt_with(|pt| { pt.leaves.insert(va.0, (pa.0, flags.bits())); });
+        // different PA is at the slot, overwrite (Linux semantics) and
+        // return the displaced PA per the F157-A1 trait contract.
+        pt_with(|pt| {
+            let prev = pt.leaves.insert(va.0, (pa.0, flags.bits()));
+            prev.filter(|(old, _)| (old >> 12) != (pa.0 >> 12)).map(|(old, _)| Pa(old))
+        })
     }
 
     unsafe fn activate(_root_pa: u64) {}
@@ -219,9 +229,12 @@ fn dropped_child_removed_from_chain_walks() {
         let cv = tree.iter().next().unwrap();
         Arc::clone(cv.anon_vma.as_ref().unwrap())
     };
-    // child Arc dropped here; weak entry on chain dangles.
-    assert_eq!(av.live_target_count(), 0,
-        "after child drop no live targets remain (parent never attached in v1)");
+    // child Arc dropped here; its weak entry on the chain dangles. A4-1:
+    // the parent's OWN self-edge (attached by `mmap`) survives, so exactly
+    // one live target remains. Pre-A4 the parent edge was never attached
+    // and this read 0 — that was the rmap-invisibility bug A4 closes.
+    assert_eq!(av.live_target_count(), 1,
+        "parent self-edge (A4-1) survives child drop");
 }
 
 #[test]
@@ -233,19 +246,20 @@ fn repeat_fork_cow_chain_grows_then_settles() {
         let c = parent.fork_cow_pages::<HostMmu, _>(0, 0, |_pa| {}).unwrap();
         children.push(c);
     }
-    // Pick one child's anon_vma and verify chain has 5 live targets
-    // (one per fork). All 5 children share the same anon_vma family.
+    // Pick one child's anon_vma and verify the chain has 6 live targets:
+    // the parent self-edge (A4-1, attached by `mmap`) + one per fork. All
+    // 5 children share the same anon_vma family.
     let av = {
         let tree = children[0].vmas_for_test();
         let cv = tree.iter().next().unwrap();
         Arc::clone(cv.anon_vma.as_ref().unwrap())
     };
-    assert_eq!(av.live_target_count(), 5);
+    assert_eq!(av.live_target_count(), 6);
 
     // Drop two children — chain raw_len stays the same, live count
-    // drops by 2.
+    // drops by 2 (parent + 3 surviving children = 4).
     children.truncate(3);
-    assert_eq!(av.live_target_count(), 3);
+    assert_eq!(av.live_target_count(), 4);
     av.gc_dangling();
-    assert_eq!(av.raw_chain_len(), 3);
+    assert_eq!(av.raw_chain_len(), 4);
 }

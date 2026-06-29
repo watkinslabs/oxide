@@ -141,14 +141,14 @@ ConditionPathExists=/dev/ttyS0
 
 [Service]
 Environment=TERM=vt100
-ExecStart=-/sbin/getty -L 115200 ttyS0 vt100
+ExecStart=-/sbin/getty --noreset --noclear -L 115200 ttyS0 vt100
 Restart=always
 RestartSec=1
 StandardInput=tty
 StandardOutput=tty
 StandardError=tty
 TTYPath=/dev/ttyS0
-TTYReset=yes
+TTYReset=no
 KillMode=process
 IgnoreSIGPIPE=no
 

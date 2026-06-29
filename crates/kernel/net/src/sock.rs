@@ -230,6 +230,7 @@ pub struct SockOpts {
     pub tcp_keepintvl_s: core::sync::atomic::AtomicI32,
     pub tcp_keepcnt: core::sync::atomic::AtomicI32,
     pub passcred: core::sync::atomic::AtomicI32,
+    pub timestamping: core::sync::atomic::AtomicI32,
 }
 
 pub const TCP_SNDBUF_DEFAULT: i32 = 16384; pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
@@ -262,6 +263,7 @@ impl Default for SockOpts {
             tcp_keepintvl_s: AtomicI32::new(crate::sock_opts::TCP_KEEPINTVL_DEFAULT_S),
             tcp_keepcnt:    AtomicI32::new(crate::sock_opts::TCP_KEEPCNT_DEFAULT),
             passcred: AtomicI32::new(0),
+            timestamping: AtomicI32::new(0),
         }
     }
 }
@@ -757,6 +759,13 @@ pub enum RemoteAddr {
 pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<(), NetError> {
     match addr {
         RemoteAddr::UnixPath(path) => {
+            if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
+                if UNIX_REGISTRY.dgram_lookup(&path).is_none() {
+                    return Err(NetError::Econnrefused);
+                }
+                q.set_peer(path);
+                return Ok(());
+            }
             // B47: connect to a non-existent AF_UNIX path returns
             // ECONNREFUSED on Linux (no listener) — used to return
             // ENOBUFS which dhcpcd treated as fatal "out of buffer
@@ -959,11 +968,11 @@ pub fn sendto(
         let end = *end;
         return Ok(pair.write(end, payload));
     }
-    // AF_UNIX SOCK_DGRAM: dest path required, push to peer queue.
-    if let SockKind::UnixDgram(_) = &*sock.kind.lock() {
-        let path = match dest {
+    // AF_UNIX SOCK_DGRAM: explicit dest or connected peer.
+    if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
+        let path = match dest.clone() {
             Some(RemoteAddr::UnixPath(p)) => p,
-            _ => return Err(NetError::Einval),
+            _ => q.peer().ok_or(NetError::Eaddrnotavail)?,
         };
         let q = UNIX_REGISTRY.dgram_lookup(&path).ok_or(NetError::Enobufs)?;
         q.push(crate::UnixDgram {

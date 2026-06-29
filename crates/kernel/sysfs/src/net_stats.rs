@@ -37,13 +37,14 @@ impl Inode for SysNetStatsInode {
     fn readdir(
         &self,
         off: u64,
-        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         let fields = net::STAT_FIELDS;
         let mut idx = off as usize;
         while idx < fields.len() {
             let next = idx as u64 + 1;
-            if !f(next, fields[idx], FileType::Regular) { return Ok(next); }
+            let ino = self.lookup(fields[idx]).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, fields[idx], FileType::Regular) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)

@@ -75,12 +75,13 @@ impl Inode for SysBlockInode {
         }
         Err(VfsError::Enoent)
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let disks = block::registry::snapshot();
         let mut idx = off as usize;
         while idx < disks.len() {
             let next = idx as u64 + 1;
-            if !f(next, &disks[idx].name, FileType::Directory) { return Ok(next); }
+            let ino = self.lookup(&disks[idx].name).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, &disks[idx].name, FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -101,16 +102,18 @@ impl Inode for DiskDirInode {
         let body = disk_attr(&disk, name).ok_or(VfsError::Enoent)?;
         Ok(Arc::new(BodyInode::new(body, INO_ATTR)) as InodeRef)
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let mut idx = off as usize;
         while idx < DISK_ATTRS.len() {
             let next = idx as u64 + 1;
-            if !f(next, DISK_ATTRS[idx], FileType::Regular) { return Ok(next); }
+            let ino = self.lookup(DISK_ATTRS[idx]).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, DISK_ATTRS[idx], FileType::Regular) { return Ok(next); }
             idx += 1;
         }
         if idx == DISK_ATTRS.len() {
             let next = idx as u64 + 1;
-            if !f(next, "queue", FileType::Directory) { return Ok(next); }
+            let ino = self.lookup("queue").map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, "queue", FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -129,11 +132,12 @@ impl Inode for QueueDirInode {
         let body = alloc::format!("{}\n", disk.dev.block_size()).into_bytes();
         Ok(Arc::new(BodyInode::new(body, INO_ATTR)) as InodeRef)
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let mut idx = off as usize;
         while idx < QUEUE_ATTRS.len() {
             let next = idx as u64 + 1;
-            if !f(next, QUEUE_ATTRS[idx], FileType::Regular) { return Ok(next); }
+            let ino = self.lookup(QUEUE_ATTRS[idx]).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, QUEUE_ATTRS[idx], FileType::Regular) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -146,5 +150,5 @@ impl Inode for QueueDirInode {
 /// no further work.
 /// # C: O(1)
 pub fn init() {
-    devfs::register("/sys/block", Arc::new(SysBlockInode) as InodeRef);
+    crate::register("/sys/block", Arc::new(SysBlockInode) as InodeRef);
 }

@@ -37,6 +37,8 @@ extern crate std;
 
 pub mod paths;
 pub mod pseudo;
+pub mod reg;
+pub use reg::{proc_reg, register, PROCFS_FSID};
 pub use paths::{child_under, parse_proc_path, ProcPath};
 pub use pseudo::{
     DynamicOps, KResult as PseudoKResult, PseudoError, PseudoFs, PseudoLeaf, PseudoOps,

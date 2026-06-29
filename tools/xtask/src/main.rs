@@ -1,6 +1,7 @@
 // xtask: CI entry, 07§8.
 use std::process::ExitCode;
 mod buildns;
+mod artifacts;
 mod cmds;
 mod gc;
 mod glibc;
@@ -47,6 +48,7 @@ fn main() -> ExitCode {
         "stats"     => stats::cmd_stats(rest),
         "gc"        => gc::cmd_gc(rest),
         "path"      => path::cmd_path(rest),
+        "artifacts" => artifacts::cmd_artifacts(rest),
         "-h" | "--help" => return usage(),
         _ => { eprintln!("xtask: unknown subcommand `{cmd}`"); return usage(); }
     };
@@ -57,6 +59,6 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: xtask <kernel|user|glibc|image|test|qemu|rootfs|grub|gc|path|soak|bench|spec-lint|doc-check|stats> [args]");
+    eprintln!("usage: xtask <kernel|user|glibc|image|test|qemu|rootfs|grub|gc|path|artifacts|soak|bench|spec-lint|doc-check|stats> [args]");
     ExitCode::from(2)
 }

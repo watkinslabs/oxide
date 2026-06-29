@@ -111,7 +111,7 @@ impl MmuOps for ArmMmu {
     /// # SAFETY: per `MmuOps::map`.
     /// # C: O(walk depth) = O(4)
     /// # Ctx: pre-init or under PT lock.
-    unsafe fn map(va: Va, pa: Pa, flags: PageFlags, size: PageSize) {
+    unsafe fn map(va: Va, pa: Pa, flags: PageFlags, size: PageSize) -> Option<Pa> {
         let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
         kassert!(hhdm != 0, "MmuOps::map called before set_hhdm_offset");
         let (leaf_level, page_bytes, leaf) = match size {
@@ -128,24 +128,40 @@ impl MmuOps for ArmMmu {
         let r = unsafe {
             pt_walker::map_at_level::<PtWalkerArm, _>(va.0, leaf_level, leaf, hhdm, alloc_frame)
         };
-        match r {
-            Ok(()) => {}
-            // COW split: caller wants to overwrite an existing leaf
-            // with a new PA. Tear down + reinstall. Mirrors x86 path.
+        let displaced = match r {
+            // Empty slot, or same-pa permission rewrite (fork W-strip / shmem
+            // RO→RW): no frame displaced.
+            Ok(()) => None,
+            // F157-A1: a DIFFERENT present frame occupies the slot. Tear it
+            // down, capture its PA for the mm layer to `dec_ref`, reinstall.
+            // Mirrors x86; the old silent-replace leaked the displaced frame.
             Err(pt_walker::WalkErr::AlreadyMapped) => {
                 // SAFETY: same-VA unmap-then-map; PT lock per outer caller.
-                unsafe {
-                    pt_walker::unmap_at_va::<PtWalkerArm>(va.0, hhdm);
-                    let r2 = pt_walker::map_at_level::<PtWalkerArm, _>(
+                let old = unsafe { pt_walker::unmap_at_va::<PtWalkerArm>(va.0, hhdm) };
+                // SAFETY: re-install over the now-empty slot; preconditions as above.
+                let r2 = unsafe {
+                    pt_walker::map_at_level::<PtWalkerArm, _>(
                         va.0, leaf_level, leaf, hhdm, alloc_frame,
-                    );
-                    kassert!(r2.is_ok(), "MmuOps::map remap-after-unmap failed");
-                }
+                    )
+                };
+                kassert!(r2.is_ok(), "MmuOps::map remap-after-unmap failed");
+                old.map(|(old_leaf, _lvl)| Pa(old_leaf & PtWalkerArm::PHYS_MASK))
             }
             Err(_) => {
                 kassert!(false, "MmuOps::map walker failure");
+                None
             }
-        }
+        };
+        // Invalidate the local TLB for this VA — `map` mutates the ACTIVE
+        // TTBR0's tables, so a present→present permission change (fork's
+        // W-strip) or a cached not-present entry must be flushed or the CPU
+        // keeps the stale translation. Mirrors x86; `map_at` (non-active
+        // child root) deliberately does NOT flush. Without this, fork's
+        // parent RO-remap left a stale writable entry → write-while-shared
+        // corruption of COW frames.
+        // SAFETY: EL1; TLBI VAE1IS invalidates matching inner-shareable entries.
+        unsafe { <PtWalkerArm as pt_walker::PtWalker>::flush_va(va.0); }
+        displaced
     }
 
     /// Tear down a 4 KiB leaf at `va`. v1 only supports
@@ -213,7 +229,7 @@ impl MmuOps for ArmMmu {
     /// instead of the active TTBR0/TTBR1. Used by `AddressSpace::fork`
     /// per docs/11§7 for child PT population.
     /// # SAFETY: per trait contract.
-    unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, size: PageSize) {
+    unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, size: PageSize) -> Option<Pa> {
         let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
         kassert!(hhdm != 0, "MmuOps::map_at called before set_hhdm_offset");
         let (leaf_level, page_bytes, leaf) = match size {
@@ -230,7 +246,11 @@ impl MmuOps for ArmMmu {
                 root_pa, va.0, leaf_level, leaf, hhdm, &mut alloc,
             )
         };
+        // Fork builds a FRESH child root → slot always empty → never displaces
+        // (a present leaf trips the kassert). Return `None`; the `Option<Pa>`
+        // only keeps `map_at` symmetric with `map`. Mirrors x86.
         kassert!(r.is_ok(), "MmuOps::map_at walker failure");
+        None
     }
 
     /// Install `root_pa` as `TTBR0_EL1` — switches the user-half

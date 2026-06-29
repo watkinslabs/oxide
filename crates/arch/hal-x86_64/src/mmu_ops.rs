@@ -200,7 +200,7 @@ impl MmuOps for X86Mmu {
     /// # SAFETY: per `MmuOps::map` (`14§4` link).
     /// # C: O(walk depth) = O(4)
     /// # Ctx: pre-init or under PT lock.
-    unsafe fn map(va: Va, pa: Pa, flags: PageFlags, size: PageSize) {
+    unsafe fn map(va: Va, pa: Pa, flags: PageFlags, size: PageSize) -> Option<Pa> {
         let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
         kassert!(hhdm != 0, "MmuOps::map called before set_hhdm_offset");
         let (leaf_level, page_bytes, leaf) = match size {
@@ -218,28 +218,47 @@ impl MmuOps for X86Mmu {
         let r = unsafe {
             pt_walker::map_at_level::<PtWalkerX86, _>(va.0, leaf_level, leaf, hhdm, alloc_frame)
         };
-        match r {
-            Ok(()) => {}
-            // Linux-equivalent COW split: caller installs a new PA at
-            // a VA that already has a different PA. Tear down the old
-            // leaf, flush, then install the new one. Without this the
-            // COW fault handler (`vmm::handle_page_fault_cow`) panics
-            // on the second-and-later fault per VA.
+        let displaced = match r {
+            // Slot was empty, or already held the SAME pa (a pure permission
+            // rewrite: fork W-strip / shmem RO→RW). No frame displaced.
+            Ok(()) => None,
+            // F157-A1: a DIFFERENT present frame occupies the slot (COW copy,
+            // MAP_FIXED-over-existing, demand-fault over a stale leaf). Tear
+            // the old leaf down, capture its PA so the mm layer can `dec_ref`
+            // the displaced frame, then install the new one. Previously this
+            // arm silently dropped the old PA → refcount > live-PTE count →
+            // leak/free-while-mapped aliasing (the RANK-1 boot corruption).
             Err(pt_walker::WalkErr::AlreadyMapped) => {
                 // SAFETY: same-VA unmap-then-map sequence; PT lock per the
                 // outer caller; no concurrent reader on UP single-CPU.
-                unsafe {
-                    pt_walker::unmap_at_va::<PtWalkerX86>(va.0, hhdm);
-                    let r2 = pt_walker::map_at_level::<PtWalkerX86, _>(
+                let old = unsafe { pt_walker::unmap_at_va::<PtWalkerX86>(va.0, hhdm) };
+                // SAFETY: re-install over the now-empty slot; preconditions as above.
+                let r2 = unsafe {
+                    pt_walker::map_at_level::<PtWalkerX86, _>(
                         va.0, leaf_level, leaf, hhdm, alloc_frame,
-                    );
-                    kassert!(r2.is_ok(), "MmuOps::map remap-after-unmap failed");
-                }
+                    )
+                };
+                kassert!(r2.is_ok(), "MmuOps::map remap-after-unmap failed");
+                old.map(|(old_leaf, _lvl)| Pa(old_leaf & PtWalkerX86::PHYS_MASK))
             }
             Err(_) => {
                 kassert!(false, "MmuOps::map walker failure");
+                None
             }
-        }
+        };
+        // Invalidate the local TLB for this VA. `map` mutates the ACTIVE
+        // CR3's tables, so any stale entry (a present→present permission
+        // change like fork's W-strip, or a cached not-present/negative
+        // entry from a prior demand-fault) MUST be flushed or the CPU keeps
+        // using the old translation. Linux flushes on every such PTE update
+        // (ptep_set_wrprotect + flush_tlb_page). Omitting it let fork's
+        // parent-side RO-remap leave a stale WRITABLE entry, so the parent
+        // wrote straight into the now-COW-shared frame — write-while-shared
+        // corruption invisible to refcount/poison/FWM detectors. `map_at`
+        // (non-active child root) deliberately does NOT flush.
+        // SAFETY: CPL=0; INVLPG affects only the local TLB for this VA.
+        unsafe { <PtWalkerX86 as pt_walker::PtWalker>::flush_va(va.0); }
+        displaced
     }
 
     /// Tear down a 4 KiB leaf at `va`. v1 only supports
@@ -297,7 +316,7 @@ impl MmuOps for X86Mmu {
     /// PT root (the child PT during `fork`).
     /// # SAFETY: per trait contract.
     /// # C: O(walk depth)
-    unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, size: PageSize) {
+    unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, size: PageSize) -> Option<Pa> {
         let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
         kassert!(hhdm != 0, "MmuOps::map_at called before set_hhdm_offset");
         let (leaf_level, page_bytes, leaf) = match size {
@@ -314,7 +333,13 @@ impl MmuOps for X86Mmu {
                 root_pa, va.0, leaf_level, leaf, hhdm, &mut alloc,
             )
         };
+        // Fork populates a FRESH child root, so the leaf slot is always empty
+        // (a present leaf here is a build-the-child-over-dirty-root bug → the
+        // kassert fires). Hence no frame is ever displaced: return `None`. The
+        // `Option<Pa>` return only exists to keep `map_at` symmetric with
+        // `map` for callers that account displaced frames generically.
         kassert!(r.is_ok(), "MmuOps::map_at walker failure");
+        None
     }
 
     /// Install `root_pa` as CR3 — switches the active address space

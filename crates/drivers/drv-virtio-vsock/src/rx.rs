@@ -69,6 +69,9 @@ pub(crate) fn drain() -> usize {
         let used = h.wrapping_add(ctx.q0_device_pa) as *const u16;
         // SAFETY: HHDM-mapped q0 used ring; aligned u16 load of used.idx.
         let cur_used = unsafe { core::ptr::read_volatile(used.add(1)) };
+        // virtio 1.2 §2.7.13.2: acquire barrier after observing used.idx so the
+        // used-element id/len + RX buffer payload are not read ahead of it.
+        core::sync::atomic::fence(Ordering::Acquire);
         let used_u32 = h.wrapping_add(ctx.q0_device_pa) as *const u32;
 
         while ctx.rx_used_seen != cur_used {

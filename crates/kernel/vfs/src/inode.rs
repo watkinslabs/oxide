@@ -17,6 +17,26 @@ use crate::types::{FileType, Ino, KResult, VfsError};
 pub type InodeRef = Arc<dyn Inode>;
 
 /// `16§2` Inode trait — v1 subset.
+///
+/// CONCEPTUAL `i_op` / `i_fop` SPLIT (Linux `inode_operations` vs
+/// `file_operations`). This kernel keeps ONE trait object per inode (the
+/// trait-object model: `Arc<dyn Inode>`), so the two Linux vtables are not
+/// separate types — but the methods group into the same two families and a
+/// reader/auditor should treat them as such:
+///   * `i_op` (inode_operations — namespace/metadata ops keyed on a DIRECTORY
+///     or the inode's identity): `lookup`, `mkdir`, `rmdir`, `create_child`,
+///     `unlink_child`, `symlink_child`, `mknod_child`, `readlink`,
+///     `set_perm`/`set_owner`/`set_times`, `truncate`, and the metadata
+///     accessors (`perm`/`uid`/`gid`/`mtime`/`atime`/`ctime`/`rdev`/`nlink`/
+///     `size`/`fsid`/`blksize`/`statfs_magic`).
+///   * `i_fop` (file_operations — per-open data-path ops): `read`/`write`,
+///     `read_nonblock`/`write_nonblock`, `readdir`, `poll`/`poll_file`,
+///     `mmap_shared_frame`, `on_open`/`on_release`, `fdinfo_extra`,
+///     `fcntl_seals`, `poll_subscribers`.
+/// `i_sb`/`ino`/`as_any` are the shared object-model identity (Linux `struct
+/// inode` core). Splitting into two physical traits is deferred — it buys no
+/// behaviour and doubles the per-FS impl surface (131 impls). Documented here
+/// so the grouping is explicit without over-refactoring.
 pub trait Inode: Send + Sync {
     /// Optional downcast hook. Returns `Some(self)` for inode
     /// types whose syscall handlers need to recover a concrete
@@ -31,16 +51,45 @@ pub trait Inode: Send + Sync {
     /// # C: O(1)
     fn ino(&self) -> Ino;
 
+    /// `i_sb` — owning superblock backref (Linux `inode->i_sb`). `None`
+    /// during the WP6 migration (backends not yet converted to own a
+    /// `SuperBlock`); converted FSes return `Some(sb)` so `fsid()` and
+    /// `statfs` derive from the real superblock. # C: O(1)
+    fn i_sb(&self) -> Option<alloc::sync::Arc<crate::superblock::SuperBlock>> { None }
+
     /// Superblock / mount identity (Linux `st_dev` analog). Inodes on
     /// the same filesystem return the same value; distinct filesystems
     /// return distinct values. Used by `name_to_handle_at`'s `mount_id`
     /// and mount-point detection (`is_mount_point` compares a path's id
-    /// to its parent's). Default `0` = the root/ext4 domain; pseudo
-    /// filesystems mounted elsewhere (cgroup2, proc, …) override it so a
-    /// mount boundary is observable. Without this, systemd's cgroup
-    /// walk never finds the `/sys/fs/cgroup` boundary and loops forever.
+    /// to its parent's). Derives from `i_sb().s_dev` once the FS owns a
+    /// SuperBlock; default `0` = the root/ext4 domain. Pseudo filesystems
+    /// not yet SB-backed override it directly so a mount boundary is
+    /// observable — without it, systemd's cgroup walk never finds the
+    /// `/sys/fs/cgroup` boundary and loops forever.
     /// # C: O(1)
-    fn fsid(&self) -> u64 { 0 }
+    fn fsid(&self) -> u64 { self.i_sb().map(|s| s.s_dev).unwrap_or(0) }
+
+    /// Link count reported through stat/statx. Filesystems with real
+    /// metadata should override this with their stored inode link count.
+    /// The default matches Linux's baseline shape: non-directories have
+    /// one link, an empty directory has "." and its parent's entry.
+    /// # C: O(1)
+    fn nlink(&self) -> u32 {
+        if matches!(self.file_type(), FileType::Directory) { 2 } else { 1 }
+    }
+
+    /// Preferred I/O block size reported through stat/statx. Filesystems
+    /// with a superblock or device block size should override it.
+    /// # C: O(1)
+    fn blksize(&self) -> u32 { 4096 }
+
+    /// Filesystem magic for anonymous or pathless inodes reported by
+    /// `fstatfs(2)`. Mounted filesystems normally report through their mount's
+    /// `FileSystem::magic`; anonymous descriptor families such as pidfd have no
+    /// stable pathname, so the inode itself supplies the superblock magic.
+    /// `0` means "use the path/mount based fallback".
+    /// # C: O(1)
+    fn statfs_magic(&self) -> u64 { 0 }
 
     /// # C: O(1)
     fn file_type(&self) -> FileType;
@@ -56,10 +105,13 @@ pub trait Inode: Send + Sync {
 
     /// Read into `buf` starting at byte offset `off`. Returns the
     /// number of bytes actually read; `0` indicates EOF. Default impl
-    /// returns `Err(Eisdir)` for directory inodes.
+    /// binds to the inode's `S_IFMT` type via `no_data_op_errno`: a
+    /// directory yields `Eisdir` (Linux `generic_read_dir`), any other
+    /// type with no overridden data op yields `Einval` (Linux `vfs_read`
+    /// when `f_op->read`/`read_iter` are both absent).
     /// # C: depends on FS impl
     fn read(&self, _off: u64, _buf: &mut [u8]) -> KResult<usize> {
-        Err(VfsError::Eisdir)
+        Err(no_data_op_errno(self.file_type()))
     }
 
     /// Non-blocking read variant per `15§5` (O_NONBLOCK). Returns
@@ -84,10 +136,13 @@ pub trait Inode: Send + Sync {
     }
 
     /// Write `buf` starting at byte offset `off`. Returns the number
-    /// of bytes actually written. Default impl returns `Err(Eisdir)`.
+    /// of bytes actually written. Default impl binds to the inode's
+    /// `S_IFMT` type via `no_data_op_errno`: a directory yields `Eisdir`
+    /// (Linux `vfs_write` rejects directory writes with EISDIR), any
+    /// other type with no overridden data op yields `Einval`.
     /// # C: depends on FS impl
     fn write(&self, _off: u64, _buf: &[u8]) -> KResult<usize> {
-        Err(VfsError::Eisdir)
+        Err(no_data_op_errno(self.file_type()))
     }
 
     /// Resolve a symbolic link to its target path bytes. Returns
@@ -100,12 +155,42 @@ pub trait Inode: Send + Sync {
         Err(VfsError::Einval)
     }
 
+    /// `inode->i_link` (Linux `struct inode`) — the inline "fast symlink" body:
+    /// a borrow of the target bytes a backend stores INSIDE the inode (Linux
+    /// ext4 fast symlinks ≤60 bytes, the `simple_symlink` family). `get_link`
+    /// consults this BEFORE the per-inode `readlink` op, matching Linux
+    /// `get_link()`'s `READ_ONCE(inode->i_link)` fast path — no allocation, no
+    /// block read. `None` (default) = no inline body, so `get_link` falls
+    /// through to `readlink`. Set ONLY on symlink inodes; a non-symlink leaves
+    /// it `None` so `get_link`/`readlink` still yield `Einval`.
+    /// # C: O(1)
+    fn i_link(&self) -> Option<&[u8]> { None }
+
+    /// `i_op->get_link` (Linux `fs/namei.c`) — the VFS symlink-resolution entry
+    /// the path walker and `readlink(2)` call. Mirrors Linux `get_link()`: the
+    /// inline `i_link()` fast path is checked FIRST, then the per-inode
+    /// `readlink` storage primitive (so backends overriding only `readlink` need
+    /// no further change). A backend with a page-cached or RCU link can override
+    /// `get_link` directly. # C: O(target_len)
+    fn get_link(&self) -> KResult<alloc::vec::Vec<u8>> {
+        if let Some(link) = self.i_link() { return Ok(link.to_vec()); }
+        self.readlink()
+    }
+
     /// Truncate the file to `len` bytes per `truncate(2)` /
     /// `ftruncate(2)`. Default impl returns `Erofs`. tmpfs honours
     /// it; static / pseudo inodes don't.
     /// # C: depends on FS impl
     fn truncate(&self, _len: u64) -> KResult<()> {
         Err(VfsError::Erofs)
+    }
+
+    /// Ensure backing storage exists for `[offset, offset + len)`.
+    /// `keep_size` preserves `i_size`; `zero_range` also overwrites existing
+    /// bytes in the range with zeroes.
+    /// # C: depends on FS impl
+    fn fallocate(&self, _offset: u64, _len: u64, _keep_size: bool, _zero_range: bool) -> KResult<()> {
+        Err(VfsError::Eopnotsupp)
     }
 
     /// Create a child directory `name` with permission `mode` within
@@ -158,15 +243,18 @@ pub trait Inode: Send + Sync {
         Err(VfsError::Erofs)
     }
 
-    /// Iterate child entries of a directory. `off` is the cookie from
-    /// a previous call; `0` starts from the beginning. The callback
-    /// returns `false` to stop early. Default impl returns
+    /// Iterate child entries of a directory (Linux `i_op->iterate`/`dir_emit`).
+    /// `off` is the cookie from a previous call; `0` starts from the beginning.
+    /// The callback receives `(ino, next_off, name, file_type)` — `ino` is the
+    /// child's REAL inode number (Linux `dir_emit`'s `ino`), which `getdents`
+    /// packs as `d_ino`; emitting `0` breaks `ls -i` / `find -inum`. The
+    /// callback returns `false` to stop early. Default impl returns
     /// `Err(Enotdir)`.
     /// # C: depends on FS impl
     fn readdir(
         &self,
         _off: u64,
-        _f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+        _f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         Err(VfsError::Enotdir)
     }
@@ -177,6 +265,44 @@ pub trait Inode: Send + Sync {
     /// (synthetic / static inodes never block).
     /// # C: O(1)
     fn poll(&self) -> u32 { POLL_IN | POLL_OUT }
+
+    /// Readiness query that knows the caller's per-fd read cursor (`File::pos`).
+    /// Needed for append-only streams whose readability depends on whether the
+    /// reader has caught up to the head — notably `/dev/kmsg`, where the
+    /// position-less `poll()` defaults to always-`POLL_IN` and busy-loops
+    /// systemd's journald epoll. Default forwards to `poll()`.
+    /// # C: O(1)
+    fn poll_file(&self, pos: u64) -> u32 { let _ = pos; self.poll() }
+
+    /// Linux per-file `show_fdinfo`: file-type-specific lines appended to
+    /// `/proc/<pid>/fdinfo/<n>` AFTER the generic `pos/flags/mnt_id/ino`.
+    /// A pidfd emits `Pid:`/`NSpid:` (kernel/pid.c `pidfd_show_fdinfo`);
+    /// glibc/systemd `pidfd_get_pid()` parses the `Pid:` line and reports
+    /// ENOTTY when it is missing. Default = no extra lines. # C: O(1)
+    fn fdinfo_extra(&self, _out: &mut alloc::vec::Vec<u8>) {}
+
+    /// `i_mapping` — the inode's `address_space` (Linux `inode->i_mapping`):
+    /// the ONE per-inode page cache, keyed by page index, shared by every
+    /// mapper of this inode. `Some` for inodes whose data lives in persistent
+    /// page-cache frames (tmpfs/shmem now; regular files as ext4 opts in);
+    /// `None` (default) for inodes without a frame-backed cache. The mmap
+    /// fault path and `InodeFileBacking` route through this so two `mmap()`s
+    /// of one inode share one address space (not two per-backing caches).
+    /// # C: O(1)
+    fn i_mapping(&self) -> Option<&dyn crate::mapping::AddressSpaceOps> { None }
+
+    /// `MAP_SHARED` page-cache frame for page-aligned file offset `off`.
+    /// Returns the persistent backing PMM frame so a shared mapping aliases
+    /// the file's own storage (Linux shmem / page cache) — user writes
+    /// propagate to the file and to every other mapper. The default forwards
+    /// to `i_mapping()` (the per-inode address space): `Some(pa)` when the
+    /// inode has a frame-backed cache, else `None` → the fault handler copies
+    /// via `read` into a fresh private frame (correct for `MAP_PRIVATE`; the
+    /// only option for backings without page-frame storage).
+    /// # C: O(log N_pages)
+    fn mmap_shared_frame(&self, off: u64) -> Option<u64> {
+        self.i_mapping().and_then(|m| m.shared_frame(off))
+    }
 
     /// F181: per-Inode subscriber list for targeted epoll wakes.
     /// Default `None` falls back to the global epoll-broadcast wake
@@ -201,6 +327,12 @@ pub trait Inode: Send + Sync {
     fn atime(&self) -> Option<u64> { None }
     /// # C: O(1)
     fn ctime(&self) -> Option<u64> { None }
+    /// Creation time (`i_crtime` / statx `stx_btime`). `None` = the fs has no
+    /// birth time; `generic_fillattr` then leaves `STATX_BTIME` clear in
+    /// `stx_mask` (Linux does NOT substitute ctime). Only filesystems with an
+    /// on-disk birth time (ext4 `i_crtime`) override this.
+    /// # C: O(1)
+    fn btime(&self) -> Option<u64> { None }
 
     /// Update the inode's atime/mtime/ctime. `None` for a time field
     /// means "leave alone" (UTIME_OMIT). Default returns `Erofs` so
@@ -215,6 +347,39 @@ pub trait Inode: Send + Sync {
     /// `None` = no per-FS override; statx applies its 0o600 fallback.
     /// # C: O(1)
     fn perm(&self) -> Option<u16> { None }
+
+    /// Linux `umode_t` view (`i_mode` in `struct inode`): the `S_IFMT` type
+    /// bits (`file_type().to_ifmt()`) OR'd with the low-12 permission bits in
+    /// ONE value. `perm() == None` (pseudo-fs default-allow) falls back to the
+    /// same `default_perm_for(file_type())` `generic_fillattr` uses, so
+    /// `i_mode()` and the `Kstat.mode` low bits agree for any inode without a
+    /// kernel `inode_times` overlay (the overlay is a syscall-layer concern
+    /// outside the inode, so it does not enter this pure-inode view).
+    /// # C: O(1)
+    fn i_mode(&self) -> crate::types::Umode {
+        let ft = self.file_type();
+        ft.to_ifmt() | self.perm().unwrap_or_else(|| crate::getattr::default_perm_for(ft))
+    }
+
+    /// `i_flags` (Linux `struct inode::i_flags`) — the VFS-level inode flag
+    /// set: the `S_*` bits (`S_IMMUTABLE`/`S_APPEND`/`S_NOATIME`/`S_SYNC`),
+    /// distinct from the `S_IF*`/perm bits in `i_mode`. Each FS translates its
+    /// on-disk attribute flags into these (ext4 `FS_IMMUTABLE_FL`/`FS_APPEND_FL`
+    /// → `S_IMMUTABLE`/`S_APPEND` in `ext4_set_inode_flags`). The write path
+    /// consults `S_IMMUTABLE` (no writer ever, not even via CAP_DAC_OVERRIDE —
+    /// enforced in `permission`); the open path consults `S_APPEND` (a write
+    /// open must be append-only, `chattr +a`); the atime path consults
+    /// `S_NOATIME`. Default `0` = no special flags.
+    /// # C: O(1)
+    fn i_flags(&self) -> u32 { 0 }
+
+    /// Device number (`dev_t`, packed `(major<<8)|minor` Linux legacy
+    /// encoding) for a char/block device node. `0` = not a device / no
+    /// number. Linux devtmpfs nodes carry their real `dev_t` from the
+    /// driver model; `stat`/`fstat`/`statx` report it as `st_rdev`.
+    /// Non-device inodes leave this 0.
+    /// # C: O(1)
+    fn rdev(&self) -> u32 { 0 }
 
     /// Owner uid. `None` = no per-FS override.
     /// # C: O(1)
@@ -231,6 +396,40 @@ pub trait Inode: Send + Sync {
     /// `chown(2)` backend. Default `Erofs` → overlay handles it.
     /// # C: O(1)
     fn set_owner(&self, _uid: u32, _gid: u32) -> KResult<()> { Err(VfsError::Erofs) }
+
+    /// `i_op->permission` (Linux `fs/namei.c`) — DAC check for the access
+    /// `mask` (`MAY_READ`/`MAY_WRITE`/`MAY_EXEC`). Default `generic_permission`
+    /// reads the mode/owner bits; a filesystem with POSIX ACLs or custom DAC
+    /// overrides this to intercept. The whole `inode_permission` family
+    /// (lookup/open/create/setattr) dispatches here. # C: O(ngroups)
+    fn permission(&self, mask: u32, cred: &crate::namei::Cred) -> KResult<()> {
+        // Linux `inode_permission`: "Nobody gets write access to an immutable
+        // file" — checked BEFORE the DAC/`do_inode_permission` class check, so
+        // not even CAP_DAC_OVERRIDE bypasses S_IMMUTABLE on a write.
+        if mask & crate::namei::MAY_WRITE != 0 && self.i_flags() & S_IMMUTABLE != 0 {
+            return Err(VfsError::Eperm);
+        }
+        crate::namei::generic_permission(self, mask, cred)
+    }
+
+    /// `i_op->getattr` (Linux `fs/stat.c`) — assemble the `Kstat` stat/statx
+    /// report. Default `generic_fillattr` reads the trait accessors, merges the
+    /// kernel `inode_times` overlay, and applies the mount idmap to the owner
+    /// ids. Backends with native metadata (ext4) override. # C: O(1)
+    fn getattr(&self, idmap: &crate::idmap::Idmap, overlay: Option<crate::inode_times::InodeTimes>)
+        -> crate::getattr::Kstat
+    {
+        crate::getattr::generic_fillattr(self, idmap, overlay)
+    }
+
+    /// `i_op->setattr` (Linux `fs/attr.c`) — apply a prepared `Iattr` to the
+    /// inode's native metadata. Default `simple_setattr` (via the existing
+    /// `set_perm`/`set_owner`/`set_times`/`truncate` primitives) returns `Erofs`
+    /// for inodes without native storage, so the kernel `notify_change` falls
+    /// back to its metadata overlay. # C: O(1)
+    fn setattr(&self, idmap: &crate::idmap::Idmap, ia: &crate::setattr::Iattr) -> KResult<()> {
+        crate::setattr::simple_setattr(self, idmap, ia)
+    }
 
     /// Open-time hook per Linux `file_operations->open`. Fired by the
     /// open path after path resolution, before the `File`/fd is built, so
@@ -252,6 +451,13 @@ pub trait Inode: Send + Sync {
     /// # C: O(1)
     fn on_release(&self) {}
 
+    /// Per-close flush hook per Linux `file_operations->flush`. Fired by
+    /// `FdTable::close`/`dup2`-replace/cloexec-drop on EVERY `close(2)`
+    /// of an fd referencing this open description (not only the last —
+    /// that is `on_release`). Default no-op. MUST NOT panic or block.
+    /// # C: O(1)
+    fn on_flush(&self) {}
+
     /// memfd file-sealing state (`fcntl(F_ADD_SEALS/F_GET_SEALS)`,
     /// `docs/19`). `Some(&seals)` only for a sealable memfd (created with
     /// `MFD_ALLOW_SEALING`); `None` for every other inode, where
@@ -260,7 +466,383 @@ pub trait Inode: Send + Sync {
     /// WRITE on `write`, SHRINK/GROW on `truncate`.
     /// # C: O(1)
     fn fcntl_seals(&self) -> Option<&core::sync::atomic::AtomicU32> { None }
+
+    /// `i_version` change counter (Linux `struct inode::i_version`,
+    /// `include/linux/iversion.h`) — the per-inode 64-bit monotone version the
+    /// VFS bumps on every data/metadata change, queried by NFS/IMA and statx
+    /// `STATX_CHANGE_COOKIE` to detect modification without re-reading content.
+    /// Returns the backing atomic so the `inode_*_iversion` free functions can
+    /// run the lazy QUERIED-bit cmpxchg protocol against it (bit 0 is the
+    /// `I_VERSION_QUERIED` flag; the real version is the stored word `>> 1`).
+    /// `None` (default) = the FS tracks no change counter, so
+    /// `inode_query_iversion` reports `0` and the bump helpers no-op.
+    /// Filesystems that opt in (Linux `SB_I_VERSION`) store an `AtomicU64` and
+    /// return it here, exactly as `fcntl_seals` exposes its seal word.
+    /// # C: O(1)
+    fn i_version_raw(&self) -> Option<&core::sync::atomic::AtomicU64> { None }
+
+    /// `i_generation` (Linux `struct inode::i_generation`) — the per-inode
+    /// generation number a filesystem stamps so a reused inode NUMBER is
+    /// distinguishable across delete + reallocate. `name_to_handle_at(2)` FIDs
+    /// and NFS file handles pack `(i_ino, i_generation)`; a stale handle to a
+    /// freed-and-recycled inode is rejected because the stored generation no
+    /// longer matches (Linux `generic_fh_to_dentry` compares it). ext4 reads it
+    /// from disk (`ext4_inode::i_generation`); pseudo filesystems that never
+    /// recycle an inode number leave it `0` (default).
+    /// # C: O(1)
+    fn i_generation(&self) -> u32 { 0 }
+
+    /// `i_op->fiemap` (Linux `fs/ioctl.c` `ioctl_fiemap`) — report the physical
+    /// extent layout of the byte range `[start, start + len)`. The backend calls
+    /// `emit` once per extent in increasing `fe_logical` order; `emit` returns
+    /// `false` to stop early (the caller's extent buffer is full, Linux
+    /// `fiemap_fill_next_extent` returning 1). The LAST extent must carry
+    /// `FIEMAP_EXTENT_LAST`. Default `Err(Eopnotsupp)` matches Linux: a
+    /// filesystem with no `->fiemap` makes `FS_IOC_FIEMAP` return `-EOPNOTSUPP`.
+    /// # C: O(extents)
+    fn fiemap(
+        &self,
+        _start: u64,
+        _len: u64,
+        _emit: &mut dyn FnMut(FiemapExtent) -> bool,
+    ) -> KResult<()> {
+        Err(VfsError::Eopnotsupp)
+    }
+
+    /// `bmap` (Linux `fs/inode.c`) — map the logical file block `block` (in
+    /// units of the fs block size) to its physical device block number, the
+    /// `FIBMAP` ioctl primitive (`a_ops->bmap`). Returns `0` for a hole (sparse
+    /// region with no allocation), the physical block otherwise. Default
+    /// `Err(Einval)` matches Linux `bmap()` when `->bmap` is absent (`FIBMAP`
+    /// then returns `-EINVAL`). # C: O(1) amortized
+    fn bmap(&self, _block: u64) -> KResult<u64> { Err(VfsError::Einval) }
+
+    /// `i_op->fileattr_get` (Linux `fs/ioctl.c`) — the inode-flag / extended
+    /// attribute view behind `FS_IOC_GETFLAGS` (`chattr`/`lsattr`) and
+    /// `FS_IOC_FSGETXATTR`. Default `Err(Eopnotsupp)` matches Linux: an inode
+    /// whose `i_op` has no `fileattr_get` makes the ioctl unsupported (the
+    /// in-kernel `-ENOIOCTLCMD` surfaces to userspace as failure). A backend
+    /// that stores `FS_*_FL` flags overrides it; the generic translation of the
+    /// VFS `i_flags` word into that view is `FileAttr::from_i_flags`.
+    /// # C: O(1)
+    fn fileattr_get(&self) -> KResult<FileAttr> { Err(VfsError::Eopnotsupp) }
+
+    /// `i_op->fileattr_set` (Linux `fs/ioctl.c`) — apply a `chattr` flag change
+    /// (`FS_IOC_SETFLAGS`/`FS_IOC_FSSETXATTR`). Default `Err(Eopnotsupp)`: an
+    /// inode with no native flag store rejects the change. Backends translate
+    /// the `FS_*_FL` bits into their on-disk attribute word and into `i_flags`.
+    /// # C: O(1)
+    fn fileattr_set(&self, _fa: &FileAttr) -> KResult<()> { Err(VfsError::Eopnotsupp) }
 }
+
+/// One physical extent reported by `Inode::fiemap` (Linux `struct
+/// fiemap_extent`). Byte offsets/lengths, not blocks. `flags` is the
+/// `FIEMAP_EXTENT_*` set (`FIEMAP_EXTENT_LAST` on the final extent,
+/// `FIEMAP_EXTENT_UNKNOWN`/`_DELALLOC`/`_ENCODED`/… as applicable).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct FiemapExtent {
+    /// `fe_logical` — byte offset of the extent within the file.
+    pub logical: u64,
+    /// `fe_physical` — byte offset of the extent on the underlying device.
+    pub physical: u64,
+    /// `fe_length` — byte length of the extent.
+    pub length: u64,
+    /// `fe_flags` — `FIEMAP_EXTENT_*` bitmask.
+    pub flags: u32,
+}
+
+/// Inode attribute view shared by `fileattr_get`/`fileattr_set` (Linux `struct
+/// fileattr`, `include/linux/fileattr.h`). Carries BOTH the legacy
+/// `FS_IOC_GETFLAGS` `FS_*_FL` word and the `FS_IOC_FSGETXATTR` `xflags`/projid
+/// view so one struct serves both ioctls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct FileAttr {
+    /// `FS_IOC_GETFLAGS` `FS_*_FL` flag word (`FS_IMMUTABLE_FL`…).
+    pub flags: u32,
+    /// `FS_IOC_FSGETXATTR` `fsx_xflags` (`FS_XFLAG_*`); `0` when unused.
+    pub fsx_xflags: u32,
+    /// `FS_IOC_FSGETXATTR` `fsx_projid` (project quota id); `0` = default.
+    pub fsx_projid: u32,
+}
+
+impl FileAttr {
+    /// Translate the VFS `i_flags` (`S_*`) word into the `FS_*_FL` view a
+    /// generic `fileattr_get` reports — the inverse of `ext4_set_inode_flags`'s
+    /// `FS_*_FL → S_*` map. Only the VFS-representable bits cross over
+    /// (`S_IMMUTABLE`/`S_APPEND`/`S_NOATIME`/`S_SYNC`); FS-private flags
+    /// (compression, journal-data, …) are not derivable from `i_flags` and stay
+    /// clear. # C: O(1)
+    pub fn from_i_flags(i_flags: u32) -> Self {
+        let mut flags = 0;
+        if i_flags & S_IMMUTABLE != 0 { flags |= FS_IMMUTABLE_FL; }
+        if i_flags & S_APPEND    != 0 { flags |= FS_APPEND_FL; }
+        if i_flags & S_NOATIME   != 0 { flags |= FS_NOATIME_FL; }
+        if i_flags & S_SYNC      != 0 { flags |= FS_SYNC_FL; }
+        FileAttr { flags, fsx_xflags: 0, fsx_projid: 0 }
+    }
+}
+
+/// `FIEMAP_EXTENT_*` flags (Linux `include/uapi/linux/fiemap.h`). Numeric reps
+/// match Linux exactly. `LAST` marks the final extent of the file; `UNKNOWN`
+/// means the location is not (yet) known (e.g. delayed allocation); `DELALLOC`
+/// implies `UNKNOWN`; `ENCODED`/`DATA_ENCRYPTED` mark transformed data.
+pub const FIEMAP_EXTENT_LAST:           u32 = 0x0001;
+pub const FIEMAP_EXTENT_UNKNOWN:        u32 = 0x0002;
+pub const FIEMAP_EXTENT_DELALLOC:       u32 = 0x0004;
+pub const FIEMAP_EXTENT_ENCODED:        u32 = 0x0008;
+pub const FIEMAP_EXTENT_DATA_ENCRYPTED: u32 = 0x0080;
+pub const FIEMAP_EXTENT_NOT_ALIGNED:    u32 = 0x0100;
+pub const FIEMAP_EXTENT_DATA_INLINE:    u32 = 0x0200;
+pub const FIEMAP_EXTENT_UNWRITTEN:      u32 = 0x0800;
+pub const FIEMAP_EXTENT_MERGED:         u32 = 0x1000;
+pub const FIEMAP_EXTENT_SHARED:         u32 = 0x2000;
+
+/// `FS_*_FL` inode flags (Linux `include/uapi/linux/fs.h`) — the
+/// `FS_IOC_GETFLAGS`/`FS_IOC_SETFLAGS` (`chattr`) bit set. Numeric reps match
+/// Linux exactly. Only the VFS-representable subset is enforced by the VFS
+/// (`FS_IMMUTABLE_FL`↔`S_IMMUTABLE`, `FS_APPEND_FL`↔`S_APPEND`,
+/// `FS_NOATIME_FL`↔`S_NOATIME`, `FS_SYNC_FL`↔`S_SYNC`); the rest are FS-private.
+pub const FS_SECRM_FL:     u32 = 0x0000_0001; // secure deletion
+pub const FS_UNRM_FL:      u32 = 0x0000_0002; // undelete
+pub const FS_COMPR_FL:     u32 = 0x0000_0004; // compress file
+pub const FS_SYNC_FL:      u32 = 0x0000_0008; // synchronous updates
+pub const FS_IMMUTABLE_FL: u32 = 0x0000_0010; // immutable file
+pub const FS_APPEND_FL:    u32 = 0x0000_0020; // append-only
+pub const FS_NODUMP_FL:    u32 = 0x0000_0040; // do not dump
+pub const FS_NOATIME_FL:   u32 = 0x0000_0080; // do not update atime
+
+/// `get_next_ino` (Linux `fs/inode.c`) — the process-wide anonymous-inode
+/// number allocator for pseudo inodes that have no on-disk number: pipes,
+/// sockets, `eventfd`/`signalfd`/`timerfd`, `anon_inode`, and other internal
+/// filesystems built on `alloc_anon_inode`. Returns a monotone `u32`, NEVER
+/// `0` — `0` is reserved as "no inode" (`d_ino == 0` hides an entry from
+/// `getdents`), so on the 32-bit wrap the allocator skips past it. Distinct
+/// pseudo inodes therefore get distinct `(s_dev, i_ino)` identities and never
+/// collide on `0`. Linux batches the global counter per-CPU to cut contention;
+/// the net contract — strictly increasing, non-zero — is identical here.
+/// # C: O(1)
+pub fn get_next_ino() -> u32 {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static LAST_INO: AtomicU32 = AtomicU32::new(0);
+    loop {
+        // `fetch_add` returns the prior value; the allocated number is prior+1.
+        let next = LAST_INO.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        if next != 0 { return next; } // skip 0 on the u32 wrap (reserved id)
+    }
+}
+
+/// `IS_IMMUTABLE` (Linux `include/linux/fs.h`) — the inode carries `S_IMMUTABLE`
+/// (`chattr +i`): no writer, rename, unlink, or attribute change, not even with
+/// `CAP_DAC_OVERRIDE`. # C: O(1)
+pub fn is_immutable<I: Inode + ?Sized>(inode: &I) -> bool { inode.i_flags() & S_IMMUTABLE != 0 }
+
+/// `IS_APPEND` (Linux `include/linux/fs.h`) — the inode carries `S_APPEND`
+/// (`chattr +a`): a write open must be `O_APPEND`-only and the file may not be
+/// truncated, renamed, or unlinked. # C: O(1)
+pub fn is_append<I: Inode + ?Sized>(inode: &I) -> bool { inode.i_flags() & S_APPEND != 0 }
+
+/// `IS_NOATIME` (Linux, modulo the mount flag) — the inode carries `S_NOATIME`:
+/// the access-time update path is suppressed for it. # C: O(1)
+pub fn is_noatime<I: Inode + ?Sized>(inode: &I) -> bool { inode.i_flags() & S_NOATIME != 0 }
+
+/// `IS_SYNC` (Linux, inode portion) — the inode carries `S_SYNC`: writes are
+/// forced synchronously to backing store. # C: O(1)
+pub fn is_sync<I: Inode + ?Sized>(inode: &I) -> bool { inode.i_flags() & S_SYNC != 0 }
+
+/// `i_version` lazy-counter bit layout (Linux `include/linux/iversion.h`). The
+/// low bit of the stored 64-bit word is the `I_VERSION_QUERIED` flag (set by a
+/// reader so the next change knows it must actually bump); the real version is
+/// the word `>> I_VERSION_QUERIED_SHIFT`. A bump adds `I_VERSION_INCREMENT` (2)
+/// so it never collides with the flag bit. Numeric reps match Linux exactly.
+pub const I_VERSION_QUERIED_SHIFT: u32 = 1;
+pub const I_VERSION_QUERIED:       u64 = 1 << (I_VERSION_QUERIED_SHIFT - 1); // 0x1
+pub const I_VERSION_INCREMENT:     u64 = 1 << I_VERSION_QUERIED_SHIFT;       // 0x2
+
+/// `inode_peek_iversion_raw` (Linux) — read the raw stored version word (flag
+/// bit included) without latching the QUERIED flag. `0` when the inode tracks
+/// no counter. # C: O(1)
+pub fn inode_peek_iversion_raw<I: Inode + ?Sized>(inode: &I) -> u64 {
+    match inode.i_version_raw() {
+        Some(v) => v.load(core::sync::atomic::Ordering::Relaxed),
+        None    => 0,
+    }
+}
+
+/// `inode_set_iversion_raw` (Linux) — store the raw version word verbatim (a FS
+/// seeds the on-disk `i_version` at `iget` time). No-op when the inode tracks no
+/// counter. # C: O(1)
+pub fn inode_set_iversion_raw<I: Inode + ?Sized>(inode: &I, val: u64) {
+    if let Some(v) = inode.i_version_raw() { v.store(val, core::sync::atomic::Ordering::Relaxed); }
+}
+
+/// `inode_maybe_inc_iversion` (Linux `include/linux/iversion.h`) — bump the
+/// change counter on a data/metadata modification, but ONLY when a reader has
+/// queried it since the last bump (the lazy NFS-friendly behaviour) unless
+/// `force`. Clears the QUERIED flag and adds `I_VERSION_INCREMENT` via cmpxchg.
+/// Returns `true` iff the stored version actually changed (`false` for no
+/// counter, or nobody queried and `!force`). # C: O(1) amortized
+pub fn inode_maybe_inc_iversion<I: Inode + ?Sized>(inode: &I, force: bool) -> bool {
+    use core::sync::atomic::Ordering;
+    let store = match inode.i_version_raw() { Some(v) => v, None => return false };
+    let mut cur = store.load(Ordering::Relaxed);
+    loop {
+        // Nobody queried since the last bump ⇒ a reader cannot observe the
+        // difference, so skip the write (Linux's lazy `i_version` optimization).
+        if !force && (cur & I_VERSION_QUERIED) == 0 { return false; }
+        let new = (cur & !I_VERSION_QUERIED) + I_VERSION_INCREMENT;
+        match store.compare_exchange_weak(cur, new, Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_)       => return true,
+            Err(actual) => cur = actual,
+        }
+    }
+}
+
+/// `inode_inc_iversion` (Linux) — unconditional counter bump (`force = true`).
+/// # C: O(1) amortized
+pub fn inode_inc_iversion<I: Inode + ?Sized>(inode: &I) { inode_maybe_inc_iversion(inode, true); }
+
+/// `inode_query_iversion` (Linux) — read the current version a change-detector
+/// compares against, AND latch the QUERIED flag so the next modification is
+/// guaranteed to bump. Returns the real version (`stored >> 1`); `0` for an
+/// inode without a counter. # C: O(1) amortized
+pub fn inode_query_iversion<I: Inode + ?Sized>(inode: &I) -> u64 {
+    use core::sync::atomic::Ordering;
+    let store = match inode.i_version_raw() { Some(v) => v, None => return 0 };
+    let mut cur = store.load(Ordering::Relaxed);
+    loop {
+        if (cur & I_VERSION_QUERIED) != 0 { break; }      // already latched
+        let new = cur | I_VERSION_QUERIED;
+        match store.compare_exchange_weak(cur, new, Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_)       => break,
+            Err(actual) => cur = actual,
+        }
+    }
+    cur >> I_VERSION_QUERIED_SHIFT
+}
+
+/// `inode_owner_or_capable` (Linux `fs/inode.c`) — the canonical
+/// owner-or-`CAP_FOWNER` predicate gating operations only the file owner (or a
+/// privileged caller) may perform: chmod, a *specific*-time `utimes`, `chattr`,
+/// and the `setattr_prepare` owner branch all reduce to this test. The inode's
+/// `i_uid` is mapped THROUGH the mount idmap (`i_uid_into_vfsuid`) before the
+/// comparison, so an idmapped mount compares the caller's fsuid against the
+/// file's *vfsuid*, not the raw on-disk id. Returns `true` when the caller owns
+/// the file (`fsuid == vfsuid`), OR holds `CAP_FOWNER` AND the file's owner is
+/// representable in the caller's id space (Linux `vfsuid_has_mapping`): an idmap
+/// miss (`INVALID_ID`) denies the capability path, because privilege cannot be
+/// exercised over an owner with no mapping in the caller's namespace — the
+/// correctness edge the open-coded `cred.uid == vfsuid || cred.cap_fowner`
+/// inline (setattr_prepare / may_chmod) silently grants. # C: O(extents)
+pub fn inode_owner_or_capable<I: Inode + ?Sized>(
+    idmap: &crate::idmap::Idmap,
+    inode: &I,
+    cred: &crate::namei::Cred,
+) -> bool {
+    let vfsuid = idmap.map_out_uid(inode.uid().unwrap_or(0));
+    if vfsuid == cred.uid { return true; }
+    cred.cap_fowner && vfsuid != crate::idmap::INVALID_ID
+}
+
+/// `inode_init_owner` (Linux `fs/inode.c`) — assign owner ids + finalize the
+/// mode for a NEWLY created inode under parent directory `dir`. Returns the
+/// `(i_uid, i_gid, i_mode)` the caller stamps onto the fresh inode.
+///
+/// * `i_uid` is always the creator's fsuid (`cred.uid`).
+/// * `i_gid` follows the BSD-style SGID-directory rule: if `dir` has its
+///   `S_ISGID` bit set, the new inode inherits the *directory's* gid (group
+///   inheritance); otherwise it takes the creator's fsgid (`cred.gid`).
+/// * SGID propagation on `mode`:
+///   - a new **directory** under an SGID parent always inherits `S_ISGID`
+///     (so the whole subtree keeps the group), regardless of caller group;
+///   - a new **group-executable setgid file** (`mode & (S_ISGID|S_IXGRP)` both
+///     set) under an SGID parent has `S_ISGID` STRIPPED unless the caller is in
+///     the inherited group (`in_group`) or holds `CAP_FSETID` — an unprivileged
+///     non-member must not mint a setgid binary running as a group it is not in.
+///
+/// `mode` is the full `umode_t` (S_IFMT type bits OR'd with the permission
+/// bits) and is taken AS GIVEN — umask is applied by the syscall layer
+/// (`do_mkdirat`/`do_mknodat` mask `mode & ~current_umask()`) BEFORE this runs,
+/// so this function neither reads nor re-applies umask (a double-mask bug).
+/// # C: O(ngroups)
+pub fn inode_init_owner<D: Inode + ?Sized>(
+    dir: &D,
+    mode: crate::types::Umode,
+    cred: &crate::namei::Cred,
+) -> (u32, u32, crate::types::Umode) {
+    let uid = cred.uid;
+    let mut m = mode;
+    let gid = if dir.i_mode() & crate::namei::S_ISGID != 0 {
+        let dgid = dir.gid().unwrap_or(0);
+        if m & crate::types::S_IFMT == crate::types::S_IFDIR {
+            // Directories always inherit S_ISGID so the subtree keeps the group.
+            m |= crate::namei::S_ISGID;
+        } else if m & (crate::namei::S_ISGID | crate::namei::S_IXGRP)
+            == crate::namei::S_ISGID | crate::namei::S_IXGRP
+            && !cred.in_group(dgid)
+            && !cred.cap_fsetid
+        {
+            // Non-member, non-CAP_FSETID caller may not create a setgid binary.
+            m &= !crate::namei::S_ISGID;
+        }
+        dgid
+    } else {
+        cred.gid
+    };
+    (uid, gid, m)
+}
+
+/// errno for a default (no-data-op) `read`/`write` keyed on the inode's
+/// `S_IFMT` type. A directory is `Eisdir` — Linux routes directory
+/// `read(2)`/`write(2)` to `generic_read_dir`/the write guard, both `-EISDIR`.
+/// Every other type with no `f_op->read`/`read_iter` (resp. write) installed
+/// is `Einval` — Linux `vfs_read`/`vfs_write` return `-EINVAL` when the op is
+/// absent, NOT `-EISDIR`. The old unconditional `Eisdir` mislabelled
+/// non-directory backends (e.g. a socket/anon inode lacking a data op).
+/// # C: O(1)
+fn no_data_op_errno(ft: FileType) -> VfsError {
+    match ft {
+        FileType::Directory => VfsError::Eisdir,
+        _                   => VfsError::Einval,
+    }
+}
+
+/// `i_state` bits (Linux `include/linux/fs.h`). Stored per-ino in the owning
+/// superblock's inode cache (see `SuperBlock::i_state`), NOT on the trait
+/// object — the trait-object inodes carry no shared state block, so lifecycle
+/// state lives icache-side (one place, zero per-FS-impl churn). Numeric reps
+/// match Linux exactly.
+/// `I_NEW` is set by `iget` on a build-miss and cleared once the inode is
+/// installed (Linux `unlock_new_inode`); a concurrent `ilookup` upgrades the
+/// fully-built `Arc` regardless, so `I_NEW` is the build-race marker only.
+/// `I_WILL_FREE`/`I_FREEING` are the two dying-inode markers Linux tests
+/// together in `find_inode_fast` (see `SuperBlock::i_is_freeing`): `iput_final`
+/// raises `I_WILL_FREE` for the pre-evict writeback window, then swaps it for
+/// `I_FREEING` across `evict`; `clear_inode` finishes with `I_FREEING|I_CLEAR`.
+pub const I_DIRTY_SYNC:     u32 = 1 << 0; // metadata dirty, fsync-relevant
+pub const I_DIRTY_DATASYNC: u32 = 1 << 1; // metadata dirty, fdatasync-relevant
+pub const I_DIRTY_PAGES:    u32 = 1 << 2; // data pages dirty
+pub const I_NEW:            u32 = 1 << 3; // 0x08 — being constructed
+pub const I_WILL_FREE:      u32 = 1 << 4; // 0x10 — iput_final pre-evict writeback
+pub const I_FREEING:        u32 = 1 << 5; // 0x20 — being evicted
+pub const I_CLEAR:          u32 = 1 << 6; // 0x40 — clear_inode finished (evicted)
+/// `I_DIRTY` aggregate (Linux `I_DIRTY_SYNC|I_DIRTY_DATASYNC|I_DIRTY_PAGES`). 0x07.
+pub const I_DIRTY: u32 = I_DIRTY_SYNC | I_DIRTY_DATASYNC | I_DIRTY_PAGES;
+
+/// `i_flags` `S_*` bits (Linux `include/linux/fs.h`) — the VFS inode flag set
+/// returned by `Inode::i_flags`, distinct from the `S_IF*`/perm mode bits.
+/// Numeric reps match Linux exactly. `S_IMMUTABLE` blocks every write (see
+/// `Inode::permission`); `S_APPEND` forces append-only opens; `S_NOATIME`
+/// suppresses access-time updates; `S_SYNC` forces synchronous writeback.
+pub const S_SYNC:      u32 = 1 << 0;  // synchronous writes
+pub const S_NOATIME:   u32 = 1 << 1;  // do not update access time
+pub const S_APPEND:    u32 = 1 << 2;  // append-only (chattr +a)
+pub const S_IMMUTABLE: u32 = 1 << 3;  // immutable (chattr +i)
+pub const S_DEAD:      u32 = 1 << 4;  // removed, but still open directory
+pub const S_DIRSYNC:   u32 = 1 << 6;  // directory modifications are synchronous
+pub const S_DAX:       u32 = 1 << 13; // direct access (dax-mapped)
+pub const S_ENCRYPTED: u32 = 1 << 14; // encrypted file (fscrypt)
+pub const S_CASEFOLD:  u32 = 1 << 15; // case-insensitive lookups
+pub const S_VERITY:    u32 = 1 << 16; // fs-verity protected (read-only, hashed)
 
 /// `poll(2)` event bitmasks. Numeric reps match Linux exactly.
 pub const POLL_IN:    u32 = 0x0001;  // POLLIN  — readable

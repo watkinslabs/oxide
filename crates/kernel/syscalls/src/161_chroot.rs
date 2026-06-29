@@ -36,7 +36,14 @@ pub fn sys_chroot(args: &SyscallArgs) -> i64 {
             out
         }
     };
+    let root_obj = match crate::pathresolve::resolve_path(&new_root, false) {
+        Some(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
+        _ => return -(Errno::Enoent.as_i32() as i64),
+    };
     // SAFETY: same single-mutator invariant.
-    unsafe { *cur.root.get() = new_root; }
+    unsafe {
+        *cur.root.get() = new_root;
+        *cur.root_vfs.get() = Some(root_obj);
+    }
     0
 }

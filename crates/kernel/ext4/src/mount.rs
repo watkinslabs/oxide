@@ -21,6 +21,7 @@ use sync::{Guard, Spinlock, Superblock as SuperblockLockClass};
 use crate::jbd2::StagedBlock;
 
 use crate::dir;
+use crate::htree::EXT4_INDEX_FL;
 use crate::gdt::{self, GdtError, GroupDesc};
 use crate::inode::{self, Inode, InodeError};
 use crate::superblock::{Superblock, SuperblockError, SUPERBLOCK_OFFSET, SUPERBLOCK_LEN};
@@ -444,39 +445,111 @@ impl Mount {
         self.metadata_write(byte_off, data)
     }
 
+    /// Read `(i_flags, i_generation)` for `ino` from its raw slot.
+    /// `i_flags` drives the htree (`EXT4_INDEX_FL`) branch; the
+    /// generation keys the dir-block metadata_csum.
+    /// # C: O(1) I/O
+    pub fn inode_flags_gen(&self, ino: u32) -> Result<(u32, u32), MountError> {
+        let (raw, _) = self.read_inode_bytes(ino)?;
+        let flags = u32::from_le_bytes([raw[0x20], raw[0x21], raw[0x22], raw[0x23]]);
+        let gen   = u32::from_le_bytes([raw[0x64], raw[0x65], raw[0x66], raw[0x67]]);
+        Ok((flags, gen))
+    }
+
+    /// Stamp the dir-block tail csum (no-op without metadata_csum)
+    /// and write the block back through the journaled metadata path.
+    /// # C: O(bs) csum + 1 block I/O
+    fn write_dir_block(&self, dir_node: &Inode, dir_ino: u32, gen: u32, fb: u32, blk: &mut Vec<u8>)
+        -> Result<(), MountError>
+    {
+        crate::csum::stamp_dirent_tail(&self.sb, dir_ino, gen, blk);
+        self.run_journaled(|m| m.write_file_block_meta(dir_node, fb, blk))
+    }
+
     /// Add a `name → child_ino` entry to directory `dir_ino`.
-    /// Reads dir's first data block, splices a new dir_entry_2,
-    /// writes the block back. `DirFull` if no slack.
-    /// # C: O(N entries) walk + 2 block I/Os
+    ///
+    /// Linear dirs: scan every data block for slack; insert into the
+    /// first with room, reserving + restamping the metadata_csum tail.
+    /// When all blocks are full, grow the directory by one fresh block.
+    /// Indexed (htree) dirs: hash the name, descend the dx index to the
+    /// covering leaf, and insert there (so Linux's hash lookup finds
+    /// it). The dx index is never linear-overwritten — the prior code
+    /// corrupted dx_root by splicing into block 0.
+    /// # C: O(N entries) walk + O(1) block I/Os (+hash for htree)
     pub fn dir_link(&self, dir_ino: u32, name: &[u8], child_ino: u32, file_type: u8)
+        -> Result<(), MountError>
+    {
+        self.run_journaled(|m| m.dir_link_inner(dir_ino, name, child_ino, file_type))
+    }
+
+    fn dir_link_inner(&self, dir_ino: u32, name: &[u8], child_ino: u32, file_type: u8)
         -> Result<(), MountError>
     {
         let dir_node = self.read_inode(dir_ino)?;
         if !dir_node.is_dir() { return Err(MountError::NotDir); }
-        let mut blk = self.read_file_block_meta(&dir_node, 0)?;
-        match dir::insert(&mut blk, child_ino, file_type, name) {
-            Err(dir::DirError::Full) => return Err(MountError::DirFull),
-            Err(e) => return Err(MountError::Dir(e)),
-            Ok(()) => {}
+        let (flags, gen) = self.inode_flags_gen(dir_ino)?;
+        let bs = self.sb.block_size as usize;
+        let usable = crate::csum::dir_usable_len(&self.sb, bs);
+
+        if (flags & EXT4_INDEX_FL) != 0 {
+            return self.htree_insert(&dir_node, dir_ino, gen, name, child_ino, file_type);
         }
-        self.run_journaled(|m| m.write_file_block_meta(&dir_node, 0, &blk))
+
+        // Linear directory: scan existing blocks for slack.
+        let total = dir_node.size;
+        let nblocks = ((total + bs as u64 - 1) / bs as u64) as u32;
+        for fb in 0..nblocks {
+            let mut blk = self.read_file_block_meta(&dir_node, fb)?;
+            if blk.len() < bs { blk.resize(bs, 0); }
+            match dir::insert(&mut blk[..usable], child_ino, file_type, name) {
+                Ok(()) => {
+                    return self.write_dir_block(&dir_node, dir_ino, gen, fb, &mut blk);
+                }
+                Err(dir::DirError::Full) => continue,
+                Err(e) => return Err(MountError::Dir(e)),
+            }
+        }
+        // No slack anywhere → grow the directory by one block.
+        let mut newblk = alloc::vec![0u8; bs];
+        // One free entry covering the whole usable area, then insert.
+        newblk[0..4].copy_from_slice(&0u32.to_le_bytes());
+        newblk[4..6].copy_from_slice(&(usable as u16).to_le_bytes());
+        dir::insert(&mut newblk[..usable], child_ino, file_type, name)
+            .map_err(MountError::Dir)?;
+        crate::csum::stamp_dirent_tail(&self.sb, dir_ino, gen, &mut newblk);
+        self.append_block(dir_ino, &newblk)?;
+        Ok(())
     }
 
     /// Remove `name` from directory `dir_ino`. Returns the inode
-    /// number of the unlinked target (caller decrements its
-    /// link count + frees blocks/inode when nlink reaches 0).
+    /// number of the unlinked target (caller decrements its link
+    /// count + frees blocks/inode when nlink reaches 0). Scans every
+    /// data block; restamps the metadata_csum tail of the modified
+    /// block.
     /// # C: O(N entries) walk + 2 block I/Os
     pub fn dir_unlink(&self, dir_ino: u32, name: &[u8]) -> Result<u32, MountError> {
+        self.run_journaled(|m| m.dir_unlink_inner(dir_ino, name))
+    }
+
+    fn dir_unlink_inner(&self, dir_ino: u32, name: &[u8]) -> Result<u32, MountError> {
         let dir_node = self.read_inode(dir_ino)?;
         if !dir_node.is_dir() { return Err(MountError::NotDir); }
-        let mut blk = self.read_file_block_meta(&dir_node, 0)?;
-        let removed = match dir::remove(&mut blk, name) {
-            Err(dir::DirError::NotFound) => return Err(MountError::NotFound),
-            Err(e) => return Err(MountError::Dir(e)),
-            Ok(n) => n,
-        };
-        self.run_journaled(|m| m.write_file_block_meta(&dir_node, 0, &blk))?;
-        Ok(removed)
+        let (_flags, gen) = self.inode_flags_gen(dir_ino)?;
+        let bs = self.sb.block_size as u64;
+        let total = dir_node.size;
+        let nblocks = ((total + bs - 1) / bs) as u32;
+        for fb in 0..nblocks {
+            let mut blk = self.read_file_block_meta(&dir_node, fb)?;
+            match dir::remove(&mut blk, name) {
+                Ok(removed) => {
+                    self.write_dir_block(&dir_node, dir_ino, gen, fb, &mut blk)?;
+                    return Ok(removed);
+                }
+                Err(dir::DirError::NotFound) => continue,
+                Err(e) => return Err(MountError::Dir(e)),
+            }
+        }
+        Err(MountError::NotFound)
     }
 
     /// Look `name` up in the directory. Walks all data blocks

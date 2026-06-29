@@ -13,6 +13,8 @@ pub fn sys_mknodat(args: &SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
     // BUG D follow-up: resolve against the real dirfd (a0).
-    let raw = crate::pathresolve::resolve_at(args.a0 as i32, &raw).unwrap_or(raw);
+    let raw = match crate::pathresolve::resolve_at_result(args.a0 as i32, &raw) {
+        Ok(p) => p, Err(rv) => return rv,
+    };
     crate::s133_mknod::mknod_impl(raw, args.a2 as u16, args.a3 as u32)
 }

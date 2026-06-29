@@ -68,6 +68,11 @@ pub unsafe fn get_display_info(
         polls += 1;
         core::hint::spin_loop();
     }
+    // virtio 1.2 §2.7.13.2: after observing used.idx advance, an acquire
+    // barrier must precede reading any device-written buffer so the response
+    // bytes are not speculated ahead of the idx load (no-op on x86 TSO,
+    // load-load barrier on aarch64).
+    core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
     // SAFETY: same HHDM-mapped frame; bounded 408-byte slice for parser.
     let resp_slice = unsafe {
         core::slice::from_raw_parts(buf_va.add(0x200) as *const u8, 408)

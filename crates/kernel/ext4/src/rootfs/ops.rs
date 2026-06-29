@@ -6,7 +6,7 @@ use alloc::sync::Arc;
 
 use block::types::InodeId;
 use ::sync as sync;
-use super::inode::{Ext4FileInode, Ext4StatInode};
+use super::inode::{Ext4FileInode, Ext4StatInode, ext4_wrap_ino};
 use super::state::RootfsState;
 
 impl RootfsState {
@@ -17,13 +17,30 @@ impl RootfsState {
     pub fn wrap_any_ino(self: &Arc<Self>, ino: u32) -> Option<vfs::InodeRef> {
         let inode = self.mount.read_inode(ino).ok()?;
         if inode.is_reg() { return self.wrap_file(ino); }
-        let ft = if inode.is_dir() { vfs::FileType::Directory }
-                 else if inode.is_link() { vfs::FileType::Symlink }
-                 else { vfs::FileType::Regular };
-        Some(Arc::new(Ext4StatInode {
-            st: self.clone(), ino, ft,
-            size: inode.size as u64, perm: (inode.mode & 0o7777) as u16,
-        }) as vfs::InodeRef)
+        // Map every ext4 `S_IFMT` type to its VFS `FileType` (not just
+        // dir/link → Regular): a char/block node must surface as CharDev/
+        // BlockDev so `getattr` reports `st_rdev`, and FIFO/SOCK so stat's
+        // mode type-bits are correct.
+        let ft = match inode.mode & crate::inode::S_IFMT {
+            crate::inode::S_IFDIR  => vfs::FileType::Directory,
+            crate::inode::S_IFLNK  => vfs::FileType::Symlink,
+            crate::inode::S_IFCHR  => vfs::FileType::CharDev,
+            crate::inode::S_IFBLK  => vfs::FileType::BlockDev,
+            crate::inode::S_IFIFO  => vfs::FileType::Fifo,
+            crate::inode::S_IFSOCK => vfs::FileType::Socket,
+            _                     => vfs::FileType::Regular,
+        };
+        let size = inode.size as u64;
+        let perm = (inode.mode & 0o7777) as u16;
+        let st = self.clone();
+        let build = move || Arc::new(Ext4StatInode { st, ino, ft, size, perm }) as vfs::InodeRef;
+        // Route through the SB inode cache so a repeated lookup of the same ino
+        // returns the SAME `Arc` (shared inode identity, Linux `iget`). Before
+        // the SB is back-stamped (during `fs.root()`) build directly.
+        Some(match self.i_sb() {
+            Some(sb) => sb.iget(ext4_wrap_ino(ino), build),
+            None => build(),
+        })
     }
 
     /// Wrap regular-file `ino` in a deferred-bytes `Ext4FileInode`.
@@ -31,12 +48,18 @@ impl RootfsState {
     pub fn wrap_file(self: &Arc<Self>, ino: u32) -> Option<vfs::InodeRef> {
         let inode = self.mount.read_inode(ino).ok()?;
         if !inode.is_reg() { return None; }
-        Some(Arc::new(Ext4FileInode {
-            st: self.clone(),
-            ino,
-            size_hint: core::sync::atomic::AtomicU64::new(inode.size),
+        let size = inode.size;
+        let st = self.clone();
+        let build = move || Arc::new(Ext4FileInode {
+            st, ino,
+            size_hint: core::sync::atomic::AtomicU64::new(size),
             bytes: sync::Spinlock::new(None),
-        }) as vfs::InodeRef)
+        }) as vfs::InodeRef;
+        // Shared identity via the SB inode cache (Linux `iget`).
+        Some(match self.i_sb() {
+            Some(sb) => sb.iget(ext4_wrap_ino(ino), build),
+            None => build(),
+        })
     }
 
     /// Resolve `path` to a stat tuple for any file type.
@@ -205,6 +228,67 @@ fn split_parent_and_name(path: &[u8]) -> Option<(&[u8], &[u8])> {
     Some((parent, name))
 }
 
+/// `super_operations` for an ext4 mount (Linux `ext4_statfs`): live on-disk
+/// block/inode accounting read from the per-mount `RootfsState`. Installed as
+/// the SB's `s_op` by `FileSystem::super_ops`, replacing the generic
+/// `FsBackedSuperOps` (which reported only `f_type`/`f_bsize`).
+pub struct Ext4SuperOps { st: Arc<RootfsState> }
+
+impl Ext4SuperOps {
+    /// # C: O(1)
+    pub fn new(st: Arc<RootfsState>) -> Self { Self { st } }
+}
+
+impl vfs::SuperOps for Ext4SuperOps {
+    /// Report this mount's real totals (parsed superblock) + live free
+    /// counters (`state_free_blocks`/`state_free_inodes`, which mirror
+    /// `s_free_blocks_count`/`s_free_inodes_count`). `f_fsid` is left 0 →
+    /// `SuperBlock::statfs` fills it from `s_dev`. # C: O(1)
+    fn statfs(&self) -> vfs::KResult<vfs::SbStatFs> {
+        let m = &self.st.mount;
+        let free_blocks = m.state_free_blocks();
+        let free_inodes = m.state_free_inodes() as u64;
+        Ok(vfs::SbStatFs {
+            f_type:   crate::EXT4_SUPER_MAGIC as u64,
+            f_bsize:  m.sb.block_size,
+            f_blocks: m.sb.blocks_count_lo as u64,
+            f_bfree:  free_blocks,
+            f_bavail: free_blocks,
+            f_files:  m.sb.inodes_count as u64,
+            f_ffree:  free_inodes,
+            f_fsid:   0,
+            f_flags:  0, // per-MOUNT ST_* filled at the syscall layer (calculate_f_flags)
+        })
+    }
+
+    /// `sync_fs` (Linux `ext4_sync_fs`): the journal commits each
+    /// `run_journaled` transaction synchronously, so there is no open
+    /// transaction to force — push any pending tx, then barrier the backing
+    /// device so committed metadata is durable. # C: O(1) + 1 device flush
+    fn sync_fs(&self, _wait: bool) -> vfs::KResult<()> {
+        self.st.mount.flush_pending_tx().map_err(|_| vfs::VfsError::Eio)?;
+        self.st.mount.dev.flush().map_err(|_| vfs::VfsError::Eio)?;
+        Ok(())
+    }
+
+    /// `freeze_fs` (Linux `ext4_freeze`, FIFREEZE): writers are already
+    /// blocked by the VFS `freeze_super` (B155); flush + barrier the journal
+    /// to leave a consistent on-disk image, then mark the mount frozen so a
+    /// double freeze is rejected at the VFS layer. # C: O(1) + 1 device flush
+    fn freeze_fs(&self) -> vfs::KResult<()> {
+        self.sync_fs(true)?;
+        self.st.frozen.store(true, core::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    /// `thaw_fs`/`unfreeze_fs` (Linux `ext4_unfreeze`, FITHAW): resume normal
+    /// operation. # C: O(1)
+    fn thaw_fs(&self) -> vfs::KResult<()> {
+        self.st.frozen.store(false, core::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+}
+
 /// FileSystem instance over a single, non-root ext4 mount. Carries its
 /// own `RootfsState`; all methods route through `self.st` — the
 /// de-singletonised counterpart to the root `Ext4RootfsFs`. Built via
@@ -226,12 +310,33 @@ impl Ext4Mount {
 impl vfs::fs::FileSystem for Ext4Mount {
     fn name(&self) -> &str { "ext4" }
     fn magic(&self) -> u64 { crate::EXT4_SUPER_MAGIC as u64 }
+    /// On-disk `s_blocksize` (`1024 << s_log_block_size`). # C: O(1)
+    fn block_size(&self) -> u32 { self.st.mount.sb.block_size }
+    /// Install live ext4 statfs accounting as this SB's `s_op`. # C: O(1)
+    fn super_ops(&self) -> Option<Arc<dyn vfs::SuperOps>> {
+        Some(Arc::new(Ext4SuperOps::new(self.st.clone())))
+    }
     fn root(&self) -> Option<vfs::InodeRef> { self.st.wrap_any_ino(2) }
-    fn lookup(&self, path: &str) -> Option<vfs::InodeRef> { self.st.lookup_inode_any(path.as_bytes()) }
+    /// Back-stamp the SB into this mount's own state (Linux `s_fs_info ↔ sb`).
+    /// # C: O(1)
+    fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) { self.st.set_sb(sb); }
     fn create(&self, path: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
         self.st.create_at(path.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enoent)
     }
+    fn create_anonymous(&self, dir: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
+        self.st.create_anonymous_at(dir.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enospc)
+    }
     fn unlink(&self, path: &str) -> vfs::fs::KResult<()> { self.st.unlink_at(path.as_bytes()) }
+    fn link(&self, target: &str, link: &str) -> vfs::fs::KResult<()> {
+        self.st.link_at(target.as_bytes(), link.as_bytes())
+    }
+    fn link_inode(&self, inode: vfs::InodeRef, link: &str) -> vfs::fs::KResult<()> {
+        let ino = inode.as_any()
+            .and_then(|a| a.downcast_ref::<Ext4FileInode>())
+            .map(|i| i.ext4_ino())
+            .ok_or(vfs::VfsError::Exdev)?;
+        self.st.link_inode_at(ino, link.as_bytes())
+    }
     fn rename(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
         self.st.rename_at(from.as_bytes(), to.as_bytes())
     }

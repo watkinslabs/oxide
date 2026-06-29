@@ -3,6 +3,19 @@
 
 use syscall::SyscallArgs;
 
+/// `sys_exit_group(2)` (slot 231): terminate the ENTIRE thread-group, not just
+/// the caller. Linux `do_group_exit` → `zap_other_threads` SIGKILLs every
+/// sibling, then the caller exits. `sys_exit` (slot 60) keeps single-thread
+/// semantics for `pthread_exit`. Routing both to plain `sys_exit` (the prior
+/// bug) left a multi-threaded process's siblings alive after `exit_group` and,
+/// worse, after a fatal signal — leaking any libc lock the dying thread held.
+/// # SAFETY: dispatch ctx on task's syscall kstack, IRQs masked.
+/// # C: O(N_threads) + O(log N)
+pub fn sys_exit_group(args: &SyscallArgs) -> i64 {
+    sched::live::zap_other_threads();
+    sys_exit(args)
+}
+
 /// sys_exit: mark Zombie, stash exit_status, schedule away.
 /// # SAFETY: dispatch ctx on task's syscall kstack, IRQs masked.
 /// # C: O(log N) + O(1)
@@ -25,6 +38,9 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
         if !raw.is_null() {
             // SAFETY: rq.current was installed via Arc::into_raw and is non-null after install_global; the AtomicPtr's strong-ref-via-raw keeps the pointee alive across this borrow; we are running ON this task so no concurrent freer.
             let task: &sched::Task = unsafe { &*raw };
+            // DIAG (debug-watchdog): a non-zero exit dumps the task's recent
+            // syscalls so a service's status=1/FAILURE shows its failing call.
+            sched::diag::dump_exit_recent(task.name, args.a0);
             task.exit_status.store(args.a0 as i32, Ordering::Release);
             task.vfork_pending.store(false, Ordering::Release); // F156 vfork
             // cgroup v2 (`26§4`): drop the exiting task from its
@@ -68,8 +84,24 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
                 // SAFETY: validated as a mapped, writable 4-byte user slot;
                 // demand-paging resolves a not-present page on this CPL=0 write.
                 unsafe { core::ptr::write_volatile(ctid as *mut i32, 0); }
-                let _ = ipc::live::futex::dispatch(ctid, 1 /* FUTEX_WAKE */, 1);
+                // FUTEX_WAKE | PRIVATE: clear_child_tid / pthread_join is
+                // process-private, so it must key on (mm,va) to match the
+                // joining thread's private FUTEX_WAIT.
+                let _ = ipc::live::futex::dispatch(
+                    ctid, 1 | ipc::live::futex::FUTEX_PRIVATE_FLAG, 1);
                 task.clear_child_tid.store(0, Ordering::Release);
+            }
+            // Robust-futex recovery (Linux do_exit -> exit_robust_list): a
+            // thread dying while holding a robust mutex must mark it
+            // FUTEX_OWNER_DIED and wake a waiter, or a peer blocked on that lock
+            // hangs forever (boot wedge: init parks in waitid behind a service
+            // stuck on a dead owner's mutex). MUST run while the dying task's mm
+            // is still mapped (before replace_mm below).
+            let rl = task.robust_list_head.load(Ordering::Acquire);
+            if rl != 0 {
+                let vt = task.vtid.load(Ordering::Acquire);
+                let owner_tid = if vt != 0 { vt } else { task.tid };
+                ipc::live::futex::exit_robust_list(rl, owner_tid);
             }
             // B13/B14: drop fd_table+mm at exit + reparent children to init.
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.

@@ -62,6 +62,25 @@ core::arch::global_asm!(
     "    jmp  oxide_irq_resume_user",
     ".size oxide_irq_vec_41, . - oxide_irq_vec_41",
 
+    // ----- vec 0x42 -- cross-CPU TLB shootdown IPI per `20§5`. Same
+    //       shape as the resched stub; oxide_irq_dispatch routes the
+    //       0x42 tag to the TLB-shootdown service (local invlpg + ACK).
+    ".globl oxide_irq_vec_42",
+    ".type  oxide_irq_vec_42, @function",
+    "oxide_irq_vec_42:",
+    "    push 0",
+    "    push 0x42",
+    "    push rax", "    push rcx", "    push rdx",
+    "    push rsi", "    push rdi",
+    "    push r8",  "    push r9",  "    push r10", "    push r11",
+    "    cld",
+    "    mov rdi, rsp",
+    "    call oxide_irq_dispatch",
+    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
+    "    call oxide_irq_resched_on_exit",
+    "    jmp  oxide_irq_resume_user",
+    ".size oxide_irq_vec_42, . - oxide_irq_vec_42",
+
     // ----- vec 0x50 -- MSI vector (F57). Same shape as the timer
     //       stub; oxide_irq_dispatch differentiates by reading the
     //       saved vec tag and bumps MSI_FIRES. ----------------------
@@ -194,6 +213,7 @@ core::arch::global_asm!(
 extern "C" {
     fn oxide_irq_vec_40();
     fn oxide_irq_vec_41();
+    fn oxide_irq_vec_42();
     fn oxide_irq_vec_50();
     fn oxide_irq_vec_51();
     fn oxide_irq_vec_52();
@@ -209,6 +229,11 @@ extern "C" {
 pub const VEC_TIMER:   u8 = 0x40;
 /// Cross-CPU resched IPI vector per `13§9`.
 pub const VEC_RESCHED: u8 = 0x41;
+/// Cross-CPU TLB-shootdown IPI vector per `20§5`. The sender (a CPU that
+/// downgraded/removed a user PTE) IPIs every other online CPU; each
+/// invalidates the target VA locally and ACKs. x86 has no hardware TLB
+/// broadcast, unlike aarch64's `tlbi vae1is`.
+pub const VEC_TLB_SHOOTDOWN: u8 = 0x42;
 /// MSI delivery vector (F57). Legacy alias for the first slot in
 /// the per-vector pool. Kept so existing callers compile; new code
 /// should call `alloc_x86_vector` and use the returned vector.
@@ -232,6 +257,7 @@ pub fn irq_stub_addr(vec: u8) -> u64 {
         match vec {
             VEC_TIMER   => return oxide_irq_vec_40 as *const () as usize as u64,
             VEC_RESCHED => return oxide_irq_vec_41 as *const () as usize as u64,
+            VEC_TLB_SHOOTDOWN => return oxide_irq_vec_42 as *const () as usize as u64,
             0x50 => return oxide_irq_vec_50 as *const () as usize as u64,
             0x51 => return oxide_irq_vec_51 as *const () as usize as u64,
             0x52 => return oxide_irq_vec_52 as *const () as usize as u64,

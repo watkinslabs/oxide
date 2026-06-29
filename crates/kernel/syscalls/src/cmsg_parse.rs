@@ -154,10 +154,10 @@ pub fn sendmsg_unix_dgram_with_fds(
         }
     } else {
         match &*sock.kind.lock() {
-            SockKind::UnixDgram(_) => {
-                // No stashed peer path yet; v1 requires an explicit name.
-                return -(Errno::Edestaddrreq.as_i32() as i64);
-            }
+            SockKind::UnixDgram(q) => match q.peer() {
+                Some(p) => p,
+                None => return -(Errno::Edestaddrreq.as_i32() as i64),
+            },
             _ => return -(Errno::Einval.as_i32() as i64),
         }
     };

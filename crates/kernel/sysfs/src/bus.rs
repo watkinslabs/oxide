@@ -90,18 +90,20 @@ impl Inode for DeviceDirInode {
         let body = dev_attr(&dev, name).ok_or(VfsError::Enoent)?;
         Ok(Arc::new(BodyInode::new(body, INO_ATTR)) as InodeRef)
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let attrs = dev_entries(self.bus);
         let bound = find_dev(self.bus, &self.addr).map(|d| d.bound().is_some()).unwrap_or(false);
         let mut idx = off as usize;
         while idx < attrs.len() {
             let next = idx as u64 + 1;
-            if !f(next, attrs[idx], FileType::Regular) { return Ok(next); }
+            let ino = self.lookup(attrs[idx]).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, attrs[idx], FileType::Regular) { return Ok(next); }
             idx += 1;
         }
         if bound && idx == attrs.len() {
             let next = idx as u64 + 1;
-            if !f(next, "driver", FileType::Symlink) { return Ok(next); }
+            let ino = self.lookup("driver").map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, "driver", FileType::Symlink) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -128,13 +130,14 @@ impl Inode for DevicesRootInode {
         }
         Err(VfsError::Enoent)
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let devs = drv::devices();
         let list: Vec<&str> = devs.iter().filter(|d| d.bus == self.bus).map(|d| d.addr.as_str()).collect();
         let mut idx = off as usize;
         while idx < list.len() {
             let next = idx as u64 + 1;
-            if !f(next, list[idx], FileType::Directory) { return Ok(next); }
+            let ino = self.lookup(list[idx]).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, list[idx], FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -155,13 +158,14 @@ impl Inode for BusDevicesInode {
         }
         Err(VfsError::Enoent)
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let devs = drv::devices();
         let list: Vec<&str> = devs.iter().filter(|d| d.bus == self.bus).map(|d| d.addr.as_str()).collect();
         let mut idx = off as usize;
         while idx < list.len() {
             let next = idx as u64 + 1;
-            if !f(next, list[idx], FileType::Symlink) { return Ok(next); }
+            let ino = self.lookup(list[idx]).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, list[idx], FileType::Symlink) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -180,12 +184,13 @@ impl Inode for BusDriversInode {
         }
         Err(VfsError::Enoent)
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let names = drv::driver_names();
         let mut idx = off as usize;
         while idx < names.len() {
             let next = idx as u64 + 1;
-            if !f(next, names[idx], FileType::Directory) { return Ok(next); }
+            let ino = self.lookup(names[idx]).map(|i| i.ino()).unwrap_or(0);
+            if !f(ino, next, names[idx], FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -200,7 +205,7 @@ impl Inode for DriverDirInode {
     fn file_type(&self) -> FileType { FileType::Directory }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
-    fn readdir(&self, _o: u64, _f: &mut dyn FnMut(u64, &str, FileType) -> bool) -> KResult<u64> { Ok(0) }
+    fn readdir(&self, _o: u64, _f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> { Ok(0) }
 }
 
 /// Register the dynamic bus/devices dir inodes in the devfs key
@@ -209,12 +214,12 @@ impl Inode for DriverDirInode {
 /// resolve through these dynamic inodes immediately.
 /// # C: O(1)
 pub fn init() {
-    devfs::register("/sys/bus/pci/devices",    Arc::new(BusDevicesInode { bus: "pci" }) as InodeRef);
-    devfs::register("/sys/bus/pci/drivers",    Arc::new(BusDriversInode { bus: "pci" }) as InodeRef);
-    devfs::register("/sys/bus/virtio/devices", Arc::new(BusDevicesInode { bus: "virtio" }) as InodeRef);
-    devfs::register("/sys/bus/virtio/drivers", Arc::new(BusDriversInode { bus: "virtio" }) as InodeRef);
-    devfs::register("/sys/devices/pci0000:00", Arc::new(DevicesRootInode { bus: "pci" }) as InodeRef);
-    devfs::register("/sys/devices/virtio",     Arc::new(DevicesRootInode { bus: "virtio" }) as InodeRef);
+    crate::register("/sys/bus/pci/devices",    Arc::new(BusDevicesInode { bus: "pci" }) as InodeRef);
+    crate::register("/sys/bus/pci/drivers",    Arc::new(BusDriversInode { bus: "pci" }) as InodeRef);
+    crate::register("/sys/bus/virtio/devices", Arc::new(BusDevicesInode { bus: "virtio" }) as InodeRef);
+    crate::register("/sys/bus/virtio/drivers", Arc::new(BusDriversInode { bus: "virtio" }) as InodeRef);
+    crate::register("/sys/devices/pci0000:00", Arc::new(DevicesRootInode { bus: "pci" }) as InodeRef);
+    crate::register("/sys/devices/virtio",     Arc::new(DevicesRootInode { bus: "virtio" }) as InodeRef);
 }
 
 // --- drv-hook callbacks the kernel wires via drv::set_*_hook --------------

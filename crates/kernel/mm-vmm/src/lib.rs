@@ -13,6 +13,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod address_space;
+pub mod debug_cow;
 mod mremap;
 pub mod anon_vma;
 pub mod rmap;
@@ -75,4 +76,24 @@ mod torture_tests;
 // PT walker. Pins the F156 boot fix in place.
 #[cfg(test)]
 mod tests_rmap_cow;
+
+// fork+COW data-isolation + refcount-accuracy reproduction (multi-AS PTs).
+#[cfg(test)]
+mod tests_cow_isolation;
+
+// Phase C: per-inode address_space (i_mapping) + shmem MAP_SHARED/MAP_PRIVATE
+// fault behaviour against the production file-fault arms.
+#[cfg(test)]
+mod tests_pagecache;
+
+// fork+COW GLOBAL refcount-invariant proptest: refcount(pa) == live PTEs + base
+// across all ASes, asserted after every op over 200k randomized fork/COW/
+// munmap/teardown operations. Catches refcount UNDER-COUNT (free-while-mapped).
+#[cfg(test)]
+mod tests_cow_invariant;
+
+// B240: File demand-fault must retry short `read_at` for a non-EOF page and
+// refuse to install a partially-zero page (SIGBUS, not silent zeros).
+#[cfg(test)]
+mod tests_shortfill;
 

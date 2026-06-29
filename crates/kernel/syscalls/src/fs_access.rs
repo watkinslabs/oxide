@@ -5,4 +5,4 @@
 #![cfg(target_os = "oxide-kernel")]
 
 pub use crate::s021_access::sys_access;
-pub use crate::s269_faccessat::sys_faccessat;
+pub use crate::s269_faccessat::{sys_faccessat, sys_faccessat2};

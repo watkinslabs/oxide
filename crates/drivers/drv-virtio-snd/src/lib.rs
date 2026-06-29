@@ -432,6 +432,9 @@ fn submit_ctl(ctx: &mut Ctx, req_len: usize, resp_len: usize) -> Option<u32> {
         polls += 1;
         core::hint::spin_loop();
     }
+    // virtio 1.2 §2.7.13.2: acquire barrier after observing used.idx so the
+    // device-written response status is not read ahead of the idx load.
+    core::sync::atomic::fence(Ordering::Acquire);
 
     // Leading virtio_snd_hdr status (le32) of the response window.
     let st = h.wrapping_add(ctx.scratch_pa + RESP_OFF) as *const u32;

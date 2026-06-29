@@ -24,9 +24,16 @@ pub fn sys_truncate(args: &SyscallArgs) -> i64 {
     };
     if let Err(rv) = crate::landlock::check(s,
         ::security::landlock::access::TRUNCATE) { return rv; }
-    let inode = match vfs::mount::lookup(s) {
-        Ok(i)  => i,
-        Err(_) => return -(Errno::Enoent.as_i32() as i64),
+    // truncate(2) follows symlinks; resolve to the inode + owning mount.
+    let vp = match crate::pathresolve::resolve_path_result(s, false) {
+        Ok(p)  => p,
+        Err(e) => return -(e as i64),
     };
-    match inode.truncate(len) { Ok(_) => 0, Err(e) => -(e as i64) }
+    // EISDIR on a directory (Linux do_sys_truncate); the size/MAY_WRITE/EROFS
+    // path then converges on notify_change (ATTR_SIZE).
+    if matches!(vp.inode.file_type(), vfs::FileType::Directory) {
+        return -(Errno::Eisdir.as_i32() as i64);
+    }
+    crate::perms_common::notify_change(&vp.inode, vp.mnt_id,
+        vfs::Iattr { valid: vfs::ATTR_SIZE, size: len, ..Default::default() })
 }

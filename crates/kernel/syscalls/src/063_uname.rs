@@ -4,6 +4,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
+use alloc::format;
 
 const UTSNAME_FIELD_LEN: usize = 65;
 const UTSNAME_TOTAL_LEN: usize = UTSNAME_FIELD_LEN * 6;
@@ -54,12 +55,13 @@ pub fn kernel_uname(args: &SyscallArgs) -> i64 {
     let host = uts_hostname_for_current();
     let dom = uts_domainname_for_current();
     let dom_bytes: &[u8] = if dom.is_empty() { b"(none)" } else { &dom };
+    let version = format!("#1 SMP PREEMPT oxide v0.1.0 nr_cpus={}", cpu::smp::online_count());
     // SAFETY: range validated; user half mapped writable; byte writes need no alignment.
     unsafe {
         write_utsname_field(tp, 0 * UTSNAME_FIELD_LEN, b"Linux");
         write_utsname_field(tp, 1 * UTSNAME_FIELD_LEN, &host);
         write_utsname_field(tp, 2 * UTSNAME_FIELD_LEN, b"5.15.0-oxide");
-        write_utsname_field(tp, 3 * UTSNAME_FIELD_LEN, b"#1 SMP PREEMPT oxide v0.1.0");
+        write_utsname_field(tp, 3 * UTSNAME_FIELD_LEN, version.as_bytes());
         write_utsname_field(tp, 4 * UTSNAME_FIELD_LEN, UNAME_MACHINE);
         write_utsname_field(tp, 5 * UTSNAME_FIELD_LEN, dom_bytes);
     }
