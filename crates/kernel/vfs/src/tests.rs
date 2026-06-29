@@ -287,6 +287,28 @@ fn file_seek_set_cur_end() {
     assert_eq!(f.seek(SeekFrom::Start, 100).unwrap(), 100); // past end OK
 }
 
+#[test]
+fn file_seek_data_hole_generic() {
+    // Generic (non-sparse) SEEK_DATA/SEEK_HOLE: the whole file is data with a
+    // single implicit hole at EOF (Linux `*_seek_hole_data` default).
+    let i: InodeRef = MemFile::new(1);
+    let d = Dentry::new_root(Arc::clone(&i));
+    let f = File::new(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDWR);
+    f.write(b"abcdefgh").unwrap(); // i_size = 8
+    // offset < size: SEEK_DATA returns offset unchanged (all data).
+    assert_eq!(f.seek(SeekFrom::Data, 0).unwrap(), 0);
+    assert_eq!(f.seek(SeekFrom::Data, 3).unwrap(), 3);
+    // offset < size: SEEK_HOLE returns i_size (the implicit EOF hole).
+    assert_eq!(f.seek(SeekFrom::Hole, 0).unwrap(), 8);
+    assert_eq!(f.seek(SeekFrom::Hole, 7).unwrap(), 8);
+    // offset >= size: both whences are ENXIO.
+    assert_eq!(f.seek(SeekFrom::Data, 8), Err(VfsError::Enxio));
+    assert_eq!(f.seek(SeekFrom::Hole, 8), Err(VfsError::Enxio));
+    assert_eq!(f.seek(SeekFrom::Data, 100), Err(VfsError::Enxio));
+    // negative start byte is EINVAL.
+    assert_eq!(f.seek(SeekFrom::Data, -1), Err(VfsError::Einval));
+}
+
 // ---------------------------------------------------------------------------
 // FdTable
 // ---------------------------------------------------------------------------

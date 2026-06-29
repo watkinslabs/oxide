@@ -16,7 +16,19 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::inode::{Inode, no_data_op_errno, POLL_IN, POLL_OUT};
-use crate::types::{FileType, KResult};
+use crate::types::{FileType, KResult, VfsError};
+
+/// `SEEK_HOLE`/`SEEK_DATA` selector for [`FileOps::seek_hole_data`] (Linux
+/// `lseek(2)` whence `4`/`3`). `Data` finds the next byte ≥ `offset` that is
+/// part of a data extent; `Hole` finds the next hole (or the implicit hole at
+/// EOF). # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum HoleOrData {
+    /// `SEEK_DATA` — next data byte at/after `offset`.
+    Data,
+    /// `SEEK_HOLE` — next hole at/after `offset`.
+    Hole,
+}
 
 /// `filldir`-style sink (Linux `struct dir_context.actor` / `filldir_t`): the
 /// callback `getdents` installs to pack one directory entry into the user
@@ -120,6 +132,27 @@ pub trait FileOps: Send + Sync {
     /// `f_op->flush` — per-`close(2)` hook on EVERY fd close (not only the
     /// last). MUST NOT panic/block. # C: O(1)
     fn on_flush(&self, _inode: &Inode) {}
+
+    /// `f_op->llseek` SEEK_HOLE/SEEK_DATA core (Linux `generic_file_llseek` →
+    /// `*_seek_hole_data`): map the starting byte `offset` to the next data byte
+    /// (`HoleOrData::Data`) or the next hole (`HoleOrData::Hole`) and return the
+    /// resulting absolute position. The generic default treats the file as fully
+    /// data with a single implicit hole at EOF — correct for in-memory /
+    /// non-sparse backends (tmpfs/procfs/memfd): SEEK_DATA returns `offset`
+    /// unchanged, SEEK_HOLE returns `i_size`, and an `offset >= i_size` (at or
+    /// past EOF, where no data and no further hole exist) is `ENXIO`. A sparse
+    /// backend (ext4 with hole-punch) overrides this to walk its extent map.
+    /// # C: O(1) generic; backend-dependent override
+    fn seek_hole_data(&self, inode: &Inode, offset: u64, which: HoleOrData) -> KResult<u64> {
+        let size = inode.size();
+        // At or past EOF there is neither data nor a subsequent hole → ENXIO
+        // (Linux `vfs_setpos` precondition for both whences).
+        if offset >= size { return Err(VfsError::Enxio); }
+        match which {
+            HoleOrData::Data => Ok(offset), // non-sparse: every byte < EOF is data
+            HoleOrData::Hole => Ok(size),   // the implicit hole sits at EOF
+        }
+    }
 
     /// `show_fdinfo` extra lines appended to `/proc/<pid>/fdinfo/<n>` after the
     /// generic `pos/flags/mnt_id/ino` (pidfd `Pid:`/`NSpid:`). Default none.
