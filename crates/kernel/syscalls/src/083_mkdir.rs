@@ -6,14 +6,15 @@ use alloc::string::String;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::namei_common::{
-    read_path, errno_from_vfs, resolve_parent, path_exists, strip_trailing_slash,
+    read_user_path, errno_from_vfs, resolve_parent, path_exists, strip_trailing_slash,
 };
 
 /// `mkdir(path, mode)` slot 83.
 /// # C: O(N parent entries)
 pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
-    let raw = match read_path(args.a0) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    let raw = match read_user_path(args.a0) {
+        Ok(s) => s, Err(rv) => return rv,
     };
     let p = match crate::pathresolve::resolve_at_result(crate::pathresolve::AT_FDCWD, &raw) {
         Ok(p) => p, Err(rv) => return rv,

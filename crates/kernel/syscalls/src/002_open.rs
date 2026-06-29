@@ -3,7 +3,6 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
 use vfs::OpenFlags;
 
 use crate::open_common::{dup_fd_target, open_proc_fd, resolve_path_for_open,
@@ -15,18 +14,13 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let flags    = args.a1 as u32;
     let mode     = args.a2 as u32;
-    if path_ptr == 0 || path_ptr >= USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: ptr in user range; user page mapped (caller already ran code from this AS); 256 B bound.
-    let path = match unsafe { devfs::read_user_cstr(path_ptr, 256) } {
-        Some(p) if !p.is_empty() => p,
-        _                        => return -(Errno::Einval.as_i32() as i64),
+    // D1/D2: full PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG)
+    // via read_user_path, replacing the 256-byte cap + EINVAL-on-empty.
+    let path = match crate::namei_common::read_user_path(path_ptr) {
+        Ok(s)   => s,
+        Err(rv) => return rv,
     };
-    let path_raw = match core::str::from_utf8(path) {
-        Ok(s)  => s,
-        Err(_) => return -(Errno::Einval.as_i32() as i64),
-    };
+    let path_raw: &str = path.as_str();
     let resolved = resolve_path_for_open(path_raw);
     let path_str: &str = resolved.as_deref().unwrap_or(path_raw);
     {

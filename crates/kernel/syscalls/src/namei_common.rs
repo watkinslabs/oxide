@@ -8,15 +8,6 @@ use alloc::string::String;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 
-/// # C: O(1)
-pub(crate) fn read_path(ptr: u64) -> Option<String> {
-    if ptr == 0 || ptr >= USER_VA_END { return None; }
-    // SAFETY: ptr in user range; user page mapped (caller's AS); 256 B bound.
-    let bytes = unsafe { devfs::read_user_cstr(ptr, 256) }?;
-    if bytes.is_empty() { return None; }
-    core::str::from_utf8(bytes).ok().map(|s| s.into())
-}
-
 /// Read a user-space pathname with the full Linux errno contract:
 ///   * NULL / out-of-range ptr  → **EFAULT**
 ///   * empty string (`""`)      → **ENOENT** (callers without AT_EMPTY_PATH)

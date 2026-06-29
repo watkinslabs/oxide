@@ -4,17 +4,18 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_path, errno_from_vfs, resolve_parent};
+use crate::namei_common::{read_user_path, errno_from_vfs, resolve_parent};
 
 /// `link(target, link)` slot 86. Hardlink only — both must
 /// resolve to ext4 paths.
 /// # C: O(1)
 pub fn sys_link(args: &SyscallArgs) -> i64 {
-    let target = match read_path(args.a0) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    let target = match read_user_path(args.a0) {
+        Ok(s) => s, Err(rv) => return rv,
     };
-    let link = match read_path(args.a1) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    let link = match read_user_path(args.a1) {
+        Ok(s) => s, Err(rv) => return rv,
     };
     let t = match crate::pathresolve::resolve_at_result(crate::pathresolve::AT_FDCWD, &target) {
         Ok(p) => p, Err(rv) => return rv,

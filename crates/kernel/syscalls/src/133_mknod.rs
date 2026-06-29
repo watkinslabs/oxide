@@ -6,13 +6,14 @@
 use alloc::string::String;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_path, errno_from_vfs, resolve_parent};
+use crate::namei_common::{read_user_path, errno_from_vfs, resolve_parent};
 
 /// `mknod(path, mode, dev)` slot 133.
 /// # C: O(N parent entries)
 pub fn sys_mknod(args: &SyscallArgs) -> i64 {
-    let raw = match read_path(args.a0) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    let raw = match read_user_path(args.a0) {
+        Ok(s) => s, Err(rv) => return rv,
     };
     mknod_impl(raw, args.a1 as u16, args.a2 as u32)
 }
