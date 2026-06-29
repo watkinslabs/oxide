@@ -277,6 +277,52 @@ pub trait SuperOps: Send + Sync {
     /// a no-longer-referenced in-core inode (schedules the RCU `free_inode`).
     /// Default = drop. # C: O(1)
     fn destroy_inode(&self, _inode: InodeRef) {}
+
+    /// `s_op->show_options` (Linux `super_operations.show_options`) — APPEND the
+    /// backend's own mount options to the `/proc/<pid>/mounts` /
+    /// `/proc/self/mountinfo` per-mount line. The VFS renders the generic flags
+    /// first (`rw`/`ro`, `relatime`, …); this hook then appends the fs-specific
+    /// tail — tmpfs `size=`/`nr_inodes=`/`mode=`, ext4 `data=ordered`, a cgroup2
+    /// controller list. Each option carries its OWN leading comma (Linux emits
+    /// them via `seq_puts(m, ",size=…")`), so the result concatenates directly
+    /// after the generic flags with no separator fixup. Default `""` = no
+    /// fs-specific options (a plain pseudo-fs). Mirrors [`crate::fs::FileSystem::show_options`]
+    /// at the `s_op` layer; the SB-level accessor is [`SuperBlock::show_options`].
+    /// # C: O(len opts)
+    fn show_options(&self) -> String { String::new() }
+
+    /// `s_op->show_devname` (Linux `super_operations.show_devname`) — override the
+    /// SOURCE-device column rendered in `/proc/self/mountinfo` for a fs whose
+    /// backing-store name is not its `s_id` (`nfs` server:/export, `overlay`
+    /// `overlay`, a `bind` source path). `None` (the default) ⇒ the VFS uses the
+    /// generic `s_id`/fs-name source column. # C: O(len name)
+    fn show_devname(&self) -> Option<String> { None }
+
+    /// `s_op->show_path` (Linux `super_operations.show_path`) — override the
+    /// mount-point PATH column rendered in `/proc/self/mountinfo` for a fs that
+    /// presents a synthetic root path different from the dentry path (Linux uses
+    /// this for e.g. the `gadgetfs`/anon-inode style roots). `None` (the default)
+    /// ⇒ the VFS uses the generic resolved mount path. # C: O(len path)
+    fn show_path(&self) -> Option<String> { None }
+
+    /// `s_op->show_stats` (Linux `super_operations.show_stats`) — emit the
+    /// backend's extra per-mount statistics line for `/proc/self/mountstats`
+    /// (Linux: `nfs` round-trip/RPC counters). `None` (the default) ⇒ the fs
+    /// contributes no `mountstats` body beyond the generic device line. # C: O(len stats)
+    fn show_stats(&self) -> Option<String> { None }
+
+    /// `s_op->dirty_inode` (Linux `super_operations.dirty_inode`) — the hook
+    /// `__mark_inode_dirty` calls so the backend records that `inode`'s metadata
+    /// changed (ext4 starts a journal handle and dirties its on-disk inode here).
+    /// `flags` is the `I_DIRTY_*` set being applied. Default = the generic
+    /// in-core dirtying: OR the requested `I_DIRTY` bits into the inode's
+    /// `i_state` (a journal-less / pseudo-fs has no extra per-fs work). `flags`
+    /// is masked to `I_DIRTY` so a caller cannot smuggle a lifecycle bit
+    /// (`I_NEW`/`I_FREEING`/…) through the dirtying path, matching
+    /// [`SuperBlock::mark_inode_dirty`]. # C: O(1)
+    fn dirty_inode(&self, inode: &Inode, flags: u32) {
+        inode.set_state(flags & I_DIRTY, 0);
+    }
 }
 
 /// `file_system_type` (Linux `struct file_system_type`) — the registry
@@ -763,6 +809,37 @@ impl SuperBlock {
         if st.f_fsid == 0 { st.f_fsid = self.s_dev; }
         Ok(st)
     }
+
+    /// `s_op->show_options` passthrough — the backend's fs-specific `/proc/mounts`
+    /// option tail (each option self-comma-prefixed), appended after the generic
+    /// per-mount flags. The SB-level entry point a `/proc/self/mountinfo` reader
+    /// calls in hand of the `Arc<SuperBlock>` (mirrors the [`Self::statfs`]
+    /// passthrough). The legacy `/proc/mounts` line is still composed by
+    /// [`crate::fs::FileSystem::mounts_line`] over `FileSystem::show_options`;
+    /// routing that consumer through this `s_op` hook is the cross-file
+    /// follow-up. # C: O(len opts)
+    pub fn show_options(&self) -> String { self.s_op.show_options() }
+
+    /// `s_op->show_devname` passthrough — backend override of the source-device
+    /// column, or `None` for the generic `s_id` source. # C: O(len name)
+    pub fn show_devname(&self) -> Option<String> { self.s_op.show_devname() }
+
+    /// `s_op->show_path` passthrough — backend override of the mount-point path
+    /// column, or `None` for the generic resolved path. # C: O(len path)
+    pub fn show_path(&self) -> Option<String> { self.s_op.show_path() }
+
+    /// `s_op->show_stats` passthrough — backend `/proc/self/mountstats` body, or
+    /// `None`. # C: O(len stats)
+    pub fn show_stats(&self) -> Option<String> { self.s_op.show_stats() }
+
+    /// `__mark_inode_dirty` (Linux fs/fs-writeback.c) → `s_op->dirty_inode`: run
+    /// the backend dirty-tracking hook for `inode` with the `I_DIRTY_*` `flags`
+    /// being applied (default ORs them into `i_state`). The icache-keyed
+    /// [`Self::mark_inode_dirty`] sets state + reconciles the writeback pin by
+    /// `ino`; THIS is the `s_op` dispatch in hand of the concrete inode (the path
+    /// `__mark_inode_dirty` takes before consulting the writeback list).
+    /// # C: O(1)
+    pub fn dirty_inode(&self, inode: &Inode, flags: u32) { self.s_op.dirty_inode(inode, flags); }
 
     /// `s_flags` snapshot (Linux `sb->s_flags`). # C: O(1)
     pub fn s_flags(&self) -> u64 { self.s_flags.load(Ordering::Acquire) }
