@@ -33,42 +33,21 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     // byte range here.
     if let Err(rv) = validate_user_buf_writable(buf, 256, 1) { return rv; }
 
-    // Probe path emptiness (path may be NULL with AT_EMPTY_PATH).
-    let empty_or_null = path_ptr == 0 || {
-        // SAFETY: path_ptr in user range guarded; 1-byte probe only.
-        path_ptr < hal::USER_VA_END
-            && unsafe { devfs::read_user_cstr(path_ptr, 1) }.map_or(true, |b| b.is_empty())
+    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty/NULL
+    // path operates on the dirfd, ENOENT without it); a normal statx FOLLOWS the
+    // trailing symlink (LOOKUP_FOLLOW), AT_SYMLINK_NOFOLLOW does not. aarch64
+    // musl routes stat()/lstat() here. ENOTDIR/ELOOP/EACCES/EFAULT/ENAMETOOLONG
+    // preserved by the engine (X1/X2/X4/X5).
+    let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
+    let lf = vfs::LookupFlags {
+        empty: (flags & AT_EMPTY_PATH) != 0,
+        no_follow_final: nofollow,
+        follow: !nofollow,
+        ..Default::default()
     };
-
-    let (inode, mnt_id) = if (flags & AT_EMPTY_PATH) != 0 && empty_or_null {
-        let cur = match sched::live::current() {
-            Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-        };
-        // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-        let fdt = match unsafe { cur.fd_table_ref() } {
-            Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-        };
-        let f = match fdt.get(dirfd) {
-            Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
-        };
-        (f.inode().clone(), f.mnt_id())
-    } else {
-        // X2/X4/X5: PATH_MAX read with EFAULT/ENOENT/ENAMETOOLONG.
-        let raw = match crate::namei_common::read_user_path(path_ptr) {
-            Ok(s) => s, Err(rv) => return rv,
-        };
-        // Resolve relative path against the dirfd's directory (real `*at`
-        // semantics, same as openat). aarch64 musl routes stat()/lstat()
-        // here.
-        let resolved = match crate::pathresolve::resolve_at_result(dirfd, &raw) {
-            Ok(p) => p, Err(rv) => return rv,
-        };
-        let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
-        // X1: preserve ENOTDIR/ELOOP/EACCES from the path-walk.
-        match crate::pathresolve::resolve_path_result(resolved.as_str(), nofollow) {
-            Ok(p)  => (p.inode, p.mnt_id),
-            Err(e) => return crate::namei_common::errno_from_vfs(e),
-        }
+    let (inode, mnt_id) = match crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf) {
+        Ok(p)  => (p.inode, p.mnt_id),
+        Err(rv) => return rv,
     };
 
     // vfs_getattr → i_op->getattr (default generic_fillattr): S_IF* mapping +
