@@ -25,6 +25,8 @@ use alloc::vec::Vec;
 use core::any::Any;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use sync::{Inode as InodeLockClass, RwLock, RwReadGuard, RwWriteGuard};
+
 use crate::file_ops::FileOps;
 use crate::inode_ops::InodeOps;
 use crate::mapping::AddressSpaceOps;
@@ -94,6 +96,17 @@ pub struct Inode {
     /// `i_link` — inline fast-symlink body (Linux `inode->i_link`); `None` = no
     /// inline body, so `get_link` falls through to `i_op->readlink`.
     i_link: Option<Box<[u8]>>,
+    /// `i_rwsem` (Linux `inode->i_rwsem`) — the per-inode read/write semaphore
+    /// at lock rank `Inode` (40, `06§3.6`). Held EXCLUSIVE by the directory
+    /// mutating paths (create/mkdir/unlink/rmdir/rename — taken in the syscall
+    /// layer + `lock_rename` here) and by `O_APPEND` cross-writer atomicity
+    /// (`File::write`/`write_iter`); held SHARED by the `lookup_slow` directory
+    /// read path (`namei::walk`). Payload is `()` — it guards the inode's
+    /// namespace/size, not a wrapped value. Ranked above the file `f_pos_lock`
+    /// (35) / `f_ra` (36), so an append takes `f_pos_lock` THEN `i_rwsem`
+    /// (ascending), and below `Dentry` (50)/`Superblock` (60), so a dir op holds
+    /// `i_rwsem` THEN touches the dcache (ascending) — no rank inversion.
+    i_rwsem: RwLock<(), InodeLockClass>,
 }
 
 impl Inode {
@@ -260,6 +273,23 @@ impl Inode {
     /// `drop_nlink` (saturating at 0). # C: O(1)
     pub fn drop_nlink(&self) { let _ = self.i_nlink.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| Some(n.saturating_sub(1))); }
 
+    // ---- i_rwsem (Linux inode->i_rwsem) ------------------------------------
+
+    /// `inode_lock` (Linux `fs/inode.c`) — take `i_rwsem` EXCLUSIVE. The write
+    /// holder for a directory's create/mkdir/unlink/rmdir/rename (and for an
+    /// `O_APPEND` size-read→write→pos). The returned guard releases on drop
+    /// (Linux `inode_unlock`); pass it to [`inode_unlock`] for an explicit
+    /// release. # C: O(contention)
+    pub fn inode_lock(&self) -> RwWriteGuard<'_, (), InodeLockClass> { self.i_rwsem.write() }
+
+    /// `inode_lock_shared` (Linux) — take `i_rwsem` SHARED. The read holder for
+    /// the `lookup_slow` directory read path; many lookups proceed concurrently
+    /// while no mutator holds the exclusive side. # C: O(contention)
+    pub fn inode_lock_shared(&self) -> RwReadGuard<'_, (), InodeLockClass> { self.i_rwsem.read() }
+
+    /// Raw `i_rwsem` handle, for the `lock_rename` ordering helper. # C: O(1)
+    fn i_rwsem(&self) -> &RwLock<(), InodeLockClass> { &self.i_rwsem }
+
     // ---- i_op delegators (namespace + metadata) ----------------------------
 
     /// `i_op->lookup`. # C: backend-dependent
@@ -359,6 +389,55 @@ impl Inode {
     /// `show_fdinfo` extra lines. # C: O(1)
     pub fn fdinfo_extra(&self, out: &mut Vec<u8>) { self.i_fop.fdinfo_extra(self, out) }
 }
+
+/// `inode_unlock`/`inode_unlock_shared` (Linux `fs/inode.c`) — release an
+/// `i_rwsem` guard from [`Inode::inode_lock`] / [`Inode::inode_lock_shared`].
+/// RAII already drops the guard at end-of-scope; this is the explicit-release
+/// spelling mirroring Linux's named call. Generic over the guard type so it
+/// serves both the exclusive and shared sides. # C: O(1)
+pub fn inode_unlock<G>(guard: G) { drop(guard); }
+
+/// Held `i_rwsem` exclusive locks for a (possibly cross-directory) rename
+/// (Linux `lock_rename` result). One guard for a same-directory rename (both
+/// parents are the SAME inode → locked once), two for a cross-directory rename
+/// (locked in address order). Releases on drop in reverse field order, or
+/// explicitly via [`unlock_rename`]. The `'a` borrow pins the parents for the
+/// rename's duration.
+pub struct RenameLockGuard<'a> {
+    _first:  RwWriteGuard<'a, (), InodeLockClass>,
+    _second: Option<RwWriteGuard<'a, (), InodeLockClass>>,
+}
+
+/// `lock_rename(p1, p2)` (Linux `fs/namei.c`) — lock the two parent directory
+/// inodes for a rename. ORDER (deadlock avoidance): the two `i_rwsem`s are
+/// always taken in ascending ADDRESS order, so two concurrent renames that name
+/// the same pair of directories in opposite argument order still acquire them in
+/// the SAME order and cannot form an ABA cycle. A same-directory rename
+/// (`p1`/`p2` the SAME inode) locks the single `i_rwsem` ONCE — re-locking it
+/// (the spin-rwsem is non-reentrant) would self-deadlock. Linux additionally
+/// holds the per-fs `s_vfs_rename_mutex` (cross-tree ancestor serialization);
+/// that superblock-level mutex is the mount/superblock lane's concern and is not
+/// duplicated here. Both `i_rwsem`s sit at the same `Inode` rank (40); the
+/// address-order tie-break is what makes same-rank acquisition total-ordered.
+/// # C: O(contention)
+pub fn lock_rename<'a>(p1: &'a Inode, p2: &'a Inode) -> RenameLockGuard<'a> {
+    if core::ptr::eq(p1, p2) {
+        return RenameLockGuard { _first: p1.i_rwsem().write(), _second: None };
+    }
+    let (lo, hi) = if (p1 as *const Inode as usize) < (p2 as *const Inode as usize) {
+        (p1, p2)
+    } else {
+        (p2, p1)
+    };
+    let first = lo.i_rwsem().write();
+    let second = hi.i_rwsem().write();
+    RenameLockGuard { _first: first, _second: Some(second) }
+}
+
+/// `unlock_rename` (Linux `fs/namei.c`) — release the parents locked by
+/// [`lock_rename`]. RAII drops them at scope end; this is the explicit form.
+/// # C: O(1)
+pub fn unlock_rename(lock: RenameLockGuard<'_>) { drop(lock); }
 
 /// Builder for [`Inode`] — the one constructor every `make_*_inode` /
 /// `iget`-build closure funnels through. Set the type/mode + ops, chain the
@@ -467,6 +546,7 @@ impl InodeBuilder {
             poll_subs: self.poll_subs,
             seals: self.seals.map(AtomicU32::new),
             i_link: self.link,
+            i_rwsem: RwLock::new(()),
         })
     }
 }
