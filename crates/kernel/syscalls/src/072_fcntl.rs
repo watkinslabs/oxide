@@ -26,6 +26,11 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_SEAL_WRITE: u32 = 0x0008;
     const F_SEAL_FUTURE_WRITE: u32 = 0x0010;
     const F_GETOWN: u64 = 9; const F_SETOWN: u64 = 8;
+    const F_SETSIG: u64 = 10; const F_GETSIG: u64 = 11;
+    const F_SETOWN_EX: u64 = 15; const F_GETOWN_EX: u64 = 16;
+    // f_owner_ex.type (Linux fcntl.h): TID / PID / PGRP.
+    const F_OWNER_TID: i32 = 0; const F_OWNER_PID: i32 = 1; const F_OWNER_PGRP: i32 = 2;
+    const NSIG: u64 = 64;
     let fd = args.a0 as i32; let cmd = args.a1; let arg = args.a2;
     let ebadf = -(Errno::Ebadf.as_i32() as i64);
     let cur = match sched::live::current() { Some(c) => c, None => return ebadf };
@@ -84,6 +89,45 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         },
         F_GETOWN => file.owner.load(core::sync::atomic::Ordering::Acquire) as i64,
         F_SETOWN => { file.owner.store(arg as i32, core::sync::atomic::Ordering::Release); 0 }
+        // F_GETSIG/F_SETSIG (Linux f_owner.signum): the signal delivered on
+        // async-I/O readiness; 0 = default SIGIO/SIGURG (D36).
+        F_GETSIG => file.sig() as i64,
+        F_SETSIG => {
+            let sig = arg as i32;
+            if sig < 0 || arg > NSIG { return -(Errno::Einval.as_i32() as i64); }
+            file.set_sig(sig);
+            0
+        }
+        // F_GETOWN_EX: write f_owner_ex { i32 type; i32 pid } (8 B). A negative
+        // stored owner is a process group (Linux convention) (D36).
+        F_GETOWN_EX => {
+            if let Err(rv) = validate_user_buf(arg, 8, 4) { return rv; }
+            let raw = file.owner.load(core::sync::atomic::Ordering::Acquire);
+            let (ty, pid) = if raw < 0 { (F_OWNER_PGRP, -raw) } else { (F_OWNER_PID, raw) };
+            // SAFETY: arg validated for 8 B below USER_VA_END; CPL=0 writes through caller's AS.
+            unsafe {
+                core::ptr::write_unaligned(arg as *mut i32, ty);
+                core::ptr::write_unaligned((arg + 4) as *mut i32, pid);
+            }
+            0
+        }
+        // F_SETOWN_EX: read f_owner_ex; store pid (PGRP → negative). TID is
+        // treated as PID (no per-thread fasync routing yet) (D36).
+        F_SETOWN_EX => {
+            if let Err(rv) = validate_user_buf(arg, 8, 4) { return rv; }
+            // SAFETY: arg validated for 8 B below USER_VA_END; CPL=0 reads through caller's AS.
+            let (ty, pid) = unsafe {
+                (core::ptr::read_unaligned(arg as *const i32),
+                 core::ptr::read_unaligned((arg + 4) as *const i32))
+            };
+            let stored = match ty {
+                F_OWNER_TID | F_OWNER_PID => pid,
+                F_OWNER_PGRP              => -pid,
+                _ => return -(Errno::Einval.as_i32() as i64),
+            };
+            file.owner.store(stored, core::sync::atomic::Ordering::Release);
+            0
+        }
         F_SETLK | F_SETLKW | F_GETLK |
         F_OFD_SETLK | F_OFD_SETLKW | F_OFD_GETLK => {
             handle_record_lock(&cur, &fdt, &file, cmd, arg)
@@ -162,11 +206,16 @@ fn handle_record_lock(
         }
         F_SETLKW | F_OFD_SETLKW => {
             // Spin-yield until peer releases (real wait list rides
-            // a follow-up).
+            // a follow-up). Interruptible: a deliverable signal aborts the
+            // wait with EINTR, matching Linux fcntl_setlk → posix_lock_file_wait
+            // (wait_event_interruptible) (D37).
             loop {
                 match try_set_lock(inode, &req, owner) {
                     Ok(()) => return 0,
                     Err(vfs::VfsError::Eagain) => {
+                        if sched::live::sigpend::deliverable_signals(cur) != 0 {
+                            return -(Errno::Eintr.as_i32() as i64);
+                        }
                         // SAFETY: process ctx; preempt-off; runqueue installed; voluntary schedule() yields the CPU; we stay Runnable so the scheduler picks us back up shortly.
                         unsafe { sched::live::schedule::schedule(); }
                     }

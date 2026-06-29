@@ -25,6 +25,7 @@ pub fn sys_mount_setattr(args: &SyscallArgs) -> i64 {
     const MS_SLAVE:      u64 = 1 << 19;
     const MS_SHARED:     u64 = 1 << 20;
     const MOUNT_ATTR_IDMAP: u64 = 0x0010_0000;
+    if let Some(rv) = require_sys_admin() { return rv; }  // Linux may_mount (D49)
     let path = match read_cstr(args.a1, 256) {
         Some(s) => s, None => return -(Errno::Efault.as_i32() as i64),
     };
