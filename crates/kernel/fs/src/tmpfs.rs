@@ -93,16 +93,17 @@ fn ensure_page(g: &mut BTreeMap<u64, u64>, idx: u64) -> Option<u64> {
 }
 
 /// Build a regular tmpfs/memfd file inode. `sealable` enables the memfd seal
-/// word (`Inode::fcntl_seals`); `sb` owns the inode (`fsid` derives from
-/// `s_dev`). # C: O(1)
-fn make_tmpfs_file_inode(sealable: bool, sb: Weak<SuperBlock>) -> InodeRef {
+/// word (`Inode::fcntl_seals`); `perm` is the caller-supplied permission bits
+/// (Linux honours the `open`/`creat` mode, masked by umask at the syscall
+/// layer); `sb` owns the inode (`fsid` derives from `s_dev`). # C: O(1)
+fn make_tmpfs_file_inode(sealable: bool, perm: u16, sb: Weak<SuperBlock>) -> InodeRef {
     let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
     let data = Arc::new(TmpfsFileData {
         pages: Spinlock::new(BTreeMap::new()),
         len:   AtomicU64::new(0),
     });
     let mapping: Arc<dyn AddressSpaceOps> = data.clone();
-    let mut b = InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644),
+    let mut b = InodeBuilder::new(ino, mk_mode(FileType::Regular, perm),
         Arc::new(TmpfsFileInodeOps), Arc::new(TmpfsFileOps))
         .fsid(fsid_of(&sb))
         .mapping(mapping)
@@ -113,9 +114,9 @@ fn make_tmpfs_file_inode(sealable: bool, sb: Weak<SuperBlock>) -> InodeRef {
 }
 
 /// Anonymous tmpfs file body (memfd / coredump), no owning SuperBlock. # C: O(1)
-pub fn tmpfs_anon_file() -> InodeRef { make_tmpfs_file_inode(false, Weak::new()) }
+pub fn tmpfs_anon_file() -> InodeRef { make_tmpfs_file_inode(false, 0o644, Weak::new()) }
 /// A sealable memfd file (`memfd_create(MFD_ALLOW_SEALING)`). # C: O(1)
-pub fn tmpfs_sealable_file() -> InodeRef { make_tmpfs_file_inode(true, Weak::new()) }
+pub fn tmpfs_sealable_file() -> InodeRef { make_tmpfs_file_inode(true, 0o644, Weak::new()) }
 
 impl TmpfsFileData {
     /// Copy out cache bytes from `off` (sparse holes read as zero, tail past
@@ -401,9 +402,11 @@ impl TmpfsDirData {
     fn remove(&self, name: &str) -> Option<InodeRef> { self.kids.lock().remove(name) }
 }
 
-/// Build a fresh tmpfs directory inode (`ino`, owned by `sb`). # C: O(1)
-fn make_tmpfs_dir_inode(ino: Ino, sb: Weak<SuperBlock>) -> InodeRef {
-    let mut b = InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755),
+/// Build a fresh tmpfs directory inode (`ino`, `perm` permission bits, owned by
+/// `sb`). `i_nlink` defaults to 2 (`.` + the parent's link), per Linux
+/// `simple_fs`. # C: O(1)
+fn make_tmpfs_dir_inode(ino: Ino, perm: u16, sb: Weak<SuperBlock>) -> InodeRef {
+    let mut b = InodeBuilder::new(ino, mk_mode(FileType::Directory, perm),
         Arc::new(TmpfsDirOps), Arc::new(TmpfsDirFileOps))
         .fsid(fsid_of(&sb))
         .private(Arc::new(TmpfsDirData {
@@ -462,18 +465,25 @@ impl InodeOps for TmpfsDirOps {
         d.kids.lock().get(name).cloned().ok_or(VfsError::Enoent)
     }
 
-    /// `mkdir` — a fresh child `TmpfsDir` in this instance's tree. # C: O(log N)
-    fn mkdir(&self, inode: &Inode, name: &str, _mode: u32) -> KResult<InodeRef> {
+    /// `mkdir` — a fresh child `TmpfsDir` in this instance's tree. Honours the
+    /// caller-supplied `mode` (perm bits; umask is applied at the syscall
+    /// layer). The new dir starts at `i_nlink == 2` (`.` + this parent's link
+    /// down) and the PARENT gains a link (the child's `..`), matching Linux
+    /// `simple_mkdir`/`inc_nlink(dir)`. # C: O(log N)
+    fn mkdir(&self, inode: &Inode, name: &str, mode: u32) -> KResult<InodeRef> {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let mut g = dd.kids.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-        let d = make_tmpfs_dir_inode(ino, dd.sb_weak());
+        let d = make_tmpfs_dir_inode(ino, (mode & 0o7777) as u16, dd.sb_weak());
         g.insert(name.into(), d.clone());
+        inode.inc_nlink(); // child's ".." adds a link to this parent dir
         Ok(d)
     }
 
-    /// `rmdir` — ENOTEMPTY when the child dir still has entries. # C: O(log N)
+    /// `rmdir` — ENOTEMPTY when the child dir still has entries. Removing the
+    /// child drops this parent's `i_nlink` (the gone `..`), mirroring Linux
+    /// `simple_rmdir`/`drop_nlink(dir)`. # C: O(log N)
     fn rmdir(&self, inode: &Inode, name: &str) -> KResult<()> {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let mut g = dd.kids.lock();
@@ -486,24 +496,41 @@ impl InodeOps for TmpfsDirOps {
                 }
             }
         }
-        g.remove(name);
+        if let Some(victim) = g.remove(name) {
+            victim.set_nlink(0);   // emptied dir: drop "." + parent's link down
+            inode.drop_nlink();    // the child's ".." no longer points at us
+        }
         Ok(())
     }
 
-    /// # C: O(log N)
-    fn create(&self, inode: &Inode, name: &str, _mode: u32) -> KResult<InodeRef> {
+    /// `create` — a fresh regular file honouring the caller-supplied `mode`
+    /// (perm bits; umask is applied at the syscall layer). # C: O(log N)
+    fn create(&self, inode: &Inode, name: &str, mode: u32) -> KResult<InodeRef> {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let mut g = dd.kids.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
-        let child = make_tmpfs_file_inode(false, dd.sb_weak());
+        let child = make_tmpfs_file_inode(false, (mode & 0o7777) as u16, dd.sb_weak());
         g.insert(name.into(), child.clone());
         Ok(child)
     }
 
-    /// # C: O(log N)
+    /// `unlink` — remove a non-directory child. A directory victim is rejected
+    /// with `EISDIR` (Linux `unlink(2)`; directories go through `rmdir`).
+    /// Dropping the name decrements the victim's `i_nlink` (Linux
+    /// `drop_nlink`); the inode's storage is freed once the count and all open
+    /// fds reach zero. # C: O(log N)
     fn unlink(&self, inode: &Inode, name: &str) -> KResult<()> {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
-        if dd.kids.lock().remove(name).is_some() { Ok(()) } else { Err(VfsError::Enoent) }
+        let mut g = dd.kids.lock();
+        match g.get(name) {
+            None => Err(VfsError::Enoent),
+            Some(i) if i.file_type() == FileType::Directory => Err(VfsError::Eisdir),
+            Some(_) => {
+                let victim = g.remove(name).expect("present");
+                victim.drop_nlink();
+                Ok(())
+            }
+        }
     }
 
     /// `symlink(2)` — a followable tmpfs symlink child. # C: O(log N)
@@ -553,7 +580,7 @@ pub fn init() {}
 /// # C: O(1)
 pub fn smoke_test() {
     use hal::kassert;
-    let root = make_tmpfs_dir_inode(ROOT_INO, Weak::new());
+    let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new());
     let inode = root.create_child(".smoke", 0o644).expect("tmpfs.create");
     let n = inode.write(0, b"shell-test").expect("tmpfs.write");
     kassert!(n == 10, "tmpfs write len");
@@ -588,7 +615,7 @@ impl TmpfsFs {
     /// `s_dev` at `fill_super`, after which children derive `fsid` from it.
     /// # C: O(1)
     pub fn new(mount_path: String) -> Arc<Self> {
-        let root = make_tmpfs_dir_inode(ROOT_INO, Weak::new());
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new());
         Arc::new(Self { mount_path, root, sb: Spinlock::new(Weak::new()) })
     }
     /// This instance's root inode (`sb->s_root->d_inode`), handed to
@@ -633,8 +660,8 @@ impl vfs::fs::FileSystem for TmpfsFs {
     /// `O_TMPFILE`: a fresh in-memory inode with no directory entry — reclaimed
     /// when its last fd closes (Linux shmem anonymous inode). It carries this
     /// instance's SB so `fsid` is the mount's `s_dev`. # C: O(1)
-    fn create_anonymous(&self, _dir: &str, _mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
-        Ok(make_tmpfs_file_inode(false, self.sb.lock().clone()))
+    fn create_anonymous(&self, _dir: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
+        Ok(make_tmpfs_file_inode(false, (mode & 0o7777) as u16, self.sb.lock().clone()))
     }
 
     /// `unlink(2)` by whole path (atomic-rename idiom). # C: O(components)
@@ -654,6 +681,7 @@ impl vfs::fs::FileSystem for TmpfsFs {
         let (p, name) = dir_parent_of(&self.root, self.rel(link)).ok_or(VfsError::Enoent)?;
         let dir = as_dir(&p).ok_or(VfsError::Enotdir)?;
         if dir.kids.lock().contains_key(name) { return Err(VfsError::Eexist); }
+        inode.inc_nlink(); // a new name for the same inode (Linux inc_nlink)
         dir.insert(name, inode);
         Ok(())
     }
@@ -687,12 +715,70 @@ mod symlink_tests {
     // the dir's own kids map (no global registry).
     #[test]
     fn dir_symlink_child_creates_followable_link() {
-        let root = make_tmpfs_dir_inode(ROOT_INO, Weak::new());
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new());
         root.symlink_child("tz", b"/etc/localtime").expect("create symlink");
         let resolved = root.lookup("tz").expect("symlink in tree");
         assert_eq!(resolved.file_type(), FileType::Symlink);
         assert_eq!(resolved.readlink().unwrap(), b"/etc/localtime".to_vec());
         // Eexist on a second create.
         assert!(matches!(root.symlink_child("tz", b"/x"), Err(VfsError::Eexist)));
+    }
+}
+
+#[cfg(test)]
+mod nlink_mode_tests {
+    use super::*;
+    use vfs::fs::FileSystem;
+
+    // D32: a fresh file starts at nlink=1; a hardlink raises it; unlink lowers
+    // it (Linux tmpfs/simple_fs link accounting).
+    #[test]
+    fn hardlink_raises_and_unlink_lowers_nlink() {
+        let fs = TmpfsFs::new(String::from("/"));
+        let root = fs.root_inode();
+        let f = root.create_child("a", 0o644).expect("create a");
+        assert_eq!(f.nlink(), 1);
+        fs.link_inode(f.clone(), "/b").expect("hardlink b");
+        assert_eq!(f.nlink(), 2);
+        fs.unlink("/b").expect("unlink b");
+        assert_eq!(f.nlink(), 1);
+        fs.unlink("/a").expect("unlink a");
+        assert_eq!(f.nlink(), 0);
+    }
+
+    // D32: mkdir starts the child at nlink=2 (".", parent's link down) and
+    // raises the PARENT's nlink (the child's ".."); rmdir reverses both.
+    #[test]
+    fn mkdir_rmdir_maintains_dir_nlink() {
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new());
+        assert_eq!(root.nlink(), 2);
+        let sub = root.mkdir("d", 0o755).expect("mkdir d");
+        assert_eq!(sub.nlink(), 2);
+        assert_eq!(root.nlink(), 3); // gained child's ".."
+        root.rmdir("d").expect("rmdir d");
+        assert_eq!(root.nlink(), 2);
+    }
+
+    // D35: mkdir/create honour the caller-supplied permission bits instead of
+    // a hardcoded 0o755/0o644.
+    #[test]
+    fn create_and_mkdir_honour_mode() {
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new());
+        let f = root.create_child("f", 0o600).expect("create f");
+        assert_eq!(f.perm(), Some(0o600));
+        let d = root.mkdir("d", 0o2750).expect("mkdir d");
+        assert_eq!(d.perm(), Some(0o2750));
+    }
+
+    // D28: unlink of a directory returns EISDIR (Linux unlink(2); rmdir is the
+    // directory removal path).
+    #[test]
+    fn unlink_directory_is_eisdir() {
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new());
+        root.mkdir("d", 0o755).expect("mkdir d");
+        assert!(matches!(root.unlink_child("d"), Err(VfsError::Eisdir)));
+        // A regular file still unlinks fine.
+        root.create_child("f", 0o644).expect("create f");
+        assert!(root.unlink_child("f").is_ok());
     }
 }
