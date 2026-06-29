@@ -99,6 +99,39 @@ fn enable_pci_mem_bm(bdf: pci::Bdf) {
     } }
 }
 
+/// Build the per-arch ConfigSpaceReader and capture the `drv::PciCfg`
+/// snapshot (revision/subsystem ids/irq + sized BARs) the sysfs attribute
+/// files render (DVR-0009..0011). # C: O(1) — ≤ ~20 cfg ops.
+fn pci_snapshot(d: &pci::PciDevice) -> drv::PciCfg {
+    #[cfg(target_arch = "x86_64")]
+    { let r = hal_x86_64::pci::LegacyPci; build_snapshot(&r, d) }
+    #[cfg(target_arch = "aarch64")]
+    { match hal_aarch64::pci::EcamPci::from_published() {
+        Some(r) => build_snapshot(&r, d),
+        None => drv::PciCfg { revision: d.revision, subsystem_vendor: 0,
+            subsystem_device: 0, irq: 0, bars: [drv::Resource::default(); 6] },
+    } }
+}
+
+/// Read subsystem ids (0x2C), irq line (0x3C), and the sized BAR regions
+/// into a `drv::PciCfg`. # C: O(1)
+fn build_snapshot<R: pci::ConfigSpaceReader>(r: &R, d: &pci::PciDevice) -> drv::PciCfg {
+    let bdf = d.bdf;
+    let sub = r.read32(bdf, 0x2C);
+    let irq = (r.read32(bdf, 0x3C) & 0xFF) as u8;
+    let regions = pci::sysfmt::bar_regions(r, bdf);
+    let mut bars = [drv::Resource::default(); 6];
+    for (i, reg) in regions.iter().enumerate() {
+        bars[i] = drv::Resource { start: reg.start, end: reg.end(), flags: reg.flags };
+    }
+    drv::PciCfg {
+        revision: d.revision,
+        subsystem_vendor: (sub & 0xFFFF) as u16,
+        subsystem_device: (sub >> 16) as u16,
+        irq, bars,
+    }
+}
+
 /// drivers-plan D3.5: bring up an NVMe controller. Matches PCI class
 /// 0x010802 (mass-storage / NVM / NVMe; QEMU vendor 0x1b36 device 0x0010).
 /// BAR0 is a 64-bit memory BAR holding the controller register file; map 2
@@ -636,8 +669,9 @@ pub fn enumerate_and_log() {
             | ((d.subclass as u32) << 8) | (d.prog_if as u32);
         let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
             0u16, d.bdf.bus, d.bdf.device, d.bdf.function);
+        let snap = pci_snapshot(d);
         drv::register_device(alloc::sync::Arc::new(drv::Device::new(
-            "pci", addr, d.vendor_id, d.device_id, class24)));
+            "pci", addr, d.vendor_id, d.device_id, class24).with_pci(snap)));
         if virtio::is_modern(d.vendor_id, d.device_id) {
             let vaddr = alloc::format!("virtio{}", virtio_seq());
             let vdev_id = d.device_id.wrapping_sub(0x1040);

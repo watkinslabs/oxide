@@ -15,6 +15,8 @@ extern crate std;
 extern crate alloc;
 use alloc::vec::Vec;
 
+pub mod sysfmt;
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error { NotImplemented, NoMem, Inval, Io, NotFound }
 
