@@ -15,14 +15,15 @@ extern crate alloc;
 
 
 use alloc::format;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use sync::{Spinlock, Tty as TtyClass};
 use tty::Pair as TtyPair;
 use tty::Sig;
-use vfs::{FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError};
+use vfs::{FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, SuperBlock, VfsError};
 use vfs::{FileOps, default_inode_ops, mk_mode};
+use kernfs::PseudoDir;
 
 /// `DEVPTS_SUPER_MAGIC` (linux/magic.h) — `statfs` `f_type` for the devpts
 /// instance mounted at `/dev/pts`.
@@ -30,8 +31,9 @@ pub const DEVPTS_MAGIC: u64 = 0x1cd1;
 /// devpts `st_dev`/`fsid`. Linux mounts devpts as its OWN filesystem at
 /// `/dev/pts` (distinct from devtmpfs at `/dev`), so its inodes must report a
 /// dev number distinct from `devfs::DEVFS_FSID` for `(dev, ino)` uniqueness
-/// across the two mounts. (A first-class `SuperBlock`+mount registration for
-/// this fs is a vfs-lane hook; the per-inode `fsid` is the devpts-confined part.)
+/// across the two mounts. Now realised by the first-class [`DevptsFs`]
+/// `SuperBlock` (D36/D37); the per-inode `fsid` override keeps pts slave nodes
+/// reporting the devpts id even before/without an SB stamp.
 pub const DEVPTS_FSID: u64 = 0x0102_1994_0000_0002;
 
 /// Spinlock-wrapped pair shared between the master and slave inodes.
@@ -265,8 +267,13 @@ pub fn allocate_pair() -> (InodeRef, u32) {
     }
     let master = make_master_inode(Arc::clone(&pair));
     let slave  = make_slave_inode(pair);
-    let path = format!("/dev/pts/{}", n);
-    devfs::register_owned(path, slave);
+    // Mirror the slave into BOTH: (a) the devfs registry at `/dev/pts/<n>`
+    // (the legacy fallback the boot /dev/pts setup still resolves through when
+    // no real devpts is mounted), and (b) THIS instance's first-class devpts
+    // root under the mount-relative name `<n>` (so a `mount -t devpts` at
+    // /dev/pts resolves the same slave through its own SuperBlock). D36/D37.
+    devfs::register_owned(format!("/dev/pts/{}", n), Arc::clone(&slave));
+    devpts_fs().root.insert_path(&format!("{}", n), slave);
     (master, n)
 }
 
@@ -333,8 +340,47 @@ pub fn smoke_test() {
     kassert!(&buf[..6] == b"output", "slave→master bytes");
 
     sigint_chain_smoke();
+    devpts_fs_smoke();
 
     debug_boot! { klog::write_raw(b"[INFO]  pty-smoke: ok\n"); }
+}
+
+/// D36/D37 first-class devpts SB smoke. Asserts the singleton backend reports
+/// `DEVPTS_MAGIC`/name + a directory root holding `ptmx`; that a freshly
+/// allocated slave is mirrored into the devpts root under its `<n>` name; and
+/// that `SuperBlock::for_backend` (fill_super) builds a real devpts SB whose
+/// `s_magic`/root resolve and whose slave reports `DEVPTS_FSID` as `st_dev`.
+/// # SAFETY: caller is the boot path; PMM up; pre-userspace.
+/// # C: O(1)
+fn devpts_fs_smoke() {
+    use hal::kassert;
+    use vfs::fs::FileSystem;
+
+    let fs = devpts_fs();
+    kassert!(fs.name() == "devpts", "devpts name");
+    kassert!(fs.magic() == DEVPTS_MAGIC, "devpts magic");
+    let root = fs.root().expect("devpts root");
+    kassert!(root.file_type() == FileType::Directory, "devpts root is dir");
+    let ptmx = root.lookup("ptmx").expect("ptmx in pts root");
+    kassert!(ptmx.file_type() == FileType::CharDev, "pts/ptmx is chardev");
+    kassert!(ptmx.fsid() == DEVPTS_FSID, "pts/ptmx on devpts fsid");
+
+    // A freshly allocated slave appears in THIS fs's root (mount-relative <n>).
+    let (_m, n) = allocate_pair();
+    let name = format!("{}", n);
+    let slave = fs.root_dir().lookup_path(&name).expect("slave mirrored in devpts root");
+    kassert!(slave.file_type() == FileType::CharDev, "mirrored slave is chardev");
+    kassert!(slave.fsid() == DEVPTS_FSID, "slave st_dev == DEVPTS_FSID");
+
+    // fill_super builds a real devpts SuperBlock over the backend.
+    let backend: Arc<dyn FileSystem> = fs.clone();
+    let sb = SuperBlock::for_backend(backend, fs.root(), DEVPTS_FSID, alloc::string::String::from("devpts"));
+    kassert!(sb.s_magic == DEVPTS_MAGIC, "devpts sb s_magic");
+    let rino = sb.s_root_inode().expect("devpts s_root inode");
+    kassert!(rino.file_type() == FileType::Directory, "devpts s_root is dir");
+    kassert!(rino.fsid() == DEVPTS_FSID, "devpts root st_dev from SB s_dev");
+
+    debug_boot! { klog::write_raw(b"[INFO]  devpts-fs: ok\n"); }
 }
 
 /// Validates the cooked-mode → pending_sigint → foreground_pgid →
@@ -440,4 +486,85 @@ pub fn make_ptmx_sentinel_inode() -> InodeRef {
     InodeBuilder::new(0x6000_FFFF, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
         .fsid(devfs::DEVFS_FSID).rdev(0x0502)
         .build()
+}
+
+/// The per-instance `ptmx` node Linux materialises INSIDE the devpts mount at
+/// `/dev/pts/ptmx` (D37 — ptmx-inside-pts). Stamped with `DEVPTS_FSID` (it
+/// belongs to the devpts fs, unlike the `/dev/ptmx` directory entry which lives
+/// in devtmpfs). The working pty factory stays the `/dev/ptmx` open-path
+/// special-case (preserving current semantics, `28§5`); this node exists so the
+/// devpts root is structurally complete (it stats/lists as a 0o666 chardev).
+/// # C: O(1)
+fn make_pts_ptmx_inode() -> InodeRef {
+    InodeBuilder::new(0x6000_FFFE, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
+        .fsid(DEVPTS_FSID).rdev(0x0502)
+        .build()
+}
+
+// ---------------------------------------------------------------------------
+// DevptsFs — first-class devpts filesystem (D36/D37).
+//
+// Linux mounts devpts as its OWN filesystem at `/dev/pts` with its own
+// `super_block` (DEVPTS_SUPER_MAGIC) whose root directory holds `ptmx` plus the
+// per-pty slave nodes `/dev/pts/<n>`. This backend gives oxide that
+// first-class object: a singleton `DevptsFs` (matching the current single
+// global pty namespace — `NEXT_PTS`/`PAIRS` are global; multi-instance pts
+// namespaces are a noted residual) whose `kernfs::PseudoDir` root exposes the
+// ptmx node + slaves from THIS fs's root rather than the devfs path registry.
+// `mount -t devpts` / `fsopen("devpts")` materialise the real SB via the
+// fsmount_common registry. The devfs registry mirror is kept as a fallback so
+// the boot /dev/pts setup is non-fatal even when no devpts is mounted.
+// ---------------------------------------------------------------------------
+
+/// A first-class devpts filesystem instance: its own `kernfs::PseudoDir` root
+/// holding `ptmx` + the per-pty slave nodes, surfaced under `DEVPTS_MAGIC` /
+/// `DEVPTS_FSID` once the mount engine builds its `SuperBlock`.
+pub struct DevptsFs {
+    root: Arc<PseudoDir>,
+}
+
+impl DevptsFs {
+    /// Build a fresh instance: an empty `PseudoDir` root seeded with the
+    /// per-instance `ptmx` node. Slaves are inserted lazily by
+    /// [`allocate_pair`]. # C: O(1)
+    fn new() -> Arc<Self> {
+        let root = PseudoDir::new_root(kernfs::dir_ino("/dev/pts"), DEVPTS_FSID, false);
+        root.insert_path("ptmx", make_pts_ptmx_inode());
+        Arc::new(Self { root })
+    }
+
+    /// The instance root directory (tree-population entry point). # C: O(1)
+    pub fn root_dir(&self) -> &Arc<PseudoDir> { &self.root }
+}
+
+impl vfs::fs::FileSystem for DevptsFs {
+    /// # C: O(1)
+    fn name(&self) -> &str { "devpts" }
+    /// `DEVPTS_SUPER_MAGIC` — `statfs`/`fstatfs` `f_type`. # C: O(1)
+    fn magic(&self) -> u64 { DEVPTS_MAGIC }
+    /// Non-`None` directory root: the path walk crosses into the mount and the
+    /// post-mount verify accepts it. # C: O(1)
+    fn root(&self) -> Option<InodeRef> { Some(self.root.as_inode()) }
+    /// Back-stamp the SB (`fill_super`) so the root dir's inodes report the
+    /// instance `s_dev`. The slave nodes carry an explicit `DEVPTS_FSID`
+    /// override (set at build), so their `st_dev` is the devpts fs id either
+    /// way. # C: O(tree)
+    fn set_sb(&self, sb: Weak<SuperBlock>) { self.root.set_sb(sb); }
+}
+
+/// Process-wide singleton devpts instance. The current pty namespace is global
+/// (`NEXT_PTS`/`PAIRS`), so one `DevptsFs` backs every devpts mount; this keeps
+/// the SB's slave set identical to the global pair table. # C: O(1) after first.
+static DEVPTS_FS: Spinlock<Option<Arc<DevptsFs>>, sync::TaskList> = Spinlock::new(None);
+
+/// The singleton [`DevptsFs`] (lazily created). The fsmount_common registry
+/// constructor and [`allocate_pair`]'s slave mirror both resolve through this,
+/// so a mounted devpts SB and the devfs fallback observe the same slaves.
+/// # C: O(1)
+pub fn devpts_fs() -> Arc<DevptsFs> {
+    let mut g = DEVPTS_FS.lock();
+    if let Some(fs) = g.as_ref() { return Arc::clone(fs); }
+    let fs = DevptsFs::new();
+    *g = Some(Arc::clone(&fs));
+    fs
 }
