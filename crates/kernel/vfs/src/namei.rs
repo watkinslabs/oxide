@@ -713,7 +713,19 @@ impl Nameidata {
                 // the slow path + `d_add` as before.
                 None if self.flags.cached => return Err(VfsError::Eagain),
                 None => match self.cur_inode.lookup(&comp) {
-                    Ok(ci) => crate::dcache::d_add(&self.cur_dentry, &comp, ci),
+                    Ok(ci) => {
+                        // D3/D37: `lookup` returned `ci` carrying the iget/build
+                        // hold; `d_add` takes the dentry's OWN counted hold
+                        // (`grab_inode_hold`). Release the walk's temporary so
+                        // `i_count` tracks (aliases + open files) and can reach 0
+                        // for eviction (Linux `d_splice_alias`/`d_add` consumes the
+                        // caller's iget ref). iput AFTER the grab → never evicts a
+                        // live inode; on the race-loser path the dentry already
+                        // counts its inode, so this drops the redundant build.
+                        let child = crate::dcache::d_add(&self.cur_dentry, &comp, ci.clone());
+                        crate::file::iput(ci);
+                        child
+                    }
                     Err(VfsError::Enoent) => {
                         // D5/D6 negative-on-miss, gated for safety (see
                         // `neg_cache_ok`): the create syscalls flush this leaf
@@ -886,7 +898,13 @@ pub fn walk_to_mount(path: &str) -> Option<u64> {
             Some(d) if !d.is_negative() => d,
             Some(_) => return Some(cur_mnt), // cached negative: current mount owns it
             None => match cur_inode.lookup(&comp) {
-                Ok(ci) => crate::dcache::d_add(&cur_dentry, &comp, ci),
+                Ok(ci) => {
+                    // D3/D37: release the iget/build temporary; the dentry's
+                    // `d_add` grab is the durable hold (see `walk`'s slow path).
+                    let child = crate::dcache::d_add(&cur_dentry, &comp, ci.clone());
+                    crate::file::iput(ci);
+                    child
+                }
                 Err(_) => return Some(cur_mnt), // missing leaf / whole-path fs
             },
         };

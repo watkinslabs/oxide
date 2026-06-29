@@ -267,7 +267,16 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     let dentry_path = if (flags & O_TMPFILE) != 0 { "/" } else { path_str };
     let dentry = vfs::file::open_dentry(dentry_path, &inode);
     let oflags = OpenFlags::from_bits_truncate(flags) - OpenFlags::O_CLOEXEC;
+    // D3/D37: a freshly CREATED inode (incl. O_TMPFILE) carries the build/born
+    // `i_count` reference. `open_dentry` bound it to a dentry (`d_add` grab) and
+    // `File::new_at` takes the open file's `igrab`; release the born ref once the
+    // File's hold is in place (Linux `do_last`/`d_instantiate` consumes the iget
+    // ref). Cloned (pointer-only) BEFORE the move into `File::new_at`; iput AFTER
+    // → `i_count` never reaches 0 on the live inode. For an O_TMPFILE (nlink==0)
+    // the File's hold is then the SOLE holder, so close → 1→0 → evict.
+    let created_ref = if created { Some(inode.clone()) } else { None };
     let file = File::new_at(inode, dentry, oflags, mnt_id, crate::pathresolve::current_cred());
+    if let Some(i) = created_ref { vfs::file::iput(i); }
     // RLIMIT_NOFILE soft limit caps fd allocation (Linux `__alloc_fd`
     // against `rlimit(RLIMIT_NOFILE)`); exceeding it → EMFILE.
     // SAFETY: rlimits slot single-mutator per `13§5`; cur is the running task on this CPU.

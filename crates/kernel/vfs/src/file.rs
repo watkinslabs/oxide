@@ -1106,6 +1106,25 @@ pub fn get_file(file: &Arc<File>) -> Arc<File> { Arc::clone(file) }
 /// # C: O(1) amortized; last-ref also runs the release hook chain
 pub fn fput(file: Arc<File>) { drop(file); }
 
+/// Release ONE `i_count` reference on `inode` (Linux `iput`). A superblock-backed
+/// inode routes through [`SuperBlock::iput`] so a 1→0 drop runs the
+/// `drop_inode`/`evict_inode` lifecycle; an anon inode (no SB / icache) just
+/// balances the count in place. The PUBLIC form of the dcache's private
+/// `dentry_iput`, mirrored from `File::drop` — for callers (D3/D37) that obtained
+/// an inode via `iget`/`build`/`i_op->create` and must release that
+/// temporary/born reference once a DURABLE counted holder (a dentry alias from
+/// `d_add`/`d_instantiate`, or an open `File`'s `igrab`) is already in place. This
+/// is Linux's `d_instantiate` consuming the iget reference, expressed at the
+/// caller side so the dcache primitive's own `grab_inode_hold` contract is
+/// unchanged. MUST be called only AFTER such a holder exists, so `i_count` never
+/// reaches 0 on a still-live inode. # C: O(log N_ino) for an SB inode, else O(1)
+pub fn iput(inode: InodeRef) {
+    match inode.i_sb() {
+        Some(sb) => sb.iput(inode),
+        None     => { inode.i_count_dec(); }
+    }
+}
+
 impl core::fmt::Debug for File {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("File")
