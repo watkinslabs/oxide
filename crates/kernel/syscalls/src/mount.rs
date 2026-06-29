@@ -28,4 +28,10 @@ pub fn install_vfs_hooks() {
     // (`resolve_mount` → namei `walk_to_mount`) AND of the engine-internal
     // `descend` that materialises SYNTHESIZED mount positions.
     vfs::set_root_dentry_provider(crate::pathresolve::root_dentry);
+    // pivot_root chroot-refs (Linux `chroot_fs_refs`): vfs commits the re-root
+    // then calls this hook to re-point every task whose root/cwd was on the old
+    // root mount to the new root. The walk lives in sched (it owns the task
+    // table). Last-writer-wins with the vfs test's own hook; in production this
+    // is the only installer.
+    vfs::mount::set_chroot_refs_hook(sched::live::chroot_fs_refs);
 }
