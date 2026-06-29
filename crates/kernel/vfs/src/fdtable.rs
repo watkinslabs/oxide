@@ -57,6 +57,21 @@ struct FdTableInner {
 }
 
 impl FdTableInner {
+    /// Grow the `fd[]` array + bitmaps to cover slot `idx`, holding the
+    /// per-process `FdTable` spinlock across the realloc.
+    ///
+    /// D33: the realloc-under-lock is BOUNDED, unlike Linux's `expand_fdtable`
+    /// (which drops `files->file_lock`, allocates a fresh power-of-two `fdtable`
+    /// up to `sysctl_nr_open` ≈ 1M fds via RCU, then re-acquires + publishes).
+    /// Here `idx` is always `< FD_TABLE_MAX` (1024) — every caller reaches this
+    /// only AFTER `find_free_fd`/range checks have rejected fds `>= FD_TABLE_MAX`
+    /// — so the worst-case growth is a one-shot copy of 1024 `Option<Arc<File>>`
+    /// (8 KiB of pointers) + 16 `u64` bitmap words. A bounded ≤8 KiB memcpy
+    /// under a non-sleeping spinlock is acceptable; it does NOT need Linux's
+    /// drop-lock / RCU-publish dance, which exists precisely because Linux's
+    /// table is unbounded. Should `FD_TABLE_MAX` ever be raised toward Linux's
+    /// `nr_open`, revisit this (move to an `Arc`-published swap, like the
+    /// `fork_clone` whole-table swap already does). # C: O(idx) one-shot copy
     fn ensure_capacity(&mut self, idx: usize) {
         if self.files.len() <= idx {
             self.files.resize_with(idx + 1, || None);
@@ -428,6 +443,12 @@ impl FdTable {
         for slot in g.files.iter().take(nfiles) {
             // F205: fire the clone hook for every duplicated File reference.
             if let Some(f) = slot.as_ref() { crate::file::fire_clone_hook(f); }
+            // D38: f_count coupling — `slot.clone()` is `Option<Arc<File>>::clone`,
+            // i.e. `Arc::clone` of the SAME open file description, bumping its
+            // `f_count` (the `Arc` strong count). Parent and child fd slots then
+            // point at ONE shared `File` (shared cursor / flags per POSIX), and
+            // the backend `->release` runs only when the LAST of the two drops.
+            // No transmute-clone, no fresh `File`: identity is preserved.
             files.push(slot.clone());
         }
         files.resize_with(nfiles, || None); // pad to the word-aligned slot count
