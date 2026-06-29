@@ -41,7 +41,7 @@ static VVAR_PA: AtomicU64 = AtomicU64::new(0);
 /// # C: O(PAGE_SIZE) for the zero.
 pub unsafe fn init() {
     if VVAR_PA.load(Ordering::Acquire) != 0 { return; }
-    let pa = match pmm::setup::alloc_one_frame() { Some(p) => p, None => return };
+    let pa = match pmm::setup::alloc_object_frame() { Some(p) => p, None => return };
     // SAFETY: HHDM offset published by mm-pmm at boot; pa was just allocated and is exclusively ours; 4096 bytes is one full PMM frame.
     unsafe {
         let va = pmm::user_as::hhdm_offset() + pa;

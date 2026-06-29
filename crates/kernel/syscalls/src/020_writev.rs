@@ -7,6 +7,27 @@ use syscall::errno::Errno;
 
 use crate::userbuf::validate_user_buf;
 
+#[cfg(feature = "debug-atexit")]
+fn trace_stderr_writev(fd: i32, bytes: &[u8]) {
+    if fd != 2 {
+        return;
+    }
+
+    let mut n = bytes.len();
+    if n > 512 {
+        n = 512;
+    }
+
+    klog::write_raw(b"[DYNERR] ");
+    klog::write_raw(&bytes[..n]);
+    if n < bytes.len() {
+        klog::write_raw(b"...<truncated>");
+    }
+    if n == 0 || bytes[n - 1] != b'\n' {
+        klog::write_raw(b"\n");
+    }
+}
+
 /// `sys_writev(fd, iov, iovcnt)` — slot 20. fd_table-routed
 /// version: looks up the open `File`, walks the iovec array,
 /// calls `File::write` for each non-empty buffer. Returns total
@@ -52,32 +73,8 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
         let bytes: &[u8] = unsafe {
             core::slice::from_raw_parts(base as *const u8, len as usize)
         };
-        #[cfg(feature = "debug-syscall")]
-        if fd == 1 || fd == 2 {
-            klog::write_raw(b"[WRITEV] fd=");
-            klog::write_dec_u64(fd as u64);
-            klog::write_raw(b" bytes=\"");
-            let mut j = 0usize;
-            let cap = bytes.len().min(160);
-            while j < cap {
-                let b = bytes[j];
-                if b == b'\n' {
-                    klog::write_raw(b"\\n");
-                } else if b == b'\r' {
-                    klog::write_raw(b"\\r");
-                } else if b >= 0x20 && b < 0x7f {
-                    let one = [b];
-                    klog::write_raw(&one);
-                } else {
-                    klog::write_raw(b".");
-                }
-                j += 1;
-            }
-            if bytes.len() > cap {
-                klog::write_raw(b"...")
-            }
-            klog::write_raw(b"\"\n");
-        }
+        #[cfg(feature = "debug-atexit")]
+        trace_stderr_writev(fd, bytes);
         dtrace!(b"WV_PRE_W");
         match file.write(bytes) {
             Ok(n)  => { dtrace!(b"WV_OK", n as u64); total = total.saturating_add(n as u64); }

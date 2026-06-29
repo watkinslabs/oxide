@@ -675,6 +675,65 @@ pub fn install_lock_step_hook() {
 /// # C: O(log N_vmas) + O(walk depth)
 #[cfg(feature = "debug-cow")]
 fn segv_dump(rip: u64, cr2: u64, err: u64) {
+    fn dump_vma(label: &[u8], v: Option<vmm::Vma>) {
+        klog::write_raw(label);
+        match v {
+            Some(v) => {
+                klog::write_raw(b"=[");
+                klog::write_hex_u64(v.start.as_u64());
+                klog::write_raw(b",");
+                klog::write_hex_u64(v.end.as_u64());
+                klog::write_raw(b",prot=");
+                klog::write_hex_u64(v.prot.bits() as u64);
+                match &v.backing {
+                    VmaBacking::File { backing, off } => {
+                        klog::write_raw(b",file_ino=");
+                        klog::write_hex_u64(backing.ino());
+                        klog::write_raw(b",file_off=");
+                        klog::write_hex_u64(*off);
+                    }
+                    VmaBacking::KernelBytes { off, .. } => {
+                        klog::write_raw(b",kb_off=");
+                        klog::write_hex_u64(*off as u64);
+                    }
+                    VmaBacking::Anonymous => klog::write_raw(b",anon"),
+                    VmaBacking::KernelFrame { pa } => {
+                        klog::write_raw(b",kframe=");
+                        klog::write_hex_u64(*pa);
+                    }
+                    VmaBacking::PhysRange { base_pa } => {
+                        klog::write_raw(b",phys=");
+                        klog::write_hex_u64(*base_pa);
+                    }
+                    VmaBacking::Special => klog::write_raw(b",special"),
+                }
+                klog::write_raw(b"]");
+            }
+            None => klog::write_raw(b"=none"),
+        }
+    }
+
+    fn dump_u64_at(root: u64, label: &[u8], addr: u64) {
+        klog::write_raw(label);
+        klog::write_hex_u64(addr);
+        if root == 0 || addr >= USER_VA_END {
+            klog::write_raw(b":unreadable");
+            return;
+        }
+        let hhdm = hhdm_offset();
+        match unsafe { read_foreign_leaf(root, addr & !0xfff, hhdm) } {
+            Some((pa, raw)) => {
+                let src = (hhdm + (pa & !0xfff) + (addr & 0xfff)) as *const u64;
+                let val = unsafe { core::ptr::read_volatile(src) };
+                klog::write_raw(b":pte=");
+                klog::write_hex_u64(raw);
+                klog::write_raw(b":val=");
+                klog::write_hex_u64(val);
+            }
+            None => klog::write_raw(b":pte=none"),
+        }
+    }
+
     let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);
     klog::write_raw(b"[SEGV] rip="); klog::write_hex_u64(rip);
     klog::write_raw(b" cr2=");       klog::write_hex_u64(cr2);
@@ -685,14 +744,16 @@ fn segv_dump(rip: u64, cr2: u64, err: u64) {
         // SAFETY: single-mutator mm slot per 13§5; fault ctx with IRQs off; read-only VMA query.
         if let Some(mm) = unsafe { cur.mm_ref() } {
             root = mm.root_pa();
-            match UserVirtAddr::new(cr2 & !0xfff).and_then(|u| mm.find_vma(u)) {
-                Some(v) => {
-                    klog::write_raw(b" vma=[");  klog::write_hex_u64(v.start.as_u64());
-                    klog::write_raw(b",");        klog::write_hex_u64(v.end.as_u64());
-                    klog::write_raw(b",prot=");   klog::write_hex_u64(v.prot.bits() as u64);
-                    klog::write_raw(b"]");
+            dump_vma(b" cr2_vma", UserVirtAddr::new(cr2 & !0xfff).and_then(|u| mm.find_vma(u)));
+            let rip_vma = UserVirtAddr::new(rip & !0xfff).and_then(|u| mm.find_vma(u));
+            dump_vma(b" rip_vma", rip_vma.clone());
+            if let Some(v) = rip_vma {
+                if let VmaBacking::File { off, .. } = &v.backing {
+                    let load_base = v.start.as_u64().saturating_sub(*off);
+                    let got_addr = load_base.saturating_add(0x1e6eb0);
+                    dump_vma(b" got_vma", UserVirtAddr::new(got_addr).and_then(|u| mm.find_vma(u)));
+                    dump_u64_at(root, b" got_rtld_global_ro@", got_addr);
                 }
-                None => klog::write_raw(b" vma=none"),
             }
         }
     }
@@ -1099,7 +1160,11 @@ pub fn glue_mmap(
     if want_fixed && !want_no_replace {
         let _ = glue_munmap(addr, len_aligned as u64);
     }
-    let is_fixed = false;
+    // MAP_FIXED is not an advisory hint: after clearing the destination
+    // range above, the VMM must either place the VMA exactly there or fail.
+    // Falling back to another hole corrupts ELF loader layout because ld.so
+    // computes later segment addresses relative to the requested base.
+    let is_fixed = want_fixed;
     let mut vma_flags = if is_shared {
         if is_anon { VmaFlags::SHARED | VmaFlags::ANONYMOUS }
         else       { VmaFlags::SHARED }

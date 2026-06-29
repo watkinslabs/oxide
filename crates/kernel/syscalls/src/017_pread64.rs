@@ -5,7 +5,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::userbuf::validate_user_buf;
+use crate::userbuf::validate_user_buf_writable;
 
 /// `sys_pread64(fd, buf, cnt, off)` — slot 17.
 /// # C: O(cnt)
@@ -15,7 +15,7 @@ pub fn sys_pread64(args: &SyscallArgs) -> i64 {
     let cnt = args.a2;
     let off = args.a3;
     if cnt == 0 { return 0; }
-    if let Err(rv) = validate_user_buf(buf, cnt, 1) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(buf, cnt, 1) { return rv; }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };

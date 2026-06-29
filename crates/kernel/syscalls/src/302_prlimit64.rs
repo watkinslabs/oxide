@@ -2,6 +2,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 /// `sys_prlimit64(pid, resource, new, old)` — slot 302. Reads/
 /// writes the per-task `rlimits` slot (cur,max). Enforcement is
@@ -24,17 +25,19 @@ pub fn sys_prlimit64(args: &SyscallArgs) -> i64 {
     };
     let task = match task { Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64) };
 
-    if old_ptr != 0 && old_ptr < hal::USER_VA_END {
+    if old_ptr != 0 {
+        if let Err(rv) = validate_user_buf_writable(old_ptr, 16, 8) { return rv; }
         // SAFETY: same single-mutator invariant as getrlimit.
         let (rcur, rmax) = unsafe { (*task.rlimits.get())[resource] };
-        // SAFETY: old_ptr validated; CPL=0 writes through caller's AS.
+        // SAFETY: old_ptr validated writable; CPL=0 writes through caller's AS.
         unsafe {
             core::ptr::write_volatile( old_ptr       as *mut u64, rcur);
             core::ptr::write_volatile((old_ptr + 8)  as *mut u64, rmax);
         }
     }
-    if new_ptr != 0 && new_ptr < hal::USER_VA_END {
-        // SAFETY: validated; CPL=0 reads through caller's AS.
+    if new_ptr != 0 {
+        if let Err(rv) = validate_user_buf(new_ptr, 16, 8) { return rv; }
+        // SAFETY: new_ptr validated readable; CPL=0 reads through caller's AS.
         let (nc, nm) = unsafe {
             let c = core::ptr::read_volatile( new_ptr       as *const u64);
             let m = core::ptr::read_volatile((new_ptr + 8)  as *const u64);

@@ -4,6 +4,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 /// `sys_select(nfds, readfds, writefds, exceptfds, timeout)` — slot 23.
 /// # C: O(nfds)
@@ -16,11 +17,18 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
     let exceptfds_p = args.a3;
     let timeout_p   = args.a4;
     if nfds > NFDS_MAX { return -(Errno::Einval.as_i32() as i64); }
+    let fdset_bytes = ((nfds + 7) / 8).min(128);
+    for &p in &[readfds_p, writefds_p, exceptfds_p] {
+        if p != 0 {
+            if let Err(rv) = validate_user_buf_writable(p, fdset_bytes, 1) { return rv; }
+        }
+    }
     // Decode timeout (struct timeval { tv_sec: i64, tv_usec: i64 }
     // = 16 B). NULL = block forever; {0,0} = non-block.
     let deadline_ns: Option<u64> = if timeout_p == 0 || timeout_p >= USER_VA_END {
         None
     } else {
+        if let Err(rv) = validate_user_buf(timeout_p, 16, 8) { return rv; }
         // SAFETY: timeout_p validated < USER_VA_END; 16 B aligned struct timeval read.
         let (s, u) = unsafe {
             (

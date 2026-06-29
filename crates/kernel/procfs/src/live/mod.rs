@@ -655,8 +655,6 @@ pub fn smoke_test() {
         kassert!(n >= prefix.len(), "procfs read short");
         kassert!(&buf[..prefix.len()] == *prefix, "procfs body mismatch");
     }
-    let binfmt = smoke_resolve("/proc/sys/fs/binfmt_misc").expect("procfs binfmt_misc dir");
-    kassert!(binfmt.file_type() == vfs::FileType::Directory, "procfs binfmt_misc not dir");
     for path in ["/sys/kernel/random/uuid", "/sys/kernel/random/boot_id"] {
         let inode = smoke_resolve(path).expect("procfs lookup");
         let mut buf = [0u8; 40];

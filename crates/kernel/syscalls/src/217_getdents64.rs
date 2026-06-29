@@ -5,7 +5,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::userbuf::validate_user_buf;
+use crate::userbuf::validate_user_buf_writable;
 
 /// `sys_getdents64(fd, dirp, count)` — slot 217. Packs `linux_dirent64`
 /// records (fixed `d_type` field at offset 18).
@@ -45,7 +45,7 @@ fn getdents_common(args: &SyscallArgs, legacy: bool) -> i64 {
     let file = match fdt.get(fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    if let Err(rv) = validate_user_buf(dirp, args.a2, 1) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(dirp, args.a2, 1) { return rv; }
     let inode = file.inode().clone();
     if !matches!(inode.file_type(), FileType::Directory) {
         return -(Errno::Enotdir.as_i32() as i64);
