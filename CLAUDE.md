@@ -167,6 +167,26 @@ When a change spans subsystems, needs many boot-test cycles, or sits on a struct
 
 5. **When stuck thrashing: stop and fix the loop, don't repeat it.** If you've booted >2-3 times to chase one bug, the loop is the problem — build the hosted harness or add a targeted trace, rather than re-running the slow path. Surface the half-built state honestly instead of pushing a compromise.
 
+## Lessons learned (boot-to-GNOME campaign — HARD RULES, learned the expensive way)
+
+These cost real hours. Violating them produces false conclusions and wasted boots.
+
+1. **`cargo run -p xtask -- kernel` BUILDS but does NOT export to `target/artifacts`.** The export is a separate `cargo run -p xtask -- artifacts --arch <a>` step. imagectl / `make boot` boot `target/artifacts/<arch>/kernel.elf`. Building with bare `xtask kernel` then `make boot` boots a **STALE** kernel — silently (you "verify a fix" against an old binary and see a bug that's already fixed, or vice-versa). ALWAYS build boots with `make kernel boot PROFILE=live-gnome ARCH=x86_64` (= `xtask kernel` + `xtask artifacts` + ISO). Before trusting any boot, confirm `ls -la target/artifacts/<arch>/kernel.elf` mtime is fresh. Tell-tale: a "release" boot showing debug-only klog traces (e.g. `[B288 dgram]`) means the artifacts are a stale debug kernel.
+
+2. **imagectl reads the MAIN tree's `../kernel/target/artifacts`, not a worktree.** `KERNEL_DIR=<worktree>` does not change which kernel boots. Boot-verify centrally in the main tree (on the integrated branch); subagents do code + hosted tests in worktrees and must `md5`-copy their kernel into `../kernel/target/artifacts` if they need to boot it.
+
+3. **Single boots LIE about intermittent bugs.** An intermittent SEGV/wedge that fires ~half the time will "reproduce" or "vanish" on any one boot, so a one-boot-each A/B falsely attributes it to whatever you changed. We reverted a good branch on a single-boot false-positive. Measure intermittent failures over **N sequential boots** (report clean/total) before attributing, reverting, or declaring fixed. A causality test (hosted, deterministic) beats any boot count.
+
+4. **When a boot result contradicts strong evidence, suspect the MEASUREMENT first, not the conclusion.** An agent's 3/3 clean boots + a failing→passing causality test outweigh one local SEGV — which turned out to be a stale-artifacts boot (lesson 1). Investigate the harness before re-opening a closed fix.
+
+5. **Boot-verify after EVERY merge — hosted tests cannot catch runtime/ABI/integration bugs.** Two fixes that passed their full hosted gate broke the actual boot (an inode `fsid` that's a struct field instead of a dynamic call; a sysfs change that made a userspace process busy-spin). Only a real ISO boot exposes these. Pair it with: verify **both arches build + `cargo test` 0-failed BEFORE any push** (a rushed merge once broke MS_REC + compile). The "main is always known-good" invariant is what makes a bad merge a fast `git revert`, not a debugging session.
+
+6. **Disprove-don't-hack, with evidence.** The hardest bugs were mis-framed for multiple sessions (the COW corruption chased as a "refcount under-count" when the invariant harness was green all along — the real bug was `MAP_SHARED|ANON` COW-split on fork). An agent that returns "I disproved hypothesis X, here's the evidence, here's the narrowed suspect" is worth more than one that ships a plausible patch. Never re-enable a previously-reverted hack blindly; find the correct mechanism (e.g. a real shmem backing, not in-place writable COW).
+
+7. **The Bash sandbox cannot kill processes** (`kill`/`pkill` silently fail, even with sandbox disabled). So **never launch background boot retry-loops** — they spawn `qemu-system` you cannot reap, which then foul every subsequent boot (port/resource contention → GRUB-hang). Run single or strictly-sequential boots; if stale qemu accumulate, ask the user to `pkill -9 qemu-system`.
+
+8. **A flaky ~8-line "boot" is a GRUB hang, not a result.** ~half of cold boots stall at GRUB with no kernel output. An 8-line log proves nothing; a real boot is >2000 lines. Re-run once.
+
 ## Git workflow (mandatory)
 
 **Commit author (HARD RULE).** Every commit + PR is authored by **`Chris Watkins <chris@watkinslabs.com>`** — period. This is the only valid author identity. Before committing in any clone, ensure `git config user.name "Chris Watkins"` and `git config user.email "chris@watkinslabs.com"` are set (a fresh clone may have `user.name` unset, which produces garbage authors like "Ablative Personality" — fix it first). Never let any other name/email land on a commit or PR.
