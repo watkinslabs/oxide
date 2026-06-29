@@ -13,6 +13,7 @@
 
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as LockClass};
@@ -209,6 +210,10 @@ pub(crate) fn mount_fstype_with_data(
 pub struct FsContextInode {
     pub fstype: String,
     pub source: Spinlock<String, LockClass>,
+    /// Accumulated `fsconfig` key/value options (Linux `fs_context` parameters),
+    /// in submission order. SET_FLAG stores an empty value; SET_STRING/PATH/
+    /// BINARY store the textual value. Consumed by the fstype materialiser.
+    pub options: Spinlock<Vec<(String, String)>, LockClass>,
 }
 
 impl FsContextInode {
@@ -216,7 +221,11 @@ impl FsContextInode {
     pub fn new(fstype: String) -> InodeRef {
         let ino = NEXT_FSCTX_INO.fetch_add(1, Ordering::Relaxed);
         InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o600), default_inode_ops(), default_file_ops())
-            .private(Arc::new(Self { fstype, source: Spinlock::new(String::new()) }))
+            .private(Arc::new(Self {
+                fstype,
+                source: Spinlock::new(String::new()),
+                options: Spinlock::new(Vec::new()),
+            }))
             .build()
     }
 }
