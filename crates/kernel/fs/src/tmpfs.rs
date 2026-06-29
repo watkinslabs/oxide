@@ -22,7 +22,7 @@ use alloc::collections::BTreeMap;
 
 use sync::{Spinlock, Inode as InodeClass, TaskList as TaskListClass};
 use vfs::{AddressSpaceOps, Devt, FileType, Ino, Inode, InodeOps, InodeRef, KResult, VfsError};
-use vfs::{FileOps, InodeBuilder, default_inode_ops, make_device_node_inode, mk_mode};
+use vfs::{FileOps, InodeBuilder, default_inode_ops, make_device_node_inode, mk_mode, CreateCtx};
 use vfs::superblock::SuperBlock;
 
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -179,7 +179,7 @@ fn ensure_page(g: &mut BTreeMap<u64, u64>, idx: u64, acct: &TmpfsSb) -> Option<u
 /// word (`Inode::fcntl_seals`); `perm` is the caller-supplied permission bits
 /// (Linux honours the `open`/`creat` mode, masked by umask at the syscall
 /// layer); `sb` owns the inode (`fsid` derives from `s_dev`). # C: O(1)
-fn make_tmpfs_file_inode(sealable: bool, perm: u16, sb: Weak<SuperBlock>, acct: Arc<TmpfsSb>) -> InodeRef {
+fn make_tmpfs_file_inode(sealable: bool, perm: u16, uid: u32, gid: u32, sb: Weak<SuperBlock>, acct: Arc<TmpfsSb>) -> InodeRef {
     let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
     let data = Arc::new(TmpfsFileData {
         pages: Spinlock::new(BTreeMap::new()),
@@ -189,6 +189,7 @@ fn make_tmpfs_file_inode(sealable: bool, perm: u16, sb: Weak<SuperBlock>, acct: 
     let mapping: Arc<dyn AddressSpaceOps> = data.clone();
     let mut b = InodeBuilder::new(ino, mk_mode(FileType::Regular, perm),
         Arc::new(TmpfsFileInodeOps), Arc::new(TmpfsFileOps))
+        .owner(uid, gid)
         .fsid(fsid_of(&sb))
         .mapping(mapping)
         .private(data);
@@ -198,9 +199,9 @@ fn make_tmpfs_file_inode(sealable: bool, perm: u16, sb: Weak<SuperBlock>, acct: 
 }
 
 /// Anonymous tmpfs file body (memfd / coredump), no owning SuperBlock. # C: O(1)
-pub fn tmpfs_anon_file() -> InodeRef { make_tmpfs_file_inode(false, 0o644, Weak::new(), TmpfsSb::unlimited()) }
+pub fn tmpfs_anon_file() -> InodeRef { make_tmpfs_file_inode(false, 0o644, 0, 0, Weak::new(), TmpfsSb::unlimited()) }
 /// A sealable memfd file (`memfd_create(MFD_ALLOW_SEALING)`). # C: O(1)
-pub fn tmpfs_sealable_file() -> InodeRef { make_tmpfs_file_inode(true, 0o644, Weak::new(), TmpfsSb::unlimited()) }
+pub fn tmpfs_sealable_file() -> InodeRef { make_tmpfs_file_inode(true, 0o644, 0, 0, Weak::new(), TmpfsSb::unlimited()) }
 
 impl TmpfsFileData {
     /// Copy out cache bytes from `off` (sparse holes read as zero, tail past
@@ -421,10 +422,11 @@ impl InodeOps for TmpfsSymlinkOps {
 }
 
 /// Build a tmpfs symlink inode pointing at `target`, owned by `sb`. # C: O(1)
-fn make_tmpfs_symlink_inode(target: &[u8], sb: Weak<SuperBlock>) -> InodeRef {
+fn make_tmpfs_symlink_inode(target: &[u8], uid: u32, gid: u32, sb: Weak<SuperBlock>) -> InodeRef {
     let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
     let mut b = InodeBuilder::new(ino, mk_mode(FileType::Symlink, 0o777),
         Arc::new(TmpfsSymlinkOps), vfs::default_file_ops())
+        .owner(uid, gid)
         .size(target.len() as u64)
         .fsid(fsid_of(&sb))
         .private(Arc::new(TmpfsSymlinkData { target: target.to_vec() }));
@@ -442,10 +444,11 @@ impl FileOps for TmpfsErrFileOps {
 /// F152: socket-type tmpfs inode. bind(AF_UNIX, path) materialises one of
 /// these at `path` so stat() returns S_IFSOCK + chmod() flows through normal
 /// VFS. All I/O errors — datagram queueing lives in `net`. # C: O(1)
-fn make_tmpfs_sock_inode(sb: Weak<SuperBlock>) -> InodeRef {
+fn make_tmpfs_sock_inode(uid: u32, gid: u32, sb: Weak<SuperBlock>) -> InodeRef {
     let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
     let mut b = InodeBuilder::new(ino, mk_mode(FileType::Socket, 0o755),
         default_inode_ops(), Arc::new(TmpfsErrFileOps))
+        .owner(uid, gid)
         .fsid(fsid_of(&sb));
     if let Some(s) = sb.upgrade() { b = b.sb(Arc::downgrade(&s)); }
     b.build()
@@ -454,10 +457,11 @@ fn make_tmpfs_sock_inode(sb: Weak<SuperBlock>) -> InodeRef {
 /// Special tmpfs inode created by mknod(2), mainly FIFO nodes under /run. The
 /// mode (`ft` + `perm`) + device number are stamped into the inode — discarding
 /// them made systemd's fifo_address_create reject the dm-event FIFO. # C: O(1)
-fn make_tmpfs_special_inode(ft: FileType, perm: u16, rdev: u32, sb: Weak<SuperBlock>) -> InodeRef {
+fn make_tmpfs_special_inode(ft: FileType, perm: u16, rdev: u32, uid: u32, gid: u32, sb: Weak<SuperBlock>) -> InodeRef {
     let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
     let mut b = InodeBuilder::new(ino, mk_mode(ft, perm),
         default_inode_ops(), Arc::new(TmpfsErrFileOps))
+        .owner(uid, gid)
         .rdev(rdev)
         .fsid(fsid_of(&sb));
     if let Some(s) = sb.upgrade() { b = b.sb(Arc::downgrade(&s)); }
@@ -496,9 +500,10 @@ impl TmpfsDirData {
 /// Build a fresh tmpfs directory inode (`ino`, `perm` permission bits, owned by
 /// `sb`). `i_nlink` defaults to 2 (`.` + the parent's link), per Linux
 /// `simple_fs`. # C: O(1)
-fn make_tmpfs_dir_inode(ino: Ino, perm: u16, sb: Weak<SuperBlock>, acct: Arc<TmpfsSb>) -> InodeRef {
+fn make_tmpfs_dir_inode(ino: Ino, perm: u16, uid: u32, gid: u32, sb: Weak<SuperBlock>, acct: Arc<TmpfsSb>) -> InodeRef {
     let mut b = InodeBuilder::new(ino, mk_mode(FileType::Directory, perm),
         Arc::new(TmpfsDirOps), Arc::new(TmpfsDirFileOps))
+        .owner(uid, gid)
         .fsid(fsid_of(&sb))
         .private(Arc::new(TmpfsDirData {
             sb:   Spinlock::new(sb.clone()),
@@ -562,13 +567,17 @@ impl InodeOps for TmpfsDirOps {
     /// layer). The new dir starts at `i_nlink == 2` (`.` + this parent's link
     /// down) and the PARENT gains a link (the child's `..`), matching Linux
     /// `simple_mkdir`/`inc_nlink(dir)`. # C: O(log N)
-    fn mkdir(&self, inode: &Inode, name: &str, mode: u32) -> KResult<InodeRef> {
+    fn mkdir(&self, inode: &Inode, name: &str, mode: u32, ctx: &CreateCtx) -> KResult<InodeRef> {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let mut g = dd.kids.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
         let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-        let d = make_tmpfs_dir_inode(ino, (mode & 0o7777) as u16, dd.sb_weak(), dd.acct.clone());
+        // Owner = caller fsuid/fsgid mapped down through the mount idmap; perm =
+        // requested mode with umask cleared (Linux `shmem_mkdir` → `shmem_get_inode`
+        // → `inode_init_owner`). Closes fsimpls D35 (was always uid/gid=0).
+        let perm = (ctx.apply_umask(mode) & 0o7777) as u16;
+        let d = make_tmpfs_dir_inode(ino, perm, ctx.fsuid(), ctx.fsgid(), dd.sb_weak(), dd.acct.clone());
         g.insert(name.into(), d.clone());
         inode.inc_nlink(); // child's ".." adds a link to this parent dir
         Ok(d)
@@ -599,12 +608,14 @@ impl InodeOps for TmpfsDirOps {
 
     /// `create` — a fresh regular file honouring the caller-supplied `mode`
     /// (perm bits; umask is applied at the syscall layer). # C: O(log N)
-    fn create(&self, inode: &Inode, name: &str, mode: u32) -> KResult<InodeRef> {
+    fn create(&self, inode: &Inode, name: &str, mode: u32, ctx: &CreateCtx) -> KResult<InodeRef> {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let mut g = dd.kids.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
-        let child = make_tmpfs_file_inode(false, (mode & 0o7777) as u16, dd.sb_weak(), dd.acct.clone());
+        // Owner from caller cred (idmap-mapped), perm with umask cleared. # D35
+        let perm = (ctx.apply_umask(mode) & 0o7777) as u16;
+        let child = make_tmpfs_file_inode(false, perm, ctx.fsuid(), ctx.fsgid(), dd.sb_weak(), dd.acct.clone());
         g.insert(name.into(), child.clone());
         Ok(child)
     }
@@ -632,12 +643,13 @@ impl InodeOps for TmpfsDirOps {
     }
 
     /// `symlink(2)` — a followable tmpfs symlink child. # C: O(log N)
-    fn symlink(&self, inode: &Inode, name: &str, target: &[u8]) -> KResult<()> {
+    fn symlink(&self, inode: &Inode, name: &str, target: &[u8], ctx: &CreateCtx) -> KResult<()> {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let mut g = dd.kids.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
-        g.insert(name.into(), make_tmpfs_symlink_inode(target, dd.sb_weak()));
+        // Symlinks carry no umask (always 0777) but DO take the caller owner. # D35
+        g.insert(name.into(), make_tmpfs_symlink_inode(target, ctx.fsuid(), ctx.fsgid(), dd.sb_weak()));
         Ok(())
     }
 
@@ -645,16 +657,17 @@ impl InodeOps for TmpfsDirOps {
     /// device-node inode that dispatches I/O to the driver registered by
     /// `(major,minor)` (so `mknod /dev/zero c 1 5` then read returns zeros).
     /// # C: O(log N)
-    fn mknod(&self, inode: &Inode, name: &str, mode: u16, rdev: u32) -> KResult<()> {
+    fn mknod(&self, inode: &Inode, name: &str, mode: u16, rdev: u32, ctx: &CreateCtx) -> KResult<()> {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let mut g = dd.kids.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
         let sb = dd.sb_weak();
-        let perm = mode & 0o7777;
+        let perm = (ctx.apply_umask(mode as u32) & 0o7777) as u16;
+        let (uid, gid) = (ctx.fsuid(), ctx.fsgid());
         let child: InodeRef = match mode & S_IFMT {
-            S_IFIFO  => make_tmpfs_special_inode(FileType::Fifo, perm, rdev, sb),
-            S_IFSOCK => make_tmpfs_sock_inode(sb),
+            S_IFIFO  => make_tmpfs_special_inode(FileType::Fifo, perm, rdev, uid, gid, sb),
+            S_IFSOCK => make_tmpfs_sock_inode(uid, gid, sb),
             S_IFCHR  => make_device_node_inode(
                 NEXT_INO.fetch_add(1, Ordering::Relaxed), FileType::CharDev,
                 Devt::from_raw(rdev), perm, sb),
@@ -680,8 +693,8 @@ pub fn init() {}
 /// # C: O(1)
 pub fn smoke_test() {
     use hal::kassert;
-    let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new(), TmpfsSb::unlimited());
-    let inode = root.create_child(".smoke", 0o644).expect("tmpfs.create");
+    let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), TmpfsSb::unlimited());
+    let inode = root.create_child(".smoke", 0o644, &CreateCtx::root()).expect("tmpfs.create");
     let n = inode.write(0, b"shell-test").expect("tmpfs.write");
     kassert!(n == 10, "tmpfs write len");
     let mut buf = [0u8; 16];
@@ -724,7 +737,7 @@ impl TmpfsFs {
     /// the option string is the only remaining piece, cross-lane). # C: O(1)
     pub fn with_limits(mount_path: String, acct: Arc<TmpfsSb>) -> Arc<Self> {
         acct.charge_inode(); // the root inode itself counts (Linux shmem)
-        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new(), acct.clone());
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), acct.clone());
         Arc::new(Self { mount_path, root, sb: Spinlock::new(Weak::new()), acct })
     }
     /// This instance's root inode (`sb->s_root->d_inode`), handed to
@@ -770,7 +783,7 @@ impl vfs::fs::FileSystem for TmpfsFs {
         let rel = self.rel(path);
         if let Some(i) = dir_resolve(&self.root, rel) { return Ok(i); }
         let (p, name) = dir_parent_of(&self.root, rel).ok_or(VfsError::Enoent)?;
-        p.create_child(name, mode)
+        p.create_child(name, mode, &CreateCtx::root())
     }
 
     /// `O_TMPFILE`: a fresh in-memory inode with no directory entry — reclaimed
@@ -779,7 +792,7 @@ impl vfs::fs::FileSystem for TmpfsFs {
     fn create_anonymous(&self, _dir: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
         // Blocks the anon inode writes count against this mount (freed on the
         // file's Drop); it has no directory entry so it is not inode-charged.
-        Ok(make_tmpfs_file_inode(false, (mode & 0o7777) as u16, self.sb.lock().clone(), self.acct.clone()))
+        Ok(make_tmpfs_file_inode(false, (mode & 0o7777) as u16, 0, 0, self.sb.lock().clone(), self.acct.clone()))
     }
 
     /// `unlink(2)` by whole path (atomic-rename idiom). # C: O(components)
@@ -866,11 +879,11 @@ mod statfs_tests {
         let sops = fs.super_ops().expect("tmpfs super_ops");
         assert_eq!(sops.statfs().unwrap().f_ffree, 2); // root charged
 
-        root.create_child("f", 0o644).expect("create f");
-        root.mkdir("d", 0o755).expect("mkdir d");
+        root.create_child("f", 0o644, &CreateCtx::root()).expect("create f");
+        root.mkdir("d", 0o755, &CreateCtx::root()).expect("mkdir d");
         assert_eq!(sops.statfs().unwrap().f_ffree, 0);
         // Inode limit reached → next create is ENOSPC.
-        assert!(matches!(root.create_child("g", 0o644), Err(VfsError::Enospc)));
+        assert!(matches!(root.create_child("g", 0o644, &CreateCtx::root()), Err(VfsError::Enospc)));
 
         // Reclaim both entries.
         root.unlink_child("f").expect("unlink f");
@@ -885,7 +898,7 @@ mod symlink_tests {
     // tmpfs symlink inode round-trips its target (the systemd /run case).
     #[test]
     fn symlink_inode_readlink_roundtrips() {
-        let s = make_tmpfs_symlink_inode(b"/usr/share/zoneinfo/UTC", Weak::new());
+        let s = make_tmpfs_symlink_inode(b"/usr/share/zoneinfo/UTC", 0, 0, Weak::new());
         assert_eq!(s.file_type(), FileType::Symlink);
         assert_eq!(s.size(), 23);
         assert_eq!(s.readlink().unwrap(), b"/usr/share/zoneinfo/UTC".to_vec());
@@ -894,13 +907,13 @@ mod symlink_tests {
     // the dir's own kids map (no global registry).
     #[test]
     fn dir_symlink_child_creates_followable_link() {
-        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new(), TmpfsSb::unlimited());
-        root.symlink_child("tz", b"/etc/localtime").expect("create symlink");
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), TmpfsSb::unlimited());
+        root.symlink_child("tz", b"/etc/localtime", &CreateCtx::root()).expect("create symlink");
         let resolved = root.lookup("tz").expect("symlink in tree");
         assert_eq!(resolved.file_type(), FileType::Symlink);
         assert_eq!(resolved.readlink().unwrap(), b"/etc/localtime".to_vec());
         // Eexist on a second create.
-        assert!(matches!(root.symlink_child("tz", b"/x"), Err(VfsError::Eexist)));
+        assert!(matches!(root.symlink_child("tz", b"/x", &CreateCtx::root()), Err(VfsError::Eexist)));
     }
 }
 
@@ -915,7 +928,7 @@ mod nlink_mode_tests {
     fn hardlink_raises_and_unlink_lowers_nlink() {
         let fs = TmpfsFs::new(String::from("/"));
         let root = fs.root_inode();
-        let f = root.create_child("a", 0o644).expect("create a");
+        let f = root.create_child("a", 0o644, &CreateCtx::root()).expect("create a");
         assert_eq!(f.nlink(), 1);
         fs.link_inode(f.clone(), "/b").expect("hardlink b");
         assert_eq!(f.nlink(), 2);
@@ -929,9 +942,9 @@ mod nlink_mode_tests {
     // raises the PARENT's nlink (the child's ".."); rmdir reverses both.
     #[test]
     fn mkdir_rmdir_maintains_dir_nlink() {
-        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new(), TmpfsSb::unlimited());
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), TmpfsSb::unlimited());
         assert_eq!(root.nlink(), 2);
-        let sub = root.mkdir("d", 0o755).expect("mkdir d");
+        let sub = root.mkdir("d", 0o755, &CreateCtx::root()).expect("mkdir d");
         assert_eq!(sub.nlink(), 2);
         assert_eq!(root.nlink(), 3); // gained child's ".."
         root.rmdir("d").expect("rmdir d");
@@ -942,22 +955,48 @@ mod nlink_mode_tests {
     // a hardcoded 0o755/0o644.
     #[test]
     fn create_and_mkdir_honour_mode() {
-        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new(), TmpfsSb::unlimited());
-        let f = root.create_child("f", 0o600).expect("create f");
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), TmpfsSb::unlimited());
+        let f = root.create_child("f", 0o600, &CreateCtx::root()).expect("create f");
         assert_eq!(f.perm(), Some(0o600));
-        let d = root.mkdir("d", 0o2750).expect("mkdir d");
+        let d = root.mkdir("d", 0o2750, &CreateCtx::root()).expect("mkdir d");
         assert_eq!(d.perm(), Some(0o2750));
+    }
+
+    // D35 (idmap lane): a new tmpfs inode takes its owner from the caller cred
+    // (fsuid/fsgid) mapped DOWN through the mount idmap, and clears the umask
+    // from its perm bits — closing the "tmpfs dirs land uid/gid=0" defect.
+    #[test]
+    fn create_mkdir_set_owner_from_cred_and_honour_umask() {
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), TmpfsSb::unlimited());
+        let mut cred = vfs::Cred::root();
+        cred.uid = 1000; cred.gid = 2000;
+        // Non-idmapped (identity) mount: stored fs ids == caller ids; umask
+        // clears the group/other write bits (Linux `inode_init_owner`).
+        let ctx = CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0o022 };
+        let f = root.create_child("f", 0o666, &ctx).expect("create f");
+        assert_eq!((f.uid(), f.gid()), (Some(1000), Some(2000)));
+        assert_eq!(f.perm(), Some(0o644)); // 0o666 & ~0o022
+        let d = root.mkdir("d", 0o777, &ctx).expect("mkdir d");
+        assert_eq!((d.uid(), d.gid()), (Some(1000), Some(2000)));
+        assert_eq!(d.perm(), Some(0o755)); // 0o777 & ~0o022
+
+        // Idmapped mount: caller vfs ids are mapped DOWN to the fs ids stored in
+        // i_uid/i_gid (uniform extent fs=vfs+10000) — the mnt_idmap path.
+        let idmap = vfs::Idmap::uniform(/*fs_lo*/10000, /*vfs_lo*/0, /*count*/65536);
+        let ctx2 = CreateCtx { idmap: &idmap, cred: &cred, umask: 0 };
+        let g = root.create_child("g", 0o600, &ctx2).expect("create g");
+        assert_eq!((g.uid(), g.gid()), (Some(11000), Some(12000)));
     }
 
     // D28: unlink of a directory returns EISDIR (Linux unlink(2); rmdir is the
     // directory removal path).
     #[test]
     fn unlink_directory_is_eisdir() {
-        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new(), TmpfsSb::unlimited());
-        root.mkdir("d", 0o755).expect("mkdir d");
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), TmpfsSb::unlimited());
+        root.mkdir("d", 0o755, &CreateCtx::root()).expect("mkdir d");
         assert!(matches!(root.unlink_child("d"), Err(VfsError::Eisdir)));
         // A regular file still unlinks fine.
-        root.create_child("f", 0o644).expect("create f");
+        root.create_child("f", 0o644, &CreateCtx::root()).expect("create f");
         assert!(root.unlink_child("f").is_ok());
     }
 }

@@ -30,7 +30,11 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
     let mode = (args.a1 as u32) & 0o7777 & !umask;
     if path_exists(&p) { return -(Errno::Eexist.as_i32() as i64); }
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
-    match pino.mkdir(&name, mode) {
+    // Thread the mount idmap + caller cred + umask so the new dir gets the right
+    // owner (Linux `->mkdir(struct mnt_idmap *, ...)`).
+    let cred = crate::pathresolve::current_cred();
+    let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
+    match pino.mkdir(&name, mode, &ctx) {
         Ok(_) => { crate::pathresolve::d_drop_path(&p); 0 }
         Err(e) => {
             crate::namei_common::trace_run_vfs_error(b"mkdir", &p, e);

@@ -792,7 +792,7 @@ impl InodeOps for TestDirOps {
             None => Err(VfsError::Enoent),
         }
     }
-    fn mknod(&self, inode: &Inode, name: &str, mode: u16, rdev: u32) -> KResult<()> {
+    fn mknod(&self, inode: &Inode, name: &str, mode: u16, rdev: u32, _ctx: &crate::CreateCtx) -> KResult<()> {
         let d = inode.private::<TestDir>().unwrap();
         let key = crate::path::path_into_bytes(name);
         let ft = match mode & 0xF000 {

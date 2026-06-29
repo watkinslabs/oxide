@@ -56,11 +56,15 @@ pub(crate) fn mknod_impl(raw: String, mode: u16, dev: u32) -> i64 {
         .map(|c| c.umask.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0) as u16;
     let perm = (mode & 0x0FFF) & !umask;
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
+    // Thread the mount idmap + caller cred + umask so the new node gets the
+    // right owner (Linux `->mknod`/`->create(struct mnt_idmap *, ...)`).
+    let cred = crate::pathresolve::current_cred();
+    let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask };
     let r = if real_ftype == S_IFREG {
         // POSIX-compat: mknod-with-regular-type = open(O_CREAT) equivalent.
-        pino.create_child(&name, perm as u32).map(|_| ())
+        pino.create_child(&name, perm as u32, &ctx).map(|_| ())
     } else {
-        pino.mknod_child(&name, (real_ftype | perm) as u16, dev)
+        pino.mknod_child(&name, (real_ftype | perm) as u16, dev, &ctx)
     };
     match r {
         Ok(())  => { crate::pathresolve::d_drop_path(&p); 0 }
