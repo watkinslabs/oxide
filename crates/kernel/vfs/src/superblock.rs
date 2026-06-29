@@ -30,16 +30,29 @@ use crate::inode::{Inode, InodeBuilder, InodeRef, I_CLEAR, I_DIRTY, I_FREEING, I
 use crate::inode_ops::InodeOps;
 use crate::types::{Ino, KResult};
 
-/// `get_anon_bdev` (Linux `fs/super.c`) — per-instance anonymous block-dev
-/// id source for filesystems with no real backing device. Each mounted
-/// instance gets a distinct `s_dev` so two `mount -t tmpfs` report
-/// different `st_dev` (the thing a per-fs-type constant cannot express).
-/// Starts above the legacy `dev_t` minor range to avoid colliding with a
-/// real block device's packed `(major<<20)|minor`. # C: O(1)
-static NEXT_ANON_DEV: AtomicU64 = AtomicU64::new(0x0000_0001_0000_0000);
+/// `unnamed_dev_ida` minor allocator (Linux `fs/super.c` `get_anon_bdev`) —
+/// the single monotonically-increasing minor source shared by BOTH the
+/// per-instance anon `s_dev` ([`next_anon_dev`]) AND the per-pseudo-fs-identity
+/// `st_dev` registry ([`crate::getattr::st_dev_for_fsid`]), so no two
+/// filesystems ever land on the same `(0, minor)` regardless of which path
+/// allocated it. Minor 0 is reserved (Linux skips it), so the first fs gets
+/// `(0, 1)`. # C: O(1)
+static ANON_MINOR: AtomicU32 = AtomicU32::new(1);
 
-/// Allocate a fresh anonymous device id (`get_anon_bdev`). # C: O(1)
-pub fn next_anon_dev() -> u64 { NEXT_ANON_DEV.fetch_add(1, Ordering::Relaxed) }
+/// Allocate one fresh anon-bdev minor from the shared `unnamed_dev_ida`
+/// counter. # C: O(1)
+pub(crate) fn alloc_anon_minor() -> u32 { ANON_MINOR.fetch_add(1, Ordering::Relaxed) }
+
+/// `get_anon_bdev` (Linux `fs/super.c`) — allocate a fresh anonymous block-dev
+/// number for a filesystem with no real backing device, as a REAL Linux anon
+/// `dev_t`: major 0, a unique minor (`MKDEV(0, minor)`). Each mounted instance
+/// gets a distinct `s_dev` so two `mount -t tmpfs` report different `st_dev`
+/// (what a per-fs-type constant cannot express), AND the value is now a genuine
+/// `dev_t` — `huge_encode_dev(s_dev)` is the `st_dev` userspace sees, not an
+/// opaque hashed number. # C: O(1)
+pub fn next_anon_dev() -> u64 {
+    crate::devnode::mkdev(0, alloc_anon_minor()) as u64
+}
 
 /// `super_blocks` (Linux `fs/super.c` global `super_blocks` list) — the registry
 /// of every live `SuperBlock` instance, held by `Weak` so it never keeps an SB
