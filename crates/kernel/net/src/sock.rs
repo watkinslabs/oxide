@@ -231,6 +231,12 @@ pub struct SockOpts {
     pub tcp_keepcnt: core::sync::atomic::AtomicI32,
     pub passcred: core::sync::atomic::AtomicI32,
     pub timestamping: core::sync::atomic::AtomicI32,
+    /// SO_TYPE override (Linux `sock->type`) for AF_UNIX sockets whose
+    /// `SockKind` doesn't itself encode the requested shape — chiefly a
+    /// `SOCK_SEQPACKET` listener, which is byte-ring-backed internally but
+    /// MUST report SOCK_SEQPACKET so `sd_is_socket()` socket-activation
+    /// checks (systemd-udevd control socket) pass. `0` = derive from kind.
+    pub so_type: core::sync::atomic::AtomicU8,
 }
 
 pub const TCP_SNDBUF_DEFAULT: i32 = 16384; pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
@@ -264,6 +270,7 @@ impl Default for SockOpts {
             tcp_keepcnt:    AtomicI32::new(crate::sock_opts::TCP_KEEPCNT_DEFAULT),
             passcred: AtomicI32::new(0),
             timestamping: AtomicI32::new(0),
+            so_type: AtomicU8::new(0),
         }
     }
 }
@@ -408,7 +415,11 @@ pub const INET_INO_TAG: u64 = 0x534F_434B_0000_0000;
 /// socket fd falls back to the global broadcast. # C: O(1)
 pub fn make_inet_socket_inode(sock: Arc<InetSocket>) -> vfs::InodeRef {
     let ino = INET_INO_TAG | (Arc::as_ptr(&sock) as u64 & 0xFFFF_FFFF);
-    vfs::InodeBuilder::new(ino, vfs::mk_mode(vfs::FileType::Regular, 0o600),
+    // S_IFSOCK so fstat()/sd_is_socket() see a socket — systemd-udevd's
+    // listen_fds() rejects an inherited fd whose mode isn't S_ISSOCK
+    // (returns -EINVAL → "Failed to listen on fds"). Linux socket fds
+    // are always S_IFSOCK.
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(vfs::FileType::Socket, 0o600),
         vfs::default_inode_ops(), Arc::new(InetFileOps))
         .private(sock)
         .build()
@@ -417,6 +428,20 @@ pub fn make_inet_socket_inode(sock: Arc<InetSocket>) -> vfs::InodeRef {
 /// Recover the `&InetSocket` stored in a socket inode's `i_private`. # C: O(1)
 pub fn inet_from_inode(inode: &vfs::Inode) -> Option<&InetSocket> {
     inode.private::<InetSocket>()
+}
+
+/// Local AF_UNIX address (sun_path) this socket is bound to, if any —
+/// used by `getsockname` to report the bound path. A bound stream/seqpacket
+/// listener carries its path on the `UnixListener`; a bound dgram queue
+/// carries it on the queue. Unbound/connected sockets return `None`.
+/// # C: O(1)
+pub fn unix_local_path(sock: &InetSocket) -> Option<alloc::string::String> {
+    match &*sock.kind.lock() {
+        SockKind::UnixListener(l) => Some(l.path.clone()),
+        // Dgram queues don't retain their bound path (the registry owns
+        // it); the bare AF_UNIX family is enough for getsockname's callers.
+        _ => None,
+    }
 }
 
 /// Recover an owning `Arc<InetSocket>` from a socket inode. # C: O(1)
@@ -817,7 +842,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             // SO_PEERCRED: the connecting task owns end B.
             if let Some(c) = sched::live::current() {
                 use core::sync::atomic::Ordering;
-                pair.set_end_cred(crate::UnixEnd::B, c.tgid.load(Ordering::Relaxed),
+                pair.set_end_cred(crate::UnixEnd::B, c.visible_pid(),
                     c.creds.euid.load(Ordering::Relaxed), c.creds.egid.load(Ordering::Relaxed));
             }
             *sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::B);
@@ -940,7 +965,7 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         // SO_PEERCRED: the accepting task owns end A.
         if let Some(c) = sched::live::current() {
             use core::sync::atomic::Ordering;
-            pair.set_end_cred(crate::UnixEnd::A, c.tgid.load(Ordering::Relaxed),
+            pair.set_end_cred(crate::UnixEnd::A, c.visible_pid(),
                 c.creds.euid.load(Ordering::Relaxed), c.creds.egid.load(Ordering::Relaxed));
         }
         *new_sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::A);
@@ -1014,6 +1039,7 @@ pub fn sendto(
             _ => q.peer().ok_or(NetError::Eaddrnotavail)?,
         };
         let q = UNIX_REGISTRY.dgram_lookup(&path).ok_or(NetError::Enobufs)?;
+        crate::trace_dgram_journal(&path, payload);
         q.push(crate::UnixDgram {
             payload: payload.to_vec(),
             creds: (creds.pid, creds.uid, creds.gid),

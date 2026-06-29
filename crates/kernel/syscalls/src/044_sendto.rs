@@ -92,7 +92,7 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     // Fetch sender creds for AF_UNIX SCM.
     let creds = match sched::live::current() {
         Some(t) => net::sock::SenderCreds {
-            pid: t.tgid.load(core::sync::atomic::Ordering::Acquire),
+            pid: t.visible_pid(),
             uid: t.creds.euid.load(core::sync::atomic::Ordering::Acquire),
             gid: t.creds.egid.load(core::sync::atomic::Ordering::Acquire),
         },

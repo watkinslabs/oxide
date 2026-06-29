@@ -976,6 +976,19 @@ impl Task {
     /// # C: O(1)
     pub fn set_state(&self, s: TaskState) { self.state.store(s as u8, Ordering::Release); }
 
+    /// PID-namespace-visible process id (`vtgid`, falling back to the real
+    /// `tgid` when no NS virtualisation is active). This is the value Linux
+    /// reports in `SCM_CREDENTIALS`/`SO_PEERCRED` (it delivers `pid_vnr`
+    /// relative to the reader's NS) and via `getpid`. AF_UNIX credential
+    /// stamping MUST use this, not the raw global `tgid`: PID 1 (systemd)
+    /// tracks each service by its NS-local pid, so a notify datagram
+    /// carrying the global tgid matches no unit and the service times out.
+    /// # C: O(1)
+    pub fn visible_pid(&self) -> u32 {
+        let v = self.vtgid.load(Ordering::Acquire);
+        if v != 0 { v } else { self.tgid.load(Ordering::Acquire) }
+    }
+
     /// Lift this task's vruntime to `floor` if it's currently below;
     /// `13§5` invariant 5. F211: also see `set_vruntime_to_floor`.
     /// # C: O(1)

@@ -53,7 +53,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         let (pid, uid, gid) = peercred_for_fd(args.a0 as i32).unwrap_or_else(|| {
             use core::sync::atomic::Ordering;
             sched::live::current()
-                .map(|c| (c.tgid.load(Ordering::Relaxed),
+                .map(|c| (c.visible_pid(),
                           c.creds.euid.load(Ordering::Relaxed),
                           c.creds.egid.load(Ordering::Relaxed)))
                 .unwrap_or((0, 0, 0))
@@ -333,6 +333,10 @@ fn socket_type(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
     const SOCK_STREAM: i32 = 1;
     const SOCK_DGRAM: i32 = 2;
     const SOCK_SEQPACKET: i32 = 5;
+    // Explicit SO_TYPE override (AF_UNIX SOCK_SEQPACKET listener — see
+    // sys_socket): the byte-ring SockKind can't encode the SEQPACKET shape.
+    let ov = s.opts.so_type.load(Ordering::Acquire);
+    if ov != 0 { return ov as i32; }
     match &*s.kind.lock() {
         SockKind::Udp | SockKind::UnixDgram(_) => SOCK_DGRAM,
         SockKind::Packet { sock_type, .. } => sock_type.load(Ordering::Acquire) as i32,
