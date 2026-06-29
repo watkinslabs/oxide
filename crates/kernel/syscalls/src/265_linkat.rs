@@ -57,6 +57,10 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
             Ok(f)  => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
         };
         let inode = file.inode();
+        // vfs_link: hard-linking a directory is EPERM (no filesystem permits it).
+        if matches!(inode.file_type(), vfs::FileType::Directory) {
+            return -(Errno::Eperm.as_i32() as i64);
+        }
         let (lm, _) = match vfs::mount::resolve_mount(&l) {
             Some(v) => v, None => return -(Errno::Enoent.as_i32() as i64),
         };
@@ -91,6 +95,10 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
                 Err(e) => return errno_from_vfs(e),
             }
         };
+        // vfs_link: hard-linking a directory is EPERM.
+        if matches!(source_inode.file_type(), vfs::FileType::Directory) {
+            return -(Errno::Eperm.as_i32() as i64);
+        }
         let (lm, _) = match vfs::mount::resolve_mount(&l) {
             Some(v) => v, None => return -(Errno::Enoent.as_i32() as i64),
         };
@@ -101,6 +109,15 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
             Ok(()) => 0,
             Err(e) => errno_from_vfs(e),
         };
+    }
+    // vfs_link: hard-linking a directory is EPERM. Without AT_SYMLINK_FOLLOW the
+    // source symlink is not followed (nofollow), matching the linked inode.
+    match crate::pathresolve::resolve_path_result(&t, true) {
+        Ok(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => {
+            return -(Errno::Eperm.as_i32() as i64);
+        }
+        Ok(_)  => {}
+        Err(e) => return errno_from_vfs(e),
     }
     let (tm, _) = match vfs::mount::resolve_mount(&t) {
         Some(v) => v, None => return -(Errno::Enoent.as_i32() as i64),

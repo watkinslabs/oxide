@@ -30,8 +30,11 @@ pub fn sys_pwrite64(args: &SyscallArgs) -> i64 {
     let bytes: &[u8] = unsafe {
         core::slice::from_raw_parts(buf as *const u8, cnt as usize)
     };
-    match file.inode().write(off, bytes) {
+    // Route through File::pwrite for the full Linux gate chain (negative off →
+    // EINVAL, !FMODE_PWRITE → ESPIPE, !FMODE_WRITE → EBADF, mnt_readonly →
+    // EROFS, O_APPEND forces i_size), instead of inode().write directly.
+    match file.pwrite(bytes, off as i64) {
         Ok(n) => n as i64,
-        Err(e) => -(e as i64),
+        Err(e) => crate::namei_common::errno_from_vfs(e),
     }
 }
