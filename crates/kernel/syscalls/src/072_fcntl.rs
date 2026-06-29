@@ -58,7 +58,11 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             Ok(()) => 0,
             Err(e) => -(e as i64),
         },
-        F_GETFL => file.flags().bits() as i64,
+        // F_GETFL: on 64-bit Linux every open implicitly carries O_LARGEFILE
+        // (`include/linux/fcntl.h` force_o_largefile; the open path ORs it into
+        // `f_flags`), so F_GETFL always reports it. OR it in here — O_LARGEFILE
+        // is NOT in `SETFL_MASK`, so F_SETFL cannot clear it (Linux parity).
+        F_GETFL => (file.flags() | vfs::OpenFlags::O_LARGEFILE).bits() as i64,
         F_SETFL => {
             // SETFL masking (preserve access mode + creation flags, update only
             // O_APPEND/O_NONBLOCK/O_DIRECT/O_NOATIME/O_ASYNC) lives in the VFS
