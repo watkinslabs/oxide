@@ -15,6 +15,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{FileOps, InodeBuilder, default_inode_ops, mk_mode};
 
 // Park / wake plumbing lives in `sched::live` so net/IPC layers
 // (which don't depend on `fs`) can trigger epoll wakeups without a
@@ -61,34 +62,35 @@ pub struct EpollEntry {
     /// fire. Without poll(), EpollInode used the default always-ready poll →
     /// any parent epoll (e.g. Go's netpoller watching a fsnotify watcher
     /// epoll) spun forever.
-    pub inode: Option<alloc::sync::Weak<dyn vfs::Inode>>,
+    pub inode: Option<alloc::sync::Weak<vfs::Inode>>,
 }
 
 /// EPOLLET — edge-triggered (Linux `EPOLLET` = 1<<31).
 const EPOLLET: u32 = 0x8000_0000;
 
-pub struct EpollInode {
+/// Per-inode epoll state (Linux `i_private`).
+pub struct EpollData {
     pub id:      u32,
     pub entries: Spinlock<Vec<EpollEntry>, TaskListClass>,
-    /// F181: per-EpollInode WaitList (Arc'd so subscribers can hold
+    /// F181: per-EpollData WaitList (Arc'd so subscribers can hold
     /// Weak). epoll_wait parks here; F181-aware event sites wake
-    /// only the EpollInodes that subscribed via `epoll_ctl(ADD)`.
+    /// only the EpollData that subscribed via `epoll_ctl(ADD)`.
     /// Kernel-only — hosted tests don't run the scheduler.
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: Arc<sched::live::WaitList>,
 }
 
-static EPOLLS: Spinlock<Vec<Arc<EpollInode>>, TaskListClass>
+static EPOLLS: Spinlock<Vec<Arc<EpollData>>, TaskListClass>
     = Spinlock::new(Vec::new());
 
 /// F181: broadcast wake registered with sched at boot via
-/// `install_epoll_broadcast`. Walks every live EpollInode and
+/// `install_epoll_broadcast`. Walks every live EpollData and
 /// wakes its per-instance waitlist. Kernel-only — hosted tests
 /// don't run epoll_wait.
 /// # C: O(N_epoll_instances)
 #[cfg(target_os = "oxide-kernel")]
 pub fn broadcast_wake_all_epolls() {
-    let snapshot: Vec<Arc<EpollInode>> = EPOLLS.lock().iter().cloned().collect();
+    let snapshot: Vec<Arc<EpollData>> = EPOLLS.lock().iter().cloned().collect();
     for ep in snapshot { ep.waiters.wake_all(); }
 }
 
@@ -101,36 +103,39 @@ pub fn install_epoll_broadcast() {
 }
 static NEXT_EPOLL_ID: AtomicU32 = AtomicU32::new(0);
 
-impl EpollInode {
-    /// # C: O(1)
-    pub fn new() -> Arc<Self> {
-        let id = NEXT_EPOLL_ID.fetch_add(1, Ordering::Relaxed);
-        let arc = Arc::new(Self {
-            id,
-            entries: Spinlock::new(Vec::new()),
-            #[cfg(target_os = "oxide-kernel")]
-            waiters: Arc::new(sched::live::WaitList::new()),
-        });
+/// `make_epoll_inode()` — a CharDev pseudo-inode; registered in the global
+/// table so epoll_ctl/wait reach its state by id. # C: O(1)
+pub fn make_epoll_inode() -> InodeRef {
+    let id = NEXT_EPOLL_ID.fetch_add(1, Ordering::Relaxed);
+    let data = Arc::new(EpollData {
+        id,
+        entries: Spinlock::new(Vec::new()),
+        #[cfg(target_os = "oxide-kernel")]
+        waiters: Arc::new(sched::live::WaitList::new()),
+    });
+    {
         let mut g = EPOLLS.lock();
-        if g.len() <= id as usize { g.resize_with(id as usize + 1, || Arc::clone(&arc)); }
-        else { g[id as usize] = Arc::clone(&arc); }
-        arc
+        if g.len() <= id as usize { g.resize_with(id as usize + 1, || Arc::clone(&data)); }
+        else { g[id as usize] = Arc::clone(&data); }
     }
+    InodeBuilder::new(EPOLL_INO_BASE | (id as Ino & EPOLL_INO_MASK),
+        mk_mode(FileType::CharDev, 0), default_inode_ops(), Arc::new(EpollFileOps))
+        .private(data)
+        .build()
 }
 
-impl Inode for EpollInode {
-    fn ino(&self) -> Ino { EPOLL_INO_BASE | (self.id as Ino & EPOLL_INO_MASK) }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Err(VfsError::Einval) }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+/// `i_fop` for an epoll inode. # C: O(1)
+struct EpollFileOps;
+impl FileOps for EpollFileOps {
+    fn read(&self, _inode: &Inode, _o: u64, _b: &mut [u8]) -> KResult<usize> { Err(VfsError::Einval) }
+    fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
     /// A nested epoll fd is POLLIN-readable iff one of its entries WOULD fire
     /// (mirrors scan_once, read-only). Without this the default always-ready
     /// poll made any PARENT epoll watching this one (e.g. Go's netpoller over
     /// an fsnotify watcher epoll) spin in epoll_pwait forever. # C: O(N_entries)
-    fn poll(&self) -> u32 {
-        let list = self.entries.lock();
+    fn poll(&self, inode: &Inode) -> u32 {
+        let d = match inode.private::<EpollData>() { Some(d) => d, None => return 0 };
+        let list = d.entries.lock();
         for e in list.iter() {
             let inode = match e.inode.as_ref().and_then(|w| w.upgrade()) {
                 Some(i) => i, None => continue,
@@ -147,16 +152,16 @@ impl Inode for EpollInode {
     }
 }
 
-/// F181: EpollInode is the wake-callback recipient registered by
+/// F181: EpollData is the wake-callback recipient registered by
 /// per-fd subscribers. `notify` wakes its WaitList directly —
 /// no fan-out, no global broadcast.
 #[cfg(target_os = "oxide-kernel")]
-impl vfs::EpollNotify for EpollInode {
+impl vfs::EpollNotify for EpollData {
     fn notify(&self) { self.waiters.wake_all(); }
 }
 
 /// # C: O(1)
-fn epoll_inode_of(file: &alloc::sync::Arc<vfs::File>) -> Option<Arc<EpollInode>> {
+fn epoll_inode_of(file: &alloc::sync::Arc<vfs::File>) -> Option<Arc<EpollData>> {
     let ino = file.inode().ino();
     if (ino & 0xFF00_0000) != EPOLL_INO_BASE { return None; }
     let id = (ino & EPOLL_INO_MASK) as usize;
@@ -178,7 +183,7 @@ pub fn sys_epoll_create1(args: &syscall::SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let inode = EpollInode::new() as InodeRef;
+    let inode = make_epoll_inode();
     let dentry = Dentry::new(None, "epoll".to_string(), Arc::clone(&inode));
     let file = File::new(inode, dentry, OpenFlags::O_RDONLY);
     match fdt.alloc(file) {
@@ -395,7 +400,7 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
 /// One non-blocking scan over an epoll's interest list. Writes
 /// ready events into the user-supplied buffer; returns the count.
 /// # C: O(N_entries)
-fn scan_once(ep: &Arc<EpollInode>, fdt: &Arc<vfs::FdTable>, evp: u64, maxevents: i32) -> i32 {
+fn scan_once(ep: &Arc<EpollData>, fdt: &Arc<vfs::FdTable>, evp: u64, maxevents: i32) -> i32 {
     // Compute readiness + apply EPOLLET edge tracking under the lock, then
     // write results to user memory after releasing it (no user writes while
     // holding the spinlock). For an EPOLLET entry we report only bits that

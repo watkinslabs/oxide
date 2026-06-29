@@ -8,42 +8,42 @@ use std::sync::Arc;
 
 use vfs::inode::Inode;
 use vfs::fs::FileSystem;
-use vfs::{Dentry, FileType, InodeRef, LookupFlags, VfsError};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder, InodeOps};
+use vfs::{Dentry, FileType, InodeRef, KResult, LookupFlags, VfsError};
 
-struct Dir { ino: u64, kids: BTreeMap<String, InodeRef> }
-impl Inode for Dir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> vfs::KResult<InodeRef> {
-        self.kids.get(name).cloned().ok_or(VfsError::Enoent)
+/// Backend state (`i_private`): the static child table this directory resolves.
+struct DirData { kids: BTreeMap<String, InodeRef> }
+
+/// `i_op->lookup` over the static `DirData` child table (shared by the plain
+/// and perm-bearing directory builders).
+struct DirOps;
+impl InodeOps for DirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<DirData>().ok_or(VfsError::Enotdir)?;
+        d.kids.get(name).cloned().ok_or(VfsError::Enoent)
     }
 }
-
-struct F { ino: u64 }
-impl Inode for F {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(VfsError::Enotdir) }
-}
-
-struct Sym { ino: u64, target: String }
-impl Inode for Sym {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Symlink }
-    fn size(&self) -> u64 { self.target.len() as u64 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn readlink(&self) -> vfs::KResult<Vec<u8>> { Ok(self.target.clone().into_bytes()) }
+fn dir_data(kids: &[(&str, InodeRef)]) -> Arc<DirData> {
+    let mut m = BTreeMap::new();
+    for (n, i) in kids { m.insert(n.to_string(), i.clone()); }
+    Arc::new(DirData { kids: m })
 }
 
 fn dir(ino: u64, kids: &[(&str, InodeRef)]) -> InodeRef {
-    let mut m = BTreeMap::new();
-    for (n, i) in kids { m.insert(n.to_string(), i.clone()); }
-    Arc::new(Dir { ino, kids: m })
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(DirOps), default_file_ops())
+        .private(dir_data(kids)).build()
 }
-fn file(ino: u64) -> InodeRef { Arc::new(F { ino }) }
-fn sym(ino: u64, t: &str) -> InodeRef { Arc::new(Sym { ino, target: t.to_string() }) }
+fn file(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
+}
+/// Symlink inode: the target body is stored inline (`i_link`), so `get_link`
+/// returns it directly (the walker's symlink fast path).
+fn sym(ino: u64, t: &str) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Symlink, 0o777), default_inode_ops(), default_file_ops())
+        .size(t.len() as u64)
+        .link(t.as_bytes().to_vec().into_boxed_slice())
+        .build()
+}
 
 struct TestMountFs;
 impl FileSystem for TestMountFs {
@@ -244,24 +244,11 @@ fn alloc_ptr_eq(a: &Arc<Dentry>, b: &Arc<Dentry>) -> bool { Arc::ptr_eq(a, b) }
 // B4 KEYSTONE + flags + dots + may_lookup acceptance.
 // ===========================================================================
 
-// A directory inode that carries explicit POSIX perm/uid/gid (so `may_lookup`
-// has per-fs perm info; the plain `Dir` returns `perm()==None` = default-allow).
-struct PermDir { ino: u64, perm: u16, uid: u32, gid: u32, kids: BTreeMap<String, InodeRef> }
-impl Inode for PermDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> vfs::KResult<InodeRef> {
-        self.kids.get(name).cloned().ok_or(VfsError::Enoent)
-    }
-    fn perm(&self) -> Option<u16> { Some(self.perm) }
-    fn uid(&self) -> Option<u32> { Some(self.uid) }
-    fn gid(&self) -> Option<u32> { Some(self.gid) }
-}
+// A directory inode that carries explicit POSIX perm (uid/gid 0) so `may_lookup`
+// has per-fs perm info. Reuses `DirOps`; only the mode bits differ from `dir`.
 fn perm_dir(ino: u64, perm: u16, kids: &[(&str, InodeRef)]) -> InodeRef {
-    let mut m = BTreeMap::new();
-    for (n, i) in kids { m.insert(n.to_string(), i.clone()); }
-    Arc::new(PermDir { ino, perm, uid: 0, gid: 0, kids: m })
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, perm), Arc::new(DirOps), default_file_ops())
+        .owner(0, 0).private(dir_data(kids)).build()
 }
 
 // THE KEYSTONE: crossing a mountpoint returns the mounted superblock's `s_root`

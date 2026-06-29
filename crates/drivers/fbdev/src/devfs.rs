@@ -6,7 +6,7 @@
 
 
 use alloc::sync::Arc;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{FileType, Ino, Inode, InodeRef, KResult, InodeBuilder, FileOps, default_inode_ops, mk_mode};
 
 // NOT 0x7001_0000: pidfd owns the whole 0x70xx_xxxx space (PIDFD_INO_MARKER
 // 0x7000_0000, masked 0xFF00_0000), and the pidfd ioctl handler runs BEFORE
@@ -14,22 +14,23 @@ use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 // stolen by the pidfd path. Use the 0xFB ("FB") top byte, outside pidfd's range.
 pub const FB0_INO_BASE: Ino = 0xFB00_0000;
 
-pub struct FbInode {
+/// Backend-private state (`i_private`) for `/dev/fb<idx>`: the framebuffer
+/// index that keys `kva_of`/`flush`/the ioctl path. The old per-inode `ino()`
+/// tag is now `FB0_INO_BASE | idx` on the inode. # C: O(1)
+pub struct FbData {
     pub idx: u32,
 }
 
-impl Inode for FbInode {
-    fn ino(&self) -> Ino { FB0_INO_BASE | self.idx as u64 }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    /// smem_len — `cat /sys`-style size queries + `fbset` use it.
-    fn size(&self) -> u64 { crate::kva_of(self.idx).map(|(_, n)| n).unwrap_or(0) }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-
+/// `file_operations` for `/dev/fb<idx>` — read/write hit the live scanout via
+/// its HHDM kernel mapping, keyed by the `idx` stored in `i_private`.
+struct FbFileOps;
+impl FileOps for FbFileOps {
     /// Read from the framebuffer at byte offset `o` (Linux fb read). Bytes
     /// past the fb end return 0 (short read). Reads the live scanout via its
     /// HHDM kernel mapping.
-    fn read(&self, o: u64, b: &mut [u8]) -> KResult<usize> {
-        let (fb_va, bytes) = match crate::kva_of(self.idx) { Some(v) => v, None => return Ok(0) };
+    fn read(&self, inode: &Inode, o: u64, b: &mut [u8]) -> KResult<usize> {
+        let idx = match inode.private::<FbData>() { Some(d) => d.idx, None => return Ok(0) };
+        let (fb_va, bytes) = match crate::kva_of(idx) { Some(v) => v, None => return Ok(0) };
         if o >= bytes { return Ok(0); }
         let n = ((bytes - o) as usize).min(b.len());
         // SAFETY: fb_va is the HHDM mapping of the scanout for `bytes`; o+n <= bytes; CPL=0 read of device-backed memory into the caller-owned slice.
@@ -39,8 +40,9 @@ impl Inode for FbInode {
 
     /// Write to the framebuffer at byte offset `o` then flush to the display
     /// (Linux fb write + defio). Bytes past the fb end are dropped.
-    fn write(&self, o: u64, b: &[u8]) -> KResult<usize> {
-        let (fb_va, bytes) = match crate::kva_of(self.idx) { Some(v) => v, None => return Ok(b.len()) };
+    fn write(&self, inode: &Inode, o: u64, b: &[u8]) -> KResult<usize> {
+        let idx = match inode.private::<FbData>() { Some(d) => d.idx, None => return Ok(b.len()) };
+        let (fb_va, bytes) = match crate::kva_of(idx) { Some(v) => v, None => return Ok(b.len()) };
         if o >= bytes { return Ok(0); }
         let n = ((bytes - o) as usize).min(b.len());
         // SAFETY: fb_va is the HHDM mapping of the scanout for `bytes`; o+n <= bytes; CPL=0 write of the caller's bytes into the device-backed framebuffer.
@@ -48,6 +50,19 @@ impl Inode for FbInode {
         crate::flush();
         Ok(n)
     }
+}
+
+/// Build the `/dev/fb<idx>` inode: `S_IFCHR|0o666`, `ino = FB0_INO_BASE | idx`
+/// (the routing tag the ioctl + mmap paths read), `i_size = smem_len` (best
+/// effort at build — `cat /sys`-style size queries; `fbset` uses
+/// FBIOGET_FSCREENINFO, not `i_size`), the shared `FbFileOps` data path,
+/// lookup → `ENOTDIR` (default i_op). # C: O(1)
+pub fn make_fb_inode(idx: u32) -> InodeRef {
+    let ino = FB0_INO_BASE | idx as Ino;
+    InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(FbFileOps))
+        .size(crate::kva_of(idx).map(|(_, n)| n).unwrap_or(0))
+        .private(Arc::new(FbData { idx }))
+        .build()
 }
 
 /// FBIO* ioctl handler. Returns `Some(rv)` if the ioctl is one of
@@ -243,5 +258,5 @@ pub fn mmap_backing(inode: &InodeRef) -> Option<(u64, u64)> {
 /// # SAFETY: caller is the boot path; pre-init.
 /// # C: O(1)
 pub fn init() {
-    devfs::register("/dev/fb0", Arc::new(FbInode { idx: 0 }) as InodeRef);
+    devfs::register("/dev/fb0", make_fb_inode(0));
 }

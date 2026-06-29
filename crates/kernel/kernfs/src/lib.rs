@@ -27,7 +27,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicPtr, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::superblock::SuperBlock;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError};
+use vfs::{FileOps, InodeOps, default_file_ops, default_inode_ops, mk_mode};
 
 // ---------------------------------------------------------------------------
 // ext4 directory-overlay hook (installed once at boot by the kernel).
@@ -77,31 +78,23 @@ fn components(path: &str) -> Vec<&str> {
 // PseudoSymlink
 // ---------------------------------------------------------------------------
 
-/// A symlink leaf in a pseudo-fs tree (lifted from devfs `DevSymlink`,
-/// `i_sb`-stamped). `readlink` returns the stored target.
-pub struct PseudoSymlink {
-    ino:    Ino,
-    fsid:   u64,
-    sb:     Spinlock<Weak<SuperBlock>, TaskListClass>,
-    target: Vec<u8>,
-}
+/// A symlink leaf in a pseudo-fs tree (lifted from devfs `DevSymlink`).
+/// The target is the inline `i_link` fast-symlink body (`get_link` reads it
+/// directly), so no custom `i_op->readlink` is needed. Leaf symlinks were
+/// never SB-stamped by `set_sb` (it recurses dirs only), so `fsid` is the
+/// fallback id passed at creation.
+pub struct PseudoSymlink;
 
 impl PseudoSymlink {
-    /// # C: O(target)
-    pub fn new(ino: Ino, fsid: u64, target: &[u8]) -> Arc<Self> {
-        Arc::new(Self { ino, fsid, sb: Spinlock::new(Weak::new()), target: target.to_vec() })
+    /// Build a symlink inode (`S_IFLNK|0o777`, inline `i_link` = `target`).
+    /// Returns the concrete [`InodeRef`]. # C: O(target)
+    pub fn new(ino: Ino, fsid: u64, target: &[u8]) -> InodeRef {
+        InodeBuilder::new(ino, mk_mode(FileType::Symlink, 0o777), default_inode_ops(), default_file_ops())
+            .fsid(fsid)
+            .size(target.len() as u64)
+            .link(target.to_vec().into_boxed_slice())
+            .build()
     }
-}
-
-impl Inode for PseudoSymlink {
-    fn ino(&self) -> Ino { self.ino }
-    fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.lock().upgrade() }
-    fn fsid(&self) -> u64 { self.sb.lock().upgrade().map(|s| s.s_dev).unwrap_or(self.fsid) }
-    fn file_type(&self) -> FileType { FileType::Symlink }
-    fn size(&self) -> u64 { self.target.len() as u64 }
-    fn lookup(&self, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn readlink(&self) -> KResult<Vec<u8>> { Ok(self.target.clone()) }
 }
 
 // ---------------------------------------------------------------------------
@@ -116,8 +109,14 @@ impl PseudoEntry {
     fn file_type(&self) -> FileType {
         match self { PseudoEntry::Dir(_) => FileType::Directory, PseudoEntry::Leaf(i) => i.file_type() }
     }
+    /// The entry's inode number WITHOUT materialising a dir inode. # C: O(1)
+    fn ino(&self) -> Ino {
+        match self { PseudoEntry::Dir(d) => d.ino, PseudoEntry::Leaf(i) => i.ino() }
+    }
+    /// Materialise the entry as an [`InodeRef`]: a dir builds (or reuses) its
+    /// backing `vfs::Inode`; a leaf is already one. # C: O(1)
     fn as_inode(&self) -> InodeRef {
-        match self { PseudoEntry::Dir(d) => Arc::clone(d) as InodeRef, PseudoEntry::Leaf(i) => Arc::clone(i) }
+        match self { PseudoEntry::Dir(d) => d.as_inode(), PseudoEntry::Leaf(i) => Arc::clone(i) }
     }
 }
 
@@ -134,6 +133,12 @@ pub struct PseudoDir {
     overlay:  bool,
     sb:       Spinlock<Weak<SuperBlock>, TaskListClass>,
     children: Spinlock<BTreeMap<String, PseudoEntry>, TaskListClass>,
+    /// Cached backing `vfs::Inode` (lazily built by [`PseudoDir::as_inode`]).
+    /// `Weak` so the Inode (whose `i_private` holds a strong `Arc<PseudoDir>`)
+    /// is freed when no dcache/dentry references it; the next `as_inode`
+    /// rebuilds an identical one. Cleared by `set_sb` so a re-stamp re-derives
+    /// `i_sb`/`fsid`.
+    inode:    Spinlock<Weak<Inode>, TaskListClass>,
 }
 
 impl PseudoDir {
@@ -145,6 +150,7 @@ impl PseudoDir {
             ino: root_ino, path: String::new(), fsid, overlay,
             sb: Spinlock::new(Weak::new()),
             children: Spinlock::new(BTreeMap::new()),
+            inode: Spinlock::new(Weak::new()),
         })
     }
 
@@ -155,18 +161,42 @@ impl PseudoDir {
             ino: dir_ino(&path), path, fsid, overlay,
             sb: Spinlock::new(sb),
             children: Spinlock::new(BTreeMap::new()),
+            inode: Spinlock::new(Weak::new()),
         })
     }
 
     /// Stamp the owning SB (`fill_super`); after this `fsid`/`i_sb` derive
-    /// from `s_dev`. Recurses into existing children so a whole pre-built
+    /// from `s_dev`. Clears the cached inode so the next `as_inode` re-derives
+    /// `i_sb`/`fsid`. Recurses into existing children so a whole pre-built
     /// tree adopts the SB. # C: O(tree)
     pub fn set_sb(&self, sb: Weak<SuperBlock>) {
         *self.sb.lock() = sb.clone();
+        *self.inode.lock() = Weak::new();
         let g = self.children.lock();
         for v in g.values() {
             if let PseudoEntry::Dir(d) = v { d.set_sb(sb.clone()); }
         }
+    }
+
+    /// Materialise (or reuse) this dir's backing `vfs::Inode`. The Inode's
+    /// `i_private` holds a strong `Arc<PseudoDir>`; the dir back-refs it
+    /// `Weak`, so identity is stable while any dcache/dentry holds it and is
+    /// rebuilt identically afterwards. `i_sb` reflects the current stamp;
+    /// `fsid` falls back to `self.fsid` only when no SB is stamped (matching
+    /// the old live `fsid()`). # C: O(1)
+    pub fn as_inode(self: &Arc<PseudoDir>) -> InodeRef {
+        let mut g = self.inode.lock();
+        if let Some(i) = g.upgrade() { return i; }
+        let sbw = self.sb.lock().clone();
+        let mut b = InodeBuilder::new(self.ino, mk_mode(FileType::Directory, 0o755),
+            Arc::new(PseudoDirOps), Arc::new(PseudoDirFileOps))
+            .private(Arc::clone(self) as Arc<dyn core::any::Any + Send + Sync>)
+            .sb(sbw.clone());
+        // No SB stamped → report the fallback fsid (the old `fsid()` path).
+        if sbw.upgrade().is_none() { b = b.fsid(self.fsid); }
+        let inode = b.build();
+        *g = Arc::downgrade(&inode);
+        inode
     }
 
     /// This dir's owning-SB weak (handed to children it creates). # C: O(1)
@@ -219,7 +249,7 @@ impl PseudoDir {
     /// `tree::lookup`.) # C: O(depth)
     pub fn lookup_path(self: &Arc<PseudoDir>, full_path: &str) -> Option<InodeRef> {
         let comps = components(full_path);
-        if comps.is_empty() { return Some(Arc::clone(self) as InodeRef); }
+        if comps.is_empty() { return Some(self.as_inode()); }
         let mut dir = Arc::clone(self);
         for (i, c) in comps.iter().enumerate() {
             let g = dir.children.lock();
@@ -231,7 +261,7 @@ impl PseudoDir {
                 Some(PseudoEntry::Dir(d)) => {
                     let d = Arc::clone(d);
                     drop(g);
-                    if i == comps.len() - 1 { return Some(d as InodeRef); }
+                    if i == comps.len() - 1 { return Some(d.as_inode()); }
                     dir = d;
                 }
                 None => return None,
@@ -273,31 +303,23 @@ impl PseudoDir {
             ino: self.ino, path: self.path.clone(), fsid: self.fsid, overlay: self.overlay,
             sb: Spinlock::new(self.sb.lock().clone()),
             children: Spinlock::new(nc),
+            inode: Spinlock::new(Weak::new()),
         })
     }
-}
 
-impl Inode for PseudoDir {
-    /// # C: O(1)
-    fn ino(&self) -> Ino { self.ino }
-    /// # C: O(1)
-    fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
-    /// # C: O(1)
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.lock().upgrade() }
-    /// `fsid` from the owning SB's `s_dev`, else the fallback. # C: O(1)
-    fn fsid(&self) -> u64 { self.sb.lock().upgrade().map(|s| s.s_dev).unwrap_or(self.fsid) }
-    /// # C: O(1)
-    fn file_type(&self) -> FileType { FileType::Directory }
-    /// # C: O(1)
-    fn size(&self) -> u64 { 0 }
-    /// # C: O(log children)
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+    // ---- VFS op bodies (driven by `PseudoDirOps`/`PseudoDirFileOps` off the
+    //      inode's `i_private`) ------------------------------------------------
+
+    /// `i_op->lookup`. # C: O(log children)
+    fn op_lookup(&self, name: &str) -> KResult<InodeRef> {
         let g = self.children.lock();
         g.get(name).map(|e| e.as_inode()).ok_or(VfsError::Enoent)
     }
-    /// Pseudo-fs dirs are mutable: systemd/tmpfiles create mountpoint dirs
-    /// and runtime symlinks (e.g. `/dev/log`) during early boot. # C: O(log children)
-    fn mkdir(&self, name: &str, _mode: u32) -> KResult<InodeRef> {
+
+    /// `i_op->mkdir`. Pseudo-fs dirs are mutable: systemd/tmpfiles create
+    /// mountpoint dirs and runtime symlinks (e.g. `/dev/log`) during early
+    /// boot. # C: O(log children)
+    fn op_mkdir(&self, name: &str) -> KResult<InodeRef> {
         let mut g = self.children.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         let mut cp = self.path.clone();
@@ -305,26 +327,28 @@ impl Inode for PseudoDir {
         cp.push_str(name);
         let d = PseudoDir::child_at(cp, self.fsid, self.overlay, self.sb_weak());
         g.insert(String::from(name), PseudoEntry::Dir(Arc::clone(&d)));
-        Ok(d as InodeRef)
+        Ok(d.as_inode())
     }
-    /// # C: O(log children + target)
-    fn symlink_child(&self, name: &str, target: &[u8]) -> KResult<()> {
+
+    /// `i_op->symlink`. # C: O(log children + target)
+    fn op_symlink(&self, name: &str, target: &[u8]) -> KResult<()> {
         let mut g = self.children.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         let mut cp = self.path.clone();
         cp.push('/');
         cp.push_str(name);
-        let link = PseudoSymlink::new(dir_ino(&cp), self.fsid, target) as InodeRef;
+        let link = PseudoSymlink::new(dir_ino(&cp), self.fsid, target);
         g.insert(String::from(name), PseudoEntry::Leaf(link));
         Ok(())
     }
-    /// # C: O(children + overlay)
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+
+    /// `f_op->iterate`/readdir. # C: O(children + overlay)
+    fn op_readdir(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         // Synthetic children first (BTreeMap → sorted, stable order). Capture
         // each child's real ino so getdents reports a non-zero `d_ino`.
         let kids: Vec<(String, u64, FileType)> = {
             let g = self.children.lock();
-            g.iter().map(|(k, v)| (k.clone(), v.as_inode().ino(), v.file_type())).collect()
+            g.iter().map(|(k, v)| (k.clone(), v.ino(), v.file_type())).collect()
         };
         let r_len = kids.len() as u64;
         let mut idx = off as usize;
@@ -349,11 +373,36 @@ impl Inode for PseudoDir {
             let next = r_len + ext4_seen;
             // Resolve the overlay child's real (ext4) ino for `d_ino`; the
             // children lock is already released, so this lookup is deadlock-free.
-            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, name, ftype) { stopped = true; stop_off = next; }
         });
         if stopped { return Ok(stop_off); }
         Ok(r_len + ext4_seen)
+    }
+}
+
+/// `inode_operations` for a `PseudoDir` — namespace ops dispatch to the
+/// `Arc<PseudoDir>` stored in `i_private`. # C: O(1) dispatch
+struct PseudoDirOps;
+
+/// Recover the backing `PseudoDir` from an inode's `i_private`. # C: O(1)
+fn pdir(inode: &Inode) -> KResult<&PseudoDir> {
+    inode.private::<PseudoDir>().ok_or(VfsError::Einval)
+}
+
+impl InodeOps for PseudoDirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> { pdir(inode)?.op_lookup(name) }
+    fn mkdir(&self, inode: &Inode, name: &str, _mode: u32) -> KResult<InodeRef> { pdir(inode)?.op_mkdir(name) }
+    fn symlink(&self, inode: &Inode, name: &str, target: &[u8]) -> KResult<()> { pdir(inode)?.op_symlink(name, target) }
+}
+
+/// `file_operations` for a `PseudoDir` — only the directory iterate path.
+/// # C: O(1) dispatch
+struct PseudoDirFileOps;
+
+impl FileOps for PseudoDirFileOps {
+    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+        pdir(inode)?.op_readdir(inode, off, f)
     }
 }
 
@@ -397,7 +446,7 @@ impl vfs::fs::FileSystem for PseudoFs {
     fn magic(&self) -> u64 { self.magic }
     /// Non-`None` directory root: the walk crosses into the mount and the
     /// post-mount verify accepts it. # C: O(1)
-    fn root(&self) -> Option<InodeRef> { Some(self.root.clone() as InodeRef) }
+    fn root(&self) -> Option<InodeRef> { Some(self.root.as_inode()) }
     /// Back-stamp the SB so the tree's inodes report `s_dev` (`fill_super`).
     /// # C: O(tree)
     fn set_sb(&self, sb: Weak<SuperBlock>) { self.root.set_sb(sb); }
@@ -412,7 +461,7 @@ mod tests {
     #[test]
     fn insert_then_lookup_per_component() {
         let r = root();
-        let leaf = PseudoSymlink::new(1, 0xDEAD, b"/target") as InodeRef;
+        let leaf = PseudoSymlink::new(1, 0xDEAD, b"/target");
         r.insert_path("/sys/kernel/osrelease", leaf);
         // Per-component walk resolves the leaf.
         let got = r.lookup_path("/sys/kernel/osrelease").expect("leaf");
@@ -421,14 +470,14 @@ mod tests {
         let kdir = r.lookup_path("/sys/kernel").expect("intermediate dir");
         assert_eq!(kdir.file_type(), FileType::Directory);
         // Direct per-component lookup matches whole-path resolution.
-        let sys = r.lookup("sys").expect("sys child");
+        let sys = r.as_inode().lookup("sys").expect("sys child");
         assert_eq!(sys.lookup("kernel").expect("kernel child").file_type(), FileType::Directory);
     }
 
     #[test]
     fn leaf_mid_path_is_none() {
         let r = root();
-        r.insert_path("/a/b", PseudoSymlink::new(2, 0, b"x") as InodeRef);
+        r.insert_path("/a/b", PseudoSymlink::new(2, 0, b"x"));
         // /a/b is a leaf; resolving through it must fail.
         assert!(r.lookup_path("/a/b/c").is_none());
     }
@@ -436,11 +485,11 @@ mod tests {
     #[test]
     fn readdir_sorted_and_no_overlay_when_off() {
         let r = root();
-        r.insert_path("/z", PseudoSymlink::new(3, 0, b"z") as InodeRef);
-        r.insert_path("/a", PseudoSymlink::new(4, 0, b"a") as InodeRef);
-        r.insert_path("/m", PseudoSymlink::new(5, 0, b"m") as InodeRef);
+        r.insert_path("/z", PseudoSymlink::new(3, 0, b"z"));
+        r.insert_path("/a", PseudoSymlink::new(4, 0, b"a"));
+        r.insert_path("/m", PseudoSymlink::new(5, 0, b"m"));
         let mut names = std::vec::Vec::new();
-        r.readdir(0, &mut |_ino, _n, name, _ft| { names.push(std::string::String::from(name)); true }).unwrap();
+        r.as_inode().readdir(0, &mut |_ino, _n, name, _ft| { names.push(std::string::String::from(name)); true }).unwrap();
         // BTreeMap → sorted; overlay off → exactly the 3 synthetic children.
         assert_eq!(names, std::vec!["a", "m", "z"]);
     }
@@ -456,10 +505,10 @@ mod tests {
     #[test]
     fn deep_clone_is_independent() {
         let r = root();
-        r.insert_path("/dev/null", PseudoSymlink::new(6, 0, b"n") as InodeRef);
+        r.insert_path("/dev/null", PseudoSymlink::new(6, 0, b"n"));
         let c = r.deep_clone();
         // Mutating the clone does not affect the source.
-        c.insert_path("/dev/extra", PseudoSymlink::new(7, 0, b"e") as InodeRef);
+        c.insert_path("/dev/extra", PseudoSymlink::new(7, 0, b"e"));
         assert!(c.lookup_path("/dev/extra").is_some());
         assert!(r.lookup_path("/dev/extra").is_none());
         // Shared leaves still present in both.
@@ -475,10 +524,10 @@ mod tests {
         let sys = PseudoDir::new_root(dir_ino("/sys"), 0x2, false);
         let trace = PseudoDir::new_root(dir_ino("/sys/kernel/tracing"), 0x3, false);
         // sysfs-style writers insert mount-relative (the "/sys" prefix stripped).
-        sys.insert_path("class/net", PseudoSymlink::new(10, 0x2, b"net") as InodeRef);
-        sys.insert_path("kernel/osrelease", PseudoSymlink::new(11, 0x2, b"v") as InodeRef);
+        sys.insert_path("class/net", PseudoSymlink::new(10, 0x2, b"net"));
+        sys.insert_path("kernel/osrelease", PseudoSymlink::new(11, 0x2, b"v"));
         // tracefs-style writer inserts into its OWN root.
-        trace.insert_path("current_tracer", PseudoSymlink::new(12, 0x3, b"nop") as InodeRef);
+        trace.insert_path("current_tracer", PseudoSymlink::new(12, 0x3, b"nop"));
         // Multi-component resolution from each own root.
         assert!(sys.lookup_path("class/net").is_some());
         assert!(sys.lookup_path("kernel/osrelease").is_some());
@@ -487,13 +536,13 @@ mod tests {
         assert!(sys.lookup_path("current_tracer").is_none());
         assert!(trace.lookup_path("class/net").is_none());
         // Distinct identity (the per-fs st_dev the shared tree collapsed).
-        assert_ne!(sys.fsid(), trace.fsid());
+        assert_ne!(sys.as_inode().fsid(), trace.as_inode().fsid());
     }
 
     #[test]
     fn remove_subtree_drops_branch() {
         let r = root();
-        r.insert_path("/dev/pts/0", PseudoSymlink::new(8, 0, b"0") as InodeRef);
+        r.insert_path("/dev/pts/0", PseudoSymlink::new(8, 0, b"0"));
         assert_eq!(r.remove_subtree("/dev/pts"), 1);
         assert!(r.lookup_path("/dev/pts").is_none());
         assert_eq!(r.remove_subtree("/dev/pts"), 0);

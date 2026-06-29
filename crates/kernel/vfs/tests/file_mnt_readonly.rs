@@ -15,7 +15,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
 use vfs::mount::{Mount, MNT_RDONLY};
-use vfs::{Cred, Dentry, File, FileType, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{Cred, Dentry, File, FileOps, FileType, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError,
+          default_inode_ops, mk_mode};
 
 mod common;
 
@@ -28,22 +29,23 @@ fn guard() -> MutexGuard<'static, ()> {
     g
 }
 
-/// Writable regular inode — the only thing that can produce EROFS is the
+/// Writable regular `i_fop` — the only thing that can produce EROFS is the
 /// mount-RO gate under test.
-struct RwFile;
-impl Inode for RwFile {
-    fn ino(&self) -> vfs::Ino { 0xD29 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> { Ok(buf.len()) }
-    fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> { Ok(buf.len()) }
+struct RwOps;
+impl FileOps for RwOps {
+    fn read(&self, _inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> { Ok(buf.len()) }
+    fn write(&self, _inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> { Ok(buf.len()) }
+}
+
+/// Build a writable regular inode.
+fn rw_file() -> InodeRef {
+    InodeBuilder::new(0xD29, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(RwOps)).build()
 }
 
 struct TestFs;
 impl FileSystem for TestFs {
     fn name(&self) -> &str { "rotestfs" }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(RwFile)) }
+    fn root(&self) -> Option<InodeRef> { Some(rw_file()) }
 }
 
 /// Register a fresh mount at `at`, return its `Mount` (carrying a real mnt_id).
@@ -54,7 +56,7 @@ fn mount_at(at: &str) -> Arc<Mount> {
 
 /// Build a write-open `File` threaded with `mnt_id`, as the open syscall does.
 fn wfile(mnt_id: u64) -> Arc<File> {
-    let ino: InodeRef = Arc::new(RwFile);
+    let ino: InodeRef = rw_file();
     let d = Dentry::new(None, "f".into(), Arc::clone(&ino));
     File::new_at(ino, d, OpenFlags::O_WRONLY, mnt_id, Cred::root())
 }

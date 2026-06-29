@@ -56,7 +56,7 @@ impl FileSystem for CgroupFs {
     /// # C: O(components · log n)
     fn root(&self) -> Option<InodeRef> {
         if !is_mounted() { return None; }
-        Some(Arc::new(inode::CgDir::new(tree::ROOT)) as InodeRef)
+        Some(inode::make_cg_dir(tree::ROOT))
     }
     /// # C: O(1)
     fn mounts_line(&self, mp: &str) -> alloc::string::String {
@@ -276,7 +276,7 @@ pub fn mount_at(mount_point: &str, mp: Option<Arc<Dentry>>) -> KResult<()> {
     if mount_point != "/" && mp.is_none() { return Err(vfs::VfsError::Enoent); }
     let first = TREE.lock().mount_root();
     let fs = Arc::new(CgroupFs::new(mount_point));
-    let root = Arc::new(inode::CgDir::new(tree::ROOT)) as InodeRef;
+    let root = inode::make_cg_dir(tree::ROOT);
     match vfs::mount::register_bind(mp, fs, root) {
         Ok(()) => Ok(()),
         Err(vfs::VfsError::Eexist) if !first => Ok(()),

@@ -182,9 +182,12 @@ pub trait AddressSpaceOps: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    use alloc::sync::Arc;
     use super::AddressSpaceOps;
-    use crate::inode::Inode;
-    use crate::types::{FileType, Ino, KResult, VfsError};
+    use crate::inode::InodeBuilder;
+    use crate::inode_ops::{default_inode_ops, mk_mode};
+    use crate::file_ops::default_file_ops;
+    use crate::types::FileType;
 
     const PG: u64 = 4096;
 
@@ -199,29 +202,22 @@ mod tests {
         fn size(&self) -> u64 { 8192 }
     }
 
-    // Inode WITH an i_mapping — `mmap_shared_frame` must forward to it.
-    struct MappedInode { m: ToyMapping }
-    impl Inode for MappedInode {
-        fn ino(&self) -> Ino { 1 }
-        fn file_type(&self) -> FileType { FileType::Regular }
-        fn size(&self) -> u64 { 8192 }
-        fn lookup(&self, _n: &str) -> KResult<crate::InodeRef> { Err(VfsError::Enotdir) }
-        fn i_mapping(&self) -> Option<&dyn AddressSpaceOps> { Some(&self.m) }
+    // Inode WITH an i_mapping — `mmap_shared_frame` must forward to it (the
+    // `FileOps::mmap_shared_frame` default routes through `inode.i_mapping()`).
+    fn make_mapped_inode() -> crate::InodeRef {
+        InodeBuilder::new(1, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
+            .size(8192).mapping(Arc::new(ToyMapping)).build()
     }
 
     // Inode WITHOUT an i_mapping — default None on both hooks.
-    struct PlainInode;
-    impl Inode for PlainInode {
-        fn ino(&self) -> Ino { 2 }
-        fn file_type(&self) -> FileType { FileType::Regular }
-        fn size(&self) -> u64 { 0 }
-        fn lookup(&self, _n: &str) -> KResult<crate::InodeRef> { Err(VfsError::Enotdir) }
+    fn make_plain_inode() -> crate::InodeRef {
+        InodeBuilder::new(2, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
     }
 
     // The wiring contract: `mmap_shared_frame` forwards through `i_mapping`.
     #[test]
     fn mmap_shared_frame_forwards_through_i_mapping() {
-        let i = MappedInode { m: ToyMapping };
+        let i = make_mapped_inode();
         // Same offset → same frame as the address_space hands out (one cache).
         assert_eq!(i.mmap_shared_frame(0), i.i_mapping().unwrap().shared_frame(0));
         assert_eq!(i.mmap_shared_frame(PG), Some(0x10_0000 + PG));
@@ -232,7 +228,7 @@ mod tests {
     // No i_mapping → no shareable frame (MAP_PRIVATE copy path upstream).
     #[test]
     fn plain_inode_has_no_mapping() {
-        let i = PlainInode;
+        let i = make_plain_inode();
         assert!(i.i_mapping().is_none());
         assert_eq!(i.mmap_shared_frame(0), None);
     }

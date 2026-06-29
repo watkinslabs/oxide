@@ -11,7 +11,6 @@ use core::sync::atomic::Ordering;
 
 use sched::live::wait_list::WaitList;
 use sync::{Spinlock, TaskList as TaskListClass};
-use vfs::PollSubscribers;
 
 /// One `struct input_event` per Linux input.h (24 B on 64-bit).
 #[repr(C)]
@@ -34,7 +33,6 @@ const QUEUE_CAP: usize = 256;
 pub struct EvdevQueue {
     pub buf:     Spinlock<VecDeque<InputEvent>, TaskListClass>,
     pub waiters: WaitList,
-    pub subs:    PollSubscribers,
 }
 
 impl EvdevQueue {
@@ -43,7 +41,6 @@ impl EvdevQueue {
         Self {
             buf:     Spinlock::new(VecDeque::new()),
             waiters: WaitList::new(),
-            subs:    PollSubscribers::new(),
         }
     }
 
@@ -54,7 +51,8 @@ impl EvdevQueue {
 
     /// Push an event; if cap-full, drop oldest (Linux evdev:
     /// overflow drops the oldest record + signals SYN_DROPPED).
-    /// Wakes one parked reader and notifies poll/epoll subscribers.
+    /// Wakes one parked reader. Poll/epoll subscribers (which now live on the
+    /// node inode, not the queue) are notified by the [`push_event`] wrapper.
     /// # C: O(1)
     pub fn push(&self, ev: InputEvent) {
         let mut g = self.buf.lock();
@@ -62,7 +60,6 @@ impl EvdevQueue {
         g.push_back(ev);
         drop(g);
         self.waiters.wake_one();
-        self.subs.notify();
     }
 
     /// Non-blocking pop. Returns the record bytes if available.
@@ -131,4 +128,7 @@ pub fn push_event(id: u32, ev_type: u16, code: u16, value: i32) {
     let tv_sec  = ns / 1_000_000_000;
     let tv_usec = (ns % 1_000_000_000) / 1_000;
     queue(id).push(InputEvent { tv_sec, tv_usec, ev_type, code, value });
+    // The poll/epoll subscriber list lives on the node inode now; wake it
+    // after the record is queued so `poll`/epoll see POLLIN.
+    crate::devfs::notify_evdev_subs(id);
 }

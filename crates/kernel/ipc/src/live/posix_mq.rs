@@ -27,7 +27,10 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use sync::{Spinlock, TaskList as MqLockClass};
-use vfs::{Dentry, File, FileType, Ino, Inode, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::inode::InodeBuilder;
+use vfs::inode_ops::{default_inode_ops, mk_mode};
+use vfs::file_ops::default_file_ops;
+use vfs::{Dentry, File, FileType, Ino, InodeRef, OpenFlags};
 
 const MQ_DEFAULT_MAXMSG:  usize = 10;
 const MQ_DEFAULT_MSGSIZE: usize = 8192;
@@ -105,27 +108,27 @@ fn unlink_by_name(name: &str) -> bool {
     }
 }
 
-/// Inode wrapper around an Arc<MqQueue>. Holds the queue alive
-/// for as long as any fd referring to it is open. Per Inode trait,
-/// most ops aren't meaningful for an mq fd; read/write return
-/// -EINVAL because the POSIX ABI is mq_timedsend/mq_timedreceive.
+/// Backend-private state (`i_private`) for an mq fd's inode: the `Arc<MqQueue>`
+/// (held alive for as long as any fd referring to it is open) + the per-fd
+/// `O_NONBLOCK` flag (mutated by `mq_getsetattr`). Most VFS ops aren't
+/// meaningful for an mq fd — `lookup` is `ENOTDIR` and `read`/`write` are
+/// `EINVAL` (the default `i_op`/`i_fop` for a regular file), because the POSIX
+/// ABI is the dedicated `mq_timedsend`/`mq_timedreceive` syscalls.
 pub struct MqInode {
     pub queue:   Arc<MqQueue>,
     pub nonblock: core::sync::atomic::AtomicBool,
 }
 
-impl Inode for MqInode {
-    fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
-    fn ino(&self) -> Ino { 0xFEED_0010 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _off: u64, _buf: &mut [u8]) -> KResult<usize> {
-        Err(VfsError::Einval)
-    }
-    fn write(&self, _off: u64, _buf: &[u8]) -> KResult<usize> {
-        Err(VfsError::Einval)
-    }
+/// `i_ino` for every mq inode — pseudo, constant. # C: O(1)
+const MQ_INO: Ino = 0xFEED_0010;
+
+/// Build the inode backing an mq fd, stashing `MqInode` state in `i_private`.
+/// The generic `S_IFREG` default ops give `lookup`→`ENOTDIR` and
+/// `read`/`write`→`EINVAL`, matching the old hand-written bodies. # C: O(1)
+fn make_mq_inode(queue: Arc<MqQueue>, nonblock: bool) -> InodeRef {
+    InodeBuilder::new(MQ_INO, mk_mode(FileType::Regular, 0o600), default_inode_ops(), default_file_ops())
+        .private(Arc::new(MqInode { queue, nonblock: core::sync::atomic::AtomicBool::new(nonblock) }))
+        .build()
 }
 
 fn read_user_string(uptr: u64, max: usize) -> Option<String> {
@@ -176,10 +179,7 @@ pub fn sys_mq_open(args: &syscall::SyscallArgs) -> i64 {
         }
     };
 
-    let inode: InodeRef = Arc::new(MqInode {
-        queue: q,
-        nonblock: core::sync::atomic::AtomicBool::new((oflag & O_NONBLOCK_BIT) != 0),
-    });
+    let inode: InodeRef = make_mq_inode(q, (oflag & O_NONBLOCK_BIT) != 0);
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -218,7 +218,7 @@ fn fd_to_mq(fd: i32) -> Option<(Arc<MqQueue>, bool)> {
     let fdt = unsafe { cur.fd_table_ref() }?.clone();
     let file = fdt.get(fd).ok()?;
     let inode = file.inode();
-    let mq = inode.as_any()?.downcast_ref::<MqInode>()?;
+    let mq = inode.private::<MqInode>()?;
     let nb = mq.nonblock.load(Ordering::Acquire);
     Some((mq.queue.clone(), nb))
 }
@@ -420,7 +420,7 @@ pub fn sys_mq_getsetattr(args: &syscall::SyscallArgs) -> i64 {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode = file.inode();
-    let mq = match inode.as_any().and_then(|a| a.downcast_ref::<MqInode>()) {
+    let mq = match inode.private::<MqInode>() {
         Some(m) => m, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let q = &mq.queue;

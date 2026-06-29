@@ -5,19 +5,10 @@
 
 use std::sync::Arc;
 
-use vfs::inode::Inode;
-use vfs::{Dentry, FileType, InodeRef, KResult, VfsError};
-
-struct TFile { ino: u64 }
-impl Inode for TFile {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-}
+use vfs::{Dentry, FileType, InodeRef};
 
 fn dentry() -> Arc<Dentry> {
-    let inode: InodeRef = Arc::new(TFile { ino: 0x1 });
+    let inode: InodeRef = vfs::InodeBuilder::new(0x1, vfs::mk_mode(FileType::Regular, 0o644), vfs::default_inode_ops(), vfs::default_file_ops()).build();
     Dentry::new(None, String::from("x"), inode)
 }
 

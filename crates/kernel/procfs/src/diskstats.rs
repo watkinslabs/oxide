@@ -7,17 +7,14 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::vec::Vec;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
-
-pub struct ProcDiskstatsInode;
+use vfs::{Ino, InodeRef};
 
 struct VecFmt<'a>(&'a mut Vec<u8>);
 impl<'a> core::fmt::Write for VecFmt<'a> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result { self.0.extend_from_slice(s.as_bytes()); Ok(()) }
 }
 
-impl ProcDiskstatsInode {
-    fn body() -> Vec<u8> {
+fn body() -> Vec<u8> {
         use core::sync::atomic::Ordering;
         let mut out: Vec<u8> = Vec::with_capacity(256);
         for d in block::registry::snapshot() {
@@ -34,21 +31,7 @@ impl ProcDiskstatsInode {
                 n = d.name));
         }
         out
-    }
 }
 
-impl Inode for ProcDiskstatsInode {
-    fn ino(&self) -> Ino { 0x3000_1024 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body = Self::body();
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
-}
+/// `/proc/diskstats` inode (KEYSTONE struct-`Inode`). # C: O(1)
+pub fn make_proc_diskstats() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1024 as Ino, body) }

@@ -600,21 +600,22 @@ mod tests {
     use super::*;
     use crate::dentry::{DentryOps, D_HASHED, D_NEGATIVE, D_OP_WEAK_REVALIDATE};
     use core::sync::atomic::AtomicBool;
-    use crate::inode::Inode;
+    use crate::inode::{Inode, InodeBuilder};
+    use crate::inode_ops::{mk_mode, InodeOps};
+    use crate::file_ops::default_file_ops;
     use crate::types::{FileType, KResult, VfsError};
     use alloc::string::String;
     use alloc::format;
 
-    // Minimal directory inode for positive-dentry tests. `i_sb()` defaults to
-    // None so no superblock/alias machinery is needed.
-    struct Dir { ino: u64 }
-    impl Inode for Dir {
-        fn ino(&self) -> u64 { self.ino }
-        fn file_type(&self) -> FileType { FileType::Directory }
-        fn size(&self) -> u64 { 0 }
-        fn lookup(&self, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+    // Minimal directory inode for positive-dentry tests. `i_sb` defaults to
+    // None so no superblock/alias machinery is needed; `lookup` → Enoent.
+    struct DirOps;
+    impl InodeOps for DirOps {
+        fn lookup(&self, _inode: &Inode, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
     }
-    fn dir(ino: u64) -> InodeRef { Arc::new(Dir { ino }) }
+    fn dir(ino: u64) -> InodeRef {
+        InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(DirOps), default_file_ops()).build()
+    }
 
     fn root() -> Arc<Dentry> { Dentry::new_root(dir(1)) }
 

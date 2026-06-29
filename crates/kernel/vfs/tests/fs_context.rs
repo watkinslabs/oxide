@@ -13,24 +13,20 @@ use vfs::fs::fs_context::{
     FsContextOps, FsContextPhase, FsContextPurpose, FsParameter, KResult as FcResult, ParamResult,
 };
 use vfs::fs::FileSystem;
-use vfs::inode::Inode;
 use vfs::superblock::{next_anon_dev, FileSystemType, SuperBlock, SB_RDONLY};
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{FileType, InodeBuilder, InodeRef, KResult, VfsError,
+          default_file_ops, default_inode_ops, mk_mode};
 
 /// Minimal directory inode for a test backend root.
-struct TDir;
-impl Inode for TDir {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+fn tdir() -> InodeRef {
+    InodeBuilder::new(1, mk_mode(FileType::Directory, 0), default_inode_ops(), default_file_ops()).build()
 }
 
 struct TFs;
 impl FileSystem for TFs {
     fn name(&self) -> &str { "tfs" }
     fn magic(&self) -> u64 { 0x7466_7300 }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir)) }
+    fn root(&self) -> Option<InodeRef> { Some(tdir()) }
 }
 
 /// A `file_system_type` whose `mount` (fill_super) records the `src`/`opts` it

@@ -13,26 +13,24 @@
 use std::sync::Arc;
 
 use vfs::inode::Inode;
-use vfs::{Dentry, File, FileType, Fmode, InodeRef, KResult, OpenFlags, SeekFrom, VfsError};
+use vfs::{Dentry, File, FileOps, FileType, Fmode, InodeBuilder, InodeRef, KResult, OpenFlags, SeekFrom, VfsError,
+          default_inode_ops, mk_mode};
 
 /// `O_PATH` (asm-generic) — not declared in `OpenFlags`; set as a raw bit and
 /// preserved via `from_bits_retain`, exactly how the syscall layer hands it in.
 const O_PATH: u32 = 0o10000000;
 
-/// Inode of a fixed type that always satisfies read/write, so the only thing
-/// that can produce ESPIPE is the seekability gate under test.
-struct Node(FileType);
-impl Inode for Node {
-    fn ino(&self) -> vfs::Ino { 0x7373 }
-    fn file_type(&self) -> FileType { self.0 }
-    fn size(&self) -> u64 { 64 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> { Ok(buf.len()) }
-    fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> { Ok(buf.len()) }
+/// `i_fop` that always satisfies read/write, so the only thing that can produce
+/// ESPIPE is the seekability gate under test.
+struct OkOps;
+impl FileOps for OkOps {
+    fn read(&self, _inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> { Ok(buf.len()) }
+    fn write(&self, _inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> { Ok(buf.len()) }
 }
 
 fn file(ft: FileType, flags: u32) -> Arc<File> {
-    let ino: InodeRef = Arc::new(Node(ft));
+    let ino: InodeRef = InodeBuilder::new(0x7373, mk_mode(ft, 0o644), default_inode_ops(), Arc::new(OkOps))
+        .size(64).build();
     let dentry = Dentry::new(None, "f".into(), Arc::clone(&ino));
     File::new(ino, dentry, OpenFlags::from_bits_retain(flags))
 }

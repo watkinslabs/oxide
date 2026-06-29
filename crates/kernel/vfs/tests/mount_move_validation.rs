@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{FileType, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, default_file_ops, mk_mode};
 
 mod common;
 
@@ -30,14 +30,14 @@ fn guard() -> MutexGuard<'static, ()> {
 struct TFs { root_ino: u64 }
 impl FileSystem for TFs {
     fn name(&self) -> &str { "tfs" }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir { ino: self.root_ino })) }
+    fn root(&self) -> Option<InodeRef> { Some(make_tdir(self.root_ino)) }
 }
-struct TDir { ino: u64 }
-impl Inode for TDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+struct TDirOps;
+impl InodeOps for TDirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+}
+fn make_tdir(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(TDirOps), default_file_ops()).build()
 }
 fn fs(ino: u64) -> Arc<dyn FileSystem> { Arc::new(TFs { root_ino: ino }) }
 
@@ -86,7 +86,7 @@ fn move_onto_root_still_permitted() {
     let _g = guard();
     common::register("/", fs(0x1)).expect("root");
     common::register("/run", fs(0xC)).expect("run");
-    let host_root: InodeRef = Arc::new(TDir { ino: 0xA });
+    let host_root: InodeRef = make_tdir(0xA);
     common::register_bind("/run/stage", fs(0xA), host_root).expect("stage bind");
     assert!(common::move_mount("/run/stage", "/").is_ok(),
             "MS_MOVE onto / must succeed (mount_move_root)");

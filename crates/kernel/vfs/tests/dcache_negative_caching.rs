@@ -6,19 +6,13 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use vfs::inode::Inode;
-use vfs::{d_add_negative, d_lookup, Dentry, FileType, InodeRef, KResult, VfsError};
+use vfs::{d_add_negative, d_lookup, Dentry, FileType, InodeRef};
 
-struct Dir(u64);
-impl Inode for Dir {
-    fn ino(&self) -> vfs::Ino { self.0 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    // A lookup MUST NOT be consulted once the negative is cached — flip a flag
-    // if it ever is, so the test can assert the cache short-circuited it.
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+// A lookup MUST NOT be consulted once the negative is cached; default ops
+// suffice (the cache short-circuits before any `i_op->lookup`).
+fn dir(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755), vfs::default_inode_ops(), vfs::default_file_ops()).build()
 }
-fn dir(ino: u64) -> InodeRef { Arc::new(Dir(ino)) }
 
 static SERIAL: Mutex<()> = Mutex::new(());
 fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_inner()) }

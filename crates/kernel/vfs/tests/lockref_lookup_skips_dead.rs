@@ -13,19 +13,19 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use vfs::dcache::shrink_dcache;
 use vfs::dentry::{DentryOps, LOCKREF_DEAD};
 use vfs::inode::Inode;
-use vfs::{Dentry, FileType, InodeRef, KResult, VfsError};
+use vfs::{Dentry, FileType, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, default_file_ops, mk_mode};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_inner()) }
 
-struct Dir { ino: u64 }
-impl Inode for Dir {
-    fn ino(&self) -> u64 { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+/// Directory inode ops: empty dir, `lookup`→`ENOENT`.
+struct DirOps;
+impl InodeOps for DirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
 }
-fn dir(ino: u64) -> InodeRef { Arc::new(Dir { ino }) }
+fn dir(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(DirOps), default_file_ops()).build()
+}
 fn root() -> Arc<Dentry> { Dentry::new_root(dir(1)) }
 
 // A dentry whose lockref is DEAD but is STILL hashed (the window inside

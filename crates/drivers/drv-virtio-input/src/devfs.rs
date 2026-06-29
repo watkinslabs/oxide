@@ -5,58 +5,91 @@
 // real virtio config-space capability bitmaps (drv::VirtioInputDev).
 
 use alloc::sync::Arc;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError, POLL_IN, POLL_OUT};
+use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError, POLL_IN, POLL_OUT,
+          InodeBuilder, FileOps, default_inode_ops, mk_mode, PollSubscribers};
+use sync::{Spinlock, TaskList as NodesLockClass};
+
+use crate::evdev_queue::MAX_EVDEV;
 
 const EVDEV_INO_BASE: Ino = 0x7400_0000;
 
-/// One evdev device node — `/dev/input/event<id>`. Reads pop 24-byte Linux
-/// `input_event` records from that device's queue (event0 = keyboard,
-/// event1 = pointer, …).
-pub struct EvdevInode { pub id: u32 }
+/// Backend-private state (`i_private`) for `/dev/input/event<id>`: the evdev
+/// id that keys the per-device queue. The old per-inode `ino()` tag is now
+/// `EVDEV_INO_BASE | (1 + id)` on the inode. # C: O(1)
+pub struct EvdevData { pub id: u32 }
 
-impl Inode for EvdevInode {
-    fn ino(&self) -> Ino { EVDEV_INO_BASE | (0x01 + self.id as Ino) }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// `id -> node inode` registry. The canonical `PollSubscribers` now lives on
+/// the inode (`Inode::poll_subs`, where `epoll_ctl(ADD)` registers); the drain
+/// reaches it through here to `notify()` on push. `None` until the node for an
+/// id is built (event0 at boot, event1.. at PCI enum). # C: O(1)
+static EVDEV_NODES: Spinlock<[Option<InodeRef>; MAX_EVDEV], NodesLockClass>
+    = Spinlock::new([const { None }; MAX_EVDEV]);
 
+/// `file_operations` for an evdev node — read pops 24-byte `input_event`
+/// records from the device queue keyed by the `id` in `i_private`; poll
+/// reports POLLIN only when a record is queued.
+struct EvdevFileOps;
+impl FileOps for EvdevFileOps {
     /// Blocking pop of one input_event record (24 B). Parks the caller on
     /// this device's queue waiters when empty; resumes when virtio-input
     /// pushes the next event. Reads of less than one record return 0.
-    fn read(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+    fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         use crate::evdev_queue::INPUT_EVENT_BYTES;
+        let id = match inode.private::<EvdevData>() { Some(d) => d.id, None => return Ok(0) };
         if buf.len() < INPUT_EVENT_BYTES { return Ok(0); }
         // SAFETY: caller is the running task on this CPU; read_blocking parks safely via WaitList and reschedules.
-        let n = unsafe { crate::evdev_queue::queue(self.id).read_blocking(buf) };
+        let n = unsafe { crate::evdev_queue::queue(id).read_blocking(buf) };
         Ok(n)
     }
 
     /// Non-blocking variant per O_NONBLOCK.
-    fn read_nonblock(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+    fn read_nonblock(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         use crate::evdev_queue::INPUT_EVENT_BYTES;
+        let id = match inode.private::<EvdevData>() { Some(d) => d.id, None => return Ok(0) };
         if buf.len() < INPUT_EVENT_BYTES { return Ok(0); }
-        match crate::evdev_queue::queue(self.id).try_pop_bytes(buf) {
+        match crate::evdev_queue::queue(id).try_pop_bytes(buf) {
             Some(n) => Ok(n),
             None    => Err(VfsError::Eagain),
         }
     }
 
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+    fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
 
     /// Linux evdev_poll: EPOLLOUT always (evdev sink never blocks writes),
     /// EPOLLIN only when at least one record is queued. sys_poll masks the
     /// result against the caller's requested events, so a `poll(POLLIN)`
     /// blocks until the drain pushes the next event. # C: O(1)
-    fn poll(&self) -> u32 {
-        if crate::evdev_queue::queue(self.id).is_empty() { POLL_OUT }
+    fn poll(&self, inode: &Inode) -> u32 {
+        let id = match inode.private::<EvdevData>() { Some(d) => d.id, None => return POLL_OUT };
+        if crate::evdev_queue::queue(id).is_empty() { POLL_OUT }
         else { POLL_IN | POLL_OUT }
     }
+}
 
-    /// Per-fd subscriber list: `epoll_ctl(ADD)` registers here and the
-    /// queue's `push` calls `notify()` to wake only subscribed epolls.
-    /// # C: O(1)
-    fn poll_subscribers(&self) -> Option<&vfs::PollSubscribers> {
-        Some(&crate::evdev_queue::queue(self.id).subs)
+/// Build the `/dev/input/event<id>` inode: `S_IFCHR|0o666`, `ino = EVDEV_INO_BASE
+/// | (1 + id)` (the routing tag the EVIOC* ioctl path reads), the per-fd epoll
+/// subscriber list (`epoll_ctl(ADD)` lands here; the drain wakes it via
+/// [`notify_evdev_subs`]), the shared `EvdevFileOps` data path, lookup →
+/// `ENOTDIR` (default i_op). Registers the node in [`EVDEV_NODES`]. # C: O(1)
+pub fn make_evdev_inode(id: u32) -> InodeRef {
+    let ino = EVDEV_INO_BASE | (0x01 + id as Ino);
+    let inode = InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(EvdevFileOps))
+        .private(Arc::new(EvdevData { id }))
+        .poll_subs(PollSubscribers::new())
+        .build();
+    if (id as usize) < MAX_EVDEV { EVDEV_NODES.lock()[id as usize] = Some(inode.clone()); }
+    inode
+}
+
+/// Wake the epoll/poll subscribers registered on evdev `id`'s node inode.
+/// Called by the queue's push path after enqueuing an event (the inode owns
+/// the canonical `PollSubscribers`). No-op if no node was built for `id`.
+/// # C: O(subscribers)
+pub fn notify_evdev_subs(id: u32) {
+    if (id as usize) >= MAX_EVDEV { return; }
+    let node = EVDEV_NODES.lock()[id as usize].clone();
+    if let Some(inode) = node {
+        if let Some(subs) = inode.poll_subscribers() { subs.notify(); }
     }
 }
 
@@ -195,7 +228,7 @@ pub fn handle_evdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    devfs::register("/dev/input/event0", Arc::new(EvdevInode { id: 0 }) as InodeRef);
+    devfs::register("/dev/input/event0", make_evdev_inode(0));
 }
 
 /// Register `/dev/input/event<id>` for every additional virtio-input device
@@ -205,6 +238,6 @@ pub fn register_extra_nodes() {
     let n = crate::count();
     for id in 1..n.min(crate::evdev_queue::MAX_EVDEV) as u32 {
         let path = alloc::format!("/dev/input/event{id}");
-        devfs::register_owned(path, Arc::new(EvdevInode { id }) as InodeRef);
+        devfs::register_owned(path, make_evdev_inode(id));
     }
 }

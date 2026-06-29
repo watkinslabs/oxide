@@ -18,7 +18,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use syscall::errno::Errno;
-use vfs::File;
+use vfs::{File, InodeRef};
 
 use crate::io_uring::{
     IoUringInode, IORING_MAX_REG, IORING_OP_ACCEPT, IORING_OP_CLOSE,
@@ -49,24 +49,30 @@ pub fn sys_io_uring_register(args: &syscall::SyscallArgs) -> i64 {
     let arg     = args.a2;
     let nr_args = args.a3 as u32;
 
-    let inode = match ring_inode(fd) { Ok(i) => i, Err(e) => return e };
+    let inode_ref = match ring_inode(fd) { Ok(i) => i, Err(e) => return e };
+    // Backend state lives in `i_private` post-KEYSTONE; the ino tag check in
+    // `ring_inode` already confirmed this is an io_uring inode.
+    let inode = match inode_ref.private::<IoUringInode>() {
+        Some(d) => d, None => return err(Errno::Einval),
+    };
 
     match opcode {
-        IORING_REGISTER_BUFFERS      => register_buffers(&inode, arg, nr_args),
-        IORING_UNREGISTER_BUFFERS    => unregister_buffers(&inode),
-        IORING_REGISTER_FILES        => register_files(&inode, arg, nr_args),
-        IORING_UNREGISTER_FILES      => unregister_files(&inode),
-        IORING_REGISTER_FILES_UPDATE => files_update(&inode, arg, nr_args),
-        IORING_REGISTER_EVENTFD      => register_eventfd(&inode, arg),
-        IORING_UNREGISTER_EVENTFD    => unregister_eventfd(&inode),
-        IORING_REGISTER_PROBE        => register_probe(&inode, arg, nr_args),
+        IORING_REGISTER_BUFFERS      => register_buffers(inode, arg, nr_args),
+        IORING_UNREGISTER_BUFFERS    => unregister_buffers(inode),
+        IORING_REGISTER_FILES        => register_files(inode, arg, nr_args),
+        IORING_UNREGISTER_FILES      => unregister_files(inode),
+        IORING_REGISTER_FILES_UPDATE => files_update(inode, arg, nr_args),
+        IORING_REGISTER_EVENTFD      => register_eventfd(inode, arg),
+        IORING_UNREGISTER_EVENTFD    => unregister_eventfd(inode),
+        IORING_REGISTER_PROBE        => register_probe(inode, arg, nr_args),
         _ => err(Errno::Einval),
     }
 }
 
-/// Resolve a ring fd to its IoUringInode (verifying the io_uring ino tag).
+/// Resolve a ring fd to its io_uring `InodeRef` (verifying the io_uring ino
+/// tag). The backend `IoUringInode` is recovered via `inode.private()`.
 /// # C: O(1)
-fn ring_inode(fd: i32) -> Result<Arc<IoUringInode>, i64> {
+fn ring_inode(fd: i32) -> Result<InodeRef, i64> {
     let cur = match sched::live::current() { Some(c) => c, None => return Err(err(Errno::Ebadf)) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot for io_uring_register fd resolution.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return Err(err(Errno::Ebadf)) };
@@ -74,9 +80,7 @@ fn ring_inode(fd: i32) -> Result<Arc<IoUringInode>, i64> {
     if (file.inode().ino() & 0xFFFF_FFFF_0000_0000) != 0x494F_5552_0000_0000 {
         return Err(err(Errno::Einval));
     }
-    let raw = Arc::into_raw(file.inode().clone());
-    // SAFETY: ino tag check above confirms an IoUringInode; the clone before into_raw bumped the strong count so from_raw consumes a balanced reference without leaking.
-    Ok(unsafe { Arc::from_raw(raw as *const IoUringInode) })
+    Ok(file.inode().clone())
 }
 
 /// Validate a user pointer + length lie below USER_VA_END. # C: O(1)

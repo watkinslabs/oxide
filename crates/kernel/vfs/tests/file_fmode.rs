@@ -7,29 +7,26 @@
 use std::sync::Arc;
 
 use vfs::inode::Inode;
-use vfs::{Dentry, File, FileType, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{Dentry, File, FileOps, FileType, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError,
+          default_inode_ops, mk_mode};
 
 /// `O_PATH` (asm-generic) — not declared in `OpenFlags`, so the test sets it as
 /// a raw bit and constructs the `File` with `from_bits_retain` to preserve it,
 /// exactly how the syscall layer must hand O_PATH through to `File`.
 const O_PATH: u32 = 0o10000000;
 
-/// Regular-file inode that always satisfies read + write, so the only thing
+/// Regular-file `i_fop` that always satisfies read + write, so the only thing
 /// that can produce EBADF is the `f_mode` gate under test.
-struct RwFile;
-impl Inode for RwFile {
-    fn ino(&self) -> vfs::Ino { 0x4242 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> { Ok(buf.len()) }
-    fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> { Ok(buf.len()) }
+struct RwOps;
+impl FileOps for RwOps {
+    fn read(&self, _inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> { Ok(buf.len()) }
+    fn write(&self, _inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> { Ok(buf.len()) }
 }
 
-/// Build a `File` over `RwFile` with the given raw open flags (retaining
-/// unknown bits like O_PATH).
+/// Build a `File` over an always-ok regular file with the given raw open flags
+/// (retaining unknown bits like O_PATH).
 fn file(flags: u32) -> Arc<File> {
-    let ino: InodeRef = Arc::new(RwFile);
+    let ino: InodeRef = InodeBuilder::new(0x4242, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(RwOps)).build();
     let dentry = Dentry::new(None, "f".into(), Arc::clone(&ino));
     File::new(ino, dentry, OpenFlags::from_bits_retain(flags))
 }

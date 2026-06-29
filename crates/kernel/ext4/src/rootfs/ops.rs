@@ -5,13 +5,12 @@
 use alloc::sync::Arc;
 
 use block::types::InodeId;
-use ::sync as sync;
-use super::inode::{Ext4FileInode, Ext4StatInode, ext4_wrap_ino};
+use super::inode::{build_file_inode, build_stat_inode, ext4_file_ino, ext4_wrap_ino};
 use super::state::RootfsState;
 
 impl RootfsState {
-    /// Wrap `ino` (any type): regular → writeable `Ext4FileInode`;
-    /// else stat-only `Ext4StatInode`. Both carry `self` so ops route
+    /// Wrap `ino` (any type): regular → writeable file inode; else
+    /// stat-only inode. Both carry `self` (via `i_private`) so ops route
     /// through this mount.
     /// # C: O(1) inode read
     pub fn wrap_any_ino(self: &Arc<Self>, ino: u32) -> Option<vfs::InodeRef> {
@@ -31,9 +30,13 @@ impl RootfsState {
             _                     => vfs::FileType::Regular,
         };
         let size = inode.size as u64;
-        let perm = (inode.mode & 0o7777) as u16;
+        let perm = inode.mode & 0o7777;
+        // `st_rdev` is only meaningful for CHR/BLK; ext4 stores it inline.
+        let rdev = if matches!(ft, vfs::FileType::CharDev | vfs::FileType::BlockDev) { inode.rdev() } else { 0 };
+        let nlink = if inode.links_count != 0 { inode.links_count as u32 }
+                    else if matches!(ft, vfs::FileType::Directory) { 2 } else { 1 };
         let st = self.clone();
-        let build = move || Arc::new(Ext4StatInode { st, ino, ft, size, perm }) as vfs::InodeRef;
+        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev);
         // Route through the SB inode cache so a repeated lookup of the same ino
         // returns the SAME `Arc` (shared inode identity, Linux `iget`). Before
         // the SB is back-stamped (during `fs.root()`) build directly.
@@ -43,18 +46,16 @@ impl RootfsState {
         })
     }
 
-    /// Wrap regular-file `ino` in a deferred-bytes `Ext4FileInode`.
+    /// Wrap regular-file `ino` in a deferred-bytes file inode.
     /// # C: O(1) inode read
     pub fn wrap_file(self: &Arc<Self>, ino: u32) -> Option<vfs::InodeRef> {
         let inode = self.mount.read_inode(ino).ok()?;
         if !inode.is_reg() { return None; }
         let size = inode.size;
+        let mode = inode.mode;
+        let nlink = if inode.links_count != 0 { inode.links_count as u32 } else { 1 };
         let st = self.clone();
-        let build = move || Arc::new(Ext4FileInode {
-            st, ino,
-            size_hint: core::sync::atomic::AtomicU64::new(size),
-            bytes: sync::Spinlock::new(None),
-        }) as vfs::InodeRef;
+        let build = move || build_file_inode(st, ino, mode, size, nlink);
         // Shared identity via the SB inode cache (Linux `iget`).
         Some(match self.i_sb() {
             Some(sb) => sb.iget(ext4_wrap_ino(ino), build),
@@ -331,10 +332,7 @@ impl vfs::fs::FileSystem for Ext4Mount {
         self.st.link_at(target.as_bytes(), link.as_bytes())
     }
     fn link_inode(&self, inode: vfs::InodeRef, link: &str) -> vfs::fs::KResult<()> {
-        let ino = inode.as_any()
-            .and_then(|a| a.downcast_ref::<Ext4FileInode>())
-            .map(|i| i.ext4_ino())
-            .ok_or(vfs::VfsError::Exdev)?;
+        let ino = ext4_file_ino(&inode).ok_or(vfs::VfsError::Exdev)?;
         self.st.link_inode_at(ino, link.as_bytes())
     }
     fn rename(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {

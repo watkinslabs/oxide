@@ -6,8 +6,6 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::sync::Arc;
-
 use crate::io_uring::{
     dispatch_op, IoUringInode, OpArgs, CQE_SIZE, OFF_CQ_HDR, OFF_CQ_RING, OFF_SQ_HDR,
     OFF_SQ_RING, SQE_SIZE,
@@ -36,9 +34,11 @@ pub fn sys_io_uring_enter(args: &syscall::SyscallArgs) -> i64 {
         return -(Errno::Einval.as_i32() as i64);
     }
     let inode_ref = file.inode().clone();
-    let raw = Arc::into_raw(inode_ref);
-    // SAFETY: ino tag check above confirms this inode is an IoUringInode; Arc::clone before into_raw bumped the refcount, so from_raw consumes a balanced strong count without leaking.
-    let ring_inode = unsafe { Arc::from_raw(raw as *const IoUringInode) };
+    // ino tag check above confirms an IoUringInode; the backend state lives in
+    // `i_private` post-KEYSTONE.
+    let ring_inode: &IoUringInode = match inode_ref.private::<IoUringInode>() {
+        Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
+    };
     let g = ring_inode.ring.lock();
     let mask = g.entries - 1;
     let sqe_arr   = g.page_va + g.sqe_off as u64;
@@ -74,7 +74,7 @@ pub fn sys_io_uring_enter(args: &syscall::SyscallArgs) -> i64 {
                 opcode, flags, fd: fd_op, off: off_op, addr,
                 len: lenfld, buf_index: buf_idx,
             };
-            let res: i64 = dispatch_op(&ring_inode, &op);
+            let res: i64 = dispatch_op(ring_inode, &op);
 
             let cqe = cq_ring + (cq_t & mask) as u64 * CQE_SIZE as u64;
             core::ptr::write_volatile((cqe +  0) as *mut u64, user_data);

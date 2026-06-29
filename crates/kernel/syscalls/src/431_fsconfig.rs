@@ -16,7 +16,7 @@ pub fn sys_fsconfig(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
     let cmd = args.a1;
     let inode = match fd_inode(fd) { Some(i) => i, None => return -(Errno::Ebadf.as_i32() as i64) };
-    let ctx = match inode.as_any().and_then(|a| a.downcast_ref::<FsContextInode>()) {
+    let ctx = match inode.private::<FsContextInode>() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
     };
     // We support no fd-valued mount options. A converted fs returns EINVAL
