@@ -265,22 +265,22 @@ impl Inode {
     /// `i_op->lookup`. # C: backend-dependent
     pub fn lookup(&self, name: &str) -> KResult<InodeRef> { self.i_op.lookup(self, name) }
     /// `i_op->create`. # C: backend-dependent
-    pub fn create_child(&self, name: &str, mode: u32) -> KResult<InodeRef> { self.i_op.create(self, name, mode) }
+    pub fn create_child(&self, name: &str, mode: u32, ctx: &crate::CreateCtx) -> KResult<InodeRef> { self.i_op.create(self, name, mode, ctx) }
     /// `i_op->mkdir`. # C: backend-dependent
-    pub fn mkdir(&self, name: &str, mode: u32) -> KResult<InodeRef> { self.i_op.mkdir(self, name, mode) }
+    pub fn mkdir(&self, name: &str, mode: u32, ctx: &crate::CreateCtx) -> KResult<InodeRef> { self.i_op.mkdir(self, name, mode, ctx) }
     /// `i_op->rmdir`. # C: backend-dependent
     pub fn rmdir(&self, name: &str) -> KResult<()> { self.i_op.rmdir(self, name) }
     /// `i_op->unlink`. # C: backend-dependent
     pub fn unlink_child(&self, name: &str) -> KResult<()> { self.i_op.unlink(self, name) }
     /// `i_op->symlink`. # C: backend-dependent
-    pub fn symlink_child(&self, name: &str, target: &[u8]) -> KResult<()> { self.i_op.symlink(self, name, target) }
+    pub fn symlink_child(&self, name: &str, target: &[u8], ctx: &crate::CreateCtx) -> KResult<()> { self.i_op.symlink(self, name, target, ctx) }
     /// `i_op->mknod`. # C: backend-dependent
-    pub fn mknod_child(&self, name: &str, mode: u16, rdev: u32) -> KResult<()> { self.i_op.mknod(self, name, mode, rdev) }
+    pub fn mknod_child(&self, name: &str, mode: u16, rdev: u32, ctx: &crate::CreateCtx) -> KResult<()> { self.i_op.mknod(self, name, mode, rdev, ctx) }
     /// `i_op->link`. # C: backend-dependent
-    pub fn link_child(&self, target: &InodeRef, name: &str) -> KResult<()> { self.i_op.link(self, target, name) }
+    pub fn link_child(&self, target: &InodeRef, name: &str, ctx: &crate::CreateCtx) -> KResult<()> { self.i_op.link(self, target, name, ctx) }
     /// `i_op->rename`. # C: backend-dependent
-    pub fn rename_child(&self, old: &str, new_dir: &Inode, new: &str, flags: u32) -> KResult<()> {
-        self.i_op.rename(self, old, new_dir, new, flags)
+    pub fn rename_child(&self, old: &str, new_dir: &Inode, new: &str, flags: u32, ctx: &crate::CreateCtx) -> KResult<()> {
+        self.i_op.rename(self, old, new_dir, new, flags, ctx)
     }
 
     /// `i_op->readlink` (the storage primitive). # C: O(target_len)

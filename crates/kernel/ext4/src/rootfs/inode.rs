@@ -284,7 +284,7 @@ impl InodeOps for Ext4StatInodeOps {
     }
 
     /// # C: O(N parent entries)
-    fn mkdir(&self, inode: &Inode, name: &str, mode: u32) -> KResult<InodeRef> {
+    fn mkdir(&self, inode: &Inode, name: &str, mode: u32, _ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
@@ -321,7 +321,7 @@ impl InodeOps for Ext4StatInodeOps {
     }
 
     /// # C: O(N parent entries)
-    fn create(&self, inode: &Inode, name: &str, mode: u32) -> KResult<InodeRef> {
+    fn create(&self, inode: &Inode, name: &str, mode: u32, _ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
@@ -344,7 +344,7 @@ impl InodeOps for Ext4StatInodeOps {
     }
 
     /// # C: O(N parent entries)
-    fn symlink(&self, inode: &Inode, name: &str, target: &[u8]) -> KResult<()> {
+    fn symlink(&self, inode: &Inode, name: &str, target: &[u8], _ctx: &vfs::CreateCtx) -> KResult<()> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
@@ -354,7 +354,7 @@ impl InodeOps for Ext4StatInodeOps {
     }
 
     /// # C: O(N parent entries)
-    fn mknod(&self, inode: &Inode, name: &str, mode: u16, rdev: u32) -> KResult<()> {
+    fn mknod(&self, inode: &Inode, name: &str, mode: u16, rdev: u32, _ctx: &vfs::CreateCtx) -> KResult<()> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }

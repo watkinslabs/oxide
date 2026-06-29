@@ -280,7 +280,7 @@ pub trait FileSystem: Send + Sync {
         let pino = match self.lookup_path(parent) {
             Some(p) => p, None => { let _ = self.rename(to, from); return Err(VfsError::Enoent); }
         };
-        if let Err(e) = pino.mknod_child(name, S_IFCHR, 0) {
+        if let Err(e) = pino.mknod_child(name, S_IFCHR, 0, &crate::CreateCtx::root()) {
             let _ = self.rename(to, from); // rollback the move
             return Err(e);
         }

@@ -32,7 +32,11 @@ pub(crate) fn symlink_impl(target: String, link: String) -> i64 {
         return -(Errno::Eexist.as_i32() as i64);
     }
     let (pino, name) = match resolve_parent(&l) { Ok(x) => x, Err(rv) => return rv };
-    match pino.symlink_child(&name, target.as_bytes()) {
+    // Thread the mount idmap + caller cred so the new symlink gets the right
+    // owner (symlinks carry no umask). Linux `->symlink(struct mnt_idmap *, ...)`.
+    let cred = crate::pathresolve::current_cred();
+    let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
+    match pino.symlink_child(&name, target.as_bytes(), &ctx) {
         Ok(())  => { crate::pathresolve::d_drop_path(&l); 0 }
         Err(e)  => {
             crate::namei_common::trace_run_vfs_error(b"symlink", &l, e);

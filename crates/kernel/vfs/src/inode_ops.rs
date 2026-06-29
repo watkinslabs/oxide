@@ -21,6 +21,44 @@ use crate::namei::Cred;
 use crate::setattr::Iattr;
 use crate::types::{KResult, VfsError};
 
+/// The all-powerful root cred backing [`CreateCtx::root`] — the default-allow
+/// identity for internal/path-API creates that carry no caller `Cred`.
+static ROOT_CRED: Cred = Cred::root();
+
+/// Creation context threaded into the `i_op` create-family — the Rust analogue
+/// of the `struct mnt_idmap *idmap` Linux passes to `->create`/`->mkdir`/
+/// `->mknod`/`->symlink`/`->link`/`->rename`, plus the caller `Cred`
+/// (fsuid/fsgid + caps) and the `umask` to clear from the requested perm bits.
+/// A backend that materialises a new inode stamps its owner from
+/// [`fsuid`](Self::fsuid)/[`fsgid`](Self::fsgid) (the caller ids mapped DOWN
+/// through the mount idmap, Linux `mapped_fsuid`/`mapped_fsgid`) and its perm
+/// bits from [`apply_umask`](Self::apply_umask). # C: O(1)
+pub struct CreateCtx<'a> {
+    /// Per-mount id map (Linux `mnt_idmap`); identity for a non-idmapped mount.
+    pub idmap: &'a crate::idmap::Idmap,
+    /// Caller credentials (fsuid/fsgid + DAC caps).
+    pub cred: &'a Cred,
+    /// `current_umask()` — perm bits cleared from a newly created inode's mode.
+    pub umask: u16,
+}
+
+impl CreateCtx<'_> {
+    /// Identity/root context: no idmap, root cred, no umask. Used by internal
+    /// resolves and the path-based `FilesystemType` create that carries no
+    /// caller creds. # C: O(1)
+    pub fn root() -> CreateCtx<'static> {
+        CreateCtx { idmap: &crate::idmap::IDENTITY, cred: &ROOT_CRED, umask: 0 }
+    }
+    /// fs `i_uid` for a new inode: caller fsuid mapped DOWN through the mount
+    /// idmap (Linux `mapped_fsuid`). # C: O(extents)
+    pub fn fsuid(&self) -> u32 { self.idmap.map_in_uid(self.cred.uid) }
+    /// fs `i_gid` for a new inode: caller fsgid mapped DOWN. # C: O(extents)
+    pub fn fsgid(&self) -> u32 { self.idmap.map_in_gid(self.cred.gid) }
+    /// Requested perm bits with the umask cleared (Linux `mode & ~umask`).
+    /// # C: O(1)
+    pub fn apply_umask(&self, mode: u32) -> u32 { mode & !(self.umask as u32) }
+}
+
 /// `inode_operations` — the inode's `i_op` namespace/metadata vtable.
 pub trait InodeOps: Send + Sync {
     /// `i_op->lookup` — resolve `name` within this directory inode. Default
@@ -30,14 +68,15 @@ pub trait InodeOps: Send + Sync {
     }
 
     /// `i_op->create` — create a regular child `name` (`mode` = full umode_t).
+    /// `ctx` carries the mount idmap + caller cred + umask for owner/mode.
     /// Default `Erofs`. # C: backend-dependent
-    fn create(&self, _inode: &Inode, _name: &str, _mode: u32) -> KResult<InodeRef> {
+    fn create(&self, _inode: &Inode, _name: &str, _mode: u32, _ctx: &CreateCtx) -> KResult<InodeRef> {
         Err(VfsError::Erofs)
     }
 
-    /// `i_op->mkdir` — create a child directory `name`. Default `Erofs`.
-    /// # C: backend-dependent
-    fn mkdir(&self, _inode: &Inode, _name: &str, _mode: u32) -> KResult<InodeRef> {
+    /// `i_op->mkdir` — create a child directory `name`. `ctx` carries the mount
+    /// idmap + caller cred + umask. Default `Erofs`. # C: backend-dependent
+    fn mkdir(&self, _inode: &Inode, _name: &str, _mode: u32, _ctx: &CreateCtx) -> KResult<InodeRef> {
         Err(VfsError::Erofs)
     }
 
@@ -46,21 +85,23 @@ pub trait InodeOps: Send + Sync {
     fn rmdir(&self, _inode: &Inode, _name: &str) -> KResult<()> { Err(VfsError::Erofs) }
 
     /// `i_op->mknod` — create a device/FIFO/socket child. `mode` carries the
-    /// `S_IF*` + perm bits, `rdev` the packed `dev_t`. Default `Erofs`.
-    /// # C: backend-dependent
-    fn mknod(&self, _inode: &Inode, _name: &str, _mode: u16, _rdev: u32) -> KResult<()> {
+    /// `S_IF*` + perm bits, `rdev` the packed `dev_t`. `ctx` carries the mount
+    /// idmap + caller cred + umask. Default `Erofs`. # C: backend-dependent
+    fn mknod(&self, _inode: &Inode, _name: &str, _mode: u16, _rdev: u32, _ctx: &CreateCtx) -> KResult<()> {
         Err(VfsError::Erofs)
     }
 
     /// `i_op->symlink` — create a symlink child `name` with body `target`.
+    /// `ctx` carries the mount idmap + caller cred (symlinks ignore umask).
     /// Default `Erofs`. # C: backend-dependent
-    fn symlink(&self, _inode: &Inode, _name: &str, _target: &[u8]) -> KResult<()> {
+    fn symlink(&self, _inode: &Inode, _name: &str, _target: &[u8], _ctx: &CreateCtx) -> KResult<()> {
         Err(VfsError::Erofs)
     }
 
-    /// `i_op->link` — hard-link `target` into this directory as `name`. Default
+    /// `i_op->link` — hard-link `target` into this directory as `name`. `ctx`
+    /// carries the caller cred (the linked inode keeps its own owner). Default
     /// `Erofs`. # C: backend-dependent
-    fn link(&self, _inode: &Inode, _target: &InodeRef, _name: &str) -> KResult<()> {
+    fn link(&self, _inode: &Inode, _target: &InodeRef, _name: &str, _ctx: &CreateCtx) -> KResult<()> {
         Err(VfsError::Erofs)
     }
 
@@ -69,8 +110,10 @@ pub trait InodeOps: Send + Sync {
     fn unlink(&self, _inode: &Inode, _name: &str) -> KResult<()> { Err(VfsError::Erofs) }
 
     /// `i_op->rename` — rename `old_name` (in this dir) to `new_name` in
-    /// `new_dir`. Default `Erofs`. # C: backend-dependent
-    fn rename(&self, _inode: &Inode, _old_name: &str, _new_dir: &Inode, _new_name: &str, _flags: u32)
+    /// `new_dir`. `ctx` carries the mount idmap + caller cred (Linux
+    /// `->rename(struct mnt_idmap *, ...)`). Default `Erofs`.
+    /// # C: backend-dependent
+    fn rename(&self, _inode: &Inode, _old_name: &str, _new_dir: &Inode, _new_name: &str, _flags: u32, _ctx: &CreateCtx)
         -> KResult<()> { Err(VfsError::Erofs) }
 
     /// `i_op->get_link`/`readlink` — symlink target bytes. Default `Einval`
