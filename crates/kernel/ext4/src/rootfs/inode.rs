@@ -387,6 +387,15 @@ impl InodeOps for Ext4StatInodeOps {
         }
         mount.dir_unlink(d.ino, name.as_bytes()).map_err(|_| VfsError::Eio)?;
         let _ = mount.free_inode(target);
+        // In-memory nlink authority (Linux `ext4_rmdir` → `clear_nlink(victim)`
+        // + `ext4_dec_count(dir)`): the FS owns the in-memory drop, not the
+        // dcache. Clear the cached victim dir's links (its "." + the parent's
+        // entry) so `d_unlink` sees nlink==0 and retires it; drop THIS parent
+        // dir's link (the victim's gone ".."), mirroring tmpfs `simple_rmdir`.
+        if let Some(sb) = d.st.i_sb() {
+            if let Some(victim) = sb.ilookup(ext4_wrap_ino(target)) { victim.set_nlink(0); }
+        }
+        inode.drop_nlink();
         Ok(())
     }
 
@@ -413,6 +422,14 @@ impl InodeOps for Ext4StatInodeOps {
         if i.is_dir() { return Err(VfsError::Eisdir); }
         mount.unlink(d.ino, name.as_bytes()).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(target as u64));
+        // In-memory nlink authority (Linux `ext4_unlink` → `ext4_dec_count`):
+        // the FS owns `drop_nlink` on the victim inode; the dcache `d_unlink`
+        // no longer touches nlink. Drop the CACHED victim's link (same `Arc` the
+        // victim dentry holds) so `iput`/`drop_inode` can retire it once the
+        // last reference drains. Uncached → nothing in memory to drop.
+        if let Some(sb) = d.st.i_sb() {
+            if let Some(victim) = sb.ilookup(ext4_wrap_ino(target)) { victim.drop_link(); }
+        }
         Ok(())
     }
 
