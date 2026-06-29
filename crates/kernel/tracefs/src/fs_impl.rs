@@ -26,7 +26,7 @@ impl vfs::fs::FileSystem for TracefsFs {
     /// post-mount verify accepts. `tracefs::init` registers the dir.
     /// # C: O(components)
     fn root(&self) -> Option<InodeRef> {
-        Some(crate::trace_root() as InodeRef)
+        Some(crate::trace_root().as_inode())
     }
 }
 
@@ -44,6 +44,6 @@ impl vfs::fs::FileSystem for DebugfsFs {
     /// required so the walk crosses into the mount and the post-mount verify
     /// accepts it. # C: O(components)
     fn root(&self) -> Option<InodeRef> {
-        Some(crate::debug_root() as InodeRef)
+        Some(crate::debug_root().as_inode())
     }
 }

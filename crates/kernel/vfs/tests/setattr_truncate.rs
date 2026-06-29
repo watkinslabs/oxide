@@ -5,53 +5,49 @@
 //! `i_op->truncate` so the backend updates `i_size` and drops backing storage
 //! past the new length. Synthetic `Inode` with real Vec backing — no FS.
 
+use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use vfs::inode::{Inode, S_APPEND, S_IMMUTABLE};
 use vfs::setattr::{notify_change, setattr_prepare, Iattr, ATTR_SIZE};
+use vfs::{default_file_ops, mk_mode, InodeBuilder, InodeOps};
 use vfs::{Cred, FileType, Idmap, InodeRef, KResult, VfsError};
 
-/// Regular-file inode whose `truncate` hook resizes a real backing buffer:
-/// grow zero-fills the tail, shrink drops the bytes past the new length —
-/// exactly the page-drop a truncate must perform. `flags` carries the
-/// `S_*` `i_flags` (immutable / append-only) under test.
-struct TruncNode {
+/// Backend state (`i_private`) for a truncatable regular file: a real backing
+/// buffer plus a truncate-call counter. The `truncate` hook resizes the buffer
+/// — grow zero-fills the tail, shrink drops the bytes past the new length.
+struct TruncData {
     data: Mutex<Vec<u8>>,
-    flags: AtomicU32,
-    perm: AtomicU32,
     truncs: AtomicU64,
 }
 
-impl TruncNode {
-    fn new(initial: &[u8], flags: u32) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self {
-            data: Mutex::new(initial.to_vec()),
-            flags: AtomicU32::new(flags),
-            perm: AtomicU32::new(0o644),
-            truncs: AtomicU64::new(0),
-        })
-    }
+impl TruncData {
     fn data_len(&self) -> usize { self.data.lock().unwrap().len() }
     fn truncs(&self) -> u64 { self.truncs.load(Ordering::Acquire) }
 }
 
-impl Inode for TruncNode {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { self.data.lock().unwrap().len() as u64 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn perm(&self) -> Option<u16> { Some(self.perm.load(Ordering::Acquire) as u16) }
-    fn uid(&self) -> Option<u32> { Some(0) }
-    fn gid(&self) -> Option<u32> { Some(0) }
-    fn i_flags(&self) -> u32 { self.flags.load(Ordering::Acquire) }
-    fn set_perm(&self, p: u16) -> KResult<()> { self.perm.store(p as u32, Ordering::Release); Ok(()) }
-    fn truncate(&self, len: u64) -> KResult<()> {
-        // Drop / extend the backing buffer to the new i_size (page drop).
-        self.data.lock().unwrap().resize(len as usize, 0u8);
-        self.truncs.fetch_add(1, Ordering::AcqRel);
+/// `i_op->truncate`: resize the backing buffer to the new `i_size` (page drop)
+/// and update the inode's `i_size`.
+struct TruncOps;
+impl InodeOps for TruncOps {
+    fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
+        let d = inode.private::<TruncData>().ok_or(VfsError::Einval)?;
+        d.data.lock().unwrap().resize(len as usize, 0u8);
+        d.truncs.fetch_add(1, Ordering::AcqRel);
+        inode.set_size(len);
         Ok(())
     }
+}
+
+/// Build a regular-file inode (perm 0o644, owner root) with `flags` `i_flags`
+/// (immutable / append-only under test) over `initial` backing bytes. Returns
+/// the inode + the backend state so the test can inspect the buffer / counter.
+fn make_trunc(initial: &[u8], flags: u32) -> (InodeRef, Arc<TruncData>) {
+    let d = Arc::new(TruncData { data: Mutex::new(initial.to_vec()), truncs: AtomicU64::new(0) });
+    let inode = InodeBuilder::new(1, mk_mode(FileType::Regular, 0o644), Arc::new(TruncOps), default_file_ops())
+        .size(initial.len() as u64).owner(0, 0).i_flags(flags).private(d.clone()).build();
+    (inode, d)
 }
 
 fn size_change(n: u64) -> Iattr { Iattr { valid: ATTR_SIZE, size: n, ..Default::default() } }
@@ -59,8 +55,7 @@ fn size_change(n: u64) -> Iattr { Iattr { valid: ATTR_SIZE, size: n, ..Default::
 /// Grow: new i_size > old, tail zero-filled, truncate hook fired once.
 #[test]
 fn truncate_grow_extends_and_zero_fills() {
-    let raw = TruncNode::new(b"hello", 0);
-    let inode: InodeRef = raw.clone();
+    let (inode, raw) = make_trunc(b"hello", 0);
     let mut ia = size_change(100);
     notify_change(&Idmap::identity(), &inode, &mut ia, &Cred::root()).unwrap();
     assert_eq!(inode.size(), 100);
@@ -72,7 +67,7 @@ fn truncate_grow_extends_and_zero_fills() {
 /// Shrink: new i_size < old, bytes past the new length dropped.
 #[test]
 fn truncate_shrink_drops_pages() {
-    let inode: InodeRef = TruncNode::new(b"abcdefghij", 0);
+    let (inode, _raw) = make_trunc(b"abcdefghij", 0);
     let mut ia = size_change(4);
     notify_change(&Idmap::identity(), &inode, &mut ia, &Cred::root()).unwrap();
     assert_eq!(inode.size(), 4);
@@ -83,8 +78,7 @@ fn truncate_shrink_drops_pages() {
 /// check) — and the truncate hook never fires.
 #[test]
 fn truncate_immutable_eperm() {
-    let raw = TruncNode::new(b"locked", S_IMMUTABLE);
-    let inode: InodeRef = raw.clone();
+    let (inode, raw) = make_trunc(b"locked", S_IMMUTABLE);
     let mut ia = size_change(0);
     assert_eq!(setattr_prepare(&Idmap::identity(), &inode, &mut ia, &Cred::root()), Err(VfsError::Eperm));
     assert_eq!(notify_change(&Idmap::identity(), &inode, &mut ia, &Cred::root()), Err(VfsError::Eperm));
@@ -97,8 +91,7 @@ fn truncate_immutable_eperm() {
 /// dedicated S_APPEND reject. The hook never fires.
 #[test]
 fn truncate_append_only_eperm() {
-    let raw = TruncNode::new(b"appendlog", S_APPEND);
-    let inode: InodeRef = raw.clone();
+    let (inode, raw) = make_trunc(b"appendlog", S_APPEND);
     let mut ia = size_change(0);
     assert_eq!(setattr_prepare(&Idmap::identity(), &inode, &mut ia, &Cred::root()), Err(VfsError::Eperm));
     assert_eq!(notify_change(&Idmap::identity(), &inode, &mut ia, &Cred::root()), Err(VfsError::Eperm));

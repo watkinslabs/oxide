@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 
 use vfs::file::{fput, get_file};
 use vfs::inode::Inode;
-use vfs::{Dentry, File, FileType, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{Dentry, File, FileOps, FileType, InodeBuilder, InodeRef, KResult, OpenFlags,
+          default_inode_ops, mk_mode};
 
 /// Serializes tests in this binary: every `File` drop runs through `dput`,
 /// which touches the GLOBAL dentry hashtable / LRU. Holding this across each
@@ -28,15 +29,16 @@ struct RelCounter {
     releases: Arc<AtomicUsize>,
     flushes:  Arc<AtomicUsize>,
 }
-impl Inode for RelCounter {
-    fn ino(&self) -> vfs::Ino { 0x5151 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _off: u64, _buf: &mut [u8]) -> KResult<usize> { Ok(0) }
-    fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> { Ok(buf.len()) }
-    fn on_release(&self) { self.releases.fetch_add(1, Ordering::SeqCst); }
-    fn on_flush(&self) { self.flushes.fetch_add(1, Ordering::SeqCst); }
+struct RelOps;
+impl FileOps for RelOps {
+    fn read(&self, _inode: &Inode, _off: u64, _buf: &mut [u8]) -> KResult<usize> { Ok(0) }
+    fn write(&self, _inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> { Ok(buf.len()) }
+    fn on_release(&self, inode: &Inode) {
+        inode.private::<RelCounter>().unwrap().releases.fetch_add(1, Ordering::SeqCst);
+    }
+    fn on_flush(&self, inode: &Inode) {
+        inode.private::<RelCounter>().unwrap().flushes.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 /// Build a `File` over a fresh `RelCounter`, returning the file plus the
@@ -44,7 +46,9 @@ impl Inode for RelCounter {
 fn file() -> (Arc<File>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let releases = Arc::new(AtomicUsize::new(0));
     let flushes  = Arc::new(AtomicUsize::new(0));
-    let ino: InodeRef = Arc::new(RelCounter { releases: releases.clone(), flushes: flushes.clone() });
+    let ino: InodeRef = InodeBuilder::new(0x5151, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(RelOps))
+        .private(Arc::new(RelCounter { releases: releases.clone(), flushes: flushes.clone() }))
+        .build();
     let dentry = Dentry::new(None, "f".into(), Arc::clone(&ino));
     let f = File::new(ino, dentry, OpenFlags::O_RDWR);
     (f, releases, flushes)

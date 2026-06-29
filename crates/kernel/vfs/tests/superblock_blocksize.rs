@@ -6,8 +6,8 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use vfs::fs::FileSystem;
-use vfs::inode::Inode;
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::inode::{Inode, InodeBuilder};
+use vfs::{default_file_ops, mk_mode, FileType, InodeOps, InodeRef, KResult, VfsError};
 
 mod common;
 
@@ -19,12 +19,12 @@ fn guard() -> MutexGuard<'static, ()> {
     g
 }
 
-struct TDir { ino: u64 }
-impl Inode for TDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+struct TDirOps;
+impl InodeOps for TDirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+}
+fn make_tdir(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(TDirOps), default_file_ops()).build()
 }
 
 /// A backend that reports a NON-default block size (the thing a hardcoded 4096
@@ -34,7 +34,7 @@ impl FileSystem for BsFs {
     fn name(&self) -> &str { "bsfs" }
     fn magic(&self) -> u64 { 0x0102_1994 }
     fn block_size(&self) -> u32 { self.bs }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir { ino: 0xB1 })) }
+    fn root(&self) -> Option<InodeRef> { Some(make_tdir(0xB1)) }
 }
 
 #[test]
@@ -54,7 +54,7 @@ fn default_block_size_is_4096() {
     impl FileSystem for DefFs {
         fn name(&self) -> &str { "deffs" }
         fn magic(&self) -> u64 { 0xEF53 }
-        fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir { ino: 0xD1 })) }
+        fn root(&self) -> Option<InodeRef> { Some(make_tdir(0xD1)) }
     }
     common::register("/bsdef", Arc::new(DefFs)).expect("register");
     let m = common::mount_at_path_exact("/bsdef").expect("mount");

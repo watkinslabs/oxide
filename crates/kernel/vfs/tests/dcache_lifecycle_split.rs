@@ -13,17 +13,11 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use vfs::dcache::shrink_dcache; // pull the module into scope (and prove it links)
-use vfs::inode::Inode;
-use vfs::{d_add, d_add_negative, d_alloc, d_instantiate, d_lookup, Dentry, FileType, InodeRef, KResult, VfsError, D_NEGATIVE};
+use vfs::{d_add, d_add_negative, d_alloc, d_instantiate, d_lookup, Dentry, FileType, InodeRef, D_NEGATIVE};
 
-struct Dir(u64);
-impl Inode for Dir {
-    fn ino(&self) -> vfs::Ino { self.0 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+fn dir(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755), vfs::default_inode_ops(), vfs::default_file_ops()).build()
 }
-fn dir(ino: u64) -> InodeRef { Arc::new(Dir(ino)) }
 
 // The global dentry hashtable is process-wide; serialize the tests that probe
 // it so concurrent inserts under distinct roots can't interleave a probe.

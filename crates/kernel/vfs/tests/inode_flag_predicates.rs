@@ -5,18 +5,14 @@
 //! write/open/atime paths call instead of open-coding `i_flags() & S_FOO`.
 
 use vfs::inode::{
-    is_append, is_immutable, is_noatime, is_sync, Inode, S_APPEND, S_CASEFOLD, S_DAX, S_DEAD,
+    is_append, is_immutable, is_noatime, is_sync, InodeBuilder, S_APPEND, S_CASEFOLD, S_DAX, S_DEAD,
     S_DIRSYNC, S_ENCRYPTED, S_IMMUTABLE, S_NOATIME, S_SYNC, S_VERITY,
 };
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, InodeRef};
 
-struct FlagFile { flags: u32 }
-impl Inode for FlagFile {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn i_flags(&self) -> u32 { self.flags }
+fn flag_file(flags: u32) -> InodeRef {
+    InodeBuilder::new(1, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
+        .i_flags(flags).build()
 }
 
 /// The added `S_*` bits match Linux `include/linux/fs.h` numeric reps exactly.
@@ -37,21 +33,21 @@ fn s_flag_bits_match_linux() {
 /// Each predicate keys ONLY on its own bit.
 #[test]
 fn predicates_isolate_their_bit() {
-    let imm = FlagFile { flags: S_IMMUTABLE };
+    let imm = flag_file(S_IMMUTABLE);
     assert!(is_immutable(&imm));
     assert!(!is_append(&imm));
     assert!(!is_noatime(&imm));
     assert!(!is_sync(&imm));
 
-    let app = FlagFile { flags: S_APPEND };
+    let app = flag_file(S_APPEND);
     assert!(is_append(&app));
     assert!(!is_immutable(&app));
 
-    let na = FlagFile { flags: S_NOATIME };
+    let na = flag_file(S_NOATIME);
     assert!(is_noatime(&na));
     assert!(!is_sync(&na));
 
-    let sy = FlagFile { flags: S_SYNC };
+    let sy = flag_file(S_SYNC);
     assert!(is_sync(&sy));
     assert!(!is_immutable(&sy));
 }
@@ -60,10 +56,10 @@ fn predicates_isolate_their_bit() {
 /// answers `true` for each set bit.
 #[test]
 fn none_and_combined() {
-    let plain = FlagFile { flags: 0 };
+    let plain = flag_file(0);
     assert!(!is_immutable(&plain) && !is_append(&plain) && !is_noatime(&plain) && !is_sync(&plain));
 
-    let both = FlagFile { flags: S_IMMUTABLE | S_APPEND };
+    let both = flag_file(S_IMMUTABLE | S_APPEND);
     assert!(is_immutable(&both));
     assert!(is_append(&both));
     assert!(!is_noatime(&both));

@@ -7,7 +7,8 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as LockClass};
 
-use vfs::{File, FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{File, FileType, Inode, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{FileOps, InodeBuilder, default_file_ops, default_inode_ops, mk_mode};
 
 #[cfg(target_os = "oxide-kernel")]
 use sched::live::WaitList;
@@ -40,7 +41,7 @@ const AUTOFS_PROTO_SUBVERSION: u32 = 6;
 const AUTOFS_PTYPE_MISSING_DIRECT: i32 = 5;
 
 pub struct AutofsFs {
-    root: Arc<AutofsRoot>,
+    root: InodeRef,
     state: Arc<AutofsState>,
 }
 
@@ -52,7 +53,7 @@ impl AutofsFs {
         };
         let state = Arc::new(AutofsState::new(pipe));
         Ok(Arc::new(Self {
-            root: Arc::new(AutofsRoot { ino: 0x0187_0001, state: Arc::clone(&state) }),
+            root: make_autofs_root(Arc::clone(&state)),
             state,
         }))
     }
@@ -61,7 +62,7 @@ impl AutofsFs {
 impl vfs::fs::FileSystem for AutofsFs {
     fn name(&self) -> &str { "autofs" }
     fn magic(&self) -> u64 { AUTOFS_SUPER_MAGIC }
-    fn root(&self) -> Option<InodeRef> { Some(self.root.clone() as InodeRef) }
+    fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
     fn set_sb(&self, sb: alloc::sync::Weak<vfs::superblock::SuperBlock>) {
         if let Some(sb) = sb.upgrade() {
             // `state.dev` holds the RAW `s_dev` so `AutofsRoot::fsid` reports it
@@ -77,50 +78,53 @@ impl vfs::fs::FileSystem for AutofsFs {
     }
 }
 
-struct AutofsRoot {
-    ino: Ino,
-    state: Arc<AutofsState>,
+/// Per-inode autofs root state (Linux `i_private`).
+struct AutofsRootData { state: Arc<AutofsState> }
+
+/// `make_autofs_root(state)` — the autofs mount-point directory inode. # C: O(1)
+fn make_autofs_root(state: Arc<AutofsState>) -> InodeRef {
+    InodeBuilder::new(0x0187_0001, mk_mode(FileType::Directory, 0o755),
+        Arc::new(AutofsRootInodeOps), Arc::new(AutofsRootFileOps))
+        .private(Arc::new(AutofsRootData { state }))
+        .build()
 }
 
-impl Inode for AutofsRoot {
-    fn ino(&self) -> Ino { self.ino }
-    /// Report the mount's `s_dev` so `fstat(automount-point)` yields the same
-    /// `st_dev` (`fsid_to_dev(s_dev)`) the autofs registry is keyed on — the
-    /// `devid` systemd hands `AUTOFS_DEV_IOCTL_OPENMOUNT`. Without this the
-    /// inode reported `fsid()==0` (no wired SB) → `st_dev==256` for every
-    /// autofs mount, which matched no registry entry. # C: O(1)
-    fn fsid(&self) -> u64 { self.state.dev.load(Ordering::Acquire) }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
-        self.state.trigger(name)?;
+/// `i_op` for the autofs root: a lookup triggers an automount request. # C: O(1)
+struct AutofsRootInodeOps;
+impl InodeOps for AutofsRootInodeOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<AutofsRootData>().ok_or(VfsError::Einval)?;
+        d.state.trigger(name)?;
         Err(VfsError::Enoent)
     }
-    fn readdir(&self, _off: u64, _f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+}
+
+/// `i_fop` for the autofs root: an empty directory. # C: O(1)
+struct AutofsRootFileOps;
+impl FileOps for AutofsRootFileOps {
+    fn iterate(&self, _inode: &Inode, _off: u64,
+               _f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         Ok(0)
     }
 }
 
+/// Per-inode autofs control state (`AUTOFS_DEV_IOCTL_OPENMOUNT`'s fd target).
+/// Kept as the public type downstream ioctl handlers downcast to. # C: O(1)
 pub struct AutofsCtlInode {
     state: Arc<AutofsState>,
 }
 
-impl AutofsCtlInode {
-    fn new(state: Arc<AutofsState>) -> Arc<Self> {
-        Arc::new(Self { state })
-    }
-}
-
-impl Inode for AutofsCtlInode {
-    fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
-    fn ino(&self) -> Ino { 0x0187_1000 | (self.state.dev.load(Ordering::Acquire) & 0xfff) }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// `make_autofs_ctl_inode(state)` — a CharDev ioctl-only inode. # C: O(1)
+fn make_autofs_ctl_inode(state: Arc<AutofsState>) -> InodeRef {
+    let ino = 0x0187_1000 | (state.dev.load(Ordering::Acquire) & 0xfff);
+    InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0),
+        default_inode_ops(), default_file_ops())
+        .private(Arc::new(AutofsCtlInode { state }))
+        .build()
 }
 
 pub fn ctl_from_inode(inode: &InodeRef) -> Option<&AutofsCtlInode> {
-    inode.as_any()?.downcast_ref::<AutofsCtlInode>()
+    inode.private::<AutofsCtlInode>()
 }
 
 struct Pending {
@@ -263,7 +267,7 @@ fn register_mount(dev: u64, state: Arc<AutofsState>) {
 
 pub fn openmount(devid: u32) -> Option<InodeRef> {
     let dev = devid as u64;
-    mounts().get(&dev).cloned().map(|state| AutofsCtlInode::new(state) as InodeRef)
+    mounts().get(&dev).cloned().map(make_autofs_ctl_inode)
 }
 
 pub fn ctl_protover(ctl: &AutofsCtlInode) -> u32 {

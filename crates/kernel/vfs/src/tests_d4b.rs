@@ -2,75 +2,34 @@
 // setattr_prepare DAC gate (utimes EPERM), get_link, utimensat UTIME_OMIT.
 
 extern crate alloc;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::getattr::{generic_fillattr, S_IFREG};
 use crate::idmap::Idmap;
-use crate::inode::{Inode, InodeRef};
+use crate::inode::InodeBuilder;
+use crate::inode::InodeRef;
+use crate::inode_ops::{default_inode_ops, mk_mode};
+use crate::file_ops::default_file_ops;
 use crate::namei::Cred;
 use crate::setattr::{notify_change, setattr_prepare, Iattr, ATTR_ATIME, ATTR_MTIME, ATTR_MTIME_SET, ATTR_UID};
-use crate::types::{FileType, KResult, VfsError};
+use crate::types::{FileType, VfsError};
 
 // Mutable test inode recording perm/owner/times so apply paths are observable.
-struct MetaInode {
-    ft: FileType,
-    perm: AtomicU32,   // u16 in low bits; u32::MAX == "None"
-    uid: AtomicU32,    // u32::MAX == "None"
-    gid: AtomicU32,
-    atime: AtomicU64,
-    mtime: AtomicU64,
-    link: Option<Vec<u8>>,
-}
-
+// The concrete `Inode` owns these fields natively (mode/owner/atime/mtime via
+// `InodeBuilder` + the inherent `set_perm`/`set_owner`/`set_times` writers), so
+// the old per-method overrides collapse into builder calls. A symlink stamps
+// its target into the inline `i_link` (so `get_link` returns it; a regular file
+// has no `i_link`, so `get_link` → `readlink` default `Einval`). Linux symlinks
+// always carry `0o777`, so the old `perm()==None → default_perm_for` fallback
+// is now just the literal mode and the assertions hold unchanged.
+struct MetaInode;
 impl MetaInode {
-    fn reg(perm: u16, uid: u32, gid: u32) -> Arc<Self> {
-        Arc::new(Self {
-            ft: FileType::Regular,
-            perm: AtomicU32::new(perm as u32), uid: AtomicU32::new(uid), gid: AtomicU32::new(gid),
-            atime: AtomicU64::new(0), mtime: AtomicU64::new(0), link: None,
-        })
+    fn reg(perm: u16, uid: u32, gid: u32) -> InodeRef {
+        InodeBuilder::new(1, mk_mode(FileType::Regular, perm), default_inode_ops(), default_file_ops())
+            .owner(uid, gid).build()
     }
-    fn symlink(target: &[u8]) -> Arc<Self> {
-        Arc::new(Self {
-            ft: FileType::Symlink,
-            perm: AtomicU32::new(u32::MAX), uid: AtomicU32::new(u32::MAX), gid: AtomicU32::new(u32::MAX),
-            atime: AtomicU64::new(0), mtime: AtomicU64::new(0), link: Some(target.to_vec()),
-        })
-    }
-}
-
-impl Inode for MetaInode {
-    fn ino(&self) -> u64 { 1 }
-    fn file_type(&self) -> FileType { self.ft }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn perm(&self) -> Option<u16> {
-        let p = self.perm.load(Ordering::Acquire);
-        if p == u32::MAX { None } else { Some(p as u16) }
-    }
-    fn uid(&self) -> Option<u32> {
-        let u = self.uid.load(Ordering::Acquire);
-        if u == u32::MAX { None } else { Some(u) }
-    }
-    fn gid(&self) -> Option<u32> {
-        let g = self.gid.load(Ordering::Acquire);
-        if g == u32::MAX { None } else { Some(g) }
-    }
-    fn atime(&self) -> Option<u64> { Some(self.atime.load(Ordering::Acquire)) }
-    fn mtime(&self) -> Option<u64> { Some(self.mtime.load(Ordering::Acquire)) }
-    fn set_perm(&self, perm: u16) -> KResult<()> { self.perm.store(perm as u32, Ordering::Release); Ok(()) }
-    fn set_owner(&self, uid: u32, gid: u32) -> KResult<()> {
-        self.uid.store(uid, Ordering::Release); self.gid.store(gid, Ordering::Release); Ok(())
-    }
-    fn set_times(&self, a: Option<u64>, m: Option<u64>, _c: u64) -> KResult<()> {
-        if let Some(a) = a { self.atime.store(a, Ordering::Release); }
-        if let Some(m) = m { self.mtime.store(m, Ordering::Release); }
-        Ok(())
-    }
-    fn readlink(&self) -> KResult<Vec<u8>> {
-        self.link.clone().ok_or(VfsError::Einval)
+    fn symlink(target: &[u8]) -> InodeRef {
+        InodeBuilder::new(1, mk_mode(FileType::Symlink, 0o777), default_inode_ops(), default_file_ops())
+            .link(target.to_vec().into_boxed_slice()).build()
     }
 }
 

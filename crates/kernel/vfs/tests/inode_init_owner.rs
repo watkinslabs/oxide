@@ -8,28 +8,21 @@
 //! is the SYSCALL layer's job — `inode_init_owner` takes the already-masked
 //! mode AS GIVEN and never re-masks (no double-mask regression).
 
-use std::sync::Arc;
-
-use vfs::inode::{inode_init_owner, Inode};
+use vfs::inode::{inode_init_owner, InodeBuilder};
 use vfs::types::{S_IFDIR, S_IFREG};
-use vfs::{Cred, FileType, InodeRef, KResult, VfsError, CRED_NGROUPS};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, Cred, FileType, InodeRef, CRED_NGROUPS};
 
 const S_ISGID: u16 = 0o2000;
 const S_IXGRP: u16 = 0o0010;
 
 /// Parent directory with an explicit owner gid and permission bits (the
-/// `S_ISGID` setgid-directory bit lives in `perm`).
-struct Dir { gid: u32, perm: u16 }
-impl Inode for Dir {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
-    fn perm(&self) -> Option<u16> { Some(self.perm) }
-    fn gid(&self) -> Option<u32> { Some(self.gid) }
+/// `S_ISGID` setgid-directory bit lives in the perm half of `i_mode`).
+fn dir(gid: u32, perm: u16) -> InodeRef {
+    InodeBuilder::new(1, mk_mode(FileType::Directory, perm), default_inode_ops(), default_file_ops())
+        .owner(0, gid).build()
 }
-fn plain_dir(gid: u32) -> Arc<Dir> { Arc::new(Dir { gid, perm: 0o755 }) }
-fn sgid_dir(gid: u32) -> Arc<Dir> { Arc::new(Dir { gid, perm: 0o2755 }) }
+fn plain_dir(gid: u32) -> InodeRef { dir(gid, 0o755) }
+fn sgid_dir(gid: u32) -> InodeRef { dir(gid, 0o2755) }
 
 /// Unprivileged cred (no caps), primary group == `gid`, no supplementary groups.
 fn user(uid: u32, gid: u32) -> Cred {
@@ -47,7 +40,7 @@ fn user(uid: u32, gid: u32) -> Cred {
 fn uid_is_always_creator_fsuid() {
     // Even under an SGID dir owned by another group, i_uid == caller fsuid.
     let d = sgid_dir(5000);
-    let (uid, _gid, _m) = inode_init_owner(&*d, S_IFREG | 0o644, &user(1000, 1000));
+    let (uid, _gid, _m) = inode_init_owner(&d, S_IFREG | 0o644, &user(1000, 1000));
     assert_eq!(uid, 1000);
 }
 
@@ -55,7 +48,7 @@ fn uid_is_always_creator_fsuid() {
 fn gid_is_fsgid_under_plain_dir() {
     // Parent has no S_ISGID → new inode takes the creator's fsgid, NOT dir gid.
     let d = plain_dir(5000);
-    let (_uid, gid, _m) = inode_init_owner(&*d, S_IFREG | 0o644, &user(1000, 2000));
+    let (_uid, gid, _m) = inode_init_owner(&d, S_IFREG | 0o644, &user(1000, 2000));
     assert_eq!(gid, 2000);
 }
 
@@ -64,7 +57,7 @@ fn gid_inherits_dir_under_sgid_dir() {
     // Parent has S_ISGID → new inode inherits the DIRECTORY's gid (5000),
     // not the caller's fsgid (2000).
     let d = sgid_dir(5000);
-    let (_uid, gid, _m) = inode_init_owner(&*d, S_IFREG | 0o644, &user(1000, 2000));
+    let (_uid, gid, _m) = inode_init_owner(&d, S_IFREG | 0o644, &user(1000, 2000));
     assert_eq!(gid, 5000);
 }
 
@@ -75,7 +68,7 @@ fn new_dir_under_sgid_parent_inherits_sgid() {
     // A child directory always gets S_ISGID under an SGID parent, regardless
     // of caller group membership — so the subtree keeps the group.
     let d = sgid_dir(5000);
-    let (_u, gid, m) = inode_init_owner(&*d, S_IFDIR | 0o755, &user(1000, 2000));
+    let (_u, gid, m) = inode_init_owner(&d, S_IFDIR | 0o755, &user(1000, 2000));
     assert_eq!(gid, 5000);
     assert_ne!(m & S_ISGID, 0, "child dir must inherit S_ISGID");
 }
@@ -83,7 +76,7 @@ fn new_dir_under_sgid_parent_inherits_sgid() {
 #[test]
 fn new_dir_under_plain_parent_has_no_sgid() {
     let d = plain_dir(5000);
-    let (_u, _g, m) = inode_init_owner(&*d, S_IFDIR | 0o755, &user(1000, 2000));
+    let (_u, _g, m) = inode_init_owner(&d, S_IFDIR | 0o755, &user(1000, 2000));
     assert_eq!(m & S_ISGID, 0);
 }
 
@@ -94,7 +87,7 @@ fn setgid_file_kept_for_group_member() {
     // Caller's fsgid == inherited dir gid (5000): member, so S_ISGID survives.
     let d = sgid_dir(5000);
     let mode = S_IFREG | 0o2755; // setgid + group-exec
-    let (_u, gid, m) = inode_init_owner(&*d, mode, &user(1000, 5000));
+    let (_u, gid, m) = inode_init_owner(&d, mode, &user(1000, 5000));
     assert_eq!(gid, 5000);
     assert_ne!(m & S_ISGID, 0, "member keeps the setgid bit");
 }
@@ -106,7 +99,7 @@ fn setgid_file_stripped_for_non_member() {
     // binary running as a group the caller is not in). Group-exec bit stays.
     let d = sgid_dir(5000);
     let mode = S_IFREG | 0o2755;
-    let (_u, gid, m) = inode_init_owner(&*d, mode, &user(1000, 2000));
+    let (_u, gid, m) = inode_init_owner(&d, mode, &user(1000, 2000));
     assert_eq!(gid, 5000);
     assert_eq!(m & S_ISGID, 0, "non-member loses the setgid bit");
     assert_ne!(m & S_IXGRP, 0, "group-exec bit is untouched");
@@ -118,7 +111,7 @@ fn setgid_file_kept_via_supplementary_group() {
     let d = sgid_dir(5000);
     let mut c = user(1000, 2000);
     c.ngroups = 1; c.groups[0] = 5000;
-    let (_u, _g, m) = inode_init_owner(&*d, S_IFREG | 0o2755, &c);
+    let (_u, _g, m) = inode_init_owner(&d, S_IFREG | 0o2755, &c);
     assert_ne!(m & S_ISGID, 0);
 }
 
@@ -128,7 +121,7 @@ fn setgid_file_kept_via_cap_fsetid() {
     let d = sgid_dir(5000);
     let mut c = user(1000, 2000);
     c.cap_fsetid = true;
-    let (_u, _g, m) = inode_init_owner(&*d, S_IFREG | 0o2755, &c);
+    let (_u, _g, m) = inode_init_owner(&d, S_IFREG | 0o2755, &c);
     assert_ne!(m & S_ISGID, 0);
 }
 
@@ -138,7 +131,7 @@ fn setgid_no_group_exec_not_stripped() {
     // binary — Linux does NOT strip it for a non-member (the strip predicate
     // requires BOTH bits). Mode 0o2700: setgid, no group-exec.
     let d = sgid_dir(5000);
-    let (_u, _g, m) = inode_init_owner(&*d, S_IFREG | 0o2700, &user(1000, 2000));
+    let (_u, _g, m) = inode_init_owner(&d, S_IFREG | 0o2700, &user(1000, 2000));
     assert_ne!(m & S_ISGID, 0, "setgid w/o group-exec survives for a non-member");
 }
 
@@ -151,6 +144,6 @@ fn umask_applied_by_caller_not_reapplied() {
     // bits through UNCHANGED — inode_init_owner reads no umask of its own.
     let d = plain_dir(5000);
     let masked = S_IFDIR | (0o777 & !0o022); // == S_IFDIR | 0o755
-    let (_u, _g, m) = inode_init_owner(&*d, masked, &user(1000, 2000));
+    let (_u, _g, m) = inode_init_owner(&d, masked, &user(1000, 2000));
     assert_eq!(m & 0o7777, 0o755, "permission bits pass through verbatim");
 }

@@ -12,22 +12,18 @@ use std::sync::Arc;
 
 use vfs::fs::fs_context::{vfs_get_tree, FsContext, FsParameter};
 use vfs::fs::{reconfigure_single, FileSystem};
-use vfs::inode::Inode;
 use vfs::superblock::{next_anon_dev, FileSystemType, SuperBlock, SB_RDONLY};
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{FileType, InodeBuilder, InodeRef, KResult, VfsError,
+          default_file_ops, default_inode_ops, mk_mode};
 
-struct TDir;
-impl Inode for TDir {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+fn tdir() -> InodeRef {
+    InodeBuilder::new(1, mk_mode(FileType::Directory, 0), default_inode_ops(), default_file_ops()).build()
 }
 
 struct TFs;
 impl FileSystem for TFs {
     fn name(&self) -> &str { "rsfs" }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir)) }
+    fn root(&self) -> Option<InodeRef> { Some(tdir()) }
 }
 
 struct Ty;

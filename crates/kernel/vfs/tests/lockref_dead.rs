@@ -10,21 +10,17 @@
 
 use std::sync::Arc;
 
-use vfs::inode::Inode;
-use vfs::{Dentry, FileType, InodeRef, KResult, VfsError};
+use vfs::{Dentry, FileType, InodeBuilder, InodeRef, default_file_ops, default_inode_ops, mk_mode};
 use vfs::dentry::LOCKREF_DEAD;
 
-struct TFile { ino: u64 }
-impl Inode for TFile {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// Regular-file inode (struct-`Inode` model): a non-dir, `lookup`→`ENOTDIR`
+/// via the default `i_op`.
+fn make_file(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
 }
 
 fn dentry() -> Arc<Dentry> {
-    let inode: InodeRef = Arc::new(TFile { ino: 0x1 });
-    Dentry::new(None, String::from("x"), inode)
+    Dentry::new(None, String::from("x"), make_file(0x1))
 }
 
 #[test]

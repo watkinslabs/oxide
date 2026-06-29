@@ -25,6 +25,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use sched::live::wait_list::WaitList;
 use sync::{Spinlock, Tty as TtyClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{FileOps, InodeBuilder, PollSubscribers, default_inode_ops, mk_mode};
 
 /// Hosted-test stand-in: WaitList only exists under the live
 /// scheduler. On hosted unit-test builds the pipe inode still
@@ -80,13 +81,13 @@ impl PipeBuf {
 /// # SAFETY: caller is the boot path; PMM up; single-CPU pre-init.
 /// # C: O(N_bytes)
 pub fn smoke_test() {
-    use vfs::Inode;
     use hal::kassert;
 
     // Pipe round-trip: write 5 bytes → read 5 bytes back.
-    let pipe = PipeInode::new();
-    pipe.writers.store(1, core::sync::atomic::Ordering::Release);
-    pipe.readers.store(1, core::sync::atomic::Ordering::Release);
+    let pipe = make_pipe_inode();
+    let pd = pipe_data(&pipe).expect("pipe data");
+    pd.writers.store(1, core::sync::atomic::Ordering::Release);
+    pd.readers.store(1, core::sync::atomic::Ordering::Release);
     let n = pipe.write(0, b"hello").expect("pipe.write");
     kassert!(n == 5, "pipe write len");
     let mut buf = [0u8; 8];
@@ -99,17 +100,17 @@ pub fn smoke_test() {
     let r = pipe.read_nonblock(0, &mut buf);
     kassert!(matches!(r, Err(vfs::VfsError::Eagain)), "pipe drained = EAGAIN");
     // Drop the writer → next read returns Ok(0) (true EOF).
-    pipe.writers.store(0, core::sync::atomic::Ordering::Release);
+    pd.writers.store(0, core::sync::atomic::Ordering::Release);
     let n = pipe.read(0, &mut buf).expect("pipe.read post-writer-close");
     kassert!(n == 0, "pipe EOF after writers=0");
     // Write to pipe with no readers: Epipe.
-    pipe.readers.store(0, core::sync::atomic::Ordering::Release);
+    pd.readers.store(0, core::sync::atomic::Ordering::Release);
     let r = pipe.write(0, b"x");
     kassert!(matches!(r, Err(vfs::VfsError::Epipe)), "pipe write w/o readers = EPIPE");
 
     // Eventfd round-trip: write 0x1234 → read swaps to 0,
     // returns prior value as 8-byte LE.
-    let evt = EventfdInode::new(0);
+    let evt = make_eventfd_inode(0);
     let n = evt.write(0, &0x1234u64.to_ne_bytes()).expect("evt.write");
     kassert!(n == 8, "evt write len");
     let mut ev = [0u8; 8];
@@ -126,76 +127,67 @@ pub fn smoke_test() {
 /// `Inode`-backed eventfd counter per `24§3` + Linux eventfd(2).
 /// Read drains the counter to a u64; write adds to it. v1: no
 /// blocking — read returns -EAGAIN if counter is 0; write returns
-/// -EAGAIN if counter would overflow.
-pub struct EventfdInode {
+/// -EAGAIN if counter would overflow. The counter lives in `i_private`.
+pub struct EventfdData {
     counter: core::sync::atomic::AtomicU64,
-    ino:     vfs::Ino,
-    /// Per-fd poll/select/epoll wait queue. `notify()`d when the
-    /// counter goes nonzero (POLLIN). See PipeInode::subs.
-    subs:    vfs::PollSubscribers,
 }
 
 static NEXT_EVENTFD_INO: core::sync::atomic::AtomicU64
     = core::sync::atomic::AtomicU64::new(0x4000_0000);
 
-impl EventfdInode {
-    /// # C: O(1)
-    pub fn new(initial: u64) -> alloc::sync::Arc<Self> {
-        let ino = NEXT_EVENTFD_INO.fetch_add(1, Ordering::Relaxed);
-        alloc::sync::Arc::new(Self {
-            counter: core::sync::atomic::AtomicU64::new(initial),
-            ino,
-            subs: vfs::PollSubscribers::new(),
-        })
-    }
+/// `make_eventfd_inode(initial)` — a Fifo pseudo-inode whose counter drains on
+/// read and accumulates on write. # C: O(1)
+pub fn make_eventfd_inode(initial: u64) -> InodeRef {
+    let ino = NEXT_EVENTFD_INO.fetch_add(1, Ordering::Relaxed);
+    InodeBuilder::new(ino, mk_mode(FileType::Fifo, 0), default_inode_ops(), Arc::new(EventfdFileOps))
+        .poll_subs(PollSubscribers::new())
+        .private(Arc::new(EventfdData { counter: core::sync::atomic::AtomicU64::new(initial) }))
+        .build()
 }
 
-impl vfs::Inode for EventfdInode {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Fifo }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _name: &str) -> vfs::KResult<vfs::InodeRef> {
-        Err(vfs::VfsError::Enotdir)
-    }
+/// `i_fop` for an eventfd inode. # C: O(1)
+struct EventfdFileOps;
+impl FileOps for EventfdFileOps {
     /// POLLIN when the counter is nonzero (read won't block); POLLOUT
     /// when it can still accept a write (< u64::MAX-1). Default
     /// always-ready poll busy-looped systemd's sd-event epoll — see
     /// signalfd::poll.
     /// # C: O(1)
-    fn poll(&self) -> u32 {
-        let v = self.counter.load(Ordering::Acquire);
+    fn poll(&self, inode: &Inode) -> u32 {
+        let v = match inode.private::<EventfdData>() { Some(d) => d.counter.load(Ordering::Acquire), None => return 0 };
         let mut m = 0;
         if v > 0 { m |= vfs::POLL_IN; }
         if v < u64::MAX - 1 { m |= vfs::POLL_OUT; }
         m
     }
-    fn poll_subscribers(&self) -> Option<&vfs::PollSubscribers> { Some(&self.subs) }
-    fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+    fn read(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.len() < 8 { return Err(vfs::VfsError::Einval); }
-        let v = self.counter.swap(0, Ordering::AcqRel);
+        let d = match inode.private::<EventfdData>() { Some(d) => d, None => return Err(vfs::VfsError::Einval) };
+        let v = d.counter.swap(0, Ordering::AcqRel);
         if v == 0 { return Err(vfs::VfsError::Einval); }
         let bytes = v.to_ne_bytes();
         buf[..8].copy_from_slice(&bytes);
         Ok(8)
     }
-    fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+    fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
         if buf.len() < 8 { return Err(vfs::VfsError::Einval); }
+        let d = match inode.private::<EventfdData>() { Some(d) => d, None => return Err(vfs::VfsError::Einval) };
         let mut a = [0u8; 8];
         a.copy_from_slice(&buf[..8]);
         let add = u64::from_ne_bytes(a);
         if add == u64::MAX { return Err(vfs::VfsError::Einval); }
-        self.counter.fetch_add(add, Ordering::AcqRel);
+        d.counter.fetch_add(add, Ordering::AcqRel);
         // Counter went nonzero → POLLIN readable. Wake poll/epoll waiters
         // (sd-event drives eventfds via epoll_wait); without this they only
         // re-scanned on the ~100 ms fallback.
-        self.subs.notify();
+        if let Some(s) = inode.poll_subscribers() { s.notify(); }
         Ok(8)
     }
 }
 
-/// `Inode`-backed anonymous pipe. One instance is shared by both
-/// the read-end and the write-end `File` wrappers.
-pub struct PipeInode {
+/// `Inode`-backed anonymous pipe state (Linux `i_private`). One instance is
+/// shared by both the read-end and the write-end `File` wrappers.
+pub struct PipeData {
     buf: Spinlock<PipeBuf, TtyClass>,
     /// Inode number — globally unique among pipes; allocated from
     /// a monotonic counter per `01§4`.
@@ -213,50 +205,51 @@ pub struct PipeInode {
     /// Tasks parked on a write that found the buffer full. Woken
     /// when a read drains bytes or when the last reader closes.
     write_waiters: WaitList,
-    /// Per-fd poll/select/epoll wait queue (the Linux `->poll` wait
-    /// queue). poll/select/epoll subscribe here; every readability/
-    /// writability transition calls `subs.notify()` to wake ONLY the
-    /// tasks polling THIS pipe — no global broadcast.
-    subs: vfs::PollSubscribers,
     capacity: AtomicUsize,
 }
 
 static NEXT_PIPE_INO: core::sync::atomic::AtomicU64
     = core::sync::atomic::AtomicU64::new(0x1000_0000);
 
-impl PipeInode {
-    /// # C: O(1)
-    pub fn new() -> Arc<Self> {
-        let ino = NEXT_PIPE_INO.fetch_add(1, Ordering::Relaxed);
-        Arc::new(Self {
+/// `make_pipe_inode()` — a Fifo pseudo-inode backing both ends of an anonymous
+/// pipe. The per-fd poll/select/epoll wait queue lives on the inode's
+/// `poll_subscribers`; the ring + waiters live in `i_private`. # C: O(1)
+pub fn make_pipe_inode() -> InodeRef {
+    let ino = NEXT_PIPE_INO.fetch_add(1, Ordering::Relaxed);
+    InodeBuilder::new(ino, mk_mode(FileType::Fifo, 0), default_inode_ops(), Arc::new(PipeFileOps))
+        .poll_subs(PollSubscribers::new())
+        .private(Arc::new(PipeData {
             buf: Spinlock::new(PipeBuf::new()),
             ino,
             writers: core::sync::atomic::AtomicUsize::new(0),
             readers: core::sync::atomic::AtomicUsize::new(0),
             read_waiters:  WaitList::new(),
             write_waiters: WaitList::new(),
-            subs: vfs::PollSubscribers::new(),
             capacity: AtomicUsize::new(PIPE_CAP),
-        })
-    }
+        }))
+        .build()
+}
 
-    pub fn pipe_size(&self) -> usize {
-        self.capacity.load(Ordering::Acquire)
-    }
+/// Recover the `PipeData` behind a pipe inode. # C: O(1)
+pub fn pipe_data(inode: &Inode) -> Option<&PipeData> { inode.private::<PipeData>() }
 
-    pub fn set_pipe_size(&self, requested: usize) -> Result<usize, VfsError> {
-        let new_cap = requested.clamp(1, PIPE_CAP);
-        let len = self.buf.lock().len;
-        if new_cap < len {
-            return Err(VfsError::Ebusy);
-        }
-        if requested > PIPE_CAP {
-            return Err(VfsError::Eperm);
-        }
-        self.capacity.store(new_cap, Ordering::Release);
-        Ok(new_cap)
-    }
+/// `fcntl(F_GETPIPE_SZ)`. # C: O(1)
+pub fn pipe_size(inode: &Inode) -> Option<usize> {
+    pipe_data(inode).map(|p| p.capacity.load(Ordering::Acquire))
+}
 
+/// `fcntl(F_SETPIPE_SZ)`. # C: O(1)
+pub fn set_pipe_size(inode: &Inode, requested: usize) -> Result<usize, VfsError> {
+    let p = pipe_data(inode).ok_or(VfsError::Einval)?;
+    let new_cap = requested.clamp(1, PIPE_CAP);
+    let len = p.buf.lock().len;
+    if new_cap < len { return Err(VfsError::Ebusy); }
+    if requested > PIPE_CAP { return Err(VfsError::Eperm); }
+    p.capacity.store(new_cap, Ordering::Release);
+    Ok(new_cap)
+}
+
+impl PipeData {
     /// Drain whatever bytes are available without blocking. Returns
     /// the byte count copied; updates wait-list state on success.
     fn try_drain(&self, buf: &mut [u8]) -> usize {
@@ -284,30 +277,25 @@ impl PipeInode {
     }
 }
 
-impl Inode for PipeInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Fifo }
-    fn size(&self) -> u64 { 0 }
-    fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
-
-    fn lookup(&self, _name: &str) -> KResult<InodeRef> {
-        Err(VfsError::Enotdir)
-    }
-
+/// `i_fop` for an anonymous-pipe inode. Reads `PipeData` off `i_private`.
+struct PipeFileOps;
+impl FileOps for PipeFileOps {
     /// Blocking pipe read per Linux pipe(7).
     /// - data available     → up to `buf.len()` bytes copied.
     /// - empty + writers>0  → park on `read_waiters`, retry on wake.
     /// - empty + writers==0 → Ok(0) (EOF, all write ends closed).
-    fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+    fn read(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
+        let this = match pipe_data(inode) { Some(p) => p, None => return Err(VfsError::Einval) };
+        let subs = inode.poll_subscribers();
         loop {
-            let n = self.try_drain(buf);
+            let n = this.try_drain(buf);
             if n > 0 {
-                self.write_waiters.wake_all();
-                self.subs.notify();
+                this.write_waiters.wake_all();
+                if let Some(s) = subs { s.notify(); }
                 return Ok(n);
             }
-            if self.writers.load(Ordering::Acquire) == 0 {
+            if this.writers.load(Ordering::Acquire) == 0 {
                 return Ok(0);
             }
             // Signal-interruptible per pipe(7): a blocked read with a
@@ -320,7 +308,7 @@ impl Inode for PipeInode {
                 return Err(VfsError::Eintr);
             }
             // SAFETY: caller is the running task; preempt-off; we are about to schedule. WaitList::park bumps Arc and marks Sleeping.
-            unsafe { self.read_waiters.park(); }
+            unsafe { this.read_waiters.park(); }
             // SAFETY: process ctx, runqueue installed, preempt-off; current is Sleeping so schedule won't re-enqueue us — only the write-side wake or last-writer-close wake will.
             #[cfg(target_os = "oxide-kernel")]
             // SAFETY: process ctx, runqueue installed, preempt-off; current is Sleeping so schedule won't re-enqueue until peer wakes us.
@@ -334,16 +322,18 @@ impl Inode for PipeInode {
     /// - readers==0     → Epipe (caller also gets SIGPIPE via sys_write).
     /// - space available→ push up to `buf.len()` bytes, return n.
     /// - buffer full    → park on `write_waiters`, retry on wake.
-    fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
+    fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
+        let this = match pipe_data(inode) { Some(p) => p, None => return Err(VfsError::Einval) };
+        let subs = inode.poll_subscribers();
         loop {
-            if self.readers.load(Ordering::Acquire) == 0 {
+            if this.readers.load(Ordering::Acquire) == 0 {
                 return Err(VfsError::Epipe);
             }
-            let n = self.try_fill(buf);
+            let n = this.try_fill(buf);
             if n > 0 {
-                self.read_waiters.wake_all();
-                self.subs.notify();
+                this.read_waiters.wake_all();
+                if let Some(s) = subs { s.notify(); }
                 return Ok(n);
             }
             // Signal-interruptible per pipe(7): a blocked write with a
@@ -353,7 +343,7 @@ impl Inode for PipeInode {
                 return Err(VfsError::Eintr);
             }
             // SAFETY: caller is the running task; preempt-off; WaitList::park bumps Arc and marks Sleeping before we schedule.
-            unsafe { self.write_waiters.park(); }
+            unsafe { this.write_waiters.park(); }
             // SAFETY: process ctx, runqueue installed, preempt-off; current is Sleeping so schedule won't re-enqueue us — only the read-side wake or last-reader-close wake will.
             #[cfg(target_os = "oxide-kernel")]
             // SAFETY: process ctx, runqueue installed, preempt-off; current is Sleeping so schedule won't re-enqueue until peer wakes us.
@@ -367,15 +357,16 @@ impl Inode for PipeInode {
     /// - data available     → bytes copied, no wait.
     /// - empty + writers>0  → Eagain.
     /// - empty + writers==0 → Ok(0).
-    fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+    fn read_nonblock(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
-        let n = self.try_drain(buf);
+        let this = match pipe_data(inode) { Some(p) => p, None => return Err(VfsError::Einval) };
+        let n = this.try_drain(buf);
         if n > 0 {
-            self.write_waiters.wake_all();
-            self.subs.notify();
+            this.write_waiters.wake_all();
+            if let Some(s) = inode.poll_subscribers() { s.notify(); }
             return Ok(n);
         }
-        if self.writers.load(Ordering::Acquire) == 0 { Ok(0) }
+        if this.writers.load(Ordering::Acquire) == 0 { Ok(0) }
         else { Err(VfsError::Eagain) }
     }
 
@@ -384,10 +375,11 @@ impl Inode for PipeInode {
     ///   has closed (read returns EOF immediately, not a block).
     /// - POLLHUP when readers==0 (write side will get EPIPE).
     /// - POLLOUT when buffer has room AND at least one reader.
-    fn poll(&self) -> u32 {
-        let len = self.buf.lock().len;
-        let writers = self.writers.load(Ordering::Acquire);
-        let readers = self.readers.load(Ordering::Acquire);
+    fn poll(&self, inode: &Inode) -> u32 {
+        let this = match pipe_data(inode) { Some(p) => p, None => return 0 };
+        let len = this.buf.lock().len;
+        let writers = this.writers.load(Ordering::Acquire);
+        let readers = this.readers.load(Ordering::Acquire);
         let mut mask = 0u32;
         if len > 0 || writers == 0 { mask |= vfs::POLL_IN; }
         if readers == 0 { mask |= vfs::POLL_HUP; }
@@ -395,18 +387,17 @@ impl Inode for PipeInode {
         mask
     }
 
-    fn poll_subscribers(&self) -> Option<&vfs::PollSubscribers> { Some(&self.subs) }
-
     /// Non-blocking pipe write per Linux O_NONBLOCK semantics.
-    fn write_nonblock(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
+    fn write_nonblock(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
-        if self.readers.load(Ordering::Acquire) == 0 {
+        let this = match pipe_data(inode) { Some(p) => p, None => return Err(VfsError::Einval) };
+        if this.readers.load(Ordering::Acquire) == 0 {
             return Err(VfsError::Epipe);
         }
-        let n = self.try_fill(buf);
+        let n = this.try_fill(buf);
         if n > 0 {
-            self.read_waiters.wake_all();
-            self.subs.notify();
+            this.read_waiters.wake_all();
+            if let Some(s) = inode.poll_subscribers() { s.notify(); }
             return Ok(n);
         }
         Err(VfsError::Eagain)
@@ -420,16 +411,7 @@ impl Inode for PipeInode {
 /// EPIPE.
 /// # C: O(1) per call
 fn pipe_close_hook(inode: &InodeRef, was_writable: bool) {
-    let Some(any) = inode.as_any() else {
-        #[cfg(feature = "debug-ssh")]
-        {
-            klog::write_raw(b"[INFO]  ssh-trace: pipe_close non-any ino=");
-            klog::write_dec_u64(inode.ino());
-            klog::write_raw(b"\n");
-        }
-        return;
-    };
-    let Some(pipe) = any.downcast_ref::<PipeInode>() else {
+    let Some(pipe) = pipe_data(inode) else {
         #[cfg(feature = "debug-ssh")]
         {
             klog::write_raw(b"[INFO]  ssh-trace: pipe_close non-pipe-inode ino=");
@@ -440,6 +422,7 @@ fn pipe_close_hook(inode: &InodeRef, was_writable: bool) {
         }
         return;
     };
+    let subs = inode.poll_subscribers();
     if was_writable {
         #[cfg(feature = "debug-ssh")]
         let pre = pipe.writers.load(Ordering::Acquire);
@@ -457,7 +440,7 @@ fn pipe_close_hook(inode: &InodeRef, was_writable: bool) {
             klog::write_dec_u64(prev as u64);
             klog::write_raw(b"\n");
         }
-        if prev <= 1 { pipe.read_waiters.wake_all(); pipe.subs.notify(); }
+        if prev <= 1 { pipe.read_waiters.wake_all(); if let Some(s) = subs { s.notify(); } }
     } else {
         let prev = pipe.readers.fetch_sub(1, Ordering::AcqRel);
         if prev == 0 {
@@ -473,7 +456,7 @@ fn pipe_close_hook(inode: &InodeRef, was_writable: bool) {
             klog::write_dec_u64(pipe.writers.load(Ordering::Acquire) as u64);
             klog::write_raw(b"\n");
         }
-        if prev <= 1 { pipe.write_waiters.wake_all(); pipe.subs.notify(); }
+        if prev <= 1 { pipe.write_waiters.wake_all(); if let Some(s) = subs { s.notify(); } }
     }
 }
 

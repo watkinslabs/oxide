@@ -8,8 +8,8 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use vfs::fs::FileSystem;
-use vfs::inode::Inode;
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::inode::{Inode, InodeBuilder};
+use vfs::{default_file_ops, mk_mode, FileType, InodeOps, InodeRef, KResult, VfsError};
 
 mod common;
 
@@ -22,12 +22,12 @@ fn guard() -> MutexGuard<'static, ()> {
     g
 }
 
-struct TDir { ino: u64 }
-impl Inode for TDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+struct TDirOps;
+impl InodeOps for TDirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+}
+fn make_tdir(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(TDirOps), default_file_ops()).build()
 }
 
 /// A backend standing in for any real fs (tmpfs/ext4/procfs/…): it carries a
@@ -36,7 +36,7 @@ struct TestFs { magic: u64, root_ino: u64 }
 impl FileSystem for TestFs {
     fn name(&self) -> &str { "testfs" }
     fn magic(&self) -> u64 { self.magic }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir { ino: self.root_ino })) }
+    fn root(&self) -> Option<InodeRef> { Some(make_tdir(self.root_ino)) }
 }
 
 /// T-mount-sb: a registered fs mounts via a SuperBlock with a valid s_root
@@ -105,7 +105,7 @@ fn two_instances_get_distinct_s_dev() {
 fn bind_keeps_mnt_root_with_own_sb() {
     let _g = guard();
     let fs = Arc::new(TestFs { magic: 0xEF53, root_ino: 0xC3 });
-    let source_root: InodeRef = Arc::new(TDir { ino: 0xDEAD });
+    let source_root: InodeRef = make_tdir(0xDEAD);
     common::register_bind("/sb_bind", fs.clone(), source_root.clone()).expect("bind");
     let m = common::mount_at_path_exact("/sb_bind").expect("bind present");
     assert_eq!(m.root.as_ref().map(|i| i.ino()), Some(0xDEAD),

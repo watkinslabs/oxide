@@ -6,9 +6,11 @@
 // task's matching slot.
 
 use alloc::sync::Arc;
-use core::any::Any;
 
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::inode::InodeBuilder;
+use vfs::inode_ops::{default_inode_ops, mk_mode};
+use vfs::file_ops::default_file_ops;
+use vfs::{FileType, Ino, InodeRef};
 
 /// Linux CLONE_NEW* bits — match clone(2) for setns(fd, nstype) checks.
 pub const CLONE_NEWNS:    u64 = 0x00020000;
@@ -58,24 +60,19 @@ impl NsKind {
 /// Inode-number tag — high byte 0x72 ("r" for "ref").
 const NS_INO_MARKER: Ino = 0x7200_0000;
 
-/// Per-NS id snapshot. Captured at /proc/<pid>/ns/<type> lookup time;
-/// stable for the lifetime of the open fd. setns reads this id +
-/// kind to update the caller's per-task slot.
+/// Per-NS id snapshot. Backend-private state (`i_private`) of the
+/// `/proc/<pid>/ns/<type>` inode: captured at lookup time, stable for the
+/// lifetime of the open fd. `setns` recovers it via `inode.private::<NsInode>()`,
+/// reading this id + kind to update the caller's per-task slot.
 pub struct NsInode {
     pub kind: NsKind,
     pub id:   u64,
 }
 
-impl Inode for NsInode {
-    fn as_any(&self) -> Option<&dyn Any> { Some(self) }
-    fn ino(&self) -> Ino { NS_INO_MARKER | (self.kind as Ino) }
-    fn file_type(&self) -> FileType { FileType::Symlink }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-}
-
-/// Construct an NsInode capturing `task`'s current id for `kind`.
-/// # C: O(1)
+/// Construct the `/proc/<pid>/ns/<type>` inode capturing `task`'s current id for
+/// `kind`. A `S_IFLNK` magic node (Linux nsfs); `lookup`→`ENOTDIR` and the
+/// metadata defaults come from the generic ops, the captured `(kind, id)` lives
+/// in `i_private`. # C: O(1)
 pub fn ns_inode_for(task: &sched::Task, kind: NsKind) -> InodeRef {
     use core::sync::atomic::Ordering;
     let id = match kind {
@@ -87,7 +84,10 @@ pub fn ns_inode_for(task: &sched::Task, kind: NsKind) -> InodeRef {
         NsKind::Cgroup => task.cgroup_ns.load(Ordering::Acquire),
         NsKind::Mnt    => task.mount_ns.load(Ordering::Acquire),
     };
-    Arc::new(NsInode { kind, id }) as InodeRef
+    let ino: Ino = NS_INO_MARKER | (kind as Ino);
+    InodeBuilder::new(ino, mk_mode(FileType::Symlink, 0o777), default_inode_ops(), default_file_ops())
+        .private(Arc::new(NsInode { kind, id }))
+        .build()
 }
 
 /// Global registry mapping `user_ns id → parent_user_ns id` so the

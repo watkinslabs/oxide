@@ -20,22 +20,22 @@ use std::sync::atomic::Ordering;
 
 use vfs::inode::Inode;
 use vfs::mntns;
-use vfs::{Dentry, FileType, Ino, InodeRef, KResult, VfsError};
+use vfs::{Dentry, FileType, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, default_file_ops, mk_mode};
 
 // Minimal directory inode: distinct ino per dentry, no children. The registry
 // keys on dentry identity (`Arc::as_ptr`), so the inode body is irrelevant.
-struct Dir(u64);
-impl Inode for Dir {
-    fn ino(&self) -> Ino { self.0 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+struct DirOps;
+impl InodeOps for DirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+}
+fn make_dir(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(DirOps), default_file_ops()).build()
 }
 
 #[test]
 fn mountpoint_refcount_lifecycle() {
-    let d1 = Dentry::new_root(Arc::new(Dir(1)));
-    let d2 = Dentry::new_root(Arc::new(Dir(2)));
+    let d1 = Dentry::new_root(make_dir(1));
+    let d2 = Dentry::new_root(make_dir(2));
 
     assert!(!mntns::is_registered_mountpoint(&d1), "fresh dentry is not a mountpoint");
 

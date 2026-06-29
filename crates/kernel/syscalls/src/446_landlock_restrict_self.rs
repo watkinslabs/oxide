@@ -22,8 +22,7 @@ pub fn sys_landlock_restrict_self(args: &SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
-    let any = match file.inode().as_any() { Some(a) => a, None => return -(Errno::Einval.as_i32() as i64) };
-    let rs_inode = match any.downcast_ref::<LandlockRulesetInode>() {
+    let rs_inode = match file.inode().private::<LandlockRulesetInode>() {
         Some(r) => r, None => return -(Errno::Einval.as_i32() as i64),
     };
     if ll::lookup(rs_inode.ruleset_id).is_none() {

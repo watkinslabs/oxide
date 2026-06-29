@@ -27,14 +27,15 @@ fn guard() -> MutexGuard<'static, ()> {
 struct TFs { root_ino: u64 }
 impl FileSystem for TFs {
     fn name(&self) -> &str { "tfs" }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir { ino: self.root_ino })) }
+    fn root(&self) -> Option<InodeRef> { Some(tdir(self.root_ino)) }
 }
-struct TDir { ino: u64 }
-impl Inode for TDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+struct TDirOps;
+impl vfs::InodeOps for TDirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+}
+fn tdir(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755),
+        Arc::new(TDirOps), vfs::default_file_ops()).build()
 }
 fn fs(ino: u64) -> Arc<dyn FileSystem> { Arc::new(TFs { root_ino: ino }) }
 

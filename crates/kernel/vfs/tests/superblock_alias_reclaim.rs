@@ -13,9 +13,9 @@
 
 use std::sync::{Arc, Weak};
 
-use vfs::inode::Inode;
+use vfs::inode::{Inode, InodeBuilder};
 use vfs::superblock::{next_anon_dev, FileSystemType, SbStatFs, SuperBlock, SuperOps};
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, InodeOps, InodeRef, KResult, VfsError};
 
 struct RamFsType;
 impl FileSystemType for RamFsType {
@@ -29,23 +29,20 @@ impl SuperOps for RamFsOps {
 }
 
 /// Root directory inode; `i_sb` so `d_make_root` records the root alias.
-struct RamDir { ino: u64, sb: Weak<SuperBlock> }
-impl Inode for RamDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+struct RamDirOps;
+impl InodeOps for RamDirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+}
+fn make_ramdir(ino: u64, sb: Weak<SuperBlock>) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(RamDirOps), default_file_ops())
+        .sb(sb).build()
 }
 
 /// A plain file inode whose only strong ref the test owns, so dropping it makes
-/// the icache `Weak` go dead (Linux `i_count == 0`).
-struct RamFile { ino: u64 }
-impl Inode for RamFile {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// the icache `Weak` go dead (Linux `i_count == 0`). `default_inode_ops` gives
+/// the `lookup`→`ENOTDIR` of a non-directory.
+fn make_ramfile(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
 }
 
 fn mount() -> Arc<SuperBlock> {
@@ -53,7 +50,7 @@ fn mount() -> Arc<SuperBlock> {
         Arc::new(RamFsType), Arc::new(RamFsOps),
         0xA11A5, next_anon_dev(), 4096, "aliasfs".into(), Arc::new(()),
     );
-    let root = Arc::new(RamDir { ino: 2, sb: Arc::downgrade(&sb) });
+    let root = make_ramdir(2, Arc::downgrade(&sb));
     vfs::d_make_root(root, &sb); // installs s_root, gives a parent for d_alloc
     sb
 }
@@ -62,7 +59,7 @@ fn mount() -> Arc<SuperBlock> {
 fn i_drop_alias_removes_one_name_keeps_the_other() {
     let sb = mount();
     let root = sb.s_root().expect("s_root");
-    let inode: InodeRef = Arc::new(RamFile { ino: 11 });
+    let inode: InodeRef = make_ramfile(11);
     // Two distinct names (hardlinks) for the one inode.
     let a = vfs::d_alloc(&root, "a");
     let b = vfs::d_alloc(&root, "b");
@@ -82,7 +79,7 @@ fn i_drop_alias_removes_one_name_keeps_the_other() {
 fn i_drop_alias_keeps_slot_while_inode_still_live() {
     let sb = mount();
     let root = sb.s_root().expect("s_root");
-    let inode: InodeRef = Arc::new(RamFile { ino: 12 });
+    let inode: InodeRef = make_ramfile(12);
     let a = vfs::d_alloc(&root, "only");
     sb.i_add_alias(&inode, &a);
     // Drop the LAST name but keep the inode Arc alive: the slot must survive
@@ -100,7 +97,7 @@ fn i_drop_alias_keeps_slot_while_inode_still_live() {
 fn i_drop_alias_reclaims_slot_when_empty_and_inode_gone() {
     let sb = mount();
     let root = sb.s_root().expect("s_root");
-    let inode: InodeRef = Arc::new(RamFile { ino: 13 });
+    let inode: InodeRef = make_ramfile(13);
     let a = vfs::d_alloc(&root, "x");
     sb.i_add_alias(&inode, &a);
     assert!(sb.ilookup(13).is_some(), "slot present after add");
@@ -117,7 +114,7 @@ fn iforget_drops_cache_slot_even_with_live_ref() {
     let sb = mount();
     // `iforget` is the raw icache-removal hook: it drops the slot regardless of a
     // still-live inode `Arc` (Linux `iput`/cache-evict removing the hash slot).
-    let held: InodeRef = sb.iget(21, || Arc::new(RamFile { ino: 21 }));
+    let held: InodeRef = sb.iget(21, || make_ramfile(21));
     assert!(sb.ilookup(21).is_some(), "iget cached the inode");
     sb.iforget(21);
     assert!(sb.ilookup(21).is_none(), "iforget removed the slot");

@@ -17,7 +17,9 @@ use alloc::vec::Vec;
 
 use sync::{Devices as DevClass, Spinlock};
 
-use crate::inode::{Inode, InodeRef};
+use crate::inode::{Inode, InodeBuilder, InodeRef};
+use crate::inode_ops::InodeOps;
+use crate::file_ops::{FileOps, default_file_ops};
 use crate::superblock::SuperBlock;
 use crate::types::{FileType, Ino, KResult, VfsError};
 
@@ -203,159 +205,122 @@ pub fn unregister_blkdev_region(major: u32, baseminor: u32, count: u32) {
     region_remove(&mut BLKDEV.lock(), major, baseminor, count);
 }
 
-/// A `mknod(2)` device node (Linux `S_ISCHR`/`S_ISBLK` inode). Carries the
-/// `dev_t` + perm; every operation dispatches to the registered driver by
-/// number. Built by any fs's `mknod_child` for `CharDev`/`BlockDev`.
-pub struct DeviceNodeInode {
-    ino:  Ino,
-    ft:   FileType,
-    devt: Devt,
-    perm: u16,
-    sb:   Weak<SuperBlock>,
+/// Backend-private state (`i_private`) for a `mknod(2)` special inode — the
+/// `dev_t` + type the dispatching `i_fop` reads off the inode. Recovered with
+/// `inode.private::<DeviceNodeData>()` (the old `as_any` downcast). # C: O(1)
+pub struct DeviceNodeData {
+    /// `S_ISCHR`/`S_ISBLK`/`S_ISFIFO`/`S_ISSOCK` (the inode's `S_IFMT`).
+    pub ft:   FileType,
+    /// Packed `dev_t` (`0` for FIFO/socket).
+    pub devt: Devt,
 }
 
-impl DeviceNodeInode {
-    /// Build a char/block device node. `ft` must be `CharDev` or `BlockDev`.
-    /// # C: O(1)
-    pub fn new(ino: Ino, ft: FileType, devt: Devt, perm: u16, sb: Weak<SuperBlock>) -> Arc<Self> {
-        Arc::new(Self { ino, ft, devt, perm, sb })
+/// Pull the [`DeviceNodeData`] off a special inode's `i_private`; `Einval` if
+/// the inode is not a special node. # C: O(1)
+fn device_data(inode: &Inode) -> KResult<&DeviceNodeData> {
+    inode.private::<DeviceNodeData>().ok_or(VfsError::Einval)
+}
+
+/// `inode_operations` for every special node — `lookup` is `ENOTDIR`; metadata
+/// ops take the generic defaults. # C: O(1)
+struct SpecialInodeOps;
+impl InodeOps for SpecialInodeOps {
+    fn lookup(&self, _inode: &Inode, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+}
+
+/// `file_operations` for a char/block device node — read/write/open dispatch to
+/// the driver registered for the inode's `dev_t` (`def_chr_fops`/`def_blk_fops`
+/// + `chrdev_open`/`blkdev_open`). `ENXIO` when the number has no driver.
+struct DeviceFileOps;
+impl FileOps for DeviceFileOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = device_data(inode)?;
+        match d.ft {
+            FileType::CharDev  => lookup_chrdev(d.devt).ok_or(VfsError::Enxio)?.read(d.devt, off, buf),
+            FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.read(d.devt, off, buf),
+            _ => Err(VfsError::Eio),
+        }
     }
-
-    /// `dev_t` this node addresses. # C: O(1)
-    pub fn devt(&self) -> Devt { self.devt }
-
-    /// `open(2)` routing — bind the driver (Linux `chrdev_open`). `ENXIO`
-    /// when the number has no registered driver. # C: O(log N)
-    pub fn do_open(&self) -> KResult<()> {
-        match self.ft {
-            FileType::CharDev  => lookup_chrdev(self.devt).ok_or(VfsError::Enxio)?.open(self.devt),
-            FileType::BlockDev => lookup_blkdev(self.devt).ok_or(VfsError::Enxio)?.open(self.devt),
+    fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
+        let d = device_data(inode)?;
+        match d.ft {
+            FileType::CharDev  => lookup_chrdev(d.devt).ok_or(VfsError::Enxio)?.write(d.devt, off, buf),
+            FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.write(d.devt, off, buf),
+            _ => Err(VfsError::Eio),
+        }
+    }
+    fn on_open(&self, inode: &Inode) -> KResult<()> {
+        let d = device_data(inode)?;
+        match d.ft {
+            FileType::CharDev  => lookup_chrdev(d.devt).ok_or(VfsError::Enxio)?.open(d.devt),
+            FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.open(d.devt),
             _ => Err(VfsError::Enodev),
         }
     }
+}
 
-    /// `ioctl(2)` routing. # C: O(log N)
-    pub fn ioctl(&self, cmd: u32, arg: usize) -> KResult<usize> {
-        match self.ft {
-            FileType::CharDev  => lookup_chrdev(self.devt).ok_or(VfsError::Enxio)?.ioctl(self.devt, cmd, arg),
-            FileType::BlockDev => lookup_blkdev(self.devt).ok_or(VfsError::Enxio)?.ioctl(self.devt, cmd, arg),
-            _ => Err(VfsError::Enotty),
-        }
+/// `file_operations` for a socket node (`sock_no_open`): `open(2)` by path is
+/// always `ENXIO` (a socket fd is born from `socket(2)`); no data op.
+struct SocketFileOps;
+impl FileOps for SocketFileOps {
+    fn on_open(&self, _inode: &Inode) -> KResult<()> { Err(VfsError::Enxio) }
+}
+
+/// Build a char/block device node inode (Linux `init_special_inode` for
+/// `S_IFCHR`/`S_IFBLK`): `i_rdev` set, `i_fop` = the driver dispatcher, the
+/// `(ft, devt)` stored in `i_private`. # C: O(1)
+pub fn make_device_node_inode(ino: Ino, ft: FileType, devt: Devt, perm: u16, sb: Weak<SuperBlock>) -> InodeRef {
+    let mode = (ft.to_ifmt() as u32) | (perm as u32 & 0o7777);
+    InodeBuilder::new(ino, mode, Arc::new(SpecialInodeOps), Arc::new(DeviceFileOps))
+        .sb(sb).rdev(devt.raw()).private(Arc::new(DeviceNodeData { ft, devt })).build()
+}
+
+/// Build a FIFO/named-pipe inode (Linux `S_IFIFO`): no `i_rdev`, the DEFAULT
+/// `i_fop` (the pipe buffer + read/write op bind at `open(2)` via `fifo_open`,
+/// not on the bare on-disk inode, so a direct read/write is `EINVAL`). # C: O(1)
+pub fn make_fifo_inode(ino: Ino, perm: u16, sb: Weak<SuperBlock>) -> InodeRef {
+    let mode = (FileType::Fifo.to_ifmt() as u32) | (perm as u32 & 0o7777);
+    InodeBuilder::new(ino, mode, Arc::new(SpecialInodeOps), default_file_ops())
+        .sb(sb).private(Arc::new(DeviceNodeData { ft: FileType::Fifo, devt: Devt(0) })).build()
+}
+
+/// Build a socket inode (Linux `S_IFSOCK`): no `i_rdev`, `open(2)` by path →
+/// `ENXIO` (`SocketFileOps`). # C: O(1)
+pub fn make_socket_inode(ino: Ino, perm: u16, sb: Weak<SuperBlock>) -> InodeRef {
+    let mode = (FileType::Socket.to_ifmt() as u32) | (perm as u32 & 0o7777);
+    InodeBuilder::new(ino, mode, Arc::new(SpecialInodeOps), Arc::new(SocketFileOps))
+        .sb(sb).private(Arc::new(DeviceNodeData { ft: FileType::Socket, devt: Devt(0) })).build()
+}
+
+/// `dev_t` a device node addresses, recovered from `i_private`. # C: O(1)
+pub fn device_inode_devt(inode: &Inode) -> Option<Devt> {
+    inode.private::<DeviceNodeData>().map(|d| d.devt)
+}
+
+/// `open(2)` routing for a device node (Linux `chrdev_open`). # C: O(log N)
+pub fn device_inode_open(inode: &Inode) -> KResult<()> { inode.on_open() }
+
+/// `ioctl(2)` routing for a device node — dispatch to the driver registered for
+/// the inode's `dev_t`; `ENXIO` if none, `ENOTTY` for a non-device. # C: O(log N)
+pub fn device_inode_ioctl(inode: &Inode, cmd: u32, arg: usize) -> KResult<usize> {
+    let d = device_data(inode)?;
+    match d.ft {
+        FileType::CharDev  => lookup_chrdev(d.devt).ok_or(VfsError::Enxio)?.ioctl(d.devt, cmd, arg),
+        FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.ioctl(d.devt, cmd, arg),
+        _ => Err(VfsError::Enotty),
     }
 }
 
-impl Inode for DeviceNodeInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
-    fn file_type(&self) -> FileType { self.ft }
-    fn perm(&self) -> Option<u16> { Some(self.perm) }
-    fn rdev(&self) -> u32 { self.devt.raw() }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-
-    /// Dispatch read to the registered driver; `ENXIO` if none. # C: O(log N)
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        match self.ft {
-            FileType::CharDev  => lookup_chrdev(self.devt).ok_or(VfsError::Enxio)?.read(self.devt, off, buf),
-            FileType::BlockDev => lookup_blkdev(self.devt).ok_or(VfsError::Enxio)?.read(self.devt, off, buf),
-            _ => Err(VfsError::Eio),
-        }
-    }
-
-    /// Dispatch write to the registered driver; `ENXIO` if none. # C: O(log N)
-    fn write(&self, off: u64, buf: &[u8]) -> KResult<usize> {
-        match self.ft {
-            FileType::CharDev  => lookup_chrdev(self.devt).ok_or(VfsError::Enxio)?.write(self.devt, off, buf),
-            FileType::BlockDev => lookup_blkdev(self.devt).ok_or(VfsError::Enxio)?.write(self.devt, off, buf),
-            _ => Err(VfsError::Eio),
-        }
-    }
-}
-
-/// A FIFO/named-pipe inode (Linux `S_ISFIFO`). `init_special_inode` binds
-/// `pipefifo_fops` to a FIFO node; the pipe buffer + read/write f_op are
-/// allocated by the pipe subsystem at `open(2)` (`fifo_open`), NOT by the
-/// bare on-disk inode. The inode itself carries no `dev_t` (FIFOs have no
-/// device number) and exposes no data op — a direct `read`/`write` on the
-/// unopened inode falls through to the VFS `Einval` (no `f_op->read`).
-pub struct FifoInode {
-    ino:  Ino,
-    perm: u16,
-    sb:   Weak<SuperBlock>,
-}
-
-impl FifoInode {
-    /// Build a FIFO node (Linux `S_IFIFO`). No `rdev` — a FIFO has none.
-    /// # C: O(1)
-    pub fn new(ino: Ino, perm: u16, sb: Weak<SuperBlock>) -> Arc<Self> {
-        Arc::new(Self { ino, perm, sb })
-    }
-}
-
-impl Inode for FifoInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
-    fn file_type(&self) -> FileType { FileType::Fifo }
-    fn perm(&self) -> Option<u16> { Some(self.perm) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    // read/write/rdev inherit the trait defaults: rdev()==0 and the bare
-    // inode has no data op (the pipe f_op binds at open) → Einval.
-}
-
-/// A socket inode (Linux `S_ISSOCK`). `init_special_inode` leaves a socket
-/// node on `no_open_fops`: a `mknod(2)` socket node addresses an AF_UNIX
-/// rendezvous point for `bind(2)`/`connect(2)` by pathname, and `open(2)` of
-/// it by path returns `ENXIO` (`sock_no_open`). The inode carries no `dev_t`
-/// and no data op — a socket fd comes from `socket(2)`, never from opening
-/// the node, so a direct `read`/`write` on the node is `Einval`.
-pub struct SocketInode {
-    ino:  Ino,
-    perm: u16,
-    sb:   Weak<SuperBlock>,
-}
-
-impl SocketInode {
-    /// Build a socket node (Linux `S_IFSOCK`). No `rdev`. # C: O(1)
-    pub fn new(ino: Ino, perm: u16, sb: Weak<SuperBlock>) -> Arc<Self> {
-        Arc::new(Self { ino, perm, sb })
-    }
-
-    /// `sock_no_open` (Linux `no_open_fops.open`) — opening a socket node by
-    /// path always fails `ENXIO`; a socket fd is born from `socket(2)`.
-    /// # C: O(1)
-    pub fn do_open(&self) -> KResult<()> { Err(VfsError::Enxio) }
-}
-
-impl Inode for SocketInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
-    fn file_type(&self) -> FileType { FileType::Socket }
-    fn perm(&self) -> Option<u16> { Some(self.perm) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    // read/write/rdev inherit the trait defaults (rdev()==0, read/write Einval).
-}
-
-/// `init_special_inode` (Linux `fs/inode.c`) — build the right special inode
-/// for a `mknod(2)` type, binding the op set by `S_IFMT`. `S_IFCHR`/`S_IFBLK`
-/// get a [`DeviceNodeInode`] with `rdev` set (def_chr/blk dispatch); `S_IFIFO`
-/// a [`FifoInode`]; `S_IFSOCK` a [`SocketInode`]. `rdev` is consumed only for
-/// the two device types (Linux sets `i_rdev` for char/block alone). Any other
-/// `FileType` is a "bogus i_mode" for a special inode and returns `Einval`.
-/// # C: O(1)
-pub fn init_special_inode(
-    ino:  Ino,
-    ft:   FileType,
-    rdev: u32,
-    perm: u16,
-    sb:   Weak<SuperBlock>,
-) -> KResult<InodeRef> {
+/// `init_special_inode` (Linux `fs/inode.c`) — build the right special inode for
+/// a `mknod(2)` type, binding the op set by `S_IFMT`. `rdev` is consumed only
+/// for the two device types. A non-special `FileType` is a bogus `i_mode` and
+/// returns `Einval`. # C: O(1)
+pub fn init_special_inode(ino: Ino, ft: FileType, rdev: u32, perm: u16, sb: Weak<SuperBlock>) -> KResult<InodeRef> {
     match ft {
         FileType::CharDev | FileType::BlockDev =>
-            Ok(DeviceNodeInode::new(ino, ft, Devt::from_raw(rdev), perm, sb) as InodeRef),
-        FileType::Fifo   => Ok(FifoInode::new(ino, perm, sb) as InodeRef),
-        FileType::Socket => Ok(SocketInode::new(ino, perm, sb) as InodeRef),
+            Ok(make_device_node_inode(ino, ft, Devt::from_raw(rdev), perm, sb)),
+        FileType::Fifo   => Ok(make_fifo_inode(ino, perm, sb)),
+        FileType::Socket => Ok(make_socket_inode(ino, perm, sb)),
         _ => Err(VfsError::Einval),
     }
 }

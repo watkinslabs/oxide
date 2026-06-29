@@ -27,6 +27,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as PerfLockClass};
+use vfs::{FileOps, Inode, InodeBuilder, InodeRef, KResult, default_inode_ops, mk_mode};
 
 const PERF_EVENT_IOC_ENABLE:  u64 = 0x2400;
 const PERF_EVENT_IOC_DISABLE: u64 = 0x2401;
@@ -40,60 +41,56 @@ pub struct PerfState {
     pub samples: u64,
 }
 
-pub struct PerfEventInode {
+/// Per-inode perf-event state (Linux `i_private`). # C: O(1)
+pub struct PerfData {
     pub state: Spinlock<PerfState, PerfLockClass>,
     pub start_ns: AtomicU64,
 }
 
-impl PerfEventInode {
-    /// # C: O(1)
-    pub fn new() -> Arc<Self> {
-        use hal::TimerOps;
-        #[cfg(target_arch = "x86_64")]
-        let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
-        #[cfg(target_arch = "aarch64")]
-        let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        let now: u64 = 0;
-        Arc::new(Self {
-            state: Spinlock::new(PerfState { enabled: true, period: 0, samples: 0 }),
-            start_ns: AtomicU64::new(now),
-        })
-    }
+/// PerfData ino tag (high bits distinct from socket/io_uring/pipe/uffd).
+const PERF_INO_TAG: vfs::Ino = 0x5045_5246_0000_0000;
+static NEXT_PERF_INO: AtomicU64 = AtomicU64::new(1);
 
-    fn current_sample(&self) -> u64 {
-        use hal::TimerOps;
-        #[cfg(target_arch = "x86_64")]
-        let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
-        #[cfg(target_arch = "aarch64")]
-        let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        let now: u64 = 0;
-        now.saturating_sub(self.start_ns.load(Ordering::Acquire))
-    }
+fn now_ns() -> u64 {
+    use hal::TimerOps;
+    #[cfg(target_arch = "x86_64")]
+    { hal_x86_64::X86TimerOps::monotonic_ns().0 }
+    #[cfg(target_arch = "aarch64")]
+    { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    { 0 }
 }
 
-impl vfs::Inode for PerfEventInode {
-    fn ino(&self) -> vfs::Ino {
-        // High-bits tag distinct from socket / io_uring / pipe / uffd inodes.
-        0x5045_5246_0000_0000u64 | (self as *const _ as u64 & 0xFFFF_FFFF) as vfs::Ino
-    }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+/// `make_perf_event_inode()` — a Regular pseudo-inode whose `read` yields the
+/// elapsed-ns sample. # C: O(1)
+pub fn make_perf_event_inode() -> InodeRef {
+    let ino = PERF_INO_TAG | (NEXT_PERF_INO.fetch_add(1, Ordering::Relaxed) & 0xFFFF_FFFF);
+    InodeBuilder::new(ino, mk_mode(vfs::FileType::Regular, 0),
+        default_inode_ops(), Arc::new(PerfFileOps))
+        .private(Arc::new(PerfData {
+            state: Spinlock::new(PerfState { enabled: true, period: 0, samples: 0 }),
+            start_ns: AtomicU64::new(now_ns()),
+        }))
+        .build()
+}
+
+/// `i_fop` for a perf-event inode. # C: O(1)
+struct PerfFileOps;
+impl FileOps for PerfFileOps {
     /// read returns the single u64 sample (elapsed monotonic ns
     /// since open). Repeated reads see monotonically increasing
     /// values — sufficient for `perf stat`-class probes.
-    fn read(&self, _o: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+    fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.len() < 8 { return Err(vfs::VfsError::Einval); }
-        let mut g = self.state.lock();
+        let d = match inode.private::<PerfData>() { Some(d) => d, None => return Err(vfs::VfsError::Einval) };
+        let mut g = d.state.lock();
         if !g.enabled { return Ok(0); }
-        let v = self.current_sample();
+        let v = now_ns().saturating_sub(d.start_ns.load(Ordering::Acquire));
         g.samples = g.samples.wrapping_add(1);
         buf[..8].copy_from_slice(&v.to_le_bytes());
         Ok(8)
     }
-    fn write(&self, _o: u64, _b: &[u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Einval) }
+    fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(vfs::VfsError::Einval) }
 }
 
 /// `perf_event_open(attr, pid, cpu, group_fd, flags)` — slot 298.
@@ -102,7 +99,7 @@ pub fn sys_perf_event_open(_args: &syscall::SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
     use syscall::errno::Errno;
-    let inode = PerfEventInode::new();
+    let inode_ref = make_perf_event_inode();
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -110,19 +107,13 @@ pub fn sys_perf_event_open(_args: &syscall::SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let inode_ref: vfs::InodeRef = inode as vfs::InodeRef;
     let dentry = Dentry::new(None, "[perf]".to_string(), inode_ref.clone());
     let file = File::new(inode_ref, dentry, OpenFlags::O_RDWR);
     match fdt.alloc(file) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
 }
 
-fn as_perf(inode: &vfs::InodeRef) -> Option<Arc<PerfEventInode>> {
-    if (inode.ino() & 0xFFFF_FFFF_0000_0000) != 0x5045_5246_0000_0000 {
-        return None;
-    }
-    let raw = Arc::into_raw(inode.clone());
-    // SAFETY: ino tag check above confirms PerfEventInode; Arc::clone bumped refcount before into_raw, from_raw consumes balanced count.
-    Some(unsafe { Arc::from_raw(raw as *const PerfEventInode) })
+fn as_perf(inode: &vfs::InodeRef) -> Option<Arc<PerfData>> {
+    inode.i_private().clone().downcast::<PerfData>().ok()
 }
 
 /// ioctl on a perf fd. Routes from the generic ioctl dispatcher.

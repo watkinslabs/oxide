@@ -7,20 +7,12 @@
 
 use std::sync::Arc;
 
-use vfs::inode::Inode;
-use vfs::{Dentry, File, FileType, InodeRef, KResult, OpenFlags, SeekFrom, VfsError};
-
-/// Regular-file inode of a fixed size, the SEEK_END base.
-struct Sized(u64);
-impl Inode for Sized {
-    fn ino(&self) -> vfs::Ino { 0x5eec }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { self.0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-}
+use vfs::{Dentry, File, FileType, InodeBuilder, InodeRef, OpenFlags, SeekFrom, VfsError,
+          default_file_ops, default_inode_ops, mk_mode};
 
 fn file(size: u64) -> Arc<File> {
-    let ino: InodeRef = Arc::new(Sized(size));
+    let ino: InodeRef = InodeBuilder::new(0x5eec, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
+        .size(size).build();
     let dentry = Dentry::new(None, "f".into(), Arc::clone(&ino));
     File::new(ino, dentry, OpenFlags::O_RDWR)
 }

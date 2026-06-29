@@ -11,50 +11,44 @@
 use std::sync::{Arc, Mutex};
 
 use vfs::inode::Inode;
-use vfs::{Dentry, File, FileType, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{Dentry, File, FileType, FileOps, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError,
+          default_file_ops, default_inode_ops, mk_mode};
 
 /// Regular-file inode backed by a growable byte vector. `read`/`write` honor
-/// the explicit offset so a positional op can be observed end-to-end.
-struct Mem(Mutex<Vec<u8>>);
-impl Inode for Mem {
-    fn ino(&self) -> vfs::Ino { 0x9ead }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { self.0.lock().unwrap().len() as u64 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let d = self.0.lock().unwrap();
+/// the explicit offset so a positional op can be observed end-to-end;
+/// `inode.set_size` tracks the live length for the `O_APPEND` pwrite gate.
+struct MemData(Mutex<Vec<u8>>);
+struct MemOps;
+impl FileOps for MemOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = inode.private::<MemData>().unwrap().0.lock().unwrap();
         let off = off as usize;
         if off >= d.len() { return Ok(0); }
         let n = core::cmp::min(buf.len(), d.len() - off);
         buf[..n].copy_from_slice(&d[off..off + n]);
         Ok(n)
     }
-    fn write(&self, off: u64, buf: &[u8]) -> KResult<usize> {
-        let mut d = self.0.lock().unwrap();
+    fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
+        let mut d = inode.private::<MemData>().unwrap().0.lock().unwrap();
         let off = off as usize;
         if off + buf.len() > d.len() { d.resize(off + buf.len(), 0); }
         d[off..off + buf.len()].copy_from_slice(buf);
+        inode.set_size(d.len() as u64);
         Ok(buf.len())
     }
 }
 
-/// Non-seekable inode (a fifo) to exercise the ESPIPE gate.
-struct Fifo;
-impl Inode for Fifo {
-    fn ino(&self) -> vfs::Ino { 0xf1f0 }
-    fn file_type(&self) -> FileType { FileType::Fifo }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-}
-
 fn mem_file(init: &[u8], flags: OpenFlags) -> Arc<File> {
-    let ino: InodeRef = Arc::new(Mem(Mutex::new(init.to_vec())));
+    let ino: InodeRef = InodeBuilder::new(0x9ead, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(MemOps))
+        .size(init.len() as u64)
+        .private(Arc::new(MemData(Mutex::new(init.to_vec()))))
+        .build();
     let dentry = Dentry::new(None, "f".into(), Arc::clone(&ino));
     File::new(ino, dentry, flags)
 }
 
 fn fifo_file(flags: OpenFlags) -> Arc<File> {
-    let ino: InodeRef = Arc::new(Fifo);
+    let ino: InodeRef = InodeBuilder::new(0xf1f0, mk_mode(FileType::Fifo, 0o644), default_inode_ops(), default_file_ops()).build();
     let dentry = Dentry::new(None, "p".into(), Arc::clone(&ino));
     File::new(ino, dentry, flags)
 }

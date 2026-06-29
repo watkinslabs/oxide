@@ -9,22 +9,19 @@ use std::sync::Arc;
 
 use vfs::file::FileRaState;
 use vfs::inode::Inode;
-use vfs::{Dentry, File, FileType, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{Dentry, File, FileOps, FileType, InodeBuilder, InodeRef, KResult, OpenFlags,
+          default_inode_ops, mk_mode};
 
 /// Default RA window for a fresh open (Linux `VM_READAHEAD_PAGES`).
 const DEFAULT_RA_PAGES: u32 = 32;
 
-struct Reg;
-impl Inode for Reg {
-    fn ino(&self) -> vfs::Ino { 11 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, b: &mut [u8]) -> KResult<usize> { Ok(b.len()) }
+struct RegOps;
+impl FileOps for RegOps {
+    fn read(&self, _inode: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> { Ok(b.len()) }
 }
 
 fn file() -> Arc<File> {
-    let ino: InodeRef = Arc::new(Reg);
+    let ino: InodeRef = InodeBuilder::new(11, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(RegOps)).build();
     let d = Dentry::new(None, "f".into(), Arc::clone(&ino));
     File::new(ino, d, OpenFlags::O_RDONLY)
 }

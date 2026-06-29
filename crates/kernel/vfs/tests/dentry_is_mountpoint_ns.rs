@@ -7,17 +7,11 @@
 
 use std::sync::Arc;
 
-use vfs::inode::Inode;
-use vfs::{Dentry, FileType, InodeRef, KResult, VfsError};
+use vfs::{Dentry, FileType, InodeRef};
 
-struct Dir(u64);
-impl Inode for Dir {
-    fn ino(&self) -> vfs::Ino { self.0 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+fn dir(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755), vfs::default_inode_ops(), vfs::default_file_ops()).build()
 }
-fn dir(ino: u64) -> InodeRef { Arc::new(Dir(ino)) }
 
 const NS_A: u64 = 11;
 const NS_B: u64 = 22;

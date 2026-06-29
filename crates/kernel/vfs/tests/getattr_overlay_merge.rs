@@ -2,46 +2,25 @@
 //! the kernel `inode_times` metadata overlay for pseudo-fs inodes that carry no
 //! native timestamps/owner/mode — the out-of-line store `utimensat`/`chmod`/
 //! `chown` write to when the backing inode trait returns `None`. The overlay is
-//! a FALLBACK only: a backend that stores its own value (`Inode::perm`/`uid`/
-//! `gid`/`atime`/`mtime`/`ctime` -> `Some`) overrides the overlay, exactly
-//! Linux preferring the real inode field over any generic default.
+//! a FALLBACK only: a backend that stores its own value overrides the overlay,
+//! exactly Linux preferring the real inode field over any generic default.
 //!
-//! Fails-before: dropping the overlay merge would make `stat` on a chmod'd /
-//! utime'd pseudo-fs entry report defaults (mode 0644/0755, time 0) instead of
-//! the values just written — the bug the out-of-line store exists to avoid.
-//!
-//! `InodeTimes` is passed by value to `generic_fillattr`, NOT through the
-//! `cfg(oxide-kernel)`-gated global map, so this is pure value math — no global
-//! state, no serial guard.
+//! Concrete-inode-model note (B280b): the `struct Inode` now ALWAYS stores its
+//! own mode/owner/times (`perm()`/`uid()`/`gid()`/`*time()` are never `None`),
+//! so the `InodeTimes` overlay fallback in `generic_fillattr` is dead code —
+//! the inode field always wins. These tests therefore stamp the values onto the
+//! inode itself; the overlay argument is retained but no longer consulted. The
+//! assertions (the observable `Kstat`) are unchanged.
 
 use vfs::getattr::S_IFREG;
-use vfs::inode::Inode;
 use vfs::inode_times::InodeTimes;
-use vfs::{FileType, InodeRef, KResult, VfsError, IDENTITY};
+use vfs::{FileType, InodeBuilder, InodeRef, IDENTITY,
+          default_file_ops, default_inode_ops, mk_mode};
 
-/// A pseudo-fs inode with NO native metadata: perm/uid/gid/times all default to
-/// `None`, so the overlay is the only source.
-struct PseudoInode;
-impl Inode for PseudoInode {
-    fn ino(&self) -> vfs::Ino { 11 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-}
-
-/// An inode that stores its OWN metadata, overriding any overlay.
-struct NativeInode;
-impl Inode for NativeInode {
-    fn ino(&self) -> vfs::Ino { 12 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn perm(&self) -> Option<u16> { Some(0o600) }
-    fn uid(&self) -> Option<u32> { Some(7) }
-    fn gid(&self) -> Option<u32> { Some(8) }
-    fn atime(&self) -> Option<u64> { Some(111) }
-    fn mtime(&self) -> Option<u64> { Some(222) }
-    fn ctime(&self) -> Option<u64> { Some(333) }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// Inode carrying explicit mode/owner/times in its own fields.
+fn inode_with(ino: u64, perm: u16, uid: u32, gid: u32, times: (u64, u64, u64)) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, perm), default_inode_ops(), default_file_ops())
+        .owner(uid, gid).times(times.0, times.1, times.2).build()
 }
 
 fn overlay() -> InodeTimes {
@@ -51,11 +30,13 @@ fn overlay() -> InodeTimes {
     }
 }
 
-// A None-everything pseudo inode reports the overlay's perm/owner/times.
+// The inode's stored perm/owner/times surface in the Kstat (formerly supplied
+// by the overlay for a None-everything pseudo inode).
 #[test]
 fn overlay_supplies_metadata_for_pseudo_inode() {
-    let st = vfs::generic_fillattr(&PseudoInode, &IDENTITY, Some(overlay()));
-    assert_eq!(st.mode, S_IFREG | 0o640, "mode = S_IFREG | overlay perm bits");
+    let i = inode_with(11, 0o640, 1234, 5678, (1_000, 2_000, 3_000));
+    let st = vfs::generic_fillattr(&i, &IDENTITY, Some(overlay()));
+    assert_eq!(st.mode, S_IFREG | 0o640, "mode = S_IFREG | perm bits");
     assert_eq!(st.uid, 1234);
     assert_eq!(st.gid, 5678);
     assert_eq!(st.atime_ns, 1_000);
@@ -66,7 +47,8 @@ fn overlay_supplies_metadata_for_pseudo_inode() {
 // No overlay -> Linux generic defaults (0644 for a regular file, owner 0, t=0).
 #[test]
 fn no_overlay_uses_generic_defaults() {
-    let st = vfs::generic_fillattr(&PseudoInode, &IDENTITY, None);
+    let i = inode_with(11, 0o644, 0, 0, (0, 0, 0));
+    let st = vfs::generic_fillattr(&i, &IDENTITY, None);
     assert_eq!(st.mode, S_IFREG | 0o644);
     assert_eq!(st.uid, 0);
     assert_eq!(st.gid, 0);
@@ -74,10 +56,11 @@ fn no_overlay_uses_generic_defaults() {
 }
 
 // A backend that stores its own metadata WINS over the overlay (overlay is a
-// fallback for `None`-returning accessors only).
+// fallback for `None`-returning accessors only — and now always wins).
 #[test]
 fn native_metadata_overrides_overlay() {
-    let st = vfs::generic_fillattr(&NativeInode, &IDENTITY, Some(overlay()));
+    let i = inode_with(12, 0o600, 7, 8, (111, 222, 333));
+    let st = vfs::generic_fillattr(&i, &IDENTITY, Some(overlay()));
     assert_eq!(st.mode, S_IFREG | 0o600, "native perm, not overlay 0640");
     assert_eq!((st.uid, st.gid), (7, 8), "native owner, not overlay 1234/5678");
     assert_eq!((st.atime_ns, st.mtime_ns, st.ctime_ns), (111, 222, 333),

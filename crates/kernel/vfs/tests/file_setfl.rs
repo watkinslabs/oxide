@@ -13,8 +13,8 @@
 
 use std::sync::Arc;
 
-use vfs::inode::Inode;
-use vfs::{Dentry, File, FileType, Ino, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{Dentry, File, FileType, InodeBuilder, InodeRef, OpenFlags,
+          default_file_ops, default_inode_ops, mk_mode};
 
 /// `O_DIRECT` / `O_NOATIME` are settable status flags not declared in
 /// `OpenFlags`; set them as raw bits exactly how the syscall layer forwards
@@ -23,16 +23,12 @@ const O_DIRECT:  u32 = 0o40000;
 const O_NOATIME: u32 = 0o1000000;
 
 /// Minimal regular inode; `set_fl` touches no I/O so the body is unused.
-struct Reg;
-impl Inode for Reg {
-    fn ino(&self) -> Ino { 0x5F }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn reg_inode() -> InodeRef {
+    InodeBuilder::new(0x5F, mk_mode(FileType::Regular, 0), default_inode_ops(), default_file_ops()).build()
 }
 
 fn file(flags: u32) -> Arc<File> {
-    let ino: InodeRef = Arc::new(Reg);
+    let ino: InodeRef = reg_inode();
     let d = Dentry::new(None, "f".into(), Arc::clone(&ino));
     File::new(ino, d, OpenFlags::from_bits_retain(flags))
 }
