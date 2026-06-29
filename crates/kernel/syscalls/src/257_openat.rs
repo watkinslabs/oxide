@@ -201,11 +201,23 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         // S_IALLUGO (0o7777): preserve suid/sgid/sticky on O_CREAT (D8).
         let final_mode = mode & 0o7777 & !umask;
         match vfs::mount::resolve_mount(path_str) {
-            Some((mnt, rel)) => {
+            Some((mnt, _rel)) => {
                 if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
                     return -(Errno::Erofs.as_i32() as i64);
                 }
-                match mnt.fs().create(&rel, final_mode) {
+                // ext4 D9: create on the RESOLVED PARENT dir inode + leaf name
+                // (Linux `filename_create` → `i_op->create`), instead of the
+                // whole-path `FileSystem::create` re-splitting the path string.
+                // Mirrors `mknod(S_IFREG)`; `final_mode` is already umasked and
+                // `apply_umask` is idempotent; owner = caller fsuid/fsgid.
+                let (pino, name) = match crate::namei_common::resolve_parent(path_str) {
+                    Ok(x) => x, Err(rv) => return rv,
+                };
+                let cred = crate::pathresolve::current_cred();
+                let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
+                // D29: parent dir `i_rwsem` EXCLUSIVE across the backend create.
+                let r = { let _g = pino.inode_lock(); pino.create_child(&name, final_mode, &ctx) };
+                match r {
                     Ok(i) => (i, mnt.mnt_id, true),
                     Err(e) => {
                         crate::namei_common::trace_run_vfs_error(b"openat-create", path_str, e);

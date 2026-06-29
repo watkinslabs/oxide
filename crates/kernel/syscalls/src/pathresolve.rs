@@ -171,6 +171,22 @@ pub fn resolve_path_flags(abs: &str, mut flags: vfs::LookupFlags) -> Result<vfs:
     }
 }
 
+/// Resolve the PARENT directory of absolute `abs` through the engine
+/// LOOKUP_PARENT walk (Linux `filename_parentat`): the walk stops BEFORE the
+/// final component and returns the parent dir in `VfsPath.inode` plus the leaf
+/// name in `VfsPath.last_component` (and `VfsPath::last_type()` for the
+/// `.`/`..`/root classification). THE single resolver feeding every namespace
+/// mutation (namei D16) — replaces the `split_parent` (`rfind('/')`) string
+/// split + a separate full `resolve(parent)` walk. Chroot-aware, perm-enforced
+/// (`may_lookup`/MAY_EXEC on the parent, Linux `link_path_walk`), follows
+/// intermediate symlinks, crosses mounts to the mounted-fs dir inode — exactly
+/// the walk `resolve_path_flags` performs, with `LookupFlags::parent` set so
+/// the leaf is reported instead of resolved (so a not-yet-existing leaf is NOT
+/// an error: create/unlink/rename act on `(parent, leaf)`). # C: O(components)
+pub fn resolve_parent_path(abs: &str) -> Result<vfs::VfsPath, vfs::VfsError> {
+    resolve_path_flags(abs, vfs::LookupFlags { parent: true, ..Default::default() })
+}
+
 /// openat2 RESOLVE_BENEATH / RESOLVE_IN_ROOT: the `dirfd` IS the scoped
 /// resolution root. START and root both become the dirfd's dentry (the task
 /// cwd for `AT_FDCWD`), so the vfs walker enforces the boundary itself — an
