@@ -612,6 +612,7 @@ fn install_open_o_cloexec_sets_fd_flag_not_file_flag() {
         OpenFlags::O_RDWR | OpenFlags::O_CLOEXEC,
         0,
         crate::namei::Cred::root(),
+        usize::MAX,
     ).unwrap();
     assert!(t.cloexec(fd).unwrap());
     assert!(!t.get(fd).unwrap().flags().contains(OpenFlags::O_CLOEXEC));

@@ -696,6 +696,15 @@ impl Task {
         unsafe { (&*self.mm.get()).as_ref() }
     }
 
+    /// Soft `RLIMIT_NOFILE` — the per-task fd ceiling the fd-alloc path
+    /// enforces (Linux `rlimit(RLIMIT_NOFILE)`); fd installs beyond it
+    /// → EMFILE. Source for every `FdTable::alloc_limit` call site.
+    /// # C: O(1)
+    pub fn nofile_soft(&self) -> usize {
+        // SAFETY: rlimits is single-mutator per the running task on this CPU (same invariant as `mm`); reads one (cur,max) slot only.
+        unsafe { (*self.rlimits.get())[crate::rlimit::rlim::NOFILE].0 as usize }
+    }
+
     /// Atomically replace `mm` with `new`, dropping the old Arc.
     /// Used by `execve` per `15§5` and `Task::new_user_with_mm`.
     /// # SAFETY: caller is the running task on its CPU OR holds

@@ -27,7 +27,7 @@ pub fn sys_eventfd2(args: &SyscallArgs) -> i64 {
     let mut fl = OpenFlags::O_RDWR;
     if (flags & EFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);
-    match fdt.alloc(file) {
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => {
             if (flags & EFD_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
             fd as i64

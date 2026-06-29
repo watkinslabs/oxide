@@ -50,7 +50,7 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
     };
     let dentry = vfs::dcache::d_alloc_pseudo(&name, inode.clone(), &crate::anon_dname::MEMFD_OPS);
     let file = File::new(inode, dentry, OpenFlags::O_RDWR);
-    let fd = match fdt.alloc(file) {
+    let fd = match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => fd, Err(e) => return -(e as i64),
     };
     if (flags & MFD_CLOEXEC) != 0 {

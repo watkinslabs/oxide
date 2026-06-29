@@ -57,5 +57,5 @@ pub fn sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
     let inode_ref: vfs::InodeRef = make_io_uring_inode(inode);
     let dentry = vfs::dcache::d_alloc_pseudo("[io_uring]", inode_ref.clone(), &crate::anon_dname::ANON_INODE_OPS);
     let file = File::new(inode_ref, dentry, OpenFlags::O_RDWR);
-    match fdt.alloc(file) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    match fdt.alloc_limit(file, cur.nofile_soft()) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
 }
