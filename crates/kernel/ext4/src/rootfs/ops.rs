@@ -35,8 +35,9 @@ impl RootfsState {
         let rdev = if matches!(ft, vfs::FileType::CharDev | vfs::FileType::BlockDev) { inode.rdev() } else { 0 };
         let nlink = if inode.links_count != 0 { inode.links_count as u32 }
                     else if matches!(ft, vfs::FileType::Directory) { 2 } else { 1 };
+        let (uid, gid) = (inode.uid, inode.gid);
         let st = self.clone();
-        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev);
+        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev, uid, gid);
         // Route through the SB inode cache so a repeated lookup of the same ino
         // returns the SAME `Arc` (shared inode identity, Linux `iget`). Before
         // the SB is back-stamped (during `fs.root()`) build directly.
@@ -53,9 +54,10 @@ impl RootfsState {
         if !inode.is_reg() { return None; }
         let size = inode.size;
         let mode = inode.mode;
+        let (uid, gid) = (inode.uid, inode.gid);
         let nlink = if inode.links_count != 0 { inode.links_count as u32 } else { 1 };
         let st = self.clone();
-        let build = move || build_file_inode(st, ino, mode, size, nlink);
+        let build = move || build_file_inode(st, ino, mode, size, nlink, uid, gid);
         // Shared identity via the SB inode cache (Linux `iget`).
         Some(match self.i_sb() {
             Some(sb) => sb.iget(ext4_wrap_ino(ino), build),
@@ -101,7 +103,7 @@ impl RootfsState {
     /// # C: O(N parent entries)
     pub fn create_at(self: &Arc<Self>, path: &[u8], mode_perm: u16) -> Option<vfs::InodeRef> {
         let (pino, name) = self.parent_inode(path)?;
-        let new_ino = self.mount.create_file(pino, name, mode_perm).ok()?;
+        let new_ino = self.mount.create_file(pino, name, mode_perm, 0, 0).ok()?;
         self.page_cache.invalidate(InodeId(new_ino as u64));
         self.wrap_file(new_ino)
     }
@@ -153,7 +155,7 @@ impl RootfsState {
     /// # C: O(N parent entries)
     pub fn symlink_at(&self, target: &[u8], link_path: &[u8]) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(link_path).ok_or(vfs::VfsError::Enoent)?;
-        let new_ino = self.mount.create_symlink(pino, name, target).map_err(|_| vfs::VfsError::Eio)?;
+        let new_ino = self.mount.create_symlink(pino, name, target, 0, 0).map_err(|_| vfs::VfsError::Eio)?;
         self.page_cache.invalidate(InodeId(new_ino as u64));
         Ok(())
     }
@@ -161,7 +163,7 @@ impl RootfsState {
     /// # C: O(N parent entries)
     pub fn mknod_at(&self, path: &[u8], mode: u16, rdev: u32) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
-        let new_ino = self.mount.create_mknod(pino, name, mode, rdev).map_err(|_| vfs::VfsError::Eio)?;
+        let new_ino = self.mount.create_mknod(pino, name, mode, rdev, 0, 0).map_err(|_| vfs::VfsError::Eio)?;
         self.page_cache.invalidate(InodeId(new_ino as u64));
         Ok(())
     }
@@ -169,7 +171,7 @@ impl RootfsState {
     /// # C: O(N parent entries)
     pub fn mkdir_at(&self, path: &[u8], mode_perm: u16) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
-        self.mount.create_dir(pino, name, mode_perm).map_err(|_| vfs::VfsError::Eio)?;
+        self.mount.create_dir(pino, name, mode_perm, 0, 0).map_err(|_| vfs::VfsError::Eio)?;
         Ok(())
     }
 

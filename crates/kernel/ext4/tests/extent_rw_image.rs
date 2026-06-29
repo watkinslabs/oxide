@@ -149,7 +149,7 @@ fn append_extends_or_adds_inline_extents() {
 fn write_at_extends_and_round_trips() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
-    let n = m.create_file(2, b"wa.bin", 0o644).unwrap();
+    let n = m.create_file(2, b"wa.bin", 0o644, 0, 0).unwrap();
     // Write straddling block boundary into a brand-new file.
     let bs = m.sb.block_size as u64;
     let off = bs - 8;
@@ -170,7 +170,7 @@ fn write_at_extends_and_round_trips() {
 fn fallocate_extends_size_and_allocates_zeroed_blocks() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
-    let n = m.create_file(2, b"falloc.bin", 0o644).unwrap();
+    let n = m.create_file(2, b"falloc.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
 
     m.fallocate_inode(n, 0, (bs * 3) as u64, false).unwrap();
@@ -187,7 +187,7 @@ fn fallocate_extends_size_and_allocates_zeroed_blocks() {
 fn fallocate_keep_size_allocates_without_extending_size() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
-    let n = m.create_file(2, b"falloc_keep.bin", 0o644).unwrap();
+    let n = m.create_file(2, b"falloc_keep.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
 
     m.fallocate_inode(n, bs as u64, (bs * 2) as u64, true).unwrap();
@@ -204,7 +204,7 @@ fn fallocate_keep_size_allocates_without_extending_size() {
 fn fallocate_keep_size_inserts_sparse_inline_extents_sorted() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
-    let n = m.create_file(2, b"falloc_sparse.bin", 0o644).unwrap();
+    let n = m.create_file(2, b"falloc_sparse.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
 
     m.fallocate_inode(n, (bs * 2) as u64, bs as u64, true).unwrap();
@@ -228,7 +228,7 @@ fn fallocate_keep_size_inserts_sparse_inline_extents_sorted() {
 fn fallocate_keep_size_inserts_sparse_depth1_leaf_sorted() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk.clone()).unwrap();
-    let n = m.create_file(2, b"falloc_d1.bin", 0o644).unwrap();
+    let n = m.create_file(2, b"falloc_d1.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
 
     for lb in [8u32, 6, 4, 2, 0] {
@@ -257,7 +257,7 @@ fn fallocate_keep_size_inserts_sparse_depth1_leaf_sorted() {
 fn fallocate_sparse_extents_promotes_full_root_to_depth3() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk.clone()).unwrap();
-    let n = m.create_file(2, b"falloc_d3.bin", 0o644).unwrap();
+    let n = m.create_file(2, b"falloc_d3.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
     let mut logicals = std::vec::Vec::new();
 
@@ -300,7 +300,7 @@ fn fallocate_sparse_extents_promotes_full_root_to_depth3() {
 fn truncate_shrinks_and_frees_blocks() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
-    let n = m.create_file(2, b"shrink.bin", 0o644).unwrap();
+    let n = m.create_file(2, b"shrink.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
     let pre_free = m.state_free_blocks();
     for _ in 0..4 { m.append_block(n, &std::vec![0xCC; bs]).unwrap(); }
@@ -317,7 +317,7 @@ fn truncate_shrinks_and_frees_blocks() {
 fn append_promotes_inline_to_depth1_when_full() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
-    let n = m.create_file(2, b"deep.bin", 0o644).unwrap();
+    let n = m.create_file(2, b"deep.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
     // Force 5 non-contiguous extents by allocating + freeing
     // surrounding blocks between appends. Easiest path: alloc
@@ -345,7 +345,7 @@ fn truncate_depth1_frees_tail_and_keeps_head() {
     // so truncating ANY multi-extent file failed).
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
-    let n = m.create_file(2, b"trunc_deep.bin", 0o644).unwrap();
+    let n = m.create_file(2, b"trunc_deep.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
     // Force depth>=1 with 6 non-contiguous extents (spacer breaks contiguity).
     for i in 0..6u8 {
@@ -374,7 +374,7 @@ fn truncate_depth1_frees_tail_and_keeps_head() {
 fn truncate_depth1_to_zero_resets_to_empty() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
-    let n = m.create_file(2, b"trunc_zero.bin", 0o644).unwrap();
+    let n = m.create_file(2, b"trunc_zero.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
     for i in 0..6u8 {
         let _spacer = m.alloc_block(0).unwrap();
@@ -401,7 +401,7 @@ fn rmw_write_and_read_into_depth1_file() {
     // file, so write_at's RMW phase silently failed on fragmented files.
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
-    let n = m.create_file(2, b"deeprmw.bin", 0o644).unwrap();
+    let n = m.create_file(2, b"deeprmw.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
     // Force depth>=1 with 5 non-contiguous extents (spacer breaks contiguity).
     for i in 0..5u8 {

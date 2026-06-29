@@ -216,7 +216,7 @@ impl AddressSpaceOps for Ext4FileMapping {
 /// Build a regular-file `vfs::Inode` for ext4 inode `ino`. `mode`/`size`/
 /// `nlink` are the captured on-disk metadata (read by the caller before the
 /// `iget` build closure). # C: O(1)
-pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: u64, nlink: u32)
+pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: u64, nlink: u32, uid: u32, gid: u32)
     -> InodeRef
 {
     let data = Arc::new(Ext4FileData {
@@ -230,6 +230,7 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
         .sb(weak_sb)
         .size(size)
         .nlink(nlink)
+        .owner(uid, gid)
         .mapping(mapping)
         .private(data)
         .build()
@@ -283,12 +284,15 @@ impl InodeOps for Ext4StatInodeOps {
         Ok(blk[..n].to_vec())
     }
 
+    /// New on-disk inode owner = `ctx.fsuid()`/`ctx.fsgid()` (idmap-mapped),
+    /// mode = `ctx.apply_umask(mode)` — Linux `ext4_mkdir` → `ext4_new_inode`.
     /// # C: O(N parent entries)
-    fn mkdir(&self, inode: &Inode, name: &str, mode: u32, _ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
+    fn mkdir(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        d.st.mount.create_dir(d.ino, name.as_bytes(), mode as u16).map_err(|_| VfsError::Eio)?;
+        let perm = ctx.apply_umask(mode) as u16;
+        d.st.mount.create_dir(d.ino, name.as_bytes(), perm, ctx.fsuid(), ctx.fsgid()).map_err(|_| VfsError::Eio)?;
         let child = d.st.lookup_child_ino(d.ino, name).ok_or(VfsError::Eio)?;
         d.st.wrap_any_ino(child).ok_or(VfsError::Eio)
     }
@@ -320,12 +324,15 @@ impl InodeOps for Ext4StatInodeOps {
         Ok(())
     }
 
+    /// New on-disk inode owner = `ctx.fsuid()`/`ctx.fsgid()`, mode =
+    /// `ctx.apply_umask(mode)` — Linux `ext4_create` → `ext4_new_inode`.
     /// # C: O(N parent entries)
-    fn create(&self, inode: &Inode, name: &str, mode: u32, _ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
+    fn create(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        let ino = d.st.mount.create_file(d.ino, name.as_bytes(), mode as u16).map_err(|_| VfsError::Eio)?;
+        let perm = ctx.apply_umask(mode) as u16;
+        let ino = d.st.mount.create_file(d.ino, name.as_bytes(), perm, ctx.fsuid(), ctx.fsgid()).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(ino as u64));
         d.st.wrap_file(ino).ok_or(VfsError::Eio)
     }
@@ -343,22 +350,26 @@ impl InodeOps for Ext4StatInodeOps {
         Ok(())
     }
 
-    /// # C: O(N parent entries)
-    fn symlink(&self, inode: &Inode, name: &str, target: &[u8], _ctx: &vfs::CreateCtx) -> KResult<()> {
+    /// Symlink inode owner = `ctx.fsuid()`/`ctx.fsgid()`; its mode is fixed
+    /// `0777` (Linux symlinks ignore umask). # C: O(N parent entries)
+    fn symlink(&self, inode: &Inode, name: &str, target: &[u8], ctx: &vfs::CreateCtx) -> KResult<()> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        let ino = d.st.mount.create_symlink(d.ino, name.as_bytes(), target).map_err(|_| VfsError::Eio)?;
+        let ino = d.st.mount.create_symlink(d.ino, name.as_bytes(), target, ctx.fsuid(), ctx.fsgid()).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(ino as u64));
         Ok(())
     }
 
-    /// # C: O(N parent entries)
-    fn mknod(&self, inode: &Inode, name: &str, mode: u16, rdev: u32, _ctx: &vfs::CreateCtx) -> KResult<()> {
+    /// New node owner = `ctx.fsuid()`/`ctx.fsgid()`; the perm bits carried in
+    /// `mode` are umasked (`ctx.apply_umask`), the `S_IFMT` type bits kept —
+    /// Linux `ext4_mknod` → `ext4_new_inode`. # C: O(N parent entries)
+    fn mknod(&self, inode: &Inode, name: &str, mode: u16, rdev: u32, ctx: &vfs::CreateCtx) -> KResult<()> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        let ino = d.st.mount.create_mknod(d.ino, name.as_bytes(), mode, rdev).map_err(|_| VfsError::Eio)?;
+        let mode = (mode & crate::inode::S_IFMT) | (ctx.apply_umask((mode & 0o7777) as u32) as u16);
+        let ino = d.st.mount.create_mknod(d.ino, name.as_bytes(), mode, rdev, ctx.fsuid(), ctx.fsgid()).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(ino as u64));
         Ok(())
     }
@@ -414,7 +425,7 @@ impl FileOps for Ext4StatFileOps {
 /// the caller before the `iget` build closure. `rdev` is only meaningful for
 /// CHR/BLK nodes (generic_fillattr reads it for those types only). # C: O(1)
 pub(crate) fn build_stat_inode(
-    st: Arc<RootfsState>, ino: u32, ft: FileType, perm: u16, size: u64, nlink: u32, rdev: u32,
+    st: Arc<RootfsState>, ino: u32, ft: FileType, perm: u16, size: u64, nlink: u32, rdev: u32, uid: u32, gid: u32,
 ) -> InodeRef {
     let data = Arc::new(Ext4StatData { st, ino, ft, size });
     let weak_sb = data.st.sb.lock().clone();
@@ -424,6 +435,7 @@ pub(crate) fn build_stat_inode(
         .size(size)
         .nlink(nlink)
         .rdev(rdev)
+        .owner(uid, gid)
         .private(data)
         .build()
 }
