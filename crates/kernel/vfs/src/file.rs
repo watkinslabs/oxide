@@ -1196,6 +1196,7 @@ pub fn install_open(
     flags: OpenFlags,
     mnt_id: u64,
     cred: Cred,
+    limit: usize,
 ) -> Result<i32, VfsError> {
     if flags.contains(OpenFlags::O_DIRECTORY)
         && !matches!(inode.file_type(), crate::types::FileType::Directory)
@@ -1213,7 +1214,7 @@ pub fn install_open(
     let file_flags = flags - OpenFlags::O_CLOEXEC;
     let dentry = open_dentry(path, &inode);
     let file = File::new_at(inode, dentry, file_flags, mnt_id, cred);
-    let fd = fdt.alloc(file).map_err(|_| VfsError::Emfile)?;
+    let fd = fdt.alloc_limit(file, limit).map_err(|_| VfsError::Emfile)?;
     if cloexec {
         fdt.set_cloexec(fd, true)?;
     }

@@ -92,7 +92,7 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
     let mut fl = OpenFlags::O_RDWR;
     if nonblock { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);
-    match fdt.alloc(file) {
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => { if cloexec { let _ = fdt.set_cloexec(fd, true); } fd as i64 }
         Err(e) => -(e as i64),
     }

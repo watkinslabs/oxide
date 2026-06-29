@@ -395,7 +395,7 @@ pub(crate) fn install_fd(inode: InodeRef, name: &str, cloexec: bool) -> i64 {
     };
     let dentry = vfs::dcache::d_alloc_pseudo(name, inode.clone(), &crate::anon_dname::ANON_INODE_OPS);
     let file = File::new(inode, dentry, OpenFlags::O_RDWR);
-    match fdt.alloc(file) {
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => { if cloexec { let _ = fdt.set_cloexec(fd, true); } fd as i64 }
         Err(e) => -(e as i64),
     }

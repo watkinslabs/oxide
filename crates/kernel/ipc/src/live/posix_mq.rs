@@ -193,7 +193,7 @@ pub fn sys_mq_open(args: &syscall::SyscallArgs) -> i64 {
     let mut fl = OpenFlags::O_RDWR;
     if (oflag & O_NONBLOCK_BIT) != 0 { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);
-    match fdt.alloc(file) {
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => {
             if (oflag & O_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
             fd as i64

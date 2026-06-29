@@ -62,13 +62,13 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
         let inode = mk(net::UnixEnd::A);
         let dentry = vfs::dcache::d_alloc_pseudo("socket", Arc::clone(&inode), &crate::anon_dname::SOCKET_OPS);
         let f = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
-        match fdt.alloc(f) { Ok(fd) => fd, Err(e) => return -(e as i64) }
+        match fdt.alloc_limit(f, cur.nofile_soft()) { Ok(fd) => fd, Err(e) => return -(e as i64) }
     };
     let b = {
         let inode = mk(net::UnixEnd::B);
         let dentry = vfs::dcache::d_alloc_pseudo("socket", Arc::clone(&inode), &crate::anon_dname::SOCKET_OPS);
         let f = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
-        match fdt.alloc(f) { Ok(fd) => fd, Err(e) => return -(e as i64) }
+        match fdt.alloc_limit(f, cur.nofile_soft()) { Ok(fd) => fd, Err(e) => return -(e as i64) }
     };
     // Write both fds back to user[]int sv[2].
     // SAFETY: svp range validated < USER_VA_END; user page mapped.
