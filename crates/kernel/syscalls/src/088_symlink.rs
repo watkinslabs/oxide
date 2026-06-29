@@ -33,7 +33,7 @@ pub(crate) fn symlink_impl(target: String, link: String) -> i64 {
     }
     let (pino, name) = match resolve_parent(&l) { Ok(x) => x, Err(rv) => return rv };
     match pino.symlink_child(&name, target.as_bytes()) {
-        Ok(())  => 0,
+        Ok(())  => { crate::pathresolve::d_drop_path(&l); 0 }
         Err(e)  => {
             crate::namei_common::trace_run_vfs_error(b"symlink", &l, e);
             errno_from_vfs(e)
