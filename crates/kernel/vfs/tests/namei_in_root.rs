@@ -10,40 +10,39 @@ use std::sync::Arc;
 use vfs::inode::Inode;
 use vfs::{Dentry, FileType, InodeRef, LookupFlags, VfsError};
 
-struct Dir { ino: u64, kids: BTreeMap<String, InodeRef> }
-impl Inode for Dir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> vfs::KResult<InodeRef> {
-        self.kids.get(name).cloned().ok_or(VfsError::Enoent)
+struct DirData { kids: BTreeMap<String, InodeRef> }
+struct DirOps;
+impl vfs::InodeOps for DirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> vfs::KResult<InodeRef> {
+        inode.private::<DirData>().unwrap().kids.get(name).cloned().ok_or(VfsError::Enoent)
     }
 }
 
-struct F { ino: u64 }
-impl Inode for F {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(VfsError::Enotdir) }
-}
-
-struct Sym { ino: u64, target: String }
-impl Inode for Sym {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Symlink }
-    fn size(&self) -> u64 { self.target.len() as u64 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn readlink(&self) -> vfs::KResult<Vec<u8>> { Ok(self.target.clone().into_bytes()) }
+struct SymData { target: Vec<u8> }
+struct SymOps;
+impl vfs::InodeOps for SymOps {
+    fn readlink(&self, inode: &Inode) -> vfs::KResult<Vec<u8>> {
+        Ok(inode.private::<SymData>().unwrap().target.clone())
+    }
 }
 
 fn dir(ino: u64, kids: &[(&str, InodeRef)]) -> InodeRef {
     let mut m = BTreeMap::new();
     for (n, i) in kids { m.insert(n.to_string(), i.clone()); }
-    Arc::new(Dir { ino, kids: m })
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755),
+        Arc::new(DirOps), vfs::default_file_ops())
+        .private(Arc::new(DirData { kids: m })).build()
 }
-fn file(ino: u64) -> InodeRef { Arc::new(F { ino }) }
-fn sym(ino: u64, t: &str) -> InodeRef { Arc::new(Sym { ino, target: t.to_string() }) }
+fn file(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Regular, 0o644),
+        vfs::default_inode_ops(), vfs::default_file_ops()).build()
+}
+fn sym(ino: u64, t: &str) -> InodeRef {
+    let body = t.as_bytes().to_vec();
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Symlink, 0o777),
+        Arc::new(SymOps), vfs::default_file_ops())
+        .size(body.len() as u64).private(Arc::new(SymData { target: body })).build()
+}
 
 // Synthetic tree:
 //   /          (ino 2)  → etc, usr, secret

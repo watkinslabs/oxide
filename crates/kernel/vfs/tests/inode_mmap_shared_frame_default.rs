@@ -9,10 +9,12 @@
 //!     fresh private copy) — shared mappings alias file storage;
 //!   * an inode WITHOUT an `i_mapping` (the `None` default) returns `None`, so
 //!     the fault handler falls back to a private `read`-filled frame.
-//! Pure-trait fixtures, no global state, no QEMU.
+//! Fixtures over `InodeBuilder`, no global state, no QEMU.
 
-use vfs::inode::Inode;
-use vfs::{AddressSpaceOps, FileType, InodeRef, KResult, VfsError};
+use std::sync::Arc;
+
+use vfs::inode::InodeBuilder;
+use vfs::{default_file_ops, default_inode_ops, mk_mode, AddressSpaceOps, FileType, InodeRef};
 
 const PG: u64 = 4096;
 /// Base PA the toy address_space hands out; page index folds into the low bits.
@@ -34,27 +36,20 @@ impl AddressSpaceOps for ToyMapping {
 /// Frame-backed inode (shmem/tmpfs shape): exposes an `i_mapping`, overrides
 /// nothing else of the data path, so `mmap_shared_frame` takes the default
 /// forwarding path.
-struct Mapped { map: ToyMapping }
-impl Inode for Mapped {
-    fn ino(&self) -> vfs::Ino { 10 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { self.map.len }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn i_mapping(&self) -> Option<&dyn AddressSpaceOps> { Some(&self.map) }
+fn mapped(len: u64) -> InodeRef {
+    InodeBuilder::new(10, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
+        .size(len).mapping(Arc::new(ToyMapping { len })).build()
 }
 
 /// Plain inode with no page-cache (default `i_mapping() == None`).
-struct Unmapped;
-impl Inode for Unmapped {
-    fn ino(&self) -> vfs::Ino { 11 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 8192 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn unmapped() -> InodeRef {
+    InodeBuilder::new(11, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
+        .size(8192).build()
 }
 
 #[test]
 fn mmap_shared_frame_forwards_to_i_mapping() {
-    let inode = Mapped { map: ToyMapping { len: 2 * PG } };
+    let inode = mapped(2 * PG);
     // page 0 and page 1 each alias the mapping's own frame, byte-identical to
     // a direct `i_mapping().shared_frame()` — i.e. the default forwarded.
     assert_eq!(inode.mmap_shared_frame(0), Some(FRAME_BASE));
@@ -70,7 +65,7 @@ fn mmap_shared_frame_forwards_to_i_mapping() {
 fn mmap_shared_frame_repeats_alias_same_pa() {
     // The aliasing guarantee: two faults of one page return ONE frame, so two
     // MAP_SHARED mappers share storage rather than diverging.
-    let inode = Mapped { map: ToyMapping { len: 4 * PG } };
+    let inode = mapped(4 * PG);
     let a = inode.mmap_shared_frame(2 * PG);
     let b = inode.mmap_shared_frame(2 * PG + 17); // mid-page offset, same page
     assert_eq!(a, Some(FRAME_BASE + 2 * PG));
@@ -80,7 +75,7 @@ fn mmap_shared_frame_repeats_alias_same_pa() {
 #[test]
 fn mmap_shared_frame_past_eof_is_none() {
     // Beyond the mapping's size there is no backing frame.
-    let inode = Mapped { map: ToyMapping { len: PG } };
+    let inode = mapped(PG);
     assert_eq!(inode.mmap_shared_frame(PG), None);
     assert_eq!(inode.mmap_shared_frame(10 * PG), None);
 }
@@ -89,7 +84,7 @@ fn mmap_shared_frame_past_eof_is_none() {
 fn no_mapping_inode_has_no_shared_frame() {
     // Default `i_mapping() == None` ⇒ `mmap_shared_frame` is `None`, so the
     // fault path copies via `read` into a fresh private frame (MAP_PRIVATE).
-    let inode = Unmapped;
+    let inode = unmapped();
     assert!(inode.i_mapping().is_none());
     assert_eq!(inode.mmap_shared_frame(0), None);
     assert_eq!(inode.mmap_shared_frame(PG), None);

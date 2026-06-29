@@ -10,7 +10,7 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError, InodeBuilder, FileOps, default_inode_ops, mk_mode};
 
 mod uapi;
 mod pcm;
@@ -31,77 +31,60 @@ const MINOR_DSP:     u64 = 0x20; // /dev/dsp
 const MINOR_AUDIO:   u64 = 0x21; // /dev/audio
 const MINOR_MIXER:   u64 = 0x22; // /dev/mixer
 
-/// ALSA `/dev/snd/pcmC0D0p` playback node. ioctls → the PCM core; `write(2)`
-/// → the byte-stream transfer; `read(2)` is capture (a follow-up).
-struct PcmPlaybackInode;
-impl Inode for PcmPlaybackInode {
-    fn ino(&self) -> Ino { SND_INO_BASE | MINOR_PCM_P }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
-    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> {
+/// Backend-private state (`i_private`) for a sound node: the device minor that
+/// keys the shared read/write/ioctl dispatch (`controlC0`/`pcmC0D0p`/…). The
+/// old per-inode `ino()` tag is now `SND_INO_BASE | minor` on the inode. # C: O(1)
+struct SndData { minor: u64 }
+
+/// `file_operations` for every `/dev/snd/*` + OSS node — `read`/`write`
+/// dispatch on the node's stored minor (the same key the ioctl path uses),
+/// preserving the per-node data path:
+///   - `pcmC0D0p`  : read → 0, write → PCM byte transfer (`Eio` on a 0 transfer)
+///   - `pcmC0D0c`  : read → capture transfer, write → `Eio`
+///   - `controlC0` : read → 0, write → `Eio`
+///   - `/dev/dsp`,`/dev/audio` : read/write → OSS transfer (`Eio` on 0 write)
+///   - `/dev/mixer`: read → 0, write → accept (`Ok(len)`)
+struct SndFileOps;
+impl FileOps for SndFileOps {
+    fn read(&self, inode: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> {
+        let minor = match inode.private::<SndData>() { Some(d) => d.minor, None => return Err(VfsError::Einval) };
         if b.is_empty() { return Ok(0); }
-        let n = pcm::write_bytes(b);
-        if n == 0 { Err(VfsError::Eio) } else { Ok(n) }
+        match minor {
+            // OSS /dev/dsp read(2) → capture (snd-pcm-oss over the same RXQ).
+            MINOR_DSP | MINOR_AUDIO => Ok(oss::read(b)),
+            MINOR_PCM_C             => Ok(capture::read_bytes(b)),
+            // pcmC0D0p / controlC0 / mixer → no readable byte stream.
+            _ => Ok(0),
+        }
+    }
+    fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
+        let minor = match inode.private::<SndData>() { Some(d) => d.minor, None => return Err(VfsError::Einval) };
+        match minor {
+            MINOR_PCM_P => {
+                if b.is_empty() { return Ok(0); }
+                let n = pcm::write_bytes(b);
+                if n == 0 { Err(VfsError::Eio) } else { Ok(n) }
+            }
+            MINOR_DSP | MINOR_AUDIO => {
+                if b.is_empty() { return Ok(0); }
+                let n = oss::write(b);
+                if n == 0 { Err(VfsError::Eio) } else { Ok(n) }
+            }
+            MINOR_MIXER => Ok(b.len()),
+            // pcmC0D0c / controlC0 → not writable.
+            _ => Err(VfsError::Eio),
+        }
     }
 }
 
-/// ALSA `/dev/snd/pcmC0D0c` capture node. ioctls → the capture core;
-/// `read(2)` → the byte-stream capture transfer.
-struct PcmCaptureInode;
-impl Inode for PcmCaptureInode {
-    fn ino(&self) -> Ino { SND_INO_BASE | MINOR_PCM_C }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, b: &mut [u8]) -> KResult<usize> {
-        if b.is_empty() { return Ok(0); }
-        Ok(capture::read_bytes(b))
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
-}
-
-/// ALSA `/dev/snd/controlC0` node. ioctl-only.
-struct ControlInode;
-impl Inode for ControlInode {
-    fn ino(&self) -> Ino { SND_INO_BASE | MINOR_CONTROL }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
-}
-
-/// OSS `/dev/dsp` + `/dev/audio` node. `write(2)` → the OSS transfer; ioctls
-/// → SNDCTL_DSP_*. `/dev/audio` (minor AUDIO) seeds µ-law/8 kHz on open.
-struct DspInode { minor: u64 }
-impl Inode for DspInode {
-    fn ino(&self) -> Ino { SND_INO_BASE | self.minor }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, b: &mut [u8]) -> KResult<usize> {
-        // OSS /dev/dsp read(2) → capture (snd-pcm-oss over the same RXQ).
-        if b.is_empty() { return Ok(0); }
-        Ok(oss::read(b))
-    }
-    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> {
-        if b.is_empty() { return Ok(0); }
-        let n = oss::write(b);
-        if n == 0 { Err(VfsError::Eio) } else { Ok(n) }
-    }
-}
-
-/// OSS `/dev/mixer` node. ioctl-only (master level).
-struct MixerInode;
-impl Inode for MixerInode {
-    fn ino(&self) -> Ino { SND_INO_BASE | MINOR_MIXER }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
-    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
+/// Build a `/dev/snd/*` (or OSS) char-device inode for `minor`: `S_IFCHR|0o666`,
+/// `ino = SND_INO_BASE | minor` (the routing tag the ioctl path reads), the
+/// shared `SndFileOps` data path, lookup → `ENOTDIR` (default i_op). # C: O(1)
+fn make_snd_inode(minor: u64) -> InodeRef {
+    InodeBuilder::new(SND_INO_BASE | minor, mk_mode(FileType::CharDev, 0o666),
+                      default_inode_ops(), Arc::new(SndFileOps))
+        .private(Arc::new(SndData { minor }))
+        .build()
 }
 
 /// Sound-node ioctl entry point for the shared `sys_ioctl` dispatch chain.
@@ -129,12 +112,12 @@ pub fn handle_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
 pub fn init() {
     if !drv_virtio_snd::present() { return; }
     // ALSA primary surface.
-    devfs::register("/dev/snd/controlC0", Arc::new(ControlInode) as InodeRef);
-    devfs::register("/dev/snd/pcmC0D0p",  Arc::new(PcmPlaybackInode) as InodeRef);
-    devfs::register("/dev/snd/pcmC0D0c",  Arc::new(PcmCaptureInode) as InodeRef);
+    devfs::register("/dev/snd/controlC0", make_snd_inode(MINOR_CONTROL));
+    devfs::register("/dev/snd/pcmC0D0p",  make_snd_inode(MINOR_PCM_P));
+    devfs::register("/dev/snd/pcmC0D0c",  make_snd_inode(MINOR_PCM_C));
     // OSS compat surface (snd-pcm-oss), over the same substream.
-    devfs::register("/dev/dsp",   Arc::new(DspInode { minor: MINOR_DSP }) as InodeRef);
-    devfs::register("/dev/dsp0",  Arc::new(DspInode { minor: MINOR_DSP }) as InodeRef);
-    devfs::register("/dev/audio", Arc::new(DspInode { minor: MINOR_AUDIO }) as InodeRef);
-    devfs::register("/dev/mixer", Arc::new(MixerInode) as InodeRef);
+    devfs::register("/dev/dsp",   make_snd_inode(MINOR_DSP));
+    devfs::register("/dev/dsp0",  make_snd_inode(MINOR_DSP));
+    devfs::register("/dev/audio", make_snd_inode(MINOR_AUDIO));
+    devfs::register("/dev/mixer", make_snd_inode(MINOR_MIXER));
 }

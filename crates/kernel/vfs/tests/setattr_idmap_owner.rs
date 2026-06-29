@@ -12,23 +12,15 @@
 //! the migrated `inode_owner_or_capable` denies it. Identity mounts and mapped
 //! owners are the positive controls (unchanged behaviour).
 
-use vfs::inode::Inode;
 use vfs::setattr::{setattr_prepare, Iattr, ATTR_MODE};
-use vfs::{Cred, FileType, IdExtent, Idmap, InodeRef, KResult, VfsError, CRED_NGROUPS};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder};
+use vfs::{Cred, FileType, IdExtent, Idmap, InodeRef, VfsError, CRED_NGROUPS};
 
-/// Inode carrying an explicit fs owner uid/gid (the on-disk id, pre-idmap).
-struct Node { uid: u32, gid: u32 }
-impl Node {
-    fn new(uid: u32, gid: u32) -> InodeRef { std::sync::Arc::new(Self { uid, gid }) }
-}
-impl Inode for Node {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn perm(&self) -> Option<u16> { Some(0o644) }
-    fn uid(&self) -> Option<u32> { Some(self.uid) }
-    fn gid(&self) -> Option<u32> { Some(self.gid) }
+/// Inode carrying an explicit fs owner uid/gid (the on-disk id, pre-idmap),
+/// perm 0o644.
+fn node(uid: u32, gid: u32) -> InodeRef {
+    InodeBuilder::new(1, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
+        .owner(uid, gid).build()
 }
 
 /// Cred with capabilities chosen per test.
@@ -53,7 +45,7 @@ fn chmod() -> Iattr { Iattr { valid: ATTR_MODE, mode: 0o600, ..Default::default(
 /// migration to `inode_owner_or_capable`).
 #[test]
 fn cap_fowner_denied_over_unmapped_owner() {
-    let node = Node::new(5000, 5000);            // fs owner outside the extents
+    let node = node(5000, 5000);                 // fs owner outside the extents
     let c = cred(0, true);                       // root-ish, holds CAP_FOWNER
     let r = setattr_prepare(&idmapped(), &node, &mut chmod(), &c);
     assert_eq!(r, Err(VfsError::Eperm),
@@ -64,7 +56,7 @@ fn cap_fowner_denied_over_unmapped_owner() {
 /// caller IS that vfsuid → owner, chmod allowed.
 #[test]
 fn mapped_owner_allowed() {
-    let node = Node::new(1000, 1000);            // fs 1000 → vfsuid 0
+    let node = node(1000, 1000);                 // fs 1000 → vfsuid 0
     let c = cred(0, false);                       // owns it as vfsuid 0
     assert!(setattr_prepare(&idmapped(), &node, &mut chmod(), &c).is_ok(),
         "the mapped owner may chmod");
@@ -74,7 +66,7 @@ fn mapped_owner_allowed() {
 /// capability path is denied only on the idmap miss, not in general).
 #[test]
 fn cap_fowner_allowed_over_mapped_owner() {
-    let node = Node::new(1005, 1005);            // fs 1005 → vfsuid 5 (valid)
+    let node = node(1005, 1005);                 // fs 1005 → vfsuid 5 (valid)
     let c = cred(42, true);                        // not the owner, but CAP_FOWNER
     assert!(setattr_prepare(&idmapped(), &node, &mut chmod(), &c).is_ok(),
         "CAP_FOWNER may chmod when the owner is representable in the caller's ns");
@@ -84,7 +76,7 @@ fn cap_fowner_allowed_over_mapped_owner() {
 /// a stranger without it is denied — byte-identical to the pre-idmap kernel.
 #[test]
 fn identity_mount_unchanged() {
-    let node = Node::new(1000, 1000);
+    let node = node(1000, 1000);
     let id = Idmap::identity();
     assert!(setattr_prepare(&id, &node, &mut chmod(), &cred(1000, false)).is_ok(), "owner ok");
     assert!(setattr_prepare(&id, &node, &mut chmod(), &cred(7, true)).is_ok(), "CAP_FOWNER ok");

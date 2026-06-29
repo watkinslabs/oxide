@@ -14,7 +14,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as LockClass};
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{FileType, Ino, Inode, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{FileOps, InodeBuilder, mk_mode};
 
 pub const BINFMT_MISC_MAGIC: u64 = 0x4249_4e4d;
 
@@ -81,74 +82,93 @@ fn trim_newline(src: &[u8]) -> &[u8] {
 }
 
 pub struct BinfmtMiscFs {
-    root: Arc<BinfmtRoot>,
+    root: InodeRef,
 }
 
 impl BinfmtMiscFs {
     pub fn new() -> Arc<Self> {
         let state = State::new();
-        Arc::new(Self {
-            root: Arc::new(BinfmtRoot { state, ino: NEXT_INO.fetch_add(1, Ordering::Relaxed) }),
-        })
+        let root = make_binfmt_root(state, NEXT_INO.fetch_add(1, Ordering::Relaxed));
+        Arc::new(Self { root })
     }
 }
 
 impl vfs::fs::FileSystem for BinfmtMiscFs {
     fn name(&self) -> &str { "binfmt_misc" }
     fn magic(&self) -> u64 { BINFMT_MISC_MAGIC }
-    fn root(&self) -> Option<InodeRef> { Some(self.root.clone() as InodeRef) }
+    fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
 }
 
-struct BinfmtRoot {
-    state: Arc<State>,
-    ino: Ino,
+/// Per-inode binfmt_misc directory state (Linux `i_private`).
+struct BinfmtRootData { state: Arc<State> }
+
+/// Which control file a `BinfmtFileData` represents.
+enum BinKind { Status, Register, Rule(String) }
+
+/// Per-inode binfmt_misc control-file state (Linux `i_private`).
+struct BinfmtFileData { state: Arc<State>, kind: BinKind }
+
+/// `make_binfmt_root(state, ino)` — the directory inode. # C: O(1)
+fn make_binfmt_root(state: Arc<State>, ino: Ino) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755),
+        Arc::new(BinfmtRootInodeOps), Arc::new(BinfmtRootFileOps))
+        .private(Arc::new(BinfmtRootData { state }))
+        .build()
 }
 
-impl Inode for BinfmtRoot {
-    fn ino(&self) -> Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
+/// `make_binfmt_file(state, kind, ino, size)` — a control-file inode. # C: O(1)
+fn make_binfmt_file(state: Arc<State>, kind: BinKind, ino: Ino, size: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644),
+        vfs::default_inode_ops(), Arc::new(BinfmtFileOps))
+        .size(size)
+        .private(Arc::new(BinfmtFileData { state, kind }))
+        .build()
+}
 
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+/// `i_op` for the binfmt_misc directory. # C: O(1)
+struct BinfmtRootInodeOps;
+impl InodeOps for BinfmtRootInodeOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<BinfmtRootData>().ok_or(VfsError::Einval)?;
         match name {
-            "status" => Ok(Arc::new(StatusInode {
-                state: Arc::clone(&self.state),
-                ino: NEXT_INO.fetch_add(1, Ordering::Relaxed),
-            }) as InodeRef),
-            "register" => Ok(Arc::new(RegisterInode {
-                state: Arc::clone(&self.state),
-                ino: NEXT_INO.fetch_add(1, Ordering::Relaxed),
-            }) as InodeRef),
+            "status" => Ok(make_binfmt_file(Arc::clone(&d.state), BinKind::Status,
+                NEXT_INO.fetch_add(1, Ordering::Relaxed), 8)),
+            "register" => Ok(make_binfmt_file(Arc::clone(&d.state), BinKind::Register,
+                NEXT_INO.fetch_add(1, Ordering::Relaxed), 0)),
             _ => {
-                let rules = self.state.rules.lock();
-                if rules.contains_key(name) {
-                    Ok(Arc::new(RuleInode {
-                        state: Arc::clone(&self.state),
-                        name: name.to_string(),
-                        ino: NEXT_INO.fetch_add(1, Ordering::Relaxed),
-                    }) as InodeRef)
+                let rules = d.state.rules.lock();
+                if let Some(r) = rules.get(name) {
+                    let size = r.line.len() as u64 + 16;
+                    Ok(make_binfmt_file(Arc::clone(&d.state), BinKind::Rule(name.to_string()),
+                        NEXT_INO.fetch_add(1, Ordering::Relaxed), size))
                 } else {
                     Err(VfsError::Enoent)
                 }
             }
         }
     }
+}
 
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+/// `i_fop` for the binfmt_misc directory (readdir). # C: O(N_rules)
+struct BinfmtRootFileOps;
+impl FileOps for BinfmtRootFileOps {
+    fn iterate(&self, inode: &Inode, off: u64,
+               f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+        let d = inode.private::<BinfmtRootData>().ok_or(VfsError::Einval)?;
         let mut idx = 0u64;
         for name in ["status", "register"] {
             if idx >= off {
-                let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+                let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
                 if !f(ino, idx + 1, name, FileType::Regular) {
                     return Ok(idx + 1);
                 }
             }
             idx += 1;
         }
-        let names: Vec<String> = self.state.rules.lock().keys().cloned().collect();
+        let names: Vec<String> = d.state.rules.lock().keys().cloned().collect();
         for name in names {
             if idx >= off {
-                let ino = self.lookup(&name).map(|i| i.ino()).unwrap_or(0);
+                let ino = inode.lookup(&name).map(|i| i.ino()).unwrap_or(0);
                 if !f(ino, idx + 1, &name, FileType::Regular) {
                     return Ok(idx + 1);
                 }
@@ -159,94 +179,53 @@ impl Inode for BinfmtRoot {
     }
 }
 
-struct StatusInode {
-    state: Arc<State>,
-    ino: Ino,
-}
-
-impl Inode for StatusInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 8 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body = if self.state.enabled.load(Ordering::Acquire) {
-            b"enabled\n".as_slice()
-        } else {
-            b"disabled\n".as_slice()
-        };
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
-    }
-    fn write(&self, _off: u64, src: &[u8]) -> KResult<usize> {
-        match trim_newline(src) {
-            b"1" => self.state.enabled.store(true, Ordering::Release),
-            b"0" => self.state.enabled.store(false, Ordering::Release),
-            b"-1" => self.state.clear(),
-            _ => return Err(VfsError::Einval),
-        }
-        Ok(src.len())
-    }
-}
-
-struct RegisterInode {
-    state: Arc<State>,
-    ino: Ino,
-}
-
-impl Inode for RegisterInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn write(&self, _off: u64, src: &[u8]) -> KResult<usize> {
-        self.state.register(src)?;
-        Ok(src.len())
-    }
-}
-
-struct RuleInode {
-    state: Arc<State>,
-    name: String,
-    ino: Ino,
-}
-
-impl Inode for RuleInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 {
-        self.state.rules.lock().get(&self.name).map(|r| r.line.len() as u64 + 16).unwrap_or(0)
-    }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body = {
-            let rules = self.state.rules.lock();
-            let rule = rules.get(&self.name).ok_or(VfsError::Enoent)?;
-            let mut body = Vec::new();
-            body.extend_from_slice(if rule.enabled { b"enabled\n" } else { b"disabled\n" });
-            body.extend_from_slice(&rule.line);
-            body.push(b'\n');
-            body
-        };
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
-    }
-    fn write(&self, _off: u64, src: &[u8]) -> KResult<usize> {
-        let mut rules = self.state.rules.lock();
-        let rule = rules.get_mut(&self.name).ok_or(VfsError::Enoent)?;
-        match trim_newline(src) {
-            b"1" => rule.enabled = true,
-            b"0" => rule.enabled = false,
-            b"-1" => {
-                rules.remove(&self.name);
+/// `i_fop` for the binfmt_misc control files (status/register/<rule>). # C: O(1)
+struct BinfmtFileOps;
+impl FileOps for BinfmtFileOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = inode.private::<BinfmtFileData>().ok_or(VfsError::Einval)?;
+        let body: Vec<u8> = match &d.kind {
+            BinKind::Status => {
+                if d.state.enabled.load(Ordering::Acquire) { b"enabled\n".to_vec() }
+                else { b"disabled\n".to_vec() }
             }
-            _ => return Err(VfsError::Einval),
+            BinKind::Register => return Err(VfsError::Einval),
+            BinKind::Rule(name) => {
+                let rules = d.state.rules.lock();
+                let rule = rules.get(name).ok_or(VfsError::Enoent)?;
+                let mut body = Vec::new();
+                body.extend_from_slice(if rule.enabled { b"enabled\n" } else { b"disabled\n" });
+                body.extend_from_slice(&rule.line);
+                body.push(b'\n');
+                body
+            }
+        };
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body[off..off + n]);
+        Ok(n)
+    }
+    fn write(&self, inode: &Inode, _off: u64, src: &[u8]) -> KResult<usize> {
+        let d = inode.private::<BinfmtFileData>().ok_or(VfsError::Einval)?;
+        match &d.kind {
+            BinKind::Status => match trim_newline(src) {
+                b"1" => d.state.enabled.store(true, Ordering::Release),
+                b"0" => d.state.enabled.store(false, Ordering::Release),
+                b"-1" => d.state.clear(),
+                _ => return Err(VfsError::Einval),
+            },
+            BinKind::Register => { d.state.register(src)?; }
+            BinKind::Rule(name) => {
+                let mut rules = d.state.rules.lock();
+                let rule = rules.get_mut(name).ok_or(VfsError::Enoent)?;
+                match trim_newline(src) {
+                    b"1" => rule.enabled = true,
+                    b"0" => rule.enabled = false,
+                    b"-1" => { rules.remove(name); }
+                    _ => return Err(VfsError::Einval),
+                }
+            }
         }
         Ok(src.len())
     }

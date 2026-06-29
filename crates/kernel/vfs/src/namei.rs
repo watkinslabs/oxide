@@ -203,7 +203,7 @@ impl VfsPath {
 /// class selection uses the cred's primary + supplementary groups
 /// (`in_group`). Generic over `?Sized` so the `Inode::permission` op hook can
 /// call it on `&self` (the trait object). # C: O(ngroups)
-pub fn generic_permission<I: crate::inode::Inode + ?Sized>(inode: &I, mask: u32, cred: &Cred) -> KResult<()> {
+pub fn generic_permission(inode: &crate::inode::Inode, mask: u32, cred: &Cred) -> KResult<()> {
     let Some(mode) = inode.perm() else { return Ok(()); };
     let mode = mode as u32;
     let uid = inode.uid().unwrap_or(0);

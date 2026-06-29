@@ -1,19 +1,16 @@
 //! inode `i_nlink` mutators (Linux fs/inode.c `set_nlink`/`inc_nlink`/
-//! `drop_nlink`). The trait-object inode carries no shared link-count field, so
-//! the authoritative `i_nlink` lives icache-side in the owning superblock's
-//! inode cache: seeded from `Inode::nlink()` when the slot is built, then
-//! mutated by these three ops. The load-bearing observable is the drop-to-zero
-//! predicate — `i_nlink == 0` is Linux's "no names left → evict on last `iput`"
-//! flag (`i_nlink_zero`). Before this there was NO mutator surface and NO
-//! stored count: `nlink()` was a pure computed accessor, so unlink/link/mkdir
-//! could not adjust a directory's `..`/parent link count.
+//! `drop_nlink`). The authoritative `i_nlink` lives icache-side in the owning
+//! superblock's inode cache: seeded from the built inode's `nlink()` when the
+//! slot is built, then mutated by these three ops. The load-bearing observable
+//! is the drop-to-zero predicate — `i_nlink == 0` is Linux's "no names left →
+//! evict on last `iput`" flag (`i_nlink_zero`).
 
 use std::sync::Arc;
 
 use vfs::fs::FileSystem;
-use vfs::inode::Inode;
+use vfs::inode::InodeBuilder;
 use vfs::superblock::next_anon_dev;
-use vfs::{FileType, InodeRef, KResult, SuperBlock, VfsError};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, InodeRef, SuperBlock};
 
 struct NlinkFs;
 impl FileSystem for NlinkFs {
@@ -21,22 +18,15 @@ impl FileSystem for NlinkFs {
     fn magic(&self) -> u64 { 0x6E11 }
 }
 
-/// Directory inode reporting Linux's baseline `nlink == 2` (`.` + parent entry).
-struct Dir { ino: u64 }
-impl Inode for Dir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+/// Directory inode reporting Linux's baseline `nlink == 2` (`.` + parent entry,
+/// the `InodeBuilder` default for a directory).
+fn dir(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), default_inode_ops(), default_file_ops()).build()
 }
 
-/// Regular file inode reporting `nlink == 1`.
-struct Reg { ino: u64 }
-impl Inode for Reg {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// Regular file inode reporting `nlink == 1` (the builder default).
+fn reg(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
 }
 
 fn sb() -> Arc<SuperBlock> {
@@ -44,13 +34,13 @@ fn sb() -> Arc<SuperBlock> {
 }
 
 #[test]
-fn icache_seeds_nlink_from_trait_accessor() {
+fn icache_seeds_nlink_from_built_inode() {
     let sb = sb();
     // Uncached ino has no stored count.
     assert_eq!(sb.i_nlink(7), None, "uncached inode has no stored link count");
-    // iget seeds the slot from `Inode::nlink()`: dir=2, regular=1.
-    let _d: InodeRef = sb.iget(7, || Arc::new(Dir { ino: 7 }));
-    let _r: InodeRef = sb.iget(8, || Arc::new(Reg { ino: 8 }));
+    // iget seeds the slot from the built inode's `nlink()`: dir=2, regular=1.
+    let _d: InodeRef = sb.iget(7, || dir(7));
+    let _r: InodeRef = sb.iget(8, || reg(8));
     assert_eq!(sb.i_nlink(7), Some(2), "directory seeds nlink=2 (. + parent)");
     assert_eq!(sb.i_nlink(8), Some(1), "regular file seeds nlink=1");
 }
@@ -58,7 +48,7 @@ fn icache_seeds_nlink_from_trait_accessor() {
 #[test]
 fn set_inc_drop_nlink_maintain_stored_count() {
     let sb = sb();
-    let _r: InodeRef = sb.iget(8, || Arc::new(Reg { ino: 8 }));
+    let _r: InodeRef = sb.iget(8, || reg(8));
     assert_eq!(sb.i_nlink(8), Some(1));
 
     // link(2): a second hard link.
@@ -80,7 +70,7 @@ fn set_inc_drop_nlink_maintain_stored_count() {
 #[test]
 fn drop_to_zero_is_the_evict_predicate() {
     let sb = sb();
-    let _r: InodeRef = sb.iget(8, || Arc::new(Reg { ino: 8 }));
+    let _r: InodeRef = sb.iget(8, || reg(8));
     // Last name removed: drop 1 → 0 makes it an eviction candidate.
     sb.drop_nlink(8);
     assert_eq!(sb.i_nlink(8), Some(0), "last link dropped");
@@ -90,7 +80,7 @@ fn drop_to_zero_is_the_evict_predicate() {
 #[test]
 fn drop_saturates_at_zero_and_set_revives() {
     let sb = sb();
-    let _r: InodeRef = sb.iget(8, || Arc::new(Reg { ino: 8 }));
+    let _r: InodeRef = sb.iget(8, || reg(8));
     sb.drop_nlink(8);
     sb.drop_nlink(8); // already 0 — must saturate, never underflow-wrap to u32::MAX
     assert_eq!(sb.i_nlink(8), Some(0), "drop_nlink saturates at zero");

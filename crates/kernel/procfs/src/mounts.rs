@@ -8,8 +8,10 @@
 
 use alloc::format;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use core::sync::atomic::AtomicU64;
+use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult};
 
 /// `/proc/mounts` + `/proc/<pid>/mounts` — fstab-style lines, one per
 /// live mount: `<src> <mountpoint> <fstype> <opts> 0 0`. Built from
@@ -83,38 +85,45 @@ fn read_body(data: &[u8], off: u64, buf: &mut [u8]) -> usize {
     n
 }
 
-/// `/proc/mounts` and `/proc/<pid>/mounts`.
-pub struct ProcMountsInode;
-impl Inode for ProcMountsInode {
-    fn ino(&self) -> Ino { 0x3000_0D01 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { build_mounts().len() as u64 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+/// `i_fop` for `/proc/mounts` — renders the live mount table on each read.
+struct MountsFileOps;
+impl FileOps for MountsFileOps {
+    fn read(&self, _inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         Ok(read_body(&build_mounts(), off, buf))
     }
 }
 
-/// `/proc/self/mountinfo` and `/proc/<pid>/mountinfo`. `last_seen` holds the
-/// reader's last-observed mount generation so `poll` can return POLLPRI when
-/// the mount table changed (libmount's mount-change wakeup, `19§4`).
-pub struct ProcMountinfoInode { last_seen: core::sync::atomic::AtomicU64 }
-impl ProcMountinfoInode {
-    /// # C: O(1)
-    pub fn new() -> Self {
-        ProcMountinfoInode { last_seen: core::sync::atomic::AtomicU64::new(vfs::mount::mount_generation()) }
-    }
+/// `/proc/mounts` and `/proc/<pid>/mounts`. # C: O(1)
+pub fn make_proc_mounts() -> InodeRef {
+    InodeBuilder::new(0x3000_0D01, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(MountsFileOps))
+        .build()
 }
-impl Default for ProcMountinfoInode { fn default() -> Self { Self::new() } }
-impl Inode for ProcMountinfoInode {
-    fn ino(&self) -> Ino { 0x3000_0D02 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { build_mountinfo().len() as u64 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+
+/// `i_private` for `/proc/<pid>/mountinfo`: `last_seen` holds the reader's
+/// last-observed mount generation so `poll` returns POLLPRI when the mount
+/// table changed (libmount's mount-change wakeup, `19§4`).
+pub struct MountinfoData { last_seen: AtomicU64 }
+
+/// `i_fop` for `/proc/<pid>/mountinfo` — renders the richer mountinfo(5)
+/// format and reports mount-change readiness via `poll`.
+struct MountinfoFileOps;
+impl FileOps for MountinfoFileOps {
+    fn read(&self, _inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         Ok(read_body(&build_mountinfo(), off, buf))
     }
     /// POLLPRI|POLLERR when the mount generation advanced since the last poll
     /// (always POLLIN — mountinfo is always readable). # C: O(1)
-    fn poll(&self) -> u32 { vfs::mount::mountinfo_poll_mask(&self.last_seen) }
+    fn poll(&self, inode: &Inode) -> u32 {
+        match inode.private::<MountinfoData>() {
+            Some(d) => vfs::mount::mountinfo_poll_mask(&d.last_seen),
+            None => vfs::POLL_IN,
+        }
+    }
+}
+
+/// `/proc/self/mountinfo` and `/proc/<pid>/mountinfo`. # C: O(1)
+pub fn make_proc_mountinfo() -> InodeRef {
+    InodeBuilder::new(0x3000_0D02, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(MountinfoFileOps))
+        .private(Arc::new(MountinfoData { last_seen: AtomicU64::new(vfs::mount::mount_generation()) }))
+        .build()
 }

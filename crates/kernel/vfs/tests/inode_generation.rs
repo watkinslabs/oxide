@@ -5,43 +5,35 @@
 //! pseudo-fs that never recycles a number), and an FS that stamps a generation
 //! reports it verbatim.
 
-use vfs::inode::Inode;
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::inode::InodeBuilder;
+use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, InodeRef};
 
 /// Inode that stamps an on-disk generation (ext4-style).
-struct GenFile { ino: u64, gen: u32 }
-impl Inode for GenFile {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn i_generation(&self) -> u32 { self.gen }
+fn gen_file(ino: u64, generation: u32) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
+        .generation(generation).build()
 }
 
-/// Inode with no generation (the trait default).
-struct Plain;
-impl Inode for Plain {
-    fn ino(&self) -> vfs::Ino { 9 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// Inode with no generation (the builder default).
+fn plain() -> InodeRef {
+    InodeBuilder::new(9, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
 }
 
-/// Trait default `i_generation()` is `0` (pseudo-fs that never recycles a no.).
+/// Default `i_generation()` is `0` (pseudo-fs that never recycles a no.).
 #[test]
 fn default_generation_zero() {
-    assert_eq!(Plain.i_generation(), 0);
+    assert_eq!(plain().i_generation(), 0);
 }
 
 /// A backend that stores a generation reports it verbatim — the value a FID
 /// packs alongside `i_ino` to detect a recycled inode.
 #[test]
 fn stored_generation_reported() {
-    let f = GenFile { ino: 12, gen: 0xDEAD_BEEF };
+    let f = gen_file(12, 0xDEAD_BEEF);
     assert_eq!(f.i_generation(), 0xDEAD_BEEF);
     // Distinct generations distinguish two inodes that reuse one number across
     // delete+reallocate — the whole point of the field.
-    let g = GenFile { ino: 12, gen: 0x0000_0001 };
+    let g = gen_file(12, 0x0000_0001);
     assert_eq!(f.ino(), g.ino());
     assert_ne!(f.i_generation(), g.i_generation());
 }

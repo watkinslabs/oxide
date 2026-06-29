@@ -5,11 +5,12 @@
 //! the `i_dentry` alias list works.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
 use vfs::dcache::d_obtain_alias;
 use vfs::dentry::D_DISCONNECTED;
 use vfs::inode::Inode;
+use vfs::{InodeBuilder, InodeOps, default_file_ops, default_inode_ops, mk_mode};
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
 use vfs::{Dentry, FileType, InodeRef, KResult, VfsError};
 
@@ -23,27 +24,27 @@ impl SuperOps for RamFsOps {
     fn statfs(&self) -> KResult<SbStatFs> { Ok(SbStatFs { f_bsize: 4096, ..Default::default() }) }
 }
 
-struct RamDir { ino: u64, sb: Weak<SuperBlock>, kids: Mutex<BTreeMap<String, InodeRef>> }
-impl Inode for RamDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, n: &str) -> KResult<InodeRef> { self.kids.lock().unwrap().get(n).cloned().ok_or(VfsError::Enoent) }
-}
-struct RamFile { ino: u64, sb: Weak<SuperBlock> }
-impl Inode for RamFile {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// Directory backend: child map lives in `i_private`; the namespace `lookup`
+/// reads it off the concrete inode.
+struct RamDirData { kids: Mutex<BTreeMap<String, InodeRef>> }
+struct RamDirOps;
+impl InodeOps for RamDirOps {
+    fn lookup(&self, inode: &Inode, n: &str) -> KResult<InodeRef> {
+        inode.private::<RamDirData>().unwrap().kids.lock().unwrap().get(n).cloned().ok_or(VfsError::Enoent)
+    }
 }
 
-fn ramdir(sb: &Arc<SuperBlock>, ino: u64) -> Arc<RamDir> {
-    Arc::new(RamDir { ino, sb: Arc::downgrade(sb), kids: Mutex::new(BTreeMap::new()) })
+fn ramdir(sb: &Arc<SuperBlock>, ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(RamDirOps), default_file_ops())
+        .sb(Arc::downgrade(sb))
+        .private(Arc::new(RamDirData { kids: Mutex::new(BTreeMap::new()) }))
+        .build()
 }
-fn ramfile(sb: &Arc<SuperBlock>, ino: u64) -> InodeRef { Arc::new(RamFile { ino, sb: Arc::downgrade(sb) }) }
+fn ramfile(sb: &Arc<SuperBlock>, ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
+        .sb(Arc::downgrade(sb))
+        .build()
+}
 
 fn mount_ramfs(s_dev: u64) -> Arc<SuperBlock> {
     let sb = SuperBlock::new(Arc::new(RamFsType), Arc::new(RamFsOps), 0x858458f6, s_dev, 4096, "ramfs".into(), Arc::new(()));
@@ -103,14 +104,7 @@ fn obtain_alias_idempotent_on_anon() {
 // An sb-less inode still yields a valid anon dentry (alias just unrecorded).
 #[test]
 fn obtain_alias_sbless_inode_graceful() {
-    struct Bare;
-    impl Inode for Bare {
-        fn ino(&self) -> vfs::Ino { 99 }
-        fn file_type(&self) -> FileType { FileType::Regular }
-        fn size(&self) -> u64 { 0 }
-        fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    }
-    let inode: InodeRef = Arc::new(Bare);
+    let inode: InodeRef = InodeBuilder::new(99, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build();
     let anon: Arc<Dentry> = d_obtain_alias(inode.clone());
     assert!(anon.is_disconnected());
     assert!(anon.parent().is_none());

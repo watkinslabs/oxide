@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use vfs::file::open_dentry;
 use vfs::inode::Inode;
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{FileOps, FileType, InodeBuilder, InodeRef, KResult, default_inode_ops, mk_mode};
 
 mod common;
 
@@ -31,16 +31,17 @@ fn guard() -> MutexGuard<'static, ()> {
     g
 }
 
-/// Minimal regular-file inode for the opened leaf. `open_dentry` only needs a
+/// Minimal regular-file `i_fop` for the opened leaf. `open_dentry` only needs a
 /// type + ino to instantiate the positive dentry.
-struct RegFile(u64);
-impl Inode for RegFile {
-    fn ino(&self) -> vfs::Ino { self.0 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _off: u64, _buf: &mut [u8]) -> KResult<usize> { Ok(0) }
-    fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> { Ok(buf.len()) }
+struct RegFileOps;
+impl FileOps for RegFileOps {
+    fn read(&self, _inode: &Inode, _off: u64, _buf: &mut [u8]) -> KResult<usize> { Ok(0) }
+    fn write(&self, _inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> { Ok(buf.len()) }
+}
+
+/// Build a regular-file inode with the given ino number.
+fn reg_file(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(RegFileOps)).build()
 }
 
 /// Two opens of the same path resolve to ONE canonical dentry Arc, and that
@@ -49,8 +50,8 @@ impl Inode for RegFile {
 #[test]
 fn two_opens_share_canonical_hashed_leaf() {
     let _g = guard();
-    let ino_a: InodeRef = Arc::new(RegFile(0xA10));
-    let ino_b: InodeRef = Arc::new(RegFile(0xB20));
+    let ino_a: InodeRef = reg_file(0xA10);
+    let ino_b: InodeRef = reg_file(0xB20);
 
     let d1 = open_dentry("/a/b/c", &ino_a);
     let d2 = open_dentry("/a/b/c", &ino_b);
@@ -72,7 +73,7 @@ fn two_opens_share_canonical_hashed_leaf() {
 #[test]
 fn opened_leaf_is_parented_basename() {
     let _g = guard();
-    let ino: InodeRef = Arc::new(RegFile(0xC30));
+    let ino: InodeRef = reg_file(0xC30);
     let d = open_dentry("/x/y/leaf", &ino);
     assert_eq!(d.name(), "leaf", "leaf dentry name is the basename, not the whole path");
     let parent = vfs::resolve_path_dentry("/x/y").expect("parent resolves");
@@ -84,7 +85,7 @@ fn opened_leaf_is_parented_basename() {
 #[test]
 fn root_open_reuses_canonical_root() {
     let _g = guard();
-    let ino: InodeRef = Arc::new(RegFile(0xD40));
+    let ino: InodeRef = reg_file(0xD40);
     let root = vfs::resolve_path_dentry("/").expect("root dentry exists");
     let d = open_dentry("/", &ino);
     assert!(Arc::ptr_eq(&d, &root), "open of \"/\" reuses the canonical root dentry");

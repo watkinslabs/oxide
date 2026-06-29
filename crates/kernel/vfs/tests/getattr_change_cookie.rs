@@ -12,41 +12,29 @@
 //!     an `i_version` (`IS_I_VERSION`);
 //!   * the value is the real version (`stored >> 1`), and the query latches the
 //!     QUERIED flag so the next modification is guaranteed to bump.
-
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
+//!
+//! Concrete-inode-model note (B280b): every `struct Inode` now carries an
+//! `i_version` word, so `i_version_raw()` is always `Some` — the old "no
+//! counter" inode that left the cookie clear no longer exists. The seed is set
+//! via `InodeBuilder::version` instead of an overridden `i_version_raw`.
 
 use vfs::getattr::{vfs_getattr, vfs_getattr_mask, STATX_BASIC_STATS, STATX_CHANGE_COOKIE};
-use vfs::inode::{inode_maybe_inc_iversion, Inode};
-use vfs::{FileType, InodeRef, KResult, VfsError, IDENTITY};
+use vfs::inode::inode_maybe_inc_iversion;
+use vfs::{FileType, InodeBuilder, InodeRef, IDENTITY,
+          default_file_ops, default_inode_ops, mk_mode};
 
-/// Inode opting into a change counter (Linux `SB_I_VERSION`), seeded so the
-/// real version (`raw >> 1`) is `seed >> 1`.
-struct VFile { ver: AtomicU64 }
-impl Inode for VFile {
-    fn ino(&self) -> vfs::Ino { 9 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn perm(&self) -> Option<u16> { Some(0o644) }
-    fn i_version_raw(&self) -> Option<&AtomicU64> { Some(&self.ver) }
-}
-
-/// Inode without a counter (the trait default `i_version_raw == None`).
-struct Plain;
-impl Inode for Plain {
-    fn ino(&self) -> vfs::Ino { 10 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn perm(&self) -> Option<u16> { Some(0o644) }
+/// Inode with a change counter seeded so the real version (`raw >> 1`) is
+/// `seed >> 1`.
+fn vfile(seed: u64) -> InodeRef {
+    InodeBuilder::new(9, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
+        .version(seed).build()
 }
 
 /// The plain (request-mask-less) stat path NEVER surfaces the cookie, even for
 /// an i_version inode — proving the side-effecting query stays out of stat.
 #[test]
 fn plain_getattr_never_fills_change_cookie() {
-    let inode: InodeRef = Arc::new(VFile { ver: AtomicU64::new(8) });
+    let inode: InodeRef = vfile(8);
     let st = vfs_getattr(&inode, &IDENTITY, None);
     assert_eq!(st.result_mask & STATX_CHANGE_COOKIE, 0, "plain stat must not advertise the cookie");
     assert_eq!(st.change_cookie, 0, "plain stat leaves change_cookie zero");
@@ -56,7 +44,7 @@ fn plain_getattr_never_fills_change_cookie() {
 /// gate is the request mask, mirroring Linux.
 #[test]
 fn unrequested_mask_leaves_cookie_clear() {
-    let inode: InodeRef = Arc::new(VFile { ver: AtomicU64::new(8) });
+    let inode: InodeRef = vfile(8);
     // Request only the basic stats, not the change cookie.
     let st = vfs_getattr_mask(&inode, &IDENTITY, None, STATX_BASIC_STATS);
     assert_eq!(st.result_mask & STATX_CHANGE_COOKIE, 0, "not requested ⇒ not filled");
@@ -69,11 +57,10 @@ fn unrequested_mask_leaves_cookie_clear() {
 #[test]
 fn requested_fills_real_version_and_latches() {
     // raw 8 → QUERIED clear, real version 8>>1 = 4.
-    let vf = Arc::new(VFile { ver: AtomicU64::new(8) });
-    let inode: InodeRef = vf.clone();
+    let inode: InodeRef = vfile(8);
 
     // Before any query, a lazy bump is a no-op (nobody queried since last bump).
-    assert!(!inode_maybe_inc_iversion(vf.as_ref(), false), "no query yet ⇒ lazy bump skipped");
+    assert!(!inode_maybe_inc_iversion(&inode, false), "no query yet ⇒ lazy bump skipped");
 
     let st = vfs_getattr_mask(&inode, &IDENTITY, None, STATX_CHANGE_COOKIE | STATX_BASIC_STATS);
     assert_eq!(st.result_mask & STATX_CHANGE_COOKIE, STATX_CHANGE_COOKIE, "cookie bit set when requested");
@@ -82,15 +69,17 @@ fn requested_fills_real_version_and_latches() {
     assert_eq!(st.result_mask & STATX_BASIC_STATS, STATX_BASIC_STATS, "base stats still reported");
 
     // The query latched QUERIED, so the next lazy bump now lands.
-    assert!(inode_maybe_inc_iversion(vf.as_ref(), false), "query latched ⇒ next lazy bump succeeds");
+    assert!(inode_maybe_inc_iversion(&inode, false), "query latched ⇒ next lazy bump succeeds");
 }
 
-/// Requested but the inode tracks NO counter (`IS_I_VERSION` false): the cookie
-/// stays clear — never a fabricated value.
+/// Requested on a concrete inode (which ALWAYS carries an i_version now): the
+/// cookie is filled with the real version. The old "no counter ⇒ clear" case no
+/// longer exists — every `struct Inode` has the change counter.
 #[test]
-fn requested_but_no_counter_stays_clear() {
-    let inode: InodeRef = Arc::new(Plain);
+fn requested_fills_cookie_for_concrete_inode() {
+    let inode: InodeRef = vfile(6); // real version 6>>1 = 3
     let st = vfs_getattr_mask(&inode, &IDENTITY, None, STATX_CHANGE_COOKIE | STATX_BASIC_STATS);
-    assert_eq!(st.result_mask & STATX_CHANGE_COOKIE, 0, "no counter ⇒ no cookie even when requested");
-    assert_eq!(st.change_cookie, 0);
+    assert_eq!(st.result_mask & STATX_CHANGE_COOKIE, STATX_CHANGE_COOKIE,
+               "concrete inode always carries i_version ⇒ cookie surfaced when requested");
+    assert_eq!(st.change_cookie, 3, "real version is raw >> 1");
 }

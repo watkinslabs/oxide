@@ -3,37 +3,21 @@
 //! file" — checked BEFORE the DAC class check, so not even CAP_DAC_OVERRIDE
 //! bypasses it). Synthetic inodes carrying explicit flags — no real FS.
 
-use std::sync::Arc;
-
-use vfs::inode::{Inode, S_APPEND, S_IMMUTABLE};
-use vfs::{Cred, FileType, InodeRef, VfsError};
+use vfs::inode::{InodeBuilder, S_APPEND, S_IMMUTABLE};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, Cred, FileType, InodeRef, VfsError};
 use vfs::{MAY_EXEC, MAY_READ, MAY_WRITE};
 
-/// Regular file, world-rwx perm, owned by uid 0, with a settable `i_flags`.
-struct FlagFile { flags: u32 }
-impl Inode for FlagFile {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn perm(&self) -> Option<u16> { Some(0o777) }
-    fn uid(&self) -> Option<u32> { Some(0) }
-    fn gid(&self) -> Option<u32> { Some(0) }
-    fn i_flags(&self) -> u32 { self.flags }
+/// Regular file, world-rwx perm, owned by uid 0, with an explicit `i_flags`.
+fn file(flags: u32) -> InodeRef {
+    InodeBuilder::new(1, mk_mode(FileType::Regular, 0o777), default_inode_ops(), default_file_ops())
+        .owner(0, 0).i_flags(flags).build()
 }
-fn file(flags: u32) -> InodeRef { Arc::new(FlagFile { flags }) }
 
-/// Default `i_flags()` is 0 for an inode that doesn't override it.
+/// Default `i_flags()` is 0 for an inode that sets no flags.
 #[test]
 fn default_i_flags_zero() {
-    struct Plain;
-    impl Inode for Plain {
-        fn ino(&self) -> vfs::Ino { 9 }
-        fn file_type(&self) -> FileType { FileType::Regular }
-        fn size(&self) -> u64 { 0 }
-        fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(VfsError::Enotdir) }
-    }
-    assert_eq!(Plain.i_flags(), 0);
+    let plain = InodeBuilder::new(9, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build();
+    assert_eq!(plain.i_flags(), 0);
 }
 
 /// S_IMMUTABLE denies a write request with EPERM even though the mode bits

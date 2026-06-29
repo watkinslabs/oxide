@@ -44,12 +44,12 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode = if allow_sealing {
-        ::fs::tmpfs::TmpfsFileInode::new_sealable()
+        ::fs::tmpfs::tmpfs_sealable_file()
     } else {
-        ::fs::tmpfs::TmpfsFileInode::new()
+        ::fs::tmpfs::tmpfs_anon_file()
     };
-    let dentry = Dentry::new(None, name, inode.clone() as vfs::InodeRef);
-    let file = File::new(inode as vfs::InodeRef, dentry, OpenFlags::O_RDWR);
+    let dentry = Dentry::new(None, name, inode.clone());
+    let file = File::new(inode, dentry, OpenFlags::O_RDWR);
     let fd = match fdt.alloc(file) {
         Ok(fd) => fd, Err(e) => return -(e as i64),
     };

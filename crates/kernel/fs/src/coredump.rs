@@ -158,9 +158,7 @@ pub fn write_for_current(signo: i32) {
     let body = build_coredump(signo, name);
     let path: String = format!("/core.{}", cur.tid);
     // Write through the tmpfs lookup-or-create path.
-    let inode = crate::tmpfs::TmpfsFileInode::new();
-    use vfs::Inode;
+    let inode = crate::tmpfs::tmpfs_anon_file();
     let _ = inode.write(0, &body);
-    let inode_ref: vfs::InodeRef = inode as vfs::InodeRef;
-    devfs::register(alloc::boxed::Box::leak(path.into_boxed_str()), inode_ref);
+    devfs::register(alloc::boxed::Box::leak(path.into_boxed_str()), inode);
 }

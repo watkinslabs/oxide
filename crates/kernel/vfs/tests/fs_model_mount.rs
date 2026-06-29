@@ -8,12 +8,12 @@
 //! SERIAL: registers/unregisters one unique type name on the global list.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
 use vfs::fs::{get_fs_type, register_filesystem, unregister_filesystem};
-use vfs::inode::Inode;
 use vfs::superblock::{next_anon_dev, FileSystemType, SbStatFs, SuperBlock, SuperOps};
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError,
+          default_file_ops, mk_mode};
 
 const RAM_MAGIC: u64 = 0x858458f6; // ramfs (linux/magic.h)
 
@@ -26,7 +26,7 @@ impl FileSystemType for RamType {
         let sb = SuperBlock::new(
             Arc::new(RamType), Arc::new(RamOps), RAM_MAGIC, dev, 4096, "t250ram".into(), Arc::new(()),
         );
-        let root: InodeRef = Arc::new(RamDir { ino: 2, sb: Arc::downgrade(&sb), kids: Mutex::new(BTreeMap::new()) });
+        let root: InodeRef = ram_dir(2, &sb);
         vfs::d_make_root(root, &sb);
         Ok(sb)
     }
@@ -38,15 +38,23 @@ impl SuperOps for RamOps {
     fn statfs(&self) -> KResult<SbStatFs> { Ok(SbStatFs { f_type: RAM_MAGIC, f_bsize: 4096, ..Default::default() }) }
 }
 
-struct RamDir { ino: u64, sb: Weak<SuperBlock>, kids: Mutex<BTreeMap<String, InodeRef>> }
-impl Inode for RamDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
-        self.kids.lock().unwrap().get(name).cloned().ok_or(VfsError::Enoent)
+/// Per-inode directory state (Linux `i_private`): the child table.
+struct RamDirData { kids: Mutex<BTreeMap<String, InodeRef>> }
+
+/// Shared `i_op` resolving a name in the directory's `i_private` child table.
+struct RamDirOps;
+impl InodeOps for RamDirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<RamDirData>().unwrap();
+        d.kids.lock().unwrap().get(name).cloned().ok_or(VfsError::Enoent)
     }
+}
+
+fn ram_dir(ino: u64, sb: &Arc<SuperBlock>) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0), Arc::new(RamDirOps), default_file_ops())
+        .sb(Arc::downgrade(sb))
+        .private(Arc::new(RamDirData { kids: Mutex::new(BTreeMap::new()) }))
+        .build()
 }
 
 #[test]

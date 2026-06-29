@@ -10,13 +10,12 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::any::Any;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{FileType, Ino, InodeRef, InodeBuilder, default_inode_ops, default_file_ops, mk_mode};
 
 const BPF_INO_BASE: Ino = 0x7300_0000;
 const BPF_INO_PROG: Ino = BPF_INO_BASE | 0x01;
@@ -25,22 +24,27 @@ const BPF_INO_LINK: Ino = BPF_INO_BASE | 0x03;
 
 /// cBPF program — 8-byte instructions per `linux/filter.h`. v1
 /// stores the prog as opaque bytes; runtime evaluation rides
-/// the existing `seccomp` cBPF interpreter.
+/// the existing `seccomp` cBPF interpreter. Lives in the inode's
+/// `i_private`; built into an `InodeRef` by [`make_bpf_prog_inode`].
 pub struct BpfProgInode {
     pub prog_type: u32,
     pub insns: Vec<u8>,
 }
 
-impl Inode for BpfProgInode {
-    fn as_any(&self) -> Option<&dyn Any> { Some(self) }
-    fn ino(&self) -> Ino { BPF_INO_PROG }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn size(&self) -> u64 { self.insns.len() as u64 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// Build the `Arc<Inode>` for a loaded cBPF program (CharDev|0o600,
+/// `i_size` = bytecode length, ops are the generic defaults). # C: O(1)
+pub fn make_bpf_prog_inode(prog_type: u32, insns: Vec<u8>) -> InodeRef {
+    let size = insns.len() as u64;
+    InodeBuilder::new(BPF_INO_PROG, mk_mode(FileType::CharDev, 0o600),
+        default_inode_ops(), default_file_ops())
+        .size(size)
+        .private(Arc::new(BpfProgInode { prog_type, insns }))
+        .build()
 }
 
 /// Byte-keyed hash map. Linux's BPF_MAP_TYPE_HASH shape; v1 supports
-/// look-up + update + delete + get_next_key via `bpf(2)` ops.
+/// look-up + update + delete + get_next_key via `bpf(2)` ops. Lives in
+/// the inode's `i_private`.
 pub struct BpfMapInode {
     pub entries: Spinlock<BTreeMap<Vec<u8>, Vec<u8>>, TaskListClass>,
     pub max_entries: u32,
@@ -49,20 +53,21 @@ pub struct BpfMapInode {
     pub frozen:      AtomicBool,
 }
 
-impl Inode for BpfMapInode {
-    fn as_any(&self) -> Option<&dyn Any> { Some(self) }
-    fn ino(&self) -> Ino { BPF_INO_MAP }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn perm(&self) -> Option<u16> { Some(0o600) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// Build the `Arc<Inode>` for a freshly created BPF map (CharDev|0o600).
+/// # C: O(1)
+pub fn make_bpf_map_inode(map: BpfMapInode) -> InodeRef {
+    InodeBuilder::new(BPF_INO_MAP, mk_mode(FileType::CharDev, 0o600),
+        default_inode_ops(), default_file_ops())
+        .private(Arc::new(map))
+        .build()
 }
 
 /// fd-backed BPF LSM link. The link keeps the program inode alive and removes
-/// its registry entry when the last fd reference is dropped.
+/// its registry entry when the last fd reference (the `i_private` `Arc`) is
+/// dropped.
 pub struct BpfLsmLinkInode {
     id: u64,
-    hook: crate::bpf_lsm::Hook,
+    _hook: crate::bpf_lsm::Hook,
     _prog: InodeRef,
 }
 
@@ -72,17 +77,13 @@ impl Drop for BpfLsmLinkInode {
     }
 }
 
-impl Inode for BpfLsmLinkInode {
-    fn as_any(&self) -> Option<&dyn Any> { Some(self) }
-    fn ino(&self) -> Ino { BPF_INO_LINK }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn perm(&self) -> Option<u16> { Some(0o600) }
-    fn size(&self) -> u64 {
-        match self.hook {
-            crate::bpf_lsm::Hook::FileOpen => 0,
-        }
-    }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// Build the `Arc<Inode>` for a BPF LSM link fd (CharDev|0o600). The
+/// `link` data's `Drop` unregisters the hook on last-fd close. # C: O(1)
+pub fn make_bpf_lsm_link_inode(link: BpfLsmLinkInode) -> InodeRef {
+    InodeBuilder::new(BPF_INO_LINK, mk_mode(FileType::CharDev, 0o600),
+        default_inode_ops(), default_file_ops())
+        .private(Arc::new(link))
+        .build()
 }
 
 const BPF_MAP_CREATE:    u64 = 0;
@@ -187,7 +188,7 @@ fn handle_link_create(attr_ptr: u64, attr_size: u64) -> i64 {
         Some(i) => i,
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let prog = match prog_inode.as_any().and_then(|a| a.downcast_ref::<BpfProgInode>()) {
+    let prog = match prog_inode.private::<BpfProgInode>() {
         Some(p) => p,
         None => return -(Errno::Einval.as_i32() as i64),
     };
@@ -196,9 +197,9 @@ fn handle_link_create(attr_ptr: u64, attr_size: u64) -> i64 {
     }
 
     let id = crate::bpf_lsm::register(hook);
-    let inode: InodeRef = Arc::new(BpfLsmLinkInode {
+    let inode: InodeRef = make_bpf_lsm_link_inode(BpfLsmLinkInode {
         id,
-        hook,
+        _hook: hook,
         _prog: prog_inode,
     });
     install_fd(inode, "[bpf-lsm-link]")
@@ -210,7 +211,7 @@ fn bpf_prog_inode_from_fd(fd: i32) -> Option<InodeRef> {
     let fdt = unsafe { cur.fd_table_ref() }?.clone();
     let file = fdt.get(fd).ok()?;
     let inode = Arc::clone(file.inode());
-    if inode.as_any()?.downcast_ref::<BpfProgInode>().is_some() {
+    if inode.private::<BpfProgInode>().is_some() {
         Some(inode)
     } else {
         None
@@ -256,7 +257,7 @@ fn handle_map_create(attr_ptr: u64, attr_size: u64) -> i64 {
     {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let inode: InodeRef = Arc::new(BpfMapInode {
+    let inode: InodeRef = make_bpf_map_inode(BpfMapInode {
         entries: Spinlock::new(BTreeMap::new()),
         max_entries: attr.max_entries,
         key_size:    attr.key_size,
@@ -310,7 +311,7 @@ fn handle_map_op(attr_ptr: u64, attr_size: u64, op: MapOp) -> i64 {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode = file.inode();
-    let map = match inode.as_any().and_then(|a| a.downcast_ref::<BpfMapInode>()) {
+    let map = match inode.private::<BpfMapInode>() {
         Some(m) => m, None => return -(Errno::Einval.as_i32() as i64),
     };
 
@@ -412,7 +413,7 @@ fn handle_map_freeze(attr_ptr: u64, attr_size: u64) -> i64 {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode = file.inode();
-    let map = match inode.as_any().and_then(|a| a.downcast_ref::<BpfMapInode>()) {
+    let map = match inode.private::<BpfMapInode>() {
         Some(m) => m, None => return -(Errno::Einval.as_i32() as i64),
     };
     map.frozen.store(true, Ordering::Release);
@@ -451,7 +452,7 @@ fn handle_map_get_next_key(attr_ptr: u64, attr_size: u64) -> i64 {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode = file.inode();
-    let map = match inode.as_any().and_then(|a| a.downcast_ref::<BpfMapInode>()) {
+    let map = match inode.private::<BpfMapInode>() {
         Some(m) => m, None => return -(Errno::Einval.as_i32() as i64),
     };
     if next_key_ptr == 0 || next_key_ptr >= USER_VA_END
@@ -553,7 +554,7 @@ fn handle_prog_load(attr_ptr: u64, attr_size: u64) -> i64 {
     if crate::bpf_verify::verify(&insns).is_err() {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let inode: InodeRef = Arc::new(BpfProgInode { prog_type, insns });
+    let inode: InodeRef = make_bpf_prog_inode(prog_type, insns);
     install_fd(inode, "[bpf-prog]")
 }
 

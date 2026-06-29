@@ -31,17 +31,18 @@ fn guard(ns: u64) -> MutexGuard<'static, ()> {
     g
 }
 
-struct TDir { ino: u64 }
-impl Inode for TDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+struct TDirOps;
+impl vfs::InodeOps for TDirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+}
+fn tdir(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755),
+        Arc::new(TDirOps), vfs::default_file_ops()).build()
 }
 struct RFs { ino: u64 }
 impl FileSystem for RFs {
     fn name(&self) -> &str { "rfs" }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir { ino: self.ino })) }
+    fn root(&self) -> Option<InodeRef> { Some(tdir(self.ino)) }
 }
 
 /// All three root-truth encodings agree for a freshly attached root mount.
