@@ -139,8 +139,18 @@ pub fn resolve_result(abs: &str, no_follow_final: bool) -> Result<vfs::InodeRef,
 /// path-walk error.
 /// # C: O(components × dir-lookup)
 pub fn resolve_path_result(abs: &str, no_follow_final: bool) -> Result<vfs::VfsPath, vfs::VfsError> {
+    resolve_path_flags(abs, vfs::LookupFlags { no_follow_final, ..Default::default() })
+}
+
+/// Like `resolve_path_result` but with caller-supplied extra `LookupFlags` —
+/// the openat2 RESOLVE_* bits that do NOT change the resolution START
+/// (NO_SYMLINKS, NO_MAGICLINKS, NO_XDEV, CACHED, plus NO_FOLLOW). The chroot
+/// `beneath`/root from `resolution_root` is OR-ed in (BENEATH/IN_ROOT, which
+/// re-base the START on the dirfd, go through `resolve_confined`).
+/// # C: O(components × dir-lookup)
+pub fn resolve_path_flags(abs: &str, mut flags: vfs::LookupFlags) -> Result<vfs::VfsPath, vfs::VfsError> {
     let (root, beneath) = resolution_root().ok_or(vfs::VfsError::Enoent)?;
-    let flags = vfs::LookupFlags { no_follow_final, beneath, ..Default::default() };
+    flags.beneath = flags.beneath || beneath;
     let Some(cur) = sched::live::current() else {
         // No task (early boot / kernel-internal resolve): default-allow root cred.
         return vfs::path_lookup_cred(root.clone(), root, abs, flags, vfs::Cred::root());
@@ -158,6 +168,40 @@ pub fn resolve_path_result(abs: &str, no_follow_final: bool) -> Result<vfs::VfsP
         }
         Err(e) => Err(e),
     }
+}
+
+/// openat2 RESOLVE_BENEATH / RESOLVE_IN_ROOT: the `dirfd` IS the scoped
+/// resolution root. START and root both become the dirfd's dentry (the task
+/// cwd for `AT_FDCWD`), so the vfs walker enforces the boundary itself — an
+/// escape attempt under BENEATH errors `EXDEV`; under IN_ROOT `..`, absolute
+/// paths and absolute symlink targets are confined to it. `raw` is walked
+/// as-is (relative or absolute). `flags` must already carry beneath_exdev /
+/// in_root. # C: O(components × dir-lookup)
+pub fn resolve_confined(dirfd: i32, raw: &str, flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
+    let base = dirfd_dentry(dirfd)?;
+    vfs::path_lookup_cred(base.clone(), base, raw, flags, current_cred())
+        .map_err(crate::namei_common::errno_from_vfs)
+}
+
+/// The `Arc<Dentry>` a dirfd names (the resolution base for the confined
+/// openat2 modes): the task cwd dentry for `AT_FDCWD`, else the open fd's
+/// dentry (which must be a directory). `EBADF` for a bad fd / no task,
+/// `ENOTDIR` for a non-directory fd. # C: O(1)
+fn dirfd_dentry(dirfd: i32) -> Result<Arc<vfs::Dentry>, i64> {
+    let ebadf = -(Errno::Ebadf.as_i32() as i64);
+    let cur = sched::live::current().ok_or(ebadf)?;
+    if dirfd == AT_FDCWD {
+        // SAFETY: cwd_vfs slot single-mutator per 13§5; current task is sole writer.
+        let cwd = unsafe { (*cur.cwd_vfs.get()).clone().map(|p| p.dentry) };
+        return cwd.or_else(root_dentry).ok_or(ebadf);
+    }
+    // SAFETY: running task on this CPU; sole reader of its fd_table slot.
+    let fdt = unsafe { cur.fd_table_ref() }.ok_or(ebadf)?.clone();
+    let f = fdt.get(dirfd).map_err(|_| ebadf)?;
+    if f.inode().file_type() != vfs::FileType::Directory {
+        return Err(-(Errno::Enotdir.as_i32() as i64));
+    }
+    Ok(f.dentry().clone())
 }
 
 fn resolve_procfs_fallback(abs: &str) -> Option<vfs::VfsPath> {

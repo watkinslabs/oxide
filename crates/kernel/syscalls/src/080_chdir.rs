@@ -16,7 +16,8 @@ pub fn sys_chdir(args: &SyscallArgs) -> i64 {
     // SAFETY: ptr in user range; user page mapped (caller's user code already executed from this AS); read bounded at 256 B.
     let path = match unsafe { devfs::read_user_cstr(path_ptr, 256) } {
         Some(p) if !p.is_empty() => p,
-        _                        => return -(Errno::Einval.as_i32() as i64),
+        Some(_)                  => return -(Errno::Enoent.as_i32() as i64), // chdir("") → ENOENT
+        None                     => return -(Errno::Efault.as_i32() as i64), // unreadable ptr
     };
     let raw = match core::str::from_utf8(path) {
         Ok(s)  => s,
@@ -28,10 +29,12 @@ pub fn sys_chdir(args: &SyscallArgs) -> i64 {
     let resolved = crate::pathresolve::resolve_cwd(raw);
     let s = resolved.as_str();
     // chdir(2) follows symlinks to a directory — resolve via the
-    // path-walk and require a directory.
-    let path_obj = match crate::pathresolve::resolve_path(s, false) {
-        Some(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
-        _ => return -(Errno::Enoent.as_i32() as i64),
+    // path-walk and require a directory. A resolved non-directory final
+    // target is ENOTDIR (not ENOENT); other walk errors are preserved.
+    let path_obj = match crate::pathresolve::resolve_path_result(s, false) {
+        Ok(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
+        Ok(_)  => return -(Errno::Enotdir.as_i32() as i64),
+        Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
     // SAFETY: single-mutator per `13§5`; current task is sole writer.
     unsafe {
