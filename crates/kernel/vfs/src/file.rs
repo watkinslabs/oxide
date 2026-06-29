@@ -847,6 +847,32 @@ impl File {
         Ok(n)
     }
 
+    /// `file_start_write` (Linux `fs/super.c` `sb_start_write` via the
+    /// `vfs_write`/`write_iter` path): admit THIS description as an in-flight
+    /// writer against its inode's superblock freeze gate before any data write,
+    /// returning an RAII [`SbWriteGuard`] whose `Drop` runs `sb_end_write` on
+    /// EVERY return/error path. Gated on regular files — freeze (SB_FREEZE_WRITE)
+    /// protects on-disk filesystem data, and gating to `FileType::Regular`
+    /// avoids holding the writer count across a parking pipe/socket write
+    /// (which would wedge a freeze drain). An anon/regular file with no live
+    /// superblock is not gated (its backend governs writability).
+    ///
+    /// CAVEAT (documented approximation): Linux `sb_start_write` SLEEPS on a
+    /// frozen sb until `thaw_super`; there is no blocking writer wait-queue on
+    /// this write path, so a NEW write to a FROZEN sb returns `Erofs` instead
+    /// of blocking. The freeze itself still drains correctly — the level gate
+    /// rejects new writers and `sb_writers()` tracks in-flight holders.
+    /// # C: O(1)
+    fn file_start_write(&self) -> KResult<SbWriteGuard> {
+        if !matches!(self.inode.file_type(), FileType::Regular) {
+            return Ok(SbWriteGuard(None));
+        }
+        match self.inode.i_sb() {
+            Some(sb) => if sb.sb_start_write() { Ok(SbWriteGuard(Some(sb))) } else { Err(VfsError::Erofs) },
+            None     => Ok(SbWriteGuard(None)),
+        }
+    }
+
     /// `write(2)` — advances the cursor by the byte count returned by
     /// the inode's `write`. Rejects read-only opens with `Ebadf`.
     /// `O_APPEND` snaps the offset to the current size before writing.
@@ -861,6 +887,10 @@ impl File {
         if self.mnt_readonly() {
             return Err(VfsError::Erofs);
         }
+        // D27: admit as a sb-freeze in-flight writer (Linux `file_start_write`).
+        // EROFS if the sb is FROZEN; guard's Drop runs `sb_end_write` on every
+        // return/error path below.
+        let _sbw = self.file_start_write()?;
         // FMODE_ATOMIC_POS: hold `f_pos_lock` across the offset pick (incl.
         // the O_APPEND size read) -> I/O -> pos-update so a shared fd can't
         // interleave the cursor (Linux `__fdget_pos`). `None` for
@@ -999,6 +1029,9 @@ impl File {
         if self.mnt_readonly() {
             return Err(VfsError::Erofs);
         }
+        // D27: sb-freeze in-flight writer admission (Linux `file_start_write`);
+        // EROFS on a FROZEN sb. Guard releases on every return path.
+        let _sbw = self.file_start_write()?;
         let f = self.flags();
         // Linux pwrite + O_APPEND: IOCB_APPEND forces ki_pos = i_size,
         // ignoring the caller's offset (documented quirk, pwrite(2) BUGS).
@@ -1079,6 +1112,9 @@ impl File {
         if self.mnt_readonly() {
             return Err(VfsError::Erofs);
         }
+        // D27: sb-freeze in-flight writer admission (Linux `file_start_write`);
+        // EROFS on a FROZEN sb. Guard releases on every return path.
+        let _sbw = self.file_start_write()?;
         let f = self.flags();
         let nonblock = f.contains(OpenFlags::O_NONBLOCK);
         let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
@@ -1113,6 +1149,19 @@ impl File {
             fire_write_hook(&self.inode);
         }
         Ok(total as usize)
+    }
+}
+
+/// RAII pairing for [`SuperBlock::sb_start_write`]/[`SuperBlock::sb_end_write`]
+/// (Linux `file_start_write`/`file_end_write`). Held across one
+/// `write`/`pwrite`/`writev` so a concurrent `freeze_super` observes the
+/// in-flight writer (`sb_writers()`); `Drop` releases it on every return/error
+/// path. `None` = not freeze-gated (anon file / no superblock / non-regular).
+/// # C: O(1)
+struct SbWriteGuard(Option<Arc<crate::superblock::SuperBlock>>);
+impl Drop for SbWriteGuard {
+    fn drop(&mut self) {
+        if let Some(sb) = self.0.take() { sb.sb_end_write(); }
     }
 }
 
