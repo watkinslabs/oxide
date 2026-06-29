@@ -29,7 +29,6 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{InodeRef, KResult, VfsError};
@@ -70,7 +69,7 @@ static TABLE: Spinlock<BTreeMap<usize, Vec<LockEntry>>, TaskListClass> =
     Spinlock::new(BTreeMap::new());
 
 fn inode_key(inode: &InodeRef) -> usize {
-    let raw: *const dyn vfs::Inode = alloc::sync::Arc::as_ptr(inode);
+    let raw: *const vfs::Inode = alloc::sync::Arc::as_ptr(inode);
     raw as *const u8 as usize
 }
 
