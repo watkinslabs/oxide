@@ -9,6 +9,7 @@
 //! `sched::current()`, returns `KResult<T>` with typed `T`.
 
 extern crate alloc;
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -374,13 +375,133 @@ pub fn unregister_filesystem(name: &str) -> KResult<()> {
 /// `None` if no type is registered under that name. # C: O(N) over registered types
 pub fn get_fs_type(name: &str) -> Option<Arc<dyn FileSystemType>> {
     let base = match name.find('.') { Some(i) => &name[..i], None => name };
-    FILESYSTEMS.lock().iter().find(|t| t.name() == base).cloned()
+    if let Some(t) = FILESYSTEMS.lock().iter().find(|t| t.name() == base).cloned() {
+        return Some(t);
+    }
+    // D40: also surface the constructor-bearing `FsType` registry, so a type
+    // registered for the production mount path resolves here too.
+    FS_TYPES.lock().iter().find(|t| t.name == base).cloned().map(|t| t as Arc<dyn FileSystemType>)
 }
 
 /// Snapshot of every registered `file_system_type` in registration order — the
-/// source `filesystems_proc_show` (`/proc/filesystems`) iterates. # C: O(N)
+/// source `filesystems_proc_show` (`/proc/filesystems`) iterates. Includes both
+/// the bare [`FileSystemType`] registrants and the constructor-bearing
+/// [`FsType`] entries (D40). # C: O(N)
 pub fn registered_filesystems() -> Vec<Arc<dyn FileSystemType>> {
-    FILESYSTEMS.lock().iter().cloned().collect()
+    let mut v: Vec<Arc<dyn FileSystemType>> = FILESYSTEMS.lock().iter().cloned().collect();
+    for t in FS_TYPES.lock().iter() { v.push(t.clone() as Arc<dyn FileSystemType>); }
+    v
+}
+
+// ---------------------------------------------------------------------------
+// `file_system_type` mount constructors — the production `mount(2)` dispatch.
+//
+// D40: the bare `FileSystemType` registry above stores name→`fill_super`
+// (→`SuperBlock`); the boot mount engine (`vfs::mount::register*`) instead
+// consumes an `Arc<dyn FileSystem>` backend object and builds the SB itself
+// (`build_sb`, Linux `fill_super`). So the value the mount-dispatch path needs
+// keyed by name is a CONSTRUCTOR yielding that backend object. `mount_fstype`
+// resolves `-t <type>` through [`get_fs`] instead of a hard-coded
+// `match fstype { … }`; unknown type → caller's ENODEV (Linux `get_fs_type`
+// miss). Registered [`FsType`]s ALSO surface through [`get_fs_type`] /
+// [`registered_filesystems`] so `/proc/filesystems` and the new-mount-API
+// existence checks see them.
+// ---------------------------------------------------------------------------
+
+/// What a registered fs-type constructor hands the mount engine for ONE mount:
+/// the backend [`FileSystem`] object, plus the bind-root inode for in-memory
+/// fses whose root the engine must graft via `register_bind` (tmpfs/ramfs);
+/// `bind_root == None` ⇒ the engine takes `fs.root()` (`register`, Linux
+/// `mount_nodev`/`mount_bdev`). `strict` preserves the legacy per-fstype error
+/// policy: `false` = the old `let _ = register(); 0` admit-and-ignore arms
+/// (tmpfs/proc/sysfs/debugfs/tracefs), `true` = the arms that surface a
+/// register failure as an errno (ext4, the kernfs pseudo-fses, autofs,
+/// binfmt_misc).
+pub struct MountSpec {
+    /// Backend object the engine grafts (`vfs::mount::register*`).
+    pub fs: Arc<dyn FileSystem>,
+    /// `Some(root)` ⇒ bind-graft this root inode (tmpfs); `None` ⇒ `fs.root()`.
+    pub bind_root: Option<InodeRef>,
+    /// `true` ⇒ propagate a register error as errno; `false` ⇒ admit-and-ignore.
+    pub strict: bool,
+}
+
+/// `file_system_type::init_fs_context`/`mount` constructor (Linux): resolve a
+/// mount's `(source, target, data)` to a freshly-built backend instance.
+/// `source` = the mount(2) device/source string; `target` = the rendered
+/// mountpoint path (tmpfs/pseudo-fs root-inode naming); `data` = the raw mount
+/// option string. Registered from the syscalls crate, where every backend crate
+/// is in scope (the VFS crate itself must not depend on them).
+pub type FsConstructor = dyn Fn(&str, &str, &str) -> KResult<MountSpec> + Send + Sync;
+
+/// A name-keyed `file_system_type` carrying its mount constructor (D40). Also a
+/// [`FileSystemType`] so it lists through [`get_fs_type`]/[`registered_filesystems`];
+/// the boot mount path uses [`FsType::construct`] to obtain the backend object,
+/// and the mount engine builds the `SuperBlock` (its `mount` here is the
+/// equivalent `fill_super` for any SB-based caller/test).
+pub struct FsType {
+    name:  String,
+    magic: u64,
+    flags: FsFlags,
+    ctor:  Box<FsConstructor>,
+}
+
+impl FsType {
+    /// Build a registry entry: `name` (Linux `file_system_type::name`), `magic`
+    /// (`s_magic`/statfs `f_type`), `flags` (`fs_flags`), and the mount
+    /// constructor. # C: O(1)
+    pub fn new(name: &str, magic: u64, flags: FsFlags, ctor: Box<FsConstructor>) -> Arc<Self> {
+        Arc::new(Self { name: name.to_string(), magic, flags, ctor })
+    }
+    /// Run the constructor for ONE mount (`source`/`target`/`data`). # C: FS-dependent
+    pub fn construct(&self, source: &str, target: &str, data: &str) -> KResult<MountSpec> {
+        (self.ctor)(source, target, data)
+    }
+    /// `s_magic` this type stamps. # C: O(1)
+    pub fn magic(&self) -> u64 { self.magic }
+    /// `fs_flags` of this type. # C: O(1)
+    pub fn fs_flags(&self) -> FsFlags { self.flags }
+}
+
+impl FileSystemType for FsType {
+    fn name(&self) -> &str { &self.name }
+    fn mount(&self, src: &str, opts: &str) -> KResult<Arc<SuperBlock>> {
+        let spec = (self.ctor)(src, "", opts)?;
+        let root = spec.bind_root.or_else(|| spec.fs.root());
+        Ok(SuperBlock::for_backend(spec.fs, root, crate::superblock::next_anon_dev(),
+            self.name.clone()))
+    }
+}
+
+/// Constructor-bearing `file_system_type` list (D40), parallel to [`FILESYSTEMS`]
+/// (which holds bare SB-builders). A leaf lock. # consumers: D40 mount dispatch.
+static FS_TYPES: Spinlock<Vec<Arc<FsType>>, FsClass> = Spinlock::new(Vec::new());
+
+/// Register a constructor-bearing `file_system_type` (D40). Duplicate name →
+/// `Ebusy` (Linux `register_filesystem` `-EBUSY`). # C: O(N)
+pub fn register_fs(fs: Arc<FsType>) -> KResult<()> {
+    let mut list = FS_TYPES.lock();
+    if list.iter().any(|t| t.name == fs.name) { return Err(VfsError::Ebusy); }
+    list.push(fs);
+    Ok(())
+}
+
+/// Resolve a constructor-bearing `file_system_type` by name (D40), honouring the
+/// `name.subtype` split like [`get_fs_type`]. The production `mount(2)` dispatch
+/// lookup. `None` ⇒ unregistered (caller maps to ENODEV). # C: O(N)
+pub fn get_fs(name: &str) -> Option<Arc<FsType>> {
+    let base = match name.find('.') { Some(i) => &name[..i], None => name };
+    FS_TYPES.lock().iter().find(|t| t.name == base).cloned()
+}
+
+/// Unregister a constructor-bearing `file_system_type` by name (D40). `Einval`
+/// if absent. # C: O(N)
+pub fn unregister_fs(name: &str) -> KResult<()> {
+    let mut list = FS_TYPES.lock();
+    match list.iter().position(|t| t.name == name) {
+        Some(i) => { list.remove(i); Ok(()) }
+        None    => Err(VfsError::Einval),
+    }
 }
 
 // ---------------------------------------------------------------------------
