@@ -16,3 +16,9 @@ bitflags = { version = "2", default-features = false }
 [features]
 default = []
 hosted  = []
+# TEMPORARY (D24 Stage-1b verification): emit `[MNTDIVERGE]` lines from
+# `follow_mount_down` comparing the legacy `mounted_mount(ns)` walk source
+# against the strict `__lookup_mnt(cur_mnt,d)` source at every crossing the
+# real boot takes. Prod-inert (no-op without the feature). Delete with the
+# `mntdiverge_probe` fn once the flip is proven GAP-free.
+debug-mnt = []
