@@ -41,15 +41,26 @@ pub(crate) fn mknod_impl(raw: String, mode: u16, dev: u32) -> i64 {
         _        => return -(Errno::Einval.as_i32() as i64),
     };
     if let Err(rv) = crate::landlock::check(&p, la) { return rv; }
+    // Linux may_mknod / vfs_mknod: device nodes require CAP_MKNOD; FIFO,
+    // socket and regular files do not (D24).
+    if matches!(real_ftype, S_IFCHR | S_IFBLK) {
+        let has = sched::live::current()
+            .map(|c| c.has_cap(sched::cap::MKNOD)).unwrap_or(false);
+        if !has { return -(Errno::Eperm.as_i32() as i64); }
+    }
     if vfs::mount::is_readonly_path(&p) {
         return -(Errno::Erofs.as_i32() as i64);
     }
+    // Linux do_mknodat: `mode &= ~current_umask()` on the permission bits (D23).
+    let umask = sched::live::current()
+        .map(|c| c.umask.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0) as u16;
+    let perm = (mode & 0x0FFF) & !umask;
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
     let r = if real_ftype == S_IFREG {
         // POSIX-compat: mknod-with-regular-type = open(O_CREAT) equivalent.
-        pino.create_child(&name, (mode & 0x0FFF) as u32).map(|_| ())
+        pino.create_child(&name, perm as u32).map(|_| ())
     } else {
-        pino.mknod_child(&name, (real_ftype | (mode & 0x0FFF)) as u16, dev)
+        pino.mknod_child(&name, (real_ftype | perm) as u16, dev)
     };
     match r {
         Ok(())  => 0,

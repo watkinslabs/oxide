@@ -10,6 +10,8 @@ use syscall::errno::Errno;
 pub fn sys_ftruncate(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let len = args.a1;
+    // Linux do_sys_ftruncate: negative length → EINVAL (D34).
+    if (len as i64) < 0 { return -(Errno::Einval.as_i32() as i64); }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -24,6 +26,11 @@ pub fn sys_ftruncate(args: &SyscallArgs) -> i64 {
     // fd is EINVAL (Linux do_sys_ftruncate). The fd already cleared EROFS at
     // open, so no path/mount re-check.
     if !file.f_mode().contains(vfs::Fmode::WRITE) {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    // Linux do_sys_ftruncate: only regular files are truncatable through an fd;
+    // a directory or other non-regular type → EINVAL (not EISDIR) (D34).
+    if !matches!(file.inode().file_type(), vfs::FileType::Regular) {
         return -(Errno::Einval.as_i32() as i64);
     }
     match file.inode().truncate(len) { Ok(_) => 0, Err(e) => -(e as i64) }

@@ -13,6 +13,7 @@ use crate::fsmount_common::*;
 /// # C: O(1)
 pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
     const FSMOUNT_CLOEXEC: u64 = 1;
+    if let Some(rv) = require_sys_admin() { return rv; }  // Linux may_mount (D49)
     let fd = args.a0 as i32;
     let inode = match fd_inode(fd) { Some(i) => i, None => return -(Errno::Ebadf.as_i32() as i64) };
     let ctx = match inode.private::<FsContextInode>() {

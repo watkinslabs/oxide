@@ -24,6 +24,18 @@ use hal::USER_VA_END;
 
 pub(crate) static NEXT_FSCTX_INO: AtomicU64 = AtomicU64::new(0x4600_0000);
 
+/// Linux `may_mount()` gate: every new-mount-API operation that creates,
+/// reconfigures or attaches a mount requires CAP_SYS_ADMIN in the caller's
+/// (user) namespace. Returns `Some(-EPERM)` to short-circuit, `None` to
+/// proceed — mirrors the legacy `mount(2)`/`umount2(2)` check (D49).
+/// # C: O(1)
+pub(crate) fn require_sys_admin() -> Option<i64> {
+    match sched::live::current() {
+        Some(c) if c.has_cap(sched::cap::SYS_ADMIN) => None,
+        _ => Some(-(Errno::Eperm.as_i32() as i64)),
+    }
+}
+
 /// fstypes the new mount API can materialise (mirrors `sys_mount`).
 /// # C: O(1)
 pub(crate) fn fstype_ok(t: &str) -> bool {
