@@ -37,7 +37,7 @@ pub fn sys_link(args: &SyscallArgs) -> i64 {
         return -(Errno::Exdev.as_i32() as i64);
     }
     match tm.fs().link(&t, &l) {
-        Ok(())  => 0,
+        Ok(())  => { crate::pathresolve::d_drop_path(&l); 0 }
         Err(e)  => errno_from_vfs(e),
     }
 }

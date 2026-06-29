@@ -31,7 +31,7 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
     if path_exists(&p) { return -(Errno::Eexist.as_i32() as i64); }
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
     match pino.mkdir(&name, mode) {
-        Ok(_) => 0,
+        Ok(_) => { crate::pathresolve::d_drop_path(&p); 0 }
         Err(e) => {
             crate::namei_common::trace_run_vfs_error(b"mkdir", &p, e);
             errno_from_vfs(e)
