@@ -231,8 +231,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_PWRITE64      => crate::s018_pwrite64::sys_pwrite64(&args),
         syscall::nrs::NR_PREADV  => crate::s295_preadv::sys_preadv(&args),
         syscall::nrs::NR_PWRITEV => crate::s296_pwritev::sys_pwritev(&args),
-        syscall::nrs::NR_PREADV2 => crate::s295_preadv::sys_preadv(&args),
-        syscall::nrs::NR_PWRITEV2 => crate::s296_pwritev::sys_pwritev(&args),
+        syscall::nrs::NR_PREADV2 => crate::s295_preadv::sys_preadv2(&args),
+        syscall::nrs::NR_PWRITEV2 => crate::s296_pwritev::sys_pwritev2(&args),
         syscall::nrs::NR_MEMFD_CREATE => crate::s319_memfd_create::sys_memfd_create(&args),
         // memfd_secret(flags) — Linux's "hide from other tasks via
         // page-table partitioning" variant. v1 single-AS scheduler
