@@ -7,17 +7,11 @@
 use std::sync::Arc;
 
 use vfs::dentry::Dentry;
-use vfs::inode::Inode;
-use vfs::{d_add, d_invalidate, d_lookup, FileType, InodeRef, KResult, VfsError};
+use vfs::{d_add, d_invalidate, d_lookup, FileType, InodeRef};
 
-struct Dir { ino: u64 }
-impl Inode for Dir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+fn dir(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755), vfs::default_inode_ops(), vfs::default_file_ops()).build()
 }
-fn dir(ino: u64) -> InodeRef { Arc::new(Dir { ino }) }
 
 // An UNHASHED dentry's subtree is left intact: d_invalidate early-returns, so a
 // hashed child below it is NOT torn down. Pre-fix the walk dropped the whole

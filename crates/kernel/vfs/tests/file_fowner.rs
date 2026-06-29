@@ -7,8 +7,8 @@
 
 use std::sync::Arc;
 
-use vfs::inode::Inode;
-use vfs::{Cred, Dentry, File, FileType, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{Cred, Dentry, File, FileType, InodeBuilder, InodeRef, OpenFlags,
+          default_file_ops, default_inode_ops, mk_mode};
 
 /// Default `SIGIO` number (asm-generic, both arches) — the signal `fasync`
 /// delivers when `F_SETSIG` was never called.
@@ -16,16 +16,12 @@ const SIGIO: i32 = 29;
 /// A realtime signal a process might select via `F_SETSIG`.
 const SIGRTMIN: i32 = 34;
 
-struct Anon;
-impl Inode for Anon {
-    fn ino(&self) -> vfs::Ino { 7 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn mk_anon() -> InodeRef {
+    InodeBuilder::new(7, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
 }
 
 fn file() -> Arc<File> {
-    let ino: InodeRef = Arc::new(Anon);
+    let ino: InodeRef = mk_anon();
     let dentry = Dentry::new(None, "f".into(), Arc::clone(&ino));
     File::new(ino, dentry, OpenFlags::O_RDONLY)
 }

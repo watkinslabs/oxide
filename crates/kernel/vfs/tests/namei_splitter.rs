@@ -11,30 +11,26 @@ use std::sync::Arc;
 use vfs::inode::Inode;
 use vfs::{Dentry, FileType, InodeRef, LookupFlags};
 
-struct Dir { ino: u64, kids: BTreeMap<String, InodeRef> }
-impl Inode for Dir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> vfs::KResult<InodeRef> {
-        self.kids.get(name).cloned().ok_or(vfs::VfsError::Enoent)
+struct DirData { kids: BTreeMap<String, InodeRef> }
+struct DirOps;
+impl vfs::InodeOps for DirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> vfs::KResult<InodeRef> {
+        inode.private::<DirData>().unwrap().kids.get(name).cloned().ok_or(vfs::VfsError::Enoent)
     }
 }
 
-struct F { ino: u64 }
-impl Inode for F {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(vfs::VfsError::Enotdir) }
-}
 
 fn dir(ino: u64, kids: &[(&str, InodeRef)]) -> InodeRef {
     let mut m = BTreeMap::new();
     for (n, i) in kids { m.insert(n.to_string(), i.clone()); }
-    Arc::new(Dir { ino, kids: m })
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755),
+        Arc::new(DirOps), vfs::default_file_ops())
+        .private(Arc::new(DirData { kids: m })).build()
 }
-fn file(ino: u64) -> InodeRef { Arc::new(F { ino }) }
+fn file(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Regular, 0o644),
+        vfs::default_inode_ops(), vfs::default_file_ops()).build()
+}
 
 // Tree:  / → a → b → f(file).  a (ino 10), a/b (ino 11), a/b/f (ino 12).
 fn build_root() -> Arc<Dentry> {

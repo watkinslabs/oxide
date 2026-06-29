@@ -15,9 +15,9 @@
 
 use std::sync::Arc;
 
-use vfs::inode::Inode;
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
-use vfs::{FileType, InodeRef, KResult, VfsError, IDENTITY};
+use vfs::{FileType, InodeBuilder, InodeRef, KResult, IDENTITY,
+          default_file_ops, default_inode_ops, mk_mode};
 
 struct NullType;
 impl FileSystemType for NullType {
@@ -32,34 +32,26 @@ fn sb(blocksize: u32) -> Arc<SuperBlock> {
     SuperBlock::new(Arc::new(NullType), Arc::new(NullOps), 0, 0x10, blocksize, "t".into(), Arc::new(()))
 }
 
-/// Inode attached to a SuperBlock, advertising a DIFFERENT per-inode
-/// `blksize()` (512) than its SB's `s_blocksize` — proves the SB wins.
-struct SbInode { sb: Arc<SuperBlock>, size: u64 }
-impl Inode for SbInode {
-    fn ino(&self) -> vfs::Ino { 5 }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { Some(self.sb.clone()) }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { self.size }
-    fn blksize(&self) -> u32 { 512 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// Inode attached to a SuperBlock; `st_blksize` derives from its `s_blocksize`.
+fn sb_inode(sb: &Arc<SuperBlock>, size: u64) -> InodeRef {
+    InodeBuilder::new(5, mk_mode(FileType::Regular, 0), default_inode_ops(), default_file_ops())
+        .sb(Arc::downgrade(sb)).size(size).build()
 }
 
-/// SB-less anon inode: `i_sb()` defaults `None`, so `blksize()` is the source.
-struct AnonInode;
-impl Inode for AnonInode {
-    fn ino(&self) -> vfs::Ino { 6 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 1 }
-    fn blksize(&self) -> u32 { 1024 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// SB-less anon inode: `i_sb()` is `None`, so `blksize()` falls back to the
+/// generic 4096 default (the concrete-inode model dropped the per-inode
+/// `blksize()` override that used to source this).
+fn anon_inode() -> InodeRef {
+    InodeBuilder::new(6, mk_mode(FileType::Regular, 0), default_inode_ops(), default_file_ops())
+        .size(1).build()
 }
 
-// st_blksize comes from the SB (2048), NOT the inode's own blksize() (512).
+// st_blksize comes from the SB (2048), not the generic 4096 default.
 #[test]
 fn blksize_from_superblock_not_inode() {
-    let i = SbInode { sb: sb(2048), size: 1 };
-    let st = vfs::generic_fillattr(&i, &IDENTITY, None);
-    assert_eq!(st.blksize, 2048, "st_blksize == s_blocksize, not the per-inode 512");
+    let s = sb(2048);
+    let st = vfs::generic_fillattr(&sb_inode(&s, 1), &IDENTITY, None);
+    assert_eq!(st.blksize, 2048, "st_blksize == s_blocksize, not the 4096 default");
     // st_blocks rounds a 1-byte file UP to one whole 2 KiB block = 4 sectors.
     assert_eq!(st.blocks, 2048 / 512, "one 2 KiB block in 512-byte sectors");
 }
@@ -67,14 +59,16 @@ fn blksize_from_superblock_not_inode() {
 // A larger fs blocksize flows through to both fields identically.
 #[test]
 fn blksize_tracks_sb_value() {
-    let st = vfs::generic_fillattr(&SbInode { sb: sb(4096), size: 1 }, &IDENTITY, None);
+    let s = sb(4096);
+    let st = vfs::generic_fillattr(&sb_inode(&s, 1), &IDENTITY, None);
     assert_eq!(st.blksize, 4096);
     assert_eq!(st.blocks, 4096 / 512);
 }
 
-// No SB -> the per-inode blksize() fallback is used (Linux anon inodes).
+// No SB -> the generic 4096 fallback (Linux anon inodes; the per-inode
+// blksize() override no longer exists in the concrete-inode model).
 #[test]
 fn sbless_inode_falls_back_to_inode_blksize() {
-    let st = vfs::generic_fillattr(&AnonInode, &IDENTITY, None);
-    assert_eq!(st.blksize, 1024, "no i_sb() -> per-inode blksize() fallback");
+    let st = vfs::generic_fillattr(&anon_inode(), &IDENTITY, None);
+    assert_eq!(st.blksize, 4096, "no i_sb() -> generic 4096 blksize() fallback");
 }

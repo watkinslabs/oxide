@@ -7,30 +7,17 @@
 
 use std::sync::Arc;
 
-use vfs::inode::Inode;
-use vfs::{Dentry, FileType, InodeRef, KResult};
+use vfs::{Dentry, FileType, InodeRef};
 
 /// Minimal directory inode whose `lookup` is never exercised (the test builds
 /// the dentry tree by hand). A fresh ino per node keeps identities distinct.
-struct Dir(u64);
-impl Inode for Dir {
-    fn ino(&self) -> vfs::Ino { self.0 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { unreachable!("hand-built tree") }
+fn dir(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755), vfs::default_inode_ops(), vfs::default_file_ops()).build()
 }
-
 /// Minimal regular-file inode for the unlinked-but-open case.
-struct Reg(u64);
-impl Inode for Reg {
-    fn ino(&self) -> vfs::Ino { self.0 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(vfs::VfsError::Enotdir) }
+fn reg(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Regular, 0o644), vfs::default_inode_ops(), vfs::default_file_ops()).build()
 }
-
-fn dir(ino: u64) -> InodeRef { Arc::new(Dir(ino)) }
-fn reg(ino: u64) -> InodeRef { Arc::new(Reg(ino)) }
 
 /// Build /usr/bin, hashing every node so none reads as "unlinked".
 fn tree() -> (Arc<Dentry>, Arc<Dentry>, Arc<Dentry>) {

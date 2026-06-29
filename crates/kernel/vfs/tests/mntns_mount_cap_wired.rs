@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
-use vfs::{mntns, FileType, InodeRef, KResult, VfsError};
+use vfs::{mntns, FileType, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, default_file_ops, mk_mode};
 
 mod common;
 
@@ -41,14 +41,14 @@ fn guard() -> MutexGuard<'static, ()> {
 struct TFs(u64);
 impl FileSystem for TFs {
     fn name(&self) -> &str { "capfs" }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir(self.0))) }
+    fn root(&self) -> Option<InodeRef> { Some(make_tdir(self.0)) }
 }
-struct TDir(u64);
-impl Inode for TDir {
-    fn ino(&self) -> vfs::Ino { self.0 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+struct TDirOps;
+impl InodeOps for TDirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+}
+fn make_tdir(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(TDirOps), default_file_ops()).build()
 }
 fn fs(ino: u64) -> Arc<dyn FileSystem> { Arc::new(TFs(ino)) }
 

@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
+use vfs::{default_file_ops, mk_mode, InodeBuilder, InodeOps};
 use vfs::{FileType, InodeRef, KResult, VfsError};
 
 mod common;
@@ -20,18 +21,19 @@ fn guard() -> MutexGuard<'static, ()> {
     g
 }
 
-struct TDir { ino: u64 }
-impl Inode for TDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+/// Test directory inode: a bare mountpoint dir whose `lookup` misses (ENOENT).
+struct TDirOps;
+impl InodeOps for TDirOps {
+    fn lookup(&self, _inode: &Inode, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+}
+fn tdir(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(TDirOps), default_file_ops()).build()
 }
 
 struct TestFs { root_ino: u64 }
 impl FileSystem for TestFs {
     fn name(&self) -> &str { "testfs" }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir { ino: self.root_ino })) }
+    fn root(&self) -> Option<InodeRef> { Some(tdir(self.root_ino)) }
 }
 
 // systemd setup_namespace for a no-RootDirectory service:
@@ -50,7 +52,7 @@ fn sandbox_pivot_staging_under_run() {
     common::register("/run", Arc::new(TestFs { root_ino: 0xC })).expect("run");
 
     let staging = "/run/systemd/mount-rootfs";
-    let host_root = common::mount_root_at("/").or_else(|| Some(Arc::new(TDir { ino: 0xA }) as InodeRef)).unwrap();
+    let host_root = common::mount_root_at("/").or_else(|| Some(tdir(0xA))).unwrap();
     common::register_bind(staging, Arc::new(TestFs { root_ino: 0xA }), host_root).expect("stage bind");
     common::bind_submounts_rec("/", staging);
 
@@ -72,7 +74,7 @@ fn sandbox_ms_move_staging_to_root() {
     common::register("/", Arc::new(TestFs { root_ino: 0xA })).expect("root");
     common::register("/run", Arc::new(TestFs { root_ino: 0xC })).expect("run");
     let staging = "/run/systemd/mount-rootfs";
-    let host_root: InodeRef = Arc::new(TDir { ino: 0xA });
+    let host_root: InodeRef = tdir(0xA);
     common::register_bind(staging, Arc::new(TestFs { root_ino: 0xA }), host_root).expect("stage bind");
     let mv = common::move_mount(staging, "/");
     assert!(mv.is_ok(), "MS_MOVE(staging, /) must succeed, got {:?}", mv);

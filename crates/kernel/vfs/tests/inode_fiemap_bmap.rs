@@ -2,39 +2,37 @@
 //! `bmap()`, `i_op->fileattr_{get,set}`). Before this the extent-mapping ops
 //! existed nowhere (grep fiemap/bmap/fileattr = nothing), so `FS_IOC_FIEMAP`,
 //! `FIBMAP`, and `chattr`/`lsattr` had no inode entry point. This proves: the
-//! trait defaults match Linux's "no op installed" errno (`EOPNOTSUPP` for
+//! op defaults match Linux's "no op installed" errno (`EOPNOTSUPP` for
 //! fiemap/fileattr, `EINVAL` for bmap); a backend can emit extents through the
 //! callback and stop early; and `FileAttr::from_i_flags` maps the VFS `S_*`
 //! word onto the `FS_*_FL` chattr view (the inverse of `ext4_set_inode_flags`).
 
+use std::sync::Arc;
+
 use vfs::inode::{
-    FileAttr, FiemapExtent, Inode, FIEMAP_EXTENT_LAST, FS_APPEND_FL, FS_IMMUTABLE_FL,
+    FileAttr, FiemapExtent, Inode, InodeBuilder, FIEMAP_EXTENT_LAST, FS_APPEND_FL, FS_IMMUTABLE_FL,
     FS_NOATIME_FL, FS_SYNC_FL, S_APPEND, S_IMMUTABLE, S_NOATIME, S_SYNC,
 };
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::inode_ops::InodeOps;
+use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, InodeRef, KResult, VfsError};
 
 /// Plain inode: every extent-mapping op uses the trait default.
-struct Plain;
-impl Inode for Plain {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 8192 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn plain() -> InodeRef {
+    InodeBuilder::new(1, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
+        .size(8192).build()
 }
 
-/// Two-extent file that reports its layout through `fiemap` and resolves blocks
-/// through `bmap`. Block 0 is a hole (returns 0); blocks 1..2 are allocated.
-struct Mapped;
-impl Inode for Mapped {
-    fn ino(&self) -> vfs::Ino { 2 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 8192 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn bmap(&self, block: u64) -> KResult<u64> {
+/// `i_op` for a two-extent file that reports its layout through `fiemap` and
+/// resolves blocks through `bmap`. Block 0 is a hole (returns 0); blocks 1..2
+/// are allocated.
+struct MappedOps;
+impl InodeOps for MappedOps {
+    fn bmap(&self, _inode: &Inode, block: u64) -> KResult<u64> {
         Ok(if block == 0 { 0 } else { 1000 + block }) // hole at 0, else mapped
     }
     fn fiemap(
         &self,
+        _inode: &Inode,
         _start: u64,
         _len: u64,
         emit: &mut dyn FnMut(FiemapExtent) -> bool,
@@ -48,11 +46,16 @@ impl Inode for Mapped {
     }
 }
 
+fn mapped() -> InodeRef {
+    InodeBuilder::new(2, mk_mode(FileType::Regular, 0o644), Arc::new(MappedOps), default_file_ops())
+        .size(8192).build()
+}
+
 /// Trait defaults: Linux returns EOPNOTSUPP for an inode with no `->fiemap`
 /// and no `->fileattr_*`, and EINVAL for `bmap` with no `->bmap` op.
 #[test]
 fn defaults_match_linux_errno() {
-    let p = Plain;
+    let p = plain();
     let mut seen = false;
     assert_eq!(p.fiemap(0, p.size(), &mut |_| { seen = true; true }), Err(VfsError::Eopnotsupp));
     assert!(!seen, "default fiemap emits no extents");
@@ -65,7 +68,7 @@ fn defaults_match_linux_errno() {
 /// `FIEMAP_EXTENT_LAST`.
 #[test]
 fn fiemap_emits_extents_in_order() {
-    let m = Mapped;
+    let m = mapped();
     let mut out = Vec::new();
     assert_eq!(m.fiemap(0, m.size(), &mut |e| { out.push(e); true }), Ok(()));
     assert_eq!(out.len(), 2);
@@ -79,7 +82,7 @@ fn fiemap_emits_extents_in_order() {
 /// Linux `fiemap_fill_next_extent` returning 1).
 #[test]
 fn fiemap_stops_when_callback_full() {
-    let m = Mapped;
+    let m = mapped();
     let mut out = Vec::new();
     assert_eq!(m.fiemap(0, m.size(), &mut |e| { out.push(e); false }), Ok(()));
     assert_eq!(out.len(), 1, "callback returned false after the first extent");
@@ -88,7 +91,7 @@ fn fiemap_stops_when_callback_full() {
 /// `bmap` distinguishes a hole (physical 0) from an allocated block.
 #[test]
 fn bmap_reports_hole_and_block() {
-    let m = Mapped;
+    let m = mapped();
     assert_eq!(m.bmap(0), Ok(0), "block 0 is a hole");
     assert_eq!(m.bmap(1), Ok(1001));
     assert_eq!(m.bmap(2), Ok(1002));

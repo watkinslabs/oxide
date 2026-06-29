@@ -7,10 +7,8 @@
 //! owner/CAP_FOWNER (EPERM). The `utimensat(2)` syscall encodes each slot into
 //! `Iattr.valid` exactly as exercised here. Synthetic `Inode`, no FS.
 
-use std::sync::atomic::{AtomicU32, Ordering};
-
-use vfs::inode::Inode;
-use vfs::setattr::{setattr_prepare, Iattr, ATTR_ATIME, ATTR_MTIME, ATTR_ATIME_SET, ATTR_MTIME_SET};
+use vfs::setattr::{setattr_prepare, Iattr, ATTR_ATIME, ATTR_MTIME, ATTR_ATIME_SET};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder};
 use vfs::{Cred, FileType, Idmap, InodeRef, KResult, VfsError, CRED_NGROUPS};
 
 const OWNER_UID: u32 = 1000;
@@ -18,22 +16,9 @@ const OWNER_GID: u32 = 1000;
 
 /// Regular-file inode carrying owner uid/gid + perm bits so the DAC class
 /// selection in `generic_permission` (owner / group / other) is exercised.
-struct TimeNode { uid: u32, gid: u32, perm: AtomicU32 }
-
-impl TimeNode {
-    fn new(uid: u32, gid: u32, perm: u16) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self { uid, gid, perm: AtomicU32::new(perm as u32) })
-    }
-}
-
-impl Inode for TimeNode {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn perm(&self) -> Option<u16> { Some(self.perm.load(Ordering::Acquire) as u16) }
-    fn uid(&self) -> Option<u32> { Some(self.uid) }
-    fn gid(&self) -> Option<u32> { Some(self.gid) }
+fn time_node(uid: u32, gid: u32, perm: u16) -> InodeRef {
+    InodeBuilder::new(1, mk_mode(FileType::Regular, perm), default_inode_ops(), default_file_ops())
+        .owner(uid, gid).build()
 }
 
 /// Cred with an explicit uid, no supplementary groups, no capabilities.
@@ -63,7 +48,7 @@ fn prepare(node: &InodeRef, ia: &mut Iattr, c: &Cred) -> KResult<()> {
 /// timestamps to now — the MAY_WRITE path.
 #[test]
 fn nonowner_writer_both_now_ok() {
-    let node: InodeRef = TimeNode::new(OWNER_UID, OWNER_GID, 0o666);
+    let node = time_node(OWNER_UID, OWNER_GID, 0o666);
     let c = cred(2000, 2000);
     assert_eq!(prepare(&node, &mut both_now(), &c), Ok(()));
 }
@@ -73,7 +58,7 @@ fn nonowner_writer_both_now_ok() {
 /// Before the fix this took the MAY_WRITE path and wrongly returned Ok.
 #[test]
 fn nonowner_writer_atime_now_only_eperm() {
-    let node: InodeRef = TimeNode::new(OWNER_UID, OWNER_GID, 0o666);
+    let node = time_node(OWNER_UID, OWNER_GID, 0o666);
     let c = cred(2000, 2000);
     assert_eq!(prepare(&node, &mut atime_now_only(), &c), Err(VfsError::Eperm));
 }
@@ -82,7 +67,7 @@ fn nonowner_writer_atime_now_only_eperm() {
 /// owner-gated — non-owner-with-write is EPERM.
 #[test]
 fn nonowner_writer_mtime_now_only_eperm() {
-    let node: InodeRef = TimeNode::new(OWNER_UID, OWNER_GID, 0o666);
+    let node = time_node(OWNER_UID, OWNER_GID, 0o666);
     let c = cred(2000, 2000);
     assert_eq!(prepare(&node, &mut mtime_now_only(), &c), Err(VfsError::Eperm));
 }
@@ -90,7 +75,7 @@ fn nonowner_writer_mtime_now_only_eperm() {
 /// A specific time always needs ownership — non-owner-with-write is EPERM.
 #[test]
 fn nonowner_writer_specific_eperm() {
-    let node: InodeRef = TimeNode::new(OWNER_UID, OWNER_GID, 0o666);
+    let node = time_node(OWNER_UID, OWNER_GID, 0o666);
     let c = cred(2000, 2000);
     assert_eq!(prepare(&node, &mut atime_specific(), &c), Err(VfsError::Eperm));
 }
@@ -99,7 +84,7 @@ fn nonowner_writer_specific_eperm() {
 /// the MAY_WRITE check fails with EACCES.
 #[test]
 fn nonowner_no_write_both_now_eacces() {
-    let node: InodeRef = TimeNode::new(OWNER_UID, OWNER_GID, 0o600);
+    let node = time_node(OWNER_UID, OWNER_GID, 0o600);
     let c = cred(2000, 2000);
     assert_eq!(prepare(&node, &mut both_now(), &c), Err(VfsError::Eacces));
 }
@@ -108,7 +93,7 @@ fn nonowner_no_write_both_now_eacces() {
 /// write bit needed, the ownership branch grants it.
 #[test]
 fn owner_atime_now_only_ok() {
-    let node: InodeRef = TimeNode::new(OWNER_UID, OWNER_GID, 0o600);
+    let node = time_node(OWNER_UID, OWNER_GID, 0o600);
     let c = cred(OWNER_UID, OWNER_GID);
     assert_eq!(prepare(&node, &mut atime_now_only(), &c), Ok(()));
 }
@@ -116,7 +101,7 @@ fn owner_atime_now_only_ok() {
 /// The owner may set a specific time (write bit irrelevant).
 #[test]
 fn owner_specific_ok() {
-    let node: InodeRef = TimeNode::new(OWNER_UID, OWNER_GID, 0o600);
+    let node = time_node(OWNER_UID, OWNER_GID, 0o600);
     let c = cred(OWNER_UID, OWNER_GID);
     assert_eq!(prepare(&node, &mut atime_specific(), &c), Ok(()));
 }
@@ -125,7 +110,7 @@ fn owner_specific_ok() {
 /// time on a file it has no write access to.
 #[test]
 fn cap_fowner_specific_ok() {
-    let node: InodeRef = TimeNode::new(OWNER_UID, OWNER_GID, 0o600);
+    let node = time_node(OWNER_UID, OWNER_GID, 0o600);
     let mut c = cred(2000, 2000);
     c.cap_fowner = true;
     assert_eq!(prepare(&node, &mut atime_specific(), &c), Ok(()));

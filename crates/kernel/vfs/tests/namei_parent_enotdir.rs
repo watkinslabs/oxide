@@ -12,35 +12,32 @@ use std::sync::Arc;
 use vfs::inode::Inode;
 use vfs::{Dentry, FileType, InodeRef, LookupFlags, VfsError};
 
-struct Dir { ino: u64, perm: Option<u16>, kids: BTreeMap<String, InodeRef> }
-impl Inode for Dir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn perm(&self) -> Option<u16> { self.perm }
-    fn uid(&self) -> Option<u32> { Some(0) }
-    fn gid(&self) -> Option<u32> { Some(0) }
-    fn lookup(&self, name: &str) -> vfs::KResult<InodeRef> {
-        self.kids.get(name).cloned().ok_or(VfsError::Enoent)
+struct DirData { kids: BTreeMap<String, InodeRef> }
+struct DirOps;
+impl vfs::InodeOps for DirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> vfs::KResult<InodeRef> {
+        inode.private::<DirData>().unwrap().kids.get(name).cloned().ok_or(VfsError::Enoent)
     }
 }
 
 // A regular file that DELIBERATELY mis-reports its lookup as Enoent (not
 // Enotdir) — proving the WALKER enforces ENOTDIR itself, not the fs op.
-struct F { ino: u64 }
-impl Inode for F {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(VfsError::Enoent) }
+struct FOps;
+impl vfs::InodeOps for FOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> vfs::KResult<InodeRef> { Err(VfsError::Enoent) }
 }
 
 fn dir(ino: u64, perm: Option<u16>, kids: &[(&str, InodeRef)]) -> InodeRef {
     let mut m = BTreeMap::new();
     for (n, i) in kids { m.insert(n.to_string(), i.clone()); }
-    Arc::new(Dir { ino, perm, kids: m })
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, perm.unwrap_or(0o755)),
+        Arc::new(DirOps), vfs::default_file_ops())
+        .private(Arc::new(DirData { kids: m })).build()
 }
-fn file(ino: u64) -> InodeRef { Arc::new(F { ino }) }
+fn file(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Regular, 0o644),
+        Arc::new(FOps), vfs::default_file_ops()).build()
+}
 
 fn parent_flags() -> LookupFlags { let mut f = LookupFlags::default(); f.parent = true; f }
 
