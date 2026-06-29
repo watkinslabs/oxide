@@ -1,6 +1,7 @@
 #![no_std]
 extern crate alloc;
 
+pub mod eventfs;
 pub mod fs_impl;
 pub mod percpu_ring;
 pub mod ring;
@@ -44,14 +45,11 @@ pub fn init() {
         StaticFileInode::new(b"nop\n") as InodeRef);
     register("/sys/kernel/tracing/available_tracers",
         StaticFileInode::new(b"nop\n") as InodeRef);
-    register("/sys/kernel/tracing/available_events",
-        StaticFileInode::new(b"sched:sched_switch\nsyscalls:sys_enter\nsyscalls:sys_exit\n") as InodeRef);
     register("/sys/kernel/tracing/trace_options",
         StaticFileInode::new(b"") as InodeRef);
     register("/sys/kernel/tracing/buffer_size_kb",
         StaticFileInode::new(b"1408\n") as InodeRef);
-    // Per-event control directory placeholder. Real per-event
-    // enable is a follow-up.
-    register("/sys/kernel/tracing/events/header_event",
-        StaticFileInode::new(b"") as InodeRef);
+    // eventfs: per-event dir hierarchy (enable/id/format/filter + subsystem and
+    // root aggregate enables + available_events), table-driven from `eventfs`.
+    eventfs::register();
 }
