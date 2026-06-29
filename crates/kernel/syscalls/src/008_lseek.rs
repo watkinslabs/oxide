@@ -9,7 +9,10 @@ use syscall::errno::Errno;
 /// seekability is decided by the file's `Fmode::LSEEK` bit inside the
 /// work fn (Linux `f_op->llseek`/`no_llseek`), so directories and
 /// seekable char/block devices succeed while pipes/fifos/sockets get
-/// ESPIPE — the shim no longer second-guesses by `FileType` (D16).
+/// ESPIPE — the shim no longer second-guesses by `FileType` (D16). D17:
+/// SEEK_DATA(3)/SEEK_HOLE(4) decode here and route to `File::seek`, which
+/// dispatches `f_op->seek_hole_data` (generic non-sparse default: ENXIO at/past
+/// EOF; a sparse backend overrides). Errors propagate as `-errno`.
 /// # C: O(1)
 pub fn sys_lseek(args: &SyscallArgs) -> i64 {
     let fd     = args.a0 as i32;
@@ -23,6 +26,8 @@ pub fn sys_lseek(args: &SyscallArgs) -> i64 {
         0 => vfs::SeekFrom::Start,   // SEEK_SET
         1 => vfs::SeekFrom::Current, // SEEK_CUR
         2 => vfs::SeekFrom::End,     // SEEK_END
+        3 => vfs::SeekFrom::Data,    // SEEK_DATA — next data byte at/after off
+        4 => vfs::SeekFrom::Hole,    // SEEK_HOLE — next hole at/after off
         _ => return -(Errno::Einval.as_i32() as i64),
     };
     match file.seek(from, off) {
