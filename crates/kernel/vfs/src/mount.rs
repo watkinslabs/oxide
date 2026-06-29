@@ -483,6 +483,13 @@ pub fn idmap_for(mnt_id: u64) -> Arc<crate::idmap::Idmap> {
 /// namespace root mount. # C: O(depth)
 fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRef>) -> KResult<()> {
     let ns = current_ns();
+    // Per-ns mount cap (Linux `count_mounts` in `attach_recursive_mnt`): RESERVE
+    // one slot in `pending_mounts` BEFORE building any mount state; over
+    // `sysctl_mount_max` ⇒ ENOSPC with nothing allocated. A single graft, so
+    // `num == 1`. The reservation is rolled live by `commit_mounts` once the
+    // mount is in `MOUNTS`; attach has no fallible step after this point, so no
+    // `abort_mounts` unwind path is reachable.
+    mntns::count_mounts(ns, 1)?;
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
     let mp = mp.filter(|d| !is_global_root(d));
     let Some(d) = mp else {
@@ -491,6 +498,7 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
         let m = new_mount(sb, String::from("/"), None, mnt_id, root, mnt_id, ns);
         mntns::ns_set_root(ns, mnt_id);
         MOUNTS.lock().insert(mnt_id, m);
+        mntns::commit_mounts(ns, 1);
         mntns::bump_gen(ns);
         return Ok(());
     };
@@ -508,6 +516,7 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
     MOUNTS.lock().insert(mnt_id, m);
     wire_crossing(ns, &d, mnt_id);
     hash_insert(ns, parent_id, dptr(&d), mnt_id);
+    mntns::commit_mounts(ns, 1);
     mntns::bump_gen(ns);
     Ok(())
 }
@@ -718,6 +727,11 @@ pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
         if m.mountpoint().is_none() { mntns::ns_set_root(to_ns, new_id); }
         MOUNTS.lock().insert(new_id, clone);
     }
+    // Account the cloned mounts into the new ns (Linux `copy_mnt_ns` sums
+    // `nr_mounts` over the copied tree). The ns COPY itself is not bounded by
+    // `sysctl_mount_max` — only later grafts are — so roll the count straight
+    // into the live `nr_mounts` (fresh ns ⇒ `pending == 0`).
+    mntns::commit_mounts(to_ns, src.len() as u64);
     rebuild_ns_index(to_ns);
     mntns::bump_gen(to_ns);
 }
@@ -740,6 +754,10 @@ pub(crate) fn reap_ns(ns: u64) {
         // free_mnt_ns → mntput → deactivate_super: drop this mount's active ref.
         put_super_if_last(&m.sb);
     }
+    // free_mnt_ns: the whole ns is gone — zero its live mount count so a stale
+    // `ns_nr_mounts` read after reap reports 0 (Linux `mnt_ns->nr_mounts` dies
+    // with the namespace).
+    mntns::dec_mounts(ns, mounts.len() as u64);
     hash_drop_ns(ns);
     mntns::bump_gen(ns);
 }
