@@ -9,22 +9,15 @@
 //! (`INVALID_ID`) denies the capability path. The inline form silently grants
 //! that case; this helper denies it.
 
-use std::sync::Arc;
-
 use vfs::idmap::Idmap;
-use vfs::inode::{inode_owner_or_capable, Inode};
-use vfs::{Cred, FileType, InodeRef, KResult, VfsError, CRED_NGROUPS};
+use vfs::inode::{inode_owner_or_capable, InodeBuilder};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, Cred, FileType, InodeRef, CRED_NGROUPS};
 
 /// Regular file with an explicit on-disk owner uid.
-struct OFile { uid: u32 }
-impl Inode for OFile {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn uid(&self) -> Option<u32> { Some(self.uid) }
+fn ofile(uid: u32) -> InodeRef {
+    InodeBuilder::new(1, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
+        .owner(uid, uid).build()
 }
-fn ofile(uid: u32) -> Arc<OFile> { Arc::new(OFile { uid }) }
 
 /// Unprivileged cred (no caps).
 fn user(uid: u32) -> Cred {
@@ -44,20 +37,20 @@ fn fowner(uid: u32) -> Cred { let mut c = user(uid); c.cap_fowner = true; c }
 fn owner_matches_regardless_of_caps() {
     // fsuid == file vfsuid → true even with zero capabilities.
     let f = ofile(1000);
-    assert!(inode_owner_or_capable(&Idmap::identity(), &*f, &user(1000)));
+    assert!(inode_owner_or_capable(&Idmap::identity(), &f, &user(1000)));
 }
 
 #[test]
 fn non_owner_without_cap_denied() {
     let f = ofile(1000);
-    assert!(!inode_owner_or_capable(&Idmap::identity(), &*f, &user(2000)));
+    assert!(!inode_owner_or_capable(&Idmap::identity(), &f, &user(2000)));
 }
 
 #[test]
 fn non_owner_with_cap_fowner_allowed() {
     // CAP_FOWNER bypasses the owner check on an identity mount (owner is mapped).
     let f = ofile(1000);
-    assert!(inode_owner_or_capable(&Idmap::identity(), &*f, &fowner(2000)));
+    assert!(inode_owner_or_capable(&Idmap::identity(), &f, &fowner(2000)));
 }
 
 // ---- idmapped mount: compare against vfsuid, not raw fs uid --------------
@@ -68,7 +61,7 @@ fn idmapped_owner_uses_mapped_vfsuid() {
     // vfsuid 100000. The owner is the caller whose fsuid is the MAPPED 100000.
     let map = Idmap::uniform(1000, 100_000, 10);
     let f = ofile(1000);
-    assert!(inode_owner_or_capable(&map, &*f, &user(100_000)));
+    assert!(inode_owner_or_capable(&map, &f, &user(100_000)));
 }
 
 #[test]
@@ -77,7 +70,7 @@ fn idmapped_raw_fs_uid_is_not_owner() {
     // an idmapped mount — proves the predicate maps before comparing.
     let map = Idmap::uniform(1000, 100_000, 10);
     let f = ofile(1000);
-    assert!(!inode_owner_or_capable(&map, &*f, &user(1000)));
+    assert!(!inode_owner_or_capable(&map, &f, &user(1000)));
 }
 
 #[test]
@@ -88,5 +81,5 @@ fn idmap_miss_denies_cap_fowner() {
     // inline `cred.uid == vfsuid || cred.cap_fowner` would have granted here.
     let map = Idmap::uniform(1000, 100_000, 10);
     let f = ofile(5000);
-    assert!(!inode_owner_or_capable(&map, &*f, &fowner(7000)));
+    assert!(!inode_owner_or_capable(&map, &f, &fowner(7000)));
 }

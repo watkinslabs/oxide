@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
-use vfs::{Dentry, FileType, InodeRef, KResult, VfsError};
+use vfs::{Dentry, FileType, InodeOps, InodeRef, KResult, VfsError};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -29,25 +29,28 @@ const NS: u64 = 0xD33D;
 
 // --- tree-backed inodes (per-component lookup works, like ext4) ------------
 
-struct Dir { ino: u64, kids: &'static [(&'static str, u64)] }
-impl Inode for Dir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, n: &str) -> KResult<InodeRef> {
-        for (name, ino) in self.kids {
+/// Per-inode dir state (the old `Dir.kids`), stored in `i_private`.
+struct DirData { kids: &'static [(&'static str, u64)] }
+
+/// Tree-backed directory `i_op`: per-component `lookup` reads the child table
+/// off `i_private` and materialises the child via `node` (like ext4).
+struct DirOps;
+impl InodeOps for DirOps {
+    fn lookup(&self, inode: &Inode, n: &str) -> KResult<InodeRef> {
+        let d = inode.private::<DirData>().ok_or(VfsError::Einval)?;
+        for (name, ino) in d.kids {
             if *name == n { return Ok(node(*ino)); }
         }
         Err(VfsError::Enoent)
     }
 }
 
-struct Reg { ino: u64 }
-impl Inode for Reg {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn dir(ino: u64, kids: &'static [(&'static str, u64)]) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755), Arc::new(DirOps), vfs::default_file_ops())
+        .private(Arc::new(DirData { kids })).build()
+}
+fn reg(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Regular, 0o644), vfs::default_inode_ops(), vfs::default_file_ops()).build()
 }
 
 const ROOT_INO: u64 = 2;
@@ -63,15 +66,15 @@ const PROC_STAT: u64 = 0x501;  // /proc/1/stat
 /// agree on, so identity is stable.
 fn node(ino: u64) -> InodeRef {
     match ino {
-        ROOT_INO => Arc::new(Dir { ino: ROOT_INO, kids: &[("a", DIR_A), ("proc", PROC_UNDERLAY)] }),
-        DIR_A => Arc::new(Dir { ino: DIR_A, kids: &[("b", DIR_B)] }),
-        DIR_B => Arc::new(Dir { ino: DIR_B, kids: &[("c", FILE_C)] }),
-        FILE_C => Arc::new(Reg { ino: FILE_C }),
-        PROC_UNDERLAY => Arc::new(Dir { ino: PROC_UNDERLAY, kids: &[] }),
+        ROOT_INO => dir(ROOT_INO, &[("a", DIR_A), ("proc", PROC_UNDERLAY)]),
+        DIR_A => dir(DIR_A, &[("b", DIR_B)]),
+        DIR_B => dir(DIR_B, &[("c", FILE_C)]),
+        FILE_C => reg(FILE_C),
+        PROC_UNDERLAY => dir(PROC_UNDERLAY, &[]),
         // procfs mount root resolves per-component: /proc → 1 → stat.
-        PROC_ROOT => Arc::new(Dir { ino: PROC_ROOT, kids: &[("1", PROC_PID1)] }),
-        PROC_PID1 => Arc::new(Dir { ino: PROC_PID1, kids: &[("stat", PROC_STAT)] }),
-        other => Arc::new(Reg { ino: other }),
+        PROC_ROOT => dir(PROC_ROOT, &[("1", PROC_PID1)]),
+        PROC_PID1 => dir(PROC_PID1, &[("stat", PROC_STAT)]),
+        other => reg(other),
     }
 }
 

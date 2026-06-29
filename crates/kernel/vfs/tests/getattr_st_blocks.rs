@@ -8,22 +8,33 @@
 //! REMAINS (D20): sparse / preallocated files are still indistinguishable from
 //! fully-allocated ones — that needs a real stored per-inode `i_blocks`/`i_bytes`.
 
-use vfs::getattr::blocks_for;
-use vfs::inode::Inode;
-use vfs::{FileType, InodeRef, KResult, VfsError, IDENTITY};
+use std::sync::Arc;
 
-/// Regular file with an explicit fs block size and logical size.
-struct TReg { bs: u32, size: u64 }
-impl Inode for TReg {
-    fn ino(&self) -> vfs::Ino { 7 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { self.size }
-    fn blksize(&self) -> u32 { self.bs }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+use vfs::getattr::blocks_for;
+use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
+use vfs::{FileType, InodeBuilder, InodeRef, KResult, IDENTITY,
+          default_file_ops, default_inode_ops, mk_mode};
+
+// `st_blksize`/`st_blocks` derive the allocation unit from the owning
+// SuperBlock's `s_blocksize` (Linux), so the fs block size is set on the SB.
+struct NullType;
+impl FileSystemType for NullType {
+    fn name(&self) -> &str { "t" }
+    fn mount(&self, _s: &str, _o: &str) -> KResult<Arc<SuperBlock>> { unreachable!() }
+}
+struct NullOps;
+impl SuperOps for NullOps {
+    fn statfs(&self) -> KResult<SbStatFs> { Ok(SbStatFs::default()) }
+}
+fn sb(blocksize: u32) -> Arc<SuperBlock> {
+    SuperBlock::new(Arc::new(NullType), Arc::new(NullOps), 0, 0x10, blocksize, "t".into(), Arc::new(()))
 }
 
+/// Regular file with logical size, attached to a SB carrying the fs block size.
 fn st_blocks(bs: u32, size: u64) -> u64 {
-    let f = TReg { bs, size };
+    let s = sb(bs);
+    let f = InodeBuilder::new(7, mk_mode(FileType::Regular, 0), default_inode_ops(), default_file_ops())
+        .sb(Arc::downgrade(&s)).size(size).build();
     vfs::generic_fillattr(&f, &IDENTITY, None).blocks
 }
 

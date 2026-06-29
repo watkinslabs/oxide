@@ -33,23 +33,20 @@ static LOOKUPS: AtomicUsize = AtomicUsize::new(0);
 /// Directory whose every `lookup` mints a fresh leaf file and bumps `LOOKUPS`.
 /// So if the walk EVER consults the fs for a planted-negative name, the counter
 /// catches it.
-struct CountDir(u64);
-impl Inode for CountDir {
-    fn ino(&self) -> vfs::Ino { self.0 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> {
+struct CountDirOps;
+impl vfs::InodeOps for CountDirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> {
         LOOKUPS.fetch_add(1, Ordering::SeqCst);
-        Ok(Arc::new(Leaf(0x5000)))
+        Ok(mk_leaf(0x5000))
     }
 }
-
-struct Leaf(u64);
-impl Inode for Leaf {
-    fn ino(&self) -> vfs::Ino { self.0 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn mk_countdir(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755),
+        Arc::new(CountDirOps), vfs::default_file_ops()).build()
+}
+fn mk_leaf(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Regular, 0o644),
+        vfs::default_inode_ops(), vfs::default_file_ops()).build()
 }
 
 fn cached() -> LookupFlags { let mut f = LookupFlags::default(); f.cached = true; f }
@@ -61,7 +58,7 @@ fn cached() -> LookupFlags { let mut f = LookupFlags::default(); f.cached = true
 fn cached_negative_is_enoent_without_fs_lookup() {
     let _g = SERIAL.lock().unwrap();
     LOOKUPS.store(0, Ordering::SeqCst);
-    let root = Dentry::new_root(Arc::new(CountDir(0x10)));
+    let root = Dentry::new_root(mk_countdir(0x10));
 
     // Plant a negative for `ghost` under the root (Linux `d_add_negative`).
     let neg = vfs::d_add_negative(&root, "ghost");
@@ -87,7 +84,7 @@ fn cached_negative_is_enoent_without_fs_lookup() {
 fn cached_negative_under_resolve_cached_is_enoent_not_eagain() {
     let _g = SERIAL.lock().unwrap();
     LOOKUPS.store(0, Ordering::SeqCst);
-    let root = Dentry::new_root(Arc::new(CountDir(0x20)));
+    let root = Dentry::new_root(mk_countdir(0x20));
     vfs::d_add_negative(&root, "ghost");
 
     assert_eq!(
@@ -105,7 +102,7 @@ fn cached_negative_under_resolve_cached_is_enoent_not_eagain() {
 fn sibling_name_still_takes_slow_path() {
     let _g = SERIAL.lock().unwrap();
     LOOKUPS.store(0, Ordering::SeqCst);
-    let root = Dentry::new_root(Arc::new(CountDir(0x30)));
+    let root = Dentry::new_root(mk_countdir(0x30));
     vfs::d_add_negative(&root, "ghost");
 
     // `real` is not cached → slow path mints the leaf, counter bumps.

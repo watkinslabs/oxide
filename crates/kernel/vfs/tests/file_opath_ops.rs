@@ -12,26 +12,24 @@ use std::sync::Arc;
 
 use vfs::file::SeekFrom;
 use vfs::inode::Inode;
-use vfs::{Dentry, File, FileType, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{Dentry, File, FileOps, FileType, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError,
+          default_inode_ops, mk_mode};
 
 /// `O_PATH` (asm-generic) — undeclared in `OpenFlags`, set as a raw bit and
 /// preserved via `from_bits_retain`, exactly how the syscall layer hands it in.
 const O_PATH: u32 = 0o10000000;
 
-/// Regular-file inode whose every I/O op succeeds — so any error returned by a
+/// Regular-file `i_fop` whose every I/O op succeeds — so any error returned by a
 /// `File` op can ONLY come from the O_PATH `f_mode` gate.
-struct AlwaysOk;
-impl Inode for AlwaysOk {
-    fn ino(&self) -> vfs::Ino { 0x9a7 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 4096 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, b: &mut [u8]) -> KResult<usize> { Ok(b.len()) }
-    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
+struct AlwaysOkOps;
+impl FileOps for AlwaysOkOps {
+    fn read(&self, _inode: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> { Ok(b.len()) }
+    fn write(&self, _inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
 
 fn opath_file() -> Arc<File> {
-    let ino: InodeRef = Arc::new(AlwaysOk);
+    let ino: InodeRef = InodeBuilder::new(0x9a7, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(AlwaysOkOps))
+        .size(4096).build();
     let d = Dentry::new(None, "p".into(), Arc::clone(&ino));
     File::new(ino, d, OpenFlags::from_bits_retain(O_PATH))
 }

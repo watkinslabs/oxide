@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use vfs::inode::Inode;
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder, InodeOps};
 use vfs::{Dentry, FileType, InodeRef, KResult, VfsError};
 
 // ---- ramfs backend: a real SuperBlock with per-component lookup ----
@@ -27,39 +28,36 @@ impl SuperOps for RamFsOps {
     fn statfs(&self) -> KResult<SbStatFs> { Ok(SbStatFs { f_type: self.magic, f_bsize: 4096, ..Default::default() }) }
 }
 
-/// In-memory directory inode. `lookup` is PER-COMPONENT and counts its
-/// invocations so a test can prove the dcache shortcut fired.
-struct RamDir {
-    ino:    u64,
-    sb:     Weak<SuperBlock>,
-    kids:   Mutex<BTreeMap<String, InodeRef>>,
+/// In-memory directory inode state (`i_private`). `lookup` is PER-COMPONENT
+/// and counts its invocations so a test can prove the dcache shortcut fired.
+struct RamDirData {
+    kids:    Mutex<BTreeMap<String, InodeRef>>,
     lookups: Arc<AtomicUsize>,
 }
-impl Inode for RamDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
-        self.lookups.fetch_add(1, Ordering::SeqCst);
-        self.kids.lock().unwrap().get(name).cloned().ok_or(VfsError::Enoent)
+
+/// `i_op->lookup` over the per-component `RamDirData` child table.
+struct RamDirOps;
+impl InodeOps for RamDirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<RamDirData>().ok_or(VfsError::Enotdir)?;
+        d.lookups.fetch_add(1, Ordering::SeqCst);
+        d.kids.lock().unwrap().get(name).cloned().ok_or(VfsError::Enoent)
     }
 }
 
-struct RamFile { ino: u64, sb: Weak<SuperBlock> }
-impl Inode for RamFile {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn dir(sb: &Arc<SuperBlock>, ino: u64, lookups: &Arc<AtomicUsize>) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(RamDirOps), default_file_ops())
+        .sb(Arc::downgrade(sb))
+        .private(Arc::new(RamDirData { kids: Mutex::new(BTreeMap::new()), lookups: lookups.clone() }))
+        .build()
 }
-
-fn dir(sb: &Arc<SuperBlock>, ino: u64, lookups: &Arc<AtomicUsize>) -> Arc<RamDir> {
-    Arc::new(RamDir { ino, sb: Arc::downgrade(sb), kids: Mutex::new(BTreeMap::new()), lookups: lookups.clone() })
+fn file(sb: &Arc<SuperBlock>, ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
+        .sb(Arc::downgrade(sb)).build()
 }
-fn file(sb: &Arc<SuperBlock>, ino: u64) -> InodeRef { Arc::new(RamFile { ino, sb: Arc::downgrade(sb) }) }
-fn link(parent: &Arc<RamDir>, name: &str, child: InodeRef) { parent.kids.lock().unwrap().insert(name.into(), child); }
+fn link(parent: &InodeRef, name: &str, child: InodeRef) {
+    parent.private::<RamDirData>().unwrap().kids.lock().unwrap().insert(name.into(), child);
+}
 
 /// Build a ramfs SuperBlock with a root inode + `s_root` dentry.
 fn mount_ramfs(s_dev: u64) -> Arc<SuperBlock> {
@@ -178,8 +176,8 @@ fn t5_dget_dput_refcount() {
 fn t6_d_move_rehomes_by_parent_name() {
     let sb = mount_ramfs(1);
     let root = sb.s_root().unwrap();
-    let a = vfs::d_add(&root, "a", Arc::new(RamDir { ino: 3, sb: Arc::downgrade(&sb), kids: Mutex::new(BTreeMap::new()), lookups: Arc::new(AtomicUsize::new(0)) }));
-    let b = vfs::d_add(&root, "b", Arc::new(RamDir { ino: 4, sb: Arc::downgrade(&sb), kids: Mutex::new(BTreeMap::new()), lookups: Arc::new(AtomicUsize::new(0)) }));
+    let a = vfs::d_add(&root, "a", dir(&sb, 3, &Arc::new(AtomicUsize::new(0))));
+    let b = vfs::d_add(&root, "b", dir(&sb, 4, &Arc::new(AtomicUsize::new(0))));
     let old = vfs::d_add(&a, "old", file(&sb, 11));
     assert!(vfs::d_lookup(&a, "old").is_some());
 

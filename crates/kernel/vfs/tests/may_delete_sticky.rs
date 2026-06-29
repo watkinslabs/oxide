@@ -5,39 +5,21 @@
 //! `may_delete` is reached via its fully-qualified `vfs::namei` path (the
 //! crate root re-export is reported, not edited).
 
-use std::sync::Arc;
-
-use vfs::inode::{Inode, S_APPEND, S_IMMUTABLE};
+use vfs::inode::{S_APPEND, S_IMMUTABLE};
 use vfs::namei::may_delete;
-use vfs::{Cred, FileType, InodeRef, VfsError, CRED_NGROUPS};
+use vfs::{Cred, FileType, InodeBuilder, InodeRef, VfsError, CRED_NGROUPS, default_file_ops, default_inode_ops, mk_mode};
 
 /// Regular file with explicit perm/uid/gid + VFS `i_flags`.
-struct PFile { perm: u16, uid: u32, flags: u32 }
-impl Inode for PFile {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn perm(&self) -> Option<u16> { Some(self.perm) }
-    fn uid(&self) -> Option<u32> { Some(self.uid) }
-    fn gid(&self) -> Option<u32> { Some(0) }
-    fn i_flags(&self) -> u32 { self.flags }
+fn pfile(perm: u16, uid: u32, flags: u32) -> InodeRef {
+    InodeBuilder::new(1, mk_mode(FileType::Regular, perm), default_inode_ops(), default_file_ops())
+        .owner(uid, 0).i_flags(flags).build()
 }
-fn pfile(perm: u16, uid: u32, flags: u32) -> InodeRef { Arc::new(PFile { perm, uid, flags }) }
 
 /// Directory with explicit perm/uid + VFS `i_flags`.
-struct PDir { perm: u16, uid: u32, flags: u32 }
-impl Inode for PDir {
-    fn ino(&self) -> vfs::Ino { 2 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(VfsError::Enoent) }
-    fn perm(&self) -> Option<u16> { Some(self.perm) }
-    fn uid(&self) -> Option<u32> { Some(self.uid) }
-    fn gid(&self) -> Option<u32> { Some(0) }
-    fn i_flags(&self) -> u32 { self.flags }
+fn pdir(perm: u16, uid: u32, flags: u32) -> InodeRef {
+    InodeBuilder::new(2, mk_mode(FileType::Directory, perm), default_inode_ops(), default_file_ops())
+        .owner(uid, 0).i_flags(flags).build()
 }
-fn pdir(perm: u16, uid: u32, flags: u32) -> InodeRef { Arc::new(PDir { perm, uid, flags }) }
 
 /// Unprivileged cred (no caps).
 fn user(uid: u32) -> Cred {

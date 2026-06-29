@@ -6,18 +6,11 @@
 
 use std::sync::Arc;
 
-use vfs::inode::Inode;
-use vfs::{Dentry, FileType, InodeRef, KResult, VfsError};
+use vfs::{Dentry, FileType, InodeRef};
 
-struct TInode { ino: u64, ft: FileType }
-impl Inode for TInode {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { self.ft }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn inode(ft: FileType) -> InodeRef {
+    vfs::InodeBuilder::new(1, vfs::mk_mode(ft, 0o644), vfs::default_inode_ops(), vfs::default_file_ops()).build()
 }
-
-fn inode(ft: FileType) -> InodeRef { Arc::new(TInode { ino: 1, ft }) }
 fn dentry(ft: FileType) -> Arc<Dentry> { Dentry::new(None, String::from("x"), inode(ft)) }
 
 #[test]

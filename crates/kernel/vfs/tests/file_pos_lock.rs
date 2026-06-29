@@ -16,11 +16,13 @@ use std::thread;
 use std::time::Duration;
 
 use vfs::inode::Inode;
-use vfs::{Dentry, File, FileType, Ino, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{Dentry, File, FileOps, FileType, InodeBuilder, InodeRef, KResult, OpenFlags,
+          default_inode_ops, mk_mode};
 
 /// Per-op record of the (offset, len) the inode saw, plus a delay injected
 /// inside each I/O call to widen the pos-update race window. `ft` lets the
 /// same recorder pose as a seekable (Regular) or non-seekable (Fifo) inode.
+/// Stored as the inode's `i_private`.
 struct Recorder {
     ops:   Mutex<Vec<(u64, usize)>>,
     delay: Duration,
@@ -33,25 +35,26 @@ impl Recorder {
     }
 }
 
-impl Inode for Recorder {
-    fn ino(&self) -> Ino { 0xD9 }
-    fn file_type(&self) -> FileType { self.ft }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        thread::sleep(self.delay);
-        self.ops.lock().unwrap().push((off, buf.len()));
+struct RecOps;
+impl FileOps for RecOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let r = inode.private::<Recorder>().unwrap();
+        thread::sleep(r.delay);
+        r.ops.lock().unwrap().push((off, buf.len()));
         Ok(buf.len())
     }
-    fn write(&self, off: u64, buf: &[u8]) -> KResult<usize> {
-        thread::sleep(self.delay);
-        self.ops.lock().unwrap().push((off, buf.len()));
+    fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
+        let r = inode.private::<Recorder>().unwrap();
+        thread::sleep(r.delay);
+        r.ops.lock().unwrap().push((off, buf.len()));
         Ok(buf.len())
     }
 }
 
 fn file_for(rec: &Arc<Recorder>) -> Arc<File> {
-    let ino: InodeRef = Arc::clone(rec) as InodeRef;
+    let ino: InodeRef = InodeBuilder::new(0xD9, mk_mode(rec.ft, 0o644), default_inode_ops(), Arc::new(RecOps))
+        .private(rec.clone())
+        .build();
     let dentry = Dentry::new(None, "f".into(), Arc::clone(&ino));
     File::new(ino, dentry, OpenFlags::O_RDWR)
 }

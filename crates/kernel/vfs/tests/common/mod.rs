@@ -14,9 +14,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use vfs::fs::FileSystem;
-use vfs::inode::Inode;
+use vfs::inode::{Inode, InodeBuilder};
 use vfs::mount::Propagation;
-use vfs::{Dentry, FileType, InodeRef, KResult, VfsError};
+use vfs::{default_file_ops, mk_mode, Dentry, FileType, InodeOps, InodeRef, KResult, VfsError};
 
 static NEXT_INO: AtomicU64 = AtomicU64::new(0x1000);
 
@@ -25,21 +25,21 @@ static NEXT_INO: AtomicU64 = AtomicU64::new(0x1000);
 /// position. Mount routing keys on dentry identity (not inode identity), and
 /// the dcache (`parent.children`) dedups the dentry, so a fresh inode per
 /// lookup is fine.
-struct FixDir(u64);
-impl Inode for FixDir {
-    fn ino(&self) -> vfs::Ino { self.0 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> {
-        Ok(Arc::new(FixDir(NEXT_INO.fetch_add(1, Ordering::Relaxed))))
+struct FixDirOps;
+impl InodeOps for FixDirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> {
+        Ok(make_fixdir(NEXT_INO.fetch_add(1, Ordering::Relaxed)))
     }
+}
+fn make_fixdir(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(FixDirOps), default_file_ops()).build()
 }
 
 /// One process-global root dentry, shared by `dentry()` and the engine's
 /// `descend` via the root-dentry provider.
 static ROOT: OnceLock<Arc<Dentry>> = OnceLock::new();
 fn root() -> Arc<Dentry> {
-    ROOT.get_or_init(|| Dentry::new_root(Arc::new(FixDir(2)))).clone()
+    ROOT.get_or_init(|| Dentry::new_root(make_fixdir(2))).clone()
 }
 fn root_provider() -> Option<Arc<Dentry>> { Some(root()) }
 

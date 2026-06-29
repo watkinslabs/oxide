@@ -9,18 +9,13 @@ use std::sync::Arc;
 
 use vfs::dcache::d_alloc_pseudo;
 use vfs::dentry::{Dentry, DentryOps, D_OP_DNAME};
-use vfs::inode::Inode;
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{FileType, InodeRef};
 
-struct PInode { ino: u64, ft: FileType }
-impl Inode for PInode {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { self.ft }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn pinode(ino: u64, ft: FileType) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(ft, 0o644), vfs::default_inode_ops(), vfs::default_file_ops()).build()
 }
-fn fifo(ino: u64) -> InodeRef { Arc::new(PInode { ino, ft: FileType::Fifo }) }
-fn reg(ino: u64) -> InodeRef { Arc::new(PInode { ino, ft: FileType::Regular }) }
+fn fifo(ino: u64) -> InodeRef { pinode(ino, FileType::Fifo) }
+fn reg(ino: u64) -> InodeRef { pinode(ino, FileType::Regular) }
 
 // pipefs `pipe:[%lu]` — renders the whole path from the inode number.
 fn pipe_dname(d: &Dentry) -> String {

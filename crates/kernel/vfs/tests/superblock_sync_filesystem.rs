@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use vfs::fs::FileSystem;
-use vfs::inode::{Inode, I_DIRTY_SYNC};
+use vfs::inode::{InodeBuilder, I_DIRTY_SYNC};
 use vfs::superblock::next_anon_dev;
-use vfs::{FileType, InodeRef, KResult, SbStatFs, SuperBlock, SuperOps, VfsError};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, InodeRef, KResult, SbStatFs, SuperBlock, SuperOps, VfsError};
 
 /// `SuperOps` recording each `sync_fs` wait flag in call order, optionally
 /// failing the async (`wait=false`) pass so the abort-before-wait path shows.
@@ -34,12 +34,8 @@ impl FileSystem for SyncFs {
     fn super_ops(&self) -> Option<Arc<dyn SuperOps>> { Some(self.ops.clone()) }
 }
 
-struct RamFile { ino: u64 }
-impl Inode for RamFile {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn make_ramfile(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
 }
 
 fn build() -> (Arc<SuperBlock>, Arc<SyncOps>) {
@@ -79,11 +75,11 @@ fn sync_filesystem_aborts_before_wait_on_async_error() {
 fn drop_caches_reclaims_clean_keeps_busy_and_dirty() {
     let (sb, _ops) = build();
     // held: clean + referenced → busy, retained.
-    let held: InodeRef = sb.iget(11, || Arc::new(RamFile { ino: 11 }));
+    let held: InodeRef = sb.iget(11, || make_ramfile(11));
     // clean + unreferenced → reclaimable.
-    drop(sb.iget(12, || Arc::new(RamFile { ino: 12 })));
+    drop(sb.iget(12, || make_ramfile(12)));
     // dirty + unreferenced → retained (writeback still owes it).
-    drop(sb.iget(13, || Arc::new(RamFile { ino: 13 })));
+    drop(sb.iget(13, || make_ramfile(13)));
     sb.mark_inode_dirty(13, I_DIRTY_SYNC);
 
     assert_eq!(sb.drop_caches(), 1, "only the clean idle ino 12 dropped");

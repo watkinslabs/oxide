@@ -15,31 +15,30 @@ use vfs::inode::Inode;
 use vfs::path::NAME_MAX;
 use vfs::{Dentry, FileType, InodeRef, LookupFlags, VfsError};
 
-struct Dir { ino: u64, kids: BTreeMap<String, InodeRef> }
-impl Inode for Dir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> vfs::KResult<InodeRef> {
-        self.kids.get(name).cloned().ok_or(VfsError::Enoent)
+struct DirData { kids: BTreeMap<String, InodeRef> }
+struct DirOps;
+impl vfs::InodeOps for DirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> vfs::KResult<InodeRef> {
+        inode.private::<DirData>().unwrap().kids.get(name).cloned().ok_or(VfsError::Enoent)
     }
 }
-struct F { ino: u64 }
-impl Inode for F {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn mk_dir(ino: u64, kids: BTreeMap<String, InodeRef>) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755),
+        Arc::new(DirOps), vfs::default_file_ops())
+        .private(Arc::new(DirData { kids })).build()
 }
-fn file(ino: u64) -> InodeRef { Arc::new(F { ino }) }
+fn file(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Regular, 0o644),
+        vfs::default_inode_ops(), vfs::default_file_ops()).build()
+}
 
 // Root holds a child named exactly NAME_MAX 'a's (file ino 50) and a `dir`.
 fn build() -> Arc<Dentry> {
     let at_limit = "a".repeat(NAME_MAX);
     let mut kids = BTreeMap::new();
     kids.insert(at_limit, file(50));
-    kids.insert("dir".to_string(), Arc::new(Dir { ino: 10, kids: BTreeMap::new() }));
-    Dentry::new_root(Arc::new(Dir { ino: 2, kids }))
+    kids.insert("dir".to_string(), mk_dir(10, BTreeMap::new()));
+    Dentry::new_root(mk_dir(2, kids))
 }
 
 // A component of NAME_MAX bytes resolves; NAME_MAX+1 bytes is ENAMETOOLONG.
