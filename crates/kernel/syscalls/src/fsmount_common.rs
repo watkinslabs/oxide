@@ -303,11 +303,15 @@ impl FsContextInode {
         Self::build(fstype, fc)
     }
 
-    /// `fspick`: build a LEGACY `fs_context` inode tagged with the picked mount's
-    /// `fstype` (no threaded `FsContext`; Step-1 `fsconfig(RECONFIGURE)` remains a
-    /// no-op, byte-identical to the prior behaviour). # C: O(1)
-    pub fn new_legacy(fstype: String) -> InodeRef {
-        Self::build(fstype, None)
+    /// `fspick`: build a RECONFIGURE `fs_context` inode bound to the LIVE
+    /// superblock + root dentry of the picked mount (superblock D15). The caller
+    /// constructs `fc` via [`vfs::fs::FsContext::for_reconfigure`] over the
+    /// resolved mount's `(sb, root)`, so a later `fsconfig(CMD_RECONFIGURE)`
+    /// threads through [`vfs::fs::reconfigure_super`] (431_fsconfig.rs:64) and
+    /// applies the parsed params + masked `sb_flags` to THAT sb in place, instead
+    /// of the prior no-op legacy context. # C: O(1)
+    pub fn new_reconfigure(fstype: String, fc: vfs::fs::FsContext) -> InodeRef {
+        Self::build(fstype, Some(fc))
     }
 
     /// # C: O(1)
