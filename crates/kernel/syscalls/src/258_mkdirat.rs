@@ -43,7 +43,10 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
     // Thread the mount idmap + caller cred + umask for the new dir's owner.
     let cred = crate::pathresolve::current_cred();
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
-    match pino.mkdir(&name, mode, &ctx) {
+    // D29: parent dir `i_rwsem` EXCLUSIVE across the backend mkdir (Linux
+    // `filename_create` → `->mkdir`); dropped before the dcache update below.
+    let r = { let _g = pino.inode_lock(); pino.mkdir(&name, mode, &ctx) };
+    match r {
         Ok(_) => { crate::pathresolve::d_drop_path(&p); 0 }
         Err(e) => {
             crate::namei_common::trace_run_vfs_error(b"mkdirat", &p, e);

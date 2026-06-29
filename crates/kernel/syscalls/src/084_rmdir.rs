@@ -20,7 +20,10 @@ pub(crate) fn do_rmdir(p: &str) -> i64 {
         return -(Errno::Erofs.as_i32() as i64);
     }
     let (pino, name) = match resolve_parent(p) { Ok(x) => x, Err(rv) => return rv };
-    match pino.rmdir(&name) {
+    // D29: parent dir `i_rwsem` EXCLUSIVE across the backend rmdir (Linux
+    // `do_rmdir` locks the parent); dropped before the dcache invalidate below.
+    let r = { let _g = pino.inode_lock(); pino.rmdir(&name) };
+    match r {
         // D25: invalidate the removed directory's whole cached subtree (the
         // dentry itself + any negative dentries cached for names looked up
         // inside it), not just the single dentry (Linux `d_invalidate`).

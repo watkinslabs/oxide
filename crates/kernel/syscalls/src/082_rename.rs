@@ -6,7 +6,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_user_path, errno_from_vfs, path_exists};
+use crate::namei_common::{read_user_path, errno_from_vfs, path_exists, resolve_parent};
 
 /// renameat2 flags (uapi/linux/fs.h).
 pub(crate) const RENAME_NOREPLACE: u32 = 1 << 0;
@@ -99,14 +99,30 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     if !alloc::sync::Arc::ptr_eq(&mnt_f, &mnt_t) {
         return -(Errno::Exdev.as_i32() as i64);
     }
+    // D29: hold BOTH parent dirs' `i_rwsem` via `lock_rename` (Linux
+    // `vfs_rename` → `lock_rename`) across the backend rename. `lock_rename`
+    // orders the two rank-40 `i_rwsem`s by address (deadlock-safe vs. a reverse
+    // concurrent rename) and locks a same-dir rename's single inode ONCE. The
+    // backend resolves names via `i_op.lookup` (no nested `i_rwsem`), so holding
+    // the exclusive side here is deadlock-free. Best-effort: on a parent-resolve
+    // miss, proceed unlocked rather than introduce a new errno. The guard drops
+    // at the end of this block — before the rank-50/60 dcache update below.
+    let old_parent = resolve_parent(&f).ok();
+    let new_parent = resolve_parent(&t).ok();
     // EXCHANGE atomically swaps; WHITEOUT renames then leaves a whiteout
     // char-dev (0,0) at the source; plain rename is link-then-replace.
-    let r = if flags & RENAME_EXCHANGE != 0 {
-        mnt_f.fs().exchange(&rel_f, &rel_t)
-    } else if flags & RENAME_WHITEOUT != 0 {
-        mnt_f.fs().whiteout(&rel_f, &rel_t)
-    } else {
-        mnt_f.fs().rename(&rel_f, &rel_t)
+    let r = {
+        let _rg = match (&old_parent, &new_parent) {
+            (Some((op, _)), Some((np, _))) => Some(vfs::lock_rename(op, np)),
+            _ => None,
+        };
+        if flags & RENAME_EXCHANGE != 0 {
+            mnt_f.fs().exchange(&rel_f, &rel_t)
+        } else if flags & RENAME_WHITEOUT != 0 {
+            mnt_f.fs().whiteout(&rel_f, &rel_t)
+        } else {
+            mnt_f.fs().rename(&rel_f, &rel_t)
+        }
     };
     match r {
         Ok(())  => {
