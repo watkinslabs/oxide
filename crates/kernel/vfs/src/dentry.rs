@@ -16,7 +16,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use sync::{Dentry as DentryClass, Inode as InodeClass, RwLock};
 
@@ -378,6 +378,19 @@ pub struct Dentry {
     /// under me — retry the walk". The bucket seqcount (`dcache.rs`) protects the
     /// hash chain; THIS protects an individual dentry's identity across a move.
     d_seq: AtomicU32,
+    /// D3/D37: `true` when this dentry holds ONE counted `i_count` reference on
+    /// its inode (Linux: a positive dentry pins its inode via the `iget` ref
+    /// `__d_instantiate` consumed). Taken by [`Dentry::grab_inode_hold`] from the
+    /// dcache binding primitives (`d_add`/`d_instantiate`/`d_make_root`/
+    /// `d_alloc_pseudo`/`d_obtain_alias`); released — exactly once — by
+    /// [`Dentry::set_inode`]`(None)` or `Dentry::drop` via [`dentry_iput`].
+    /// A dentry built through the RAW constructors ([`Dentry::new`] etc.) without
+    /// a dcache primitive stays UNcounted (`false`), so it neither bumps nor
+    /// releases `i_count` — the open-`File` igrab/iput path is then the only
+    /// counted hold (keeps `file_iput_igrab` balanced). `igrab`/`iput` touch the
+    /// SB icache (rank 60 > Dentry 50 > Inode 40), always taken with no lower
+    /// lock held, so the ordering is ascending.
+    counted: AtomicBool,
 }
 
 impl Dentry {
@@ -426,6 +439,7 @@ impl Dentry {
             d_time: AtomicU64::new(0),
             d_fsdata: AtomicU64::new(0),
             d_seq: AtomicU32::new(0),
+            counted: AtomicBool::new(false),
         });
         // Linux `__d_alloc`: after `d_set_d_op`, fire `d_op->d_init` so the fs
         // can stamp its per-dentry private state (`d_fsdata`) at allocation.
@@ -768,12 +782,40 @@ impl Dentry {
         let neg = inode.is_none();
         let type_bits = type_bits_for(&inode);
         let old = { let mut g = self.inode.write(); core::mem::replace(&mut *g, inode) };
-        if let (Some(old_inode), Some(f)) = (old, self.d_op.and_then(|o| o.d_iput)) {
-            f(self, old_inode);
+        if let Some(ref old_inode) = old {
+            if let Some(f) = self.d_op.and_then(|o| o.d_iput) { f(self, old_inode.clone()); }
         }
         self.set_flag(D_NEGATIVE, neg);
         self.set_type(type_bits); // re-stamp DCACHE_ENTRY_TYPE (Linux __d_set_inode_and_type)
+        // D3/D37: this dentry stopped referencing `old`. If it held a COUNTED
+        // `i_count` reference on it (a dcache primitive called `grab_inode_hold`),
+        // release that reference now (Linux `dentry_iput`). The 1→0 drop routes
+        // through the owning SB's `iput` (drop_inode/evict_inode lifecycle).
+        // Done AFTER the inode write lock is dropped above, and `igrab`/`iput`
+        // take no lock below the icache (rank 60) — ascending order, no deadlock.
+        if let Some(old_inode) = old {
+            if self.counted.swap(false, Ordering::AcqRel) { dentry_iput(old_inode); }
+        }
     }
+
+    /// D3/D37: take ONE counted `i_count` reference for this (now positive)
+    /// dentry's inode hold (Linux `__d_instantiate` consuming the `iget` ref —
+    /// here an explicit `igrab` so the dentry alias is reflected in `i_count`).
+    /// Called by the dcache binding primitives right after a dentry becomes
+    /// positive. Idempotent (`counted` gate): a dentry holds AT MOST one counted
+    /// reference; the matching release is `set_inode(None)` / `Drop` via
+    /// [`dentry_iput`]. No-op on a negative dentry. `igrab` is a lone atomic on
+    /// `Inode::i_count` (no lock), so this is safe to call under any held
+    /// dcache/inode lock. # C: O(1)
+    pub fn grab_inode_hold(&self) {
+        let inode = match self.inode() { Some(i) => i, None => return };
+        if !self.counted.swap(true, Ordering::AcqRel) { inode.igrab(); }
+    }
+
+    /// True iff this dentry currently holds a counted `i_count` reference on its
+    /// inode (test probe / invariant assertions). # C: O(1)
+    #[doc(hidden)]
+    pub fn holds_icount(&self) -> bool { self.counted.load(Ordering::Acquire) }
 
     /// Cached child dentry for `name`, if previously resolved (the
     /// per-parent `d_subdirs` index; the global table is the lookup fast
@@ -931,6 +973,30 @@ impl Drop for Dentry {
     // So the free stays synchronous here by design — PARTIAL, cross-lane for the
     // true RCU epoch. See ledger D12.
     fn drop(&mut self) {
+        // D3/D37: release this dentry's counted `i_count` hold on its inode (Linux
+        // `dentry_iput` at the final `dput`/free), exactly once and only when
+        // `grab_inode_hold` took one. A `set_inode(None)` (d_delete) that already
+        // released it leaves `counted == false`, so this never double-iputs. No
+        // lock is held here (`&mut self` = sole owner); `iput` takes the icache
+        // (rank 60) cleanly.
+        if self.counted.swap(false, Ordering::AcqRel) {
+            let held = { let mut g = self.inode.write(); g.take() };
+            if let Some(inode) = held { dentry_iput(inode); }
+        }
         if let Some(f) = self.d_op.and_then(|o| o.d_release) { f(self); }
+    }
+}
+
+/// Release one dentry-held `i_count` reference (Linux `iput`, reached via
+/// `dentry_iput`). A superblock-backed inode routes through [`SuperBlock::iput`]
+/// so a 1→0 drop runs the `drop_inode`/`evict_inode` lifecycle; an anon inode
+/// (no SB / icache: pipe/eventfd/socket/…) balances the count in place. Mirrors
+/// `File::drop`'s release, so the two INDEPENDENT counted holds on one inode (an
+/// open file description + a dentry alias) are each balanced and neither
+/// underflows. # C: O(log N_ino) for an SB inode, else O(1)
+fn dentry_iput(inode: InodeRef) {
+    match inode.i_sb() {
+        Some(sb) => sb.iput(inode),
+        None     => { inode.i_count_dec(); }
     }
 }
