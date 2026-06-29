@@ -16,7 +16,10 @@ bitflags = { version = "2", default-features = false }
 [features]
 default = []
 hosted  = []
-# TEMP (D24): [MNTCREATE] one-line trace at every Mount create/attach/clone/graft
-# site — reconstruct how systemd builds the sandbox-root mounts (mnt_id 10/11).
-# Prod-inert: off ⇒ call sites absent, zero bytes on the hot path.
+# TEMP (D24 diagnostics, prod-inert): [MNTCREATE] trace at every Mount
+# create/attach/clone/graft site (mount.rs) + mount-family syscalls — reconstruct
+# how systemd builds the sandbox-root mounts (mnt_id 10/11); AND [MNTDIVERGE]
+# probe in `follow_mount_down` (namei.rs) comparing the legacy `mounted_mount(ns)`
+# walk source vs the strict `__lookup_mnt(cur_mnt,d)` at every real-boot crossing
+# (verdict OK/GAP) — the D24 Stage-1b flip gate. Off ⇒ zero hot-path bytes.
 debug-mnt = []

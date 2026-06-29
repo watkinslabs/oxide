@@ -514,6 +514,14 @@ fn neg_cache_ok(dir: &InodeRef) -> bool {
 /// to the mounted fs's `s_root` dentry (Linux `__follow_mount`). Returns the
 /// final dentry, its inode, and the deepest crossed mount id. # C: O(stack)
 fn follow_mount_down(mut d: Arc<Dentry>, mut mnt_id: u64, ns: u64) -> KResult<(Arc<Dentry>, InodeRef, u64)> {
+    // [MNTDIVERGE — TEMPORARY, observe-only, feature `debug-mnt`] Prove the
+    // D24 Stage-1b walk-flip is safe BEFORE it lands: probe the strict mount
+    // hash (`__lookup_mnt(cur_mnt,d)`) against the legacy parent-agnostic
+    // `mounted_mount(ns)` map AT every position this walk examines. A "GAP"
+    // line (oldmap crosses, hash does not) is the exact post-flip ENOENT.
+    // Compiles to nothing without the feature. DELETE when 1b is verified.
+    #[cfg(feature = "debug-mnt")]
+    mntdiverge_probe(mnt_id, &d, ns);
     while let Some(id) = d.mounted_mount(ns) {
         // [2a SAFETY NET — debug only] The crossing decision STILL comes from the
         // legacy per-ns `mounted_mounts` map (`id`, above); this assert proves the
@@ -531,9 +539,44 @@ fn follow_mount_down(mut d: Arc<Dentry>, mut mnt_id: u64, ns: u64) -> KResult<(A
             Some(sr) => { d = sr; mnt_id = id; }
             None => break,
         }
+        // Probe the advanced position too: a stacked mount root is itself the
+        // next crossing point, so this covers the whole stack the walk takes.
+        #[cfg(feature = "debug-mnt")]
+        mntdiverge_probe(mnt_id, &d, ns);
     }
     let inode = d.inode().ok_or(VfsError::Enoent)?;
     Ok((d, inode, mnt_id))
+}
+
+/// [MNTDIVERGE — TEMPORARY DEBUG, feature `debug-mnt`, prod-inert] Log one
+/// grep-able line comparing the legacy walk source (`mounted_mount(ns)`) with
+/// the strict Stage-1b source (`__lookup_mnt(cur_mnt,d)`) at one walk position.
+/// Emitted only when the position is an actual/potential crossing (mounted bit
+/// set, or either map resolves). Verdict `GAP` = the legacy map WOULD cross but
+/// the strict hash would NOT → the flip would ENOENT here. `OK` otherwise.
+/// Uses the raw klog byte sink (dynamic values can't ride the interned-literal
+/// klog! macro). NOT compiled without the feature. # C: O(1)
+#[cfg(feature = "debug-mnt")]
+fn mntdiverge_probe(cur_mnt_id: u64, d: &Arc<Dentry>, ns: u64) {
+    let mounted = d.is_mounted();
+    let oldmap = d.mounted_mount(ns);
+    let hash = crate::mount::__lookup_mnt(cur_mnt_id, d).map(|m| m.mnt_id);
+    if !(mounted || oldmap.is_some() || hash.is_some()) { return; }
+    let gap = oldmap.is_some() && hash.is_none();
+    klog::write_raw(b"[MNTDIVERGE] cur=");
+    klog::write_dec_u64(cur_mnt_id);
+    klog::write_raw(b" d=ptr:0x");
+    klog::write_hex_u64(Arc::as_ptr(d) as *const () as u64);
+    klog::write_raw(b" name:");
+    klog::write_raw(d.name().as_bytes());
+    klog::write_raw(b" ino:");
+    klog::write_dec_u64(d.inode().map(|i| i.ino()).unwrap_or(0));
+    klog::write_raw(if mounted { b" mounted=true" } else { b" mounted=false" });
+    klog::write_raw(b" oldmap=");
+    match oldmap { Some(id) => { klog::write_raw(b"Some:"); klog::write_dec_u64(id); } None => klog::write_raw(b"None") }
+    klog::write_raw(b" hash=");
+    match hash { Some(id) => { klog::write_raw(b"Some:"); klog::write_dec_u64(id); } None => klog::write_raw(b"None") }
+    klog::write_raw(if gap { b" GAP\n" } else { b" OK\n" });
 }
 
 /// `..` step with `follow_dotdot` mount-crossing (Linux). Clamps at the
