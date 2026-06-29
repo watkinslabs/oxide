@@ -4,24 +4,27 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
+use vfs::OpenFlags;
 
 /// `sys_dup3(oldfd, newfd, flags)` — slot 292. ABI shim.
-/// Like dup2 but rejects oldfd==newfd; accepts O_CLOEXEC (ignored in v1).
+/// Routes through `FdTable::dup3`, which enforces the Linux `ksys_dup3`
+/// contract: flag bits other than O_CLOEXEC → EINVAL, oldfd==newfd → EINVAL,
+/// and sets FD_CLOEXEC atomically with the install.
 /// # C: O(1) + close
 pub fn sys_dup3(args: &SyscallArgs) -> i64 {
-    const O_CLOEXEC: u64 = 0o2_000_000;
     let oldfd = args.a0 as i32;
     let newfd = args.a1 as i32;
-    let flags = args.a2;
-    if oldfd == newfd { return -(Errno::Einval.as_i32() as i64); }
+    // Reject unknown high bits before mapping: from_bits_truncate would drop
+    // them, masking an invalid-flags EINVAL. Only O_CLOEXEC is valid for dup3.
+    let flags = match OpenFlags::from_bits(args.a2 as u32) {
+        Some(f) => f,
+        None    => return -(Errno::Einval.as_i32() as i64),
+    };
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
-    match fdt.dup2(oldfd, newfd) {
-        Ok(fd) => {
-            if (flags & O_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
-            fd as i64
-        }
+    match fdt.dup3(oldfd, newfd, flags) {
+        Ok(fd) => fd as i64,
         Err(e) => -(e as i64),
     }
 }

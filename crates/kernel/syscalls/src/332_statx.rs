@@ -13,6 +13,9 @@ const AT_NO_AUTOMOUNT: u32     = 0x800;
 const AT_STATX_SYNC_TYPE: u32  = 0x6000; // FORCE_SYNC|DONT_SYNC
 const AT_VALID: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_STATX_SYNC_TYPE;
 const STATX_RESERVED: u32 = 0x8000_0000;
+/// `STATX_MNT_ID` (linux/stat.h): stx_mnt_id is valid. Linux `vfs_statx` fills
+/// the mount id and sets this bit unconditionally (since 5.8).
+const STATX_MNT_ID: u32 = 0x0000_1000;
 
 /// `sys_statx(dirfd, path, flags, mask, statxbuf)` — slot 332.
 /// # C: O(1)
@@ -89,7 +92,9 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         // mask reflects exactly the valid fields. Pre-fix it was a hardcoded
         // 0x7ff that omitted BTIME entirely; the base set is unchanged so the
         // ARM-musl stat() wrapper still sees NLINK/UID/GID/SIZE valid.
-        core::ptr::write_unaligned(buf as *mut u32, st.result_mask);                                  // stx_mask
+        // Linux vfs_statx sets stx_mnt_id + STATX_MNT_ID in result_mask
+        // unconditionally (independent of the request mask).
+        core::ptr::write_unaligned(buf as *mut u32, st.result_mask | STATX_MNT_ID);                   // stx_mask
         core::ptr::write_unaligned((buf +   4)     as *mut u32, st.blksize);                          // stx_blksize
         core::ptr::write_unaligned((buf +   8)     as *mut u64, st.attributes);                       // stx_attributes
         core::ptr::write_unaligned((buf +  16)     as *mut u32, st.nlink);                            // stx_nlink
@@ -118,6 +123,7 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         core::ptr::write_unaligned((buf + 132)     as *mut u32,  rdev        & 0xff);                 // stx_rdev_minor
         core::ptr::write_unaligned((buf + 136)     as *mut u32, crate::namei_common::dev_major(dev)); // stx_dev_major
         core::ptr::write_unaligned((buf + 140)     as *mut u32, crate::namei_common::dev_minor(dev)); // stx_dev_minor
+        core::ptr::write_unaligned((buf + 144)     as *mut u64, mnt_id);                              // stx_mnt_id
     }
     0
 }

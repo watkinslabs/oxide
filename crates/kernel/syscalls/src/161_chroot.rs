@@ -38,9 +38,10 @@ pub fn sys_chroot(args: &SyscallArgs) -> i64 {
     // An absolute path keeps the legacy nested-chroot prefix concat (F95).
     // # C: O(components)
     let (new_root, root_obj) = if !s.starts_with('/') {
-        let p = match crate::pathresolve::resolve_path(s, false) {
-            Some(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
-            _ => return -(Errno::Enoent.as_i32() as i64),
+        let p = match crate::pathresolve::resolve_path_result(s, false) {
+            Ok(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
+            Ok(_)  => return -(Errno::Enotdir.as_i32() as i64),
+            Err(e) => return crate::namei_common::errno_from_vfs(e),
         };
         let abs = alloc::string::String::from_utf8(p.dentry.absolute_path())
             .unwrap_or_else(|_| alloc::string::String::from("/"));
@@ -58,9 +59,10 @@ pub fn sys_chroot(args: &SyscallArgs) -> i64 {
                 out
             }
         };
-        let p = match crate::pathresolve::resolve_path(&new_root, false) {
-            Some(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
-            _ => return -(Errno::Enoent.as_i32() as i64),
+        let p = match crate::pathresolve::resolve_path_result(&new_root, false) {
+            Ok(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
+            Ok(_)  => return -(Errno::Enotdir.as_i32() as i64),
+            Err(e) => return crate::namei_common::errno_from_vfs(e),
         };
         (new_root, p)
     };
