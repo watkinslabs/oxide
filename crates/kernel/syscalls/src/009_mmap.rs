@@ -73,11 +73,40 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 }
                 phys_base = Some(pa);
             }
-            None => backing = Some(crate::mmap_file::InodeFileBacking::new(inode.clone())),
+            None => {
+                #[cfg(feature = "debug-atexit")]
+                {
+                    let ino = inode.ino();
+                    if ino & 0xffff_ffff_0000_0000 == 0x6e54_0000_0000_0000 {
+                        klog::write_raw(b"[DYNMMAP] ino=");
+                        klog::write_hex_u64(ino);
+                        klog::write_raw(b" hint=");
+                        klog::write_hex_u64(args.a0);
+                        klog::write_raw(b" len=");
+                        klog::write_hex_u64(args.a1);
+                        klog::write_raw(b" prot=");
+                        klog::write_hex_u64(args.a2);
+                        klog::write_raw(b" flags=");
+                        klog::write_hex_u64(args.a3);
+                        klog::write_raw(b" off=");
+                        klog::write_hex_u64(offset);
+                        klog::write_raw(b"\n");
+                    }
+                }
+                backing = Some(crate::mmap_file::InodeFileBacking::new(inode.clone()));
+            },
         }
     }
     match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd, offset, backing, phys_base) {
-        Ok(va)  => va as i64,
+        Ok(va)  => {
+            #[cfg(feature = "debug-atexit")]
+            if fd >= 0 {
+                klog::write_raw(b"[DYNMMAP] -> ");
+                klog::write_hex_u64(va);
+                klog::write_raw(b"\n");
+            }
+            va as i64
+        },
         Err(rv) => rv,
     }
 }

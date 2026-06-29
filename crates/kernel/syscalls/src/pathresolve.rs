@@ -13,6 +13,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use syscall::errno::Errno;
 use sync::{MountTable as RootClass, Spinlock};
+use vfs::fs::FileSystem;
 
 pub const AT_FDCWD: i32 = -100;
 
@@ -150,7 +151,41 @@ pub fn resolve_path_result(abs: &str, no_follow_final: bool) -> Result<vfs::VfsP
     // Enforce per-directory search permission (`may_lookup`, MAY_EXEC) against
     // the caller's cred (Linux `link_path_walk`). Root keeps CAP_DAC_OVERRIDE
     // so early boot / privileged services are unaffected.
-    vfs::path_lookup_cred(start, root, abs, flags, current_cred())
+    match vfs::path_lookup_cred(start, root, abs, flags, current_cred()) {
+        Ok(p) => Ok(p),
+        Err(vfs::VfsError::Enoent) if abs.starts_with("/proc/") => {
+            resolve_procfs_fallback(abs).ok_or(vfs::VfsError::Enoent)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn resolve_procfs_fallback(abs: &str) -> Option<vfs::VfsPath> {
+    let rest = abs.strip_prefix("/proc/")?;
+    if rest.is_empty() {
+        return None;
+    }
+    let mut inode = procfs::static_files::proc_root() as vfs::InodeRef;
+    let fs = Arc::new(procfs::fs_impl::ProcfsFs) as Arc<dyn FileSystem>;
+    let sb = vfs::SuperBlock::for_backend(
+        fs,
+        Some(inode.clone()),
+        0,
+        String::from("procfs-fallback"),
+    );
+    let mut dentry = vfs::d_make_root(inode.clone(), &sb);
+    for comp in rest.split('/').filter(|c| !c.is_empty()) {
+        let child = match vfs::d_lookup(&dentry, comp) {
+            Some(d) if !d.is_negative() => d,
+            _ => {
+                let ci = inode.lookup(comp).ok()?;
+                vfs::d_add(&dentry, comp, ci)
+            }
+        };
+        inode = child.inode()?;
+        dentry = child;
+    }
+    Some(vfs::VfsPath { mnt_id: 0, dentry, inode, last_component: None })
 }
 
 /// Resolve a mount-point path `abs` to the `Arc<Dentry>` the mount engine

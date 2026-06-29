@@ -291,7 +291,7 @@ pub fn pmm_static() -> Option<&'static Pmm<HhdmBacking>> {
 /// freshly allocated page has one mapping pending). Pre-init
 /// (during boot before `init_page_meta`), refcount is implicit.
 /// # C: O(1) amortised (PMM buddy alloc).
-pub fn alloc_one_frame() -> Option<u64> {
+fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> {
     use core::sync::atomic::Ordering;
     let p = pmm_static()?;
     // Linux page-allocator invariant (`mm/page_alloc.c` `check_new_page`):
@@ -406,20 +406,38 @@ pub fn alloc_one_frame() -> Option<u64> {
                     klog::write_raw(b"\n");
                     continue; // never hand out a live frame
                 }
-                m.refcount.store(1, Ordering::Release);
-                // F157-A1: a freshly-allocated frame is about to receive its
-                // first user PTE (anon zero-fill / file-private snapshot /
-                // KernelBytes copy / COW destination). Seed mapcount to 1 to
-                // match the pending mapping, mirroring rc=1. Shmem inode base
-                // frames also alloc here; their later `inc_ref` per mapper and
-                // the inode-drop `dec_and_maybe_free_frame` keep the count
-                // self-consistent (every inc paired with a dec).
-                m.mapcount.store(1, Ordering::Release);
+                m.refcount.store(refcount, Ordering::Release);
+                m.mapcount.store(mapcount, Ordering::Release);
             }
         }
         return Some(pa);
     }
     None
+}
+
+/// Allocate a frame for a user PTE that will be installed by the caller.
+/// The returned frame starts with one struct-page reference and one live
+/// mapping, matching the immediately-following PTE install in the fault path.
+/// # C: O(1) amortised (PMM buddy alloc).
+pub fn alloc_one_frame() -> Option<u64> {
+    alloc_frame_with_meta(1, 1)
+}
+
+/// Allocate a frame owned by a kernel object, not by a user PTE.
+/// Examples: shmem/tmpfs inode storage and vvar. The object holds one
+/// refcount reference; user mappings of the object must call `inc_ref`,
+/// which bumps both refcount and mapcount for each PTE.
+/// # C: O(1) amortised (PMM buddy alloc).
+pub fn alloc_object_frame() -> Option<u64> {
+    alloc_frame_with_meta(1, 0)
+}
+
+/// Allocate a raw kernel frame with no PageMeta ownership. Used for page
+/// tables and device rings that are freed directly with `free_one_frame`
+/// and are never normal user leaves.
+/// # C: O(1) amortised (PMM buddy alloc).
+pub fn alloc_raw_frame() -> Option<u64> {
+    alloc_frame_with_meta(0, 0)
 }
 
 /// Kernel/hosted pointer for a frame owned by the caller.
@@ -460,6 +478,27 @@ pub unsafe fn inc_ref(pa: u64) {
         // was never set on them.
         let _ = meta.clear_flags(pfn, crate::PageFlags::ANON_EXCLUSIVE);
     }
+}
+
+/// Drop an object-owned frame reference without changing mapcount. Use for
+/// inode/base pins: no user PTE is removed by this operation. User PTE
+/// teardown must keep using `dec_and_maybe_free_frame`, which decrements both
+/// mapcount and refcount.
+/// # SAFETY: caller owns one non-PTE reference to `pa`.
+/// # C: O(1) amortised
+#[track_caller]
+pub unsafe fn dec_object_ref_and_maybe_free_frame(pa: u64) {
+    let pfn = hal::Pfn(pa / 4096);
+    if let Some(meta) = page_meta() {
+        if let Some(new) = meta.dec_ref(pfn) {
+            if new == 0 {
+                #[cfg(not(feature = "debug-noreclaim"))]
+                unsafe { free_one_frame(pa); }
+            }
+        }
+        return;
+    }
+    unsafe { free_one_frame(pa); }
 }
 
 /// F157-A3: the `wp_page_reuse` predicate. True iff `pa` is an

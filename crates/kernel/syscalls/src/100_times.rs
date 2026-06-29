@@ -2,6 +2,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
+use crate::userbuf::validate_user_buf_writable;
 
 /// `sys_times(tms)` — slot 100. utime + cutime real; stime +
 /// cstime stay zero (kernel-time accounting follow-up).
@@ -25,8 +26,9 @@ pub fn sys_times(args: &SyscallArgs) -> i64 {
     };
     let utime_ticks  = sched::clock::ns_to_clk_tck(elapsed);
     let cutime_ticks = sched::clock::ns_to_clk_tck(children);
-    if buf != 0 && buf < hal::USER_VA_END {
-        // SAFETY: validated 32-byte user buf below USER_VA_END; CPL=0 writes through caller's AS.
+    if buf != 0 {
+        if let Err(rv) = validate_user_buf_writable(buf, 32, 8) { return rv; }
+        // SAFETY: validated 32-byte writable user buf; CPL=0 writes through caller's AS.
         unsafe {
             core::ptr::write_volatile( buf       as *mut u64, utime_ticks);
             core::ptr::write_volatile((buf + 8)  as *mut u64, 0);             // stime

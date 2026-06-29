@@ -80,11 +80,11 @@ pub struct TmpfsFileData {
 }
 
 /// Frame for `idx`, allocating + zeroing on first touch. The frame holds
-/// the inode's single reference (alloc_one_frame = refcount 1).
+/// the inode's single object reference (refcount 1, mapcount 0).
 /// # C: O(log N_pages)
 fn ensure_page(g: &mut BTreeMap<u64, u64>, idx: u64) -> Option<u64> {
     if let Some(&pa) = g.get(&idx) { return Some(pa); }
-    let pa = pmm::setup::alloc_one_frame()?;
+    let pa = pmm::setup::alloc_object_frame()?;
     let ptr = pmm::setup::frame_ptr(pa)?;
     // SAFETY: pa is a freshly-allocated PMM frame; PG is the page granule.
     unsafe { core::ptr::write_bytes(ptr, 0, PG); }
@@ -187,7 +187,7 @@ impl TmpfsFileData {
                 if let Some(pa) = g.remove(&idx) {
                     // SAFETY: inode-owned frame past the truncation point; dec
                     // frees it when no mapper holds a reference.
-                    unsafe { pmm::setup::dec_and_maybe_free_frame(pa); }
+                    unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
                 }
             }
             let tail = len as usize % PG;

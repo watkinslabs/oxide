@@ -3,7 +3,7 @@
 
 use syscall::SyscallArgs;
 
-use crate::userbuf::validate_user_buf;
+use crate::userbuf::validate_user_buf_writable;
 use crate::time_common::{NS_PER_SEC, ns_for_clock};
 
 /// `sys_clock_gettime(clk_id, tp)` — slot 228. Writes
@@ -12,7 +12,7 @@ use crate::time_common::{NS_PER_SEC, ns_for_clock};
 pub fn kernel_clock_gettime(args: &SyscallArgs) -> i64 {
     let clk_id = args.a0;
     let tp = args.a1;
-    if let Err(rv) = validate_user_buf(tp, 16, 8) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(tp, 16, 8) { return rv; }
     let ns = ns_for_clock(clk_id);
     let tv_sec  = ns / NS_PER_SEC;
     let tv_nsec = ns % NS_PER_SEC;

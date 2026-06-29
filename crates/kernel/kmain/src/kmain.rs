@@ -222,16 +222,16 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // Wire MmuOps for this arch: stash HHDM + bare-fn frame
         // allocator. After this point the trait surface is live.
         #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-        // SAFETY: single-CPU pre-init; PMM initialised above; HHDM offset comes from BootInfo and matches the live tables; alloc_one_frame is a bare fn that wraps the just-initialised global PMM.
+        // SAFETY: single-CPU pre-init; PMM initialised above; HHDM offset comes from BootInfo and matches the live tables; alloc_raw_frame is a bare fn that wraps the just-initialised global PMM.
         unsafe {
             hal_x86_64::mmu_ops::set_hhdm_offset(info.hhdm_offset);
-            hal_x86_64::mmu_ops::set_frame_alloc(pmm::setup::alloc_one_frame);
+            hal_x86_64::mmu_ops::set_frame_alloc(pmm::setup::alloc_raw_frame);
         }
         #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-        // SAFETY: single-CPU pre-init; PMM initialised above; HHDM offset comes from BootInfo and matches the live tables; alloc_one_frame is a bare fn that wraps the just-initialised global PMM.
+        // SAFETY: single-CPU pre-init; PMM initialised above; HHDM offset comes from BootInfo and matches the live tables; alloc_raw_frame is a bare fn that wraps the just-initialised global PMM.
         unsafe {
             hal_aarch64::mmu_ops::set_hhdm_offset(info.hhdm_offset);
-            hal_aarch64::mmu_ops::set_frame_alloc(pmm::setup::alloc_one_frame);
+            hal_aarch64::mmu_ops::set_frame_alloc(pmm::setup::alloc_raw_frame);
         }
         let _ = p;
 

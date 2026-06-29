@@ -428,7 +428,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             #[cfg(target_arch = "aarch64")]
             { hal_aarch64::mmu_ops::hhdm_offset() }
         };
-        if let Some(rx_pa) = pmm::setup::alloc_one_frame() {
+        if let Some(rx_pa) = pmm::setup::alloc_raw_frame() {
             if hhdm != 0 {
                 // F59-02: capture rx_pa for runtime rx_poll re-publish.
                 rx0_buf_pa_local = rx_pa;
@@ -522,7 +522,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             #[cfg(target_arch = "aarch64")]
             { hal_aarch64::mmu_ops::hhdm_offset() }
         };
-        if let Some(tx_pa) = pmm::setup::alloc_one_frame() {
+        if let Some(tx_pa) = pmm::setup::alloc_raw_frame() {
             tx0_buf_pa_local = tx_pa;
             if hhdm != 0 {
                 let tx_va = hhdm.wrapping_add(tx_pa) as *mut u8;
