@@ -28,7 +28,7 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         if typ != SOCK_STREAM {
             return -(Errno::Esocktnosupport.as_i32() as i64);
         }
-        Arc::new(net::vsock_socket::VsockSocket::new()) as _
+        net::vsock_socket::make_vsock_socket_inode(Arc::new(net::vsock_socket::VsockSocket::new()))
     } else if domain == AF_NETLINK_DOM {
         // Linux accepts SOCK_DGRAM and SOCK_RAW for netlink (Linux's
         // own libnl uses SOCK_RAW). Other types → EPROTOTYPE.
@@ -46,7 +46,7 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         if (proto as u16) == ::netlink::proto::NETLINK_ROUTE {
             ::netlink::register_rtnl_listener(&sock);
         }
-        sock as _
+        ::netlink::make_netlink_socket_inode(sock)
     } else {
         let inet = match (domain, typ) {
             (AF_INET,  SOCK_DGRAM)  => InetSocket::new_udp(),
@@ -71,7 +71,7 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
             (AF_INET, _) | (AF_INET6, _) | (AF_UNIX_DOM, _) => return -(Errno::Esocktnosupport.as_i32() as i64),
             _ => return -(Errno::Eafnosupport.as_i32() as i64),
         };
-        Arc::new(inet) as _
+        net::sock::make_inet_socket_inode(Arc::new(inet))
     };
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
