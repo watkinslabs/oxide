@@ -158,7 +158,8 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
         let umask = cur.umask.load(core::sync::atomic::Ordering::Acquire);
-        let final_mode = (mode & 0o777 & !umask) as u16;
+        // S_IALLUGO (0o7777): preserve suid/sgid/sticky on O_TMPFILE create (D8).
+        let final_mode = (mode & 0o7777 & !umask) as u16;
         // O_TMPFILE creates the anonymous inode on the filesystem that
         // actually backs the target directory — tmpfs for /run|/tmp|/dev/shm,
         // ext4 for the rootfs. Routing every O_TMPFILE to ext4 returned ENOSPC
@@ -197,7 +198,8 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
         let umask = cur.umask.load(core::sync::atomic::Ordering::Acquire);
-        let final_mode = mode & 0o777 & !umask;
+        // S_IALLUGO (0o7777): preserve suid/sgid/sticky on O_CREAT (D8).
+        let final_mode = mode & 0o7777 & !umask;
         match vfs::mount::resolve_mount(path_str) {
             Some((mnt, rel)) => {
                 if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
