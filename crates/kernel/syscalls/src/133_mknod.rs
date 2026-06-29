@@ -63,7 +63,7 @@ pub(crate) fn mknod_impl(raw: String, mode: u16, dev: u32) -> i64 {
         pino.mknod_child(&name, (real_ftype | perm) as u16, dev)
     };
     match r {
-        Ok(())  => 0,
+        Ok(())  => { crate::pathresolve::d_drop_path(&p); 0 }
         Err(e)  => {
             crate::namei_common::trace_run_vfs_error(b"mknod", &p, e);
             errno_from_vfs(e)

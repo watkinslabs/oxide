@@ -36,7 +36,7 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
         Err(rv) => { crate::mount_common::mnt_log("mkdirat_noparent", &p, rv); return rv; }
     };
     match pino.mkdir(&name, mode) {
-        Ok(_) => 0,
+        Ok(_) => { crate::pathresolve::d_drop_path(&p); 0 }
         Err(e) => {
             crate::namei_common::trace_run_vfs_error(b"mkdirat", &p, e);
             let rv = errno_from_vfs(e);

@@ -89,6 +89,10 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     } else {
         return -(Errno::Enoent.as_i32() as i64);
     };
+    // O_CREAT flush: drop the leaf negative planted by the failed existence
+    // resolve above so `install_open`'s path-walk re-resolves to the NEW inode
+    // rather than the stale negative (Linux instantiates the create's own leaf).
+    if created { crate::pathresolve::d_drop_path(path_str); }
     // DAC + EROFS enforcement (Linux `may_open`), before the O_TRUNC truncate.
     if let Some(rv) = enforce_open_perm(&inode, mnt_id, flags, created) { return rv; }
     // fanotify FAN_OPEN_PERM: blocks here until a daemon allows/denies (fast
