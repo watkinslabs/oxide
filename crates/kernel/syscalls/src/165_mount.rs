@@ -193,17 +193,20 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         // future propagation events reach it). Captured before the bind.
         let src_pg = vfs::mount::peer_group_of(&source_d);
         let bind = Arc::new(BindFs { source: source.clone() });
-        // Global mount table (per-NS bind rides the per-ns mount tree).
-        let _ = vfs::mount::register_bind(Some(target_d.clone()), bind, root);
+        // [D14] Atomic graft + propagation (Linux `attach_recursive_mnt`): the
+        // bind is attached AND replicated to the destination parent's peer
+        // group in ONE engine call, so there is no caller-visible window where
+        // the bind is attached but its propagated mirrors are not (the prior
+        // `register_bind` + separate `propagate_mount` left the tree
+        // momentarily half-replicated). Global mount table (per-NS bind rides
+        // the per-ns mount tree).
+        let _ = vfs::mount::attach_recursive_mnt(Some(target_d.clone()), bind, Some(root));
         vfs::mount::join_peer_group(&target_d, src_pg);
         // MS_REC: also clone every mount nested under `source` to the
         // matching path under `target` (recursive bind, docs/16§6).
         if flags & MS_REC != 0 {
             let _ = vfs::mount::bind_submounts_rec(&source_d, &target_d);
         }
-        // Propagation: if `target`'s parent is a shared mount, replicate
-        // this bind to the parent's peers (docs/16§6).
-        let _ = vfs::mount::propagate_mount(&target_d);
         let _ = ns;
         return 0;
     }

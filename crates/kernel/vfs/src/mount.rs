@@ -28,7 +28,7 @@ use crate::dentry::Dentry;
 use crate::fs::{FileSystem, KResult};
 use crate::inode::InodeRef;
 use crate::mntns::{self, get_mountpoint, put_mountpoint, Mountpoint};
-use crate::superblock::{next_anon_dev, SuperBlock};
+use crate::superblock::{next_anon_dev, sget, SuperBlock};
 use crate::types::VfsError;
 
 // Re-export the namespace / notify / hook surface so callers keep using
@@ -537,6 +537,22 @@ pub fn idmap_for(mnt_id: u64) -> Arc<crate::idmap::Idmap> {
         .unwrap_or_else(|| Arc::new(crate::idmap::Idmap::identity()))
 }
 
+/// [D6] Materialise (or, for a device-backed fs, FIND-OR-SHARE via [`sget`]) the
+/// `SuperBlock` for a new mount. A backend that reports a stable backing-device
+/// id (`fs.dev_id()`, Linux's `get_tree_bdev` bdev key) SHARES one `SuperBlock`
+/// across every mount of that device: `sget` returns the live instance with one
+/// extra `s_active` instead of allocating a duplicate, so two mounts of the same
+/// disk agree on `s_dev`, inode cache and writeback (Linux's `s_active` sharing).
+/// An anon/pseudo fs (no real device, `dev_id() == None` — tmpfs, procfs, a bind
+/// marker) keeps a fresh per-mount `get_anon_bdev` instance, never shared.
+/// # C: O(N_sb) on a dev-backed share, else O(1)
+fn build_sb(fs: Arc<dyn FileSystem>, root_inode: Option<InodeRef>, s_id: String) -> Arc<SuperBlock> {
+    match fs.dev_id() {
+        Some(dev) => sget(dev, move || SuperBlock::for_backend(fs, root_inode, dev, s_id)),
+        None => SuperBlock::for_backend(fs, root_inode, next_anon_dev(), s_id),
+    }
+}
+
 /// Build a `Mount` and attach it on the caller-supplied mountpoint dentry
 /// `mp` (Linux `mnt_set_mountpoint`/`commit_tree`). `mp == None` ⇒ the
 /// namespace root mount. # C: O(depth)
@@ -553,7 +569,7 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
     let mp = mp.filter(|d| !is_global_root(d));
     let Some(d) = mp else {
         let root_inode = root.clone().or_else(|| fs.root());
-        let sb = SuperBlock::for_backend(fs, root_inode, next_anon_dev(), String::from("/"));
+        let sb = build_sb(fs, root_inode, String::from("/"));
         let m = new_mount(sb, String::from("/"), None, mnt_id, root, mnt_id, ns);
         // [D11] The namespace ROOT mount is a kernel-internal producer (Linux
         // marks rootfs / kern_mount mounts MNT_INTERNAL): never user-expirable.
@@ -567,7 +583,7 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
     let parent_id = parent_by_dentry(ns, &d);
     let rendered = abs_string(&d);
     let root_inode = root.clone().or_else(|| fs.root());
-    let sb = SuperBlock::for_backend(fs, root_inode, next_anon_dev(), rendered.clone());
+    let sb = build_sb(fs, root_inode, rendered.clone());
     let m = new_mount(sb, rendered, Some(d.clone()), parent_id, root, mnt_id, ns);
     // struct mountpoint (dentry refcount) + intrusive parent/child links.
     *m.mnt_mp.lock() = Some(get_mountpoint(&d));

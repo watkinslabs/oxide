@@ -104,6 +104,16 @@ pub trait FileSystem: Send + Sync {
     /// # C: O(1)
     fn requires_dev(&self) -> bool { self.fs_flags().contains(FsFlags::FS_REQUIRES_DEV) }
 
+    /// Stable backing-device id for superblock sharing (Linux `s_dev`, the
+    /// `get_tree_bdev` key): two mounts of the SAME backing device must SHARE
+    /// one `SuperBlock`. `Some(dev)` ⇒ the mount engine routes through
+    /// [`crate::superblock::sget`] so a second mount of `dev` re-uses the live
+    /// instance (one extra `s_active`) instead of allocating a fresh anonymous
+    /// SB; `None` (the default) ⇒ an anon/pseudo fs (tmpfs, procfs, a bind
+    /// marker) that gets a fresh per-mount `get_anon_bdev` SB, never shared.
+    /// # C: O(1)
+    fn dev_id(&self) -> Option<u64> { None }
+
     /// `->rename` drives `d_move` itself, so the VFS rename path must skip
     /// the generic dentry move (Linux `FS_RENAME_DOES_D_MOVE`). # C: O(1)
     fn rename_does_d_move(&self) -> bool {
