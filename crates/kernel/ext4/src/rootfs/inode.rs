@@ -23,7 +23,7 @@ use vfs::inode_ops::{mk_mode, InodeOps};
 use vfs::file_ops::FileOps;
 use vfs::inode::InodeBuilder;
 use vfs::mapping::AddressSpaceOps;
-use vfs::{FileType, Inode, InodeRef, KResult, VfsError};
+use vfs::{DirContext, FileType, Inode, InodeRef, KResult, VfsError};
 use super::state::RootfsState;
 
 fn vfs_error_from_mount(e: crate::MountError) -> vfs::VfsError {
@@ -370,17 +370,12 @@ impl InodeOps for Ext4StatInodeOps {
 pub(crate) struct Ext4StatFileOps;
 
 impl FileOps for Ext4StatFileOps {
-    fn iterate(
-        &self,
-        inode: &Inode,
-        off: u64,
-        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
-    ) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<Ext4StatData>().ok_or(VfsError::Eio)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         let mount = &d.st.mount;
         let dir_inode = mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?;
-        let mut next = off;
+        let off = ctx.pos;
         let mut idx: u64 = 0;
         let bs = mount.sb.block_size as u64;
         let nblocks = ((dir_inode.size + bs - 1) / bs) as u32;
@@ -405,12 +400,12 @@ impl FileOps for Ext4StatFileOps {
                     7 => FileType::Symlink,
                     _ => FileType::Regular,
                 };
-                let keep = f(e.inode as u64, idx, name, ft);
-                if keep { next = idx; } else { keep_going = false; }
+                let keep = ctx.emit(name, e.inode as u64, ft, idx);
+                if !keep { keep_going = false; }
                 keep
             });
         }
-        Ok(next)
+        Ok(())
     }
 }
 

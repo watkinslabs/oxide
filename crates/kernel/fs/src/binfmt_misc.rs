@@ -15,7 +15,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as LockClass};
 use vfs::{FileType, Ino, Inode, InodeOps, InodeRef, KResult, VfsError};
-use vfs::{FileOps, InodeBuilder, mk_mode};
+use vfs::{DirContext, FileOps, InodeBuilder, mk_mode};
 
 pub const BINFMT_MISC_MAGIC: u64 = 0x4249_4e4d;
 
@@ -152,15 +152,15 @@ impl InodeOps for BinfmtRootInodeOps {
 /// `i_fop` for the binfmt_misc directory (readdir). # C: O(N_rules)
 struct BinfmtRootFileOps;
 impl FileOps for BinfmtRootFileOps {
-    fn iterate(&self, inode: &Inode, off: u64,
-               f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<BinfmtRootData>().ok_or(VfsError::Einval)?;
+        let off = ctx.pos;
         let mut idx = 0u64;
         for name in ["status", "register"] {
             if idx >= off {
                 let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-                if !f(ino, idx + 1, name, FileType::Regular) {
-                    return Ok(idx + 1);
+                if !ctx.emit(name, ino, FileType::Regular, idx + 1) {
+                    return Ok(());
                 }
             }
             idx += 1;
@@ -169,13 +169,13 @@ impl FileOps for BinfmtRootFileOps {
         for name in names {
             if idx >= off {
                 let ino = inode.lookup(&name).map(|i| i.ino()).unwrap_or(0);
-                if !f(ino, idx + 1, &name, FileType::Regular) {
-                    return Ok(idx + 1);
+                if !ctx.emit(&name, ino, FileType::Regular, idx + 1) {
+                    return Ok(());
                 }
             }
             idx += 1;
         }
-        Ok(idx)
+        Ok(())
     }
 }
 
