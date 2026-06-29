@@ -1,14 +1,30 @@
-// Per-mount ext4 VFS Inode wrappers. Each wrapper carries an
-// `Arc<RootfsState>` (its owning mount + that mount's orphan set), so
-// a second mount's inodes never read/free through the first mount's
-// device or orphan tracking — the Stage-3 de-singletonisation gate.
+// Per-mount ext4 VFS inodes — concrete `vfs::Inode` (kp2 struct-Inode
+// model). Each inode's backend state lives in `i_private` as an
+// `Arc<Ext4FileData>` (regular files) or `Arc<Ext4StatData>` (every
+// other type), carrying that inode's owning mount + ext4 ino, so a
+// second mount's inodes never read/free through the first mount's device
+// or orphan tracking — the Stage-3 de-singletonisation gate.
+//
+// The old two `impl vfs::Inode` collapse into:
+//   * data → `i_private` (`Ext4FileData` / `Ext4StatData`),
+//   * regular-file behaviour → `Ext4RegInodeOps` (`i_op`) +
+//     `Ext4RegFileOps` (`i_fop`) + `Ext4FileMapping` (`i_mapping`),
+//   * stat/dir/symlink/dev behaviour → `Ext4StatInodeOps` (`i_op`) +
+//     `Ext4StatFileOps` (`i_fop`),
+// all shared (ZST ops) across every inode of the backend; the per-inode
+// `Arc<…Data>` disambiguates the mount + ino.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use block::types::InodeId;
 use ::sync as sync;
+use vfs::inode_ops::{mk_mode, InodeOps};
+use vfs::file_ops::FileOps;
+use vfs::inode::InodeBuilder;
+use vfs::mapping::AddressSpaceOps;
+use vfs::{FileType, Inode, InodeRef, KResult, VfsError};
 use super::state::RootfsState;
 
 fn vfs_error_from_mount(e: crate::MountError) -> vfs::VfsError {
@@ -50,28 +66,27 @@ pub const fn is_ext4_ino(vfs_ino: u64) -> bool { (vfs_ino & EXT4_INO_MASK) == EX
 #[inline]
 pub const fn ext4_unwrap_ino(vfs_ino: u64) -> u32 { (vfs_ino & !EXT4_INO_MASK) as u32 }
 
-/// VFS Inode wrapping a regular ext4 file. Bytes are lazy: stat
-/// (size/perm) doesn't pull file contents; first read/write loads
-/// them. Carries `st` so reads/writes hit the owning mount's device.
-pub struct Ext4FileInode {
-    pub(super) st:        Arc<RootfsState>,
-    pub(super) ino:       u32,
-    pub(super) size_hint: core::sync::atomic::AtomicU64,
-    pub(super) bytes:     sync::Spinlock<Option<Vec<u8>>, sync::Inode>,
+// ── i_private backend state ──────────────────────────────────────────
+
+/// `i_private` for a regular ext4 file. Bytes are lazy: stat (size/perm)
+/// doesn't pull file contents; first read/write loads them. Carries `st`
+/// so reads/writes hit the owning mount's device + page cache.
+pub(crate) struct Ext4FileData {
+    pub(crate) st:        Arc<RootfsState>,
+    pub(crate) ino:       u32,
+    pub(crate) size_hint: AtomicU64,
+    pub(crate) bytes:     sync::Spinlock<Option<Vec<u8>>, sync::Inode>,
 }
 
-impl Ext4FileInode {
-    /// Raw ext4 inode number for fs-local operations like linkat
-    /// AT_EMPTY_PATH.
-    /// # C: O(1)
-    pub fn ext4_ino(&self) -> u32 { self.ino }
-
+impl Ext4FileData {
+    /// Re-read the on-disk file into the byte cache + size hint. # C: O(size)
     fn refresh(&self) {
         if let Some(b) = self.st.read_full_file(self.ino) {
             self.size_hint.store(b.len() as u64, Ordering::Release);
             *self.bytes.lock() = Some(b);
         }
     }
+    /// Ensure the byte cache is populated; return a clone of the bytes. # C: O(size)
     fn ensure_bytes(&self) -> Option<Vec<u8>> {
         {
             let g = self.bytes.lock();
@@ -85,34 +100,101 @@ impl Ext4FileInode {
     }
 }
 
-impl vfs::Inode for Ext4FileInode {
-    fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
-    fn ino(&self) -> vfs::Ino { ext4_wrap_ino(self.ino) }
-    /// `i_sb` backref → `fsid()` (default) returns `sb.s_dev` (Linux `st_dev`),
-    /// the per-instance anon-bdev, NOT a hardcoded constant. # C: O(1)
-    fn i_sb(&self) -> Option<alloc::sync::Arc<vfs::SuperBlock>> { self.st.i_sb() }
-    fn nlink(&self) -> u32 {
-        self.st.mount.read_inode(self.ino).map(|i| i.links_count as u32).unwrap_or(1)
+/// `i_private` for any non-regular ext4 inode (directory, symlink, char/
+/// block dev, FIFO, socket). Stat-only + namespace ops drive off `st`.
+pub(crate) struct Ext4StatData {
+    pub(crate) st:   Arc<RootfsState>,
+    pub(crate) ino:  u32,
+    pub(crate) ft:   FileType,
+    pub(crate) size: u64,
+}
+
+/// Recover `(owning mount state, ext4 ino)` from a concrete inode's
+/// `i_private`, regardless of which backend data type it carries. Used by
+/// `close_hook_free_orphan` to free against the OWNING mount. # C: O(1)
+pub(crate) fn ext4_state_of(inode: &Inode) -> Option<(Arc<RootfsState>, u32)> {
+    if let Some(f) = inode.private::<Ext4FileData>() { return Some((f.st.clone(), f.ino)); }
+    if let Some(s) = inode.private::<Ext4StatData>() { return Some((s.st.clone(), s.ino)); }
+    None
+}
+
+/// Recover the raw ext4 inode number of a REGULAR-file inode (linkat
+/// AT_EMPTY_PATH); `None` for any non-file inode. # C: O(1)
+pub(crate) fn ext4_file_ino(inode: &Inode) -> Option<u32> {
+    inode.private::<Ext4FileData>().map(|f| f.ino)
+}
+
+// ── regular-file ops (i_op / i_fop / i_mapping) ──────────────────────
+
+/// `inode_operations` for a regular ext4 file: metadata + truncate /
+/// fallocate. Namespace ops (lookup/…) stay the trait default. Shared
+/// (ZST) across every file inode. # C: O(1)
+pub(crate) struct Ext4RegInodeOps;
+
+impl InodeOps for Ext4RegInodeOps {
+    fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
+        let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
+        d.st.mount.truncate_inode(d.ino, len).map_err(|_| VfsError::Eio)?;
+        d.st.page_cache.invalidate(InodeId(d.ino as u64));
+        d.refresh();
+        inode.set_size(d.size_hint.load(Ordering::Acquire));
+        Ok(())
     }
-    fn blksize(&self) -> u32 { self.st.mount.sb.block_size }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { self.size_hint.load(Ordering::Acquire) }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn perm(&self) -> Option<u16> {
-        // i_mode low 12 bits = perms. Fall back to 0o755 so executables
-        // stay executable — sys_statx defaults to 0o600 (no x bit) when
-        // perm() is None, breaking the shell's PATH search on ARM.
-        match self.st.mount.read_inode(self.ino) {
-            Ok(i) => Some(i.mode & 0o7777),
-            Err(_) => Some(0o755),
+
+    fn fallocate(&self, inode: &Inode, off: u64, len: u64, keep_size: bool, zero_range: bool)
+        -> KResult<()>
+    {
+        let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
+        if zero_range {
+            let old = d.size_hint.load(Ordering::Acquire);
+            let end = off.checked_add(len).ok_or(VfsError::Einval)?;
+            let bs = d.st.mount.sb.block_size.max(1) as usize;
+            let zeros = alloc::vec![0u8; bs];
+            let mut pos = off;
+            while pos < end {
+                let n = core::cmp::min((end - pos) as usize, zeros.len());
+                d.st.mount.write_at(d.ino, pos, &zeros[..n]).map_err(vfs_error_from_mount)?;
+                pos += n as u64;
+            }
+            if keep_size && end > old {
+                d.st.mount.set_inode_size(d.ino, old).map_err(vfs_error_from_mount)?;
+            }
+        } else {
+            d.st.mount.fallocate_inode(d.ino, off, len, keep_size).map_err(vfs_error_from_mount)?;
         }
+        d.st.page_cache.invalidate(InodeId(d.ino as u64));
+        d.refresh();
+        inode.set_size(d.size_hint.load(Ordering::Acquire));
+        Ok(())
     }
-    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        let bytes_owned = self.ensure_bytes();
-        let g = self.bytes.lock();
+
+    /// `i_op->getattr` (Linux `ext4_getattr`): the generic fill, then
+    /// `st_blocks` overwritten with the REAL on-disk `i_blocks` (512-byte
+    /// sectors) so a preallocated/`fallocate`d or sparse file reports its true
+    /// allocation, not a size-derived estimate. # C: O(1) inode read
+    fn getattr(&self, inode: &Inode, idmap: &vfs::idmap::Idmap, overlay: Option<vfs::inode_times::InodeTimes>)
+        -> vfs::getattr::Kstat
+    {
+        let mut k = vfs::getattr::generic_fillattr(inode, idmap, overlay);
+        if let Some(d) = inode.private::<Ext4FileData>() {
+            if let Ok(i) = d.st.mount.read_inode(d.ino) { k.blocks = i.i_blocks; }
+        }
+        k
+    }
+}
+
+/// `file_operations` for a regular ext4 file: read/write through the
+/// owning mount's device + page cache. Shared (ZST). # C: O(1)
+pub(crate) struct Ext4RegFileOps;
+
+impl FileOps for Ext4RegFileOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
+        let bytes_owned = d.ensure_bytes();
+        let g = d.bytes.lock();
         let slice: &[u8] = match g.as_ref() {
             Some(b) => b.as_slice(),
-            None    => match bytes_owned.as_deref() { Some(b) => b, None => return Err(vfs::VfsError::Eio) },
+            None    => match bytes_owned.as_deref() { Some(b) => b, None => return Err(VfsError::Eio) },
         };
         let off = off as usize;
         if off >= slice.len() { return Ok(0); }
@@ -120,67 +202,23 @@ impl vfs::Inode for Ext4FileInode {
         buf[..n].copy_from_slice(&slice[off..off+n]);
         Ok(n)
     }
-    fn write(&self, off: u64, buf: &[u8]) -> vfs::KResult<usize> {
-        self.st.mount.write_at(self.ino, off, buf).map_err(|_| vfs::VfsError::Eio)?;
-        self.st.page_cache.invalidate(InodeId(self.ino as u64));
-        self.refresh();
+
+    fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
+        let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
+        d.st.mount.write_at(d.ino, off, buf).map_err(|_| VfsError::Eio)?;
+        d.st.page_cache.invalidate(InodeId(d.ino as u64));
+        d.refresh();
+        inode.set_size(d.size_hint.load(Ordering::Acquire));
         Ok(buf.len())
     }
-    fn truncate(&self, len: u64) -> vfs::KResult<()> {
-        self.st.mount.truncate_inode(self.ino, len).map_err(|_| vfs::VfsError::Eio)?;
-        self.st.page_cache.invalidate(InodeId(self.ino as u64));
-        self.refresh();
-        Ok(())
-    }
-    fn fallocate(&self, off: u64, len: u64, keep_size: bool, zero_range: bool) -> vfs::KResult<()> {
-        if zero_range {
-            let old = self.size();
-            let end = off.checked_add(len).ok_or(vfs::VfsError::Einval)?;
-            let zeros = alloc::vec![0u8; self.blksize().max(1) as usize];
-            let mut pos = off;
-            while pos < end {
-                let n = core::cmp::min((end - pos) as usize, zeros.len());
-                self.st.mount.write_at(self.ino, pos, &zeros[..n]).map_err(vfs_error_from_mount)?;
-                pos += n as u64;
-            }
-            if keep_size && end > old {
-                self.st.mount.set_inode_size(self.ino, old).map_err(vfs_error_from_mount)?;
-            }
-        } else {
-            self.st.mount.fallocate_inode(self.ino, off, len, keep_size).map_err(vfs_error_from_mount)?;
-        }
-        self.st.page_cache.invalidate(InodeId(self.ino as u64));
-        self.refresh();
-        Ok(())
-    }
-    /// `i_op->getattr` (Linux `ext4_getattr`): the generic fill, then
-    /// `st_blocks` overwritten with the REAL on-disk `i_blocks` (512-byte
-    /// sectors). The generic path derives blocks from the logical size, so a
-    /// preallocated/`fallocate`d or sparse file is indistinguishable; ext4's
-    /// `i_blocks` counts the actually-allocated extents (+ tree metadata).
-    /// # C: O(1) inode read
-    fn getattr(&self, idmap: &vfs::idmap::Idmap, overlay: Option<vfs::inode_times::InodeTimes>)
-        -> vfs::getattr::Kstat
-    {
-        let mut k = vfs::getattr::generic_fillattr(self, idmap, overlay);
-        if let Ok(i) = self.st.mount.read_inode(self.ino) { k.blocks = i.i_blocks; }
-        k
-    }
-    /// Per-inode `address_space` (Linux `inode->i_mapping`): the owning
-    /// mount's `page_cache`, keyed by this inode's id. Every mapper/reader of
-    /// the same ino routes `read_at` THROUGH this one cache instead of each
-    /// `InodeFileBacking` filling its own private `PageCache` (the mmap_file
-    /// comment): two `mmap()`s of one file share ONE page set. The MAP_SHARED
-    /// frame half (`shared_frame`) stays `None` — handing out a writable PMM
-    /// frame + dirty-writeback to extents is the deferred half; this wires the
-    /// read-side shared mapping. # C: O(1)
-    fn i_mapping(&self) -> Option<&dyn vfs::mapping::AddressSpaceOps> { Some(self) }
 }
 
-/// ext4 file `address_space`: reads route through the owning mount's shared
-/// `page_cache` (keyed by inode id), so all mappers/readers of one inode hit
-/// the SAME cached pages. # C: O(1)
-impl vfs::mapping::AddressSpaceOps for Ext4FileInode {
+/// ext4 file `address_space` (`i_mapping`): reads route through the owning
+/// mount's shared `page_cache` (keyed by inode id), so all mappers/readers
+/// of one inode hit the SAME cached pages. # C: O(1)
+pub(crate) struct Ext4FileMapping { pub(crate) data: Arc<Ext4FileData> }
+
+impl AddressSpaceOps for Ext4FileMapping {
     /// MAP_SHARED writable frame: deferred (no PMM-frame store + extent
     /// writeback yet) → `None`, so the fault path copies into a private frame
     /// (correct for MAP_PRIVATE; unchanged from the pre-i_mapping default).
@@ -189,89 +227,180 @@ impl vfs::mapping::AddressSpaceOps for Ext4FileInode {
     /// Read-fault / MAP_PRIVATE fill: copy from the per-mount page cache,
     /// shared by every mapper of this inode. # C: O(dst.len)
     fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, ()> {
-        self.st.read_cached(self.ino, off, dst)
+        self.data.st.read_cached(self.data.ino, off, dst)
     }
     /// # C: O(1)
-    fn size(&self) -> u64 { vfs::Inode::size(self) }
+    fn size(&self) -> u64 { self.data.size_hint.load(Ordering::Acquire) }
 }
 
-/// Stat-only VFS Inode for any ext4 inode (regular, dir, symlink, …).
-/// Used by stat/statx and as the directory node for the dentry walk.
-pub struct Ext4StatInode {
-    pub(super) st:   Arc<RootfsState>,
-    pub(super) ino:  u32,
-    pub(super) ft:   vfs::FileType,
-    pub(super) size: u64,
-    pub(super) perm: u16,
+/// Build a regular-file `vfs::Inode` for ext4 inode `ino`. `mode`/`size`/
+/// `nlink` are the captured on-disk metadata (read by the caller before the
+/// `iget` build closure). # C: O(1)
+pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: u64, nlink: u32)
+    -> InodeRef
+{
+    let data = Arc::new(Ext4FileData {
+        st, ino,
+        size_hint: AtomicU64::new(size),
+        bytes: sync::Spinlock::new(None),
+    });
+    let mapping: Arc<dyn AddressSpaceOps> = Arc::new(Ext4FileMapping { data: data.clone() });
+    let weak_sb = data.st.sb.lock().clone();
+    InodeBuilder::new(ext4_wrap_ino(ino), mk_mode(FileType::Regular, mode & 0o7777),
+                      Arc::new(Ext4RegInodeOps), Arc::new(Ext4RegFileOps))
+        .sb(weak_sb)
+        .size(size)
+        .nlink(nlink)
+        .mapping(mapping)
+        .private(data)
+        .build()
 }
 
-impl vfs::Inode for Ext4StatInode {
-    fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
-    fn ino(&self) -> vfs::Ino { ext4_wrap_ino(self.ino) }
-    /// `i_sb` backref → `fsid()` (default) returns `sb.s_dev` (Linux `st_dev`).
-    /// # C: O(1)
-    fn i_sb(&self) -> Option<alloc::sync::Arc<vfs::SuperBlock>> { self.st.i_sb() }
-    fn nlink(&self) -> u32 {
-        self.st.mount.read_inode(self.ino).map(|i| i.links_count as u32).unwrap_or_else(|_| {
-            if matches!(self.ft, vfs::FileType::Directory) { 2 } else { 1 }
-        })
+// ── stat / dir / symlink / dev ops (i_op / i_fop) ────────────────────
+
+/// `inode_operations` for any non-regular ext4 inode. Namespace ops gate on
+/// the stored `FileType` (a non-directory rejects `lookup`/`mkdir`/… with
+/// `Enotdir`, a non-symlink rejects `readlink` with `Einval`), matching the
+/// old per-impl guards. Shared (ZST). # C: O(1)
+pub(crate) struct Ext4StatInodeOps;
+
+impl Ext4StatInodeOps {
+    fn data(inode: &Inode) -> KResult<&Ext4StatData> {
+        inode.private::<Ext4StatData>().ok_or(VfsError::Eio)
     }
-    fn blksize(&self) -> u32 { self.st.mount.sb.block_size }
-    fn file_type(&self) -> vfs::FileType { self.ft }
-    fn size(&self) -> u64 { self.size }
-    fn perm(&self) -> Option<u16> { Some(self.perm) }
-    /// `st_rdev` for a CHR/BLK node — the device number ext4 stores inline in
-    /// `i_block`. Non-device inodes report 0 (Linux). `generic_fillattr` only
-    /// reads this for CHR/BLK file types. # C: O(1) inode read
-    fn rdev(&self) -> u32 {
-        if !matches!(self.ft, vfs::FileType::CharDev | vfs::FileType::BlockDev) { return 0; }
-        self.st.mount.read_inode(self.ino).map(|i| i.rdev()).unwrap_or(0)
-    }
-    /// `i_op->getattr` (Linux `ext4_getattr`): generic fill with `st_blocks`
-    /// replaced by the real on-disk `i_blocks` (512-byte sectors) so dirs /
-    /// preallocated nodes report their true allocation, not a size estimate.
-    /// # C: O(1) inode read
-    fn getattr(&self, idmap: &vfs::idmap::Idmap, overlay: Option<vfs::inode_times::InodeTimes>)
-        -> vfs::getattr::Kstat
-    {
-        let mut k = vfs::getattr::generic_fillattr(self, idmap, overlay);
-        if let Ok(i) = self.st.mount.read_inode(self.ino) { k.blocks = i.i_blocks; }
-        k
-    }
+}
+
+impl InodeOps for Ext4StatInodeOps {
     /// Per-component child lookup the dentry path-walk (`docs/16§3`) drives.
     /// # C: O(N_entries in dir)
-    fn lookup(&self, name: &str) -> vfs::KResult<vfs::InodeRef> {
-        if !matches!(self.ft, vfs::FileType::Directory) {
-            return Err(vfs::VfsError::Enotdir);
-        }
-        let child = self.st.lookup_child_ino(self.ino, name).ok_or(vfs::VfsError::Enoent)?;
-        self.st.wrap_any_ino(child).ok_or(vfs::VfsError::Enoent)
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        let child = d.st.lookup_child_ino(d.ino, name).ok_or(VfsError::Enoent)?;
+        d.st.wrap_any_ino(child).ok_or(VfsError::Enoent)
     }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Eio) }
-    fn write(&self, _o: u64, _b: &[u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Eio) }
-    fn readlink(&self) -> vfs::KResult<alloc::vec::Vec<u8>> {
-        if !matches!(self.ft, vfs::FileType::Symlink) {
-            return Err(vfs::VfsError::Einval);
+
+    /// `i_op->getattr` (Linux `ext4_getattr`): generic fill with `st_blocks`
+    /// replaced by the real on-disk `i_blocks` (512-byte sectors). # C: O(1)
+    fn getattr(&self, inode: &Inode, idmap: &vfs::idmap::Idmap, overlay: Option<vfs::inode_times::InodeTimes>)
+        -> vfs::getattr::Kstat
+    {
+        let mut k = vfs::getattr::generic_fillattr(inode, idmap, overlay);
+        if let Some(d) = inode.private::<Ext4StatData>() {
+            if let Ok(i) = d.st.mount.read_inode(d.ino) { k.blocks = i.i_blocks; }
         }
-        let mount = &self.st.mount;
-        let inode = mount.read_inode(self.ino).map_err(|_| vfs::VfsError::Eio)?;
-        if let Some(b) = inode.fast_symlink_target() {
-            return Ok(b.to_vec());
-        }
-        let blk = mount.read_file_block(&inode, 0).map_err(|_| vfs::VfsError::Eio)?;
-        let n = (self.size as usize).min(blk.len());
+        k
+    }
+
+    /// # C: O(target_len)
+    fn readlink(&self, inode: &Inode) -> KResult<Vec<u8>> {
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Symlink) { return Err(VfsError::Einval); }
+        let mount = &d.st.mount;
+        let i = mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?;
+        if let Some(b) = i.fast_symlink_target() { return Ok(b.to_vec()); }
+        let blk = mount.read_file_block(&i, 0).map_err(|_| VfsError::Eio)?;
+        let n = (d.size as usize).min(blk.len());
         Ok(blk[..n].to_vec())
     }
-    fn readdir(
-        &self,
-        off: u64,
-        f: &mut dyn FnMut(u64, u64, &str, vfs::FileType) -> bool,
-    ) -> vfs::KResult<u64> {
-        if !matches!(self.ft, vfs::FileType::Directory) {
-            return Err(vfs::VfsError::Enotdir);
+
+    /// # C: O(N parent entries)
+    fn mkdir(&self, inode: &Inode, name: &str, mode: u32) -> KResult<InodeRef> {
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
+        d.st.mount.create_dir(d.ino, name.as_bytes(), mode as u16).map_err(|_| VfsError::Eio)?;
+        let child = d.st.lookup_child_ino(d.ino, name).ok_or(VfsError::Eio)?;
+        d.st.wrap_any_ino(child).ok_or(VfsError::Eio)
+    }
+
+    /// # C: O(N parent entries)
+    fn rmdir(&self, inode: &Inode, name: &str) -> KResult<()> {
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        let mount = &d.st.mount;
+        let target = d.st.lookup_child_ino(d.ino, name).ok_or(VfsError::Enoent)?;
+        let i = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
+        if !i.is_dir() { return Err(VfsError::Enotdir); }
+        // Emptiness check (Linux `ext4_rmdir` → `ext4_empty_dir`): reject with
+        // ENOTEMPTY if the victim holds any entry other than "." / "..".
+        let bs = mount.sb.block_size as u64;
+        let nblocks = ((i.size + bs - 1) / bs) as u32;
+        for blk_idx in 0..nblocks {
+            let Ok(blk) = mount.read_file_block(&i, blk_idx) else { break };
+            let mut nonempty = false;
+            let _ = crate::iter_active(&blk, |e| {
+                if e.name.is_empty() || e.name == b"." || e.name == b".." { return true; }
+                nonempty = true;
+                false
+            });
+            if nonempty { return Err(VfsError::Enotempty); }
         }
-        let mount = &self.st.mount;
-        let dir_inode = mount.read_inode(self.ino).map_err(|_| vfs::VfsError::Eio)?;
+        mount.dir_unlink(d.ino, name.as_bytes()).map_err(|_| VfsError::Eio)?;
+        let _ = mount.free_inode(target);
+        Ok(())
+    }
+
+    /// # C: O(N parent entries)
+    fn create(&self, inode: &Inode, name: &str, mode: u32) -> KResult<InodeRef> {
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
+        let ino = d.st.mount.create_file(d.ino, name.as_bytes(), mode as u16).map_err(|_| VfsError::Eio)?;
+        d.st.page_cache.invalidate(InodeId(ino as u64));
+        d.st.wrap_file(ino).ok_or(VfsError::Eio)
+    }
+
+    /// # C: O(N parent entries)
+    fn unlink(&self, inode: &Inode, name: &str) -> KResult<()> {
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        let mount = &d.st.mount;
+        let target = d.st.lookup_child_ino(d.ino, name).ok_or(VfsError::Enoent)?;
+        let i = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
+        if i.is_dir() { return Err(VfsError::Eisdir); }
+        mount.unlink(d.ino, name.as_bytes()).map_err(|_| VfsError::Eio)?;
+        d.st.page_cache.invalidate(InodeId(target as u64));
+        Ok(())
+    }
+
+    /// # C: O(N parent entries)
+    fn symlink(&self, inode: &Inode, name: &str, target: &[u8]) -> KResult<()> {
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
+        let ino = d.st.mount.create_symlink(d.ino, name.as_bytes(), target).map_err(|_| VfsError::Eio)?;
+        d.st.page_cache.invalidate(InodeId(ino as u64));
+        Ok(())
+    }
+
+    /// # C: O(N parent entries)
+    fn mknod(&self, inode: &Inode, name: &str, mode: u16, rdev: u32) -> KResult<()> {
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
+        let ino = d.st.mount.create_mknod(d.ino, name.as_bytes(), mode, rdev).map_err(|_| VfsError::Eio)?;
+        d.st.page_cache.invalidate(InodeId(ino as u64));
+        Ok(())
+    }
+}
+
+/// `file_operations` for a non-regular ext4 inode: `iterate`/readdir for a
+/// directory, the `S_IFMT` default (`EISDIR`/`EINVAL`) otherwise. Shared
+/// (ZST). # C: O(1)
+pub(crate) struct Ext4StatFileOps;
+
+impl FileOps for Ext4StatFileOps {
+    fn iterate(
+        &self,
+        inode: &Inode,
+        off: u64,
+        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
+    ) -> KResult<u64> {
+        let d = inode.private::<Ext4StatData>().ok_or(VfsError::Eio)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        let mount = &d.st.mount;
+        let dir_inode = mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?;
         let mut next = off;
         let mut idx: u64 = 0;
         let bs = mount.sb.block_size as u64;
@@ -288,14 +417,14 @@ impl vfs::Inode for Ext4StatInode {
                 idx += 1;
                 if idx <= off { return true; }
                 let ft = match e.file_type {
-                    1 => vfs::FileType::Regular,
-                    2 => vfs::FileType::Directory,
-                    3 => vfs::FileType::CharDev,
-                    4 => vfs::FileType::BlockDev,
-                    5 => vfs::FileType::Fifo,
-                    6 => vfs::FileType::Socket,
-                    7 => vfs::FileType::Symlink,
-                    _ => vfs::FileType::Regular,
+                    1 => FileType::Regular,
+                    2 => FileType::Directory,
+                    3 => FileType::CharDev,
+                    4 => FileType::BlockDev,
+                    5 => FileType::Fifo,
+                    6 => FileType::Socket,
+                    7 => FileType::Symlink,
+                    _ => FileType::Regular,
                 };
                 let keep = f(e.inode as u64, idx, name, ft);
                 if keep { next = idx; } else { keep_going = false; }
@@ -304,79 +433,23 @@ impl vfs::Inode for Ext4StatInode {
         }
         Ok(next)
     }
+}
 
-    /// # C: O(N parent entries)
-    fn mkdir(&self, name: &str, mode: u32) -> vfs::KResult<vfs::InodeRef> {
-        if !matches!(self.ft, vfs::FileType::Directory) { return Err(vfs::VfsError::Enotdir); }
-        if self.st.lookup_child_ino(self.ino, name).is_some() { return Err(vfs::VfsError::Eexist); }
-        self.st.mount.create_dir(self.ino, name.as_bytes(), mode as u16).map_err(|_| vfs::VfsError::Eio)?;
-        let child = self.st.lookup_child_ino(self.ino, name).ok_or(vfs::VfsError::Eio)?;
-        self.st.wrap_any_ino(child).ok_or(vfs::VfsError::Eio)
-    }
-
-    /// # C: O(N parent entries)
-    fn rmdir(&self, name: &str) -> vfs::KResult<()> {
-        if !matches!(self.ft, vfs::FileType::Directory) { return Err(vfs::VfsError::Enotdir); }
-        let mount = &self.st.mount;
-        let target = self.st.lookup_child_ino(self.ino, name).ok_or(vfs::VfsError::Enoent)?;
-        let inode = mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
-        if !inode.is_dir() { return Err(vfs::VfsError::Enotdir); }
-        // Emptiness check (Linux `ext4_rmdir` → `ext4_empty_dir`): reject with
-        // ENOTEMPTY if the victim holds any entry other than "." / "..".
-        // Without this, rmdir on a populated directory orphaned its children.
-        let bs = mount.sb.block_size as u64;
-        let nblocks = ((inode.size + bs - 1) / bs) as u32;
-        for blk_idx in 0..nblocks {
-            let Ok(blk) = mount.read_file_block(&inode, blk_idx) else { break };
-            let mut nonempty = false;
-            let _ = crate::iter_active(&blk, |e| {
-                if e.name.is_empty() || e.name == b"." || e.name == b".." { return true; }
-                nonempty = true;
-                false
-            });
-            if nonempty { return Err(vfs::VfsError::Enotempty); }
-        }
-        mount.dir_unlink(self.ino, name.as_bytes()).map_err(|_| vfs::VfsError::Eio)?;
-        let _ = mount.free_inode(target);
-        Ok(())
-    }
-
-    /// # C: O(N parent entries)
-    fn create_child(&self, name: &str, mode: u32) -> vfs::KResult<vfs::InodeRef> {
-        if !matches!(self.ft, vfs::FileType::Directory) { return Err(vfs::VfsError::Enotdir); }
-        if self.st.lookup_child_ino(self.ino, name).is_some() { return Err(vfs::VfsError::Eexist); }
-        let ino = self.st.mount.create_file(self.ino, name.as_bytes(), mode as u16).map_err(|_| vfs::VfsError::Eio)?;
-        self.st.page_cache.invalidate(InodeId(ino as u64));
-        self.st.wrap_file(ino).ok_or(vfs::VfsError::Eio)
-    }
-
-    /// # C: O(N parent entries)
-    fn unlink_child(&self, name: &str) -> vfs::KResult<()> {
-        if !matches!(self.ft, vfs::FileType::Directory) { return Err(vfs::VfsError::Enotdir); }
-        let mount = &self.st.mount;
-        let target = self.st.lookup_child_ino(self.ino, name).ok_or(vfs::VfsError::Enoent)?;
-        let inode = mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
-        if inode.is_dir() { return Err(vfs::VfsError::Eisdir); }
-        mount.unlink(self.ino, name.as_bytes()).map_err(|_| vfs::VfsError::Eio)?;
-        self.st.page_cache.invalidate(InodeId(target as u64));
-        Ok(())
-    }
-
-    /// # C: O(N parent entries)
-    fn symlink_child(&self, name: &str, target: &[u8]) -> vfs::KResult<()> {
-        if !matches!(self.ft, vfs::FileType::Directory) { return Err(vfs::VfsError::Enotdir); }
-        if self.st.lookup_child_ino(self.ino, name).is_some() { return Err(vfs::VfsError::Eexist); }
-        let ino = self.st.mount.create_symlink(self.ino, name.as_bytes(), target).map_err(|_| vfs::VfsError::Eio)?;
-        self.st.page_cache.invalidate(InodeId(ino as u64));
-        Ok(())
-    }
-
-    /// # C: O(N parent entries)
-    fn mknod_child(&self, name: &str, mode: u16, rdev: u32) -> vfs::KResult<()> {
-        if !matches!(self.ft, vfs::FileType::Directory) { return Err(vfs::VfsError::Enotdir); }
-        if self.st.lookup_child_ino(self.ino, name).is_some() { return Err(vfs::VfsError::Eexist); }
-        let ino = self.st.mount.create_mknod(self.ino, name.as_bytes(), mode, rdev).map_err(|_| vfs::VfsError::Eio)?;
-        self.st.page_cache.invalidate(InodeId(ino as u64));
-        Ok(())
-    }
+/// Build a stat/dir/symlink/dev `vfs::Inode` for ext4 inode `ino`. The
+/// captured on-disk metadata (`ft`/`perm`/`size`/`nlink`/`rdev`) is read by
+/// the caller before the `iget` build closure. `rdev` is only meaningful for
+/// CHR/BLK nodes (generic_fillattr reads it for those types only). # C: O(1)
+pub(crate) fn build_stat_inode(
+    st: Arc<RootfsState>, ino: u32, ft: FileType, perm: u16, size: u64, nlink: u32, rdev: u32,
+) -> InodeRef {
+    let data = Arc::new(Ext4StatData { st, ino, ft, size });
+    let weak_sb = data.st.sb.lock().clone();
+    InodeBuilder::new(ext4_wrap_ino(ino), mk_mode(ft, perm),
+                      Arc::new(Ext4StatInodeOps), Arc::new(Ext4StatFileOps))
+        .sb(weak_sb)
+        .size(size)
+        .nlink(nlink)
+        .rdev(rdev)
+        .private(data)
+        .build()
 }
