@@ -4,12 +4,11 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use vfs::{Dentry, File, OpenFlags};
+use vfs::{File, OpenFlags};
 
 /// `sys_eventfd2(initval, flags)` — slot 290.
 /// # C: O(1)
 pub fn sys_eventfd2(args: &SyscallArgs) -> i64 {
-    use alloc::string::ToString;
     const EFD_SEMAPHORE: u64 = 1;
     const EFD_NONBLOCK:  u64 = 0o0_004_000;
     const EFD_CLOEXEC:   u64 = 0o2_000_000;
@@ -24,7 +23,7 @@ pub fn sys_eventfd2(args: &SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode = ::fs::pipe::make_eventfd_inode(initval);
-    let dentry = Dentry::new(None, "eventfd".to_string(), inode.clone());
+    let dentry = vfs::dcache::d_alloc_pseudo("[eventfd]", inode.clone(), &crate::anon_dname::ANON_INODE_OPS);
     let mut fl = OpenFlags::O_RDWR;
     if (flags & EFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);

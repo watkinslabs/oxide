@@ -9,6 +9,7 @@
 
 extern crate alloc;
 
+pub mod anon_dname;
 pub mod pipe;
 pub mod signalfd;
 pub mod timerfd;

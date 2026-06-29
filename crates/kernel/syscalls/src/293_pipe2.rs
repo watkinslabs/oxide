@@ -7,8 +7,7 @@ use hal::USER_VA_END;
 
 /// # C: O(1)
 pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
-    use alloc::string::ToString;
-    use vfs::{Dentry, File, OpenFlags};
+    use vfs::{File, OpenFlags};
     let pipefd = args.a0;
     let flags  = args.a1 as u32;
     const O_NONBLOCK: u32 = 0o4000;
@@ -36,7 +35,7 @@ pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
         klog::write_dec_u64(r as u64);
         klog::write_raw(b"\n");
     }
-    let dentry = Dentry::new(None, "pipe".to_string(), inode.clone());
+    let dentry = vfs::dcache::d_alloc_pseudo("pipe", inode.clone(), &crate::anon_dname::PIPE_OPS);
     let mut r_oflags = OpenFlags::O_RDONLY;
     let mut w_oflags = OpenFlags::O_WRONLY;
     if (flags & O_NONBLOCK) != 0 { r_oflags |= OpenFlags::O_NONBLOCK; w_oflags |= OpenFlags::O_NONBLOCK; }

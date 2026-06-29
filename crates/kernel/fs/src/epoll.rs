@@ -171,8 +171,7 @@ fn epoll_inode_of(file: &alloc::sync::Arc<vfs::File>) -> Option<Arc<EpollData>> 
 /// `sys_epoll_create(size)` / `sys_epoll_create1(flags)`.
 /// # C: O(N_fds)
 pub fn sys_epoll_create1(args: &syscall::SyscallArgs) -> i64 {
-    use alloc::string::ToString;
-    use vfs::{Dentry, File, OpenFlags};
+    use vfs::{File, OpenFlags};
     use syscall::errno::Errno;
     const EPOLL_CLOEXEC: u64 = 0o2_000_000;
     let flags = args.a0;
@@ -184,7 +183,7 @@ pub fn sys_epoll_create1(args: &syscall::SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode = make_epoll_inode();
-    let dentry = Dentry::new(None, "epoll".to_string(), Arc::clone(&inode));
+    let dentry = vfs::dcache::d_alloc_pseudo("[eventpoll]", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
     let file = File::new(inode, dentry, OpenFlags::O_RDONLY);
     match fdt.alloc(file) {
         Ok(fd) => {
