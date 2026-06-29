@@ -59,13 +59,21 @@ fn st_flags(mnt: u64, sb: u64) -> u64 {
 /// dentry-identity crossing (root mount for paths not under a distinct
 /// mount), so there is no path-prefix guesswork. # C: O(N_mounts)
 pub(crate) fn statfs_for_path(path: &str) -> SbStatFs {
-    let mut st = SbStatFs::default();
-    if let Some((m, _)) = vfs::mount::resolve_mount(path) {
-        if let Ok(s) = m.sb().statfs() { st = s; }
-        // `f_flags` is the per-MOUNT statvfs `ST_*` view (Linux
-        // `calculate_f_flags`), not an `s_op->statfs` output.
-        st.f_flags = st_flags(m.flags(), m.sb().s_flags());
+    match vfs::mount::resolve_mount(path) {
+        Some((m, _)) => statfs_for_mount(&m),
+        None => { let mut st = SbStatFs::default(); fill_usage(&mut st); st }
     }
+}
+
+/// `kstatfs` read directly from a known owning `Mount` (its `SuperBlock` +
+/// per-mount `MNT_*` flags). Used by `fstatfs` to report the fd's real backing
+/// mount/superblock rather than re-classifying by the dentry name string. # C: O(1)
+pub(crate) fn statfs_for_mount(m: &vfs::mount::Mount) -> SbStatFs {
+    let mut st = SbStatFs::default();
+    if let Ok(s) = m.sb().statfs() { st = s; }
+    // `f_flags` is the per-MOUNT statvfs `ST_*` view (Linux `calculate_f_flags`),
+    // not an `s_op->statfs` output.
+    st.f_flags = st_flags(m.flags(), m.sb().s_flags());
     fill_usage(&mut st);
     st
 }

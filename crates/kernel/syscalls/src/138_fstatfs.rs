@@ -29,7 +29,13 @@ pub fn sys_fstatfs(args: &SyscallArgs) -> i64 {
     let im = file.inode().statfs_magic();
     let st = if im != 0 {
         statfs_for_magic(im)
+    } else if let Some(m) = vfs::mount::mount_by_id(file.mnt_id()) {
+        // Report the fd's real owning mount/superblock (Linux fstatfs =
+        // `vfs_statfs(&f.f_path)`), not a re-classification by dentry-name string.
+        crate::statfs_common::statfs_for_mount(&m)
     } else {
+        // No owning mount (anon/pseudo fd with no statfs_magic): last-resort
+        // name-string classification.
         let name = file.dentry().name();
         if name.starts_with('/') {
             statfs_for_path(name)
