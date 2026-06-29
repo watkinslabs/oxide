@@ -11,6 +11,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -62,16 +63,131 @@ const FUSE_CTL_MAGIC:   u64 = 0x6573_5546;
 const MQUEUE_MAGIC:     u64 = 0x1980_0202;
 const HUGETLBFS_MAGIC:  u64 = 0x9584_58f6;
 
-/// Register a fresh empty kernfs-class instance (`kernfs::PseudoFs`) of fstype
-/// `t` (magic `magic`) at the caller-walked mountpoint dentry, exactly as
-/// procfs/sysfs/debugfs/tracefs are registered. Returns the `move_mount`/
-/// `mount(2)` success/errno. # C: O(depth)
-fn register_pseudofs(t: &'static str, magic: u64, target: &str, target_d: &Arc<Dentry>) -> i64 {
-    let fs: Arc<dyn vfs::fs::FileSystem> = kernfs::PseudoFs::new(t, magic, target);
-    match vfs::mount::register(Some(target_d.clone()), fs) {
-        Ok(()) => { let _ = vfs::mount::propagate_mount(target_d); 0 }
-        Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
-        Err(e) => crate::namei_common::errno_from_vfs(e),
+/// `s_magic` for ext4 (linux/magic.h `EXT4_SUPER_MAGIC`) — stamped on the
+/// registry entry so it surfaces in `/proc/filesystems`; the live statfs
+/// `f_type` still comes from the constructed `Ext4Mount`.
+const EXT4_MAGIC: u64 = 0xef53;
+
+/// One-time guard: register every constructor-bearing `file_system_type` into
+/// the VFS registry (`vfs::fs::register_fs`) before the first dispatch. Held
+/// across registration so concurrent first mounts serialise. # C: O(1) after first.
+static FS_TYPES_REGISTERED: Spinlock<bool, LockClass> = Spinlock::new(false);
+
+/// Idempotently populate the `file_system_type` registry (D40). # C: O(N) once.
+fn ensure_filesystems_registered() {
+    let mut done = FS_TYPES_REGISTERED.lock();
+    if *done { return; }
+    register_filesystems();
+    *done = true;
+}
+
+/// Register each fstype the old hard-coded `match fstype { … }` materialised as
+/// a name→constructor entry (Linux `register_filesystem`). Every backend crate
+/// is in scope here (the VFS crate must not depend on them), so the constructor
+/// closures build the SAME backend object the match did; the mount engine then
+/// builds the `SuperBlock` (`build_sb`). The four fstypes whose construction is
+/// NOT a clean backend-object constructor stay in [`mount_fstype_with_data`]'s
+/// fallback match (cgroup2 → `cgroup::mount_at`; devtmpfs/devpts/cgroup →
+/// devfs-registry admit-noop). # C: O(N)
+fn register_filesystems() {
+    use vfs::fs::{register_fs, FsFlags, FsType, MountSpec};
+    type R = vfs::fs::KResult<MountSpec>;
+
+    // tmpfs / ramfs — each mount is a fresh instance owning its own tree; the
+    // engine binds its per-mount root (Linux `mount_nodev`). Admit-and-ignore.
+    fn tmpfs_ctor(_s: &str, target: &str, _d: &str) -> R {
+        let tfs = ::fs::tmpfs::TmpfsFs::new(target.to_string());
+        let root = tfs.root_inode();
+        let fs: Arc<dyn vfs::fs::FileSystem> = tfs;
+        Ok(MountSpec { fs, bind_root: Some(root), strict: false })
+    }
+    let _ = register_fs(FsType::new("tmpfs", 0, FsFlags::empty(), Box::new(tmpfs_ctor)));
+    let _ = register_fs(FsType::new("ramfs", 0, FsFlags::empty(), Box::new(tmpfs_ctor)));
+
+    // ext4 — block-device backed: resolve the source disk, open the on-disk SB.
+    let _ = register_fs(FsType::new("ext4", EXT4_MAGIC, FsFlags::FS_REQUIRES_DEV,
+        Box::new(|source: &str, _t: &str, _d: &str| -> R {
+            let name = source_disk_name(source);
+            if name.is_empty() { return Err(vfs::VfsError::Einval); }
+            let dev = block::registry::by_name(name).map(|d| d.dev.clone())
+                .or_else(|| block::registry::by_serial(name)).ok_or(vfs::VfsError::Enoent)?;
+            let fs: Arc<dyn vfs::fs::FileSystem> =
+                ext4::rootfs::Ext4Mount::open(dev).map_err(|_| vfs::VfsError::Einval)?;
+            Ok(MountSpec { fs, bind_root: None, strict: true })
+        })));
+
+    // proc / sysfs / debugfs / tracefs — singleton pseudo-fs objects, admit-and-ignore.
+    let _ = register_fs(FsType::new("proc", 0, FsFlags::empty(),
+        Box::new(|_s: &str, _t: &str, _d: &str| -> R {
+            Ok(MountSpec { fs: Arc::new(procfs::fs_impl::ProcfsFs), bind_root: None, strict: false })
+        })));
+    let _ = register_fs(FsType::new("sysfs", 0, FsFlags::empty(),
+        Box::new(|_s: &str, _t: &str, _d: &str| -> R {
+            Ok(MountSpec { fs: Arc::new(sysfs::SysfsFs), bind_root: None, strict: false })
+        })));
+    let _ = register_fs(FsType::new("debugfs", 0, FsFlags::empty(),
+        Box::new(|_s: &str, _t: &str, _d: &str| -> R {
+            Ok(MountSpec { fs: Arc::new(tracefs::fs_impl::DebugfsFs), bind_root: None, strict: false })
+        })));
+    let _ = register_fs(FsType::new("tracefs", 0, FsFlags::empty(),
+        Box::new(|_s: &str, _t: &str, _d: &str| -> R {
+            Ok(MountSpec { fs: Arc::new(tracefs::fs_impl::TracefsFs), bind_root: None, strict: false })
+        })));
+
+    // Simple kernfs/ramfs-class api-fses: a REAL empty `PseudoFs` (own SB +
+    // magic + dir root). Register failure surfaces as errno (strict).
+    macro_rules! pseudo { ($name:literal, $magic:expr) => {
+        let _ = register_fs(FsType::new($name, $magic, FsFlags::empty(),
+            Box::new(|_s: &str, target: &str, _d: &str| -> R {
+                let fs: Arc<dyn vfs::fs::FileSystem> = kernfs::PseudoFs::new($name, $magic, target);
+                Ok(MountSpec { fs, bind_root: None, strict: true })
+            })));
+    }; }
+    pseudo!("securityfs", SECURITYFS_MAGIC);
+    pseudo!("efivarfs",   EFIVARFS_MAGIC);
+    pseudo!("pstore",     PSTOREFS_MAGIC);
+    pseudo!("bpf",        BPF_FS_MAGIC);
+    pseudo!("configfs",   CONFIGFS_MAGIC);
+    pseudo!("fusectl",    FUSE_CTL_MAGIC);
+    pseudo!("mqueue",     MQUEUE_MAGIC);
+    pseudo!("hugetlbfs",  HUGETLBFS_MAGIC);
+
+    // autofs — option-string parsed at construct; bad options → errno.
+    let _ = register_fs(FsType::new("autofs", 0, FsFlags::empty(),
+        Box::new(|_s: &str, _t: &str, data: &str| -> R {
+            let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::autofs::AutofsFs::new(data)?;
+            Ok(MountSpec { fs, bind_root: None, strict: true })
+        })));
+
+    // binfmt_misc — empty registry fs.
+    let _ = register_fs(FsType::new("binfmt_misc", 0, FsFlags::empty(),
+        Box::new(|_s: &str, _t: &str, _d: &str| -> R {
+            let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::binfmt_misc::BinfmtMiscFs::new();
+            Ok(MountSpec { fs, bind_root: None, strict: true })
+        })));
+}
+
+/// Graft a constructor-produced [`vfs::fs::MountSpec`] onto the walked mountpoint
+/// dentry, preserving the legacy per-fstype error policy via `spec.strict`:
+/// admit-and-ignore (old `let _ = register(); 0`) vs surface-errno. # C: O(depth)
+fn graft_mount(spec: vfs::fs::MountSpec, target_d: &Arc<Dentry>) -> i64 {
+    if spec.strict {
+        let res = match spec.bind_root {
+            Some(root) => vfs::mount::register_bind(Some(target_d.clone()), spec.fs, root),
+            None       => vfs::mount::register(Some(target_d.clone()), spec.fs),
+        };
+        match res {
+            Ok(()) => { let _ = vfs::mount::propagate_mount(target_d); 0 }
+            Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
+            Err(e) => crate::namei_common::errno_from_vfs(e),
+        }
+    } else {
+        match spec.bind_root {
+            Some(root) => { let _ = vfs::mount::register_bind(Some(target_d.clone()), spec.fs, root); }
+            None       => { let _ = vfs::mount::register(Some(target_d.clone()), spec.fs); }
+        }
+        let _ = vfs::mount::propagate_mount(target_d);
+        0
     }
 }
 
@@ -94,125 +210,33 @@ pub(crate) fn mount_fstype_with_data(
     target_d: &Arc<Dentry>,
     data: &str,
 ) -> i64 {
+    // D40: resolve `-t <type>` through the name-keyed `file_system_type`
+    // registry (Linux `get_fs_type`) instead of a hard-coded `match fstype`.
+    ensure_filesystems_registered();
+    if let Some(ty) = vfs::fs::get_fs(fstype) {
+        let spec = match ty.construct(source, target, data) {
+            Ok(s) => s,
+            Err(e) => return crate::namei_common::errno_from_vfs(e),
+        };
+        return graft_mount(spec, target_d);
+    }
+    // Fallback: fstypes whose construction is NOT a clean backend-object
+    // constructor (so they cannot live in the registry without restructuring
+    // the boot mount path). Left here deliberately per D40 SAFETY.
     match fstype {
-        "tmpfs" | "ramfs" => {
-            // Each `mount -t tmpfs` is a fresh instance owning its own tree.
-            let tfs = ::fs::tmpfs::TmpfsFs::new(target.to_string());
-            let root: InodeRef = tfs.root_inode();
-            let fs: Arc<dyn vfs::fs::FileSystem> = tfs;
-            let _ = vfs::mount::register_bind(Some(target_d.clone()), fs, root);
-            let _ = vfs::mount::propagate_mount(target_d);
-            0
-        }
-        "ext4" => {
-            let name = source_disk_name(source);
-            if name.is_empty() { return -(Errno::Einval.as_i32() as i64); }
-            let dev = block::registry::by_name(name)
-                .map(|d| d.dev.clone())
-                .or_else(|| block::registry::by_serial(name));
-            let dev = match dev {
-                Some(d) => d,
-                None => return -(Errno::Enoent.as_i32() as i64),
-            };
-            let fs = match ext4::rootfs::Ext4Mount::open(dev) {
-                Ok(f) => f,
-                Err(_) => return -(Errno::Einval.as_i32() as i64),
-            };
-            match vfs::mount::register(Some(target_d.clone()), fs) {
-                Ok(()) => {
-                    let _ = vfs::mount::propagate_mount(target_d);
-                    0
-                }
-                Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
-                Err(e) => crate::namei_common::errno_from_vfs(e),
-            }
-        }
+        // cgroup2 has its own mount engine (`cgroup::mount_at`), not a plain
+        // `FileSystem` graft.
         "cgroup2" => match cgroup::mount_at(target, Some(target_d.clone())) {
             Ok(()) => 0,
             Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
             Err(e) => crate::namei_common::errno_from_vfs(e),
         }
-        "proc" => {
-            let _ = vfs::mount::register(Some(target_d.clone()), Arc::new(procfs::fs_impl::ProcfsFs));
-            let _ = vfs::mount::propagate_mount(target_d);
-            0
-        }
-        // A fresh sysfs INSTANCE must enter the unified mount table, exactly
-        // like procfs/debugfs/tracefs above. systemd's `mount_private_sysfs`
-        // (namespace.c `mount_private_apivfs`) mounts a new sysfs at a unique
-        // mkdtemp staging dir, then `mount(staging, entry, MS_MOVE)` relocates
-        // it into the sandbox root. The old `=> 0` admit-noop registered
-        // NOTHING, so the staging path was not an exact mount → the follow-up
-        // MS_MOVE hit `move_mount`'s `mount_exact_at … ok_or(Einval)` and the
-        // executor failed step NAMESPACE (status=226). Registering the real
-        // SysfsFs (the same fs kmain mounts at /sys) makes the staging mount
-        // resolvable; after the executor's pivot_root re-roots staging→/, its
-        // `mount_point` lands back at /sys and `SysfsFs::lookup("/sys/…")`
-        // resolves normally. Boot never re-mounts /sys (the kernel mounted it),
-        // so this never stacks a duplicate at /sys.
-        "sysfs" => {
-            let _ = vfs::mount::register(Some(target_d.clone()), Arc::new(sysfs::SysfsFs));
-            let _ = vfs::mount::propagate_mount(target_d);
-            0
-        }
-        // devtmpfs/devpts/cgroup(v1) instances still admit-noop: their content
-        // lives in the devfs registry (no standalone whole-path FileSystem to
-        // register), and systemd's private-dev path uses a tmpfs (registered
-        // above), not devtmpfs — so the captured NAMESPACE failure does not
-        // exercise them. They share sysfs's old latent MS_MOVE/umount2 gap and
-        // want a real DevfsFs/DevptsFs superblock once one exists (residual).
+        // devtmpfs/devpts/cgroup(v1) still admit-noop: their content lives in
+        // the devfs registry (no standalone whole-path FileSystem to register),
+        // and systemd's private-dev path uses a tmpfs (registered above), not
+        // devtmpfs. They want a real DevfsFs/DevptsFs superblock once one
+        // exists (residual).
         "devtmpfs" | "devpts" | "cgroup" => 0,
-        // Real (devfs-delegating) superblocks so the mount enters the unified
-        // table and passes libmount's post-mount verify + statfs f_type magic.
-        // The old `=> 0` admit-noop made these invisible → helper exit 32.
-        "debugfs" => {
-            let _ = vfs::mount::register(Some(target_d.clone()), Arc::new(tracefs::fs_impl::DebugfsFs));
-            let _ = vfs::mount::propagate_mount(target_d);
-            0
-        }
-        "tracefs" => {
-            let _ = vfs::mount::register(Some(target_d.clone()), Arc::new(tracefs::fs_impl::TracefsFs));
-            let _ = vfs::mount::propagate_mount(target_d);
-            0
-        }
-        // Simple kernfs/ramfs-class api-fses: each gets a REAL empty
-        // `PseudoFs` instance (own SB + magic + directory root) so it enters
-        // the unified mount table, shows in mountinfo, and reports its true
-        // `statfs` f_type — the old `=> 0` admit-noop registered nothing
-        // (mount succeeded but was invisible → libmount verify failed).
-        "securityfs" => register_pseudofs("securityfs", SECURITYFS_MAGIC, target, target_d),
-        "efivarfs"   => register_pseudofs("efivarfs",   EFIVARFS_MAGIC,   target, target_d),
-        "pstore"     => register_pseudofs("pstore",     PSTOREFS_MAGIC,   target, target_d),
-        "bpf"        => register_pseudofs("bpf",        BPF_FS_MAGIC,     target, target_d),
-        "configfs"   => register_pseudofs("configfs",   CONFIGFS_MAGIC,   target, target_d),
-        "fusectl"    => register_pseudofs("fusectl",    FUSE_CTL_MAGIC,   target, target_d),
-        "mqueue"     => register_pseudofs("mqueue",     MQUEUE_MAGIC,     target, target_d),
-        "hugetlbfs"  => register_pseudofs("hugetlbfs",  HUGETLBFS_MAGIC,  target, target_d),
-        "autofs" => {
-            let fs: Arc<dyn vfs::fs::FileSystem> = match ::fs::autofs::AutofsFs::new(data) {
-                Ok(fs) => fs,
-                Err(e) => return crate::namei_common::errno_from_vfs(e),
-            };
-            match vfs::mount::register(Some(target_d.clone()), fs) {
-                Ok(()) => {
-                    let _ = vfs::mount::propagate_mount(target_d);
-                    0
-                }
-                Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
-                Err(e) => crate::namei_common::errno_from_vfs(e),
-            }
-        }
-        "binfmt_misc" => {
-            let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::binfmt_misc::BinfmtMiscFs::new();
-            match vfs::mount::register(Some(target_d.clone()), fs) {
-                Ok(()) => {
-                    let _ = vfs::mount::propagate_mount(target_d);
-                    0
-                }
-                Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
-                Err(e) => crate::namei_common::errno_from_vfs(e),
-            }
-        }
         // Unknown fstype: Linux `get_fs_type` fails to find a registered
         // file_system_type → mount(2)/fsmount return ENODEV, not EOPNOTSUPP (D48).
         _ => -(Errno::Enodev.as_i32() as i64),
