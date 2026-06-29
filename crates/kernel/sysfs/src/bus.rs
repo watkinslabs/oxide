@@ -21,7 +21,8 @@ use alloc::vec::Vec;
 
 use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
-use crate::{make_body_inode, make_symlink_inode_ino, DIR_PERM};
+use crate::kobject::{make_attr_inode, Attribute, AttrGroup, SysfsOps};
+use crate::{make_symlink_inode_ino, DIR_PERM, RO_PERM};
 
 const INO_BUS_PCI_DEV:   Ino = 0x5102_0001;
 const INO_BUS_PCI_DRV:   Ino = 0x5102_0002;
@@ -57,9 +58,35 @@ fn dev_attr(dev: &drv::Device, leaf: &str) -> Option<Vec<u8>> {
     }
 }
 
-fn dev_entries(bus: &str) -> &'static [&'static str] {
-    if bus == "pci" { &["vendor", "device", "class", "uevent"] }
-    else { &["device", "uevent"] }
+/// PCI device default attribute group (Linux `pci_dev_attrs`). # C: n/a
+const PCI_DEV_ATTRS: &[Attribute] = &[
+    Attribute { name: "vendor", mode: RO_PERM },
+    Attribute { name: "device", mode: RO_PERM },
+    Attribute { name: "class",  mode: RO_PERM },
+    Attribute { name: "uevent", mode: RO_PERM },
+];
+static PCI_DEV_GROUP: AttrGroup = AttrGroup { attrs: PCI_DEV_ATTRS };
+
+/// virtio device default attribute group. # C: n/a
+const VIRTIO_DEV_ATTRS: &[Attribute] = &[
+    Attribute { name: "device", mode: RO_PERM },
+    Attribute { name: "uevent", mode: RO_PERM },
+];
+static VIRTIO_DEV_GROUP: AttrGroup = AttrGroup { attrs: VIRTIO_DEV_ATTRS };
+
+/// The device attribute group for `bus`. # C: O(1)
+fn dev_group(bus: &str) -> &'static AttrGroup {
+    if bus == "pci" { &PCI_DEV_GROUP } else { &VIRTIO_DEV_GROUP }
+}
+
+/// `sysfs_ops` for a `/sys/devices/.../<addr>` device kobject — `show` renders
+/// each attribute fresh from the live `drv` registry. # C: O(1)
+struct DeviceKobj { addr: String, bus: &'static str }
+impl SysfsOps for DeviceKobj {
+    fn show(&self, attr: &str) -> Option<Vec<u8>> {
+        let dev = find_dev(self.bus, &self.addr)?;
+        dev_attr(&dev, attr)
+    }
 }
 
 /// A symlink inode (under the bus tree) whose readlink target is a fixed
@@ -83,20 +110,22 @@ impl InodeOps for DeviceDirOps {
             let t = alloc::format!("../../../bus/{}/drivers/{}", data.bus, drvname);
             return Ok(make_link_inode(t.into_bytes()));
         }
-        let body = dev_attr(&dev, name).ok_or(VfsError::Enoent)?;
-        Ok(make_body_inode(body, INO_ATTR))
+        let attr = dev_group(data.bus).find(name).ok_or(VfsError::Enoent)?;
+        let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { addr: data.addr.clone(), bus: data.bus });
+        Ok(make_attr_inode(attr, ops, INO_ATTR))
     }
 }
 impl FileOps for DeviceDirOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let data = match inode.private::<DeviceDirData>() { Some(d) => d, None => return Err(VfsError::Einval) };
-        let attrs = dev_entries(data.bus);
+        let attrs = dev_group(data.bus).attrs;
         let bound = find_dev(data.bus, &data.addr).map(|d| d.bound().is_some()).unwrap_or(false);
         let mut idx = ctx.pos as usize;
         while idx < attrs.len() {
             let next = idx as u64 + 1;
-            let ino = inode.lookup(attrs[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(attrs[idx], ino, FileType::Regular, next) { return Ok(()); }
+            let name = attrs[idx].name;
+            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !ctx.emit(name, ino, FileType::Regular, next) { return Ok(()); }
             idx += 1;
         }
         if bound && idx == attrs.len() {
