@@ -44,7 +44,11 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
     // owner (Linux `->mkdir(struct mnt_idmap *, ...)`).
     let cred = crate::pathresolve::current_cred();
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
-    match pino.mkdir(&name, mode, &ctx) {
+    // D29: hold the parent dir's `i_rwsem` EXCLUSIVE across the backend mkdir
+    // (Linux `filename_create` → `->mkdir`). Scope is just the op; the rank-40
+    // i_rwsem is dropped before the rank-50/60 dcache `d_drop_path` below.
+    let r = { let _g = pino.inode_lock(); pino.mkdir(&name, mode, &ctx) };
+    match r {
         Ok(_) => { crate::pathresolve::d_drop_path(&p); 0 }
         Err(e) => {
             crate::namei_common::trace_run_vfs_error(b"mkdir", &p, e);
