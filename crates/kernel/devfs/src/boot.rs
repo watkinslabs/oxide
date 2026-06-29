@@ -59,39 +59,35 @@ fn machine_id_line() -> &'static [u8] {
     alloc::boxed::Box::leak(s.into_boxed_slice())
 }
 
-/// Register the `/etc/*` overlay nodes (machine-id, passwd, group,
-/// hosts, services, …) into devfs's own ns-0 tree. devfs owns `/etc` as an
-/// ext4-overlay subtree in the SAME ns-keyed tree as `/dev` (root `overlay =
-/// true`), so userspace `/etc/*` resolution merges synthetic + on-disk rootfs
-/// entries exactly as before — without the shared cross-fs path registry (the
-/// `/etc` writes used to live in procfs `register_static_files`, D1d).
-/// `/etc/os-release` is intentionally not registered here: the rootfs image
-/// builders provide the real file, and a kernel synthetic identity would
-/// incorrectly shadow the distro/profile identity selected by userspace.
-/// Boot, once, at the same phase `populate_defaults` runs. # C: O(N nodes)
+/// Register the kernel/runtime-synthetic `/etc/*` overlay nodes into devfs's
+/// own ns-0 tree. devfs owns `/etc` as an ext4-overlay subtree in the SAME
+/// ns-keyed tree as `/dev` (root `overlay = true`), so userspace `/etc/*`
+/// resolution merges synthetic + on-disk rootfs entries (the `/etc` writes used
+/// to live in procfs `register_static_files`, D1d).
+///
+/// D23: only entries with NO real rootfs backing remain synthetic here.
+/// Everything the rootfs image now ships as a real file — `os-release`,
+/// `hostname`, `passwd`, `group`, `shadow`, `shells`, `profile`, `issue`,
+/// `motd`, `hosts`, `nsswitch.conf`, `ld.so.cache` (built by
+/// `tools/xtask/src/rootfs{,_etc}.rs`) — is intentionally NOT registered: a
+/// kernel synthetic copy would incorrectly shadow the real distro/profile file
+/// (the original `os-release` rationale, generalized to the whole set; e.g. the
+/// synthetic `passwd` with only `root` masked the real multi-user `passwd`, and
+/// an empty `ld.so.cache` masked the real one). The remaining entries are
+/// genuinely kernel/runtime-provided with no on-disk source: `machine-id`
+/// (random, like the boot UUIDs), `resolv.conf`/`localtime` (empty placeholders
+/// rewritten at runtime by dhcpcd/tzdata), the static `services`/`protocols`
+/// reference tables, and `ld.so.conf`/`timezone`. Boot, once, at the same phase
+/// `populate_defaults` runs. # C: O(N nodes)
 pub fn register_etc_overlay() {
     register("/etc/machine-id", StaticFileInode::new(machine_id_line()) as InodeRef);
-    register("/etc/hostname", StaticFileInode::new(b"oxide\n") as InodeRef);
-    register("/etc/passwd", StaticFileInode::new(b"root:x:0:0:root:/:/bin/sh\n") as InodeRef);
-    register("/etc/group", StaticFileInode::new(b"root:x:0:\n") as InodeRef);
-    register("/etc/nsswitch.conf",
-        StaticFileInode::new(b"passwd: files\ngroup: files\nhosts: files\n") as InodeRef);
     register("/etc/resolv.conf", StaticFileInode::new(b"") as InodeRef);
     register("/etc/localtime", StaticFileInode::new(b"") as InodeRef);
-    register("/etc/shadow", StaticFileInode::new(b"root::0:0:99999:7:::\n") as InodeRef);
-    register("/etc/shells", StaticFileInode::new(b"/bin/sh\n") as InodeRef);
-    register("/etc/profile",
-        StaticFileInode::new(b"export PATH=/bin:/usr/bin\nexport PS1='$ '\n") as InodeRef);
-    register("/etc/issue", StaticFileInode::new(b"oxide \\r \\l\n\n") as InodeRef);
-    register("/etc/motd", StaticFileInode::new(b"Welcome to oxide.\n") as InodeRef);
-    register("/etc/hosts",
-        StaticFileInode::new(b"127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost\n") as InodeRef);
     register("/etc/services", StaticFileInode::new(
         b"ssh\t\t22/tcp\nssh\t\t22/udp\nhttp\t\t80/tcp\nhttp\t\t80/udp\n\
 https\t\t443/tcp\nhttps\t\t443/udp\ndomain\t\t53/tcp\ndomain\t\t53/udp\n") as InodeRef);
     register("/etc/protocols", StaticFileInode::new(
         b"ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n") as InodeRef);
-    register("/etc/ld.so.cache", StaticFileInode::new(b"") as InodeRef);
     register("/etc/ld.so.conf",
         StaticFileInode::new(b"include /etc/ld.so.conf.d/*.conf\n") as InodeRef);
     register("/etc/timezone", StaticFileInode::new(b"UTC\n") as InodeRef);
