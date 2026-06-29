@@ -154,6 +154,12 @@ impl Inode {
         if f != 0 { f } else { self.i_sb().map(|s| s.s_dev).unwrap_or(0) }
     }
 
+    /// Set the `i_fsid` override (`st_dev`) after construction — for a backend
+    /// whose `s_dev` isn't known at inode-build time (e.g. autofs stamps its
+    /// root inode in `set_sb` so `fstat(mountpoint)` reports `fsid_to_dev(s_dev)`
+    /// the AUTOFS_DEV_IOCTL_OPENMOUNT registry is keyed on). # C: O(1)
+    pub fn set_fsid(&self, f: u64) { self.i_fsid.store(f, Ordering::Release); }
+
     /// Filesystem magic for `fstatfs` on a pathless/anon inode (`s_magic` of the
     /// owning SB, else 0). # C: O(1)
     pub fn statfs_magic(&self) -> u64 { self.i_sb().map(|s| s.s_magic).unwrap_or(0) }
