@@ -7,16 +7,30 @@ use syscall::errno::Errno;
 /// # C: O(log N_vmas)
 pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     let fd     = args.a4 as i64;
-    let offset = args.a5;
+    let mut offset = args.a5;
     let flags  = args.a3;
     const MAP_ANON: u64 = 0x20;
+    const MAP_SHARED: u64 = 0x01;
     // File-backed mmap: resolve fd, wrap as FileBacking, pass to glue_mmap.
     // A device exposing a contiguous physical range (e.g. /dev/fbN, the
     // framebuffer) is mapped straight to that PA (Linux remap_pfn_range) via
     // `phys_base` instead of a page-cache FileBacking. Anonymous → None/None.
     let mut backing: Option<alloc::sync::Arc<dyn vmm::FileBacking>> = None;
     let mut phys_base: Option<u64> = None;
-    if (flags & MAP_ANON) == 0 && fd >= 0 {
+    // MAP_SHARED|MAP_ANON: Linux `shmem_zero_setup` — back the mapping with a
+    // fresh ANONYMOUS tmpfs (shmem) inode so its frames are owned by one
+    // object that parent + child alias across fork(2). The File-backed SHARED
+    // fault/fork/teardown paths (mm-vmm) then share the frames (no COW split,
+    // no W-strip), so writes are mutually visible — fixing the lost-write
+    // corruption that COW-splitting MAP_SHARED|ANON caused. Offset is 0 (anon
+    // inode starts empty, grows sparse + zero-filled on demand). MAP_PRIVATE|
+    // MAP_ANON is unchanged: pure zero-fill COW (backing stays None).
+    if (flags & MAP_ANON) != 0 {
+        if (flags & MAP_SHARED) != 0 {
+            backing = Some(crate::mmap_file::InodeFileBacking::new(::fs::tmpfs::tmpfs_anon_file()));
+            offset = 0;
+        }
+    } else if fd >= 0 {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
