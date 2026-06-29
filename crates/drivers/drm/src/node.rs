@@ -76,30 +76,31 @@ const FALLBACK_NAME: &str = "oxide";
 const FALLBACK_DATE: &str = "20260509";
 const FALLBACK_DESC: &str = "Oxide DRM (no GPU)";
 
-pub struct DrmCardInode;
+// High-bits tags keep the three char-device inodes distinct from every other
+// device number; the ioctl + mmap dispatchers (`handle_drm_ioctl`,
+// `mmap_backing`) route on `inode.ino()` masked to the top 32 bits.
+const DRM_CARD_INO:   vfs::Ino = 0x4452_4D43_0000_0000;
+const DRM_RENDER_INO: vfs::Ino = 0x4452_4D52_0000_0000;
+const DRM_EVDEV_INO:  vfs::Ino = 0x4556_4456_0000_0000;
 
-impl vfs::Inode for DrmCardInode {
-    fn ino(&self) -> vfs::Ino {
-        // High-bits tag distinct from other char devices.
-        0x4452_4D43_0000_0000u64 | 0
-    }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::CharDev }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+/// `file_operations` for `/dev/dri/card0`: read drains queued KMS events,
+/// write is a no-op sink, last-close restores the boot fbcon scanout.
+struct DrmCardFileOps;
+impl vfs::FileOps for DrmCardFileOps {
     /// read(2) on the card fd drains queued KMS events (DRM page-flip
     /// completions) as `drm_event_vblank` records — Linux `drm_read`.
     /// 0 bytes when no event is pending (libdrm polls then reads).
     /// # C: O(events)
-    fn read(&self, _o: u64, b: &mut [u8]) -> vfs::KResult<usize> {
+    fn read(&self, _inode: &vfs::Inode, _o: u64, b: &mut [u8]) -> vfs::KResult<usize> {
         Ok(crate::crtc::drain_events(b))
     }
-    fn write(&self, _o: u64, b: &[u8]) -> vfs::KResult<usize> { Ok(b.len()) }
+    fn write(&self, _inode: &vfs::Inode, _o: u64, b: &[u8]) -> vfs::KResult<usize> { Ok(b.len()) }
     /// Last-close: if a KMS client took the scanout via SETCRTC and is
     /// now closing its card fd, restore the boot fbcon scanout + repaint
     /// the console so the fb console (and getty) come back. A normal
     /// boot never opens card0 → this never fires → console untouched.
     /// MUST NOT panic or block. # C: O(1) + O(scanout repaint).
-    fn on_release(&self) {
+    fn on_release(&self, _inode: &vfs::Inode) {
         if crate::crtc::owner() != 0 {
             if let Some(ops) = scanout_ops() { (ops.restore_console)(); }
             crate::crtc::clear_owner();
@@ -107,41 +108,37 @@ impl vfs::Inode for DrmCardInode {
     }
 }
 
-pub struct DrmRenderInode;
-
-impl vfs::Inode for DrmRenderInode {
-    fn ino(&self) -> vfs::Ino {
-        0x4452_4D52_0000_0000u64 | 0
-    }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::CharDev }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Ok(0) }
-    fn write(&self, _o: u64, b: &[u8]) -> vfs::KResult<usize> { Ok(b.len()) }
+/// `file_operations` for the render node + the evdev surface: read returns 0
+/// bytes (no events queued → userspace blocks/poll-empty), write is a sink.
+struct DrmSinkFileOps;
+impl vfs::FileOps for DrmSinkFileOps {
+    fn read(&self, _inode: &vfs::Inode, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Ok(0) }
+    fn write(&self, _inode: &vfs::Inode, _o: u64, b: &[u8]) -> vfs::KResult<usize> { Ok(b.len()) }
 }
 
-/// /dev/input/event0 — evdev surface. v1 returns 0-byte reads
-/// (no events queued) so userspace blocks/poll-empty rather than
-/// failing.
-pub struct EvdevInode;
-
-impl vfs::Inode for EvdevInode {
-    fn ino(&self) -> vfs::Ino {
-        0x4556_4456_0000_0000u64 | 0
-    }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::CharDev }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Ok(0) }
-    fn write(&self, _o: u64, b: &[u8]) -> vfs::KResult<usize> { Ok(b.len()) }
+/// Build the `/dev/dri/card0` inode (`S_IFCHR|0o666`, card tag, card f_op).
+/// # C: O(1)
+fn make_card_inode() -> vfs::InodeRef {
+    vfs::InodeBuilder::new(DRM_CARD_INO, vfs::mk_mode(vfs::FileType::CharDev, 0o666),
+                           vfs::default_inode_ops(), Arc::new(DrmCardFileOps)).build()
+}
+/// Build the `/dev/dri/renderD128` inode (sink f_op). # C: O(1)
+fn make_render_inode() -> vfs::InodeRef {
+    vfs::InodeBuilder::new(DRM_RENDER_INO, vfs::mk_mode(vfs::FileType::CharDev, 0o666),
+                           vfs::default_inode_ops(), Arc::new(DrmSinkFileOps)).build()
+}
+/// Build the `/dev/input/event0` evdev inode (sink f_op). # C: O(1)
+fn make_evdev_inode() -> vfs::InodeRef {
+    vfs::InodeBuilder::new(DRM_EVDEV_INO, vfs::mk_mode(vfs::FileType::CharDev, 0o666),
+                           vfs::default_inode_ops(), Arc::new(DrmSinkFileOps)).build()
 }
 
 /// Register DRM card / render / evdev / input-devices nodes.
 /// # C: O(1)
 pub fn register() {
-    devfs::register("/dev/dri/card0",     Arc::new(DrmCardInode)   as vfs::InodeRef);
-    devfs::register("/dev/dri/renderD128", Arc::new(DrmRenderInode) as vfs::InodeRef);
-    devfs::register("/dev/input/event0",  Arc::new(EvdevInode)     as vfs::InodeRef);
+    devfs::register("/dev/dri/card0",      make_card_inode());
+    devfs::register("/dev/dri/renderD128", make_render_inode());
+    devfs::register("/dev/input/event0",   make_evdev_inode());
     procfs::register("/proc/bus/input/devices",
         vfs::StaticFileInode::new(b"\
 I: Bus=0019 Vendor=0000 Product=0000 Version=0000\n\
@@ -151,7 +148,7 @@ S: Sysfs=/devices/oxide/input0\n\
 H: Handlers=event0\n\
 B: EV=3\n\
 B: KEY=ffffffffffffffff\n\
-") as vfs::InodeRef);
+"));
 }
 
 /// mmap backing for a DRM card inode (offset-keyed). The `offset` is

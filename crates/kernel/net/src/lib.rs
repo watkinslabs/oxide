@@ -109,6 +109,38 @@ mod stack_tests;
 #[cfg(target_os = "oxide-kernel")]
 fn tcp_retx_timer(now_ns: u64) { sock::stack().tcp_retx_tick(now_ns); }
 
+/// B288 diagnostic: dump AF_UNIX SOCK_DGRAM payloads sent to the
+/// journal / syslog / sd_notify sockets so early-boot service error
+/// strings (tmpfiles/sysusers/udevd/journald) surface in klog. The
+/// services log their fatal reason to journald's socket (which queues
+/// because journald itself is wedged), so the payload is the only
+/// place the human-readable cause appears. Gated on `debug-boot`.
+/// # C: O(payload bytes)
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-boot"))]
+pub fn trace_dgram_journal(path: &str, payload: &[u8]) {
+    let is_journal = path.as_bytes().windows(7).any(|w| w == b"journal")
+        || path.as_bytes().windows(4).any(|w| w == b"/log")
+        || path.as_bytes().windows(6).any(|w| w == b"notify")
+        || path.as_bytes().windows(7).any(|w| w == b"dev-log");
+    if !is_journal { return; }
+    klog::write_raw(b"[B288 dgram ");
+    klog::write_raw(crate::unix_sock::unix_path_display(path).as_bytes());
+    klog::write_raw(b" pid=");
+    let pid = sched::live::current().map(|t| t.tgid.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
+    klog::write_dec_u64(pid as u64);
+    klog::write_raw(b"] ");
+    // Cap the dump so a huge journal record can't flood the UART.
+    let n = core::cmp::min(payload.len(), 512);
+    klog::write_raw(&payload[..n]);
+    klog::write_raw(b"\n");
+}
+
+/// No-op when debug-boot is off.
+/// # C: O(1)
+#[cfg(not(all(target_os = "oxide-kernel", feature = "debug-boot")))]
+#[inline]
+pub fn trace_dgram_journal(_path: &str, _payload: &[u8]) {}
+
 /// Register net's periodic timers (TCP retransmit). Boot, once.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]

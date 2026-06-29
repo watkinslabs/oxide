@@ -1106,7 +1106,16 @@ pub fn glue_mmap(
     let is_anon = flags & MAP_ANON != 0;
     let _ = fd;
     if is_anon {
-        if backing.is_some() || phys_base.is_some() { return Err(-(Errno::Einval.as_i32() as i64)); }
+        // MAP_SHARED|MAP_ANON carries an anonymous shmem backing object
+        // (Linux `shmem_zero_setup`): the caller hands us a frame-backed
+        // anonymous tmpfs inode so fork(2) ALIASES the frames (one backing
+        // object, no anon_vma, no COW split) and parent/child see each
+        // other's writes. MAP_PRIVATE|MAP_ANON is pure zero-fill COW and
+        // must NOT carry a backing.
+        if phys_base.is_some() { return Err(-(Errno::Einval.as_i32() as i64)); }
+        if backing.is_some() && (flags & MAP_SHARED) == 0 {
+            return Err(-(Errno::Einval.as_i32() as i64));
+        }
     } else if phys_base.is_some() {
         // Device physical mapping (e.g. /dev/fbN, Linux remap_pfn_range):
         // no FileBacking, just a page-aligned offset into the device memory.

@@ -92,3 +92,8 @@ mod tests_pagecache;
 #[cfg(test)]
 mod tests_cow_invariant;
 
+// B240: File demand-fault must retry short `read_at` for a non-EOF page and
+// refuse to install a partially-zero page (SIGBUS, not silent zeros).
+#[cfg(test)]
+mod tests_shortfill;
+

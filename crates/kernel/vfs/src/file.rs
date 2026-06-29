@@ -34,13 +34,22 @@ bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
     pub struct Fmode: u32 {
         /// FMODE_READ — file is readable.
-        const READ  = 0x0000_0001;
+        const READ   = 0x0000_0001;
         /// FMODE_WRITE — file is writable.
-        const WRITE = 0x0000_0002;
+        const WRITE  = 0x0000_0002;
+        /// FMODE_LSEEK — file is seekable (`do_dentry_open`: `f_op->llseek`
+        /// present and not `no_llseek`). Gates `lseek(2)`.
+        const LSEEK  = 0x0000_0004;
+        /// FMODE_PREAD — positional read supported (`f_op->read_iter`). Gates
+        /// `pread(2)`.
+        const PREAD  = 0x0000_0008;
+        /// FMODE_PWRITE — positional write supported (`f_op->write_iter`).
+        /// Gates `pwrite(2)`.
+        const PWRITE = 0x0000_0010;
         /// FMODE_EXEC — opened for execution (`do_open_execat`).
-        const EXEC  = 0x0000_0020;
+        const EXEC   = 0x0000_0020;
         /// FMODE_PATH — O_PATH descriptor (no read/write, fd-ref only).
-        const PATH  = 0x0000_4000;
+        const PATH   = 0x0000_4000;
     }
 }
 
@@ -66,6 +75,37 @@ const O_NOATIME: u32 = 0o1000000;
 /// and silently ignored by `F_SETFL`, so they are excluded here.
 const SETFL_MASK: u32 =
     OpenFlags::O_APPEND.bits() | OpenFlags::O_NONBLOCK.bits() | O_DIRECT | O_NOATIME;
+
+/// Default readahead window (Linux `VM_READAHEAD_PAGES`, 128 KiB = 32 pages at
+/// 4 KiB) — the per-open `f_ra.ra_pages` ceiling.
+const DEFAULT_RA_PAGES: u32 = 32;
+
+/// Lock class for `File::f_ra` (never nested with the inode lock). # C: O(1)
+struct FileRa;
+impl sync::LockClass for FileRa { fn rank() -> u16 { 36 } }
+
+/// `struct file_ra_state` (Linux): per-open sequential readahead window —
+/// `start`/`size` in PAGE units, `async_size` the async-trigger margin,
+/// `ra_pages` the ceiling. State + Linux window arithmetic; the page-cache fill
+/// is the block lane, the mmap `prev_pos`/`mmap_miss` heuristics the mmap lane.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct FileRaState { pub start: u64, pub size: u32, pub async_size: u32, pub ra_pages: u32 }
+
+impl FileRaState {
+    /// Initial window for a `req`-page read, ≤ `max` (Linux `get_init_ra_size`:
+    /// roundup pow2 → 4x small / 2x medium / clamp). # C: O(1)
+    pub fn init_ra_size(req: u32, max: u32) -> u32 {
+        let mut n = req.max(1).next_power_of_two();
+        if n <= max / 32 { n = n.saturating_mul(4); } else if n <= max / 4 { n = n.saturating_mul(2); } else { n = max; }
+        n.clamp(1, max.max(1))
+    }
+    /// Grown window from the current, ≤ `max` (Linux `get_next_ra_size`). # C: O(1)
+    pub fn next_ra_size(&self, max: u32) -> u32 {
+        let cur = self.size.max(1);
+        let n = if cur < max / 16 { cur.saturating_mul(4) } else if cur <= max / 2 { cur.saturating_mul(2) } else { max };
+        n.clamp(1, max.max(1))
+    }
+}
 
 /// Map an open's access mode (`O_RDONLY`/`O_WRONLY`/`O_RDWR`) to the
 /// canonical `Fmode` capability bits. Mirrors Linux `OPEN_FMODE`. An `O_PATH`
@@ -114,15 +154,31 @@ pub struct File {
     /// `pos` atomic — payload is `()`. Only taken for seekable files
     /// (regular/directory); non-seekable I/O may park and ignores `pos`.
     f_pos_lock: Spinlock<(), FilePos>,
+    /// `f_ra` readahead window (Linux `struct file.f_ra`). Spinlock-guarded so
+    /// the on-demand advance is atomic against a dup'd / shared description.
+    f_ra: Spinlock<FileRaState, FileRa>,
     flags:  AtomicU32,
     /// Currently-held flock kind: 0=none, 1=LOCK_SH, 2=LOCK_EX. Used
     /// by the kernel-side flock registry to find which lock to drop
     /// when the last reference to this open-file-description goes
     /// away (Drop impl below).
     pub flock_op: AtomicU32,
-    /// F_GETOWN/F_SETOWN target: positive = tid, negative = -pgid, 0 = none.
-    /// SIGIO/SIGURG delivery routes to this id when fasync fires.
+    /// F_GETOWN/F_SETOWN target: positive = tid, negative = -pgid, 0 = none
+    /// (Linux `f_owner.pid`). SIGIO/SIGURG routes here on fasync; the credential
+    /// snapshot lives in `owner_creds`, the delivery signal in `f_sig`.
     pub owner: core::sync::atomic::AtomicI32,
+    /// `f_owner` credential snapshot (Linux `struct fown_struct.uid/.euid`)
+    /// captured at `F_SETOWN`, so a deferred SIGIO permission-checks against
+    /// the credentials that requested ownership, not those current when the
+    /// signal fires. Packed `uid << 32 | euid`. The `Cred` subset carries one
+    /// id, so uid==euid here until a separate euid lands.
+    owner_creds: AtomicU64,
+    /// `F_SETSIG`/`F_GETSIG` (Linux `f_owner.signum`): the signal delivered on
+    /// async-I/O readiness; `0` = the default `SIGIO` (data) / `SIGURG` (OOB).
+    f_sig: core::sync::atomic::AtomicI32,
+    /// `file->f_version` (Linux): inode change-version this open last observed;
+    /// directory readers compare it vs `inode->i_version` to drop a stale cursor.
+    f_version: AtomicU64,
 }
 
 /// Kernel-side hook installed at boot. Called from `File::drop` for
@@ -318,11 +374,19 @@ impl File {
             let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
             f(&inode);
         }
-        let f_mode = fmode_from_flags(flags);
-        // D11 (`16§97` lockref): the open file description pins its dentry with
-        // a `d_count` ref (Linux `struct file` holds a `dget`'d `f_path.dentry`).
-        // The matching `dput` is in `File::drop`. Until this, `d_count` was
-        // permanently 0 in production — no dentry ever entered the LRU.
+        let mut f_mode = fmode_from_flags(flags);
+        // FMODE_LSEEK/PREAD/PWRITE (Linux `do_dentry_open`): a seekable backing
+        // (anything but a streaming pipe/socket/fifo) carries a real cursor +
+        // positional I/O → all three bits; an O_PATH (`empty_fops`) / streaming
+        // file gets none. Computed once so `seek`/`pread`/`pwrite` read `f_mode`.
+        if !f_mode.contains(Fmode::PATH)
+            && !matches!(inode.file_type(), FileType::Fifo | FileType::Socket)
+        {
+            f_mode |= Fmode::LSEEK | Fmode::PREAD | Fmode::PWRITE;
+        }
+        // D11 (`16§97` lockref): the open file description pins its dentry with a
+        // `d_count` ref (Linux `struct file` holds a `dget`'d `f_path.dentry`);
+        // the matching `dput` is in `File::drop`.
         let dentry = crate::dcache::dget(&dentry);
         Arc::new(Self {
             inode,
@@ -333,9 +397,13 @@ impl File {
             private_data: AtomicU64::new(0),
             pos:   AtomicU64::new(0),
             f_pos_lock: Spinlock::new(()),
+            f_ra: Spinlock::new(FileRaState { ra_pages: DEFAULT_RA_PAGES, ..FileRaState::default() }),
             flags: AtomicU32::new(flags.bits()),
             flock_op: AtomicU32::new(0),
             owner: core::sync::atomic::AtomicI32::new(0),
+            owner_creds: AtomicU64::new(0),
+            f_sig: core::sync::atomic::AtomicI32::new(0),
+            f_version: AtomicU64::new(0),
         })
     }
 
@@ -369,6 +437,25 @@ impl File {
         crate::mount::mount_by_id(self.mnt_id)
     }
 
+    /// True iff a write through this open file description must be refused
+    /// `EROFS` because its mount or backing superblock is read-only (Linux
+    /// `mnt_want_write` → `__mnt_want_write` + `sb_rdonly`). Reads the mount
+    /// the file was opened THROUGH (the captured `f_path.vfsmount`, recovered
+    /// by `mnt_id`) — O(1) by mount-id lookup — instead of re-deriving the
+    /// absolute pathname and re-walking it on every write (the old
+    /// `is_readonly_path(absolute_path())` round-trip, which could also resolve
+    /// a DIFFERENT mount than the one the file was opened through if the tree
+    /// changed since open). An anon file (`mnt_id == 0`: pipe/socket/eventfd/…)
+    /// has no vfsmount and is never mount-RO-blocked; its backend governs
+    /// writability directly.
+    /// # C: O(log N)
+    fn mnt_readonly(&self) -> bool {
+        match self.vfsmount() {
+            Some(m) => (m.flags() & crate::mount::MNT_RDONLY) != 0 || m.sb().is_readonly(),
+            None    => false,
+        }
+    }
+
     /// `f_mode` (FMODE_* capability bits). # C: O(1)
     pub fn f_mode(&self) -> Fmode { self.f_mode }
 
@@ -380,6 +467,83 @@ impl File {
 
     /// `file->private_data` slot write. # C: O(1)
     pub fn set_private_data(&self, v: u64) { self.private_data.store(v, Ordering::Release); }
+
+    /// `F_SETOWN` (Linux `f_setown`): set the SIGIO/SIGURG delivery target
+    /// (`>0` a task, `<0` a `-pgrp`, `0` clears) AND snapshot the requesting
+    /// credentials for the later delivery permission check. Stores the bare id
+    /// in `owner` (what `F_GETOWN` returns) and the packed uid/euid in
+    /// `owner_creds`. # C: O(1)
+    pub fn f_setown(&self, id: i32, cred: &Cred) {
+        self.owner.store(id, Ordering::Release);
+        self.owner_creds.store(((cred.uid as u64) << 32) | cred.uid as u64, Ordering::Release);
+    }
+
+    /// `F_GETOWN` (Linux `f_getown`): the delivery target id. # C: O(1)
+    pub fn f_getown(&self) -> i32 { self.owner.load(Ordering::Acquire) }
+
+    /// `f_owner` credential snapshot `(uid, euid)` from the last `F_SETOWN`
+    /// (Linux `struct fown_struct.uid/.euid`). # C: O(1)
+    pub fn f_owner_creds(&self) -> (u32, u32) {
+        let v = self.owner_creds.load(Ordering::Acquire);
+        ((v >> 32) as u32, v as u32)
+    }
+
+    /// `F_SETSIG` (Linux): choose the signal delivered on async-I/O readiness;
+    /// `0` restores the default (SIGIO for data, SIGURG for OOB). # C: O(1)
+    pub fn set_sig(&self, sig: i32) { self.f_sig.store(sig, Ordering::Release); }
+
+    /// `F_GETSIG` (Linux). # C: O(1)
+    pub fn sig(&self) -> i32 { self.f_sig.load(Ordering::Acquire) }
+
+    /// Resolve the signal to actually deliver for an async-I/O event: the
+    /// `F_SETSIG` value if set, else `dfl` (the default `SIGIO`/`SIGURG`).
+    /// Linux `send_sigio_to_task`: `signum ? signum : SIGIO`. # C: O(1)
+    pub fn fasync_signal(&self, dfl: i32) -> i32 {
+        let s = self.f_sig.load(Ordering::Acquire);
+        if s != 0 { s } else { dfl }
+    }
+
+    /// `file->f_version` read — the change-version a `readdir` cursor was built against. # C: O(1)
+    pub fn f_version(&self) -> u64 { self.f_version.load(Ordering::Acquire) }
+    /// `file->f_version` stamp (Linux: from `inode_query_iversion` at cursor setup). # C: O(1)
+    pub fn set_f_version(&self, v: u64) { self.f_version.store(v, Ordering::Release); }
+    /// True when the inode's change-version advanced past the last `f_version`
+    /// stamp — the cached `readdir` position is stale (Linux `file->f_version !=
+    /// inode->i_version`). # C: O(1)
+    pub fn dir_version_changed(&self) -> bool {
+        crate::inode::inode_query_iversion(&*self.inode) != self.f_version.load(Ordering::Acquire)
+    }
+
+    /// Snapshot of the `f_ra` readahead window state. # C: O(1)
+    pub fn ra_state(&self) -> FileRaState { *self.f_ra.lock() }
+
+    /// Set the readahead window ceiling in pages (Linux `POSIX_FADV_SEQUENTIAL`
+    /// doubles the default, `POSIX_FADV_RANDOM` zeroes it to disable RA). # C: O(1)
+    pub fn set_ra_pages(&self, pages: u32) { self.f_ra.lock().ra_pages = pages; }
+
+    /// On-demand readahead advance (Linux `ondemand_readahead` core): from the
+    /// read's first page `index`, page count `req`, and whether the PG_readahead
+    /// marker was hit, update `f_ra` and return the `(start, size, async_size)`
+    /// window to submit (page-cache fill is the block lane). `ra_pages == 0`
+    /// (FADV_RANDOM) disables RA; a sequential continuation (`index==start+size`)
+    /// or marker hit grows via `next_ra_size`; SOF / a jump re-seeds via
+    /// `init_ra_size`. # C: O(1)
+    pub fn ra_ondemand(&self, index: u64, req: u32, hit_marker: bool) -> (u64, u32, u32) {
+        let mut ra = self.f_ra.lock();
+        let max = ra.ra_pages;
+        if max == 0 { *ra = FileRaState { start: index, ..*ra }; return (index, 0, 0); }
+        let sequential = index == ra.start + ra.size as u64;
+        if index != 0 && (sequential || hit_marker) {
+            ra.start = if sequential { ra.start + ra.size as u64 } else { index + 1 };
+            ra.size = ra.next_ra_size(max);
+            ra.async_size = ra.size;
+        } else {
+            ra.start = index;
+            ra.size = FileRaState::init_ra_size(req, max);
+            ra.async_size = if ra.size > req { ra.size - req } else { ra.size };
+        }
+        (ra.start, ra.size, ra.async_size)
+    }
 
     /// Per-close flush (Linux `file_operations->flush`, fired by
     /// `filp_close` on every `close(2)`/`dup2`-replace/cloexec drop —
@@ -479,11 +643,8 @@ impl File {
         if !self.f_mode.contains(Fmode::WRITE) {
             return Err(VfsError::Ebadf);
         }
-        let path = self.dentry.absolute_path();
-        if let Ok(path) = core::str::from_utf8(&path) {
-            if crate::mount::is_readonly_path(path) {
-                return Err(VfsError::Erofs);
-            }
+        if self.mnt_readonly() {
+            return Err(VfsError::Erofs);
         }
         // FMODE_ATOMIC_POS: hold `f_pos_lock` across the offset pick (incl.
         // the O_APPEND size read) -> I/O -> pos-update so a shared fd can't
@@ -523,16 +684,14 @@ impl File {
     /// (the old `off as u64` cast turned a negative offset into a huge value).
     ///
     /// FMODE_LSEEK gate (Linux `vfs_llseek`): a file without FMODE_LSEEK is
-    /// `ESPIPE` ("illegal seek") before any offset math. Two cases lack it
-    /// here — an `O_PATH` fd (FMODE_PATH only, `empty_fops`, no `llseek`) and an
-    /// inherently non-seekable `pipe`/`socket`/`fifo` — exactly the files Linux
-    /// `do_dentry_open` leaves without FMODE_LSEEK. Regular/dir/char/block keep
-    /// a real cursor and seek.
+    /// `ESPIPE` ("illegal seek") before any offset math. The bit is computed
+    /// once at open (`new_at`): an `O_PATH` fd (FMODE_PATH only, `empty_fops`,
+    /// no `llseek`) and an inherently non-seekable `pipe`/`socket`/`fifo` lack
+    /// it — exactly the files Linux `do_dentry_open` leaves without
+    /// FMODE_LSEEK. Regular/dir/char/block keep a real cursor and seek.
     /// # C: O(1)
     pub fn seek(&self, whence: SeekFrom, off: i64) -> KResult<u64> {
-        if self.f_mode.contains(Fmode::PATH)
-            || matches!(self.inode.file_type(), FileType::Fifo | FileType::Socket)
-        {
+        if !self.f_mode.contains(Fmode::LSEEK) {
             return Err(VfsError::Espipe);
         }
         let base = match whence {
@@ -561,10 +720,9 @@ impl File {
     pub fn pread(&self, buf: &mut [u8], off: i64) -> KResult<usize> {
         if off < 0 { return Err(VfsError::Einval); }
         // FMODE_PREAD gate (Linux `do_dentry_open`): only seekable files carry
-        // it; pipe/socket/fifo and O_PATH fds do not → ESPIPE.
-        if self.f_mode.contains(Fmode::PATH)
-            || matches!(self.inode.file_type(), FileType::Fifo | FileType::Socket)
-        {
+        // it; pipe/socket/fifo and O_PATH fds do not → ESPIPE. The bit is set
+        // once at open, so no per-call file-type re-derivation.
+        if !self.f_mode.contains(Fmode::PREAD) {
             return Err(VfsError::Espipe);
         }
         if !self.f_mode.contains(Fmode::READ) {
@@ -600,19 +758,16 @@ impl File {
     /// # C: depends on inode impl
     pub fn pwrite(&self, buf: &[u8], off: i64) -> KResult<usize> {
         if off < 0 { return Err(VfsError::Einval); }
-        if self.f_mode.contains(Fmode::PATH)
-            || matches!(self.inode.file_type(), FileType::Fifo | FileType::Socket)
-        {
+        // FMODE_PWRITE gate (Linux `do_dentry_open`): set once at open for
+        // seekable files only; pipe/socket/fifo and O_PATH lack it → ESPIPE.
+        if !self.f_mode.contains(Fmode::PWRITE) {
             return Err(VfsError::Espipe);
         }
         if !self.f_mode.contains(Fmode::WRITE) {
             return Err(VfsError::Ebadf);
         }
-        let path = self.dentry.absolute_path();
-        if let Ok(path) = core::str::from_utf8(&path) {
-            if crate::mount::is_readonly_path(path) {
-                return Err(VfsError::Erofs);
-            }
+        if self.mnt_readonly() {
+            return Err(VfsError::Erofs);
         }
         let f = self.flags();
         // Linux pwrite + O_APPEND: IOCB_APPEND forces ki_pos = i_size,
@@ -634,20 +789,14 @@ impl File {
         Ok(n)
     }
 
-    /// `readv(2)` core (Linux `vfs_readv` -> `do_iter_read`): aggregate a slice
-    /// of destination buffers into ONE cursor-advancing read against the file,
-    /// holding `f_pos_lock` for the WHOLE walk so a dup'd / CLONE_FILES-shared
-    /// fd cannot interleave the cursor between buffers, and advancing `f_pos`
-    /// ONCE by the grand total — matching Linux taking `f_pos_lock` once in
-    /// `__fdget_pos` and writing `file->f_pos` back a single time. The buffers
-    /// form one logical region: buffer `i` is filled at the running offset
-    /// `pos + total`. A short fill (inode `read` returns fewer bytes than the
-    /// buffer length, `0` = EOF) terminates the walk per `iov_iter` semantics.
-    /// An inode error propagates only when NO bytes have been read yet; once
-    /// progress is made the partial count is returned (Linux generic-read
-    /// `written ? written : error`). Empty buffers are skipped. O_NONBLOCK
-    /// routes through `read_nonblock`, exactly as scalar `read`.
-    /// # C: O(sum of buf lens)
+    /// `readv(2)` core (Linux `vfs_readv` -> `do_iter_read`): aggregate the
+    /// destination buffers into ONE cursor-advancing read, holding `f_pos_lock`
+    /// for the WHOLE walk so a dup'd / shared fd cannot interleave the cursor,
+    /// and advancing `f_pos` ONCE by the grand total (Linux `__fdget_pos`).
+    /// Buffer `i` fills at the running offset `pos + total`; a short fill (`0` =
+    /// EOF) ends the walk per `iov_iter`. An inode error propagates only when NO
+    /// bytes were read yet, else the partial count is returned. Empty buffers
+    /// skipped; O_NONBLOCK routes through `read_nonblock`. # C: O(sum of buf lens)
     pub fn read_iter(&self, bufs: &mut [&mut [u8]]) -> KResult<usize> {
         if !self.f_mode.contains(Fmode::READ) {
             return Err(VfsError::Ebadf);
@@ -684,27 +833,20 @@ impl File {
         Ok(total as usize)
     }
 
-    /// `writev(2)` core (Linux `vfs_writev` -> `do_iter_write`): aggregate a
-    /// slice of source buffers into ONE cursor-advancing write, holding
-    /// `f_pos_lock` for the whole walk and advancing `f_pos` ONCE by the total
-    /// (Linux `__fdget_pos`). With `O_APPEND` the base offset is forced to the
-    /// current size ONCE (Linux `IOCB_APPEND` overriding `ki_pos` for the whole
-    /// iocb), then buffers are written sequentially at `base + total`; the
-    /// inter-writer append atomicity is the inode lock's job — this serializes
-    /// only this description's cursor. A short write terminates the walk per
-    /// `iov_iter` semantics. An inode error propagates only when NO bytes have
-    /// been written yet; otherwise the partial count is returned. Empty buffers
-    /// are skipped. O_NONBLOCK routes through `write_nonblock`.
-    /// # C: O(sum of buf lens)
+    /// `writev(2)` core (Linux `vfs_writev` -> `do_iter_write`): aggregate the
+    /// source buffers into ONE cursor-advancing write, holding `f_pos_lock` for
+    /// the whole walk and advancing `f_pos` ONCE by the total (Linux
+    /// `__fdget_pos`). `O_APPEND` forces the base to i_size ONCE (Linux
+    /// `IOCB_APPEND` for the whole iocb); inter-writer append atomicity is the
+    /// inode lock's job. A short write ends the walk per `iov_iter`; an inode
+    /// error propagates only with no prior progress, else the partial count.
+    /// Empty buffers skipped; O_NONBLOCK → `write_nonblock`. # C: O(sum of buf lens)
     pub fn write_iter(&self, bufs: &[&[u8]]) -> KResult<usize> {
         if !self.f_mode.contains(Fmode::WRITE) {
             return Err(VfsError::Ebadf);
         }
-        let path = self.dentry.absolute_path();
-        if let Ok(path) = core::str::from_utf8(&path) {
-            if crate::mount::is_readonly_path(path) {
-                return Err(VfsError::Erofs);
-            }
+        if self.mnt_readonly() {
+            return Err(VfsError::Erofs);
         }
         let f = self.flags();
         let nonblock = f.contains(OpenFlags::O_NONBLOCK);

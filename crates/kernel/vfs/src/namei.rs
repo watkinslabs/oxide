@@ -59,9 +59,21 @@ pub struct LookupFlags {
     pub no_follow_final: bool,
     /// RESOLVE_NO_SYMLINKS: any symlink anywhere → ELOOP.
     pub no_symlinks: bool,
-    /// RESOLVE_BENEATH: `..` may not ascend above `root`, and an absolute
-    /// symlink target is rejected (Linux EXDEV; surfaced here as ELOOP).
+    /// Confined-root marker (chroot, wired by `pathresolve::resolution_root`):
+    /// the walk is scoped to `root`, so `..` cannot ascend above it and an
+    /// absolute path / absolute symlink target restarts AT `root` (the clamp is
+    /// performed by the `root`-relative `to_root`/`dotdot_step` machinery, so
+    /// this field is currently informational). NOTE: Linux's openat2
+    /// RESOLVE_BENEATH instead ERRORS `-EXDEV` on an escape attempt rather than
+    /// clamping; that distinct behaviour is `beneath_exdev` below.
     pub beneath: bool,
+    /// RESOLVE_BENEATH (`openat2(2)`, Linux `LOOKUP_BENEATH`): the START dirfd
+    /// is the scoped resolution root and any attempt to escape ABOVE it ERRORS
+    /// `EXDEV` rather than clamping (the distinction from the chroot `beneath`
+    /// field). Three escapes are rejected: an absolute pathname, a `..` at the
+    /// scoped root, and an absolute symlink target. `Nameidata::new` pins the
+    /// resolution root to START (like `in_root`), so the boundary is the dirfd.
+    pub beneath_exdev: bool,
     /// LOOKUP_DIRECTORY: the final component must resolve to a directory
     /// (else ENOTDIR).
     pub directory: bool,
@@ -77,11 +89,24 @@ pub struct LookupFlags {
     /// The magic-link reopen lives at the open/dup layer (`path::dup_fd_target`),
     /// which gates on this flag; the walker carries it for completeness.
     pub no_magiclinks: bool,
+    /// RESOLVE_NO_XDEV (`openat2(2)`): forbid mount-point traversal during
+    /// resolution. A component that would descend INTO a mounted filesystem, or
+    /// a `..` that would ascend OUT of the current mount, is rejected with
+    /// `EXDEV` (Linux `LOOKUP_NO_XDEV`). The START position's own over-mount is
+    /// normalised by `Nameidata::new` BEFORE the walk and is exempt — only
+    /// crossings made WHILE walking are blocked.
+    pub no_xdev: bool,
     /// LOOKUP_REVAL: forced revalidation (Linux's ESTALE-retry walk). Threaded
     /// to each cached dentry's `d_op->d_revalidate` so a fs that trusts an
     /// attribute-cache timeout normally re-checks its backing store on this
     /// pass; set by the retry path after a stale-handle failure.
     pub reval: bool,
+    /// RESOLVE_CACHED (`openat2(2)`): resolve ONLY from the dcache — never
+    /// invoke a filesystem `i_op->lookup` (which may block on I/O). A dcache
+    /// miss that would take the slow path is `EAGAIN`, telling the caller to
+    /// retry on a blocking path (Linux `try_to_unlazy`/`LOOKUP_CACHED` →
+    /// `-EAGAIN`). A cached NEGATIVE dentry is still a definitive `ENOENT`.
+    pub cached: bool,
 }
 
 /// Caller credentials for the VFS permission checks — Linux `struct cred`
@@ -146,13 +171,39 @@ pub struct VfsPath {
     pub last_component: Option<String>,
 }
 
+/// Linux `nd->last_type` (`fs/namei.c`) — the classification of a LOOKUP_PARENT
+/// walk's final segment, derived from `VfsPath.last_component`. A caller
+/// (`do_rmdir`/`do_unlinkat`/`do_renameat2`) matches on this to reject the
+/// dot-forms WITHOUT re-parsing the pathname: `rmdir(".")` → `EINVAL` (`Dot`),
+/// `rmdir("..")` → `ENOTEMPTY` (`Dotdot`), removing/renaming the root → `EBUSY`
+/// (`Root`). `Norm` is an ordinary name (the only form a create/remove may act
+/// on). `Bind` (Linux `LAST_BIND`, a procfs-style magic link as the leaf) is
+/// not produced by this walker — magic links are handled at the open/dup layer
+/// (`path::dup_fd_target`), so they never surface as a parent-walk leaf here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LastType { Norm, Dot, Dotdot, Root }
+
+impl VfsPath {
+    /// Classify the LOOKUP_PARENT leaf (`last_component`) as Linux `last_type`.
+    /// `Root` when there is no leaf — a full (non-PARENT) walk, or a PARENT walk
+    /// of `/` whose leaf clamps at the resolution root. # C: O(1)
+    pub fn last_type(&self) -> LastType {
+        match self.last_component.as_deref() {
+            None       => LastType::Root,
+            Some(".")  => LastType::Dot,
+            Some("..") => LastType::Dotdot,
+            Some(_)    => LastType::Norm,
+        }
+    }
+}
+
 /// `generic_permission` (Linux `fs/namei.c`) for the access `mask`. Inodes
 /// with no per-fs perm info (`perm() == None`: pseudo-fs / synthetic) are
 /// default-allow, preserving the pre-permission behaviour. Owner/group/other
 /// class selection uses the cred's primary + supplementary groups
 /// (`in_group`). Generic over `?Sized` so the `Inode::permission` op hook can
 /// call it on `&self` (the trait object). # C: O(ngroups)
-pub fn generic_permission<I: crate::inode::Inode + ?Sized>(inode: &I, mask: u32, cred: &Cred) -> KResult<()> {
+pub fn generic_permission(inode: &crate::inode::Inode, mask: u32, cred: &Cred) -> KResult<()> {
     let Some(mode) = inode.perm() else { return Ok(()); };
     let mode = mode as u32;
     let uid = inode.uid().unwrap_or(0);
@@ -419,16 +470,18 @@ fn follow_mount_down(mut d: Arc<Dentry>, mut mnt_id: u64, ns: u64) -> KResult<(A
 /// resolution root (`/.. == /`, chroot/BENEATH/IN_ROOT confinement). At a
 /// mounted fs root that is not the resolution root, cross back to the
 /// mountpoint in the parent mount (looping for stacked roots), THEN take the
-/// normal parent step. # C: O(stack)
+/// normal parent step. Returns `true` when the step was an ESCAPE attempt —
+/// `..` at the resolution root, which is clamped (held at root) here but which
+/// `RESOLVE_BENEATH` (`beneath_exdev`) turns into `EXDEV`. # C: O(stack)
 fn dotdot_step(
     cur_dentry: &mut Arc<Dentry>,
     cur_mnt: &mut u64,
     cur_inode: &mut InodeRef,
     root_dentry: &Arc<Dentry>,
     root_mnt: u64,
-) {
+) -> bool {
     loop {
-        if Arc::ptr_eq(cur_dentry, root_dentry) { return; }
+        if Arc::ptr_eq(cur_dentry, root_dentry) { return true; }
         if cur_dentry.is_root() && *cur_mnt != root_mnt {
             if let Some((mp, parent_mnt)) = crate::mount::mountpoint_of(*cur_mnt) {
                 *cur_dentry = mp;
@@ -443,6 +496,7 @@ fn dotdot_step(
         let par = par.clone();
         if let Some(pi) = par.inode() { *cur_inode = pi; *cur_dentry = par; }
     }
+    false
 }
 
 /// Linux `struct nameidata` — the walk's mutable resolution state: current
@@ -474,7 +528,9 @@ impl Nameidata {
         // root, so `to_root()` (absolute paths / absolute symlink restarts) and
         // `dotdot_step` (`..` clamp) all confine to it, overriding the passed
         // `root` (Linux sets `nd->root = nd->path` for LOOKUP_IS_SCOPED+IN_ROOT).
-        if flags.in_root { root_dentry = cur_dentry.clone(); root_mnt_id = cur_mnt_id; }
+        // RESOLVE_BENEATH (`beneath_exdev`) likewise scopes resolution to the
+        // dirfd, but ERRORS on escape (handled in `walk`) instead of clamping.
+        if flags.in_root || flags.beneath_exdev { root_dentry = cur_dentry.clone(); root_mnt_id = cur_mnt_id; }
         Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, depth: 0, flags, cred })
     }
 
@@ -487,19 +543,26 @@ impl Nameidata {
         Ok(())
     }
 
-    /// `..` — `follow_dotdot` clamped at the resolution root. # C: O(stack)
-    fn handle_dotdot(&mut self) {
+    /// `..` — `follow_dotdot` clamped at the resolution root. Returns `true`
+    /// when the step was an escape attempt clamped at the root (the caller
+    /// turns this into `EXDEV` under `beneath_exdev`). # C: O(stack)
+    fn handle_dotdot(&mut self) -> bool {
         dotdot_step(
             &mut self.cur_dentry, &mut self.cur_mnt_id, &mut self.cur_inode,
             &self.root_dentry, self.root_mnt_id,
-        );
+        )
     }
 
     /// Resolve `path` from the current state to a final `VfsPath`. # C:
     /// O(components × dir-lookup) + O(symlinks)
     pub fn walk(&mut self, path: &str) -> KResult<VfsPath> {
         let ns = crate::mount::current_ns();
-        if path.as_bytes().first() == Some(&b'/') { self.to_root()?; }
+        if path.as_bytes().first() == Some(&b'/') {
+            // RESOLVE_BENEATH: an absolute pathname would jump to the (real)
+            // root ABOVE the scoped dirfd → EXDEV (Linux `LOOKUP_BENEATH`).
+            if self.flags.beneath_exdev { return Err(VfsError::Exdev); }
+            self.to_root()?;
+        }
 
         // LOOKUP_DIRECTORY from pathname syntax (`path::requires_dir`): a
         // trailing `/` (`foo/`), or a final `.` / `..` (`foo/.`, `foo/..`)
@@ -512,6 +575,15 @@ impl Nameidata {
         // recovered from `queue` alone — `requires_dir` reads the raw path.
         let trailing_slash = crate::path::requires_dir(path);
         if trailing_slash { self.flags.directory = true; }
+
+        // LOOKUP_PARENT leaf type (Linux `nd->last_type`): a trailing `.`
+        // (`dir/.`) is dropped by `components`, so the parent walk must resolve
+        // `dir` FULLY and report `.` as the leaf — not stop before `dir`.
+        // Detected from the raw path (the queue cannot carry the dropped `.`);
+        // when set, the parent-stop is suppressed and `last_component` is fixed
+        // to `.` after the loop. A trailing `..` survives in the queue and is
+        // reported verbatim at the stop below (Linux `LAST_DOTDOT`).
+        let trailing_dot = self.flags.parent && crate::path::last_segment(path) == ".";
 
         let mut queue: Vec<String> = components(path);
         let mut idx = 0usize;
@@ -535,22 +607,48 @@ impl Nameidata {
                 return Err(VfsError::Enotdir);
             }
 
-            // `.` and empty segments are already dropped by `components`
-            // (single splitter in `path.rs`); only `..` and names reach here.
-            if comp == ".." { self.handle_dotdot(); continue; }
+            // ENAMETOOLONG: a single component longer than NAME_MAX (255 bytes)
+            // is rejected lexically as the walk consumes it (Linux
+            // `link_path_walk` `hash_name` → `-ENAMETOOLONG`), even when the
+            // whole pathname is well under PATH_MAX and even for a LOOKUP_PARENT
+            // leaf (checked before the parent-stop below). `..` is a control
+            // segment (≤2 bytes), never over-length, so it is exempt.
+            if comp != ".." { crate::path::check_component(&comp)?; }
 
-            // `may_lookup`: search permission (MAY_EXEC) on the current
-            // directory, enforced BEFORE the LOOKUP_PARENT stop — Linux calls
-            // `may_lookup` at the top of every component iteration, the final
-            // parent included, so creating in a non-searchable dir is EACCES.
-            may_lookup(&self.cur_inode, &self.cred)?;
-
-            // LOOKUP_PARENT: stop at the last component, returning the parent
-            // dir + the leaf name (Linux `path_parentat`).
-            if is_final && self.flags.parent {
+            // LOOKUP_PARENT: stop BEFORE the final component, reporting it as
+            // the leaf (Linux `path_parentat` / `nd->last`). `may_lookup`
+            // (search permission, MAY_EXEC) runs FIRST — `link_path_walk` checks
+            // it at the top of every component iteration, the final parent
+            // included, so creating in a non-searchable dir is EACCES. The leaf
+            // is reported VERBATIM: a trailing `..` surfaces as
+            // `last_component == ".."` (Linux `LAST_DOTDOT`) instead of silently
+            // walking up, a normal name as itself (`LAST_NORM`), letting the
+            // caller reject `rmdir("..")` / `rename(.., "..")`. A trailing `.`
+            // (`trailing_dot`, dropped by the splitter) is excluded here and
+            // resolved fully, with `.` restored as the leaf after the loop.
+            if is_final && self.flags.parent && !trailing_dot {
+                may_lookup(&self.cur_inode, &self.cred)?;
                 last_component = Some(comp);
                 break;
             }
+
+            // `.` and empty segments are already dropped by `components`
+            // (single splitter in `path.rs`); only `..` and names reach here.
+            if comp == ".." {
+                let from_mnt = self.cur_mnt_id;
+                let escaped = self.handle_dotdot();
+                // RESOLVE_BENEATH: a `..` at the scoped root is an escape above
+                // the dirfd → EXDEV (Linux), not a silent clamp.
+                if self.flags.beneath_exdev && escaped { return Err(VfsError::Exdev); }
+                // RESOLVE_NO_XDEV: a `..` that ascends OUT of the current mount
+                // (back to the mountpoint in the parent mount) is rejected.
+                if self.flags.no_xdev && self.cur_mnt_id != from_mnt { return Err(VfsError::Exdev); }
+                continue;
+            }
+
+            // `may_lookup`: search permission (MAY_EXEC) on the current
+            // directory before resolving a child within it (Linux).
+            may_lookup(&self.cur_inode, &self.cred)?;
 
             // Resolve the named child via the dcache: fast path `d_lookup`
             // (parent,name)-keyed, else slow path `i_op->lookup` + `d_add`.
@@ -563,21 +661,37 @@ impl Nameidata {
             // un-cached (re-walks `i_op->lookup` next time, as before).
             let child = match crate::dcache::d_lookup_reval(&self.cur_dentry, &comp, self.flags.reval) {
                 Some(d) if !d.is_negative() => d,
-                Some(_) => return Err(VfsError::Enoent), // cached negative
+                Some(_) => return Err(VfsError::Enoent), // cached negative (definitive)
+                // RESOLVE_CACHED: a dcache miss would take the (possibly
+                // blocking) `i_op->lookup` slow path — refuse with EAGAIN
+                // instead (Linux `LOOKUP_CACHED`). Without the flag, fall to
+                // the slow path + `d_add` as before.
+                None if self.flags.cached => return Err(VfsError::Eagain),
                 None => crate::dcache::d_add(&self.cur_dentry, &comp, self.cur_inode.lookup(&comp)?),
             };
 
             // Symlink handling — use the child's OWN inode (a mountpoint is a
             // directory, never a symlink, so this precedes mount crossing).
             if matches!(child.inode().map(|i| i.file_type()), Some(FileType::Symlink)) {
-                if self.flags.no_symlinks { return Err(VfsError::Eloop); }
-                // A trailing slash forces the FINAL symlink to be followed even
+                // O_NOFOLLOW / AT_SYMLINK_NOFOLLOW: the FINAL symlink is returned
+                // UNFOLLOWED (Linux `step_into` with LOOKUP_FOLLOW clear). The link
+                // is NOT resolved, so RESOLVE_NO_SYMLINKS does not apply to it —
+                // this short-circuit precedes the `no_symlinks` ELOOP gate so
+                // `open(symlink, O_PATH|O_NOFOLLOW)` under RESOLVE_NO_SYMLINKS
+                // yields the link itself, not ELOOP (Linux `pick_link`'s
+                // NO_SYMLINKS gate fires only when a link is actually followed).
+                // A trailing slash forces the final symlink to be followed even
                 // under no_follow_final (Linux: `link/` follows `link`, then the
-                // target must be a directory).
+                // target must be a directory), so it does NOT short-circuit here.
                 if is_final && self.flags.no_follow_final && !trailing_slash {
                     let inode = child.inode().ok_or(VfsError::Enoent)?;
                     return Ok(VfsPath { mnt_id: self.cur_mnt_id, dentry: child, inode, last_component: None });
                 }
+                // About to FOLLOW the link → RESOLVE_NO_SYMLINKS forbids it
+                // (Linux `pick_link`: `if (nd->flags & LOOKUP_NO_SYMLINKS) -ELOOP`).
+                // Reaches here for every intermediate symlink, and for a final
+                // symlink that IS being followed (no O_NOFOLLOW, or trailing `/`).
+                if self.flags.no_symlinks { return Err(VfsError::Eloop); }
                 self.depth += 1;
                 if self.depth > MAX_SYMLINK_DEPTH { return Err(VfsError::Eloop); }
                 let target = child.inode().ok_or(VfsError::Enoent)?.get_link()?;
@@ -588,10 +702,18 @@ impl Nameidata {
                 queue = next;
                 idx = 0;
                 if target.as_bytes().first() == Some(&b'/') {
-                    // Absolute target: restart at the resolution root. BENEATH
-                    // forbids the escape (Linux EXDEV → surfaced as ELOOP);
-                    // IN_ROOT confines it (restart at `root`, the default).
-                    if self.flags.beneath { return Err(VfsError::Eloop); }
+                    // RESOLVE_BENEATH (`beneath_exdev`): an absolute symlink
+                    // target escapes above the scoped dirfd → EXDEV (Linux),
+                    // checked BEFORE the jump-to-root.
+                    if self.flags.beneath_exdev { return Err(VfsError::Exdev); }
+                    // Absolute target jumps to the resolution root (Linux
+                    // `nd_jump_root`), exactly as an absolute pathname does
+                    // (`to_root` at the top of `walk`). Under a CONFINED root —
+                    // chroot (`beneath`, wired by `pathresolve::resolution_root`)
+                    // or RESOLVE_IN_ROOT — `root` IS the jail/dirfd, so the
+                    // target restarts there and cannot escape: a chroot'd
+                    // `/etc/foo` symlink resolves to `<jail>/etc/foo`, NOT the
+                    // global tree.
                     self.to_root()?;
                 }
                 // Relative target keeps walking from the symlink's directory.
@@ -602,6 +724,9 @@ impl Nameidata {
             // current dentry to the mounted fs's `s_root`, looping for stacked
             // overmounts. `VfsPath.dentry` thus becomes the mounted-fs dentry.
             let (nd, ni, nm) = follow_mount_down(child, self.cur_mnt_id, ns)?;
+            // RESOLVE_NO_XDEV: a component that descends INTO a mount (the
+            // crossed mount id differs) is rejected (Linux `LOOKUP_NO_XDEV`).
+            if self.flags.no_xdev && nm != self.cur_mnt_id { return Err(VfsError::Exdev); }
             self.cur_dentry = nd;
             self.cur_inode = ni;
             self.cur_mnt_id = nm;
@@ -611,6 +736,12 @@ impl Nameidata {
         if self.flags.directory && !matches!(self.cur_inode.file_type(), FileType::Directory) {
             return Err(VfsError::Enotdir);
         }
+
+        // Trailing `.` under LOOKUP_PARENT: the parent is the fully-resolved
+        // directory and the leaf is `.` (Linux `LAST_DOT`) — `components`
+        // dropped the `.`, so it is restored here so the caller can reject
+        // `rmdir(".")` / `unlink(".")` without re-parsing the path.
+        if trailing_dot { last_component = Some(String::from(".")); }
 
         Ok(VfsPath {
             mnt_id: self.cur_mnt_id,
@@ -682,7 +813,9 @@ pub fn walk_to_mount(path: &str) -> Option<u64> {
     for comp in components(path) {
         // `.`/empty already dropped by `components` (single splitter, path.rs).
         if comp == ".." {
-            dotdot_step(&mut cur_dentry, &mut cur_mnt, &mut cur_inode, &root, root_mnt);
+            // Mount-identification walk: the root-clamp escape signal is
+            // irrelevant here (no RESOLVE_BENEATH on this internal walk).
+            let _ = dotdot_step(&mut cur_dentry, &mut cur_mnt, &mut cur_inode, &root, root_mnt);
             continue;
         }
         // dcache fast path (d_lookup) then slow path (i_op->lookup + d_add).

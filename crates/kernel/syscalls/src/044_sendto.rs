@@ -30,15 +30,19 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     }
     // D3.3: AF_VSOCK send/sendto → OP_RW via the socket inode write
     // path (STREAM, dest ignored — already connected).
-    if let Some(vs) = crate::net_common::vsock_from_fd(fd) {
+    if crate::net_common::vsock_from_fd(fd).is_some() {
         if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
         // SAFETY: ptr range validated; user page mapped under caller's AS.
         let payload: alloc::vec::Vec<u8> = unsafe {
             core::slice::from_raw_parts(bufp as *const u8, len).to_vec()
         };
         let nb = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
-        use vfs::Inode;
-        let r = if nb { vs.write_nonblock(0, &payload) } else { vs.write(0, &payload) };
+        // Post-KEYSTONE: the data path is the inode's `i_fop` (vsock FileOps);
+        // route the write through the concrete inode's delegators.
+        let file = match crate::net_common::fd_file(fd) {
+            Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        let r = if nb { file.inode().write_nonblock(0, &payload) } else { file.inode().write(0, &payload) };
         return match r { Ok(n) => n as i64, Err(e) => -(e as i64) };
     }
     let sock   = match socket_from_fd(fd) {
@@ -88,7 +92,7 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     // Fetch sender creds for AF_UNIX SCM.
     let creds = match sched::live::current() {
         Some(t) => net::sock::SenderCreds {
-            pid: t.tgid.load(core::sync::atomic::Ordering::Acquire),
+            pid: t.visible_pid(),
             uid: t.creds.euid.load(core::sync::atomic::Ordering::Acquire),
             gid: t.creds.egid.load(core::sync::atomic::Ordering::Acquire),
         },

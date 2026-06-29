@@ -54,6 +54,7 @@ use core::sync::atomic::AtomicU32;
 
 use sync::{Spinlock, TaskList as RingLockClass};
 use vfs::File;
+use vfs::{Inode, InodeBuilder, InodeRef, FileOps, FileType, default_inode_ops, mk_mode, get_next_ino};
 
 pub(crate) const SQE_SIZE: usize = 64;
 pub(crate) const CQE_SIZE: usize = 16;
@@ -220,22 +221,32 @@ impl IoUringInode {
 /// outlives the fd), so the mapping can't dangle. Returns `(page_pa, PAGE)`.
 /// # C: O(1).
 pub fn mmap_backing(inode: &vfs::InodeRef, _offset: u64) -> Option<(u64, u64)> {
-    let iu = inode.as_any()?.downcast_ref::<IoUringInode>()?;
+    let iu = inode.private::<IoUringInode>()?;
     let pa = iu.ring.lock().page_pa;
     Some((pa, PAGE))
 }
 
-impl vfs::Inode for IoUringInode {
-    fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
-    fn ino(&self) -> vfs::Ino {
-        // High-bits tag distinct from socket / ext4 / pipe inodes.
-        0x494F_5552_0000_0000u64 | (self as *const _ as u64 & 0xFFFF_FFFF) as vfs::Ino
-    }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { PAGE }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Einval) }
-    fn write(&self, _o: u64, _b: &[u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Einval) }
+/// io_uring ino high-bits tag (`"IOUR"`), distinct from socket/ext4/pipe inodes.
+pub(crate) const IO_URING_INO_TAG: u64 = 0x494F_5552_0000_0000;
+
+/// `file_operations` for an io_uring fd: the ring is consumed via
+/// `io_uring_enter`/`mmap`, not `read`/`write`, so both are `Einval` (Linux).
+/// # C: O(1)
+struct IoUringFileOps;
+impl FileOps for IoUringFileOps {
+    fn read(&self, _inode: &Inode, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Einval) }
+    fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Einval) }
+}
+
+/// Wrap ring backend state into a concrete `vfs::Inode`: `i_private` carries the
+/// `IoUringInode` (ring + registration state), `i_size = PAGE`, the ino tagged
+/// `"IOUR"` | a process-wide anon ino. # C: O(1)
+pub fn make_io_uring_inode(data: Arc<IoUringInode>) -> InodeRef {
+    let ino = IO_URING_INO_TAG | get_next_ino() as u64;
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o600), default_inode_ops(), Arc::new(IoUringFileOps))
+        .size(PAGE)
+        .private(data)
+        .build()
 }
 
 /// One decoded SQE's operands, threaded from the enter loop into dispatch so

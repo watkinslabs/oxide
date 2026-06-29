@@ -7,6 +7,29 @@ use net::sock::InetSocket;
 
 const AF_INET:  u32 = 2;
 const AF_INET6: u32 = 10;
+const AF_UNIX:  u16 = 1;
+
+/// Write a `sockaddr_un` (family + sun_path) at user pointer `ptr`. An
+/// abstract address (leading NUL) writes its name after the family with the
+/// leading NUL preserved; a pathname address writes the path + a trailing
+/// NUL. `None`/empty path writes the bare 2-byte family (unbound socket).
+/// Caller's `getsockname` keeps the in/out addrlen the caller passed, which
+/// is what `sd_is_socket` relies on. # C: O(path len)
+pub(crate) fn write_sockaddr_un(ptr: u64, path: Option<&str>) {
+    if ptr == 0 || ptr >= USER_VA_END { return; }
+    // SAFETY: ptr validated in user range; caller AS active; bounded writes within sockaddr_un (2 + 108).
+    unsafe {
+        core::ptr::write_volatile(ptr as *mut u16, AF_UNIX);
+        let bytes = path.unwrap_or("").as_bytes();
+        let n = core::cmp::min(bytes.len(), 108);
+        for i in 0..n {
+            core::ptr::write_volatile((ptr + 2 + i as u64) as *mut u8, bytes[i]);
+        }
+        if n < 108 {
+            core::ptr::write_volatile((ptr + 2 + n as u64) as *mut u8, 0);
+        }
+    }
+}
 
 /// Read sa_family (first 2 bytes) at user pointer `ptr`. # C: O(1)
 pub(crate) fn read_sa_family(ptr: u64) -> Option<u16> {
@@ -175,6 +198,15 @@ pub(crate) fn read_sockaddr_any(ptr: u64) -> Option<(u32, net::Ipv4Addr, u16)> {
 /// mapped/::1/:: synthesis when sock holds V4 state). # C: O(1)
 pub(crate) fn write_sockaddr_for_socket(ptr: u64, sock: &InetSocket, ip: net::Ipv4Addr, port: u16) {
     let fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
+    if fam == net::sock::AF_UNIX {
+        // getsockname on an AF_UNIX socket must report sa_family=AF_UNIX +
+        // the bound sun_path. systemd-udevd's sd_is_socket(fd, AF_UNIX, …)
+        // family check (listen_fds) fails — returning -EINVAL — if we fall
+        // through to the AF_INET writer below.
+        let path = net::sock::unix_local_path(sock);
+        write_sockaddr_un(ptr, path.as_deref());
+        return;
+    }
     if fam == net::sock::AF_INET6 {
         let mut b = [0u8; 16];
         if ip == net::Ipv4Addr::LOOPBACK {

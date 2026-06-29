@@ -7,8 +7,7 @@
 
 use std::sync::Arc;
 
-use vfs::devnode::{init_special_inode, FifoInode, SocketInode};
-use vfs::inode::Inode;
+use vfs::devnode::{device_inode_open, init_special_inode, make_fifo_inode, make_socket_inode};
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
 use vfs::{CharDevOps, Devt, FileType, KResult, VfsError};
 
@@ -82,14 +81,14 @@ fn socket_node_typed_ignores_rdev_open_enxio() {
     let mut buf = [0u8; 4];
     assert_eq!(n.read(0, &mut buf), Err(VfsError::Einval), "socket node not directly readable");
     // sock_no_open: opening a socket node by path returns ENXIO.
-    let direct = SocketInode::new(201, 0o666, Arc::downgrade(&s));
-    assert_eq!(direct.do_open(), Err(VfsError::Enxio));
+    let direct = make_socket_inode(201, 0o666, Arc::downgrade(&s));
+    assert_eq!(device_inode_open(&direct), Err(VfsError::Enxio));
 }
 
 #[test]
 fn fifo_direct_constructor_matches() {
     let s = sb(0x14);
-    let f = FifoInode::new(300, 0o600, Arc::downgrade(&s));
+    let f = make_fifo_inode(300, 0o600, Arc::downgrade(&s));
     assert_eq!(f.file_type(), FileType::Fifo);
     assert_eq!(f.rdev(), 0);
     assert_eq!(f.ino(), 300);

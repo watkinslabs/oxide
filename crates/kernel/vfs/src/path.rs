@@ -141,6 +141,18 @@ pub fn requires_dir(path: &str) -> bool {
     }
 }
 
+/// The final pathname segment after stripping trailing `/` (Linux `nd->last`
+/// as a string): `"a/b" → "b"`, `"a/." → "."`, `"a/.." → ".."`, `"a/b/" → "b"`,
+/// `"/" → ""`, `"" → ""`. Companion to [`components`], which DROPS a trailing
+/// `.` and so cannot report it as the LOOKUP_PARENT leaf — the walk uses this to
+/// classify the parent-walk leaf type (Linux `LAST_DOT`/`LAST_DOTDOT`/`LAST_NORM`)
+/// so a caller can reject `rmdir("..")` / `unlink(".")` without re-parsing.
+/// # C: O(len)
+pub fn last_segment(path: &str) -> &str {
+    let t = path.trim_end_matches('/');
+    match t.rfind('/') { Some(i) => &t[i + 1..], None => t }
+}
+
 /// Private-use code-point base for escaped non-UTF-8 path bytes. Each
 /// raw byte `b` of an invalid UTF-8 sequence maps to `U+EE00 + b`
 /// (PUA-A, valid Rust scalar values). `path_into_bytes` reverses it.

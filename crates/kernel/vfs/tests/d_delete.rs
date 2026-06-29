@@ -7,14 +7,12 @@
 //! Driven against a real ramfs SuperBlock so `i_sb()` resolves and the
 //! `i_dentry` alias list (the inode↔dentry back-link) is exercised.
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use vfs::dcache::d_delete;
 use vfs::dentry::DentryOps;
-use vfs::inode::Inode;
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
-use vfs::{Dentry, FileType, InodeRef, KResult, VfsError};
+use vfs::{Dentry, FileType, InodeRef, KResult};
 
 // These tests mutate the process-global dcache hash table; serialize them.
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -30,27 +28,14 @@ impl SuperOps for RamFsOps {
     fn statfs(&self) -> KResult<SbStatFs> { Ok(SbStatFs { f_bsize: 4096, ..Default::default() }) }
 }
 
-struct RamDir { ino: u64, sb: Weak<SuperBlock>, kids: Mutex<BTreeMap<String, InodeRef>> }
-impl Inode for RamDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, n: &str) -> KResult<InodeRef> { self.kids.lock().unwrap().get(n).cloned().ok_or(VfsError::Enoent) }
+fn ramdir(sb: &Arc<SuperBlock>, ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755), vfs::default_inode_ops(), vfs::default_file_ops())
+        .sb(Arc::downgrade(sb)).build()
 }
-struct RamFile { ino: u64, sb: Weak<SuperBlock> }
-impl Inode for RamFile {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn ramfile(sb: &Arc<SuperBlock>, ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Regular, 0o644), vfs::default_inode_ops(), vfs::default_file_ops())
+        .sb(Arc::downgrade(sb)).build()
 }
-
-fn ramdir(sb: &Arc<SuperBlock>, ino: u64) -> Arc<RamDir> {
-    Arc::new(RamDir { ino, sb: Arc::downgrade(sb), kids: Mutex::new(BTreeMap::new()) })
-}
-fn ramfile(sb: &Arc<SuperBlock>, ino: u64) -> InodeRef { Arc::new(RamFile { ino, sb: Arc::downgrade(sb) }) }
 
 fn mount_ramfs(s_dev: u64) -> Arc<SuperBlock> {
     SuperBlock::new(Arc::new(RamFsType), Arc::new(RamFsOps), 0x858458f6, s_dev, 4096, "ramfs".into(), Arc::new(()))
@@ -60,7 +45,7 @@ fn mount_ramfs(s_dev: u64) -> Arc<SuperBlock> {
 // so d_delete must DROP (unhash) rather than keep the dentry negative.
 static DROP_OPS: DentryOps = DentryOps {
     d_delete: Some(|_d| true),
-    d_hash: None, d_compare: None, d_revalidate: None, d_release: None, d_iput: None,
+    d_hash: None, d_compare: None, d_revalidate: None, d_weak_revalidate: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None,
 };
 
 // SOLE-USER + default ops: d_delete turns the dentry NEGATIVE and keeps it

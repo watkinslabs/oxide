@@ -51,18 +51,54 @@ impl VsockSocket {
 
 impl Default for VsockSocket { fn default() -> Self { Self::new() } }
 
-impl vfs::Inode for VsockSocket {
-    fn ino(&self) -> vfs::Ino {
-        VSOCK_INO_TAG | (self as *const _ as u64 & 0xFFFF_FFFF) as vfs::Ino
-    }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn poll_subscribers(&self) -> Option<&vfs::PollSubscribers> { Some(self.poll_subs.as_ref()) }
+/// Build the `Arc<Inode>` wrapping an AF_VSOCK socket fd. The socket lives in
+/// `i_private` (recover it with [`vsock_from_inode`]); `ino()` carries
+/// [`VSOCK_INO_TAG`] OR'd with the socket pointer's low bits. # C: O(1)
+pub fn make_vsock_socket_inode(sock: Arc<VsockSocket>) -> vfs::InodeRef {
+    let ino = VSOCK_INO_TAG | (Arc::as_ptr(&sock) as u64 & 0xFFFF_FFFF);
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(vfs::FileType::Regular, 0o600),
+        vfs::default_inode_ops(), Arc::new(VsockFileOps))
+        .private(sock)
+        .build()
+}
 
+/// Recover the `&VsockSocket` stored in a vsock inode's `i_private`. # C: O(1)
+pub fn vsock_from_inode(inode: &vfs::Inode) -> Option<&VsockSocket> {
+    inode.private::<VsockSocket>()
+}
+
+/// Recover an owning `Arc<VsockSocket>` from a vsock inode. # C: O(1)
+pub fn vsock_arc_from_inode(inode: &vfs::InodeRef) -> Option<Arc<VsockSocket>> {
+    inode.i_private().clone().downcast::<VsockSocket>().ok()
+}
+
+/// `file_operations` for an AF_VSOCK socket inode — delegates the data path to
+/// the `VsockSocket` in `i_private`.
+struct VsockFileOps;
+
+impl vfs::FileOps for VsockFileOps {
+    fn read(&self, inode: &vfs::Inode, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        match inode.private::<VsockSocket>() { Some(s) => s.read(off, buf), None => Err(vfs::VfsError::Einval) }
+    }
+    fn write(&self, inode: &vfs::Inode, off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+        match inode.private::<VsockSocket>() { Some(s) => s.write(off, buf), None => Err(vfs::VfsError::Einval) }
+    }
+    fn read_nonblock(&self, inode: &vfs::Inode, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        match inode.private::<VsockSocket>() { Some(s) => s.read_nonblock(off, buf), None => Err(vfs::VfsError::Einval) }
+    }
+    fn write_nonblock(&self, inode: &vfs::Inode, off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+        match inode.private::<VsockSocket>() { Some(s) => s.write_nonblock(off, buf), None => Err(vfs::VfsError::Einval) }
+    }
+    fn poll(&self, inode: &vfs::Inode) -> u32 {
+        inode.private::<VsockSocket>().map(|s| s.poll()).unwrap_or(vfs::POLL_OUT)
+    }
+}
+
+impl VsockSocket {
     /// Blocking stream read: drain buffered RX, park on the conn's
     /// waiters when empty + still live. EOF (Ok(0)) on peer shutdown.
-    fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+    /// # C: backend-dependent
+    pub fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         loop {
@@ -87,7 +123,7 @@ impl vfs::Inode for VsockSocket {
         }
     }
 
-    fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+    pub fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         match vsock::recv(&c, buf) {
@@ -99,7 +135,7 @@ impl vfs::Inode for VsockSocket {
 
     /// Blocking stream write: OP_RW respecting peer credit; park on the
     /// conn's waiters until credit reopens (a peer CREDIT_UPDATE wakes us).
-    fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+    pub fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         let mut sent = 0usize;
         while sent < buf.len() {
@@ -128,7 +164,7 @@ impl vfs::Inode for VsockSocket {
         Ok(sent)
     }
 
-    fn write_nonblock(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+    pub fn write_nonblock(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         match vsock::send(&c, buf) {
             Ok(n)  => Ok(n),
@@ -138,7 +174,7 @@ impl vfs::Inode for VsockSocket {
         }
     }
 
-    fn poll(&self) -> u32 {
+    pub fn poll(&self) -> u32 {
         use vfs::{POLL_IN, POLL_OUT, POLL_HUP};
         match &*self.kind.lock() {
             VsockKind::Conn(c) => {

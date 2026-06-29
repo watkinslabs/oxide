@@ -23,7 +23,7 @@ pub fn sys_eventfd2(args: &SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let inode = ::fs::pipe::EventfdInode::new(initval);
+    let inode = ::fs::pipe::make_eventfd_inode(initval);
     let dentry = Dentry::new(None, "eventfd".to_string(), inode.clone());
     let mut fl = OpenFlags::O_RDWR;
     if (flags & EFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }

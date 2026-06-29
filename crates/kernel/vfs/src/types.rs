@@ -59,6 +59,22 @@ impl FileType {
             FileType::Fifo      => S_IFIFO,
         }
     }
+
+    /// Inverse of [`Self::to_ifmt`] — classify the `S_IFMT` half of a `umode_t`
+    /// (Linux `inode->i_mode & S_IFMT`). An unrecognised type-nibble defaults to
+    /// `Regular` (Linux treats a zero/garbage `S_IFMT` as a regular file for
+    /// `i_op`/`i_fop` binding). # C: O(1)
+    pub fn from_ifmt(mode: Umode) -> FileType {
+        match mode & S_IFMT {
+            S_IFSOCK => FileType::Socket,
+            S_IFLNK  => FileType::Symlink,
+            S_IFBLK  => FileType::BlockDev,
+            S_IFDIR  => FileType::Directory,
+            S_IFCHR  => FileType::CharDev,
+            S_IFIFO  => FileType::Fifo,
+            _        => FileType::Regular,
+        }
+    }
 }
 
 bitflags::bitflags! {

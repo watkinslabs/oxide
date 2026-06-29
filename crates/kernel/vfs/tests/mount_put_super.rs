@@ -39,12 +39,13 @@ impl SuperOps for CountOps {
     fn put_super(&self) { self.puts.fetch_add(1, Ordering::Relaxed); }
 }
 
-struct CDir { ino: u64 }
-impl Inode for CDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+struct CDirOps;
+impl vfs::InodeOps for CDirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+}
+fn cdir(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755),
+        Arc::new(CDirOps), vfs::default_file_ops()).build()
 }
 
 struct CountFs { ops: Arc<CountOps>, root_ino: u64, magic: u64 }
@@ -52,7 +53,7 @@ impl FileSystem for CountFs {
     fn name(&self) -> &str { "countfs" }
     fn magic(&self) -> u64 { self.magic }
     fn super_ops(&self) -> Option<Arc<dyn SuperOps>> { Some(self.ops.clone()) }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(CDir { ino: self.root_ino })) }
+    fn root(&self) -> Option<InodeRef> { Some(cdir(self.root_ino)) }
 }
 
 static NEXT_MAGIC: AtomicU64 = AtomicU64::new(0xC0FFEE00);
@@ -68,7 +69,7 @@ fn count_fs(root_ino: u64) -> (Arc<dyn FileSystem>, Arc<CountOps>) {
 struct PlainFs { root_ino: u64 }
 impl FileSystem for PlainFs {
     fn name(&self) -> &str { "plainfs" }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(CDir { ino: self.root_ino })) }
+    fn root(&self) -> Option<InodeRef> { Some(cdir(self.root_ino)) }
 }
 fn plain_fs(root_ino: u64) -> Arc<dyn FileSystem> { Arc::new(PlainFs { root_ino }) }
 

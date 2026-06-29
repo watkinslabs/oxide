@@ -31,6 +31,9 @@ pub fn unregister(d: &Arc<Dentry>) -> usize {
     // s_root + clear icache, gated so a sibling sharing the SB blocks teardown).
     target.mark_detached();
     if target.mnt_count() == 0 { super::put_super_if_last(&sb); }
+    // Linux `umount_tree`: a detached mount leaves its namespace tree, so drop
+    // its slot from `mnt_ns->nr_mounts` (frees cap headroom for a re-mount).
+    mntns::dec_mounts(ns, 1);
     mntns::bump_gen(ns);
     1
 }
@@ -59,6 +62,8 @@ pub(crate) fn detach_mounts_on(d: &Arc<Dentry>) -> usize {
         // `mntput` while an external `mnt_count` pin remains.
         m.mark_detached();
         if m.mnt_count() == 0 { super::put_super_if_last(&m.sb); }
+        // Linux `umount_tree`: detached from its ns tree → drop a `nr_mounts` slot.
+        mntns::dec_mounts(ns, 1);
         mntns::bump_gen(ns);
         removed += 1;
     }
@@ -143,6 +148,8 @@ pub fn unregister_top(d: &Arc<Dentry>, detach_subtree: bool) -> usize {
         // still-present sibling sharing the SB blocks teardown.
         m.mark_detached();
         if m.mnt_count() == 0 { super::put_super_if_last(&m.sb); }
+        // Linux `umount_tree`: each detached victim drops a `nr_mounts` slot.
+        mntns::dec_mounts(ns, 1);
         removed += 1;
     }
     mntns::bump_gen(ns);

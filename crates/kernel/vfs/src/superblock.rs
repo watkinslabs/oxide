@@ -18,7 +18,7 @@ use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::any::Any;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use sync::{RwLock, Spinlock, Superblock as SbClass};
 
@@ -50,6 +50,11 @@ pub const SB_MANDLOCK:    u64 = 1 << 6;
 pub const SB_DIRSYNC:     u64 = 1 << 7;
 pub const SB_NOATIME:     u64 = 1 << 10;
 pub const SB_NODIRATIME:  u64 = 1 << 11;
+pub const SB_SILENT:      u64 = 1 << 15;
+pub const SB_POSIXACL:    u64 = 1 << 16;
+pub const SB_KERNMOUNT:   u64 = 1 << 22;
+pub const SB_I_VERSION:   u64 = 1 << 23;
+pub const SB_LAZYTIME:    u64 = 1 << 25;
 /// Internal lifecycle bits: `SB_BORN` (fill_super done), `SB_ACTIVE` (mounted).
 pub const SB_BORN:   u64 = 1 << 29;
 pub const SB_ACTIVE: u64 = 1 << 30;
@@ -73,6 +78,15 @@ pub const MAX_LFS_FILESIZE: u64 = i64::MAX as u64;
 /// the per-second denominator [`SuperBlock::timestamp_truncate`] floors the
 /// sub-second field against. # C: O(1)
 pub const NSEC_PER_SEC: u64 = 1_000_000_000;
+
+/// `TIME64_MIN`/`TIME64_MAX` (Linux include/linux/time64.h) — the widest
+/// representable `time64_t` seconds-since-epoch range, the default
+/// `s_time_min`/`s_time_max` `alloc_super` installs before a backend narrows it
+/// to its on-disk timestamp field width (ext4 32-bit: 1901..2446). With these
+/// defaults [`SuperBlock::timestamp_truncate`]'s clamp is a no-op. # C: O(1)
+pub const TIME64_MIN: i64 = i64::MIN;
+/// See [`TIME64_MIN`]. # C: O(1)
+pub const TIME64_MAX: i64 = i64::MAX;
 
 /// Placeholder backend for an `s_fs`-less superblock built via
 /// [`SuperBlock::new`] (the object-model unit tests). Production superblocks
@@ -143,6 +157,16 @@ pub trait SuperOps: Send + Sync {
     /// `unfreeze_fs`/`thaw_fs` — resume after a freeze (FITHAW). Default no-op.
     /// # C: FS-dependent
     fn thaw_fs(&self) -> KResult<()> { Ok(()) }
+    /// `remount_fs` (Linux classic `super_operations.remount_fs`) — apply a
+    /// filesystem-level reconfigure (RO↔RW, on-disk journal mode, mount options)
+    /// to a LIVE superblock. `sb_flags` is the PROPOSED post-remount `s_flags`
+    /// the backend may validate (e.g. refuse RW on a fs with un-replayed
+    /// journal). Driven by [`SuperBlock::reconfigure_super`]; default Ok (a
+    /// pseudo-fs flag-only remount needs no backend work). Returning Err aborts
+    /// the remount with `s_flags` UNCHANGED. The new mount API's richer
+    /// `fs_context_operations.reconfigure` supersedes this for converted
+    /// filesystems; this is the classic hook for the rest. # C: FS-dependent
+    fn remount_fs(&self, _sb_flags: u64) -> KResult<()> { Ok(()) }
     /// `put_super` — last-umount teardown. Default no-op. # C: O(1)
     fn put_super(&self) {}
 }
@@ -190,6 +214,20 @@ pub struct SuperBlock {
     /// this struct's other mount-time-mutable fields and allow a remount/fill to
     /// publish it without rebuilding the SB. # consumers: inode setattr rounding.
     s_time_gran: AtomicU32,
+    /// `s_time_min` — earliest seconds-since-epoch this fs can store (Linux
+    /// `sb->s_time_min`). A backend whose on-disk timestamp field is narrower
+    /// than `time64_t` (ext4 = -0x80000000 ≈ year 1901) publishes it at
+    /// `fill_super` ([`SuperBlock::set_time_range`]); [`Self::timestamp_truncate`]
+    /// CLAMPS a setattr time up to it so an out-of-range timestamp is pinned to
+    /// the representable floor rather than wrapping on disk. Default
+    /// [`TIME64_MIN`] (no clamp). # consumers: inode setattr clamping.
+    s_time_min: AtomicI64,
+    /// `s_time_max` — latest seconds-since-epoch this fs can store (Linux
+    /// `sb->s_time_max`; ext4 32-bit = 0x37fffffff ≈ year 2446). The upper
+    /// counterpart to [`Self::s_time_min`]: [`Self::timestamp_truncate`] clamps a
+    /// future-dated setattr DOWN to it. Default [`TIME64_MAX`] (no clamp).
+    /// # consumers: inode setattr clamping.
+    s_time_max: AtomicI64,
     /// `s_writers.frozen` — current freeze level (`SB_UNFROZEN`..`SB_FREEZE_COMPLETE`).
     /// `freeze_super`/`thaw_super` ratchet it; `sb_start_write` gates on it.
     s_writers_frozen: AtomicU32,
@@ -199,6 +237,13 @@ pub struct SuperBlock {
     s_writers_count: AtomicU32,
     /// `s_id` — `"/dev/vda1"`, `"tmpfs"`; `/proc/mounts` source column.
     pub s_id: String,
+    /// `s_uuid` (Linux `super_block.s_uuid`, a `uuid_t`) + `s_uuid_len` — the
+    /// on-disk filesystem UUID a backend reads from its superblock at
+    /// `fill_super` ([`SuperBlock::set_uuid`]). All-zero / `len == 0` ⇒ the fs
+    /// has no UUID (the `for_backend` default). Consumed by `name_to_handle_at`
+    /// FID generation and the `STATX_ATTR`/`/proc` UUID display. Locked because
+    /// it is set after construction (like `s_root`) without rebuilding the SB.
+    s_uuid: Spinlock<([u8; 16], u8), SbClass>,
     /// `s_root` — the ROOT DENTRY (strong; see CYCLE NOTE).
     s_root: RwLock<Option<Arc<Dentry>>, SbClass>,
     /// `s_fs_info` — backend-private state (ext4 sb / tmpfs arena).
@@ -208,34 +253,29 @@ pub struct SuperBlock {
     /// `SuperOps`/`FileSystemType` do not. The mount table reaches the
     /// backend through `sb.fs()`. `NullFs` for an `s_fs`-less test SB.
     s_fs: Arc<dyn FileSystem>,
-    /// Per-instance inode cache (`iget`/`ilookup`/`iput`) keyed by `ino`.
-    /// Each slot is an [`IcacheEntry`] carrying a `Weak` to the inode (so it
-    /// reclaims when its last `Arc` drops), the inode's `i_dentry` ALIAS list
-    /// (the dentries pointing at this inode, Linux `inode->i_dentry`), and
-    /// the `i_state` lifecycle bits — all kept icache-side so the trait-object
-    /// inodes need no shared state block.
-    icache: Spinlock<BTreeMap<Ino, IcacheEntry>, SbClass>,
+    /// Per-instance inode cache (`iget`/`ilookup`/`iput`) keyed by `ino`. Each
+    /// [`IcacheEntry`] is a `Weak<Inode>` + the inode's `i_dentry` ALIAS list;
+    /// the lifecycle state (`i_state`/`i_count`/`__i_nlink`) lives on the
+    /// concrete inode itself (post-KEYSTONE), not in the slot.
+    pub(crate) icache: Spinlock<BTreeMap<Ino, IcacheEntry>, SbClass>,
+    /// `s_inodes_wb` — STRONG-pin list of every inode carrying an `I_DIRTY` bit
+    /// (Linux's per-bdi/`sb` writeback list holds a reference until writeback
+    /// cleans it, so a dirty inode is NOT freed before its metadata hits the
+    /// backend). Keyed by `ino`; the `Arc` here is the writeback ref, not any
+    /// caller's. `mark_inode_dirty` (clean→dirty) inserts, writeback /
+    /// `clear_inode` / `iput` (dirty→clean) removes. Driven from `superblock_wb.rs`.
+    pub(crate) s_wb: Spinlock<BTreeMap<Ino, InodeRef>, SbClass>,
 }
 
-/// One inode-cache slot. `Weak` everywhere so the cache never keeps an inode
-/// or dentry alive past its last strong ref (Linux dcache/icache are weak
-/// w.r.t. their objects). A stale slot (dead inode + no live aliases) is
-/// reclaimed on the next touch.
-struct IcacheEntry {
+/// One inode-cache slot. `Weak` everywhere so the cache never keeps an inode or
+/// dentry alive past its last strong ref. The lifecycle state Linux keeps on
+/// `struct inode` (`i_state`/`__i_nlink`/`i_count`) now lives IN the concrete
+/// [`crate::inode::Inode`] — this slot is a pure `Weak<Inode>` + alias list.
+pub(crate) struct IcacheEntry {
     /// The cached inode (Linux `struct inode`). `Weak` → reclaim on last drop.
-    inode:   Weak<dyn Inode>,
-    /// `i_dentry` — the dentry aliases for this inode (hardlinks share one
-    /// inode, many dentries). `Weak` so `d_drop` / dentry teardown reclaims.
-    aliases: Vec<Weak<Dentry>>,
-    /// `i_state` (`I_NEW`/`I_DIRTY`/`I_FREEING`).
-    state:   u32,
-    /// `i_nlink` (Linux `inode->__i_nlink`) — the inode's authoritative hard-link
-    /// count. The trait-object inode carries no shared count field, so the live
-    /// link count lives icache-side here, seeded from `Inode::nlink()` when the
-    /// slot is built and thereafter maintained by `set_nlink`/`inc_nlink`/
-    /// `drop_nlink`. A drop to `0` is the Linux "no names left → evict on last
-    /// `iput`" predicate (`i_nlink == 0`).
-    nlink:   u32,
+    pub(crate) inode:   Weak<Inode>,
+    /// `i_dentry` — the dentry aliases (hardlinks: one inode, many dentries).
+    pub(crate) aliases: Vec<Weak<Dentry>>,
 }
 
 impl SuperBlock {
@@ -258,13 +298,17 @@ impl SuperBlock {
             s_active: AtomicU32::new(1),
             s_maxbytes: MAX_LFS_FILESIZE,
             s_time_gran: AtomicU32::new(1),
+            s_time_min: AtomicI64::new(TIME64_MIN),
+            s_time_max: AtomicI64::new(TIME64_MAX),
             s_writers_frozen: AtomicU32::new(SB_UNFROZEN),
             s_writers_count: AtomicU32::new(0),
             s_id,
+            s_uuid: Spinlock::new(([0u8; 16], 0)),
             s_root: RwLock::new(None),
             s_fs_info,
             s_fs: Arc::new(NullFs),
             icache: Spinlock::new(BTreeMap::new()),
+            s_wb: Spinlock::new(BTreeMap::new()),
         })
     }
 
@@ -294,13 +338,17 @@ impl SuperBlock {
             s_active: AtomicU32::new(1),
             s_maxbytes: MAX_LFS_FILESIZE,
             s_time_gran: AtomicU32::new(1),
+            s_time_min: AtomicI64::new(TIME64_MIN),
+            s_time_max: AtomicI64::new(TIME64_MAX),
             s_writers_frozen: AtomicU32::new(SB_UNFROZEN),
             s_writers_count: AtomicU32::new(0),
             s_id,
+            s_uuid: Spinlock::new(([0u8; 16], 0)),
             s_root: RwLock::new(None),
             s_fs_info: Arc::new(()),
             s_fs: fs,
             icache: Spinlock::new(BTreeMap::new()),
+            s_wb: Spinlock::new(BTreeMap::new()),
         });
         // `fill_super`: back-stamp the SB into the backend's per-mount state
         // BEFORE building the root dentry, so the root inode's `i_sb()` (and
@@ -333,57 +381,99 @@ impl SuperBlock {
     /// half-evicted object, so a freeing slot reads as a miss here too.
     /// # C: O(log N_ino)
     pub fn ilookup(&self, ino: Ino) -> Option<InodeRef> {
-        let c = self.icache.lock();
-        let e = c.get(&ino)?;
-        if e.state & (I_FREEING | I_WILL_FREE) != 0 { return None; }
-        e.inode.upgrade()
+        let i = self.icache_upgrade(ino)?;
+        if i.is_freeing() { return None; }
+        Some(i)
     }
 
-    /// `iget` — cache hit (SAME `Arc` → shared inode identity), else build via
-    /// the backend closure and cache a `Weak`. The build-miss slot is created
-    /// with `I_NEW` then immediately cleared (Linux `unlock_new_inode`); a
-    /// concurrent `ilookup` upgrades the fully-built `Arc` and wins. A slot
-    /// whose `Weak` went stale (existing aliases all dead too) is replaced.
+    /// Upgrade the icache `Weak` for `ino` UNCONDITIONALLY (dying slots too) —
+    /// the raw accessor behind the per-ino `i_state`/`i_nlink` helpers. # C: O(log N_ino)
+    fn icache_upgrade(&self, ino: Ino) -> Option<InodeRef> {
+        self.icache.lock().get(&ino).and_then(|e| e.inode.upgrade())
+    }
+
+    /// `iget` — cache hit (SAME `Arc`, `igrab` bumps `i_count`), else `build()`
+    /// a fresh `Arc<Inode>` (born `i_count == 1`) and cache a `Weak`. The
+    /// build-miss inode is published with `I_NEW` then cleared (Linux
+    /// `unlock_new_inode`); a concurrent `ilookup` upgrades the built `Arc` and
+    /// wins. A stale/dying slot (`I_FREEING`/`I_WILL_FREE`) is rebuilt over.
     /// # C: O(log N_ino)
     pub fn iget(&self, ino: Ino, build: impl FnOnce() -> InodeRef) -> InodeRef {
-        if let Some(i) = self.ilookup(ino) { return i; }
+        if let Some(i) = self.ilookup(ino) { i.igrab(); return i; }
         let inode = build();
+        inode.set_state(I_NEW, 0);
         let mut c = self.icache.lock();
         if let Some(e) = c.get(&ino) {
-            // A dying slot (`I_FREEING`/`I_WILL_FREE`) is past resurrection
-            // (Linux `find_inode_fast` skips it); rebuild over it instead of
-            // handing back the half-evicted inode.
-            if e.state & (I_FREEING | I_WILL_FREE) == 0 {
-                if let Some(existing) = e.inode.upgrade() { return existing; }
+            if let Some(existing) = e.inode.upgrade() {
+                if !existing.is_freeing() { existing.igrab(); return existing; }
             }
         }
-        // Preserve any still-live aliases recorded against this ino while the
-        // inode was momentarily un-cached; they re-bind to the rebuilt inode.
+        // Preserve still-live aliases recorded while the inode was un-cached.
         let aliases = c.get(&ino).map(|e| {
             e.aliases.iter().filter(|w| w.upgrade().is_some()).cloned().collect::<Vec<_>>()
         }).unwrap_or_default();
-        c.insert(ino, IcacheEntry {
-            inode: Arc::downgrade(&inode), aliases, state: I_NEW, nlink: inode.nlink(),
-        });
-        if let Some(e) = c.get_mut(&ino) { e.state &= !I_NEW; } // unlock_new_inode
+        c.insert(ino, IcacheEntry { inode: Arc::downgrade(&inode), aliases });
+        inode.set_state(0, I_NEW); // unlock_new_inode
         inode
+    }
+
+    /// `iput` (Linux `fs/inode.c`) — drop one `i_count` reference. On the LAST
+    /// drop (1 → 0): flush dirty state, mark `I_WILL_FREE` → `I_FREEING`, run
+    /// `clear_inode`, and drop the icache `Weak` so a later `iget` rebuilds.
+    /// # C: O(log N_ino)
+    pub fn iput(&self, inode: InodeRef) {
+        if inode.i_count_dec() != 1 { return; }
+        let ino = inode.ino();
+        inode.set_state(I_WILL_FREE, 0);
+        let _ = self.sync_fs(false); // writeback-if-dirty
+        inode.set_state(I_FREEING, I_WILL_FREE);
+        inode.set_state(I_FREEING | I_CLEAR, I_DIRTY); // clear_inode
+        self.wb_forget(ino); // dirty bits gone → drop the writeback pin
+        self.icache.lock().remove(&ino);
     }
 
     /// `iput`/reclaim hook — drop a cache slot whose inode is gone.
     /// # C: O(log N_ino)
     pub fn iforget(&self, ino: Ino) { self.icache.lock().remove(&ino); }
 
+    /// `s_inodes` (Linux `super_block.s_inodes`) — every LIVE inode resident on
+    /// this superblock, in `ino` order (the icache is an `ino`-keyed `BTreeMap`,
+    /// so iteration is naturally ordered). Slots whose `Weak` no longer upgrades
+    /// (the inode's last `Arc` already dropped) are skipped — Linux's list holds
+    /// only resident inodes. This is the set the per-sb sweeps walk
+    /// ([`Self::evict_inodes`], [`Self::drop_caches`], writeback, quota,
+    /// fsnotify). # C: O(N_ino)
+    pub fn s_inodes(&self) -> Vec<InodeRef> {
+        self.icache.lock().values().filter_map(|e| e.inode.upgrade()).collect()
+    }
+
+    /// Cached inode-slot count on this superblock (Linux per-sb `nr_inodes`).
+    /// Counts every slot including a stale `Weak` not yet reclaimed, so it is the
+    /// icache occupancy, not the live-inode count ([`Self::s_inodes`]`.len()`).
+    /// # C: O(1)
+    pub fn nr_cached_inodes(&self) -> usize { self.icache.lock().len() }
+
+    /// Walk the `s_inodes` list applying `f` to every LIVE inode in `ino` order
+    /// (Linux `inode_sb_list` walk behind quota/fsnotify/`sync` sweeps). Snapshots
+    /// the live set FIRST and releases the icache lock before invoking `f`, so a
+    /// callback may safely re-enter the SB (`iget`/`ilookup`) without
+    /// self-deadlock — Linux's equivalent `igrab`s then drops `s_inode_list_lock`
+    /// across the body. # C: O(N_ino)
+    pub fn for_each_inode(&self, mut f: impl FnMut(&InodeRef)) {
+        for i in self.s_inodes() { f(&i); }
+    }
+
     /// `i_state` bits for `ino` (`I_NEW`/`I_DIRTY`/`I_FREEING`); `0` if not
     /// cached. # C: O(log N_ino)
     pub fn i_state(&self, ino: Ino) -> u32 {
-        self.icache.lock().get(&ino).map(|e| e.state).unwrap_or(0)
+        self.icache_upgrade(ino).map(|i| i.i_state()).unwrap_or(0)
     }
 
-    /// Set/clear `i_state` bits for `ino` (no-op if uncached). # C: O(log N_ino)
+    /// Set/clear `i_state` bits for `ino` (no-op if uncached). After the change
+    /// the writeback pin is reconciled ([`Self::wb_reconcile`]): a now-`I_DIRTY`
+    /// inode is STRONG-pinned, a fully-clean one released. # C: O(log N_ino)
     pub fn i_set_state(&self, ino: Ino, set: u32, clear: u32) {
-        if let Some(e) = self.icache.lock().get_mut(&ino) {
-            e.state = (e.state & !clear) | set;
-        }
+        if let Some(i) = self.icache_upgrade(ino) { i.set_state(set, clear); self.wb_reconcile(ino, &i); }
     }
 
     /// True iff `ino` is being evicted — Linux's pervasive
@@ -402,7 +492,7 @@ impl SuperBlock {
     /// (`i_nlink == 0`): the inode has no remaining names and is freed on its
     /// last `iput`. # C: O(log N_ino)
     pub fn i_nlink(&self, ino: Ino) -> Option<u32> {
-        self.icache.lock().get(&ino).map(|e| e.nlink)
+        self.icache_upgrade(ino).map(|i| i.nlink())
     }
 
     /// True iff `ino` is an eviction candidate — cached with `i_nlink == 0`
@@ -417,14 +507,14 @@ impl SuperBlock {
     /// directly installs the count, including the legitimate `0 → 1` revival some
     /// filesystems perform. No-op if uncached. # C: O(log N_ino)
     pub fn set_nlink(&self, ino: Ino, nlink: u32) {
-        if let Some(e) = self.icache.lock().get_mut(&ino) { e.nlink = nlink; }
+        if let Some(i) = self.icache_upgrade(ino) { i.set_nlink(nlink); }
     }
 
     /// `inc_nlink` (Linux fs/inode.c): add one hard link to `ino`'s stored count,
     /// reviving a `0`-count inode (the O_TMPFILE `linkat` `I_LINKABLE` case). The
     /// count saturates rather than wrapping. No-op if uncached. # C: O(log N_ino)
     pub fn inc_nlink(&self, ino: Ino) {
-        if let Some(e) = self.icache.lock().get_mut(&ino) { e.nlink = e.nlink.saturating_add(1); }
+        if let Some(i) = self.icache_upgrade(ino) { i.inc_nlink(); }
     }
 
     /// `drop_nlink` (Linux fs/inode.c): remove one hard link from `ino`'s stored
@@ -433,7 +523,7 @@ impl SuperBlock {
     /// underflowing (Linux WARNs on a drop below zero; the count never wraps).
     /// No-op if uncached. # C: O(log N_ino)
     pub fn drop_nlink(&self, ino: Ino) {
-        if let Some(e) = self.icache.lock().get_mut(&ino) { e.nlink = e.nlink.saturating_sub(1); }
+        if let Some(i) = self.icache_upgrade(ino) { i.drop_nlink(); }
     }
 
     /// `mark_inode_dirty` (Linux `__mark_inode_dirty`): OR the requested
@@ -460,7 +550,7 @@ impl SuperBlock {
         let ino = inode.ino();
         let mut c = self.icache.lock();
         let e = c.entry(ino).or_insert_with(|| IcacheEntry {
-            inode: Arc::downgrade(inode), aliases: Vec::new(), state: 0, nlink: inode.nlink(),
+            inode: Arc::downgrade(inode), aliases: Vec::new(),
         });
         if e.inode.upgrade().is_none() { e.inode = Arc::downgrade(inode); }
         e.aliases.retain(|w| match w.upgrade() { Some(a) => !Arc::ptr_eq(&a, d), None => false });
@@ -531,12 +621,100 @@ impl SuperBlock {
     /// True iff this superblock is mounted read-only (`SB_RDONLY`). # C: O(1)
     pub fn is_readonly(&self) -> bool { (self.s_flags() & SB_RDONLY) != 0 }
 
+    /// `sb_rdonly` (Linux include/linux/fs.h) — explicit-name alias of
+    /// [`Self::is_readonly`] for call sites that read better as the kernel
+    /// predicate. # C: O(1)
+    pub fn sb_rdonly(&self) -> bool { self.is_readonly() }
+
+    /// True iff `flag` (any `SB_*` bit, e.g. `SB_NOSUID`) is set in `s_flags`.
+    /// The generic form behind the named `is_*` predicates. # C: O(1)
+    pub fn sb_has_flag(&self, flag: u64) -> bool { (self.s_flags() & flag) != 0 }
+
+    /// `SB_NOSUID` — setuid/setgid bits ignored on this mount (Linux `IS_NOSUID`,
+    /// consulted by exec credential elevation). # C: O(1)
+    pub fn is_nosuid(&self) -> bool { self.sb_has_flag(SB_NOSUID) }
+
+    /// `SB_NODEV` — device-special files do not function on this mount
+    /// (Linux `may_open` rejects opening a dev node). # C: O(1)
+    pub fn is_nodev(&self) -> bool { self.sb_has_flag(SB_NODEV) }
+
+    /// `SB_NOEXEC` — no `execve` from this mount (Linux `path_noexec`). # C: O(1)
+    pub fn is_noexec(&self) -> bool { self.sb_has_flag(SB_NOEXEC) }
+
+    /// `SB_SYNCHRONOUS` — writes commit synchronously (Linux `IS_SYNC`). # C: O(1)
+    pub fn is_synchronous(&self) -> bool { self.sb_has_flag(SB_SYNCHRONOUS) }
+
+    /// `SB_MANDLOCK` — mandatory locking permitted (Linux `IS_MANDLOCK`). # C: O(1)
+    pub fn is_mandlock(&self) -> bool { self.sb_has_flag(SB_MANDLOCK) }
+
+    /// `SB_DIRSYNC` — directory updates commit synchronously (Linux `IS_DIRSYNC`).
+    /// # C: O(1)
+    pub fn is_dirsync(&self) -> bool { self.sb_has_flag(SB_DIRSYNC) }
+
+    /// `SB_NOATIME` — never update access times on this mount (Linux the
+    /// `MNT_NOATIME`/`SB_NOATIME` half of `atime_needs_update`). # C: O(1)
+    pub fn is_noatime(&self) -> bool { self.sb_has_flag(SB_NOATIME) }
+
+    /// `SB_NODIRATIME` — never update directory access times. # C: O(1)
+    pub fn is_nodiratime(&self) -> bool { self.sb_has_flag(SB_NODIRATIME) }
+
+    /// `SB_POSIXACL` — backend honours POSIX ACLs (Linux `IS_POSIXACL`, gates
+    /// the `acl`-aware permission path). # C: O(1)
+    pub fn is_posixacl(&self) -> bool { self.sb_has_flag(SB_POSIXACL) }
+
+    /// `SB_I_VERSION` — auto-maintain the inode change cookie (Linux
+    /// `IS_I_VERSION`, gates `inode_maybe_inc_iversion`). # C: O(1)
+    pub fn is_i_version(&self) -> bool { self.sb_has_flag(SB_I_VERSION) }
+
+    /// `SB_LAZYTIME` — defer on-disk timestamp writeback (Linux `IS_LAZYTIME`).
+    /// # C: O(1)
+    pub fn is_lazytime(&self) -> bool { self.sb_has_flag(SB_LAZYTIME) }
+
+    /// `SB_KERNMOUNT` — internal kernel mount, not user-initiated (Linux
+    /// `kern_mount`); excluded from user umount accounting. # C: O(1)
+    pub fn is_kernmount(&self) -> bool { self.sb_has_flag(SB_KERNMOUNT) }
+
+    /// `SB_BORN` — `fill_super` has completed; the instance is fully built and
+    /// safe to publish (Linux `super_block.SB_BORN`). # C: O(1)
+    pub fn is_born(&self) -> bool { self.sb_has_flag(SB_BORN) }
+
+    /// `SB_ACTIVE` — the instance is mounted/live; cleared by
+    /// `generic_shutdown_super` at last-umount so no operation treats a tearing-
+    /// down SB as mounted (Linux `super_block.SB_ACTIVE`). Distinct from the
+    /// `s_active` REFCOUNT ([`Self::s_active`]): this is the published mounted
+    /// FLAG. # C: O(1)
+    pub fn is_mounted(&self) -> bool { self.sb_has_flag(SB_ACTIVE) }
+
     /// Flip the `SB_RDONLY` bit (sb-level `remount` RO↔RW toggle, Linux
     /// `reconfigure_super` rewriting `sb->s_flags`). Once set, [`sb_start_write`]
     /// refuses every new writer so a write(2)/page-fault path cannot dirty a
     /// read-only mount. # C: O(1)
     pub fn set_readonly(&self, ro: bool) {
         if ro { self.set_s_flags(SB_RDONLY, 0); } else { self.set_s_flags(0, SB_RDONLY); }
+    }
+
+    /// `reconfigure_super` (Linux fs/super.c) — apply a flag-delta remount to
+    /// this LIVE superblock in place, without rebuilding it (`mount(2) MS_REMOUNT`
+    /// / `fsconfig(CMD_RECONFIGURE)` sb-flag half). `set`/`clear` are the
+    /// `s_flags` bits to add/remove; the proposed result is
+    /// `(s_flags & !clear) | set`. When the remount turns the fs READ-ONLY
+    /// (RW→RO) the dirty state is flushed FIRST ([`Self::sync_filesystem`], Linux
+    /// syncs before sealing RO so no buffered write is lost). The backend hook
+    /// `s_op->remount_fs(proposed_flags)` then runs and ONLY on its success are
+    /// `s_flags` rewritten — a hook error leaves the SB untouched (Linux returns
+    /// the error with the old flags intact), so a backend that refuses (e.g.
+    /// RW on a fs needing recovery) cleanly aborts. Re-applying the current flags
+    /// is idempotent. The per-MOUNT `MNT_*` bits and `fs_context` param parse
+    /// live at their own layers ([`crate::fs::reconfigure_super`]); this is the
+    /// sb-flag + classic-backend-hook core. # C: O(dirty) on RW→RO, else O(1)
+    pub fn reconfigure_super(&self, set: u64, clear: u64) -> KResult<()> {
+        let cur = self.s_flags();
+        let proposed = (cur & !clear) | set;
+        let going_ro = (proposed & SB_RDONLY) != 0 && (cur & SB_RDONLY) == 0;
+        if going_ro { self.sync_filesystem()?; }
+        self.s_op.remount_fs(proposed)?;
+        self.set_s_flags(set, clear);
+        Ok(())
     }
 
     /// `s_active` snapshot — live active references (Linux `s->s_active`).
@@ -581,6 +759,56 @@ impl SuperBlock {
     /// `s_maxbytes` — largest representable file size. # C: O(1)
     pub fn s_maxbytes(&self) -> u64 { self.s_maxbytes }
 
+    /// `generic_write_check_limits` (Linux fs/read_write.c), the `s_maxbytes`
+    /// half: bound a write of `count` bytes starting at byte offset `pos`
+    /// against the largest file size this filesystem can represent.
+    /// - `Some(n)` ⇒ the write is admissible; `n` is `count` CLAMPED so
+    ///   `pos + n <= s_maxbytes` (a write that would straddle the cap is
+    ///   shortened, exactly like Linux clamps `iov_iter` to `max_size - pos`).
+    /// - `None` ⇒ `pos >= s_maxbytes`: there is no room at or beyond the cap,
+    ///   which the write(2) shim maps to `EFBIG` (+ `SIGXFSZ`). A zero-length
+    ///   write short-circuits to `Some(0)` (Linux returns `0` before the cap
+    ///   check), so an empty write at the cap is not spuriously rejected.
+    /// The per-task `RLIMIT_FSIZE` half of `generic_write_check_limits` lives at
+    /// the syscall layer (it needs the caller's rlimits); this is the SB-level
+    /// physical-size cap only. # C: O(1)
+    pub fn generic_write_check_limits(&self, pos: u64, count: usize) -> Option<usize> {
+        if count == 0 { return Some(0); }
+        let max = self.s_maxbytes;
+        if pos >= max { return None; }
+        let room = max - pos; // > 0
+        Some(core::cmp::min(count as u64, room) as usize)
+    }
+
+    /// True iff a write STARTING at byte offset `pos` must fail `EFBIG` —
+    /// `pos >= s_maxbytes`, no representable room remains (Linux the
+    /// `pos >= max_size` arm of `generic_write_check_limits`). # C: O(1)
+    pub fn write_exceeds_maxbytes(&self, pos: u64) -> bool { pos >= self.s_maxbytes }
+
+    /// `s_uuid` snapshot (Linux `super_block.s_uuid`). All-zero when the fs has
+    /// no UUID; pair with [`Self::has_uuid`] to distinguish "no UUID" from the
+    /// (legitimate but vanishingly rare) all-zero UUID. # C: O(1)
+    pub fn s_uuid(&self) -> [u8; 16] { self.s_uuid.lock().0 }
+
+    /// `s_uuid_len` — the significant byte length of `s_uuid` (`16` for a v4
+    /// UUID, `0` when unset). Linux `super_block.s_uuid_len`. # C: O(1)
+    pub fn s_uuid_len(&self) -> u8 { self.s_uuid.lock().1 }
+
+    /// True iff a non-empty UUID has been published (`s_uuid_len != 0`). # C: O(1)
+    pub fn has_uuid(&self) -> bool { self.s_uuid.lock().1 != 0 }
+
+    /// Publish the filesystem UUID (Linux `super_set_uuid` / a `fill_super`
+    /// writing `sb->s_uuid` from the on-disk superblock). `len` is clamped to
+    /// the 16-byte `uuid_t` width; the unused tail is zero-filled so a short
+    /// UUID never leaks stale bytes. # C: O(1)
+    pub fn set_uuid(&self, uuid: [u8; 16], len: u8) {
+        let len = if len > 16 { 16 } else { len };
+        let mut g = self.s_uuid.lock();
+        g.0 = [0u8; 16];
+        g.0[..len as usize].copy_from_slice(&uuid[..len as usize]);
+        g.1 = len;
+    }
+
     /// `s_time_gran` — timestamp granularity (ns). # C: O(1)
     pub fn s_time_gran(&self) -> u32 { self.s_time_gran.load(Ordering::Acquire) }
 
@@ -593,22 +821,55 @@ impl SuperBlock {
         self.s_time_gran.store(if gran == 0 { 1 } else { gran }, Ordering::Release);
     }
 
+    /// `s_time_min` — earliest representable seconds-since-epoch. # C: O(1)
+    pub fn s_time_min(&self) -> i64 { self.s_time_min.load(Ordering::Acquire) }
+
+    /// `s_time_max` — latest representable seconds-since-epoch. # C: O(1)
+    pub fn s_time_max(&self) -> i64 { self.s_time_max.load(Ordering::Acquire) }
+
+    /// Publish the fs timestamp range (Linux `fill_super` writing
+    /// `sb->s_time_min`/`sb->s_time_max` from the on-disk timestamp field width).
+    /// A backend whose epoch window is narrower than `time64_t` calls this once
+    /// after [`SuperBlock::for_backend`] so [`Self::timestamp_truncate`] clamps
+    /// out-of-range setattr times. `min > max` is normalized by swapping so the
+    /// clamp window is never inverted. # C: O(1)
+    pub fn set_time_range(&self, min: i64, max: i64) {
+        let (min, max) = if min > max { (max, min) } else { (min, max) };
+        self.s_time_min.store(min, Ordering::Release);
+        self.s_time_max.store(max, Ordering::Release);
+    }
+
     /// `timestamp_truncate` (Linux fs/inode.c): round a wall-clock timestamp
     /// (`t_ns`, nanoseconds since the epoch — the inode atime/mtime/ctime
-    /// representation) DOWN to this superblock's `s_time_gran`, so a setattr
-    /// never records sub-granularity precision the backend cannot persist.
-    /// `gran <= 1` is the identity (full ns); `gran >= NSEC_PER_SEC` floors to a
-    /// whole second; an in-between granularity truncates the sub-second
-    /// remainder to a `gran` multiple. Truncation is confined to the sub-second
-    /// field (Linux truncates `tv_nsec` only), so a coarse `gran` whose value is
-    /// not a divisor of `NSEC_PER_SEC` never perturbs the seconds count.
-    /// # C: O(1)
+    /// representation) DOWN to this superblock's `s_time_gran`, THEN clamp the
+    /// seconds field to `[s_time_min, s_time_max]`, so a setattr never records
+    /// either sub-granularity precision OR an out-of-epoch-window timestamp the
+    /// backend cannot persist. `gran <= 1` is the granularity identity (full ns);
+    /// `gran >= NSEC_PER_SEC` floors to a whole second; an in-between granularity
+    /// truncates the sub-second remainder to a `gran` multiple. The granularity
+    /// truncation is confined to the sub-second field (Linux truncates `tv_nsec`
+    /// only). The range clamp pins an out-of-window time to the boundary second
+    /// with a zeroed sub-second field (Linux sets `tv_nsec = 0` when it clamps);
+    /// with the default [`TIME64_MIN`]/[`TIME64_MAX`] window it is a no-op. Since
+    /// `t_ns` is unsigned (≥ epoch), the floor clamp only fires for a backend
+    /// whose `s_time_min` is itself post-epoch. # C: O(1)
     pub fn timestamp_truncate(&self, t_ns: u64) -> u64 {
         let gran = self.s_time_gran() as u64;
-        if gran <= 1 { return t_ns; }
         let sec = t_ns / NSEC_PER_SEC;
         let nsec = t_ns % NSEC_PER_SEC;
-        let nsec = if gran >= NSEC_PER_SEC { 0 } else { nsec - nsec % gran };
+        let nsec = if gran <= 1 { nsec }
+                   else if gran >= NSEC_PER_SEC { 0 }
+                   else { nsec - nsec % gran };
+        let sec_i = sec as i64; // t_ns unsigned ⇒ sec_i ≥ 0
+        let smax = self.s_time_max();
+        if sec_i > smax {
+            return if smax < 0 { 0 } else { (smax as u64).saturating_mul(NSEC_PER_SEC) };
+        }
+        let smin = self.s_time_min();
+        if sec_i < smin {
+            // Reachable only when smin > 0 (sec_i ≥ 0); the floor is post-epoch.
+            return (smin as u64).saturating_mul(NSEC_PER_SEC);
+        }
         sec * NSEC_PER_SEC + nsec
     }
 
@@ -629,29 +890,9 @@ impl SuperBlock {
     pub fn sync_filesystem(&self) -> KResult<()> {
         if self.is_readonly() { return Ok(()); }
         self.sync_fs(false)?;
-        self.sync_fs(true)
-    }
-
-    /// `invalidate_inodes` / per-sb `drop_caches` (Linux fs/inode.c
-    /// `invalidate_inodes`, fs/drop_caches.c): sweep the inode cache dropping
-    /// every CLEAN, UNREFERENCED slot so a `drop_caches`/remount reclaim shrinks
-    /// the icache without touching live or dirty state. A slot is reclaimable
-    /// only when its inode is UNUSED — in this `Weak`-keyed cache that is a slot
-    /// whose `Weak::upgrade` already fails (Linux `i_count == 0`, no dentry alias
-    /// pinning it) — AND it carries no `I_DIRTY`/`I_NEW`/`I_FREEING`/`I_WILL_FREE`
-    /// bit (Linux skips dirty and in-flight inodes: writeback or an in-progress
-    /// evict still owns them). Busy and dirty slots are RETAINED. Dead alias
-    /// `Weak`s are pruned from every surviving slot on the way past. Returns the
-    /// count of slots dropped. # C: O(N_ino)
-    pub fn drop_caches(&self) -> u32 {
-        let mut dropped = 0u32;
-        self.icache.lock().retain(|_, e| {
-            e.aliases.retain(|w| w.upgrade().is_some());
-            let busy = e.inode.upgrade().is_some();
-            let pinned = e.state & (I_DIRTY | I_NEW | I_FREEING | I_WILL_FREE) != 0;
-            if busy || pinned { true } else { dropped += 1; false }
-        });
-        dropped
+        self.sync_fs(true)?;
+        self.wb_writeback(); // wait pass cleaned the inodes → clear I_DIRTY + unpin
+        Ok(())
     }
 
     /// Current `s_writers.frozen` level (`SB_UNFROZEN`..`SB_FREEZE_COMPLETE`).

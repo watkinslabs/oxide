@@ -45,6 +45,13 @@ pub const STATX_BLOCKS:      u32 = 0x0000_0400;
 pub const STATX_BASIC_STATS: u32 = STATX_TYPE | STATX_MODE | STATX_NLINK | STATX_UID
     | STATX_GID | STATX_ATIME | STATX_MTIME | STATX_CTIME | STATX_INO | STATX_SIZE | STATX_BLOCKS;
 pub const STATX_BTIME:       u32 = 0x0000_0800;
+/// `STATX_CHANGE_COOKIE` (Linux `include/uapi/linux/stat.h`, bit 30) — the
+/// caller wants / the kernel filled `stx_change_attr`, the opaque monotonic
+/// change cookie an NFS-style client compares to detect a modification without
+/// re-reading content. Only [`vfs_getattr_mask`] sets it (gated on the request
+/// mask, like Linux), because querying the cookie LATCHES the inode's i_version
+/// QUERIED flag — a plain stat must not pay that side effect.
+pub const STATX_CHANGE_COOKIE: u32 = 0x4000_0000;
 
 /// `STATX_ATTR_*` bits (Linux `include/uapi/linux/stat.h`) — reported in
 /// `Kstat::attributes`, masked by `Kstat::attributes_mask` (the set of
@@ -60,6 +67,9 @@ pub const STATX_ATTR_APPEND:    u64 = 0x0000_0020;
 /// `stx_mask`); `attributes`/`attributes_mask` carry the `STATX_ATTR_*`
 /// flag report (statx `stx_attributes`/`stx_attributes_mask`); `btime_ns` is
 /// the creation time, valid only when `STATX_BTIME` is set in `result_mask`.
+/// `change_cookie` is the statx `stx_change_attr`, valid only when
+/// `STATX_CHANGE_COOKIE` is set in `result_mask` (filled by [`vfs_getattr_mask`]
+/// from the inode `i_version`).
 #[derive(Clone, Copy, Default)]
 pub struct Kstat {
     pub ino: u64,
@@ -76,6 +86,7 @@ pub struct Kstat {
     pub ctime_ns: u64,
     pub btime_ns: u64,
     pub fsid: u64,
+    pub change_cookie: u64,
     pub result_mask: u32,
     pub attributes: u64,
     pub attributes_mask: u64,
@@ -92,6 +103,45 @@ pub struct Kstat {
 /// verbatim for device nodes and reports 0 for everything else. # C: O(1)
 pub const fn encode_dev(major: u32, minor: u32) -> u32 {
     (minor & 0xff) | ((major & 0xfff) << 8) | ((minor & !0xff) << 12)
+}
+
+/// Map a filesystem identity (`Inode::fsid()` / `SuperBlock::s_dev`) to the
+/// Linux `dev_t` userspace sees in `st_dev` — THE single transform `stat`/
+/// `statx` apply (`syscalls::namei_common::fsid_to_dev` delegates here).
+/// Reproducing it outside the stat path lets a subsystem match the `st_dev`
+/// userspace holds: autofs `AUTOFS_DEV_IOCTL_OPENMOUNT` carries the `devid`
+/// systemd took from `fstat`, so the autofs registry MUST key on this
+/// user-visible dev — not the raw 64-bit anon `s_dev`, which neither equals
+/// the hashed `st_dev` nor fits the ioctl's `__u32` devid field. Uses the
+/// full Linux `dev_t` packing (matching the stat path), distinct from the
+/// 32-bit `encode_dev` above. # C: O(1)
+pub fn fsid_to_dev(fsid: u64) -> u64 {
+    let mut x = fsid;
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xff51afd7ed558ccd);
+    x ^= x >> 33;
+    let major = (((x >> 20) & 0x0fff) as u32).max(1);
+    let minor = (x & 0x000f_ffff) as u32;
+    ((minor & 0xff) as u64)
+        | (((major & 0xfff) as u64) << 8)
+        | (((minor & !0xff) as u64) << 12)
+        | (((major & !0xfff) as u64) << 32)
+}
+
+#[cfg(test)]
+mod dev_tests {
+    /// Every `fsid_to_dev` result must fit Linux's effective 32-bit `dev_t`:
+    /// the autofs `AUTOFS_DEV_IOCTL_OPENMOUNT` devid field is a `__u32`, so a
+    /// value above `u32::MAX` would truncate and never match the registry
+    /// (the binfmt_misc automount wedge root cause). # C: O(N samples)
+    #[test]
+    fn fsid_to_dev_fits_u32_and_is_stable() {
+        for fsid in [0u64, 1, 256, 0x0102_1994_0000_0003, 0x0000_0001_0000_000e, u64::MAX] {
+            let d = super::fsid_to_dev(fsid);
+            assert!(d <= u32::MAX as u64, "fsid {fsid:#x} -> dev {d:#x} exceeds u32");
+            assert_eq!(d, super::fsid_to_dev(fsid), "fsid_to_dev not deterministic");
+        }
+    }
 }
 
 /// Linux-shaped permission fallback for inodes without a native mode
@@ -111,7 +161,7 @@ pub fn default_perm_for(ft: FileType) -> u16 {
 /// storage) and applying the mount `idmap` to the owner ids. An identity idmap
 /// returns the raw fs ids, so the output is byte-identical to the
 /// pre-idmap stat path. # C: O(1)
-pub fn generic_fillattr<I: Inode + ?Sized>(inode: &I, idmap: &Idmap, overlay: Option<InodeTimes>) -> Kstat {
+pub fn generic_fillattr(inode: &Inode, idmap: &Idmap, overlay: Option<InodeTimes>) -> Kstat {
     let ov = overlay.unwrap_or_default();
     let ft = inode.file_type();
     // ONE place builds the `S_IFMT` half of the mode: `FileType::to_ifmt`
@@ -164,6 +214,11 @@ pub fn generic_fillattr<I: Inode + ?Sized>(inode: &I, idmap: &Idmap, overlay: Op
         ctime_ns: inode.ctime().unwrap_or(ov.ctime_ns),
         btime_ns,
         fsid:     inode.fsid(),
+        // `change_cookie` is NOT filled here: querying the i_version latches the
+        // QUERIED flag, a side effect a plain stat must avoid. Only the
+        // request-mask-gated `vfs_getattr_mask` populates it (Linux gates the
+        // change-cookie on `STATX_CHANGE_COOKIE` for the same reason).
+        change_cookie: 0,
         // Every base field above is filled; add BTIME only when present so
         // `stx_mask` reflects exactly the valid fields, no more.
         result_mask: STATX_BASIC_STATS | btime_bit,
@@ -191,4 +246,22 @@ pub fn blocks_for(size: u64, bsize: u32) -> u64 {
 /// `i_op->getattr` (override) or `generic_fillattr` (default). # C: O(1)
 pub fn vfs_getattr(inode: &crate::inode::InodeRef, idmap: &Idmap, overlay: Option<InodeTimes>) -> Kstat {
     inode.getattr(idmap, overlay)
+}
+
+/// `vfs_getattr` with the statx `request_mask` honored for the request-gated
+/// fields (Linux `vfs_getattr_nosec`). Runs the base `i_op->getattr` then, when
+/// `STATX_CHANGE_COOKIE` is requested AND the inode carries an `i_version`
+/// (`IS_I_VERSION`), fills `change_cookie` from `inode_query_iversion` and sets
+/// the result bit. The query LATCHES the inode's QUERIED flag so the next
+/// modification is guaranteed to bump the version — which is exactly why this is
+/// gated on the request mask and not done in the unconditional
+/// `generic_fillattr`. # C: O(1)
+pub fn vfs_getattr_mask(inode: &crate::inode::InodeRef, idmap: &Idmap,
+                        overlay: Option<InodeTimes>, request_mask: u32) -> Kstat {
+    let mut st = inode.getattr(idmap, overlay);
+    if request_mask & STATX_CHANGE_COOKIE != 0 && inode.i_version_raw().is_some() {
+        st.change_cookie = crate::inode::inode_query_iversion(inode.as_ref());
+        st.result_mask |= STATX_CHANGE_COOKIE;
+    }
+    st
 }

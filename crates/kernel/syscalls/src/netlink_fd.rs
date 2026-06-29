@@ -50,9 +50,7 @@ pub fn bind(fd: u64, addr_p: u64) -> i64 {
     if addr_p == 0 || addr_p + 12 >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     // SAFETY: addr_p+12 validated < USER_VA_END; sockaddr_nl.nl_groups @ +8.
     let nl_groups = unsafe { core::ptr::read_volatile((addr_p + 8) as *const u32) };
-    if let Some(s) = file.inode().as_any()
-        .and_then(|a| a.downcast_ref::<::netlink::NetlinkSocket>())
-    {
+    if let Some(s) = file.inode().private::<::netlink::NetlinkSocket>() {
         s.set_group_mask(nl_groups);
     }
     0
@@ -77,9 +75,7 @@ pub fn setsockopt(fd: u64, level: u64, optname: u64, optval: u64, optlen: u64) -
         let file = match netlink_sock(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
         // SAFETY: optval+4 validated < USER_VA_END; group is a 4-byte int.
         let group = unsafe { core::ptr::read_volatile(optval as *const u32) };
-        if let Some(s) = file.inode().as_any()
-            .and_then(|a| a.downcast_ref::<::netlink::NetlinkSocket>())
-        {
+        if let Some(s) = file.inode().private::<::netlink::NetlinkSocket>() {
             if optname == NETLINK_ADD_MEMBERSHIP { s.add_membership(group); }
             else { s.drop_membership(group); }
         }
@@ -114,8 +110,7 @@ pub fn getsockopt(fd: u64, level: u64, optname: u64, optval: u64, optlen_p: u64)
     // same) makes sd_netlink accept our rtnl replies, so open + rtnl now
     // work and lo comes up.
     let proto = fd_file_local(fd)
-        .and_then(|f| f.inode().as_any()
-            .and_then(|a| a.downcast_ref::<::netlink::NetlinkSocket>().map(|s| s.protocol)))
+        .and_then(|f| f.inode().private::<::netlink::NetlinkSocket>().map(|s| s.protocol))
         .unwrap_or(0);
     let val: u32 = if level == SOL_SOCKET && optname == SO_PROTOCOL { proto as u32 }
                    else if level == SOL_SOCKET && optname == SO_TYPE { 3 /* SOCK_RAW */ }
@@ -162,7 +157,7 @@ pub fn recvmsg(fd: u64, msgp: u64, flags: u32) -> i64 {
     if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
     let file = match fd_file_local(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
     // Pull the datagram via PEEK (leave queued) or consume, per MSG_PEEK.
-    let sock = match file.inode().as_any().and_then(|a| a.downcast_ref::<::netlink::NetlinkSocket>()) {
+    let sock = match file.inode().private::<::netlink::NetlinkSocket>() {
         Some(s) => s, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let dgram = if (flags & MSG_PEEK) != 0 { sock.peek_front() } else { sock.dequeue() };
@@ -228,9 +223,8 @@ pub fn getsockname(fd: u64, addr_p: u64) -> i64 {
     // dropped. Fall back to the task tid only if the fd isn't netlink.
     use core::sync::atomic::Ordering;
     let pid = fd_file_local(fd)
-        .and_then(|f| f.inode().as_any()
-            .and_then(|a| a.downcast_ref::<::netlink::NetlinkSocket>()
-                .map(|s| s.port_id.load(Ordering::Acquire))))
+        .and_then(|f| f.inode().private::<::netlink::NetlinkSocket>()
+            .map(|s| s.port_id.load(Ordering::Acquire)))
         .unwrap_or_else(|| sched::live::current().map(|c| c.tid).unwrap_or(1));
     // SAFETY: addr_p validated < USER_VA_END; sockaddr_nl is 12 bytes (u16 family, u16 pad, u32 pid, u32 groups).
     unsafe {

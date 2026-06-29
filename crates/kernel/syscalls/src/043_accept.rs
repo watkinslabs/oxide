@@ -69,7 +69,7 @@ pub fn sys_accept(args: &SyscallArgs) -> i64 {
         write_sockaddr_for_socket(addr_p, &accepted.new_sock, ip, port);
     }
     let label = if accepted.peer.is_some() { "[socket]" } else { "[unix]" };
-    let inode: vfs::InodeRef = accepted.new_sock as _;
+    let inode: vfs::InodeRef = net::sock::make_inet_socket_inode(accepted.new_sock);
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
@@ -115,7 +115,7 @@ fn vsock_accept(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64,
     }
     let new_sock = Arc::new(net::vsock_socket::VsockSocket::new());
     *new_sock.kind.lock() = net::vsock_socket::VsockKind::Conn(conn);
-    let inode: vfs::InodeRef = new_sock as _;
+    let inode: vfs::InodeRef = net::vsock_socket::make_vsock_socket_inode(new_sock);
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };

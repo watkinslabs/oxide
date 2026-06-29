@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use vfs::fs::FileSystem;
-use vfs::inode::Inode;
+use vfs::inode::InodeBuilder;
 use vfs::superblock::{next_anon_dev, SB_ACTIVE};
-use vfs::{FileType, InodeRef, KResult, SbStatFs, SuperBlock, SuperOps, VfsError};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, InodeRef, KResult, SbStatFs, SuperBlock, SuperOps};
 
 /// `SuperOps` counting `put_super` + `sync_fs` so the shutdown ordering is
 /// observable from a test.
@@ -32,12 +32,8 @@ impl FileSystem for EvictFs {
 }
 
 /// Minimal regular-file inode for icache occupancy.
-struct RamFile { ino: u64 }
-impl Inode for RamFile {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn make_ramfile(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
 }
 
 fn build() -> (Arc<SuperBlock>, Arc<TeardownOps>) {
@@ -51,8 +47,8 @@ fn build() -> (Arc<SuperBlock>, Arc<TeardownOps>) {
 fn evict_inodes_reclaims_dead_counts_busy() {
     let (sb, _ops) = build();
     // Two cached inodes; keep `held` alive, drop the other's only Arc.
-    let held: InodeRef = sb.iget(11, || Arc::new(RamFile { ino: 11 }));
-    drop(sb.iget(12, || Arc::new(RamFile { ino: 12 })));
+    let held: InodeRef = sb.iget(11, || make_ramfile(11));
+    drop(sb.iget(12, || make_ramfile(12)));
     // ino 12's only strong ref is gone → its Weak slot is reclaimable; ino 11
     // still upgrades → counted busy and retained.
     assert_eq!(sb.evict_inodes(), 1, "one busy inode (the held ino 11)");
@@ -68,7 +64,7 @@ fn evict_inodes_reclaims_dead_counts_busy() {
 fn shutdown_clears_active_flag_syncs_evicts_then_put_super() {
     let (sb, ops) = build();
     assert_ne!(sb.s_flags() & SB_ACTIVE, 0, "fresh SB carries the SB_ACTIVE flag");
-    drop(sb.iget(11, || Arc::new(RamFile { ino: 11 }))); // idle inode in icache
+    drop(sb.iget(11, || make_ramfile(11))); // idle inode in icache
     let busy = sb.generic_shutdown_super();
     assert_eq!(busy, 0, "no inode outlived the unmount");
     assert_eq!(sb.s_flags() & SB_ACTIVE, 0, "SB_ACTIVE flag cleared by shutdown");
@@ -90,6 +86,6 @@ fn last_deactivate_routes_through_generic_shutdown() {
 #[test]
 fn busy_inode_outliving_unmount_is_reported() {
     let (sb, _ops) = build();
-    let _leak: InodeRef = sb.iget(11, || Arc::new(RamFile { ino: 11 })); // ref outlives shutdown
+    let _leak: InodeRef = sb.iget(11, || make_ramfile(11)); // ref outlives shutdown
     assert_eq!(sb.generic_shutdown_super(), 1, "busy inode counted at shutdown");
 }

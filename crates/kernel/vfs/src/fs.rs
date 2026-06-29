@@ -9,15 +9,27 @@
 //! `sched::current()`, returns `KResult<T>` with typed `T`.
 
 extern crate alloc;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
+use sync::{Devices as FsClass, Spinlock};
 use crate::inode::InodeRef;
-use crate::superblock::{SuperBlock, SuperOps};
+use crate::superblock::{FileSystemType, SuperBlock, SuperOps, SB_RDONLY};
 use crate::types::VfsError;
 
 /// `KResult<T>` is the VFS error envelope. Aliased here for
 /// convenience inside trait bodies.
 pub type KResult<T> = core::result::Result<T, VfsError>;
+
+/// `struct fs_context` — the modern mount-API context (`docs/16§6`). Lives in a
+/// submodule of `fs` so it re-exports through `vfs::fs::fs_context::*` without a
+/// new top-level `lib.rs` module declaration. See [`fs_context::FsContext`].
+pub mod fs_context;
+pub use fs_context::{
+    put_fs_context, reconfigure_super, vfs_get_tree, vfs_parse_fs_param, vfs_parse_fs_param_source,
+    vfs_parse_fs_string, FsContext, FsContextOps, FsContextPhase, FsContextPurpose,
+    FsContextSecurity, FsParameter, FsValue, LegacyFsContextOps, ParamResult, SB_FLAGS_USER_MASK,
+};
 
 bitflags::bitflags! {
     /// `file_system_type::fs_flags` (Linux `include/linux/fs.h`). A
@@ -304,4 +316,197 @@ pub trait FileSystem: Send + Sync {
         s.push_str(" 0 0\n");
         s
     }
+}
+
+// ---------------------------------------------------------------------------
+// `file_systems` registry — Linux `fs/filesystems.c`.
+//
+// A global, name-keyed list of `file_system_type`s. `register_filesystem`
+// links a type in at module/boot init; `get_fs_type(name)` is the lookup
+// `mount(2)` uses to resolve `-t <type>` to a `FileSystemType` instead of a
+// hard-coded `match fstype { … }`. Insertion order is preserved (Linux keeps
+// a singly linked list, `/proc/filesystems` renders it in registration
+// order) and lookup is a linear scan — both matching Linux exactly.
+// ---------------------------------------------------------------------------
+
+/// `file_systems` — the registered `file_system_type` list (Linux `fs/filesystems.c`).
+/// Insertion-ordered `Vec` (not a `BTreeMap`) to render `/proc/filesystems` in
+/// registration order like Linux. A leaf lock: nothing else is acquired under
+/// it (lookups only clone an `Arc`).
+static FILESYSTEMS: Spinlock<Vec<Arc<dyn FileSystemType>>, FsClass>
+    = Spinlock::new(Vec::new());
+
+/// `register_filesystem` (Linux `fs/filesystems.c`) — link a `file_system_type`
+/// into the global registry so `mount(2)` can resolve it by name. Rejects a
+/// duplicate type name with `Ebusy` exactly as Linux (`-EBUSY`).
+/// # C: O(N) over registered types
+pub fn register_filesystem(fs: Arc<dyn FileSystemType>) -> KResult<()> {
+    let mut list = FILESYSTEMS.lock();
+    if list.iter().any(|t| t.name() == fs.name()) { return Err(VfsError::Ebusy); }
+    list.push(fs);
+    Ok(())
+}
+
+/// `unregister_filesystem` (Linux `fs/filesystems.c`) — unlink a type by name.
+/// `Einval` if no type with that name is registered (Linux `-EINVAL`).
+/// # C: O(N) over registered types
+pub fn unregister_filesystem(name: &str) -> KResult<()> {
+    let mut list = FILESYSTEMS.lock();
+    match list.iter().position(|t| t.name() == name) {
+        Some(i) => { list.remove(i); Ok(()) }
+        None    => Err(VfsError::Einval),
+    }
+}
+
+/// `get_fs_type` (Linux `fs/filesystems.c`) — resolve a `file_system_type` by
+/// name. A `name.subtype` form (FUSE `fuse.sshfs`) resolves on the base name
+/// before the first `'.'`, mirroring Linux `__get_fs_type`'s `.subtype` split.
+/// `None` if no type is registered under that name. # C: O(N) over registered types
+pub fn get_fs_type(name: &str) -> Option<Arc<dyn FileSystemType>> {
+    let base = match name.find('.') { Some(i) => &name[..i], None => name };
+    FILESYSTEMS.lock().iter().find(|t| t.name() == base).cloned()
+}
+
+/// Snapshot of every registered `file_system_type` in registration order — the
+/// source `filesystems_proc_show` (`/proc/filesystems`) iterates. # C: O(N)
+pub fn registered_filesystems() -> Vec<Arc<dyn FileSystemType>> {
+    FILESYSTEMS.lock().iter().cloned().collect()
+}
+
+// ---------------------------------------------------------------------------
+// `get_tree_*` superblock-sharing helpers — Linux `fs/super.c`.
+//
+// A backend's `FsContextOps::get_tree` calls one of these to materialise (or
+// re-share) its superblock during `vfs_get_tree`:
+//   * `get_tree_nodev`  — never share: a fresh SB per mount (tmpfs, ramfs).
+//   * `get_tree_single` — share ONE SB across every mount of this fs_type
+//     (sysfs, debugfs, the kernel's single-instance pseudo-fses).
+//   * `get_tree_keyed`  — share an SB across mounts that present the same key
+//     (mqueue per-netns, cgroup per-hierarchy).
+//   * `get_tree_bdev`   — block-device-keyed sharing; NOT here (needs
+//     `lookup_bdev` + the block-device registry — block-crate coupled).
+//
+// Sharing goes through a global registry (Linux's per-`file_system_type`
+// `fs_supers` hlist) scoped by `(fs_type-name, key)`; a `sget_fc`-style probe
+// bumps `s_active` on a live match instead of re-running fill_super.
+// ---------------------------------------------------------------------------
+
+/// One shared-superblock registry slot. `Weak` so a fully-unmounted SB (its last
+/// live `Arc` gone after the final umount) reclaims its slot on the next probe;
+/// the `(fs_name, key)` pair is the `sget` test predicate. # consumers: D6 sget.
+struct SharedSuper {
+    fs_name: String,
+    key:     String,
+    sb:      Weak<SuperBlock>,
+}
+
+/// `fs_supers` analogue — the live shared superblocks `get_tree_single`/
+/// `get_tree_keyed` probe. A leaf lock (nothing else taken under it; the
+/// fill_super closure runs OUTSIDE it, matching Linux `sget_fc`'s drop of
+/// `sb_lock` around `alloc_super`).
+static SHARED_SUPERS: Spinlock<Vec<SharedSuper>, FsClass> = Spinlock::new(Vec::new());
+
+/// Stamp a context's user-settable `sb_flags` slice onto a freshly built SB
+/// (Linux `sb->s_flags = (s_flags & ~mask) | (sb_flags & mask)` in
+/// `sget`/`alloc_super`), keeping the dedicated `SB_RDONLY` writer-gate in sync.
+/// # C: O(1)
+fn stamp_sb_flags(sb: &SuperBlock, fc: &fs_context::FsContext) {
+    let mask = fc.sb_flags_mask();
+    let set = fc.sb_flags() & mask;
+    let clear = !fc.sb_flags() & mask;
+    sb.set_s_flags(set, clear);
+    sb.set_readonly(set & SB_RDONLY != 0);
+}
+
+/// Probe the registry for a live SB matching `(fs_name, key)`, pruning dead
+/// `Weak`s. On a hit, bumps `s_active` (`atomic_inc_not_zero`) and returns the
+/// shared instance. # C: O(N live supers)
+fn sget_probe(fs_name: &str, key: &str) -> Option<Arc<SuperBlock>> {
+    let mut list = SHARED_SUPERS.lock();
+    list.retain(|e| e.sb.strong_count() > 0);
+    for e in list.iter() {
+        if e.fs_name == fs_name && e.key == key {
+            if let Some(sb) = e.sb.upgrade() {
+                if sb.grab_active() { return Some(sb); }
+            }
+        }
+    }
+    None
+}
+
+/// `get_tree_nodev` (Linux `fs/super.c`) — materialise a BRAND-NEW superblock for
+/// this mount with no sharing (every `mount -t tmpfs` is an independent
+/// instance). Runs `fill` to build the SB, then stamps the context's `sb_flags`.
+/// # C: FS-dependent
+pub fn get_tree_nodev<F>(fc: &mut fs_context::FsContext, fill: F) -> KResult<Arc<SuperBlock>>
+where F: FnOnce(&mut fs_context::FsContext) -> KResult<Arc<SuperBlock>> {
+    let sb = fill(fc)?;
+    stamp_sb_flags(&sb, fc);
+    Ok(sb)
+}
+
+/// `get_tree_keyed` (Linux `fs/super.c`) — share a superblock across every mount
+/// of this fs_type that presents the same `key` (e.g. mqueue per-netns). A live
+/// match is returned with `s_active` bumped and `fill` is NOT re-run; otherwise
+/// `fill` builds a fresh SB, its `sb_flags` are stamped, and it is registered
+/// under `(fs_type, key)`. A `sget_fc`-style re-probe after `fill` resolves a
+/// race where a sibling registered the same key meanwhile. # C: FS-dependent
+pub fn get_tree_keyed<F>(fc: &mut fs_context::FsContext, key: &str, fill: F)
+    -> KResult<Arc<SuperBlock>>
+where F: FnOnce(&mut fs_context::FsContext) -> KResult<Arc<SuperBlock>> {
+    let fs_name = fc.fs_type().name().to_string();
+    if let Some(sb) = sget_probe(&fs_name, key) { return Ok(sb); }
+    // No live match — build (fill_super runs outside the registry lock).
+    let sb = fill(fc)?;
+    stamp_sb_flags(&sb, fc);
+    let mut list = SHARED_SUPERS.lock();
+    // Re-probe: a concurrent mount may have registered the same key meanwhile.
+    list.retain(|e| e.sb.strong_count() > 0);
+    for e in list.iter() {
+        if e.fs_name == fs_name && e.key == key {
+            if let Some(shared) = e.sb.upgrade() {
+                if shared.grab_active() { return Ok(shared); }
+            }
+        }
+    }
+    list.push(SharedSuper { fs_name, key: key.to_string(), sb: Arc::downgrade(&sb) });
+    Ok(sb)
+}
+
+/// `get_tree_single` (Linux `fs/super.c`) — share ONE superblock across EVERY
+/// mount of this fs_type (sysfs, debugfs, the single-instance pseudo-fses). The
+/// keyed sharing with an empty key: all mounts of the type collapse to one SB.
+/// # C: FS-dependent
+pub fn get_tree_single<F>(fc: &mut fs_context::FsContext, fill: F) -> KResult<Arc<SuperBlock>>
+where F: FnOnce(&mut fs_context::FsContext) -> KResult<Arc<SuperBlock>> {
+    get_tree_keyed(fc, "", fill)
+}
+
+/// `reconfigure_single` (Linux `fs/super.c`) — reconfigure a single-instance
+/// pseudo-fs's LIVE superblock from monolithic remount data. Builds a throwaway
+/// `FS_CONTEXT_FOR_RECONFIGURE` context over `sb`'s root, replays each parsed
+/// `param` through [`fs_context::vfs_parse_fs_param`], runs
+/// [`fs_context::reconfigure_super`] to apply them plus the masked `sb_flags`,
+/// then tears the context down ([`fs_context::put_fs_context`], running the LSM +
+/// backend `free` hooks). This is the remount path a single-instance fs uses
+/// instead of threading an `fs_context` through `mount_single`. A parse failure
+/// fails the context and surfaces the errno; the live SB is left untouched until
+/// `reconfigure_super` commits. # C: O(N params)
+pub fn reconfigure_single(
+    sb: Arc<SuperBlock>,
+    sb_flags: u64,
+    params: &[fs_context::FsParameter],
+) -> KResult<()> {
+    let root = sb.s_root().ok_or(VfsError::Einval)?;
+    let mut fc = fs_context::FsContext::for_reconfigure(sb, root, sb_flags, SB_FLAGS_USER_MASK);
+    for p in params {
+        if let Err(e) = fs_context::vfs_parse_fs_param(&mut fc, p) {
+            fc.fail();
+            fs_context::put_fs_context(fc);
+            return Err(e);
+        }
+    }
+    let r = fs_context::reconfigure_super(&mut fc);
+    fs_context::put_fs_context(fc);
+    r
 }

@@ -369,7 +369,7 @@ impl Xorshift {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Kind { Anon, FilePriv, FileShared, KernelBytes }
+enum Kind { Anon, FilePriv, FileShared, ShmemAnon, KernelBytes }
 
 struct AsSlot {
     root: u64,
@@ -468,6 +468,13 @@ fn map_region(slot: &AsSlot, kind: Kind, len: u64) {
             VmaProt::READ | VmaProt::WRITE,
             VmaFlags::SHARED,
             VmaBacking::File { backing: Arc::new(MemfdBacking), off: 0 }),
+        // MM5: MAP_SHARED|MAP_ANON as the FIXED mmap builds it — an anonymous
+        // shmem backing (Linux `shmem_zero_setup`). SHARED|ANONYMOUS flags +
+        // a File backing so `fork_cow_pages` shares the frames (no COW split).
+        Kind::ShmemAnon => (
+            VmaProt::READ | VmaProt::WRITE,
+            VmaFlags::SHARED | VmaFlags::ANONYMOUS,
+            VmaBacking::File { backing: Arc::new(MemfdBacking), off: 0 }),
         Kind::KernelBytes => {
             let data: Arc<[u8]> = Arc::from(std::vec![0xABu8; len as usize].into_boxed_slice());
             (VmaProt::READ | VmaProt::WRITE,
@@ -493,6 +500,7 @@ fn run(seed: u64, iters: usize) {
         map_region(&s, Kind::Anon, 8 * PAGE);
         map_region(&s, Kind::FilePriv, 4 * PAGE);
         map_region(&s, Kind::FileShared, 4 * PAGE);
+        map_region(&s, Kind::ShmemAnon, 4 * PAGE);
         map_region(&s, Kind::KernelBytes, 4 * PAGE);
         slots.push(s);
     }
@@ -684,6 +692,119 @@ fn fork_does_cow_split_private_anon() {
     activate(croot);
     assert_eq!(&read_tag(cur_pa(va)), b"CH1_", "PRIVATE anon: child sees its own write");
     check_invariant("anon-isolation");
+    BUG.with(|b| { if let Some(m) = b.borrow().as_ref() { panic!("invariant: {}", m); } });
+}
+
+// ---- MM5: MAP_SHARED|MAP_ANON must SHARE across fork (shmem_zero_setup) ----
+//
+// The intermittent boot corruption (journald/flatpak/user-session SIGSEGV,
+// ~2/4 boots) was a DATA-COHERENCE bug: the mmap syscall built MAP_SHARED|
+// MAP_ANON as `VmaFlags::SHARED|ANONYMOUS` + `VmaBacking::Anonymous`. On fork
+// `fork_cow_pages` (line ~407) only shares File-backed SHARED VMAs, so an
+// anon-backed SHARED VMA was COW-SPLIT — parent and child stopped seeing each
+// other's writes (POSIX violation: MAP_SHARED|ANON pages MUST be shared across
+// fork). A peer then read a stale private snapshot -> wrong pointer -> SIGSEGV.
+//
+// The fix (`009_mmap.rs`, Linux `shmem_zero_setup`): route MAP_SHARED|MAP_ANON
+// through a fresh anonymous tmpfs (shmem) inode so the VMA is File-backed and
+// `fork_cow_pages` shares the frames. These two tests pin both halves:
+//   * `anon_backed_shared_loses_child_write_mm5_bug` reproduces the ORIGIN
+//     representation (Anonymous backing) and asserts the lost-write — the bug.
+//   * `fork_shares_shmem_anon_mapping` drives the FIXED representation (shmem
+//     File backing) and asserts mutual visibility — fail-on-origin / pass-after
+//     for the actual data-coherence contract.
+
+#[test]
+fn anon_backed_shared_loses_child_write_mm5_bug() {
+    // ORIGIN/F649 representation of MAP_SHARED|MAP_ANON: SHARED|ANONYMOUS flags
+    // with a plain Anonymous backing. `fork_cow_pages` COW-splits it (no File
+    // backing) -> the child's write lands in a private frame the parent never
+    // sees. This documents the exact lost-write the fix removes.
+    reset();
+    let proot = 0xA_0000_0000u64;
+    let pmm = AddressSpace::new(proot).expect("AS::new");
+    let _ = pmm.mmap(None, PAGE as usize,
+        VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::SHARED | VmaFlags::ANONYMOUS, VmaBacking::Anonymous, false);
+    let pslot = AsSlot { root: proot, mm: pmm };
+    let va = pslot.mm.vmas_for_test().iter().next().unwrap().start.as_u64();
+    activate(proot);
+    do_fault(&pslot.mm, va, DEMAND_WRITE);
+    store(&pslot, va, b"PAR0");
+
+    let croot = 0xA_1000_0000u64;
+    activate(proot);
+    let child = pslot.mm.fork_cow_pages::<MultiMmu, _>(croot, 0, rc_inc).expect("fork");
+    let cslot = AsSlot { root: croot, mm: child };
+    store(&cslot, va, b"CH1_");
+
+    // The bug: anon-backed SHARED COW-splits, so the parent is frozen at PAR0.
+    activate(proot);
+    assert_eq!(&read_tag(cur_pa(va)), b"PAR0",
+        "ORIGIN bug: anon-backed MAP_SHARED|ANON COW-splits -> parent must NOT \
+         see the child write (this is the corruption the shmem fix removes)");
+    check_invariant("mm5-origin-bug");
+    BUG.with(|b| { if let Some(m) = b.borrow().as_ref() { panic!("invariant: {}", m); } });
+    let _ = cslot;
+}
+
+#[test]
+fn fork_shares_shmem_anon_mapping() {
+    // FIXED representation: MAP_SHARED|MAP_ANON routed through an anonymous
+    // shmem backing (File-backed). The frames are owned by one object both
+    // processes alias, so fork shares them and writes are mutually visible.
+    // This is the failing-on-origin / passing-after data-coherence gate: with
+    // the origin Anonymous backing (test above) the parent never sees "CH1_".
+    reset();
+    let mut next_root = 0xB_0000_0000u64;
+
+    // Parent maps a SHARED|ANONYMOUS shmem page, faults it in, writes "PAR0".
+    let proot = next_root; next_root += 0x1000_0000;
+    let pmm = AddressSpace::new(proot).expect("AS::new");
+    let _ = pmm.mmap(None, PAGE as usize,
+        VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::SHARED | VmaFlags::ANONYMOUS,
+        VmaBacking::File { backing: Arc::new(MemfdBacking), off: 0 }, false);
+    let pslot = AsSlot { root: proot, mm: pmm };
+    let va = pslot.mm.vmas_for_test().iter().next().unwrap().start.as_u64();
+    activate(proot);
+    do_fault(&pslot.mm, va, DEMAND_WRITE);
+    let shared_frame = cur_pa(va);
+    store(&pslot, va, b"PAR0");
+    check_invariant("shmem-anon-pre-fork");
+
+    // Fork. The shmem-anon frame must stay shared (no COW split, no W-strip).
+    activate(proot);
+    let croot = next_root;
+    let child = pslot.mm.fork_cow_pages::<MultiMmu, _>(croot, 0, rc_inc).expect("fork");
+    let cslot = AsSlot { root: croot, mm: child };
+    check_invariant("shmem-anon-post-fork");
+
+    // Child writes "CH1_": the parent and the backing frame MUST observe it.
+    store(&cslot, va, b"CH1_");
+    check_invariant("shmem-anon-post-child-write");
+    activate(proot);
+    assert_eq!(&read_tag(cur_pa(va)), b"CH1_",
+        "MAP_SHARED|ANON: parent must observe the child's shared write \
+         (fork COW-split the anon mapping -> lost-write corruption)");
+    assert_eq!(&read_tag(shared_frame), b"CH1_",
+        "MAP_SHARED|ANON: the shmem backing frame must hold the child's write");
+
+    // And a parent write is visible to the child (true bidirectional sharing).
+    store(&pslot, va, b"PAR1");
+    activate(croot);
+    assert_eq!(&read_tag(cur_pa(va)), b"PAR1",
+        "MAP_SHARED|ANON: child must observe the parent's shared write");
+
+    // Coherence holds across teardown in either order.
+    do_exit(&cslot);
+    drop(cslot.mm);
+    check_invariant("shmem-anon-child-exit");
+    activate(proot);
+    assert_eq!(&read_tag(cur_pa(va)), b"PAR1",
+        "parent's shmem view survives the child's munmap/exit");
+    do_exit(&pslot);
+    check_invariant("shmem-anon-parent-exit");
     BUG.with(|b| { if let Some(m) = b.borrow().as_ref() { panic!("invariant: {}", m); } });
 }
 

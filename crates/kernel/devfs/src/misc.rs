@@ -5,38 +5,51 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use alloc::sync::Arc;
+use vfs::{FileType, Inode, InodeBuilder, InodeRef, KResult, VfsError};
+use vfs::{FileOps, default_file_ops, default_inode_ops, mk_mode};
 
-/// Boot-time smoke test: each Inode read fills the right bytes.
+/// Build a `CharDev` inode with the misc-device perm/rdev shape: `i_private`
+/// is unused (the data path is a stateless `i_fop`), `fsid` is `DEVFS_FSID`.
+/// # C: O(1)
+fn char_inode(ino: vfs::Ino, perm: u16, rdev: u32, fop: Arc<dyn FileOps>) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::CharDev, perm), default_inode_ops(), fop)
+        .fsid(crate::DEVFS_FSID).rdev(rdev).build()
+}
+
+/// Boot-time smoke test: each device's `f_op` read fills the right bytes.
 /// `/dev/zero` returns NUL, `/dev/null` returns 0 (EOF), `/dev/random`
 /// fills with non-deterministic bytes (we just check len). Run from
 /// `kernel_main` after `crate::init()`.
 /// # SAFETY: caller is the boot path; PMM up; single-CPU pre-init.
 /// # C: O(1) per inode
 pub fn smoke_test() {
-    use vfs::Inode;
+    let zero = make_zero_inode();
+    let null = make_null_inode();
+    let random = make_random_inode();
+    let full = make_full_inode();
 
     let mut buf = [0xAAu8; 16];
-    let n = ZeroInode.read(0, &mut buf).expect("zero.read");
+    let n = zero.read(0, &mut buf).expect("zero.read");
     kassert!(n == 16, "zero read len");
     for b in buf.iter() { kassert!(*b == 0, "zero read fills NUL"); }
 
     let mut buf2 = [0xBBu8; 16];
-    let n = NullInode.read(0, &mut buf2).expect("null.read");
+    let n = null.read(0, &mut buf2).expect("null.read");
     kassert!(n == 0, "null read EOF");
     for b in buf2.iter() { kassert!(*b == 0xBB, "null read leaves buf"); }
 
     let mut buf3 = [0u8; 32];
-    let n = RandomInode.read(0, &mut buf3).expect("random.read");
+    let n = random.read(0, &mut buf3).expect("random.read");
     kassert!(n == 32, "random read len");
     let nz = buf3.iter().filter(|b| **b != 0).count();
     kassert!(nz > 0, "random read produces non-zero bytes");
 
-    let n = NullInode.write(0, b"hello").expect("null.write");
+    let n = null.write(0, b"hello").expect("null.write");
     kassert!(n == 5, "null write accepts all");
-    let n = ZeroInode.write(0, b"hello").expect("zero.write");
+    let n = zero.write(0, b"hello").expect("zero.write");
     kassert!(n == 5, "zero write accepts all");
-    let r = FullInode.write(0, b"hello");
+    let r = full.write(0, b"hello");
     kassert!(r.is_err(), "full write returns Eio");
 
     #[cfg(feature = "debug-boot")]
@@ -48,35 +61,27 @@ pub fn smoke_test() {
 use hal::kassert;
 
 /// `/dev/null` — read returns 0 (EOF), write discards.
-pub struct NullInode;
-impl Inode for NullInode {
-    fn ino(&self) -> Ino { 0x2000_0001 }
-    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn rdev(&self) -> u32 { 0x0103 }               // 1:3 mem/null
-    fn perm(&self) -> Option<u16> { Some(0o666) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
-    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
+struct NullFileOps;
+impl FileOps for NullFileOps {
+    fn read(&self, _i: &Inode, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
+    fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
+/// `/dev/null` inode (1:3 mem/null, `0o666`). # C: O(1)
+pub fn make_null_inode() -> InodeRef { char_inode(0x2000_0001, 0o666, 0x0103, Arc::new(NullFileOps)) }
 
 /// Static symlink with a fixed target — backs the standard `/dev`
 /// links `stdin`/`stdout`/`stderr`/`fd` that every Linux system
 /// carries (→ `/proc/self/fd/*`). Shells (`< /dev/stdin`,
 /// `> /dev/stdout`), bash process substitution (`/dev/fd/<n>`), and
-/// scripts depend on them.
-pub struct SymlinkInode {
-    pub target: &'static [u8],
-    pub ino:    Ino,
-}
-impl Inode for SymlinkInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
-    fn file_type(&self) -> FileType { FileType::Symlink }
-    fn size(&self) -> u64 { self.target.len() as u64 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn readlink(&self) -> KResult<alloc::vec::Vec<u8>> { Ok(self.target.to_vec()) }
+/// scripts depend on them. Built with the target as the inline `i_link`
+/// body, so `get_link` reads it without a custom `i_op->readlink`.
+/// # C: O(target)
+pub fn make_symlink_inode(target: &'static [u8], ino: vfs::Ino) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Symlink, 0o777), default_inode_ops(), default_file_ops())
+        .fsid(crate::DEVFS_FSID)
+        .size(target.len() as u64)
+        .link(target.to_vec().into_boxed_slice())
+        .build()
 }
 
 /// `/dev/kmsg` — Linux kernel ring-buffer file. Reads pull bytes from
@@ -85,16 +90,9 @@ impl Inode for SymlinkInode {
 /// Each open's reader cursor is reset to 0 at open — repeated
 /// `cat /dev/kmsg` invocations from userspace each see the
 /// available tail of the ring.
-pub struct KmsgInode;
-impl Inode for KmsgInode {
-    fn ino(&self) -> Ino { 0x2000_000A }
-    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn rdev(&self) -> u32 { 0x010b }               // 1:11 mem/kmsg
-    fn perm(&self) -> Option<u16> { Some(0o644) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, b: &mut [u8]) -> KResult<usize> {
+struct KmsgFileOps;
+impl FileOps for KmsgFileOps {
+    fn read(&self, _i: &Inode, off: u64, b: &mut [u8]) -> KResult<usize> {
         let (n, _next) = klog::ring_read(off as usize, b);
         Ok(n)
     }
@@ -102,7 +100,7 @@ impl Inode for KmsgInode {
     /// (`File::pos`) is behind the ring head (unread messages). Without this,
     /// the default always-`POLL_IN` poll() busy-looped journald's epoll on
     /// /dev/kmsg ("Looping too fast"). # C: O(1)
-    fn poll_file(&self, pos: u64) -> u32 {
+    fn poll_file(&self, _i: &Inode, pos: u64) -> u32 {
         let mut mask = vfs::POLL_OUT;
         if (pos as usize) < klog::ring_total() { mask |= vfs::POLL_IN; }
         mask
@@ -114,7 +112,7 @@ impl Inode for KmsgInode {
     /// ensured so each write is one record. Before this, writes were
     /// silently discarded.
     /// # C: O(len)
-    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> {
+    fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
         let mut msg = b;
         if msg.first() == Some(&b'<') {
             if let Some(gt) = msg.iter().take(6).position(|&c| c == b'>') {
@@ -128,42 +126,34 @@ impl Inode for KmsgInode {
         Ok(b.len())
     }
 }
+/// `/dev/kmsg` inode (1:11 mem/kmsg, `0o644`). # C: O(1)
+pub fn make_kmsg_inode() -> InodeRef { char_inode(0x2000_000A, 0o644, 0x010b, Arc::new(KmsgFileOps)) }
 
 /// `/dev/zero` — read fills with NUL, write discards.
-pub struct ZeroInode;
-impl Inode for ZeroInode {
-    fn ino(&self) -> Ino { 0x2000_0002 }
-    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn rdev(&self) -> u32 { 0x0105 }               // 1:5 mem/zero
-    fn perm(&self) -> Option<u16> { Some(0o666) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, b: &mut [u8]) -> KResult<usize> {
+struct ZeroFileOps;
+impl FileOps for ZeroFileOps {
+    fn read(&self, _i: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> {
         for x in b.iter_mut() { *x = 0; }
         Ok(b.len())
     }
-    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
+    fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
+/// `/dev/zero` inode (1:5 mem/zero, `0o666`). # C: O(1)
+pub fn make_zero_inode() -> InodeRef { char_inode(0x2000_0002, 0o666, 0x0105, Arc::new(ZeroFileOps)) }
 
 /// `/dev/full` — read fills with NUL like /dev/zero; write
 /// returns -ENOSPC. POSIX-shaped so libc `posix_fallocate`-on-
 /// /dev/full tests work.
-pub struct FullInode;
-impl Inode for FullInode {
-    fn ino(&self) -> Ino { 0x2000_0003 }
-    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn rdev(&self) -> u32 { 0x0107 }               // 1:7 mem/full
-    fn perm(&self) -> Option<u16> { Some(0o666) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, b: &mut [u8]) -> KResult<usize> {
+struct FullFileOps;
+impl FileOps for FullFileOps {
+    fn read(&self, _i: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> {
         for x in b.iter_mut() { *x = 0; }
         Ok(b.len())
     }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+    fn write(&self, _i: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
 }
+/// `/dev/full` inode (1:7 mem/full, `0o666`). # C: O(1)
+pub fn make_full_inode() -> InodeRef { char_inode(0x2000_0003, 0o666, 0x0107, Arc::new(FullFileOps)) }
 
 /// LCG pseudo-random source seeded from a monotonic counter. v1
 /// has no real entropy pool (per docs/26 the CPRNG/RDRAND wiring
@@ -219,16 +209,9 @@ pub fn set_hwrng_source(f: HwRngFn) {
 /// bytes from the installed virtio-rng source; with no source installed
 /// (no device) reads return 0 (EOF), matching a `/dev/hwrng` whose backing
 /// hwrng has no current_rng. Real hardware entropy, NOT the LCG.
-pub struct HwRngInode;
-impl Inode for HwRngInode {
-    fn ino(&self) -> Ino { 0x2000_0005 }
-    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn rdev(&self) -> u32 { 0x0ab7 }               // 10:183 misc/hw_random
-    fn perm(&self) -> Option<u16> { Some(0o644) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, b: &mut [u8]) -> KResult<usize> {
+struct HwRngFileOps;
+impl FileOps for HwRngFileOps {
+    fn read(&self, _i: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> {
         let p = HWRNG_SOURCE.load(Ordering::Acquire);
         if p == 0 { return Ok(0); }
         // SAFETY: p was stored from a `HwRngFn` via set_hwrng_source; the
@@ -237,34 +220,22 @@ impl Inode for HwRngInode {
         let f: HwRngFn = unsafe { core::mem::transmute(p as usize) };
         Ok(f(b))
     }
-    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
+    fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
+/// `/dev/hwrng` inode (10:183 misc/hw_random, `0o644`). # C: O(1)
+pub fn make_hwrng_inode() -> InodeRef { char_inode(0x2000_0005, 0o644, 0x0ab7, Arc::new(HwRngFileOps)) }
 
 /// `/dev/autofs` — misc char device for the built-in autofs control ABI.
-pub struct AutofsInode;
-impl Inode for AutofsInode {
-    fn ino(&self) -> Ino { 0x2000_0006 }
-    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn rdev(&self) -> u32 { 0x0aec }               // 10:236 misc/autofs
-    fn perm(&self) -> Option<u16> { Some(0o600) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-}
+/// No data path (default `f_op` → `EINVAL` on a CharDev read/write).
+/// # C: O(1)
+pub fn make_autofs_inode() -> InodeRef { char_inode(0x2000_0006, 0o600, 0x0aec, default_file_ops()) }
 
 /// `/dev/random` and `/dev/urandom` — fill with LCG bytes.
 /// SECURITY: NOT cryptographic; v1 placeholder until docs/26
 /// CPRNG lands.
-pub struct RandomInode;
-impl Inode for RandomInode {
-    fn ino(&self) -> Ino { 0x2000_0004 }
-    fn fsid(&self) -> u64 { crate::DEVFS_FSID }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn rdev(&self) -> u32 { 0x0108 }               // 1:8 mem/random
-    fn perm(&self) -> Option<u16> { Some(0o666) }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, b: &mut [u8]) -> KResult<usize> {
+struct RandomFileOps;
+impl FileOps for RandomFileOps {
+    fn read(&self, _i: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> {
         let mut i = 0;
         while i < b.len() {
             let v = lcg_next().to_le_bytes();
@@ -274,8 +245,10 @@ impl Inode for RandomInode {
         }
         Ok(b.len())
     }
-    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
+    fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
+/// `/dev/random`/`/dev/urandom` inode (1:8 mem/random, `0o666`). # C: O(1)
+pub fn make_random_inode() -> InodeRef { char_inode(0x2000_0004, 0o666, 0x0108, Arc::new(RandomFileOps)) }
 
 #[cfg(test)]
 mod tests {

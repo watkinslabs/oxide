@@ -21,27 +21,18 @@ use sync::{RwLock, Inode as InodeClass};
 // In-memory test inode — minimal Regular + Directory inodes for the FS surface
 // ---------------------------------------------------------------------------
 
-struct MemFile {
-    ino:  u64,
+// Per-inode backing state (the old `MemFile` fields), stored in `i_private`.
+struct MemFileData {
     body: RwLock<Vec<u8>, InodeClass>,
 }
 
-impl MemFile {
-    fn new(ino: u64) -> Arc<Self> {
-        Arc::new(Self { ino, body: RwLock::new(Vec::new()) })
-    }
-}
-
-impl Inode for MemFile {
-    fn ino(&self) -> u64 { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { self.body.read().len() as u64 }
-
-    fn lookup(&self, _name: &str) -> KResult<InodeRef> {
-        Err(VfsError::Enotdir)
-    }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body = self.body.read();
+// Data-path ops for the in-memory file. Reads/writes the byte buffer off
+// `i_private` and keeps `i_size` in sync (the concrete inode owns its size).
+struct MemFileOps;
+impl FileOps for MemFileOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = inode.private::<MemFileData>().unwrap();
+        let body = d.body.read();
         if off >= body.len() as u64 { return Ok(0); }
         let start = off as usize;
         let avail = body.len() - start;
@@ -49,12 +40,25 @@ impl Inode for MemFile {
         buf[..n].copy_from_slice(&body[start..start + n]);
         Ok(n)
     }
-    fn write(&self, off: u64, buf: &[u8]) -> KResult<usize> {
-        let mut body = self.body.write();
+    fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
+        let d = inode.private::<MemFileData>().unwrap();
+        let mut body = d.body.write();
         let end = off as usize + buf.len();
         if body.len() < end { body.resize(end, 0); }
         body[off as usize..end].copy_from_slice(buf);
+        inode.set_size(body.len() as u64);
         Ok(buf.len())
+    }
+}
+
+// Namespace facade over the old `MemFile` ZST: `MemFile::new(ino)` now stamps
+// the concrete `Inode` (Regular, MemFileOps data path, default i_op).
+struct MemFile;
+impl MemFile {
+    fn new(ino: u64) -> InodeRef {
+        InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(MemFileOps))
+            .private(Arc::new(MemFileData { body: RwLock::new(Vec::new()) }))
+            .build()
     }
 }
 
@@ -477,12 +481,18 @@ fn file_f_mode_derivation() {
     use crate::file::Fmode;
     let i: InodeRef = MemFile::new(1);
     let d = Dentry::new_root(Arc::clone(&i));
+    // MemFile is a regular (seekable) file, so every open also carries the
+    // FMODE_LSEEK|PREAD|PWRITE capability bits (`do_dentry_open`). Mask them
+    // out to assert the access-mode derivation in isolation, then assert the
+    // seekability bits are present.
+    let seek = Fmode::LSEEK | Fmode::PREAD | Fmode::PWRITE;
     let ro = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDONLY, 0, Cred::root());
-    assert_eq!(ro.f_mode(), Fmode::READ);
+    assert_eq!(ro.f_mode() - seek, Fmode::READ);
+    assert!(ro.f_mode().contains(seek), "regular file is seekable");
     let wo = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_WRONLY, 0, Cred::root());
-    assert_eq!(wo.f_mode(), Fmode::WRITE);
+    assert_eq!(wo.f_mode() - seek, Fmode::WRITE);
     let rw = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDWR, 0, Cred::root());
-    assert_eq!(rw.f_mode(), Fmode::READ | Fmode::WRITE);
+    assert_eq!(rw.f_mode() - seek, Fmode::READ | Fmode::WRITE);
 }
 
 #[test]
@@ -607,18 +617,15 @@ fn fdtable_bitmap_alloc_min_skips_full_words() {
 fn fdtable_flush_fires_on_close() {
     use core::sync::atomic::{AtomicUsize, Ordering as O};
     static FLUSHED: AtomicUsize = AtomicUsize::new(0);
-    struct FlushInode { ino: u64 }
-    impl Inode for FlushInode {
-        fn ino(&self) -> u64 { self.ino }
-        fn file_type(&self) -> FileType { FileType::Regular }
-        fn size(&self) -> u64 { 0 }
-        fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-        fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
-        fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
-        fn on_flush(&self) { FLUSHED.fetch_add(1, O::Relaxed); }
+    struct FlushOps;
+    impl FileOps for FlushOps {
+        fn read(&self, _i: &Inode, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
+        fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
+        fn on_flush(&self, _i: &Inode) { FLUSHED.fetch_add(1, O::Relaxed); }
     }
     FLUSHED.store(0, O::Relaxed);
-    let i: InodeRef = Arc::new(FlushInode { ino: 9 });
+    let i: InodeRef = InodeBuilder::new(9, mk_mode(FileType::Regular, 0o644),
+        default_inode_ops(), Arc::new(FlushOps)).build();
     let d = Dentry::new_root(Arc::clone(&i));
     let f = File::new(i, d, OpenFlags::O_RDWR);
     let t = FdTable::new();
@@ -765,20 +772,28 @@ impl TestDir {
     fn get(&self, name: &[u8]) -> Option<(u64, FileType, u32)> {
         self.ents.read().get(name).copied()
     }
+    // Build the concrete directory inode backed by this `TestDir` (stored as
+    // `i_private`; `TestDirOps` reads it back via `inode.private::<TestDir>()`).
+    fn inode(self: &Arc<Self>) -> InodeRef {
+        InodeBuilder::new(self.ino, mk_mode(FileType::Directory, 0o755),
+            Arc::new(TestDirOps), default_file_ops())
+            .private(self.clone())
+            .build()
+    }
 }
 
-impl Inode for TestDir {
-    fn ino(&self) -> u64 { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+struct TestDirOps;
+impl InodeOps for TestDirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<TestDir>().unwrap();
         let key = crate::path::path_into_bytes(name);
-        match self.ents.read().get(&key) {
+        match d.ents.read().get(&key) {
             Some(&(ino, _, _)) => { let r: InodeRef = MemFile::new(ino); Ok(r) }
             None => Err(VfsError::Enoent),
         }
     }
-    fn mknod_child(&self, name: &str, mode: u16, rdev: u32) -> KResult<()> {
+    fn mknod(&self, inode: &Inode, name: &str, mode: u16, rdev: u32) -> KResult<()> {
+        let d = inode.private::<TestDir>().unwrap();
         let key = crate::path::path_into_bytes(name);
         let ft = match mode & 0xF000 {
             0x2000 => FileType::CharDev,
@@ -787,7 +802,7 @@ impl Inode for TestDir {
             0xC000 => FileType::Socket,
             _      => FileType::Regular,
         };
-        self.ents.write().insert(key, (0, ft, rdev));
+        d.ents.write().insert(key, (0, ft, rdev));
         Ok(())
     }
 }
@@ -796,7 +811,7 @@ struct TestFs { dir: Arc<TestDir> }
 
 impl crate::fs::FileSystem for TestFs {
     fn name(&self) -> &str { "testfs" }
-    fn root(&self) -> Option<InodeRef> { let r: InodeRef = self.dir.clone(); Some(r) }
+    fn root(&self) -> Option<InodeRef> { Some(self.dir.inode()) }
     fn rename(&self, from: &str, to: &str) -> KResult<()> {
         let fk = crate::path::path_into_bytes(from);
         let tk = crate::path::path_into_bytes(to);

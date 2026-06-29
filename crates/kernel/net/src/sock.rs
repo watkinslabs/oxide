@@ -231,6 +231,12 @@ pub struct SockOpts {
     pub tcp_keepcnt: core::sync::atomic::AtomicI32,
     pub passcred: core::sync::atomic::AtomicI32,
     pub timestamping: core::sync::atomic::AtomicI32,
+    /// SO_TYPE override (Linux `sock->type`) for AF_UNIX sockets whose
+    /// `SockKind` doesn't itself encode the requested shape — chiefly a
+    /// `SOCK_SEQPACKET` listener, which is byte-ring-backed internally but
+    /// MUST report SOCK_SEQPACKET so `sd_is_socket()` socket-activation
+    /// checks (systemd-udevd control socket) pass. `0` = derive from kind.
+    pub so_type: core::sync::atomic::AtomicU8,
 }
 
 pub const TCP_SNDBUF_DEFAULT: i32 = 16384; pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
@@ -264,6 +270,7 @@ impl Default for SockOpts {
             tcp_keepcnt:    AtomicI32::new(crate::sock_opts::TCP_KEEPCNT_DEFAULT),
             passcred: AtomicI32::new(0),
             timestamping: AtomicI32::new(0),
+            so_type: AtomicU8::new(0),
         }
     }
 }
@@ -392,24 +399,81 @@ impl Default for InetSocket { fn default() -> Self { Self::new_udp() } }
 
 // F161 InetSocket::Drop moved to sock_drop.rs (1000-line cap).
 
-impl vfs::Inode for InetSocket {
-    fn ino(&self) -> vfs::Ino {
-        // High-bits tag so socket inode numbers don't collide
-        // with fs inode space.
-        0x534F_434B_0000_0000u64 | (self as *const _ as u64 & 0xFFFF_FFFF) as vfs::Ino
-    }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+/// `ino()` high tag identifying an AF_INET/AF_UNIX/AF_PACKET socket inode (so
+/// its inode numbers don't collide with fs inode space). # C: O(1)
+pub const INET_INO_TAG: u64 = 0x534F_434B_0000_0000;
 
-    /// F181: targeted-wake subscriber list — epoll_ctl(ADD) on
-    /// this socket's fd registers here, event sites call
-    /// `self.poll_subs.notify()` instead of the global broadcast.
-    fn poll_subscribers(&self) -> Option<&vfs::PollSubscribers> {
-        Some(self.poll_subs.as_ref())
-    }
+/// Build the `Arc<Inode>` wrapping an AF_INET-family socket fd. The socket
+/// lives in `i_private` (recover it with [`inet_from_inode`]); `ino()` carries
+/// [`INET_INO_TAG`] OR'd with the socket pointer's low bits.
+///
+/// NOTE (kp2 follow-up): the socket's own `poll_subs` (`Arc<PollSubscribers>`,
+/// referenced by the TCP/UDP stack entries for targeted epoll wakes) is NOT
+/// shared into the built inode, because `InodeBuilder` only accepts a
+/// by-value `PollSubscribers`. Until vfs grows `InodeBuilder::poll_subs_arc(
+/// Arc<PollSubscribers>)`, `inode.poll_subscribers()` is `None` and epoll on a
+/// socket fd falls back to the global broadcast. # C: O(1)
+pub fn make_inet_socket_inode(sock: Arc<InetSocket>) -> vfs::InodeRef {
+    let ino = INET_INO_TAG | (Arc::as_ptr(&sock) as u64 & 0xFFFF_FFFF);
+    // S_IFSOCK so fstat()/sd_is_socket() see a socket — systemd-udevd's
+    // listen_fds() rejects an inherited fd whose mode isn't S_ISSOCK
+    // (returns -EINVAL → "Failed to listen on fds"). Linux socket fds
+    // are always S_IFSOCK.
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(vfs::FileType::Socket, 0o600),
+        vfs::default_inode_ops(), Arc::new(InetFileOps))
+        .private(sock)
+        .build()
+}
 
-    fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+/// Recover the `&InetSocket` stored in a socket inode's `i_private`. # C: O(1)
+pub fn inet_from_inode(inode: &vfs::Inode) -> Option<&InetSocket> {
+    inode.private::<InetSocket>()
+}
+
+/// Local AF_UNIX address (sun_path) this socket is bound to, if any —
+/// used by `getsockname` to report the bound path. A bound stream/seqpacket
+/// listener carries its path on the `UnixListener`; a bound dgram queue
+/// carries it on the queue. Unbound/connected sockets return `None`.
+/// # C: O(1)
+pub fn unix_local_path(sock: &InetSocket) -> Option<alloc::string::String> {
+    match &*sock.kind.lock() {
+        SockKind::UnixListener(l) => Some(l.path.clone()),
+        // Dgram queues don't retain their bound path (the registry owns
+        // it); the bare AF_UNIX family is enough for getsockname's callers.
+        _ => None,
+    }
+}
+
+/// Recover an owning `Arc<InetSocket>` from a socket inode. # C: O(1)
+pub fn inet_arc_from_inode(inode: &vfs::InodeRef) -> Option<Arc<InetSocket>> {
+    inode.i_private().clone().downcast::<InetSocket>().ok()
+}
+
+/// `file_operations` for an AF_INET-family socket inode — delegates the data
+/// path to the `InetSocket` in `i_private`.
+struct InetFileOps;
+
+impl vfs::FileOps for InetFileOps {
+    fn read(&self, inode: &vfs::Inode, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        match inode.private::<InetSocket>() { Some(s) => s.read(off, buf), None => Err(vfs::VfsError::Einval) }
+    }
+    fn write(&self, inode: &vfs::Inode, off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+        match inode.private::<InetSocket>() { Some(s) => s.write(off, buf), None => Err(vfs::VfsError::Einval) }
+    }
+    fn read_nonblock(&self, inode: &vfs::Inode, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        match inode.private::<InetSocket>() { Some(s) => s.read_nonblock(off, buf), None => Err(vfs::VfsError::Einval) }
+    }
+    fn write_nonblock(&self, inode: &vfs::Inode, off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+        match inode.private::<InetSocket>() { Some(s) => s.write_nonblock(off, buf), None => Err(vfs::VfsError::Einval) }
+    }
+    fn poll(&self, inode: &vfs::Inode) -> u32 {
+        inode.private::<InetSocket>().map(|s| s.poll()).unwrap_or(vfs::POLL_OUT)
+    }
+}
+
+impl InetSocket {
+    /// `f_op->read` — blocking stream/datagram read. # C: backend-dependent
+    pub fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         // F166: shutdown(SHUT_RD | SHUT_RDWR) latches read_shut →
         // read returns EOF without consulting the recv buffer.
         if self.read_shut.load(core::sync::atomic::Ordering::Acquire) {
@@ -453,7 +517,7 @@ impl vfs::Inode for InetSocket {
     /// Non-blocking variant per `15§5` / vfs::Inode contract. Returns
     /// Eagain when recv_buf is empty AND the connection is still in a
     /// data-transfer state; Ok(0) only on peer FIN.
-    fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+    pub fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         if self.read_shut.load(core::sync::atomic::Ordering::Acquire) {
             return Ok(0);
         }
@@ -480,7 +544,7 @@ impl vfs::Inode for InetSocket {
         self.read(_off, buf)
     }
 
-    fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+    pub fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         // F164: snapshot kind out of its lock for parity with read();
         // a TCP write may park on entry.rx_waiters until the peer's
         // ACK frees send_buf space — we must not hold sock.kind.lock()
@@ -517,7 +581,7 @@ impl vfs::Inode for InetSocket {
     /// the connection's send buffer is at SO_SNDBUF; else writes as
     /// many bytes as fit. UDP / AF_UNIX delegate to their existing
     /// write() — neither blocks on send today.
-    fn write_nonblock(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+    pub fn write_nonblock(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         if let SockKind::TcpConn(entry) = &*self.kind.lock() {
             let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
                 .max(TCP_SNDBUF_DEFAULT) as usize;
@@ -548,7 +612,7 @@ impl vfs::Inode for InetSocket {
         self.write(_off, buf)
     }
 
-    fn poll(&self) -> u32 {
+    pub fn poll(&self) -> u32 {
         use vfs::{POLL_IN, POLL_OUT, POLL_HUP};
         match &*self.kind.lock() {
             SockKind::Udp => {
@@ -778,7 +842,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             // SO_PEERCRED: the connecting task owns end B.
             if let Some(c) = sched::live::current() {
                 use core::sync::atomic::Ordering;
-                pair.set_end_cred(crate::UnixEnd::B, c.tgid.load(Ordering::Relaxed),
+                pair.set_end_cred(crate::UnixEnd::B, c.visible_pid(),
                     c.creds.euid.load(Ordering::Relaxed), c.creds.egid.load(Ordering::Relaxed));
             }
             *sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::B);
@@ -901,7 +965,7 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         // SO_PEERCRED: the accepting task owns end A.
         if let Some(c) = sched::live::current() {
             use core::sync::atomic::Ordering;
-            pair.set_end_cred(crate::UnixEnd::A, c.tgid.load(Ordering::Relaxed),
+            pair.set_end_cred(crate::UnixEnd::A, c.visible_pid(),
                 c.creds.euid.load(Ordering::Relaxed), c.creds.egid.load(Ordering::Relaxed));
         }
         *new_sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::A);
@@ -975,6 +1039,7 @@ pub fn sendto(
             _ => q.peer().ok_or(NetError::Eaddrnotavail)?,
         };
         let q = UNIX_REGISTRY.dgram_lookup(&path).ok_or(NetError::Enobufs)?;
+        crate::trace_dgram_journal(&path, payload);
         q.push(crate::UnixDgram {
             payload: payload.to_vec(),
             creds: (creds.pid, creds.uid, creds.gid),

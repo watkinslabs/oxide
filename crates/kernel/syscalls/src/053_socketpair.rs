@@ -34,7 +34,7 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
             *s.kind.lock() = SockKind::UnixMsgPair(p.clone(), end);
             p.register_end_subs(end, &s.poll_subs);
         }
-        Arc::new(s) as _
+        net::sock::make_inet_socket_inode(Arc::new(s))
     };
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -46,14 +46,14 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
     // SO_PEERCRED: both ends of a socketpair belong to the caller.
     if let Some(p) = &stream {
         use core::sync::atomic::Ordering;
-        let (pid, uid, gid) = (cur.tgid.load(Ordering::Relaxed),
+        let (pid, uid, gid) = (cur.visible_pid(),
             cur.creds.euid.load(Ordering::Relaxed), cur.creds.egid.load(Ordering::Relaxed));
         p.set_end_cred(net::UnixEnd::A, pid, uid, gid);
         p.set_end_cred(net::UnixEnd::B, pid, uid, gid);
     }
     if let Some(p) = &msg {
         use core::sync::atomic::Ordering;
-        let (pid, uid, gid) = (cur.tgid.load(Ordering::Relaxed),
+        let (pid, uid, gid) = (cur.visible_pid(),
             cur.creds.euid.load(Ordering::Relaxed), cur.creds.egid.load(Ordering::Relaxed));
         p.set_end_cred(net::UnixEnd::A, pid, uid, gid);
         p.set_end_cred(net::UnixEnd::B, pid, uid, gid);

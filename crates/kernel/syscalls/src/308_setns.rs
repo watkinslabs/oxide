@@ -20,10 +20,7 @@ pub fn sys_setns(args: &SyscallArgs) -> i64 {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode = file.inode();
-    let any = match inode.as_any() {
-        Some(a) => a, None => return -(Errno::Einval.as_i32() as i64),
-    };
-    let ns = match any.downcast_ref::<nscg::proc_ns::NsInode>() {
+    let ns = match inode.private::<nscg::proc_ns::NsInode>() {
         Some(n) => n, None => return -(Errno::Einval.as_i32() as i64),
     };
     nscg::proc_ns::setns_apply(ns, nstype, cur)

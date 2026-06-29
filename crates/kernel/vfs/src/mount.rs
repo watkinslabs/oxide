@@ -21,7 +21,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use sync::{MountTable as MountClass, Spinlock};
 
 use crate::dentry::Dentry;
@@ -42,13 +42,27 @@ pub use crate::mntns::{
 // Mount-propagation engine (peer/slave fan-out) lives in a submodule to hold
 // the line cap; its public surface stays `vfs::mount::*` verbatim.
 mod propagation;
-pub use propagation::{join_peer_group, peer_group_of, propagate_mount};
+pub use propagation::{join_peer_group, peer_group_of, propagate_mount, set_propagation};
 
 // Umount / detach tear-down (umount(2), d_invalidate detach, propagate_umount)
 // lives in a submodule to hold the line cap; public surface stays `vfs::mount::*`.
 mod detach;
 pub use detach::{unregister, unregister_top};
 pub(crate) use detach::detach_mounts_on;
+
+// mnt_flags model: the kernel-internal `mnt_flags` bit set (MNT_LOCKED /
+// MNT_INTERNAL / MNT_DOOMED / …, Linux `include/linux/mount.h`) distinct from
+// the MS_*-valued option mask, plus typed option-mask + atime-policy readback.
+mod mnt_flags;
+pub use mnt_flags::{
+    AtimePolicy, MNT_DOOMED, MNT_EXPIRE_MARK, MNT_INTERNAL, MNT_LOCKED, MNT_MARKED, MNT_UMOUNT,
+};
+
+// Mount expiry list (Linux `mark_mounts_for_expiry`, autofs/NFS auto-umount):
+// a two-sweep grace where an unused, unmarked mount is marked on one pass and
+// reaped on the next if still idle.
+mod expiry;
+pub use expiry::{expire_list_create, mark_mounts_for_expiry, mnt_expire_add, mnt_expire_remove};
 
 pub const MNT_RDONLY: u64 = 1;
 pub const MNT_NOSUID: u64 = 2;
@@ -331,6 +345,12 @@ pub struct Mount {
     /// has been unlinked from its namespace tree by an umount. While set, the
     /// final [`mntput`] (`mnt_count` 1 → 0) runs the deferred `deactivate_super`.
     detached: AtomicBool,
+    /// Kernel-internal `mnt_flags` (Linux `include/linux/mount.h`): MNT_LOCKED,
+    /// MNT_INTERNAL, MNT_DOOMED, MNT_MARKED, MNT_UMOUNT, plus the synthetic
+    /// MNT_EXPIRE_MARK standing in for Linux's separate `mnt_expiry_mark` int.
+    /// SEPARATE namespace from the MS_*-valued option mask in `flags` — see
+    /// [`mnt_flags`]. Accessed via per-bit atomic fetch_or/and (xchg semantics).
+    pub(super) mnt_internal_flags: AtomicU32,
     /// Per-mount id mapping (Linux `mnt_idmap`). Identity by default — a
     /// non-idmapped mount maps every uid/gid to itself, so stat-out and
     /// chown/create-in are byte-identical to the non-idmapped kernel.
@@ -444,6 +464,7 @@ fn new_mount(sb: Arc<SuperBlock>, rendered: String, mountpoint: Option<Arc<Dentr
         mnt_writers: AtomicI32::new(0),
         mnt_count: AtomicI32::new(0),
         detached: AtomicBool::new(false),
+        mnt_internal_flags: AtomicU32::new(0),
         mnt_idmap: Arc::new(crate::idmap::Idmap::identity()),
     })
 }
@@ -462,6 +483,13 @@ pub fn idmap_for(mnt_id: u64) -> Arc<crate::idmap::Idmap> {
 /// namespace root mount. # C: O(depth)
 fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRef>) -> KResult<()> {
     let ns = current_ns();
+    // Per-ns mount cap (Linux `count_mounts` in `attach_recursive_mnt`): RESERVE
+    // one slot in `pending_mounts` BEFORE building any mount state; over
+    // `sysctl_mount_max` ⇒ ENOSPC with nothing allocated. A single graft, so
+    // `num == 1`. The reservation is rolled live by `commit_mounts` once the
+    // mount is in `MOUNTS`; attach has no fallible step after this point, so no
+    // `abort_mounts` unwind path is reachable.
+    mntns::count_mounts(ns, 1)?;
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
     let mp = mp.filter(|d| !is_global_root(d));
     let Some(d) = mp else {
@@ -470,6 +498,7 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
         let m = new_mount(sb, String::from("/"), None, mnt_id, root, mnt_id, ns);
         mntns::ns_set_root(ns, mnt_id);
         MOUNTS.lock().insert(mnt_id, m);
+        mntns::commit_mounts(ns, 1);
         mntns::bump_gen(ns);
         return Ok(());
     };
@@ -487,6 +516,7 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
     MOUNTS.lock().insert(mnt_id, m);
     wire_crossing(ns, &d, mnt_id);
     hash_insert(ns, parent_id, dptr(&d), mnt_id);
+    mntns::commit_mounts(ns, 1);
     mntns::bump_gen(ns);
     Ok(())
 }
@@ -551,7 +581,7 @@ pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> 
             };
             (m.mnt_id, np)
         }).collect();
-        commit_retree(ns, &new_paths, Some(nr_id));
+        commit_retree(ns, &new_paths, Some(nr_id), &nr_subtree);
         if let Some(old) = old_root_id { mntns::chroot_fs_refs(old, nr_id); }
         return Ok(());
     }
@@ -576,22 +606,35 @@ pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> 
         };
         (m.mnt_id, np)
     }).collect();
-    commit_retree(ns, &new_paths, Some(nr_id));
+    commit_retree(ns, &new_paths, Some(nr_id), &nr_subtree);
     if let Some(old) = old_root_id { mntns::chroot_fs_refs(old, nr_id); }
     Ok(())
 }
 
-/// Commit a whole-namespace path rewrite: MATERIALISE each mount's new
-/// mountpoint dentry by descending from the ns root, mutate it in place, then
-/// rebuild the ns index (links + crossings + hash) by identity. # C: O(N×depth)
-fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>) {
+/// Commit a whole-namespace path rewrite (pivot_root): re-root the ns, then
+/// for each mount mutate its position in place and rebuild the ns index (links
+/// + crossings + hash) by identity. Mounts listed in `preserve` (the new root's
+/// own subtree) KEEP their existing mountpoint dentry — they live INSIDE the
+/// moved filesystems and travel unchanged (Linux `copy_tree`); only their
+/// rendered path is re-based. Re-deriving their dentry by a global-path
+/// `descend` was the 203/EXEC bug: a bind/clone submount's `s_root` is a
+/// DISTINCT dentry the global-root descent NEVER reaches, so the descent
+/// re-seated the crossing onto the OLD tree's dentry — after the executor's
+/// `pivot_root` the relocated `/usr`,`/lib64` were unreachable from the new
+/// root, so `execve(/usr/lib/systemd/systemd-udevd)` ENOENT'd → status 203.
+/// Mounts OUTSIDE the new-root subtree (the old root + its tree, relocated
+/// under `put_old`) are still reachable from the global root, so their position
+/// is materialised by `descend`. # C: O(N×depth)
+fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>, preserve: &[u64]) {
     let mounts = mounts_in_ns(ns);
     for m in mounts.iter() { if let Some(d) = m.mountpoint() { d.set_mounted_mount(ns, None); } }
     if let Some(rid) = new_root_id { mntns::ns_set_root(ns, rid); }
     let root = global_root();
     let dents: Vec<(u64, String, Option<Arc<Dentry>>)> = new_paths.iter().map(|(id, p)| {
         let is_root = Some(*id) == new_root_id;
-        let d = if is_root { None } else { root.as_ref().and_then(|r| descend(r, p)) };
+        let d = if is_root { None }
+                else if preserve.contains(id) { mount_by_id(*id).and_then(|m| m.mountpoint()) }
+                else { root.as_ref().and_then(|r| descend(r, p)) };
         (*id, p.clone(), d)
     }).collect();
     for m in mounts.iter() {
@@ -627,6 +670,10 @@ pub(super) fn put_super_if_last(sb: &Arc<SuperBlock>) {
 /// balanced by exactly one [`mntput`]. # C: O(1)
 pub fn mntget(m: &Arc<Mount>) {
     m.mnt_count.fetch_add(1, Ordering::AcqRel);
+    // A fresh pin = the mount is in use again: reset its expiry grace so a
+    // pending [`mark_mounts_for_expiry`] sweep does not reap it (Linux clears
+    // `mnt_expiry_mark` when a mount is referenced).
+    m.mnt_internal_flags.fetch_and(!MNT_EXPIRE_MARK, Ordering::AcqRel);
 }
 
 /// `mntput` (Linux `mntput_no_expire`): drop a long-lived reference taken by
@@ -670,6 +717,10 @@ pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
             0, m.root.clone(), new_id, to_ns,
         );
         clone.flags.store(m.flags.load(Ordering::Acquire), Ordering::Release);
+        // Linux `clone_mnt` keeps MNT_LOCKED on the copy so a child userns cannot
+        // reveal a locked submount by unmounting it; transient marks are dropped.
+        clone.mnt_internal_flags.store(
+            m.mnt_internal_flags.load(Ordering::Acquire) & MNT_LOCKED, Ordering::Release);
         let prop = Propagation::from_u8(m.propagation.load(Ordering::Acquire));
         match prop {
             Propagation::Shared => {
@@ -689,6 +740,11 @@ pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
         if m.mountpoint().is_none() { mntns::ns_set_root(to_ns, new_id); }
         MOUNTS.lock().insert(new_id, clone);
     }
+    // Account the cloned mounts into the new ns (Linux `copy_mnt_ns` sums
+    // `nr_mounts` over the copied tree). The ns COPY itself is not bounded by
+    // `sysctl_mount_max` — only later grafts are — so roll the count straight
+    // into the live `nr_mounts` (fresh ns ⇒ `pending == 0`).
+    mntns::commit_mounts(to_ns, src.len() as u64);
     rebuild_ns_index(to_ns);
     mntns::bump_gen(to_ns);
 }
@@ -711,6 +767,10 @@ pub(crate) fn reap_ns(ns: u64) {
         // free_mnt_ns → mntput → deactivate_super: drop this mount's active ref.
         put_super_if_last(&m.sb);
     }
+    // free_mnt_ns: the whole ns is gone — zero its live mount count so a stale
+    // `ns_nr_mounts` read after reap reports 0 (Linux `mnt_ns->nr_mounts` dies
+    // with the namespace).
+    mntns::dec_mounts(ns, mounts.len() as u64);
     hash_drop_ns(ns);
     mntns::bump_gen(ns);
 }
@@ -728,6 +788,19 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
     }
     let src_id = src_m.as_ref().map(|m| m.mnt_id);
     let src_mp = src_m.and_then(|m| m.mountpoint());
+    // Mirror submounts under the TARGET's mounted ROOT, not its bare mountpoint
+    // dentry: the top-level bind already covers `tgt`, and a submount's slot
+    // lives INSIDE that clone — where namei lands after crossing `tgt` (Linux
+    // `attach_recursive_mnt` grafts relative to the dest mount's root). The bare
+    // `tgt` underlay is the empty staging dir; descending it ENOENT'd `proc`,
+    // dropping the procfs clone so udevd's private-ns open of
+    // `<stage>/proc/sys/kernel/domainname` failed (step NAMESPACE 226). Fall
+    // back to the bare `tgt` subtree when the clone root can't resolve the slot
+    // (degenerate dest) so a plain-dir recursive bind still mirrors.
+    let mut tgt_base = tgt.clone();
+    while let Some(id) = tgt_base.mounted_mount(ns) {
+        match root_dentry_for_mount_id(id) { Some(sr) => tgt_base = sr, None => break }
+    }
     let snap = mounts_in_ns(ns);
     let mut n = 0;
     for m in snap.iter() {
@@ -737,7 +810,9 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
         if rel_under(&mp, Some(tgt)).is_some() { continue; }
         let Some(rel) = rel_under(&mp, src_mp.as_ref()) else { continue; };
         if rel.is_empty() { continue; }
-        let Some(new_mp) = descend(tgt, &rel) else { continue; };
+        let Some(new_mp) = descend(&tgt_base, &rel)
+            .or_else(|| if Arc::ptr_eq(&tgt_base, tgt) { None } else { descend(tgt, &rel) })
+        else { continue; };
         let root = m.root.clone().or_else(|| m.fs().root());
         if let Some(r) = root {
             if register_bind(Some(new_mp), m.fs().clone(), r).is_ok() { n += 1; }
@@ -758,12 +833,45 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
 /// exists (and a shared/singleton `s_root` descends into the underlay), so the
 /// child is orphaned and its leaf ENOENTs. # C: O(N × depth)
 pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
+    let from_m = mount_exact_at(current_ns(), from).ok_or(VfsError::Einval)?;
+    move_mount_m(from_m, to)
+}
+
+/// As [`move_mount`] but identifies the SOURCE mount by the `mnt_id` the path
+/// walk CROSSED INTO (Linux `do_move_mount` keys on `path->mnt`). The MS_MOVE
+/// source resolves THROUGH the mount being moved, landing on its (often shared)
+/// `s_root`, which `mount_exact_at` cannot map back to a mount — so systemd's
+/// `mount_move_root` (`mount(".", "/", MS_MOVE)`, the final pivot of the
+/// assembled sandbox root) got EINVAL at step NAMESPACE. # C: O(N × depth)
+pub fn move_mount_by_id(from_id: u64, to: &Arc<Dentry>) -> KResult<()> {
+    let from_m = mount_by_id(from_id).ok_or(VfsError::Einval)?;
+    if from_m.ns != current_ns() { return Err(VfsError::Einval); }
+    move_mount_m(from_m, to)
+}
+
+/// Shared MS_MOVE body for both [`move_mount`] variants. # C: O(N × depth)
+fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>) -> KResult<()> {
     let ns = current_ns();
-    let from_m = mount_exact_at(ns, from).ok_or(VfsError::Einval)?;
+    let from_id = from_m.mnt_id;
     let to_root = is_global_root(to);
+    // Linux `do_move_mount` validation (all -EINVAL). NOTE: moving ONTO `/` is
+    // NOT rejected here — systemd `mount_move_root` (`mount(new, "/", MS_MOVE)`
+    // then `chroot(".")`) depends on it, and Linux permits overmounting the
+    // root this way; only the two checks below are universal:
+    //   * cannot move the namespace ROOT mount itself (`!mnt_has_parent(old)`);
+    //   * cannot move a mount INTO its own subtree (`for(p=dest;...) if p==old`).
+    if root_mount_id(ns) == Some(from_id) { return Err(VfsError::Einval); }
+    if !to_root {
+        let mut anc = Some(parent_by_dentry(ns, to));
+        while let Some(a) = anc {
+            if a == from_id { return Err(VfsError::Einval); }
+            let Some(am) = mount_by_id(a) else { break; };
+            let p = am.parent_id.load(Ordering::Acquire);
+            anc = if p == a { None } else { Some(p) };
+        }
+    }
     if !to_root && to.mounted_mount(ns).is_some() { return Err(VfsError::Ebusy); }
     let to_abs = if to_root { String::from("/") } else { abs_string(to) };
-    let from_id = from_m.mnt_id;
     let old_mp = from_m.mountpoint();
     let old_parent = from_m.parent_id.load(Ordering::Acquire);
     let snap: Vec<Arc<Mount>> = subtree_ids(ns, from_id).iter()
@@ -837,50 +945,31 @@ pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
     Ok(())
 }
 
-/// Retune the propagation type of the mount at dentry `d` (`docs/16§6`).
-/// MS_SLAVE on a shared mount links it as a slave of its current peer group
-/// (Linux `change_mnt_propagation` → `CL_SLAVE`). # C: O(N_mounts)
-pub fn set_propagation(d: &Arc<Dentry>, kind: Propagation) -> KResult<()> {
-    let m = mount_exact_at(current_ns(), d).ok_or(VfsError::Einval)?;
-    match kind {
-        Propagation::Shared => {
-            if m.peer_group.load(Ordering::Acquire) == 0 {
-                m.peer_group.store(NEXT_PEER_GROUP.fetch_add(1, Ordering::Relaxed), Ordering::Release);
-            }
-            m.propagation.store(Propagation::Shared as u8, Ordering::Release);
-        }
-        Propagation::Slave => {
-            // Become a slave of the current peer group: pick a master from the
-            // group (another shared peer) and link master↔slave. Keep
-            // peer_group for the `master:<pg>` mountinfo render.
-            let pg = m.peer_group.load(Ordering::Acquire);
-            if pg != 0 {
-                if let Some(master) = mounts_in_ns(m.ns).into_iter().find(|p| {
-                    p.mnt_id != m.mnt_id
-                        && Propagation::from_u8(p.propagation.load(Ordering::Acquire)) == Propagation::Shared
-                        && p.peer_group.load(Ordering::Acquire) == pg
-                }) {
-                    *m.mnt_master.lock() = Arc::downgrade(&master);
-                    master.mnt_slave_list.lock().push(Arc::downgrade(&m));
-                }
-            }
-            m.propagation.store(Propagation::Slave as u8, Ordering::Release);
-        }
-        Propagation::Private | Propagation::Unbindable => {
-            m.peer_group.store(0, Ordering::Release);
-            *m.mnt_master.lock() = Weak::new();
-            m.propagation.store(kind as u8, Ordering::Release);
-        }
-    }
-    mntns::bump_gen(m.ns);
-    Ok(())
-}
-
 /// Update the per-mount MNT_* option bits on the mount at dentry `d`. Setting
 /// MNT_RDONLY while writers are active fails with EBUSY (Linux
 /// `mnt_hold_writers`). # C: O(log N)
 pub fn remount_flags(d: &Arc<Dentry>, flags: u64) -> KResult<()> {
     let m = mount_exact_at(current_ns(), d).ok_or(VfsError::Einval)?;
+    apply_remount(&m, flags)
+}
+
+/// As [`remount_flags`] but identifies the mount by the `mnt_id` the path walk
+/// CROSSED INTO (Linux `do_reconfigure_mnt` keys on `path->mnt`, not a
+/// re-derived dentry). The MS_REMOUNT walk follows the mount at its final
+/// component, so the resolved dentry is the mounted-fs ROOT — which
+/// `mount_exact_at` cannot map back to a mount (a root is not a mountpoint) and
+/// a pseudo-fs `s_root` is SHARED across instances. The crossed-into `mnt_id`
+/// is unambiguous: systemd's `ProtectKernelTunables=` RO-remount of the sandbox
+/// `/proc/sys` bind then succeeds instead of EINVAL (step NAMESPACE status=226
+/// once the procfs replication exposed the remount). # C: O(log N)
+pub fn remount_flags_by_id(mnt_id: u64, flags: u64) -> KResult<()> {
+    let m = mount_by_id(mnt_id).ok_or(VfsError::Einval)?;
+    if m.ns != current_ns() { return Err(VfsError::Einval); }
+    apply_remount(&m, flags)
+}
+
+/// Shared MNT_* option update for both [`remount_flags`] variants. # C: O(1)
+fn apply_remount(m: &Arc<Mount>, flags: u64) -> KResult<()> {
     let old = m.flags.load(Ordering::Acquire);
     let new = (old & !MNT_OPTION_MASK) | (flags & MNT_OPTION_MASK);
     if (new & MNT_RDONLY) != 0 && (old & MNT_RDONLY) == 0 && m.mnt_writers.load(Ordering::Acquire) > 0 {
@@ -902,13 +991,23 @@ pub fn mnt_want_write(m: &Mount) -> KResult<()> {
 /// `mnt_drop_write` (Linux): end a write begun by `mnt_want_write`. # C: O(1)
 pub fn mnt_drop_write(m: &Mount) { m.mnt_writers.fetch_sub(1, Ordering::AcqRel); }
 
+/// `check_mnt` (Linux `fs/namespace.c`): true iff mount `m` belongs to the
+/// CALLER's mount namespace. The uniform guard that keeps a by-id / by-fd /
+/// resolved mount handle from operating across a namespace boundary — every
+/// mount-tree op handed a mount the caller did not freshly resolve in its own
+/// ns must gate on it before acting. # C: O(1)
+pub fn check_mnt(m: &Mount) -> bool { m.ns == current_ns() }
+
 /// The mount that OWNS `path`, by dentry-identity crossing (Linux
-/// `path_lookup`), NOT a longest-`mount_point` string scan. # C: O(components)
+/// `path_lookup`), NOT a longest-`mount_point` string scan. A walk that lands
+/// on a mount in ANOTHER namespace is rejected (Linux `check_mnt`): the caller
+/// sees only its own ns's tree, so the result falls back to the caller's root
+/// mount, never the foreign mount. # C: O(components)
 pub fn resolve_mount(path: &str) -> Option<(Arc<Mount>, String)> {
     let ns = current_ns();
     let id = crate::namei::walk_to_mount(path).or_else(|| root_mount_id(ns))?;
     let m = mount_by_id(id)?;
-    if m.ns != ns { return root_mount_id(ns).and_then(mount_by_id).map(|r| (r, path.to_string())); }
+    if !check_mnt(&m) { return root_mount_id(ns).and_then(mount_by_id).map(|r| (r, path.to_string())); }
     Some((m, path.to_string()))
 }
 

@@ -8,7 +8,7 @@
 use alloc::sync::Arc;
 
 use crate::io_uring::{
-    IoUringInode, MAX_ENTRIES, OFF_CQ_HDR, OFF_CQ_RING, OFF_SQ_HDR, OFF_SQ_RING,
+    make_io_uring_inode, IoUringInode, MAX_ENTRIES, OFF_CQ_HDR, OFF_CQ_RING, OFF_SQ_HDR, OFF_SQ_RING,
 };
 
 /// `sys_io_uring_setup(entries, *params)` — slot 425.
@@ -55,7 +55,7 @@ pub fn sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let inode_ref: vfs::InodeRef = inode as vfs::InodeRef;
+    let inode_ref: vfs::InodeRef = make_io_uring_inode(inode);
     let dentry = Dentry::new(None, "[io_uring]".to_string(), inode_ref.clone());
     let file = File::new(inode_ref, dentry, OpenFlags::O_RDWR);
     match fdt.alloc(file) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
