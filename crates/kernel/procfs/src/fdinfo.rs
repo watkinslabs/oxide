@@ -15,7 +15,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{default_inode_ops, mk_mode, DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 /// `i_private` for the `/proc/{self|<pid>}/fdinfo` directory. Same readdir
 /// set as `/proc/<pid>/fd` (one entry per live fd); `lookup(<n>)` returns a
@@ -46,20 +46,20 @@ impl InodeOps for FdInfoDirOps {
 /// `i_fop` for the fdinfo directory — readdir enumerates the live fds.
 struct FdInfoDirFileOps;
 impl FileOps for FdInfoDirFileOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<ProcFdInfoDirInode>().ok_or(VfsError::Einval)?;
         let task = match d.tid_opt {
             None    => sched::live::current().and_then(|c|
                             sched::live::registry::lookup(c.tid)),
             Some(t) => sched::live::registry::lookup(t),
         };
-        let task = match task { Some(t) => t, None => return Ok(off) };
+        let task = match task { Some(t) => t, None => return Ok(()) };
         // SAFETY: sole reader; single-mutator per `13§5`.
         let fdt = match unsafe { task.fd_table_ref() } {
-            Some(t) => t.clone(), None => return Ok(off),
+            Some(t) => t.clone(), None => return Ok(()),
         };
         let fds = fdt.live_fds();
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < fds.len() {
             let next = idx as u64 + 1;
             let fd = fds[idx];
@@ -69,10 +69,10 @@ impl FileOps for FdInfoDirFileOps {
             buf[..n].reverse();
             let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
             let ino = inode.lookup(s).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, s, FileType::Regular) { return Ok(next); }
+            if !ctx.emit(s, ino, FileType::Regular, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 

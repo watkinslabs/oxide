@@ -16,7 +16,7 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use core::fmt::Write as _;
-use vfs::{mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 /// Live online-CPU count, clamped to a real range.
 fn ncpu() -> usize {
@@ -82,8 +82,8 @@ impl InodeOps for SysCpuRootOps {
     fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> { root_lookup(name) }
 }
 impl FileOps for SysCpuRootOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
-        let mut idx = off as usize;
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let mut idx = ctx.pos as usize;
         let n = ncpu();
         let total = ROOT_FILES.len() + n;
         while idx < total {
@@ -99,12 +99,12 @@ impl FileOps for SysCpuRootOps {
                 ft = FileType::Directory;
             }
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, name, ft) {
-                return Ok(next);
+            if !ctx.emit(name, ino, ft, next) {
+                return Ok(());
             }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 
@@ -143,8 +143,8 @@ impl InodeOps for SysCpuNOps {
     }
 }
 impl FileOps for SysCpuNOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
-        let mut idx = off as usize;
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let mut idx = ctx.pos as usize;
         let total = CPUN_FILES.len() + 1; // + topology dir
         while idx < total {
             let next = idx as u64 + 1;
@@ -154,12 +154,12 @@ impl FileOps for SysCpuNOps {
                 ("topology", FileType::Directory)
             };
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, name, ft) {
-                return Ok(next);
+            if !ctx.emit(name, ino, ft, next) {
+                return Ok(());
             }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 
@@ -217,17 +217,17 @@ impl InodeOps for SysCpuTopologyOps {
     }
 }
 impl FileOps for SysCpuTopologyOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
-        let mut idx = off as usize;
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let mut idx = ctx.pos as usize;
         while idx < TOPO_FILES.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup(TOPO_FILES[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, TOPO_FILES[idx], FileType::Regular) {
-                return Ok(next);
+            if !ctx.emit(TOPO_FILES[idx], ino, FileType::Regular, next) {
+                return Ok(());
             }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 

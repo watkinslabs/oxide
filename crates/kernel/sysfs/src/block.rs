@@ -25,7 +25,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use vfs::{mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 use crate::{make_body_inode, DIR_PERM};
 
@@ -74,16 +74,16 @@ impl InodeOps for SysBlockOps {
     }
 }
 impl FileOps for SysBlockOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let disks = block::registry::snapshot();
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < disks.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup(&disks[idx].name).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, &disks[idx].name, FileType::Directory) { return Ok(next); }
+            if !ctx.emit(&disks[idx].name, ino, FileType::Directory, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 fn make_sys_block_inode() -> InodeRef {
@@ -107,21 +107,21 @@ impl InodeOps for DiskDirOps {
     }
 }
 impl FileOps for DiskDirOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
-        let mut idx = off as usize;
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let mut idx = ctx.pos as usize;
         while idx < DISK_ATTRS.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup(DISK_ATTRS[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, DISK_ATTRS[idx], FileType::Regular) { return Ok(next); }
+            if !ctx.emit(DISK_ATTRS[idx], ino, FileType::Regular, next) { return Ok(()); }
             idx += 1;
         }
         if idx == DISK_ATTRS.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup("queue").map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, "queue", FileType::Directory) { return Ok(next); }
+            if !ctx.emit("queue", ino, FileType::Directory, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 fn make_disk_dir_inode(name: String) -> InodeRef {
@@ -145,15 +145,15 @@ impl InodeOps for QueueDirOps {
     }
 }
 impl FileOps for QueueDirOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
-        let mut idx = off as usize;
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let mut idx = ctx.pos as usize;
         while idx < QUEUE_ATTRS.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup(QUEUE_ATTRS[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, QUEUE_ATTRS[idx], FileType::Regular) { return Ok(next); }
+            if !ctx.emit(QUEUE_ATTRS[idx], ino, FileType::Regular, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 fn make_queue_dir_inode(name: String) -> InodeRef {
