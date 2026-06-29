@@ -53,6 +53,13 @@ pub struct Inode {
     /// preallocated files. Drives `st_blocks` (`getattr`) exactly as Linux
     /// `ext4_getattr`, not the size-derived `blocks_for` estimate.
     pub i_blocks:    u64,
+    /// Owner uid: `i_uid` @0x02 (low u16) merged with `l_i_uid_high` @0x78
+    /// (osd2 high u16). fs-domain id (Linux `i_uid`); the mount idmap maps it
+    /// out at `getattr`. Drives `st_uid`.
+    pub uid:         u32,
+    /// Owner gid: `i_gid` @0x18 (low u16) merged with `l_i_gid_high` @0x7A
+    /// (osd2 high u16). Drives `st_gid`.
+    pub gid:         u32,
     /// Inline extent tree root + leaves (60 bytes verbatim).
     pub i_block:     [u8; I_BLOCK_LEN],
 }
@@ -83,11 +90,19 @@ impl Inode {
         // feature. For v1 we just merge it unconditionally — a
         // zero high half is harmless on small files.
         let size_hi = u32::from_le_bytes([buf[0x6C], buf[0x6D], buf[0x6E], buf[0x6F]]) as u64;
+        // Owner ids: low u16 (0x02/0x18) merged with osd2 high u16 (0x78/0x7A).
+        // 0x7A..0x7C lies inside even a 128-byte inode, so always in range.
+        let uid = u16::from_le_bytes([buf[0x02], buf[0x03]]) as u32
+                | ((u16::from_le_bytes([buf[0x78], buf[0x79]]) as u32) << 16);
+        let gid = u16::from_le_bytes([buf[0x18], buf[0x19]]) as u32
+                | ((u16::from_le_bytes([buf[0x7A], buf[0x7B]]) as u32) << 16);
         Ok(Inode {
             mode,
             size: size_lo | (size_hi << 32),
             links_count: links,
             i_blocks,
+            uid,
+            gid,
             i_block,
         })
     }
@@ -394,6 +409,23 @@ mod tests {
         assert!(ino.is_reg());
         assert_eq!(ino.size, big);
         assert_eq!(ino.links_count, 1);
+    }
+
+    #[test]
+    fn parse_owner_merges_low_and_high_words() {
+        // uid/gid persisted as low u16 (0x02/0x18) + osd2 high u16 (0x78/0x7A);
+        // parse must merge both halves (ids > 65535 round-trip).
+        let sb = fake_sb_inode_size(256);
+        let mut buf = make_inode_buf(256, S_IFREG | 0o644, 0, 1, [0u8; I_BLOCK_LEN]);
+        let uid: u32 = 0x0001_2345; // hi=1, lo=0x2345
+        let gid: u32 = 0x0002_BEEF; // hi=2, lo=0xBEEF
+        buf[0x02..0x04].copy_from_slice(&((uid & 0xFFFF) as u16).to_le_bytes());
+        buf[0x18..0x1A].copy_from_slice(&((gid & 0xFFFF) as u16).to_le_bytes());
+        buf[0x78..0x7A].copy_from_slice(&((uid >> 16) as u16).to_le_bytes());
+        buf[0x7A..0x7C].copy_from_slice(&((gid >> 16) as u16).to_le_bytes());
+        let ino = Inode::parse(&buf, &sb).expect("parse");
+        assert_eq!(ino.uid, uid);
+        assert_eq!(ino.gid, gid);
     }
 
     #[test]
