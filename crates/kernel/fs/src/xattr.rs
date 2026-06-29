@@ -168,7 +168,13 @@ fn write_user_bytes(p: u64, src: &[u8]) -> Result<(), i64> {
     Ok(())
 }
 
-fn resolve_path_inode(p: u64) -> Result<InodeRef, i64> {
+/// Resolve a user path pointer to its inode. `follow=false` (the l-variants:
+/// lsetxattr/lgetxattr/llistxattr/lremovexattr) does NOT follow a trailing
+/// symlink — it operates on the symlink's own inode. INTERMEDIATE symlinks are
+/// always followed. D26-fs: a lexical-normalization miss is `ENOENT`, never a
+/// nondeterministic raw-string fallback.
+/// # C: O(path components) + O(symlinks)
+fn resolve_path_inode(p: u64, follow: bool) -> Result<InodeRef, i64> {
     if p == 0 || p >= hal::USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
     }
@@ -176,16 +182,33 @@ fn resolve_path_inode(p: u64) -> Result<InodeRef, i64> {
     let bytes = unsafe { devfs::read_user_cstr(p, 256) };
     let s = bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() })
         .ok_or(-(Errno::Einval.as_i32() as i64))?;
+    resolve_str_inode(s, follow)
+}
+
+/// Path-string → inode (the user-pointer hop already done). Split out so the
+/// follow / no-follow resolution is unit-testable without a user VA.
+/// # C: O(path components) + O(symlinks)
+fn resolve_str_inode(s: &str, follow: bool) -> Result<InodeRef, i64> {
+    let enoent = || -(Errno::Enoent.as_i32() as i64);
     let resolved = if s.starts_with('/') {
-        vfs::path::lexical_normalize(s).unwrap_or_else(|| s.into())
+        vfs::path::lexical_normalize(s).ok_or_else(enoent)?
     } else if let Some(cur) = sched::current() {
         // SAFETY: current task is the sole writer of its cwd slot on this CPU.
         let cwd = unsafe { (*cur.cwd.get()).clone() };
-        vfs::path::resolve_against_cwd(&cwd, s).unwrap_or_else(|| s.into())
+        vfs::path::resolve_against_cwd(&cwd, s).ok_or_else(enoent)?
     } else {
-        s.into()
+        String::from(s)
     };
-    vfs::mount::lookup(&resolved).map_err(|_| -(Errno::Enoent.as_i32() as i64))
+    if follow {
+        return vfs::mount::lookup(&resolved).map_err(|_| enoent());
+    }
+    // No-follow (l-variant): per-component walk with `no_follow_final` so the
+    // trailing symlink is returned as-is rather than dereferenced.
+    let root = vfs::namei::root_dentry().ok_or_else(enoent)?;
+    let flags = vfs::LookupFlags { no_follow_final: true, ..Default::default() };
+    vfs::namei::path_lookup_path(root.clone(), root, &resolved, flags)
+        .map(|vp| vp.inode)
+        .map_err(|_| enoent())
 }
 
 fn resolve_fd_inode(fd: i32) -> Result<InodeRef, i64> {
@@ -282,9 +305,10 @@ pub fn query_into(inode: &InodeRef, name: &str, buf: &mut [u8]) -> bool {
 }
 
 /// `sys_setxattr / lsetxattr` (slots 188/189). path / name / value / size / flags.
+/// `follow=false` for the l-variant (no trailing-symlink deref).
 /// # C: O(N_xattrs)
-pub fn sys_setxattr(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_path_inode(args.a0) { Ok(i) => i, Err(rv) => return rv };
+pub fn sys_setxattr(args: &SyscallArgs, follow: bool) -> i64 {
+    let inode = match resolve_path_inode(args.a0, follow) { Ok(i) => i, Err(rv) => return rv };
     let name  = match read_user_cstr_owned(args.a1, 256) { Ok(s) => s, Err(rv) => return rv };
     let value = match read_user_bytes(args.a2, args.a3 as usize) { Ok(v) => v, Err(rv) => return rv };
     do_set(&inode, name, value, args.a4 as u32)
@@ -300,9 +324,10 @@ pub fn sys_fsetxattr(args: &SyscallArgs) -> i64 {
 }
 
 /// `sys_getxattr / lgetxattr` (slots 191/192). path / name / value / size.
+/// `follow=false` for the l-variant (no trailing-symlink deref).
 /// # C: O(N_xattrs)
-pub fn sys_getxattr(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_path_inode(args.a0) { Ok(i) => i, Err(rv) => return rv };
+pub fn sys_getxattr(args: &SyscallArgs, follow: bool) -> i64 {
+    let inode = match resolve_path_inode(args.a0, follow) { Ok(i) => i, Err(rv) => return rv };
     let name  = match read_user_cstr_owned(args.a1, 256) { Ok(s) => s, Err(rv) => return rv };
     do_get(&inode, &name, args.a2, args.a3 as usize)
 }
@@ -316,9 +341,10 @@ pub fn sys_fgetxattr(args: &SyscallArgs) -> i64 {
 }
 
 /// `sys_listxattr / llistxattr` (slots 194/195). path / list / size.
+/// `follow=false` for the l-variant (no trailing-symlink deref).
 /// # C: O(N_xattrs)
-pub fn sys_listxattr(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_path_inode(args.a0) { Ok(i) => i, Err(rv) => return rv };
+pub fn sys_listxattr(args: &SyscallArgs, follow: bool) -> i64 {
+    let inode = match resolve_path_inode(args.a0, follow) { Ok(i) => i, Err(rv) => return rv };
     do_list(&inode, args.a1, args.a2 as usize)
 }
 
@@ -330,9 +356,10 @@ pub fn sys_flistxattr(args: &SyscallArgs) -> i64 {
 }
 
 /// `sys_removexattr / lremovexattr` (slots 197/198). path / name.
+/// `follow=false` for the l-variant (no trailing-symlink deref).
 /// # C: O(N_xattrs)
-pub fn sys_removexattr(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_path_inode(args.a0) { Ok(i) => i, Err(rv) => return rv };
+pub fn sys_removexattr(args: &SyscallArgs, follow: bool) -> i64 {
+    let inode = match resolve_path_inode(args.a0, follow) { Ok(i) => i, Err(rv) => return rv };
     let name  = match read_user_cstr_owned(args.a1, 256) { Ok(s) => s, Err(rv) => return rv };
     do_remove(&inode, &name)
 }
@@ -350,14 +377,20 @@ pub fn sys_fremovexattr(args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn xattr_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
     use syscall::nrs::*;
+    // l-variants (LSETXATTR/LGETXATTR/LLISTXATTR/LREMOVEXATTR) resolve with
+    // `follow=false` so a trailing symlink is operated on directly (D44).
     let rv = match nr {
-        NR_SETXATTR | NR_LSETXATTR  => sys_setxattr(args),
+        NR_SETXATTR                 => sys_setxattr(args, true),
+        NR_LSETXATTR                => sys_setxattr(args, false),
         NR_FSETXATTR                => sys_fsetxattr(args),
-        NR_GETXATTR | NR_LGETXATTR  => sys_getxattr(args),
+        NR_GETXATTR                 => sys_getxattr(args, true),
+        NR_LGETXATTR                => sys_getxattr(args, false),
         NR_FGETXATTR                => sys_fgetxattr(args),
-        NR_LISTXATTR | NR_LLISTXATTR => sys_listxattr(args),
+        NR_LISTXATTR                => sys_listxattr(args, true),
+        NR_LLISTXATTR               => sys_listxattr(args, false),
         NR_FLISTXATTR               => sys_flistxattr(args),
-        NR_REMOVEXATTR | NR_LREMOVEXATTR => sys_removexattr(args),
+        NR_REMOVEXATTR              => sys_removexattr(args, true),
+        NR_LREMOVEXATTR             => sys_removexattr(args, false),
         NR_FREMOVEXATTR             => sys_fremovexattr(args),
         _ => return None,
     };
@@ -409,4 +442,61 @@ pub fn listxattrat_on(inode: &InodeRef, args_ptr: u64, args_size: usize) -> i64 
 pub fn removexattrat_on(inode: &InodeRef, name_ptr: u64) -> i64 {
     let name = match read_user_cstr_owned(name_ptr, 256) { Ok(s) => s, Err(rv) => return rv };
     do_remove(inode, &name)
+}
+
+#[cfg(test)]
+mod lxattr_tests {
+    use super::*;
+    use alloc::boxed::Box;
+    use alloc::collections::BTreeMap;
+    use alloc::string::ToString;
+    use alloc::sync::Arc;
+    use core::any::Any;
+    use vfs::{Dentry, FileType, Inode, InodeOps, KResult, VfsError};
+    use vfs::{InodeBuilder, default_file_ops, default_inode_ops, mk_mode};
+
+    struct DirData { kids: BTreeMap<String, InodeRef> }
+    struct DirOps;
+    impl InodeOps for DirOps {
+        fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+            let d = inode.private::<DirData>().ok_or(VfsError::Enotdir)?;
+            d.kids.get(name).cloned().ok_or(VfsError::Enoent)
+        }
+    }
+    fn dir(ino: u64, kids: &[(&str, InodeRef)]) -> InodeRef {
+        let mut m = BTreeMap::new();
+        for (n, i) in kids { m.insert(n.to_string(), i.clone()); }
+        let p: Arc<dyn Any + Send + Sync> = Arc::new(DirData { kids: m });
+        InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(DirOps), default_file_ops())
+            .private(p).build()
+    }
+    fn file(ino: u64) -> InodeRef {
+        InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
+    }
+    fn sym(ino: u64, t: &str) -> InodeRef {
+        InodeBuilder::new(ino, mk_mode(FileType::Symlink, 0o777), default_inode_ops(), default_file_ops())
+            .size(t.len() as u64)
+            .link(t.as_bytes().to_vec().into_boxed_slice() as Box<[u8]>)
+            .build()
+    }
+    // /target (regular, ino 11); /sl -> target (symlink, ino 30).
+    fn build_root() -> Arc<Dentry> {
+        let root = dir(2, &[("target", file(11)), ("sl", sym(30, "target"))]);
+        Dentry::new_root(root)
+    }
+    fn provider() -> Option<Arc<Dentry>> { Some(build_root()) }
+
+    // D44: the l-variant resolution (`follow=false`) MUST return the trailing
+    // symlink's OWN inode, never the dereferenced target. The non-l variant
+    // (`follow=true`) follows through to the regular file.
+    #[test]
+    fn l_variant_does_not_follow_trailing_symlink() {
+        vfs::set_root_dentry_provider(provider);
+        let followed = resolve_str_inode("/sl", true).expect("follow resolves");
+        assert_eq!(followed.file_type(), FileType::Regular);
+        assert_eq!(followed.ino(), 11);
+        let nofollow = resolve_str_inode("/sl", false).expect("nofollow resolves");
+        assert_eq!(nofollow.file_type(), FileType::Symlink);
+        assert_eq!(nofollow.ino(), 30);
+    }
 }
