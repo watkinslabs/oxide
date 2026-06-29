@@ -11,6 +11,7 @@
 
 use alloc::string::String;
 use alloc::sync::Arc;
+use hal::USER_VA_END;
 use syscall::errno::Errno;
 use sync::{MountTable as RootClass, Spinlock};
 use vfs::fs::FileSystem;
@@ -436,6 +437,59 @@ pub fn resolve_at_result(dirfd: i32, raw: &str) -> Result<String, i64> {
 
 pub fn resolve_at(dirfd: i32, raw: &str) -> Option<String> {
     resolve_at_result(dirfd, raw).ok()
+}
+
+/// True if the user pathname at `ptr` is empty (`""`) or NULL — the
+/// AT_EMPTY_PATH probe. A NULL pointer counts as empty (Linux lets
+/// `path == NULL` stand in for `""` under AT_EMPTY_PATH); an out-of-range
+/// non-NULL pointer is NOT treated as empty so the full read below raises
+/// EFAULT. # C: O(1)
+fn at_path_empty(ptr: u64) -> bool {
+    if ptr == 0 { return true; }
+    if ptr >= USER_VA_END { return false; }
+    // SAFETY: ptr is non-NULL and below USER_VA_END (user range); a bounded
+    // one-byte probe of the caller's mapped page tests only for an empty path.
+    unsafe { devfs::read_user_cstr(ptr, 1) }.map_or(true, |b| b.is_empty())
+}
+
+/// THE centralized `*at` resolver: resolve a `(dirfd, path_ptr)` pair to its
+/// `VfsPath` honoring AT_EMPTY_PATH through the engine's LOOKUP_EMPTY
+/// (`flags.empty`) plus the trailing-symlink policy carried in `flags`
+/// (`follow` / `no_follow_final`). Replaces the per-handler `if path.is_empty()`
+/// special-casing: an EMPTY (or NULL) pathname with `flags.empty` set operates
+/// on the dirfd's own open file — its inode + mount id, ANY file type (Linux
+/// AT_EMPTY_PATH; `AT_FDCWD` → the task cwd); WITHOUT the flag an empty pathname
+/// is ENOENT (the engine `path_init` contract). A non-empty pathname is read
+/// with the full PATH_MAX errno contract (EFAULT / ENAMETOOLONG), resolved
+/// against the dirfd (`resolve_at_result`), then walked through the engine
+/// (`resolve_path_flags`) with `flags`. # C: O(components × dir-lookup)
+pub fn resolve_at_lookup(dirfd: i32, path_ptr: u64, flags: vfs::LookupFlags)
+    -> Result<vfs::VfsPath, i64>
+{
+    let ebadf = -(Errno::Ebadf.as_i32() as i64);
+    if at_path_empty(path_ptr) {
+        // LOOKUP_EMPTY gate: empty pathname is ENOENT unless AT_EMPTY_PATH.
+        if !flags.empty { return Err(-(Errno::Enoent.as_i32() as i64)); }
+        if dirfd == AT_FDCWD {
+            let cur = sched::live::current().ok_or(ebadf)?;
+            // SAFETY: cwd_vfs slot single-mutator per 13§5; current task sole writer.
+            if let Some(p) = unsafe { (*cur.cwd_vfs.get()).clone() } { return Ok(p); }
+            let dentry = root_dentry().ok_or(ebadf)?;
+            let inode = dentry.inode().ok_or(ebadf)?;
+            return Ok(vfs::VfsPath { mnt_id: 0, dentry, inode, last_component: None });
+        }
+        let cur = sched::live::current().ok_or(ebadf)?;
+        // SAFETY: running task on this CPU; sole reader of its fd_table slot.
+        let fdt = unsafe { cur.fd_table_ref() }.ok_or(ebadf)?.clone();
+        let f = fdt.get(dirfd).map_err(|_| ebadf)?;
+        return Ok(vfs::VfsPath {
+            mnt_id: f.mnt_id(), dentry: f.dentry().clone(),
+            inode: f.inode().clone(), last_component: None,
+        });
+    }
+    let raw = crate::namei_common::read_user_path(path_ptr)?;
+    let abs = resolve_at_result(dirfd, &raw)?;
+    resolve_path_flags(&abs, flags).map_err(crate::namei_common::errno_from_vfs)
 }
 
 /// Resolve `raw` against the running task's cwd. Absolute paths

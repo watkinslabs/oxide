@@ -41,7 +41,6 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
     let handle_ptr = args.a2;
     let mnt_id_ptr = args.a3;
     let flags = args.a4 as u32;
-    let einval = -(Errno::Einval.as_i32() as i64);
 
     // handle->handle_bytes is read first (caller-supplied capacity), then
     // the full header+FID is written back, so the struct must be R+W.
@@ -56,43 +55,19 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
         return -(Errno::Eoverflow.as_i32() as i64);
     }
 
-    // Resolve the target inode and the owning mount id.
-    let (inode, mount_id) = if (flags & AT_EMPTY_PATH) != 0 && !path_has_bytes(path_ptr) {
-        let cur = match sched::live::current() { Some(c) => c, None => return einval };
-        // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot per the single-mutator invariant in `13§5`.
-        let fdt = match unsafe { cur.fd_table_ref() } {
-            Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-        };
-        match fdt.get(dirfd) {
-            Ok(f) => {
-                let path_bytes = f.dentry().absolute_path();
-                let mid = core::str::from_utf8(&path_bytes).ok()
-                    .and_then(|p| vfs::mount::resolve_mount(p).map(|(m, _)| m.mnt_id as i32))
-                    .unwrap_or(1);
-                (f.inode().clone(), mid)
-            }
-            Err(_) => return -(Errno::Ebadf.as_i32() as i64),
-        }
-    } else {
-        // SAFETY: path_ptr in user range; user page mapped in caller's AS; bounded 256-byte cstr read.
-        let p = match unsafe { devfs::read_user_cstr(path_ptr, 256) } {
-            Some(p) if !p.is_empty() => p,
-            _ => return einval,
-        };
-        let raw = match core::str::from_utf8(p) { Ok(s) => s, Err(_) => return einval };
-        let resolved = match crate::pathresolve::resolve_at_result(dirfd, raw) {
-            Ok(p) => p,
-            Err(rv) => return rv,
-        };
-        // name_to_handle_at follows the final symlink only with AT_SYMLINK_FOLLOW.
-        let nofollow = (flags & AT_SYMLINK_FOLLOW) == 0;
-        let mid = vfs::mount::resolve_mount(resolved.as_str())
-            .map(|(m, _)| m.mnt_id as i32)
-            .unwrap_or(1);
-        match crate::pathresolve::resolve(resolved.as_str(), nofollow) {
-            Some(i) => (i, mid),
-            None => return -(Errno::Enoent.as_i32() as i64),
-        }
+    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty/NULL
+    // path operates on the dirfd, ENOENT without it). name_to_handle_at FOLLOWS
+    // the final symlink only with AT_SYMLINK_FOLLOW; otherwise it does not.
+    let nofollow = (flags & AT_SYMLINK_FOLLOW) == 0;
+    let lf = vfs::LookupFlags {
+        empty: (flags & AT_EMPTY_PATH) != 0,
+        no_follow_final: nofollow,
+        follow: !nofollow,
+        ..Default::default()
+    };
+    let (inode, mount_id) = match crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf) {
+        Ok(p)  => (p.inode, p.mnt_id as i32),
+        Err(rv) => return rv,
     };
 
     let fid = inode.ino().to_le_bytes();
@@ -116,16 +91,4 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
         }
     }
     0
-}
-
-/// True if `ptr` points at a non-empty C string (first byte != NUL).
-/// Used to decide AT_EMPTY_PATH (empty path ⇒ operate on dirfd).
-/// # C: O(1)
-fn path_has_bytes(ptr: u64) -> bool {
-    if ptr == 0 || ptr >= USER_VA_END { return false; }
-    // SAFETY: ptr in user range; single-byte probe of the caller's mapped page to test for an empty path.
-    match unsafe { devfs::read_user_cstr(ptr, 2) } {
-        Some(p) => !p.is_empty(),
-        None => false,
-    }
 }

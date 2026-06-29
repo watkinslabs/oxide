@@ -98,7 +98,10 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
                 None => return -(Errno::Ebadf.as_i32() as i64),
             }
         } else {
-            match crate::pathresolve::resolve_path_result(&t, false) {
+            // AT_SYMLINK_FOLLOW: explicitly FOLLOW the trailing symlink
+            // (LOOKUP_FOLLOW) so the resolved target inode is linked.
+            let lf = vfs::LookupFlags { follow: true, ..Default::default() };
+            match crate::pathresolve::resolve_path_flags(&t, lf) {
                 Ok(p) => p.inode,
                 Err(e) => return errno_from_vfs(e),
             }
