@@ -119,8 +119,9 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         write_ts(80,  st.btime_ns);   // 0 when STATX_BTIME absent in stx_mask
         write_ts(96,  st.ctime_ns);
         write_ts(112, st.mtime_ns);
-        core::ptr::write_unaligned((buf + 128)     as *mut u32, (rdev >> 8)  & 0xfff);                // stx_rdev_major
-        core::ptr::write_unaligned((buf + 132)     as *mut u32,  rdev        & 0xff);                 // stx_rdev_minor
+        let rdevt = vfs::Devt::from_raw(rdev);
+        core::ptr::write_unaligned((buf + 128)     as *mut u32, rdevt.major());                        // stx_rdev_major
+        core::ptr::write_unaligned((buf + 132)     as *mut u32, rdevt.minor());                        // stx_rdev_minor (full 12:20 split)
         core::ptr::write_unaligned((buf + 136)     as *mut u32, crate::namei_common::dev_major(dev)); // stx_dev_major
         core::ptr::write_unaligned((buf + 140)     as *mut u32, crate::namei_common::dev_minor(dev)); // stx_dev_minor
         core::ptr::write_unaligned((buf + 144)     as *mut u64, mnt_id);                              // stx_mnt_id
