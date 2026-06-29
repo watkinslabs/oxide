@@ -253,34 +253,22 @@ pub struct SuperBlock {
     /// `SuperOps`/`FileSystemType` do not. The mount table reaches the
     /// backend through `sb.fs()`. `NullFs` for an `s_fs`-less test SB.
     s_fs: Arc<dyn FileSystem>,
-    /// Per-instance inode cache (`iget`/`ilookup`/`iput`) keyed by `ino`.
-    /// Each slot is an [`IcacheEntry`] carrying a `Weak` to the inode (so it
-    /// reclaims when its last `Arc` drops), the inode's `i_dentry` ALIAS list
-    /// (the dentries pointing at this inode, Linux `inode->i_dentry`), and
-    /// the `i_state` lifecycle bits — all kept icache-side so the trait-object
-    /// inodes need no shared state block.
+    /// Per-instance inode cache (`iget`/`ilookup`/`iput`) keyed by `ino`. Each
+    /// [`IcacheEntry`] is a `Weak<Inode>` + the inode's `i_dentry` ALIAS list;
+    /// the lifecycle state (`i_state`/`i_count`/`__i_nlink`) lives on the
+    /// concrete inode itself (post-KEYSTONE), not in the slot.
     icache: Spinlock<BTreeMap<Ino, IcacheEntry>, SbClass>,
 }
 
-/// One inode-cache slot. `Weak` everywhere so the cache never keeps an inode
-/// or dentry alive past its last strong ref (Linux dcache/icache are weak
-/// w.r.t. their objects). A stale slot (dead inode + no live aliases) is
-/// reclaimed on the next touch.
+/// One inode-cache slot. `Weak` everywhere so the cache never keeps an inode or
+/// dentry alive past its last strong ref. The lifecycle state Linux keeps on
+/// `struct inode` (`i_state`/`__i_nlink`/`i_count`) now lives IN the concrete
+/// [`crate::inode::Inode`] — this slot is a pure `Weak<Inode>` + alias list.
 struct IcacheEntry {
     /// The cached inode (Linux `struct inode`). `Weak` → reclaim on last drop.
-    inode:   Weak<dyn Inode>,
-    /// `i_dentry` — the dentry aliases for this inode (hardlinks share one
-    /// inode, many dentries). `Weak` so `d_drop` / dentry teardown reclaims.
+    inode:   Weak<Inode>,
+    /// `i_dentry` — the dentry aliases (hardlinks: one inode, many dentries).
     aliases: Vec<Weak<Dentry>>,
-    /// `i_state` (`I_NEW`/`I_DIRTY`/`I_FREEING`).
-    state:   u32,
-    /// `i_nlink` (Linux `inode->__i_nlink`) — the inode's authoritative hard-link
-    /// count. The trait-object inode carries no shared count field, so the live
-    /// link count lives icache-side here, seeded from `Inode::nlink()` when the
-    /// slot is built and thereafter maintained by `set_nlink`/`inc_nlink`/
-    /// `drop_nlink`. A drop to `0` is the Linux "no names left → evict on last
-    /// `iput`" predicate (`i_nlink == 0`).
-    nlink:   u32,
 }
 
 impl SuperBlock {
@@ -384,40 +372,54 @@ impl SuperBlock {
     /// half-evicted object, so a freeing slot reads as a miss here too.
     /// # C: O(log N_ino)
     pub fn ilookup(&self, ino: Ino) -> Option<InodeRef> {
-        let c = self.icache.lock();
-        let e = c.get(&ino)?;
-        if e.state & (I_FREEING | I_WILL_FREE) != 0 { return None; }
-        e.inode.upgrade()
+        let i = self.icache_upgrade(ino)?;
+        if i.is_freeing() { return None; }
+        Some(i)
     }
 
-    /// `iget` — cache hit (SAME `Arc` → shared inode identity), else build via
-    /// the backend closure and cache a `Weak`. The build-miss slot is created
-    /// with `I_NEW` then immediately cleared (Linux `unlock_new_inode`); a
-    /// concurrent `ilookup` upgrades the fully-built `Arc` and wins. A slot
-    /// whose `Weak` went stale (existing aliases all dead too) is replaced.
+    /// Upgrade the icache `Weak` for `ino` UNCONDITIONALLY (dying slots too) —
+    /// the raw accessor behind the per-ino `i_state`/`i_nlink` helpers. # C: O(log N_ino)
+    fn icache_upgrade(&self, ino: Ino) -> Option<InodeRef> {
+        self.icache.lock().get(&ino).and_then(|e| e.inode.upgrade())
+    }
+
+    /// `iget` — cache hit (SAME `Arc`, `igrab` bumps `i_count`), else `build()`
+    /// a fresh `Arc<Inode>` (born `i_count == 1`) and cache a `Weak`. The
+    /// build-miss inode is published with `I_NEW` then cleared (Linux
+    /// `unlock_new_inode`); a concurrent `ilookup` upgrades the built `Arc` and
+    /// wins. A stale/dying slot (`I_FREEING`/`I_WILL_FREE`) is rebuilt over.
     /// # C: O(log N_ino)
     pub fn iget(&self, ino: Ino, build: impl FnOnce() -> InodeRef) -> InodeRef {
-        if let Some(i) = self.ilookup(ino) { return i; }
+        if let Some(i) = self.ilookup(ino) { i.igrab(); return i; }
         let inode = build();
+        inode.set_state(I_NEW, 0);
         let mut c = self.icache.lock();
         if let Some(e) = c.get(&ino) {
-            // A dying slot (`I_FREEING`/`I_WILL_FREE`) is past resurrection
-            // (Linux `find_inode_fast` skips it); rebuild over it instead of
-            // handing back the half-evicted inode.
-            if e.state & (I_FREEING | I_WILL_FREE) == 0 {
-                if let Some(existing) = e.inode.upgrade() { return existing; }
+            if let Some(existing) = e.inode.upgrade() {
+                if !existing.is_freeing() { existing.igrab(); return existing; }
             }
         }
-        // Preserve any still-live aliases recorded against this ino while the
-        // inode was momentarily un-cached; they re-bind to the rebuilt inode.
+        // Preserve still-live aliases recorded while the inode was un-cached.
         let aliases = c.get(&ino).map(|e| {
             e.aliases.iter().filter(|w| w.upgrade().is_some()).cloned().collect::<Vec<_>>()
         }).unwrap_or_default();
-        c.insert(ino, IcacheEntry {
-            inode: Arc::downgrade(&inode), aliases, state: I_NEW, nlink: inode.nlink(),
-        });
-        if let Some(e) = c.get_mut(&ino) { e.state &= !I_NEW; } // unlock_new_inode
+        c.insert(ino, IcacheEntry { inode: Arc::downgrade(&inode), aliases });
+        inode.set_state(0, I_NEW); // unlock_new_inode
         inode
+    }
+
+    /// `iput` (Linux `fs/inode.c`) — drop one `i_count` reference. On the LAST
+    /// drop (1 → 0): flush dirty state, mark `I_WILL_FREE` → `I_FREEING`, run
+    /// `clear_inode`, and drop the icache `Weak` so a later `iget` rebuilds.
+    /// # C: O(log N_ino)
+    pub fn iput(&self, inode: InodeRef) {
+        if inode.i_count_dec() != 1 { return; }
+        let ino = inode.ino();
+        inode.set_state(I_WILL_FREE, 0);
+        let _ = self.sync_fs(false); // writeback-if-dirty
+        inode.set_state(I_FREEING, I_WILL_FREE);
+        inode.set_state(I_FREEING | I_CLEAR, I_DIRTY); // clear_inode
+        self.icache.lock().remove(&ino);
     }
 
     /// `iput`/reclaim hook — drop a cache slot whose inode is gone.
@@ -454,14 +456,12 @@ impl SuperBlock {
     /// `i_state` bits for `ino` (`I_NEW`/`I_DIRTY`/`I_FREEING`); `0` if not
     /// cached. # C: O(log N_ino)
     pub fn i_state(&self, ino: Ino) -> u32 {
-        self.icache.lock().get(&ino).map(|e| e.state).unwrap_or(0)
+        self.icache_upgrade(ino).map(|i| i.i_state()).unwrap_or(0)
     }
 
     /// Set/clear `i_state` bits for `ino` (no-op if uncached). # C: O(log N_ino)
     pub fn i_set_state(&self, ino: Ino, set: u32, clear: u32) {
-        if let Some(e) = self.icache.lock().get_mut(&ino) {
-            e.state = (e.state & !clear) | set;
-        }
+        if let Some(i) = self.icache_upgrade(ino) { i.set_state(set, clear); }
     }
 
     /// True iff `ino` is being evicted — Linux's pervasive
@@ -480,7 +480,7 @@ impl SuperBlock {
     /// (`i_nlink == 0`): the inode has no remaining names and is freed on its
     /// last `iput`. # C: O(log N_ino)
     pub fn i_nlink(&self, ino: Ino) -> Option<u32> {
-        self.icache.lock().get(&ino).map(|e| e.nlink)
+        self.icache_upgrade(ino).map(|i| i.nlink())
     }
 
     /// True iff `ino` is an eviction candidate — cached with `i_nlink == 0`
@@ -495,14 +495,14 @@ impl SuperBlock {
     /// directly installs the count, including the legitimate `0 → 1` revival some
     /// filesystems perform. No-op if uncached. # C: O(log N_ino)
     pub fn set_nlink(&self, ino: Ino, nlink: u32) {
-        if let Some(e) = self.icache.lock().get_mut(&ino) { e.nlink = nlink; }
+        if let Some(i) = self.icache_upgrade(ino) { i.set_nlink(nlink); }
     }
 
     /// `inc_nlink` (Linux fs/inode.c): add one hard link to `ino`'s stored count,
     /// reviving a `0`-count inode (the O_TMPFILE `linkat` `I_LINKABLE` case). The
     /// count saturates rather than wrapping. No-op if uncached. # C: O(log N_ino)
     pub fn inc_nlink(&self, ino: Ino) {
-        if let Some(e) = self.icache.lock().get_mut(&ino) { e.nlink = e.nlink.saturating_add(1); }
+        if let Some(i) = self.icache_upgrade(ino) { i.inc_nlink(); }
     }
 
     /// `drop_nlink` (Linux fs/inode.c): remove one hard link from `ino`'s stored
@@ -511,7 +511,7 @@ impl SuperBlock {
     /// underflowing (Linux WARNs on a drop below zero; the count never wraps).
     /// No-op if uncached. # C: O(log N_ino)
     pub fn drop_nlink(&self, ino: Ino) {
-        if let Some(e) = self.icache.lock().get_mut(&ino) { e.nlink = e.nlink.saturating_sub(1); }
+        if let Some(i) = self.icache_upgrade(ino) { i.drop_nlink(); }
     }
 
     /// `mark_inode_dirty` (Linux `__mark_inode_dirty`): OR the requested
@@ -538,7 +538,7 @@ impl SuperBlock {
         let ino = inode.ino();
         let mut c = self.icache.lock();
         let e = c.entry(ino).or_insert_with(|| IcacheEntry {
-            inode: Arc::downgrade(inode), aliases: Vec::new(), state: 0, nlink: inode.nlink(),
+            inode: Arc::downgrade(inode), aliases: Vec::new(),
         });
         if e.inode.upgrade().is_none() { e.inode = Arc::downgrade(inode); }
         e.aliases.retain(|w| match w.upgrade() { Some(a) => !Arc::ptr_eq(&a, d), None => false });
@@ -896,9 +896,10 @@ impl SuperBlock {
         let mut dropped = 0u32;
         self.icache.lock().retain(|_, e| {
             e.aliases.retain(|w| w.upgrade().is_some());
-            let busy = e.inode.upgrade().is_some();
-            let pinned = e.state & (I_DIRTY | I_NEW | I_FREEING | I_WILL_FREE) != 0;
-            if busy || pinned { true } else { dropped += 1; false }
+            // Reclaimable = the inode's last `Arc` already dropped (Linux
+            // `i_count == 0`); a live inode is BUSY (its `i_state` carries any
+            // dirty/in-flight pin), a dead `Weak` cannot be dirty.
+            if e.inode.upgrade().is_some() { true } else { dropped += 1; false }
         });
         dropped
     }

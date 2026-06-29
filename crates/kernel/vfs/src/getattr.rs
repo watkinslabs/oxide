@@ -122,7 +122,7 @@ pub fn default_perm_for(ft: FileType) -> u16 {
 /// storage) and applying the mount `idmap` to the owner ids. An identity idmap
 /// returns the raw fs ids, so the output is byte-identical to the
 /// pre-idmap stat path. # C: O(1)
-pub fn generic_fillattr<I: Inode + ?Sized>(inode: &I, idmap: &Idmap, overlay: Option<InodeTimes>) -> Kstat {
+pub fn generic_fillattr(inode: &Inode, idmap: &Idmap, overlay: Option<InodeTimes>) -> Kstat {
     let ov = overlay.unwrap_or_default();
     let ft = inode.file_type();
     // ONE place builds the `S_IFMT` half of the mode: `FileType::to_ifmt`
