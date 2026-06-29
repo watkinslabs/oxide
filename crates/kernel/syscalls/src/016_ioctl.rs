@@ -121,6 +121,24 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             return rv;
         }
     }
+    // FIFREEZE / FITHAW (Linux `ioctl_fsfreeze`/`ioctl_fsthaw`, fs/ioctl.c).
+    // Issued on a regular file / directory / block-device fd; route BEFORE the
+    // CharDev gate. CAP_SYS_ADMIN-gated. `arg` is ignored (Linux ignores it).
+    // FIFREEZE → `freeze_super` (EBUSY if already frozen); FITHAW →
+    // `thaw_super` (EINVAL if not frozen). The sb is the file inode's `i_sb`.
+    const FIFREEZE: u64 = 0xC0045877;
+    const FITHAW:   u64 = 0xC0045878;
+    if req == FIFREEZE || req == FITHAW {
+        if !cur.has_cap(sched::cap::SYS_ADMIN) { return -(Errno::Eperm.as_i32() as i64); }
+        let sb = match file.inode().i_sb() {
+            Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+        };
+        let r = if req == FIFREEZE { sb.freeze_super() } else { sb.thaw_super() };
+        return match r {
+            Ok(())  => 0,
+            Err(e)  => crate::namei_common::errno_from_vfs(e),
+        };
+    }
     if file.inode().file_type() != vfs::FileType::CharDev {
         #[cfg(feature = "debug-syscall")]
         if req != TCGETS {
