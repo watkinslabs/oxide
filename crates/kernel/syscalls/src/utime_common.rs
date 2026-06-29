@@ -46,18 +46,13 @@ pub(crate) fn resolve_target(dirfd: i32, path_ptr: u64, no_follow: bool) -> Resu
         };
         return Ok((f.inode().clone(), f.mnt_id()));
     }
-    if path_ptr >= hal::USER_VA_END {
-        return Err(-(Errno::Efault.as_i32() as i64));
-    }
-    // SAFETY: path_ptr in user range; bounded read via devfs::read_user_cstr.
-    let bytes = unsafe { devfs::read_user_cstr(path_ptr, 256) };
-    let raw = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
-        Some(s) => s, None => return Err(-(Errno::Einval.as_i32() as i64)),
-    };
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    // (path_ptr == 0 handled above: utimensat NULL path updates by fd.)
+    let raw = crate::namei_common::read_user_path(path_ptr)?;
     // BUG D: resolve against the dirfd's directory for a real fd-relative
     // dirfd; resolve_at(AT_FDCWD, raw) == resolve_cwd(raw) so the common
     // AT_FDCWD/absolute callers are unchanged.
-    let resolved = crate::pathresolve::resolve_at_result(dirfd, raw)?;
+    let resolved = crate::pathresolve::resolve_at_result(dirfd, &raw)?;
     let s = resolved.as_str();
     match crate::pathresolve::resolve_path_result(s, no_follow) {
         Ok(p)  => Ok((p.inode, p.mnt_id)),

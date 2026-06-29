@@ -5,7 +5,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_path, errno_from_vfs, resolve_parent};
+use crate::namei_common::{read_user_path, errno_from_vfs, resolve_parent};
 
 /// Single rmdir core — both `rmdir(2)` (slot 84, x86 legacy) and
 /// `unlinkat(…, AT_REMOVEDIR)` (the only form aarch64 has) delegate
@@ -48,8 +48,9 @@ pub(crate) fn do_rmdir(p: &str) -> i64 {
 /// `rmdir(path)` slot 84 (x86 legacy; absent on aarch64).
 /// # C: O(1)
 pub fn sys_rmdir(args: &SyscallArgs) -> i64 {
-    let raw = match read_path(args.a0) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    let raw = match read_user_path(args.a0) {
+        Ok(s) => s, Err(rv) => return rv,
     };
     // do_rmdirat: `.` final component → EINVAL, `..` → ENOTEMPTY (checked on
     // the raw path before resolution normalises the dots away).

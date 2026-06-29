@@ -4,7 +4,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_path, errno_from_vfs, resolve_parent};
+use crate::namei_common::{read_user_path, errno_from_vfs, resolve_parent};
 
 /// `linkat(odir, target, ndir, link, flags)` slot 265. Supports
 /// `AT_EMPTY_PATH` (flag bit 0x1000): when set and `target` is the
@@ -27,8 +27,9 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
         return -(Errno::Einval.as_i32() as i64);
     }
 
-    let link = match read_path(link_p) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    let link = match read_user_path(link_p) {
+        Ok(s) => s, Err(rv) => return rv,
     };
     let l = match crate::pathresolve::resolve_at_result(args.a2 as i32, &link) {
         Ok(p) => p, Err(rv) => return rv,
@@ -85,8 +86,9 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
     // resolved source inode instead of the symlink dentry itself. `/proc/*/fd`
     // entries are magic links to open file descriptions; route them through
     // the fd table so an O_TMPFILE fd can be materialized in its own mount.
-    let target = match read_path(target_p) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    // D1/D2: PATH_MAX errno contract (non-AT_EMPTY_PATH path source).
+    let target = match read_user_path(target_p) {
+        Ok(s) => s, Err(rv) => return rv,
     };
     let t = match crate::pathresolve::resolve_at_result(odir_fd, &target) {
         Ok(p) => p, Err(rv) => return rv,
