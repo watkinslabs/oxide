@@ -6,6 +6,9 @@
 use syscall::errno::Errno;
 
 pub(crate) const O_CREAT:     u32 = 0o100;
+/// `O_EXCL` (asm-generic, both arches): with `O_CREAT`, an existing final
+/// component → `EEXIST` (Linux `do_last`/`lookup_open`).
+pub(crate) const O_EXCL:      u32 = 0o200;
 pub(crate) const O_TRUNC:     u32 = 0o1000;
 pub(crate) const O_DIRECTORY: u32 = 0o200000;
 // O_* flag VALUES are arch-specific (Linux fcntl.h per-arch overrides):
