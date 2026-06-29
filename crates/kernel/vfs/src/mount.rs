@@ -638,6 +638,24 @@ fn subtree_ids(_ns: u64, top: u64) -> Vec<u64> {
     ids
 }
 
+/// True iff `m`'s propagation type is SHARED (Linux `IS_MNT_SHARED`). # C: O(1)
+fn is_shared(m: &Mount) -> bool {
+    Propagation::from_u8(m.propagation.load(Ordering::Acquire)) == Propagation::Shared
+}
+
+/// True iff `m`'s propagation type is UNBINDABLE (Linux `IS_MNT_UNBINDABLE`).
+/// # C: O(1)
+fn is_unbindable(m: &Mount) -> bool {
+    Propagation::from_u8(m.propagation.load(Ordering::Acquire)) == Propagation::Unbindable
+}
+
+/// True iff the subtree rooted at mount `top` contains an UNBINDABLE mount
+/// (Linux `do_move_mount` `tree_contains_unbindable`). # C: O(N_subtree)
+fn tree_contains_unbindable(ns: u64, top: u64) -> bool {
+    subtree_ids(ns, top).iter()
+        .any(|id| mount_by_id(*id).map(|m| is_unbindable(&m)).unwrap_or(false))
+}
+
 /// In-place swap of a mount's mountpoint dentry + rendered path + `struct
 /// mountpoint` (used by MS_MOVE / pivot_root so the Arc — and every intrusive
 /// link to it — stays valid). # C: O(log N)
@@ -659,6 +677,26 @@ pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> 
     let nr_subtree = subtree_ids(ns, nr_id);
     let po_d = put_old.clone();
     let old_root_id = root_mount_id(ns);
+    // [D20] Linux `pivot_root(2)` safety checks (all -EINVAL):
+    //   * the new_root mount must not be MNT_LOCKED
+    //     (`new_mnt->mnt.mnt_flags & MNT_LOCKED`);
+    //   * none of {the mount put_old resides on, the new_root's parent, the
+    //     current root's parent} may be SHARED — a shared mountpoint would
+    //     corrupt its peers when the re-root mutates it
+    //     (`IS_MNT_SHARED(old_mnt) || IS_MNT_SHARED(new_mnt->mnt_parent) ||
+    //       IS_MNT_SHARED(root_mnt->mnt_parent)`).
+    if nr_m.is_locked() { return Err(VfsError::Einval); }
+    if let Some(p) = mount_by_id(nr_m.parent_id.load(Ordering::Acquire)) {
+        if is_shared(&p) { return Err(VfsError::Einval); }
+    }
+    if let Some(rm) = old_root_id.and_then(mount_by_id) {
+        if let Some(rp) = mount_by_id(rm.parent_id.load(Ordering::Acquire)) {
+            if is_shared(&rp) { return Err(VfsError::Einval); }
+        }
+    }
+    if let Some(om) = mount_by_id(parent_by_dentry(ns, &po_d)) {
+        if is_shared(&om) { return Err(VfsError::Einval); }
+    }
     let mounts = mounts_in_ns(ns);
     let stacking = nr_mp.as_ref().map(|d| Arc::ptr_eq(d, &po_d)).unwrap_or(false)
         || rel_under(&po_d, nr_mp.as_ref()) == Some(String::new());
@@ -960,6 +998,25 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>) -> KResult<()> {
     // `attached && (old->mnt.mnt_flags & MNT_LOCKED)` → -EINVAL): an
     // unprivileged userns must not relocate a mount its parent pinned.
     if from_m.is_locked() { return Err(VfsError::Einval); }
+    // [D21] Don't move a mount residing in a SHARED parent (Linux
+    // `do_move_mount`: `attached && IS_MNT_SHARED(parent)` → -EINVAL): the
+    // detach from the old position would otherwise have to propagate to the
+    // parent's peer group. The source here is always attached (the ns-root case
+    // returned above), so this is the unconditional parent-shared rejection.
+    if let Some(p) = mount_by_id(from_m.parent_id.load(Ordering::Acquire)) {
+        if is_shared(&p) { return Err(VfsError::Einval); }
+    }
+    // [D21] Don't move a tree containing UNBINDABLE mounts onto a SHARED
+    // destination (Linux `do_move_mount`: `IS_MNT_SHARED(dest) &&
+    // tree_contains_unbindable(old)` → -EINVAL): the dest's peers would receive
+    // a propagated copy of a mount declared unbindable.
+    if !to_root {
+        if let Some(dest) = mount_by_id(parent_by_dentry(ns, to)) {
+            if is_shared(&dest) && tree_contains_unbindable(ns, from_id) {
+                return Err(VfsError::Einval);
+            }
+        }
+    }
     if !to_root {
         let mut anc = Some(parent_by_dentry(ns, to));
         while let Some(a) = anc {

@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
+use vfs::mount::Propagation;
 use vfs::{FileType, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, default_file_ops, mk_mode};
 
 mod common;
@@ -76,6 +77,52 @@ fn legit_move_still_succeeds() {
     assert!(common::mount_at_path_exact("/from").is_none(), "vacated old location");
     let moved = common::mount_at_path_exact("/to/here").expect("present at new location");
     assert_eq!(moved.mnt_id, id, "MS_MOVE preserves mnt_id");
+}
+
+// [D21] A mount residing in a SHARED parent cannot be moved (Linux
+// `do_move_mount`: `attached && IS_MNT_SHARED(parent)` → EINVAL) — the detach
+// from the old slot would otherwise have to propagate to the parent's peers.
+#[test]
+fn move_out_of_shared_parent_is_einval() {
+    let _g = guard();
+    common::register("/", fs(0x1)).expect("root");
+    common::register("/p", fs(0xA)).expect("p");
+    common::set_propagation("/p", Propagation::Shared).expect("share p");
+    common::register("/p/sub", fs(0xB)).expect("sub");
+    common::register("/dst", fs(0xC)).expect("dst");
+    assert!(matches!(common::move_mount("/p/sub", "/dst/here"), Err(VfsError::Einval)),
+            "moving a mount whose parent is shared must be EINVAL");
+    assert!(common::mount_at_path_exact("/p/sub").is_some(), "/p/sub stays put");
+}
+
+// [D21] A tree containing UNBINDABLE mounts cannot move onto a SHARED dest
+// (Linux `do_move_mount`: `IS_MNT_SHARED(dest) && tree_contains_unbindable(old)`
+// → EINVAL) — the dest's peers would receive a copy of an unbindable mount.
+#[test]
+fn move_unbindable_onto_shared_dest_is_einval() {
+    let _g = guard();
+    common::register("/", fs(0x1)).expect("root");
+    common::register("/src", fs(0xA)).expect("src");
+    common::set_propagation("/src", Propagation::Unbindable).expect("unbindable src");
+    common::register("/dst", fs(0xB)).expect("dst");
+    common::set_propagation("/dst", Propagation::Shared).expect("share dst");
+    assert!(matches!(common::move_mount("/src", "/dst/here"), Err(VfsError::Einval)),
+            "moving an unbindable tree onto a shared dest must be EINVAL");
+    assert!(common::mount_at_path_exact("/src").is_some(), "/src stays put");
+}
+
+// [D21] Control: an unbindable source moving onto a NON-shared (private) dest is
+// permitted — Linux only rejects the SHARED-dest case, an unbindable mount is
+// otherwise freely relocatable.
+#[test]
+fn move_unbindable_onto_private_dest_ok() {
+    let _g = guard();
+    common::register("/", fs(0x1)).expect("root");
+    common::register("/src", fs(0xA)).expect("src");
+    common::set_propagation("/src", Propagation::Unbindable).expect("unbindable src");
+    common::register("/dst", fs(0xB)).expect("dst");
+    common::move_mount("/src", "/dst/here").expect("unbindable move onto private dest ok");
+    assert!(common::mount_at_path_exact("/dst/here").is_some(), "relocated to /dst/here");
 }
 
 // Regression guard: moving ONTO `/` must STILL be permitted (systemd
