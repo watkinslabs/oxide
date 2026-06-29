@@ -29,7 +29,7 @@ pub fn make_proc_self_smaps() -> InodeRef {
 
 /// `/proc/<pid>/smaps` inode (per-pid). # C: O(1)
 pub fn make_proc_pid_smaps(tid: u32) -> InodeRef {
-    crate::dyn_file::make_pid_gen_file((0x3000_1B01u64).wrapping_add(tid as u64), tid, build_for_pid)
+    crate::dyn_file::make_pid_gen_file(crate::live::pid_ino(0x1B, tid), tid, build_for_pid)
 }
 
 /// Build the body for the current task.

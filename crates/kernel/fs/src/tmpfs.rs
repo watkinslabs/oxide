@@ -57,6 +57,85 @@ fn fsid_of(sb: &Weak<SuperBlock>) -> u64 {
     sb.upgrade().map(|s| s.s_dev).unwrap_or(TMPFS_FSID)
 }
 
+/// Per-instance tmpfs space accounting (Linux `shmem_sb_info`): block + inode
+/// limits and live usage, so `statfs(2)`/`df` report real `f_blocks`/`f_bfree`/
+/// `f_files`/`f_ffree` and `create`/`write`/`mkdir` fail `ENOSPC` at the limit
+/// (D33). Blocks are counted in `PG` (4 KiB) units, matching `f_bsize`. Shared
+/// by every node of one mount (cloned `Arc`); anonymous memfd/coredump files
+/// use [`TmpfsSb::unlimited`] so they neither hit a limit nor skew any mount.
+pub struct TmpfsSb {
+    max_blocks:  u64,
+    max_inodes:  u64,
+    used_blocks: AtomicU64,
+    used_inodes: AtomicU64,
+}
+
+impl TmpfsSb {
+    /// A bounded instance (`max_blocks` pages, `max_inodes` inodes). # C: O(1)
+    fn new(max_blocks: u64, max_inodes: u64) -> Arc<Self> {
+        Arc::new(Self { max_blocks, max_inodes,
+            used_blocks: AtomicU64::new(0), used_inodes: AtomicU64::new(0) })
+    }
+    /// Effectively-unbounded accounting (memfd/anon/coredump, hosted tests).
+    /// # C: O(1)
+    pub fn unlimited() -> Arc<Self> { Self::new(u64::MAX, u64::MAX) }
+    /// Linux tmpfs default: half of physical RAM for blocks, and one inode per
+    /// page of half-RAM, falling back to a large bound when the PMM is absent
+    /// (hosted tests). # C: O(1)
+    fn default_limits() -> Arc<Self> {
+        let total_pages = pmm::setup::pmm_static()
+            .map(|p| p.free_pages() + p.allocated_pages())
+            .filter(|&t| t != 0)
+            .unwrap_or(1 << 30);
+        let half = total_pages / 2;
+        Self::new(half, half)
+    }
+    /// Reserve one block; `false` (caller → `ENOSPC`) at the limit. # C: O(1)
+    fn charge_block(&self) -> bool {
+        let mut cur = self.used_blocks.load(Ordering::Relaxed);
+        loop {
+            if cur >= self.max_blocks { return false; }
+            match self.used_blocks.compare_exchange_weak(cur, cur + 1, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => return true,
+                Err(c) => cur = c,
+            }
+        }
+    }
+    /// Release `n` blocks. # C: O(1)
+    fn free_blocks(&self, n: u64) { if n != 0 { self.used_blocks.fetch_sub(n, Ordering::Relaxed); } }
+    /// Reserve one inode; `false` (caller → `ENOSPC`) at the limit. # C: O(1)
+    fn charge_inode(&self) -> bool {
+        let mut cur = self.used_inodes.load(Ordering::Relaxed);
+        loop {
+            if cur >= self.max_inodes { return false; }
+            match self.used_inodes.compare_exchange_weak(cur, cur + 1, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => return true,
+                Err(c) => cur = c,
+            }
+        }
+    }
+    /// Release one inode. # C: O(1)
+    fn free_inode(&self) { self.used_inodes.fetch_sub(1, Ordering::Relaxed); }
+    /// `statfs(2)` block/inode accounting subset (Linux `shmem_statfs`).
+    /// # C: O(1)
+    fn statfs(&self) -> vfs::SbStatFs {
+        let ub = self.used_blocks.load(Ordering::Relaxed);
+        let ui = self.used_inodes.load(Ordering::Relaxed);
+        let bfree = self.max_blocks.saturating_sub(ub);
+        let ffree = self.max_inodes.saturating_sub(ui);
+        vfs::SbStatFs {
+            f_type:   TMPFS_MAGIC,
+            f_bsize:  PG as u32,
+            f_blocks: self.max_blocks,
+            f_bfree:  bfree,
+            f_bavail: bfree,
+            f_files:  self.max_inodes,
+            f_ffree:  ffree,
+            ..Default::default()
+        }
+    }
+}
+
 /// In-memory file body, Linux-shmem style: data lives in PMM page FRAMES
 /// (sparse `page_idx -> pa`), NOT a `Vec<u8>`. This is load-bearing for
 /// `MAP_SHARED`: a shared mmap aliases the SAME frames the file's
@@ -77,15 +156,19 @@ pub struct TmpfsFileData {
     /// Logical size (Linux `i_size`); may exceed the populated pages. Kept in
     /// sync with the owning inode's `i_size` by the file/inode ops.
     len:  AtomicU64,
+    /// Owning mount's space accounting (block charge/uncharge). # D33
+    acct: Arc<TmpfsSb>,
 }
 
-/// Frame for `idx`, allocating + zeroing on first touch. The frame holds
-/// the inode's single object reference (refcount 1, mapcount 0).
+/// Frame for `idx`, allocating + zeroing on first touch and charging one block
+/// against the mount's accounting (`ENOSPC` → `None` at the limit). The frame
+/// holds the inode's single object reference (refcount 1, mapcount 0).
 /// # C: O(log N_pages)
-fn ensure_page(g: &mut BTreeMap<u64, u64>, idx: u64) -> Option<u64> {
+fn ensure_page(g: &mut BTreeMap<u64, u64>, idx: u64, acct: &TmpfsSb) -> Option<u64> {
     if let Some(&pa) = g.get(&idx) { return Some(pa); }
-    let pa = pmm::setup::alloc_object_frame()?;
-    let ptr = pmm::setup::frame_ptr(pa)?;
+    if !acct.charge_block() { return None; } // f_bfree exhausted → ENOSPC
+    let pa = match pmm::setup::alloc_object_frame() { Some(p) => p, None => { acct.free_blocks(1); return None; } };
+    let ptr = match pmm::setup::frame_ptr(pa) { Some(p) => p, None => { acct.free_blocks(1); return None; } };
     // SAFETY: pa is a freshly-allocated PMM frame; PG is the page granule.
     unsafe { core::ptr::write_bytes(ptr, 0, PG); }
     g.insert(idx, pa);
@@ -96,11 +179,12 @@ fn ensure_page(g: &mut BTreeMap<u64, u64>, idx: u64) -> Option<u64> {
 /// word (`Inode::fcntl_seals`); `perm` is the caller-supplied permission bits
 /// (Linux honours the `open`/`creat` mode, masked by umask at the syscall
 /// layer); `sb` owns the inode (`fsid` derives from `s_dev`). # C: O(1)
-fn make_tmpfs_file_inode(sealable: bool, perm: u16, sb: Weak<SuperBlock>) -> InodeRef {
+fn make_tmpfs_file_inode(sealable: bool, perm: u16, sb: Weak<SuperBlock>, acct: Arc<TmpfsSb>) -> InodeRef {
     let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
     let data = Arc::new(TmpfsFileData {
         pages: Spinlock::new(BTreeMap::new()),
         len:   AtomicU64::new(0),
+        acct,
     });
     let mapping: Arc<dyn AddressSpaceOps> = data.clone();
     let mut b = InodeBuilder::new(ino, mk_mode(FileType::Regular, perm),
@@ -114,9 +198,9 @@ fn make_tmpfs_file_inode(sealable: bool, perm: u16, sb: Weak<SuperBlock>) -> Ino
 }
 
 /// Anonymous tmpfs file body (memfd / coredump), no owning SuperBlock. # C: O(1)
-pub fn tmpfs_anon_file() -> InodeRef { make_tmpfs_file_inode(false, 0o644, Weak::new()) }
+pub fn tmpfs_anon_file() -> InodeRef { make_tmpfs_file_inode(false, 0o644, Weak::new(), TmpfsSb::unlimited()) }
 /// A sealable memfd file (`memfd_create(MFD_ALLOW_SEALING)`). # C: O(1)
-pub fn tmpfs_sealable_file() -> InodeRef { make_tmpfs_file_inode(true, 0o644, Weak::new()) }
+pub fn tmpfs_sealable_file() -> InodeRef { make_tmpfs_file_inode(true, 0o644, Weak::new(), TmpfsSb::unlimited()) }
 
 impl TmpfsFileData {
     /// Copy out cache bytes from `off` (sparse holes read as zero, tail past
@@ -160,7 +244,7 @@ impl TmpfsFileData {
             let idx   = (cur / PG) as u64;
             let pgoff = cur % PG;
             let chunk = (PG - pgoff).min(src.len() - done);
-            let pa = ensure_page(&mut g, idx).ok_or(VfsError::Enospc)?;
+            let pa = ensure_page(&mut g, idx, &self.acct).ok_or(VfsError::Enospc)?;
             let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
             // SAFETY: pa is an inode-owned frame; HHDM mirror writable;
             // [pgoff..pgoff+chunk] within the page granule; non-overlapping.
@@ -184,13 +268,16 @@ impl TmpfsFileData {
             // last page so a later grow re-reads zeros (Linux truncate).
             let keep = (len as usize).div_ceil(PG) as u64;
             let stale: Vec<u64> = g.range(keep..).map(|(&k, _)| k).collect();
+            let mut freed = 0u64;
             for idx in stale {
                 if let Some(pa) = g.remove(&idx) {
                     // SAFETY: inode-owned frame past the truncation point; dec
                     // frees it when no mapper holds a reference.
                     unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
+                    freed += 1;
                 }
             }
+            self.acct.free_blocks(freed); // return reclaimed blocks to f_bfree
             let tail = len as usize % PG;
             if tail != 0 {
                 if let Some(&pa) = g.get(&((len / PG as u64))) {
@@ -215,7 +302,7 @@ impl TmpfsFileData {
             let idx = pos / PG as u64;
             let pgoff = (pos as usize) % PG;
             let chunk = (PG - pgoff).min((end - pos) as usize);
-            let pa = ensure_page(&mut g, idx).ok_or(VfsError::Enospc)?;
+            let pa = ensure_page(&mut g, idx, &self.acct).ok_or(VfsError::Enospc)?;
             if zero_range {
                 let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
                 // SAFETY: pa is an inode-owned frame; range lies within page.
@@ -243,6 +330,7 @@ impl Drop for TmpfsFileData {
             // held since); dec returns it to the buddy when the count hits 0.
             unsafe { pmm::setup::dec_and_maybe_free_frame(pa); }
         }
+        self.acct.free_blocks(g.len() as u64); // return this inode's blocks to f_bfree
     }
 }
 
@@ -302,7 +390,7 @@ impl AddressSpaceOps for TmpfsFileData {
     /// offset `off` (page-aligned), allocating on first touch. # C: O(log N_pages)
     fn shared_frame(&self, off: u64) -> Option<u64> {
         let mut g = self.pages.lock();
-        ensure_page(&mut g, off / PG as u64)
+        ensure_page(&mut g, off / PG as u64, &self.acct)
     }
 
     /// Read-fault / MAP_PRIVATE fill: copy cache bytes (sparse holes read as
@@ -389,6 +477,9 @@ fn as_dir(i: &InodeRef) -> Option<&TmpfsDirData> {
 pub struct TmpfsDirData {
     sb:   Spinlock<Weak<SuperBlock>, InodeClass>,
     kids: Spinlock<BTreeMap<String, InodeRef>, InodeClass>,
+    /// Owning mount's space accounting (inode charge/uncharge + block
+    /// propagation to children). Shared `Arc` across the whole instance. # D33
+    acct: Arc<TmpfsSb>,
 }
 
 impl TmpfsDirData {
@@ -405,13 +496,14 @@ impl TmpfsDirData {
 /// Build a fresh tmpfs directory inode (`ino`, `perm` permission bits, owned by
 /// `sb`). `i_nlink` defaults to 2 (`.` + the parent's link), per Linux
 /// `simple_fs`. # C: O(1)
-fn make_tmpfs_dir_inode(ino: Ino, perm: u16, sb: Weak<SuperBlock>) -> InodeRef {
+fn make_tmpfs_dir_inode(ino: Ino, perm: u16, sb: Weak<SuperBlock>, acct: Arc<TmpfsSb>) -> InodeRef {
     let mut b = InodeBuilder::new(ino, mk_mode(FileType::Directory, perm),
         Arc::new(TmpfsDirOps), Arc::new(TmpfsDirFileOps))
         .fsid(fsid_of(&sb))
         .private(Arc::new(TmpfsDirData {
             sb:   Spinlock::new(sb.clone()),
             kids: Spinlock::new(BTreeMap::new()),
+            acct,
         }));
     if let Some(s) = sb.upgrade() { b = b.sb(Arc::downgrade(&s)); }
     b.build()
@@ -474,8 +566,9 @@ impl InodeOps for TmpfsDirOps {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let mut g = dd.kids.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
+        if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
         let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-        let d = make_tmpfs_dir_inode(ino, (mode & 0o7777) as u16, dd.sb_weak());
+        let d = make_tmpfs_dir_inode(ino, (mode & 0o7777) as u16, dd.sb_weak(), dd.acct.clone());
         g.insert(name.into(), d.clone());
         inode.inc_nlink(); // child's ".." adds a link to this parent dir
         Ok(d)
@@ -499,6 +592,7 @@ impl InodeOps for TmpfsDirOps {
         if let Some(victim) = g.remove(name) {
             victim.set_nlink(0);   // emptied dir: drop "." + parent's link down
             inode.drop_nlink();    // the child's ".." no longer points at us
+            dd.acct.free_inode();  // reclaim the dir inode (f_ffree)
         }
         Ok(())
     }
@@ -509,7 +603,8 @@ impl InodeOps for TmpfsDirOps {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let mut g = dd.kids.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
-        let child = make_tmpfs_file_inode(false, (mode & 0o7777) as u16, dd.sb_weak());
+        if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
+        let child = make_tmpfs_file_inode(false, (mode & 0o7777) as u16, dd.sb_weak(), dd.acct.clone());
         g.insert(name.into(), child.clone());
         Ok(child)
     }
@@ -528,6 +623,9 @@ impl InodeOps for TmpfsDirOps {
             Some(_) => {
                 let victim = g.remove(name).expect("present");
                 victim.drop_nlink();
+                // Reclaim the inode only when the last name is gone (a hardlink
+                // target with nlink>0 keeps its single charged inode). # D33
+                if victim.nlink() == 0 { dd.acct.free_inode(); }
                 Ok(())
             }
         }
@@ -538,6 +636,7 @@ impl InodeOps for TmpfsDirOps {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let mut g = dd.kids.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
+        if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
         g.insert(name.into(), make_tmpfs_symlink_inode(target, dd.sb_weak()));
         Ok(())
     }
@@ -550,6 +649,7 @@ impl InodeOps for TmpfsDirOps {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let mut g = dd.kids.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
+        if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
         let sb = dd.sb_weak();
         let perm = mode & 0o7777;
         let child: InodeRef = match mode & S_IFMT {
@@ -561,7 +661,7 @@ impl InodeOps for TmpfsDirOps {
             S_IFBLK  => make_device_node_inode(
                 NEXT_INO.fetch_add(1, Ordering::Relaxed), FileType::BlockDev,
                 Devt::from_raw(rdev), perm, sb),
-            _ => return Err(VfsError::Einval),
+            _ => { dd.acct.free_inode(); return Err(VfsError::Einval); }
         };
         g.insert(name.into(), child);
         Ok(())
@@ -580,7 +680,7 @@ pub fn init() {}
 /// # C: O(1)
 pub fn smoke_test() {
     use hal::kassert;
-    let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new());
+    let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new(), TmpfsSb::unlimited());
     let inode = root.create_child(".smoke", 0o644).expect("tmpfs.create");
     let n = inode.write(0, b"shell-test").expect("tmpfs.write");
     kassert!(n == 10, "tmpfs write len");
@@ -608,15 +708,24 @@ pub struct TmpfsFs {
     mount_path: String,
     root:       InodeRef,
     sb:         Spinlock<Weak<SuperBlock>, InodeClass>,
+    /// Per-instance space accounting (block/inode limits + usage). # D33
+    acct:       Arc<TmpfsSb>,
 }
 
 impl TmpfsFs {
-    /// A fresh empty tmpfs instance mounted at `mount_path`. `set_sb` stamps
-    /// `s_dev` at `fill_super`, after which children derive `fsid` from it.
-    /// # C: O(1)
+    /// A fresh empty tmpfs instance mounted at `mount_path` with Linux-default
+    /// limits (half of RAM). `set_sb` stamps `s_dev` at `fill_super`, after
+    /// which children derive `fsid` from it. # C: O(1)
     pub fn new(mount_path: String) -> Arc<Self> {
-        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new());
-        Arc::new(Self { mount_path, root, sb: Spinlock::new(Weak::new()) })
+        Self::with_limits(mount_path, TmpfsSb::default_limits())
+    }
+    /// As [`TmpfsFs::new`] but with explicit accounting (the hook a future
+    /// `mount -o size=,nr_inodes=` parser fills — the syscall layer that parses
+    /// the option string is the only remaining piece, cross-lane). # C: O(1)
+    pub fn with_limits(mount_path: String, acct: Arc<TmpfsSb>) -> Arc<Self> {
+        acct.charge_inode(); // the root inode itself counts (Linux shmem)
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new(), acct.clone());
+        Arc::new(Self { mount_path, root, sb: Spinlock::new(Weak::new()), acct })
     }
     /// This instance's root inode (`sb->s_root->d_inode`), handed to
     /// `register_bind` so the path walk crosses into the tree. # C: O(1)
@@ -638,8 +747,15 @@ impl vfs::fs::FileSystem for TmpfsFs {
     fn name(&self) -> &str { "tmpfs" }
     /// TMPFS_MAGIC (linux/magic.h). # C: O(1)
     fn magic(&self) -> u64 { TMPFS_MAGIC }
+    /// tmpfs block size = page size (statfs `f_bsize`). # C: O(1)
+    fn block_size(&self) -> u32 { PG as u32 }
     /// This instance's root inode (mount table per-mount root). # C: O(1)
     fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
+    /// Install live tmpfs space accounting as this SB's `s_op` so `statfs(2)`/
+    /// `df` report real `f_blocks`/`f_bfree`/`f_files`/`f_ffree` (D33/D6). # C: O(1)
+    fn super_ops(&self) -> Option<Arc<dyn vfs::SuperOps>> {
+        Some(Arc::new(TmpfsSuperOps { acct: self.acct.clone() }))
+    }
 
     /// `fill_super` back-stamp: record the SB so the root + every child
     /// derives `fsid` from `s_dev` (per-instance, not a constant). # C: O(1)
@@ -661,7 +777,9 @@ impl vfs::fs::FileSystem for TmpfsFs {
     /// when its last fd closes (Linux shmem anonymous inode). It carries this
     /// instance's SB so `fsid` is the mount's `s_dev`. # C: O(1)
     fn create_anonymous(&self, _dir: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
-        Ok(make_tmpfs_file_inode(false, (mode & 0o7777) as u16, self.sb.lock().clone()))
+        // Blocks the anon inode writes count against this mount (freed on the
+        // file's Drop); it has no directory entry so it is not inode-charged.
+        Ok(make_tmpfs_file_inode(false, (mode & 0o7777) as u16, self.sb.lock().clone(), self.acct.clone()))
     }
 
     /// `unlink(2)` by whole path (atomic-rename idiom). # C: O(components)
@@ -700,6 +818,67 @@ impl vfs::fs::FileSystem for TmpfsFs {
     }
 }
 
+/// `super_operations` for a tmpfs mount: `statfs` reports live per-instance
+/// block/inode accounting (Linux `shmem_statfs`), replacing the generic
+/// `FsBackedSuperOps` that reported only `f_type`/`f_bsize` (D33/D6). # C: O(1)
+pub struct TmpfsSuperOps { acct: Arc<TmpfsSb> }
+impl vfs::SuperOps for TmpfsSuperOps {
+    /// # C: O(1)
+    fn statfs(&self) -> KResult<vfs::SbStatFs> { Ok(self.acct.statfs()) }
+}
+
+#[cfg(test)]
+mod statfs_tests {
+    use super::*;
+    use vfs::fs::FileSystem;
+
+    // D33/D6: the accounting arithmetic statfs reports — block charge/free hits
+    // the limit (the ENOSPC source) and f_bfree/f_ffree track usage. Exercised
+    // directly so it needs no initialised PMM (frame alloc) in hosted tests.
+    #[test]
+    fn sb_block_inode_accounting_arithmetic() {
+        let sb = TmpfsSb::new(4, 4);
+        let s0 = sb.statfs();
+        assert_eq!((s0.f_type, s0.f_bsize as usize), (TMPFS_MAGIC, PG));
+        assert_eq!((s0.f_blocks, s0.f_bfree, s0.f_files, s0.f_ffree), (4, 4, 4, 4));
+        // Charge 4 blocks → 5th is refused (ENOSPC).
+        for _ in 0..4 { assert!(sb.charge_block()); }
+        assert!(!sb.charge_block());
+        assert_eq!(sb.statfs().f_bfree, 0);
+        sb.free_blocks(2);
+        assert_eq!(sb.statfs().f_bfree, 2);
+        // Inodes behave the same.
+        for _ in 0..4 { assert!(sb.charge_inode()); }
+        assert!(!sb.charge_inode());
+        assert_eq!(sb.statfs().f_ffree, 0);
+        sb.free_inode();
+        assert_eq!(sb.statfs().f_ffree, 1);
+    }
+
+    // D33: per-instance inode accounting through the directory ops — the root
+    // counts, create/mkdir charge, unlink/rmdir reclaim, and an inode-limit hit
+    // returns ENOSPC. (No data writes → no PMM dependency.)
+    #[test]
+    fn instance_inode_accounting_and_enospc() {
+        // 3 inodes: root takes one, leaving room for two entries.
+        let fs = TmpfsFs::with_limits(String::from("/"), TmpfsSb::new(64, 3));
+        let root = fs.root_inode();
+        let sops = fs.super_ops().expect("tmpfs super_ops");
+        assert_eq!(sops.statfs().unwrap().f_ffree, 2); // root charged
+
+        root.create_child("f", 0o644).expect("create f");
+        root.mkdir("d", 0o755).expect("mkdir d");
+        assert_eq!(sops.statfs().unwrap().f_ffree, 0);
+        // Inode limit reached → next create is ENOSPC.
+        assert!(matches!(root.create_child("g", 0o644), Err(VfsError::Enospc)));
+
+        // Reclaim both entries.
+        root.unlink_child("f").expect("unlink f");
+        root.rmdir("d").expect("rmdir d");
+        assert_eq!(sops.statfs().unwrap().f_ffree, 2);
+    }
+}
+
 #[cfg(test)]
 mod symlink_tests {
     use super::*;
@@ -715,7 +894,7 @@ mod symlink_tests {
     // the dir's own kids map (no global registry).
     #[test]
     fn dir_symlink_child_creates_followable_link() {
-        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new());
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new(), TmpfsSb::unlimited());
         root.symlink_child("tz", b"/etc/localtime").expect("create symlink");
         let resolved = root.lookup("tz").expect("symlink in tree");
         assert_eq!(resolved.file_type(), FileType::Symlink);
@@ -750,7 +929,7 @@ mod nlink_mode_tests {
     // raises the PARENT's nlink (the child's ".."); rmdir reverses both.
     #[test]
     fn mkdir_rmdir_maintains_dir_nlink() {
-        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new());
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new(), TmpfsSb::unlimited());
         assert_eq!(root.nlink(), 2);
         let sub = root.mkdir("d", 0o755).expect("mkdir d");
         assert_eq!(sub.nlink(), 2);
@@ -763,7 +942,7 @@ mod nlink_mode_tests {
     // a hardcoded 0o755/0o644.
     #[test]
     fn create_and_mkdir_honour_mode() {
-        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new());
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new(), TmpfsSb::unlimited());
         let f = root.create_child("f", 0o600).expect("create f");
         assert_eq!(f.perm(), Some(0o600));
         let d = root.mkdir("d", 0o2750).expect("mkdir d");
@@ -774,7 +953,7 @@ mod nlink_mode_tests {
     // directory removal path).
     #[test]
     fn unlink_directory_is_eisdir() {
-        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new());
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, Weak::new(), TmpfsSb::unlimited());
         root.mkdir("d", 0o755).expect("mkdir d");
         assert!(matches!(root.unlink_child("d"), Err(VfsError::Eisdir)));
         // A regular file still unlinks fine.
