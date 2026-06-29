@@ -13,7 +13,10 @@ use alloc::format;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as TraceClass};
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::inode::{Inode, InodeBuilder};
+use vfs::inode_ops::{default_inode_ops, mk_mode};
+use vfs::file_ops::FileOps;
+use vfs::{FileType, Ino, InodeRef, KResult, VfsError};
 
 use crate::percpu_ring::{self, Record, KIND_MARK, KIND_SCHED_SWITCH, KIND_SYS_ENTER, KIND_SYS_EXIT, PAYLOAD};
 
@@ -231,144 +234,163 @@ fn read_at(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
 
 fn alloc_ino() -> Ino { NEXT_INO.fetch_add(1, Ordering::Relaxed) }
 
-/// `/sys/kernel/tracing/trace_marker` — write records a marker; read is empty.
-struct TraceMarkerInode { ino: Ino }
-impl Inode for TraceMarkerInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
-    fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> { record_marker(buf); Ok(buf.len()) }
-}
-
-/// `/sys/kernel/tracing/trace` — read renders the buffer; write clears it.
-struct TraceInode { ino: Ino }
-impl Inode for TraceInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { render().len() as u64 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> { Ok(read_at(&render(), off, buf)) }
-    /// Any write clears the buffer (Linux `echo > trace`). # C: O(1)
-    fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> { percpu_ring::clear(); Ok(buf.len()) }
-}
-
-/// `/sys/kernel/tracing/tracing_on` — read "1\n"/"0\n"; write toggles.
-struct TracingOnInode { ino: Ino }
-impl Inode for TracingOnInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 2 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body: &[u8] = if TRACING_ON.load(Ordering::Acquire) { b"1\n" } else { b"0\n" };
-        Ok(read_at(body, off, buf))
-    }
-    fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
-        // First non-space byte '0' disables, anything else (incl. '1') enables.
-        let on = !matches!(buf.iter().find(|b| !b.is_ascii_whitespace()), Some(b'0'));
-        TRACING_ON.store(on, Ordering::Release);
-        Ok(buf.len())
-    }
-}
-
-/// `events/<sub>/<event>/enable` — read "1\n"/"0\n"; write 1/0 installs or
-/// clears the event's tracepoint hook (per-event get/set fn pointers).
-struct EnableInode { ino: Ino, get: fn() -> bool, set: fn(bool) }
-impl Inode for EnableInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 2 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body: &[u8] = if (self.get)() { b"1\n" } else { b"0\n" };
-        Ok(read_at(body, off, buf))
-    }
-    fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
-        let on = !matches!(buf.iter().find(|b| !b.is_ascii_whitespace()), Some(b'0'));
-        (self.set)(on);
-        Ok(buf.len())
-    }
-}
-
 fn sched_switch_on() -> bool { SCHED_SWITCH_ON.load(Ordering::Acquire) }
 fn sys_enter_on() -> bool { SYS_ENTER_ON.load(Ordering::Acquire) }
 fn sys_exit_on() -> bool { SYS_EXIT_ON.load(Ordering::Acquire) }
 
-/// `/sys/kernel/tracing/trace_pipe` — the CONSUMING ftrace reader. Unlike
-/// `trace` (non-destructive snapshot), each read drains records out of the
-/// buffer and renders their event lines (no header). A blocking read parks
-/// until a record is available (Linux trace_pipe blocks by default);
-/// O_NONBLOCK reads return EAGAIN on an empty buffer. `pending` holds bytes
-/// already rendered but not yet copied to the reader (so a short read never
-/// drops a record).
-struct TracePipeInode { ino: Ino, pending: Spinlock<Vec<u8>, TraceClass> }
+/// Which `/sys/kernel/tracing` control file an inode backs — the `i_private`
+/// payload (`TraceData`). One shared `i_fop` (`TraceFileOps`) dispatches on it,
+/// so every trace file shares one vtable. Each variant carries only its
+/// per-file state (the per-event get/set fn pointers for `Enable`, the
+/// consume-buffer for `Pipe`).
+enum TraceFile {
+    /// `trace_marker` — write records a marker; read is empty.
+    Marker,
+    /// `trace` — read renders the buffer; write clears it.
+    Trace,
+    /// `tracing_on` — read "1\n"/"0\n"; write toggles.
+    TracingOn,
+    /// `events/<sub>/<event>/enable` — read "1\n"/"0\n"; write 1/0 installs or
+    /// clears the event's tracepoint hook (per-event get/set fn pointers).
+    Enable { get: fn() -> bool, set: fn(bool) },
+    /// `trace_pipe` — the CONSUMING ftrace reader. Unlike `trace`
+    /// (non-destructive snapshot), each read drains records out of the buffer
+    /// and renders their event lines (no header). A blocking read parks until a
+    /// record is available (Linux trace_pipe blocks by default); O_NONBLOCK
+    /// reads return EAGAIN on an empty buffer. `pending` holds bytes already
+    /// rendered but not yet copied to the reader (so a short read never drops a
+    /// record).
+    Pipe { pending: Spinlock<Vec<u8>, TraceClass> },
+}
 
-impl TracePipeInode {
-    /// Copy from `pending` front into `buf`; drop the served bytes. Refills
-    /// `pending` from a buffer drain first if it is empty. Returns bytes
-    /// served (0 only when both `pending` and the buffer are empty).
-    fn serve(&self, buf: &mut [u8]) -> usize {
-        let mut p = self.pending.lock();
-        if p.is_empty() {
-            let drained = drain_render();
-            if drained.is_empty() { return 0; }
-            *p = drained;
+/// Backend-private state (`i_private`) for a trace control-file inode. # C: O(1)
+struct TraceData { file: TraceFile }
+
+/// Recover the per-file state from a trace inode's `i_private`. # C: O(1)
+fn trace_data(inode: &Inode) -> KResult<&TraceData> {
+    inode.private::<TraceData>().ok_or(VfsError::Einval)
+}
+
+/// Copy from `pending` front into `buf`; drop the served bytes. Refills
+/// `pending` from a buffer drain first if it is empty. Returns bytes served
+/// (0 only when both `pending` and the buffer are empty). # C: O(n)
+fn pipe_serve(pending: &Spinlock<Vec<u8>, TraceClass>, buf: &mut [u8]) -> usize {
+    let mut p = pending.lock();
+    if p.is_empty() {
+        let drained = drain_render();
+        if drained.is_empty() { return 0; }
+        *p = drained;
+    }
+    let n = p.len().min(buf.len());
+    buf[..n].copy_from_slice(&p[..n]);
+    p.drain(..n);
+    n
+}
+
+/// '0' (first non-space byte) disables, anything else (incl. '1') enables —
+/// the shared `tracing_on`/`enable` write parse (Linux `echo 0|1 > file`).
+/// # C: O(buf)
+fn parse_on(buf: &[u8]) -> bool {
+    !matches!(buf.iter().find(|b| !b.is_ascii_whitespace()), Some(b'0'))
+}
+
+/// Shared `file_operations` for every `/sys/kernel/tracing` control file;
+/// dispatches on the `TraceFile` variant in `i_private`.
+struct TraceFileOps;
+impl FileOps for TraceFileOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        match &trace_data(inode)?.file {
+            TraceFile::Marker => Ok(0),
+            TraceFile::Trace => Ok(read_at(&render(), off, buf)),
+            TraceFile::TracingOn => {
+                let body: &[u8] = if TRACING_ON.load(Ordering::Acquire) { b"1\n" } else { b"0\n" };
+                Ok(read_at(body, off, buf))
+            }
+            TraceFile::Enable { get, .. } => {
+                let body: &[u8] = if get() { b"1\n" } else { b"0\n" };
+                Ok(read_at(body, off, buf))
+            }
+            // Blocking read: park (tick-yield) until a record is available, then
+            // drain. Mirrors the console/pty yield-loop; no busy spin on the lock.
+            TraceFile::Pipe { pending } => loop {
+                let n = pipe_serve(pending, buf);
+                if n > 0 { return Ok(n); }
+                #[cfg(target_os = "oxide-kernel")]
+                // SAFETY: tracefs read runs in process syscall context with the
+                // runqueue installed; tick_yield reschedules until data arrives.
+                unsafe { sched::live::tick_yield(); }
+                #[cfg(not(target_os = "oxide-kernel"))]
+                return Ok(0);
+            },
         }
-        let n = p.len().min(buf.len());
-        buf[..n].copy_from_slice(&p[..n]);
-        p.drain(..n);
-        n
+    }
+
+    /// O_NONBLOCK read: only `trace_pipe` differs (EAGAIN on empty); every other
+    /// trace file never blocks, so the default forward-to-`read` is correct.
+    fn read_nonblock(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        match &trace_data(inode)?.file {
+            TraceFile::Pipe { pending } => {
+                let n = pipe_serve(pending, buf);
+                if n == 0 { Err(VfsError::Eagain) } else { Ok(n) }
+            }
+            _ => self.read(inode, off, buf),
+        }
+    }
+
+    fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
+        match &trace_data(inode)?.file {
+            TraceFile::Marker => { record_marker(buf); Ok(buf.len()) }
+            // Any write clears the buffer (Linux `echo > trace`).
+            TraceFile::Trace => { percpu_ring::clear(); Ok(buf.len()) }
+            TraceFile::TracingOn => { TRACING_ON.store(parse_on(buf), Ordering::Release); Ok(buf.len()) }
+            TraceFile::Enable { set, .. } => { set(parse_on(buf)); Ok(buf.len()) }
+            // trace_pipe is read-only (Linux: no write op) → EINVAL.
+            TraceFile::Pipe { .. } => Err(VfsError::Einval),
+        }
+    }
+
+    fn poll(&self, inode: &Inode) -> u32 {
+        match trace_data(inode) {
+            Ok(d) => match &d.file {
+                TraceFile::Pipe { pending } => {
+                    let mut mask = 0;
+                    if !pending.lock().is_empty() || percpu_ring::any_pending() { mask |= vfs::POLL_IN; }
+                    mask
+                }
+                // Synthetic files never block → always ready (the generic default).
+                _ => vfs::POLL_IN | vfs::POLL_OUT,
+            },
+            Err(_) => vfs::POLL_IN | vfs::POLL_OUT,
+        }
     }
 }
 
-impl Inode for TracePipeInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    /// Blocking read: park (tick-yield) until a record is available, then
-    /// drain. Mirrors the console/pty yield-loop; no busy spin on the lock.
-    fn read(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
-        loop {
-            let n = self.serve(buf);
-            if n > 0 { return Ok(n); }
-            #[cfg(target_os = "oxide-kernel")]
-            // SAFETY: tracefs read runs in process syscall context with the
-            // runqueue installed; tick_yield reschedules until data arrives.
-            unsafe { sched::live::tick_yield(); }
-            #[cfg(not(target_os = "oxide-kernel"))]
-            return Ok(0);
-        }
-    }
-    /// O_NONBLOCK read: EAGAIN when the buffer is empty.
-    fn read_nonblock(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
-        let n = self.serve(buf);
-        if n == 0 { Err(VfsError::Eagain) } else { Ok(n) }
-    }
-    fn poll(&self) -> u32 {
-        let mut mask = 0;
-        if !self.pending.lock().is_empty() || percpu_ring::any_pending() { mask |= vfs::POLL_IN; }
-        mask
-    }
+/// Build a `/sys/kernel/tracing` control-file inode (`S_IFREG|0o644`) backed by
+/// `file`, with `i_size` snapshot `size`. The read path bounds on EOF, not
+/// `i_size`. # C: O(1)
+fn make_trace_inode(file: TraceFile, size: u64) -> InodeRef {
+    InodeBuilder::new(alloc_ino(), mk_mode(FileType::Regular, 0o644),
+                      default_inode_ops(), Arc::new(TraceFileOps))
+        .size(size)
+        .private(Arc::new(TraceData { file }))
+        .build()
 }
 
 /// Register the dynamic trace inodes. Replaces the static placeholders for
 /// `trace` / `trace_marker` / `trace_pipe` / `tracing_on`. # C: O(1)
 pub fn register() {
     crate::register("/sys/kernel/tracing/trace_marker",
-        Arc::new(TraceMarkerInode { ino: alloc_ino() }) as InodeRef);
+        make_trace_inode(TraceFile::Marker, 0));
     crate::register("/sys/kernel/tracing/trace",
-        Arc::new(TraceInode { ino: alloc_ino() }) as InodeRef);
+        make_trace_inode(TraceFile::Trace, render().len() as u64));
     crate::register("/sys/kernel/tracing/trace_pipe",
-        Arc::new(TracePipeInode { ino: alloc_ino(), pending: Spinlock::new(Vec::new()) }) as InodeRef);
+        make_trace_inode(TraceFile::Pipe { pending: Spinlock::new(Vec::new()) }, 0));
     crate::register("/sys/kernel/tracing/tracing_on",
-        Arc::new(TracingOnInode { ino: alloc_ino() }) as InodeRef);
+        make_trace_inode(TraceFile::TracingOn, 2));
     crate::register("/sys/kernel/tracing/events/sched/sched_switch/enable",
-        Arc::new(EnableInode { ino: alloc_ino(), get: sched_switch_on, set: set_sched_switch }) as InodeRef);
+        make_trace_inode(TraceFile::Enable { get: sched_switch_on, set: set_sched_switch }, 2));
     crate::register("/sys/kernel/tracing/events/syscalls/sys_enter/enable",
-        Arc::new(EnableInode { ino: alloc_ino(), get: sys_enter_on, set: set_sys_enter }) as InodeRef);
+        make_trace_inode(TraceFile::Enable { get: sys_enter_on, set: set_sys_enter }, 2));
     crate::register("/sys/kernel/tracing/events/syscalls/sys_exit/enable",
-        Arc::new(EnableInode { ino: alloc_ino(), get: sys_exit_on, set: set_sys_exit }) as InodeRef);
+        make_trace_inode(TraceFile::Enable { get: sys_exit_on, set: set_sys_exit }, 2));
 }
