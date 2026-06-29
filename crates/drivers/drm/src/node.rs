@@ -120,29 +120,22 @@ impl vfs::FileOps for DrmSinkFileOps {
 /// # C: O(1)
 fn make_card_inode() -> vfs::InodeRef {
     vfs::InodeBuilder::new(DRM_CARD_INO, vfs::mk_mode(vfs::FileType::CharDev, 0o666),
-                           vfs::default_inode_ops(), Arc::new(DrmCardFileOps))
-        .rdev(vfs::Devt::new(226, 0).raw()).build()
+                           vfs::default_inode_ops(), Arc::new(DrmCardFileOps)).build()
 }
-/// Build the `/dev/dri/renderD128` inode (sink f_op). DRM render minor 128.
-/// # C: O(1)
+/// Build the `/dev/dri/renderD128` inode (sink f_op). # C: O(1)
 fn make_render_inode() -> vfs::InodeRef {
     vfs::InodeBuilder::new(DRM_RENDER_INO, vfs::mk_mode(vfs::FileType::CharDev, 0o666),
-                           vfs::default_inode_ops(), Arc::new(DrmSinkFileOps))
-        .rdev(vfs::Devt::new(226, 128).raw()).build()
+                           vfs::default_inode_ops(), Arc::new(DrmSinkFileOps)).build()
 }
-/// Build the `/dev/input/event0` evdev inode (sink f_op). evdev major 13,
-/// minor base 64. # C: O(1)
+/// Build the `/dev/input/event0` evdev inode (sink f_op). # C: O(1)
 fn make_evdev_inode() -> vfs::InodeRef {
     vfs::InodeBuilder::new(DRM_EVDEV_INO, vfs::mk_mode(vfs::FileType::CharDev, 0o666),
-                           vfs::default_inode_ops(), Arc::new(DrmSinkFileOps))
-        .rdev(vfs::Devt::new(13, 64).raw()).build()
+                           vfs::default_inode_ops(), Arc::new(DrmSinkFileOps)).build()
 }
 
 /// Register DRM card / render / evdev / input-devices nodes.
 /// # C: O(1)
 pub fn register() {
-    vfs::register_chrdev_name(226, "drm");
-    vfs::register_chrdev_name(13, "input");
     devfs::register("/dev/dri/card0",      make_card_inode());
     devfs::register("/dev/dri/renderD128", make_render_inode());
     devfs::register("/dev/input/event0",   make_evdev_inode());

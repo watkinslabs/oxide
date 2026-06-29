@@ -13,4 +13,3 @@ net   = { path = "../net" }
 block = { path = "../block" }
 netlink = { path = "../netlink" }
 drv   = { path = "../../drivers/drv" }
-pci   = { path = "../../drivers/pci" }

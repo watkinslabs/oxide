@@ -73,10 +73,8 @@ impl FileOps for EvdevFileOps {
 /// `ENOTDIR` (default i_op). Registers the node in [`EVDEV_NODES`]. # C: O(1)
 pub fn make_evdev_inode(id: u32) -> InodeRef {
     let ino = EVDEV_INO_BASE | (0x01 + id as Ino);
-    // evdev: major 13, minor base 64 (Linux EVDEV_MINOR_BASE). DVR-0015.
     let inode = InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(EvdevFileOps))
         .private(Arc::new(EvdevData { id }))
-        .rdev(vfs::Devt::new(13, 64 + id).raw())
         .poll_subs(PollSubscribers::new())
         .build();
     if (id as usize) < MAX_EVDEV { EVDEV_NODES.lock()[id as usize] = Some(inode.clone()); }
@@ -230,7 +228,6 @@ pub fn handle_evdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    vfs::register_chrdev_name(13, "input");
     devfs::register("/dev/input/event0", make_evdev_inode(0));
 }
 
