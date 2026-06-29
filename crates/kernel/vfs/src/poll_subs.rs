@@ -31,10 +31,16 @@ pub trait EpollNotify: Send + Sync {
 /// interest does not intersect the fired event, matching
 /// `ep_poll_callback`'s key check. `!0` = interested in every
 /// event (the plain `subscribe` default → preserves wake-all).
+/// `exclusive` marks an `EPOLLEXCLUSIVE` epitem (Linux
+/// `add_wait_queue_exclusive`): on a readiness wake `notify_mask`
+/// wakes at most ONE *interested* exclusive subscriber, leaving the
+/// rest asleep — the thundering-herd avoidance an `accept(2)` load
+/// balancer relies on. Non-exclusive subscribers are always all woken.
 pub struct Subscription {
-    pub id:    u32,
-    pub wake:  Weak<dyn EpollNotify>,
-    pub mask:  u32,
+    pub id:        u32,
+    pub wake:      Weak<dyn EpollNotify>,
+    pub mask:      u32,
+    pub exclusive: bool,
 }
 
 /// Events that wake an epoll subscriber unconditionally, regardless
@@ -74,11 +80,29 @@ impl PollSubscribers {
     /// mirroring `epoll_ctl(EPOLL_CTL_MOD)`.
     /// # C: O(N)
     pub fn subscribe_mask(&self, id: u32, wake: Weak<dyn EpollNotify>, mask: u32) {
+        self.subscribe_flags(id, wake, mask, false);
+    }
+
+    /// Add an `EPOLLEXCLUSIVE` subscriber (Linux `add_wait_queue_exclusive`):
+    /// `notify_mask` wakes at most ONE interested exclusive subscriber per
+    /// readiness event (plus every interested non-exclusive one), so N epolls
+    /// each `accept(2)`-ing the same listening socket don't all wake on one
+    /// incoming connection. Idempotent on `id` like `subscribe_mask`.
+    /// # C: O(N)
+    pub fn subscribe_exclusive(&self, id: u32, wake: Weak<dyn EpollNotify>, mask: u32) {
+        self.subscribe_flags(id, wake, mask, true);
+    }
+
+    /// Shared insert/replace for `subscribe_mask`/`subscribe_exclusive`. A
+    /// re-add with the same `id` replaces the Weak, mask AND exclusive flag,
+    /// mirroring `epoll_ctl(EPOLL_CTL_MOD)`.
+    /// # C: O(N)
+    fn subscribe_flags(&self, id: u32, wake: Weak<dyn EpollNotify>, mask: u32, exclusive: bool) {
         let mut g = self.subs.lock();
         for s in g.iter_mut() {
-            if s.id == id { s.wake = wake; s.mask = mask; return; }
+            if s.id == id { s.wake = wake; s.mask = mask; s.exclusive = exclusive; return; }
         }
-        g.push(Subscription { id, wake, mask });
+        g.push(Subscription { id, wake, mask, exclusive });
     }
 
     /// Drop the subscription identified by `id`.
@@ -108,13 +132,27 @@ impl PollSubscribers {
     /// waiter is not woken by a pure `EPOLLOUT` writability transition).
     /// GC-prune dead Weak refs. `events == 0` wakes nobody (Linux:
     /// a keyless wake passes 0 only on teardown, handled separately).
+    ///
+    /// `EPOLLEXCLUSIVE` subscribers (see [`subscribe_exclusive`]) are limited
+    /// to ONE wake per event: every interested non-exclusive subscriber is
+    /// woken, but only the first interested exclusive one — matching Linux
+    /// `__wake_up_common`'s `nr_exclusive == 1` walk where an exclusive waiter
+    /// that fails the key check is skipped (not counted) so the next interested
+    /// exclusive waiter still gets the wake.
+    ///
+    /// [`subscribe_exclusive`]: Self::subscribe_exclusive
     /// # C: O(N)
     pub fn notify_mask(&self, events: u32) {
         let mut g = self.subs.lock();
         g.retain(|s| s.wake.upgrade().is_some());
         let always = events & ALWAYS_WAKE != 0;
+        let mut woke_exclusive = false;
         for s in g.iter() {
             if !always && (s.mask & events) == 0 { continue; }
+            if s.exclusive {
+                if woke_exclusive { continue; }
+                woke_exclusive = true;
+            }
             if let Some(a) = s.wake.upgrade() { a.notify(); }
         }
     }

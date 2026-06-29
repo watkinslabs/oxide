@@ -3,42 +3,22 @@
 //! `chmod_sgid_strip`, `chown_kill_priv`). Synthetic `Inode` impls carrying
 //! explicit POSIX mode/uid/gid — no real filesystem, no `sched`.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-
-use vfs::inode::Inode;
+use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder};
 use vfs::{Cred, FileType, InodeRef, VfsError};
 use vfs::{inode_permission, may_open, may_create, may_chmod, may_chown,
     chmod_sgid_strip, chown_kill_priv, CRED_NGROUPS, MAY_EXEC, MAY_READ, MAY_WRITE};
 
-/// Regular file with explicit perm/uid/gid.
-struct PFile { perm: u16, uid: u32, gid: u32 }
-impl Inode for PFile {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn perm(&self) -> Option<u16> { Some(self.perm) }
-    fn uid(&self) -> Option<u32> { Some(self.uid) }
-    fn gid(&self) -> Option<u32> { Some(self.gid) }
+/// Regular file with explicit perm/uid/gid (default ops — only the permission
+/// decision functions are exercised, never `lookup`).
+fn pfile(perm: u16, uid: u32, gid: u32) -> InodeRef {
+    InodeBuilder::new(1, mk_mode(FileType::Regular, perm), default_inode_ops(), default_file_ops())
+        .owner(uid, gid).build()
 }
-fn pfile(perm: u16, uid: u32, gid: u32) -> InodeRef { Arc::new(PFile { perm, uid, gid }) }
 
-/// Directory with explicit perm/uid/gid.
-struct PDir { perm: u16, uid: u32, gid: u32, kids: BTreeMap<String, InodeRef> }
-impl Inode for PDir {
-    fn ino(&self) -> vfs::Ino { 2 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, n: &str) -> vfs::KResult<InodeRef> {
-        self.kids.get(n).cloned().ok_or(VfsError::Enoent)
-    }
-    fn perm(&self) -> Option<u16> { Some(self.perm) }
-    fn uid(&self) -> Option<u32> { Some(self.uid) }
-    fn gid(&self) -> Option<u32> { Some(self.gid) }
-}
+/// Directory with explicit perm/uid/gid (default ops).
 fn pdir(perm: u16, uid: u32, gid: u32) -> InodeRef {
-    Arc::new(PDir { perm, uid, gid, kids: BTreeMap::new() })
+    InodeBuilder::new(2, mk_mode(FileType::Directory, perm), default_inode_ops(), default_file_ops())
+        .owner(uid, gid).build()
 }
 
 /// Unprivileged cred (no caps); `groups` empty unless specified.

@@ -12,30 +12,33 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{FileOps, InodeBuilder, default_inode_ops, mk_mode};
 
 const SIGNALFD_INO_BASE: Ino = 0x7200_0000;
 /// Linux `signalfd_siginfo` size — 128 bytes per `signalfd(2)`.
 pub const SIGINFO_SIZE: usize = 128;
 
-pub struct SignalfdInode {
+/// Per-inode signalfd state (Linux `i_private`): the signal mask read drains.
+pub struct SignalfdData {
     pub mask: AtomicU64,
 }
 
-impl SignalfdInode {
-    /// # C: O(1)
-    pub fn new(mask: u64) -> Arc<Self> {
-        Arc::new(Self { mask: AtomicU64::new(mask) })
-    }
+/// `make_signalfd_inode(mask)` — a CharDev pseudo-inode whose `read` pops the
+/// lowest pending masked signal. # C: O(1)
+pub fn make_signalfd_inode(mask: u64) -> InodeRef {
+    InodeBuilder::new(SIGNALFD_INO_BASE, mk_mode(FileType::CharDev, 0),
+        default_inode_ops(), Arc::new(SignalfdFileOps))
+        .private(Arc::new(SignalfdData { mask: AtomicU64::new(mask) }))
+        .build()
 }
 
-impl Inode for SignalfdInode {
-    fn ino(&self) -> Ino { SIGNALFD_INO_BASE }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+/// `i_fop` for a signalfd inode. # C: O(1)
+struct SignalfdFileOps;
+impl FileOps for SignalfdFileOps {
+    fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.len() < SIGINFO_SIZE { return Err(VfsError::Einval); }
-        let mask = self.mask.load(Ordering::Acquire);
+        let d = match inode.private::<SignalfdData>() { Some(d) => d, None => return Err(VfsError::Einval) };
+        let mask = d.mask.load(Ordering::Acquire);
         let cur = match sched::current() { Some(c) => c, None => return Ok(0) };
         let pending = cur.sigpending.load(Ordering::Acquire);
         let deliver = pending & mask;
@@ -52,14 +55,14 @@ impl Inode for SignalfdInode {
         buf[0..4].copy_from_slice(&sig.to_le_bytes());
         Ok(SIGINFO_SIZE)
     }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+    fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
     /// POLLIN only when a signal in this fd's mask is pending for the
     /// current task. The default Inode::poll (always-ready) made epoll
     /// spin: systemd's sd-event registers a signalfd, so an always-ready
     /// poll busy-looped epoll_pwait forever and PID1 never ran services.
     /// # C: O(1)
-    fn poll(&self) -> u32 {
-        let mask = self.mask.load(Ordering::Acquire);
+    fn poll(&self, inode: &Inode) -> u32 {
+        let mask = match inode.private::<SignalfdData>() { Some(d) => d.mask.load(Ordering::Acquire), None => return 0 };
         let pending = sched::current().map_or(0, |c| c.sigpending.load(Ordering::Acquire));
         if pending & mask != 0 { vfs::POLL_IN } else { 0 }
     }
@@ -106,7 +109,7 @@ pub fn sys_signalfd4(args: &syscall::SyscallArgs) -> i64 {
     const SFD_NONBLOCK: u64 = 0o0_004_000;
     const SFD_CLOEXEC:  u64 = 0o2_000_000;
     let flags = args.a3;
-    let inode = SignalfdInode::new(mask) as InodeRef;
+    let inode = make_signalfd_inode(mask);
     let dentry = Dentry::new(None, "signalfd".to_string(), Arc::clone(&inode));
     let mut fl = OpenFlags::O_RDONLY;
     if (flags & SFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }

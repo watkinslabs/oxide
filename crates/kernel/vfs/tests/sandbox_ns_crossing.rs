@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
+use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder, InodeOps};
 use vfs::{Dentry, FileType, InodeRef, KResult, LookupFlags, VfsError};
 
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -27,33 +28,37 @@ fn guard() -> MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-struct Dir { ino: u64, kids: BTreeMap<String, InodeRef> }
-impl Inode for Dir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
-        self.kids.get(name).cloned().ok_or(VfsError::Enoent)
+/// Backend state (`i_private`): the static child table this directory resolves.
+struct DirData { kids: BTreeMap<String, InodeRef> }
+
+/// `i_op->lookup` over the static `DirData` child table.
+struct DirOps;
+impl InodeOps for DirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<DirData>().ok_or(VfsError::Enotdir)?;
+        d.kids.get(name).cloned().ok_or(VfsError::Enoent)
     }
-}
-struct FacDir(u64);
-impl Inode for FacDir {
-    fn ino(&self) -> vfs::Ino { self.0 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Ok(Arc::new(FacDir(0x9000))) }
-}
-struct F(u64);
-impl Inode for F {
-    fn ino(&self) -> vfs::Ino { self.0 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
 }
 fn dir(ino: u64, kids: &[(&str, InodeRef)]) -> InodeRef {
     let mut m = BTreeMap::new();
     for (n, i) in kids { m.insert(n.to_string(), i.clone()); }
-    Arc::new(Dir { ino, kids: m })
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(DirOps), default_file_ops())
+        .private(Arc::new(DirData { kids: m })).build()
+}
+
+/// Directory-factory ops: any name resolves to a fresh child directory (ino
+/// 0x9000) — the procfs/sysfs singleton-style mountpoint factory.
+struct FacDirOps;
+impl InodeOps for FacDirOps {
+    fn lookup(&self, _inode: &Inode, _name: &str) -> KResult<InodeRef> { Ok(facdir(0x9000)) }
+}
+fn facdir(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(FacDirOps), default_file_ops()).build()
+}
+
+/// Regular file inode (default ops).
+fn file(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
 }
 
 struct NamedFs { n: &'static str, root: InodeRef }
@@ -70,16 +75,16 @@ fn root_provider() -> Option<Arc<Dentry>> { ROOT.get().cloned() }
 fn proc_root() -> InodeRef {
     dir(0x100, &[
         ("sys", dir(0x101, &[
-            ("kernel", dir(0x102, &[ ("domainname", Arc::new(F(0x103))) ])),
+            ("kernel", dir(0x102, &[ ("domainname", file(0x103)) ])),
             ("fs",     dir(0x104, &[ ("binfmt_misc", dir(0x110, &[])) ])),
         ])),
     ])
 }
 // binfmt_misc mount root: a "status" file.
-fn binfmt_root() -> InodeRef { dir(0x200, &[ ("status", Arc::new(F(0x201))) ]) }
+fn binfmt_root() -> InodeRef { dir(0x200, &[ ("status", file(0x201)) ]) }
 
 fn setup_host() -> (Arc<Dentry>, Arc<Dentry>) {
-    let root_inode = dir(2, &[ ("proc", Arc::new(FacDir(0x10))), ("run", Arc::new(FacDir(0x20))) ]);
+    let root_inode = dir(2, &[ ("proc", facdir(0x10)), ("run", facdir(0x20)) ]);
     let root = ROOT.get_or_init(|| Dentry::new_root(root_inode.clone())).clone();
     vfs::set_root_dentry_provider(root_provider);
 
@@ -87,7 +92,7 @@ fn setup_host() -> (Arc<Dentry>, Arc<Dentry>) {
     let (_, proc_d) = vfs::path_lookup(root.clone(), root.clone(), "/proc", LookupFlags::default()).expect("/proc");
     vfs::mount::register(Some(proc_d.clone()), Arc::new(NamedFs { n: "proc", root: proc_root() })).expect("mount /proc");
     let (_, run_d) = vfs::path_lookup(root.clone(), root.clone(), "/run", LookupFlags::default()).expect("/run");
-    vfs::mount::register(Some(run_d), Arc::new(NamedFs { n: "tmpfs", root: Arc::new(FacDir(0x21)) })).expect("mount /run");
+    vfs::mount::register(Some(run_d), Arc::new(NamedFs { n: "tmpfs", root: facdir(0x21) })).expect("mount /run");
     // binfmt_misc as a CHILD mount inside procfs.
     let (_, bm_d) = vfs::path_lookup(root.clone(), root.clone(), "/proc/sys/fs/binfmt_misc", LookupFlags::default()).expect("binfmt dir");
     vfs::mount::register(Some(bm_d), Arc::new(NamedFs { n: "binfmt_misc", root: binfmt_root() })).expect("mount binfmt");

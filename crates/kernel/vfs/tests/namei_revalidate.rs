@@ -25,30 +25,28 @@ static SAW_REVAL: AtomicBool = AtomicBool::new(false);
 
 /// Directory whose every `lookup` mints a fresh leaf file and bumps `LOOKUPS`,
 /// so a re-resolved (dropped-then-re-looked-up) child is observable.
-struct CountDir(u64);
-impl Inode for CountDir {
-    fn ino(&self) -> vfs::Ino { self.0 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> {
+struct CountDirOps;
+impl vfs::InodeOps for CountDirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> {
         LOOKUPS.fetch_add(1, Ordering::SeqCst);
-        Ok(Arc::new(Leaf(0x4000)))
+        Ok(mk_leaf(0x4000))
     }
 }
-
-struct Leaf(u64);
-impl Inode for Leaf {
-    fn ino(&self) -> vfs::Ino { self.0 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn mk_countdir(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755),
+        Arc::new(CountDirOps), vfs::default_file_ops()).build()
+}
+fn mk_leaf(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Regular, 0o644),
+        vfs::default_inode_ops(), vfs::default_file_ops()).build()
 }
 
 // Always stale: every cache hit must be dropped + re-resolved (contract 1).
 fn rev_always_stale(_d: &Arc<Dentry>, _reval: bool) -> bool { false }
 static OPS_STALE: DentryOps = DentryOps {
     d_revalidate: Some(rev_always_stale),
-    d_hash: None, d_compare: None, d_delete: None, d_release: None, d_iput: None,
+    d_weak_revalidate: None,
+    d_hash: None, d_compare: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None,
 };
 
 // Valid normally, stale ONLY under a forced LOOKUP_REVAL walk (contract 2):
@@ -59,11 +57,12 @@ fn rev_on_reval(_d: &Arc<Dentry>, reval: bool) -> bool {
 }
 static OPS_REVAL: DentryOps = DentryOps {
     d_revalidate: Some(rev_on_reval),
-    d_hash: None, d_compare: None, d_delete: None, d_release: None, d_iput: None,
+    d_weak_revalidate: None,
+    d_hash: None, d_compare: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None,
 };
 
 fn root_with(ops: &'static DentryOps, ino: u64) -> Arc<Dentry> {
-    Dentry::new_root(Arc::new(CountDir(ino))).set_d_op(ops)
+    Dentry::new_root(mk_countdir(ino)).set_d_op(ops)
 }
 
 #[test]

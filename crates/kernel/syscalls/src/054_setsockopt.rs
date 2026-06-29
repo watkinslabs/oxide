@@ -723,8 +723,7 @@ fn bpf_prog_insns(fd: i32) -> Option<alloc::vec::Vec<u8>> {
     // SAFETY: running task on this CPU; sole reader of the fd-table slot.
     let fdt = unsafe { cur.fd_table_ref() }?.clone();
     let f = fdt.get(fd).ok()?;
-    let any = f.inode().as_any()?;
-    let prog = any.downcast_ref::<security::bpf::BpfProgInode>()?;
+    let prog = f.inode().private::<security::bpf::BpfProgInode>()?;
     Some(prog.insns.clone())
 }
 

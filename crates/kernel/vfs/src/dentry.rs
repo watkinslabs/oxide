@@ -31,6 +31,12 @@ pub const D_HASHED:     u32 = 0x0004; // present in the global dentry_hashtable
 pub const D_REFERENCED: u32 = 0x0008; // recently used — LRU two-hand-clock bit
 pub const D_LRU:        u32 = 0x0010; // currently linked on the dcache LRU
 pub const D_DISCONNECTED: u32 = 0x0020; // anonymous (parentless) alias, on s_anon
+/// Drop this dentry the instant it goes unused — Linux `DCACHE_DONTCACHE`
+/// (`d_mark_dontcache`, propagated from `I_DONTCACHE`). `retain_dentry` returns
+/// false for it, so the final `dput` `dentry_kill`s instead of LRU-caching;
+/// repeated lookups of a `DONTCACHE` name therefore never accumulate idle
+/// dentries (DAX / on-demand fs that want their inodes evicted promptly).
+pub const D_DONTCACHE:  u32 = 0x1000;
 
 // ---------------------------------------------------------------------------
 // DCACHE_OP_* — `d_op` presence cache, stamped into `d_flags` at construction
@@ -40,9 +46,10 @@ pub const D_DISCONNECTED: u32 = 0x0020; // anonymous (parentless) alias, on s_an
 // `__d_lookup` tests `parent->d_flags & DCACHE_OP_COMPARE` before calling
 // `d_compare`; `dput`/`dentry_kill` test `DCACHE_OP_DELETE` before `d_delete`.
 // Bit positions are this file's own layout (the rest of `d_flags` already
-// diverges from Linux's numeric bits — see the `D_ROOT..D_DISCONNECTED` block);
-// only the four hooks the dcache exposes get a presence bit (Linux additionally
-// has PRUNE/WEAK_REVALIDATE/REAL, which have no hook here).
+// diverges from Linux's numeric bits — see the `D_ROOT..D_DISCONNECTED` block).
+// Every dcache-exposed hook gets a presence bit; the only `dentry_operations`
+// members WITHOUT a hook here are the mount-trigger pair (`d_automount`/
+// `d_manage`, mount-coupled) and overlayfs `d_real`.
 // ---------------------------------------------------------------------------
 /// `d_op->d_hash` present (Linux `DCACHE_OP_HASH`).
 pub const D_OP_HASH:       u32 = 0x0040;
@@ -52,8 +59,21 @@ pub const D_OP_COMPARE:    u32 = 0x0080;
 pub const D_OP_REVALIDATE: u32 = 0x0100;
 /// `d_op->d_delete` present (Linux `DCACHE_OP_DELETE`).
 pub const D_OP_DELETE:     u32 = 0x0200;
+/// `d_op->d_dname` present (Linux `DCACHE_OP_DNAME`) — the dentry renders its
+/// OWN path string dynamically (pipefs `pipe:[ino]`, sockfs `socket:[ino]`,
+/// anon-inode `[name]`), so `d_path`/`dentry_path` must NOT parent-walk it.
+pub const D_OP_DNAME:      u32 = 0x0400;
+/// `d_op->d_prune` present (Linux `DCACHE_OP_PRUNE`). `__dentry_kill` tests
+/// this bit before firing `d_prune` on a dentry about to leave the cache, so
+/// the eviction hot path skips the `d_op` deref for the common no-prune fs.
+pub const D_OP_PRUNE:      u32 = 0x0800;
+/// `d_op->d_weak_revalidate` present (Linux `DCACHE_OP_WEAK_REVALIDATE`).
+/// `complete_walk` tests this on the FINAL path component (post-jump, e.g. a
+/// `..`/procfs-symlink hop that changed mount) before the one-shot weak
+/// revalidation, so the check stays off the per-component hot path.
+pub const D_OP_WEAK_REVALIDATE: u32 = 0x2000;
 /// All `d_op` presence bits (cleared together before a re-stamp).
-pub const D_OP_MASK: u32 = D_OP_HASH | D_OP_COMPARE | D_OP_REVALIDATE | D_OP_DELETE;
+pub const D_OP_MASK: u32 = D_OP_HASH | D_OP_COMPARE | D_OP_REVALIDATE | D_OP_DELETE | D_OP_DNAME | D_OP_PRUNE | D_OP_WEAK_REVALIDATE;
 
 /// Presence-bit set for `d_op` (Linux `d_set_d_op`): a `D_OP_*` bit per
 /// non-NULL hook, so the hot path branches on `d_flags` not a pointer deref.
@@ -64,7 +84,10 @@ fn op_flags_for(d_op: Option<&'static DentryOps>) -> u32 {
     if o.d_hash.is_some()       { f |= D_OP_HASH; }
     if o.d_compare.is_some()    { f |= D_OP_COMPARE; }
     if o.d_revalidate.is_some() { f |= D_OP_REVALIDATE; }
+    if o.d_weak_revalidate.is_some() { f |= D_OP_WEAK_REVALIDATE; }
     if o.d_delete.is_some()     { f |= D_OP_DELETE; }
+    if o.d_dname.is_some()      { f |= D_OP_DNAME; }
+    if o.d_prune.is_some()      { f |= D_OP_PRUNE; }
     f
 }
 
@@ -242,26 +265,57 @@ pub type DCompareFn = fn(name: &str, cand: &Dentry) -> bool;
 /// ordinary walk must re-check against its backing store when `reval` is set
 /// (NFS/FUSE/AFS `flags & LOOKUP_REVAL`).
 pub type DRevalidateFn = fn(d: &Arc<Dentry>, reval: bool) -> bool;
+/// `d_weak_revalidate`: the one-shot weak counterpart of `d_revalidate`,
+/// invoked by Linux `complete_walk` on the FINAL resolved dentry when the walk
+/// reached it via a jump (`..` out of a mount, a procfs magic symlink) rather
+/// than a per-component `d_revalidate`. `false` ⇒ the result is stale (Linux
+/// returns `-ESTALE` → the caller retries with `LOOKUP_REVAL`); UNLIKE
+/// `d_revalidate` the dentry is NOT dropped here — it remains a valid cache node,
+/// only this resolution is rejected. `reval` threads `LOOKUP_REVAL`.
+pub type DWeakRevalidateFn = fn(d: &Arc<Dentry>, reval: bool) -> bool;
 /// `d_delete`: true ⇒ on final `dput` free immediately (don't LRU-cache).
 pub type DDeleteFn = fn(d: &Dentry) -> bool;
 /// `d_release`: dentry is being freed (final `Arc` drop).
 pub type DReleaseFn = fn(d: &Dentry);
 /// `d_iput`: an inode is being disassociated from the dentry.
 pub type DIputFn = fn(d: &Dentry, inode: InodeRef);
+/// `d_dname`: render this dentry's path string dynamically (Linux
+/// `dentry_operations::d_dname`, e.g. pipefs `pipe:[%lu]`). Set ONLY on
+/// `d_alloc_pseudo` dentries; consulted by `d_path`/`dentry_path` in place of
+/// the parent walk. Returns the full displayed name (no leading-slash logic —
+/// it IS the whole path, like Linux's `dynamic_dname` buffer).
+pub type DDnameFn = fn(d: &Dentry) -> String;
+/// `d_init`: a dentry has just been allocated for this fs (Linux
+/// `dentry_operations::d_init`, fired by `__d_alloc` right after `d_set_d_op`).
+/// The fs initializes its per-dentry private state here (typically stamping
+/// `d_fsdata`). Infallible in this model — `build` cannot fail — so it returns
+/// `()` rather than Linux's `int` ENOMEM path (allocation lives in the fs token,
+/// not the dentry).
+pub type DInitFn = fn(d: &Dentry);
+/// `d_prune`: a dentry is about to be pruned/killed out of the cache (Linux
+/// `dentry_operations::d_prune`, fired by `__dentry_kill` before the unhash).
+/// The fs drops any cache-side bookkeeping keyed on this dentry. Fires for every
+/// eviction route — final `dput`, the LRU / per-sb / subtree shrinkers, and
+/// `d_prune_aliases` — since all funnel through `dentry_kill`.
+pub type DPruneFn = fn(d: &Dentry);
 
 pub struct DentryOps {
     pub d_hash:       Option<DHashFn>,
     pub d_compare:    Option<DCompareFn>,
     pub d_revalidate: Option<DRevalidateFn>,
+    pub d_weak_revalidate: Option<DWeakRevalidateFn>,
     pub d_delete:     Option<DDeleteFn>,
     pub d_release:    Option<DReleaseFn>,
     pub d_iput:       Option<DIputFn>,
+    pub d_dname:      Option<DDnameFn>,
+    pub d_init:       Option<DInitFn>,
+    pub d_prune:      Option<DPruneFn>,
 }
 
 impl DentryOps {
     /// All-default ops vector. # C: O(1)
     pub const fn empty() -> Self {
-        DentryOps { d_hash: None, d_compare: None, d_revalidate: None, d_delete: None, d_release: None, d_iput: None }
+        DentryOps { d_hash: None, d_compare: None, d_revalidate: None, d_weak_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None }
     }
 }
 
@@ -307,6 +361,14 @@ pub struct Dentry {
     /// `d_fsdata` — fs-private per-dentry token (Linux `d_fsdata` void*). A
     /// pointer-sized opaque value the owning fs interprets (`0` = unset).
     d_fsdata: AtomicU64,
+    /// `d_seq` — per-dentry seqcount (Linux `dentry->d_seq`) guarding the
+    /// `d_parent`/`d_name` binding against a concurrent `d_move` (rename) during
+    /// a lock-free walk. EVEN = stable, ODD = a `d_move` is rehoming this name.
+    /// A lockless reader snapshots it (`read_seqbegin`), reads parent/name, then
+    /// `read_seqretry`s; an odd value or a changed generation means "renamed
+    /// under me — retry the walk". The bucket seqcount (`dcache.rs`) protects the
+    /// hash chain; THIS protects an individual dentry's identity across a move.
+    d_seq: AtomicU32,
 }
 
 impl Dentry {
@@ -342,7 +404,7 @@ impl Dentry {
         flags = (flags & !D_TYPE_MASK) | type_bits_for(&inode); // DCACHE_ENTRY_TYPE stamp
         flags = (flags & !D_OP_MASK) | op_flags_for(d_op);      // DCACHE_OP_* stamp (d_set_d_op)
         let qname = QStr::new(parent.as_ref(), name);
-        Arc::new(Self {
+        let d = Arc::new(Self {
             parent,
             name: qname,
             inode: RwLock::new(inode),
@@ -354,7 +416,12 @@ impl Dentry {
             mounted_mounts: RwLock::new(BTreeMap::new()),
             d_time: AtomicU64::new(0),
             d_fsdata: AtomicU64::new(0),
-        })
+            d_seq: AtomicU32::new(0),
+        });
+        // Linux `__d_alloc`: after `d_set_d_op`, fire `d_op->d_init` so the fs
+        // can stamp its per-dentry private state (`d_fsdata`) at allocation.
+        if let Some(f) = d_op.and_then(|o| o.d_init) { f(&d); }
+        d
     }
 
     /// `d_time` — fs-private revalidation stamp (Linux `d_time`). # C: O(1)
@@ -365,6 +432,40 @@ impl Dentry {
     pub fn d_fsdata(&self) -> u64 { self.d_fsdata.load(Ordering::Acquire) }
     /// Set `d_fsdata` (owning fs). # C: O(1)
     pub fn set_d_fsdata(&self, v: u64) { self.d_fsdata.store(v, Ordering::Release); }
+
+    /// `d_seq` raw snapshot — the per-dentry rename seqcount. # C: O(1)
+    pub fn d_seq(&self) -> u32 { self.d_seq.load(Ordering::Acquire) }
+
+    /// Begin a lock-free read of `d_parent`/`d_name` (Linux
+    /// `read_seqcount_begin`): spin until the seqcount is EVEN (no `d_move` in
+    /// flight) and return that even snapshot. Pair with `read_seqretry` after
+    /// reading the name/parent. # C: O(1) amortized
+    pub fn read_seqbegin(&self) -> u32 {
+        loop {
+            let s = self.d_seq.load(Ordering::Acquire);
+            if s & 1 == 0 { return s; }
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Validate a lock-free read (Linux `read_seqcount_retry`): `true` ⇒ a
+    /// `d_move` raced the read (seqcount advanced or is mid-write), so the caller
+    /// must retry the walk. # C: O(1)
+    pub fn read_seqretry(&self, start: u32) -> bool {
+        core::sync::atomic::fence(Ordering::Acquire);
+        self.d_seq.load(Ordering::Acquire) != start
+    }
+
+    /// Open the rename write window on this dentry's name binding (Linux
+    /// `write_seqcount_begin` at the top of `__d_move`): advance `d_seq` to ODD
+    /// so a concurrent lock-free reader sees the in-flight rename and retries.
+    /// MUST be paired with `seq_write_end`. # C: O(1)
+    pub fn seq_write_begin(&self) { self.d_seq.fetch_add(1, Ordering::Release); }
+
+    /// Close the rename write window (Linux `write_seqcount_end`): advance
+    /// `d_seq` back to EVEN — a new generation, so any reader that snapshotted
+    /// the pre-move value fails `read_seqretry`. # C: O(1)
+    pub fn seq_write_end(&self) { self.d_seq.fetch_add(1, Ordering::Release); }
 
     /// Construct a positive dentry — name resolves to `inode`. sb-less
     /// (`Weak::new()`); use `new_child` to inherit a parent's superblock.
@@ -409,6 +510,18 @@ impl Dentry {
         Self::build(None, "/", Some(inode), sb, None, D_DISCONNECTED)
     }
 
+    /// Construct a PSEUDO dentry (Linux `d_alloc_pseudo`): a parentless,
+    /// positive dentry carrying a `d_op` whose `d_dname` renders the displayed
+    /// path dynamically (pipefs `pipe:[ino]`, sockfs `socket:[ino]`, anon-inode
+    /// `[eventfd]`). `name` is the static fallback `d_name` (Linux keeps it for
+    /// the rare no-`d_dname` reader); the live path comes from `d_op->d_dname`.
+    /// NOT hashed and NOT a superblock root — these never participate in the
+    /// (parent,name) lookup table. # C: O(name.len())
+    pub fn new_pseudo(name: &str, inode: InodeRef, d_op: &'static DentryOps) -> Arc<Self> {
+        let sb = match inode.i_sb() { Some(s) => Arc::downgrade(&s), None => Weak::new() };
+        Self::build(None, name, Some(inode), sb, Some(d_op), 0)
+    }
+
     /// `d_sb` — owning superblock, if any. # C: O(1)
     pub fn d_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
 
@@ -423,9 +536,29 @@ impl Dentry {
     pub fn d_has_op_compare(&self) -> bool { self.flags() & D_OP_COMPARE != 0 }
     /// `d_op->d_revalidate` present (Linux `DCACHE_OP_REVALIDATE`). # C: O(1)
     pub fn d_has_op_revalidate(&self) -> bool { self.flags() & D_OP_REVALIDATE != 0 }
+    /// `d_op->d_weak_revalidate` present (Linux `DCACHE_OP_WEAK_REVALIDATE`).
+    /// `complete_walk` tests this on the final dentry before the one-shot weak
+    /// revalidation. # C: O(1)
+    pub fn d_has_op_weak_revalidate(&self) -> bool { self.flags() & D_OP_WEAK_REVALIDATE != 0 }
     /// `d_op->d_delete` present (Linux `DCACHE_OP_DELETE`). `dput` tests this
     /// before consulting `d_delete` on the final put. # C: O(1)
     pub fn d_has_op_delete(&self) -> bool { self.flags() & D_OP_DELETE != 0 }
+    /// `d_op->d_dname` present (Linux `DCACHE_OP_DNAME`). `d_path`/`dentry_path`
+    /// test this to render the name dynamically instead of parent-walking — set
+    /// only on `d_alloc_pseudo` dentries (pipe/socket/anon-inode). # C: O(1)
+    pub fn d_has_op_dname(&self) -> bool { self.flags() & D_OP_DNAME != 0 }
+    /// `d_op->d_prune` present (Linux `DCACHE_OP_PRUNE`). `dentry_kill` tests
+    /// this before firing `d_prune` on a dentry about to leave the cache.
+    /// # C: O(1)
+    pub fn d_has_op_prune(&self) -> bool { self.flags() & D_OP_PRUNE != 0 }
+
+    /// Dynamic path string from `d_op->d_dname`, if this is a pseudo dentry that
+    /// renders its own name (Linux `dentry->d_op->d_dname`). `None` ⇒ ordinary
+    /// dentry, reconstruct by the parent walk. # C: O(d_dname)
+    pub fn d_dname(&self) -> Option<String> {
+        if self.flags() & D_OP_DNAME == 0 { return None; }
+        self.d_op.and_then(|o| o.d_dname).map(|f| f(self))
+    }
 
     /// Install `d_op` on a freshly built dentry (Linux `d_set_d_op`). Used to
     /// give a subtree root case-insensitive ops before children are spliced.
@@ -516,6 +649,13 @@ impl Dentry {
     /// parentless, no path, on the SB's `s_anon` list (Linux `d_obtain_alias`).
     /// # C: O(1)
     pub fn is_disconnected(&self) -> bool { self.flags() & D_DISCONNECTED != 0 }
+
+    /// Mark/clear "drop when unused" (Linux `d_mark_dontcache` sets the bit on
+    /// every alias of an `I_DONTCACHE` inode). # C: O(1)
+    pub fn set_dontcache(&self, on: bool) { self.set_flag(D_DONTCACHE, on); }
+    /// True iff `D_DONTCACHE` — the final `dput` must kill, not LRU-cache, this
+    /// dentry (Linux `retain_dentry` returns false). # C: O(1)
+    pub fn is_dontcache(&self) -> bool { self.flags() & D_DONTCACHE != 0 }
 
     /// Replace the `DCACHE_ENTRY_TYPE` field with `bits` (one of `D_*_TYPE`),
     /// preserving every other `d_flags` bit. Linux `__d_set_inode_and_type`.
@@ -682,6 +822,11 @@ impl Dentry {
     /// otherwise `b"/sbin/init"`. Empty-named roots contribute no slash so we
     /// never emit `//sbin/init`. # C: O(depth × N_mounts)
     pub fn absolute_path(&self) -> Vec<u8> {
+        // Pseudo dentries (`d_alloc_pseudo`) render their own path via
+        // `d_op->d_dname` (Linux `prepend_path`: `if (dentry->d_op &&
+        // dentry->d_op->d_dname) return dentry->d_op->d_dname(...)`) — never
+        // parent-walk a `pipe:[ino]`/`[eventfd]` into a bogus `/eventfd`.
+        if let Some(dyn_name) = self.d_dname() { return dyn_name.into_bytes(); }
         let mut parts: Vec<String> = Vec::new();
         if !self.name.name().is_empty() { parts.push(String::from(self.name.name())); }
         // First ancestor: `d_parent`, or — if this dentry is itself a mounted
@@ -723,6 +868,9 @@ impl Dentry {
     /// suffixed " (deleted)" exactly as Linux `dentry_path_raw` marks it.
     /// # C: O(depth)
     pub fn dentry_path(&self, root: Option<&Arc<Dentry>>) -> String {
+        // Pseudo dentries render their own name (Linux `__dentry_path` defers to
+        // `d_dname` for these) — return it verbatim, no parent walk / "(deleted)".
+        if let Some(dyn_name) = self.d_dname() { return dyn_name; }
         let root_ptr = root.map(Arc::as_ptr);
         let me_ptr = self as *const Dentry;
         let mut parts: Vec<String> = Vec::new();

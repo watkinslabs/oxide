@@ -50,32 +50,9 @@ pub(crate) fn socket_from_fd(fd: u64) -> Option<Arc<InetSocket>> {
     // SAFETY: running task; sole reader of fd_table slot.
     let fdt = unsafe { cur.fd_table_ref() }?;
     let file = fdt.get(fd as i32).ok()?;
-    let inode: &vfs::InodeRef = file.inode();
-    // Downcast from Arc<dyn Inode> by raw-pointer compare with
-    // a sentinel — vfs::Inode doesn't expose Any. Workaround:
-    // wrap the InetSocket in an Arc<dyn Inode> and rely on
-    // matching the underlying type via a dedicated tag inode.
-    // Simpler: stash a raw &InetSocket via a downcast helper.
-    // For v1 we pattern: Arc<dyn Inode> → check ino() upper bits.
-    let raw_ino = inode.ino();
-    if (raw_ino & 0xFFFF_FFFF_0000_0000) != 0x534F_434B_0000_0000 {
-        return None;
-    }
-    // SAFETY: ino tag confirms this Inode is an InetSocket; the
-    // pointer encoded in the low 32 bits is a valid &InetSocket
-    // for the Arc's lifetime (kept alive by `file`).
-    let ptr = (raw_ino & 0xFFFF_FFFF) as usize;
-    let _ = ptr;
-    // Cleaner lift: clone the Arc<dyn Inode>, then convert via
-    // a transmute through Arc::into_raw. We can't do that safely
-    // without a downcast trait. So: rebuild an InetSocket-shaped
-    // handle by re-reading. This v1 implementation requires the
-    // caller supply the InetSocket directly via the fd_table —
-    // which it does, since the Arc holds the InetSocket. We just
-    // can't retrieve it as Arc<InetSocket> without a dedicated
-    // downcast helper. Add one here.
-    let sock_arc = inode_as_inet_socket(inode)?;
-    Some(sock_arc)
+    // Post-KEYSTONE: the socket is the inode's `i_private`; `Arc::downcast`
+    // (in `inode_as_inet_socket`) recovers the typed `Arc<InetSocket>`.
+    inode_as_inet_socket(file.inode())
 }
 
 /// `SO_PEERCRED` source: resolve `fd` → its AF_UNIX socket → the peer
@@ -99,19 +76,11 @@ pub(crate) fn peercred_for_fd(fd: i32) -> Option<(u32, u32, u32)> {
 /// (vouched by the high-bit tag in `ino()`).
 /// # C: O(1)
 pub(crate) fn inode_as_inet_socket(inode: &vfs::InodeRef) -> Option<Arc<InetSocket>> {
-    if (inode.ino() & 0xFFFF_FFFF_0000_0000) != 0x534F_434B_0000_0000 {
-        return None;
-    }
-    // Erase fat-pointer metadata via Arc::into_raw → cast to
-    // *const InetSocket → Arc::from_raw. Sound only because we
-    // verified the tag.
-    let raw = Arc::into_raw(inode.clone());
-    let ptr = raw as *const InetSocket;
-    // SAFETY: ino tag check above confirms the inode is an
-    // InetSocket; refcount was just incremented by `Arc::clone`
-    // followed by `into_raw` so the new Arc::from_raw consumes it.
-    let arc = unsafe { Arc::from_raw(ptr) };
-    Some(arc)
+    // Post-KEYSTONE: the socket lives in the concrete inode's `i_private`
+    // (`Arc<dyn Any + Send + Sync>`); recover the typed `Arc<InetSocket>` via
+    // `Arc::downcast` (the ino tag is no longer needed — the downcast IS the
+    // type check).
+    inode.i_private().clone().downcast::<InetSocket>().ok()
 }
 
 /// D3.3: resolve an fd to its AF_VSOCK socket Arc, or None for a
@@ -123,17 +92,9 @@ pub(crate) fn vsock_from_fd(fd: u64) -> Option<Arc<net::vsock_socket::VsockSocke
     let fdt = unsafe { cur.fd_table_ref() }?;
     let file = fdt.get(fd as i32).ok()?;
     let inode: &vfs::InodeRef = file.inode();
-    if (inode.ino() & 0xFFFF_FFFF_0000_0000) != net::vsock_socket::VSOCK_INO_TAG {
-        return None;
-    }
-    // Erase fat-pointer metadata via Arc::into_raw → cast → from_raw.
-    let raw = Arc::into_raw(inode.clone());
-    let ptr = raw as *const net::vsock_socket::VsockSocket;
-    // SAFETY: ino tag check above confirms the inode is a VsockSocket;
-    // refcount was incremented by `Arc::clone` then `into_raw`, so the
-    // matching `Arc::from_raw` consumes exactly that reference.
-    let arc = unsafe { Arc::from_raw(ptr) };
-    Some(arc)
+    // Post-KEYSTONE: the vsock socket lives in `i_private`; recover the typed
+    // `Arc<VsockSocket>` via `Arc::downcast`.
+    inode.i_private().clone().downcast::<net::vsock_socket::VsockSocket>().ok()
 }
 
 /// Resolve an fd to its vfs::File Arc (running task's fd table).

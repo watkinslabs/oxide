@@ -84,13 +84,10 @@ pub(crate) fn dev_minor(dev: u64) -> u32 {
 /// ABI shape expected by stat/statx.
 /// # C: O(1)
 pub(crate) fn fsid_to_dev(fsid: u64) -> u64 {
-    let mut x = fsid;
-    x ^= x >> 33;
-    x = x.wrapping_mul(0xff51afd7ed558ccd);
-    x ^= x >> 33;
-    let major = (((x >> 20) & 0x0fff) as u32).max(1);
-    let minor = (x & 0x000f_ffff) as u32;
-    encode_dev(major, minor)
+    // Single source of truth in `vfs::fsid_to_dev` so autofs OPENMOUNT (which
+    // must reproduce the `st_dev` userspace stat'd) can never drift from the
+    // value this stat path encodes.
+    vfs::fsid_to_dev(fsid)
 }
 
 /// Map a `VfsError` to the negative Linux errno the ABI returns. Complete

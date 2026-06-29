@@ -861,3 +861,21 @@ fn parent_vpid_resolves_parent_vtgid() {
     // init's parent is the kernel (parent_tid 0 / not registered) → PPid 0.
     assert_eq!(crate::registry::parent_vpid(0xC0DE_0002), 0);
 }
+
+// B288: SCM_CREDENTIALS / SO_PEERCRED must carry the PID-namespace-visible
+// pid (`vtgid`), not the raw global `tgid`. PID 1 (systemd) tracks each
+// service by its NS-local pid; a notify datagram stamped with the global
+// tgid matches no unit, so the service ("READY=1") times out. `visible_pid`
+// is the single accessor every AF_UNIX credential-stamping site now uses.
+#[test]
+fn visible_pid_prefers_vtgid_then_falls_back_to_tgid() {
+    let t = Task::new(4120, "svc", SchedClass::Normal { weight: 1024 });
+    t.tgid.store(4120, Ordering::Release);
+    // No NS virtualisation yet: visible pid == real tgid.
+    t.vtgid.store(0, Ordering::Release);
+    assert_eq!(t.visible_pid(), 4120);
+    // Service spawned by PID 1 in the userspace pid_ns: vtgid=40 is what
+    // systemd sees and stores; SCM_CREDENTIALS must report 40, not 4120.
+    t.vtgid.store(40, Ordering::Release);
+    assert_eq!(t.visible_pid(), 40);
+}

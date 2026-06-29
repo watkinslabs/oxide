@@ -13,19 +13,15 @@
 
 use std::sync::Arc;
 
-use vfs::inode::Inode;
-use vfs::{Dentry, FdTable, File, FileType, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{InodeBuilder, default_file_ops, default_inode_ops, mk_mode};
+use vfs::{Dentry, FdTable, File, FileType, InodeRef, OpenFlags, VfsError};
 
-struct Dummy;
-impl Inode for Dummy {
-    fn ino(&self) -> vfs::Ino { 0x1 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn mk_inode() -> InodeRef {
+    InodeBuilder::new(0x1, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
 }
 
 fn mk_file() -> Arc<File> {
-    let ino: InodeRef = Arc::new(Dummy);
+    let ino: InodeRef = mk_inode();
     let dentry = Dentry::new(None, "f".into(), Arc::clone(&ino));
     File::new(ino, dentry, OpenFlags::O_RDWR)
 }

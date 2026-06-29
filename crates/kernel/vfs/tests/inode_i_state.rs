@@ -11,9 +11,12 @@
 
 use std::sync::Arc;
 
-use vfs::inode::{Inode, I_CLEAR, I_DIRTY_DATASYNC, I_DIRTY_PAGES, I_DIRTY_SYNC, I_WILL_FREE};
+use vfs::inode::{InodeBuilder, I_CLEAR, I_DIRTY_DATASYNC, I_DIRTY_PAGES, I_DIRTY_SYNC, I_WILL_FREE};
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
-use vfs::{FileType, InodeRef, KResult, VfsError, I_DIRTY, I_FREEING, I_NEW};
+use vfs::{
+    default_file_ops, default_inode_ops, mk_mode, FileType, InodeRef, KResult, VfsError, I_DIRTY,
+    I_FREEING, I_NEW,
+};
 
 struct TType;
 impl FileSystemType for TType {
@@ -24,18 +27,13 @@ struct TOps;
 impl SuperOps for TOps {
     fn statfs(&self) -> KResult<SbStatFs> { Ok(SbStatFs::default()) }
 }
-struct TFile { ino: u64 }
-impl Inode for TFile {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-}
 
 fn sb() -> Arc<SuperBlock> {
     SuperBlock::new(Arc::new(TType), Arc::new(TOps), 0xBADCAFE, 7, 4096, "tstatefs".into(), Arc::new(()))
 }
-fn file(ino: u64) -> InodeRef { Arc::new(TFile { ino }) }
+fn file(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
+}
 
 /// Linux `include/linux/fs.h` numeric reps: the new bits sit at exactly the
 /// Linux positions and `I_DIRTY` is the SYNC|DATASYNC|PAGES aggregate.

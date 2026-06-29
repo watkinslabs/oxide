@@ -232,7 +232,7 @@ impl UnixPair {
             // creds. peer_cred(reader_end) reads this end's value.
             if let Some(c) = sched::live::current() {
                 use core::sync::atomic::Ordering::Relaxed;
-                self.set_end_cred(end, c.tgid.load(Relaxed),
+                self.set_end_cred(end, c.visible_pid(),
                     c.creds.euid.load(Relaxed), c.creds.egid.load(Relaxed));
             }
             // Writer on `end` feeds the ring the OTHER end reads from.
@@ -415,7 +415,7 @@ impl UnixMsgPair {
             // must carry the child's pid, not the creator's.
             if let Some(c) = sched::live::current() {
                 use core::sync::atomic::Ordering::Relaxed;
-                self.set_end_cred(end, c.tgid.load(Relaxed),
+                self.set_end_cred(end, c.visible_pid(),
                     c.creds.euid.load(Relaxed), c.creds.egid.load(Relaxed));
             }
             let waiters = match end {
@@ -860,5 +860,26 @@ mod tests {
         p.send(UnixEnd::B, b"world");
         assert_eq!(p.recv(UnixEnd::B, 64).unwrap(), b"hello");
         assert_eq!(p.recv(UnixEnd::A, 64).unwrap(), b"world");
+    }
+
+    // B288: an AF_UNIX SOCK_DGRAM message carries the sender's credential
+    // tuple end-to-end (push→pop). The kernel send paths stamp this with
+    // the namespace-visible pid (`Task::visible_pid`), which is what
+    // `recvmsg` re-emits as SCM_CREDENTIALS — the value PID 1 matches a
+    // service's notify datagram against. A regression that dropped/zeroed
+    // creds here would make every Type=notify service time out.
+    #[test]
+    fn dgram_message_preserves_sender_creds() {
+        let q = UnixDgramQueue::new();
+        q.push(UnixDgram {
+            payload: b"READY=1".to_vec(),
+            creds: (40, 0, 0),                 // vpid 40 (e.g. journald)
+            #[cfg(not(target_os = "oxide-kernel"))]
+            fds: alloc::vec::Vec::new(),
+        });
+        let got = q.pop().expect("one queued message");
+        assert_eq!(&got.payload[..], b"READY=1");
+        assert_eq!(got.creds, (40, 0, 0));
+        assert!(q.pop().is_none());
     }
 }

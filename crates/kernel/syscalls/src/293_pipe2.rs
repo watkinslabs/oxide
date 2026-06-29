@@ -19,14 +19,15 @@ pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
-    let inode = ::fs::pipe::PipeInode::new();
-    inode.writers.store(1, core::sync::atomic::Ordering::Release);
-    inode.readers.store(1, core::sync::atomic::Ordering::Release);
+    let inode = ::fs::pipe::make_pipe_inode();
+    let pd = ::fs::pipe::pipe_data(&inode).expect("pipe inode has PipeData");
+    pd.writers.store(1, core::sync::atomic::Ordering::Release);
+    pd.readers.store(1, core::sync::atomic::Ordering::Release);
     debug_ssh! {
-        let w = inode.writers.load(core::sync::atomic::Ordering::Acquire);
-        let r = inode.readers.load(core::sync::atomic::Ordering::Acquire);
+        let w = pd.writers.load(core::sync::atomic::Ordering::Acquire);
+        let r = pd.readers.load(core::sync::atomic::Ordering::Acquire);
         klog::write_raw(b"[INFO]  ssh-trace: pipe_create ino=");
-        klog::write_dec_u64(inode.ino);
+        klog::write_dec_u64(pd.ino);
         klog::write_raw(b" tid=");
         klog::write_dec_u64(cur.tid as u64);
         klog::write_raw(b" w_post_store=");

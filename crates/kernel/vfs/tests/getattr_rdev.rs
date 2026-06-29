@@ -11,32 +11,22 @@
 //! impl must agree with, so this also pins `encode_dev == Devt::new(..).raw()`.
 
 use vfs::getattr::encode_dev;
-use vfs::inode::Inode;
-use vfs::{Devt, FileType, InodeRef, KResult, VfsError, IDENTITY};
+use vfs::{Devt, FileType, Inode, InodeBuilder, InodeRef, IDENTITY,
+          default_file_ops, default_inode_ops, mk_mode};
 
 /// Device node returning an already-encoded `dev_t` from `rdev()` (the Linux
 /// contract: `i_rdev` is the packed number the driver model assigned).
-struct TDev { ft: FileType, rdev: u32 }
-impl Inode for TDev {
-    fn ino(&self) -> vfs::Ino { 3 }
-    fn file_type(&self) -> FileType { self.ft }
-    fn size(&self) -> u64 { 0 }
-    fn rdev(&self) -> u32 { self.rdev }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn dev_inode(ft: FileType, rdev: u32) -> InodeRef {
+    InodeBuilder::new(3, mk_mode(ft, 0), default_inode_ops(), default_file_ops()).rdev(rdev).build()
 }
 
-/// Non-device inode that (incorrectly) advertises a non-zero `rdev()` — proves
-/// the type gate, not the source, is what zeroes `st_rdev` off device nodes.
-struct TNonDev { ft: FileType }
-impl Inode for TNonDev {
-    fn ino(&self) -> vfs::Ino { 4 }
-    fn file_type(&self) -> FileType { self.ft }
-    fn size(&self) -> u64 { 0 }
-    fn rdev(&self) -> u32 { 0xdead }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// Non-device inode that (incorrectly) carries a non-zero `i_rdev` — proves the
+/// type gate, not the source, is what zeroes `st_rdev` off device nodes.
+fn nondev_inode(ft: FileType) -> InodeRef {
+    InodeBuilder::new(4, mk_mode(ft, 0), default_inode_ops(), default_file_ops()).rdev(0xdead).build()
 }
 
-fn fill_rdev<I: Inode>(i: &I) -> u32 { vfs::generic_fillattr(i, &IDENTITY, None).rdev }
+fn fill_rdev(i: &Inode) -> u32 { vfs::generic_fillattr(i, &IDENTITY, None).rdev }
 
 #[test]
 fn encode_dev_matches_devt_and_splits_high_minor() {
@@ -58,18 +48,18 @@ fn encode_dev_matches_devt_and_splits_high_minor() {
 fn device_inodes_report_their_encoded_rdev() {
     let cdev = encode_dev(1, 3);
     let bdev = encode_dev(8, 0);                       // sd/sda 8:0
-    assert_eq!(fill_rdev(&TDev { ft: FileType::CharDev,  rdev: cdev }), cdev, "char rdev passed through");
-    assert_eq!(fill_rdev(&TDev { ft: FileType::BlockDev, rdev: bdev }), bdev, "block rdev passed through");
+    assert_eq!(fill_rdev(&dev_inode(FileType::CharDev,  cdev)), cdev, "char rdev passed through");
+    assert_eq!(fill_rdev(&dev_inode(FileType::BlockDev, bdev)), bdev, "block rdev passed through");
     // A high minor survives intact (no truncation in the fill path).
     let big = encode_dev(4, 300);
-    assert_eq!(fill_rdev(&TDev { ft: FileType::CharDev, rdev: big }), big, "high-minor char rdev intact");
+    assert_eq!(fill_rdev(&dev_inode(FileType::CharDev, big)), big, "high-minor char rdev intact");
 }
 
 #[test]
 fn non_device_inodes_report_zero_rdev() {
     for ft in [FileType::Regular, FileType::Directory, FileType::Symlink,
                FileType::Fifo, FileType::Socket] {
-        assert_eq!(fill_rdev(&TNonDev { ft }), 0,
+        assert_eq!(fill_rdev(&nondev_inode(ft)), 0,
                    "non-device inode must zero st_rdev regardless of rdev()");
     }
 }

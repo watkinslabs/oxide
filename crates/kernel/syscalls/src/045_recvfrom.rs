@@ -33,13 +33,16 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     }
     // D3.3: AF_VSOCK recv/recvfrom → OP_RW delivery via the socket
     // inode read path (STREAM, src not filled — single peer).
-    if let Some(vs) = crate::net_common::vsock_from_fd(fd) {
+    if crate::net_common::vsock_from_fd(fd).is_some() {
         if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
         let nb = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
         // SAFETY: bufp validated; user page mapped under caller's AS.
         let dst = unsafe { core::slice::from_raw_parts_mut(bufp as *mut u8, len) };
-        use vfs::Inode;
-        let r = if nb { vs.read_nonblock(0, dst) } else { vs.read(0, dst) };
+        // Post-KEYSTONE: the data path is the inode's `i_fop` (vsock FileOps).
+        let file = match crate::net_common::fd_file(fd) {
+            Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        let r = if nb { file.inode().read_nonblock(0, dst) } else { file.inode().read(0, dst) };
         return match r { Ok(n) => n as i64, Err(e) => -(e as i64) };
     }
     let sock: Arc<net::sock::InetSocket> = match socket_from_fd(fd) {

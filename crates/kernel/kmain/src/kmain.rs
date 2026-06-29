@@ -632,8 +632,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     if drv_virtio_rng::present() {
         devfs::misc::set_hwrng_source(drv_virtio_rng::fill);
-        devfs::register("/dev/hwrng",
-            alloc::sync::Arc::new(devfs::misc::HwRngInode) as vfs::InodeRef);
+        devfs::register("/dev/hwrng", devfs::misc::make_hwrng_inode());
         debug_boot! { klog::write_raw(b"[INFO]  /dev/hwrng registered (virtio-rng)\n"); }
     }
 

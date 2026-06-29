@@ -570,7 +570,15 @@ fn handle_autofs_dev_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<
             let Some(ctl_inode) = ::fs::autofs::openmount(devid) else {
                 return Some(-(Errno::Enoent.as_i32() as i64));
             };
-            crate::fsmount_common::install_fd(ctl_inode, "[autofs]", true)
+            let fd = crate::fsmount_common::install_fd(ctl_inode, "[autofs]", true);
+            if fd < 0 { return Some(fd); }
+            // OPENMOUNT yields the new control fd in `param.ioctlfd` (struct
+            // offset 12) and returns 0 — NOT the fd as the ioctl retval. systemd
+            // treats `ioctlfd < 0` after the call as -EIO, so a 0-retval without
+            // writing this field aborted automount setup (the EIO that followed
+            // the ENOENT fix). # SAFETY: arg..arg+24 validated writable above.
+            unsafe { core::ptr::write_volatile((arg + 12) as *mut i32, fd as i32); }
+            0
         }
         PROTOVER => {
             let version = ctl.map(::fs::autofs::ctl_protover).unwrap_or(5);

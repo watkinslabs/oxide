@@ -317,6 +317,21 @@ pub fn d_alloc(parent: &Arc<Dentry>, name: &str) -> Arc<Dentry> {
     Dentry::new_child(parent, name, None)
 }
 
+/// Allocate a PSEUDO dentry for an anonymous/internal inode (Linux
+/// `d_alloc_pseudo`, `fs/dcache.c`) — the constructor pipefs/sockfs/anon-inodefs
+/// and every `anon_inode_getfd` consumer (pipe, eventfd, signalfd, timerfd,
+/// memfd, epoll, bpf, io_uring) use for an fd with no path. The dentry is
+/// parentless, positive, UNHASHED (no (parent,name) key — it never enters the
+/// global table or any `d_subdirs`), and carries `d_op` so `d_op->d_dname`
+/// renders its displayed path dynamically (`pipe:[ino]`, `[eventfd]`). `name` is
+/// the static fallback `d_name`. Records the inode alias when the inode has an
+/// owning SB, mirroring the other instantiating builders. # C: O(name.len())
+pub fn d_alloc_pseudo(name: &str, inode: InodeRef, d_op: &'static crate::dentry::DentryOps) -> Arc<Dentry> {
+    let d = Dentry::new_pseudo(name, inode.clone(), d_op);
+    if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, &d); }
+    d
+}
+
 /// Cache read (Linux `d_lookup`): the child dentry for `name` under
 /// `parent`, positive OR cached-negative, via the global hash table — RCU
 /// (seqcount) read with a locked ref-walk fallback. Fires `d_op->d_revalidate`
@@ -354,6 +369,27 @@ pub fn d_lookup_reval(parent: &Arc<Dentry>, name: &str, reval: bool) -> Option<A
     }
     d.dec_count();
     Some(d)
+}
+
+/// One-shot WEAK revalidation of an already-resolved final dentry (Linux
+/// `complete_walk` → `d_op->d_weak_revalidate`). The per-component `d_lookup`
+/// fast path consults `d_revalidate`; this is the counterpart Linux fires ONCE,
+/// on the LAST component, only when the walk reached it via a jump (`..` out of
+/// the starting mount, a procfs magic symlink) and so skipped the ordinary
+/// per-step revalidation. `true` ⇒ the result is valid; `false` ⇒ stale (the
+/// caller returns `-ESTALE` and retries the walk with `LOOKUP_REVAL`, threaded
+/// here as `reval`). UNLIKE [`d_lookup_reval`], a stale weak result does NOT
+/// `d_drop` the dentry — it stays a valid cache node, only THIS resolution is
+/// rejected (Linux `complete_walk` returns the error without unhashing). A
+/// dentry without the `D_OP_WEAK_REVALIDATE` hook is always valid — the common
+/// case, gated on the presence bit so no `d_op` deref happens for it.
+/// # C: O(1) (+ the fs hook)
+pub fn d_weak_revalidate(d: &Arc<Dentry>, reval: bool) -> bool {
+    if !d.d_has_op_weak_revalidate() { return true; }
+    match d.d_op().and_then(|o| o.d_weak_revalidate) {
+        Some(f) => f(d, reval),
+        None    => true,
+    }
 }
 
 /// Attach `inode` to a negative `dentry`, making it positive (post
@@ -398,13 +434,15 @@ pub fn dget(d: &Arc<Dentry>) -> Arc<Dentry> { d.inc_count(); Arc::clone(d) }
 pub fn dput(d: Arc<Dentry>) {
     if d.dec_count() == 0 {
         let delete = d.d_op().and_then(|o| o.d_delete).map(|f| f(&d)).unwrap_or(false);
-        // Linux `retain_dentry`: only a HASHED (cacheable) dentry is retained on
-        // the LRU for the shrinker. An unhashed dentry — every anon-inode fd
-        // (pipe/eventfd/signalfd/socket/memfd), or one already `d_drop`-ed by
-        // unlink — is killed at count 0 instead, so it never leaks a dangling
-        // `Weak` into the (currently un-driven, D10) LRU. `d_delete` forces the
-        // same immediate eviction for pseudo-fs that opt in.
-        if delete || !d.is_hashed() { dentry_kill(&d); } else { lru_add(&d); }
+        // Linux `retain_dentry`: only a HASHED (cacheable) dentry that is NOT
+        // marked `DCACHE_DONTCACHE` is retained on the LRU for the shrinker. An
+        // unhashed dentry — every anon-inode fd (pipe/eventfd/signalfd/socket/
+        // memfd), or one already `d_drop`-ed by unlink — is killed at count 0
+        // instead, so it never leaks a dangling `Weak` into the (currently
+        // un-driven, D10) LRU. `d_delete` forces the same immediate eviction for
+        // pseudo-fs that opt in; `DCACHE_DONTCACHE` (from an `I_DONTCACHE` inode)
+        // forces it for a hashed dentry the fs wants evicted promptly.
+        if delete || !d.is_hashed() || d.is_dontcache() { dentry_kill(&d); } else { lru_add(&d); }
     }
     drop(d);
 }
@@ -420,6 +458,12 @@ pub fn dput(d: Arc<Dentry>) {
 /// disconnects a subtree whose nodes may still be in use, and a stale
 /// `d_revalidate` miss re-walks without a refcount kill. # C: O(d_drop)
 fn dentry_kill(d: &Arc<Dentry>) {
+    // Linux `__dentry_kill`: fire `d_op->d_prune` (gated by the `DCACHE_OP_PRUNE`
+    // presence bit) BEFORE unhashing, so the fs can drop cache bookkeeping while
+    // the dentry's name/parent binding is still intact.
+    if d.d_has_op_prune() {
+        if let Some(f) = d.d_op().and_then(|o| o.d_prune) { f(d); }
+    }
     d.mark_dead();
     d_drop(d);
 }
@@ -466,11 +510,17 @@ pub fn d_delete(d: &Arc<Dentry>) {
 /// (parent,name) key, so `d_lookup(old_parent, old_name)` misses and
 /// `d_lookup(new_parent, new_name)` hits. # C: O(1) expected
 pub fn d_move(old: &Arc<Dentry>, new_parent: &Arc<Dentry>, new_name: &str) -> Arc<Dentry> {
+    // Linux `__d_move` brackets the rehome in `write_seqcount_begin/end(&d_seq)`
+    // so a lock-free walker holding `old` detects the move (`read_seqretry`) and
+    // re-looks-up the new (parent,name) instead of trusting the stale binding.
+    old.seq_write_begin();
     d_drop(old);
-    match old.inode() {
+    let moved = match old.inode() {
         Some(inode) => d_add(new_parent, new_name, inode),
         None        => d_add_negative(new_parent, new_name),
-    }
+    };
+    old.seq_write_end();
+    moved
 }
 
 /// Obtain a dentry referring to `inode` WITHOUT a path/parent (Linux
@@ -529,6 +579,14 @@ pub fn d_splice_alias(inode: InodeRef, d: &Arc<Dentry>) -> Arc<Dentry> {
 /// stack depth. Used on remount / staleness and rmdir of a populated-but-
 /// invalidated dir. # C: O(subtree)
 pub fn d_invalidate(d: &Arc<Dentry>) {
+    // Linux `d_invalidate` opens with `if (d_unhashed(dentry)) return;` — an
+    // already-unhashed dentry was invalidated by a prior call (or never entered
+    // the hash), so a re-entry must be a no-op: it must NOT re-detach mounts or
+    // re-tear-down a subtree that is already disconnected (or one hanging off a
+    // dentry that is not the cache's canonical name). This makes `d_invalidate`
+    // idempotent and stops a parallel rmdir + revalidate racing two teardowns of
+    // the same subtree.
+    if d.is_unhashed() { return; }
     let mut stack: Vec<Arc<Dentry>> = alloc::vec![d.clone()];
     while let Some(cur) = stack.pop() {
         for kid in cur.children_snapshot() { stack.push(kid); }
@@ -540,22 +598,24 @@ pub fn d_invalidate(d: &Arc<Dentry>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dentry::{DentryOps, D_HASHED, D_NEGATIVE};
-    use crate::inode::Inode;
+    use crate::dentry::{DentryOps, D_HASHED, D_NEGATIVE, D_OP_WEAK_REVALIDATE};
+    use core::sync::atomic::AtomicBool;
+    use crate::inode::{Inode, InodeBuilder};
+    use crate::inode_ops::{mk_mode, InodeOps};
+    use crate::file_ops::default_file_ops;
     use crate::types::{FileType, KResult, VfsError};
     use alloc::string::String;
     use alloc::format;
 
-    // Minimal directory inode for positive-dentry tests. `i_sb()` defaults to
-    // None so no superblock/alias machinery is needed.
-    struct Dir { ino: u64 }
-    impl Inode for Dir {
-        fn ino(&self) -> u64 { self.ino }
-        fn file_type(&self) -> FileType { FileType::Directory }
-        fn size(&self) -> u64 { 0 }
-        fn lookup(&self, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+    // Minimal directory inode for positive-dentry tests. `i_sb` defaults to
+    // None so no superblock/alias machinery is needed; `lookup` → Enoent.
+    struct DirOps;
+    impl InodeOps for DirOps {
+        fn lookup(&self, _inode: &Inode, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
     }
-    fn dir(ino: u64) -> InodeRef { Arc::new(Dir { ino }) }
+    fn dir(ino: u64) -> InodeRef {
+        InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(DirOps), default_file_ops()).build()
+    }
 
     fn root() -> Arc<Dentry> { Dentry::new_root(dir(1)) }
 
@@ -617,7 +677,7 @@ mod tests {
             (h ^ (h >> 32)) as u32
         }),
         d_compare: Some(|name, cand| name.eq_ignore_ascii_case(cand.name())),
-        d_revalidate: None, d_delete: None, d_release: None, d_iput: None,
+        d_revalidate: None, d_weak_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None,
     };
     #[test]
     fn d_compare_case_insensitive() {
@@ -632,7 +692,8 @@ mod tests {
     // d_revalidate: a stale dentry is dropped on lookup.
     static STALE_OPS: DentryOps = DentryOps {
         d_revalidate: Some(|_d, _reval| false), // everything is stale
-        d_hash: None, d_compare: None, d_delete: None, d_release: None, d_iput: None,
+        d_weak_revalidate: None,
+        d_hash: None, d_compare: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None,
     };
     #[test]
     fn d_revalidate_drops_stale() {
@@ -756,5 +817,51 @@ mod tests {
         c.set_inode(Some(dir(30)));
         assert_eq!(c.flags() & D_NEGATIVE, 0);
         assert!(!c.is_negative());
+    }
+
+    // d_weak_revalidate (Linux `complete_walk` final-dentry hook): the presence
+    // bit is stamped, the hook fires with the `LOOKUP_REVAL` flag threaded, and a
+    // STALE weak result does NOT drop the dentry (unlike per-component
+    // d_revalidate) — only this resolution is rejected.
+    static WEAK_SAW_REVAL: AtomicBool = AtomicBool::new(false);
+    static WEAK_VALID:     AtomicBool = AtomicBool::new(true);
+    fn weak_rev(_d: &Arc<Dentry>, reval: bool) -> bool {
+        WEAK_SAW_REVAL.store(reval, Ordering::SeqCst);
+        WEAK_VALID.load(Ordering::SeqCst)
+    }
+    static WEAK_OPS: DentryOps = DentryOps {
+        d_weak_revalidate: Some(weak_rev),
+        d_hash: None, d_compare: None, d_revalidate: None, d_delete: None,
+        d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None,
+    };
+    #[test]
+    fn d_weak_revalidate_hook_and_no_drop() {
+        // Presence bit stamped from the non-NULL hook (d_set_d_op).
+        let r = Dentry::new_root(dir(1)).set_d_op(&WEAK_OPS);
+        assert_ne!(r.flags() & D_OP_WEAK_REVALIDATE, 0);
+        assert!(r.d_has_op_weak_revalidate());
+        let c = d_add(&r, "leaf", dir(40)); // child inherits WEAK_OPS via new_child
+        assert!(c.d_has_op_weak_revalidate());
+        assert!(c.is_hashed());
+
+        // Valid path: hook returns true; `reval` flag is threaded through.
+        WEAK_VALID.store(true, Ordering::SeqCst);
+        assert!(d_weak_revalidate(&c, true));
+        assert!(WEAK_SAW_REVAL.load(Ordering::SeqCst), "LOOKUP_REVAL threaded");
+        assert!(d_weak_revalidate(&c, false));
+        assert!(!WEAK_SAW_REVAL.load(Ordering::SeqCst));
+
+        // Stale path: hook returns false, but the dentry stays a valid cache node
+        // (still hashed, still found by d_lookup) — complete_walk rejects the
+        // resolution without unhashing, unlike d_lookup_reval's d_drop.
+        WEAK_VALID.store(false, Ordering::SeqCst);
+        assert!(!d_weak_revalidate(&c, false));
+        assert!(c.is_hashed(), "weak-stale must NOT unhash the dentry");
+        assert!(d_lookup(&r, "leaf").is_some(), "dentry still cached after weak-stale");
+
+        // A dentry with no weak hook is always valid, no deref.
+        let plain = root();
+        assert!(!plain.d_has_op_weak_revalidate());
+        assert!(d_weak_revalidate(&plain, true));
     }
 }

@@ -55,7 +55,7 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
         let inode = match fd_inode(from_fd) {
             Some(i) => i, None => return -(Errno::Ebadf.as_i32() as i64),
         };
-        if let Some(mo) = inode.as_any().and_then(|a| a.downcast_ref::<MountObjectInode>()) {
+        if let Some(mo) = inode.private::<MountObjectInode>() {
             // open_tree clone: bind the captured (fs, root) at the target.
             if let Some((fs, root)) = mo.clone_of.as_ref() {
                 let _ = vfs::mount::register_bind(Some(target_d.clone()), fs.clone(), root.clone());
@@ -70,10 +70,12 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
         Ok(p) => p, Err(rv) => return rv,
     };
     let from = if from.len() > 1 { from.trim_end_matches('/').to_string() } else { from };
-    let from_d = match crate::pathresolve::mount_dentry(&from) {
-        Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
+    // Source mount = the `mnt_id` the walk crossed into (Linux `path->mnt`), not
+    // a re-derived dentry (which resolves onto the moved mount's shared root).
+    let from_vp = match crate::pathresolve::resolve_path(&from, false) {
+        Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
     };
-    match vfs::mount::move_mount(&from_d, &target_d) {
+    match vfs::mount::move_mount_by_id(from_vp.mnt_id, &target_d) {
         Ok(())                    => 0,
         Err(vfs::VfsError::Ebusy) => -(Errno::Ebusy.as_i32() as i64),
         Err(_)                    => -(Errno::Einval.as_i32() as i64),

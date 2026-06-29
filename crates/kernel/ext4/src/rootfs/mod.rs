@@ -15,7 +15,7 @@ mod inode;
 mod ops;
 
 pub use state::RootfsState;
-pub use inode::{Ext4FileInode, Ext4StatInode, EXT4_INO_MARK, EXT4_INO_MASK,
+pub use inode::{EXT4_INO_MARK, EXT4_INO_MASK,
     ext4_wrap_ino, is_ext4_ino, ext4_unwrap_ino};
 pub use ops::Ext4Mount;
 
@@ -85,8 +85,8 @@ pub fn set_test_mount(mount: crate::Mount) {
 
 /// Close-hook: free an ext4 O_TMPFILE inode once its last fd drops AND
 /// its on-disk nlink is 0. Routes to the OWNING mount via the closed
-/// inode wrapper's own `Arc<RootfsState>` (downcast through
-/// `Inode::as_any`) — NEVER `root()`. Small on-disk inos (11,12,13…)
+/// inode's own `Arc<RootfsState>` (recovered from `i_private` by
+/// `ext4_state_of`) — NEVER `root()`. Small on-disk inos (11,12,13…)
 /// collide across every ext4 image, so freeing against the root would
 /// silently corrupt the root fs when a non-root mount's fd closes. The
 /// marker only proves "some ext4 inode"; the wrapper's `st` field
@@ -94,16 +94,11 @@ pub fn set_test_mount(mount: crate::Mount) {
 #[cfg(target_os = "oxide-kernel")]
 fn close_hook_free_orphan(ino_ref: &vfs::InodeRef, _was_writable: bool) {
     if !is_ext4_ino(ino_ref.ino()) { return; }
-    // Recover (owning mount state, ext4 ino) from the wrapper itself.
-    let any = match ino_ref.as_any() { Some(a) => a, None => return };
-    let (st, ino): (&Arc<RootfsState>, u32) =
-        if let Some(f) = any.downcast_ref::<Ext4FileInode>() {
-            (&f.st, f.ino)
-        } else if let Some(s) = any.downcast_ref::<Ext4StatInode>() {
-            (&s.st, s.ino)
-        } else {
-            return;
-        };
+    // Recover (owning mount state, ext4 ino) from the inode's i_private.
+    let (st, ino): (Arc<RootfsState>, u32) = match inode::ext4_state_of(ino_ref) {
+        Some(v) => v,
+        None => return,
+    };
     if !st.orphan_contains(ino) { return; }
     if Arc::strong_count(ino_ref) != 1 { return; }
     if let Ok(inode) = st.mount.read_inode(ino) {
@@ -222,10 +217,7 @@ impl vfs::fs::FileSystem for Ext4RootfsFs {
         link_at(target.as_bytes(), link.as_bytes())
     }
     fn link_inode(&self, inode: vfs::InodeRef, link: &str) -> vfs::fs::KResult<()> {
-        let ino = inode.as_any()
-            .and_then(|a| a.downcast_ref::<crate::rootfs::inode::Ext4FileInode>())
-            .map(|i| i.ext4_ino())
-            .ok_or(vfs::VfsError::Exdev)?;
+        let ino = inode::ext4_file_ino(&inode).ok_or(vfs::VfsError::Exdev)?;
         link_inode_at(ino, link.as_bytes())
     }
     fn rename(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {

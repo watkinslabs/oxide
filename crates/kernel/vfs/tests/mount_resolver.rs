@@ -29,18 +29,19 @@ fn guard() -> MutexGuard<'static, ()> {
     g
 }
 
-struct TDir { ino: u64 }
-impl Inode for TDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+struct TDirOps;
+impl vfs::InodeOps for TDirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+}
+fn tdir(ino: u64) -> InodeRef {
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755),
+        Arc::new(TDirOps), vfs::default_file_ops()).build()
 }
 
 struct TestFs { root_ino: u64 }
 impl FileSystem for TestFs {
     fn name(&self) -> &str { "testfs" }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir { ino: self.root_ino })) }
+    fn root(&self) -> Option<InodeRef> { Some(tdir(self.root_ino)) }
 }
 
 #[test]
@@ -102,21 +103,22 @@ fn move_mount_relocates_preserving_mnt_id() {
 
 // K2V V7-b: bind-as-clone. register_bind mounts an arbitrary source inode
 // as the mount root; mount_root_at returns THAT inode (not fs.root()).
-struct BindChildDir;
-impl Inode for BindChildDir {
-    fn ino(&self) -> vfs::Ino { 0xB14D }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, n: &str) -> KResult<InodeRef> {
-        if n == "kid" { Ok(Arc::new(TDir { ino: 0xC0DE })) } else { Err(VfsError::Enoent) }
+struct BindChildDirOps;
+impl vfs::InodeOps for BindChildDirOps {
+    fn lookup(&self, _inode: &Inode, n: &str) -> KResult<InodeRef> {
+        if n == "kid" { Ok(tdir(0xC0DE)) } else { Err(VfsError::Enoent) }
     }
+}
+fn bind_child() -> InodeRef {
+    vfs::InodeBuilder::new(0xB14D, vfs::mk_mode(FileType::Directory, 0o755),
+        Arc::new(BindChildDirOps), vfs::default_file_ops()).build()
 }
 
 #[test]
 fn bind_as_clone_roots_at_source_inode() {
     let _g = guard();
     let bindfs = Arc::new(TestFs { root_ino: 0x9999 }); // fs.root() must NOT win
-    let src_root: InodeRef = Arc::new(BindChildDir);
+    let src_root: InodeRef = bind_child();
     common::register_bind("/bnd", bindfs, src_root).expect("register_bind");
     let r = common::mount_root_at("/bnd").expect("cross into bind");
     assert_eq!(r.ino(), 0xB14D, "bind root is the source inode, not fs.root()");
@@ -229,7 +231,7 @@ fn per_ns_isolation_and_copy_on_unshare() {
 #[test]
 fn unregister_detaches_table_mount() {
     let _g = guard();
-    let src: InodeRef = Arc::new(TDir { ino: 0xD00D });
+    let src: InodeRef = tdir(0xD00D);
     common::register_bind("/umnt", Arc::new(TestFs { root_ino: 1 }), src).expect("bind");
     assert!(common::mount_root_at("/umnt").is_some(), "bound");
     let n = common::unregister("/umnt");

@@ -33,7 +33,7 @@ static TABLE: Spinlock<BTreeMap<usize, FlockState>, TaskListClass> =
     Spinlock::new(BTreeMap::new());
 
 fn inode_key(inode: &InodeRef) -> usize {
-    let raw: *const dyn vfs::Inode = alloc::sync::Arc::as_ptr(inode);
+    let raw: *const vfs::Inode = alloc::sync::Arc::as_ptr(inode);
     raw as *const u8 as usize
 }
 

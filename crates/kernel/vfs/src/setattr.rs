@@ -11,7 +11,7 @@
 
 extern crate alloc;
 use crate::idmap::Idmap;
-use crate::inode::{Inode, InodeRef};
+use crate::inode::{Inode, InodeRef, inode_owner_or_capable};
 use crate::getattr::default_perm_for;
 use crate::inode::S_APPEND;
 use crate::namei::{Cred, inode_permission, MAY_WRITE, S_ISGID, S_ISUID, S_IXGRP};
@@ -53,7 +53,13 @@ pub struct Iattr {
 pub fn setattr_prepare(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &Cred) -> KResult<()> {
     let vfsuid = idmap.map_out_uid(inode.uid().unwrap_or(0));
     let vfsgid = idmap.map_out_gid(inode.gid().unwrap_or(0));
-    let is_owner = cred.uid == vfsuid || cred.cap_fowner;
+    // `inode_owner_or_capable` (Linux), NOT the open-coded `uid == vfsuid ||
+    // cap_fowner`: on an idmapped mount whose extents do not cover the inode's
+    // fs owner, the vfsuid is INVALID and the CAP_FOWNER path must be DENIED
+    // (privilege cannot be exercised over an owner with no mapping in the
+    // caller's namespace, Linux `vfsuid_has_mapping`). The inline form silently
+    // granted it — the correctness edge this helper exists to close.
+    let is_owner = inode_owner_or_capable(idmap, inode.as_ref(), cred);
 
     // chmod: owner or CAP_FOWNER, then S_ISGID strip for a non-member.
     if ia.valid & ATTR_MODE != 0 {
@@ -123,8 +129,18 @@ pub fn apply_kill_priv(valid: u32, mut mode: u16) -> u16 {
 /// fs ids (`map_in_*`). Returns `Erofs` for inodes without native storage
 /// (the kernel `notify_change` then falls back to its metadata overlay).
 /// # C: O(1)
-pub fn simple_setattr<I: Inode + ?Sized>(inode: &I, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
-    if ia.valid & ATTR_SIZE != 0 { inode.truncate(ia.size)?; }
+pub fn simple_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
+    if ia.valid & ATTR_SIZE != 0 {
+        inode.truncate(ia.size)?;
+        // `truncate_pagecache` (Linux `mm/truncate.c`, via `truncate_setsize`):
+        // after the backend updates `i_size`, evict resident cache pages lying
+        // WHOLLY beyond the new size so a later refault re-reads zeros/backing,
+        // never stale post-EOF bytes. `invalidate_range` retains the page that
+        // straddles the new size (the backend `truncate` zeroed its tail). On
+        // grow nothing is resident past the new size, so this is a no-op — exactly
+        // Linux. Inodes without an `i_mapping` (no page cache) skip it.
+        if let Some(m) = inode.i_mapping() { m.invalidate_range(ia.size, u64::MAX); }
+    }
     if ia.valid & (ATTR_UID | ATTR_GID) != 0 {
         let uid = if ia.valid & ATTR_UID != 0 { idmap.map_in_uid(ia.uid) } else { inode.uid().unwrap_or(0) };
         let gid = if ia.valid & ATTR_GID != 0 { idmap.map_in_gid(ia.gid) } else { inode.gid().unwrap_or(0) };
@@ -153,12 +169,31 @@ pub fn simple_setattr<I: Inode + ?Sized>(inode: &I, idmap: &Idmap, ia: &Iattr) -
 /// is a mandatory-lock mark — left alone). A caller holding CAP_FSETID over the
 /// inode keeps the bits, and the drop applies to regular files only (Linux
 /// `file_remove_privs` / `dentry_needs_remove_privs`). # C: O(1)
-pub fn setattr_should_drop_suidgid<I: Inode + ?Sized>(inode: &I, cred: &Cred) -> u32 {
+pub fn setattr_should_drop_suidgid(inode: &Inode, cred: &Cred) -> u32 {
     let mode = inode.perm().unwrap_or_else(|| default_perm_for(inode.file_type()));
     let mut kill = 0u32;
     if mode & S_ISUID != 0 { kill |= ATTR_KILL_SUID; }
     if mode & S_ISGID != 0 && mode & S_IXGRP != 0 { kill |= ATTR_KILL_SGID; }
     if kill != 0 && !cred.cap_fsetid && matches!(inode.file_type(), FileType::Regular) { kill } else { 0 }
+}
+
+/// `setattr_should_drop_sgid` (Linux `fs/attr.c`) — the idmap-aware S_ISGID
+/// strip used by the chown / `setattr_copy` path (distinct from the write-path
+/// [`setattr_should_drop_suidgid`], which preserves a bare mandatory-lock
+/// S_ISGID). Returns `ATTR_KILL_SGID` when the inode is set-group-id AND either
+/// (a) it is group-executable, or (b) the caller is NOT in the inode's *vfsgid*
+/// group and lacks CAP_FSETID over it — an ownership/permission change that
+/// would hand a setgid bit to a process outside the file's group drops it. The
+/// inode gid is mapped THROUGH the mount idmap before the group test (Linux
+/// `i_gid_into_vfsgid` + `in_group_or_capable`), so an idmapped mount compares
+/// against the id the caller actually observes. # C: O(ngroups)
+pub fn setattr_should_drop_sgid(idmap: &Idmap, inode: &Inode, cred: &Cred) -> u32 {
+    let mode = inode.perm().unwrap_or_else(|| default_perm_for(inode.file_type()));
+    if mode & S_ISGID == 0 { return 0; }
+    if mode & S_IXGRP != 0 { return ATTR_KILL_SGID; }
+    // in_group_or_capable: caller in the inode's vfsgid group, or CAP_FSETID.
+    let vfsgid = idmap.map_out_gid(inode.gid().unwrap_or(0));
+    if cred.in_group(vfsgid) || cred.cap_fsetid { 0 } else { ATTR_KILL_SGID }
 }
 
 /// `notify_change` (Linux `fs/attr.c`): `setattr_prepare` then `i_op->setattr`.
@@ -167,5 +202,19 @@ pub fn setattr_should_drop_suidgid<I: Inode + ?Sized>(inode: &I, cred: &Cred) ->
 /// hosted tests. # C: O(ngroups)
 pub fn notify_change(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &Cred) -> KResult<()> {
     setattr_prepare(idmap, inode, ia, cred)?;
+    // Floor the timestamp fields to the backing superblock's `s_time_gran`
+    // (Linux `fs/attr.c` `notify_change`, which sets each `ia_*time` through
+    // `timestamp_truncate`): a setattr must never record sub-granularity
+    // precision the filesystem cannot persist (ext4 1 ns vs a coarse-time
+    // backend). `ctime` is stamped on every change, so it is floored whenever
+    // any time field is applied. Inodes without an `i_sb` (anon/pseudo) keep
+    // full-ns values — their granularity is implicitly 1 ns.
+    if let Some(sb) = inode.i_sb() {
+        if ia.valid & ATTR_ATIME != 0 { ia.atime_ns = sb.timestamp_truncate(ia.atime_ns); }
+        if ia.valid & ATTR_MTIME != 0 { ia.mtime_ns = sb.timestamp_truncate(ia.mtime_ns); }
+        if ia.valid & (ATTR_ATIME | ATTR_MTIME | ATTR_CTIME) != 0 {
+            ia.ctime_ns = sb.timestamp_truncate(ia.ctime_ns);
+        }
+    }
     inode.setattr(idmap, ia)
 }

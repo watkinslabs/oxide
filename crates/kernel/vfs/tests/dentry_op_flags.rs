@@ -10,17 +10,11 @@ use vfs::dentry::{
     DCompareFn, DDeleteFn, DHashFn, DRevalidateFn, Dentry, DentryOps, D_OP_COMPARE, D_OP_DELETE,
     D_OP_HASH, D_OP_MASK, D_OP_REVALIDATE,
 };
-use vfs::inode::Inode;
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{FileType, InodeRef};
 
-struct TInode { ino: u64, ft: FileType }
-impl Inode for TInode {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { self.ft }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn dir() -> InodeRef {
+    vfs::InodeBuilder::new(1, vfs::mk_mode(FileType::Directory, 0o755), vfs::default_inode_ops(), vfs::default_file_ops()).build()
 }
-fn dir() -> InodeRef { Arc::new(TInode { ino: 1, ft: FileType::Directory }) }
 
 // Stand-in hook impls (only presence matters for the stamp).
 fn h(_n: &str) -> u32 { 0 }
@@ -37,9 +31,9 @@ const DEL_FN: DDeleteFn = del;
 
 // d_op vectors covering the relevant presence combinations.
 static OPS_NONE: DentryOps = DentryOps::empty();
-static OPS_CMP: DentryOps = DentryOps { d_hash: None, d_compare: Some(CMP_FN), d_revalidate: None, d_delete: None, d_release: None, d_iput: None };
-static OPS_CI: DentryOps = DentryOps { d_hash: None, d_compare: Some(CMP_CI_FN), d_revalidate: None, d_delete: None, d_release: None, d_iput: None };
-static OPS_ALL4: DentryOps = DentryOps { d_hash: Some(HASH_FN), d_compare: Some(CMP_FN), d_revalidate: Some(REV_FN), d_delete: Some(DEL_FN), d_release: None, d_iput: None };
+static OPS_CMP: DentryOps = DentryOps { d_hash: None, d_compare: Some(CMP_FN), d_revalidate: None, d_weak_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None };
+static OPS_CI: DentryOps = DentryOps { d_hash: None, d_compare: Some(CMP_CI_FN), d_revalidate: None, d_weak_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None };
+static OPS_ALL4: DentryOps = DentryOps { d_hash: Some(HASH_FN), d_compare: Some(CMP_FN), d_revalidate: Some(REV_FN), d_weak_revalidate: None, d_delete: Some(DEL_FN), d_release: None, d_iput: None, d_dname: None, d_init: None, d_prune: None };
 
 fn root_with(ops: &'static DentryOps) -> Arc<Dentry> {
     Dentry::new_root(dir()).set_d_op(ops)

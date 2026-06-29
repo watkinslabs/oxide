@@ -150,6 +150,26 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
     let argc = argv_vec.len();
     let envc = envp_vec.len();
 
+    // B288 diagnostic: dump LISTEN_FDS / LISTEN_FDNAMES (socket-activation
+    // fd handoff) for the failing early services so the n_fds vs n_names
+    // mismatch behind udevd's "Failed to listen on fds: EINVAL" is visible.
+    #[cfg(feature = "debug-boot")]
+    {
+        let is_target = path_owned.windows(5).any(|w| w == b"udevd")
+            || path_owned.windows(8).any(|w| w == b"journald");
+        if is_target {
+            for e in &envp_vec {
+                if e.starts_with(b"LISTEN_") {
+                    klog::write_raw(b"[B288 env ");
+                    klog::write_raw(&path_owned);
+                    klog::write_raw(b"] ");
+                    klog::write_raw(e);
+                    klog::write_raw(b"\n");
+                }
+            }
+        }
+    }
+
     // 1. Allocate new PT root for the post-execve AS.
     // SAFETY: master PML4 captured at pmm::user_as::init; PMM up.
     let new_root = match unsafe { hal_x86_64::mmu_ops::new_user_pml4() } {

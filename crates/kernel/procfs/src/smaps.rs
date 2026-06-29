@@ -20,44 +20,16 @@
 
 
 use alloc::vec::Vec;
-use vfs::{FileType, Inode, InodeRef, Ino, KResult, VfsError};
+use vfs::{Ino, InodeRef};
 
-/// `/proc/self/smaps` inode.
-pub struct ProcSelfSmapsInode;
-
-impl Inode for ProcSelfSmapsInode {
-    fn ino(&self) -> Ino { 0x3000_1B00 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body = build_for_current();
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+/// `/proc/self/smaps` inode. # C: O(1)
+pub fn make_proc_self_smaps() -> InodeRef {
+    crate::dyn_file::make_gen_file(0x3000_1B00 as Ino, build_for_current)
 }
 
-/// `/proc/<pid>/smaps` inode (per-pid).
-pub struct ProcPidSmapsInode { pub tid: u32 }
-
-impl Inode for ProcPidSmapsInode {
-    fn ino(&self) -> Ino { (0x3000_1B01u64).wrapping_add(self.tid as u64) }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body = build_for_pid(self.tid);
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+/// `/proc/<pid>/smaps` inode (per-pid). # C: O(1)
+pub fn make_proc_pid_smaps(tid: u32) -> InodeRef {
+    crate::dyn_file::make_pid_gen_file((0x3000_1B01u64).wrapping_add(tid as u64), tid, build_for_pid)
 }
 
 /// Build the body for the current task.

@@ -16,14 +16,15 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{FileOps, InodeBuilder, default_inode_ops, mk_mode};
 
 const TIMERFD_INO_BASE: Ino = 0x7300_0000;
 const TIMERFD_INO_MASK: Ino = 0x00FF_FFFF;
 
-/// Global timerfd table — id → Arc<TimerfdInode>. Lets settime/gettime
-/// reach the inode by extracting `id` from the inode marker without
-/// an Any-downcast on the trait object.
-static TIMERFDS: Spinlock<Vec<Arc<TimerfdInode>>, TaskListClass>
+/// Global timerfd table — id → Arc<TimerfdData>. Lets settime/gettime
+/// reach the inode state by extracting `id` from the inode marker without
+/// a downcast on the inode.
+static TIMERFDS: Spinlock<Vec<Arc<TimerfdData>>, TaskListClass>
     = Spinlock::new(Vec::new());
 static NEXT_TIMERFD_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -36,70 +37,76 @@ fn monotonic_ns() -> u64 {
     { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
 }
 
-pub struct TimerfdInode {
+/// Per-inode timerfd state (Linux `i_private`). # C: O(1)
+pub struct TimerfdData {
     pub id:           u32,
     pub expiry_ns:    AtomicU64,
     pub interval_ns:  AtomicU64,
     pub last_read_ns: AtomicU64,
 }
 
-impl TimerfdInode {
-    /// # C: O(1)
-    pub fn new() -> Arc<Self> {
-        let id = NEXT_TIMERFD_ID.fetch_add(1, Ordering::Relaxed);
-        let arc = Arc::new(Self {
-            id,
-            expiry_ns:   AtomicU64::new(0),
-            interval_ns: AtomicU64::new(0),
-            last_read_ns: AtomicU64::new(0),
-        });
+/// `make_timerfd_inode()` — a CharDev pseudo-inode whose `read` yields the
+/// expiration count. Registered in the global table so settime/gettime reach
+/// it by id. # C: O(1)
+pub fn make_timerfd_inode() -> InodeRef {
+    let id = NEXT_TIMERFD_ID.fetch_add(1, Ordering::Relaxed);
+    let data = Arc::new(TimerfdData {
+        id,
+        expiry_ns:   AtomicU64::new(0),
+        interval_ns: AtomicU64::new(0),
+        last_read_ns: AtomicU64::new(0),
+    });
+    {
         let mut g = TIMERFDS.lock();
-        if g.len() <= id as usize { g.resize_with(id as usize + 1, || Arc::clone(&arc)); }
-        else { g[id as usize] = Arc::clone(&arc); }
-        arc
+        if g.len() <= id as usize { g.resize_with(id as usize + 1, || Arc::clone(&data)); }
+        else { g[id as usize] = Arc::clone(&data); }
     }
+    InodeBuilder::new(TIMERFD_INO_BASE | (id as Ino & TIMERFD_INO_MASK),
+        mk_mode(FileType::CharDev, 0), default_inode_ops(), Arc::new(TimerfdFileOps))
+        .private(data)
+        .build()
 }
 
-impl Inode for TimerfdInode {
-    fn ino(&self) -> Ino { TIMERFD_INO_BASE | (self.id as Ino & TIMERFD_INO_MASK) }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// `i_fop` for a timerfd inode. # C: O(1)
+struct TimerfdFileOps;
+impl FileOps for TimerfdFileOps {
     /// POLLIN only once the timer has expired. The default always-ready
     /// poll made systemd's sd-event (which arms timerfds) busy-loop
     /// epoll_pwait forever — see signalfd::poll.
     /// # C: O(1)
-    fn poll(&self) -> u32 {
-        let expiry = self.expiry_ns.load(Ordering::Acquire);
+    fn poll(&self, inode: &Inode) -> u32 {
+        let d = match inode.private::<TimerfdData>() { Some(d) => d, None => return 0 };
+        let expiry = d.expiry_ns.load(Ordering::Acquire);
         if expiry != 0 && monotonic_ns() >= expiry { vfs::POLL_IN } else { 0 }
     }
-    fn read(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+    fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.len() < 8 { return Err(VfsError::Einval); }
+        let d = match inode.private::<TimerfdData>() { Some(d) => d, None => return Err(VfsError::Einval) };
         let now = monotonic_ns();
-        let expiry = self.expiry_ns.load(Ordering::Acquire);
+        let expiry = d.expiry_ns.load(Ordering::Acquire);
         if expiry == 0 || now < expiry {
             // No expirations yet — Linux blocks; v1 returns EAGAIN-shape (Ok(0)).
             return Ok(0);
         }
-        let interval = self.interval_ns.load(Ordering::Acquire);
-        let last = self.last_read_ns.load(Ordering::Acquire);
+        let interval = d.interval_ns.load(Ordering::Acquire);
+        let last = d.last_read_ns.load(Ordering::Acquire);
         let count = if interval == 0 { 1 } else {
             // periodic: expirations since last read
             let base = if last >= expiry { last } else { expiry };
             ((now - base) / interval) + 1
         };
-        self.last_read_ns.store(now, Ordering::Release);
-        if interval == 0 { self.expiry_ns.store(0, Ordering::Release); }
-        else { self.expiry_ns.store(now.saturating_add(interval), Ordering::Release); }
+        d.last_read_ns.store(now, Ordering::Release);
+        if interval == 0 { d.expiry_ns.store(0, Ordering::Release); }
+        else { d.expiry_ns.store(now.saturating_add(interval), Ordering::Release); }
         buf[..8].copy_from_slice(&count.to_le_bytes());
         Ok(8)
     }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+    fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
 }
 
-/// Lookup the TimerfdInode bound to an fd's inode-number marker.
+/// Lookup the TimerfdData bound to an fd's inode-number marker.
 /// # C: O(1)
-fn timerfd_inode_of(file: &alloc::sync::Arc<vfs::File>) -> Option<Arc<TimerfdInode>> {
+fn timerfd_inode_of(file: &alloc::sync::Arc<vfs::File>) -> Option<Arc<TimerfdData>> {
     let ino = file.inode().ino();
     if (ino & 0xFF00_0000) != TIMERFD_INO_BASE { return None; }
     let id = (ino & TIMERFD_INO_MASK) as usize;
@@ -122,7 +129,7 @@ pub fn sys_timerfd_create(args: &syscall::SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let inode = TimerfdInode::new() as InodeRef;
+    let inode = make_timerfd_inode();
     let dentry = Dentry::new(None, "timerfd".to_string(), Arc::clone(&inode));
     let mut fl = OpenFlags::O_RDONLY;
     if (flags & TFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }

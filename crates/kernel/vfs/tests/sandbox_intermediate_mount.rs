@@ -18,32 +18,31 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
+use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder, InodeOps};
 use vfs::{Dentry, FileType, InodeRef, KResult, LookupFlags, VfsError};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
-struct Dir { ino: u64, kids: BTreeMap<String, InodeRef> }
-impl Inode for Dir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
-        self.kids.get(name).cloned().ok_or(VfsError::Enoent)
+/// Backend state (`i_private`): the static child table this directory resolves.
+struct DirData { kids: BTreeMap<String, InodeRef> }
+
+/// `i_op->lookup` over the static `DirData` child table.
+struct DirOps;
+impl InodeOps for DirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<DirData>().ok_or(VfsError::Enotdir)?;
+        d.kids.get(name).cloned().ok_or(VfsError::Enoent)
     }
-}
-struct F { ino: u64 }
-impl Inode for F {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
 }
 fn dir(ino: u64, kids: &[(&str, InodeRef)]) -> InodeRef {
     let mut m = BTreeMap::new();
     for (n, i) in kids { m.insert(n.to_string(), i.clone()); }
-    Arc::new(Dir { ino, kids: m })
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(DirOps), default_file_ops())
+        .private(Arc::new(DirData { kids: m })).build()
 }
-fn file(ino: u64) -> InodeRef { Arc::new(F { ino }) }
+fn file(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
+}
 
 struct NamedFs { n: &'static str, root: InodeRef }
 impl FileSystem for NamedFs {

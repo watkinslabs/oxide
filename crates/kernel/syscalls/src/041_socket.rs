@@ -28,7 +28,7 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         if typ != SOCK_STREAM {
             return -(Errno::Esocktnosupport.as_i32() as i64);
         }
-        Arc::new(net::vsock_socket::VsockSocket::new()) as _
+        net::vsock_socket::make_vsock_socket_inode(Arc::new(net::vsock_socket::VsockSocket::new()))
     } else if domain == AF_NETLINK_DOM {
         // Linux accepts SOCK_DGRAM and SOCK_RAW for netlink (Linux's
         // own libnl uses SOCK_RAW). Other types → EPROTOTYPE.
@@ -46,7 +46,7 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         if (proto as u16) == ::netlink::proto::NETLINK_ROUTE {
             ::netlink::register_rtnl_listener(&sock);
         }
-        sock as _
+        ::netlink::make_netlink_socket_inode(sock)
     } else {
         let inet = match (domain, typ) {
             (AF_INET,  SOCK_DGRAM)  => InetSocket::new_udp(),
@@ -62,7 +62,15 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
             // systemd uses path-bound AF_UNIX SOCK_SEQPACKET control sockets.
             // The existing Unix listener path is byte-stream internally, but
             // accepting the type is enough for bind/listen/epoll readiness.
-            (AF_UNIX_DOM, SOCK_SEQPACKET) => InetSocket::new_unix(),
+            (AF_UNIX_DOM, SOCK_SEQPACKET) => {
+                // SOCK_SEQPACKET is byte-ring-backed internally, but it MUST
+                // report SO_TYPE=SOCK_SEQPACKET: systemd-udevd's listen_fds()
+                // does sd_is_socket(fd, AF_UNIX, SOCK_SEQPACKET) on its
+                // inherited control socket and returns -EINVAL on mismatch.
+                let s = InetSocket::new_unix();
+                s.opts.so_type.store(SOCK_SEQPACKET as u8, core::sync::atomic::Ordering::Release);
+                s
+            }
             (AF_PACKET_DOM, _) => {
                 // F131: proto is htons(ETH_P_*); store host-order.
                 let proto_be = (proto & 0xFFFF) as u16;
@@ -71,7 +79,7 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
             (AF_INET, _) | (AF_INET6, _) | (AF_UNIX_DOM, _) => return -(Errno::Esocktnosupport.as_i32() as i64),
             _ => return -(Errno::Eafnosupport.as_i32() as i64),
         };
-        Arc::new(inet) as _
+        net::sock::make_inet_socket_inode(Arc::new(inet))
     };
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),

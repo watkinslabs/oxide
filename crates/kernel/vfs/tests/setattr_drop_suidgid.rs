@@ -1,25 +1,18 @@
 //! Write-path privilege drop (`setattr_should_drop_suidgid`, Linux `fs/attr.c`):
 //! a modifying write strips S_ISUID always and S_ISGID when group-executable,
 //! unless the writer holds CAP_FSETID; non-regular inodes are never touched.
-//! Synthetic `Inode` impls carrying explicit POSIX mode — no real filesystem.
+//! Synthetic `Inode`s carrying explicit POSIX mode — no real filesystem.
 
-use vfs::inode::Inode;
-use vfs::{Cred, FileType, InodeRef, VfsError, CRED_NGROUPS};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder};
+use vfs::{Cred, FileType, InodeRef, CRED_NGROUPS};
 use vfs::setattr::{setattr_should_drop_suidgid, ATTR_KILL_SUID, ATTR_KILL_SGID};
 
 /// Inode of `ft` with explicit perm bits (including setid bits in low-12).
-struct PNode { perm: u16, ft: FileType }
-impl Inode for PNode {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { self.ft }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn perm(&self) -> Option<u16> { Some(self.perm) }
-    fn uid(&self) -> Option<u32> { Some(0) }
-    fn gid(&self) -> Option<u32> { Some(0) }
+fn pnode(ft: FileType, perm: u16) -> InodeRef {
+    InodeBuilder::new(1, mk_mode(ft, perm), default_inode_ops(), default_file_ops()).owner(0, 0).build()
 }
-fn reg(perm: u16) -> PNode { PNode { perm, ft: FileType::Regular } }
-fn dir(perm: u16) -> PNode { PNode { perm, ft: FileType::Directory } }
+fn reg(perm: u16) -> InodeRef { pnode(FileType::Regular, perm) }
+fn dir(perm: u16) -> InodeRef { pnode(FileType::Directory, perm) }
 
 /// Unprivileged cred (no CAP_FSETID).
 fn user() -> Cred {

@@ -26,3 +26,5 @@ debug-no-fork-shared = []  # TEST: force COW for all VMAs on fork
 debug-no-shmem = []  # TEST: disable MAP_SHARED shared_frame path
 
 debug-cow = []  # [COW-CORRUPT] runtime detector: checksum RO-shared anon frames at fork_cow, re-verify at COW write-fault + at free (catch peer write to a RO-shared page = stale TLB / wrong frame)
+
+debug-shortfill = []  # [SHORT-FILE-FAULT] B240: log when File demand-fault read_at returns short for a non-EOF page (partial fill = ld.so reads zeros = exit 127)
