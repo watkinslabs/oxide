@@ -25,6 +25,7 @@ use vfs::{default_file_ops, default_inode_ops, mk_mode, FileOps, FileType, Ino, 
 
 pub mod block;
 pub mod bus;
+pub mod devnum;
 pub mod net_stats;
 pub mod root;
 
