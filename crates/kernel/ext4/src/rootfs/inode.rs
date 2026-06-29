@@ -20,7 +20,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use block::types::InodeId;
 use vfs::inode_ops::{mk_mode, InodeOps};
-use vfs::file_ops::FileOps;
+use vfs::file_ops::{FileOps, HoleOrData};
 use vfs::inode::InodeBuilder;
 use vfs::mapping::AddressSpaceOps;
 use vfs::{DirContext, FileType, Inode, InodeRef, KResult, VfsError};
@@ -190,6 +190,72 @@ impl FileOps for Ext4RegFileOps {
         d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
         Ok(buf.len())
+    }
+
+    /// `f_op->llseek` SEEK_HOLE/SEEK_DATA (Linux `ext4_seek_hole`/
+    /// `ext4_seek_data`): EXTENT-AWARE override of the generic non-sparse
+    /// default. Walks the inode's extent map (`collect_leaf_extents`) so a
+    /// sparse or hole-punched ext4 file reports its real data/hole boundaries
+    /// — `SEEK_DATA` skips forward over holes to the next allocated extent,
+    /// `SEEK_HOLE` skips forward over data to the next gap (or the implicit
+    /// hole at EOF). Boundaries are block-granular (ext4 allocates whole
+    /// blocks); `offset` already inside a data byte / hole returns `offset`
+    /// unchanged. `offset >= i_size` is `ENXIO`. # C: O(N_extents)
+    fn seek_hole_data(&self, inode: &Inode, offset: u64, which: HoleOrData) -> KResult<u64> {
+        let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
+        let i = d.st.mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?;
+        let size = i.size;
+        if offset >= size { return Err(VfsError::Enxio); }
+        let bs = d.st.mount.sb.block_size.max(1) as u64;
+        let runs = d.st.mount.collect_leaf_extents(&i.i_block).map_err(|_| VfsError::Eio)?;
+        seek_in_runs(&runs, bs, size, offset, which)
+    }
+}
+
+/// Pure SEEK_HOLE/SEEK_DATA boundary resolver over a file's data runs.
+/// `runs` are `(first_logical_block, len_blocks)` ASCENDING by start block,
+/// non-overlapping; gaps between runs (and the region after the last run, up
+/// to `size`) are holes. `bs` = block size, `size` = i_size (bytes), `offset`
+/// = scan-start byte (caller guarantees `offset < size`). Mirrors Linux
+/// `ext4_seek_data`/`ext4_seek_hole` semantics. # C: O(N_runs)
+fn seek_in_runs(runs: &[(u32, u32)], bs: u64, size: u64, offset: u64, which: HoleOrData)
+    -> KResult<u64>
+{
+    let b = offset / bs; // logical block holding `offset`
+    let contains = |blk: u64| runs.iter().any(|&(s, l)| blk >= s as u64 && blk < s as u64 + l as u64);
+    match which {
+        HoleOrData::Data => {
+            if contains(b) { return Ok(offset); }
+            // First run that starts strictly after `b` (sorted ascending) is the
+            // next data region. Runs entirely before `b` have start <= b and are
+            // skipped by the `> b` test.
+            for &(s, _l) in runs {
+                if (s as u64) > b {
+                    let byte = (s as u64) * bs;
+                    return if byte < size { Ok(byte) } else { Err(VfsError::Enxio) };
+                }
+            }
+            Err(VfsError::Enxio)
+        }
+        HoleOrData::Hole => {
+            if !contains(b) { return Ok(offset); } // already in a hole
+            // Walk the contiguous data chain covering `b`; the hole begins at the
+            // end of the last contiguous run.
+            let mut chain_end: Option<u64> = None;
+            for &(s, l) in runs {
+                let start = s as u64;
+                let end = start + l as u64;
+                match chain_end {
+                    None => { if b >= start && b < end { chain_end = Some(end); } }
+                    Some(ce) => {
+                        if start == ce { chain_end = Some(end); }
+                        else if start > ce { break; }
+                    }
+                }
+            }
+            let hole_byte = chain_end.map(|e| e * bs).unwrap_or(offset);
+            Ok(hole_byte.min(size))
+        }
     }
 }
 
@@ -438,4 +504,83 @@ pub(crate) fn build_stat_inode(
         .owner(uid, gid)
         .private(data)
         .build()
+}
+
+#[cfg(test)]
+mod seek_tests {
+    use super::{seek_in_runs, HoleOrData};
+    use vfs::VfsError;
+
+    const BS: u64 = 4096;
+
+    // Fully-allocated file: one run [0,10) blocks, size 40000 (< 10 blocks).
+    #[test]
+    fn full_file_data_and_hole() {
+        let runs = [(0u32, 10u32)];
+        let size = 40000u64;
+        // SEEK_DATA at 0 → 0 (already data)
+        assert_eq!(seek_in_runs(&runs, BS, size, 0, HoleOrData::Data), Ok(0));
+        // SEEK_DATA mid-file → unchanged
+        assert_eq!(seek_in_runs(&runs, BS, size, 5000, HoleOrData::Data), Ok(5000));
+        // SEEK_HOLE in data → implicit hole at EOF (size)
+        assert_eq!(seek_in_runs(&runs, BS, size, 0, HoleOrData::Hole), Ok(size));
+        // past EOF handled by caller; resolver assumes offset<size.
+    }
+
+    // Sparse: data [0,1), hole [1,5), data [5,8). size = 8 blocks.
+    #[test]
+    fn sparse_middle_hole() {
+        let runs = [(0u32, 1u32), (5u32, 3u32)];
+        let size = 8 * BS;
+        // In first data block: SEEK_HOLE → start of hole (block 1).
+        assert_eq!(seek_in_runs(&runs, BS, size, 100, HoleOrData::Hole), Ok(BS));
+        // In the hole: SEEK_DATA → next data extent (block 5).
+        assert_eq!(seek_in_runs(&runs, BS, size, 2 * BS, HoleOrData::Data), Ok(5 * BS));
+        // In the hole: SEEK_HOLE → unchanged (already a hole).
+        let off = 2 * BS + 17;
+        assert_eq!(seek_in_runs(&runs, BS, size, off, HoleOrData::Hole), Ok(off));
+        // In second data region: SEEK_HOLE → EOF (data runs to size).
+        assert_eq!(seek_in_runs(&runs, BS, size, 6 * BS, HoleOrData::Hole), Ok(size));
+    }
+
+    // Leading hole: file starts with a hole, data later.
+    #[test]
+    fn leading_hole() {
+        let runs = [(3u32, 2u32)];
+        let size = 6 * BS;
+        // SEEK_DATA from 0 → first extent at block 3.
+        assert_eq!(seek_in_runs(&runs, BS, size, 0, HoleOrData::Data), Ok(3 * BS));
+        // SEEK_HOLE from 0 → unchanged (offset is in the leading hole).
+        assert_eq!(seek_in_runs(&runs, BS, size, 0, HoleOrData::Data), Ok(3 * BS));
+        assert_eq!(seek_in_runs(&runs, BS, size, 0, HoleOrData::Hole), Ok(0));
+    }
+
+    // Adjacent runs merge: [0,2)+[2,3) are contiguous data → single region.
+    #[test]
+    fn adjacent_runs_merge() {
+        let runs = [(0u32, 2u32), (2u32, 1u32), (10u32, 1u32)];
+        let size = 11 * BS;
+        // SEEK_HOLE in the merged [0,3) region → hole at block 3.
+        assert_eq!(seek_in_runs(&runs, BS, size, BS, HoleOrData::Hole), Ok(3 * BS));
+        // SEEK_DATA in the [3,10) hole → block 10.
+        assert_eq!(seek_in_runs(&runs, BS, size, 5 * BS, HoleOrData::Data), Ok(10 * BS));
+    }
+
+    // No data at/after offset → SEEK_DATA is ENXIO.
+    #[test]
+    fn no_more_data_enxio() {
+        let runs = [(0u32, 1u32)];
+        let size = 8 * BS;
+        // Offset in the trailing hole, no further extents → ENXIO.
+        assert_eq!(seek_in_runs(&runs, BS, size, 4 * BS, HoleOrData::Data), Err(VfsError::Enxio));
+    }
+
+    // Empty file body (no extents): every byte before EOF is a hole.
+    #[test]
+    fn no_extents_all_hole() {
+        let runs: [(u32, u32); 0] = [];
+        let size = 3 * BS;
+        assert_eq!(seek_in_runs(&runs, BS, size, 0, HoleOrData::Hole), Ok(0));
+        assert_eq!(seek_in_runs(&runs, BS, size, BS, HoleOrData::Data), Err(VfsError::Enxio));
+    }
 }
