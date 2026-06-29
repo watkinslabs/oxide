@@ -30,9 +30,19 @@ use crate::dentry::Dentry;
 use crate::inode::InodeRef;
 use crate::types::{FileType, KResult, VfsError};
 
-/// Max symlinks followed in one resolution (Linux `MAXSYMLINKS` = 40,
-/// invariant 5 in `16§1`).
+/// Max symlinks followed in one resolution — Linux `MAXSYMLINKS` = 40, the
+/// `nd->total_link_count` cap (invariant 5 in `16§1`). A MONOTONIC count of
+/// every symlink followed across the whole resolution (never decremented); the
+/// robust loop guard that catches any cycle, however reached.
 pub const MAX_SYMLINK_DEPTH: u32 = 40;
+
+/// Max symlink NESTING depth — Linux historical `MAX_NESTED_LINKS` = 8, the
+/// `nd->depth` cap. The number of suspended link-remainder frames stacked at
+/// once (a link whose target resolution is still pending an outer remainder).
+/// Distinct from [`MAX_SYMLINK_DEPTH`]: nesting is the live stack depth (rises
+/// and falls with `put_link`), total is the lifetime follow count. Either cap
+/// exceeded is ELOOP (Linux rejects both over-nesting and over-counting).
+pub const MAX_NESTED_LINKS: u32 = 8;
 
 /// `MAY_*` access mask bits (Linux `include/linux/fs.h`).
 pub const MAY_EXEC:  u32 = 0x01;
@@ -569,7 +579,14 @@ pub struct Nameidata {
     pub cur_inode: InodeRef,
     pub root_mnt_id: u64,
     pub root_dentry: Arc<Dentry>,
+    /// Linux `nd->depth` — symlink NESTING depth: the count of suspended
+    /// link-remainder frames currently on the resume stack (rises on a frame
+    /// push, falls on `put_link` resume). Capped at [`MAX_NESTED_LINKS`].
     pub depth: u32,
+    /// Linux `nd->total_link_count` — TOTAL symlinks followed in this
+    /// resolution (monotonic, never decremented). Capped at
+    /// [`MAX_SYMLINK_DEPTH`] (`MAXSYMLINKS` = 40) — the cycle guard.
+    pub total_link_count: u32,
     pub flags: LookupFlags,
     pub cred: Cred,
     /// LOOKUP_RCU live state (Linux `nd->flags & LOOKUP_RCU`). Seeded from
@@ -619,7 +636,7 @@ impl Nameidata {
         // dirfd, but ERRORS on escape (handled in `walk`) instead of clamping.
         if flags.in_root || flags.beneath_exdev { root_dentry = cur_dentry.clone(); root_mnt_id = cur_mnt_id; }
         let rcu = flags.rcu;
-        Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, depth: 0, flags, cred, rcu })
+        Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, depth: 0, total_link_count: 0, flags, cred, rcu })
     }
 
     /// Reset the current position to the resolution root (absolute path /
@@ -712,6 +729,7 @@ impl Nameidata {
                     self.cur_dentry = s_dentry.clone();
                     self.cur_inode = s_inode.clone();
                     self.depth = 0;
+                    self.total_link_count = 0;
                     // `self.rcu` persists (a seqretry restart re-attempts lazily);
                     // a fallback restart already cleared it in `unlazy_walk`.
                     continue;
@@ -796,13 +814,25 @@ impl Nameidata {
             // empty stack with the active frame consumed ends the walk.
             while idx >= queue.len() {
                 match saved.pop() {
-                    Some((q, i)) => { queue = q; idx = i; }
+                    // Linux `put_link`: the suspended remainder resumes, so the
+                    // symlink whose target it followed is fully consumed — drop
+                    // one level of nesting depth (`nd->depth--`). Stays in lock-
+                    // step with `saved.len()` (the live link stack).
+                    Some((q, i)) => { queue = q; idx = i; self.depth = self.depth.saturating_sub(1); }
                     None => break,
                 }
             }
             if idx >= queue.len() { break; }
 
-            let comp = queue[idx].clone();
+            // D23: BORROW the active component in place rather than cloning a
+            // fresh `String` every iteration. The dcache probe (`d_lookup`),
+            // the slow-path `i_op->lookup`/`d_add`, and the lexical checks all
+            // take `&str`, so the walk needs no owned copy. The borrow ends
+            // before the symlink branch's `core::mem::take(&mut queue)` (NLL:
+            // `comp`'s last use precedes the queue mutation), so following a
+            // link can still swap the active frame. Only the LOOKUP_PARENT leaf
+            // (returned to the caller) is materialised to an owned `String`.
+            let comp: &str = &queue[idx];
             idx += 1;
             // Final component of the WHOLE resolution: the active frame is
             // exhausted AND no suspended remainder follows (Linux: last component
@@ -829,7 +859,7 @@ impl Nameidata {
             // whole pathname is well under PATH_MAX and even for a LOOKUP_PARENT
             // leaf (checked before the parent-stop below). `..` is a control
             // segment (≤2 bytes), never over-length, so it is exempt.
-            if comp != ".." { crate::path::check_component(&comp)?; }
+            if comp != ".." { crate::path::check_component(comp)?; }
 
             // LOOKUP_PARENT: stop BEFORE the final component, reporting it as
             // the leaf (Linux `path_parentat` / `nd->last`). `may_lookup`
@@ -844,7 +874,7 @@ impl Nameidata {
             // resolved fully, with `.` restored as the leaf after the loop.
             if is_final && self.flags.parent && !trailing_dot {
                 may_lookup(&self.cur_inode, &self.cred)?;
-                last_component = Some(comp);
+                last_component = Some(String::from(comp));
                 break;
             }
 
@@ -875,7 +905,7 @@ impl Nameidata {
             // exclusively through the flushed create/unlink/rename syscalls.
             // On a pseudo-fs the miss propagates un-cached (re-walks next time),
             // so a dynamically-appearing entry is never masked.
-            let child = match crate::dcache::d_lookup_reval(&self.cur_dentry, &comp, self.flags.reval) {
+            let child = match crate::dcache::d_lookup_reval(&self.cur_dentry, comp, self.flags.reval) {
                 Some(d) if !d.is_negative() => d,
                 Some(_) => return Err(VfsError::Enoent), // cached negative (definitive)
                 // RESOLVE_CACHED: a dcache miss would take the (possibly
@@ -903,7 +933,7 @@ impl Nameidata {
                   // the dcache Dentry (50)/Superblock (60) locks `d_add` takes,
                   // so the chain is ascending.
                   let _dir_lk = self.cur_inode.inode_lock_shared();
-                  match self.cur_inode.lookup(&comp) {
+                  match self.cur_inode.lookup(comp) {
                     Ok(ci) => {
                         // D3/D37: `lookup` returned `ci` carrying the iget/build
                         // hold; `d_add` takes the dentry's OWN counted hold
@@ -913,7 +943,7 @@ impl Nameidata {
                         // caller's iget ref). iput AFTER the grab → never evicts a
                         // live inode; on the race-loser path the dentry already
                         // counts its inode, so this drops the redundant build.
-                        let child = crate::dcache::d_add(&self.cur_dentry, &comp, ci.clone());
+                        let child = crate::dcache::d_add(&self.cur_dentry, comp, ci.clone());
                         crate::file::iput(ci);
                         child
                     }
@@ -923,7 +953,7 @@ impl Nameidata {
                         // negative via `pathresolve::d_drop_path`, so a
                         // subsequently-created file is never masked.
                         if neg_cache_ok(&self.cur_inode) {
-                            crate::dcache::d_add_negative(&self.cur_dentry, &comp);
+                            crate::dcache::d_add_negative(&self.cur_dentry, comp);
                         }
                         return Err(VfsError::Enoent);
                     }
@@ -971,8 +1001,12 @@ impl Nameidata {
                 // Reaches here for every intermediate symlink, and for a final
                 // symlink that IS being followed (no O_NOFOLLOW, or trailing `/`).
                 if self.flags.no_symlinks { return Err(VfsError::Eloop); }
-                self.depth += 1;
-                if self.depth > MAX_SYMLINK_DEPTH { return Err(VfsError::Eloop); }
+                // Linux `pick_link`: bump the TOTAL link count and ELOOP past
+                // MAXSYMLINKS — the monotonic cycle guard (catches every loop,
+                // however deeply or shallowly nested). The NESTING cap is
+                // enforced separately at the frame push below.
+                self.total_link_count += 1;
+                if self.total_link_count > MAX_SYMLINK_DEPTH { return Err(VfsError::Eloop); }
                 let target = child.inode().ok_or(VfsError::Enoent)?.get_link()?;
                 let target = String::from_utf8_lossy(&target).into_owned();
                 // Suspend the active frame's remainder (Linux `nd->stack` push)
@@ -982,6 +1016,14 @@ impl Nameidata {
                 // — keeping the resume loop and `is_final` exact.
                 if idx < queue.len() {
                     saved.push((core::mem::take(&mut queue), idx));
+                    // Linux `nd->depth++` — one more suspended link frame is
+                    // live. Cap the NESTING separately from the total count: a
+                    // pathologically deep stack of pending remainders is ELOOP
+                    // at MAX_NESTED_LINKS even while the total is under
+                    // MAXSYMLINKS (Linux rejects both over-nesting and
+                    // over-counting). `saved.len() == self.depth` holds.
+                    self.depth += 1;
+                    if self.depth > MAX_NESTED_LINKS { return Err(VfsError::Eloop); }
                 }
                 queue = components(&target);
                 idx = 0;
