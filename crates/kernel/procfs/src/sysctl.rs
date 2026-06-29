@@ -21,13 +21,17 @@ use crate::live::NEXT_INO;
 
 /// `i_private` for a mutable sysctl value (KEYSTONE struct-`Inode`). Stored
 /// verbatim (callers write e.g. "1\n" or "1"); reads return exactly the
-/// stored bytes.
+/// stored bytes. `bounds` is the `proc_dointvec_minmax` window
+/// (`extra1`/`extra2`): when `Some((min,max))` a write is parsed + range-checked
+/// before it is stored (EINVAL on a non-integer or out-of-range value, like
+/// Linux); `None` is a plain `proc_dointvec`-style free byte slot.
 pub struct SysctlInode {
-    val: Spinlock<alloc::vec::Vec<u8>, TaskListClass>,
+    val:    Spinlock<alloc::vec::Vec<u8>, TaskListClass>,
+    bounds: Option<(i64, i64)>,
 }
 
 /// `i_fop` for a writable sysctl byte slot — read returns the stored bytes;
-/// write (offset 0) replaces them.
+/// write (offset 0) validates against `bounds` then replaces them.
 struct SysctlFileOps;
 impl FileOps for SysctlFileOps {
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
@@ -41,6 +45,12 @@ impl FileOps for SysctlFileOps {
         // truncates first; we treat any write as a full replace so the
         // stored value always reflects the last writer.
         if off == 0 {
+            // proc_dointvec_minmax: a bounded integer leaf rejects a
+            // non-integer / out-of-range write before it is stored.
+            if let Some((min, max)) = d.bounds {
+                crate::proc_dointvec::validate_intvec(src, min, max)
+                    .map_err(|_| VfsError::Einval)?;
+            }
             let mut v = d.val.lock();
             v.clear();
             v.extend_from_slice(src);
@@ -50,11 +60,23 @@ impl FileOps for SysctlFileOps {
 }
 
 impl SysctlInode {
-    /// New writable sysctl inode seeded with `default`. # C: O(len default)
+    /// New unbounded writable sysctl inode seeded with `default`
+    /// (`proc_dointvec` free byte slot). # C: O(len default)
     pub fn new(default: &[u8]) -> InodeRef {
+        Self::new_inner(default, None)
+    }
+
+    /// New `proc_dointvec_minmax` integer leaf: writes are parsed + checked
+    /// against `[min,max]` (EINVAL otherwise). # C: O(len default)
+    pub fn new_minmax(default: &[u8], min: i64, max: i64) -> InodeRef {
+        Self::new_inner(default, Some((min, max)))
+    }
+
+    /// # C: O(len default)
+    fn new_inner(default: &[u8], bounds: Option<(i64, i64)>) -> InodeRef {
         let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
         InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(SysctlFileOps))
-            .private(Arc::new(SysctlInode { val: Spinlock::new(default.to_vec()) }))
+            .private(Arc::new(SysctlInode { val: Spinlock::new(default.to_vec()), bounds }))
             .build()
     }
 }

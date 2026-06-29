@@ -10,10 +10,18 @@
 // per-iface conf.* knobs) are registered by `register_dynamic` rather than the
 // const table.
 //
-// NOT done (D22 remainder): a nested `ctl_table` *hierarchy* with per-leaf
-// `data`/`extra1..2` bound to kernel variables and real `proc_dointvec`
-// min/max validation — every writable knob here is still a free byte slot.
-// The structural flat-vs-declarative antipattern is what this closes.
+// D22 (this revision): integer leaves now carry a `proc_dointvec_minmax`
+// window (`extra1`/`extra2`) — `K::I(min,max)` — and a write is parsed +
+// range-checked before it is stored (EINVAL on a non-integer / out-of-range
+// value, like Linux). `K::W` remains a `proc_dointvec` free byte slot for the
+// multi-field / long knobs (printk, file-nr, file-max).
+//
+// NOT done (D22 remainder): a nested `ctl_table` *hierarchy* and per-leaf
+// `data` bound to the actual live kernel variable. Most backing variables live
+// outside procfs (cross-lane: VM tunables in mm, the fs.* limits in vfs, the
+// net.* knobs in net) and have no procfs-reachable accessor; the one reachable
+// live binding (`net.ipv4.ip_forward` → `net::forwarding`) is wired via
+// `register_dynamic`. The remainder stay validated-but-detached slots.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -21,11 +29,16 @@ use vfs::InodeRef;
 use crate::StaticFileInode;
 use crate::sysctl::{IpForwardInode, SysctlInode};
 
-/// proc_handler class. `W` = `proc_dointvec`-style writable byte slot
-/// (`SysctlInode`); `C` = read-only constant (`StaticFileInode`, Linux rejects
-/// writes to these too — `mode 0444`).
+/// proc_handler class. `W` = `proc_dointvec` writable free byte slot
+/// (`SysctlInode`, multi-field / long knobs); `I(min,max)` =
+/// `proc_dointvec_minmax` integer leaf (write range-checked against the
+/// inclusive window); `C` = read-only constant (`StaticFileInode`, Linux
+/// rejects writes to these too — `mode 0444`).
 #[derive(Copy, Clone)]
-enum K { W, C }
+enum K { W, I(i64, i64), C }
+
+/// `proc_dointvec_minmax` window for a 32-bit-int knob (0..INT_MAX).
+const INT_MAX: i64 = i32::MAX as i64;
 
 /// One `ctl_table` leaf: `procname`, handler class, default value. # C: n/a
 type Ctl = (&'static str, K, &'static [u8]);
@@ -36,7 +49,7 @@ type Ctl = (&'static str, K, &'static [u8]);
 /// row wins, exactly as the prior in-order `register` calls behaved. # C: n/a
 const SYSCTL_TABLE: &[Ctl] = &[
     // ---- first registration block ----
-    ("/proc/sys/kernel/pid_max",                    K::W, b"32768\n"),
+    ("/proc/sys/kernel/pid_max",                    K::I(1, 4_194_304), b"32768\n"),
     ("/proc/sys/kernel/ngroups_max",                K::C, b"65536\n"),
     ("/proc/sys/kernel/cap_last_cap",               K::C, b"40\n"),
     ("/proc/sys/kernel/osrelease",                  K::C, b"5.15.0-oxide\n"),
@@ -46,27 +59,27 @@ const SYSCTL_TABLE: &[Ctl] = &[
     ("/proc/sys/kernel/threads-max",                K::C, b"32768\n"),
     ("/proc/sys/fs/file-max",                       K::W, b"65536\n"),
     ("/proc/sys/fs/file-nr",                        K::C, b"0\t0\t65536\n"),
-    ("/proc/sys/fs/nr_open",                        K::W, b"1048576\n"),
+    ("/proc/sys/fs/nr_open",                        K::I(0, INT_MAX), b"1048576\n"),
     ("/proc/sys/fs/inotify/max_user_watches",       K::C, b"65536\n"),
     ("/proc/sys/fs/inotify/max_user_instances",     K::C, b"128\n"),
     ("/proc/sys/fs/inotify/max_queued_events",      K::C, b"16384\n"),
-    ("/proc/sys/fs/pipe-max-size",                  K::W, b"4096\n"),
-    ("/proc/sys/vm/overcommit_memory",              K::W, b"0\n"),
-    ("/proc/sys/vm/swappiness",                     K::W, b"60\n"),
-    ("/proc/sys/net/core/somaxconn",                K::W, b"4096\n"),
+    ("/proc/sys/fs/pipe-max-size",                  K::I(0, INT_MAX), b"4096\n"),
+    ("/proc/sys/vm/overcommit_memory",              K::I(0, 2), b"0\n"),
+    ("/proc/sys/vm/swappiness",                     K::I(0, 200), b"60\n"),
+    ("/proc/sys/net/core/somaxconn",                K::I(0, INT_MAX), b"4096\n"),
     ("/proc/sys/kernel/printk",                     K::W, b"4\t4\t1\t7\n"),
-    ("/proc/sys/net/ipv4/tcp_syncookies",           K::W, b"1\n"),
-    ("/proc/sys/vm/dirty_ratio",                    K::W, b"20\n"),
-    ("/proc/sys/vm/max_map_count",                  K::W, b"65530\n"),
+    ("/proc/sys/net/ipv4/tcp_syncookies",           K::I(0, 2), b"1\n"),
+    ("/proc/sys/vm/dirty_ratio",                    K::I(0, 100), b"20\n"),
+    ("/proc/sys/vm/max_map_count",                  K::I(0, INT_MAX), b"65530\n"),
     // ---- second registration block (F158 + more) ----
     ("/proc/sys/net/ipv4/tcp_syncookies",           K::C, b"1\n"),
     ("/proc/sys/net/ipv4/tcp_tw_reuse",             K::C, b"2\n"),
     ("/proc/sys/net/ipv4/tcp_fin_timeout",          K::C, b"60\n"),
     ("/proc/sys/net/ipv4/tcp_keepalive_time",       K::C, b"7200\n"),
     ("/proc/sys/net/ipv4/ip_local_port_range",      K::C, b"32768\t60999\n"),
-    ("/proc/sys/net/ipv4/icmp_echo_ignore_all",     K::W, b"0\n"),
-    ("/proc/sys/fs/protected_regular",              K::W, b"2\n"),
-    ("/proc/sys/fs/protected_fifos",                K::W, b"1\n"),
+    ("/proc/sys/net/ipv4/icmp_echo_ignore_all",     K::I(0, 1), b"0\n"),
+    ("/proc/sys/fs/protected_regular",              K::I(0, 2), b"2\n"),
+    ("/proc/sys/fs/protected_fifos",                K::I(0, 2), b"1\n"),
     ("/proc/sys/net/ipv6/conf/all/disable_ipv6",    K::C, b"0\n"),
     ("/proc/sys/net/ipv6/conf/default/disable_ipv6", K::C, b"0\n"),
     ("/proc/sys/net/core/rmem_default",             K::C, b"212992\n"),
@@ -74,27 +87,27 @@ const SYSCTL_TABLE: &[Ctl] = &[
     ("/proc/sys/net/core/wmem_default",             K::C, b"212992\n"),
     ("/proc/sys/net/core/wmem_max",                 K::C, b"212992\n"),
     ("/proc/sys/net/core/netdev_max_backlog",       K::C, b"1000\n"),
-    ("/proc/sys/vm/min_free_kbytes",                K::W, b"4096\n"),
-    ("/proc/sys/vm/overcommit_ratio",               K::W, b"50\n"),
-    ("/proc/sys/vm/dirty_ratio",                    K::W, b"20\n"),
-    ("/proc/sys/vm/dirty_background_ratio",         K::W, b"10\n"),
-    ("/proc/sys/vm/page-cluster",                   K::W, b"3\n"),
-    ("/proc/sys/vm/max_map_count",                  K::W, b"65530\n"),
-    ("/proc/sys/vm/nr_hugepages",                   K::W, b"0\n"),
-    ("/proc/sys/vm/mmap_min_addr",                  K::W, b"65536\n"),
-    ("/proc/sys/kernel/sched_rr_timeslice_ms",      K::W, b"100\n"),
-    ("/proc/sys/kernel/randomize_va_space",         K::W, b"2\n"),
-    ("/proc/sys/kernel/yama/ptrace_scope",          K::W, b"1\n"),
-    ("/proc/sys/kernel/perf_event_paranoid",        K::W, b"2\n"),
-    ("/proc/sys/kernel/dmesg_restrict",             K::W, b"0\n"),
-    ("/proc/sys/kernel/kptr_restrict",              K::W, b"0\n"),
-    ("/proc/sys/kernel/threads-max",                K::W, b"32768\n"),
-    ("/proc/sys/kernel/io_uring_disabled",          K::W, b"0\n"),
+    ("/proc/sys/vm/min_free_kbytes",                K::I(0, INT_MAX), b"4096\n"),
+    ("/proc/sys/vm/overcommit_ratio",               K::I(0, 100), b"50\n"),
+    ("/proc/sys/vm/dirty_ratio",                    K::I(0, 100), b"20\n"),
+    ("/proc/sys/vm/dirty_background_ratio",         K::I(0, 100), b"10\n"),
+    ("/proc/sys/vm/page-cluster",                   K::I(0, INT_MAX), b"3\n"),
+    ("/proc/sys/vm/max_map_count",                  K::I(0, INT_MAX), b"65530\n"),
+    ("/proc/sys/vm/nr_hugepages",                   K::I(0, INT_MAX), b"0\n"),
+    ("/proc/sys/vm/mmap_min_addr",                  K::I(0, INT_MAX), b"65536\n"),
+    ("/proc/sys/kernel/sched_rr_timeslice_ms",      K::I(1, INT_MAX), b"100\n"),
+    ("/proc/sys/kernel/randomize_va_space",         K::I(0, 2), b"2\n"),
+    ("/proc/sys/kernel/yama/ptrace_scope",          K::I(0, 3), b"1\n"),
+    ("/proc/sys/kernel/perf_event_paranoid",        K::I(-1, 4), b"2\n"),
+    ("/proc/sys/kernel/dmesg_restrict",             K::I(0, 1), b"0\n"),
+    ("/proc/sys/kernel/kptr_restrict",              K::I(0, 2), b"0\n"),
+    ("/proc/sys/kernel/threads-max",                K::I(20, INT_MAX), b"32768\n"),
+    ("/proc/sys/kernel/io_uring_disabled",          K::I(0, 2), b"0\n"),
     ("/proc/sys/fs/file-max",                       K::W, b"4096\n"),
-    ("/proc/sys/fs/nr_open",                        K::W, b"1048576\n"),
+    ("/proc/sys/fs/nr_open",                        K::I(0, INT_MAX), b"1048576\n"),
     ("/proc/sys/fs/protected_hardlinks",            K::C, b"1\n"),
     ("/proc/sys/fs/protected_symlinks",             K::C, b"1\n"),
-    ("/proc/sys/fs/suid_dumpable",                  K::W, b"0\n"),
+    ("/proc/sys/fs/suid_dumpable",                  K::I(0, 2), b"0\n"),
 ];
 
 /// The Linux `net/ipv4/conf/<dev>/*` per-interface knob set. Each `<dev>`
@@ -106,6 +119,7 @@ const IPV4_CONF_LEAVES: &[&str] =
 fn make_leaf(kind: K, default: &'static [u8]) -> InodeRef {
     match kind {
         K::W => SysctlInode::new(default) as InodeRef,
+        K::I(min, max) => SysctlInode::new_minmax(default, min, max) as InodeRef,
         K::C => StaticFileInode::new(default) as InodeRef,
     }
 }
