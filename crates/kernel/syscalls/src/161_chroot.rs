@@ -23,24 +23,48 @@ pub fn sys_chroot(args: &SyscallArgs) -> i64 {
     let s = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    if !s.starts_with('/') { return -(Errno::Einval.as_i32() as i64); }
-    // SAFETY: task.root single-mutator per `13§5`; running task on this CPU is the sole writer (chroot only mutates the calling task's root).
-    let new_root = unsafe {
-        let cur_root = (*cur.root.get()).clone();
-        if cur_root == "/" {
-            alloc::string::String::from(s)
-        } else {
-            let mut out = cur_root;
-            if out.ends_with('/') { out.pop(); }
-            out.push_str(s);
-            out
-        }
+    // chroot(2) accepts a RELATIVE path (resolved against cwd) — Linux
+    // `set_fs_root` takes `user_path_at(AT_FDCWD, ...)`. systemd's
+    // `mount_switch_root` does `chroot(".")` after MS_MOVE-ing the assembled
+    // sandbox root onto `/` and `chdir`-ing into it; rejecting non-absolute
+    // paths failed that with EINVAL (step NAMESPACE status=226).
+    //
+    // A relative path MUST resolve against the cwd DENTRY via namei, NOT by
+    // re-resolving the cwd path STRING: the MS_MOVE/pivot that just ran
+    // relocated the sandbox root, so the cwd's recorded path string is stale
+    // and re-resolving it ENOENTs (the chroot then returns ENOENT, the same
+    // step-NAMESPACE failure). `resolve_path` walks from `cwd_vfs.dentry`,
+    // which travelled WITH the moved mount, landing on the live moved root.
+    // An absolute path keeps the legacy nested-chroot prefix concat (F95).
+    // # C: O(components)
+    let (new_root, root_obj) = if !s.starts_with('/') {
+        let p = match crate::pathresolve::resolve_path(s, false) {
+            Some(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
+            _ => return -(Errno::Enoent.as_i32() as i64),
+        };
+        let abs = alloc::string::String::from_utf8(p.dentry.absolute_path())
+            .unwrap_or_else(|_| alloc::string::String::from("/"));
+        (abs, p)
+    } else {
+        // SAFETY: task.root single-mutator per `13§5`; running task on this CPU is the sole writer (chroot only mutates the calling task's root).
+        let new_root = unsafe {
+            let cur_root = (*cur.root.get()).clone();
+            if cur_root == "/" {
+                alloc::string::String::from(s)
+            } else {
+                let mut out = cur_root;
+                if out.ends_with('/') { out.pop(); }
+                out.push_str(s);
+                out
+            }
+        };
+        let p = match crate::pathresolve::resolve_path(&new_root, false) {
+            Some(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
+            _ => return -(Errno::Enoent.as_i32() as i64),
+        };
+        (new_root, p)
     };
-    let root_obj = match crate::pathresolve::resolve_path(&new_root, false) {
-        Some(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
-        _ => return -(Errno::Enoent.as_i32() as i64),
-    };
-    // SAFETY: same single-mutator invariant.
+    // SAFETY: task.root/root_vfs single-mutator per `13§5`; the running task on this CPU is the sole writer (chroot only mutates the calling task's root).
     unsafe {
         *cur.root.get() = new_root;
         *cur.root_vfs.get() = Some(root_obj);
