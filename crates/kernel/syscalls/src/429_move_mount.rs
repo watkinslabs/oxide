@@ -57,7 +57,16 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
             Some(i) => i, None => return -(Errno::Ebadf.as_i32() as i64),
         };
         if let Some(mo) = inode.private::<MountObjectInode>() {
-            // open_tree clone: bind the captured (fs, root) at the target.
+            // D24 Stage 1a: an open_tree-cloned SUBTREE → splice it under the
+            // target HASH-ONLY (adds the (clone_root,/proc) etc. strict-hash
+            // entries; the legacy `mounted_mounts` walk oracle is untouched, so
+            // boot stays green this stage). TAKE it so the inode's Drop does not
+            // also release the now-committed clones.
+            if let Some(tree) = mo.detached_tree.lock().take() {
+                let _ = vfs::mount::commit_tree_hashonly(tree, &target_d);
+                return 0;
+            }
+            // open_tree clone (legacy non-recursive): bind the captured (fs, root).
             if let Some((fs, root)) = mo.clone_of.as_ref() {
                 let _ = vfs::mount::register_bind(Some(target_d.clone()), fs.clone(), root.clone());
                 return 0;
