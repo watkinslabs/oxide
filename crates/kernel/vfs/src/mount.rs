@@ -62,23 +62,67 @@ pub use mnt_flags::{
 // a two-sweep grace where an unused, unmarked mount is marked on one pass and
 // reaped on the next if still idle.
 mod expiry;
-pub use expiry::{expire_list_create, mark_mounts_for_expiry, mnt_expire_add, mnt_expire_remove};
+pub use expiry::{
+    expire_list_create, mark_mounts_for_expiry, mnt_expire_add, mnt_expire_remove,
+    sweep_expired_mounts,
+};
 
-pub const MNT_RDONLY: u64 = 1;
-pub const MNT_NOSUID: u64 = 2;
-pub const MNT_NODEV: u64 = 4;
-pub const MNT_NOEXEC: u64 = 8;
-pub const MNT_SYNCHRONOUS: u64 = 16;
-pub const MNT_MANDLOCK: u64 = 64;
-pub const MNT_DIRSYNC: u64 = 128;
-pub const MNT_NOATIME: u64 = 1024;
-pub const MNT_NODIRATIME: u64 = 2048;
-pub const MNT_RELATIME: u64 = 1 << 21;
-pub const MNT_STRICTATIME: u64 = 1 << 24;
-pub const MNT_LAZYTIME: u64 = 1 << 25;
+// --- [D10] Per-mount mnt_flags OPTION bits — the REAL Linux kernel-internal
+// `mnt->mnt_flags` values (`include/linux/mount.h`), a DISJOINT space from the
+// MS_* mount(2) request flags below. `ms_to_mnt` maps a request mask into this
+// space at mount/remount time. `/proc/mounts` + statvfs `ST_*` read these by
+// NAME, so the value change is transparent to those renderers. ---
+pub const MNT_NOSUID: u64 = 0x01;
+pub const MNT_NODEV: u64 = 0x02;
+pub const MNT_NOEXEC: u64 = 0x04;
+pub const MNT_NOATIME: u64 = 0x08;
+pub const MNT_NODIRATIME: u64 = 0x10;
+pub const MNT_RELATIME: u64 = 0x20;
+/// Linux `MNT_READONLY` (the per-mount RO bit, distinct from `SB_RDONLY`).
+pub const MNT_RDONLY: u64 = 0x40;
+/// Linux `MNT_NOSYMFOLLOW` (symlinks on this mount are not followed).
+pub const MNT_NOSYMFOLLOW: u64 = 0x80;
+/// Synthetic strictatime marker. Linux has NO per-mount strictatime bit —
+/// strictatime is the ABSENCE of NOATIME+RELATIME — but `atime_policy` and
+/// `inode_times` model it as one disjoint bit so an explicit MS_STRICTATIME
+/// request stays representable and the policy resolver stays branch-simple.
+/// Above the real `u32` mnt_flags range, disjoint from every Linux value.
+pub const MNT_STRICTATIME: u64 = 1 << 33;
 pub const MNT_OPTION_MASK: u64 = MNT_RDONLY | MNT_NOSUID | MNT_NODEV | MNT_NOEXEC
-    | MNT_SYNCHRONOUS | MNT_MANDLOCK | MNT_DIRSYNC | MNT_NOATIME | MNT_NODIRATIME
-    | MNT_RELATIME | MNT_STRICTATIME | MNT_LAZYTIME;
+    | MNT_NOATIME | MNT_NODIRATIME | MNT_RELATIME | MNT_NOSYMFOLLOW | MNT_STRICTATIME;
+
+// --- [D10] mount(2) MS_* OPTION request flags (`linux/mount.h`) — the
+// USER-FACING request space the syscall passes in, mapped to MNT_* by
+// `ms_to_mnt`. SYNCHRONOUS/MANDLOCK/DIRSYNC/LAZYTIME are SUPERBLOCK (`SB_*`)
+// flags, not per-mount, and are NOT represented in the mnt_flags space. ---
+pub const MS_RDONLY: u64 = 0x1;
+pub const MS_NOSUID: u64 = 0x2;
+pub const MS_NODEV: u64 = 0x4;
+pub const MS_NOEXEC: u64 = 0x8;
+pub const MS_NOATIME: u64 = 0x400;
+pub const MS_NODIRATIME: u64 = 0x800;
+pub const MS_RELATIME: u64 = 1 << 21;
+pub const MS_STRICTATIME: u64 = 1 << 24;
+
+/// Map a mount(2) MS_* OPTION request mask to the per-mount MNT_* flag space
+/// (Linux `do_mount`/`reconfigure`: derive `mnt_flags` from the request). The
+/// atime policy follows Linux precedence — NOATIME wins, then explicit
+/// STRICTATIME, else RELATIME (the kernel default since 2.6.30 when neither
+/// STRICTATIME nor NOATIME is asked for). SB-level options
+/// (SYNCHRONOUS/MANDLOCK/DIRSYNC/LAZYTIME) live on the superblock and are
+/// dropped here. # C: O(1)
+pub fn ms_to_mnt(ms: u64) -> u64 {
+    let mut f = 0u64;
+    if ms & MS_RDONLY     != 0 { f |= MNT_RDONLY; }
+    if ms & MS_NOSUID     != 0 { f |= MNT_NOSUID; }
+    if ms & MS_NODEV      != 0 { f |= MNT_NODEV; }
+    if ms & MS_NOEXEC     != 0 { f |= MNT_NOEXEC; }
+    if ms & MS_NODIRATIME != 0 { f |= MNT_NODIRATIME; }
+    if ms & MS_NOATIME != 0 { f |= MNT_NOATIME; }
+    else if ms & MS_STRICTATIME != 0 { f |= MNT_STRICTATIME; }
+    else { f |= MNT_RELATIME; }
+    f
+}
 
 /// A dentry's identity key (stable address of the `Arc<Dentry>` allocation).
 /// # C: O(1)
@@ -291,8 +335,23 @@ impl Propagation {
 /// namei base fallback before any root mount exists). # C: const
 pub const MNT_ID_NONE: u64 = 0;
 /// Monotonic mount-id source (mountinfo field 1). Starts at 1 (`MNT_ID_NONE`+1).
+///
+/// [D29] Strictly increasing and NEVER recycled — deliberately, NOT a leak.
+/// Linux recycles `mnt_id` via an IDR only because its id is a 32-bit `int`;
+/// our id is a 64-bit counter that cannot be exhausted in any realistic uptime
+/// (2^64 mounts at, say, 10^9 mounts/s ≈ 585 years), so recycling buys nothing
+/// and a free-list would only add ABA hazard: a freed-then-reused `mnt_id`
+/// could alias a stale handle (an open file's `f_path.mnt`, an in-flight
+/// `statmount`/`open_tree` fd, a `/proc/.../mountinfo` row a reader cached).
+/// Same safety argument as `NEXT_NS_ID` in `mntns`. Detach drops the `MOUNTS`
+/// entry; the id is simply never minted again.
 static NEXT_MNT_ID: AtomicU64 = AtomicU64::new(1);
 /// Monotonic peer-group id source. Starts at 1 (0 = none).
+///
+/// [D29] Monotonic-never-recycled for the same reason as `NEXT_MNT_ID`: a
+/// 64-bit space never exhausts, and reusing a `peer_group` id could conflate a
+/// demoted-then-reborn group with a stale `master:<pg>` / `shared:<pg>` field
+/// still rendered in another reader's mountinfo snapshot.
 static NEXT_PEER_GROUP: AtomicU64 = AtomicU64::new(1);
 
 /// One mount instance (Linux `struct mount`). An intrusive tree node.
@@ -496,6 +555,9 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
         let root_inode = root.clone().or_else(|| fs.root());
         let sb = SuperBlock::for_backend(fs, root_inode, next_anon_dev(), String::from("/"));
         let m = new_mount(sb, String::from("/"), None, mnt_id, root, mnt_id, ns);
+        // [D11] The namespace ROOT mount is a kernel-internal producer (Linux
+        // marks rootfs / kern_mount mounts MNT_INTERNAL): never user-expirable.
+        m.set_internal_flag(MNT_INTERNAL);
         mntns::ns_set_root(ns, mnt_id);
         MOUNTS.lock().insert(mnt_id, m);
         mntns::commit_mounts(ns, 1);
@@ -530,6 +592,21 @@ pub fn register(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()>
 /// Bind-as-clone (`mount(src, tgt, NULL, MS_BIND)`). # C: O(depth)
 pub fn register_bind(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
     attach(mp, fs, Some(root))
+}
+
+/// [D14] `attach_recursive_mnt` (Linux `fs/namespace.c`): graft a new mount on
+/// `mp` AND deliver mount propagation to the destination parent's peer group as
+/// ONE engine call, so there is no caller-visible window where the mount is
+/// attached but its propagated mirrors are not (the prior `register*` +
+/// separate `propagate_mount` sequence left the tree momentarily
+/// half-replicated). `root` `Some` ⇒ bind-as-clone, `None` ⇒ fresh fs. Returns
+/// the number of propagated mirror copies created (0 for a private/root graft).
+/// # C: O(N_mounts × depth)
+pub fn attach_recursive_mnt(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>,
+                            root: Option<InodeRef>) -> KResult<usize> {
+    let at = mp.clone();
+    attach(mp, fs, root)?;
+    Ok(match at { Some(d) => propagation::propagate_mount(&d), None => 0 })
 }
 
 /// `mnt_id`s of `top` plus its transitive children via the intrusive child
@@ -845,7 +922,9 @@ pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
 /// assembled sandbox root) got EINVAL at step NAMESPACE. # C: O(N × depth)
 pub fn move_mount_by_id(from_id: u64, to: &Arc<Dentry>) -> KResult<()> {
     let from_m = mount_by_id(from_id).ok_or(VfsError::Einval)?;
-    if from_m.ns != current_ns() { return Err(VfsError::Einval); }
+    // [D32] Uniform cross-ns guard: `mount_by_id` is the ns-AGNOSTIC arena
+    // lookup, so a by-id handle MUST pass `check_mnt` before any mutation.
+    if !check_mnt(&from_m) { return Err(VfsError::Einval); }
     move_mount_m(from_m, to)
 }
 
@@ -861,6 +940,10 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>) -> KResult<()> {
     //   * cannot move the namespace ROOT mount itself (`!mnt_has_parent(old)`);
     //   * cannot move a mount INTO its own subtree (`for(p=dest;...) if p==old`).
     if root_mount_id(ns) == Some(from_id) { return Err(VfsError::Einval); }
+    // [D11] A MNT_LOCKED mount cannot be moved (Linux `do_move_mount`:
+    // `attached && (old->mnt.mnt_flags & MNT_LOCKED)` → -EINVAL): an
+    // unprivileged userns must not relocate a mount its parent pinned.
+    if from_m.is_locked() { return Err(VfsError::Einval); }
     if !to_root {
         let mut anc = Some(parent_by_dentry(ns, to));
         while let Some(a) = anc {
@@ -945,9 +1028,10 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>) -> KResult<()> {
     Ok(())
 }
 
-/// Update the per-mount MNT_* option bits on the mount at dentry `d`. Setting
-/// MNT_RDONLY while writers are active fails with EBUSY (Linux
-/// `mnt_hold_writers`). # C: O(log N)
+/// Update the per-mount option bits on the mount at dentry `d` from a mount(2)
+/// MS_* REQUEST mask (mapped to MNT_* via [`ms_to_mnt`], D10). Setting RDONLY
+/// while writers are active fails with EBUSY (Linux `mnt_hold_writers`).
+/// # C: O(log N)
 pub fn remount_flags(d: &Arc<Dentry>, flags: u64) -> KResult<()> {
     let m = mount_exact_at(current_ns(), d).ok_or(VfsError::Einval)?;
     apply_remount(&m, flags)
@@ -964,14 +1048,18 @@ pub fn remount_flags(d: &Arc<Dentry>, flags: u64) -> KResult<()> {
 /// once the procfs replication exposed the remount). # C: O(log N)
 pub fn remount_flags_by_id(mnt_id: u64, flags: u64) -> KResult<()> {
     let m = mount_by_id(mnt_id).ok_or(VfsError::Einval)?;
-    if m.ns != current_ns() { return Err(VfsError::Einval); }
+    // [D32] Uniform cross-ns guard via `check_mnt` (the ns-AGNOSTIC `mount_by_id`
+    // arena lookup must be gated before mutating a by-id handle).
+    if !check_mnt(&m) { return Err(VfsError::Einval); }
     apply_remount(&m, flags)
 }
 
-/// Shared MNT_* option update for both [`remount_flags`] variants. # C: O(1)
+/// Shared option update for both [`remount_flags`] variants. `flags` is the
+/// mount(2) MS_* REQUEST mask; it is mapped to the per-mount MNT_* space
+/// ([`ms_to_mnt`]) before being committed (D10). # C: O(1)
 fn apply_remount(m: &Arc<Mount>, flags: u64) -> KResult<()> {
     let old = m.flags.load(Ordering::Acquire);
-    let new = (old & !MNT_OPTION_MASK) | (flags & MNT_OPTION_MASK);
+    let new = (old & !MNT_OPTION_MASK) | (ms_to_mnt(flags) & MNT_OPTION_MASK);
     if (new & MNT_RDONLY) != 0 && (old & MNT_RDONLY) == 0 && m.mnt_writers.load(Ordering::Acquire) > 0 {
         return Err(VfsError::Ebusy);
     }
@@ -1005,8 +1093,15 @@ pub fn check_mnt(m: &Mount) -> bool { m.ns == current_ns() }
 /// mount, never the foreign mount. # C: O(components)
 pub fn resolve_mount(path: &str) -> Option<(Arc<Mount>, String)> {
     let ns = current_ns();
-    let id = crate::namei::walk_to_mount(path).or_else(|| root_mount_id(ns))?;
+    // [D22] A failed walk (path does not resolve — e.g. before any root mount
+    // exists) returns `None` (→ ENOENT), NOT a silent substitution of the ns
+    // root. `walk_to_mount` already returns the deepest OWNING mount for a
+    // not-yet-existing leaf, so a normal path still resolves; only a truly
+    // unresolvable walk yields `None`.
+    let id = crate::namei::walk_to_mount(path)?;
     let m = mount_by_id(id)?;
+    // Cross-ns guard kept: a walk that lands on a FOREIGN-ns mount falls back to
+    // the caller's own root mount (never leaks the foreign mount).
     if !check_mnt(&m) { return root_mount_id(ns).and_then(mount_by_id).map(|r| (r, path.to_string())); }
     Some((m, path.to_string()))
 }

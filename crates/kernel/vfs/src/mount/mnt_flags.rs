@@ -1,8 +1,9 @@
 //! `mnt_flags` model (`docs/16§6`, Linux `include/linux/mount.h`).
 //!
 //! TWO disjoint flag spaces ride a `Mount`:
-//!   * the MS_*-valued OPTION mask in `Mount.flags` (RDONLY/NOSUID/NODEV/NOEXEC/
-//!     atime policy …), set by `mount(2)`/`remount` — typed readback here;
+//!   * the per-mount MNT_* OPTION mask in `Mount.flags` (RDONLY/NOSUID/NODEV/
+//!     NOEXEC/atime policy …) — REAL Linux `mnt_flags` values (D10), mapped
+//!     from the `mount(2)` MS_* request mask by `ms_to_mnt`; typed readback here;
 //!   * the kernel-INTERNAL `mnt_flags` bit set in `Mount.mnt_internal_flags`
 //!     (MNT_LOCKED/MNT_INTERNAL/MNT_DOOMED/MNT_MARKED/MNT_UMOUNT) never exposed
 //!     to userspace — Linux real values, plus the synthetic MNT_EXPIRE_MARK
@@ -59,8 +60,8 @@ impl Mount {
     pub fn is_strictatime(&self) -> bool { self.flags() & MNT_STRICTATIME != 0 }
 
     /// Resolved atime policy (Linux precedence): NOATIME wins, then explicit
-    /// RELATIME, then explicit STRICTATIME, else the kernel relatime default.
-    /// # C: O(1)
+    /// RELATIME, then explicit STRICTATIME, else the kernel relatime default
+    /// (a fresh mount with no atime bits set). # C: O(1)
     pub fn atime_policy(&self) -> AtimePolicy {
         let f = self.flags();
         if f & MNT_NOATIME != 0 { AtimePolicy::Noatime }

@@ -80,6 +80,19 @@ pub fn mark_mounts_for_expiry(list: u64) -> usize {
     n
 }
 
+/// [D26] Production expiry sweep entry point: run one [`mark_mounts_for_expiry`]
+/// pass over EVERY registered expire list (Linux's periodic
+/// `mark_mounts_for_expiry` housekeeping timer, plus the autofs/NFS expiry
+/// ticks). The scheduler / an autofs daemon tick calls this so the two-pass
+/// grace engine actually runs in production, not only from tests. Returns the
+/// total mounts reaped this pass. # C: O(N_lists × N_members)
+pub fn sweep_expired_mounts() -> usize {
+    let lists: Vec<u64> = EXPIRE_LISTS.lock().keys().copied().collect();
+    let mut n = 0;
+    for l in lists { n += mark_mounts_for_expiry(l); }
+    n
+}
+
 /// Object-level detach of an expired mount (Linux `umount_tree(mnt)` on the
 /// expiry path), operating on the `Arc<Mount>` directly so it is ns-correct
 /// regardless of the caller's current ns: unlink from parent + hash + crossing,
