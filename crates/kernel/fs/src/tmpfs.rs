@@ -57,6 +57,27 @@ fn fsid_of(sb: &Weak<SuperBlock>) -> u64 {
     sb.upgrade().map(|s| s.s_dev).unwrap_or(TMPFS_FSID)
 }
 
+/// [inode D2] Route a freshly-built inode through the owning SB's inode cache
+/// (Linux `iget`), so a later `ilookup`/`iget` of the same `ino` returns the
+/// SAME `Arc` (shared inode identity) and the inode is visible in `s_inodes`
+/// from build time — mirroring ext4's `wrap_*_ino` (rootfs/ops.rs). Before the
+/// SB is back-stamped (the root inode built at `fill_super`) or for an
+/// anonymous inode (memfd/coredump) with no owning SB, there is no cache to
+/// register in → build directly. tmpfs always allocates a FRESH `ino`, so the
+/// icache is always a build-miss and `iget` is refcount-NEUTRAL: the build sets
+/// `i_count == 1`, exactly the single strong reference the tree's `kids` map (or
+/// the open file) then holds. Reclaim stays Arc/`Weak`-driven (the cache slot is
+/// a `Weak`; the last strong `Arc` dropped → `Inode::Drop` frees the frames →
+/// the `Weak` dies), identical to ext4 which likewise never `iput`s.
+/// Lock order: a caller holding the parent dir's `kids`/`sb` (Inode rank 40)
+/// then takes the icache (Superblock rank 60) — ascending, per `06§3.6`. # C: O(log N_ino)
+fn iget_or_build(sb: &Weak<SuperBlock>, ino: Ino, build: impl FnOnce() -> InodeRef) -> InodeRef {
+    match sb.upgrade() {
+        Some(s) => s.iget(ino, build),
+        None    => build(),
+    }
+}
+
 /// Per-instance tmpfs space accounting (Linux `shmem_sb_info`): block + inode
 /// limits and live usage, so `statfs(2)`/`df` report real `f_blocks`/`f_bfree`/
 /// `f_files`/`f_ffree` and `create`/`write`/`mkdir` fail `ENOSPC` at the limit
@@ -181,21 +202,24 @@ fn ensure_page(g: &mut BTreeMap<u64, u64>, idx: u64, acct: &TmpfsSb) -> Option<u
 /// layer); `sb` owns the inode (`fsid` derives from `s_dev`). # C: O(1)
 fn make_tmpfs_file_inode(sealable: bool, perm: u16, uid: u32, gid: u32, sb: Weak<SuperBlock>, acct: Arc<TmpfsSb>) -> InodeRef {
     let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-    let data = Arc::new(TmpfsFileData {
-        pages: Spinlock::new(BTreeMap::new()),
-        len:   AtomicU64::new(0),
-        acct,
-    });
-    let mapping: Arc<dyn AddressSpaceOps> = data.clone();
-    let mut b = InodeBuilder::new(ino, mk_mode(FileType::Regular, perm),
-        Arc::new(TmpfsFileInodeOps), Arc::new(TmpfsFileOps))
-        .owner(uid, gid)
-        .fsid(fsid_of(&sb))
-        .mapping(mapping)
-        .private(data);
-    if let Some(s) = sb.upgrade() { b = b.sb(Arc::downgrade(&s)); }
-    if sealable { b = b.seals(0); }
-    b.build()
+    let sb2 = sb.clone();
+    iget_or_build(&sb, ino, move || {
+        let data = Arc::new(TmpfsFileData {
+            pages: Spinlock::new(BTreeMap::new()),
+            len:   AtomicU64::new(0),
+            acct,
+        });
+        let mapping: Arc<dyn AddressSpaceOps> = data.clone();
+        let mut b = InodeBuilder::new(ino, mk_mode(FileType::Regular, perm),
+            Arc::new(TmpfsFileInodeOps), Arc::new(TmpfsFileOps))
+            .owner(uid, gid)
+            .fsid(fsid_of(&sb2))
+            .mapping(mapping)
+            .private(data);
+        if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
+        if sealable { b = b.seals(0); }
+        b.build()
+    })
 }
 
 /// Anonymous tmpfs file body (memfd / coredump), no owning SuperBlock. # C: O(1)
@@ -424,14 +448,18 @@ impl InodeOps for TmpfsSymlinkOps {
 /// Build a tmpfs symlink inode pointing at `target`, owned by `sb`. # C: O(1)
 fn make_tmpfs_symlink_inode(target: &[u8], uid: u32, gid: u32, sb: Weak<SuperBlock>) -> InodeRef {
     let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-    let mut b = InodeBuilder::new(ino, mk_mode(FileType::Symlink, 0o777),
-        Arc::new(TmpfsSymlinkOps), vfs::default_file_ops())
-        .owner(uid, gid)
-        .size(target.len() as u64)
-        .fsid(fsid_of(&sb))
-        .private(Arc::new(TmpfsSymlinkData { target: target.to_vec() }));
-    if let Some(s) = sb.upgrade() { b = b.sb(Arc::downgrade(&s)); }
-    b.build()
+    let sb2 = sb.clone();
+    let target = target.to_vec();
+    iget_or_build(&sb, ino, move || {
+        let mut b = InodeBuilder::new(ino, mk_mode(FileType::Symlink, 0o777),
+            Arc::new(TmpfsSymlinkOps), vfs::default_file_ops())
+            .owner(uid, gid)
+            .size(target.len() as u64)
+            .fsid(fsid_of(&sb2))
+            .private(Arc::new(TmpfsSymlinkData { target }));
+        if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
+        b.build()
+    })
 }
 
 /// `i_fop` whose read/write both error `EIO` (tmpfs socket / special node).
@@ -446,12 +474,15 @@ impl FileOps for TmpfsErrFileOps {
 /// VFS. All I/O errors — datagram queueing lives in `net`. # C: O(1)
 fn make_tmpfs_sock_inode(uid: u32, gid: u32, sb: Weak<SuperBlock>) -> InodeRef {
     let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-    let mut b = InodeBuilder::new(ino, mk_mode(FileType::Socket, 0o755),
-        default_inode_ops(), Arc::new(TmpfsErrFileOps))
-        .owner(uid, gid)
-        .fsid(fsid_of(&sb));
-    if let Some(s) = sb.upgrade() { b = b.sb(Arc::downgrade(&s)); }
-    b.build()
+    let sb2 = sb.clone();
+    iget_or_build(&sb, ino, move || {
+        let mut b = InodeBuilder::new(ino, mk_mode(FileType::Socket, 0o755),
+            default_inode_ops(), Arc::new(TmpfsErrFileOps))
+            .owner(uid, gid)
+            .fsid(fsid_of(&sb2));
+        if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
+        b.build()
+    })
 }
 
 /// Special tmpfs inode created by mknod(2), mainly FIFO nodes under /run. The
@@ -459,13 +490,16 @@ fn make_tmpfs_sock_inode(uid: u32, gid: u32, sb: Weak<SuperBlock>) -> InodeRef {
 /// them made systemd's fifo_address_create reject the dm-event FIFO. # C: O(1)
 fn make_tmpfs_special_inode(ft: FileType, perm: u16, rdev: u32, uid: u32, gid: u32, sb: Weak<SuperBlock>) -> InodeRef {
     let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-    let mut b = InodeBuilder::new(ino, mk_mode(ft, perm),
-        default_inode_ops(), Arc::new(TmpfsErrFileOps))
-        .owner(uid, gid)
-        .rdev(rdev)
-        .fsid(fsid_of(&sb));
-    if let Some(s) = sb.upgrade() { b = b.sb(Arc::downgrade(&s)); }
-    b.build()
+    let sb2 = sb.clone();
+    iget_or_build(&sb, ino, move || {
+        let mut b = InodeBuilder::new(ino, mk_mode(ft, perm),
+            default_inode_ops(), Arc::new(TmpfsErrFileOps))
+            .owner(uid, gid)
+            .rdev(rdev)
+            .fsid(fsid_of(&sb2));
+        if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
+        b.build()
+    })
 }
 
 /// Downcast an `InodeRef` to `&TmpfsDirData` (every tmpfs dir carries one).
@@ -501,17 +535,20 @@ impl TmpfsDirData {
 /// `sb`). `i_nlink` defaults to 2 (`.` + the parent's link), per Linux
 /// `simple_fs`. # C: O(1)
 fn make_tmpfs_dir_inode(ino: Ino, perm: u16, uid: u32, gid: u32, sb: Weak<SuperBlock>, acct: Arc<TmpfsSb>) -> InodeRef {
-    let mut b = InodeBuilder::new(ino, mk_mode(FileType::Directory, perm),
-        Arc::new(TmpfsDirOps), Arc::new(TmpfsDirFileOps))
-        .owner(uid, gid)
-        .fsid(fsid_of(&sb))
-        .private(Arc::new(TmpfsDirData {
-            sb:   Spinlock::new(sb.clone()),
-            kids: Spinlock::new(BTreeMap::new()),
-            acct,
-        }));
-    if let Some(s) = sb.upgrade() { b = b.sb(Arc::downgrade(&s)); }
-    b.build()
+    let sb2 = sb.clone();
+    iget_or_build(&sb, ino, move || {
+        let mut b = InodeBuilder::new(ino, mk_mode(FileType::Directory, perm),
+            Arc::new(TmpfsDirOps), Arc::new(TmpfsDirFileOps))
+            .owner(uid, gid)
+            .fsid(fsid_of(&sb2))
+            .private(Arc::new(TmpfsDirData {
+                sb:   Spinlock::new(sb2.clone()),
+                kids: Spinlock::new(BTreeMap::new()),
+                acct,
+            }));
+        if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
+        b.build()
+    })
 }
 
 /// Resolve a tree-relative path per-component from `root`. # C: O(components·log N)
@@ -889,6 +926,78 @@ mod statfs_tests {
         root.unlink_child("f").expect("unlink f");
         root.rmdir("d").expect("rmdir d");
         assert_eq!(sops.statfs().unwrap().f_ffree, 2);
+    }
+}
+
+#[cfg(test)]
+mod iget_tests {
+    use super::*;
+    use vfs::fs::FileSystem;
+
+    // Build a live tmpfs SuperBlock (fill_super back-stamps the root dir's sb
+    // weak, after which children build through `iget`). No PMM needed — no data
+    // writes, only inode lifecycle.
+    fn live_sb() -> Arc<SuperBlock> {
+        let fs = TmpfsFs::new(String::from("/"));
+        let root = fs.root_inode();
+        SuperBlock::for_backend(fs as Arc<dyn FileSystem>, Some(root), 0x1234_5678, String::from("tmpfs"))
+    }
+
+    // [inode D2] A child created on a back-stamped tmpfs mount is registered in
+    // the per-SB icache, and a later `ilookup`/`iget` of its ino returns the
+    // SAME `Arc` (shared inode identity, Linux iget) — never a fresh duplicate.
+    #[test]
+    fn create_child_has_icache_identity() {
+        let sb = live_sb();
+        let root = sb.s_root_inode().expect("root inode");
+        let child = root.create_child("f", 0o644, &CreateCtx::root()).expect("create f");
+        let ino = child.ino();
+
+        // Registered at build: visible in the icache immediately (no dentry yet).
+        let via_lookup = sb.ilookup(ino).expect("child cached in icache");
+        assert!(Arc::ptr_eq(&child, &via_lookup), "ilookup returns the SAME Arc");
+
+        // iget is a cache HIT — the build closure must NOT run (would be a fresh
+        // duplicate, the bug iget prevents).
+        let via_iget = sb.iget(ino, || panic!("iget must hit the cache, not rebuild"));
+        assert!(Arc::ptr_eq(&child, &via_iget), "iget returns the SAME Arc");
+
+        // The child carries the mount's SB (fsid derives from s_dev).
+        assert_eq!(child.fsid(), 0x1234_5678);
+    }
+
+    // [inode D2] An OPEN/held inode is NOT evicted: while any strong `Arc`
+    // lives (here the tree's `kids` ref + our handles), the icache `Weak` keeps
+    // upgrading. Once the last strong ref drops (unlink removed the kids ref +
+    // we drop our handles), the `Weak` dies and the slot reclaims — the
+    // Arc/`Weak` reclaim path, exactly as ext4 operates (no `iput` needed).
+    #[test]
+    fn held_inode_not_evicted_then_reclaimed_on_last_drop() {
+        let sb = live_sb();
+        let root = sb.s_root_inode().expect("root inode");
+        let child = root.create_child("g", 0o644, &CreateCtx::root()).expect("create g");
+        let ino = child.ino();
+
+        // Unlink drops the name (and the kids strong ref) but we still hold one.
+        root.unlink_child("g").expect("unlink g");
+        assert!(sb.ilookup(ino).is_some(), "still held → NOT evicted");
+
+        // Drop the last strong reference → the cache Weak can no longer upgrade.
+        drop(child);
+        assert!(sb.ilookup(ino).is_none(), "last ref gone → reclaimed");
+    }
+
+    // [inode D2] A second create of the SAME name path after reclaim yields a
+    // DISTINCT inode (fresh ino), and both never collide in the icache.
+    #[test]
+    fn distinct_children_distinct_icache_slots() {
+        let sb = live_sb();
+        let root = sb.s_root_inode().expect("root inode");
+        let a = root.create_child("a", 0o644, &CreateCtx::root()).expect("create a");
+        let b = root.mkdir("d", 0o755, &CreateCtx::root()).expect("mkdir d");
+        assert_ne!(a.ino(), b.ino());
+        assert!(Arc::ptr_eq(&a, &sb.ilookup(a.ino()).unwrap()));
+        assert!(Arc::ptr_eq(&b, &sb.ilookup(b.ino()).unwrap()));
     }
 }
 
