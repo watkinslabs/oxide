@@ -105,6 +105,45 @@ pub const fn encode_dev(major: u32, minor: u32) -> u32 {
     (minor & 0xff) | ((major & 0xfff) << 8) | ((minor & !0xff) << 12)
 }
 
+/// Map a filesystem identity (`Inode::fsid()` / `SuperBlock::s_dev`) to the
+/// Linux `dev_t` userspace sees in `st_dev` — THE single transform `stat`/
+/// `statx` apply (`syscalls::namei_common::fsid_to_dev` delegates here).
+/// Reproducing it outside the stat path lets a subsystem match the `st_dev`
+/// userspace holds: autofs `AUTOFS_DEV_IOCTL_OPENMOUNT` carries the `devid`
+/// systemd took from `fstat`, so the autofs registry MUST key on this
+/// user-visible dev — not the raw 64-bit anon `s_dev`, which neither equals
+/// the hashed `st_dev` nor fits the ioctl's `__u32` devid field. Uses the
+/// full Linux `dev_t` packing (matching the stat path), distinct from the
+/// 32-bit `encode_dev` above. # C: O(1)
+pub fn fsid_to_dev(fsid: u64) -> u64 {
+    let mut x = fsid;
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xff51afd7ed558ccd);
+    x ^= x >> 33;
+    let major = (((x >> 20) & 0x0fff) as u32).max(1);
+    let minor = (x & 0x000f_ffff) as u32;
+    ((minor & 0xff) as u64)
+        | (((major & 0xfff) as u64) << 8)
+        | (((minor & !0xff) as u64) << 12)
+        | (((major & !0xfff) as u64) << 32)
+}
+
+#[cfg(test)]
+mod dev_tests {
+    /// Every `fsid_to_dev` result must fit Linux's effective 32-bit `dev_t`:
+    /// the autofs `AUTOFS_DEV_IOCTL_OPENMOUNT` devid field is a `__u32`, so a
+    /// value above `u32::MAX` would truncate and never match the registry
+    /// (the binfmt_misc automount wedge root cause). # C: O(N samples)
+    #[test]
+    fn fsid_to_dev_fits_u32_and_is_stable() {
+        for fsid in [0u64, 1, 256, 0x0102_1994_0000_0003, 0x0000_0001_0000_000e, u64::MAX] {
+            let d = super::fsid_to_dev(fsid);
+            assert!(d <= u32::MAX as u64, "fsid {fsid:#x} -> dev {d:#x} exceeds u32");
+            assert_eq!(d, super::fsid_to_dev(fsid), "fsid_to_dev not deterministic");
+        }
+    }
+}
+
 /// Linux-shaped permission fallback for inodes without a native mode
 /// (`Inode::perm() == None` and no overlay). # C: O(1)
 pub fn default_perm_for(ft: FileType) -> u16 {
