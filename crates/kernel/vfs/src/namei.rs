@@ -585,14 +585,42 @@ impl Nameidata {
         // reported verbatim at the stop below (Linux `LAST_DOTDOT`).
         let trailing_dot = self.flags.parent && crate::path::last_segment(path) == ".";
 
+        // Linux `nameidata` walk frames: an ACTIVE component list `(queue, idx)`
+        // plus a stack of SUSPENDED frames (`nd->stack`). Following a symlink
+        // SUSPENDS the active frame's remainder, makes the link target the new
+        // active frame, and resumes the suspended remainder (Linux `put_link`)
+        // once the target is fully consumed. This replaces the old
+        // splice-and-restart (`queue.extend(remainder); idx = 0`), which
+        // re-copied the trailing remainder and grew one queue per nested link
+        // (O(n²) on deeply nested symlinks); each frame now owns only its own
+        // components, and relative/absolute targets resolve from the right
+        // directory context (`cur_*` for relative, `to_root()` for absolute)
+        // exactly as before.
         let mut queue: Vec<String> = components(path);
         let mut idx = 0usize;
+        let mut saved: Vec<(Vec<String>, usize)> = Vec::new();
         let mut last_component: Option<String> = None;
 
-        while idx < queue.len() {
+        loop {
+            // Resume suspended link frames whose target is now consumed (Linux
+            // `put_link` + walk continuation). Only a NON-empty remainder is ever
+            // pushed, so a popped frame always has a component to process; an
+            // empty stack with the active frame consumed ends the walk.
+            while idx >= queue.len() {
+                match saved.pop() {
+                    Some((q, i)) => { queue = q; idx = i; }
+                    None => break,
+                }
+            }
+            if idx >= queue.len() { break; }
+
             let comp = queue[idx].clone();
             idx += 1;
-            let is_final = idx == queue.len();
+            // Final component of the WHOLE resolution: the active frame is
+            // exhausted AND no suspended remainder follows (Linux: last component
+            // with `nd->depth == 0`). A non-empty `saved` means more path follows
+            // a symlink, so this component is not the trailing one.
+            let is_final = idx >= queue.len() && saved.is_empty();
 
             // ENOTDIR: `comp` (a name OR `..`) is resolved WITHIN `cur_inode`,
             // so `cur_inode` must be a directory — including the PARENT of a
@@ -696,10 +724,15 @@ impl Nameidata {
                 if self.depth > MAX_SYMLINK_DEPTH { return Err(VfsError::Eloop); }
                 let target = child.inode().ok_or(VfsError::Enoent)?.get_link()?;
                 let target = String::from_utf8_lossy(&target).into_owned();
-                // Splice the target's components ahead of whatever remains.
-                let mut next: Vec<String> = components(&target);
-                next.extend_from_slice(&queue[idx..]);
-                queue = next;
+                // Suspend the active frame's remainder (Linux `nd->stack` push)
+                // and make the link target the new active frame; the remainder is
+                // resumed (Linux `put_link`) when the target is consumed. Skip the
+                // push when nothing remains, so an exhausted frame is never stacked
+                // — keeping the resume loop and `is_final` exact.
+                if idx < queue.len() {
+                    saved.push((core::mem::take(&mut queue), idx));
+                }
+                queue = components(&target);
                 idx = 0;
                 if target.as_bytes().first() == Some(&b'/') {
                     // RESOLVE_BENEATH (`beneath_exdev`): an absolute symlink
