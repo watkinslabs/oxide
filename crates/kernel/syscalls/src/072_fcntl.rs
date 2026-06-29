@@ -30,6 +30,13 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_SETOWN_EX: u64 = 15; const F_GETOWN_EX: u64 = 16;
     // f_owner_ex.type (Linux fcntl.h): TID / PID / PGRP.
     const F_OWNER_TID: i32 = 0; const F_OWNER_PID: i32 = 1; const F_OWNER_PGRP: i32 = 2;
+    // F_*LEASE / F_NOTIFY (Linux fcntl.h, asm-generic).
+    const F_SETLEASE: u64 = 1024; const F_GETLEASE: u64 = 1025; const F_NOTIFY: u64 = 1026;
+    // Lease types (== the l_type record-lock values): read / write / unlock.
+    const F_RDLCK: i32 = 0; const F_WRLCK: i32 = 1; const F_UNLCK: i32 = 2;
+    // dnotify F_NOTIFY DN_* event bits + DN_MULTISHOT (Linux fcntl.h).
+    const DN_VALID: u32 = 0x0000_003f; // ACCESS|MODIFY|CREATE|DELETE|RENAME|ATTRIB
+    const DN_MULTISHOT: u32 = 0x8000_0000;
     const NSIG: u64 = 64;
     let fd = args.a0 as i32; let cmd = args.a1; let arg = args.a2;
     let ebadf = -(Errno::Ebadf.as_i32() as i64);
@@ -54,9 +61,20 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         F_GETFL => file.flags().bits() as i64,
         F_SETFL => {
             // SETFL masking (preserve access mode + creation flags, update only
-            // O_APPEND/O_NONBLOCK/O_DIRECT/O_NOATIME) lives in the VFS work fn
-            // `File::set_fl` per `53§3`; the shim forwards the raw `arg`.
+            // O_APPEND/O_NONBLOCK/O_DIRECT/O_NOATIME/O_ASYNC) lives in the VFS
+            // work fn `File::set_fl` per `53§3`; the shim forwards the raw `arg`.
+            // Toggling O_ASYNC (de)registers the fd for fasync SIGIO delivery —
+            // done here (not in `set_fl`) because the fasync registry keys on the
+            // `Arc<File>` the fd table holds (Linux `setfl` -> `f_op->fasync`).
+            let was_async = file.is_async();
             file.set_fl(vfs::OpenFlags::from_bits_retain(arg as u32));
+            let now_async = file.is_async();
+            if now_async && !was_async {
+                sched::live::sigpend::install_sigio_hook();
+                vfs::file::fasync_register(&file);
+            } else if was_async && !now_async {
+                vfs::file::fasync_unregister(&file);
+            }
             0
         }
         F_GETPIPE_SZ => match fs::pipe::pipe_size(file.inode()) {
@@ -88,7 +106,16 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             None => -(Errno::Einval.as_i32() as i64),
         },
         F_GETOWN => file.owner.load(core::sync::atomic::Ordering::Acquire) as i64,
-        F_SETOWN => { file.owner.store(arg as i32, core::sync::atomic::Ordering::Release); 0 }
+        // F_SETOWN: record the SIGIO target AND snapshot the requesting creds
+        // (Linux `f_setown` -> `__f_setown` capturing `current_cred()->uid/euid`)
+        // so a later async signal is permission-checked against the credentials
+        // that asked for ownership, not those current when it fires. Ensure the
+        // sched SIGIO delivery hook is installed.
+        F_SETOWN => {
+            sched::live::sigpend::install_sigio_hook();
+            file.f_setown(arg as i32, &crate::pathresolve::current_cred());
+            0
+        }
         // F_GETSIG/F_SETSIG (Linux f_owner.signum): the signal delivered on
         // async-I/O readiness; 0 = default SIGIO/SIGURG (D36).
         F_GETSIG => file.sig() as i64,
@@ -125,7 +152,47 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
                 F_OWNER_PGRP              => -pid,
                 _ => return -(Errno::Einval.as_i32() as i64),
             };
-            file.owner.store(stored, core::sync::atomic::Ordering::Release);
+            sched::live::sigpend::install_sigio_hook();
+            // Capture the requesting creds too (same as F_SETOWN); TID is routed
+            // as PID (no per-thread fasync queue yet).
+            file.f_setown(stored, &crate::pathresolve::current_cred());
+            0
+        }
+        // F_GETLEASE (Linux `fcntl_getlease`): the lease type held on the open
+        // file description — F_RDLCK / F_WRLCK, or F_UNLCK when none.
+        F_GETLEASE => file.lease() as i64,
+        // F_SETLEASE (Linux `do_fcntl_add_lease`): take/drop a read/write lease.
+        // Only regular files may hold a lease (EINVAL otherwise); a write lease
+        // needs the fd to be the sole opener — that conflict check + the
+        // lease-break delivery are the lease-manager follow-up, so this validates
+        // the type and records it (F_UNLCK drops). EBADF-class checks already
+        // passed (fd resolved). Returns 0 on success.
+        F_SETLEASE => {
+            let ty = arg as i32;
+            if !matches!(ty, F_RDLCK | F_WRLCK | F_UNLCK) {
+                return -(Errno::Einval.as_i32() as i64);
+            }
+            if !matches!(file.inode().file_type(), vfs::FileType::Regular) {
+                return -(Errno::Einval.as_i32() as i64);
+            }
+            file.set_lease(ty);
+            0
+        }
+        // F_NOTIFY (Linux `fcntl_dirnotify`, dnotify): arm a directory-change
+        // watch. Only a directory fd is valid (ENOTDIR otherwise). `arg == 0`
+        // clears the watch; otherwise the DN_* mask is validated and stored
+        // (additive in Linux unless DN_MULTISHOT toggles one-shot — recorded
+        // verbatim). The event delivery (dir-mutation -> SIGIO) is the dnotify
+        // follow-up. Returns 0 on success.
+        F_NOTIFY => {
+            if !matches!(file.inode().file_type(), vfs::FileType::Directory) {
+                return -(Errno::Enotdir.as_i32() as i64);
+            }
+            let mask = arg as u32;
+            if mask != 0 && (mask & !(DN_VALID | DN_MULTISHOT)) != 0 {
+                return -(Errno::Einval.as_i32() as i64);
+            }
+            file.set_dnotify(mask);
             0
         }
         F_SETLK | F_SETLKW | F_GETLK |
