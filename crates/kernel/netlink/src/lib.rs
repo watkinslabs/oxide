@@ -423,20 +423,14 @@ impl NetlinkSocket {
     }
 }
 
-impl vfs::Inode for NetlinkSocket {
-    fn ino(&self) -> vfs::Ino {
-        // High tag chosen so netlink inode numbers don't collide
-        // with fs / AF_INET socket inode space.
-        0x4E4C_534B_0000_0000u64 | (self as *const _ as u64 & 0xFFFF_FFFF) as vfs::Ino
-    }
-    // Expose the concrete socket so getsockopt(SO_PROTOCOL) reads `protocol`.
-    fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> {
-        Err(vfs::VfsError::Enotdir)
-    }
-    fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+/// `ino()` high tag identifying a netlink socket inode (so its inode numbers
+/// don't collide with fs / AF_INET socket inode space). # C: O(1)
+pub const NETLINK_INO_TAG: u64 = 0x4E4C_534B_0000_0000;
+
+impl NetlinkSocket {
+    /// Pop one queued reply into `buf` (datagram semantics; `0` = empty).
+    /// # C: O(msg len)
+    pub fn read(&self, buf: &mut [u8]) -> vfs::KResult<usize> {
         match self.dequeue() {
             Some(reply) => {
                 let n = reply.len().min(buf.len());
@@ -446,7 +440,10 @@ impl vfs::Inode for NetlinkSocket {
             None => Ok(0),
         }
     }
-    fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+
+    /// Parse + dispatch every nlmsghdr in `buf`; returns the bytes consumed
+    /// (the whole buffer, mirroring Linux netlink `sendmsg`). # C: O(buf len)
+    pub fn write(&self, buf: &[u8]) -> vfs::KResult<usize> {
         let consumed = buf.len();
         let mut off = 0;
         while off + Nlmsghdr::SIZE <= buf.len() {
@@ -463,12 +460,60 @@ impl vfs::Inode for NetlinkSocket {
         }
         Ok(consumed)
     }
-    fn poll(&self) -> u32 {
+
+    /// `f_op->poll` readiness: always writable, readable when the rx queue is
+    /// non-empty. # C: O(1)
+    pub fn poll(&self) -> u32 {
         use vfs::{POLL_IN, POLL_OUT};
         let mut mask = POLL_OUT;
         if !self.rx_queue.lock().is_empty() { mask |= POLL_IN; }
         mask
     }
+}
+
+/// `file_operations` for a netlink-socket inode — delegates the data path to
+/// the `NetlinkSocket` stored in `i_private`.
+struct NetlinkFileOps;
+
+impl vfs::FileOps for NetlinkFileOps {
+    fn read(&self, inode: &vfs::Inode, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        match inode.private::<NetlinkSocket>() {
+            Some(s) => s.read(buf),
+            None => Err(vfs::VfsError::Einval),
+        }
+    }
+    fn write(&self, inode: &vfs::Inode, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+        match inode.private::<NetlinkSocket>() {
+            Some(s) => s.write(buf),
+            None => Err(vfs::VfsError::Einval),
+        }
+    }
+    fn poll(&self, inode: &vfs::Inode) -> u32 {
+        inode.private::<NetlinkSocket>().map(|s| s.poll()).unwrap_or(vfs::POLL_OUT)
+    }
+}
+
+/// Build the `Arc<Inode>` wrapping a netlink socket fd. The socket lives in
+/// `i_private` (recover it with [`netlink_from_inode`]); the inode's `ino()`
+/// carries [`NETLINK_INO_TAG`] OR'd with the socket pointer's low bits.
+/// # C: O(1)
+pub fn make_netlink_socket_inode(sock: alloc::sync::Arc<NetlinkSocket>) -> vfs::InodeRef {
+    let ino = NETLINK_INO_TAG | (alloc::sync::Arc::as_ptr(&sock) as u64 & 0xFFFF_FFFF);
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(vfs::FileType::Regular, 0o600),
+        vfs::default_inode_ops(), alloc::sync::Arc::new(NetlinkFileOps))
+        .private(sock)
+        .build()
+}
+
+/// Recover the `&NetlinkSocket` stored in a netlink-socket inode's `i_private`
+/// (e.g. `getsockopt(SO_PROTOCOL)` reading `protocol`). # C: O(1)
+pub fn netlink_from_inode(inode: &vfs::Inode) -> Option<&NetlinkSocket> {
+    inode.private::<NetlinkSocket>()
+}
+
+/// Recover an owning `Arc<NetlinkSocket>` from a netlink-socket inode. # C: O(1)
+pub fn netlink_arc_from_inode(inode: &vfs::InodeRef) -> Option<alloc::sync::Arc<NetlinkSocket>> {
+    inode.i_private().clone().downcast::<NetlinkSocket>().ok()
 }
 
 #[cfg(test)]
