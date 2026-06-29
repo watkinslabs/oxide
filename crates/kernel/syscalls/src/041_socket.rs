@@ -1,10 +1,9 @@
 // 041 socket — one syscall, one file (docs/53 §0). Moved verbatim from net.rs.
 #![cfg(target_os = "oxide-kernel")]
-use alloc::string::String;
 use alloc::sync::Arc;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use vfs::{Dentry, File, OpenFlags};
+use vfs::{File, OpenFlags};
 use net::sock::InetSocket;
 use crate::net_common::{AF_INET, AF_INET6, SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET};
 
@@ -88,7 +87,7 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let dentry = Dentry::new(None, String::from("[socket]"), Arc::clone(&inode));
+    let dentry = vfs::dcache::d_alloc_pseudo("socket", Arc::clone(&inode), &crate::anon_dname::SOCKET_OPS);
     // F198: sockets are RW by spec — File::write needs O_RDWR.
     let mut fl = OpenFlags::O_RDWR;
     if nonblock { fl |= OpenFlags::O_NONBLOCK; }

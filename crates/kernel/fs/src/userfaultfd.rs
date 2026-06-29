@@ -164,8 +164,7 @@ const UFFDIO_WAKE:       u64 = 0x8010_aa02;
 /// `userfaultfd(flags)` — slot 323. Returns a fresh fd.
 /// # C: O(1)
 pub fn sys_userfaultfd(args: &syscall::SyscallArgs) -> i64 {
-    use alloc::string::ToString;
-    use vfs::{Dentry, File, OpenFlags};
+    use vfs::{File, OpenFlags};
     use syscall::errno::Errno;
     const O_NONBLOCK: u64 = 0o0_004_000;
     const O_CLOEXEC:  u64 = 0o2_000_000;
@@ -179,7 +178,7 @@ pub fn sys_userfaultfd(args: &syscall::SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let dentry = Dentry::new(None, "[uffd]".to_string(), inode_ref.clone());
+    let dentry = vfs::dcache::d_alloc_pseudo("[userfaultfd]", inode_ref.clone(), &crate::anon_dname::ANON_INODE_OPS);
     let mut fl = OpenFlags::O_RDWR;
     if (raw & O_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode_ref, dentry, fl);

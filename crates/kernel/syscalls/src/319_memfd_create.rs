@@ -5,7 +5,7 @@
 use alloc::string::String;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use vfs::{Dentry, File, OpenFlags};
+use vfs::{File, OpenFlags};
 use hal::USER_VA_END;
 
 /// `sys_memfd_create(name, flags)` — slot 319.
@@ -48,7 +48,7 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
     } else {
         ::fs::tmpfs::tmpfs_anon_file()
     };
-    let dentry = Dentry::new(None, name, inode.clone());
+    let dentry = vfs::dcache::d_alloc_pseudo(&name, inode.clone(), &crate::anon_dname::MEMFD_OPS);
     let file = File::new(inode, dentry, OpenFlags::O_RDWR);
     let fd = match fdt.alloc(file) {
         Ok(fd) => fd, Err(e) => return -(e as i64),
