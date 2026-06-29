@@ -20,13 +20,24 @@ pub fn sys_statfs(args: &SyscallArgs) -> i64 {
         return -(Errno::Efault.as_i32() as i64);
     }
     // SAFETY: ptr in user range; user page mapped (caller's user code ran from this AS); read bounded at 256 B.
-    let st = match unsafe { devfs::read_user_cstr(path_ptr, 256) } {
+    let raw = match unsafe { devfs::read_user_cstr(path_ptr, 256) } {
         Some(p) => match core::str::from_utf8(p) {
-            Ok(s) => statfs_for_path(s),
+            Ok(s) => s,
             Err(_) => return -(Errno::Einval.as_i32() as i64),
         },
         None => return -(Errno::Efault.as_i32() as i64),
     };
+    // Linux statfs() is `user_path_at(LOOKUP_FOLLOW)` then `vfs_statfs`: the path
+    // must exist (else ENOENT) and a relative path resolves against cwd. The old
+    // code fed the raw string straight to `resolve_mount`, which falls back to
+    // the root mount for ANY string — so a nonexistent path wrongly succeeded.
+    let abspath = match crate::pathresolve::resolve_at_result(crate::perms_common::AT_FDCWD, raw) {
+        Ok(p) => p, Err(rv) => return rv,
+    };
+    if crate::pathresolve::resolve(abspath.as_str(), false).is_none() {
+        return -(Errno::Enoent.as_i32() as i64);
+    }
+    let st = statfs_for_path(abspath.as_str());
     write_statfs(buf, &st);
     0
 }

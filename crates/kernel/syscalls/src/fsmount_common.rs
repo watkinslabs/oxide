@@ -213,7 +213,9 @@ pub(crate) fn mount_fstype_with_data(
                 Err(e) => crate::namei_common::errno_from_vfs(e),
             }
         }
-        _ => -(Errno::Eopnotsupp.as_i32() as i64),
+        // Unknown fstype: Linux `get_fs_type` fails to find a registered
+        // file_system_type → mount(2)/fsmount return ENODEV, not EOPNOTSUPP (D48).
+        _ => -(Errno::Enodev.as_i32() as i64),
     }
 }
 

@@ -81,6 +81,23 @@ pub(crate) fn resolve_path_mnt(dirfd: i32, path_ptr: u64, follow: bool) -> Resul
     Ok((vp.inode, vp.mnt_id))
 }
 
+/// Resolve a `*xattrat` (Linux 6.13) target inode, honouring the at_flags
+/// shared by that family: AT_SYMLINK_NOFOLLOW (operate on the symlink) and
+/// AT_EMPTY_PATH (empty path → operate on the dirfd itself). Unknown flag bits
+/// → EINVAL (Linux `setxattrat`/`getxattrat` reject `~(AT_SYMLINK_NOFOLLOW |
+/// AT_EMPTY_PATH)`). # C: O(N_path)
+pub(crate) fn resolve_xattr_at(dirfd: i32, path_ptr: u64, at_flags: u32) -> Result<InodeRef, i64> {
+    if at_flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH) != 0 {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    if at_flags & AT_EMPTY_PATH != 0 {
+        // SAFETY: bounded 1-byte probe via the validated helper; only checks emptiness.
+        let empty = unsafe { devfs::read_user_cstr(path_ptr, 1) }.map_or(true, |b| b.is_empty());
+        if empty { return Ok(resolve_fd_file(dirfd)?.inode().clone()); }
+    }
+    resolve_path_inode(dirfd, path_ptr, at_flags & AT_SYMLINK_NOFOLLOW == 0)
+}
+
 /// Resolve an open fd to its `Arc<File>` (carries `mnt_id` for EROFS). # C: O(1)
 pub(crate) fn resolve_fd_file(fd: i32) -> Result<Arc<File>, i64> {
     let cur = sched::live::current().ok_or(-(Errno::Ebadf.as_i32() as i64))?;
@@ -176,7 +193,14 @@ pub(crate) fn notify_change(inode: &InodeRef, mnt_id: u64, mut ia: vfs::Iattr) -
 
 /// `chmod` work-fn shared by chmod/fchmod/fchmodat(2): routes through
 /// `notify_change` (EROFS, owner-or-FOWNER, S_ISGID strip, apply). # C: O(N_path)
+///
+/// A symlink inode only reaches here via fchmodat/fchmodat2 with
+/// AT_SYMLINK_NOFOLLOW (an `lchmod`); no filesystem implements chmod on a
+/// symlink, so Linux returns EOPNOTSUPP (D40) — there is no symlink i_op->setattr.
 pub(crate) fn do_chmod(inode: &InodeRef, mnt_id: u64, mode: u16) -> i64 {
+    if matches!(inode.file_type(), vfs::FileType::Symlink) {
+        return -(Errno::Eopnotsupp.as_i32() as i64);
+    }
     notify_change(inode, mnt_id, vfs::Iattr { valid: vfs::ATTR_MODE, mode: mode & 0o7777, ..Default::default() })
 }
 
