@@ -26,13 +26,16 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
     if vfs::mount::is_readonly_path(&p) {
         return -(Errno::Erofs.as_i32() as i64);
     }
-    let mode = args.a2 as u16;
+    // Linux do_mkdirat: `mode &= ~current_umask()` (D23).
+    let umask = sched::live::current()
+        .map(|c| c.umask.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
+    let mode = (args.a2 as u32) & 0o7777 & !umask;
     if path_exists(&p) { return -(Errno::Eexist.as_i32() as i64); }
     let (pino, name) = match resolve_parent(&p) {
         Ok(x) => x,
         Err(rv) => { crate::mount_common::mnt_log("mkdirat_noparent", &p, rv); return rv; }
     };
-    match pino.mkdir(&name, mode as u32) {
+    match pino.mkdir(&name, mode) {
         Ok(_) => 0,
         Err(e) => {
             crate::namei_common::trace_run_vfs_error(b"mkdirat", &p, e);

@@ -11,6 +11,8 @@ use hal::USER_VA_END;
 pub fn sys_truncate(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let len      = args.a1;
+    // Linux do_sys_truncate: a negative length is EINVAL before any walk (D33).
+    if (len as i64) < 0 { return -(Errno::Einval.as_i32() as i64); }
     if path_ptr == 0 || path_ptr >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }

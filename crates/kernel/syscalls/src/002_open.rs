@@ -66,7 +66,10 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
         let umask = cur.umask.load(core::sync::atomic::Ordering::Acquire);
-        let final_mode = mode & 0o777 & !umask;
+        // Linux build_open_flags: mode masked with S_IALLUGO (0o7777) so the
+        // S_ISUID/S_ISGID/S_ISVTX bits survive the create; umask clears only the
+        // rwx bits it carries (D8).
+        let final_mode = mode & 0o7777 & !umask;
         match vfs::mount::resolve_mount(path_str) {
             Some((mnt, rel)) => {
                 // EROFS before create on a read-only mount (Linux `mnt_want_write`).

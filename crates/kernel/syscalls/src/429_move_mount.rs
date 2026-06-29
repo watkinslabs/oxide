@@ -27,6 +27,7 @@ pub fn sys_move_mount(args: &SyscallArgs) -> i64 {
 }
 
 fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
+    if let Some(rv) = require_sys_admin() { return rv; }  // Linux may_mount (D49)
     let from_fd = args.a0 as i32;
     let from_path = read_cstr(args.a1, 256).unwrap_or_default();
     let to_path = match read_cstr(args.a3, 256) {

@@ -3,21 +3,17 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
-use syscall::errno::Errno;
-use crate::namei_common::read_path;
+use crate::namei_common::read_user_path;
 
-/// `symlinkat(target, newdirfd, linkpath)` slot 266. Ignores newdirfd
-/// (paths resolved absolute or cwd-relative).
+/// `symlinkat(target, newdirfd, linkpath)` slot 266. `linkpath` is resolved
+/// against `newdirfd` (a1); the target is stored verbatim.
 /// # C: O(N parent entries)
 pub fn sys_symlinkat(args: &SyscallArgs) -> i64 {
-    let target = match read_path(args.a0) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
-    };
-    let link = match read_path(args.a2) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
-    };
-    // BUG D follow-up: resolve linkpath against newdirfd (a1). The symlink
-    // target is stored verbatim (never resolved at creation).
+    // Linux `getname`: empty target/link → ENOENT (not EINVAL) (D29).
+    let target = match read_user_path(args.a0) { Ok(s) => s, Err(rv) => return rv };
+    let link   = match read_user_path(args.a2) { Ok(s) => s, Err(rv) => return rv };
+    // Resolve linkpath against newdirfd (a1). The symlink target is stored
+    // verbatim (never resolved at creation).
     let link = match crate::pathresolve::resolve_at_result(args.a1 as i32, &link) {
         Ok(p) => p, Err(rv) => return rv,
     };

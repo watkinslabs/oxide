@@ -27,6 +27,10 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
     let abs = if abs.len() > 1 { abs.trim_end_matches('/').to_string() } else { abs };
     let cloexec = (args.a2 & OPEN_TREE_CLOEXEC) != 0;
     if (args.a2 & OPEN_TREE_CLONE) != 0 {
+        // OPEN_TREE_CLONE creates a detached mount → requires CAP_SYS_ADMIN
+        // (Linux open_detached_copy/may_mount); the non-clone O_PATH-like form
+        // below is unprivileged (D49).
+        if let Some(rv) = require_sys_admin() { return rv; }
         // Capture the mount rooted at `abs` (fs + root inode) into a
         // detached clone object.
         let (mnt, _) = match vfs::mount::resolve_mount(&abs) {
