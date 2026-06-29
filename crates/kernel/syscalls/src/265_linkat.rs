@@ -4,7 +4,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_path, errno_from_vfs};
+use crate::namei_common::{read_path, errno_from_vfs, resolve_parent};
 
 /// `linkat(odir, target, ndir, link, flags)` slot 265. Supports
 /// `AT_EMPTY_PATH` (flag bit 0x1000): when set and `target` is the
@@ -67,7 +67,15 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
         if (lm.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
             return -(Errno::Erofs.as_i32() as i64);
         }
-        return match lm.fs().link_inode(inode.clone(), &l) {
+        // D29: destination parent dir `i_rwsem` EXCLUSIVE across the backend
+        // link (Linux `do_linkat`/`filename_create`). Backend resolves via
+        // `i_op.lookup` (no nested `i_rwsem`) → deadlock-free. Best-effort.
+        let lparent = resolve_parent(&l).ok();
+        let r = {
+            let _g = lparent.as_ref().map(|(pino, _)| pino.inode_lock());
+            lm.fs().link_inode(inode.clone(), &l)
+        };
+        return match r {
             Ok(())  => 0,
             Err(e)  => errno_from_vfs(e),
         };
@@ -105,7 +113,14 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
         if (lm.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
             return -(Errno::Erofs.as_i32() as i64);
         }
-        return match lm.fs().link_inode(source_inode, &l) {
+        // D29: destination parent dir `i_rwsem` EXCLUSIVE (see AT_EMPTY_PATH
+        // branch above). Best-effort resolve; deadlock-free backend lookup.
+        let lparent = resolve_parent(&l).ok();
+        let r = {
+            let _g = lparent.as_ref().map(|(pino, _)| pino.inode_lock());
+            lm.fs().link_inode(source_inode, &l)
+        };
+        return match r {
             Ok(()) => 0,
             Err(e) => errno_from_vfs(e),
         };
@@ -131,7 +146,13 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
     if tm.mnt_id != lm.mnt_id {
         return -(Errno::Exdev.as_i32() as i64);
     }
-    match tm.fs().link(&t, &l) {
+    // D29: destination parent dir `i_rwsem` EXCLUSIVE (see branches above).
+    let lparent = resolve_parent(&l).ok();
+    let r = {
+        let _g = lparent.as_ref().map(|(pino, _)| pino.inode_lock());
+        tm.fs().link(&t, &l)
+    };
+    match r {
         Ok(())  => 0,
         Err(e)  => errno_from_vfs(e),
     }

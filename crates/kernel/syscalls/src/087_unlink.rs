@@ -22,7 +22,10 @@ pub fn sys_unlink(args: &SyscallArgs) -> i64 {
         return -(Errno::Erofs.as_i32() as i64);
     }
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
-    match pino.unlink_child(&name) {
+    // D29: parent dir `i_rwsem` EXCLUSIVE across the backend unlink (Linux
+    // `do_unlinkat` locks the parent); dropped before the dcache delete below.
+    let r = { let _g = pino.inode_lock(); pino.unlink_child(&name) };
+    match r {
         // d_delete: drop the cached dentry so a stale positive isn't reused
         // (stat/open after unlink must miss). See pathresolve::d_delete_path.
         Ok(())  => { unlink_unix_socket_path(&p); crate::pathresolve::d_delete_path(&p); 0 }
