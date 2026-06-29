@@ -29,8 +29,8 @@ use core::any::Any;
 use crate::dentry::Dentry;
 use crate::fs::FsFlags;
 use crate::superblock::{
-    FileSystemType, SuperBlock, SB_DIRSYNC, SB_MANDLOCK, SB_NOATIME, SB_NODEV, SB_NODIRATIME,
-    SB_NOEXEC, SB_NOSUID, SB_RDONLY, SB_SYNCHRONOUS,
+    FileSystemType, SuperBlock, SB_DIRSYNC, SB_LAZYTIME, SB_MANDLOCK, SB_NOATIME, SB_NODEV,
+    SB_NODIRATIME, SB_NOEXEC, SB_NOSUID, SB_RDONLY, SB_SYNCHRONOUS,
 };
 use crate::types::VfsError;
 
@@ -501,6 +501,15 @@ pub fn vfs_parse_fs_param(fc: &mut FsContext, param: &FsParameter) -> KResult<()
     // A reconfigure context flips to its param-collecting phase on first param.
     if fc.phase == FsContextPhase::AwaitingReconf { fc.phase = FsContextPhase::ReconfParams; }
 
+    // Linux `vfs_parse_sb_flag`: a common sb-flag keyword (`ro`/`rw`/`sync`/…)
+    // maps a bare FLAG straight onto `fc.sb_flags` and is CONSUMED here, BEFORE
+    // the LSM or backend `parse_param` ever sees it (so it never leaks into the
+    // legacy comma blob). Per-mount opts (`nosuid`/`nodev`/`noexec`/`noatime`/
+    // `relatime`) are MNT_*/MOUNT_ATTR_*, NOT sb flags — deliberately excluded.
+    if let FsValue::Flag = param.value {
+        if vfs_parse_sb_flag(fc, &param.key) { return Ok(()); }
+    }
+
     // LSM gets first refusal on the option (Linux `security_fs_context_parse_param`,
     // returning `-ENOPARAM` for a non-LSM key so the fs still sees it). A consumed
     // LSM option (`context=`, …) never reaches the backend's `parse_param`.
@@ -517,6 +526,31 @@ pub fn vfs_parse_fs_param(fc: &mut FsContext, param: &FsParameter) -> KResult<()
         ParamResult::Declined => {}
     }
     vfs_parse_fs_param_source(fc, param)
+}
+
+/// `vfs_parse_sb_flag` (Linux `fs/fs_context.c`) — the keyword step
+/// [`vfs_parse_fs_param`] runs before the LSM/backend `parse_param`. Maps one of
+/// the common superblock-flag keywords to its `SB_*` bit on `fc.sb_flags`
+/// (`common_set_sb_flag`) or clears it (`common_clear_sb_flag`); `true` =
+/// consumed. Anything else returns `false` so the option falls through. Only the
+/// genuine sb flags live here — `nosuid`/`nodev`/`noexec`/`noatime`/`relatime`
+/// are per-mount `MNT_*`/`MOUNT_ATTR_*` and are handled elsewhere. # C: O(len key)
+fn vfs_parse_sb_flag(fc: &mut FsContext, key: &str) -> bool {
+    // (bit, set?) — Linux `common_set_sb_flag` / `common_clear_sb_flag`.
+    let (bit, set) = match key {
+        "ro"         => (SB_RDONLY,      true),
+        "rw"         => (SB_RDONLY,      false),
+        "sync"       => (SB_SYNCHRONOUS, true),
+        "async"      => (SB_SYNCHRONOUS, false),
+        "dirsync"    => (SB_DIRSYNC,     true),
+        "mand"       => (SB_MANDLOCK,    true),
+        "nomand"     => (SB_MANDLOCK,    false),
+        "lazytime"   => (SB_LAZYTIME,    true),
+        "nolazytime" => (SB_LAZYTIME,    false),
+        _ => return false,
+    };
+    if set { fc.sb_flags |= bit; } else { fc.sb_flags &= !bit; }
+    true
 }
 
 /// `vfs_parse_fs_param_source` (Linux `fs/fs_context.c`) — the generic `source`
