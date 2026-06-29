@@ -12,8 +12,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
 use vfs::mount::{
-    AtimePolicy, MNT_DOOMED, MNT_INTERNAL, MNT_LOCKED, MNT_MARKED, MNT_NODEV, MNT_NOEXEC,
-    MNT_NOSUID, MNT_RDONLY, MNT_RELATIME,
+    ms_to_mnt, AtimePolicy, MNT_DOOMED, MNT_INTERNAL, MNT_LOCKED, MNT_MARKED, MNT_NODEV,
+    MNT_NOEXEC, MNT_NOSUID, MNT_RDONLY, MNT_RELATIME, MNT_STRICTATIME,
+    MS_NODEV, MS_NODIRATIME, MS_NOEXEC, MS_NOSUID, MS_RDONLY, MS_RELATIME, MS_STRICTATIME,
 };
 use vfs::{FileType, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, default_file_ops, mk_mode};
 
@@ -61,8 +62,9 @@ fn option_mask_typed_readback_and_atime_policy() {
     assert!(!m.is_readonly() && !m.is_nosuid() && !m.is_nodev() && !m.is_noexec());
     assert_eq!(m.atime_policy(), AtimePolicy::Relatime, "default policy is relatime");
 
-    // Set RDONLY|NOSUID|NODEV|NOEXEC and read back each typed gate.
-    vfs::mount::remount_flags(&d, MNT_RDONLY | MNT_NOSUID | MNT_NODEV | MNT_NOEXEC)
+    // remount_flags takes the mount(2) MS_* REQUEST mask (D10); it is mapped to
+    // the per-mount MNT_* space, then read back via the typed gates.
+    vfs::mount::remount_flags(&d, MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC)
         .expect("remount");
     let m = mount_at("/m");
     assert!(m.is_readonly(), "MNT_RDONLY readback");
@@ -71,8 +73,8 @@ fn option_mask_typed_readback_and_atime_policy() {
     assert!(m.is_noexec(), "MNT_NOEXEC readback");
     assert_eq!(m.flags() & MNT_RDONLY, MNT_RDONLY);
 
-    // Explicit RELATIME resolves to the Relatime policy.
-    vfs::mount::remount_flags(&d, MNT_RELATIME).expect("remount relatime");
+    // Explicit MS_RELATIME resolves to the Relatime policy.
+    vfs::mount::remount_flags(&d, MS_RELATIME).expect("remount relatime");
     assert_eq!(mount_at("/m").atime_policy(), AtimePolicy::Relatime);
     assert!(!mount_at("/m").is_readonly(), "remount cleared RDONLY");
 }
@@ -92,7 +94,7 @@ fn internal_flags_disjoint_from_option_mask() {
     assert_eq!(m.internal_flags(), 0);
 
     // Set an OPTION bit — the internal word stays zero (disjoint spaces).
-    vfs::mount::remount_flags(&d, MNT_RDONLY).expect("remount");
+    vfs::mount::remount_flags(&d, MS_RDONLY).expect("remount");
     let m = mount_at("/lk");
     assert!(m.is_readonly());
     assert_eq!(m.internal_flags(), 0, "option mask does not bleed into mnt_flags");
@@ -110,6 +112,36 @@ fn internal_flags_disjoint_from_option_mask() {
     assert!(prior & MNT_LOCKED != 0, "clear returns prior word with the bit set");
     assert!(!m.is_locked() && m.is_internal(), "only MNT_LOCKED cleared");
     let _ = MNT_DOOMED; // const exists (D11 requires the bit to be defined)
+}
+
+// [D10] The per-mount MNT_* values are the REAL Linux kernel-internal ones
+// (DISJOINT from the MS_* request space), and `ms_to_mnt` maps a mount(2)
+// request mask into that space with Linux atime precedence. Pure value math.
+#[test]
+fn ms_to_mnt_maps_request_flags_to_real_mnt_values() {
+    // Real Linux include/linux/mount.h per-mount values.
+    assert_eq!(MNT_NOSUID, 0x01);
+    assert_eq!(MNT_NODEV, 0x02);
+    assert_eq!(MNT_NOEXEC, 0x04);
+    assert_eq!(MNT_RDONLY, 0x40); // MNT_READONLY — NOT the MS_RDONLY=0x1 value
+    // The MNT_* space is distinct from the MS_* request space.
+    assert_ne!(MNT_RDONLY, MS_RDONLY);
+
+    // Each request bit maps to its MNT_* counterpart.
+    assert_eq!(ms_to_mnt(MS_RDONLY) & MNT_RDONLY, MNT_RDONLY);
+    assert_eq!(ms_to_mnt(MS_NOSUID) & MNT_NOSUID, MNT_NOSUID);
+    assert_eq!(ms_to_mnt(MS_NODEV) & MNT_NODEV, MNT_NODEV);
+    assert_eq!(ms_to_mnt(MS_NOEXEC) & MNT_NOEXEC, MNT_NOEXEC);
+
+    // Atime precedence (Linux do_mount): default ⇒ RELATIME; explicit
+    // STRICTATIME ⇒ strictatime marker; NOATIME wins over everything.
+    assert_eq!(ms_to_mnt(0) & MNT_RELATIME, MNT_RELATIME, "default is relatime");
+    assert_eq!(ms_to_mnt(MS_STRICTATIME) & MNT_STRICTATIME, MNT_STRICTATIME);
+    assert_eq!(ms_to_mnt(MS_STRICTATIME) & MNT_RELATIME, 0, "strict is not relatime");
+    let na = ms_to_mnt(vfs::mount::MS_NOATIME | MS_RELATIME);
+    assert_eq!(na & MNT_RELATIME, 0, "noatime wins over relatime");
+    assert_ne!(na & vfs::mount::MNT_NOATIME, 0);
+    assert_eq!(ms_to_mnt(MS_NODIRATIME) & vfs::mount::MNT_NODIRATIME, vfs::mount::MNT_NODIRATIME);
 }
 
 // MNT_LOCKED is preserved across a copy_mnt_ns clone (Linux clone_mnt) so a

@@ -136,11 +136,11 @@ fn rdonly_blocks_write_and_remount_holds_writers() {
     assert!(m.writers() > 0, "writer counted");
     // remount-RO is refused while a writer is held (Linux mnt_hold_writers).
     assert!(matches!(
-        vfs::mount::remount_flags(&common::dentry("/rw"), vfs::mount::MNT_RDONLY),
+        vfs::mount::remount_flags(&common::dentry("/rw"), vfs::mount::MS_RDONLY),
         Err(VfsError::Ebusy)), "remount-RO blocked by active writer");
     vfs::mount::mnt_drop_write(&m);
     // Now remount-RO succeeds; subsequent want_write → EROFS.
-    vfs::mount::remount_flags(&common::dentry("/rw"), vfs::mount::MNT_RDONLY).expect("remount ro");
+    vfs::mount::remount_flags(&common::dentry("/rw"), vfs::mount::MS_RDONLY).expect("remount ro");
     assert!(matches!(vfs::mount::mnt_want_write(&m), Err(VfsError::Erofs)), "RO → EROFS");
     // Clearing RDONLY re-allows writes.
     vfs::mount::remount_flags(&common::dentry("/rw"), 0).expect("remount rw");
