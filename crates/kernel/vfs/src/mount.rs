@@ -433,12 +433,6 @@ pub struct Mount {
     mountpoint: Spinlock<Option<Arc<Dentry>>, MountClass>,
     /// Parent mount id (Linux `mnt_parent`), recorded at attach. Root → self.
     pub parent_id: AtomicU64,
-    /// Bind-as-clone root inode (Linux `mnt_root` inode); `None` = whole-fs.
-    /// [D5] CONSTRUCTION INPUT only — fed to `build_sb` to stamp `s_root`. Engine
-    /// reads now derive the root inode from `mnt_root` (the single source of
-    /// truth); this stored copy survives solely because an external vfs
-    /// integration test reads the `pub` field by name (cross-lane to drop).
-    pub root: Option<InodeRef>,
     /// Stable unique id; /proc mountinfo field 1.
     pub mnt_id: u64,
     /// Propagation type discriminant. Default Private.
@@ -598,11 +592,11 @@ pub fn parent_mnt_id(m: &Mount) -> u64 { m.parent_id.load(Ordering::Acquire) }
 
 /// Build the `Mount` Arc (intrusive links empty; caller wires them). # C: O(1)
 fn new_mount(sb: Arc<SuperBlock>, rendered: String, mountpoint: Option<Arc<Dentry>>,
-             parent_id: u64, root: Option<InodeRef>, mnt_id: u64, ns: u64) -> Arc<Mount> {
+             parent_id: u64, mnt_id: u64, ns: u64) -> Arc<Mount> {
     let mnt_root = sb.s_root();
     Arc::new(Mount {
         sb, rendered_path: Spinlock::new(rendered), mountpoint: Spinlock::new(mountpoint),
-        parent_id: AtomicU64::new(parent_id), root, mnt_id,
+        parent_id: AtomicU64::new(parent_id), mnt_id,
         propagation: AtomicU8::new(Propagation::Private as u8),
         peer_group: AtomicU64::new(0), flags: AtomicU64::new(0), ns,
         mnt_root: Spinlock::new(mnt_root),
@@ -657,27 +651,26 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
     // anywhere — keep it for an exact byte match with the prior behaviour.
     let s_id = match &mp { Some(d) => abs_string(d), None => String::from("/") };
     let sb = build_sb(fs, root_inode, s_id);
-    graft_realized(mp, sb, root)
+    graft_realized(mp, sb)
 }
 
 /// Graft an ALREADY-REALIZED `SuperBlock` (built by the new mount API's
 /// `vfs_get_tree`/`get_tree`, which already ran `fill_super` + `d_make_root`)
 /// onto mountpoint `mp` — the `move_mount` mode-(a) attach for a `fsmount`
-/// object. The SB carries its own `s_root` dentry; the legacy per-mount
-/// root-inode marker is derived from `sb.s_root_inode()` so the resulting
-/// mount-table state matches the equivalent `register`/`register_bind` graft
-/// byte-for-byte (both resolve the SAME root inode + root dentry). # C: O(depth)
+/// object. The SB carries its own `s_root` dentry, from which the engine derives
+/// the mount root inode (`mnt_root`), so the resulting mount-table state matches
+/// the equivalent `register`/`register_bind` graft byte-for-byte (both resolve
+/// the SAME root inode + root dentry). # C: O(depth)
 pub fn attach_sb(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>) -> KResult<()> {
-    let root = sb.s_root_inode();
-    graft_realized(mp, sb, root)
+    graft_realized(mp, sb)
 }
 
 /// Shared TAIL of [`attach`]/[`attach_sb`]: reserve the per-ns mount slot,
 /// build the `Mount` over the realized `sb`, wire the intrusive parent/child +
-/// crossing-hash links, and commit. `root` is the legacy per-mount bind-root
-/// inode marker (Linux `mnt_root` inode). `mp == None` ⇒ the namespace root
-/// mount. # C: O(depth)
-fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, root: Option<InodeRef>)
+/// crossing-hash links, and commit. The mount root inode is derived from
+/// `sb.s_root()` (Linux `mnt_root`), not a stored copy. `mp == None` ⇒ the
+/// namespace root mount. # C: O(depth)
+fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>)
     -> KResult<()> {
     let ns = current_ns();
     // Per-ns mount cap (Linux `count_mounts` in `attach_recursive_mnt`): RESERVE
@@ -689,7 +682,7 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, root: Option<Ino
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
     let mp = mp.filter(|d| !is_global_root(d));
     let Some(d) = mp else {
-        let m = new_mount(sb, String::from("/"), None, mnt_id, root, mnt_id, ns);
+        let m = new_mount(sb, String::from("/"), None, mnt_id, mnt_id, ns);
         // [D11] The namespace ROOT mount is a kernel-internal producer (Linux
         // marks rootfs / kern_mount mounts MNT_INTERNAL): never user-expirable.
         m.set_internal_flag(MNT_INTERNAL);
@@ -701,7 +694,7 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, root: Option<Ino
     };
     let parent_id = parent_by_dentry(ns, &d);
     let rendered = abs_string(&d);
-    let m = new_mount(sb, rendered, Some(d.clone()), parent_id, root, mnt_id, ns);
+    let m = new_mount(sb, rendered, Some(d.clone()), parent_id, mnt_id, ns);
     // struct mountpoint (dentry refcount) + intrusive parent/child links.
     *m.mnt_mp.lock() = Some(get_mountpoint(&d));
     if let Some(p) = mount_by_id(parent_id) {
@@ -767,9 +760,11 @@ pub(super) struct CloneNode { pub m: Arc<Mount>, pub rel: String }
 pub(super) fn clone_mnt(src: &Arc<Mount>, ty: CloneType, pg: u64, master: &Arc<Mount>, ns: u64)
     -> Arc<Mount> {
     let new_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
-    let root_inode = src.root.clone().or_else(|| src.fs().root());
+    // [D5] derive the clone's root inode from the source `mnt_root` dentry (the
+    // single source of truth), not a stored per-mount inode copy.
+    let root_inode = src.mnt_root().and_then(|r| r.inode()).or_else(|| src.fs().root());
     let sb = build_sb(src.fs().clone(), root_inode, src.mount_point_str());
-    let clone = new_mount(sb, src.mount_point_str(), None, 0, src.root.clone(), new_id, ns);
+    let clone = new_mount(sb, src.mount_point_str(), None, 0, new_id, ns);
     clone.flags.store(src.flags.load(Ordering::Acquire), Ordering::Release);
     // Keep only MNT_LOCKED on the copy (Linux `clone_mnt`); drop transient marks.
     clone.mnt_internal_flags.store(
@@ -1141,7 +1136,7 @@ pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
         hal::kassert!(grabbed, "copy_mnt_ns: live source SB must grab an active ref");
         let clone = new_mount(
             m.sb.clone(), m.mount_point_str(), m.mountpoint(),
-            0, m.root.clone(), new_id, to_ns,
+            0, new_id, to_ns,
         );
         clone.flags.store(m.flags.load(Ordering::Acquire), Ordering::Release);
         // Linux `clone_mnt` keeps MNT_LOCKED on the copy so a child userns cannot
