@@ -64,8 +64,15 @@ impl vfs::fs::FileSystem for AutofsFs {
     fn root(&self) -> Option<InodeRef> { Some(self.root.clone() as InodeRef) }
     fn set_sb(&self, sb: alloc::sync::Weak<vfs::superblock::SuperBlock>) {
         if let Some(sb) = sb.upgrade() {
+            // `state.dev` holds the RAW `s_dev` so `AutofsRoot::fsid` reports it
+            // and `fstat(mountpoint)` yields `fsid_to_dev(s_dev)` (the stat ABI).
+            // The registry is keyed on that SAME user-visible dev: systemd's
+            // `AUTOFS_DEV_IOCTL_OPENMOUNT` passes the `devid` it took from
+            // `fstat`, so keying on the raw 64-bit anon `s_dev` never matched —
+            // the ioctl returned ENOENT and wedged PID1 in an endless umount
+            // retry of `proc-sys-fs-binfmt_misc.automount`.
             self.state.dev.store(sb.s_dev, Ordering::Release);
-            register_mount(sb.s_dev, Arc::clone(&self.state));
+            register_mount(vfs::fsid_to_dev(sb.s_dev), Arc::clone(&self.state));
         }
     }
 }
@@ -77,6 +84,12 @@ struct AutofsRoot {
 
 impl Inode for AutofsRoot {
     fn ino(&self) -> Ino { self.ino }
+    /// Report the mount's `s_dev` so `fstat(automount-point)` yields the same
+    /// `st_dev` (`fsid_to_dev(s_dev)`) the autofs registry is keyed on — the
+    /// `devid` systemd hands `AUTOFS_DEV_IOCTL_OPENMOUNT`. Without this the
+    /// inode reported `fsid()==0` (no wired SB) → `st_dev==256` for every
+    /// autofs mount, which matched no registry entry. # C: O(1)
+    fn fsid(&self) -> u64 { self.state.dev.load(Ordering::Acquire) }
     fn file_type(&self) -> FileType { FileType::Directory }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, name: &str) -> KResult<InodeRef> {
