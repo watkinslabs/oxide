@@ -86,7 +86,7 @@ impl InodeOps for CgDirOps {
         Err(VfsError::Enoent)
     }
 
-    fn mkdir(&self, inode: &Inode, name: &str, _mode: u32) -> KResult<InodeRef> {
+    fn mkdir(&self, inode: &Inode, name: &str, _mode: u32, _ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
         let cgid = dir_data(inode)?.cgid;
         #[cfg(feature = "debug-cgroup")]
         {
