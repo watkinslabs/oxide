@@ -157,6 +157,20 @@ fn is_global_root(d: &Arc<Dentry>) -> bool {
     d.parent().is_none() && d.name().is_empty()
 }
 
+/// [D24] True iff `d` is THE namespace-root dentry by IDENTITY — the single
+/// `s_root` of the current ns-root mount — not merely a structural sb-root
+/// (parentless + empty name). The structural [`is_global_root`] heuristic
+/// matches EVERY superblock root dentry (procfs/sysfs singleton roots included),
+/// so a fresh-fs `mount(proc,/proc)` over an existing proc mount — whose target
+/// resolves to the procfs `s_root` (parentless, empty-name) — would be wrongly
+/// filtered to the self-root branch and HIJACK the ns root. The self-root filter
+/// must fire only for the TRUE ns root: compare against [`global_root`] by
+/// pointer identity. Falls back to the structural test when no global root is set
+/// yet (the very first rootfs mount, where `global_root() == None`). # C: O(1)
+fn is_ns_root_dentry(d: &Arc<Dentry>) -> bool {
+    match global_root() { Some(r) => dptr(&r) == dptr(d), None => is_global_root(d) }
+}
+
 /// The mount in `ns` whose superblock root DENTRY is `d`, by `s_root`
 /// IDENTITY (cross-ns scanner over the global map). # C: O(N_mounts)
 fn mount_with_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
@@ -670,7 +684,7 @@ fn build_sb(fs: Arc<dyn FileSystem>, root_inode: Option<InodeRef>, s_id: String)
 /// `SuperBlock`, then grafts it through the shared [`graft_realized`] tail.
 /// # C: O(depth)
 fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRef>) -> KResult<()> {
-    let mp = mp.filter(|d| !is_global_root(d));
+    let mp = mp.filter(|d| !is_ns_root_dentry(d));
     let root_inode = root.clone().or_else(|| fs.root());
     // `s_id` (the SB label) mirrors Linux's device/source id; the legacy mount
     // engine used the rendered mountpoint path here, which is not consumed
@@ -710,7 +724,7 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>)
     // after this point, so no `abort_mounts` unwind path is reachable.
     mntns::count_mounts(ns, 1)?;
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
-    let mp = mp.filter(|d| !is_global_root(d));
+    let mp = mp.filter(|d| !is_ns_root_dentry(d));
     let Some(d) = mp else {
         let m = new_mount(sb, String::from("/"), None, mnt_id, mnt_id, ns);
         // [D11] The namespace ROOT mount is a kernel-internal producer (Linux
