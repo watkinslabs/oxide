@@ -21,7 +21,7 @@ pub fn unregister(d: &Arc<Dentry>) -> usize {
     if let Some(o) = target.mnt_mp.lock().take() { put_mountpoint(&o); }
     super::MOUNTS.lock().remove(&id);
     if let Some(d) = mp.as_ref() {
-        super::hash_remove(ns, parent, super::dptr(d), id);
+        super::hash_remove(parent, super::dptr(d), id);
         rewire_crossing_top(ns, d, parent);
     }
     // Lazy-umount deferral (Linux `umount_tree` + `mntput_no_expire`): the mount
@@ -56,7 +56,7 @@ pub(crate) fn detach_mounts_on(d: &Arc<Dentry>) -> usize {
         super::unlink_from_parent(m);
         if let Some(o) = m.mnt_mp.lock().take() { put_mountpoint(&o); }
         super::MOUNTS.lock().remove(&m.mnt_id);
-        super::hash_remove(ns, parent, dp, m.mnt_id);
+        super::hash_remove(parent, dp, m.mnt_id);
         rewire_crossing_top(ns, d, parent);
         // Detached now (Linux `MNT_DETACHED`); defer SB teardown to the final
         // `mntput` while an external `mnt_count` pin remains.
@@ -91,7 +91,7 @@ fn descend_mountpoint(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
 /// Re-point the dentry crossing link to the new hash top after a detach.
 /// # C: O(log N)
 fn rewire_crossing_top(ns: u64, d: &Arc<Dentry>, parent: u64) {
-    match super::hash_top(ns, parent, super::dptr(d)) {
+    match super::hash_top(parent, super::dptr(d)) {
         Some(top) => d.set_mounted_mount(ns, Some(top)),
         None => d.set_mounted_mount(ns, None),
     }
@@ -144,7 +144,7 @@ pub fn unregister_top(d: &Arc<Dentry>, detach_subtree: bool) -> usize {
         if let Some(o) = m.mnt_mp.lock().take() { put_mountpoint(&o); }
         super::MOUNTS.lock().remove(&m.mnt_id);
         if let Some(dd) = mp.as_ref() {
-            super::hash_remove(ns, parent, super::dptr(dd), m.mnt_id);
+            super::hash_remove(parent, super::dptr(dd), m.mnt_id);
             rewire_crossing_top(ns, dd, parent);
         }
         // Lazy-umount deferral (Linux `umount_tree` + `mntput_no_expire`): the

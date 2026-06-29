@@ -474,6 +474,18 @@ fn neg_cache_ok(dir: &InodeRef) -> bool {
 /// final dentry, its inode, and the deepest crossed mount id. # C: O(stack)
 fn follow_mount_down(mut d: Arc<Dentry>, mut mnt_id: u64, ns: u64) -> KResult<(Arc<Dentry>, InodeRef, u64)> {
     while let Some(id) = d.mounted_mount(ns) {
+        // [2a SAFETY NET — debug only] The crossing decision STILL comes from the
+        // legacy per-ns `mounted_mounts` map (`id`, above); this assert proves the
+        // NEW structures (refcounted `D_MOUNTED` hint + the `(parent,dentry)`
+        // mount hash via `__lookup_mnt`) already agree with it, so 2b can flip the
+        // hot path to read them with confidence. NOT compiled into release.
+        #[cfg(debug_assertions)]
+        {
+            debug_assert_eq!(d.is_mounted(), !d.mounted_mounts_empty(),
+                "D_MOUNTED hint must match the legacy mounted_mounts map non-emptiness");
+            debug_assert_eq!(crate::mount::__lookup_mnt(mnt_id, &d).map(|m| m.mnt_id), Some(id),
+                "__lookup_mnt(cur_mnt, d) must resolve the same top mount as mounted_mount(ns)");
+        }
         match crate::mount::root_dentry_for_mount_id(id) {
             Some(sr) => { d = sr; mnt_id = id; }
             None => break,
@@ -538,9 +550,18 @@ impl Nameidata {
     /// fs). # C: O(start/root mount stack)
     pub fn new(start: Arc<Dentry>, root: Arc<Dentry>, flags: LookupFlags, cred: Cred) -> KResult<Self> {
         let ns = crate::mount::current_ns();
-        let base_mnt = crate::mount::root_mount_id(ns).unwrap_or(crate::mount::MNT_ID_NONE);
-        let (mut root_dentry, _ri, mut root_mnt_id) = follow_mount_down(root, base_mnt, ns)?;
-        let (cur_dentry, cur_inode, cur_mnt_id) = follow_mount_down(start, root_mnt_id, ns)?;
+        // Seed each follow-down with the mount that CONTAINS the base dentry, not
+        // the ns-root mount. The caller hands bare dentries (no `vfsmount`); a
+        // base sitting inside a sub-mount (chroot/pivot staging dir) lives in that
+        // sub-mount, not the root, so `__lookup_mnt(cur_mnt_id, d)` must key on the
+        // true containing mount for the crossing to resolve. The crossing READ is
+        // unchanged (still `d.mounted_mount(ns)`); only the seed `mnt_id` the walk
+        // carries is made accurate (the design linchpin — ns-correctness flows
+        // from `cur_mnt_id`).
+        let root_base = crate::mount::containing_mount_id(ns, &root);
+        let (mut root_dentry, _ri, mut root_mnt_id) = follow_mount_down(root, root_base, ns)?;
+        let start_base = crate::mount::containing_mount_id(ns, &start);
+        let (cur_dentry, cur_inode, cur_mnt_id) = follow_mount_down(start, start_base, ns)?;
         // RESOLVE_IN_ROOT (openat2): the dirfd (START) becomes the resolution
         // root, so `to_root()` (absolute paths / absolute symlink restarts) and
         // `dotdot_step` (`..` clamp) all confine to it, overriding the passed

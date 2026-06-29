@@ -46,6 +46,14 @@ pub const D_DONTCACHE:  u32 = 0x1000;
 /// resolved (positive or cached-negative) dentry, after which the bit-clear is
 /// the waiters' wake condition. Bit position is this file's own layout.
 pub const D_PAR_LOOKUP:  u32 = 0x4000;
+/// A filesystem is mounted on this dentry — Linux `DCACHE_MOUNTED`. A single
+/// REFCOUNTED hint bit (set when the dentry's `struct mountpoint` `m_count`
+/// goes 0→1 in [`crate::mntns::get_mountpoint`], cleared on the last drop in
+/// [`crate::mntns::put_mountpoint`]) that lets the path walk skip the mount
+/// hash for the overwhelmingly common non-mountpoint dentry. ns-AGNOSTIC: the
+/// per-ns covering identity comes from the mount hash keyed by the walk's
+/// current `mnt_id`, not from this bit. Bit position is this file's own layout.
+pub const D_MOUNTED:     u32 = 0x0001_0000;
 
 // ---------------------------------------------------------------------------
 // DCACHE_OP_* — `d_op` presence cache, stamped into `d_flags` at construction
@@ -865,6 +873,25 @@ impl Dentry {
     pub fn is_mountpoint(&self, ns: u64) -> bool {
         self.mounted_mounts.read().contains_key(&ns)
     }
+
+    /// `D_MOUNTED` hint — true iff ≥1 mount (any namespace) is attached on this
+    /// dentry (Linux `d_mountpoint`: `d_flags & DCACHE_MOUNTED`). Refcounted via
+    /// the `struct mountpoint` `m_count` in [`crate::mntns`]. # C: O(1)
+    pub fn is_mounted(&self) -> bool { self.flags() & D_MOUNTED != 0 }
+
+    /// Set `D_MOUNTED` (Linux `d_set_mounted`). Called on the `m_count` 0→1
+    /// create path in [`crate::mntns::get_mountpoint`]. # C: O(1)
+    pub(crate) fn set_mounted(&self) { self.d_flags.fetch_or(D_MOUNTED, Ordering::Relaxed); }
+
+    /// Clear `D_MOUNTED` (Linux `__put_mountpoint` last drop). Called on the
+    /// `m_count` 1→0 drop in [`crate::mntns::put_mountpoint`]. # C: O(1)
+    pub(crate) fn clear_mounted(&self) { self.d_flags.fetch_and(!D_MOUNTED, Ordering::Relaxed); }
+
+    /// True iff NO namespace records a covering mount on this dentry (the old
+    /// per-ns `mounted_mounts` map is empty). The 2a debug-assert safety net
+    /// pairs this with [`Self::is_mounted`] to prove the refcounted `D_MOUNTED`
+    /// hint matches the legacy per-ns map. # C: O(1)
+    pub(crate) fn mounted_mounts_empty(&self) -> bool { self.mounted_mounts.read().is_empty() }
 
     /// Absolute (GLOBAL) path for this dentry — Linux `d_path` / `prepend_path`:
     /// walk the parent chain to the global root and join `d_name`s with `/`,
