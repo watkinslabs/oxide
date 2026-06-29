@@ -82,6 +82,11 @@ pub struct Superblock {
 pub const SB_OFF_FREE_BLOCKS_LO: usize = 0x0C;
 pub const SB_OFF_FREE_INODES:    usize = 0x10;
 pub const SB_OFF_FREE_BLOCKS_HI: usize = 0x150;
+/// `s_last_orphan` (__le32 @0xE8): head of the on-disk orphan-inode list —
+/// the most recently orphaned inode (deleted-but-open / O_TMPFILE awaiting a
+/// name). Each listed inode chains to the previous head via its `i_dtime`
+/// field (`NEXT_ORPHAN`). Linux `ext4_orphan_add`/`_del`/`_cleanup`.
+pub const SB_OFF_LAST_ORPHAN:    usize = 0xE8;
 
 /// Read a little-endian u16 / u32 / u64 at offset `o`. Caller
 /// must ensure `buf.len() >= o + N`.

@@ -137,6 +137,9 @@ impl RootfsState {
         self.mount.run_journaled(|m| {
             m.dir_link(parent_ino, &name, ino, ftype)?;
             m.adjust_nlink(ino, 1)?;
+            // The inode now has a name → off the on-disk orphan list
+            // (Linux `ext4_orphan_del` in `ext4_link`/`ext4_tmpfile` linkat).
+            m.orphan_del(ino)?;
             Ok(())
         }).map_err(|_| vfs::VfsError::Eio)?;
         self.orphan_remove(ino);
