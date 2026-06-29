@@ -434,6 +434,10 @@ pub struct Mount {
     /// Parent mount id (Linux `mnt_parent`), recorded at attach. Root → self.
     pub parent_id: AtomicU64,
     /// Bind-as-clone root inode (Linux `mnt_root` inode); `None` = whole-fs.
+    /// [D5] CONSTRUCTION INPUT only — fed to `build_sb` to stamp `s_root`. Engine
+    /// reads now derive the root inode from `mnt_root` (the single source of
+    /// truth); this stored copy survives solely because an external vfs
+    /// integration test reads the `pub` field by name (cross-lane to drop).
     pub root: Option<InodeRef>,
     /// Stable unique id; /proc mountinfo field 1.
     pub mnt_id: u64,
@@ -1471,15 +1475,19 @@ pub fn lookup(path: &str) -> KResult<InodeRef> {
 pub fn mount_root_at(d: &Arc<Dentry>) -> Option<InodeRef> {
     if is_global_root(d) { return None; }
     let m = mount_at_path_exact(d)?;
-    if let Some(r) = m.root.as_ref() { return Some(r.clone()); }
-    m.fs().root()
+    // [D5] `mnt_root` (the mounted-fs root DENTRY) is the single source of
+    // truth: its inode IS the bind-root inode (`for_backend`→`d_make_root`
+    // stamps it as `s_root->d_inode`), so derive instead of reading the legacy
+    // `root` inode copy. `fs().root()` covers an `s_root`-less SB.
+    m.mnt_root().and_then(|r| r.inode()).or_else(|| m.fs().root())
 }
 
 /// Root inode of a concrete mount id (the path walk's crossing primitive).
 /// # C: O(log N)
 pub fn root_for_mount_id(mnt_id: u64) -> Option<InodeRef> {
     let m = mount_by_id(mnt_id)?;
-    m.root.clone().or_else(|| m.fs().root())
+    // [D5] derive from `mnt_root` (see `mount_root_at`).
+    m.mnt_root().and_then(|r| r.inode()).or_else(|| m.fs().root())
 }
 
 /// The mounted fs's ROOT DENTRY for `mnt_id` (Linux `mnt->mnt_root`). The
