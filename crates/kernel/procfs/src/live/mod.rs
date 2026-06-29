@@ -313,7 +313,7 @@ impl FileOps for ProcPidTaskDirOps {
             }
             buf[..n].reverse();
             let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
-            let ino = self.lookup(s).map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup(s).map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, s, FileType::Directory) {
                 return Ok(next);
             }
