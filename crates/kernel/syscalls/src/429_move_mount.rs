@@ -55,7 +55,7 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
         let inode = match fd_inode(from_fd) {
             Some(i) => i, None => return -(Errno::Ebadf.as_i32() as i64),
         };
-        if let Some(mo) = inode.as_any().and_then(|a| a.downcast_ref::<MountObjectInode>()) {
+        if let Some(mo) = inode.private::<MountObjectInode>() {
             // open_tree clone: bind the captured (fs, root) at the target.
             if let Some((fs, root)) = mo.clone_of.as_ref() {
                 let _ = vfs::mount::register_bind(Some(target_d.clone()), fs.clone(), root.clone());

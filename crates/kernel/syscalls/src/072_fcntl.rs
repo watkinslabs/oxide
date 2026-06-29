@@ -54,11 +54,11 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             file.set_fl(vfs::OpenFlags::from_bits_retain(arg as u32));
             0
         }
-        F_GETPIPE_SZ => match file.inode().as_any().and_then(|a| a.downcast_ref::<fs::pipe::PipeInode>()) {
+        F_GETPIPE_SZ => match file.inode().private::<fs::pipe::PipeInode>() {
             Some(pipe) => pipe.pipe_size() as i64,
             None => -(Errno::Einval.as_i32() as i64),
         },
-        F_SETPIPE_SZ => match file.inode().as_any().and_then(|a| a.downcast_ref::<fs::pipe::PipeInode>()) {
+        F_SETPIPE_SZ => match file.inode().private::<fs::pipe::PipeInode>() {
             Some(pipe) => match pipe.set_pipe_size(arg as usize) {
                 Ok(size) => size as i64,
                 Err(e) => -(e as i64),

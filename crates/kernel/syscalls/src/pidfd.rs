@@ -6,6 +6,7 @@
 use alloc::sync::Arc;
 
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{InodeBuilder, FileOps, default_inode_ops, mk_mode};
 
 /// Inode-number marker — high 32 bits spell "PIDF". The low 32 bits store the
 /// full internal tid; truncating to 24 bits broke long-running PID spaces.
@@ -23,23 +24,22 @@ pub struct PidfdInode {
     target: Arc<sched::Task>,
 }
 
-impl Inode for PidfdInode {
-    fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
-    fn ino(&self) -> Ino { PIDFD_INO_MARKER | self.tid as Ino }
-    fn statfs_magic(&self) -> u64 { 0x5049_4446 } // PIDFS_MAGIC
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+/// `file_operations` for a pidfd: `read` reads nothing (`Ok(0)`), `write` is
+/// `Eio`, and `fdinfo_extra` emits the `Pid:`/`NSpid:` lines glibc/systemd
+/// parse. The per-inode target lives in `i_private` (`PidfdInode`).
+struct PidfdFileOps;
+impl FileOps for PidfdFileOps {
+    fn read(&self, _inode: &Inode, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
+    fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
     /// Linux `pidfd_show_fdinfo`: append `Pid:`/`NSpid:` so `/proc/<pid>/
     /// fdinfo/<n>` carries the target pid. `Pid:` = the target's vpid in the
     /// reader's pidns (init-ns global pid here); a reaped target shows -1 (and
     /// NSpid omitted, matching Linux). glibc/systemd `pidfd_get_pid()` parses
     /// this; a missing `Pid:` line makes it return ENOTTY. # C: O(1)
-    fn fdinfo_extra(&self, out: &mut alloc::vec::Vec<u8>) {
+    fn fdinfo_extra(&self, inode: &Inode, out: &mut alloc::vec::Vec<u8>) {
         use core::fmt::Write;
-        let vpid = self.target.vtgid.load(core::sync::atomic::Ordering::Acquire);
+        let target = match inode.private::<PidfdInode>() { Some(p) => &p.target, None => return };
+        let vpid = target.vtgid.load(core::sync::atomic::Ordering::Acquire);
         if vpid != 0 {
             let _ = write!(FdinfoFmt(out), "Pid:\t{}\nNSpid:\t{}\n", vpid, vpid);
         } else {
@@ -73,7 +73,7 @@ pub fn tid_from_fd(fd: i32) -> Result<u32, syscall::errno::Errno> {
 /// Recover the pinned target task from a pidfd inode.
 /// # C: O(1)
 pub fn task_from_inode(inode: &InodeRef) -> Option<Arc<sched::Task>> {
-    inode.as_any()?.downcast_ref::<PidfdInode>().map(|p| Arc::clone(&p.target))
+    inode.private::<PidfdInode>().map(|p| Arc::clone(&p.target))
 }
 
 /// `ioctl(pidfd, PIDFD_GET_INFO)` (Linux 6.13+). Returns a populated
@@ -155,8 +155,13 @@ pub fn tid_from_ino(ino: Ino) -> Option<u32> {
     } else { None }
 }
 
-/// Construct a pidfd inode. Wraps in `Arc<dyn Inode>`.
+/// Construct a pidfd inode (concrete `vfs::Inode` with the target task pinned
+/// in `i_private`). The ino keeps the `"PIDF"` marker | full internal tid.
 /// # C: O(1)
 pub fn new_pidfd_inode(target: Arc<sched::Task>) -> InodeRef {
-    Arc::new(PidfdInode { tid: target.tid, target }) as InodeRef
+    let tid = target.tid;
+    let ino = PIDFD_INO_MARKER | tid as Ino;
+    InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o600), default_inode_ops(), Arc::new(PidfdFileOps))
+        .private(Arc::new(PidfdInode { tid, target }))
+        .build()
 }

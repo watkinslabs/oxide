@@ -13,12 +13,12 @@
 
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
-use core::any::Any;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as LockClass};
 use syscall::errno::Errno;
-use vfs::{Dentry, File, FileType, Ino, Inode, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{Dentry, File, FileType, InodeRef, OpenFlags};
+use vfs::{InodeBuilder, default_inode_ops, default_file_ops, mk_mode};
 use hal::USER_VA_END;
 
 pub(crate) static NEXT_FSCTX_INO: AtomicU64 = AtomicU64::new(0x4600_0000);
@@ -204,27 +204,21 @@ pub(crate) fn mount_fstype_with_data(
     }
 }
 
-/// fd-backed `fs_context` builder created by `fsopen`.
+/// fd-backed `fs_context` builder created by `fsopen` — backend state
+/// (`i_private`) of a concrete `vfs::Inode`.
 pub struct FsContextInode {
     pub fstype: String,
     pub source: Spinlock<String, LockClass>,
-    ino: Ino,
 }
 
 impl FsContextInode {
-    /// # C: O(1)
-    pub fn new(fstype: String) -> Arc<Self> {
+    /// Build an `fs_context` anon inode tagged with `fstype`. # C: O(1)
+    pub fn new(fstype: String) -> InodeRef {
         let ino = NEXT_FSCTX_INO.fetch_add(1, Ordering::Relaxed);
-        Arc::new(Self { fstype, source: Spinlock::new(String::new()), ino })
+        InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o600), default_inode_ops(), default_file_ops())
+            .private(Arc::new(Self { fstype, source: Spinlock::new(String::new()) }))
+            .build()
     }
-}
-
-impl Inode for FsContextInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn as_any(&self) -> Option<&dyn Any> { Some(self) }
 }
 
 /// Detached mount object created by `fsmount` (materialise-by-fstype at
@@ -236,31 +230,26 @@ pub struct MountObjectInode {
     /// Some for an `open_tree` clone: the captured (fs, root) to bind at
     /// the target. None for `fsmount`: materialise a fresh `fstype` mount.
     pub clone_of: Option<(Arc<dyn vfs::fs::FileSystem>, InodeRef)>,
-    ino: Ino,
 }
 
 impl MountObjectInode {
-    /// `fsmount`: materialise-by-fstype at attach time.
+    /// `fsmount`: materialise-by-fstype at attach time. Returns the anon inode.
     /// # C: O(1)
-    pub fn new(fstype: String, source: String) -> Arc<Self> {
-        let ino = NEXT_FSCTX_INO.fetch_add(1, Ordering::Relaxed);
-        Arc::new(Self { fstype, source, clone_of: None, ino })
+    pub fn new(fstype: String, source: String) -> InodeRef {
+        Self::build(Self { fstype, source, clone_of: None })
     }
     /// `open_tree(OPEN_TREE_CLONE)`: capture an existing mount's (fs, root).
     /// # C: O(1)
-    pub fn new_clone(fs: Arc<dyn vfs::fs::FileSystem>, root: InodeRef) -> Arc<Self> {
-        let ino = NEXT_FSCTX_INO.fetch_add(1, Ordering::Relaxed);
-        Arc::new(Self { fstype: String::new(), source: String::new(),
-                        clone_of: Some((fs, root)), ino })
+    pub fn new_clone(fs: Arc<dyn vfs::fs::FileSystem>, root: InodeRef) -> InodeRef {
+        Self::build(Self { fstype: String::new(), source: String::new(), clone_of: Some((fs, root)) })
     }
-}
-
-impl Inode for MountObjectInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn as_any(&self) -> Option<&dyn Any> { Some(self) }
+    /// Wrap the mount-object state into a concrete `vfs::Inode`. # C: O(1)
+    fn build(data: Self) -> InodeRef {
+        let ino = NEXT_FSCTX_INO.fetch_add(1, Ordering::Relaxed);
+        InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o600), default_inode_ops(), default_file_ops())
+            .private(Arc::new(data))
+            .build()
+    }
 }
 
 /// # C: O(max)
