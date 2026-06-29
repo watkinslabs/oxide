@@ -570,5 +570,5 @@ fn install_fd(inode: InodeRef, name: &str) -> i64 {
     };
     let dentry = vfs::dcache::d_alloc_pseudo(name, Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
     let file = File::new(inode, dentry, OpenFlags::O_RDWR);
-    match fdt.alloc(file) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    match fdt.alloc_limit(file, cur.nofile_soft()) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
 }

@@ -131,7 +131,7 @@ impl InotifyData {
         let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -1 };
         let dentry = vfs::dcache::d_alloc_pseudo("[fanotify]", obj.clone(), &crate::anon_dname::ANON_INODE_OPS);
         let file = vfs::File::new(obj.clone(), dentry, vfs::OpenFlags::O_RDONLY);
-        fdt.alloc(file).unwrap_or(-1)
+        fdt.alloc_limit(file, cur.nofile_soft()).unwrap_or(-1)
     }
 
     /// Drain queued events as Linux `struct fanotify_event_metadata` (24 B):
@@ -490,7 +490,7 @@ pub fn sys_inotify_init1(args: &syscall::SyscallArgs) -> i64 {
     let mut fl = OpenFlags::O_RDONLY;
     if (flags & IN_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);
-    match fdt.alloc(file) {
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => {
             if (flags & IN_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
             fd as i64
@@ -524,7 +524,7 @@ pub fn sys_fanotify_init(args: &syscall::SyscallArgs) -> i64 {
     let mut fl = OpenFlags::O_RDWR;
     if (flags & FAN_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);
-    match fdt.alloc(file) {
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => {
             if (flags & FAN_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
             fd as i64

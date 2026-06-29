@@ -185,7 +185,7 @@ pub fn sys_epoll_create1(args: &syscall::SyscallArgs) -> i64 {
     let inode = make_epoll_inode();
     let dentry = vfs::dcache::d_alloc_pseudo("[eventpoll]", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
     let file = File::new(inode, dentry, OpenFlags::O_RDONLY);
-    match fdt.alloc(file) {
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => {
             if (flags & EPOLL_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
             fd as i64

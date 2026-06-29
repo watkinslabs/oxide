@@ -127,7 +127,7 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     // born ref held — conservative: no eviction there, but never a UAF.)
     let created_ref = if created { Some(inode.clone()) } else { None };
     match vfs::file::install_open(&fdt, inode, path_str, OpenFlags::from_bits_truncate(flags),
-        mnt_id, crate::pathresolve::current_cred()) {
+        mnt_id, crate::pathresolve::current_cred(), cur.nofile_soft()) {
         Ok(fd) => { if let Some(i) = created_ref { vfs::file::iput(i); } fd as i64 }
         Err(e) => -(e as i64),
     }
