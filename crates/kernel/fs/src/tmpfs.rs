@@ -22,7 +22,7 @@ use alloc::collections::BTreeMap;
 
 use sync::{Spinlock, Inode as InodeClass, TaskList as TaskListClass};
 use vfs::{AddressSpaceOps, Devt, FileType, Ino, Inode, InodeOps, InodeRef, KResult, VfsError};
-use vfs::{FileOps, InodeBuilder, default_inode_ops, make_device_node_inode, mk_mode, CreateCtx};
+use vfs::{DirContext, FileOps, InodeBuilder, default_inode_ops, make_device_node_inode, mk_mode, CreateCtx};
 use vfs::superblock::SuperBlock;
 
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -540,17 +540,17 @@ fn dir_parent_of<'a>(root: &InodeRef, rel: &'a str) -> Option<(InodeRef, &'a str
 /// `i_fop` for a tmpfs directory (readdir). # C: O(1)
 struct TmpfsDirFileOps;
 impl FileOps for TmpfsDirFileOps {
-    fn iterate(&self, inode: &Inode, off: u64,
-               f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let g = d.kids.lock();
-        let mut idx = off as usize;
-        for (name, inode) in g.iter().skip(off as usize) {
+        let off = ctx.pos as usize;
+        let mut idx = off;
+        for (name, child) in g.iter().skip(off) {
             let next = idx as u64 + 1;
-            if !f(inode.ino(), next, name, inode.file_type()) { return Ok(next); }
+            if !ctx.emit(name, child.ino(), child.file_type(), next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 

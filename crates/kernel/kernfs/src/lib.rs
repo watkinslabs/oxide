@@ -28,7 +28,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::superblock::SuperBlock;
 use vfs::{FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError};
-use vfs::{FileOps, InodeOps, default_file_ops, default_inode_ops, mk_mode};
+use vfs::{DirContext, FileOps, InodeOps, default_file_ops, default_inode_ops, mk_mode};
 
 // ---------------------------------------------------------------------------
 // ext4 directory-overlay hook (installed once at boot by the kernel).
@@ -401,8 +401,13 @@ impl InodeOps for PseudoDirOps {
 struct PseudoDirFileOps;
 
 impl FileOps for PseudoDirFileOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
-        pdir(inode)?.op_readdir(inode, off, f)
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        // Adapt the kernfs-internal `op_readdir` (legacy closure form) to the
+        // dir_context actor: each entry is forwarded through `ctx.emit`, which
+        // advances `ctx.pos` and signals buffer-full (false) back to stop.
+        let off = ctx.pos;
+        pdir(inode)?.op_readdir(inode, off, &mut |ino, next, name, ft| ctx.emit(name, ino, ft, next))?;
+        Ok(())
     }
 }
 
@@ -489,7 +494,17 @@ mod tests {
         r.insert_path("/a", PseudoSymlink::new(4, 0, b"a"));
         r.insert_path("/m", PseudoSymlink::new(5, 0, b"m"));
         let mut names = std::vec::Vec::new();
-        r.as_inode().readdir(0, &mut |_ino, _n, name, _ft| { names.push(std::string::String::from(name)); true }).unwrap();
+        {
+            struct Collect<'a>(&'a mut std::vec::Vec<std::string::String>);
+            impl<'a> vfs::DirEmit for Collect<'a> {
+                fn emit(&mut self, name: &str, _ino: u64, _d: vfs::FileType, _next: u64) -> bool {
+                    self.0.push(std::string::String::from(name)); true
+                }
+            }
+            let mut actor = Collect(&mut names);
+            let mut ctx = vfs::DirContext::new(0, &mut actor);
+            r.as_inode().readdir(&mut ctx).unwrap();
+        }
         // BTreeMap → sorted; overlay off → exactly the 3 synthetic children.
         assert_eq!(names, std::vec!["a", "m", "z"]);
     }
