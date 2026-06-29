@@ -96,6 +96,20 @@ impl FileSystem for BindFs {
 /// `sys_mount(source, target, fstype, flags, data)` — slot 165.
 /// # C: O(N_path)
 pub fn sys_mount(args: &SyscallArgs) -> i64 {
+    // TEMP (D24, debug-mnt): mount-creating syscall ENTRY trace — pair with the
+    // vfs [MNTCREATE] mount-create lines to reconstruct how 10/11 are built.
+    #[cfg(feature = "debug-mount")]
+    {
+        let src = crate::mount_common::read_user_cstr_owned(args.a0, 256).unwrap_or_default();
+        let tgt = crate::mount_common::read_user_cstr_owned(args.a1, 256).unwrap_or_default();
+        klog::write_raw(b"[MNTCREATE] syscall=mount flags=0x");
+        klog::write_hex_u64(args.a3);
+        klog::write_raw(b" recursive=");
+        klog::write_raw(if args.a3 & MS_REC != 0 { b"true" } else { b"false" });
+        klog::write_raw(b" source="); klog::write_raw(src.as_bytes());
+        klog::write_raw(b" target="); klog::write_raw(tgt.as_bytes());
+        klog::write_raw(b"\n");
+    }
     let rv = sys_mount_impl(args);
     // Failure-only trace: logging every successful mount floods the UART and
     // shifts boot timing into the intermittent wedge before logind runs. Only
