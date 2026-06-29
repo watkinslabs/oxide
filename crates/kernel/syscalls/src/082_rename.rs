@@ -109,6 +109,14 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     // at the end of this block — before the rank-50/60 dcache update below.
     let old_parent = resolve_parent(&f).ok();
     let new_parent = resolve_parent(&t).ok();
+    // D30: a plain rename that overwrites an existing destination removes the
+    // destination's name — its inode loses a hard link. Capture that victim
+    // dentry before the backend replaces it so the dcache half below can drive
+    // `drop_link` + last-alias retirement on it (EXCHANGE swaps both names, so
+    // neither is removed; NOREPLACE already errored above on an existing dest).
+    let dest_victim = if flags & (RENAME_EXCHANGE | RENAME_WHITEOUT) == 0 && path_exists(&t) {
+        crate::s087_unlink::victim_dentry(&t)
+    } else { None };
     // EXCHANGE atomically swaps; WHITEOUT renames then leaves a whiteout
     // char-dev (0,0) at the source; plain rename is link-then-replace.
     let r = {
@@ -133,6 +141,11 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
                 crate::pathresolve::d_delete_path(&f);
                 crate::pathresolve::d_delete_path(&t);
             } else {
+                // D30: an overwritten destination loses its name first — `d_unlink`
+                // drops the replaced inode's link and retires it on its last name
+                // (Linux `vfs_rename` calls this for the replaced target). Done
+                // before d_move_path rehomes the source onto the dest (parent,name).
+                if let Some(d) = dest_victim { vfs::dcache::d_unlink(&d); }
                 // D9: plain/whiteout rename → `d_move` the source dentry onto the
                 // destination (parent,name) (Linux `d_move`), instead of
                 // discarding it via two `d_delete`s. d_move_path also drops any

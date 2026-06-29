@@ -45,12 +45,22 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
         return -(Errno::Erofs.as_i32() as i64);
     }
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
+    // D30: capture the victim dentry before the backend removes the name.
+    let victim = crate::s087_unlink::victim_dentry(&p);
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend unlink (Linux
     // `do_unlinkat` locks the parent); dropped before the dcache delete below.
     let r = { let _g = pino.inode_lock(); pino.unlink_child(&name) };
     match r {
-        // d_delete: invalidate the cached dentry (see pathresolve::d_delete_path).
-        Ok(())  => { unlink_unix_socket_path(&p); crate::pathresolve::d_delete_path(&p); 0 }
+        // D30: backend unlink ran first; `d_unlink` then drives drop_link + the
+        // last-alias retirement (Linux `vfs_unlink` tail). See sys_unlink.
+        Ok(())  => {
+            unlink_unix_socket_path(&p);
+            match victim {
+                Some(d) => { vfs::dcache::d_unlink(&d); }
+                None    => crate::pathresolve::d_delete_path(&p),
+            }
+            0
+        }
         Err(vfs::VfsError::Enoent) if unlink_unix_socket_path(&p) => 0,
         Err(e)  => errno_from_vfs(e),
     }
