@@ -42,7 +42,53 @@ impl Devt {
     pub fn raw(self) -> u32 { self.0 }
     /// Wrap a raw packed `dev_t` from `mknod(2)`. # C: O(1)
     pub fn from_raw(raw: u32) -> Devt { Devt(raw) }
+    /// Build a [`Devt`] from a KERNEL `dev_t` (Linux 12:20 split: minor in the
+    /// low 20 bits, major in the top 12) by re-packing into the glibc `st_rdev`
+    /// wire form. The inverse of [`Self::to_kdev`]. # C: O(1)
+    pub fn from_kdev(kdev: u32) -> Devt { Devt::new(kdev_major(kdev), kdev_minor(kdev)) }
+    /// This device's KERNEL `dev_t` (Linux `MKDEV`, 12:20 split). # C: O(1)
+    pub fn to_kdev(self) -> u32 { mkdev(self.major(), self.minor()) }
 }
+
+// ---------------------------------------------------------------------------
+// Linux KERNEL `dev_t` model (`include/linux/kdev_t.h`).
+//
+// Two encodings coexist in Linux and both are reproduced here, byte-faithfully:
+//   * KERNEL dev_t — a 32-bit `(major:12 << 20) | minor:20` split used in-core
+//     (`i_rdev`, `s_dev`, `MKDEV`/`MAJOR`/`MINOR`).
+//   * USER dev_t — the glibc/`new_encode_dev` wire form the stat(2) ABI exposes
+//     (minor[0..8] | major[8..20] | minor[20..32]); this is what [`Devt`] stores
+//     and `st_rdev`/`st_dev` carry. `huge_encode_dev` is the kernel→user map.
+// ---------------------------------------------------------------------------
+
+/// `MINORBITS` (Linux `include/linux/kdev_t.h`) — minor occupies the low 20 bits
+/// of a kernel `dev_t`, major the top 12.
+pub const MINORBITS: u32 = 20;
+/// `MINORMASK` — `(1 << MINORBITS) - 1`, the kernel-`dev_t` minor field mask.
+pub const MINORMASK: u32 = (1 << MINORBITS) - 1;
+
+/// `MKDEV(ma, mi)` (Linux) — pack a KERNEL `dev_t` from `(major, minor)`.
+/// # C: O(1)
+pub const fn mkdev(major: u32, minor: u32) -> u32 { (major << MINORBITS) | (minor & MINORMASK) }
+/// `MAJOR(dev)` (Linux) for a KERNEL `dev_t`. # C: O(1)
+pub const fn kdev_major(kdev: u32) -> u32 { kdev >> MINORBITS }
+/// `MINOR(dev)` (Linux) for a KERNEL `dev_t`. # C: O(1)
+pub const fn kdev_minor(kdev: u32) -> u32 { kdev & MINORMASK }
+
+/// `new_encode_dev` (Linux `include/linux/kdev_t.h`) — map a KERNEL `dev_t` to
+/// the 32-bit glibc/user wire form the stat ABI exposes (`st_rdev`/`st_dev`):
+/// `minor[0..8] | major[8..20] | minor[20..32]`. The high-minor split lets a
+/// minor exceed 255 without clobbering the 12-bit major. # C: O(1)
+pub const fn new_encode_dev(kdev: u32) -> u32 {
+    let major = kdev_major(kdev);
+    let minor = kdev_minor(kdev);
+    (minor & 0xff) | ((major & 0xfff) << 8) | ((minor & !0xff) << 12)
+}
+
+/// `huge_encode_dev` (Linux `include/linux/kdev_t.h`) — the 64-bit `st_dev`
+/// user form; identical to [`new_encode_dev`] widened to `u64` (the upper bits
+/// stay clear for a 32-bit-representable dev). # C: O(1)
+pub const fn huge_encode_dev(kdev: u32) -> u64 { new_encode_dev(kdev) as u64 }
 
 /// `struct cdev` operations — a char driver's per-`dev_t` I/O vtable. The
 /// `devt` is passed on every call so one driver instance can back a whole
