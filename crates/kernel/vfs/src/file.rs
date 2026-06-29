@@ -3,7 +3,8 @@
 // FD table lives in `fdtable.rs`.
 
 extern crate alloc;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -69,13 +70,21 @@ const O_PATH: u32 = 0o10000000;
 const O_DIRECT:  u32 = 0o40000;
 const O_NOATIME: u32 = 0o1000000;
 
+/// `O_ASYNC`/`FASYNC` (asm-generic, both arches — Linux `fcntl.h` `0o20000`).
+/// Settable via `F_SETFL`; toggling it (de)registers the open file description
+/// for fasync SIGIO/SIGURG delivery to its `f_owner` (Linux `setfl`'s
+/// `FASYNC` branch calling `f_op->fasync`). Not declared in `OpenFlags` (no
+/// other in-`vfs` consumer), so matched here by raw value, and the stored bit
+/// is read by `File::is_async`.
+const O_ASYNC: u32 = 0o20000;
+
 /// Linux `SETFL_MASK` (`fs/fcntl.c`): the only `f_flags` bits `fcntl(F_SETFL)`
 /// may change on an already-open file description. The access mode
 /// (`O_RDONLY`/`O_WRONLY`/`O_RDWR`) and the creation-time flags
 /// (`O_CREAT`/`O_EXCL`/`O_TRUNC`/`O_CLOEXEC`/`O_DIRECTORY`/…) are fixed at open
 /// and silently ignored by `F_SETFL`, so they are excluded here.
 const SETFL_MASK: u32 =
-    OpenFlags::O_APPEND.bits() | OpenFlags::O_NONBLOCK.bits() | O_DIRECT | O_NOATIME;
+    OpenFlags::O_APPEND.bits() | OpenFlags::O_NONBLOCK.bits() | O_DIRECT | O_NOATIME | O_ASYNC;
 
 /// Default readahead window (Linux `VM_READAHEAD_PAGES`, 128 KiB = 32 pages at
 /// 4 KiB) — the per-open `f_ra.ra_pages` ceiling.
@@ -189,6 +198,18 @@ pub struct File {
     /// `F_SETSIG`/`F_GETSIG` (Linux `f_owner.signum`): the signal delivered on
     /// async-I/O readiness; `0` = the default `SIGIO` (data) / `SIGURG` (OOB).
     f_sig: core::sync::atomic::AtomicI32,
+    /// `F_SETLEASE`/`F_GETLEASE` lease type held on this open file description
+    /// (Linux `fl->fl_type` of the `FL_LEASE` lock): `F_RDLCK`(0) read lease,
+    /// `F_WRLCK`(1) write lease, `F_UNLCK`(2) = no lease. Default `F_UNLCK`.
+    /// Storage + validation only; the lease-break delivery (a conflicting
+    /// open signalling the lease holder) is the lease-manager follow-up.
+    lease: core::sync::atomic::AtomicI32,
+    /// `F_NOTIFY` (dnotify) directory-change watch mask (Linux `dnotify_struct
+    /// .dn_mask`): the `DN_*` events this directory fd wants `F_SETSIG`/`SIGIO`
+    /// for. `0` = no watch. `F_NOTIFY` is additive unless the caller passes a
+    /// zero arg (clear). Storage + validation only; the event delivery rides
+    /// the dnotify follow-up (needs dir-mutation hooks, cross-lane).
+    dnotify_mask: AtomicU32,
     /// `file->f_version` (Linux): inode change-version this open last observed;
     /// directory readers compare it vs `inode->i_version` to drop a stale cursor.
     f_version: AtomicU64,
@@ -321,8 +342,90 @@ pub fn fire_dirent_delete(parent: &str, leaf: &str) {
     f(parent, leaf);
 }
 
+/// SIGIO delivery hook (Linux `send_sigio`/`kill_pid_info`): installed at boot
+/// by the sched signal module so the VFS fasync path can post a signal to a
+/// pid/pgrp without `vfs` depending on `sched`. Args: `(owner, sig, uid,
+/// euid)` — `owner` is the `F_SETOWN` target (`>0` task, `<0` `-pgrp`), `sig`
+/// the resolved signal (`F_SETSIG` value or default SIGIO/SIGURG), `uid`/`euid`
+/// the `F_SETOWN`-time credential snapshot for the delivery permission check.
+/// `0` = not installed (host tests, early boot). # C: O(1)
+static SIGIO_HOOK: AtomicU64 = AtomicU64::new(0);
+
+/// Install the SIGIO delivery hook used by fasync (`O_ASYNC`). Called once at
+/// kernel init by the sched signal module. # C: O(1)
+pub fn set_sigio_hook(f: fn(i32, i32, u32, u32)) {
+    SIGIO_HOOK.store(f as u64, Ordering::Release);
+}
+
+/// Lock class for the global fasync registry. Taken standalone (the held set
+/// is snapshotted then released before any delivery hook runs), so it never
+/// nests under the inode / pos / ra locks. # C: O(1)
+struct FasyncLock;
+impl sync::LockClass for FasyncLock { fn rank() -> u16 { 34 } }
+
+/// `inode->i_fasync` analogue (Linux per-object `fasync_struct` list): the set
+/// of open file descriptions with `O_ASYNC` enabled, awaiting SIGIO on an
+/// async-ready event. Held as `Weak<File>` so a closed description drops out
+/// without an explicit unregister; dead entries are pruned on every touch.
+/// # C: O(N) registered fds
+static FASYNC: Spinlock<Vec<Weak<File>>, FasyncLock> = Spinlock::new(Vec::new());
+
+/// Register an open file description for fasync SIGIO delivery (Linux
+/// `fasync_helper(.., on=1)` linking a `fasync_struct` onto the backend list).
+/// Idempotent; prunes dead weak entries. Called when `O_ASYNC` is turned on via
+/// `F_SETFL`. # C: O(N) registered fds
+pub fn fasync_register(file: &Arc<File>) {
+    let mut l = FASYNC.lock();
+    let p = Arc::as_ptr(file);
+    l.retain(|w| w.upgrade().is_some());
+    if !l.iter().any(|w| w.upgrade().is_some_and(|f| Arc::as_ptr(&f) == p)) {
+        l.push(Arc::downgrade(file));
+    }
+}
+
+/// Unregister an open file description from fasync delivery (Linux
+/// `fasync_helper(.., on=0)`). Also prunes dead entries. Called when `O_ASYNC`
+/// is turned off via `F_SETFL` and from `File::drop`. # C: O(N) registered fds
+pub fn fasync_unregister(file: &File) {
+    let mut l = FASYNC.lock();
+    let p = file as *const File;
+    l.retain(|w| w.upgrade().is_some_and(|f| Arc::as_ptr(&f) != p));
+}
+
+/// Count of live fasync-registered descriptions (prunes dead entries).
+/// Test/observability accessor. # C: O(N) registered fds
+pub fn fasync_registered() -> usize {
+    let mut l = FASYNC.lock();
+    l.retain(|w| w.upgrade().is_some());
+    l.len()
+}
+
+/// `kill_fasync(&inode->i_fasync, sig, band)` (Linux `fs/fcntl.c`): deliver the
+/// async-ready signal to every `O_ASYNC` fd open on `inode`. A backend
+/// (pipe/socket/tty) calls this when its buffer becomes readable/writable or an
+/// OOB byte arrives. `dfl` is the default signal — `SIGIO` for data-ready,
+/// `SIGURG` for out-of-band — overridden per-fd by `F_SETSIG`. Snapshots the
+/// matching set under the registry lock, then delivers with the lock dropped so
+/// the signal hook may take sched locks. # C: O(N) registered fds
+pub fn kill_fasync(inode: &InodeRef, dfl: i32) {
+    let snapshot: Vec<Arc<File>> = {
+        let mut l = FASYNC.lock();
+        l.retain(|w| w.upgrade().is_some());
+        l.iter()
+            .filter_map(|w| w.upgrade())
+            .filter(|f| Arc::ptr_eq(&f.inode, inode))
+            .collect()
+    };
+    for f in snapshot { f.kill_fasync(dfl); }
+}
+
 impl Drop for File {
     fn drop(&mut self) {
+        // Drop the fasync registration weak (Linux `__fput` -> `f_op->fasync(.,
+        // 0)` for an `O_ASYNC` file). Weaks self-expire, but prune eagerly.
+        if (self.flags.load(Ordering::Acquire) & O_ASYNC) != 0 {
+            fasync_unregister(self);
+        }
         if self.flock_op.load(Ordering::Acquire) != 0 {
             let h = FLOCK_RELEASE_HOOK.load(Ordering::Acquire);
             if h != 0 {
@@ -436,6 +539,9 @@ impl File {
             owner: core::sync::atomic::AtomicI32::new(0),
             owner_creds: AtomicU64::new(0),
             f_sig: core::sync::atomic::AtomicI32::new(0),
+            // F_UNLCK (2) = no lease held (Linux `F_GETLEASE` default).
+            lease: core::sync::atomic::AtomicI32::new(2),
+            dnotify_mask: AtomicU32::new(0),
             f_version: AtomicU64::new(0),
         })
     }
@@ -535,6 +641,50 @@ impl File {
         let s = self.f_sig.load(Ordering::Acquire);
         if s != 0 { s } else { dfl }
     }
+
+    /// `O_ASYNC` enabled on this description (Linux `FASYNC` in `f_flags`).
+    /// # C: O(1)
+    pub fn is_async(&self) -> bool {
+        (self.flags.load(Ordering::Acquire) & O_ASYNC) != 0
+    }
+
+    /// `kill_fasync` per-fd core (Linux `kill_fasync_rcu` -> `send_sigio`):
+    /// deliver the async-ready signal to THIS description's `f_owner` via the
+    /// installed SIGIO hook. `dfl` = default signal (SIGIO data / SIGURG OOB),
+    /// overridden by `F_SETSIG`. No-op unless `O_ASYNC` is set, an owner is
+    /// recorded, and a hook is installed. The owner credentials snapshot is
+    /// forwarded for the hook's delivery permission check. # C: O(1)
+    pub fn kill_fasync(&self, dfl: i32) {
+        if !self.is_async() { return; }
+        let owner = self.owner.load(Ordering::Acquire);
+        if owner == 0 { return; }
+        let h = SIGIO_HOOK.load(Ordering::Acquire);
+        if h == 0 { return; }
+        let sig = self.fasync_signal(dfl);
+        let (uid, euid) = self.f_owner_creds();
+        // SAFETY: h installed by `set_sigio_hook` with the documented
+        // fn(i32,i32,u32,u32) signature; the cast round-trips that exact type.
+        let f: fn(i32, i32, u32, u32) = unsafe { core::mem::transmute(h) };
+        f(owner, sig, uid, euid);
+    }
+
+    /// `F_SETLEASE` (Linux `do_fcntl_add_lease`): record the lease type held on
+    /// this description — `F_RDLCK`(0) / `F_WRLCK`(1) read/write lease, or
+    /// `F_UNLCK`(2) to drop it. Storage only; the conflicting-open break path is
+    /// the lease-manager follow-up. # C: O(1)
+    pub fn set_lease(&self, ty: i32) { self.lease.store(ty, Ordering::Release); }
+
+    /// `F_GETLEASE` (Linux `fcntl_getlease`): the lease type held — `F_RDLCK`/
+    /// `F_WRLCK`, or `F_UNLCK` when none. # C: O(1)
+    pub fn lease(&self) -> i32 { self.lease.load(Ordering::Acquire) }
+
+    /// `F_NOTIFY` (Linux `fcntl_dirnotify`): set the dnotify `DN_*` watch mask
+    /// on this directory fd (`0` clears). Storage only; the dir-mutation event
+    /// delivery is the dnotify follow-up. # C: O(1)
+    pub fn set_dnotify(&self, mask: u32) { self.dnotify_mask.store(mask, Ordering::Release); }
+
+    /// The dnotify `DN_*` watch mask on this fd (`0` = no watch). # C: O(1)
+    pub fn dnotify(&self) -> u32 { self.dnotify_mask.load(Ordering::Acquire) }
 
     /// `file->f_version` read — the change-version a `readdir` cursor was built against. # C: O(1)
     pub fn f_version(&self) -> u64 { self.f_version.load(Ordering::Acquire) }
