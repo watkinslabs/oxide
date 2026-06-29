@@ -214,13 +214,35 @@ impl RootfsState {
         let (to_p, to_name_owned) = self.parent_inode(to).ok_or(vfs::VfsError::Enoent)?;
         let to_name: alloc::vec::Vec<u8> = to_name_owned.to_vec();
         let ftype = if inode.is_dir() { crate::DT_DIR } else if inode.is_link() { crate::DT_LNK } else { crate::DT_REG };
-        let dest_exists = self.mount.lookup_path(to).is_ok();
+        // Replaced destination (plain rename = non-EXCHANGE; RENAME_EXCHANGE
+        // routes through `exchange`, which only ever renames into a vacated temp
+        // name, so it never reaches this overwrite path). Capture the victim's
+        // ino + dir-ness before the dir entry is removed so its in-memory nlink
+        // can be dropped after (Linux `vfs_rename`: the replaced inode loses its
+        // link).
+        let dest_victim = self.mount.lookup_path(to).ok();
+        let dest_is_dir = dest_victim
+            .and_then(|v| self.mount.read_inode(v).ok())
+            .map(|i| i.is_dir())
+            .unwrap_or(false);
         self.mount.run_journaled(|m| {
-            if dest_exists { let _ = m.dir_unlink(to_p, &to_name); }
+            if dest_victim.is_some() { let _ = m.dir_unlink(to_p, &to_name); }
             m.dir_link(to_p, &to_name, target, ftype)?;
             m.dir_unlink(from_p, &from_name)?;
             Ok(())
-        }).map_err(|_| vfs::VfsError::Eio)
+        }).map_err(|_| vfs::VfsError::Eio)?;
+        // In-memory nlink authority (mirror `unlink`): the dcache `d_unlink` no
+        // longer touches nlink, so the FS drops the CACHED victim's link here. A
+        // directory target is fully unlinked (clear to 0: it loses both its `.`
+        // self-link and its parent's reference). Uncached → nothing to drop.
+        if let Some(victim_ino) = dest_victim {
+            if let Some(sb) = self.i_sb() {
+                if let Some(victim) = sb.ilookup(ext4_wrap_ino(victim_ino)) {
+                    if dest_is_dir { victim.set_nlink(0); } else { victim.drop_link(); }
+                }
+            }
+        }
+        Ok(())
     }
 }
 

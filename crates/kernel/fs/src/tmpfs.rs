@@ -877,6 +877,17 @@ impl vfs::fs::FileSystem for TmpfsFs {
         let sdir = as_dir(&sp).ok_or(VfsError::Enotdir)?;
         let ddir = as_dir(&dp).ok_or(VfsError::Enotdir)?;
         let inode = sdir.remove(sname).ok_or(VfsError::Enoent)?;
+        // Replaced destination (plain rename = non-EXCHANGE; RENAME_EXCHANGE
+        // routes through `exchange`, which only renames into a vacated temp name
+        // and never overwrites a live target). The victim loses its link (Linux
+        // `vfs_rename`): drop its in-memory nlink — a directory target is cleared
+        // to 0 (loses both its `.` self-link and the parent's reference) — and
+        // reclaim its inode charge once no name remains. Mirrors `unlink`.
+        if let Some(victim) = ddir.remove(dname) {
+            if victim.file_type() == FileType::Directory { victim.set_nlink(0); }
+            else { victim.drop_nlink(); }
+            if victim.nlink() == 0 { ddir.acct.free_inode(); }
+        }
         ddir.insert(dname, inode);
         Ok(())
     }
@@ -1012,6 +1023,55 @@ mod iget_tests {
         assert_ne!(a.ino(), b.ino());
         assert!(Arc::ptr_eq(&a, &sb.ilookup(a.ino()).unwrap()));
         assert!(Arc::ptr_eq(&b, &sb.ilookup(b.ino()).unwrap()));
+    }
+}
+
+#[cfg(test)]
+mod rename_overwrite_tests {
+    use super::*;
+    use vfs::fs::FileSystem;
+
+    // A plain rename that OVERWRITES an existing destination drops the replaced
+    // target's in-memory nlink to 0 (Linux `vfs_rename`), and reclaims its inode
+    // charge; the source inode takes the destination name.
+    #[test]
+    fn rename_overwrite_drops_replaced_target_nlink() {
+        let fs = TmpfsFs::with_limits(String::from("/"), TmpfsSb::new(64, 16));
+        let root = fs.root_inode();
+        let src = root.create_child("src", 0o644, &CreateCtx::root()).expect("create src");
+        let dst = root.create_child("dst", 0o644, &CreateCtx::root()).expect("create dst");
+        assert_eq!(dst.nlink(), 1);
+        let free_before = fs.super_ops().unwrap().statfs().unwrap().f_ffree;
+
+        fs.rename("/src", "/dst").expect("rename overwrite");
+
+        // Replaced target lost its link; its inode charge was reclaimed.
+        assert_eq!(dst.nlink(), 0, "replaced destination nlink dropped to 0");
+        assert_eq!(fs.super_ops().unwrap().statfs().unwrap().f_ffree, free_before + 1);
+        // The destination name now resolves to the SOURCE inode (survivor).
+        let now = root.lookup("dst").expect("dst present");
+        assert!(Arc::ptr_eq(&now, &src), "dst name now holds the source inode");
+        assert_eq!(now.nlink(), 1, "moved source keeps its link");
+        assert!(matches!(root.lookup("src"), Err(VfsError::Enoent)), "source name gone");
+    }
+
+    // RENAME_EXCHANGE (FileSystem::exchange) swaps two existing paths; NEITHER
+    // inode loses its link (both survive with nlink unchanged).
+    #[test]
+    fn exchange_does_not_drop_either_nlink() {
+        let fs = TmpfsFs::with_limits(String::from("/"), TmpfsSb::new(64, 16));
+        let root = fs.root_inode();
+        let a = root.create_child("a", 0o644, &CreateCtx::root()).expect("create a");
+        let b = root.create_child("b", 0o644, &CreateCtx::root()).expect("create b");
+
+        fs.exchange("/a", "/b").expect("exchange");
+
+        // Both inodes survive with their single link intact.
+        assert_eq!(a.nlink(), 1, "exchange survivor a keeps its link");
+        assert_eq!(b.nlink(), 1, "exchange survivor b keeps its link");
+        // Names are swapped: /a now holds the old-b inode and vice-versa.
+        assert!(Arc::ptr_eq(&root.lookup("a").unwrap(), &b), "/a now holds old b");
+        assert!(Arc::ptr_eq(&root.lookup("b").unwrap(), &a), "/b now holds old a");
     }
 }
 
