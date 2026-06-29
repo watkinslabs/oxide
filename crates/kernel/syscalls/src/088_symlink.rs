@@ -36,7 +36,10 @@ pub(crate) fn symlink_impl(target: String, link: String) -> i64 {
     // owner (symlinks carry no umask). Linux `->symlink(struct mnt_idmap *, ...)`.
     let cred = crate::pathresolve::current_cred();
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
-    match pino.symlink_child(&name, target.as_bytes(), &ctx) {
+    // D29: parent dir `i_rwsem` EXCLUSIVE across the backend symlink (Linux
+    // `filename_create` → `->symlink`); dropped before the dcache update below.
+    let r = { let _g = pino.inode_lock(); pino.symlink_child(&name, target.as_bytes(), &ctx) };
+    match r {
         Ok(())  => { crate::pathresolve::d_drop_path(&l); 0 }
         Err(e)  => {
             crate::namei_common::trace_run_vfs_error(b"symlink", &l, e);
