@@ -103,9 +103,18 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
+    // D3/D37: a freshly CREATED inode (`fs().create`) carries the build/born
+    // `i_count` reference. `install_open` binds it to a dentry (`d_add` grab) and
+    // an open `File` (`igrab`); on success those are durable counted holders, so
+    // release the born ref here (Linux `do_last`/`d_instantiate` consumes the
+    // iget ref). `inode.clone()` is a pointer clone (no `i_count` change) taken
+    // BEFORE the move so we can iput AFTER `install_open` reports a holder exists
+    // → `i_count` never reaches 0 on the live inode. (The Err path leaves the
+    // born ref held — conservative: no eviction there, but never a UAF.)
+    let created_ref = if created { Some(inode.clone()) } else { None };
     match vfs::file::install_open(&fdt, inode, path_str, OpenFlags::from_bits_truncate(flags),
         mnt_id, crate::pathresolve::current_cred()) {
-        Ok(fd) => fd as i64,
+        Ok(fd) => { if let Some(i) = created_ref { vfs::file::iput(i); } fd as i64 }
         Err(e) => -(e as i64),
     }
 }
