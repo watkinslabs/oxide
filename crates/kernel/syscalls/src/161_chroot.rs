@@ -23,27 +23,17 @@ pub fn sys_chroot(args: &SyscallArgs) -> i64 {
     let s = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    // chroot(2) accepts a RELATIVE path (resolved against cwd) — Linux
-    // `set_fs_root` takes `user_path_at(AT_FDCWD, ...)`. systemd's
-    // `mount_switch_root` does `chroot(".")` after MS_MOVE-ing the assembled
-    // sandbox root onto `/` and `chdir`-ing into it; rejecting non-absolute
-    // paths failed that with EINVAL (step NAMESPACE status=226, B282). A
-    // relative path resolves to its absolute form via cwd; an absolute path
-    // keeps the legacy nested-chroot prefix concat (F95). # C: O(len)
+    if !s.starts_with('/') { return -(Errno::Einval.as_i32() as i64); }
     // SAFETY: task.root single-mutator per `13§5`; running task on this CPU is the sole writer (chroot only mutates the calling task's root).
-    let new_root = if !s.starts_with('/') {
-        crate::pathresolve::resolve_cwd(s)
-    } else {
-        unsafe {
-            let cur_root = (*cur.root.get()).clone();
-            if cur_root == "/" {
-                alloc::string::String::from(s)
-            } else {
-                let mut out = cur_root;
-                if out.ends_with('/') { out.pop(); }
-                out.push_str(s);
-                out
-            }
+    let new_root = unsafe {
+        let cur_root = (*cur.root.get()).clone();
+        if cur_root == "/" {
+            alloc::string::String::from(s)
+        } else {
+            let mut out = cur_root;
+            if out.ends_with('/') { out.pop(); }
+            out.push_str(s);
+            out
         }
     };
     let root_obj = match crate::pathresolve::resolve_path(&new_root, false) {

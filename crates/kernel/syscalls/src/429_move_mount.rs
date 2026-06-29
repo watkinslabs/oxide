@@ -70,12 +70,10 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
         Ok(p) => p, Err(rv) => return rv,
     };
     let from = if from.len() > 1 { from.trim_end_matches('/').to_string() } else { from };
-    // Source mount = the mnt_id the walk crossed into (Linux `path->mnt`), not
-    // a re-derived dentry (resolves onto the moved mount's shared root).
-    let from_vp = match crate::pathresolve::resolve_path(&from, false) {
-        Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
+    let from_d = match crate::pathresolve::mount_dentry(&from) {
+        Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
     };
-    match vfs::mount::move_mount_by_id(from_vp.mnt_id, &target_d) {
+    match vfs::mount::move_mount(&from_d, &target_d) {
         Ok(())                    => 0,
         Err(vfs::VfsError::Ebusy) => -(Errno::Ebusy.as_i32() as i64),
         Err(_)                    => -(Errno::Einval.as_i32() as i64),
