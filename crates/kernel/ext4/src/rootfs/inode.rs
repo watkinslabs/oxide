@@ -456,6 +456,57 @@ impl InodeOps for Ext4StatInodeOps {
         d.st.page_cache.invalidate(InodeId(ino as u64));
         Ok(())
     }
+
+    /// `i_op->rename` (Linux `ext4_rename` reached via `vfs_rename`): the
+    /// resolved-parent variant of the legacy whole-path `rename_at` — a single
+    /// journaled transaction that unlinks any overwritten dest, links the source
+    /// inode under the new (dir,name), then unlinks the old name. Only the plain
+    /// rename routes here; `RENAME_EXCHANGE`/`RENAME_WHITEOUT` stay on the
+    /// `FileSystem` path (`082_rename` branches) and are rejected here
+    /// defensively. # C: O(N parent entries) + 1 journaled tx
+    fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32, _ctx: &vfs::CreateCtx)
+        -> KResult<()>
+    {
+        if flags & (vfs::namei::RENAME_EXCHANGE | vfs::namei::RENAME_WHITEOUT) != 0 {
+            return Err(VfsError::Einval);
+        }
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        let nd = new_dir.private::<Ext4StatData>().ok_or(VfsError::Eio)?;
+        if !matches!(nd.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        // rename is within a single mount (Linux EXDEV otherwise). The syscall
+        // already guarantees this; re-check on the resolved parents' state.
+        if !Arc::ptr_eq(&d.st, &nd.st) { return Err(VfsError::Exdev); }
+        let (from_p, to_p) = (d.ino, nd.ino);
+        let mount = &d.st.mount;
+        let target = d.st.lookup_child_ino(from_p, old_name).ok_or(VfsError::Enoent)?;
+        let src = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
+        let ftype = if src.is_dir() { crate::DT_DIR } else if src.is_link() { crate::DT_LNK } else { crate::DT_REG };
+        let (from_name, to_name) = (old_name.as_bytes(), new_name.as_bytes());
+        // Replaced destination (plain rename only; EXCHANGE/WHITEOUT excluded
+        // above): capture its ino + dir-ness before the entry is removed so its
+        // in-memory nlink drops after (Linux `vfs_rename`: replaced inode loses
+        // its link). Mirrors the legacy `rename_at`.
+        let dest_victim = d.st.lookup_child_ino(to_p, new_name);
+        let dest_is_dir = dest_victim
+            .and_then(|v| mount.read_inode(v).ok())
+            .map(|i| i.is_dir())
+            .unwrap_or(false);
+        mount.run_journaled(|m| {
+            if dest_victim.is_some() { let _ = m.dir_unlink(to_p, to_name); }
+            m.dir_link(to_p, to_name, target, ftype)?;
+            m.dir_unlink(from_p, from_name)?;
+            Ok(())
+        }).map_err(|_| VfsError::Eio)?;
+        if let Some(victim_ino) = dest_victim {
+            if let Some(sb) = d.st.i_sb() {
+                if let Some(victim) = sb.ilookup(ext4_wrap_ino(victim_ino)) {
+                    if dest_is_dir { victim.set_nlink(0); } else { victim.drop_link(); }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `file_operations` for a non-regular ext4 inode: `iterate`/readdir for a

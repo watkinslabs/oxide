@@ -129,7 +129,17 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
         } else if flags & RENAME_WHITEOUT != 0 {
             mnt_f.fs().whiteout(&rel_f, &rel_t)
         } else {
-            mnt_f.fs().rename(&rel_f, &rel_t)
+            // D9: route the plain rename through the resolved-parent
+            // `i_op->rename` (Linux `vfs_rename` → `old_dir->i_op->rename`)
+            // instead of the whole-path `FileSystem::rename`. Both parents are
+            // already resolved for `lock_rename`; if either resolve missed, fall
+            // back to the FS path (byte-equivalent, conservative). EXCHANGE/
+            // WHITEOUT keep the FS path above.
+            match (&old_parent, &new_parent) {
+                (Some((op, oname)), Some((np, nname))) =>
+                    op.rename_child(oname, np, nname, flags, &vfs::CreateCtx::root()),
+                _ => mnt_f.fs().rename(&rel_f, &rel_t),
+            }
         }
     };
     match r {

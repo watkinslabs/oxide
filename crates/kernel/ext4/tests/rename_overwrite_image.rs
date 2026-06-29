@@ -57,6 +57,37 @@ fn rename_overwrite_drops_replaced_target_nlink() {
 }
 
 #[test]
+fn iop_rename_overwrite_drops_replaced_target_nlink() {
+    // D9: the resolved-parent `i_op->rename` is byte-equivalent to the
+    // whole-path `FileSystem::rename` — same overwrite + nlink-drop semantics.
+    let (m, sb) = mount();
+    let root = sb.s_root_inode().expect("root inode");
+    let src = root.create_child("isrc", 0o644, &CreateCtx::root()).expect("create isrc");
+    let dst = root.create_child("idst", 0o644, &CreateCtx::root()).expect("create idst");
+    assert_eq!(dst.nlink(), 1);
+
+    root.rename_child("isrc", &root, "idst", 0, &CreateCtx::root()).expect("iop rename overwrite");
+
+    assert_eq!(dst.nlink(), 0, "replaced destination in-memory nlink dropped to 0");
+    assert!(m.state().lookup_path(b"/isrc").is_none(), "source name removed");
+    let now = root.lookup("idst").expect("idst present");
+    assert!(Arc::ptr_eq(&now, &src), "destination name now holds the source inode");
+}
+
+#[test]
+fn iop_rename_rejects_exchange_whiteout() {
+    let (_m, sb) = mount();
+    let root = sb.s_root_inode().expect("root inode");
+    root.create_child("ix", 0o644, &CreateCtx::root()).expect("create ix");
+    assert!(matches!(
+        root.rename_child("ix", &root, "iy", vfs::namei::RENAME_EXCHANGE, &CreateCtx::root()),
+        Err(vfs::VfsError::Einval)));
+    assert!(matches!(
+        root.rename_child("ix", &root, "iy", vfs::namei::RENAME_WHITEOUT, &CreateCtx::root()),
+        Err(vfs::VfsError::Einval)));
+}
+
+#[test]
 fn exchange_does_not_drop_either_nlink() {
     let (m, sb) = mount();
     let root = sb.s_root_inode().expect("root inode");
