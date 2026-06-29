@@ -156,13 +156,15 @@ pub fn default_perm_for(ft: FileType) -> u16 {
     }
 }
 
-/// `generic_fillattr` — assemble a `Kstat` from inode fields, merging the
-/// kernel `inode_times` overlay (perm/owner/times for pseudo-fs without native
-/// storage) and applying the mount `idmap` to the owner ids. An identity idmap
-/// returns the raw fs ids, so the output is byte-identical to the
-/// pre-idmap stat path. # C: O(1)
+/// `generic_fillattr` — assemble a `Kstat` from the inode's own fields, applying
+/// the mount `idmap` to the owner ids. An identity idmap returns the raw fs ids,
+/// so the output is byte-identical to the pre-idmap stat path. D17: the concrete
+/// `struct Inode` now always stores its own perm/owner/times, so the legacy
+/// `inode_times` overlay is no longer merged — `overlay` is retained as a
+/// (now-inert) parameter for ABI/signature stability with the `i_op->getattr`
+/// override path and is ignored. # C: O(1)
 pub fn generic_fillattr(inode: &Inode, idmap: &Idmap, overlay: Option<InodeTimes>) -> Kstat {
-    let ov = overlay.unwrap_or_default();
+    let _ = &overlay; // D17: overlay no longer consulted (inode owns its fields)
     let ft = inode.file_type();
     // ONE place builds the `S_IFMT` half of the mode: `FileType::to_ifmt`
     // (shared with `Inode::i_mode`). `st_rdev` is only meaningful for device
@@ -172,11 +174,9 @@ pub fn generic_fillattr(inode: &Inode, idmap: &Idmap, overlay: Option<InodeTimes
         FileType::CharDev | FileType::BlockDev => inode.rdev(),
         _ => 0,
     };
-    let perm = inode.perm()
-        .or_else(|| if ov.owner_set && ov.mode_bits != 0 { Some(ov.mode_bits) } else { None })
-        .unwrap_or_else(|| default_perm_for(ft));
-    let raw_uid = inode.uid().unwrap_or(if ov.owner_set { ov.uid } else { 0 });
-    let raw_gid = inode.gid().unwrap_or(if ov.owner_set { ov.gid } else { 0 });
+    let perm = inode.perm().unwrap_or_else(|| default_perm_for(ft));
+    let raw_uid = inode.uid().unwrap_or(0);
+    let raw_gid = inode.gid().unwrap_or(0);
     // `st_blksize` is a SUPERBLOCK property (Linux `s_blocksize`), not a
     // per-inode one: route through the owning SB so every inode on one fs
     // reports its mount's block size. `blksize()` is only the fallback for
@@ -209,9 +209,9 @@ pub fn generic_fillattr(inode: &Inode, idmap: &Idmap, overlay: Option<InodeTimes
         size:     inode.size(),
         blksize:  bsize,
         blocks:   blocks_for(inode.size(), bsize),
-        atime_ns: inode.atime().unwrap_or(ov.atime_ns),
-        mtime_ns: inode.mtime().unwrap_or(ov.mtime_ns),
-        ctime_ns: inode.ctime().unwrap_or(ov.ctime_ns),
+        atime_ns: inode.atime().unwrap_or(0),
+        mtime_ns: inode.mtime().unwrap_or(0),
+        ctime_ns: inode.ctime().unwrap_or(0),
         btime_ns,
         fsid:     inode.fsid(),
         // `change_cookie` is NOT filled here: querying the i_version latches the
