@@ -4,7 +4,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::userbuf::validate_user_buf;
+use crate::userbuf::validate_user_buf_writable;
 use crate::time_common::{
     clock_id_known, CLOCK_MONOTONIC_COARSE, CLOCK_REALTIME_COARSE,
 };
@@ -18,7 +18,7 @@ pub fn kernel_clock_getres(args: &SyscallArgs) -> i64 {
         return -(Errno::Einval.as_i32() as i64);
     }
     if tp == 0 { return 0; }
-    if let Err(rv) = validate_user_buf(tp, 16, 8) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(tp, 16, 8) { return rv; }
     let nsec = match clk_id {
         CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE => 1_000_000,
         _ => 1,

@@ -2,6 +2,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 /// `sys_setitimer(which, new, old)` — slot 38. ITIMER_REAL only.
 /// new = `struct itimerval { it_interval: timeval, it_value: timeval }`.
@@ -19,14 +20,15 @@ pub fn sys_setitimer(args: &SyscallArgs) -> i64 {
         #[cfg(target_arch = "x86_64")] { hal_x86_64::X86TimerOps::monotonic_ns().0 }
         #[cfg(target_arch = "aarch64")] { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
     };
-    if old != 0 && old < hal::USER_VA_END {
+    if old != 0 {
+        if let Err(rv) = validate_user_buf_writable(old, 32, 8) { return rv; }
         // Render the previous interval + remaining time into user `old`.
         let prev_int = cur.alarm_interval_ns.load(Ordering::Acquire);
         let prev_dl  = cur.alarm_ns.load(Ordering::Acquire);
         let remain   = if prev_dl > now { prev_dl - now } else { 0 };
         let (i_s, i_us) = sched::clock::ns_to_timeval(prev_int);
         let (r_s, r_us) = sched::clock::ns_to_timeval(remain);
-        // SAFETY: old validated < USER_VA_END; CPL=0 writes through caller's AS.
+        // SAFETY: old validated writable; CPL=0 writes through caller's AS.
         unsafe {
             core::ptr::write_volatile( old        as *mut u64, i_s);
             core::ptr::write_volatile((old +  8)  as *mut u64, i_us);
@@ -34,8 +36,9 @@ pub fn sys_setitimer(args: &SyscallArgs) -> i64 {
             core::ptr::write_volatile((old + 24)  as *mut u64, r_us);
         }
     }
-    if new != 0 && new < hal::USER_VA_END {
-        // SAFETY: new validated; CPL=0 reads through caller's AS.
+    if new != 0 {
+        if let Err(rv) = validate_user_buf(new, 32, 8) { return rv; }
+        // SAFETY: new validated readable; CPL=0 reads through caller's AS.
         let (i_s, i_us, v_s, v_us) = unsafe {
             let a = core::ptr::read_volatile( new        as *const u64);
             let b = core::ptr::read_volatile((new +  8)  as *const u64);

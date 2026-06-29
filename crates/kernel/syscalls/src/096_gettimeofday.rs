@@ -3,7 +3,7 @@
 
 use syscall::SyscallArgs;
 
-use crate::userbuf::validate_user_buf;
+use crate::userbuf::validate_user_buf_writable;
 use crate::time_common::{NS_PER_SEC, realtime_ns};
 
 /// `sys_gettimeofday(tv, tz)` — slot 96. Writes
@@ -12,7 +12,7 @@ use crate::time_common::{NS_PER_SEC, realtime_ns};
 pub fn kernel_gettimeofday(args: &SyscallArgs) -> i64 {
     let tv = args.a0;
     if tv == 0 { return 0; }
-    if let Err(rv) = validate_user_buf(tv, 16, 8) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(tv, 16, 8) { return rv; }
     let ns = realtime_ns();
     let sec  = ns / NS_PER_SEC;
     let usec = (ns % NS_PER_SEC) / 1000;

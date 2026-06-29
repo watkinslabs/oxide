@@ -2,6 +2,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
+use crate::userbuf::validate_user_buf_writable;
 
 /// `sys_getitimer(which, curr)` — slot 36. Reports remaining +
 /// interval for ITIMER_REAL.
@@ -12,7 +13,8 @@ pub fn sys_getitimer(args: &SyscallArgs) -> i64 {
     const ITIMER_REAL: u64 = 0;
     let which = args.a0;
     let curr = args.a1;
-    if curr == 0 || curr >= hal::USER_VA_END { return 0; }
+    if curr == 0 { return 0; }
+    if let Err(rv) = validate_user_buf_writable(curr, 32, 8) { return rv; }
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let now = {
         #[cfg(target_arch = "x86_64")] { hal_x86_64::X86TimerOps::monotonic_ns().0 }
@@ -25,7 +27,7 @@ pub fn sys_getitimer(args: &SyscallArgs) -> i64 {
     } else { (0, 0) };
     let (i_s, i_us) = sched::clock::ns_to_timeval(interval);
     let (r_s, r_us) = sched::clock::ns_to_timeval(remain);
-    // SAFETY: curr validated < USER_VA_END; CPL=0 writes through caller's AS.
+    // SAFETY: curr validated writable; CPL=0 writes through caller's AS.
     unsafe {
         core::ptr::write_volatile( curr       as *mut u64, i_s);
         core::ptr::write_volatile((curr +  8) as *mut u64, i_us);

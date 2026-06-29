@@ -26,6 +26,22 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     let s = match core::str::from_utf8(path) {
         Ok(s)  => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
+    #[cfg(feature = "debug-atexit")]
+    if dyn_trace_path(s) {
+        klog::write_raw(b"[DYNOPEN] raw dirfd=");
+        let dirfd = args.a0 as i64;
+        if dirfd < 0 {
+            klog::write_raw(b"-");
+            klog::write_dec_u64(dirfd.wrapping_neg() as u64);
+        } else {
+            klog::write_dec_u64(dirfd as u64);
+        }
+        klog::write_raw(b" flags=");
+        klog::write_hex_u64(flags as u64);
+        klog::write_raw(b" path=");
+        klog::write_raw(s.as_bytes());
+        klog::write_raw(b"\n");
+    }
     #[cfg(feature = "debug-syscall")]
     {
         klog::write_raw(b"[OPENAT] dirfd=");
@@ -48,6 +64,12 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
         Err(rv) => return rv,
     };
     let path_str: &str = resolved.as_str();
+    #[cfg(feature = "debug-atexit")]
+    if dyn_trace_path(path_str) {
+        klog::write_raw(b"[DYNOPEN] resolved=");
+        klog::write_raw(path_str.as_bytes());
+        klog::write_raw(b"\n");
+    }
     {
         use ::security::landlock::access as la;
         let mut op = la::READ_FILE;
@@ -183,4 +205,14 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
         }
         Err(e)  => -(e as i64),
     }
+}
+
+#[cfg(feature = "debug-atexit")]
+fn dyn_trace_path(s: &str) -> bool {
+    s.contains("libselinux")
+        || s.contains("libpcre2")
+        || s.contains("libaudit")
+        || s.contains("libseccomp")
+        || s.contains("libpam")
+        || s.contains("libsystemd-shared")
 }
