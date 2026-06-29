@@ -31,17 +31,12 @@ pub(crate) const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 /// the *xattrat family). `follow` controls symlink-following (AT_SYMLINK_NOFOLLOW).
 /// # C: O(N_path)
 pub(crate) fn resolve_path_inode(dirfd: i32, path_ptr: u64, follow: bool) -> Result<InodeRef, i64> {
-    if path_ptr == 0 || path_ptr >= hal::USER_VA_END {
-        return Err(-(Errno::Efault.as_i32() as i64));
-    }
-    // SAFETY: path_ptr in user range; bounded read via existing helper.
-    let bytes = unsafe { devfs::read_user_cstr(path_ptr, 256) };
-    let raw = bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() })
-        .ok_or(-(Errno::Einval.as_i32() as i64))?;
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    let raw = crate::namei_common::read_user_path(path_ptr)?;
     // BUG D: resolve against the dirfd's directory for a real fd-relative
     // dirfd (fchmodat/fchownat); resolve_at(AT_FDCWD, raw) == resolve_cwd(raw)
     // so legacy chmod/chown are unchanged.
-    let resolved = crate::pathresolve::resolve_at_result(dirfd, raw)?;
+    let resolved = crate::pathresolve::resolve_at_result(dirfd, &raw)?;
     let s = resolved.as_str();
     // THE resolver (path-walk): crosses mounts, follows symlinks unless
     // `!follow` (chmod/chown follow; AT_SYMLINK_NOFOLLOW / lchown don't).
@@ -68,14 +63,9 @@ pub(crate) const AT_EMPTY_PATH: u32 = 0x1000;
 /// family can enforce EROFS on the owning mount. Preserves the path-walk errno
 /// (EACCES from `may_lookup`, ENOTDIR, ELOOP …). # C: O(N_path)
 pub(crate) fn resolve_path_mnt(dirfd: i32, path_ptr: u64, follow: bool) -> Result<(InodeRef, u64), i64> {
-    if path_ptr == 0 || path_ptr >= hal::USER_VA_END {
-        return Err(-(Errno::Efault.as_i32() as i64));
-    }
-    // SAFETY: path_ptr in user range; bounded read via existing helper.
-    let bytes = unsafe { devfs::read_user_cstr(path_ptr, 256) };
-    let raw = bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() })
-        .ok_or(-(Errno::Einval.as_i32() as i64))?;
-    let resolved = crate::pathresolve::resolve_at_result(dirfd, raw)?;
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    let raw = crate::namei_common::read_user_path(path_ptr)?;
+    let resolved = crate::pathresolve::resolve_at_result(dirfd, &raw)?;
     let vp = crate::pathresolve::resolve_path_result(resolved.as_str(), !follow)
         .map_err(|e| -(e as i64))?;
     Ok((vp.inode, vp.mnt_id))
