@@ -555,21 +555,49 @@ fn build_sb(fs: Arc<dyn FileSystem>, root_inode: Option<InodeRef>, s_id: String)
 
 /// Build a `Mount` and attach it on the caller-supplied mountpoint dentry
 /// `mp` (Linux `mnt_set_mountpoint`/`commit_tree`). `mp == None` ⇒ the
-/// namespace root mount. # C: O(depth)
+/// namespace root mount. Acquires (or shares, via `build_sb`/`sget`) the
+/// `SuperBlock`, then grafts it through the shared [`graft_realized`] tail.
+/// # C: O(depth)
 fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRef>) -> KResult<()> {
+    let mp = mp.filter(|d| !is_global_root(d));
+    let root_inode = root.clone().or_else(|| fs.root());
+    // `s_id` (the SB label) mirrors Linux's device/source id; the legacy mount
+    // engine used the rendered mountpoint path here, which is not consumed
+    // anywhere — keep it for an exact byte match with the prior behaviour.
+    let s_id = match &mp { Some(d) => abs_string(d), None => String::from("/") };
+    let sb = build_sb(fs, root_inode, s_id);
+    graft_realized(mp, sb, root)
+}
+
+/// Graft an ALREADY-REALIZED `SuperBlock` (built by the new mount API's
+/// `vfs_get_tree`/`get_tree`, which already ran `fill_super` + `d_make_root`)
+/// onto mountpoint `mp` — the `move_mount` mode-(a) attach for a `fsmount`
+/// object. The SB carries its own `s_root` dentry; the legacy per-mount
+/// root-inode marker is derived from `sb.s_root_inode()` so the resulting
+/// mount-table state matches the equivalent `register`/`register_bind` graft
+/// byte-for-byte (both resolve the SAME root inode + root dentry). # C: O(depth)
+pub fn attach_sb(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>) -> KResult<()> {
+    let root = sb.s_root_inode();
+    graft_realized(mp, sb, root)
+}
+
+/// Shared TAIL of [`attach`]/[`attach_sb`]: reserve the per-ns mount slot,
+/// build the `Mount` over the realized `sb`, wire the intrusive parent/child +
+/// crossing-hash links, and commit. `root` is the legacy per-mount bind-root
+/// inode marker (Linux `mnt_root` inode). `mp == None` ⇒ the namespace root
+/// mount. # C: O(depth)
+fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, root: Option<InodeRef>)
+    -> KResult<()> {
     let ns = current_ns();
     // Per-ns mount cap (Linux `count_mounts` in `attach_recursive_mnt`): RESERVE
     // one slot in `pending_mounts` BEFORE building any mount state; over
-    // `sysctl_mount_max` ⇒ ENOSPC with nothing allocated. A single graft, so
-    // `num == 1`. The reservation is rolled live by `commit_mounts` once the
-    // mount is in `MOUNTS`; attach has no fallible step after this point, so no
-    // `abort_mounts` unwind path is reachable.
+    // `sysctl_mount_max` ⇒ ENOSPC. The reservation is rolled live by
+    // `commit_mounts` once the mount is in `MOUNTS`; there is no fallible step
+    // after this point, so no `abort_mounts` unwind path is reachable.
     mntns::count_mounts(ns, 1)?;
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
     let mp = mp.filter(|d| !is_global_root(d));
     let Some(d) = mp else {
-        let root_inode = root.clone().or_else(|| fs.root());
-        let sb = build_sb(fs, root_inode, String::from("/"));
         let m = new_mount(sb, String::from("/"), None, mnt_id, root, mnt_id, ns);
         // [D11] The namespace ROOT mount is a kernel-internal producer (Linux
         // marks rootfs / kern_mount mounts MNT_INTERNAL): never user-expirable.
@@ -582,8 +610,6 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
     };
     let parent_id = parent_by_dentry(ns, &d);
     let rendered = abs_string(&d);
-    let root_inode = root.clone().or_else(|| fs.root());
-    let sb = build_sb(fs, root_inode, rendered.clone());
     let m = new_mount(sb, rendered, Some(d.clone()), parent_id, root, mnt_id, ns);
     // struct mountpoint (dentry refcount) + intrusive parent/child links.
     *m.mnt_mp.lock() = Some(get_mountpoint(&d));
