@@ -310,12 +310,20 @@ pub trait FileSystem: Send + Sync {
 
     /// `/proc/mounts`-style description: `<src> <mnt> <fstype> <opts> 0 0`.
     /// Source and fstype default to the fs name; `<opts>` is the generic
-    /// `rw,relatime` per-mount flags followed by [`Self::show_options`] (the
-    /// procfs reader swaps the leading ` rw,` → ` ro,` for a read-only mount,
-    /// Linux's per-mount `MNT_RDONLY` rendering). Backends with extra options
-    /// override `show_options` ONLY — not this whole line — so the
-    /// `<src> <mnt> <fstype> … 0 0` framing stays in one place. # C: O(1)
-    fn mounts_line(&self, mount_point: &str) -> String {
+    /// `rw,relatime` per-mount flags followed by the fs-specific options tail
+    /// (the procfs reader swaps the leading ` rw,` → ` ro,` for a read-only
+    /// mount, Linux's per-mount `MNT_RDONLY` rendering). Backends with extra
+    /// options override the `s_op->show_options` hook ONLY — not this whole
+    /// line — so the `<src> <mnt> <fstype> … 0 0` framing stays in one place.
+    ///
+    /// D39/D3 consumer wiring: the fs-specific tail now comes from the owning
+    /// [`SuperBlock`]'s [`SuperOps::show_options`] (Linux `show_options(seq,
+    /// mnt_root)`, the `s_op` hook) when an `sb` is threaded from the [`crate::mount::Mount`]
+    /// (`mnt.sb()`); without an SB in hand (a registry-based pseudo-fs line) it
+    /// falls back to the FileSystem-level [`Self::show_options`]. The `s_op`
+    /// default is `""` (= [`Self::show_options`]'s default), so a backend that
+    /// overrides neither renders byte-identically to before. # C: O(1)
+    fn mounts_line(&self, mount_point: &str, sb: Option<&SuperBlock>) -> String {
         let mut s = String::new();
         s.push_str(self.name());
         s.push(' ');
@@ -323,7 +331,13 @@ pub trait FileSystem: Send + Sync {
         s.push(' ');
         s.push_str(self.name());
         s.push_str(" rw,relatime");
-        s.push_str(&self.show_options());
+        // fs-specific options: prefer the SuperBlock's `s_op->show_options`
+        // (the Linux super_operations hook); fall back to the FileSystem-level
+        // hook when no SB is available.
+        match sb {
+            Some(sb) => s.push_str(&sb.show_options()),
+            None     => s.push_str(&self.show_options()),
+        }
         s.push_str(" 0 0\n");
         s
     }
