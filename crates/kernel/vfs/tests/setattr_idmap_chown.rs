@@ -11,34 +11,18 @@
 //! `ia.uid` raw (no `map_in`) would write the caller's vfs id as the on-disk
 //! `i_uid`. This pins both directions of the idmap through the attr path.
 //!
-//! Local `Idmap` + a recording `Inode`; no global state, no serial guard.
+//! Local `Idmap` + a mutable-owner `Inode`; no global state, no serial guard.
 
-use std::sync::atomic::{AtomicU32, Ordering};
-
-use vfs::inode::Inode;
 use vfs::setattr::{notify_change, setattr_prepare, simple_setattr, Iattr, ATTR_MODE, ATTR_UID};
-use vfs::{Cred, FileType, Idmap, InodeRef, KResult, VfsError, CRED_NGROUPS};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder};
+use vfs::{Cred, FileType, Idmap, InodeRef, VfsError, CRED_NGROUPS};
 
-/// Inode whose owner is mutable so a chown apply is observable. `uid`/`gid` are
-/// FILESYSTEM ids (the on-disk `i_uid`/`i_gid`).
-struct RecInode { uid: AtomicU32, gid: AtomicU32, perm: AtomicU32 }
-impl RecInode {
-    fn new(uid: u32, gid: u32) -> Self {
-        RecInode { uid: AtomicU32::new(uid), gid: AtomicU32::new(gid), perm: AtomicU32::new(0o644) }
-    }
-}
-impl Inode for RecInode {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn perm(&self) -> Option<u16> { Some(self.perm.load(Ordering::Relaxed) as u16) }
-    fn uid(&self) -> Option<u32> { Some(self.uid.load(Ordering::Relaxed)) }
-    fn gid(&self) -> Option<u32> { Some(self.gid.load(Ordering::Relaxed)) }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn set_perm(&self, perm: u16) -> KResult<()> { self.perm.store(perm as u32, Ordering::Relaxed); Ok(()) }
-    fn set_owner(&self, uid: u32, gid: u32) -> KResult<()> {
-        self.uid.store(uid, Ordering::Relaxed); self.gid.store(gid, Ordering::Relaxed); Ok(())
-    }
+/// Inode whose owner is mutable (the default `set_owner`/`set_perm` field
+/// writers) so a chown apply is observable. `uid`/`gid` are FILESYSTEM ids
+/// (the on-disk `i_uid`/`i_gid`); perm 0o644.
+fn rec_inode(uid: u32, gid: u32) -> InodeRef {
+    InodeBuilder::new(1, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
+        .owner(uid, gid).build()
 }
 
 /// Unprivileged cred with the given vfs uid (no CAP_* set).
@@ -58,7 +42,7 @@ fn idmap() -> Idmap { Idmap::uniform(0, 100_000, 65_536) }
 // owner test goes through map_out, not a raw fs-id compare.
 #[test]
 fn vfs_owner_may_chmod_idmapped_inode() {
-    let inode: InodeRef = std::sync::Arc::new(RecInode::new(1000, 1000));
+    let inode = rec_inode(1000, 1000);
     let mut ia = Iattr { valid: ATTR_MODE, mode: 0o600, ..Default::default() };
     // the genuine vfs owner (101000) succeeds...
     assert!(setattr_prepare(&idmap(), &inode, &mut ia, &user(101_000)).is_ok());
@@ -72,12 +56,11 @@ fn vfs_owner_may_chmod_idmapped_inode() {
 // to vfs 102000 must persist on-disk i_uid 2000, not 102000.
 #[test]
 fn chown_stores_fs_mapped_id() {
-    let rec = std::sync::Arc::new(RecInode::new(1000, 1000));
-    let inode: InodeRef = rec.clone();
+    let inode = rec_inode(1000, 1000);
     // CAP_CHOWN cred to authorize the uid change; target is the vfs id 102000.
     let mut ia = Iattr { valid: ATTR_UID, uid: 102_000, ..Default::default() };
     notify_change(&idmap(), &inode, &mut ia, &Cred::root()).unwrap();
-    assert_eq!(rec.uid.load(Ordering::Relaxed), 2000,
+    assert_eq!(inode.uid().unwrap(), 2000,
         "stored i_uid = map_in(102000) = 2000, not the raw vfs id");
 }
 
@@ -85,8 +68,8 @@ fn chown_stores_fs_mapped_id() {
 // window) -> fs 65535; an unmapped vfs id stores INVALID, never the raw id.
 #[test]
 fn simple_setattr_maps_in_owner() {
-    let rec = std::sync::Arc::new(RecInode::new(1000, 1000));
+    let inode = rec_inode(1000, 1000);
     let ia = Iattr { valid: ATTR_UID, uid: 165_535, ..Default::default() };
-    simple_setattr(rec.as_ref(), &idmap(), &ia).unwrap();
-    assert_eq!(rec.uid.load(Ordering::Relaxed), 65_535, "map_in(165535) = fs 65535");
+    simple_setattr(inode.as_ref(), &idmap(), &ia).unwrap();
+    assert_eq!(inode.uid().unwrap(), 65_535, "map_in(165535) = fs 65535");
 }

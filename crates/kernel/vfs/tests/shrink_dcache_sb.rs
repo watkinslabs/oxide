@@ -16,14 +16,13 @@ use vfs::inode::InodeRef;
 use vfs::superblock::next_anon_dev;
 use vfs::{Dentry, FileType, KResult, SbStatFs, SuperBlock, SuperOps, VfsError};
 
-struct Dir { ino: u64 }
-impl vfs::Inode for Dir {
-    fn ino(&self) -> u64 { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+struct DirOps;
+impl vfs::InodeOps for DirOps {
+    fn lookup(&self, _inode: &vfs::Inode, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
 }
-fn dir(ino: u64) -> InodeRef { Arc::new(Dir { ino }) }
+fn dir(ino: u64) -> InodeRef {
+    vfs::inode::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755), Arc::new(DirOps), vfs::default_file_ops()).build()
+}
 
 struct NoopOps;
 impl SuperOps for NoopOps {

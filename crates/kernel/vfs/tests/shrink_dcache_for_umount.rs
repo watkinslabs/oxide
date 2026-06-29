@@ -15,16 +15,14 @@ use vfs::dcache::{dget, dput, shrink_dcache_for_umount, shrink_dcache_sb};
 use vfs::fs::FileSystem;
 use vfs::inode::InodeRef;
 use vfs::superblock::next_anon_dev;
-use vfs::{Dentry, FileType, KResult, SbStatFs, SuperBlock, SuperOps, VfsError};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder};
+use vfs::{Dentry, FileType, KResult, SbStatFs, SuperBlock, SuperOps};
 
-struct Dir { ino: u64 }
-impl vfs::Inode for Dir {
-    fn ino(&self) -> u64 { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+/// Directory inode (default ops — its `lookup` is never exercised; the test
+/// builds the dcache tree with explicit inodes via `d_add`).
+fn dir(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), default_inode_ops(), default_file_ops()).build()
 }
-fn dir(ino: u64) -> InodeRef { Arc::new(Dir { ino }) }
 
 struct NoopOps;
 impl SuperOps for NoopOps {

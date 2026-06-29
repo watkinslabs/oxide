@@ -10,17 +10,11 @@ use vfs::dentry::{
     DCompareFn, DDeleteFn, DHashFn, DRevalidateFn, Dentry, DentryOps, D_OP_COMPARE, D_OP_DELETE,
     D_OP_HASH, D_OP_MASK, D_OP_REVALIDATE,
 };
-use vfs::inode::Inode;
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{FileType, InodeRef};
 
-struct TInode { ino: u64, ft: FileType }
-impl Inode for TInode {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { self.ft }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+fn dir() -> InodeRef {
+    vfs::InodeBuilder::new(1, vfs::mk_mode(FileType::Directory, 0o755), vfs::default_inode_ops(), vfs::default_file_ops()).build()
 }
-fn dir() -> InodeRef { Arc::new(TInode { ino: 1, ft: FileType::Directory }) }
 
 // Stand-in hook impls (only presence matters for the stamp).
 fn h(_n: &str) -> u32 { 0 }

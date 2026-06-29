@@ -129,7 +129,7 @@ pub fn apply_kill_priv(valid: u32, mut mode: u16) -> u16 {
 /// fs ids (`map_in_*`). Returns `Erofs` for inodes without native storage
 /// (the kernel `notify_change` then falls back to its metadata overlay).
 /// # C: O(1)
-pub fn simple_setattr<I: Inode + ?Sized>(inode: &I, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
+pub fn simple_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
     if ia.valid & ATTR_SIZE != 0 {
         inode.truncate(ia.size)?;
         // `truncate_pagecache` (Linux `mm/truncate.c`, via `truncate_setsize`):
@@ -169,7 +169,7 @@ pub fn simple_setattr<I: Inode + ?Sized>(inode: &I, idmap: &Idmap, ia: &Iattr) -
 /// is a mandatory-lock mark — left alone). A caller holding CAP_FSETID over the
 /// inode keeps the bits, and the drop applies to regular files only (Linux
 /// `file_remove_privs` / `dentry_needs_remove_privs`). # C: O(1)
-pub fn setattr_should_drop_suidgid<I: Inode + ?Sized>(inode: &I, cred: &Cred) -> u32 {
+pub fn setattr_should_drop_suidgid(inode: &Inode, cred: &Cred) -> u32 {
     let mode = inode.perm().unwrap_or_else(|| default_perm_for(inode.file_type()));
     let mut kill = 0u32;
     if mode & S_ISUID != 0 { kill |= ATTR_KILL_SUID; }
@@ -187,7 +187,7 @@ pub fn setattr_should_drop_suidgid<I: Inode + ?Sized>(inode: &I, cred: &Cred) ->
 /// inode gid is mapped THROUGH the mount idmap before the group test (Linux
 /// `i_gid_into_vfsgid` + `in_group_or_capable`), so an idmapped mount compares
 /// against the id the caller actually observes. # C: O(ngroups)
-pub fn setattr_should_drop_sgid<I: Inode + ?Sized>(idmap: &Idmap, inode: &I, cred: &Cred) -> u32 {
+pub fn setattr_should_drop_sgid(idmap: &Idmap, inode: &Inode, cred: &Cred) -> u32 {
     let mode = inode.perm().unwrap_or_else(|| default_perm_for(inode.file_type()));
     if mode & S_ISGID == 0 { return 0; }
     if mode & S_IXGRP != 0 { return ATTR_KILL_SGID; }

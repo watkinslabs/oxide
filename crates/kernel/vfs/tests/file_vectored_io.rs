@@ -10,36 +10,40 @@
 
 use std::sync::{Arc, Mutex};
 
-use vfs::inode::Inode;
-use vfs::{Dentry, File, FileType, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{Dentry, File, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, OpenFlags,
+          VfsError, default_inode_ops, mk_mode};
 
-/// Regular-file inode backed by a growable byte vector honoring the explicit
-/// offset, so cursor advancement across vectored buffers is observable.
-struct Mem(Mutex<Vec<u8>>);
-impl Inode for Mem {
-    fn ino(&self) -> vfs::Ino { 0x7ec }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { self.0.lock().unwrap().len() as u64 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let d = self.0.lock().unwrap();
+/// Backend state for the regular-file inode: a growable byte vector honoring the
+/// explicit offset, so cursor advancement across vectored buffers is observable.
+struct MemData(Mutex<Vec<u8>>);
+
+/// `f_op` reading/writing the inode's `i_private` byte vector.
+struct MemFileOps;
+impl FileOps for MemFileOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = inode.private::<MemData>().unwrap().0.lock().unwrap();
         let off = off as usize;
         if off >= d.len() { return Ok(0); }
         let n = core::cmp::min(buf.len(), d.len() - off);
         buf[..n].copy_from_slice(&d[off..off + n]);
         Ok(n)
     }
-    fn write(&self, off: u64, buf: &[u8]) -> KResult<usize> {
-        let mut d = self.0.lock().unwrap();
+    fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
+        let mut d = inode.private::<MemData>().unwrap().0.lock().unwrap();
         let off = off as usize;
         if off + buf.len() > d.len() { d.resize(off + buf.len(), 0); }
         d[off..off + buf.len()].copy_from_slice(buf);
+        inode.set_size(d.len() as u64);
         Ok(buf.len())
     }
 }
 
 fn mem_file(init: &[u8], flags: OpenFlags) -> Arc<File> {
-    let ino: InodeRef = Arc::new(Mem(Mutex::new(init.to_vec())));
+    let ino: InodeRef = InodeBuilder::new(0x7ec, mk_mode(FileType::Regular, 0o644),
+            default_inode_ops(), Arc::new(MemFileOps))
+        .size(init.len() as u64)
+        .private(Arc::new(MemData(Mutex::new(init.to_vec()))))
+        .build();
     let dentry = Dentry::new(None, "f".into(), Arc::clone(&ino));
     File::new(ino, dentry, flags)
 }

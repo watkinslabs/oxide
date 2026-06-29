@@ -5,13 +5,12 @@
 //! NOT prunable while a live child survives. Driven against a real ramfs
 //! SuperBlock so `i_sb()` + the `i_dentry` alias list resolve.
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::Arc;
 
 use vfs::dcache::shrink_dcache_parent;
-use vfs::inode::Inode;
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
-use vfs::{d_add, d_lookup, dget, dput, Dentry, FileType, InodeRef, KResult, VfsError};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder};
+use vfs::{d_add, d_lookup, dget, dput, Dentry, FileType, InodeRef, KResult};
 
 struct RamFsType;
 impl FileSystemType for RamFsType {
@@ -23,27 +22,17 @@ impl SuperOps for RamFsOps {
     fn statfs(&self) -> KResult<SbStatFs> { Ok(SbStatFs { f_bsize: 4096, ..Default::default() }) }
 }
 
-struct RamDir { ino: u64, sb: Weak<SuperBlock>, kids: Mutex<BTreeMap<String, InodeRef>> }
-impl Inode for RamDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, n: &str) -> KResult<InodeRef> { self.kids.lock().unwrap().get(n).cloned().ok_or(VfsError::Enoent) }
-}
-struct RamFile { ino: u64, sb: Weak<SuperBlock> }
-impl Inode for RamFile {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.upgrade() }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-}
-
+// Directory / regular inodes bound to the ramfs sb so `i_sb()` + the `i_dentry`
+// alias list resolve. Default ops — the prune walks the dcache, never
+// `inode.lookup`.
 fn ramdir(sb: &Arc<SuperBlock>, ino: u64) -> InodeRef {
-    Arc::new(RamDir { ino, sb: Arc::downgrade(sb), kids: Mutex::new(BTreeMap::new()) })
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), default_inode_ops(), default_file_ops())
+        .sb(Arc::downgrade(sb)).build()
 }
-fn ramfile(sb: &Arc<SuperBlock>, ino: u64) -> InodeRef { Arc::new(RamFile { ino, sb: Arc::downgrade(sb) }) }
+fn ramfile(sb: &Arc<SuperBlock>, ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
+        .sb(Arc::downgrade(sb)).build()
+}
 
 fn mount_ramfs(s_dev: u64) -> Arc<SuperBlock> {
     let sb = SuperBlock::new(Arc::new(RamFsType), Arc::new(RamFsOps), 0x858458f6, s_dev, 4096, "ramfs".into(), Arc::new(()));

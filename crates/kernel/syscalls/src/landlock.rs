@@ -16,21 +16,33 @@ use alloc::sync::Arc;
 use syscall::errno::Errno;
 
 use ::security::landlock::{self as ll};
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{FileType, Inode, InodeRef, KResult, VfsError};
+use vfs::{InodeBuilder, default_inode_ops, mk_mode};
+use vfs::FileOps;
 
-/// /sys/landlock anonymous-fd inode carrying a ruleset id.
+/// `/sys/landlock` anonymous-fd backend state (`i_private`) carrying a ruleset
+/// id. Post-KEYSTONE: the inode is a concrete `vfs::Inode` whose `i_private`
+/// is this struct; the data path lives in [`LandlockFileOps`].
 pub struct LandlockRulesetInode {
     pub ruleset_id: u64,
 }
 
-impl Inode for LandlockRulesetInode {
-    fn ino(&self) -> Ino { 0x4C4E_4400_0000_0000 | self.ruleset_id }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
-    fn lookup(&self, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Err(VfsError::Eio) }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+/// `file_operations` for a landlock ruleset fd: not a data stream — `read`/
+/// `write` are `Eio` (Linux landlock fds are config handles, not readable).
+/// # C: O(1)
+struct LandlockFileOps;
+impl FileOps for LandlockFileOps {
+    fn read(&self, _inode: &Inode, _o: u64, _b: &mut [u8]) -> KResult<usize> { Err(VfsError::Eio) }
+    fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+}
+
+/// Construct a landlock ruleset anon inode carrying `ruleset_id`. The ino keeps
+/// the old `"LND"`-tagged marker (`0x4C4E_4400…`). # C: O(1)
+pub fn make_landlock_inode(ruleset_id: u64) -> InodeRef {
+    let ino = 0x4C4E_4400_0000_0000 | ruleset_id;
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o600), default_inode_ops(), Arc::new(LandlockFileOps))
+        .private(Arc::new(LandlockRulesetInode { ruleset_id }))
+        .build()
 }
 
 /// Check `(path, op)` against the calling task's landlock chain.

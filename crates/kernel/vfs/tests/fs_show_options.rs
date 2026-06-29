@@ -7,25 +7,18 @@
 //! so a backend overrides `show_options` ONLY — never the whole `<src> <mnt>
 //! <fstype> … 0 0` framing.
 
-use std::sync::Arc;
-
 use vfs::fs::FileSystem;
-use vfs::inode::Inode;
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{FileType, InodeBuilder, InodeRef, default_file_ops, default_inode_ops, mk_mode};
 
-struct TDir;
-impl Inode for TDir {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+fn tdir() -> InodeRef {
+    InodeBuilder::new(1, mk_mode(FileType::Directory, 0), default_inode_ops(), default_file_ops()).build()
 }
 
 /// A backend with no `show_options` override ⇒ no fs-specific options.
 struct PlainFs;
 impl FileSystem for PlainFs {
     fn name(&self) -> &str { "ext4" }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir)) }
+    fn root(&self) -> Option<InodeRef> { Some(tdir()) }
 }
 
 /// A tmpfs-shaped backend that publishes `size=`/`nr_inodes=`/`mode=` like
@@ -33,7 +26,7 @@ impl FileSystem for PlainFs {
 struct TmpFs;
 impl FileSystem for TmpFs {
     fn name(&self) -> &str { "tmpfs" }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir)) }
+    fn root(&self) -> Option<InodeRef> { Some(tdir()) }
     fn show_options(&self) -> String {
         String::from(",size=10240k,nr_inodes=2560,mode=755")
     }

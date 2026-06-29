@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{FileType, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, default_file_ops, mk_mode};
 
 mod common;
 
@@ -29,17 +29,17 @@ fn set_ns(ns: u64) {
     vfs::mount::set_current_ns_provider(ns_provider);
 }
 
-struct TDir { ino: u64 }
-impl Inode for TDir {
-    fn ino(&self) -> vfs::Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+struct TDirOps;
+impl InodeOps for TDirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+}
+fn make_tdir(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(TDirOps), default_file_ops()).build()
 }
 struct NFs { ino: u64 }
 impl FileSystem for NFs {
     fn name(&self) -> &str { "nfs" }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir { ino: self.ino })) }
+    fn root(&self) -> Option<InodeRef> { Some(make_tdir(self.ino)) }
 }
 
 /// `check_mnt` is true only while the caller's ns equals the mount's ns.

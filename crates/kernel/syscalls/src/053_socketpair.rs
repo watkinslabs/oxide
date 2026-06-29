@@ -34,7 +34,7 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
             *s.kind.lock() = SockKind::UnixMsgPair(p.clone(), end);
             p.register_end_subs(end, &s.poll_subs);
         }
-        Arc::new(s) as _
+        net::sock::make_inet_socket_inode(Arc::new(s))
     };
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),

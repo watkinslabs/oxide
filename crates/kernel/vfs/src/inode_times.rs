@@ -103,7 +103,7 @@ pub fn atime_needs_update(c: &AtimeCtx, now_ns: u64) -> bool {
 /// atime/mtime/ctime never carries sub-granularity precision the backend cannot
 /// persist. An SB-less inode (anon pidfd/pipe/socket) gets the raw `now_ns`
 /// (ns precision). # C: O(1)
-pub fn current_time<I: crate::inode::Inode + ?Sized>(inode: &I, now_ns: u64) -> u64 {
+pub fn current_time(inode: &crate::inode::Inode, now_ns: u64) -> u64 {
     inode.i_sb().map(|sb| sb.timestamp_truncate(now_ns)).unwrap_or(now_ns)
 }
 
@@ -144,7 +144,7 @@ static TIMES: Spinlock<BTreeMap<usize, InodeTimes>, TaskListClass> =
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub fn key(inode: &InodeRef) -> usize {
-    let raw: *const dyn crate::Inode = alloc::sync::Arc::as_ptr(inode);
+    let raw: *const crate::Inode = alloc::sync::Arc::as_ptr(inode);
     raw as *const u8 as usize
 }
 

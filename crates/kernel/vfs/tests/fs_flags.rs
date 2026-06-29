@@ -5,25 +5,18 @@
 //! `"\t<name>\n"`; a pseudo / in-memory fs emits `"nodev\t<name>\n"`. The
 //! rename-d_move predicate keys the VFS rename path off `FS_RENAME_DOES_D_MOVE`.
 
-use std::sync::Arc;
-
 use vfs::fs::{FileSystem, FsFlags};
-use vfs::inode::Inode;
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{FileType, InodeBuilder, InodeRef, default_file_ops, default_inode_ops, mk_mode};
 
-struct TDir;
-impl Inode for TDir {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+fn tdir() -> InodeRef {
+    InodeBuilder::new(1, mk_mode(FileType::Directory, 0), default_inode_ops(), default_file_ops()).build()
 }
 
 /// A pseudo / in-memory backend: no `fs_flags` override ⇒ `empty()`.
 struct PseudoFs;
 impl FileSystem for PseudoFs {
     fn name(&self) -> &str { "tmpfs" }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir)) }
+    fn root(&self) -> Option<InodeRef> { Some(tdir()) }
 }
 
 /// A block-device backed backend (ext4-shaped): `FS_REQUIRES_DEV`.
@@ -31,7 +24,7 @@ struct DiskFs;
 impl FileSystem for DiskFs {
     fn name(&self) -> &str { "ext4" }
     fn fs_flags(&self) -> FsFlags { FsFlags::FS_REQUIRES_DEV }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir)) }
+    fn root(&self) -> Option<InodeRef> { Some(tdir()) }
 }
 
 /// A network fs that drives `d_move` itself (`FS_RENAME_DOES_D_MOVE`) and is
@@ -42,7 +35,7 @@ impl FileSystem for NetFs {
     fn fs_flags(&self) -> FsFlags {
         FsFlags::FS_REQUIRES_DEV | FsFlags::FS_RENAME_DOES_D_MOVE | FsFlags::FS_USERNS_MOUNT
     }
-    fn root(&self) -> Option<InodeRef> { Some(Arc::new(TDir)) }
+    fn root(&self) -> Option<InodeRef> { Some(tdir()) }
 }
 
 #[test]

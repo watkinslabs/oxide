@@ -10,8 +10,10 @@ use std::sync::Mutex;
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
 use vfs::superblock::NSEC_PER_SEC;
-use vfs::setattr::{notify_change, Iattr, ATTR_ATIME, ATTR_ATIME_SET, ATTR_CTIME, ATTR_MTIME, ATTR_MTIME_SET};
-use vfs::{Cred, FileType, Idmap, InodeRef, KResult, SuperBlock, VfsError};
+use vfs::setattr::{notify_change, simple_setattr, Iattr,
+    ATTR_ATIME, ATTR_ATIME_SET, ATTR_CTIME, ATTR_MTIME, ATTR_MTIME_SET};
+use vfs::{default_file_ops, mk_mode, InodeBuilder, InodeOps};
+use vfs::{Cred, FileType, Idmap, InodeRef, KResult, SuperBlock};
 
 struct TFs;
 impl FileSystem for TFs {
@@ -24,38 +26,50 @@ fn sb_with_gran(gran: u32) -> Arc<SuperBlock> {
     sb
 }
 
-/// Regular file recording the `(atime, mtime, ctime)` its `set_times` hook is
-/// handed — the values `simple_setattr` writes after `notify_change` floors.
-struct TimedNode { times: Mutex<(Option<u64>, Option<u64>, u64)>, sb: Option<Arc<SuperBlock>> }
+/// Backend state (`i_private`): records the `(atime, mtime, ctime)` that the
+/// `setattr` apply hands `set_times` — the values `simple_setattr` writes after
+/// `notify_change` floors them. Holds the backing `SuperBlock` alive (the inode
+/// keeps only a `Weak` to it).
+struct TimedData {
+    times: Mutex<(Option<u64>, Option<u64>, u64)>,
+    _sb: Option<Arc<SuperBlock>>,
+}
 
-impl TimedNode {
-    fn new(sb: Option<Arc<SuperBlock>>) -> Arc<Self> {
-        Arc::new(Self { times: Mutex::new((None, None, 0)), sb })
-    }
+impl TimedData {
     fn recorded(&self) -> (Option<u64>, Option<u64>, u64) { *self.times.lock().unwrap() }
 }
 
-impl Inode for TimedNode {
-    fn ino(&self) -> vfs::Ino { 1 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn perm(&self) -> Option<u16> { Some(0o644) }
-    fn uid(&self) -> Option<u32> { Some(0) }
-    fn gid(&self) -> Option<u32> { Some(0) }
-    fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.sb.clone() }
-    fn set_times(&self, a: Option<u64>, m: Option<u64>, c: u64) -> KResult<()> {
-        *self.times.lock().unwrap() = (a, m, c);
-        Ok(())
+/// `i_op->setattr`: record the floored `set_times` arguments, then apply via the
+/// generic `simple_setattr`.
+struct TimedOps;
+impl InodeOps for TimedOps {
+    fn setattr(&self, inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
+        if ia.valid & (ATTR_ATIME | ATTR_MTIME | ATTR_CTIME) != 0 {
+            let a = if ia.valid & ATTR_ATIME != 0 { Some(ia.atime_ns) } else { None };
+            let m = if ia.valid & ATTR_MTIME != 0 { Some(ia.mtime_ns) } else { None };
+            if let Some(d) = inode.private::<TimedData>() {
+                *d.times.lock().unwrap() = (a, m, ia.ctime_ns);
+            }
+        }
+        simple_setattr(inode, idmap, ia)
     }
+}
+
+/// Regular file (perm 0o644, owner root) bound to `TimedOps`, optionally on the
+/// backing `sb`. Returns the inode + the recording state.
+fn make_timed(sb: Option<Arc<SuperBlock>>) -> (InodeRef, Arc<TimedData>) {
+    let d = Arc::new(TimedData { times: Mutex::new((None, None, 0)), _sb: sb.clone() });
+    let mut b = InodeBuilder::new(1, mk_mode(FileType::Regular, 0o644), Arc::new(TimedOps), default_file_ops())
+        .owner(0, 0).private(d.clone());
+    if let Some(s) = &sb { b = b.sb(Arc::downgrade(s)); }
+    (b.build(), d)
 }
 
 /// Specific atime/mtime with a 1 s granularity backend: both are floored to the
 /// whole second, and the change ctime is floored too.
 #[test]
 fn second_gran_floors_specific_times() {
-    let raw = TimedNode::new(Some(sb_with_gran(NSEC_PER_SEC as u32)));
-    let inode: InodeRef = raw.clone();
+    let (inode, raw) = make_timed(Some(sb_with_gran(NSEC_PER_SEC as u32)));
     let mut ia = Iattr {
         valid: ATTR_ATIME | ATTR_MTIME | ATTR_ATIME_SET | ATTR_MTIME_SET | ATTR_CTIME,
         atime_ns: 5 * NSEC_PER_SEC + 999_999_999,
@@ -74,8 +88,7 @@ fn second_gran_floors_specific_times() {
 /// A 1 ns granularity (the default) is the identity: nothing is perturbed.
 #[test]
 fn ns_gran_is_identity() {
-    let raw = TimedNode::new(Some(sb_with_gran(1)));
-    let inode: InodeRef = raw.clone();
+    let (inode, raw) = make_timed(Some(sb_with_gran(1)));
     let t_a = 3 * NSEC_PER_SEC + 111;
     let t_m = 4 * NSEC_PER_SEC + 222;
     let mut ia = Iattr {
@@ -91,8 +104,7 @@ fn ns_gran_is_identity() {
 /// field (UTIME_OMIT) is left `None`, not flattened to a floored zero.
 #[test]
 fn omitted_field_not_written() {
-    let raw = TimedNode::new(Some(sb_with_gran(NSEC_PER_SEC as u32)));
-    let inode: InodeRef = raw.clone();
+    let (inode, raw) = make_timed(Some(sb_with_gran(NSEC_PER_SEC as u32)));
     let mut ia = Iattr {
         valid: ATTR_MTIME | ATTR_MTIME_SET,
         mtime_ns: 8 * NSEC_PER_SEC + 500_000_000,
@@ -112,8 +124,7 @@ fn omitted_field_not_written() {
 /// implicitly 1 ns) — the `i_sb` guard skips truncation entirely.
 #[test]
 fn no_sb_keeps_full_ns() {
-    let raw = TimedNode::new(None);
-    let inode: InodeRef = raw.clone();
+    let (inode, raw) = make_timed(None);
     let t_a = 6 * NSEC_PER_SEC + 654_321;
     let t_m = 6 * NSEC_PER_SEC + 123_456;
     let mut ia = Iattr {

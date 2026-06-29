@@ -8,11 +8,13 @@ use vfs::InodeRef;
 use sync::{Spinlock, MountTable as RootClass};
 
 use crate::{
-    ProcHostnameInode, ProcLoadavgInode, ProcMeminfoInode, ProcRootInode, ProcSelfCmdlineInode,
-    ProcSelfCommInode, ProcSelfEnvironInode, ProcSelfFdInode, ProcSelfMapsInode, ProcSelfStatInode,
-    ProcSelfStatusInode, ProcUptimeInode, StaticFileInode, FILESYSTEMS, IO_BODY,
+    make_proc_cmdline, make_proc_hostname, make_proc_loadavg, make_proc_meminfo, make_proc_root,
+    make_proc_self_cmdline, make_proc_self_comm, make_proc_self_environ, make_proc_self_exe,
+    make_proc_self_fd, make_proc_self_maps, make_proc_self_root, make_proc_self_stat,
+    make_proc_self_status, make_proc_uptime, StaticFileInode, FILESYSTEMS, IO_BODY,
     LIMITS_BODY, VERSION_BODY,
 };
+use crate::{make_proc_self_cwd, make_proc_cgroup};
 
 fn hex_nibble(n: u8) -> u8 {
     match n & 0x0f {
@@ -100,24 +102,24 @@ fn register_ipv4_conf_sysctls(base: &'static str) {
 pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, InodeRef> {
     use alloc::string::ToString;
     let mut c: alloc::collections::BTreeMap<alloc::string::String, InodeRef> = Default::default();
-    c.insert("version".to_string(),     StaticFileInode::new(VERSION_BODY) as InodeRef);
-    c.insert("cpuinfo".to_string(),     Arc::new(crate::cpuinfo::ProcCpuinfoInode) as InodeRef);
-    c.insert("meminfo".to_string(),     Arc::new(ProcMeminfoInode) as InodeRef);
-    c.insert("uptime".to_string(),      Arc::new(ProcUptimeInode) as InodeRef);
-    c.insert("loadavg".to_string(),     Arc::new(ProcLoadavgInode) as InodeRef);
-    c.insert("stat".to_string(),        Arc::new(crate::stat::ProcStatInode) as InodeRef);
-    c.insert("filesystems".to_string(), StaticFileInode::new(FILESYSTEMS) as InodeRef);
-    c.insert("cmdline".to_string(),     Arc::new(crate::ProcCmdlineInode) as InodeRef);
-    c.insert("devices".to_string(),     Arc::new(crate::devices::ProcDevicesInode) as InodeRef);
-    c.insert("modules".to_string(),     Arc::new(crate::net::ProcModulesInode) as InodeRef);
-    c.insert("swaps".to_string(),       StaticFileInode::new(b"Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n") as InodeRef);
-    c.insert("diskstats".to_string(),   Arc::new(crate::diskstats::ProcDiskstatsInode) as InodeRef);
-    c.insert("partitions".to_string(),  Arc::new(crate::partitions::ProcPartitionsInode) as InodeRef);
-    c.insert("misc".to_string(),        StaticFileInode::new(b"") as InodeRef);
-    c.insert("buddyinfo".to_string(),   Arc::new(crate::buddyinfo::ProcBuddyinfoInode) as InodeRef);
-    c.insert("zoneinfo".to_string(),    StaticFileInode::new(b"Node 0, zone Normal\n  pages free 1024\n") as InodeRef);
-    c.insert("vmstat".to_string(),       Arc::new(crate::vmstat::ProcVmstatInode) as InodeRef);
-    c.insert("interrupts".to_string(),  Arc::new(crate::interrupts::ProcInterruptsInode) as InodeRef);
+    c.insert("version".to_string(),     StaticFileInode::new(VERSION_BODY));
+    c.insert("cpuinfo".to_string(),     crate::cpuinfo::make_proc_cpuinfo());
+    c.insert("meminfo".to_string(),     make_proc_meminfo());
+    c.insert("uptime".to_string(),      make_proc_uptime());
+    c.insert("loadavg".to_string(),     make_proc_loadavg());
+    c.insert("stat".to_string(),        crate::stat::make_proc_stat());
+    c.insert("filesystems".to_string(), StaticFileInode::new(FILESYSTEMS));
+    c.insert("cmdline".to_string(),     make_proc_cmdline());
+    c.insert("devices".to_string(),     crate::devices::make_proc_devices());
+    c.insert("modules".to_string(),     crate::net::make_proc_modules());
+    c.insert("swaps".to_string(),       StaticFileInode::new(b"Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n"));
+    c.insert("diskstats".to_string(),   crate::diskstats::make_proc_diskstats());
+    c.insert("partitions".to_string(),  crate::partitions::make_proc_partitions());
+    c.insert("misc".to_string(),        StaticFileInode::new(b""));
+    c.insert("buddyinfo".to_string(),   crate::buddyinfo::make_proc_buddyinfo());
+    c.insert("zoneinfo".to_string(),    StaticFileInode::new(b"Node 0, zone Normal\n  pages free 1024\n"));
+    c.insert("vmstat".to_string(),       crate::vmstat::make_proc_vmstat());
+    c.insert("interrupts".to_string(),  crate::interrupts::make_proc_interrupts());
     c.insert("softirqs".to_string(),    StaticFileInode::new(b"                CPU0       \n      HI:          0\n   TIMER:       1234\n") as InodeRef);
     c.insert("kallsyms".to_string(),    StaticFileInode::new(b"") as InodeRef);
     c.insert("key-users".to_string(),   StaticFileInode::new(b"") as InodeRef);
@@ -126,7 +128,7 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
     c.insert("crypto".to_string(),      StaticFileInode::new(b"") as InodeRef);
     c.insert("execdomains".to_string(), StaticFileInode::new(b"0-0\tLinux           \t[kernel]\n") as InodeRef);
     c.insert("cgroups".to_string(),     StaticFileInode::new(b"#subsys_name\thierarchy\tnum_cgroups\tenabled\ncpuset\t0\t1\t1\ncpu\t0\t1\t1\nio\t0\t1\t1\nmemory\t0\t1\t1\npids\t0\t1\t1\n") as InodeRef);
-    c.insert("mounts".to_string(),      Arc::new(crate::mounts::ProcMountsInode) as InodeRef);
+    c.insert("mounts".to_string(),      crate::mounts::make_proc_mounts());
     let reg = crate::reg::proc_reg();
     reg.ensure_dir_path("sys");
     reg.ensure_dir_path("net");
@@ -139,15 +141,15 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
 /// OWNS /proc and resolves through THIS: static children here, `/proc/{sys,net,
 /// self}` via the `crate::reg` PROC_REG kernfs subtree (D1d), per-pid dirs
 /// synthesized. No devfs registry involvement.
-static PROC_ROOT: Spinlock<Option<Arc<ProcRootInode>>, RootClass> = Spinlock::new(None);
+static PROC_ROOT: Spinlock<Option<InodeRef>, RootClass> = Spinlock::new(None);
 
 /// The `/proc` root directory inode (cached). `ProcfsFs::lookup` resolves the
 /// static-file children + `self` + pid dirs through this.
 /// # C: O(1) cached; O(N files) on first build
-pub fn proc_root() -> Arc<ProcRootInode> {
+pub fn proc_root() -> InodeRef {
     let mut g = PROC_ROOT.lock();
     if let Some(r) = g.as_ref() { return Arc::clone(r); }
-    let r = Arc::new(ProcRootInode::new(build_proc_root()));
+    let r = make_proc_root(build_proc_root());
     *g = Some(Arc::clone(&r));
     r
 }
@@ -159,42 +161,18 @@ pub fn register_static_files() {
     let boot_id = leak_uuid_line(random_uuid_bytes());
 
     // /proc/self/cgroup resolves the calling task's real cgroup path at read time.
-    crate::reg::register(
-        "/proc/self/cgroup",
-        alloc::sync::Arc::new(crate::ProcCgroupInode { tid: None }) as InodeRef,
-    );
-    crate::reg::register(
-        "/proc/self/status",
-        Arc::new(ProcSelfStatusInode) as InodeRef,
-    );
-    crate::reg::register(
-        "/proc/self/cmdline",
-        Arc::new(ProcSelfCmdlineInode) as InodeRef,
-    );
-    crate::reg::register("/proc/self/comm", Arc::new(ProcSelfCommInode) as InodeRef);
-    crate::reg::register(
-        "/proc/self/environ",
-        Arc::new(ProcSelfEnvironInode) as InodeRef,
-    );
-    crate::reg::register("/proc/self/stat", Arc::new(ProcSelfStatInode) as InodeRef);
-    crate::reg::register("/proc/self/maps", Arc::new(ProcSelfMapsInode) as InodeRef);
-    crate::reg::register(
-        "/proc/self/smaps",
-        Arc::new(crate::smaps::ProcSelfSmapsInode) as InodeRef,
-    );
-    crate::reg::register("/proc/self/fd", Arc::new(ProcSelfFdInode) as InodeRef);
-    crate::reg::register(
-        "/proc/self/exe",
-        Arc::new(crate::ProcSelfExeInode) as InodeRef,
-    );
-    crate::reg::register(
-        "/proc/self/cwd",
-        Arc::new(crate::ProcSelfCwdInode) as InodeRef,
-    );
-    crate::reg::register(
-        "/proc/self/root",
-        Arc::new(crate::ProcSelfRootInode) as InodeRef,
-    );
+    crate::reg::register("/proc/self/cgroup", make_proc_cgroup(None));
+    crate::reg::register("/proc/self/status", make_proc_self_status());
+    crate::reg::register("/proc/self/cmdline", make_proc_self_cmdline());
+    crate::reg::register("/proc/self/comm", make_proc_self_comm());
+    crate::reg::register("/proc/self/environ", make_proc_self_environ());
+    crate::reg::register("/proc/self/stat", make_proc_self_stat());
+    crate::reg::register("/proc/self/maps", make_proc_self_maps());
+    crate::reg::register("/proc/self/smaps", crate::smaps::make_proc_self_smaps());
+    crate::reg::register("/proc/self/fd", make_proc_self_fd());
+    crate::reg::register("/proc/self/exe", make_proc_self_exe());
+    crate::reg::register("/proc/self/cwd", make_proc_self_cwd());
+    crate::reg::register("/proc/self/root", make_proc_self_root());
 
     // /sys hierarchy (P3-19). Same Static inode shape; libc/systemd
     // probes look these up before falling back.
@@ -226,7 +204,7 @@ pub fn register_static_files() {
     // lscpu (`_SC_NPROCESSORS_CONF` reads the cpuN dirs) walk this.
     sysfs::register(
         "/sys/devices/system/cpu",
-        Arc::new(crate::syscpu::SysCpuRootInode) as InodeRef,
+        crate::syscpu::make_syscpu_root(),
     );
     sysfs::register_dir("/sys/class/misc/autofs");
     sysfs::register(
@@ -310,11 +288,11 @@ pub fn register_static_files() {
     crate::reg::register("/proc/self/io", StaticFileInode::new(IO_BODY) as InodeRef);
     crate::reg::register(
         "/proc/self/mountinfo",
-        Arc::new(crate::mounts::ProcMountinfoInode::new()) as InodeRef,
+        crate::mounts::make_proc_mountinfo(),
     );
     crate::reg::register(
         "/proc/self/mounts",
-        Arc::new(crate::mounts::ProcMountsInode) as InodeRef,
+        crate::mounts::make_proc_mounts(),
     );
     crate::reg::register(
         "/proc/sys/kernel/random/boot_id",
@@ -350,15 +328,11 @@ pub fn register_static_files() {
     );
     crate::reg::register(
         "/proc/sys/fs/binfmt_misc",
-        kernfs::PseudoDir::new_root(
-            kernfs::dir_ino("/proc/sys/fs/binfmt_misc"),
-            crate::reg::PROCFS_FSID,
-            false,
-        ) as InodeRef,
+        kernfs::PseudoDir::new_root(kernfs::dir_ino("/proc/sys/fs/binfmt_misc"), crate::reg::PROCFS_FSID, false).as_inode(),
     );
     crate::reg::register(
         "/proc/sys/kernel/hostname",
-        Arc::new(ProcHostnameInode) as InodeRef,
+        make_proc_hostname(),
     );
     crate::reg::register(
         "/proc/sys/kernel/domainname",
@@ -433,22 +407,13 @@ pub fn register_static_files() {
 
     // /proc/net/* — Linux networking surface. Entries with live kernel table
     // backing use procfs inodes, not static header snapshots.
-    crate::reg::register("/proc/net/dev", Arc::new(crate::net::ProcNetDevInode) as InodeRef);
-    crate::reg::register(
-        "/proc/net/route",
-        Arc::new(crate::net::ProcNetRouteInode) as InodeRef,
-    );
-    crate::reg::register(
-        "/proc/net/tcp",
-        Arc::new(crate::net::ProcNetTcpInode) as InodeRef,
-    );
-    crate::reg::register("/proc/net/tcp6", Arc::new(crate::net::ProcNetTcp6Inode) as InodeRef);
-    crate::reg::register("/proc/net/udp", Arc::new(crate::net::ProcNetUdpInode) as InodeRef);
-    crate::reg::register("/proc/net/udp6", Arc::new(crate::net::ProcNetUdp6Inode) as InodeRef);
-    crate::reg::register(
-        "/proc/net/unix",
-        Arc::new(crate::net::ProcNetUnixInode) as InodeRef,
-    );
+    crate::reg::register("/proc/net/dev", crate::net::make_proc_net_dev());
+    crate::reg::register("/proc/net/route", crate::net::make_proc_net_route());
+    crate::reg::register("/proc/net/tcp", crate::net::make_proc_net_tcp());
+    crate::reg::register("/proc/net/tcp6", crate::net::make_proc_net_tcp6());
+    crate::reg::register("/proc/net/udp", crate::net::make_proc_net_udp());
+    crate::reg::register("/proc/net/udp6", crate::net::make_proc_net_udp6());
+    crate::reg::register("/proc/net/unix", crate::net::make_proc_net_unix());
     crate::reg::register("/proc/net/raw", StaticFileInode::new(b"\
   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n\
 ") as InodeRef);
@@ -471,7 +436,7 @@ sk       RefCnt Type Proto  Iface R Rmem   User   Inode\n\
 ",
         ) as InodeRef,
     );
-    crate::reg::register("/proc/net/snmp", Arc::new(crate::net::ProcNetSnmpInode) as InodeRef);
+    crate::reg::register("/proc/net/snmp", crate::net::make_proc_net_snmp());
     crate::reg::register("/proc/net/snmp6", StaticFileInode::new(b"") as InodeRef);
     crate::reg::register(
         "/proc/net/netstat",
@@ -511,8 +476,8 @@ TCP6: inuse 0\nUDP6: inuse 0\nUDPLITE6: inuse 0\nRAW6: inuse 0\nFRAG6: inuse 0 m
 ",
         ) as InodeRef,
     );
-    crate::reg::register("/proc/net/arp", Arc::new(crate::net::ProcNetArpInode) as InodeRef);
-    crate::reg::register("/proc/net/if_inet6", Arc::new(crate::net::ProcNetIfInet6Inode) as InodeRef);
+    crate::reg::register("/proc/net/arp", crate::net::make_proc_net_arp());
+    crate::reg::register("/proc/net/if_inet6", crate::net::make_proc_net_if_inet6());
     crate::reg::register(
         "/proc/net/igmp",
         StaticFileInode::new(

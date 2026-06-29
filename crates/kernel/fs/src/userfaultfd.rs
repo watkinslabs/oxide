@@ -37,9 +37,10 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::collections::VecDeque;
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as UffdLockClass};
+use vfs::{FileOps, Inode, InodeBuilder, InodeRef, KResult, default_inode_ops, mk_mode};
 
 const UFFD_API_FEATURE_SET: u64 = 0;
 
@@ -105,37 +106,41 @@ pub struct UfState {
     pub events:     VecDeque<UffdMsg>,
 }
 
-pub struct UserfaultFdInode {
+/// Per-inode userfaultfd state (Linux `i_private`). # C: O(1)
+pub struct UfData {
     pub state:   Spinlock<UfState, UffdLockClass>,
     pub flags:   AtomicU16,
 }
 
-impl UserfaultFdInode {
-    /// # C: O(1)
-    pub fn new(flags: u16) -> Arc<Self> {
-        Arc::new(Self {
+/// UfData ino tag (high bits distinct from socket/io_uring/pipe).
+const UFFD_INO_TAG: vfs::Ino = 0x5546_4644_0000_0000;
+static NEXT_UFFD_INO: AtomicU64 = AtomicU64::new(1);
+
+/// `make_userfaultfd_inode(flags)` — a Regular pseudo-inode whose `read` drains
+/// queued `uffd_msg` events. # C: O(1)
+pub fn make_userfaultfd_inode(flags: u16) -> InodeRef {
+    let ino = UFFD_INO_TAG | (NEXT_UFFD_INO.fetch_add(1, Ordering::Relaxed) & 0xFFFF_FFFF);
+    InodeBuilder::new(ino, mk_mode(vfs::FileType::Regular, 0),
+        default_inode_ops(), Arc::new(UffdFileOps))
+        .private(Arc::new(UfData {
             state: Spinlock::new(UfState {
                 api_set: false,
                 ranges:  Vec::new(),
                 events:  VecDeque::new(),
             }),
             flags: AtomicU16::new(flags),
-        })
-    }
+        }))
+        .build()
 }
 
-impl vfs::Inode for UserfaultFdInode {
-    fn ino(&self) -> vfs::Ino {
-        // High-bits tag distinct from socket / io_uring / pipe inodes.
-        0x5546_4644_0000_0000u64 | (self as *const _ as u64 & 0xFFFF_FFFF) as vfs::Ino
-    }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    /// Drain the next queued uffd_msg. Empty queue → Eagain.
-    fn read(&self, _o: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+/// `i_fop` for a userfaultfd inode. # C: O(1)
+struct UffdFileOps;
+impl FileOps for UffdFileOps {
+    /// Drain the next queued uffd_msg. Empty queue → 0 (no events).
+    fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.len() < core::mem::size_of::<UffdMsg>() { return Err(vfs::VfsError::Einval); }
-        let mut g = self.state.lock();
+        let d = match inode.private::<UfData>() { Some(d) => d, None => return Err(vfs::VfsError::Einval) };
+        let mut g = d.state.lock();
         // Empty event queue → 0 (Linux returns -EAGAIN; v1 vfs doesn't
         // expose Eagain so we return 0 — caller treats it as "no events").
         let msg = match g.events.pop_front() {
@@ -146,7 +151,7 @@ impl vfs::Inode for UserfaultFdInode {
         buf[..bytes.len()].copy_from_slice(&bytes);
         Ok(bytes.len())
     }
-    fn write(&self, _o: u64, _b: &[u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Einval) }
+    fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(vfs::VfsError::Einval) }
 }
 
 const UFFDIO_API:        u64 = 0xc018_aa3f;
@@ -166,7 +171,7 @@ pub fn sys_userfaultfd(args: &syscall::SyscallArgs) -> i64 {
     const O_CLOEXEC:  u64 = 0o2_000_000;
     let raw   = args.a0;
     let flags = raw as u16;
-    let inode = UserfaultFdInode::new(flags);
+    let inode_ref = make_userfaultfd_inode(flags);
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -174,7 +179,6 @@ pub fn sys_userfaultfd(args: &syscall::SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let inode_ref: vfs::InodeRef = inode as vfs::InodeRef;
     let dentry = Dentry::new(None, "[uffd]".to_string(), inode_ref.clone());
     let mut fl = OpenFlags::O_RDWR;
     if (raw & O_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
@@ -188,14 +192,9 @@ pub fn sys_userfaultfd(args: &syscall::SyscallArgs) -> i64 {
     }
 }
 
-/// Lift a generic `vfs::InodeRef` to `Arc<UserfaultFdInode>` by ino tag.
-fn as_uffd(inode: &vfs::InodeRef) -> Option<Arc<UserfaultFdInode>> {
-    if (inode.ino() & 0xFFFF_FFFF_0000_0000) != 0x5546_4644_0000_0000 {
-        return None;
-    }
-    let raw = Arc::into_raw(inode.clone());
-    // SAFETY: ino tag check above confirms this inode is a UserfaultFdInode; Arc::clone before into_raw bumped the refcount; from_raw consumes a balanced strong count.
-    Some(unsafe { Arc::from_raw(raw as *const UserfaultFdInode) })
+/// Lift a generic `vfs::InodeRef` to `Arc<UfData>` via `i_private`.
+fn as_uffd(inode: &vfs::InodeRef) -> Option<Arc<UfData>> {
+    inode.i_private().clone().downcast::<UfData>().ok()
 }
 
 /// `ioctl(uffd_fd, UFFDIO_*, arg)` — handled by the generic ioctl

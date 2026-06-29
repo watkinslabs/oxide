@@ -5,42 +5,19 @@
 //! `vfs_write` when `f_op->read`/`read_iter` are absent) — NOT the old
 //! unconditional `Eisdir`. `read_nonblock`/`write_nonblock` delegate to
 //! `read`/`write`, so they inherit the same type-keyed errno.
-//! Driven over minimal `Inode` impls, no QEMU.
+//! Driven over `InodeBuilder` fixtures with the default `i_fop`, no QEMU.
 
-use vfs::inode::Inode;
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::inode::InodeBuilder;
+use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, InodeRef, VfsError};
 
-/// Directory backend with NO data op overrides → defaults apply.
-struct TDir;
-impl Inode for TDir {
-    fn ino(&self) -> vfs::Ino { 2 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
-}
-
-/// Regular file backend with NO data op overrides → defaults apply.
-struct TReg;
-impl Inode for TReg {
-    fn ino(&self) -> vfs::Ino { 3 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-}
-
-/// Socket backend with NO data op overrides → defaults apply. The pre-fix
-/// code mislabelled this `Eisdir`; Linux returns `Einval`.
-struct TSock;
-impl Inode for TSock {
-    fn ino(&self) -> vfs::Ino { 4 }
-    fn file_type(&self) -> FileType { FileType::Socket }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// Backend with NO data op overrides (the default `i_fop`) of a given type.
+fn node(ino: u64, ft: FileType) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(ft, 0o644), default_inode_ops(), default_file_ops()).build()
 }
 
 #[test]
 fn directory_default_read_write_is_eisdir() {
-    let d = TDir;
+    let d = node(2, FileType::Directory);
     let mut buf = [0u8; 4];
     assert_eq!(d.read(0, &mut buf), Err(VfsError::Eisdir));
     assert_eq!(d.write(0, &buf), Err(VfsError::Eisdir));
@@ -49,13 +26,13 @@ fn directory_default_read_write_is_eisdir() {
 #[test]
 fn nondir_default_read_write_is_einval() {
     // Regular file with no installed data op → EINVAL (was wrongly EISDIR).
-    let f = TReg;
+    let f = node(3, FileType::Regular);
     let mut buf = [0u8; 4];
     assert_eq!(f.read(0, &mut buf), Err(VfsError::Einval));
     assert_eq!(f.write(0, &buf), Err(VfsError::Einval));
 
     // Socket with no installed data op → EINVAL, not EISDIR.
-    let s = TSock;
+    let s = node(4, FileType::Socket);
     assert_eq!(s.read(0, &mut buf), Err(VfsError::Einval));
     assert_eq!(s.write(0, &buf), Err(VfsError::Einval));
 }
@@ -63,8 +40,8 @@ fn nondir_default_read_write_is_einval() {
 #[test]
 fn nonblock_variants_inherit_type_keyed_errno() {
     // read_nonblock/write_nonblock delegate to read/write → same errno.
-    let d = TDir;
-    let s = TSock;
+    let d = node(2, FileType::Directory);
+    let s = node(4, FileType::Socket);
     let mut buf = [0u8; 4];
     assert_eq!(d.read_nonblock(0, &mut buf), Err(VfsError::Eisdir));
     assert_eq!(d.write_nonblock(0, &buf), Err(VfsError::Eisdir));

@@ -20,14 +20,14 @@
 
 
 use alloc::collections::VecDeque;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::any::Any;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{FileOps, InodeBuilder, default_inode_ops, mk_mode};
 
 const INOTIFY_INO_BASE: Ino = 0x7100_0000;
 
@@ -82,7 +82,7 @@ struct Event {
     pid:    u32,
 }
 
-pub struct InotifyInode {
+pub struct InotifyData {
     pub flags:   u32,
     pub next_wd: AtomicI32,
     /// `true` for a `fanotify_init` group: read() emits the 24-byte
@@ -97,7 +97,7 @@ pub struct InotifyInode {
     perm_pending: Spinlock<Vec<(i32, Arc<PermEvent>)>, TaskListClass>,
 }
 
-impl InotifyInode {
+impl InotifyData {
     /// Construct + register in the global instance list so the vfs
     /// write hook can find this inotify when an inode it watches is
     /// modified. Drop unregisters.
@@ -244,12 +244,38 @@ fn check_perm(inode: &InodeRef, perm_mask: u32) -> bool {
     }
 }
 
-impl Inode for InotifyInode {
-    fn as_any(&self) -> Option<&dyn Any> { Some(self) }
-    fn ino(&self) -> Ino { INOTIFY_INO_BASE }
-    fn file_type(&self) -> FileType { FileType::CharDev }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+/// `make_inotify_inode(flags, fanotify)` — a CharDev pseudo-inode whose `read`
+/// drains the event queue. The `InotifyData` lives both in `i_private` and in
+/// the global INSTANCES list (the vfs write-hook walks it). # C: O(1)
+pub fn make_inotify_inode(data: Arc<InotifyData>) -> InodeRef {
+    InodeBuilder::new(INOTIFY_INO_BASE, mk_mode(FileType::CharDev, 0),
+        default_inode_ops(), Arc::new(InotifyFileOps))
+        .private(data)
+        .build()
+}
+
+/// `i_fop` for an inotify/fanotify group inode. Reads `InotifyData` off
+/// `i_private` and delegates to its inherent methods. # C: O(1)
+struct InotifyFileOps;
+impl FileOps for InotifyFileOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        match inode.private::<InotifyData>() { Some(d) => d.read(off, buf), None => Err(VfsError::Einval) }
+    }
+    fn read_nonblock(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        match inode.private::<InotifyData>() { Some(d) => d.read_nonblock(off, buf), None => Err(VfsError::Einval) }
+    }
+    fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
+        match inode.private::<InotifyData>() { Some(d) => d.write(off, buf), None => Err(VfsError::Einval) }
+    }
+    fn poll(&self, inode: &Inode) -> u32 {
+        inode.private::<InotifyData>().map_or(0, |d| d.poll())
+    }
+    fn on_release(&self, inode: &Inode) {
+        if let Some(d) = inode.private::<InotifyData>() { d.on_release(); }
+    }
+}
+
+impl InotifyData {
     /// Drain queued events into `buf` in Linux `struct inotify_event`
     /// shape: {wd: i32, mask: u32, cookie: u32, len: u32, name[len]}.
     /// v1 always emits len=0 (no name tail).
@@ -325,20 +351,21 @@ impl Inode for InotifyInode {
     fn on_release(&self) { if self.fanotify { self.release_perms(); } }
 }
 
-/// Global registry of weak refs to every live InotifyInode. Walked
+
+/// Global registry of weak refs to every live InotifyData. Walked
 /// on each VFS write-hook call to find watches matching the modified
 /// inode.
-static INSTANCES: Spinlock<Vec<Weak<InotifyInode>>, TaskListClass> =
+static INSTANCES: Spinlock<Vec<Weak<InotifyData>>, TaskListClass> =
     Spinlock::new(Vec::new());
 
-fn register_instance(w: Weak<InotifyInode>) {
+fn register_instance(w: Weak<InotifyData>) {
     let mut g = INSTANCES.lock();
     // Garbage-collect dead weak refs while we're here.
     g.retain(|w| w.upgrade().is_some());
     g.push(w);
 }
 
-/// Generic event-firing helper. Walks live InotifyInode list, finds
+/// Generic event-firing helper. Walks live InotifyData list, finds
 /// watches matching `inode_key + mask_bit`, pushes one event each.
 /// # C: O(N_inotify * N_watches_per)
 fn fire_event(inode: &InodeRef, mask_bit: u32) {
@@ -426,7 +453,7 @@ pub const IN_MOVED_FROM: u32 = 0x40;
 pub const IN_MOVED_TO:   u32 = 0x80;
 
 fn inode_key(inode: &InodeRef) -> usize {
-    let raw: *const dyn Inode = Arc::as_ptr(inode);
+    let raw: *const Inode = Arc::as_ptr(inode);
     raw as *const u8 as usize
 }
 
@@ -444,7 +471,7 @@ fn resolve_watch_path(raw: &str) -> Option<InodeRef> {
 }
 
 /// `sys_inotify_init(flags=0)` / `sys_inotify_init1(flags)`.
-/// Allocates a fresh InotifyInode at the lowest free fd.
+/// Allocates a fresh InotifyData at the lowest free fd.
 /// # C: O(N_fds)
 pub fn sys_inotify_init1(args: &syscall::SyscallArgs) -> i64 {
     use vfs::{Dentry, File, OpenFlags};
@@ -459,8 +486,7 @@ pub fn sys_inotify_init1(args: &syscall::SyscallArgs) -> i64 {
     };
     const IN_NONBLOCK: u32 = 0o0_004_000;
     const IN_CLOEXEC:  u32 = 0o2_000_000;
-    let arc = InotifyInode::new(flags);
-    let inode: InodeRef = arc as InodeRef;
+    let inode = make_inotify_inode(InotifyData::new(flags));
     let dentry = Dentry::new(None, "inotify".to_string(), Arc::clone(&inode));
     let mut fl = OpenFlags::O_RDONLY;
     if (flags & IN_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
@@ -492,8 +518,7 @@ pub fn sys_fanotify_init(args: &syscall::SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let arc = InotifyInode::new_fanotify(flags);
-    let inode: InodeRef = arc as InodeRef;
+    let inode = make_inotify_inode(InotifyData::new_fanotify(flags));
     let dentry = Dentry::new(None, "fanotify".to_string(), Arc::clone(&inode));
     // A fanotify group fd is read (events) AND write (responses) — must be
     // O_RDWR or the response write() is rejected EBADF before the inode.
@@ -509,33 +534,18 @@ pub fn sys_fanotify_init(args: &syscall::SyscallArgs) -> i64 {
     }
 }
 
-fn fd_to_inotify(fd: i32) -> Option<Arc<InotifyInode>> {
+fn fd_to_inotify(fd: i32) -> Option<Arc<InotifyData>> {
     let cur = sched::current()?;
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = unsafe { cur.fd_table_ref() }?.clone();
     let f = fdt.get(fd).ok()?;
-    let inode = f.inode().clone();
-    let any = inode.as_any()?;
-    any.downcast_ref::<InotifyInode>()?;
-    // Re-construct the Arc<InotifyInode> from the Arc<dyn Inode>.
-    // We can't downcast Arc directly; instead we use the existing
-    // INSTANCES list to find the matching weak and upgrade it.
-    let key_self = inode_key(&inode);
-    let g = INSTANCES.lock();
-    for w in g.iter() {
-        if let Some(a) = w.upgrade() {
-            let a_inode: InodeRef = a.clone() as InodeRef;
-            if inode_key(&a_inode) == key_self {
-                return Some(a);
-            }
-        }
-    }
-    None
+    // Recover the Arc<InotifyData> directly off the inode's i_private.
+    f.inode().i_private().clone().downcast::<InotifyData>().ok()
 }
 
 /// `sys_inotify_add_watch(fd, pathname, mask)`. Resolves `pathname`
 /// via devfs (v1's only namespace), records a Watch on the fd's
-/// InotifyInode, returns the wd.
+/// InotifyData, returns the wd.
 /// # C: O(N_path)
 pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
@@ -571,7 +581,7 @@ pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
 }
 
 /// `sys_inotify_rm_watch(fd, wd)`. Removes the watch from the fd's
-/// InotifyInode. EINVAL if no such wd.
+/// InotifyData. EINVAL if no such wd.
 /// # C: O(N_watches)
 pub fn sys_inotify_rm_watch(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
@@ -671,13 +681,12 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vfs::Inode;
 
     // An empty inotify fd is EAGAIN (would-block), never EOF(0), and
     // poll() reports not-readable — else an epoll-driven reader spins.
     #[test]
     fn empty_inotify_is_eagain_and_not_pollable() {
-        let ino = InotifyInode::new(0);
+        let ino = InotifyData::new(0);
         let mut buf = [0u8; 64];
         assert_eq!(ino.read(0, &mut buf), Err(vfs::VfsError::Eagain));
         assert_eq!(ino.poll(), 0);
@@ -687,7 +696,7 @@ mod tests {
     // 16-byte inotify_event; a second read returns to EAGAIN.
     #[test]
     fn queued_event_is_readable_then_drains_to_eagain() {
-        let ino = InotifyInode::new(0);
+        let ino = InotifyData::new(0);
         ino.events.lock().push_back(Event { wd: 1, mask: IN_MODIFY, cookie: 0, len: 0, obj: None, pid: 0 });
         assert_eq!(ino.poll(), vfs::POLL_IN);
         let mut buf = [0u8; 64];
