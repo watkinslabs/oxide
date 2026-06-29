@@ -307,7 +307,12 @@ pub fn get_mountpoint(d: &Arc<Dentry>) -> Arc<Mountpoint> {
     let mp = g.entry(dptr(d)).or_insert_with(|| Arc::new(Mountpoint {
         m_dentry: d.clone(), m_count: AtomicU32::new(0),
     })).clone();
-    mp.m_count.fetch_add(1, Ordering::AcqRel);
+    // `m_count` 0→1 is the CREATE path: stamp the `D_MOUNTED` hint bit on the
+    // dentry (Linux `d_set_mounted`). Refcounted + ns-agnostic, so a second
+    // mount (overmount / cross-ns clone) on the same dentry only bumps the
+    // count and leaves the bit set.
+    let prev = mp.m_count.fetch_add(1, Ordering::AcqRel);
+    if prev == 0 { d.set_mounted(); }
     mp
 }
 
@@ -315,7 +320,12 @@ pub fn get_mountpoint(d: &Arc<Dentry>) -> Arc<Mountpoint> {
 /// (Linux `put_mountpoint`). # C: O(log N)
 pub fn put_mountpoint(mp: &Arc<Mountpoint>) {
     let prev = mp.m_count.fetch_sub(1, Ordering::AcqRel);
-    if prev <= 1 { MOUNTPOINTS.lock().remove(&dptr(&mp.m_dentry)); }
+    // Last drop (1→0): clear the `D_MOUNTED` hint (Linux `__put_mountpoint`)
+    // and remove the registry entry.
+    if prev <= 1 {
+        mp.m_dentry.clear_mounted();
+        MOUNTPOINTS.lock().remove(&dptr(&mp.m_dentry));
+    }
 }
 
 /// True iff dentry `d` is a registered mountpoint (Linux `d_mountpoint`).
