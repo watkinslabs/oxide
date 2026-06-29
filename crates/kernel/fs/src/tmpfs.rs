@@ -730,6 +730,33 @@ impl InodeOps for TmpfsDirOps {
         g.insert(name.into(), child);
         Ok(())
     }
+
+    /// `i_op->rename` (Linux `shmem_rename2` reached via `vfs_rename`): the
+    /// resolved-parent variant of `TmpfsFs::rename` — detach the source from
+    /// this dir, drop any overwritten dest's link, attach the source under the
+    /// new name in `new_dir`. Only the plain rename routes here;
+    /// `RENAME_EXCHANGE`/`RENAME_WHITEOUT` stay on the `FileSystem` path and are
+    /// rejected defensively. # C: O(log N)
+    fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32, _ctx: &CreateCtx)
+        -> KResult<()>
+    {
+        if flags & (vfs::namei::RENAME_EXCHANGE | vfs::namei::RENAME_WHITEOUT) != 0 {
+            return Err(VfsError::Einval);
+        }
+        let sdir = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
+        let ddir = new_dir.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
+        let moved = sdir.remove(old_name).ok_or(VfsError::Enoent)?;
+        // Replaced destination loses its link (Linux `vfs_rename`): a directory
+        // target is cleared to 0, else drop one link; reclaim the inode charge
+        // once no name remains. Mirrors `TmpfsFs::rename`.
+        if let Some(victim) = ddir.remove(new_name) {
+            if victim.file_type() == FileType::Directory { victim.set_nlink(0); }
+            else { victim.drop_nlink(); }
+            if victim.nlink() == 0 { ddir.acct.free_inode(); }
+        }
+        ddir.insert(new_name, moved);
+        Ok(())
+    }
 }
 
 /// Boot-time hook (kept for the boot sequence). The per-instance trees are
@@ -1072,6 +1099,53 @@ mod rename_overwrite_tests {
         // Names are swapped: /a now holds the old-b inode and vice-versa.
         assert!(Arc::ptr_eq(&root.lookup("a").unwrap(), &b), "/a now holds old b");
         assert!(Arc::ptr_eq(&root.lookup("b").unwrap(), &a), "/b now holds old a");
+    }
+
+    // D9: `i_op->rename` (resolved-parent path) — same-dir plain rename moves the
+    // source inode onto the destination name, overwriting (and dropping the link
+    // of) an existing target, byte-equivalent to `FileSystem::rename`.
+    #[test]
+    fn iop_rename_same_dir_overwrites() {
+        let fs = TmpfsFs::with_limits(String::from("/"), TmpfsSb::new(64, 16));
+        let root = fs.root_inode();
+        let src = root.create_child("src", 0o644, &CreateCtx::root()).expect("src");
+        let dst = root.create_child("dst", 0o644, &CreateCtx::root()).expect("dst");
+
+        root.rename_child("src", &root, "dst", 0, &CreateCtx::root()).expect("iop rename");
+
+        assert_eq!(dst.nlink(), 0, "replaced dest link dropped");
+        assert!(Arc::ptr_eq(&root.lookup("dst").unwrap(), &src), "dst now holds source");
+        assert!(matches!(root.lookup("src"), Err(VfsError::Enoent)), "src gone");
+    }
+
+    // D9: `i_op->rename` across two directories — the source detaches from its
+    // parent and re-attaches under the new parent's name.
+    #[test]
+    fn iop_rename_cross_dir() {
+        let fs = TmpfsFs::with_limits(String::from("/"), TmpfsSb::new(64, 16));
+        let root = fs.root_inode();
+        let a = root.mkdir("a", 0o755, &CreateCtx::root()).expect("mkdir a");
+        let b = root.mkdir("b", 0o755, &CreateCtx::root()).expect("mkdir b");
+        let f = a.create_child("f", 0o644, &CreateCtx::root()).expect("create f");
+
+        a.rename_child("f", &b, "g", 0, &CreateCtx::root()).expect("cross-dir rename");
+
+        assert!(matches!(a.lookup("f"), Err(VfsError::Enoent)), "f gone from a");
+        assert!(Arc::ptr_eq(&b.lookup("g").unwrap(), &f), "f now b/g");
+    }
+
+    // D9: `i_op->rename` rejects EXCHANGE/WHITEOUT (those keep the FileSystem
+    // path); the inode-op handles only the plain rename.
+    #[test]
+    fn iop_rename_rejects_exchange_whiteout() {
+        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), TmpfsSb::unlimited());
+        root.create_child("x", 0o644, &CreateCtx::root()).expect("x");
+        assert!(matches!(
+            root.rename_child("x", &root, "y", vfs::namei::RENAME_EXCHANGE, &CreateCtx::root()),
+            Err(VfsError::Einval)));
+        assert!(matches!(
+            root.rename_child("x", &root, "y", vfs::namei::RENAME_WHITEOUT, &CreateCtx::root()),
+            Err(VfsError::Einval)));
     }
 }
 
