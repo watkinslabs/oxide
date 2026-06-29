@@ -74,12 +74,12 @@ pub fn make_proc_self_root() -> InodeRef {
 /// concludes it is chrooted and freezes PID1. # C: O(1)
 pub fn make_proc_pid_link(tid: u32, leaf: &'static str) -> InodeRef {
     use core::fmt::Write as _;
-    let base: Ino = match leaf { "exe" => 0x3000_1800, "cwd" => 0x3000_1900, _ => 0x3000_1A00 };
+    let tag: u64 = match leaf { "exe" => 0x18, "cwd" => 0x19, _ => 0x1A };
     let mut p = String::new();
     let _ = write!(p, "/proc/{}/{}", tid, leaf);
     // root is always "/" even for a dead tid; exe/cwd fall back to "/"
     // (resolve_proc_link returns None only when the tid is gone).
-    make_proc_link(base | tid as Ino, 0, ProcLinkData {
+    make_proc_link(crate::live::pid_ino(tag, tid), 0, ProcLinkData {
         resolve: Some(p), target: Vec::new(), fallback: b"/".to_vec(),
     })
 }
@@ -88,7 +88,7 @@ pub fn make_proc_pid_link(tid: u32, leaf: &'static str) -> InodeRef {
 /// Used by `ProcSelfFdInode::lookup`. `ino` is a stable distinguisher so
 /// getdents reflects the fd. # C: O(target_len)
 pub fn fd_link_for_path(path: &[u8], fd: i32) -> InodeRef {
-    make_proc_link(0x3000_1600 | (fd as Ino), path.len() as u64, ProcLinkData {
+    make_proc_link(crate::live::pid_ino(0x16, fd as u32), path.len() as u64, ProcLinkData {
         resolve: None, target: path.to_vec(), fallback: Vec::new(),
     })
 }

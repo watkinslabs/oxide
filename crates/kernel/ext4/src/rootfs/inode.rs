@@ -19,7 +19,6 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use block::types::InodeId;
-use ::sync as sync;
 use vfs::inode_ops::{mk_mode, InodeOps};
 use vfs::file_ops::FileOps;
 use vfs::inode::InodeBuilder;
@@ -68,35 +67,23 @@ pub const fn ext4_unwrap_ino(vfs_ino: u64) -> u32 { (vfs_ino & !EXT4_INO_MASK) a
 
 // ── i_private backend state ──────────────────────────────────────────
 
-/// `i_private` for a regular ext4 file. Bytes are lazy: stat (size/perm)
-/// doesn't pull file contents; first read/write loads them. Carries `st`
-/// so reads/writes hit the owning mount's device + page cache.
+/// `i_private` for a regular ext4 file. Stat (size/perm) doesn't pull file
+/// contents; read(2)/mmap serve incrementally through the owning mount's
+/// shared `page_cache` (D8 — no whole-file `Vec` snapshot). `st` carries the
+/// owning mount so reads/writes hit its device + page cache.
 pub(crate) struct Ext4FileData {
     pub(crate) st:        Arc<RootfsState>,
     pub(crate) ino:       u32,
     pub(crate) size_hint: AtomicU64,
-    pub(crate) bytes:     sync::Spinlock<Option<Vec<u8>>, sync::Inode>,
 }
 
 impl Ext4FileData {
-    /// Re-read the on-disk file into the byte cache + size hint. # C: O(size)
-    fn refresh(&self) {
-        if let Some(b) = self.st.read_full_file(self.ino) {
-            self.size_hint.store(b.len() as u64, Ordering::Release);
-            *self.bytes.lock() = Some(b);
+    /// Re-read just the on-disk size into the hint after a mutating op
+    /// (write/truncate/fallocate) — O(1), no file body load. # C: O(1)
+    fn refresh_size(&self) {
+        if let Ok(i) = self.st.mount.read_inode(self.ino) {
+            self.size_hint.store(i.size, Ordering::Release);
         }
-    }
-    /// Ensure the byte cache is populated; return a clone of the bytes. # C: O(size)
-    fn ensure_bytes(&self) -> Option<Vec<u8>> {
-        {
-            let g = self.bytes.lock();
-            if let Some(b) = g.as_ref() { return Some(b.clone()); }
-        }
-        let b = self.st.read_full_file(self.ino)?;
-        self.size_hint.store(b.len() as u64, Ordering::Release);
-        let out = b.clone();
-        *self.bytes.lock() = Some(b);
-        Some(out)
     }
 }
 
@@ -136,7 +123,7 @@ impl InodeOps for Ext4RegInodeOps {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         d.st.mount.truncate_inode(d.ino, len).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(d.ino as u64));
-        d.refresh();
+        d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
         Ok(())
     }
@@ -163,7 +150,7 @@ impl InodeOps for Ext4RegInodeOps {
             d.st.mount.fallocate_inode(d.ino, off, len, keep_size).map_err(vfs_error_from_mount)?;
         }
         d.st.page_cache.invalidate(InodeId(d.ino as u64));
-        d.refresh();
+        d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
         Ok(())
     }
@@ -188,26 +175,19 @@ impl InodeOps for Ext4RegInodeOps {
 pub(crate) struct Ext4RegFileOps;
 
 impl FileOps for Ext4RegFileOps {
+    /// read(2): serve incrementally from the owning mount's shared page cache
+    /// (Linux `generic_file_read_iter` → `address_space`), never loading the
+    /// whole file. Short read past EOF; holes read as zero. # C: O(buf.len)
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
-        let bytes_owned = d.ensure_bytes();
-        let g = d.bytes.lock();
-        let slice: &[u8] = match g.as_ref() {
-            Some(b) => b.as_slice(),
-            None    => match bytes_owned.as_deref() { Some(b) => b, None => return Err(VfsError::Eio) },
-        };
-        let off = off as usize;
-        if off >= slice.len() { return Ok(0); }
-        let n = (slice.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&slice[off..off+n]);
-        Ok(n)
+        d.st.read_cached(d.ino, off, buf).map_err(|_| VfsError::Eio)
     }
 
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         d.st.mount.write_at(d.ino, off, buf).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(d.ino as u64));
-        d.refresh();
+        d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
         Ok(buf.len())
     }
@@ -242,7 +222,6 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
     let data = Arc::new(Ext4FileData {
         st, ino,
         size_hint: AtomicU64::new(size),
-        bytes: sync::Spinlock::new(None),
     });
     let mapping: Arc<dyn AddressSpaceOps> = Arc::new(Ext4FileMapping { data: data.clone() });
     let weak_sb = data.st.sb.lock().clone();
