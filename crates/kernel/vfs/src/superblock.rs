@@ -24,7 +24,8 @@ use sync::{RwLock, Spinlock, Superblock as SbClass};
 
 use crate::dentry::Dentry;
 use crate::file_ops::FileOps;
-use crate::fs::FileSystem;
+use crate::fs::fs_context::FsContextOps;
+use crate::fs::{FileSystem, FsFlags};
 use crate::inode::{Inode, InodeBuilder, InodeRef, I_CLEAR, I_DIRTY, I_FREEING, I_NEW, I_WILL_FREE};
 use crate::inode_ops::InodeOps;
 use crate::types::{Ino, KResult};
@@ -164,6 +165,7 @@ impl FileSystemType for FsBackedType {
         Ok(SuperBlock::for_backend(self.fs.clone(), self.fs.root(),
             next_anon_dev(), String::from(self.fs.name())))
     }
+    fn fs_flags(&self) -> FsFlags { self.fs.fs_flags() }
 }
 
 /// `statfs(2)` payload a superblock reports (Linux `struct kstatfs`
@@ -272,6 +274,17 @@ pub trait FileSystemType: Send + Sync {
     fn name(&self) -> &str;
     /// Build a superblock instance (`fill_super`). # C: FS-dependent
     fn mount(&self, src: &str, opts: &str) -> KResult<Arc<SuperBlock>>;
+    /// `file_system_type::fs_flags` (Linux `include/linux/fs.h`) — the
+    /// type-level classification the new-mount-API `vfs_get_tree` consults for
+    /// the `FS_REQUIRES_DEV` source check (D23). Default `empty()` = a pseudo /
+    /// in-memory fs; block-device backends override with `FS_REQUIRES_DEV`.
+    /// # C: O(1)
+    fn fs_flags(&self) -> FsFlags { FsFlags::empty() }
+    /// `file_system_type::init_fs_context` (Linux) — install a backend-specific
+    /// `fs_context_operations` for the new mount API. `None` (the default) ⇒ the
+    /// legacy adapter ([`crate::fs::fs_context::LegacyFsContextOps`]) replays the
+    /// accumulated options to [`FileSystemType::mount`] at `get_tree`. # C: O(1)
+    fn init_fs_context(&self) -> Option<Arc<dyn FsContextOps>> { None }
 }
 
 /// `struct super_block`. One per mounted fs instance (`16§2` inv 3).

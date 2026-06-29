@@ -29,6 +29,54 @@ pub fn sys_fsconfig(args: &SyscallArgs) -> i64 {
     let ctx = match inode.private::<FsContextInode>() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
     };
+
+    // Read the option key/value from user memory FIRST (outside any fs_context
+    // lock — never fault a user page while holding a spinlock); a SET_* command
+    // needs a non-empty key (Linux requires `key` for everything but CMD_*).
+    let is_param = matches!(cmd, FSCONFIG_SET_FLAG | FSCONFIG_SET_STRING
+        | FSCONFIG_SET_BINARY | FSCONFIG_SET_PATH | FSCONFIG_SET_PATH_EMPTY);
+    let (key, value) = if is_param {
+        let key = match read_cstr(args.a2, 64) {
+            Some(k) if !k.is_empty() => k,
+            _ => return -(Errno::Einval.as_i32() as i64),
+        };
+        let value = if cmd == FSCONFIG_SET_FLAG { alloc::string::String::new() }
+            else { read_cstr(args.a3, 256).unwrap_or_default() };
+        (key, value)
+    } else {
+        (alloc::string::String::new(), alloc::string::String::new())
+    };
+
+    // CONVERTED pseudo fstype: thread the command through the real
+    // `vfs::fs::FsContext` (D14: params no longer dropped; D13: SB realized at
+    // CMD_CREATE; D15: CMD_RECONFIGURE). SET_FD stays EINVAL (systemd's
+    // mount_option_supported() probe). An unrecognised parameter / parse error
+    // surfaces the VFS errno.
+    {
+        let mut g = ctx.fc.lock();
+        if let Some(fc) = g.as_mut() {
+            return match cmd {
+                FSCONFIG_SET_FD => -(Errno::Einval.as_i32() as i64),
+                FSCONFIG_CMD_CREATE | FSCONFIG_CMD_CREATE_EXCL => match vfs::fs::vfs_get_tree(fc) {
+                    Ok(())  => 0,
+                    Err(e)  => crate::namei_common::errno_from_vfs(e),
+                },
+                FSCONFIG_CMD_RECONFIGURE => match vfs::fs::reconfigure_super(fc) {
+                    Ok(())  => 0,
+                    Err(e)  => crate::namei_common::errno_from_vfs(e),
+                },
+                FSCONFIG_SET_FLAG => parse(fc, vfs::fs::FsParameter::flag(&key)),
+                FSCONFIG_SET_PATH => parse(fc, vfs::fs::FsParameter::path(&key, &value)),
+                FSCONFIG_SET_PATH_EMPTY => parse(fc, vfs::fs::FsParameter::path_empty(&key, &value)),
+                FSCONFIG_SET_BINARY => parse(fc, vfs::fs::FsParameter::blob(&key, value.as_bytes())),
+                FSCONFIG_SET_STRING => parse(fc, vfs::fs::FsParameter::string(&key, &value)),
+                _ => -(Errno::Einval.as_i32() as i64),
+            };
+        }
+    }
+
+    // LEGACY string-bag path (unconverted fstypes → materialised by
+    // `mount_fstype` at `move_mount`): byte-identical to the prior behaviour.
     match cmd {
         // We support no fd-valued mount options. A converted fs returns EINVAL
         // (not EOPNOTSUPP) for an unknown SET_FD key; systemd's
@@ -39,24 +87,22 @@ pub fn sys_fsconfig(args: &SyscallArgs) -> i64 {
         FSCONFIG_CMD_CREATE | FSCONFIG_CMD_RECONFIGURE | FSCONFIG_CMD_CREATE_EXCL => 0,
         FSCONFIG_SET_FLAG | FSCONFIG_SET_STRING | FSCONFIG_SET_BINARY
         | FSCONFIG_SET_PATH | FSCONFIG_SET_PATH_EMPTY => {
-            // A NULL/empty key is invalid for a parameter command (Linux requires
-            // `key` for everything but the CMD_* actions).
-            let key = match read_cstr(args.a2, 64) {
-                Some(k) if !k.is_empty() => k,
-                _ => return -(Errno::Einval.as_i32() as i64),
-            };
-            // SET_FLAG carries no value; the rest read a textual value (path /
-            // string / binary blob rendered as bytes-as-str).
-            let value = if cmd == FSCONFIG_SET_FLAG {
-                alloc::string::String::new()
-            } else {
-                read_cstr(args.a3, 256).unwrap_or_default()
-            };
+            // key/value were read above (SET_FLAG has an empty value). `source`
+            // is mirrored into the context source for `mount_fstype`.
             if key == "source" { *ctx.source.lock() = value.clone(); }
             ctx.options.lock().push((key, value));
             0
         }
         // Unknown command → EINVAL (Linux vfs_fsconfig_locked default).
         _ => -(Errno::Einval.as_i32() as i64),
+    }
+}
+
+/// Feed one parameter to the context (`vfs_parse_fs_param`), mapping the VFS
+/// errno on a rejected/unknown option. # C: O(len key+value)
+fn parse(fc: &mut vfs::fs::FsContext, param: vfs::fs::FsParameter) -> i64 {
+    match vfs::fs::vfs_parse_fs_param(fc, &param) {
+        Ok(())  => 0,
+        Err(e)  => crate::namei_common::errno_from_vfs(e),
     }
 }

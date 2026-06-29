@@ -192,6 +192,8 @@ impl vfs::fs::FileSystem for Ext4RootfsFs {
     fn name(&self) -> &str { "ext4" }
     /// EXT4_SUPER_MAGIC (linux/magic.h).
     fn magic(&self) -> u64 { crate::EXT4_SUPER_MAGIC as u64 }
+    /// ext4 is block-device backed (Linux `FS_REQUIRES_DEV`). # C: O(1)
+    fn fs_flags(&self) -> vfs::fs::FsFlags { vfs::fs::FsFlags::FS_REQUIRES_DEV }
     /// On-disk `s_blocksize` of the published root mount. # C: O(1)
     fn block_size(&self) -> u32 { root().map(|st| st.mount.sb.block_size).unwrap_or(4096) }
     /// Install live ext4 statfs accounting (root mount's state) as `s_op`.
