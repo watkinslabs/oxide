@@ -61,7 +61,7 @@ drv-virtio-snd    = { path = "../../drivers/drv-virtio-snd" }
 
 [features]
 debug-eager-fork = []  # TEST: eager-copy fork instead of COW
-debug-boot = ["kmacros/debug-boot"]
+debug-boot = ["kmacros/debug-boot", "net/debug-boot"]
 debug-trace = ["kmacros/debug-trace"]
 debug-syscall = ["kmacros/debug-syscall", "sched/debug-syscall"]
 debug-ssh = ["kmacros/debug-ssh"]
