@@ -179,6 +179,20 @@ fn register_filesystems() {
             let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::binfmt_misc::BinfmtMiscFs::new();
             Ok(MountSpec { fs, bind_root: None, strict: true })
         })));
+
+    // devpts — first-class pseudo-fs (D36/D37): a singleton `DevptsFs` SB whose
+    // root holds `ptmx` + the per-pty slave nodes. `mount -t devpts` / fsopen
+    // materialise the real `DEVPTS_MAGIC` SB instead of the old admit-noop. The
+    // slaves stay mirrored in the devfs registry (devpts::allocate_pair) as a
+    // fallback, so the boot /dev/pts setup is non-fatal if no devpts is mounted.
+    // strict:false preserves the old devpts path's unconditional-success
+    // semantics (admit-and-ignore, like devtmpfs) to keep the boot mount-path
+    // change conservative.
+    let _ = register_fs(FsType::new("devpts", devpts::DEVPTS_MAGIC, FsFlags::empty(),
+        Box::new(|_s: &str, _t: &str, _d: &str| -> R {
+            let fs: Arc<dyn vfs::fs::FileSystem> = devpts::devpts_fs();
+            Ok(MountSpec { fs, bind_root: None, strict: false })
+        })));
 }
 
 /// Graft a constructor-produced [`vfs::fs::MountSpec`] onto the walked mountpoint
