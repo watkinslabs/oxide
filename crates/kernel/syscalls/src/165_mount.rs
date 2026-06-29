@@ -83,7 +83,7 @@ impl FileSystem for BindFs {
             .filter(|&m| m != 0)
             .unwrap_or(0xEF53)
     }
-    fn mounts_line(&self, mount_point: &str) -> String {
+    fn mounts_line(&self, mount_point: &str, _sb: Option<&vfs::SuperBlock>) -> String {
         let mut s = String::new();
         s.push_str(&self.source);
         s.push(' ');
