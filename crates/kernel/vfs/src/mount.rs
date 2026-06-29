@@ -84,9 +84,22 @@ pub const MNT_OPTION_MASK: u64 = MNT_RDONLY | MNT_NOSUID | MNT_NODEV | MNT_NOEXE
 /// # C: O(1)
 fn dptr(d: &Arc<Dentry>) -> usize { Arc::as_ptr(d) as *const () as usize }
 
-/// True iff `d` is the global namespace-root dentry. # C: O(1)
+/// True iff `d` is THE global namespace-root dentry (the rootfs `/`), by
+/// pointer IDENTITY against the cached root — NOT merely "a filesystem root"
+/// (`parent==None && name==""`), which every mounted pseudo-fs `s_root`
+/// (sysfs/procfs/autofs) also satisfies. The structural test let a CROSSED
+/// mount-root dentry (returned when a path walk follows the mount at its final
+/// component) impersonate `/`, so `attach` mis-set `ns_set_root` to e.g. a
+/// staged sysfs mount and `mount_exact_at`/`mount_at_path_exact` returned the
+/// ns-root mount for it — wrecking umount identity (the systemd binfmt_misc
+/// automount then umount-looped forever, status nr#166, never reaching udevd).
+/// Identity is exact. Falls back to the structural test only before the root
+/// dentry is cached (very early boot, the first rootfs mount). # C: O(1)
 fn is_global_root(d: &Arc<Dentry>) -> bool {
-    d.parent().is_none() && d.name().is_empty()
+    match global_root() {
+        Some(r) => Arc::ptr_eq(d, &r),
+        None => d.parent().is_none() && d.name().is_empty(),
+    }
 }
 
 /// The mount in `ns` whose superblock root DENTRY is `d`, by `s_root`
@@ -775,6 +788,21 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
     }
     let src_id = src_m.as_ref().map(|m| m.mnt_id);
     let src_mp = src_m.and_then(|m| m.mountpoint());
+    // Descend from the TARGET's mounted ROOT, not its mountpoint dentry. The
+    // top-level bind (the `/` → staging clone) is already registered when this
+    // runs, so `tgt` (the staging mountpoint) is covered by it; its bare inode
+    // is the empty staging dir, where a child like `proc` does NOT resolve.
+    // Crossing into the bind root first lands on the mirror of the source tree,
+    // so `descend(.., "proc")` finds the `/proc` slot and the procfs submount
+    // gets replicated. Without this, systemd's recursive `mount("/", staging,
+    // MS_BIND|MS_REC)` left staging/proc as the bare rootfs dir (no procfs), so
+    // udevd's later open of staging/proc/sys/kernel/domainname was ENOENT →
+    // step NAMESPACE status=226 (B282). Linux `attach_recursive_mnt` likewise
+    // grafts copies relative to the destination mount's root.
+    let mut tgt_base = tgt.clone();
+    while let Some(id) = tgt_base.mounted_mount(ns) {
+        match root_dentry_for_mount_id(id) { Some(sr) => tgt_base = sr, None => break }
+    }
     let snap = mounts_in_ns(ns);
     let mut n = 0;
     for m in snap.iter() {
@@ -784,7 +812,7 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
         if rel_under(&mp, Some(tgt)).is_some() { continue; }
         let Some(rel) = rel_under(&mp, src_mp.as_ref()) else { continue; };
         if rel.is_empty() { continue; }
-        let Some(new_mp) = descend(tgt, &rel) else { continue; };
+        let Some(new_mp) = descend(&tgt_base, &rel) else { continue; };
         let root = m.root.clone().or_else(|| m.fs().root());
         if let Some(r) = root {
             if register_bind(Some(new_mp), m.fs().clone(), r).is_ok() { n += 1; }
@@ -807,6 +835,23 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
 pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
     let ns = current_ns();
     let from_m = mount_exact_at(ns, from).ok_or(VfsError::Einval)?;
+    move_mount_m(from_m, to)
+}
+
+/// As `move_mount` but identifies the SOURCE mount by the `mnt_id` the path
+/// walk crossed into (Linux `do_move_mount` keys on `path->mnt`). The MS_MOVE
+/// source resolves THROUGH the mount being moved, landing on its (often
+/// shared) `s_root`, which `mount_exact_at` cannot map back to a mount — so
+/// systemd's `mount_move_root` (`mount(".", "/", MS_MOVE)` final pivot of the
+/// assembled sandbox root) got EINVAL at step NAMESPACE (B282). # C: O(N×depth)
+pub fn move_mount_by_id(from_id: u64, to: &Arc<Dentry>) -> KResult<()> {
+    let from_m = mount_by_id(from_id).ok_or(VfsError::Einval)?;
+    if from_m.ns != current_ns() { return Err(VfsError::Einval); }
+    move_mount_m(from_m, to)
+}
+
+fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>) -> KResult<()> {
+    let ns = current_ns();
     let from_id = from_m.mnt_id;
     let to_root = is_global_root(to);
     // Linux `do_move_mount` validation (all -EINVAL). NOTE: moving ONTO `/` is
@@ -905,6 +950,26 @@ pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
 /// `mnt_hold_writers`). # C: O(log N)
 pub fn remount_flags(d: &Arc<Dentry>, flags: u64) -> KResult<()> {
     let m = mount_exact_at(current_ns(), d).ok_or(VfsError::Einval)?;
+    apply_remount(&m, flags)
+}
+
+/// As `remount_flags` but identifies the mount by its resolved `mnt_id` (Linux
+/// `do_reconfigure_mnt` keys on `path->mnt`, not a re-derived dentry). The
+/// MS_REMOUNT path walk follows the mount at its final component, so the
+/// resolved dentry is the mounted-fs ROOT — which `mount_exact_at` cannot map
+/// back to a mount (a root is not a mountpoint) and a pseudo-fs `s_root` is
+/// SHARED across every instance. Passing the `VfsPath.mnt_id` the walk crossed
+/// into is unambiguous: systemd's `ProtectKernelTunables=`/`MS_BIND|MS_REMOUNT`
+/// RO-remount of the sandbox `/proc/sys` bind then succeeds instead of EINVAL
+/// (was step NAMESPACE status=226 once the procfs replication, B282, exposed
+/// the remount). # C: O(log N)
+pub fn remount_flags_by_id(mnt_id: u64, flags: u64) -> KResult<()> {
+    let m = mount_by_id(mnt_id).ok_or(VfsError::Einval)?;
+    apply_remount(&m, flags)
+}
+
+/// Shared MNT_* option update for both `remount_flags` variants. # C: O(1)
+fn apply_remount(m: &Arc<Mount>, flags: u64) -> KResult<()> {
     let old = m.flags.load(Ordering::Acquire);
     let new = (old & !MNT_OPTION_MASK) | (flags & MNT_OPTION_MASK);
     if (new & MNT_RDONLY) != 0 && (old & MNT_RDONLY) == 0 && m.mnt_writers.load(Ordering::Acquire) > 0 {
