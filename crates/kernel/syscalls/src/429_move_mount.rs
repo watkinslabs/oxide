@@ -14,6 +14,18 @@ use crate::fsmount_common::*;
 /// `to_path`; (b) relocate an EXISTING mount at `from_path` to `to_path`.
 /// # C: O(N_mounts)
 pub fn sys_move_mount(args: &SyscallArgs) -> i64 {
+    // TEMP (D24, debug-mnt): mount-creating syscall ENTRY trace — this is where
+    // an open_tree-cloned subtree is spliced under the sandbox root (10/11).
+    #[cfg(feature = "debug-mount")]
+    {
+        let from = read_cstr(args.a1, 256).unwrap_or_default();
+        let to = read_cstr(args.a3, 256).unwrap_or_default();
+        klog::write_raw(b"[MNTCREATE] syscall=move_mount flags=0x");
+        klog::write_hex_u64(args.a4);
+        klog::write_raw(b" recursive=false source="); klog::write_raw(from.as_bytes());
+        klog::write_raw(b" target="); klog::write_raw(to.as_bytes());
+        klog::write_raw(b"\n");
+    }
     let rv = sys_move_mount_impl(args);
     #[cfg(feature = "debug-mount")]
     {

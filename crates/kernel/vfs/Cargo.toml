@@ -16,3 +16,7 @@ bitflags = { version = "2", default-features = false }
 [features]
 default = []
 hosted  = []
+# TEMP (D24): [MNTCREATE] one-line trace at every Mount create/attach/clone/graft
+# site — reconstruct how systemd builds the sandbox-root mounts (mnt_id 10/11).
+# Prod-inert: off ⇒ call sites absent, zero bytes on the hot path.
+debug-mnt = []
