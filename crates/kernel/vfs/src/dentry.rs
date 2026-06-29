@@ -37,6 +37,15 @@ pub const D_DISCONNECTED: u32 = 0x0020; // anonymous (parentless) alias, on s_an
 /// repeated lookups of a `DONTCACHE` name therefore never accumulate idle
 /// dentries (DAX / on-demand fs that want their inodes evicted promptly).
 pub const D_DONTCACHE:  u32 = 0x1000;
+/// An in-flight PARALLEL lookup is resolving this (parent,name) — Linux
+/// `DCACHE_PAR_LOOKUP` (`d_alloc_parallel`). Set on the placeholder dentry the
+/// LEADER walker installs in the in-lookup table before it runs the slow
+/// `i_op->lookup`; concurrent walkers for the SAME key find the placeholder and
+/// wait on this bit instead of each constructing + racing their own. Cleared by
+/// `d_lookup_done` (Linux `__d_lookup_done`) once the leader publishes the
+/// resolved (positive or cached-negative) dentry, after which the bit-clear is
+/// the waiters' wake condition. Bit position is this file's own layout.
+pub const D_PAR_LOOKUP:  u32 = 0x4000;
 
 // ---------------------------------------------------------------------------
 // DCACHE_OP_* — `d_op` presence cache, stamped into `d_flags` at construction
@@ -657,6 +666,14 @@ impl Dentry {
     /// dentry (Linux `retain_dentry` returns false). # C: O(1)
     pub fn is_dontcache(&self) -> bool { self.flags() & D_DONTCACHE != 0 }
 
+    /// Mark/clear `D_PAR_LOOKUP` — an in-flight parallel lookup placeholder
+    /// (Linux `DCACHE_PAR_LOOKUP`, set in `d_alloc_parallel`, cleared in
+    /// `__d_lookup_done`). # C: O(1)
+    pub fn set_par_lookup(&self, on: bool) { self.set_flag(D_PAR_LOOKUP, on); }
+    /// True iff a parallel lookup is still resolving this dentry — the
+    /// `DParLookup::Waiter` wake gate (Linux `d_in_lookup`). # C: O(1)
+    pub fn is_in_lookup(&self) -> bool { self.flags() & D_PAR_LOOKUP != 0 }
+
     /// Replace the `DCACHE_ENTRY_TYPE` field with `bits` (one of `D_*_TYPE`),
     /// preserving every other `d_flags` bit. Linux `__d_set_inode_and_type`.
     /// # C: O(1)
@@ -898,6 +915,21 @@ impl Drop for Dentry {
     /// Fire `d_op->d_release` on the final free (Linux `d_release`). The
     /// `Arc` strong count reaching zero IS the free; `d_count`/LRU only gate
     /// when that becomes possible. # C: O(1)
+    //
+    // D12 (RCU-grace deferred free): Linux defers the actual `kmem_cache_free`
+    // to a `call_rcu(&dentry->d_rcu, __d_free)` so a lock-free `__d_lookup_rcu`
+    // reader that grabbed a raw pointer can finish its grace period before the
+    // memory is reused. This crate's rcu read path instead validates a
+    // `Weak::upgrade` under the bucket seqcount (`dcache.rs` `lookup_rcu`): a
+    // reader holds an `Arc`, whose atomic strong count makes the deref safe with
+    // NO grace period, and a concurrently-dropped dentry simply fails to upgrade.
+    // A genuine `call_rcu`-style deferred-free epoch needs the kernel RCU
+    // quiescent-state machinery (per-CPU grace tracking driven by the scheduler /
+    // timer tick) which lives outside the vfs lane; staging Arcs on an in-crate
+    // "deferred" list with no external quiescent drain would only delay reclaim
+    // (and risk a leak) without adding safety the Arc/Weak model already gives.
+    // So the free stays synchronous here by design — PARTIAL, cross-lane for the
+    // true RCU epoch. See ledger D12.
     fn drop(&mut self) {
         if let Some(f) = self.d_op.and_then(|o| o.d_release) { f(self); }
     }
