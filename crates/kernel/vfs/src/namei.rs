@@ -57,6 +57,25 @@ pub struct LookupFlags {
     /// O_NOFOLLOW / AT_SYMLINK_NOFOLLOW: a symlink as the FINAL component is
     /// returned as-is rather than followed.
     pub no_follow_final: bool,
+    /// LOOKUP_FOLLOW (Linux `fs/namei.c`): explicitly FOLLOW a trailing symlink.
+    /// First-class counterpart to `no_follow_final` — when set it OVERRIDES the
+    /// no-follow short-circuit so the final symlink is resolved even if
+    /// `no_follow_final` is also set (Linux's flag set never holds both, and
+    /// LOOKUP_FOLLOW wins where they conflict). DEFAULT OFF: with neither bit set
+    /// the walk follows the trailing symlink as before (the historical
+    /// `!no_follow_final` default), so this is purely additive. A caller that
+    /// needs the Linux "always follow" semantics (stat/`AT_SYMLINK_FOLLOW`,
+    /// `linkat` source) sets `follow`; O_NOFOLLOW/`AT_SYMLINK_NOFOLLOW` clear it
+    /// and set `no_follow_final`.
+    pub follow: bool,
+    /// LOOKUP_EMPTY (Linux `AT_EMPTY_PATH`): an EMPTY pathname (`""`) is allowed
+    /// and resolves to the dirfd/cwd base itself (the empty component queue ends
+    /// the walk at the start position). Without this bit an empty pathname is
+    /// `ENOENT` (Linux `filename_lookup`/`path_init`: `-ENOENT` unless
+    /// LOOKUP_EMPTY). First-class replacement for the per-`*at`-handler
+    /// AT_EMPTY_PATH gate — every path-taking `*at` now gets uniform empty-path
+    /// semantics from the engine.
+    pub empty: bool,
     /// RESOLVE_NO_SYMLINKS: any symlink anywhere → ELOOP.
     pub no_symlinks: bool,
     /// Confined-root marker (chroot, wired by `pathresolve::resolution_root`):
@@ -719,6 +738,13 @@ impl Nameidata {
         let renamed = |child: &Arc<Dentry>, cseq: u32| -> bool {
             validate && (child.read_seqretry(cseq) || crate::dcache::rename_lock_retry(m_seq))
         };
+        // D18 LOOKUP_EMPTY (Linux `AT_EMPTY_PATH`): an empty pathname is `ENOENT`
+        // unless LOOKUP_EMPTY is set, in which case the walk operates on the
+        // dirfd/cwd base — the empty component queue (below) breaks immediately
+        // and returns the start `(mnt,dentry,inode)`. Centralizing the gate here
+        // gives every path-taking `*at` syscall uniform empty-path semantics
+        // instead of each handler re-implementing the AT_EMPTY_PATH check.
+        if path.is_empty() && !self.flags.empty { return Err(VfsError::Enoent); }
         if path.as_bytes().first() == Some(&b'/') {
             // RESOLVE_BENEATH: an absolute pathname would jump to the (real)
             // root ABOVE the scoped dirfd → EXDEV (Linux `LOOKUP_BENEATH`).
@@ -926,7 +952,10 @@ impl Nameidata {
                 // A trailing slash forces the final symlink to be followed even
                 // under no_follow_final (Linux: `link/` follows `link`, then the
                 // target must be a directory), so it does NOT short-circuit here.
-                if is_final && self.flags.no_follow_final && !trailing_slash {
+                // D30 LOOKUP_FOLLOW: an explicit `follow` likewise OVERRIDES
+                // no_follow_final (Linux's flag set never holds both; FOLLOW
+                // wins), so the trailing link is resolved rather than returned.
+                if is_final && self.flags.no_follow_final && !self.flags.follow && !trailing_slash {
                     // Final component complication: legitimize (rcu → ref) and
                     // validate the rename seqcounts before returning the link.
                     if !self.unlazy_walk(&child, cseq, m_seq) { return Ok(WalkOutcome::Restart); }
