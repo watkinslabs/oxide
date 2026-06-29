@@ -51,6 +51,20 @@ fn source_disk_name(source: &str) -> &str {
     source.rsplit('/').next().unwrap_or(source)
 }
 
+/// fstypes whose new-mount-API path is THREADED through a real
+/// [`vfs::fs::FsContext`] (`fsopen`→`fsconfig`→`vfs_get_tree`→`fsmount`→
+/// `move_mount`/`attach_sb`) rather than the legacy string-bag deferred to
+/// [`mount_fstype`] at `move_mount`. Restricted to pseudo fstypes whose backend
+/// `root()` is a target-INDEPENDENT singleton, so the SB realized at
+/// `fsconfig(CMD_CREATE)` (which does not yet know the mount target) is
+/// byte-identical to what `mount_fstype` would graft. tmpfs/ramfs (bake the
+/// mount path into `rel()`), the PseudoFs group (seed the root ino from the
+/// target path), ext4 (`FS_REQUIRES_DEV`), cgroup2/autofs/devtmpfs/devpts/cgroup
+/// stay on the `mount_fstype` fallback. # C: O(1)
+pub(crate) fn fstype_converted(t: &str) -> bool {
+    matches!(t, "proc" | "sysfs" | "debugfs" | "tracefs")
+}
+
 // `s_magic` (linux/magic.h) for the simple kernfs/ramfs-class api-fses that
 // mount EMPTY then get populated by the kernel/userspace. Named (not bare
 // literals) so the statfs `f_type` a tool reads is the real Linux magic.
@@ -243,52 +257,95 @@ pub(crate) fn mount_fstype_with_data(
     }
 }
 
-/// fd-backed `fs_context` builder created by `fsopen` — backend state
+/// fd-backed `fs_context` builder created by `fsopen`/`fspick` — backend state
 /// (`i_private`) of a concrete `vfs::Inode`.
 pub struct FsContextInode {
     pub fstype: String,
     pub source: Spinlock<String, LockClass>,
     /// Accumulated `fsconfig` key/value options (Linux `fs_context` parameters),
     /// in submission order. SET_FLAG stores an empty value; SET_STRING/PATH/
-    /// BINARY store the textual value. Consumed by the fstype materialiser.
+    /// BINARY store the textual value. Consumed by the fstype materialiser on the
+    /// LEGACY `mount_fstype` path (`fc == None`).
     pub options: Spinlock<Vec<(String, String)>, LockClass>,
+    /// New mount-API context for a CONVERTED pseudo fstype ([`fstype_converted`]):
+    /// the real [`vfs::fs::FsContext`] threaded through `fsconfig`/`vfs_get_tree`.
+    /// `None` for fstypes still on the `mount_fstype` fallback AND for every
+    /// `fspick` context (Step-1 reconfigure stays on the legacy no-op path).
+    pub fc: Spinlock<Option<vfs::fs::FsContext>, LockClass>,
 }
 
 impl FsContextInode {
-    /// Build an `fs_context` anon inode tagged with `fstype`. # C: O(1)
+    /// `fsopen`: build an `fs_context` anon inode tagged with `fstype`. For a
+    /// CONVERTED pseudo fstype this allocates a real `vfs::fs::FsContext`
+    /// (`FsContext::for_mount`); otherwise `fc == None` and options accumulate in
+    /// the string-bag for the `mount_fstype` fallback. # C: O(1)
     pub fn new(fstype: String) -> InodeRef {
+        let fc = if fstype_converted(&fstype) {
+            ensure_filesystems_registered();
+            vfs::fs::get_fs_type(&fstype).map(|ty| vfs::fs::FsContext::for_mount(ty, 0))
+        } else {
+            None
+        };
+        Self::build(fstype, fc)
+    }
+
+    /// `fspick`: build a LEGACY `fs_context` inode tagged with the picked mount's
+    /// `fstype` (no threaded `FsContext`; Step-1 `fsconfig(RECONFIGURE)` remains a
+    /// no-op, byte-identical to the prior behaviour). # C: O(1)
+    pub fn new_legacy(fstype: String) -> InodeRef {
+        Self::build(fstype, None)
+    }
+
+    /// # C: O(1)
+    fn build(fstype: String, fc: Option<vfs::fs::FsContext>) -> InodeRef {
         let ino = NEXT_FSCTX_INO.fetch_add(1, Ordering::Relaxed);
         InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o600), default_inode_ops(), default_file_ops())
             .private(Arc::new(Self {
                 fstype,
                 source: Spinlock::new(String::new()),
                 options: Spinlock::new(Vec::new()),
+                fc: Spinlock::new(fc),
             }))
             .build()
     }
 }
 
-/// Detached mount object created by `fsmount` (materialise-by-fstype at
-/// attach) or `open_tree(OPEN_TREE_CLONE)` (carries the cloned subtree's
-/// root inode + fs). `move_mount` attaches it at a target path.
+/// Detached mount object created by `fsmount` (CONVERTED: an already-realized
+/// SB; LEGACY: materialise-by-fstype at attach) or `open_tree(OPEN_TREE_CLONE)`
+/// (the cloned subtree's root inode + fs). `move_mount` attaches it at a target.
 pub struct MountObjectInode {
     pub fstype: String,
     pub source: String,
-    /// Some for an `open_tree` clone: the captured (fs, root) to bind at
-    /// the target. None for `fsmount`: materialise a fresh `fstype` mount.
+    /// CONVERTED path: the `SuperBlock` realized by `vfs_get_tree` at
+    /// `fsconfig(CMD_CREATE)` plus its root dentry — `move_mount` grafts it via
+    /// [`vfs::mount::attach_sb`]. `None` ⇒ unconverted fstype: `move_mount` falls
+    /// back to [`mount_fstype`] (byte-identical to the prior behaviour).
+    pub realized: Option<(Arc<vfs::SuperBlock>, Arc<Dentry>)>,
+    /// `fsmount(2)` `MOUNT_ATTR_*` the caller requested (validated in fsmount,
+    /// D51). STORED but NOT yet applied on the realized graft: the prior path
+    /// silently dropped these, so applying them would change the booted
+    /// mount-table state — deferred behind a boot-verify (see move_mount).
+    pub mnt_attrs: u64,
+    /// Some for an `open_tree` clone: the captured (fs, root) to bind at the
+    /// target. None otherwise.
     pub clone_of: Option<(Arc<dyn vfs::fs::FileSystem>, InodeRef)>,
 }
 
 impl MountObjectInode {
-    /// `fsmount`: materialise-by-fstype at attach time. Returns the anon inode.
-    /// # C: O(1)
-    pub fn new(fstype: String, source: String) -> InodeRef {
-        Self::build(Self { fstype, source, clone_of: None })
+    /// `fsmount` LEGACY: materialise-by-fstype at attach time. # C: O(1)
+    pub fn new(fstype: String, source: String, mnt_attrs: u64) -> InodeRef {
+        Self::build(Self { fstype, source, realized: None, mnt_attrs, clone_of: None })
+    }
+    /// `fsmount` CONVERTED: carry the already-realized (sb, root dentry). # C: O(1)
+    pub fn new_realized(sb: Arc<vfs::SuperBlock>, root: Arc<Dentry>, fstype: String,
+        source: String, mnt_attrs: u64) -> InodeRef {
+        Self::build(Self { fstype, source, realized: Some((sb, root)), mnt_attrs, clone_of: None })
     }
     /// `open_tree(OPEN_TREE_CLONE)`: capture an existing mount's (fs, root).
     /// # C: O(1)
     pub fn new_clone(fs: Arc<dyn vfs::fs::FileSystem>, root: InodeRef) -> InodeRef {
-        Self::build(Self { fstype: String::new(), source: String::new(), clone_of: Some((fs, root)) })
+        Self::build(Self { fstype: String::new(), source: String::new(),
+            realized: None, mnt_attrs: 0, clone_of: Some((fs, root)) })
     }
     /// Wrap the mount-object state into a concrete `vfs::Inode`. # C: O(1)
     fn build(data: Self) -> InodeRef {

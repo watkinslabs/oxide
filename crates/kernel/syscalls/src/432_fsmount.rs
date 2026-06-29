@@ -1,6 +1,8 @@
 // 432 fsmount — one syscall, one file (docs/53 §0). Moved verbatim from fsmount.rs.
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::string::ToString;
+
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use vfs::InodeRef;
@@ -41,7 +43,28 @@ pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
     let ctx = match inode.private::<FsContextInode>() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
     };
+    let attrs = args.a2;
+    // CONVERTED pseudo fstype: the SB was realized at fsconfig(CMD_CREATE). The
+    // context MUST be AwaitingMount with a pinned root (Linux do_fsmount rejects
+    // a fsmount before get_tree with EINVAL); carry the realized (sb, root) for
+    // move_mount → attach_sb.
+    {
+        let g = ctx.fc.lock();
+        if let Some(fc) = g.as_ref() {
+            if fc.phase() != vfs::fs::FsContextPhase::AwaitingMount {
+                return -(Errno::Einval.as_i32() as i64);
+            }
+            let (sb, root) = match (fc.sb(), fc.root()) {
+                (Some(sb), Some(root)) => (sb.clone(), root.clone()),
+                _ => return -(Errno::Einval.as_i32() as i64),
+            };
+            let source = fc.source().unwrap_or("").to_string();
+            let mo: InodeRef = MountObjectInode::new_realized(sb, root, ctx.fstype.clone(), source, attrs);
+            return install_fd(mo, "fsmount", (args.a1 & FSMOUNT_CLOEXEC) != 0);
+        }
+    }
+    // LEGACY: defer materialisation to move_mount → mount_fstype.
     let source = ctx.source.lock().clone();
-    let mo: InodeRef = MountObjectInode::new(ctx.fstype.clone(), source);
+    let mo: InodeRef = MountObjectInode::new(ctx.fstype.clone(), source, attrs);
     install_fd(mo, "fsmount", (args.a1 & FSMOUNT_CLOEXEC) != 0)
 }

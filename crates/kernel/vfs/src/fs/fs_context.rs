@@ -27,6 +27,7 @@ use alloc::vec::Vec;
 use core::any::Any;
 
 use crate::dentry::Dentry;
+use crate::fs::FsFlags;
 use crate::superblock::{
     FileSystemType, SuperBlock, SB_DIRSYNC, SB_MANDLOCK, SB_NOATIME, SB_NODEV, SB_NODIRATIME,
     SB_NOEXEC, SB_NOSUID, SB_RDONLY, SB_SYNCHRONOUS,
@@ -345,14 +346,18 @@ impl FsContext {
     /// the user-settable set). Backends predating the new API get
     /// [`LegacyFsContextOps`]. # C: O(1)
     pub fn for_mount(fs_type: Arc<dyn FileSystemType>, sb_flags: u64) -> Self {
-        Self::alloc(fs_type, FsContextPurpose::Mount, FsContextPhase::CreateParams,
-            sb_flags, SB_FLAGS_USER_MASK)
+        let mut fc = Self::alloc(fs_type, FsContextPurpose::Mount, FsContextPhase::CreateParams,
+            sb_flags, SB_FLAGS_USER_MASK);
+        if let Some(ops) = fc.fs_type.init_fs_context() { fc.ops = ops; }
+        fc
     }
 
     /// `fs_context_for_submount` — an automount clone for `fs_type`. # C: O(1)
     pub fn for_submount(fs_type: Arc<dyn FileSystemType>, sb_flags: u64) -> Self {
-        Self::alloc(fs_type, FsContextPurpose::Submount, FsContextPhase::CreateParams,
-            sb_flags, SB_FLAGS_USER_MASK)
+        let mut fc = Self::alloc(fs_type, FsContextPurpose::Submount, FsContextPhase::CreateParams,
+            sb_flags, SB_FLAGS_USER_MASK);
+        if let Some(ops) = fc.fs_type.init_fs_context() { fc.ops = ops; }
+        fc
     }
 
     /// `fs_context_for_reconfigure` (Linux `fs/fs_context.c`) — a context bound to
@@ -550,6 +555,14 @@ pub fn vfs_parse_fs_string(fc: &mut FsContext, key: &str, value: &str) -> KResul
 pub fn vfs_get_tree(fc: &mut FsContext) -> KResult<()> {
     if fc.root.is_some() { return Err(VfsError::Ebusy); }
     if fc.phase != FsContextPhase::CreateParams { return Err(VfsError::Ebusy); }
+    // D23: a `FS_REQUIRES_DEV` fs (ext4, ext2/3, vfat) MUST be given a source
+    // device (Linux `vfs_get_tree` → `get_tree_bdev` rejects a missing dev_name
+    // with `-ENODEV`/`invalf`). A pseudo / in-memory fs (default `empty()`
+    // flags) ignores `source`.
+    if fc.fs_type.fs_flags().contains(FsFlags::FS_REQUIRES_DEV) && fc.source.is_none() {
+        fc.phase = FsContextPhase::Failed;
+        return fc.invalf("VFS: Filesystem requires a source device");
+    }
     fc.phase = FsContextPhase::Creating;
     let ops = fc.ops.clone();
     let sb = match ops.get_tree(fc) {
