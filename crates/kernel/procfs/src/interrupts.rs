@@ -5,17 +5,14 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::vec::Vec;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
-
-pub struct ProcInterruptsInode;
+use vfs::{Ino, InodeRef};
 
 struct VecFmt<'a>(&'a mut Vec<u8>);
 impl<'a> core::fmt::Write for VecFmt<'a> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result { self.0.extend_from_slice(s.as_bytes()); Ok(()) }
 }
 
-impl ProcInterruptsInode {
-    fn body() -> Vec<u8> {
+fn body() -> Vec<u8> {
         use core::fmt::Write;
         use arch_irq::irqstat;
         let ncpu = (cpu::smp::online_count() as usize).clamp(1, cpu::MAX_CPUS);
@@ -43,21 +40,7 @@ impl ProcInterruptsInode {
         for c in 0..ncpu { let _ = write!(VecFmt(&mut out), " {:>10}", irqstat::resched(c)); }
         out.extend_from_slice(b"   Rescheduling interrupts\n");
         out
-    }
 }
 
-impl Inode for ProcInterruptsInode {
-    fn ino(&self) -> Ino { 0x3000_1025 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body = Self::body();
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
-}
+/// `/proc/interrupts` inode (KEYSTONE struct-`Inode`). # C: O(1)
+pub fn make_proc_interrupts() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1025 as Ino, body) }

@@ -1,142 +1,101 @@
-// /proc/net/* + /proc/modules inode impls split out of procfs.rs
-// to keep that file under the 1000-line cap (docs/08§7). The
-// dispatch inside crate::lookup_dynamic remains there; only the
-// per-file Inode impls live here.
+// /proc/net/* + /proc/modules inode bodies split out of procfs.rs
+// to keep that file under the 1000-line cap (docs/08§7). KEYSTONE
+// struct-`Inode` model: each file is a `vfs::Inode` built by
+// `dyn_file::make_gen_file` over the per-file body generator below.
 
-fn read_string_body(body: alloc::string::String, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-    let off = off as usize;
-    if off >= body.len() { return Ok(0); }
-    let n = (body.len() - off).min(buf.len());
-    buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
-    Ok(n)
-}
+use alloc::string::String;
+use vfs::{Ino, InodeRef};
 
 /// `/proc/net/dev` — Linux text format: header + per-iface line.
-pub struct ProcNetDevInode;
-impl vfs::Inode for ProcNetDevInode {
-    fn ino(&self) -> vfs::Ino { 0xFEED_0001 }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { self.body().len() as u64 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        read_string_body(self.body(), off, buf)
+fn net_dev_body() -> alloc::vec::Vec<u8> {
+    use core::fmt::Write as _;
+    let mut s = String::new();
+    let _ = writeln!(s, "Inter-|   Receive                                                |  Transmit");
+    let _ = writeln!(s, " face |bytes packets errs drop fifo frame compressed multicast |bytes packets errs drop fifo colls carrier compressed");
+    let stack = net::sock::stack();
+    let snap = stack.ifaces.snapshot();
+    for (id, name, mtu) in snap {
+        let stats = stack.ifaces.lookup(id).map(|d| d.stats()).unwrap_or_default();
+        let _ = writeln!(s, "{:>6}: {} {} {} {} 0 0 0 0 {} {} {} {} 0 0 0 0  # mtu={}",
+            name,
+            stats.rx_bytes, stats.rx_packets, stats.rx_errors, stats.rx_dropped,
+            stats.tx_bytes, stats.tx_packets, stats.tx_errors, stats.tx_dropped,
+            mtu);
     }
+    s.into_bytes()
 }
-
-impl ProcNetDevInode {
-    fn body(&self) -> alloc::string::String {
-        use alloc::string::String;
-        use core::fmt::Write as _;
-        let mut s = String::new();
-        let _ = writeln!(s, "Inter-|   Receive                                                |  Transmit");
-        let _ = writeln!(s, " face |bytes packets errs drop fifo frame compressed multicast |bytes packets errs drop fifo colls carrier compressed");
-        let stack = net::sock::stack();
-        let snap = stack.ifaces.snapshot();
-        for (id, name, mtu) in snap {
-            let stats = stack.ifaces.lookup(id).map(|d| d.stats()).unwrap_or_default();
-            let _ = writeln!(s, "{:>6}: {} {} {} {} 0 0 0 0 {} {} {} {} 0 0 0 0  # mtu={}",
-                name,
-                stats.rx_bytes, stats.rx_packets, stats.rx_errors, stats.rx_dropped,
-                stats.tx_bytes, stats.tx_packets, stats.tx_errors, stats.tx_dropped,
-                mtu);
-        }
-        s
-    }
-}
+/// `/proc/net/dev` inode. # C: O(1)
+pub fn make_proc_net_dev() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_0001 as Ino, net_dev_body) }
 
 /// `/proc/net/tcp` — Linux fixed-width per-connection table.
-pub struct ProcNetTcpInode;
-impl vfs::Inode for ProcNetTcpInode {
-    fn ino(&self) -> vfs::Ino { 0xFEED_0002 }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { self.body().len() as u64 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        read_string_body(self.body(), off, buf)
-    }
-}
-
-impl ProcNetTcpInode {
-    fn body(&self) -> alloc::string::String {
-        use alloc::string::String;
-        use core::fmt::Write as _;
-        use net::addr::IpAddr;
-        let mut s = String::from(
-            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
-        );
-        let stack = net::sock::stack();
-        let mut sl: u32 = 0;
-        // LISTEN rows from the v4 listener table.
-        let listens = stack.tcp_listens_map().lock();
-        for (key, _) in listens.iter() {
-            if let IpAddr::V4(ip) = key.local_ip {
-                let ip_be = ip.as_u32().to_be();
-                let _ = writeln!(s, "{:5}: {:08X}:{:04X} 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
-                    sl, ip_be, key.local_port);
-                sl += 1;
-            }
-        }
-        drop(listens);
-        // Established / other states from the conn table.
-        let conns = stack.tcp_conns_map().lock();
-        for (key, entry) in conns.iter() {
-            let (IpAddr::V4(lip), IpAddr::V4(rip)) = (key.local_ip, key.remote_ip)
-                else { continue };
-            let st = linux_tcp_state(entry.conn.lock().state);
-            let _ = writeln!(s, "{:5}: {:08X}:{:04X} {:08X}:{:04X} {:02X} 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
-                sl, lip.as_u32().to_be(), key.local_port,
-                rip.as_u32().to_be(), key.remote_port, st);
+fn net_tcp_body() -> alloc::vec::Vec<u8> {
+    use core::fmt::Write as _;
+    use net::addr::IpAddr;
+    let mut s = String::from(
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
+    );
+    let stack = net::sock::stack();
+    let mut sl: u32 = 0;
+    // LISTEN rows from the v4 listener table.
+    let listens = stack.tcp_listens_map().lock();
+    for (key, _) in listens.iter() {
+        if let IpAddr::V4(ip) = key.local_ip {
+            let ip_be = ip.as_u32().to_be();
+            let _ = writeln!(s, "{:5}: {:08X}:{:04X} 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
+                sl, ip_be, key.local_port);
             sl += 1;
         }
-        s
     }
+    drop(listens);
+    // Established / other states from the conn table.
+    let conns = stack.tcp_conns_map().lock();
+    for (key, entry) in conns.iter() {
+        let (IpAddr::V4(lip), IpAddr::V4(rip)) = (key.local_ip, key.remote_ip)
+            else { continue };
+        let st = linux_tcp_state(entry.conn.lock().state);
+        let _ = writeln!(s, "{:5}: {:08X}:{:04X} {:08X}:{:04X} {:02X} 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
+            sl, lip.as_u32().to_be(), key.local_port,
+            rip.as_u32().to_be(), key.remote_port, st);
+        sl += 1;
+    }
+    s.into_bytes()
 }
+/// `/proc/net/tcp` inode. # C: O(1)
+pub fn make_proc_net_tcp() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_0002 as Ino, net_tcp_body) }
 
 /// `/proc/net/tcp6` — IPv6 TCP table matching Linux tcp6 column shape.
-pub struct ProcNetTcp6Inode;
-impl vfs::Inode for ProcNetTcp6Inode {
-    fn ino(&self) -> vfs::Ino { 0xFEED_000A }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { self.body().len() as u64 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        read_string_body(self.body(), off, buf)
-    }
-}
+fn net_tcp6_body() -> alloc::vec::Vec<u8> {
+    use core::fmt::Write as _;
+    use net::addr::{IpAddr, Ipv6Addr};
 
-impl ProcNetTcp6Inode {
-    fn body(&self) -> alloc::string::String {
-        use alloc::string::String;
-        use core::fmt::Write as _;
-        use net::addr::{IpAddr, Ipv6Addr};
-
-        let mut s = String::from(
-            "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
-        );
-        let stack = net::sock::stack();
-        let mut sl: u32 = 0;
-        let listens = stack.tcp_listens_map().lock();
-        for (key, _) in listens.iter() {
-            if let IpAddr::V6(ip) = key.local_ip {
-                let _ = writeln!(s, "{:5}: {}:{:04X} {}:0000 0A 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
-                    sl, proc_ipv6_hex(ip), key.local_port, proc_ipv6_hex(Ipv6Addr::ANY));
-                sl += 1;
-            }
-        }
-        drop(listens);
-        let conns = stack.tcp_conns_map().lock();
-        for (key, entry) in conns.iter() {
-            let (IpAddr::V6(lip), IpAddr::V6(rip)) = (key.local_ip, key.remote_ip)
-                else { continue };
-            let st = linux_tcp_state(entry.conn.lock().state);
-            let _ = writeln!(s, "{:5}: {}:{:04X} {}:{:04X} {:02X} 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
-                sl, proc_ipv6_hex(lip), key.local_port,
-                proc_ipv6_hex(rip), key.remote_port, st);
+    let mut s = String::from(
+        "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
+    );
+    let stack = net::sock::stack();
+    let mut sl: u32 = 0;
+    let listens = stack.tcp_listens_map().lock();
+    for (key, _) in listens.iter() {
+        if let IpAddr::V6(ip) = key.local_ip {
+            let _ = writeln!(s, "{:5}: {}:{:04X} {}:0000 0A 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
+                sl, proc_ipv6_hex(ip), key.local_port, proc_ipv6_hex(Ipv6Addr::ANY));
             sl += 1;
         }
-        s
     }
+    drop(listens);
+    let conns = stack.tcp_conns_map().lock();
+    for (key, entry) in conns.iter() {
+        let (IpAddr::V6(lip), IpAddr::V6(rip)) = (key.local_ip, key.remote_ip)
+            else { continue };
+        let st = linux_tcp_state(entry.conn.lock().state);
+        let _ = writeln!(s, "{:5}: {}:{:04X} {}:{:04X} {:02X} 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
+            sl, proc_ipv6_hex(lip), key.local_port,
+            proc_ipv6_hex(rip), key.remote_port, st);
+        sl += 1;
+    }
+    s.into_bytes()
 }
+/// `/proc/net/tcp6` inode. # C: O(1)
+pub fn make_proc_net_tcp6() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_000A as Ino, net_tcp6_body) }
 
 /// Translate our internal TcpState to Linux's /proc/net/tcp values
 /// (uapi/linux/tcp.h `enum tcp_state`). `ss`/`netstat` decode this.
@@ -168,269 +127,145 @@ fn proc_ipv6_hex(ip: net::addr::Ipv6Addr) -> alloc::string::String {
 }
 
 /// `/proc/net/udp` — UDP equivalent.
-pub struct ProcNetUdpInode;
-impl vfs::Inode for ProcNetUdpInode {
-    fn ino(&self) -> vfs::Ino { 0xFEED_0003 }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { self.body().len() as u64 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        read_string_body(self.body(), off, buf)
+fn net_udp_body() -> alloc::vec::Vec<u8> {
+    use core::fmt::Write as _;
+    let mut s = String::from(
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n",
+    );
+    let stack = net::sock::stack();
+    let map = stack.udp_map().lock();
+    let mut sl: u32 = 0;
+    // UDP local-bind table — Linux reports 0.0.0.0 for INADDR_ANY,
+    // and our table is port-keyed (no per-bind IP), so we honour
+    // the wildcard convention.
+    for (port, _) in map.iter() {
+        let _ = writeln!(s, "{:5}: 00000000:{:04X} 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 0 2 0000000000000000 0",
+            sl, port);
+        sl += 1;
     }
+    s.into_bytes()
 }
-
-impl ProcNetUdpInode {
-    fn body(&self) -> alloc::string::String {
-        use alloc::string::String;
-        use core::fmt::Write as _;
-        let mut s = String::from(
-            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n",
-        );
-        let stack = net::sock::stack();
-        let map = stack.udp_map().lock();
-        let mut sl: u32 = 0;
-        // UDP local-bind table — Linux reports 0.0.0.0 for INADDR_ANY,
-        // and our table is port-keyed (no per-bind IP), so we honour
-        // the wildcard convention.
-        for (port, _) in map.iter() {
-            let _ = writeln!(s, "{:5}: 00000000:{:04X} 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 0 2 0000000000000000 0",
-                sl, port);
-            sl += 1;
-        }
-        s
-    }
-}
+/// `/proc/net/udp` inode. # C: O(1)
+pub fn make_proc_net_udp() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_0003 as Ino, net_udp_body) }
 
 /// `/proc/net/udp6` — live IPv6 UDP bind table.
-pub struct ProcNetUdp6Inode;
-impl vfs::Inode for ProcNetUdp6Inode {
-    fn ino(&self) -> vfs::Ino { 0xFEED_000B }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { self.body().len() as u64 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        read_string_body(self.body(), off, buf)
+fn net_udp6_body() -> alloc::vec::Vec<u8> {
+    use core::fmt::Write as _;
+    use net::addr::Ipv6Addr;
+    let mut s = String::from(
+        "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n",
+    );
+    let stack = net::sock::stack();
+    let map = stack.udp6_map().lock();
+    let mut sl: u32 = 0;
+    for q in map.values() {
+        let rx_len: usize = q.q.lock().iter().map(|(_, _, p)| p.len()).sum();
+        let _ = writeln!(s, "{:5}: {}:{:04X} {}:0000 07 00000000:{:08X} 00:00000000 00000000     0        0 0 2 0000000000000000 0",
+            sl, proc_ipv6_hex(q.bound_ip), q.bound_port, proc_ipv6_hex(Ipv6Addr::ANY), rx_len);
+        sl += 1;
     }
+    s.into_bytes()
 }
-
-impl ProcNetUdp6Inode {
-    fn body(&self) -> alloc::string::String {
-        use alloc::string::String;
-        use core::fmt::Write as _;
-        use net::addr::Ipv6Addr;
-        let mut s = String::from(
-            "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n",
-        );
-        let stack = net::sock::stack();
-        let map = stack.udp6_map().lock();
-        let mut sl: u32 = 0;
-        for q in map.values() {
-            let rx_len: usize = q.q.lock().iter().map(|(_, _, p)| p.len()).sum();
-            let _ = writeln!(s, "{:5}: {}:{:04X} {}:0000 07 00000000:{:08X} 00:00000000 00000000     0        0 0 2 0000000000000000 0",
-                sl, proc_ipv6_hex(q.bound_ip), q.bound_port, proc_ipv6_hex(Ipv6Addr::ANY), rx_len);
-            sl += 1;
-        }
-        s
-    }
-}
+/// `/proc/net/udp6` inode. # C: O(1)
+pub fn make_proc_net_udp6() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_000B as Ino, net_udp6_body) }
 
 /// `/proc/modules` — Linux text format: "<name> <size> <refcnt> <holders> <state> <addr>\n".
 /// v1 uses synthetic name "module_<idx>" since .modinfo parsing
 /// hasn't landed.
-pub struct ProcModulesInode;
-impl vfs::Inode for ProcModulesInode {
-    fn ino(&self) -> vfs::Ino { 0xFEED_0004 }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { self.body().len() as u64 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        read_string_body(self.body(), off, buf)
+fn modules_body() -> alloc::vec::Vec<u8> {
+    use core::fmt::Write as _;
+    let mut s = String::new();
+    for (idx, n_secs, n_syms) in modules::registry::snapshot() {
+        let _ = writeln!(s, "module_{} {} {} - Live 0x0 sec={} sym={}",
+            idx, n_secs * 4096, 0, n_secs, n_syms);
     }
+    s.into_bytes()
 }
-
-impl ProcModulesInode {
-    fn body(&self) -> alloc::string::String {
-        use alloc::string::String;
-        use core::fmt::Write as _;
-        let mut s = String::new();
-        for (idx, n_secs, n_syms) in modules::registry::snapshot() {
-            let _ = writeln!(s, "module_{} {} {} - Live 0x0 sec={} sym={}",
-                idx, n_secs * 4096, 0, n_secs, n_syms);
-        }
-        s
-    }
-}
+/// `/proc/modules` inode. # C: O(1)
+pub fn make_proc_modules() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_0004 as Ino, modules_body) }
 
 /// `/proc/net/route` — IPv4 routing table. Linux text format:
 ///   Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT
-pub struct ProcNetRouteInode;
-impl vfs::Inode for ProcNetRouteInode {
-    fn ino(&self) -> vfs::Ino { 0xFEED_0005 }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { self.body().len() as u64 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        let body = self.body();
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
-        Ok(n)
-    }
-}
-
-impl ProcNetRouteInode {
-    fn body(&self) -> alloc::string::String {
-        use alloc::string::String;
-        use core::fmt::Write as _;
-        let mut s = String::from(
-            "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n",
+fn net_route_body() -> alloc::vec::Vec<u8> {
+    use core::fmt::Write as _;
+    let mut s = String::from(
+        "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n",
+    );
+    let stack = net::sock::stack();
+    for re in stack.routes.snapshot() {
+        let dev = stack.ifaces.lookup(re.iface);
+        let iface_name = dev.as_ref().map(|d| d.name()).unwrap_or("lo");
+        // Linux text encodes addrs in network-byte-order hex (LE
+        // from the on-the-wire perspective).
+        let dst_be = re.dst.as_u32().to_le();
+        let mask = if re.prefix_len == 0 { 0u32 }
+                   else { !0u32 << (32 - re.prefix_len) };
+        let _ = writeln!(s,
+            "{}\t{:08X}\t{:08X}\t0001\t0\t0\t0\t{:08X}\t0\t0\t0",
+            iface_name, dst_be, 0u32, mask.to_le(),
         );
-        let stack = net::sock::stack();
-        for re in stack.routes.snapshot() {
-            let dev = stack.ifaces.lookup(re.iface);
-            let iface_name = dev.as_ref().map(|d| d.name()).unwrap_or("lo");
-            // Linux text encodes addrs in network-byte-order hex (LE
-            // from the on-the-wire perspective).
-            let dst_be = re.dst.as_u32().to_le();
-            let mask = if re.prefix_len == 0 { 0u32 }
-                       else { !0u32 << (32 - re.prefix_len) };
-            let _ = writeln!(s,
-                "{}\t{:08X}\t{:08X}\t0001\t0\t0\t0\t{:08X}\t0\t0\t0",
-                iface_name, dst_be, 0u32, mask.to_le(),
-            );
-        }
-        s
     }
+    s.into_bytes()
 }
+/// `/proc/net/route` inode. # C: O(1)
+pub fn make_proc_net_route() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_0005 as Ino, net_route_body) }
 
 /// `/proc/net/arp` — ARP cache table.
-pub struct ProcNetArpInode;
-impl vfs::Inode for ProcNetArpInode {
-    fn ino(&self) -> vfs::Ino { 0xFEED_0006 }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { self.body().len() as u64 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        let body = self.body();
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
-        Ok(n)
-    }
+fn net_arp_body() -> alloc::vec::Vec<u8> {
+    // v1: empty ARP cache (loopback only). Header still
+    // emitted so iproute2 + others parse without erroring.
+    b"IP address       HW type     Flags       HW address            Mask     Device\n".to_vec()
 }
-
-impl ProcNetArpInode {
-    fn body(&self) -> alloc::string::String {
-        // v1: empty ARP cache (loopback only). Header still
-        // emitted so iproute2 + others parse without erroring.
-        alloc::string::String::from(
-            "IP address       HW type     Flags       HW address            Mask     Device\n",
-        )
-    }
-}
+/// `/proc/net/arp` inode. # C: O(1)
+pub fn make_proc_net_arp() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_0006 as Ino, net_arp_body) }
 
 /// `/proc/net/unix` — AF_UNIX socket table. netstat/ss/lsof
 /// probe this. v1 returns header + zero rows.
-pub struct ProcNetUnixInode;
-impl vfs::Inode for ProcNetUnixInode {
-    fn ino(&self) -> vfs::Ino { 0xFEED_0007 }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { self.body().len() as u64 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        let body = self.body();
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
-        Ok(n)
+fn net_unix_body() -> alloc::vec::Vec<u8> {
+    use core::fmt::Write as _;
+    let mut s = String::from(
+        "Num       RefCount Protocol Flags    Type St Inode Path\n",
+    );
+    // Each entry: opaque "Num" (we use a stable per-row counter),
+    // RefCount 02, Protocol 0, Flags 0x10000 for stream listeners
+    // (LISTENING) / 0 otherwise, Type (0001 stream | 0002 dgram),
+    // St 01 (UNCONNECTED for listener / bound dgram), Inode 0
+    // (no inode table linkage), Path.
+    let mut num: u64 = 1;
+    for (kind, path) in net::sock::UNIX_REGISTRY.snapshot_paths() {
+        let flags = if kind == 0x0001 { 0x10000u32 } else { 0u32 };
+        let path = net::unix_path_display(&path);
+        let _ = writeln!(s, "{:016x}: 00000002 00000000 {:08x} {:04x} 01 0 {}",
+            num, flags, kind, path);
+        num += 1;
     }
+    s.into_bytes()
 }
-
-impl ProcNetUnixInode {
-    fn body(&self) -> alloc::string::String {
-        use alloc::string::String;
-        use core::fmt::Write as _;
-        let mut s = String::from(
-            "Num       RefCount Protocol Flags    Type St Inode Path\n",
-        );
-        // Each entry: opaque "Num" (we use a stable per-row counter),
-        // RefCount 02, Protocol 0, Flags 0x10000 for stream listeners
-        // (LISTENING) / 0 otherwise, Type (0001 stream | 0002 dgram),
-        // St 01 (UNCONNECTED for listener / bound dgram), Inode 0
-        // (no inode table linkage), Path.
-        let mut num: u64 = 1;
-        for (kind, path) in net::sock::UNIX_REGISTRY.snapshot_paths() {
-            let flags = if kind == 0x0001 { 0x10000u32 } else { 0u32 };
-            let path = net::unix_path_display(&path);
-            let _ = writeln!(s, "{:016x}: 00000002 00000000 {:08x} {:04x} 01 0 {}",
-                num, flags, kind, path);
-            num += 1;
-        }
-        s
-    }
-}
+/// `/proc/net/unix` inode. # C: O(1)
+pub fn make_proc_net_unix() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_0007 as Ino, net_unix_body) }
 
 /// `/proc/net/if_inet6` — IPv6 per-iface address table.
 /// glibc + ifconfig probe this for V6 status. Format:
 ///   addr-hex(32) iface-idx(02) prefix(02) scope(02) flags(02) name
 /// Loopback ::1 only for v1.
-pub struct ProcNetIfInet6Inode;
-impl vfs::Inode for ProcNetIfInet6Inode {
-    fn ino(&self) -> vfs::Ino { 0xFEED_0008 }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { self.body().len() as u64 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        let body = self.body();
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
-        Ok(n)
-    }
+fn net_if_inet6_body() -> alloc::vec::Vec<u8> {
+    // ::1 loopback, idx 1, /128, scope=host(0x10), flags=permanent(0x80).
+    b"00000000000000000000000000000001 01 80 10 80 lo\n".to_vec()
 }
-
-impl ProcNetIfInet6Inode {
-    fn body(&self) -> alloc::string::String {
-        // ::1 loopback, idx 1, /128, scope=host(0x10), flags=permanent(0x80).
-        alloc::string::String::from(
-            "00000000000000000000000000000001 01 80 10 80 lo\n",
-        )
-    }
-}
+/// `/proc/net/if_inet6` inode. # C: O(1)
+pub fn make_proc_net_if_inet6() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_0008 as Ino, net_if_inet6_body) }
 
 /// `/proc/net/snmp` — protocol-level counters. netstat -s probes
 /// this. v1 returns just the header rows; counters all zero.
-pub struct ProcNetSnmpInode;
-impl vfs::Inode for ProcNetSnmpInode {
-    fn ino(&self) -> vfs::Ino { 0xFEED_0009 }
-    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { self.body().len() as u64 }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        let body = self.body();
-        let off = off as usize;
-        if off >= body.len() { return Ok(0); }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
-        Ok(n)
-    }
+fn net_snmp_body() -> alloc::vec::Vec<u8> {
+    (b"Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates\n\
+         Ip: 1 64 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n\
+         Icmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps\n\
+         Icmp: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n\
+         Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors\n\
+         Tcp: 1 200 120000 -1 0 0 0 0 0 0 0 0 0 0 0\n\
+         Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti\n\
+         Udp: 0 0 0 0 0 0 0 0\n" as &[u8]).to_vec()
 }
-
-impl ProcNetSnmpInode {
-    fn body(&self) -> alloc::string::String {
-        alloc::string::String::from(
-            "Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates\n\
-             Ip: 1 64 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n\
-             Icmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps\n\
-             Icmp: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n\
-             Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors\n\
-             Tcp: 1 200 120000 -1 0 0 0 0 0 0 0 0 0 0 0\n\
-             Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti\n\
-             Udp: 0 0 0 0 0 0 0 0\n",
-        )
-    }
-}
+/// `/proc/net/snmp` inode. # C: O(1)
+pub fn make_proc_net_snmp() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_0009 as Ino, net_snmp_body) }

@@ -1,112 +1,67 @@
 //! `/proc/self/*` + system pseudo-files (maps, cmdline, stat, status,
 //! environ, hostname, loadavg, meminfo, uptime, comm, fd). Split from
 //! `live.rs` to keep both under the 1000-line cap; re-exported via `live`.
+//!
+//! KEYSTONE struct-`Inode` model: each leaf is a `vfs::Inode` built by a
+//! `make_*` constructor over `dyn_file` (read-only generators) or a bespoke
+//! `FileOps` (hostname is writable; `/proc/self/fd` is a synthetic dir).
 
 use alloc::sync::Arc;
-use core::sync::atomic::Ordering;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
-use crate::StaticFileInode;
-use super::NEXT_INO;
-/// `/proc/self/maps` per `19§4`. Walks the current task's
-/// AddressSpace VMA tree and emits one line per VMA in
-/// `<start>-<end> <perms> <off> 00:00 <ino> <path>` form. v1
-/// path/offset/inode are stubs.
-pub struct ProcSelfMapsInode;
+use alloc::vec::Vec;
+use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
-impl ProcSelfMapsInode {
-    fn body() -> alloc::vec::Vec<u8> {
-        let mut out = alloc::vec::Vec::with_capacity(1024);
-        let cur = match sched::live::current() {
-            Some(c) => c,
-            None => return out,
-        };
-        // SAFETY: running task on this CPU; preempt-off; sole reader of the mm slot per the single-mutator invariant in `13§5`.
-        let mm = match unsafe { cur.mm_ref() } {
-            Some(m) => m.clone(),
-            None => return out,
-        };
-        let brk_lo = mm.brk_max().saturating_sub(0);
-        let brk_hi = mm.brk();
-        let _ = brk_lo;
-        for vma in mm.snapshot_vmas() {
-            push_hex(&mut out, vma.start.as_u64());
-            out.push(b'-');
-            push_hex(&mut out, vma.end.as_u64());
-            out.push(b' ');
-            // perms: rwx + p/s (private/shared) per Linux man page.
-            let p = vma.prot;
-            out.push(if p.contains(vmm::VmaProt::READ) {
-                b'r'
-            } else {
-                b'-'
-            });
-            out.push(if p.contains(vmm::VmaProt::WRITE) {
-                b'w'
-            } else {
-                b'-'
-            });
-            out.push(if p.contains(vmm::VmaProt::EXEC) {
-                b'x'
-            } else {
-                b'-'
-            });
-            out.push(if vma.flags.contains(vmm::VmaFlags::SHARED) {
-                b's'
-            } else {
-                b'p'
-            });
-            push(&mut out, b" 00000000 00:00 0 ");
-            // F158: synthesise pathname pseudo-tags Linux emits for
-            // unnamed VMAs. [stack] for GROWSDOWN; [heap] for the
-            // anon VMA covering the current brk range.
-            if vma.flags.contains(vmm::VmaFlags::GROWSDOWN) {
-                push(&mut out, b"[stack]");
-            } else if vma.start.as_u64() <= brk_hi
-                && vma.end.as_u64() > 0
-                && brk_hi > 0
-                && vma.end.as_u64() > brk_hi.saturating_sub(0x10000)
-                && matches!(vma.backing, vmm::VmaBacking::Anonymous)
-            {
-                push(&mut out, b"[heap]");
-            }
-            out.push(b'\n');
+/// `/proc/self/maps` per `19§4`. Walks the current task's AddressSpace VMA
+/// tree and emits one line per VMA in `<start>-<end> <perms> <off> 00:00
+/// <ino> <path>` form. v1 path/offset/inode are stubs.
+fn maps_body() -> Vec<u8> {
+    let mut out = Vec::with_capacity(1024);
+    let cur = match sched::live::current() {
+        Some(c) => c,
+        None => return out,
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of the mm slot per the single-mutator invariant in `13§5`.
+    let mm = match unsafe { cur.mm_ref() } {
+        Some(m) => m.clone(),
+        None => return out,
+    };
+    let brk_lo = mm.brk_max().saturating_sub(0);
+    let brk_hi = mm.brk();
+    let _ = brk_lo;
+    for vma in mm.snapshot_vmas() {
+        push_hex(&mut out, vma.start.as_u64());
+        out.push(b'-');
+        push_hex(&mut out, vma.end.as_u64());
+        out.push(b' ');
+        // perms: rwx + p/s (private/shared) per Linux man page.
+        let p = vma.prot;
+        out.push(if p.contains(vmm::VmaProt::READ) { b'r' } else { b'-' });
+        out.push(if p.contains(vmm::VmaProt::WRITE) { b'w' } else { b'-' });
+        out.push(if p.contains(vmm::VmaProt::EXEC) { b'x' } else { b'-' });
+        out.push(if vma.flags.contains(vmm::VmaFlags::SHARED) { b's' } else { b'p' });
+        push(&mut out, b" 00000000 00:00 0 ");
+        // F158: synthesise pathname pseudo-tags Linux emits for unnamed VMAs.
+        // [stack] for GROWSDOWN; [heap] for the anon VMA covering brk.
+        if vma.flags.contains(vmm::VmaFlags::GROWSDOWN) {
+            push(&mut out, b"[stack]");
+        } else if vma.start.as_u64() <= brk_hi
+            && vma.end.as_u64() > 0
+            && brk_hi > 0
+            && vma.end.as_u64() > brk_hi.saturating_sub(0x10000)
+            && matches!(vma.backing, vmm::VmaBacking::Anonymous)
+        {
+            push(&mut out, b"[heap]");
         }
-        out
+        out.push(b'\n');
     }
+    out
 }
 
-impl Inode for ProcSelfMapsInode {
-    fn ino(&self) -> Ino {
-        0x3000_1300
-    }
-    fn file_type(&self) -> FileType {
-        FileType::Regular
-    }
-    fn size(&self) -> u64 {
-        0
-    }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> {
-        Err(VfsError::Enotdir)
-    }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body = Self::body();
-        let off = off as usize;
-        if off >= body.len() {
-            return Ok(0);
-        }
-        let avail = &body[off..];
-        let n = avail.len().min(buf.len());
-        buf[..n].copy_from_slice(&avail[..n]);
-        Ok(n)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> {
-        Err(VfsError::Erofs)
-    }
-}
+/// `/proc/self/maps` inode. # C: O(1)
+pub fn make_proc_self_maps() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1300, maps_body) }
 
 /// Append `n` as lowercase hex (no `0x`) to `v`. Shared by the self/ + pid maps inodes.
 /// # C: O(hex digits)
-pub(crate) fn push_hex(v: &mut alloc::vec::Vec<u8>, mut n: u64) {
+pub(crate) fn push_hex(v: &mut Vec<u8>, mut n: u64) {
     if n == 0 {
         v.push(b'0');
         return;
@@ -115,11 +70,7 @@ pub(crate) fn push_hex(v: &mut alloc::vec::Vec<u8>, mut n: u64) {
     let mut i = 0;
     while n > 0 {
         let nib = (n & 0xf) as u8;
-        buf[i] = if nib < 10 {
-            b'0' + nib
-        } else {
-            b'a' + (nib - 10)
-        };
+        buf[i] = if nib < 10 { b'0' + nib } else { b'a' + (nib - 10) };
         n >>= 4;
         i += 1;
     }
@@ -129,186 +80,131 @@ pub(crate) fn push_hex(v: &mut alloc::vec::Vec<u8>, mut n: u64) {
     }
 }
 
-/// `/proc/self/cmdline` per `19§4`. Reads `Task.cmdline` snapshot
-/// (NUL-joined argv from the most recent execve). Falls back to
-/// `Task.name` + NUL when no execve has run yet.
-pub struct ProcSelfCmdlineInode;
-
-impl Inode for ProcSelfCmdlineInode {
-    fn ino(&self) -> Ino {
-        0x3000_1100
-    }
-    fn file_type(&self) -> FileType {
-        FileType::Regular
-    }
-    fn size(&self) -> u64 {
-        0
-    }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> {
-        Err(VfsError::Enotdir)
-    }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let mut body = alloc::vec::Vec::with_capacity(64);
-        let cur = sched::live::current();
-        // SAFETY: single-mutator per `13§5`; current task is the sole
-        // writer to its own cmdline slot, and we are it on this CPU.
-        let snapshot = cur.and_then(|c| unsafe { (*c.cmdline.get()).clone() });
-        if let Some(s) = snapshot {
-            push(&mut body, s.as_bytes());
-        } else {
-            let name = cur.map(|c| c.name).unwrap_or("init");
-            push(&mut body, name.as_bytes());
-            body.push(0);
-        }
-        let off = off as usize;
-        if off >= body.len() {
-            return Ok(0);
-        }
-        let avail = &body[off..];
-        let n = avail.len().min(buf.len());
-        buf[..n].copy_from_slice(&avail[..n]);
-        Ok(n)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> {
-        Err(VfsError::Erofs)
-    }
-}
-
-/// `/proc/self/stat` per `19§4` — single space-separated line of
-/// fields. v1: pid, comm in parens, state R, ppid, then zeros to
-/// pad to the canonical 52 fields.
-pub struct ProcSelfStatInode;
-
-impl Inode for ProcSelfStatInode {
-    fn ino(&self) -> Ino {
-        0x3000_1200
-    }
-    fn file_type(&self) -> FileType {
-        FileType::Regular
-    }
-    fn size(&self) -> u64 {
-        0
-    }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> {
-        Err(VfsError::Enotdir)
-    }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let mut body = alloc::vec::Vec::with_capacity(192);
-        let cur = sched::live::current();
-        // /proc/self/stat reports the VPID userspace sees (Linux field 1),
-        // not the opaque internal tid; PPid likewise resolves to the parent's
-        // vpid (mirrors pid_stat.rs; self fast-path used to leak internal tids).
-        let vpid = cur.map(|c| sched::live::registry::display_vpid(c.tid)).unwrap_or(1);
-        let ppid = cur.map(|c| sched::live::registry::parent_vpid(c.tid)).unwrap_or(0);
+/// `/proc/self/cmdline` per `19§4`. Reads `Task.cmdline` snapshot (NUL-joined
+/// argv from the most recent execve). Falls back to `Task.name` + NUL.
+fn self_cmdline_body() -> Vec<u8> {
+    let mut body = Vec::with_capacity(64);
+    let cur = sched::live::current();
+    // SAFETY: single-mutator per `13§5`; current task is the sole writer to
+    // its own cmdline slot, and we are it on this CPU.
+    let snapshot = cur.and_then(|c| unsafe { (*c.cmdline.get()).clone() });
+    if let Some(s) = snapshot {
+        push(&mut body, s.as_bytes());
+    } else {
         let name = cur.map(|c| c.name).unwrap_or("init");
-        push_u64(&mut body, vpid);
-        push(&mut body, b" (");
         push(&mut body, name.as_bytes());
-        let state_char = cur.map(|c| c.state().linux_char()).unwrap_or(b'R');
-        push(&mut body, b") ");
-        body.push(state_char);
-        body.push(b' ');
-        push_u64(&mut body, ppid);
-        // pad with zeros to fill enough fields for libc parsers.
-        for _ in 0..48 {
-            push(&mut body, b" 0");
-        }
-        body.push(b'\n');
-        let off = off as usize;
-        if off >= body.len() {
-            return Ok(0);
-        }
-        let avail = &body[off..];
-        let n = avail.len().min(buf.len());
-        buf[..n].copy_from_slice(&avail[..n]);
-        Ok(n)
+        body.push(0);
     }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> {
-        Err(VfsError::Erofs)
-    }
+    body
 }
+/// `/proc/self/cmdline` inode. # C: O(1)
+pub fn make_proc_self_cmdline() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1100, self_cmdline_body) }
 
-/// `/proc/self/status` per `19§4`. Synthesises body at read time
-/// from the current task; bash and many libc fns parse this.
-pub struct ProcSelfStatusInode;
+/// `/proc/self/stat` per `19§4` — single space-separated line of fields. v1:
+/// pid, comm in parens, state R, ppid, then zeros to pad to ~52 fields.
+fn self_stat_body() -> Vec<u8> {
+    let mut body = Vec::with_capacity(192);
+    let cur = sched::live::current();
+    // /proc/self/stat reports the VPID userspace sees (Linux field 1), not the
+    // opaque internal tid; PPid likewise resolves to the parent's vpid.
+    let vpid = cur.map(|c| sched::live::registry::display_vpid(c.tid)).unwrap_or(1);
+    let ppid = cur.map(|c| sched::live::registry::parent_vpid(c.tid)).unwrap_or(0);
+    let name = cur.map(|c| c.name).unwrap_or("init");
+    push_u64(&mut body, vpid);
+    push(&mut body, b" (");
+    push(&mut body, name.as_bytes());
+    let state_char = cur.map(|c| c.state().linux_char()).unwrap_or(b'R');
+    push(&mut body, b") ");
+    body.push(state_char);
+    body.push(b' ');
+    push_u64(&mut body, ppid);
+    // pad with zeros to fill enough fields for libc parsers.
+    for _ in 0..48 {
+        push(&mut body, b" 0");
+    }
+    body.push(b'\n');
+    body
+}
+/// `/proc/self/stat` inode. # C: O(1)
+pub fn make_proc_self_stat() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1200, self_stat_body) }
 
-impl ProcSelfStatusInode {
-    fn body() -> alloc::vec::Vec<u8> {
-        let mut out = alloc::vec::Vec::with_capacity(256);
-        let cur = sched::live::current();
-        // VPID userspace sees (Tgid/Pid), and the parent's vpid (PPid) — not
-        // the opaque internal tids the self fast-path used to leak.
-        let tid = cur.map(|c| sched::live::registry::display_vpid(c.tid)).unwrap_or(1);
-        let ppid = cur.map(|c| sched::live::registry::parent_vpid(c.tid)).unwrap_or(0);
-        let name = cur.map(|c| c.name).unwrap_or("oxide");
-        push(&mut out, b"Name:\t");
-        push(&mut out, name.as_bytes());
-        push(&mut out, b"\n");
-        let state_label = cur
-            .map(|c| c.state().linux_status_label())
-            .unwrap_or("R (running)");
-        push(&mut out, b"State:\t");
-        push(&mut out, state_label.as_bytes());
-        push(&mut out, b"\n");
-        push(&mut out, b"Tgid:\t");
-        push_u64(&mut out, tid);
-        push(&mut out, b"\nPid:\t");
-        push_u64(&mut out, tid);
-        push(&mut out, b"\nPPid:\t");
-        push_u64(&mut out, ppid);
-        push(&mut out, b"\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n");
-        push(&mut out, b"FDSize:\t");
-        let fds = cur
-            // SAFETY: fd_table slot single-mutator per `13§5`; current task is the running task on this CPU and the sole writer.
-            .and_then(|c| unsafe { (*c.fd_table.get()).as_ref().cloned() })
-            .map(|t| t.count() as u64)
-            .unwrap_or(0);
-        push_u64(&mut out, fds);
-        push(&mut out, b"\n");
-        push(&mut out, b"Groups:\t\n");
-        let (vm, d, s, e, l) = cur
-            // SAFETY: mm slot single-mutator per `13§5`; sole writer is this running task per the address-space ownership rule.
-            .and_then(|c| unsafe {
-                (*c.mm.get()).as_ref().map(|m| {
-                    let (mut v, mut d, mut s, mut e, mut l) = (0u64, 0u64, 0u64, 0u64, 0u64);
-                    for x in m.snapshot_vmas() {
-                        let kb = (x.end.as_u64() - x.start.as_u64()) / 1024;
-                        v += kb;
-                        if x.flags.contains(vmm::VmaFlags::GROWSDOWN) {
-                            s += kb;
-                        } else if x.prot.contains(vmm::VmaProt::EXEC) {
-                            e += kb;
-                        } else if x.prot.contains(vmm::VmaProt::WRITE) {
-                            d += kb;
-                        } else {
-                            l += kb;
-                        }
+/// `/proc/self/status` per `19§4`. Synthesises body at read time from the
+/// current task; bash and many libc fns parse this.
+fn self_status_body() -> Vec<u8> {
+    let mut out = Vec::with_capacity(256);
+    let cur = sched::live::current();
+    let tid = cur.map(|c| sched::live::registry::display_vpid(c.tid)).unwrap_or(1);
+    let ppid = cur.map(|c| sched::live::registry::parent_vpid(c.tid)).unwrap_or(0);
+    let name = cur.map(|c| c.name).unwrap_or("oxide");
+    push(&mut out, b"Name:\t");
+    push(&mut out, name.as_bytes());
+    push(&mut out, b"\n");
+    let state_label = cur
+        .map(|c| c.state().linux_status_label())
+        .unwrap_or("R (running)");
+    push(&mut out, b"State:\t");
+    push(&mut out, state_label.as_bytes());
+    push(&mut out, b"\n");
+    push(&mut out, b"Tgid:\t");
+    push_u64(&mut out, tid);
+    push(&mut out, b"\nPid:\t");
+    push_u64(&mut out, tid);
+    push(&mut out, b"\nPPid:\t");
+    push_u64(&mut out, ppid);
+    push(&mut out, b"\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n");
+    push(&mut out, b"FDSize:\t");
+    let fds = cur
+        // SAFETY: fd_table slot single-mutator per `13§5`; current task is the running task on this CPU and the sole writer.
+        .and_then(|c| unsafe { (*c.fd_table.get()).as_ref().cloned() })
+        .map(|t| t.count() as u64)
+        .unwrap_or(0);
+    push_u64(&mut out, fds);
+    push(&mut out, b"\n");
+    push(&mut out, b"Groups:\t\n");
+    let (vm, d, s, e, l) = cur
+        // SAFETY: mm slot single-mutator per `13§5`; sole writer is this running task per the address-space ownership rule.
+        .and_then(|c| unsafe {
+            (*c.mm.get()).as_ref().map(|m| {
+                let (mut v, mut d, mut s, mut e, mut l) = (0u64, 0u64, 0u64, 0u64, 0u64);
+                for x in m.snapshot_vmas() {
+                    let kb = (x.end.as_u64() - x.start.as_u64()) / 1024;
+                    v += kb;
+                    if x.flags.contains(vmm::VmaFlags::GROWSDOWN) {
+                        s += kb;
+                    } else if x.prot.contains(vmm::VmaProt::EXEC) {
+                        e += kb;
+                    } else if x.prot.contains(vmm::VmaProt::WRITE) {
+                        d += kb;
+                    } else {
+                        l += kb;
                     }
-                    (v, d, s, e, l)
-                })
+                }
+                (v, d, s, e, l)
             })
-            .unwrap_or((0, 0, 0, 0, 0));
-        let row = |out: &mut alloc::vec::Vec<u8>, k: &[u8], v: u64| {
-            push(out, k);
-            push_u64(out, v);
-            push(out, b" kB\n");
-        };
-        for &(k, v) in &[
-            (b"VmPeak:\t" as &[u8], vm),
-            (b"VmSize:\t", vm),
-            (b"VmHWM:\t", vm),
-            (b"VmRSS:\t", vm),
-            (b"VmData:\t", d),
-            (b"VmStk:\t", s),
-            (b"VmExe:\t", e),
-            (b"VmLib:\t", l),
-        ] {
-            row(&mut out, k, v);
-        }
-        push(&mut out, STATUS_TAIL);
-        out
+        })
+        .unwrap_or((0, 0, 0, 0, 0));
+    let row = |out: &mut Vec<u8>, k: &[u8], v: u64| {
+        push(out, k);
+        push_u64(out, v);
+        push(out, b" kB\n");
+    };
+    for &(k, v) in &[
+        (b"VmPeak:\t" as &[u8], vm),
+        (b"VmSize:\t", vm),
+        (b"VmHWM:\t", vm),
+        (b"VmRSS:\t", vm),
+        (b"VmData:\t", d),
+        (b"VmStk:\t", s),
+        (b"VmExe:\t", e),
+        (b"VmLib:\t", l),
+    ] {
+        row(&mut out, k, v);
     }
+    push(&mut out, STATUS_TAIL);
+    out
 }
+/// `/proc/self/status` inode. # C: O(1)
+pub fn make_proc_self_status() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1000, self_status_body) }
 
 const STATUS_TAIL: &[u8] = b"\
 Threads:\t1\n\
@@ -320,41 +216,12 @@ CapEff:\t000001ffffffffff\nCapBnd:\t000001ffffffffff\n\
 Cpus_allowed:\t1\nCpus_allowed_list:\t0\n\
 Mems_allowed:\t1\nMems_allowed_list:\t0\n";
 
-impl Inode for ProcSelfStatusInode {
-    fn ino(&self) -> Ino {
-        0x3000_1000
-    }
-    fn file_type(&self) -> FileType {
-        FileType::Regular
-    }
-    fn size(&self) -> u64 {
-        0
-    }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> {
-        Err(VfsError::Enotdir)
-    }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body = Self::body();
-        let off = off as usize;
-        if off >= body.len() {
-            return Ok(0);
-        }
-        let avail = &body[off..];
-        let n = avail.len().min(buf.len());
-        buf[..n].copy_from_slice(&avail[..n]);
-        Ok(n)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> {
-        Err(VfsError::Erofs)
-    }
-}
-
 /// # C: O(len s)
-pub(crate) fn push(v: &mut alloc::vec::Vec<u8>, s: &[u8]) {
+pub(crate) fn push(v: &mut Vec<u8>, s: &[u8]) {
     v.extend_from_slice(s);
 }
 /// # C: O(log10 n)
-pub(crate) fn push_u64(v: &mut alloc::vec::Vec<u8>, mut n: u64) {
+pub(crate) fn push_u64(v: &mut Vec<u8>, mut n: u64) {
     if n == 0 {
         v.push(b'0');
         return;
@@ -412,8 +279,8 @@ CPU part\t: 0xd03\n\
 CPU revision\t: 4\n\
 \n";
 
-// Canonical static bodies retained for documentation; live impls
-// build dynamic versions above.
+// Canonical static bodies retained for documentation; live impls build
+// dynamic versions above.
 pub(crate) const FILESYSTEMS:  &[u8] = b"nodev\tsysfs\nnodev\tproc\nnodev\tdevtmpfs\nnodev\ttmpfs\nnodev\tdevpts\nnodev\tcgroup\nnodev\tcgroup2\nnodev\tpipefs\nnodev\tsockfs\nnodev\tbpf\nnodev\tmqueue\nnodev\tautofs\nnodev\tbinfmt_misc\nnodev\trpc_pipefs\n\text4\n\text2\n\text3\n\tiso9660\n\tvfat\n\tmsdos\n\tfuseblk\n";
 // /proc/mounts + /proc/<pid>/mountinfo are now generated dynamically
 // from the live `vfs::mount` table — see `crate::mounts`.
@@ -437,217 +304,86 @@ Max nice priority         0                    0                    \n\
 Max realtime priority     0                    0                    \n\
 Max realtime timeout      unlimited            unlimited            us\n";
 
-/// `/proc/self/environ` per `19§4`. Reads the NUL-joined envp
-/// snapshot taken at execve. Empty for tasks with no execve.
-pub struct ProcSelfEnvironInode;
-
-impl Inode for ProcSelfEnvironInode {
-    fn ino(&self) -> Ino {
-        0x3000_1800
-    }
-    fn file_type(&self) -> FileType {
-        FileType::Regular
-    }
-    fn size(&self) -> u64 {
-        0
-    }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> {
-        Err(VfsError::Enotdir)
-    }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let cur = sched::live::current();
-        // SAFETY: environ slot single-mutator per `13§5`.
-        let snap = cur.and_then(|c| unsafe { (*c.environ.get()).clone() });
-        let body: &[u8] = match snap.as_ref() {
-            Some(s) => s.as_bytes(),
-            None => &[],
-        };
-        let off = off as usize;
-        if off >= body.len() {
-            return Ok(0);
-        }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> {
-        Err(VfsError::Erofs)
+/// `/proc/self/environ` per `19§4`. Reads the NUL-joined envp snapshot taken
+/// at execve. Empty for tasks with no execve.
+fn self_environ_body() -> Vec<u8> {
+    let cur = sched::live::current();
+    // SAFETY: environ slot single-mutator per `13§5`.
+    let snap = cur.and_then(|c| unsafe { (*c.environ.get()).clone() });
+    match snap {
+        Some(s) => s.into_bytes(),
+        None => Vec::new(),
     }
 }
+/// `/proc/self/environ` inode. # C: O(1)
+pub fn make_proc_self_environ() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1800, self_environ_body) }
 
-/// `/proc/sys/kernel/hostname` per Linux sysctl convention.
-/// Reads the live `hostname` slot + trailing newline; writes
-/// (echo "newhost" > /proc/sys/kernel/hostname) update the slot.
-pub struct ProcHostnameInode;
-
-impl Inode for ProcHostnameInode {
-    fn ino(&self) -> Ino {
-        0x3000_1C00
-    }
-    fn file_type(&self) -> FileType {
-        FileType::Regular
-    }
-    fn size(&self) -> u64 {
-        0
-    }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> {
-        Err(VfsError::Enotdir)
-    }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+/// `i_fop` for `/proc/sys/kernel/hostname` — read the live hostname slot +
+/// trailing newline; write updates the slot.
+struct HostnameFileOps;
+impl FileOps for HostnameFileOps {
+    fn read(&self, _inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let mut body = crate::hooks::hostname();
         body.push(b'\n');
-        let off = off as usize;
-        if off >= body.len() {
-            return Ok(0);
-        }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
+        Ok(crate::dyn_file::read_at(&body, off, buf))
     }
-    fn write(&self, _off: u64, src: &[u8]) -> KResult<usize> {
+    fn write(&self, _inode: &Inode, _off: u64, src: &[u8]) -> KResult<usize> {
         crate::hooks::set_hostname(src);
         Ok(src.len())
     }
 }
+/// `/proc/sys/kernel/hostname` inode (writable). # C: O(1)
+pub fn make_proc_hostname() -> InodeRef {
+    InodeBuilder::new(0x3000_1C00, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(HostnameFileOps))
+        .build()
+}
 
 /// `/proc/loadavg` per `19§4`. "<1m> <5m> <15m> <run>/<total> <last_pid>\n".
-/// Load averages are the real 1/5/15-min EWMA (`sched::loadavg`); run/total +
-/// last_pid come from the live task registry.
-pub struct ProcLoadavgInode;
-
-impl Inode for ProcLoadavgInode {
-    fn ino(&self) -> Ino {
-        0x3000_1B00
-    }
-    fn file_type(&self) -> FileType {
-        FileType::Regular
-    }
-    fn size(&self) -> u64 {
-        0
-    }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> {
-        Err(VfsError::Enotdir)
-    }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let mut body = alloc::vec::Vec::with_capacity(64);
-        // B118: loadavg's last field is last_pid — a Linux PID, so it must
-        // come from VPID space (live_vpids, sorted) not the opaque internal
-        // tid. total = live task count (either list has the same length).
-        let vpids = sched::live::registry::live_vpids();
-        let total = vpids.len() as u64;
-        let last = vpids.last().copied().unwrap_or(1) as u64;
-        let (_, running) = sched::live::registry::live_counts();
-        let avg = sched::loadavg::snapshot();
-        for a in avg {
-            let (i, f) = sched::loadavg::fmt_parts(a);
-            push_u64(&mut body, i);
-            body.push(b'.');
-            if f < 10 { body.push(b'0'); }
-            push_u64(&mut body, f);
-            body.push(b' ');
-        }
-        push_u64(&mut body, running);
-        body.push(b'/');
-        push_u64(&mut body, total);
+fn loadavg_body() -> Vec<u8> {
+    let mut body = Vec::with_capacity(64);
+    // B118: loadavg's last field is last_pid — a Linux PID, so it must come
+    // from VPID space (live_vpids, sorted). total = live task count.
+    let vpids = sched::live::registry::live_vpids();
+    let total = vpids.len() as u64;
+    let last = vpids.last().copied().unwrap_or(1) as u64;
+    let (_, running) = sched::live::registry::live_counts();
+    let avg = sched::loadavg::snapshot();
+    for a in avg {
+        let (i, f) = sched::loadavg::fmt_parts(a);
+        push_u64(&mut body, i);
+        body.push(b'.');
+        if f < 10 { body.push(b'0'); }
+        push_u64(&mut body, f);
         body.push(b' ');
-        push_u64(&mut body, last);
-        body.push(b'\n');
-        let off = off as usize;
-        if off >= body.len() {
-            return Ok(0);
-        }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
     }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> {
-        Err(VfsError::Erofs)
-    }
+    push_u64(&mut body, running);
+    body.push(b'/');
+    push_u64(&mut body, total);
+    body.push(b' ');
+    push_u64(&mut body, last);
+    body.push(b'\n');
+    body
 }
+/// `/proc/loadavg` inode. # C: O(1)
+pub fn make_proc_loadavg() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1B00, loadavg_body) }
 
-/// `/proc/meminfo` per `19§4`. Reports MemTotal / MemFree / MemAvailable
-/// from the live PMM allocator state in kB.
-pub struct ProcMeminfoInode;
-
-impl Inode for ProcMeminfoInode {
-    fn ino(&self) -> Ino {
-        0x3000_1A00
-    }
-    fn file_type(&self) -> FileType {
-        FileType::Regular
-    }
-    fn size(&self) -> u64 {
-        0
-    }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> {
-        Err(VfsError::Enotdir)
-    }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body = crate::meminfo::build();
-        let off = off as usize;
-        if off >= body.len() {
-            return Ok(0);
-        }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> {
-        Err(VfsError::Erofs)
-    }
-}
-
-fn pmm_kb_stats() -> (u64, u64) {
-    match pmm::setup::pmm_static() {
-        Some(p) => {
-            let free = p.free_pages() * 4; // 4 KiB pages
-            let alloc = p.allocated_pages() * 4;
-            (free, alloc)
-        }
-        None => (0, 0),
-    }
-}
+/// `/proc/meminfo` inode. # C: O(1)
+pub fn make_proc_meminfo() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1A00, crate::meminfo::build) }
 
 /// `/proc/uptime` per `19§4`. "<seconds.cs> <idle_seconds.cs>\n".
-/// First field = monotonic clock; second = summed per-CPU idle time
-/// from `sched::cpustat` (CLK_TCK=100 → 1 idle tick = 1 centisecond),
-/// matching Linux where idle is the all-CPU sum (can exceed uptime).
-pub struct ProcUptimeInode;
-
-impl Inode for ProcUptimeInode {
-    fn ino(&self) -> Ino {
-        0x3000_1900
-    }
-    fn file_type(&self) -> FileType {
-        FileType::Regular
-    }
-    fn size(&self) -> u64 {
-        0
-    }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> {
-        Err(VfsError::Enotdir)
-    }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let mut body = alloc::vec::Vec::with_capacity(48);
-        let ns = uptime_ns();
-        push_uptime(&mut body, ns);
-        body.push(b' ');
-        // idle: all-CPU summed idle centiseconds → ns for push_uptime.
-        let idle_cs = sched::cpustat::snapshot().2;
-        push_uptime(&mut body, idle_cs.saturating_mul(10_000_000));
-        body.push(b'\n');
-        let off = off as usize;
-        if off >= body.len() {
-            return Ok(0);
-        }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> {
-        Err(VfsError::Erofs)
-    }
+fn uptime_body() -> Vec<u8> {
+    let mut body = Vec::with_capacity(48);
+    let ns = uptime_ns();
+    push_uptime(&mut body, ns);
+    body.push(b' ');
+    // idle: all-CPU summed idle centiseconds → ns for push_uptime.
+    let idle_cs = sched::cpustat::snapshot().2;
+    push_uptime(&mut body, idle_cs.saturating_mul(10_000_000));
+    body.push(b'\n');
+    body
 }
+/// `/proc/uptime` inode. # C: O(1)
+pub fn make_proc_uptime() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1900, uptime_body) }
 
 #[cfg(target_arch = "x86_64")]
 fn uptime_ns() -> u64 {
@@ -660,7 +396,7 @@ fn uptime_ns() -> u64 {
     hal_aarch64::ArmTimerOps::monotonic_ns().0
 }
 
-fn push_uptime(out: &mut alloc::vec::Vec<u8>, ns: u64) {
+fn push_uptime(out: &mut Vec<u8>, ns: u64) {
     let total_cs = ns / 10_000_000;
     let secs = total_cs / 100;
     let cs = total_cs % 100;
@@ -672,75 +408,45 @@ fn push_uptime(out: &mut alloc::vec::Vec<u8>, ns: u64) {
     push_u64(out, cs);
 }
 
-/// `/proc/self/comm` per `19§4`. Reads `current().name` plus a
-/// trailing newline. Real Linux also lets userspace `write()` it
-/// to rename the thread; v1 is read-only.
-pub struct ProcSelfCommInode;
+/// `/proc/self/comm` per `19§4`. Reads `current().name` plus a trailing
+/// newline.
+fn self_comm_body() -> Vec<u8> {
+    let mut body = Vec::with_capacity(32);
+    let name = sched::live::current().map(|c| c.name).unwrap_or("oxide");
+    push(&mut body, name.as_bytes());
+    body.push(b'\n');
+    body
+}
+/// `/proc/self/comm` inode. # C: O(1)
+pub fn make_proc_self_comm() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1700, self_comm_body) }
 
-impl Inode for ProcSelfCommInode {
-    fn ino(&self) -> Ino {
-        0x3000_1700
-    }
-    fn file_type(&self) -> FileType {
-        FileType::Regular
-    }
-    fn size(&self) -> u64 {
-        0
-    }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> {
-        Err(VfsError::Enotdir)
-    }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let mut body = alloc::vec::Vec::with_capacity(32);
-        let name = sched::live::current().map(|c| c.name).unwrap_or("oxide");
-        push(&mut body, name.as_bytes());
-        body.push(b'\n');
-        let off = off as usize;
-        if off >= body.len() {
-            return Ok(0);
-        }
-        let n = (body.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&body[off..off + n]);
-        Ok(n)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> {
-        Err(VfsError::Erofs)
-    }
+pub use crate::cmdline::make_proc_cmdline;
+
+/// Resolve a child of `/proc/self/fd` (a decimal fd → magic symlink).
+fn self_fd_lookup(name: &str) -> KResult<InodeRef> {
+    let fd: i32 = name.parse().map_err(|_| VfsError::Enoent)?;
+    let cur = sched::live::current().ok_or(VfsError::Enoent)?;
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = unsafe { cur.fd_table_ref() }
+        .ok_or(VfsError::Enoent)?
+        .clone();
+    let file = fdt.get(fd).map_err(|_| VfsError::Enoent)?;
+    // Linux: /proc/<pid>/fd/<n> readlink → file's ABSOLUTE path
+    // (ttyname requires /dev/pts/<n>, not the basename "<n>").
+    Ok(crate::proc_links::fd_link_for_path(
+        &file.dentry().absolute_path(),
+        fd,
+    ))
 }
 
-pub use crate::cmdline::ProcCmdlineInode;
-
-/// `/proc/self/fd` directory. Walks `current().fd_table` and emits
-/// each live fd as a decimal name. lookup(name) parses the fd back
-/// and returns a placeholder inode mirroring the underlying File.
-pub struct ProcSelfFdInode;
-
-impl Inode for ProcSelfFdInode {
-    fn ino(&self) -> Ino {
-        0x3000_1500
-    }
-    fn file_type(&self) -> FileType {
-        FileType::Directory
-    }
-    fn size(&self) -> u64 {
-        0
-    }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
-        let fd: i32 = name.parse().map_err(|_| VfsError::Enoent)?;
-        let cur = sched::live::current().ok_or(VfsError::Enoent)?;
-        // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-        let fdt = unsafe { cur.fd_table_ref() }
-            .ok_or(VfsError::Enoent)?
-            .clone();
-        let file = fdt.get(fd).map_err(|_| VfsError::Enoent)?;
-        // Linux: /proc/<pid>/fd/<n> readlink → file's ABSOLUTE path
-        // (ttyname requires /dev/pts/<n>, not the basename "<n>").
-        Ok(crate::proc_links::fd_link_for_path(
-            &file.dentry().absolute_path(),
-            fd,
-        ))
-    }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+/// `i_op`/`i_fop` for `/proc/self/fd` — lookup parses the fd, readdir walks
+/// the live fd table.
+struct ProcSelfFdOps;
+impl InodeOps for ProcSelfFdOps {
+    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> { self_fd_lookup(name) }
+}
+impl FileOps for ProcSelfFdOps {
+    fn iterate(&self, _inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let cur = match sched::live::current() {
             Some(c) => c,
             None => return Ok(off),
@@ -770,7 +476,7 @@ impl Inode for ProcSelfFdInode {
             }
             buf[..n].reverse();
             let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
-            let ino = self.lookup(s).map(|i| i.ino()).unwrap_or(0);
+            let ino = self_fd_lookup(s).map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, s, FileType::Symlink) {
                 return Ok(next);
             }
@@ -778,16 +484,12 @@ impl Inode for ProcSelfFdInode {
         }
         Ok(idx as u64)
     }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> {
-        Err(VfsError::Eisdir)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> {
-        Err(VfsError::Erofs)
-    }
 }
 
-/// `/proc` root directory inode. readdir emits live tids (decimal
-/// names) plus `self`. lookup parses tids and returns a per-pid dir.
-pub use crate::proc_links::{
-    ProcFdLinkInode, ProcSelfCwdInode, ProcSelfExeInode, ProcSelfRootInode,
-};
+/// `/proc/self/fd` directory inode. # C: O(1)
+pub fn make_proc_self_fd() -> InodeRef {
+    InodeBuilder::new(0x3000_1500, mk_mode(FileType::Directory, 0o555), Arc::new(ProcSelfFdOps), Arc::new(ProcSelfFdOps))
+        .build()
+}
+
+pub use crate::proc_links::{make_proc_self_cwd, make_proc_self_exe, make_proc_self_root};

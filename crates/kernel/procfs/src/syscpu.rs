@@ -7,27 +7,20 @@
 // (`online`/`present`/`possible`/`offline`/`kernel_max`/`isolated`) are
 // the live cpumask. nproc / htop / lscpu (`_SC_NPROCESSORS_CONF` reads
 // the `cpuN` dirs) / libnuma / systemd walk this subtree.
+//
+// KEYSTONE struct-`Inode` model: each directory is a `vfs::Inode` whose
+// `i_op->lookup` + `i_fop->iterate` read the per-inode index off `i_private`;
+// leaf attributes are `dyn_file::make_owned_file` / `make_gen_file` inodes.
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::string::String;
 use alloc::sync::Arc;
 use core::fmt::Write as _;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 /// Live online-CPU count, clamped to a real range.
 fn ncpu() -> usize {
     (cpu::smp::online_count() as usize).clamp(1, cpu::MAX_CPUS)
-}
-
-/// Serve `body[off..]` into `buf` (the shared offset-read tail).
-fn read_body(body: &[u8], off: u64, buf: &mut [u8]) -> KResult<usize> {
-    let off = off as usize;
-    if off >= body.len() {
-        return Ok(0);
-    }
-    let n = (body.len() - off).min(buf.len());
-    buf[..n].copy_from_slice(&body[off..off + n]);
-    Ok(n)
 }
 
 /// Linux cpumask list form: `0` for one CPU, `0-N` for N+1.
@@ -50,41 +43,8 @@ fn mask_hex(bits: u64) -> String {
     s
 }
 
-// ---- a generic read-only leaf carrying an owned body --------------------
-
-/// Read-only `/sys` attribute whose body is computed once per construction
-/// (cheap; the dir's `lookup` builds it on demand).
-struct AttrInode {
-    ino: Ino,
-    body: alloc::vec::Vec<u8>,
-}
-impl AttrInode {
-    fn new(ino: Ino, body: String) -> InodeRef {
-        Arc::new(AttrInode { ino, body: body.into_bytes() }) as InodeRef
-    }
-}
-impl Inode for AttrInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> { read_body(&self.body, off, buf) }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
-}
-
-/// `online`/`present`/`possible` — the live cpumask list, re-read every
-/// time so it tracks `online_count()` (Linux `cpu_*_mask` show).
-struct CpuRangeInode;
-impl Inode for CpuRangeInode {
-    fn ino(&self) -> Ino { 0x3000_1C01 }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        read_body(range_list(ncpu()).as_bytes(), off, buf)
-    }
-    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
-}
+/// Read-only `/sys` attribute whose body is computed once at lookup. # C: O(1)
+fn attr(ino: Ino, body: String) -> InodeRef { crate::dyn_file::make_owned_file(ino, body.into_bytes()) }
 
 // ---- /sys/devices/system/cpu (root) -------------------------------------
 
@@ -94,29 +54,35 @@ const ROOT_FILES: &[&str] = &[
     "kernel_max", "uevent", "modalias",
 ];
 
-pub struct SysCpuRootInode;
-impl Inode for SysCpuRootInode {
-    fn ino(&self) -> Ino { 0x3000_1C00 }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
-        match name {
-            "online" | "present" | "possible" => Ok(Arc::new(CpuRangeInode) as InodeRef),
-            "offline" | "isolated" | "nohz_full" => Ok(AttrInode::new(0x3000_1C02, String::from("\n"))),
-            // Linux kernel_max = CONFIG_NR_CPUS-1 (the largest possible id).
-            "kernel_max" => Ok(AttrInode::new(0x3000_1C03, {
-                let mut s = String::new();
-                let _ = write!(s, "{}\n", cpu::MAX_CPUS - 1);
-                s
-            })),
-            "uevent" | "modalias" => Ok(AttrInode::new(0x3000_1C04, String::new())),
-            _ => match parse_cpu_n(name) {
-                Some(c) if c < ncpu() => Ok(Arc::new(SysCpuNInode { c }) as InodeRef),
-                _ => Err(VfsError::Enoent),
-            },
-        }
+/// `online`/`present`/`possible` body — the live cpumask list, re-read every
+/// time so it tracks `online_count()` (Linux `cpu_*_mask` show).
+fn cpu_range_body() -> alloc::vec::Vec<u8> { range_list(ncpu()).into_bytes() }
+
+/// Resolve a child of `/sys/devices/system/cpu`.
+fn root_lookup(name: &str) -> KResult<InodeRef> {
+    match name {
+        "online" | "present" | "possible" => Ok(crate::dyn_file::make_gen_file(0x3000_1C01 as Ino, cpu_range_body)),
+        "offline" | "isolated" | "nohz_full" => Ok(attr(0x3000_1C02, String::from("\n"))),
+        // Linux kernel_max = CONFIG_NR_CPUS-1 (the largest possible id).
+        "kernel_max" => Ok(attr(0x3000_1C03, {
+            let mut s = String::new();
+            let _ = write!(s, "{}\n", cpu::MAX_CPUS - 1);
+            s
+        })),
+        "uevent" | "modalias" => Ok(attr(0x3000_1C04, String::new())),
+        _ => match parse_cpu_n(name) {
+            Some(c) if c < ncpu() => Ok(make_syscpu_n(c)),
+            _ => Err(VfsError::Enoent),
+        },
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+}
+
+struct SysCpuRootOps;
+impl InodeOps for SysCpuRootOps {
+    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> { root_lookup(name) }
+}
+impl FileOps for SysCpuRootOps {
+    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let mut idx = off as usize;
         let n = ncpu();
         let total = ROOT_FILES.len() + n;
@@ -132,7 +98,7 @@ impl Inode for SysCpuRootInode {
                 name = buf.as_str();
                 ft = FileType::Directory;
             }
-            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, name, ft) {
                 return Ok(next);
             }
@@ -140,6 +106,12 @@ impl Inode for SysCpuRootInode {
         }
         Ok(idx as u64)
     }
+}
+
+/// `/sys/devices/system/cpu` root dir inode. # C: O(1)
+pub fn make_syscpu_root() -> InodeRef {
+    InodeBuilder::new(0x3000_1C00, mk_mode(FileType::Directory, 0o555), Arc::new(SysCpuRootOps), Arc::new(SysCpuRootOps))
+        .build()
 }
 
 /// Parse a `cpu<N>` directory name to its index.
@@ -151,22 +123,27 @@ fn parse_cpu_n(name: &str) -> Option<usize> {
 
 const CPUN_FILES: &[&str] = &["online", "uevent"];
 
-pub struct SysCpuNInode {
-    c: usize,
-}
-impl Inode for SysCpuNInode {
-    fn ino(&self) -> Ino { 0x3000_1D00 + self.c as Ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
-        match name {
-            "online" => Ok(AttrInode::new(0x3000_1D80 + self.c as Ino, String::from("1\n"))),
-            "uevent" => Ok(AttrInode::new(0x3000_1DC0 + self.c as Ino, String::from("DRIVER=processor\n"))),
-            "topology" => Ok(Arc::new(SysCpuTopologyInode { c: self.c }) as InodeRef),
-            _ => Err(VfsError::Enoent),
-        }
+/// `i_private` for a `cpuN` device directory. # C: O(1)
+pub struct SysCpuNInode { c: usize }
+
+fn cpu_n_lookup(c: usize, name: &str) -> KResult<InodeRef> {
+    match name {
+        "online" => Ok(attr(0x3000_1D80 + c as Ino, String::from("1\n"))),
+        "uevent" => Ok(attr(0x3000_1DC0 + c as Ino, String::from("DRIVER=processor\n"))),
+        "topology" => Ok(make_syscpu_topology(c)),
+        _ => Err(VfsError::Enoent),
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+}
+
+struct SysCpuNOps;
+impl InodeOps for SysCpuNOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<SysCpuNInode>().ok_or(VfsError::Einval)?;
+        cpu_n_lookup(d.c, name)
+    }
+}
+impl FileOps for SysCpuNOps {
+    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let mut idx = off as usize;
         let total = CPUN_FILES.len() + 1; // + topology dir
         while idx < total {
@@ -176,7 +153,7 @@ impl Inode for SysCpuNInode {
             } else {
                 ("topology", FileType::Directory)
             };
-            let ino = self.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, name, ft) {
                 return Ok(next);
             }
@@ -184,6 +161,13 @@ impl Inode for SysCpuNInode {
         }
         Ok(idx as u64)
     }
+}
+
+/// `/sys/devices/system/cpu/cpuN` device dir inode. # C: O(1)
+pub fn make_syscpu_n(c: usize) -> InodeRef {
+    InodeBuilder::new(0x3000_1D00 + c as Ino, mk_mode(FileType::Directory, 0o555), Arc::new(SysCpuNOps), Arc::new(SysCpuNOps))
+        .private(Arc::new(SysCpuNInode { c }))
+        .build()
 }
 
 // ---- /sys/devices/system/cpu/cpuN/topology ------------------------------
@@ -199,46 +183,45 @@ const TOPO_FILES: &[&str] = &[
     "package_cpus", "package_cpus_list",
 ];
 
-pub struct SysCpuTopologyInode {
-    c: usize,
-}
-impl SysCpuTopologyInode {
-    fn attr_body(&self, name: &str) -> Option<String> {
-        let c = self.c;
-        let n = ncpu();
-        let all: u64 = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
-        let me: u64 = 1u64 << (c.min(63));
-        let mut s = String::new();
-        match name {
-            // No SMT: each CPU is its own core. Single package/die/cluster.
-            "core_id" => { let _ = write!(s, "{c}\n"); }
-            "physical_package_id" | "cluster_id" | "die_id" => s.push_str("0\n"),
-            // thread siblings == core cpus == just this CPU (no SMT).
-            "thread_siblings" | "core_cpus" => return Some(mask_hex(me)),
-            "thread_siblings_list" | "core_cpus_list" => { let _ = write!(s, "{c}\n"); }
-            // core/package siblings == every online CPU (one package).
-            "core_siblings" | "package_cpus" => return Some(mask_hex(all)),
-            "core_siblings_list" | "package_cpus_list" => return Some(range_list(n)),
-            _ => return None,
-        }
-        Some(s)
+/// `i_private` for a `cpuN/topology` directory. # C: O(1)
+pub struct SysCpuTopologyInode { c: usize }
+
+fn topo_attr_body(c: usize, name: &str) -> Option<String> {
+    let n = ncpu();
+    let all: u64 = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
+    let me: u64 = 1u64 << (c.min(63));
+    let mut s = String::new();
+    match name {
+        // No SMT: each CPU is its own core. Single package/die/cluster.
+        "core_id" => { let _ = write!(s, "{c}\n"); }
+        "physical_package_id" | "cluster_id" | "die_id" => s.push_str("0\n"),
+        // thread siblings == core cpus == just this CPU (no SMT).
+        "thread_siblings" | "core_cpus" => return Some(mask_hex(me)),
+        "thread_siblings_list" | "core_cpus_list" => { let _ = write!(s, "{c}\n"); }
+        // core/package siblings == every online CPU (one package).
+        "core_siblings" | "package_cpus" => return Some(mask_hex(all)),
+        "core_siblings_list" | "package_cpus_list" => return Some(range_list(n)),
+        _ => return None,
     }
+    Some(s)
 }
-impl Inode for SysCpuTopologyInode {
-    fn ino(&self) -> Ino { 0x3000_1E00 + self.c as Ino }
-    fn file_type(&self) -> FileType { FileType::Directory }
-    fn size(&self) -> u64 { 0 }
-    fn lookup(&self, name: &str) -> KResult<InodeRef> {
-        match self.attr_body(name) {
-            Some(body) => Ok(AttrInode::new(0x3000_1F00 + self.c as Ino, body)),
+
+struct SysCpuTopologyOps;
+impl InodeOps for SysCpuTopologyOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<SysCpuTopologyInode>().ok_or(VfsError::Einval)?;
+        match topo_attr_body(d.c, name) {
+            Some(body) => Ok(attr(0x3000_1F00 + d.c as Ino, body)),
             None => Err(VfsError::Enoent),
         }
     }
-    fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+}
+impl FileOps for SysCpuTopologyOps {
+    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         let mut idx = off as usize;
         while idx < TOPO_FILES.len() {
             let next = idx as u64 + 1;
-            let ino = self.lookup(TOPO_FILES[idx]).map(|i| i.ino()).unwrap_or(0);
+            let ino = inode.lookup(TOPO_FILES[idx]).map(|i| i.ino()).unwrap_or(0);
             if !f(ino, next, TOPO_FILES[idx], FileType::Regular) {
                 return Ok(next);
             }
@@ -246,4 +229,11 @@ impl Inode for SysCpuTopologyInode {
         }
         Ok(idx as u64)
     }
+}
+
+/// `/sys/devices/system/cpu/cpuN/topology` dir inode. # C: O(1)
+pub fn make_syscpu_topology(c: usize) -> InodeRef {
+    InodeBuilder::new(0x3000_1E00 + c as Ino, mk_mode(FileType::Directory, 0o555), Arc::new(SysCpuTopologyOps), Arc::new(SysCpuTopologyOps))
+        .private(Arc::new(SysCpuTopologyInode { c }))
+        .build()
 }
