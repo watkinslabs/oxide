@@ -20,6 +20,7 @@
 
 extern crate alloc;
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::any::Any;
@@ -96,6 +97,14 @@ pub struct Inode {
     /// `i_link` — inline fast-symlink body (Linux `inode->i_link`); `None` = no
     /// inline body, so `get_link` falls through to `i_op->readlink`.
     i_link: Option<Box<[u8]>>,
+    /// `i_xattrs` — the inode's OWN extended-attribute store (Linux
+    /// `simple_xattrs` hung off the fs-specific inode info). `Some` for a
+    /// filesystem that owns its xattrs in-core (tmpfs/shmem, ext4 ibody cache);
+    /// `None` for a backend with no xattr store, whose `i_op` xattr ops then
+    /// report [`crate::xattr::XattrError::NotSup`]. The default `i_op` xattr
+    /// family routes here, so a backend gets working xattrs just by attaching
+    /// the store at build time.
+    i_xattrs: Option<crate::xattr::SimpleXattrs>,
     /// `i_rwsem` (Linux `inode->i_rwsem`) — the per-inode read/write semaphore
     /// at lock rank `Inode` (40, `06§3.6`). Held EXCLUSIVE by the directory
     /// mutating paths (create/mkdir/unlink/rmdir/rename — taken in the syscall
@@ -201,6 +210,11 @@ impl Inode {
 
     /// `i_link` — inline fast-symlink body. # C: O(1)
     pub fn i_link(&self) -> Option<&[u8]> { self.i_link.as_deref() }
+
+    /// `i_xattrs` — the inode's own xattr store (`None` = no store; the backend
+    /// has no xattr support). The default `i_op` xattr family consults this.
+    /// # C: O(1)
+    pub fn simple_xattrs(&self) -> Option<&crate::xattr::SimpleXattrs> { self.i_xattrs.as_ref() }
 
     /// The `i_op` vtable. # C: O(1)
     pub fn i_op(&self) -> &Arc<dyn InodeOps> { &self.i_op }
@@ -358,6 +372,25 @@ impl Inode {
     }
     /// `bmap`. # C: O(1) amortized
     pub fn bmap(&self, block: u64) -> KResult<u64> { self.i_op.bmap(self, block) }
+    /// `i_op->getxattr` — value bytes for `name`. # C: O(log N)
+    pub fn getxattr(&self, name: &str) -> Result<Vec<u8>, crate::xattr::XattrError> {
+        self.i_op.getxattr(self, name)
+    }
+    /// `i_op->setxattr` — store `name`→`value` (flags = XATTR_CREATE/REPLACE).
+    /// # C: O(log N)
+    pub fn setxattr(&self, name: &str, value: Vec<u8>, create: bool, replace: bool)
+        -> Result<(), crate::xattr::XattrError> {
+        self.i_op.setxattr(self, name, value, create, replace)
+    }
+    /// `i_op->removexattr` — drop `name`. # C: O(log N)
+    pub fn removexattr(&self, name: &str) -> Result<(), crate::xattr::XattrError> {
+        self.i_op.removexattr(self, name)
+    }
+    /// `i_op->listxattr` — the attribute names. # C: O(N)
+    pub fn listxattr(&self) -> Result<Vec<String>, crate::xattr::XattrError> {
+        self.i_op.listxattr(self)
+    }
+
     /// `i_op->fileattr_get`. # C: O(1)
     pub fn fileattr_get(&self) -> KResult<FileAttr> { self.i_op.fileattr_get(self) }
     /// `i_op->fileattr_set`. # C: O(1)
@@ -482,6 +515,7 @@ pub struct InodeBuilder {
     poll_subs: Option<PollSubscribers>,
     seals: Option<u32>,
     link: Option<Box<[u8]>>,
+    xattrs: Option<crate::xattr::SimpleXattrs>,
 }
 
 impl InodeBuilder {
@@ -493,6 +527,7 @@ impl InodeBuilder {
             size: 0, blocks: 0, nlink: None, uid: 0, gid: 0, flags: 0, rdev: 0,
             generation: 0, fsid: 0, atime: 0, mtime: 0, ctime: 0, btime: 0, version: 0,
             mapping: None, private: Arc::new(()), poll_subs: None, seals: None, link: None,
+            xattrs: None,
         }
     }
     /// Set `i_sb`. # C: O(1)
@@ -529,6 +564,9 @@ impl InodeBuilder {
     pub fn seals(mut self, initial: u32) -> Self { self.seals = Some(initial); self }
     /// Set the inline fast-symlink body (`i_link`). # C: O(1)
     pub fn link(mut self, body: Box<[u8]>) -> Self { self.link = Some(body); self }
+    /// Attach an empty per-inode xattr store (`i_xattrs`), making this inode's
+    /// filesystem the authority for its own extended attributes. # C: O(1)
+    pub fn xattrs(mut self, x: crate::xattr::SimpleXattrs) -> Self { self.xattrs = Some(x); self }
 
     /// Finish: produce the `Arc<Inode>` with `i_count == 1` and `I_NEW` clear.
     /// # C: O(1)
@@ -561,6 +599,7 @@ impl InodeBuilder {
             poll_subs: self.poll_subs,
             seals: self.seals.map(AtomicU32::new),
             i_link: self.link,
+            i_xattrs: self.xattrs,
             i_rwsem: RwLock::new(()),
         })
     }
