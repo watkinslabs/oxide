@@ -22,7 +22,7 @@ use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering};
-use sync::{MountTable as MountClass, Spinlock};
+use sync::{MountTable as MountClass, MountWrite as MountWriteClass, Spinlock};
 
 use crate::dentry::Dentry;
 use crate::fs::{FileSystem, KResult};
@@ -195,8 +195,9 @@ fn visible_mnt_id_of_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<u64> {
         .filter(|m| m.ns == ns && m.sb.s_root().map(|r| dptr(&r) == dp).unwrap_or(false))
         .cloned().collect();
     if cands.is_empty() { return None; }
-    // (a) ns root mount (mountpoint None) ⇒ the canonical ns-root id.
-    if cands.iter().any(|m| m.mountpoint().is_none()) { return root_mount_id(ns); }
+    // (a) ns root mount ⇒ the canonical ns-root id. [D25] identity by the
+    // self-parent `is_root()` predicate, not the `mountpoint == None` data state.
+    if cands.iter().any(|m| m.is_root()) { return root_mount_id(ns); }
     // (b) the duplicate currently visible (top of its own mountpoint crossing).
     for m in cands.iter() {
         if let Some(mp) = m.mountpoint() {
@@ -267,6 +268,26 @@ pub(super) fn global_root() -> Option<Arc<Dentry>> { crate::namei::root_dentry()
 // ---------------------------------------------------------------------------
 static MOUNT_HASH: Spinlock<BTreeMap<(u64, usize), Vec<u64>>, MountClass> =
     Spinlock::new(BTreeMap::new());
+
+/// [D28a] Mount-tree WRITER serialization lock (Linux `mount_lock`/`namespace_sem`
+/// write side — the coarse mutator gate). Every mount-tree MUTATOR takes this
+/// OUTERMOST around its multi-structure mutation so two concurrent writers cannot
+/// interleave the separate `MOUNTS` / `MOUNT_HASH` / `MOUNTPOINTS` / `NAMESPACES`
+/// critical sections and leave them mutually inconsistent (the confirmed torn
+/// window: graft inserts `MOUNTS` then `MOUNT_HASH` in SEPARATE sections; detach
+/// removes them symmetrically). LOCK ORDERING (`MountWrite` rank 58, `06§3.6`):
+/// STRICT OUTERMOST of the mount locks — acquired BEFORE any `MountClass`/`MountTable`
+/// (70) structure lock and BEFORE `Superblock` (60, via `grab_active`), and NEVER
+/// while one of those is held. It is NEVER held across a SLEEPING call — the
+/// crossing-resolver `descend`/`descend_nocross`/`descend_mountpoint` (which call
+/// `inode.lookup`) and `put_super_if_last` (`deactivate_super`) run OUTSIDE the
+/// region — so each mutator scopes the lock to exactly its non-sleeping structural
+/// mutation. READERS do NOT take it (the D28b reader-seqlock is out of scope; a
+/// lock-free mount reader does not exist — readers still take `MOUNT_HASH.lock`).
+/// Non-recursive (plain `Spinlock`): a mutator under `MOUNT_WRITE` must never call
+/// another that takes it — `rebuild_ns_index` therefore does NOT self-lock; its
+/// callers (`copy_mnt_ns`, `commit_retree`) hold `MOUNT_WRITE` around it instead.
+static MOUNT_WRITE: Spinlock<(), MountWriteClass> = Spinlock::new(());
 
 fn hash_insert(parent: u64, d: usize, mnt_id: u64) {
     MOUNT_HASH.lock().entry((parent, d)).or_default().push(mnt_id);
@@ -552,9 +573,18 @@ impl Mount {
         self.mnt_root.lock().clone().or_else(|| self.sb.s_root())
     }
 
-    /// True iff this is its namespace's root mount. # C: O(log N)
+    /// True iff this is its namespace's root mount, by the Linux SELF-PARENT
+    /// identity test (`mnt_parent == self`, i.e. `!mnt_has_parent`). [D25] The
+    /// single root predicate — collapses the three former encodings (the
+    /// `MntNamespace.root` by-id index, `mountpoint == None`, and self-parent)
+    /// to one O(1) atomic read that needs no cross-structure `NAMESPACES`
+    /// lookup. The encodings are all set together at every graft / re-seat (root
+    /// branch of [`graft_realized`], the `None` arm of [`rebuild_ns_index`],
+    /// [`move_mount_m`]'s detach-to-root), so they agree; `mountpoint == None`
+    /// stays the natural DATA state of a root, just not the identity test.
+    /// # C: O(1)
     pub fn is_root(&self) -> bool {
-        root_mount_id(self.ns) == Some(self.mnt_id)
+        self.parent_id.load(Ordering::Acquire) == self.mnt_id
     }
 
     /// The mounted-instance superblock (Linux `mnt_sb`). # C: O(1)
@@ -753,8 +783,12 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>)
         m.set_internal_flag(MNT_INTERNAL);
         #[cfg(feature = "debug-mnt")]
         mntcreate_log("graft", mnt_id, mnt_id, None, m.mnt_root().as_ref(), Some(&m.sb));
-        mntns::ns_set_root(ns, mnt_id);
-        MOUNTS.lock().insert(mnt_id, m);
+        // [D28a] serialize the NAMESPACES-root + MOUNTS insert as one write.
+        {
+            let _w = MOUNT_WRITE.lock();
+            mntns::ns_set_root(ns, mnt_id);
+            MOUNTS.lock().insert(mnt_id, m);
+        }
         mntns::commit_mounts(ns, 1);
         mntns::bump_gen(ns);
         return Ok(());
@@ -765,13 +799,18 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>)
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("graft", mnt_id, parent_id, Some(&d), m.mnt_root().as_ref(), Some(&m.sb));
     // struct mountpoint (dentry refcount) + intrusive parent/child links.
-    *m.mnt_mp.lock() = Some(get_mountpoint(&d));
-    if let Some(p) = mount_by_id(parent_id) {
-        *m.mnt_parent.lock() = Arc::downgrade(&p);
-        p.mnt_mounts.lock().push(m.clone());
+    // [D28a] one writer-serialized region: MOUNTPOINTS + parent/child links +
+    // MOUNTS + MOUNT_HASH mutated atomically w.r.t. other writers.
+    {
+        let _w = MOUNT_WRITE.lock();
+        *m.mnt_mp.lock() = Some(get_mountpoint(&d));
+        if let Some(p) = mount_by_id(parent_id) {
+            *m.mnt_parent.lock() = Arc::downgrade(&p);
+            p.mnt_mounts.lock().push(m.clone());
+        }
+        MOUNTS.lock().insert(mnt_id, m);
+        hash_insert(parent_id, dptr(&d), mnt_id);
     }
-    MOUNTS.lock().insert(mnt_id, m);
-    hash_insert(parent_id, dptr(&d), mnt_id);
     mntns::commit_mounts(ns, 1);
     mntns::bump_gen(ns);
     Ok(())
@@ -957,19 +996,27 @@ pub(super) fn commit_tree(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>,
         // RESERVE before any visible state (Linux `count_mounts` in
         // `attach_recursive_mnt`); over the per-ns cap ⇒ skip this node+subtree.
         if mntns::count_mounts(ns, 1).is_err() { mark_dead(&mut dead, &rel); release_clone(&m); continue; }
-        let parent_id = parent_by_dentry(ns, &mp_d);
         let rendered = abs_string(&mp_d);
-        *m.mountpoint.lock() = Some(mp_d.clone());
-        *m.rendered_path.lock() = rendered;
-        m.parent_id.store(parent_id, Ordering::Release);
-        // The D_MOUNTED hold — ONE `get_mountpoint` per cloned crossing.
-        *m.mnt_mp.lock() = Some(get_mountpoint(&mp_d));
-        if let Some(p) = mount_by_id(parent_id) {
-            *m.mnt_parent.lock() = Arc::downgrade(&p);
-            p.mnt_mounts.lock().push(m.clone());
+        // [D28a] one writer-serialized structural region per node (after the
+        // sleeping `descend` resolved `mp_d` above): parent-id derivation +
+        // MOUNTPOINTS + parent/child links + MOUNTS + MOUNT_HASH mutated
+        // atomically w.r.t. other writers. `descend` (sleep) stays OUTSIDE.
+        let parent_id;
+        {
+            let _w = MOUNT_WRITE.lock();
+            parent_id = parent_by_dentry(ns, &mp_d);
+            *m.mountpoint.lock() = Some(mp_d.clone());
+            *m.rendered_path.lock() = rendered;
+            m.parent_id.store(parent_id, Ordering::Release);
+            // The D_MOUNTED hold — ONE `get_mountpoint` per cloned crossing.
+            *m.mnt_mp.lock() = Some(get_mountpoint(&mp_d));
+            if let Some(p) = mount_by_id(parent_id) {
+                *m.mnt_parent.lock() = Arc::downgrade(&p);
+                p.mnt_mounts.lock().push(m.clone());
+            }
+            MOUNTS.lock().insert(m.mnt_id, m.clone());
+            hash_insert(parent_id, dptr(&mp_d), m.mnt_id);
         }
-        MOUNTS.lock().insert(m.mnt_id, m.clone());
-        hash_insert(parent_id, dptr(&mp_d), m.mnt_id);
         #[cfg(feature = "debug-mnt")]
         mntcreate_log("commit", m.mnt_id, parent_id, Some(&mp_d), m.mnt_root().as_ref(), Some(&m.sb));
         mntns::commit_mounts(ns, 1);
@@ -1082,18 +1129,24 @@ pub fn commit_tree_hashonly(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>) -> u
         };
         // RESERVE before any visible state (Linux `count_mounts`).
         if mntns::count_mounts(ns, 1).is_err() { mark_dead(&mut dead, &rel); release_clone(&m); continue; }
-        *m.mountpoint.lock() = Some(mp_d.clone());
-        *m.rendered_path.lock() = abs_string(&mp_d);
-        m.parent_id.store(parent_id, Ordering::Release);
-        // The D_MOUNTED hold — ONE `get_mountpoint` per cloned crossing.
-        *m.mnt_mp.lock() = Some(get_mountpoint(&mp_d));
-        if let Some(p) = mount_by_id(parent_id) {
-            *m.mnt_parent.lock() = Arc::downgrade(&p);
-            p.mnt_mounts.lock().push(m.clone());
+        // [D28a] one writer-serialized structural region per node (the sleeping
+        // `descend_nocross`/`parent_by_dentry` resolution ran above): MOUNTPOINTS
+        // + parent/child links + MOUNTS + MOUNT_HASH mutated atomically.
+        {
+            let _w = MOUNT_WRITE.lock();
+            *m.mountpoint.lock() = Some(mp_d.clone());
+            *m.rendered_path.lock() = abs_string(&mp_d);
+            m.parent_id.store(parent_id, Ordering::Release);
+            // The D_MOUNTED hold — ONE `get_mountpoint` per cloned crossing.
+            *m.mnt_mp.lock() = Some(get_mountpoint(&mp_d));
+            if let Some(p) = mount_by_id(parent_id) {
+                *m.mnt_parent.lock() = Arc::downgrade(&p);
+                p.mnt_mounts.lock().push(m.clone());
+            }
+            MOUNTS.lock().insert(m.mnt_id, m.clone());
+            // Strict (parent,dentry) crossing hash — the single crossing structure.
+            hash_insert(parent_id, dptr(&mp_d), m.mnt_id);
         }
-        MOUNTS.lock().insert(m.mnt_id, m.clone());
-        // Strict (parent,dentry) crossing hash — the single crossing structure.
-        hash_insert(parent_id, dptr(&mp_d), m.mnt_id);
         #[cfg(feature = "debug-mnt")]
         mntcreate_log("commit_hashonly", m.mnt_id, parent_id, Some(&mp_d), m.mnt_root().as_ref(), Some(&m.sb));
         mntns::commit_mounts(ns, 1);
@@ -1258,9 +1311,16 @@ fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>,
     // dentry `descend` from the new global root, which must NOT cross the stale
     // crossings (matches the legacy map-clear that ran here). `rebuild_ns_index`
     // re-inserts every crossing from the recorded mountpoint dentries below.
-    hash_drop_ids(&mounts.iter().map(|m| m.mnt_id).collect::<Vec<_>>());
-    if let Some(rid) = new_root_id { mntns::ns_set_root(ns, rid); }
+    // [D28a] FRONT structural region (before the sleeping `descend` below):
+    // drop the stale crossings + re-root the ns, serialized w.r.t. other writers.
+    {
+        let _w = MOUNT_WRITE.lock();
+        hash_drop_ids(&mounts.iter().map(|m| m.mnt_id).collect::<Vec<_>>());
+        if let Some(rid) = new_root_id { mntns::ns_set_root(ns, rid); }
+    }
     let root = global_root();
+    // The (sleeping) `descend` materialization of relocated positions runs with
+    // NO writer lock held.
     let dents: Vec<(u64, String, Option<Arc<Dentry>>)> = new_paths.iter().map(|(id, p)| {
         let is_root = Some(*id) == new_root_id;
         let d = if is_root { None }
@@ -1268,13 +1328,19 @@ fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>,
                 else { root.as_ref().and_then(|r| descend(r, p)) };
         (*id, p.clone(), d)
     }).collect();
-    for m in mounts.iter() {
-        if let Some((_, p, d)) = dents.iter().find(|(id, _, _)| *id == m.mnt_id) {
-            let is_root = Some(m.mnt_id) == new_root_id;
-            set_mountpoint_dentry(m, if is_root { None } else { d.clone() }, p.clone());
+    // [D28a] BACK structural region: re-seat every mount + rebuild the ns index
+    // (links + crossings + hash) as one writer-serialized mutation.
+    // `rebuild_ns_index` does NOT self-lock — it is covered by this hold.
+    {
+        let _w = MOUNT_WRITE.lock();
+        for m in mounts.iter() {
+            if let Some((_, p, d)) = dents.iter().find(|(id, _, _)| *id == m.mnt_id) {
+                let is_root = Some(m.mnt_id) == new_root_id;
+                set_mountpoint_dentry(m, if is_root { None } else { d.clone() }, p.clone());
+            }
         }
+        rebuild_ns_index(ns);
     }
-    rebuild_ns_index(ns);
     mntns::bump_gen(ns);
 }
 
@@ -1336,6 +1402,11 @@ fn unlink_from_parent(m: &Arc<Mount>) {
 pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
     let src = mounts_in_ns(from_ns);
     mntns::ns_get_or_create(to_ns);
+    // [D28a] serialize the whole ns clone (the per-clone MOUNTS inserts +
+    // NAMESPACES root + the `rebuild_ns_index` link/hash wiring) as one writer
+    // region. No `descend` / `put_super` runs here, so no sleep under the lock;
+    // `rebuild_ns_index` does NOT self-lock — it is covered by this hold.
+    let _w = MOUNT_WRITE.lock();
     for m in src.iter() {
         let new_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
         // Linux `clone_mnt`: the clone shares the source SB, so take an extra
@@ -1368,7 +1439,10 @@ pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
                 clone.peer_group.store(0, Ordering::Release);
             }
         }
-        if m.mountpoint().is_none() { mntns::ns_set_root(to_ns, new_id); }
+        // [D25] the clone of the SOURCE ns-root mount becomes the new ns root,
+        // identified by the source's self-parent `is_root()` (the clone's own
+        // self-parent is stamped later by `rebuild_ns_index`'s `None` arm).
+        if m.is_root() { mntns::ns_set_root(to_ns, new_id); }
         MOUNTS.lock().insert(new_id, clone);
     }
     // Account the cloned mounts into the new ns (Linux `copy_mnt_ns` sums
@@ -1518,25 +1592,31 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>) -> KResult<()> {
         .filter_map(|id| mount_by_id(*id)).collect();
 
     // --- 1) Re-seat the moved ROOT mount (the only attachment that changes). ---
-    if let Some(d) = &old_mp {
-        hash_remove(old_parent, dptr(d), from_id);
-    }
-    unlink_from_parent(&from_m);
     let new_root_d = if to_root { None } else { Some(to.clone()) };
-    set_mountpoint_dentry(&from_m, new_root_d.clone(), to_abs.clone());
-    match &new_root_d {
-        None => {
-            from_m.parent_id.store(from_id, Ordering::Release);
-            *from_m.mnt_parent.lock() = Weak::new();
+    // [D28a] writer-serialized ROOT re-seat (no `descend` here): drop the old
+    // crossing, unlink, then set the new mountpoint + parent/child links +
+    // MOUNT_HASH atomically w.r.t. other writers.
+    {
+        let _w = MOUNT_WRITE.lock();
+        if let Some(d) = &old_mp {
+            hash_remove(old_parent, dptr(d), from_id);
         }
-        Some(d) => {
-            let new_parent = parent_by_dentry(ns, d);
-            from_m.parent_id.store(new_parent, Ordering::Release);
-            if let Some(p) = mount_by_id(new_parent) {
-                *from_m.mnt_parent.lock() = Arc::downgrade(&p);
-                p.mnt_mounts.lock().push(from_m.clone());
+        unlink_from_parent(&from_m);
+        set_mountpoint_dentry(&from_m, new_root_d.clone(), to_abs.clone());
+        match &new_root_d {
+            None => {
+                from_m.parent_id.store(from_id, Ordering::Release);
+                *from_m.mnt_parent.lock() = Weak::new();
             }
-            hash_insert(new_parent, dptr(d), from_id);
+            Some(d) => {
+                let new_parent = parent_by_dentry(ns, d);
+                from_m.parent_id.store(new_parent, Ordering::Release);
+                if let Some(p) = mount_by_id(new_parent) {
+                    *from_m.mnt_parent.lock() = Arc::downgrade(&p);
+                    p.mnt_mounts.lock().push(from_m.clone());
+                }
+                hash_insert(new_parent, dptr(d), from_id);
+            }
         }
     }
 
@@ -1554,10 +1634,16 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>) -> KResult<()> {
             Some(rel) => {
                 // UNDERLAY child: relocate its mountpoint dentry to the mirrored
                 // underlay position beneath `to`, by an underlay descent (NOT
-                // crossing the moved root) from `to`.
+                // crossing the moved root) from `to`. [D28a] the (sleeping)
+                // `descend` runs OUTSIDE the writer lock; the two structural
+                // mutations (old-crossing drop, new wiring) are each serialized.
                 let m_parent = m.parent_id.load(Ordering::Acquire);
-                hash_remove(m_parent, dptr(&child_mp), m.mnt_id);
+                {
+                    let _w = MOUNT_WRITE.lock();
+                    hash_remove(m_parent, dptr(&child_mp), m.mnt_id);
+                }
                 let new_d = to_base.as_ref().and_then(|b| descend(b, rel.trim_start_matches('/')));
+                let _w = MOUNT_WRITE.lock();
                 set_mountpoint_dentry(m, new_d.clone(), new_rendered);
                 unlink_from_parent(m);
                 if let Some(d) = &new_d {
