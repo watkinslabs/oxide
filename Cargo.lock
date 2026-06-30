@@ -58,6 +58,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "cgroup",
+ "drv",
  "hal",
  "klog",
  "sched",
@@ -120,6 +121,7 @@ version = "0.1.0"
 dependencies = [
  "cmdline",
  "devfs",
+ "drv",
  "drv-serial",
  "fbcon",
  "klog",
@@ -157,6 +159,7 @@ version = "0.1.0"
 name = "devfs"
 version = "0.1.0"
 dependencies = [
+ "drv",
  "hal",
  "kernfs",
  "klog",
@@ -192,6 +195,7 @@ name = "drm"
 version = "0.1.0"
 dependencies = [
  "devfs",
+ "drv",
  "hal",
  "klog",
  "pmm",
@@ -467,6 +471,7 @@ version = "0.1.0"
 dependencies = [
  "devfs",
  "drm",
+ "drv",
  "hal",
  "klog",
  "sync",

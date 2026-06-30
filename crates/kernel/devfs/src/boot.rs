@@ -14,6 +14,19 @@ pub fn set_dir_overlay(f: fn(&[u8], &mut dyn FnMut(&[u8], FileType))) {
 }
 
 
+/// Self-register a mem-class pseudo-device through `drv::device_add` (D27):
+/// pushes a `drv::Device` (bus/dev_class "mem", addr/devname `name`) into the
+/// device registry and fires the devtmpfs hook → `/dev/<name>` minted from the
+/// `factory` (preserving the exact bespoke inode). `dt` is the `(major, minor)`
+/// metadata. # C: O(1) amortised
+fn add_mem_dev(name: &str, dt: (u32, u32), factory: drv::NodeFactory) {
+    use alloc::string::String;
+    drv::device_add(Arc::new(
+        drv::Device::new("mem", String::from(name), 0, 0, 0)
+            .with_devnode("mem", String::from(name), Some(dt))
+            .with_node_factory(factory)));
+}
+
 /// Register the built-in pseudo-device nodes + the synthetic directory
 /// overlay. Boot, once (idempotent — re-registration overwrites).
 /// # C: O(N nodes)
@@ -25,14 +38,26 @@ pub fn populate_defaults() {
     // the underlay dir so the boot tmpfs mount resolves its mountpoint dentry
     // (the mount engine takes the walked dentry, no path-string resolve).
     crate::register_dir("/dev/shm");
-    register("/dev/null",    crate::misc::make_null_inode());
-    register("/dev/kmsg",    crate::misc::make_kmsg_inode());
-    register("/dev/zero",    crate::misc::make_zero_inode());
-    register("/dev/full",    crate::misc::make_full_inode());
-    register("/dev/autofs",  crate::misc::make_autofs_inode());
+    // device-model Stage C (D27): the standard mem char devices self-register
+    // through `drv::device_add` (dev_class "mem") so ONE registration drives the
+    // device model + /dev. `node_factory` mints the EXACT bespoke inode each used
+    // before (same ino, fops, rdev) — byte-identical /dev. bus "mem" is ignored
+    // by the pci/virtio /sys synthesis (no spurious /sys entry). dev_t is the
+    // standard mem major/minor metadata. NOTE: /dev/urandom keeps the shared
+    // /dev/random inode (rdev 1:8) as before; Linux assigns urandom 1:9 — that
+    // pre-existing quirk is preserved here (conservative: identical /dev), not
+    // "fixed", to avoid changing a node's identity in this migration.
+    add_mem_dev("null", (1, 3),  Arc::new(|| crate::misc::make_null_inode()));
+    add_mem_dev("kmsg", (1, 11), Arc::new(|| crate::misc::make_kmsg_inode()));
+    add_mem_dev("zero", (1, 5),  Arc::new(|| crate::misc::make_zero_inode()));
+    add_mem_dev("full", (1, 7),  Arc::new(|| crate::misc::make_full_inode()));
     let rand = crate::misc::make_random_inode();
-    register("/dev/random",  Arc::clone(&rand));
-    register("/dev/urandom", rand);
+    let rand2 = Arc::clone(&rand);
+    add_mem_dev("random",  (1, 8), Arc::new(move || Arc::clone(&rand)));
+    add_mem_dev("urandom", (1, 8), Arc::new(move || Arc::clone(&rand2)));
+    // /dev/autofs (misc 10:235) keeps its direct registration: it is not a mem
+    // device and is handled with the misc class elsewhere.
+    register("/dev/autofs",  crate::misc::make_autofs_inode());
     let sym = |target: &'static [u8], ino: u64| -> InodeRef {
         crate::misc::make_symlink_inode(target, ino)
     };

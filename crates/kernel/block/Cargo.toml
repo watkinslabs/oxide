@@ -13,6 +13,10 @@ cgroup = { path = "../cgroup" }
 hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
 sync     = { path = "../../shared/sync" }
+# device-model Stage C (D27): registering a disk also `drv::device_add`s a
+# block /dev node so /dev/<disk> + /sys/block derive from one registration.
+# drv deps {hal,klog,sync,vfs} only — acyclic with block.
+drv      = { path = "../../drivers/drv" }
 bitflags = { version = "2", default-features = false }
 
 [features]
