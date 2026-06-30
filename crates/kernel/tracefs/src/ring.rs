@@ -19,6 +19,15 @@ use vfs::file_ops::FileOps;
 use vfs::{FileType, Ino, InodeRef, KResult, VfsError};
 
 use crate::percpu_ring::{self, Record, KIND_MARK, KIND_SCHED_SWITCH, KIND_SYS_ENTER, KIND_SYS_EXIT, PAYLOAD};
+use crate::predicate::{EventRecord, FieldVal, FilterSlot};
+
+/// Per-event compiled-filter slots, shared with the eventfs `filter` files
+/// (`eventfs::BUILTIN` points each `EventDesc.filter` here). The emit site
+/// reads them lockless when no filter is set; a set filter drops samples that
+/// do not match (Linux per-event filtering). # C: O(1)
+pub(crate) static FILTER_SCHED_SWITCH: FilterSlot = FilterSlot::new(crate::eventfs::SCHED_SWITCH_FORMAT);
+pub(crate) static FILTER_SYS_ENTER:   FilterSlot = FilterSlot::new(crate::eventfs::SYS_ENTER_FORMAT);
+pub(crate) static FILTER_SYS_EXIT:    FilterSlot = FilterSlot::new(crate::eventfs::SYS_EXIT_FORMAT);
 
 /// Linux default: tracing_on = 1 (recording enabled; the `nop` tracer just
 /// doesn't generate function events — trace_marker still records).
@@ -91,6 +100,17 @@ fn record_marker(msg: &[u8]) {
 /// # C: O(1)
 fn record_sched_switch(prev_pid: u32, prev_comm: &str, next_pid: u32, next_comm: &str) {
     if !tracing_on() { return; }
+    // Per-event filter (lockless when unset): drop non-matching samples.
+    if FILTER_SCHED_SWITCH.has_filter() {
+        let f = [
+            ("prev_pid",   FieldVal::Int(prev_pid as i64)),
+            ("prev_comm",  FieldVal::Str(prev_comm)),
+            ("next_pid",   FieldVal::Int(next_pid as i64)),
+            ("next_comm",  FieldVal::Str(next_comm)),
+            ("common_pid", FieldVal::Int(prev_pid as i64)),
+        ];
+        if !FILTER_SCHED_SWITCH.passes(&EventRecord::new(&f)) { return; }
+    }
     let mut pl = [0u8; PAYLOAD];
     let pc = prev_comm.as_bytes();
     pl[..pc.len().min(16)].copy_from_slice(&pc[..pc.len().min(16)]);
@@ -120,6 +140,13 @@ pub(crate) fn set_sched_switch(on: bool) {
 fn record_sys_enter(nr: u32) {
     if !tracing_on() { return; }
     let (pid, comm) = cur_task();
+    if FILTER_SYS_ENTER.has_filter() {
+        let f = [
+            ("id",         FieldVal::Int(nr as i64)),
+            ("common_pid", FieldVal::Int(pid as i64)),
+        ];
+        if !FILTER_SYS_ENTER.passes(&EventRecord::new(&f)) { return; }
+    }
     let mut pl = [0u8; PAYLOAD];
     pl[..16].copy_from_slice(&comm);
     pl[16..20].copy_from_slice(&nr.to_le_bytes());
@@ -131,6 +158,14 @@ fn record_sys_enter(nr: u32) {
 fn record_sys_exit(nr: u32, ret: i64) {
     if !tracing_on() { return; }
     let (pid, comm) = cur_task();
+    if FILTER_SYS_EXIT.has_filter() {
+        let f = [
+            ("id",         FieldVal::Int(nr as i64)),
+            ("ret",        FieldVal::Int(ret)),
+            ("common_pid", FieldVal::Int(pid as i64)),
+        ];
+        if !FILTER_SYS_EXIT.passes(&EventRecord::new(&f)) { return; }
+    }
     let mut pl = [0u8; PAYLOAD];
     pl[..16].copy_from_slice(&comm);
     pl[16..20].copy_from_slice(&nr.to_le_bytes());
