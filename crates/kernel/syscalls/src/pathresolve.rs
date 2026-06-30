@@ -426,7 +426,11 @@ pub fn read_exec_inode(inode: &vfs::InodeRef) -> Option<alloc::vec::Vec<u8>> {
 /// # C: O(N_path) + O(1) fd lookup
 pub fn resolve_at_result(dirfd: i32, raw: &str) -> Result<String, i64> {
     if raw.starts_with('/') {
-        return Ok(vfs::path::lexical_normalize(raw).unwrap_or_else(|| raw.into()));
+        // D26: a normalization miss is ENOENT (Linux for a path that cannot be
+        // normalized), never a silent raw-string leak — keeps resolution
+        // deterministic. The engine (`vfs::path`) is total, so this is the
+        // explicit contract, not a live branch.
+        return vfs::path::lexical_normalize(raw).ok_or(-(Errno::Enoent.as_i32() as i64));
     }
     if dirfd == AT_FDCWD {
         return Ok(resolve_cwd(raw));
@@ -443,12 +447,9 @@ pub fn resolve_at_result(dirfd: i32, raw: &str) -> Result<String, i64> {
     let base_bytes = f.dentry().absolute_path();
     let base = core::str::from_utf8(&base_bytes)
         .map_err(|_| -(Errno::Enotdir.as_i32() as i64))?;
-    Ok(vfs::path::resolve_against_cwd(base, raw).unwrap_or_else(|| {
-        let mut s = String::from(base);
-        if !s.ends_with('/') { s.push('/'); }
-        s.push_str(raw);
-        s
-    }))
+    // D26: ENOENT on a normalization miss rather than a hand-joined raw-string
+    // fallback — no unnormalized raw path ever leaves the resolver.
+    vfs::path::resolve_against_cwd(base, raw).ok_or(-(Errno::Enoent.as_i32() as i64))
 }
 
 pub fn resolve_at(dirfd: i32, raw: &str) -> Option<String> {
