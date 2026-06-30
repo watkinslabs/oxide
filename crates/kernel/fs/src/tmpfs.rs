@@ -25,7 +25,7 @@ use vfs::{AddressSpaceOps, Devt, FileType, Ino, Inode, InodeOps, InodeRef, KResu
 use vfs::{DirContext, FileOps, InodeBuilder, default_inode_ops, make_device_node_inode, mk_mode, CreateCtx};
 use vfs::superblock::SuperBlock;
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 static NEXT_INO: AtomicU64 = AtomicU64::new(0x4000_0000);
 
@@ -179,6 +179,18 @@ pub struct TmpfsFileData {
     len:  AtomicU64,
     /// Owning mount's space accounting (block charge/uncharge). # D33
     acct: Arc<TmpfsSb>,
+    /// memfd `F_*_SEALS` word (Linux `shmem_inode_info.seals`). Lives HERE in the
+    /// per-fs inode-info, reached via `vfs::SealCarrier`; the owning `Inode`
+    /// exposes it through `fcntl_seals()` only when this data was attached as the
+    /// inode's seal carrier (a sealable memfd). # D42
+    seals: AtomicU32,
+}
+
+/// memfd seal-store carrier (`16§2`, Linux `SHMEM_I(inode)->seals`): the tmpfs
+/// inode-info owns the seal word, and the generic `Inode` reads it through this
+/// trait. # C: O(1)
+impl vfs::SealCarrier for TmpfsFileData {
+    fn seal_word(&self) -> &AtomicU32 { &self.seals }
 }
 
 /// Frame for `idx`, allocating + zeroing on first touch and charging one block
@@ -208,6 +220,7 @@ fn make_tmpfs_file_inode(sealable: bool, perm: u16, uid: u32, gid: u32, sb: Weak
             pages: Spinlock::new(BTreeMap::new()),
             len:   AtomicU64::new(0),
             acct,
+            seals: AtomicU32::new(0),
         });
         let mapping: Arc<dyn AddressSpaceOps> = data.clone();
         let mut b = InodeBuilder::new(ino, mk_mode(FileType::Regular, perm),
@@ -216,9 +229,9 @@ fn make_tmpfs_file_inode(sealable: bool, perm: u16, uid: u32, gid: u32, sb: Weak
             .fsid(fsid_of(&sb2))
             .mapping(mapping)
             .xattrs(vfs::SimpleXattrs::new())
-            .private(data);
+            .private(data.clone());
         if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
-        if sealable { b = b.seals(0); }
+        if sealable { b = b.seal_carrier(data); }
         b.build()
     })
 }
