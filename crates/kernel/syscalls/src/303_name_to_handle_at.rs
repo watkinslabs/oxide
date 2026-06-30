@@ -8,9 +8,10 @@
 // The handle we emit is the 8-byte inode number (FILEID-style); the
 // mount id is a single constant since v1 has one visible mount domain.
 // Same inode -> identical handle -> systemd sees the same file.
-// open_by_handle_at (the reverse) stays unimplemented: it needs a
-// global handle->inode map + CAP_DAC_READ_SEARCH and no userspace we
-// run calls it.
+// open_by_handle_at (the reverse) is implemented in
+// 304_open_by_handle_at.rs (D47): it decodes this same 8-byte inode FID
+// and resolves it on mount_fd's superblock via ilookup(ino), gated on
+// CAP_DAC_READ_SEARCH.
 
 #![cfg(target_os = "oxide-kernel")]
 
