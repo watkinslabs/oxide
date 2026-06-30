@@ -36,9 +36,14 @@ pub(crate) fn read_user_path(ptr: u64) -> Result<String, i64> {
     Ok(path)
 }
 
+/// D26: every path leaves through the lexical normalizer — an absolute path is
+/// normalized (no raw-string passthrough), a relative path is joined to cwd then
+/// normalized. A normalization miss returns `None` (callers map to ENOENT, Linux
+/// for a path that cannot be normalized), never a silent raw unnormalized string;
+/// this keeps path resolution deterministic.
 /// # C: O(1)
 pub(crate) fn resolve(path_raw: &str) -> Option<String> {
-    if path_raw.starts_with('/') { return Some(path_raw.into()); }
+    if path_raw.starts_with('/') { return vfs::path::lexical_normalize(path_raw); }
     let cur = sched::live::current()?;
     // SAFETY: cwd slot single-mutator per `13§5`; current task is sole writer.
     let cwd = unsafe { (*cur.cwd.get()).clone() };
