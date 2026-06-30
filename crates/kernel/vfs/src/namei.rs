@@ -224,6 +224,19 @@ pub struct VfsPath {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LastType { Norm, Dot, Dotdot, Root }
 
+/// `i_op->get_link` result (Linux `fs/namei.c get_link`): either the symlink
+/// BODY to follow as a path string (`Path`), or a MAGIC-link JUMP target — an
+/// already-resolved `(mnt,dentry,inode)` the walk RESETS its current position
+/// to (Linux `nd_jump_link`) INSTEAD of splicing a path string. Only magic
+/// inodes (`/proc/<pid>/fd/<n>` and friends) produce `Jump`; every ordinary /
+/// inline symlink produces `Path`, so the no-magic-link walk is unchanged.
+pub enum LinkTarget {
+    /// Ordinary symlink body — splice as a new path frame and resolve.
+    Path(alloc::vec::Vec<u8>),
+    /// Magic-link jump target — reset the walk's `(mnt,dentry,inode)` here.
+    Jump(VfsPath),
+}
+
 impl VfsPath {
     /// Classify the LOOKUP_PARENT leaf (`last_component`) as Linux `last_type`.
     /// `Root` when there is no leaf — a full (non-PARENT) walk, or a PARENT walk
@@ -999,8 +1012,36 @@ impl Nameidata {
                 // enforced separately at the frame push below.
                 self.total_link_count += 1;
                 if self.total_link_count > MAX_SYMLINK_DEPTH { return Err(VfsError::Eloop); }
-                let target = child.inode().ok_or(VfsError::Enoent)?.get_link()?;
-                let target = String::from_utf8_lossy(&target).into_owned();
+                // `i_op->get_link` (Linux `get_link`): a MAGIC link
+                // (`/proc/<pid>/fd/<n>` …) yields a resolved JUMP target the
+                // walk RESETS to (Linux `nd_jump_link`); an ordinary symlink
+                // yields its BODY string to splice as a new path frame. Only
+                // magic inodes ever take the `Jump` arm, so the common symlink
+                // walk below is byte-for-byte unchanged.
+                match child.inode().ok_or(VfsError::Enoent)?.follow_link()? {
+                    LinkTarget::Jump(vp) => {
+                        // RESOLVE_NO_MAGICLINKS (Linux `nd_jump_link` under
+                        // LOOKUP_NO_MAGICLINKS): a magic link followed in the
+                        // walk → ELOOP. The open/dup layer enforces the same on
+                        // its `/proc/self/fd/N` short-circuit.
+                        if self.flags.no_magiclinks { return Err(VfsError::Eloop); }
+                        // Linux `nd_jump_link`: reset the current
+                        // `(mnt,dentry,inode)` to the jump target. The ACTIVE
+                        // frame's REMAINING components (`queue`/`idx` already
+                        // advanced past this link) resume from the new position —
+                        // no frame push, no string splice, no nesting bump. The
+                        // jump target is an already-resolved path (an open file's
+                        // `(mnt,dentry)`), so no mount-crossing follow is needed.
+                        self.cur_mnt_id = vp.mnt_id;
+                        self.cur_dentry = vp.dentry;
+                        self.cur_inode  = vp.inode;
+                        // D22: a `d_move` of the magic-link dentry under us taints
+                        // the jump read, so restart.
+                        if renamed(&child, cseq) { return Ok(WalkOutcome::Restart); }
+                        continue;
+                    }
+                    LinkTarget::Path(bytes) => {
+                let target = String::from_utf8_lossy(&bytes).into_owned();
                 // Suspend the active frame's remainder (Linux `nd->stack` push)
                 // and make the link target the new active frame; the remainder is
                 // resumed (Linux `put_link`) when the target is consumed. Skip the
@@ -1039,6 +1080,8 @@ impl Nameidata {
                 if renamed(&child, cseq) { return Ok(WalkOutcome::Restart); }
                 // Relative target keeps walking from the symlink's directory.
                 continue;
+                    }
+                }
             }
 
             // Mount crossing / final component are complications: legitimize
