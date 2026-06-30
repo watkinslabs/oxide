@@ -17,11 +17,17 @@ pub fn unregister(d: &Arc<Dentry>) -> usize {
     let mp = target.mountpoint();
     let parent = target.parent_id.load(Ordering::Acquire);
     let sb = target.sb.clone();
-    super::unlink_from_parent(&target);
-    if let Some(o) = target.mnt_mp.lock().take() { put_mountpoint(&o); }
-    super::MOUNTS.lock().remove(&id);
-    if let Some(d) = mp.as_ref() {
-        super::hash_remove(parent, super::dptr(d), id);
+    // [D28a] writer-serialized structural removal: unlink + MOUNTPOINTS drop +
+    // MOUNTS remove + MOUNT_HASH remove atomically w.r.t. other writers. The
+    // (possibly sleeping) `put_super_if_last` runs AFTER the lock is released.
+    {
+        let _w = super::MOUNT_WRITE.lock();
+        super::unlink_from_parent(&target);
+        if let Some(o) = target.mnt_mp.lock().take() { put_mountpoint(&o); }
+        super::MOUNTS.lock().remove(&id);
+        if let Some(d) = mp.as_ref() {
+            super::hash_remove(parent, super::dptr(d), id);
+        }
     }
     // Lazy-umount deferral (Linux `umount_tree` + `mntput_no_expire`): the mount
     // is now unlinked from the tree (`MNT_DETACHED`). If an external reference
@@ -52,10 +58,15 @@ pub(crate) fn detach_mounts_on(d: &Arc<Dentry>) -> usize {
     for m in victims.iter() {
         let ns = m.ns;
         let parent = m.parent_id.load(Ordering::Acquire);
-        super::unlink_from_parent(m);
-        if let Some(o) = m.mnt_mp.lock().take() { put_mountpoint(&o); }
-        super::MOUNTS.lock().remove(&m.mnt_id);
-        super::hash_remove(parent, dp, m.mnt_id);
+        // [D28a] per-victim writer-serialized structural removal; `put_super`
+        // (may sleep) runs AFTER the lock is released.
+        {
+            let _w = super::MOUNT_WRITE.lock();
+            super::unlink_from_parent(m);
+            if let Some(o) = m.mnt_mp.lock().take() { put_mountpoint(&o); }
+            super::MOUNTS.lock().remove(&m.mnt_id);
+            super::hash_remove(parent, dp, m.mnt_id);
+        }
         // Detached now (Linux `MNT_DETACHED`); defer SB teardown to the final
         // `mntput` while an external `mnt_count` pin remains.
         m.mark_detached();
@@ -129,11 +140,18 @@ pub fn unregister_top(d: &Arc<Dentry>, detach_subtree: bool) -> usize {
     for m in victims.iter() {
         let parent = m.parent_id.load(Ordering::Acquire);
         let mp = m.mountpoint();
-        super::unlink_from_parent(m);
-        if let Some(o) = m.mnt_mp.lock().take() { put_mountpoint(&o); }
-        super::MOUNTS.lock().remove(&m.mnt_id);
-        if let Some(dd) = mp.as_ref() {
-            super::hash_remove(parent, super::dptr(dd), m.mnt_id);
+        // [D28a] per-victim writer-serialized structural removal; the
+        // (sleeping) `put_super_if_last` runs AFTER the lock is released. The
+        // peer-mirror detach above goes through `unregister`, which takes
+        // MOUNT_WRITE itself (per-peer atomic) — never nested under this region.
+        {
+            let _w = super::MOUNT_WRITE.lock();
+            super::unlink_from_parent(m);
+            if let Some(o) = m.mnt_mp.lock().take() { put_mountpoint(&o); }
+            super::MOUNTS.lock().remove(&m.mnt_id);
+            if let Some(dd) = mp.as_ref() {
+                super::hash_remove(parent, super::dptr(dd), m.mnt_id);
+            }
         }
         // Lazy-umount deferral (Linux `umount_tree` + `mntput_no_expire`): the
         // victim is now unlinked from the tree (`MNT_DETACHED`). If an external
