@@ -123,6 +123,43 @@ impl IrqGate for NoopIrq {
 }
 
 // ---------------------------------------------------------------------------
+// SMP spin-stall probe (`debug-smp`). Capture-first diagnostic for the -smp
+// wake-path hardening: when a `Spinlock::lock()` spins past a threshold it is a
+// suspected IF=0 cross-CPU stall, so we report the held lock's CLASS rank via an
+// installable hook (the consumer wires it to klog). Entirely compiled out unless
+// the `debug-smp` feature is on — prod pays zero. The hook defaults to a no-op,
+// so even a `debug-smp` build that never installs one stays silent.
+// ---------------------------------------------------------------------------
+#[cfg(feature = "debug-smp")]
+mod spin_probe {
+    use core::sync::atomic::{AtomicPtr, Ordering};
+
+    /// Reported once a `lock()` spins this many iterations without acquiring.
+    /// Large enough that only a genuine stall (not normal contention) trips it.
+    pub const SPIN_WARN_ITERS: u64 = 200_000_000;
+
+    /// Installed probe sink: `(lock_class_rank, spin_iters)`.
+    pub type SpinWarnFn = fn(u16, u64);
+    static HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+    /// Install the spin-stall reporter (consumer wires it to klog). # C: O(1)
+    pub fn set_spin_warn_hook(f: SpinWarnFn) { HOOK.store(f as *mut (), Ordering::Release); }
+
+    /// Fire the reporter if installed. # C: O(1)
+    #[inline]
+    pub fn warn(rank: u16, iters: u64) {
+        let p = HOOK.load(Ordering::Acquire);
+        if p.is_null() { return; }
+        // SAFETY: HOOK is only ever set via set_spin_warn_hook with the
+        // documented SpinWarnFn signature; non-null implies a live fn pointer.
+        let f: SpinWarnFn = unsafe { core::mem::transmute(p) };
+        f(rank, iters);
+    }
+}
+#[cfg(feature = "debug-smp")]
+pub use spin_probe::{set_spin_warn_hook, SpinWarnFn};
+
+// ---------------------------------------------------------------------------
 // Spinlock<T, C> — `06§3.1`.
 // ---------------------------------------------------------------------------
 
@@ -151,12 +188,22 @@ impl<T, C: LockClass> Spinlock<T, C> {
     /// # C: O(contention)
     /// # Lk: this lock acquired
     pub fn lock(&self) -> Guard<'_, T, C> {
+        #[cfg(feature = "debug-smp")]
+        let mut iters: u64 = 0;
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
             core::hint::spin_loop();
+            // Capture-first SMP probe (prod-inert: compiled out unless `debug-smp`).
+            // A lock spin past the threshold is a suspected IF=0 cross-CPU stall —
+            // report the lock CLASS rank so the next -smp boot names the vertex.
+            #[cfg(feature = "debug-smp")]
+            {
+                iters += 1;
+                if iters == spin_probe::SPIN_WARN_ITERS { spin_probe::warn(C::rank(), iters); }
+            }
         }
         Guard { lock: self }
     }
