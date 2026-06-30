@@ -163,6 +163,12 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
                 // node re-resolves on the next walk (d_move d_drops the source).
                 crate::pathresolve::d_move_path(&f, &t);
             }
+            // FAN_MOVED_FROM/TO (paired cookie) + FAN_MOVE_SELF (Linux
+            // fsnotify_move). Best-effort: needs both resolved parents.
+            if let (Some((op, _)), Some((np, _))) = (&old_parent, &new_parent) {
+                let moved = vfs::mount::lookup(&t).ok();
+                ::fs::inotify::fire_move(op, np, moved.as_ref());
+            }
             0
         }
         Err(e)  => errno_from_vfs(e),
