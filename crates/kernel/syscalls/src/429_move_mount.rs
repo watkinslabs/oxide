@@ -86,11 +86,14 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
             // CONVERTED: graft the already-realized SB (Linux do_move_mount over a
             // fsmount object), then deliver mount propagation to the destination
             // peer group — the same `register*`+`propagate_mount` outcome the
-            // `mount_fstype` fallback produces. `mnt_attrs` are NOT applied here:
-            // the prior path dropped them, so applying would change the booted
-            // mount-table state (deferred behind boot-verify, D51 PARTIAL).
+            // `mount_fstype` fallback produces. [D51] The `fsmount(2)` MOUNT_ATTR_*
+            // request stored on the object (`mnt_attrs`) is mapped into the MNT_*
+            // option space and stamped on the new mount BEFORE it goes live, so a
+            // following `propagate_mount` peer-copy inherits it (clone_mnt copies
+            // src.flags); the prior path dropped these bits.
             if let Some((sb, _root)) = mo.realized.as_ref() {
-                return match vfs::mount::attach_sb(Some(target_d.clone()), sb.clone()) {
+                let mnt_flags = vfs::mount::mount_attr_to_mnt(mo.mnt_attrs);
+                return match vfs::mount::attach_sb_with_flags(Some(target_d.clone()), sb.clone(), mnt_flags) {
                     Ok(()) => { let _ = vfs::mount::propagate_mount(&target_d); 0 }
                     Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
                     Err(e) => crate::namei_common::errno_from_vfs(e),
