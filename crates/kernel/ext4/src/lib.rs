@@ -48,6 +48,8 @@ pub use extent_rw::EXTENT_LEN_MAX;
 
 pub mod ialloc;
 
+pub mod xattr;
+
 pub mod journal;
 
 // Host-compilable so the verify-left resolution harness
