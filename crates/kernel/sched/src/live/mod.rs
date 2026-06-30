@@ -38,7 +38,7 @@ pub mod sigpend;
 pub mod tick_deadline;
 
 pub use chroot_refs::chroot_fs_refs;
-pub use ttwu::{try_to_wake_up, select_task_rq, resched_curr, relocate_for_affinity};
+pub use ttwu::{try_to_wake_up, ttwu_deferred, select_task_rq, resched_curr, relocate_for_affinity};
 
 pub use runqueue::{global, Runqueue};
 pub use schedule::{

@@ -44,3 +44,7 @@ debug-watchdog = []
 # F205 SSH-relay diagnostic — toggled from kernel/Cargo.toml's
 # `debug-ssh` feature which forwards via `--features debug-ssh`.
 debug-ssh = []
+# Capture-first SMP wake-path probe: klogs a [SMP-STALL] banner (lock class
+# rank + spin iters + cpu) when a Spinlock spins past threshold, so a -smp
+# boot that still wedges names the contended lock. Prod-inert; off by default.
+debug-smp = ["sync/debug-smp"]
