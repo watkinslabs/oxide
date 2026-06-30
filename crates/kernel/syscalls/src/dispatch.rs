@@ -118,6 +118,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_READLINKAT    => crate::s267_readlinkat::sys_readlinkat(&args),
         syscall::nrs::NR_STATX         => crate::s332_statx::sys_statx(&args),
         syscall::nrs::NR_NAME_TO_HANDLE_AT => crate::handle::sys_name_to_handle_at(&args),
+        syscall::nrs::NR_OPEN_BY_HANDLE_AT => crate::s304_open_by_handle_at::sys_open_by_handle_at(&args),
         syscall::nrs::NR_FCNTL         => crate::s072_fcntl::sys_fcntl(&args),
         syscall::nrs::NR_RSEQ          => crate::proc::sys_rseq(&args),
         syscall::nrs::NR_MEMBARRIER    => crate::s324_membarrier::sys_membarrier(&args),
