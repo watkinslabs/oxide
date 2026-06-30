@@ -37,16 +37,28 @@ pub fn sys_link(args: &SyscallArgs) -> i64 {
     if tm.mnt_id != lm.mnt_id {
         return -(Errno::Exdev.as_i32() as i64);
     }
-    // D29: hold the destination parent dir's `i_rwsem` EXCLUSIVE across the
-    // backend link (Linux `do_linkat` locks the new dentry's parent via
-    // `filename_create`). The backend `fs().link` resolves via `i_op.lookup`
-    // (no nested `i_rwsem`), so holding the exclusive side here is deadlock-free.
-    // Best-effort resolve: on a parent-resolve miss, proceed unlocked rather
-    // than introduce a new errno. Dropped before the dcache update below.
-    let lparent = resolve_parent(&l).ok();
-    let r = {
-        let _g = lparent.as_ref().map(|(pino, _)| pino.inode_lock());
-        tm.fs().link(&t, &l)
+    // link(2) does NOT follow the trailing symlink of the source (Linux
+    // `do_linkat` without `AT_SYMLINK_FOLLOW`): the inode of the source name
+    // itself is linked. A directory source is EPERM (no fs permits dir links).
+    let src = match crate::pathresolve::resolve_path_result(&t, true) {
+        Ok(p) => p.inode,
+        Err(e) => return errno_from_vfs(e),
+    };
+    if matches!(src.file_type(), vfs::FileType::Directory) {
+        return -(Errno::Eperm.as_i32() as i64);
+    }
+    // D9/D29: route through the resolved new-path PARENT's `i_op->link` (Linux
+    // `vfs_link` → `dir->i_op->link`) instead of the whole-path `FileSystem::link`,
+    // holding that parent's `i_rwsem` EXCLUSIVE across the backend (Linux
+    // `filename_create`). The backend resolves via `i_op.lookup` (no nested
+    // `i_rwsem`) → deadlock-free. On a parent-resolve miss, fall back to the
+    // whole-path FS link (byte-equivalent, conservative).
+    let r = match resolve_parent(&l) {
+        Ok((pino, name)) => {
+            let _g = pino.inode_lock();
+            pino.link_child(&src, &name, &vfs::CreateCtx::root())
+        }
+        Err(_) => tm.fs().link(&t, &l),
     };
     match r {
         Ok(())  => { crate::pathresolve::d_drop_path(&l); 0 }

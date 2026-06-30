@@ -497,6 +497,38 @@ impl InodeOps for Ext4StatInodeOps {
         Ok(())
     }
 
+    /// `i_op->link` (Linux `ext4_link` reached via `vfs_link`): add `name` in
+    /// THIS directory as a new hardlink to the existing `target` inode — one
+    /// journaled transaction (`dir_link` + on-disk `adjust_nlink` + orphan-del),
+    /// mirroring the legacy whole-path `link_inode_at`. EEXIST if `name` is
+    /// taken; a directory target is EPERM; a target from another mount is EXDEV
+    /// (`ext4_file_ino` returns None). Bumps the cached inode's in-memory
+    /// `i_nlink` (the inverse of `unlink`'s `drop_link`). # C: O(N parent
+    /// entries) + 1 journaled tx
+    fn link(&self, inode: &Inode, target: &InodeRef, name: &str, _ctx: &vfs::CreateCtx) -> KResult<()> {
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        if target.file_type() == FileType::Directory { return Err(VfsError::Eperm); }
+        let ino = ext4_file_ino(target).ok_or(VfsError::Exdev)?;
+        let src = d.st.mount.read_inode(ino).map_err(|_| VfsError::Eio)?;
+        if src.is_dir() { return Err(VfsError::Eperm); }
+        if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
+        let ftype = if src.is_link() { crate::DT_LNK } else { crate::DT_REG };
+        let name_b = name.as_bytes();
+        d.st.mount.run_journaled(|m| {
+            m.dir_link(d.ino, name_b, ino, ftype)?;
+            m.adjust_nlink(ino, 1)?;
+            // The inode now has a name → off the on-disk orphan list (Linux
+            // `ext4_orphan_del` in `ext4_link`).
+            m.orphan_del(ino)?;
+            Ok(())
+        }).map_err(|_| VfsError::Eio)?;
+        d.st.orphan_remove(ino);
+        d.st.page_cache.invalidate(InodeId(ino as u64));
+        target.inc_nlink(); // in-memory authority (inverse of unlink's drop_link)
+        Ok(())
+    }
+
     /// Symlink inode owner = `ctx.fsuid()`/`ctx.fsgid()`; its mode is fixed
     /// `0777` (Linux symlinks ignore umask). # C: O(N parent entries)
     fn symlink(&self, inode: &Inode, name: &str, target: &[u8], ctx: &vfs::CreateCtx) -> KResult<()> {
