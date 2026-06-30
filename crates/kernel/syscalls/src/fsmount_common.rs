@@ -51,18 +51,39 @@ fn source_disk_name(source: &str) -> &str {
     source.rsplit('/').next().unwrap_or(source)
 }
 
+/// `lookup_bdev` (Linux `block/bdev.c`) — resolve a `source` device path
+/// (`/dev/vda`) through the VFS to its inode, require a block special node
+/// (`S_ISBLK`), and map its `i_rdev` (the glibc/`new_encode_dev` wire dev_t
+/// devfs stamps on the node) to the registered disk via
+/// [`block::registry::by_dev`] (D26). `None` if `source` is not an absolute path,
+/// the path doesn't resolve, the node isn't a block device, or no disk owns that
+/// dev_t — the ext4 ctor then falls back to the legacy basename name/serial
+/// lookup so a mount the old path would have resolved never fails on a
+/// lookup_bdev miss. # C: O(path-depth + N_disks)
+fn lookup_bdev(source: &str) -> Option<Arc<dyn block::BlockDevice>> {
+    if !source.starts_with('/') { return None; }
+    let vp = crate::pathresolve::resolve_path(source, false)?;
+    if vp.inode.file_type() != FileType::BlockDev { return None; }
+    block::registry::by_dev(vp.inode.rdev()).map(|d| d.dev.clone())
+}
+
 /// fstypes whose new-mount-API path is THREADED through a real
 /// [`vfs::fs::FsContext`] (`fsopen`→`fsconfig`→`vfs_get_tree`→`fsmount`→
 /// `move_mount`/`attach_sb`) rather than the legacy string-bag deferred to
 /// [`mount_fstype`] at `move_mount`. Restricted to pseudo fstypes whose backend
 /// `root()` is a target-INDEPENDENT singleton, so the SB realized at
 /// `fsconfig(CMD_CREATE)` (which does not yet know the mount target) is
-/// byte-identical to what `mount_fstype` would graft. tmpfs/ramfs (bake the
-/// mount path into `rel()`), the PseudoFs group (seed the root ino from the
-/// target path), ext4 (`FS_REQUIRES_DEV`), cgroup2/autofs/devtmpfs/devpts/cgroup
-/// stay on the `mount_fstype` fallback. # C: O(1)
+/// byte-identical to what `mount_fstype` would graft. ext4's ctor keys off
+/// `source` (the block device), NOT the target, so it too realizes identically
+/// at CMD_CREATE: `fsconfig("source",dev)` sets `fc.source`, the
+/// `FS_REQUIRES_DEV` gate (fs_context `vfs_get_tree`) enforces a source, and
+/// `LegacyFsContextOps::get_tree` → `FsType::mount(fc.source(),opts)` → the ext4
+/// ctor opens the same SB `mount_fstype` would (D13/D14 for ext4). tmpfs/ramfs
+/// (bake the mount path into `rel()`), the PseudoFs group (seed the root ino from
+/// the target path), cgroup2/autofs/devtmpfs/devpts/cgroup stay on the
+/// `mount_fstype` fallback. # C: O(1)
 pub(crate) fn fstype_converted(t: &str) -> bool {
-    matches!(t, "proc" | "sysfs" | "debugfs" | "tracefs")
+    matches!(t, "proc" | "sysfs" | "debugfs" | "tracefs" | "ext4")
 }
 
 // `s_magic` (linux/magic.h) for the simple kernfs/ramfs-class api-fses that
@@ -121,10 +142,17 @@ fn register_filesystems() {
     // ext4 — block-device backed: resolve the source disk, open the on-disk SB.
     let _ = register_fs(FsType::new("ext4", EXT4_MAGIC, FsFlags::FS_REQUIRES_DEV,
         Box::new(|source: &str, _t: &str, _d: &str| -> R {
-            let name = source_disk_name(source);
-            if name.is_empty() { return Err(vfs::VfsError::Einval); }
-            let dev = block::registry::by_name(name).map(|d| d.dev.clone())
-                .or_else(|| block::registry::by_serial(name)).ok_or(vfs::VfsError::Enoent)?;
+            // D26: real `lookup_bdev` over the `source` path (VFS inode →
+            // S_ISBLK → i_rdev → by_dev) replaces the basename-strip; on a miss
+            // FALL BACK to the legacy basename name/serial lookup (the root
+            // volume binds by virtio serial before device naming settles, and an
+            // early mount may have no /dev node) so boot is never regressed.
+            let dev = lookup_bdev(source).or_else(|| {
+                let name = source_disk_name(source);
+                if name.is_empty() { return None; }
+                block::registry::by_name(name).map(|d| d.dev.clone())
+                    .or_else(|| block::registry::by_serial(name))
+            }).ok_or(vfs::VfsError::Enoent)?;
             let fs: Arc<dyn vfs::fs::FileSystem> =
                 ext4::rootfs::Ext4Mount::open(dev).map_err(|_| vfs::VfsError::Einval)?;
             Ok(MountSpec { fs, bind_root: None, strict: true })
