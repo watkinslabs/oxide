@@ -284,6 +284,23 @@ pub fn mount_at(mount_point: &str, mp: Option<Arc<Dentry>>) -> KResult<()> {
     }
 }
 
+/// fs_context `get_tree` realize for the unified cgroup2 hierarchy: mark the
+/// (singleton, global) tree mounted — idempotent, mirroring `mount_at`'s
+/// `TREE.lock().mount_root()` — and return the `(FileSystem, root inode)` the
+/// mount engine wraps into a `SuperBlock` (`SuperBlock::for_backend`). This is
+/// the TARGET-INDEPENDENT equivalent of `mount_at`'s `register_bind`: cgroup2's
+/// SB does not depend on the mount target (the hierarchy is global; `CgroupFs`
+/// is zero-sized; resolution is per-component from the root `CgDir`), so the SB
+/// realized at `fsconfig(CMD_CREATE)` is byte-identical to what `mount_at`
+/// grafts. Used by the converted `fsopen`→`fsconfig`→`vfs_get_tree`→`fsmount`→
+/// `move_mount` path (a registered `cgroup2` `file_system_type`'s ctor). # C: O(1)
+pub fn realize_tree() -> (Arc<dyn FileSystem>, InodeRef) {
+    let _ = TREE.lock().mount_root();
+    let fs: Arc<dyn FileSystem> = Arc::new(CgroupFs::new(""));
+    let root = inode::make_cg_dir(tree::ROOT);
+    (fs, root)
+}
+
 /// True iff cgroup `cgid` has a control file named `name`.
 /// # C: O(controllers)
 pub fn node_has_file(cgid: u64, name: &str) -> bool { TREE.lock().has_file(cgid, name) }
