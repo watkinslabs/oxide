@@ -235,6 +235,24 @@ mod fs_tests {
         assert_eq!(sb.fs().name(), "devfs", "SB backend is DevfsFs");
     }
 
+    /// Stage C (D27): `populate_defaults` now self-registers the mem char
+    /// devices via `drv::device_add`. With the devtmpfs hook wired (as kmain
+    /// does at boot), the exact bespoke nodes appear at `/dev/<name>` with the
+    /// right `CharDev` type + rdev — byte-identical to the old direct register.
+    #[test]
+    fn populate_defaults_mints_mem_nodes_via_device_add() {
+        drv::set_devtmpfs_hook(add_device_node);
+        crate::boot::populate_defaults();
+        for (path, rdev) in [
+            ("/dev/null", 0x0103u32), ("/dev/zero", 0x0105), ("/dev/full", 0x0107),
+            ("/dev/kmsg", 0x010b), ("/dev/random", 0x0108), ("/dev/urandom", 0x0108),
+        ] {
+            let i = lookup(path).unwrap_or_else(|| panic!("{} minted", path));
+            assert_eq!(i.file_type(), vfs::FileType::CharDev, "{} is a char device", path);
+            assert_eq!(i.rdev(), rdev, "{} carries its mem rdev", path);
+        }
+    }
+
     /// Stage B: the `DEVTMPFS_HOOK` target mints `/dev/<name>` for both a
     /// `dev_t`-synthesised block node and a factory-supplied bespoke node.
     #[test]

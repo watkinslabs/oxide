@@ -333,6 +333,14 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot_current, syscalls::hostname::set_current);
         procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
         ::devfs::set_current_hooks(sched::live::current_mount_ns, sched::live::current_chroot_root);
+        // device-model Stage C: wire the devtmpfs side of `drv::device_add`
+        // BEFORE the built-in /dev registrants run below (console/mem/drm/fbdev
+        // self-register via `device_add` now, D27). The /sys side (set_sysfs_hook)
+        // stays wired just before PCI enumeration — these early pseudo-devices
+        // carry a non-pci/non-virtio bus that the /sys synthesis ignores, so the
+        // devtmpfs hook is the only one they need at this phase.
+        drv::set_devtmpfs_hook(devfs::add_device_node);
+        drv::set_devtmpfs_del_hook(devfs::del_device_node);
         // Publish cmdline before /dev/console registers so the node follows
         // the preferred console from its first open.
         // SAFETY: boot-only single-writer, pre-userspace; install_arch_default is idempotent (no-op if the slot is set) and cannot race a procfs reader here.
@@ -565,13 +573,12 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     drv::set_sysfs_hook(crate::sysfs::bus::publish_device_cb);
     drv::set_driver_hook(crate::sysfs::bus::publish_driver_cb);
     drv::set_bind_hook(crate::sysfs::bus::bind_device_cb);
-    // device-model Stage B: wire the devtmpfs side of `drv::device_add` so ONE
-    // registration mints both the `/sys` entry (hooks above) AND the `/dev`
-    // node. ADDITIVE — nothing calls `device_add` yet (Stage C migrates the
-    // scattered `devfs::register` callers), so this fires zero times at boot
-    // and the boot is byte-identical until a caller opts in.
-    drv::set_devtmpfs_hook(devfs::add_device_node);
-    drv::set_devtmpfs_del_hook(devfs::del_device_node);
+    // device-model Stage B: the devtmpfs side of `drv::device_add` is wired
+    // EARLY (just after `devfs::set_current_hooks`, above) so the built-in
+    // /dev registrants that now self-register via `device_add` (console/mem/
+    // drm/fbdev, Stage C) mint their nodes at boot. The /sys-publish hooks here
+    // still precede PCI enumeration so each bus device's `/sys/bus/<bus>/
+    // devices/<addr>` entry lands as it is enumerated.
     // virtio-gpu/input bind via the real driver-model Driver registered + bound
     // at their bring-up sites in pci_boot (drivers-plan D1a/D2); the old
     // NoMatch DriverEntry probe stubs were removed in D2.
@@ -639,7 +646,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     if drv_virtio_rng::present() {
         devfs::misc::set_hwrng_source(drv_virtio_rng::fill);
-        devfs::register("/dev/hwrng", devfs::misc::make_hwrng_inode());
+        // device-model Stage C (D27): /dev/hwrng now self-registers via
+        // `drv::device_add` (dev_class "misc", 10:183). `node_factory` mints the
+        // exact bespoke `HwRngFileOps` inode (identical to the old direct
+        // register); bus "misc" is ignored by the pci/virtio /sys synthesis, so
+        // no spurious /sys entry appears.
+        drv::device_add(alloc::sync::Arc::new(
+            drv::Device::new("misc", alloc::string::String::from("hwrng"), 0, 0, 0)
+                .with_devnode("misc", alloc::string::String::from("hwrng"), Some((10, 183)))
+                .with_node_factory(alloc::sync::Arc::new(|| devfs::misc::make_hwrng_inode()))));
         debug_boot! { klog::write_raw(b"[INFO]  /dev/hwrng registered (virtio-rng)\n"); }
     }
 

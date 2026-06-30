@@ -16,6 +16,10 @@ sync   = { path = "../../shared/sync" }
 vfs    = { path = "../../kernel/vfs" }
 klog   = { path = "../../shared/klog" }
 kernfs = { path = "../kernfs" }
+# device-model Stage C (D27): the built-in mem pseudo-devices self-register via
+# `drv::device_add` so ONE registration drives /dev (+ /sys when a bus matches).
+# drv deps {hal,klog,sync,vfs} only — no drv->devfs edge, so this is acyclic.
+drv    = { path = "../../drivers/drv" }
 
 [features]
 default = []

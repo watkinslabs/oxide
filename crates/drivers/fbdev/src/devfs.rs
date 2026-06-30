@@ -258,5 +258,13 @@ pub fn mmap_backing(inode: &InodeRef) -> Option<(u64, u64)> {
 /// # SAFETY: caller is the boot path; pre-init.
 /// # C: O(1)
 pub fn init() {
-    devfs::register("/dev/fb0", make_fb_inode(0));
+    // device-model Stage C (D27): /dev/fb0 (graphics 29:0) self-registers via
+    // `drv::device_add`. `node_factory` mints the EXACT bespoke `FbFileOps`
+    // inode (FB0_INO_BASE routing tag, smem size) the direct register used, so
+    // the node is byte-identical; bus "graphics" is ignored by the pci/virtio
+    // /sys synthesis (no spurious /sys entry).
+    drv::device_add(Arc::new(
+        drv::Device::new("graphics", alloc::string::String::from("fb0"), 0, 0, 0)
+            .with_devnode("graphics", alloc::string::String::from("fb0"), Some((29, 0)))
+            .with_node_factory(Arc::new(|| make_fb_inode(0)))));
 }
