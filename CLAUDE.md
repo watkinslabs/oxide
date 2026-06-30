@@ -187,6 +187,21 @@ These cost real hours. Violating them produces false conclusions and wasted boot
 
 8. **A flaky ~8-line "boot" is a GRUB hang, not a result.** ~half of cold boots stall at GRUB with no kernel output. An 8-line log proves nothing; a real boot is >2000 lines. Re-run once.
 
+## Claim work before starting (HARD RULE — no duplicate lanes)
+
+Two agents independently rewrote the SAME mount subsystem item (the `mounted_mounts`
+dual-truth removal) in two branches at once — hours of wasted, conflicting work.
+Never again. Before writing ANY code for a ledger item / D-item / subsystem task:
+
+1. **Check for an existing lane FIRST — three greps, every time:**
+   - `git worktree list` and `git branch -a` — is there already a branch/worktree whose name or title covers this item?
+   - `grep -n "<item-id>" fix-ledger.md` (and any `*-ledger.md`) — is the row already marked IN-PROGRESS / claimed / has a branch SHA next to it?
+   - For mount/vfs/sched core work, grep the source for the symbol you intend to add (e.g. a helper name) — if it already exists on another branch's diff, someone is on it.
+2. **If a lane exists, DO NOT open a parallel one.** Either continue that lane (its worktree; resume its agent via SendMessage; or take it over and finish it), or pick a DIFFERENT unclaimed item. Duplicating a live lane is the single most expensive mistake in this repo.
+3. **Claim it before you start.** Mark the ledger row `[CLAIMED <branch> <date>]` (or add the branch name to the row) and commit that claim, so the next agent's grep in step 1 sees it. Release/flip to DONE on merge.
+4. **After any agent wave, before boot-verify: re-check `git -C <main-tree> rev-parse HEAD` + `git branch -a` + `git worktree list`.** The shared main tree gets reset/advanced by concurrent lanes; a stale assumption about HEAD invalidates a boot result (you may boot a different lane's kernel — see Lessons §2).
+5. **One item = one lane = one agent.** If you discover mid-task that you've duplicated a live lane, STOP, preserve your commit on a branch, and reconcile with the owning lane rather than racing it to merge.
+
 ## Git workflow (mandatory)
 
 **Commit author (HARD RULE).** Every commit + PR is authored by **`Chris Watkins <chris@watkinslabs.com>`** — period. This is the only valid author identity. Before committing in any clone, ensure `git config user.name "Chris Watkins"` and `git config user.email "chris@watkinslabs.com"` are set (a fresh clone may have `user.name` unset, which produces garbage authors like "Ablative Personality" — fix it first). Never let any other name/email land on a commit or PR.
