@@ -68,6 +68,60 @@ pub fn route(ino: u64) -> TtyTarget {
 /// follow this. # C: O(1)
 pub fn foreground_vt() -> u8 { tty::live::foreground().max(1) }
 
+/// True when `ino` is a console / serial / numbered-VT tty char-device inode
+/// (the `0x7400..=0x74FF` band — `/dev/console`, `/dev/tty`, `/dev/tty0`,
+/// `/dev/tty1..63`, `/dev/ttyS0`). Excludes vcs (`0x7600`/`0x7700`), pts
+/// (`0x6000_0000`), fbdev, vcsa, and pidfd ranges. # C: O(1)
+pub fn is_console_tty_ino(ino: Ino) -> bool {
+    (ino & !0xFF) == TTY_INO_BASE
+}
+
+/// Linux `tty_open` controlling-terminal acquisition (`drivers/tty/tty_io.c`
+/// `tty_open` → `__proc_set_tty`, POSIX §11.1.3). Called from the open(2)
+/// path after a console/serial/VT tty char-device inode has been resolved.
+///
+/// When the caller is a session leader with NO controlling terminal, the
+/// open flags do NOT carry `O_NOCTTY`, and the tty has no owning session,
+/// make this tty the session's controlling terminal: record the inode on the
+/// calling task (`task.ctty`) so `/dev/tty` resolves to it, claim the tty for
+/// the leader's session (`tty->session`), and seed the tty's foreground
+/// process group with the leader's pgrp (without which a job-control shell
+/// trips SIGTTIN on its first read). No-op when O_NOCTTY is set, the inode is
+/// not a console tty, the caller is not a session leader, the caller already
+/// owns a ctty, or the tty already belongs to a session (a plain open never
+/// steals — that needs TIOCSCTTY).
+/// # C: O(1)
+pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
+    use core::sync::atomic::Ordering;
+    let ino = inode.ino();
+    if !is_console_tty_ino(ino) { return; }
+    let o_noctty = flags & OpenFlags::O_NOCTTY.bits() != 0;
+    let cur = match sched::live::current() { Some(c) => c, None => return };
+    // Session leader iff its session id equals its own (v)pid.
+    let vpid = cur.vtgid.load(Ordering::Acquire);
+    let my_pid = if vpid != 0 { vpid } else { cur.tid };
+    let sid = cur.sid.load(Ordering::Acquire);
+    let is_leader = sid != 0 && sid == my_pid;
+    // SAFETY: single-mutator per `13§5` — running task on this CPU is the sole writer of ctty.
+    let has_ctty = unsafe { (*cur.ctty.get()).is_some() };
+    let tty_sid = match route(ino) {
+        TtyTarget::Serial => static_console::session(),
+        TtyTarget::Vt(vt) => vt_tty::vt_tty(vt).sid(),
+    };
+    if !tty::ctty::should_acquire_ctty(true, o_noctty, is_leader, has_ctty, tty_sid != 0) {
+        return;
+    }
+    // Acquire: record on the task + claim the tty for this session, seeding
+    // the fg pgrp with the leader's pgrp.
+    let pgid = cur.pgid.load(Ordering::Acquire);
+    // SAFETY: single-mutator per `13§5` — running task on this CPU is the sole writer of ctty.
+    unsafe { *cur.ctty.get() = Some(inode.clone()); }
+    match route(ino) {
+        TtyTarget::Serial => static_console::set_session_and_fg(sid, pgid),
+        TtyTarget::Vt(vt) => vt_tty::set_session_and_fg(vt, sid, pgid),
+    }
+}
+
 // ---- VT console device: per-inode `vt` in `i_private`, shared `i_fop` ----
 
 /// Backend-private state (`i_private`) for a VT console inode: which VT it
