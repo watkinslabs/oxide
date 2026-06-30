@@ -63,6 +63,16 @@ decl_lock_class! {
     // held WHILE acquiring the SB icache lock (ascending) — the rank window
     // that lets kernfs/procfs/sysfs/devfs route inode builds through `iget`.
     Kernfs       = 55,
+    // [D28a] Mount-tree writer serialization (`vfs::mount::MOUNT_WRITE`): the
+    // coarse outer lock every mount-tree MUTATOR takes around its multi-structure
+    // mutation (MOUNTS + MOUNT_HASH + MOUNTPOINTS + NAMESPACES) so two concurrent
+    // writers cannot interleave and leave those structures mutually inconsistent.
+    // Ranked ABOVE `Dentry` (50) so the `d_invalidate`→`detach_mounts` path can
+    // take it while holding a dentry lock, and BELOW `Superblock` (60) /
+    // `MountTable` (70) — the mount-structure locks it is held ACROSS (strict
+    // outermost-of-the-mount-locks). NEVER held across a sleeping descend
+    // (`namei`/`inode.lookup`) or `put_super`; those run outside the region.
+    MountWrite   = 58,
     Superblock   = 60,
     Modules      = 65,
     MountTable   = 70,
