@@ -107,7 +107,9 @@ pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
         // Clone the source subtree (freshly-created `newm` is childless at this
         // point, so this is one node) and splice it at `dst` under the target.
         let nodes = copy_tree(&newm, &new_mp, ty, grp, &newm, ns, true, None);
-        n += commit_tree(nodes, &dst, None, ns);
+        // The peer copy's root lands at `dst` under this `peer` mount; `0` lets
+        // `commit_tree` derive the (unambiguous, distinct-dentry) parent itself.
+        n += commit_tree(nodes, &dst, 0, None, ns);
     }
     n
 }
