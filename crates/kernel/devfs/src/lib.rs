@@ -167,3 +167,31 @@ impl vfs::fs::FileSystem for DevfsFs {
 /// Singleton accessor for the mount-table to register.
 /// # C: O(1)
 pub fn instance() -> &'static dyn vfs::fs::FileSystem { &DevfsFs }
+
+#[cfg(test)]
+mod fs_tests {
+    use super::*;
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
+
+    /// devtmpfs is a singleton SB-bearing backend: the registered `devtmpfs`
+    /// `file_system_type` ctor (mirroring `fsmount_common::register_filesystems`)
+    /// realizes a real `DevfsFs` SuperBlock at the converted CMD_CREATE path
+    /// (`FsType::mount` == fsconfig get_tree). Closes the devtmpfs half of
+    /// superblock D8/D21 — `mount -t devtmpfs` is no longer an admit-noop.
+    #[test]
+    fn devtmpfs_fstype_realizes_devfs_sb() {
+        use vfs::FileSystemType;
+        use vfs::fs::{FsFlags, FsType, MountSpec};
+        // The exact ctor registered for "devtmpfs" in the syscalls crate.
+        let ctor = Box::new(|_s: &str, _t: &str, _d: &str| {
+            let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(DevfsFs);
+            Ok(MountSpec { fs, bind_root: None, strict: false })
+        });
+        let ty = FsType::new("devtmpfs", 0x0102_1994, FsFlags::empty(), ctor);
+        // The realized SuperBlock carries the DevfsFs backend + TMPFS_MAGIC.
+        let sb = ty.mount("", "").expect("devtmpfs realizes a SuperBlock");
+        assert_eq!(sb.s_magic, 0x0102_1994, "devtmpfs SB stamps TMPFS_MAGIC");
+        assert_eq!(sb.fs().name(), "devfs", "SB backend is DevfsFs");
+    }
+}
