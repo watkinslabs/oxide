@@ -21,7 +21,7 @@ static DEBUG_ROOT: Spinlock<Option<Arc<PseudoDir>>, LockClass> = Spinlock::new(N
 pub fn trace_root() -> Arc<PseudoDir> {
     let mut g = TRACE_ROOT.lock();
     if let Some(r) = g.as_ref() { return Arc::clone(r); }
-    let r = PseudoDir::new_root(kernfs::dir_ino("/sys/kernel/tracing"), TRACEFS_FSID, false);
+    let r = PseudoDir::new_root(kernfs::dir_ino("/sys/kernel/tracing"), TRACEFS_FSID);
     *g = Some(Arc::clone(&r));
     r
 }
@@ -30,7 +30,7 @@ pub fn trace_root() -> Arc<PseudoDir> {
 pub fn debug_root() -> Arc<PseudoDir> {
     let mut g = DEBUG_ROOT.lock();
     if let Some(r) = g.as_ref() { return Arc::clone(r); }
-    let r = PseudoDir::new_root(kernfs::dir_ino("/sys/kernel/debug"), DEBUGFS_FSID, false);
+    let r = PseudoDir::new_root(kernfs::dir_ino("/sys/kernel/debug"), DEBUGFS_FSID);
     *g = Some(Arc::clone(&r));
     r
 }

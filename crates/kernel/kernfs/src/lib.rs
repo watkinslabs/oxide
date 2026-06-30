@@ -2,16 +2,14 @@
 //! is a real per-component `vfs::Inode`: its `children` BTreeMap IS the
 //! directory and resolution is per-component `i_op->lookup`, never a
 //! whole-path key. Lifted from devfs's `DevDir` (D1) and given a `Weak<
-//! SuperBlock>` (`i_sb`, the tmpfs `TmpfsDir` precedent) plus an optional
-//! per-dir ext4-overlay so each pseudo-fs (devfs/sysfs/procfs/tracefs/
-//! devpts) can OWN its own tree under its SuperBlock instead of a shared
-//! global path registry (D1b).
+//! SuperBlock>` (`i_sb`, the tmpfs `TmpfsDir` precedent) so each pseudo-fs
+//! (devfs/sysfs/procfs/tracefs/devpts) can OWN its own tree under its
+//! SuperBlock instead of a shared global path registry (D1b).
 //!
-//! `readdir` enumerates its (sorted) BTreeMap children THEN, when
-//! `overlay` is set, the ext4 overlay for its own path (skipping
-//! synthetic-shadowed names) — mirroring devtmpfs's `/dev` + `/etc`
-//! merge. Trees that have no on-disk backing (sysfs/procfs subtrees)
-//! leave `overlay` off and emit children only.
+//! `readdir` enumerates its (sorted) BTreeMap children only. D19 removed the
+//! last ext4-overlay user (`/etc`); `/dev` lost its overlay at D17. The
+//! synthetic dirs no longer merge on-disk rootfs entries — the rootfs ext4
+//! mount serves `/etc` (and any other real dir) directly.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -24,38 +22,10 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicPtr, Ordering};
 use sync::{Spinlock, Kernfs as KernfsClass};
 use vfs::superblock::SuperBlock;
 use vfs::{FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError};
 use vfs::{DirContext, FileOps, InodeOps, default_file_ops, default_inode_ops, mk_mode};
-
-// ---------------------------------------------------------------------------
-// ext4 directory-overlay hook (installed once at boot by the kernel).
-// ---------------------------------------------------------------------------
-
-/// Directory-overlay hook: emits real on-disk children (the rootfs) under a
-/// path prefix, so synthetic dirs (`/dev`, `/etc`) overlay ext4 without
-/// kernfs depending on a filesystem driver (would cycle kernfs->ext4->
-/// block->cgroup->...). The kernel installs an ext4 adapter at boot (docs/56).
-static DIR_OVERLAY: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-type OverlayFn = fn(&[u8], &mut dyn FnMut(&[u8], FileType));
-
-/// Install the rootfs directory-overlay adapter. Boot, once.
-/// # C: O(1)
-pub fn set_dir_overlay(f: OverlayFn) { DIR_OVERLAY.store(f as *mut (), Ordering::Release); }
-
-/// Emit on-disk ext4 children under `prefix` via the installed adapter.
-/// Called by `PseudoDir::readdir` (overlay dirs only) to merge real entries
-/// with synthetic ones. # C: O(N ext4 children)
-fn dir_overlay(prefix: &[u8], emit: &mut dyn FnMut(&[u8], FileType)) {
-    let p = DIR_OVERLAY.load(Ordering::Acquire);
-    if p.is_null() { return; }
-    // SAFETY: p was stored from an OverlayFn via set_dir_overlay; the fn
-    // pointer type round-trips through *mut () unchanged.
-    let f: OverlayFn = unsafe { core::mem::transmute(p) };
-    f(prefix, emit);
-}
 
 // ---------------------------------------------------------------------------
 // Inode-number derivation (FNV-1a, tagged into the synthetic-dir range).
@@ -122,15 +92,13 @@ impl PseudoEntry {
 
 /// A mutable directory in a pseudo-fs tree. Drivers register nodes at
 /// runtime, so `children` is behind a spinlock. `path` is the dir's
-/// absolute path (root = ""), used to drive the ext4 overlay. `fsid` is the
-/// fallback filesystem id when no `SuperBlock` is stamped; once `set_sb`
-/// runs at `fill_super`, `fsid`/`i_sb` derive from the SB's `s_dev`.
-/// `overlay` gates the ext4 readdir merge (devtmpfs `/dev`, rootfs `/etc`).
+/// absolute path (root = ""). `fsid` is the fallback filesystem id when no
+/// `SuperBlock` is stamped; once `set_sb` runs at `fill_super`, `fsid`/`i_sb`
+/// derive from the SB's `s_dev`.
 pub struct PseudoDir {
     ino:      Ino,
     path:     String,
     fsid:     u64,
-    overlay:  bool,
     sb:       Spinlock<Weak<SuperBlock>, KernfsClass>,
     children: Spinlock<BTreeMap<String, PseudoEntry>, KernfsClass>,
     /// Cached backing `vfs::Inode` (lazily built by [`PseudoDir::as_inode`]).
@@ -143,22 +111,21 @@ pub struct PseudoDir {
 
 impl PseudoDir {
     /// A fresh root dir (`path == ""`). `root_ino` is the stable root inode
-    /// number; `fsid` the fallback filesystem id; `overlay` whether readdir
-    /// merges the ext4 overlay for this subtree. # C: O(1)
-    pub fn new_root(root_ino: Ino, fsid: u64, overlay: bool) -> Arc<PseudoDir> {
+    /// number; `fsid` the fallback filesystem id. # C: O(1)
+    pub fn new_root(root_ino: Ino, fsid: u64) -> Arc<PseudoDir> {
         Arc::new(PseudoDir {
-            ino: root_ino, path: String::new(), fsid, overlay,
+            ino: root_ino, path: String::new(), fsid,
             sb: Spinlock::new(Weak::new()),
             children: Spinlock::new(BTreeMap::new()),
             inode: Spinlock::new(Weak::new()),
         })
     }
 
-    /// Internal: a non-root dir at `path` inheriting `fsid`/`overlay`/`sb`.
+    /// Internal: a non-root dir at `path` inheriting `fsid`/`sb`.
     /// # C: O(1)
-    fn child_at(path: String, fsid: u64, overlay: bool, sb: Weak<SuperBlock>) -> Arc<PseudoDir> {
+    fn child_at(path: String, fsid: u64, sb: Weak<SuperBlock>) -> Arc<PseudoDir> {
         Arc::new(PseudoDir {
-            ino: dir_ino(&path), path, fsid, overlay,
+            ino: dir_ino(&path), path, fsid,
             sb: Spinlock::new(sb),
             children: Spinlock::new(BTreeMap::new()),
             inode: Spinlock::new(Weak::new()),
@@ -233,7 +200,7 @@ impl PseudoDir {
         let mut cp = self.path.clone();
         cp.push('/');
         cp.push_str(name);
-        let d = PseudoDir::child_at(cp, self.fsid, self.overlay, self.sb_weak());
+        let d = PseudoDir::child_at(cp, self.fsid, self.sb_weak());
         g.insert(String::from(name), PseudoEntry::Dir(Arc::clone(&d)));
         d
     }
@@ -265,28 +232,6 @@ impl PseudoDir {
         let mut dir = Arc::clone(self);
         for c in &comps { dir = dir.child_dir(c); }
         let _ = dir;
-    }
-
-    /// Create the dir chain `path`; the FINAL dir uses `overlay` (and its
-    /// future children inherit it) instead of inheriting the parent flag.
-    /// Lets ONE subtree (the rootfs `/etc` overlay, D19) keep merging ext4
-    /// entries while the rest of the tree (devtmpfs `/dev`, D17) does not.
-    /// MUST be called before any other creation of the final component (an
-    /// already-present dir keeps its existing flag — `overlay` is immutable
-    /// per dir). Intermediate dirs inherit the parent flag. # C: O(components)
-    pub fn ensure_overlay_dir(self: &Arc<PseudoDir>, path: &str, overlay: bool) {
-        let comps = components(path);
-        if comps.is_empty() { return; }
-        let mut dir = Arc::clone(self);
-        for c in &comps[..comps.len() - 1] { dir = dir.child_dir(c); }
-        let last = comps[comps.len() - 1];
-        let mut g = dir.children.lock();
-        if matches!(g.get(last), Some(PseudoEntry::Dir(_))) { return; }
-        let mut cp = dir.path.clone();
-        cp.push('/');
-        cp.push_str(last);
-        let d = PseudoDir::child_at(cp, dir.fsid, overlay, dir.sb_weak());
-        g.insert(String::from(last), PseudoEntry::Dir(d));
     }
 
     /// Resolve `full_path` from this root. A leaf mid-path → `None`; a dir as
@@ -345,7 +290,7 @@ impl PseudoDir {
             nc.insert(k.clone(), nv);
         }
         Arc::new(PseudoDir {
-            ino: self.ino, path: self.path.clone(), fsid: self.fsid, overlay: self.overlay,
+            ino: self.ino, path: self.path.clone(), fsid: self.fsid,
             sb: Spinlock::new(self.sb.lock().clone()),
             children: Spinlock::new(nc),
             inode: Spinlock::new(Weak::new()),
@@ -370,7 +315,7 @@ impl PseudoDir {
         let mut cp = self.path.clone();
         cp.push('/');
         cp.push_str(name);
-        let d = PseudoDir::child_at(cp, self.fsid, self.overlay, self.sb_weak());
+        let d = PseudoDir::child_at(cp, self.fsid, self.sb_weak());
         g.insert(String::from(name), PseudoEntry::Dir(Arc::clone(&d)));
         Ok(d.as_inode())
     }
@@ -387,8 +332,8 @@ impl PseudoDir {
         Ok(())
     }
 
-    /// `f_op->iterate`/readdir. # C: O(children + overlay)
-    fn op_readdir(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    /// `f_op->iterate`/readdir. # C: O(children)
+    fn op_readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         // Synthetic children first (BTreeMap → sorted, stable order). Capture
         // each child's real ino so getdents reports a non-zero `d_ino`.
         let kids: Vec<(String, u64, FileType)> = {
@@ -403,26 +348,7 @@ impl PseudoDir {
             if !f(*ino, next, name, *ft) { return Ok(next); }
             idx += 1;
         }
-        if !self.overlay { return Ok(r_len); }
-        // ext4 overlay for this dir's path, skipping synthetic-shadowed names.
-        let mut ext4_seen: u64 = 0;
-        let mut stopped = false;
-        let mut stop_off: u64 = (idx as u64).max(r_len);
-        let prefix: &str = if self.path.is_empty() { "/" } else { &self.path };
-        dir_overlay(prefix.as_bytes(), &mut |name_bytes, ftype| {
-            if stopped { return; }
-            ext4_seen += 1;
-            if r_len + ext4_seen <= off { return; }
-            let name = match core::str::from_utf8(name_bytes) { Ok(s) => s, Err(_) => return };
-            if kids.iter().any(|(k, _, _)| k.as_str() == name) { return; }
-            let next = r_len + ext4_seen;
-            // Resolve the overlay child's real (ext4) ino for `d_ino`; the
-            // children lock is already released, so this lookup is deadlock-free.
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, name, ftype) { stopped = true; stop_off = next; }
-        });
-        if stopped { return Ok(stop_off); }
-        Ok(r_len + ext4_seen)
+        Ok(r_len)
     }
 }
 
@@ -451,7 +377,7 @@ impl FileOps for PseudoDirFileOps {
         // dir_context actor: each entry is forwarded through `ctx.emit`, which
         // advances `ctx.pos` and signals buffer-full (false) back to stop.
         let off = ctx.pos;
-        pdir(inode)?.op_readdir(inode, off, &mut |ino, next, name, ft| ctx.emit(name, ino, ft, next))?;
+        pdir(inode)?.op_readdir(off, &mut |ino, next, name, ft| ctx.emit(name, ino, ft, next))?;
         Ok(())
     }
 }
@@ -493,7 +419,7 @@ impl PseudoFs {
     /// inos under distinct SBs (distinct `s_dev`) — Linux-faithful and target-
     /// independent. # C: O(1)
     pub fn new(name: &'static str, magic: u64) -> Arc<Self> {
-        let root = PseudoDir::new_root(PSEUDO_ROOT_INO, magic, false);
+        let root = PseudoDir::new_root(PSEUDO_ROOT_INO, magic);
         Arc::new(Self { name, magic, root })
     }
 
@@ -518,7 +444,7 @@ impl vfs::fs::FileSystem for PseudoFs {
 mod tests {
     use super::*;
 
-    fn root() -> Arc<PseudoDir> { PseudoDir::new_root(0x5000_0001, 0xDEAD, false) }
+    fn root() -> Arc<PseudoDir> { PseudoDir::new_root(0x5000_0001, 0xDEAD) }
 
     #[test]
     fn insert_then_lookup_per_component() {
@@ -593,8 +519,8 @@ mod tests {
         // D1c property the shared ROOTS write-bus violated: a write into one
         // fs's own root is NOT visible from another fs's root. Mirrors sysfs
         // SYS_ROOT vs tracefs TRACE_ROOT (each `new_root`, distinct fsid).
-        let sys = PseudoDir::new_root(dir_ino("/sys"), 0x2, false);
-        let trace = PseudoDir::new_root(dir_ino("/sys/kernel/tracing"), 0x3, false);
+        let sys = PseudoDir::new_root(dir_ino("/sys"), 0x2);
+        let trace = PseudoDir::new_root(dir_ino("/sys/kernel/tracing"), 0x3);
         // sysfs-style writers insert mount-relative (the "/sys" prefix stripped).
         sys.insert_path("class/net", PseudoSymlink::new(10, 0x2, b"net"));
         sys.insert_path("kernel/osrelease", PseudoSymlink::new(11, 0x2, b"v"));
