@@ -120,6 +120,11 @@ impl Mount {
         // Run JBD2 replay before allowing any writes. No-op for
         // images without a journal or with a clean log.
         let _ = m.recover_journal();
+        // Reclaim any inodes left on the on-disk orphan list by a prior crash
+        // (Linux `ext4_orphan_cleanup` at mount). No-op when s_last_orphan==0
+        // (a cleanly-unmounted fs); bounded + best-effort so a corrupt list
+        // can never wedge the mount.
+        let _ = m.orphan_cleanup();
         Ok(m)
     }
 

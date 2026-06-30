@@ -19,12 +19,11 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use block::types::InodeId;
-use ::sync as sync;
 use vfs::inode_ops::{mk_mode, InodeOps};
-use vfs::file_ops::FileOps;
+use vfs::file_ops::{FileOps, HoleOrData};
 use vfs::inode::InodeBuilder;
 use vfs::mapping::AddressSpaceOps;
-use vfs::{FileType, Inode, InodeRef, KResult, VfsError};
+use vfs::{DirContext, FileType, Inode, InodeRef, KResult, VfsError};
 use super::state::RootfsState;
 
 fn vfs_error_from_mount(e: crate::MountError) -> vfs::VfsError {
@@ -68,35 +67,23 @@ pub const fn ext4_unwrap_ino(vfs_ino: u64) -> u32 { (vfs_ino & !EXT4_INO_MASK) a
 
 // ── i_private backend state ──────────────────────────────────────────
 
-/// `i_private` for a regular ext4 file. Bytes are lazy: stat (size/perm)
-/// doesn't pull file contents; first read/write loads them. Carries `st`
-/// so reads/writes hit the owning mount's device + page cache.
+/// `i_private` for a regular ext4 file. Stat (size/perm) doesn't pull file
+/// contents; read(2)/mmap serve incrementally through the owning mount's
+/// shared `page_cache` (D8 — no whole-file `Vec` snapshot). `st` carries the
+/// owning mount so reads/writes hit its device + page cache.
 pub(crate) struct Ext4FileData {
     pub(crate) st:        Arc<RootfsState>,
     pub(crate) ino:       u32,
     pub(crate) size_hint: AtomicU64,
-    pub(crate) bytes:     sync::Spinlock<Option<Vec<u8>>, sync::Inode>,
 }
 
 impl Ext4FileData {
-    /// Re-read the on-disk file into the byte cache + size hint. # C: O(size)
-    fn refresh(&self) {
-        if let Some(b) = self.st.read_full_file(self.ino) {
-            self.size_hint.store(b.len() as u64, Ordering::Release);
-            *self.bytes.lock() = Some(b);
+    /// Re-read just the on-disk size into the hint after a mutating op
+    /// (write/truncate/fallocate) — O(1), no file body load. # C: O(1)
+    fn refresh_size(&self) {
+        if let Ok(i) = self.st.mount.read_inode(self.ino) {
+            self.size_hint.store(i.size, Ordering::Release);
         }
-    }
-    /// Ensure the byte cache is populated; return a clone of the bytes. # C: O(size)
-    fn ensure_bytes(&self) -> Option<Vec<u8>> {
-        {
-            let g = self.bytes.lock();
-            if let Some(b) = g.as_ref() { return Some(b.clone()); }
-        }
-        let b = self.st.read_full_file(self.ino)?;
-        self.size_hint.store(b.len() as u64, Ordering::Release);
-        let out = b.clone();
-        *self.bytes.lock() = Some(b);
-        Some(out)
     }
 }
 
@@ -136,7 +123,7 @@ impl InodeOps for Ext4RegInodeOps {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         d.st.mount.truncate_inode(d.ino, len).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(d.ino as u64));
-        d.refresh();
+        d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
         Ok(())
     }
@@ -163,7 +150,7 @@ impl InodeOps for Ext4RegInodeOps {
             d.st.mount.fallocate_inode(d.ino, off, len, keep_size).map_err(vfs_error_from_mount)?;
         }
         d.st.page_cache.invalidate(InodeId(d.ino as u64));
-        d.refresh();
+        d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
         Ok(())
     }
@@ -188,28 +175,87 @@ impl InodeOps for Ext4RegInodeOps {
 pub(crate) struct Ext4RegFileOps;
 
 impl FileOps for Ext4RegFileOps {
+    /// read(2): serve incrementally from the owning mount's shared page cache
+    /// (Linux `generic_file_read_iter` → `address_space`), never loading the
+    /// whole file. Short read past EOF; holes read as zero. # C: O(buf.len)
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
-        let bytes_owned = d.ensure_bytes();
-        let g = d.bytes.lock();
-        let slice: &[u8] = match g.as_ref() {
-            Some(b) => b.as_slice(),
-            None    => match bytes_owned.as_deref() { Some(b) => b, None => return Err(VfsError::Eio) },
-        };
-        let off = off as usize;
-        if off >= slice.len() { return Ok(0); }
-        let n = (slice.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&slice[off..off+n]);
-        Ok(n)
+        d.st.read_cached(d.ino, off, buf).map_err(|_| VfsError::Eio)
     }
 
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         d.st.mount.write_at(d.ino, off, buf).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(d.ino as u64));
-        d.refresh();
+        d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
         Ok(buf.len())
+    }
+
+    /// `f_op->llseek` SEEK_HOLE/SEEK_DATA (Linux `ext4_seek_hole`/
+    /// `ext4_seek_data`): EXTENT-AWARE override of the generic non-sparse
+    /// default. Walks the inode's extent map (`collect_leaf_extents`) so a
+    /// sparse or hole-punched ext4 file reports its real data/hole boundaries
+    /// — `SEEK_DATA` skips forward over holes to the next allocated extent,
+    /// `SEEK_HOLE` skips forward over data to the next gap (or the implicit
+    /// hole at EOF). Boundaries are block-granular (ext4 allocates whole
+    /// blocks); `offset` already inside a data byte / hole returns `offset`
+    /// unchanged. `offset >= i_size` is `ENXIO`. # C: O(N_extents)
+    fn seek_hole_data(&self, inode: &Inode, offset: u64, which: HoleOrData) -> KResult<u64> {
+        let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
+        let i = d.st.mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?;
+        let size = i.size;
+        if offset >= size { return Err(VfsError::Enxio); }
+        let bs = d.st.mount.sb.block_size.max(1) as u64;
+        let runs = d.st.mount.collect_leaf_extents(&i.i_block).map_err(|_| VfsError::Eio)?;
+        seek_in_runs(&runs, bs, size, offset, which)
+    }
+}
+
+/// Pure SEEK_HOLE/SEEK_DATA boundary resolver over a file's data runs.
+/// `runs` are `(first_logical_block, len_blocks)` ASCENDING by start block,
+/// non-overlapping; gaps between runs (and the region after the last run, up
+/// to `size`) are holes. `bs` = block size, `size` = i_size (bytes), `offset`
+/// = scan-start byte (caller guarantees `offset < size`). Mirrors Linux
+/// `ext4_seek_data`/`ext4_seek_hole` semantics. # C: O(N_runs)
+fn seek_in_runs(runs: &[(u32, u32)], bs: u64, size: u64, offset: u64, which: HoleOrData)
+    -> KResult<u64>
+{
+    let b = offset / bs; // logical block holding `offset`
+    let contains = |blk: u64| runs.iter().any(|&(s, l)| blk >= s as u64 && blk < s as u64 + l as u64);
+    match which {
+        HoleOrData::Data => {
+            if contains(b) { return Ok(offset); }
+            // First run that starts strictly after `b` (sorted ascending) is the
+            // next data region. Runs entirely before `b` have start <= b and are
+            // skipped by the `> b` test.
+            for &(s, _l) in runs {
+                if (s as u64) > b {
+                    let byte = (s as u64) * bs;
+                    return if byte < size { Ok(byte) } else { Err(VfsError::Enxio) };
+                }
+            }
+            Err(VfsError::Enxio)
+        }
+        HoleOrData::Hole => {
+            if !contains(b) { return Ok(offset); } // already in a hole
+            // Walk the contiguous data chain covering `b`; the hole begins at the
+            // end of the last contiguous run.
+            let mut chain_end: Option<u64> = None;
+            for &(s, l) in runs {
+                let start = s as u64;
+                let end = start + l as u64;
+                match chain_end {
+                    None => { if b >= start && b < end { chain_end = Some(end); } }
+                    Some(ce) => {
+                        if start == ce { chain_end = Some(end); }
+                        else if start > ce { break; }
+                    }
+                }
+            }
+            let hole_byte = chain_end.map(|e| e * bs).unwrap_or(offset);
+            Ok(hole_byte.min(size))
+        }
     }
 }
 
@@ -236,13 +282,12 @@ impl AddressSpaceOps for Ext4FileMapping {
 /// Build a regular-file `vfs::Inode` for ext4 inode `ino`. `mode`/`size`/
 /// `nlink` are the captured on-disk metadata (read by the caller before the
 /// `iget` build closure). # C: O(1)
-pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: u64, nlink: u32)
+pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: u64, nlink: u32, uid: u32, gid: u32)
     -> InodeRef
 {
     let data = Arc::new(Ext4FileData {
         st, ino,
         size_hint: AtomicU64::new(size),
-        bytes: sync::Spinlock::new(None),
     });
     let mapping: Arc<dyn AddressSpaceOps> = Arc::new(Ext4FileMapping { data: data.clone() });
     let weak_sb = data.st.sb.lock().clone();
@@ -251,6 +296,7 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
         .sb(weak_sb)
         .size(size)
         .nlink(nlink)
+        .owner(uid, gid)
         .mapping(mapping)
         .private(data)
         .build()
@@ -304,12 +350,15 @@ impl InodeOps for Ext4StatInodeOps {
         Ok(blk[..n].to_vec())
     }
 
+    /// New on-disk inode owner = `ctx.fsuid()`/`ctx.fsgid()` (idmap-mapped),
+    /// mode = `ctx.apply_umask(mode)` — Linux `ext4_mkdir` → `ext4_new_inode`.
     /// # C: O(N parent entries)
-    fn mkdir(&self, inode: &Inode, name: &str, mode: u32) -> KResult<InodeRef> {
+    fn mkdir(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        d.st.mount.create_dir(d.ino, name.as_bytes(), mode as u16).map_err(|_| VfsError::Eio)?;
+        let perm = ctx.apply_umask(mode) as u16;
+        d.st.mount.create_dir(d.ino, name.as_bytes(), perm, ctx.fsuid(), ctx.fsgid()).map_err(|_| VfsError::Eio)?;
         let child = d.st.lookup_child_ino(d.ino, name).ok_or(VfsError::Eio)?;
         d.st.wrap_any_ino(child).ok_or(VfsError::Eio)
     }
@@ -338,15 +387,27 @@ impl InodeOps for Ext4StatInodeOps {
         }
         mount.dir_unlink(d.ino, name.as_bytes()).map_err(|_| VfsError::Eio)?;
         let _ = mount.free_inode(target);
+        // In-memory nlink authority (Linux `ext4_rmdir` → `clear_nlink(victim)`
+        // + `ext4_dec_count(dir)`): the FS owns the in-memory drop, not the
+        // dcache. Clear the cached victim dir's links (its "." + the parent's
+        // entry) so `d_unlink` sees nlink==0 and retires it; drop THIS parent
+        // dir's link (the victim's gone ".."), mirroring tmpfs `simple_rmdir`.
+        if let Some(sb) = d.st.i_sb() {
+            if let Some(victim) = sb.ilookup(ext4_wrap_ino(target)) { victim.set_nlink(0); }
+        }
+        inode.drop_nlink();
         Ok(())
     }
 
+    /// New on-disk inode owner = `ctx.fsuid()`/`ctx.fsgid()`, mode =
+    /// `ctx.apply_umask(mode)` — Linux `ext4_create` → `ext4_new_inode`.
     /// # C: O(N parent entries)
-    fn create(&self, inode: &Inode, name: &str, mode: u32) -> KResult<InodeRef> {
+    fn create(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        let ino = d.st.mount.create_file(d.ino, name.as_bytes(), mode as u16).map_err(|_| VfsError::Eio)?;
+        let perm = ctx.apply_umask(mode) as u16;
+        let ino = d.st.mount.create_file(d.ino, name.as_bytes(), perm, ctx.fsuid(), ctx.fsgid()).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(ino as u64));
         d.st.wrap_file(ino).ok_or(VfsError::Eio)
     }
@@ -361,26 +422,89 @@ impl InodeOps for Ext4StatInodeOps {
         if i.is_dir() { return Err(VfsError::Eisdir); }
         mount.unlink(d.ino, name.as_bytes()).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(target as u64));
+        // In-memory nlink authority (Linux `ext4_unlink` → `ext4_dec_count`):
+        // the FS owns `drop_nlink` on the victim inode; the dcache `d_unlink`
+        // no longer touches nlink. Drop the CACHED victim's link (same `Arc` the
+        // victim dentry holds) so `iput`/`drop_inode` can retire it once the
+        // last reference drains. Uncached → nothing in memory to drop.
+        if let Some(sb) = d.st.i_sb() {
+            if let Some(victim) = sb.ilookup(ext4_wrap_ino(target)) { victim.drop_link(); }
+        }
         Ok(())
     }
 
-    /// # C: O(N parent entries)
-    fn symlink(&self, inode: &Inode, name: &str, target: &[u8]) -> KResult<()> {
+    /// Symlink inode owner = `ctx.fsuid()`/`ctx.fsgid()`; its mode is fixed
+    /// `0777` (Linux symlinks ignore umask). # C: O(N parent entries)
+    fn symlink(&self, inode: &Inode, name: &str, target: &[u8], ctx: &vfs::CreateCtx) -> KResult<()> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        let ino = d.st.mount.create_symlink(d.ino, name.as_bytes(), target).map_err(|_| VfsError::Eio)?;
+        let ino = d.st.mount.create_symlink(d.ino, name.as_bytes(), target, ctx.fsuid(), ctx.fsgid()).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(ino as u64));
         Ok(())
     }
 
-    /// # C: O(N parent entries)
-    fn mknod(&self, inode: &Inode, name: &str, mode: u16, rdev: u32) -> KResult<()> {
+    /// New node owner = `ctx.fsuid()`/`ctx.fsgid()`; the perm bits carried in
+    /// `mode` are umasked (`ctx.apply_umask`), the `S_IFMT` type bits kept —
+    /// Linux `ext4_mknod` → `ext4_new_inode`. # C: O(N parent entries)
+    fn mknod(&self, inode: &Inode, name: &str, mode: u16, rdev: u32, ctx: &vfs::CreateCtx) -> KResult<()> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        let ino = d.st.mount.create_mknod(d.ino, name.as_bytes(), mode, rdev).map_err(|_| VfsError::Eio)?;
+        let mode = (mode & crate::inode::S_IFMT) | (ctx.apply_umask((mode & 0o7777) as u32) as u16);
+        let ino = d.st.mount.create_mknod(d.ino, name.as_bytes(), mode, rdev, ctx.fsuid(), ctx.fsgid()).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(ino as u64));
+        Ok(())
+    }
+
+    /// `i_op->rename` (Linux `ext4_rename` reached via `vfs_rename`): the
+    /// resolved-parent variant of the legacy whole-path `rename_at` — a single
+    /// journaled transaction that unlinks any overwritten dest, links the source
+    /// inode under the new (dir,name), then unlinks the old name. Only the plain
+    /// rename routes here; `RENAME_EXCHANGE`/`RENAME_WHITEOUT` stay on the
+    /// `FileSystem` path (`082_rename` branches) and are rejected here
+    /// defensively. # C: O(N parent entries) + 1 journaled tx
+    fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32, _ctx: &vfs::CreateCtx)
+        -> KResult<()>
+    {
+        if flags & (vfs::namei::RENAME_EXCHANGE | vfs::namei::RENAME_WHITEOUT) != 0 {
+            return Err(VfsError::Einval);
+        }
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        let nd = new_dir.private::<Ext4StatData>().ok_or(VfsError::Eio)?;
+        if !matches!(nd.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        // rename is within a single mount (Linux EXDEV otherwise). The syscall
+        // already guarantees this; re-check on the resolved parents' state.
+        if !Arc::ptr_eq(&d.st, &nd.st) { return Err(VfsError::Exdev); }
+        let (from_p, to_p) = (d.ino, nd.ino);
+        let mount = &d.st.mount;
+        let target = d.st.lookup_child_ino(from_p, old_name).ok_or(VfsError::Enoent)?;
+        let src = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
+        let ftype = if src.is_dir() { crate::DT_DIR } else if src.is_link() { crate::DT_LNK } else { crate::DT_REG };
+        let (from_name, to_name) = (old_name.as_bytes(), new_name.as_bytes());
+        // Replaced destination (plain rename only; EXCHANGE/WHITEOUT excluded
+        // above): capture its ino + dir-ness before the entry is removed so its
+        // in-memory nlink drops after (Linux `vfs_rename`: replaced inode loses
+        // its link). Mirrors the legacy `rename_at`.
+        let dest_victim = d.st.lookup_child_ino(to_p, new_name);
+        let dest_is_dir = dest_victim
+            .and_then(|v| mount.read_inode(v).ok())
+            .map(|i| i.is_dir())
+            .unwrap_or(false);
+        mount.run_journaled(|m| {
+            if dest_victim.is_some() { let _ = m.dir_unlink(to_p, to_name); }
+            m.dir_link(to_p, to_name, target, ftype)?;
+            m.dir_unlink(from_p, from_name)?;
+            Ok(())
+        }).map_err(|_| VfsError::Eio)?;
+        if let Some(victim_ino) = dest_victim {
+            if let Some(sb) = d.st.i_sb() {
+                if let Some(victim) = sb.ilookup(ext4_wrap_ino(victim_ino)) {
+                    if dest_is_dir { victim.set_nlink(0); } else { victim.drop_link(); }
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -391,17 +515,12 @@ impl InodeOps for Ext4StatInodeOps {
 pub(crate) struct Ext4StatFileOps;
 
 impl FileOps for Ext4StatFileOps {
-    fn iterate(
-        &self,
-        inode: &Inode,
-        off: u64,
-        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
-    ) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<Ext4StatData>().ok_or(VfsError::Eio)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         let mount = &d.st.mount;
         let dir_inode = mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?;
-        let mut next = off;
+        let off = ctx.pos;
         let mut idx: u64 = 0;
         let bs = mount.sb.block_size as u64;
         let nblocks = ((dir_inode.size + bs - 1) / bs) as u32;
@@ -426,12 +545,12 @@ impl FileOps for Ext4StatFileOps {
                     7 => FileType::Symlink,
                     _ => FileType::Regular,
                 };
-                let keep = f(e.inode as u64, idx, name, ft);
-                if keep { next = idx; } else { keep_going = false; }
+                let keep = ctx.emit(name, e.inode as u64, ft, idx);
+                if !keep { keep_going = false; }
                 keep
             });
         }
-        Ok(next)
+        Ok(())
     }
 }
 
@@ -440,7 +559,7 @@ impl FileOps for Ext4StatFileOps {
 /// the caller before the `iget` build closure. `rdev` is only meaningful for
 /// CHR/BLK nodes (generic_fillattr reads it for those types only). # C: O(1)
 pub(crate) fn build_stat_inode(
-    st: Arc<RootfsState>, ino: u32, ft: FileType, perm: u16, size: u64, nlink: u32, rdev: u32,
+    st: Arc<RootfsState>, ino: u32, ft: FileType, perm: u16, size: u64, nlink: u32, rdev: u32, uid: u32, gid: u32,
 ) -> InodeRef {
     let data = Arc::new(Ext4StatData { st, ino, ft, size });
     let weak_sb = data.st.sb.lock().clone();
@@ -450,6 +569,86 @@ pub(crate) fn build_stat_inode(
         .size(size)
         .nlink(nlink)
         .rdev(rdev)
+        .owner(uid, gid)
         .private(data)
         .build()
+}
+
+#[cfg(test)]
+mod seek_tests {
+    use super::{seek_in_runs, HoleOrData};
+    use vfs::VfsError;
+
+    const BS: u64 = 4096;
+
+    // Fully-allocated file: one run [0,10) blocks, size 40000 (< 10 blocks).
+    #[test]
+    fn full_file_data_and_hole() {
+        let runs = [(0u32, 10u32)];
+        let size = 40000u64;
+        // SEEK_DATA at 0 → 0 (already data)
+        assert_eq!(seek_in_runs(&runs, BS, size, 0, HoleOrData::Data), Ok(0));
+        // SEEK_DATA mid-file → unchanged
+        assert_eq!(seek_in_runs(&runs, BS, size, 5000, HoleOrData::Data), Ok(5000));
+        // SEEK_HOLE in data → implicit hole at EOF (size)
+        assert_eq!(seek_in_runs(&runs, BS, size, 0, HoleOrData::Hole), Ok(size));
+        // past EOF handled by caller; resolver assumes offset<size.
+    }
+
+    // Sparse: data [0,1), hole [1,5), data [5,8). size = 8 blocks.
+    #[test]
+    fn sparse_middle_hole() {
+        let runs = [(0u32, 1u32), (5u32, 3u32)];
+        let size = 8 * BS;
+        // In first data block: SEEK_HOLE → start of hole (block 1).
+        assert_eq!(seek_in_runs(&runs, BS, size, 100, HoleOrData::Hole), Ok(BS));
+        // In the hole: SEEK_DATA → next data extent (block 5).
+        assert_eq!(seek_in_runs(&runs, BS, size, 2 * BS, HoleOrData::Data), Ok(5 * BS));
+        // In the hole: SEEK_HOLE → unchanged (already a hole).
+        let off = 2 * BS + 17;
+        assert_eq!(seek_in_runs(&runs, BS, size, off, HoleOrData::Hole), Ok(off));
+        // In second data region: SEEK_HOLE → EOF (data runs to size).
+        assert_eq!(seek_in_runs(&runs, BS, size, 6 * BS, HoleOrData::Hole), Ok(size));
+    }
+
+    // Leading hole: file starts with a hole, data later.
+    #[test]
+    fn leading_hole() {
+        let runs = [(3u32, 2u32)];
+        let size = 6 * BS;
+        // SEEK_DATA from 0 → first extent at block 3.
+        assert_eq!(seek_in_runs(&runs, BS, size, 0, HoleOrData::Data), Ok(3 * BS));
+        // SEEK_HOLE from 0 → unchanged (offset is in the leading hole).
+        assert_eq!(seek_in_runs(&runs, BS, size, 0, HoleOrData::Data), Ok(3 * BS));
+        assert_eq!(seek_in_runs(&runs, BS, size, 0, HoleOrData::Hole), Ok(0));
+    }
+
+    // Adjacent runs merge: [0,2)+[2,3) are contiguous data → single region.
+    #[test]
+    fn adjacent_runs_merge() {
+        let runs = [(0u32, 2u32), (2u32, 1u32), (10u32, 1u32)];
+        let size = 11 * BS;
+        // SEEK_HOLE in the merged [0,3) region → hole at block 3.
+        assert_eq!(seek_in_runs(&runs, BS, size, BS, HoleOrData::Hole), Ok(3 * BS));
+        // SEEK_DATA in the [3,10) hole → block 10.
+        assert_eq!(seek_in_runs(&runs, BS, size, 5 * BS, HoleOrData::Data), Ok(10 * BS));
+    }
+
+    // No data at/after offset → SEEK_DATA is ENXIO.
+    #[test]
+    fn no_more_data_enxio() {
+        let runs = [(0u32, 1u32)];
+        let size = 8 * BS;
+        // Offset in the trailing hole, no further extents → ENXIO.
+        assert_eq!(seek_in_runs(&runs, BS, size, 4 * BS, HoleOrData::Data), Err(VfsError::Enxio));
+    }
+
+    // Empty file body (no extents): every byte before EOF is a hole.
+    #[test]
+    fn no_extents_all_hole() {
+        let runs: [(u32, u32); 0] = [];
+        let size = 3 * BS;
+        assert_eq!(seek_in_runs(&runs, BS, size, 0, HoleOrData::Hole), Ok(0));
+        assert_eq!(seek_in_runs(&runs, BS, size, BS, HoleOrData::Data), Err(VfsError::Enxio));
+    }
 }

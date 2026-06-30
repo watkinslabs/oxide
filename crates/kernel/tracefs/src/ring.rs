@@ -106,7 +106,7 @@ fn record_sched_switch(prev_pid: u32, prev_comm: &str, next_pid: u32, next_comm:
 static SCHED_SWITCH_ON: AtomicBool = AtomicBool::new(false);
 
 /// Enable (true) / disable the sched_switch tracepoint. # C: O(1)
-fn set_sched_switch(on: bool) {
+pub(crate) fn set_sched_switch(on: bool) {
     SCHED_SWITCH_ON.store(on, Ordering::Release);
     #[cfg(target_os = "oxide-kernel")]
     sched::live::install_sched_switch_hook(if on { Some(record_sched_switch) } else { None });
@@ -142,12 +142,12 @@ static SYS_ENTER_ON: AtomicBool = AtomicBool::new(false);
 static SYS_EXIT_ON: AtomicBool = AtomicBool::new(false);
 
 /// Enable/disable the sys_enter tracepoint. # C: O(1)
-fn set_sys_enter(on: bool) {
+pub(crate) fn set_sys_enter(on: bool) {
     SYS_ENTER_ON.store(on, Ordering::Release);
     syscall::tracepoint::install_sys_enter_hook(if on { Some(record_sys_enter) } else { None });
 }
 /// Enable/disable the sys_exit tracepoint. # C: O(1)
-fn set_sys_exit(on: bool) {
+pub(crate) fn set_sys_exit(on: bool) {
     SYS_EXIT_ON.store(on, Ordering::Release);
     syscall::tracepoint::install_sys_exit_hook(if on { Some(record_sys_exit) } else { None });
 }
@@ -234,9 +234,15 @@ fn read_at(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
 
 fn alloc_ino() -> Ino { NEXT_INO.fetch_add(1, Ordering::Relaxed) }
 
-fn sched_switch_on() -> bool { SCHED_SWITCH_ON.load(Ordering::Acquire) }
-fn sys_enter_on() -> bool { SYS_ENTER_ON.load(Ordering::Acquire) }
-fn sys_exit_on() -> bool { SYS_EXIT_ON.load(Ordering::Acquire) }
+pub(crate) fn sched_switch_on() -> bool { SCHED_SWITCH_ON.load(Ordering::Acquire) }
+pub(crate) fn sys_enter_on() -> bool { SYS_ENTER_ON.load(Ordering::Acquire) }
+pub(crate) fn sys_exit_on() -> bool { SYS_EXIT_ON.load(Ordering::Acquire) }
+
+/// Build an `events/.../enable` inode for the eventfs model (per-event
+/// tracepoint get/set fn pointers). # C: O(1)
+pub(crate) fn make_enable_inode(get: fn() -> bool, set: fn(bool)) -> InodeRef {
+    make_trace_inode(TraceFile::Enable { get, set }, 2)
+}
 
 /// Which `/sys/kernel/tracing` control file an inode backs — the `i_private`
 /// payload (`TraceData`). One shared `i_fop` (`TraceFileOps`) dispatches on it,
@@ -387,10 +393,7 @@ pub fn register() {
         make_trace_inode(TraceFile::Pipe { pending: Spinlock::new(Vec::new()) }, 0));
     crate::register("/sys/kernel/tracing/tracing_on",
         make_trace_inode(TraceFile::TracingOn, 2));
-    crate::register("/sys/kernel/tracing/events/sched/sched_switch/enable",
-        make_trace_inode(TraceFile::Enable { get: sched_switch_on, set: set_sched_switch }, 2));
-    crate::register("/sys/kernel/tracing/events/syscalls/sys_enter/enable",
-        make_trace_inode(TraceFile::Enable { get: sys_enter_on, set: set_sys_enter }, 2));
-    crate::register("/sys/kernel/tracing/events/syscalls/sys_exit/enable",
-        make_trace_inode(TraceFile::Enable { get: sys_exit_on, set: set_sys_exit }, 2));
+    // The per-event `events/.../enable` leaves are registered by the eventfs
+    // model (`eventfs::register`), which also adds id/format/filter + the
+    // subsystem/root aggregate enables.
 }

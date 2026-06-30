@@ -20,7 +20,6 @@
 
 
 use alloc::collections::VecDeque;
-use alloc::string::ToString;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
@@ -130,9 +129,9 @@ impl InotifyData {
         let cur = match sched::current() { Some(c) => c, None => return -1 };
         // SAFETY: running task on this CPU; sole reader of its fd-table slot.
         let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -1 };
-        let dentry = vfs::Dentry::new(None, alloc::string::String::from("[fanotify]"), obj.clone());
+        let dentry = vfs::dcache::d_alloc_pseudo("[fanotify]", obj.clone(), &crate::anon_dname::ANON_INODE_OPS);
         let file = vfs::File::new(obj.clone(), dentry, vfs::OpenFlags::O_RDONLY);
-        fdt.alloc(file).unwrap_or(-1)
+        fdt.alloc_limit(file, cur.nofile_soft()).unwrap_or(-1)
     }
 
     /// Drain queued events as Linux `struct fanotify_event_metadata` (24 B):
@@ -458,12 +457,14 @@ fn inode_key(inode: &InodeRef) -> usize {
 }
 
 fn resolve_watch_path(raw: &str) -> Option<InodeRef> {
+    // D26-fs: a lexical-normalization miss resolves to nothing (caller maps to
+    // ENOENT), never a nondeterministic raw-string fallback.
     let resolved = if raw.starts_with('/') {
-        vfs::path::lexical_normalize(raw).unwrap_or_else(|| raw.into())
+        vfs::path::lexical_normalize(raw)?
     } else if let Some(cur) = sched::current() {
         // SAFETY: current task is the sole writer of its cwd slot on this CPU.
         let cwd = unsafe { (*cur.cwd.get()).clone() };
-        vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
+        vfs::path::resolve_against_cwd(&cwd, raw)?
     } else {
         raw.into()
     };
@@ -474,7 +475,7 @@ fn resolve_watch_path(raw: &str) -> Option<InodeRef> {
 /// Allocates a fresh InotifyData at the lowest free fd.
 /// # C: O(N_fds)
 pub fn sys_inotify_init1(args: &syscall::SyscallArgs) -> i64 {
-    use vfs::{Dentry, File, OpenFlags};
+    use vfs::{File, OpenFlags};
     use syscall::errno::Errno;
     let flags = args.a0 as u32;
     let cur = match sched::current() {
@@ -487,11 +488,11 @@ pub fn sys_inotify_init1(args: &syscall::SyscallArgs) -> i64 {
     const IN_NONBLOCK: u32 = 0o0_004_000;
     const IN_CLOEXEC:  u32 = 0o2_000_000;
     let inode = make_inotify_inode(InotifyData::new(flags));
-    let dentry = Dentry::new(None, "inotify".to_string(), Arc::clone(&inode));
+    let dentry = vfs::dcache::d_alloc_pseudo("inotify", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
     let mut fl = OpenFlags::O_RDONLY;
     if (flags & IN_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);
-    match fdt.alloc(file) {
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => {
             if (flags & IN_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
             fd as i64
@@ -506,7 +507,7 @@ pub fn sys_inotify_init1(args: &syscall::SyscallArgs) -> i64 {
 /// mode for minted object fds (we open them O_RDONLY).
 /// # C: O(N_fds)
 pub fn sys_fanotify_init(args: &syscall::SyscallArgs) -> i64 {
-    use vfs::{Dentry, File, OpenFlags};
+    use vfs::{File, OpenFlags};
     use syscall::errno::Errno;
     let flags = args.a0 as u32;
     const FAN_CLOEXEC:  u32 = 0x1;
@@ -519,13 +520,13 @@ pub fn sys_fanotify_init(args: &syscall::SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode = make_inotify_inode(InotifyData::new_fanotify(flags));
-    let dentry = Dentry::new(None, "fanotify".to_string(), Arc::clone(&inode));
+    let dentry = vfs::dcache::d_alloc_pseudo("[fanotify]", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
     // A fanotify group fd is read (events) AND write (responses) — must be
     // O_RDWR or the response write() is rejected EBADF before the inode.
     let mut fl = OpenFlags::O_RDWR;
     if (flags & FAN_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);
-    match fdt.alloc(file) {
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => {
             if (flags & FAN_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
             fd as i64

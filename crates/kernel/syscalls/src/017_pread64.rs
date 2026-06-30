@@ -30,8 +30,11 @@ pub fn sys_pread64(args: &SyscallArgs) -> i64 {
     let user_buf: &mut [u8] = unsafe {
         core::slice::from_raw_parts_mut(buf as *mut u8, cnt as usize)
     };
-    match file.inode().read(off, user_buf) {
+    // Route through File::pread so the full Linux gate chain applies (negative
+    // off → EINVAL, non-seekable !FMODE_PREAD → ESPIPE, !FMODE_READ → EBADF),
+    // instead of calling inode().read directly and bypassing it.
+    match file.pread(user_buf, off as i64) {
         Ok(n) => n as i64,
-        Err(e) => -(e as i64),
+        Err(e) => crate::namei_common::errno_from_vfs(e),
     }
 }

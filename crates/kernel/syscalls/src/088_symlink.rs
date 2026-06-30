@@ -6,17 +6,15 @@
 use alloc::string::String;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{errno_from_vfs, path_exists, read_path, resolve_parent};
+use crate::namei_common::{errno_from_vfs, path_exists, read_user_path, resolve_parent};
 
 /// `symlink(target, linkpath)` slot 88.
 /// # C: O(N parent entries)
 pub fn sys_symlink(args: &SyscallArgs) -> i64 {
-    let target = match read_path(args.a0) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
-    };
-    let link = match read_path(args.a1) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
-    };
+    // Linux `getname`: NULL/bad ptr → EFAULT, empty string → ENOENT,
+    // ≥ PATH_MAX → ENAMETOOLONG (D29; was EINVAL on empty target).
+    let target = match read_user_path(args.a0) { Ok(s) => s, Err(rv) => return rv };
+    let link   = match read_user_path(args.a1) { Ok(s) => s, Err(rv) => return rv };
     symlink_impl(target, link)
 }
 
@@ -34,8 +32,15 @@ pub(crate) fn symlink_impl(target: String, link: String) -> i64 {
         return -(Errno::Eexist.as_i32() as i64);
     }
     let (pino, name) = match resolve_parent(&l) { Ok(x) => x, Err(rv) => return rv };
-    match pino.symlink_child(&name, target.as_bytes()) {
-        Ok(())  => 0,
+    // Thread the mount idmap + caller cred so the new symlink gets the right
+    // owner (symlinks carry no umask). Linux `->symlink(struct mnt_idmap *, ...)`.
+    let cred = crate::pathresolve::current_cred();
+    let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
+    // D29: parent dir `i_rwsem` EXCLUSIVE across the backend symlink (Linux
+    // `filename_create` → `->symlink`); dropped before the dcache update below.
+    let r = { let _g = pino.inode_lock(); pino.symlink_child(&name, target.as_bytes(), &ctx) };
+    match r {
+        Ok(())  => { crate::pathresolve::d_drop_path(&l); 0 }
         Err(e)  => {
             crate::namei_common::trace_run_vfs_error(b"symlink", &l, e);
             errno_from_vfs(e)

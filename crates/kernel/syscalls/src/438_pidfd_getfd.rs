@@ -42,7 +42,7 @@ pub fn sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
     let cloned = match target_fdt.get(target_fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    match cur_fdt.alloc(cloned) {
+    match cur_fdt.alloc_limit(cloned, cur.nofile_soft()) {
         Ok(fd) => fd as i64,
         Err(e) => -(e as i64),
     }

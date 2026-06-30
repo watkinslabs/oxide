@@ -72,8 +72,7 @@ impl FileOps for SignalfdFileOps {
 /// fd == -1 → allocate new fd; fd >= 0 → update existing inode's mask.
 /// # C: O(N_fds) for new; O(1) update
 pub fn sys_signalfd4(args: &syscall::SyscallArgs) -> i64 {
-    use alloc::string::ToString;
-    use vfs::{Dentry, File, OpenFlags};
+    use vfs::{File, OpenFlags};
     use syscall::errno::Errno;
     let in_fd     = args.a0 as i32;
     let mask_ptr  = args.a1;
@@ -110,11 +109,11 @@ pub fn sys_signalfd4(args: &syscall::SyscallArgs) -> i64 {
     const SFD_CLOEXEC:  u64 = 0o2_000_000;
     let flags = args.a3;
     let inode = make_signalfd_inode(mask);
-    let dentry = Dentry::new(None, "signalfd".to_string(), Arc::clone(&inode));
+    let dentry = vfs::dcache::d_alloc_pseudo("[signalfd]", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
     let mut fl = OpenFlags::O_RDONLY;
     if (flags & SFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);
-    match fdt.alloc(file) {
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => {
             if (flags & SFD_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
             fd as i64

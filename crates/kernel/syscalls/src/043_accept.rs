@@ -68,19 +68,18 @@ pub fn sys_accept(args: &SyscallArgs) -> i64 {
     if let (Some((ip, port)), true) = (accepted.peer, addr_p != 0) {
         write_sockaddr_for_socket(addr_p, &accepted.new_sock, ip, port);
     }
-    let label = if accepted.peer.is_some() { "[socket]" } else { "[unix]" };
     let inode: vfs::InodeRef = net::sock::make_inet_socket_inode(accepted.new_sock);
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
-    let dentry = vfs::Dentry::new(None, alloc::string::String::from(label), Arc::clone(&inode));
+    let dentry = vfs::dcache::d_alloc_pseudo("socket", Arc::clone(&inode), &crate::anon_dname::SOCKET_OPS);
     const SOCK_CLOEXEC:  u64 = 0o2_000_000;
     const SOCK_NONBLOCK: u64 = 0o0_004_000;
     let flags = args.a3;
     let mut fl = vfs::OpenFlags::O_RDWR;
     if (flags & SOCK_NONBLOCK) != 0 { fl |= vfs::OpenFlags::O_NONBLOCK; }
     let file = vfs::File::new(inode, dentry, fl);
-    match fdt.alloc(file) {
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => {
             if (flags & SOCK_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
             fd as i64
@@ -119,13 +118,13 @@ fn vsock_accept(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64,
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
-    let dentry = vfs::Dentry::new(None, alloc::string::String::from("[vsock]"), Arc::clone(&inode));
+    let dentry = vfs::dcache::d_alloc_pseudo("socket", Arc::clone(&inode), &crate::anon_dname::SOCKET_OPS);
     const SOCK_CLOEXEC:  u64 = 0o2_000_000;
     const SOCK_NONBLOCK: u64 = 0o0_004_000;
     let mut fl = vfs::OpenFlags::O_RDWR;
     if (flags & SOCK_NONBLOCK) != 0 { fl |= vfs::OpenFlags::O_NONBLOCK; }
     let file = vfs::File::new(inode, dentry, fl);
-    match fdt.alloc(file) {
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => { if (flags & SOCK_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); } fd as i64 }
         Err(e) => -(e as i64),
     }

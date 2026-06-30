@@ -332,7 +332,7 @@ fn install_scratch_fd(file: Arc<File>) -> Result<i32, i64> {
     let cur = match sched::live::current() { Some(c) => c, None => return Err(-(Errno::Ebadf.as_i32() as i64)) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot for io_uring fixed-file scratch install.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return Err(-(Errno::Ebadf.as_i32() as i64)) };
-    match fdt.alloc(file) { Ok(fd) => Ok(fd), Err(e) => Err(-(e as i64)) }
+    match fdt.alloc_limit(file, cur.nofile_soft()) { Ok(fd) => Ok(fd), Err(e) => Err(-(e as i64)) }
 }
 
 /// Remove a scratch fd installed by `install_scratch_fd`. # C: O(1)

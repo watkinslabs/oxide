@@ -137,8 +137,16 @@ pub mod live;
 #[cfg(target_os = "oxide-kernel")] pub mod trace;
 #[cfg(target_os = "oxide-kernel")] pub mod xfer;
 
+/// [D26] Periodic mount-expiry sweep (Linux's `mark_mounts_for_expiry`
+/// housekeeping): runs one two-pass grace over every registered expire list so
+/// autofs/NFS shrinkable submounts auto-umount in production, not only from
+/// tests. Cheap — an empty registry scan when no fs registered an expire list.
+/// # C: O(N_lists × N_members)
+#[cfg(target_os = "oxide-kernel")]
+fn mount_expiry_tick(_now_ns: u64) { let _ = vfs::mount::sweep_expired_mounts(); }
+
 /// Register the scheduler's periodic timers (cpu.max bandwidth enforcement +
-/// SMP load balance) with the timer subsystem. Boot, once.
+/// SMP load balance + mount-expiry sweep) with the timer subsystem. Boot, once.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub fn register_timers() {
@@ -148,6 +156,11 @@ pub fn register_timers() {
     const P: u64 = 100_000_000; // 100 ms
     timer::register_periodic(P, cgroup::tick);
     timer::register_periodic(P, live::balance::balance_tick);
+    // [D26] Low-frequency expiry housekeeping (1 s) — the two-pass grace means
+    // an idle shrinkable mount is reaped ~1 sweep after going unused; running it
+    // at the bandwidth/balance cadence would be needlessly aggressive.
+    const EXPIRE_P: u64 = 1_000_000_000; // 1 s
+    timer::register_periodic(EXPIRE_P, mount_expiry_tick);
 }
 
 /// Boot anchor / idle loop: `schedule()` (so an IRQ-woken task runs) then

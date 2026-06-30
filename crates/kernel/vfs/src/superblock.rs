@@ -23,20 +23,80 @@ use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 use sync::{RwLock, Spinlock, Superblock as SbClass};
 
 use crate::dentry::Dentry;
-use crate::fs::FileSystem;
-use crate::inode::{Inode, InodeRef, I_CLEAR, I_DIRTY, I_FREEING, I_NEW, I_WILL_FREE};
+use crate::file_ops::FileOps;
+use crate::fs::fs_context::FsContextOps;
+use crate::fs::{FileSystem, FsFlags};
+use crate::inode::{Inode, InodeBuilder, InodeRef, I_CLEAR, I_DIRTY, I_FREEING, I_NEW, I_WILL_FREE};
+use crate::inode_ops::InodeOps;
 use crate::types::{Ino, KResult};
 
-/// `get_anon_bdev` (Linux `fs/super.c`) — per-instance anonymous block-dev
-/// id source for filesystems with no real backing device. Each mounted
-/// instance gets a distinct `s_dev` so two `mount -t tmpfs` report
-/// different `st_dev` (the thing a per-fs-type constant cannot express).
-/// Starts above the legacy `dev_t` minor range to avoid colliding with a
-/// real block device's packed `(major<<20)|minor`. # C: O(1)
-static NEXT_ANON_DEV: AtomicU64 = AtomicU64::new(0x0000_0001_0000_0000);
+/// `unnamed_dev_ida` minor allocator (Linux `fs/super.c` `get_anon_bdev`) —
+/// the single monotonically-increasing minor source shared by BOTH the
+/// per-instance anon `s_dev` ([`next_anon_dev`]) AND the per-pseudo-fs-identity
+/// `st_dev` registry ([`crate::getattr::st_dev_for_fsid`]), so no two
+/// filesystems ever land on the same `(0, minor)` regardless of which path
+/// allocated it. Minor 0 is reserved (Linux skips it), so the first fs gets
+/// `(0, 1)`. # C: O(1)
+static ANON_MINOR: AtomicU32 = AtomicU32::new(1);
 
-/// Allocate a fresh anonymous device id (`get_anon_bdev`). # C: O(1)
-pub fn next_anon_dev() -> u64 { NEXT_ANON_DEV.fetch_add(1, Ordering::Relaxed) }
+/// Allocate one fresh anon-bdev minor from the shared `unnamed_dev_ida`
+/// counter. # C: O(1)
+pub(crate) fn alloc_anon_minor() -> u32 { ANON_MINOR.fetch_add(1, Ordering::Relaxed) }
+
+/// `get_anon_bdev` (Linux `fs/super.c`) — allocate a fresh anonymous block-dev
+/// number for a filesystem with no real backing device, as a REAL Linux anon
+/// `dev_t`: major 0, a unique minor (`MKDEV(0, minor)`). Each mounted instance
+/// gets a distinct `s_dev` so two `mount -t tmpfs` report different `st_dev`
+/// (what a per-fs-type constant cannot express), AND the value is now a genuine
+/// `dev_t` — `huge_encode_dev(s_dev)` is the `st_dev` userspace sees, not an
+/// opaque hashed number. # C: O(1)
+pub fn next_anon_dev() -> u64 {
+    crate::devnode::mkdev(0, alloc_anon_minor()) as u64
+}
+
+/// `super_blocks` (Linux `fs/super.c` global `super_blocks` list) — the registry
+/// of every live `SuperBlock` instance, held by `Weak` so it never keeps an SB
+/// alive past its last reference. [`sget`] scans this to SHARE an existing
+/// instance for the same backing device instead of building a duplicate. # C: O(1)
+static FS_SUPERS: Spinlock<Vec<Weak<SuperBlock>>, SbClass> = Spinlock::new(Vec::new());
+
+/// `fs_supers`/`super_blocks` snapshot — every live registered superblock
+/// instance (dead `Weak`s skipped). # C: O(N_sb)
+pub fn fs_supers() -> Vec<Arc<SuperBlock>> {
+    FS_SUPERS.lock().iter().filter_map(Weak::upgrade).collect()
+}
+
+/// Register `sb` in the global `fs_supers` list (Linux `fill_super` →
+/// `list_add(&s->s_list, &super_blocks)`). Prunes dead `Weak`s and de-dups an
+/// already-registered live instance on the way. # C: O(N_sb)
+pub fn register_super(sb: &Arc<SuperBlock>) {
+    let mut g = FS_SUPERS.lock();
+    g.retain(|w| w.upgrade().map(|e| !Arc::ptr_eq(&e, sb)).unwrap_or(false));
+    g.push(Arc::downgrade(sb));
+}
+
+/// `sget` (Linux `fs/super.c`) — find-or-create a superblock for the backing
+/// device `dev`. If a LIVE registered instance already serves `dev` AND is still
+/// active ([`SuperBlock::grab_active`]), SHARE it: bump `s_count` and return it
+/// (the caller owns one extra active ref to pair with `deactivate_super` at
+/// umount). Otherwise `build()` a fresh instance, register it, and return it.
+/// This is the dedup the mount table's `next_anon_dev`-per-mount path lacks;
+/// wiring `register`/`register_bind` (mount.rs, another lane) to call `sget`
+/// instead of always `for_backend(next_anon_dev())` is the cross-lane
+/// follow-up. # C: O(N_sb)
+pub fn sget(dev: u64, build: impl FnOnce() -> Arc<SuperBlock>) -> Arc<SuperBlock> {
+    {
+        let g = FS_SUPERS.lock();
+        for w in g.iter() {
+            if let Some(sb) = w.upgrade() {
+                if sb.s_dev == dev && sb.grab_active() { sb.s_count_inc(); return sb; }
+            }
+        }
+    }
+    let sb = build();
+    register_super(&sb);
+    sb
+}
 
 // `s_flags` bits (Linux include/linux/fs.h). User-visible mount RO/option
 // flags in the low range; lifecycle bits (`SB_BORN`/`SB_ACTIVE`) in the high
@@ -118,6 +178,7 @@ impl FileSystemType for FsBackedType {
         Ok(SuperBlock::for_backend(self.fs.clone(), self.fs.root(),
             next_anon_dev(), String::from(self.fs.name())))
     }
+    fn fs_flags(&self) -> FsFlags { self.fs.fs_flags() }
 }
 
 /// `statfs(2)` payload a superblock reports (Linux `struct kstatfs`
@@ -169,6 +230,99 @@ pub trait SuperOps: Send + Sync {
     fn remount_fs(&self, _sb_flags: u64) -> KResult<()> { Ok(()) }
     /// `put_super` — last-umount teardown. Default no-op. # C: O(1)
     fn put_super(&self) {}
+
+    /// `s_op->write_inode` (Linux `super_operations.write_inode`) — flush this
+    /// inode's dirty metadata to the backend. `wait` requests a synchronous
+    /// commit. Default `Ok` (a pseudo-fs with no backing store has nothing to
+    /// write). Called by [`SuperBlock::iput`] on the last-ref pre-evict window.
+    /// # C: FS-dependent
+    fn write_inode(&self, _inode: &Inode, _wait: bool) -> KResult<()> { Ok(()) }
+
+    /// `s_op->drop_inode` (Linux `super_operations.drop_inode`) — decide, when an
+    /// inode's last reference drops (`i_count` reached 0), whether to EVICT it now
+    /// rather than retain it cached for reuse. Default = `generic_drop_inode`:
+    /// evict iff the inode has no remaining links AND no references
+    /// (`i_nlink == 0 && i_count == 0`). A backend may override to e.g. always
+    /// evict (`generic_delete_inode`). # C: O(1)
+    fn drop_inode(&self, inode: &Inode) -> bool {
+        inode.nlink() == 0 && inode.i_count() == 0
+    }
+
+    /// `s_op->evict_inode` (Linux `super_operations.evict_inode`) — the terminal
+    /// per-inode teardown: drop the inode's data/blocks and clear it. Default =
+    /// `clear_inode` (mark `I_FREEING | I_CLEAR`, drop every dirty bit). A backend
+    /// (ext4) overrides to free on-disk blocks first. Run by [`SuperBlock::iput`]
+    /// after `drop_inode` returns true. # C: FS-dependent
+    fn evict_inode(&self, inode: &Inode) {
+        inode.set_state(I_FREEING | I_CLEAR, I_DIRTY);
+    }
+
+    /// `s_op->alloc_inode` (Linux `super_operations.alloc_inode`) — allocate a
+    /// fresh in-core inode. Default funnels through [`InodeBuilder`] (the one
+    /// constructor every `make_*_inode`/iget-build closure uses), born with
+    /// `i_count == 1`. A backend overrides to embed the inode in its own
+    /// per-inode container (`ext4_inode_info`); the generic path keeps the
+    /// builder funnel. # C: O(1)
+    fn alloc_inode(&self, ino: Ino, mode: u32,
+                   i_op: Arc<dyn InodeOps>, i_fop: Arc<dyn FileOps>) -> InodeRef {
+        InodeBuilder::new(ino, mode, i_op, i_fop).build()
+    }
+
+    /// `s_op->free_inode` (Linux `super_operations.free_inode`) — the RCU
+    /// free callback releasing the in-core inode allocation. Default = drop
+    /// (the moved-in `Arc` releases when this returns). # C: O(1)
+    fn free_inode(&self, _inode: InodeRef) {}
+
+    /// `s_op->destroy_inode` (Linux `super_operations.destroy_inode`) — tear down
+    /// a no-longer-referenced in-core inode (schedules the RCU `free_inode`).
+    /// Default = drop. # C: O(1)
+    fn destroy_inode(&self, _inode: InodeRef) {}
+
+    /// `s_op->show_options` (Linux `super_operations.show_options`) — APPEND the
+    /// backend's own mount options to the `/proc/<pid>/mounts` /
+    /// `/proc/self/mountinfo` per-mount line. The VFS renders the generic flags
+    /// first (`rw`/`ro`, `relatime`, …); this hook then appends the fs-specific
+    /// tail — tmpfs `size=`/`nr_inodes=`/`mode=`, ext4 `data=ordered`, a cgroup2
+    /// controller list. Each option carries its OWN leading comma (Linux emits
+    /// them via `seq_puts(m, ",size=…")`), so the result concatenates directly
+    /// after the generic flags with no separator fixup. Default `""` = no
+    /// fs-specific options (a plain pseudo-fs). Mirrors [`crate::fs::FileSystem::show_options`]
+    /// at the `s_op` layer; the SB-level accessor is [`SuperBlock::show_options`].
+    /// # C: O(len opts)
+    fn show_options(&self) -> String { String::new() }
+
+    /// `s_op->show_devname` (Linux `super_operations.show_devname`) — override the
+    /// SOURCE-device column rendered in `/proc/self/mountinfo` for a fs whose
+    /// backing-store name is not its `s_id` (`nfs` server:/export, `overlay`
+    /// `overlay`, a `bind` source path). `None` (the default) ⇒ the VFS uses the
+    /// generic `s_id`/fs-name source column. # C: O(len name)
+    fn show_devname(&self) -> Option<String> { None }
+
+    /// `s_op->show_path` (Linux `super_operations.show_path`) — override the
+    /// mount-point PATH column rendered in `/proc/self/mountinfo` for a fs that
+    /// presents a synthetic root path different from the dentry path (Linux uses
+    /// this for e.g. the `gadgetfs`/anon-inode style roots). `None` (the default)
+    /// ⇒ the VFS uses the generic resolved mount path. # C: O(len path)
+    fn show_path(&self) -> Option<String> { None }
+
+    /// `s_op->show_stats` (Linux `super_operations.show_stats`) — emit the
+    /// backend's extra per-mount statistics line for `/proc/self/mountstats`
+    /// (Linux: `nfs` round-trip/RPC counters). `None` (the default) ⇒ the fs
+    /// contributes no `mountstats` body beyond the generic device line. # C: O(len stats)
+    fn show_stats(&self) -> Option<String> { None }
+
+    /// `s_op->dirty_inode` (Linux `super_operations.dirty_inode`) — the hook
+    /// `__mark_inode_dirty` calls so the backend records that `inode`'s metadata
+    /// changed (ext4 starts a journal handle and dirties its on-disk inode here).
+    /// `flags` is the `I_DIRTY_*` set being applied. Default = the generic
+    /// in-core dirtying: OR the requested `I_DIRTY` bits into the inode's
+    /// `i_state` (a journal-less / pseudo-fs has no extra per-fs work). `flags`
+    /// is masked to `I_DIRTY` so a caller cannot smuggle a lifecycle bit
+    /// (`I_NEW`/`I_FREEING`/…) through the dirtying path, matching
+    /// [`SuperBlock::mark_inode_dirty`]. # C: O(1)
+    fn dirty_inode(&self, inode: &Inode, flags: u32) {
+        inode.set_state(flags & I_DIRTY, 0);
+    }
 }
 
 /// `file_system_type` (Linux `struct file_system_type`) — the registry
@@ -179,6 +333,17 @@ pub trait FileSystemType: Send + Sync {
     fn name(&self) -> &str;
     /// Build a superblock instance (`fill_super`). # C: FS-dependent
     fn mount(&self, src: &str, opts: &str) -> KResult<Arc<SuperBlock>>;
+    /// `file_system_type::fs_flags` (Linux `include/linux/fs.h`) — the
+    /// type-level classification the new-mount-API `vfs_get_tree` consults for
+    /// the `FS_REQUIRES_DEV` source check (D23). Default `empty()` = a pseudo /
+    /// in-memory fs; block-device backends override with `FS_REQUIRES_DEV`.
+    /// # C: O(1)
+    fn fs_flags(&self) -> FsFlags { FsFlags::empty() }
+    /// `file_system_type::init_fs_context` (Linux) — install a backend-specific
+    /// `fs_context_operations` for the new mount API. `None` (the default) ⇒ the
+    /// legacy adapter ([`crate::fs::fs_context::LegacyFsContextOps`]) replays the
+    /// accumulated options to [`FileSystemType::mount`] at `get_tree`. # C: O(1)
+    fn init_fs_context(&self) -> Option<Arc<dyn FsContextOps>> { None }
 }
 
 /// `struct super_block`. One per mounted fs instance (`16§2` inv 3).
@@ -205,6 +370,12 @@ pub struct SuperBlock {
     /// This is the refcount the mount table's O(N) `Arc::ptr_eq` scan stands in
     /// for (mount.rs D6). # consumers: D6 last-umount teardown, sget sb sharing.
     s_active: AtomicU32,
+    /// `s_count` — the existence/lookup refcount (Linux `super_block.s_count`),
+    /// distinct from `s_active`: it counts references that merely keep the SB
+    /// OBJECT alive (an [`sget`] lookup walking `fs_supers`, a `grab_super`
+    /// retry), whereas `s_active` counts live mounts. Born at 1; an `sget` hit
+    /// bumps it ([`SuperBlock::s_count_inc`]). # consumers: D6 sget sb sharing.
+    s_count: AtomicU32,
     /// `s_maxbytes` — largest file size this fs can represent (write-path cap).
     pub s_maxbytes: u64,
     /// `s_time_gran` — timestamp granularity in ns (Linux `sb->s_time_gran`),
@@ -246,8 +417,14 @@ pub struct SuperBlock {
     s_uuid: Spinlock<([u8; 16], u8), SbClass>,
     /// `s_root` — the ROOT DENTRY (strong; see CYCLE NOTE).
     s_root: RwLock<Option<Arc<Dentry>>, SbClass>,
-    /// `s_fs_info` — backend-private state (ext4 sb / tmpfs arena).
-    s_fs_info: Arc<dyn Any + Send + Sync>,
+    /// `s_fs_info` — backend-private state slot (Linux `super_block.s_fs_info`):
+    /// the ext4 on-disk-sb struct / tmpfs arena / pseudo-fs context a backend
+    /// hangs off its instance. Typed `Arc<dyn Any>` like `inode.i_private`;
+    /// `fill_super` installs the concrete state via [`Self::set_fs_info`] and a
+    /// backend reads it back through the downcasting [`Self::fs_info_as`]. Locked
+    /// because Linux sets it AFTER `alloc_super` (post-construction), so the slot
+    /// is replaceable without rebuilding the SB. # consumers: per-fs state.
+    s_fs_info: Spinlock<Arc<dyn Any + Send + Sync>, SbClass>,
     /// The legacy `Arc<dyn FileSystem>` backend carrying the write/inode ops
     /// (`create`/`unlink`/`link`/`rename`/`root`/`mounts_line`) that
     /// `SuperOps`/`FileSystemType` do not. The mount table reaches the
@@ -296,6 +473,7 @@ impl SuperBlock {
             s_op, s_type, s_magic, s_dev, s_blocksize,
             s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
             s_active: AtomicU32::new(1),
+            s_count: AtomicU32::new(1),
             s_maxbytes: MAX_LFS_FILESIZE,
             s_time_gran: AtomicU32::new(1),
             s_time_min: AtomicI64::new(TIME64_MIN),
@@ -305,7 +483,7 @@ impl SuperBlock {
             s_id,
             s_uuid: Spinlock::new(([0u8; 16], 0)),
             s_root: RwLock::new(None),
-            s_fs_info,
+            s_fs_info: Spinlock::new(s_fs_info),
             s_fs: Arc::new(NullFs),
             icache: Spinlock::new(BTreeMap::new()),
             s_wb: Spinlock::new(BTreeMap::new()),
@@ -336,6 +514,7 @@ impl SuperBlock {
             s_op, s_type, s_magic, s_dev, s_blocksize,
             s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
             s_active: AtomicU32::new(1),
+            s_count: AtomicU32::new(1),
             s_maxbytes: MAX_LFS_FILESIZE,
             s_time_gran: AtomicU32::new(1),
             s_time_min: AtomicI64::new(TIME64_MIN),
@@ -345,7 +524,7 @@ impl SuperBlock {
             s_id,
             s_uuid: Spinlock::new(([0u8; 16], 0)),
             s_root: RwLock::new(None),
-            s_fs_info: Arc::new(()),
+            s_fs_info: Spinlock::new(Arc::new(())),
             s_fs: fs,
             icache: Spinlock::new(BTreeMap::new()),
             s_wb: Spinlock::new(BTreeMap::new()),
@@ -372,8 +551,28 @@ impl SuperBlock {
     /// Install `s_root` (called by `d_make_root`). # C: O(1)
     pub fn set_s_root(&self, root: Arc<Dentry>) { *self.s_root.write() = Some(root); }
 
-    /// Backend-private state downcast. # C: O(1)
-    pub fn fs_info(&self) -> &Arc<dyn Any + Send + Sync> { &self.s_fs_info }
+    /// `s_fs_info` snapshot — the raw backend-private state `Arc` (Linux
+    /// `sb->s_fs_info`). Clones the slot so the lock is not held across use;
+    /// prefer the typed [`Self::fs_info_as`] when the concrete type is known.
+    /// # C: O(1)
+    pub fn fs_info(&self) -> Arc<dyn Any + Send + Sync> { self.s_fs_info.lock().clone() }
+
+    /// `sb->s_fs_info = info` (Linux `fill_super`) — install the backend's
+    /// per-superblock private state. Typed: a backend passes its concrete
+    /// `Arc<Ext4SbInfo>`/`Arc<TmpfsArena>` and reads it back via
+    /// [`Self::fs_info_as`], replacing the `Arc::new(())` placeholder
+    /// `for_backend` seeds. # C: O(1)
+    pub fn set_fs_info<T: Any + Send + Sync>(&self, info: Arc<T>) {
+        *self.s_fs_info.lock() = info;
+    }
+
+    /// Downcast `s_fs_info` to the backend's concrete state type (Linux casting
+    /// `sb->s_fs_info` to its private struct), returning a counted reference.
+    /// `None` if the slot holds a different type or the `()` placeholder. Mirrors
+    /// `inode.private::<T>()`. # C: O(1)
+    pub fn fs_info_as<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.s_fs_info.lock().clone().downcast::<T>().ok()
+    }
 
     /// `ilookup` — hit the inode cache. `None` if absent, reclaimed, OR dying
     /// (`I_FREEING`/`I_WILL_FREE`): Linux `find_inode_fast` skips a dying inode
@@ -418,16 +617,23 @@ impl SuperBlock {
     }
 
     /// `iput` (Linux `fs/inode.c`) — drop one `i_count` reference. On the LAST
-    /// drop (1 → 0): flush dirty state, mark `I_WILL_FREE` → `I_FREEING`, run
-    /// `clear_inode`, and drop the icache `Weak` so a later `iget` rebuilds.
-    /// # C: O(log N_ino)
+    /// drop (1 → 0, `iput_final`) the `s_op->drop_inode` decision runs: when it
+    /// says evict (default: `i_nlink == 0`), the inode goes through the pre-evict
+    /// window — `I_WILL_FREE`, `s_op->write_inode` (flush dirty metadata),
+    /// `I_FREEING`, `s_op->evict_inode` (default `clear_inode`) — then the
+    /// writeback pin and icache `Weak` are dropped so a later `iget` rebuilds.
+    /// When `drop_inode` declines (a still-linked inode), the inode is RETAINED
+    /// cached for reuse (Linux leaves it on the LRU), exactly mirroring the
+    /// kernel's keep-vs-evict split. # C: O(log N_ino)
     pub fn iput(&self, inode: InodeRef) {
-        if inode.i_count_dec() != 1 { return; }
+        if inode.i_count_dec() != 1 { return; } // not the last reference
+        // i_count is now 0 (iput_final). Consult the backend keep/evict policy.
+        if !self.s_op.drop_inode(&inode) { return; } // retain cached for reuse
         let ino = inode.ino();
         inode.set_state(I_WILL_FREE, 0);
-        let _ = self.sync_fs(false); // writeback-if-dirty
+        let _ = self.s_op.write_inode(&inode, false); // flush dirty metadata
         inode.set_state(I_FREEING, I_WILL_FREE);
-        inode.set_state(I_FREEING | I_CLEAR, I_DIRTY); // clear_inode
+        self.s_op.evict_inode(&inode); // default: clear_inode (I_FREEING|I_CLEAR)
         self.wb_forget(ino); // dirty bits gone → drop the writeback pin
         self.icache.lock().remove(&ino);
     }
@@ -604,6 +810,37 @@ impl SuperBlock {
         Ok(st)
     }
 
+    /// `s_op->show_options` passthrough — the backend's fs-specific `/proc/mounts`
+    /// option tail (each option self-comma-prefixed), appended after the generic
+    /// per-mount flags. The SB-level entry point a `/proc/self/mountinfo` reader
+    /// calls in hand of the `Arc<SuperBlock>` (mirrors the [`Self::statfs`]
+    /// passthrough). The legacy `/proc/mounts` line is still composed by
+    /// [`crate::fs::FileSystem::mounts_line`] over `FileSystem::show_options`;
+    /// routing that consumer through this `s_op` hook is the cross-file
+    /// follow-up. # C: O(len opts)
+    pub fn show_options(&self) -> String { self.s_op.show_options() }
+
+    /// `s_op->show_devname` passthrough — backend override of the source-device
+    /// column, or `None` for the generic `s_id` source. # C: O(len name)
+    pub fn show_devname(&self) -> Option<String> { self.s_op.show_devname() }
+
+    /// `s_op->show_path` passthrough — backend override of the mount-point path
+    /// column, or `None` for the generic resolved path. # C: O(len path)
+    pub fn show_path(&self) -> Option<String> { self.s_op.show_path() }
+
+    /// `s_op->show_stats` passthrough — backend `/proc/self/mountstats` body, or
+    /// `None`. # C: O(len stats)
+    pub fn show_stats(&self) -> Option<String> { self.s_op.show_stats() }
+
+    /// `__mark_inode_dirty` (Linux fs/fs-writeback.c) → `s_op->dirty_inode`: run
+    /// the backend dirty-tracking hook for `inode` with the `I_DIRTY_*` `flags`
+    /// being applied (default ORs them into `i_state`). The icache-keyed
+    /// [`Self::mark_inode_dirty`] sets state + reconciles the writeback pin by
+    /// `ino`; THIS is the `s_op` dispatch in hand of the concrete inode (the path
+    /// `__mark_inode_dirty` takes before consulting the writeback list).
+    /// # C: O(1)
+    pub fn dirty_inode(&self, inode: &Inode, flags: u32) { self.s_op.dirty_inode(inode, flags); }
+
     /// `s_flags` snapshot (Linux `sb->s_flags`). # C: O(1)
     pub fn s_flags(&self) -> u64 { self.s_flags.load(Ordering::Acquire) }
 
@@ -721,6 +958,15 @@ impl SuperBlock {
     /// `0` ⇒ the SB is being / has been torn down. # C: O(1)
     pub fn s_active(&self) -> u32 { self.s_active.load(Ordering::Acquire) }
 
+    /// `s_count` snapshot — existence/lookup references (Linux `s->s_count`).
+    /// # C: O(1)
+    pub fn s_count(&self) -> u32 { self.s_count.load(Ordering::Acquire) }
+
+    /// Take one extra `s_count` (Linux `grab_super`/`__put_super` pairing).
+    /// Bumped by an [`sget`] hit; the matching drop is the SB's own teardown.
+    /// # C: O(1)
+    pub fn s_count_inc(&self) { self.s_count.fetch_add(1, Ordering::AcqRel); }
+
     /// `grab_super` (Linux `atomic_inc_not_zero(&s->s_active)`): take one extra
     /// active reference IFF the SB is still live (count != 0). Returns `false`
     /// once teardown has begun so an sget-style lookup never resurrects a dying
@@ -758,6 +1004,12 @@ impl SuperBlock {
 
     /// `s_maxbytes` — largest representable file size. # C: O(1)
     pub fn s_maxbytes(&self) -> u64 { self.s_maxbytes }
+
+    /// `s_blocksize_bits` (Linux `super_block.s_blocksize_bits`) —
+    /// `log2(s_blocksize)`, the shift for byte↔block conversion. Derived from
+    /// `s_blocksize` (always a power of two) rather than stored, so it cannot
+    /// drift from it. # C: O(1)
+    pub fn s_blocksize_bits(&self) -> u32 { self.s_blocksize.trailing_zeros() }
 
     /// `generic_write_check_limits` (Linux fs/read_write.c), the `s_maxbytes`
     /// half: bound a write of `count` bytes starting at byte offset `pos`

@@ -11,7 +11,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use vfs::{mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{mk_mode, DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 use crate::{make_body_inode, VecFmt, DIR_PERM};
 
@@ -36,16 +36,16 @@ impl InodeOps for NetStatsOps {
     }
 }
 impl FileOps for NetStatsOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let fields = net::STAT_FIELDS;
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < fields.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup(fields[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, fields[idx], FileType::Regular) { return Ok(next); }
+            if !ctx.emit(fields[idx], ino, FileType::Regular, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 

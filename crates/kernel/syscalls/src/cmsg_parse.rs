@@ -294,9 +294,10 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64) -> i64 {
                 if max_data < nfds { ctrunc = true; }
                 core::cmp::min(nfds, max_data)
             };
+            let nofile = cur.map(|c| c.nofile_soft()).unwrap_or(0);
             let mut allocated_fds: Vec<i32> = Vec::with_capacity(fit_n);
             for f in pending_fds.iter().take(fit_n) {
-                match fdt.alloc((*f).clone()) {
+                match fdt.alloc_limit((*f).clone(), nofile) {
                     Ok(nfd) => allocated_fds.push(nfd),
                     Err(_)  => { ctrunc = true; break; }
                 }
@@ -450,9 +451,10 @@ pub fn recvmsg_unix_msgpair(sock: &Arc<InetSocket>, fd: u64, msgp: u64, args: &S
             let max_data = controllen.saturating_sub(16) as usize / 4;
             if max_data < nfds { ctrunc = true; }
             let fit_n = core::cmp::min(nfds, max_data);
+            let nofile = cur.map(|c| c.nofile_soft()).unwrap_or(0);
             let mut allocated_fds: Vec<i32> = Vec::with_capacity(fit_n);
             for f in msg.fds.iter().take(fit_n) {
-                match fdt.alloc((*f).clone()) {
+                match fdt.alloc_limit((*f).clone(), nofile) {
                     Ok(nfd) => allocated_fds.push(nfd),
                     Err(_) => { ctrunc = true; break; }
                 }

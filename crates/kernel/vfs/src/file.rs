@@ -3,13 +3,15 @@
 // FD table lives in `fdtable.rs`.
 
 extern crate alloc;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use sync::Spinlock;
 
 use crate::dentry::Dentry;
+use crate::file_ops::{FileOps, HoleOrData};
 use crate::inode::InodeRef;
 use crate::namei::Cred;
 use crate::types::{FileType, KResult, OpenFlags, VfsError};
@@ -50,16 +52,18 @@ bitflags::bitflags! {
         const EXEC   = 0x0000_0020;
         /// FMODE_PATH — O_PATH descriptor (no read/write, fd-ref only).
         const PATH   = 0x0000_4000;
+        /// FMODE_OPENED — `do_dentry_open` reached the point past `f_op->open`
+        /// (the description is fully opened). Linux `(1 << 19)`.
+        const OPENED  = 0x0008_0000;
+        /// FMODE_CREATED — this open CREATED the file (`O_CREAT` hit the
+        /// negative-dentry path), distinguishing create-vs-existing for events
+        /// / audit after the open returns. Linux `(1 << 20)`.
+        const CREATED = 0x0010_0000;
+        /// FMODE_NONOTIFY — suppress fsnotify events on this description
+        /// (fanotify's own fds avoid self-notification loops). Linux `(1 << 26)`.
+        const NONOTIFY = 0x0400_0000;
     }
 }
-
-/// `O_PATH` bit (asm-generic, both arches — Linux `fcntl.h` `010000000`). Not
-/// declared in `OpenFlags` (which only carries bits with an in-`vfs` consumer),
-/// so it's matched here by raw value. An `O_PATH` fd is an fd-reference with
-/// NEITHER `FMODE_READ` nor `FMODE_WRITE`; read/write on it are `EBADF`.
-/// Caller (`openat`) must preserve this bit into the `File` flags (e.g.
-/// `from_bits_retain`) for the gate to see it.
-const O_PATH: u32 = 0o10000000;
 
 /// `O_DIRECT` (asm-generic, 0o40000) and `O_NOATIME` (0o1000000) — settable
 /// via `F_SETFL` but not declared in `OpenFlags` (no in-`vfs` consumer yet),
@@ -68,17 +72,30 @@ const O_PATH: u32 = 0o10000000;
 const O_DIRECT:  u32 = 0o40000;
 const O_NOATIME: u32 = 0o1000000;
 
+/// `O_ASYNC`/`FASYNC` (asm-generic, both arches — Linux `fcntl.h` `0o20000`).
+/// Settable via `F_SETFL`; toggling it (de)registers the open file description
+/// for fasync SIGIO/SIGURG delivery to its `f_owner` (Linux `setfl`'s
+/// `FASYNC` branch calling `f_op->fasync`). Not declared in `OpenFlags` (no
+/// other in-`vfs` consumer), so matched here by raw value, and the stored bit
+/// is read by `File::is_async`.
+const O_ASYNC: u32 = 0o20000;
+
 /// Linux `SETFL_MASK` (`fs/fcntl.c`): the only `f_flags` bits `fcntl(F_SETFL)`
 /// may change on an already-open file description. The access mode
 /// (`O_RDONLY`/`O_WRONLY`/`O_RDWR`) and the creation-time flags
 /// (`O_CREAT`/`O_EXCL`/`O_TRUNC`/`O_CLOEXEC`/`O_DIRECTORY`/…) are fixed at open
 /// and silently ignored by `F_SETFL`, so they are excluded here.
 const SETFL_MASK: u32 =
-    OpenFlags::O_APPEND.bits() | OpenFlags::O_NONBLOCK.bits() | O_DIRECT | O_NOATIME;
+    OpenFlags::O_APPEND.bits() | OpenFlags::O_NONBLOCK.bits() | O_DIRECT | O_NOATIME | O_ASYNC;
 
 /// Default readahead window (Linux `VM_READAHEAD_PAGES`, 128 KiB = 32 pages at
 /// 4 KiB) — the per-open `f_ra.ra_pages` ceiling.
 const DEFAULT_RA_PAGES: u32 = 32;
+
+/// Page size used to convert a byte offset/length into the PAGE-unit index +
+/// request count [`File::ra_ondemand`] works in (Linux readahead is page-
+/// granular). 4 KiB on both arches' base page. # C: O(1)
+const PAGE_SIZE: u64 = 4096;
 
 /// Lock class for `File::f_ra` (never nested with the inode lock). # C: O(1)
 struct FileRa;
@@ -110,10 +127,13 @@ impl FileRaState {
 /// Map an open's access mode (`O_RDONLY`/`O_WRONLY`/`O_RDWR`) to the
 /// canonical `Fmode` capability bits. Mirrors Linux `OPEN_FMODE`. An `O_PATH`
 /// open yields `FMODE_PATH` only (no read/write) regardless of the access-mode
-/// bits, matching Linux `do_dentry_open`.
+/// bits, matching Linux `do_dentry_open`. `O_PATH` is a declared `OpenFlags`
+/// bit (single source of truth, `types.rs`), so the open path's
+/// `from_bits_truncate(flags)` preserves it through to here — it is no longer
+/// silently stripped (Linux keeps it in `f_flags`).
 /// # C: O(1)
 fn fmode_from_flags(f: OpenFlags) -> Fmode {
-    if (f.bits() & O_PATH) != 0 {
+    if f.contains(OpenFlags::O_PATH) {
         return Fmode::PATH; // fd-reference only: no READ, no WRITE
     }
     let mut m = Fmode::empty();
@@ -131,6 +151,13 @@ fn fmode_from_flags(f: OpenFlags) -> Fmode {
 /// share the position cursor per POSIX (`15§2`).
 pub struct File {
     inode:  InodeRef,
+    /// `file->f_op` (Linux `struct file.f_op`) — the `file_operations` vtable
+    /// SNAPSHOTTED from `inode->i_fop` at open. The data path
+    /// (read/write/read_iter/…) dispatches through this cached `Arc` rather than
+    /// re-reading `inode.i_fop()` each call, matching Linux's per-`struct file`
+    /// `f_op` (a device open may even install a different `f_op` than the
+    /// inode's; the snapshot is the open-time binding). # C: O(1)
+    f_op: Arc<dyn FileOps>,
     dentry: Arc<Dentry>,
     /// `f_path.vfsmount` resolved by id (Linux `struct path.mnt`). The
     /// mount the file was opened through, recovered from the lookup's
@@ -176,6 +203,18 @@ pub struct File {
     /// `F_SETSIG`/`F_GETSIG` (Linux `f_owner.signum`): the signal delivered on
     /// async-I/O readiness; `0` = the default `SIGIO` (data) / `SIGURG` (OOB).
     f_sig: core::sync::atomic::AtomicI32,
+    /// `F_SETLEASE`/`F_GETLEASE` lease type held on this open file description
+    /// (Linux `fl->fl_type` of the `FL_LEASE` lock): `F_RDLCK`(0) read lease,
+    /// `F_WRLCK`(1) write lease, `F_UNLCK`(2) = no lease. Default `F_UNLCK`.
+    /// Storage + validation only; the lease-break delivery (a conflicting
+    /// open signalling the lease holder) is the lease-manager follow-up.
+    lease: core::sync::atomic::AtomicI32,
+    /// `F_NOTIFY` (dnotify) directory-change watch mask (Linux `dnotify_struct
+    /// .dn_mask`): the `DN_*` events this directory fd wants `F_SETSIG`/`SIGIO`
+    /// for. `0` = no watch. `F_NOTIFY` is additive unless the caller passes a
+    /// zero arg (clear). Storage + validation only; the event delivery rides
+    /// the dnotify follow-up (needs dir-mutation hooks, cross-lane).
+    dnotify_mask: AtomicU32,
     /// `file->f_version` (Linux): inode change-version this open last observed;
     /// directory readers compare it vs `inode->i_version` to drop a stale cursor.
     f_version: AtomicU64,
@@ -195,121 +234,223 @@ pub fn set_drop_hook(f: fn(usize, &InodeRef)) {
     FLOCK_RELEASE_HOOK.store(f as u64, Ordering::Release);
 }
 
-/// Kernel-side write hook called from `File::write` after a successful
-/// inode write. Used by the inotify subsystem to fire IN_MODIFY events.
-/// `0` = no hook installed.
-static WRITE_HOOK: AtomicU64 = AtomicU64::new(0);
+/// Close-hook slot count per `16§R02`. Multiple subsystems register a
+/// close hook (inotify IN_CLOSE_*, pipe writer/reader-count tracking,
+/// posix-lock cleanup, ext4 orphan reap); every occupied slot fires in
+/// `File::Drop`. Fixed N=4 covers the in-kernel consumers; extend if a new
+/// one arrives.
+const CLOSE_HOOK_SLOTS: usize = 4;
 
-/// Install the post-write hook used by inotify(7) to fire IN_MODIFY.
-/// # C: O(1)
-pub fn set_write_hook(f: fn(&InodeRef)) {
-    WRITE_HOOK.store(f as u64, Ordering::Release);
+/// D30: typed inotify/fsnotify + pipe-accounting hook registry. Replaces the
+/// old per-slot transmuted `AtomicU64` storage (every load reinterpreted a
+/// `u64` as a `fn` of an assumed signature via `core::mem::transmute`). Each
+/// entry is now a typed `Option<fn(..)>` carrying its exact signature, so
+/// installing AND firing a hook needs NO transmute — the compiler checks the
+/// call. Hooks are installed once at boot (inotify / pipe / posix-lock / ext4
+/// rootfs modules); the data path copies the relevant `Option<fn>` out under
+/// the registry lock, RELEASES it, then calls, so no foreign hook ever runs
+/// while the lock is held. # C: O(1) per fire (+ short critical section)
+#[derive(Copy, Clone)]
+struct InodeHooks {
+    /// IN_OPEN — fired at `File::new_at` (Linux `fsnotify_open`).
+    open:  Option<fn(&InodeRef)>,
+    /// IN_ACCESS — fired after a `read` returns >0 (Linux `fsnotify_access`).
+    read:  Option<fn(&InodeRef)>,
+    /// IN_MODIFY — fired after a `write` returns >0 (Linux `fsnotify_modify`).
+    write: Option<fn(&InodeRef)>,
+    /// Per-reference clone (fork_clone / dup / dup2): pipe writer-count++.
+    /// `bool` = opened-writable.
+    clone: Option<fn(&InodeRef, bool)>,
+    /// IN_CLOSE_* + pipe close accounting, fired in `File::Drop`. Multiple
+    /// subsystems register; every occupied slot fires. `bool` = was-writable.
+    close: [Option<fn(&InodeRef, bool)>; CLOSE_HOOK_SLOTS],
+    /// IN_CREATE — dirent created in a watched parent. Args: (parent, leaf).
+    dirent_create: Option<fn(&str, &str)>,
+    /// IN_DELETE — dirent removed from a watched parent. Args: (parent, leaf).
+    dirent_delete: Option<fn(&str, &str)>,
 }
 
-static OPEN_HOOK:  AtomicU64 = AtomicU64::new(0);
-static READ_HOOK:  AtomicU64 = AtomicU64::new(0);
+impl InodeHooks {
+    /// # C: O(1)
+    const fn new() -> Self {
+        Self { open: None, read: None, write: None, clone: None,
+               close: [None; CLOSE_HOOK_SLOTS], dirent_create: None, dirent_delete: None }
+    }
+}
 
-/// Close-hook slot table per `16§R02`. Multiple subsystems register
-/// here (inotify IN_CLOSE_*, pipe writer/reader-count tracking, …);
-/// every slot fires in `File::Drop`. Fixed N=4 covers the in-kernel
-/// subsystems we have; extend if a new consumer arrives.
-const CLOSE_HOOK_SLOTS: usize = 4;
-static CLOSE_HOOKS: [AtomicU64; CLOSE_HOOK_SLOTS] =
-    [const { AtomicU64::new(0) }; CLOSE_HOOK_SLOTS];
+/// Lock class for the typed hook registry. Taken standalone — the fire path
+/// copies the `Option<fn>` out and releases the lock BEFORE calling, so it
+/// never nests under the inode / pos / ra locks. # C: O(1)
+struct HookReg;
+impl sync::LockClass for HookReg { fn rank() -> u16 { 33 } }
 
-/// Install the open hook (fires IN_OPEN at File::new).
-/// # C: O(1)
-pub fn set_open_hook(f: fn(&InodeRef))  { OPEN_HOOK.store(f as u64, Ordering::Release); }
+static HOOKS: Spinlock<InodeHooks, HookReg> = Spinlock::new(InodeHooks::new());
 
-/// Install the read hook (fires IN_ACCESS after File::read returns >0).
-/// # C: O(1)
-pub fn set_read_hook(f: fn(&InodeRef))  { READ_HOOK.store(f as u64, Ordering::Release); }
+/// Install the open hook (fires IN_OPEN at `File::new_at`). # C: O(1)
+pub fn set_open_hook(f: fn(&InodeRef))  { HOOKS.lock().open = Some(f); }
 
-/// Install a close hook (fires at `File::Drop`). Bool argument is
-/// true when the closed File was opened writable. Picks the next
-/// free slot in the registry; panics if full so misconfiguration
-/// is loud rather than silent.
-/// # C: O(N) slot scan; N=4 fixed.
+/// Install the read hook (fires IN_ACCESS after `File::read` returns >0). # C: O(1)
+pub fn set_read_hook(f: fn(&InodeRef))  { HOOKS.lock().read = Some(f); }
+
+/// Install the post-write hook used by inotify(7) to fire IN_MODIFY. # C: O(1)
+pub fn set_write_hook(f: fn(&InodeRef)) { HOOKS.lock().write = Some(f); }
+
+/// Install a close hook (fires at `File::Drop`; `bool` = opened-writable).
+/// Takes the next free slot; panics if the table is full so a misconfiguration
+/// is loud rather than silent. # C: O(N) slot scan, N=4 fixed.
 pub fn set_close_hook(f: fn(&InodeRef, bool)) {
-    for slot in CLOSE_HOOKS.iter() {
-        if slot.compare_exchange(0, f as u64, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-            return;
-        }
+    let mut h = HOOKS.lock();
+    for slot in h.close.iter_mut() {
+        if slot.is_none() { *slot = Some(f); return; }
     }
     hal::kassert!(false, "CLOSE_HOOKS table full");
 }
 
-/// Clone-hook slot: fires when a Fd-table reference to an existing
-/// File is duplicated (fork_clone, dup, dup2). Conceptually mirrors
-/// CLOSE_HOOKS — every "open count++" event has a matching "open
-/// count--" on close. Without this, fork_clone bumps the Arc<File>
-/// refcount but the pipe writer/reader counts stay at 1; closing
-/// the original drops the Arc to 1 (File alive), no close hook fires,
-/// pipe POLL_HUP never propagates. F205. Bool: writable flag, same
-/// convention as the close hook.
-static CLONE_HOOK: AtomicU64 = AtomicU64::new(0);
-/// # C: O(1)
-pub fn set_clone_hook(f: fn(&InodeRef, bool)) {
-    CLONE_HOOK.store(f as u64, Ordering::Release);
-}
-/// Fire the clone hook for a File reference being duplicated. Caller
-/// is fork_clone / dup / dup2 right after the Arc::clone — they have
-/// already produced the new reference; we just announce it to any
-/// subscriber that tracks per-reference state (e.g. pipe writer count).
-/// # C: O(1)
+/// Install the clone hook (fires when an fd-table reference to a `File` is
+/// duplicated: fork_clone / dup / dup2). Every "open count++" event thus has a
+/// matching close-hook "open count--". Without it, fork_clone bumps the
+/// `Arc<File>` refcount but the pipe writer/reader counts stay at 1; closing
+/// the original drops the Arc to 1 (File alive), no close hook fires, pipe
+/// POLL_HUP never propagates. F205. `bool` = opened-writable. # C: O(1)
+pub fn set_clone_hook(f: fn(&InodeRef, bool)) { HOOKS.lock().clone = Some(f); }
+
+/// Fire the clone hook for a `File` reference being duplicated. The caller
+/// (fork_clone / dup / dup2) has already produced the new `Arc<File>`
+/// reference; this announces it to any subscriber tracking per-reference state
+/// (e.g. the pipe writer count). # C: O(1)
 pub fn fire_clone_hook(file: &File) {
-    let h = CLONE_HOOK.load(Ordering::Acquire);
-    if h == 0 { return; }
-    let was_writable = {
-        let bits = file.flags.load(Ordering::Acquire);
-        let f = OpenFlags::from_bits_retain(bits);
-        f.contains(OpenFlags::O_WRONLY) || f.contains(OpenFlags::O_RDWR)
-    };
-    // SAFETY: h was installed by `set_clone_hook` with the documented signature.
-    let f: fn(&InodeRef, bool) = unsafe { core::mem::transmute(h) };
-    f(&file.inode, was_writable);
+    let h = HOOKS.lock().clone;
+    if let Some(f) = h {
+        let was_writable = {
+            let bits = file.flags.load(Ordering::Acquire);
+            let fl = OpenFlags::from_bits_retain(bits);
+            fl.contains(OpenFlags::O_WRONLY) || fl.contains(OpenFlags::O_RDWR)
+        };
+        f(&file.inode, was_writable);
+    }
 }
 
-/// Dirent-mutation hooks per `16§R02`. Fired by devfs / tmpfs path-
-/// registry mutations so inotify watches on the parent directory
-/// can dispatch IN_CREATE / IN_DELETE / IN_MOVED with the new dirent
-/// name. Args: (parent_path, leaf_name).
-static DIRENT_CREATE_HOOK: AtomicU64 = AtomicU64::new(0);
-static DIRENT_DELETE_HOOK: AtomicU64 = AtomicU64::new(0);
+/// Install the dirent-create hook (fires IN_CREATE; args (parent, leaf)).
+/// Fired by devfs / tmpfs path-registry mutations so inotify watches on the
+/// parent directory can dispatch IN_CREATE. # C: O(1)
+pub fn set_dirent_create_hook(f: fn(&str, &str)) { HOOKS.lock().dirent_create = Some(f); }
+/// Install the dirent-delete hook (fires IN_DELETE; args (parent, leaf)). # C: O(1)
+pub fn set_dirent_delete_hook(f: fn(&str, &str)) { HOOKS.lock().dirent_delete = Some(f); }
 
-/// # C: O(1)
-pub fn set_dirent_create_hook(f: fn(&str, &str)) {
-    DIRENT_CREATE_HOOK.store(f as u64, Ordering::Release);
-}
-/// # C: O(1)
-pub fn set_dirent_delete_hook(f: fn(&str, &str)) {
-    DIRENT_DELETE_HOOK.store(f as u64, Ordering::Release);
-}
-
-/// Fire the dirent-create hook (no-op when not installed).
-/// # C: O(1)
+/// Fire the dirent-create hook (no-op when not installed). # C: O(1)
 pub fn fire_dirent_create(parent: &str, leaf: &str) {
-    let h = DIRENT_CREATE_HOOK.load(Ordering::Acquire);
-    if h == 0 { return; }
-    // SAFETY: h was installed by `set_dirent_create_hook` with the
-    // documented signature.
-    let f: fn(&str, &str) = unsafe { core::mem::transmute(h) };
-    f(parent, leaf);
+    let h = HOOKS.lock().dirent_create;
+    if let Some(f) = h { f(parent, leaf); }
 }
 
-/// Fire the dirent-delete hook (no-op when not installed).
-/// # C: O(1)
+/// Fire the dirent-delete hook (no-op when not installed). # C: O(1)
 pub fn fire_dirent_delete(parent: &str, leaf: &str) {
-    let h = DIRENT_DELETE_HOOK.load(Ordering::Acquire);
-    if h == 0 { return; }
-    // SAFETY: h was installed by `set_dirent_delete_hook` with the
-    // documented signature.
-    let f: fn(&str, &str) = unsafe { core::mem::transmute(h) };
-    f(parent, leaf);
+    let h = HOOKS.lock().dirent_delete;
+    if let Some(f) = h { f(parent, leaf); }
+}
+
+/// Fire the IN_OPEN hook (no-op when not installed). # C: O(1)
+fn fire_open_hook(inode: &InodeRef) {
+    let h = HOOKS.lock().open;
+    if let Some(f) = h { f(inode); }
+}
+
+/// Fire the IN_ACCESS hook (no-op when not installed). # C: O(1)
+fn fire_read_hook(inode: &InodeRef) {
+    let h = HOOKS.lock().read;
+    if let Some(f) = h { f(inode); }
+}
+
+/// Fire the IN_MODIFY hook (no-op when not installed). # C: O(1)
+fn fire_write_hook(inode: &InodeRef) {
+    let h = HOOKS.lock().write;
+    if let Some(f) = h { f(inode); }
+}
+
+/// SIGIO delivery hook (Linux `send_sigio`/`kill_pid_info`): installed at boot
+/// by the sched signal module so the VFS fasync path can post a signal to a
+/// pid/pgrp without `vfs` depending on `sched`. Args: `(owner, sig, uid,
+/// euid)` — `owner` is the `F_SETOWN` target (`>0` task, `<0` `-pgrp`), `sig`
+/// the resolved signal (`F_SETSIG` value or default SIGIO/SIGURG), `uid`/`euid`
+/// the `F_SETOWN`-time credential snapshot for the delivery permission check.
+/// `0` = not installed (host tests, early boot). # C: O(1)
+static SIGIO_HOOK: AtomicU64 = AtomicU64::new(0);
+
+/// Install the SIGIO delivery hook used by fasync (`O_ASYNC`). Called once at
+/// kernel init by the sched signal module. # C: O(1)
+pub fn set_sigio_hook(f: fn(i32, i32, u32, u32)) {
+    SIGIO_HOOK.store(f as u64, Ordering::Release);
+}
+
+/// Lock class for the global fasync registry. Taken standalone (the held set
+/// is snapshotted then released before any delivery hook runs), so it never
+/// nests under the inode / pos / ra locks. # C: O(1)
+struct FasyncLock;
+impl sync::LockClass for FasyncLock { fn rank() -> u16 { 34 } }
+
+/// `inode->i_fasync` analogue (Linux per-object `fasync_struct` list): the set
+/// of open file descriptions with `O_ASYNC` enabled, awaiting SIGIO on an
+/// async-ready event. Held as `Weak<File>` so a closed description drops out
+/// without an explicit unregister; dead entries are pruned on every touch.
+/// # C: O(N) registered fds
+static FASYNC: Spinlock<Vec<Weak<File>>, FasyncLock> = Spinlock::new(Vec::new());
+
+/// Register an open file description for fasync SIGIO delivery (Linux
+/// `fasync_helper(.., on=1)` linking a `fasync_struct` onto the backend list).
+/// Idempotent; prunes dead weak entries. Called when `O_ASYNC` is turned on via
+/// `F_SETFL`. # C: O(N) registered fds
+pub fn fasync_register(file: &Arc<File>) {
+    let mut l = FASYNC.lock();
+    let p = Arc::as_ptr(file);
+    l.retain(|w| w.upgrade().is_some());
+    if !l.iter().any(|w| w.upgrade().is_some_and(|f| Arc::as_ptr(&f) == p)) {
+        l.push(Arc::downgrade(file));
+    }
+}
+
+/// Unregister an open file description from fasync delivery (Linux
+/// `fasync_helper(.., on=0)`). Also prunes dead entries. Called when `O_ASYNC`
+/// is turned off via `F_SETFL` and from `File::drop`. # C: O(N) registered fds
+pub fn fasync_unregister(file: &File) {
+    let mut l = FASYNC.lock();
+    let p = file as *const File;
+    l.retain(|w| w.upgrade().is_some_and(|f| Arc::as_ptr(&f) != p));
+}
+
+/// Count of live fasync-registered descriptions (prunes dead entries).
+/// Test/observability accessor. # C: O(N) registered fds
+pub fn fasync_registered() -> usize {
+    let mut l = FASYNC.lock();
+    l.retain(|w| w.upgrade().is_some());
+    l.len()
+}
+
+/// `kill_fasync(&inode->i_fasync, sig, band)` (Linux `fs/fcntl.c`): deliver the
+/// async-ready signal to every `O_ASYNC` fd open on `inode`. A backend
+/// (pipe/socket/tty) calls this when its buffer becomes readable/writable or an
+/// OOB byte arrives. `dfl` is the default signal — `SIGIO` for data-ready,
+/// `SIGURG` for out-of-band — overridden per-fd by `F_SETSIG`. Snapshots the
+/// matching set under the registry lock, then delivers with the lock dropped so
+/// the signal hook may take sched locks. # C: O(N) registered fds
+pub fn kill_fasync(inode: &InodeRef, dfl: i32) {
+    let snapshot: Vec<Arc<File>> = {
+        let mut l = FASYNC.lock();
+        l.retain(|w| w.upgrade().is_some());
+        l.iter()
+            .filter_map(|w| w.upgrade())
+            .filter(|f| Arc::ptr_eq(&f.inode, inode))
+            .collect()
+    };
+    for f in snapshot { f.kill_fasync(dfl); }
 }
 
 impl Drop for File {
     fn drop(&mut self) {
+        // Drop the fasync registration weak (Linux `__fput` -> `f_op->fasync(.,
+        // 0)` for an `O_ASYNC` file). Weaks self-expire, but prune eagerly.
+        if (self.flags.load(Ordering::Acquire) & O_ASYNC) != 0 {
+            fasync_unregister(self);
+        }
         if self.flock_op.load(Ordering::Acquire) != 0 {
             let h = FLOCK_RELEASE_HOOK.load(Ordering::Acquire);
             if h != 0 {
@@ -325,12 +466,11 @@ impl Drop for File {
             let f = OpenFlags::from_bits_retain(bits);
             f.contains(OpenFlags::O_WRONLY) || f.contains(OpenFlags::O_RDWR)
         };
-        for slot in CLOSE_HOOKS.iter() {
-            let h = slot.load(Ordering::Acquire);
-            if h == 0 { continue; }
-            // SAFETY: slot value installed via set_close_hook with the documented fn(&InodeRef, bool) signature; reinterpret round-trips that exact type.
-            let f: fn(&InodeRef, bool) = unsafe { core::mem::transmute(h) };
-            f(&self.inode, was_writable);
+        // Copy the close-hook slots out under the registry lock, release it,
+        // then fire each — no foreign hook runs while the lock is held.
+        let close = HOOKS.lock().close;
+        for slot in close.iter() {
+            if let Some(f) = slot { f(&self.inode, was_writable); }
         }
         // Last-close release per Linux `file_operations->release`: a
         // File == one open file description; dup'd fds share this Arc,
@@ -342,6 +482,17 @@ impl Drop for File {
         // `__fput`). At zero the dentry is unused — `d_op->d_delete` may evict
         // it (pseudo-fs), otherwise it joins the dcache LRU for the shrinker.
         crate::dcache::dput(self.dentry.clone());
+        // D3: release the `i_count` reference this open file description took on
+        // its inode at construction (Linux `iput` reached via `__fput`→`dput`).
+        // Routed through the owning superblock so a 1→0 drop runs the
+        // `drop_inode`/`evict_inode` lifecycle; an anon inode (no superblock /
+        // icache: pipe/eventfd/socket/…) just balances the count in place. The
+        // matching `igrab` is in `new_at`, so this is always balanced and never
+        // underflows regardless of how the inode was obtained.
+        match self.inode.i_sb() {
+            Some(sb) => sb.iput(self.inode.clone()),
+            None     => { self.inode.i_count_dec(); }
+        }
     }
 }
 
@@ -368,12 +519,7 @@ impl File {
         mnt_id: u64,
         cred: Cred,
     ) -> Arc<Self> {
-        let h = OPEN_HOOK.load(Ordering::Acquire);
-        if h != 0 {
-            // SAFETY: h was installed by `set_open_hook` with a real fn(&InodeRef) pointer.
-            let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
-            f(&inode);
-        }
+        fire_open_hook(&inode);
         let mut f_mode = fmode_from_flags(flags);
         // FMODE_LSEEK/PREAD/PWRITE (Linux `do_dentry_open`): a seekable backing
         // (anything but a streaming pipe/socket/fifo) carries a real cursor +
@@ -388,8 +534,17 @@ impl File {
         // `d_count` ref (Linux `struct file` holds a `dget`'d `f_path.dentry`);
         // the matching `dput` is in `File::drop`.
         let dentry = crate::dcache::dget(&dentry);
+        // D2: snapshot `inode->i_fop` into `file->f_op` so the data path
+        // dispatches through the per-open cached vtable (Linux do_dentry_open:
+        // `f->f_op = fops_get(inode->i_fop)`).
+        let f_op = inode.i_fop().clone();
+        // D3: the open file description takes an `i_count` reference on its inode
+        // (Linux `struct file` pins the inode; iget/igrab supplies the ref). The
+        // matching `iput`/dec is in `File::drop`.
+        inode.igrab();
         Arc::new(Self {
             inode,
+            f_op,
             dentry,
             mnt_id,
             f_mode,
@@ -403,6 +558,9 @@ impl File {
             owner: core::sync::atomic::AtomicI32::new(0),
             owner_creds: AtomicU64::new(0),
             f_sig: core::sync::atomic::AtomicI32::new(0),
+            // F_UNLCK (2) = no lease held (Linux `F_GETLEASE` default).
+            lease: core::sync::atomic::AtomicI32::new(2),
+            dnotify_mask: AtomicU32::new(0),
             f_version: AtomicU64::new(0),
         })
     }
@@ -502,6 +660,50 @@ impl File {
         let s = self.f_sig.load(Ordering::Acquire);
         if s != 0 { s } else { dfl }
     }
+
+    /// `O_ASYNC` enabled on this description (Linux `FASYNC` in `f_flags`).
+    /// # C: O(1)
+    pub fn is_async(&self) -> bool {
+        (self.flags.load(Ordering::Acquire) & O_ASYNC) != 0
+    }
+
+    /// `kill_fasync` per-fd core (Linux `kill_fasync_rcu` -> `send_sigio`):
+    /// deliver the async-ready signal to THIS description's `f_owner` via the
+    /// installed SIGIO hook. `dfl` = default signal (SIGIO data / SIGURG OOB),
+    /// overridden by `F_SETSIG`. No-op unless `O_ASYNC` is set, an owner is
+    /// recorded, and a hook is installed. The owner credentials snapshot is
+    /// forwarded for the hook's delivery permission check. # C: O(1)
+    pub fn kill_fasync(&self, dfl: i32) {
+        if !self.is_async() { return; }
+        let owner = self.owner.load(Ordering::Acquire);
+        if owner == 0 { return; }
+        let h = SIGIO_HOOK.load(Ordering::Acquire);
+        if h == 0 { return; }
+        let sig = self.fasync_signal(dfl);
+        let (uid, euid) = self.f_owner_creds();
+        // SAFETY: h installed by `set_sigio_hook` with the documented
+        // fn(i32,i32,u32,u32) signature; the cast round-trips that exact type.
+        let f: fn(i32, i32, u32, u32) = unsafe { core::mem::transmute(h) };
+        f(owner, sig, uid, euid);
+    }
+
+    /// `F_SETLEASE` (Linux `do_fcntl_add_lease`): record the lease type held on
+    /// this description — `F_RDLCK`(0) / `F_WRLCK`(1) read/write lease, or
+    /// `F_UNLCK`(2) to drop it. Storage only; the conflicting-open break path is
+    /// the lease-manager follow-up. # C: O(1)
+    pub fn set_lease(&self, ty: i32) { self.lease.store(ty, Ordering::Release); }
+
+    /// `F_GETLEASE` (Linux `fcntl_getlease`): the lease type held — `F_RDLCK`/
+    /// `F_WRLCK`, or `F_UNLCK` when none. # C: O(1)
+    pub fn lease(&self) -> i32 { self.lease.load(Ordering::Acquire) }
+
+    /// `F_NOTIFY` (Linux `fcntl_dirnotify`): set the dnotify `DN_*` watch mask
+    /// on this directory fd (`0` clears). Storage only; the dir-mutation event
+    /// delivery is the dnotify follow-up. # C: O(1)
+    pub fn set_dnotify(&self, mask: u32) { self.dnotify_mask.store(mask, Ordering::Release); }
+
+    /// The dnotify `DN_*` watch mask on this fd (`0` = no watch). # C: O(1)
+    pub fn dnotify(&self) -> u32 { self.dnotify_mask.load(Ordering::Acquire) }
 
     /// `file->f_version` read — the change-version a `readdir` cursor was built against. # C: O(1)
     pub fn f_version(&self) -> u64 { self.f_version.load(Ordering::Acquire) }
@@ -609,27 +811,66 @@ impl File {
         if !self.f_mode.contains(Fmode::READ) {
             return Err(VfsError::Ebadf);
         }
+        // [D19] A directory fd has no readable byte stream: read(2)/readv(2) on
+        // it is EISDIR (Linux `generic_read_dir`); getdents(2) is the only way to
+        // read a directory. An O_RDONLY dir open carries FMODE_READ, so the EBADF
+        // gate above passes — the EISDIR guard belongs here, after it.
+        if matches!(self.inode.file_type(), FileType::Directory) {
+            return Err(VfsError::Eisdir);
+        }
         // FMODE_ATOMIC_POS: hold `f_pos_lock` across pos-read -> I/O ->
         // pos-update so a dup'd / CLONE_FILES-shared fd can't interleave the
         // cursor (Linux `__fdget_pos`). `None` for non-seekable files.
         let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
         let pos = self.pos.load(Ordering::Acquire);
+        // D31: advance the per-open readahead window on the buffered read path
+        // (Linux `page_cache_sync_readahead`). Regular files only; the window
+        // state drives the block lane's page-cache fill. Pure state update — the
+        // byte count returned is still bounded by `buf`, so there is no
+        // over-read past EOF.
+        if !f.contains(OpenFlags::O_NONBLOCK) && matches!(self.inode.file_type(), FileType::Regular) {
+            let index = pos / PAGE_SIZE;
+            let req = (((buf.len() as u64) + PAGE_SIZE - 1) / PAGE_SIZE).max(1) as u32;
+            let _ = self.ra_ondemand(index, req, false);
+        }
+        // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
-            self.inode.read_nonblock(pos, buf)?
+            self.f_op.read_nonblock(&self.inode, pos, buf)?
         } else {
-            self.inode.read(pos, buf)?
+            self.f_op.read(&self.inode, pos, buf)?
         };
         self.pos.store(pos + n as u64, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         if n > 0 {
-            let h = READ_HOOK.load(Ordering::Acquire);
-            if h != 0 {
-                // SAFETY: h was installed by `set_read_hook` with a real fn(&InodeRef) pointer.
-                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
-                f(&self.inode);
-            }
+            fire_read_hook(&self.inode);
         }
         Ok(n)
+    }
+
+    /// `file_start_write` (Linux `fs/super.c` `sb_start_write` via the
+    /// `vfs_write`/`write_iter` path): admit THIS description as an in-flight
+    /// writer against its inode's superblock freeze gate before any data write,
+    /// returning an RAII [`SbWriteGuard`] whose `Drop` runs `sb_end_write` on
+    /// EVERY return/error path. Gated on regular files — freeze (SB_FREEZE_WRITE)
+    /// protects on-disk filesystem data, and gating to `FileType::Regular`
+    /// avoids holding the writer count across a parking pipe/socket write
+    /// (which would wedge a freeze drain). An anon/regular file with no live
+    /// superblock is not gated (its backend governs writability).
+    ///
+    /// CAVEAT (documented approximation): Linux `sb_start_write` SLEEPS on a
+    /// frozen sb until `thaw_super`; there is no blocking writer wait-queue on
+    /// this write path, so a NEW write to a FROZEN sb returns `Erofs` instead
+    /// of blocking. The freeze itself still drains correctly — the level gate
+    /// rejects new writers and `sb_writers()` tracks in-flight holders.
+    /// # C: O(1)
+    fn file_start_write(&self) -> KResult<SbWriteGuard> {
+        if !matches!(self.inode.file_type(), FileType::Regular) {
+            return Ok(SbWriteGuard(None));
+        }
+        match self.inode.i_sb() {
+            Some(sb) => if sb.sb_start_write() { Ok(SbWriteGuard(Some(sb))) } else { Err(VfsError::Erofs) },
+            None     => Ok(SbWriteGuard(None)),
+        }
     }
 
     /// `write(2)` — advances the cursor by the byte count returned by
@@ -646,32 +887,42 @@ impl File {
         if self.mnt_readonly() {
             return Err(VfsError::Erofs);
         }
+        // D27: admit as a sb-freeze in-flight writer (Linux `file_start_write`).
+        // EROFS if the sb is FROZEN; guard's Drop runs `sb_end_write` on every
+        // return/error path below.
+        let _sbw = self.file_start_write()?;
         // FMODE_ATOMIC_POS: hold `f_pos_lock` across the offset pick (incl.
         // the O_APPEND size read) -> I/O -> pos-update so a shared fd can't
         // interleave the cursor (Linux `__fdget_pos`). `None` for
-        // non-seekable files. O_APPEND atomicity vs other writers is the
-        // inode lock's job; this serializes only this description's `pos`.
+        // non-seekable files. This serializes only THIS description's `pos`.
         let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
-        let off = if f.contains(OpenFlags::O_APPEND) {
+        // D37: O_APPEND cross-writer atomicity — hold the inode's `i_rwsem`
+        // EXCLUSIVE across size-read -> write -> pos so two DIFFERENT open file
+        // descriptions appending to the SAME inode are mutually atomic (Linux
+        // `file_start_write` + the i_size append path's inode lock), not merely
+        // per-description-serialized by `f_pos_lock`. Acquired AFTER `f_pos_lock`
+        // (rank 35) — `i_rwsem` is rank 40, so the order is ascending. Gated on
+        // `atomic_pos` (regular/dir) so the spin-rwsem is never held across a
+        // parking pipe/socket write.
+        let is_append = f.contains(OpenFlags::O_APPEND);
+        let append_guard = if is_append && self.atomic_pos() { Some(self.inode.inode_lock()) } else { None };
+        let off = if is_append {
             self.inode.size()
         } else {
             self.pos.load(Ordering::Acquire)
         };
+        // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
-            self.inode.write_nonblock(off, buf)?
+            self.f_op.write_nonblock(&self.inode, off, buf)?
         } else {
-            self.inode.write(off, buf)?
+            self.f_op.write(&self.inode, off, buf)?
         };
         self.pos.store(off + n as u64, Ordering::Release);
+        drop(append_guard); // release i_rwsem (rank 40) before f_pos_lock (rank 35)
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         // inotify IN_MODIFY hook (no-op when nothing installed).
         if n > 0 {
-            let h = WRITE_HOOK.load(Ordering::Acquire);
-            if h != 0 {
-                // SAFETY: h was installed by `set_write_hook` with a real fn(&InodeRef) pointer; the cast back to that signature is the documented-shape contract.
-                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
-                f(&self.inode);
-            }
+            fire_write_hook(&self.inode);
         }
         Ok(n)
     }
@@ -694,10 +945,23 @@ impl File {
         if !self.f_mode.contains(Fmode::LSEEK) {
             return Err(VfsError::Espipe);
         }
+        // SEEK_DATA(3)/SEEK_HOLE(4): the `off` arg is the START byte to scan
+        // from (Linux `lseek` whence 3/4). A negative start is EINVAL; the
+        // backend's `seek_hole_data` (generic: non-sparse, single EOF hole)
+        // resolves it and returns ENXIO at/past EOF.
+        if let SeekFrom::Data | SeekFrom::Hole = whence {
+            if off < 0 { return Err(VfsError::Einval); }
+            let which = if matches!(whence, SeekFrom::Hole) { HoleOrData::Hole } else { HoleOrData::Data };
+            let new_pos = self.f_op.seek_hole_data(&self.inode, off as u64, which)?;
+            self.pos.store(new_pos, Ordering::Release);
+            return Ok(new_pos);
+        }
         let base = match whence {
             SeekFrom::Start   => 0i64,
             SeekFrom::Current => self.pos.load(Ordering::Acquire) as i64,
             SeekFrom::End     => self.inode.size() as i64,
+            // Data/Hole handled above and returned.
+            SeekFrom::Data | SeekFrom::Hole => unreachable!(),
         };
         let new = base.checked_add(off).ok_or(VfsError::Einval)?;
         if new < 0 { return Err(VfsError::Einval); }
@@ -729,18 +993,14 @@ impl File {
             return Err(VfsError::Ebadf);
         }
         let f = self.flags();
+        // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
-            self.inode.read_nonblock(off as u64, buf)?
+            self.f_op.read_nonblock(&self.inode, off as u64, buf)?
         } else {
-            self.inode.read(off as u64, buf)?
+            self.f_op.read(&self.inode, off as u64, buf)?
         };
         if n > 0 {
-            let h = READ_HOOK.load(Ordering::Acquire);
-            if h != 0 {
-                // SAFETY: h was installed by `set_read_hook` with a real fn(&InodeRef) pointer.
-                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
-                f(&self.inode);
-            }
+            fire_read_hook(&self.inode);
         }
         Ok(n)
     }
@@ -769,22 +1029,21 @@ impl File {
         if self.mnt_readonly() {
             return Err(VfsError::Erofs);
         }
+        // D27: sb-freeze in-flight writer admission (Linux `file_start_write`);
+        // EROFS on a FROZEN sb. Guard releases on every return path.
+        let _sbw = self.file_start_write()?;
         let f = self.flags();
         // Linux pwrite + O_APPEND: IOCB_APPEND forces ki_pos = i_size,
         // ignoring the caller's offset (documented quirk, pwrite(2) BUGS).
         let pos = if f.contains(OpenFlags::O_APPEND) { self.inode.size() } else { off as u64 };
+        // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
-            self.inode.write_nonblock(pos, buf)?
+            self.f_op.write_nonblock(&self.inode, pos, buf)?
         } else {
-            self.inode.write(pos, buf)?
+            self.f_op.write(&self.inode, pos, buf)?
         };
         if n > 0 {
-            let h = WRITE_HOOK.load(Ordering::Acquire);
-            if h != 0 {
-                // SAFETY: h was installed by `set_write_hook` with a real fn(&InodeRef) pointer.
-                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
-                f(&self.inode);
-            }
+            fire_write_hook(&self.inode);
         }
         Ok(n)
     }
@@ -807,12 +1066,22 @@ impl File {
         // `__fdget_pos`), so the cursor advances atomically over all buffers.
         let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
         let pos = self.pos.load(Ordering::Acquire);
+        // D31: advance the readahead window once for the whole vectored read
+        // (Linux `page_cache_sync_readahead`). Regular files only; the request
+        // size is the grand total of the destination buffers. Pure state update.
+        if !nonblock && matches!(self.inode.file_type(), FileType::Regular) {
+            let bytes: u64 = bufs.iter().map(|b| b.len() as u64).sum();
+            let index = pos / PAGE_SIZE;
+            let req = ((bytes + PAGE_SIZE - 1) / PAGE_SIZE).max(1) as u32;
+            let _ = self.ra_ondemand(index, req, false);
+        }
         let mut total: u64 = 0;
         for buf in bufs.iter_mut() {
             if buf.is_empty() { continue; }
             let want = buf.len();
             let off = pos + total;
-            let r = if nonblock { self.inode.read_nonblock(off, buf) } else { self.inode.read(off, buf) };
+            // D2: dispatch through the cached `file->f_op` (snapshotted at open).
+            let r = if nonblock { self.f_op.read_nonblock(&self.inode, off, buf) } else { self.f_op.read(&self.inode, off, buf) };
             match r {
                 Ok(0)                => break,                   // EOF
                 Ok(n)                => { total += n as u64; if n < want { break; } }
@@ -823,12 +1092,7 @@ impl File {
         self.pos.store(pos + total, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         if total > 0 {
-            let h = READ_HOOK.load(Ordering::Acquire);
-            if h != 0 {
-                // SAFETY: h was installed by `set_read_hook` with a real fn(&InodeRef) pointer.
-                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
-                f(&self.inode);
-            }
+            fire_read_hook(&self.inode);
         }
         Ok(total as usize)
     }
@@ -848,17 +1112,29 @@ impl File {
         if self.mnt_readonly() {
             return Err(VfsError::Erofs);
         }
+        // D27: sb-freeze in-flight writer admission (Linux `file_start_write`);
+        // EROFS on a FROZEN sb. Guard releases on every return path.
+        let _sbw = self.file_start_write()?;
         let f = self.flags();
         let nonblock = f.contains(OpenFlags::O_NONBLOCK);
         let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
+        // D37: O_APPEND cross-writer atomicity — hold `i_rwsem` EXCLUSIVE across
+        // the size-read base pick -> the whole vectored write -> pos so two
+        // DIFFERENT open descriptions appending stay mutually atomic (Linux
+        // `IOCB_APPEND` under the append path's inode lock). Acquired after
+        // `f_pos_lock` (35 -> 40, ascending); gated on `atomic_pos` so the
+        // spin-rwsem is never held across a parking non-seekable write.
+        let is_append = f.contains(OpenFlags::O_APPEND);
+        let append_guard = if is_append && self.atomic_pos() { Some(self.inode.inode_lock()) } else { None };
         // O_APPEND forces the base to i_size ONCE for the whole vectored write.
-        let base = if f.contains(OpenFlags::O_APPEND) { self.inode.size() } else { self.pos.load(Ordering::Acquire) };
+        let base = if is_append { self.inode.size() } else { self.pos.load(Ordering::Acquire) };
         let mut total: u64 = 0;
         for buf in bufs.iter() {
             if buf.is_empty() { continue; }
             let want = buf.len();
             let off = base + total;
-            let r = if nonblock { self.inode.write_nonblock(off, buf) } else { self.inode.write(off, buf) };
+            // D2: dispatch through the cached `file->f_op` (snapshotted at open).
+            let r = if nonblock { self.f_op.write_nonblock(&self.inode, off, buf) } else { self.f_op.write(&self.inode, off, buf) };
             match r {
                 Ok(0)                => break,
                 Ok(n)                => { total += n as u64; if n < want { break; } }
@@ -867,16 +1143,25 @@ impl File {
             }
         }
         self.pos.store(base + total, Ordering::Release);
+        drop(append_guard); // release i_rwsem (rank 40) before f_pos_lock (rank 35)
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         if total > 0 {
-            let h = WRITE_HOOK.load(Ordering::Acquire);
-            if h != 0 {
-                // SAFETY: h was installed by `set_write_hook` with a real fn(&InodeRef) pointer.
-                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
-                f(&self.inode);
-            }
+            fire_write_hook(&self.inode);
         }
         Ok(total as usize)
+    }
+}
+
+/// RAII pairing for [`SuperBlock::sb_start_write`]/[`SuperBlock::sb_end_write`]
+/// (Linux `file_start_write`/`file_end_write`). Held across one
+/// `write`/`pwrite`/`writev` so a concurrent `freeze_super` observes the
+/// in-flight writer (`sb_writers()`); `Drop` releases it on every return/error
+/// path. `None` = not freeze-gated (anon file / no superblock / non-regular).
+/// # C: O(1)
+struct SbWriteGuard(Option<Arc<crate::superblock::SuperBlock>>);
+impl Drop for SbWriteGuard {
+    fn drop(&mut self) {
+        if let Some(sb) = self.0.take() { sb.sb_end_write(); }
     }
 }
 
@@ -904,6 +1189,25 @@ pub fn get_file(file: &Arc<File>) -> Arc<File> { Arc::clone(file) }
 /// # C: O(1) amortized; last-ref also runs the release hook chain
 pub fn fput(file: Arc<File>) { drop(file); }
 
+/// Release ONE `i_count` reference on `inode` (Linux `iput`). A superblock-backed
+/// inode routes through [`SuperBlock::iput`] so a 1→0 drop runs the
+/// `drop_inode`/`evict_inode` lifecycle; an anon inode (no SB / icache) just
+/// balances the count in place. The PUBLIC form of the dcache's private
+/// `dentry_iput`, mirrored from `File::drop` — for callers (D3/D37) that obtained
+/// an inode via `iget`/`build`/`i_op->create` and must release that
+/// temporary/born reference once a DURABLE counted holder (a dentry alias from
+/// `d_add`/`d_instantiate`, or an open `File`'s `igrab`) is already in place. This
+/// is Linux's `d_instantiate` consuming the iget reference, expressed at the
+/// caller side so the dcache primitive's own `grab_inode_hold` contract is
+/// unchanged. MUST be called only AFTER such a holder exists, so `i_count` never
+/// reaches 0 on a still-live inode. # C: O(log N_ino) for an SB inode, else O(1)
+pub fn iput(inode: InodeRef) {
+    match inode.i_sb() {
+        Some(sb) => sb.iput(inode),
+        None     => { inode.i_count_dec(); }
+    }
+}
+
 impl core::fmt::Debug for File {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("File")
@@ -916,9 +1220,18 @@ impl core::fmt::Debug for File {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SeekFrom {
+    /// `SEEK_SET` — base 0; the `off` arg is the absolute position.
     Start,
+    /// `SEEK_CUR` — base the current cursor.
     Current,
+    /// `SEEK_END` — base `i_size`.
     End,
+    /// `SEEK_DATA` (whence 3) — the `off` arg is the start byte; resolve to the
+    /// next data byte via `f_op->seek_hole_data`.
+    Data,
+    /// `SEEK_HOLE` (whence 4) — the `off` arg is the start byte; resolve to the
+    /// next hole via `f_op->seek_hole_data`.
+    Hole,
 }
 
 
@@ -934,6 +1247,7 @@ pub fn install_open(
     flags: OpenFlags,
     mnt_id: u64,
     cred: Cred,
+    limit: usize,
 ) -> Result<i32, VfsError> {
     if flags.contains(OpenFlags::O_DIRECTORY)
         && !matches!(inode.file_type(), crate::types::FileType::Directory)
@@ -951,7 +1265,7 @@ pub fn install_open(
     let file_flags = flags - OpenFlags::O_CLOEXEC;
     let dentry = open_dentry(path, &inode);
     let file = File::new_at(inode, dentry, file_flags, mnt_id, cred);
-    let fd = fdt.alloc(file).map_err(|_| VfsError::Emfile)?;
+    let fd = fdt.alloc_limit(file, limit).map_err(|_| VfsError::Emfile)?;
     if cloexec {
         fdt.set_cloexec(fd, true)?;
     }

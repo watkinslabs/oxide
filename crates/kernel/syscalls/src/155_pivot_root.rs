@@ -26,6 +26,14 @@ pub fn sys_pivot_root(args: &SyscallArgs) -> i64 {
     let po = crate::pathresolve::resolve_cwd(&put_old);
     let nr = if nr.len() > 1 { nr.trim_end_matches('/').to_string() } else { nr };
     let po = if po.len() > 1 { po.trim_end_matches('/').to_string() } else { po };
+    // TEMP (D24, debug-mnt): mount-creating syscall ENTRY trace.
+    #[cfg(feature = "debug-mount")]
+    {
+        klog::write_raw(b"[MNTCREATE] syscall=pivot_root flags=0x0 recursive=false source=");
+        klog::write_raw(nr.as_bytes());
+        klog::write_raw(b" target="); klog::write_raw(po.as_bytes());
+        klog::write_raw(b"\n");
+    }
     // The two namei walks pivot_root(2) hands the engine: new_root + put_old
     // mountpoint dentries (Linux `struct path.dentry`). The SAME `Arc`s the
     // engine compares by identity (the `pivot_root(".",".")` stacking case).

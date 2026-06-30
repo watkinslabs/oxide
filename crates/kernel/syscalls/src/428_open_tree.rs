@@ -5,7 +5,6 @@ use alloc::string::ToString;
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use vfs::InodeRef;
 
 use crate::fsmount_common::*;
 
@@ -18,6 +17,7 @@ use crate::fsmount_common::*;
 pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
     const OPEN_TREE_CLONE:   u64 = 1;
     const OPEN_TREE_CLOEXEC: u64 = 0o2_000_000;     // O_CLOEXEC
+    const AT_RECURSIVE:      u64 = 0x8000;          // clone the whole subtree
     let path = match read_cstr(args.a1, 256) {
         Some(s) => s, None => return -(Errno::Efault.as_i32() as i64),
     };
@@ -25,10 +25,29 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
         Ok(p) => p, Err(rv) => return rv,
     };
     let abs = if abs.len() > 1 { abs.trim_end_matches('/').to_string() } else { abs };
+    // TEMP (D24, debug-mnt): mount-creating syscall ENTRY trace (Stage-1a
+    // replication source) — pair with vfs [MNTCREATE] clone/commit_hashonly.
+    #[cfg(feature = "debug-mount")]
+    {
+        klog::write_raw(b"[MNTCREATE] syscall=open_tree flags=0x");
+        klog::write_hex_u64(args.a2);
+        klog::write_raw(b" recursive=");
+        klog::write_raw(if args.a2 & AT_RECURSIVE != 0 { b"true" } else { b"false" });
+        klog::write_raw(b" source="); klog::write_raw(abs.as_bytes());
+        klog::write_raw(b" target=<none>\n");
+    }
     let cloexec = (args.a2 & OPEN_TREE_CLOEXEC) != 0;
     if (args.a2 & OPEN_TREE_CLONE) != 0 {
-        // Capture the mount rooted at `abs` (fs + root inode) into a
-        // detached clone object.
+        // OPEN_TREE_CLONE creates a detached mount → requires CAP_SYS_ADMIN
+        // (Linux open_detached_copy/may_mount); the non-clone O_PATH-like form
+        // below is unprivileged (D49).
+        if let Some(rv) = require_sys_admin() { return rv; }
+        // D24 Stage 1a: RECURSIVELY clone the mount SUBTREE rooted at `abs`
+        // (AT_RECURSIVE ⇒ whole bindable subtree; else root-only) into a
+        // DETACHED node list stored in the mount-object fd. `move_mount` later
+        // commits it hash-only; fd-close releases it. This replaces the prior
+        // single-(fs,root) capture that never replicated submounts.
+        let recursive = (args.a2 & AT_RECURSIVE) != 0;
         let (mnt, _) = match vfs::mount::resolve_mount(&abs) {
             Some(m) => m,
             None => {
@@ -36,10 +55,9 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
                 return -(Errno::Enoent.as_i32() as i64);
             }
         };
-        let root = match mnt.root.clone().or_else(|| mnt.fs().root()) {
-            Some(r) => r, None => return -(Errno::Einval.as_i32() as i64),
-        };
-        let mo: InodeRef = MountObjectInode::new_clone(mnt.fs().clone(), root);
+        let tree = vfs::mount::clone_mount_tree(&mnt, recursive);
+        if tree.is_empty() { return -(Errno::Einval.as_i32() as i64); }
+        let mo = MountObjectInode::new_clone_tree(tree);
         return install_fd(mo, "open_tree", cloexec);
     }
     // Non-clone: an fd referring to the path's inode (O_PATH-ish).

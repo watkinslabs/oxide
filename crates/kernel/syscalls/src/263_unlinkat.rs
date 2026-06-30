@@ -19,6 +19,11 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
     let raw = match read_user_path(args.a1) {
         Ok(s) => s, Err(rv) => return rv,
     };
+    // do_rmdirat: AT_REMOVEDIR with a `.`/`..` final component → EINVAL/ENOTEMPTY
+    // (LAST_DOT/LAST_DOTDOT). Plain unlink of `.`/`..` is EISDIR via the backend.
+    if (flags & AT_REMOVEDIR) != 0 {
+        if let Some(rv) = crate::namei_common::rmdir_dot_errno(&raw) { return rv; }
+    }
     // BUG D follow-up: resolve against the real dirfd (a0).
     let p = match crate::pathresolve::resolve_at_result(args.a0 as i32, &raw) {
         Ok(rp) => rp, Err(rv) => return rv,
@@ -40,9 +45,22 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
         return -(Errno::Erofs.as_i32() as i64);
     }
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
-    match pino.unlink_child(&name) {
-        // d_delete: invalidate the cached dentry (see pathresolve::d_delete_path).
-        Ok(())  => { unlink_unix_socket_path(&p); crate::pathresolve::d_delete_path(&p); 0 }
+    // D30: capture the victim dentry before the backend removes the name.
+    let victim = crate::s087_unlink::victim_dentry(&p);
+    // D29: parent dir `i_rwsem` EXCLUSIVE across the backend unlink (Linux
+    // `do_unlinkat` locks the parent); dropped before the dcache delete below.
+    let r = { let _g = pino.inode_lock(); pino.unlink_child(&name) };
+    match r {
+        // D30: backend unlink ran first; `d_unlink` then drives drop_link + the
+        // last-alias retirement (Linux `vfs_unlink` tail). See sys_unlink.
+        Ok(())  => {
+            unlink_unix_socket_path(&p);
+            match victim {
+                Some(d) => { vfs::dcache::d_unlink(&d); }
+                None    => crate::pathresolve::d_delete_path(&p),
+            }
+            0
+        }
         Err(vfs::VfsError::Enoent) if unlink_unix_socket_path(&p) => 0,
         Err(e)  => errno_from_vfs(e),
     }

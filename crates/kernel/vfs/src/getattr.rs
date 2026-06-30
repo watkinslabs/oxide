@@ -111,36 +111,123 @@ pub const fn encode_dev(major: u32, minor: u32) -> u32 {
 /// Reproducing it outside the stat path lets a subsystem match the `st_dev`
 /// userspace holds: autofs `AUTOFS_DEV_IOCTL_OPENMOUNT` carries the `devid`
 /// systemd took from `fstat`, so the autofs registry MUST key on this
-/// user-visible dev — not the raw 64-bit anon `s_dev`, which neither equals
-/// the hashed `st_dev` nor fits the ioctl's `__u32` devid field. Uses the
-/// full Linux `dev_t` packing (matching the stat path), distinct from the
-/// 32-bit `encode_dev` above. # C: O(1)
+/// user-visible dev — not the raw identity, which neither equals the encoded
+/// `st_dev` nor fits the ioctl's `__u32` devid field.
+///
+/// Linux-faithful path (no more hash): the identity is resolved to a REAL anon
+/// `dev_t` `(major 0, unique minor)` by [`crate::superblock::st_dev_for_fsid`]
+/// (the `get_anon_bdev`/`unnamed_dev_ida` model every nodev filesystem uses),
+/// then `huge_encode_dev`'d to the 64-bit user wire form — exactly what
+/// `/proc/mounts` shows as `0:NN` for a nodev fs. Distinct per filesystem,
+/// stable across a boot, always `<= u32::MAX`. # C: O(log N_fs)
 pub fn fsid_to_dev(fsid: u64) -> u64 {
-    let mut x = fsid;
-    x ^= x >> 33;
-    x = x.wrapping_mul(0xff51afd7ed558ccd);
-    x ^= x >> 33;
-    let major = (((x >> 20) & 0x0fff) as u32).max(1);
-    let minor = (x & 0x000f_ffff) as u32;
-    ((minor & 0xff) as u64)
-        | (((major & 0xfff) as u64) << 8)
-        | (((minor & !0xff) as u64) << 12)
-        | (((major & !0xfff) as u64) << 32)
+    crate::devnode::huge_encode_dev(st_dev_for_fsid(fsid))
+}
+
+/// `st_dev` identity registry — maps each opaque filesystem identity
+/// (`Inode::fsid()`: a per-instance anon `s_dev` OR a per-fs-type constant like
+/// `DEVFS_FSID`) to the stable KERNEL anon `dev_t` `(0, minor)` it presents.
+/// Pseudo-filesystems that share one constant identity across every inode (and
+/// have no per-instance `s_dev`) get a single reserved minor here; per-instance
+/// `s_dev` values are anon devs already and pass straight through.
+/// # C: O(log N_fs)
+static ST_DEV_MAP: sync::Spinlock<alloc::collections::BTreeMap<u64, u32>, sync::Superblock>
+    = sync::Spinlock::new(alloc::collections::BTreeMap::new());
+
+/// Map a filesystem identity (`Inode::fsid()`) to the stable KERNEL anon `dev_t`
+/// `(0, minor)` it presents to userspace. An identity that is ALREADY a real
+/// anon `dev_t` from [`crate::superblock::next_anon_dev`] (major 0, minor in the
+/// live anon range) passes through unchanged; a large per-fs-type constant
+/// (`0x0102_1994_…`, `CGROUP2_FSID`, …) is assigned — once, stably — a fresh
+/// reserved minor from the shared `unnamed_dev_ida` allocator. `0` (a truly anon
+/// SB-less inode: pipe/socket) maps to `0`, matching Linux `st_dev == 0`. The
+/// single source of truth behind [`fsid_to_dev`]. # C: O(log N_fs)
+pub fn st_dev_for_fsid(fsid: u64) -> u32 {
+    if fsid == 0 { return 0; }
+    // A `next_anon_dev` result is `MKDEV(0, minor)` == `minor` (major 0), so it
+    // already fits the kernel `dev_t` minor field — present it directly.
+    if fsid <= crate::devnode::MINORMASK as u64 { return fsid as u32; }
+    let mut m = ST_DEV_MAP.lock();
+    if let Some(&d) = m.get(&fsid) { return d; }
+    let d = crate::devnode::mkdev(0, crate::superblock::alloc_anon_minor());
+    m.insert(fsid, d);
+    d
 }
 
 #[cfg(test)]
 mod dev_tests {
-    /// Every `fsid_to_dev` result must fit Linux's effective 32-bit `dev_t`:
-    /// the autofs `AUTOFS_DEV_IOCTL_OPENMOUNT` devid field is a `__u32`, so a
-    /// value above `u32::MAX` would truncate and never match the registry
-    /// (the binfmt_misc automount wedge root cause). # C: O(N samples)
+    use crate::devnode::{Devt, mkdev, kdev_major, kdev_minor, new_encode_dev, huge_encode_dev, MINORMASK};
+
+    /// `MKDEV`/`MAJOR`/`MINOR` round-trip on a KERNEL `dev_t` (12:20 split),
+    /// including a high minor that overflows the legacy 8-bit field. # C: O(1)
     #[test]
-    fn fsid_to_dev_fits_u32_and_is_stable() {
+    fn mkdev_major_minor_roundtrip() {
+        for (ma, mi) in [(0u32, 1u32), (0, 21), (1, 3), (8, 0), (10, 200), (240, 0xfffff), (4, 65535)] {
+            let kd = mkdev(ma, mi);
+            assert_eq!(kdev_major(kd), ma, "major {ma}:{mi}");
+            assert_eq!(kdev_minor(kd), mi & MINORMASK, "minor {ma}:{mi}");
+        }
+    }
+
+    /// `new_encode_dev`/`huge_encode_dev` reproduce the glibc wire form, and the
+    /// [`Devt`] user wrapper decodes it back to the same `(major, minor)` — the
+    /// `st_rdev` ABI contract, high-minor split included. # C: O(1)
+    #[test]
+    fn encode_dev_matches_devt_and_decodes() {
+        for (ma, mi) in [(1u32, 3u32), (10, 200), (4, 300), (89, 1), (8, 70000)] {
+            let kd = mkdev(ma, mi);
+            let enc = new_encode_dev(kd);
+            assert_eq!(huge_encode_dev(kd), enc as u64, "huge==new for {ma}:{mi}");
+            assert_eq!(Devt::new(ma, mi).raw(), enc, "Devt::new packs new_encode_dev {ma}:{mi}");
+            let d = Devt::from_raw(enc);
+            assert_eq!((d.major(), d.minor()), (ma, mi), "Devt decode {ma}:{mi}");
+            assert_eq!(d.to_kdev(), kd, "Devt->kdev {ma}:{mi}");
+        }
+    }
+
+    /// Every `fsid_to_dev` result must be a REAL anon `dev_t` (major 0) and fit
+    /// Linux's effective 32-bit `dev_t`: the autofs `AUTOFS_DEV_IOCTL_OPENMOUNT`
+    /// devid field is a `__u32`, so a value above `u32::MAX` would truncate and
+    /// never match the registry (the binfmt_misc automount wedge root cause).
+    /// # C: O(N samples)
+    #[test]
+    fn fsid_to_dev_real_anon_and_stable() {
         for fsid in [0u64, 1, 256, 0x0102_1994_0000_0003, 0x0000_0001_0000_000e, u64::MAX] {
             let d = super::fsid_to_dev(fsid);
             assert!(d <= u32::MAX as u64, "fsid {fsid:#x} -> dev {d:#x} exceeds u32");
             assert_eq!(d, super::fsid_to_dev(fsid), "fsid_to_dev not deterministic");
+            // Decode back: major must be 0 (anon block device, Linux nodev fs).
+            let major = ((d >> 8) & 0xfff) as u32 | ((d >> 32) & !0xfff) as u32;
+            assert_eq!(major, 0, "fsid {fsid:#x} -> dev {d:#x} is not a (0,minor) anon dev");
         }
+        // Distinct identities → distinct st_dev (the property userspace mount-
+        // boundary detection relies on).
+        let a = super::fsid_to_dev(0x0102_1994_0000_00aa);
+        let b = super::fsid_to_dev(0x0102_1994_0000_00bb);
+        assert_ne!(a, b, "distinct fsids must map to distinct st_dev");
+        assert_eq!(a, super::fsid_to_dev(0x0102_1994_0000_00aa), "stable across calls");
+    }
+
+    /// A `mknod` char-device inode carries a real `(major, minor)` `i_rdev`;
+    /// `generic_fillattr` reports it in `Kstat::rdev` in the glibc wire form,
+    /// decodable back to the original pair (high-minor split included). # C: O(1)
+    #[test]
+    fn mknod_chardev_st_rdev_roundtrip() {
+        use alloc::sync::Weak;
+        use crate::devnode::make_device_node_inode;
+        use crate::types::FileType;
+        for (ma, mi) in [(1u32, 3u32), (10, 200), (4, 300)] {
+            let inode = make_device_node_inode(7, FileType::CharDev, Devt::new(ma, mi), 0o666, Weak::new());
+            let st = super::generic_fillattr(&inode, &crate::idmap::IDENTITY, None);
+            assert_eq!(st.mode & super::S_IFMT, super::S_IFCHR, "char type bits {ma}:{mi}");
+            let d = Devt::from_raw(st.rdev);
+            assert_eq!((d.major(), d.minor()), (ma, mi), "st_rdev decode {ma}:{mi}");
+        }
+        // A regular file reports st_rdev == 0 (Linux leaves it clear).
+        let reg = crate::inode::InodeBuilder::new(8, super::S_IFREG | 0o644,
+            crate::inode_ops::default_inode_ops(), crate::file_ops::default_file_ops()).build();
+        let st = super::generic_fillattr(&reg, &crate::idmap::IDENTITY, None);
+        assert_eq!(st.rdev, 0, "regular file st_rdev clear");
     }
 }
 
@@ -156,13 +243,15 @@ pub fn default_perm_for(ft: FileType) -> u16 {
     }
 }
 
-/// `generic_fillattr` — assemble a `Kstat` from inode fields, merging the
-/// kernel `inode_times` overlay (perm/owner/times for pseudo-fs without native
-/// storage) and applying the mount `idmap` to the owner ids. An identity idmap
-/// returns the raw fs ids, so the output is byte-identical to the
-/// pre-idmap stat path. # C: O(1)
+/// `generic_fillattr` — assemble a `Kstat` from the inode's own fields, applying
+/// the mount `idmap` to the owner ids. An identity idmap returns the raw fs ids,
+/// so the output is byte-identical to the pre-idmap stat path. D17: the concrete
+/// `struct Inode` now always stores its own perm/owner/times, so the legacy
+/// `inode_times` overlay is no longer merged — `overlay` is retained as a
+/// (now-inert) parameter for ABI/signature stability with the `i_op->getattr`
+/// override path and is ignored. # C: O(1)
 pub fn generic_fillattr(inode: &Inode, idmap: &Idmap, overlay: Option<InodeTimes>) -> Kstat {
-    let ov = overlay.unwrap_or_default();
+    let _ = &overlay; // D17: overlay no longer consulted (inode owns its fields)
     let ft = inode.file_type();
     // ONE place builds the `S_IFMT` half of the mode: `FileType::to_ifmt`
     // (shared with `Inode::i_mode`). `st_rdev` is only meaningful for device
@@ -172,11 +261,9 @@ pub fn generic_fillattr(inode: &Inode, idmap: &Idmap, overlay: Option<InodeTimes
         FileType::CharDev | FileType::BlockDev => inode.rdev(),
         _ => 0,
     };
-    let perm = inode.perm()
-        .or_else(|| if ov.owner_set && ov.mode_bits != 0 { Some(ov.mode_bits) } else { None })
-        .unwrap_or_else(|| default_perm_for(ft));
-    let raw_uid = inode.uid().unwrap_or(if ov.owner_set { ov.uid } else { 0 });
-    let raw_gid = inode.gid().unwrap_or(if ov.owner_set { ov.gid } else { 0 });
+    let perm = inode.perm().unwrap_or_else(|| default_perm_for(ft));
+    let raw_uid = inode.uid().unwrap_or(0);
+    let raw_gid = inode.gid().unwrap_or(0);
     // `st_blksize` is a SUPERBLOCK property (Linux `s_blocksize`), not a
     // per-inode one: route through the owning SB so every inode on one fs
     // reports its mount's block size. `blksize()` is only the fallback for
@@ -208,10 +295,16 @@ pub fn generic_fillattr(inode: &Inode, idmap: &Idmap, overlay: Option<InodeTimes
         rdev,
         size:     inode.size(),
         blksize:  bsize,
-        blocks:   blocks_for(inode.size(), bsize),
-        atime_ns: inode.atime().unwrap_or(ov.atime_ns),
-        mtime_ns: inode.mtime().unwrap_or(ov.mtime_ns),
-        ctime_ns: inode.ctime().unwrap_or(ov.ctime_ns),
+        // Linux `generic_fillattr`: `stat->blocks = inode->i_blocks`. A backend
+        // that maintains a real `i_blocks` (sparse/preallocated extents) reports
+        // it verbatim; only an inode that never set it (`0`) falls back to the
+        // size-rounded estimate (`blocks_for`). The old code ALWAYS estimated,
+        // silently discarding a stored `i_blocks` — wrong for a sparse file
+        // (over-count) or a file with preallocation past EOF (under-count). D20.
+        blocks:   if inode.blocks() != 0 { inode.blocks() } else { blocks_for(inode.size(), bsize) },
+        atime_ns: inode.atime().unwrap_or(0),
+        mtime_ns: inode.mtime().unwrap_or(0),
+        ctime_ns: inode.ctime().unwrap_or(0),
         btime_ns,
         fsid:     inode.fsid(),
         // `change_cookie` is NOT filled here: querying the i_version latches the

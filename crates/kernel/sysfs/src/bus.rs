@@ -19,9 +19,10 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use vfs::{mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
-use crate::{make_body_inode, make_symlink_inode_ino, DIR_PERM};
+use crate::kobject::{make_attr_inode, Attribute, AttrGroup, SysfsOps};
+use crate::{make_symlink_inode_ino, DIR_PERM, RO_PERM};
 
 const INO_BUS_PCI_DEV:   Ino = 0x5102_0001;
 const INO_BUS_PCI_DRV:   Ino = 0x5102_0002;
@@ -57,9 +58,35 @@ fn dev_attr(dev: &drv::Device, leaf: &str) -> Option<Vec<u8>> {
     }
 }
 
-fn dev_entries(bus: &str) -> &'static [&'static str] {
-    if bus == "pci" { &["vendor", "device", "class", "uevent"] }
-    else { &["device", "uevent"] }
+/// PCI device default attribute group (Linux `pci_dev_attrs`). # C: n/a
+const PCI_DEV_ATTRS: &[Attribute] = &[
+    Attribute { name: "vendor", mode: RO_PERM },
+    Attribute { name: "device", mode: RO_PERM },
+    Attribute { name: "class",  mode: RO_PERM },
+    Attribute { name: "uevent", mode: RO_PERM },
+];
+static PCI_DEV_GROUP: AttrGroup = AttrGroup { attrs: PCI_DEV_ATTRS };
+
+/// virtio device default attribute group. # C: n/a
+const VIRTIO_DEV_ATTRS: &[Attribute] = &[
+    Attribute { name: "device", mode: RO_PERM },
+    Attribute { name: "uevent", mode: RO_PERM },
+];
+static VIRTIO_DEV_GROUP: AttrGroup = AttrGroup { attrs: VIRTIO_DEV_ATTRS };
+
+/// The device attribute group for `bus`. # C: O(1)
+fn dev_group(bus: &str) -> &'static AttrGroup {
+    if bus == "pci" { &PCI_DEV_GROUP } else { &VIRTIO_DEV_GROUP }
+}
+
+/// `sysfs_ops` for a `/sys/devices/.../<addr>` device kobject — `show` renders
+/// each attribute fresh from the live `drv` registry. # C: O(1)
+struct DeviceKobj { addr: String, bus: &'static str }
+impl SysfsOps for DeviceKobj {
+    fn show(&self, attr: &str) -> Option<Vec<u8>> {
+        let dev = find_dev(self.bus, &self.addr)?;
+        dev_attr(&dev, attr)
+    }
 }
 
 /// A symlink inode (under the bus tree) whose readlink target is a fixed
@@ -83,29 +110,31 @@ impl InodeOps for DeviceDirOps {
             let t = alloc::format!("../../../bus/{}/drivers/{}", data.bus, drvname);
             return Ok(make_link_inode(t.into_bytes()));
         }
-        let body = dev_attr(&dev, name).ok_or(VfsError::Enoent)?;
-        Ok(make_body_inode(body, INO_ATTR))
+        let attr = dev_group(data.bus).find(name).ok_or(VfsError::Enoent)?;
+        let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { addr: data.addr.clone(), bus: data.bus });
+        Ok(make_attr_inode(attr, ops, INO_ATTR))
     }
 }
 impl FileOps for DeviceDirOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let data = match inode.private::<DeviceDirData>() { Some(d) => d, None => return Err(VfsError::Einval) };
-        let attrs = dev_entries(data.bus);
+        let attrs = dev_group(data.bus).attrs;
         let bound = find_dev(data.bus, &data.addr).map(|d| d.bound().is_some()).unwrap_or(false);
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < attrs.len() {
             let next = idx as u64 + 1;
-            let ino = inode.lookup(attrs[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, attrs[idx], FileType::Regular) { return Ok(next); }
+            let name = attrs[idx].name;
+            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !ctx.emit(name, ino, FileType::Regular, next) { return Ok(()); }
             idx += 1;
         }
         if bound && idx == attrs.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup("driver").map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, "driver", FileType::Symlink) { return Ok(next); }
+            if !ctx.emit("driver", ino, FileType::Symlink, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 fn make_device_dir_inode(addr: String, bus: &'static str) -> InodeRef {
@@ -138,18 +167,18 @@ impl InodeOps for DevicesRootOps {
     }
 }
 impl FileOps for DevicesRootOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let bus = match inode.private::<BusData>() { Some(d) => d.bus, None => return Err(VfsError::Einval) };
         let devs = drv::devices();
         let list: Vec<&str> = devs.iter().filter(|d| d.bus == bus).map(|d| d.addr.as_str()).collect();
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < list.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup(list[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, list[idx], FileType::Directory) { return Ok(next); }
+            if !ctx.emit(list[idx], ino, FileType::Directory, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 fn make_devices_root_inode(bus: &'static str) -> InodeRef {
@@ -174,18 +203,18 @@ impl InodeOps for BusDevicesOps {
     }
 }
 impl FileOps for BusDevicesOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let bus = match inode.private::<BusData>() { Some(d) => d.bus, None => return Err(VfsError::Einval) };
         let devs = drv::devices();
         let list: Vec<&str> = devs.iter().filter(|d| d.bus == bus).map(|d| d.addr.as_str()).collect();
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < list.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup(list[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, list[idx], FileType::Symlink) { return Ok(next); }
+            if !ctx.emit(list[idx], ino, FileType::Symlink, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 fn make_bus_devices_inode(bus: &'static str) -> InodeRef {
@@ -207,16 +236,16 @@ impl InodeOps for BusDriversOps {
     }
 }
 impl FileOps for BusDriversOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let names = drv::driver_names();
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < names.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup(names[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, names[idx], FileType::Directory) { return Ok(next); }
+            if !ctx.emit(names[idx], ino, FileType::Directory, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 fn make_bus_drivers_inode(bus: &'static str) -> InodeRef {
@@ -234,7 +263,7 @@ impl InodeOps for DriverDirOps {
     fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
 }
 impl FileOps for DriverDirOps {
-    fn iterate(&self, _inode: &Inode, _o: u64, _f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> { Ok(0) }
+    fn iterate(&self, _inode: &Inode, _ctx: &mut DirContext) -> KResult<()> { Ok(()) }
 }
 fn make_driver_dir_inode() -> InodeRef {
     InodeBuilder::new(INO_DRIVER_DIR, mk_mode(FileType::Directory, DIR_PERM),

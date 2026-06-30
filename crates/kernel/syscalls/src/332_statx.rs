@@ -13,6 +13,9 @@ const AT_NO_AUTOMOUNT: u32     = 0x800;
 const AT_STATX_SYNC_TYPE: u32  = 0x6000; // FORCE_SYNC|DONT_SYNC
 const AT_VALID: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_STATX_SYNC_TYPE;
 const STATX_RESERVED: u32 = 0x8000_0000;
+/// `STATX_MNT_ID` (linux/stat.h): stx_mnt_id is valid. Linux `vfs_statx` fills
+/// the mount id and sets this bit unconditionally (since 5.8).
+const STATX_MNT_ID: u32 = 0x0000_1000;
 
 /// `sys_statx(dirfd, path, flags, mask, statxbuf)` — slot 332.
 /// # C: O(1)
@@ -30,42 +33,21 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     // byte range here.
     if let Err(rv) = validate_user_buf_writable(buf, 256, 1) { return rv; }
 
-    // Probe path emptiness (path may be NULL with AT_EMPTY_PATH).
-    let empty_or_null = path_ptr == 0 || {
-        // SAFETY: path_ptr in user range guarded; 1-byte probe only.
-        path_ptr < hal::USER_VA_END
-            && unsafe { devfs::read_user_cstr(path_ptr, 1) }.map_or(true, |b| b.is_empty())
+    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty/NULL
+    // path operates on the dirfd, ENOENT without it); a normal statx FOLLOWS the
+    // trailing symlink (LOOKUP_FOLLOW), AT_SYMLINK_NOFOLLOW does not. aarch64
+    // musl routes stat()/lstat() here. ENOTDIR/ELOOP/EACCES/EFAULT/ENAMETOOLONG
+    // preserved by the engine (X1/X2/X4/X5).
+    let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
+    let lf = vfs::LookupFlags {
+        empty: (flags & AT_EMPTY_PATH) != 0,
+        no_follow_final: nofollow,
+        follow: !nofollow,
+        ..Default::default()
     };
-
-    let (inode, mnt_id) = if (flags & AT_EMPTY_PATH) != 0 && empty_or_null {
-        let cur = match sched::live::current() {
-            Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-        };
-        // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-        let fdt = match unsafe { cur.fd_table_ref() } {
-            Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-        };
-        let f = match fdt.get(dirfd) {
-            Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
-        };
-        (f.inode().clone(), f.mnt_id())
-    } else {
-        // X2/X4/X5: PATH_MAX read with EFAULT/ENOENT/ENAMETOOLONG.
-        let raw = match crate::namei_common::read_user_path(path_ptr) {
-            Ok(s) => s, Err(rv) => return rv,
-        };
-        // Resolve relative path against the dirfd's directory (real `*at`
-        // semantics, same as openat). aarch64 musl routes stat()/lstat()
-        // here.
-        let resolved = match crate::pathresolve::resolve_at_result(dirfd, &raw) {
-            Ok(p) => p, Err(rv) => return rv,
-        };
-        let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
-        // X1: preserve ENOTDIR/ELOOP/EACCES from the path-walk.
-        match crate::pathresolve::resolve_path_result(resolved.as_str(), nofollow) {
-            Ok(p)  => (p.inode, p.mnt_id),
-            Err(e) => return crate::namei_common::errno_from_vfs(e),
-        }
+    let (inode, mnt_id) = match crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf) {
+        Ok(p)  => (p.inode, p.mnt_id),
+        Err(rv) => return rv,
     };
 
     // vfs_getattr → i_op->getattr (default generic_fillattr): S_IF* mapping +
@@ -89,7 +71,9 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         // mask reflects exactly the valid fields. Pre-fix it was a hardcoded
         // 0x7ff that omitted BTIME entirely; the base set is unchanged so the
         // ARM-musl stat() wrapper still sees NLINK/UID/GID/SIZE valid.
-        core::ptr::write_unaligned(buf as *mut u32, st.result_mask);                                  // stx_mask
+        // Linux vfs_statx sets stx_mnt_id + STATX_MNT_ID in result_mask
+        // unconditionally (independent of the request mask).
+        core::ptr::write_unaligned(buf as *mut u32, st.result_mask | STATX_MNT_ID);                   // stx_mask
         core::ptr::write_unaligned((buf +   4)     as *mut u32, st.blksize);                          // stx_blksize
         core::ptr::write_unaligned((buf +   8)     as *mut u64, st.attributes);                       // stx_attributes
         core::ptr::write_unaligned((buf +  16)     as *mut u32, st.nlink);                            // stx_nlink
@@ -114,10 +98,12 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         write_ts(80,  st.btime_ns);   // 0 when STATX_BTIME absent in stx_mask
         write_ts(96,  st.ctime_ns);
         write_ts(112, st.mtime_ns);
-        core::ptr::write_unaligned((buf + 128)     as *mut u32, (rdev >> 8)  & 0xfff);                // stx_rdev_major
-        core::ptr::write_unaligned((buf + 132)     as *mut u32,  rdev        & 0xff);                 // stx_rdev_minor
+        let rdevt = vfs::Devt::from_raw(rdev);
+        core::ptr::write_unaligned((buf + 128)     as *mut u32, rdevt.major());                        // stx_rdev_major
+        core::ptr::write_unaligned((buf + 132)     as *mut u32, rdevt.minor());                        // stx_rdev_minor (full 12:20 split)
         core::ptr::write_unaligned((buf + 136)     as *mut u32, crate::namei_common::dev_major(dev)); // stx_dev_major
         core::ptr::write_unaligned((buf + 140)     as *mut u32, crate::namei_common::dev_minor(dev)); // stx_dev_minor
+        core::ptr::write_unaligned((buf + 144)     as *mut u64, mnt_id);                              // stx_mnt_id
     }
     0
 }

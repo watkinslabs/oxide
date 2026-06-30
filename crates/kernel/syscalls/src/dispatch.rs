@@ -231,8 +231,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_PWRITE64      => crate::s018_pwrite64::sys_pwrite64(&args),
         syscall::nrs::NR_PREADV  => crate::s295_preadv::sys_preadv(&args),
         syscall::nrs::NR_PWRITEV => crate::s296_pwritev::sys_pwritev(&args),
-        syscall::nrs::NR_PREADV2 => crate::s295_preadv::sys_preadv(&args),
-        syscall::nrs::NR_PWRITEV2 => crate::s296_pwritev::sys_pwritev(&args),
+        syscall::nrs::NR_PREADV2 => crate::s295_preadv::sys_preadv2(&args),
+        syscall::nrs::NR_PWRITEV2 => crate::s296_pwritev::sys_pwritev2(&args),
         syscall::nrs::NR_MEMFD_CREATE => crate::s319_memfd_create::sys_memfd_create(&args),
         // memfd_secret(flags) — Linux's "hide from other tasks via
         // page-table partitioning" variant. v1 single-AS scheduler
@@ -259,19 +259,27 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_TEE        => sched::xfer::sys_tee(&args),
         syscall::nrs::NR_VMSPLICE   => sched::xfer::sys_vmsplice(&args),
         syscall::nrs::NR_OPENAT        => crate::s257_openat::sys_openat(&args),
-        // openat2: read flags+mode from open_how, route through openat.
+        // openat2: read flags+mode+resolve from open_how, route through openat2.
         syscall::nrs::NR_OPENAT2       => {
             let how = args.a2;
-            let mut sa = args; sa.a2 = 0;
-            if how != 0 && how < USER_VA_END {
-                // SAFETY: how validated < USER_VA_END; struct open_how
-                // first u64 = flags, second = mode; CPL=0 reads.
-                unsafe {
+            // struct open_how is 24 bytes (flags@0, mode@8, resolve@16); the
+            // `size` arg (a3) must be at least that — Linux EINVALs a short
+            // struct, EFAULTs a bad pointer.
+            if how == 0 || how >= USER_VA_END {
+                -(syscall::errno::Errno::Efault.as_i32() as i64)
+            } else if args.a3 < 24 {
+                -(syscall::errno::Errno::Einval.as_i32() as i64)
+            } else {
+                let mut sa = args; sa.a2 = 0; sa.a3 = 0;
+                // SAFETY: [how, how+24) validated < USER_VA_END; struct open_how
+                // flags@0 / mode@8 / resolve@16; CPL=0 reads of the user struct.
+                let resolve = unsafe {
                     sa.a2 = core::ptr::read_volatile(how as *const u64);
                     sa.a3 = core::ptr::read_volatile((how + 8) as *const u64);
-                }
+                    core::ptr::read_volatile((how + 16) as *const u64)
+                };
+                crate::s257_openat::sys_openat2(&sa, resolve)
             }
-            crate::s257_openat::sys_openat(&sa)
         }
         syscall::nrs::NR_FACCESSAT2    => crate::fs_access::sys_faccessat2(&args),
         syscall::nrs::NR_SYNC => 0,

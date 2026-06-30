@@ -42,32 +42,29 @@ pub const DEVFS_FSID: u64 = 0x0102_1994_0000_0001;
 /// Register `path` → `inode` in the init namespace (`ns == 0`).
 /// Used by the boot bootstrap; takes a `'static` path so we don't
 
-// Current-task context hooks (mount-ns + chroot root). devfs is a
-// filesystem; it must not depend on the scheduler — the kernel installs
-// these at boot so device visibility/chroot resolve against the running
-// task without a devfs->sched edge (which would cycle cgroup->devfs->sched).
+// Current-task mount-namespace hook. devfs is a filesystem; it must not
+// depend on the scheduler — the kernel installs this at boot so device
+// visibility resolves against the running task's mount namespace without a
+// devfs->sched edge (which would cycle cgroup->devfs->sched). chroot is NOT
+// resolved here: namei owns confined-root resolution (`pathresolve::
+// resolution_root` / `root_dentry`), so by the time a path reaches this
+// registry it is already mount-relative — the old string-prefix
+// `chroot_resolve` (D18) was an abstraction inversion and is gone.
 use core::sync::atomic::{AtomicU64, Ordering as HookOrdering};
 static MOUNT_NS_HOOK: AtomicU64 = AtomicU64::new(0);
-static CHROOT_ROOT_HOOK: AtomicU64 = AtomicU64::new(0);
 
-/// Install the current-task context hooks (boot, once).
+/// Install the current-task context hook (boot, once). `_chroot_root` is
+/// accepted for boot-wiring compatibility but ignored — chroot is namei's
+/// job (see module note), not the devfs registry's.
 /// # C: O(1)
-pub fn set_current_hooks(mount_ns: fn() -> u64, chroot_root: fn() -> Option<String>) {
+pub fn set_current_hooks(mount_ns: fn() -> u64, _chroot_root: fn() -> Option<String>) {
     MOUNT_NS_HOOK.store(mount_ns as usize as u64, HookOrdering::Release);
-    CHROOT_ROOT_HOOK.store(chroot_root as usize as u64, HookOrdering::Release);
 }
 fn current_mount_ns() -> u64 {
     let p = MOUNT_NS_HOOK.load(HookOrdering::Acquire);
     if p == 0 { return 0; }
     // SAFETY: p was stored from a `fn() -> u64` via set_current_hooks.
     let f: fn() -> u64 = unsafe { core::mem::transmute(p as usize) };
-    f()
-}
-fn current_chroot_root() -> Option<String> {
-    let p = CHROOT_ROOT_HOOK.load(HookOrdering::Acquire);
-    if p == 0 { return None; }
-    // SAFETY: p was stored from a `fn() -> Option<String>` via set_current_hooks.
-    let f: fn() -> Option<String> = unsafe { core::mem::transmute(p as usize) };
     f()
 }
 
@@ -97,39 +94,12 @@ pub fn register_in_ns(ns: u64, path: String, inode: InodeRef) {
     tree::register(ns, &path, inode);
 }
 
-/// Look up a path. Tries caller's mount_ns first, then init NS.
-/// Applies the chroot prefix (F95) before matching.
+/// Look up a mount-absolute path in the devfs registry. Tries the caller's
+/// mount namespace first, then the init NS. The path is already mount-relative
+/// (namei resolved any chroot/confined-root before reaching here, D18), so no
+/// string-prefix translation is applied.
 /// # C: O(depth)
 pub fn lookup(path: &str) -> Option<InodeRef> {
-    let resolved = chroot_resolve(path);
-    let cur_ns = current_mount_ns();
-    let r = if cur_ns != 0 {
-        tree::lookup(cur_ns, &resolved).or_else(|| tree::lookup(0, &resolved))
-    } else {
-        tree::lookup(0, &resolved)
-    };
-    // DIAG (debug-boot): the 226/NAMESPACE blocker — does a sandbox lookup of
-    // /proc/sys/kernel/domainname get chroot-prefixed so the registered key no
-    // longer matches? Log path→resolved + ns + hit so we see the mangling.
-    #[cfg(feature = "debug-boot")]
-    if path.contains("domainname") {
-        klog::write_raw(b"[mnt] DEVLK ns="); klog::write_dec_u64(cur_ns);
-        klog::write_raw(if r.is_some() { b" HIT in=" } else { b" MISS in=" });
-        klog::write_raw(path.as_bytes());
-        klog::write_raw(b" resolved="); klog::write_raw(resolved.as_bytes());
-        klog::write_raw(b"\n");
-    }
-    r
-}
-
-/// Like `lookup` but WITHOUT chroot translation, for a filesystem (procfs/
-/// sysfs) resolving its OWN mount content. The path is already mount-absolute
-/// (e.g. `/proc/sys/kernel/domainname`), reached via the mount itself, so
-/// applying `chroot_resolve` would wrongly re-prefix it with the caller's
-/// chroot root and break sandbox resolution (status 226/NAMESPACE). Linux's
-/// proc_sys_lookup is chroot-independent for the same reason.
-/// # C: O(components)
-pub fn lookup_no_chroot(path: &str) -> Option<InodeRef> {
     let cur_ns = current_mount_ns();
     if cur_ns != 0 {
         if let Some(i) = tree::lookup(cur_ns, path) { return Some(i); }
@@ -150,19 +120,6 @@ pub fn unregister_subtree(ns: u64, mount_point: &str) -> usize {
 /// # C: O(tree)
 pub fn snapshot_ns(src_ns: u64, dst_ns: u64) {
     tree::snapshot_ns(src_ns, dst_ns);
-}
-
-/// Apply the calling task's chroot root to an absolute path.
-/// Relative paths and boot-context calls (no current task) pass
-/// through unchanged.
-/// # C: O(len)
-fn chroot_resolve(path: &str) -> String {
-    if path.as_bytes().first() != Some(&b'/') { return String::from(path); }
-    let root = match current_chroot_root() { Some(r) => r, None => return String::from(path) };
-    let mut out = root;
-    if out.ends_with('/') { out.pop(); }
-    out.push_str(path);
-    out
 }
 
 /// Read a NUL-terminated string from user memory at `ptr`, bounded
@@ -204,7 +161,7 @@ impl vfs::fs::FileSystem for DevfsFs {
     /// The path walk crosses into the devfs mount and resolves every
     /// `/dev/*` component via `DevDir::lookup` — no whole-path lookup.
     /// # C: O(1)
-    fn root(&self) -> Option<vfs::InodeRef> { lookup_no_chroot("/dev") }
+    fn root(&self) -> Option<vfs::InodeRef> { lookup("/dev") }
 }
 
 /// Singleton accessor for the mount-table to register.

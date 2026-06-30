@@ -26,6 +26,18 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_SEAL_WRITE: u32 = 0x0008;
     const F_SEAL_FUTURE_WRITE: u32 = 0x0010;
     const F_GETOWN: u64 = 9; const F_SETOWN: u64 = 8;
+    const F_SETSIG: u64 = 10; const F_GETSIG: u64 = 11;
+    const F_SETOWN_EX: u64 = 15; const F_GETOWN_EX: u64 = 16;
+    // f_owner_ex.type (Linux fcntl.h): TID / PID / PGRP.
+    const F_OWNER_TID: i32 = 0; const F_OWNER_PID: i32 = 1; const F_OWNER_PGRP: i32 = 2;
+    // F_*LEASE / F_NOTIFY (Linux fcntl.h, asm-generic).
+    const F_SETLEASE: u64 = 1024; const F_GETLEASE: u64 = 1025; const F_NOTIFY: u64 = 1026;
+    // Lease types (== the l_type record-lock values): read / write / unlock.
+    const F_RDLCK: i32 = 0; const F_WRLCK: i32 = 1; const F_UNLCK: i32 = 2;
+    // dnotify F_NOTIFY DN_* event bits + DN_MULTISHOT (Linux fcntl.h).
+    const DN_VALID: u32 = 0x0000_003f; // ACCESS|MODIFY|CREATE|DELETE|RENAME|ATTRIB
+    const DN_MULTISHOT: u32 = 0x8000_0000;
+    const NSIG: u64 = 64;
     let fd = args.a0 as i32; let cmd = args.a1; let arg = args.a2;
     let ebadf = -(Errno::Ebadf.as_i32() as i64);
     let cur = match sched::live::current() { Some(c) => c, None => return ebadf };
@@ -46,12 +58,27 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             Ok(()) => 0,
             Err(e) => -(e as i64),
         },
-        F_GETFL => file.flags().bits() as i64,
+        // F_GETFL: on 64-bit Linux every open implicitly carries O_LARGEFILE
+        // (`include/linux/fcntl.h` force_o_largefile; the open path ORs it into
+        // `f_flags`), so F_GETFL always reports it. OR it in here — O_LARGEFILE
+        // is NOT in `SETFL_MASK`, so F_SETFL cannot clear it (Linux parity).
+        F_GETFL => (file.flags() | vfs::OpenFlags::O_LARGEFILE).bits() as i64,
         F_SETFL => {
             // SETFL masking (preserve access mode + creation flags, update only
-            // O_APPEND/O_NONBLOCK/O_DIRECT/O_NOATIME) lives in the VFS work fn
-            // `File::set_fl` per `53§3`; the shim forwards the raw `arg`.
+            // O_APPEND/O_NONBLOCK/O_DIRECT/O_NOATIME/O_ASYNC) lives in the VFS
+            // work fn `File::set_fl` per `53§3`; the shim forwards the raw `arg`.
+            // Toggling O_ASYNC (de)registers the fd for fasync SIGIO delivery —
+            // done here (not in `set_fl`) because the fasync registry keys on the
+            // `Arc<File>` the fd table holds (Linux `setfl` -> `f_op->fasync`).
+            let was_async = file.is_async();
             file.set_fl(vfs::OpenFlags::from_bits_retain(arg as u32));
+            let now_async = file.is_async();
+            if now_async && !was_async {
+                sched::live::sigpend::install_sigio_hook();
+                vfs::file::fasync_register(&file);
+            } else if was_async && !now_async {
+                vfs::file::fasync_unregister(&file);
+            }
             0
         }
         F_GETPIPE_SZ => match fs::pipe::pipe_size(file.inode()) {
@@ -83,7 +110,95 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             None => -(Errno::Einval.as_i32() as i64),
         },
         F_GETOWN => file.owner.load(core::sync::atomic::Ordering::Acquire) as i64,
-        F_SETOWN => { file.owner.store(arg as i32, core::sync::atomic::Ordering::Release); 0 }
+        // F_SETOWN: record the SIGIO target AND snapshot the requesting creds
+        // (Linux `f_setown` -> `__f_setown` capturing `current_cred()->uid/euid`)
+        // so a later async signal is permission-checked against the credentials
+        // that asked for ownership, not those current when it fires. Ensure the
+        // sched SIGIO delivery hook is installed.
+        F_SETOWN => {
+            sched::live::sigpend::install_sigio_hook();
+            file.f_setown(arg as i32, &crate::pathresolve::current_cred());
+            0
+        }
+        // F_GETSIG/F_SETSIG (Linux f_owner.signum): the signal delivered on
+        // async-I/O readiness; 0 = default SIGIO/SIGURG (D36).
+        F_GETSIG => file.sig() as i64,
+        F_SETSIG => {
+            let sig = arg as i32;
+            if sig < 0 || arg > NSIG { return -(Errno::Einval.as_i32() as i64); }
+            file.set_sig(sig);
+            0
+        }
+        // F_GETOWN_EX: write f_owner_ex { i32 type; i32 pid } (8 B). A negative
+        // stored owner is a process group (Linux convention) (D36).
+        F_GETOWN_EX => {
+            if let Err(rv) = validate_user_buf(arg, 8, 4) { return rv; }
+            let raw = file.owner.load(core::sync::atomic::Ordering::Acquire);
+            let (ty, pid) = if raw < 0 { (F_OWNER_PGRP, -raw) } else { (F_OWNER_PID, raw) };
+            // SAFETY: arg validated for 8 B below USER_VA_END; CPL=0 writes through caller's AS.
+            unsafe {
+                core::ptr::write_unaligned(arg as *mut i32, ty);
+                core::ptr::write_unaligned((arg + 4) as *mut i32, pid);
+            }
+            0
+        }
+        // F_SETOWN_EX: read f_owner_ex; store pid (PGRP → negative). TID is
+        // treated as PID (no per-thread fasync routing yet) (D36).
+        F_SETOWN_EX => {
+            if let Err(rv) = validate_user_buf(arg, 8, 4) { return rv; }
+            // SAFETY: arg validated for 8 B below USER_VA_END; CPL=0 reads through caller's AS.
+            let (ty, pid) = unsafe {
+                (core::ptr::read_unaligned(arg as *const i32),
+                 core::ptr::read_unaligned((arg + 4) as *const i32))
+            };
+            let stored = match ty {
+                F_OWNER_TID | F_OWNER_PID => pid,
+                F_OWNER_PGRP              => -pid,
+                _ => return -(Errno::Einval.as_i32() as i64),
+            };
+            sched::live::sigpend::install_sigio_hook();
+            // Capture the requesting creds too (same as F_SETOWN); TID is routed
+            // as PID (no per-thread fasync queue yet).
+            file.f_setown(stored, &crate::pathresolve::current_cred());
+            0
+        }
+        // F_GETLEASE (Linux `fcntl_getlease`): the lease type held on the open
+        // file description — F_RDLCK / F_WRLCK, or F_UNLCK when none.
+        F_GETLEASE => file.lease() as i64,
+        // F_SETLEASE (Linux `do_fcntl_add_lease`): take/drop a read/write lease.
+        // Only regular files may hold a lease (EINVAL otherwise); a write lease
+        // needs the fd to be the sole opener — that conflict check + the
+        // lease-break delivery are the lease-manager follow-up, so this validates
+        // the type and records it (F_UNLCK drops). EBADF-class checks already
+        // passed (fd resolved). Returns 0 on success.
+        F_SETLEASE => {
+            let ty = arg as i32;
+            if !matches!(ty, F_RDLCK | F_WRLCK | F_UNLCK) {
+                return -(Errno::Einval.as_i32() as i64);
+            }
+            if !matches!(file.inode().file_type(), vfs::FileType::Regular) {
+                return -(Errno::Einval.as_i32() as i64);
+            }
+            file.set_lease(ty);
+            0
+        }
+        // F_NOTIFY (Linux `fcntl_dirnotify`, dnotify): arm a directory-change
+        // watch. Only a directory fd is valid (ENOTDIR otherwise). `arg == 0`
+        // clears the watch; otherwise the DN_* mask is validated and stored
+        // (additive in Linux unless DN_MULTISHOT toggles one-shot — recorded
+        // verbatim). The event delivery (dir-mutation -> SIGIO) is the dnotify
+        // follow-up. Returns 0 on success.
+        F_NOTIFY => {
+            if !matches!(file.inode().file_type(), vfs::FileType::Directory) {
+                return -(Errno::Enotdir.as_i32() as i64);
+            }
+            let mask = arg as u32;
+            if mask != 0 && (mask & !(DN_VALID | DN_MULTISHOT)) != 0 {
+                return -(Errno::Einval.as_i32() as i64);
+            }
+            file.set_dnotify(mask);
+            0
+        }
         F_SETLK | F_SETLKW | F_GETLK |
         F_OFD_SETLK | F_OFD_SETLKW | F_OFD_GETLK => {
             handle_record_lock(&cur, &fdt, &file, cmd, arg)
@@ -162,11 +277,16 @@ fn handle_record_lock(
         }
         F_SETLKW | F_OFD_SETLKW => {
             // Spin-yield until peer releases (real wait list rides
-            // a follow-up).
+            // a follow-up). Interruptible: a deliverable signal aborts the
+            // wait with EINTR, matching Linux fcntl_setlk → posix_lock_file_wait
+            // (wait_event_interruptible) (D37).
             loop {
                 match try_set_lock(inode, &req, owner) {
                     Ok(()) => return 0,
                     Err(vfs::VfsError::Eagain) => {
+                        if sched::live::sigpend::deliverable_signals(cur) != 0 {
+                            return -(Errno::Eintr.as_i32() as i64);
+                        }
                         // SAFETY: process ctx; preempt-off; runqueue installed; voluntary schedule() yields the CPU; we stay Runnable so the scheduler picks us back up shortly.
                         unsafe { sched::live::schedule::schedule(); }
                     }

@@ -5,7 +5,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_path, errno_from_vfs, resolve_parent};
+use crate::namei_common::{read_user_path, errno_from_vfs, resolve_parent};
 
 /// Single rmdir core — both `rmdir(2)` (slot 84, x86 legacy) and
 /// `unlinkat(…, AT_REMOVEDIR)` (the only form aarch64 has) delegate
@@ -20,11 +20,27 @@ pub(crate) fn do_rmdir(p: &str) -> i64 {
         return -(Errno::Erofs.as_i32() as i64);
     }
     let (pino, name) = match resolve_parent(p) { Ok(x) => x, Err(rv) => return rv };
-    match pino.rmdir(&name) {
-        // D25: invalidate the removed directory's whole cached subtree (the
-        // dentry itself + any negative dentries cached for names looked up
-        // inside it), not just the single dentry (Linux `d_invalidate`).
-        Ok(())  => { crate::pathresolve::d_invalidate_path(p); 0 }
+    // D30: capture the victim dir dentry before the backend removes it.
+    let victim = crate::s087_unlink::victim_dentry(p);
+    // D29: parent dir `i_rwsem` EXCLUSIVE across the backend rmdir (Linux
+    // `do_rmdir` locks the parent); dropped before the dcache invalidate below.
+    let r = { let _g = pino.inode_lock(); pino.rmdir(&name) };
+    match r {
+        // D25+D30: backend rmdir ran first. With the victim dir dentry in hand,
+        // `d_invalidate` FIRST tears down its whole cached subtree (the dentry +
+        // any negative dentries cached for names looked up inside it) while it is
+        // still hashed, then `d_unlink` drives the nlink↔alias coupling
+        // (`drop_link` + last-alias prune) on the now-disconnected dir inode. The
+        // invalidate must precede the unlink: d_unlink unhashes the dentry, after
+        // which d_invalidate would early-return and skip the subtree. No cached
+        // victim → the path-based whole-subtree invalidate, as before.
+        Ok(())  => {
+            match victim {
+                Some(d) => { vfs::d_invalidate(&d); vfs::dcache::d_unlink(&d); }
+                None    => crate::pathresolve::d_invalidate_path(p),
+            }
+            0
+        }
         Err(e)  => errno_from_vfs(e),
     }
 }
@@ -32,9 +48,13 @@ pub(crate) fn do_rmdir(p: &str) -> i64 {
 /// `rmdir(path)` slot 84 (x86 legacy; absent on aarch64).
 /// # C: O(1)
 pub fn sys_rmdir(args: &SyscallArgs) -> i64 {
-    let raw = match read_path(args.a0) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    let raw = match read_user_path(args.a0) {
+        Ok(s) => s, Err(rv) => return rv,
     };
+    // do_rmdirat: `.` final component → EINVAL, `..` → ENOTEMPTY (checked on
+    // the raw path before resolution normalises the dots away).
+    if let Some(rv) = crate::namei_common::rmdir_dot_errno(&raw) { return rv; }
     let p = match crate::pathresolve::resolve_at_result(crate::pathresolve::AT_FDCWD, &raw) {
         Ok(p) => p, Err(rv) => return rv,
     };

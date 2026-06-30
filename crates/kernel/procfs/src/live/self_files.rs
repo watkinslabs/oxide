@@ -8,7 +8,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{default_inode_ops, mk_mode, DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 /// `/proc/self/maps` per `19§4`. Walks the current task's AddressSpace VMA
 /// tree and emits one line per VMA in `<start>-<end> <perms> <off> 00:00
@@ -446,18 +446,18 @@ impl InodeOps for ProcSelfFdOps {
     fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> { self_fd_lookup(name) }
 }
 impl FileOps for ProcSelfFdOps {
-    fn iterate(&self, _inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, _inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let cur = match sched::live::current() {
             Some(c) => c,
-            None => return Ok(off),
+            None => return Ok(()),
         };
         // SAFETY: sole reader; single-mutator per `13§5`.
         let fdt = match unsafe { cur.fd_table_ref() } {
             Some(t) => t.clone(),
-            None => return Ok(off),
+            None => return Ok(()),
         };
         let fds = fdt.live_fds();
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < fds.len() {
             let next = idx as u64 + 1;
             let fd = fds[idx];
@@ -477,12 +477,12 @@ impl FileOps for ProcSelfFdOps {
             buf[..n].reverse();
             let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
             let ino = self_fd_lookup(s).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, s, FileType::Symlink) {
-                return Ok(next);
+            if !ctx.emit(s, ino, FileType::Symlink, next) {
+                return Ok(());
             }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 

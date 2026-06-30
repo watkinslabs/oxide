@@ -1,21 +1,21 @@
-// Per-inode atime/mtime/ctime overlay for `utimensat` family.
+// Atime-update policy (relatime/noatime) + `current_time` granularity flooring
+// for the `utimensat`/stat family.
 //
-// The Inode trait doesn't carry timestamps yet (most kernel-side
-// inodes are pseudo: devfs/procfs/tmpfs entries). Rather than changing
-// every Inode impl, we keep an out-of-line BTreeMap keyed by inode
-// data-pointer identity. utimensat writes here; statx reads here and
-// falls back to 0.
-//
-// Identity = `Arc::as_ptr(&inode) as *const u8 as usize`. Stable for
-// the inode's lifetime; pointer reuse after free is theoretically
-// possible but rare on a kernel-uptime timeline.
+// D17: the legacy pointer-keyed `TIMES` overlay (a `BTreeMap` keyed by
+// `Arc::as_ptr`) is GONE — the concrete `struct Inode` now stores real
+// `i_atime`/`i_mtime`/`i_ctime`/`i_mode`/`i_uid`/`i_gid` fields, so `getattr`
+// reads them directly and the overlay store+merge is dead. The accessor shims
+// below (`get`/`set`/`set_mode`/`set_owner`) remain as no-ops only so the
+// cross-lane fallback call sites (syscalls `perms_common`, `fs::xattr`) still
+// compile; they take effect nowhere because the concrete inode's own
+// `set_perm`/`set_owner`/`set_times` always succeed. Removing those call sites
+// (and then these shims) is a cross-lane follow-up. The [`InodeTimes`] struct is
+// retained as the (now inert) `overlay` argument type of `getattr`.
 
-extern crate alloc;
-
-/// Per-inode metadata overlay: timestamps + mode + owner. Tracks
-/// real values for inodes whose backing FS doesn't carry them yet
-/// (devfs/procfs/tmpfs pseudo entries). statx merges the override
-/// onto its computed defaults.
+/// Per-inode metadata overlay (LEGACY, inert): timestamps + mode + owner. Once
+/// the fallback store for pseudo-fs inodes without native fields; the concrete
+/// `struct Inode` now always carries its own, so this is retained only as the
+/// `getattr`/`generic_fillattr` `overlay` parameter type and is never consulted.
 #[derive(Default, Copy, Clone)]
 pub struct InodeTimes {
     pub atime_ns: u64,
@@ -108,101 +108,29 @@ pub fn current_time(inode: &crate::inode::Inode, now_ns: u64) -> u64 {
 }
 
 /// `inode_set_ctime_current` (Linux fs/inode.c) — floor `now_ns` to the inode's
-/// granularity ([`current_time`]), stamp it as the inode's ctime (recorded in
-/// the metadata overlay until per-inode timespec fields land, D17), and return
-/// the value stored, so a metadata mutator both updates and reports the change
-/// time in one call. # C: O(log N)
-#[cfg(target_os = "oxide-kernel")]
-pub fn inode_set_ctime_current(inode: &crate::InodeRef, now_ns: u64) -> u64 {
-    let t = current_time(&**inode, now_ns);
-    let k = key(inode);
-    let mut g = TIMES.lock();
-    g.entry(k).or_insert(InodeTimes::default()).ctime_ns = t;
-    t
-}
-
-/// Hosted build: no global overlay store, so the stamp is a no-op; the
-/// granularity-floored value is still returned (the half the hosted tests
-/// exercise). # C: O(1)
-#[cfg(not(target_os = "oxide-kernel"))]
+/// granularity ([`current_time`]) and return it, so a metadata mutator both
+/// reports and (via the inode's own `set_times`) records the change time.
+/// D17: no longer writes any out-of-line overlay — the concrete inode owns its
+/// `i_ctime` field. # C: O(1)
 pub fn inode_set_ctime_current(inode: &crate::InodeRef, now_ns: u64) -> u64 {
     current_time(&**inode, now_ns)
 }
 
-#[cfg(target_os = "oxide-kernel")]
-use alloc::collections::BTreeMap;
-#[cfg(target_os = "oxide-kernel")]
-use sync::{Spinlock, TaskList as TaskListClass};
-#[cfg(target_os = "oxide-kernel")]
-use crate::InodeRef;
+// D17 LEGACY no-op shims. The concrete `struct Inode` owns mode/owner/times, so
+// these fallbacks take effect nowhere; they remain only so the cross-lane
+// callers (`syscalls::perms_common`, `fs::xattr`) that still reference the old
+// overlay continue to compile. Removing those call sites + these shims is a
+// cross-lane follow-up.
 
-#[cfg(target_os = "oxide-kernel")]
-static TIMES: Spinlock<BTreeMap<usize, InodeTimes>, TaskListClass> =
-    Spinlock::new(BTreeMap::new());
-
-/// Pointer-identity key for an inode reference.
-/// # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-pub fn key(inode: &InodeRef) -> usize {
-    let raw: *const crate::Inode = alloc::sync::Arc::as_ptr(inode);
-    raw as *const u8 as usize
-}
-
-/// Fetch the stored times for `inode`, or `None` if never set.
-/// # C: O(log N)
-#[cfg(target_os = "oxide-kernel")]
-pub fn get(inode: &InodeRef) -> Option<InodeTimes> {
-    let g = TIMES.lock();
-    g.get(&key(inode)).copied()
-}
-
-#[cfg(not(target_os = "oxide-kernel"))]
+/// Always `None` (the overlay store is gone). # C: O(1)
 pub fn get(_inode: &crate::InodeRef) -> Option<InodeTimes> { None }
 
-/// Update atime/mtime; ctime always advances to `now_ns` on any update.
-/// `None` for a field means "leave existing alone" (utimensat UTIME_OMIT).
-/// # C: O(log N)
-#[cfg(target_os = "oxide-kernel")]
-pub fn set(inode: &InodeRef, atime_ns: Option<u64>, mtime_ns: Option<u64>, now_ns: u64) {
-    let k = key(inode);
-    let mut g = TIMES.lock();
-    let entry = g.entry(k).or_insert(InodeTimes::default());
-    if let Some(t) = atime_ns { entry.atime_ns = t; }
-    if let Some(t) = mtime_ns { entry.mtime_ns = t; }
-    entry.ctime_ns = now_ns;
-}
-
-#[cfg(not(target_os = "oxide-kernel"))]
+/// No-op (the overlay store is gone; the inode's own `set_times` records times).
+/// # C: O(1)
 pub fn set(_inode: &crate::InodeRef, _atime_ns: Option<u64>, _mtime_ns: Option<u64>, _now_ns: u64) {}
 
-/// Set mode bits (low 12 — perm + suid/sgid/sticky). Used by chmod/
-/// fchmod/fchmodat. Bumps ctime.
-/// # C: O(log N)
-#[cfg(target_os = "oxide-kernel")]
-pub fn set_mode(inode: &InodeRef, mode_bits: u16, now_ns: u64) {
-    let k = key(inode);
-    let mut g = TIMES.lock();
-    let entry = g.entry(k).or_insert(InodeTimes::default());
-    entry.mode_bits = mode_bits & 0o7777;
-    entry.owner_set = true;
-    entry.ctime_ns = now_ns;
-}
-
-#[cfg(not(target_os = "oxide-kernel"))]
+/// No-op (the inode's own `set_perm` records the mode). # C: O(1)
 pub fn set_mode(_inode: &crate::InodeRef, _mode_bits: u16, _now_ns: u64) {}
 
-/// Set owner uid/gid. `u32::MAX` (i.e. `(uid_t)-1`) means leave alone.
-/// # C: O(log N)
-#[cfg(target_os = "oxide-kernel")]
-pub fn set_owner(inode: &InodeRef, uid: u32, gid: u32, now_ns: u64) {
-    let k = key(inode);
-    let mut g = TIMES.lock();
-    let entry = g.entry(k).or_insert(InodeTimes::default());
-    if uid != u32::MAX { entry.uid = uid; }
-    if gid != u32::MAX { entry.gid = gid; }
-    entry.owner_set = true;
-    entry.ctime_ns = now_ns;
-}
-
-#[cfg(not(target_os = "oxide-kernel"))]
+/// No-op (the inode's own `set_owner` records the owner ids). # C: O(1)
 pub fn set_owner(_inode: &crate::InodeRef, _uid: u32, _gid: u32, _now_ns: u64) {}

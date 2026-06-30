@@ -30,7 +30,7 @@ pub fn run() {
     let ctrls = rd("/sys/fs/cgroup/cgroup.controllers");
     line("controllers", trim(&ctrls));
     let mk = match vfs::mount::lookup("/sys/fs/cgroup") {
-        Ok(root) => root.mkdir("selftest", 0o755).is_ok(), Err(_) => false,
+        Ok(root) => root.mkdir("selftest", 0o755, &vfs::CreateCtx::root()).is_ok(), Err(_) => false,
     };
     line("mkdir", if mk { b"ok" } else { b"fail" });
     if let Ok(sc) = vfs::mount::lookup("/sys/fs/cgroup/cgroup.subtree_control") { let _ = sc.write(0, b"+pids"); }
