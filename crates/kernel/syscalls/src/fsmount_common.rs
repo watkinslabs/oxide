@@ -78,12 +78,21 @@ fn lookup_bdev(source: &str) -> Option<Arc<dyn block::BlockDevice>> {
 /// at CMD_CREATE: `fsconfig("source",dev)` sets `fc.source`, the
 /// `FS_REQUIRES_DEV` gate (fs_context `vfs_get_tree`) enforces a source, and
 /// `LegacyFsContextOps::get_tree` → `FsType::mount(fc.source(),opts)` → the ext4
-/// ctor opens the same SB `mount_fstype` would (D13/D14 for ext4). tmpfs/ramfs
-/// (bake the mount path into `rel()`), the PseudoFs group (seed the root ino from
-/// the target path), cgroup2/autofs/devtmpfs/devpts/cgroup stay on the
+/// ctor opens the same SB `mount_fstype` would (D13/D14 for ext4). The PseudoFs
+/// group (securityfs/efivarfs/pstore/bpf/configfs/fusectl/mqueue/hugetlbfs) is
+/// now converted too: its root ino is the fixed Linux pseudo-fs root ino
+/// (`kernfs::PSEUDO_ROOT_INO` = 1), no longer seeded from the target path, so it
+/// realizes byte-identically at CMD_CREATE. tmpfs/ramfs (bake the mount path
+/// into `rel()`), cgroup2/autofs/devtmpfs/devpts/cgroup stay on the
 /// `mount_fstype` fallback. # C: O(1)
 pub(crate) fn fstype_converted(t: &str) -> bool {
-    matches!(t, "proc" | "sysfs" | "debugfs" | "tracefs" | "ext4")
+    matches!(t,
+        "proc" | "sysfs" | "debugfs" | "tracefs" | "ext4"
+        // PseudoFs group: now target-independent (fixed Linux root ino = 1,
+        // `kernfs::PSEUDO_ROOT_INO`), so the SB realized at fsconfig(CMD_CREATE)
+        // is byte-identical to mount_fstype's graft (D13/D14).
+        | "securityfs" | "efivarfs" | "pstore" | "bpf"
+        | "configfs" | "fusectl" | "mqueue" | "hugetlbfs")
 }
 
 // `s_magic` (linux/magic.h) for the simple kernfs/ramfs-class api-fses that
@@ -180,8 +189,8 @@ fn register_filesystems() {
     // magic + dir root). Register failure surfaces as errno (strict).
     macro_rules! pseudo { ($name:literal, $magic:expr) => {
         let _ = register_fs(FsType::new($name, $magic, FsFlags::empty(),
-            Box::new(|_s: &str, target: &str, _d: &str| -> R {
-                let fs: Arc<dyn vfs::fs::FileSystem> = kernfs::PseudoFs::new($name, $magic, target);
+            Box::new(|_s: &str, _t: &str, _d: &str| -> R {
+                let fs: Arc<dyn vfs::fs::FileSystem> = kernfs::PseudoFs::new($name, $magic);
                 Ok(MountSpec { fs, bind_root: None, strict: true })
             })));
     }; }
