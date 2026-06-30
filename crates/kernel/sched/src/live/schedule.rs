@@ -26,6 +26,7 @@
 // kthread→user pair; wired via `MmuOps::activate(next.mm.root_pa)`.
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use hal::{Context, MmuOps};
@@ -297,7 +298,26 @@ pub unsafe fn install_default_runqueue() {
     // preempt_enable hook is read at every decrement-to-zero with
     // appropriate barriers via the count atomic.
     unsafe { crate::preempt::set_schedule_hook(schedule_hook_trampoline); }
+    // Capture-first SMP spin-stall probe (prod-inert: only with `debug-smp`).
+    // Self-installs here so a `debug-smp` build needs no kernel wiring.
+    #[cfg(feature = "debug-smp")]
+    sync::set_spin_warn_hook(smp_spin_warn);
     crate::register_timers(); // sched self-registers cpu.max + load-balance timers
+}
+
+/// `debug-smp` spin-stall reporter installed into `sync`: emit a [SMP-STALL]
+/// banner naming the contended lock CLASS rank, the spin count, and this CPU —
+/// so a -smp boot that still wedges names the vertex the conservative wake-path
+/// fix missed. # C: O(1)
+#[cfg(feature = "debug-smp")]
+fn smp_spin_warn(rank: u16, iters: u64) {
+    klog::write_raw(b"[SMP-STALL] lock_class_rank=");
+    klog::write_dec_u64(rank as u64);
+    klog::write_raw(b" spin_iters=");
+    klog::write_dec_u64(iters);
+    klog::write_raw(b" cpu=");
+    klog::write_dec_u64(sched_current_cpu() as u64);
+    klog::write_raw(b"\n");
 }
 
 /// Trampoline matching the `unsafe fn()` shape `crate::preempt`
@@ -391,6 +411,28 @@ pub unsafe fn schedule() {
     let flags = unsafe { irq_save_disable() };
     let now = now_ns();
 
+    // Drain deferred wakeups handed to us by remote / IRQ-context wakers (Linux
+    // `sched_ttwu_pending`). Each was atomically claimed Sleeping→Runnable by
+    // the waker; we place it on OUR runqueue now (IRQ-masked here, so the
+    // wake_list leaf lock is taken consistently IF=0). A task still finishing
+    // its switch-OFF on another CPU (`on_cpu` set) is re-deferred rather than
+    // enqueued, so it is never run on two CPUs — the recheck runs BEFORE we take
+    // `inner`, so the wake_list leaf is never nested under the rq lock.
+    let me_cpu = sched_current_cpu() as u32;
+    let mut ready: Vec<Arc<Task>> = Vec::new();
+    let mut redeferred = false;
+    for t in super::ttwu::wake_list_drain(me_cpu) {
+        if t.on_cpu.load(Ordering::Acquire) {
+            super::ttwu::wake_list_push(me_cpu, t); // re-defer; placed on a later drain
+            redeferred = true;
+        } else {
+            ready.push(t);
+        }
+    }
+    // A re-deferred task needs another schedule to retry; the periodic tick is
+    // the backstop, but flag need_resched so an IRQ-exit re-enters promptly.
+    if redeferred { crate::preempt::set_need_resched(); }
+
     // Pick next under the rq lock. B1 (SMP): the lock is HELD across the
     // switch — not dropped after the pick — so no concurrent CPU observes a
     // half-updated rq (current swapped but the task not yet switched). The
@@ -398,6 +440,12 @@ pub unsafe fn schedule() {
     // `finish_lock_switch`). `inner` is kept alive and `mem::forget`-ed just
     // before the switch; the no-switch early return drops it normally.
     let mut inner = rq.inner.lock();
+    // Place the drained deferred wakeups now that we hold the rq lock (sleeper
+    // credit per F211, same as the ttwu local fast path).
+    for t in ready {
+        t.set_vruntime_to_floor(inner.cfs.min_vruntime());
+        inner.enqueue(t);
+    }
     {
         // SAFETY: rq.current is non-null after install_global.
         let prev_ref = unsafe { rq.current_ref() };

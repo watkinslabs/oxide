@@ -11,6 +11,9 @@ path = "src/lib.rs"
 # Enables `HostedCpuLocal` (uses std::thread_local). Off in kernel
 # builds; on for hosted-test consumers (slab, sched, klog tests).
 hosted = []
+# Capture-first SMP spin-stall probe in `Spinlock::lock()`. Prod-inert
+# (compiled out unless on). Kernel forwards via `sched/debug-smp`.
+debug-smp = []
 
 [dependencies]
 hal = { path = "../../arch/hal" }

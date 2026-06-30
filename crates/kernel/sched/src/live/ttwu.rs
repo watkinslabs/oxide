@@ -6,10 +6,48 @@
 // idle CPUs at wake time so the idle AP picks it up without waiting a tick.
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use crate::{Task, TaskState};
 use super::runqueue::global_for;
+use sync::{Spinlock, Runqueue as RunqueueClass};
+
+/// Per-CPU deferred-wake list (Linux `ttwu_queue` / `wake_list` +
+/// `sched_ttwu_pending`). A waker that must NOT place a task directly on a
+/// runqueue pushes it here and IPIs the target; the target enqueues it on its
+/// next `schedule()` drain. Used when:
+///   - the task is still finishing its switch-OFF on another CPU (`on_cpu`) —
+///     a direct enqueue could run it on two CPUs at once; or
+///   - the target is a REMOTE CPU — a waker must not take a peer's rq lock; or
+///   - the waker is the timer ISR (IF=0) — it must never block on a contended
+///     rq lock (the BSP-tick freeze).
+/// Leaf lock: pushed/drained briefly, NEVER held across the rq inner lock or a
+/// context switch. Reuses the `Runqueue` class but is never nested with `inner`
+/// (drain pulls the Vec out, releases, then `schedule()` takes `inner`).
+struct WakeCell(Spinlock<Vec<Arc<Task>>, RunqueueClass>);
+const WAKE_EMPTY: WakeCell = WakeCell(Spinlock::new(Vec::new()));
+static WAKE_LISTS: [WakeCell; cpu::MAX_CPUS] = [WAKE_EMPTY; cpu::MAX_CPUS];
+
+/// Push `task` onto CPU `cpu`'s deferred-wake list. Caller IPIs `cpu` after.
+/// # C: O(1) amortized
+pub fn wake_list_push(cpu: u32, task: Arc<Task>) {
+    let i = cpu as usize;
+    if i >= cpu::MAX_CPUS { return; }
+    WAKE_LISTS[i].0.lock().push(task);
+}
+
+/// Drain CPU `cpu`'s deferred-wake list (Linux `sched_ttwu_pending`). Called
+/// from `schedule()` on that CPU. Returns the claimed tasks (empty fast path
+/// allocates nothing).
+/// # C: O(deferred)
+pub fn wake_list_drain(cpu: u32) -> Vec<Arc<Task>> {
+    let i = cpu as usize;
+    if i >= cpu::MAX_CPUS { return Vec::new(); }
+    let mut g = WAKE_LISTS[i].0.lock();
+    if g.is_empty() { return Vec::new(); }
+    core::mem::take(&mut *g)
+}
 
 /// This CPU's index (gs:0 / TPIDR). Host build → 0.
 #[inline]
@@ -114,41 +152,82 @@ pub fn relocate_for_affinity(task: &Arc<Task>, allowed: u64) {
     }
 }
 
+/// Shared `try_to_wake_up` body. `force_defer` routes placement through the
+/// target's wake_list even when local+settled (the timer-ISR contract: never
+/// take an rq lock from IF=0). See [`try_to_wake_up`] / [`ttwu_deferred`].
+///
+/// Claim-then-place (Linux ttwu): an atomic `Sleeping → Runnable` CAS claims
+/// the wake (exactly one waker wins; losers / already-runnable / exiting tasks
+/// return false), THEN the task is placed. This replaces the old "spin IF=0 on
+/// `on_cpu`, then re-check state under the target rq lock" — that unbounded
+/// cross-CPU spin AB-BA'd against a waker-held subsystem lock (the -smp hang).
+/// # SAFETY: caller is a wake site (process/IRQ ctx); the Arc keeps `task`
+/// alive; preempt discipline per the wake path.
+/// # C: O(N_cpus + log N)
+unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
+    if task.cas_state(TaskState::Sleeping, TaskState::Runnable).is_err() { return false; }
+    // Explicit wake clears any SO_*TIMEO deadline so the scanner doesn't re-rouse it.
+    task.wakeup_deadline_ns.store(0, Ordering::Release);
+    let me = this_cpu();
+    let target = select_task_rq(&task);
+    // Defer to the target's wake_list (Linux `ttwu_queue_wakelist`) when we must
+    // not place directly: the task is still switching OFF elsewhere (`on_cpu`),
+    // the target is remote, or the caller forced it (timer ISR). The target
+    // drains + enqueues it once its own switch has settled (`schedule()` →
+    // `wake_list_drain`), so a task is never run on two CPUs and a waker never
+    // blocks IF=0 on a peer's rq lock.
+    if force_defer || target != me || task.on_cpu.load(Ordering::Acquire) {
+        // Pick a real, installed CPU to own the deferred task; fall back to local.
+        // SAFETY: global_for reads installed per-CPU runqueue slots; None unless online.
+        let tcpu = if unsafe { global_for(target) }.is_some() { target }
+                   else if unsafe { global_for(me) }.is_some() { me }
+                   else { wake_list_push(target, task); return true; };
+        wake_list_push(tcpu, task);
+        resched_curr(tcpu);
+        return true;
+    }
+    // Local, settled (`on_cpu == false`, target == this CPU): direct enqueue —
+    // the UP fast path, behaviourally identical to the pre-SMP code. The task
+    // is not on any rq (just claimed Runnable) so nobody can pick it / set its
+    // `on_cpu` until we enqueue; the `on_cpu == false` check above therefore
+    // can't race a fresh switch-on.
+    // SAFETY: global_for(me) reads this CPU's own installed runqueue slot.
+    if let Some(rq) = unsafe { global_for(me) } {
+        {
+            let mut inner = rq.inner.lock();
+            // Sleeper credit on wake (F211).
+            task.set_vruntime_to_floor(inner.cfs.min_vruntime());
+            inner.enqueue(task);
+            rq.nr_running.store(inner.nr_running(), Ordering::Release);
+        }
+        resched_curr(me);
+    }
+    true
+}
+
 /// Linux `try_to_wake_up`: place a Sleeping `task` Runnable on its selected
 /// CPU's runqueue and make that CPU reschedule. Returns true on a genuine
 /// Sleeping→Runnable transition; false if the task was already runnable /
-/// exiting (a racing waker won, or it's a stale wait-list entry). The target
-/// rq's lock is taken cross-CPU (B1 made the switch hold rq->lock so a remote
-/// pick never observes a half-updated rq).
+/// exiting (a racing waker won, or it's a stale wait-list entry). Remote /
+/// still-`on_cpu` placements defer through the per-CPU wake_list.
 /// # SAFETY: caller is a wake site (process/IRQ ctx); the Arc keeps `task`
 /// alive; preempt discipline per the wake path.
 /// # C: O(N_cpus + log N)
 pub unsafe fn try_to_wake_up(task: Arc<Task>) -> bool {
-    if task.state() != TaskState::Sleeping { return false; }
-    // SMP on_cpu handshake (Linux `while (p->on_cpu) cpu_relax()`): the task
-    // may still be finishing its switch-OFF on another CPU (its registers not
-    // yet saved). Wait until it has truly stopped before we place it on a
-    // runqueue, or it could be picked + run on two CPUs at once. On UP this is
-    // already false (this CPU cleared it when it switched off the task).
-    while task.on_cpu.load(Ordering::Acquire) { core::hint::spin_loop(); }
-    let target = select_task_rq(&task);
-    // SAFETY: global_for(target) reads the per-CPU runqueue slot; sound for any
-    // index, returns None unless that CPU installed its rq (online + scheduling).
-    let rq = match unsafe { global_for(target) } { Some(r) => r, None => return false };
-    {
-        let mut inner = rq.inner.lock();
-        // Re-check under the rq lock — another CPU's waker may have raced us
-        // (Linux's ttwu re-reads p->state under the lock).
-        if task.state() != TaskState::Sleeping { return false; }
-        task.set_state(TaskState::Runnable);
-        // Explicit wake clears any SO_*TIMEO deadline so the scanner doesn't
-        // also re-rouse it.
-        task.wakeup_deadline_ns.store(0, Ordering::Release);
-        // Sleeper credit on wake (F211).
-        task.set_vruntime_to_floor(inner.cfs.min_vruntime());
-        inner.enqueue(task);
-        rq.nr_running.store(inner.nr_running(), Ordering::Release);
-    }
-    resched_curr(target);
-    true
+    // SAFETY: wake-site context; the Arc keeps `task` alive across placement.
+    unsafe { ttwu_inner(task, false) }
+}
+
+/// Timer-ISR / IRQ-context wake (Linux ttwu via `wake_list`, always deferred):
+/// claims the Sleeping→Runnable transition, then hands placement to the
+/// target's wake_list + a resched, NEVER taking an rq inner lock from the
+/// caller. This is the wake form for the timer tick scanner (`tick_deadline`)
+/// so a tick never blocks IF=0 on a contended rq lock (the BSP-tick freeze) and
+/// never enqueues a task still finishing its switch-off elsewhere (run-on-2-CPUs
+/// corruption).
+/// # SAFETY: wake-site (timer ISR) context; the Arc keeps `task` alive.
+/// # C: O(N_cpus)
+pub unsafe fn ttwu_deferred(task: Arc<Task>) -> bool {
+    // SAFETY: see try_to_wake_up; force_defer avoids any rq-lock acquire here.
+    unsafe { ttwu_inner(task, true) }
 }
