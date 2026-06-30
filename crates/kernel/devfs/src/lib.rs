@@ -253,6 +253,36 @@ mod fs_tests {
         }
     }
 
+    /// D17: with the ext4 overlay-union flipped OFF, the `/dev` listing must
+    /// still contain the full expected node set purely from `device_add` + the
+    /// boot `register`/`register_dir` sources (the rootfs ships ZERO `/dev`
+    /// nodes, so the overlay merged nothing). readdir `/dev` and assert every
+    /// devfs-owned node/mountpoint dir is present.
+    #[test]
+    fn dev_listing_complete_without_overlay() {
+        drv::set_devtmpfs_hook(add_device_node);
+        crate::boot::populate_defaults();
+        // Collect the `/dev` directory listing (overlay is off — no adapter is
+        // installed in the hosted test, and the root flag is now false).
+        let dev = lookup("/dev").expect("/dev dir exists");
+        let mut names: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
+        struct Collect<'a>(&'a mut alloc::vec::Vec<alloc::string::String>);
+        impl<'a> vfs::DirEmit for Collect<'a> {
+            fn emit(&mut self, name: &str, _ino: u64, _d: vfs::FileType, _next: u64) -> bool {
+                self.0.push(alloc::string::String::from(name)); true
+            }
+        }
+        let mut actor = Collect(&mut names);
+        let mut ctx = vfs::DirContext::new(0, &mut actor);
+        dev.readdir(&mut ctx).expect("readdir /dev");
+        // mem char devices + kmsg (device_add), autofs (register), the std fd
+        // symlinks (register), and the mount-point dirs (register_dir).
+        for want in ["null", "zero", "full", "kmsg", "random", "urandom", "autofs",
+                     "stdin", "stdout", "stderr", "fd", "shm", "mqueue", "pts"] {
+            assert!(names.iter().any(|n| n == want), "/dev/{} present, got {:?}", want, names);
+        }
+    }
+
     /// Stage B: the `DEVTMPFS_HOOK` target mints `/dev/<name>` for both a
     /// `dev_t`-synthesised block node and a factory-supplied bespoke node.
     #[test]
