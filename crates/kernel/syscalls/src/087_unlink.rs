@@ -50,7 +50,12 @@ pub fn sys_unlink(args: &SyscallArgs) -> i64 {
         Ok(())  => {
             unlink_unix_socket_path(&p);
             match victim {
-                Some(d) => { vfs::dcache::d_unlink(&d); }
+                Some(d) => {
+                    // FAN_DELETE_SELF / IN_DELETE_SELF on the victim before its
+                    // alias is torn down (Linux fsnotify_unlink → fsnotify_inoderemove).
+                    if let Some(ino) = d.inode() { ::fs::inotify::fire_delete_self(&ino); }
+                    vfs::dcache::d_unlink(&d);
+                }
                 None    => crate::pathresolve::d_delete_path(&p),
             }
             0

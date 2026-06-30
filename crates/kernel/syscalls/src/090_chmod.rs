@@ -24,5 +24,8 @@ pub fn sys_chmod(args: &SyscallArgs) -> i64 {
         }
     }
     let (inode, mnt_id) = match resolve_path_mnt(AT_FDCWD, args.a0, true) { Ok(p) => p, Err(rv) => return rv };
-    do_chmod(&inode, mnt_id, args.a1 as u16)
+    let rc = do_chmod(&inode, mnt_id, args.a1 as u16);
+    // FAN_ATTRIB / IN_ATTRIB on a successful metadata change (Linux fsnotify_change).
+    if rc == 0 { ::fs::inotify::fire_attrib(&inode); }
+    rc
 }
