@@ -267,6 +267,28 @@ impl PseudoDir {
         let _ = dir;
     }
 
+    /// Create the dir chain `path`; the FINAL dir uses `overlay` (and its
+    /// future children inherit it) instead of inheriting the parent flag.
+    /// Lets ONE subtree (the rootfs `/etc` overlay, D19) keep merging ext4
+    /// entries while the rest of the tree (devtmpfs `/dev`, D17) does not.
+    /// MUST be called before any other creation of the final component (an
+    /// already-present dir keeps its existing flag — `overlay` is immutable
+    /// per dir). Intermediate dirs inherit the parent flag. # C: O(components)
+    pub fn ensure_overlay_dir(self: &Arc<PseudoDir>, path: &str, overlay: bool) {
+        let comps = components(path);
+        if comps.is_empty() { return; }
+        let mut dir = Arc::clone(self);
+        for c in &comps[..comps.len() - 1] { dir = dir.child_dir(c); }
+        let last = comps[comps.len() - 1];
+        let mut g = dir.children.lock();
+        if matches!(g.get(last), Some(PseudoEntry::Dir(_))) { return; }
+        let mut cp = dir.path.clone();
+        cp.push('/');
+        cp.push_str(last);
+        let d = PseudoDir::child_at(cp, dir.fsid, overlay, dir.sb_weak());
+        g.insert(String::from(last), PseudoEntry::Dir(d));
+    }
+
     /// Resolve `full_path` from this root. A leaf mid-path → `None`; a dir as
     /// the final component → the dir; the empty path → this root. (= old
     /// `tree::lookup`.) # C: O(depth)
