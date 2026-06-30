@@ -114,7 +114,8 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // NR_NAME_TO_HANDLE_AT moved to a real impl (syscalls/handle.rs):
         // systemd's running_in_chroot() FID-compares /proc/1/root vs /;
         // ENOSYS forced a fallback that wrongly froze PID1.
-        | NR_OPEN_BY_HANDLE_AT
+        // NR_OPEN_BY_HANDLE_AT moved to a real impl (D47,
+        // syscalls/304_open_by_handle_at.rs): mount_fd -> sb -> ilookup(ino).
         // OPENAT2 / FACCESSAT2 aliased to openat / faccessat in PR-M.
         // Modern mount API moved to real (admit) impls in P29a — fsopen/
         // fsconfig/fsmount/fspick/open_tree/move_mount/mount_setattr return
