@@ -32,6 +32,11 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_OWNER_TID: i32 = 0; const F_OWNER_PID: i32 = 1; const F_OWNER_PGRP: i32 = 2;
     // F_*LEASE / F_NOTIFY (Linux fcntl.h, asm-generic).
     const F_SETLEASE: u64 = 1024; const F_GETLEASE: u64 = 1025; const F_NOTIFY: u64 = 1026;
+    // F_{GET,SET}_RW_HINT + the per-file variants (Linux fcntl.h). arg is a
+    // pointer to a u64 RWH_WRITE_LIFE_* value (NOT_SET=0 … EXTREME=5).
+    const F_GET_RW_HINT: u64 = 1035; const F_SET_RW_HINT: u64 = 1036;
+    const F_GET_FILE_RW_HINT: u64 = 1037; const F_SET_FILE_RW_HINT: u64 = 1038;
+    const RWH_WRITE_LIFE_EXTREME: u64 = 5;
     // Lease types (== the l_type record-lock values): read / write / unlock.
     const F_RDLCK: i32 = 0; const F_WRLCK: i32 = 1; const F_UNLCK: i32 = 2;
     // dnotify F_NOTIFY DN_* event bits + DN_MULTISHOT (Linux fcntl.h).
@@ -166,11 +171,10 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         // file description — F_RDLCK / F_WRLCK, or F_UNLCK when none.
         F_GETLEASE => file.lease() as i64,
         // F_SETLEASE (Linux `do_fcntl_add_lease`): take/drop a read/write lease.
-        // Only regular files may hold a lease (EINVAL otherwise); a write lease
-        // needs the fd to be the sole opener — that conflict check + the
-        // lease-break delivery are the lease-manager follow-up, so this validates
-        // the type and records it (F_UNLCK drops). EBADF-class checks already
-        // passed (fd resolved). Returns 0 on success.
+        // Only regular files may hold a lease (EINVAL otherwise). Records the
+        // type AND indexes the holder in the lease registry so a later
+        // conflicting open can find + signal it (`break_lease`). EBADF-class
+        // checks already passed (fd resolved). Returns 0 on success.
         F_SETLEASE => {
             let ty = arg as i32;
             if !matches!(ty, F_RDLCK | F_WRLCK | F_UNLCK) {
@@ -180,14 +184,28 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
                 return -(Errno::Einval.as_i32() as i64);
             }
             file.set_lease(ty);
+            // F_UNLCK drops the registry entry; otherwise index it. Ensure a SIGIO
+            // target + delivery hook exist so the lease-break signal lands even
+            // without a prior F_SETOWN — default `f_owner` to the holder process
+            // (Linux delivers via the file's fown, defaulting to the opener).
+            if ty == F_UNLCK {
+                vfs::file::lease_unregister(&file);
+            } else {
+                if file.owner.load(core::sync::atomic::Ordering::Acquire) == 0 {
+                    let tgid = cur.tgid.load(core::sync::atomic::Ordering::Acquire) as i32;
+                    file.f_setown(tgid, &crate::pathresolve::current_cred());
+                }
+                sched::live::sigpend::install_sigio_hook();
+                vfs::file::lease_register(&file);
+            }
             0
         }
         // F_NOTIFY (Linux `fcntl_dirnotify`, dnotify): arm a directory-change
         // watch. Only a directory fd is valid (ENOTDIR otherwise). `arg == 0`
-        // clears the watch; otherwise the DN_* mask is validated and stored
-        // (additive in Linux unless DN_MULTISHOT toggles one-shot — recorded
-        // verbatim). The event delivery (dir-mutation -> SIGIO) is the dnotify
-        // follow-up. Returns 0 on success.
+        // clears the watch; otherwise the DN_* mask is validated and stored,
+        // and the fd is indexed in the dnotify registry so a dir mutation
+        // (create/unlink/rename/attrib) can find + signal it. Linux F_NOTIFY is
+        // additive (OR-in) unless arg==0 clears; DN_MULTISHOT makes it sticky.
         F_NOTIFY => {
             if !matches!(file.inode().file_type(), vfs::FileType::Directory) {
                 return -(Errno::Enotdir.as_i32() as i64);
@@ -196,7 +214,38 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             if mask != 0 && (mask & !(DN_VALID | DN_MULTISHOT)) != 0 {
                 return -(Errno::Einval.as_i32() as i64);
             }
-            file.set_dnotify(mask);
+            if mask == 0 {
+                file.set_dnotify(0);
+                vfs::file::dnotify_unregister(&file);
+            } else {
+                // Additive: OR the new events onto any existing watch (Linux
+                // `fcntl_dirnotify` merges into the existing `dnotify_struct`).
+                file.set_dnotify(file.dnotify() | mask);
+                if file.owner.load(core::sync::atomic::Ordering::Acquire) == 0 {
+                    let tgid = cur.tgid.load(core::sync::atomic::Ordering::Acquire) as i32;
+                    file.f_setown(tgid, &crate::pathresolve::current_cred());
+                }
+                sched::live::sigpend::install_sigio_hook();
+                vfs::file::dnotify_register(&file);
+            }
+            0
+        }
+        // F_GET_RW_HINT / F_GET_FILE_RW_HINT (Linux `fcntl_rw_hint`): write the
+        // stored RWH_WRITE_LIFE_* hint to the u64 the caller points `arg` at.
+        F_GET_RW_HINT | F_GET_FILE_RW_HINT => {
+            if let Err(rv) = validate_user_buf(arg, 8, 8) { return rv; }
+            // SAFETY: arg validated for 8 B below USER_VA_END; CPL=0 writes through caller's AS.
+            unsafe { core::ptr::write_unaligned(arg as *mut u64, file.rw_hint()); }
+            0
+        }
+        // F_SET_RW_HINT / F_SET_FILE_RW_HINT: read the u64 hint, reject any value
+        // above RWH_WRITE_LIFE_EXTREME (Linux `rw_hint_valid`), then store it.
+        F_SET_RW_HINT | F_SET_FILE_RW_HINT => {
+            if let Err(rv) = validate_user_buf(arg, 8, 8) { return rv; }
+            // SAFETY: arg validated for 8 B below USER_VA_END; CPL=0 reads through caller's AS.
+            let hint = unsafe { core::ptr::read_unaligned(arg as *const u64) };
+            if hint > RWH_WRITE_LIFE_EXTREME { return -(Errno::Einval.as_i32() as i64); }
+            file.set_rw_hint(hint);
             0
         }
         F_SETLK | F_SETLKW | F_GETLK |
