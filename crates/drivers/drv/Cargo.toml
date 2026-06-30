@@ -11,3 +11,8 @@ path = "src/lib.rs"
 hal  = { path = "../../arch/hal" }
 klog = { path = "../../shared/klog" }
 sync = { path = "../../shared/sync" }
+# device_add (Stage B) needs `vfs::InodeRef` to type the `/dev`-node factory
+# the devtmpfs hook carries. vfs is no_std + does NOT depend on drv/devfs
+# (acyclic); the forbidden edge is drv->devfs (the cgroup->devfs->sched cycle),
+# which the DEVTMPFS_HOOK indirection avoids.
+vfs  = { path = "../../kernel/vfs" }
