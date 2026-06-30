@@ -32,6 +32,11 @@ pub mod signum;
 mod sigqueue;
 mod sched_enc;
 
+// RCU API (`06§3.5`). Read side = preempt aliases here; write/grace side
+// re-exported from `sync::rcu` so consumers have one `sched`-level surface.
+pub use preempt::{rcu_read_lock, rcu_read_unlock};
+pub use sync::{call_rcu, note_qs as rcu_note_qs, rcu_barrier, rcu_process_callbacks, synchronize_rcu};
+
 pub use cfs::CfsRunqueue;
 pub use cmdline::argv_to_cmdline;
 pub use rt::{RtRunqueue, RT_PRIO_COUNT};
@@ -161,7 +166,19 @@ pub fn register_timers() {
     // at the bandwidth/balance cadence would be needlessly aggressive.
     const EXPIRE_P: u64 = 1_000_000_000; // 1 s
     timer::register_periodic(EXPIRE_P, mount_expiry_tick);
+    // RCU callback drain (`06§3.5`) — bounded fallback drainer. The PRIMARY
+    // drain is `ksoftirqd` (process context); this tick guarantees forward
+    // progress + leak-safety if ksoftirqd is starved. Cheap when idle.
+    const RCU_P: u64 = 10_000_000; // 10 ms
+    timer::register_periodic(RCU_P, rcu_drain_tick);
 }
+
+/// Timer-tick RCU drain (`06§3.5`). Advances the grace machine + runs any
+/// callbacks whose grace period elapsed. `try_lock`'d internally, so it is
+/// a no-op if a process-context drainer holds the drain state.
+/// # C: O(ready callbacks)
+#[cfg(target_os = "oxide-kernel")]
+fn rcu_drain_tick(_now_ns: u64) { sync::rcu_process_callbacks(); }
 
 /// Boot anchor / idle loop: `schedule()` (so an IRQ-woken task runs) then
 /// hlt/wfi until the next IRQ. The kernel jumps here at the end of boot.
@@ -181,6 +198,10 @@ pub fn halt_forever() -> ! {
                 continue; // pulled work — loop back so schedule() runs it
             }
         }
+        // RCU quiescent state (`06§3.5`): an idle CPU holds no read-side
+        // lock — entering idle is a QS (Linux `rcu_idle_enter`). One atomic
+        // bump before parking lets a grace period complete on the UP runtime.
+        sync::note_qs();
         #[cfg(target_arch = "x86_64")] hal_x86_64::halt();
         #[cfg(target_arch = "aarch64")] hal_aarch64::halt();
     }

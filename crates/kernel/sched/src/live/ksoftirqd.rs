@@ -47,6 +47,11 @@ fn this_cpu() -> usize {
 extern "C" fn ksoftirqd(arg: usize) -> ! {
     let my_cpu = if arg < MAX_CPUS { arg } else { 0 };
     loop {
+        // RCU callback drain (`06§3.5`) — process-context PRIMARY drainer.
+        // Runs deferred frees (e.g. dentry __d_free) whose grace period has
+        // elapsed. Process context, so callbacks that take sleeping-style
+        // locks (iput → icache) are safe here.
+        sync::rcu_process_callbacks();
         if softirq::pending() {
             // Linux run_ksoftirqd: drain in process context via the bh-accounted
             // entry (in_serving_softirq marked, in_interrupt re-entry guard).
