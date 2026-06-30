@@ -21,7 +21,7 @@ static SYS_ROOT: Spinlock<Option<Arc<PseudoDir>>, LockClass> = Spinlock::new(Non
 pub fn sys_root() -> Arc<PseudoDir> {
     let mut g = SYS_ROOT.lock();
     if let Some(r) = g.as_ref() { return Arc::clone(r); }
-    let r = PseudoDir::new_root(kernfs::dir_ino("/sys"), SYSFS_FSID, false);
+    let r = PseudoDir::new_root(kernfs::dir_ino("/sys"), SYSFS_FSID);
     *g = Some(Arc::clone(&r));
     r
 }

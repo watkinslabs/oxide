@@ -24,17 +24,16 @@ use vfs::InodeRef;
 static ROOTS: Spinlock<BTreeMap<u64, Arc<PseudoDir>>, TaskListClass> = Spinlock::new(BTreeMap::new());
 
 /// Get-or-create the root `PseudoDir` for namespace `ns` (path = "").
-/// D17: the root no longer blanket-overlays the ext4 rootfs (`overlay =
-/// false`). `/dev` is now FULLY populated by `drv::device_add` + the boot
-/// `register`/`register_dir` nodes (the rootfs image ships ZERO `/dev` device
-/// nodes, so the old ext4-overlay-union under `/dev` merged an empty dir). The
-/// `/etc` rootfs overlay (D19, still deferred — its 7 runtime files are not in
-/// the rootfs image) is preserved per-subtree by `register_overlay_dir`, NOT
-/// the root flag, so this change touches ONLY `/dev`. # C: O(log ns)
+/// D17/D19: devfs no longer overlays the ext4 rootfs at all. `/dev` is FULLY
+/// populated by `drv::device_add` + the boot `register`/`register_dir` nodes
+/// (the rootfs image ships ZERO `/dev` device nodes), and `/etc`'s 7 former
+/// runtime-synthetic files now ship as real rootfs ext4 files
+/// (`tools/xtask/src/rootfs_etc.rs`), so the directory-overlay machinery is
+/// gone. # C: O(log ns)
 fn ns_root(ns: u64) -> Arc<PseudoDir> {
     let mut g = ROOTS.lock();
     if let Some(r) = g.get(&ns) { return Arc::clone(r); }
-    let r = PseudoDir::new_root(0x5000_0001, crate::DEVFS_FSID, false);
+    let r = PseudoDir::new_root(0x5000_0001, crate::DEVFS_FSID);
     g.insert(ns, Arc::clone(&r));
     r
 }
@@ -48,14 +47,6 @@ pub fn register(ns: u64, full_path: &str, inode: InodeRef) {
 /// registered leaves, e.g. `/dev/shm`, `/dev/pts`). # C: O(components)
 pub fn register_dir(ns: u64, path: &str) {
     ns_root(ns).ensure_dir_path(path);
-}
-
-/// Create `path` as an ext4-overlay subtree (its readdir merges the on-disk
-/// rootfs entries). D19: keeps the `/etc` overlay merging real rootfs files
-/// while the root (and `/dev`) no longer overlays (D17). Call before any other
-/// creation of `path`'s final component. # C: O(components)
-pub fn register_overlay_dir(ns: u64, path: &str) {
-    ns_root(ns).ensure_overlay_dir(path, true);
 }
 
 /// Resolve `full_path` in namespace `ns`. Leaf mid-path → `None`; dir as the

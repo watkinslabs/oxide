@@ -23,7 +23,7 @@ static PROC_REG: Spinlock<Option<Arc<PseudoDir>>, LockClass> = Spinlock::new(Non
 pub fn proc_reg() -> Arc<PseudoDir> {
     let mut g = PROC_REG.lock();
     if let Some(r) = g.as_ref() { return Arc::clone(r); }
-    let r = PseudoDir::new_root(kernfs::dir_ino("/proc"), PROCFS_FSID, false);
+    let r = PseudoDir::new_root(kernfs::dir_ino("/proc"), PROCFS_FSID);
     *g = Some(Arc::clone(&r));
     r
 }

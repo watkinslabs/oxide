@@ -179,9 +179,9 @@ pub fn register_static_files() {
     // (address/mtu/operstate/type/flags/carrier/speed/duplex/ifindex/...).
     // Replaces the prior hard-coded /sys/class/net/lo/* constants.
     sysfs::init();
-    // The `/etc/*` overlay (os-release/machine-id/passwd/group/hosts/…) is
-    // devfs's own overlay subtree now (D1d) — registered by
-    // `devfs::boot::register_etc_overlay`, NOT procfs. procfs owns only /proc.
+    // `/etc/*` (os-release/machine-id/passwd/group/hosts/services/…) ships as
+    // real rootfs ext4 files (D19, `tools/xtask/src/rootfs_etc.rs`) — no devfs
+    // overlay, NOT procfs. procfs owns only /proc.
     // /proc/self/auxv: Linux passes 16-byte AT_NULL-terminated entry pairs.
     // glibc/musl getauxval falls back to this file when the at-start auxv
     // vector wasn't preserved. We hand back a minimal AT_NULL-only blob
