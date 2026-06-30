@@ -432,9 +432,12 @@ fn self_fd_lookup(name: &str) -> KResult<InodeRef> {
         .clone();
     let file = fdt.get(fd).map_err(|_| VfsError::Enoent)?;
     // Linux: /proc/<pid>/fd/<n> readlink → file's ABSOLUTE path
-    // (ttyname requires /dev/pts/<n>, not the basename "<n>").
+    // (ttyname requires /dev/pts/<n>, not the basename "<n>"). `/proc/self/fd`
+    // ⇒ tid_opt None (the caller's own fd table), so a walk THROUGH the magic
+    // link jumps to the walker's live fd.
     Ok(crate::proc_links::fd_link_for_path(
         &file.dentry().absolute_path(),
+        None,
         fd,
     ))
 }
