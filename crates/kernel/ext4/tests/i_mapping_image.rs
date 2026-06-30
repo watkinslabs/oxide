@@ -1,12 +1,22 @@
-//! B235 coupling: ext4 regular-file `i_mapping` is the owning mount's shared
-//! per-inode page cache, so two mappers/readers of one inode hit the SAME
-//! cached pages (not a separate per-`InodeFileBacking` cache).
+//! B235 / D8 coupling: ext4 regular-file `i_mapping` is the inode's per-inode
+//! PMM frame store, so the SAME inode (Linux `iget` shared identity) hands
+//! every mapper/reader ONE coherent page cache — two handles read identical
+//! bytes from the SAME backing frame.
+//!
+//! (Before D8 the read path served from the per-mount `Vec` page cache; reads
+//! now serve from the per-inode frame store, so this asserts on the frame
+//! identity, not the legacy `Vec` cache.)
 
 extern crate alloc;
+mod common;
+
+use alloc::string::String;
 use alloc::sync::Arc;
 
-use block::{BlockDevice, BlockOp, BlockRequest, InodeId, MemDisk};
+use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
+use vfs::fs::FileSystem;
+use vfs::SuperBlock;
 
 const IMAGE: &[u8] = include_bytes!("mini.img");
 const SECTOR: u32 = 512;
@@ -23,33 +33,36 @@ fn build_disk() -> Arc<dyn BlockDevice> {
 }
 
 #[test]
-fn two_mappers_share_one_page_cache() {
+fn two_mappers_share_one_inode_page_cache() {
+    common::boot_hosted_pmm();
     let m = ext4::rootfs::Ext4Mount::open(build_disk()).unwrap();
-    let st = m.state();
-    let ino = st.lookup_path(b"/hello.txt").expect("hello.txt");
+    // Back-stamp a SuperBlock so `wrap_file` shares one inode (iget).
+    let fs: Arc<dyn FileSystem> = m.clone();
+    let root = fs.root();
+    let _sb = SuperBlock::for_backend(fs.clone(), root, 0x1234_5678, String::from("ext4"));
 
-    // Two independent VFS wrappers of the SAME inode — modelling two `mmap()`s,
-    // each of which would otherwise own a private `InodeFileBacking` cache.
-    let a = st.wrap_file(ino).expect("wrap a");
-    let b = st.wrap_file(ino).expect("wrap b");
+    let ino = m.state().lookup_path(b"/hello.txt").expect("hello.txt");
+
+    // Two wrappers of the SAME inode — the shared `iget` identity gives ONE
+    // `i_mapping` / one frame store, the coherency guarantee a real mmap relies
+    // on (path lookup → iget → same inode).
+    let a = m.state().wrap_file(ino).expect("wrap a");
+    let b = m.state().wrap_file(ino).expect("wrap b");
+    assert!(Arc::ptr_eq(&a, &b), "iget returns the SAME inode Arc");
+
     let ma = a.i_mapping().expect("ext4 regular file exposes i_mapping");
     let mb = b.i_mapping().expect("ext4 regular file exposes i_mapping");
 
-    // First mapper faults the page in.
+    // Both read the same bytes from the same backing.
     let mut ba = [0u8; 16];
     let na = ma.read_at(0, &mut ba).expect("read a");
     assert!(na > 0, "hello.txt is non-empty");
-    let cached_after_a = st.page_cache.cached_count();
-    assert!(st.page_cache.lookup(InodeId(ino as u64), 0).is_some(),
-        "first read populated the shared cache");
 
-    // Second mapper reads the same offset: it must REUSE the shared page
-    // (no new cache entry) and see identical bytes.
     let mut bb = [0u8; 16];
     let nb = mb.read_at(0, &mut bb).expect("read b");
-    let cached_after_b = st.page_cache.cached_count();
-
     assert_eq!(&ba[..na], &bb[..nb], "both mappers see identical bytes");
-    assert_eq!(cached_after_a, cached_after_b,
-        "second mapper reused the shared cache — no second per-backing page");
+
+    // And both hand out the SAME MAP_SHARED frame for page 0 (one cache).
+    assert_eq!(ma.shared_frame(0), mb.shared_frame(0),
+        "both mappers alias the SAME inode frame — one page cache");
 }

@@ -1,0 +1,193 @@
+//! D8 ext4 frame-backed page-cache coherency, against the real mini.img.
+//!
+//! Proves the three views of one inode (read(2), write(2), MAP_SHARED mmap)
+//! all alias ONE per-inode PMM frame store:
+//!   * read == write: a write(2) is visible to a later read(2).
+//!   * mmap == read:  a store into the MAP_SHARED frame is visible to read(2),
+//!     and read(2)'s page IS the shared frame.
+//!   * writeback persists: a frame mutation flushed by `i_mapping().writeback()`
+//!     survives a remount of the same device.
+//!
+//! All paths run through the SAME inode (`iget` shared identity via a
+//! back-stamped SuperBlock), which is the kernel's coherency guarantee: one
+//! inode → one `i_mapping` → one frame store.
+
+extern crate alloc;
+mod common;
+
+use alloc::string::String;
+use alloc::sync::Arc;
+
+use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
+use sync::TaskList;
+use vfs::fs::FileSystem;
+use vfs::SuperBlock;
+
+const IMAGE: &[u8] = include_bytes!("mini.img");
+const SECTOR: u32 = 512;
+const PG: usize = 4096;
+
+/// A MemDisk preloaded with mini.img; returned as the concrete `Arc<MemDisk>`
+/// so a remount can reopen the SAME backing store (persistence check).
+fn fresh_disk() -> Arc<MemDisk<TaskList>> {
+    let cap = (IMAGE.len() as u64) / (SECTOR as u64);
+    let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
+    let mut req = BlockRequest {
+        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: IMAGE.to_vec(),
+    };
+    disk.submit_sync(&mut req).unwrap();
+    disk
+}
+
+/// Open `disk` as an ext4 mount with a back-stamped SuperBlock so `wrap_file`
+/// returns the SAME inode `Arc` across calls (Linux `iget`). The returned
+/// `Arc<SuperBlock>` MUST be kept alive (the mount holds only a `Weak`).
+fn open_with_sb(disk: Arc<dyn BlockDevice>) -> (Arc<ext4::rootfs::Ext4Mount>, Arc<SuperBlock>) {
+    let m = ext4::rootfs::Ext4Mount::open(disk).unwrap();
+    let fs: Arc<dyn FileSystem> = m.clone();
+    let root = fs.root();
+    let sb = SuperBlock::for_backend(fs.clone(), root, 0x1234_5678, String::from("ext4"));
+    (m, sb)
+}
+
+#[test]
+fn one_inode_two_handles_share_frame_store() {
+    common::boot_hosted_pmm();
+    let (m, _sb) = open_with_sb(fresh_disk());
+    let ino = m.state().lookup_path(b"/hello.txt").expect("hello.txt");
+
+    let a = m.state().wrap_file(ino).expect("wrap a");
+    let b = m.state().wrap_file(ino).expect("wrap b");
+    assert!(Arc::ptr_eq(&a, &b), "iget returns the SAME inode Arc (one frame store)");
+
+    // Both expose the same MAP_SHARED frame for page 0 (one cache).
+    let fa = a.i_mapping().unwrap().shared_frame(0).expect("frame a");
+    let fb = b.i_mapping().unwrap().shared_frame(0).expect("frame b");
+    assert_eq!(fa, fb, "both handles hand out the SAME inode frame");
+}
+
+#[test]
+fn write_is_visible_to_read() {
+    common::boot_hosted_pmm();
+    let (m, _sb) = open_with_sb(fresh_disk());
+    let ino = m.state().lookup_path(b"/hello.txt").expect("hello.txt");
+    let f = m.state().wrap_file(ino).expect("wrap");
+
+    // Overwrite the first bytes in-place (within the existing first block).
+    let pat = b"OXIDE-D8";
+    let n = f.write(0, pat).expect("write");
+    assert_eq!(n, pat.len());
+
+    let mut buf = [0u8; 8];
+    let r = f.read(0, &mut buf).expect("read");
+    assert_eq!(r, pat.len(), "read returns the written length");
+    assert_eq!(&buf, pat, "read(2) observes the write(2) (one coherent cache)");
+}
+
+#[test]
+fn mmap_store_is_visible_to_read_and_shares_the_frame() {
+    common::boot_hosted_pmm();
+    let (m, _sb) = open_with_sb(fresh_disk());
+    let ino = m.state().lookup_path(b"/hello.txt").expect("hello.txt");
+    let f = m.state().wrap_file(ino).expect("wrap");
+
+    // Fault page 0 in for read (resident frame).
+    let mut pre = [0u8; 4];
+    f.read(0, &mut pre).expect("read pre");
+
+    // A MAP_SHARED mapping's frame for page 0.
+    let pa = f.i_mapping().unwrap().shared_frame(0).expect("shared frame");
+    // The read path serves from the SAME frame: store through the frame (what a
+    // userspace mmap write does via the CPU), then read(2) must see it.
+    let pat = [0xDEu8, 0xAD, 0xBE, 0xEF];
+    let base = pmm::setup::frame_ptr(pa).expect("frame_ptr");
+    // SAFETY: pa is the inode's resident page-0 frame; 4-byte write in-bounds.
+    unsafe { core::ptr::copy_nonoverlapping(pat.as_ptr(), base, pat.len()); }
+
+    let mut buf = [0u8; 4];
+    f.read(0, &mut buf).expect("read post");
+    assert_eq!(buf, pat, "read(2) observes the MAP_SHARED store — read IS the shared frame");
+}
+
+#[test]
+fn multipage_frame_read_matches_legacy_and_source_b240() {
+    common::boot_hosted_pmm();
+    let disk = fresh_disk();
+    let dev: Arc<dyn BlockDevice> = disk.clone();
+
+    // A multi-page, non-page-aligned payload: spans several ext4 blocks and >2
+    // pages, with a partial final page (the B240 short-fill-at-EOF case).
+    let total = 2 * PG + 1234;
+    let mut pat = alloc::vec![0u8; total];
+    for (i, b) in pat.iter_mut().enumerate() { *b = (i as u32).wrapping_mul(2654435761).to_le_bytes()[0]; }
+
+    // Create + write the file, flush to disk, drop the mount.
+    {
+        let (m, _sb) = open_with_sb(dev.clone());
+        let st = m.state();
+        let root = st.lookup_path(b"/").expect("root");
+        let new_ino = st.mount.create_file(root, b"big.bin", 0o644, 0, 0).expect("create big.bin");
+        let f = st.wrap_file(new_ino).expect("wrap big.bin");
+        // Write in a few chunks crossing page boundaries.
+        let mut off = 0usize;
+        for chunk in [4000usize, 200, total - 4200] {
+            f.write(off as u64, &pat[off..off + chunk]).expect("write chunk");
+            off += chunk;
+        }
+        f.i_mapping().unwrap().writeback().expect("writeback");
+    }
+
+    // Fresh remount: no resident frames, so the frame read fills purely from
+    // disk. Compare the frame path (inode.read → read_framed) to the legacy Vec
+    // page-cache path (RootfsState::read_cached) and to the source bytes.
+    let (m2, _sb2) = open_with_sb(dev.clone());
+    let ino = m2.state().lookup_path(b"/big.bin").expect("big.bin after remount");
+    let f = m2.state().wrap_file(ino).expect("wrap big.bin remount");
+
+    let mut via_frame = alloc::vec![0u8; total];
+    let n1 = f.read(0, &mut via_frame).expect("frame read");
+    assert_eq!(n1, total, "frame read returns full length");
+    assert_eq!(&via_frame[..], &pat[..], "frame read == source bytes (B240 multi-page fill)");
+
+    let mut via_legacy = alloc::vec![0u8; total];
+    let n2 = m2.state().read_cached(ino, 0, &mut via_legacy).expect("legacy read");
+    assert_eq!(n2, total, "legacy read returns full length");
+    assert_eq!(&via_frame[..], &via_legacy[..], "frame read byte-identical to legacy Vec page-cache read");
+
+    // Short read past EOF: reading at total-10 with a big buffer returns 10.
+    let mut tail = [0u8; 64];
+    let nt = f.read((total - 10) as u64, &mut tail).expect("tail read");
+    assert_eq!(nt, 10, "short read clamps at EOF");
+    assert_eq!(&tail[..10], &pat[total - 10..], "EOF tail bytes correct");
+}
+
+#[test]
+fn writeback_persists_across_remount() {
+    common::boot_hosted_pmm();
+    let disk = fresh_disk();
+    let dev: Arc<dyn BlockDevice> = disk.clone();
+
+    let pat = [0x55u8, 0xAA, 0x55, 0xAA, 0x12, 0x34];
+    {
+        let (m, _sb) = open_with_sb(dev.clone());
+        let ino = m.state().lookup_path(b"/hello.txt").expect("hello.txt");
+        let f = m.state().wrap_file(ino).expect("wrap");
+
+        // Mutate via the MAP_SHARED frame (no write(2) write-through), then flush.
+        let pa = f.i_mapping().unwrap().shared_frame(0).expect("shared frame");
+        let base = pmm::setup::frame_ptr(pa).expect("frame_ptr");
+        // SAFETY: pa is the inode's resident page-0 frame; write in-bounds.
+        unsafe { core::ptr::copy_nonoverlapping(pat.as_ptr(), base, pat.len()); }
+        f.i_mapping().unwrap().writeback().expect("writeback");
+        // mount + sb + inode drop here.
+    }
+
+    // Remount the SAME device: the flushed bytes must be on disk.
+    let (m2, _sb2) = open_with_sb(dev.clone());
+    let ino2 = m2.state().lookup_path(b"/hello.txt").expect("hello.txt after remount");
+    let f2 = m2.state().wrap_file(ino2).expect("wrap after remount");
+    let mut buf = [0u8; 6];
+    f2.read(0, &mut buf).expect("read after remount");
+    assert_eq!(buf, pat, "writeback persisted the frame mutation across remount");
+    let _ = PG; // silence if unused in some cfg
+}

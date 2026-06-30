@@ -441,8 +441,10 @@ name = "ext4"
 version = "0.1.0"
 dependencies = [
  "block",
+ "boot-info",
  "crc",
  "klog",
+ "pmm",
  "sync",
  "vfs",
 ]
