@@ -135,8 +135,9 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         let r: Result<vfs::VfsPath, i64> = if extra.beneath_exdev || extra.in_root {
             crate::pathresolve::resolve_confined(args.a0 as i32, s, lookup)
         } else {
-            crate::pathresolve::resolve_path_flags(path_str, lookup)
-                .map_err(crate::namei_common::errno_from_vfs)
+            // D17: seed from the dirfd's real (mnt_id, dentry) so EXDEV (NO_XDEV)
+            // / ELOOP (NO_SYMLINKS) decisions key on the bind-correct mount.
+            crate::pathresolve::resolve_at_path(args.a0 as i32, s, lookup)
         };
         match r {
             Ok(p) => Some(Some(p)),

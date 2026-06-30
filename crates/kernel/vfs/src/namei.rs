@@ -645,6 +645,31 @@ impl Nameidata {
         Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, depth: 0, total_link_count: 0, flags, cred, rcu })
     }
 
+    /// Build the walk state for an `*at` resolution whose `start`/`root` arrive
+    /// WITH their real mount ids (the dirfd `File` carries `f.mnt_id()`; the cwd
+    /// `VfsPath` carries `mnt_id`). Unlike [`Nameidata::new`], this SKIPS the
+    /// `containing_mount_id` guess — the caller already knows the mount the base
+    /// lives in (the file was opened through it), so the seed `mnt_id` is the
+    /// exact mount, not a region-containment best-guess. This is what makes a
+    /// dirfd that names a BIND mount resolve relative paths (and `..`) through
+    /// the bind's own mount identity instead of the canonical mount the
+    /// stringified `absolute_path()` would re-resolve to (D17 / dcache D16). Both
+    /// ids are still normalised through any over-mount via `follow_mount_down`.
+    /// # C: O(start/root mount stack)
+    pub fn new_at(
+        start: Arc<Dentry>, start_mnt_id: u64,
+        root: Arc<Dentry>, root_mnt_id: u64,
+        flags: LookupFlags, cred: Cred,
+    ) -> KResult<Self> {
+        let (mut root_dentry, _ri, mut root_mnt_id) = follow_mount_down(root, root_mnt_id)?;
+        let (cur_dentry, cur_inode, cur_mnt_id) = follow_mount_down(start, start_mnt_id)?;
+        // RESOLVE_IN_ROOT / RESOLVE_BENEATH: the dirfd (START) IS the resolution
+        // root (same override as `new`).
+        if flags.in_root || flags.beneath_exdev { root_dentry = cur_dentry.clone(); root_mnt_id = cur_mnt_id; }
+        let rcu = flags.rcu;
+        Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, depth: 0, total_link_count: 0, flags, cred, rcu })
+    }
+
     /// Reset the current position to the resolution root (absolute path /
     /// absolute symlink target). # C: O(1)
     fn to_root(&mut self) -> KResult<()> {
@@ -1271,5 +1296,28 @@ pub fn path_lookup_cred(
     cred: Cred,
 ) -> KResult<VfsPath> {
     let mut nd = Nameidata::new(start, root, flags, cred)?;
+    nd.walk(path)
+}
+
+/// `*at` resolution that seeds the walk from a `start` carrying its REAL
+/// `start_mnt_id` (the dirfd's `f.mnt_id()` / the cwd `VfsPath.mnt_id`) instead
+/// of guessing the containing mount from a bare dentry. The resolution `root`
+/// arrives as a bare dentry (the global/chroot root has no dirfd mount context),
+/// so its mount id is still derived via `containing_mount_id`. This is the
+/// non-lossy replacement for the old "stringify `f.dentry().absolute_path()` →
+/// re-walk from cwd" `*at` entry: mount identity is preserved end-to-end and
+/// `..` climbs the real mount tree rather than collapsing lexically (D17 / D16).
+/// # C: O(components × dir-lookup) + O(symlinks)
+pub fn path_lookup_at_cred(
+    start: Arc<Dentry>,
+    start_mnt_id: u64,
+    root: Arc<Dentry>,
+    path: &str,
+    flags: LookupFlags,
+    cred: Cred,
+) -> KResult<VfsPath> {
+    let ns = crate::mount::current_ns();
+    let root_mnt_id = crate::mount::containing_mount_id(ns, &root);
+    let mut nd = Nameidata::new_at(start, start_mnt_id, root, root_mnt_id, flags, cred)?;
     nd.walk(path)
 }
