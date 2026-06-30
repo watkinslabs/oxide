@@ -68,13 +68,16 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
         if (lm.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
             return -(Errno::Erofs.as_i32() as i64);
         }
-        // D29: destination parent dir `i_rwsem` EXCLUSIVE across the backend
-        // link (Linux `do_linkat`/`filename_create`). Backend resolves via
-        // `i_op.lookup` (no nested `i_rwsem`) → deadlock-free. Best-effort.
-        let lparent = resolve_parent(&l).ok();
-        let r = {
-            let _g = lparent.as_ref().map(|(pino, _)| pino.inode_lock());
-            lm.fs().link_inode(inode.clone(), &l)
+        // D9/D29: route through the resolved new-path PARENT's `i_op->link`
+        // (Linux `vfs_link`), holding its `i_rwsem` EXCLUSIVE (Linux
+        // `filename_create`). Backend resolves via `i_op.lookup` (no nested
+        // `i_rwsem`) → deadlock-free. Parent-resolve miss → whole-path fallback.
+        let r = match resolve_parent(&l) {
+            Ok((pino, name)) => {
+                let _g = pino.inode_lock();
+                pino.link_child(&inode, &name, &vfs::CreateCtx::root())
+            }
+            Err(_) => lm.fs().link_inode(inode.clone(), &l),
         };
         return match r {
             Ok(())  => 0,
@@ -118,12 +121,15 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
         if (lm.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
             return -(Errno::Erofs.as_i32() as i64);
         }
-        // D29: destination parent dir `i_rwsem` EXCLUSIVE (see AT_EMPTY_PATH
-        // branch above). Best-effort resolve; deadlock-free backend lookup.
-        let lparent = resolve_parent(&l).ok();
-        let r = {
-            let _g = lparent.as_ref().map(|(pino, _)| pino.inode_lock());
-            lm.fs().link_inode(source_inode, &l)
+        // D9/D29: route the resolved source inode through the new-path PARENT's
+        // `i_op->link` (Linux `vfs_link`), `i_rwsem` EXCLUSIVE; deadlock-free
+        // backend lookup. Parent-resolve miss → whole-path fallback.
+        let r = match resolve_parent(&l) {
+            Ok((pino, name)) => {
+                let _g = pino.inode_lock();
+                pino.link_child(&source_inode, &name, &vfs::CreateCtx::root())
+            }
+            Err(_) => lm.fs().link_inode(source_inode, &l),
         };
         return match r {
             Ok(()) => 0,
@@ -132,13 +138,13 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
     }
     // vfs_link: hard-linking a directory is EPERM. Without AT_SYMLINK_FOLLOW the
     // source symlink is not followed (nofollow), matching the linked inode.
-    match crate::pathresolve::resolve_path_result(&t, true) {
+    let src = match crate::pathresolve::resolve_path_result(&t, true) {
         Ok(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => {
             return -(Errno::Eperm.as_i32() as i64);
         }
-        Ok(_)  => {}
+        Ok(p)  => p.inode,
         Err(e) => return errno_from_vfs(e),
-    }
+    };
     let (tm, _) = match vfs::mount::resolve_mount(&t) {
         Some(v) => v, None => return -(Errno::Enoent.as_i32() as i64),
     };
@@ -151,11 +157,15 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
     if tm.mnt_id != lm.mnt_id {
         return -(Errno::Exdev.as_i32() as i64);
     }
-    // D29: destination parent dir `i_rwsem` EXCLUSIVE (see branches above).
-    let lparent = resolve_parent(&l).ok();
-    let r = {
-        let _g = lparent.as_ref().map(|(pino, _)| pino.inode_lock());
-        tm.fs().link(&t, &l)
+    // D9/D29: route through the resolved new-path PARENT's `i_op->link` (Linux
+    // `vfs_link`), `i_rwsem` EXCLUSIVE; deadlock-free backend lookup.
+    // Parent-resolve miss → whole-path fallback.
+    let r = match resolve_parent(&l) {
+        Ok((pino, name)) => {
+            let _g = pino.inode_lock();
+            pino.link_child(&src, &name, &vfs::CreateCtx::root())
+        }
+        Err(_) => tm.fs().link(&t, &l),
     };
     match r {
         Ok(())  => 0,

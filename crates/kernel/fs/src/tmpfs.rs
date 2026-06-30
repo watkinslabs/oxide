@@ -775,6 +775,22 @@ impl InodeOps for TmpfsDirOps {
         ddir.insert(new_name, moved);
         Ok(())
     }
+
+    /// `i_op->link` (Linux `shmem_link` reached via `vfs_link`): add another
+    /// name in THIS directory for the existing `target` inode (a hardlink).
+    /// EEXIST if `name` is taken; a directory target is EPERM (Linux forbids
+    /// directory hardlinks). Bumps the inode's in-memory `i_nlink` (Linux
+    /// `inc_nlink`). The resolved-parent variant of `TmpfsFs::link_inode`.
+    /// # C: O(log N)
+    fn link(&self, inode: &Inode, target: &InodeRef, name: &str, _ctx: &CreateCtx) -> KResult<()> {
+        if target.file_type() == FileType::Directory { return Err(VfsError::Eperm); }
+        let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
+        let mut g = dd.kids.lock();
+        if g.contains_key(name) { return Err(VfsError::Eexist); }
+        target.inc_nlink(); // a new name for the same inode (Linux inc_nlink)
+        g.insert(name.into(), target.clone());
+        Ok(())
+    }
 }
 
 /// Boot-time hook (kept for the boot sequence). The per-instance trees are
@@ -808,13 +824,13 @@ pub fn smoke_test() {
 }
 
 /// One mounted tmpfs instance. Owns its OWN inode tree (`root: TmpfsDir`)
-/// under its SuperBlock — there is no shared global registry. `mount_path`
-/// is the prefix stripped from the whole-path `FileSystem` write ops
-/// (`create`/`unlink`/`rename`/`link`) to address the tree; the per-component
-/// ops (`mknod_child`/`unlink_child` via the resolved parent inode) need no
-/// path at all. Built fresh per mount by [`TmpfsFs::new`].
+/// under its SuperBlock — there is no shared global registry. TARGET-INDEPENDENT
+/// (no baked mount path): every write op is mount-relative — the per-component
+/// i_op path (`create_child`/`unlink_child`/`link_child`/`rename_child` via the
+/// resolved parent inode) needs no path, and the whole-path `FileSystem`
+/// fallbacks address the tree from the SB root with the leading `/` stripped.
+/// Built fresh per mount by [`TmpfsFs::new`]; identical at `/` and `/run`.
 pub struct TmpfsFs {
-    mount_path: String,
     root:       InodeRef,
     sb:         Spinlock<Weak<SuperBlock>, InodeClass>,
     /// Per-instance space accounting (block/inode limits + usage). # D33
@@ -822,33 +838,25 @@ pub struct TmpfsFs {
 }
 
 impl TmpfsFs {
-    /// A fresh empty tmpfs instance mounted at `mount_path` with Linux-default
-    /// limits (half of RAM). `set_sb` stamps `s_dev` at `fill_super`, after
-    /// which children derive `fsid` from it. # C: O(1)
-    pub fn new(mount_path: String) -> Arc<Self> {
-        Self::with_limits(mount_path, TmpfsSb::default_limits())
+    /// A fresh empty tmpfs instance with Linux-default limits (half of RAM).
+    /// `name` is informational only (no mount path is baked into the SB — the
+    /// tree is target-independent); `set_sb` stamps `s_dev` at `fill_super`,
+    /// after which children derive `fsid` from it. # C: O(1)
+    pub fn new(name: String) -> Arc<Self> {
+        Self::with_limits(name, TmpfsSb::default_limits())
     }
     /// As [`TmpfsFs::new`] but with explicit accounting (the hook a future
     /// `mount -o size=,nr_inodes=` parser fills — the syscall layer that parses
-    /// the option string is the only remaining piece, cross-lane). # C: O(1)
-    pub fn with_limits(mount_path: String, acct: Arc<TmpfsSb>) -> Arc<Self> {
+    /// the option string is the only remaining piece, cross-lane). `_name` is
+    /// ignored for SB identity (target-independent). # C: O(1)
+    pub fn with_limits(_name: String, acct: Arc<TmpfsSb>) -> Arc<Self> {
         acct.charge_inode(); // the root inode itself counts (Linux shmem)
         let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), acct.clone());
-        Arc::new(Self { mount_path, root, sb: Spinlock::new(Weak::new()), acct })
+        Arc::new(Self { root, sb: Spinlock::new(Weak::new()), acct })
     }
     /// This instance's root inode (`sb->s_root->d_inode`), handed to
     /// `register_bind` so the path walk crosses into the tree. # C: O(1)
     pub fn root_inode(&self) -> InodeRef { self.root.clone() }
-    /// Strip the mount-point prefix → tree-relative path. # C: O(len)
-    fn rel<'a>(&self, abs: &'a str) -> &'a str {
-        let mp = self.mount_path.trim_end_matches('/');
-        if !mp.is_empty() {
-            if let Some(r) = abs.strip_prefix(mp) {
-                if r.is_empty() || r.starts_with('/') { return r.trim_start_matches('/'); }
-            }
-        }
-        abs.trim_start_matches('/')
-    }
 }
 
 impl vfs::fs::FileSystem for TmpfsFs {
@@ -876,7 +884,7 @@ impl vfs::fs::FileSystem for TmpfsFs {
     /// `open(O_CREAT)`: return the existing inode or create a regular file in
     /// the tree (lookup-or-create). `path` is mount-absolute. # C: O(components)
     fn create(&self, path: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
-        let rel = self.rel(path);
+        let rel = path.trim_start_matches('/');
         if let Some(i) = dir_resolve(&self.root, rel) { return Ok(i); }
         let (p, name) = dir_parent_of(&self.root, rel).ok_or(VfsError::Enoent)?;
         p.create_child(name, mode, &CreateCtx::root())
@@ -893,19 +901,19 @@ impl vfs::fs::FileSystem for TmpfsFs {
 
     /// `unlink(2)` by whole path (atomic-rename idiom). # C: O(components)
     fn unlink(&self, path: &str) -> vfs::fs::KResult<()> {
-        let (p, name) = dir_parent_of(&self.root, self.rel(path)).ok_or(VfsError::Enoent)?;
+        let (p, name) = dir_parent_of(&self.root, path.trim_start_matches('/')).ok_or(VfsError::Enoent)?;
         p.unlink_child(name)
     }
 
     /// Hardlink: add another name in the tree for `target`'s inode. # C: O(components)
     fn link(&self, target: &str, link: &str) -> vfs::fs::KResult<()> {
-        let inode = dir_resolve(&self.root, self.rel(target)).ok_or(VfsError::Enoent)?;
+        let inode = dir_resolve(&self.root, target.trim_start_matches('/')).ok_or(VfsError::Enoent)?;
         self.link_inode(inode, link)
     }
 
     /// Materialize `inode` at `link` (linkat AT_EMPTY_PATH). # C: O(components)
     fn link_inode(&self, inode: vfs::InodeRef, link: &str) -> vfs::fs::KResult<()> {
-        let (p, name) = dir_parent_of(&self.root, self.rel(link)).ok_or(VfsError::Enoent)?;
+        let (p, name) = dir_parent_of(&self.root, link.trim_start_matches('/')).ok_or(VfsError::Enoent)?;
         let dir = as_dir(&p).ok_or(VfsError::Enotdir)?;
         if dir.kids.lock().contains_key(name) { return Err(VfsError::Eexist); }
         inode.inc_nlink(); // a new name for the same inode (Linux inc_nlink)
@@ -917,8 +925,8 @@ impl vfs::fs::FileSystem for TmpfsFs {
     /// detach the source from its parent dir, attach it under the dest name.
     /// # C: O(components)
     fn rename(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
-        let (sp, sname) = dir_parent_of(&self.root, self.rel(from)).ok_or(VfsError::Enoent)?;
-        let (dp, dname) = dir_parent_of(&self.root, self.rel(to)).ok_or(VfsError::Enoent)?;
+        let (sp, sname) = dir_parent_of(&self.root, from.trim_start_matches('/')).ok_or(VfsError::Enoent)?;
+        let (dp, dname) = dir_parent_of(&self.root, to.trim_start_matches('/')).ok_or(VfsError::Enoent)?;
         let sdir = as_dir(&sp).ok_or(VfsError::Enotdir)?;
         let ddir = as_dir(&dp).ok_or(VfsError::Enotdir)?;
         let inode = sdir.remove(sname).ok_or(VfsError::Enoent)?;
@@ -1150,6 +1158,49 @@ mod rename_overwrite_tests {
 
         assert!(matches!(a.lookup("f"), Err(VfsError::Enoent)), "f gone from a");
         assert!(Arc::ptr_eq(&b.lookup("g").unwrap(), &f), "f now b/g");
+    }
+
+    // D9/D13: `i_op->link` (resolved-parent path) — hardlink an existing inode
+    // into a NON-ROOT directory under a new name. The new name resolves to the
+    // SAME inode (`Arc::ptr_eq`), its `i_nlink` bumps, EEXIST on a taken name,
+    // EPERM on a directory source. This is the path tmpfs link/linkat now take,
+    // and it must work at a non-root parent (the `/run/.../cred` systemd case).
+    #[test]
+    fn iop_link_child_at_nonroot_dir() {
+        let fs = TmpfsFs::with_limits(String::from("/run"), TmpfsSb::new(64, 16));
+        let root = fs.root_inode();
+        let sub = root.mkdir("sub", 0o755, &CreateCtx::root()).expect("mkdir sub");
+        let f = root.create_child("f", 0o644, &CreateCtx::root()).expect("create f");
+        assert_eq!(f.nlink(), 1);
+
+        // Hardlink root/f into sub as "alias".
+        sub.link_child(&f, "alias", &CreateCtx::root()).expect("iop link");
+        let aliased = sub.lookup("alias").expect("alias present");
+        assert!(Arc::ptr_eq(&aliased, &f), "alias resolves to the same inode");
+        assert_eq!(f.nlink(), 2, "hardlink bumped nlink");
+
+        // EEXIST on a taken name.
+        assert!(matches!(sub.link_child(&f, "alias", &CreateCtx::root()), Err(VfsError::Eexist)));
+        // EPERM on a directory source (no fs permits directory hardlinks).
+        assert!(matches!(sub.link_child(&sub, "dlink", &CreateCtx::root()), Err(VfsError::Eperm)));
+    }
+
+    // D13: tmpfs is TARGET-INDEPENDENT — a non-root mount (`/run`) behaves
+    // identically to `/` for the i_op write ops, and the whole-path FileSystem
+    // fallbacks (mount-relative, leading-`/` stripped) address the same tree.
+    #[test]
+    fn nonroot_mount_realizes_identically() {
+        let fs = TmpfsFs::with_limits(String::from("/run"), TmpfsSb::new(64, 16));
+        let root = fs.root_inode();
+        assert_eq!(root.ino(), ROOT_INO, "root ino is the fixed constant, not target-derived");
+        // i_op create + whole-path FileSystem fallbacks operate on the same tree.
+        root.create_child("a", 0o644, &CreateCtx::root()).expect("iop create");
+        // FileSystem::create with a mount-relative path hits the SAME inode tree.
+        let viafs = fs.create("/a", 0o644).expect("fs create resolves existing");
+        assert!(Arc::ptr_eq(&viafs, &root.lookup("a").unwrap()), "fs path == i_op tree");
+        // FileSystem::link fallback (whole-path) links within the tree.
+        fs.link("/a", "/b").expect("fs link fallback");
+        assert!(Arc::ptr_eq(&root.lookup("b").unwrap(), &root.lookup("a").unwrap()), "b is a hardlink of a");
     }
 
     // D9: `i_op->rename` rejects EXCHANGE/WHITEOUT (those keep the FileSystem
