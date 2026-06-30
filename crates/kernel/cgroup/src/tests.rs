@@ -7,6 +7,37 @@ use alloc::string::ToString;
 
 fn s(v: &[u8]) -> &str { core::str::from_utf8(v).unwrap() }
 
+/// Converted fs_context path (D13/D14): `realize_tree` materialises the unified
+/// hierarchy's `(CgroupFs, root CgDir)`; `SuperBlock::for_backend` wraps it
+/// exactly as `FsType::mount`/`vfs_get_tree` does at `fsconfig(CMD_CREATE)`.
+/// Pin the cgroup2 identity (magic + root CgDir ino + fsid) the SB realizes,
+/// and that it is TARGET-INDEPENDENT (a second realize yields the same identity
+/// — the singleton tree carries no mount-target state).
+#[test]
+fn realize_tree_builds_target_independent_cgroup2_sb() {
+    use vfs::superblock::{next_anon_dev, SuperBlock};
+    const CGROUP2_MAGIC: u64 = 0x6367_7270;
+    const ROOT_CGDIR_INO: u64 = 0x6000_0000 + 1; // DIR_INO_BASE + tree::ROOT
+
+    let (fs, root) = crate::realize_tree();
+    assert_eq!(fs.magic(), CGROUP2_MAGIC, "CgroupFs.magic == CGROUP2_SUPER_MAGIC");
+    assert_eq!(root.ino(), ROOT_CGDIR_INO, "root CgDir ino = DIR_INO_BASE + ROOT");
+    assert_eq!(root.fsid(), CGROUP2_MAGIC, "root CgDir fsid == CGROUP2_FSID");
+    assert!(crate::is_mounted(), "realize_tree marks the singleton hierarchy mounted");
+
+    let sb = SuperBlock::for_backend(fs, Some(root), next_anon_dev(), "cgroup2".to_string());
+    assert_eq!(sb.s_magic, CGROUP2_MAGIC, "SB s_magic == CGROUP2_SUPER_MAGIC");
+    let sroot = sb.s_root_inode().expect("SB has a root inode (d_make_root)");
+    assert_eq!(sroot.ino(), ROOT_CGDIR_INO, "SB root inode = root CgDir");
+    assert_eq!(sroot.fsid(), CGROUP2_MAGIC, "SB root inode fsid preserved through the SB build");
+
+    // Target-independence: a second CMD_CREATE realize yields identical identity.
+    let (fs2, root2) = crate::realize_tree();
+    assert_eq!(fs2.magic(), CGROUP2_MAGIC);
+    assert_eq!(root2.ino(), ROOT_CGDIR_INO);
+    assert_eq!(root2.fsid(), CGROUP2_MAGIC);
+}
+
 #[test]
 fn root_mounts_with_all_controllers() {
     let mut t = Tree::new();

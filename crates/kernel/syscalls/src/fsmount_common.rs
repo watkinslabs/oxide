@@ -85,8 +85,12 @@ fn lookup_bdev(source: &str) -> Option<Arc<dyn block::BlockDevice>> {
 /// realizes byte-identically at CMD_CREATE. tmpfs/ramfs are converted too: their
 /// baked mount path (`mount_path`/`rel()`) is gone — root ino is fixed
 /// (`ROOT_INO`), write ops are i_op-routed (create/unlink/link/rename), so the
-/// SB realizes identically at any mount point. cgroup2/autofs/devtmpfs/devpts/
-/// cgroup stay on the `mount_fstype` fallback. # C: O(1)
+/// SB realizes identically at any mount point. cgroup2 is converted too: the
+/// unified hierarchy is a global singleton (`cgroup::realize_tree` marks the tree
+/// mounted + returns the `(CgroupFs, root CgDir)` pair), its `CgroupFs` is
+/// zero-sized and resolution is per-component from the root, so its SB is
+/// target-independent and realizes byte-identically at CMD_CREATE (D13/D14).
+/// autofs/devtmpfs/devpts/cgroup(v1) stay on the `mount_fstype` fallback. # C: O(1)
 pub(crate) fn fstype_converted(t: &str) -> bool {
     matches!(t,
         "proc" | "sysfs" | "debugfs" | "tracefs" | "ext4"
@@ -99,7 +103,9 @@ pub(crate) fn fstype_converted(t: &str) -> bool {
         // ino fixed at ROOT_INO, write ops i_op-routed incl. link/linkat), so
         // the SB realized at fsconfig(CMD_CREATE) is byte-identical to
         // mount_fstype's graft regardless of mount point (`/` == `/run`). D13/D14.
-        | "tmpfs" | "ramfs")
+        | "tmpfs" | "ramfs"
+        // cgroup2: unified hierarchy = global singleton; SB target-independent.
+        | "cgroup2")
 }
 
 // `s_magic` (linux/magic.h) for the simple kernfs/ramfs-class api-fses that
@@ -118,6 +124,10 @@ const HUGETLBFS_MAGIC:  u64 = 0x9584_58f6;
 /// registry entry so it surfaces in `/proc/filesystems`; the live statfs
 /// `f_type` still comes from the constructed `Ext4Mount`.
 const EXT4_MAGIC: u64 = 0xef53;
+
+/// `s_magic` for cgroup2 (linux/magic.h `CGROUP2_SUPER_MAGIC`) — surfaced in
+/// `/proc/filesystems`; the live statfs `f_type` still comes from `CgroupFs::magic`.
+const CGROUP2_MAGIC: u64 = 0x6367_7270;
 
 /// One-time guard: register every constructor-bearing `file_system_type` into
 /// the VFS registry (`vfs::fs::register_fs`) before the first dispatch. Held
@@ -138,8 +148,9 @@ fn ensure_filesystems_registered() {
 /// closures build the SAME backend object the match did; the mount engine then
 /// builds the `SuperBlock` (`build_sb`). The four fstypes whose construction is
 /// NOT a clean backend-object constructor stay in [`mount_fstype_with_data`]'s
-/// fallback match (cgroup2 → `cgroup::mount_at`; devtmpfs/devpts/cgroup →
-/// devfs-registry admit-noop). # C: O(N)
+/// fallback match (devtmpfs/devpts/cgroup(v1) → devfs-registry admit-noop).
+/// cgroup2 is now a registered `file_system_type` (`cgroup::realize_tree`),
+/// not a fallback arm. # C: O(N)
 fn register_filesystems() {
     use vfs::fs::{register_fs, FsFlags, FsType, MountSpec};
     type R = vfs::fs::KResult<MountSpec>;
@@ -237,6 +248,22 @@ fn register_filesystems() {
             let fs: Arc<dyn vfs::fs::FileSystem> = devpts::devpts_fs();
             Ok(MountSpec { fs, bind_root: None, strict: false })
         })));
+
+    // cgroup2 — the unified hierarchy (cgroup v2). TARGET-INDEPENDENT: the
+    // hierarchy is a global singleton (`cgroup::realize_tree` marks it mounted,
+    // idempotently, and returns the `(CgroupFs, root CgDir)` pair), so the SB
+    // realized at `fsconfig(CMD_CREATE)` is byte-identical to the SB
+    // `cgroup::mount_at` grafts at the boot mount. `bind_root` is the root
+    // `CgDir` (whose `fsid`=CGROUP2_FSID + root ino are stamped on the inode,
+    // not the SB, so they survive any mount path). strict:false preserves the
+    // prior cgroup2 admit-and-ignore mount(2) semantics (`mount_at` tolerated a
+    // re-mount of the shared hierarchy). The boot `/sys/fs/cgroup` mount stays
+    // on `cgroup::mount_root()` (kernel-internal, kmain) — unaffected.
+    let _ = register_fs(FsType::new("cgroup2", CGROUP2_MAGIC, FsFlags::empty(),
+        Box::new(|_s: &str, _t: &str, _d: &str| -> R {
+            let (fs, root) = cgroup::realize_tree();
+            Ok(MountSpec { fs, bind_root: Some(root), strict: false })
+        })));
 }
 
 /// Graft a constructor-produced [`vfs::fs::MountSpec`] onto the walked mountpoint
@@ -296,13 +323,6 @@ pub(crate) fn mount_fstype_with_data(
     // constructor (so they cannot live in the registry without restructuring
     // the boot mount path). Left here deliberately per D40 SAFETY.
     match fstype {
-        // cgroup2 has its own mount engine (`cgroup::mount_at`), not a plain
-        // `FileSystem` graft.
-        "cgroup2" => match cgroup::mount_at(target, Some(target_d.clone())) {
-            Ok(()) => 0,
-            Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
-            Err(e) => crate::namei_common::errno_from_vfs(e),
-        }
         // devtmpfs/devpts/cgroup(v1) still admit-noop: their content lives in
         // the devfs registry (no standalone whole-path FileSystem to register),
         // and systemd's private-dev path uses a tmpfs (registered above), not
