@@ -25,7 +25,7 @@ use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicPtr, Ordering};
-use sync::{Spinlock, TaskList as TaskListClass};
+use sync::{Spinlock, Kernfs as KernfsClass};
 use vfs::superblock::SuperBlock;
 use vfs::{FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError};
 use vfs::{DirContext, FileOps, InodeOps, default_file_ops, default_inode_ops, mk_mode};
@@ -131,14 +131,14 @@ pub struct PseudoDir {
     path:     String,
     fsid:     u64,
     overlay:  bool,
-    sb:       Spinlock<Weak<SuperBlock>, TaskListClass>,
-    children: Spinlock<BTreeMap<String, PseudoEntry>, TaskListClass>,
+    sb:       Spinlock<Weak<SuperBlock>, KernfsClass>,
+    children: Spinlock<BTreeMap<String, PseudoEntry>, KernfsClass>,
     /// Cached backing `vfs::Inode` (lazily built by [`PseudoDir::as_inode`]).
     /// `Weak` so the Inode (whose `i_private` holds a strong `Arc<PseudoDir>`)
     /// is freed when no dcache/dentry references it; the next `as_inode`
     /// rebuilds an identical one. Cleared by `set_sb` so a re-stamp re-derives
     /// `i_sb`/`fsid`.
-    inode:    Spinlock<Weak<Inode>, TaskListClass>,
+    inode:    Spinlock<Weak<Inode>, KernfsClass>,
 }
 
 impl PseudoDir {
@@ -179,24 +179,47 @@ impl PseudoDir {
     }
 
     /// Materialise (or reuse) this dir's backing `vfs::Inode`. The Inode's
-    /// `i_private` holds a strong `Arc<PseudoDir>`; the dir back-refs it
-    /// `Weak`, so identity is stable while any dcache/dentry holds it and is
-    /// rebuilt identically afterwards. `i_sb` reflects the current stamp;
-    /// `fsid` falls back to `self.fsid` only when no SB is stamped (matching
-    /// the old live `fsid()`). # C: O(1)
+    /// `i_private` holds a strong `Arc<PseudoDir>`; identity is stable while any
+    /// dcache/dentry holds it and is rebuilt identically afterwards. `i_sb`
+    /// reflects the current stamp; `fsid` falls back to `self.fsid` only when no
+    /// SB is stamped (matching the old live `fsid()`).
+    ///
+    /// inode D2: once the owning SB is back-stamped (`fill_super`/`set_sb`), the
+    /// build routes through [`SuperBlock::iget`] keyed by `self.ino`, so this
+    /// dir's inode enters the per-SB icache — `ilookup`/`iget` dedup by ino
+    /// (a repeat fetch returns the SAME `Arc`), `s_inodes`/`drop_caches`/
+    /// `evict_inodes` see it, and the icache `Weak` is the canonical cache (the
+    /// per-dir `inode` Weak is only the pre-stamp fallback, before any SB
+    /// exists, exactly like tmpfs's `iget_or_build`). The kernfs node locks sit
+    /// at rank `Kernfs` (55) < `Superblock` (60), so `op_lookup` may call this
+    /// (→ `iget`, the icache lock) while holding `children` — ascending,
+    /// deadlock-free. # C: O(log N_ino)
     pub fn as_inode(self: &Arc<PseudoDir>) -> InodeRef {
-        let mut g = self.inode.lock();
-        if let Some(i) = g.upgrade() { return i; }
         let sbw = self.sb.lock().clone();
-        let mut b = InodeBuilder::new(self.ino, mk_mode(FileType::Directory, 0o755),
-            Arc::new(PseudoDirOps), Arc::new(PseudoDirFileOps))
-            .private(Arc::clone(self) as Arc<dyn core::any::Any + Send + Sync>)
-            .sb(sbw.clone());
-        // No SB stamped → report the fallback fsid (the old `fsid()` path).
-        if sbw.upgrade().is_none() { b = b.fsid(self.fsid); }
-        let inode = b.build();
-        *g = Arc::downgrade(&inode);
-        inode
+        let me = Arc::clone(self);
+        let sbw2 = sbw.clone();
+        let build = move || {
+            let mut b = InodeBuilder::new(me.ino, mk_mode(FileType::Directory, 0o755),
+                Arc::new(PseudoDirOps), Arc::new(PseudoDirFileOps))
+                .private(Arc::clone(&me) as Arc<dyn core::any::Any + Send + Sync>)
+                .sb(sbw2.clone());
+            // No SB stamped → report the fallback fsid (the old `fsid()` path).
+            if sbw2.upgrade().is_none() { b = b.fsid(me.fsid); }
+            b.build()
+        };
+        match sbw.upgrade() {
+            // SB stamped → per-SB icache lifecycle (dedup by ino, igrab on hit).
+            Some(sb) => sb.iget(self.ino, build),
+            // Pre-stamp (no SB yet) → local Weak cache holds identity until
+            // `fill_super` back-stamps; the next `as_inode` then re-enters iget.
+            None => {
+                let mut g = self.inode.lock();
+                if let Some(i) = g.upgrade() { return i; }
+                let inode = build();
+                *g = Arc::downgrade(&inode);
+                inode
+            }
+        }
     }
 
     /// This dir's owning-SB weak (handed to children it creates). # C: O(1)
@@ -593,5 +616,38 @@ mod tests {
         assert_eq!(r.remove_subtree("/dev/pts"), 1);
         assert!(r.lookup_path("/dev/pts").is_none());
         assert_eq!(r.remove_subtree("/dev/pts"), 0);
+    }
+
+    // [inode D2] Once the owning SB is back-stamped (`fill_super`), a kernfs
+    // directory inode builds through `SuperBlock::iget`: it enters the per-SB
+    // icache and a repeat fetch by ino returns the SAME `Arc` (dedup), never a
+    // fresh duplicate. This is the lifecycle-routing that brings kernfs-backed
+    // procfs/sysfs/devfs/devpts/tracefs dir inodes in line with tmpfs/ext4.
+    #[test]
+    fn dir_inode_routed_through_icache_dedup() {
+        use vfs::fs::FileSystem;
+        // Build a kernfs mount and back-stamp its SB; after this every dir
+        // inode build routes through the icache (sb weak is `Some`).
+        let fs = PseudoFs::new("kernfs", 0x1234);
+        let root_inode = fs.root().expect("root inode");
+        let sb = SuperBlock::for_backend(
+            fs.clone() as Arc<dyn FileSystem>, Some(root_inode), 0xBEEF, String::from("kernfs"));
+
+        // A subdir created AFTER the stamp inherits the SB weak.
+        fs.root_dir().ensure_dir_path("sub");
+        let sub_ino = dir_ino("/sub");
+
+        // Fetch the same dir inode twice by ino → the SAME icache `Arc`.
+        let a = fs.root_dir().lookup_path("sub").expect("sub dir");
+        assert_eq!(a.ino(), sub_ino);
+        let b = fs.root_dir().lookup_path("sub").expect("sub dir again");
+        assert!(Arc::ptr_eq(&a, &b), "repeat as_inode returns the SAME icache Arc (dedup)");
+
+        // Registered in the per-SB icache: ilookup returns that SAME Arc and
+        // iget is a cache HIT (the build closure must not run — would duplicate).
+        let via_lookup = sb.ilookup(sub_ino).expect("dir cached in icache");
+        assert!(Arc::ptr_eq(&a, &via_lookup), "ilookup returns the SAME Arc");
+        let via_iget = sb.iget(sub_ino, || panic!("iget must hit the cache, not rebuild"));
+        assert!(Arc::ptr_eq(&a, &via_iget), "iget returns the SAME Arc");
     }
 }
