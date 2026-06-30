@@ -1,49 +1,65 @@
-//! dcache-D15: `Dentry::is_mountpoint(ns)` is namespace-scoped (Linux mount
-//! crossing is per-mount-namespace — the same dentry can be covered in one ns
-//! and bare in another). An any-ns test would be a cross-ns false positive that
-//! makes a walk in ns B wrongly cross a mount that exists only in ns A. The
-//! covering mount id is stored per-ns (`set_mounted_mount`) and queried per-ns
-//! (`mounted_mount`/`is_mountpoint`). Regression guard for the ledger's stale
-//! "is_mountpoint ignores namespace" claim — the ns parameter is now mandatory.
+//! D24: mount crossing is NAMESPACE-SCOPED. The per-ns `dentry.mounted_mounts`
+//! map is GONE; ns-scoping now comes from the strict `(parent_mnt_id, dentry)`
+//! mount hash, whose `parent_mnt_id` is ns-private (every namespace mints fresh,
+//! never-recycled ids). A mount established in ns A must NOT make the SAME
+//! (shared-dcache) dentry cross in ns B. Asserted through the real mount engine +
+//! `__lookup_mnt`, not the deleted map. Regression guard for the cross-ns
+//! false-positive class (a walk in ns B wrongly crossing ns A's mount).
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
-use vfs::dentry::Dentry;
+use vfs::fs::FileSystem;
 use vfs::{FileType, InodeRef};
 
-fn dir(ino: u64) -> InodeRef {
-    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755), vfs::default_inode_ops(), vfs::default_file_ops()).build()
+mod common;
+
+static SERIAL: Mutex<()> = Mutex::new(());
+static CUR_NS: AtomicU64 = AtomicU64::new(0);
+fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
+fn set_ns(n: u64) { CUR_NS.store(n, Ordering::Release); }
+
+fn guard() -> MutexGuard<'static, ()> {
+    let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    vfs::mount::set_current_ns_provider(cur_ns);
+    common::install();
+    g
 }
 
-const NS_A: u64 = 0xA;
-const NS_B: u64 = 0xB;
-
-#[test]
-fn mountpoint_is_per_namespace() {
-    let d = Dentry::new_root(dir(1));
-    // Bare in every namespace to start.
-    assert!(!d.is_mountpoint(NS_A));
-    assert!(!d.is_mountpoint(NS_B));
-    assert!(d.mounted_mount(NS_A).is_none());
-
-    // Cover it in ns A only.
-    d.set_mounted_mount(NS_A, Some(0x100));
-    assert!(d.is_mountpoint(NS_A), "covered in ns A");
-    assert_eq!(d.mounted_mount(NS_A), Some(0x100));
-    // ns B must NOT see ns A's mount (no cross-ns false positive).
-    assert!(!d.is_mountpoint(NS_B), "ns B is unaffected by ns A's mount");
-    assert!(d.mounted_mount(NS_B).is_none());
+struct TFs { ino: u64 }
+impl FileSystem for TFs {
+    fn name(&self) -> &str { "tfs" }
+    fn root(&self) -> Option<InodeRef> {
+        Some(vfs::InodeBuilder::new(self.ino, vfs::mk_mode(FileType::Directory, 0o755),
+            vfs::default_inode_ops(), vfs::default_file_ops()).build())
+    }
 }
+fn fs(ino: u64) -> Arc<dyn FileSystem> { Arc::new(TFs { ino }) }
 
+const NS_A: u64 = 0xD24_0A01;
+const NS_B: u64 = 0xD24_0B01;
+
+// A mount established in ns A crosses in ns A but the SAME dentry stays bare in
+// ns B (its own, independent tree) — no cross-ns false positive.
 #[test]
-fn unmount_in_one_ns_keeps_the_other() {
-    let d = Dentry::new_root(dir(2));
-    d.set_mounted_mount(NS_A, Some(0x200));
-    d.set_mounted_mount(NS_B, Some(0x201));
-    assert!(d.is_mountpoint(NS_A) && d.is_mountpoint(NS_B));
-    // Detach in ns A; ns B still covered.
-    d.set_mounted_mount(NS_A, None);
-    assert!(!d.is_mountpoint(NS_A), "ns A detached");
-    assert!(d.is_mountpoint(NS_B), "ns B still covered");
-    assert_eq!(d.mounted_mount(NS_B), Some(0x201));
+fn mount_crossing_is_per_namespace() {
+    let _g = guard();
+
+    set_ns(NS_A);
+    common::register("/", fs(0x1)).expect("ns A root");
+    let mp = common::dentry("/proc");
+    common::register("/proc", fs(0x42)).expect("mount /proc in ns A");
+
+    // Crosses in ns A via the strict hash under A's containing parent.
+    let pa = vfs::mount::containing_mount_id(NS_A, &mp);
+    assert!(vfs::mount::__lookup_mnt(pa, &mp).is_some(), "crosses in ns A");
+    assert!(vfs::mount::is_mount_in_ns(&mp, NS_A), "is_mount_in_ns true for A");
+
+    // ns B has its OWN root tree: the SAME dentry must NOT cross there.
+    set_ns(NS_B);
+    common::register("/", fs(0x2)).expect("ns B root");
+    let pb = vfs::mount::containing_mount_id(NS_B, &mp);
+    assert!(vfs::mount::__lookup_mnt(pb, &mp).is_none(),
+        "ns B unaffected by ns A's mount (parent_mnt_id is ns-private)");
+    assert!(!vfs::mount::is_mount_in_ns(&mp, NS_B), "no cross-ns false positive");
 }

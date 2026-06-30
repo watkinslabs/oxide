@@ -60,8 +60,7 @@ fn build_mounted() -> (Arc<Dentry>, Arc<Dentry>) {
     let root = Dentry::new_root(dir(2, &[("mnt", dir(50, &[]))]));
     let (_, mnt_d) = vfs::path_lookup(root.clone(), root.clone(), "/mnt", LookupFlags::default())
         .expect("resolve /mnt");
-    let mnt_id = mount_id_for(&mnt_d, mnt_root);
-    mnt_d.set_mounted_mount(0, Some(mnt_id));
+    let _mnt_id = mount_id_for(&mnt_d, mnt_root);
     (root, mnt_d)
 }
 
