@@ -105,6 +105,7 @@ pub mod dispatch;
 #[path = "056_clone.rs"] pub mod clone;
 #[path = "449_futex_waitv.rs"] pub mod futex_waitv;
 #[path = "303_name_to_handle_at.rs"] pub mod handle;
+#[path = "304_open_by_handle_at.rs"] pub mod s304_open_by_handle_at;
 #[path = "171_setdomainname.rs"] pub mod hostname;
 #[path = "016_ioctl.rs"] pub mod ioctl;
 #[path = "045_recvfrom.rs"] pub mod net_recv;
