@@ -116,7 +116,7 @@ fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_
 #[test]
 fn recursive_clone_hashonly_no_clobber() {
     let _g = guard();
-    let (ns, root_id, proc_id, _s_root, proc_d) = setup();
+    let (_ns, root_id, proc_id, _s_root, proc_d) = setup();
 
     // Premise: rootfs is dev-backed (the global-dentry-exposure precondition).
     assert!(vfs::mount::mount_by_id(root_id).unwrap().fs().dev_id().is_some(),
@@ -146,10 +146,6 @@ fn recursive_clone_hashonly_no_clobber() {
     // NOT CLOBBERED: original (ns_root, /proc) still resolves to the original.
     assert_eq!(vfs::mount::__lookup_mnt(root_id, &proc_d).map(|m| m.mnt_id), Some(proc_id),
         "__lookup_mnt(ns_root, /proc) STILL the original (no hash clobber)");
-    // Walk oracle UNTOUCHED: the legacy per-ns map at /proc still names the
-    // original proc mount, not the clone (no wire_crossing in hash-only commit).
-    assert_eq!(proc_d.mounted_mount(ns), Some(proc_id),
-        "legacy dentry.mounted_mounts map (walk oracle) NOT clobbered by hash-only commit");
 }
 
 // Leak balance: an open_tree clone tree released without a move_mount (fd closed)

@@ -365,12 +365,6 @@ pub struct Dentry {
     /// authoritative O(1) lookup is the global `dentry_hashtable`. Per-(parent,
     /// name) — there is no global path→dentry map. Lock class `Dentry`.
     children: RwLock<BTreeMap<String, Arc<Dentry>>, DentryClass>,
-    /// Namespace-scoped mount link. Linux mount crossing is not a property
-    /// of a dentry alone: the same dentry can be covered differently in
-    /// different mount namespaces. This table records the covering mount id
-    /// for each namespace. The mount table, not the dentry, owns the mounted
-    /// filesystem/root object.
-    mounted_mounts: RwLock<BTreeMap<u64, u64>, DentryClass>,
     /// `d_time` — fs-private revalidation stamp (Linux `d_time`). The owning fs
     /// sets it in lookup/`d_revalidate` (a version/generation); the VFS only
     /// stores it. Atomic — a dentry is shared via `Arc`. # consumers: d_revalidate.
@@ -443,7 +437,6 @@ impl Dentry {
             d_count: Lockref::new(),
             d_flags: AtomicU32::new(flags),
             children: RwLock::new(BTreeMap::new()),
-            mounted_mounts: RwLock::new(BTreeMap::new()),
             d_time: AtomicU64::new(0),
             d_fsdata: AtomicU64::new(0),
             d_seq: AtomicU32::new(0),
@@ -853,27 +846,6 @@ impl Dentry {
         self.children.read().values().cloned().collect()
     }
 
-    /// Covering mount id for mount namespace `ns`, if this dentry is a
-    /// mountpoint in that namespace. # C: O(log N_ns_coverings)
-    pub fn mounted_mount(&self, ns: u64) -> Option<u64> {
-        self.mounted_mounts.read().get(&ns).copied()
-    }
-
-    /// Install / clear the namespace-scoped covering mount id. This is the
-    /// real VFS mount-crossing identity. # C: O(log N_ns_coverings)
-    pub fn set_mounted_mount(&self, ns: u64, mnt_id: Option<u64>) {
-        let mut mounts = self.mounted_mounts.write();
-        if let Some(id) = mnt_id { mounts.insert(ns, id); } else { mounts.remove(&ns); }
-    }
-
-    /// True iff a filesystem is mounted on this dentry IN namespace `ns`
-    /// (Linux mount crossing is per-mount-namespace: the same dentry can be
-    /// covered in one ns and bare in another, so an any-ns test is a cross-ns
-    /// false positive). # C: O(log N_ns_coverings)
-    pub fn is_mountpoint(&self, ns: u64) -> bool {
-        self.mounted_mounts.read().contains_key(&ns)
-    }
-
     /// `D_MOUNTED` hint — true iff ≥1 mount (any namespace) is attached on this
     /// dentry (Linux `d_mountpoint`: `d_flags & DCACHE_MOUNTED`). Refcounted via
     /// the `struct mountpoint` `m_count` in [`crate::mntns`]. # C: O(1)
@@ -886,12 +858,6 @@ impl Dentry {
     /// Clear `D_MOUNTED` (Linux `__put_mountpoint` last drop). Called on the
     /// `m_count` 1→0 drop in [`crate::mntns::put_mountpoint`]. # C: O(1)
     pub(crate) fn clear_mounted(&self) { self.d_flags.fetch_and(!D_MOUNTED, Ordering::Relaxed); }
-
-    /// True iff NO namespace records a covering mount on this dentry (the old
-    /// per-ns `mounted_mounts` map is empty). The 2a debug-assert safety net
-    /// pairs this with [`Self::is_mounted`] to prove the refcounted `D_MOUNTED`
-    /// hint matches the legacy per-ns map. # C: O(1)
-    pub(crate) fn mounted_mounts_empty(&self) -> bool { self.mounted_mounts.read().is_empty() }
 
     /// Absolute (GLOBAL) path for this dentry — Linux `d_path` / `prepend_path`:
     /// walk the parent chain to the global root and join `d_name`s with `/`,

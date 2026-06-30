@@ -54,7 +54,7 @@ fn d_invalidate_detaches_submount() {
 
     assert!(vfs::mount::mount_at_path_exact(&mp).is_none(), "submount GONE post-invalidate");
     assert!(common::mount_root_at("/a/b/m").is_none(), "no mount root post");
-    assert!(!mp.is_mountpoint(0xD25), "mountpoint dentry no longer crosses");
+    assert!(!mp.is_mounted(), "mountpoint dentry no longer crosses (D_MOUNTED cleared)");
     // And the table holds only the root mount.
     let left: Vec<u64> = vfs::mount::snapshot().into_iter().map(|m| m.mnt_id).collect();
     assert_eq!(left.len(), 1, "only the root mount remains: {left:?}");
