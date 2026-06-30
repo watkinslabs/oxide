@@ -272,6 +272,10 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     if !::fs::inotify::check_open_perm(&inode) { return -(Errno::Eacces.as_i32() as i64); }
     if let Err(rv) = ::security::bpf_lsm::file_open(&inode) { return rv; }
     if (flags & O_TRUNC) != 0 { let _ = inode.truncate(0); }
+    // D23: controlling-terminal acquisition on open (Linux `tty_open`). A
+    // session leader opening a console/serial/VT tty WITHOUT O_NOCTTY, when
+    // the tty is unclaimed, makes it the session's controlling terminal.
+    console::acquire_ctty_on_open(&inode, flags);
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
