@@ -56,6 +56,8 @@ pub(crate) use detach::detach_mounts_on;
 mod mnt_flags;
 pub use mnt_flags::{
     AtimePolicy, MNT_DOOMED, MNT_EXPIRE_MARK, MNT_INTERNAL, MNT_LOCKED, MNT_MARKED, MNT_UMOUNT,
+    MNT_ATIME_MASK, MOUNT_ATTR_IDMAP, MOUNT_ATTR_NOATIME, MOUNT_ATTR_RDONLY, MOUNT_ATTR_SETTABLE,
+    MOUNT_ATTR_STRICTATIME, MOUNT_ATTR__ATIME, mount_attr_to_mnt,
 };
 
 // Mount expiry list (Linux `mark_mounts_for_expiry`, autofs/NFS auto-umount):
@@ -744,7 +746,7 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
     let sb = build_sb(fs, root_inode, s_id);
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("attach", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
-    graft_realized(mp, sb)
+    graft_realized(mp, sb, 0)
 }
 
 /// Graft an ALREADY-REALIZED `SuperBlock` (built by the new mount API's
@@ -757,7 +759,20 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
 pub fn attach_sb(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>) -> KResult<()> {
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("attach_sb", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
-    graft_realized(mp, sb)
+    graft_realized(mp, sb, 0)
+}
+
+/// [D51] As [`attach_sb`] but stamps the per-mount MNT_* option bits (mapped
+/// from a `fsmount(2)` MOUNT_ATTR_* request by [`mount_attr_to_mnt`]) onto the
+/// new mount BEFORE it enters `MOUNTS` — so a subsequent `propagate_mount`
+/// peer-copy inherits them ([`clone_mnt`] copies `src.flags`). Only
+/// `MNT_OPTION_MASK` bits are honoured; internal-flag bits are ignored.
+/// # C: O(depth)
+pub fn attach_sb_with_flags(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64)
+    -> KResult<()> {
+    #[cfg(feature = "debug-mnt")]
+    mntcreate_log("attach_sb_with_flags", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
+    graft_realized(mp, sb, mnt_flags & MNT_OPTION_MASK)
 }
 
 /// Shared TAIL of [`attach`]/[`attach_sb`]: reserve the per-ns mount slot,
@@ -765,9 +780,10 @@ pub fn attach_sb(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>) -> KResult<()> {
 /// crossing-hash links, and commit. The mount root inode is derived from
 /// `sb.s_root()` (Linux `mnt_root`), not a stored copy. `mp == None` ⇒ the
 /// namespace root mount. # C: O(depth)
-fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>)
+fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64)
     -> KResult<()> {
     let ns = current_ns();
+    let mnt_flags = mnt_flags & MNT_OPTION_MASK;
     // Per-ns mount cap (Linux `count_mounts` in `attach_recursive_mnt`): RESERVE
     // one slot in `pending_mounts` BEFORE building any mount state; over
     // `sysctl_mount_max` ⇒ ENOSPC. The reservation is rolled live by
@@ -778,6 +794,8 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>)
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
     let Some(d) = mp else {
         let m = new_mount(sb, String::from("/"), None, mnt_id, mnt_id, ns);
+        // [D51] Stamp the requested option bits before the mount goes live.
+        if mnt_flags != 0 { m.flags.store(mnt_flags, Ordering::Release); }
         // [D11] The namespace ROOT mount is a kernel-internal producer (Linux
         // marks rootfs / kern_mount mounts MNT_INTERNAL): never user-expirable.
         m.set_internal_flag(MNT_INTERNAL);
@@ -796,6 +814,9 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>)
     let parent_id = parent_by_dentry(ns, &d);
     let rendered = abs_string(&d);
     let m = new_mount(sb, rendered, Some(d.clone()), parent_id, mnt_id, ns);
+    // [D51] Stamp the requested option bits before the mount goes live, so a
+    // following propagate_mount peer-copy inherits them via clone_mnt.
+    if mnt_flags != 0 { m.flags.store(mnt_flags, Ordering::Release); }
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("graft", mnt_id, parent_id, Some(&d), m.mnt_root().as_ref(), Some(&m.sb));
     // struct mountpoint (dentry refcount) + intrusive parent/child links.
@@ -1704,6 +1725,68 @@ fn apply_remount(m: &Arc<Mount>, flags: u64) -> KResult<()> {
     }
     m.flags.store(new, Ordering::Release);
     mntns::bump_gen(m.ns);
+    Ok(())
+}
+
+/// [D52] Commit `set_mnt`/`clr_mnt` (already in the MNT_* space) onto mount `m`:
+/// `new = (old & !clr) | set`, MASKED to `MNT_OPTION_MASK` so only per-mount
+/// option bits move (internal flags untouched). No writer guard — callers that
+/// can set RDONLY gate first. # C: O(1)
+fn commit_mnt_attrs(m: &Arc<Mount>, set_mnt: u64, clr_mnt: u64) {
+    let old = m.flags.load(Ordering::Acquire);
+    let set = set_mnt & MNT_OPTION_MASK;
+    let clr = clr_mnt & MNT_OPTION_MASK;
+    let new = (old & !clr) | set;
+    m.flags.store(new, Ordering::Release);
+    mntns::bump_gen(m.ns);
+}
+
+/// [D52] Apply a `mount_setattr(2)` option change to ONE mount: same EBUSY guard
+/// as [`apply_remount`] (turning RDONLY on with active writers is Linux
+/// `mnt_hold_writers` EBUSY), then commit via [`commit_mnt_attrs`]. # C: O(1)
+fn apply_mnt_attrs(m: &Arc<Mount>, set_mnt: u64, clr_mnt: u64) -> KResult<()> {
+    let old = m.flags.load(Ordering::Acquire);
+    if (set_mnt & MNT_RDONLY) != 0 && (old & MNT_RDONLY) == 0
+        && m.mnt_writers.load(Ordering::Acquire) > 0 {
+        return Err(VfsError::Ebusy);
+    }
+    commit_mnt_attrs(m, set_mnt, clr_mnt);
+    Ok(())
+}
+
+/// [D52] `mount_setattr(2)` on the mount the path walk CROSSED INTO, identified
+/// by `mnt_id` (Linux `do_mount_setattr` keys on `path->mnt`, NOT a re-derived
+/// dentry — same lesson as [`remount_flags_by_id`]). `set`/`clr` are MNT_*
+/// masks (from [`mount_attr_to_mnt`]). ns-gated by `check_mnt`. # C: O(1)
+pub fn mnt_setattr_by_id(mnt_id: u64, set: u64, clr: u64) -> KResult<()> {
+    let m = mount_by_id(mnt_id).ok_or(VfsError::Einval)?;
+    if !check_mnt(&m) { return Err(VfsError::Einval); }
+    apply_mnt_attrs(&m, set, clr)
+}
+
+/// [D52] `mount_setattr(2)` with `AT_RECURSIVE`: apply `set`/`clr` across the
+/// subtree rooted at `top_id` ([`subtree_ids`]). When turning RDONLY on, Linux
+/// holds writers across the WHOLE subtree first (`mnt_hold_writers`) and fails
+/// atomically — so this pre-checks every mount for active writers and returns
+/// EBUSY without mutating any, then commits the tree. ns-gated by `check_mnt`.
+/// # C: O(N_subtree)
+pub fn mnt_setattr_tree_by_id(top_id: u64, set: u64, clr: u64) -> KResult<()> {
+    let top = mount_by_id(top_id).ok_or(VfsError::Einval)?;
+    if !check_mnt(&top) { return Err(VfsError::Einval); }
+    let ids = subtree_ids(top.ns, top_id);
+    if (set & MNT_RDONLY) != 0 {
+        for id in &ids {
+            if let Some(m) = mount_by_id(*id) {
+                let old = m.flags.load(Ordering::Acquire);
+                if (old & MNT_RDONLY) == 0 && m.mnt_writers.load(Ordering::Acquire) > 0 {
+                    return Err(VfsError::Ebusy);
+                }
+            }
+        }
+    }
+    for id in &ids {
+        if let Some(m) = mount_by_id(*id) { commit_mnt_attrs(&m, set, clr); }
+    }
     Ok(())
 }
 

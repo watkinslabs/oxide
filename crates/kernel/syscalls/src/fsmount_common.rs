@@ -432,9 +432,10 @@ pub struct MountObjectInode {
     /// back to [`mount_fstype`] (byte-identical to the prior behaviour).
     pub realized: Option<(Arc<vfs::SuperBlock>, Arc<Dentry>)>,
     /// `fsmount(2)` `MOUNT_ATTR_*` the caller requested (validated in fsmount,
-    /// D51). STORED but NOT yet applied on the realized graft: the prior path
-    /// silently dropped these, so applying them would change the booted
-    /// mount-table state — deferred behind a boot-verify (see move_mount).
+    /// D51). Applied on the realized graft by `move_mount` via
+    /// [`vfs::mount::mount_attr_to_mnt`] + [`vfs::mount::attach_sb_with_flags`],
+    /// which stamps the mapped MNT_* option bits on the new mount before it goes
+    /// live (so a following `propagate_mount` peer-copy inherits them).
     pub mnt_attrs: u64,
     /// Some for an `open_tree` clone: the captured (fs, root) to bind at the
     /// target. None otherwise. (Legacy non-recursive path; superseded by
