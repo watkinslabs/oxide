@@ -44,21 +44,38 @@ pub fn register(name: &str, dev: Arc<dyn BlockDevice>) -> u32 {
 /// on `name` as `register`.
 /// # C: O(N_disks)
 pub fn register_with_serial(name: &str, serial: Option<&str>, dev: Arc<dyn BlockDevice>) -> u32 {
-    let mut t = TABLE.lock();
-    if let Some(d) = t.iter().find(|d| d.name == name) {
-        return d.index;
-    }
-    let index = (t.len() as u32) + 1;
-    // Wrap the driver device in the stats-counting decorator so every I/O
-    // through the registry is accounted at one central point (Linux blk-stat).
-    let (dev, stats) = crate::stats::StatsDev::wrap(dev);
-    t.push(Arc::new(Disk {
-        name: name.to_string(),
-        index,
-        serial: serial.filter(|s| !s.is_empty()).map(|s| s.to_string()),
-        dev,
-        stats,
-    }));
+    let index = {
+        let mut t = TABLE.lock();
+        if let Some(d) = t.iter().find(|d| d.name == name) {
+            return d.index;
+        }
+        let index = (t.len() as u32) + 1;
+        // Wrap the driver device in the stats-counting decorator so every I/O
+        // through the registry is accounted at one central point (Linux blk-stat).
+        let (dev, stats) = crate::stats::StatsDev::wrap(dev);
+        t.push(Arc::new(Disk {
+            name: name.to_string(),
+            index,
+            serial: serial.filter(|s| !s.is_empty()).map(|s| s.to_string()),
+            dev,
+            stats,
+        }));
+        index
+    }; // release TABLE before firing the device-model hooks (avoids holding the
+       // registry lock across the devtmpfs /dev-node insertion).
+    // device-model Stage C (D27): publish the disk as a `drv::device_add` block
+    // device so ONE registration mints the `/dev/<name>` block node (devtmpfs)
+    // alongside the existing `/sys/block/<name>` synthesis (which already reads
+    // this registry). bus "block" is ignored by the pci/virtio /sys synthesis,
+    // so the disk is NOT double-listed under /sys/bus; the real virtio-blk PCI
+    // function is still registered separately under its own bus. No factory: a
+    // plain block node synthesised from the real (major,minor) is exactly the
+    // devtmpfs node Linux would create (none existed before — the rootfs image
+    // ships no /dev/<disk> node).
+    let dt = major_minor(name, index);
+    drv::device_add(Arc::new(
+        drv::Device::new("block", name.to_string(), 0, 0, 0)
+            .with_devnode("block", name.to_string(), Some(dt))));
     index
 }
 
@@ -179,6 +196,25 @@ mod sysfs_format_tests {
         assert_eq!(found.index, idx);
         // A dev_t no disk owns (impossible major 0xfff) → None.
         assert!(by_dev(0xfff << 8).is_none(), "unowned dev_t → None");
+    }
+
+    #[test]
+    fn register_fires_device_add_block_node() {
+        use crate::blockdev::MemDisk;
+        use sync::TaskList;
+        // Record what the devtmpfs hook receives (mimics devfs::add_device_node).
+        static SEEN: Spinlock<Vec<(String, Option<(u32, u32)>)>, DevicesClass>
+            = Spinlock::new(Vec::new());
+        fn cb(class: &str, name: &str, dt: Option<(u32, u32)>, _f: Option<drv::NodeFactory>) {
+            if class == "block" { SEEN.lock().push((name.to_string(), dt)); }
+        }
+        drv::set_devtmpfs_hook(cb);
+        let dev: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 8);
+        let idx = register("vdadd", dev);
+        // device_add minted /dev/vdadd with the disk's real (major,minor).
+        let want = (String::from("vdadd"), Some(major_minor("vdadd", idx)));
+        assert!(SEEN.lock().iter().any(|e| *e == want),
+            "register() device_add's a block /dev node with the disk dev_t");
     }
 
     #[test]
