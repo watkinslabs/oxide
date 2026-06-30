@@ -111,6 +111,24 @@ pub(crate) fn ext4_file_ino(inode: &Inode) -> Option<u32> {
     inode.private::<Ext4FileData>().map(|f| f.ino)
 }
 
+/// Write-back-on-modify: re-encode the inode's full in-core xattr set into its
+/// on-disk IBODY area (journaled). Called after a successful in-core
+/// set/remove so disk stays the authority across eviction/remount. Best-effort:
+/// a set that overflows the ibody area (external-block residual) stays in-core
+/// only. # C: O(N_xattr) + 1 journaled inode write
+fn persist_inode_xattrs(inode: &Inode) {
+    if let Some((st, ino)) = ext4_state_of(inode) {
+        if let Some(store) = inode.simple_xattrs() {
+            let entries: Vec<(alloc::string::String, Vec<u8>)> = store
+                .list_names()
+                .into_iter()
+                .filter_map(|n| store.get(&n).map(|v| (n, v)))
+                .collect();
+            let _ = st.mount.store_ibody_xattrs(ino, &entries);
+        }
+    }
+}
+
 // ── regular-file ops (i_op / i_fop / i_mapping) ──────────────────────
 
 /// `inode_operations` for a regular ext4 file: metadata + truncate /
@@ -167,6 +185,26 @@ impl InodeOps for Ext4RegInodeOps {
             if let Ok(i) = d.st.mount.read_inode(d.ino) { k.blocks = i.i_blocks; }
         }
         k
+    }
+
+    /// `i_op->setxattr` — update the in-core store (atomic flag check), then
+    /// persist the full set to the on-disk IBODY area. # C: O(N_xattr) + 1 I/O
+    fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
+        -> Result<(), vfs::XattrError>
+    {
+        let store = inode.simple_xattrs().ok_or(vfs::XattrError::NotSup)?;
+        store.set(name, value, create, replace)?;
+        persist_inode_xattrs(inode);
+        Ok(())
+    }
+
+    /// `i_op->removexattr` — drop from the in-core store, then re-encode the
+    /// IBODY area to disk. # C: O(N_xattr) + 1 I/O
+    fn removexattr(&self, inode: &Inode, name: &str) -> Result<(), vfs::XattrError> {
+        let store = inode.simple_xattrs().ok_or(vfs::XattrError::NotSup)?;
+        store.remove(name)?;
+        persist_inode_xattrs(inode);
+        Ok(())
     }
 }
 
@@ -291,6 +329,11 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
     });
     let mapping: Arc<dyn AddressSpaceOps> = Arc::new(Ext4FileMapping { data: data.clone() });
     let weak_sb = data.st.sb.lock().clone();
+    // Load-on-iget: disk is the xattr authority, the SimpleXattrs store the
+    // in-core cache. Populate from the on-disk ibody + external block so xattrs
+    // survive eviction + remount.
+    let xattrs = vfs::SimpleXattrs::new();
+    data.st.mount.load_xattrs(ino, &xattrs);
     InodeBuilder::new(ext4_wrap_ino(ino), mk_mode(FileType::Regular, mode & 0o7777),
                       Arc::new(Ext4RegInodeOps), Arc::new(Ext4RegFileOps))
         .sb(weak_sb)
@@ -298,7 +341,7 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
         .nlink(nlink)
         .owner(uid, gid)
         .mapping(mapping)
-        .xattrs(vfs::SimpleXattrs::new())
+        .xattrs(xattrs)
         .private(data)
         .build()
 }
@@ -337,6 +380,26 @@ impl InodeOps for Ext4StatInodeOps {
             if let Ok(i) = d.st.mount.read_inode(d.ino) { k.blocks = i.i_blocks; }
         }
         k
+    }
+
+    /// `i_op->setxattr` — in-core update then on-disk IBODY persist (see the
+    /// regular-file impl). # C: O(N_xattr) + 1 I/O
+    fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
+        -> Result<(), vfs::XattrError>
+    {
+        let store = inode.simple_xattrs().ok_or(vfs::XattrError::NotSup)?;
+        store.set(name, value, create, replace)?;
+        persist_inode_xattrs(inode);
+        Ok(())
+    }
+
+    /// `i_op->removexattr` — in-core drop then on-disk IBODY persist. # C:
+    /// O(N_xattr) + 1 I/O
+    fn removexattr(&self, inode: &Inode, name: &str) -> Result<(), vfs::XattrError> {
+        let store = inode.simple_xattrs().ok_or(vfs::XattrError::NotSup)?;
+        store.remove(name)?;
+        persist_inode_xattrs(inode);
+        Ok(())
     }
 
     /// # C: O(target_len)
@@ -564,6 +627,9 @@ pub(crate) fn build_stat_inode(
 ) -> InodeRef {
     let data = Arc::new(Ext4StatData { st, ino, ft, size });
     let weak_sb = data.st.sb.lock().clone();
+    // Load-on-iget (see `build_file_inode`): disk-authority xattr cache.
+    let xattrs = vfs::SimpleXattrs::new();
+    data.st.mount.load_xattrs(ino, &xattrs);
     InodeBuilder::new(ext4_wrap_ino(ino), mk_mode(ft, perm),
                       Arc::new(Ext4StatInodeOps), Arc::new(Ext4StatFileOps))
         .sb(weak_sb)
@@ -571,7 +637,7 @@ pub(crate) fn build_stat_inode(
         .nlink(nlink)
         .rdev(rdev)
         .owner(uid, gid)
-        .xattrs(vfs::SimpleXattrs::new())
+        .xattrs(xattrs)
         .private(data)
         .build()
 }
