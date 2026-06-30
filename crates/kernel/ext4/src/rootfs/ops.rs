@@ -8,6 +8,22 @@ use block::types::InodeId;
 use super::inode::{build_file_inode, build_stat_inode, ext4_file_ino, ext4_wrap_ino};
 use super::state::RootfsState;
 
+/// ext4 dirent `file_type` byte for an inode's `S_IFMT` (Linux
+/// `ext4_type_by_mode` / `fs/ext4/dir.c`). Used by the atomic
+/// exchange/whiteout dirent rewrites so a swapped char/block/fifo/sock
+/// entry keeps its correct `d_type`, not a blanket `DT_REG`. # C: O(1)
+fn dirent_dt(i: &crate::Inode) -> u8 {
+    match i.mode & crate::inode::S_IFMT {
+        crate::inode::S_IFDIR  => crate::dir::DT_DIR,
+        crate::inode::S_IFLNK  => crate::dir::DT_LNK,
+        crate::inode::S_IFCHR  => crate::dir::DT_CHR,
+        crate::inode::S_IFBLK  => crate::dir::DT_BLK,
+        crate::inode::S_IFIFO  => crate::dir::DT_FIFO,
+        crate::inode::S_IFSOCK => crate::dir::DT_SOCK,
+        _                      => crate::dir::DT_REG,
+    }
+}
+
 impl RootfsState {
     /// Wrap `ino` (any type): regular → writeable file inode; else
     /// stat-only inode. Both carry `self` (via `i_private`) so ops route
@@ -244,6 +260,93 @@ impl RootfsState {
         }
         Ok(())
     }
+
+    /// `RENAME_EXCHANGE` (Linux `ext4_rename` with the `EXCHANGE` flag): swap
+    /// the two existing entries `a` and `b` ATOMICALLY in ONE journaled
+    /// transaction — both names point at each other's inode after, and both
+    /// inodes' nlink + owning parent are unchanged (an exchange moves no link
+    /// counts). Replaces the generic non-atomic 3-step temp-name dance: the
+    /// two `dir_unlink`s + two swapped `dir_link`s stage into a single shadow
+    /// that `run_journaled` commits as one tx, so a crash mid-swap can never
+    /// leave one entry pointing at a freed/temp inode. Caller (`082_rename`)
+    /// has pre-checked both exist (ENOENT otherwise).
+    ///
+    /// Residual (matches the existing plain-rename path, not a new gap): a
+    /// cross-parent exchange of two DIRECTORIES does not rewrite their `..`
+    /// entries or adjust parent `i_nlink` — this ext4 backend maintains no
+    /// `..` fixup on any directory move yet (same limitation in `rename_at`).
+    /// # C: O(N parent entries) + 1 journaled tx
+    pub fn exchange_at(&self, a: &[u8], b: &[u8]) -> Result<(), vfs::VfsError> {
+        let (ap, aname) = split_parent_and_name(a).ok_or(vfs::VfsError::Enoent)?;
+        let (bp, bname) = split_parent_and_name(b).ok_or(vfs::VfsError::Enoent)?;
+        let apino = self.mount.lookup_path(ap).map_err(|_| vfs::VfsError::Enoent)?;
+        let bpino = self.mount.lookup_path(bp).map_err(|_| vfs::VfsError::Enoent)?;
+        let aino = self.mount.lookup_path(a).map_err(|_| vfs::VfsError::Enoent)?;
+        let bino = self.mount.lookup_path(b).map_err(|_| vfs::VfsError::Enoent)?;
+        // Exchanging a name with itself is a no-op (Linux returns 0).
+        if apino == bpino && aname == bname { return Ok(()); }
+        let aft = dirent_dt(&self.mount.read_inode(aino).map_err(|_| vfs::VfsError::Eio)?);
+        let bft = dirent_dt(&self.mount.read_inode(bino).map_err(|_| vfs::VfsError::Eio)?);
+        let (aname, bname) = (aname.to_vec(), bname.to_vec());
+        self.mount.run_journaled(|m| {
+            // Remove both, then re-link SWAPPED — all four ops share one shadow
+            // (re-entrant `run_journaled`), committing atomically.
+            m.dir_unlink(apino, &aname)?;
+            m.dir_unlink(bpino, &bname)?;
+            m.dir_link(apino, &aname, bino, bft)?;
+            m.dir_link(bpino, &bname, aino, aft)?;
+            Ok(())
+        }).map_err(|_| vfs::VfsError::Eio)
+    }
+
+    /// `RENAME_WHITEOUT` (Linux `vfs_rename` with the `WHITEOUT` flag, the
+    /// overlayfs lower-layer-delete primitive): rename `from`→`to` AND plant a
+    /// whiteout at the vacated source — a character device with rdev 0:0
+    /// (`S_IFCHR | 0`) — ATOMICALLY in ONE journaled transaction. Replaces the
+    /// generic two-step (rename-then-mknod, which on a mid-crash leaves the
+    /// source name gone with no whiteout): the overwrite-unlink + dest link +
+    /// source unlink + whiteout `create_mknod` all stage into one shadow that
+    /// commits together. `create_mknod` is re-entrant under the open shadow, so
+    /// the pre-allocated whiteout inode + its dirent join THIS tx. Whiteout
+    /// owner is root (uid/gid 0), mirroring the generic default.
+    /// # C: O(N parent entries) + 1 journaled tx
+    pub fn whiteout_at(&self, from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
+        let (from_p, from_name) = split_parent_and_name(from).ok_or(vfs::VfsError::Enoent)?;
+        let (to_p, to_name) = split_parent_and_name(to).ok_or(vfs::VfsError::Enoent)?;
+        let from_pino = self.mount.lookup_path(from_p).map_err(|_| vfs::VfsError::Enoent)?;
+        let to_pino = self.mount.lookup_path(to_p).map_err(|_| vfs::VfsError::Enoent)?;
+        let target = self.mount.lookup_path(from).map_err(|_| vfs::VfsError::Enoent)?;
+        let src = self.mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
+        let ftype = dirent_dt(&src);
+        let (from_name, to_name) = (from_name.to_vec(), to_name.to_vec());
+        // Replaced destination (a whiteout rename may overwrite an existing
+        // dest): capture the victim's ino + dir-ness before its entry is
+        // removed so its in-memory nlink drops after (mirrors `rename_at`).
+        let dest_victim = self.mount.lookup_path(to).ok();
+        let dest_is_dir = dest_victim
+            .and_then(|v| self.mount.read_inode(v).ok())
+            .map(|i| i.is_dir())
+            .unwrap_or(false);
+        // Whiteout = char device, perm 0, rdev 0:0 (Linux WHITEOUT_MODE /
+        // WHITEOUT_DEV). `create_mknod` requires the `S_IFMT` type bits.
+        const WHITEOUT_MODE: u16 = crate::inode::S_IFCHR;
+        self.mount.run_journaled(|m| {
+            if dest_victim.is_some() { let _ = m.dir_unlink(to_pino, &to_name); }
+            m.dir_link(to_pino, &to_name, target, ftype)?;
+            m.dir_unlink(from_pino, &from_name)?;
+            m.create_mknod(from_pino, &from_name, WHITEOUT_MODE, 0, 0, 0)?;
+            Ok(())
+        }).map_err(|_| vfs::VfsError::Eio)?;
+        // In-memory nlink authority for an overwritten dest (mirror `rename_at`).
+        if let Some(victim_ino) = dest_victim {
+            if let Some(sb) = self.i_sb() {
+                if let Some(victim) = sb.ilookup(ext4_wrap_ino(victim_ino)) {
+                    if dest_is_dir { victim.set_nlink(0); } else { victim.drop_link(); }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Split `/a/b/c` into (`/a/b`, `c`). None for paths without a basename.
@@ -367,6 +470,17 @@ impl vfs::fs::FileSystem for Ext4Mount {
     }
     fn rename(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
         self.st.rename_at(from.as_bytes(), to.as_bytes())
+    }
+    /// ext4-native ATOMIC `RENAME_EXCHANGE` (overrides the generic non-atomic
+    /// 3-step default): one journaled dirent swap. # C: O(N parent entries) + 1 tx
+    fn exchange(&self, a: &str, b: &str) -> vfs::fs::KResult<()> {
+        self.st.exchange_at(a.as_bytes(), b.as_bytes())
+    }
+    /// ext4-native ATOMIC `RENAME_WHITEOUT` (overrides the generic two-step
+    /// default): one journaled rename + whiteout-chardev placement.
+    /// # C: O(N parent entries) + 1 tx
+    fn whiteout(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
+        self.st.whiteout_at(from.as_bytes(), to.as_bytes())
     }
 }
 
