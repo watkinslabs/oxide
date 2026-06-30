@@ -14,6 +14,7 @@ vfs        = { path = "../vfs" }
 cmdline    = { path = "../cmdline" }
 tty        = { path = "../tty" }
 devfs      = { path = "../devfs" }
+drv        = { path = "../../drivers/drv" }
 sched      = { path = "../sched" }
 serialtty  = { path = "../serialtty" }
 drv-serial = { path = "../../drivers/drv-serial" }

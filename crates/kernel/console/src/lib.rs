@@ -441,29 +441,53 @@ pub fn system_console_inode() -> InodeRef {
 pub fn register_devnodes() {
     use alloc::sync::Arc;
     use alloc::string::String;
+    // device-model Stage C (D27): the console/tty char devices self-register
+    // through `drv::device_add` (dev_class "tty"). Each `node_factory` mints the
+    // EXACT bespoke inode (per-VT `i_private`, routing tag, rdev) the direct
+    // register used, so every /dev node is byte-identical (shared instances —
+    // tty/tty0, vcs/vcs0, vcsa/vcsa0 — are preserved by cloning a captured Arc).
+    // bus "tty" is ignored by the pci/virtio /sys synthesis (no spurious /sys
+    // entry); dev_t metadata is decoded from each inode's real rdev.
     // /dev/console = the preferred console (serial when a serial console is
     // the preferred console, else the fg VT) — the Linux 5:1 kernel-console
     // device.
-    devfs::register("/dev/console", system_console_inode());
+    add_tty_node("console", 0x0501, Arc::new(|| system_console_inode()));
     // /dev/tty, /dev/tty0 = the foreground video VT (always video; distinct
-    // from /dev/console, which the console= cmdline may point at serial).
+    // from /dev/console, which the console= cmdline may point at serial). Both
+    // share ONE inode instance (rdev 5:0), as before.
     let fg: vfs::InodeRef = make_console_inode(0);
-    devfs::register("/dev/tty",     Arc::clone(&fg));
-    devfs::register("/dev/tty0",    fg);
+    let fg2 = Arc::clone(&fg);
+    add_tty_node("tty",  console_rdev(0), Arc::new(move || Arc::clone(&fg)));
+    add_tty_node("tty0", console_rdev(0), Arc::new(move || Arc::clone(&fg2)));
     // Serial line — a SEPARATE device (its own tty, serial-only, own winsize).
-    devfs::register("/dev/ttyS0",   make_serial_inode());
+    add_tty_node("ttyS0", SERIAL_RDEV, Arc::new(|| make_serial_inode()));
     for vt in 1..=tty::live::N_VT as u8 {
-        let mut path = String::with_capacity(10);
-        path.push_str("/dev/tty");
-        if vt >= 10 { path.push((b'0' + (vt / 10)) as char); }
-        path.push((b'0' + (vt % 10)) as char);
-        devfs::register_owned(path, make_console_inode(vt));
+        let mut name = String::with_capacity(6);
+        name.push_str("tty");
+        if vt >= 10 { name.push((b'0' + (vt / 10)) as char); }
+        name.push((b'0' + (vt % 10)) as char);
+        add_tty_node(&name, console_rdev(vt), Arc::new(move || make_console_inode(vt)));
     }
     // VT screen-dump devices (vc_screen.c). 0 = current foreground VT.
     let vcs: vfs::InodeRef = make_vcs_inode(false);
-    devfs::register("/dev/vcs",  Arc::clone(&vcs));
-    devfs::register("/dev/vcs0", vcs);
+    let vcs2 = Arc::clone(&vcs);
+    add_tty_node("vcs",  0x0700, Arc::new(move || Arc::clone(&vcs)));
+    add_tty_node("vcs0", 0x0700, Arc::new(move || Arc::clone(&vcs2)));
     let vcsa: vfs::InodeRef = make_vcs_inode(true);
-    devfs::register("/dev/vcsa",  Arc::clone(&vcsa));
-    devfs::register("/dev/vcsa0", vcsa);
+    let vcsa2 = Arc::clone(&vcsa);
+    add_tty_node("vcsa",  0x0780, Arc::new(move || Arc::clone(&vcsa)));
+    add_tty_node("vcsa0", 0x0780, Arc::new(move || Arc::clone(&vcsa2)));
+}
+
+/// Self-register a tty-class `/dev/<name>` node through `drv::device_add` (D27).
+/// `rdev` is the inode's packed `(major<<8)|minor`; the device-model carries the
+/// decoded `(major,minor)` metadata and the `factory` mints the exact inode.
+/// # C: O(1) amortised
+fn add_tty_node(name: &str, rdev: u32, factory: drv::NodeFactory) {
+    use alloc::string::String;
+    use alloc::sync::Arc;
+    drv::device_add(Arc::new(
+        drv::Device::new("tty", String::from(name), 0, 0, 0)
+            .with_devnode("tty", String::from(name), Some((rdev >> 8, rdev & 0xff)))
+            .with_node_factory(factory)));
 }

@@ -133,12 +133,27 @@ fn make_evdev_inode() -> vfs::InodeRef {
                            vfs::default_inode_ops(), Arc::new(DrmSinkFileOps)).build()
 }
 
+/// Self-register a DRM/input `/dev` node through `drv::device_add` (D27): the
+/// `node_factory` mints the EXACT bespoke inode (custom `FileOps`, routing tag)
+/// each used before, so the /dev node is byte-identical; `dt` is the standard
+/// `(major,minor)` metadata. bus == `class` (`drm`/`input`) is ignored by the
+/// pci/virtio /sys synthesis, so no spurious /sys entry appears. # C: O(1)
+fn add_node(name: &str, class: &'static str, dt: (u32, u32), factory: drv::NodeFactory) {
+    use alloc::string::String;
+    drv::device_add(Arc::new(
+        drv::Device::new(class, String::from(name), 0, 0, 0)
+            .with_devnode(class, String::from(name), Some(dt))
+            .with_node_factory(factory)));
+}
+
 /// Register DRM card / render / evdev / input-devices nodes.
 /// # C: O(1)
 pub fn register() {
-    devfs::register("/dev/dri/card0",      make_card_inode());
-    devfs::register("/dev/dri/renderD128", make_render_inode());
-    devfs::register("/dev/input/event0",   make_evdev_inode());
+    // device-model Stage C (D27): /dev/dri/card0 (226:0), renderD128 (226:128)
+    // and /dev/input/event0 (13:64) self-register via `device_add`.
+    add_node("dri/card0",      "drm",   (226, 0),   Arc::new(|| make_card_inode()));
+    add_node("dri/renderD128", "drm",   (226, 128), Arc::new(|| make_render_inode()));
+    add_node("input/event0",   "input", (13, 64),   Arc::new(|| make_evdev_inode()));
     procfs::register("/proc/bus/input/devices",
         vfs::StaticFileInode::new(b"\
 I: Bus=0019 Vendor=0000 Product=0000 Version=0000\n\
