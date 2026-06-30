@@ -83,11 +83,6 @@ impl PseudoEntry {
     fn ino(&self) -> Ino {
         match self { PseudoEntry::Dir(d) => d.ino, PseudoEntry::Leaf(i) => i.ino() }
     }
-    /// Materialise the entry as an [`InodeRef`]: a dir builds (or reuses) its
-    /// backing `vfs::Inode`; a leaf is already one. # C: O(1)
-    fn as_inode(&self) -> InodeRef {
-        match self { PseudoEntry::Dir(d) => d.as_inode(), PseudoEntry::Leaf(i) => Arc::clone(i) }
-    }
 }
 
 /// A mutable directory in a pseudo-fs tree. Drivers register nodes at
@@ -189,6 +184,32 @@ impl PseudoDir {
         }
     }
 
+    /// Materialise a registered LEAF child through the owning SB's per-SB
+    /// icache (inode D2 leaf — the leaf counterpart of [`PseudoDir::as_inode`]).
+    ///
+    /// The kernfs tree holds each leaf `vfs::Inode` STRONG (it is the backend
+    /// leaf-info / rebuild source — kobject attribute files, static `/proc`
+    /// files, runtime symlinks), so identity is already stable. Routing the
+    /// materialisation through [`SuperBlock::iget`] keyed by the leaf's `ino`
+    /// makes the leaf ENTER the per-SB icache: `ilookup`/`iget` dedup by ino
+    /// (a repeat fetch returns the SAME `Arc`, igrab on hit) and
+    /// `s_inodes`/`drop_caches`/`evict_inodes` now SEE it — exactly like the
+    /// dir path and tmpfs/ext4 leaf inodes. The `build` closure hands back the
+    /// tree-pinned `Arc` (never a duplicate), so even if the icache `Weak` is
+    /// later reclaimed and rebuilt the identity, `ino`, `i_op`/`i_fop` and
+    /// `i_private` are byte-identical — reads are unchanged. Pre-stamp (no SB
+    /// yet, before `fill_super`/`set_sb`) → the strong clone directly, until a
+    /// later lookup re-enters `iget`. Lock order: the caller holds nothing at
+    /// `Superblock` (60) rank; `self.sb` sits at `Kernfs` (55) < 60, so taking
+    /// `sb.iget`'s icache lock after dropping the kernfs node lock is
+    /// ascending and deadlock-free (same as the dir path). # C: O(log N_ino)
+    fn leaf_iget(&self, leaf: &InodeRef) -> InodeRef {
+        match self.sb.lock().clone().upgrade() {
+            Some(sb) => { let l = Arc::clone(leaf); sb.iget(leaf.ino(), move || l) }
+            None => Arc::clone(leaf),
+        }
+    }
+
     /// This dir's owning-SB weak (handed to children it creates). # C: O(1)
     fn sb_weak(&self) -> Weak<SuperBlock> { self.sb.lock().clone() }
 
@@ -245,8 +266,13 @@ impl PseudoDir {
             let g = dir.children.lock();
             match g.get(*c) {
                 Some(PseudoEntry::Leaf(inode)) => {
-                    if i == comps.len() - 1 { return Some(Arc::clone(inode)); }
-                    return None; // leaf mid-path
+                    // Final-component leaf → route through the per-SB icache
+                    // (inode D2 leaf), dropping the node lock first so the
+                    // icache lock is taken cleanly at ascending rank.
+                    let last = i == comps.len() - 1;
+                    let leaf = if last { Some(Arc::clone(inode)) } else { None };
+                    drop(g);
+                    return leaf.map(|l| dir.leaf_iget(&l)); // None ⇒ leaf mid-path
                 }
                 Some(PseudoEntry::Dir(d)) => {
                     let d = Arc::clone(d);
@@ -300,10 +326,20 @@ impl PseudoDir {
     // ---- VFS op bodies (driven by `PseudoDirOps`/`PseudoDirFileOps` off the
     //      inode's `i_private`) ------------------------------------------------
 
-    /// `i_op->lookup`. # C: O(log children)
+    /// `i_op->lookup`. A leaf routes through the per-SB icache (inode D2 leaf,
+    /// [`PseudoDir::leaf_iget`]); a subdir through [`PseudoDir::as_inode`]. The
+    /// child node lock is dropped before `leaf_iget` so the icache lock is
+    /// taken at ascending rank. # C: O(log children)
     fn op_lookup(&self, name: &str) -> KResult<InodeRef> {
-        let g = self.children.lock();
-        g.get(name).map(|e| e.as_inode()).ok_or(VfsError::Enoent)
+        let leaf = {
+            let g = self.children.lock();
+            match g.get(name) {
+                None => return Err(VfsError::Enoent),
+                Some(PseudoEntry::Dir(d)) => return Ok(d.as_inode()),
+                Some(PseudoEntry::Leaf(i)) => Arc::clone(i),
+            }
+        };
+        Ok(self.leaf_iget(&leaf))
     }
 
     /// `i_op->mkdir`. Pseudo-fs dirs are mutable: systemd/tmpfiles create
@@ -596,6 +632,45 @@ mod tests {
         let via_lookup = sb.ilookup(sub_ino).expect("dir cached in icache");
         assert!(Arc::ptr_eq(&a, &via_lookup), "ilookup returns the SAME Arc");
         let via_iget = sb.iget(sub_ino, || panic!("iget must hit the cache, not rebuild"));
+        assert!(Arc::ptr_eq(&a, &via_iget), "iget returns the SAME Arc");
+    }
+
+    // [inode D2 leaf] A registered LEAF inode (kobject attr / static-proc file /
+    // symlink) now materialises through `SuperBlock::iget` keyed by its ino, so
+    // it ENTERS the per-SB icache: a repeat fetch by ino returns the SAME `Arc`
+    // (dedup, igrab on hit), and the icache `ilookup`/`iget` see it — bringing
+    // leaf inodes in line with the dir path and tmpfs/ext4. Identity, ino,
+    // i_op/i_fop and reads are unchanged (lifecycle routing, not behaviour).
+    #[test]
+    fn leaf_inode_routed_through_icache_dedup() {
+        use vfs::fs::FileSystem;
+        let fs = PseudoFs::new("kernfs", 0x1234);
+        let root_inode = fs.root().expect("root inode");
+        let sb = SuperBlock::for_backend(
+            fs.clone() as Arc<dyn FileSystem>, Some(root_inode), 0xBEEF, String::from("kernfs"));
+
+        // Register a leaf (a symlink leaf) AFTER the SB stamp; insert_path
+        // routes the intermediate dirs and stores the leaf strong in the tree.
+        let leaf_ino: Ino = 0x7000_0042;
+        fs.root_dir().insert_path("dir/leaf", PseudoSymlink::new(leaf_ino, fs.magic(), b"/tgt"));
+
+        // Fetch the same leaf twice by path → routed through the icache → the
+        // SAME `Arc` (dedup), and its ino is the registered leaf ino.
+        let a = fs.root_dir().lookup_path("dir/leaf").expect("leaf");
+        assert_eq!(a.ino(), leaf_ino);
+        assert_eq!(a.file_type(), FileType::Symlink);
+        let b = fs.root_dir().lookup_path("dir/leaf").expect("leaf again");
+        assert!(Arc::ptr_eq(&a, &b), "repeat leaf fetch returns the SAME icache Arc (dedup)");
+
+        // Per-component lookup (op_lookup) routes through the same icache slot.
+        let dir = fs.root_dir().lookup_path("dir").expect("dir");
+        let via_lookup = dir.lookup("leaf").expect("leaf via op_lookup");
+        assert!(Arc::ptr_eq(&a, &via_lookup), "op_lookup returns the SAME icache Arc");
+
+        // Registered in the per-SB icache and a cache HIT (closure must not run).
+        let via_ilookup = sb.ilookup(leaf_ino).expect("leaf cached in icache");
+        assert!(Arc::ptr_eq(&a, &via_ilookup), "ilookup returns the SAME Arc");
+        let via_iget = sb.iget(leaf_ino, || panic!("iget must hit the cache, not rebuild"));
         assert!(Arc::ptr_eq(&a, &via_iget), "iget returns the SAME Arc");
     }
 }
