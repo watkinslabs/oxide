@@ -35,6 +35,19 @@ pub fn sys_umount2(args: &SyscallArgs) -> i64 {
 
 fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
+    // Linux ksys_umount flag gate (D53): reject unknown bits, and MNT_EXPIRE is
+    // mutually exclusive with MNT_FORCE/MNT_DETACH — both before the path walk.
+    const MNT_FORCE:        u64 = 1;
+    const MNT_DETACH_BIT:   u64 = 2;
+    const MNT_EXPIRE:       u64 = 4;
+    const UMOUNT_NOFOLLOW:  u64 = 8;
+    let flags = args.a1;
+    if flags & !(MNT_FORCE | MNT_DETACH_BIT | MNT_EXPIRE | UMOUNT_NOFOLLOW) != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    if (flags & MNT_EXPIRE) != 0 && (flags & (MNT_FORCE | MNT_DETACH_BIT)) != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };

@@ -25,6 +25,8 @@ use alloc::vec::Vec;
 use core::any::Any;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use sync::{Inode as InodeLockClass, RwLock, RwReadGuard, RwWriteGuard};
+
 use crate::file_ops::FileOps;
 use crate::inode_ops::InodeOps;
 use crate::mapping::AddressSpaceOps;
@@ -94,6 +96,17 @@ pub struct Inode {
     /// `i_link` — inline fast-symlink body (Linux `inode->i_link`); `None` = no
     /// inline body, so `get_link` falls through to `i_op->readlink`.
     i_link: Option<Box<[u8]>>,
+    /// `i_rwsem` (Linux `inode->i_rwsem`) — the per-inode read/write semaphore
+    /// at lock rank `Inode` (40, `06§3.6`). Held EXCLUSIVE by the directory
+    /// mutating paths (create/mkdir/unlink/rmdir/rename — taken in the syscall
+    /// layer + `lock_rename` here) and by `O_APPEND` cross-writer atomicity
+    /// (`File::write`/`write_iter`); held SHARED by the `lookup_slow` directory
+    /// read path (`namei::walk`). Payload is `()` — it guards the inode's
+    /// namespace/size, not a wrapped value. Ranked above the file `f_pos_lock`
+    /// (35) / `f_ra` (36), so an append takes `f_pos_lock` THEN `i_rwsem`
+    /// (ascending), and below `Dentry` (50)/`Superblock` (60), so a dir op holds
+    /// `i_rwsem` THEN touches the dcache (ascending) — no rank inversion.
+    i_rwsem: RwLock<(), InodeLockClass>,
 }
 
 impl Inode {
@@ -260,28 +273,68 @@ impl Inode {
     /// `drop_nlink` (saturating at 0). # C: O(1)
     pub fn drop_nlink(&self) { let _ = self.i_nlink.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| Some(n.saturating_sub(1))); }
 
+    /// Unlink-name coupling (`16§2`; Linux `drop_nlink` + the `i_nlink == 0`
+    /// evict test): atomically remove one hard-link name and report whether it
+    /// was the LAST (`i_nlink` reached 0). This is the coupling the per-inode
+    /// `i_dentry` alias list lacked — it ties `Inode::nlink` to the name set so
+    /// the dcache can drive retirement. A `true` return is Linux's "no names
+    /// remain → the inode must be retired once its last reference (`i_count`)
+    /// drops" signal; the eviction itself is driven SOLELY by the `iput`/
+    /// `drop_inode`/`evict_inode` lifecycle (no double-evict). The dcache pairs
+    /// this with alias-list teardown in [`crate::dcache::d_unlink`] /
+    /// [`crate::dcache::d_prune_aliases`]. Saturates at 0. # C: O(1)
+    pub fn drop_link(&self) -> bool {
+        let prev = self.i_nlink.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| Some(n.saturating_sub(1)));
+        matches!(prev, Ok(n) if n <= 1)
+    }
+
+    // ---- i_rwsem (Linux inode->i_rwsem) ------------------------------------
+
+    /// `inode_lock` (Linux `fs/inode.c`) — take `i_rwsem` EXCLUSIVE. The write
+    /// holder for a directory's create/mkdir/unlink/rmdir/rename (and for an
+    /// `O_APPEND` size-read→write→pos). The returned guard releases on drop
+    /// (Linux `inode_unlock`); pass it to [`inode_unlock`] for an explicit
+    /// release. # C: O(contention)
+    pub fn inode_lock(&self) -> RwWriteGuard<'_, (), InodeLockClass> { self.i_rwsem.write() }
+
+    /// `inode_lock_shared` (Linux) — take `i_rwsem` SHARED. The read holder for
+    /// the `lookup_slow` directory read path; many lookups proceed concurrently
+    /// while no mutator holds the exclusive side. # C: O(contention)
+    pub fn inode_lock_shared(&self) -> RwReadGuard<'_, (), InodeLockClass> { self.i_rwsem.read() }
+
+    /// Raw `i_rwsem` handle, for the `lock_rename` ordering helper. # C: O(1)
+    fn i_rwsem(&self) -> &RwLock<(), InodeLockClass> { &self.i_rwsem }
+
     // ---- i_op delegators (namespace + metadata) ----------------------------
 
     /// `i_op->lookup`. # C: backend-dependent
     pub fn lookup(&self, name: &str) -> KResult<InodeRef> { self.i_op.lookup(self, name) }
     /// `i_op->create`. # C: backend-dependent
-    pub fn create_child(&self, name: &str, mode: u32) -> KResult<InodeRef> { self.i_op.create(self, name, mode) }
+    pub fn create_child(&self, name: &str, mode: u32, ctx: &crate::CreateCtx) -> KResult<InodeRef> { self.i_op.create(self, name, mode, ctx) }
     /// `i_op->mkdir`. # C: backend-dependent
-    pub fn mkdir(&self, name: &str, mode: u32) -> KResult<InodeRef> { self.i_op.mkdir(self, name, mode) }
+    pub fn mkdir(&self, name: &str, mode: u32, ctx: &crate::CreateCtx) -> KResult<InodeRef> { self.i_op.mkdir(self, name, mode, ctx) }
     /// `i_op->rmdir`. # C: backend-dependent
     pub fn rmdir(&self, name: &str) -> KResult<()> { self.i_op.rmdir(self, name) }
     /// `i_op->unlink`. # C: backend-dependent
     pub fn unlink_child(&self, name: &str) -> KResult<()> { self.i_op.unlink(self, name) }
     /// `i_op->symlink`. # C: backend-dependent
-    pub fn symlink_child(&self, name: &str, target: &[u8]) -> KResult<()> { self.i_op.symlink(self, name, target) }
+    pub fn symlink_child(&self, name: &str, target: &[u8], ctx: &crate::CreateCtx) -> KResult<()> { self.i_op.symlink(self, name, target, ctx) }
     /// `i_op->mknod`. # C: backend-dependent
-    pub fn mknod_child(&self, name: &str, mode: u16, rdev: u32) -> KResult<()> { self.i_op.mknod(self, name, mode, rdev) }
+    pub fn mknod_child(&self, name: &str, mode: u16, rdev: u32, ctx: &crate::CreateCtx) -> KResult<()> { self.i_op.mknod(self, name, mode, rdev, ctx) }
     /// `i_op->link`. # C: backend-dependent
-    pub fn link_child(&self, target: &InodeRef, name: &str) -> KResult<()> { self.i_op.link(self, target, name) }
+    pub fn link_child(&self, target: &InodeRef, name: &str, ctx: &crate::CreateCtx) -> KResult<()> { self.i_op.link(self, target, name, ctx) }
     /// `i_op->rename`. # C: backend-dependent
-    pub fn rename_child(&self, old: &str, new_dir: &Inode, new: &str, flags: u32) -> KResult<()> {
-        self.i_op.rename(self, old, new_dir, new, flags)
+    pub fn rename_child(&self, old: &str, new_dir: &Inode, new: &str, flags: u32, ctx: &crate::CreateCtx) -> KResult<()> {
+        self.i_op.rename(self, old, new_dir, new, flags, ctx)
     }
+
+    /// `i_op->tmpfile` (`open(O_TMPFILE)`) — an unlinked child inode of this
+    /// directory's fs. # C: backend-dependent
+    pub fn tmpfile(&self, mode: u32, ctx: &crate::CreateCtx) -> KResult<InodeRef> { self.i_op.tmpfile(self, mode, ctx) }
+
+    /// `i_op->update_time` — apply the timestamp-update policy (`S_ATIME`/`S_MTIME`/
+    /// `S_CTIME`/`S_VERSION`) to `now`. # C: O(1)
+    pub fn update_time(&self, now: u64, flags: u32) -> KResult<()> { self.i_op.update_time(self, now, flags) }
 
     /// `i_op->readlink` (the storage primitive). # C: O(target_len)
     pub fn readlink(&self) -> KResult<Vec<u8>> { self.i_op.readlink(self) }
@@ -332,9 +385,9 @@ impl Inode {
     pub fn read_nonblock(&self, off: u64, buf: &mut [u8]) -> KResult<usize> { self.i_fop.read_nonblock(self, off, buf) }
     /// Non-blocking write. # C: backend-dependent
     pub fn write_nonblock(&self, off: u64, buf: &[u8]) -> KResult<usize> { self.i_fop.write_nonblock(self, off, buf) }
-    /// `f_op->iterate`/readdir. # C: backend-dependent
-    pub fn readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
-        self.i_fop.iterate(self, off, f)
+    /// `f_op->iterate`/readdir — drive the backend through `ctx`. # C: backend-dependent
+    pub fn readdir(&self, ctx: &mut crate::file_ops::DirContext) -> KResult<()> {
+        self.i_fop.iterate(self, ctx)
     }
     /// `f_op->poll`. # C: O(1)
     pub fn poll(&self) -> u32 { self.i_fop.poll(self) }
@@ -351,6 +404,55 @@ impl Inode {
     /// `show_fdinfo` extra lines. # C: O(1)
     pub fn fdinfo_extra(&self, out: &mut Vec<u8>) { self.i_fop.fdinfo_extra(self, out) }
 }
+
+/// `inode_unlock`/`inode_unlock_shared` (Linux `fs/inode.c`) — release an
+/// `i_rwsem` guard from [`Inode::inode_lock`] / [`Inode::inode_lock_shared`].
+/// RAII already drops the guard at end-of-scope; this is the explicit-release
+/// spelling mirroring Linux's named call. Generic over the guard type so it
+/// serves both the exclusive and shared sides. # C: O(1)
+pub fn inode_unlock<G>(guard: G) { drop(guard); }
+
+/// Held `i_rwsem` exclusive locks for a (possibly cross-directory) rename
+/// (Linux `lock_rename` result). One guard for a same-directory rename (both
+/// parents are the SAME inode → locked once), two for a cross-directory rename
+/// (locked in address order). Releases on drop in reverse field order, or
+/// explicitly via [`unlock_rename`]. The `'a` borrow pins the parents for the
+/// rename's duration.
+pub struct RenameLockGuard<'a> {
+    _first:  RwWriteGuard<'a, (), InodeLockClass>,
+    _second: Option<RwWriteGuard<'a, (), InodeLockClass>>,
+}
+
+/// `lock_rename(p1, p2)` (Linux `fs/namei.c`) — lock the two parent directory
+/// inodes for a rename. ORDER (deadlock avoidance): the two `i_rwsem`s are
+/// always taken in ascending ADDRESS order, so two concurrent renames that name
+/// the same pair of directories in opposite argument order still acquire them in
+/// the SAME order and cannot form an ABA cycle. A same-directory rename
+/// (`p1`/`p2` the SAME inode) locks the single `i_rwsem` ONCE — re-locking it
+/// (the spin-rwsem is non-reentrant) would self-deadlock. Linux additionally
+/// holds the per-fs `s_vfs_rename_mutex` (cross-tree ancestor serialization);
+/// that superblock-level mutex is the mount/superblock lane's concern and is not
+/// duplicated here. Both `i_rwsem`s sit at the same `Inode` rank (40); the
+/// address-order tie-break is what makes same-rank acquisition total-ordered.
+/// # C: O(contention)
+pub fn lock_rename<'a>(p1: &'a Inode, p2: &'a Inode) -> RenameLockGuard<'a> {
+    if core::ptr::eq(p1, p2) {
+        return RenameLockGuard { _first: p1.i_rwsem().write(), _second: None };
+    }
+    let (lo, hi) = if (p1 as *const Inode as usize) < (p2 as *const Inode as usize) {
+        (p1, p2)
+    } else {
+        (p2, p1)
+    };
+    let first = lo.i_rwsem().write();
+    let second = hi.i_rwsem().write();
+    RenameLockGuard { _first: first, _second: Some(second) }
+}
+
+/// `unlock_rename` (Linux `fs/namei.c`) — release the parents locked by
+/// [`lock_rename`]. RAII drops them at scope end; this is the explicit form.
+/// # C: O(1)
+pub fn unlock_rename(lock: RenameLockGuard<'_>) { drop(lock); }
 
 /// Builder for [`Inode`] — the one constructor every `make_*_inode` /
 /// `iget`-build closure funnels through. Set the type/mode + ops, chain the
@@ -459,6 +561,7 @@ impl InodeBuilder {
             poll_subs: self.poll_subs,
             seals: self.seals.map(AtomicU32::new),
             i_link: self.link,
+            i_rwsem: RwLock::new(()),
         })
     }
 }
@@ -592,6 +695,33 @@ pub fn inode_query_iversion(inode: &Inode) -> u64 {
         }
     }
     cur >> I_VERSION_QUERIED_SHIFT
+}
+
+/// `update_time`/`inode_update_time` selector flags (Linux `include/linux/fs.h`
+/// — the `S_ATIME`/`S_MTIME`/`S_CTIME`/`S_VERSION` set passed as the `flags`
+/// arg to `->update_time`). Numerically distinct *namespace* from the `i_flags`
+/// `S_*` set below (which describes the inode), even though both spell `S_`:
+/// these say WHICH timestamp a touch updates.
+pub const S_ATIME:    u32 = 1 << 0;
+pub const S_MTIME:    u32 = 1 << 1;
+pub const S_CTIME:    u32 = 1 << 2;
+pub const S_VERSION:  u32 = 1 << 3;
+
+/// `generic_update_time` (Linux `fs/inode.c`) — the default `i_op->update_time`:
+/// write the atime/mtime/ctime selected by `flags` to `now` (ns) and, on
+/// `S_VERSION`, lazily bump `i_version`. `set_times` always stamps ctime, so a
+/// touch that does NOT carry `S_CTIME` re-writes the inode's CURRENT ctime
+/// (leaving it unchanged); a touch with no time bit at all skips the write.
+/// # C: O(1)
+pub fn generic_update_time(inode: &Inode, now: u64, flags: u32) -> KResult<()> {
+    let a = if flags & S_ATIME != 0 { Some(now) } else { None };
+    let m = if flags & S_MTIME != 0 { Some(now) } else { None };
+    if flags & (S_ATIME | S_MTIME | S_CTIME) != 0 {
+        let ctime = if flags & S_CTIME != 0 { now } else { inode.ctime().unwrap_or(0) };
+        inode.set_times(a, m, ctime)?;
+    }
+    if flags & S_VERSION != 0 { inode_maybe_inc_iversion(inode, false); }
+    Ok(())
 }
 
 /// `inode_owner_or_capable` (Linux `fs/inode.c`) — owner-or-`CAP_FOWNER`,

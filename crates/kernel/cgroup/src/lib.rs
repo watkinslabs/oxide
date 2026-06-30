@@ -59,7 +59,7 @@ impl FileSystem for CgroupFs {
         Some(inode::make_cg_dir(tree::ROOT))
     }
     /// # C: O(1)
-    fn mounts_line(&self, mp: &str) -> alloc::string::String {
+    fn mounts_line(&self, mp: &str, _sb: Option<&vfs::SuperBlock>) -> alloc::string::String {
         let mut s = alloc::string::String::from("cgroup2 ");
         s.push_str(mp);
         s.push_str(" cgroup2 rw,nosuid,nodev,noexec,relatime 0 0\n");

@@ -15,7 +15,13 @@ use crate::inode::{
     S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK,
 };
 use crate::mount::{Mount, MountError};
-use crate::superblock::SB_OFF_FREE_INODES;
+use crate::superblock::{SB_OFF_FREE_INODES, SB_OFF_LAST_ORPHAN, SUPERBLOCK_LEN, SUPERBLOCK_OFFSET};
+
+/// On-disk inode byte offset of `NEXT_ORPHAN` — Linux overloads `i_dtime`
+/// (@0x14) as the "next orphan inode number" pointer while an inode sits on
+/// the superblock orphan list. A small value (< `s_inodes_count`) is a list
+/// link; a large value is a genuine deletion timestamp (see `DELETED_DTIME`).
+const I_OFF_DTIME: usize = 0x14;
 
 extern crate alloc;
 use alloc::vec;
@@ -27,6 +33,17 @@ use alloc::vec;
 /// in-crate wall clock we use a fixed plausible Unix time (2023-11-14);
 /// the exact value is immaterial to validity as long as it is large.
 const DELETED_DTIME: u32 = 1_700_000_000;
+
+/// Stamp owner ids into a fresh on-disk inode buffer: low u16 into `i_uid`
+/// @0x02 / `i_gid` @0x18, high u16 into osd2 `l_i_uid_high` @0x78 /
+/// `l_i_gid_high` @0x7A (matching `Inode::parse`). `bytes` must be a full
+/// inode (≥128 B; 0x7A..0x7C is in range for every inode size). # C: O(1)
+fn stamp_owner(bytes: &mut [u8], uid: u32, gid: u32) {
+    bytes[0x02..0x04].copy_from_slice(&((uid & 0xFFFF) as u16).to_le_bytes());
+    bytes[0x18..0x1A].copy_from_slice(&((gid & 0xFFFF) as u16).to_le_bytes());
+    bytes[0x78..0x7A].copy_from_slice(&((uid >> 16) as u16).to_le_bytes());
+    bytes[0x7A..0x7C].copy_from_slice(&((gid >> 16) as u16).to_le_bytes());
+}
 
 impl Mount {
     /// Allocate one previously-free inode. Searches groups from
@@ -155,9 +172,123 @@ impl Mount {
         self.run_journaled(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(new_ino, S_IFREG | (mode_perm & 0x0FFF), 0)?;
+            m.init_inode(new_ino, S_IFREG | (mode_perm & 0x0FFF), 0, 0, 0)?;
+            // Persist on the on-disk orphan list: a crash before a name is
+            // linked (or before the last fd closes) leaves the inode + its
+            // blocks recoverable by `orphan_cleanup` on the next mount,
+            // instead of leaking (Linux `ext4_orphan_add`).
+            m.orphan_add(new_ino)?;
             Ok(new_ino)
         })
+    }
+
+    /// `ext4_orphan_add`: push `ino` onto the head of the on-disk orphan list.
+    /// Sets the inode's `NEXT_ORPHAN` (`i_dtime`) to the previous head, then
+    /// points `s_last_orphan` at `ino`. The complementary in-memory set
+    /// (`RootfsState.orphans`) drives the fast last-close free path; this is
+    /// the crash-durable backing.
+    /// # C: O(1) — 1 SB read + 1 inode RW + 1 SB write
+    pub fn orphan_add(&self, ino: u32) -> Result<(), MountError> {
+        self.run_journaled(|m| {
+            let head = m.read_sb_last_orphan()?;
+            if head == ino { return Ok(()); } // already the list head
+            let (mut bytes, _off) = m.read_inode_bytes(ino)?;
+            bytes[I_OFF_DTIME..I_OFF_DTIME + 4].copy_from_slice(&head.to_le_bytes());
+            m.write_inode_bytes(ino, &bytes)?;
+            m.set_sb_last_orphan(ino)?;
+            Ok(())
+        })
+    }
+
+    /// `ext4_orphan_del`: splice `ino` out of the on-disk orphan list. If it
+    /// is the head, `s_last_orphan` is advanced to its `NEXT_ORPHAN`; otherwise
+    /// the chain is walked to find the predecessor and relink it past `ino`.
+    /// The inode's own `NEXT_ORPHAN` (`i_dtime`) is then cleared to 0 (the
+    /// caller — link or free — overwrites it appropriately). Idempotent: a
+    /// no-longer-listed inode is left untouched apart from the cleared link.
+    /// # C: O(N_orphans) worst-case chain walk
+    pub fn orphan_del(&self, ino: u32) -> Result<(), MountError> {
+        self.run_journaled(|m| {
+            let head = m.read_sb_last_orphan()?;
+            let (bytes, _off) = m.read_inode_bytes(ino)?;
+            let next = u32::from_le_bytes([
+                bytes[I_OFF_DTIME], bytes[I_OFF_DTIME + 1],
+                bytes[I_OFF_DTIME + 2], bytes[I_OFF_DTIME + 3],
+            ]);
+            if head == ino {
+                m.set_sb_last_orphan(next)?;
+            } else if head != 0 {
+                let mut cur = head;
+                let mut guard = m.sb.inodes_count;
+                while cur != 0 && cur != ino && guard > 0 {
+                    guard -= 1;
+                    let (mut cbytes, _o) = m.read_inode_bytes(cur)?;
+                    let cnext = u32::from_le_bytes([
+                        cbytes[I_OFF_DTIME], cbytes[I_OFF_DTIME + 1],
+                        cbytes[I_OFF_DTIME + 2], cbytes[I_OFF_DTIME + 3],
+                    ]);
+                    if cnext == ino {
+                        cbytes[I_OFF_DTIME..I_OFF_DTIME + 4].copy_from_slice(&next.to_le_bytes());
+                        m.write_inode_bytes(cur, &cbytes)?;
+                        break;
+                    }
+                    cur = cnext;
+                }
+            }
+            // Clear this inode's link field.
+            let (mut bytes2, _o2) = m.read_inode_bytes(ino)?;
+            bytes2[I_OFF_DTIME..I_OFF_DTIME + 4].copy_from_slice(&0u32.to_le_bytes());
+            m.write_inode_bytes(ino, &bytes2)?;
+            Ok(())
+        })
+    }
+
+    /// Read the on-disk `s_last_orphan` head. # C: O(1) SB read
+    pub fn read_sb_last_orphan(&self) -> Result<u32, MountError> {
+        let buf = self.read_meta_byte_range(SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
+        Ok(u32::from_le_bytes([
+            buf[SB_OFF_LAST_ORPHAN], buf[SB_OFF_LAST_ORPHAN + 1],
+            buf[SB_OFF_LAST_ORPHAN + 2], buf[SB_OFF_LAST_ORPHAN + 3],
+        ]))
+    }
+
+    /// Persist a new `s_last_orphan` value (re-stamps the SB csum).
+    /// # C: O(1) SB RW
+    pub(crate) fn set_sb_last_orphan(&self, val: u32) -> Result<(), MountError> {
+        let mut sb_buf = self.read_meta_byte_range(SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
+        sb_buf[SB_OFF_LAST_ORPHAN..SB_OFF_LAST_ORPHAN + 4].copy_from_slice(&val.to_le_bytes());
+        crate::csum::stamp_superblock_csum(&self.sb, &mut sb_buf);
+        self.metadata_write(SUPERBLOCK_OFFSET, &sb_buf)
+    }
+
+    /// `ext4_orphan_cleanup`: walk the on-disk orphan list at mount time,
+    /// reclaiming inodes left over from a crash. An inode with `nlink == 0`
+    /// (a never-named O_TMPFILE or a fully-unlinked-but-was-open file) is
+    /// freed (its data blocks + inode slot); one with `nlink > 0` (interrupted
+    /// truncate) is just removed from the list. Bounded by `s_inodes_count` to
+    /// defuse a corrupt cycle. Idempotent; a no-op when `s_last_orphan == 0`.
+    /// # C: O(N_orphans × N_extents)
+    pub fn orphan_cleanup(&self) -> Result<(), MountError> {
+        let mut head = self.read_sb_last_orphan()?;
+        let mut guard = self.sb.inodes_count;
+        while head != 0 && head <= self.sb.inodes_count && guard > 0 {
+            guard -= 1;
+            let (bytes, _off) = self.read_inode_bytes(head)?;
+            let next = u32::from_le_bytes([
+                bytes[I_OFF_DTIME], bytes[I_OFF_DTIME + 1],
+                bytes[I_OFF_DTIME + 2], bytes[I_OFF_DTIME + 3],
+            ]);
+            let links = u16::from_le_bytes([bytes[0x1A], bytes[0x1B]]);
+            if links == 0 {
+                // Frees blocks + inode AND advances s_last_orphan past `head`
+                // (its internal `orphan_del`), so the list shrinks as we go.
+                let _ = self.free_orphan_inode(head);
+            } else {
+                let _ = self.orphan_del(head);
+            }
+            head = next;
+        }
+        Ok(())
     }
 
     /// Free an orphan inode (one with `nlink==0`, e.g. an O_TMPFILE
@@ -168,12 +299,22 @@ impl Mount {
     /// # C: O(N_extents) block frees + 1 inode-free
     pub fn free_orphan_inode(&self, ino: u32) -> Result<(), MountError> {
         self.run_journaled(|m| {
-            let (mut bytes, off) = m.read_inode_bytes(ino)?;
-            let links = u16::from_le_bytes([bytes[0x1A], bytes[0x1B]]);
+            let links = {
+                let (b, _o) = m.read_inode_bytes(ino)?;
+                u16::from_le_bytes([b[0x1A], b[0x1B]])
+            };
             if links != 0 {
                 // Caller raced with a linkat; nothing to do.
                 return Ok(());
             }
+            // Detach from the on-disk orphan list before freeing — advances
+            // `s_last_orphan` / relinks the chain so it never dangles at a
+            // freed slot (Linux `ext4_orphan_del` precedes the truncate+free).
+            // This also clears `i_dtime`; the genuine deletion timestamp is
+            // re-stamped below.
+            m.orphan_del(ino)?;
+            // Re-read after orphan_del rewrote the slot's i_dtime field.
+            let (mut bytes, off) = m.read_inode_bytes(ino)?;
             let mut i_block = [0u8; I_BLOCK_LEN];
             i_block.copy_from_slice(&bytes[0x28..0x28 + I_BLOCK_LEN]);
             if let Ok(hdr) = inode::parse_extent_header(&i_block) {
@@ -203,14 +344,16 @@ impl Mount {
     /// Allocates an inode, writes a fresh on-disk inode (mode
     /// `S_IFREG | mode_perm`, nlink=1, empty extent tree, size 0),
     /// and adds a directory entry. Returns the new inode number.
+    /// `uid`/`gid` are the fs-domain owner ids stamped on the new inode
+    /// (Linux `ext4_new_inode`).
     /// # C: O(N parent entries) + 1 inode-alloc + 2 block I/Os
-    pub fn create_file(&self, parent_ino: u32, name: &[u8], mode_perm: u16)
+    pub fn create_file(&self, parent_ino: u32, name: &[u8], mode_perm: u16, uid: u32, gid: u32)
         -> Result<u32, MountError>
     {
         self.run_journaled(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(new_ino, S_IFREG | (mode_perm & 0x0FFF), 1)?;
+            m.init_inode(new_ino, S_IFREG | (mode_perm & 0x0FFF), 1, uid, gid)?;
             m.dir_link(parent_ino, name, new_ino, dir::DT_REG)?;
             Ok(new_ino)
         })
@@ -262,13 +405,19 @@ impl Mount {
         })
     }
 
-    /// Write a fresh inode struct (mode + nlink + empty extent
-    /// tree, size=0, blocks=0). Other timestamps/uid/gid stay 0.
+    /// Write a fresh inode struct (mode + nlink + owner + empty extent
+    /// tree, size=0, blocks=0). `uid`/`gid` are the fs-domain owner ids
+    /// (Linux `ext4_new_inode` stamps `current_fsuid`/`current_fsgid` mapped
+    /// through the mount idmap) — split into the low u16 (0x02/0x18) and the
+    /// osd2 high u16 (0x78/0x7A). Other timestamps stay 0.
     /// # C: O(1) I/O
-    pub fn init_inode(&self, ino: u32, mode: u16, nlink: u16) -> Result<(), MountError> {
+    pub fn init_inode(&self, ino: u32, mode: u16, nlink: u16, uid: u32, gid: u32)
+        -> Result<(), MountError>
+    {
         let mut bytes = vec![0u8; self.sb.inode_size as usize];
         bytes[0x00..0x02].copy_from_slice(&mode.to_le_bytes());
         bytes[0x1A..0x1C].copy_from_slice(&nlink.to_le_bytes());
+        stamp_owner(&mut bytes, uid, gid);
         // i_extra_isize: required when inode_size > 128 (the fs advertises
         // EXTRA_ISIZE). 32 is the universal value for 256-byte inodes and
         // is what mke2fs writes; it also makes i_checksum_hi covered.
@@ -298,14 +447,14 @@ impl Mount {
     /// data block yet — callers that need to populate it should
     /// follow with `append_block`.
     /// # C: O(parent entries) + 1 inode alloc + 2 I/Os
-    pub fn create_dir(&self, parent_ino: u32, name: &[u8], mode_perm: u16)
+    pub fn create_dir(&self, parent_ino: u32, name: &[u8], mode_perm: u16, uid: u32, gid: u32)
         -> Result<u32, MountError>
     {
         self.run_journaled(|m| {
             let bs = m.sb.block_size as usize;
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(new_ino, S_IFDIR | (mode_perm & 0x0FFF), 2)?;
+            m.init_inode(new_ino, S_IFDIR | (mode_perm & 0x0FFF), 2, uid, gid)?;
             // A freshly created directory MUST have a data block holding
             // "." (→ self) and ".." (→ parent); the ".." entry's rec_len
             // spans the rest of the block as the free slot for future
@@ -353,7 +502,7 @@ impl Mount {
     /// directly into `i_block`; slow path allocates one data block.
     /// `target` must be non-empty and ≤ one filesystem block.
     /// # C: O(N parent entries) + 1 inode-alloc + (target>60 ? 1 block-alloc + 2 block I/Os : 1 inode I/O)
-    pub fn create_symlink(&self, parent_ino: u32, name: &[u8], target: &[u8])
+    pub fn create_symlink(&self, parent_ino: u32, name: &[u8], target: &[u8], uid: u32, gid: u32)
         -> Result<u32, MountError>
     {
         let bs = self.sb.block_size as usize;
@@ -363,7 +512,7 @@ impl Mount {
         self.run_journaled(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(new_ino, S_IFLNK | 0o777, 1)?;
+            m.init_inode(new_ino, S_IFLNK | 0o777, 1, uid, gid)?;
             if target.len() <= I_BLOCK_LEN {
                 let (mut bytes, _off) = m.read_inode_bytes(new_ino)?;
                 for b in &mut bytes[0x28..0x28 + I_BLOCK_LEN] { *b = 0; }
@@ -395,7 +544,7 @@ impl Mount {
     /// `i_block[0..4]` for CHR/BLK (Linux "small dev" layout) and
     /// ignored for FIFO/SOCK.
     /// # C: O(N parent entries) + 1 inode-alloc + 1 inode I/O
-    pub fn create_mknod(&self, parent_ino: u32, name: &[u8], mode: u16, rdev: u32)
+    pub fn create_mknod(&self, parent_ino: u32, name: &[u8], mode: u16, rdev: u32, uid: u32, gid: u32)
         -> Result<u32, MountError>
     {
         let ftype = mode & S_IFMT;
@@ -412,6 +561,7 @@ impl Mount {
             let mut bytes = vec![0u8; m.sb.inode_size as usize];
             bytes[0x00..0x02].copy_from_slice(&mode.to_le_bytes());
             bytes[0x1A..0x1C].copy_from_slice(&1u16.to_le_bytes());
+            stamp_owner(&mut bytes, uid, gid);
             if m.sb.inode_size as usize > crate::csum::EXT4_GOOD_OLD_INODE_SIZE {
                 bytes[0x80..0x82].copy_from_slice(&32u16.to_le_bytes());
             }

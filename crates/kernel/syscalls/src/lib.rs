@@ -5,6 +5,7 @@
 #[macro_use] extern crate kmacros;
 extern crate alloc;
 
+mod anon_dname;
 // Moved out of the kernel binary with the syscall layer (docs/53):
 pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 // One-syscall-per-file modules (docs/53 §0): `<NNN>_<name>.rs`, wired by #[path]

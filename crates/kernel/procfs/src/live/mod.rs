@@ -5,9 +5,18 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use vfs::{default_file_ops, mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{default_file_ops, mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 pub static NEXT_INO: AtomicU64 = AtomicU64::new(0x3000_0000);
+
+/// Collision-free per-pid / -tid / -fd procfs inode number (Linux
+/// `proc_alloc_inum` analogue). The entry `tag` occupies bits [32,48) and the
+/// pid/tid/fd the low 32 bits, so no `(tag, id)` pair can alias another the
+/// way the old `tag | id` packing did once `id` set a bit inside `tag`'s
+/// range (D24). High nibble `0x3` keeps it in procfs's inode space. # C: O(1)
+pub(crate) fn pid_ino(tag: u64, id: u32) -> Ino {
+    0x3000_0000_0000_0000 | (tag << 32) | id as u64
+}
 
 /// Static-body procfs file. `read(off, buf)` returns the window
 /// `body[off..off+buf.len()]` clamped to body length.
@@ -52,15 +61,15 @@ impl InodeOps for ProcRootOps {
     }
 }
 impl FileOps for ProcRootOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<ProcRootInode>().ok_or(VfsError::Einval)?;
         // Order: static children (sorted, the subdir tree) → self → live pids.
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         let nstat = d.children.len();
         while idx < nstat {
             let (name, child) = d.children.iter().nth(idx).unwrap();
             let next = idx as u64 + 1;
-            if !f(child.ino(), next, name.as_str(), child.file_type()) { return Ok(next); }
+            if !ctx.emit(name.as_str(), child.ino(), child.file_type(), next) { return Ok(()); }
             idx += 1;
         }
         let vpids = sched::live::registry::live_vpids();
@@ -88,12 +97,12 @@ impl FileOps for ProcRootOps {
                 core::str::from_utf8(&buf[..n]).unwrap_or("0")
             };
             let ino = inode.lookup(s).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, s, FileType::Directory) {
-                return Ok(next);
+            if !ctx.emit(s, ino, FileType::Directory, next) {
+                return Ok(());
             }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 
@@ -120,7 +129,7 @@ fn proc_pid_dir_lookup(d: &ProcPidDirInode, name: &str) -> KResult<InodeRef> {
         // Static `/proc/self/<file>` entries live under PROC_REG key
         // `self/<name>` (procfs's own tree, D1d) — exe/cwd/root symlinks,
         // /fd dir, auxv, limits, etc. take priority; else resolve `self`
-        // to the running task's tid and fall through to the match arms.
+        // to the running task's tid and fall through to the table/match.
         if let Some(i) = crate::reg::proc_reg().lookup_path(&alloc::format!("self/{name}")) {
             return Ok(i);
         }
@@ -130,28 +139,16 @@ fn proc_pid_dir_lookup(d: &ProcPidDirInode, name: &str) -> KResult<InodeRef> {
     } else {
         d.tid
     };
+    // D25: the SAME `PID_ENTRIES` table that drives readdir also drives lookup —
+    // a single source for name → (d_type, constructor), so the listing and the
+    // resolvable set can no longer drift. Linux `tgid_base_stuff[]` is likewise
+    // one array consumed by both `proc_pident_readdir` and `proc_pident_lookup`.
+    if let Some((_, _, ctor)) = PID_ENTRIES.iter().find(|(n, _, _)| *n == name) {
+        return Ok(ctor(tid, d.is_self));
+    }
+    // Entries with non-uniform resolution (a gated subdir, an ns dir) or that
+    // are intentionally NOT enumerated in readdir stay off the table.
     match name {
-        "status" => Ok(make_pid_status(tid)),
-        "cmdline" => Ok(make_pid_cmdline(tid)),
-        "stat" => Ok(make_pid_stat(tid)),
-        "maps" => Ok(make_pid_maps(tid)),
-        "smaps" => Ok(crate::smaps::make_proc_pid_smaps(tid)),
-        "comm" => Ok(make_pid_comm(tid)),
-        "environ" => Ok(make_pid_environ(tid)),
-        "statm" => Ok(make_pid_statm(tid)),
-        "wchan" => Ok(StaticFileInode::new(b"0")),
-        "oom_score" => Ok(StaticFileInode::new(b"0\n")),
-        "oom_score_adj" => Ok(crate::sysctl::SysctlInode::new(b"0\n")),
-        "loginuid" => Ok(StaticFileInode::new(b"0\n")),
-        "sessionid" => Ok(StaticFileInode::new(b"0\n")),
-        "io" => {
-            Ok(StaticFileInode::new(b"rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\n"))
-        }
-        "limits" => Ok(make_pid_limits(tid)),
-        "personality" => Ok(StaticFileInode::new(b"00000000\n")),
-        "sched" => Ok(make_pid_sched(tid)),
-        "schedstat" => Ok(StaticFileInode::new(b"0 0 0\n")),
-        "autogroup" => Ok(StaticFileInode::new(b"/autogroup-1 nice 0\n")),
         "task" if d.allow_task_dir => {
             let task = sched::live::registry::lookup(tid).ok_or(VfsError::Enoent)?;
             let tgid = task.tgid.load(Ordering::Acquire);
@@ -161,34 +158,100 @@ fn proc_pid_dir_lookup(d: &ProcPidDirInode, name: &str) -> KResult<InodeRef> {
         // whose lookup(<type>) returns an NsInode with the task's
         // current id snapshot for that NS kind.
         "ns" => Ok(make_proc_pid_ns_dir(tid)),
-        "uid_map" | "gid_map" => {
-            Ok(crate::sysctl::SysctlInode::new(b"         0          0 4294967295\n"))
-        }
-        "setgroups" => Ok(crate::sysctl::SysctlInode::new(b"allow\n")),
-        "syscall" => Ok(StaticFileInode::new(b"running\n")),
-        "mounts" => Ok(crate::mounts::make_proc_mounts()),
-        "mountinfo" => Ok(crate::mounts::make_proc_mountinfo()),
-        "cgroup" => Ok(make_proc_cgroup(Some(tid))),
-        "auxv" => Ok(StaticFileInode::new(&[0u8; 16])),
-        "timerslack_ns" => Ok(StaticFileInode::new(b"50000\n")),
-        "coredump_filter" => Ok(StaticFileInode::new(b"00000033\n")),
-        "smaps_rollup" => Ok(crate::smaps::make_proc_pid_smaps(tid)),
-        "numa_maps" => Ok(make_pid_maps(tid)),
         "projid_map" => Ok(crate::sysctl::SysctlInode::new(b"         0          0 4294967295\n")),
-        "stack" | "mountstats" | "make-it-fail" | "fail-nth" | "pagemap"
+        "make-it-fail" | "fail-nth" | "pagemap"
         | "kpagecount" | "kpageflags" | "attr" => Ok(StaticFileInode::new(b"")),
         "wakeups_count" => Ok(StaticFileInode::new(b"0\n")),
-        // exe/cwd/root: magic symlinks (followed by stat/O_PATH) per make_proc_pid_link.
-        "exe" | "cwd" | "root" => Ok(crate::proc_links::make_proc_pid_link(tid, match name {
-            "exe" => "exe",
-            "cwd" => "cwd",
-            _ => "root",
-        })),
-        "fd" => Ok(make_proc_self_fd()),
-        "fdinfo" => Ok(crate::fdinfo::make_fdinfo_dir(if d.is_self { None } else { Some(tid) })),
         _ => Err(VfsError::Enoent),
     }
 }
+
+/// Per-entry constructors for the `/proc/<pid>` table. Uniform
+/// `fn(tid, is_self) -> InodeRef` signature so one table can drive both readdir
+/// and lookup (D25). Most ignore `is_self`; only `fdinfo` distinguishes the
+/// `/proc/self` form. # C: O(1) each
+type PidCtor = fn(u32, bool) -> InodeRef;
+fn pc_status(t: u32, _s: bool) -> InodeRef { make_pid_status(t) }
+fn pc_cmdline(t: u32, _s: bool) -> InodeRef { make_pid_cmdline(t) }
+fn pc_stat(t: u32, _s: bool) -> InodeRef { make_pid_stat(t) }
+fn pc_maps(t: u32, _s: bool) -> InodeRef { make_pid_maps(t) }
+fn pc_smaps(t: u32, _s: bool) -> InodeRef { crate::smaps::make_proc_pid_smaps(t) }
+fn pc_comm(t: u32, _s: bool) -> InodeRef { make_pid_comm(t) }
+fn pc_environ(t: u32, _s: bool) -> InodeRef { make_pid_environ(t) }
+fn pc_statm(t: u32, _s: bool) -> InodeRef { make_pid_statm(t) }
+fn pc_wchan(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0") }
+fn pc_oom_score(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0\n") }
+fn pc_oom_score_adj(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(b"0\n") }
+fn pc_loginuid(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0\n") }
+fn pc_sessionid(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0\n") }
+fn pc_io(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\n") }
+fn pc_limits(t: u32, _s: bool) -> InodeRef { make_pid_limits(t) }
+fn pc_personality(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"00000000\n") }
+fn pc_sched(t: u32, _s: bool) -> InodeRef { make_pid_sched(t) }
+fn pc_schedstat(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0 0 0\n") }
+fn pc_autogroup(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"/autogroup-1 nice 0\n") }
+fn pc_idmap(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(b"         0          0 4294967295\n") }
+fn pc_setgroups(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(b"allow\n") }
+fn pc_syscall(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"running\n") }
+fn pc_empty(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"") }
+fn pc_mounts(_t: u32, _s: bool) -> InodeRef { crate::mounts::make_proc_mounts() }
+fn pc_mountinfo(_t: u32, _s: bool) -> InodeRef { crate::mounts::make_proc_mountinfo() }
+fn pc_cgroup(t: u32, _s: bool) -> InodeRef { make_proc_cgroup(Some(t)) }
+fn pc_auxv(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(&[0u8; 16]) }
+fn pc_timerslack(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"50000\n") }
+fn pc_coredump_filter(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"00000033\n") }
+fn pc_exe(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_link(t, "exe") }
+fn pc_cwd(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_link(t, "cwd") }
+fn pc_root(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_link(t, "root") }
+fn pc_fd(_t: u32, _s: bool) -> InodeRef { make_proc_self_fd() }
+fn pc_fdinfo(t: u32, is_self: bool) -> InodeRef { crate::fdinfo::make_fdinfo_dir(if is_self { None } else { Some(t) }) }
+
+/// Single source of truth for the `/proc/<pid>` directory contents (Linux
+/// `tgid_base_stuff[]`): drives readdir's listing, each entry's `d_type`, AND
+/// `proc_pid_dir_lookup`'s resolution (name → constructor), so the listing and
+/// the resolvable set are one array and can never drift (D25). `task`/`ns` and
+/// the non-enumerated debug files stay off the table (see the lookup match).
+/// # C: O(1)
+const PID_ENTRIES: &[(&str, FileType, PidCtor)] = &[
+    ("status",          FileType::Regular,   pc_status),
+    ("cmdline",         FileType::Regular,   pc_cmdline),
+    ("stat",            FileType::Regular,   pc_stat),
+    ("maps",            FileType::Regular,   pc_maps),
+    ("smaps",           FileType::Regular,   pc_smaps),
+    ("smaps_rollup",    FileType::Regular,   pc_smaps),
+    ("numa_maps",       FileType::Regular,   pc_maps),
+    ("comm",            FileType::Regular,   pc_comm),
+    ("environ",         FileType::Regular,   pc_environ),
+    ("statm",           FileType::Regular,   pc_statm),
+    ("wchan",           FileType::Regular,   pc_wchan),
+    ("oom_score",       FileType::Regular,   pc_oom_score),
+    ("oom_score_adj",   FileType::Regular,   pc_oom_score_adj),
+    ("loginuid",        FileType::Regular,   pc_loginuid),
+    ("sessionid",       FileType::Regular,   pc_sessionid),
+    ("io",              FileType::Regular,   pc_io),
+    ("limits",          FileType::Regular,   pc_limits),
+    ("personality",     FileType::Regular,   pc_personality),
+    ("sched",           FileType::Regular,   pc_sched),
+    ("schedstat",       FileType::Regular,   pc_schedstat),
+    ("autogroup",       FileType::Regular,   pc_autogroup),
+    ("uid_map",         FileType::Regular,   pc_idmap),
+    ("gid_map",         FileType::Regular,   pc_idmap),
+    ("setgroups",       FileType::Regular,   pc_setgroups),
+    ("syscall",         FileType::Regular,   pc_syscall),
+    ("stack",           FileType::Regular,   pc_empty),
+    ("mounts",          FileType::Regular,   pc_mounts),
+    ("mountinfo",       FileType::Regular,   pc_mountinfo),
+    ("mountstats",      FileType::Regular,   pc_empty),
+    ("cgroup",          FileType::Regular,   pc_cgroup),
+    ("auxv",            FileType::Regular,   pc_auxv),
+    ("timerslack_ns",   FileType::Regular,   pc_timerslack),
+    ("coredump_filter", FileType::Regular,   pc_coredump_filter),
+    ("exe",             FileType::Symlink,   pc_exe),
+    ("cwd",             FileType::Symlink,   pc_cwd),
+    ("root",            FileType::Symlink,   pc_root),
+    ("fd",              FileType::Directory, pc_fd),
+    ("fdinfo",          FileType::Directory, pc_fdinfo),
+];
 
 struct ProcPidDirOps;
 impl InodeOps for ProcPidDirOps {
@@ -198,75 +261,31 @@ impl InodeOps for ProcPidDirOps {
     }
 }
 impl FileOps for ProcPidDirOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<ProcPidDirInode>().ok_or(VfsError::Einval)?;
-        const ENTRIES: &[&str] = &[
-            "status",
-            "cmdline",
-            "stat",
-            "maps",
-            "smaps",
-            "smaps_rollup",
-            "numa_maps",
-            "comm",
-            "environ",
-            "statm",
-            "wchan",
-            "oom_score",
-            "oom_score_adj",
-            "loginuid",
-            "sessionid",
-            "io",
-            "limits",
-            "personality",
-            "sched",
-            "schedstat",
-            "autogroup",
-            "uid_map",
-            "gid_map",
-            "setgroups",
-            "syscall",
-            "stack",
-            "mounts",
-            "mountinfo",
-            "mountstats",
-            "cgroup",
-            "auxv",
-            "timerslack_ns",
-            "coredump_filter",
-            "exe",
-            "cwd",
-            "root",
-            "fd",
-            "fdinfo",
-        ];
-        let mut idx = off as usize;
-        let total = ENTRIES.len() + usize::from(d.allow_task_dir);
+        let mut idx = ctx.pos as usize;
+        let total = PID_ENTRIES.len() + usize::from(d.allow_task_dir);
         while idx < total {
             let next = idx as u64 + 1;
-            let name = if idx < ENTRIES.len() {
-                ENTRIES[idx]
+            let (name, ft) = if idx < PID_ENTRIES.len() {
+                let (n, ft, _) = PID_ENTRIES[idx];
+                (n, ft)
             } else {
-                "task"
-            };
-            let ft = match name {
-                "exe" | "cwd" | "root" => FileType::Symlink,
-                "fd" | "fdinfo" | "task" => FileType::Directory,
-                _ => FileType::Regular,
+                ("task", FileType::Directory)
             };
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, name, ft) {
-                return Ok(next);
+            if !ctx.emit(name, ino, ft, next) {
+                return Ok(());
             }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 
 /// Per-pid `/proc/<tid>` directory inode. # C: O(1)
 pub fn make_proc_pid_dir(tid: u32, is_self: bool, allow_task_dir: bool) -> InodeRef {
-    InodeBuilder::new(0x3000_0100 | tid as Ino, mk_mode(FileType::Directory, 0o555), Arc::new(ProcPidDirOps), Arc::new(ProcPidDirOps))
+    InodeBuilder::new(pid_ino(0x01, tid), mk_mode(FileType::Directory, 0o555), Arc::new(ProcPidDirOps), Arc::new(ProcPidDirOps))
         .private(Arc::new(ProcPidDirInode { tid, is_self, allow_task_dir }))
         .build()
 }
@@ -292,10 +311,10 @@ impl InodeOps for ProcPidTaskDirOps {
     }
 }
 impl FileOps for ProcPidTaskDirOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<ProcPidTaskDirInode>().ok_or(VfsError::Einval)?;
         let tids = sched::live::registry::thread_entries(d.tgid);
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < tids.len() {
             let next = idx as u64 + 1;
             let mut buf = [0u8; 11];
@@ -314,18 +333,18 @@ impl FileOps for ProcPidTaskDirOps {
             buf[..n].reverse();
             let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
             let ino = inode.lookup(s).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, s, FileType::Directory) {
-                return Ok(next);
+            if !ctx.emit(s, ino, FileType::Directory, next) {
+                return Ok(());
             }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 
 /// Per-pid `/proc/<tgid>/task` thread directory inode. # C: O(1)
 pub fn make_proc_pid_task_dir(tgid: u32) -> InodeRef {
-    InodeBuilder::new(0x3000_7000 | tgid as Ino, mk_mode(FileType::Directory, 0o555), Arc::new(ProcPidTaskDirOps), Arc::new(ProcPidTaskDirOps))
+    InodeBuilder::new(pid_ino(0x07, tgid), mk_mode(FileType::Directory, 0o555), Arc::new(ProcPidTaskDirOps), Arc::new(ProcPidTaskDirOps))
         .private(Arc::new(ProcPidTaskDirInode { tgid }))
         .build()
 }
@@ -397,22 +416,22 @@ fn pid_maps_body(tid: u32) -> alloc::vec::Vec<u8> {
 /// body is `$body(tid)`. Mirrors the old `pid_inode_impl!` macro but stamps a
 /// KEYSTONE struct-`Inode` via `dyn_file::make_pid_gen_file`.
 macro_rules! pid_inode_ctor {
-    ($ctor:ident, $body:ident, $ino:expr) => {
+    ($ctor:ident, $body:ident, $tag:expr) => {
         /// Per-pid `/proc/<tid>` file inode. # C: O(1)
         pub fn $ctor(tid: u32) -> InodeRef {
-            crate::dyn_file::make_pid_gen_file($ino | tid as Ino, tid, $body)
+            crate::dyn_file::make_pid_gen_file(pid_ino($tag, tid), tid, $body)
         }
     };
 }
 
-pid_inode_ctor!(make_pid_status, pid_status_body, 0x3000_2000);
-pid_inode_ctor!(make_pid_cmdline, pid_cmdline_body, 0x3000_2100);
-pid_inode_ctor!(make_pid_stat, pid_stat_body, 0x3000_2200);
-pid_inode_ctor!(make_pid_maps, pid_maps_body, 0x3000_2300);
-pid_inode_ctor!(make_pid_comm, pid_comm_body, 0x3000_2400);
-pid_inode_ctor!(make_pid_environ, pid_environ_body, 0x3000_2500);
-pid_inode_ctor!(make_pid_statm, pid_statm_body, 0x3000_2600);
-pid_inode_ctor!(make_pid_limits, pid_limits_body, 0x3000_2800);
+pid_inode_ctor!(make_pid_status, pid_status_body, 0x20);
+pid_inode_ctor!(make_pid_cmdline, pid_cmdline_body, 0x21);
+pid_inode_ctor!(make_pid_stat, pid_stat_body, 0x22);
+pid_inode_ctor!(make_pid_maps, pid_maps_body, 0x23);
+pid_inode_ctor!(make_pid_comm, pid_comm_body, 0x24);
+pid_inode_ctor!(make_pid_environ, pid_environ_body, 0x25);
+pid_inode_ctor!(make_pid_statm, pid_statm_body, 0x26);
+pid_inode_ctor!(make_pid_limits, pid_limits_body, 0x28);
 
 /// Render /proc/<pid>/limits from the live per-task rlimit slot.
 fn pid_limits_body(tid: u32) -> alloc::vec::Vec<u8> {
@@ -465,7 +484,7 @@ fn pid_limits_body(tid: u32) -> alloc::vec::Vec<u8> {
     out
 }
 use crate::pid_sched::pid_sched_body;
-pid_inode_ctor!(make_pid_sched, pid_sched_body, 0x3000_2700);
+pid_inode_ctor!(make_pid_sched, pid_sched_body, 0x27);
 
 fn pid_statm_body(tid: u32) -> alloc::vec::Vec<u8> {
     // statm fields (in pages of 4 KiB): size resident shared text lib data dt
@@ -634,7 +653,7 @@ impl InodeOps for ProcPidNsDirOps {
     }
 }
 impl FileOps for ProcPidNsDirOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         const NAMES: &[&str] = &[
             "mnt",
             "cgroup",
@@ -645,22 +664,22 @@ impl FileOps for ProcPidNsDirOps {
             "net",
             "pid_for_children",
         ];
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < NAMES.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup(NAMES[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, NAMES[idx], FileType::Symlink) {
-                return Ok(next);
+            if !ctx.emit(NAMES[idx], ino, FileType::Symlink, next) {
+                return Ok(());
             }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 
 /// `/proc/<pid>/ns` directory inode (F117). # C: O(1)
 pub fn make_proc_pid_ns_dir(tid: u32) -> InodeRef {
-    InodeBuilder::new(0x3000_8000 | tid as Ino, mk_mode(FileType::Directory, 0o555), Arc::new(ProcPidNsDirOps), Arc::new(ProcPidNsDirOps))
+    InodeBuilder::new(pid_ino(0x08, tid), mk_mode(FileType::Directory, 0o555), Arc::new(ProcPidNsDirOps), Arc::new(ProcPidNsDirOps))
         .private(Arc::new(ProcPidNsDirInode { tid }))
         .build()
 }

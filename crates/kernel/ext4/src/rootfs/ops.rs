@@ -35,8 +35,9 @@ impl RootfsState {
         let rdev = if matches!(ft, vfs::FileType::CharDev | vfs::FileType::BlockDev) { inode.rdev() } else { 0 };
         let nlink = if inode.links_count != 0 { inode.links_count as u32 }
                     else if matches!(ft, vfs::FileType::Directory) { 2 } else { 1 };
+        let (uid, gid) = (inode.uid, inode.gid);
         let st = self.clone();
-        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev);
+        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev, uid, gid);
         // Route through the SB inode cache so a repeated lookup of the same ino
         // returns the SAME `Arc` (shared inode identity, Linux `iget`). Before
         // the SB is back-stamped (during `fs.root()`) build directly.
@@ -53,9 +54,10 @@ impl RootfsState {
         if !inode.is_reg() { return None; }
         let size = inode.size;
         let mode = inode.mode;
+        let (uid, gid) = (inode.uid, inode.gid);
         let nlink = if inode.links_count != 0 { inode.links_count as u32 } else { 1 };
         let st = self.clone();
-        let build = move || build_file_inode(st, ino, mode, size, nlink);
+        let build = move || build_file_inode(st, ino, mode, size, nlink, uid, gid);
         // Shared identity via the SB inode cache (Linux `iget`).
         Some(match self.i_sb() {
             Some(sb) => sb.iget(ext4_wrap_ino(ino), build),
@@ -101,7 +103,7 @@ impl RootfsState {
     /// # C: O(N parent entries)
     pub fn create_at(self: &Arc<Self>, path: &[u8], mode_perm: u16) -> Option<vfs::InodeRef> {
         let (pino, name) = self.parent_inode(path)?;
-        let new_ino = self.mount.create_file(pino, name, mode_perm).ok()?;
+        let new_ino = self.mount.create_file(pino, name, mode_perm, 0, 0).ok()?;
         self.page_cache.invalidate(InodeId(new_ino as u64));
         self.wrap_file(new_ino)
     }
@@ -135,6 +137,9 @@ impl RootfsState {
         self.mount.run_journaled(|m| {
             m.dir_link(parent_ino, &name, ino, ftype)?;
             m.adjust_nlink(ino, 1)?;
+            // The inode now has a name → off the on-disk orphan list
+            // (Linux `ext4_orphan_del` in `ext4_link`/`ext4_tmpfile` linkat).
+            m.orphan_del(ino)?;
             Ok(())
         }).map_err(|_| vfs::VfsError::Eio)?;
         self.orphan_remove(ino);
@@ -153,7 +158,7 @@ impl RootfsState {
     /// # C: O(N parent entries)
     pub fn symlink_at(&self, target: &[u8], link_path: &[u8]) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(link_path).ok_or(vfs::VfsError::Enoent)?;
-        let new_ino = self.mount.create_symlink(pino, name, target).map_err(|_| vfs::VfsError::Eio)?;
+        let new_ino = self.mount.create_symlink(pino, name, target, 0, 0).map_err(|_| vfs::VfsError::Eio)?;
         self.page_cache.invalidate(InodeId(new_ino as u64));
         Ok(())
     }
@@ -161,7 +166,7 @@ impl RootfsState {
     /// # C: O(N parent entries)
     pub fn mknod_at(&self, path: &[u8], mode: u16, rdev: u32) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
-        let new_ino = self.mount.create_mknod(pino, name, mode, rdev).map_err(|_| vfs::VfsError::Eio)?;
+        let new_ino = self.mount.create_mknod(pino, name, mode, rdev, 0, 0).map_err(|_| vfs::VfsError::Eio)?;
         self.page_cache.invalidate(InodeId(new_ino as u64));
         Ok(())
     }
@@ -169,7 +174,7 @@ impl RootfsState {
     /// # C: O(N parent entries)
     pub fn mkdir_at(&self, path: &[u8], mode_perm: u16) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
-        self.mount.create_dir(pino, name, mode_perm).map_err(|_| vfs::VfsError::Eio)?;
+        self.mount.create_dir(pino, name, mode_perm, 0, 0).map_err(|_| vfs::VfsError::Eio)?;
         Ok(())
     }
 
@@ -209,13 +214,35 @@ impl RootfsState {
         let (to_p, to_name_owned) = self.parent_inode(to).ok_or(vfs::VfsError::Enoent)?;
         let to_name: alloc::vec::Vec<u8> = to_name_owned.to_vec();
         let ftype = if inode.is_dir() { crate::DT_DIR } else if inode.is_link() { crate::DT_LNK } else { crate::DT_REG };
-        let dest_exists = self.mount.lookup_path(to).is_ok();
+        // Replaced destination (plain rename = non-EXCHANGE; RENAME_EXCHANGE
+        // routes through `exchange`, which only ever renames into a vacated temp
+        // name, so it never reaches this overwrite path). Capture the victim's
+        // ino + dir-ness before the dir entry is removed so its in-memory nlink
+        // can be dropped after (Linux `vfs_rename`: the replaced inode loses its
+        // link).
+        let dest_victim = self.mount.lookup_path(to).ok();
+        let dest_is_dir = dest_victim
+            .and_then(|v| self.mount.read_inode(v).ok())
+            .map(|i| i.is_dir())
+            .unwrap_or(false);
         self.mount.run_journaled(|m| {
-            if dest_exists { let _ = m.dir_unlink(to_p, &to_name); }
+            if dest_victim.is_some() { let _ = m.dir_unlink(to_p, &to_name); }
             m.dir_link(to_p, &to_name, target, ftype)?;
             m.dir_unlink(from_p, &from_name)?;
             Ok(())
-        }).map_err(|_| vfs::VfsError::Eio)
+        }).map_err(|_| vfs::VfsError::Eio)?;
+        // In-memory nlink authority (mirror `unlink`): the dcache `d_unlink` no
+        // longer touches nlink, so the FS drops the CACHED victim's link here. A
+        // directory target is fully unlinked (clear to 0: it loses both its `.`
+        // self-link and its parent's reference). Uncached → nothing to drop.
+        if let Some(victim_ino) = dest_victim {
+            if let Some(sb) = self.i_sb() {
+                if let Some(victim) = sb.ilookup(ext4_wrap_ino(victim_ino)) {
+                    if dest_is_dir { victim.set_nlink(0); } else { victim.drop_link(); }
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -311,6 +338,9 @@ impl Ext4Mount {
 impl vfs::fs::FileSystem for Ext4Mount {
     fn name(&self) -> &str { "ext4" }
     fn magic(&self) -> u64 { crate::EXT4_SUPER_MAGIC as u64 }
+    /// ext4 is block-device backed (Linux `FS_REQUIRES_DEV`): drives the D23
+    /// new-mount-API source check + `/proc/filesystems` (no `nodev`). # C: O(1)
+    fn fs_flags(&self) -> vfs::fs::FsFlags { vfs::fs::FsFlags::FS_REQUIRES_DEV }
     /// On-disk `s_blocksize` (`1024 << s_log_block_size`). # C: O(1)
     fn block_size(&self) -> u32 { self.st.mount.sb.block_size }
     /// Install live ext4 statfs accounting as this SB's `s_op`. # C: O(1)

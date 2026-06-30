@@ -8,15 +8,6 @@ use alloc::string::String;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 
-/// # C: O(1)
-pub(crate) fn read_path(ptr: u64) -> Option<String> {
-    if ptr == 0 || ptr >= USER_VA_END { return None; }
-    // SAFETY: ptr in user range; user page mapped (caller's AS); 256 B bound.
-    let bytes = unsafe { devfs::read_user_cstr(ptr, 256) }?;
-    if bytes.is_empty() { return None; }
-    core::str::from_utf8(bytes).ok().map(|s| s.into())
-}
-
 /// Read a user-space pathname with the full Linux errno contract:
 ///   * NULL / out-of-range ptr  → **EFAULT**
 ///   * empty string (`""`)      → **ENOENT** (callers without AT_EMPTY_PATH)
@@ -140,33 +131,28 @@ pub(crate) fn trace_run_vfs_error(op: &[u8], path: &str, e: vfs::VfsError) {
     klog::write_raw(b"\n");
 }
 
-/// Split an absolute path into `(parent, basename)`. `None` for `/`
-/// or a trailing-only slash.
-/// # C: O(N)
-fn split_parent(p: &str) -> Option<(&str, &str)> {
-    let p = if p.len() > 1 { p.strip_suffix('/').unwrap_or(p) } else { p };
-    let idx = p.rfind('/')?;
-    let name = &p[idx + 1..];
-    if name.is_empty() { return None; }
-    let parent = if idx == 0 { "/" } else { &p[..idx] };
-    Some((parent, name))
-}
-
-/// Resolve the PARENT directory of absolute `p` through the dentry walk
-/// (`pathresolve::resolve` = `vfs::path_lookup`; follows intermediate
-/// symlinks + crosses mounts) and return `(parent_inode, basename)` —
-/// THE resolver feeding every namespace mutation per `docs/16§3`,
-/// replacing the old path-prefix / pseudo-fs string gates.
-/// The owning mount's inode then services the op (ext4 dir → ext4
-/// create/unlink; tmpfs dir → tmpfs; cgroupfs → cgroupfs; read-only
-/// pseudo-fs → Erofs), exactly as Linux `inode_operations`.
-/// # C: O(N parent components)
+/// Resolve the PARENT directory of absolute `p` through the engine
+/// LOOKUP_PARENT walk (`pathresolve::resolve_parent_path`, Linux
+/// `filename_parentat`) and return `(parent_inode, leaf_name)` — THE resolver
+/// feeding every namespace mutation per `docs/16§3` (namei D16). The walk
+/// stops before the final component, returning the resolved parent dir inode +
+/// the leaf reported VERBATIM (so a not-yet-existing leaf is fine; the per-
+/// component child op on the parent then services the create/unlink/rename).
+/// Replaces the old `split_parent` (`rfind('/')`) string split + a separate
+/// full `resolve(parent)` walk; the leaf classification (`.`/`..`/root) is
+/// owned by the engine (`VfsPath::last_type`) but the callers still pre-reject
+/// the dot-forms on the RAW path (`rmdir_dot_errno`/`rename_component_busy`)
+/// before lexical normalization collapses them. The owning mount's inode
+/// services the op (ext4 dir → ext4 create/unlink; tmpfs → tmpfs; read-only
+/// pseudo-fs → Erofs), exactly as Linux `inode_operations`. A `/` (no leaf,
+/// `last_type == Root`) maps to EINVAL — the same error the old `split_parent`
+/// returned for a parent-less path. # C: O(N parent components)
 pub(crate) fn resolve_parent(p: &str) -> Result<(vfs::InodeRef, String), i64> {
-    let p = strip_trailing_slash(p);
-    let (parent, name) = split_parent(p).ok_or(-(Errno::Einval.as_i32() as i64))?;
-    let pino = crate::pathresolve::resolve(parent, false)
-        .ok_or(-(Errno::Enoent.as_i32() as i64))?;
-    Ok((pino, String::from(name)))
+    let vp = crate::pathresolve::resolve_parent_path(p).map_err(errno_from_vfs)?;
+    match vp.last_component {
+        Some(name) => Ok((vp.inode, name)),
+        None       => Err(-(Errno::Einval.as_i32() as i64)),
+    }
 }
 
 /// True if `p` already resolves to an existing inode (final component
@@ -195,6 +181,31 @@ pub(crate) fn unlink_unix_socket_path(p: &str) -> bool {
     net::sock::UNIX_REGISTRY.dgram_unbind(p);
     crate::pathresolve::d_delete_path(p);
     true
+}
+
+/// Final path component of a raw user pathname (Linux `last` of
+/// `filename_parentat`). Trailing slashes are stripped first; the root `/`
+/// and a bare empty string yield `""`. # C: O(N)
+pub(crate) fn last_component(raw: &str) -> &str {
+    let trimmed = raw.trim_end_matches('/');
+    trimmed.rsplit('/').next().unwrap_or(trimmed)
+}
+
+/// Linux `do_rmdirat`: a final component of `.` → EINVAL, `..` → ENOTEMPTY
+/// (the `LAST_DOT` / `LAST_DOTDOT` cases). Checked on the raw path before
+/// resolution, which would otherwise normalise the dots away. # C: O(N)
+pub(crate) fn rmdir_dot_errno(raw: &str) -> Option<i64> {
+    match last_component(raw) {
+        "."  => Some(-(Errno::Einval.as_i32() as i64)),
+        ".." => Some(-(Errno::Enotempty.as_i32() as i64)),
+        _    => None,
+    }
+}
+
+/// Linux `do_renameat2`: EBUSY when either side's final component is not
+/// `LAST_NORM` — i.e. `.`, `..`, or the root (`""` after trimming). # C: O(N)
+pub(crate) fn rename_component_busy(raw: &str) -> bool {
+    matches!(last_component(raw), "" | "." | "..")
 }
 
 /// Strip a trailing `/` for the PARENT-SPLIT of create ops (`mkdir`/`mkdirat`):

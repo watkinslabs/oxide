@@ -4,34 +4,29 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
 
 /// `sys_chdir(path)` — slot 80.
 /// # C: O(N_devfs_entries)
 pub fn sys_chdir(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
-    if path_ptr == 0 || path_ptr >= USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: ptr in user range; user page mapped (caller's user code already executed from this AS); read bounded at 256 B.
-    let path = match unsafe { devfs::read_user_cstr(path_ptr, 256) } {
-        Some(p) if !p.is_empty() => p,
-        _                        => return -(Errno::Einval.as_i32() as i64),
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    let path = match crate::namei_common::read_user_path(path_ptr) {
+        Ok(s)   => s,
+        Err(rv) => return rv,
     };
-    let raw = match core::str::from_utf8(path) {
-        Ok(s)  => s,
-        Err(_) => return -(Errno::Einval.as_i32() as i64),
-    };
+    let raw: &str = path.as_str();
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
     };
     let resolved = crate::pathresolve::resolve_cwd(raw);
     let s = resolved.as_str();
     // chdir(2) follows symlinks to a directory — resolve via the
-    // path-walk and require a directory.
-    let path_obj = match crate::pathresolve::resolve_path(s, false) {
-        Some(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
-        _ => return -(Errno::Enoent.as_i32() as i64),
+    // path-walk and require a directory. A resolved non-directory final
+    // target is ENOTDIR (not ENOENT); other walk errors are preserved.
+    let path_obj = match crate::pathresolve::resolve_path_result(s, false) {
+        Ok(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
+        Ok(_)  => return -(Errno::Enotdir.as_i32() as i64),
+        Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
     // SAFETY: single-mutator per `13§5`; current task is sole writer.
     unsafe {

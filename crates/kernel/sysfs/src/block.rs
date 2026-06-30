@@ -25,9 +25,10 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use vfs::{mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
-use crate::{make_body_inode, DIR_PERM};
+use crate::kobject::{make_attr_inode, Attribute, AttrGroup, SysfsOps};
+use crate::{DIR_PERM, RO_PERM};
 
 const INO_BLOCK_ROOT: Ino = 0x5103_0001;
 const INO_DISK_DIR:   Ino = 0x5103_1000;
@@ -59,8 +60,43 @@ fn disk_attr(disk: &block::registry::Disk, leaf: &str) -> Option<Vec<u8>> {
     }
 }
 
-const DISK_ATTRS: &[&str] = &["size", "ro", "removable", "dev", "uevent"];
-const QUEUE_ATTRS: &[&str] = &["logical_block_size", "physical_block_size"];
+/// `/sys/block/<dev>` default attribute group (Linux `disk_attrs`). # C: n/a
+const DISK_ATTR_LIST: &[Attribute] = &[
+    Attribute { name: "size",      mode: RO_PERM },
+    Attribute { name: "ro",        mode: RO_PERM },
+    Attribute { name: "removable", mode: RO_PERM },
+    Attribute { name: "dev",       mode: RO_PERM },
+    Attribute { name: "uevent",    mode: RO_PERM },
+];
+static DISK_GROUP: AttrGroup = AttrGroup { attrs: DISK_ATTR_LIST };
+
+/// `/sys/block/<dev>/queue` attribute group (Linux `queue_attrs`). # C: n/a
+const QUEUE_ATTR_LIST: &[Attribute] = &[
+    Attribute { name: "logical_block_size",  mode: RO_PERM },
+    Attribute { name: "physical_block_size", mode: RO_PERM },
+];
+static QUEUE_GROUP: AttrGroup = AttrGroup { attrs: QUEUE_ATTR_LIST };
+
+/// `sysfs_ops` for a `/sys/block/<dev>` kobject — `show` renders each disk
+/// attribute fresh from the live `block::registry`. # C: O(1)
+struct DiskKobj { name: String }
+impl SysfsOps for DiskKobj {
+    fn show(&self, attr: &str) -> Option<Vec<u8>> {
+        let disk = block::registry::by_name(&self.name)?;
+        disk_attr(&disk, attr)
+    }
+}
+
+/// `sysfs_ops` for a `/sys/block/<dev>/queue` kobject — both leaves report the
+/// disk's block size. # C: O(1)
+struct QueueKobj { name: String }
+impl SysfsOps for QueueKobj {
+    fn show(&self, attr: &str) -> Option<Vec<u8>> {
+        QUEUE_GROUP.find(attr)?;
+        let disk = block::registry::by_name(&self.name)?;
+        Some(alloc::format!("{}\n", disk.dev.block_size()).into_bytes())
+    }
+}
 
 /// `/sys/block` directory — readdir/lookup enumerates the live
 /// `block::registry`. One entry per registered disk.
@@ -74,16 +110,16 @@ impl InodeOps for SysBlockOps {
     }
 }
 impl FileOps for SysBlockOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let disks = block::registry::snapshot();
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < disks.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup(&disks[idx].name).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, &disks[idx].name, FileType::Directory) { return Ok(next); }
+            if !ctx.emit(&disks[idx].name, ino, FileType::Directory, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 fn make_sys_block_inode() -> InodeRef {
@@ -101,27 +137,28 @@ impl InodeOps for DiskDirOps {
         if name == "queue" {
             return Ok(make_queue_dir_inode(d.name.clone()));
         }
-        let disk = block::registry::by_name(&d.name).ok_or(VfsError::Enoent)?;
-        let body = disk_attr(&disk, name).ok_or(VfsError::Enoent)?;
-        Ok(make_body_inode(body, INO_ATTR))
+        let attr = DISK_GROUP.find(name).ok_or(VfsError::Enoent)?;
+        let ops: Arc<dyn SysfsOps> = Arc::new(DiskKobj { name: d.name.clone() });
+        Ok(make_attr_inode(attr, ops, INO_ATTR))
     }
 }
 impl FileOps for DiskDirOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
-        let mut idx = off as usize;
-        while idx < DISK_ATTRS.len() {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let mut idx = ctx.pos as usize;
+        while idx < DISK_GROUP.attrs.len() {
             let next = idx as u64 + 1;
-            let ino = inode.lookup(DISK_ATTRS[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, DISK_ATTRS[idx], FileType::Regular) { return Ok(next); }
+            let name = DISK_GROUP.attrs[idx].name;
+            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !ctx.emit(name, ino, FileType::Regular, next) { return Ok(()); }
             idx += 1;
         }
-        if idx == DISK_ATTRS.len() {
+        if idx == DISK_GROUP.attrs.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup("queue").map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, "queue", FileType::Directory) { return Ok(next); }
+            if !ctx.emit("queue", ino, FileType::Directory, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 fn make_disk_dir_inode(name: String) -> InodeRef {
@@ -138,22 +175,22 @@ struct QueueDirOps;
 impl InodeOps for QueueDirOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let d = inode.private::<QueueDirData>().ok_or(VfsError::Einval)?;
-        if !QUEUE_ATTRS.contains(&name) { return Err(VfsError::Enoent); }
-        let disk = block::registry::by_name(&d.name).ok_or(VfsError::Enoent)?;
-        let body = alloc::format!("{}\n", disk.dev.block_size()).into_bytes();
-        Ok(make_body_inode(body, INO_ATTR))
+        let attr = QUEUE_GROUP.find(name).ok_or(VfsError::Enoent)?;
+        let ops: Arc<dyn SysfsOps> = Arc::new(QueueKobj { name: d.name.clone() });
+        Ok(make_attr_inode(attr, ops, INO_ATTR))
     }
 }
 impl FileOps for QueueDirOps {
-    fn iterate(&self, inode: &Inode, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
-        let mut idx = off as usize;
-        while idx < QUEUE_ATTRS.len() {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let mut idx = ctx.pos as usize;
+        while idx < QUEUE_GROUP.attrs.len() {
             let next = idx as u64 + 1;
-            let ino = inode.lookup(QUEUE_ATTRS[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !f(ino, next, QUEUE_ATTRS[idx], FileType::Regular) { return Ok(next); }
+            let name = QUEUE_GROUP.attrs[idx].name;
+            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !ctx.emit(name, ino, FileType::Regular, next) { return Ok(()); }
             idx += 1;
         }
-        Ok(idx as u64)
+        Ok(())
     }
 }
 fn make_queue_dir_inode(name: String) -> InodeRef {

@@ -11,18 +11,26 @@ use syscall::errno::Errno;
 /// # C: O(len)
 pub fn sys_chroot(args: &SyscallArgs) -> i64 {
     let p = args.a0;
-    if p == 0 || p >= hal::USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     if !cur.has_cap(sched::cap::SYS_CHROOT) {
         return -(Errno::Eperm.as_i32() as i64);
     }
-    // SAFETY: p validated < USER_VA_END; bounded read via existing helper.
-    let bytes = unsafe { devfs::read_user_cstr(p, 256) };
-    let s = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    let path = match crate::namei_common::read_user_path(p) {
+        Ok(s)   => s,
+        Err(rv) => return rv,
     };
+    let s: &str = path.as_str();
+    // TEMP (D24, debug-mnt): mount-creating syscall ENTRY trace — chroot into the
+    // assembled sandbox root that pins cur_mnt_id 10/11 for the api-mount walks.
+    #[cfg(feature = "debug-mount")]
+    {
+        klog::write_raw(b"[MNTCREATE] syscall=chroot flags=0x0 recursive=false source=<none> target=");
+        klog::write_raw(s.as_bytes());
+        klog::write_raw(b"\n");
+    }
     // chroot(2) accepts a RELATIVE path (resolved against cwd) — Linux
     // `set_fs_root` takes `user_path_at(AT_FDCWD, ...)`. systemd's
     // `mount_switch_root` does `chroot(".")` after MS_MOVE-ing the assembled
@@ -38,9 +46,10 @@ pub fn sys_chroot(args: &SyscallArgs) -> i64 {
     // An absolute path keeps the legacy nested-chroot prefix concat (F95).
     // # C: O(components)
     let (new_root, root_obj) = if !s.starts_with('/') {
-        let p = match crate::pathresolve::resolve_path(s, false) {
-            Some(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
-            _ => return -(Errno::Enoent.as_i32() as i64),
+        let p = match crate::pathresolve::resolve_path_result(s, false) {
+            Ok(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
+            Ok(_)  => return -(Errno::Enotdir.as_i32() as i64),
+            Err(e) => return crate::namei_common::errno_from_vfs(e),
         };
         let abs = alloc::string::String::from_utf8(p.dentry.absolute_path())
             .unwrap_or_else(|_| alloc::string::String::from("/"));
@@ -58,9 +67,10 @@ pub fn sys_chroot(args: &SyscallArgs) -> i64 {
                 out
             }
         };
-        let p = match crate::pathresolve::resolve_path(&new_root, false) {
-            Some(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
-            _ => return -(Errno::Enoent.as_i32() as i64),
+        let p = match crate::pathresolve::resolve_path_result(&new_root, false) {
+            Ok(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
+            Ok(_)  => return -(Errno::Enotdir.as_i32() as i64),
+            Err(e) => return crate::namei_common::errno_from_vfs(e),
         };
         (new_root, p)
     };

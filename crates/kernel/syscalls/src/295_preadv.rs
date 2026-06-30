@@ -15,6 +15,20 @@ fn offset_from_args(args: &SyscallArgs) -> u64 {
 #[cfg(target_arch = "aarch64")]
 fn offset_from_args(args: &SyscallArgs) -> u64 { args.a3 }
 
+/// RWF_* flags accepted by preadv2/pwritev2 (uapi `linux/fs.h`). HIPRI/DSYNC/
+/// SYNC/NOWAIT have no effect on the synchronous in-kernel backends (never
+/// block, always durable); RWF_APPEND is meaningful only on the write path.
+pub(crate) const RWF_SUPPORTED: u64 = 0x1f; // HIPRI|DSYNC|SYNC|NOWAIT|APPEND
+
+/// `sys_preadv2(fd, iov, iovcnt, pos_l, pos_h, flags)` — slot 286. Validates
+/// the RWF_* `flags` word (Linux `kiocb_set_rw_flags`: an unsupported bit →
+/// EOPNOTSUPP) the plain `preadv` handler silently dropped, then reads (D54).
+/// # C: O(iovcnt x iov[i].len)
+pub fn sys_preadv2(args: &SyscallArgs) -> i64 {
+    if args.a5 & !RWF_SUPPORTED != 0 { return -(Errno::Eopnotsupp.as_i32() as i64); }
+    sys_preadv(args)
+}
+
 /// `sys_preadv(fd, iov, iovcnt, off)` — slot 295. Positional read:
 /// does not consume or depend on the open file description's `f_pos`.
 /// `preadv2` currently shares this implementation and accepts flags as

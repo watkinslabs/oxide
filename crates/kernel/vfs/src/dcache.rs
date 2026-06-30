@@ -151,6 +151,65 @@ fn lru_add(d: &Arc<Dentry>) {
     DENTRY_LRU.lock().push_back(Arc::downgrade(d));
 }
 
+/// Approximate count of dentries currently parked on the production LRU —
+/// the shrinker `count_objects` hook (Linux `super_block::s_dentry_lru` count
+/// reported to `do_shrink_slab`). The number a memory-pressure / periodic
+/// reclaim caller scales its [`shrink_dcache_memory`] target against. O(1):
+/// reports the raw deque length (includes not-yet-pruned dead `Weak`s, an upper
+/// bound Linux's `list_lru_count` shares). # C: O(1)
+pub fn dcache_lru_count() -> usize { DENTRY_LRU.lock().len() }
+
+/// Memory-pressure / periodic shrinker ENTRY POINT for the dentry cache (Linux
+/// `shrinker::scan_objects` → `prune_dcache_sb`, driven by `do_shrink_slab` under
+/// reclaim). The production caller lives in mm/sched (cross-lane): a reclaim /
+/// periodic-vmpressure path invokes this with the number of unused dentries it
+/// wants returned to the slab allocator. Drains the SAME production-populated
+/// [`DENTRY_LRU`] that every `File::drop` → `dput`-to-zero feeds (D10), via the
+/// two-hand-clock [`shrink_dcache`]; referenced/in-use entries survive, unused
+/// negatives + idle positives are evicted. Returns the count freed. # C: O(scanned)
+pub fn shrink_dcache_memory(target: usize) -> usize { shrink_dcache(target) }
+
+// ---------------------------------------------------------------------------
+// Global rename seqlock (`16§2`, Linux `rename_lock` in `fs/dcache.c`). A SINGLE
+// process-wide seqcount the lock-free WHOLE-PATH walker brackets a multi-
+// component read in: any `d_move` anywhere advances it, so a path walk that
+// raced a rename detects it and retries — the per-dentry `d_seq` only guards the
+// ONE renamed name, not the path's other components shifting under a concurrent
+// directory rename. EVEN = no rename in flight, ODD = a `d_move` is rehoming.
+// ---------------------------------------------------------------------------
+
+static RENAME_LOCK: AtomicU32 = AtomicU32::new(0);
+
+/// Begin a lock-free whole-path read (Linux `read_seqbegin(&rename_lock)`): spin
+/// until the global rename seqcount is EVEN (no `d_move` in flight) and return
+/// that snapshot. Pair with [`rename_lock_retry`] after reading the path's
+/// dentries. # C: O(1) amortized
+pub fn rename_lock_read_begin() -> u32 {
+    loop {
+        let s = RENAME_LOCK.load(Ordering::Acquire);
+        if s & 1 == 0 { return s; }
+        core::hint::spin_loop();
+    }
+}
+
+/// Validate a lock-free whole-path read (Linux `read_seqretry(&rename_lock,…)`):
+/// `true` ⇒ a `d_move` raced the walk (the global seqcount advanced or is mid-
+/// write), so the caller must restart the path walk. # C: O(1)
+pub fn rename_lock_retry(start: u32) -> bool {
+    core::sync::atomic::fence(Ordering::Acquire);
+    RENAME_LOCK.load(Ordering::Acquire) != start
+}
+
+/// Open the global rename window (Linux `write_seqlock(&rename_lock)` at the top
+/// of `d_move`): advance `RENAME_LOCK` to ODD so every in-flight whole-path
+/// reader fails `rename_lock_retry`. MUST be paired with [`rename_unlock`].
+/// # C: O(1)
+fn rename_lock() { RENAME_LOCK.fetch_add(1, Ordering::Release); }
+
+/// Close the global rename window (Linux `write_sequnlock(&rename_lock)`):
+/// advance back to EVEN — a new generation. # C: O(1)
+fn rename_unlock() { RENAME_LOCK.fetch_add(1, Ordering::Release); }
+
 /// Reclaim up to `target` unused dentries from the LRU head (Linux
 /// `shrink_dcache_sb` / `prune_dcache`). Referenced entries get their bit
 /// cleared and rotate to the tail (two-hand clock); entries that regained a
@@ -307,6 +366,7 @@ pub fn d_make_root(inode: InodeRef, sb: &Arc<SuperBlock>) -> Arc<Dentry> {
     let root = Dentry::new_root_in_sb(inode.clone(), sb);
     sb.set_s_root(root.clone());
     if let Some(s) = inode.i_sb() { s.i_add_alias(&inode, &root); }
+    root.grab_inode_hold(); // D3/D37: root dentry counts its inode hold
     root
 }
 
@@ -329,6 +389,7 @@ pub fn d_alloc(parent: &Arc<Dentry>, name: &str) -> Arc<Dentry> {
 pub fn d_alloc_pseudo(name: &str, inode: InodeRef, d_op: &'static crate::dentry::DentryOps) -> Arc<Dentry> {
     let d = Dentry::new_pseudo(name, inode.clone(), d_op);
     if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, &d); }
+    d.grab_inode_hold(); // D3/D37: pseudo dentry counts its inode hold
     d
 }
 
@@ -399,6 +460,7 @@ pub fn d_weak_revalidate(d: &Arc<Dentry>, reval: bool) -> bool {
 pub fn d_instantiate(dentry: &Arc<Dentry>, inode: InodeRef) {
     if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, dentry); }
     dentry.set_inode(Some(inode));
+    dentry.grab_inode_hold(); // D3/D37: positive dentry counts its inode hold
 }
 
 /// `d_alloc` + `d_instantiate` + hash-insert, race-safe: an existing
@@ -409,6 +471,7 @@ pub fn d_add(parent: &Arc<Dentry>, name: &str, inode: InodeRef) -> Arc<Dentry> {
     let child = Dentry::new_child(parent, name, Some(inode.clone()));
     let canon = parent.cache_child(name, child);
     if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, &canon); }
+    canon.grab_inode_hold(); // D3/D37: positive (race-winning) dentry counts its inode hold
     DENTRY_HASHTABLE.insert(&canon);
     canon
 }
@@ -419,6 +482,92 @@ pub fn d_add(parent: &Arc<Dentry>, name: &str, inode: InodeRef) -> Arc<Dentry> {
 pub fn d_add_negative(parent: &Arc<Dentry>, name: &str) -> Arc<Dentry> {
     let child = Dentry::new_child(parent, name, None);
     let canon = parent.cache_child(name, child);
+    DENTRY_HASHTABLE.insert(&canon);
+    canon
+}
+
+// ---------------------------------------------------------------------------
+// In-lookup table (`16§2`, Linux `in_lookup_hashtable` / `d_alloc_parallel`).
+// Holds the PLACEHOLDER dentries of (parent,name) lookups CURRENTLY IN FLIGHT,
+// so two walkers that miss the main hash for the SAME key do not each build a
+// dentry and run `i_op->lookup` then race in `cache_child` (D27 efficiency gap):
+// the first becomes the LEADER (its placeholder goes here, flagged
+// `D_PAR_LOOKUP`), the rest become WAITERS that block on the placeholder's
+// `D_PAR_LOOKUP` bit and share the leader's single lookup. Entries live only
+// between `d_alloc_parallel` and `d_lookup_done`. `Weak` so a crashed/leaked
+// leader can't pin the table; dead weaks self-prune on probe.
+// ---------------------------------------------------------------------------
+
+static IN_LOOKUP: Spinlock<Vec<Weak<Dentry>>, DentryClass> = Spinlock::new(Vec::new());
+
+/// Outcome of [`d_alloc_parallel`] — which role the caller plays in the
+/// in-flight lookup of one (parent,name).
+pub enum DParLookup {
+    /// This caller WON the race and owns the in-flight placeholder (flagged
+    /// `D_PAR_LOOKUP`, NOT yet hashed). It MUST run the slow `i_op->lookup`,
+    /// `d_instantiate` the placeholder if the name resolved (leave it negative
+    /// otherwise), then call [`d_lookup_done`] to publish + wake waiters.
+    Leader(Arc<Dentry>),
+    /// Another caller is already resolving this key; this is that SHARED
+    /// placeholder. The caller must NOT run its own `i_op->lookup` — it waits
+    /// for `is_in_lookup()` to clear (Linux `d_wait_lookup`) and then uses the
+    /// now-published dentry. In the cooperative kernel walker the wait is a
+    /// `D_PAR_LOOKUP` wait-queue sleep; the primitive only exposes the gate.
+    Waiter(Arc<Dentry>),
+}
+
+/// Begin a PARALLEL lookup of `(parent, name)` (Linux `d_alloc_parallel`).
+/// Re-checks the main hash + the in-lookup table under one lock: if another
+/// walker is already resolving this key, returns [`DParLookup::Waiter`] sharing
+/// that in-flight placeholder; otherwise installs a fresh `D_PAR_LOOKUP`
+/// placeholder and returns [`DParLookup::Leader`]. Only the leader runs the
+/// slow `i_op->lookup`; concurrent walkers no longer each construct + race a
+/// dentry (D27). The caller is expected to have already missed [`d_lookup`]
+/// (the fast path) before calling this. # C: O(bucket_len + in_lookup_len)
+pub fn d_alloc_parallel(parent: &Arc<Dentry>, name: &str) -> DParLookup {
+    let qhash = Dentry::compute_hash(Some(parent), name);
+    let pptr = Arc::as_ptr(parent);
+    let mut g = IN_LOOKUP.lock();
+    // An in-flight placeholder for this key already present ⇒ become a waiter.
+    g.retain(|w| w.upgrade().is_some()); // prune dead leaders
+    for w in g.iter() {
+        if let Some(e) = w.upgrade() {
+            if e.is_in_lookup() && e.key_matches(pptr, qhash, name) {
+                return DParLookup::Waiter(e);
+            }
+        }
+    }
+    // The key may have been published into the main hash since the caller's
+    // fast-path miss (a leader finished between then and now) — adopt it rather
+    // than launch a redundant lookup. Hashed result ⇒ already resolved.
+    if let Some(existing) = DENTRY_HASHTABLE.lookup_locked(pptr, qhash, name) {
+        return DParLookup::Waiter(existing);
+    }
+    // We are the leader: install an unhashed placeholder under D_PAR_LOOKUP.
+    let placeholder = Dentry::new_child(parent, name, None);
+    placeholder.set_par_lookup(true);
+    g.push(Arc::downgrade(&placeholder));
+    DParLookup::Leader(placeholder)
+}
+
+/// Publish a leader's resolved placeholder and wake its waiters (Linux
+/// `__d_lookup_done` + the `__d_add` rehash tail). Clears `D_PAR_LOOKUP` (the
+/// waiters' wake gate), removes the placeholder from the in-lookup table, caches
+/// it under its parent's `d_subdirs`, and hashes it into the global table — so a
+/// subsequent [`d_lookup`] of the key hits it. Call AFTER the leader has
+/// `d_instantiate`-d the placeholder (positive result) or left it negative
+/// (cached miss). Returns the canonical dentry. # C: O(bucket_len + in_lookup_len)
+pub fn d_lookup_done(placeholder: &Arc<Dentry>) -> Arc<Dentry> {
+    placeholder.set_par_lookup(false); // wake gate clears
+    {
+        let mut g = IN_LOOKUP.lock();
+        let dptr = Arc::as_ptr(placeholder);
+        g.retain(|w| match w.upgrade() { Some(e) => Arc::as_ptr(&e) != dptr, None => false });
+    }
+    let canon = match placeholder.parent() {
+        Some(p) => p.cache_child(placeholder.name(), placeholder.clone()),
+        None    => placeholder.clone(),
+    };
     DENTRY_HASHTABLE.insert(&canon);
     canon
 }
@@ -505,14 +654,52 @@ pub fn d_delete(d: &Arc<Dentry>) {
     }
 }
 
+/// Unlink the name at `d` (Linux `vfs_unlink` tail, dentry side) — the D30
+/// coupling between `Inode::i_nlink` and the per-inode `i_dentry` alias list.
+///
+/// AUTHORITY: the FILESYSTEM's `i_op->unlink`/`rmdir` owns the in-memory
+/// `drop_nlink` on the victim inode (Linux: `ext4_unlink`→`ext4_dec_count`,
+/// `shmem`/`simple_unlink`→`drop_nlink`), and it runs BEFORE this — the unlink/
+/// rmdir syscall handlers call the backend op first, then this. So by the time
+/// `d_unlink` runs, `inode.i_nlink` ALREADY reflects the drop; this function
+/// does NOT touch nlink (no double-decrement). It only tears down the dcache
+/// side. Steps:
+///   1. Read whether the backed-out name was the LAST (`inode.nlink() == 0`).
+///   2. [`d_delete`] tears down THIS name: a sole-user dentry goes negative
+///      (its alias dropped + inode detached via `dentry_iput`→`iput`), a shared
+///      one is unhashed.
+///   3. If that was the last name, [`d_prune_aliases`] drops every remaining
+///      UNUSED sibling alias so no stale cached name resolves to the now-dead
+///      inode (Linux `d_prune_aliases` on the final unlink), and the last
+///      held reference's `iput` retires the inode through the EXISTING
+///      `drop_inode`/`evict_inode` window. Eviction is driven solely by `iput`
+///      (whose `drop_inode` default is `nlink == 0 && i_count == 0`) — this
+///      function never frees the inode itself, so there is NO double-evict.
+/// A negative `d` (no inode) is a no-op. Returns true iff the inode lost its
+/// last name (caller may observe retirement once references drain).
+/// # C: O(N_aliases)
+pub fn d_unlink(d: &Arc<Dentry>) -> bool {
+    let inode = match d.inode() { Some(i) => i, None => return false };
+    // Backend `i_op->unlink`/`rmdir` already dropped the in-memory link.
+    let last = inode.nlink() == 0;
+    d_delete(d);
+    if last { d_prune_aliases(&inode); }
+    last
+}
+
 /// Rename `old` to `(new_parent, new_name)` (Linux `d_move`). Unhashes
 /// `old` from its current parent and rehomes its inode under the new
 /// (parent,name) key, so `d_lookup(old_parent, old_name)` misses and
 /// `d_lookup(new_parent, new_name)` hits. # C: O(1) expected
 pub fn d_move(old: &Arc<Dentry>, new_parent: &Arc<Dentry>, new_name: &str) -> Arc<Dentry> {
-    // Linux `__d_move` brackets the rehome in `write_seqcount_begin/end(&d_seq)`
-    // so a lock-free walker holding `old` detects the move (`read_seqretry`) and
-    // re-looks-up the new (parent,name) instead of trusting the stale binding.
+    // Linux `__d_move` runs under `write_seqlock(&rename_lock)` (the GLOBAL
+    // rename seqcount) AND brackets the rehome in `write_seqcount_begin/end(
+    // &dentry->d_seq)` (the per-dentry one). The global lock invalidates any
+    // in-flight WHOLE-PATH walk (a sibling component shifting under a directory
+    // rename); the per-dentry `d_seq` lets a walker holding `old` detect the move
+    // (`read_seqretry`) and re-look-up the new (parent,name). Take the global
+    // first, then the per-dentry, mirroring Linux's nesting order.
+    rename_lock();
     old.seq_write_begin();
     d_drop(old);
     let moved = match old.inode() {
@@ -520,6 +707,7 @@ pub fn d_move(old: &Arc<Dentry>, new_parent: &Arc<Dentry>, new_name: &str) -> Ar
         None        => d_add_negative(new_parent, new_name),
     };
     old.seq_write_end();
+    rename_unlock();
     moved
 }
 
@@ -540,6 +728,7 @@ pub fn d_obtain_alias(inode: InodeRef) -> Arc<Dentry> {
     }
     let anon = Dentry::new_anon(inode.clone());
     if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, &anon); }
+    anon.grab_inode_hold(); // D3/D37: anonymous alias counts its inode hold
     anon
 }
 

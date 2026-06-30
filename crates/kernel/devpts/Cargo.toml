@@ -10,6 +10,7 @@ sync    = { path = "../../shared/sync" }
 tty     = { path = "../tty" }
 vfs     = { path = "../vfs" }
 devfs   = { path = "../devfs" }
+kernfs  = { path = "../kernfs" }
 sched   = { path = "../sched" }
 hal     = { path = "../../arch/hal" }
 klog    = { path = "../../shared/klog" }

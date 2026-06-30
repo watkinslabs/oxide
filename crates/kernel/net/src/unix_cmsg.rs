@@ -103,7 +103,7 @@ pub fn recvmsg_unix_dgram(sock: &alloc::sync::Arc<InetSocket>, msgp: u64) -> i64
                         // preserving position, flags, AND `f_path.mnt_id`.
                         let new_f = f.clone();
                         vfs::fire_clone_hook(&new_f);
-                        if let Ok(fd) = fdt.alloc(new_f) {
+                        if let Ok(fd) = fdt.alloc_limit(new_f, cur.nofile_soft()) {
                             // SAFETY: cmsg payload area inside controllen-bounded buf.
                             unsafe { core::ptr::write_volatile((base + 16 + written * 4) as *mut i32, fd); }
                             written += 1;

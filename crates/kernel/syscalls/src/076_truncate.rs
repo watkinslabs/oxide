@@ -4,24 +4,20 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
 
 /// `sys_truncate(path, length)` — slot 76.
 /// # C: O(N_devfs_entries)
 pub fn sys_truncate(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let len      = args.a1;
-    if path_ptr == 0 || path_ptr >= USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: ptr in user range; user page mapped; bounded read.
-    let path = match unsafe { devfs::read_user_cstr(path_ptr, 256) } {
-        Some(p) if !p.is_empty() => p,
-        _                        => return -(Errno::Einval.as_i32() as i64),
+    // Linux do_sys_truncate: a negative length is EINVAL before any walk (D33).
+    if (len as i64) < 0 { return -(Errno::Einval.as_i32() as i64); }
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    let path = match crate::namei_common::read_user_path(path_ptr) {
+        Ok(s)   => s,
+        Err(rv) => return rv,
     };
-    let s = match core::str::from_utf8(path) {
-        Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
-    };
+    let s: &str = path.as_str();
     if let Err(rv) = crate::landlock::check(s,
         ::security::landlock::access::TRUNCATE) { return rv; }
     // truncate(2) follows symlinks; resolve to the inode + owning mount.

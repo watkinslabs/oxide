@@ -4,7 +4,6 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
 
 use crate::userbuf::validate_user_buf_writable;
 
@@ -18,19 +17,14 @@ pub fn sys_readlink(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let buf_ptr  = args.a1;
     let bufsize  = args.a2;
-    if path_ptr == 0 || path_ptr >= USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
     if bufsize == 0 { return -(Errno::Einval.as_i32() as i64); }
     if let Err(rv) = validate_user_buf_writable(buf_ptr, bufsize, 1) { return rv; }
-    // SAFETY: ptr in user range; user page mapped (caller already executed user code from this AS); bounded read.
-    let path = match unsafe { devfs::read_user_cstr(path_ptr, 256) } {
-        Some(p) if !p.is_empty() => p,
-        _                        => return -(Errno::Einval.as_i32() as i64),
+    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
+    let path = match crate::namei_common::read_user_path(path_ptr) {
+        Ok(s)   => s,
+        Err(rv) => return rv,
     };
-    let raw = match core::str::from_utf8(path) {
-        Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
-    };
+    let raw: &str = path.as_str();
     let resolved = crate::pathresolve::resolve_cwd(raw);
     readlink_resolved_path(resolved.as_str(), buf_ptr, bufsize)
 }
@@ -45,8 +39,14 @@ pub(crate) fn readlink_resolved_path(path_s: &str, buf_ptr: u64, bufsize: u64) -
         else if let Some(inode) = crate::pathresolve::resolve(path_s, true) {
             match inode.get_link() { Ok(v) => v, Err(_) => return -(Errno::Einval.as_i32() as i64) }
         } else { return -(Errno::Enoent.as_i32() as i64); };
+    write_link_target(&target, buf_ptr, bufsize)
+}
+
+/// Copy a symlink target into the caller's `buf` (truncated to `bufsize`),
+/// returning the byte count — shared by `readlink`/`readlinkat`. # C: O(n)
+pub(crate) fn write_link_target(target: &[u8], buf_ptr: u64, bufsize: u64) -> i64 {
     let n = (target.len() as u64).min(bufsize) as usize;
-    // SAFETY: buf range validated < USER_VA_END; CPL=0 writes through caller's AS.
+    // SAFETY: buf range validated < USER_VA_END by the caller; CPL=0 writes through caller's AS.
     unsafe {
         for i in 0..n {
             core::ptr::write_volatile((buf_ptr + i as u64) as *mut u8, target[i]);

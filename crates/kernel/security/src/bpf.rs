@@ -202,7 +202,7 @@ fn handle_link_create(attr_ptr: u64, attr_size: u64) -> i64 {
         _hook: hook,
         _prog: prog_inode,
     });
-    install_fd(inode, "[bpf-lsm-link]")
+    install_fd(inode, "bpf-link")
 }
 
 fn bpf_prog_inode_from_fd(fd: i32) -> Option<InodeRef> {
@@ -264,7 +264,7 @@ fn handle_map_create(attr_ptr: u64, attr_size: u64) -> i64 {
         value_size:  attr.value_size,
         frozen:      AtomicBool::new(false),
     });
-    install_fd(inode, "[bpf-map]")
+    install_fd(inode, "bpf-map")
 }
 
 /// `bpf_attr` map-ops variant per Linux `linux/bpf.h`. 32 bytes
@@ -555,13 +555,12 @@ fn handle_prog_load(attr_ptr: u64, attr_size: u64) -> i64 {
         return -(Errno::Einval.as_i32() as i64);
     }
     let inode: InodeRef = make_bpf_prog_inode(prog_type, insns);
-    install_fd(inode, "[bpf-prog]")
+    install_fd(inode, "bpf-prog")
 }
 
 fn install_fd(inode: InodeRef, name: &str) -> i64 {
-    use alloc::string::ToString;
     use alloc::sync::Arc;
-    use vfs::{Dentry, File, OpenFlags};
+    use vfs::{File, OpenFlags};
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -569,7 +568,7 @@ fn install_fd(inode: InodeRef, name: &str) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let dentry = Dentry::new(None, name.to_string(), Arc::clone(&inode));
+    let dentry = vfs::dcache::d_alloc_pseudo(name, Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
     let file = File::new(inode, dentry, OpenFlags::O_RDWR);
-    match fdt.alloc(file) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    match fdt.alloc_limit(file, cur.nofile_soft()) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
 }

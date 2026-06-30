@@ -30,9 +30,19 @@ use crate::dentry::Dentry;
 use crate::inode::InodeRef;
 use crate::types::{FileType, KResult, VfsError};
 
-/// Max symlinks followed in one resolution (Linux `MAXSYMLINKS` = 40,
-/// invariant 5 in `16§1`).
+/// Max symlinks followed in one resolution — Linux `MAXSYMLINKS` = 40, the
+/// `nd->total_link_count` cap (invariant 5 in `16§1`). A MONOTONIC count of
+/// every symlink followed across the whole resolution (never decremented); the
+/// robust loop guard that catches any cycle, however reached.
 pub const MAX_SYMLINK_DEPTH: u32 = 40;
+
+/// Max symlink NESTING depth — Linux historical `MAX_NESTED_LINKS` = 8, the
+/// `nd->depth` cap. The number of suspended link-remainder frames stacked at
+/// once (a link whose target resolution is still pending an outer remainder).
+/// Distinct from [`MAX_SYMLINK_DEPTH`]: nesting is the live stack depth (rises
+/// and falls with `put_link`), total is the lifetime follow count. Either cap
+/// exceeded is ELOOP (Linux rejects both over-nesting and over-counting).
+pub const MAX_NESTED_LINKS: u32 = 8;
 
 /// `MAY_*` access mask bits (Linux `include/linux/fs.h`).
 pub const MAY_EXEC:  u32 = 0x01;
@@ -57,6 +67,25 @@ pub struct LookupFlags {
     /// O_NOFOLLOW / AT_SYMLINK_NOFOLLOW: a symlink as the FINAL component is
     /// returned as-is rather than followed.
     pub no_follow_final: bool,
+    /// LOOKUP_FOLLOW (Linux `fs/namei.c`): explicitly FOLLOW a trailing symlink.
+    /// First-class counterpart to `no_follow_final` — when set it OVERRIDES the
+    /// no-follow short-circuit so the final symlink is resolved even if
+    /// `no_follow_final` is also set (Linux's flag set never holds both, and
+    /// LOOKUP_FOLLOW wins where they conflict). DEFAULT OFF: with neither bit set
+    /// the walk follows the trailing symlink as before (the historical
+    /// `!no_follow_final` default), so this is purely additive. A caller that
+    /// needs the Linux "always follow" semantics (stat/`AT_SYMLINK_FOLLOW`,
+    /// `linkat` source) sets `follow`; O_NOFOLLOW/`AT_SYMLINK_NOFOLLOW` clear it
+    /// and set `no_follow_final`.
+    pub follow: bool,
+    /// LOOKUP_EMPTY (Linux `AT_EMPTY_PATH`): an EMPTY pathname (`""`) is allowed
+    /// and resolves to the dirfd/cwd base itself (the empty component queue ends
+    /// the walk at the start position). Without this bit an empty pathname is
+    /// `ENOENT` (Linux `filename_lookup`/`path_init`: `-ENOENT` unless
+    /// LOOKUP_EMPTY). First-class replacement for the per-`*at`-handler
+    /// AT_EMPTY_PATH gate — every path-taking `*at` now gets uniform empty-path
+    /// semantics from the engine.
+    pub empty: bool,
     /// RESOLVE_NO_SYMLINKS: any symlink anywhere → ELOOP.
     pub no_symlinks: bool,
     /// Confined-root marker (chroot, wired by `pathresolve::resolution_root`):
@@ -107,6 +136,18 @@ pub struct LookupFlags {
     /// retry on a blocking path (Linux `try_to_unlazy`/`LOOKUP_CACHED` →
     /// `-EAGAIN`). A cached NEGATIVE dentry is still a definitive `ENOENT`.
     pub cached: bool,
+    /// LOOKUP_RCU (Linux `fs/namei.c`) — OPT-IN lock-free "lazy" walk.
+    /// DEFAULT OFF: the proven, D22-validated ref/Arc walk is the
+    /// default-correct path. When set, the walk runs in rcu (lazy) mode,
+    /// resolving components from the seqcount-gated dcache probe and only
+    /// "legitimizing" (taking real references via `unlazy_walk`) at a
+    /// complication point (symlink, mount crossing, the final component, a
+    /// dcache miss). On ANY uncertainty it falls back to the ref/Arc walk
+    /// (`unlazy_walk` failure → restart with rcu cleared), so the rcu mode can
+    /// never produce a different result than the Arc walk — it is a pure
+    /// fast-path overlay. A later lane flips the default to rcu after boot +
+    /// stress; this lane lands it opt-in with the mandatory fallback.
+    pub rcu: bool,
 }
 
 /// Caller credentials for the VFS permission checks — Linux `struct cred`
@@ -452,13 +493,36 @@ pub fn chown_kill_priv(mode: u16, is_dir: bool) -> Option<u16> {
     if m != mode { Some(m) } else { None }
 }
 
+/// Negative-dentry caching (D5/D6) is correct ONLY on a filesystem whose
+/// directory namespace mutates EXCLUSIVELY through the VFS create/unlink/rename
+/// syscalls — each of which flushes the leaf's cached negative (create →
+/// `pathresolve::d_drop_path`, remove → `d_delete_path`, rename → `d_move_path`,
+/// the dest stale-drop). A pseudo-fs whose entries appear WITHOUT a syscall
+/// (`/proc/<pid>`, `/sys` hotplug, devpts, devtmpfs auto-nodes) has no such
+/// flush, so a stale negative would MASK the node forever; Linux relies on
+/// per-fs `d_revalidate`/`d_delete` there (not yet wired). Gate on the fs-type
+/// name — the same pseudo-fs discriminator `umount2` uses. A SB-less synthetic
+/// inode (no `i_sb`) is never cached. # C: O(1)
+fn neg_cache_ok(dir: &InodeRef) -> bool {
+    match dir.i_sb() {
+        Some(sb) => matches!(sb.s_type.name(), "ext4" | "tmpfs" | "ramfs"),
+        None => false,
+    }
+}
+
 /// Follow stacked mountpoints DOWN from `d`: while `d` is a mountpoint, switch
 /// to the mounted fs's `s_root` dentry (Linux `__follow_mount`). Returns the
 /// final dentry, its inode, and the deepest crossed mount id. # C: O(stack)
-fn follow_mount_down(mut d: Arc<Dentry>, mut mnt_id: u64, ns: u64) -> KResult<(Arc<Dentry>, InodeRef, u64)> {
-    while let Some(id) = d.mounted_mount(ns) {
-        match crate::mount::root_dentry_for_mount_id(id) {
-            Some(sr) => { d = sr; mnt_id = id; }
+fn follow_mount_down(mut d: Arc<Dentry>, mut mnt_id: u64) -> KResult<(Arc<Dentry>, InodeRef, u64)> {
+    // [D24] Cross stacked mounts via the strict `(parent_mnt_id, dentry)` mount
+    // hash (Linux `__lookup_mnt`): while a mount is attached on `d` whose PARENT
+    // is the current mount `mnt_id`, switch to that child mount's root dentry and
+    // adopt its id, looping for stacked overmounts. The parent-keyed hash is
+    // ns-correct (every namespace mints ns-private mnt_ids), so the legacy
+    // parent-agnostic `dentry.mounted_mounts` map is no longer consulted (deleted).
+    while let Some(m) = crate::mount::__lookup_mnt(mnt_id, &d) {
+        match m.mnt_root() {
+            Some(sr) => { d = sr; mnt_id = m.mnt_id; }
             None => break,
         }
     }
@@ -509,10 +573,35 @@ pub struct Nameidata {
     pub cur_inode: InodeRef,
     pub root_mnt_id: u64,
     pub root_dentry: Arc<Dentry>,
+    /// Linux `nd->depth` — symlink NESTING depth: the count of suspended
+    /// link-remainder frames currently on the resume stack (rises on a frame
+    /// push, falls on `put_link` resume). Capped at [`MAX_NESTED_LINKS`].
     pub depth: u32,
+    /// Linux `nd->total_link_count` — TOTAL symlinks followed in this
+    /// resolution (monotonic, never decremented). Capped at
+    /// [`MAX_SYMLINK_DEPTH`] (`MAXSYMLINKS` = 40) — the cycle guard.
+    pub total_link_count: u32,
     pub flags: LookupFlags,
     pub cred: Cred,
+    /// LOOKUP_RCU live state (Linux `nd->flags & LOOKUP_RCU`). Seeded from
+    /// `flags.rcu`; CLEARED by `unlazy_walk` (legitimized → ref walk) or by
+    /// `terminate_walk` (error/teardown exit). Persists across a bounded
+    /// rename-seqretry restart so a still-lazy walk re-attempts in rcu mode;
+    /// a fallback restart clears it so the retry is a plain ref walk.
+    pub rcu: bool,
 }
+
+/// Bounded number of whole-walk restarts (Linux retries the lock-free walk a
+/// bounded number of times before falling to the ref walk). On exhaustion the
+/// walk PROCEEDS with the Arc-walk result (seqretries ignored) — the `Arc`
+/// already guarantees memory safety, so this bounded-degrade valve can never
+/// livelock the walk (the apex boot-safety property of the D22 work).
+const MAX_WALK_RESTARTS: u32 = 16;
+
+/// One pass of the component walk either RESOLVED a final `VfsPath`, or hit a
+/// rename-seqretry / rcu-legitimize failure that demands a bounded RESTART
+/// (Linux `retry_estale` / `try_to_unlazy` failure → re-walk).
+enum WalkOutcome { Done(VfsPath), Restart }
 
 impl Nameidata {
     /// Build the walk state from a `start` (dirfd/cwd base) and a resolution
@@ -521,9 +610,17 @@ impl Nameidata {
     /// fs). # C: O(start/root mount stack)
     pub fn new(start: Arc<Dentry>, root: Arc<Dentry>, flags: LookupFlags, cred: Cred) -> KResult<Self> {
         let ns = crate::mount::current_ns();
-        let base_mnt = crate::mount::root_mount_id(ns).unwrap_or(crate::mount::MNT_ID_NONE);
-        let (mut root_dentry, _ri, mut root_mnt_id) = follow_mount_down(root, base_mnt, ns)?;
-        let (cur_dentry, cur_inode, cur_mnt_id) = follow_mount_down(start, root_mnt_id, ns)?;
+        // Seed each follow-down with the mount that CONTAINS the base dentry, not
+        // the ns-root mount. The caller hands bare dentries (no `vfsmount`); a
+        // base sitting inside a sub-mount (chroot/pivot staging dir) lives in that
+        // sub-mount, not the root, so `__lookup_mnt(cur_mnt_id, d)` must key on the
+        // true containing mount for the crossing to resolve. The seed `mnt_id` the
+        // walk carries is the design linchpin — ns-correctness flows from
+        // `cur_mnt_id` through the `(parent_mnt_id, dentry)` strict hash.
+        let root_base = crate::mount::containing_mount_id(ns, &root);
+        let (mut root_dentry, _ri, mut root_mnt_id) = follow_mount_down(root, root_base)?;
+        let start_base = crate::mount::containing_mount_id(ns, &start);
+        let (cur_dentry, cur_inode, cur_mnt_id) = follow_mount_down(start, start_base)?;
         // RESOLVE_IN_ROOT (openat2): the dirfd (START) becomes the resolution
         // root, so `to_root()` (absolute paths / absolute symlink restarts) and
         // `dotdot_step` (`..` clamp) all confine to it, overriding the passed
@@ -531,7 +628,8 @@ impl Nameidata {
         // RESOLVE_BENEATH (`beneath_exdev`) likewise scopes resolution to the
         // dirfd, but ERRORS on escape (handled in `walk`) instead of clamping.
         if flags.in_root || flags.beneath_exdev { root_dentry = cur_dentry.clone(); root_mnt_id = cur_mnt_id; }
-        Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, depth: 0, flags, cred })
+        let rcu = flags.rcu;
+        Ok(Nameidata { cur_mnt_id, cur_dentry, cur_inode, root_mnt_id, root_dentry, depth: 0, total_link_count: 0, flags, cred, rcu })
     }
 
     /// Reset the current position to the resolution root (absolute path /
@@ -553,10 +651,110 @@ impl Nameidata {
         )
     }
 
-    /// Resolve `path` from the current state to a final `VfsPath`. # C:
-    /// O(components × dir-lookup) + O(symlinks)
+    /// `terminate_walk` (Linux `fs/namei.c`) — the SINGLE error/teardown exit
+    /// of the walk. In the default ref/Arc walk the resolver pins NOTHING via
+    /// `d_count` (the `Arc` in `cur_dentry` is the only hold and drops on
+    /// return), so the body is the rcu-mode unwind: leave LOOKUP_RCU
+    /// (`nd->flags &= ~LOOKUP_RCU`) so any restart begins as a clean ref walk
+    /// and no lazy read-side leaks out of the failed resolution. Returns `e`
+    /// unchanged so every error site funnels through one exit
+    /// (`Err(self.terminate_walk(e))`). D28: lands the single-exit plumbing —
+    /// load-bearing once a real rcu read-side / saved-link `d_count` stack is
+    /// held (Step C / a later lane); a no-op net effect on the Arc walk today.
+    /// # C: O(1)
+    fn terminate_walk(&mut self, e: VfsError) -> VfsError {
+        self.rcu = false;
+        e
+    }
+
+    /// `unlazy_walk` / `try_to_unlazy` (Linux `fs/namei.c`) — leave LOOKUP_RCU
+    /// at a point that must block or take a lock (symlink `get_link`, mount
+    /// crossing, the final component, a blocking permission check, or a dcache
+    /// miss that needs `i_op->lookup` under `i_rwsem`). LEGITIMIZE the freshly
+    /// resolved `child`: pin it (`inc_count_not_zero`) THEN re-validate the
+    /// per-dentry (`cseq`) and global (`m_seq`) rename seqcounts — the
+    /// reference-BEFORE-recheck order. On success drop rcu mode and continue as
+    /// a ref/Arc walk (the `Arc` is the durable hold; the transient pin was
+    /// only the not-zero legitimize test, released here). On ANY failure return
+    /// `false` so the caller restarts the walk in ref mode (`self.rcu` is left
+    /// cleared). In this lane's Arc-walk substrate the dcache `d_count` is
+    /// DORMANT (an unheld cache dentry rests at 0 — the dput/dget lockref
+    /// lifecycle is built-but-unwired, dcache D11), so `inc_count_not_zero`
+    /// conservatively fails and rcu mode legitimizes by FALLING BACK to the
+    /// proven ref walk at the first complication — provably == the Arc walk.
+    /// # C: O(1)
+    fn unlazy_walk(&mut self, child: &Arc<Dentry>, cseq: u32, m_seq: u32) -> bool {
+        if !self.rcu { return true; }
+        // EVERY failure path leaves LOOKUP_RCU (the fallback IS dropping rcu),
+        // so the caller's restart re-walks as a plain ref walk and can never
+        // re-enter rcu to fail again — the termination guarantee of the
+        // fast-path overlay (a missed `self.rcu` clear here is an infinite
+        // restart). The legitimize succeeds only when the pin AND both
+        // seqcounts hold; otherwise fall back.
+        self.rcu = false;
+        if !child.inc_count_not_zero() { return false; }
+        let raced = child.read_seqretry(cseq) || crate::dcache::rename_lock_retry(m_seq);
+        child.dec_count(); // Arc pins; the bump was only the not-zero legitimize test
+        !raced
+    }
+
+    /// Resolve `path` from the current state to a final `VfsPath`. Drives a
+    /// BOUNDED restart loop over [`walk_inner`]: a rename raced mid-walk (the
+    /// D22 per-component `d_seq` / global `rename_lock` seqretry) or an rcu
+    /// legitimize failure restarts the walk from the snapshotted start, up to
+    /// [`MAX_WALK_RESTARTS`]; on exhaustion a final un-validated pass PROCEEDS
+    /// with the Arc-walk result (the bounded-degrade valve — cannot livelock).
+    /// All errors exit through the single [`terminate_walk`]. # C:
+    /// O(restarts × components × dir-lookup) + O(symlinks)
     pub fn walk(&mut self, path: &str) -> KResult<VfsPath> {
-        let ns = crate::mount::current_ns();
+        // Snapshot the start position so a restart re-walks from scratch.
+        let s_mnt = self.cur_mnt_id;
+        let s_dentry = self.cur_dentry.clone();
+        let s_inode = self.cur_inode.clone();
+        let mut attempt = 0u32;
+        loop {
+            let validate = attempt < MAX_WALK_RESTARTS;
+            match self.walk_inner(path, validate) {
+                Ok(WalkOutcome::Done(p)) => return Ok(p),
+                Ok(WalkOutcome::Restart) => {
+                    attempt += 1;
+                    self.cur_mnt_id = s_mnt;
+                    self.cur_dentry = s_dentry.clone();
+                    self.cur_inode = s_inode.clone();
+                    self.depth = 0;
+                    self.total_link_count = 0;
+                    // `self.rcu` persists (a seqretry restart re-attempts lazily);
+                    // a fallback restart already cleared it in `unlazy_walk`.
+                    continue;
+                }
+                Err(e) => return Err(self.terminate_walk(e)),
+            }
+        }
+    }
+
+    /// ONE component-walk pass. `validate` gates the D22 seqretry restarts (the
+    /// final degraded pass passes `false` so the Arc result is taken as-is).
+    /// Returns `Done(path)` or a `Restart` request. # C: O(components) + O(symlinks)
+    fn walk_inner(&mut self, path: &str, validate: bool) -> KResult<WalkOutcome> {
+        // D22: snapshot the GLOBAL rename seqcount at the walk top (Linux
+        // `read_seqbegin(&rename_lock)`). Any `d_move` anywhere advances it, so a
+        // multi-component walk that raced a directory rename detects it via
+        // `rename_lock_retry(m_seq)` and restarts — catching a sibling component
+        // shifting under a rename that the per-dentry `d_seq` alone would miss.
+        let m_seq = crate::dcache::rename_lock_read_begin();
+        // Closure: a resolved `child` (snapshot `cseq`) was renamed under us iff
+        // its per-dentry seqcount advanced OR the global rename seqcount did.
+        // Only consulted when `validate` (the degraded final pass ignores it).
+        let renamed = |child: &Arc<Dentry>, cseq: u32| -> bool {
+            validate && (child.read_seqretry(cseq) || crate::dcache::rename_lock_retry(m_seq))
+        };
+        // D18 LOOKUP_EMPTY (Linux `AT_EMPTY_PATH`): an empty pathname is `ENOENT`
+        // unless LOOKUP_EMPTY is set, in which case the walk operates on the
+        // dirfd/cwd base — the empty component queue (below) breaks immediately
+        // and returns the start `(mnt,dentry,inode)`. Centralizing the gate here
+        // gives every path-taking `*at` syscall uniform empty-path semantics
+        // instead of each handler re-implementing the AT_EMPTY_PATH check.
+        if path.is_empty() && !self.flags.empty { return Err(VfsError::Enoent); }
         if path.as_bytes().first() == Some(&b'/') {
             // RESOLVE_BENEATH: an absolute pathname would jump to the (real)
             // root ABOVE the scoped dirfd → EXDEV (Linux `LOOKUP_BENEATH`).
@@ -585,14 +783,54 @@ impl Nameidata {
         // reported verbatim at the stop below (Linux `LAST_DOTDOT`).
         let trailing_dot = self.flags.parent && crate::path::last_segment(path) == ".";
 
+        // Linux `nameidata` walk frames: an ACTIVE component list `(queue, idx)`
+        // plus a stack of SUSPENDED frames (`nd->stack`). Following a symlink
+        // SUSPENDS the active frame's remainder, makes the link target the new
+        // active frame, and resumes the suspended remainder (Linux `put_link`)
+        // once the target is fully consumed. This replaces the old
+        // splice-and-restart (`queue.extend(remainder); idx = 0`), which
+        // re-copied the trailing remainder and grew one queue per nested link
+        // (O(n²) on deeply nested symlinks); each frame now owns only its own
+        // components, and relative/absolute targets resolve from the right
+        // directory context (`cur_*` for relative, `to_root()` for absolute)
+        // exactly as before.
         let mut queue: Vec<String> = components(path);
         let mut idx = 0usize;
+        let mut saved: Vec<(Vec<String>, usize)> = Vec::new();
         let mut last_component: Option<String> = None;
 
-        while idx < queue.len() {
-            let comp = queue[idx].clone();
+        loop {
+            // Resume suspended link frames whose target is now consumed (Linux
+            // `put_link` + walk continuation). Only a NON-empty remainder is ever
+            // pushed, so a popped frame always has a component to process; an
+            // empty stack with the active frame consumed ends the walk.
+            while idx >= queue.len() {
+                match saved.pop() {
+                    // Linux `put_link`: the suspended remainder resumes, so the
+                    // symlink whose target it followed is fully consumed — drop
+                    // one level of nesting depth (`nd->depth--`). Stays in lock-
+                    // step with `saved.len()` (the live link stack).
+                    Some((q, i)) => { queue = q; idx = i; self.depth = self.depth.saturating_sub(1); }
+                    None => break,
+                }
+            }
+            if idx >= queue.len() { break; }
+
+            // D23: BORROW the active component in place rather than cloning a
+            // fresh `String` every iteration. The dcache probe (`d_lookup`),
+            // the slow-path `i_op->lookup`/`d_add`, and the lexical checks all
+            // take `&str`, so the walk needs no owned copy. The borrow ends
+            // before the symlink branch's `core::mem::take(&mut queue)` (NLL:
+            // `comp`'s last use precedes the queue mutation), so following a
+            // link can still swap the active frame. Only the LOOKUP_PARENT leaf
+            // (returned to the caller) is materialised to an owned `String`.
+            let comp: &str = &queue[idx];
             idx += 1;
-            let is_final = idx == queue.len();
+            // Final component of the WHOLE resolution: the active frame is
+            // exhausted AND no suspended remainder follows (Linux: last component
+            // with `nd->depth == 0`). A non-empty `saved` means more path follows
+            // a symlink, so this component is not the trailing one.
+            let is_final = idx >= queue.len() && saved.is_empty();
 
             // ENOTDIR: `comp` (a name OR `..`) is resolved WITHIN `cur_inode`,
             // so `cur_inode` must be a directory — including the PARENT of a
@@ -613,7 +851,7 @@ impl Nameidata {
             // whole pathname is well under PATH_MAX and even for a LOOKUP_PARENT
             // leaf (checked before the parent-stop below). `..` is a control
             // segment (≤2 bytes), never over-length, so it is exempt.
-            if comp != ".." { crate::path::check_component(&comp)?; }
+            if comp != ".." { crate::path::check_component(comp)?; }
 
             // LOOKUP_PARENT: stop BEFORE the final component, reporting it as
             // the leaf (Linux `path_parentat` / `nd->last`). `may_lookup`
@@ -628,7 +866,7 @@ impl Nameidata {
             // resolved fully, with `.` restored as the leaf after the loop.
             if is_final && self.flags.parent && !trailing_dot {
                 may_lookup(&self.cur_inode, &self.cred)?;
-                last_component = Some(comp);
+                last_component = Some(String::from(comp));
                 break;
             }
 
@@ -652,14 +890,14 @@ impl Nameidata {
 
             // Resolve the named child via the dcache: fast path `d_lookup`
             // (parent,name)-keyed, else slow path `i_op->lookup` + `d_add`.
-            // D6 NOTE: a confirmed miss is NOT cached as a negative dentry here.
-            // Negative caching is only Linux-correct with per-fs `d_revalidate`
-            // / `d_delete` (the deferred D5 work) — without it, a negative
-            // cached for a dynamically-appearing pseudo-fs entry (`/proc/<pid>`,
-            // `/sys` hotplug nodes, `/dev/pts/N`) that materialises WITHOUT a
-            // create syscall would mask it forever. So the miss propagates
-            // un-cached (re-walks `i_op->lookup` next time, as before).
-            let child = match crate::dcache::d_lookup_reval(&self.cur_dentry, &comp, self.flags.reval) {
+            // D5/D6: a confirmed MISS is cached as a NEGATIVE dentry (so a
+            // repeated lookup/stat of the same name is served from the dcache
+            // WITHOUT re-walking the blocking slow path), but ONLY on a
+            // filesystem that is `neg_cache_ok` — one whose namespace mutates
+            // exclusively through the flushed create/unlink/rename syscalls.
+            // On a pseudo-fs the miss propagates un-cached (re-walks next time),
+            // so a dynamically-appearing entry is never masked.
+            let child = match crate::dcache::d_lookup_reval(&self.cur_dentry, comp, self.flags.reval) {
                 Some(d) if !d.is_negative() => d,
                 Some(_) => return Err(VfsError::Enoent), // cached negative (definitive)
                 // RESOLVE_CACHED: a dcache miss would take the (possibly
@@ -667,8 +905,61 @@ impl Nameidata {
                 // instead (Linux `LOOKUP_CACHED`). Without the flag, fall to
                 // the slow path + `d_add` as before.
                 None if self.flags.cached => return Err(VfsError::Eagain),
-                None => crate::dcache::d_add(&self.cur_dentry, &comp, self.cur_inode.lookup(&comp)?),
+                // rcu (lazy) walk: a dcache MISS must take the blocking
+                // `i_op->lookup` slow path under `i_rwsem`, which an rcu read-side
+                // may not hold — leave LOOKUP_RCU and restart the walk in ref mode
+                // (Linux `lookup_slow` is reached only after `try_to_unlazy`).
+                None if self.rcu => { self.rcu = false; return Ok(WalkOutcome::Restart); }
+                None => {
+                  // `lookup_slow` (Linux `fs/namei.c`): take the PARENT
+                  // directory's `i_rwsem` SHARED across the blocking
+                  // `i_op->lookup` + dcache install, so the (parent,name)
+                  // resolution is consistent against a concurrent mutator that
+                  // holds the SAME `i_rwsem` EXCLUSIVE (create/unlink/rename, in
+                  // the syscall layer). DEADLOCK-FREE: a single shared acquire,
+                  // no other `i_rwsem` nested under it, dropped at the end of
+                  // THIS component (RAII) — never spanning two components — so no
+                  // cycle is possible; the only same-rank lock `d_add` takes is a
+                  // DIFFERENT dentry's `d_inode` pointer lock, always acquired
+                  // after (never before) this one. Rank: `i_rwsem` (40) is below
+                  // the dcache Dentry (50)/Superblock (60) locks `d_add` takes,
+                  // so the chain is ascending.
+                  let _dir_lk = self.cur_inode.inode_lock_shared();
+                  match self.cur_inode.lookup(comp) {
+                    Ok(ci) => {
+                        // D3/D37: `lookup` returned `ci` carrying the iget/build
+                        // hold; `d_add` takes the dentry's OWN counted hold
+                        // (`grab_inode_hold`). Release the walk's temporary so
+                        // `i_count` tracks (aliases + open files) and can reach 0
+                        // for eviction (Linux `d_splice_alias`/`d_add` consumes the
+                        // caller's iget ref). iput AFTER the grab → never evicts a
+                        // live inode; on the race-loser path the dentry already
+                        // counts its inode, so this drops the redundant build.
+                        let child = crate::dcache::d_add(&self.cur_dentry, comp, ci.clone());
+                        crate::file::iput(ci);
+                        child
+                    }
+                    Err(VfsError::Enoent) => {
+                        // D5/D6 negative-on-miss, gated for safety (see
+                        // `neg_cache_ok`): the create syscalls flush this leaf
+                        // negative via `pathresolve::d_drop_path`, so a
+                        // subsequently-created file is never masked.
+                        if neg_cache_ok(&self.cur_inode) {
+                            crate::dcache::d_add_negative(&self.cur_dentry, comp);
+                        }
+                        return Err(VfsError::Enoent);
+                    }
+                    Err(e) => return Err(e),
+                  }
+                }
             };
+
+            // D22: snapshot the resolved child's per-dentry rename seqcount
+            // BEFORE reading its name/inode/crossing (Linux `read_seqcount_begin(
+            // &child->d_seq)`). Re-checked (`renamed`) after the child is USED —
+            // an advanced `d_seq` (or global `rename_lock`) means a `d_move`
+            // rehomed it under us, so the result would be torn: restart the walk.
+            let cseq = child.read_seqbegin();
 
             // Symlink handling — use the child's OWN inode (a mountpoint is a
             // directory, never a symlink, so this precedes mount crossing).
@@ -683,23 +974,50 @@ impl Nameidata {
                 // A trailing slash forces the final symlink to be followed even
                 // under no_follow_final (Linux: `link/` follows `link`, then the
                 // target must be a directory), so it does NOT short-circuit here.
-                if is_final && self.flags.no_follow_final && !trailing_slash {
+                // D30 LOOKUP_FOLLOW: an explicit `follow` likewise OVERRIDES
+                // no_follow_final (Linux's flag set never holds both; FOLLOW
+                // wins), so the trailing link is resolved rather than returned.
+                if is_final && self.flags.no_follow_final && !self.flags.follow && !trailing_slash {
+                    // Final component complication: legitimize (rcu → ref) and
+                    // validate the rename seqcounts before returning the link.
+                    if !self.unlazy_walk(&child, cseq, m_seq) { return Ok(WalkOutcome::Restart); }
+                    if renamed(&child, cseq) { return Ok(WalkOutcome::Restart); }
                     let inode = child.inode().ok_or(VfsError::Enoent)?;
-                    return Ok(VfsPath { mnt_id: self.cur_mnt_id, dentry: child, inode, last_component: None });
+                    return Ok(WalkOutcome::Done(VfsPath { mnt_id: self.cur_mnt_id, dentry: child, inode, last_component: None }));
                 }
+                // About to FOLLOW the link (a blocking `get_link` + jump): leave
+                // LOOKUP_RCU first (Linux `try_to_unlazy` before `get_link`).
+                if !self.unlazy_walk(&child, cseq, m_seq) { return Ok(WalkOutcome::Restart); }
                 // About to FOLLOW the link → RESOLVE_NO_SYMLINKS forbids it
                 // (Linux `pick_link`: `if (nd->flags & LOOKUP_NO_SYMLINKS) -ELOOP`).
                 // Reaches here for every intermediate symlink, and for a final
                 // symlink that IS being followed (no O_NOFOLLOW, or trailing `/`).
                 if self.flags.no_symlinks { return Err(VfsError::Eloop); }
-                self.depth += 1;
-                if self.depth > MAX_SYMLINK_DEPTH { return Err(VfsError::Eloop); }
+                // Linux `pick_link`: bump the TOTAL link count and ELOOP past
+                // MAXSYMLINKS — the monotonic cycle guard (catches every loop,
+                // however deeply or shallowly nested). The NESTING cap is
+                // enforced separately at the frame push below.
+                self.total_link_count += 1;
+                if self.total_link_count > MAX_SYMLINK_DEPTH { return Err(VfsError::Eloop); }
                 let target = child.inode().ok_or(VfsError::Enoent)?.get_link()?;
                 let target = String::from_utf8_lossy(&target).into_owned();
-                // Splice the target's components ahead of whatever remains.
-                let mut next: Vec<String> = components(&target);
-                next.extend_from_slice(&queue[idx..]);
-                queue = next;
+                // Suspend the active frame's remainder (Linux `nd->stack` push)
+                // and make the link target the new active frame; the remainder is
+                // resumed (Linux `put_link`) when the target is consumed. Skip the
+                // push when nothing remains, so an exhausted frame is never stacked
+                // — keeping the resume loop and `is_final` exact.
+                if idx < queue.len() {
+                    saved.push((core::mem::take(&mut queue), idx));
+                    // Linux `nd->depth++` — one more suspended link frame is
+                    // live. Cap the NESTING separately from the total count: a
+                    // pathologically deep stack of pending remainders is ELOOP
+                    // at MAX_NESTED_LINKS even while the total is under
+                    // MAXSYMLINKS (Linux rejects both over-nesting and
+                    // over-counting). `saved.len() == self.depth` holds.
+                    self.depth += 1;
+                    if self.depth > MAX_NESTED_LINKS { return Err(VfsError::Eloop); }
+                }
+                queue = components(&target);
                 idx = 0;
                 if target.as_bytes().first() == Some(&b'/') {
                     // RESOLVE_BENEATH (`beneath_exdev`): an absolute symlink
@@ -716,17 +1034,29 @@ impl Nameidata {
                     // global tree.
                     self.to_root()?;
                 }
+                // D22: the link's name/target was consumed — a `d_move` of the
+                // symlink dentry under us taints the target read, so restart.
+                if renamed(&child, cseq) { return Ok(WalkOutcome::Restart); }
                 // Relative target keeps walking from the symlink's directory.
                 continue;
             }
 
+            // Mount crossing / final component are complications: legitimize
+            // (leave LOOKUP_RCU) when crossing into a mount (reads the mount
+            // tables) or at the trailing component (Linux `complete_walk`).
+            if self.rcu && (is_final || child.is_mounted())
+                && !self.unlazy_walk(&child, cseq, m_seq) { return Ok(WalkOutcome::Restart); }
+
             // KEYSTONE — mount crossing (Linux `__follow_mount`): switch the
             // current dentry to the mounted fs's `s_root`, looping for stacked
             // overmounts. `VfsPath.dentry` thus becomes the mounted-fs dentry.
-            let (nd, ni, nm) = follow_mount_down(child, self.cur_mnt_id, ns)?;
+            let (nd, ni, nm) = follow_mount_down(child.clone(), self.cur_mnt_id)?;
             // RESOLVE_NO_XDEV: a component that descends INTO a mount (the
             // crossed mount id differs) is rejected (Linux `LOOKUP_NO_XDEV`).
             if self.flags.no_xdev && nm != self.cur_mnt_id { return Err(VfsError::Exdev); }
+            // D22: validate the child's binding survived our use (name read +
+            // mount crossing) before committing it as the new walk position.
+            if renamed(&child, cseq) { return Ok(WalkOutcome::Restart); }
             self.cur_dentry = nd;
             self.cur_inode = ni;
             self.cur_mnt_id = nm;
@@ -743,12 +1073,17 @@ impl Nameidata {
         // `rmdir(".")` / `unlink(".")` without re-parsing the path.
         if trailing_dot { last_component = Some(String::from(".")); }
 
-        Ok(VfsPath {
+        // D22: a final whole-path consistency gate (Linux `read_seqretry(
+        // &rename_lock)` at walk end) — a directory rename anywhere along the
+        // resolved path during the walk taints the result; restart.
+        if validate && crate::dcache::rename_lock_retry(m_seq) { return Ok(WalkOutcome::Restart); }
+
+        Ok(WalkOutcome::Done(VfsPath {
             mnt_id: self.cur_mnt_id,
             dentry: self.cur_dentry.clone(),
             inode: self.cur_inode.clone(),
             last_component,
-        })
+        }))
     }
 }
 
@@ -809,7 +1144,7 @@ pub fn walk_to_mount(path: &str) -> Option<u64> {
     let ns = crate::mount::current_ns();
     let root_mnt = crate::mount::root_mount_id(ns).unwrap_or(crate::mount::MNT_ID_NONE);
     let (mut cur_dentry, mut cur_inode, mut cur_mnt) =
-        follow_mount_down(root.clone(), root_mnt, ns).ok()?;
+        follow_mount_down(root.clone(), root_mnt).ok()?;
     for comp in components(path) {
         // `.`/empty already dropped by `components` (single splitter, path.rs).
         if comp == ".." {
@@ -823,12 +1158,18 @@ pub fn walk_to_mount(path: &str) -> Option<u64> {
             Some(d) if !d.is_negative() => d,
             Some(_) => return Some(cur_mnt), // cached negative: current mount owns it
             None => match cur_inode.lookup(&comp) {
-                Ok(ci) => crate::dcache::d_add(&cur_dentry, &comp, ci),
+                Ok(ci) => {
+                    // D3/D37: release the iget/build temporary; the dentry's
+                    // `d_add` grab is the durable hold (see `walk`'s slow path).
+                    let child = crate::dcache::d_add(&cur_dentry, &comp, ci.clone());
+                    crate::file::iput(ci);
+                    child
+                }
                 Err(_) => return Some(cur_mnt), // missing leaf / whole-path fs
             },
         };
         // Cross to the mounted fs `s_root` (keystone) for the next component.
-        match follow_mount_down(child, cur_mnt, ns) {
+        match follow_mount_down(child, cur_mnt) {
             Ok((nd, ni, nm)) => { cur_dentry = nd; cur_inode = ni; cur_mnt = nm; }
             Err(_) => return Some(cur_mnt),
         }

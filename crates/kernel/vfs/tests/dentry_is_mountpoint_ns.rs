@@ -1,48 +1,65 @@
-//! dcache-D15: `Dentry::is_mountpoint(ns)` is NAMESPACE-SCOPED (Linux mount
-//! crossing is per-mount-namespace — the same dentry can be covered in one ns
-//! and bare in another). The ledger flagged the old any-ns shape
-//! (`!mounted_mounts.is_empty()`) as a cross-ns false positive; the current
-//! code keys the covering-mount test on `ns`. This locks the per-ns behavior so
-//! a regression back to an any-ns test fails here.
+//! D24: a mount cloned into a child mount-namespace (`copy_mnt_ns`) crosses
+//! INDEPENDENTLY per namespace via the strict `(parent_mnt_id, dentry)` hash —
+//! the deleted per-ns `dentry.mounted_mounts` map is no longer how ns-scoping is
+//! expressed. Umounting in the host ns must leave the clone's crossing (and the
+//! refcounted `D_MOUNTED` hint) intact in the child ns. This is exactly the
+//! cross-ns coverage the per-ns map alone could not express (the 203/226 class).
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
-use vfs::{Dentry, FileType, InodeRef};
+use vfs::fs::FileSystem;
+use vfs::{FileType, InodeRef};
 
-fn dir(ino: u64) -> InodeRef {
-    vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755), vfs::default_inode_ops(), vfs::default_file_ops()).build()
+mod common;
+
+static SERIAL: Mutex<()> = Mutex::new(());
+static CUR_NS: AtomicU64 = AtomicU64::new(0);
+fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
+fn set_ns(n: u64) { CUR_NS.store(n, Ordering::Release); }
+
+fn guard() -> MutexGuard<'static, ()> {
+    let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    vfs::mount::set_current_ns_provider(cur_ns);
+    common::install();
+    g
 }
 
-const NS_A: u64 = 11;
-const NS_B: u64 = 22;
-
-#[test]
-fn is_mountpoint_is_per_namespace() {
-    let d = Dentry::new_root(dir(1));
-    // Bare in every namespace.
-    assert!(!d.is_mountpoint(NS_A));
-    assert!(!d.is_mountpoint(NS_B));
-    assert!(d.mounted_mount(NS_A).is_none());
-
-    // Cover it ONLY in NS_A.
-    d.set_mounted_mount(NS_A, Some(0xABCD));
-    assert!(d.is_mountpoint(NS_A), "covered in NS_A");
-    assert_eq!(d.mounted_mount(NS_A), Some(0xABCD));
-    // The any-ns bug would report NS_B as a mountpoint too — it must NOT.
-    assert!(!d.is_mountpoint(NS_B), "must be bare in NS_B (cross-ns false positive)");
-    assert!(d.mounted_mount(NS_B).is_none());
+struct TFs { ino: u64 }
+impl FileSystem for TFs {
+    fn name(&self) -> &str { "tfs" }
+    fn root(&self) -> Option<InodeRef> {
+        Some(vfs::InodeBuilder::new(self.ino, vfs::mk_mode(FileType::Directory, 0o755),
+            vfs::default_inode_ops(), vfs::default_file_ops()).build())
+    }
 }
+fn fs(ino: u64) -> Arc<dyn FileSystem> { Arc::new(TFs { ino }) }
+
+const HOST: u64 = 0xD24_1A01;
+const CHILD: u64 = 0xD24_1B01;
 
 #[test]
-fn clear_covering_mount_in_one_ns_only() {
-    let d = Dentry::new_root(dir(2));
-    d.set_mounted_mount(NS_A, Some(1));
-    d.set_mounted_mount(NS_B, Some(2));
-    assert!(d.is_mountpoint(NS_A) && d.is_mountpoint(NS_B));
+fn copy_mnt_ns_keeps_per_ns_crossing() {
+    let _g = guard();
 
-    // Uncover NS_A; NS_B must survive.
-    d.set_mounted_mount(NS_A, None);
-    assert!(!d.is_mountpoint(NS_A), "NS_A uncovered");
-    assert!(d.is_mountpoint(NS_B), "NS_B coverage untouched");
-    assert_eq!(d.mounted_mount(NS_B), Some(2));
+    set_ns(HOST);
+    common::register("/", fs(0x1)).expect("host root");
+    let mp = common::dentry("/proc");
+    common::register("/proc", fs(0x42)).expect("mount /proc in host");
+    let ph = vfs::mount::containing_mount_id(HOST, &mp);
+    assert!(vfs::mount::__lookup_mnt(ph, &mp).is_some(), "crosses in host");
+    assert!(mp.is_mounted());
+
+    // Clone host → child ns: the clone reuses the same mountpoint dentry but
+    // gets ns-private ids, so it lands under a DISTINCT parent in the hash.
+    vfs::mount::copy_mnt_ns(HOST, CHILD);
+    let pc = vfs::mount::containing_mount_id(CHILD, &mp);
+    assert!(vfs::mount::__lookup_mnt(pc, &mp).is_some(), "clone crosses in child ns");
+
+    // Umount in the host: the child crossing + the refcounted D_MOUNTED survive.
+    set_ns(HOST);
+    assert_eq!(vfs::mount::unregister(&mp), 1);
+    assert!(vfs::mount::__lookup_mnt(ph, &mp).is_none(), "host crossing gone");
+    assert!(vfs::mount::__lookup_mnt(pc, &mp).is_some(), "child crossing intact");
+    assert!(mp.is_mounted(), "child still pins the mountpoint → D_MOUNTED stays");
 }

@@ -6,7 +6,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_user_path, errno_from_vfs, path_exists};
+use crate::namei_common::{read_user_path, errno_from_vfs, path_exists, resolve_parent};
 
 /// renameat2 flags (uapi/linux/fs.h).
 pub(crate) const RENAME_NOREPLACE: u32 = 1 << 0;
@@ -53,6 +53,13 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     let to_raw = match read_user_path(to_ptr) {
         Ok(s) => s, Err(rv) => return rv,
     };
+    // D26: Linux do_renameat2 rejects a `.`/`..`/root final component on either
+    // side with EBUSY (only LAST_NORM is renameable) — checked on the raw path
+    // before resolution normalises the dots away.
+    if crate::namei_common::rename_component_busy(&from_raw)
+        || crate::namei_common::rename_component_busy(&to_raw) {
+        return -(Errno::Ebusy.as_i32() as i64);
+    }
     // BUG D follow-up: resolve each side against its dirfd (renameat).
     let f = match crate::pathresolve::resolve_at_result(from_dirfd, &from_raw) {
         Ok(rp) => rp, Err(rv) => return rv,
@@ -60,6 +67,13 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     let t = match crate::pathresolve::resolve_at_result(to_dirfd, &to_raw) {
         Ok(rp) => rp, Err(rv) => return rv,
     };
+    // D26: an attempt to make a directory a subdirectory of itself → EINVAL
+    // (Linux is_subdir / d_ancestor). `t` strictly under `f` ⇒ `t` == `f` + "/…".
+    if f != "/" {
+        if let Some(rest) = t.strip_prefix(f.as_str()) {
+            if rest.starts_with('/') { return -(Errno::Einval.as_i32() as i64); }
+        }
+    }
     // RENAME_NOREPLACE: fail with EEXIST if the target already exists
     // (mv -n, dpkg atomic installs). Pre-check before the backend rename,
     // which would otherwise silently overwrite → data loss.
@@ -85,14 +99,48 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     if !alloc::sync::Arc::ptr_eq(&mnt_f, &mnt_t) {
         return -(Errno::Exdev.as_i32() as i64);
     }
+    // D29: hold BOTH parent dirs' `i_rwsem` via `lock_rename` (Linux
+    // `vfs_rename` → `lock_rename`) across the backend rename. `lock_rename`
+    // orders the two rank-40 `i_rwsem`s by address (deadlock-safe vs. a reverse
+    // concurrent rename) and locks a same-dir rename's single inode ONCE. The
+    // backend resolves names via `i_op.lookup` (no nested `i_rwsem`), so holding
+    // the exclusive side here is deadlock-free. Best-effort: on a parent-resolve
+    // miss, proceed unlocked rather than introduce a new errno. The guard drops
+    // at the end of this block — before the rank-50/60 dcache update below.
+    let old_parent = resolve_parent(&f).ok();
+    let new_parent = resolve_parent(&t).ok();
+    // D30: a plain rename that overwrites an existing destination removes the
+    // destination's name — its inode loses a hard link. Capture that victim
+    // dentry before the backend replaces it so the dcache half below can drive
+    // `drop_link` + last-alias retirement on it (EXCHANGE swaps both names, so
+    // neither is removed; NOREPLACE already errored above on an existing dest).
+    let dest_victim = if flags & (RENAME_EXCHANGE | RENAME_WHITEOUT) == 0 && path_exists(&t) {
+        crate::s087_unlink::victim_dentry(&t)
+    } else { None };
     // EXCHANGE atomically swaps; WHITEOUT renames then leaves a whiteout
     // char-dev (0,0) at the source; plain rename is link-then-replace.
-    let r = if flags & RENAME_EXCHANGE != 0 {
-        mnt_f.fs().exchange(&rel_f, &rel_t)
-    } else if flags & RENAME_WHITEOUT != 0 {
-        mnt_f.fs().whiteout(&rel_f, &rel_t)
-    } else {
-        mnt_f.fs().rename(&rel_f, &rel_t)
+    let r = {
+        let _rg = match (&old_parent, &new_parent) {
+            (Some((op, _)), Some((np, _))) => Some(vfs::lock_rename(op, np)),
+            _ => None,
+        };
+        if flags & RENAME_EXCHANGE != 0 {
+            mnt_f.fs().exchange(&rel_f, &rel_t)
+        } else if flags & RENAME_WHITEOUT != 0 {
+            mnt_f.fs().whiteout(&rel_f, &rel_t)
+        } else {
+            // D9: route the plain rename through the resolved-parent
+            // `i_op->rename` (Linux `vfs_rename` → `old_dir->i_op->rename`)
+            // instead of the whole-path `FileSystem::rename`. Both parents are
+            // already resolved for `lock_rename`; if either resolve missed, fall
+            // back to the FS path (byte-equivalent, conservative). EXCHANGE/
+            // WHITEOUT keep the FS path above.
+            match (&old_parent, &new_parent) {
+                (Some((op, oname)), Some((np, nname))) =>
+                    op.rename_child(oname, np, nname, flags, &vfs::CreateCtx::root()),
+                _ => mnt_f.fs().rename(&rel_f, &rel_t),
+            }
+        }
     };
     match r {
         Ok(())  => {
@@ -103,6 +151,11 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
                 crate::pathresolve::d_delete_path(&f);
                 crate::pathresolve::d_delete_path(&t);
             } else {
+                // D30: an overwritten destination loses its name first — `d_unlink`
+                // drops the replaced inode's link and retires it on its last name
+                // (Linux `vfs_rename` calls this for the replaced target). Done
+                // before d_move_path rehomes the source onto the dest (parent,name).
+                if let Some(d) = dest_victim { vfs::dcache::d_unlink(&d); }
                 // D9: plain/whiteout rename → `d_move` the source dentry onto the
                 // destination (parent,name) (Linux `d_move`), instead of
                 // discarding it via two `d_delete`s. d_move_path also drops any

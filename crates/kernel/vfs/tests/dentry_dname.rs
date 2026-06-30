@@ -5,8 +5,6 @@
 //! bogus `/eventfd`. Also asserts the `D_OP_DNAME` presence bit is stamped and
 //! that ordinary dentries (no `d_dname`) still reconstruct by the parent walk.
 
-use std::sync::Arc;
-
 use vfs::dcache::d_alloc_pseudo;
 use vfs::dentry::{Dentry, DentryOps, D_OP_DNAME};
 use vfs::{FileType, InodeRef};
@@ -44,6 +42,23 @@ fn d_dname_drives_absolute_and_dentry_path() {
     // d_path / __dentry_path consult d_dname instead of walking to "/pipe".
     assert_eq!(d.absolute_path(), b"pipe:[1234]".to_vec());
     assert_eq!(d.dentry_path(None), "pipe:[1234]");
+}
+
+// anon_inodefs `anon_inode:<name>` — the form used by eventfd/timerfd/signalfd/
+// epoll/inotify/userfaultfd/pidfd/io_uring/perf/landlock anon-fd factories.
+fn anon_inode_dname(d: &Dentry) -> String { format!("anon_inode:{}", d.name()) }
+static ANON_INODE_OPS: DentryOps = DentryOps {
+    d_dname: Some(anon_inode_dname),
+    d_hash: None, d_compare: None, d_revalidate: None, d_weak_revalidate: None, d_delete: None, d_release: None, d_iput: None, d_init: None, d_prune: None,
+};
+
+#[test]
+fn anon_inode_pseudo_renders_linux_form() {
+    // eventfd: Linux `anon_inode:[eventfd]`, NOT a parent-walked `/eventfd`.
+    let d = d_alloc_pseudo("[eventfd]", reg(7), &ANON_INODE_OPS);
+    assert_eq!(d.d_dname().as_deref(), Some("anon_inode:[eventfd]"));
+    assert_eq!(d.absolute_path(), b"anon_inode:[eventfd]".to_vec());
+    assert_eq!(d.dentry_path(None), "anon_inode:[eventfd]");
 }
 
 #[test]

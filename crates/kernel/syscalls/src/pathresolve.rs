@@ -11,6 +11,7 @@
 
 use alloc::string::String;
 use alloc::sync::Arc;
+use hal::USER_VA_END;
 use syscall::errno::Errno;
 use sync::{MountTable as RootClass, Spinlock};
 use vfs::fs::FileSystem;
@@ -139,8 +140,18 @@ pub fn resolve_result(abs: &str, no_follow_final: bool) -> Result<vfs::InodeRef,
 /// path-walk error.
 /// # C: O(components × dir-lookup)
 pub fn resolve_path_result(abs: &str, no_follow_final: bool) -> Result<vfs::VfsPath, vfs::VfsError> {
+    resolve_path_flags(abs, vfs::LookupFlags { no_follow_final, ..Default::default() })
+}
+
+/// Like `resolve_path_result` but with caller-supplied extra `LookupFlags` —
+/// the openat2 RESOLVE_* bits that do NOT change the resolution START
+/// (NO_SYMLINKS, NO_MAGICLINKS, NO_XDEV, CACHED, plus NO_FOLLOW). The chroot
+/// `beneath`/root from `resolution_root` is OR-ed in (BENEATH/IN_ROOT, which
+/// re-base the START on the dirfd, go through `resolve_confined`).
+/// # C: O(components × dir-lookup)
+pub fn resolve_path_flags(abs: &str, mut flags: vfs::LookupFlags) -> Result<vfs::VfsPath, vfs::VfsError> {
     let (root, beneath) = resolution_root().ok_or(vfs::VfsError::Enoent)?;
-    let flags = vfs::LookupFlags { no_follow_final, beneath, ..Default::default() };
+    flags.beneath = flags.beneath || beneath;
     let Some(cur) = sched::live::current() else {
         // No task (early boot / kernel-internal resolve): default-allow root cred.
         return vfs::path_lookup_cred(root.clone(), root, abs, flags, vfs::Cred::root());
@@ -158,6 +169,56 @@ pub fn resolve_path_result(abs: &str, no_follow_final: bool) -> Result<vfs::VfsP
         }
         Err(e) => Err(e),
     }
+}
+
+/// Resolve the PARENT directory of absolute `abs` through the engine
+/// LOOKUP_PARENT walk (Linux `filename_parentat`): the walk stops BEFORE the
+/// final component and returns the parent dir in `VfsPath.inode` plus the leaf
+/// name in `VfsPath.last_component` (and `VfsPath::last_type()` for the
+/// `.`/`..`/root classification). THE single resolver feeding every namespace
+/// mutation (namei D16) — replaces the `split_parent` (`rfind('/')`) string
+/// split + a separate full `resolve(parent)` walk. Chroot-aware, perm-enforced
+/// (`may_lookup`/MAY_EXEC on the parent, Linux `link_path_walk`), follows
+/// intermediate symlinks, crosses mounts to the mounted-fs dir inode — exactly
+/// the walk `resolve_path_flags` performs, with `LookupFlags::parent` set so
+/// the leaf is reported instead of resolved (so a not-yet-existing leaf is NOT
+/// an error: create/unlink/rename act on `(parent, leaf)`). # C: O(components)
+pub fn resolve_parent_path(abs: &str) -> Result<vfs::VfsPath, vfs::VfsError> {
+    resolve_path_flags(abs, vfs::LookupFlags { parent: true, ..Default::default() })
+}
+
+/// openat2 RESOLVE_BENEATH / RESOLVE_IN_ROOT: the `dirfd` IS the scoped
+/// resolution root. START and root both become the dirfd's dentry (the task
+/// cwd for `AT_FDCWD`), so the vfs walker enforces the boundary itself — an
+/// escape attempt under BENEATH errors `EXDEV`; under IN_ROOT `..`, absolute
+/// paths and absolute symlink targets are confined to it. `raw` is walked
+/// as-is (relative or absolute). `flags` must already carry beneath_exdev /
+/// in_root. # C: O(components × dir-lookup)
+pub fn resolve_confined(dirfd: i32, raw: &str, flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
+    let base = dirfd_dentry(dirfd)?;
+    vfs::path_lookup_cred(base.clone(), base, raw, flags, current_cred())
+        .map_err(crate::namei_common::errno_from_vfs)
+}
+
+/// The `Arc<Dentry>` a dirfd names (the resolution base for the confined
+/// openat2 modes): the task cwd dentry for `AT_FDCWD`, else the open fd's
+/// dentry (which must be a directory). `EBADF` for a bad fd / no task,
+/// `ENOTDIR` for a non-directory fd. # C: O(1)
+fn dirfd_dentry(dirfd: i32) -> Result<Arc<vfs::Dentry>, i64> {
+    let ebadf = -(Errno::Ebadf.as_i32() as i64);
+    let cur = sched::live::current().ok_or(ebadf)?;
+    if dirfd == AT_FDCWD {
+        // SAFETY: cwd_vfs slot single-mutator per 13§5; current task is sole writer.
+        let cwd = unsafe { (*cur.cwd_vfs.get()).clone().map(|p| p.dentry) };
+        return cwd.or_else(root_dentry).ok_or(ebadf);
+    }
+    // SAFETY: running task on this CPU; sole reader of its fd_table slot.
+    let fdt = unsafe { cur.fd_table_ref() }.ok_or(ebadf)?.clone();
+    let f = fdt.get(dirfd).map_err(|_| ebadf)?;
+    if f.inode().file_type() != vfs::FileType::Directory {
+        return Err(-(Errno::Enotdir.as_i32() as i64));
+    }
+    Ok(f.dentry().clone())
 }
 
 fn resolve_procfs_fallback(abs: &str) -> Option<vfs::VfsPath> {
@@ -213,6 +274,21 @@ pub fn mount_dentry(abs: &str) -> Option<Arc<vfs::Dentry>> {
 /// still returned the dead positive dentry after unlink.
 /// # C: O(components)
 pub fn d_delete_path(abs: &str) {
+    drop_cached_child(abs);
+}
+
+/// Flush the cached NEGATIVE dentry for absolute `abs` after a SUCCESSFUL
+/// create (open O_CREAT / mknod / mkdir / symlink / hardlink) so a negative
+/// planted by the pre-create existence probe (`path_exists`) — or by an earlier
+/// `stat`/`open` of the not-yet-existing name — does NOT mask the freshly
+/// created file. The next walk then misses the dcache and re-resolves via
+/// `i_op->lookup`, finding the new inode. Linux instantiates the create's OWN
+/// leaf dentry (`d_instantiate`); these create handlers bypass the leaf dentry
+/// and call the backend on the parent inode, so the stale negative must be
+/// dropped explicitly. Shares `drop_cached_child` with `d_delete_path` (it
+/// `d_drop`s any cached child — positive or negative — unhashing it).
+/// # C: O(components)
+pub fn d_drop_path(abs: &str) {
     drop_cached_child(abs);
 }
 
@@ -377,6 +453,59 @@ pub fn resolve_at_result(dirfd: i32, raw: &str) -> Result<String, i64> {
 
 pub fn resolve_at(dirfd: i32, raw: &str) -> Option<String> {
     resolve_at_result(dirfd, raw).ok()
+}
+
+/// True if the user pathname at `ptr` is empty (`""`) or NULL — the
+/// AT_EMPTY_PATH probe. A NULL pointer counts as empty (Linux lets
+/// `path == NULL` stand in for `""` under AT_EMPTY_PATH); an out-of-range
+/// non-NULL pointer is NOT treated as empty so the full read below raises
+/// EFAULT. # C: O(1)
+fn at_path_empty(ptr: u64) -> bool {
+    if ptr == 0 { return true; }
+    if ptr >= USER_VA_END { return false; }
+    // SAFETY: ptr is non-NULL and below USER_VA_END (user range); a bounded
+    // one-byte probe of the caller's mapped page tests only for an empty path.
+    unsafe { devfs::read_user_cstr(ptr, 1) }.map_or(true, |b| b.is_empty())
+}
+
+/// THE centralized `*at` resolver: resolve a `(dirfd, path_ptr)` pair to its
+/// `VfsPath` honoring AT_EMPTY_PATH through the engine's LOOKUP_EMPTY
+/// (`flags.empty`) plus the trailing-symlink policy carried in `flags`
+/// (`follow` / `no_follow_final`). Replaces the per-handler `if path.is_empty()`
+/// special-casing: an EMPTY (or NULL) pathname with `flags.empty` set operates
+/// on the dirfd's own open file — its inode + mount id, ANY file type (Linux
+/// AT_EMPTY_PATH; `AT_FDCWD` → the task cwd); WITHOUT the flag an empty pathname
+/// is ENOENT (the engine `path_init` contract). A non-empty pathname is read
+/// with the full PATH_MAX errno contract (EFAULT / ENAMETOOLONG), resolved
+/// against the dirfd (`resolve_at_result`), then walked through the engine
+/// (`resolve_path_flags`) with `flags`. # C: O(components × dir-lookup)
+pub fn resolve_at_lookup(dirfd: i32, path_ptr: u64, flags: vfs::LookupFlags)
+    -> Result<vfs::VfsPath, i64>
+{
+    let ebadf = -(Errno::Ebadf.as_i32() as i64);
+    if at_path_empty(path_ptr) {
+        // LOOKUP_EMPTY gate: empty pathname is ENOENT unless AT_EMPTY_PATH.
+        if !flags.empty { return Err(-(Errno::Enoent.as_i32() as i64)); }
+        if dirfd == AT_FDCWD {
+            let cur = sched::live::current().ok_or(ebadf)?;
+            // SAFETY: cwd_vfs slot single-mutator per 13§5; current task sole writer.
+            if let Some(p) = unsafe { (*cur.cwd_vfs.get()).clone() } { return Ok(p); }
+            let dentry = root_dentry().ok_or(ebadf)?;
+            let inode = dentry.inode().ok_or(ebadf)?;
+            return Ok(vfs::VfsPath { mnt_id: 0, dentry, inode, last_component: None });
+        }
+        let cur = sched::live::current().ok_or(ebadf)?;
+        // SAFETY: running task on this CPU; sole reader of its fd_table slot.
+        let fdt = unsafe { cur.fd_table_ref() }.ok_or(ebadf)?.clone();
+        let f = fdt.get(dirfd).map_err(|_| ebadf)?;
+        return Ok(vfs::VfsPath {
+            mnt_id: f.mnt_id(), dentry: f.dentry().clone(),
+            inode: f.inode().clone(), last_component: None,
+        });
+    }
+    let raw = crate::namei_common::read_user_path(path_ptr)?;
+    let abs = resolve_at_result(dirfd, &raw)?;
+    resolve_path_flags(&abs, flags).map_err(crate::namei_common::errno_from_vfs)
 }
 
 /// Resolve `raw` against the running task's cwd. Absolute paths

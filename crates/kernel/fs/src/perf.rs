@@ -96,8 +96,7 @@ impl FileOps for PerfFileOps {
 /// `perf_event_open(attr, pid, cpu, group_fd, flags)` — slot 298.
 /// # C: O(1)
 pub fn sys_perf_event_open(_args: &syscall::SyscallArgs) -> i64 {
-    use alloc::string::ToString;
-    use vfs::{Dentry, File, OpenFlags};
+    use vfs::{File, OpenFlags};
     use syscall::errno::Errno;
     let inode_ref = make_perf_event_inode();
     let cur = match sched::current() {
@@ -107,9 +106,9 @@ pub fn sys_perf_event_open(_args: &syscall::SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let dentry = Dentry::new(None, "[perf]".to_string(), inode_ref.clone());
+    let dentry = vfs::dcache::d_alloc_pseudo("[perf_event]", inode_ref.clone(), &crate::anon_dname::ANON_INODE_OPS);
     let file = File::new(inode_ref, dentry, OpenFlags::O_RDWR);
-    match fdt.alloc(file) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    match fdt.alloc_limit(file, cur.nofile_soft()) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
 }
 
 fn as_perf(inode: &vfs::InodeRef) -> Option<Arc<PerfData>> {

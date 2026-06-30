@@ -48,17 +48,17 @@ pub mod poll_subs;
 
 pub use dcache::{d_add, d_add_negative, d_alloc, d_drop, d_instantiate, d_invalidate, d_lookup, d_make_root, d_move, d_obtain_alias, d_splice_alias, dget, dput};
 pub use dentry::{Dentry, D_HASHED, D_NEGATIVE, D_ROOT};
-pub use devnode::{BlockDevOps, CharDevOps, Devt, DeviceNodeData, init_special_inode, make_device_node_inode, make_fifo_inode, make_socket_inode, device_inode_open, device_inode_ioctl, device_inode_devt, lookup_blkdev, lookup_chrdev, register_blkdev, register_chrdev, unregister_blkdev, unregister_chrdev};
+pub use devnode::{BlockDevOps, CharDevOps, Devt, DeviceNodeData, init_special_inode, make_device_node_inode, make_fifo_inode, make_socket_inode, device_inode_open, device_inode_ioctl, device_inode_devt, lookup_blkdev, lookup_chrdev, register_blkdev, register_chrdev, unregister_blkdev, unregister_chrdev, mkdev, kdev_major, kdev_minor, new_encode_dev, huge_encode_dev, MINORBITS, MINORMASK};
 pub use superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
 pub use namei::{path_lookup, path_lookup_path, path_lookup_cred, resolve_abs, resolve_path_dentry, set_root_dentry_provider, inode_permission, generic_permission, may_open, may_create, may_chmod, may_chown, chmod_sgid_strip, chown_kill_priv, Cred, LookupFlags, Nameidata, VfsPath, CRED_NGROUPS, MAX_SYMLINK_DEPTH, MAY_EXEC, MAY_READ, MAY_WRITE, S_ISUID, S_ISGID, S_IXGRP};
 pub use dirent::{dirent64_pack, dirent64_reclen, DIRENT64_HEADER, dirent_pack, dirent_reclen, DIRENT_HEADER};
 pub use path::{path_from_bytes, path_into_bytes};
 pub use fdtable::{FdTable, FD_TABLE_MAX};
 pub use file::{File, Fmode, SeekFrom, fire_clone_hook, fire_dirent_create, fire_dirent_delete, set_clone_hook, set_close_hook, set_dirent_create_hook, set_dirent_delete_hook, set_drop_hook, set_open_hook, set_read_hook, set_write_hook};
-pub use inode::{Inode, InodeBuilder, InodeRef, FileAttr, FiemapExtent, get_next_ino, I_DIRTY, I_NEW, I_FREEING, S_IMMUTABLE, S_APPEND, S_NOATIME, S_SYNC, POLL_IN, POLL_OUT, POLL_HUP, POLL_ERR, POLL_PRI, POLL_RDHUP};
-pub use inode_ops::{InodeOps, DefaultInodeOps, default_inode_ops, mk_mode};
-pub use file_ops::{FileOps, DefaultFileOps, default_file_ops};
-pub use getattr::{fsid_to_dev, generic_fillattr, vfs_getattr, default_perm_for, Kstat, S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIFO};
+pub use inode::{Inode, InodeBuilder, InodeRef, FileAttr, FiemapExtent, get_next_ino, generic_update_time, inode_unlock, lock_rename, unlock_rename, RenameLockGuard, I_DIRTY, I_NEW, I_FREEING, S_IMMUTABLE, S_APPEND, S_NOATIME, S_SYNC, S_ATIME, S_MTIME, S_CTIME, S_VERSION, POLL_IN, POLL_OUT, POLL_HUP, POLL_ERR, POLL_PRI, POLL_RDHUP};
+pub use inode_ops::{InodeOps, DefaultInodeOps, default_inode_ops, mk_mode, CreateCtx};
+pub use file_ops::{FileOps, DefaultFileOps, default_file_ops, DirContext, DirEmit};
+pub use getattr::{fsid_to_dev, st_dev_for_fsid, generic_fillattr, vfs_getattr, default_perm_for, Kstat, S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIFO};
 pub use idmap::{Idmap, IdExtent, IDENTITY};
 pub use setattr::{setattr_prepare, simple_setattr, notify_change, apply_kill_priv, Iattr, ATTR_MODE, ATTR_UID, ATTR_GID, ATTR_SIZE, ATTR_ATIME, ATTR_MTIME, ATTR_CTIME, ATTR_ATIME_SET, ATTR_MTIME_SET, ATTR_KILL_SUID, ATTR_KILL_SGID};
 pub use mapping::AddressSpaceOps;
@@ -69,6 +69,8 @@ pub use poll_subs::{EpollNotify, PollSubscribers};
 mod tests;
 #[cfg(test)]
 mod tests_d4b;
+#[cfg(test)]
+mod tests_dircontext;
 
 /// Subsystem-level error per `38`. Kept for the existing skeleton
 /// `init` shim; the canonical VFS error is `VfsError` above.

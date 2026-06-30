@@ -105,7 +105,9 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
                 if !name.is_empty() {
                     if let Ok(pino) = vfs::mount::lookup(parent) {
                         const S_IFSOCK: u16 = 0xC000;
-                        let _ = pino.mknod_child(name, S_IFSOCK, 0);
+                        let cred = crate::pathresolve::current_cred();
+                        let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
+                        let _ = pino.mknod_child(name, S_IFSOCK, 0, &ctx);
                     }
                 }
             }

@@ -83,7 +83,7 @@ impl FileSystem for BindFs {
             .filter(|&m| m != 0)
             .unwrap_or(0xEF53)
     }
-    fn mounts_line(&self, mount_point: &str) -> String {
+    fn mounts_line(&self, mount_point: &str, _sb: Option<&vfs::SuperBlock>) -> String {
         let mut s = String::new();
         s.push_str(&self.source);
         s.push(' ');
@@ -96,6 +96,20 @@ impl FileSystem for BindFs {
 /// `sys_mount(source, target, fstype, flags, data)` — slot 165.
 /// # C: O(N_path)
 pub fn sys_mount(args: &SyscallArgs) -> i64 {
+    // TEMP (D24, debug-mnt): mount-creating syscall ENTRY trace — pair with the
+    // vfs [MNTCREATE] mount-create lines to reconstruct how 10/11 are built.
+    #[cfg(feature = "debug-mount")]
+    {
+        let src = crate::mount_common::read_user_cstr_owned(args.a0, 256).unwrap_or_default();
+        let tgt = crate::mount_common::read_user_cstr_owned(args.a1, 256).unwrap_or_default();
+        klog::write_raw(b"[MNTCREATE] syscall=mount flags=0x");
+        klog::write_hex_u64(args.a3);
+        klog::write_raw(b" recursive=");
+        klog::write_raw(if args.a3 & MS_REC != 0 { b"true" } else { b"false" });
+        klog::write_raw(b" source="); klog::write_raw(src.as_bytes());
+        klog::write_raw(b" target="); klog::write_raw(tgt.as_bytes());
+        klog::write_raw(b"\n");
+    }
     let rv = sys_mount_impl(args);
     // Failure-only trace: logging every successful mount floods the UART and
     // shifts boot timing into the intermittent wedge before logind runs. Only
@@ -193,17 +207,20 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         // future propagation events reach it). Captured before the bind.
         let src_pg = vfs::mount::peer_group_of(&source_d);
         let bind = Arc::new(BindFs { source: source.clone() });
-        // Global mount table (per-NS bind rides the per-ns mount tree).
-        let _ = vfs::mount::register_bind(Some(target_d.clone()), bind, root);
+        // [D14] Atomic graft + propagation (Linux `attach_recursive_mnt`): the
+        // bind is attached AND replicated to the destination parent's peer
+        // group in ONE engine call, so there is no caller-visible window where
+        // the bind is attached but its propagated mirrors are not (the prior
+        // `register_bind` + separate `propagate_mount` left the tree
+        // momentarily half-replicated). Global mount table (per-NS bind rides
+        // the per-ns mount tree).
+        let _ = vfs::mount::attach_recursive_mnt(Some(target_d.clone()), bind, Some(root));
         vfs::mount::join_peer_group(&target_d, src_pg);
         // MS_REC: also clone every mount nested under `source` to the
         // matching path under `target` (recursive bind, docs/16§6).
         if flags & MS_REC != 0 {
             let _ = vfs::mount::bind_submounts_rec(&source_d, &target_d);
         }
-        // Propagation: if `target`'s parent is a shared mount, replicate
-        // this bind to the parent's peers (docs/16§6).
-        let _ = vfs::mount::propagate_mount(&target_d);
         let _ = ns;
         return 0;
     }

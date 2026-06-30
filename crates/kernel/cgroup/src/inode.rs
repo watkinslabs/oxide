@@ -17,7 +17,7 @@ use alloc::sync::Arc;
 use vfs::inode::{Inode, InodeBuilder};
 use vfs::inode_ops::{default_inode_ops, mk_mode, InodeOps};
 use vfs::file_ops::FileOps;
-use vfs::{FileType, Ino, InodeRef, KResult, VfsError};
+use vfs::{DirContext, FileType, Ino, InodeRef, KResult, VfsError};
 
 const DIR_INO_BASE: u64 = 0x6000_0000;
 const FILE_INO_BASE: u64 = 0x6100_0000;
@@ -86,7 +86,7 @@ impl InodeOps for CgDirOps {
         Err(VfsError::Enoent)
     }
 
-    fn mkdir(&self, inode: &Inode, name: &str, _mode: u32) -> KResult<InodeRef> {
+    fn mkdir(&self, inode: &Inode, name: &str, _mode: u32, _ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
         let cgid = dir_data(inode)?.cgid;
         #[cfg(feature = "debug-cgroup")]
         {
@@ -109,12 +109,7 @@ impl InodeOps for CgDirOps {
 /// control files then the child cgroups.
 struct CgDirFileOps;
 impl FileOps for CgDirFileOps {
-    fn iterate(
-        &self,
-        inode: &Inode,
-        off: u64,
-        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
-    ) -> KResult<u64> {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let cgid = dir_data(inode)?.cgid;
         // Stable order: control files first, then child cgroups. The
         // offset is an index into that concatenated sequence. The child's real
@@ -122,20 +117,20 @@ impl FileOps for CgDirFileOps {
         let files = crate::node_file_names(cgid);
         let kids = crate::node_child_names(cgid);
         let total = files.len() + kids.len();
-        let mut idx = off as usize;
+        let mut idx = ctx.pos as usize;
         while idx < total {
             let next = idx as u64 + 1;
             if idx < files.len() {
                 let ino = inode.lookup(files[idx]).map(|i| i.ino()).unwrap_or(0);
-                if !f(ino, next, files[idx], FileType::Regular) { return Ok(next); }
+                if !ctx.emit(files[idx], ino, FileType::Regular, next) { return Ok(()); }
             } else {
                 let name = &kids[idx - files.len()];
                 let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-                if !f(ino, next, name, FileType::Directory) { return Ok(next); }
+                if !ctx.emit(name, ino, FileType::Directory, next) { return Ok(()); }
             }
             idx += 1;
         }
-        Ok(total as u64)
+        Ok(())
     }
 }
 

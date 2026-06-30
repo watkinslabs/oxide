@@ -96,6 +96,44 @@ pub fn freeze_task(task: &alloc::sync::Arc<crate::Task>) {
     crate::preempt::set_need_resched();
 }
 
+/// VFS fasync (`O_ASYNC`) SIGIO delivery (Linux `send_sigio` -> `do_send_sig_info`
+/// -> `kill_pid_info`). Posts `sig` to the `F_SETOWN` target and wakes it:
+///   `owner > 0` — that vpid (task or, for `F_OWNER_TID`, thread) in the init
+///                 pid namespace, mirroring how `F_SETOWN` records a pid.
+///   `owner < 0` — every member of process group `-owner`.
+///   `owner == 0` — no target; no-op.
+/// `_uid`/`_euid` are the `F_SETOWN`-time credential snapshot reserved for the
+/// `sigio_perm` check (deliver only if the owner could `kill(2)` the target);
+/// the basic post path delivers unconditionally for now (the perm gate rides
+/// the same follow-up as the cross-NS owner translation). Installed into the
+/// VFS via `set_sigio_hook` so `vfs` need not depend on `sched`. # C: O(N_tasks)
+/// for a pgrp fan; O(1) for a single owner.
+pub fn send_sigio(owner: i32, sig: i32, _uid: u32, _euid: u32) {
+    if owner == 0 || !(1..=64).contains(&sig) { return; }
+    let bit = 1u64 << (sig - 1);
+    if owner > 0 {
+        if let Some(t) = crate::registry::lookup_in_ns(0, owner as u32)
+            .or_else(|| crate::registry::lookup(owner as u32))
+        {
+            t.sigpending.fetch_or(bit, Ordering::Release);
+            wake_if_sleeping(&t);
+        }
+    } else {
+        for t in crate::registry::tasks_in_pgrp((-owner) as u32) {
+            t.sigpending.fetch_or(bit, Ordering::Release);
+            wake_if_sleeping(&t);
+        }
+    }
+}
+
+/// Install [`send_sigio`] as the VFS fasync delivery hook (idempotent; a plain
+/// atomic store). Called from the fcntl path the first time an `F_SETOWN` /
+/// `O_ASYNC` is requested, so a kernel that never uses async-I/O pays nothing.
+/// # C: O(1)
+pub fn install_sigio_hook() {
+    vfs::file::set_sigio_hook(send_sigio);
+}
+
 /// cgroup v2 thaw (`cgroup.freeze=0`): clear the frozen flag and
 /// re-enqueue if the task is runnable (a still-blocked task re-enqueues on
 /// its own wake, now that the chokepoint admits it).
