@@ -285,6 +285,11 @@ pub fn check_access_perm(inode: &InodeRef) -> bool { check_perm(inode, FAN_ACCES
 /// FAN_OPEN_EXEC_PERM hook for the execve path. # C: O(1) fast / O(groups)+park
 pub fn check_open_exec_perm(inode: &InodeRef) -> bool { check_perm(inode, FAN_OPEN_EXEC_PERM) }
 
+/// Boot fast-path gate: `true` iff any `FAN_*_PERM` mark is armed anywhere.
+/// Lets the execve perm-gate skip its inode resolve entirely at boot (no perm
+/// marks → byte-identical to the pre-gate path). # C: O(1)
+pub fn perm_marks_present() -> bool { PERM_MARK_COUNT.load(Ordering::Acquire) != 0 }
+
 /// Permission-event core. Returns `true` to allow, `false` to deny (caller
 /// returns -EACCES). Fast-paths to allow when no FAN_*_PERM marks exist
 /// anywhere (zero overhead on the open/read hot paths — never blocks boot).
