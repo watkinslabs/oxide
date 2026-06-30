@@ -565,6 +565,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     drv::set_sysfs_hook(crate::sysfs::bus::publish_device_cb);
     drv::set_driver_hook(crate::sysfs::bus::publish_driver_cb);
     drv::set_bind_hook(crate::sysfs::bus::bind_device_cb);
+    // device-model Stage B: wire the devtmpfs side of `drv::device_add` so ONE
+    // registration mints both the `/sys` entry (hooks above) AND the `/dev`
+    // node. ADDITIVE — nothing calls `device_add` yet (Stage C migrates the
+    // scattered `devfs::register` callers), so this fires zero times at boot
+    // and the boot is byte-identical until a caller opts in.
+    drv::set_devtmpfs_hook(devfs::add_device_node);
+    drv::set_devtmpfs_del_hook(devfs::del_device_node);
     // virtio-gpu/input bind via the real driver-model Driver registered + bound
     // at their bring-up sites in pci_boot (drivers-plan D1a/D2); the old
     // NoMatch DriverEntry probe stubs were removed in D2.
