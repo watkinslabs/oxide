@@ -431,12 +431,24 @@ pub struct PseudoFs {
     root: Arc<PseudoDir>,
 }
 
+/// Fixed root inode number for every kernfs/ramfs-class pseudo-fs, matching
+/// Linux `pseudo_fs_fill_super` (`fs/libfs.c`: `root->i_ino = 1`). Target-
+/// INDEPENDENT, so the SB realized at `fsconfig(CMD_CREATE)` (which does not
+/// yet know the mount target) is byte-identical to what `mount_fstype` grafts —
+/// the precondition for adding these fstypes to `fstype_converted`. Child
+/// inode numbering is unaffected: child paths are seeded from the empty root
+/// path (`PseudoDir::new_root` sets `path == ""`), never from the target.
+pub const PSEUDO_ROOT_INO: Ino = 1;
+
 impl PseudoFs {
     /// Build a fresh instance. `name` is the fstype string, `magic` its
-    /// `linux/magic.h` `s_magic`, `root_path` seeds the deterministic root
-    /// inode number so two distinct mounts get distinct root inos. # C: O(1)
-    pub fn new(name: &'static str, magic: u64, root_path: &str) -> Arc<Self> {
-        let root = PseudoDir::new_root(dir_ino(root_path), magic, false);
+    /// `linux/magic.h` `s_magic`. The root inode number is the fixed Linux
+    /// pseudo-fs root ino ([`PSEUDO_ROOT_INO`] = 1), NOT derived from the mount
+    /// target, so two distinct mounts of the same fstype get identical root
+    /// inos under distinct SBs (distinct `s_dev`) — Linux-faithful and target-
+    /// independent. # C: O(1)
+    pub fn new(name: &'static str, magic: u64) -> Arc<Self> {
+        let root = PseudoDir::new_root(PSEUDO_ROOT_INO, magic, false);
         Arc::new(Self { name, magic, root })
     }
 
@@ -552,6 +564,26 @@ mod tests {
         assert!(trace.lookup_path("class/net").is_none());
         // Distinct identity (the per-fs st_dev the shared tree collapsed).
         assert_ne!(sys.as_inode().fsid(), trace.as_inode().fsid());
+    }
+
+    #[test]
+    fn pseudofs_root_ino_is_fixed_and_target_independent() {
+        use vfs::fs::FileSystem;
+        // Two distinct mounts of the same fstype (what fsopen/fsconfig and the
+        // legacy mount_fstype path each build) must expose the SAME fixed root
+        // ino — Linux pseudo_fs_fill_super root->i_ino = 1 — never a target hash.
+        let a = PseudoFs::new("bpf", 0xcafe_4a11);
+        let b = PseudoFs::new("bpf", 0xcafe_4a11);
+        assert_eq!(a.root().unwrap().ino(), PSEUDO_ROOT_INO);
+        assert_eq!(b.root().unwrap().ino(), PSEUDO_ROOT_INO);
+        assert_eq!(PSEUDO_ROOT_INO, 1);
+        // Root ino does not depend on construction order/identity.
+        assert_eq!(a.root().unwrap().ino(), b.root().unwrap().ino());
+        // Child inode numbering is unaffected (still in the tagged dir range).
+        a.root_dir().ensure_dir_path("sub");
+        let child = a.root_dir().lookup_path("sub").expect("child dir");
+        assert_ne!(child.ino(), PSEUDO_ROOT_INO);
+        assert_eq!(child.ino(), dir_ino("/sub"));
     }
 
     #[test]
