@@ -55,14 +55,18 @@ pub fn tick_wake_expired(now_ns: u64) {
                 Ordering::Release,
             );
             t.sigpending.fetch_or(super::sigpend::Signum::Sigalrm.bit(), Ordering::Release);
-            super::sigpend::wake_if_sleeping(&t);
+            // Timer-ISR (IF=0): defer placement to the target's wake_list so the
+            // tick never blocks on a contended rq lock and never enqueues a task
+            // still on_cpu elsewhere. SAFETY: timer-ISR wake site; lookup keeps t alive.
+            unsafe { super::ttwu::ttwu_deferred(alloc::sync::Arc::clone(&t)); }
         }
         let dl = t.wakeup_deadline_ns.load(Ordering::Acquire);
         if dl == 0 || dl > now_ns { continue; }
-        // Match wake_if_sleeping semantics: clear deadline before
-        // we flip state, so a racing explicit waker observing
-        // Runnable doesn't double-fire.
+        // Clear the deadline before the wake so a task already roused by a racing
+        // explicit waker doesn't keep re-matching this scan (ttwu_deferred also
+        // clears it after a successful Sleeping→Runnable claim).
         t.wakeup_deadline_ns.store(0, Ordering::Release);
-        super::sigpend::wake_if_sleeping(&t);
+        // SAFETY: timer-ISR wake site; registry lookup keeps `t` alive across the call.
+        unsafe { super::ttwu::ttwu_deferred(alloc::sync::Arc::clone(&t)); }
     }
 }

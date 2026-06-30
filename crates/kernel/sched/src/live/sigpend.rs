@@ -69,16 +69,15 @@ pub fn deliverable_signals_self() -> u64 {
 /// re-check. No-op for other states. Mirrors `wake_if_stopped`.
 /// # C: O(log N) under runqueue inner lock
 pub fn wake_if_sleeping(task: &alloc::sync::Arc<crate::Task>) {
-    if task.state() != crate::TaskState::Sleeping { return; }
-    task.set_state(crate::TaskState::Runnable);
-    if let Some(rq) = super::runqueue::global() {
-        let mut inner = rq.inner.lock();
-        // F211: sleeper credit on wake. See Task::set_vruntime_to_floor.
-        task.set_vruntime_to_floor(inner.cfs.min_vruntime());
-        inner.enqueue(alloc::sync::Arc::clone(task));
-        rq.nr_running.store(inner.nr_running(), Ordering::Release);
-        crate::preempt::set_need_resched();
-    }
+    // Route through try_to_wake_up (Linux ttwu): atomic Sleeping→Runnable claim,
+    // select_task_rq placement, on_cpu handshake + wake_list deferral, sleeper
+    // credit, and a remote RESCHED IPI. Replaces the old raw LOCAL-rq enqueue,
+    // which had NO on_cpu handshake (a task still on_cpu on another CPU could be
+    // enqueued and run on two CPUs) and NO select_task_rq. Process-context
+    // callers (signal post, IPC, fasync) reach the local fast path on UP; the
+    // timer-ISR scanner uses `ttwu::ttwu_deferred` directly (never the rq lock).
+    // SAFETY: wake-site (signal / IPC / fasync) context; the Arc keeps it alive.
+    unsafe { super::try_to_wake_up(alloc::sync::Arc::clone(task)); }
 }
 
 /// cgroup v2 freezer (`cgroup.freeze=1`): mark `task` frozen and pull it
