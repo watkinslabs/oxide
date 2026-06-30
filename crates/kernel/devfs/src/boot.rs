@@ -38,6 +38,12 @@ pub fn populate_defaults() {
     // the underlay dir so the boot tmpfs mount resolves its mountpoint dentry
     // (the mount engine takes the walked dentry, no path-string resolve).
     crate::register_dir("/dev/shm");
+    // /dev/mqueue + /dev/pts mount-point underlay dirs (POSIX mqueue + devpts).
+    // D17: with the ext4 overlay-union off, these mount-point dirs must be real
+    // devfs dirs (the empty rootfs `/dev` never provided them anyway). /dev/pts
+    // is also register_dir'd by `devpts::init`; idempotent. /dev/shm above.
+    crate::register_dir("/dev/mqueue");
+    crate::register_dir("/dev/pts");
     // device-model Stage C (D27): the standard mem char devices self-register
     // through `drv::device_add` (dev_class "mem") so ONE registration drives the
     // device model + /dev. `node_factory` mints the EXACT bespoke inode each used
@@ -105,6 +111,13 @@ fn machine_id_line() -> &'static [u8] {
 /// reference tables, and `ld.so.conf`/`timezone`. Boot, once, at the same phase
 /// `populate_defaults` runs. # C: O(N nodes)
 pub fn register_etc_overlay() {
+    // D19 (deferred): keep `/etc` as an ext4-overlay subtree so its readdir
+    // still merges the real on-disk rootfs `/etc` files. The root flag is now
+    // OFF (D17), so `/etc`'s overlay is set per-subtree here. Must run before
+    // the leaves below create `/etc`. The 7 entries are runtime/synthetic with
+    // no on-disk source (NOT in the rootfs image) — removing devfs ownership of
+    // `/etc` would lose them, so D19 stays deferred pending rootfs-image work.
+    crate::tree::register_overlay_dir(0, "/etc");
     register("/etc/machine-id", StaticFileInode::new(machine_id_line()) as InodeRef);
     register("/etc/resolv.conf", StaticFileInode::new(b"") as InodeRef);
     register("/etc/localtime", StaticFileInode::new(b"") as InodeRef);
