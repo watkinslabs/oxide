@@ -4,8 +4,11 @@ extern crate alloc;
 pub mod eventfs;
 pub mod fs_impl;
 pub mod percpu_ring;
+pub mod predicate;
 pub mod ring;
 pub mod root;
+
+pub use eventfs::{register_dynamic_event, EventDesc};
 
 pub use root::{debug_root, register, trace_root};
 
@@ -22,7 +25,6 @@ pub use root::{debug_root, register, trace_root};
 // sched_switch / sys_enter / sys_exit per `37§6`.
 
 
-use alloc::sync::Arc;
 use vfs::InodeRef;
 
 use vfs::StaticFileInode;
