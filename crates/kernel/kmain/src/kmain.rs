@@ -235,6 +235,24 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         }
         let _ = p;
 
+        // SMP-IST hardening (Stage 1): now the allocator is live, give the
+        // BSP its per-CPU IST exception stacks (#DF/NMI/#DB/#MC) and point
+        // the shared IDT gates at them. boot-x86_64 installed the TSS/IDT
+        // with RSP0-only + ist=0; populate the BSP's TSS IST slots FIRST,
+        // then patch the gates (else a fault would vector to a zero top).
+        // Each AP does its own setup_ist_stacks in ap_main_x86 before `sti`;
+        // the gates are shared so they're patched once here. A #DF/NMI on a
+        // CPU mid kernel-stack-switch now lands on a known-good stack instead
+        // of escalating to a triple fault (the late-boot -smp 2 flake).
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+        // SAFETY: single-CPU pre-init, IRQs masked; allocator live; BSP is
+        // cpu 0; setup_ist_stacks(0) populates this CPU's TSS IST slots
+        // before install_ist_gates patches the (shared) IDT gate indices.
+        unsafe {
+            hal_x86_64::setup_ist_stacks(0);
+            hal_x86_64::install_ist_gates();
+        }
+
         // Device bring-up: install Device-attr 4 KiB MMIO mappings
         // via the PMM-backed mapper, enable LAPIC/GIC/UART. The
         // bring-up is always-on; per-step diagnostic logs are gated

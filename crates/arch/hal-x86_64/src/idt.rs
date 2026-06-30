@@ -175,6 +175,47 @@ pub unsafe fn install_default() {
     let _ = pointer;
 }
 
+/// Patch CPU-exception vector `vec`'s gate to dispatch on IST index `ist`
+/// (1..=7; 0 = use the TSS RSP0 stack). The IDT is shared across CPUs, so
+/// this sets the index ONCE; the actual stack the index selects is per-CPU
+/// via the running CPU's TSS IST slot. The CPU re-reads the gate on every
+/// dispatch, so an in-place single-byte field patch after `lidt` is safe.
+///
+/// # SAFETY: caller asserts every CPU that can take vector `vec` has its
+/// TSS IST[`ist`] slot populated (`tss::setup_ist_stacks`) BEFORE this runs
+/// — otherwise the fault vectors to a zero stack top. Single u8 store into
+/// the IDT static the CPU only reads asynchronously.
+/// # C: O(1)
+pub unsafe fn set_gate_ist(vec: u8, ist: u8) {
+    // SAFETY: single-CPU boot; we own the IDT static for this patch. The
+    // CPU reads `ist` (bits 0..2) when it next dispatches `vec`.
+    let idt = unsafe { &mut *IDT.0.get() };
+    idt[vec as usize].ist = ist & 0x07;
+}
+
+/// Point the fatal / nesting-prone CPU-exception gates at their per-CPU IST
+/// stacks (Linux-faithful: #DF→IST1, NMI→IST2, #DB→IST3, #MC→IST4). #PF is
+/// intentionally NOT IST-routed (Linux keeps it on RSP0 — page faults nest
+/// legitimately and a single per-CPU IST is non-reentrant). Call ONCE from
+/// the BSP boot path AFTER `tss::setup_ist_stacks(0)`; APs inherit the same
+/// gates via the shared IDT and only need their own TSS slots populated.
+///
+/// # SAFETY: caller asserts the BSP's TSS IST slots are populated; runs
+/// single-CPU IRQ-off at boot. Vector numbers are the Intel SDM Vol. 3
+/// §6.15 fixed exception assignments.
+/// # C: O(1)
+/// # Ctx: pre-init, IRQ-off, single-CPU (BSP only)
+pub unsafe fn install_ist_gates() {
+    use crate::tss::{IST_DF, IST_NMI, IST_DB, IST_MC};
+    // SAFETY: see fn contract; each call is a single masked u8 field store.
+    unsafe {
+        set_gate_ist(1,  IST_DB);  // #DB  debug
+        set_gate_ist(2,  IST_NMI); // NMI
+        set_gate_ist(8,  IST_DF);  // #DF  double fault
+        set_gate_ist(18, IST_MC);  // #MC  machine check
+    }
+}
+
 /// Load IDTR on this CPU using the IDT already populated by an
 /// earlier `install_default` call. Used by AP startup so each AP
 /// gets the same vector dispatch table without rewriting the
@@ -268,6 +309,24 @@ mod tests {
         let e = IdtEntry::new_int_gate(0, KERNEL_CS, 0xff);
         assert_eq!(e.ist & 0xf8, 0, "high bits of ist must be reserved zero");
         assert_eq!(e.ist & 0x07, 0x07, "low 3 bits should retain caller value");
+    }
+
+    #[test]
+    fn install_ist_gates_sets_linux_scheme() {
+        use crate::tss::{IST_DF, IST_NMI, IST_DB, IST_MC};
+        // SAFETY: hosted test; install_default populates the array branch,
+        // install_ist_gates patches the gate ist fields (no asm on host).
+        unsafe { install_default(); install_ist_gates(); }
+        // SAFETY: hosted single-threaded test reads the IDT static.
+        let idt = unsafe { &*IDT.0.get() };
+        assert_eq!(idt[1].ist,  IST_DB,  "#DB → IST3");
+        assert_eq!(idt[2].ist,  IST_NMI, "NMI → IST2");
+        assert_eq!(idt[8].ist,  IST_DF,  "#DF → IST1");
+        assert_eq!(idt[18].ist, IST_MC,  "#MC → IST4");
+        // #PF (vec 14) must stay on RSP0 (ist = 0), Linux-faithful.
+        assert_eq!(idt[14].ist, 0, "#PF must NOT be IST-routed");
+        // A regular IRQ vector (timer 0x40) is untouched.
+        assert_eq!(idt[0x40].ist, 0);
     }
 
     #[test]
