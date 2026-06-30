@@ -39,6 +39,19 @@ use crate::types::{FileType, Ino, KResult, Umode, VfsError, S_IFMT};
 /// every filesystem; behaviour comes from `i_op`/`i_fop`/`i_private`.
 pub type InodeRef = Arc<Inode>;
 
+/// memfd file-sealing store carrier (Linux `shmem_inode_info.seals`, reached via
+/// `SHMEM_I()`). Implemented by the per-fs inode-info type that owns the seal
+/// word — for us tmpfs/shmem (`memfd_create` makes tmpfs inodes), so the seal
+/// state lives in the BACKEND inode-info, not on the generic `struct Inode`.
+/// `vfs` cannot depend on `fs`, so the backend hands the inode an
+/// `Arc<dyn SealCarrier>` (the same per-fs inode-info that backs `i_private`)
+/// and `Inode::fcntl_seals` reads the word through this trait. A non-sealable
+/// inode attaches no carrier → `fcntl_seals()` is `None`.
+pub trait SealCarrier: Send + Sync {
+    /// The `F_*_SEALS` word (Linux `shmem_inode_info.seals`). # C: O(1)
+    fn seal_word(&self) -> &AtomicU32;
+}
+
 /// `struct inode` (`16§2`). One per in-core inode; shared by every dentry alias
 /// (hardlinks) and every open `File` on it.
 pub struct Inode {
@@ -92,8 +105,10 @@ pub struct Inode {
     /// F181 per-inode epoll subscriber list for targeted wakes (`None` = global
     /// broadcast).
     poll_subs: Option<PollSubscribers>,
-    /// memfd file-sealing word (`Some` only for a sealable memfd).
-    seals: Option<AtomicU32>,
+    /// memfd seal-store carrier (Linux `SHMEM_I(inode)->seals`). `Some` only for
+    /// a sealable memfd; points at the per-fs inode-info (the same object that
+    /// backs `i_private`), so the seal WORD lives in the backend, not here.
+    seal_carrier: Option<Arc<dyn SealCarrier>>,
     /// `i_link` — inline fast-symlink body (Linux `inode->i_link`); `None` = no
     /// inline body, so `get_link` falls through to `i_op->readlink`.
     i_link: Option<Box<[u8]>>,
@@ -202,8 +217,13 @@ impl Inode {
     /// F181 per-inode epoll subscribers (`None` = global broadcast). # C: O(1)
     pub fn poll_subscribers(&self) -> Option<&PollSubscribers> { self.poll_subs.as_ref() }
 
-    /// memfd seal word (`Some` only for a sealable memfd). # C: O(1)
-    pub fn fcntl_seals(&self) -> Option<&AtomicU32> { self.seals.as_ref() }
+    /// memfd seal-store carrier (`Some` only for a sealable memfd) — the per-fs
+    /// inode-info that owns the seal word. # C: O(1)
+    pub fn as_seal_carrier(&self) -> Option<&dyn SealCarrier> { self.seal_carrier.as_deref() }
+
+    /// memfd seal word (`Some` only for a sealable memfd), read through the
+    /// backend `SealCarrier` (Linux `SHMEM_I(inode)->seals`). # C: O(1)
+    pub fn fcntl_seals(&self) -> Option<&AtomicU32> { self.as_seal_carrier().map(|c| c.seal_word()) }
 
     /// `i_version` raw word — always present on the concrete inode. # C: O(1)
     pub fn i_version_raw(&self) -> Option<&AtomicU64> { Some(&self.i_version) }
@@ -513,7 +533,7 @@ pub struct InodeBuilder {
     mapping: Option<Arc<dyn AddressSpaceOps>>,
     private: Arc<dyn Any + Send + Sync>,
     poll_subs: Option<PollSubscribers>,
-    seals: Option<u32>,
+    seal_carrier: Option<Arc<dyn SealCarrier>>,
     link: Option<Box<[u8]>>,
     xattrs: Option<crate::xattr::SimpleXattrs>,
 }
@@ -526,7 +546,7 @@ impl InodeBuilder {
             ino, mode, i_op, i_fop, sb: Weak::new(),
             size: 0, blocks: 0, nlink: None, uid: 0, gid: 0, flags: 0, rdev: 0,
             generation: 0, fsid: 0, atime: 0, mtime: 0, ctime: 0, btime: 0, version: 0,
-            mapping: None, private: Arc::new(()), poll_subs: None, seals: None, link: None,
+            mapping: None, private: Arc::new(()), poll_subs: None, seal_carrier: None, link: None,
             xattrs: None,
         }
     }
@@ -560,8 +580,10 @@ impl InodeBuilder {
     pub fn private(mut self, p: Arc<dyn Any + Send + Sync>) -> Self { self.private = p; self }
     /// Attach a per-inode epoll subscriber list. # C: O(1)
     pub fn poll_subs(mut self, p: PollSubscribers) -> Self { self.poll_subs = Some(p); self }
-    /// Enable memfd sealing with an initial seal word. # C: O(1)
-    pub fn seals(mut self, initial: u32) -> Self { self.seals = Some(initial); self }
+    /// Enable memfd sealing by attaching the backend `SealCarrier` (the per-fs
+    /// inode-info that owns the seal word, e.g. tmpfs `TmpfsFileData`). The seal
+    /// store lives in the backend, not on `struct Inode`. # C: O(1)
+    pub fn seal_carrier(mut self, c: Arc<dyn SealCarrier>) -> Self { self.seal_carrier = Some(c); self }
     /// Set the inline fast-symlink body (`i_link`). # C: O(1)
     pub fn link(mut self, body: Box<[u8]>) -> Self { self.link = Some(body); self }
     /// Attach an empty per-inode xattr store (`i_xattrs`), making this inode's
@@ -597,7 +619,7 @@ impl InodeBuilder {
             i_fop: self.i_fop,
             i_private: self.private,
             poll_subs: self.poll_subs,
-            seals: self.seals.map(AtomicU32::new),
+            seal_carrier: self.seal_carrier,
             i_link: self.link,
             i_xattrs: self.xattrs,
             i_rwsem: RwLock::new(()),
