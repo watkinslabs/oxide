@@ -528,7 +528,7 @@ impl DevptsFs {
     /// per-instance `ptmx` node. Slaves are inserted lazily by
     /// [`allocate_pair`]. # C: O(1)
     fn new() -> Arc<Self> {
-        let root = PseudoDir::new_root(kernfs::dir_ino("/dev/pts"), DEVPTS_FSID, false);
+        let root = PseudoDir::new_root(kernfs::dir_ino("/dev/pts"), DEVPTS_FSID);
         root.insert_path("ptmx", make_pts_ptmx_inode());
         Arc::new(Self { root })
     }

@@ -345,7 +345,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // the preferred console from its first open.
         // SAFETY: boot-only single-writer, pre-userspace; install_arch_default is idempotent (no-op if the slot is set) and cannot race a procfs reader here.
         unsafe { crate::boot_cmdline::install_arch_default(); }
-        console::register_devnodes(); ::devfs::boot::set_dir_overlay(ext4::dir::read_dir_overlay); ::devfs::boot::populate_defaults(); ::devfs::boot::register_etc_overlay(); procfs::init();
+        console::register_devnodes(); ::devfs::boot::populate_defaults(); procfs::init();
         drm::node::register();
         fs::tmpfs::init(); tracefs::init(); drv_virtio_input::devfs::init();
         fbdev::devfs::init(); devpts::init();
