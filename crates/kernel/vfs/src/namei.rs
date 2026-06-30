@@ -513,70 +513,21 @@ fn neg_cache_ok(dir: &InodeRef) -> bool {
 /// Follow stacked mountpoints DOWN from `d`: while `d` is a mountpoint, switch
 /// to the mounted fs's `s_root` dentry (Linux `__follow_mount`). Returns the
 /// final dentry, its inode, and the deepest crossed mount id. # C: O(stack)
-fn follow_mount_down(mut d: Arc<Dentry>, mut mnt_id: u64, ns: u64) -> KResult<(Arc<Dentry>, InodeRef, u64)> {
-    // [MNTDIVERGE — TEMPORARY, observe-only, feature `debug-mnt`] Prove the
-    // D24 Stage-1b walk-flip is safe BEFORE it lands: probe the strict mount
-    // hash (`__lookup_mnt(cur_mnt,d)`) against the legacy parent-agnostic
-    // `mounted_mount(ns)` map AT every position this walk examines. A "GAP"
-    // line (oldmap crosses, hash does not) is the exact post-flip ENOENT.
-    // Compiles to nothing without the feature. DELETE when 1b is verified.
-    #[cfg(feature = "debug-mnt")]
-    mntdiverge_probe(mnt_id, &d, ns);
-    while let Some(id) = d.mounted_mount(ns) {
-        // [2a SAFETY NET — debug only] The crossing decision STILL comes from the
-        // legacy per-ns `mounted_mounts` map (`id`, above); this assert proves the
-        // NEW structures (refcounted `D_MOUNTED` hint + the `(parent,dentry)`
-        // mount hash via `__lookup_mnt`) already agree with it, so 2b can flip the
-        // hot path to read them with confidence. NOT compiled into release.
-        #[cfg(debug_assertions)]
-        {
-            debug_assert_eq!(d.is_mounted(), !d.mounted_mounts_empty(),
-                "D_MOUNTED hint must match the legacy mounted_mounts map non-emptiness");
-            debug_assert_eq!(crate::mount::__lookup_mnt(mnt_id, &d).map(|m| m.mnt_id), Some(id),
-                "__lookup_mnt(cur_mnt, d) must resolve the same top mount as mounted_mount(ns)");
-        }
-        match crate::mount::root_dentry_for_mount_id(id) {
-            Some(sr) => { d = sr; mnt_id = id; }
+fn follow_mount_down(mut d: Arc<Dentry>, mut mnt_id: u64) -> KResult<(Arc<Dentry>, InodeRef, u64)> {
+    // [D24] Cross stacked mounts via the strict `(parent_mnt_id, dentry)` mount
+    // hash (Linux `__lookup_mnt`): while a mount is attached on `d` whose PARENT
+    // is the current mount `mnt_id`, switch to that child mount's root dentry and
+    // adopt its id, looping for stacked overmounts. The parent-keyed hash is
+    // ns-correct (every namespace mints ns-private mnt_ids), so the legacy
+    // parent-agnostic `dentry.mounted_mounts` map is no longer consulted (deleted).
+    while let Some(m) = crate::mount::__lookup_mnt(mnt_id, &d) {
+        match m.mnt_root() {
+            Some(sr) => { d = sr; mnt_id = m.mnt_id; }
             None => break,
         }
-        // Probe the advanced position too: a stacked mount root is itself the
-        // next crossing point, so this covers the whole stack the walk takes.
-        #[cfg(feature = "debug-mnt")]
-        mntdiverge_probe(mnt_id, &d, ns);
     }
     let inode = d.inode().ok_or(VfsError::Enoent)?;
     Ok((d, inode, mnt_id))
-}
-
-/// [MNTDIVERGE — TEMPORARY DEBUG, feature `debug-mnt`, prod-inert] Log one
-/// grep-able line comparing the legacy walk source (`mounted_mount(ns)`) with
-/// the strict Stage-1b source (`__lookup_mnt(cur_mnt,d)`) at one walk position.
-/// Emitted only when the position is an actual/potential crossing (mounted bit
-/// set, or either map resolves). Verdict `GAP` = the legacy map WOULD cross but
-/// the strict hash would NOT → the flip would ENOENT here. `OK` otherwise.
-/// Uses the raw klog byte sink (dynamic values can't ride the interned-literal
-/// klog! macro). NOT compiled without the feature. # C: O(1)
-#[cfg(feature = "debug-mnt")]
-fn mntdiverge_probe(cur_mnt_id: u64, d: &Arc<Dentry>, ns: u64) {
-    let mounted = d.is_mounted();
-    let oldmap = d.mounted_mount(ns);
-    let hash = crate::mount::__lookup_mnt(cur_mnt_id, d).map(|m| m.mnt_id);
-    if !(mounted || oldmap.is_some() || hash.is_some()) { return; }
-    let gap = oldmap.is_some() && hash.is_none();
-    klog::write_raw(b"[MNTDIVERGE] cur=");
-    klog::write_dec_u64(cur_mnt_id);
-    klog::write_raw(b" d=ptr:0x");
-    klog::write_hex_u64(Arc::as_ptr(d) as *const () as u64);
-    klog::write_raw(b" name:");
-    klog::write_raw(d.name().as_bytes());
-    klog::write_raw(b" ino:");
-    klog::write_dec_u64(d.inode().map(|i| i.ino()).unwrap_or(0));
-    klog::write_raw(if mounted { b" mounted=true" } else { b" mounted=false" });
-    klog::write_raw(b" oldmap=");
-    match oldmap { Some(id) => { klog::write_raw(b"Some:"); klog::write_dec_u64(id); } None => klog::write_raw(b"None") }
-    klog::write_raw(b" hash=");
-    match hash { Some(id) => { klog::write_raw(b"Some:"); klog::write_dec_u64(id); } None => klog::write_raw(b"None") }
-    klog::write_raw(if gap { b" GAP\n" } else { b" OK\n" });
 }
 
 /// `..` step with `follow_dotdot` mount-crossing (Linux). Clamps at the
@@ -663,14 +614,13 @@ impl Nameidata {
         // the ns-root mount. The caller hands bare dentries (no `vfsmount`); a
         // base sitting inside a sub-mount (chroot/pivot staging dir) lives in that
         // sub-mount, not the root, so `__lookup_mnt(cur_mnt_id, d)` must key on the
-        // true containing mount for the crossing to resolve. The crossing READ is
-        // unchanged (still `d.mounted_mount(ns)`); only the seed `mnt_id` the walk
-        // carries is made accurate (the design linchpin — ns-correctness flows
-        // from `cur_mnt_id`).
+        // true containing mount for the crossing to resolve. The seed `mnt_id` the
+        // walk carries is the design linchpin — ns-correctness flows from
+        // `cur_mnt_id` through the `(parent_mnt_id, dentry)` strict hash.
         let root_base = crate::mount::containing_mount_id(ns, &root);
-        let (mut root_dentry, _ri, mut root_mnt_id) = follow_mount_down(root, root_base, ns)?;
+        let (mut root_dentry, _ri, mut root_mnt_id) = follow_mount_down(root, root_base)?;
         let start_base = crate::mount::containing_mount_id(ns, &start);
-        let (cur_dentry, cur_inode, cur_mnt_id) = follow_mount_down(start, start_base, ns)?;
+        let (cur_dentry, cur_inode, cur_mnt_id) = follow_mount_down(start, start_base)?;
         // RESOLVE_IN_ROOT (openat2): the dirfd (START) becomes the resolution
         // root, so `to_root()` (absolute paths / absolute symlink restarts) and
         // `dotdot_step` (`..` clamp) all confine to it, overriding the passed
@@ -786,7 +736,6 @@ impl Nameidata {
     /// final degraded pass passes `false` so the Arc result is taken as-is).
     /// Returns `Done(path)` or a `Restart` request. # C: O(components) + O(symlinks)
     fn walk_inner(&mut self, path: &str, validate: bool) -> KResult<WalkOutcome> {
-        let ns = crate::mount::current_ns();
         // D22: snapshot the GLOBAL rename seqcount at the walk top (Linux
         // `read_seqbegin(&rename_lock)`). Any `d_move` anywhere advances it, so a
         // multi-component walk that raced a directory rename detects it via
@@ -1101,7 +1050,7 @@ impl Nameidata {
             // KEYSTONE — mount crossing (Linux `__follow_mount`): switch the
             // current dentry to the mounted fs's `s_root`, looping for stacked
             // overmounts. `VfsPath.dentry` thus becomes the mounted-fs dentry.
-            let (nd, ni, nm) = follow_mount_down(child.clone(), self.cur_mnt_id, ns)?;
+            let (nd, ni, nm) = follow_mount_down(child.clone(), self.cur_mnt_id)?;
             // RESOLVE_NO_XDEV: a component that descends INTO a mount (the
             // crossed mount id differs) is rejected (Linux `LOOKUP_NO_XDEV`).
             if self.flags.no_xdev && nm != self.cur_mnt_id { return Err(VfsError::Exdev); }
@@ -1195,7 +1144,7 @@ pub fn walk_to_mount(path: &str) -> Option<u64> {
     let ns = crate::mount::current_ns();
     let root_mnt = crate::mount::root_mount_id(ns).unwrap_or(crate::mount::MNT_ID_NONE);
     let (mut cur_dentry, mut cur_inode, mut cur_mnt) =
-        follow_mount_down(root.clone(), root_mnt, ns).ok()?;
+        follow_mount_down(root.clone(), root_mnt).ok()?;
     for comp in components(path) {
         // `.`/empty already dropped by `components` (single splitter, path.rs).
         if comp == ".." {
@@ -1220,7 +1169,7 @@ pub fn walk_to_mount(path: &str) -> Option<u64> {
             },
         };
         // Cross to the mounted fs `s_root` (keystone) for the next component.
-        match follow_mount_down(child, cur_mnt, ns) {
+        match follow_mount_down(child, cur_mnt) {
             Ok((nd, ni, nm)) => { cur_dentry = nd; cur_inode = ni; cur_mnt = nm; }
             Err(_) => return Some(cur_mnt),
         }
