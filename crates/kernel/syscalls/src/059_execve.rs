@@ -327,6 +327,8 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
     if let Some(p) = exec_path_for_caps {
         if let Some(inode) = crate::pathresolve::resolve(&p, true) {
             apply_file_caps_at_execve(&inode, cur);
+            // FAN_OPEN_EXEC notification (Linux fsnotify_open with FMODE_EXEC).
+            ::fs::inotify::fire_open_exec(&inode);
         }
     }
     // 4b. Map the vDSO into the new AS so the SysV initial stack
@@ -607,6 +609,8 @@ pub(crate) fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u
     if let Some(p) = exec_path_for_caps {
         if let Some(inode) = crate::pathresolve::resolve(&p, true) {
             apply_file_caps_at_execve(&inode, cur);
+            // FAN_OPEN_EXEC notification (Linux fsnotify_open with FMODE_EXEC).
+            ::fs::inotify::fire_open_exec(&inode);
         }
     }
     let vdso_ehdr = crate::vdso::map_into_current().unwrap_or(0);
