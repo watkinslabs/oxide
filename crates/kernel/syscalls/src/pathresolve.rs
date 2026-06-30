@@ -195,22 +195,33 @@ pub fn resolve_parent_path(abs: &str) -> Result<vfs::VfsPath, vfs::VfsError> {
 /// as-is (relative or absolute). `flags` must already carry beneath_exdev /
 /// in_root. # C: O(components × dir-lookup)
 pub fn resolve_confined(dirfd: i32, raw: &str, flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
-    let base = dirfd_dentry(dirfd)?;
-    vfs::path_lookup_cred(base.clone(), base, raw, flags, current_cred())
+    let (mid, base) = dirfd_base(dirfd)?;
+    // Seed BOTH start and root from the dirfd's real (mnt_id, dentry); the
+    // in_root/beneath_exdev override in `new_at` re-roots on the dirfd, so a
+    // confined walk under a BIND mount enforces the boundary against the bind's
+    // own mount identity (not the canonical mount a stringified base re-resolves).
+    vfs::path_lookup_at_cred(base.clone(), mid, base, raw, flags, current_cred())
         .map_err(crate::namei_common::errno_from_vfs)
 }
 
-/// The `Arc<Dentry>` a dirfd names (the resolution base for the confined
-/// openat2 modes): the task cwd dentry for `AT_FDCWD`, else the open fd's
-/// dentry (which must be a directory). `EBADF` for a bad fd / no task,
-/// `ENOTDIR` for a non-directory fd. # C: O(1)
-fn dirfd_dentry(dirfd: i32) -> Result<Arc<vfs::Dentry>, i64> {
+/// The `(mnt_id, Arc<Dentry>)` a dirfd names — the resolution base for every
+/// `*at` walk. For `AT_FDCWD` it is the task cwd `VfsPath`'s `(mnt_id, dentry)`;
+/// for a real fd it is the open `File`'s `(f.mnt_id(), f.dentry())` (which must
+/// be a directory). Returning the REAL mount id (not a `containing_mount_id`
+/// re-derivation from the bare dentry) is the linchpin of D17: a dirfd opened
+/// through a bind mount carries that bind's mnt_id, so relative resolution and
+/// `..` stay bind-correct. `EBADF` for a bad fd / no task, `ENOTDIR` for a
+/// non-directory fd. # C: O(1)
+fn dirfd_base(dirfd: i32) -> Result<(u64, Arc<vfs::Dentry>), i64> {
     let ebadf = -(Errno::Ebadf.as_i32() as i64);
     let cur = sched::live::current().ok_or(ebadf)?;
     if dirfd == AT_FDCWD {
         // SAFETY: cwd_vfs slot single-mutator per 13§5; current task is sole writer.
-        let cwd = unsafe { (*cur.cwd_vfs.get()).clone().map(|p| p.dentry) };
-        return cwd.or_else(root_dentry).ok_or(ebadf);
+        if let Some(p) = unsafe { (*cur.cwd_vfs.get()).clone() } {
+            return Ok((p.mnt_id, p.dentry));
+        }
+        let d = root_dentry().ok_or(ebadf)?;
+        return Ok((0, d));
     }
     // SAFETY: running task on this CPU; sole reader of its fd_table slot.
     let fdt = unsafe { cur.fd_table_ref() }.ok_or(ebadf)?.clone();
@@ -218,7 +229,24 @@ fn dirfd_dentry(dirfd: i32) -> Result<Arc<vfs::Dentry>, i64> {
     if f.inode().file_type() != vfs::FileType::Directory {
         return Err(-(Errno::Enotdir.as_i32() as i64));
     }
-    Ok(f.dentry().clone())
+    Ok((f.mnt_id(), f.dentry().clone()))
+}
+
+/// Resolve a `(dirfd, raw)` pair straight to a `VfsPath` through the engine,
+/// seeding the walk from the dirfd's real `(mnt_id, dentry)` — the non-lossy
+/// `*at` entry that replaces "stringify the dirfd's `absolute_path()` →
+/// re-walk from cwd". An absolute `raw` resets to the resolution root via the
+/// walk's own `to_root` (no string pre-join, no lexical `..` collapse). The
+/// chroot `beneath` clamp from `resolution_root` is OR-ed into `flags` exactly
+/// as `resolve_path_flags` does. # C: O(components × dir-lookup) + O(symlinks)
+pub fn resolve_at_path(dirfd: i32, raw: &str, mut flags: vfs::LookupFlags)
+    -> Result<vfs::VfsPath, i64>
+{
+    let (mid, base) = dirfd_base(dirfd)?;
+    let (root, beneath) = resolution_root().ok_or(-(Errno::Enoent.as_i32() as i64))?;
+    flags.beneath = flags.beneath || beneath;
+    vfs::path_lookup_at_cred(base, mid, root, raw, flags, current_cred())
+        .map_err(crate::namei_common::errno_from_vfs)
 }
 
 fn resolve_procfs_fallback(abs: &str) -> Option<vfs::VfsPath> {
@@ -505,8 +533,19 @@ pub fn resolve_at_lookup(dirfd: i32, path_ptr: u64, flags: vfs::LookupFlags)
         });
     }
     let raw = crate::namei_common::read_user_path(path_ptr)?;
-    let abs = resolve_at_result(dirfd, &raw)?;
-    resolve_path_flags(&abs, flags).map_err(crate::namei_common::errno_from_vfs)
+    // D17: seed the walk from the dirfd's real (mnt_id, dentry) — preserves
+    // mount identity + climbs `..` through the real mount tree (no stringify,
+    // no lexical `..` collapse). On a genuine ENOENT fall back to the legacy
+    // stringify path so the procfs dynamic-entry fallback in `resolve_path_flags`
+    // (e.g. `/proc/<pid>/...` not yet in dcache) is preserved unchanged.
+    match resolve_at_path(dirfd, &raw, flags) {
+        Ok(p) => Ok(p),
+        Err(rv) if rv == -(Errno::Enoent.as_i32() as i64) => {
+            let abs = resolve_at_result(dirfd, &raw)?;
+            resolve_path_flags(&abs, flags).map_err(crate::namei_common::errno_from_vfs)
+        }
+        Err(rv) => Err(rv),
+    }
 }
 
 /// Resolve `raw` against the running task's cwd. Absolute paths
