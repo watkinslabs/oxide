@@ -90,10 +90,15 @@ fn lookup_bdev(source: &str) -> Option<Arc<dyn block::BlockDevice>> {
 /// mounted + returns the `(CgroupFs, root CgDir)` pair), its `CgroupFs` is
 /// zero-sized and resolution is per-component from the root, so its SB is
 /// target-independent and realizes byte-identically at CMD_CREATE (D13/D14).
-/// autofs/devtmpfs/devpts/cgroup(v1) stay on the `mount_fstype` fallback. # C: O(1)
+/// devtmpfs is converted too: the global `/dev` tree is a singleton (`DevfsFs`,
+/// own SB + TMPFS_MAGIC + the `/dev` `DevDir` root), so its SB is
+/// target-independent and realizes byte-identically at CMD_CREATE (D8/D21).
+/// autofs/devpts/cgroup(v1) stay on the `mount_fstype` fallback. # C: O(1)
 pub(crate) fn fstype_converted(t: &str) -> bool {
     matches!(t,
         "proc" | "sysfs" | "debugfs" | "tracefs" | "ext4"
+        // devtmpfs: singleton global `/dev` tree (`DevfsFs`), target-independent.
+        | "devtmpfs"
         // PseudoFs group: now target-independent (fixed Linux root ino = 1,
         // `kernfs::PSEUDO_ROOT_INO`), so the SB realized at fsconfig(CMD_CREATE)
         // is byte-identical to mount_fstype's graft (D13/D14).
@@ -129,6 +134,11 @@ const EXT4_MAGIC: u64 = 0xef53;
 /// `/proc/filesystems`; the live statfs `f_type` still comes from `CgroupFs::magic`.
 const CGROUP2_MAGIC: u64 = 0x6367_7270;
 
+/// `s_magic` for devtmpfs (linux/magic.h `TMPFS_MAGIC` — devtmpfs shares the
+/// tmpfs SB magic) — surfaced in `/proc/filesystems`; the live statfs `f_type`
+/// comes from `devfs::DevfsFs::magic`.
+const DEVTMPFS_MAGIC: u64 = 0x0102_1994;
+
 /// One-time guard: register every constructor-bearing `file_system_type` into
 /// the VFS registry (`vfs::fs::register_fs`) before the first dispatch. Held
 /// across registration so concurrent first mounts serialise. # C: O(1) after first.
@@ -146,9 +156,11 @@ fn ensure_filesystems_registered() {
 /// a name→constructor entry (Linux `register_filesystem`). Every backend crate
 /// is in scope here (the VFS crate must not depend on them), so the constructor
 /// closures build the SAME backend object the match did; the mount engine then
-/// builds the `SuperBlock` (`build_sb`). The four fstypes whose construction is
+/// builds the `SuperBlock` (`build_sb`). The fstypes whose construction is
 /// NOT a clean backend-object constructor stay in [`mount_fstype_with_data`]'s
-/// fallback match (devtmpfs/devpts/cgroup(v1) → devfs-registry admit-noop).
+/// fallback match (cgroup(v1) admit-noop; devpts keeps a boot-tolerant fallback
+/// arm in addition to its first-class registration; devtmpfs is now a registered
+/// singleton `DevfsFs` `file_system_type`, off the fallback).
 /// cgroup2 is now a registered `file_system_type` (`cgroup::realize_tree`),
 /// not a fallback arm. # C: O(N)
 fn register_filesystems() {
@@ -249,6 +261,21 @@ fn register_filesystems() {
             Ok(MountSpec { fs, bind_root: None, strict: false })
         })));
 
+    // devtmpfs — the global `/dev` tree (`DevfsFs`): a singleton SB-bearing
+    // backend (own SB + TMPFS_MAGIC + the `/dev` `DevDir` root). TARGET-
+    // INDEPENDENT: `DevfsFs` is zero-sized and `root()` resolves the global
+    // `/dev` dir, so the SB realized at `fsconfig(CMD_CREATE)` is byte-identical
+    // regardless of mount point (D8/D21). strict:false preserves the prior
+    // devtmpfs admit-and-ignore mount(2) semantics. The boot `/dev` mount stays
+    // kernel-internal (kmain) — this only services an explicit `mount -t
+    // devtmpfs` (e.g. systemd's container/sandbox private-dev). `bind_root:None`
+    // ⇒ the engine binds `DevfsFs::root()` (the `/dev` `DevDir`).
+    let _ = register_fs(FsType::new("devtmpfs", DEVTMPFS_MAGIC, FsFlags::empty(),
+        Box::new(|_s: &str, _t: &str, _d: &str| -> R {
+            let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(devfs::DevfsFs);
+            Ok(MountSpec { fs, bind_root: None, strict: false })
+        })));
+
     // cgroup2 — the unified hierarchy (cgroup v2). TARGET-INDEPENDENT: the
     // hierarchy is a global singleton (`cgroup::realize_tree` marks it mounted,
     // idempotently, and returns the `(CgroupFs, root CgDir)` pair), so the SB
@@ -323,12 +350,13 @@ pub(crate) fn mount_fstype_with_data(
     // constructor (so they cannot live in the registry without restructuring
     // the boot mount path). Left here deliberately per D40 SAFETY.
     match fstype {
-        // devtmpfs/devpts/cgroup(v1) still admit-noop: their content lives in
-        // the devfs registry (no standalone whole-path FileSystem to register),
-        // and systemd's private-dev path uses a tmpfs (registered above), not
-        // devtmpfs. They want a real DevfsFs/DevptsFs superblock once one
-        // exists (residual).
-        "devtmpfs" | "devpts" | "cgroup" => 0,
+        // cgroup (v1) still admit-noop: cgroup-v1 is descoped (v2-only in-tree,
+        // no consumer), so there is no standalone whole-path FileSystem to
+        // register. devpts is kept as a boot-tolerant fallback arm here in
+        // addition to its first-class `DevptsFs` registration above. devtmpfs is
+        // now a registered `devtmpfs` `file_system_type` (singleton `DevfsFs`),
+        // off this fallback. cgroup-v1 is the documented D8/D21 residual.
+        "devpts" | "cgroup" => 0,
         // Unknown fstype: Linux `get_fs_type` fails to find a registered
         // file_system_type → mount(2)/fsmount return ENODEV, not EOPNOTSUPP (D48).
         _ => -(Errno::Enodev.as_i32() as i64),
