@@ -150,6 +150,21 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
     let argc = argv_vec.len();
     let envc = envp_vec.len();
 
+    // FAN_OPEN_EXEC_PERM gate (Linux fsnotify_open w/ FMODE_EXEC, perm variant).
+    // MUST run before the AS-activate point-of-no-return (~:254): a DENY returns
+    // -EACCES with the old AS intact (no mm/fd mutation yet). The
+    // perm_marks_present() guard keeps boot byte-identical — no extra resolve
+    // when no FAN_*_PERM mark is armed. path_owned is final post-shebang rewrite.
+    if ::fs::inotify::perm_marks_present() {
+        if let Ok(p) = core::str::from_utf8(&path_owned) {
+            if let Some(inode) = crate::pathresolve::resolve(p, true) {
+                if !::fs::inotify::check_open_exec_perm(&inode) {
+                    return -(Errno::Eacces.as_i32() as i64);
+                }
+            }
+        }
+    }
+
     // B288 diagnostic: dump LISTEN_FDS / LISTEN_FDNAMES (socket-activation
     // fd handoff) for the failing early services so the n_fds vs n_names
     // mismatch behind udevd's "Failed to listen on fds: EINVAL" is visible.
@@ -497,6 +512,21 @@ pub(crate) fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u
     let blob: &[u8] = &blob_vec;
     let argc = argv_vec.len();
     let envc = envp_vec.len();
+
+    // FAN_OPEN_EXEC_PERM gate (Linux fsnotify_open w/ FMODE_EXEC, perm variant).
+    // MUST run before the AS-activate point-of-no-return (~:556): a DENY returns
+    // -EACCES with the old AS intact (no mm/fd mutation yet). The
+    // perm_marks_present() guard keeps boot byte-identical — no extra resolve
+    // when no FAN_*_PERM mark is armed. path_owned is final post-shebang rewrite.
+    if ::fs::inotify::perm_marks_present() {
+        if let Ok(p) = core::str::from_utf8(&path_owned) {
+            if let Some(inode) = crate::pathresolve::resolve(p, true) {
+                if !::fs::inotify::check_open_exec_perm(&inode) {
+                    return -(Errno::Eacces.as_i32() as i64);
+                }
+            }
+        }
+    }
 
     // 2. Allocate new PT root + build the post-execve AS.
     // SAFETY: master L0 captured at pmm::user_as::init; PMM up; new_user_l0 returns a fresh frame zeroed and populated with the kernel half.
