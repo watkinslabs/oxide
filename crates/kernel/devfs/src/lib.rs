@@ -107,6 +107,46 @@ pub fn lookup(path: &str) -> Option<InodeRef> {
     tree::lookup(0, path)
 }
 
+/// `/dev`-node factory carried by the drv `DEVTMPFS_HOOK` (structurally
+/// identical to `drv::NodeFactory`, so the two coerce when kmain wires
+/// `add_device_node` as the hook). # C: O(1)
+pub type NodeFactory = alloc::sync::Arc<dyn Fn() -> InodeRef + Send + Sync>;
+
+/// Monotonic inode-number source for `device_add`-minted `/dev` nodes. High
+/// base avoids collision with the boot pseudo-device inos (`0x2000_00xx`).
+static DEVNODE_INO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0x3000_0000);
+
+/// Mint a `/dev` node for a `drv::device_add` device (the `DEVTMPFS_HOOK`
+/// target). `name` is the `/dev`-relative path (`"vda"`, `"input/event0"`); the
+/// node lands at `/dev/<name>`. With a `factory` the device supplies its own
+/// inode (bespoke `FileOps`); otherwise a plain char/block node is synthesised
+/// from `dev_t` (`class == "block"` ⇒ block, else char), dispatching `open`/I/O
+/// through the `vfs::devnode` `(major,minor)` registry exactly like `mknod(2)`.
+/// No `dev_t` and no factory ⇒ nothing created. # C: O(depth)
+pub fn add_device_node(class: &str, name: &str, dev_t: Option<(u32, u32)>, factory: Option<NodeFactory>) {
+    let path = if name.starts_with('/') { String::from(name) } else { alloc::format!("/dev/{}", name) };
+    let inode = match factory {
+        Some(f) => f(),
+        None => match dev_t {
+            Some((maj, min)) => {
+                let ft = if class == "block" { vfs::FileType::BlockDev } else { vfs::FileType::CharDev };
+                let ino = DEVNODE_INO.fetch_add(1, HookOrdering::Relaxed);
+                vfs::devnode::make_device_node_inode(
+                    ino, ft, vfs::devnode::Devt::new(maj, min), 0o600, alloc::sync::Weak::new())
+            }
+            None => return, // neither a factory nor a dev_t: nothing to create
+        },
+    };
+    register_owned(path, inode);
+}
+
+/// Remove a `device_add`-minted `/dev` node (`device_del` symmetry / hot-unplug).
+/// `name` matches the `add_device_node` form. # C: O(depth)
+pub fn del_device_node(name: &str) {
+    let path = if name.starts_with('/') { String::from(name) } else { alloc::format!("/dev/{}", name) };
+    tree::unregister_subtree(0, &path);
+}
+
 /// Detach the entry at `mount_point` (and its subtree) from `mount_ns`.
 /// Linux umount2(2) equivalent. Returns the count removed (0 or 1).
 /// # C: O(depth)
@@ -193,5 +233,24 @@ mod fs_tests {
         let sb = ty.mount("", "").expect("devtmpfs realizes a SuperBlock");
         assert_eq!(sb.s_magic, 0x0102_1994, "devtmpfs SB stamps TMPFS_MAGIC");
         assert_eq!(sb.fs().name(), "devfs", "SB backend is DevfsFs");
+    }
+
+    /// Stage B: the `DEVTMPFS_HOOK` target mints `/dev/<name>` for both a
+    /// `dev_t`-synthesised block node and a factory-supplied bespoke node.
+    #[test]
+    fn add_device_node_creates_dev_entries() {
+        // dev_t path (block class → block device node).
+        add_device_node("block", "vdtest0", Some((254, 0)), None);
+        assert!(lookup("/dev/vdtest0").is_some(), "dev_t block node minted at /dev/vdtest0");
+        // factory path (bespoke inode, custom FileOps).
+        let f: NodeFactory = Arc::new(|| crate::misc::make_null_inode());
+        add_device_node("mem", "nulltest", None, Some(f));
+        assert!(lookup("/dev/nulltest").is_some(), "factory node minted at /dev/nulltest");
+        // no dev_t + no factory ⇒ no node.
+        add_device_node("misc", "nothing", None, None);
+        assert!(lookup("/dev/nothing").is_none(), "no source ⇒ no node");
+        // del removes it.
+        del_device_node("vdtest0");
+        assert!(lookup("/dev/vdtest0").is_none(), "del_device_node removes the node");
     }
 }
