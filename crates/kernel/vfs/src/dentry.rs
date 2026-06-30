@@ -951,32 +951,41 @@ impl Drop for Dentry {
     /// `Arc` strong count reaching zero IS the free; `d_count`/LRU only gate
     /// when that becomes possible. # C: O(1)
     //
-    // D12 (RCU-grace deferred free): Linux defers the actual `kmem_cache_free`
-    // to a `call_rcu(&dentry->d_rcu, __d_free)` so a lock-free `__d_lookup_rcu`
-    // reader that grabbed a raw pointer can finish its grace period before the
-    // memory is reused. This crate's rcu read path instead validates a
-    // `Weak::upgrade` under the bucket seqcount (`dcache.rs` `lookup_rcu`): a
-    // reader holds an `Arc`, whose atomic strong count makes the deref safe with
-    // NO grace period, and a concurrently-dropped dentry simply fails to upgrade.
-    // A genuine `call_rcu`-style deferred-free epoch needs the kernel RCU
-    // quiescent-state machinery (per-CPU grace tracking driven by the scheduler /
-    // timer tick) which lives outside the vfs lane; staging Arcs on an in-crate
-    // "deferred" list with no external quiescent drain would only delay reclaim
-    // (and risk a leak) without adding safety the Arc/Weak model already gives.
-    // So the free stays synchronous here by design — PARTIAL, cross-lane for the
-    // true RCU epoch. See ledger D12.
+    // D12 (RCU-grace deferred free): Linux defers the dentry reclaim tail
+    // (`__d_free` / `dentry_iput`) to `call_rcu(&dentry->d_rcu, …)` so the
+    // final free lands only after an RCU grace period — past the window a
+    // lock-free `__d_lookup_rcu` reader could still hold a reference. We now
+    // route the reclaim (the counted `i_count` release — the "free" side of
+    // this dentry's inode hold) through `sync::call_rcu` (grace machinery in
+    // `sync::rcu`, QS driven by the scheduler ctxsw/idle, drained by
+    // `ksoftirqd` + the timer tick). The `d_release` callback stays SYNCHRONOUS
+    // — it needs a live `&self`, and Linux likewise runs `d_op->d_release` in
+    // `__dentry_kill` before the `call_rcu(__d_free)` tail.
+    //
+    // Safety of the deferral: the closure OWNS the `InodeRef` (`Arc<Inode>`),
+    // keeping the inode alive until it runs; `dentry_iput` re-derives the SB
+    // through the inode's WEAK `i_sb` at run time (falling back to a plain
+    // `i_count_dec` if the SB is already gone), so it never delays SB teardown
+    // and never UAFs. Leak-safety: `call_rcu`'s high-water mark + the
+    // ksoftirqd/tick drain guarantee the closure always runs. The Arc/Weak
+    // reader is unchanged (`dcache.rs` `lookup_rcu` stays `Weak::upgrade`), so
+    // this deferral is Linux-FIDELITY for the reclaim timing; the raw-pointer
+    // rcu-walk reader that would consume the grace for safety is SMP-gated
+    // (ledger D3). See ledger D12.
     fn drop(&mut self) {
-        // D3/D37: release this dentry's counted `i_count` hold on its inode (Linux
-        // `dentry_iput` at the final `dput`/free), exactly once and only when
-        // `grab_inode_hold` took one. A `set_inode(None)` (d_delete) that already
-        // released it leaves `counted == false`, so this never double-iputs. No
-        // lock is held here (`&mut self` = sole owner); `iput` takes the icache
-        // (rank 60) cleanly.
+        // d_release first, while `self` is still live (Linux __dentry_kill).
+        if let Some(f) = self.d_op.and_then(|o| o.d_release) { f(self); }
+        // D3/D37: release this dentry's counted `i_count` hold on its inode
+        // (Linux `dentry_iput`), exactly once and only when `grab_inode_hold`
+        // took one. A `set_inode(None)` (d_delete) that already released it
+        // leaves `counted == false`, so this never double-iputs. D12: the
+        // release is now deferred past an RCU grace period via `call_rcu`.
         if self.counted.swap(false, Ordering::AcqRel) {
             let held = { let mut g = self.inode.write(); g.take() };
-            if let Some(inode) = held { dentry_iput(inode); }
+            if let Some(inode) = held {
+                sync::call_rcu(alloc::boxed::Box::new(move || dentry_iput(inode)));
+            }
         }
-        if let Some(f) = self.d_op.and_then(|o| o.d_release) { f(self); }
     }
 }
 
