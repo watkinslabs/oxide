@@ -163,6 +163,24 @@ pub fn should_resched_to_user(interrupted_user: bool) -> bool {
     interrupted_user && should_resched()
 }
 
+/// RCU read-side lock (`06§3.5`): on this kernel `rcu_read_lock` is
+/// `preempt_disable` — a reader cannot be context-switched (the only
+/// quiescent state a running task reaches) while preemption is off, so the
+/// preempt-off window IS the RCU read-side critical section. The grace /
+/// callback machinery lives in `sync::rcu`.
+/// # C: O(1)
+#[inline]
+pub fn rcu_read_lock() { preempt_disable() }
+
+/// RCU read-side unlock (`06§3.5`) — `preempt_enable_no_check`. The
+/// unchecked variant so a leaving reader never surprises the caller with a
+/// reschedule mid-flow; the next natural `preempt_enable` / return-to-user
+/// takes any pending resched.
+/// # SAFETY: pairs 1:1 with a `rcu_read_lock`; no schedule fires here.
+/// # C: O(1)
+#[inline]
+pub unsafe fn rcu_read_unlock() { preempt_enable_no_check() }
+
 /// Bump the preempt count. Pairs with `preempt_enable` /
 /// `preempt_enable_no_check`. Prefer the `PreemptGuard` RAII form
 /// to keep pairs balanced.

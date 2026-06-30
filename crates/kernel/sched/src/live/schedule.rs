@@ -185,6 +185,11 @@ unsafe fn irq_restore(flags: u64) {
 /// # C: O(1)
 #[no_mangle]
 pub unsafe extern "C" fn oxide_finish_task_switch() {
+    // RCU quiescent state (`06§3.5`): a context switch is THE quiescent point
+    // — the outgoing task held no `rcu_read_lock` across the switch (preempt
+    // was off only inside read sections, which never span schedule()). One
+    // per-CPU atomic bump; near-zero cost on this hot path.
+    sync::note_qs();
     if let Some(rq) = global() {
         // 1. Release the rq-lock the resumer/switcher held across the switch
         //    to us (Linux finish_lock_switch). On UP this is this CPU's rq;

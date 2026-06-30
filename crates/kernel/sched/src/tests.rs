@@ -879,3 +879,34 @@ fn visible_pid_prefers_vtgid_then_falls_back_to_tgid() {
     t.vtgid.store(40, Ordering::Release);
     assert_eq!(t.visible_pid(), 40);
 }
+
+// D12 (RCU): a `call_rcu` callback runs only AFTER a grace period, driven by
+// the per-CPU quiescent state the scheduler bumps at each context switch
+// (`note_qs` in `oxide_finish_task_switch`). Simulated here by bumping QS via
+// `rcu_note_qs` + draining via `rcu_process_callbacks` (what ksoftirqd/tick
+// do). No leak: the callback is dequeued exactly once.
+#[test]
+fn call_rcu_callback_runs_after_grace_period() {
+    use core::sync::atomic::{AtomicBool, AtomicU32};
+    use alloc::sync::Arc;
+    use alloc::boxed::Box;
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+
+    let ran = Arc::new(AtomicBool::new(false));
+    let n = Arc::new(AtomicU32::new(0));
+    let (r2, n2) = (ran.clone(), n.clone());
+    crate::call_rcu(Box::new(move || { r2.store(true, Ordering::Release); n2.fetch_add(1, Ordering::AcqRel); }));
+
+    // Open the period; no QS yet → must not have run.
+    crate::rcu_process_callbacks();
+    assert!(!ran.load(Ordering::Acquire), "callback ran before any quiescent state");
+
+    // Simulate the ctxsw QS the scheduler bumps, then drain.
+    for _ in 0..6 { crate::rcu_note_qs(); crate::rcu_process_callbacks(); }
+    assert!(ran.load(Ordering::Acquire), "callback runs after a grace period");
+    assert_eq!(n.load(Ordering::Acquire), 1, "callback ran exactly once (no leak / no double-run)");
+
+    // synchronize_rcu must return having waited at least one grace period.
+    crate::synchronize_rcu();
+}

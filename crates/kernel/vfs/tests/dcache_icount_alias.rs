@@ -71,8 +71,34 @@ fn dentry_drop_releases_counted_hold() {
     assert_eq!(ino.i_count(), 2, "d_instantiate took the counted hold");
     assert!(dd.holds_icount());
 
-    drop(dd); // last Arc → Dentry::drop → dentry_iput
-    assert_eq!(ino.i_count(), 1, "Dentry::drop released the counted hold");
+    // D12: Dentry::drop now DEFERS the counted-hold release via call_rcu
+    // (Linux __d_free). The release lands after an RCU grace period, not
+    // synchronously at drop.
+    drop(dd); // last Arc → Dentry::drop → call_rcu(dentry_iput)
+    assert_eq!(ino.i_count(), 2, "D12: release is deferred past a grace period, not immediate");
+    vfs::rcu_barrier(); // flush the deferred reclaim
+    assert_eq!(ino.i_count(), 1, "Dentry::drop released the counted hold after the grace period");
+}
+
+/// D12: the dentry's final inode reclaim (`iput`) is routed through an RCU
+/// grace period — deferred at drop, run by the drain, with no leak. Mirrors
+/// Linux `__d_free` via `call_rcu`.
+#[test]
+fn dentry_drop_defers_iput_to_grace_then_no_leak() {
+    let sb = sb();
+    let r = root(&sb);
+    let ino = inode(&sb, 24, FileType::Regular, 1);
+    let d = d_alloc(&r, "z");
+    d_instantiate(&d, ino.clone());
+    assert_eq!(ino.i_count(), 2, "instantiate took the counted hold");
+
+    drop(d);
+    // BEFORE a grace period: the reclaim has NOT run (deferred).
+    assert_eq!(ino.i_count(), 2, "iput deferred — not run before a grace period");
+
+    // AFTER a grace period (drained): the reclaim ran exactly once. No leak.
+    vfs::rcu_barrier();
+    assert_eq!(ino.i_count(), 1, "deferred iput ran exactly once after the grace period");
 }
 
 /// The eviction keystone: once the creator's `iget`/born reference is released

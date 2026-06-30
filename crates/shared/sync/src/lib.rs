@@ -5,13 +5,20 @@
 
 #![no_std]
 
+extern crate alloc;
+
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
 mod percpu;
+mod rcu;
 mod rwlock;
 pub use percpu::{
     CacheLine, CpuLocalSource, NoopCpuLocal, PerCpu, CACHELINE_BYTES, MAX_CPUS,
+};
+pub use rcu::{
+    call_rcu, note_qs, pending_callbacks, rcu_barrier, rcu_process_callbacks, set_cpu_hooks,
+    synchronize_rcu, RcuCallback,
 };
 pub use rwlock::{RwLock, RwReadGuard, RwWriteGuard};
 
