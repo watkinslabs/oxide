@@ -139,6 +139,18 @@ pub trait InodeOps: Send + Sync {
     /// consulted by [`Inode::get_link`] BEFORE this. # C: O(target_len)
     fn readlink(&self, _inode: &Inode) -> KResult<Vec<u8>> { Err(VfsError::Einval) }
 
+    /// `i_op->get_link` (Linux `fs/namei.c get_link`) — the link-FOLLOW entry
+    /// the path walk uses. Returns either the symlink BODY to splice as a path
+    /// (`LinkTarget::Path`), or a MAGIC-link JUMP target the walk resets its
+    /// current `(mnt,dentry,inode)` to (`LinkTarget::Jump`, Linux
+    /// `nd_jump_link`). The default delegates to [`readlink`](Self::readlink) —
+    /// every ordinary / inline symlink is a `Path` — so only a magic inode
+    /// (`/proc/<pid>/fd/<n>`) overrides this to return `Jump`, keeping the
+    /// no-magic-link walk byte-for-byte unchanged. # C: O(target_len)
+    fn get_link(&self, inode: &Inode) -> KResult<crate::namei::LinkTarget> {
+        Ok(crate::namei::LinkTarget::Path(self.readlink(inode)?))
+    }
+
     /// `i_op->getattr` — assemble the stat/statx `Kstat`. Default
     /// `generic_fillattr` over the concrete inode fields + mount idmap.
     /// # C: O(1)

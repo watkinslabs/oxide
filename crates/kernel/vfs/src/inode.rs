@@ -380,6 +380,19 @@ impl Inode {
         self.readlink()
     }
 
+    /// `i_op->get_link` link-FOLLOW driver (Linux `fs/namei.c get_link`) — the
+    /// entry the path walk uses to follow a symlink. The inline `i_link` fast
+    /// path FIRST (always a `Path` body, never a magic jump), else the per-inode
+    /// `i_op->get_link` (a magic inode overrides it to a
+    /// [`LinkTarget::Jump`](crate::namei::LinkTarget) the walk resets to, Linux
+    /// `nd_jump_link`). Distinct from [`get_link`](Self::get_link)/[`readlink`]
+    /// (Self::readlink) which return raw target BYTES for readlink(2): this
+    /// carries the walk's jump-or-splice decision. # C: O(target_len)
+    pub fn follow_link(&self) -> KResult<crate::namei::LinkTarget> {
+        if let Some(l) = self.i_link() { return Ok(crate::namei::LinkTarget::Path(l.to_vec())); }
+        self.i_op.get_link(self)
+    }
+
     /// `i_op->truncate`. # C: backend-dependent
     pub fn truncate(&self, len: u64) -> KResult<()> { self.i_op.truncate(self, len) }
     /// `i_op->fallocate`. # C: backend-dependent
