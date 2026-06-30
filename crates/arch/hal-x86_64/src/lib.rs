@@ -54,10 +54,10 @@ pub use irq::{
 };
 pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateX86_64, FPU_OWNER, FPU_STATE_BYTES};
 pub use gdt::{install_kernel_gdt, load_kernel_gdt_for_ap, GdtPointer, GDT_LEN, USER_CS, USER_DS};
-pub use tss::{install_tss, install_tss_for_cpu, set_rsp0, tss_base_addr, Tss64, TSS_SEL};
+pub use tss::{install_tss, install_tss_for_cpu, set_rsp0, setup_ist_stacks, tss_base_addr, Tss64, TSS_SEL, IST_STACK_BYTES};
 pub use syscall::{install_syscall_msrs, current_user_frame, current_user_full_frame, current_kstack_top, set_syscall_kstack, init_percpu_syscall_kstack, boot_syscall_kstack_top};
 pub use signal::{build_signal_frame, restore_signal_frame};
-pub use idt::{install_default as install_default_idt, load_idtr_for_ap, IdtEntry, IdtPointer, GATE_INT64_KERNEL, IDT_LEN, KERNEL_CS};
+pub use idt::{install_default as install_default_idt, install_ist_gates, load_idtr_for_ap, IdtEntry, IdtPointer, GATE_INT64_KERNEL, IDT_LEN, KERNEL_CS};
 pub use context::{ContextX86_64, ForkRegs};
 pub use mmu::{
     flush_local_all, flush_local_va, va_to_indices, PteFlags, PteX86_64, PtIndices,

@@ -158,6 +158,16 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
         // 2. Load THIS AP's TSS (selector TSS_SEL + cpu*0x10) so a user
         //    task scheduled here lands ring3→ring0 on this CPU's RSP0.
         hal_x86_64::install_tss_for_cpu(logical_cpu_id as u16);
+        // 2b. SMP-IST: populate THIS AP's TSS IST slots (#DF/NMI/#DB/#MC)
+        //     immediately after `ltr`, BEFORE the `sti` below — the shared
+        //     IDT gates already carry the IST indices (BSP set them), so the
+        //     AP's slots must be non-zero before any IST-routed fault (esp.
+        //     the non-maskable NMI/#DF) can fire on this CPU. Without a
+        //     dedicated #DF stack an AP fault mid kernel-stack-switch
+        //     corrupts the live stack → triple fault (the -smp 2 flake).
+        //     SAFETY: this AP is the sole writer of its own TSS slot; the
+        //     allocator is live (BSP brought it up pre-SMP); runs IRQ-off.
+        hal_x86_64::setup_ist_stacks(logical_cpu_id as u16);
         // 3. Seed this AP's syscall-kstack slot (gs:[8]); per-task tops then
         //    come from set_syscall_kstack on each switch. Use this AP's stack
         //    top as the pre-first-switch scratch.
