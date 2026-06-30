@@ -6,7 +6,7 @@ use syscall::errno::Errno;
 use vfs::OpenFlags;
 
 use crate::open_common::{dup_fd_target, open_proc_fd, resolve_path_for_open,
-    enforce_open_perm, O_CREAT, O_EXCL, O_TRUNC, O_DIRECTORY, O_NOFOLLOW};
+    enforce_open_perm, break_lease_for_open, O_CREAT, O_EXCL, O_TRUNC, O_DIRECTORY, O_NOFOLLOW};
 
 /// `sys_open(path, flags, mode)` — slot 2.
 /// # C: O(N_path)
@@ -117,6 +117,11 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     if let Err(e) = inode.on_open() { return -(e as i64); }
     // DAC + EROFS enforcement (Linux `may_open`), before the O_TRUNC truncate.
     if let Some(rv) = enforce_open_perm(&inode, mnt_id, flags, created) { return rv; }
+    // Lease-break (Linux `break_lease` in `do_open`): a conflicting open signals
+    // the lease holder + waits for the downgrade/release (or break timeout)
+    // before proceeding. Zero-cost when no lease exists. A just-created file
+    // cannot have a pre-existing lease, so skip it there.
+    if !created { if let Some(rv) = break_lease_for_open(&inode, flags) { return rv; } }
     // fanotify FAN_OPEN_PERM: blocks here until a daemon allows/denies (fast
     // no-op when no perm marks exist). Deny → EACCES, no fd created.
     if !::fs::inotify::check_open_perm(&inode) { return -(Errno::Eacces.as_i32() as i64); }
