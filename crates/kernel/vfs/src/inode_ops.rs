@@ -9,8 +9,11 @@
 // optional query ops), so a backend overrides only what it implements.
 
 extern crate alloc;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+
+use crate::xattr::XattrError;
 
 use crate::idmap::Idmap;
 use crate::inode::{FileAttr, FiemapExtent, Inode, S_IMMUTABLE};
@@ -201,11 +204,44 @@ pub trait InodeOps: Send + Sync {
         Err(VfsError::Eopnotsupp)
     }
 
-    /// `i_op->listxattr` — append the NUL-terminated xattr names to `out`,
-    /// returning the byte length. Default `Eopnotsupp` (no xattr store).
+    /// `i_op->getxattr` — value bytes for `name`. Default routes to the inode's
+    /// own [`crate::xattr::SimpleXattrs`] store (`i_xattrs`); a backend with no
+    /// store reports [`XattrError::NotSup`]. # C: O(log N_xattr)
+    fn getxattr(&self, inode: &Inode, name: &str) -> Result<Vec<u8>, XattrError> {
+        match inode.simple_xattrs() {
+            Some(x) => x.get(name).ok_or(XattrError::NotFound),
+            None => Err(XattrError::NotSup),
+        }
+    }
+
+    /// `i_op->setxattr` — store `name`→`value` honouring `create`/`replace`
+    /// (XATTR_CREATE/XATTR_REPLACE) atomically. Default routes to `i_xattrs`.
+    /// # C: O(log N_xattr)
+    fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
+        -> Result<(), XattrError> {
+        match inode.simple_xattrs() {
+            Some(x) => x.set(name, value, create, replace),
+            None => Err(XattrError::NotSup),
+        }
+    }
+
+    /// `i_op->removexattr` — drop `name`. Default routes to `i_xattrs`.
+    /// # C: O(log N_xattr)
+    fn removexattr(&self, inode: &Inode, name: &str) -> Result<(), XattrError> {
+        match inode.simple_xattrs() {
+            Some(x) => x.remove(name),
+            None => Err(XattrError::NotSup),
+        }
+    }
+
+    /// `i_op->listxattr` — the stored attribute names. Default routes to
+    /// `i_xattrs`; a backend with no store reports [`XattrError::NotSup`].
     /// # C: O(N_xattr)
-    fn listxattr(&self, _inode: &Inode, _out: &mut Vec<u8>) -> KResult<usize> {
-        Err(VfsError::Eopnotsupp)
+    fn listxattr(&self, inode: &Inode) -> Result<Vec<String>, XattrError> {
+        match inode.simple_xattrs() {
+            Some(x) => Ok(x.list_names()),
+            None => Err(XattrError::NotSup),
+        }
     }
 }
 

@@ -45,6 +45,7 @@ pub mod superblock;
 mod superblock_wb;
 pub mod types;
 pub mod poll_subs;
+pub mod xattr;
 
 pub use dcache::{d_add, d_add_negative, d_alloc, d_drop, d_instantiate, d_invalidate, d_lookup, d_make_root, d_move, d_obtain_alias, d_splice_alias, dget, dput};
 pub use dentry::{Dentry, D_HASHED, D_NEGATIVE, D_ROOT};
@@ -57,6 +58,7 @@ pub use fdtable::{FdTable, FD_TABLE_MAX};
 pub use file::{File, Fmode, SeekFrom, fire_clone_hook, fire_dirent_create, fire_dirent_delete, set_clone_hook, set_close_hook, set_dirent_create_hook, set_dirent_delete_hook, set_drop_hook, set_open_hook, set_read_hook, set_write_hook};
 pub use inode::{Inode, InodeBuilder, InodeRef, FileAttr, FiemapExtent, get_next_ino, generic_update_time, inode_unlock, lock_rename, unlock_rename, RenameLockGuard, I_DIRTY, I_NEW, I_FREEING, S_IMMUTABLE, S_APPEND, S_NOATIME, S_SYNC, S_ATIME, S_MTIME, S_CTIME, S_VERSION, POLL_IN, POLL_OUT, POLL_HUP, POLL_ERR, POLL_PRI, POLL_RDHUP};
 pub use inode_ops::{InodeOps, DefaultInodeOps, default_inode_ops, mk_mode, CreateCtx};
+pub use xattr::{SimpleXattrs, XattrError};
 pub use file_ops::{FileOps, DefaultFileOps, default_file_ops, DirContext, DirEmit};
 pub use getattr::{fsid_to_dev, st_dev_for_fsid, generic_fillattr, vfs_getattr, default_perm_for, Kstat, S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIFO};
 pub use idmap::{Idmap, IdExtent, IDENTITY};
