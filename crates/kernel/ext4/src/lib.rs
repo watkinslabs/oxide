@@ -57,6 +57,8 @@ pub mod journal;
 // `set_test_mount`. The boot path mounts a real virtio-blk disk via
 // `init_from_dev` (serial `oxide-root`); no embedded image.
 pub mod rootfs;
+/// D8: flush every dirty ext4 frame store (the `msync(2)` durability path).
+pub use rootfs::flush_all_dirty;
 pub use journal::ExtentLogReader;
 pub mod jbd2;
 pub use crate::jbd2::StagedBlock;

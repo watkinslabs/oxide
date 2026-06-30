@@ -75,6 +75,11 @@ pub(crate) struct Ext4FileData {
     pub(crate) st:        Arc<RootfsState>,
     pub(crate) ino:       u32,
     pub(crate) size_hint: AtomicU64,
+    /// D8: per-inode PMM frame store. `read`/`write`/`shared_frame` all serve
+    /// from THESE frames (read==write==mmap coherency); writeback flushes
+    /// dirty (mmap-written) frames to disk. Shared (same `Arc`) with this
+    /// inode's `Ext4FileMapping`.
+    pub(crate) frames:    Arc<super::framecache::Ext4FrameStore>,
 }
 
 impl Ext4FileData {
@@ -141,6 +146,10 @@ impl InodeOps for Ext4RegInodeOps {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         d.st.mount.truncate_inode(d.ino, len).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(d.ino as u64));
+        // D8: drop frames at/after the new EOF (floored to a page so the
+        // partial last page is dropped too), so a refault re-reads the
+        // disk-zeroed tail rather than a stale resident frame.
+        d.frames.invalidate_range(len & !(4095u64), u64::MAX);
         d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
         Ok(())
@@ -168,6 +177,10 @@ impl InodeOps for Ext4RegInodeOps {
             d.st.mount.fallocate_inode(d.ino, off, len, keep_size).map_err(vfs_error_from_mount)?;
         }
         d.st.page_cache.invalidate(InodeId(d.ino as u64));
+        // D8: drop resident frames over the affected range so a refault re-reads
+        // the disk state (zeroed for zero_range/punch, freshly-allocated extents
+        // otherwise). Floor `off` to a page to cover a partial leading page.
+        if let Some(end) = off.checked_add(len) { d.frames.invalidate_range(off & !(4095u64), end); }
         d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
         Ok(())
@@ -218,13 +231,24 @@ impl FileOps for Ext4RegFileOps {
     /// whole file. Short read past EOF; holes read as zero. # C: O(buf.len)
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
-        d.st.read_cached(d.ino, off, buf).map_err(|_| VfsError::Eio)
+        // D8: serve read(2) from the per-inode frame store so a read observes
+        // any MAP_SHARED / write(2) mutation (one coherent page cache). The
+        // legacy `Vec` page-cache path is the bisect fallback.
+        #[cfg(feature = "ext4-frame-cache")]
+        { return d.frames.read_framed(off, buf).map_err(|_| VfsError::Eio); }
+        #[cfg(not(feature = "ext4-frame-cache"))]
+        { d.st.read_cached(d.ino, off, buf).map_err(|_| VfsError::Eio) }
     }
 
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         d.st.mount.write_at(d.ino, off, buf).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(d.ino as u64));
+        // D8: keep any resident frame coherent with the just-written disk bytes
+        // (a MAP_SHARED mapper + later read see the write). Non-resident pages
+        // refault from the now-updated disk.
+        #[cfg(feature = "ext4-frame-cache")]
+        d.frames.update_resident(off, buf);
         d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
         Ok(buf.len())
@@ -303,15 +327,37 @@ fn seek_in_runs(runs: &[(u32, u32)], bs: u64, size: u64, offset: u64, which: Hol
 pub(crate) struct Ext4FileMapping { pub(crate) data: Arc<Ext4FileData> }
 
 impl AddressSpaceOps for Ext4FileMapping {
-    /// MAP_SHARED writable frame: deferred (no PMM-frame store + extent
-    /// writeback yet) → `None`, so the fault path copies into a private frame
-    /// (correct for MAP_PRIVATE; unchanged from the pre-i_mapping default).
-    /// # C: O(1)
-    fn shared_frame(&self, _off: u64) -> Option<u64> { None }
-    /// Read-fault / MAP_PRIVATE fill: copy from the per-mount page cache,
-    /// shared by every mapper of this inode. # C: O(dst.len)
+    /// MAP_SHARED writable frame (D8): the inode's persistent PMM frame for the
+    /// page at `off`, filled from disk on first touch. A shared mapping installs
+    /// it directly so user writes alias the inode's storage and propagate to
+    /// read/write + every other mapper; `writeback` flushes it to disk. With
+    /// the frame cache OFF, `None` → MAP_PRIVATE copy path (bisect fallback).
+    /// # C: O(log N_pages)
+    fn shared_frame(&self, off: u64) -> Option<u64> {
+        #[cfg(feature = "ext4-frame-cache")]
+        { return self.data.frames.shared_frame(off); }
+        #[cfg(not(feature = "ext4-frame-cache"))]
+        { let _ = off; None }
+    }
+    /// Read-fault / MAP_PRIVATE fill: copy from the per-inode frame store
+    /// (one coherent page cache shared by every mapper/reader). # C: O(dst.len)
     fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, ()> {
-        self.data.st.read_cached(self.data.ino, off, dst)
+        #[cfg(feature = "ext4-frame-cache")]
+        { return self.data.frames.read_framed(off, dst); }
+        #[cfg(not(feature = "ext4-frame-cache"))]
+        { self.data.st.read_cached(self.data.ino, off, dst) }
+    }
+    /// `msync`/`fsync` flush: write dirty (mmap-written) frames to disk via the
+    /// journaled `Mount::write_at`. # C: O(N_dirty)
+    fn writeback(&self) -> Result<(), ()> { self.data.frames.writeback() }
+    /// Range-limited flush (`sync_file_range` / range `fsync`). # C: O(N_dirty in range)
+    fn writeback_range(&self, start: u64, end: u64) -> Result<(), ()> {
+        self.data.frames.writeback_range(start, end)
+    }
+    /// Evict resident frames fully covered by `[start, end)` (truncate / hole
+    /// punch). # C: O(pages in range)
+    fn invalidate_range(&self, start: u64, end: u64) -> usize {
+        self.data.frames.invalidate_range(start, end)
     }
     /// # C: O(1)
     fn size(&self) -> u64 { self.data.size_hint.load(Ordering::Acquire) }
@@ -323,9 +369,11 @@ impl AddressSpaceOps for Ext4FileMapping {
 pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: u64, nlink: u32, uid: u32, gid: u32)
     -> InodeRef
 {
+    let frames = super::framecache::Ext4FrameStore::new(st.clone(), ino);
     let data = Arc::new(Ext4FileData {
         st, ino,
         size_hint: AtomicU64::new(size),
+        frames,
     });
     let mapping: Arc<dyn AddressSpaceOps> = Arc::new(Ext4FileMapping { data: data.clone() });
     let weak_sb = data.st.sb.lock().clone();
