@@ -82,9 +82,11 @@ fn lookup_bdev(source: &str) -> Option<Arc<dyn block::BlockDevice>> {
 /// group (securityfs/efivarfs/pstore/bpf/configfs/fusectl/mqueue/hugetlbfs) is
 /// now converted too: its root ino is the fixed Linux pseudo-fs root ino
 /// (`kernfs::PSEUDO_ROOT_INO` = 1), no longer seeded from the target path, so it
-/// realizes byte-identically at CMD_CREATE. tmpfs/ramfs (bake the mount path
-/// into `rel()`), cgroup2/autofs/devtmpfs/devpts/cgroup stay on the
-/// `mount_fstype` fallback. # C: O(1)
+/// realizes byte-identically at CMD_CREATE. tmpfs/ramfs are converted too: their
+/// baked mount path (`mount_path`/`rel()`) is gone — root ino is fixed
+/// (`ROOT_INO`), write ops are i_op-routed (create/unlink/link/rename), so the
+/// SB realizes identically at any mount point. cgroup2/autofs/devtmpfs/devpts/
+/// cgroup stay on the `mount_fstype` fallback. # C: O(1)
 pub(crate) fn fstype_converted(t: &str) -> bool {
     matches!(t,
         "proc" | "sysfs" | "debugfs" | "tracefs" | "ext4"
@@ -92,7 +94,12 @@ pub(crate) fn fstype_converted(t: &str) -> bool {
         // `kernfs::PSEUDO_ROOT_INO`), so the SB realized at fsconfig(CMD_CREATE)
         // is byte-identical to mount_fstype's graft (D13/D14).
         | "securityfs" | "efivarfs" | "pstore" | "bpf"
-        | "configfs" | "fusectl" | "mqueue" | "hugetlbfs")
+        | "configfs" | "fusectl" | "mqueue" | "hugetlbfs"
+        // tmpfs/ramfs: now TARGET-INDEPENDENT (mount_path/rel() removed; root
+        // ino fixed at ROOT_INO, write ops i_op-routed incl. link/linkat), so
+        // the SB realized at fsconfig(CMD_CREATE) is byte-identical to
+        // mount_fstype's graft regardless of mount point (`/` == `/run`). D13/D14.
+        | "tmpfs" | "ramfs")
 }
 
 // `s_magic` (linux/magic.h) for the simple kernfs/ramfs-class api-fses that

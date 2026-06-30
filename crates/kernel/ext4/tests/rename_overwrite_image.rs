@@ -88,6 +88,33 @@ fn iop_rename_rejects_exchange_whiteout() {
 }
 
 #[test]
+fn iop_link_child_hardlinks_and_bumps_nlink() {
+    // D9/D13: the resolved-parent `i_op->link` is the path link(2)/linkat(2)
+    // now take — it journals a `dir_link` for the existing inode under a new
+    // name in the parent dir, bumps the inode's in-memory nlink, and the alias
+    // resolves on disk to the same ino. EEXIST on a taken name; EPERM on a dir.
+    let (m, sb) = mount();
+    let root = sb.s_root_inode().expect("root inode");
+    let f = root.create_child("lsrc", 0o644, &CreateCtx::root()).expect("create lsrc");
+    assert_eq!(f.nlink(), 1);
+    let src_ino = f.ino();
+
+    root.link_child(&f, "lalias", &CreateCtx::root()).expect("iop link");
+
+    assert_eq!(f.nlink(), 2, "hardlink bumped in-memory nlink");
+    let alias = root.lookup("lalias").expect("alias resolves");
+    assert_eq!(alias.ino(), src_ino, "alias is the SAME on-disk inode");
+    assert!(m.state().lookup_path(b"/lalias").is_some(), "alias name present on disk");
+    assert!(m.state().lookup_path(b"/lsrc").is_some(), "original name still present");
+
+    // EEXIST on a taken name.
+    assert!(matches!(root.link_child(&f, "lalias", &CreateCtx::root()), Err(vfs::VfsError::Eexist)));
+    // EPERM on a directory source (no fs permits directory hardlinks).
+    let d = root.mkdir("ldir", 0o755, &CreateCtx::root()).expect("mkdir ldir");
+    assert!(matches!(root.link_child(&d, "dlink", &CreateCtx::root()), Err(vfs::VfsError::Eperm)));
+}
+
+#[test]
 fn exchange_does_not_drop_either_nlink() {
     let (m, sb) = mount();
     let root = sb.s_root_inode().expect("root inode");
