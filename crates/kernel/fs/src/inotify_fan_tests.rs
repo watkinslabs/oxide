@@ -162,6 +162,60 @@ fn perm_release_auto_allows() {
     assert_eq!(ev.response.load(Ordering::Acquire), FAN_ALLOW);
 }
 
+// FAN_OPEN_EXEC_PERM execve-gate cycle (D56). perm_marks_present() is the boot
+// fast-path gate the execve hook checks first: false with no perm mark armed
+// (execve skips the resolve entirely), true once a FAN_OPEN_EXEC_PERM mark is
+// installed. The verdict mapping check_perm applies (DENY→false / ALLOW→true)
+// is exercised via the same read/respond cycle as perm_reply_protocol (host
+// can't park, so the response→bool mapping is asserted directly). Single test:
+// it is the sole mutator of the global PERM_MARK_COUNT, so the gate assertions
+// are race-free.
+#[test]
+fn open_exec_perm_gate_cycle() {
+    // No perm marks armed by us yet → execve gate stays inert.
+    assert!(!perm_marks_present());
+
+    let g = InotifyData::new_fanotify(0);
+    let ino = mk_inode(FileType::Regular, 0xC001);
+    apply_mark(&g, MarkScope::Inode, inode_key(&ino), ino.fsid(),
+               FAN_OPEN_EXEC_PERM, true, false);
+    // A FAN_*_PERM mark is now armed → execve gate engages its resolve+check.
+    assert!(perm_marks_present());
+
+    // DENY verdict: listener reads the queued exec-perm event, writes FAN_DENY;
+    // check_perm maps response != FAN_ALLOW → false (caller returns -EACCES).
+    let ev = Arc::new(PermEvent { obj: ino.clone(), pid: 0,
+        mask: FAN_OPEN_EXEC_PERM, response: AtomicU32::new(0) });
+    g.perm_queue.lock().push_back(ev.clone());
+    let mut buf = [0u8; 64];
+    assert_eq!(g.read_fanotify(&mut buf).unwrap(), 24);
+    let fd = i32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]);
+    let mut resp = [0u8; 8];
+    resp[0..4].copy_from_slice(&fd.to_le_bytes());
+    resp[4..8].copy_from_slice(&FAN_DENY.to_le_bytes());
+    assert_eq!(g.write(0, &resp), Ok(8));
+    assert_eq!(ev.response.load(Ordering::Acquire), FAN_DENY);
+    assert!(ev.response.load(Ordering::Acquire) != FAN_ALLOW);   // → check returns false
+
+    // ALLOW verdict: a fresh exec-perm event answered FAN_ALLOW maps → true.
+    let ev2 = Arc::new(PermEvent { obj: ino.clone(), pid: 0,
+        mask: FAN_OPEN_EXEC_PERM, response: AtomicU32::new(0) });
+    g.perm_queue.lock().push_back(ev2.clone());
+    let mut buf2 = [0u8; 64];
+    assert_eq!(g.read_fanotify(&mut buf2).unwrap(), 24);
+    let fd2 = i32::from_le_bytes([buf2[16], buf2[17], buf2[18], buf2[19]]);
+    let mut resp2 = [0u8; 8];
+    resp2[0..4].copy_from_slice(&fd2.to_le_bytes());
+    resp2[4..8].copy_from_slice(&FAN_ALLOW.to_le_bytes());
+    assert_eq!(g.write(0, &resp2), Ok(8));
+    assert_eq!(ev2.response.load(Ordering::Acquire), FAN_ALLOW);  // → check returns true
+
+    // Retire the mark → gate goes inert again (PERM_MARK_COUNT back to 0).
+    apply_mark(&g, MarkScope::Inode, inode_key(&ino), ino.fsid(),
+               FAN_OPEN_EXEC_PERM, false, false);
+    assert!(!perm_marks_present());
+}
+
 // fanotify_init flag validation: unknown bits, the impossible class 0xc, and
 // FAN_REPORT_NAME without FAN_REPORT_DIR_FID are all EINVAL.
 #[test]
