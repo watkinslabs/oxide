@@ -110,3 +110,43 @@ impl IpForwardInode {
             .build()
     }
 }
+
+// ---------------------------------------------------------------------------
+// proc_handler-bound leaf inode: a `/proc/sys/*` file whose `data` is a LIVE
+// kernel variable (D22). Read formats the live value, write parses+validates
+// against `extra1`/`extra2` and updates the live variable (EINVAL on reject).
+// ---------------------------------------------------------------------------
+
+/// `i_private` wrapper around the type-erased `proc_handler` for a bound leaf.
+pub struct BoundSysctlInode { h: Arc<dyn crate::proc_handler::ProcHandler> }
+
+/// `i_fop` for a `proc_handler`-bound leaf — read formats the live variable,
+/// write parses+validates+stores it.
+struct BoundSysctlFileOps;
+impl FileOps for BoundSysctlFileOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = inode.private::<BoundSysctlInode>().ok_or(VfsError::Einval)?;
+        let body = d.h.format();
+        Ok(read_at(&body, off, buf))
+    }
+    fn write(&self, inode: &Inode, off: u64, src: &[u8]) -> KResult<usize> {
+        let d = inode.private::<BoundSysctlInode>().ok_or(VfsError::Einval)?;
+        if off == 0 {
+            // proc_dointvec_minmax / proc_dobool / proc_dostring: parse +
+            // validate + update the live variable; EINVAL on a bad write.
+            d.h.store(src).map_err(|_| VfsError::Einval)?;
+        }
+        Ok(src.len())
+    }
+}
+
+/// Build a `/proc/sys/*` leaf inode bound to a live kernel variable via the
+/// `proc_handler` model. Writable leaves are `0o644`, read-only `0o444`.
+/// # C: O(1)
+pub fn bound_sysctl_inode(h: Arc<dyn crate::proc_handler::ProcHandler>) -> InodeRef {
+    let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
+    let perm = if h.writable() { 0o644 } else { 0o444 };
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, perm), default_inode_ops(), Arc::new(BoundSysctlFileOps))
+        .private(Arc::new(BoundSysctlInode { h }))
+        .build()
+}
