@@ -20,7 +20,7 @@
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{MountTable as MountClass, Spinlock};
 
 use crate::dentry::Dentry;
@@ -338,24 +338,29 @@ pub fn is_registered_mountpoint(d: &Arc<Dentry>) -> bool {
 // Mount-namespace provider (the calling task's mount_ns id).
 // ---------------------------------------------------------------------------
 
-static CURRENT_NS_PROVIDER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+// Typed, compiler-checked storage (Linux-faithful is `current->nsproxy->mnt_ns`,
+// but vfs sits structurally BELOW sched in the crate DAG — sched depends on vfs
+// — so direct task-field access would form a `vfs→sched` cycle; the calling
+// task's mnt-ns id is therefore read through a sched-installed provider. The
+// previous `AtomicPtr<()>` + `core::mem::transmute` is gone: install + fire are
+// now type-checked with no `unsafe`. Consistent with `MOUNTPOINTS`/`NAMESPACES`
+// which already lock on the resolve path.
+static CURRENT_NS_PROVIDER: Spinlock<Option<NsProvider>, MountClass> = Spinlock::new(None);
 
 /// Signature of the mount-ns provider.
 pub type NsProvider = fn() -> u64;
 
 /// Install the mount-ns provider (kernel boot). Idempotent. # C: O(1)
 pub fn set_current_ns_provider(f: NsProvider) {
-    CURRENT_NS_PROVIDER.store(f as *mut (), Ordering::Release);
+    *CURRENT_NS_PROVIDER.lock() = Some(f);
 }
 
 /// The calling task's mount-namespace id, or 0 if no provider. # C: O(1)
 pub fn current_ns() -> u64 {
-    let p = CURRENT_NS_PROVIDER.load(Ordering::Acquire);
-    if p.is_null() { return 0; }
-    // SAFETY: CURRENT_NS_PROVIDER only ever holds an `NsProvider` fn pointer
-    // stored by set_current_ns_provider; the null check guards un-installed.
-    let f: NsProvider = unsafe { core::mem::transmute::<*mut (), NsProvider>(p) };
-    f()
+    // Copy the fn ptr out and drop the lock BEFORE calling into sched (never
+    // hold a lock across the callback).
+    let f = *CURRENT_NS_PROVIDER.lock();
+    match f { Some(f) => f(), None => 0 }
 }
 
 // ---------------------------------------------------------------------------
@@ -365,23 +370,24 @@ pub fn current_ns() -> u64 {
 // every task whose root/cwd was on the old root mount to the new root.
 // ---------------------------------------------------------------------------
 
-static CHROOT_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+// Typed, compiler-checked storage (sched owns the task table, which vfs cannot
+// walk without a `vfs→sched` cycle — see `CURRENT_NS_PROVIDER`). The previous
+// `AtomicPtr<()>` + `core::mem::transmute` is gone; install + fire are now
+// type-checked with no `unsafe`. Pivot-only (cold) path.
+static CHROOT_HOOK: Spinlock<Option<ChrootRefsHook>, MountClass> = Spinlock::new(None);
 
 /// Signature of the chroot-refs hook: `(old_root_mnt_id, new_root_mnt_id)`.
 pub type ChrootRefsHook = fn(u64, u64);
 
 /// Install the chroot-refs hook (kernel boot / test). # C: O(1)
 pub fn set_chroot_refs_hook(f: ChrootRefsHook) {
-    CHROOT_HOOK.store(f as *mut (), Ordering::Release);
+    *CHROOT_HOOK.lock() = Some(f);
 }
 
 /// Invoke the chroot-refs hook after a pivot_root commit (no-op if unset).
 /// # C: O(1) + hook cost
 pub fn chroot_fs_refs(old_root: u64, new_root: u64) {
-    let p = CHROOT_HOOK.load(Ordering::Acquire);
-    if p.is_null() { return; }
-    // SAFETY: CHROOT_HOOK only ever holds a ChrootRefsHook fn pointer stored
-    // by set_chroot_refs_hook; the null check guards the un-installed case.
-    let f: ChrootRefsHook = unsafe { core::mem::transmute::<*mut (), ChrootRefsHook>(p) };
-    f(old_root, new_root);
+    // Copy the fn ptr out and drop the lock before calling into sched.
+    let f = *CHROOT_HOOK.lock();
+    if let Some(f) = f { f(old_root, new_root); }
 }
