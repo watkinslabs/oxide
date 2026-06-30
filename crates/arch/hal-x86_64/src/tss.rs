@@ -2,8 +2,18 @@
 //
 // Single static TSS (BSS), referenced by a 16-byte system descriptor
 // in the kernel-owned GDT at selector 0x48. `ltr 0x48` loads it.
-// Phase 1 sets RSP0 only; IST slots stay zero until the IRQ-on-IST
-// stacks land alongside the userspace `iretq` smoke (P1-82).
+//
+// IST (SMP hardening): `setup_ist_stacks(cpu)` allocates per-CPU
+// exception stacks for the fatal / nesting-prone vectors and publishes
+// their tops into CPU `cpu`'s TSS IST slots. Linux-faithful assignment
+// (arch/x86/include/asm/cpu_entry_area.h `IST_INDEX_*` + 1 → gate field):
+//   IST1 = #DF (double fault)   IST2 = NMI
+//   IST3 = #DB (debug)          IST4 = #MC (machine check)
+// #PF is DELIBERATELY left on RSP0 (Linux does the same): page faults
+// nest legitimately (demand paging, copy-to-user fault, vmalloc fault),
+// and a single per-CPU IST stack is NOT re-entrant — a nested #PF on its
+// own IST would clobber the outer frame. The gate `ist` index is per-gate
+// (shared IDT); the STACK it selects is per-CPU via the running CPU's TSS.
 //
 // 64-bit TSS layout (104 B, no IO bitmap):
 //   0x00  reserved (4)
@@ -26,10 +36,27 @@
 //   bits 64..95  base_hi (32)
 //   bits 96..127 reserved zero
 
+extern crate alloc;
+
 use core::cell::UnsafeCell;
 
 /// Selector for the kernel TSS in the GDT (offset 0x50, post-P2-02).
 pub const TSS_SEL: u16 = 0x50;
+
+/// Per-CPU IST exception-stack size. 16 KiB (Linux `EXCEPTION_STKSZ`
+/// scale): enough for the deepest fault-handler call chain plus the
+/// hardware-pushed frame, small enough to afford one set per online CPU.
+pub const IST_STACK_BYTES: usize = 16 * 1024;
+
+/// Number of distinct IST stacks populated per CPU (IST1..IST4).
+pub const NR_IST: usize = 4;
+
+/// IST gate-index assignments (1-based: matches the IDT gate `ist` field;
+/// 0 there means "use RSP0"). Linux scheme (`IST_INDEX_* + 1`).
+pub const IST_DF:  u8 = 1; // #DF  double fault
+pub const IST_NMI: u8 = 2; // NMI  non-maskable interrupt
+pub const IST_DB:  u8 = 3; // #DB  debug
+pub const IST_MC:  u8 = 4; // #MC  machine check
 
 /// 64-bit TSS, repr(C, packed) per Intel SDM Vol. 3 Fig. 7-11. The
 /// 4-byte misalignment of the RSP fields (offsets 0x04/0x0C/0x14)
@@ -112,6 +139,54 @@ pub unsafe fn set_rsp0(rsp0: u64) {
     // SAFETY: this CPU is the sole writer of its own slot; single mov store.
     let tss = unsafe { &mut *TSS[cpu].0.get() };
     tss.rsp0 = rsp0;
+}
+
+/// Allocate CPU `cpu`'s per-CPU IST exception stacks (#DF/NMI/#DB/#MC) and
+/// publish their 16-byte-aligned tops into that CPU's TSS IST slots. Stacks
+/// are leaked (live for the kernel's lifetime — an exception stack must
+/// never be freed underneath the CPU). MUST run AFTER the global allocator
+/// is up: BSP from `kmain` post-heap-init, each AP from `ap_main_x86` right
+/// after `install_tss_for_cpu` and BEFORE it enables interrupts (`sti`), so
+/// the AP's TSS IST slots are non-zero before any IST-routed fault can fire.
+///
+/// Pairs with `idt::install_ist_gates`, which sets the (shared) IDT gate
+/// `ist` indices; that must run only AFTER the BSP's slots are populated
+/// here, or a fault would vector to a zero stack top.
+///
+/// # SAFETY: caller owns CPU `cpu`'s bring-up (it is the sole writer of its
+/// own TSS slot); runs single-threaded for that CPU with the allocator live.
+/// # C: O(NR_IST)
+/// # Ctx: pre-init (BSP) | AP bring-up, IRQ-off
+pub unsafe fn setup_ist_stacks(cpu: u16) {
+    use alloc::boxed::Box;
+    let cpu = (cpu as usize).min(NR_TSS - 1);
+    // 16 KiB zeroed stack; leak it, return a 16-aligned top (RSP grows down).
+    let mk = || -> u64 {
+        let s: Box<[u8]> = alloc::vec![0u8; IST_STACK_BYTES].into_boxed_slice();
+        let base = Box::leak(s).as_ptr() as u64;
+        (base + IST_STACK_BYTES as u64) & !0xf
+    };
+    let (df, nmi, db, mc) = (mk(), mk(), mk(), mk());
+    // SAFETY: this CPU is the sole writer of its own TSS slot during setup;
+    // each store is an aligned 8-byte mov to a field the CPU only re-reads
+    // when it takes the matching IST-routed exception (serialized by entry).
+    let tss = unsafe { &mut *TSS[cpu].0.get() };
+    tss.ist1 = df;  // IST_DF
+    tss.ist2 = nmi; // IST_NMI
+    tss.ist3 = db;  // IST_DB
+    tss.ist4 = mc;  // IST_MC
+}
+
+/// Read CPU `cpu`'s TSS IST slot `ist` (1..=7). Test/diagnostic helper.
+/// # C: O(1)
+pub fn tss_ist(cpu: usize, ist: u8) -> u64 {
+    // SAFETY: read-only load of a u64 field; no concurrent writer once
+    // `setup_ist_stacks` has run for this CPU (slots are write-once).
+    let tss = unsafe { &*TSS[cpu.min(NR_TSS - 1)].0.get() };
+    match ist {
+        1 => tss.ist1, 2 => tss.ist2, 3 => tss.ist3, 4 => tss.ist4,
+        5 => tss.ist5, 6 => tss.ist6, 7 => tss.ist7, _ => 0,
+    }
 }
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -225,6 +300,28 @@ mod tests {
         assert_eq!(read, 0xDEAD_BEEF_CAFE_BABE);
         // SAFETY: hosted test reset; same single-thread justification as the prior set_rsp0 call above.
         unsafe { set_rsp0(0); }
+    }
+
+    #[test]
+    fn setup_ist_stacks_populates_slots() {
+        // After setup, IST1..IST4 (DF/NMI/DB/MC) must be non-zero, distinct,
+        // and 16-aligned tops; IST5..IST7 stay zero (#PF et al. use RSP0).
+        let cpu = 2u16; // avoid TSS[0] used by other tests' set_rsp0
+        // SAFETY: hosted single-threaded test; sole writer of TSS[2]'s slot;
+        // allocator (std) is live. Leaks 4×16 KiB — acceptable in a test.
+        unsafe { setup_ist_stacks(cpu); }
+        let c = cpu as usize;
+        let (df, nmi, db, mc) = (tss_ist(c, IST_DF), tss_ist(c, IST_NMI),
+                                 tss_ist(c, IST_DB), tss_ist(c, IST_MC));
+        for v in [df, nmi, db, mc] {
+            assert_ne!(v, 0, "IST slot must be a real stack top");
+            assert_eq!(v & 0xf, 0, "IST top must be 16-aligned");
+        }
+        // Distinct stacks (a shared one would clobber across nested vectors).
+        assert_ne!(df, nmi); assert_ne!(nmi, db); assert_ne!(db, mc);
+        assert_eq!(tss_ist(c, 5), 0, "IST5 must stay zero (#PF on RSP0)");
+        assert_eq!(tss_ist(c, 6), 0);
+        assert_eq!(tss_ist(c, 7), 0);
     }
 
     #[test]
