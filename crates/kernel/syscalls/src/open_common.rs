@@ -27,6 +27,9 @@ pub(crate) const O_PATH:      u32 = 0o10000000;
 pub(crate) const O_ACCMODE:   u32 = 0o3;
 pub(crate) const O_WRONLY:    u32 = 0o1;
 pub(crate) const O_RDWR:      u32 = 0o2;
+/// `O_NONBLOCK` (asm-generic, both arches): a non-blocking conflicting open
+/// fails the lease-break with `EWOULDBLOCK` instead of waiting.
+pub(crate) const O_NONBLOCK:  u32 = 0o4000;
 
 /// Linux `do_open` access enforcement, run after path resolution: `EROFS` for a
 /// write through a read-only mount (`mnt_want_write`), then the `may_open` DAC
@@ -57,6 +60,45 @@ pub(crate) fn enforce_open_perm(
     if created || mnt_id == 0 { return None; }
     if let Err(e) = vfs::may_open(inode, want_read, want_write, &crate::pathresolve::current_cred()) {
         return Some(-(e as i64));
+    }
+    None
+}
+
+/// Lease-break on a conflicting open (Linux `do_open` → `break_lease`). When
+/// another open description holds a lease on `inode` that conflicts with this
+/// open (a read lease vs a write/truncate open, OR a write lease vs ANY open),
+/// signal the lease holder (its `F_SETSIG` signal or default `SIGIO`) and BLOCK
+/// this opener until the holder downgrades/releases the lease or `lease_break_time`
+/// (45 s) elapses, at which point the lease is force-broken and the open proceeds.
+/// `O_NONBLOCK` returns `EWOULDBLOCK` instead of waiting; a pending signal aborts
+/// the wait with `EINTR` (Linux `-ERESTARTSYS`).
+///
+/// Zero-cost on the common path: `lease_conflict` reads a single relaxed counter
+/// and returns `false` immediately when no lease exists anywhere — the boot/
+/// no-lease open never takes a lock or scans. `Some(neg_errno)` fails the open;
+/// `None` lets it proceed. # C: O(1) common; O(N_leases) + wait when a lease conflicts
+pub(crate) fn break_lease_for_open(inode: &vfs::InodeRef, flags: u32) -> Option<i64> {
+    let accmode = flags & O_ACCMODE;
+    let writes = accmode == O_WRONLY || accmode == O_RDWR || (flags & O_TRUNC) != 0;
+    // Fast path: no conflicting lease (almost always). One atomic load at zero.
+    if !vfs::file::lease_conflict(inode, writes) { return None; }
+    // A conflict exists — signal the holder(s) once (Linux `__break_lease`).
+    vfs::file::lease_break_signal(inode, writes);
+    if (flags & O_NONBLOCK) != 0 { return Some(-(Errno::Eagain.as_i32() as i64)); }
+    let cur = match sched::live::current() { Some(c) => c, None => return None };
+    use hal::TimerOps;
+    #[cfg(target_arch = "x86_64")] let now = || hal_x86_64::X86TimerOps::monotonic_ns().0;
+    #[cfg(target_arch = "aarch64")] let now = || hal_aarch64::ArmTimerOps::monotonic_ns().0;
+    let deadline = now().saturating_add(vfs::file::LEASE_BREAK_NS);
+    // Wait for the holder to downgrade/release; force-break on timeout. Yields
+    // the CPU like F_SETLKW; interruptible by a deliverable signal.
+    while vfs::file::lease_conflict(inode, writes) {
+        if sched::live::sigpend::deliverable_signals(cur) != 0 {
+            return Some(-(Errno::Eintr.as_i32() as i64));
+        }
+        if now() >= deadline { vfs::file::lease_force_break(inode, writes); break; }
+        // SAFETY: process ctx; preempt-off; runqueue installed; voluntary schedule() yields the CPU; we stay Runnable so the scheduler reselects us.
+        unsafe { sched::live::schedule::schedule(); }
     }
     None
 }

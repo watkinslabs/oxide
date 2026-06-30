@@ -5,8 +5,8 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use vfs::{File, OpenFlags};
 
-use crate::open_common::{dup_fd_target, open_proc_fd, enforce_open_perm, O_CREAT, O_EXCL, O_TRUNC,
-    O_DIRECTORY, O_NOFOLLOW, O_TMPFILE};
+use crate::open_common::{dup_fd_target, open_proc_fd, enforce_open_perm, break_lease_for_open,
+    O_CREAT, O_EXCL, O_TRUNC, O_DIRECTORY, O_NOFOLLOW, O_TMPFILE};
 
 /// `sys_openat(dirfd, path, flags, mode)` — slot 257. No openat2 RESOLVE_*
 /// modifiers (default `LookupFlags`). # C: O(N_path)
@@ -264,6 +264,10 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     if let Err(e) = inode.on_open() { return -(e as i64); }
     // DAC + EROFS enforcement (Linux `may_open`), before the O_TRUNC truncate.
     if let Some(rv) = enforce_open_perm(&inode, mnt_id, flags, created) { return rv; }
+    // Lease-break (Linux `break_lease` in `do_open`): conflicting open signals
+    // the lease holder + waits before proceeding. Zero-cost without a lease;
+    // skip for a just-created file (cannot hold a pre-existing lease).
+    if !created { if let Some(rv) = break_lease_for_open(&inode, flags) { return rv; } }
     // fanotify FAN_OPEN_PERM (fast no-op without perm marks; deny → EACCES).
     if !::fs::inotify::check_open_perm(&inode) { return -(Errno::Eacces.as_i32() as i64); }
     if let Err(rv) = ::security::bpf_lsm::file_open(&inode) { return rv; }
