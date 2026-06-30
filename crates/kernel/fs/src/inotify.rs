@@ -510,7 +510,14 @@ pub fn fire_modify_path(path: &str) {
 /// FAN_ATTRIB / IN_ATTRIB — metadata change (chmod/chown/utimes/link-count).
 /// Wired from the chmod/chown syscall handlers (Linux `fsnotify_change`).
 /// # C: O(N_groups * N_watches)
-pub fn fire_attrib(inode: &InodeRef) { fire_self(inode, FAN_ATTRIB); }
+pub fn fire_attrib(inode: &InodeRef) {
+    fire_self(inode, FAN_ATTRIB);
+    // dnotify DN_ATTRIB: fires when the watched directory's OWN attrs change
+    // (chmod/chown on a dir holding an F_NOTIFY watch). A DN_ATTRIB on a child
+    // file requires the parent-dentry context the chmod/chown VFS hook does not
+    // carry; that child case rides the per-child fsnotify-parent hook.
+    vfs::file::dnotify_emit(inode, vfs::file::DN_ATTRIB);
+}
 
 /// FAN_OPEN_EXEC — a file opened for program execution (Linux
 /// `fsnotify_open` with `FMODE_EXEC`). Wired from the execve path.
@@ -530,6 +537,10 @@ pub fn fire_move(old_parent: &InodeRef, new_parent: &InodeRef, moved: Option<&In
     fire_child(old_parent, FAN_MOVED_FROM, c);
     fire_child(new_parent, FAN_MOVED_TO, c);
     if let Some(m) = moved { fire_self(m, FAN_MOVE_SELF); }
+    // dnotify DN_RENAME on both the source and destination dir watches (Linux
+    // `dnotify_parent` for FS_MOVED_FROM/TO). Zero-cost without an armed watch.
+    vfs::file::dnotify_emit(old_parent, vfs::file::DN_RENAME);
+    vfs::file::dnotify_emit(new_parent, vfs::file::DN_RENAME);
 }
 
 fn vfs_write_notify(inode: &InodeRef) { fire_self(inode, IN_MODIFY); }
@@ -566,11 +577,16 @@ pub fn install_write_hook() {
 fn vfs_dirent_create(parent: &str, _leaf: &str) {
     if let Ok(parent_inode) = vfs::mount::lookup(parent) {
         fire_child(&parent_inode, IN_CREATE, 0);
+        // dnotify DN_CREATE on the parent dir's F_NOTIFY watch (Linux
+        // `dnotify_parent`/`fsnotify_create`). Zero-cost when no watch is armed.
+        vfs::file::dnotify_emit(&parent_inode, vfs::file::DN_CREATE);
     }
 }
 fn vfs_dirent_delete(parent: &str, _leaf: &str) {
     if let Ok(parent_inode) = vfs::mount::lookup(parent) {
         fire_child(&parent_inode, IN_DELETE, 0);
+        // dnotify DN_DELETE on the parent dir's watch (Linux `fsnotify_unlink`).
+        vfs::file::dnotify_emit(&parent_inode, vfs::file::DN_DELETE);
     }
 }
 
