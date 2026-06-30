@@ -87,6 +87,21 @@ pub fn by_serial(serial: &str) -> Option<Arc<dyn BlockDevice>> {
         .map(|d| d.dev.clone())
 }
 
+/// `lookup_bdev`-style resolution: find a registered disk by its packed `dev_t`
+/// in the glibc/`new_encode_dev` wire form (`st_rdev`/`i_rdev`) — minor[0..8] |
+/// major[8..20] | minor[20..32]. The caller resolves a `/dev/<disk>` block node
+/// to its inode and passes `i_rdev`; this decodes it to `(major, minor)` and
+/// matches against each disk's synthetic [`major_minor`]. Linux's
+/// `blkdev_get_by_dev` over the gendisk's `(major, minor)`. `None` ⇒ no disk owns
+/// that dev_t (caller falls back to name/serial). # C: O(N_disks)
+pub fn by_dev(dev_t: u32) -> Option<Arc<Disk>> {
+    // `new_decode_dev` (Linux `include/linux/kdev_t.h`): invert the high-minor
+    // split the stat ABI packs into a 32-bit user dev_t.
+    let major = (dev_t & 0x000f_ff00) >> 8;
+    let minor = (dev_t & 0xff) | ((dev_t >> 12) & 0x000f_ff00);
+    TABLE.lock().iter().find(|d| major_minor(&d.name, d.index) == (major, minor)).cloned()
+}
+
 /// Return the first registered block device in probe order. Boot uses this
 /// only as a fallback when the root disk's virtio serial has not been stamped
 /// yet; serial lookup remains the preferred binding.
@@ -148,6 +163,22 @@ mod sysfs_format_tests {
     fn major_minor_ahci() {
         assert_eq!(major_minor("sata0", 3), (8, 2));
         assert_eq!(major_minor("sda", 1), (8, 0));
+    }
+
+    #[test]
+    fn by_dev_resolves_registered_disk() {
+        use crate::blockdev::MemDisk;
+        use sync::TaskList;
+        let dev: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 8);
+        let idx = register("bydevvd", dev);
+        let (major, minor) = major_minor("bydevvd", idx);
+        // glibc/new_encode_dev wire form the stat ABI (i_rdev) carries.
+        let enc = (minor & 0xff) | ((major & 0xfff) << 8) | ((minor & !0xff) << 12);
+        let found = by_dev(enc).expect("by_dev resolves the registered disk");
+        assert_eq!(found.name, "bydevvd");
+        assert_eq!(found.index, idx);
+        // A dev_t no disk owns (impossible major 0xfff) → None.
+        assert!(by_dev(0xfff << 8).is_none(), "unowned dev_t → None");
     }
 
     #[test]
