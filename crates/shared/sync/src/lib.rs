@@ -56,6 +56,13 @@ decl_lock_class! {
     AddressSpace = 30,
     Inode        = 40,
     Dentry       = 50,
+    // Pseudo-fs (kernfs) directory-structure locks: held during VFS lookup/
+    // readdir (under `Dentry`/`Inode`) and call `SuperBlock::iget` (the icache
+    // lock at `Superblock`) to materialise child inodes. Ranked strictly
+    // between `Dentry` (50) and `Superblock` (60) so a kernfs node lock may be
+    // held WHILE acquiring the SB icache lock (ascending) — the rank window
+    // that lets kernfs/procfs/sysfs/devfs route inode builds through `iget`.
+    Kernfs       = 55,
     Superblock   = 60,
     Modules      = 65,
     MountTable   = 70,
@@ -278,5 +285,10 @@ mod tests {
     fn lock_classes_have_distinct_ranks() {
         assert!(Buddy::rank() < Slab::rank());
         assert!(Slab::rank() < PageTable::rank());
+        // kernfs node locks sit strictly between Dentry and Superblock so a
+        // pseudo-fs may hold its structural lock WHILE taking the SB icache
+        // lock (iget) — ascending, deadlock-free. (inode D2 lock-rank reorder.)
+        assert!(Dentry::rank() < Kernfs::rank());
+        assert!(Kernfs::rank() < Superblock::rank());
     }
 }
