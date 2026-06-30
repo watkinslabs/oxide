@@ -18,6 +18,8 @@ pub use ldisc::{LdiscOps, NTty, Sig, TtyDriverHooks};
 
 pub mod jobctl;
 
+pub mod ctty;
+
 pub mod wait;
 pub use wait::TtyWait;
 
