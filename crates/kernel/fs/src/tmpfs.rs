@@ -215,6 +215,7 @@ fn make_tmpfs_file_inode(sealable: bool, perm: u16, uid: u32, gid: u32, sb: Weak
             .owner(uid, gid)
             .fsid(fsid_of(&sb2))
             .mapping(mapping)
+            .xattrs(vfs::SimpleXattrs::new())
             .private(data);
         if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
         if sealable { b = b.seals(0); }
@@ -456,6 +457,7 @@ fn make_tmpfs_symlink_inode(target: &[u8], uid: u32, gid: u32, sb: Weak<SuperBlo
             .owner(uid, gid)
             .size(target.len() as u64)
             .fsid(fsid_of(&sb2))
+            .xattrs(vfs::SimpleXattrs::new())
             .private(Arc::new(TmpfsSymlinkData { target }));
         if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
         b.build()
@@ -479,6 +481,7 @@ fn make_tmpfs_sock_inode(uid: u32, gid: u32, sb: Weak<SuperBlock>) -> InodeRef {
         let mut b = InodeBuilder::new(ino, mk_mode(FileType::Socket, 0o755),
             default_inode_ops(), Arc::new(TmpfsErrFileOps))
             .owner(uid, gid)
+            .xattrs(vfs::SimpleXattrs::new())
             .fsid(fsid_of(&sb2));
         if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
         b.build()
@@ -496,6 +499,7 @@ fn make_tmpfs_special_inode(ft: FileType, perm: u16, rdev: u32, uid: u32, gid: u
             default_inode_ops(), Arc::new(TmpfsErrFileOps))
             .owner(uid, gid)
             .rdev(rdev)
+            .xattrs(vfs::SimpleXattrs::new())
             .fsid(fsid_of(&sb2));
         if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
         b.build()
@@ -541,6 +545,7 @@ fn make_tmpfs_dir_inode(ino: Ino, perm: u16, uid: u32, gid: u32, sb: Weak<SuperB
             Arc::new(TmpfsDirOps), Arc::new(TmpfsDirFileOps))
             .owner(uid, gid)
             .fsid(fsid_of(&sb2))
+            .xattrs(vfs::SimpleXattrs::new())
             .private(Arc::new(TmpfsDirData {
                 sb:   Spinlock::new(sb2.clone()),
                 kids: Spinlock::new(BTreeMap::new()),
@@ -1286,5 +1291,69 @@ mod nlink_mode_tests {
         // A regular file still unlinks fine.
         root.create_child("f", 0o644, &CreateCtx::root()).expect("create f");
         assert!(root.unlink_child("f").is_ok());
+    }
+}
+
+// D45: xattrs are FILESYSTEM-backed — each tmpfs inode OWNS its own xattr store
+// (Linux shmem_inode_info / `simple_xattrs`), so set/get/list/remove round-trip
+// per-inode and two inodes never see each other's attributes. Exercised through
+// the `i_op` hooks (the same path `fs::xattr` dispatches to), no global table,
+// no PMM (xattr ops touch no frames).
+#[cfg(test)]
+mod xattr_tests {
+    use super::*;
+    use vfs::xattr::XattrError;
+
+    fn file() -> InodeRef { make_tmpfs_file_inode(false, 0o644, 0, 0, Weak::new(), TmpfsSb::unlimited()) }
+
+    // set → get → list → remove round-trip on ONE tmpfs inode.
+    #[test]
+    fn set_get_list_remove_roundtrip() {
+        let i = file();
+        assert!(i.simple_xattrs().is_some(), "tmpfs inode owns an xattr store");
+        // set
+        i.setxattr("user.color", b"blue".to_vec(), false, false).expect("set");
+        i.setxattr("user.size",  b"10".to_vec(),   false, false).expect("set2");
+        // get
+        assert_eq!(i.getxattr("user.color"), Ok(b"blue".to_vec()));
+        assert_eq!(i.getxattr("user.missing"), Err(XattrError::NotFound));
+        // list (order-independent membership)
+        let mut names = i.listxattr().expect("list");
+        names.sort();
+        assert_eq!(names, alloc::vec![String::from("user.color"), String::from("user.size")]);
+        // remove
+        i.removexattr("user.color").expect("remove");
+        assert_eq!(i.getxattr("user.color"), Err(XattrError::NotFound));
+        assert_eq!(i.removexattr("user.color"), Err(XattrError::NotFound));
+        assert_eq!(i.listxattr().unwrap(), alloc::vec![String::from("user.size")]);
+    }
+
+    // XATTR_CREATE/XATTR_REPLACE flag semantics, atomic under the store lock.
+    #[test]
+    fn create_replace_flags() {
+        let i = file();
+        // REPLACE of an absent name → ENODATA (NotFound).
+        assert_eq!(i.setxattr("user.a", b"1".to_vec(), false, true), Err(XattrError::NotFound));
+        // CREATE of a new name → ok; CREATE again → EEXIST.
+        i.setxattr("user.a", b"1".to_vec(), true, false).expect("create");
+        assert_eq!(i.setxattr("user.a", b"2".to_vec(), true, false), Err(XattrError::Exists));
+        // REPLACE of an existing name → ok, value updated.
+        i.setxattr("user.a", b"3".to_vec(), false, true).expect("replace");
+        assert_eq!(i.getxattr("user.a"), Ok(b"3".to_vec()));
+    }
+
+    // Two inodes are INDEPENDENT — no global table, no cross-inode leakage.
+    #[test]
+    fn two_inodes_independent() {
+        let a = file();
+        let b = file();
+        a.setxattr("user.k", b"A".to_vec(), false, false).expect("set a");
+        b.setxattr("user.k", b"B".to_vec(), false, false).expect("set b");
+        assert_eq!(a.getxattr("user.k"), Ok(b"A".to_vec()));
+        assert_eq!(b.getxattr("user.k"), Ok(b"B".to_vec()));
+        // Removing from one leaves the other untouched.
+        a.removexattr("user.k").expect("remove a");
+        assert_eq!(a.getxattr("user.k"), Err(XattrError::NotFound));
+        assert_eq!(b.getxattr("user.k"), Ok(b"B".to_vec()));
     }
 }

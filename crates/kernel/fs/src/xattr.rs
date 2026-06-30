@@ -1,11 +1,17 @@
-// Per-inode xattr (extended-attribute) overlay backed by a global
-// BTreeMap keyed by inode pointer identity (same identity scheme as
-// `inode_times`). Replaces the ENOTSUP stub for the xattr family
-// with a real round-trip: programs (tar/rsync/cp -a, getfattr/setfattr,
-// SELinux/POSIX-ACL/cap-bit consumers) now see the values they wrote.
+// xattr (extended-attribute) syscall layer (setxattr/getxattr/listxattr/
+// removexattr + the f/l/*at variants). This is the VFS-policy half (Linux
+// `vfs_setxattr` → `xattr_permission` → `handler->set`): it resolves the
+// inode, enforces the namespace permission model + name/size limits + the
+// XATTR_CREATE/XATTR_REPLACE meaning, then dispatches STORAGE to the owning
+// filesystem's per-inode backend (`Inode::{get,set,remove,list}xattr` →
+// `i_op` → `vfs::xattr::SimpleXattrs`). Each fs OWNS its xattrs (D45):
+//   * tmpfs  — `SimpleXattrs` on every tmpfs inode (Linux shmem_inode_info).
+//   * ext4   — `SimpleXattrs` on every ext4 inode (in-core ownership; on-disk
+//              ibody/xattr-block PERSISTENCE is a residual, see fix-ledger).
 //
-// v1 limit: in-memory overlay only. ext4-on-disk xattr storage rides
-// v2 phase 26.
+// The old global `TABLE` is DEMOTED to a compatibility fallback used ONLY for
+// a filesystem with no backend store of its own (pseudo-fses) so their xattrs
+// keep round-tripping; tmpfs/ext4 never touch it.
 //
 // Linux semantics honoured:
 //   * setxattr flags: XATTR_CREATE (1) — fail with EEXIST if name already
@@ -24,6 +30,7 @@ use sync::{Spinlock, TaskList as TaskListClass};
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use vfs::InodeRef;
+use vfs::xattr::XattrError;
 
 const ENODATA: i32 = 61;
 const EEXIST:  i32 = 17;
@@ -219,6 +226,12 @@ fn resolve_fd_inode(fd: i32) -> Result<InodeRef, i64> {
     Ok(f.inode().clone())
 }
 
+/// True iff `inode`'s filesystem owns its own xattr store (tmpfs/ext4). When
+/// false the legacy global [`TABLE`] is used as a compatibility fallback so
+/// xattrs keep working for the pseudo-fses that have no backend store yet.
+/// # C: O(1)
+fn fs_backed(inode: &InodeRef) -> bool { inode.simple_xattrs().is_some() }
+
 fn do_set(inode: &InodeRef, name: String, value: Vec<u8>, flags: u32) -> i64 {
     // XATTR_CREATE | XATTR_REPLACE together is invalid (Linux EINVAL).
     if flags & XATTR_CREATE != 0 && flags & XATTR_REPLACE != 0 {
@@ -227,12 +240,23 @@ fn do_set(inode: &InodeRef, name: String, value: Vec<u8>, flags: u32) -> i64 {
     if let Err(rv) = check_name_len(&name) { return rv; }
     if value.len() > XATTR_SIZE_MAX { return -(Errno::E2big.as_i32() as i64); }
     if let Err(rv) = check_write_perm(inode, &name) { return rv; }
-    let k = inode_key(inode);
+    let create  = flags & XATTR_CREATE  != 0;
+    let replace = flags & XATTR_REPLACE != 0;
+    // Per-fs backend is the authority; fall back to the global table only for a
+    // filesystem with no xattr store of its own.
+    if fs_backed(inode) {
+        return match inode.setxattr(&name, value, create, replace) {
+            Ok(())                       => 0,
+            Err(XattrError::Exists)      => -(EEXIST as i64),
+            Err(XattrError::NotFound)    => -(ENODATA as i64),
+            Err(XattrError::NotSup)      => -(EOPNOTSUPP as i64),
+        };
+    }
     let mut g = TABLE.lock();
-    let entry = g.entry(k).or_insert_with(InodeXattrs::default);
+    let entry = g.entry(inode_key(inode)).or_insert_with(InodeXattrs::default);
     let exists = entry.0.contains_key(&name);
-    if flags & XATTR_CREATE  != 0 && exists  { return -(EEXIST as i64); }
-    if flags & XATTR_REPLACE != 0 && !exists { return -(ENODATA as i64); }
+    if create  && exists  { return -(EEXIST as i64); }
+    if replace && !exists { return -(ENODATA as i64); }
     entry.0.insert(name, value);
     0
 }
@@ -240,26 +264,38 @@ fn do_set(inode: &InodeRef, name: String, value: Vec<u8>, flags: u32) -> i64 {
 fn do_get(inode: &InodeRef, name: &str, buf_p: u64, buflen: usize) -> i64 {
     if let Err(rv) = check_name_len(name) { return rv; }
     if read_hidden(name) { return -(ENODATA as i64); }
-    let g = TABLE.lock();
-    let entry = match g.get(&inode_key(inode)) {
-        Some(e) => e, None => return -(ENODATA as i64),
-    };
-    let val = match entry.0.get(name) {
-        Some(v) => v, None => return -(ENODATA as i64),
+    let val = if fs_backed(inode) {
+        match inode.getxattr(name) {
+            Ok(v) => v,
+            Err(_) => return -(ENODATA as i64),
+        }
+    } else {
+        let g = TABLE.lock();
+        match g.get(&inode_key(inode)).and_then(|e| e.0.get(name)) {
+            Some(v) => v.clone(),
+            None => return -(ENODATA as i64),
+        }
     };
     let want = val.len();
     if buflen == 0 { return want as i64; }
     if buflen < want { return -(Errno::Erange.as_i32() as i64); }
-    if let Err(rv) = write_user_bytes(buf_p, val) { return rv; }
+    if let Err(rv) = write_user_bytes(buf_p, &val) { return rv; }
     want as i64
 }
 
 fn do_list(inode: &InodeRef, buf_p: u64, buflen: usize) -> i64 {
-    let g = TABLE.lock();
     // Hide trusted.* names from a task lacking CAP_SYS_ADMIN (Linux).
-    let names: Vec<&String> = match g.get(&inode_key(inode)) {
-        Some(e) => e.0.keys().filter(|n| !read_hidden(n)).collect(),
-        None    => return 0,
+    let names: Vec<String> = if fs_backed(inode) {
+        match inode.listxattr() {
+            Ok(ns) => ns.into_iter().filter(|n| !read_hidden(n)).collect(),
+            Err(_) => return 0,
+        }
+    } else {
+        let g = TABLE.lock();
+        match g.get(&inode_key(inode)) {
+            Some(e) => e.0.keys().filter(|n| !read_hidden(n)).cloned().collect(),
+            None    => return 0,
+        }
     };
     let mut total = 0usize;
     for n in &names { total += n.len() + 1; }
@@ -274,6 +310,12 @@ fn do_list(inode: &InodeRef, buf_p: u64, buflen: usize) -> i64 {
 fn do_remove(inode: &InodeRef, name: &str) -> i64 {
     if let Err(rv) = check_name_len(name) { return rv; }
     if let Err(rv) = check_write_perm(inode, name) { return rv; }
+    if fs_backed(inode) {
+        return match inode.removexattr(name) {
+            Ok(())                    => 0,
+            Err(_)                    => -(ENODATA as i64),
+        };
+    }
     let mut g = TABLE.lock();
     let entry = match g.get_mut(&inode_key(inode)) {
         Some(e) => e, None => return -(ENODATA as i64),
@@ -285,6 +327,9 @@ fn do_remove(inode: &InodeRef, name: &str) -> i64 {
 /// length, or 0 if absent. Used by F103 file-cap probe at execve.
 /// # C: O(log N)
 pub fn query_len(inode: &InodeRef, name: &str) -> usize {
+    if fs_backed(inode) {
+        return inode.getxattr(name).map(|v| v.len()).unwrap_or(0);
+    }
     let g = TABLE.lock();
     g.get(&inode_key(inode))
         .and_then(|e| e.0.get(name))
@@ -295,6 +340,12 @@ pub fn query_len(inode: &InodeRef, name: &str) -> usize {
 /// Kernel-side xattr read into a buffer. Returns true on hit.
 /// # C: O(log N) + O(value len)
 pub fn query_into(inode: &InodeRef, name: &str, buf: &mut [u8]) -> bool {
+    if fs_backed(inode) {
+        return match inode.getxattr(name) {
+            Ok(v) => { let n = v.len().min(buf.len()); buf[..n].copy_from_slice(&v[..n]); true }
+            Err(_) => false,
+        };
+    }
     let g = TABLE.lock();
     let v = match g.get(&inode_key(inode)).and_then(|e| e.0.get(name)) {
         Some(v) => v, None => return false,
