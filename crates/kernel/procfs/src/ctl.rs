@@ -211,7 +211,7 @@ pub fn register_sysctl_table(boot_id: &'static [u8], random_uuid: &'static [u8])
     crate::reg::register(
         "/proc/sys/fs/binfmt_misc",
         kernfs::PseudoDir::new_root(
-            kernfs::dir_ino("/proc/sys/fs/binfmt_misc"), crate::reg::PROCFS_FSID, false).as_inode(),
+            kernfs::dir_ino("/proc/sys/fs/binfmt_misc"), crate::reg::PROCFS_FSID).as_inode(),
     );
     // The nested ctl_table tree (live-bound leaves).
     register_tree("/proc/sys", SYSCTL_TREE);

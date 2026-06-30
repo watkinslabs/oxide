@@ -6,8 +6,10 @@
 use std::path::Path;
 
 /// Write `/etc/{shells,hosts,environment,motd,bash.bashrc,inputrc}`, the
-/// `/etc/profile.d/*.sh` drop-ins, and `/etc/skel` + per-user dotfiles.
-/// # C: O(files)
+/// runtime/synthetic set formerly minted by `devfs::register_etc_overlay`
+/// (D19: `machine-id`, `resolv.conf`, `localtime`, `services`, `protocols`,
+/// `ld.so.conf`, `timezone`), the `/etc/profile.d/*.sh` drop-ins, and
+/// `/etc/skel` + per-user dotfiles. # C: O(files)
 pub fn write_standard_etc<S, P>(stage: &S, put: &P) -> Result<(), u8>
 where
     S: Fn(&str, &[u8]) -> Result<std::path::PathBuf, u8>,
@@ -60,6 +62,77 @@ set completion-ignore-case on
 \"\\e[A\": history-search-backward
 \"\\e[B\": history-search-forward
 ")?, "/etc/inputrc")?;
+
+    // ---- D19: the 7 runtime/synthetic /etc files formerly minted by
+    // devfs::register_etc_overlay. Now real rootfs ext4 files so /etc resolves
+    // purely through the rootfs mount (no devfs /etc overlay). Linux-faithful
+    // contents; NSS/ld.so/systemd/glibc read these at boot.
+
+    // /etc/machine-id — EMPTY (uninitialized). systemd-machine-id-setup /
+    // first-boot generates the 32-hex id (Linux: empty file triggers
+    // generation), else systemd uses a transient /run/machine-id.
+    put(&stage("machine-id", b"")?, "/etc/machine-id")?;
+
+    // /etc/resolv.conf — empty placeholder; dhcpcd/systemd-resolved rewrite it
+    // at runtime (matches the prior empty synthetic).
+    put(&stage("resolv.conf", b"")?, "/etc/resolv.conf")?;
+
+    // /etc/localtime — empty; glibc __tzfile_read falls back to UTC when it
+    // can't parse a TZif body (no zoneinfo db is shipped). Matches prior.
+    put(&stage("localtime", b"")?, "/etc/localtime")?;
+
+    // /etc/timezone — Debian-style tz name (UTC).
+    put(&stage("timezone", b"UTC\n")?, "/etc/timezone")?;
+
+    // /etc/services — well-known port table (NSS getservbyname).
+    put(&stage("services",
+b"tcpmux\t\t1/tcp
+echo\t\t7/tcp
+echo\t\t7/udp
+discard\t\t9/tcp
+daytime\t\t13/tcp
+ftp-data\t20/tcp
+ftp\t\t21/tcp
+ssh\t\t22/tcp
+ssh\t\t22/udp
+telnet\t\t23/tcp
+smtp\t\t25/tcp
+time\t\t37/tcp
+time\t\t37/udp
+domain\t\t53/tcp
+domain\t\t53/udp
+bootps\t\t67/udp
+bootpc\t\t68/udp
+tftp\t\t69/udp
+http\t\t80/tcp
+http\t\t80/udp
+pop3\t\t110/tcp
+ntp\t\t123/udp
+imap\t\t143/tcp
+snmp\t\t161/udp
+https\t\t443/tcp
+https\t\t443/udp
+syslog\t\t514/udp
+")?, "/etc/services")?;
+
+    // /etc/protocols — protocol-number table (NSS getprotobyname).
+    put(&stage("protocols",
+b"ip\t0\tIP
+icmp\t1\tICMP
+igmp\t2\tIGMP
+tcp\t6\tTCP
+udp\t17\tUDP
+ipv6\t41\tIPv6
+ipv6-icmp\t58\tIPv6-ICMP
+")?, "/etc/protocols")?;
+
+    // /etc/ld.so.conf — dynamic-linker search dirs (ldconfig/ld.so).
+    put(&stage("ld.so.conf",
+b"/usr/local/lib
+/usr/lib
+/lib
+include /etc/ld.so.conf.d/*.conf
+")?, "/etc/ld.so.conf")?;
 
     // /etc/profile.d drop-ins (sourced by /etc/profile).
     put(&stage("profile.d.umask", b"umask 022\n")?, "/etc/profile.d/umask.sh")?;

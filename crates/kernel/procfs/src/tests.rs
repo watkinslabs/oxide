@@ -295,7 +295,7 @@ fn proc_sys_resolves_own_tree() {
     );
     assert!(crate::reg::proc_reg().lookup_path("net/dev").is_some());
     // Isolation: a fresh foreign root does NOT see procfs's entries.
-    let foreign = kernfs::PseudoDir::new_root(kernfs::dir_ino("/x"), 0xABCD, false);
+    let foreign = kernfs::PseudoDir::new_root(kernfs::dir_ino("/x"), 0xABCD);
     assert!(foreign.lookup_path("sys/kernel/pid_max").is_none());
 }
 

@@ -1,18 +1,13 @@
 //! Boot-time devfs population + the synthetic directory inode. The
 //! built-in pseudo-devices (null/zero/full/kmsg/random + the std fd
-//! symlinks) and the directory overlay live here; the console/tty nodes
-//! self-register from the `console` crate (docs/56 self-registration).
+//! symlinks) live here; the console/tty nodes self-register from the
+//! `console` crate (docs/56 self-registration). D19: `/etc` no longer
+//! overlays the rootfs — its 7 runtime-synthetic files now ship as real
+//! rootfs ext4 files (`tools/xtask/src/rootfs_etc.rs`), so devfs owns
+//! `/dev` only and the directory-overlay machinery is gone.
 use alloc::sync::Arc;
-use vfs::{FileType, InodeRef, StaticFileInode};
+use vfs::InodeRef;
 use crate::register;
-/// Directory-overlay hook (the ext4 rootfs merge under `/dev` + `/etc`) now
-/// lives in `kernfs`; `PseudoDir::readdir` consults it directly. This thin
-/// re-export keeps the kmain boot wiring (`devfs::boot::set_dir_overlay`)
-/// unchanged. # C: O(1)
-pub fn set_dir_overlay(f: fn(&[u8], &mut dyn FnMut(&[u8], FileType))) {
-    kernfs::set_dir_overlay(f);
-}
-
 
 /// Self-register a mem-class pseudo-device through `drv::device_add` (D27):
 /// pushes a `drv::Device` (bus/dev_class "mem", addr/devname `name`) into the
@@ -76,57 +71,4 @@ pub fn populate_defaults() {
     // register — no synthetic prefix-scan inodes needed. The CPU topology
     // dirs (/sys/devices/system/cpu/cpuN/online) materialize when sysfs
     // registers the cpu leaves; readdir enumerates the real BTreeMap.
-}
-
-/// Generate a 32-hex-char `/etc/machine-id` body (16 random bytes), leaked
-/// `'static` (lives for the kernel lifetime, like the boot UUIDs). # C: O(1)
-fn machine_id_line() -> &'static [u8] {
-    fn nib(n: u8) -> u8 { match n & 0x0f { v @ 0..=9 => b'0' + v, v => b'a' + (v - 10) } }
-    let mut s = alloc::vec::Vec::with_capacity(33);
-    for word in [crate::misc::lcg_next(), crate::misc::lcg_next()] {
-        for b in word.to_le_bytes() { s.push(nib(b >> 4)); s.push(nib(b)); }
-    }
-    s.push(b'\n');
-    alloc::boxed::Box::leak(s.into_boxed_slice())
-}
-
-/// Register the kernel/runtime-synthetic `/etc/*` overlay nodes into devfs's
-/// own ns-0 tree. devfs owns `/etc` as an ext4-overlay subtree in the SAME
-/// ns-keyed tree as `/dev` (root `overlay = true`), so userspace `/etc/*`
-/// resolution merges synthetic + on-disk rootfs entries (the `/etc` writes used
-/// to live in procfs `register_static_files`, D1d).
-///
-/// D23: only entries with NO real rootfs backing remain synthetic here.
-/// Everything the rootfs image now ships as a real file — `os-release`,
-/// `hostname`, `passwd`, `group`, `shadow`, `shells`, `profile`, `issue`,
-/// `motd`, `hosts`, `nsswitch.conf`, `ld.so.cache` (built by
-/// `tools/xtask/src/rootfs{,_etc}.rs`) — is intentionally NOT registered: a
-/// kernel synthetic copy would incorrectly shadow the real distro/profile file
-/// (the original `os-release` rationale, generalized to the whole set; e.g. the
-/// synthetic `passwd` with only `root` masked the real multi-user `passwd`, and
-/// an empty `ld.so.cache` masked the real one). The remaining entries are
-/// genuinely kernel/runtime-provided with no on-disk source: `machine-id`
-/// (random, like the boot UUIDs), `resolv.conf`/`localtime` (empty placeholders
-/// rewritten at runtime by dhcpcd/tzdata), the static `services`/`protocols`
-/// reference tables, and `ld.so.conf`/`timezone`. Boot, once, at the same phase
-/// `populate_defaults` runs. # C: O(N nodes)
-pub fn register_etc_overlay() {
-    // D19 (deferred): keep `/etc` as an ext4-overlay subtree so its readdir
-    // still merges the real on-disk rootfs `/etc` files. The root flag is now
-    // OFF (D17), so `/etc`'s overlay is set per-subtree here. Must run before
-    // the leaves below create `/etc`. The 7 entries are runtime/synthetic with
-    // no on-disk source (NOT in the rootfs image) — removing devfs ownership of
-    // `/etc` would lose them, so D19 stays deferred pending rootfs-image work.
-    crate::tree::register_overlay_dir(0, "/etc");
-    register("/etc/machine-id", StaticFileInode::new(machine_id_line()) as InodeRef);
-    register("/etc/resolv.conf", StaticFileInode::new(b"") as InodeRef);
-    register("/etc/localtime", StaticFileInode::new(b"") as InodeRef);
-    register("/etc/services", StaticFileInode::new(
-        b"ssh\t\t22/tcp\nssh\t\t22/udp\nhttp\t\t80/tcp\nhttp\t\t80/udp\n\
-https\t\t443/tcp\nhttps\t\t443/udp\ndomain\t\t53/tcp\ndomain\t\t53/udp\n") as InodeRef);
-    register("/etc/protocols", StaticFileInode::new(
-        b"ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n") as InodeRef);
-    register("/etc/ld.so.conf",
-        StaticFileInode::new(b"include /etc/ld.so.conf.d/*.conf\n") as InodeRef);
-    register("/etc/timezone", StaticFileInode::new(b"UTC\n") as InodeRef);
 }
