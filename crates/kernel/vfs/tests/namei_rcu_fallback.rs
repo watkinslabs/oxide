@@ -104,8 +104,7 @@ fn rcu_equals_arc_across_mount() {
 
     let (_, mnt_d) = vfs::path_lookup(root.clone(), root.clone(), "/mnt", LookupFlags::default())
         .expect("resolve /mnt");
-    let id = mount_id_for(&mnt_d, mnt_root);
-    mnt_d.set_mounted_mount(0, Some(id));
+    let _id = mount_id_for(&mnt_d, mnt_root);
 
     let arc = vfs::path_lookup_path(root.clone(), root.clone(), "/mnt/file", LookupFlags::default()).unwrap();
     let lazy = vfs::path_lookup_path(root.clone(), root.clone(), "/mnt/file", rcu()).unwrap();

@@ -206,7 +206,8 @@ fn copy_mnt_ns_keeps_d_mounted_refcount() {
     // dentry, so the D_MOUNTED refcount must rise to 2 (the 2a copy_mnt_ns fix).
     vfs::mount::copy_mnt_ns(H, S);
     assert!(mp.is_mounted(), "clone registered the crossing → flag still set");
-    assert_eq!(mp.mounted_mount(S).is_some(), true, "clone wired the crossing in S");
+    assert!(vfs::mount::__lookup_mnt(vfs::mount::containing_mount_id(S, &mp), &mp).is_some(),
+        "clone wired the crossing in S (strict hash, ns-private parent)");
 
     // Umount in the host ns: the clone in S still pins the mountpoint, so the
     // refcounted flag MUST survive (this is exactly what the per-ns map alone
@@ -214,8 +215,10 @@ fn copy_mnt_ns_keeps_d_mounted_refcount() {
     set_ns(H);
     assert_eq!(vfs::mount::unregister(&mp), 1);
     assert!(mp.is_mounted(), "S clone still holds the mountpoint → D_MOUNTED stays");
-    assert!(mp.mounted_mount(H).is_none(), "host crossing gone");
-    assert!(mp.mounted_mount(S).is_some(), "S crossing intact");
+    assert!(vfs::mount::__lookup_mnt(vfs::mount::containing_mount_id(H, &mp), &mp).is_none(),
+        "host crossing gone");
+    assert!(vfs::mount::__lookup_mnt(vfs::mount::containing_mount_id(S, &mp), &mp).is_some(),
+        "S crossing intact");
 
     // Umount in the private ns: now the LAST holder drops → flag clears.
     set_ns(S);

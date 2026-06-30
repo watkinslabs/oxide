@@ -166,13 +166,12 @@ fn crosses_mount_point() {
     let root_inode = dir(2, &[("mnt", empty_mnt)]);
     let root = Dentry::new_root(root_inode);
 
-    // Resolve /mnt to its canonical dentry, then mark it covered by the
-    // test mount id. The dentry stores only the covering mount identity;
-    // the mount table owns the mounted root.
+    // Resolve /mnt to its canonical dentry, then mount the test fs there
+    // (`register_bind` inserts the `(parent,dentry)` crossing into the strict
+    // mount hash — the walk crosses via `__lookup_mnt`).
     let (_, mnt_d) = vfs::path_lookup(root.clone(), root.clone(), "/mnt", LookupFlags::default())
         .expect("resolve /mnt");
-    let mnt_id = mount_id_for(&mnt_d, mnt_root);
-    mnt_d.set_mounted_mount(0, Some(mnt_id));
+    let _mnt_id = mount_id_for(&mnt_d, mnt_root);
 
     let (i, _) = vfs::path_lookup(root.clone(), root.clone(), "/mnt/file", LookupFlags::default())
         .expect("cross into mount");
@@ -195,8 +194,7 @@ fn crosses_into_mount_and_resolves_per_component() {
 
     let (_, proc_d) = vfs::path_lookup(root.clone(), root.clone(), "/proc", LookupFlags::default())
         .expect("resolve /proc");
-    let mnt_id = mount_id_for(&proc_d, proc_root);
-    proc_d.set_mounted_mount(0, Some(mnt_id));
+    let _mnt_id = mount_id_for(&proc_d, proc_root);
 
     let (i, _) = vfs::path_lookup(root.clone(), root, "/proc/123/stat", LookupFlags::default())
         .expect("cross into procfs mount + resolve per-component");
@@ -447,8 +445,7 @@ fn crosses_mount_on_tree_backed_subtree() {
     // Mount the sub-tree fs ON `/sys` by dentry identity (outer mount).
     let (_, sys_d) = vfs::path_lookup(root.clone(), root.clone(), "/sys", LookupFlags::default())
         .expect("resolve /sys");
-    let sys_mnt = mount_id_for(&sys_d, sys_tree_fs);
-    sys_d.set_mounted_mount(0, Some(sys_mnt));
+    let _sys_mnt = mount_id_for(&sys_d, sys_tree_fs);
 
     // Now resolve the INNER mountpoint dentry the way the late
     // rewire does — a full walk that crosses `/sys` then descends the
@@ -456,8 +453,7 @@ fn crosses_mount_on_tree_backed_subtree() {
     // sub-tree's `fs` dentry.
     let (_, cg_mp) = vfs::path_lookup(root.clone(), root.clone(), "/sys/fs/cgroup", LookupFlags::default())
         .expect("resolve /sys/fs/cgroup mountpoint");
-    let cg_mnt = mount_id_for(&cg_mp, cg_root);
-    cg_mp.set_mounted_mount(0, Some(cg_mnt));
+    let _cg_mnt = mount_id_for(&cg_mp, cg_root);
 
     // A SUBSEQUENT child-path walk must cross into cgroupfs by hitting the
     // SAME cached dentry — proving the mark is canonical / visible.
