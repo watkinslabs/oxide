@@ -149,8 +149,9 @@ fn copy_tree_unbindable_excluded() {
 
 // commit_tree refcount balance: a clone takes ONE `struct mountpoint`
 // (D_MOUNTED) hold on its crossing dentry (`get_mountpoint`), held while mounted
-// and released on detach (`put_mountpoint`). The clone gets a fresh anon SB
-// (distinct `s_root`, `s_active == 1`); the SOURCE submount's SB is untouched.
+// and released on detach (`put_mountpoint`). [Stage 1] The clone SHARES the
+// SOURCE superblock (Linux `clone_mnt`'s `atomic_inc(&sb->s_active)`): the SAME
+// SB instance + root dentry, with one EXTRA active ref dropped on detach.
 #[test]
 fn copy_tree_dmounted_refcount() {
     let _g = guard();
@@ -158,19 +159,20 @@ fn copy_tree_dmounted_refcount() {
     common::register("/rsrc", fs(0xA)).expect("rsrc");
     common::register("/rsrc/a", fs(0xA1)).expect("a");
 
-    let src_active = common::mount_at_path_exact("/rsrc/a").expect("a mount").sb().s_active();
+    let src = common::mount_at_path_exact("/rsrc/a").expect("a mount");
+    let src_active = src.sb().s_active();
     let n = common::bind_submounts_rec("/rsrc", "/rdst");
     assert_eq!(n, 1, "one submount cloned");
     // D_MOUNTED hold taken on the clone's crossing dentry.
     assert!(common::dentry("/rdst/a").is_mounted(), "D_MOUNTED set on the clone crossing");
-    // Source SB active count is NOT perturbed (distinct per-clone anon SB).
-    assert_eq!(common::mount_at_path_exact("/rsrc/a").expect("a mount").sb().s_active(), src_active,
-        "source submount SB active count unchanged by the clone");
-    assert_eq!(common::mount_at_path_exact("/rdst/a").expect("clone").sb().s_active(), 1,
-        "clone has its own fresh anon SB (one active ref)");
+    // The clone shares the source SB instance and took one extra active ref.
+    let clone = common::mount_at_path_exact("/rdst/a").expect("clone");
+    assert!(Arc::ptr_eq(src.sb(), clone.sb()), "clone shares the SOURCE superblock instance");
+    assert_eq!(src.sb().s_active(), src_active + 1,
+        "shared SB took ONE extra active ref for the clone");
 
     common::unregister("/rdst/a");
     assert!(!common::dentry("/rdst/a").is_mounted(), "D_MOUNTED released on detach (put_mountpoint)");
-    assert_eq!(common::mount_at_path_exact("/rsrc/a").expect("a mount").sb().s_active(), src_active,
-        "source SB still balanced after the clone is detached");
+    assert_eq!(src.sb().s_active(), src_active,
+        "extra active ref released on detach (shared SB balanced)");
 }

@@ -397,6 +397,62 @@ fn join_names(names: &[String]) -> String {
     out
 }
 
+/// MOUNT-AWARE relative path of `mp` beneath `stop` (exclusive), starting in the
+/// KNOWN mount `start_mnt`. Unlike [`rel_under`] (which re-derives the crossed
+/// mount from the dentry alone via [`mount_with_root_dentry`] — AMBIGUOUS when an
+/// SB-sharing clone shares one `s_root`, Stage 1), this carries the mount context
+/// up the tree via the EXPLICIT `mnt_parent`/`mnt_mountpoint` links (Linux
+/// `follow_up`): a plain dentry parent step stays in the same mount; at a mount
+/// ROOT it crosses up to that mount's mountpoint dentry in its PARENT. `None` ⇒
+/// `mp` is not under `stop` (when `stop` is `Some`). # C: O(depth)
+fn rel_under_seeded(mp: &Arc<Dentry>, start_mnt: u64, stop: Option<&Arc<Dentry>>) -> Option<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut cur = mp.clone();
+    let mut cur_mnt = start_mnt;
+    loop {
+        if let Some(s) = stop { if Arc::ptr_eq(&cur, s) { return Some(join_names(&names)); } }
+        match cur.parent() {
+            Some(p) => {
+                // Plain parent within the current mount's filesystem.
+                if !cur.name().is_empty() { names.push(cur.name().to_string()); }
+                cur = p.clone();
+            }
+            None => {
+                // At a filesystem ROOT: cross UP via the explicit mount links.
+                let Some(m) = mount_by_id(cur_mnt) else {
+                    return if stop.is_none() { Some(join_names(&names)) } else { None };
+                };
+                let parent = m.parent_id.load(Ordering::Acquire);
+                match m.mountpoint() {
+                    // ns-root mount (self-parent / no mountpoint): walk ends here.
+                    _ if parent == cur_mnt => {
+                        return if stop.is_none() { Some(join_names(&names)) } else { None };
+                    }
+                    Some(mp_d) => { cur = mp_d; cur_mnt = parent; }
+                    None => {
+                        return if stop.is_none() { Some(join_names(&names)) } else { None };
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The mount in `subtree` whose `mnt_root` is the filesystem ROOT containing
+/// dentry `d` (reached by PLAIN parent links) — the mount-aware seed for an
+/// [`rel_under_seeded`] walk from a bare dentry whose containing mount a
+/// dentry-ptr scan cannot pin down (a shared `s_root`). `pivot_root` uses it to
+/// seed `put_old`, which must live inside the new-root subtree. # C: O(depth+N)
+fn mount_owning_dentry_in(d: &Arc<Dentry>, subtree: &[u64]) -> Option<u64> {
+    let mut r = d.clone();
+    while let Some(p) = r.parent() { r = p.clone(); }
+    let rp = dptr(&r);
+    subtree.iter().copied()
+        .filter_map(mount_by_id)
+        .find(|m| m.mnt_root().map(|mr| dptr(&mr) == rp).unwrap_or(false))
+        .map(|m| m.mnt_id)
+}
+
 /// Relative path of `mp` beneath `stop` via PLAIN parent links only (NO mount
 /// crossing). Distinguishes an UNDERLAY child (mounted on a dentry beneath
 /// `stop` in the SAME fs — an MS_MOVE of `stop` relocates it) from an IN-FS
@@ -449,12 +505,24 @@ fn rebuild_ns_index(ns: u64) {
             *m.mnt_mp.lock() = Some(get_mountpoint(&d));
         }
     }
-    // Parent + child links + hash from the wired crossings.
+    // Parent + child links + hash from the wired crossings. The recorded
+    // `parent_id` (the explicit Linux `mnt_parent`) is left intact by the clear
+    // loop above, so the parent-aware derivation below can consult it.
     for m in mounts.iter() {
         match m.mountpoint() {
             None => { m.parent_id.store(m.mnt_id, Ordering::Release); }
             Some(d) => {
-                let parent = parent_by_dentry(ns, &d);
+                let recorded = m.parent_id.load(Ordering::Acquire);
+                let derived = parent_by_dentry(ns, &d);
+                // [Stage 0] PARENT-AWARE: a dentry-ptr scan cannot tell two
+                // mounts that SHARE one `s_root` (an SB-sharing clone, Stage 1)
+                // apart, so when `parent_by_dentry` lands on a mount sharing the
+                // recorded explicit parent's superblock root, trust the recorded
+                // `mnt_parent` (Linux never re-derives it). When they do NOT share
+                // an `s_root`, the parent genuinely moved (a pivot relocation) and
+                // the freshly derived one wins.
+                let parent = if recorded != 0 && recorded != m.mnt_id
+                    && same_sb_root(recorded, derived) { recorded } else { derived };
                 m.parent_id.store(parent, Ordering::Release);
                 if let Some(p) = mount_by_id(parent) {
                     *m.mnt_parent.lock() = Arc::downgrade(&p);
@@ -463,6 +531,20 @@ fn rebuild_ns_index(ns: u64) {
                 hash_insert(parent, dptr(&d), m.mnt_id);
             }
         }
+    }
+}
+
+/// True iff mounts `a` and `b` resolve to the SAME superblock root dentry (or are
+/// the same mount) — the signature of an SB-sharing clone pair that a bare
+/// dentry-ptr scan cannot disambiguate. # C: O(log N)
+fn same_sb_root(a: u64, b: u64) -> bool {
+    if a == b { return true; }
+    match (mount_by_id(a), mount_by_id(b)) {
+        (Some(ma), Some(mb)) => match (ma.sb.s_root(), mb.sb.s_root()) {
+            (Some(ra), Some(rb)) => dptr(&ra) == dptr(&rb),
+            _ => false,
+        },
+        _ => false,
     }
 }
 
@@ -884,21 +966,24 @@ pub struct CloneNode { pub m: Arc<Mount>, pub rel: String }
 /// MakeShared joins peer group `pg`; Slave chains onto `master`'s slave list;
 /// Private stands alone.
 ///
-/// SB handling follows THIS engine's [`build_sb`] (not Linux's literal
-/// `sb->s_active++` share): a dev-backed backend SHARES one `SuperBlock` via
-/// `sget` (the Linux `s_active` share for the same device), while a pseudo /
-/// anon backend gets a FRESH per-clone `SuperBlock` with a DISTINCT `s_root`.
-/// Sharing one anon `s_root` across clones would re-introduce the singleton-
-/// `s_root` ambiguity `rel_under`/`pivot_root` cannot disambiguate (the 203/EXEC
-/// executor-pivot repro) — distinct identity per clone is what this dentry-
-/// identity engine relies on, exactly as `register_bind` already does. # C: O(1)
+/// SB handling is Linux's literal `clone_mnt` share (`atomic_inc(&sb->s_active)`):
+/// the clone SHARES the source `SuperBlock` — and therefore its `s_root` DENTRY —
+/// taking ONE extra active ref ([`SuperBlock::grab_active`]); [`release_clone`] /
+/// `put_super_if_last` drop it. `new_mount` derives the clone's `mnt_root` from
+/// `sb.s_root()`, so the clone presents the SAME root dentry as `src`. This is
+/// identical to the proven `copy_mnt_ns` cross-ns share; the SAME-ns shared-`s_root`
+/// ambiguity it introduces (the 203/EXEC executor-pivot floor) is resolved by the
+/// Stage-0 PARENT-AWARE derivation in [`commit_tree`] / [`rebuild_ns_index`], not
+/// by minting a distinct per-clone `s_root`. # C: O(1)
 pub(super) fn clone_mnt(src: &Arc<Mount>, ty: CloneType, pg: u64, master: &Arc<Mount>, ns: u64)
     -> Arc<Mount> {
     let new_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
-    // [D5] derive the clone's root inode from the source `mnt_root` dentry (the
-    // single source of truth), not a stored per-mount inode copy.
-    let root_inode = src.mnt_root().and_then(|r| r.inode()).or_else(|| src.fs().root());
-    let sb = build_sb(src.fs().clone(), root_inode, src.mount_point_str());
+    // [Stage 1] SHARE the source SB (and its root dentry) with one extra active
+    // ref. The source is live in `MOUNTS`, so its SB is active and `grab_active`
+    // always succeeds (kassert mirrors `copy_mnt_ns`).
+    let sb = src.sb.clone();
+    let grabbed = sb.grab_active();
+    hal::kassert!(grabbed, "clone_mnt: live source SB must grab an active ref");
     let clone = new_mount(sb, src.mount_point_str(), None, 0, new_id, ns);
     clone.flags.store(src.flags.load(Ordering::Acquire), Ordering::Release);
     // Keep only MNT_LOCKED on the copy (Linux `clone_mnt`); drop transient marks.
@@ -995,37 +1080,71 @@ fn mark_dead(dead: &mut Vec<String>, rel: &str) {
 /// slave link are released via [`release_clone`]) — never half-attached. One
 /// [`mntns::bump_gen`] at the end. Returns the count committed. # C: O(N × depth)
 pub(super) fn commit_tree(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>,
-                          fallback: Option<&Arc<Dentry>>, ns: u64) -> usize {
+                          dest_base_mnt: u64, fallback: Option<&Arc<Dentry>>, ns: u64) -> usize {
     let mut committed = 0usize;
     let mut dead: Vec<String> = Vec::new();
+    // [Stage 0] PARENT-AWARE placement (the executor-pivot floor). Track each
+    // committed clone's `(rel, mnt_id, mnt_root)` so a descendant derives its
+    // PARENT from the clone-tree STRUCTURE (the deepest committed `rel` that is a
+    // path-prefix) and its mountpoint from a NO-CROSS descent of that parent
+    // clone's own `mnt_root` — NEVER a dentry-ptr scan (`parent_by_dentry`) nor a
+    // crossing `descend` seeded by `containing_mount_id`, both of which an
+    // SB-sharing clone (a shared `s_root`, Stage 1) conflates with the SOURCE
+    // mount that owns the same dentry. Mirrors [`commit_tree_hashonly`].
+    let mut placed: Vec<(String, u64, Arc<Dentry>)> = Vec::new();
+    // Parent of a TOP-LEVEL node (no committed ancestor): the mount that owns
+    // `dest_base`, supplied explicitly by the caller (the `(parent,dentry)`-known
+    // path). `0` ⇒ derive it by dentry scan (callers without shared-`s_root`
+    // ambiguity, e.g. propagation onto a distinct peer dentry).
+    let base_mnt = if dest_base_mnt != 0 { dest_base_mnt } else { parent_by_dentry(ns, dest_base) };
     'node: for node in nodes.into_iter() {
         let CloneNode { m, rel } = node;
         for d in dead.iter() {
             if rel.starts_with(d.as_str()) { release_clone(&m); continue 'node; }
         }
-        let mp_d = if rel.is_empty() {
-            dest_base.clone()
-        } else {
-            let resolved = descend(dest_base, &rel).or_else(|| fallback.and_then(|f| {
-                if Arc::ptr_eq(f, dest_base) { None } else { descend(f, &rel) }
-            }));
-            match resolved {
-                Some(d) => d,
-                None => { mark_dead(&mut dead, &rel); release_clone(&m); continue; }
+        // Deepest already-committed ancestor clone (longest `rel` path-prefix).
+        let chosen = placed.iter()
+            .filter(|p| p.0.is_empty()
+                || { let mut s = p.0.clone(); s.push('/'); rel.starts_with(&s) })
+            .max_by_key(|p| p.0.len())
+            .map(|p| (p.0.clone(), p.1, p.2.clone()));
+        let (parent_id, mp_d) = match chosen {
+            Some((p_rel, p_id, p_root)) => {
+                // Position WITHIN the parent clone's fs by a no-cross descent of
+                // its `mnt_root` over the rel SUFFIX — lands on the mountpoint
+                // dentry, never crosses the original mount stacked there.
+                let sub = rel[p_rel.len()..].trim_start_matches('/');
+                match descend_nocross(&p_root, sub) {
+                    Some(d) => (p_id, d),
+                    None => { mark_dead(&mut dead, &rel); release_clone(&m); continue; }
+                }
+            }
+            None if rel.is_empty() => (base_mnt, dest_base.clone()),
+            None => {
+                // Top-level node beneath `dest_base` (the mounted root at the
+                // bind target), falling back to the bare `fallback` underlay when
+                // the mounted root cannot resolve the slot.
+                let sub = rel.trim_start_matches('/');
+                let resolved = descend_nocross(dest_base, sub).or_else(|| fallback.and_then(|f| {
+                    if Arc::ptr_eq(f, dest_base) { None } else { descend_nocross(f, sub) }
+                }));
+                match resolved {
+                    Some(d) => (base_mnt, d),
+                    None => { mark_dead(&mut dead, &rel); release_clone(&m); continue; }
+                }
             }
         };
         // RESERVE before any visible state (Linux `count_mounts` in
         // `attach_recursive_mnt`); over the per-ns cap ⇒ skip this node+subtree.
         if mntns::count_mounts(ns, 1).is_err() { mark_dead(&mut dead, &rel); release_clone(&m); continue; }
         let rendered = abs_string(&mp_d);
+        let mnt_root = m.mnt_root();
         // [D28a] one writer-serialized structural region per node (after the
-        // sleeping `descend` resolved `mp_d` above): parent-id derivation +
-        // MOUNTPOINTS + parent/child links + MOUNTS + MOUNT_HASH mutated
-        // atomically w.r.t. other writers. `descend` (sleep) stays OUTSIDE.
-        let parent_id;
+        // sleeping `descend_nocross` resolved `mp_d` above): parent/child links +
+        // MOUNTPOINTS + MOUNTS + MOUNT_HASH mutated atomically w.r.t. other
+        // writers. The (sleeping) descent stays OUTSIDE.
         {
             let _w = MOUNT_WRITE.lock();
-            parent_id = parent_by_dentry(ns, &mp_d);
             *m.mountpoint.lock() = Some(mp_d.clone());
             *m.rendered_path.lock() = rendered;
             m.parent_id.store(parent_id, Ordering::Release);
@@ -1038,6 +1157,8 @@ pub(super) fn commit_tree(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>,
             MOUNTS.lock().insert(m.mnt_id, m.clone());
             hash_insert(parent_id, dptr(&mp_d), m.mnt_id);
         }
+        // Record this node for its own descendants' parent-aware placement.
+        if let Some(r) = mnt_root { placed.push((rel.clone(), m.mnt_id, r)); }
         #[cfg(feature = "debug-mnt")]
         mntcreate_log("commit", m.mnt_id, parent_id, Some(&mp_d), m.mnt_root().as_ref(), Some(&m.sb));
         mntns::commit_mounts(ns, 1);
@@ -1245,6 +1366,12 @@ pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> 
     let nr_id = nr_m.mnt_id;
     let nr_subtree = subtree_ids(ns, nr_id);
     let po_d = put_old.clone();
+    // Mount `put_old` resides on. It must live inside the new-root subtree
+    // (Linux pivot_root requirement), so seed it mount-aware from there; this
+    // pins the otherwise-ambiguous containing mount when the new tree shares an
+    // `s_root` with the old (Stage 1). Fall back to the dentry scan otherwise.
+    let po_mnt = mount_owning_dentry_in(&po_d, &nr_subtree)
+        .unwrap_or_else(|| containing_mount_id(ns, &po_d));
     let old_root_id = root_mount_id(ns);
     // [D20] Linux `pivot_root(2)` safety checks (all -EINVAL):
     //   * the new_root mount must not be MNT_LOCKED
@@ -1263,19 +1390,25 @@ pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> 
             if is_shared(&rp) { return Err(VfsError::Einval); }
         }
     }
-    if let Some(om) = mount_by_id(parent_by_dentry(ns, &po_d)) {
+    if let Some(om) = mount_by_id(po_mnt) {
         if is_shared(&om) { return Err(VfsError::Einval); }
     }
     let mounts = mounts_in_ns(ns);
+    // Position of a PRESERVE-set mount under the new root, MOUNT-AWARE: seed the
+    // upward walk from the mount's own recorded parent (the fs its mountpoint
+    // dentry lives in) so an SB-sharing clone's shared `s_root` does not derail
+    // the crossing chain (Stage 1).
+    let preserve_rel = |m: &Arc<Mount>| -> Option<String> {
+        m.mountpoint().and_then(|d| rel_under_seeded(&d, m.parent_id.load(Ordering::Acquire), nr_mp.as_ref()))
+    };
     let stacking = nr_mp.as_ref().map(|d| Arc::ptr_eq(d, &po_d)).unwrap_or(false)
-        || rel_under(&po_d, nr_mp.as_ref()) == Some(String::new());
+        || rel_under_seeded(&po_d, po_mnt, nr_mp.as_ref()) == Some(String::new());
     if stacking {
         let new_paths: Vec<(u64, String)> = mounts.iter().map(|m| {
             let np = if m.mnt_id == nr_id {
                 String::from("/")
             } else if nr_subtree.contains(&m.mnt_id) {
-                m.mountpoint().and_then(|d| rel_under(&d, nr_mp.as_ref()))
-                    .unwrap_or_else(|| m.mount_point_str())
+                preserve_rel(m).unwrap_or_else(|| m.mount_point_str())
             } else {
                 m.mount_point_str()
             };
@@ -1285,9 +1418,9 @@ pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> 
         if let Some(old) = old_root_id { mntns::chroot_fs_refs(old, nr_id); }
         return Ok(());
     }
-    let old_dst = match rel_under(&po_d, nr_mp.as_ref()) {
+    let old_dst = match rel_under_seeded(&po_d, po_mnt, nr_mp.as_ref()) {
         Some(r) if !r.is_empty() => r,
-        _ if nr_mp.is_none() => rel_under(&po_d, None).unwrap_or_default(),
+        _ if nr_mp.is_none() => rel_under_seeded(&po_d, po_mnt, None).unwrap_or_default(),
         _ => return Err(VfsError::Einval),
     };
     if top_mount_on(ns, &po_d).is_some() { return Err(VfsError::Ebusy); }
@@ -1295,12 +1428,12 @@ pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> 
         let np = if m.mnt_id == nr_id {
             String::from("/")
         } else if nr_subtree.contains(&m.mnt_id) {
-            m.mountpoint().and_then(|d| rel_under(&d, nr_mp.as_ref()))
-                .unwrap_or_else(|| m.mount_point_str())
+            preserve_rel(m).unwrap_or_else(|| m.mount_point_str())
         } else if Some(m.mnt_id) == old_root_id {
             old_dst.clone()
         } else {
-            let abs = m.mountpoint().and_then(|d| rel_under(&d, None))
+            let abs = m.mountpoint()
+                .and_then(|d| rel_under_seeded(&d, m.parent_id.load(Ordering::Acquire), None))
                 .unwrap_or_else(|| m.mount_point_str());
             alloc::format!("{}{}", old_dst, abs)
         };
@@ -1528,7 +1661,10 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
     // private binds, then splice it under the destination base, falling back to
     // the bare `tgt` underlay when the mounted root cannot resolve a slot.
     let nodes = copy_tree(&src_m, &base_mp, CloneType::Private, 0, &src_m, ns, false, Some(tgt));
-    commit_tree(nodes, &tgt_base, Some(tgt), ns)
+    // `tgt_mnt` is the mount whose `mnt_root` is `tgt_base` — the explicit parent
+    // of every top-level cloned submount, threaded so the parent-aware
+    // `commit_tree` need not (ambiguously) re-derive it from the shared dentry.
+    commit_tree(nodes, &tgt_base, tgt_mnt, Some(tgt), ns)
 }
 
 /// `mount(MS_MOVE)`: relocate the mount at dentry `from` (plus its subtree) to
