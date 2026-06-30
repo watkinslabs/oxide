@@ -184,6 +184,14 @@ pub fn link_at(target_path: &[u8], link_path: &[u8]) -> Result<(), vfs::VfsError
 pub fn rename_at(from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
     root().ok_or(vfs::VfsError::Eio)?.rename_at(from, to)
 }
+/// Atomic `RENAME_EXCHANGE` on the root mount. # C: O(N parent entries) + 1 tx
+pub fn exchange_at(a: &[u8], b: &[u8]) -> Result<(), vfs::VfsError> {
+    root().ok_or(vfs::VfsError::Eio)?.exchange_at(a, b)
+}
+/// Atomic `RENAME_WHITEOUT` on the root mount. # C: O(N parent entries) + 1 tx
+pub fn whiteout_at(from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
+    root().ok_or(vfs::VfsError::Eio)?.whiteout_at(from, to)
+}
 
 /// FileSystem trait impl for the ROOT ext4 mount. Unit struct so kmain's
 /// `Arc::new(Ext4RootfsFs)` and `Ext4RootfsFs.root()` keep compiling
@@ -226,6 +234,16 @@ impl vfs::fs::FileSystem for Ext4RootfsFs {
     }
     fn rename(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
         rename_at(from.as_bytes(), to.as_bytes())
+    }
+    /// ext4-native ATOMIC `RENAME_EXCHANGE` (one journaled dirent swap),
+    /// overriding the generic non-atomic 3-step default. # C: O(N) + 1 tx
+    fn exchange(&self, a: &str, b: &str) -> vfs::fs::KResult<()> {
+        exchange_at(a.as_bytes(), b.as_bytes())
+    }
+    /// ext4-native ATOMIC `RENAME_WHITEOUT` (one journaled rename + whiteout
+    /// chardev), overriding the generic two-step default. # C: O(N) + 1 tx
+    fn whiteout(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
+        whiteout_at(from.as_bytes(), to.as_bytes())
     }
 }
 
