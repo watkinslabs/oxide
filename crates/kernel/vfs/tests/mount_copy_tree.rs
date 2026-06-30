@@ -82,6 +82,37 @@ fn copy_tree_recursive_bind() {
     assert!(mounted("/dst/a"), "direct submount cloned and committed");
 }
 
+// D31 same-dentry placement: a NESTED clone is positioned on the SAME source
+// mountpoint dentry (Linux `copy_tree`'s `q->mnt_mountpoint =
+// dget(p->mnt_mountpoint)`), reachable because the parent clone SHARES the source
+// `s_root` (Stage 1) — not re-derived by a path descent.
+#[test]
+fn copy_tree_nested_same_dentry_placement() {
+    let _g = guard();
+    common::register("/", facfs(0x1)).expect("root");
+    common::register("/src", facfs(0xA)).expect("src");
+    common::register("/src/a", facfs(0xA1)).expect("a");
+    common::register("/src/a/b", facfs(0xA2)).expect("b");
+
+    let src_b = common::mount_at_path_exact("/src/a/b").expect("src b mount");
+    let src_b_mp = src_b.mountpoint().expect("src b has a mountpoint dentry");
+
+    let n = common::bind_submounts_rec("/src", "/dst");
+    assert_eq!(n, 2, "direct + nested submount cloned (depth-first)");
+
+    // The nested clone is the child of the /dst/a clone that shares src_b's SB.
+    // (Found via the live table, not path resolution — the factory backend mints
+    // fresh dentries for the walker, which is irrelevant to placement.)
+    let clone_a = common::mount_at_path_exact("/dst/a").expect("direct clone present");
+    let clone_b = vfs::mount::snapshot_all().into_iter()
+        .find(|m| vfs::mount::parent_mnt_id(m) == clone_a.mnt_id
+            && Arc::ptr_eq(m.sb(), src_b.sb()))
+        .expect("nested clone present under /dst/a sharing src b's SB");
+    let clone_b_mp = clone_b.mountpoint().expect("nested clone has a mountpoint dentry");
+    assert!(Arc::ptr_eq(&src_b_mp, &clone_b_mp),
+        "nested clone adopts the SOURCE submount's mountpoint dentry (same-dentry placement)");
+}
+
 // CL_MAKE_SHARED: a mount under a SHARED parent + its propagated peer copy join
 // ONE NEW peer group (distinct from the parent group), and the copy is SHARED.
 #[test]
