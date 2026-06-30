@@ -424,14 +424,32 @@ impl vfs::SuperOps for Ext4SuperOps {
 /// own `RootfsState`; all methods route through `self.st` — the
 /// de-singletonised counterpart to the root `Ext4RootfsFs`. Built via
 /// `Ext4Mount::open`; boot wiring (kmain) adopts it in a later stage.
-pub struct Ext4Mount { pub(super) st: Arc<RootfsState> }
+pub struct Ext4Mount {
+    pub(super) st: Arc<RootfsState>,
+    /// [D6] The backing block device's stable `dev_t` (glibc/`new_encode_dev`
+    /// wire form), when the mount source resolved to a registered disk
+    /// (`lookup_bdev`/by-name). `None` when the source has no resolvable dev_t —
+    /// the rootfs/home binds by virtio serial BEFORE /dev naming settles, so its
+    /// disk index is not cleanly available; that mount keeps a fresh anon SB
+    /// (`dev_id() == None`) rather than mis-keying an `sget` share.
+    dev_t: Option<u64>,
+}
 
 impl Ext4Mount {
-    /// Open `dev` as an independent ext4 mount instance.
-    /// # C: O(N_groups + 1024)
+    /// Open `dev` as an independent ext4 mount instance with NO stable dev_t
+    /// (`dev_id() == None` ⇒ a fresh per-mount anon SuperBlock). Boot rootfs/home
+    /// + fixtures use this. # C: O(N_groups + 1024)
     pub fn open(dev: Arc<dyn block::BlockDevice>) -> block::types::KResult<Arc<Self>> {
+        Self::open_with_dev(dev, None)
+    }
+    /// [D6] Open `dev` carrying its stable block `dev_t` (`Some` ⇒ `dev_id()`
+    /// reports it, so the mount engine keys the `SuperBlock` on `sget`: two mounts
+    /// of the same device share ONE SB with the real `major:minor` `s_dev`).
+    /// # C: O(N_groups + 1024)
+    pub fn open_with_dev(dev: Arc<dyn block::BlockDevice>, dev_t: Option<u64>)
+        -> block::types::KResult<Arc<Self>> {
         let st = RootfsState::open(dev)?;
-        Ok(Arc::new(Self { st }))
+        Ok(Arc::new(Self { st, dev_t }))
     }
     /// Borrow this instance's per-mount state (tests / introspection).
     /// # C: O(1)
@@ -444,6 +462,12 @@ impl vfs::fs::FileSystem for Ext4Mount {
     /// ext4 is block-device backed (Linux `FS_REQUIRES_DEV`): drives the D23
     /// new-mount-API source check + `/proc/filesystems` (no `nodev`). # C: O(1)
     fn fs_flags(&self) -> vfs::fs::FsFlags { vfs::fs::FsFlags::FS_REQUIRES_DEV }
+    /// [D6] The backing device `dev_t` (Linux `get_tree_bdev`'s bdev key) when
+    /// the source resolved to a registered disk — so the mount engine SHARES one
+    /// `SuperBlock` across mounts of the same device via `sget`, with the real
+    /// `major:minor` as `s_dev` (`/proc/self/mountinfo`, `st_dev`). `None` (anon
+    /// SB) when the source has no resolvable dev_t (serial-bound rootfs). # C: O(1)
+    fn dev_id(&self) -> Option<u64> { self.dev_t }
     /// On-disk `s_blocksize` (`1024 << s_log_block_size`). # C: O(1)
     fn block_size(&self) -> u32 { self.st.mount.sb.block_size }
     /// Install live ext4 statfs accounting as this SB's `s_op`. # C: O(1)
