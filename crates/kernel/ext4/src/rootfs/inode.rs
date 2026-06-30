@@ -298,6 +298,7 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
         .nlink(nlink)
         .owner(uid, gid)
         .mapping(mapping)
+        .xattrs(vfs::SimpleXattrs::new())
         .private(data)
         .build()
 }
@@ -570,6 +571,7 @@ pub(crate) fn build_stat_inode(
         .nlink(nlink)
         .rdev(rdev)
         .owner(uid, gid)
+        .xattrs(vfs::SimpleXattrs::new())
         .private(data)
         .build()
 }
