@@ -67,6 +67,63 @@ fn trace_stderr_writev(fd: i32, bytes: &[u8]) {
                     }
                     klog::write_raw(b"\n");
                 }
+
+                // Walk ld.so's link_map chain (the list find_needed loop-1 walks
+                // via l_next) so we see WHERE it breaks / whether libgcc_s is
+                // reachable. Uses the STABLE public ABI: ld.so@INTERP_LOAD_BIAS
+                // 0x40000000; `_r_debug` at file offset 0x37e58 (readelf of this
+                // ld-linux); r_debug.r_map at +8; per link_map l_name at +8,
+                // l_next at +24. Reads are through the running task's active AS
+                // (user pages readable at CPL=0); each node VA is translate-gated
+                // so a bad pointer logs and stops instead of faulting the kernel.
+                #[cfg(target_arch = "x86_64")]
+                {
+                    use hal::{MmuOps, Va};
+                    let rd = |va: u64| -> Option<u64> {
+                        if va < 0x1000 || va >= hal::USER_VA_END { return None; }
+                        // SAFETY: translate is a privileged PT read of the running task's root.
+                        <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::translate(Va(va & !0xfff))?;
+                        // SAFETY: page mapped (translate ok); CPL=0 read of user VA.
+                        Some(unsafe { core::ptr::read_volatile(va as *const u64) })
+                    };
+                    const R_DEBUG_VA: u64 = 0x4000_0000 + 0x0003_7e58;
+                    klog::write_raw(b"[LINKMAP] chain (l_name via r_debug.r_map):\n");
+                    if let Some(mut node) = rd(R_DEBUG_VA + 8) {
+                        let mut n = 0u32;
+                        let mut saw_gcc = false;
+                        while node != 0 && n < 48 {
+                            let name_ptr = rd(node + 8).unwrap_or(0);
+                            klog::write_raw(b"  #"); klog::write_dec_u64(n as u64);
+                            klog::write_raw(b" map="); klog::write_hex_u64(node);
+                            klog::write_raw(b" name=");
+                            if name_ptr != 0 {
+                                // Read up to 96 bytes of the null-terminated l_name.
+                                let mut i = 0u64;
+                                let mut buf = [0u8; 96];
+                                let mut m = 0usize;
+                                while i < 96 {
+                                    // one byte at a time, translate-gated per page boundary
+                                    if (name_ptr + i) & 0xfff == 0 || i == 0 {
+                                        if rd(name_ptr + i).is_none() { break; }
+                                    }
+                                    // SAFETY: page validated at each 4K boundary above; CPL=0 read.
+                                    let b = unsafe { core::ptr::read_volatile((name_ptr + i) as *const u8) };
+                                    if b == 0 { break; }
+                                    buf[m] = b; m += 1; i += 1;
+                                }
+                                klog::write_raw(&buf[..m]);
+                                if buf[..m].windows(9).any(|w| w == b"libgcc_s.") { saw_gcc = true; }
+                            } else { klog::write_raw(b"<null>"); }
+                            klog::write_raw(b"\n");
+                            node = rd(node + 24).unwrap_or(0);   // l_next
+                            n += 1;
+                        }
+                        klog::write_raw(b"[LINKMAP] nodes="); klog::write_dec_u64(n as u64);
+                        klog::write_raw(if saw_gcc { b" libgcc_s=IN-CHAIN\n" } else { b" libgcc_s=MISSING-FROM-CHAIN\n" });
+                    } else {
+                        klog::write_raw(b"[LINKMAP] r_debug.r_map unreadable\n");
+                    }
+                }
             }
         }
     }
