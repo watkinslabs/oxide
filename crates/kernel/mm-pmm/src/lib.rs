@@ -568,6 +568,12 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     /// # Ctx: any; brief IRQ-off
     /// # Lk: Buddy
     pub fn alloc(&self, order: Order) -> KResult<Pfn> {
+        let r = self.alloc_inner(order);
+        if let Ok(pfn) = r { hal::zerotrap::trap_buddy(pfn.0 * 4096, b"ALLOC"); }
+        r
+    }
+
+    fn alloc_inner(&self, order: Order) -> KResult<Pfn> {
         if order.0 > MAX_ORDER { return Err(Error::InvalidOrder); }
         let pfn;
         let o = order.0;
@@ -605,6 +611,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             let p = unsafe { self.backing.page_ptr(Pfn(pfn + k)) };
             // SAFETY: pointer is page-aligned and points to PAGE_SIZE_BYTES
             // of caller-owned memory; no aliasing for the duration.
+            hal::zerotrap::trap((p) as *const u8, (PAGE_SIZE_BYTES as usize) as usize);
             unsafe { core::ptr::write_bytes(p, 0, PAGE_SIZE_BYTES as usize) };
         }
         Ok(Pfn(pfn))
@@ -621,7 +628,9 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     /// # Ctx: any; brief IRQ-off
     /// # Lk: Buddy
     #[track_caller]
+    #[track_caller]
     pub unsafe fn free(&self, pfn: Pfn, order: Order) {
+        hal::zerotrap::trap_buddy(pfn.0 * 4096, b"FREE");
         // Original freeing call-site (via the #[track_caller] chain on
         // free_one_frame / dec_and_maybe_free_frame) — for the double-free
         // diagnostic ring.

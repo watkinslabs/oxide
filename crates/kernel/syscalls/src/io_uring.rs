@@ -141,6 +141,7 @@ impl IoUringInode {
         let pa = pmm::setup::alloc_object_frame()?;
         let va = pa + pmm::user_as::hhdm_offset();
         // SAFETY: HHDM-mapped page just allocated; zero a single 4 KiB region; sole writer until we publish.
+        hal::zerotrap::trap((va as *mut u8) as *const u8, (PAGE as usize) as usize);
         unsafe { core::ptr::write_bytes(va as *mut u8, 0, PAGE as usize); }
         // SAFETY: page just allocated and zeroed; no aliasing; ring_mask + ring_entries fields written through HHDM mapping.
         unsafe {

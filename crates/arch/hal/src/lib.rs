@@ -153,6 +153,7 @@ pub trait Context: Sized {
 // ---------------------------------------------------------------------------
 
 pub mod pt_walker;
+pub mod zerotrap;
 
 pub mod tlb;
 

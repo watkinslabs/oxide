@@ -188,6 +188,7 @@ pub unsafe fn init_from_boot_info(
     let pool_va: *mut u8 = info.hhdm_offset.wrapping_add(chosen.base_pa) as *mut u8;
     // SAFETY: pool memory is RAM (chosen.kind == Usable), HHDM-mapped by the bootloader, page-aligned (Limine memmap entries are page-aligned), and not yet touched by any kernel subsystem because we run before kernel_main hands control to anything else.
     unsafe {
+        hal::zerotrap::trap(pool_va as *const u8, (pool_bytes / 8) as usize);
         core::ptr::write_bytes(pool_va as *mut u64, 0, (pool_bytes / 8) as usize);
     }
 
@@ -462,6 +463,14 @@ pub fn frame_ptr(pa: u64) -> Option<*mut u8> {
 pub unsafe fn inc_ref(pa: u64) {
     if let Some(meta) = page_meta() {
         let pfn = hal::Pfn(pa / 4096);
+        #[cfg(feature = "debug-atexit")]
+        if hal::zerotrap::is_armed(pa) {
+            klog::write_raw(b"[ARMED-INCREF] pa=");
+            klog::write_hex_u64(pa & !0xfff);
+            klog::write_raw(b" rc-before=");
+            klog::write_dec_u64(meta.refcount(pfn).unwrap_or(0) as u64);
+            klog::write_raw(b"\n");
+        }
         let _ = meta.inc_ref(pfn);
         // F157-A1: every `inc_ref` call adds one user PTE to an existing
         // frame (fork child install, shmem MAP_SHARED fault, KernelFrame
@@ -564,6 +573,28 @@ pub fn frame_refcount(pa: u64) -> u32 {
 pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
     let pfn = hal::Pfn(pa / 4096);
     if let Some(meta) = page_meta() {
+        #[cfg(feature = "debug-atexit")]
+        let armed = hal::zerotrap::is_armed(pa);
+        #[cfg(feature = "debug-atexit")]
+        if armed {
+            let loc = core::panic::Location::caller();
+            let rc0 = meta.refcount(pfn).unwrap_or(0);
+            klog::write_raw(b"[ARMED-DEC] pa=");
+            klog::write_hex_u64(pa & !0xfff);
+            klog::write_raw(b" rc-before=");
+            klog::write_dec_u64(rc0 as u64);
+            klog::write_raw(b" ctx=");
+            klog::write_hex_u64(dec_ctx_root());
+            klog::write_raw(b" at ");
+            klog::write_raw(loc.file().as_bytes());
+            klog::write_raw(b":");
+            klog::write_dec_u64(loc.line() as u64);
+            klog::write_raw(b"\n");
+            if rc0 == 1 {
+                // Final release — owner-context = legit; foreign = FWM bug.
+                vmm::tailwatch::note_final_free(pa, dec_ctx_root());
+            }
+        }
         // F157-A1: this drop corresponds to one user PTE being torn down
         // (munmap / AS-teardown leaf / madvise DONTNEED / COW-displaced
         // frame). Decrement the live-mapping count alongside the refcount.
@@ -871,6 +902,25 @@ fn cow_dbg_rmap_report(pa: u64) {
 }
 
 /// Internal: snapshot the metadata array if installed.
+/// debug-atexit: dec context root for [ARMED-DEC]/[FWM-FREE] attribution.
+/// Set by as_teardown (the dying root); 0 = use the current task's mm root.
+#[cfg(feature = "debug-atexit")]
+static DEC_CTX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// # C: O(1)
+#[cfg(feature = "debug-atexit")]
+pub fn set_dec_ctx(root: u64) { DEC_CTX.store(root, core::sync::atomic::Ordering::Release); }
+
+/// # C: O(1)
+#[cfg(feature = "debug-atexit")]
+fn dec_ctx_root() -> u64 {
+    let t = DEC_CTX.load(core::sync::atomic::Ordering::Acquire);
+    if t != 0 { return t; }
+    sched::live::current()
+        .and_then(|c| unsafe { c.mm_ref() }.map(|m| m.root_pa()))
+        .unwrap_or(0)
+}
+
 pub(crate) fn page_meta() -> Option<&'static crate::PageMetaArr> {
     let p = PAGE_META_PTR.load(core::sync::atomic::Ordering::Acquire);
     if p.is_null() { return None; }
@@ -899,6 +949,10 @@ pub fn alloc_contig(order: crate::Order) -> Option<u64> {
 /// # C: O(1) amortised (PMM buddy free).
 #[track_caller]
 pub unsafe fn free_one_frame(pa: u64) {
+    // debug-zerotrap: an armed sentinel frame being FREED while its owning
+    // process still maps it is itself the bug — disarm (the poison/realloc
+    // zeroing that follows is then legit) but leave a trace via trap(0-len).
+    hal::zerotrap::disarm(pa);
     let p = match pmm_static() { Some(p) => p, None => return };
     let pfn = hal::Pfn(pa / 4096);
     // Defense in depth: once PageMeta is installed, a pfn with no slot is
