@@ -1141,19 +1141,36 @@ impl AddressSpace {
                     }
                 }
             }
-            // Shared frame (refcount > 1) or no current mapping:
-            // alloc fresh + copy + install writable + dec_ref shared.
+            // A write-protection fault with NO present leaf is not a real CoW —
+            // there is nothing to copy. Post-normalization (line ~997) it means
+            // the leaf was zapped by a peer CPU of the SAME mm between the
+            // normalization `translate` and the re-read `cur` above — an SMP
+            // TOCTOU the single-`translate` normalization can't see. The old
+            // code fell through and alloc+ZERO-filled a fresh frame, installing
+            // zeros over File / KernelBytes content (the EOF-straddling
+            // .data/.dynamic tail of a freshly-mapped shared library) → ld.so
+            // silently skipped DT_NEEDED deps and tripped dl-version.c's
+            // `needed != NULL` assert. Mirror the read/exec Protection arm
+            // below: flush and let the refault take the NotPresent path, which
+            // reads the correct backing bytes. NEVER zero over backing content.
+            let (src_pa, _) = match cur {
+                Some(c) => c,
+                None => {
+                    let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
+                    // SAFETY: privileged TLB invalidation legal at CPL=0/EL1;
+                    // drops any stale entry so the refault re-reads the backing.
+                    unsafe { M::flush_va(Va(va_page)); }
+                    return Ok(());
+                }
+            };
+            // Shared frame (refcount > 1): alloc fresh + copy the current bytes
+            // + install writable + dec_ref the shared source below.
             let new_pa = alloc_frame().ok_or(Error::NoMem)?;
-            // SAFETY: dst is the freshly-allocated PMM frame's HHDM mirror; src is the previously-mapped frame's HHDM mirror (when present); 4 KiB non-overlapping copy. If no prior leaf was present we zero the new page.
+            // SAFETY: dst is the freshly-allocated PMM frame's HHDM mirror; src is the previously-mapped frame's HHDM mirror; 4 KiB non-overlapping copy.
             unsafe {
                 let dst = (hhdm_offset + new_pa) as *mut u8;
-                if let Some((src_pa, _)) = cur {
-                    let src = (hhdm_offset + (src_pa.0 & !0xfff)) as *const u8;
-                    core::ptr::copy_nonoverlapping(src, dst, PAGE_SIZE_BYTES as usize);
-                } else {
-                    hal::zerotrap::trap((dst) as *const u8, (PAGE_SIZE_BYTES as usize) as usize);
-                    core::ptr::write_bytes(dst, 0, PAGE_SIZE_BYTES as usize);
-                }
+                let src = (hhdm_offset + (src_pa.0 & !0xfff)) as *const u8;
+                core::ptr::copy_nonoverlapping(src, dst, PAGE_SIZE_BYTES as usize);
             }
             let pte_flags = vma.prot.to_page_flags();
             #[cfg(feature = "debug-atexit")]
