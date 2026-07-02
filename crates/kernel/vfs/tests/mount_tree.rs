@@ -206,6 +206,41 @@ fn copy_mnt_ns_isolates_child() {
     assert!(common::mount_root_at("/only-child").is_none(), "parent can't see child's mount");
 }
 
+// (5b) D16: copy_mnt_ns now clones via the shared `clone_mnt` primitive. Pin the
+// CL_* fidelity it inherits: the child clone SHARES the source SuperBlock (one
+// extra `s_active`), a SHARED source is demoted to a SLAVE chained onto the
+// source's slave list (master link set, source group id preserved), and a
+// PRIVATE source clones private.
+#[test]
+fn copy_mnt_ns_clone_mnt_fidelity() {
+    let _g = guard();
+    vfs::mount::set_current_ns_provider(|| 0x140);
+    common::register("/", fs(0x1)).expect("root");
+    common::register("/sh", fs(0x7101)).expect("sh");
+    common::register("/pv", fs(0x7102)).expect("pv");
+    common::set_propagation("/sh", Propagation::Shared).expect("share sh");
+    let sh = common::mount_at_path_exact("/sh").expect("sh mount");
+    let sh_pg = common::peer_group_of("/sh");
+    let sh_active = sh.sb().s_active();
+
+    vfs::mount::copy_mnt_ns(0x140, 0x141);
+    vfs::mount::set_current_ns_provider(|| 0x141);
+
+    let sh_child = common::mount_at_path_exact("/sh").expect("child sh");
+    let pv_child = common::mount_at_path_exact("/pv").expect("child pv");
+    // SB shared with the source (Linux `clone_mnt` `atomic_inc(&sb->s_active)`).
+    assert!(Arc::ptr_eq(sh.sb(), sh_child.sb()), "child clone shares the source SB");
+    assert_eq!(sh.sb().s_active(), sh_active + 1, "clone took one extra s_active");
+    // CL_SLAVE demotion: child is a slave, source group id preserved.
+    assert_eq!(Propagation::from_u8(sh_child.propagation.load(Ordering::Acquire)),
+        Propagation::Slave, "shared source → slave clone");
+    assert_eq!(sh_child.peer_group.load(Ordering::Acquire), sh_pg,
+        "demoted slave keeps the source peer group id");
+    // CL_PRIVATE: a private source stays private.
+    assert_eq!(Propagation::from_u8(pv_child.propagation.load(Ordering::Acquire)),
+        Propagation::Private, "private source → private clone");
+}
+
 // (8) ns reap: when the last task of a child ns exits, its per-ns mounts are
 // detached and the ns object is dropped.
 #[test]

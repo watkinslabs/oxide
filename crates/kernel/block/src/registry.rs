@@ -154,6 +154,21 @@ pub fn major_minor(name: &str, index: u32) -> (u32, u32) {
     (major, index.saturating_sub(1))
 }
 
+/// Pack `(major, minor)` into the glibc/`new_encode_dev` wire `dev_t` form
+/// (`st_rdev`/`i_rdev`) — the inverse of [`by_dev`]'s decode: minor[0..8] |
+/// major[8..20] | minor[20..32]. The canonical 32-bit device id ext4 keys its
+/// shared `SuperBlock` (`s_dev`) on. # C: O(1)
+pub fn encode_dev(major: u32, minor: u32) -> u32 {
+    (minor & 0xff) | ((major & 0xfff) << 8) | ((minor & !0xff) << 12)
+}
+
+/// The packed wire `dev_t` of a registered disk (by name + 1-based index), via
+/// its synthetic [`major_minor`]. # C: O(1)
+pub fn dev_t_of(name: &str, index: u32) -> u32 {
+    let (major, minor) = major_minor(name, index);
+    encode_dev(major, minor)
+}
+
 #[cfg(test)]
 mod sysfs_format_tests {
     use super::*;
@@ -188,12 +203,14 @@ mod sysfs_format_tests {
         use sync::TaskList;
         let dev: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 8);
         let idx = register("bydevvd", dev);
-        let (major, minor) = major_minor("bydevvd", idx);
         // glibc/new_encode_dev wire form the stat ABI (i_rdev) carries.
-        let enc = (minor & 0xff) | ((major & 0xfff) << 8) | ((minor & !0xff) << 12);
+        let enc = dev_t_of("bydevvd", idx);
         let found = by_dev(enc).expect("by_dev resolves the registered disk");
         assert_eq!(found.name, "bydevvd");
         assert_eq!(found.index, idx);
+        // encode_dev ∘ by_dev round-trips the (major,minor) split.
+        let (major, minor) = major_minor("bydevvd", idx);
+        assert_eq!(encode_dev(major, minor), enc, "encode_dev is by_dev's inverse");
         // A dev_t no disk owns (impossible major 0xfff) → None.
         assert!(by_dev(0xfff << 8).is_none(), "unowned dev_t → None");
     }

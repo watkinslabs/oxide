@@ -938,12 +938,15 @@ pub fn register_bind(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Ino
 // mount propagation (`propagate_mnt`) and the MS_REC recursive bind. A clone
 // SHARES the source superblock (one extra `s_active`), copies its option flags
 // + MNT_LOCKED, and carries the requested propagation (CL_MAKE_SHARED / CL_SLAVE
-// / private). POSITION is resolved by the engine's unified crossing-aware
-// resolver (`rel_under` for capture, `descend` for placement) — NOT by reusing
-// the source mountpoint dentry: this engine (and every hosted fixture) positions
-// nested mounts on UNDERLAY dentries reached by descent, so a peer/target lives
-// at a DISTINCT dentry the same-dentry Linux shortcut cannot name. `rel_under`
-// is the same in-fs/underlay-unifying resolver MS_MOVE/pivot_root retain.
+// / private). POSITION: a TOP-LEVEL node's slot lives under a DISTINCT
+// destination fs, resolved by the crossing-aware resolver (`rel_under` for
+// capture, `descend` for placement). A NESTED submount instead lands inside its
+// parent clone's fs — and since the clone SHARES the source `s_root` (Stage 1),
+// the source submount's mountpoint dentry IS that slot: [D31] `commit_tree`
+// adopts it directly (`CloneNode::mp`, Linux `copy_tree`'s `q->mnt_mountpoint =
+// dget(p->mnt_mountpoint)`), keeping the no-cross descent only as a fallback.
+// `rel_under_seeded` is the same resolver MS_MOVE/pivot_root retain for
+// OUT-OF-SUBTREE relocation.
 // ---------------------------------------------------------------------------
 
 /// Propagation type stamped on a [`clone_mnt`] copy (Linux `CL_*` clone flags).
@@ -954,11 +957,21 @@ pub(super) enum CloneType { MakeShared, Slave, Private }
 /// position RELATIVE to the copy's base mountpoint (so [`commit_tree`] can
 /// `descend` it under any destination base). # C: field
 ///
+/// `mp` (D31): the SOURCE submount's mountpoint DENTRY. Because a `clone_mnt`
+/// copy SHARES the source SB and its `s_root` (Stage 1), a NESTED submount's
+/// source mountpoint dentry is a live dentry under its parent clone's `mnt_root`
+/// — so [`commit_tree`] adopts it DIRECTLY (Linux `copy_tree`'s `q->mnt_mountpoint
+/// = dget(p->mnt_mountpoint)` same-dentry placement) instead of re-deriving the
+/// slot by a no-cross path descent (which only CONVERGES with it and can fail to
+/// re-mint). `None` for a TOP-LEVEL node (its slot lives under a DISTINCT
+/// destination fs reached by `descend`, not the source dentry) and degenerate
+/// root-only clones.
+///
 /// `pub` (D24 Stage 1a): an `open_tree(OPEN_TREE_CLONE)` detaches such a node
 /// list into its mount-object fd (`MountObjectInode::detached_tree`), and
 /// `move_mount` later commits it ([`commit_tree_hashonly`]) or fd-close releases
 /// it ([`release_clone_tree`]).
-pub struct CloneNode { pub m: Arc<Mount>, pub rel: String }
+pub struct CloneNode { pub m: Arc<Mount>, pub rel: String, pub mp: Option<Arc<Dentry>> }
 
 /// Linux `clone_mnt`: build a NEW mount over `src`'s backend, copy its option
 /// flags + MNT_LOCKED, and stamp the requested propagation. UNLINKED — no
@@ -1041,8 +1054,10 @@ fn copy_tree_into(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ty: CloneType, pg: u6
                   master: &Arc<Mount>, ns: u64, include_root: bool,
                   exclude: Option<&Arc<Dentry>>, out: &mut Vec<CloneNode>) {
     if include_root {
+        // The copy ROOT is positioned at the destination base (a DISTINCT fs),
+        // never via the source dentry → `mp: None` (commit_tree uses `descend`).
         let rel = src.mountpoint().and_then(|d| rel_under(&d, Some(base_mp))).unwrap_or_default();
-        out.push(CloneNode { m: clone_mnt(src, ty, pg, master, ns), rel });
+        out.push(CloneNode { m: clone_mnt(src, ty, pg, master, ns), rel, mp: None });
     }
     // Snapshot children OUT of the lock before recursing (recursion re-locks).
     let children: Vec<Arc<Mount>> = src.mnt_mounts.lock().iter().cloned().collect();
@@ -1056,7 +1071,10 @@ fn copy_tree_into(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ty: CloneType, pg: u6
         }
         let Some(rel) = rel_under(&child_mp, Some(base_mp)) else { continue; };
         if rel.is_empty() { continue; }
-        out.push(CloneNode { m: clone_mnt(child, ty, pg, master, ns), rel });
+        // [D31] Record the source submount's mountpoint dentry: it is shared into
+        // every clone of its parent (Stage 1 `s_root` share), so commit_tree can
+        // place this nested clone on it directly (Linux same-dentry placement).
+        out.push(CloneNode { m: clone_mnt(child, ty, pg, master, ns), rel, mp: Some(child_mp.clone()) });
         copy_tree_into(child, base_mp, ty, pg, master, ns, false, exclude, out);
     }
 }
@@ -1098,7 +1116,7 @@ pub(super) fn commit_tree(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>,
     // ambiguity, e.g. propagation onto a distinct peer dentry).
     let base_mnt = if dest_base_mnt != 0 { dest_base_mnt } else { parent_by_dentry(ns, dest_base) };
     'node: for node in nodes.into_iter() {
-        let CloneNode { m, rel } = node;
+        let CloneNode { m, rel, mp } = node;
         for d in dead.iter() {
             if rel.starts_with(d.as_str()) { release_clone(&m); continue 'node; }
         }
@@ -1110,11 +1128,18 @@ pub(super) fn commit_tree(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>,
             .map(|p| (p.0.clone(), p.1, p.2.clone()));
         let (parent_id, mp_d) = match chosen {
             Some((p_rel, p_id, p_root)) => {
-                // Position WITHIN the parent clone's fs by a no-cross descent of
-                // its `mnt_root` over the rel SUFFIX — lands on the mountpoint
-                // dentry, never crosses the original mount stacked there.
-                let sub = rel[p_rel.len()..].trim_start_matches('/');
-                match descend_nocross(&p_root, sub) {
+                // [D31] Linux `copy_tree` same-dentry placement: the parent clone
+                // SHARES the source parent's SB (Stage 1), so the recorded source
+                // mountpoint dentry (`mp`) IS a live slot under the parent clone's
+                // `mnt_root` — adopt it directly (`q->mnt_mountpoint =
+                // dget(p->mnt_mountpoint)`). Fall back to a no-cross descent of the
+                // rel SUFFIX (which only CONVERGES with `mp`) for a degenerate node
+                // that recorded none.
+                let placed_d = mp.clone().or_else(|| {
+                    let sub = rel[p_rel.len()..].trim_start_matches('/');
+                    descend_nocross(&p_root, sub)
+                });
+                match placed_d {
                     Some(d) => (p_id, d),
                     None => { mark_dead(&mut dead, &rel); release_clone(&m); continue; }
                 }
@@ -1209,7 +1234,7 @@ pub fn clone_mount_tree(src: &Arc<Mount>, recursive: bool) -> Vec<CloneNode> {
     let ns = current_ns();
     let Some(base_mp) = src.mountpoint().or_else(global_root) else {
         // No base dentry (degenerate): root-only clone with empty rel.
-        return alloc::vec![CloneNode { m: clone_mnt(src, CloneType::Private, 0, src, ns), rel: String::new() }];
+        return alloc::vec![CloneNode { m: clone_mnt(src, CloneType::Private, 0, src, ns), rel: String::new(), mp: None }];
     };
     let mut nodes = copy_tree(src, &base_mp, CloneType::Private, 0, src, ns, true, None);
     if !recursive && nodes.len() > 1 {
@@ -1247,7 +1272,7 @@ pub fn commit_tree_hashonly(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>) -> u
     // descendants' parent + base without consulting the (un-clobbered) map.
     let mut placed: Vec<(String, u64, Arc<Dentry>)> = Vec::new();
     'node: for node in nodes.into_iter() {
-        let CloneNode { m, rel } = node;
+        let CloneNode { m, rel, mp } = node;
         for d in dead.iter() {
             if rel.starts_with(d.as_str()) { release_clone(&m); continue 'node; }
         }
@@ -1263,8 +1288,12 @@ pub fn commit_tree_hashonly(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>) -> u
             let Some((p_rel, p_id, p_root)) = chosen else {
                 mark_dead(&mut dead, &rel); release_clone(&m); continue;
             };
-            let sub = rel[p_rel.len()..].trim_start_matches('/');
-            match descend_nocross(&p_root, sub) {
+            // [D31] same-dentry placement (shared `s_root`); descend fallback.
+            let placed_d = mp.clone().or_else(|| {
+                let sub = rel[p_rel.len()..].trim_start_matches('/');
+                descend_nocross(&p_root, sub)
+            });
+            match placed_d {
                 Some(d) => (p_id, d),
                 None => { mark_dead(&mut dead, &rel); release_clone(&m); continue; }
             }
@@ -1562,42 +1591,33 @@ pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
     // `rebuild_ns_index` does NOT self-lock — it is covered by this hold.
     let _w = MOUNT_WRITE.lock();
     for m in src.iter() {
-        let new_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
-        // Linux `clone_mnt`: the clone shares the source SB, so take an extra
-        // active ref (`atomic_inc(&sb->s_active)`). The source mount is live in
-        // `MOUNTS`, so its SB is active and `grab_active` always succeeds.
-        let grabbed = m.sb.grab_active();
-        hal::kassert!(grabbed, "copy_mnt_ns: live source SB must grab an active ref");
-        let clone = new_mount(
-            m.sb.clone(), m.mount_point_str(), m.mountpoint(),
-            0, new_id, to_ns,
-        );
-        clone.flags.store(m.flags.load(Ordering::Acquire), Ordering::Release);
-        // Linux `clone_mnt` keeps MNT_LOCKED on the copy so a child userns cannot
-        // reveal a locked submount by unmounting it; transient marks are dropped.
-        clone.mnt_internal_flags.store(
-            m.mnt_internal_flags.load(Ordering::Acquire) & MNT_LOCKED, Ordering::Release);
+        // [D16] Reuse the shared `clone_mnt` primitive (CL_* fidelity) instead of
+        // a hand-rolled inline duplicate: it shares the source SB (one extra
+        // `s_active` + kassert), copies the option flags + MNT_LOCKED, and stamps
+        // the requested propagation. Per the existing copy_mnt_ns CL_SLAVE
+        // demotion, a SHARED source is demoted to a SLAVE of itself (CL_SLAVE: the
+        // clone receives parent-ns events but its own mounts stay private to the
+        // child ns); every other source is cloned PRIVATE (CL_PRIVATE).
         let prop = Propagation::from_u8(m.propagation.load(Ordering::Acquire));
-        match prop {
+        let clone = match prop {
             Propagation::Shared => {
-                // The clone becomes a slave of the SOURCE shared mount: it
-                // receives parent-ns events but its own mounts stay private to
-                // the child ns (containment). master link + master's slave list.
-                clone.propagation.store(Propagation::Slave as u8, Ordering::Release);
-                clone.peer_group.store(m.peer_group.load(Ordering::Acquire), Ordering::Release);
-                *clone.mnt_master.lock() = Arc::downgrade(m);
-                m.mnt_slave_list.lock().push(Arc::downgrade(&clone));
+                let c = clone_mnt(m, CloneType::Slave, 0, m, to_ns);
+                // Keep the source group id on the demoted slave (the slave knows
+                // which peer group it slaves to) — the inline path's behaviour.
+                c.peer_group.store(m.peer_group.load(Ordering::Acquire), Ordering::Release);
+                c
             }
-            _ => {
-                clone.propagation.store(prop as u8, Ordering::Release);
-                clone.peer_group.store(0, Ordering::Release);
-            }
-        }
+            _ => clone_mnt(m, CloneType::Private, 0, m, to_ns),
+        };
+        // Cross-ns clone is 1:1: keep the SAME mountpoint dentry (`clone_mnt`
+        // leaves it UNLINKED); `rebuild_ns_index` reparents from it below. The
+        // rendered path string is already set by `clone_mnt` (`mount_point_str`).
+        *clone.mountpoint.lock() = m.mountpoint();
         // [D25] the clone of the SOURCE ns-root mount becomes the new ns root,
         // identified by the source's self-parent `is_root()` (the clone's own
         // self-parent is stamped later by `rebuild_ns_index`'s `None` arm).
-        if m.is_root() { mntns::ns_set_root(to_ns, new_id); }
-        MOUNTS.lock().insert(new_id, clone);
+        if m.is_root() { mntns::ns_set_root(to_ns, clone.mnt_id); }
+        MOUNTS.lock().insert(clone.mnt_id, clone);
     }
     // Account the cloned mounts into the new ns (Linux `copy_mnt_ns` sums
     // `nr_mounts` over the copied tree). The ns COPY itself is not bounded by
