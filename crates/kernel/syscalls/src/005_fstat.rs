@@ -48,6 +48,20 @@ pub fn sys_fstat(args: &SyscallArgs) -> i64 {
     let size = st.size as i64;
     let blocks = st.blocks;
     let dev = crate::namei_common::fsid_to_dev(st.fsid);
+    // DIAG (debug-atexit): ld.so dedups DSOs by fstat (st_dev, st_ino) — log
+    // every ext4-file fstat so unstable dev or colliding ino shows in the boot log.
+    #[cfg(feature = "debug-atexit")]
+    if (ino >> 48) == 0x6e54 {
+        klog::write_raw(b"[SOSTAT] tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" fd=");
+        klog::write_dec_u64(fd as u64);
+        klog::write_raw(b" ino=");
+        klog::write_hex_u64(ino);
+        klog::write_raw(b" dev=");
+        klog::write_hex_u64(dev);
+        klog::write_raw(b"\n");
+    }
     let nlink = st.nlink;
     let blksize = st.blksize;
     let at = st.atime_ns;

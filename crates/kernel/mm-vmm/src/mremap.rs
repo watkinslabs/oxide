@@ -103,22 +103,48 @@ impl AddressSpace {
         if !maymove && !fixed {
             return Err(Error::NoMem);
         }
+        // Linux mremap MOVES the vma: the destination keeps the SOURCE's
+        // prot, flags, and backing (file off shifted by the intra-vma
+        // delta). Forcing Anonymous|PRIVATE|RW here (the old behavior)
+        // dropped file backing (never-faulted moved pages read ZERO instead
+        // of file content), dropped EXEC, and broke MAP_SHARED visibility.
+        // Linux requires the moved range to lie within one vma — enforce it.
+        let src_vma = self.find_vma(old).ok_or(Error::Inval)?;
+        if old.as_u64() + old_size as u64 > src_vma.end.as_u64() {
+            return Err(Error::Inval);
+        }
+        let delta = old.as_u64() - src_vma.start.as_u64();
+        let moved_backing = match &src_vma.backing {
+            VmaBacking::File { backing, off } =>
+                VmaBacking::File { backing: backing.clone(), off: off + delta },
+            VmaBacking::KernelBytes { data, off } =>
+                VmaBacking::KernelBytes { data: data.clone(), off: off + delta as usize },
+            b => b.clone(),
+        };
         let hint = if fixed { new_addr.or(Some(old)) } else { None };
         let new_va = self.mmap(
             hint,
             new_size,
-            VmaProt::READ | VmaProt::WRITE,
-            VmaFlags::ANONYMOUS | VmaFlags::PRIVATE,
-            VmaBacking::Anonymous,
+            src_vma.prot,
+            src_vma.flags,
+            moved_backing,
             fixed,
         )?;
         let copy_len = core::cmp::min(old_size, new_size);
         let dst = new_va.as_u64();
-        // SAFETY: both regions live in the caller's AS, validated by mmap/munmap above; CPL=0 reads/writes through the caller's active PT.
-        unsafe {
-            for i in 0..copy_len {
-                let v = core::ptr::read_volatile((old.as_u64() + i as u64) as *const u8);
-                core::ptr::write_volatile((dst + i as u64) as *mut u8, v);
+        // Migrate DIRTY private data: the dest's own demand-faults refill
+        // clean pages from the (preserved) backing, but pages the process
+        // already wrote exist only in the source's private frames. Byte-copy
+        // through user VAs — only when the mapping is writable (an RO
+        // mapping cannot hold private dirty data; writing the dest would
+        // fault a read-only PTE at CPL=0).
+        if src_vma.prot.contains(VmaProt::WRITE) {
+            // SAFETY: both regions live in the caller's AS, validated by mmap/munmap above; CPL=0 reads/writes through the caller's active PT.
+            unsafe {
+                for i in 0..copy_len {
+                    let v = core::ptr::read_volatile((old.as_u64() + i as u64) as *const u8);
+                    core::ptr::write_volatile((dst + i as u64) as *mut u8, v);
+                }
             }
         }
         let _ = self.munmap(old, old_size);

@@ -12,8 +12,11 @@ pub fn sys_mprotect(args: &SyscallArgs) -> i64 {
     use hal::UserVirtAddr;
     use syscall::errno::Errno;
     let addr = args.a0;
-    let len  = args.a1 as usize;
+    // Linux PAGE_ALIGNs len up; len==0 succeeds as a no-op.
+    let len  = ((args.a1 as usize) + 0xfff) & !0xfff;
     let prot = args.a2 as u32;
+    if (addr & 0xfff) != 0 { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
+    if len == 0 { return 0; }
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     // SAFETY: mm slot single-mutator per `13§5`.
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return 0 };
@@ -32,6 +35,7 @@ pub fn sys_mprotect(args: &SyscallArgs) -> i64 {
             unsafe { pmm::user_as::mprotect_pages(mm.root_pa(), addr, len, vp); }
             0
         }
-        Err(_) => -(Errno::Einval.as_i32() as i64),
+        // Linux: an unmapped hole inside the range is ENOMEM (not EINVAL).
+        Err(_) => -(Errno::Enomem.as_i32() as i64),
     }
 }

@@ -51,6 +51,27 @@ pub(crate) struct Ext4FrameStore {
     me: Spinlock<Weak<Ext4FrameStore>, TaskListClass>,
     /// One-shot: registered in the global dirty list (on first dirty).
     registered: AtomicBool,
+    /// DIAG (debug-fillverify): checksum of each page at fill time,
+    /// re-verified on every read of a still-clean page. Distinguishes
+    /// lower-layer read nondeterminism ([FILLRACE], caught at fill) from a
+    /// later wild write to the cached frame ([FRAME-CORRUPT], caught at read).
+    #[cfg(feature = "debug-fillverify")]
+    sums: Spinlock<BTreeMap<u64, u64>, TaskListClass>,
+}
+
+/// DIAG: cheap 64-bit FNV-ish page checksum over the HHDM mirror. # C: O(PG)
+#[cfg(feature = "debug-fillverify")]
+fn page_sum(base: *const u8) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    // SAFETY: caller passes a live HHDM frame mirror; reads stay within PG.
+    unsafe {
+        let words = base as *const u64;
+        for i in 0..(PG / 8) {
+            h ^= core::ptr::read_volatile(words.add(i));
+            h = h.wrapping_mul(0x100000001b3);
+        }
+    }
+    h
 }
 
 impl Ext4FrameStore {
@@ -62,6 +83,8 @@ impl Ext4FrameStore {
             dirty: Spinlock::new(BTreeSet::new()),
             me: Spinlock::new(Weak::new()),
             registered: AtomicBool::new(false),
+            #[cfg(feature = "debug-fillverify")]
+            sums: Spinlock::new(BTreeMap::new()),
         });
         *s.me.lock() = Arc::downgrade(&s);
         s
@@ -78,6 +101,7 @@ impl Ext4FrameStore {
         let base = pmm::setup::frame_ptr(pa).ok_or(())?;
         // SAFETY: pa is a freshly-allocated PMM frame owned here; the HHDM
         // mirror is writable; PG is the page granule.
+        hal::zerotrap::trap((base) as *const u8, (PG) as usize);
         unsafe { core::ptr::write_bytes(base, 0, PG); }
         let bs = self.st.mount.sb.block_size.max(1) as u64;
         let bpp = (PG as u64 / bs).max(1) as u32;
@@ -95,6 +119,18 @@ impl Ext4FrameStore {
                 Err(crate::MountError::NotFound) => {} // sparse hole → stays zero
                 Err(_) => return Err(()),
             }
+        }
+        // Linux zeroes the page-cache page past EOF: the last on-disk block
+        // extends beyond i_size and its tail bytes are stale disk garbage a
+        // MAP_SHARED mapper would otherwise see raw.
+        let size = dinode.size;
+        let page_start = idx * PG as u64;
+        if size > page_start && size < page_start + PG as u64 {
+            let valid = (size - page_start) as usize;
+            // SAFETY: pa owned here; [valid, PG) within the frame's HHDM mirror.
+            // SAFETY: same bounds as the write_bytes below — [valid, PG) within the frame's HHDM mirror.
+            hal::zerotrap::trap(unsafe { base.add(valid) } as *const u8, PG - valid);
+            unsafe { core::ptr::write_bytes(base.add(valid), 0, PG - valid); }
         }
         Ok(())
     }
@@ -114,6 +150,35 @@ impl Ext4FrameStore {
             unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
             return None;
         }
+        // DIAG (debug-fillverify): verify the fill is reproducible — fill a second
+        // frame from the same blocks and compare. A mismatch = the block/extent
+        // layer returned different bytes for the same page back-to-back.
+        #[cfg(feature = "debug-fillverify")]
+        let mut fsum = 0u64;
+        #[cfg(feature = "debug-fillverify")]
+        if let Some(base) = pmm::setup::frame_ptr(pa) {
+            fsum = page_sum(base);
+            if let Some(pa2) = pmm::setup::alloc_object_frame() {
+                if self.fill_page(dinode, idx, pa2).is_ok() {
+                    if let Some(base2) = pmm::setup::frame_ptr(pa2) {
+                        let s2 = page_sum(base2);
+                        if s2 != fsum {
+                            klog::write_raw(b"[FILLRACE] ino=");
+                            klog::write_dec_u64(self.ino as u64);
+                            klog::write_raw(b" idx=");
+                            klog::write_dec_u64(idx);
+                            klog::write_raw(b" s1=");
+                            klog::write_hex_u64(fsum);
+                            klog::write_raw(b" s2=");
+                            klog::write_hex_u64(s2);
+                            klog::write_raw(b"\n");
+                        }
+                    }
+                }
+                // SAFETY: pa2 is the diag scratch frame (refcount 1, unmapped).
+                unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa2); }
+            }
+        }
         let mut g = self.pages.lock();
         if let Some(&existing) = g.get(&idx) {
             drop(g);
@@ -123,6 +188,9 @@ impl Ext4FrameStore {
             return Some(existing);
         }
         g.insert(idx, pa);
+        drop(g);
+        #[cfg(feature = "debug-fillverify")]
+        self.sums.lock().insert(idx, fsum);
         Some(pa)
     }
 
@@ -155,6 +223,26 @@ impl Ext4FrameStore {
             let pgoff = (cur % PG as u64) as usize;
             let pa = match self.ensure_page(&dinode, idx) { Some(p) => p, None => break };
             let base = pmm::setup::frame_ptr(pa).ok_or(())?;
+            // DIAG (debug-fillverify): a clean page must still match its fill-time
+            // checksum; a mismatch = something wrote the cached frame since fill.
+            #[cfg(feature = "debug-fillverify")]
+            if !self.dirty.lock().contains(&idx) {
+                if let Some(&want) = self.sums.lock().get(&idx) {
+                    let got = page_sum(base);
+                    if got != want {
+                        klog::write_raw(b"[FRAME-CORRUPT] ino=");
+                        klog::write_dec_u64(self.ino as u64);
+                        klog::write_raw(b" idx=");
+                        klog::write_dec_u64(idx);
+                        klog::write_raw(b" want=");
+                        klog::write_hex_u64(want);
+                        klog::write_raw(b" got=");
+                        klog::write_hex_u64(got);
+                        klog::write_raw(b"\n");
+                        self.sums.lock().insert(idx, got);
+                    }
+                }
+            }
             let want = (dst.len() - written).min(PG - pgoff).min((total - cur) as usize);
             if want == 0 { break; }
             // SAFETY: pa is an inode-owned frame kept alive for this read by
@@ -184,6 +272,8 @@ impl Ext4FrameStore {
                     // SAFETY: pa is an inode-owned resident frame; [pgoff,
                     // pgoff+chunk) ⊆ [0, PG); src slice is distinct.
                     unsafe { core::ptr::copy_nonoverlapping(src[done..].as_ptr(), base.add(pgoff), chunk); }
+                    #[cfg(feature = "debug-fillverify")]
+                    self.sums.lock().remove(&idx); // DIAG: legit write(2) patch
                 }
             }
             done += chunk;
@@ -234,12 +324,17 @@ impl Ext4FrameStore {
         }
         let mut d = self.dirty.lock();
         d.retain(|&i| i < lo || i >= hi);
+        drop(d);
+        #[cfg(feature = "debug-fillverify")]
+        self.sums.lock().retain(|&i, _| i < lo || i >= hi);
         n
     }
 
     // ── internals ────────────────────────────────────────────────────────
 
     fn mark_dirty(&self, idx: u64) {
+        #[cfg(feature = "debug-fillverify")]
+        self.sums.lock().remove(&idx); // DIAG: page may legitimately change now
         self.dirty.lock().insert(idx);
         if !self.registered.swap(true, Ordering::AcqRel) {
             if let Some(arc) = self.me.lock().upgrade() { register(&arc); }

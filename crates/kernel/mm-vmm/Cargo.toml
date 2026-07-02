@@ -14,6 +14,7 @@ sync      = { path = "../../shared/sync" }
 bitflags  = { version = "2", default-features = false }
 
 [features]
+debug-atexit = []  # loader-corruption probes ([FILLTAIL] EOF-straddling fill trace)
 default = []
 hosted  = []
 debug-mount = []  # [mnt] FFAULT-LOCK: log libc lock-page VA on File-fault (correlate with zap tracer)

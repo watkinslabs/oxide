@@ -350,6 +350,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         procfs::hooks::set_boot_unix_secs_hook(syscalls::time::boot_unix_seconds);
         procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot_current, syscalls::hostname::set_current);
         procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
+        // debug-zerotrap: give the [ZEROTRAP] logger a current-tid getter.
+        hal::zerotrap::set_tid_hook(zerotrap_tid);
         ::devfs::set_current_hooks(sched::live::current_mount_ns, sched::live::current_chroot_root);
         // device-model Stage C: wire the devtmpfs side of `drv::device_add`
         // BEFORE the built-in /dev registrants run below (console/mem/drm/fbdev
@@ -1080,3 +1082,7 @@ mod tests {
         assert_ne!(BootMemKind::Usable as u8, BootMemKind::BadMem as u8);
     }
 }
+
+
+/// debug-zerotrap tid getter (fn-pointer, no capture). # C: O(1)
+fn zerotrap_tid() -> u32 { sched::live::current().map(|c| c.tid).unwrap_or(0) }

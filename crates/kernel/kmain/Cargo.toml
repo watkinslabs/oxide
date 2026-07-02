@@ -98,12 +98,13 @@ debug-mnt = ["syscalls/debug-mount", "vfs/debug-mnt"]  # mount-family syscall fa
 debug-noreclaim = ["pmm/debug-noreclaim"]  # DIAG: leak freed frames — confirm free-while-mapped aliasing is the wedge.
 debug-fwm = ["pmm/debug-fwm"]  # DIAG: [FWM] pinpoint the free-while-mapped caller at as_teardown.
 debug-leak-teardown = ["pmm/debug-leak-teardown"]  # BISECT premature-free path
-debug-cow = ["pmm/debug-cow", "vmm/debug-cow"]  # runtime COW-corruption detector ([COW-CORRUPT]/[COW-LEAK]/[COW-RC]/[POISON]) — checksum RO-shared anon frames, poison freed frames, assert refcount==live-PTE
+debug-cow = ["pmm/debug-cow", "vmm/debug-cow"]
+debug-fillverify = ["ext4/debug-fillverify"]  # ext4 page-cache integrity ([FILLRACE]/[FRAME-CORRUPT])  # runtime COW-corruption detector ([COW-CORRUPT]/[COW-LEAK]/[COW-RC]/[POISON]) — checksum RO-shared anon frames, poison freed frames, assert refcount==live-PTE
 debug-no-cow-fast = ["vmm/debug-no-cow-fast"]  # TEST: disable COW fast-path
 debug-no-fork-shared = ["vmm/debug-no-fork-shared"]  # TEST
 debug-no-shmem = ["vmm/debug-no-shmem"]  # TEST
 debug-shortfill = ["vmm/debug-shortfill"]  # [SHORT-FILE-FAULT] B240: log File demand-fault short read_at on a non-EOF page (partial fill = ld.so exit 127)
 debug-eager-fork = ["syscalls/debug-eager-fork"]  # TEST
-debug-atexit = ["syscalls/debug-atexit"]  # targeted dynamic-loader stderr / atexit probes
+debug-atexit = ["syscalls/debug-atexit", "vmm/debug-atexit", "pmm/debug-atexit", "hal/debug-zerotrap"]  # targeted dynamic-loader stderr / atexit probes
 debug-trace = ["kmacros/debug-trace", "console/debug-trace", "smoke/debug-trace", "syscalls/debug-trace", "pci-boot/debug-trace"]  # structured dtrace! probes — direct UART emit bypassing klog/lock (CAT-wedge-class debugging)
 debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-cgroup","debug-modules","debug-syscall","sched/debug-syscall"]

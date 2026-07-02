@@ -308,6 +308,56 @@ impl VmaTree {
         Ok(())
     }
 
+    /// Set/clear VmaFlags over `[start, end)`, splitting at boundaries —
+    /// the madvise fork-behavior core (MADV_DONTFORK/DOFORK/WIPEONFORK/
+    /// KEEPONFORK, Linux madvise_update_vma). Holes are SKIPPED (Linux
+    /// madvise walks present VMAs; ENOMEM-for-hole is the caller's call).
+    /// # C: O(K log N)
+    pub fn update_flags_range(
+        &mut self,
+        start: UserVirtAddr,
+        end:   UserVirtAddr,
+        set:   crate::vma::VmaFlags,
+        clear: crate::vma::VmaFlags,
+    ) {
+        if start.as_u64() >= end.as_u64() { return; }
+        let mut keys: Vec<UserVirtAddr> = Vec::new();
+        for (k, v) in self.map.range(..end) {
+            if v.end.as_u64() > start.as_u64() { keys.push(*k); }
+        }
+        for k in keys {
+            let v = self.map.remove(&k).expect("collected key");
+            let v_start = v.start.as_u64();
+            let v_end   = v.end.as_u64();
+            let s = start.as_u64().max(v_start);
+            let e = end.as_u64().min(v_end);
+            if v_start < s {
+                let lend = UserVirtAddr::new(s).expect("UVA in range");
+                let left = v.clone_subrange(v.start, lend);
+                self.map.insert(left.start, left);
+            }
+            let ms = UserVirtAddr::new(s).expect("UVA in range");
+            let me = UserVirtAddr::new(e).expect("UVA in range");
+            let mut mid = v.clone_subrange(ms, me);
+            mid.flags.insert(set);
+            mid.flags.remove(clear);
+            let mid_key = mid.start;
+            self.map.insert(mid_key, mid);
+            if e < v_end {
+                let rstart = UserVirtAddr::new(e).expect("UVA in range");
+                let right = v.clone_subrange(rstart, v.end);
+                self.map.insert(right.start, right);
+            }
+            self.try_merge_left(mid_key);
+            let after_left = if self.map.contains_key(&mid_key) {
+                mid_key
+            } else {
+                self.map.range(..mid_key).next_back().map(|(k, _)| *k).unwrap_or(mid_key)
+            };
+            self.try_merge_right(after_left);
+        }
+    }
+
     /// Audit hook: verify invariant 1 (non-overlap, `11§2`) over the
     /// entire tree. Used by tests and by the `debug-vmm` cargo feature
     /// (`11§13`). Returns `Err(Inval)` on the first violation.

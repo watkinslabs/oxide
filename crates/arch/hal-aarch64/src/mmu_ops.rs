@@ -96,6 +96,7 @@ pub unsafe fn new_user_l0() -> Option<u64> {
     // observe this frame yet.
     unsafe {
         let dst = (hhdm.wrapping_add(pa)) as *mut u64;
+        hal::zerotrap::trap((dst) as *const u8, (512) as usize);
         core::ptr::write_bytes(dst, 0, 512);
     }
     Some(pa)

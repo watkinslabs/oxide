@@ -183,6 +183,12 @@ pub struct BlkState {
     /// in-flight `busy` gate, under lock. Held only for brief shadow
     /// mutations — never across a sleep.
     inflight:     Spinlock<RingShadow, DriverLockClass>,
+    /// Set when a completion TIMED OUT: the device still owns the fixed
+    /// descriptors + the shared bounce frame, so reusing them would race the
+    /// late DMA (a previous request's bytes served as another's — silent
+    /// wrong-data corruption). Once poisoned every subsequent request fails
+    /// EIO; the turn is never released.
+    poisoned:     core::sync::atomic::AtomicBool,
 }
 
 // Single-in-flight by design (drivers-plan D7c, deliberate — NOT a façade).
@@ -243,8 +249,25 @@ impl BlkState {
         // Claim the single in-flight slot (spins then sleeps until free),
         // run the request, then release the slot + wake the next submitter
         // on EVERY path so an error never strands the device busy.
+        if self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
+            return Err(BlockError::Eio);
+        }
         self.acquire_turn();
+        if self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
+            // Poisoned while we waited: the ring/bounce belong to the wedged
+            // request forever; do not touch them.
+            return Err(BlockError::Eio);
+        }
         let r = self.do_request(h, type_, sector, data, is_in, is_flush, data_len);
+        if matches!(r, Err(BlockError::Eio))
+            && self.poisoned.load(core::sync::atomic::Ordering::Acquire)
+        {
+            // Timeout path set `poisoned`: keep the turn held so the late DMA
+            // target stays quarantined; wake waiters so they observe poison.
+            #[cfg(target_os = "oxide-kernel")]
+            BLK_COMPL.wake_all();
+            return r;
+        }
         self.release_turn();
         r
     }
@@ -382,7 +405,13 @@ impl BlkState {
             }
             #[cfg(target_os = "oxide-kernel")]
             {
-                if now_ns() >= deadline { return Err(BlockError::Eio); }
+                if now_ns() >= deadline {
+                    // Late completion may still DMA into the bounce frame —
+                    // poison the device so no request ever reuses it.
+                    self.poisoned.store(true, core::sync::atomic::Ordering::Release);
+                    klog::write_raw(b"[BLK-TIMEOUT] device poisoned, used stuck\n");
+                    return Err(BlockError::Eio);
+                }
                 if spun < IO_SPIN_BUDGET { spun += 1; core::hint::spin_loop(); }
                 else { park_blk(); }
             }
@@ -402,6 +431,7 @@ impl BlkState {
         #[cfg(target_os = "oxide-kernel")]
         let mut spun: u64 = 0;
         loop {
+            if self.poisoned.load(core::sync::atomic::Ordering::Acquire) { return; }
             {
                 let mut g = self.inflight.lock();
                 if !g.busy { g.busy = true; return; }
@@ -577,6 +607,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
         serial:       [0u8; blk::BLK_SERIAL_LEN],
         bounce_pa,
         inflight:     Spinlock::new(RingShadow { avail_idx: seed, used_seen: seed, busy: false }),
+        poisoned:     core::sync::atomic::AtomicBool::new(false),
     };
 
     // Read the real serial via GET_ID (device-writable 20-byte buffer).

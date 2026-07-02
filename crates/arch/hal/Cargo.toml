@@ -8,4 +8,8 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
+klog = { path = "../../shared/klog" }
 bitflags = { version = "2", default-features = false }
+
+[features]
+debug-zerotrap = []  # [ZEROTRAP] armed-frame zero-write trap (names the zeroing call site)

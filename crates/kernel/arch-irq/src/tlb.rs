@@ -130,6 +130,11 @@ fn shootdown(va: u64, mask: u64) {
         core::hint::spin_loop();
         spins = spins.wrapping_add(1);
         if spins > 1_000_000_000 {
+            // A target CPU never ACKed — it keeps a STALE TLB entry, which
+            // is silent memory corruption waiting to happen. Name it loudly.
+            klog::write_raw(b"[TLB-MISSED-FLUSH] pending=");
+            klog::write_hex_u64(PENDING.load(Ordering::Acquire));
+            klog::write_raw(b"\n");
             PENDING.store(0, Ordering::Release);
             break;
         }
