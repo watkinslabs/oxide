@@ -1269,33 +1269,6 @@ impl AddressSpace {
                 if (0x7ffff6000000..0x7ffff8000000).contains(&va_page) {
                     crate::tailwatch::log_install(b"anon", 0, 0, va_page, pa, self.root_pa);
                 }
-                // SAFETY: privileged PT read of the running task's active root —
-                // re-check the leaf AFTER the frame is prepared. Linux
-                // finish_fault re-validates the pte before install.
-                let present_now = unsafe { M::translate(Va(va_page)) };
-                if present_now.is_some() {
-                    // LOST-WRITE GUARD (the ld.so link_map corruption): the
-                    // normalization at the top saw translate()==None and routed
-                    // this WRITE here to demand-zero, but a populated leaf is
-                    // present NOW — installing our zero frame would drop the
-                    // page's live content (an `l->l_next = new` store →
-                    // orphaned link_map → `needed != NULL`). This is a spurious
-                    // write-fault (stale TLB / already-populated). Abandon the
-                    // zero frame, refresh permissions from the VMA prot in place,
-                    // and retry the store against the REAL frame.
-                    #[cfg(feature = "debug-watchdog")]
-                    {
-                        klog::write_raw(b"[LOSTWRITE-AVERTED] anon spurious zero va=");
-                        klog::write_hex_u64(va_page);
-                        klog::write_raw(b" real_pa="); klog::write_hex_u64(present_now.unwrap().0 & !(PAGE_SIZE_BYTES - 1));
-                        klog::write_raw(b"\n");
-                    }
-                    dec_ref(pa);   // release the unused fresh zero frame
-                    let (rpa, _) = present_now.unwrap();
-                    // SAFETY: same-PA permission refresh to the VMA prot; M::map self-flushes; frame already owned + mapped here.
-                    unsafe { M::map(Va(va_page), Pa(rpa.0 & !(PAGE_SIZE_BYTES - 1)), pte_flags, PageSize::P4K); }
-                    return Ok(());
-                }
                 // SAFETY: va_page is the page-aligned faulting user-half VA per find_containing; pa is a fresh PMM frame; flags carry USER for the leaf U bit per `11§5` to_pte_flags; MmuOps state initialised by the live per-arch impl.
                 // F157-A1: a demand fault normally installs over an empty slot
                 // (`None`); if a stale present leaf is displaced, dec_ref it so
