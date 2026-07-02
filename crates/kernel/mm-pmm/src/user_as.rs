@@ -1347,6 +1347,16 @@ pub fn glue_mmap(
 /// don't get yanked from the peer.
 /// # C: O(pages)
 pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
+    // DIAG (debug-syscall): a MADV_DONTNEED/FREE zap of a lib-arena page while a
+    // thread holds a lock there (finding #4) loses the in-flight lock/unlock
+    // write on refault. Log the range so it can be correlated with a spin.
+    #[cfg(feature = "debug-syscall")]
+    if (0x7ffff6000000..0x7ffff8000000).contains(&addr) {
+        klog::write_raw(b"[ZAPEVICT] addr="); klog::write_hex_u64(addr);
+        klog::write_raw(b" len="); klog::write_hex_u64(len);
+        klog::write_raw(b" tid="); klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+        klog::write_raw(b"\n");
+    }
     use syscall::errno::Errno;
     use hal::{MmuOps, PageSize, Va};
     if addr == 0 || len == 0 || (addr & 0xfff) != 0 {
@@ -1407,6 +1417,14 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
 /// → free PA back to PMM → flush_va. Then removes the VMA(s).
 /// # C: O(pages) PT walk + O(K log N) VMA remove
 pub fn glue_munmap(addr: u64, len: u64) -> i64 {
+    // DIAG (debug-syscall): a munmap zap of a lib-arena page (finding #4).
+    #[cfg(feature = "debug-syscall")]
+    if (0x7ffff6000000..0x7ffff8000000).contains(&addr) {
+        klog::write_raw(b"[ZAPMUNMAP] addr="); klog::write_hex_u64(addr);
+        klog::write_raw(b" len="); klog::write_hex_u64(len);
+        klog::write_raw(b" tid="); klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+        klog::write_raw(b"\n");
+    }
     use syscall::errno::Errno;
     use hal::{MmuOps, PageSize, Va};
     if len == 0 || (addr & 0xfff) != 0 {

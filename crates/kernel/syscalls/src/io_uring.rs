@@ -95,6 +95,20 @@ pub struct IoUring {
     pub cq_tail: AtomicU32,
 }
 
+impl Drop for IoUring {
+    /// Release the ring's kernel page (audit #9: `alloc_object_frame` at
+    /// `IoUring::new` bumped the object refcount but nothing dropped it, so the
+    /// frame leaked per ring). Any user mmap of the ring balances its own
+    /// inc_ref/AS-teardown dec around this object ref. # C: O(1)
+    fn drop(&mut self) {
+        if self.page_pa != 0 {
+            // SAFETY: page_pa was alloc_object_frame'd in IoUring::new (object
+            // refcount 1, mapcount 0); release exactly that object reference.
+            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(self.page_pa); }
+        }
+    }
+}
+
 const PAGE: u64 = 4096;
 
 /// Layout for the kernel page:

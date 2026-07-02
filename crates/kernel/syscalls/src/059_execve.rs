@@ -253,6 +253,18 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
     // MMAP_BASE_GAP (128 MiB) below the stack reservation bottom.
     new_as.set_mmap_base(EXEC_USER_STACK_VA.saturating_sub(vmm::MMAP_BASE_GAP));
 
+    // de_thread (audit #5, Linux `begin_new_exec` -> `de_thread`): a
+    // multithreaded process that execve's must TERMINATE its sibling threads
+    // before adopting the new image — otherwise the siblings keep running on
+    // the (now-abandoned) old address space, a POSIX/Linux violation. Done
+    // here, past the point where the new image is confirmed loadable so a
+    // failed exec doesn't kill threads. SIGKILL is marked now; the siblings
+    // (which cannot be running on this UP CPU while we hold it IRQ-off through
+    // execve) die when next scheduled. The old AS stays alive via their Arc
+    // refs until then, so no use-after-free. No-op for the single-threaded
+    // fork+exec children that dominate the boot path.
+    sched::live::zap_other_threads();
+
     // 3. Replace `current.mm` with the new AS and activate it.
     //    Order: activate BEFORE replace_mm so CR3 doesn't dangle
     //    if drop runs concurrently — but on UP single-CPU the
@@ -570,6 +582,11 @@ pub(crate) fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u
         return -(Errno::Enomem.as_i32() as i64);
     }
     new_as.set_mmap_base(EXEC_USER_STACK_VA.saturating_sub(vmm::MMAP_BASE_GAP));
+
+    // de_thread (audit #5, Linux `begin_new_exec` -> `de_thread`): kill the
+    // sibling threads before adopting the new image. See the x86 path above for
+    // the full rationale. No-op for single-threaded fork+exec children.
+    sched::live::zap_other_threads();
 
     // 3. Replace cur.mm + activate the new AS.
     // mm_cpumask (Linux): execve's direct activate bypasses the scheduler, so
