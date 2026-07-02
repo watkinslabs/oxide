@@ -26,6 +26,50 @@ fn trace_stderr_writev(fd: i32, bytes: &[u8]) {
     if n == 0 || bytes[n - 1] != b'\n' {
         klog::write_raw(b"\n");
     }
+
+    // On the ld.so `_dl_check_map_versions` assertion (needed != NULL), dump the
+    // failing process's full VMA layout so library placement (overlap / wrong
+    // load bias / missing map) can be inspected directly — the loader scope is
+    // built from exactly these mappings. `off`/ino per File VMA identifies the
+    // library and confirms the file->va offset. # C: O(N_vmas)
+    let is_verassert = bytes.windows(9).any(|w| w == b"needed !=")
+        || bytes.windows(12).any(|w| w == b"Inconsistenc");
+    if is_verassert {
+        if let Some(c) = sched::live::current() {
+            // SAFETY: running task on this CPU; sole mm reader here.
+            if let Some(mm) = unsafe { c.mm_ref() } {
+                klog::write_raw(b"[VMADUMP] tid=");
+                klog::write_dec_u64(c.tid as u64);
+                klog::write_raw(b" root="); klog::write_hex_u64(mm.root_pa());
+                klog::write_raw(b"\n");
+                let mut prev_end = 0u64;
+                for v in mm.snapshot_vmas() {
+                    klog::write_raw(b"  [");
+                    klog::write_hex_u64(v.start.as_u64());
+                    klog::write_raw(b",");
+                    klog::write_hex_u64(v.end.as_u64());
+                    klog::write_raw(b") prot=");
+                    klog::write_hex_u64(v.prot.bits() as u64);
+                    // Overlap with the previous (ascending) VMA = the smoking gun.
+                    if v.start.as_u64() < prev_end {
+                        klog::write_raw(b" **OVERLAP prev_end=");
+                        klog::write_hex_u64(prev_end);
+                        klog::write_raw(b"**");
+                    }
+                    prev_end = v.end.as_u64();
+                    match &v.backing {
+                        vmm::VmaBacking::File { backing, off } => {
+                            klog::write_raw(b" File ino="); klog::write_hex_u64(backing.ino());
+                            klog::write_raw(b" off="); klog::write_hex_u64(*off);
+                        }
+                        vmm::VmaBacking::Anonymous => klog::write_raw(b" Anon"),
+                        _ => klog::write_raw(b" Other"),
+                    }
+                    klog::write_raw(b"\n");
+                }
+            }
+        }
+    }
 }
 
 /// `sys_writev(fd, iov, iovcnt)` — slot 20. fd_table-routed
