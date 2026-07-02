@@ -26,18 +26,32 @@ pub fn sys_madvise(args: &SyscallArgs) -> i64 {
         Some(u) => u, None => return -(Errno::Einval.as_i32() as i64),
     };
     match advice {
-        8 if mm.find_vma(ua).map_or(false, |v| !matches!(v.backing, vmm::VmaBacking::Anonymous)) => {
-            // Linux: MADV_FREE applies to private anonymous memory only.
-            -(Errno::Einval.as_i32() as i64)
+        8 => {
+            // MADV_FREE: private anonymous memory only. Linux walks EVERY
+            // vma in [addr, addr+len) and rejects EINVAL on any non-anon
+            // vma, ENOMEM on a hole. A single find_vma(addr) check only saw
+            // the START vma, letting a range crossing into a file-backed vma
+            // through — the fall-through arm then zapped its pages (bug_002).
+            let end = addr.wrapping_add(len as u64);
+            let mut va = addr;
+            while va < end {
+                let u = match UserVirtAddr::new(va) { Some(u) => u, None => return -(Errno::Einval.as_i32() as i64) };
+                match mm.find_vma(u) {
+                    None => return -(Errno::Enomem.as_i32() as i64),
+                    Some(v) if !matches!(v.backing, vmm::VmaBacking::Anonymous) => return -(Errno::Einval.as_i32() as i64),
+                    Some(v) => va = v.end.as_u64(),
+                }
+            }
+            let _ = (cur, mm);
+            pmm::user_as::evict_pages_in_range(addr, len as u64)
         }
-        4 | 8 | 9 => {
-            // F128: MADV_DONTNEED / MADV_FREE / MADV_REMOVE. Linux
-            // drops physical pages but keeps the VMA — anonymous
-            // refaults as zero, file-backed refaults from disk.
-            // Prior impl destructively munmap+mmap, which dropped
-            // VMA-specific flags (GROWSDOWN, file backing) and
-            // could corrupt COW-shared frames. The new helper does
-            // refcount-aware page eviction without touching VMAs.
+        4 | 9 => {
+            // F128: MADV_DONTNEED / MADV_REMOVE. Linux drops physical pages
+            // but keeps the VMA — anonymous refaults as zero, file-backed
+            // refaults from disk. Prior impl destructively munmap+mmap, which
+            // dropped VMA-specific flags (GROWSDOWN, file backing) and could
+            // corrupt COW-shared frames. The new helper does refcount-aware
+            // page eviction without touching VMAs.
             let _ = (cur, mm); // suppress unused warnings on this branch
             pmm::user_as::evict_pages_in_range(addr, len as u64)
         }
