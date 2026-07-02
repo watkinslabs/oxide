@@ -85,6 +85,42 @@ lib actually present in ns 0 while still asserting. So the "chain drops a node"
 observations from mid-session are partly artifact — do not treat them as fact.
 The assert is real; its exact trigger is not yet nailed.
 
+## UPDATE 2026-07-02 (further narrowing — read before re-chasing)
+
+New disproofs + one positive lead this session:
+
+| Hypothesis | Verdict this session |
+|---|---|
+| Cross-CPU / SMP race in the fault path | **Ruled out.** Assert reproduces at **smp=1** (oneboot.sh / Makefile default `SMP=1`) — boot-verified. A single-core, IRQ-off, non-sleeping fault handler has no interleave point. |
+| Short-read / `read_at` partial fill leaving a zero tail | **Not firing.** `debug-atexit` boot: `[SIZE-DESYNC]`=0, all 34 `[FILLTAIL]` are legit EOF straddles (`valid == fsize−foff` exactly), `[MAPZERO]`=known-benign BSS tail. |
+| Transiently-small `size_hint`/i_size | **Not firing** (`[SIZE-DESYNC]`=0). |
+| Frame reuse / stale content | Still ruled out (`debug-noreclaim` STILL asserts → every alloc fresh-zeroed). |
+| Layout / ASLR variation | **N/A** — oxide has **no ASLR** (`PIE_LOAD_BIAS`/`INTERP_LOAD_BIAS` fixed consts, `exec/src/lib.rs:130,136`). Load addresses identical every boot ⇒ nondeterminism is **not** layout. |
+
+**Positive lead (from ld.so's own `LD_DEBUG=versions,scopes,files` trace, injected in
+`059_execve.rs:160` under `debug-atexit`, captured via `[DYNERR]`):** the assert is
+`find_needed(vn_file) → NULL` at the **version-check** stage — `checking for version
+'X' in file Y required by file libsystemd-shared`, Y a version-provider dep
+(libcrypt/libmount/libselinux/libpam/libm/libgcc_s…). **Every dep is mapped**
+("generating link map" for all), yet libsystemd-shared's search scope lacks one
+loaded provider at check time; the **failing Y varies** boot-to-boot. ⇒ a
+**link-scope / `_ns_loaded` namespace-membership** effect in the loader stage —
+memory intact, objects loaded, but scope/searchlist wrong. NOT content corruption.
+
+Nondeterminism at smp=1 + fixed layout ⇒ driven by **fault/syscall ORDERING**
+(timer-preemption-scheduled interleave of the generators' fork/exec/mmap/openat
+sequence), not data. Next decisive instrument: a **clean** (non-char-interleaved)
+capture of the `scopes` dump, or a direct trace of `_dl_map_object_deps` /
+`_ns_loaded` membership vs `l_searchlist.r_list[]` at the assert, using stable
+pointers. Read glibc `_dl_map_object_deps` + `_dl_check_map_versions` against
+oxide's exact openat/fstat/mmap/close ordering.
+
+Related fix landed this session (NOT the blocker): PR #2303 — a real latent **SMP**
+write-protection TOCTOU that zero-filled over File/KernelBytes backing (the exact
+historical mechanism of this assert), with a deterministic repro test
+(`mm-vmm/src/tests_ldso_toctou.rs`). Cannot fire at smp=1, so it does not explain
+this blocker; kept as a standalone correctness fix.
+
 ## Where to look next (inspection is exhausted; needs a new modality)
 
 The bug is nondeterministic, memory-intact, and survives full kernel-path
