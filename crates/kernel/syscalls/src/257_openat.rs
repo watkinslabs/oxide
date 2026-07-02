@@ -298,6 +298,10 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     // → `i_count` never reaches 0 on the live inode. For an O_TMPFILE (nlink==0)
     // the File's hold is then the SOLE holder, so close → 1→0 → evict.
     let created_ref = if created { Some(inode.clone()) } else { None };
+    // DIAG (debug-atexit): capture ino before the move so a .so open can be
+    // logged — the same path resolving to different inos across calls = lookup race.
+    #[cfg(feature = "debug-atexit")]
+    let probe_ino = if path_str.contains(".so") { Some(inode.ino()) } else { None };
     let file = File::new_at(inode, dentry, oflags, mnt_id, crate::pathresolve::current_cred());
     if let Some(i) = created_ref { vfs::file::iput(i); }
     // RLIMIT_NOFILE soft limit caps fd allocation (Linux `__alloc_fd`
@@ -308,6 +312,19 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         Ok(fd)  => {
             if (flags & OpenFlags::O_CLOEXEC.bits()) != 0 {
                 if let Err(e) = fdt.set_cloexec(fd, true) { return -(e as i64); }
+            }
+            #[cfg(feature = "debug-atexit")]
+            if let Some(pino) = probe_ino {
+                let tail = if path_str.len() > 28 { &path_str[path_str.len() - 28..] } else { path_str };
+                klog::write_raw(b"[SOOPEN] tid=");
+                klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+                klog::write_raw(b" fd=");
+                klog::write_dec_u64(fd as u64);
+                klog::write_raw(b" ino=");
+                klog::write_hex_u64(pino);
+                klog::write_raw(b" p=");
+                klog::write_raw(tail.as_bytes());
+                klog::write_raw(b"\n");
             }
             fd as i64
         }
