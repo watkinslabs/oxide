@@ -518,7 +518,6 @@ pub fn tx_frame(frame: &[u8]) -> Result<usize, TxErr> {
     unsafe {
         let dst = d.tx_buf_va as *mut u8;
         hal::zerotrap::trap((dst) as *const u8, (VIRTIO_NET_HDR_LEN) as usize);
-        hal::zerotrap::trap((dst) as *const u8, (VIRTIO_NET_HDR_LEN) as usize);
         core::ptr::write_bytes(dst, 0, VIRTIO_NET_HDR_LEN);
         if !frame.is_empty() {
             core::ptr::copy_nonoverlapping(

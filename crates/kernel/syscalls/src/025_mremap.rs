@@ -23,9 +23,11 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
     const MREMAP_FIXED:     u64 = 2;
     const MREMAP_DONTUNMAP: u64 = 4;
     let old      = args.a0;
-    // Linux PAGE_ALIGNs both sizes up; unaligned inputs are legal.
-    let old_size = ((args.a1 as usize) + 0xfff) & !0xfff;
-    let new_size = ((args.a2 as usize) + 0xfff) & !0xfff;
+    // Linux PAGE_ALIGNs both sizes up; unaligned inputs are legal. A size in
+    // the top page of usize wraps the +0xfff to 0 (a false no-op/zero size) —
+    // reject with ENOMEM as Linux does when end overflows past TASK_SIZE.
+    let old_size = match (args.a1 as usize).checked_add(0xfff) { Some(v) => v & !0xfff, None => return -(Errno::Enomem.as_i32() as i64) };
+    let new_size = match (args.a2 as usize).checked_add(0xfff) { Some(v) => v & !0xfff, None => return -(Errno::Enomem.as_i32() as i64) };
     let flags    = args.a3;
     let new_addr = args.a4;
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Einval.as_i32() as i64) };
@@ -41,6 +43,22 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
     // PTEs must be torn down here or the new mapping silently aliases the
     // old frames (present leaves never fault).
     if (flags & MREMAP_FIXED) != 0 && new_addr != 0 {
+        // Linux mremap is atomic: a source error (unaligned/hole/multi-VMA/
+        // zero size) must leave the caller's destination mapping intact.
+        // Validate the source FIRST — glue_munmap frees the destination's
+        // frames, so tearing it down before mremap_full's checks would
+        // silently destroy live data on an error return (bug_006). Mirror
+        // mremap_full's own move-path guards. Shrink (new_size < old_size)
+        // never touches new_addr in mremap_full, so it is skipped here.
+        if old == 0 || (old & 0xFFF) != 0 || new_size == 0 {
+            return -(Errno::Einval.as_i32() as i64);
+        }
+        if new_size >= old_size {
+            match mm.find_vma(old_ua) {
+                Some(v) if old.wrapping_add(old_size as u64) <= v.end.as_u64() => {}
+                _ => return -(Errno::Einval.as_i32() as i64),
+            }
+        }
         let _ = pmm::user_as::glue_munmap(new_addr, new_size as u64);
     }
     match mm.mremap_full(old_ua, old_size, new_size,

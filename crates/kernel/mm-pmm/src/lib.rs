@@ -628,7 +628,6 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     /// # Ctx: any; brief IRQ-off
     /// # Lk: Buddy
     #[track_caller]
-    #[track_caller]
     pub unsafe fn free(&self, pfn: Pfn, order: Order) {
         // wrapping_mul: an out-of-range/garbage pfn (u64::MAX) must reach the
         // range kassert below, not panic here with an overflow message.
