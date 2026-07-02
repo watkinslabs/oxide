@@ -637,14 +637,21 @@ pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
                     vmm::debug_cow::forget(pa);
                 }
             }
-            // LOUD over-dec detection: dec on a refcount-0 frame wraps to a huge
-            // value — a PTE was torn down whose inc_ref was never paired (the
-            // under-count root) OR a frame was dec'd twice. Names the frame.
-            #[cfg(feature = "debug-watchdog")]
+            // Over-dec detection: dec on a refcount-0 frame wraps to a huge
+            // value — a PTE torn down whose inc_ref was never paired, or a
+            // double-dec. Audit #11: the SELF-HEAL (reset rc/mc to 0, do NOT
+            // free-into-a-wrapped-count) must run in PRODUCTION too, not just
+            // debug builds — otherwise a stray underflow wraps mapcount to
+            // ~u32::MAX in release with no recovery, permanently pinning the
+            // frame (and, worse, a wrapped refcount would never re-hit 0 to
+            // free). The klog stays debug-gated (no steady-state noise).
             if new > 0x8000_0000 {
-                klog::write_raw(b"[REFBUG] dec-underflow pa="); klog::write_hex_u64(pa);
-                klog::write_raw(b" new="); klog::write_hex_u64(new as u64);
-                klog::write_raw(b"\n");
+                #[cfg(feature = "debug-watchdog")]
+                {
+                    klog::write_raw(b"[REFBUG] dec-underflow pa="); klog::write_hex_u64(pa);
+                    klog::write_raw(b" new="); klog::write_hex_u64(new as u64);
+                    klog::write_raw(b"\n");
+                }
                 if let Some(m) = meta.get(pfn) {
                     m.refcount.store(0, core::sync::atomic::Ordering::Release);
                     m.mapcount.store(0, core::sync::atomic::Ordering::Release);

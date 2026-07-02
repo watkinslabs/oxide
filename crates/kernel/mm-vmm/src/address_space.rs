@@ -1618,6 +1618,27 @@ impl AddressSpace {
                     klog::write_raw(b"\n");
                 }
                 let pte_flags = vma.prot.to_page_flags();
+                // Linux `finish_fault` pte_same/!pte_none re-check (mm/memory.c):
+                // `backing.read_at` above SLEEPS on the block device (ext4 ->
+                // virtio-blk park_blk -> schedule()), so a PEER THREAD of this
+                // same mm (CLONE_VM) can fault the SAME va while we sleep,
+                // ALSO fill a frame, and install FIRST. Linux re-takes the pte
+                // lock after the sleeping ->fault and, if a racer already
+                // populated the slot, FREES its own page and does NOT install.
+                // Oxide has no ptl; the minimal correct equivalent is: if the
+                // slot is now present, back off — the racer's frame (identical
+                // file content) stands, and clobbering it would (a) revert the
+                // racer's retired user store and (b) free the racer's live
+                // frame (the libcap `.bss` lock-byte lost-write / frame-reuse
+                // bug). Only install into a still-empty slot.
+                // SAFETY: privileged PT read of the running task's active root.
+                if unsafe { M::translate(Va(va_page)) }.is_some() {
+                    // A racer won while we slept in read_at — free our unused
+                    // fill frame and adopt the racer's install (retry the
+                    // faulting instruction, which will now hit the present PTE).
+                    dec_ref(pa);
+                    return Ok(());
+                }
                 // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
                 // F157-A1: dec_ref any frame displaced by a stale present leaf.
                 if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {

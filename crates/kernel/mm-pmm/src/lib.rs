@@ -630,7 +630,9 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     #[track_caller]
     #[track_caller]
     pub unsafe fn free(&self, pfn: Pfn, order: Order) {
-        hal::zerotrap::trap_buddy(pfn.0 * 4096, b"FREE");
+        // wrapping_mul: an out-of-range/garbage pfn (u64::MAX) must reach the
+        // range kassert below, not panic here with an overflow message.
+        hal::zerotrap::trap_buddy(pfn.0.wrapping_mul(4096), b"FREE");
         // Original freeing call-site (via the #[track_caller] chain on
         // free_one_frame / dec_and_maybe_free_frame) — for the double-free
         // diagnostic ring.

@@ -30,6 +30,21 @@ pub fn sys_readlink(args: &SyscallArgs) -> i64 {
 }
 
 pub(crate) fn readlink_resolved_path(path_s: &str, buf_ptr: u64, bufsize: u64) -> i64 {
+    // DIAG (debug-syscall): the intermittent boot wedge shows a process looping
+    // on readlink=-22 (EINVAL). Log the path every Nth call so the spun path is
+    // symbolizable (which symlink the process wrongly sees as a non-symlink, or
+    // which path it re-resolves forever).
+    #[cfg(feature = "debug-syscall")]
+    {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        if N.fetch_add(1, Ordering::Relaxed) % 2000 == 0 {
+            let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);
+            klog::write_raw(b"[RLTRACE] tid="); klog::write_dec_u64(tid as u64);
+            klog::write_raw(b" path="); klog::write_raw(path_s.as_bytes());
+            klog::write_raw(b"\n");
+        }
+    }
     // proc-link family first (/proc/self/exe etc) — not backed by Inode::readlink.
     // Otherwise resolve via the dentry walk with no_follow_final=true: Linux
     // readlink follows INTERMEDIATE symlinks in the path but returns the FINAL
