@@ -18,7 +18,14 @@ fn trace_stderr_writev(fd: i32, bytes: &[u8]) {
         n = 512;
     }
 
-    klog::write_raw(b"[DYNERR] ");
+    // Tag each fragment with the writing tid: glibc splits one LD_DEBUG line
+    // across several writes and multiple processes interleave, so an untagged
+    // stream is unreconstructable. `[DYNERR t=<tid>]` lets a post-pass demux
+    // per-process and read the exact `vn_file` of the last "checking for
+    // version" line before each assert.
+    klog::write_raw(b"[DYNERR t=");
+    if let Some(c) = sched::live::current() { klog::write_dec_u64(c.tid as u64); }
+    klog::write_raw(b"] ");
     klog::write_raw(&bytes[..n]);
     if n < bytes.len() {
         klog::write_raw(b"...<truncated>");
