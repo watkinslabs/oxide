@@ -1352,6 +1352,14 @@ impl AddressSpace {
                 // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
                 // F157-A1: dec_ref any frame displaced by a stale present leaf.
                 if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                    // LOST-WRITE (kbytes/file arm, ALL ranges incl brk + ld.so
+                    // .bss): a demand fault installed over a PRESENT leaf → the
+                    // displaced page's live content was dropped. va identifies
+                    // the range (0x1000_0000 exe/brk, 0x4003_xxxx ld.so .bss).
+                    #[cfg(feature = "debug-watchdog")]
+                    { klog::write_raw(b"[LOSTWRITE] demand-install displaced present va=");
+                      klog::write_hex_u64(va_page); klog::write_raw(b" old_pa=");
+                      klog::write_hex_u64(old.0 & !(PAGE_SIZE_BYTES - 1)); klog::write_raw(b"\n"); }
                     // GAP-1 (displaced-frame UAF): this fault displaced a
                     // present leaf; dec_ref below may free `old`. A peer CPU
                     // of the same mm with a stale TLB entry for va_page->old
@@ -1654,6 +1662,14 @@ impl AddressSpace {
                 // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
                 // F157-A1: dec_ref any frame displaced by a stale present leaf.
                 if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                    // LOST-WRITE (kbytes/file arm, ALL ranges incl brk + ld.so
+                    // .bss): a demand fault installed over a PRESENT leaf → the
+                    // displaced page's live content was dropped. va identifies
+                    // the range (0x1000_0000 exe/brk, 0x4003_xxxx ld.so .bss).
+                    #[cfg(feature = "debug-watchdog")]
+                    { klog::write_raw(b"[LOSTWRITE] demand-install displaced present va=");
+                      klog::write_hex_u64(va_page); klog::write_raw(b" old_pa=");
+                      klog::write_hex_u64(old.0 & !(PAGE_SIZE_BYTES - 1)); klog::write_raw(b"\n"); }
                     // GAP-1 (displaced-frame UAF): this fault displaced a
                     // present leaf; dec_ref below may free `old`. A peer CPU
                     // of the same mm with a stale TLB entry for va_page->old
