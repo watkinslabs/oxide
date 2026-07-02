@@ -245,6 +245,10 @@ impl Inode {
 
     /// Set `i_size` (Linux `i_size_write`). # C: O(1)
     pub fn set_size(&self, size: u64) { self.i_size.store(size, Ordering::Relaxed); }
+
+    /// Monotonic i_size extend (write path; Linux holds inode_lock instead).
+    /// Never shrinks — truncate paths use `set_size`. # C: O(1)
+    pub fn i_size_fetch_max(&self, size: u64) { self.i_size.fetch_max(size, Ordering::AcqRel); }
     /// Set `i_blocks`. # C: O(1)
     pub fn set_blocks(&self, blocks: u64) { self.i_blocks.store(blocks, Ordering::Relaxed); }
     /// `i_blocks` (512-byte units; `0` = estimate from size). # C: O(1)

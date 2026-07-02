@@ -249,8 +249,17 @@ impl FileOps for Ext4RegFileOps {
         // refault from the now-updated disk.
         #[cfg(feature = "ext4-frame-cache")]
         d.frames.update_resident(off, buf);
-        d.refresh_size();
-        inode.set_size(d.size_hint.load(Ordering::Acquire));
+        // MONOTONIC size update for the write path (Linux serializes with
+        // inode_lock; Oxide has no i_rwsem here). The old refresh_size →
+        // store sequence raced two concurrent extenders: the LOSER's stale
+        // disk read overwrote the winner's larger size, PERSISTENTLY
+        // regressing i_size below the on-disk size — mmap fault bounds then
+        // silently zeroed real tail pages ([SIZE-DESYNC]). A write can only
+        // extend; truncate/fallocate own the shrink paths and set size
+        // explicitly.
+        let end = off.saturating_add(buf.len() as u64);
+        d.size_hint.fetch_max(end, Ordering::AcqRel);
+        inode.i_size_fetch_max(end);
         Ok(buf.len())
     }
 

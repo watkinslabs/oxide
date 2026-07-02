@@ -23,8 +23,9 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
     const MREMAP_FIXED:     u64 = 2;
     const MREMAP_DONTUNMAP: u64 = 4;
     let old      = args.a0;
-    let old_size = args.a1 as usize;
-    let new_size = args.a2 as usize;
+    // Linux PAGE_ALIGNs both sizes up; unaligned inputs are legal.
+    let old_size = ((args.a1 as usize) + 0xfff) & !0xfff;
+    let new_size = ((args.a2 as usize) + 0xfff) & !0xfff;
     let flags    = args.a3;
     let new_addr = args.a4;
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Einval.as_i32() as i64) };
@@ -35,6 +36,13 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
     if mm.range_sealed(old_ua, old_size) { return -(Errno::Eperm.as_i32() as i64); }
     let new_ua = if new_addr != 0 { UserVirtAddr::new(new_addr) } else { None };
     let dontunmap = (flags & MREMAP_DONTUNMAP) != 0;
+    // MREMAP_FIXED discards any existing mapping at the destination (Linux
+    // semantic). AddressSpace::mmap(fixed) only clears the VMA side — the
+    // PTEs must be torn down here or the new mapping silently aliases the
+    // old frames (present leaves never fault).
+    if (flags & MREMAP_FIXED) != 0 && new_addr != 0 {
+        let _ = pmm::user_as::glue_munmap(new_addr, new_size as u64);
+    }
     match mm.mremap_full(old_ua, old_size, new_size,
                     (flags & MREMAP_MAYMOVE) != 0,
                     (flags & MREMAP_FIXED) != 0,

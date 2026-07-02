@@ -331,41 +331,55 @@ fn leaf_writable(leaf: u64) -> bool {
 /// user range. HHDM-mapped table memory is read/written.
 /// # C: O(len/4096 * walk_depth) + per-page TLB flush
 pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
-    let hhdm = hhdm_offset();
+    use hal::{MmuOps, PageSize, Va};
     let new_flags = prot.to_page_flags();
     let va_start = va & !0xFFF;
     let va_end = va.checked_add(len as u64).map_or(va_start, |e| (e + 0xFFF) & !0xFFF);
     if va_end <= va_start { return; }
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: forwards to the per-arch walker; caller's contract above.
-        let _n = unsafe {
-            hal::pt_walker::protect_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(
-                root_pa, va_start, va_end, new_flags, hhdm,
-            )
-        };
-        // Flush each page in the range so the new PTE bits take effect.
-        let mut p = va_start;
-        while p < va_end {
-            // SAFETY: invlpg legal at CPL=0; flushes one TLB entry.
-            unsafe { hal_x86_64::flush_local_va(p); }
-            p = p.wrapping_add(0x1000);
+    // Linux `change_protection` + `can_change_pte_writable`: NEVER hardware-
+    // upgrade W on a present leaf that currently lacks it — a fork-COW
+    // W-stripped frame (anon AND private-file .data/GOT) is still SHARED
+    // with the fork peer; granting W here lets stores bypass the COW split
+    // and silently corrupt the peer. Keep such leaves W-less: the VMA prot
+    // now carries WRITE, so the next store takes the Protection{Write}
+    // fault and COW-copies/upgrades per page. Downgrades (removing W,
+    // toggling NX) apply directly. Both callers target the CALLER's own
+    // active root (mprotect glue passes current mm.root_pa()), so the
+    // active-root translate/map primitives — which self-flush per VA —
+    // are the correct walkers here.
+    let _ = root_pa;
+    let mut p = va_start;
+    while p < va_end {
+        // SAFETY: privileged PT read of the caller's live active root.
+        #[cfg(target_arch = "x86_64")]
+        let cur = unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::translate(Va(p)) };
+        #[cfg(target_arch = "aarch64")]
+        let cur = unsafe { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::translate(Va(p)) };
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        let cur: Option<(hal::Pa, hal::PageFlags)> = None;
+        if let Some((pa, old_fl)) = cur {
+            let mut f = new_flags;
+            if f.contains(hal::PageFlags::WRITE) && !old_fl.contains(hal::PageFlags::WRITE) {
+                f.remove(hal::PageFlags::WRITE);
+            }
+            // PROT_NONE (Linux _PAGE_PROTNONE): the leaf must revoke USER
+            // access — pack_4k_leaf always sets PRESENT, so keeping USER
+            // left PROT_NONE pages readable (guard pages didn't guard).
+            // Clearing USER keeps the frame + content resident (a later
+            // mprotect(READ) restores access losslessly) while any user
+            // touch takes a protection fault → VMA check → SIGSEGV.
+            if prot.is_empty() { f.remove(hal::PageFlags::USER); }
+            // SAFETY: same-PA permission rewrite on the caller's active root;
+            // M::map self-flushes the VA and returns no displaced frame for a
+            // same-PA rewrite.
+            unsafe {
+                #[cfg(target_arch = "x86_64")]
+                { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::map(Va(p), hal::Pa(pa.0 & !0xFFF), f, PageSize::P4K); }
+                #[cfg(target_arch = "aarch64")]
+                { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::map(Va(p), hal::Pa(pa.0 & !0xFFF), f, PageSize::P4K); }
+            }
         }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        // SAFETY: forwards to the per-arch walker; caller's contract above.
-        let _n = unsafe {
-            hal::pt_walker::protect_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(
-                root_pa, va_start, va_end, new_flags, hhdm,
-            )
-        };
-        let mut p = va_start;
-        while p < va_end {
-            // SAFETY: tlbi+dsb sequence per `21§5`; flushes one EL0/EL1 user page.
-            unsafe { hal_aarch64::flush_local_va(p); }
-            p = p.wrapping_add(0x1000);
-        }
+        p = p.wrapping_add(0x1000);
     }
     // SMP TLB coherence (`20§5`): the loops above rewrote PTE permissions
     // (e.g. RELRO RO-downgrade) + flushed only THIS CPU's TLB. Peer threads
@@ -376,7 +390,7 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
     // Target only the CPUs that have this mm loaded (cpumask), not every
     // online CPU, per Linux flush_tlb_others.
     hal::tlb::shootdown_others_all(current_mm_cpumask());
-    let _ = (root_pa, new_flags, hhdm); // touch on host/test build
+    let _ = (root_pa, new_flags); // touch on host/test build
 }
 
 /// A4-rmap: walk every (root_pa, va) that maps the anonymous frame `pa`,
@@ -942,6 +956,10 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
 fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
     -> Result<(), vmm::Error>
 {
+    // DIAG (debug-atexit): sentinel-frame re-verify on every fault entry —
+    // names the window in which the watched tail page went zero ([TAILZAP]).
+    #[cfg(feature = "debug-atexit")]
+    vmm::tailwatch::check(sched::live::current().map(|c| c.tid).unwrap_or(0));
     // debug-cow item 2: task-struct integrity. Validate the running task's
     // head fields on every fault entry (the cheapest place that already has
     // `current()`); a clobbered struct head (the sched task corruption
@@ -1134,9 +1152,12 @@ pub fn glue_mmap(
     if is_shared == is_private { return Err(-(Errno::Einval.as_i32() as i64)); }
     let want_fixed = flags & MAP_FIXED != 0;
     let want_no_replace = flags & MAP_FIXED_NOREPLACE != 0;
-    // F158: MAP_STACK is documented as an alias for MAP_GROWSDOWN
-    // (sets up a stack VMA the kernel can auto-extend on PF).
-    let want_grows_down = flags & (MAP_GROWSDOWN | MAP_STACK) != 0;
+    // Linux: MAP_STACK is a NO-OP hint (mman.h: "provided for
+    // compatibility"), NOT an alias for MAP_GROWSDOWN — treating it as
+    // GROWSDOWN armed the 8 MiB auto-extend under every pthread stack, so a
+    // stray fault in a hole below one silently extended the stack over the
+    // hole instead of SIGSEGV-ing. Only an explicit MAP_GROWSDOWN grows.
+    let want_grows_down = flags & MAP_GROWSDOWN != 0;
     let len_aligned = ((len + 0xfff) & !0xfff) as usize;
     if (want_fixed || want_no_replace) && (addr == 0 || (addr & 0xfff) != 0) {
         return Err(-(Errno::Einval.as_i32() as i64));
@@ -1235,6 +1256,9 @@ pub fn glue_mmap(
     };
     match r {
         Ok(uva)  => Ok(uva.as_u64()),
+        // errno fidelity (Linux do_mmap): bad args are EINVAL; only genuine
+        // exhaustion (no hole / no frame) is ENOMEM.
+        Err(vmm::Error::Inval) => Err(-(Errno::Einval.as_i32() as i64)),
         Err(_)   => Err(-(Errno::Enomem.as_i32() as i64)),
     }
 }
@@ -1309,9 +1333,11 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
 pub fn glue_munmap(addr: u64, len: u64) -> i64 {
     use syscall::errno::Errno;
     use hal::{MmuOps, PageSize, Va};
-    if addr == 0 || len == 0 || (addr & 0xfff) != 0 {
+    if len == 0 || (addr & 0xfff) != 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
+    // Linux munmap(0, len): aligned, walks the (empty) low range, returns 0.
+    if addr == 0 { return 0; }
     let len_aligned = (len + 0xfff) & !0xfff;
     if addr.checked_add(len_aligned).map_or(true, |e| e > USER_VA_END) {
         return -(Errno::Einval.as_i32() as i64);

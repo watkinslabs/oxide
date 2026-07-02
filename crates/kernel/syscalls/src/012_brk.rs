@@ -31,7 +31,14 @@ pub fn sys_brk(args: &SyscallArgs) -> i64 {
         out as i64
     } else if req < cur_brk {
         let out = mm.try_set_brk(req);
-        if out < cur_brk { cgroup::uncharge(pid, cur_brk - out); }
+        if out < cur_brk {
+            cgroup::uncharge(pid, cur_brk - out);
+            // Linux releases the shrunk region's pages (do_brk munmaps): a
+            // re-grown brk must read fresh ZEROS, not stale heap data.
+            let lo = (out + 0xfff) & !0xfff;
+            let hi = (cur_brk + 0xfff) & !0xfff;
+            if hi > lo { let _ = pmm::user_as::evict_pages_in_range(lo, hi - lo); }
+        }
         out as i64
     } else {
         mm.try_set_brk(req) as i64
