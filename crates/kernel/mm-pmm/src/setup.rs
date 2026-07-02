@@ -659,6 +659,29 @@ pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
                 return;
             }
             if new == 0 {
+                // DIAG (debug-watchdog): free-while-mapped RED-HANDED trap.
+                // Invariant: refcount >= mapcount, so refcount can only reach 0
+                // AFTER mapcount does. If we're about to free (refcount 0) with
+                // mapcount STILL nonzero, a PTE somewhere maps this frame and its
+                // ref was lost (the under-count that corrupts ld.so's ANON heap
+                // → `needed != NULL`). Name the frame + residual mapcount +
+                // caller + tid — this is the anon-corruption smoking gun the
+                // file-only tailwatch detector can't see. (Exclude the wrapped
+                // underflow value handled above.)
+                #[cfg(feature = "debug-watchdog")]
+                if let Some(mc) = new_mc {
+                    if mc != 0 && mc < 0x8000_0000 {
+                        let loc = core::panic::Location::caller();
+                        klog::write_raw(b"[FWM] pa="); klog::write_hex_u64(pa);
+                        klog::write_raw(b" residual-mapcount="); klog::write_dec_u64(mc as u64);
+                        klog::write_raw(b" tid=");
+                        klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+                        klog::write_raw(b" at ");
+                        klog::write_raw(loc.file().as_bytes());
+                        klog::write_raw(b":"); klog::write_dec_u64(loc.line() as u64);
+                        klog::write_raw(b"\n");
+                    }
+                }
                 // DIAG (debug-noreclaim): leak instead of freeing. If this
                 // makes the boot wedge vanish, the wedge is a free-while-mapped
                 // aliasing (a frame dec'd to 0 while a peer still maps it, then

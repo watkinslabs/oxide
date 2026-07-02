@@ -147,6 +147,21 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
         blob = ext4_blob.as_deref().expect("just set");
     }
 
+    // DIAG (debug-atexit): inject LD_DEBUG=versions for the binaries that hit
+    // the ld.so `_dl_check_map_versions` assertion (generators + udevadm) so the
+    // linker dumps its version-resolution to fd 2 — captured by [DYNERR] — and
+    // names the exact file/version whose find_needed returns NULL. Targeted to
+    // the failing set to bound output volume.
+    #[cfg(feature = "debug-atexit")]
+    {
+        let is_target = path_owned.windows(9).any(|w| w == b"generator")
+            || path_owned.windows(7).any(|w| w == b"udevadm");
+        if is_target {
+            envp_vec.push(b"LD_DEBUG=versions,scopes,files".to_vec());
+            envp_vec.push(b"LD_WARN=1".to_vec());
+        }
+    }
+
     let argc = argv_vec.len();
     let envc = envp_vec.len();
 
