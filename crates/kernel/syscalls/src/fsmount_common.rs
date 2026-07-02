@@ -51,20 +51,36 @@ fn source_disk_name(source: &str) -> &str {
     source.rsplit('/').next().unwrap_or(source)
 }
 
-/// `lookup_bdev` (Linux `block/bdev.c`) — resolve a `source` device path
-/// (`/dev/vda`) through the VFS to its inode, require a block special node
-/// (`S_ISBLK`), and map its `i_rdev` (the glibc/`new_encode_dev` wire dev_t
-/// devfs stamps on the node) to the registered disk via
-/// [`block::registry::by_dev`] (D26). `None` if `source` is not an absolute path,
-/// the path doesn't resolve, the node isn't a block device, or no disk owns that
-/// dev_t — the ext4 ctor then falls back to the legacy basename name/serial
-/// lookup so a mount the old path would have resolved never fails on a
-/// lookup_bdev miss. # C: O(path-depth + N_disks)
-fn lookup_bdev(source: &str) -> Option<Arc<dyn block::BlockDevice>> {
-    if !source.starts_with('/') { return None; }
-    let vp = crate::pathresolve::resolve_path(source, false)?;
-    if vp.inode.file_type() != FileType::BlockDev { return None; }
-    block::registry::by_dev(vp.inode.rdev()).map(|d| d.dev.clone())
+/// [D6] `lookup_bdev` (Linux `block/bdev.c`) extended: resolve an ext4 `source`
+/// to its backing device AND its stable `dev_t`
+/// (`Some` ⇒ ext4 `dev_id()` reports it, so the engine `sget`-shares one
+/// `SuperBlock` keyed on it with the real `major:minor` `s_dev`). Mirrors the ctor
+/// device resolution: real `lookup_bdev` (path → S_ISBLK → `i_rdev` → registered
+/// disk) carries the node's `i_rdev` as the canonical dev_t; the by-name fallback
+/// synthesises the disk's dev_t; the by-serial fallback (the root/home volume
+/// bound BEFORE /dev naming) has no clean disk index, so its dev_t is `None` (a
+/// fresh anon SB — never break the rootfs). `None` device ⇒ caller errors ENOENT.
+/// # C: O(path-depth + N_disks)
+fn resolve_ext4_source(source: &str) -> Option<(Arc<dyn block::BlockDevice>, Option<u64>)> {
+    // Linux `lookup_bdev`: the block node's `i_rdev` IS the canonical `dev_t`.
+    if source.starts_with('/') {
+        if let Some(vp) = crate::pathresolve::resolve_path(source, false) {
+            if vp.inode.file_type() == FileType::BlockDev {
+                let rdev = vp.inode.rdev();
+                if let Some(d) = block::registry::by_dev(rdev) {
+                    return Some((d.dev.clone(), Some(rdev as u64)));
+                }
+            }
+        }
+    }
+    let name = source_disk_name(source);
+    if name.is_empty() { return None; }
+    // by-name: a registered disk yields its synthetic dev_t.
+    if let Some(d) = block::registry::by_name(name) {
+        return Some((d.dev.clone(), Some(block::registry::dev_t_of(&d.name, d.index) as u64)));
+    }
+    // by-serial (root/home pre-/dev): device only, no resolvable dev_t.
+    block::registry::by_serial(name).map(|dev| (dev, None))
 }
 
 /// fstypes whose new-mount-API path is THREADED through a real
@@ -181,19 +197,13 @@ fn register_filesystems() {
     // ext4 — block-device backed: resolve the source disk, open the on-disk SB.
     let _ = register_fs(FsType::new("ext4", EXT4_MAGIC, FsFlags::FS_REQUIRES_DEV,
         Box::new(|source: &str, _t: &str, _d: &str| -> R {
-            // D26: real `lookup_bdev` over the `source` path (VFS inode →
-            // S_ISBLK → i_rdev → by_dev) replaces the basename-strip; on a miss
-            // FALL BACK to the legacy basename name/serial lookup (the root
-            // volume binds by virtio serial before device naming settles, and an
-            // early mount may have no /dev node) so boot is never regressed.
-            let dev = lookup_bdev(source).or_else(|| {
-                let name = source_disk_name(source);
-                if name.is_empty() { return None; }
-                block::registry::by_name(name).map(|d| d.dev.clone())
-                    .or_else(|| block::registry::by_serial(name))
-            }).ok_or(vfs::VfsError::Enoent)?;
+            // D26 `lookup_bdev` (path → S_ISBLK → i_rdev → by_dev) with a legacy
+            // basename name/serial fallback (the root volume binds by virtio
+            // serial before /dev naming settles), now also yielding the [D6]
+            // stable `dev_t` so two mounts of the same device sget-share one SB.
+            let (dev, dev_t) = resolve_ext4_source(source).ok_or(vfs::VfsError::Enoent)?;
             let fs: Arc<dyn vfs::fs::FileSystem> =
-                ext4::rootfs::Ext4Mount::open(dev).map_err(|_| vfs::VfsError::Einval)?;
+                ext4::rootfs::Ext4Mount::open_with_dev(dev, dev_t).map_err(|_| vfs::VfsError::Einval)?;
             Ok(MountSpec { fs, bind_root: None, strict: true })
         })));
 
