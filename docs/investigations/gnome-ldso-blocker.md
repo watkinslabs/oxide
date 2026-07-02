@@ -139,21 +139,29 @@ fresh `debug-atexit` boot:
 
 ⇒ Loader builds an **incomplete dependency scope** (`_dl_map_object_deps` /
 `_ns_loaded`). At smp=1 single-threaded ld.so, the nondeterminism must enter via
-**varying kernel syscall results**. **Leading suspect: `fstat`/`statx`
-`(st_dev, st_ino)` feeding `_dl_map_object`'s already-loaded dedup** — if two
-distinct libraries ever receive a colliding/wrong `(dev,ino)`, ld.so treats the
-second as already-loaded, drops it from the scope, and `find_needed` for it
-returns NULL; *which* pair collides varies → varying failure point. (The earlier
-"dev/ino consistent+unique" disproof checked per-lib consistency, NOT cross-lib
-collision at dedup time under this lens — re-check.)
+**varying kernel syscall results**.
 
-**Next instrument:** log `(path, st_dev, st_ino, load_va, l_ns)` at each library
-open/`_dl_map_object` in the failing generators; look for a `(dev,ino)` collision
-across the distinct libs within ONE process, or a dep whose openat/mmap
-transiently errored and was skipped. Alternative mechanisms not yet excluded:
-(b) a dep openat/mmap transient failure silently skipped, (c) `_ns_loaded`
-append ordering. Read glibc `_dl_map_object` (dedup by `l_ino`/`l_dev`) +
-`_dl_map_object_deps`.
+**dev/ino dedup collision — CHECKED, DISPROVEN.** Mined the `[VMADUMP]` File-ino
+per VMA across all 24 assert dumps: every library carries a **distinct** inode
+(constant `6e54…` fsid prefix + unique low bits); **no inode backs two address
+clusters**. So `_dl_map_object`'s dedup is not collapsing two distinct libs. The
+`[VMADUMP]` distinct-File-ino count *does* vary (14/15/16/17), BUT these are
+**different generator binaries** with possibly different direct deps —
+**confounded, not conclusive** on its own.
+
+**What survives as solid:** the version-checks run against **libsystemd-shared's
+FIXED verneed sequence**, yet `find_needed` fails at a varying entry — that alone
+proves the searched scope for the SAME sequence is incomplete by a varying amount,
+independent of the VMADUMP-count ambiguity.
+
+**Next instrument (mechanism still open):** in ONE failing process, correlate
+ino→libname and dump, at the assert, libsystemd-shared's `l_searchlist.r_list[]`
+(the exact scope `find_needed` loop-2 walks) vs the full `_ns_loaded` — to see
+whether the missing provider was (a) never mapped, (b) mapped but absent from
+`l_searchlist`, or (c) mapped but name-mismatched. Remaining live hypotheses:
+a dep openat/mmap transiently erroring and being skipped; `_dl_map_object_deps`
+BFS building `r_list` short; `_ns_loaded` append ordering. Read glibc
+`_dl_map_object_deps` (builds `l_searchlist`) + `_dl_check_map_versions`.
 
 ## Where to look next (inspection is exhausted; needs a new modality)
 
