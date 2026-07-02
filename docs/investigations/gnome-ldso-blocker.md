@@ -121,6 +121,40 @@ historical mechanism of this assert), with a deterministic repro test
 (`mm-vmm/src/tests_ldso_toctou.rs`). Cannot fire at smp=1, so it does not explain
 this blocker; kept as a standalone correctness fix.
 
+## UPDATE 2026-07-02 (#2) — scope is incomplete by a VARYING amount
+
+tid-tagged `[DYNERR t=<tid>]` tracer (`020_writev.rs`) + per-tid demux of a
+fresh `debug-atexit` boot:
+
+- **12 processes asserted in one boot**, but each after a DIFFERENT number of
+  SUCCESSFUL version-checks (4, 7, 9, 22, 25, 27, …). glibc prints
+  `checking for version … in file Y` only AFTER `find_needed(Y)` already
+  succeeded, so `find_needed` fails at a **different verneed entry each time**.
+  libsystemd-shared's verneed order is fixed ⇒ the **search scope is
+  nondeterministically incomplete by a varying amount**, not one fixed missing
+  lib.
+- Kernel chain-walker (unreliable per the caveat, but corroborating): `_ns_loaded`
+  node count **varies 16/17/18/19**; libgcc_s `in ns=0` in 20 dumps, `MISSING`
+  in 4. **Zero VMA overlaps** (load bias correct).
+
+⇒ Loader builds an **incomplete dependency scope** (`_dl_map_object_deps` /
+`_ns_loaded`). At smp=1 single-threaded ld.so, the nondeterminism must enter via
+**varying kernel syscall results**. **Leading suspect: `fstat`/`statx`
+`(st_dev, st_ino)` feeding `_dl_map_object`'s already-loaded dedup** — if two
+distinct libraries ever receive a colliding/wrong `(dev,ino)`, ld.so treats the
+second as already-loaded, drops it from the scope, and `find_needed` for it
+returns NULL; *which* pair collides varies → varying failure point. (The earlier
+"dev/ino consistent+unique" disproof checked per-lib consistency, NOT cross-lib
+collision at dedup time under this lens — re-check.)
+
+**Next instrument:** log `(path, st_dev, st_ino, load_va, l_ns)` at each library
+open/`_dl_map_object` in the failing generators; look for a `(dev,ino)` collision
+across the distinct libs within ONE process, or a dep whose openat/mmap
+transiently errored and was skipped. Alternative mechanisms not yet excluded:
+(b) a dep openat/mmap transient failure silently skipped, (c) `_ns_loaded`
+append ordering. Read glibc `_dl_map_object` (dedup by `l_ino`/`l_dev`) +
+`_dl_map_object_deps`.
+
 ## Where to look next (inspection is exhausted; needs a new modality)
 
 The bug is nondeterministic, memory-intact, and survives full kernel-path
