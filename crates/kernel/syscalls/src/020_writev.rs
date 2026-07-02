@@ -86,69 +86,52 @@ fn trace_stderr_writev(fd: i32, bytes: &[u8]) {
                         // SAFETY: page mapped (translate ok); CPL=0 read of user VA.
                         Some(unsafe { core::ptr::read_volatile(va as *const u64) })
                     };
+                    // `_r_debug_extended` @ 0x37e58: base r_debug (r_map @ +8) then
+                    // r_next @ +40 chains per-NAMESPACE r_debug structs. Walk every
+                    // namespace to see if libgcc_s was added to a DIFFERENT one
+                    // (wrong l_ns) rather than genuinely dropped.
                     const R_DEBUG_VA: u64 = 0x4000_0000 + 0x0003_7e58;
-                    klog::write_raw(b"[LINKMAP] chain (l_name via r_debug.r_map):\n");
-                    if let Some(mut node) = rd(R_DEBUG_VA + 8) {
+                    let read_name = |np: u64, want: &[u8]| -> bool {
+                        if np == 0 { return false; }
+                        let mut i = 0u64; let mut buf = [0u8; 96]; let mut m = 0usize;
+                        while i < 96 {
+                            if (np + i) & 0xfff == 0 || i == 0 { if rd(np + i).is_none() { break; } }
+                            // SAFETY: page validated per 4K boundary; CPL=0 read.
+                            let b = unsafe { core::ptr::read_volatile((np + i) as *const u8) };
+                            if b == 0 { break; }
+                            buf[m] = b; m += 1; i += 1;
+                        }
+                        klog::write_raw(&buf[..m]);
+                        m >= want.len() && buf[..m].windows(want.len()).any(|w| w == want)
+                    };
+                    let mut ns_va = R_DEBUG_VA;
+                    let mut nsidx = 0u32;
+                    let mut gcc_in_ns: i64 = -1;
+                    while ns_va != 0 && nsidx < 8 {
+                        klog::write_raw(b"[LINKMAP] ns="); klog::write_dec_u64(nsidx as u64);
+                        klog::write_raw(b" chain:\n");
+                        let mut node = rd(ns_va + 8).unwrap_or(0);
                         let mut n = 0u32;
-                        let mut saw_gcc = false;
-                        let mut prev_node = 0u64;
-                        while node != 0 && n < 48 {
-                            let name_ptr = rd(node + 8).unwrap_or(0);
+                        while node != 0 && n < 64 {
                             klog::write_raw(b"  #"); klog::write_dec_u64(n as u64);
                             klog::write_raw(b" map="); klog::write_hex_u64(node);
                             klog::write_raw(b" name=");
-                            if name_ptr != 0 {
-                                // Read up to 96 bytes of the null-terminated l_name.
-                                let mut i = 0u64;
-                                let mut buf = [0u8; 96];
-                                let mut m = 0usize;
-                                while i < 96 {
-                                    // one byte at a time, translate-gated per page boundary
-                                    if (name_ptr + i) & 0xfff == 0 || i == 0 {
-                                        if rd(name_ptr + i).is_none() { break; }
-                                    }
-                                    // SAFETY: page validated at each 4K boundary above; CPL=0 read.
-                                    let b = unsafe { core::ptr::read_volatile((name_ptr + i) as *const u8) };
-                                    if b == 0 { break; }
-                                    buf[m] = b; m += 1; i += 1;
-                                }
-                                klog::write_raw(&buf[..m]);
-                                if buf[..m].windows(9).any(|w| w == b"libgcc_s.") { saw_gcc = true; }
-                            } else { klog::write_raw(b"<null>"); }
-                            let lnext = rd(node + 24).unwrap_or(0);   // l_next
-                            let lprev = rd(node + 32).unwrap_or(0);   // l_prev (public ABI)
+                            let name_ptr = rd(node + 8).unwrap_or(0);
+                            if read_name(name_ptr, b"libgcc_s.") { gcc_in_ns = nsidx as i64; }
+                            let lnext = rd(node + 24).unwrap_or(0);
                             klog::write_raw(b" l_next="); klog::write_hex_u64(lnext);
-                            klog::write_raw(b" l_prev="); klog::write_hex_u64(lprev);
-                            // Back-link mismatch: this node's l_prev should equal
-                            // the previous forward node. If not, l_prev names the
-                            // ORPHAN link_map whose predecessor's l_next append was
-                            // lost — dump its name to identify the dropped lib.
-                            if n > 0 && lprev != prev_node && lprev != 0 {
-                                klog::write_raw(b" **ORPHAN-BACKLINK->");
-                                let onp = rd(lprev + 8).unwrap_or(0);
-                                if onp != 0 {
-                                    let mut j = 0u64; let mut ob = [0u8; 64]; let mut om = 0usize;
-                                    while j < 64 {
-                                        if (onp + j) & 0xfff == 0 || j == 0 { if rd(onp + j).is_none() { break; } }
-                                        // SAFETY: page validated per 4K boundary; CPL=0 read.
-                                        let b = unsafe { core::ptr::read_volatile((onp + j) as *const u8) };
-                                        if b == 0 { break; }
-                                        ob[om] = b; om += 1; j += 1;
-                                    }
-                                    klog::write_raw(&ob[..om]);
-                                }
-                                klog::write_raw(b"**");
-                            }
                             klog::write_raw(b"\n");
-                            prev_node = node;
                             node = lnext;
                             n += 1;
                         }
-                        klog::write_raw(b"[LINKMAP] nodes="); klog::write_dec_u64(n as u64);
-                        klog::write_raw(if saw_gcc { b" libgcc_s=IN-CHAIN\n" } else { b" libgcc_s=MISSING-FROM-CHAIN\n" });
-                    } else {
-                        klog::write_raw(b"[LINKMAP] r_debug.r_map unreadable\n");
+                        klog::write_raw(b"[LINKMAP] ns="); klog::write_dec_u64(nsidx as u64);
+                        klog::write_raw(b" nodes="); klog::write_dec_u64(n as u64); klog::write_raw(b"\n");
+                        ns_va = rd(ns_va + 40).unwrap_or(0);   // r_next → next namespace
+                        nsidx += 1;
                     }
+                    klog::write_raw(b"[LINKMAP] libgcc_s ");
+                    if gcc_in_ns < 0 { klog::write_raw(b"MISSING-FROM-ALL-NAMESPACES\n"); }
+                    else { klog::write_raw(b"in ns="); klog::write_dec_u64(gcc_in_ns as u64); klog::write_raw(b"\n"); }
                 }
             }
         }
