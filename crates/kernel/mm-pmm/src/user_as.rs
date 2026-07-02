@@ -428,18 +428,20 @@ pub fn rmap_walk_anon_pa<F: FnMut(u64, u64)>(pa: u64, mut f: F) -> usize {
 /// ref hit zero — the root is no longer active on any CPU and no
 /// concurrent walker / writer remains.
 ///
-/// GAP-2 (tracked follow-up, lazy-TLB / Linux `mmdrop`): the
-/// "no longer active on any CPU" precondition holds only because a CPU
-/// that goes lazy-TLB on this root (scheduler skips `activate` when the
-/// next task has `mm == None`) keeps its `mm_cpumask` bit set, but does
-/// NOT hold an `Arc<AddressSpace>` — so the strong count can hit zero and
-/// run this teardown while a peer CPU still has the root in CR3. A bare
-/// `flush_tlb_others(cpumask)` here is INSUFFICIENT: a TLB flush does not
-/// change CR3, so the peer's next user walk would still traverse the
-/// just-freed tables. The correct fix is the Linux `mmgrab`/`mmdrop`
-/// lazy-TLB reference (force peers onto the kernel/init root before the
-/// free). The `cpumask` is now available to implement it; until then this
-/// path relies on the same UP/quiesced assumption as before.
+/// GAP-2 (FIXED, lazy-TLB / Linux `mmgrab`/`mmdrop`): the "no longer
+/// active on any CPU" precondition is now GUARANTEED by the scheduler's
+/// per-CPU `active_mm` reference (`sched::live::schedule`). When a CPU
+/// goes lazy-TLB on this root (the scheduler skips `activate` because the
+/// next task has `mm == None`) it keeps the root in CR3 AND takes an extra
+/// `Arc<AddressSpace>` grab (`mmgrab`), released only when it later
+/// activates a different root (`mmdrop`). That grab holds this AS's strong
+/// count above zero for as long as ANY CPU has the root in CR3, so this
+/// `Drop`-driven teardown — which runs only at strong-count zero — can
+/// never free the root (or its tables) while a CPU is still resident on
+/// it. (A bare `flush_tlb_others(cpumask)` here would have been
+/// INSUFFICIENT: a TLB flush does not change CR3, so a lazy peer's next
+/// user walk would still traverse the freed tables. The `active_mm`
+/// refcount, not a flush, is what makes this path safe under SMP.)
 /// # C: O(N_present_leaves + N_present_tables)
 #[cfg(target_arch = "x86_64")]
 pub unsafe extern "C" fn as_teardown(root_pa: u64) {

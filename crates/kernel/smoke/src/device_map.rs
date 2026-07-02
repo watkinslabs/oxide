@@ -41,7 +41,15 @@ const LAPIC_VA: u64 = KERNEL_DEVICE_BASE | (LAPIC_PHYS & 0xFFFF_FFFF);
 /// bits the previous-generation `vmm::map_device_4k` packed
 /// directly.
 fn device_flags() -> PageFlags {
-    PageFlags::READ | PageFlags::WRITE | PageFlags::NO_CACHE | PageFlags::WRITE_THROUGH
+    // GLOBAL (Linux marks kernel mappings global; `20§5`): device MMIO lives in
+    // the kernel-half that is copied into EVERY AS root, so its TLB entry should
+    // survive CR3 switches rather than be re-walked through whatever user root
+    // is live. This is GAP-2 defense-in-depth: it keeps the LAPIC-EOI
+    // translation resident across the lazy-TLB CR3 the EOI runs under. Effective
+    // on x86 only when CR4.PGE is enabled (PTE bit 8 is otherwise ignored —
+    // harmless either way); on aarch64 device/kernel leaves are already global
+    // (the nG bit is never set), so the flag is a no-op there.
+    PageFlags::READ | PageFlags::WRITE | PageFlags::NO_CACHE | PageFlags::WRITE_THROUGH | PageFlags::GLOBAL
 }
 
 /// x86 device-MMIO bring-up smoke. Maps HPET + LAPIC at fixed
