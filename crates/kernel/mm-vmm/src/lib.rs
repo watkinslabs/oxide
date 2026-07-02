@@ -106,3 +106,9 @@ mod tests_cow_invariant;
 #[cfg(test)]
 mod tests_shortfill;
 
+// ld.so `needed != NULL` blocker: the write-protection fault must never
+// zero-fill over File/KernelBytes backing when the leaf is zapped between the
+// normalization translate and the CoW re-read (SMP TOCTOU).
+#[cfg(test)]
+mod tests_ldso_toctou;
+
