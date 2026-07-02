@@ -101,6 +101,7 @@ impl Ext4FrameStore {
         let base = pmm::setup::frame_ptr(pa).ok_or(())?;
         // SAFETY: pa is a freshly-allocated PMM frame owned here; the HHDM
         // mirror is writable; PG is the page granule.
+        hal::zerotrap::trap((base) as *const u8, (PG) as usize);
         unsafe { core::ptr::write_bytes(base, 0, PG); }
         let bs = self.st.mount.sb.block_size.max(1) as u64;
         let bpp = (PG as u64 / bs).max(1) as u32;
@@ -127,6 +128,8 @@ impl Ext4FrameStore {
         if size > page_start && size < page_start + PG as u64 {
             let valid = (size - page_start) as usize;
             // SAFETY: pa owned here; [valid, PG) within the frame's HHDM mirror.
+            // SAFETY: same bounds as the write_bytes below — [valid, PG) within the frame's HHDM mirror.
+            hal::zerotrap::trap(unsafe { base.add(valid) } as *const u8, PG - valid);
             unsafe { core::ptr::write_bytes(base.add(valid), 0, PG - valid); }
         }
         Ok(())

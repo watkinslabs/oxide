@@ -460,6 +460,11 @@ pub fn rmap_walk_anon_pa<F: FnMut(u64, u64)>(pa: u64, mut f: F) -> usize {
 #[cfg(target_arch = "x86_64")]
 pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+    // debug-atexit: the dec context for note_final_free — as_teardown runs
+    // in the REAPER's task context, so current-mm is the wrong identity;
+    // the dying AS root is the honest one. UP single-threaded teardown.
+    #[cfg(feature = "debug-atexit")]
+    crate::setup::set_dec_ctx(root_pa);
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     // F157: leaves go through dec_and_maybe_free so COW-shared frames
     // (multiple AS map them) only release once the last AS drops.
@@ -498,12 +503,19 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     // Free the root frame itself.
     // SAFETY: root_pa is the AS-private root; no longer reachable.
     unsafe { crate::setup::free_one_frame(root_pa); }
+    #[cfg(feature = "debug-atexit")]
+    crate::setup::set_dec_ctx(0);
 }
 
 /// aarch64 mirror of `as_teardown`.
 #[cfg(target_arch = "aarch64")]
 pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+    // debug-atexit: the dec context for note_final_free — as_teardown runs
+    // in the REAPER's task context, so current-mm is the wrong identity;
+    // the dying AS root is the honest one. UP single-threaded teardown.
+    #[cfg(feature = "debug-atexit")]
+    crate::setup::set_dec_ctx(root_pa);
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     let mut free_leaf = |_va: u64, pa: u64| {
         // SAFETY: leaf was reachable from this AS's PT; F157 dec-and-free.
@@ -960,6 +972,27 @@ fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
     // names the window in which the watched tail page went zero ([TAILZAP]).
     #[cfg(feature = "debug-atexit")]
     vmm::tailwatch::check(sched::live::current().map(|c| c.tid).unwrap_or(0));
+    // RANK-1 decisive test (graph analysis): a fault resolves against `as_`'s
+    // VMA tree but installs into the ACTIVE root. If active CR3 != as_.root_pa
+    // the install lands in the WRONG address space — the deterministic-target /
+    // random-victim geometry. Log both roots + the faulting VA; do not panic
+    // (boot continues so the corruption still reproduces for correlation).
+    #[cfg(all(feature = "debug-atexit", target_arch = "x86_64"))]
+    {
+        let cr3 = hal_x86_64::read_cr3() & !0xfff;
+        let mmroot = as_.root_pa() & !0xfff;
+        if cr3 != mmroot {
+            klog::write_raw(b"[CR3-DESYNC] va=");
+            klog::write_hex_u64(uva.as_u64());
+            klog::write_raw(b" cr3=");
+            klog::write_hex_u64(cr3);
+            klog::write_raw(b" mm-root=");
+            klog::write_hex_u64(mmroot);
+            klog::write_raw(b" tid=");
+            klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+            klog::write_raw(b"\n");
+        }
+    }
     // debug-cow item 2: task-struct integrity. Validate the running task's
     // head fields on every fault entry (the cheapest place that already has
     // `current()`); a clobbered struct head (the sched task corruption
@@ -1044,6 +1077,49 @@ fn handle(va_raw: u64, fault: FaultKind) -> bool {
         Some(u) => u,
         None    => return false,
     };
+    // DIAG (debug-atexit): the File fill installs lib-arena writable pages
+    // READ-ONLY, so the FIRST write to a correctly-filled library page arrives
+    // here as Protection{Write}. Capture the writing RIP (user ld.so text vs
+    // kernel) + the pre-write bytes at the observed corruption offset (0x20).
+    // A bulk `rep stosq` memset faults on its first store, so this names a
+    // memset zeroer; the RIP range names user vs kernel.
+    #[cfg(all(feature = "debug-atexit", target_arch = "x86_64"))]
+    if matches!(fault, FaultKind::Protection { access: FaultAccess::Write })
+        && (0x7ffff6000000..0x7ffff8000000).contains(&va_raw) {
+        let fp = hal_x86_64::current_fault_frame();
+        let rip = if fp.is_null() { 0 } else { unsafe { (*fp).rip } };
+        // memset lives at ld.so bias 0x40000000 + [0x24970, 0x24a40). When the
+        // zeroing store faults inside memset, dump its ARGS (rdi=dst, sil=val,
+        // rdx=len) — the exact range ld.so clears. A val==0 memset whose
+        // [dst,dst+len) spans file-data pages is the corruption: ld.so's BSS
+        // clear range is wrong (kernel gave it a bad filesz/segment view).
+        // Log the EXACT faulting offset (cr2 low 12 bits) + RIP for writes near
+        // a .dynamic entry boundary (offset a multiple of 0x10, i.e. an
+        // Elf64_Dyn slot). A zeroed slot at offset 0x20/0x40/... = DT_NULL early
+        // terminator. memset RIPs additionally dump their dst/len.
+        let off = va_raw & 0xfff;
+        let in_memset = (0x40024970..0x40024a40).contains(&rip);
+        static WCOUNT: AtomicU64 = AtomicU64::new(0);
+        if (off < 0x400) && WCOUNT.fetch_add(1, Ordering::Relaxed) < 300 {
+            klog::write_raw(b"[W] va=");
+            klog::write_hex_u64(va_raw);
+            klog::write_raw(b" rip=");
+            klog::write_hex_u64(rip);
+            if in_memset {
+                let gp = hal_x86_64::current_fault_gprs();
+                if !gp.is_null() {
+                    let g = unsafe { &*gp };
+                    klog::write_raw(b" MEMSET dst=");
+                    klog::write_hex_u64(g.rdi);
+                    klog::write_raw(b" len=");
+                    klog::write_hex_u64(g.rdx);
+                }
+            }
+            klog::write_raw(b" tid=");
+            klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+            klog::write_raw(b"\n");
+        }
+    }
     // Pick the AS the active CR3/TTBR0 actually targets: the
     // current task's mm if there is one (post-execve this is the
     // new AS, not the boot global). With `Task.mm` wrapped in
@@ -1451,6 +1527,22 @@ pub fn diag_verify_file_pages() {
     // SAFETY: running task on this CPU; single-mutator mm slot per 13§5.
     let Some(mm) = (unsafe { cur.mm_ref() }) else { return };
     let hhdm = hhdm_offset();
+    // Dump the dying process's VMA table once — overlap/aliasing shows here.
+    for v in mm.snapshot_vmas() {
+        if let VmaBacking::File { ref backing, off } = v.backing {
+            klog::write_raw(b"[VMA] ");
+            klog::write_hex_u64(v.start.as_u64());
+            klog::write_raw(b"-");
+            klog::write_hex_u64(v.end.as_u64());
+            klog::write_raw(b" ino=");
+            klog::write_hex_u64(backing.ino());
+            klog::write_raw(b" off=");
+            klog::write_hex_u64(off);
+            klog::write_raw(b" prot=");
+            klog::write_dec_u64(v.prot.bits() as u64);
+            klog::write_raw(b"\n");
+        }
+    }
     let mut reported = 0u32;
     for vma in mm.snapshot_vmas() {
         if reported >= 8 { break; }
@@ -1465,7 +1557,16 @@ pub fn diag_verify_file_pages() {
         while va < vma.end.as_u64() && reported < 8 {
             // SAFETY: privileged PT read of the current (dying) task's live root.
             let translated = unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::translate(Va(va)) };
-            if let Some((pa, _fl)) = translated {
+            // Raw x86 leaf (D bit6 = written-through-since-install, A bit5 =
+            // accessed, W bit1). The DECISIVE discriminator: D=0 => the frame's
+            // zero content arrived WITH the frame at install (some path zeroed
+            // it before mapping); D=1 => a store retired through THIS mapping
+            // after install (a user memset / kernel copy-to-user of zeros).
+            let raw_leaf = unsafe {
+                hal::pt_walker::translate_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(
+                    mm.root_pa(), va, hhdm)
+            }.map(|(_, leaf)| leaf).unwrap_or(0);
+            if let Some((pa, fl)) = translated {
                 let foff = off + (va - vma.start.as_u64());
                 let fsize = backing.size_hint();
                 let valid = if foff >= fsize { 0usize }
@@ -1517,6 +1618,13 @@ pub fn diag_verify_file_pages() {
                                     klog::write_raw(b"]");
                                 }
                             }
+                            klog::write_raw(b"[pte=");
+                            klog::write_hex_u64(fl.bits() as u64);
+                            klog::write_raw(b" raw=");
+                            klog::write_hex_u64(raw_leaf);
+                            klog::write_raw(if raw_leaf & (1 << 6) != 0 { b" D=1" } else { b" D=0" });
+                            klog::write_raw(if raw_leaf & (1 << 5) != 0 { b" A=1" } else { b" A=0" });
+                            klog::write_raw(b"]");
                             klog::write_raw(b"[MAPDIFF] ino=");
                             klog::write_hex_u64(backing.ino());
                             klog::write_raw(b" foff=");

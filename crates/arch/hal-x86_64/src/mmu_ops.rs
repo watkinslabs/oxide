@@ -177,6 +177,7 @@ pub unsafe fn new_user_pml4() -> Option<u64> {
     // other CPU can observe this frame yet.
     unsafe {
         let dst = (hhdm.wrapping_add(pa)) as *mut u64;
+        hal::zerotrap::trap((dst) as *const u8, (512) as usize);
         core::ptr::write_bytes(dst, 0, 512);
         let src = (hhdm.wrapping_add(src_pa)) as *const u64;
         // Copy kernel-half PML4 entries 256..512. Each entry is one

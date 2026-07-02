@@ -203,6 +203,7 @@ fn ensure_page(g: &mut BTreeMap<u64, u64>, idx: u64, acct: &TmpfsSb) -> Option<u
     let pa = match pmm::setup::alloc_object_frame() { Some(p) => p, None => { acct.free_blocks(1); return None; } };
     let ptr = match pmm::setup::frame_ptr(pa) { Some(p) => p, None => { acct.free_blocks(1); return None; } };
     // SAFETY: pa is a freshly-allocated PMM frame; PG is the page granule.
+    hal::zerotrap::trap((ptr) as *const u8, (PG) as usize);
     unsafe { core::ptr::write_bytes(ptr, 0, PG); }
     g.insert(idx, pa);
     Some(pa)
@@ -322,6 +323,8 @@ impl TmpfsFileData {
                 if let Some(&pa) = g.get(&((len / PG as u64))) {
                     let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
                     // SAFETY: inode-owned frame; zero [tail..PG] within the granule.
+                    // SAFETY: same bounds as the write_bytes below.
+                    hal::zerotrap::trap(unsafe { base.add(tail) } as *const u8, PG - tail);
                     unsafe { core::ptr::write_bytes(base.add(tail), 0, PG - tail); }
                 }
             }
@@ -345,6 +348,8 @@ impl TmpfsFileData {
             if zero_range {
                 let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
                 // SAFETY: pa is an inode-owned frame; range lies within page.
+                // SAFETY: same bounds as the write_bytes below.
+                hal::zerotrap::trap(unsafe { base.add(pgoff) } as *const u8, chunk);
                 unsafe { core::ptr::write_bytes(base.add(pgoff), 0, chunk); }
             }
             pos += chunk as u64;

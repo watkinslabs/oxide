@@ -45,6 +45,7 @@ pub unsafe fn init() {
     // SAFETY: HHDM offset published by mm-pmm at boot; pa was just allocated and is exclusively ours; 4096 bytes is one full PMM frame.
     unsafe {
         let va = pmm::user_as::hhdm_offset() + pa;
+        hal::zerotrap::trap((va as *mut u8) as *const u8, (4096) as usize);
         core::ptr::write_bytes(va as *mut u8, 0, 4096);
     }
     VVAR_PA.store(pa, Ordering::Release);

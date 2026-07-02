@@ -227,6 +227,7 @@ fn alloc_queue_region(size: u16) -> Option<VirtQueueRuntime> {
     let pa = pmm::setup::alloc_one_frame()?;
     let va = pa + pmm::user_as::hhdm_offset();
     // SAFETY: HHDM-mapped page; zero a single 4KiB region we just allocated.
+    hal::zerotrap::trap((va as *mut u8) as *const u8, (PAGE_SIZE as usize) as usize);
     unsafe { core::ptr::write_bytes(va as *mut u8, 0, PAGE_SIZE as usize); }
     Some(VirtQueueRuntime {
         size,
@@ -342,6 +343,7 @@ pub fn init_legacy() {
     };
     let tx_buf_va = tx_buf_pa + pmm::user_as::hhdm_offset();
     // SAFETY: HHDM-mapped scratch page; zero a single 4KiB region we just allocated.
+    hal::zerotrap::trap((tx_buf_va as *mut u8) as *const u8, (PAGE_SIZE as usize) as usize);
     unsafe { core::ptr::write_bytes(tx_buf_va as *mut u8, 0, PAGE_SIZE as usize); }
 
     // Pre-allocate RX buffer pages and pin descriptors at indices
@@ -357,6 +359,7 @@ pub fn init_legacy() {
             Some(pa) => {
                 let va = pa + pmm::user_as::hhdm_offset();
                 // SAFETY: HHDM-mapped page just allocated; zero before publishing.
+                hal::zerotrap::trap((va as *mut u8) as *const u8, (PAGE_SIZE as usize) as usize);
                 unsafe { core::ptr::write_bytes(va as *mut u8, 0, PAGE_SIZE as usize); }
                 rx_bufs[i] = RxBuf { pa, va };
                 rx_count += 1;
@@ -514,6 +517,8 @@ pub fn tx_frame(frame: &[u8]) -> Result<usize, TxErr> {
     // own exclusively under DEVICE.lock(); 12 + frame.len() ≤ PAGE_SIZE.
     unsafe {
         let dst = d.tx_buf_va as *mut u8;
+        hal::zerotrap::trap((dst) as *const u8, (VIRTIO_NET_HDR_LEN) as usize);
+        hal::zerotrap::trap((dst) as *const u8, (VIRTIO_NET_HDR_LEN) as usize);
         core::ptr::write_bytes(dst, 0, VIRTIO_NET_HDR_LEN);
         if !frame.is_empty() {
             core::ptr::copy_nonoverlapping(
