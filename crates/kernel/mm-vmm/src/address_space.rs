@@ -947,6 +947,32 @@ impl AddressSpace {
         // `|_| false` (copy-always, the previous behaviour).
         XR: FnMut(u64) -> bool,
     {
+        // Linux `handle_pte_fault`: when the PTE is ABSENT the fault is a
+        // FIRST TOUCH (`do_pte_missing` → do_anonymous_page / do_fault) no
+        // matter what the hardware error code claims — a stale TLB entry or
+        // a zap race can deliver a protection-write fault for a leaf that is
+        // gone. Normalize such faults to NotPresent BEFORE the Protection
+        // branch below: its cur==None fallback allocated a ZERO page even for
+        // File/KernelBytes backings, installing zeros over file content
+        // (Linux do_cow_fault READS the backing page first). That zero page
+        // landed on the EOF-straddling .data/.dynamic tail of freshly-mapped
+        // shared libraries — ld.so then silently skipped DT_NEEDED deps
+        // (dl-version.c `needed != NULL` assert), hit bogus undefined-symbol
+        // errors, or wedged on a zeroed lock word: the random-victim exit-127
+        // / futex-wedge boot corruption.
+        let fault = match fault {
+            FaultKind::Protection { access } => {
+                let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
+                // SAFETY: va_page is in user-half; M::translate reads the
+                // active PT for the running task's CR3 / TTBR0.
+                if unsafe { M::translate(Va(va_page)) }.is_none() {
+                    FaultKind::NotPresent { access }
+                } else {
+                    FaultKind::Protection { access }
+                }
+            }
+            f => f,
+        };
         // Protection write to a writable VMA — CoW-style
         // upgrade. Three causes hit this:
         //   (a) eager-copy at fork installed the leaf with the
@@ -1302,6 +1328,24 @@ impl AddressSpace {
                 // straddling EOF, 0 for a page wholly past EOF (pure BSS).
                 let valid = if file_off >= fsize { 0usize }
                             else { core::cmp::min(page as u64, fsize - file_off) as usize };
+                // DIAG (debug-atexit): log every EOF-straddling / past-EOF fill
+                // with the fsize observed AT FAULT TIME — a transiently-small
+                // size_hint makes `valid` 0/short and silently installs a zero
+                // page ([MAPZERO] corruption: ld.so skips a DT_NEEDED, GOT/.data
+                // tail zeroed). Comparing this fsize against the stable exit-time
+                // value pins whether i_size fluctuates.
+                #[cfg(feature = "debug-atexit")]
+                if valid < page {
+                    klog::write_raw(b"[FILLTAIL] ino=");
+                    klog::write_hex_u64(backing.ino());
+                    klog::write_raw(b" foff=");
+                    klog::write_hex_u64(file_off);
+                    klog::write_raw(b" fsize=");
+                    klog::write_hex_u64(fsize);
+                    klog::write_raw(b" valid=");
+                    klog::write_hex_u64(valid as u64);
+                    klog::write_raw(b"\n");
+                }
                 // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at hhdm_offset+pa is mapped writable; full page owned exclusively until M::map below makes it user-visible.
                 let short = unsafe {
                     let dst = (hhdm_offset + pa) as *mut u8;
