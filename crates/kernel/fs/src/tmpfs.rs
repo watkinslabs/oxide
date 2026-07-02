@@ -365,9 +365,12 @@ impl Drop for TmpfsFileData {
     fn drop(&mut self) {
         let g = self.pages.lock();
         for (_idx, &pa) in g.iter() {
-            // SAFETY: pa was alloc_one_frame'd for this inode (refcount ref
-            // held since); dec returns it to the buddy when the count hits 0.
-            unsafe { pmm::setup::dec_and_maybe_free_frame(pa); }
+            // SAFETY: pa was alloc_object_frame'd for this inode (object ref
+            // held since); the OBJECT dec releases refcount WITHOUT touching
+            // mapcount — this drop is not a PTE teardown (the plain
+            // dec_and_maybe_free_frame here underflowed mapcount 0→-1 on
+            // every tmpfs inode drop, tripping [COW-LEAK] free-while-mapped).
+            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
         }
         self.acct.free_blocks(g.len() as u64); // return this inode's blocks to f_bfree
     }
