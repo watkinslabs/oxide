@@ -12,8 +12,10 @@ pub fn sys_mprotect(args: &SyscallArgs) -> i64 {
     use hal::UserVirtAddr;
     use syscall::errno::Errno;
     let addr = args.a0;
-    // Linux PAGE_ALIGNs len up; len==0 succeeds as a no-op.
-    let len  = ((args.a1 as usize) + 0xfff) & !0xfff;
+    // Linux PAGE_ALIGNs len up; len==0 succeeds as a no-op. A len in the
+    // top page of usize wraps the +0xfff to 0 — Linux rejects (end past
+    // TASK_SIZE) with ENOMEM, not a silent no-op success.
+    let len  = match (args.a1 as usize).checked_add(0xfff) { Some(v) => v & !0xfff, None => return -(Errno::Enomem.as_i32() as i64) };
     let prot = args.a2 as u32;
     if (addr & 0xfff) != 0 { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
     if len == 0 { return 0; }
