@@ -11,7 +11,7 @@
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 use core::arch::asm;
 #[cfg(target_arch = "x86_64")]
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(target_arch = "x86_64")]
 const REG_ID:      usize = 0x020;
@@ -42,6 +42,59 @@ const SPURIOUS_VECTOR: u32 = 0xFF;
 const MSR_IA32_APIC_BASE: u32 = 0x1B;
 #[cfg(target_arch = "x86_64")]
 const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
+/// IA32_APIC_BASE bit 10 = x2APIC mode (EXTD). When set, the LAPIC is driven
+/// entirely through MSRs and the xAPIC MMIO window is DISABLED.
+#[cfg(target_arch = "x86_64")]
+const APIC_X2_ENABLE: u64 = 1 << 10;
+/// x2APIC EOI register MSR (Intel SDM Vol 3 Table 10-6): write 0 to signal EOI.
+#[cfg(target_arch = "x86_64")]
+const MSR_X2APIC_EOI: u32 = 0x80B;
+
+/// True iff EOI must go through the x2APIC EOI MSR (0x80B) instead of the xAPIC
+/// MMIO register at `LAPIC_VA+0xB0`. GAP-2 hardening: an MSR EOI never
+/// page-walks the active root, so a stale/clobbered user-root PML4 can't fault
+/// the EOI. Set by `enable`/`enable_for_ap` ONLY when firmware already put the
+/// CPU in x2APIC mode (see those fns for why we don't flip the mode ourselves).
+#[cfg(target_arch = "x86_64")]
+static X2APIC_EOI: AtomicBool = AtomicBool::new(false);
+
+/// CPUID.01h:ECX bit 21 — x2APIC supported by this CPU. Detection only; does
+/// not imply x2APIC mode is enabled. # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+fn x2apic_supported() -> bool {
+    let ecx: u32;
+    // SAFETY: `cpuid` is unprivileged with no memory effects; ebx is preserved
+    // across the call (LLVM reserves it), leaf 1 is present on every 64-bit CPU.
+    unsafe {
+        asm!(
+            "push rbx", "cpuid", "pop rbx",
+            inout("eax") 1u32 => _,
+            out("ecx") ecx,
+            out("edx") _,
+            options(nostack, preserves_flags),
+        );
+    }
+    (ecx & (1 << 21)) != 0
+}
+
+/// Decide the EOI path for this CPU. GAP-2 hardening: if the CPU is ALREADY in
+/// x2APIC mode (firmware set IA32_APIC_BASE.EXTD), route EOI through the MSR so
+/// it never page-walks. We deliberately do NOT enable x2APIC mode ourselves:
+/// this driver drives SVR / ICR (incl. AP INIT-SIPI) / timer / APIC-ID through
+/// the xAPIC MMIO window, which x2APIC disables — flipping EXTD here would
+/// require a full MSR rewrite of the whole LAPIC + AP-startup path (out of this
+/// lane's scope and boot-critical). Under the normal xAPIC boot EXTD is clear,
+/// so this leaves EOI on the safe MMIO path; the real GAP-2 fix is the
+/// scheduler `active_mm` refcount, which removes the underlying use-after-free.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+fn select_eoi_path() {
+    // SAFETY: rdmsr on IA32_APIC_BASE is privileged but legal at CPL=0; pure read.
+    let base = unsafe { rdmsr(MSR_IA32_APIC_BASE) };
+    if x2apic_supported() && (base & APIC_X2_ENABLE) != 0 {
+        X2APIC_EOI.store(true, Ordering::Release);
+    }
+}
 
 /// Mapped kernel VA after `enable` runs. `0` until then.
 #[cfg(target_arch = "x86_64")]
@@ -64,6 +117,14 @@ pub static RESCHED_IPI_COUNT: core::sync::atomic::AtomicU64 =
 /// # C: O(1)
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub unsafe fn eoi() {
+    // x2APIC mode (GAP-2 hardening): EOI via MSR 0x80B never page-walks the
+    // active root, so a stale/clobbered user-root PML4 can't fault it. Only
+    // taken when the CPU is actually in x2APIC mode (see `select_eoi_path`).
+    if X2APIC_EOI.load(Ordering::Acquire) {
+        // SAFETY: wrmsr on the x2APIC EOI MSR is legal at CPL=0 in x2APIC mode; writing 0 signals EOI per Intel SDM Vol 3.
+        unsafe { wrmsr(MSR_X2APIC_EOI, 0); }
+        return;
+    }
     let va = LAPIC_BASE_VA.load(Ordering::Acquire);
     if va == 0 { return; }
     // SAFETY: per fn contract -- `va` is a Device-attr 4 KiB mapping; offset 0xB0 lies within.
@@ -252,6 +313,8 @@ pub unsafe fn enable(va: u64) -> LapicStatus {
             wrmsr(MSR_IA32_APIC_BASE, cur | APIC_GLOBAL_ENABLE);
         }
     }
+    // GAP-2 hardening: pick the EOI path (MSR if already in x2APIC mode).
+    select_eoi_path();
     // Software-enable via SVR + park spurious-int on vector 0xFF.
     // SAFETY: `va` is the freshly-mapped Device-attr LAPIC page per fn contract; reads/writes lie within its 4 KiB.
     unsafe {
@@ -361,6 +424,8 @@ pub unsafe fn enable_for_ap() -> (u32, u32) {
             wrmsr(MSR_IA32_APIC_BASE, cur | APIC_GLOBAL_ENABLE);
         }
     }
+    // GAP-2 hardening: pick the EOI path for this AP (MSR if in x2APIC mode).
+    select_eoi_path();
     // SAFETY: `va` aliases this CPU's LAPIC page; SVR offset within.
     unsafe {
         let svr_addr = (va + REG_SVR as u64) as *mut u32;

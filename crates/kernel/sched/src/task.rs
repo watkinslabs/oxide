@@ -705,16 +705,26 @@ impl Task {
         unsafe { (*self.rlimits.get())[crate::rlimit::rlim::NOFILE].0 as usize }
     }
 
-    /// Atomically replace `mm` with `new`, dropping the old Arc.
-    /// Used by `execve` per `15§5` and `Task::new_user_with_mm`.
+    /// Atomically replace `mm` with `new`. The displaced Arc is NOT dropped
+    /// here — it is parked in this CPU's `active_mm` slot (Linux `exit_mm`
+    /// keeps `active_mm`+`mm_count`; `mmdrop` runs after the next switch):
+    /// on exit/signal-death the caller clears `mm` BEFORE the final
+    /// `schedule()`, so an in-place drop of the last Arc would free the
+    /// page-table root while it is still live in CR3/TTBR0 (GAP-2
+    /// use-after-free → random exec/ld.so corruption). `execve` is safe by
+    /// ordering (it `activate`s the new root BEFORE calling this) but parks
+    /// through the same choke-point.
     /// # SAFETY: caller is the running task on its CPU OR holds
-    /// the runqueue invariant for this task; preempt-off; single-
-    /// CPU UP. Not safe to call on an actively-scheduled task from
-    /// another CPU.
-    /// # C: O(1) + Arc drop
+    /// the runqueue invariant for this task; preempt-off. Not safe
+    /// to call on an actively-scheduled task from another CPU.
+    /// # C: O(1)
     pub unsafe fn replace_mm(&self, new: Option<Arc<AddressSpace>>) {
         // SAFETY: see fn-level contract; single-mutator on this CPU.
-        unsafe { *self.mm.get() = new; }
+        let old = unsafe { core::mem::replace(&mut *self.mm.get(), new) };
+        #[cfg(target_os = "oxide-kernel")]
+        if let Some(m) = old { crate::live::schedule::park_active_mm(m); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        drop(old); // hosted: no live CR3 to protect
     }
 }
 

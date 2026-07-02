@@ -168,9 +168,21 @@ pub struct ExtentHeader {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Extent {
     pub block:    u32,  // first logical block this extent covers
-    pub len:      u16,  // number of contiguous blocks
+    pub len:      u16,  // raw on-disk len: >32768 = UNWRITTEN, real = len-32768
     pub start_hi: u16,  // high 16 bits of start LBA
     pub start_lo: u32,  // low 32 bits of start LBA
+}
+
+impl Extent {
+    /// Initialized-coverage length. ext4 encodes an unwritten (fallocated,
+    /// never-written) extent as `len > 32768` with real length `len - 32768`;
+    /// an initialized extent is capped at 32768 blocks. # C: O(1)
+    pub fn real_len(&self) -> u32 {
+        if self.len > 32768 { (self.len - 32768) as u32 } else { self.len as u32 }
+    }
+    /// True for an unwritten (fallocate-preallocated) extent — Linux serves
+    /// ZEROS for it, never the stale on-disk bytes. # C: O(1)
+    pub fn is_unwritten(&self) -> bool { self.len > 32768 }
 }
 
 /// 12-byte interior `ext4_extent_idx` (depth>0). Each idx points

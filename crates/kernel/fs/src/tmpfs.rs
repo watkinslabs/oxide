@@ -203,6 +203,7 @@ fn ensure_page(g: &mut BTreeMap<u64, u64>, idx: u64, acct: &TmpfsSb) -> Option<u
     let pa = match pmm::setup::alloc_object_frame() { Some(p) => p, None => { acct.free_blocks(1); return None; } };
     let ptr = match pmm::setup::frame_ptr(pa) { Some(p) => p, None => { acct.free_blocks(1); return None; } };
     // SAFETY: pa is a freshly-allocated PMM frame; PG is the page granule.
+    hal::zerotrap::trap((ptr) as *const u8, (PG) as usize);
     unsafe { core::ptr::write_bytes(ptr, 0, PG); }
     g.insert(idx, pa);
     Some(pa)
@@ -322,6 +323,8 @@ impl TmpfsFileData {
                 if let Some(&pa) = g.get(&((len / PG as u64))) {
                     let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
                     // SAFETY: inode-owned frame; zero [tail..PG] within the granule.
+                    // SAFETY: same bounds as the write_bytes below.
+                    hal::zerotrap::trap(unsafe { base.add(tail) } as *const u8, PG - tail);
                     unsafe { core::ptr::write_bytes(base.add(tail), 0, PG - tail); }
                 }
             }
@@ -345,6 +348,8 @@ impl TmpfsFileData {
             if zero_range {
                 let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
                 // SAFETY: pa is an inode-owned frame; range lies within page.
+                // SAFETY: same bounds as the write_bytes below.
+                hal::zerotrap::trap(unsafe { base.add(pgoff) } as *const u8, chunk);
                 unsafe { core::ptr::write_bytes(base.add(pgoff), 0, chunk); }
             }
             pos += chunk as u64;
@@ -365,9 +370,12 @@ impl Drop for TmpfsFileData {
     fn drop(&mut self) {
         let g = self.pages.lock();
         for (_idx, &pa) in g.iter() {
-            // SAFETY: pa was alloc_one_frame'd for this inode (refcount ref
-            // held since); dec returns it to the buddy when the count hits 0.
-            unsafe { pmm::setup::dec_and_maybe_free_frame(pa); }
+            // SAFETY: pa was alloc_object_frame'd for this inode (object ref
+            // held since); the OBJECT dec releases refcount WITHOUT touching
+            // mapcount — this drop is not a PTE teardown (the plain
+            // dec_and_maybe_free_frame here underflowed mapcount 0→-1 on
+            // every tmpfs inode drop, tripping [COW-LEAK] free-while-mapped).
+            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
         }
         self.acct.free_blocks(g.len() as u64); // return this inode's blocks to f_bfree
     }

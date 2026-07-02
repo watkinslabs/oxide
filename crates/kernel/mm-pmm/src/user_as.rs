@@ -331,41 +331,55 @@ fn leaf_writable(leaf: u64) -> bool {
 /// user range. HHDM-mapped table memory is read/written.
 /// # C: O(len/4096 * walk_depth) + per-page TLB flush
 pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
-    let hhdm = hhdm_offset();
+    use hal::{MmuOps, PageSize, Va};
     let new_flags = prot.to_page_flags();
     let va_start = va & !0xFFF;
     let va_end = va.checked_add(len as u64).map_or(va_start, |e| (e + 0xFFF) & !0xFFF);
     if va_end <= va_start { return; }
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: forwards to the per-arch walker; caller's contract above.
-        let _n = unsafe {
-            hal::pt_walker::protect_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(
-                root_pa, va_start, va_end, new_flags, hhdm,
-            )
-        };
-        // Flush each page in the range so the new PTE bits take effect.
-        let mut p = va_start;
-        while p < va_end {
-            // SAFETY: invlpg legal at CPL=0; flushes one TLB entry.
-            unsafe { hal_x86_64::flush_local_va(p); }
-            p = p.wrapping_add(0x1000);
+    // Linux `change_protection` + `can_change_pte_writable`: NEVER hardware-
+    // upgrade W on a present leaf that currently lacks it — a fork-COW
+    // W-stripped frame (anon AND private-file .data/GOT) is still SHARED
+    // with the fork peer; granting W here lets stores bypass the COW split
+    // and silently corrupt the peer. Keep such leaves W-less: the VMA prot
+    // now carries WRITE, so the next store takes the Protection{Write}
+    // fault and COW-copies/upgrades per page. Downgrades (removing W,
+    // toggling NX) apply directly. Both callers target the CALLER's own
+    // active root (mprotect glue passes current mm.root_pa()), so the
+    // active-root translate/map primitives — which self-flush per VA —
+    // are the correct walkers here.
+    let _ = root_pa;
+    let mut p = va_start;
+    while p < va_end {
+        // SAFETY: privileged PT read of the caller's live active root.
+        #[cfg(target_arch = "x86_64")]
+        let cur = unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::translate(Va(p)) };
+        #[cfg(target_arch = "aarch64")]
+        let cur = unsafe { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::translate(Va(p)) };
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        let cur: Option<(hal::Pa, hal::PageFlags)> = None;
+        if let Some((pa, old_fl)) = cur {
+            let mut f = new_flags;
+            if f.contains(hal::PageFlags::WRITE) && !old_fl.contains(hal::PageFlags::WRITE) {
+                f.remove(hal::PageFlags::WRITE);
+            }
+            // PROT_NONE (Linux _PAGE_PROTNONE): the leaf must revoke USER
+            // access — pack_4k_leaf always sets PRESENT, so keeping USER
+            // left PROT_NONE pages readable (guard pages didn't guard).
+            // Clearing USER keeps the frame + content resident (a later
+            // mprotect(READ) restores access losslessly) while any user
+            // touch takes a protection fault → VMA check → SIGSEGV.
+            if prot.is_empty() { f.remove(hal::PageFlags::USER); }
+            // SAFETY: same-PA permission rewrite on the caller's active root;
+            // M::map self-flushes the VA and returns no displaced frame for a
+            // same-PA rewrite.
+            unsafe {
+                #[cfg(target_arch = "x86_64")]
+                { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::map(Va(p), hal::Pa(pa.0 & !0xFFF), f, PageSize::P4K); }
+                #[cfg(target_arch = "aarch64")]
+                { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::map(Va(p), hal::Pa(pa.0 & !0xFFF), f, PageSize::P4K); }
+            }
         }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        // SAFETY: forwards to the per-arch walker; caller's contract above.
-        let _n = unsafe {
-            hal::pt_walker::protect_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(
-                root_pa, va_start, va_end, new_flags, hhdm,
-            )
-        };
-        let mut p = va_start;
-        while p < va_end {
-            // SAFETY: tlbi+dsb sequence per `21§5`; flushes one EL0/EL1 user page.
-            unsafe { hal_aarch64::flush_local_va(p); }
-            p = p.wrapping_add(0x1000);
-        }
+        p = p.wrapping_add(0x1000);
     }
     // SMP TLB coherence (`20§5`): the loops above rewrote PTE permissions
     // (e.g. RELRO RO-downgrade) + flushed only THIS CPU's TLB. Peer threads
@@ -376,7 +390,7 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
     // Target only the CPUs that have this mm loaded (cpumask), not every
     // online CPU, per Linux flush_tlb_others.
     hal::tlb::shootdown_others_all(current_mm_cpumask());
-    let _ = (root_pa, new_flags, hhdm); // touch on host/test build
+    let _ = (root_pa, new_flags); // touch on host/test build
 }
 
 /// A4-rmap: walk every (root_pa, va) that maps the anonymous frame `pa`,
@@ -428,22 +442,29 @@ pub fn rmap_walk_anon_pa<F: FnMut(u64, u64)>(pa: u64, mut f: F) -> usize {
 /// ref hit zero — the root is no longer active on any CPU and no
 /// concurrent walker / writer remains.
 ///
-/// GAP-2 (tracked follow-up, lazy-TLB / Linux `mmdrop`): the
-/// "no longer active on any CPU" precondition holds only because a CPU
-/// that goes lazy-TLB on this root (scheduler skips `activate` when the
-/// next task has `mm == None`) keeps its `mm_cpumask` bit set, but does
-/// NOT hold an `Arc<AddressSpace>` — so the strong count can hit zero and
-/// run this teardown while a peer CPU still has the root in CR3. A bare
-/// `flush_tlb_others(cpumask)` here is INSUFFICIENT: a TLB flush does not
-/// change CR3, so the peer's next user walk would still traverse the
-/// just-freed tables. The correct fix is the Linux `mmgrab`/`mmdrop`
-/// lazy-TLB reference (force peers onto the kernel/init root before the
-/// free). The `cpumask` is now available to implement it; until then this
-/// path relies on the same UP/quiesced assumption as before.
+/// GAP-2 (FIXED, lazy-TLB / Linux `mmgrab`/`mmdrop`): the "no longer
+/// active on any CPU" precondition is now GUARANTEED by the scheduler's
+/// per-CPU `active_mm` reference (`sched::live::schedule`). When a CPU
+/// goes lazy-TLB on this root (the scheduler skips `activate` because the
+/// next task has `mm == None`) it keeps the root in CR3 AND takes an extra
+/// `Arc<AddressSpace>` grab (`mmgrab`), released only when it later
+/// activates a different root (`mmdrop`). That grab holds this AS's strong
+/// count above zero for as long as ANY CPU has the root in CR3, so this
+/// `Drop`-driven teardown — which runs only at strong-count zero — can
+/// never free the root (or its tables) while a CPU is still resident on
+/// it. (A bare `flush_tlb_others(cpumask)` here would have been
+/// INSUFFICIENT: a TLB flush does not change CR3, so a lazy peer's next
+/// user walk would still traverse the freed tables. The `active_mm`
+/// refcount, not a flush, is what makes this path safe under SMP.)
 /// # C: O(N_present_leaves + N_present_tables)
 #[cfg(target_arch = "x86_64")]
 pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+    // debug-atexit: the dec context for note_final_free — as_teardown runs
+    // in the REAPER's task context, so current-mm is the wrong identity;
+    // the dying AS root is the honest one. UP single-threaded teardown.
+    #[cfg(feature = "debug-atexit")]
+    crate::setup::set_dec_ctx(root_pa);
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     // F157: leaves go through dec_and_maybe_free so COW-shared frames
     // (multiple AS map them) only release once the last AS drops.
@@ -482,12 +503,19 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     // Free the root frame itself.
     // SAFETY: root_pa is the AS-private root; no longer reachable.
     unsafe { crate::setup::free_one_frame(root_pa); }
+    #[cfg(feature = "debug-atexit")]
+    crate::setup::set_dec_ctx(0);
 }
 
 /// aarch64 mirror of `as_teardown`.
 #[cfg(target_arch = "aarch64")]
 pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+    // debug-atexit: the dec context for note_final_free — as_teardown runs
+    // in the REAPER's task context, so current-mm is the wrong identity;
+    // the dying AS root is the honest one. UP single-threaded teardown.
+    #[cfg(feature = "debug-atexit")]
+    crate::setup::set_dec_ctx(root_pa);
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     let mut free_leaf = |_va: u64, pa: u64| {
         // SAFETY: leaf was reachable from this AS's PT; F157 dec-and-free.
@@ -940,6 +968,31 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
 fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
     -> Result<(), vmm::Error>
 {
+    // DIAG (debug-atexit): sentinel-frame re-verify on every fault entry —
+    // names the window in which the watched tail page went zero ([TAILZAP]).
+    #[cfg(feature = "debug-atexit")]
+    vmm::tailwatch::check(sched::live::current().map(|c| c.tid).unwrap_or(0));
+    // RANK-1 decisive test (graph analysis): a fault resolves against `as_`'s
+    // VMA tree but installs into the ACTIVE root. If active CR3 != as_.root_pa
+    // the install lands in the WRONG address space — the deterministic-target /
+    // random-victim geometry. Log both roots + the faulting VA; do not panic
+    // (boot continues so the corruption still reproduces for correlation).
+    #[cfg(all(feature = "debug-atexit", target_arch = "x86_64"))]
+    {
+        let cr3 = hal_x86_64::read_cr3() & !0xfff;
+        let mmroot = as_.root_pa() & !0xfff;
+        if cr3 != mmroot {
+            klog::write_raw(b"[CR3-DESYNC] va=");
+            klog::write_hex_u64(uva.as_u64());
+            klog::write_raw(b" cr3=");
+            klog::write_hex_u64(cr3);
+            klog::write_raw(b" mm-root=");
+            klog::write_hex_u64(mmroot);
+            klog::write_raw(b" tid=");
+            klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+            klog::write_raw(b"\n");
+        }
+    }
     // debug-cow item 2: task-struct integrity. Validate the running task's
     // head fields on every fault entry (the cheapest place that already has
     // `current()`); a clobbered struct head (the sched task corruption
@@ -1024,6 +1077,49 @@ fn handle(va_raw: u64, fault: FaultKind) -> bool {
         Some(u) => u,
         None    => return false,
     };
+    // DIAG (debug-atexit): the File fill installs lib-arena writable pages
+    // READ-ONLY, so the FIRST write to a correctly-filled library page arrives
+    // here as Protection{Write}. Capture the writing RIP (user ld.so text vs
+    // kernel) + the pre-write bytes at the observed corruption offset (0x20).
+    // A bulk `rep stosq` memset faults on its first store, so this names a
+    // memset zeroer; the RIP range names user vs kernel.
+    #[cfg(all(feature = "debug-atexit", target_arch = "x86_64"))]
+    if matches!(fault, FaultKind::Protection { access: FaultAccess::Write })
+        && (0x7ffff6000000..0x7ffff8000000).contains(&va_raw) {
+        let fp = hal_x86_64::current_fault_frame();
+        let rip = if fp.is_null() { 0 } else { unsafe { (*fp).rip } };
+        // memset lives at ld.so bias 0x40000000 + [0x24970, 0x24a40). When the
+        // zeroing store faults inside memset, dump its ARGS (rdi=dst, sil=val,
+        // rdx=len) — the exact range ld.so clears. A val==0 memset whose
+        // [dst,dst+len) spans file-data pages is the corruption: ld.so's BSS
+        // clear range is wrong (kernel gave it a bad filesz/segment view).
+        // Log the EXACT faulting offset (cr2 low 12 bits) + RIP for writes near
+        // a .dynamic entry boundary (offset a multiple of 0x10, i.e. an
+        // Elf64_Dyn slot). A zeroed slot at offset 0x20/0x40/... = DT_NULL early
+        // terminator. memset RIPs additionally dump their dst/len.
+        let off = va_raw & 0xfff;
+        let in_memset = (0x40024970..0x40024a40).contains(&rip);
+        static WCOUNT: AtomicU64 = AtomicU64::new(0);
+        if (off < 0x400) && WCOUNT.fetch_add(1, Ordering::Relaxed) < 300 {
+            klog::write_raw(b"[W] va=");
+            klog::write_hex_u64(va_raw);
+            klog::write_raw(b" rip=");
+            klog::write_hex_u64(rip);
+            if in_memset {
+                let gp = hal_x86_64::current_fault_gprs();
+                if !gp.is_null() {
+                    let g = unsafe { &*gp };
+                    klog::write_raw(b" MEMSET dst=");
+                    klog::write_hex_u64(g.rdi);
+                    klog::write_raw(b" len=");
+                    klog::write_hex_u64(g.rdx);
+                }
+            }
+            klog::write_raw(b" tid=");
+            klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+            klog::write_raw(b"\n");
+        }
+    }
     // Pick the AS the active CR3/TTBR0 actually targets: the
     // current task's mm if there is one (post-execve this is the
     // new AS, not the boot global). With `Task.mm` wrapped in
@@ -1132,9 +1228,12 @@ pub fn glue_mmap(
     if is_shared == is_private { return Err(-(Errno::Einval.as_i32() as i64)); }
     let want_fixed = flags & MAP_FIXED != 0;
     let want_no_replace = flags & MAP_FIXED_NOREPLACE != 0;
-    // F158: MAP_STACK is documented as an alias for MAP_GROWSDOWN
-    // (sets up a stack VMA the kernel can auto-extend on PF).
-    let want_grows_down = flags & (MAP_GROWSDOWN | MAP_STACK) != 0;
+    // Linux: MAP_STACK is a NO-OP hint (mman.h: "provided for
+    // compatibility"), NOT an alias for MAP_GROWSDOWN — treating it as
+    // GROWSDOWN armed the 8 MiB auto-extend under every pthread stack, so a
+    // stray fault in a hole below one silently extended the stack over the
+    // hole instead of SIGSEGV-ing. Only an explicit MAP_GROWSDOWN grows.
+    let want_grows_down = flags & MAP_GROWSDOWN != 0;
     let len_aligned = ((len + 0xfff) & !0xfff) as usize;
     if (want_fixed || want_no_replace) && (addr == 0 || (addr & 0xfff) != 0) {
         return Err(-(Errno::Einval.as_i32() as i64));
@@ -1233,6 +1332,9 @@ pub fn glue_mmap(
     };
     match r {
         Ok(uva)  => Ok(uva.as_u64()),
+        // errno fidelity (Linux do_mmap): bad args are EINVAL; only genuine
+        // exhaustion (no hole / no frame) is ENOMEM.
+        Err(vmm::Error::Inval) => Err(-(Errno::Einval.as_i32() as i64)),
         Err(_)   => Err(-(Errno::Enomem.as_i32() as i64)),
     }
 }
@@ -1245,6 +1347,16 @@ pub fn glue_mmap(
 /// don't get yanked from the peer.
 /// # C: O(pages)
 pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
+    // DIAG (debug-syscall): a MADV_DONTNEED/FREE zap of a lib-arena page while a
+    // thread holds a lock there (finding #4) loses the in-flight lock/unlock
+    // write on refault. Log the range so it can be correlated with a spin.
+    #[cfg(feature = "debug-syscall")]
+    if (0x7ffff6000000..0x7ffff8000000).contains(&addr) {
+        klog::write_raw(b"[ZAPEVICT] addr="); klog::write_hex_u64(addr);
+        klog::write_raw(b" len="); klog::write_hex_u64(len);
+        klog::write_raw(b" tid="); klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+        klog::write_raw(b"\n");
+    }
     use syscall::errno::Errno;
     use hal::{MmuOps, PageSize, Va};
     if addr == 0 || len == 0 || (addr & 0xfff) != 0 {
@@ -1305,11 +1417,21 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
 /// → free PA back to PMM → flush_va. Then removes the VMA(s).
 /// # C: O(pages) PT walk + O(K log N) VMA remove
 pub fn glue_munmap(addr: u64, len: u64) -> i64 {
+    // DIAG (debug-syscall): a munmap zap of a lib-arena page (finding #4).
+    #[cfg(feature = "debug-syscall")]
+    if (0x7ffff6000000..0x7ffff8000000).contains(&addr) {
+        klog::write_raw(b"[ZAPMUNMAP] addr="); klog::write_hex_u64(addr);
+        klog::write_raw(b" len="); klog::write_hex_u64(len);
+        klog::write_raw(b" tid="); klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+        klog::write_raw(b"\n");
+    }
     use syscall::errno::Errno;
     use hal::{MmuOps, PageSize, Va};
-    if addr == 0 || len == 0 || (addr & 0xfff) != 0 {
+    if len == 0 || (addr & 0xfff) != 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
+    // Linux munmap(0, len): aligned, walks the (empty) low range, returns 0.
+    if addr == 0 { return 0; }
     let len_aligned = (len + 0xfff) & !0xfff;
     if addr.checked_add(len_aligned).map_or(true, |e| e > USER_VA_END) {
         return -(Errno::Einval.as_i32() as i64);
@@ -1405,5 +1527,152 @@ pub fn prefault_stack(as_: &AddressSpace, top: u64, len: u64) {
             let _ = do_handle(as_, uva, FaultKind::NotPresent { access: FaultAccess::Write }, hhdm);
         }
         va += 4096;
+    }
+}
+
+/// DIAG (worktree-only, do not merge): on an exit(127), while the dying
+/// task's page tables are still live, compare every PRESENT page of every
+/// NON-WRITABLE file-backed VMA against the backing store. The page cache is
+/// proven clean ([FILLRACE]/[FRAME-CORRUPT] both zero), so any mismatch here
+/// pins the corruption to the private fault frame / PTE / TLB layer and names
+/// the exact ino/off/va. Writable VMAs are skipped (legit relocation writes);
+/// post-RELRO pages may false-positive — exec-only diffs are definitive.
+/// # C: O(mapped pages × page I/O)
+#[cfg(target_arch = "x86_64")]
+pub fn diag_verify_file_pages() {
+    use hal::{MmuOps, Va};
+    let Some(cur) = sched::live::current() else { return };
+    // SAFETY: running task on this CPU; single-mutator mm slot per 13§5.
+    let Some(mm) = (unsafe { cur.mm_ref() }) else { return };
+    let hhdm = hhdm_offset();
+    // Dump the dying process's VMA table once — overlap/aliasing shows here.
+    for v in mm.snapshot_vmas() {
+        if let VmaBacking::File { ref backing, off } = v.backing {
+            klog::write_raw(b"[VMA] ");
+            klog::write_hex_u64(v.start.as_u64());
+            klog::write_raw(b"-");
+            klog::write_hex_u64(v.end.as_u64());
+            klog::write_raw(b" ino=");
+            klog::write_hex_u64(backing.ino());
+            klog::write_raw(b" off=");
+            klog::write_hex_u64(off);
+            klog::write_raw(b" prot=");
+            klog::write_dec_u64(v.prot.bits() as u64);
+            klog::write_raw(b"\n");
+        }
+    }
+    let mut reported = 0u32;
+    for vma in mm.snapshot_vmas() {
+        if reported >= 8 { break; }
+        // Writable VMAs (RW .data/.dynamic/GOT) legitimately diverge from the
+        // file via relocations — those write POINTERS. They never zero a run
+        // that had file content, so for writable pages report only [MAPZERO]:
+        // a 32-byte aligned all-zero run where the backing is non-zero = a
+        // lost dirty page / zero-refault (the DT_NEEDED-skip corruption).
+        let writable = vma.prot.contains(VmaProt::WRITE);
+        let VmaBacking::File { ref backing, off } = vma.backing else { continue };
+        let mut va = vma.start.as_u64();
+        while va < vma.end.as_u64() && reported < 8 {
+            // SAFETY: privileged PT read of the current (dying) task's live root.
+            let translated = unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::translate(Va(va)) };
+            // Raw x86 leaf (D bit6 = written-through-since-install, A bit5 =
+            // accessed, W bit1). The DECISIVE discriminator: D=0 => the frame's
+            // zero content arrived WITH the frame at install (some path zeroed
+            // it before mapping); D=1 => a store retired through THIS mapping
+            // after install (a user memset / kernel copy-to-user of zeros).
+            let raw_leaf = unsafe {
+                hal::pt_walker::translate_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(
+                    mm.root_pa(), va, hhdm)
+            }.map(|(_, leaf)| leaf).unwrap_or(0);
+            if let Some((pa, fl)) = translated {
+                let foff = off + (va - vma.start.as_u64());
+                let fsize = backing.size_hint();
+                let valid = if foff >= fsize { 0usize }
+                            else { core::cmp::min(4096u64, fsize - foff) as usize };
+                if valid > 0 {
+                    let mut want = alloc::vec![0u8; valid];
+                    let mut filled = 0usize;
+                    while filled < valid {
+                        match backing.read_at(foff + filled as u64, &mut want[filled..valid]) {
+                            Ok(0) => break,
+                            Ok(n) => filled += n,
+                            Err(()) => { filled = 0; break }
+                        }
+                    }
+                    if filled == valid {
+                        let got = (hhdm + (pa.0 & !0xfff)) as *const u8;
+                        let mut first_diff: Option<usize> = None;
+                        if writable {
+                            // [MAPZERO] scan: aligned 32-byte run zero in memory,
+                            // non-zero in the file.
+                            let mut i = 0usize;
+                            while i + 32 <= valid {
+                                // SAFETY: HHDM mirror of a live user frame; read-only.
+                                let gz = (0..4).all(|k| unsafe {
+                                    core::ptr::read_volatile((got.add(i) as *const u64).add(k)) } == 0);
+                                if gz {
+                                    let wz = want[i..i + 32].iter().all(|&b| b == 0);
+                                    if !wz { first_diff = Some(i); break }
+                                }
+                                i += 32;
+                            }
+                        } else {
+                            for i in 0..valid {
+                                // SAFETY: HHDM mirror of a live user frame; read-only.
+                                let b = unsafe { core::ptr::read_volatile(got.add(i)) };
+                                if b != want[i] { first_diff = Some(i); break }
+                            }
+                        }
+                        if let Some(d) = first_diff {
+                            if writable { klog::write_raw(b"[MAPZERO]"); }
+                            // Frame provenance: the ANON PageMeta flag means the
+                            // frame was installed by the ANONYMOUS fault arm
+                            // (demand-zero) — proof a File page faulted through
+                            // the wrong backing.
+                            if let Some(meta) = crate::setup::page_meta() {
+                                if let Some(f) = meta.flags(hal::Pfn((pa.0 & !0xfff) / 4096)) {
+                                    klog::write_raw(b"[pmflags=");
+                                    klog::write_hex_u64(f.bits() as u64);
+                                    klog::write_raw(b"]");
+                                }
+                            }
+                            klog::write_raw(b"[pte=");
+                            klog::write_hex_u64(fl.bits() as u64);
+                            klog::write_raw(b" raw=");
+                            klog::write_hex_u64(raw_leaf);
+                            klog::write_raw(if raw_leaf & (1 << 6) != 0 { b" D=1" } else { b" D=0" });
+                            klog::write_raw(if raw_leaf & (1 << 5) != 0 { b" A=1" } else { b" A=0" });
+                            klog::write_raw(b"]");
+                            klog::write_raw(b"[MAPDIFF] ino=");
+                            klog::write_hex_u64(backing.ino());
+                            klog::write_raw(b" foff=");
+                            klog::write_hex_u64(foff);
+                            klog::write_raw(b" va=");
+                            klog::write_hex_u64(va);
+                            klog::write_raw(b" pa=");
+                            klog::write_hex_u64(pa.0 & !0xfff);
+                            klog::write_raw(b" at=");
+                            klog::write_hex_u64(d as u64);
+                            klog::write_raw(b" want=");
+                            for i in d..core::cmp::min(d + 8, valid) {
+                                klog::write_hex_u64(want[i] as u64); klog::write_raw(b",");
+                            }
+                            klog::write_raw(b" got=");
+                            for i in d..core::cmp::min(d + 8, valid) {
+                                // SAFETY: same HHDM mirror as the compare loop above.
+                                let b = unsafe { core::ptr::read_volatile(got.add(i)) };
+                                klog::write_hex_u64(b as u64); klog::write_raw(b",");
+                            }
+                            klog::write_raw(b"\n");
+                            reported += 1;
+                        }
+                    }
+                }
+            }
+            va += 4096;
+        }
+    }
+    if reported == 0 {
+        klog::write_raw(b"[MAPDIFF] exit127: all non-writable file pages MATCH backing\n");
     }
 }

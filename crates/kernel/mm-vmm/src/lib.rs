@@ -14,6 +14,8 @@ extern crate std;
 
 pub mod address_space;
 pub mod debug_cow;
+#[cfg(feature = "debug-atexit")]
+pub mod tailwatch;
 mod mremap;
 pub mod anon_vma;
 pub mod rmap;
@@ -25,6 +27,13 @@ pub use address_space::{AddressSpace, MIN_USER_VA, MMAP_BASE_GAP};
 pub use anon_vma::{AnonVma, RmapTarget};
 pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, Vma, VmaBacking, VmaFlags, VmaProt};
 pub use tree::VmaTree;
+
+/// DIAG (debug-atexit): fn-ptr the arch layer installs to arm a DR0 hardware
+/// write-watchpoint at a VA. The File fill arm calls it once, on the first
+/// lib-arena full page, so the #DB hook can name the instruction that later
+/// zeros that page. 0 = not installed.
+#[cfg(feature = "debug-atexit")]
+pub static WATCH_ARM: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// Subsystem-level error per `38`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

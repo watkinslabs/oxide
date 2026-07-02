@@ -366,12 +366,26 @@ impl AddressSpace {
         _hhdm_offset: u64,
         mut inc_ref: IR,
     ) -> KResult<Arc<Self>> {
-        let src = self.vmas.read();
+        // Linux dup_mmap holds mmap_lock WRITE for the whole copy: a peer
+        // thread's fault (which takes the read lock) must not interleave
+        // with the per-page translate/inc_ref/map_at/W-strip sequence, or
+        // its COW copy in the window is torn down by the parent remap
+        // (frame leak + retired stores reverted).
+        let src = self.vmas.write();
         let mut dst = VmaTree::new();
         for vma in src.iter() {
+            // MADV_DONTFORK (Linux VM_DONTCOPY): the child does not
+            // inherit this VMA at all.
+            if vma.flags.contains(VmaFlags::DONTFORK) { continue; }
             dst.insert(vma.clone()).map_err(|_| Error::NoMem)?;
         }
         for vma in src.iter() {
+            if vma.flags.contains(VmaFlags::DONTFORK) { continue; }
+            // MADV_WIPEONFORK (Linux VM_WIPEONFORK): the child keeps the
+            // VMA but NO pages — every touch refaults as fresh zeros
+            // (systemd random-util's fork-detection contract).
+            if vma.flags.contains(VmaFlags::WIPEONFORK)
+                && matches!(vma.backing, VmaBacking::Anonymous) { continue; }
             let writable = vma.prot.contains(VmaProt::WRITE);
             // MAP_SHARED VMAs are NOT copy-on-write: parent and child keep
             // writing the SAME frame (Linux shmem / MAP_SHARED|MAP_ANON). The
@@ -443,6 +457,12 @@ impl AddressSpace {
                         vma.prot
                     };
                     let child_flags = child_prot.to_page_flags();
+                    // DIAG (debug-atexit): fork map_at into the child root at a
+                    // lib-arena VA. ino=2 marks fork origin; root=child root.
+                    #[cfg(feature = "debug-atexit")]
+                    if (0x7ffff6000000..0x7ffff8000000).contains(&va) {
+                        crate::tailwatch::log_install(b"fork", 2, 0, va, pa, new_root_pa);
+                    }
                     // SAFETY: new_root_pa carries kernel-half clone; va aligned in user range; flags carry USER per `11§5`; pa is the parent's mapped frame whose refcount we just bumped.
                     unsafe {
                         M::map_at(new_root_pa, Va(va), Pa(pa), child_flags, PageSize::P4K);
@@ -622,6 +642,15 @@ impl AddressSpace {
     /// Snapshot every VMA into a Vec for callers that need a stable
     /// view (e.g. /proc/self/maps). Read-locks the tree briefly.
     /// # C: O(N) clone
+    /// madvise fork-behavior core: set/clear VmaFlags over `[start,
+    /// start+len)` with boundary splits (Linux madvise_update_vma).
+    /// # C: O(K log N)
+    pub fn update_flags_range(&self, start: UserVirtAddr, len: usize,
+                              set: VmaFlags, clear: VmaFlags) {
+        let Some(end) = UserVirtAddr::new(start.as_u64().saturating_add(len as u64)) else { return };
+        self.vmas.write().update_flags_range(start, end, set, clear);
+    }
+
     pub fn snapshot_vmas(&self) -> alloc::vec::Vec<Vma> {
         let g: RwReadGuard<'_, _, _> = self.vmas.read();
         g.iter().cloned().collect()
@@ -947,6 +976,32 @@ impl AddressSpace {
         // `|_| false` (copy-always, the previous behaviour).
         XR: FnMut(u64) -> bool,
     {
+        // Linux `handle_pte_fault`: when the PTE is ABSENT the fault is a
+        // FIRST TOUCH (`do_pte_missing` → do_anonymous_page / do_fault) no
+        // matter what the hardware error code claims — a stale TLB entry or
+        // a zap race can deliver a protection-write fault for a leaf that is
+        // gone. Normalize such faults to NotPresent BEFORE the Protection
+        // branch below: its cur==None fallback allocated a ZERO page even for
+        // File/KernelBytes backings, installing zeros over file content
+        // (Linux do_cow_fault READS the backing page first). That zero page
+        // landed on the EOF-straddling .data/.dynamic tail of freshly-mapped
+        // shared libraries — ld.so then silently skipped DT_NEEDED deps
+        // (dl-version.c `needed != NULL` assert), hit bogus undefined-symbol
+        // errors, or wedged on a zeroed lock word: the random-victim exit-127
+        // / futex-wedge boot corruption.
+        let fault = match fault {
+            FaultKind::Protection { access } => {
+                let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
+                // SAFETY: va_page is in user-half; M::translate reads the
+                // active PT for the running task's CR3 / TTBR0.
+                if unsafe { M::translate(Va(va_page)) }.is_none() {
+                    FaultKind::NotPresent { access }
+                } else {
+                    FaultKind::Protection { access }
+                }
+            }
+            f => f,
+        };
         // Protection write to a writable VMA — CoW-style
         // upgrade. Three causes hit this:
         //   (a) eager-copy at fork installed the leaf with the
@@ -1096,10 +1151,16 @@ impl AddressSpace {
                     let src = (hhdm_offset + (src_pa.0 & !0xfff)) as *const u8;
                     core::ptr::copy_nonoverlapping(src, dst, PAGE_SIZE_BYTES as usize);
                 } else {
+                    hal::zerotrap::trap((dst) as *const u8, (PAGE_SIZE_BYTES as usize) as usize);
                     core::ptr::write_bytes(dst, 0, PAGE_SIZE_BYTES as usize);
                 }
             }
             let pte_flags = vma.prot.to_page_flags();
+            #[cfg(feature = "debug-atexit")]
+            if let VmaBacking::File { backing, off } = &vma.backing {
+                let foff = off.wrapping_add(va_page - vma.start.as_u64());
+                crate::tailwatch::log_install(b"cowcopy", backing.ino(), foff, va_page, new_pa, 0);
+            }
             // SAFETY: va_page page-aligned in user-half; new_pa fresh PMM frame; flags carry USER + WRITE since vma.prot.WRITE checked above.
             let displaced = unsafe {
                 let d = M::map(Va(va_page), Pa(new_pa), pte_flags, PageSize::P4K);
@@ -1140,7 +1201,39 @@ impl AddressSpace {
         }
         let access = match fault {
             FaultKind::NotPresent { access } => access,
-            FaultKind::Protection { .. }     => return Err(Error::NotImplemented),
+            // Linux `spurious_fault`: only Read/Exec protection faults reach
+            // here (Write took the branch above; absent leaves were
+            // normalized to NotPresent). The leaf is PRESENT, so if the VMA
+            // permits the access this fault came from a stale TLB entry or
+            // stale leaf permissions — re-install the leaf from the VMA prot
+            // (preserving a COW W-strip) and retry, never kill. A genuine
+            // VMA-forbidden access stays EFAULT/SIGSEGV.
+            FaultKind::Protection { access } => {
+                let g = self.vmas.read();
+                let vma = g.find_containing(va).ok_or(Error::Inval)?;
+                if !vma.permits(access) { return Err(Error::Inval); }
+                let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
+                // SAFETY: privileged PT read of the running task's active root.
+                if let Some((pa, old_fl)) = unsafe { M::translate(Va(va_page)) } {
+                    let mut f = vma.prot.to_page_flags();
+                    if f.contains(hal::PageFlags::WRITE) && !old_fl.contains(hal::PageFlags::WRITE) {
+                        f.remove(hal::PageFlags::WRITE); // keep COW W-strip
+                    }
+                    #[cfg(feature = "debug-atexit")]
+                    if let VmaBacking::File { backing, off } = &vma.backing {
+                        let foff = off.wrapping_add(va_page - vma.start.as_u64());
+                        crate::tailwatch::log_install(b"spurious", backing.ino(), foff, va_page, pa.0 & !(PAGE_SIZE_BYTES - 1), 0);
+                    }
+                    // SAFETY: same-PA permission refresh; M::map self-flushes.
+                    unsafe { M::map(Va(va_page), Pa(pa.0 & !(PAGE_SIZE_BYTES - 1)), f, PageSize::P4K); }
+                } else {
+                    // Raced away between normalization and here — flush and
+                    // let the refault take the NotPresent path.
+                    // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
+                    unsafe { M::flush_va(Va(va_page)); }
+                }
+                return Ok(());
+            }
         };
 
         // Per spec §5: read VMA tree (concurrent with other faults).
@@ -1163,15 +1256,36 @@ impl AddressSpace {
                 // bytes is the page granule.
                 unsafe {
                     let dst = (hhdm_offset + pa) as *mut u8;
+                    hal::zerotrap::trap((dst) as *const u8, (PAGE_SIZE_BYTES as usize) as usize);
                     core::ptr::write_bytes(dst, 0, PAGE_SIZE_BYTES as usize);
                 }
                 let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
                 let pte_flags = vma.prot.to_page_flags();
+                // DIAG (debug-atexit): anon-arm install in the lib arena — this
+                // arm zeros the frame, so if it fires at a library-tail VA the
+                // VMA-tree consulted was wrong (an anon VMA covering what should
+                // be a File page). ino=0 marks the anon origin.
+                #[cfg(feature = "debug-atexit")]
+                if (0x7ffff6000000..0x7ffff8000000).contains(&va_page) {
+                    crate::tailwatch::log_install(b"anon", 0, 0, va_page, pa, self.root_pa);
+                }
                 // SAFETY: va_page is the page-aligned faulting user-half VA per find_containing; pa is a fresh PMM frame; flags carry USER for the leaf U bit per `11§5` to_pte_flags; MmuOps state initialised by the live per-arch impl.
                 // F157-A1: a demand fault normally installs over an empty slot
                 // (`None`); if a stale present leaf is displaced, dec_ref it so
                 // refcount stays == live-PTE count (the RANK-1 fix).
                 if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                    // LOST-WRITE (the ld.so link_map corruption): a NotPresent
+                    // anon fault just installed a ZERO frame but M::map DISPLACED
+                    // a present leaf `old` — a populated page existed here yet
+                    // translate() reported it absent both times. Name it.
+                    #[cfg(feature = "debug-watchdog")]
+                    {
+                        klog::write_raw(b"[LOSTWRITE] anon-zero displaced present leaf va=");
+                        klog::write_hex_u64(va_page);
+                        klog::write_raw(b" old_pa="); klog::write_hex_u64(old.0 & !(PAGE_SIZE_BYTES - 1));
+                        klog::write_raw(b" newzero_pa="); klog::write_hex_u64(pa);
+                        klog::write_raw(b"\n");
+                    }
                     // GAP-1 (displaced-frame UAF): this fault displaced a
                     // present leaf; dec_ref below may free `old`. A peer CPU
                     // of the same mm with a stale TLB entry for va_page->old
@@ -1211,6 +1325,7 @@ impl AddressSpace {
                     let dst = (hhdm_offset + pa) as *mut u8;
                     if off >= data_slice.len() {
                         // Entirely BSS (past file-backed extent).
+                        hal::zerotrap::trap((dst) as *const u8, (page) as usize);
                         core::ptr::write_bytes(dst, 0, page);
                     } else {
                         let avail = (data_slice.len() - off).min(page);
@@ -1220,14 +1335,31 @@ impl AddressSpace {
                         );
                         if avail < page {
                             // SAFETY: dst+avail is within the freshly-allocated frame; tail zero-fills the BSS portion of this page.
+                            hal::zerotrap::trap((dst.add(avail)) as *const u8, (page - avail) as usize);
                             core::ptr::write_bytes(dst.add(avail), 0, page - avail);
                         }
                     }
                 }
                 let pte_flags = vma.prot.to_page_flags();
+                // DIAG (debug-atexit): KernelBytes-arm install in the lib arena
+                // — this arm zeros BSS tail bytes and NEVER logged before; if it
+                // fires at a library VA the VMA consulted was a KernelBytes VMA
+                // (exec/ld.so image) where a File VMA should be. ino=1 marks it.
+                #[cfg(feature = "debug-atexit")]
+                if (0x7ffff6000000..0x7ffff8000000).contains(&va_page) {
+                    crate::tailwatch::log_install(b"kbytes", 1, off as u64, va_page, pa, self.root_pa);
+                }
                 // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
                 // F157-A1: dec_ref any frame displaced by a stale present leaf.
                 if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                    // LOST-WRITE (kbytes/file arm, ALL ranges incl brk + ld.so
+                    // .bss): a demand fault installed over a PRESENT leaf → the
+                    // displaced page's live content was dropped. va identifies
+                    // the range (0x1000_0000 exe/brk, 0x4003_xxxx ld.so .bss).
+                    #[cfg(feature = "debug-watchdog")]
+                    { klog::write_raw(b"[LOSTWRITE] demand-install displaced present va=");
+                      klog::write_hex_u64(va_page); klog::write_raw(b" old_pa=");
+                      klog::write_hex_u64(old.0 & !(PAGE_SIZE_BYTES - 1)); klog::write_raw(b"\n"); }
                     // GAP-1 (displaced-frame UAF): this fault displaced a
                     // present leaf; dec_ref below may free `old`. A peer CPU
                     // of the same mm with a stale TLB entry for va_page->old
@@ -1247,6 +1379,22 @@ impl AddressSpace {
                 let vma_off = (va_page - vma.start.as_u64()) as u64;
                 let file_off = backing_off.saturating_add(vma_off);
                 let page = PAGE_SIZE_BYTES as usize;
+                // DIAG (debug-atexit): every File-arm ENTRY in the lib arena —
+                // proves whether the arm runs at all for a given (ino,foff) and
+                // which sub-branch (shmem vs fill) it takes. If a corrupted
+                // (ino,foff) NEVER appears here, the page was made present by a
+                // path OUTSIDE this arm (or never faulted in this process).
+                #[cfg(feature = "debug-atexit")]
+                if (0x7ffff6000000..0x7ffff8000000).contains(&va_page) {
+                    klog::write_raw(b"[FARM] va=");
+                    klog::write_hex_u64(va_page);
+                    klog::write_raw(b" ino=");
+                    klog::write_hex_u64(backing.ino());
+                    klog::write_raw(b" foff=");
+                    klog::write_hex_u64(file_off);
+                    klog::write_raw(if vma.flags.contains(VmaFlags::SHARED) { b" SHARED" } else { b" PRIV" });
+                    klog::write_raw(b"\n");
+                }
                 // MAP_SHARED of a page-frame-backed file (tmpfs/memfd): install
                 // the backing's PERSISTENT frame directly so user writes alias
                 // the file's storage and propagate to read/write + every other
@@ -1300,11 +1448,73 @@ impl AddressSpace {
                 // Bytes that genuinely belong to the file in this page: whole
                 // PAGE for an in-file page, `fsize - file_off` for a page
                 // straddling EOF, 0 for a page wholly past EOF (pure BSS).
-                let valid = if file_off >= fsize { 0usize }
+                let mut valid = if file_off >= fsize { 0usize }
                             else { core::cmp::min(page as u64, fsize - file_off) as usize };
+                // Size-truth cross-check (Linux filemap_fault uses ONE i_size
+                // for both the SIGBUS bound and the read clamp; Oxide's
+                // size_hint (vfs i_size) and the backing's own clamp (on-disk
+                // inode size) can desynchronize — a too-small size_hint made
+                // `valid == 0` skip the fill AND the short-guard, silently
+                // installing a zero page over real file content). If the hint
+                // claims past-EOF but the backing still serves data at this
+                // offset, trust the backing: the fill loop below stops at the
+                // backing's own EOF anyway.
+                let mut desync = false;
+                if valid == 0 {
+                    let mut probe = [0u8; 8];
+                    if let Ok(n) = backing.read_at(file_off, &mut probe) {
+                        if n > 0 {
+                            klog::write_raw(b"[SIZE-DESYNC] ino=");
+                            klog::write_hex_u64(backing.ino());
+                            klog::write_raw(b" foff=");
+                            klog::write_hex_u64(file_off);
+                            klog::write_raw(b" hint=");
+                            klog::write_hex_u64(fsize);
+                            klog::write_raw(b"\n");
+                            valid = page;
+                            desync = true;
+                        }
+                    }
+                }
+                // DIAG (debug-atexit): log every EOF-straddling / past-EOF fill
+                // with the fsize observed AT FAULT TIME — a transiently-small
+                // size_hint makes `valid` 0/short and silently installs a zero
+                // page ([MAPZERO] corruption: ld.so skips a DT_NEEDED, GOT/.data
+                // tail zeroed). Comparing this fsize against the stable exit-time
+                // value pins whether i_size fluctuates.
+                #[cfg(feature = "debug-atexit")]
+                if valid < page {
+                    klog::write_raw(b"[FILLTAIL] ino=");
+                    klog::write_hex_u64(backing.ino());
+                    klog::write_raw(b" foff=");
+                    klog::write_hex_u64(file_off);
+                    klog::write_raw(b" fsize=");
+                    klog::write_hex_u64(fsize);
+                    klog::write_raw(b" valid=");
+                    klog::write_hex_u64(valid as u64);
+                    klog::write_raw(b"\n");
+                }
+                // DIAG (debug-atexit): the frame this MAP_PRIVATE fill hands out
+                // for a lib-arena page. If two processes (different root) log the
+                // SAME pa for the SAME va, the "private" copy is not private — a
+                // shared frame one process can zero for all (deterministic page,
+                // random victim, D=1). Keyed (root,va,pa).
+                #[cfg(feature = "debug-atexit")]
+                if (0x7ffff6000000..0x7ffff8000000).contains(&va_page) {
+                    klog::write_raw(b"[FILLPA] va=");
+                    klog::write_hex_u64(va_page);
+                    klog::write_raw(b" pa=");
+                    klog::write_hex_u64(pa);
+                    klog::write_raw(b" root=");
+                    klog::write_hex_u64(self.root_pa);
+                    klog::write_raw(b" ino=");
+                    klog::write_hex_u64(backing.ino());
+                    klog::write_raw(b"\n");
+                }
                 // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at hhdm_offset+pa is mapped writable; full page owned exclusively until M::map below makes it user-visible.
                 let short = unsafe {
                     let dst = (hhdm_offset + pa) as *mut u8;
+                    hal::zerotrap::trap((dst) as *const u8, (page) as usize);
                     core::ptr::write_bytes(dst, 0, page);
                     let slice = core::slice::from_raw_parts_mut(dst, page);
                     let mut filled = 0usize;
@@ -1329,7 +1539,10 @@ impl AddressSpace {
                             Err(()) => { err = true; break; }
                         }
                     }
-                    err || filled < valid
+                    // A desync-recovered fill legitimately stops at the
+                    // BACKING's own EOF mid-page (the zeroed tail is real
+                    // bss); only a non-desync shortfall is fatal.
+                    err || (filled < valid && !desync)
                 };
                 if short {
                     // Unrecoverable: the backing could not supply the full
@@ -1346,6 +1559,48 @@ impl AddressSpace {
                     }
                     dec_ref(pa);
                     return Err(Error::Io);
+                }
+                // DIAG (debug-atexit): sample the JUST-FILLED frame vs a fresh
+                // backing read for lib-arena pages. If they DISAGREE now, the
+                // FILL is wrong (read_at nondeterministic / short). If they
+                // AGREE now but the page is zero at exit, a later user store
+                // zeroed it. Decisive fill-vs-post-write discriminator.
+                #[cfg(feature = "debug-atexit")]
+                if (0x7ffff6000000..0x7ffff8000000).contains(&va_page) && valid == page {
+                    let mut chk = [0u8; 32];
+                    if backing.read_at(file_off, &mut chk).is_ok() {
+                        // SAFETY: pa is the just-filled frame; HHDM mirror readable; 32 bytes within page.
+                        let framebytes = unsafe {
+                            core::slice::from_raw_parts((hhdm_offset + pa) as *const u8, 32)
+                        };
+                        if framebytes != &chk[..] {
+                            klog::write_raw(b"[FILLBAD] va=");
+                            klog::write_hex_u64(va_page);
+                            klog::write_raw(b" ino=");
+                            klog::write_hex_u64(backing.ino());
+                            klog::write_raw(b" foff=");
+                            klog::write_hex_u64(file_off);
+                            klog::write_raw(b" frame0=");
+                            klog::write_hex_u64(framebytes[0] as u64);
+                            klog::write_raw(b" want0=");
+                            klog::write_hex_u64(chk[0] as u64);
+                            klog::write_raw(b"\n");
+                        }
+                    }
+                }
+                // DIAG (debug-atexit): sentinel watch — arm EVERY
+                // EOF-straddling writable file-page fill AFTER its content is
+                // in place (arming pre-fill made the fill's own zeroing a
+                // false [ZEROTRAP]). The zerotrap + fault-entry re-verify
+                // then name whoever zeroes one of these frames in place.
+                #[cfg(feature = "debug-atexit")]
+                if valid < page {
+                    if valid > 0 && vma.prot.contains(VmaProt::WRITE) {
+                        crate::tailwatch::record(pa, hhdm_offset, self.root_pa);
+                    }
+                    let tag: &'static [u8] = if vma.prot.contains(VmaProt::WRITE) { b"fill-rw" } else { b"fill-ro" };
+                    crate::tailwatch::log_install(tag, backing.ino(), file_off,
+                        va.as_u64() & !(PAGE_SIZE_BYTES - 1), pa, 0);
                 }
                 // debug-cow (this arm is MAP_PRIVATE: the SHARED branch
                 // returned above). `pa` is a FRESH private copy of the file
@@ -1383,9 +1638,38 @@ impl AddressSpace {
                     klog::write_raw(b"\n");
                 }
                 let pte_flags = vma.prot.to_page_flags();
+                // Linux `finish_fault` pte_same/!pte_none re-check (mm/memory.c):
+                // `backing.read_at` above SLEEPS on the block device (ext4 ->
+                // virtio-blk park_blk -> schedule()), so a PEER THREAD of this
+                // same mm (CLONE_VM) can fault the SAME va while we sleep,
+                // ALSO fill a frame, and install FIRST. Linux re-takes the pte
+                // lock after the sleeping ->fault and, if a racer already
+                // populated the slot, FREES its own page and does NOT install.
+                // Oxide has no ptl; the minimal correct equivalent is: if the
+                // slot is now present, back off — the racer's frame (identical
+                // file content) stands, and clobbering it would (a) revert the
+                // racer's retired user store and (b) free the racer's live
+                // frame (the libcap `.bss` lock-byte lost-write / frame-reuse
+                // bug). Only install into a still-empty slot.
+                // SAFETY: privileged PT read of the running task's active root.
+                if unsafe { M::translate(Va(va_page)) }.is_some() {
+                    // A racer won while we slept in read_at — free our unused
+                    // fill frame and adopt the racer's install (retry the
+                    // faulting instruction, which will now hit the present PTE).
+                    dec_ref(pa);
+                    return Ok(());
+                }
                 // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
                 // F157-A1: dec_ref any frame displaced by a stale present leaf.
                 if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                    // LOST-WRITE (kbytes/file arm, ALL ranges incl brk + ld.so
+                    // .bss): a demand fault installed over a PRESENT leaf → the
+                    // displaced page's live content was dropped. va identifies
+                    // the range (0x1000_0000 exe/brk, 0x4003_xxxx ld.so .bss).
+                    #[cfg(feature = "debug-watchdog")]
+                    { klog::write_raw(b"[LOSTWRITE] demand-install displaced present va=");
+                      klog::write_hex_u64(va_page); klog::write_raw(b" old_pa=");
+                      klog::write_hex_u64(old.0 & !(PAGE_SIZE_BYTES - 1)); klog::write_raw(b"\n"); }
                     // GAP-1 (displaced-frame UAF): this fault displaced a
                     // present leaf; dec_ref below may free `old`. A peer CPU
                     // of the same mm with a stale TLB entry for va_page->old

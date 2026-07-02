@@ -95,6 +95,20 @@ pub struct IoUring {
     pub cq_tail: AtomicU32,
 }
 
+impl Drop for IoUring {
+    /// Release the ring's kernel page (audit #9: `alloc_object_frame` at
+    /// `IoUring::new` bumped the object refcount but nothing dropped it, so the
+    /// frame leaked per ring). Any user mmap of the ring balances its own
+    /// inc_ref/AS-teardown dec around this object ref. # C: O(1)
+    fn drop(&mut self) {
+        if self.page_pa != 0 {
+            // SAFETY: page_pa was alloc_object_frame'd in IoUring::new (object
+            // refcount 1, mapcount 0); release exactly that object reference.
+            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(self.page_pa); }
+        }
+    }
+}
+
 const PAGE: u64 = 4096;
 
 /// Layout for the kernel page:
@@ -141,6 +155,7 @@ impl IoUringInode {
         let pa = pmm::setup::alloc_object_frame()?;
         let va = pa + pmm::user_as::hhdm_offset();
         // SAFETY: HHDM-mapped page just allocated; zero a single 4 KiB region; sole writer until we publish.
+        hal::zerotrap::trap((va as *mut u8) as *const u8, (PAGE as usize) as usize);
         unsafe { core::ptr::write_bytes(va as *mut u8, 0, PAGE as usize); }
         // SAFETY: page just allocated and zeroed; no aliasing; ring_mask + ring_entries fields written through HHDM mapping.
         unsafe {
