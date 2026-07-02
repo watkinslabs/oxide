@@ -78,7 +78,9 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 {
                     let ino = inode.ino();
                     if ino & 0xffff_ffff_0000_0000 == 0x6e54_0000_0000_0000 {
-                        klog::write_raw(b"[DYNMMAP] ino=");
+                        klog::write_raw(b"[DYNMMAP] tid=");
+                        klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+                        klog::write_raw(b" ino=");
                         klog::write_hex_u64(ino);
                         klog::write_raw(b" hint=");
                         klog::write_hex_u64(args.a0);
@@ -101,7 +103,9 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         Ok(va)  => {
             #[cfg(feature = "debug-atexit")]
             if fd >= 0 {
-                klog::write_raw(b"[DYNMMAP] -> ");
+                klog::write_raw(b"[DYNMMAP] tid=");
+                klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+                klog::write_raw(b" -> ");
                 klog::write_hex_u64(va);
                 klog::write_raw(b"\n");
             }

@@ -28,3 +28,4 @@ default = ["ext4-frame-cache"]
 ext4-frame-cache = []
 hosted = []
 debug-mount = []  # read-twice block verification (diagnose flaky block reads)
+debug-fillverify = []  # page-cache integrity: fill-twice compare ([FILLRACE] = block layer returned different bytes back-to-back) + fill-time checksum re-verified on every clean-page read ([FRAME-CORRUPT] = cached frame written after fill)

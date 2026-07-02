@@ -570,6 +570,23 @@ pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
         // Out-of-range pfns (device/MMIO PhysRange) return `None` here, same
         // as `dec_ref` below, so the early-return path is unaffected.
         let new_mc = meta.dec_map(pfn);
+        // DIAG (debug-cow): mapcount 0→-1 = the EXTRA dec (a PTE-teardown
+        // dec with no matching install inc). Name the call site + task.
+        #[cfg(feature = "debug-cow")]
+        if new_mc == Some(u32::MAX) {
+            let loc = core::panic::Location::caller();
+            klog::write_raw(b"[MAPNEG] pa=");
+            klog::write_hex_u64(pa);
+            klog::write_raw(b" rc=");
+            klog::write_dec_u64(meta.refcount(pfn).unwrap_or(0) as u64);
+            klog::write_raw(b" tid=");
+            klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+            klog::write_raw(b" at ");
+            klog::write_raw(loc.file().as_bytes());
+            klog::write_raw(b":");
+            klog::write_dec_u64(loc.line() as u64);
+            klog::write_raw(b"\n");
+        }
         if let Some(new) = meta.dec_ref(pfn) {
             // F157-A3 (RESTORE, Linux do_wp_page's reuse-path re-marks the
             // sole survivor exclusive): one mapper of a fork-shared anon
@@ -854,7 +871,7 @@ fn cow_dbg_rmap_report(pa: u64) {
 }
 
 /// Internal: snapshot the metadata array if installed.
-fn page_meta() -> Option<&'static crate::PageMetaArr> {
+pub(crate) fn page_meta() -> Option<&'static crate::PageMetaArr> {
     let p = PAGE_META_PTR.load(core::sync::atomic::Ordering::Acquire);
     if p.is_null() { return None; }
     // SAFETY: PAGE_META_PTR is set exactly once via Box::leak in
