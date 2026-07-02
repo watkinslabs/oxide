@@ -171,19 +171,23 @@ impl Mount {
             full_buf.extend_from_slice(&block_bytes);
         }
         full_buf[inner_off .. inner_off + data.len()].copy_from_slice(data);
-        // Decide: stage in shadow, or commit immediately.
-        let in_scope = self.state.lock().shadow.is_some();
-        if in_scope {
+        // Decide: stage in shadow, or commit immediately. ONE lock scope for
+        // check + use — the old two-acquisition sequence (in_scope read,
+        // drop, re-lock, `shadow.as_mut().unwrap()`) panicked when a
+        // concurrent scope close cleared the shadow between them.
+        {
             let mut s = self.state.lock();
-            let shadow = s.shadow.as_mut().unwrap();
-            for i in 0..n_blocks as u64 {
-                let lba = first_blk + i;
-                let lo = (i * bs) as usize;
-                let hi = lo + bs as usize;
-                shadow.insert(lba, full_buf[lo..hi].to_vec());
+            if let Some(shadow) = s.shadow.as_mut() {
+                for i in 0..n_blocks as u64 {
+                    let lba = first_blk + i;
+                    let lo = (i * bs) as usize;
+                    let hi = lo + bs as usize;
+                    shadow.insert(lba, full_buf[lo..hi].to_vec());
+                }
+                return Ok(());
             }
-            Ok(())
-        } else {
+        }
+        {
             let mut staged = Vec::with_capacity(n_blocks as usize);
             for i in 0..n_blocks as u64 {
                 let lba = first_blk + i;
@@ -339,8 +343,14 @@ impl Mount {
     fn leaf_pblock_inline(&self, i_block: &[u8; inode::I_BLOCK_LEN],
                           hdr: &inode::ExtentHeader, file_blk: u32) -> Result<u64, MountError> {
         for i in 0..hdr.entries {
-            let e = inode::parse_inline_extent(i_block, hdr, i).ok_or(MountError::NotFound)?;
-            if file_blk >= e.block && file_blk < e.block + e.len as u32 {
+            // A parse failure inside a header-declared entry range is
+            // CORRUPTION (Linux EFSCORRUPTED), never a hole — reporting it
+            // NotFound made the page-cache fill serve permanent zeros.
+            let e = inode::parse_inline_extent(i_block, hdr, i).ok_or(MountError::BlockIo)?;
+            if file_blk >= e.block && file_blk < e.block + e.real_len() {
+                // Linux: an unwritten extent reads as zeros (hole), never the
+                // stale on-disk bytes of the preallocated blocks.
+                if e.is_unwritten() { return Err(MountError::NotFound); }
                 return Ok(e.start_lba() + (file_blk - e.block) as u64);
             }
         }
@@ -351,8 +361,10 @@ impl Mount {
     fn leaf_pblock_slice(&self, buf: &[u8], hdr: &inode::ExtentHeader, file_blk: u32)
         -> Result<u64, MountError> {
         for i in 0..hdr.entries {
-            let e = inode::parse_inline_extent_slice(buf, hdr, i).ok_or(MountError::NotFound)?;
-            if file_blk >= e.block && file_blk < e.block + e.len as u32 {
+            // Parse failure = corruption, not a hole (see leaf_pblock_inline).
+            let e = inode::parse_inline_extent_slice(buf, hdr, i).ok_or(MountError::BlockIo)?;
+            if file_blk >= e.block && file_blk < e.block + e.real_len() {
+                if e.is_unwritten() { return Err(MountError::NotFound); }
                 return Ok(e.start_lba() + (file_blk - e.block) as u64);
             }
         }

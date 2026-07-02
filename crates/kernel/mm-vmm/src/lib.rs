@@ -14,6 +14,8 @@ extern crate std;
 
 pub mod address_space;
 pub mod debug_cow;
+#[cfg(feature = "debug-atexit")]
+pub mod tailwatch;
 mod mremap;
 pub mod anon_vma;
 pub mod rmap;

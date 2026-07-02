@@ -366,12 +366,26 @@ impl AddressSpace {
         _hhdm_offset: u64,
         mut inc_ref: IR,
     ) -> KResult<Arc<Self>> {
-        let src = self.vmas.read();
+        // Linux dup_mmap holds mmap_lock WRITE for the whole copy: a peer
+        // thread's fault (which takes the read lock) must not interleave
+        // with the per-page translate/inc_ref/map_at/W-strip sequence, or
+        // its COW copy in the window is torn down by the parent remap
+        // (frame leak + retired stores reverted).
+        let src = self.vmas.write();
         let mut dst = VmaTree::new();
         for vma in src.iter() {
+            // MADV_DONTFORK (Linux VM_DONTCOPY): the child does not
+            // inherit this VMA at all.
+            if vma.flags.contains(VmaFlags::DONTFORK) { continue; }
             dst.insert(vma.clone()).map_err(|_| Error::NoMem)?;
         }
         for vma in src.iter() {
+            if vma.flags.contains(VmaFlags::DONTFORK) { continue; }
+            // MADV_WIPEONFORK (Linux VM_WIPEONFORK): the child keeps the
+            // VMA but NO pages — every touch refaults as fresh zeros
+            // (systemd random-util's fork-detection contract).
+            if vma.flags.contains(VmaFlags::WIPEONFORK)
+                && matches!(vma.backing, VmaBacking::Anonymous) { continue; }
             let writable = vma.prot.contains(VmaProt::WRITE);
             // MAP_SHARED VMAs are NOT copy-on-write: parent and child keep
             // writing the SAME frame (Linux shmem / MAP_SHARED|MAP_ANON). The
@@ -622,6 +636,15 @@ impl AddressSpace {
     /// Snapshot every VMA into a Vec for callers that need a stable
     /// view (e.g. /proc/self/maps). Read-locks the tree briefly.
     /// # C: O(N) clone
+    /// madvise fork-behavior core: set/clear VmaFlags over `[start,
+    /// start+len)` with boundary splits (Linux madvise_update_vma).
+    /// # C: O(K log N)
+    pub fn update_flags_range(&self, start: UserVirtAddr, len: usize,
+                              set: VmaFlags, clear: VmaFlags) {
+        let Some(end) = UserVirtAddr::new(start.as_u64().saturating_add(len as u64)) else { return };
+        self.vmas.write().update_flags_range(start, end, set, clear);
+    }
+
     pub fn snapshot_vmas(&self) -> alloc::vec::Vec<Vma> {
         let g: RwReadGuard<'_, _, _> = self.vmas.read();
         g.iter().cloned().collect()
@@ -1166,7 +1189,34 @@ impl AddressSpace {
         }
         let access = match fault {
             FaultKind::NotPresent { access } => access,
-            FaultKind::Protection { .. }     => return Err(Error::NotImplemented),
+            // Linux `spurious_fault`: only Read/Exec protection faults reach
+            // here (Write took the branch above; absent leaves were
+            // normalized to NotPresent). The leaf is PRESENT, so if the VMA
+            // permits the access this fault came from a stale TLB entry or
+            // stale leaf permissions — re-install the leaf from the VMA prot
+            // (preserving a COW W-strip) and retry, never kill. A genuine
+            // VMA-forbidden access stays EFAULT/SIGSEGV.
+            FaultKind::Protection { access } => {
+                let g = self.vmas.read();
+                let vma = g.find_containing(va).ok_or(Error::Inval)?;
+                if !vma.permits(access) { return Err(Error::Inval); }
+                let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
+                // SAFETY: privileged PT read of the running task's active root.
+                if let Some((pa, old_fl)) = unsafe { M::translate(Va(va_page)) } {
+                    let mut f = vma.prot.to_page_flags();
+                    if f.contains(hal::PageFlags::WRITE) && !old_fl.contains(hal::PageFlags::WRITE) {
+                        f.remove(hal::PageFlags::WRITE); // keep COW W-strip
+                    }
+                    // SAFETY: same-PA permission refresh; M::map self-flushes.
+                    unsafe { M::map(Va(va_page), Pa(pa.0 & !(PAGE_SIZE_BYTES - 1)), f, PageSize::P4K); }
+                } else {
+                    // Raced away between normalization and here — flush and
+                    // let the refault take the NotPresent path.
+                    // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
+                    unsafe { M::flush_va(Va(va_page)); }
+                }
+                return Ok(());
+            }
         };
 
         // Per spec §5: read VMA tree (concurrent with other faults).
@@ -1326,14 +1376,48 @@ impl AddressSpace {
                 // Bytes that genuinely belong to the file in this page: whole
                 // PAGE for an in-file page, `fsize - file_off` for a page
                 // straddling EOF, 0 for a page wholly past EOF (pure BSS).
-                let valid = if file_off >= fsize { 0usize }
+                let mut valid = if file_off >= fsize { 0usize }
                             else { core::cmp::min(page as u64, fsize - file_off) as usize };
+                // Size-truth cross-check (Linux filemap_fault uses ONE i_size
+                // for both the SIGBUS bound and the read clamp; Oxide's
+                // size_hint (vfs i_size) and the backing's own clamp (on-disk
+                // inode size) can desynchronize — a too-small size_hint made
+                // `valid == 0` skip the fill AND the short-guard, silently
+                // installing a zero page over real file content). If the hint
+                // claims past-EOF but the backing still serves data at this
+                // offset, trust the backing: the fill loop below stops at the
+                // backing's own EOF anyway.
+                let mut desync = false;
+                if valid == 0 {
+                    let mut probe = [0u8; 8];
+                    if let Ok(n) = backing.read_at(file_off, &mut probe) {
+                        if n > 0 {
+                            klog::write_raw(b"[SIZE-DESYNC] ino=");
+                            klog::write_hex_u64(backing.ino());
+                            klog::write_raw(b" foff=");
+                            klog::write_hex_u64(file_off);
+                            klog::write_raw(b" hint=");
+                            klog::write_hex_u64(fsize);
+                            klog::write_raw(b"\n");
+                            valid = page;
+                            desync = true;
+                        }
+                    }
+                }
                 // DIAG (debug-atexit): log every EOF-straddling / past-EOF fill
                 // with the fsize observed AT FAULT TIME — a transiently-small
                 // size_hint makes `valid` 0/short and silently installs a zero
                 // page ([MAPZERO] corruption: ld.so skips a DT_NEEDED, GOT/.data
                 // tail zeroed). Comparing this fsize against the stable exit-time
                 // value pins whether i_size fluctuates.
+                // DIAG (debug-atexit): sentinel watch — record the filled
+                // frame of the known corruption target (libpcre2 tail page)
+                // so the fault-dispatch hot path can re-verify it and name
+                // the moment + task when it goes zero ([TAILZAP]).
+                #[cfg(feature = "debug-atexit")]
+                if file_off == 0xaa000 && backing.ino() == 0x6e540000000420ea {
+                    crate::tailwatch::record(pa, hhdm_offset);
+                }
                 #[cfg(feature = "debug-atexit")]
                 if valid < page {
                     klog::write_raw(b"[FILLTAIL] ino=");
@@ -1373,7 +1457,10 @@ impl AddressSpace {
                             Err(()) => { err = true; break; }
                         }
                     }
-                    err || filled < valid
+                    // A desync-recovered fill legitimately stops at the
+                    // BACKING's own EOF mid-page (the zeroed tail is real
+                    // bss); only a non-desync shortfall is fatal.
+                    err || (filled < valid && !desync)
                 };
                 if short {
                     // Unrecoverable: the backing could not supply the full

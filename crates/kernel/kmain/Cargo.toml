@@ -105,6 +105,6 @@ debug-no-fork-shared = ["vmm/debug-no-fork-shared"]  # TEST
 debug-no-shmem = ["vmm/debug-no-shmem"]  # TEST
 debug-shortfill = ["vmm/debug-shortfill"]  # [SHORT-FILE-FAULT] B240: log File demand-fault short read_at on a non-EOF page (partial fill = ld.so exit 127)
 debug-eager-fork = ["syscalls/debug-eager-fork"]  # TEST
-debug-atexit = ["syscalls/debug-atexit", "vmm/debug-atexit"]  # targeted dynamic-loader stderr / atexit probes
+debug-atexit = ["syscalls/debug-atexit", "vmm/debug-atexit", "pmm/debug-atexit"]  # targeted dynamic-loader stderr / atexit probes
 debug-trace = ["kmacros/debug-trace", "console/debug-trace", "smoke/debug-trace", "syscalls/debug-trace", "pci-boot/debug-trace"]  # structured dtrace! probes — direct UART emit bypassing klog/lock (CAT-wedge-class debugging)
 debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-cgroup","debug-modules","debug-syscall","sched/debug-syscall"]

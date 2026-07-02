@@ -26,6 +26,10 @@ pub fn sys_madvise(args: &SyscallArgs) -> i64 {
         Some(u) => u, None => return -(Errno::Einval.as_i32() as i64),
     };
     match advice {
+        8 if mm.find_vma(ua).map_or(false, |v| !matches!(v.backing, vmm::VmaBacking::Anonymous)) => {
+            // Linux: MADV_FREE applies to private anonymous memory only.
+            -(Errno::Einval.as_i32() as i64)
+        }
         4 | 8 | 9 => {
             // F128: MADV_DONTNEED / MADV_FREE / MADV_REMOVE. Linux
             // drops physical pages but keeps the VMA — anonymous
@@ -37,7 +41,13 @@ pub fn sys_madvise(args: &SyscallArgs) -> i64 {
             let _ = (cur, mm); // suppress unused warnings on this branch
             pmm::user_as::evict_pages_in_range(addr, len as u64)
         }
-        0..=3 | 10..=21 => 0,                          // hints
+        // Fork-behavior advice is FUNCTIONAL, not a hint (Linux VM_DONTCOPY
+        // / VM_WIPEONFORK; systemd's random-util relies on WIPEONFORK).
+        10 => { mm.update_flags_range(ua, len, vmm::VmaFlags::DONTFORK, vmm::VmaFlags::empty()); 0 }
+        11 => { mm.update_flags_range(ua, len, vmm::VmaFlags::empty(), vmm::VmaFlags::DONTFORK); 0 }
+        18 => { mm.update_flags_range(ua, len, vmm::VmaFlags::WIPEONFORK, vmm::VmaFlags::empty()); 0 }
+        19 => { mm.update_flags_range(ua, len, vmm::VmaFlags::empty(), vmm::VmaFlags::WIPEONFORK); 0 }
+        0..=3 | 12..=17 | 20 | 21 => 0,                // hints
         100 => -(Errno::Eperm.as_i32() as i64),        // MADV_HWPOISON
         _   => -(Errno::Einval.as_i32() as i64),
     }

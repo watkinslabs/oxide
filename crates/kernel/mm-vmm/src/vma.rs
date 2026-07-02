@@ -83,6 +83,14 @@ bitflags::bitflags! {
         /// mseal(2): the mapping is sealed — mprotect/munmap/mremap/
         /// mmap(MAP_FIXED) over it fail with EPERM. Never cleared.
         const SEALED    = 1 << 5;
+        /// madvise(MADV_DONTFORK): the child does NOT inherit this VMA
+        /// (Linux VM_DONTCOPY). Cleared by MADV_DOFORK.
+        const DONTFORK  = 1 << 6;
+        /// madvise(MADV_WIPEONFORK): the child inherits the VMA but its
+        /// pages read as fresh zeros (Linux VM_WIPEONFORK; anon-private
+        /// only). Cleared by MADV_KEEPONFORK. systemd's random-util
+        /// depends on this being FUNCTIONAL, not a hint.
+        const WIPEONFORK = 1 << 7;
     }
 }
 

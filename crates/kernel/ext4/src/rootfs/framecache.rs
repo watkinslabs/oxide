@@ -119,6 +119,16 @@ impl Ext4FrameStore {
                 Err(_) => return Err(()),
             }
         }
+        // Linux zeroes the page-cache page past EOF: the last on-disk block
+        // extends beyond i_size and its tail bytes are stale disk garbage a
+        // MAP_SHARED mapper would otherwise see raw.
+        let size = dinode.size;
+        let page_start = idx * PG as u64;
+        if size > page_start && size < page_start + PG as u64 {
+            let valid = (size - page_start) as usize;
+            // SAFETY: pa owned here; [valid, PG) within the frame's HHDM mirror.
+            unsafe { core::ptr::write_bytes(base.add(valid), 0, PG - valid); }
+        }
         Ok(())
     }
 
