@@ -771,6 +771,25 @@ pub struct ArchCtxBuf(pub [u8; ARCH_CTX_SIZE]);
 #[repr(C, align(16))]
 pub struct ArchFpuBuf(pub [u8; ARCH_FPU_SIZE]);
 
+impl ArchFpuBuf {
+    /// Fresh-task FPU image. NOT all-zeros: a zeroed x86 FXSAVE area has
+    /// MXCSR=0 (all SSE exceptions UNMASKED) and FCW=0, which makes the
+    /// first inexact/denormal SSE op in userspace #XM → spurious SIGFPE.
+    /// Seed the architectural defaults (x86: FCW=0x037f, MXCSR=0x1f80) so a
+    /// first-run task the ctxsw `fxrstor`s starts with a sane control word.
+    /// # C: O(1)
+    pub fn arch_default() -> Self {
+        let mut b = [0u8; ARCH_FPU_SIZE];
+        #[cfg(target_arch = "x86_64")]
+        {
+            // FXSAVE layout: FCW @0 (0x037f), MXCSR @24 (0x1f80).
+            b[0] = 0x7f; b[1] = 0x03;
+            b[24] = 0x80; b[25] = 0x1f;
+        }
+        ArchFpuBuf(b)
+    }
+}
+
 // SAFETY: `arch_ctx` mutation is gated by the kernel scheduler's
 // runqueue invariant (only the CPU running this task writes the
 // buffer, and only via `Context::switch` which is a single
@@ -881,7 +900,7 @@ impl Task {
             ptrace_eventmsg: AtomicU64::new(0),
             ptrace_siginfo:  Spinlock::new(None),
             landlock_chain:  Spinlock::new(alloc::vec::Vec::new()),
-            fpu_state:       UnsafeCell::new(ArchFpuBuf([0u8; ARCH_FPU_SIZE])),
+            fpu_state:       UnsafeCell::new(ArchFpuBuf::arch_default()),
             ptrace_fpu_dirty: AtomicBool::new(false),
             singlestep:    AtomicU32::new(0),
             #[cfg(target_arch = "aarch64")]
