@@ -89,38 +89,34 @@ never opened → seat0 not graphical. Traced chain state:
   `/run/host/userdb`, `/usr/lib/userdb`, `/etc/group` — ~30 opens each) plus
   probing `/dev/*` (fuse/kvm/loop-control/net-tun/snd/vfio/vhost). So card0 is
   never tagged because udevd never gets past init to its event loop.
-- **ROOT MECHANISM FOUND (high confidence, supersedes the userdb guess): udevd
-  BUSY-LOOPS on its uevent netlink socket and never finishes init.** Dumped the
-  real udevd's recent-syscall ring (latched by exe_path) mid-run: it repeats
-  `epoll_pwait2`(441)=1 → `gettid` → `clock_gettime` → `recvfrom`(45)=**-14
-  EAGAIN** → `ioctl`=ENOTTY (or `unlink`=ENOENT) → forever. The `recvfrom` is on
-  **fd=3/4, a NETLINK socket, protocol=15 (KOBJECT_UEVENT)** — udevd's uevent
-  monitor. At that recvfrom: **qlen=2 (two messages queued), poll()=0x5
-  (POLLIN|POLLOUT correctly set)** — yet recvfrom returns EAGAIN and the queue
-  STAYS at 2 across all sampled calls. So epoll/poll reports the socket readable,
-  udevd tries to drain, but either can't extract the 2 stuck messages OR the
-  kernel re-emits them as fast as udevd drains (qlen pinned at 2). Either way
-  udevd never gets past its event loop into device processing → card0 never
-  tagged → seat never graphical.
-- **Two candidate causes to disambiguate with a CLEAN controlled repro:**
-  (a) recvfrom/poll inconsistency — `netlink_fd::recvfrom` returns EAGAIN
-  (`read`→`Ok(0)`) despite qlen=2. `read`(`NetlinkSocket::read`) returns Ok(0)
-  only if dequeue==None (empty) OR `msg.len().min(buflen)==0` (zero-len message
-  or udevd passes buflen=0). Check udevd's recvfrom `buflen` and whether the 2
-  queued messages are zero-length. (b) a re-emit FLOOD — udevd drains one
-  (recvfrom n>0), but something re-enqueues to its socket each iteration (a
-  uevent-write feedback loop: does processing card0 re-write card0/uevent? does
-  systemd-udev-trigger loop?), pinning qlen=2.
-  Repro artifacts (re-add, latch udevd by `exe_path` in
-  `sched::diag::record_syscall` → `WATCH_TID`): trace inside
-  `syscalls/src/netlink_fd.rs::recvfrom` — `buflen`, qlen before+after `read`,
-  and `n` returned — for the udevd tid. It was intermittent (a fuller boot
-  didn't repro); take several boots. NOTE a `(rx_queue.lock().len(), s.poll())`
-  tuple DEADLOCKS (poll re-locks rx_queue) — read qlen into a `let` first.
-- This is a specific KERNEL netlink poll/recv/emit bug on the uevent socket —
-  NOT device-model, NOT userdb. Fix it and udevd should finish init and process
-  card0. THEN the udevfix.md device-model completeness (tagging/db) is the layer
-  after.
+- **CONFOUND WARNING (retracts the "recvfrom spin is the root" claim): the
+  diagnostic build changed the behavior.** With `FEATURES=debug-watchdog` (adds
+  a per-syscall `record_syscall` hook), the real udevd's ring showed a busy-loop
+  `epoll_pwait2=1 → recvfrom(proto=15 uevent socket)=EAGAIN → ioctl/unlink →`
+  repeat, with the uevent socket at qlen=2/poll=POLLIN. BUT in a **RELEASE**
+  boot (no per-syscall overhead), a proto-15 recvfrom/recvmsg trace fires ZERO
+  times — udevd does not read its uevent socket at all in the timeframe. So the
+  recvfrom-EAGAIN spin is at least partly a debug-build timing artifact, NOT
+  confirmed as the release-boot behavior. Do not treat it as the confirmed root.
+- **Non-confounded, consistent truth across BOTH builds: udevd never completes
+  initialization → never processes the coldplug card0 event → card0 never tagged
+  → seat0 never graphical → gdm idles.** In release, udevd is busy loading MANY
+  rule files (`/usr/lib/udev/rules.d/*`) + doing heavy userdb/NSS/group lookups
+  (`/run/userdb`, `/etc/userdb`, `/etc/group`) and never reaches `/sys` device
+  reads or `/run/udev/data` writes — even across a full ~5-min boot (udev/data
+  writes = 0). So udevd's init is stuck/never-completing; **prime suspect a
+  BLOCKING userdb/varlink query** (a `connect`/`recvmsg` on a systemd-userdbd
+  varlink socket that never returns), OR endless rule re-scan.
+- **Next step needs NON-INVASIVE introspection (the batch harness + kernel klog
+  traces confound the timing).** Use an interactive serial session
+  (`make -C ../oxide-images run-serial`; getty.target IS reached) to
+  `strace -p $(pidof systemd-udevd)` and see the exact syscall it blocks on, +
+  `journalctl -u systemd-udevd -o verbose`. Then fix that kernel-side (likely a
+  userdb/varlink unix-socket recv that hangs instead of returning, or NSS). Also
+  fix the latent (not-yet-triggered) bug in `netlink_fd::recvmsg` line ~164:
+  `Some(d) if !d.is_empty() => d, _ => EAGAIN` — with `MSG_PEEK` an empty front
+  datagram returns EAGAIN but is never removed → would wedge any peeking reader;
+  drop/skip empty front messages. THEN udevfix.md device-model is the next layer.
 - Still faster with real udevd introspection: interactive serial (`make -C
   ../oxide-images run-serial`; getty.target is up) → `strace -p $(pidof
   systemd-udevd)`, `udevadm monitor --kernel --udev`, `journalctl -u
