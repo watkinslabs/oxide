@@ -385,13 +385,22 @@ pub fn unpack_pseudo(v: &FbVarScreeninfo, px: u32) -> (u16, u16, u16) {
     (chan(&v.red), chan(&v.green), chan(&v.blue))
 }
 
-/// Register `/dev/fbN` backed by the real scanout: `base_pa`/`fb_va` =
-/// physical + HHDM-kernel address of the contiguous BGRA32 framebuffer,
-/// `pitch` = bytes/line, `w`×`h` = resolution. Builds var/fix (smem_start =
-/// base_pa, line_length = pitch, 32bpp BGRA truecolor), registers it, and
-/// publishes its devtmpfs node.
+/// Register `/dev/fbN` backed by a real scanout owned by a DRM card/CRTC:
+/// `base_pa`/`fb_va` = physical + HHDM-kernel address of the contiguous BGRA32
+/// framebuffer, `pitch` = bytes/line, `w`×`h` = resolution. Builds var/fix
+/// (smem_start = base_pa, line_length = pitch, 32bpp BGRA truecolor),
+/// registers it, and publishes its devtmpfs node.
 /// # C: O(N + depth)
-pub fn init_scanout(base_pa: u64, fb_va: u64, fb_bytes: u64, pitch: u32, w: u32, h: u32) -> u32 {
+pub fn init_scanout(
+    card_id: u32,
+    crtc_id: u32,
+    base_pa: u64,
+    fb_va: u64,
+    fb_bytes: u64,
+    pitch: u32,
+    w: u32,
+    h: u32,
+) -> u32 {
     let mut var = FbVarScreeninfo::default();
     var.xres = w; var.yres = h; var.xres_virtual = w; var.yres_virtual = h;
     let mut fix = FbFixScreeninfo::default();
@@ -403,7 +412,7 @@ pub fn init_scanout(base_pa: u64, fb_va: u64, fb_bytes: u64, pitch: u32, w: u32,
         let idx = lowest_free_fb_idx(&g);
         g.push(FbDev {
             idx, var, fix, base_pa, fb_va, fb_bytes,
-            card_id: 0, crtc_id: 0, fb_id: 0, dumb_handle: 0,
+            card_id, crtc_id, fb_id: 0, dumb_handle: 0,
             blank: FB_BLANK_UNBLANK, pseudo_palette: [0; 16],
         });
         idx
@@ -684,8 +693,14 @@ mod tests {
     fn init_scanout_populates_geometry_and_backing() {
         FBS.lock().clear();
         let bytes = 800u64 * 600 * 4;
-        let idx = init_scanout(0xdead_0000, 0xffff_8000_dead_0000, bytes, 800 * 4, 800, 600);
+        let idx = init_scanout(7, 1, 0xdead_0000, 0xffff_8000_dead_0000, bytes, 800 * 4, 800, 600);
         assert_eq!(idx, 0);
+        let owner = {
+            let g = FBS.lock();
+            let fb = g.iter().find(|fb| fb.idx == 0).unwrap();
+            (fb.card_id, fb.crtc_id)
+        };
+        assert_eq!(owner, (7, 1));
         let v = var_of(0).unwrap();
         assert_eq!((v.xres, v.yres, v.bits_per_pixel), (800, 600, 32));
         let f = fix_of(0).unwrap();

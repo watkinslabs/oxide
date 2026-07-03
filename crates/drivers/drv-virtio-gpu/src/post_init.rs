@@ -607,7 +607,7 @@ pub fn publish_console_scanout(card_id: u32) {
     let Some((w, h)) = dimensions(card_id) else { return };
     fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
     if let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer(card_id) {
-        fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
+        fbdev::init_scanout(card_id, drm::crtc_id_for(0), base_pa, fb_va, bytes, pitch, fw, fh);
         fbdev::set_flush_hook(flush_scanout);
         fbdev::set_blank_hooks(blank_scanout, unblank_scanout);
         fbdev::set_yield_hook(fbdev_vsync_yield);
