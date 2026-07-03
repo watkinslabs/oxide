@@ -92,7 +92,9 @@ test-pass claims.
   CID-keyed protocol endpoints with TX dispatch selected by the packet source
   CID. Protocol teardown requires the matching owned endpoint token, so stale
   or unrelated remove paths cannot clear another live CID/TX hook or close its
-  connections.
+  connections. The virtio child probe no longer has a global "any vsock
+  present" gate; duplicate ownership is rejected by the BDF/CID keyed install
+  path.
 - Virtio-rng now keeps per-BDF records, seeds from the just-bound device,
   removes by owning parent BDF, and promotes `/dev/hwrng` publication to a
   remaining RNG device on active-provider removal. Virtio-snd install/remove
@@ -101,7 +103,9 @@ test-pass claims.
   owned ALSA card id and removes only the matching card publication. Sound ops
   registration, ALSA/OSS node dispatch, and playback/capture runtime state are
   now keyed by ALSA card id, so a second virtio-snd card no longer shares the
-  first card's ops/PCM state.
+  first card's ops/PCM state. The virtio child probe no longer has a global
+  "any sound card present" gate; duplicate ownership is rejected by the BDF
+  keyed install path and sound core card allocation.
 - Virtio MSI-X handler ownership is no longer selected by a transport-side
   PCI-ID special-case dispatch. Child virtio driver probes now pass the
   optional queue-0 IRQ callback into the virtio-pci setup path; the PCI
@@ -178,13 +182,14 @@ test-pass claims.
   BDF-owned, fbdev helper hooks are fb-index-owned, and fbcon console ownership
   is tokenized. Virtio-gpu probe is no longer rejected just because another GPU
   is already installed; duplicate ownership is rejected by BDF/card state.
-  Virtio-vsock
-  transport context, protocol publication, TX dispatch, RX drain, and protocol
-  teardown are now BDF/CID keyed; the remaining vsock work is QEMU-visible
-  repeated bind/unbind/readd proof. Virtio-snd transport context, card
-  publication, ops dispatch, ALSA
-  nodes, and playback/capture runtime are now card/BDF-keyed; the remaining
-  sound work is QEMU-visible repeated bind/unbind/readd proof.
+  Virtio-vsock transport context, protocol publication, TX dispatch, RX drain,
+  and protocol teardown are now BDF/CID keyed, and child probe no longer
+  rejects a second device just because one vsock device is already present; the
+  remaining vsock work is QEMU-visible repeated bind/unbind/readd proof.
+  Virtio-snd transport context, card publication, ops dispatch, ALSA nodes, and
+  playback/capture runtime are now card/BDF-keyed, and child probe no longer
+  rejects a second device just because one sound card is already present; the
+  remaining sound work is QEMU-visible repeated bind/unbind/readd proof.
 - UART and PS/2 platform drivers now have model probes/removes, but they are
   still intentionally singleton hardware paths, not general multi-device
   serial/input infrastructure.
