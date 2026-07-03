@@ -1,12 +1,15 @@
-// DRM/KMS card per `47`. /dev/dri/card0 + /dev/dri/renderD128
+// DRM/KMS card per `47`. /dev/dri/cardN + /dev/dri/renderD(128+N)
 // dispatch ioctls through the registered DrmDriver in the drm
-// crate. virtio-gpu installs itself as the first card via
+// crate. virtio-gpu installs itself as a card via
 // drv_virtio_gpu::install_with_drm; real per-card responses
 // flow from there.
 
 #![allow(dead_code)]
 
+use alloc::format;
+use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use crate::{
     DRM_IOCTL_VERSION, DRM_IOCTL_GET_CAP, DRM_IOCTL_GET_UNIQUE,
@@ -48,8 +51,13 @@ pub struct ScanoutOps {
 }
 
 static SCANOUT_OPS: Spinlock<Option<ScanoutOps>, OpsLockClass> = Spinlock::new(None);
-static DRM_NODES: Spinlock<[Option<Arc<drv::Device>>; 2], OpsLockClass>
-    = Spinlock::new([const { None }; 2]);
+
+struct DrmNodeSet {
+    card_id: u32,
+    nodes: [Arc<drv::Device>; 2],
+}
+
+static DRM_NODES: Spinlock<Vec<DrmNodeSet>, OpsLockClass> = Spinlock::new(Vec::new());
 
 /// Install the runtime scanout backend (called once at GPU install).
 /// # C: O(1)
@@ -121,15 +129,15 @@ impl vfs::FileOps for DrmSinkFileOps {
     fn write(&self, _inode: &vfs::Inode, _o: u64, b: &[u8]) -> vfs::KResult<usize> { Ok(b.len()) }
 }
 
-/// Build the `/dev/dri/card0` inode (`S_IFCHR|0o666`, card tag, card f_op).
+/// Build a `/dev/dri/cardN` inode (`S_IFCHR|0o666`, card tag + id, card f_op).
 /// # C: O(1)
-fn make_card_inode() -> vfs::InodeRef {
-    vfs::InodeBuilder::new(DRM_CARD_INO, vfs::mk_mode(vfs::FileType::CharDev, 0o666),
+fn make_card_inode(card_id: u32) -> vfs::InodeRef {
+    vfs::InodeBuilder::new(DRM_CARD_INO | card_id as u64, vfs::mk_mode(vfs::FileType::CharDev, 0o666),
                            vfs::default_inode_ops(), Arc::new(DrmCardFileOps)).build()
 }
-/// Build the `/dev/dri/renderD128` inode (sink f_op). # C: O(1)
-fn make_render_inode() -> vfs::InodeRef {
-    vfs::InodeBuilder::new(DRM_RENDER_INO, vfs::mk_mode(vfs::FileType::CharDev, 0o666),
+/// Build a `/dev/dri/renderD(128+N)` inode (sink f_op). # C: O(1)
+fn make_render_inode(card_id: u32) -> vfs::InodeRef {
+    vfs::InodeBuilder::new(DRM_RENDER_INO | card_id as u64, vfs::mk_mode(vfs::FileType::CharDev, 0o666),
                            vfs::default_inode_ops(), Arc::new(DrmSinkFileOps)).build()
 }
 
@@ -138,37 +146,65 @@ fn make_render_inode() -> vfs::InodeRef {
 /// each used before, so the /dev node is byte-identical; `dt` is the standard
 /// `(major,minor)` metadata. bus == `class` (`drm`) is ignored by the pci/virtio
 /// /sys synthesis, so no spurious /sys entry appears. # C: O(1)
-fn add_node(name: &str, class: &'static str, dt: (u32, u32), factory: drv::NodeFactory) -> Arc<drv::Device> {
-    use alloc::string::String;
+fn add_node(name: String, class: &'static str, dt: (u32, u32), factory: drv::NodeFactory) -> Arc<drv::Device> {
     drv::device_add(Arc::new(
-        drv::Device::new(class, String::from(name), 0, 0, 0)
-            .with_devnode(class, String::from(name), Some(dt))
+        drv::Device::new(class, name.clone(), 0, 0, dt.1)
+            .with_devnode(class, name, Some(dt))
             .with_node_factory(factory)))
 }
 
-/// Register DRM card/render nodes for the first live DRM card.
+/// Register DRM card/render nodes for one live DRM card.
 /// # C: O(1)
-pub fn register() {
+pub fn register(card_id: u32) {
     let mut nodes = DRM_NODES.lock();
-    if nodes[0].is_some() || nodes[1].is_some() {
+    if nodes.iter().any(|entry| entry.card_id == card_id) {
         return;
     }
-    // The nodes are device-model-owned: /dev/dri/card0 (226:0) and
-    // renderD128 (226:128) are minted by drv::device_add and removed by
-    // drv::device_del when the final DRM card unregisters.
-    nodes[0] = Some(add_node("dri/card0",      "drm", (226, 0),   Arc::new(|| make_card_inode())));
-    nodes[1] = Some(add_node("dri/renderD128", "drm", (226, 128), Arc::new(|| make_render_inode())));
+    let card_minor = card_id;
+    let render_minor = 128u32.saturating_add(card_id);
+    // The nodes are device-model-owned: /dev/dri/cardN (226:N) and
+    // renderD(128+N) are minted by drv::device_add and removed by
+    // drv::device_del when that DRM card unregisters.
+    let card = add_node(
+        format!("dri/card{}", card_id),
+        "drm",
+        (226, card_minor),
+        Arc::new(move || make_card_inode(card_id)),
+    );
+    let render = add_node(
+        format!("dri/renderD{}", render_minor),
+        "drm",
+        (226, render_minor),
+        Arc::new(move || make_render_inode(card_id)),
+    );
+    nodes.push(DrmNodeSet { card_id, nodes: [card, render] });
 }
 
-/// Remove DRM card/render nodes after the final live DRM card is gone.
+/// Remove DRM card/render nodes for one DRM card.
 /// # C: O(depth)
-pub fn unregister() {
+pub fn unregister(card_id: u32) {
     let nodes = {
         let mut g = DRM_NODES.lock();
-        [g[0].take(), g[1].take()]
+        let Some(idx) = g.iter().position(|entry| entry.card_id == card_id) else {
+            return;
+        };
+        g.remove(idx).nodes
     };
-    for node in nodes.iter().rev().flatten() {
+    for node in nodes.iter().rev() {
         drv::device_del(node);
+    }
+}
+
+/// Test/reset helper for the core tests. Production removal is per-card.
+/// # C: O(cards * depth)
+#[cfg(test)]
+pub fn unregister_all() {
+    let ids = {
+        let g = DRM_NODES.lock();
+        g.iter().map(|entry| entry.card_id).collect::<Vec<_>>()
+    };
+    for id in ids {
+        unregister(id);
     }
 }
 
@@ -183,6 +219,10 @@ pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
     crate::dumb::mmap_backing(offset)
 }
 
+fn card_id_from_inode(inode: &vfs::InodeRef) -> u32 {
+    (inode.ino() & 0xFFFF_FFFF) as u32
+}
+
 /// ioctl on a DRM fd. Returns Some(rv) when handled; None otherwise (caller
 /// falls back to the generic CharDev path).
 /// # C: O(1)
@@ -195,12 +235,13 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
     if arg == 0 || arg >= hal::USER_VA_END {
         return Some(-(Errno::Efault.as_i32() as i64));
     }
+    let card_id = card_id_from_inode(inode);
     match req {
         DRM_IOCTL_VERSION => {
-            // Look up the registered DrmDriver (card 0); fall back
+            // Look up the registered DrmDriver for this card; fall back
             // to "oxide / no-GPU" strings when none registered.
-            let cards = crate::cards();
-            let (name, date, desc, ver) = match cards.first() {
+            let driver = crate::driver_for(card_id);
+            let (name, date, desc, ver) = match driver.as_ref() {
                 Some(d) => (d.name(), d.date(), d.desc(), d.version()),
                 None    => (FALLBACK_NAME, FALLBACK_DATE, FALLBACK_DESC, (1, 6, 0)),
             };
@@ -242,8 +283,8 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
             // Delegate to driver.cap(); fall back to crate::default_cap.
             // SAFETY: arg validated < USER_VA_END; aligned u64 read of capability + write of value.
             let cap = unsafe { core::ptr::read_volatile(arg as *const u64) };
-            let cards = crate::cards();
-            let val = match cards.first() {
+            let driver = crate::driver_for(card_id);
+            let val = match driver.as_ref() {
                 Some(d) => d.cap(cap),
                 None    => crate::default_cap(cap),
             };
@@ -257,8 +298,8 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
             // Real 2-pass enumeration when a card is registered;
             // empty counts (no objects) when none. drm_mode_card_res
             // is 64 B; validated < USER_VA_END above.
-            let cards = crate::cards();
-            match cards.first() {
+            let driver = crate::driver_for(card_id);
+            match driver.as_ref() {
                 Some(d) => Some(crate::modeset::get_resources(d, arg)),
                 None => {
                     // SAFETY: arg validated; struct ≥ 64 B; zero counts + dims.
@@ -272,8 +313,8 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
             }
         }
         DRM_IOCTL_MODE_GETPLANERESOURCES => {
-            let cards = crate::cards();
-            match cards.first() {
+            let driver = crate::driver_for(card_id);
+            match driver.as_ref() {
                 Some(d) => Some(crate::modeset::get_plane_res(d, arg)),
                 None => {
                     // SAFETY: arg validated; field at +8 is the count u32.
@@ -283,29 +324,29 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
             }
         }
         DRM_IOCTL_MODE_GETPLANE => {
-            let cards = crate::cards();
-            match cards.first() {
+            let driver = crate::driver_for(card_id);
+            match driver.as_ref() {
                 Some(d) => Some(crate::modeset::get_plane(d, arg)),
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
         DRM_IOCTL_MODE_GETCRTC => {
-            let cards = crate::cards();
-            match cards.first() {
+            let driver = crate::driver_for(card_id);
+            match driver.as_ref() {
                 Some(d) => Some(crate::modeset::get_crtc(d, arg)),
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
         DRM_IOCTL_MODE_GETENCODER => {
-            let cards = crate::cards();
-            match cards.first() {
+            let driver = crate::driver_for(card_id);
+            match driver.as_ref() {
                 Some(d) => Some(crate::modeset::get_encoder(d, arg)),
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
         DRM_IOCTL_MODE_GETCONNECTOR => {
-            let cards = crate::cards();
-            match cards.first() {
+            let driver = crate::driver_for(card_id);
+            match driver.as_ref() {
                 Some(d) => Some(crate::modeset::get_connector(d, arg)),
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
@@ -366,14 +407,16 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
         // client). Card required (no GPU → set_crtc honest-fails EINVAL).
         DRM_IOCTL_MODE_SETCRTC => {
             let token = Arc::as_ptr(inode) as *const () as u64;
-            match crate::cards().first() {
+            let driver = crate::driver_for(card_id);
+            match driver.as_ref() {
                 Some(d) => Some(crate::crtc::set_crtc(d, arg, token)),
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
         DRM_IOCTL_MODE_PAGE_FLIP => {
             let token = Arc::as_ptr(inode) as *const () as u64;
-            match crate::cards().first() {
+            let driver = crate::driver_for(card_id);
+            match driver.as_ref() {
                 Some(d) => Some(crate::crtc::page_flip(d, arg, token)),
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }

@@ -487,11 +487,10 @@ static NEXT_HANDLE: AtomicU32 = AtomicU32::new(1);
 /// # C: O(1)
 pub fn register(driver: Arc<dyn DrmDriver>) -> u32 {
     let mut g = CARDS.lock();
-    if g.is_empty() {
-        node::register();
-    }
     let id = NEXT_CARD_ID.fetch_add(1, Ordering::AcqRel);
     g.push(CardEntry { id, driver });
+    drop(g);
+    node::register(id);
     id
 }
 
@@ -504,11 +503,8 @@ pub fn unregister(card_id: u32) -> bool {
         return false;
     };
     g.remove(idx);
-    let empty = g.is_empty();
     drop(g);
-    if empty {
-        node::unregister();
-    }
+    node::unregister(card_id);
     true
 }
 
@@ -516,6 +512,16 @@ pub fn unregister(card_id: u32) -> bool {
 /// # C: O(1)
 pub fn cards() -> Vec<Arc<dyn DrmDriver>> {
     CARDS.lock().iter().map(|entry| Arc::clone(&entry.driver)).collect()
+}
+
+/// Snapshot one registered card driver by stable card id.
+/// # C: O(N)
+pub fn driver_for(card_id: u32) -> Option<Arc<dyn DrmDriver>> {
+    CARDS
+        .lock()
+        .iter()
+        .find(|entry| entry.id == card_id)
+        .map(|entry| Arc::clone(&entry.driver))
 }
 
 /// Return the count of registered cards.
@@ -564,6 +570,15 @@ pub fn is_master_only(req: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::String;
+
+    static ADDED: Spinlock<Vec<(String, Option<(u32, u32)>)>, DriverLockClass> = Spinlock::new(Vec::new());
+
+    fn add_hook(class: &str, name: &str, dt: Option<(u32, u32)>, _factory: Option<drv::NodeFactory>) {
+        if class == "drm" {
+            ADDED.lock().push((String::from(name), dt));
+        }
+    }
 
     #[test]
     fn card_res_layout() {
@@ -708,7 +723,7 @@ mod tests {
     fn register_increments_card_count() {
         CARDS.lock().clear();
         NEXT_CARD_ID.store(0, Ordering::Release);
-        node::unregister();
+        node::unregister_all();
         let idx = register(Arc::new(DummyDrv));
         assert_eq!(idx, 0);
         assert_eq!(card_count(), 1);
@@ -723,7 +738,7 @@ mod tests {
     fn unregister_uses_stable_card_id() {
         CARDS.lock().clear();
         NEXT_CARD_ID.store(0, Ordering::Release);
-        node::unregister();
+        node::unregister_all();
         let first = register(Arc::new(DummyDrv));
         let second = register(Arc::new(DummyDrv));
         assert_eq!((first, second), (0, 1));
@@ -731,6 +746,28 @@ mod tests {
         assert_eq!(card_count(), 1);
         assert!(unregister(second));
         assert_eq!(card_count(), 0);
+    }
+
+    #[test]
+    fn register_publishes_card_specific_nodes() {
+        drv::set_devtmpfs_hook(add_hook);
+        CARDS.lock().clear();
+        NEXT_CARD_ID.store(0, Ordering::Release);
+        node::unregister_all();
+        ADDED.lock().clear();
+
+        let first = register(Arc::new(DummyDrv));
+        let second = register(Arc::new(DummyDrv));
+        assert_eq!((first, second), (0, 1));
+
+        let added = ADDED.lock().clone();
+        assert!(added.iter().any(|n| n == &(String::from("dri/card0"), Some((226, 0)))));
+        assert!(added.iter().any(|n| n == &(String::from("dri/renderD128"), Some((226, 128)))));
+        assert!(added.iter().any(|n| n == &(String::from("dri/card1"), Some((226, 1)))));
+        assert!(added.iter().any(|n| n == &(String::from("dri/renderD129"), Some((226, 129)))));
+
+        assert!(unregister(first));
+        assert!(unregister(second));
     }
 }
 
