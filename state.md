@@ -1,58 +1,63 @@
 # state.md — session handoff
 
 ## Headline
-**GNOME reaches `graphical.target` + `gdm.service`; greeter/login does NOT yet
-render.** The udevd "epoll-ready-but-never-reads" spin — misdiagnosed last
-session as an sd-event/udevd internal fault — was a **KERNEL bug**, now fixed &
-merged (#2324): `netlink_fd::recvfrom` ignored `MSG_PEEK`/`MSG_TRUNC`, so
-libudev's `recvfrom(len=0, MSG_PEEK|MSG_TRUNC)` size-probe **dequeued+destroyed**
-the card0 uevent and returned EAGAIN → udevd spun forever, drained nothing.
-Next layer = udevd now READS the uevent but `/run/udev/data` writes still 0
-(device-model tagging → graphical seat → gdm). Follow **`udevfix.md`**; driver
-work on **`codex/driver-fixes`**.
+**GNOME reaches graphical.target + gdm; greeter still not rendered.** Major win
+this session: udev was completely non-functional (processed ZERO devices); root
+cause found + fixed — **netlink uevents carried no SCM_CREDENTIALS**, so modern
+`sd-device-monitor` dropped every uevent. udev now works: `/run/udev/data/c226:0`
+written with `G:master-of-seat`. Next wedged daemon: **systemd-logind** (not
+creating `/run/systemd/seats/`, doesn't answer its bus). Chain: udev ✅ →
+logind ❌ → seat0 CanGraphical → gdm greeter.
 
-## Merged this session (14 PRs, #2311–#2324, all boot-verified)
-- #2311 mount_setattr AT_EMPTY_PATH + mount-aware bind — killed domainname 226.
-- #2312 O_PATH must not invoke device-driver open (FMODE_PATH).
-- #2313 socketpair(AF_UNIX) SO_DOMAIN=AF_UNIX — system D-Bus up.
-- #2314 eventfd blocking read must BLOCK not EINVAL — EXIT_USER(217).
-- #2315 AF_UNIX accept SO_DOMAIN + epoll-wake listener on connect.
-- #2316 share a socket's poll_subs into its inode (epoll targeted wakes).
-- #2317 recvmsg AF_UNIX honours O_NONBLOCK/MSG_DONTWAIT — THE dbus fix.
-- #2318 /sys/class/drm class node — udev DRM seat-discovery prerequisite.
-- #2319 route raw kernel uevents to netlink group 1 only — PID1 uevent storm.
-- #2320 NETLINK_KOBJECT_UEVENT userspace cooked-uevent multicast (udevfix Ph1).
-- #2321–#2323 docs: udevfix.md plan + state hand-offs.
-- **#2324 recvfrom MSG_PEEK/MSG_TRUNC — THE udevd-spin fix (root cause above).**
+## Merged this session (4 PRs, #2324–#2327, all boot-verified)
+- #2324 netlink recvfrom must honour MSG_PEEK/MSG_TRUNC — udevd size-probe no
+  longer destroys the uevent.
+- #2325 `/proc/<pid>/fd/<n>` magic-symlink must re-open fresh with caller flags
+  (not dup the fd) — killed os-release / StateDirectory EBADF (systemd chase()+
+  fd_reopen of an O_PATH fd).
+- #2326 pidfd poll must report EPOLLIN only after target exits — killed
+  dbus-broker-launch's ~3900×/boot waitid busy-spin (sd-event child source on an
+  always-readable pidfd).
+- **#2327 netlink uevent monitor: SCM_CREDENTIALS + enqueue-wakes-pollers +
+  correct source nl_groups — THE udev-wall fix.** udevd read every uevent but
+  dropped all (no SO_PASSCRED cred record). Now processes card0 → 71-seat.rules
+  → master-of-seat tag.
 
-## Current blocker (next layer)
-udevd now drains its uevent monitor (peek returns real 155 B len, spin gone).
-Remaining: udevd must PROCESS card0 → write `/run/udev/data/c226:0` with the
-`master-of-seat` tag → seat0 CanGraphical=yes → gdm launches greeter. Last known
-state: `/run/udev/data` writes = 0. Unknown whether udevd now processes the
-uevent + stalls later, or the device-model surface (`/sys` attrs, `MODALIAS`,
-subsystem/devtype) is still incomplete for udev's rules. That is the udevfix.md
-device-model-completeness work.
+## Current blocker (next lane): systemd-logind wedged
+Confirmed via debugfs-injected diagnostic unit (dumps to /dev/ttyS0 at
+graphical.target):
+- `/run/systemd/seats/` is EMPTY — logind creates NO seat (not even default seat0).
+- `loginctl seat-status seat0` → "Connection timed out" — logind's bus/IPC
+  unresponsive (same shape as udevd-was: daemon up, State S sleeping, not
+  servicing its sockets).
+- gdm is active but launches no greeter session (seat0 never CanGraphical).
+Investigate logind like udevd: does its udev monitor (group 2, cooked) receive
+the card0 event? does its sd-bus/varlink event loop wake? Likely another
+netlink/af_unix/creds-class kernel bug OR a logind-specific one. The SCM_CREDS
+fix already applies to logind's cooked monitor reads (recvmsg, all proto-15).
 
-## First task next session
-`git checkout main && git pull`. Boot live-gnome and check whether
-`/run/udev/data/c226:0` now exists post-#2324. Interactive serial session:
-`make -C ../oxide-images run-serial` (getty.target reached), then
-`udevadm info /dev/dri/card0`, `udevadm monitor --udev`, `ls /run/udev/data`,
-`loginctl seat-status seat0` (CanGraphical?). If the tag is missing, trace which
-udev rule / device attribute is absent (device-model gap, not policy — kernel
-exposes the Linux-shaped model, udevfix.md). Fix kernel-side; keep any kernel
-probe to ONE-SHOT dumps (per-syscall klog confounds udevd timing).
+## Diagnosis harness (USE THIS — it ended the thrashing)
+- **Inject a diagnostic oneshot into the rootfs via debugfs (unprivileged, no
+  mount):** write `/usr/local/bin/oxdiag.sh` (`exec >/dev/ttyS0`), a
+  `graphical.target.wants/oxdiag.service` symlink; `debugfs -w -R "write ..."`
+  + `sif ... mode 0100755` + `symlink ...` on
+  `../oxide-images/output/live-gnome-x86_64-root.img`. Reads real runtime state
+  (loginctl, ls /run/udev/data, cat /run/systemd/seats/seat0, /proc/<pid>/status).
+- **sysrq over serial:** boot with `-serial stdio`, feed stdin
+  `( sleep N; printf '\000t' )` → `[sysrq] task dump` shows every task's
+  state + last_syscall + nsyscalls + exe (pins a wedged daemon's blocking
+  syscall). `\000w`=watchdog, `\000c`=cpus, `\000b`=backtrace.
+- Boot script: `/tmp/claude-.../scratchpad/boot.sh <log> <secs>` (single qemu,
+  `-serial file:`); `boot_sysrq.sh` for the stdin-driven sysrq variant.
+- **GOTCHA:** `/proc/<pid>/fd` lists the CALLER's fds, not the target pid's
+  (`ProcSelfFdOps::iterate` uses `current()`) — do NOT trust it. Separate bug.
 
-## Boot / diagnosis notes
-- Build+boot: `cd ../oxide-images && make kernel ARCH=x86_64 && make boot
-  PROFILE=live-gnome ARCH=x86_64 && bash oneboot.sh out.log <secs>`. Full boot
-  35k+ lines; card0 uevent + udevd at coldplug ~6s, so a 90s window suffices.
-  ~900-line boots = GRUB-partial, re-run (`pkill -9 -f qemu-system`,
-  dangerouslyDisableSandbox — the Bash sandbox otherwise can't reap qemu).
-- Diagnostic cmdline: `../oxide-images/imagectl/src/main.rs` GRUB menuentry (NOT
-  git-tracked). Default `quiet`. systemd serial logs: swap `quiet` →
-  `systemd.log_target=kmsg systemd.journald.forward_to_console=1`.
-- `dump_tasks()` (one-shot, non-invasive): every task's state + last syscall +
-  nsyscalls. `debug-watchdog` feature enables the syscall-name table.
-- Ledger `metadata/index.md`: B next = 308, D next = 118.
+## Boot / build
+- `cd ../oxide-images && make kernel ARCH=x86_64` then
+  `cd ../kernel && cargo run -q -p xtask -- artifacts --arch x86_64` then
+  `cd ../oxide-images && cargo run -q -p imagectl -- build-boot --profile
+  live-gnome --arch x86_64`. (`make boot` wrapper exits 1 spuriously — use
+  imagectl build-boot directly.) Then boot.sh. ~half of cold boots GRUB-hang
+  (<1000 lines) — re-run. Diagnostic cmdline in imagectl/src/main.rs (~L963,
+  NOT git-tracked): currently kmsg+forward_to_console; restore `quiet` before done.
+- Ledger `metadata/index.md`: B next = 311.
