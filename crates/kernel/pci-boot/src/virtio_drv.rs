@@ -163,9 +163,7 @@ impl drv::Driver for VirtioGpuDrv {
     fn remove(&self, dev: &drv::Device) {
         let Some(bdf) = pci_parent_bdf(dev) else { return };
         let bdf_word = bdf_word(bdf);
-        if drv_virtio_gpu::uninstall(bdf_word).is_none() {
-            return;
-        }
+        let _ = drv_virtio_gpu::uninstall(bdf_word);
         let _ = drv_virtio_gpu::post_init::uninstall_scanout(bdf_word);
         unpublish_transport_mmio(bdf_word);
     }
@@ -313,12 +311,9 @@ impl drv::Driver for VirtioNetDrv {
     fn remove(&self, _dev: &drv::Device) {
         if let Some(bdf) = pci_parent_bdf(_dev) {
             let device_key = bdf_word(bdf);
-            if drv_virtio_net::modern::is_modern_present_for(device_key) {
-                let _ = drv_virtio_net::modern::unregister_netdev(device_key);
-                if drv_virtio_net::modern::uninstall_modern(device_key) {
-                    unpublish_transport_mmio(device_key);
-                }
-            }
+            let _ = drv_virtio_net::modern::unregister_netdev(device_key);
+            let _ = drv_virtio_net::modern::uninstall_modern(device_key);
+            unpublish_transport_mmio(device_key);
         }
     }
 }
@@ -507,9 +502,7 @@ impl drv::Driver for VirtioVsockDrv {
     fn remove(&self, dev: &drv::Device) {
         let Some(bdf) = pci_parent_bdf(dev) else { return };
         let device_key = bdf_word(bdf);
-        if !drv_virtio_vsock::uninstall(device_key) {
-            return;
-        }
+        let _ = drv_virtio_vsock::uninstall(device_key);
         unpublish_transport_mmio(device_key);
     }
 }
@@ -584,9 +577,8 @@ impl drv::Driver for VirtioSndDrv {
     fn remove(&self, dev: &drv::Device) {
         if let Some(bdf) = pci_parent_bdf(dev) {
             let device_key = bdf_word(bdf);
-            if drv_virtio_snd::uninstall(device_key) {
-                unpublish_transport_mmio(device_key);
-            }
+            let _ = drv_virtio_snd::uninstall(device_key);
+            unpublish_transport_mmio(device_key);
         }
     }
 }
