@@ -25,6 +25,12 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
     let msg    = if typ != SOCK_STREAM { Some(net::UnixMsgPair::new()) } else { None };
     let mk = |end: net::UnixEnd| -> vfs::InodeRef {
         let s = InetSocket::new_tcp();
+        // socketpair(2) is AF_UNIX: SO_DOMAIN must report AF_UNIX, not the
+        // `new_tcp` default of AF_INET. dbus-broker rejects its controller fd
+        // (getsockopt SO_DOMAIN != AF_UNIX → "socket type of controller
+        // file-descriptor not supported"), which downed the system bus and timed
+        // out every dbus-dependent service (gdm, polkit, upower, NetworkManager…).
+        s.family.store(net::sock::AF_UNIX, core::sync::atomic::Ordering::Release);
         if let Some(p) = &stream {
             *s.kind.lock() = SockKind::Unix(p.clone(), end);
             // F181a: tell the pair which subscribers wake on
