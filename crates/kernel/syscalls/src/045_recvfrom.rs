@@ -29,7 +29,7 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     const MSG_PEEK:     u64 = 0x02;
     const MSG_TRUNC:    u64 = 0x20;
     if crate::netlink_fd::is_netlink(fd) {
-        return crate::netlink_fd::recvfrom(fd, bufp, len, src_p);
+        return crate::netlink_fd::recvfrom(fd, bufp, len, src_p, flags);
     }
     // D3.3: AF_VSOCK recv/recvfrom → OP_RW delivery via the socket
     // inode read path (STREAM, src not filled — single peer).
