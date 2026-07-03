@@ -5,6 +5,8 @@
 
 use super::*;
 
+fn dummy_tx(_frame: &[u8]) -> bool { true }
+
 #[test]
 fn hdr_roundtrip_all_fields() {
     let h = VsockHdr {
@@ -167,4 +169,30 @@ fn listener_request_queues_accept() {
     assert_eq!(*conn.st.lock(), VsockState::Connected);
     assert_eq!(conn.credit.lock().peer_buf_alloc, 8192);
     TABLE.remove(k);
+}
+
+#[test]
+fn driver_endpoint_owns_uninstall() {
+    if driver_up() {
+        let live = DriverEndpoint {
+            owner: DRIVER_OWNER.load(core::sync::atomic::Ordering::Acquire),
+            guest_cid: guest_cid(),
+        };
+        let _ = driver_uninstall(live);
+    }
+
+    let ep = driver_install(42, dummy_tx).expect("first endpoint installs");
+    assert_eq!(ep.guest_cid(), 42);
+    assert_eq!(guest_cid(), 42);
+    assert!(driver_up());
+    assert!(driver_install(43, dummy_tx).is_none(), "second endpoint must not replace live one");
+
+    let stale = DriverEndpoint { owner: ep.owner.wrapping_add(1), guest_cid: 43 };
+    assert!(!driver_uninstall(stale), "stale endpoint must not clear live hook");
+    assert_eq!(guest_cid(), 42);
+    assert!(driver_up());
+
+    assert!(driver_uninstall(ep));
+    assert_eq!(guest_cid(), 0);
+    assert!(!driver_up());
 }

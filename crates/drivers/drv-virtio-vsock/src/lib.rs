@@ -36,6 +36,7 @@ pub struct Ctx {
     pub cfg_va:    u64,
     pub hhdm:      u64,
     pub guest_cid: u64,
+    pub endpoint:  Option<net::vsock::DriverEndpoint>,
     /// q0 = RX (device writes inbound packets here).
     pub rxq:       virtio::VirtQueueResource,
     /// q1 = TX (driver writes outbound packets here).
@@ -124,6 +125,7 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u
         cfg_va: resources.cfg_va,
         hhdm: resources.hhdm,
         guest_cid,
+        endpoint: None,
         rxq,
         txq,
         rx_avail_idx: rx_used_seen, rx_used_seen,
@@ -149,21 +151,27 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u
     rx::prepost_all();
 
     // Publish guest CID + TX hook so net::vsock can drive the protocol. If
-    // the protocol endpoint is already owned, undo only this probe's transport
-    // state; do not clear the existing net::vsock hook.
-    if !net::vsock::driver_install(guest_cid, tx_packet) {
-        let mut g = CTX.lock();
-        let Some(mut ctx) = g.take() else {
+    // a second transport is already installed, unwind only this probe's
+    // transport state and do not clear the existing net::vsock hook.
+    let endpoint = match net::vsock::driver_install(guest_cid, tx_packet) {
+        Some(endpoint) => endpoint,
+        None => {
+            let mut ctx = CTX.lock().take().unwrap();
+            // Virtio reset: write 0 to device_status (§3.1.1), using byte access.
+            unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+            free_rx_bufs(&mut ctx.rx_bufs);
+            if ctx.tx_buf_pa != 0 {
+                // SAFETY: tx_buf_pa was allocated in this install attempt and is
+                // not reachable after CTX.take().
+                unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
+            }
             return false;
-        };
-        // Virtio reset: write 0 to device_status (§3.1.1), using byte access.
-        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
-        free_rx_bufs(&mut ctx.rx_bufs);
-        if ctx.tx_buf_pa != 0 {
-            // SAFETY: tx_buf_pa was allocated in this install attempt and is
-            // not reachable after CTX.take().
-            unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
         }
+    };
+    if let Some(ctx) = CTX.lock().as_mut() {
+        ctx.endpoint = Some(endpoint);
+    } else {
+        let _ = net::vsock::driver_uninstall(endpoint);
         return false;
     }
     if !SOFTIRQ_INSTALLED.swap(true, Ordering::AcqRel) {
@@ -201,7 +209,9 @@ pub fn uninstall(device_key: u32) -> bool {
     if SOFTIRQ_INSTALLED.swap(false, Ordering::AcqRel) {
         let _ = softirq::clear_handler(softirq::Slot::VsockRx);
     }
-    net::vsock::driver_uninstall();
+    if let Some(endpoint) = ctx.endpoint {
+        let _ = net::vsock::driver_uninstall(endpoint);
+    }
     // Virtio reset: write 0 to device_status (§3.1.1), using byte access.
     unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
     free_rx_bufs(&mut ctx.rx_bufs);
