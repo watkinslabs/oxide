@@ -91,14 +91,17 @@ test-pass claims.
   removes by owning parent BDF, and promotes `/dev/hwrng` publication to a
   remaining RNG device on active-provider removal. Virtio-snd install/remove
   is now keyed to the owning parent BDF and releases child-owned queue/buffer
-  resources only for the matching transport; the sound card layer remains a
-  single global card.
+  resources only for the matching transport. Sound card publication now has an
+  owned ALSA card id and removes only the matching card publication, but the
+  upper ops/PCM runtime is still a single active sound endpoint.
 - Virtio MSI-X handler ownership is no longer selected by a transport-side
   PCI-ID special-case dispatch. Child virtio driver probes now pass the
   optional queue-0 IRQ callback into the virtio-pci setup path; the PCI
   transport still owns MSI-X table/vector programming and teardown.
-- Sound card publication is model-owned and registration is now guarded so a
-  repeated probe cannot publish duplicate ALSA/OSS nodes.
+- Sound card publication is model-owned, registration is guarded so a repeated
+  probe cannot publish duplicate ALSA/OSS nodes, and the published ALSA node
+  names/dev_t values derive from the owned card id instead of hard-coded
+  `card0`.
 - Fbdev publication now unwinds its live framebuffer record when model-owned
   `/dev/fbN` publication fails, preventing partial framebuffer state from
   outliving its devtmpfs node.
@@ -149,8 +152,10 @@ test-pass claims.
   still uses the minimal one-buffer RX design per transport and a shared ARP
   cache. Virtio-gpu teardown is BDF-owned, but the installed DRM/scanout device
   is still singleton. Virtio-vsock's upper protocol layer and virtio-snd's upper
-  sound-card layer also still retain singleton limits; vsock now fails a second
-  protocol publish cleanly instead of replacing the installed transport.
+  ops/PCM runtime also still retain singleton limits; vsock now fails a second
+  protocol publish cleanly instead of replacing the installed transport, and
+  sound publication now keeps an owned active card id instead of a bare global
+  card0 flag.
 - UART and PS/2 platform drivers now have model probes/removes, but they are
   still intentionally singleton hardware paths, not general multi-device
   serial/input infrastructure.
@@ -173,9 +178,11 @@ test-pass claims.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-gpu still needs
   a real multi-card/scanout table after its BDF-owned teardown fix;
-  virtio-vsock's upper protocol layer and virtio-snd's global sound-card layer
-  are still the main offenders. Virtio-net's old singleton installed-device
-  slot is gone, but its RX buffer model and shared ARP cache still need the next
+  virtio-vsock's upper protocol layer and virtio-snd's upper ops/PCM runtime
+  are still the main offenders. Virtio-snd card publication now has owned card
+  ids and card-specific ALSA names, but full multi-card sound still needs the
+  ops and PCM state split. Virtio-net's old singleton installed-device slot is
+  gone, but its RX buffer model and shared ARP cache still need the next
   networking cleanup pass.
 - Add explicit fault-injection coverage for probe failure after each allocation,
   mapping, registration, IRQ/MSI step, queue setup, and userspace publication.
@@ -308,7 +315,8 @@ Several drivers use singleton global state:
 - virtio-gpu: single `DEV: Option<VirtioGpuDev>`
 - virtio-rng: single `CTX`
 - virtio-vsock: single `CTX`
-- virtio-snd: single `CTX`
+- virtio-snd: single active `CTX`; card publication now carries an owned ALSA
+  card id, but ops/PCM state is not split per card
 - UART drivers: global `PRESENT` and base state
 - PS/2 keyboard: global present/poll state
 

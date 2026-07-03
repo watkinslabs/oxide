@@ -556,7 +556,9 @@ impl drv::Driver for VirtioSndDrv {
         debug_boot! {
             klog::write_raw(b"[INFO]  virtio-snd: bdf=0:");
             klog::write_dec_u64(d.bdf.device as u64);
-            klog::write_raw(b".0 card=C0 streams=");
+            klog::write_raw(b".0 card=C");
+            klog::write_dec_u64(sp.card_id as u64);
+            klog::write_raw(b" streams=");
             klog::write_dec_u64(sp.streams as u64);
             klog::write_raw(b" out=");
             klog::write_dec_u64(sp.out as u64);

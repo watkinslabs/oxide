@@ -1,6 +1,6 @@
 // `sound` — the ALSA core (snd_pcm_lib + control + the char-device ABI) for
 // the virtio-snd card. The PRIMARY surface is ALSA `/dev/snd/*`
-// (controlC0 + pcmC0D0p, served by the SNDRV_*_IOCTL ABI); the OSS
+// (controlC<N> + pcmC<N>D0p, served by the SNDRV_*_IOCTL ABI); the OSS
 // `/dev/dsp`/`/dev/mixer` nodes are snd-pcm-oss emulation over the SAME
 // drv-virtio-snd substream ops — the modern-Linux layering (docs/58§5–6).
 // virtio-snd is the card driver (snd_pcm_ops); this crate owns the
@@ -9,9 +9,11 @@
 #![no_std]
 extern crate alloc;
 
+use alloc::format;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 use sync::{Spinlock, TaskList as SoundLockClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError, InodeBuilder, FileOps, default_inode_ops, mk_mode};
 
@@ -28,15 +30,20 @@ use uapi::{PCM_MAGIC, CTL_MAGIC};
 /// dispatcher to the right node.
 const SND_INO_BASE: Ino = 0x536E_6400_0000_0000;
 const SND_INO_MASK: Ino = 0xFFFF_FFFF_0000_0000;
-const MINOR_CONTROL: u64 = 0x00; // controlC0
-const MINOR_PCM_P:   u64 = 0x10; // pcmC0D0p (playback)
-const MINOR_PCM_C:   u64 = 0x11; // pcmC0D0c (capture)
+const MINOR_CONTROL: u64 = 0x00; // controlC<N>
+const MINOR_PCM_P:   u64 = 0x10; // pcmC<N>D0p (playback)
+const MINOR_PCM_C:   u64 = 0x11; // pcmC<N>D0c (capture)
 const MINOR_DSP:     u64 = 0x20; // /dev/dsp
 const MINOR_AUDIO:   u64 = 0x21; // /dev/audio
 const MINOR_MIXER:   u64 = 0x22; // /dev/mixer
 
-static CARD_NODES: Spinlock<Vec<Arc<drv::Device>>, SoundLockClass> = Spinlock::new(Vec::new());
-static CARD_REGISTERED: AtomicBool = AtomicBool::new(false);
+struct CardPublication {
+    card_id: u32,
+    nodes: Vec<Arc<drv::Device>>,
+}
+
+static ACTIVE_CARD: Spinlock<Option<CardPublication>, SoundLockClass> = Spinlock::new(None);
+static NEXT_CARD_ID: AtomicU32 = AtomicU32::new(0);
 
 /// Backend-private state (`i_private`) for a sound node: the device minor that
 /// keys the shared read/write/ioctl dispatch (`controlC0`/`pcmC0D0p`/…). The
@@ -102,28 +109,31 @@ struct SoundNode {
     minor: u64,
 }
 
-const SOUND_NODES: &[SoundNode] = &[
-    SoundNode {
-        name: "controlC0",
-        class: "sound",
-        dev_name: "snd/controlC0",
-        dev_t: (116, 0),
-        minor: MINOR_CONTROL,
-    },
-    SoundNode {
-        name: "pcmC0D0p",
-        class: "sound",
-        dev_name: "snd/pcmC0D0p",
-        dev_t: (116, 16),
-        minor: MINOR_PCM_P,
-    },
-    SoundNode {
-        name: "pcmC0D0c",
-        class: "sound",
-        dev_name: "snd/pcmC0D0c",
-        dev_t: (116, 24),
-        minor: MINOR_PCM_C,
-    },
+fn alsa_nodes(card_id: u32) -> [(String, String, (u32, u32), u64); 3] {
+    let base = card_id.saturating_mul(32);
+    [
+        (
+            format!("controlC{}", card_id),
+            format!("snd/controlC{}", card_id),
+            (116, base),
+            MINOR_CONTROL,
+        ),
+        (
+            format!("pcmC{}D0p", card_id),
+            format!("snd/pcmC{}D0p", card_id),
+            (116, base.saturating_add(16)),
+            MINOR_PCM_P,
+        ),
+        (
+            format!("pcmC{}D0c", card_id),
+            format!("snd/pcmC{}D0c", card_id),
+            (116, base.saturating_add(24)),
+            MINOR_PCM_C,
+        ),
+    ]
+}
+
+const OSS_PRIMARY_NODES: &[SoundNode] = &[
     SoundNode {
         name: "dsp",
         class: "sound",
@@ -154,14 +164,23 @@ const SOUND_NODES: &[SoundNode] = &[
     },
 ];
 
-fn add_sound_node(node: &SoundNode) -> Arc<drv::Device> {
-    let minor = node.minor;
+fn add_sound_node(class: &'static str, name: String, dev_name: String, dev_t: (u32, u32), minor: u64) -> Arc<drv::Device> {
     let factory: drv::NodeFactory = Arc::new(move || make_snd_inode(minor));
     drv::device_add(Arc::new(
-        drv::Device::new(node.class, node.name.into(), 0, 0, node.minor as u32)
-            .with_devnode(node.class, node.dev_name.into(), Some(node.dev_t))
+        drv::Device::new(class, name, 0, 0, minor as u32)
+            .with_devnode(class, dev_name, Some(dev_t))
             .with_node_factory(factory),
     ))
+}
+
+fn add_oss_node(node: &SoundNode) -> Arc<drv::Device> {
+    add_sound_node(
+        node.class,
+        String::from(node.name),
+        String::from(node.dev_name),
+        node.dev_t,
+        node.minor,
+    )
 }
 
 /// Sound-node ioctl entry point for the shared `sys_ioctl` dispatch chain.
@@ -184,44 +203,55 @@ pub fn handle_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
     })
 }
 
+/// Active ALSA card number, if a card driver has published one.
+/// # C: O(1)
+pub fn active_card_id() -> Option<u32> {
+    ACTIVE_CARD.lock().as_ref().map(|card| card.card_id)
+}
+
 /// Register the ALSA (primary) + OSS (emulation) nodes for a probed card.
 /// Called from the sound card driver's probe after it has installed ops.
 /// # C: O(depth)
-pub fn register_card() -> bool {
+pub fn register_card() -> Option<u32> {
     if ops::ops().is_none() {
-        return false;
+        return None;
     }
-    if CARD_REGISTERED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return true;
+    let mut active = ACTIVE_CARD.lock();
+    if let Some(card) = active.as_ref() {
+        return Some(card.card_id);
     }
     devfs::register_dir("/dev/snd");
+    let card_id = NEXT_CARD_ID.fetch_add(1, Ordering::AcqRel);
     let mut published = Vec::new();
-    for node in SOUND_NODES {
-        published.push(add_sound_node(node));
+    for (name, dev_name, dev_t, minor) in alsa_nodes(card_id) {
+        published.push(add_sound_node("sound", name, dev_name, dev_t, minor));
     }
-    *CARD_NODES.lock() = published;
-    true
+    if card_id == 0 {
+        for node in OSS_PRIMARY_NODES {
+            published.push(add_oss_node(node));
+        }
+    }
+    *active = Some(CardPublication { card_id, nodes: published });
+    Some(card_id)
 }
 
 /// Remove ALSA/OSS nodes for the card being removed.
 /// # C: O(nodes * depth)
-pub fn unregister_card() {
-    if !CARD_REGISTERED.swap(false, Ordering::AcqRel) {
-        return;
-    }
+pub fn unregister_card(card_id: u32) -> bool {
     let nodes = {
-        let mut registered = CARD_NODES.lock();
-        if registered.is_empty() {
-            return;
+        let mut active = ACTIVE_CARD.lock();
+        match active.as_ref() {
+            Some(card) if card.card_id == card_id => {
+                let card = active.take().unwrap();
+                card.nodes
+            }
+            _ => return false,
         }
-        core::mem::take(&mut *registered)
     };
     for node in nodes.iter().rev() {
         drv::device_del(node);
     }
+    true
 }
 
 #[cfg(test)]
@@ -275,15 +305,19 @@ mod tests {
         drv::set_devtmpfs_del_hook(del_hook);
         ADDED.lock().clear();
         REMOVED.lock().clear();
-        unregister_card();
+        if let Some(card_id) = active_card_id() {
+            let _ = unregister_card(card_id);
+        }
+        NEXT_CARD_ID.store(0, Ordering::Release);
         ops::clear();
 
         ops::register(&TEST_OPS);
-        assert!(register_card());
-        assert!(register_card(), "second register is idempotent");
+        let card_id = register_card().expect("card registered");
+        assert_eq!(card_id, 0);
+        assert_eq!(register_card(), Some(card_id), "second register is idempotent");
 
         let added = ADDED.lock().clone();
-        assert_eq!(added.len(), SOUND_NODES.len());
+        assert_eq!(added.len(), alsa_nodes(card_id).len() + OSS_PRIMARY_NODES.len());
         assert!(added.iter().any(|n| n == &(String::from("snd/controlC0"), Some((116, 0)), true)));
         assert!(added.iter().any(|n| n == &(String::from("snd/pcmC0D0p"), Some((116, 16)), true)));
         assert!(added.iter().any(|n| n == &(String::from("snd/pcmC0D0c"), Some((116, 24)), true)));
@@ -292,9 +326,10 @@ mod tests {
         assert!(added.iter().any(|n| n == &(String::from("audio"), Some((14, 4)), true)));
         assert!(added.iter().any(|n| n == &(String::from("mixer"), Some((14, 0)), true)));
 
-        unregister_card();
+        assert!(!unregister_card(card_id + 1), "wrong card id must not remove nodes");
+        assert!(unregister_card(card_id));
         let removed = REMOVED.lock().clone();
-        assert_eq!(removed.len(), SOUND_NODES.len());
+        assert_eq!(removed.len(), alsa_nodes(card_id).len() + OSS_PRIMARY_NODES.len());
         assert!(removed.iter().any(|n| n == "snd/controlC0"));
         assert!(removed.iter().any(|n| n == "snd/pcmC0D0p"));
         assert!(removed.iter().any(|n| n == "snd/pcmC0D0c"));
@@ -303,8 +338,12 @@ mod tests {
         assert!(removed.iter().any(|n| n == "audio"));
         assert!(removed.iter().any(|n| n == "mixer"));
 
-        unregister_card();
-        assert_eq!(REMOVED.lock().len(), SOUND_NODES.len(), "second unregister is idempotent");
+        assert!(!unregister_card(card_id));
+        assert_eq!(
+            REMOVED.lock().len(),
+            alsa_nodes(card_id).len() + OSS_PRIMARY_NODES.len(),
+            "second unregister is idempotent"
+        );
         ops::clear();
     }
 }

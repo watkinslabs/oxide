@@ -75,6 +75,8 @@ const RESP_OFF: u64 = 0x200;
 struct Ctx {
     /// Owning PCI transport BDF packed as bus:device:function.
     device_key: u32,
+    /// ALSA card number allocated by sound core for this installed transport.
+    card_id: Option<u32>,
     controlq: virtio::VirtQueueResource,
     hhdm:     u64,
     /// virtio common-cfg MMIO window. A harmless read of device_status
@@ -182,6 +184,7 @@ pub struct SndInstall {
 /// Probe result handed back for the boot line: total streams + the
 /// OUTPUT/INPUT split discovered via VIRTIO_SND_R_PCM_INFO.
 pub struct SndProbe {
+    pub card_id: u32,
     pub streams: u32,
     pub out:     u32,
     pub input:   u32,
@@ -289,6 +292,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     }
     *g = Some(Ctx {
         device_key: p.device_key,
+        card_id: None,
         controlq,
         hhdm: p.resources.hhdm,
         cfg_va: p.resources.cfg_va,
@@ -327,11 +331,17 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         }
     };
     sound::ops::register(&SOUND_OPS);
-    if !sound::register_card() {
-        let _ = uninstall(p.device_key);
-        return None;
+    let card_id = match sound::register_card() {
+        Some(card_id) => card_id,
+        None => {
+            let _ = uninstall(p.device_key);
+            return None;
+        }
+    };
+    if let Some(ctx) = CTX.lock().as_mut() {
+        ctx.card_id = Some(card_id);
     }
-    Some(SndProbe { streams: p.streams, out, input })
+    Some(SndProbe { card_id, streams: p.streams, out, input })
 }
 
 /// Stop streams, reset the virtio device, and release all queue/scratch frames
@@ -347,7 +357,9 @@ pub fn uninstall(device_key: u32) -> bool {
     let Some(ctx) = ctx else {
         return false;
     };
-    sound::unregister_card();
+    if let Some(card_id) = ctx.card_id {
+        let _ = sound::unregister_card(card_id);
+    }
     sound::ops::clear();
     stop_reset_free(ctx);
     true

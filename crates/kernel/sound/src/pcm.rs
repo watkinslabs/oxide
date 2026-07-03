@@ -309,7 +309,7 @@ fn pcm_info(arg: u64) -> i64 {
     b.w32(PI_DEVICE, 0);
     b.w32(PI_SUBDEVICE, 0);
     b.w32(PI_STREAM, STREAM_PLAYBACK as u32);
-    b.w32(PI_CARD, 0);
+    b.w32(PI_CARD, crate::active_card_id().unwrap_or(0));
     b.wstr(PI_ID, b"virtio-snd", 64);
     b.wstr(PI_NAME, b"virtio-snd PCM", 80);
     b.wstr(PI_SUBNAME, b"subdevice #0", 32);

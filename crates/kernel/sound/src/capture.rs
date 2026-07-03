@@ -87,7 +87,10 @@ pub fn handle(nr: u64, arg: u64) -> i64 {
 fn pcm_info(arg: u64) -> i64 {
     let b = match UserBuf::new(arg, PCM_INFO_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     b.zero(0, PCM_INFO_SIZE);
+    b.w32(PI_DEVICE, 0);
+    b.w32(PI_SUBDEVICE, 0);
     b.w32(PI_STREAM, STREAM_CAPTURE as u32);
+    b.w32(PI_CARD, crate::active_card_id().unwrap_or(0));
     b.wstr(PI_ID, b"virtio-snd", 64);
     b.wstr(PI_NAME, b"virtio-snd PCM", 80);
     b.wstr(PI_SUBNAME, b"subdevice #0", 32);
