@@ -248,14 +248,6 @@ fn remove_net_runtime(device_key: u32) -> Option<NetRuntime> {
     Some(runtimes.remove(pos))
 }
 
-/// Read-only accessor for the device MAC. Returns `None` until
-/// `init_modern` has run with `mac_valid=true`.
-/// # C: O(1) under MODERN_DEVS.lock()
-pub fn mac() -> Option<[u8; 6]> {
-    let g = MODERN_DEVS.lock();
-    g.first().and_then(|s| if s.mac_valid { Some(s.mac) } else { None })
-}
-
 /// Read-only accessor for a named device MAC.
 /// # C: O(N) under MODERN_DEVS.lock()
 pub fn mac_for(device_key: u32) -> Option<[u8; 6]> {
@@ -274,7 +266,7 @@ pub fn mac_for(device_key: u32) -> Option<[u8; 6]> {
 // (next slot) and TX_LAST_USED=1 (boot probe's completion was logged
 // in `virtio-tx tx_used_idx=N`; we trust the device finished it).
 
-/// Errors returned by `tx_frame`.
+/// Errors returned by `tx_frame_for`.
 #[derive(Copy, Clone, Debug)]
 pub enum TxErr {
     /// Modern virtio-net not initialized; `init_modern` has not run.
@@ -302,10 +294,6 @@ pub enum TxOutcome {
     /// avail-side state is consistent (caller can reissue) but
     /// the kick may not have been processed.
     Timeout,
-}
-
-fn installed_device_key() -> Option<u32> {
-    MODERN_DEVS.lock().first().map(|s| s.device_key)
 }
 
 /// Send one frame out the named modern virtio-net transmit queue. Writes
@@ -420,18 +408,10 @@ pub fn tx_frame_for(device_key: u32, body: &[u8]) -> Result<TxOutcome, TxErr> {
     Ok(TxOutcome::Timeout)
 }
 
-/// Compatibility entry point for callers that have not yet been threaded with
-/// a BDF key. Device-owned paths must use `tx_frame_for`.
-pub fn tx_frame(body: &[u8]) -> Result<TxOutcome, TxErr> {
-    let Some(device_key) = installed_device_key() else {
-        return Err(TxErr::NotPresent);
-    };
-    tx_frame_for(device_key, body)
-}
-
 // -------- F59-13: poll RX into the kernel net stack -------------------
 //
-// `poll_into_stack(iface)` drains rx_poll once and dispatches each
+// `poll_into_stack_for(device_key, iface)` drains one RX completion pass and
+// dispatches each frame.
 // frame: ARP → arp_cache (with a synchronous reply if it's a
 // request for `our_ip`); IPv4 → strip eth header + hand to
 // `stack.deliver_rx(iface, l3)`. Intended call site is a periodic
@@ -440,7 +420,7 @@ pub fn tx_frame(body: &[u8]) -> Result<TxOutcome, TxErr> {
 // stack is fully wired (F59-14+). Returns frames consumed.
 
 /// Drain pending RX frames into the kernel net stack. ARP requests
-/// for `our_ip` get a synchronous reply via `tx_frame`. Returns the
+/// for `our_ip` get a synchronous reply via `tx_frame_for`. Returns the
 /// number of frames consumed.
 /// # C: O(rx_drain)
 #[cfg(target_os = "oxide-kernel")]
@@ -504,17 +484,6 @@ pub fn poll_into_stack_for(device_key: u32, iface: net::NetIfaceId, our_ip: [u8;
         }
     })
 }
-
-/// Compatibility RX entry point for the first installed device.
-/// # C: O(rx_drain)
-#[cfg(target_os = "oxide-kernel")]
-pub fn poll_into_stack(iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
-    let Some(device_key) = installed_device_key() else {
-        return 0;
-    };
-    poll_into_stack_for(device_key, iface, our_ip)
-}
-
 
 // -------- F59-11: NetDev iface registration ---------------------------
 //
@@ -703,10 +672,6 @@ fn arp_cache_lookup_for(device_key: u32, ip: net::Ipv4Addr) -> Option<net::MacAd
     runtime.arp.lookup(ip)
 }
 
-/// Snapshot of the registered modern device (None until init_modern).
-/// # C: O(1) under MODERN_DEVS.lock()
-pub fn modern_state() -> Option<ModernNetState> { MODERN_DEVS.lock().first().cloned() }
-
 /// Snapshot of the named modern device.
 /// # C: O(N) under MODERN_DEVS.lock()
 pub fn modern_state_for(device_key: u32) -> Option<ModernNetState> {
@@ -780,21 +745,6 @@ pub fn set_softirq_ip_for_iface(id: net::NetIfaceId, ip: [u8; 4]) -> bool {
     true
 }
 
-/// Compatibility helper for the first registered virtio-net runtime.
-/// # C: O(1)
-pub fn set_softirq_ip(ip: [u8; 4]) {
-    if let Some(runtime) = NET_RUNTIMES.lock().first_mut() {
-        runtime.ip = ip;
-    }
-}
-
-/// F138: read the first registered iface id (0 = none yet).
-/// Kept for older callers; new code should address the iface directly.
-/// # C: O(1)
-pub fn softirq_iface_id() -> u32 {
-    NET_RUNTIMES.lock().first().map(|runtime| runtime.iface.raw()).unwrap_or(0)
-}
-
 /// Primary registered virtio-net iface, used by boot-time default route
 /// seeding before userspace has selected a specific interface.
 /// # C: O(1)
@@ -803,8 +753,8 @@ pub fn registered_iface() -> Option<net::NetIfaceId> {
 }
 
 /// Softirq slot handler. Drains pending RX into the net stack.
-/// Bails fast when no iface stashed (boot ordering) or RX queue empty
-/// (poll_into_stack returns 0 in either case).
+/// Bails fast when no iface is registered (boot ordering) or RX queue empty
+/// (poll_into_stack_for returns 0 in either case).
 /// # C: O(rx_drain)
 #[cfg(target_os = "oxide-kernel")]
 pub fn rx_drain_softirq() {
@@ -1018,12 +968,12 @@ mod ndp_tests {
             true,
             10
         ));
-        assert_eq!(modern_state().unwrap().bus, 1);
+        assert_eq!(modern_state_for(1).unwrap().bus, 1);
         assert!(is_modern_present_for(2));
         assert_eq!(modern_state_for(2).unwrap().rx_bufs.len(), 1);
         remove_test_state(1);
         remove_test_state(2);
-        assert!(modern_state().is_none());
+        assert!(!is_modern_present_for(2));
     }
 
     #[test]
@@ -1295,15 +1245,6 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: u32, mut cb: F) -> usize {
         cb(&f);
     }
     delivered
-}
-
-/// Compatibility RX poll for the first installed device.
-/// # C: O(frames_in_flight)
-pub fn rx_poll<F: FnMut(&[u8])>(cb: F) -> usize {
-    let Some(device_key) = installed_device_key() else {
-        return 0;
-    };
-    rx_poll_for(device_key, cb)
 }
 
 /// ARP neighbor-cache GC for the timer driver (drops entries older than 60s).
