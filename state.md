@@ -23,6 +23,11 @@ logind ❌ → seat0 CanGraphical → gdm greeter.
   dropped all (no SO_PASSCRED cred record). Now processes card0 → 71-seat.rules
   → master-of-seat tag.
 
+## Merged since (5th PR)
+- #2328 `/proc/<pid>/fd` must list the TARGET pid's fds, not the caller's
+  (`ProcSelfFdOps` used `current()`). Real Linux-contract bug AND it had been
+  misleading kernel debugging (daemon fd inspection showed the debugger's fds).
+
 ## Current blocker (next lane): systemd-logind wedged
 Confirmed via debugfs-injected diagnostic unit (dumps to /dev/ttyS0 at
 graphical.target):
@@ -35,6 +40,33 @@ Investigate logind like udevd: does its udev monitor (group 2, cooked) receive
 the card0 event? does its sd-bus/varlink event loop wake? Likely another
 netlink/af_unix/creds-class kernel bug OR a logind-specific one. The SCM_CREDS
 fix already applies to logind's cooked monitor reads (recvmsg, all proto-15).
+
+### logind facts gathered (now that /proc/pid/fd works, #2328)
+- D-Bus method calls WORK: `busctl call systemd1 ... GetUnitFileState gdm.service`
+  → `"enabled"` rc=0. So dbus-broker + AF_UNIX method-call replies are fine.
+- `busctl list`: `org.freedesktop.login1` is `(activatable)` with EMPTY
+  connection — the running logind (pid ~69) never acquired its well-known name.
+  → `busctl call login1 ...` and `loginctl` time out; gdm can't query seats.
+- logind DOES have its sockets (fd 5 = `socket:[…]`) — it's connected, not
+  missing fds. And it holds **~87 `/run/systemd/inhibit/N.ref` inhibitor fds +
+  paired `anon_inode:[pidfd]`** — abnormally many (normal ≈ 2-5). STRONGEST
+  unchased lead: is something looping on `Inhibit()`, or is logind failing to
+  release inhibitors when holders die (pidfd-signal / epoll-wake)? The pidfd
+  poll fix (#2326) should make holder-exit wake logind — verify it does for
+  logind's inhibitor pidfds specifically.
+- logind seen frozen in `epoll_wait` (nsyscalls flat 5352 over 50→58s) in an
+  EARLIER boot, but later had 87 inhibitors → it IS processing some D-Bus. The
+  contradiction (processes Inhibit but doesn't own login1 / answer ListSeats)
+  is the crux to resolve NEXT.
+- `/run/systemd/seats/` empty, `/run/udev/tags/master-of-seat/` absent in some
+  boots → logind never attaches card0 → seat0 not CanGraphical → no greeter.
+
+### NOTE: concurrent driver lane active in the shared tree
+Uncommitted driver changes (virtio-blk/rng/snd, drv/model.rs, pci-boot,
+mm-pmm/setup.rs, sound, block/registry.rs, devfs/misc.rs, driver_anal.md)
+appeared in the working tree mid-session — another lane (codex/driver-fixes?).
+LEFT UNTOUCHED. Do NOT commit/clobber them; coordinate before boot-verifying on
+the shared tree (its artifacts may include this WIP).
 
 ## Diagnosis harness (USE THIS — it ended the thrashing)
 - **Inject a diagnostic oneshot into the rootfs via debugfs (unprivileged, no
