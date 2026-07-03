@@ -120,13 +120,22 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     // ONLY for the mounted fs ROOT: a descendant like /proc/sys/fs/binfmt_misc
     // keeps the same mnt_id but fails the root-dentry check, so it falls
     // through to normal teardown below.
-    if exact_mountpoint.is_some() {
-        if let Some(m) = resolved.as_ref().and_then(|p| vfs::mount::mount_by_id(p.mnt_id)) {
-            if matches!(m.fs().name(), "procfs" | "sysfs" | "devtmpfs" | "devfs") {
-                return 0;
-            }
-        }
-    }
+    // Is the umount target a synthetic pseudo-fs (procfs/sysfs/devfs) mount?
+    // Previously these returned 0 as a NO-OP (mount left in the table) to avoid
+    // wiping their kernel-generated backing — but leaving the mount visible in
+    // /proc/self/mountinfo made a userspace "umount until gone" loop spin
+    // FOREVER: systemd's RootDirectory/MountAPIVFS teardown of
+    // /run/systemd/mount-rootfs/{dev,proc,sys} called umount2 tens of thousands
+    // of times (each returned 0, the mount never left mountinfo), a CPU-burning
+    // livelock that starved dbus-broker/udevd/logind into their start timeouts.
+    // Now: DETACH the instance (unregister_top below removes it from the table →
+    // gone from mountinfo → the loop terminates) but NEVER wipe the synthetic
+    // backing (it regenerates on re-mount, exactly as Linux umount detaches a
+    // mount without destroying fs data).
+    let is_pseudo = exact_mountpoint.is_some() && resolved.as_ref()
+        .and_then(|p| vfs::mount::mount_by_id(p.mnt_id))
+        .map(|m| matches!(m.fs().name(), "procfs" | "sysfs" | "devtmpfs" | "devfs"))
+        .unwrap_or(false);
     // `None` (target gone or not a mount root) ⇒ no TABLE mount, but the
     // devfs-registry detach below may still match legacy devfs-owned paths.
     let target_d = exact_mountpoint.or_else(|| crate::pathresolve::mount_dentry(trimmed));
@@ -140,10 +149,17 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     // such as `/proc/sys/fs/binfmt_misc` must report EINVAL. Returning success
     // there makes systemd's automount cleanup spin on umount2 forever.
     let removed_tab = target_d.as_ref().map(|d| vfs::mount::unregister_top(d, lazy)).unwrap_or(0);
-    let is_devfs_path = trimmed == "/dev" || trimmed.starts_with("/dev/")
-        || trimmed == "/etc" || trimmed.starts_with("/etc/");
+    // Registry wipe is ONLY for a real device-node fs at a devfs-owned path —
+    // NEVER for a pseudo-fs (deleting the synthetic /proc/sys/dev tree once
+    // permanently broke every later sandbox). The instance detach above already
+    // removed it from mountinfo.
+    let is_devfs_path = !is_pseudo && (trimmed == "/dev" || trimmed.starts_with("/dev/")
+        || trimmed == "/etc" || trimmed.starts_with("/etc/"));
     let removed_reg = if is_devfs_path { devfs::unregister_subtree(ns, trimmed) } else { 0 };
-    if removed_tab == 0 && removed_reg == 0 {
+    // A pseudo-fs umount that matched no removable mount instance is a
+    // successful no-op (Linux detaches the initial /proc; a synthetic root with
+    // no separate instance has nothing to remove) — never surface EINVAL there.
+    if removed_tab == 0 && removed_reg == 0 && !is_pseudo {
         #[cfg(feature = "debug-boot")]
         {
             klog::write_raw(b"[umount EINVAL] ns="); klog::write_dec_u64(ns);
