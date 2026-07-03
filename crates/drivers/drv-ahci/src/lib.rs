@@ -248,26 +248,18 @@ impl drv::Driver for AhciDriver {
 
     fn probe(&self, dev: &alloc::sync::Arc<drv::Device>) -> drv::KResult<()> {
         let bdf = pci::parse_bdf_addr(&dev.addr).ok_or(drv::Error::ProbeFailed)?;
-        #[cfg(target_arch = "x86_64")]
-        {
-            let r = hal_x86_64::pci::LegacyPci;
-            pci::enable_mem_bus_master(&r, bdf);
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
-                pci::enable_mem_bus_master(&r, bdf);
-            } else {
-                return Err(drv::Error::ProbeFailed);
-            }
-        }
+        let cmd_orig = enable_and_capture_command(bdf).ok_or(drv::Error::ProbeFailed)?;
         let bars = decode_bars(bdf);
         let abar_pa = bars[5].mem_base().unwrap_or(0);
-        if abar_pa == 0 { return Err(drv::Error::ProbeFailed); }
+        if abar_pa == 0 {
+            restore_command(bdf, cmd_orig);
+            return Err(drv::Error::ProbeFailed);
+        }
         // SAFETY: BAR5 PA came from this PCI function's config space; two
         // pages cover generic HBA registers plus the 32-port register array.
         let mmio = unsafe { mmio_map::map_owned(abar_pa & !0xFFF, 2) };
         if imp::init(mmio, abar_pa & 0xFFF) == 0 {
+            restore_command(bdf, cmd_orig);
             return Err(drv::Error::ProbeFailed);
         }
         Ok(())
@@ -275,6 +267,31 @@ impl drv::Driver for AhciDriver {
 
     fn remove(&self, _dev: &drv::Device) {
         let _ = imp::remove();
+    }
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+fn enable_and_capture_command(bdf: pci::Bdf) -> Option<u16> {
+    let r = hal_x86_64::pci::LegacyPci;
+    Some(pci::enable_mem_bus_master(&r, bdf))
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+fn restore_command(bdf: pci::Bdf, command: u16) {
+    let r = hal_x86_64::pci::LegacyPci;
+    pci::write_command(&r, bdf, command);
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+fn enable_and_capture_command(bdf: pci::Bdf) -> Option<u16> {
+    let r = hal_aarch64::pci::EcamPci::from_published()?;
+    Some(pci::enable_mem_bus_master(&r, bdf))
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+fn restore_command(bdf: pci::Bdf, command: u16) {
+    if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
+        pci::write_command(&r, bdf, command);
     }
 }
 

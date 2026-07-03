@@ -304,6 +304,7 @@ impl drv::Driver for VirtioNetDrv {
             None => {
                 let _ = drv_virtio_net::modern::uninstall_modern(device_key);
                 unmap_probe_mmio(&mut p);
+                restore_pci_command_from_probe(&p);
                 Err(drv::Error::ProbeFailed)
             }
         }
