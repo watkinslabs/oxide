@@ -248,22 +248,43 @@ fn publish_or_unwind(idx: u32) -> Option<u32> {
     Some(idx)
 }
 
-/// Display-flush hook (`transfer_to_host_2d + resource_flush`) provided by
-/// the GPU driver — makes pixels written to the mmap'd/written scanout
-/// visible. Registered at boot; `None` keeps writes invisible (no panic).
-static FLUSH_HOOK: Spinlock<Option<fn()>, DriverLockClass> = Spinlock::new(None);
+struct FlushHook {
+    idx: u32,
+    flush: fn(u32),
+}
 
-/// Register the display-flush hook (boot wiring, once).
-/// # C: O(1)
-pub fn set_flush_hook(f: fn()) { *FLUSH_HOOK.lock() = Some(f); }
+/// Display-flush hooks (`transfer_to_host_2d + resource_flush`) provided by
+/// GPU drivers. They are keyed by fbdev index so `/dev/fbN` operations flush
+/// the scanout owned by that framebuffer rather than a crate-global primary.
+static FLUSH_HOOKS: Spinlock<Vec<FlushHook>, DriverLockClass> = Spinlock::new(Vec::new());
 
-/// Clear the display-flush hook during driver teardown.
-/// # C: O(1)
-pub fn clear_flush_hook() { *FLUSH_HOOK.lock() = None; }
+/// Register or replace the display-flush hook for `/dev/fb<idx>`.
+/// # C: O(N)
+pub fn set_flush_hook(idx: u32, f: fn(u32)) {
+    let mut hooks = FLUSH_HOOKS.lock();
+    if let Some(hook) = hooks.iter_mut().find(|hook| hook.idx == idx) {
+        hook.flush = f;
+    } else {
+        hooks.push(FlushHook { idx, flush: f });
+    }
+}
 
-/// Push written pixels to the display via the registered flush hook.
-/// # C: O(1) + host transfer.
-pub fn flush() { if let Some(f) = *FLUSH_HOOK.lock() { f(); } }
+/// Clear the display-flush hook for one framebuffer during driver teardown.
+/// # C: O(N)
+pub fn clear_flush_hook(idx: u32) {
+    let mut hooks = FLUSH_HOOKS.lock();
+    if let Some(pos) = hooks.iter().position(|hook| hook.idx == idx) {
+        hooks.remove(pos);
+    }
+}
+
+/// Push written pixels for `/dev/fb<idx>` through its registered flush hook.
+/// # C: O(N) + host transfer.
+pub fn flush(idx: u32) {
+    if let Some(f) = FLUSH_HOOKS.lock().iter().find(|hook| hook.idx == idx).map(|hook| hook.flush) {
+        f(idx);
+    }
+}
 
 // ============================================================
 // Pseudo-vblank source + WAITFORVSYNC wait plumbing
@@ -540,22 +561,35 @@ pub fn palette_at(idx: u32, i: usize) -> Option<u32> {
 // it on unblank — the real user-visible effect. Registered at boot.
 // ============================================================
 
-/// Clear the displayed scanout to black (blank). `None` ⇒ no GPU path.
-static BLANK_HOOK: Spinlock<Option<fn()>, DriverLockClass> = Spinlock::new(None);
-/// Repaint the live console (unblank). `None` ⇒ no GPU path.
-static UNBLANK_HOOK: Spinlock<Option<fn()>, DriverLockClass> = Spinlock::new(None);
-
-/// Register the blank/unblank display hooks (boot wiring, once). # C: O(1)
-pub fn set_blank_hooks(blank: fn(), unblank: fn()) {
-    *BLANK_HOOK.lock() = Some(blank);
-    *UNBLANK_HOOK.lock() = Some(unblank);
+struct BlankHooks {
+    idx: u32,
+    blank: fn(u32),
+    unblank: fn(u32),
 }
 
-/// Clear blank/unblank hooks during framebuffer driver teardown.
-/// # C: O(1)
-pub fn clear_blank_hooks() {
-    *BLANK_HOOK.lock() = None;
-    *UNBLANK_HOOK.lock() = None;
+/// Clear/repaint hooks keyed by fbdev index. `None` for an index means that
+/// framebuffer has no GPU-owned blanking path.
+static BLANK_HOOKS: Spinlock<Vec<BlankHooks>, DriverLockClass> = Spinlock::new(Vec::new());
+
+/// Register or replace the blank/unblank display hooks for `/dev/fb<idx>`.
+/// # C: O(N)
+pub fn set_blank_hooks(idx: u32, blank: fn(u32), unblank: fn(u32)) {
+    let mut hooks = BLANK_HOOKS.lock();
+    if let Some(hook) = hooks.iter_mut().find(|hook| hook.idx == idx) {
+        hook.blank = blank;
+        hook.unblank = unblank;
+    } else {
+        hooks.push(BlankHooks { idx, blank, unblank });
+    }
+}
+
+/// Clear blank/unblank hooks for one framebuffer during driver teardown.
+/// # C: O(N)
+pub fn clear_blank_hooks(idx: u32) {
+    let mut hooks = BLANK_HOOKS.lock();
+    if let Some(pos) = hooks.iter().position(|hook| hook.idx == idx) {
+        hooks.remove(pos);
+    }
 }
 
 /// Apply a blank-level transition for `/dev/fb<idx>`: store the level, then
@@ -565,14 +599,78 @@ pub fn clear_blank_hooks() {
 pub fn apply_blank(idx: u32, level: u32) {
     let prev = blank_of(idx).unwrap_or(FB_BLANK_UNBLANK);
     set_blank(idx, level);
+    let hooks = BLANK_HOOKS.lock();
+    let Some(hooks) = hooks.iter().find(|hook| hook.idx == idx) else {
+        return;
+    };
     if level == FB_BLANK_UNBLANK {
-        if prev != FB_BLANK_UNBLANK { if let Some(f) = *UNBLANK_HOOK.lock() { f(); } }
-    } else if let Some(f) = *BLANK_HOOK.lock() { f(); }
+        if prev != FB_BLANK_UNBLANK {
+            (hooks.unblank)(idx);
+        }
+    } else {
+        (hooks.blank)(idx);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    static FLUSH_0: AtomicU32 = AtomicU32::new(0);
+    static FLUSH_1: AtomicU32 = AtomicU32::new(0);
+    static BLANK_0: AtomicU32 = AtomicU32::new(0);
+    static BLANK_1: AtomicU32 = AtomicU32::new(0);
+    static UNBLANK_0: AtomicU32 = AtomicU32::new(0);
+    static UNBLANK_1: AtomicU32 = AtomicU32::new(0);
+
+    fn test_flush_0(idx: u32) {
+        if idx == 0 {
+            FLUSH_0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn test_flush_1(idx: u32) {
+        if idx == 1 {
+            FLUSH_1.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn test_blank_0(idx: u32) {
+        if idx == 0 {
+            BLANK_0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn test_blank_1(idx: u32) {
+        if idx == 1 {
+            BLANK_1.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn test_unblank_0(idx: u32) {
+        if idx == 0 {
+            UNBLANK_0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn test_unblank_1(idx: u32) {
+        if idx == 1 {
+            UNBLANK_1.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn reset_hook_tests() {
+        FLUSH_HOOKS.lock().clear();
+        BLANK_HOOKS.lock().clear();
+        FBS.lock().clear();
+        FLUSH_0.store(0, Ordering::Relaxed);
+        FLUSH_1.store(0, Ordering::Relaxed);
+        BLANK_0.store(0, Ordering::Relaxed);
+        BLANK_1.store(0, Ordering::Relaxed);
+        UNBLANK_0.store(0, Ordering::Relaxed);
+        UNBLANK_1.store(0, Ordering::Relaxed);
+    }
 
     #[test]
     fn fb_var_default_bgra32() {
@@ -687,6 +785,53 @@ mod tests {
         assert!(is_blank_level(FB_BLANK_UNBLANK));
         assert!(is_blank_level(FB_BLANK_POWERDOWN));
         assert!(!is_blank_level(99));
+    }
+
+    #[test]
+    fn flush_hooks_are_scoped_by_framebuffer_idx() {
+        reset_hook_tests();
+        set_flush_hook(0, test_flush_0);
+        set_flush_hook(1, test_flush_1);
+
+        flush(0);
+        assert_eq!(FLUSH_0.load(Ordering::Relaxed), 1);
+        assert_eq!(FLUSH_1.load(Ordering::Relaxed), 0);
+
+        flush(1);
+        assert_eq!(FLUSH_0.load(Ordering::Relaxed), 1);
+        assert_eq!(FLUSH_1.load(Ordering::Relaxed), 1);
+
+        clear_flush_hook(0);
+        flush(0);
+        flush(1);
+        assert_eq!(FLUSH_0.load(Ordering::Relaxed), 1);
+        assert_eq!(FLUSH_1.load(Ordering::Relaxed), 2);
+        reset_hook_tests();
+    }
+
+    #[test]
+    fn blank_hooks_are_scoped_by_framebuffer_idx() {
+        reset_hook_tests();
+        let idx0 = register(0, 1, FbVarScreeninfo::default(), FbFixScreeninfo::default());
+        let idx1 = register(1, 1, FbVarScreeninfo::default(), FbFixScreeninfo::default());
+        assert_eq!((idx0, idx1), (0, 1));
+        set_blank_hooks(0, test_blank_0, test_unblank_0);
+        set_blank_hooks(1, test_blank_1, test_unblank_1);
+
+        apply_blank(1, FB_BLANK_NORMAL);
+        assert_eq!(BLANK_0.load(Ordering::Relaxed), 0);
+        assert_eq!(BLANK_1.load(Ordering::Relaxed), 1);
+
+        apply_blank(1, FB_BLANK_UNBLANK);
+        assert_eq!(UNBLANK_0.load(Ordering::Relaxed), 0);
+        assert_eq!(UNBLANK_1.load(Ordering::Relaxed), 1);
+
+        clear_blank_hooks(1);
+        apply_blank(1, FB_BLANK_NORMAL);
+        apply_blank(0, FB_BLANK_NORMAL);
+        assert_eq!(BLANK_0.load(Ordering::Relaxed), 1);
+        assert_eq!(BLANK_1.load(Ordering::Relaxed), 1);
+        reset_hook_tests();
     }
 
     #[test]

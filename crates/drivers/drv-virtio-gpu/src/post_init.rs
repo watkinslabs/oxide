@@ -387,6 +387,7 @@ use sync::{TaskList as DriverLockClass, Spinlock};
 struct ScanoutCtx {
     bdf: u32,
     card_id: Option<u32>,
+    fb_idx: Option<u32>,
     primary_console: bool,
     cfg_va: u64,
     w: u32,
@@ -414,6 +415,10 @@ fn ctx_idx_by_card(ctxs: &[ScanoutCtx], card_id: u32) -> Option<usize> {
 
 fn primary_ctx_idx(ctxs: &[ScanoutCtx]) -> Option<usize> {
     ctxs.iter().position(|ctx| ctx.primary_console)
+}
+
+fn ctx_idx_by_fb(ctxs: &[ScanoutCtx], fb_idx: u32) -> Option<usize> {
+    ctxs.iter().position(|ctx| ctx.fb_idx == Some(fb_idx))
 }
 
 /// Copy `pixels` into the live framebuffer, then issue
@@ -455,6 +460,10 @@ pub fn fbcon_flush_pixels(pixels: &[u8]) {
 pub fn blank_scanout() {
     let g = CTX.lock();
     let ctx = match primary_ctx_idx(&g) { Some(idx) => &g[idx], None => return };
+    blank_ctx(ctx);
+}
+
+fn blank_ctx(ctx: &ScanoutCtx) {
     // SAFETY: ctx.fb_va is HHDM-mapped for fb_bytes; bounded zero of the whole backing; CPL=0 writes through the HHDM mapping.
     hal::zerotrap::trap((ctx.fb_va as *mut u8) as *const u8, (ctx.fb_bytes as usize) as usize);
     unsafe { core::ptr::write_bytes(ctx.fb_va as *mut u8, 0, ctx.fb_bytes as usize); }
@@ -471,10 +480,33 @@ pub fn blank_scanout() {
     }
 }
 
+/// Blank the scanout owned by `/dev/fb<fb_idx>`.
+/// # C: O(scanouts) + O(fb_bytes) clear + O(1) submits.
+pub fn blank_scanout_for_fb(fb_idx: u32) {
+    let g = CTX.lock();
+    let ctx = match ctx_idx_by_fb(&g, fb_idx) { Some(idx) => &g[idx], None => return };
+    blank_ctx(ctx);
+}
+
 /// Unblank: repaint the live console into the scanout and flush. Delegates to
 /// `fbcon::force_repaint` (re-blits every cell of the fg VT, raises the flush
 /// softirq). The FBIOBLANK(UNBLANK) restore path. # C: O(cols*rows) repaint.
 pub fn unblank_scanout() { fbcon::kernel::force_repaint(); }
+
+/// Unblank the scanout owned by `/dev/fb<fb_idx>`.
+/// # C: O(scanouts) + O(cols*rows) repaint or O(1) submits.
+pub fn unblank_scanout_for_fb(fb_idx: u32) {
+    let repaint_primary = {
+        let g = CTX.lock();
+        let Some(idx) = ctx_idx_by_fb(&g, fb_idx) else { return };
+        g[idx].primary_console
+    };
+    if repaint_primary {
+        fbcon::kernel::force_repaint();
+    } else {
+        flush_scanout_for_fb(fb_idx);
+    }
+}
 
 /// Install the scanout context for later flushes. Called once from
 /// `setup_scanout` after the resource is created and attached.
@@ -488,7 +520,7 @@ fn install_scanout_ctx(
         return false;
     }
     ctx.push(ScanoutCtx {
-        bdf, card_id: None, primary_console: false,
+        bdf, card_id: None, fb_idx: None, primary_console: false,
         cfg_va, w, h, fb_va, fb_bytes, fb_pages_alloc, res_id,
         ctrlq, cmd_buf_va, cmd_buf_pa, hhdm,
         next_runtime_res_id: AtomicU32::new(2),
@@ -596,23 +628,41 @@ pub fn framebuffer(card_id: u32) -> Option<(u64, u64, u64, u32, u32, u32)> {
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub fn publish_console_scanout(card_id: u32) {
-    {
-        let mut ctxs = CTX.lock();
+    let has_primary = {
+        let ctxs = CTX.lock();
         let Some(idx) = ctx_idx_by_card(&ctxs, card_id) else { return };
-        if primary_ctx_idx(&ctxs).is_some() && !ctxs[idx].primary_console {
+        if ctxs[idx].primary_console {
             return;
         }
-        ctxs[idx].primary_console = true;
+        primary_ctx_idx(&ctxs).is_some()
+    };
+    if has_primary {
+        return;
     }
     let Some((w, h)) = dimensions(card_id) else { return };
-    fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
-    if let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer(card_id) {
-        fbdev::init_scanout(card_id, drm::crtc_id_for(0), base_pa, fb_va, bytes, pitch, fw, fh);
-        fbdev::set_flush_hook(flush_scanout);
-        fbdev::set_blank_hooks(blank_scanout, unblank_scanout);
-        fbdev::set_yield_hook(fbdev_vsync_yield);
-        fbdev::set_now_hook(monotonic_now_ns);
+    let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer(card_id) else { return };
+    let fb_idx = fbdev::init_scanout(card_id, drm::crtc_id_for(0), base_pa, fb_va, bytes, pitch, fw, fh);
+    if fbdev::var_of(fb_idx).is_none() {
+        return;
     }
+    {
+        let mut ctxs = CTX.lock();
+        let Some(idx) = ctx_idx_by_card(&ctxs, card_id) else {
+            let _ = fbdev::unregister(fb_idx);
+            return;
+        };
+        if !ctxs[idx].primary_console && primary_ctx_idx(&ctxs).is_some() {
+            let _ = fbdev::unregister(fb_idx);
+            return;
+        }
+        ctxs[idx].fb_idx = Some(fb_idx);
+        ctxs[idx].primary_console = true;
+    }
+    fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
+    fbdev::set_flush_hook(fb_idx, flush_scanout_for_fb);
+    fbdev::set_blank_hooks(fb_idx, blank_scanout_for_fb, unblank_scanout_for_fb);
+    fbdev::set_yield_hook(fbdev_vsync_yield);
+    fbdev::set_now_hook(monotonic_now_ns);
     klog::set_aux_sink(fbcon::kernel::vt_console_sink);
     fbcon::kernel::set_reply_sink(console::vt_reply_sink);
     tty::live::set_app_cursor_query(fbcon::kernel::fg_app_cursor);
@@ -624,23 +674,27 @@ pub fn publish_console_scanout(card_id: u32) {
 /// # C: O(N + depth)
 #[cfg(target_os = "oxide-kernel")]
 pub fn unpublish_console_scanout(bdf: u32, card_id: u32) {
-    let (fb_base, was_primary) = {
-        let ctxs = CTX.lock();
+    let (fb_idx, was_primary) = {
+        let mut ctxs = CTX.lock();
         let Some(idx) = ctx_idx_by_bdf(&ctxs, bdf) else {
             drm::node::clear_scanout_ops(card_id);
             return;
         };
-        let ctx = &ctxs[idx];
-        (ctx.fb_va - ctx.hhdm, ctx.primary_console)
+        let fb_idx = ctxs[idx].fb_idx.take();
+        let was_primary = ctxs[idx].primary_console;
+        ctxs[idx].primary_console = false;
+        (fb_idx, was_primary)
     };
     if was_primary {
         klog::clear_aux_sink();
         tty::live::clear_vt_mode_queries();
         fbcon::kernel::kernel_unregister();
-        fbdev::clear_blank_hooks();
-        fbdev::clear_flush_hook();
+        if let Some(fb_idx) = fb_idx {
+            fbdev::clear_blank_hooks(fb_idx);
+            fbdev::clear_flush_hook(fb_idx);
+            let _ = fbdev::unregister(fb_idx);
+        }
         fbdev::clear_wait_hooks();
-        let _ = fbdev::unregister_by_base(fb_base);
     }
     drm::node::clear_scanout_ops(card_id);
 }
@@ -787,6 +841,18 @@ pub fn register_drm_hooks(card_id: u32) {
 pub fn flush_scanout() {
     let g = CTX.lock();
     let ctx = match primary_ctx_idx(&g) { Some(idx) => &g[idx], None => return };
+    flush_ctx(ctx);
+}
+
+/// Flush the scanout owned by `/dev/fb<fb_idx>`.
+/// # C: O(scanouts) + O(1) submits.
+pub fn flush_scanout_for_fb(fb_idx: u32) {
+    let g = CTX.lock();
+    let ctx = match ctx_idx_by_fb(&g, fb_idx) { Some(idx) => &g[idx], None => return };
+    flush_ctx(ctx);
+}
+
+fn flush_ctx(ctx: &ScanoutCtx) {
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     let (res_id, w, h) = (ctx.res_id, ctx.w, ctx.h);
     // SAFETY: same VAs/PAs setup_scanout installed; sole writer under the CTX lock; cmd_buf is HHDM-mapped 4 KiB scratch.
