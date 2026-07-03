@@ -92,7 +92,8 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
             // following `propagate_mount` peer-copy inherits it (clone_mnt copies
             // src.flags); the prior path dropped these bits.
             if let Some((sb, _root)) = mo.realized.as_ref() {
-                let mnt_flags = vfs::mount::mount_attr_to_mnt(mo.mnt_attrs);
+                let mnt_flags = vfs::mount::mount_attr_to_mnt(
+                    mo.mnt_attrs.load(core::sync::atomic::Ordering::Acquire));
                 return match vfs::mount::attach_sb_with_flags(Some(target_d.clone()), sb.clone(), mnt_flags) {
                     Ok(()) => { let _ = vfs::mount::propagate_mount(&target_d); 0 }
                     Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),

@@ -53,8 +53,36 @@ fn canonical_mount_path(path: String) -> String {
     let Some(file) = sched::proclink::proc_fd_file(tid_opt, fd) else {
         return path;
     };
-    let bytes = file.dentry().absolute_path();
-    match core::str::from_utf8(&bytes) {
+    let dentry_ap = file.dentry().absolute_path();
+    // MOUNT-AWARE reconstruction (Linux d_path). A `/proc/self/fd/N` opened THROUGH
+    // a bind mount must resolve to the BIND's location, not the source's. Bind
+    // mounts share the source dentry, so `dentry.absolute_path()` (a pure d_parent
+    // walk) yields the SOURCE path, dropping the bind prefix — an fd on
+    // /run/systemd/mount-rootfs/proc/sys/kernel/domainname collapsed to the real
+    // /proc/sys/kernel/domainname, so systemd's self-bind (mount-util.c
+    // `bind_remount_recursive`: `mount(prefix,prefix,MS_BIND|MS_REC)` to make the
+    // prefix a mount) landed OUTSIDE the sandbox staging tree. Its
+    // /proc/self/mountinfo never showed the prefix as a mount, so the convergence
+    // loop re-tried forever, hit its 32-try cap, and returned EBUSY (status 226 →
+    // no graphical target). Rebuild the path from the fd's MOUNT point + the
+    // dentry's suffix relative to that mount's root.
+    let mnt_id = file.mnt_id();
+    if let Some(m) = vfs::mount::mount_by_id(mnt_id) {
+        let mp = m.mount_point_str();
+        if !mp.is_empty() {
+            if let Some(root) = vfs::mount::root_dentry_for_mount_id(mnt_id) {
+                let root_ap = root.absolute_path();
+                if dentry_ap.starts_with(root_ap.as_slice()) {
+                    let suffix = &dentry_ap[root_ap.len()..];
+                    let mut out = if mp == "/" { String::new() } else { mp };
+                    out.push_str(core::str::from_utf8(suffix).unwrap_or(""));
+                    if out.is_empty() { out.push('/'); }
+                    return out;
+                }
+            }
+        }
+    }
+    match core::str::from_utf8(&dentry_ap) {
         Ok(s) if s.starts_with('/') => String::from(s),
         _ => path,
     }
@@ -207,14 +235,31 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         // future propagation events reach it). Captured before the bind.
         let src_pg = vfs::mount::peer_group_of(&source_d);
         let bind = Arc::new(BindFs { source: source.clone() });
-        // [D14] Atomic graft + propagation (Linux `attach_recursive_mnt`): the
-        // bind is attached AND replicated to the destination parent's peer
-        // group in ONE engine call, so there is no caller-visible window where
-        // the bind is attached but its propagated mirrors are not (the prior
-        // `register_bind` + separate `propagate_mount` left the tree
-        // momentarily half-replicated). Global mount table (per-NS bind rides
-        // the per-ns mount tree).
-        let _ = vfs::mount::attach_recursive_mnt(Some(target_d.clone()), bind, Some(root));
+        // Linux `do_add_mount` keys the target on the caller's `struct path`
+        // (`vfsmount` + `dentry`), NOT the dentry alone. When the target dentry is
+        // SHARED across bind locations — e.g. systemd's `bind_remount_recursive`
+        // self-binds a procfs leaf inside /run/systemd/mount-rootfs, and that leaf's
+        // dentry is the SAME Arc as the real /proc leaf — the dentry's d_parent
+        // chain leads to the WRONG parent mount, so `attach`'s `parent_by_dentry`
+        // hashes the bind under the real /proc (invisible at the staging prefix,
+        // → systemd's 32-try EBUSY, status 226). Detect it: the dentry-chain path
+        // disagrees with the resolved `target`. Then attach under the RESOLVED
+        // target mount so the bind lands at the correct `(parent_id, dentry)` slot.
+        let dentry_chain = alloc::string::String::from_utf8_lossy(&target_d.absolute_path()).into_owned();
+        let resolved_parent = if dentry_chain != target {
+            crate::pathresolve::resolve_path(&target, false)
+                .map(|p| p.mnt_id)
+                .filter(|&mid| vfs::mount::mount_by_id(mid).is_some())
+        } else { None };
+        if let Some(pid) = resolved_parent {
+            let _ = vfs::mount::register_bind_under(pid, target_d.clone(), target.clone(), bind, root);
+            let _ = vfs::mount::propagate_mount(&target_d);
+        } else {
+            // [D14] Atomic graft + propagation (Linux `attach_recursive_mnt`): the
+            // bind is attached AND replicated to the destination parent's peer
+            // group in ONE engine call.
+            let _ = vfs::mount::attach_recursive_mnt(Some(target_d.clone()), bind, Some(root));
+        }
         vfs::mount::join_peer_group(&target_d, src_pg);
         // MS_REC: also clone every mount nested under `source` to the
         // matching path under `target` (recursive bind, docs/16§6).
