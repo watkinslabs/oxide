@@ -247,18 +247,20 @@ pub fn tx_packet(frame: &[u8]) -> bool {
     // copy of want ≤ 4 KiB bytes into the page we allocated at install.
     unsafe { for i in 0..want { core::ptr::write_volatile(dst.add(i), frame[i]); } }
 
-    // Descriptor[0] = { addr=tx_buf_pa, len=want, flags=0 (device reads), next=0 }.
+    let qsz = ctx.txq.size;
+    let slot = (ctx.tx_avail_idx % qsz) as usize;
+
+    // Descriptor[slot] = { addr=tx_buf_pa, len=want, flags=0 (device reads), next=0 }.
     let desc = h.wrapping_add(ctx.txq.desc_pa) as *mut u64;
     // SAFETY: HHDM-mapped q1 descriptor table programmed by the boot
     // probe; two aligned u64 stores build one device-readable descriptor
     // pointing at our owned TX bounce frame.
     unsafe {
-        core::ptr::write_volatile(desc.add(0), ctx.tx_buf_pa);
-        core::ptr::write_volatile(desc.add(1), want as u64);
+        let d = slot * 2;
+        core::ptr::write_volatile(desc.add(d), ctx.tx_buf_pa);
+        core::ptr::write_volatile(desc.add(d + 1), want as u64);
     }
 
-    let qsz = ctx.txq.size;
-    let slot = (ctx.tx_avail_idx % qsz) as usize;
     let avail = h.wrapping_add(ctx.txq.driver_pa) as *mut u16;
     // SAFETY: HHDM-mapped q1 avail ring; u16 stores at ring(2+slot)/idx(1);
     // slot bounded by txq.size; Release fence publishes the descriptor

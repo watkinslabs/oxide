@@ -528,9 +528,6 @@ impl drv::Driver for VirtioVsockDrv {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        if drv_virtio_vsock::present() {
-            return Err(drv::Error::Busy);
-        }
         let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
         let device_key = bdf_word(d.bdf);
         let mut p =
