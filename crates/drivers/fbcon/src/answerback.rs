@@ -77,6 +77,12 @@ pub fn set_sink(f: ReplyFn) {
     SINK.store(f as *mut (), Ordering::Release);
 }
 
+/// Clear the deferred answerback drain sink when fbcon unregisters.
+/// # C: O(1).
+pub fn clear_sink() {
+    SINK.store(core::ptr::null_mut(), Ordering::Release);
+}
+
 /// `tty_insert_flip_string`: queue an emulator answerback for `vt` for
 /// deferred delivery. Holds only the per-VT answerback lock, so it is safe
 /// while the console write lock is held. No-op for empty `bytes`.

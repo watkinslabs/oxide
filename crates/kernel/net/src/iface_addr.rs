@@ -159,6 +159,15 @@ pub fn remove(ns: u64, iface: NetIfaceId, addr: Ipv4Addr, prefixlen: u8) -> usiz
     before - g.len()
 }
 
+/// Remove every IPv4 address row for `iface` in namespace `ns`.
+/// # C: O(N)
+pub fn remove_iface(ns: u64, iface: NetIfaceId) -> usize {
+    let mut g = IPV4_ADDRS.lock();
+    let before = g.len();
+    g.retain(|r| !(r.ns == ns && r.iface == iface));
+    before - g.len()
+}
+
 /// Primary address and netmask for ioctl callers. # C: O(N)
 pub fn primary(ns: u64, iface: NetIfaceId) -> Option<(Ipv4Addr, u32)> {
     IPV4_ADDRS.lock().iter()

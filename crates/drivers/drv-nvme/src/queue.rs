@@ -10,6 +10,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use crate::regs;
+use mmio_map::Mapping;
 
 /// HHDM base for the running arch (PA→VA for queue + PRP frames).
 /// # C: O(1)
@@ -64,6 +65,7 @@ struct Queue {
 /// admin + single I/O queue, and the negotiated geometry (namespace block
 /// size + capacity). One PRP bounce frame bounds a request to one transfer.
 pub struct Nvme {
+    mmio:    Mapping,
     bar0_va: u64,
     dstrd:   u32,
     admin:   Queue,
@@ -86,6 +88,52 @@ unsafe impl Sync for Nvme {}
 const PAGE: u64 = 0x1000;
 
 impl Nvme {
+    fn free_frame(pa: &mut u64) {
+        if *pa == 0 {
+            return;
+        }
+        // SAFETY: the caller owns controller teardown/quiesce. These frames
+        // are the single-page queue/PRP allocations returned by alloc_one_frame
+        // during bring-up and are no longer reachable by live DMA.
+        unsafe { pmm::setup::free_one_frame(*pa); }
+        *pa = 0;
+    }
+
+    fn alloc_frames() -> Option<[u64; 5]> {
+        let mut frames = [0u64; 5];
+        let mut i = 0usize;
+        while i < frames.len() {
+            match pmm::setup::alloc_one_frame() {
+                Some(pa) => frames[i] = pa,
+                None => {
+                    for pa in frames.iter_mut() {
+                        Self::free_frame(pa);
+                    }
+                    return None;
+                }
+            }
+            i += 1;
+        }
+        Some(frames)
+    }
+
+    /// Disable the controller and return all queue/PRP frames to PMM.
+    /// Existing publication must be removed and callers quiesced before this.
+    /// # C: O(controller disable wait + 5 frees)
+    pub fn shutdown_and_free(&mut self) {
+        if self.bar0_va != 0 {
+            self.w32(regs::REG_CC, 0);
+            let _ = self.wait_rdy(false, 2_000);
+        }
+        Self::free_frame(&mut self.admin.sq_pa);
+        Self::free_frame(&mut self.admin.cq_pa);
+        Self::free_frame(&mut self.io.sq_pa);
+        Self::free_frame(&mut self.io.cq_pa);
+        Self::free_frame(&mut self.prp_pa);
+        self.bar0_va = 0;
+        self.mmio.unmap();
+    }
+
     /// Read a 32-bit controller register. # C: O(1)
     #[inline]
     fn r32(&self, off: u64) -> u32 {
@@ -131,14 +179,11 @@ impl Nvme {
     /// create the I/O queue pair. Returns None on any timeout/alloc failure.
     /// `bar0_va` is the HHDM-independent register-file VA from map_mmio_pages.
     /// # C: O(reset + 2 admin cmds + 2 create-queue cmds)
-    pub fn bring_up(bar0_va: u64) -> Option<Nvme> {
+    pub fn bring_up(mmio: Mapping, bar0_off: u64) -> Option<Nvme> {
         // Allocate admin SQ + CQ, I/O SQ + CQ, and the PRP bounce frame.
-        let asq = pmm::setup::alloc_one_frame()?;
-        let acq = pmm::setup::alloc_one_frame()?;
-        let isq = pmm::setup::alloc_one_frame()?;
-        let icq = pmm::setup::alloc_one_frame()?;
-        let prp = pmm::setup::alloc_one_frame()?;
+        let [asq, acq, isq, icq, prp] = Self::alloc_frames()?;
         for f in [asq, acq, isq, icq, prp] { Self::zero_frame(f); }
+        let bar0_va = mmio.base_va() + bar0_off;
 
         // Pre-read DSTRD from CAP using a throwaway accessor (bar0_va direct).
         // SAFETY: bar0_va is the Device-attr-mapped register file; aligned
@@ -163,14 +208,17 @@ impl Nvme {
         };
 
         let mut nv = Nvme {
-            bar0_va, dstrd, admin, io, prp_pa: prp,
+            mmio, bar0_va, dstrd, admin, io, prp_pa: prp,
             ns_blocks: 0, blk_size: 512,
         };
         let to_ms = regs::cap_to_ms(cap).max(2_000);
 
         // 1. Disable: CC.EN=0, wait CSTS.RDY==0.
         nv.w32(regs::REG_CC, 0);
-        if !nv.wait_rdy(false, to_ms) { return None; }
+        if !nv.wait_rdy(false, to_ms) {
+            nv.shutdown_and_free();
+            return None;
+        }
 
         // 2. Program admin queue attributes + base addresses.
         nv.w32(regs::REG_AQA, regs::aqa(Q_ENTRIES));
@@ -179,17 +227,32 @@ impl Nvme {
 
         // 3. Enable: CC with IOSQES/IOCQES + EN, wait CSTS.RDY==1.
         nv.w32(regs::REG_CC, regs::cc_enable());
-        if !nv.wait_rdy(true, to_ms) { return None; }
+        if !nv.wait_rdy(true, to_ms) {
+            nv.shutdown_and_free();
+            return None;
+        }
 
         // 4. IDENTIFY controller (confirm the controller answers admin cmds).
-        if nv.identify(regs::CNS_CONTROLLER, 0).is_none() { return None; }
+        if nv.identify(regs::CNS_CONTROLLER, 0).is_none() {
+            nv.shutdown_and_free();
+            return None;
+        }
 
         // 5. IDENTIFY namespace 1 → capacity (NSZE) + LBA format → block size.
-        if !nv.identify_ns1() { return None; }
+        if !nv.identify_ns1() {
+            nv.shutdown_and_free();
+            return None;
+        }
 
         // 6. Create the I/O completion + submission queue (qid=1).
-        if !nv.create_io_cq() { return None; }
-        if !nv.create_io_sq() { return None; }
+        if !nv.create_io_cq() {
+            nv.shutdown_and_free();
+            return None;
+        }
+        if !nv.create_io_sq() {
+            nv.shutdown_and_free();
+            return None;
+        }
 
         Some(nv)
     }

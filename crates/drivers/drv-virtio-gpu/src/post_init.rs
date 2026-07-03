@@ -1,6 +1,5 @@
-// virtio-gpu modern post-init: submit CMD_GET_DISPLAY_INFO over
-// CTRLQ to populate real DisplayInfo. Called from
-// `pci_boot::virtio_probe_arch` when the device id matches.
+// virtio-gpu modern display setup. Called by the virtio-gpu model driver's
+// probe after virtio-pci transport init has produced queue0/config state.
 
 
 
@@ -10,24 +9,18 @@ use core::sync::atomic::Ordering;
 /// completion; parse the response and re-install the device with
 /// real DisplayInfo (which propagates to `47` DRM/KMS via the
 /// `VirtioGpuDrm` impl).
-/// # SAFETY: caller is the boot path; PMM up; q0/notify VAs valid;
-///   single-CPU; IRQs masked.
 /// # C: O(spin-poll bound = 1e6)
-pub unsafe fn get_display_info(
+pub fn get_display_info(
     bdf_bus: u8, bdf_dev: u8, bdf_fn: u8,
     drv_features: u64,
-    q0_desc_pa: u64,
-    q0_driver_pa: u64,
-    q0_device_pa: u64,
-    q0_notify_va: u64,
+    resources: virtio::VirtioResources,
 ) -> bool {
-    let hhdm = {
-        #[cfg(target_arch = "x86_64")]
-        { hal_x86_64::mmu_ops::hhdm_offset() }
-        #[cfg(target_arch = "aarch64")]
-        { hal_aarch64::mmu_ops::hhdm_offset() }
-    };
-    if hhdm == 0 { return false; }
+    let Some(ctrlq) = resources.require_queue(0) else { return false };
+    if !resources.common_cfg_valid() {
+        return false;
+    }
+    let cfg_va = resources.cfg_va;
+    let hhdm = resources.hhdm;
     let buf_pa = match pmm::setup::alloc_one_frame() {
         Some(pa) => pa, None => return false,
     };
@@ -38,7 +31,7 @@ pub unsafe fn get_display_info(
         let req = core::slice::from_raw_parts_mut(buf_va, 24);
         crate::encode_get_display_info(req);
     }
-    let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *mut u64;
+    let desc0 = (hhdm.wrapping_add(ctrlq.desc_pa)) as *mut u64;
     // SAFETY: HHDM-mapped virtio q0 descriptor table; aligned u64 stores into driver-owned frame.
     unsafe {
         core::ptr::write_volatile(desc0.add(0), buf_pa);
@@ -50,16 +43,16 @@ pub unsafe fn get_display_info(
         let d1 = 408u64 | ((virtio::VRING_DESC_F_WRITE as u64) << 32);
         core::ptr::write_volatile(desc0.add(3), d1);
     }
-    let avail = (hhdm.wrapping_add(q0_driver_pa)) as *mut u16;
+    let avail = (hhdm.wrapping_add(ctrlq.driver_pa)) as *mut u16;
     // SAFETY: HHDM-mapped avail ring; aligned u16 stores within driver-owned frame.
     unsafe { core::ptr::write_volatile(avail.add(2), 0u16); }
     core::sync::atomic::fence(Ordering::Release);
     // SAFETY: same avail ring; idx at u16 offset 1.
     unsafe { core::ptr::write_volatile(avail.add(1), 1u16); }
     core::sync::atomic::fence(Ordering::Release);
-    // SAFETY: q0_notify_va mapped Device-attr; queue idx written per virtio 1.2 §4.1.5.2.
-    unsafe { core::ptr::write_volatile(q0_notify_va as *mut u16, 0u16); }
-    let used = (hhdm.wrapping_add(q0_device_pa)) as *mut u16;
+    // SAFETY: notify_va mapped Device-attr; queue idx written per virtio 1.2 §4.1.5.2.
+    unsafe { core::ptr::write_volatile(ctrlq.notify_va as *mut u16, ctrlq.index); }
+    let used = (hhdm.wrapping_add(ctrlq.device_pa)) as *mut u16;
     let mut polls = 0u32;
     loop {
         // SAFETY: HHDM-mapped used ring; aligned u16 read.
@@ -79,18 +72,16 @@ pub unsafe fn get_display_info(
     };
     let info = match crate::parse_display_info(resp_slice) {
         Ok(i)  => i,
-        Err(_) => return false,
+        Err(_) => {
+            // SAFETY: buf_pa was allocated above and no persistent state owns it.
+            unsafe { pmm::setup::free_one_frame(buf_pa); }
+            return false;
+        }
     };
     use core::sync::atomic::{AtomicU32, AtomicU64};
     let bdf_word = (bdf_bus as u32) << 16
                  | (bdf_dev as u32) << 8
                  | (bdf_fn as u32);
-    crate::install_with_drm(crate::VirtioGpuDev {
-        bdf: bdf_word, features_negotiated: drv_features,
-        display: info,
-        resource_id_alloc: AtomicU32::new(1),
-        blob_uuid_alloc: AtomicU64::new(1), capset_count: 0,
-    });
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  virtio-gpu display: enabled=");
@@ -105,14 +96,41 @@ pub unsafe fn get_display_info(
     }
     if info.count_enabled > 0 {
         // SAFETY: boot path; queue + notify VAs valid; PMM up.
-        let _ = unsafe {
+        let scanout_ok = unsafe {
             setup_scanout(
+                bdf_word,
                 info.modes[0].r.width, info.modes[0].r.height,
-                q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va,
-                buf_va, buf_pa,
+                cfg_va, ctrlq, buf_va, buf_pa, hhdm,
             )
         };
+        if !scanout_ok {
+            // No scanout context retained the command buffer.
+            // SAFETY: buf_pa is not retained when setup_scanout fails.
+            unsafe { pmm::setup::free_one_frame(buf_pa); }
+            return false;
+        }
+    } else {
+        // No scanout context retained the command buffer.
+        // SAFETY: buf_pa is not retained when no display is enabled.
+        unsafe { pmm::setup::free_one_frame(buf_pa); }
     }
+    match crate::install_with_drm(crate::VirtioGpuDev {
+        bdf: bdf_word, card_id: 0, cfg_va,
+        ctrlq,
+        features_negotiated: drv_features,
+        display: info,
+        resource_id_alloc: AtomicU32::new(1),
+        blob_uuid_alloc: AtomicU64::new(1), capset_count: 0,
+    }) {
+        Ok(_) => {}
+        Err(_) => {
+            if info.count_enabled > 0 {
+                let _ = uninstall_scanout_after_failed_probe(bdf_word);
+            }
+            return false;
+        }
+    }
+    publish_console_scanout();
     true
 }
 
@@ -123,16 +141,13 @@ pub unsafe fn get_display_info(
 /// # SAFETY: caller is the boot path; queue + notify VAs valid; PMM up.
 /// # C: O(width * height) for the fill + O(1) per command.
 unsafe fn setup_scanout(
+    bdf: u32,
     w: u32, h: u32,
-    q0_desc_pa: u64, q0_driver_pa: u64, q0_device_pa: u64, q0_notify_va: u64,
+    cfg_va: u64,
+    ctrlq: virtio::VirtQueueResource,
     cmd_buf_va: *mut u8, cmd_buf_pa: u64,
+    hhdm: u64,
 ) -> bool {
-    let hhdm = {
-        #[cfg(target_arch = "x86_64")]
-        { hal_x86_64::mmu_ops::hhdm_offset() }
-        #[cfg(target_arch = "aarch64")]
-        { hal_aarch64::mmu_ops::hhdm_offset() }
-    };
     let pitch = w as u64 * 4;
     let fb_bytes = pitch * h as u64;
     let pages_req = ((fb_bytes + 0xFFF) / 0x1000) as usize;
@@ -145,7 +160,16 @@ unsafe fn setup_scanout(
     let base_pa = match pmm::setup::alloc_contig(pmm::Order(order as u8)) {
         Some(pa) => pa, None => return false,
     };
-    let _ = 1usize << order; // pages_alloc — informational only
+    let pages_alloc = 1usize << order;
+    let free_fb = || {
+        // SAFETY: base_pa is the contiguous run just allocated above; no
+        // persistent scanout context owns it before install_scanout_ctx.
+        unsafe {
+            for i in 0..pages_alloc {
+                pmm::setup::free_one_frame(base_pa + (i as u64) * 4096);
+            }
+        }
+    };
     // Render boot text. Paint the entire FB with the bg color
     // first (not all-zero) so glyphs aren't drowning on solid
     // black; Console's EraseDisplay would zero the buffer.
@@ -180,25 +204,30 @@ unsafe fn setup_scanout(
     // visible. virtio-gpu acks with VIRTIO_GPU_RESP_OK_NODATA (0x1100);
     // anything else means the host rejected the request.
     let log_resp = |tag: &[u8]| {
-        // SAFETY: cmd_buf_va is HHDM-mapped 4 KiB; response sits at
-        // cmd_buf_va + 0x200 per submit_raw's descriptor layout.
-        let resp = unsafe { core::ptr::read_volatile(cmd_buf_va.add(0x200) as *const u32) };
-    #[cfg(feature = "debug-boot")]
+        #[cfg(feature = "debug-boot")]
         {
+            // SAFETY: cmd_buf_va is HHDM-mapped 4 KiB; response sits at
+            // cmd_buf_va + 0x200 per submit_raw's descriptor layout.
+            let resp = unsafe { core::ptr::read_volatile(cmd_buf_va.add(0x200) as *const u32) };
             klog::write_raw(b"[INFO]  virtio-gpu resp ");
             klog::write_raw(tag);
             klog::write_raw(b"=");
             klog::write_hex_u64(resp as u64);
             klog::write_raw(b"\n");
         }
+        #[cfg(not(feature = "debug-boot"))]
+        let _ = tag;
     };
     // ---- 1. CMD_RESOURCE_CREATE_2D (40 B request, 24 B response) ----
     // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
         |buf| crate::encode_resource_create_2d(buf, res_id,
             crate::VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, w, h),
-        q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
-    ) } { return false; }
+        ctrlq, hhdm,
+    ) } {
+        free_fb();
+        return false;
+    }
     log_resp(b"create");
     // ---- 2. CMD_RESOURCE_ATTACH_BACKING with ONE mem-entry ----
     // The FB lives in a SINGLE contiguous PMM run (alloc_contig
@@ -215,39 +244,54 @@ unsafe fn setup_scanout(
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
         |buf| crate::encode_resource_attach_backing_one(
             buf, res_id, base_pa, fb_bytes as u32),
-        q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
-    ) } { return false; }
+        ctrlq, hhdm,
+    ) } {
+        free_fb();
+        return false;
+    }
     log_resp(b"attach");
     // ---- 3. CMD_SET_SCANOUT ----
     // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
         |buf| crate::encode_set_scanout(buf, 0, res_id, 0, 0, w, h),
-        q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
-    ) } { return false; }
+        ctrlq, hhdm,
+    ) } {
+        free_fb();
+        return false;
+    }
     log_resp(b"setscanout");
     // ---- 4. CMD_TRANSFER_TO_HOST_2D ----
     // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
         |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
-        q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
-    ) } { return false; }
+        ctrlq, hhdm,
+    ) } {
+        free_fb();
+        return false;
+    }
     log_resp(b"transfer");
     // ---- 5. CMD_RESOURCE_FLUSH ----
     // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
         |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
-        q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
-    ) } { return false; }
+        ctrlq, hhdm,
+    ) } {
+        free_fb();
+        return false;
+    }
     log_resp(b"flush");
     // Stash scanout context so the kernel-side fbcon klog sink can
     // repaint after boot. base_pa is the contig PMM run; HHDM-map
     // it to a kernel VA for byte-copy access.
-    install_scanout_ctx(
+    if !install_scanout_ctx(
+        bdf,
         w, h,
-        hhdm.wrapping_add(base_pa), fb_bytes, res_id,
-        q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va,
-        cmd_buf_va as u64, cmd_buf_pa, hhdm,
-    );
+        cfg_va, hhdm.wrapping_add(base_pa), fb_bytes, pages_alloc, res_id,
+        ctrlq, cmd_buf_va as u64, cmd_buf_pa, hhdm,
+    ) {
+        free_fb();
+        return false;
+    }
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  virtio-gpu scanout: ");
@@ -266,8 +310,7 @@ unsafe fn setup_scanout(
 /// successful round-trip.
 unsafe fn submit_one<F: FnOnce(&mut [u8]) -> usize>(
     buf_va: *mut u8, buf_pa: u64, encode: F,
-    q0_desc_pa: u64, q0_driver_pa: u64, q0_device_pa: u64, q0_notify_va: u64,
-    hhdm: u64,
+    ctrlq: virtio::VirtQueueResource, hhdm: u64,
 ) -> bool {
     // SAFETY: HHDM-mapped 4 KiB buffer; bounded zero of 0x100 + write of <0x100 B encoded request.
     unsafe {
@@ -281,17 +324,16 @@ unsafe fn submit_one<F: FnOnce(&mut [u8]) -> usize>(
     // could parse it; using 64 B is enough for all encoders in the
     // arc so far per `45§5`.
     // SAFETY: cmd buffer + queue VAs valid by caller's contract.
-    unsafe { submit_raw(buf_pa, 64, q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm) }
+    unsafe { submit_raw(buf_pa, 64, ctrlq, hhdm) }
 }
 
 /// Submit a request of length `req_len` followed by a 24-byte
 /// response slot. Polls used.idx for completion.
 unsafe fn submit_raw(
     buf_pa: u64, req_len: usize,
-    q0_desc_pa: u64, q0_driver_pa: u64, q0_device_pa: u64, q0_notify_va: u64,
-    hhdm: u64,
+    ctrlq: virtio::VirtQueueResource, hhdm: u64,
 ) -> bool {
-    let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *mut u64;
+    let desc0 = (hhdm.wrapping_add(ctrlq.desc_pa)) as *mut u64;
     // SAFETY: HHDM-mapped virtio q0 descriptor table; aligned u64 stores into the driver-owned frame.
     unsafe {
         core::ptr::write_volatile(desc0.add(0), buf_pa);
@@ -303,19 +345,19 @@ unsafe fn submit_raw(
         let d1 = 24u64 | ((virtio::VRING_DESC_F_WRITE as u64) << 32);
         core::ptr::write_volatile(desc0.add(3), d1);
     }
-    let avail = (hhdm.wrapping_add(q0_driver_pa)) as *mut u16;
+    let avail = (hhdm.wrapping_add(ctrlq.driver_pa)) as *mut u16;
     // Read current avail.idx to know where to write the next ring slot.
     // SAFETY: HHDM-mapped avail ring; aligned u16 read of avail.idx then write of next slot.
     let cur_idx = unsafe { core::ptr::read_volatile(avail.add(1)) };
-    // SAFETY: avail.ring is u16 ring of size N (>=256); cur_idx is a wrapping index used per virtio spec.
-    unsafe { core::ptr::write_volatile(avail.add(2 + (cur_idx as usize % 256)), 0u16); }
+    // SAFETY: avail.ring is a u16 ring of the negotiated queue size; cur_idx is a wrapping index used per virtio spec.
+    unsafe { core::ptr::write_volatile(avail.add(2 + (cur_idx as usize % ctrlq.size as usize)), 0u16); }
     core::sync::atomic::fence(Ordering::Release);
     // SAFETY: same avail ring; idx at u16 offset 1.
     unsafe { core::ptr::write_volatile(avail.add(1), cur_idx + 1); }
     core::sync::atomic::fence(Ordering::Release);
     // SAFETY: notify VA mapped Device-attr; queue idx written per virtio 1.2 §4.1.5.2.
-    unsafe { core::ptr::write_volatile(q0_notify_va as *mut u16, 0u16); }
-    let used = (hhdm.wrapping_add(q0_device_pa)) as *mut u16;
+    unsafe { core::ptr::write_volatile(ctrlq.notify_va as *mut u16, ctrlq.index); }
+    let used = (hhdm.wrapping_add(ctrlq.device_pa)) as *mut u16;
     let want = cur_idx + 1;
     let mut polls = 0u32;
     loop {
@@ -339,15 +381,15 @@ unsafe fn submit_raw(
 use sync::{TaskList as DriverLockClass, Spinlock};
 
 struct ScanoutCtx {
+    bdf: u32,
+    cfg_va: u64,
     w: u32,
     h: u32,
     fb_va: u64,          // HHDM-mapped backing FB
     fb_bytes: u64,
+    fb_pages_alloc: usize,
     res_id: u32,
-    q0_desc_pa: u64,
-    q0_driver_pa: u64,
-    q0_device_pa: u64,
-    q0_notify_va: u64,
+    ctrlq: virtio::VirtQueueResource,
     cmd_buf_va: u64,
     cmd_buf_pa: u64,
     hhdm: u64,
@@ -378,12 +420,10 @@ pub fn fbcon_flush_pixels(pixels: &[u8]) {
     unsafe {
         let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
-            ctx.q0_desc_pa, ctx.q0_driver_pa, ctx.q0_device_pa,
-            ctx.q0_notify_va, ctx.hhdm);
+            ctx.ctrlq, ctx.hhdm);
         let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
-            ctx.q0_desc_pa, ctx.q0_driver_pa, ctx.q0_device_pa,
-            ctx.q0_notify_va, ctx.hhdm);
+            ctx.ctrlq, ctx.hhdm);
     }
 }
 
@@ -405,12 +445,10 @@ pub fn blank_scanout() {
     unsafe {
         let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
-            ctx.q0_desc_pa, ctx.q0_driver_pa, ctx.q0_device_pa,
-            ctx.q0_notify_va, ctx.hhdm);
+            ctx.ctrlq, ctx.hhdm);
         let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
-            ctx.q0_desc_pa, ctx.q0_driver_pa, ctx.q0_device_pa,
-            ctx.q0_notify_va, ctx.hhdm);
+            ctx.ctrlq, ctx.hhdm);
     }
 }
 
@@ -422,15 +460,77 @@ pub fn unblank_scanout() { fbcon::kernel::force_repaint(); }
 /// Install the scanout context for later flushes. Called once from
 /// `setup_scanout` after the resource is created and attached.
 fn install_scanout_ctx(
-    w: u32, h: u32, fb_va: u64, fb_bytes: u64, res_id: u32,
-    q0_desc_pa: u64, q0_driver_pa: u64, q0_device_pa: u64, q0_notify_va: u64,
-    cmd_buf_va: u64, cmd_buf_pa: u64, hhdm: u64,
-) {
-    *CTX.lock() = Some(ScanoutCtx {
-        w, h, fb_va, fb_bytes, res_id,
-        q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va,
-        cmd_buf_va, cmd_buf_pa, hhdm,
+    bdf: u32,
+    w: u32, h: u32, cfg_va: u64, fb_va: u64, fb_bytes: u64, fb_pages_alloc: usize, res_id: u32,
+    ctrlq: virtio::VirtQueueResource, cmd_buf_va: u64, cmd_buf_pa: u64, hhdm: u64,
+) -> bool {
+    let mut ctx = CTX.lock();
+    if ctx.is_some() {
+        return false;
+    }
+    *ctx = Some(ScanoutCtx {
+        bdf, cfg_va, w, h, fb_va, fb_bytes, fb_pages_alloc, res_id,
+        ctrlq, cmd_buf_va, cmd_buf_pa, hhdm,
     });
+    true
+}
+
+/// Tear down the installed scanout context, reset the virtio device, and free
+/// the command buffer plus framebuffer run.
+/// # C: O(fb_pages_alloc)
+pub fn uninstall_scanout(bdf: u32) -> bool {
+    let ctx = {
+        let mut guard = CTX.lock();
+        match guard.as_ref() {
+            Some(ctx) if ctx.bdf == bdf => guard.take(),
+            _ => None,
+        }
+    };
+    let ctx = match ctx {
+        Some(ctx) => ctx,
+        None => return false,
+    };
+    // SAFETY: cfg_va is the mapped common-cfg window captured at probe;
+    // device_status is a u8 at +0x14. Reset before releasing queue storage.
+    unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    let fb_base_pa = ctx.fb_va - ctx.hhdm;
+    // SAFETY: these frames were allocated by this driver and are no longer
+    // reachable after CTX removal and device reset. The ctrlq vring frames are
+    // transport-owned after successful probe and are released on unpublish.
+    unsafe {
+        pmm::setup::free_one_frame(ctx.cmd_buf_pa);
+        for i in 0..ctx.fb_pages_alloc {
+            pmm::setup::free_one_frame(fb_base_pa + (i as u64) * 4096);
+        }
+    }
+    true
+}
+
+/// Tear down scanout-only state after a probe failure. The caller still owns
+/// the transport unwind and will reset the virtio device and release q0.
+/// # C: O(fb_pages_alloc)
+pub fn uninstall_scanout_after_failed_probe(bdf: u32) -> bool {
+    let ctx = {
+        let mut guard = CTX.lock();
+        match guard.as_ref() {
+            Some(ctx) if ctx.bdf == bdf => guard.take(),
+            _ => None,
+        }
+    };
+    let ctx = match ctx {
+        Some(ctx) => ctx,
+        None => return false,
+    };
+    let fb_base_pa = ctx.fb_va - ctx.hhdm;
+    // SAFETY: scanout was not published to the runtime driver. The transport
+    // q0 frames remain owned by the caller's failed-probe cleanup path.
+    unsafe {
+        pmm::setup::free_one_frame(ctx.cmd_buf_pa);
+        for i in 0..ctx.fb_pages_alloc {
+            pmm::setup::free_one_frame(fb_base_pa + (i as u64) * 4096);
+        }
+    }
+    true
 }
 
 /// True iff the scanout context is installed (post-`setup_scanout`).
@@ -452,6 +552,71 @@ pub fn framebuffer() -> Option<(u64, u64, u64, u32, u32, u32)> {
     let g = CTX.lock();
     let c = g.as_ref()?;
     Some((c.fb_va - c.hhdm, c.fb_va, c.fb_bytes, c.w * 4, c.w, c.h))
+}
+
+/// Publish the installed virtio-gpu scanout through fbcon, fbdev, printk, and
+/// the live VT query hooks. Called from the virtio-gpu probe after scanout and
+/// DRM registration succeed, matching the Linux pattern where the driver owns
+/// its console/fb helper registration.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn publish_console_scanout() {
+    let Some((w, h)) = dimensions() else { return };
+    fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
+    if let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer() {
+        fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
+        fbdev::set_flush_hook(flush_scanout);
+        fbdev::set_blank_hooks(blank_scanout, unblank_scanout);
+        fbdev::set_yield_hook(fbdev_vsync_yield);
+        fbdev::set_now_hook(monotonic_now_ns);
+    }
+    klog::set_aux_sink(fbcon::kernel::vt_console_sink);
+    fbcon::kernel::set_reply_sink(console::vt_reply_sink);
+    tty::live::set_app_cursor_query(fbcon::kernel::fg_app_cursor);
+    tty::live::set_bracketed_paste_query(fbcon::kernel::fg_bracketed_paste);
+}
+
+/// Unpublish the console/fb helper state owned by the installed scanout before
+/// the scanout backing and queue scratch pages are released.
+/// # C: O(N + depth)
+#[cfg(target_os = "oxide-kernel")]
+pub fn unpublish_console_scanout(bdf: u32) {
+    let fb_base = {
+        let ctx = CTX.lock();
+        match ctx.as_ref() {
+            Some(ctx) if ctx.bdf == bdf => Some(ctx.fb_va - ctx.hhdm),
+            _ => return,
+        }
+    };
+    klog::clear_aux_sink();
+    tty::live::clear_vt_mode_queries();
+    fbcon::kernel::kernel_unregister();
+    fbdev::clear_blank_hooks();
+    fbdev::clear_flush_hook();
+    fbdev::clear_wait_hooks();
+    let _ = fbdev::unregister_by_base(fb_base);
+    drm::node::clear_scanout_ops();
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn fbdev_vsync_yield() {
+    // SAFETY: invoked from the FBIOWAITFORVSYNC ioctl path in process context;
+    // wait_vblank drops hook guards before calling it, so no fbdev lock is held.
+    unsafe { sched::live::tick_yield(); }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn monotonic_now_ns() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use hal::TimerOps;
+        hal_x86_64::X86TimerOps::monotonic_ns().0
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        use hal::TimerOps;
+        hal_aarch64::ArmTimerOps::monotonic_ns().0
+    }
 }
 
 // ============================================================
@@ -490,8 +655,7 @@ fn submit_ctrl<F: Fn(&mut [u8]) -> usize>(encode: F) -> bool {
     // SAFETY: cmd_buf is the HHDM-mapped 4 KiB scratch frame setup_scanout installed; q0 descriptor/avail/used/notify VAs are the exact ones the boot path validated; we hold the CTX lock so we are the sole writer for this submit; the encode closure writes < 0x100 bytes into the per-call request slice.
     let ok = unsafe {
         submit_one(cmd_buf_va_p, ctx.cmd_buf_pa, |b| encode(b),
-            ctx.q0_desc_pa, ctx.q0_driver_pa, ctx.q0_device_pa,
-            ctx.q0_notify_va, ctx.hhdm)
+            ctx.ctrlq, ctx.hhdm)
     };
     if !ok { return false; }
     // SAFETY: cmd_buf_va is HHDM-mapped 4 KiB; submit_raw places the 24-byte response at +0x200; aligned u32 read of the response type word.
@@ -577,11 +741,9 @@ pub fn flush_scanout() {
     unsafe {
         let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
-            ctx.q0_desc_pa, ctx.q0_driver_pa, ctx.q0_device_pa,
-            ctx.q0_notify_va, ctx.hhdm);
+            ctx.ctrlq, ctx.hhdm);
         let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
-            ctx.q0_desc_pa, ctx.q0_driver_pa, ctx.q0_device_pa,
-            ctx.q0_notify_va, ctx.hhdm);
+            ctx.ctrlq, ctx.hhdm);
     }
 }

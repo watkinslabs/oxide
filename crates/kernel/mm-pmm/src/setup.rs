@@ -969,6 +969,20 @@ pub fn alloc_contig(order: crate::Order) -> Option<u64> {
     p.alloc(order).ok().map(|pfn| pfn.0 * 4096)
 }
 
+/// Free a contiguous physical region previously returned by `alloc_contig`
+/// with the same `order`.
+///
+/// # SAFETY: `pa` must be page-aligned, aligned to `2^order` pages, originally
+/// returned by `alloc_contig(order)`, and no longer reachable by any CPU or
+/// device DMA engine. The caller owns quiesce/reset before returning the run.
+/// # C: O(MAX_ORDER)
+#[track_caller]
+pub unsafe fn free_contig(pa: u64, order: crate::Order) {
+    let p = match pmm_static() { Some(p) => p, None => return };
+    let pfn = hal::Pfn(pa / 4096);
+    unsafe { p.free(pfn, order); }
+}
+
 /// Free a single 4 KiB frame back to the kernel-owned PMM. Pair of
 /// `alloc_one_frame`; the PA must originally have come from a PMM
 /// alloc and not be currently mapped in any live page table (caller's

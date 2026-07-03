@@ -1,19 +1,17 @@
-// Modern virtio-blk runtime engine (arch-neutral). The boot probe in
-// `pci_boot::virtio_drv` brings up cap discovery, BAR mapping, queue-0
-// program, and DRIVER_OK; once that finishes it hands the persistent
-// kernel-side addresses + device-cfg here via `init_blk`. This module
-// owns the synchronous request engine: build the 3-descriptor chain
+// Modern virtio-blk runtime engine (arch-neutral). The model driver's
+// `probe` in `pci_boot::virtio_drv` brings up cap discovery, BAR mapping,
+// queue-0 program, and DRIVER_OK; once that finishes it hands the
+// persistent kernel-side addresses + device-cfg here via `init_blk`.
+// This module owns the synchronous request engine: build the 3-descriptor chain
 // (header IN + data + status WRITE), kick the notify register, wait for
 // completion.
 //
 // Completion wait is ADAPTIVE: a short bounded spin catches the common
 // near-instant completion with zero added latency (keeps the boot read
 // storm fast), then — only if it hasn't completed — the requesting task
-// SLEEPS on `BLK_COMPL` instead of pegging a core. Sleepers are woken
-// from the timer tick (`tick_wake_completions`, called by kmain's
-// `tick_poll_combined`, mirroring virtio-net's rx poll); a real
-// per-queue completion MSI is a future latency optimisation. A
-// wall-clock deadline bounds a genuinely-lost completion to `EIO`.
+// SLEEPS on `BLK_COMPL` instead of pegging a core. Sleepers are woken by the
+// queue completion MSI registered by the virtio-pci transport. A wall-clock
+// deadline bounds a genuinely-lost completion to `EIO`.
 // Single in-flight is serialised by `RingShadow.busy` + the same wait
 // list; the inflight spinlock is NEVER held across a sleep, so the
 // completion path can take it.
@@ -26,6 +24,7 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
@@ -44,10 +43,9 @@ use virtio::blk;
 #[cfg(target_os = "oxide-kernel")]
 static BLK_COMPL: WaitList = WaitList::new();
 
-/// Wake every parked blk waiter so it re-checks used.idx. Driven by BOTH
-/// the per-queue completion MSI (registered in pci-boot — immediate wake)
-/// AND the timer tick (kmain `tick_poll_combined` — backstop if an MSI
-/// edge is missed/coalesced). Cheap when no one is parked.
+/// Wake every parked blk waiter so it re-checks used.idx. Driven by the
+/// per-queue completion MSI registered by the virtio-pci transport. Cheap
+/// when no one is parked.
 /// # C: O(N_waiters)
 #[cfg(target_os = "oxide-kernel")]
 pub fn wake_completions() {
@@ -98,9 +96,9 @@ fn can_sleep() -> bool {
 }
 
 /// Sleep the current task on `BLK_COMPL` for one wake cycle (woken by the
-/// timer tick via `tick_wake_completions` or by `release_turn`). Falls
-/// back to a CPU relax before the scheduler exists. The caller re-checks
-/// its condition after this returns.
+/// queue completion MSI or by `release_turn`. Falls back to a CPU relax
+/// before the scheduler exists. The caller re-checks its condition after
+/// this returns.
 /// # C: O(1) park
 #[cfg(target_os = "oxide-kernel")]
 #[inline]
@@ -160,16 +158,27 @@ const BOUNCE_ORDER: u8 = 6;
 /// device regardless of (possibly duplicate / empty) serials.
 static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(0);
 
+struct BlkRecord {
+    bus:      u8,
+    device:   u8,
+    function: u8,
+    name:     String,
+    state:    Arc<BlkState>,
+}
+
+static DEVICES: Spinlock<Vec<BlkRecord>, DriverLockClass> = Spinlock::new(Vec::new());
+
+fn same_bdf(rec: &BlkRecord, bus: u8, device: u8, function: u8) -> bool {
+    rec.bus == bus && rec.device == device && rec.function == function
+}
+
 /// Persistent per-device request engine. The PAs/VA reference rings
 /// the boot probe already programmed into the device; the bounce frame
 /// is allocated once at `init_blk`. A single in-flight request at a
 /// time (Stage 1, synchronous) — guarded by `inflight`.
 pub struct BlkState {
-    q0_desc_pa:   u64,
-    q0_avail_pa:  u64,
-    q0_used_pa:   u64,
-    q0_notify_va: u64,
-    q0_size:      u16,
+    cfg_va:       u64,
+    requestq:     virtio::VirtQueueResource,
     capacity:     u64,
     blk_size:     u32,
     /// Device serial from `VIRTIO_BLK_T_GET_ID` (trimmed). Identity
@@ -222,6 +231,74 @@ impl BlkState {
     /// # C: O(1)
     pub fn serial(&self) -> &[u8; blk::BLK_SERIAL_LEN] { &self.serial }
 
+    /// Quiesce publication and prevent future I/O. This is the minimal correct
+    /// remove boundary for the current synchronous engine: no new request may
+    /// reuse the shared descriptors/bounce frame after the device is reset.
+    /// Existing holders of the Arc observe EIO through `poisoned`.
+    /// # C: O(1)
+    fn remove(&self) {
+        self.poisoned.store(true, core::sync::atomic::Ordering::Release);
+        #[cfg(target_os = "oxide-kernel")]
+        BLK_COMPL.wake_all();
+        if !self.wait_idle_for_remove() {
+            if self.cfg_va != 0 {
+                // Reset to stop further device DMA, but keep the bounce run
+                // quarantined: an in-flight owner still has this request slot.
+                unsafe { core::ptr::write_volatile((self.cfg_va + 0x14) as *mut u8, 0u8); }
+            }
+            return;
+        }
+        if self.cfg_va != 0 {
+            // Virtio reset: write 0 to device_status (§3.1.1). Use the byte
+            // access size for the status field, matching modern virtio-pci.
+            unsafe { core::ptr::write_volatile((self.cfg_va + 0x14) as *mut u8, 0u8); }
+        }
+        if self.bounce_pa != 0 {
+            // SAFETY: remove poisons the request engine first and resets the
+            // device before returning the contiguous bounce run. Future holders
+            // of this Arc observe EIO before touching the freed DMA buffer.
+            unsafe { pmm::setup::free_contig(self.bounce_pa, pmm::Order(BOUNCE_ORDER)); }
+        }
+        #[cfg(target_os = "oxide-kernel")]
+        BLK_COMPL.wake_all();
+    }
+
+    /// Freeze new I/O and wait for the single in-flight request owner to leave
+    /// the bounce region before freeing it. A permanently wedged request keeps
+    /// the bounce run quarantined rather than freeing memory still reachable
+    /// by a live owner.
+    /// # C: O(wait until active request drains, bounded by IO_TIMEOUT_NS)
+    fn wait_idle_for_remove(&self) -> bool {
+        #[cfg(target_os = "oxide-kernel")]
+        let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
+        let mut spun: u64 = 0;
+        loop {
+            if !self.inflight.lock().busy {
+                return true;
+            }
+            #[cfg(target_os = "oxide-kernel")]
+            {
+                if now_ns() >= deadline {
+                    return false;
+                }
+                if spun < IO_SPIN_BUDGET {
+                    spun += 1;
+                    core::hint::spin_loop();
+                } else {
+                    park_blk();
+                }
+            }
+            #[cfg(not(target_os = "oxide-kernel"))]
+            {
+                spun += 1;
+                if spun > IO_FALLBACK_SPINS {
+                    return false;
+                }
+                core::hint::spin_loop();
+            }
+        }
+    }
+
     /// Issue one single-transfer request: `type_` ∈ T_IN / T_OUT /
     /// T_FLUSH / T_GET_ID. For device-readable transfers (T_OUT) the
     /// caller's `data` is copied into the bounce frame; for
@@ -231,7 +308,7 @@ impl BlkState {
     /// # C: O(wait until used.idx advances; sleeps after a short spin)
     fn submit(&self, type_: u32, sector: u64, data: &mut [u8]) -> KResult<()> {
         let h = hhdm();
-        if h == 0 || self.q0_desc_pa == 0 || self.bounce_pa == 0 {
+        if h == 0 || !self.requestq.is_runtime_valid() || self.bounce_pa == 0 {
             return Err(BlockError::Eio);
         }
         let is_flush = type_ == blk::VIRTIO_BLK_T_FLUSH;
@@ -310,11 +387,11 @@ impl BlkState {
         let status_pa = self.bounce_pa + STATUS_OFF as u64;
         let (descs, n) = blk::build_chain(is_in, hdr_pa, data_pa, data_len, status_pa);
 
-        let desc_tbl = h.wrapping_add(self.q0_desc_pa) as *mut u64;
+        let desc_tbl = h.wrapping_add(self.requestq.desc_pa) as *mut u64;
         // SAFETY: HHDM-mapped queue-0 descriptor table programmed by
         // the boot probe; `n ≤ 3` descriptors written as the two
         // little-endian words `pack_desc` defines; chain indices 0..n
-        // are within the device-declared q0_size; we own the in-flight slot.
+        // are within the device-declared requestq size; we own the in-flight slot.
         unsafe {
             for (i, d) in descs.iter().take(n).enumerate() {
                 let (w0, w1) = blk::pack_desc(d);
@@ -326,14 +403,14 @@ impl BlkState {
         // Publish the chain to the avail ring and capture our completion
         // target (the bumped avail.idx). Hold the inflight lock only for
         // this brief shadow mutation.
-        let avail = h.wrapping_add(self.q0_avail_pa) as *mut u16;
-        let qsz = if self.q0_size == 0 { 1 } else { self.q0_size };
+        let avail = h.wrapping_add(self.requestq.driver_pa) as *mut u16;
+        let qsz = self.requestq.size;
         let target = {
             let mut g = self.inflight.lock();
             let slot = g.avail_idx % qsz;
             // SAFETY: HHDM-mapped queue-0 avail ring; u16 stores at the
             // flags(0)/idx(1)/ring(2+slot) offsets within the frame; slot
-            // bounded by q0_size; the Release fence publishes the chain
+            // bounded by requestq.size; the Release fence publishes the chain
             // before idx so the device observes a fully-built request.
             unsafe {
                 core::ptr::write_volatile(avail.add(2 + slot as usize), 0u16);
@@ -346,11 +423,16 @@ impl BlkState {
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
 
         // Kick the device via the notify register.
-        if self.q0_notify_va != 0 {
+        if self.requestq.notify_va != 0 {
             // SAFETY: notify VA is the Device-attr MMIO window mapped by
-            // the boot probe; an aligned u16 store of queue index 0 is
+            // the transport probe; an aligned u16 store of the queue index is
             // the spec-defined kick.
-            unsafe { core::ptr::write_volatile(self.q0_notify_va as *mut u16, 0u16); }
+            unsafe {
+                core::ptr::write_volatile(
+                    self.requestq.notify_va as *mut u16,
+                    self.requestq.index,
+                );
+            }
         }
 
         // Wait for the device to consume our chain (used.idx == target).
@@ -386,12 +468,12 @@ impl BlkState {
     /// Wait until the device advances used.idx to `target`. Adaptive: a
     /// short bounded spin catches the common near-instant completion with
     /// zero scheduler overhead; only then does the task SLEEP on
-    /// `BLK_COMPL` (woken from the timer tick), avoiding a CPU peg on a
-    /// slow/stuck completion. A wall-clock deadline bounds a genuinely-lost
+    /// `BLK_COMPL` until the queue completion IRQ wakes it, avoiding a CPU
+    /// peg on a slow/stuck completion. A wall-clock deadline bounds a genuinely-lost
     /// completion to `EIO`. Re-checks used.idx after every wake.
     /// # C: O(wait until used.idx advances)
     fn wait_for_completion(&self, h: u64, target: u16) -> KResult<()> {
-        let used = h.wrapping_add(self.q0_used_pa) as *const u16;
+        let used = h.wrapping_add(self.requestq.device_pa) as *const u16;
         #[cfg(target_os = "oxide-kernel")]
         let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
         let mut spun: u64 = 0;
@@ -528,16 +610,12 @@ impl BlockDevice for BlkState {
 
 /// Boot-probe handoff: the persistent ring addresses + device-cfg the
 /// probe harvested. `pci_boot::virtio_drv` fills this after DRIVER_OK.
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone)]
 pub struct BlkInit {
     pub bus:      u8,
     pub device:   u8,
     pub function: u8,
-    pub q0_desc_pa:   u64,
-    pub q0_avail_pa:  u64,
-    pub q0_used_pa:   u64,
-    pub q0_notify_va: u64,
-    pub q0_size:      u16,
+    pub resources: virtio::VirtioResources,
     pub capacity:     u64,
     pub blk_size:     u32,
 }
@@ -559,6 +637,15 @@ pub fn disk_name(index: u32) -> String {
 /// 1-based registry index (0 on bounce-alloc failure).
 /// # C: O(1) + GET_ID transfer + registry O(N_disks)
 pub fn init_blk(init: BlkInit) -> u32 {
+    let Some(requestq) = init.resources.require_queue(0) else {
+        return 0;
+    };
+    if !init.resources.common_cfg_valid() {
+        return 0;
+    }
+    if DEVICES.lock().iter().any(|d| same_bdf(d, init.bus, init.device, init.function)) {
+        return 0;
+    }
     // Contiguous BOUNCE_ORDER region (256 KiB) so the 128 KiB data
     // descriptor addresses one physically-contiguous, region-aligned run.
     let bounce_pa = match pmm::setup::alloc_contig(pmm::Order(BOUNCE_ORDER)) {
@@ -586,8 +673,8 @@ pub fn init_blk(init: BlkInit) -> u32 {
     // seed defensively in case the device or a warm reboot left used.idx
     // advanced, so the first real submit waits for a fresh completion
     // rather than mistaking a stale one for its own.
-    let seed = if h != 0 && init.q0_used_pa != 0 {
-        let used = h.wrapping_add(init.q0_used_pa) as *const u16;
+    let seed = if h != 0 && requestq.device_pa != 0 {
+        let used = h.wrapping_add(requestq.device_pa) as *const u16;
         // SAFETY: HHDM-mapped queue-0 used ring programmed by the boot
         // probe; aligned u16 load of the used.idx field at offset 1.
         unsafe { core::ptr::read_volatile(used.add(1)) }
@@ -597,11 +684,8 @@ pub fn init_blk(init: BlkInit) -> u32 {
     // serial via GET_ID and stamp it before publishing the Arc. The
     // ring fields are all that GET_ID needs.
     let mut state = BlkState {
-        q0_desc_pa:   init.q0_desc_pa,
-        q0_avail_pa:  init.q0_avail_pa,
-        q0_used_pa:   init.q0_used_pa,
-        q0_notify_va: init.q0_notify_va,
-        q0_size:      init.q0_size,
+        cfg_va:       init.resources.cfg_va,
+        requestq,
         capacity:     init.capacity,
         blk_size,
         serial:       [0u8; blk::BLK_SERIAL_LEN],
@@ -628,9 +712,34 @@ pub fn init_blk(init: BlkInit) -> u32 {
     // registry can bind named volumes (oxide-root/oxide-home) by serial.
     let serial_len = state.serial.iter().position(|&b| b == 0).unwrap_or(state.serial.len());
     let serial_str = String::from_utf8_lossy(&state.serial[..serial_len]).into_owned();
-    let state: Arc<dyn BlockDevice> = Arc::new(state);
+    let state: Arc<BlkState> = Arc::new(state);
     let serial_opt = if serial_str.is_empty() { None } else { Some(serial_str.as_str()) };
-    let idx = block::registry::register_with_serial(&name, serial_opt, state);
+    let existed = block::registry::by_name(&name).is_some();
+    let idx = block::registry::register_with_serial(&name, serial_opt, state.clone());
+    let published = if idx != 0 && !existed {
+        let mut devices = DEVICES.lock();
+        if devices.iter().any(|d| same_bdf(d, init.bus, init.device, init.function)) {
+            false
+        } else {
+            devices.push(BlkRecord {
+                bus: init.bus,
+                device: init.device,
+                function: init.function,
+                name: name.clone(),
+                state: state.clone(),
+            });
+            true
+        }
+    } else {
+        false
+    };
+    if !published {
+        if idx != 0 && !existed {
+            let _ = block::registry::unregister(&name);
+        }
+        state.remove();
+        return 0;
+    }
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  virtio-blk-modern ");
@@ -648,4 +757,61 @@ pub fn init_blk(init: BlkInit) -> u32 {
         klog::write_raw(b"\n");
     }
     idx
+}
+
+/// Remove the virtio-blk device identified by its PCI BDF. Stops future I/O,
+/// unregisters the block disk, and drops this driver's per-device record.
+/// Existing filesystem references keep their Arc alive but see EIO.
+/// # C: O(N_virtio_blk + N_disks + N_devices)
+pub fn remove_blk(bus: u8, device: u8, function: u8) -> bool {
+    let rec = {
+        let mut devices = DEVICES.lock();
+        match devices.iter().position(|d| same_bdf(d, bus, device, function)) {
+            Some(i) => devices.remove(i),
+            None => return false,
+        }
+    };
+    rec.state.remove();
+    block::registry::unregister(&rec.name)
+}
+
+#[cfg(test)]
+pub(crate) fn test_publish_record(bus: u8, device: u8, function: u8, name: &str) -> u32 {
+    if DEVICES.lock().iter().any(|d| same_bdf(d, bus, device, function)) {
+        return 0;
+    }
+    let state = Arc::new(BlkState {
+        cfg_va:       0,
+        requestq:     virtio::VirtQueueResource {
+            index:      0,
+            size:       0,
+            desc_pa:    0,
+            driver_pa:  0,
+            device_pa:  0,
+            notify_va:  0,
+            notify_off: 0,
+        },
+        capacity:     8,
+        blk_size:     512,
+        serial:       [0u8; blk::BLK_SERIAL_LEN],
+        bounce_pa:    0,
+        inflight:     Spinlock::new(RingShadow { avail_idx: 0, used_seen: 0, busy: false }),
+        poisoned:     core::sync::atomic::AtomicBool::new(false),
+    });
+    let idx = block::registry::register_with_serial(name, None, state.clone());
+    if idx != 0 {
+        DEVICES.lock().push(BlkRecord {
+            bus,
+            device,
+            function,
+            name: String::from(name),
+            state,
+        });
+    }
+    idx
+}
+
+#[cfg(test)]
+pub(crate) fn test_has_record(bus: u8, device: u8, function: u8) -> bool {
+    DEVICES.lock().iter().any(|d| same_bdf(d, bus, device, function))
 }

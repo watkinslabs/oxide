@@ -10,7 +10,7 @@ Driver crate `drv-virtio-snd` for virtio device class 25 ("sound device", PCI mo
 
 ## 2 Invariants (frozen)
 
-1. Driver lives in `crates/drivers/drv-virtio-snd`. Kernel does not link it directly; `drv::probe_all` invokes `probe(bdf)`. Pure MMIO (notify/common-cfg windows) + HHDM (rings + period buffers); zero arch-specific asm — identical on x86_64 + aarch64.
+1. Driver lives in `crates/drivers/drv-virtio-snd`. The virtio bus registers the child device and binds it through the `drv::Driver` probe/remove path. Pure MMIO (notify/common-cfg windows) + HHDM (rings + period buffers); zero arch-specific asm — identical on x86_64 + aarch64.
 2. Four virtqueues, fixed index: CONTROLQ(0, request/response control), EVENTQ(1, device→driver notifications), TXQ(2, guest→device PCM frames for OUTPUT streams), RXQ(3, device→guest PCM frames for INPUT streams).
 3. Negotiated features (v1): `VIRTIO_F_VERSION_1`(32). `VIRTIO_SND_F_CTLS`(0) negotiated when the device offers it (exposes the ALSA control/mixer element set); absent → `controls=0` and `/dev/snd/controlC0` exposes only the static master element.
 4. Config space `virtio_snd_config` (16 bytes): `le32 jacks; le32 streams; le32 chmaps; le32 controls`. Read once at probe to size the PCM/jack/chmap/control tables.
@@ -23,10 +23,9 @@ Driver crate `drv-virtio-snd` for virtio device class 25 ("sound device", PCI mo
 
 ```rust
 // crates/drivers/drv-virtio-snd/src/lib.rs
-pub fn register();   // drv::register(DriverEntry { name: "virtio-snd", probe })
-
-// Probe-time install hook (called from pci_boot::virtio_drv after DRIVER_OK):
+// Probe-time install hook (called by virtio-snd Driver::probe after DRIVER_OK):
 pub fn install(cfg: SndInstall) -> bool;
+pub fn uninstall();
 
 // ALSA + OSS node backends (crates/kernel/sound consumes these):
 pub fn card_count() -> u32;
@@ -173,7 +172,7 @@ Per `linux/include/uapi/linux/soundcard.h`. Major 14. `write(2)` of PCM → `pcm
 
 ## 7 Probe + bring-up
 
-1. `drv::probe_all(bdf)` → `drv-virtio-snd::probe`. PCI match `0x1AF4`/`0x1059`.
+1. The virtio bus binds the virtio-snd child device through `Driver::probe`.
 2. Standard virtio init (ACK → DRIVER → features (`VERSION_1` + `CTLS` if offered) → FEATURES_OK).
 3. Program all four queues' desc/avail/used PAs; DRIVER_OK.
 4. Read `virtio_snd_config` → `streams`, `jacks`, `chmaps`, `controls`.

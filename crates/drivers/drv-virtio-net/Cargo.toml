@@ -11,6 +11,7 @@ license = "MPL-2.0"
 
 [dependencies]
 timer = { path = "../../kernel/timer" }
+softirq  = { path = "../../kernel/softirq" }
 hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
 net      = { path = "../../kernel/net" }

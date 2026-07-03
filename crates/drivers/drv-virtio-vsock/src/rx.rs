@@ -19,15 +19,15 @@ pub(crate) fn prepost_all() {
     let mut g = CTX.lock();
     let ctx = match g.as_mut() { Some(c) => c, None => return };
     let h = ctx.hhdm;
-    let qsz = if ctx.q0_size == 0 { 1u16 } else { ctx.q0_size };
-    let desc = h.wrapping_add(ctx.q0_desc_pa) as *mut u64;
-    let avail = h.wrapping_add(ctx.q0_driver_pa) as *mut u16;
+    let qsz = ctx.rxq.size;
+    let desc = h.wrapping_add(ctx.rxq.desc_pa) as *mut u64;
+    let avail = h.wrapping_add(ctx.rxq.driver_pa) as *mut u16;
 
     for i in 0..RX_RING_BUFS {
         let buf_pa = ctx.rx_bufs[i];
         // Descriptor[i] = { addr=buf_pa, len=4096, flags=WRITE, next=0 }.
         // SAFETY: HHDM-mapped q0 descriptor table programmed by the boot
-        // probe; two aligned u64 stores per slot i < RX_RING_BUFS ≤ q0_size
+        // probe; two aligned u64 stores per slot i < RX_RING_BUFS <= rxq.size
         // build a device-writable descriptor over our owned bounce frame.
         unsafe {
             core::ptr::write_volatile(desc.add(i * 2), buf_pa);
@@ -36,7 +36,7 @@ pub(crate) fn prepost_all() {
         }
         let slot = (ctx.rx_avail_idx % qsz) as usize;
         // SAFETY: HHDM-mapped q0 avail ring; u16 store at ring(2+slot)
-        // publishes descriptor index i; slot bounded by q0_size.
+        // publishes descriptor index i; slot bounded by rxq.size.
         unsafe { core::ptr::write_volatile(avail.add(2 + slot), i as u16); }
         ctx.rx_avail_idx = ctx.rx_avail_idx.wrapping_add(1);
     }
@@ -48,7 +48,7 @@ pub(crate) fn prepost_all() {
     // Kick q0 (queue index 0).
     // SAFETY: q0 notify VA is the Device-attr MMIO window mapped by the
     // boot probe; an aligned u16 store of queue index 0 is the kick.
-    unsafe { core::ptr::write_volatile(ctx.q0_notify_va as *mut u16, 0u16); }
+    unsafe { core::ptr::write_volatile(ctx.rxq.notify_va as *mut u16, ctx.rxq.index); }
 }
 
 /// Drain completed RX buffers. For each used element since last drain:
@@ -65,21 +65,21 @@ pub(crate) fn drain() -> usize {
         let mut g = CTX.lock();
         let ctx = match g.as_mut() { Some(c) => c, None => return 0 };
         let h = ctx.hhdm;
-        let qsz = if ctx.q0_size == 0 { 1u16 } else { ctx.q0_size };
-        let used = h.wrapping_add(ctx.q0_device_pa) as *const u16;
+        let qsz = ctx.rxq.size;
+        let used = h.wrapping_add(ctx.rxq.device_pa) as *const u16;
         // SAFETY: HHDM-mapped q0 used ring; aligned u16 load of used.idx.
         let cur_used = unsafe { core::ptr::read_volatile(used.add(1)) };
         // virtio 1.2 §2.7.13.2: acquire barrier after observing used.idx so the
         // used-element id/len + RX buffer payload are not read ahead of it.
         core::sync::atomic::fence(Ordering::Acquire);
-        let used_u32 = h.wrapping_add(ctx.q0_device_pa) as *const u32;
+        let used_u32 = h.wrapping_add(ctx.rxq.device_pa) as *const u32;
 
         while ctx.rx_used_seen != cur_used {
             let e = (ctx.rx_used_seen % qsz) as usize;
             // used ring[]: starts at byte 4 → u32 index 1; each elem is
             // {id:u32, len:u32}; id at idx 1+e*2, len at 1+e*2+1.
             // SAFETY: HHDM-mapped used ring; aligned u32 loads of the
-            // completed element's id+len; e bounded by q0_size.
+            // completed element's id+len; e bounded by rxq.size.
             let (desc_id, dev_len) = unsafe {
                 (core::ptr::read_volatile(used_u32.add(1 + e * 2)),
                  core::ptr::read_volatile(used_u32.add(1 + e * 2 + 1)))
@@ -105,8 +105,8 @@ pub(crate) fn drain() -> usize {
 
         // Re-post the consumed descriptors so the device can refill.
         if !refill_slots.is_empty() {
-            let desc = h.wrapping_add(ctx.q0_desc_pa) as *mut u64;
-            let avail = h.wrapping_add(ctx.q0_driver_pa) as *mut u16;
+            let desc = h.wrapping_add(ctx.rxq.desc_pa) as *mut u64;
+            let avail = h.wrapping_add(ctx.rxq.driver_pa) as *mut u16;
             for &desc_id in &refill_slots {
                 let slot = (desc_id as usize) % RX_RING_BUFS;
                 let buf_pa = ctx.rx_bufs[slot];
@@ -127,7 +127,7 @@ pub(crate) fn drain() -> usize {
             unsafe { core::ptr::write_volatile(avail.add(1), ctx.rx_avail_idx); }
             core::sync::atomic::fence(Ordering::Release);
             // SAFETY: q0 notify VA Device-attr mapped; kick queue index 0.
-            unsafe { core::ptr::write_volatile(ctx.q0_notify_va as *mut u16, 0u16); }
+            unsafe { core::ptr::write_volatile(ctx.rxq.notify_va as *mut u16, ctx.rxq.index); }
         }
     }
 

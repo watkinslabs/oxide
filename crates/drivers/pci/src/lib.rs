@@ -32,6 +32,33 @@ impl Bdf {
     }
 }
 
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn hex_byte(s: &[u8]) -> Option<u8> {
+    Some((hex_nibble(*s.first()?)? << 4) | hex_nibble(*s.get(1)?)?)
+}
+
+/// Parse a PCI model address in the kernel's canonical
+/// `0000:bb:dd.f` form. # C: O(1)
+pub fn parse_bdf_addr(addr: &str) -> Option<Bdf> {
+    let b = addr.as_bytes();
+    if b.len() != 12 || b[4] != b':' || b[7] != b':' || b[10] != b'.' {
+        return None;
+    }
+    Some(Bdf {
+        bus: hex_byte(&b[5..7])?,
+        device: hex_byte(&b[8..10])?,
+        function: hex_nibble(b[11])?,
+    })
+}
+
 /// `ConfigSpaceReader`: arch-specific accessor for the per-BDF
 /// 256-byte config space. x86 uses CF8/CFC; AArch64 ECAM MMIO.
 pub trait ConfigSpaceReader: Send + Sync {
@@ -39,6 +66,38 @@ pub trait ConfigSpaceReader: Send + Sync {
     fn read32(&self, bdf: Bdf, offset: u8) -> u32;
     /// Optional write (for BAR programming, MSI setup, etc.).
     fn write32(&self, bdf: Bdf, offset: u8, val: u32);
+}
+
+/// PCI command register bit: I/O Space Enable.
+pub const COMMAND_IO: u16 = 1 << 0;
+/// PCI command register bit: Memory Space Enable.
+pub const COMMAND_MEMORY: u16 = 1 << 1;
+/// PCI command register bit: Bus Master Enable.
+pub const COMMAND_BUS_MASTER: u16 = 1 << 2;
+
+/// Read the low 16-bit PCI command register. # C: O(1)
+pub fn read_command<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> u16 {
+    (r.read32(bdf, 0x04) & 0xFFFF) as u16
+}
+
+/// Write the low 16-bit PCI command register while preserving status bits.
+/// # C: O(1)
+pub fn write_command<R: ConfigSpaceReader>(r: &R, bdf: Bdf, command: u16) {
+    let cur = r.read32(bdf, 0x04);
+    r.write32(bdf, 0x04, (cur & 0xFFFF_0000) | command as u32);
+}
+
+/// Enable Memory Space and Bus Master for a function claimed by a driver.
+/// Returns the previous command value so a driver can restore it on failed
+/// probe or remove when it owns that policy.
+/// # C: O(1)
+pub fn enable_mem_bus_master<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> u16 {
+    let old = read_command(r, bdf);
+    let new = old | COMMAND_MEMORY | COMMAND_BUS_MASTER;
+    if new != old {
+        write_command(r, bdf, new);
+    }
+    old
 }
 
 /// Per-device decoded summary for the kernel's device list.
@@ -244,6 +303,32 @@ pub enum Bar {
     HighHalfConsumed,
 }
 
+/// Linux-compatible resource flag bits for PCI BAR resources. These mirror the
+/// common `IORESOURCE_*` values exposed by `/sys/bus/pci/devices/.../resource`.
+pub const IORESOURCE_IO:       u64 = 0x0000_0100;
+pub const IORESOURCE_MEM:      u64 = 0x0000_0200;
+pub const IORESOURCE_PREFETCH: u64 = 0x0000_2000;
+
+/// One sized PCI BAR resource.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Resource {
+    pub start: u64,
+    pub end:   u64,
+    pub flags: u64,
+}
+
+impl Bar {
+    /// Physical base of a memory BAR, or None for I/O/empty BAR slots.
+    /// # C: O(1)
+    pub const fn mem_base(self) -> Option<u64> {
+        match self {
+            Bar::Mem32 { base, .. } => Some(base as u64),
+            Bar::Mem64 { base, .. } => Some(base),
+            _ => None,
+        }
+    }
+}
+
 /// BAR offset in config space for header type 0. # C: O(1)
 pub const fn bar_offset(idx: u8) -> u8 {
     debug_assert!(idx < 6);
@@ -280,6 +365,103 @@ pub fn decode_bars<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> [Bar; 6] {
             idx += 1;
         }
     }
+    out
+}
+
+fn bar_size32(mask: u32, low_bits: u32) -> u64 {
+    let m = mask & !low_bits;
+    if m == 0 {
+        0
+    } else {
+        (!m).wrapping_add(1) as u64
+    }
+}
+
+fn bar_size64(mask: u64, low_bits: u64) -> u64 {
+    let m = mask & !low_bits;
+    if m == 0 {
+        0
+    } else {
+        (!m).wrapping_add(1)
+    }
+}
+
+/// Size the programmed BARs of a header-type-0 function and return Linux
+/// resource records. Temporarily disables I/O and memory decode while probing,
+/// then restores every BAR and the command register.
+/// # C: O(1) — at most 6 BARs, with bounded config-space writes.
+pub fn probe_bar_resources<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> [Option<Resource>; 6] {
+    let mut out = [None; 6];
+    let cmd_status = r.read32(bdf, 0x04);
+    let cmd = cmd_status & 0xFFFF;
+    r.write32(bdf, 0x04, (cmd_status & 0xFFFF_0000) | (cmd & !0x3));
+
+    let mut idx = 0u8;
+    while idx < 6 {
+        let off = bar_offset(idx);
+        let orig = r.read32(bdf, off);
+        if orig == 0 || orig == 0xFFFF_FFFF {
+            idx += 1;
+            continue;
+        }
+
+        if orig & 0x1 != 0 {
+            r.write32(bdf, off, 0xFFFF_FFFF);
+            let mask = r.read32(bdf, off);
+            r.write32(bdf, off, orig);
+            let start = (orig & 0xFFFF_FFFC) as u64;
+            let size = bar_size32(mask, 0x3);
+            if start != 0 && size != 0 {
+                out[idx as usize] = Some(Resource {
+                    start,
+                    end: start.saturating_add(size).saturating_sub(1),
+                    flags: IORESOURCE_IO,
+                });
+            }
+            idx += 1;
+            continue;
+        }
+
+        let prefetch = orig & 0x8 != 0;
+        let kind = (orig >> 1) & 0x3;
+        if kind == 0x2 && idx + 1 < 6 {
+            let off_hi = bar_offset(idx + 1);
+            let orig_hi = r.read32(bdf, off_hi);
+            r.write32(bdf, off, 0xFFFF_FFFF);
+            r.write32(bdf, off_hi, 0xFFFF_FFFF);
+            let mask_lo = r.read32(bdf, off) as u64;
+            let mask_hi = r.read32(bdf, off_hi) as u64;
+            r.write32(bdf, off_hi, orig_hi);
+            r.write32(bdf, off, orig);
+            let start = ((orig_hi as u64) << 32) | ((orig & 0xFFFF_FFF0) as u64);
+            let mask = (mask_hi << 32) | mask_lo;
+            let size = bar_size64(mask, 0xF);
+            if start != 0 && size != 0 {
+                out[idx as usize] = Some(Resource {
+                    start,
+                    end: start.saturating_add(size).saturating_sub(1),
+                    flags: IORESOURCE_MEM | if prefetch { IORESOURCE_PREFETCH } else { 0 },
+                });
+            }
+            idx += 2;
+        } else {
+            r.write32(bdf, off, 0xFFFF_FFFF);
+            let mask = r.read32(bdf, off);
+            r.write32(bdf, off, orig);
+            let start = (orig & 0xFFFF_FFF0) as u64;
+            let size = bar_size32(mask, 0xF);
+            if start != 0 && size != 0 {
+                out[idx as usize] = Some(Resource {
+                    start,
+                    end: start.saturating_add(size).saturating_sub(1),
+                    flags: IORESOURCE_MEM | if prefetch { IORESOURCE_PREFETCH } else { 0 },
+                });
+            }
+            idx += 1;
+        }
+    }
+
+    r.write32(bdf, 0x04, cmd_status);
     out
 }
 
@@ -351,6 +533,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_bdf_addr_kernel_model_form() {
+        assert_eq!(
+            parse_bdf_addr("0000:00:1f.2"),
+            Some(Bdf { bus: 0x00, device: 0x1f, function: 2 })
+        );
+        assert_eq!(
+            parse_bdf_addr("0000:ab:0C.7"),
+            Some(Bdf { bus: 0xab, device: 0x0c, function: 7 })
+        );
+        assert_eq!(parse_bdf_addr("00:1f.2"), None);
+        assert_eq!(parse_bdf_addr("0000:00:1f:x"), None);
+    }
+
+    #[test]
+    fn enable_mem_bus_master_preserves_status_bits() {
+        let r = MapReader { m: Mutex::new(HashMap::new()) };
+        let bdf = Bdf { bus: 0, device: 6, function: 0 };
+        r.write32(bdf, 0x04, 0x1234_0001);
+
+        let old = enable_mem_bus_master(&r, bdf);
+
+        assert_eq!(old, COMMAND_IO);
+        assert_eq!(r.read32(bdf, 0x04), 0x1234_0007);
+    }
+
+    #[test]
     fn decode_mem64_bar() {
         let r = MapReader { m: Mutex::new(HashMap::new()) };
         let bdf = Bdf { bus: 0, device: 1, function: 0 };
@@ -366,7 +574,9 @@ mod tests {
         r.write32(bdf, 0x24, 0);
         let bars = decode_bars(&r, bdf);
         assert_eq!(bars[0], Bar::Mem64 { base: 0x1_0000_0000, prefetch: true });
+        assert_eq!(bars[0].mem_base(), Some(0x1_0000_0000));
         assert_eq!(bars[1], Bar::HighHalfConsumed);
+        assert_eq!(bars[1].mem_base(), None);
         assert_eq!(bars[2], Bar::None);
     }
 
@@ -385,6 +595,35 @@ mod tests {
         let bars = decode_bars(&r, bdf);
         assert_eq!(bars[0], Bar::Mem32 { base: 0x1000_0000, prefetch: false });
         assert_eq!(bars[1], Bar::Io { port: 0xC000 });
+    }
+
+    #[test]
+    fn probe_bar_resources_restores_command_and_bars() {
+        let r = MapReader { m: Mutex::new(HashMap::new()) };
+        let bdf = Bdf { bus: 0, device: 3, function: 0 };
+        r.write32(bdf, 0x04, 0x0010_0007);
+        r.write32(bdf, 0x10, 0x1000_0000);
+        r.write32(bdf, 0x14, 0x0000_C001);
+        r.write32(bdf, 0x18, 0);
+        r.write32(bdf, 0x1C, 0);
+        r.write32(bdf, 0x20, 0);
+        r.write32(bdf, 0x24, 0);
+
+        let res = probe_bar_resources(&r, bdf);
+
+        assert_eq!(r.read32(bdf, 0x04), 0x0010_0007);
+        assert_eq!(r.read32(bdf, 0x10), 0x1000_0000);
+        assert_eq!(r.read32(bdf, 0x14), 0x0000_C001);
+        assert_eq!(res[0], Some(Resource {
+            start: 0x1000_0000,
+            end: 0x1000_000f,
+            flags: IORESOURCE_MEM,
+        }));
+        assert_eq!(res[1], Some(Resource {
+            start: 0xC000,
+            end: 0xC003,
+            flags: IORESOURCE_IO,
+        }));
     }
 
     #[test]

@@ -8,22 +8,54 @@
 //! mechanism, the callers own the timers (docs/53 kernel=glue).
 extern crate alloc;
 
-use sync::{Spinlock, Timer as TimerLock};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
+use sync::{Spinlock, Timer as TimerLock};
 
 /// Periodic callback. Receives the current monotonic time (ns).
 pub type TimerFn = fn(u64);
 
-struct Entry { interval_ns: u64, last_ns: u64, f: TimerFn }
+/// Opaque id for a registered periodic timer.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct TimerId(u64);
+
+impl TimerId {
+    /// Rebuild a timer id from a stored raw value. `0` is never a valid id.
+    /// # C: O(1)
+    pub const fn from_raw(raw: u64) -> Option<Self> {
+        if raw == 0 { None } else { Some(Self(raw)) }
+    }
+
+    /// Raw non-zero id suitable for atomic storage by the timer owner.
+    /// # C: O(1)
+    pub const fn raw(self) -> u64 { self.0 }
+}
+
+struct Entry { id: TimerId, interval_ns: u64, last_ns: u64, f: TimerFn }
 
 static TIMERS: Spinlock<Vec<Entry>, TimerLock> = Spinlock::new(Vec::new());
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Register a periodic callback fired roughly every `interval_ns` from the
 /// timer driver's process context (safe to take runqueue/subsystem locks).
-/// Call once per timer at boot from the owning subsystem.
+/// The returned id belongs to the caller and must be unregistered by drivers
+/// whose lifetime is tied to a removable device.
 /// # C: O(1) amortized
-pub fn register_periodic(interval_ns: u64, f: TimerFn) {
-    TIMERS.lock().push(Entry { interval_ns, last_ns: 0, f });
+pub fn register_periodic(interval_ns: u64, f: TimerFn) -> TimerId {
+    let raw = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let id = TimerId(if raw == 0 { NEXT_ID.fetch_add(1, Ordering::Relaxed) } else { raw });
+    TIMERS.lock().push(Entry { id, interval_ns, last_ns: 0, f });
+    id
+}
+
+/// Unregister a periodic timer previously returned by `register_periodic`.
+/// Returns true if the timer was still registered.
+/// # C: O(N registered)
+pub fn unregister_periodic(id: TimerId) -> bool {
+    let mut g = TIMERS.lock();
+    let before = g.len();
+    g.retain(|entry| entry.id != id);
+    g.len() != before
 }
 
 /// Fire every registered timer whose interval has elapsed since its last

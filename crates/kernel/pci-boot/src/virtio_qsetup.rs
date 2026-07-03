@@ -98,32 +98,3 @@ pub(super) fn program_queue(cfg_va: u64, qi: u16, msix_vec: u16, hhdm: u64) -> O
 
     Some(QueueRing { desc_pa, driver_pa, device_pa, notify_off, size })
 }
-
-/// Map the per-queue notify window: NOTIFY_BAR_pa + notify_cap.offset +
-/// notify_off × notify_off_multiplier (Virtio 1.2 §4.1.4.4), returning the
-/// kick VA (an aligned u16 store of the queue index notifies the device).
-/// 0 if the NOTIFY cap's BAR doesn't decode. Generalises the q1 notify-VA
-/// computation hand-coded in the net/vsock paths so q2/q3 (virtio-snd)
-/// reuse it.
-/// # SAFETY: caller is the boot path; maps a Device-attr MMIO page.
-/// # C: O(1) — one page map
-pub(super) fn notify_va(
-    notify_cap: &virtio::VirtioPciCap,
-    bars: &[pci::Bar],
-    notify_off: u16,
-) -> u64 {
-    let nbar_pa = match bars[notify_cap.bar as usize] {
-        pci::Bar::Mem32 { base, .. } => base as u64,
-        pci::Bar::Mem64 { base, .. } => base,
-        _ => return 0,
-    };
-    if nbar_pa == 0 { return 0; }
-    let nfy_pa = nbar_pa + notify_cap.offset as u64
-        + (notify_off as u64) * (notify_cap.notify_off_multiplier as u64);
-    let n_page_pa = nfy_pa & !0xFFF;
-    let n_page_off = nfy_pa - n_page_pa;
-    // SAFETY: NOTIFY BAR PA decoded from the device cap; bump VA private to
-    // virtio; one page covers the queue's notify register.
-    let n_va = unsafe { super::map_mmio_pages(n_page_pa, 1) };
-    n_va + n_page_off
-}

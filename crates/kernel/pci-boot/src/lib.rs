@@ -8,51 +8,14 @@ extern crate alloc;
 // EcamPci MMIO seeded by `device_map_smoke_arm`). Split out of
 // `lib.rs` to keep that file under the 1000-line cap (08§7).
 
-
-use core::sync::atomic::{AtomicU64, Ordering};
-use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
-#[cfg(target_arch = "aarch64")]
-use hal_aarch64::mmu_ops::ArmMmu;
-#[cfg(target_arch = "x86_64")]
-use hal_x86_64::mmu_ops::X86Mmu;
-
-/// Kernel VA bump-allocator base for virtio BAR mappings. Disjoint
-/// from `KERNEL_DEVICE_BASE` (low-32 PA alias) and `ECAM_BUS0_VA`.
-const VIRTIO_BAR_VA_BASE: u64 = 0xffff_fd00_0000_0000;
-static VIRTIO_BAR_VA_NEXT: AtomicU64 = AtomicU64::new(VIRTIO_BAR_VA_BASE);
-
-/// F58: virtio-net's allocated MSI vector (x86) / SPI (arm). Stashed
-/// during the per-device cap-scan binding; consumed by the post-scan
-/// iface-registration site to install a per-vector handler.
-static VIRTIO_NET_MSI_ID: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
-
-fn device_flags() -> PageFlags {
-    PageFlags::READ | PageFlags::WRITE | PageFlags::NO_CACHE | PageFlags::WRITE_THROUGH
-}
-
-/// Map `n_pages` of MMIO at PA `pa` (4K-aligned) into kernel VA at
-/// the next free virtio-BAR slot. Returns the base VA.
+/// Map `n_pages` of MMIO at PA `pa` (4K-aligned) into kernel VA space.
+/// Returns the base VA.
 /// # SAFETY: caller asserts (a) `pa` names a real device region the
 /// kernel exclusively owns, (b) PMM ready + single-CPU + IRQs masked,
 /// (c) `pa` is 4K-aligned. Used only at boot for virtio probing.
 /// # C: O(n_pages × walk depth)
 pub(crate) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
-    let bytes = n_pages * 0x1000;
-    let base = VIRTIO_BAR_VA_NEXT.fetch_add(bytes, Ordering::AcqRel);
-    for i in 0..n_pages {
-        let va = base + i * 0x1000;
-        let pa_i = pa + i * 0x1000;
-        // SAFETY: per fn contract; kernel-half VA is private to the
-        // bump allocator above; map() splices a Device-attr leaf.
-        unsafe {
-            #[cfg(target_arch = "x86_64")]
-            <X86Mmu as MmuOps>::map(Va(va), Pa(pa_i), device_flags(), PageSize::P4K);
-            #[cfg(target_arch = "aarch64")]
-            <ArmMmu as MmuOps>::map(Va(va), Pa(pa_i), device_flags(), PageSize::P4K);
-        }
-    }
-    base
+    unsafe { mmio_map::map_pages(pa, n_pages) }
 }
 
 // Submodule named `virtio_drv` (not `virtio`) so it doesn't shadow
@@ -64,7 +27,6 @@ mod virtio_blk_cfg;
 mod virtio_vsock_cfg;
 mod virtio_snd_cfg;
 mod virtio_trace;
-use virtio_drv::virtio_probe_arch;
 
 /// Monotonic virtio-bus sequence (`virtioN` naming) assigned in
 /// enumeration order, mirroring Linux's virtio-pci registration.
@@ -72,127 +34,20 @@ static VIRTIO_SEQ: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32
 /// Next virtio bus index. # C: O(1)
 fn virtio_seq() -> u32 { VIRTIO_SEQ.fetch_add(1, core::sync::atomic::Ordering::Relaxed) }
 
-/// Enable PCI command reg bits 1 (Memory Space) + 2 (Bus Master) on
-/// `bdf`. UEFI on QEMU virt leaves Memory OFF; without this any BAR
-/// MMIO read returns 0xFFFFFFFF and any write is silently dropped.
-/// # C: O(1) — one config-space R/W pair.
-fn enable_pci_mem_bm(bdf: pci::Bdf) {
-    use pci::ConfigSpaceReader as _;
-    let cur = {
-        #[cfg(target_arch = "x86_64")]
-        { let r = hal_x86_64::pci::LegacyPci;
-          <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::read32(&r, bdf, 0x04) }
-        #[cfg(target_arch = "aarch64")]
-        { match hal_aarch64::pci::EcamPci::from_published() {
-            Some(r) => <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&r, bdf, 0x04),
-            None => return,
-        } }
-    };
-    let new = (cur & 0xFFFF_0000) | ((cur & 0xFFFF) | 0x0006);
-    if new == cur { return; }
-    #[cfg(target_arch = "x86_64")]
-    { let r = hal_x86_64::pci::LegacyPci;
-      <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::write32(&r, bdf, 0x04, new); }
-    #[cfg(target_arch = "aarch64")]
-    { if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
-        <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::write32(&r, bdf, 0x04, new);
-    } }
-}
-
-/// drivers-plan D3.5: bring up an NVMe controller. Matches PCI class
-/// 0x010802 (mass-storage / NVM / NVMe; QEMU vendor 0x1b36 device 0x0010).
-/// BAR0 is a 64-bit memory BAR holding the controller register file; map 2
-/// pages (CAP/CC/AQA/ASQ/ACQ + doorbells) and hand the VA to `drv_nvme::init`,
-/// which resets the controller, runs IDENTIFY, creates one I/O queue pair, and
-/// registers `nvme0n1` as a `BlockDevice`. On success publish the D1a model
-/// driver + bind (`/sys/bus/pci/drivers/nvme` + the device's `driver` symlink).
-/// # SAFETY: boot path; PMM ready; single-CPU; IRQs masked. BAR0 PA owned by
-/// the device; map_mmio_pages splices a private Device-attr window.
-/// # C: O(BAR map + controller bring-up)
-fn nvme_probe(d: &pci::PciDevice) {
-    let class24 = ((d.class_code as u32) << 16)
-        | ((d.subclass as u32) << 8) | (d.prog_if as u32);
-    if class24 != drv_nvme::NVME_CLASS24 { return; }
-    let bdf = d.bdf;
-    // Decode BARs; BAR0 is the NVMe register file (64-bit mem BAR).
-    let bars = {
-        #[cfg(target_arch = "x86_64")]
-        { let r = hal_x86_64::pci::LegacyPci; pci::decode_bars(&r, bdf) }
-        #[cfg(target_arch = "aarch64")]
-        { match hal_aarch64::pci::EcamPci::from_published() {
-            Some(r) => pci::decode_bars(&r, bdf),
-            None    => [pci::Bar::None; 6],
-        } }
-    };
-    let bar0_pa = match bars[0] {
-        pci::Bar::Mem64 { base, .. } => base,
-        pci::Bar::Mem32 { base, .. } => base as u64,
-        _ => 0,
-    };
-    if bar0_pa == 0 { return; }
-    // SAFETY: bar0_pa decoded from the device's programmed BAR0; PMM ready +
-    // single-CPU + IRQs masked at the boot probe; 2 pages cover the register
-    // file + the doorbell array (DSTRD ≤ small on QEMU).
-    let bar0_va = unsafe { map_mmio_pages(bar0_pa & !0xFFF, 2) }
-        + (bar0_pa & 0xFFF);
-    let idx = drv_nvme::init(bar0_va);
-    if idx != 0 {
-        drv::register_driver(&drv_nvme::NVME_DRIVER);
-        let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
-            0u16, bdf.bus, bdf.device, bdf.function);
-        drv::bind_addr("pci", &addr, "nvme");
-    }
-}
-
-/// drivers-plan D3.6: bring up an AHCI/SATA controller. Matches PCI class
-/// 0x010601 (mass-storage / SATA / AHCI; QEMU ich9-ahci vendor 0x8086 device
-/// 0x2922). ABAR is BAR5, a 32-bit memory BAR holding the HBA register file;
-/// map 2 pages (generic HBA regs + the 32-port register array, 0x100 + 32*0x80
-/// = 0x1100 ≤ 2 pages) and hand the VA to `drv_ahci::init`, which enables
-/// AHCI mode, brings up the first SATA-disk port, runs IDENTIFY, and registers
-/// `sata0` as a `BlockDevice`. On success publish the D1a model driver + bind
-/// (`/sys/bus/pci/drivers/ahci` + the device's `driver` symlink).
-/// # SAFETY: boot path; PMM ready; single-CPU; IRQs masked. BAR5 PA owned by
-/// the device; map_mmio_pages splices a private Device-attr window.
-/// # C: O(BAR map + HBA/port bring-up)
-fn ahci_probe(d: &pci::PciDevice) {
-    let class24 = ((d.class_code as u32) << 16)
-        | ((d.subclass as u32) << 8) | (d.prog_if as u32);
-    if class24 != drv_ahci::AHCI_CLASS24 { return; }
-    let bdf = d.bdf;
-    // Decode BARs; BAR5 is the AHCI HBA register file (ABAR, 32-bit mem BAR).
-    let bars = {
-        #[cfg(target_arch = "x86_64")]
-        { let r = hal_x86_64::pci::LegacyPci; pci::decode_bars(&r, bdf) }
-        #[cfg(target_arch = "aarch64")]
-        { match hal_aarch64::pci::EcamPci::from_published() {
-            Some(r) => pci::decode_bars(&r, bdf),
-            None    => [pci::Bar::None; 6],
-        } }
-    };
-    let abar_pa = match bars[5] {
-        pci::Bar::Mem32 { base, .. } => base as u64,
-        pci::Bar::Mem64 { base, .. } => base,
-        _ => 0,
-    };
-    if abar_pa == 0 { return; }
-    // SAFETY: abar_pa decoded from the device's programmed BAR5; PMM ready +
-    // single-CPU + IRQs masked at the boot probe; 2 pages cover the generic
-    // HBA registers + the full 32-port register array (≤ 0x1100 bytes).
-    let abar_va = unsafe { map_mmio_pages(abar_pa & !0xFFF, 2) }
-        + (abar_pa & 0xFFF);
-    let idx = drv_ahci::init(abar_va);
-    if idx != 0 {
-        drv::register_driver(&drv_ahci::AHCI_DRIVER);
-        let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
-            0u16, bdf.bus, bdf.device, bdf.function);
-        drv::bind_addr("pci", &addr, "ahci");
-    }
+/// Register PCI model drivers known at boot. Matching and probe are still
+/// driven by `drv::auto_bind` on each enumerated PCI device.
+/// # C: O(N_drivers)
+fn register_pci_model_drivers() {
+    drv::register_driver(&drv_nvme::NVME_DRIVER);
+    drv::register_driver(&drv_ahci::AHCI_DRIVER);
+    virtio_drv::register_model_drivers();
 }
 
 /// Emit one `[INFO] pci-bar <bdf> N <kind>=...` line per programmed BAR.
 /// # C: O(1) — at most 6 BARs.
 fn bar_dump_arch(bdf: pci::Bdf) {
+    #[cfg(not(feature = "debug-boot"))]
+    let _ = bdf;
     debug_boot! {
         let bars = {
             #[cfg(target_arch = "x86_64")]
@@ -257,13 +112,36 @@ fn bar_dump_arch(bdf: pci::Bdf) {
     }
 }
 
+fn pci_resources_arch(bdf: pci::Bdf) -> alloc::vec::Vec<drv::Resource> {
+    let resources = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let r = hal_x86_64::pci::LegacyPci;
+            pci::probe_bar_resources(&r, bdf)
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            match hal_aarch64::pci::EcamPci::from_published() {
+                Some(r) => pci::probe_bar_resources(&r, bdf),
+                None => [None; 6],
+            }
+        }
+    };
+    resources
+        .iter()
+        .filter_map(|r| r.map(|r| drv::Resource { start: r.start, end: r.end, flags: r.flags }))
+        .collect()
+}
+
 /// Per-arch wrapper that walks the capability list for one BDF and
 /// emits `[INFO] pci-cap ... id=...` lines. For modern virtio devices
-/// (vendor=0x1AF4, device>=0x1040) it also decodes each vendor cap and
+/// (vendor=0x1AF4, device=0x1041..=0x107f) it also decodes each vendor cap and
 /// emits a `[INFO] virtio-cap ...` line per cfg_type.
 /// # C: O(N_caps) — typical N is 1–6.
 fn cap_dump_arch(d: &pci::PciDevice) {
     let bdf = d.bdf;
+    #[cfg(not(feature = "debug-boot"))]
+    let _ = bdf;
     debug_boot! {
         let caps = {
             #[cfg(target_arch = "x86_64")]
@@ -379,164 +257,10 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                             klog::write_dec_u64((vc & 0x1) as u64);
                             klog::write_raw(b"\n");
                         }
-                        // F38: program entry 0 with a real GICv2m MSI
-                        // message on aarch64. Allocate one SPI, enable
-                        // it at the GIC distributor, write the table
-                        // entry, leave masked (vector_control bit 0=1)
-                        // so no IRQ fires until F39 binds queue_msix
-                        // and the dispatcher learns to route the SPI.
-                        // F56-08: prefer the ITS path on virtio-blk
-                        // (DeviceID 0x10 was pre-bound to LPI 8192 in
-                        // smoke_device_map_arm), fall back to GICv2m
-                        // SPI for everyone else. If neither is
-                        // available, skip the bind and let the
-                        // device sit in INTx-style ISR delivery.
-                        // F57: per-arch MSI bind. aarch64 prefers ITS
-                        // for virtio-blk (DeviceID 0x10 → LPI 8192,
-                        // bound by smoke_device_map_arm), falls back
-                        // to GICv2m SPI. x86 allocates an IDT vector
-                        // (`VEC_MSI = 0x50`) and writes the LAPIC MSI
-                        // message addr `0xFEE0_0000` (boot CPU dest=0,
-                        // RH=0, DM=0, Fixed delivery).
-                        let bind: Option<(u32, u64, u32)> = {
-                            #[cfg(target_arch = "aarch64")]
-                            {
-                                let its_translater = arch_irq::its::translater_pa();
-                                let is_blk_bdf = bdf.bus == 0 && bdf.device == 2 && bdf.function == 0;
-                                let use_its = its_translater != 0 && is_blk_bdf;
-                                if use_its {
-                                    Some((0u32, its_translater, 0u32))
-                                } else if let Some(spi) = arch_irq::alloc_arm_spi() {
-                                    // SAFETY: SPI freshly allocated, range owned by msi.rs; gic was enabled by smoke_device_map_arm; single-CPU pre-init context for boot probe.
-                                    unsafe { arch_irq::gic::enable_intid(spi); }
-                                    let v2m_pa = firmware::acpi::GIC_MSI_FRAME_PA
-                                        .load(core::sync::atomic::Ordering::Acquire);
-                                    Some((spi, v2m_pa + 0x40, spi))
-                                } else {
-                                    None
-                                }
-                            }
-                            #[cfg(target_arch = "x86_64")]
-                            {
-                                if let Some(vec) = arch_irq::alloc_x86_vector() {
-                                    Some((vec as u32, 0xFEE0_0000u64, vec as u32))
-                                } else { None }
-                            }
-                        };
-                        if let Some((id, msg_addr, msg_data)) = bind {
-                            // F58: stash the per-device MSI vector/SPI
-                            // so the post-scan iface registration can
-                            // install a per-vector handler that
-                            // bypasses the shared-vector softirq raise.
-                            let is_virtio_net = d.vendor_id == 0x1AF4
-                                && (d.device_id == 0x1000 || d.device_id == 0x1041);
-                            if is_virtio_net {
-                                VIRTIO_NET_MSI_ID
-                                    .store(id, core::sync::atomic::Ordering::Release);
-                            }
-                            // virtio-blk: register the queue-completion MSI
-                            // handler now (device-agnostic — wakes the global
-                            // blk sleeper list). Immediate wake vs the timer
-                            // tick backstop. transitional 0x1001 / modern 0x1042.
-                            let is_virtio_blk = d.vendor_id == 0x1AF4
-                                && (d.device_id == 0x1001 || d.device_id == 0x1042);
-                            if is_virtio_blk {
-                                #[cfg(target_arch = "x86_64")]
-                                let _ = arch_irq::register_msi_handler(
-                                    id as u8, drv_virtio_blk::modern::wake_completions);
-                                #[cfg(target_arch = "aarch64")]
-                                let _ = arch_irq::register_msi_handler(
-                                    id, drv_virtio_blk::modern::wake_completions);
-                            }
-                            let entry_va = tbl_va; // entry 0
-                            // SAFETY: entry_va is the freshly Device-attr-mapped MSI-X table base; aligned u32 stores within the 16-byte entry.
-                            unsafe {
-                                core::ptr::write_volatile(entry_va as *mut u32,
-                                    (msg_addr & 0xFFFF_FFFF) as u32);
-                                core::ptr::write_volatile((entry_va + 4) as *mut u32,
-                                    (msg_addr >> 32) as u32);
-                                core::ptr::write_volatile((entry_va + 8) as *mut u32,
-                                    msg_data);
-                                // F39: unmask the vector (vector_control bit 0 = 0).
-                                // The handler in oxide_arm_irq_dispatch only
-                                // bumps a counter today, so spurious fires are
-                                // harmless; F40 will bind to a real callback.
-                                core::ptr::write_volatile((entry_va + 12) as *mut u32, 0);
-                            }
-                            // F39: set MSI-X Enable bit (bit 15 of message
-                            // control at cap_off+0x02). PCI 3.0 §6.8.2 —
-                            // until this is set the device routes IRQs via
-                            // INTx and ignores table entries.
-                            #[cfg(target_arch = "aarch64")]
-                            { if let Some(rr) = hal_aarch64::pci::EcamPci::from_published() {
-                                use pci::ConfigSpaceReader as _;
-                                let off = c.cfg_off & 0xFC;
-                                let cur = <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&rr, bdf, off);
-                                let new = cur | (1u32 << 31); // MC bit 15 -> dword bit 31
-                                <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::write32(&rr, bdf, off, new);
-                            } }
-                            #[cfg(target_arch = "x86_64")]
-                            { let rr = hal_x86_64::pci::LegacyPci;
-                              use pci::ConfigSpaceReader as _;
-                              let off = c.cfg_off & 0xFC;
-                              let cur = <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::read32(&rr, bdf, off);
-                              let new = cur | (1u32 << 31);
-                              <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::write32(&rr, bdf, off, new);
-                            }
-                            // F41: re-read message_control to verify the
-                            // Enable bit stuck. If `mc_after & 0x8000 == 0`
-                            // then the device rejected the write (bit is
-                            // RO), and the device will keep delivering via
-                            // INTx (ISR bit) instead of MSI-X.
-                            let mc_after = {
-                                #[cfg(target_arch = "aarch64")]
-                                { match hal_aarch64::pci::EcamPci::from_published() {
-                                    Some(rr) => {
-                                        use pci::ConfigSpaceReader as _;
-                                        <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&rr, bdf, c.cfg_off & 0xFC) >> 16
-                                    }
-                                    None => 0,
-                                } }
-                                #[cfg(target_arch = "x86_64")]
-                                { let rr = hal_x86_64::pci::LegacyPci;
-                                  use pci::ConfigSpaceReader as _;
-                                  <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::read32(&rr, bdf, c.cfg_off & 0xFC) >> 16 }
-                            };
-                            klog::write_raw(b"[INFO]  msix-en ");
-                            klog::write_dec_u64(bdf.bus as u64);
-                            klog::write_raw(b":");
-                            klog::write_dec_u64(bdf.device as u64);
-                            klog::write_raw(b".");
-                            klog::write_dec_u64(bdf.function as u64);
-                            klog::write_raw(b" mc=");
-                            klog::write_hex_u64(mc_after as u64);
-                            klog::write_raw(b" enabled=");
-                            klog::write_dec_u64(((mc_after >> 15) & 1) as u64);
-                            klog::write_raw(b"\n");
-                            // Read back to confirm the writes landed.
-                            // SAFETY: same Device-attr-mapped entry; aligned u32 loads of fields just written.
-                            let (al, ah, dt, vc) = unsafe {(
-                                core::ptr::read_volatile(entry_va as *const u32),
-                                core::ptr::read_volatile((entry_va + 4) as *const u32),
-                                core::ptr::read_volatile((entry_va + 8) as *const u32),
-                                core::ptr::read_volatile((entry_va + 12) as *const u32),
-                            )};
-                            klog::write_raw(b"[INFO]  msix-bind ");
-                            klog::write_dec_u64(bdf.bus as u64);
-                            klog::write_raw(b":");
-                            klog::write_dec_u64(bdf.device as u64);
-                            klog::write_raw(b".");
-                            klog::write_dec_u64(bdf.function as u64);
-                            klog::write_raw(b" spi=");
-                            klog::write_dec_u64(id as u64);
-                            klog::write_raw(b" addr=");
-                            klog::write_hex_u64(((ah as u64) << 32) | (al as u64));
-                            klog::write_raw(b" data=");
-                            klog::write_hex_u64(dt as u64);
-                            klog::write_raw(b" ctl=");
-                            klog::write_hex_u64(vc as u64);
-                            klog::write_raw(b"\n");
-                        }
+                        // Capability dumping is read-only. MSI-X programming
+                        // belongs to the bound PCI transport driver, which can
+                        // pair allocation with remove-time teardown.
+                        unsafe { mmio_map::unmap_pages(base_va, 1); }
                     }
                 }
             }
@@ -610,7 +334,8 @@ pub fn enumerate_and_log() {
         klog::write_dec_u64(devs.len() as u64);
         klog::write_raw(b"\n");
     }
-    for d in devs.iter().take(16) {
+    register_pci_model_drivers();
+    for d in devs.iter() {
         debug_boot! {
             klog::write_raw(b"[INFO]  pci ");
             klog::write_dec_u64(d.bdf.bus as u64);
@@ -626,9 +351,6 @@ pub fn enumerate_and_log() {
             klog::write_hex_u64(d.class_code as u64);
             klog::write_raw(b"\n");
         }
-        // F38 ordering fix: enable Memory + BusMaster bits before touching
-        // BAR-backed capability state or handing the device to a driver.
-        enable_pci_mem_bm(d.bdf);
         bar_dump_arch(d.bdf);
         cap_dump_arch(d);
 
@@ -636,17 +358,10 @@ pub fn enumerate_and_log() {
             | ((d.subclass as u32) << 8) | (d.prog_if as u32);
         let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
             0u16, d.bdf.bus, d.bdf.device, d.bdf.function);
-        drv::register_device(alloc::sync::Arc::new(drv::Device::new(
-            "pci", addr, d.vendor_id, d.device_id, class24)));
-        if virtio::is_modern(d.vendor_id, d.device_id) {
-            let vaddr = alloc::format!("virtio{}", virtio_seq());
-            let vdev_id = d.device_id.wrapping_sub(0x1040);
-            drv::register_device(alloc::sync::Arc::new(drv::Device::new(
-                "virtio", vaddr, d.vendor_id, vdev_id, 0)));
-        }
-        virtio_probe_arch(d);
-        nvme_probe(d);
-        ahci_probe(d);
+        let pci_dev = drv::device_add(alloc::sync::Arc::new(
+            drv::Device::new("pci", addr, d.vendor_id, d.device_id, class24)
+                .with_resources(pci_resources_arch(d.bdf))));
+        let _ = drv::auto_bind(&pci_dev);
     }
 
     // F40 + F57: brief IRQ unmask window so any MSIs queued during
@@ -696,19 +411,10 @@ pub fn enumerate_and_log() {
         klog::write_raw(b"\n");
     }
 
-    // F59-15: register the modern virtio-net device as a NetDev and install
-    // the default L2/netlink route state. Logging is optional; setup is not.
-    if drv_virtio_net::modern::is_modern_present() {
-        if let Some(dev) = drv_virtio_net::modern::VirtioNetDev::new() {
+    // F59-15: install the default L2/netlink route state for the netdev
+    // already registered by virtio-net's model probe.
+    if let Some(id) = drv_virtio_net::modern::registered_iface() {
             let stack = net::sock::stack();
-            let id = stack.ifaces.register(
-                dev as alloc::sync::Arc<dyn net::NetDev>,
-            );
-            debug_boot! {
-                klog::write_raw(b"[INFO]  virtio-net-iface registered id=");
-                klog::write_dec_u64(id.0 as u64);
-                klog::write_raw(b" name=eth0\n");
-            }
 
             let lo_idx = stack.ifaces.lookup_name("lo").map(|(id, _)| id.0);
             ::netlink::rtnetlink::seed_defaults(Some(id.0), lo_idx);
@@ -717,28 +423,6 @@ pub fn enumerate_and_log() {
                 ::netlink::rtnetlink::seed_default_routes_lo(lo_idx);
             }
             let _ = stack.send_router_solicitation(id, net::Ipv6Addr::ANY);
-
-            let our_ip: [u8; 4] = [10, 0, 2, 15];
-            drv_virtio_net::modern::set_softirq_iface(id, our_ip);
-            softirq::set_handler(
-                softirq::Slot::NetRx,
-                drv_virtio_net::modern::rx_drain_softirq,
-            );
-            let msi_id = VIRTIO_NET_MSI_ID.load(core::sync::atomic::Ordering::Acquire);
-            if msi_id != 0 {
-                #[cfg(target_arch = "x86_64")]
-                let _ = arch_irq::register_msi_handler(
-                    msi_id as u8,
-                    drv_virtio_net::modern::rx_drain_softirq,
-                );
-                #[cfg(target_arch = "aarch64")]
-                let _ = arch_irq::register_msi_handler(
-                    msi_id,
-                    drv_virtio_net::modern::rx_drain_softirq,
-                );
-            }
-            let _ = u32::from_be_bytes(our_ip);
-        }
     }
 
     debug_boot! {
@@ -801,13 +485,13 @@ pub fn enumerate_and_log() {
                     klog::write_raw(b" delta=");
                     klog::write_dec_u64((after - before) as u64);
                     klog::write_raw(b"\n");
+                    let _ = arch_irq::free_arm_spi(spi);
                 }
             }
             // F48: open a longer unmask window so any bytes pushed
             // into the UART RX FIFO via qemu_send_serial (or typing)
             // during boot get a chance to fire SPI 33. Logs the
-            // UART IRQ counter delta — nonzero proves the
-            // IRQ-driven RX path replaces the timer-poll fallback.
+            // UART IRQ counter delta; nonzero proves the RX path is IRQ-driven.
             let uart_before = arch_irq::gic::UART_IRQ_FIRES
                 .load(core::sync::atomic::Ordering::Acquire);
             // SAFETY: brief unmask window, mirrors F40 pattern; gic+pl011 already up.

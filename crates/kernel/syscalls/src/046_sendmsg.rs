@@ -23,6 +23,9 @@ pub fn sys_sendmsg(args: &SyscallArgs) -> i64 {
         let controllen= core::ptr::read_volatile((msgp + 40) as *const u64);
         (name, namelen, iov, iovlen, control, controllen)
     };
+    if crate::netlink_fd::is_netlink(fd) {
+        return crate::netlink_fd::sendmsg(fd, name, namelen as u64, iov, iovlen);
+    }
     // F189: SCM_RIGHTS short-circuit for AF_UNIX sockets.
     if let Some(r) = crate::cmsg_parse::try_sendmsg_with_fds(
         fd, name, namelen as u64, iov, iovlen, control, controllen,

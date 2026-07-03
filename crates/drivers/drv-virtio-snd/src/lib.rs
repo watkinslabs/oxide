@@ -73,12 +73,10 @@ const RESP_OFF: u64 = 0x200;
 /// boot probe already programmed. One in-flight control request at a time,
 /// serialised by the `Spinlock` around the whole request body.
 struct Ctx {
-    q0_desc_pa:   u64,
-    q0_driver_pa: u64,
-    q0_device_pa: u64,
-    q0_notify_va: u64,
-    q0_size:      u16,
-    hhdm:         u64,
+    /// Owning PCI transport BDF packed as bus:device:function.
+    device_key: u32,
+    controlq: virtio::VirtQueueResource,
+    hhdm:     u64,
     /// virtio common-cfg MMIO window. A harmless read of device_status
     /// (@0x14) forces a VM exit so QEMU's audio-backend timer can retire
     /// TXQ buffers while we poll (TCG holds the BQL during tight spins).
@@ -103,12 +101,8 @@ struct Ctx {
     out_rates:   u64,
     out_ch_min:  u8,
     out_ch_max:  u8,
-    /// TXQ(2) ring the boot probe programmed (0 if not programmed).
-    q2_desc_pa:   u64,
-    q2_driver_pa: u64,
-    q2_device_pa: u64,
-    q2_notify_va: u64,
-    q2_size:      u16,
+    /// TXQ(2) ring the transport programmed.
+    txq: Option<virtio::VirtQueueResource>,
     /// TXQ driver-side avail.idx shadow.
     tx_avail_idx: u16,
     /// Period payload frame (one 4 KiB page) the TXQ payload descriptor
@@ -134,12 +128,8 @@ struct Ctx {
     in_rates:   u64,
     in_ch_min:  u8,
     in_ch_max:  u8,
-    /// RXQ(3) ring the boot probe programmed (0 if not programmed).
-    q3_desc_pa:   u64,
-    q3_driver_pa: u64,
-    q3_device_pa: u64,
-    q3_notify_va: u64,
-    q3_size:      u16,
+    /// RXQ(3) ring the transport programmed.
+    rxq: Option<virtio::VirtQueueResource>,
     rx_avail_idx: u16,
     /// RXQ payload frame (device writes captured PCM here) + scratch (xfer
     /// hdr @0 + status @16). One 4 KiB page each.
@@ -161,33 +151,32 @@ pub enum PcmState { Idle, Configured, Prepared, Running }
 // Spinlock, so cross-CPU sharing is sound.
 static CTX: Spinlock<Option<Ctx>, DriverLockClass> = Spinlock::new(None);
 
+static SOUND_OPS: sound::ops::SoundOps = sound::ops::SoundOps {
+    config,
+    pcm_caps,
+    cap_caps,
+    period_bytes,
+    pcm_hw_params,
+    pcm_prepare,
+    pcm_trigger,
+    pcm_hw_free,
+    pcm_submit,
+    cap_hw_params,
+    cap_prepare,
+    cap_trigger,
+    cap_hw_free,
+    pcm_recv,
+};
+
 /// Boot-probe → driver handoff: the CONTROLQ ring the boot path programmed
 /// plus the harvested virtio_snd_config counts.
 pub struct SndInstall {
-    pub q0_desc_pa:   u64,
-    pub q0_driver_pa: u64,
-    pub q0_device_pa: u64,
-    pub q0_notify_va: u64,
-    pub q0_size:      u16,
-    pub hhdm:         u64,
-    /// virtio common-cfg MMIO window (for the TXQ-poll VM-exit yield).
-    pub cfg_va:       u64,
+    pub device_key: u32,
+    pub resources: virtio::VirtioResources,
     pub jacks:    u32,
     pub streams:  u32,
     pub chmaps:   u32,
     pub controls: u32,
-    /// TXQ(2) playback ring + notify VA (0 if the queue didn't program).
-    pub q2_desc_pa:   u64,
-    pub q2_driver_pa: u64,
-    pub q2_device_pa: u64,
-    pub q2_notify_va: u64,
-    pub q2_size:      u16,
-    /// RXQ(3) capture ring + notify VA (0 if the queue didn't program).
-    pub q3_desc_pa:   u64,
-    pub q3_driver_pa: u64,
-    pub q3_device_pa: u64,
-    pub q3_notify_va: u64,
-    pub q3_size:      u16,
 }
 
 /// Probe result handed back for the boot line: total streams + the
@@ -201,6 +190,15 @@ pub struct SndProbe {
 /// True once a virtio-snd device has been brought up + installed.
 /// # C: O(1)
 pub fn present() -> bool { CTX.lock().is_some() }
+
+/// True iff the named virtio-snd transport owns the installed sound card.
+/// # C: O(1)
+pub fn present_for(device_key: u32) -> bool {
+    CTX.lock()
+        .as_ref()
+        .map(|ctx| ctx.device_key == device_key)
+        .unwrap_or(false)
+}
 
 /// Snapshot of the harvested virtio_snd_config: `(jacks, streams, chmaps,
 /// controls)`. None until a device is installed. Backs the ALSA card /
@@ -217,27 +215,44 @@ pub fn config() -> Option<(u32, u32, u32, u32)> {
 /// notify VA / HHDM is missing or no scratch frame is available.
 /// # C: O(streams) — one CONTROLQ round-trip
 pub fn install(p: SndInstall) -> Option<SndProbe> {
-    if p.hhdm == 0 || p.q0_desc_pa == 0 || p.q0_driver_pa == 0
-        || p.q0_device_pa == 0 || p.q0_notify_va == 0
-    {
+    let controlq = p.resources.require_queue(0)?;
+    if !p.resources.common_cfg_valid() {
+        return None;
+    }
+    let txq = p.resources.require_queue(2);
+    let rxq = p.resources.require_queue(3);
+    if CTX.lock().is_some() {
         return None;
     }
     let scratch_pa = pmm::setup::alloc_one_frame()?;
-    // TXQ payload + xfer/status scratch frames. Zero-alloc failures leave the
-    // TXQ unprogrammed (CONTROLQ probe still works; playback returns false).
-    let (tx_buf_pa, tx_scratch_pa) = if p.q2_desc_pa != 0 {
-        (pmm::setup::alloc_one_frame().unwrap_or(0),
-         pmm::setup::alloc_one_frame().unwrap_or(0))
+    let (tx_buf_pa, tx_scratch_pa) = if txq.is_some() {
+        match (pmm::setup::alloc_one_frame(), pmm::setup::alloc_one_frame()) {
+            (Some(buf), Some(scratch)) => (buf, scratch),
+            (buf, scratch) => {
+                free_frame(buf.unwrap_or(0));
+                free_frame(scratch.unwrap_or(0));
+                free_frame(scratch_pa);
+                return None;
+            }
+        }
     } else { (0, 0) };
-    // RXQ payload + xfer/status scratch frames (capture).
-    let (rx_buf_pa, rx_scratch_pa) = if p.q3_desc_pa != 0 {
-        (pmm::setup::alloc_one_frame().unwrap_or(0),
-         pmm::setup::alloc_one_frame().unwrap_or(0))
+    let (rx_buf_pa, rx_scratch_pa) = if rxq.is_some() {
+        match (pmm::setup::alloc_one_frame(), pmm::setup::alloc_one_frame()) {
+            (Some(buf), Some(scratch)) => (buf, scratch),
+            (buf, scratch) => {
+                free_frame(buf.unwrap_or(0));
+                free_frame(scratch.unwrap_or(0));
+                free_frame(tx_buf_pa);
+                free_frame(tx_scratch_pa);
+                free_frame(scratch_pa);
+                return None;
+            }
+        }
     } else { (0, 0) };
     // Zero every freshly-allocated frame for deterministic state.
     for &pa in &[scratch_pa, tx_buf_pa, tx_scratch_pa, rx_buf_pa, rx_scratch_pa] {
         if pa == 0 { continue; }
-        let va = p.hhdm.wrapping_add(pa) as *mut u8;
+        let va = p.resources.hhdm.wrapping_add(pa) as *mut u8;
         // SAFETY: HHDM covers all RAM the PMM hands out; each frame is
         // freshly allocated and owned by this driver; aligned u8 stores span
         // only the 4 KiB page.
@@ -245,35 +260,45 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     }
     // Seed avail.idx from the live used.idx so the first request waits for a
     // fresh completion rather than mistaking a stale idx for its own.
-    let used = p.hhdm.wrapping_add(p.q0_device_pa) as *const u16;
+    let used = p.resources.hhdm.wrapping_add(controlq.device_pa) as *const u16;
     // SAFETY: HHDM-mapped queue-0 used ring programmed by the boot probe;
     // aligned u16 load of used.idx at u16 offset 1 in the device-owned frame.
     let used_seen = unsafe { core::ptr::read_volatile(used.add(1)) };
     // TXQ avail.idx seeds from its own used.idx likewise (0 if unprogrammed).
-    let tx_used_seen = if p.q2_device_pa != 0 {
-        let txu = p.hhdm.wrapping_add(p.q2_device_pa) as *const u16;
+    let tx_used_seen = if let Some(txq) = txq {
+        let txu = p.resources.hhdm.wrapping_add(txq.device_pa) as *const u16;
         // SAFETY: HHDM-mapped TXQ used ring programmed by the boot probe;
         // aligned u16 load of used.idx at u16 offset 1.
         unsafe { core::ptr::read_volatile(txu.add(1)) }
     } else { 0 };
-    let rx_used_seen = if p.q3_device_pa != 0 {
-        let rxu = p.hhdm.wrapping_add(p.q3_device_pa) as *const u16;
+    let rx_used_seen = if let Some(rxq) = rxq {
+        let rxu = p.resources.hhdm.wrapping_add(rxq.device_pa) as *const u16;
         // SAFETY: HHDM-mapped RXQ used ring programmed by the boot probe;
         // aligned u16 load of used.idx at u16 offset 1.
         unsafe { core::ptr::read_volatile(rxu.add(1)) }
     } else { 0 };
-    *CTX.lock() = Some(Ctx {
-        q0_desc_pa: p.q0_desc_pa, q0_driver_pa: p.q0_driver_pa,
-        q0_device_pa: p.q0_device_pa, q0_notify_va: p.q0_notify_va,
-        q0_size: p.q0_size, hhdm: p.hhdm, cfg_va: p.cfg_va, scratch_pa,
+    let mut g = CTX.lock();
+    if g.is_some() {
+        drop(g);
+        free_frame(rx_buf_pa);
+        free_frame(rx_scratch_pa);
+        free_frame(tx_buf_pa);
+        free_frame(tx_scratch_pa);
+        free_frame(scratch_pa);
+        return None;
+    }
+    *g = Some(Ctx {
+        device_key: p.device_key,
+        controlq,
+        hhdm: p.resources.hhdm,
+        cfg_va: p.resources.cfg_va,
+        scratch_pa,
         avail_idx: used_seen,
         jacks: p.jacks, streams: p.streams,
         chmaps: p.chmaps, controls: p.controls,
         out_stream: None,
         out_formats: 0, out_rates: 0, out_ch_min: 1, out_ch_max: 2,
-        q2_desc_pa: p.q2_desc_pa, q2_driver_pa: p.q2_driver_pa,
-        q2_device_pa: p.q2_device_pa, q2_notify_va: p.q2_notify_va,
-        q2_size: p.q2_size, tx_avail_idx: tx_used_seen,
+        txq, tx_avail_idx: tx_used_seen,
         tx_buf_pa, tx_scratch_pa,
         pcm_state: PcmState::Idle,
         cfg_rate: VIRTIO_SND_PCM_RATE_44100,
@@ -282,9 +307,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         cfg_period_bytes: PERIOD_BYTES as u32,
         in_stream: None,
         in_formats: 0, in_rates: 0, in_ch_min: 1, in_ch_max: 2,
-        q3_desc_pa: p.q3_desc_pa, q3_driver_pa: p.q3_driver_pa,
-        q3_device_pa: p.q3_device_pa, q3_notify_va: p.q3_notify_va,
-        q3_size: p.q3_size, rx_avail_idx: rx_used_seen,
+        rxq, rx_avail_idx: rx_used_seen,
         rx_buf_pa, rx_scratch_pa,
         cap_state: PcmState::Idle,
         cap_rate: VIRTIO_SND_PCM_RATE_44100,
@@ -292,19 +315,93 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         cap_channels: 2,
         cap_period_bytes: PERIOD_BYTES as u32,
     });
-    let (out, input) = pcm_info_scan();
+    drop(g);
+    let (out, input) = match pcm_info_scan() {
+        Some(split) => split,
+        None => {
+            let ctx = CTX.lock().take();
+            if let Some(ctx) = ctx {
+                stop_reset_free(ctx);
+            }
+            return None;
+        }
+    };
+    sound::ops::register(&SOUND_OPS);
+    if !sound::register_card() {
+        let _ = uninstall(p.device_key);
+        return None;
+    }
     Some(SndProbe { streams: p.streams, out, input })
+}
+
+/// Stop streams, reset the virtio device, and release all queue/scratch frames
+/// owned by the matching installed transport. # C: O(CONTROLQ)
+pub fn uninstall(device_key: u32) -> bool {
+    let ctx = {
+        let mut guard = CTX.lock();
+        match guard.as_ref() {
+            Some(ctx) if ctx.device_key == device_key => guard.take(),
+            _ => None,
+        }
+    };
+    let Some(ctx) = ctx else {
+        return false;
+    };
+    sound::unregister_card();
+    sound::ops::clear();
+    stop_reset_free(ctx);
+    true
+}
+
+fn stop_reset_free(mut ctx: Ctx) {
+    if let Some(stream) = ctx.out_stream {
+        if ctx.pcm_state == PcmState::Running {
+            let _ = pcm_ctl(&mut ctx, VIRTIO_SND_R_PCM_STOP, stream);
+        }
+        if ctx.pcm_state != PcmState::Idle {
+            let _ = pcm_ctl(&mut ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
+        }
+    }
+    if let Some(stream) = ctx.in_stream {
+        if ctx.cap_state == PcmState::Running {
+            let _ = pcm_ctl(&mut ctx, VIRTIO_SND_R_PCM_STOP, stream);
+        }
+        if ctx.cap_state != PcmState::Idle {
+            let _ = pcm_ctl(&mut ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
+        }
+    }
+    if ctx.cfg_va != 0 {
+        // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
+        // probe; device_status is an 8-bit register at offset 0x14.
+        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    }
+    free_frame(ctx.rx_buf_pa);
+    free_frame(ctx.rx_scratch_pa);
+    free_frame(ctx.tx_buf_pa);
+    free_frame(ctx.tx_scratch_pa);
+    free_frame(ctx.scratch_pa);
+}
+
+fn free_frame(pa: u64) {
+    if pa != 0 {
+        // SAFETY: all callers pass child-owned buffer pages returned by
+        // pmm::setup::alloc_one_frame and ensure each page is freed at most
+        // once. Vring frames are transport-owned after successful probe and are
+        // freed when the transport is unpublished.
+        unsafe { pmm::setup::free_one_frame(pa); }
+    }
 }
 
 /// Query the PCM stream table (VIRTIO_SND_R_PCM_INFO, start_id=0,
 /// count=streams) and tally the OUTPUT/INPUT split by each entry's
-/// `direction` byte. Returns (out, input); (0,0) on transport/status error.
+/// `direction` byte. Returns None on transport/status error so probe can
+/// reset the device and free child-owned DMA pages before publication.
 /// # C: O(streams)
-fn pcm_info_scan() -> (u32, u32) {
+fn pcm_info_scan() -> Option<(u32, u32)> {
     let mut g = CTX.lock();
-    let ctx = match g.as_mut() { Some(c) => c, None => return (0, 0) };
+    let ctx = g.as_mut()?;
     let count = ctx.streams;
-    if count == 0 { return (0, 0); }
+    if count == 0 { return Some((0, 0)); }
     let h = ctx.hhdm;
 
     // Build virtio_snd_query_info at REQ_OFF.
@@ -323,9 +420,9 @@ fn pcm_info_scan() -> (u32, u32) {
     let want = SND_HDR_SIZE + count as usize * PCM_INFO_SIZE;
     let resp_len = want.min(0x1000 - RESP_OFF as usize);
     let status = match submit_ctl(ctx, QUERY_INFO_SIZE, resp_len) {
-        Some(s) => s, None => return (0, 0),
+        Some(s) => s, None => return None,
     };
-    if status != VIRTIO_SND_S_OK { return (0, 0); }
+    if status != VIRTIO_SND_S_OK { return None; }
 
     // Tally direction across the entries that fit in the response window.
     let entries = ((resp_len - SND_HDR_SIZE) / PCM_INFO_SIZE).min(count as usize);
@@ -370,7 +467,7 @@ fn pcm_info_scan() -> (u32, u32) {
     }
     ctx.out_stream = first_out;
     ctx.in_stream = first_in;
-    (out, input)
+    Some((out, input))
 }
 
 /// Submit one CONTROLQ request/response pair: a 2-descriptor chain (req RO
@@ -381,10 +478,11 @@ fn pcm_info_scan() -> (u32, u32) {
 /// # C: O(CTL_POLL_BUDGET) per call
 fn submit_ctl(ctx: &mut Ctx, req_len: usize, resp_len: usize) -> Option<u32> {
     let h = ctx.hhdm;
+    let controlq = ctx.controlq;
 
     // Descriptor chain head at index 0: [0]=req (RO, NEXT→1), [1]=resp (WO).
     // Each virtq desc = 16 bytes = 2 u64: addr; then len|flags<<32|next<<48.
-    let desc = h.wrapping_add(ctx.q0_desc_pa) as *mut u64;
+    let desc = h.wrapping_add(controlq.desc_pa) as *mut u64;
     // SAFETY: HHDM-mapped queue-0 descriptor table programmed by the boot
     // probe; four aligned u64 stores into the driver-owned ring frame build
     // a 2-descriptor chain over our owned scratch request/response windows.
@@ -400,11 +498,10 @@ fn submit_ctl(ctx: &mut Ctx, req_len: usize, resp_len: usize) -> Option<u32> {
     }
 
     // Publish to the avail ring: ring[slot]=0 (head desc index), bump idx.
-    let qsz = if ctx.q0_size == 0 { 1u16 } else { ctx.q0_size };
-    let slot = (ctx.avail_idx % qsz) as usize;
-    let avail = h.wrapping_add(ctx.q0_driver_pa) as *mut u16;
+    let slot = (ctx.avail_idx % controlq.size) as usize;
+    let avail = h.wrapping_add(controlq.driver_pa) as *mut u16;
     // SAFETY: HHDM-mapped queue-0 avail ring; u16 stores at ring(2+slot)/
-    // idx(1) within the driver-owned frame; slot bounded by q0_size; the
+    // idx(1) within the driver-owned frame; slot bounded by controlq.size; the
     // Release fence publishes the descriptor writes before the idx bump.
     let target = unsafe {
         core::ptr::write_volatile(avail.add(2 + slot), 0u16);
@@ -418,10 +515,10 @@ fn submit_ctl(ctx: &mut Ctx, req_len: usize, resp_len: usize) -> Option<u32> {
     // Kick the device via the CONTROLQ notify register (queue index 0).
     // SAFETY: notify VA is the Device-attr MMIO window mapped by the boot
     // probe; an aligned u16 store of queue index 0 is the spec-defined kick.
-    unsafe { core::ptr::write_volatile(ctx.q0_notify_va as *mut u16, 0u16); }
+    unsafe { core::ptr::write_volatile(controlq.notify_va as *mut u16, controlq.index); }
 
     // Poll the used ring until used.idx reaches our target (or budget).
-    let used = h.wrapping_add(ctx.q0_device_pa) as *const u16;
+    let used = h.wrapping_add(controlq.device_pa) as *const u16;
     let mut polls = 0u32;
     loop {
         // SAFETY: HHDM-mapped queue-0 used ring; aligned u16 load of used.idx
@@ -496,7 +593,8 @@ fn pcm_set_params(
 /// kick, poll the used ring. Returns true once the device retires it.
 /// # C: O(TX_POLL_BUDGET)
 fn tx_period(ctx: &mut Ctx, stream_id: u32, pcm: &[u8]) -> bool {
-    if ctx.q2_desc_pa == 0 || ctx.tx_buf_pa == 0 || ctx.tx_scratch_pa == 0 { return false; }
+    let Some(txq) = ctx.txq else { return false };
+    if ctx.tx_buf_pa == 0 || ctx.tx_scratch_pa == 0 { return false; }
     let h = ctx.hhdm;
     let n = pcm.len().min(0x1000);
     // xfer hdr (stream_id) at tx_scratch+0; copy payload into tx_buf.
@@ -509,7 +607,7 @@ fn tx_period(ctx: &mut Ctx, stream_id: u32, pcm: &[u8]) -> bool {
         for i in 0..n { core::ptr::write_volatile(buf.add(i), pcm[i]); }
     }
     // 3-descriptor chain at TXQ desc index 0.
-    let desc = h.wrapping_add(ctx.q2_desc_pa) as *mut u64;
+    let desc = h.wrapping_add(txq.desc_pa) as *mut u64;
     // SAFETY: HHDM-mapped TXQ descriptor table programmed by the boot probe;
     // six aligned u64 stores build a 3-descriptor chain over driver-owned
     // buffers (xfer hdr RO → payload RO → status WO).
@@ -525,11 +623,10 @@ fn tx_period(ctx: &mut Ctx, stream_id: u32, pcm: &[u8]) -> bool {
             8u64 | ((VRING_DESC_F_WRITE as u64) << 32));
     }
     // Publish to TXQ avail + kick + poll used.
-    let qsz = if ctx.q2_size == 0 { 1u16 } else { ctx.q2_size };
-    let slot = (ctx.tx_avail_idx % qsz) as usize;
-    let avail = h.wrapping_add(ctx.q2_driver_pa) as *mut u16;
+    let slot = (ctx.tx_avail_idx % txq.size) as usize;
+    let avail = h.wrapping_add(txq.driver_pa) as *mut u16;
     // SAFETY: HHDM-mapped TXQ avail ring; u16 stores at ring(2+slot)/idx(1)
-    // within the driver-owned frame; slot bounded by q2_size; Release fences
+    // within the driver-owned frame; slot bounded by txq.size; Release fences
     // publish the descriptor chain before the idx bump.
     let target = unsafe {
         core::ptr::write_volatile(avail.add(2 + slot), 0u16);
@@ -542,8 +639,8 @@ fn tx_period(ctx: &mut Ctx, stream_id: u32, pcm: &[u8]) -> bool {
     // Kick the device via the TXQ notify register (queue index 2).
     // SAFETY: notify VA is the Device-attr MMIO window mapped by the boot
     // probe; an aligned u16 store of queue index 2 is the spec-defined kick.
-    unsafe { core::ptr::write_volatile(ctx.q2_notify_va as *mut u16, 2u16); }
-    let used = h.wrapping_add(ctx.q2_device_pa) as *const u16;
+    unsafe { core::ptr::write_volatile(txq.notify_va as *mut u16, txq.index); }
+    let used = h.wrapping_add(txq.device_pa) as *const u16;
     let mut polls = 0u32;
     loop {
         // SAFETY: HHDM-mapped TXQ used ring; aligned u16 load of used.idx.
@@ -581,7 +678,7 @@ pub fn beep_diag(hz: u32, ms: u32) -> u8 {
     let mut g = CTX.lock();
     let ctx = match g.as_mut() { Some(c) => c, None => return 1 };
     let stream = match ctx.out_stream { Some(s) => s, None => return 2 };
-    if ctx.q2_desc_pa == 0 { return 3; }
+    if ctx.txq.is_none() { return 3; }
 
     // S16 mono @44.1 kHz; 2 KiB period, 4 KiB (2-period) buffer.
     if pcm_set_params(ctx, stream, (PERIOD_BYTES * 2) as u32, PERIOD_BYTES as u32,
@@ -650,7 +747,7 @@ pub fn period_bytes() -> usize { PERIOD_BYTES }
 /// the core/self-test. # C: O(1)
 pub fn playback_ready() -> (bool, bool, bool) {
     match CTX.lock().as_ref() {
-        Some(c) => (true, c.out_stream.is_some(), c.q2_desc_pa != 0),
+        Some(c) => (true, c.out_stream.is_some(), c.txq.is_some()),
         None => (false, false, false),
     }
 }
@@ -759,14 +856,15 @@ pub fn pcm_submit(bytes: &[u8]) -> usize {
 /// used ring, then copy the captured PCM into `out`. Returns bytes captured
 /// (the used-ring length minus the 8-byte status trailer). # C: O(TX_POLL_BUDGET)
 fn rx_period(ctx: &mut Ctx, stream_id: u32, out: &mut [u8]) -> usize {
-    if ctx.q3_desc_pa == 0 || ctx.rx_buf_pa == 0 || ctx.rx_scratch_pa == 0 { return 0; }
+    let Some(rxq) = ctx.rxq else { return 0 };
+    if ctx.rx_buf_pa == 0 || ctx.rx_scratch_pa == 0 { return 0; }
     let h = ctx.hhdm;
     let n = out.len().min(0x1000);
     let xfer = h.wrapping_add(ctx.rx_scratch_pa) as *mut u32;
     // SAFETY: HHDM-mapped driver-owned scratch frame; one aligned u32 store
     // writes the virtio_snd_pcm_xfer stream_id header.
     unsafe { core::ptr::write_volatile(xfer, stream_id); }
-    let desc = h.wrapping_add(ctx.q3_desc_pa) as *mut u64;
+    let desc = h.wrapping_add(rxq.desc_pa) as *mut u64;
     // SAFETY: HHDM-mapped RXQ descriptor table programmed by the boot probe;
     // six aligned u64 stores build a 3-descriptor chain: xfer hdr RO →
     // payload WO (device fills) → status WO, over driver-owned frames.
@@ -781,11 +879,10 @@ fn rx_period(ctx: &mut Ctx, stream_id: u32, out: &mut [u8]) -> usize {
         core::ptr::write_volatile(desc.add(5),
             8u64 | ((VRING_DESC_F_WRITE as u64) << 32));
     }
-    let qsz = if ctx.q3_size == 0 { 1u16 } else { ctx.q3_size };
-    let slot = (ctx.rx_avail_idx % qsz) as usize;
-    let avail = h.wrapping_add(ctx.q3_driver_pa) as *mut u16;
+    let slot = (ctx.rx_avail_idx % rxq.size) as usize;
+    let avail = h.wrapping_add(rxq.driver_pa) as *mut u16;
     // SAFETY: HHDM-mapped RXQ avail ring; u16 stores at ring(2+slot)/idx(1)
-    // within the driver-owned frame; slot bounded by q3_size; Release fences
+    // within the driver-owned frame; slot bounded by rxq.size; Release fences
     // publish the descriptor chain before the idx bump.
     let target = unsafe {
         core::ptr::write_volatile(avail.add(2 + slot), 0u16);
@@ -798,8 +895,8 @@ fn rx_period(ctx: &mut Ctx, stream_id: u32, out: &mut [u8]) -> usize {
     // Kick the device via the RXQ notify register (queue index 3).
     // SAFETY: notify VA is the Device-attr MMIO window mapped by the boot
     // probe; an aligned u16 store of queue index 3 is the spec-defined kick.
-    unsafe { core::ptr::write_volatile(ctx.q3_notify_va as *mut u16, 3u16); }
-    let used16 = h.wrapping_add(ctx.q3_device_pa) as *const u16;
+    unsafe { core::ptr::write_volatile(rxq.notify_va as *mut u16, rxq.index); }
+    let used16 = h.wrapping_add(rxq.device_pa) as *const u16;
     let mut polls = 0u32;
     loop {
         // SAFETY: HHDM-mapped RXQ used ring; aligned u16 load of used.idx.
@@ -818,10 +915,10 @@ fn rx_period(ctx: &mut Ctx, stream_id: u32, out: &mut [u8]) -> usize {
     }
     // used ring elem: {id:u32, len:u32} at byte 4 + elem*8; len = bytes the
     // device wrote (payload + 8-byte status). Payload = len - 8.
-    let elem = ((target.wrapping_sub(1)) % qsz) as usize;
-    let used32 = h.wrapping_add(ctx.q3_device_pa) as *const u32;
+    let elem = ((target.wrapping_sub(1)) % rxq.size) as usize;
+    let used32 = h.wrapping_add(rxq.device_pa) as *const u32;
     // SAFETY: HHDM-mapped used ring; aligned u32 load of the completed elem's
-    // len at u32 index 1 + elem*2 + 1; elem bounded by q3_size.
+    // len at u32 index 1 + elem*2 + 1; elem bounded by rxq.size.
     let used_len = unsafe { core::ptr::read_volatile(used32.add(1 + elem * 2 + 1)) } as usize;
     let payload = used_len.saturating_sub(8).min(n);
     let src = h.wrapping_add(ctx.rx_buf_pa) as *const u8;
@@ -848,7 +945,7 @@ pub fn cap_state() -> PcmState {
 /// `(installed, has_input_stream, has_rxq)` capture-readiness probe. # C: O(1)
 pub fn capture_ready() -> (bool, bool, bool) {
     match CTX.lock().as_ref() {
-        Some(c) => (true, c.in_stream.is_some(), c.q3_desc_pa != 0),
+        Some(c) => (true, c.in_stream.is_some(), c.rxq.is_some()),
         None => (false, false, false),
     }
 }

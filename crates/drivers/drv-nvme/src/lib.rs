@@ -1,7 +1,7 @@
 // NVMe block driver (drivers-plan D3.5). A real controller bring-up: reset →
 // admin SQ/CQ → IDENTIFY controller + namespace 1 → one I/O queue pair →
 // READ/WRITE via a PRP bounce frame, exposed as a `block::BlockDevice` under
-// the registry name `nvme0n1`. The boot probe (`pci_boot`) matches PCI class
+// the registry name `nvme0n1`. The model driver's `probe` matches PCI class
 // 0x010802 (QEMU vendor 0x1b36 device 0x0010), maps BAR0, and calls `init`.
 //
 // Layering: `regs.rs` = pure register/bit math (host-tested); `queue.rs` =
@@ -20,6 +20,7 @@ mod queue;
 #[cfg(target_os = "oxide-kernel")]
 mod imp {
     use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicBool, Ordering};
     use sync::{Spinlock, TaskList as DriverLockClass};
     use block::{BlockDevice, BlockRequest, BlockError, BlockOp, KResult};
     use crate::queue::Nvme;
@@ -35,6 +36,7 @@ mod imp {
         ctrl:     Spinlock<Nvme, DriverLockClass>,
         blk_size: u32,
         capacity: u64,
+        removed:  AtomicBool,
     }
 
     impl NvmeBlk {
@@ -52,6 +54,9 @@ mod imp {
         fn capacity_blocks(&self) -> u64 { self.capacity }
 
         fn submit_sync(&self, req: &mut BlockRequest) -> KResult<()> {
+            if self.removed.load(Ordering::Acquire) {
+                return Err(BlockError::Eio);
+            }
             let bs = self.blk_size as usize;
             match req.op {
                 BlockOp::Flush => {
@@ -114,17 +119,32 @@ mod imp {
         }
 
         fn flush(&self) -> KResult<()> {
+            if self.removed.load(Ordering::Acquire) {
+                return Err(BlockError::Eio);
+            }
             let mut c = self.ctrl.lock();
             if c.flush() { Ok(()) } else { Err(BlockError::Eio) }
         }
     }
 
-    /// Bring up the NVMe controller mapped at `bar0_va` (BAR0 register file,
-    /// ≥2 pages from map_mmio_pages), register it as `nvme0n1`, and return the
+    impl NvmeBlk {
+        /// Remove publication before calling this, then quiesce hardware and
+        /// release queue/PRP frames. Existing Arc holders observe EIO.
+        /// # C: O(controller shutdown + PMM frees)
+        fn remove(&self) {
+            self.removed.store(true, Ordering::Release);
+            self.ctrl.lock().shutdown_and_free();
+        }
+    }
+
+    static INSTALLED: Spinlock<Option<Arc<NvmeBlk>>, DriverLockClass> = Spinlock::new(None);
+
+    /// Bring up the NVMe controller mapped by `mmio` (BAR0 register file,
+    /// ≥2 pages), register it as `nvme0n1`, and return the
     /// 1-based registry index (0 on failure). Optionally self-tests by reading
     /// LBA 0. # C: O(controller bring-up) + registry O(N_disks)
-    pub fn init(bar0_va: u64) -> u32 {
-        let nv = match Nvme::bring_up(bar0_va) { Some(n) => n, None => {
+    pub fn init(mmio: mmio_map::Mapping, bar0_off: u64) -> u32 {
+        let nv = match Nvme::bring_up(mmio, bar0_off) { Some(n) => n, None => {
             #[cfg(feature = "debug-boot")]
             { klog::write_raw(b"[WARN]  nvme: controller bring-up failed\n"); }
             return 0;
@@ -141,9 +161,10 @@ mod imp {
             klog::write_raw(b"\n");
         }
 
-        let dev: Arc<dyn BlockDevice> = Arc::new(NvmeBlk {
+        let dev = Arc::new(NvmeBlk {
             ctrl: Spinlock::new(nv),
             blk_size, capacity,
+            removed: AtomicBool::new(false),
         });
 
         // Optional bring-up self-test: read LBA 0 (proves the I/O queue +
@@ -157,7 +178,16 @@ mod imp {
             klog::write_raw(b"\n");
         }
 
-        let idx = block::registry::register_with_serial("nvme0n1", Some("oxnvme"), dev);
+        let idx = block::registry::register_with_serial(
+            "nvme0n1",
+            Some("oxnvme"),
+            dev.clone() as Arc<dyn BlockDevice>,
+        );
+        if idx == 0 {
+            dev.remove();
+            return 0;
+        }
+        *INSTALLED.lock() = Some(dev);
         #[cfg(feature = "debug-boot")]
         {
             klog::write_raw(b"[INFO]  nvme: block dev registered idx=");
@@ -166,10 +196,36 @@ mod imp {
         }
         idx
     }
+
+    /// Remove the registered NVMe disk and release controller-owned resources.
+    /// # C: O(N_disks + controller shutdown)
+    pub fn remove() -> bool {
+        let dev = match INSTALLED.lock().take() {
+            Some(dev) => dev,
+            None => return false,
+        };
+        let _ = block::registry::unregister("nvme0n1");
+        dev.remove();
+        true
+    }
 }
 
 #[cfg(target_os = "oxide-kernel")]
-pub use imp::{init, NvmeBlk, NVME_CLASS24};
+pub use imp::{init, remove, NvmeBlk, NVME_CLASS24};
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {
+    let r = hal_x86_64::pci::LegacyPci;
+    pci::decode_bars(&r, bdf)
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {
+    match hal_aarch64::pci::EcamPci::from_published() {
+        Some(r) => pci::decode_bars(&r, bdf),
+        None => [pci::Bar::None; 6],
+    }
+}
 
 /// The D1a model driver for NVMe: matches PCI class 0x010802 on the PCI bus.
 /// Registered + bound at the bring-up success site in pci-boot.
@@ -181,6 +237,37 @@ impl drv::Driver for NvmeDriver {
     fn name(&self) -> &'static str { "nvme" }
     fn matches(&self, dev: &drv::Device) -> bool {
         dev.bus == "pci" && dev.class == imp::NVME_CLASS24
+    }
+
+    fn probe(&self, dev: &alloc::sync::Arc<drv::Device>) -> drv::KResult<()> {
+        let bdf = pci::parse_bdf_addr(&dev.addr).ok_or(drv::Error::ProbeFailed)?;
+        #[cfg(target_arch = "x86_64")]
+        {
+            let r = hal_x86_64::pci::LegacyPci;
+            pci::enable_mem_bus_master(&r, bdf);
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
+                pci::enable_mem_bus_master(&r, bdf);
+            } else {
+                return Err(drv::Error::ProbeFailed);
+            }
+        }
+        let bars = decode_bars(bdf);
+        let bar0_pa = bars[0].mem_base().unwrap_or(0);
+        if bar0_pa == 0 { return Err(drv::Error::ProbeFailed); }
+        // SAFETY: BAR0 PA came from this PCI function's config space; two
+        // pages cover the controller register file and QEMU doorbells.
+        let mmio = unsafe { mmio_map::map_owned(bar0_pa & !0xFFF, 2) };
+        if imp::init(mmio, bar0_pa & 0xFFF) == 0 {
+            return Err(drv::Error::ProbeFailed);
+        }
+        Ok(())
+    }
+
+    fn remove(&self, _dev: &drv::Device) {
+        let _ = imp::remove();
     }
 }
 

@@ -20,10 +20,11 @@ pub const VIRTIO_PCI_CAP_SHARED_MEMORY_CFG: u8 = 8;
 pub const VIRTIO_PCI_VENDOR_RH:      u16 = 0x1AF4;
 /// Modern-only device-ID base (non-transitional). 0x1041+ per spec §4.1.2.
 pub const VIRTIO_PCI_MODERN_ID_BASE: u16 = 0x1040;
-/// Transitional device-ID range: 0x1000..=0x103F. These speak both legacy
-/// port-IO AND the modern PCI cap-based transport when caps are present.
+/// Transitional device-ID range: 0x1000..=0x103F. This kernel does not bind
+/// transitional devices in the modern-only virtio-pci transport.
 pub const VIRTIO_PCI_TRANSITIONAL_LO: u16 = 0x1000;
 pub const VIRTIO_PCI_TRANSITIONAL_HI: u16 = 0x103F;
+pub const VIRTIO_PCI_MODERN_ID_HI: u16 = 0x107F;
 
 /// Decoded virtio-pci vendor cap. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -39,18 +40,51 @@ pub struct VirtioPciCap {
 /// True iff `(vendor, device)` is a modern-only virtio-pci device.
 /// # C: O(1)
 pub const fn is_modern_only(vendor: u16, device: u16) -> bool {
-    vendor == VIRTIO_PCI_VENDOR_RH && device >= VIRTIO_PCI_MODERN_ID_BASE
+    vendor == VIRTIO_PCI_VENDOR_RH
+        && device > VIRTIO_PCI_MODERN_ID_BASE
+        && device <= VIRTIO_PCI_MODERN_ID_HI
 }
 
-/// True iff the device may speak the modern (cap-based) transport — that
-/// covers both modern-only IDs and transitional IDs (which advertise the
-/// same caps when running under a 1.0+ host). The cap walker still has
-/// final say: a transitional ID without virtio caps is legacy-only.
+/// True iff the device is a modern-only virtio-pci function. Transitional
+/// IDs are intentionally not accepted here; binding them through this path
+/// would mix legacy and modern transport policy and break child device IDs.
 /// # C: O(1)
 pub const fn is_modern(vendor: u16, device: u16) -> bool {
-    vendor == VIRTIO_PCI_VENDOR_RH
-        && device >= VIRTIO_PCI_TRANSITIONAL_LO
-        && device <= 0x107F
+    is_modern_only(vendor, device)
+}
+
+/// Convert a modern-only PCI device ID into the virtio device ID exposed on the
+/// virtio bus. Transitional IDs are rejected instead of underflowing through
+/// the modern base.
+/// # C: O(1)
+pub const fn modern_device_id(pci_device_id: u16) -> Option<u16> {
+    if pci_device_id > VIRTIO_PCI_MODERN_ID_BASE && pci_device_id <= VIRTIO_PCI_MODERN_ID_HI {
+        Some(pci_device_id - VIRTIO_PCI_MODERN_ID_BASE)
+    } else {
+        None
+    }
+}
+
+/// Compute the physical notify address for a queue from a NOTIFY_CFG cap and
+/// a firmware-programmed PCI BAR table. Mapping and lifetime remain owned by
+/// the caller/transport.
+/// # C: O(1)
+pub fn notify_pa(cap: &VirtioPciCap, bars: &[pci::Bar; 6], notify_off: u16) -> Option<u64> {
+    if cap.cfg_type != VIRTIO_PCI_CAP_NOTIFY_CFG {
+        return None;
+    }
+    let bar = match bars.get(cap.bar as usize)? {
+        pci::Bar::Mem32 { base, .. } => *base as u64,
+        pci::Bar::Mem64 { base, .. } => *base,
+        _ => return None,
+    };
+    if bar == 0 {
+        return None;
+    }
+    Some(
+        bar.wrapping_add(cap.offset as u64)
+            .wrapping_add((notify_off as u64) * (cap.notify_off_multiplier as u64)),
+    )
 }
 
 /// Decode one virtio vendor cap from config space. Returns None if the
@@ -177,12 +211,50 @@ mod tests {
     fn modern_id_check() {
         assert!(is_modern_only(0x1AF4, 0x1041));
         assert!(is_modern_only(0x1AF4, 0x1042));
+        assert!(!is_modern_only(0x1AF4, 0x1040));
         assert!(!is_modern_only(0x1AF4, 0x1000));
         assert!(!is_modern_only(0x8086, 0x1041));
-        // Transitional + modern-only both pass the loose check.
-        assert!(is_modern(0x1AF4, 0x1000));
+        assert!(!is_modern(0x1AF4, 0x1000));
         assert!(is_modern(0x1AF4, 0x1041));
         assert!(!is_modern(0x1AF4, 0x1080));
         assert!(!is_modern(0x8086, 0x1000));
+        assert_eq!(modern_device_id(0x1041), Some(1));
+        assert_eq!(modern_device_id(0x1042), Some(2));
+        assert_eq!(modern_device_id(0x1040), None);
+        assert_eq!(modern_device_id(0x1000), None);
+        assert_eq!(modern_device_id(0x103f), None);
+        assert_eq!(modern_device_id(0x1080), None);
+    }
+
+    #[test]
+    fn notify_pa_uses_memory_bar_and_multiplier() {
+        let cap = VirtioPciCap {
+            cfg_type: VIRTIO_PCI_CAP_NOTIFY_CFG,
+            bar: 2,
+            offset: 0x100,
+            length: 0x100,
+            notify_off_multiplier: 4,
+        };
+        let mut bars = [pci::Bar::None; 6];
+        bars[2] = pci::Bar::Mem64 { base: 0x8000_0000, prefetch: false };
+
+        assert_eq!(notify_pa(&cap, &bars, 3), Some(0x8000_010c));
+    }
+
+    #[test]
+    fn notify_pa_rejects_wrong_or_unmapped_bar() {
+        let common = VirtioPciCap {
+            cfg_type: VIRTIO_PCI_CAP_COMMON_CFG,
+            bar: 0,
+            offset: 0x100,
+            length: 0x100,
+            notify_off_multiplier: 4,
+        };
+        let bars = [pci::Bar::None; 6];
+
+        assert_eq!(notify_pa(&common, &bars, 0), None);
+
+        let notify = VirtioPciCap { cfg_type: VIRTIO_PCI_CAP_NOTIFY_CFG, ..common };
+        assert_eq!(notify_pa(&notify, &bars, 0), None);
     }
 }

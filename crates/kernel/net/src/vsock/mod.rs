@@ -34,12 +34,29 @@ static DRIVER_UP: AtomicBool = AtomicBool::new(false);
 pub type TxFn = fn(&[u8]) -> bool;
 static TX_HOOK: AtomicU64 = AtomicU64::new(0);
 
-/// Driver bring-up entry: publish guest CID + install the TX hook.
-/// Idempotent. # C: O(1)
-pub fn driver_install(guest_cid: u64, tx: TxFn) {
+/// Driver bring-up entry: publish guest CID + install the TX hook. Rejects a
+/// second active transport so a later probe cannot overwrite the live protocol
+/// endpoint behind existing sockets.
+/// # C: O(1)
+pub fn driver_install(guest_cid: u64, tx: TxFn) -> bool {
+    if DRIVER_UP
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return false;
+    }
     GUEST_CID.store(guest_cid, Ordering::Release);
     TX_HOOK.store(tx as usize as u64, Ordering::Release);
-    DRIVER_UP.store(true, Ordering::Release);
+    true
+}
+
+/// Driver remove entry: stop new TX, reset CID, and close live connections.
+/// # C: O(N conns)
+pub fn driver_uninstall() {
+    DRIVER_UP.store(false, Ordering::Release);
+    TX_HOOK.store(0, Ordering::Release);
+    GUEST_CID.store(0, Ordering::Release);
+    TABLE.close_all();
 }
 
 /// Our guest CID (0 if no device). # C: O(1)

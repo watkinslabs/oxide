@@ -42,6 +42,10 @@ pub enum Slot {
     /// the net stack. Raised by the MSI dispatcher on every virtio
     /// MSI fire (shared vector — handler bails if RX queue is empty).
     NetRx = 2,
+    /// virtio-vsock: drain RX queue used-ring + dispatch packets into
+    /// AF_VSOCK. Raised by the MSI dispatcher; the handler is installed
+    /// by the virtio-vsock driver probe.
+    VsockRx = 3,
 }
 
 const N_SLOTS: usize = 32;
@@ -161,6 +165,17 @@ pub static DEFERRALS: AtomicU32 = AtomicU32::new(0);
 pub fn set_handler(slot: Slot, f: fn()) -> *mut () {
     let raw = f as *mut ();
     HANDLERS[slot as usize].swap(raw, Ordering::Release)
+}
+
+/// Remove a handler and clear any still-pending work for that slot on every
+/// CPU. Drivers call this from remove after stopping publication of new work.
+/// # C: O(NR_CPUS)
+pub fn clear_handler(slot: Slot) -> *mut () {
+    let bit = 1u32 << (slot as u32);
+    for pending in PENDING.iter() {
+        pending.fetch_and(!bit, Ordering::AcqRel);
+    }
+    HANDLERS[slot as usize].swap(core::ptr::null_mut(), Ordering::AcqRel)
 }
 
 /// Raise `slot` on THIS CPU — Linux `__raise_softirq_irqoff` / `or_softirq_
@@ -299,6 +314,21 @@ mod tests {
         unsafe { run_pending(); }
         // No panic, no crash; just a no-op.
         assert!(!pending());
+    }
+
+    #[test]
+    fn clear_handler_removes_handler_and_pending_bit() {
+        T_HITS.store(0, Ordering::Relaxed);
+        PENDING[0].store(0, Ordering::Relaxed);
+        set_handler(Slot::VsockRx, t_handler);
+        raise(Slot::VsockRx);
+        assert!(pending());
+        let old = clear_handler(Slot::VsockRx);
+        assert!(!old.is_null());
+        assert!(!pending());
+        // SAFETY: hosted unit test; no IRQs to coordinate with; sole caller of run_pending in this thread.
+        unsafe { run_pending(); }
+        assert_eq!(T_HITS.load(Ordering::Relaxed), 0);
     }
 
     #[test]

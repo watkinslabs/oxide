@@ -14,6 +14,10 @@ klog             = { path = "../../shared/klog" }
 kmacros          = { path = "../../shared/kmacros" }
 drv              = { path = "../drv" }
 drv-virtio-input = { path = "../drv-virtio-input" }
+arch-irq         = { path = "../../kernel/arch-irq" }
+firmware         = { path = "../../kernel/firmware" }
+hal              = { path = "../../arch/hal" }
+hal-x86_64       = { path = "../../arch/hal-x86_64" }
 
 [features]
 default = []
