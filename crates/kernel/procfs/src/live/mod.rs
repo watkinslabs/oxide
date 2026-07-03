@@ -203,7 +203,7 @@ fn pc_coredump_filter(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"00
 fn pc_exe(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_link(t, "exe") }
 fn pc_cwd(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_link(t, "cwd") }
 fn pc_root(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_link(t, "root") }
-fn pc_fd(_t: u32, _s: bool) -> InodeRef { make_proc_self_fd() }
+fn pc_fd(t: u32, is_self: bool) -> InodeRef { make_proc_fd_dir(if is_self { None } else { Some(t) }) }
 fn pc_fdinfo(t: u32, is_self: bool) -> InodeRef { crate::fdinfo::make_fdinfo_dir(if is_self { None } else { Some(t) }) }
 
 /// Single source of truth for the `/proc/<pid>` directory contents (Linux
