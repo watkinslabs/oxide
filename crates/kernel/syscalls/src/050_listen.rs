@@ -12,14 +12,17 @@ use crate::net_common::{errno_from_neterr, socket_from_fd};
 pub fn sys_listen(args: &SyscallArgs) -> i64 {
     let fd      = args.a0;
     let backlog = args.a1 as i32;
-    // D3.3: AF_VSOCK listen — register the bound port in the vsock
+    // D3.3: AF_VSOCK listen — register the bound local CID/port in the
     // connection table so inbound OP_REQUESTs are accepted + queued.
     if let Some(vs) = crate::net_common::vsock_from_fd(fd) {
-        if let net::vsock_socket::VsockKind::Listener(port) = &*vs.kind.lock() {
-            net::vsock::TABLE.add_listener(*port);
-            return 0;
-        }
-        return -(Errno::Einval.as_i32() as i64);
+        let (local_cid, port) = match &*vs.kind.lock() {
+            net::vsock_socket::VsockKind::Bound { local_cid, port } => (*local_cid, *port),
+            net::vsock_socket::VsockKind::Listener { local_cid, port } => (*local_cid, *port),
+            _ => return -(Errno::Einval.as_i32() as i64),
+        };
+        net::vsock::TABLE.add_listener_for_cid(local_cid, port);
+        *vs.kind.lock() = net::vsock_socket::VsockKind::Listener { local_cid, port };
+        return 0;
     }
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"listen"); return -(Errno::Enotsock.as_i32() as i64); }

@@ -156,6 +156,7 @@ pub struct VsockTable {
 /// A bound listener + its accept backlog of inbound OP_REQUESTs that
 /// haven't been accept()ed yet. # C: O(1)
 pub struct Listener {
+    pub local_cid: u64,
     pub local_port: u32,
     pub backlog: Spinlock<VecDeque<ConnKey>, SockLockClass>,
     #[cfg(target_os = "oxide-kernel")]
@@ -244,11 +245,19 @@ impl VsockTable {
         }
     }
 
-    /// Register a listener on `port`. # C: O(1)
+    /// Register an any-CID listener on `port`. # C: O(1)
     pub fn add_listener(&self, port: u32) {
+        self.add_listener_for_cid(VMADDR_CID_ANY as u64, port);
+    }
+
+    /// Register a listener on `(local_cid, port)`. `VMADDR_CID_ANY` accepts
+    /// requests for any installed local CID, matching the Linux sockaddr_vm
+    /// wildcard. # C: O(1)
+    pub fn add_listener_for_cid(&self, local_cid: u64, port: u32) {
         let mut g = self.listeners.lock();
-        if g.iter().any(|l| l.local_port == port) { return; }
+        if g.iter().any(|l| l.local_cid == local_cid && l.local_port == port) { return; }
         g.push(Listener {
+            local_cid,
             local_port: port,
             backlog: Spinlock::new(VecDeque::new()),
             #[cfg(target_os = "oxide-kernel")]
@@ -256,34 +265,48 @@ impl VsockTable {
         });
     }
 
-    /// True iff `port` has a registered listener. # C: O(N listeners)
-    pub fn is_listening(&self, port: u32) -> bool {
-        self.listeners.lock().iter().any(|l| l.local_port == port)
+    /// True iff `(local_cid, port)` has a registered listener or an any-CID
+    /// listener exists for the port. # C: O(N listeners)
+    pub fn is_listening(&self, local_cid: u64, port: u32) -> bool {
+        self.listeners
+            .lock()
+            .iter()
+            .any(|l| l.local_port == port && (l.local_cid == local_cid || l.local_cid == VMADDR_CID_ANY as u64))
     }
 
-    /// Queue an accepted-but-not-yet-accept()ed peer key on `port`'s
+    /// Queue an accepted-but-not-yet-accept()ed peer key on the matching
     /// listener backlog + wake any accept() parker. # C: O(N listeners)
-    pub fn queue_accept(&self, port: u32, k: ConnKey) {
+    pub fn queue_accept(&self, local_cid: u64, port: u32, k: ConnKey) {
         let g = self.listeners.lock();
-        if let Some(l) = g.iter().find(|l| l.local_port == port) {
+        if let Some(l) = g
+            .iter()
+            .find(|l| l.local_port == port && (l.local_cid == local_cid || l.local_cid == VMADDR_CID_ANY as u64))
+        {
             l.backlog.lock().push_back(k);
             #[cfg(target_os = "oxide-kernel")]
             l.accept_waiters.wake_all();
         }
     }
 
-    /// Pop one pending peer key from `port`'s accept backlog. # C: O(N)
-    pub fn pop_accept(&self, port: u32) -> Option<ConnKey> {
+    /// Pop one pending peer key from the listener's accept backlog. # C: O(N)
+    pub fn pop_accept(&self, local_cid: u64, port: u32) -> Option<ConnKey> {
         let g = self.listeners.lock();
-        let k = g.iter().find(|l| l.local_port == port)?.backlog.lock().pop_front();
+        let k = g
+            .iter()
+            .find(|l| l.local_port == port && l.local_cid == local_cid)?
+            .backlog
+            .lock()
+            .pop_front();
         k
     }
 
     /// True iff `port`'s accept backlog is non-empty (poll readability).
     /// # C: O(N listeners)
-    pub fn pop_accept_peek(&self, port: u32) -> bool {
+    pub fn pop_accept_peek(&self, local_cid: u64, port: u32) -> bool {
         let g = self.listeners.lock();
-        g.iter().find(|l| l.local_port == port)
-            .map(|l| !l.backlog.lock().is_empty()).unwrap_or(false)
+        g.iter()
+            .find(|l| l.local_port == port && l.local_cid == local_cid)
+            .map(|l| !l.backlog.lock().is_empty())
+            .unwrap_or(false)
     }
 }

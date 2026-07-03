@@ -94,7 +94,9 @@ test-pass claims.
   or unrelated remove paths cannot clear another live CID/TX hook or close its
   connections. The virtio child probe no longer has a global "any vsock
   present" gate; duplicate ownership is rejected by the BDF/CID keyed install
-  path.
+  path. AF_VSOCK bind/listen/accept and explicit outbound connect routing now
+  carry the local CID, so listener backlogs and TX routing no longer collapse
+  multiple local vsock endpoints into a first-installed endpoint policy.
 - Virtio-rng now keeps per-BDF records, seeds from the just-bound device,
   removes by owning parent BDF, and promotes `/dev/hwrng` publication to a
   remaining RNG device on active-provider removal. Virtio-snd install/remove
@@ -183,9 +185,10 @@ test-pass claims.
   is tokenized. Virtio-gpu probe is no longer rejected just because another GPU
   is already installed; duplicate ownership is rejected by BDF/card state.
   Virtio-vsock transport context, protocol publication, TX dispatch, RX drain,
-  and protocol teardown are now BDF/CID keyed, and child probe no longer
-  rejects a second device just because one vsock device is already present; the
-  remaining vsock work is QEMU-visible repeated bind/unbind/readd proof.
+  AF_VSOCK local-CID bind/listen/connect routing, and protocol teardown are now
+  BDF/CID keyed, and child probe no longer rejects a second device just because
+  one vsock device is already present; the remaining vsock work is QEMU-visible
+  repeated bind/unbind/readd proof.
   Virtio-snd transport context, card publication, ops dispatch, ALSA nodes, and
   playback/capture runtime are now card/BDF-keyed, and child probe no longer
   rejects a second device just because one sound card is already present; the

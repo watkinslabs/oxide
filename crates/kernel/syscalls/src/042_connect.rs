@@ -19,7 +19,15 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         let (_fam, port, cid) = match read_sockaddr_vm(addr_p) {
             Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
         };
-        return match net::vsock::connect(cid, port) {
+        let local_cid = match &*vs.kind.lock() {
+            net::vsock_socket::VsockKind::Bound { local_cid, .. } => Some(*local_cid),
+            _ => None,
+        };
+        let connected = match local_cid {
+            Some(local_cid) => net::vsock::connect_from_cid(local_cid, cid, port),
+            None => net::vsock::connect(cid, port),
+        };
+        return match connected {
             Ok(c) => {
                 *vs.kind.lock() = net::vsock_socket::VsockKind::Conn(c);
                 0

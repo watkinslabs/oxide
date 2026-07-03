@@ -15,10 +15,13 @@ pub const VSOCK_INO_TAG: u64 = 0x5653_4F43_0000_0000;
 pub enum VsockKind {
     /// `socket()` done, no connect/bind yet.
     Init,
+    /// `bind()` recorded a local address; `listen()` publishes it as a
+    /// listener, while `connect()` uses the local CID as the TX route.
+    Bound { local_cid: u64, port: u32 },
     /// `connect()` succeeded or `accept()` produced this — live stream.
     Conn(Arc<VsockConn>),
     /// `bind()`+`listen()` — accepts inbound OP_REQUESTs on `port`.
-    Listener(u32),
+    Listener { local_cid: u64, port: u32 },
 }
 
 /// AF_VSOCK socket VFS state. # C: O(1)
@@ -190,10 +193,10 @@ impl VsockSocket {
                 }
                 mask
             }
-            VsockKind::Listener(port) => {
-                if vsock::TABLE.pop_accept_peek(*port) { POLL_IN } else { 0 }
+            VsockKind::Listener { local_cid, port } => {
+                if vsock::TABLE.pop_accept_peek(*local_cid, *port) { POLL_IN } else { 0 }
             }
-            VsockKind::Init => POLL_OUT,
+            VsockKind::Init | VsockKind::Bound { .. } => POLL_OUT,
         }
     }
 }

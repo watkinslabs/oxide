@@ -161,13 +161,32 @@ fn listener_request_queues_accept() {
         op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
     };
     deliver_rx(&req, &[]);
-    let k = TABLE.pop_accept(5555).expect("accept queued");
+    let k = TABLE.pop_accept(VMADDR_CID_ANY as u64, 5555).expect("accept queued");
     assert_eq!(k.peer_cid, 2);
     assert_eq!(k.peer_port, 4444);
     assert_eq!(k.local_port, 5555);
     let conn = TABLE.find(k).expect("conn inserted");
     assert_eq!(*conn.st.lock(), VsockState::Connected);
     assert_eq!(conn.credit.lock().peer_buf_alloc, 8192);
+    TABLE.remove(k);
+}
+
+#[test]
+fn listener_request_uses_bound_local_cid() {
+    TABLE.add_listener_for_cid(43, 5556);
+    let wrong_cid = VsockHdr {
+        src_cid: 2, dst_cid: 42, src_port: 4444, dst_port: 5556,
+        len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
+        op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
+    };
+    deliver_rx(&wrong_cid, &[]);
+    assert!(TABLE.pop_accept(43, 5556).is_none());
+
+    let right_cid = VsockHdr { dst_cid: 43, ..wrong_cid };
+    deliver_rx(&right_cid, &[]);
+    let k = TABLE.pop_accept(43, 5556).expect("exact CID accept queued");
+    assert_eq!(k.local_cid, 43);
+    assert_eq!(k.local_port, 5556);
     TABLE.remove(k);
 }
 
@@ -202,4 +221,16 @@ fn driver_endpoint_owns_uninstall() {
     assert_eq!(guest_cid(), 0);
     assert!(!driver_up());
     TABLE.remove(c43.key());
+}
+
+#[test]
+fn connect_from_cid_routes_through_requested_endpoint() {
+    let ep42 = driver_install(42, dummy_tx).expect("first endpoint installs");
+    let ep43 = driver_install(43, dummy_tx).expect("second endpoint installs");
+    let c = connect_from_cid(43, 2, 5555).expect("explicit local cid connects");
+    assert_eq!(c.local_cid, 43);
+    assert!(connect_from_cid(44, 2, 5555).is_err());
+    TABLE.remove(c.key());
+    assert!(driver_uninstall(ep42));
+    assert!(driver_uninstall(ep43));
 }

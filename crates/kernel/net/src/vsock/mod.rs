@@ -100,6 +100,11 @@ pub fn driver_up() -> bool {
     !DRIVERS.lock().is_empty()
 }
 
+/// True iff a driver owns `guest_cid`. # C: O(N drivers)
+pub fn driver_up_for_cid(guest_cid: u64) -> bool {
+    DRIVERS.lock().iter().any(|driver| driver.guest_cid == guest_cid)
+}
+
 /// Emit one packet through the endpoint that owns `hdr.src_cid`.
 /// False if no matching driver. # C: O(N drivers + len)
 pub fn tx(hdr: &VsockHdr, payload: &[u8]) -> bool {
@@ -141,7 +146,7 @@ pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
         VIRTIO_VSOCK_OP_REQUEST => {
             // Inbound connection attempt. Accept iff we listen on the
             // dst port; reply OP_RESPONSE and queue for accept(). Else RST.
-            if TABLE.is_listening(local_port) {
+            if TABLE.is_listening(local_cid, local_port) {
                 let c = alloc::sync::Arc::new(VsockConn::new(
                     local_cid, local_port, peer_cid, peer_port,
                     VsockState::Connected));
@@ -149,7 +154,7 @@ pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
                 let resp = c.make_hdr(VIRTIO_VSOCK_OP_RESPONSE, 0, 0);
                 TABLE.insert(c.clone());
                 let _ = tx(&resp, &[]);
-                TABLE.queue_accept(local_port, c.key());
+                TABLE.queue_accept(local_cid, local_port, c.key());
             } else {
                 let rst = VsockHdr {
                     src_cid: local_cid, dst_cid: peer_cid,
@@ -225,7 +230,18 @@ pub fn connect(peer_cid: u64, peer_port: u32)
 {
     if !driver_up() { return Err(NetError::Enetunreach); }
     let local_cid = guest_cid();
+    connect_from_cid(local_cid, peer_cid, peer_port)
+}
+
+/// Client connect from a specific local CID. This is the Linux-shaped path
+/// for multiple local vsock transports: TX is routed through the endpoint that
+/// owns `local_cid`, and a missing endpoint fails before the connection enters
+/// the table. # C: O(RTT)
+pub fn connect_from_cid(local_cid: u64, peer_cid: u64, peer_port: u32)
+    -> Result<alloc::sync::Arc<VsockConn>, NetError>
+{
     if local_cid == 0 { return Err(NetError::Enetunreach); }
+    if !driver_up_for_cid(local_cid) { return Err(NetError::Enetunreach); }
     let local_port = TABLE.alloc_port();
     let c = alloc::sync::Arc::new(VsockConn::new(
         local_cid, local_port, peer_cid, peer_port, VsockState::Connecting));
