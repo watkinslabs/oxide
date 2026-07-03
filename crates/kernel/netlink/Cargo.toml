@@ -11,3 +11,4 @@ path = "src/lib.rs"
 sync = { path = "../../shared/sync" }
 vfs  = { path = "../vfs" }
 net  = { path = "../net" }
+klog = { path = "../../shared/klog" }
