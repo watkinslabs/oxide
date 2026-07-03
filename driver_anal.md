@@ -161,20 +161,21 @@ test-pass claims.
   records the owning card/CRTC identity plus the exact `/dev/fbN` it published.
   fbdev write/pan/wait/blank hooks are keyed by framebuffer index, so one
   framebuffer cannot steal or clear another framebuffer's display callbacks.
-  fbcon unregister now removes the framebuffer flush softirq handler and clears
-  pending fbcon flush work. Full multi-GPU KMS still needs the global
-  fbcon/klog/tty console hook model to become per-console ownership instead of
-  the remaining primary-only path.
+  fbcon registration now returns an owner token, virtio-gpu stores that token
+  with the owning scanout, and teardown unregisters klog/tty/fbcon hooks only
+  for the matching owner. Additional scanouts still publish fbdev nodes instead
+  of being blocked by an existing console. Full multi-GPU KMS still needs
+  QEMU-visible repeated bind/unbind/readd proof and deeper CRTC/output coverage.
 - Block, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`
   provider. Virtio-net transport/netdev/softirq runtime is now BDF-keyed, ARP
   neighbor state is per runtime, and RX uses a bounded descriptor/buffer pool
   instead of one global or single-descriptor path. Virtio-gpu teardown is
-  BDF-owned and fbdev helper hooks are now fb-index-owned. Virtio-gpu probe is
-  no longer rejected just because another
-  GPU is already installed; duplicate ownership is rejected by BDF/card state.
-  The fbcon/klog/tty console helper path is still primary-only. Virtio-vsock
+  BDF-owned, fbdev helper hooks are fb-index-owned, and fbcon console ownership
+  is tokenized. Virtio-gpu probe is no longer rejected just because another GPU
+  is already installed; duplicate ownership is rejected by BDF/card state.
+  Virtio-vsock
   transport context, protocol publication, TX dispatch, RX drain, and protocol
   teardown are now BDF/CID keyed; the remaining vsock work is QEMU-visible
   repeated bind/unbind/readd proof. Virtio-snd transport context, card
@@ -203,9 +204,10 @@ test-pass claims.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-gpu DRM core
   state, installed device registry, and scanout contexts are now card/BDF-scoped,
-  and fbdev scanout publication/hook dispatch records card/CRTC/fb ownership,
-  but the global fbcon/klog/tty hooks still need to move beyond primary-only
-  scanout export;
+  fbdev scanout publication/hook dispatch records card/CRTC/fb ownership, and
+  fbcon/klog/tty ownership is tokenized for the owning scanout; remaining GPU
+  work is QEMU-visible repeated bind/unbind/readd proof plus deeper
+  multi-output/KMS coverage;
   virtio-vsock transport contexts and protocol endpoints are now split by
   BDF/CID, with TX dispatch selected from packet headers and teardown scoped to
   the owned endpoint. Virtio-snd card publication, ops, ALSA nodes, and PCM
@@ -342,9 +344,9 @@ side-effect cleanup, not the old add-before-devtmpfs ordering bug.
 Several drivers use singleton global state:
 
 - virtio-gpu: BDF-keyed installed device registry, card-keyed scanout
-  contexts, and fb-index-keyed fbdev hooks; probe is no longer globally
-  blocked by an existing GPU; global fbcon/klog/tty console hooks are still
-  primary-only
+  contexts, fb-index-keyed fbdev hooks, and token-owned fbcon/klog/tty console
+  hooks; probe and fbdev publication are no longer globally blocked by an
+  existing GPU
 - virtio-rng: BDF-keyed record table with one active `/dev/hwrng` provider
 - virtio-vsock: BDF-keyed transport contexts and CID-keyed protocol endpoints;
   QEMU repeated bind/unbind/remove/readd proof remains

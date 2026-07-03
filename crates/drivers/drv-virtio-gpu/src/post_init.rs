@@ -388,7 +388,7 @@ struct ScanoutCtx {
     bdf: u32,
     card_id: Option<u32>,
     fb_idx: Option<u32>,
-    primary_console: bool,
+    console_id: Option<fbcon::kernel::ConsoleId>,
     cfg_va: u64,
     w: u32,
     h: u32,
@@ -413,8 +413,8 @@ fn ctx_idx_by_card(ctxs: &[ScanoutCtx], card_id: u32) -> Option<usize> {
     ctxs.iter().position(|ctx| ctx.card_id == Some(card_id))
 }
 
-fn primary_ctx_idx(ctxs: &[ScanoutCtx]) -> Option<usize> {
-    ctxs.iter().position(|ctx| ctx.primary_console)
+fn console_ctx_idx(ctxs: &[ScanoutCtx], console_id: fbcon::kernel::ConsoleId) -> Option<usize> {
+    ctxs.iter().position(|ctx| ctx.console_id == Some(console_id))
 }
 
 fn ctx_idx_by_fb(ctxs: &[ScanoutCtx], fb_idx: u32) -> Option<usize> {
@@ -428,7 +428,8 @@ fn ctx_idx_by_fb(ctxs: &[ScanoutCtx], fb_idx: u32) -> Option<usize> {
 /// # C: O(fb_bytes) copy + O(1) per submit.
 pub fn fbcon_flush_pixels(pixels: &[u8]) {
     let g = CTX.lock();
-    let ctx = match primary_ctx_idx(&g) { Some(idx) => &g[idx], None => return };
+    let Some(console_id) = fbcon::kernel::active_console_id() else { return };
+    let ctx = match console_ctx_idx(&g, console_id) { Some(idx) => &g[idx], None => return };
     let n = (ctx.fb_bytes as usize).min(pixels.len());
     // SAFETY: ctx.fb_va is HHDM-mapped for fb_bytes; bounded copy of n ≤ fb_bytes; CPL=0 writes through HHDM mapping.
     unsafe {
@@ -459,7 +460,8 @@ pub fn fbcon_flush_pixels(pixels: &[u8]) {
 /// # C: O(fb_bytes) clear + O(1) submits.
 pub fn blank_scanout() {
     let g = CTX.lock();
-    let ctx = match primary_ctx_idx(&g) { Some(idx) => &g[idx], None => return };
+    let Some(console_id) = fbcon::kernel::active_console_id() else { return };
+    let ctx = match console_ctx_idx(&g, console_id) { Some(idx) => &g[idx], None => return };
     blank_ctx(ctx);
 }
 
@@ -499,7 +501,7 @@ pub fn unblank_scanout_for_fb(fb_idx: u32) {
     let repaint_primary = {
         let g = CTX.lock();
         let Some(idx) = ctx_idx_by_fb(&g, fb_idx) else { return };
-        g[idx].primary_console
+        g[idx].console_id.is_some()
     };
     if repaint_primary {
         fbcon::kernel::force_repaint();
@@ -520,7 +522,7 @@ fn install_scanout_ctx(
         return false;
     }
     ctx.push(ScanoutCtx {
-        bdf, card_id: None, fb_idx: None, primary_console: false,
+        bdf, card_id: None, fb_idx: None, console_id: None,
         cfg_va, w, h, fb_va, fb_bytes, fb_pages_alloc, res_id,
         ctrlq, cmd_buf_va, cmd_buf_pa, hhdm,
         next_runtime_res_id: AtomicU32::new(2),
@@ -628,18 +630,22 @@ pub fn framebuffer(card_id: u32) -> Option<(u64, u64, u64, u32, u32, u32)> {
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub fn publish_console_scanout(card_id: u32) {
-    let has_primary = {
+    {
         let ctxs = CTX.lock();
         let Some(idx) = ctx_idx_by_card(&ctxs, card_id) else { return };
-        if ctxs[idx].primary_console {
+        if ctxs[idx].fb_idx.is_some() {
             return;
         }
-        primary_ctx_idx(&ctxs).is_some()
+    }
+    let wants_console = fbcon::kernel::active_console_id().is_none();
+    let dims = if wants_console {
+        dimensions(card_id)
+    } else {
+        None
     };
-    if has_primary {
+    if wants_console && dims.is_none() {
         return;
     }
-    let Some((w, h)) = dimensions(card_id) else { return };
     let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer(card_id) else { return };
     let fb_idx = fbdev::init_scanout(card_id, drm::crtc_id_for(0), base_pa, fb_va, bytes, pitch, fw, fh);
     if fbdev::var_of(fb_idx).is_none() {
@@ -651,22 +657,33 @@ pub fn publish_console_scanout(card_id: u32) {
             let _ = fbdev::unregister(fb_idx);
             return;
         };
-        if !ctxs[idx].primary_console && primary_ctx_idx(&ctxs).is_some() {
+        if ctxs[idx].fb_idx.is_some() {
             let _ = fbdev::unregister(fb_idx);
             return;
         }
         ctxs[idx].fb_idx = Some(fb_idx);
-        ctxs[idx].primary_console = true;
     }
-    fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
     fbdev::set_flush_hook(fb_idx, flush_scanout_for_fb);
     fbdev::set_blank_hooks(fb_idx, blank_scanout_for_fb, unblank_scanout_for_fb);
     fbdev::set_yield_hook(fbdev_vsync_yield);
     fbdev::set_now_hook(monotonic_now_ns);
-    klog::set_aux_sink(fbcon::kernel::vt_console_sink);
-    fbcon::kernel::set_reply_sink(console::vt_reply_sink);
-    tty::live::set_app_cursor_query(fbcon::kernel::fg_app_cursor);
-    tty::live::set_bracketed_paste_query(fbcon::kernel::fg_bracketed_paste);
+    if let Some((w, h)) = dims {
+        let Some(console_id) = fbcon::kernel::register_console(w, h, fbcon_flush_pixels) else {
+            return;
+        };
+        {
+            let mut ctxs = CTX.lock();
+            let Some(idx) = ctx_idx_by_card(&ctxs, card_id) else {
+                let _ = fbcon::kernel::unregister_console(console_id);
+                return;
+            };
+            ctxs[idx].console_id = Some(console_id);
+        }
+        klog::set_aux_sink(fbcon::kernel::vt_console_sink);
+        fbcon::kernel::set_reply_sink(console::vt_reply_sink);
+        tty::live::set_app_cursor_query(fbcon::kernel::fg_app_cursor);
+        tty::live::set_bracketed_paste_query(fbcon::kernel::fg_bracketed_paste);
+    }
 }
 
 /// Unpublish the console/fb helper state owned by the installed scanout before
@@ -674,26 +691,32 @@ pub fn publish_console_scanout(card_id: u32) {
 /// # C: O(N + depth)
 #[cfg(target_os = "oxide-kernel")]
 pub fn unpublish_console_scanout(bdf: u32, card_id: u32) {
-    let (fb_idx, was_primary) = {
+    let (fb_idx, console_id) = {
         let mut ctxs = CTX.lock();
         let Some(idx) = ctx_idx_by_bdf(&ctxs, bdf) else {
             drm::node::clear_scanout_ops(card_id);
             return;
         };
         let fb_idx = ctxs[idx].fb_idx.take();
-        let was_primary = ctxs[idx].primary_console;
-        ctxs[idx].primary_console = false;
-        (fb_idx, was_primary)
+        let console_id = ctxs[idx].console_id.take();
+        (fb_idx, console_id)
     };
-    if was_primary {
-        klog::clear_aux_sink();
-        tty::live::clear_vt_mode_queries();
-        fbcon::kernel::kernel_unregister();
-        if let Some(fb_idx) = fb_idx {
-            fbdev::clear_blank_hooks(fb_idx);
-            fbdev::clear_flush_hook(fb_idx);
-            let _ = fbdev::unregister(fb_idx);
+    if let Some(fb_idx) = fb_idx {
+        fbdev::clear_blank_hooks(fb_idx);
+        fbdev::clear_flush_hook(fb_idx);
+        let _ = fbdev::unregister(fb_idx);
+    }
+    if let Some(console_id) = console_id {
+        if fbcon::kernel::unregister_console(console_id) {
+            klog::clear_aux_sink();
+            tty::live::clear_vt_mode_queries();
         }
+    }
+    let clear_wait_hooks = {
+        let ctxs = CTX.lock();
+        !ctxs.iter().any(|ctx| ctx.fb_idx.is_some())
+    };
+    if clear_wait_hooks {
         fbdev::clear_wait_hooks();
     }
     drm::node::clear_scanout_ops(card_id);
@@ -810,11 +833,11 @@ pub fn restore_console_scanout(card_id: u32) -> bool {
     // Bring the console content back: force_repaint marks the fg VT
     // dirty + raises the flush softirq, which calls fbcon_flush_pixels
     // → writes res_id 1's backing + transfer/flush.
-    let is_primary = {
+    let owns_console = {
         let ctxs = CTX.lock();
-        ctx_idx_by_card(&ctxs, card_id).map(|idx| ctxs[idx].primary_console).unwrap_or(false)
+        ctx_idx_by_card(&ctxs, card_id).map(|idx| ctxs[idx].console_id.is_some()).unwrap_or(false)
     };
-    if is_primary {
+    if owns_console {
         fbcon::kernel::force_repaint();
     }
     ok
@@ -840,7 +863,8 @@ pub fn register_drm_hooks(card_id: u32) {
 /// # C: O(1) submits (+ host-side O(w*h) transfer).
 pub fn flush_scanout() {
     let g = CTX.lock();
-    let ctx = match primary_ctx_idx(&g) { Some(idx) => &g[idx], None => return };
+    let Some(console_id) = fbcon::kernel::active_console_id() else { return };
+    let ctx = match console_ctx_idx(&g, console_id) { Some(idx) => &g[idx], None => return };
     flush_ctx(ctx);
 }
 

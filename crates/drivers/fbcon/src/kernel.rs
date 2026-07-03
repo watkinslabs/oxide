@@ -8,8 +8,8 @@
 // This module realizes that:
 //   * `VcCell` = { vc: Vc, em: Emulator } — one per VT, LAZILY allocated
 //     (each `Vc` carries RGB cells + 1000-line scrollback, so eager ×63
-//     would blow the heap). Index 0 = the system/printk console built by
-//     `kernel_init`. Indices 1..=N_VT = the numbered `/dev/ttyN` devices.
+    //     would blow the heap). Index 0 = the system/printk console slot.
+    //     Indices 1..=N_VT = the numbered `/dev/ttyN` devices.
 //   * ONE shared `VcRenderer` (the single physical FB) + an `fg` index.
 //     Only the FG vc is blitted to the FB; offscreen VTs update their
 //     `Vc` only (no blit).
@@ -32,7 +32,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
 use sync::{Spinlock, Tty as TtyClass};
 use vtdata::{Consw, Emulator, Vc, N_VT};
@@ -57,6 +57,7 @@ const N_SLOTS: usize = N_VT + 1;
 /// only `vc_cons[fg]` is blitted to `renderer`. `cols`/`rows` size newly
 /// allocated VTs to the physical framebuffer's cell grid.
 struct VtState {
+    id: ConsoleId,
     vc_cons: [Option<Box<VcCell>>; N_SLOTS],
     fg: u8,
     renderer: VcRenderer,
@@ -82,6 +83,10 @@ impl VtState {
 }
 
 static VT_STATE: Spinlock<Option<VtState>, TtyClass> = Spinlock::new(None);
+
+/// Opaque owner token for one registered framebuffer console.
+pub type ConsoleId = u32;
+static NEXT_CONSOLE_ID: AtomicU32 = AtomicU32::new(1);
 
 /// Reinterpret a 0x00RRGGBB pixel slice as a BGRA32 byte slice for the
 /// flush thunk. On a little-endian target the native u32 byte order is
@@ -131,7 +136,7 @@ pub fn drain_answerback() {
     crate::answerback::drain();
 }
 
-/// True once `kernel_init` has finished. All sinks no-op before.
+/// True once `register_console` has finished. All sinks no-op before.
 static READY: AtomicBool = AtomicBool::new(false);
 
 /// Set when the fg screen changed since the last flush. Drained by the
@@ -139,7 +144,7 @@ static READY: AtomicBool = AtomicBool::new(false);
 /// essential (a full-frame transfer + virtio flush per line is slow).
 static DIRTY: AtomicBool = AtomicBool::new(false);
 
-/// Softirq handler installed at `kernel_init`. Runs in process-level
+/// Softirq handler installed at `register_console`. Runs in process-level
 /// context with IRQs unmasked, so the virtio-gpu submit can wait on the
 /// device's used-idx ack without deadlocking.
 /// # C: O(xres*yres) on a dirty frame.
@@ -150,13 +155,20 @@ fn flush_softirq() {
     repaint();
 }
 
-/// Initialize the per-VT fbcon console layer. Called once by the
-/// virtio-gpu boot probe after the scanout is active. Builds the shared
-/// renderer sized to the framebuffer's cell grid, allocates vc_cons[0]
-/// (the system console), sets fg=0, registers the softirq flush handler
-/// + flush thunk, and paints the (blank) screen once.
+/// Register the per-VT fbcon console layer for one framebuffer owner. Called by
+/// a GPU driver after the scanout is active. Builds the shared renderer sized
+/// to the framebuffer's cell grid, allocates the default foreground VT,
+/// registers the softirq flush handler + flush thunk, and returns an owner
+/// token required for unregister.
 /// # C: O(cols*rows) — renderer surface alloc + clear.
-pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
+pub fn register_console(xres: u32, yres: u32, flush: FlushFn) -> Option<ConsoleId> {
+    {
+        let guard = VT_STATE.lock();
+        if guard.is_some() {
+            return None;
+        }
+    }
+    let id = NEXT_CONSOLE_ID.fetch_add(1, Ordering::AcqRel).max(1);
     softirq::set_handler(softirq::Slot::FbconFlush, flush_softirq);
     // Cell dims are font-driven: default 8×16 → same grid as before; a wider
     // font loaded at boot grids correctly. (CELL_W/CELL_H are the fallback.)
@@ -179,7 +191,12 @@ pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
     // there is no `/dev/tty0` VT, only the fg alias.) This keeps ONE notion of
     // "foreground": fbcon fg == vt_tty foreground == keyboard target == 1.
     vc_cons[1] = Some(sys);
-    *VT_STATE.lock() = Some(VtState {
+    let mut guard = VT_STATE.lock();
+    if guard.is_some() {
+        return None;
+    }
+    *guard = Some(VtState {
+        id,
         vc_cons,
         fg: 1,
         renderer,
@@ -190,19 +207,33 @@ pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
     READY.store(true, Ordering::Release);
     DIRTY.store(true, Ordering::Release);
     repaint();
+    Some(id)
 }
 
 /// Detach fbcon from a disappearing framebuffer. The VT contents are dropped
 /// with the framebuffer console because there is no live consw target left;
 /// serial remains the durable console.
 /// # C: O(1)
-pub fn kernel_unregister() {
+pub fn unregister_console(id: ConsoleId) -> bool {
+    {
+        let guard = VT_STATE.lock();
+        if guard.as_ref().map(|st| st.id) != Some(id) {
+            return false;
+        }
+    }
     READY.store(false, Ordering::Release);
     DIRTY.store(false, Ordering::Release);
     let _ = softirq::clear_handler(softirq::Slot::FbconFlush);
     FLUSH_FN.store(core::ptr::null_mut(), Ordering::Release);
     crate::answerback::clear_sink();
     *VT_STATE.lock() = None;
+    true
+}
+
+/// Active framebuffer console owner, if one is registered.
+/// # C: O(1)
+pub fn active_console_id() -> Option<ConsoleId> {
+    VT_STATE.lock().as_ref().map(|st| st.id)
 }
 
 /// System-console grid `(rows, cols)` derived from the framebuffer geometry
@@ -278,7 +309,7 @@ fn repaint() {
     if raw.is_null() {
         return;
     }
-    // SAFETY: FLUSH_FN is only populated via kernel_init with a non-null FlushFn cast through `as *mut ()`; reverse-cast restores the identical fn signature, and the flush thunk reads its &[u8] argument by length.
+    // SAFETY: FLUSH_FN is only populated via register_console with a non-null FlushFn cast through `as *mut ()`; reverse-cast restores the identical fn signature, and the flush thunk reads its &[u8] argument by length.
     let f: FlushFn = unsafe { core::mem::transmute::<*mut (), FlushFn>(raw) };
     let guard = VT_STATE.lock();
     if let Some(st) = guard.as_ref() {
@@ -440,7 +471,7 @@ pub fn screen_dump(with_attr: bool) -> alloc::vec::Vec<u8> {
 /// Live-resize VT `vt`'s text grid (Linux `fbcon_resize`). The physical
 /// framebuffer scanout is a FIXED size, so the text grid can only ever be
 /// made SMALLER than (or equal to) the native cell grid computed at
-/// `kernel_init` (`xres/CELL_W` × `yres/CELL_H`, stored in `st.cols/rows`):
+/// `register_console` (`xres/CELL_W` × `yres/CELL_H`, stored in `st.cols/rows`):
 /// a request wider OR taller than native is REJECTED (`false`), exactly as
 /// `fbcon_resize` rejects a var that exceeds the fb's `xres/yres`.
 ///
