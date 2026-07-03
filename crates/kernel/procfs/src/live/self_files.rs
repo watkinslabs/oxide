@@ -422,44 +422,30 @@ pub fn make_proc_self_comm() -> InodeRef { crate::dyn_file::make_gen_file(0x3000
 
 pub use crate::cmdline::make_proc_cmdline;
 
-/// Resolve a child of `/proc/self/fd` (a decimal fd → magic symlink).
-fn self_fd_lookup(name: &str) -> KResult<InodeRef> {
+/// Resolve a child of `/proc/<tid_opt>/fd` (a decimal fd → magic symlink).
+/// `tid_opt` = `None` for `/proc/self/fd` (caller's table), `Some(tid)` for a
+/// specific pid — so the link resolves against the TARGET's fd table.
+fn fd_lookup_for(tid_opt: Option<u32>, name: &str) -> KResult<InodeRef> {
     let fd: i32 = name.parse().map_err(|_| VfsError::Enoent)?;
-    let cur = sched::live::current().ok_or(VfsError::Enoent)?;
-    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = unsafe { cur.fd_table_ref() }
-        .ok_or(VfsError::Enoent)?
-        .clone();
-    let file = fdt.get(fd).map_err(|_| VfsError::Enoent)?;
-    // Linux: /proc/<pid>/fd/<n> readlink → file's ABSOLUTE path
-    // (ttyname requires /dev/pts/<n>, not the basename "<n>"). `/proc/self/fd`
-    // ⇒ tid_opt None (the caller's own fd table), so a walk THROUGH the magic
-    // link jumps to the walker's live fd.
+    let file = sched::proclink::proc_fd_file(tid_opt, fd).ok_or(VfsError::Enoent)?;
+    // Linux: /proc/<pid>/fd/<n> readlink → file's ABSOLUTE path (ttyname needs
+    // /dev/pts/<n>). A walk THROUGH the magic link jumps to the target's live fd.
     Ok(crate::proc_links::fd_link_for_path(
         &file.dentry().absolute_path(),
-        None,
+        tid_opt,
         fd,
     ))
 }
 
-/// `i_op`/`i_fop` for `/proc/self/fd` — lookup parses the fd, readdir walks
-/// the live fd table.
-struct ProcSelfFdOps;
+/// `i_op`/`i_fop` for `/proc/<tid>/fd` — lookup parses the fd, readdir walks the
+/// TARGET task's live fd table (`tid = None` ⇒ caller's own, for `/proc/self`).
+struct ProcSelfFdOps { tid: Option<u32> }
 impl InodeOps for ProcSelfFdOps {
-    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> { self_fd_lookup(name) }
+    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> { fd_lookup_for(self.tid, name) }
 }
 impl FileOps for ProcSelfFdOps {
     fn iterate(&self, _inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let cur = match sched::live::current() {
-            Some(c) => c,
-            None => return Ok(()),
-        };
-        // SAFETY: sole reader; single-mutator per `13§5`.
-        let fdt = match unsafe { cur.fd_table_ref() } {
-            Some(t) => t.clone(),
-            None => return Ok(()),
-        };
-        let fds = fdt.live_fds();
+        let fds = sched::proclink::proc_fd_list(self.tid);
         let mut idx = ctx.pos as usize;
         while idx < fds.len() {
             let next = idx as u64 + 1;
@@ -479,7 +465,7 @@ impl FileOps for ProcSelfFdOps {
             }
             buf[..n].reverse();
             let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
-            let ino = self_fd_lookup(s).map(|i| i.ino()).unwrap_or(0);
+            let ino = fd_lookup_for(self.tid, s).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(s, ino, FileType::Symlink, next) {
                 return Ok(());
             }
@@ -489,9 +475,14 @@ impl FileOps for ProcSelfFdOps {
     }
 }
 
-/// `/proc/self/fd` directory inode. # C: O(1)
-pub fn make_proc_self_fd() -> InodeRef {
-    InodeBuilder::new(0x3000_1500, mk_mode(FileType::Directory, 0o555), Arc::new(ProcSelfFdOps), Arc::new(ProcSelfFdOps))
+/// `/proc/self/fd` directory inode (caller's own fd table). # C: O(1)
+pub fn make_proc_self_fd() -> InodeRef { make_proc_fd_dir(None) }
+
+/// `/proc/<tid>/fd` directory inode listing the TARGET task's fds.
+/// `tid = None` ⇒ `/proc/self/fd` (caller's own). # C: O(1)
+pub fn make_proc_fd_dir(tid: Option<u32>) -> InodeRef {
+    InodeBuilder::new(0x3000_1500, mk_mode(FileType::Directory, 0o555),
+        Arc::new(ProcSelfFdOps { tid }), Arc::new(ProcSelfFdOps { tid }))
         .build()
 }
 
