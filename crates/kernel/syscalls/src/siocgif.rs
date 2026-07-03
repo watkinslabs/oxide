@@ -56,9 +56,7 @@ pub fn iface_primary_ip_hook(id: net::NetIfaceId) -> Option<net::Ipv4Addr> {
 /// Keep virtio-net's ARP responder in sync with whichever control plane
 /// changes the primary IPv4 address. # C: O(1)
 pub fn ipv4_addr_change_hook(id: net::NetIfaceId, ip: net::Ipv4Addr) {
-    if drv_virtio_net::modern::softirq_iface_id() == id.raw() {
-        drv_virtio_net::modern::set_softirq_ip(ip.octets());
-    }
+    let _ = drv_virtio_net::modern::set_softirq_ip_for_iface(id, ip.octets());
 }
 
 fn set_ifaddr(id: net::NetIfaceId, ip: u32, mask: u32, set_ip: bool, set_mask: bool) {

@@ -302,12 +302,19 @@ Also, many real devices still use `register_device()` instead of `device_add()`,
 Several drivers use singleton global state:
 
 - virtio-gpu: single `DEV: Option<VirtioGpuDev>`
-- virtio-net modern: single `MODERN_DEV`
 - virtio-rng: single `CTX`
 - virtio-vsock: single `CTX`
 - virtio-snd: single `CTX`
 - UART drivers: global `PRESENT` and base state
 - PS/2 keyboard: global present/poll state
+
+virtio-net modern is no longer a single installed device slot on
+`codex/driver-fixes-next`: transport state is stored in a BDF-keyed
+`MODERN_DEVS` table, net stack registration/model publication is stored in a
+BDF-keyed runtime table, TX/RX polling has keyed entry points, and the NetRx
+softirq walks registered runtimes. Remaining virtio-net cleanup is not the old
+singleton overwrite bug; it is the still-minimal per-device RX design
+(one boot-pinned RX buffer per transport) and the shared ARP cache.
 
 Some subsystems are per-device already or closer to it:
 

@@ -233,11 +233,11 @@ impl drv::Driver for VirtioNetDrv {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        if drv_virtio_net::modern::is_modern_present() {
-            return Err(drv::Error::Busy);
-        }
         let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
         let device_key = bdf_word(d.bdf);
+        if drv_virtio_net::modern::is_modern_present_for(device_key) {
+            return Err(drv::Error::Busy);
+        }
         let mut p =
             virtio_init_arch(&d, Some(drv_virtio_net::modern::raise_rx))
                 .ok_or(drv::Error::ProbeFailed)?;
@@ -277,14 +277,14 @@ impl drv::Driver for VirtioNetDrv {
             release_net_after_failed_probe(&mut p);
             return Err(drv::Error::ProbeFailed);
         }
-        match drv_virtio_net::modern::register_netdev() {
+        match drv_virtio_net::modern::register_netdev(device_key) {
             Some(id) => {
                 #[cfg(not(feature = "debug-boot"))]
                 let _ = id;
                 debug_boot! {
                     klog::write_raw(b"[INFO]  virtio-net-iface registered id=");
                     klog::write_dec_u64(id.0 as u64);
-                    klog::write_raw(b" name=eth0\n");
+                    klog::write_raw(b"\n");
                 }
                 publish_transport_mmio(&mut p);
                 Ok(())
@@ -301,7 +301,7 @@ impl drv::Driver for VirtioNetDrv {
         if let Some(bdf) = pci_parent_bdf(_dev) {
             let device_key = bdf_word(bdf);
             if drv_virtio_net::modern::is_modern_present_for(device_key) {
-                let _ = drv_virtio_net::modern::unregister_netdev();
+                let _ = drv_virtio_net::modern::unregister_netdev(device_key);
                 if drv_virtio_net::modern::uninstall_modern(device_key) {
                     unpublish_transport_mmio(device_key);
                 }
