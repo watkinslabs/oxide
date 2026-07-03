@@ -241,13 +241,32 @@ pub fn getsockname(fd: u64, addr_p: u64) -> i64 {
 /// and enqueues a reply for the matching `recvfrom`.
 /// # SAFETY: caller asserts bufp..bufp+len ⊂ USER_VA_END.
 /// # C: O(len) — single copy into NetlinkSocket::write.
-pub fn sendto(fd: u64, bufp: u64, len: usize) -> i64 {
+pub fn sendto(fd: u64, bufp: u64, len: usize, dest_p: u64, dest_len: u64) -> i64 {
     let file = match fd_file_local(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
     if bufp == 0 || bufp.saturating_add(len as u64) >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
     // SAFETY: caller's range check + the bounds-add above.
     let buf = unsafe { core::slice::from_raw_parts(bufp as *const u8, len) };
+    // Destination multicast group (sockaddr_nl.nl_groups @ +8), if supplied.
+    let dest_groups: u32 = if dest_p != 0 && dest_len >= 12 && dest_p + 12 <= USER_VA_END {
+        // SAFETY: dest_p+12 validated in-range; nl_groups is a 4-byte field @ +8.
+        unsafe { core::ptr::read_volatile((dest_p + 8) as *const u32) }
+    } else { 0 };
+    // NETLINK_KOBJECT_UEVENT cooked re-broadcast: systemd-udevd sends the
+    // COOKED libudev message (magic "libudev\0" prefix) to a monitor group so
+    // systemd PID1 / logind receive processed device events. Route it to the
+    // userspace→userspace multicast path instead of nlmsghdr request handling
+    // (a cooked message is NOT an nlmsghdr). Match on the libudev magic or a
+    // multicast destination on a KOBJECT_UEVENT socket.
+    if let Some(s) = file.inode().private::<::netlink::NetlinkSocket>() {
+        let is_uevent = s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT;
+        let is_cooked = len >= 8 && &buf[..8] == b"libudev\0";
+        if is_uevent && (is_cooked || dest_groups != 0) {
+            ::netlink::rebroadcast_cooked_uevent(buf, dest_groups, s);
+            return len as i64;
+        }
+    }
     match file.inode().write(0, buf) {
         Ok(n) => n as i64,
         Err(_) => -(Errno::Eio.as_i32() as i64),

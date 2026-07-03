@@ -26,7 +26,7 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     if crate::netlink_fd::is_netlink(fd) {
         if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
         if len > 65507 { return -(Errno::Emsgsize.as_i32() as i64); }
-        return crate::netlink_fd::sendto(fd, bufp, len);
+        return crate::netlink_fd::sendto(fd, bufp, len, dest_p, dest_len);
     }
     // D3.3: AF_VSOCK send/sendto → OP_RW via the socket inode write
     // path (STREAM, dest ignored — already connected).
