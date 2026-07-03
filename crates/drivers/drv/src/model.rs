@@ -450,6 +450,22 @@ mod tests {
     }
     static AUTO_FAILING_PROBE_DRV: AutoFailingProbeDrv = AutoFailingProbeDrv;
 
+    static REBIND_PROBES: AtomicU32 = AtomicU32::new(0);
+    static REBIND_REMOVES: AtomicU32 = AtomicU32::new(0);
+    struct RebindTestDrv;
+    impl Driver for RebindTestDrv {
+        fn name(&self) -> &'static str { "rebind-test" }
+        fn matches(&self, dev: &Device) -> bool { dev.device_id == 0x8888 }
+        fn probe(&self, _dev: &Arc<Device>) -> KResult<()> {
+            REBIND_PROBES.fetch_add(1, Ordering::Release);
+            Ok(())
+        }
+        fn remove(&self, _dev: &Device) {
+            REBIND_REMOVES.fetch_add(1, Ordering::Release);
+        }
+    }
+    static REBIND_TEST_DRV: RebindTestDrv = RebindTestDrv;
+
     #[test]
     fn addr_formatting_pci() {
         let a = alloc::format!("{:04x}:{:02x}:{:02x}.{}", 0u16, 0u8, 3u8, 0u8);
@@ -526,6 +542,29 @@ mod tests {
         assert_eq!(auto_bind(&d), Err(crate::Error::ProbeFailed));
         assert!(d.bound().is_none());
         assert_eq!(AUTO_FAIL_PROBES.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn rebind_cycle_runs_probe_remove_probe() {
+        REBIND_PROBES.store(0, Ordering::Release);
+        REBIND_REMOVES.store(0, Ordering::Release);
+        register_driver(&REBIND_TEST_DRV);
+        let d = device_add(Arc::new(Device::new(
+            "pci", String::from("0000:00:15.0"), 0x1AF4, 0x8888, 0)));
+
+        assert_eq!(bind(&d, "rebind-test"), Ok(()));
+        assert_eq!(REBIND_PROBES.load(Ordering::Acquire), 1);
+        assert_eq!(REBIND_REMOVES.load(Ordering::Acquire), 0);
+        assert_eq!(d.bound(), Some("rebind-test"));
+
+        assert_eq!(unbind(&d), Ok(()));
+        assert_eq!(REBIND_REMOVES.load(Ordering::Acquire), 1);
+        assert!(d.bound().is_none());
+
+        assert_eq!(bind(&d, "rebind-test"), Ok(()));
+        assert_eq!(REBIND_PROBES.load(Ordering::Acquire), 2);
+        assert_eq!(REBIND_REMOVES.load(Ordering::Acquire), 1);
+        assert_eq!(d.bound(), Some("rebind-test"));
     }
 
     #[test]
