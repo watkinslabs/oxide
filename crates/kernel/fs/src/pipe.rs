@@ -125,11 +125,16 @@ pub fn smoke_test() {
 }
 
 /// `Inode`-backed eventfd counter per `24§3` + Linux eventfd(2).
-/// Read drains the counter to a u64; write adds to it. v1: no
-/// blocking — read returns -EAGAIN if counter is 0; write returns
-/// -EAGAIN if counter would overflow. The counter lives in `i_private`.
+/// Read drains the counter to a u64; write adds to it. A BLOCKING read on a
+/// zero counter PARKS on `read_waiters` until a write makes it non-zero (Linux
+/// eventfd(2) blocks; a non-blocking read returns EAGAIN — NEVER EINVAL). The
+/// counter lives in `i_private`.
 pub struct EventfdData {
     counter: core::sync::atomic::AtomicU64,
+    /// Tasks parked in a blocking `read` that found the counter 0; woken by
+    /// `write`. (No blocking-write parking: a u64 counter effectively never
+    /// fills in these control-fd uses.)
+    read_waiters: WaitList,
 }
 
 static NEXT_EVENTFD_INO: core::sync::atomic::AtomicU64
@@ -141,7 +146,10 @@ pub fn make_eventfd_inode(initial: u64) -> InodeRef {
     let ino = NEXT_EVENTFD_INO.fetch_add(1, Ordering::Relaxed);
     InodeBuilder::new(ino, mk_mode(FileType::Fifo, 0), default_inode_ops(), Arc::new(EventfdFileOps))
         .poll_subs(PollSubscribers::new())
-        .private(Arc::new(EventfdData { counter: core::sync::atomic::AtomicU64::new(initial) }))
+        .private(Arc::new(EventfdData {
+            counter: core::sync::atomic::AtomicU64::new(initial),
+            read_waiters: WaitList::new(),
+        }))
         .build()
 }
 
@@ -160,13 +168,43 @@ impl FileOps for EventfdFileOps {
         if v < u64::MAX - 1 { m |= vfs::POLL_OUT; }
         m
     }
+    /// BLOCKING read (Linux eventfd(2)): drain the counter; if it is 0, PARK
+    /// until a write makes it non-zero (interruptible by a deliverable signal →
+    /// EINTR). NEVER EINVAL on an empty counter — that broke systemd's
+    /// `setup_private_users` `(sd-userns)` helper, whose blocking
+    /// `read(unshare_ready_fd)` barrier got EINVAL and reported it to the
+    /// executor → EXIT_USER(217) for every PrivateUsers= unit (upower, …).
     fn read(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.len() < 8 { return Err(vfs::VfsError::Einval); }
         let d = match inode.private::<EventfdData>() { Some(d) => d, None => return Err(vfs::VfsError::Einval) };
+        loop {
+            let v = d.counter.swap(0, Ordering::AcqRel);
+            if v != 0 {
+                buf[..8].copy_from_slice(&v.to_ne_bytes());
+                return Ok(8);
+            }
+            #[cfg(target_os = "oxide-kernel")]
+            {
+                // On UP with preempt-off nothing runs between the swap above and
+                // the park below, so a writer cannot slip a wake in unseen.
+                if sched::live::deliverable_signals_self() != 0 { return Err(vfs::VfsError::Eintr); }
+                // SAFETY: running task; preempt-off; park marks Sleeping + bumps the Arc before we schedule.
+                unsafe { d.read_waiters.park(); }
+                // SAFETY: process ctx; runqueue installed; preempt-off; Sleeping so schedule won't re-enqueue until a write wakes us.
+                unsafe { sched::live::schedule::schedule(); }
+            }
+            #[cfg(not(target_os = "oxide-kernel"))]
+            return Err(vfs::VfsError::Eagain);
+        }
+    }
+    /// Non-blocking read (O_NONBLOCK): EAGAIN on an empty counter (Linux), not
+    /// EINVAL and not a park.
+    fn read_nonblock(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        if buf.len() < 8 { return Err(vfs::VfsError::Einval); }
+        let d = match inode.private::<EventfdData>() { Some(d) => d, None => return Err(vfs::VfsError::Einval) };
         let v = d.counter.swap(0, Ordering::AcqRel);
-        if v == 0 { return Err(vfs::VfsError::Einval); }
-        let bytes = v.to_ne_bytes();
-        buf[..8].copy_from_slice(&bytes);
+        if v == 0 { return Err(vfs::VfsError::Eagain); }
+        buf[..8].copy_from_slice(&v.to_ne_bytes());
         Ok(8)
     }
     fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
@@ -177,9 +215,9 @@ impl FileOps for EventfdFileOps {
         let add = u64::from_ne_bytes(a);
         if add == u64::MAX { return Err(vfs::VfsError::Einval); }
         d.counter.fetch_add(add, Ordering::AcqRel);
-        // Counter went nonzero → POLLIN readable. Wake poll/epoll waiters
-        // (sd-event drives eventfds via epoll_wait); without this they only
-        // re-scanned on the ~100 ms fallback.
+        // Counter went nonzero → wake blocking readers parked on it, AND poll/
+        // epoll waiters (sd-event drives eventfds via epoll_wait).
+        d.read_waiters.wake_all();
         if let Some(s) = inode.poll_subscribers() { s.notify(); }
         Ok(8)
     }
