@@ -39,6 +39,7 @@ const MINOR_MIXER:   u64 = 0x22; // /dev/mixer
 
 struct CardPublication {
     card_id: u32,
+    ops_endpoint: ops::OpsEndpoint,
     nodes: Vec<Arc<drv::Device>>,
 }
 
@@ -212,13 +213,13 @@ pub fn active_card_id() -> Option<u32> {
 /// Register the ALSA (primary) + OSS (emulation) nodes for a probed card.
 /// Called from the sound card driver's probe after it has installed ops.
 /// # C: O(depth)
-pub fn register_card() -> Option<u32> {
-    if ops::ops().is_none() {
+pub fn register_card(ops_endpoint: ops::OpsEndpoint) -> Option<u32> {
+    if !ops::is_owner(ops_endpoint) {
         return None;
     }
     let mut active = ACTIVE_CARD.lock();
     if let Some(card) = active.as_ref() {
-        return Some(card.card_id);
+        return if card.ops_endpoint == ops_endpoint { Some(card.card_id) } else { None };
     }
     devfs::register_dir("/dev/snd");
     let card_id = NEXT_CARD_ID.fetch_add(1, Ordering::AcqRel);
@@ -231,7 +232,7 @@ pub fn register_card() -> Option<u32> {
             published.push(add_oss_node(node));
         }
     }
-    *active = Some(CardPublication { card_id, nodes: published });
+    *active = Some(CardPublication { card_id, ops_endpoint, nodes: published });
     Some(card_id)
 }
 
@@ -309,12 +310,14 @@ mod tests {
             let _ = unregister_card(card_id);
         }
         NEXT_CARD_ID.store(0, Ordering::Release);
-        ops::clear();
+        ops::clear_for_tests();
 
-        ops::register(&TEST_OPS);
-        let card_id = register_card().expect("card registered");
+        let endpoint = ops::register(&TEST_OPS).expect("ops registered");
+        let card_id = register_card(endpoint).expect("card registered");
         assert_eq!(card_id, 0);
-        assert_eq!(register_card(), Some(card_id), "second register is idempotent");
+        assert_eq!(register_card(endpoint), Some(card_id), "same endpoint register is idempotent");
+        let stale = ops::OpsEndpoint { owner: endpoint.owner.wrapping_add(1) };
+        assert!(register_card(stale).is_none(), "stale endpoint must not reuse active card");
 
         let added = ADDED.lock().clone();
         assert_eq!(added.len(), alsa_nodes(card_id).len() + OSS_PRIMARY_NODES.len());
@@ -344,6 +347,6 @@ mod tests {
             alsa_nodes(card_id).len() + OSS_PRIMARY_NODES.len(),
             "second unregister is idempotent"
         );
-        ops::clear();
+        assert!(ops::clear(endpoint));
     }
 }

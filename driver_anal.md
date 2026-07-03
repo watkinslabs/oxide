@@ -94,8 +94,10 @@ test-pass claims.
   remaining RNG device on active-provider removal. Virtio-snd install/remove
   is now keyed to the owning parent BDF and releases child-owned queue/buffer
   resources only for the matching transport. Sound card publication now has an
-  owned ALSA card id and removes only the matching card publication, but the
-  upper ops/PCM runtime is still a single active sound endpoint.
+  owned ALSA card id and removes only the matching card publication. The upper
+  ops/PCM runtime is still a single active sound endpoint, but ops registration
+  and card publication now carry an owned endpoint token so stale remove paths
+  cannot clear a live ops table.
 - Virtio MSI-X handler ownership is no longer selected by a transport-side
   PCI-ID special-case dispatch. Child virtio driver probes now pass the
   optional queue-0 IRQ callback into the virtio-pci setup path; the PCI
@@ -161,8 +163,8 @@ test-pass claims.
   ops/PCM runtime also still retain singleton limits; vsock now fails a second
   protocol publish cleanly instead of replacing the installed transport and
   requires the matching endpoint token before protocol teardown, while sound
-  publication now keeps an owned active card id instead of a bare global card0
-  flag.
+  publication/ops teardown now require the owning endpoint instead of a bare
+  global card0 flag.
 - UART and PS/2 platform drivers now have model probes/removes, but they are
   still intentionally singleton hardware paths, not general multi-device
   serial/input infrastructure.
@@ -189,8 +191,8 @@ test-pass claims.
   are still the main offenders. Virtio-vsock teardown is now owned by a protocol
   endpoint token, but full multi-transport vsock still needs protocol state
   split beyond the single active CID/TX hook. Virtio-snd card publication now
-  has owned card ids and card-specific ALSA names, but full multi-card sound
-  still needs the ops and PCM state split. Virtio-net's old singleton
+  has owned card ids, card-specific ALSA names, and an owned ops endpoint, but
+  full multi-card sound still needs the ops and PCM state split. Virtio-net's old singleton
   installed-device slot is gone, but its RX buffer model and shared ARP cache
   still need the next networking cleanup pass.
 - Add explicit fault-injection coverage for probe failure after each allocation,
@@ -326,7 +328,7 @@ Several drivers use singleton global state:
 - virtio-vsock: single active `CTX`; protocol teardown now requires the owned
   endpoint token, but protocol state is not split per transport
 - virtio-snd: single active `CTX`; card publication now carries an owned ALSA
-  card id, but ops/PCM state is not split per card
+  card id and ops endpoint token, but ops/PCM state is not split per card
 - UART drivers: global `PRESENT` and base state
 - PS/2 keyboard: global present/poll state
 

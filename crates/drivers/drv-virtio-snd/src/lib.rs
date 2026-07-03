@@ -77,6 +77,8 @@ struct Ctx {
     device_key: u32,
     /// ALSA card number allocated by sound core for this installed transport.
     card_id: Option<u32>,
+    /// Owned sound-core ops endpoint for this installed transport.
+    ops_endpoint: Option<sound::ops::OpsEndpoint>,
     controlq: virtio::VirtQueueResource,
     hhdm:     u64,
     /// virtio common-cfg MMIO window. A harmless read of device_status
@@ -293,6 +295,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     *g = Some(Ctx {
         device_key: p.device_key,
         card_id: None,
+        ops_endpoint: None,
         controlq,
         hhdm: p.resources.hhdm,
         cfg_va: p.resources.cfg_va,
@@ -330,16 +333,24 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
             return None;
         }
     };
-    sound::ops::register(&SOUND_OPS);
-    let card_id = match sound::register_card() {
+    let ops_endpoint = match sound::ops::register(&SOUND_OPS) {
+        Some(endpoint) => endpoint,
+        None => {
+            let _ = uninstall(p.device_key);
+            return None;
+        }
+    };
+    let card_id = match sound::register_card(ops_endpoint) {
         Some(card_id) => card_id,
         None => {
+            let _ = sound::ops::clear(ops_endpoint);
             let _ = uninstall(p.device_key);
             return None;
         }
     };
     if let Some(ctx) = CTX.lock().as_mut() {
         ctx.card_id = Some(card_id);
+        ctx.ops_endpoint = Some(ops_endpoint);
     }
     Some(SndProbe { card_id, streams: p.streams, out, input })
 }
@@ -360,7 +371,9 @@ pub fn uninstall(device_key: u32) -> bool {
     if let Some(card_id) = ctx.card_id {
         let _ = sound::unregister_card(card_id);
     }
-    sound::ops::clear();
+    if let Some(endpoint) = ctx.ops_endpoint {
+        let _ = sound::ops::clear(endpoint);
+    }
     stop_reset_free(ctx);
     true
 }

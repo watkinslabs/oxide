@@ -4,6 +4,7 @@
 //! concrete card driver installs this table from probe, matching Linux's
 //! `snd_pcm_ops` split without creating a crate cycle.
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as OpsLockClass};
 
 pub type Caps = Option<(u64, u64, u8, u8)>;
@@ -25,18 +26,57 @@ pub struct SoundOps {
     pub pcm_recv: fn(&mut [u8]) -> usize,
 }
 
-static OPS: Spinlock<Option<&'static SoundOps>, OpsLockClass> = Spinlock::new(None);
-
-pub fn register(ops: &'static SoundOps) {
-    *OPS.lock() = Some(ops);
+struct OpsRegistration {
+    owner: u64,
+    ops:   &'static SoundOps,
 }
 
-pub fn clear() {
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct OpsEndpoint {
+    pub(crate) owner: u64,
+}
+
+static OPS: Spinlock<Option<OpsRegistration>, OpsLockClass> = Spinlock::new(None);
+static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
+
+pub fn register(ops: &'static SoundOps) -> Option<OpsEndpoint> {
+    let mut active = OPS.lock();
+    if active.is_some() {
+        return None;
+    }
+    let mut owner;
+    loop {
+        owner = NEXT_OWNER.fetch_add(1, Ordering::AcqRel);
+        if owner != 0 {
+            break;
+        }
+    }
+    *active = Some(OpsRegistration { owner, ops });
+    Some(OpsEndpoint { owner })
+}
+
+pub fn clear(endpoint: OpsEndpoint) -> bool {
+    let mut active = OPS.lock();
+    match active.as_ref() {
+        Some(reg) if reg.owner == endpoint.owner => {
+            *active = None;
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn clear_for_tests() {
     *OPS.lock() = None;
 }
 
+pub fn is_owner(endpoint: OpsEndpoint) -> bool {
+    OPS.lock().as_ref().map(|reg| reg.owner == endpoint.owner).unwrap_or(false)
+}
+
 pub fn ops() -> Option<&'static SoundOps> {
-    *OPS.lock()
+    OPS.lock().as_ref().map(|reg| reg.ops)
 }
 
 pub fn config() -> Option<(u32, u32, u32, u32)> {
