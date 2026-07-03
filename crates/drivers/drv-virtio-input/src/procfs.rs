@@ -48,7 +48,7 @@ fn devices_body() -> Vec<u8> {
         push_escaped_string(&mut out, &dev.name[..name_len]);
         let _ = write!(
             out,
-            "\"\nP: Phys=virtio/input{}\nS: Sysfs=/devices/virtio-input/input{}\nU: Uniq=",
+            "\"\nP: Phys=virtio/input{}\nS: Sysfs=/devices/virtual/input/event{}\nU: Uniq=",
             dev.evdev_id, dev.evdev_id,
         );
         push_escaped_string(&mut out, &dev.serial[..serial_len]);

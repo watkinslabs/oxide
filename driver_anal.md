@@ -363,8 +363,8 @@ Some subsystems are per-device already or closer to it:
 - block registry stores multiple disks
 - DRM core can register multiple DRM drivers/cards in principle
 - fbdev has a registry
-- input has per-device event nodes, procfs metadata, and sysfs class entries
-  derived from live model/input state
+- input has per-device event nodes, procfs metadata pointing at the live sysfs
+  event-device path, and sysfs class entries derived from live model/input state
 
 Singleton runtime state is acceptable only for explicitly singleton hardware or transitional boot code. It is not acceptable as the general driver model.
 
