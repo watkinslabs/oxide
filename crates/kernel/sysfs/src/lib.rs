@@ -25,6 +25,7 @@ use vfs::{default_file_ops, default_inode_ops, mk_mode, DirContext, FileOps, Fil
 
 pub mod block;
 pub mod bus;
+pub mod drm;
 pub mod kobject;
 pub mod net_stats;
 pub mod root;
@@ -78,7 +79,7 @@ pub(crate) fn read_window(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
 }
 
 /// First whitespace token of a uevent write = the action ("add"/"change"/…). # C: O(n)
-fn uevent_action(b: &[u8]) -> &str {
+pub(crate) fn uevent_action(b: &[u8]) -> &str {
     core::str::from_utf8(b).ok()
         .and_then(|s| s.split_whitespace().next())
         .filter(|a| !a.is_empty())
@@ -545,6 +546,7 @@ pub fn init() {
     register("/sys/devices/virtual/tty", make_sys_devices_virtual_tty_inode());
     bus::init();
     block::init();
+    drm::init();
 }
 
 /// `vfs::fs::FileSystem` impl mounted at `/sys`. Lookups consult sysfs's own
