@@ -85,6 +85,8 @@ test-pass claims.
 - Virtio-gpu remove is keyed to the owning parent BDF and tears down
   fbcon/fbdev/DRM/klog/tty scanout state before backing memory is released.
   Probe-failure unwind only removes scanout state for the failed probe's BDF.
+  DRM publication now happens only after the singleton GPU device slot admits
+  the device, so a second GPU cannot publish then roll back a stray DRM card.
 - Virtio-net owns netdev publication/removal and RX runtime
   installation/removal: iface/IP bottom-half state, ARP-GC timer, and `NetRx`
   handler are installed from the net driver path and removed after reset. The

@@ -606,17 +606,32 @@ impl VirtioGpuDrm {
 /// Install + register with the DRM core (`47`).
 /// # C: O(1)
 pub fn install_with_drm(mut dev: VirtioGpuDev) -> KResult<u32> {
+    let bdf = dev.bdf;
+    let display = dev.display;
+    let features_negotiated = dev.features_negotiated;
+    dev.card_id = u32::MAX;
+    install(dev)?;
+
     let drm_dev = alloc::sync::Arc::new(VirtioGpuDrm {
-        display:             dev.display,
-        features_negotiated: dev.features_negotiated,
-        bdf:                 dev.bdf,
+        display,
+        features_negotiated,
+        bdf,
     });
     let card_id = drm::register(drm_dev);
-    dev.card_id = card_id;
-    if let Err(e) = install(dev) {
-        let _ = drm::unregister(card_id);
-        return Err(e);
+
+    let mut g = DEV.lock();
+    match g.as_mut() {
+        Some(dev) if dev.bdf == bdf => {
+            dev.card_id = card_id;
+        }
+        _ => {
+            drop(g);
+            let _ = drm::unregister(card_id);
+            return Err(Error::NoDevice);
+        }
     }
+    drop(g);
+
     // Wire the runtime SETCRTC/PAGE_FLIP/restore hooks into the DRM
     // core (kernel target only; the hosted unit tests don't link the
     // post_init queue plumbing). No crate cycle: drm exposes the hook
@@ -896,6 +911,31 @@ mod tests {
         install(dev(1)).unwrap();
         assert_eq!(install(dev(2)), Err(Error::Busy));
         assert_eq!(uninstall(1).unwrap().bdf, 1);
+        assert!(!is_present());
+    }
+
+    #[test]
+    fn install_with_drm_rejects_second_before_publication() {
+        fn dev(bdf: u32) -> VirtioGpuDev {
+            VirtioGpuDev {
+                bdf,
+                card_id: 0,
+                cfg_va: 0,
+                ctrlq: test_ctrlq(),
+                features_negotiated: 0,
+                display: DisplayInfo::default(),
+                resource_id_alloc: AtomicU32::new(1),
+                blob_uuid_alloc: AtomicU64::new(1),
+                capset_count: 0,
+            }
+        }
+
+        *DEV.lock() = None;
+        let card_id = install_with_drm(dev(1)).unwrap();
+        assert_eq!(DEV.lock().as_ref().unwrap().card_id, card_id);
+        assert_eq!(install_with_drm(dev(2)), Err(Error::Busy));
+        assert_eq!(DEV.lock().as_ref().unwrap().bdf, 1);
+        assert_eq!(uninstall(1).unwrap().card_id, card_id);
         assert!(!is_present());
     }
 
