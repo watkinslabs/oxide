@@ -456,7 +456,7 @@ pub fn terminate_current_with_signal(sig: u8) -> ! {
             // ON this task so no concurrent freer; reads/atomic-stores only.
             let task: &Task = unsafe { &*raw };
             task.exit_status.store(crate::signum::killed_status(sig as u32), Ordering::Release);
-            task.vfork_pending.store(false, Ordering::Release);
+            super::vfork_done(task); // clear + wake a parked vfork parent (signal-death)
             ::cgroup::on_exit(task.tid as u64);
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
             unsafe { task.replace_fd_table(None); task.replace_mm(None); reparent_children(task.tid); }

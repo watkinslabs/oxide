@@ -318,11 +318,23 @@ pub fn sys_clone_dispatch(
         // the runqueue Arc.
         let watch = alloc::sync::Arc::clone(&child);
         drop(child);
-        // Yield until child clears vfork_pending. On UP single-CPU
-        // each yield gives child the CPU; child runs sigaction*N +
-        // setsid + close + exec, then sets the flag = false.
-        while watch.vfork_pending.load(Ordering::Acquire) {
-            // SAFETY: process ctx; preempt-off; runqueue installed.
+        // PARK (Sleeping) until the child clears vfork_pending — do NOT
+        // busy-yield. A busy-yield keeps the parent Runnable, so on UP the
+        // scheduler re-picks it forever and NO other task runs; a vfork child
+        // that blocks in a syscall (never reaching exec/exit) then deadlocks
+        // the whole system with IRQs off (dead timer, no watchdog). The
+        // child's departure sites (execve/exit/signal-death via `vfork_done`)
+        // wake us. set-Sleeping-then-recheck closes the lost-wakeup race: if
+        // the child clears+wakes between the recheck and schedule(), the wake
+        // CASes us back Runnable and schedule() just re-picks us to re-loop.
+        loop {
+            cur.set_state(sched::TaskState::Sleeping);
+            if !watch.vfork_pending.load(Ordering::Acquire) {
+                cur.set_state(sched::TaskState::Runnable);
+                break;
+            }
+            // SAFETY: process ctx; preempt-off; runqueue installed; self is
+            // Sleeping so schedule() switches away without re-enqueueing us.
             unsafe { sched::live::schedule(); }
         }
         drop(watch);
