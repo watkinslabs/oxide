@@ -126,7 +126,7 @@ pub fn getsockopt(fd: u64, level: u64, optname: u64, optval: u64, optlen_p: u64)
 /// `read(fd, buf, len)` for netlink — same as recvfrom with no peer addr.
 /// Linux lets you read() a netlink socket. # C: O(len)
 pub fn read(fd: u64, bufp: u64, len: usize) -> i64 {
-    recvfrom(fd, bufp, len, 0)
+    recvfrom(fd, bufp, len, 0, 0)
 }
 
 /// `recvmsg(fd, msghdr, flags)` for netlink. Copies ONE reply datagram
@@ -273,23 +273,41 @@ pub fn sendto(fd: u64, bufp: u64, len: usize, dest_p: u64, dest_len: u64) -> i64
     }
 }
 
-/// `recvfrom(fd, buf, len, flags, src, ...)` for netlink — pops one
-/// reply via `NetlinkSocket::read`. Returns EAGAIN if the queue is
-/// empty so callers can poll/retry without spinning the kernel.
-/// # SAFETY: caller asserts bufp..bufp+len ⊂ USER_VA_END; src_p
-/// validated if non-zero.
-/// # C: O(len) — single copy out of NetlinkSocket::read.
-pub fn recvfrom(fd: u64, bufp: u64, len: usize, src_p: u64) -> i64 {
+/// `recvfrom(fd, buf, len, flags, src, ...)` for netlink. Honours `MSG_PEEK`
+/// (leave the datagram queued) and `MSG_TRUNC` (return the FULL datagram length
+/// even when the user buffer is shorter). Returns EAGAIN when the queue is
+/// empty.
+///
+/// libudev's uevent monitor does `recvfrom(buf, len=0, MSG_PEEK|MSG_TRUNC)` to
+/// SIZE the pending message before allocating, then a second consuming read.
+/// If recvfrom drops the flags (as it used to) that size-probe dequeues and
+/// DESTROYS the message and returns 0/EAGAIN — so udevd never actually received
+/// any uevent, spun its event loop, and never processed devices (card0 was
+/// never tagged → no graphical seat → no gdm greeter). MSG_PEEK must leave the
+/// datagram queued and MSG_TRUNC must report its true length.
+/// # SAFETY: bufp..bufp+len ⊂ USER_VA_END (checked when len>0); src_p validated.
+/// # C: O(len) — single copy out of the peeked/dequeued datagram.
+pub fn recvfrom(fd: u64, bufp: u64, len: usize, src_p: u64, flags: u64) -> i64 {
+    const MSG_PEEK:  u64 = 0x02;
+    const MSG_TRUNC: u64 = 0x20;
     let file = match fd_file_local(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
-    if bufp == 0 || bufp.saturating_add(len as u64) >= USER_VA_END {
+    // A zero-length size-probe (MSG_PEEK|MSG_TRUNC) legitimately passes len==0
+    // (and possibly bufp==0); only range-check when there is a buffer to write.
+    if len > 0 && (bufp == 0 || bufp.saturating_add(len as u64) >= USER_VA_END) {
         return -(Errno::Efault.as_i32() as i64);
     }
-    // SAFETY: bufp range validated; CPL=0 writes through caller's AS.
-    let buf = unsafe { core::slice::from_raw_parts_mut(bufp as *mut u8, len) };
-    let n = match file.inode().read(0, buf) {
-        Ok(n) => n,
-        Err(_) => return -(Errno::Eio.as_i32() as i64),
+    let sock = match file.inode().private::<::netlink::NetlinkSocket>() {
+        Some(s) => s, None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    // PEEK leaves the datagram queued (the following consuming read still sees
+    // it); otherwise consume it. Empty/zero-length front → EAGAIN.
+    let dgram = if (flags & MSG_PEEK) != 0 { sock.peek_front() } else { sock.dequeue() };
+    let dgram = match dgram { Some(d) if !d.is_empty() => d, _ => return -(Errno::Eagain.as_i32() as i64) };
+    let copy = dgram.len().min(len);
+    if copy > 0 {
+        // SAFETY: bufp..bufp+copy validated above (len>0 ⇒ range checked); CPL=0 write through caller AS.
+        unsafe { core::ptr::copy_nonoverlapping(dgram.as_ptr(), bufp as *mut u8, copy); }
+    }
     if src_p != 0 && src_p < USER_VA_END {
         // SAFETY: src_p validated < USER_VA_END; sockaddr_nl is 12 bytes.
         unsafe {
@@ -299,5 +317,7 @@ pub fn recvfrom(fd: u64, bufp: u64, len: usize, src_p: u64) -> i64 {
             core::ptr::write_volatile((src_p +  8)  as *mut u32, 0);
         }
     }
-    if n == 0 { -(Errno::Eagain.as_i32() as i64) } else { n as i64 }
+    // MSG_TRUNC: report the FULL datagram length (Linux netlink_recvmsg) so the
+    // caller sizes its buffer correctly; else the number of bytes copied.
+    if (flags & MSG_TRUNC) != 0 { dgram.len() as i64 } else { copy as i64 }
 }
