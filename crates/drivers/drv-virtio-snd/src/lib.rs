@@ -353,6 +353,25 @@ pub fn uninstall(device_key: u32) -> bool {
     true
 }
 
+/// Quiesce the installed virtio-snd transport for reboot/poweroff without
+/// unregistering the sound card or clearing sound ops. Publication remains
+/// visible for the terminal transition; subsequent ops see no live transport.
+/// # C: O(CONTROLQ)
+pub fn shutdown(device_key: u32) -> bool {
+    let ctx = {
+        let mut guard = CTX.lock();
+        match guard.as_ref() {
+            Some(ctx) if ctx.device_key == device_key => guard.take(),
+            _ => None,
+        }
+    };
+    let Some(ctx) = ctx else {
+        return false;
+    };
+    stop_reset_free(ctx);
+    true
+}
+
 fn stop_reset_free(mut ctx: Ctx) {
     if let Some(stream) = ctx.out_stream {
         if ctx.pcm_state == PcmState::Running {
