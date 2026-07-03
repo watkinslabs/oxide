@@ -202,7 +202,7 @@ fn set_registered_iface(id: net::NetIfaceId) {
 
 /// Registered net stack ifindex, if any.
 /// # C: O(1)
-fn registered_iface() -> Option<net::NetIfaceId> {
+pub fn registered_iface() -> Option<net::NetIfaceId> {
     let raw = REGISTERED_IFACE.load(Ordering::Acquire);
     if raw == 0 { None } else { Some(net::NetIfaceId::from_raw(raw)) }
 }

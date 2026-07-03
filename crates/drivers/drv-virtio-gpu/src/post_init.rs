@@ -584,7 +584,7 @@ pub fn unpublish_console_scanout(bdf: u32) {
     let fb_base = {
         let ctx = CTX.lock();
         match ctx.as_ref() {
-            Some(ctx) if ctx.bdf == bdf => Some(ctx.fb_va - ctx.hhdm),
+            Some(ctx) if ctx.bdf == bdf => ctx.fb_va - ctx.hhdm,
             _ => return,
         }
     };
