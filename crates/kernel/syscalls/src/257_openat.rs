@@ -6,7 +6,7 @@ use syscall::errno::Errno;
 use vfs::{File, OpenFlags};
 
 use crate::open_common::{dup_fd_target, open_proc_fd, enforce_open_perm, break_lease_for_open,
-    O_CREAT, O_EXCL, O_TRUNC, O_DIRECTORY, O_NOFOLLOW, O_TMPFILE};
+    O_CREAT, O_EXCL, O_TRUNC, O_DIRECTORY, O_NOFOLLOW, O_TMPFILE, O_PATH};
 
 /// `sys_openat(dirfd, path, flags, mode)` — slot 257. No openat2 RESOLVE_*
 /// modifiers (default `LookupFlags`). # C: O(N_path)
@@ -262,7 +262,18 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     {
         return -(Errno::Enotdir.as_i32() as i64);
     }
-    if let Err(e) = inode.on_open() { return -(e as i64); }
+    // Linux `do_dentry_open`: an O_PATH (FMODE_PATH) descriptor is a pure
+    // fd-reference — it NEVER calls `f_op->open`, so the device driver's open is
+    // skipped. Our `on_open` IS that driver hook (char/block `->open`), so gating
+    // it on !O_PATH matches Linux. Without this, an O_PATH open of a char node
+    // whose (major,minor) has no registered driver — e.g. systemd's ProtectKernelLogs
+    // inaccessible node `/run/systemd/inaccessible/chr` (devt 0:0) bound over
+    // /dev/kmsg — hit `lookup_chrdev` → ENXIO. systemd `mount_entry_chase`
+    // O_PATH-opens each mount target during namespace setup, so that ENXIO aborted
+    // the whole sandbox (EXIT_NAMESPACE 226 for logind/udevd/… → no graphical target).
+    if (flags & O_PATH) == 0 {
+        if let Err(e) = inode.on_open() { return -(e as i64); }
+    }
     // DAC + EROFS enforcement (Linux `may_open`), before the O_TRUNC truncate.
     if let Some(rv) = enforce_open_perm(&inode, mnt_id, flags, created) { return rv; }
     // Lease-break (Linux `break_lease` in `do_open`): conflicting open signals
