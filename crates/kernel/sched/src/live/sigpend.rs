@@ -80,6 +80,29 @@ pub fn wake_if_sleeping(task: &alloc::sync::Arc<crate::Task>) {
     unsafe { super::try_to_wake_up(alloc::sync::Arc::clone(task)); }
 }
 
+/// vfork completion (Linux `vfork_done`): clear the departing child's
+/// `vfork_pending` and, if it was actually set (a genuine CLONE_VFORK child),
+/// wake the parent parked in `sys_clone`'s vfork wait. The `swap` gates the
+/// wake — a non-vfork child, or a second departure event, never spuriously
+/// wakes its parent. Called from EVERY child-departure site: execve-success,
+/// exit / exit_group, and signal-death — so a vfork child that dies any way
+/// (not just via the exit syscall) still releases the parent. Replaces the
+/// old busy-yield model where the parent spun Runnable and starved a vfork
+/// child that blocked in a syscall (UP deadlock, dead timer).
+/// # C: O(1) + one wake
+pub fn vfork_done(child: &crate::Task) {
+    use core::sync::atomic::Ordering;
+    if child.vfork_pending.swap(false, Ordering::AcqRel) {
+        // SAFETY: `parent_arc` is written once at spawn under the per-task
+        // single-mutator invariant (`13§5`) and only read here; upgrading the
+        // Weak yields the live parent Arc (or None if already reaped).
+        let parent = unsafe {
+            (*child.parent_arc.get()).as_ref().and_then(|w| w.upgrade())
+        };
+        if let Some(p) = parent { wake_if_sleeping(&p); }
+    }
+}
+
 /// cgroup v2 freezer (`cgroup.freeze=1`): mark `task` frozen and pull it
 /// off the runqueue. A running task yields on the next `need_resched` and
 /// the enqueue chokepoint won't re-add it; a sleeping task stays parked
