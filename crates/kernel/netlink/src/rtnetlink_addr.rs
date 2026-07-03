@@ -114,7 +114,8 @@ pub fn addr_snapshot() -> Vec<IfaceAddr> {
     net::iface_addr::snapshot().into_iter().map(addr_from_net).collect()
 }
 
-/// Boot-time seed of the default v1 addresses. # C: O(1)
+/// Seed the default v1 addresses. Higher-level networking policy should own
+/// when and whether these bootstrap addresses are inserted.
 pub fn seed_defaults(eth0_ifindex: Option<u32>, lo_ifindex: Option<u32>) {
     if let Some(idx) = lo_ifindex {
         addr_insert(IfaceAddr {

@@ -781,8 +781,9 @@ pub fn seed_default_routes_lo(lo_ifindex: u32) {
     });
 }
 
-/// Seed the boot-time default routes for the eth0 iface. Called
-/// from pci_boot alongside addr seed_defaults.
+/// Seed default routes for an ethernet interface. Must be invoked by the
+/// policy owner (currently tests or higher-level networking setup), not by
+/// low-level PCI probe.
 /// # C: O(1)
 pub fn seed_default_routes(eth0_ifindex: u32) {
     route_insert(RouteRow {
