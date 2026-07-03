@@ -49,8 +49,21 @@ pub(crate) fn enforce_open_perm(
     let accmode    = flags & O_ACCMODE;
     let want_write = accmode == O_WRONLY || accmode == O_RDWR || (flags & O_TRUNC) != 0;
     let want_read  = accmode != O_WRONLY;
-    // EROFS: writing through a read-only mount (Linux `mnt_want_write`).
-    if want_write && mnt_id != 0 {
+    // EROFS: writing through a read-only mount (Linux `mnt_want_write`) — BUT
+    // Linux EXEMPTS special files. `do_dentry_open` skips the write-access
+    // check when `special_file(inode->i_mode)` (char/block device, FIFO,
+    // socket): writing to a device or FIFO doesn't modify the filesystem, so a
+    // read-only mount must not block it. Without this exemption a service's
+    // sandbox (systemd bind-mounts /dev read-only) could not open /dev/kmsg
+    // O_WRONLY for logging → the child aborts with EXIT_NAMESPACE(226), which
+    // fails EVERY sandboxed unit (dbus-broker, systemd-udevd, logind, gdm, …)
+    // and stalls the whole boot before the graphical target.
+    let special = matches!(
+        inode.file_type(),
+        vfs::types::FileType::CharDev | vfs::types::FileType::BlockDev
+            | vfs::types::FileType::Fifo | vfs::types::FileType::Socket
+    );
+    if want_write && mnt_id != 0 && !special {
         if let Some(m) = vfs::mount::mount_by_id(mnt_id) {
             if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
                 return Some(-(Errno::Erofs.as_i32() as i64));
