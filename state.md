@@ -89,34 +89,46 @@ never opened → seat0 not graphical. Traced chain state:
   `/run/host/userdb`, `/usr/lib/userdb`, `/etc/group` — ~30 opens each) plus
   probing `/dev/*` (fuse/kvm/loop-control/net-tun/snd/vfio/vhost). So card0 is
   never tagged because udevd never gets past init to its event loop.
-- **CONFOUND WARNING (retracts the "recvfrom spin is the root" claim): the
-  diagnostic build changed the behavior.** With `FEATURES=debug-watchdog` (adds
-  a per-syscall `record_syscall` hook), the real udevd's ring showed a busy-loop
-  `epoll_pwait2=1 → recvfrom(proto=15 uevent socket)=EAGAIN → ioctl/unlink →`
-  repeat, with the uevent socket at qlen=2/poll=POLLIN. BUT in a **RELEASE**
-  boot (no per-syscall overhead), a proto-15 recvfrom/recvmsg trace fires ZERO
-  times — udevd does not read its uevent socket at all in the timeframe. So the
-  recvfrom-EAGAIN spin is at least partly a debug-build timing artifact, NOT
-  confirmed as the release-boot behavior. Do not treat it as the confirmed root.
-- **Non-confounded, consistent truth across BOTH builds: udevd never completes
-  initialization → never processes the coldplug card0 event → card0 never tagged
-  → seat0 never graphical → gdm idles.** In release, udevd is busy loading MANY
-  rule files (`/usr/lib/udev/rules.d/*`) + doing heavy userdb/NSS/group lookups
-  (`/run/userdb`, `/etc/userdb`, `/etc/group`) and never reaches `/sys` device
-  reads or `/run/udev/data` writes — even across a full ~5-min boot (udev/data
-  writes = 0). So udevd's init is stuck/never-completing; **prime suspect a
-  BLOCKING userdb/varlink query** (a `connect`/`recvmsg` on a systemd-userdbd
-  varlink socket that never returns), OR endless rule re-scan.
-- **Next step needs NON-INVASIVE introspection (the batch harness + kernel klog
-  traces confound the timing).** Use an interactive serial session
-  (`make -C ../oxide-images run-serial`; getty.target IS reached) to
-  `strace -p $(pidof systemd-udevd)` and see the exact syscall it blocks on, +
-  `journalctl -u systemd-udevd -o verbose`. Then fix that kernel-side (likely a
-  userdb/varlink unix-socket recv that hangs instead of returning, or NSS). Also
-  fix the latent (not-yet-triggered) bug in `netlink_fd::recvmsg` line ~164:
+- **COMPLETE ROOT PICTURE (non-confounded, confirmed via a one-shot
+  `dump_tasks()` that adds NO per-syscall overhead):** systemd-udevd is
+  **Runnable and busy-SPINNING** — `dump_tasks` at 50s showed it `R`, with
+  `nsyscalls=251884` (a quarter-million) and last syscall `unlink`. Traced the
+  spin precisely:
+  1. udevd's epoll persistently reports **fd=4** ready with `POLLIN`
+     (`[UDVEP] fd=4 type=6 inotag=4e4c534b(NLSK) ready=0x1` — a NETLINK socket
+     whose `rx_queue` is non-empty, so `NetlinkSocket::poll` correctly = POLLIN).
+  2. BUT udevd issues **NO recv syscall on fd=4** — recvmsg/recvfrom/read/
+     recvmmsg traces (for udevd's tid, all netlink protocols) fire ZERO times.
+     So the socket never drains → epoll stays hot every scan.
+  3. Each loop udevd instead `unlink("/run/udev/queue")`=ENOENT (its
+     "queue-EMPTY" marker — so from udevd's view it has NO pending events).
+  4. Net: udevd spins forever on an epoll-ready-but-never-read netlink fd,
+     never processes the coldplug card0 event → card0 never tagged → seat0
+     never graphical → gdm idles.
+- **THE crux (unresolved): epoll reports fd=4 ready to udevd, but udevd's
+  sd-event never dispatches a read for it.** This SAME pattern (epoll ready, no
+  recv) was also seen for systemd PID1 earlier — BOTH sd-event processes. So the
+  suspect is how our epoll delivers events to sd-event: it looks up the source
+  by the 8-byte `epoll_event.data` (a pointer) and only recv's if it finds+
+  enables the source. If the returned `events`/`data` don't match what
+  `epoll_ctl(ADD)` stored (corruption, wrong offset, an EPOLLET/oneshot
+  interaction, or a level fd that sd-event has disabled), sd-event ignores the
+  event but the fd stays ready → spin. VERIFY: `scan_once` writes `data` at
+  `EPOLL_DATA_OFF` (x86=4) as u64 and `revents` u32 @0 into a 12-byte record —
+  confirm sd-event reads the SAME data it registered, and that a persistently-
+  level-ready netlink fd whose source sd-event `disabled`/`ONESHOT`'d is not
+  re-reported. This is a KERNEL epoll↔sd-event dispatch bug, likely general (hits
+  PID1 + udevd), and is THE thing to fix for the greeter.
+- Also a latent (separate) bug: `netlink_fd::recvmsg` line ~164
   `Some(d) if !d.is_empty() => d, _ => EAGAIN` — with `MSG_PEEK` an empty front
-  datagram returns EAGAIN but is never removed → would wedge any peeking reader;
-  drop/skip empty front messages. THEN udevfix.md device-model is the next layer.
+  datagram returns EAGAIN and is never removed (peek doesn't pop) → would wedge
+  a peeking reader; drop/skip empty front messages.
+- Faster confirmation: interactive serial (`make -C ../oxide-images run-serial`;
+  getty.target reached) → `strace -p $(pidof systemd-udevd)` shows the
+  epoll_wait return {events,data} vs what udevd does with it. Batch klog traces
+  confound udevd's timing (debug-watchdog per-syscall klog changed the loop),
+  so keep any kernel probe to one-shot dumps (like `dump_tasks`), never
+  per-syscall.
 - Still faster with real udevd introspection: interactive serial (`make -C
   ../oxide-images run-serial`; getty.target is up) → `strace -p $(pidof
   systemd-udevd)`, `udevadm monitor --kernel --udev`, `journalctl -u
