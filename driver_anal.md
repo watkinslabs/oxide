@@ -138,10 +138,11 @@ test-pass claims.
   or fault-injection proof after every step.
 - Devtmpfs publication is model-owned for many real nodes, including block,
   DRM, fbdev, input, RNG, and sound. Net class visibility now has a
-  model-owned device gate for loopback and virtio-net devices as well. The
-  branch still needs an audit for all direct runtime `devfs::register` users
-  and for remaining class directories that are still synthesized from
-  subsystem registries.
+  model-owned device gate for loopback and virtio-net devices as well. Input
+  event devices now have model-derived `/sys/class/input/eventN` and
+  `/sys/devices/virtual/input/eventN` entries. The branch still needs an audit
+  for all direct runtime `devfs::register` users and for remaining class
+  directories that are still synthesized from subsystem registries.
 - Sysfs exposes more Linux-shaped bus state, including `/sys/dev/char`,
   `/sys/dev/block`, parent/subsystem links, and model-backed bind/unbind attrs,
   but class-device topology and repeated bind/unbind/remove/readd behavior are
@@ -362,7 +363,8 @@ Some subsystems are per-device already or closer to it:
 - block registry stores multiple disks
 - DRM core can register multiple DRM drivers/cards in principle
 - fbdev has a registry
-- input has pieces of per-device support, but `/dev/input/event0` and procfs metadata still include synthetic/singleton paths
+- input has per-device event nodes, procfs metadata, and sysfs class entries
+  derived from live model/input state
 
 Singleton runtime state is acceptable only for explicitly singleton hardware or transitional boot code. It is not acceptable as the general driver model.
 
