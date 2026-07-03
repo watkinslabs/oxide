@@ -1,6 +1,16 @@
 # state.md — session handoff
 
-## Headline
+## Headline (2026-07-03 update)
+**The "Looping too fast" storm is FIXED & merged (#2319).** Root cause: the
+kernel broadcast RAW uevents to ALL netlink listeners ignoring multicast group;
+systemd PID1's cooked (group-0) monitor got a raw blob it couldn't parse, never
+consumed it, and spun ~3.8M epoll scans. Fix: raw kernel uevents → netlink group
+1 (udevd) only. The DRM card0 seat-master uevent now emits cleanly:
+`storm 0`, boot reaches multi-user + graphical.target. **Remaining: seat0 still
+not graphical** — nobody opens `/dev/dri/card0` (traced CARDOPEN=0). Next blocker
+is the udevd→systemd cooked-uevent re-broadcast (see below).
+
+## Prior headline
 **GNOME reaches `graphical.target`; last blocker is the virtio-gpu DRM-master/KMS
 path so logind can build a graphical seat0 for gdm's greeter.** The dbus storm
 that stalled every Type=dbus service is FIXED (#2317), so multi-user + graphical
@@ -106,9 +116,33 @@ trace in `257_openat.rs` after resolve.
   `#[cfg(feature="debug-boot")]`) for one boot to see missing binaries.
 - Ledger `metadata/index.md`: B next = 305.
 
+## NEXT BLOCKER (storm fixed; seat0 still not graphical)
+The drm card0 "add" uevent now reaches udevd (group 1) without storming. But
+`/dev/dri/card0` is never opened (CARDOPEN=0) → seat0 not graphical → gdm idles.
+The chain from here:
+1. udevd (group 1) processes card0, applies 71-seat.rules, tags `master-of-seat`.
+2. udevd re-broadcasts a COOKED libudev event to its monitor clients.
+3. systemd PID1 / logind receive the cooked event → mark seat0 CanGraphical.
+4. gdm opens /dev/dri/card0, launches gnome-shell greeter.
+
+**Prime suspect: step 2→3 — the udevd→systemd cooked re-broadcast.** systemd's
+sd-device monitors bind `nl_groups=0` (traced: 3 sockets group 0, 2 group 1
+[udevd]; ZERO group 2; ZERO ADD_MEMBERSHIP). In Linux the manager monitor is on
+the UDEV group (2) and udevd multicasts cooked events to group 2. Here systemd
+is on group 0 — so it may receive NOTHING via multicast. Check whether oxide's
+netlink implements USERSPACE→group multicast for `NETLINK_KOBJECT_UEVENT`: when
+udevd sendmsg's a cooked event with a destination group, does the kernel deliver
+it to the group-0/2 monitor sockets? If not (likely — `rtnl_multicast` covers
+NETLINK_ROUTE only), that's the gap: implement uevent-socket send-side multicast
+so udevd's cooked events reach systemd/logind.
+Also verify (debug boot, `systemd.log_level=debug`, now no storm so it can reach
+the seat stage if given time): does logind log seat0 CanGraphical / does udevd
+log tagging card0? Re-add the `[CARDOPEN]` trace (257_openat.rs, `contains("dri/card")`)
+to detect when the seat goes graphical (card0 finally opened).
+
 ## First task next session
-`git checkout main && git pull`. Diagnose the synthetic-drm-uevent systemd storm
-(step 1 above) — that, not the DRM ioctls, is what currently blocks the graphical
-seat. Get udevd to accept the card0 "add" without PID1 looping, then follow the
-chain (tag → logind opens card0 → DRM master handshake → gnome-shell) to a
+`git checkout main && git pull`. Investigate the udevd→systemd cooked-uevent
+re-broadcast (step 2→3): does oxide netlink multicast a userspace-sent uevent to
+group subscribers? Trace udevd's sendmsg on its KOBJECT_UEVENT socket + whether
+it reaches systemd's monitor. Fix the multicast gap, then drive the chain to a
 rendered gdm greeter (active `/goal`).
