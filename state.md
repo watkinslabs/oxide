@@ -68,17 +68,32 @@ never opened → seat0 not graphical. Traced chain state:
   reports POLLIN (007_poll.rs:100-108); `NetlinkSocket::poll` returns POLLIN when
   rx_queue non-empty. Every kernel path correctly signals the uevent socket
   readable to pid 49. An `enqueue`→`notify_epoll_waiters` wake did not change it.
-- **CONCLUSION: the kernel side is correct; the fault is inside pid 49 (udevd) —
-  it is told its uevent fd is readable but issues no read.** This is a userspace
-  (systemd-udevd) internal dispatch/fd-set issue, NOT a kernel poll bug and NOT
-  device-model. Resolve it by introspecting udevd itself: an INTERACTIVE serial
-  session (getty.target IS reached → serial-getty on ttyS0) running
-  `strace -f -p <udevd>` + `udevadm monitor --kernel` + `journalctl -u
-  systemd-udevd -o verbose`. The fire-and-forget `oneboot.sh` harness cannot
-  drive interactive input — use `make -C ../oxide-images run-serial` or the qemu
-  MCP serial. Also confirm pid 49 IS systemd-udevd (vs a udev worker) and that
-  its monitor fd is the SAME socket object (port 6) the coldplug uevent reached
-  (socket-activation fd-passing vs udevd creating its own late-bound monitor).
+- **CORRECTION (supersedes "udevd never reads"): I MISIDENTIFIED the actor.**
+  I latched the first tid to poll a readable KOBJECT_UEVENT socket and dumped its
+  live syscall stream (`record_syscall` + a `WATCH_TID` probe). That tid is NOT
+  udevd — its syscalls are `epoll_wait`, `recvmsg(ret=16)`, and a heavy
+  `openat`→`fstat`→`read`→`close` loop over `/sys/fs/cgroup/**/cgroup.events`,
+  `/proc/N/cgroup`, `pids.max`, `threads-max`, `/proc/self/fdinfo` — that is
+  **systemd PID1's cgroup/unit manager**, and it is very much ACTIVE (not stuck).
+  So the "poller sees readable but never reads" was PID1's socket-activation
+  socket, which PID1 legitimately does NOT drain (it hands it to udevd). udevd's
+  ACTUAL behavior is therefore UNVERIFIED — the earlier UEVREAD=0 traces need
+  re-attribution.
+- **Corrected next step — identify systemd-udevd's tid CORRECTLY, then trace it.**
+  Match the process by exe path (`Task.exe_path` contains `systemd-udevd`) rather
+  than "first uevent poller", set the `WATCH_TID` probe from there, and dump ITS
+  syscall stream + openat paths. Determine: does the real udevd (a) receive the
+  card0 event on ITS monitor fd (socket-activation fd-passing correct?), (b) read
+  it, (c) process it (read /sys/devices/virtual/drm/card0 attrs), (d) write
+  `/run/udev/data/c226:0` + re-broadcast. The break is somewhere in a–d.
+- Still faster with real udevd introspection: interactive serial (`make -C
+  ../oxide-images run-serial`; getty.target is up) → `strace -p $(pidof
+  systemd-udevd)`, `udevadm monitor --kernel --udev`, `journalctl -u
+  systemd-udevd -o verbose`. The batch `oneboot.sh` can't drive stdin.
+- Ruled out (verified): kernel poll machinery (POLL bits, EPOLLET et_seen init,
+  ppoll scan, netlink poll all correct); the two boot storms (dbus, uevent) are
+  fixed. The greeter blocker is in the udevd device-processing pipeline
+  (`udevfix.md` territory), NOT the kernel poll layer.
 - Alternatively confirm with udevd's own journal via an INTERACTIVE serial shell
   (getty.target is reached; a serial-getty on ttyS0 may allow `journalctl -u
   systemd-udevd` + `udevadm monitor --kernel`) — the fire-and-forget oneboot.sh
