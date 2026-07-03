@@ -83,12 +83,12 @@ test-pass claims.
   interface, and sysfs exposes non-loopback `/sys/class/net` entries only while
   that model device exists.
 - Virtio-vsock remove is keyed to the owning parent BDF and clears its
-  `VsockRx` bottom half only for the installed transport. The upper
-  `net::vsock` layer is still a single global guest-CID/TX-hook protocol
-  endpoint, so simultaneous multi-transport vsock is not complete, but it now
-  rejects a second active hook instead of overwriting the live endpoint. The
-  protocol endpoint also has an owned install token, so stale or unrelated
-  remove paths cannot clear the live CID/TX hook or close its connections.
+  `VsockRx` bottom half only for the installed transport. The transport
+  context table is BDF-keyed, and the upper `net::vsock` layer now registers
+  CID-keyed protocol endpoints with TX dispatch selected by the packet source
+  CID. Protocol teardown requires the matching owned endpoint token, so stale
+  or unrelated remove paths cannot clear another live CID/TX hook or close its
+  connections.
 - Virtio-rng now keeps per-BDF records, seeds from the just-bound device,
   removes by owning parent BDF, and promotes `/dev/hwrng` publication to a
   remaining RNG device on active-provider removal. Virtio-snd install/remove
@@ -164,12 +164,12 @@ test-pass claims.
   provider. Virtio-net transport/netdev/softirq runtime is now BDF-keyed, but
   still uses the minimal one-buffer RX design per transport and a shared ARP
   cache. Virtio-gpu teardown is BDF-owned, but the global fbcon/fbdev helper
-  path is still primary-only. Virtio-vsock's upper protocol layer still retains
-  singleton limits; vsock now fails a second protocol publish cleanly instead
-  of replacing the installed transport and requires the matching endpoint token
-  before protocol teardown. Virtio-snd transport context, card publication,
-  ops dispatch, ALSA nodes, and playback/capture runtime are now card/BDF-keyed;
-  the remaining sound work is QEMU-visible repeated bind/unbind/readd proof.
+  path is still primary-only. Virtio-vsock transport context, protocol
+  publication, TX dispatch, RX drain, and protocol teardown are now BDF/CID
+  keyed; the remaining vsock work is QEMU-visible repeated bind/unbind/readd
+  proof. Virtio-snd transport context, card publication, ops dispatch, ALSA
+  nodes, and playback/capture runtime are now card/BDF-keyed; the remaining
+  sound work is QEMU-visible repeated bind/unbind/readd proof.
 - UART and PS/2 platform drivers now have model probes/removes, but they are
   still intentionally singleton hardware paths, not general multi-device
   serial/input infrastructure.
@@ -195,12 +195,11 @@ test-pass claims.
   and fbdev scanout publication records card/CRTC ownership, but the global
   fbcon/fbdev/klog/tty hooks still need to move beyond primary-only scanout
   export;
-  virtio-vsock's upper protocol layer remains the main virtio singleton
-  offender. Virtio-vsock teardown is now owned by a protocol endpoint token,
-  but full multi-transport vsock still needs protocol state split beyond the
-  single active CID/TX hook. Virtio-snd card publication, ops, ALSA nodes, and
-  PCM runtime are now split by card id/BDF; the remaining sound work is
-  repeated bind/unbind/remove/readd proof. Virtio-net's old singleton
+  virtio-vsock transport contexts and protocol endpoints are now split by
+  BDF/CID, with TX dispatch selected from packet headers and teardown scoped to
+  the owned endpoint. Virtio-snd card publication, ops, ALSA nodes, and PCM
+  runtime are now split by card id/BDF; the remaining sound work is repeated
+  bind/unbind/remove/readd proof. Virtio-net's old singleton
   installed-device slot is gone, but its RX buffer model and shared ARP cache
   still need the next networking cleanup pass.
 - Add explicit fault-injection coverage for probe failure after each allocation,
@@ -334,8 +333,8 @@ Several drivers use singleton global state:
 - virtio-gpu: BDF-keyed installed device registry and card-keyed scanout
   contexts; global console/fb helper hooks are still primary-only
 - virtio-rng: BDF-keyed record table with one active `/dev/hwrng` provider
-- virtio-vsock: single active `CTX`; protocol teardown now requires the owned
-  endpoint token, but protocol state is not split per transport
+- virtio-vsock: BDF-keyed transport contexts and CID-keyed protocol endpoints;
+  QEMU repeated bind/unbind/remove/readd proof remains
 - virtio-snd: BDF-keyed transport contexts with card-keyed ops and PCM runtime
 - UART drivers: global `PRESENT` and base state
 - PS/2 keyboard: global present/poll state

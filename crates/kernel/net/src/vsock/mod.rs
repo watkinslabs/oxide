@@ -19,21 +19,25 @@ pub use conn::*;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use crate::netdev::NetError;
+use sync::{Spinlock, Socket as SockLockClass};
 
 /// Process-global connection table. # C: O(1)
 pub static TABLE: VsockTable = VsockTable::new();
 
-/// Our guest CID, published by the driver at bring-up. 0 = no device.
-static GUEST_CID: AtomicU64 = AtomicU64::new(0);
-/// Installed protocol endpoint owner. 0 = no driver; u64::MAX = installing.
-static DRIVER_OWNER: AtomicU64 = AtomicU64::new(0);
 static NEXT_DRIVER_OWNER: AtomicU64 = AtomicU64::new(1);
 
 /// TX hook: hand a fully-encoded header + payload to the driver, which
 /// builds a TX descriptor, kicks q1, and polls the used ring. Returns
 /// true if the frame went out. # C: O(payload)
 pub type TxFn = fn(&[u8]) -> bool;
-static TX_HOOK: AtomicU64 = AtomicU64::new(0);
+
+struct DriverRegistration {
+    owner: u64,
+    guest_cid: u64,
+    tx: TxFn,
+}
+
+static DRIVERS: Spinlock<Vec<DriverRegistration>, SockLockClass> = Spinlock::new(Vec::new());
 
 /// Opaque ownership token for the installed vsock protocol endpoint.
 /// The transport that installed the TX hook must present this token at remove.
@@ -49,63 +53,65 @@ impl DriverEndpoint {
     pub fn guest_cid(self) -> u64 { self.guest_cid }
 }
 
-/// Driver bring-up entry: publish guest CID + install the TX hook. Rejects a
-/// second active transport so a later probe cannot overwrite the live protocol
-/// endpoint behind existing sockets.
-/// # C: O(1)
+/// Driver bring-up entry: publish one guest CID + install its TX hook. Multiple
+/// transports may coexist, but each local CID is owned by at most one endpoint.
+/// # C: O(N drivers)
 pub fn driver_install(guest_cid: u64, tx: TxFn) -> Option<DriverEndpoint> {
-    const INSTALLING: u64 = u64::MAX;
-    if DRIVER_OWNER
-        .compare_exchange(0, INSTALLING, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return None;
-    }
     let mut owner;
     loop {
         owner = NEXT_DRIVER_OWNER.fetch_add(1, Ordering::AcqRel);
-        if owner != 0 && owner != INSTALLING {
+        if owner != 0 {
             break;
         }
     }
-    GUEST_CID.store(guest_cid, Ordering::Release);
-    TX_HOOK.store(tx as usize as u64, Ordering::Release);
-    DRIVER_OWNER.store(owner, Ordering::Release);
+    let mut drivers = DRIVERS.lock();
+    if drivers.iter().any(|driver| driver.guest_cid == guest_cid) {
+        return None;
+    }
+    drivers.push(DriverRegistration { owner, guest_cid, tx });
     Some(DriverEndpoint { owner, guest_cid })
 }
 
-/// Driver remove entry: stop new TX, reset CID, and close live connections.
-/// # C: O(N conns)
+/// Driver remove entry: stop new TX for the endpoint and close connections
+/// whose local CID belonged to that endpoint.
+/// # C: O(N drivers + N conns)
 pub fn driver_uninstall(endpoint: DriverEndpoint) -> bool {
-    if DRIVER_OWNER
-        .compare_exchange(endpoint.owner, 0, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return false;
-    }
-    TX_HOOK.store(0, Ordering::Release);
-    GUEST_CID.store(0, Ordering::Release);
-    TABLE.close_all();
+    let removed = {
+        let mut drivers = DRIVERS.lock();
+        let Some(idx) = drivers
+            .iter()
+            .position(|driver| driver.owner == endpoint.owner && driver.guest_cid == endpoint.guest_cid)
+        else {
+            return false;
+        };
+        drivers.remove(idx)
+    };
+    TABLE.close_all_for_cid(removed.guest_cid);
     true
 }
 
-/// Our guest CID (0 if no device). # C: O(1)
-pub fn guest_cid() -> u64 { GUEST_CID.load(Ordering::Acquire) }
+/// Primary guest CID (0 if no device). # C: O(1)
+pub fn guest_cid() -> u64 {
+    DRIVERS.lock().first().map(|driver| driver.guest_cid).unwrap_or(0)
+}
 
 /// True iff a virtio-vsock device is installed. # C: O(1)
 pub fn driver_up() -> bool {
-    let owner = DRIVER_OWNER.load(Ordering::Acquire);
-    owner != 0 && owner != u64::MAX
+    !DRIVERS.lock().is_empty()
 }
 
-/// Emit one packet via the driver TX hook. False if no driver. # C: O(len)
+/// Emit one packet through the endpoint that owns `hdr.src_cid`.
+/// False if no matching driver. # C: O(N drivers + len)
 pub fn tx(hdr: &VsockHdr, payload: &[u8]) -> bool {
-    let raw = TX_HOOK.load(Ordering::Acquire);
-    if raw == 0 { return false; }
-    // SAFETY: TX_HOOK only ever stores a `TxFn` (fn(&[u8]) -> bool) via
-    // `driver_install`; the transmute reconstructs that exact fn pointer
-    // shape, matching the install-site type. No other writer exists.
-    let f: TxFn = unsafe { core::mem::transmute(raw as usize) };
+    let f = match DRIVERS
+        .lock()
+        .iter()
+        .find(|driver| driver.guest_cid == hdr.src_cid)
+        .map(|driver| driver.tx)
+    {
+        Some(f) => f,
+        None => return false,
+    };
     let mut frame = Vec::with_capacity(VSOCK_HDR_LEN + payload.len());
     frame.extend_from_slice(&hdr.encode());
     frame.extend_from_slice(payload);
@@ -219,6 +225,7 @@ pub fn connect(peer_cid: u64, peer_port: u32)
 {
     if !driver_up() { return Err(NetError::Enetunreach); }
     let local_cid = guest_cid();
+    if local_cid == 0 { return Err(NetError::Enetunreach); }
     let local_port = TABLE.alloc_port();
     let c = alloc::sync::Arc::new(VsockConn::new(
         local_cid, local_port, peer_cid, peer_port, VsockState::Connecting));
