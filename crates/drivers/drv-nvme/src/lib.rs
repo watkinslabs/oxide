@@ -276,7 +276,9 @@ impl drv::Driver for NvmeDriver {
     }
 
     fn remove(&self, dev: &drv::Device) {
-        let bdf = pci::parse_bdf_addr(&dev.addr).unwrap_or(Bdf { bus: 0, device: 0, function: 0 });
+        let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else {
+            return;
+        };
         let _ = imp::remove(bdf);
     }
 }
