@@ -191,10 +191,21 @@ pub fn set_devtmpfs_hook(f: DevtmpfsHook) { *DEVTMPFS_HOOK.lock() = Some(f); }
 /// # C: O(1)
 pub fn set_devtmpfs_del_hook(f: DevtmpfsDelHook) { *DEVTMPFS_DEL_HOOK.lock() = Some(f); }
 
-/// Push an enumerated device into the authoritative registry.
-/// # C: O(1) amortised
+/// Push an enumerated device into the authoritative registry, or return the
+/// existing model object for the same bus address. Linux has one `struct device`
+/// per bus id; duplicate publication must not create a second sysfs/devtmpfs
+/// owner for the same hardware.
+/// # C: O(N_devices)
 fn push_device(d: Arc<Device>) -> Arc<Device> {
-    DEVICES.lock().push(Arc::clone(&d));
+    let mut devices = DEVICES.lock();
+    if let Some(existing) = devices
+        .iter()
+        .find(|existing| existing.bus == d.bus && existing.addr == d.addr)
+        .cloned()
+    {
+        return existing;
+    }
+    devices.push(Arc::clone(&d));
     DEV_COUNT.fetch_add(1, Ordering::Release);
     d
 }
@@ -219,7 +230,11 @@ pub fn device_count() -> usize { DEV_COUNT.load(Ordering::Acquire) }
 /// build here — registration is the single source of truth, dirs are a view.
 /// # C: O(1) amortised
 pub fn device_add(d: Arc<Device>) -> Arc<Device> {
+    let requested = Arc::clone(&d);
     let d = push_device(d);
+    if !Arc::ptr_eq(&d, &requested) {
+        return d;
+    }
     if let Some(name) = d.devname.clone() {
         if let Some(h) = *DEVTMPFS_HOOK.lock() { h(d.dev_class, &name, d.dev_t, d.node_factory.clone()); }
     }
@@ -621,6 +636,35 @@ mod tests {
         assert!(devices().iter().any(|x| x.addr == "virtio9"));
         assert_eq!(dev.dev_class, "block");
         assert_eq!(SYSFS_AFTER_DEV.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn device_add_deduplicates_bus_address_without_republishing() {
+        static DEVTMPFS_HITS: AtomicU32 = AtomicU32::new(0);
+        static SYSFS_HITS: AtomicU32 = AtomicU32::new(0);
+        fn devtmpfs_cb(_class: &str, _name: &str, _dev_t: Option<(u32, u32)>, _f: Option<NodeFactory>) {
+            DEVTMPFS_HITS.fetch_add(1, Ordering::Release);
+        }
+        fn sysfs_cb(_d: &Device) {
+            SYSFS_HITS.fetch_add(1, Ordering::Release);
+        }
+        set_devtmpfs_hook(devtmpfs_cb);
+        set_sysfs_hook(sysfs_cb);
+        let devtmpfs_before = DEVTMPFS_HITS.load(Ordering::Acquire);
+        let sysfs_before = SYSFS_HITS.load(Ordering::Acquire);
+        let first = device_add(Arc::new(
+            Device::new("virtio", String::from("dedup-virtio0"), 0, 2, 0)
+                .with_devnode("input", String::from("input/dedup0"), Some((13, 90))),
+        ));
+        let duplicate = device_add(Arc::new(
+            Device::new("virtio", String::from("dedup-virtio0"), 0, 2, 0)
+                .with_devnode("input", String::from("input/dedup0-duplicate"), Some((13, 91))),
+        ));
+        assert!(Arc::ptr_eq(&first, &duplicate));
+        assert_eq!(DEVTMPFS_HITS.load(Ordering::Acquire), devtmpfs_before + 1);
+        assert_eq!(SYSFS_HITS.load(Ordering::Acquire), sysfs_before + 1);
+        assert_eq!(devices().iter().filter(|d| d.bus == "virtio" && d.addr == "dedup-virtio0").count(), 1);
+        device_del(&first);
     }
 
     #[test]

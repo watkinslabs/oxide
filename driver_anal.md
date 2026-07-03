@@ -40,6 +40,9 @@ test-pass claims.
   removes devtmpfs state, and then drops the device from the registry.
 - Public `register_device` bypasses have been removed from the driver model;
   `device_add` is the intended publication entry.
+- `device_add` now returns the existing model object for a duplicate
+  `(bus, addr)` instead of publishing a second sysfs/devtmpfs owner for the same
+  hardware identity.
 - Sysfs bus-driver controls are backed by the model path for bind/unbind, with
   driver links, `driver_override`, `modalias`, PCI `resource`, and model-derived
   uevent environment coverage improved on this branch. Model devices with
