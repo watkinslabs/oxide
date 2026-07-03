@@ -35,6 +35,7 @@ struct Ctx {
     q0_notify_va: u64,
     q0_size:      u16,
     hhdm:         u64,
+    cfg_va:       u64,
     /// Driver-side avail.idx shadow (next ring slot to publish).
     avail_idx:    u16,
     /// Last used.idx the driver observed (completion target tracking).
@@ -62,7 +63,7 @@ pub fn present() -> bool { CTX.lock().is_some() }
 /// # C: O(1)
 pub fn install(
     q0_desc_pa: u64, q0_driver_pa: u64, q0_device_pa: u64,
-    q0_notify_va: u64, q0_size: u16, hhdm: u64,
+    q0_notify_va: u64, q0_size: u16, hhdm: u64, cfg_va: u64,
 ) -> bool {
     if hhdm == 0 || q0_desc_pa == 0 || q0_driver_pa == 0
         || q0_device_pa == 0 || q0_notify_va == 0
@@ -89,12 +90,32 @@ pub fn install(
     let used_seen = unsafe { core::ptr::read_volatile(used.add(1)) };
     *CTX.lock() = Some(Ctx {
         q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va,
-        q0_size, hhdm,
+        q0_size, hhdm, cfg_va,
         avail_idx: used_seen,
         used_idx_seen: used_seen,
         bounce_pa,
     });
     true
+}
+
+/// Tear down the installed virtio-rng engine. The caller must remove external
+/// `/dev/hwrng` routing before this so new opens cannot enter `fill` while the
+/// backing queue is being reset.
+/// # C: O(1)
+pub fn uninstall() {
+    let ctx = CTX.lock().take();
+    if let Some(ctx) = ctx {
+        if ctx.cfg_va != 0 {
+            // SAFETY: cfg_va is the Device-attr common-cfg window mapped by
+            // the virtio transport; device_status is the u8 reset field.
+            unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0); }
+        }
+        if ctx.bounce_pa != 0 {
+            // SAFETY: bounce_pa came from alloc_one_frame in install and the
+            // context has been removed, so no future request can reuse it.
+            unsafe { pmm::setup::free_one_frame(ctx.bounce_pa); }
+        }
+    }
 }
 
 /// Pull fresh hardware entropy into `buf`. Submits a single WRITE-ONLY

@@ -161,6 +161,34 @@ pub enum PcmState { Idle, Configured, Prepared, Running }
 // Spinlock, so cross-CPU sharing is sound.
 static CTX: Spinlock<Option<Ctx>, DriverLockClass> = Spinlock::new(None);
 
+fn reset_device(ctx: &Ctx) {
+    if ctx.cfg_va != 0 {
+        // SAFETY: cfg_va is the Device-attr common-cfg window mapped by the
+        // virtio transport; device_status is the u8 reset field.
+        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0); }
+    }
+}
+
+unsafe fn free_frame(pa: u64) {
+    if pa != 0 {
+        // SAFETY: caller has removed the context that owned this PMM frame, so
+        // no future queue operation can address it.
+        unsafe { pmm::setup::free_one_frame(pa); }
+    }
+}
+
+fn free_ctx_frames(ctx: &Ctx) {
+    // SAFETY: all frames listed here were allocated by install and are owned
+    // solely by this driver context.
+    unsafe {
+        free_frame(ctx.scratch_pa);
+        free_frame(ctx.tx_buf_pa);
+        free_frame(ctx.tx_scratch_pa);
+        free_frame(ctx.rx_buf_pa);
+        free_frame(ctx.rx_scratch_pa);
+    }
+}
+
 /// Boot-probe → driver handoff: the CONTROLQ ring the boot path programmed
 /// plus the harvested virtio_snd_config counts.
 pub struct SndInstall {
@@ -292,19 +320,39 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         cap_channels: 2,
         cap_period_bytes: PERIOD_BYTES as u32,
     });
-    let (out, input) = pcm_info_scan();
+    let (out, input) = match pcm_info_scan() {
+        Some(split) => split,
+        None => {
+            if let Some(ctx) = CTX.lock().take() {
+                reset_device(&ctx);
+                free_ctx_frames(&ctx);
+            }
+            return None;
+        }
+    };
     Some(SndProbe { streams: p.streams, out, input })
+}
+
+/// Tear down the installed virtio-snd runtime state after userspace-facing
+/// sound nodes have been removed by the sound/devfs owner.
+/// # C: O(1)
+pub fn uninstall() {
+    if let Some(ctx) = CTX.lock().take() {
+        reset_device(&ctx);
+        free_ctx_frames(&ctx);
+    }
 }
 
 /// Query the PCM stream table (VIRTIO_SND_R_PCM_INFO, start_id=0,
 /// count=streams) and tally the OUTPUT/INPUT split by each entry's
-/// `direction` byte. Returns (out, input); (0,0) on transport/status error.
+/// `direction` byte. Returns None on transport/status error; a failed mandatory
+/// probe must not publish a partial sound device.
 /// # C: O(streams)
-fn pcm_info_scan() -> (u32, u32) {
+fn pcm_info_scan() -> Option<(u32, u32)> {
     let mut g = CTX.lock();
-    let ctx = match g.as_mut() { Some(c) => c, None => return (0, 0) };
+    let ctx = match g.as_mut() { Some(c) => c, None => return None };
     let count = ctx.streams;
-    if count == 0 { return (0, 0); }
+    if count == 0 { return Some((0, 0)); }
     let h = ctx.hhdm;
 
     // Build virtio_snd_query_info at REQ_OFF.
@@ -323,9 +371,9 @@ fn pcm_info_scan() -> (u32, u32) {
     let want = SND_HDR_SIZE + count as usize * PCM_INFO_SIZE;
     let resp_len = want.min(0x1000 - RESP_OFF as usize);
     let status = match submit_ctl(ctx, QUERY_INFO_SIZE, resp_len) {
-        Some(s) => s, None => return (0, 0),
+        Some(s) => s, None => return None,
     };
-    if status != VIRTIO_SND_S_OK { return (0, 0); }
+    if status != VIRTIO_SND_S_OK { return None; }
 
     // Tally direction across the entries that fit in the response window.
     let entries = ((resp_len - SND_HDR_SIZE) / PCM_INFO_SIZE).min(count as usize);
@@ -370,7 +418,7 @@ fn pcm_info_scan() -> (u32, u32) {
     }
     ctx.out_stream = first_out;
     ctx.in_stream = first_in;
-    (out, input)
+    Some((out, input))
 }
 
 /// Submit one CONTROLQ request/response pair: a 2-descriptor chain (req RO

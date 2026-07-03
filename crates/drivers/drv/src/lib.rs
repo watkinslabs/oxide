@@ -27,7 +27,8 @@ extern crate alloc;
 pub mod model;
 pub use model::{
     bind, Device, Driver, NodeFactory, register_device, register_driver, devices, device_count,
-    device_add, device_del, driver_names, driver_count, match_driver, bind_addr,
+    device_add, device_del, driver_names, driver_count, match_driver, bind_addr, bind_driver,
+    auto_bind,
     set_sysfs_hook, set_bind_hook, set_driver_hook, set_devtmpfs_hook, set_devtmpfs_del_hook,
 };
 
@@ -36,7 +37,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use sync::{Spinlock, TaskList as DriverListClass};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Error { NoMatch, NoMem, ProbeFailed, Removed }
+pub enum Error { NoMatch, NoMem, ProbeFailed, Removed, AlreadyBound }
 
 pub type KResult<T> = core::result::Result<T, Error>;
 

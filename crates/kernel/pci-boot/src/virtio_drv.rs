@@ -3,11 +3,10 @@
 
 use super::map_mmio_pages;
 
-// drivers-plan D1a model drivers. Each live virtio driver gets a
-// static `drv::Driver` whose `matches` keys on its PCI device-id.
-// `probe` is a no-op: the inline bring-up below already brought the
-// device up — D1b moves bring-up into `probe`. We `register_driver`
-// + `bind` at the existing success sites; bring-up itself is unchanged.
+// drivers-plan model drivers. Most live virtio drivers still use no-op model
+// probes because inline bring-up below has already installed their runtime
+// state. virtio-blk has moved one step further: the transport stages typed
+// queue resources and the model driver's `probe` consumes them before binding.
 macro_rules! model_driver {
     ($ty:ident, $static:ident, $name:literal, $($id:literal)|+) => {
         struct $ty;
@@ -20,13 +19,110 @@ macro_rules! model_driver {
         static $static: $ty = $ty;
     };
 }
-model_driver!(VirtioBlkDrv,   VIRTIO_BLK_DRV,   "virtio-blk",   0x1001 | 0x1042);
 model_driver!(VirtioNetDrv,   VIRTIO_NET_DRV,   "virtio-net",   0x1000 | 0x1041);
 model_driver!(VirtioGpuDrv,   VIRTIO_GPU_DRV,   "virtio-gpu",   0x1050);
 model_driver!(VirtioInputDrv, VIRTIO_INPUT_DRV, "virtio-input", 0x1052);
-model_driver!(VirtioRngDrv,   VIRTIO_RNG_DRV,   "virtio-rng",   0x1044);
 model_driver!(VirtioVsockDrv, VIRTIO_VSOCK_DRV, "virtio-vsock", 0x1053);
-model_driver!(VirtioSndDrv,   VIRTIO_SND_DRV,   "virtio-snd",   0x1059);
+
+static PENDING_BLK: sync::Spinlock<
+    alloc::vec::Vec<(u32, drv_virtio_blk::modern::BlkInit)>,
+    sync::TaskList,
+> = sync::Spinlock::new(alloc::vec::Vec::new());
+
+fn bdf_key(bus: u8, device: u8, function: u8) -> u32 {
+    ((bus as u32) << 16) | ((device as u32) << 8) | function as u32
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn pci_addr_key(addr: &str) -> Option<u32> {
+    let b = addr.as_bytes();
+    if b.len() != 12 || b[4] != b':' || b[7] != b':' || b[10] != b'.' {
+        return None;
+    }
+    let bus = (hex_nibble(b[5])? << 4) | hex_nibble(b[6])?;
+    let device = (hex_nibble(b[8])? << 4) | hex_nibble(b[9])?;
+    let function = hex_nibble(b[11])?;
+    Some(bdf_key(bus, device, function))
+}
+
+fn stage_blk_probe(init: drv_virtio_blk::modern::BlkInit) {
+    let key = bdf_key(init.bus, init.device, init.function);
+    let mut pending = PENDING_BLK.lock();
+    if let Some((_, slot)) = pending.iter_mut().find(|(k, _)| *k == key) {
+        *slot = init;
+        return;
+    }
+    pending.push((key, init));
+}
+
+fn pending_blk_init(key: u32) -> Option<drv_virtio_blk::modern::BlkInit> {
+    PENDING_BLK.lock().iter().find(|(k, _)| *k == key).map(|(_, init)| *init)
+}
+
+fn clear_pending_blk(key: u32) {
+    PENDING_BLK.lock().retain(|(k, _)| *k != key);
+}
+
+struct VirtioBlkDrv;
+impl drv::Driver for VirtioBlkDrv {
+    fn name(&self) -> &'static str { "virtio-blk" }
+    fn matches(&self, dev: &drv::Device) -> bool {
+        dev.bus == "pci" && dev.vendor_id == 0x1AF4
+            && matches!(dev.device_id, 0x1001 | 0x1042)
+    }
+    fn probe(&self, dev: &alloc::sync::Arc<drv::Device>) -> drv::KResult<()> {
+        let key = pci_addr_key(&dev.addr).ok_or(drv::Error::NoMatch)?;
+        let init = pending_blk_init(key).ok_or(drv::Error::NoMatch)?;
+        let idx = drv_virtio_blk::modern::init_blk(init);
+        if idx == 0 {
+            return Err(drv::Error::ProbeFailed);
+        }
+        clear_pending_blk(key);
+        Ok(())
+    }
+    fn remove(&self, dev: &drv::Device) {
+        if let Some(key) = pci_addr_key(&dev.addr) {
+            let bus = ((key >> 16) & 0xff) as u8;
+            let device = ((key >> 8) & 0xff) as u8;
+            let function = (key & 0xff) as u8;
+            let _ = drv_virtio_blk::modern::remove_blk(bus, device, function);
+        }
+    }
+}
+static VIRTIO_BLK_DRV: VirtioBlkDrv = VirtioBlkDrv;
+
+struct VirtioRngDrv;
+impl drv::Driver for VirtioRngDrv {
+    fn name(&self) -> &'static str { "virtio-rng" }
+    fn matches(&self, dev: &drv::Device) -> bool {
+        dev.bus == "pci" && dev.vendor_id == 0x1AF4 && dev.device_id == 0x1044
+    }
+    fn remove(&self, _dev: &drv::Device) {
+        devfs::misc::clear_hwrng_source();
+        drv_virtio_rng::uninstall();
+    }
+}
+static VIRTIO_RNG_DRV: VirtioRngDrv = VirtioRngDrv;
+
+struct VirtioSndDrv;
+impl drv::Driver for VirtioSndDrv {
+    fn name(&self) -> &'static str { "virtio-snd" }
+    fn matches(&self, dev: &drv::Device) -> bool {
+        dev.bus == "pci" && dev.vendor_id == 0x1AF4 && dev.device_id == 0x1059
+    }
+    fn remove(&self, _dev: &drv::Device) {
+        drv_virtio_snd::uninstall();
+    }
+}
+static VIRTIO_SND_DRV: VirtioSndDrv = VirtioSndDrv;
 
 /// Canonical `0000:bb:dd.f` addr for a BDF (matches enumeration loop).
 /// # C: O(1)
@@ -41,6 +137,16 @@ fn pci_addr(bdf: pci::Bdf) -> alloc::string::String {
 fn model_bind(d: &'static dyn drv::Driver, bdf: pci::Bdf) {
     drv::register_driver(d);
     drv::bind_addr("pci", &pci_addr(bdf), d.name());
+}
+
+fn model_probe_bind(d: &'static dyn drv::Driver, bdf: pci::Bdf) -> drv::KResult<()> {
+    drv::register_driver(d);
+    let addr = pci_addr(bdf);
+    let dev = drv::devices()
+        .into_iter()
+        .find(|dev| dev.bus == "pci" && dev.addr == addr)
+        .ok_or(drv::Error::NoMatch)?;
+    drv::bind_driver(&dev, d)
 }
 
 // pub(super) so the trace (virtio_trace.rs) can read the fields without
@@ -417,10 +523,9 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             klog::write_raw(if drv_virtio_input::is_pointer(evdev_id) { b" pointer\n" } else { b" keyboard\n" }); }
         model_bind(&VIRTIO_INPUT_DRV, d.bdf); // D1a: publish + bind
     }
-    // Stage 1: the persistent virtio-blk engine (drv-virtio-blk) owns
-    // all blk reads now — the boot probe no longer issues a throwaway
-    // sector-1 diagnostic. The device registers via `register_blk`
-    // below and ext4 mounts through `BlockDevice::submit_sync`.
+    // The persistent virtio-blk engine owns all blk reads; the boot probe no
+    // longer issues a throwaway sector-1 diagnostic. Disk publication now
+    // happens from VirtioBlkDrv::probe after generic transport setup.
     if is_virtio_net && q0_desc_pa != 0 && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
         let hhdm = {
             #[cfg(target_arch = "x86_64")]
@@ -855,24 +960,20 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
         model_bind(&VIRTIO_NET_DRV, bdf); // D1a: publish + bind
     }
 
-    // Stage 1: register the virtio-blk device as a `BlockDevice` so
-    // ext4 can mount a real disk. The persistent engine (drv-virtio-blk)
-    // reads the serial via GET_ID and owns all I/O. Gated on
-    // blk_cfg_valid — a device whose device-cfg BAR never decoded
-    // reports capacity=0; registering it would hand ext4 a phantom
-    // zero-capacity disk to fail mounting. Helper keeps this file under
-    // the line cap.
+    // virtio-blk: generic virtio-pci transport has reached DRIVER_OK and
+    // staged q0. The model driver's probe consumes this handoff and publishes
+    // the block device; binding is causal, not just descriptive.
     if d.vendor_id == 0x1AF4 && (d.device_id == 0x1001 || d.device_id == 0x1042)
         && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
         && p.q0_desc_pa != 0 && p.q0_notify_va != 0
         && p.blk_cfg_valid
     {
-        super::virtio_blk_cfg::register_blk(
+        stage_blk_probe(super::virtio_blk_cfg::build_init(
             bdf.bus, bdf.device, bdf.function,
             p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa,
             p.q0_notify_va, p.q0_size, p.blk_capacity, p.blk_blk_size,
-        );
-        model_bind(&VIRTIO_BLK_DRV, bdf); // D1a: publish + bind
+        ));
+        let _ = model_probe_bind(&VIRTIO_BLK_DRV, bdf);
     }
 
     // D3.1: virtio-rng (entropy). Generic q0 setup above already gave this
@@ -892,7 +993,7 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
         };
         if drv_virtio_rng::install(
             p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa,
-            p.q0_notify_va, p.q0_size, hhdm,
+            p.q0_notify_va, p.q0_size, hhdm, p.cfg_va,
         ) {
             // Seed the kernel RNG with real entropy at bring-up.
             let mut seed = [0u8; 32];

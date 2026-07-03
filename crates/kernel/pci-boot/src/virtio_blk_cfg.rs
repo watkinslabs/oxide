@@ -58,19 +58,19 @@ pub(super) fn harvest(
     (capacity, blk_size, true)
 }
 
-/// Hand the persistent queue-0 addresses + harvested device-cfg to the
-/// virtio-blk engine, which reads the serial (GET_ID), builds a
-/// `BlockDevice`, and registers it under a unique name.
-/// # C: O(1) + registry O(N_disks)
+/// Build the persistent queue-0 handoff that the virtio-blk model driver's
+/// `probe` consumes. The generic virtio-pci transport owns queue setup; the
+/// block driver owns publishing the disk.
+/// # C: O(1)
 #[allow(clippy::too_many_arguments)]
-pub(super) fn register_blk(
+pub(super) fn build_init(
     bus: u8, device: u8, function: u8,
     q0_desc_pa: u64, q0_avail_pa: u64, q0_used_pa: u64,
     q0_notify_va: u64, q0_size: u16, capacity: u64, blk_size: u32,
-) {
-    let _ = drv_virtio_blk::modern::init_blk(drv_virtio_blk::modern::BlkInit {
+) -> drv_virtio_blk::modern::BlkInit {
+    drv_virtio_blk::modern::BlkInit {
         bus, device, function,
         q0_desc_pa, q0_avail_pa, q0_used_pa, q0_notify_va,
         q0_size, capacity, blk_size,
-    });
+    }
 }

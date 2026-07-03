@@ -969,6 +969,56 @@ pub fn alloc_contig(order: crate::Order) -> Option<u64> {
     p.alloc(order).ok().map(|pfn| pfn.0 * 4096)
 }
 
+/// Free a contiguous physical region returned by [`alloc_contig`].
+/// # SAFETY: `pa` must be the exact base returned by `alloc_contig(order)`;
+/// none of the frames in the region may be reachable by a live mapping or DMA.
+/// # C: O(2^order) metadata reset + buddy free.
+#[track_caller]
+pub unsafe fn free_contig(pa: u64, order: crate::Order) {
+    let p = match pmm_static() { Some(p) => p, None => return };
+    let pages = 1usize << (order.0 as usize);
+    let pfn = hal::Pfn(pa / 4096);
+    for i in 0..pages {
+        hal::zerotrap::disarm(pa + (i as u64) * 4096);
+    }
+    if let Some(meta) = page_meta() {
+        for i in 0..pages {
+            let pf = hal::Pfn(pfn.0 + i as u64);
+            if meta.get(pf).is_none() { return; }
+        }
+        for i in 0..pages {
+            let pf = hal::Pfn(pfn.0 + i as u64);
+            if let Some(m) = meta.get(pf) {
+                m.refcount.store(0, core::sync::atomic::Ordering::Release);
+                m.mapcount.store(0, core::sync::atomic::Ordering::Release);
+                let _ = meta.clear_flags(pf,
+                    crate::PageFlags::ANON | crate::PageFlags::ANON_EXCLUSIVE);
+            }
+        }
+    }
+    #[cfg(feature = "debug-watchdog")]
+    {
+        let hhdm = crate::user_as::hhdm_offset();
+        if hhdm != 0 {
+            // SAFETY: caller guarantees the full region is no longer reachable.
+            unsafe { core::ptr::write_bytes((hhdm + pa) as *mut u8, 0xAA, pages * 4096); }
+        }
+    }
+    #[cfg(feature = "debug-cow")]
+    {
+        for i in 0..pages {
+            alloc_integrity::clear((pa / 4096) + i as u64);
+        }
+        let hhdm = crate::user_as::hhdm_offset();
+        if hhdm != 0 {
+            // SAFETY: caller guarantees the full region is no longer reachable.
+            unsafe { core::ptr::write_bytes((hhdm + pa) as *mut u8, 0xCC, pages * 4096); }
+        }
+    }
+    // SAFETY: caller guarantees this is the exact live buddy allocation.
+    unsafe { p.free(pfn, order); }
+}
+
 /// Free a single 4 KiB frame back to the kernel-owned PMM. Pair of
 /// `alloc_one_frame`; the PA must originally have come from a PMM
 /// alloc and not be currently mapped in any live page table (caller's

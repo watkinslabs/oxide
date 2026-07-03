@@ -145,22 +145,3 @@ pub fn proc_fd_file(tid_opt: Option<u32>, fd: i32) -> Option<alloc::sync::Arc<vf
     let fdt = unsafe { (*task.fd_table.get()).as_ref()?.clone() };
     fdt.get(fd).ok()
 }
-
-/// Live fd numbers for `/proc/<tid_opt>/fd` readdir. `None` ⇒ the caller's own
-/// table; `Some(tid)` ⇒ the TARGET task's — so `/proc/<pid>/fd` lists that
-/// pid's descriptors, not the reader's (the `readdir` bug that made every
-/// `/proc/<pid>/fd` show the caller's fds). # C: O(N_fds)
-pub fn proc_fd_list(tid_opt: Option<u32>) -> alloc::vec::Vec<i32> {
-    let task = match tid_opt {
-        Some(tid) => crate::live::registry::lookup(tid),
-        None      => crate::live::current().and_then(|c| crate::live::registry::lookup(c.tid)),
-    };
-    match task {
-        // SAFETY: fd_table slot single-mutator per `13§5`; Arc-clone snapshot.
-        Some(t) => match unsafe { (*t.fd_table.get()).as_ref() } {
-            Some(fdt) => fdt.clone().live_fds(),
-            None => alloc::vec::Vec::new(),
-        },
-        None => alloc::vec::Vec::new(),
-    }
-}

@@ -25,6 +25,21 @@ The real hardware bring-up mostly bypasses both as a true driver model. PCI enum
 
 That must be corrected. The driver model should own matching, probing, binding, error unwind, remove, shutdown, sysfs state, devtmpfs publication, and uevents. The boot PCI path should enumerate devices and hand them to the driver core, not contain the drivers.
 
+## Progress ledger
+
+Current status after the July 3, 2026 driver-fixes branch work:
+
+- Overall: about 70% through cleanup/stabilization, about 42% through the full Linux-grade architecture conversion. The remaining gap is not small polish; the model still needs to become the causal owner of full transport probe/remove instead of `pci-boot`.
+- Done: virtio-net now owns installation/removal of its `NetRx` softirq handler instead of leaving a driver-owned bottom half installed from `pci-boot`.
+- Done: first pure virtio transport helpers moved into `crates/drivers/virtio`: modern device-id decoding, notify PA calculation, queue-resource construction, and common/queue requirement checks.
+- Done: driver model now has a probe-driven bind path (`bind_driver`/`auto_bind`) that rejects duplicate bind, leaves failed probes unbound and retriable, and calls bound-driver `remove` during `device_del`.
+- Done: virtio-rng now has explicit `uninstall`, common-cfg reset, and bounce-frame release; devfs has a clearable `/dev/hwrng` source hook, and the rng model driver clears the hook before hardware teardown.
+- Done: virtio-snd install now treats failed mandatory `PCM_INFO` as probe failure, unwinds the singleton, resets the device, and frees driver-owned frames instead of publishing a partial card. The `sound` crate has a node unregister primitive; sound node removal still needs to be wired into a real sound-device remove path.
+- Done: virtio-blk has a duplicate-BDF publication guard so the same PCI function cannot publish multiple `vd*` disks on re-entry.
+- Done: virtio-blk disk publication is now model-probe causal. `pci-boot` still performs generic virtio-pci transport setup, but it stages a typed `BlkInit`; `VirtioBlkDrv::probe` consumes it, calls the block engine, and only then `bind_driver` records the bound driver.
+- Done: virtio-blk now has a model remove path that unregisters the block disk, removes the devtmpfs/model block node through `block::registry::unregister`, clears the BDF publication guard, and releases the driver-owned contiguous bounce region through a matching PMM `free_contig`.
+- Still open: `pci-boot` still performs most virtio transport bring-up directly. The next major work is moving transport ownership and error-unwind for virtio-blk, then repeating the pattern for net/input/gpu/rng/snd/vsock.
+
 ## Current architecture
 
 ### Driver core

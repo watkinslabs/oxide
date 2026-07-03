@@ -121,3 +121,15 @@ pub fn init() {
     devfs::register("/dev/audio", make_snd_inode(MINOR_AUDIO));
     devfs::register("/dev/mixer", make_snd_inode(MINOR_MIXER));
 }
+
+/// Remove the ALSA + OSS device nodes before tearing down the backing card.
+/// # C: O(nodes * path-depth)
+pub fn unregister() {
+    devfs::del_device_node("/dev/snd/controlC0");
+    devfs::del_device_node("/dev/snd/pcmC0D0p");
+    devfs::del_device_node("/dev/snd/pcmC0D0c");
+    devfs::del_device_node("/dev/dsp");
+    devfs::del_device_node("/dev/dsp0");
+    devfs::del_device_node("/dev/audio");
+    devfs::del_device_node("/dev/mixer");
+}

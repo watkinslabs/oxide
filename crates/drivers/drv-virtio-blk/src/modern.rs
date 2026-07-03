@@ -26,6 +26,7 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
@@ -159,6 +160,11 @@ const BOUNCE_ORDER: u8 = 6;
 /// 0-based index; the registry NAME is `vd_name(index)`, unique per
 /// device regardless of (possibly duplicate / empty) serials.
 static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(0);
+static PUBLISHED_BDFS: Spinlock<Vec<(u32, String)>, DriverLockClass> = Spinlock::new(Vec::new());
+
+fn bdf_key(bus: u8, device: u8, function: u8) -> u32 {
+    ((bus as u32) << 16) | ((device as u32) << 8) | function as u32
+}
 
 /// Persistent per-device request engine. The PAs/VA reference rings
 /// the boot probe already programmed into the device; the bounce frame
@@ -464,6 +470,17 @@ impl BlkState {
     }
 }
 
+impl Drop for BlkState {
+    fn drop(&mut self) {
+        if self.bounce_pa != 0 {
+            // SAFETY: BlkState owns this contiguous PMM allocation; dropping
+            // the last registry reference means no new request can reach it.
+            unsafe { pmm::setup::free_contig(self.bounce_pa, pmm::Order(BOUNCE_ORDER)); }
+            self.bounce_pa = 0;
+        }
+    }
+}
+
 impl BlockDevice for BlkState {
     fn block_size(&self) -> u32 { self.blk_size }
 
@@ -559,11 +576,22 @@ pub fn disk_name(index: u32) -> String {
 /// 1-based registry index (0 on bounce-alloc failure).
 /// # C: O(1) + GET_ID transfer + registry O(N_disks)
 pub fn init_blk(init: BlkInit) -> u32 {
+    let key = bdf_key(init.bus, init.device, init.function);
+    {
+        let mut published = PUBLISHED_BDFS.lock();
+        if published.iter().any(|(b, _)| *b == key) {
+            return 0;
+        }
+        published.push((key, String::new()));
+    }
     // Contiguous BOUNCE_ORDER region (256 KiB) so the 128 KiB data
     // descriptor addresses one physically-contiguous, region-aligned run.
     let bounce_pa = match pmm::setup::alloc_contig(pmm::Order(BOUNCE_ORDER)) {
         Some(pa) => pa,
-        None => return 0,
+        None => {
+            PUBLISHED_BDFS.lock().retain(|(b, _)| *b != key);
+            return 0;
+        }
     };
     // Zero the bounce region for deterministic header/status state.
     let h = hhdm();
@@ -631,6 +659,9 @@ pub fn init_blk(init: BlkInit) -> u32 {
     let state: Arc<dyn BlockDevice> = Arc::new(state);
     let serial_opt = if serial_str.is_empty() { None } else { Some(serial_str.as_str()) };
     let idx = block::registry::register_with_serial(&name, serial_opt, state);
+    if let Some((_, published_name)) = PUBLISHED_BDFS.lock().iter_mut().find(|(b, _)| *b == key) {
+        *published_name = name.clone();
+    }
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  virtio-blk-modern ");
@@ -648,4 +679,27 @@ pub fn init_blk(init: BlkInit) -> u32 {
         klog::write_raw(b"\n");
     }
     idx
+}
+
+/// Remove a published virtio-blk disk by PCI BDF. The block registry owns the
+/// gendisk/devtmpfs publication; dropping its last device reference drops
+/// `BlkState`, which releases the driver-owned DMA bounce region.
+/// # C: O(N_disks + N_devices)
+pub fn remove_blk(bus: u8, device: u8, function: u8) -> bool {
+    let key = bdf_key(bus, device, function);
+    let name = {
+        let published = PUBLISHED_BDFS.lock();
+        let Some(pos) = published.iter().position(|(b, _)| *b == key) else {
+            return false;
+        };
+        published[pos].1.clone()
+    };
+    if name.is_empty() {
+        return false;
+    }
+    if !block::registry::unregister(&name) {
+        return false;
+    }
+    PUBLISHED_BDFS.lock().retain(|(b, _)| *b != key);
+    true
 }

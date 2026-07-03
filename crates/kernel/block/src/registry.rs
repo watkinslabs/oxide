@@ -79,6 +79,28 @@ pub fn register_with_serial(name: &str, serial: Option<&str>, dev: Arc<dyn Block
     index
 }
 
+/// Unregister a block device by name. Removes it from the disk table, then
+/// tears down the matching model/devtmpfs block device created by
+/// `register_with_serial`.
+/// # C: O(N_disks + N_devices)
+pub fn unregister(name: &str) -> bool {
+    let removed = {
+        let mut t = TABLE.lock();
+        let before = t.len();
+        t.retain(|d| d.name != name);
+        t.len() != before
+    };
+    if removed {
+        if let Some(dev) = drv::devices()
+            .into_iter()
+            .find(|d| d.bus == "block" && d.addr == name)
+        {
+            drv::device_del(&dev);
+        }
+    }
+    removed
+}
+
 /// Look up a registered disk by name.
 /// # C: O(N_disks)
 pub fn by_name(name: &str) -> Option<Arc<Disk>> {
@@ -232,6 +254,22 @@ mod sysfs_format_tests {
         let want = (String::from("vdadd"), Some(major_minor("vdadd", idx)));
         assert!(SEEN.lock().iter().any(|e| *e == want),
             "register() device_add's a block /dev node with the disk dev_t");
+    }
+
+    #[test]
+    fn unregister_removes_disk_and_devtmpfs_node() {
+        use crate::blockdev::MemDisk;
+        use sync::TaskList;
+        static DELETED: Spinlock<Vec<String>, DevicesClass> = Spinlock::new(Vec::new());
+        fn del(name: &str) { DELETED.lock().push(name.to_string()); }
+        drv::set_devtmpfs_del_hook(del);
+        let dev: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 8);
+        let _idx = register("vdremove", dev);
+        assert!(by_name("vdremove").is_some());
+        assert!(unregister("vdremove"));
+        assert!(by_name("vdremove").is_none());
+        assert!(DELETED.lock().iter().any(|n| n == "vdremove"));
+        assert!(!unregister("vdremove"));
     }
 
     #[test]

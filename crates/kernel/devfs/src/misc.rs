@@ -205,6 +205,13 @@ pub fn set_hwrng_source(f: HwRngFn) {
     HWRNG_SOURCE.store(f as usize as u64, Ordering::Release);
 }
 
+/// Clear the hardware-entropy source before the backing driver tears down.
+/// After this, `/dev/hwrng` reads return EOF until a new source is installed.
+/// # C: O(1)
+pub fn clear_hwrng_source() {
+    HWRNG_SOURCE.store(0, Ordering::Release);
+}
+
 /// `/dev/hwrng` — Linux hardware-RNG char device. Each read pulls fresh
 /// bytes from the installed virtio-rng source; with no source installed
 /// (no device) reads return 0 (EOF), matching a `/dev/hwrng` whose backing

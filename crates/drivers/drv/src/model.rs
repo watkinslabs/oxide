@@ -147,8 +147,18 @@ pub fn set_devtmpfs_del_hook(f: DevtmpfsDelHook) { *DEVTMPFS_DEL_HOOK.lock() = S
 pub fn register_device(d: Arc<Device>) -> Arc<Device> {
     DEVICES.lock().push(Arc::clone(&d));
     DEV_COUNT.fetch_add(1, Ordering::Release);
-    if let Some(h) = *SYSFS_HOOK.lock() { h(&d); }
+    publish_device(&d);
     d
+}
+
+fn register_device_quiet(d: Arc<Device>) -> Arc<Device> {
+    DEVICES.lock().push(Arc::clone(&d));
+    DEV_COUNT.fetch_add(1, Ordering::Release);
+    d
+}
+
+fn publish_device(d: &Device) {
+    if let Some(h) = *SYSFS_HOOK.lock() { h(d); }
 }
 
 /// Snapshot of all registered devices. # C: O(N_devices)
@@ -159,11 +169,14 @@ pub fn device_count() -> usize { DEV_COUNT.load(Ordering::Acquire) }
 
 /// Unified device registration (Linux `device_add`). ONE call publishes a
 /// device to BOTH `/sys` and `/dev` from a single registration:
-///   1. push to the registry + fire `SYSFS_HOOK` (synthesises
-///      `/sys/bus/<bus>/devices/<addr>` AND emits the `add` uevent — see
-///      `sysfs::bus::publish_device_cb`), via the existing `register_device`;
+///   1. push to the registry so sysfs/devtmpfs views can resolve it;
 ///   2. if the device declares a `/dev` node (`devname.is_some()`), fire
-///      `DEVTMPFS_HOOK` so devtmpfs mints `/dev/<devname>`.
+///      `DEVTMPFS_HOOK` so devtmpfs mints `/dev/<devname>`;
+///   3. fire `SYSFS_HOOK`, which emits the userspace-visible add uevent.
+///
+/// The devtmpfs step intentionally precedes the uevent: Linux creates the
+/// device node as part of device_add before userspace observes the add event,
+/// so udev/coldplug must not see an event before `/dev/<devname>` exists.
 ///
 /// Deliberate oxide design (do NOT "fix" into Linux kset/kobject trees): `/sys`
 /// directories are SYNTHESISED on demand from this registry by the sysfs crate
@@ -171,10 +184,11 @@ pub fn device_count() -> usize { DEV_COUNT.load(Ordering::Acquire) }
 /// build here — registration is the single source of truth, dirs are a view.
 /// # C: O(1) amortised
 pub fn device_add(d: Arc<Device>) -> Arc<Device> {
-    let d = register_device(d); // registry push + SYSFS_HOOK (/sys + `add` uevent)
+    let d = register_device_quiet(d);
     if let Some(name) = d.devname.clone() {
         if let Some(h) = *DEVTMPFS_HOOK.lock() { h(d.dev_class, &name, d.dev_t, d.node_factory.clone()); }
     }
+    publish_device(&d);
     d
 }
 
@@ -182,8 +196,16 @@ pub fn device_add(d: Arc<Device>) -> Arc<Device> {
 /// (so `/sys` synthesis stops listing it) and, if it owns a `/dev` node, fire
 /// `DEVTMPFS_DEL_HOOK` to remove `/dev/<devname>`. # C: O(N_devices)
 pub fn device_del(d: &Arc<Device>) {
+    if let Some(driver_name) = d.bound() {
+        if let Some(driver) = MODEL_DRIVERS.lock().iter().find(|x| x.name() == driver_name).copied() {
+            driver.remove(d);
+        }
+        *d.driver.lock() = None;
+    }
     DEVICES.lock().retain(|x| !Arc::ptr_eq(x, d));
-    DEV_COUNT.fetch_sub(1, Ordering::Release);
+    if DEV_COUNT.load(Ordering::Acquire) != 0 {
+        DEV_COUNT.fetch_sub(1, Ordering::Release);
+    }
     if let Some(name) = d.devname.clone() {
         if let Some(h) = *DEVTMPFS_DEL_HOOK.lock() { h(&name); }
     }
@@ -230,6 +252,31 @@ pub fn bind(dev: &Arc<Device>, driver_name: &'static str) {
     if let Some(h) = *BIND_HOOK.lock() { h(dev.bus, &dev.addr, driver_name); }
 }
 
+/// Probe-driven bind. This mirrors Linux's driver core order: reject an
+/// already-bound device, run the driver's `probe`, and publish the binding only
+/// after probe succeeds. A failed probe leaves the device unbound and retriable.
+/// # C: driver-defined probe + O(1)
+pub fn bind_driver(dev: &Arc<Device>, driver: &'static dyn Driver) -> KResult<()> {
+    if dev.bound().is_some() { return Err(crate::Error::AlreadyBound); }
+    driver.probe(dev)?;
+    bind(dev, driver.name());
+    Ok(())
+}
+
+/// Match the first registered driver for `dev` and bind it through
+/// [`bind_driver`]. Failed probes leave the device unbound so later retries or
+/// another driver-core pass can try again.
+/// # C: O(N_drivers) + driver-defined probe
+pub fn auto_bind(dev: &Arc<Device>) -> KResult<()> {
+    let driver = MODEL_DRIVERS
+        .lock()
+        .iter()
+        .find(|d| d.matches(dev))
+        .copied()
+        .ok_or(crate::Error::NoMatch)?;
+    bind_driver(dev, driver)
+}
+
 /// Find the registered `Arc<Device>` at `(bus, addr)` and `bind` it to
 /// `driver_name`. Convenience for bring-up sites that hold a bus addr
 /// (not the Arc). No-op if the device isn't registered.
@@ -251,6 +298,31 @@ mod tests {
         fn matches(&self, dev: &Device) -> bool { dev.device_id == 0x1042 }
     }
     static FAKE: FakeDrv = FakeDrv;
+
+    struct FailDrv;
+    impl Driver for FailDrv {
+        fn name(&self) -> &'static str { "fail-probe" }
+        fn matches(&self, dev: &Device) -> bool { dev.device_id == 0xf001 }
+        fn probe(&self, _dev: &Arc<Device>) -> KResult<()> { Err(crate::Error::ProbeFailed) }
+    }
+    static FAIL: FailDrv = FailDrv;
+
+    struct RetryDrv;
+    impl Driver for RetryDrv {
+        fn name(&self) -> &'static str { "retry-probe" }
+        fn matches(&self, dev: &Device) -> bool { dev.device_id == 0xf002 }
+        fn probe(&self, _dev: &Arc<Device>) -> KResult<()> { Ok(()) }
+    }
+    static RETRY: RetryDrv = RetryDrv;
+
+    struct RemoveDrv;
+    impl Driver for RemoveDrv {
+        fn name(&self) -> &'static str { "remove-probe" }
+        fn matches(&self, dev: &Device) -> bool { dev.device_id == 0xf003 }
+        fn remove(&self, _dev: &Device) { REMOVE_HITS.fetch_add(1, Ordering::Release); }
+    }
+    static REMOVE: RemoveDrv = RemoveDrv;
+    static REMOVE_HITS: AtomicU32 = AtomicU32::new(0);
 
     #[test]
     fn addr_formatting_pci() {
@@ -302,6 +374,35 @@ mod tests {
     }
 
     #[test]
+    fn device_add_mints_devtmpfs_before_sysfs_event() {
+        static STEP: AtomicU32 = AtomicU32::new(0);
+        static DEVFS_STEP: AtomicU32 = AtomicU32::new(0);
+        static SYSFS_STEP: AtomicU32 = AtomicU32::new(0);
+        fn devfs_cb(_class: &str, name: &str, _dt: Option<(u32, u32)>, _f: Option<NodeFactory>) {
+            if name == "order-test" {
+                DEVFS_STEP.store(STEP.fetch_add(1, Ordering::AcqRel) + 1, Ordering::Release);
+            }
+        }
+        fn sysfs_cb(dev: &Device) {
+            if dev.addr == "order-test" {
+                SYSFS_STEP.store(STEP.fetch_add(1, Ordering::AcqRel) + 1, Ordering::Release);
+            }
+        }
+        STEP.store(0, Ordering::Release);
+        DEVFS_STEP.store(0, Ordering::Release);
+        SYSFS_STEP.store(0, Ordering::Release);
+        set_devtmpfs_hook(devfs_cb);
+        set_sysfs_hook(sysfs_cb);
+        device_add(Arc::new(
+            Device::new("misc", String::from("order-test"), 0, 0, 0)
+                .with_devnode("misc", String::from("order-test"), Some((10, 241)))));
+        let devfs = DEVFS_STEP.load(Ordering::Acquire);
+        let sysfs = SYSFS_STEP.load(Ordering::Acquire);
+        assert!(devfs != 0 && sysfs != 0 && devfs < sysfs,
+            "device_add must create devtmpfs node before sysfs add uevent");
+    }
+
+    #[test]
     fn sysfs_hook_fires_on_register() {
         static HITS: AtomicU32 = AtomicU32::new(0);
         fn cb(_d: &Device) { HITS.fetch_add(1, Ordering::Release); }
@@ -310,5 +411,41 @@ mod tests {
         register_device(Arc::new(Device::new(
             "pci", alloc::string::String::from("0000:00:0c.0"), 0x1234, 0x5678, 0)));
         assert!(HITS.load(Ordering::Acquire) > before);
+    }
+
+    #[test]
+    fn failed_probe_leaves_device_unbound_and_retriable() {
+        register_driver(&FAIL);
+        let dev = register_device(Arc::new(Device::new(
+            "pci", String::from("0000:00:0d.0"), 0x1AF4, 0xf001, 0)));
+        assert_eq!(auto_bind(&dev), Err(crate::Error::ProbeFailed));
+        assert!(dev.bound().is_none());
+        assert_eq!(auto_bind(&dev), Err(crate::Error::ProbeFailed));
+        assert!(dev.bound().is_none());
+    }
+
+    #[test]
+    fn bind_driver_rejects_duplicate_bind() {
+        register_driver(&RETRY);
+        let dev = register_device(Arc::new(Device::new(
+            "pci", String::from("0000:00:0e.0"), 0x1AF4, 0xf002, 0)));
+        assert_eq!(auto_bind(&dev), Ok(()));
+        assert_eq!(dev.bound(), Some("retry-probe"));
+        assert_eq!(bind_driver(&dev, &RETRY), Err(crate::Error::AlreadyBound));
+        assert_eq!(dev.bound(), Some("retry-probe"));
+    }
+
+    #[test]
+    fn device_del_calls_bound_driver_remove_once() {
+        register_driver(&REMOVE);
+        let dev = device_add(Arc::new(Device::new(
+            "pci", String::from("0000:00:0f.0"), 0x1AF4, 0xf003, 0)
+                .with_devnode("misc", String::from("remove-test"), Some((10, 240)))));
+        assert_eq!(auto_bind(&dev), Ok(()));
+        let before = REMOVE_HITS.load(Ordering::Acquire);
+        device_del(&dev);
+        assert_eq!(REMOVE_HITS.load(Ordering::Acquire), before + 1);
+        assert!(dev.bound().is_none());
+        assert!(!devices().iter().any(|x| Arc::ptr_eq(x, &dev)));
     }
 }
