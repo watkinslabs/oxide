@@ -41,6 +41,19 @@ compliant first"). Fixed + verified:
   /sys path (dev_root_canon block → devices/platform) so udevd processed NO
   disk. Now /sys/devices/virtual/block/<name> + /sys/class/block + subsystem
   symlink + DEVTYPE=disk; DEVPATH resolves. Boot-verified (root mounts, systemd up).
+- **#2336 input device-model** — same systematic bug: /dev/input/eventN emitted
+  DEVPATH=/devices/platform/event0 (nonexistent). New sysfs::input:
+  /sys/class/input + /sys/devices/virtual/input + subsystem symlink;
+  dev_root_canon("input")→devices/virtual/input. Boot-verified.
+- ROOT PATTERN: `sysfs::bus::dev_root_canon` sends every non-pci/virtio/platform
+  bus to a FAKE /sys path (`_ => devices/platform`). Fixed per-subsystem for
+  block+input; a GENERIC /sys/devices/virtual/<subsys> + /sys/class/<subsys>
+  synthesis would cover the rest (sound/graphics/misc/…) in one pass.
+- KEY DISTINCTION: the greeter gate is NOT the block/input device model. card0
+  (drm) ALREADY works — it's tagged master-of-seat in /run/udev/data. The greeter
+  needs logind to ATTACH the already-tagged card0 (R30/R31), which is downstream
+  of the (working) drm device model. block/input compliance is real but does not
+  render the greeter.
 Remaining compliance gaps (doc 60 §6.3a), NOT yet done:
 - block `/sys/.../uevent` still RO → R12 coldplug-write (systemd-udev-trigger)
   fails EACCES; add SysfsOps::store re-emit (initial device_add add-uevent
