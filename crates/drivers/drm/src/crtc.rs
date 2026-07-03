@@ -128,12 +128,12 @@ pub fn has_events() -> bool { !EVENTS.lock().is_empty() }
 // SETCRTC / PAGE_FLIP handlers
 // ============================================================
 
-/// Resolve an FB id → its primary dumb buffer's (pa, w, h, fourcc).
+/// Resolve a card-local FB id → its primary dumb buffer's (pa, w, h, fourcc).
 /// `None` if the fb or its handle is unknown. # C: O(n)
-fn fb_to_scanout(fb_id: u32) -> Option<(u64, u32, u32, u32)> {
+fn fb_to_scanout(card_id: u32, fb_id: u32) -> Option<(u64, u32, u32, u32)> {
     let t = crate::dumb::TABLES.lock();
-    let fb = t.find_fb(fb_id)?;
-    let buf = t.find_buf(fb.handles[0])?;
+    let fb = t.find_fb_for_card(card_id, fb_id)?;
+    let buf = t.find_buf_for_card(card_id, fb.handles[0])?;
     Some((buf.pa, fb.w, fb.h, fb.pixel_format))
 }
 
@@ -148,7 +148,7 @@ fn fb_to_scanout(fb_id: u32) -> Option<(u64, u32, u32, u32)> {
 ///
 /// Honest -EINVAL on a bad crtc_id / unknown fb_id / unsupported format
 /// / no virtio-gpu scanout backend installed. # C: O(1) + O(scanout).
-pub fn set_crtc(card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg: u64, token: u64) -> i64 {
+pub fn set_crtc(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg: u64, token: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeCrtc>() as u64) { return einval(); }
     // SAFETY: arg range validated < USER_VA_END; drm_mode_crtc is 104 bytes; aligned struct read through the caller's AS at CPL=0.
     let c: DrmModeCrtc = unsafe { core::ptr::read_volatile(arg as *const DrmModeCrtc) };
@@ -169,7 +169,7 @@ pub fn set_crtc(card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg: u64, token: 
         return 0;
     }
 
-    let (pa, w, h, fmt) = match fb_to_scanout(c.fb_id) { Some(v) => v, None => return einval() };
+    let (pa, w, h, fmt) = match fb_to_scanout(card_id, c.fb_id) { Some(v) => v, None => return einval() };
     // Optionally validate the connector array pointer is sane when set.
     if c.set_connectors_ptr != 0
         && !user_ok(c.set_connectors_ptr, (c.count_connectors as u64) * 4) {
@@ -187,7 +187,7 @@ pub fn set_crtc(card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg: u64, token: 
 /// If `flags & DRM_MODE_PAGE_FLIP_EVENT`, queue a DRM_EVENT_FLIP_COMPLETE
 /// the card fd's read() returns. Honest -EINVAL on bad ids / no backend.
 /// # C: O(1) + O(scanout).
-pub fn page_flip(card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg: u64, token: u64) -> i64 {
+pub fn page_flip(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg: u64, token: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeCrtcPageFlip>() as u64) { return einval(); }
     // SAFETY: arg range validated < USER_VA_END; drm_mode_crtc_page_flip is 24 bytes; aligned struct read through the caller's AS at CPL=0.
     let f: DrmModeCrtcPageFlip = unsafe { core::ptr::read_volatile(arg as *const DrmModeCrtcPageFlip) };
@@ -195,7 +195,7 @@ pub fn page_flip(card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg: u64, token:
     if crtc_idx_of(f.crtc_id, count).is_none() { return einval(); }
     if f.fb_id == 0 { return einval(); }
     let ops = match scanout_ops() { Some(o) => o, None => return einval() };
-    let (pa, w, h, fmt) = match fb_to_scanout(f.fb_id) { Some(v) => v, None => return einval() };
+    let (pa, w, h, fmt) = match fb_to_scanout(card_id, f.fb_id) { Some(v) => v, None => return einval() };
     let res_id = match (ops.create_from_pa)(pa, w, h, fmt) { Some(r) => r, None => return einval() };
     if !(ops.set_scanout)(res_id, w, h) { return einval(); }
     set_owner(token);

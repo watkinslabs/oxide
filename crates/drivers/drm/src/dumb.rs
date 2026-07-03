@@ -153,6 +153,7 @@ pub fn handle_of_cookie(cookie: u64) -> Option<u32> {
 /// A dumb buffer: physically-contiguous backing + geometry + refcount.
 #[derive(Copy, Clone, Debug)]
 pub struct DumbBuf {
+    pub card_id: u32,
     pub handle: u32,
     pub pa:     u64,
     pub size:   u64,   // 4 KiB-aligned byte size actually mapped
@@ -167,6 +168,7 @@ pub struct DumbBuf {
 /// An FB object: metadata referencing up to 4 dumb handles.
 #[derive(Copy, Clone, Debug)]
 pub struct FbObj {
+    pub card_id:       u32,
     pub fb_id:        u32,
     pub w:            u32,
     pub h:            u32,
@@ -192,8 +194,18 @@ impl DumbTables {
     pub fn find_buf(&self, h: u32) -> Option<&DumbBuf> {
         self.bufs.iter().find(|b| b.handle == h)
     }
-    fn find_buf_mut(&mut self, h: u32) -> Option<&mut DumbBuf> {
-        self.bufs.iter_mut().find(|b| b.handle == h)
+
+    /// Find a buffer by card + handle. # C: O(n)
+    pub fn find_buf_for_card(&self, card_id: u32, h: u32) -> Option<&DumbBuf> {
+        self.bufs
+            .iter()
+            .find(|b| b.card_id == card_id && b.handle == h)
+    }
+
+    fn find_buf_mut_for_card(&mut self, card_id: u32, h: u32) -> Option<&mut DumbBuf> {
+        self.bufs
+            .iter_mut()
+            .find(|b| b.card_id == card_id && b.handle == h)
     }
 
     /// Find an FB by id. # C: O(n)
@@ -201,16 +213,26 @@ impl DumbTables {
         self.fbs.iter().find(|f| f.fb_id == id)
     }
 
+    /// Find an FB by card + id. # C: O(n)
+    pub fn find_fb_for_card(&self, card_id: u32, id: u32) -> Option<&FbObj> {
+        self.fbs
+            .iter()
+            .find(|f| f.card_id == card_id && f.fb_id == id)
+    }
+
     /// Bump a handle's refcount. `false` if unknown. # C: O(n)
-    pub fn ref_handle(&mut self, h: u32) -> bool {
-        match self.find_buf_mut(h) { Some(b) => { b.refcnt += 1; true } None => false }
+    pub fn ref_handle_for_card(&mut self, card_id: u32, h: u32) -> bool {
+        match self.find_buf_mut_for_card(card_id, h) { Some(b) => { b.refcnt += 1; true } None => false }
     }
 
     /// Decrement a handle's refcount; return `Some((pa,order))` to free
     /// when it hit zero, else `None`. `false`-equivalent (None) also for
     /// unknown handle — caller distinguishes via a prior find. # C: O(n)
-    pub fn unref_handle(&mut self, h: u32) -> Option<(u64, u8)> {
-        let idx = self.bufs.iter().position(|b| b.handle == h)?;
+    pub fn unref_handle_for_card(&mut self, card_id: u32, h: u32) -> Option<(u64, u8)> {
+        let idx = self
+            .bufs
+            .iter()
+            .position(|b| b.card_id == card_id && b.handle == h)?;
         if self.bufs[idx].refcnt > 0 { self.bufs[idx].refcnt -= 1; }
         if self.bufs[idx].refcnt == 0 {
             let b = self.bufs.remove(idx);
@@ -244,7 +266,7 @@ fn user_ok(ptr: u64, len: u64) -> bool {
 
 /// MODE_CREATE_DUMB: allocate contiguous pages, register a handle,
 /// write back handle/pitch/size. # C: O(1)
-pub fn create_dumb(arg: u64) -> i64 {
+pub fn create_dumb(card_id: u32, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeCreateDumb>() as u64) { return einval(); }
     // SAFETY: arg range validated < USER_VA_END; drm_mode_create_dumb is 32 bytes; aligned struct read through caller's AS at CPL=0.
     let mut req: DrmModeCreateDumb = unsafe { core::ptr::read_volatile(arg as *const DrmModeCreateDumb) };
@@ -254,7 +276,7 @@ pub fn create_dumb(arg: u64) -> i64 {
     let pa = match pmm::setup::alloc_contig(pmm::Order(order)) { Some(p) => p, None => return enomem() };
     let handle = alloc_dumb_handle();
     TABLES.lock().insert_buf(DumbBuf {
-        handle, pa, size, order,
+        card_id, handle, pa, size, order,
         w: req.width, h: req.height, pitch, bpp: req.bpp, refcnt: 1,
     });
     req.handle = handle;
@@ -266,11 +288,11 @@ pub fn create_dumb(arg: u64) -> i64 {
 }
 
 /// MODE_MAP_DUMB: return the DRM mmap cookie for the handle. # C: O(n)
-pub fn map_dumb(arg: u64) -> i64 {
+pub fn map_dumb(card_id: u32, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeMapDumb>() as u64) { return einval(); }
     // SAFETY: arg range validated < USER_VA_END; drm_mode_map_dumb is 16 bytes; aligned struct read through caller's AS at CPL=0.
     let mut req: DrmModeMapDumb = unsafe { core::ptr::read_volatile(arg as *const DrmModeMapDumb) };
-    if TABLES.lock().find_buf(req.handle).is_none() { return einval(); }
+    if TABLES.lock().find_buf_for_card(card_id, req.handle).is_none() { return einval(); }
     req.offset = cookie_for(req.handle);
     // SAFETY: arg validated above; struct is 16 bytes; aligned write of the offset out field through caller's AS at CPL=0.
     unsafe { core::ptr::write_volatile(arg as *mut DrmModeMapDumb, req); }
@@ -279,14 +301,14 @@ pub fn map_dumb(arg: u64) -> i64 {
 
 /// MODE_DESTROY_DUMB: drop the open ref; free pages iff refcount hit 0.
 /// # C: O(n)
-pub fn destroy_dumb(arg: u64) -> i64 {
+pub fn destroy_dumb(card_id: u32, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeDestroyDumb>() as u64) { return einval(); }
     // SAFETY: arg range validated < USER_VA_END; drm_mode_destroy_dumb is 4 bytes; aligned u32 read through caller's AS at CPL=0.
     let req: DrmModeDestroyDumb = unsafe { core::ptr::read_volatile(arg as *const DrmModeDestroyDumb) };
     let freed = {
         let mut t = TABLES.lock();
-        if t.find_buf(req.handle).is_none() { return einval(); }
-        t.unref_handle(req.handle)
+        if t.find_buf_for_card(card_id, req.handle).is_none() { return einval(); }
+        t.unref_handle_for_card(card_id, req.handle)
     };
     if let Some((pa, order)) = freed { free_buf_pages(pa, order); }
     0
@@ -295,7 +317,7 @@ pub fn destroy_dumb(arg: u64) -> i64 {
 /// MODE_ADDFB2: validate handles + format, create a metadata-only FB
 /// object, bump each referenced handle's refcount, write fb_id back.
 /// # C: O(n)
-pub fn addfb2(arg: u64) -> i64 {
+pub fn addfb2(card_id: u32, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeFbCmd2>() as u64) { return einval(); }
     // SAFETY: arg range validated < USER_VA_END; drm_mode_fb_cmd2 is 104 bytes; aligned struct read through caller's AS at CPL=0.
     let mut req: DrmModeFbCmd2 = unsafe { core::ptr::read_volatile(arg as *const DrmModeFbCmd2) };
@@ -306,15 +328,15 @@ pub fn addfb2(arg: u64) -> i64 {
     {
         let t = TABLES.lock();
         for &h in req.handles.iter() {
-            if h != 0 && t.find_buf(h).is_none() { return einval(); }
+            if h != 0 && t.find_buf_for_card(card_id, h).is_none() { return einval(); }
         }
     }
     let fb_id = alloc_fb_id();
     {
         let mut t = TABLES.lock();
-        for &h in req.handles.iter() { if h != 0 { t.ref_handle(h); } }
+        for &h in req.handles.iter() { if h != 0 { t.ref_handle_for_card(card_id, h); } }
         t.fbs.push(FbObj {
-            fb_id, w: req.width, h: req.height, pixel_format: req.pixel_format,
+            card_id, fb_id, w: req.width, h: req.height, pixel_format: req.pixel_format,
             handles: req.handles, pitches: req.pitches, offsets: req.offsets,
         });
     }
@@ -326,7 +348,7 @@ pub fn addfb2(arg: u64) -> i64 {
 
 /// MODE_ADDFB (legacy): single-handle FB, derive format from bpp/depth.
 /// # C: O(n)
-pub fn addfb(arg: u64) -> i64 {
+pub fn addfb(card_id: u32, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeFbCmd>() as u64) { return einval(); }
     // SAFETY: arg range validated < USER_VA_END; drm_mode_fb_cmd is 28 bytes; aligned struct read through caller's AS at CPL=0.
     let mut req: DrmModeFbCmd = unsafe { core::ptr::read_volatile(arg as *const DrmModeFbCmd) };
@@ -337,13 +359,13 @@ pub fn addfb(arg: u64) -> i64 {
         (32, 32) => DRM_FORMAT_ARGB8888,
         _        => return einval(),
     };
-    if TABLES.lock().find_buf(req.handle).is_none() { return einval(); }
+    if TABLES.lock().find_buf_for_card(card_id, req.handle).is_none() { return einval(); }
     let fb_id = alloc_fb_id();
     {
         let mut t = TABLES.lock();
-        t.ref_handle(req.handle);
+        t.ref_handle_for_card(card_id, req.handle);
         t.fbs.push(FbObj {
-            fb_id, w: req.width, h: req.height, pixel_format: fourcc,
+            card_id, fb_id, w: req.width, h: req.height, pixel_format: fourcc,
             handles: [req.handle, 0, 0, 0], pitches: [req.pitch, 0, 0, 0], offsets: [0; 4],
         });
     }
@@ -355,17 +377,17 @@ pub fn addfb(arg: u64) -> i64 {
 
 /// MODE_RMFB: drop the FB object, unref its handles (free pages of any
 /// that hit refcount 0). `arg` points at a `u32` fb_id. # C: O(n)
-pub fn rmfb(arg: u64) -> i64 {
+pub fn rmfb(card_id: u32, arg: u64) -> i64 {
     if !user_ok(arg, 4) { return einval(); }
     // SAFETY: arg range validated < USER_VA_END; aligned u32 read of the fb_id through caller's AS at CPL=0.
     let fb_id: u32 = unsafe { core::ptr::read_volatile(arg as *const u32) };
     let to_free = {
         let mut t = TABLES.lock();
-        let idx = match t.fbs.iter().position(|f| f.fb_id == fb_id) { Some(i) => i, None => return einval() };
+        let idx = match t.fbs.iter().position(|f| f.card_id == card_id && f.fb_id == fb_id) { Some(i) => i, None => return einval() };
         let fb = t.fbs.remove(idx);
         let mut freed: [Option<(u64, u8)>; 4] = [None; 4];
         for (i, &h) in fb.handles.iter().enumerate() {
-            if h != 0 { freed[i] = t.unref_handle(h); }
+            if h != 0 { freed[i] = t.unref_handle_for_card(card_id, h); }
         }
         freed
     };
@@ -388,10 +410,10 @@ fn free_buf_pages(pa: u64, order: u8) {
 /// selects the dumb buffer; returns its (pa, size). Offset-keyed
 /// counterpart of `fbdev::devfs::mmap_backing`. `None` if not a DRM
 /// cookie or unknown handle. # C: O(n)
-pub fn mmap_backing(cookie: u64) -> Option<(u64, u64)> {
+pub fn mmap_backing(card_id: u32, cookie: u64) -> Option<(u64, u64)> {
     let h = handle_of_cookie(cookie)?;
     let t = TABLES.lock();
-    let b = t.find_buf(h)?;
+    let b = t.find_buf_for_card(card_id, h)?;
     Some((b.pa, b.size))
 }
 
@@ -473,30 +495,36 @@ mod tests {
     #[test]
     fn table_insert_lookup_ref_unref() {
         let mut t = DumbTables::new();
-        t.insert_buf(DumbBuf { handle: 1, pa: 0x10_0000, size: 4096, order: 0,
+        t.insert_buf(DumbBuf { card_id: 0, handle: 1, pa: 0x10_0000, size: 4096, order: 0,
             w: 4, h: 4, pitch: 16, bpp: 32, refcnt: 1 });
         assert!(t.find_buf(1).is_some());
         assert!(t.find_buf(2).is_none());
+        assert!(t.find_buf_for_card(0, 1).is_some());
+        assert!(t.find_buf_for_card(1, 1).is_none());
         // FB takes a ref → refcnt 2.
-        assert!(t.ref_handle(1));
+        assert!(t.ref_handle_for_card(0, 1));
         assert_eq!(t.find_buf(1).unwrap().refcnt, 2);
-        assert!(!t.ref_handle(99));
+        assert!(!t.ref_handle_for_card(0, 99));
+        assert!(!t.ref_handle_for_card(1, 1));
         // DESTROY_DUMB drops the open ref → still alive (FB holds it).
-        assert_eq!(t.unref_handle(1), None);
+        assert_eq!(t.unref_handle_for_card(1, 1), None);
+        assert_eq!(t.unref_handle_for_card(0, 1), None);
         assert_eq!(t.find_buf(1).unwrap().refcnt, 1);
         // RMFB drops the FB ref → now frees, returns (pa,order).
-        assert_eq!(t.unref_handle(1), Some((0x10_0000, 0)));
+        assert_eq!(t.unref_handle_for_card(0, 1), Some((0x10_0000, 0)));
         assert!(t.find_buf(1).is_none());
         // unknown handle → None.
-        assert_eq!(t.unref_handle(1), None);
+        assert_eq!(t.unref_handle_for_card(0, 1), None);
     }
 
     #[test]
     fn fb_table_insert_lookup() {
         let mut t = DumbTables::new();
-        t.fbs.push(FbObj { fb_id: 1, w: 640, h: 480, pixel_format: DRM_FORMAT_XRGB8888,
+        t.fbs.push(FbObj { card_id: 0, fb_id: 1, w: 640, h: 480, pixel_format: DRM_FORMAT_XRGB8888,
             handles: [3, 0, 0, 0], pitches: [2560, 0, 0, 0], offsets: [0; 4] });
         assert_eq!(t.find_fb(1).unwrap().handles[0], 3);
+        assert_eq!(t.find_fb_for_card(0, 1).unwrap().handles[0], 3);
+        assert!(t.find_fb_for_card(1, 1).is_none());
         assert!(t.find_fb(2).is_none());
     }
 }

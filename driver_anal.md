@@ -151,8 +151,10 @@ test-pass claims.
   `renderD(128+N)` pair per registered card, removes only the matching pair on
   unregister, and routes basic DRM ioctls through the inode's card id. The DRM
   sysfs class view now enumerates those model-owned DRM devices instead of a
-  static `card0` table. The scanout hooks and dumb-buffer table are still
-  shared, so full multi-GPU KMS is not complete.
+  static `card0` table. Dumb-buffer handles, FB objects, mmap cookies, and
+  SETCRTC/PAGE_FLIP FB lookup are now scoped by the card inode id. The scanout
+  hooks and CRTC owner/event queues are still shared, so full multi-GPU KMS is
+  not complete.
 - Block, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`
