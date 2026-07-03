@@ -111,14 +111,17 @@ impl Ahci {
     }
 
     /// Stop the active port and return command/FIS/table/bounce frames to PMM.
-    /// Publication must already be removed and callers quiesced.
+    /// Publication must already be removed, or the system must be in terminal
+    /// shutdown, and callers quiesced.
     /// # C: O(port stop wait + 4 frees)
     pub fn shutdown_and_free(&mut self) {
-        let _ = self.stop_port();
-        self.pw(regs::P_CLB, 0);
-        self.pw(regs::P_CLBU, 0);
-        self.pw(regs::P_FB, 0);
-        self.pw(regs::P_FBU, 0);
+        if self.abar_va != 0 {
+            let _ = self.stop_port();
+            self.pw(regs::P_CLB, 0);
+            self.pw(regs::P_CLBU, 0);
+            self.pw(regs::P_FB, 0);
+            self.pw(regs::P_FBU, 0);
+        }
         Self::free_frame(&mut self.clb_pa);
         Self::free_frame(&mut self.fb_pa);
         Self::free_frame(&mut self.ctba_pa);
