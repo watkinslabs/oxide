@@ -90,8 +90,21 @@ impl drv::Driver for VirtioPciDrv {
             let Some((parent_bus, parent_addr)) = child.parent() else { return false };
             parent_bus == "pci" && parent_addr == dev.addr
         }).collect();
+
+        let mut bdfs: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
         for child in children {
+            if let Some((_, parent_addr)) = child.parent() {
+                if let Some(parent_bdf) = parse_pci_addr(&parent_addr) {
+                    bdfs.push(bdf_word(parent_bdf));
+                }
+            }
             drv::device_del(&child);
+        }
+
+        bdfs.sort_unstable();
+        bdfs.dedup();
+        for bdf_word in bdfs {
+            unpublish_transport_mmio(bdf_word);
         }
     }
 }
