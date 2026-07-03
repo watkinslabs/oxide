@@ -10,14 +10,14 @@ use crate::uapi::*;
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 /// Handle one `SNDRV_CTL_IOCTL_*` (magic 'U' stripped → `nr`). # C: O(1)
-pub fn handle(nr: u64, arg: u64) -> i64 {
+pub fn handle(card_id: u32, nr: u64, arg: u64) -> i64 {
     match nr {
         CTL_PVERSION => match UserBuf::new(arg, 4) {
             Some(b) => { b.w32(0, SNDRV_CTL_VERSION); 0 } None => err(Errno::Efault),
         },
-        CTL_CARD_INFO => card_info(arg),
+        CTL_CARD_INFO => card_info(card_id, arg),
         CTL_PCM_NEXT_DEVICE => pcm_next_device(arg),
-        CTL_PCM_INFO => pcm_info(arg),
+        CTL_PCM_INFO => pcm_info(card_id, arg),
         CTL_ELEM_LIST => elem_list(arg),
         CTL_SUBSCRIBE => 0, // no async control events (no control elements)
         CTL_ELEM_INFO | CTL_ELEM_READ | CTL_ELEM_WRITE => err(Errno::Enoent),
@@ -25,10 +25,10 @@ pub fn handle(nr: u64, arg: u64) -> i64 {
     }
 }
 
-fn card_info(arg: u64) -> i64 {
+fn card_info(card_id: u32, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, CARD_INFO_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     b.zero(0, CARD_INFO_SIZE);
-    b.w32(CI_CARD, crate::active_card_id().unwrap_or(0));
+    b.w32(CI_CARD, card_id);
     b.wstr(CI_ID, b"virtio-snd", 16);
     b.wstr(CI_DRIVER, b"virtio_snd", 16);
     b.wstr(CI_NAME, b"virtio-snd", 32);
@@ -50,7 +50,7 @@ fn pcm_next_device(arg: u64) -> i64 {
 
 /// SNDRV_CTL_IOCTL_PCM_INFO: fill snd_pcm_info for the device/stream selected
 /// in the struct's `device`/`stream` fields. Only device 0 / playback exists.
-fn pcm_info(arg: u64) -> i64 {
+fn pcm_info(card_id: u32, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, PCM_INFO_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let device = b.r32(PI_DEVICE);
     let stream = b.r32(PI_STREAM) as i32;
@@ -59,7 +59,7 @@ fn pcm_info(arg: u64) -> i64 {
     b.w32(PI_DEVICE, 0);
     b.w32(PI_SUBDEVICE, 0);
     b.w32(PI_STREAM, STREAM_PLAYBACK as u32);
-    b.w32(PI_CARD, crate::active_card_id().unwrap_or(0));
+    b.w32(PI_CARD, card_id);
     b.wstr(PI_ID, b"virtio-snd", 64);
     b.wstr(PI_NAME, b"virtio-snd PCM", 80);
     b.wstr(PI_SUBNAME, b"subdevice #0", 32);

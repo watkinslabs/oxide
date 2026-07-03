@@ -43,13 +43,13 @@ struct CardPublication {
     nodes: Vec<Arc<drv::Device>>,
 }
 
-static ACTIVE_CARD: Spinlock<Option<CardPublication>, SoundLockClass> = Spinlock::new(None);
+static CARDS: Spinlock<Vec<CardPublication>, SoundLockClass> = Spinlock::new(Vec::new());
 static NEXT_CARD_ID: AtomicU32 = AtomicU32::new(0);
 
 /// Backend-private state (`i_private`) for a sound node: the device minor that
 /// keys the shared read/write/ioctl dispatch (`controlC0`/`pcmC0D0p`/…). The
 /// old per-inode `ino()` tag is now `SND_INO_BASE | minor` on the inode. # C: O(1)
-struct SndData { minor: u64 }
+struct SndData { card_id: u32, minor: u64 }
 
 /// `file_operations` for every `/dev/snd/*` + OSS node — `read`/`write`
 /// dispatch on the node's stored minor (the same key the ioctl path uses),
@@ -62,27 +62,33 @@ struct SndData { minor: u64 }
 struct SndFileOps;
 impl FileOps for SndFileOps {
     fn read(&self, inode: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> {
-        let minor = match inode.private::<SndData>() { Some(d) => d.minor, None => return Err(VfsError::Einval) };
+        let (card_id, minor) = match inode.private::<SndData>() {
+            Some(d) => (d.card_id, d.minor),
+            None => return Err(VfsError::Einval),
+        };
         if b.is_empty() { return Ok(0); }
         match minor {
             // OSS /dev/dsp read(2) → capture (snd-pcm-oss over the same RXQ).
-            MINOR_DSP | MINOR_AUDIO => Ok(oss::read(b)),
-            MINOR_PCM_C             => Ok(capture::read_bytes(b)),
+            MINOR_DSP | MINOR_AUDIO => Ok(oss::read(card_id, b)),
+            MINOR_PCM_C             => Ok(capture::read_bytes(card_id, b)),
             // pcmC0D0p / controlC0 / mixer → no readable byte stream.
             _ => Ok(0),
         }
     }
     fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
-        let minor = match inode.private::<SndData>() { Some(d) => d.minor, None => return Err(VfsError::Einval) };
+        let (card_id, minor) = match inode.private::<SndData>() {
+            Some(d) => (d.card_id, d.minor),
+            None => return Err(VfsError::Einval),
+        };
         match minor {
             MINOR_PCM_P => {
                 if b.is_empty() { return Ok(0); }
-                let n = pcm::write_bytes(b);
+                let n = pcm::write_bytes(card_id, b);
                 if n == 0 { Err(VfsError::Eio) } else { Ok(n) }
             }
             MINOR_DSP | MINOR_AUDIO => {
                 if b.is_empty() { return Ok(0); }
-                let n = oss::write(b);
+                let n = oss::write(card_id, b);
                 if n == 0 { Err(VfsError::Eio) } else { Ok(n) }
             }
             MINOR_MIXER => Ok(b.len()),
@@ -95,10 +101,10 @@ impl FileOps for SndFileOps {
 /// Build a `/dev/snd/*` (or OSS) char-device inode for `minor`: `S_IFCHR|0o666`,
 /// `ino = SND_INO_BASE | minor` (the routing tag the ioctl path reads), the
 /// shared `SndFileOps` data path, lookup → `ENOTDIR` (default i_op). # C: O(1)
-fn make_snd_inode(minor: u64) -> InodeRef {
-    InodeBuilder::new(SND_INO_BASE | minor, mk_mode(FileType::CharDev, 0o666),
+fn make_snd_inode(card_id: u32, minor: u64) -> InodeRef {
+    InodeBuilder::new(SND_INO_BASE | ((card_id as u64) << 8) | minor, mk_mode(FileType::CharDev, 0o666),
                       default_inode_ops(), Arc::new(SndFileOps))
-        .private(Arc::new(SndData { minor }))
+        .private(Arc::new(SndData { card_id, minor }))
         .build()
 }
 
@@ -165,8 +171,8 @@ const OSS_PRIMARY_NODES: &[SoundNode] = &[
     },
 ];
 
-fn add_sound_node(class: &'static str, name: String, dev_name: String, dev_t: (u32, u32), minor: u64) -> Arc<drv::Device> {
-    let factory: drv::NodeFactory = Arc::new(move || make_snd_inode(minor));
+fn add_sound_node(class: &'static str, name: String, dev_name: String, dev_t: (u32, u32), card_id: u32, minor: u64) -> Arc<drv::Device> {
+    let factory: drv::NodeFactory = Arc::new(move || make_snd_inode(card_id, minor));
     drv::device_add(Arc::new(
         drv::Device::new(class, name, 0, 0, minor as u32)
             .with_devnode(class, dev_name, Some(dev_t))
@@ -174,12 +180,13 @@ fn add_sound_node(class: &'static str, name: String, dev_name: String, dev_t: (u
     ))
 }
 
-fn add_oss_node(node: &SoundNode) -> Arc<drv::Device> {
+fn add_oss_node(card_id: u32, node: &SoundNode) -> Arc<drv::Device> {
     add_sound_node(
         node.class,
         String::from(node.name),
         String::from(node.dev_name),
         node.dev_t,
+        card_id,
         node.minor,
     )
 }
@@ -193,12 +200,13 @@ pub fn handle_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
     let minor = ino & 0xFF;
     let group = (req >> 8) & 0xFF;
     let nr = req & 0xFF;
+    let card_id = inode.private::<SndData>().map(|d| d.card_id).unwrap_or(((ino >> 8) & 0xFFFF_FFFF) as u32);
     Some(match minor {
-        MINOR_PCM_P if group == PCM_MAGIC => pcm::handle(nr, arg),
-        MINOR_PCM_C if group == PCM_MAGIC => capture::handle(nr, arg),
-        MINOR_CONTROL if group == CTL_MAGIC => control::handle(nr, arg),
-        MINOR_DSP | MINOR_AUDIO => oss::handle(false, req, arg),
-        MINOR_MIXER => oss::handle(true, req, arg),
+        MINOR_PCM_P if group == PCM_MAGIC => pcm::handle(card_id, nr, arg),
+        MINOR_PCM_C if group == PCM_MAGIC => capture::handle(card_id, nr, arg),
+        MINOR_CONTROL if group == CTL_MAGIC => control::handle(card_id, nr, arg),
+        MINOR_DSP | MINOR_AUDIO => oss::handle(card_id, false, req, arg),
+        MINOR_MIXER => oss::handle(card_id, true, req, arg),
         // Unknown ioctl on a sound node → ENOTTY (don't fall through).
         _ => -(syscall::errno::Errno::Enotty.as_i32() as i64),
     })
@@ -207,7 +215,7 @@ pub fn handle_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
 /// Active ALSA card number, if a card driver has published one.
 /// # C: O(1)
 pub fn active_card_id() -> Option<u32> {
-    ACTIVE_CARD.lock().as_ref().map(|card| card.card_id)
+    CARDS.lock().first().map(|card| card.card_id)
 }
 
 /// Register the ALSA (primary) + OSS (emulation) nodes for a probed card.
@@ -217,22 +225,27 @@ pub fn register_card(ops_endpoint: ops::OpsEndpoint) -> Option<u32> {
     if !ops::is_owner(ops_endpoint) {
         return None;
     }
-    let mut active = ACTIVE_CARD.lock();
-    if let Some(card) = active.as_ref() {
-        return if card.ops_endpoint == ops_endpoint { Some(card.card_id) } else { None };
+    {
+        let cards = CARDS.lock();
+        if let Some(card) = cards.iter().find(|card| card.ops_endpoint == ops_endpoint) {
+            return Some(card.card_id);
+        }
     }
     devfs::register_dir("/dev/snd");
     let card_id = NEXT_CARD_ID.fetch_add(1, Ordering::AcqRel);
+    if !ops::bind_card(ops_endpoint, card_id) {
+        return None;
+    }
     let mut published = Vec::new();
     for (name, dev_name, dev_t, minor) in alsa_nodes(card_id) {
-        published.push(add_sound_node("sound", name, dev_name, dev_t, minor));
+        published.push(add_sound_node("sound", name, dev_name, dev_t, card_id, minor));
     }
     if card_id == 0 {
         for node in OSS_PRIMARY_NODES {
-            published.push(add_oss_node(node));
+            published.push(add_oss_node(card_id, node));
         }
     }
-    *active = Some(CardPublication { card_id, ops_endpoint, nodes: published });
+    CARDS.lock().push(CardPublication { card_id, ops_endpoint, nodes: published });
     Some(card_id)
 }
 
@@ -240,14 +253,11 @@ pub fn register_card(ops_endpoint: ops::OpsEndpoint) -> Option<u32> {
 /// # C: O(nodes * depth)
 pub fn unregister_card(card_id: u32) -> bool {
     let nodes = {
-        let mut active = ACTIVE_CARD.lock();
-        match active.as_ref() {
-            Some(card) if card.card_id == card_id => {
-                let card = active.take().unwrap();
-                card.nodes
-            }
-            _ => return false,
-        }
+        let mut cards = CARDS.lock();
+        let Some(idx) = cards.iter().position(|card| card.card_id == card_id) else {
+            return false;
+        };
+        cards.remove(idx).nodes
     };
     for node in nodes.iter().rev() {
         drv::device_del(node);
@@ -264,14 +274,14 @@ mod tests {
         = Spinlock::new(Vec::new());
     static REMOVED: Spinlock<Vec<String>, SoundLockClass> = Spinlock::new(Vec::new());
 
-    fn cfg() -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
-    fn caps() -> ops::Caps { Some((0, 0, 1, 2)) }
-    fn period() -> usize { 2048 }
-    fn hw_params(_rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
-    fn yes() -> bool { true }
-    fn trigger(_start: bool) -> bool { true }
-    fn submit(b: &[u8]) -> usize { b.len() }
-    fn recv(b: &mut [u8]) -> usize { b.len() }
+    fn cfg(_card_id: u32) -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
+    fn caps(_card_id: u32) -> ops::Caps { Some((0, 0, 1, 2)) }
+    fn period(_card_id: u32) -> usize { 2048 }
+    fn hw_params(_card_id: u32, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
+    fn yes(_card_id: u32) -> bool { true }
+    fn trigger(_card_id: u32, _start: bool) -> bool { true }
+    fn submit(_card_id: u32, b: &[u8]) -> usize { b.len() }
+    fn recv(_card_id: u32, b: &mut [u8]) -> usize { b.len() }
 
     static TEST_OPS: ops::SoundOps = ops::SoundOps {
         config: cfg,
@@ -306,9 +316,7 @@ mod tests {
         drv::set_devtmpfs_del_hook(del_hook);
         ADDED.lock().clear();
         REMOVED.lock().clear();
-        if let Some(card_id) = active_card_id() {
-            let _ = unregister_card(card_id);
-        }
+        while let Some(card_id) = active_card_id() { let _ = unregister_card(card_id); }
         NEXT_CARD_ID.store(0, Ordering::Release);
         ops::clear_for_tests();
 
@@ -348,5 +356,33 @@ mod tests {
             "second unregister is idempotent"
         );
         assert!(ops::clear(endpoint));
+    }
+
+    #[test]
+    fn multiple_cards_publish_independent_alsa_nodes() {
+        drv::set_devtmpfs_hook(add_hook);
+        drv::set_devtmpfs_del_hook(del_hook);
+        ADDED.lock().clear();
+        REMOVED.lock().clear();
+        while let Some(card_id) = active_card_id() { let _ = unregister_card(card_id); }
+        NEXT_CARD_ID.store(0, Ordering::Release);
+        ops::clear_for_tests();
+
+        let ep0 = ops::register(&TEST_OPS).expect("ops0 registered");
+        let ep1 = ops::register(&TEST_OPS).expect("ops1 registered");
+        let card0 = register_card(ep0).expect("card0 registered");
+        let card1 = register_card(ep1).expect("card1 registered");
+        assert_eq!((card0, card1), (0, 1));
+
+        let added = ADDED.lock().clone();
+        assert!(added.iter().any(|n| n == &(String::from("snd/controlC0"), Some((116, 0)), true)));
+        assert!(added.iter().any(|n| n == &(String::from("snd/controlC1"), Some((116, 32)), true)));
+        assert!(added.iter().any(|n| n == &(String::from("snd/pcmC1D0p"), Some((116, 48)), true)));
+        assert_eq!(added.iter().filter(|n| n.0 == "dsp").count(), 1, "OSS primary alias is card0-only");
+
+        assert!(unregister_card(card1));
+        assert!(unregister_card(card0));
+        assert!(ops::clear(ep1));
+        assert!(ops::clear(ep0));
     }
 }

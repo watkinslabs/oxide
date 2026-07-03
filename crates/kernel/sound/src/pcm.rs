@@ -9,6 +9,7 @@
 // whole buffer is available again — the canonical snd_pcm_writei blocking
 // mode (mmap/async streaming is a follow-up; INFO advertises no MMAP).
 
+use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as L};
 use syscall::errno::Errno;
 
@@ -22,8 +23,10 @@ const DEF_PERIODS: u32 = 2;
 /// appl_ptr/hw_ptr wrap point reported to userspace.
 const BOUNDARY: u64 = 0x4000_0000_0000;
 
-/// The OUTPUT substream. A single global instance (one card, one device).
+/// The OUTPUT substream for one card/device.
+#[derive(Clone, Copy)]
 struct Pcm {
+    card_id: u32,
     state: u32,
     format: u32,      // ALSA SNDRV_PCM_FORMAT_*
     rate: u32,        // Hz
@@ -36,11 +39,28 @@ struct Pcm {
     hw_ptr: u64,          // frames
 }
 
-static PCM: Spinlock<Pcm, L> = Spinlock::new(Pcm {
-    state: STATE_OPEN, format: FMT_S16_LE, rate: 44100, channels: 2,
-    frame_bytes: 4, period_frames: 512, buffer_frames: 1024,
-    start_threshold: 1, appl_ptr: 0, hw_ptr: 0,
-});
+static PCMS: Spinlock<Vec<Pcm>, L> = Spinlock::new(Vec::new());
+
+fn default_pcm(card_id: u32) -> Pcm {
+    Pcm {
+        card_id,
+        state: STATE_OPEN, format: FMT_S16_LE, rate: 44100, channels: 2,
+        frame_bytes: 4, period_frames: 512, buffer_frames: 1024,
+        start_threshold: 1, appl_ptr: 0, hw_ptr: 0,
+    }
+}
+
+fn with_pcm<R>(card_id: u32, f: impl FnOnce(&mut Pcm) -> R) -> R {
+    let mut pcms = PCMS.lock();
+    let idx = match pcms.iter().position(|pcm| pcm.card_id == card_id) {
+        Some(idx) => idx,
+        None => {
+            pcms.push(default_pcm(card_id));
+            pcms.len() - 1
+        }
+    };
+    f(&mut pcms[idx])
+}
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -76,8 +96,8 @@ fn hz_rate_enum(hz: u32) -> u8 {
 
 /// Device OUTPUT caps `(virtio_formats, virtio_rates, ch_min, ch_max)`.
 /// # C: O(1)
-fn caps() -> (u64, u64, u8, u8) {
-    crate::ops::pcm_caps().unwrap_or((1 << 5, 1 << 6, 1, 2)) // S16 @ 44.1k st default
+fn caps(card_id: u32) -> (u64, u64, u8, u8) {
+    crate::ops::pcm_caps(card_id).unwrap_or((1 << 5, 1 << 6, 1, 2)) // S16 @ 44.1k st default
 }
 
 // ── hw_params mask / interval accessors ────────────────────────────────
@@ -214,20 +234,21 @@ pub(crate) fn refine_params(b: &UserBuf, vf: u64, vr: u64, ch_min: u8, ch_max: u
 
 /// Playback HW_REFINE/HW_PARAMS: refine against the OUTPUT caps; on commit
 /// apply via the playback ops + record the substream geometry. # C: O(CONTROLQ)
-fn refine(b: &UserBuf, commit: bool) -> i64 {
-    let (vf, vr, ch_min, ch_max) = caps();
+fn refine(card_id: u32, b: &UserBuf, commit: bool) -> i64 {
+    let (vf, vr, ch_min, ch_max) = caps(card_id);
     let r = match refine_params(b, vf, vr, ch_min, ch_max) { Ok(r) => r, Err(e) => return e };
     if commit {
-        if !crate::ops::pcm_hw_params(rate_hz_to_enum(r.rate), fmt_alsa_to_virtio(r.format),
+        if !crate::ops::pcm_hw_params(card_id, rate_hz_to_enum(r.rate), fmt_alsa_to_virtio(r.format),
                                           r.channels as u8, r.period_bytes, r.buffer_bytes) {
             return err(Errno::Eio);
         }
-        let mut p = PCM.lock();
+        with_pcm(card_id, |p| {
         p.format = r.format; p.rate = r.rate; p.channels = r.channels;
         p.frame_bytes = r.frame_bytes;
         p.period_frames = r.period_frames; p.buffer_frames = r.buffer_frames;
         p.state = STATE_SETUP;
         p.appl_ptr = 0; p.hw_ptr = 0;
+        });
     }
     0
 }
@@ -237,39 +258,44 @@ fn refine(b: &UserBuf, commit: bool) -> i64 {
 /// Handle one `SNDRV_PCM_IOCTL_*` on the playback substream. The caller has
 /// already matched the node; `nr` is the ioctl nr (magic 'A' stripped).
 /// # C: O(1) excluding the blocking transfer in WRITEI
-pub fn handle(nr: u64, arg: u64) -> i64 {
+pub fn handle(card_id: u32, nr: u64, arg: u64) -> i64 {
     match nr {
         PCM_PVERSION => write_int(arg, SNDRV_PCM_VERSION),
-        PCM_INFO => pcm_info(arg),
+        PCM_INFO => pcm_info(card_id, arg),
         PCM_TSTAMP | PCM_TTSTAMP => 0,
         PCM_HW_REFINE => match UserBuf::new(arg, HW_PARAMS_SIZE) {
-            Some(b) => refine(&b, false), None => err(Errno::Efault),
+            Some(b) => refine(card_id, &b, false), None => err(Errno::Efault),
         },
         PCM_HW_PARAMS => match UserBuf::new(arg, HW_PARAMS_SIZE) {
-            Some(b) => refine(&b, true), None => err(Errno::Efault),
+            Some(b) => refine(card_id, &b, true), None => err(Errno::Efault),
         },
-        PCM_HW_FREE => { crate::ops::pcm_hw_free(); PCM.lock().state = STATE_OPEN; 0 }
-        PCM_SW_PARAMS => sw_params(arg),
+        PCM_HW_FREE => { crate::ops::pcm_hw_free(card_id); with_pcm(card_id, |p| p.state = STATE_OPEN); 0 }
+        PCM_SW_PARAMS => sw_params(card_id, arg),
         PCM_PREPARE => {
-            if !crate::ops::pcm_prepare() { return err(Errno::Eio); }
-            let mut p = PCM.lock();
-            p.state = STATE_PREPARED; p.appl_ptr = 0; p.hw_ptr = 0; 0
+            if !crate::ops::pcm_prepare(card_id) { return err(Errno::Eio); }
+            with_pcm(card_id, |p| {
+                p.state = STATE_PREPARED; p.appl_ptr = 0; p.hw_ptr = 0;
+            });
+            0
         }
         PCM_START => {
-            if !crate::ops::pcm_trigger(true) { return err(Errno::Eio); }
-            PCM.lock().state = STATE_RUNNING; 0
+            if !crate::ops::pcm_trigger(card_id, true) { return err(Errno::Eio); }
+            with_pcm(card_id, |p| p.state = STATE_RUNNING);
+            0
         }
         PCM_DROP | PCM_DRAIN => {
-            let _ = crate::ops::pcm_trigger(false);
-            let mut p = PCM.lock();
-            p.state = STATE_SETUP; p.appl_ptr = 0; p.hw_ptr = 0; 0
+            let _ = crate::ops::pcm_trigger(card_id, false);
+            with_pcm(card_id, |p| {
+                p.state = STATE_SETUP; p.appl_ptr = 0; p.hw_ptr = 0;
+            });
+            0
         }
-        PCM_PAUSE => { let _ = crate::ops::pcm_trigger(false); PCM.lock().state = STATE_PREPARED; 0 }
+        PCM_PAUSE => { let _ = crate::ops::pcm_trigger(card_id, false); with_pcm(card_id, |p| p.state = STATE_PREPARED); 0 }
         PCM_HWSYNC => 0,
         PCM_DELAY => write_long(arg, 0),
-        PCM_STATUS => pcm_status(arg),
-        PCM_SYNC_PTR => sync_ptr(arg),
-        PCM_WRITEI => writei(arg),
+        PCM_STATUS => pcm_status(card_id, arg),
+        PCM_SYNC_PTR => sync_ptr(card_id, arg),
+        PCM_WRITEI => writei(card_id, arg),
         PCM_READI => err(Errno::Ebadf), // capture is a follow-up (RXQ)
         _ => err(Errno::Enotty),
     }
@@ -279,19 +305,20 @@ pub fn handle(nr: u64, arg: u64) -> i64 {
 /// the configured geometry (snd_pcm_write). Auto-starts a PREPARED stream,
 /// transfers (blocking), advances appl_ptr/hw_ptr. Returns bytes accepted.
 /// # C: O(bytes/period × TXQ round-trip)
-pub fn write_bytes(buf: &[u8]) -> usize {
-    let (fb, state) = { let p = PCM.lock(); (p.frame_bytes as u64, p.state) };
+pub fn write_bytes(card_id: u32, buf: &[u8]) -> usize {
+    let (fb, state) = with_pcm(card_id, |p| (p.frame_bytes as u64, p.state));
     if state == STATE_OPEN || state == STATE_SETUP { return 0; }
     if state == STATE_PREPARED {
-        if !crate::ops::pcm_trigger(true) { return 0; }
-        PCM.lock().state = STATE_RUNNING;
+        if !crate::ops::pcm_trigger(card_id, true) { return 0; }
+        with_pcm(card_id, |p| p.state = STATE_RUNNING);
     }
-    let n = crate::ops::pcm_submit(buf);
+    let n = crate::ops::pcm_submit(card_id, buf);
     if n > 0 {
         let frames = n as u64 / fb.max(1);
-        let mut p = PCM.lock();
+        with_pcm(card_id, |p| {
         p.appl_ptr = p.appl_ptr.wrapping_add(frames) % BOUNDARY;
         p.hw_ptr = p.appl_ptr;
+        });
     }
     n
 }
@@ -303,13 +330,13 @@ fn write_long(arg: u64, v: u64) -> i64 {
     match UserBuf::new(arg, 8) { Some(b) => { b.w64(0, v); 0 } None => err(Errno::Efault) }
 }
 
-fn pcm_info(arg: u64) -> i64 {
+fn pcm_info(card_id: u32, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, PCM_INFO_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     b.zero(0, PCM_INFO_SIZE);
     b.w32(PI_DEVICE, 0);
     b.w32(PI_SUBDEVICE, 0);
     b.w32(PI_STREAM, STREAM_PLAYBACK as u32);
-    b.w32(PI_CARD, crate::active_card_id().unwrap_or(0));
+    b.w32(PI_CARD, card_id);
     b.wstr(PI_ID, b"virtio-snd", 64);
     b.wstr(PI_NAME, b"virtio-snd PCM", 80);
     b.wstr(PI_SUBNAME, b"subdevice #0", 32);
@@ -318,50 +345,53 @@ fn pcm_info(arg: u64) -> i64 {
     0
 }
 
-fn sw_params(arg: u64) -> i64 {
+fn sw_params(card_id: u32, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, SW_PARAMS_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let st = b.r64(SWP_START_THRESHOLD);
-    PCM.lock().start_threshold = if st == 0 { 1 } else { st };
+    with_pcm(card_id, |p| p.start_threshold = if st == 0 { 1 } else { st });
     b.w64(SWP_BOUNDARY, BOUNDARY); // echo the wrap point back
     0
 }
 
-fn pcm_status(arg: u64) -> i64 {
+fn pcm_status(card_id: u32, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, STATUS_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
-    let p = PCM.lock();
-    let avail = p.buffer_frames as u64; // synchronous transfer → buffer always free
+    let (state, appl_ptr, hw_ptr, avail) = with_pcm(card_id, |p| {
+        (p.state, p.appl_ptr, p.hw_ptr, p.buffer_frames as u64)
+    });
     b.zero(0, STATUS_SIZE);
-    b.w32(ST_STATE, p.state);
-    b.w64(ST_APPL_PTR, p.appl_ptr);
-    b.w64(ST_HW_PTR, p.hw_ptr);
+    b.w32(ST_STATE, state);
+    b.w64(ST_APPL_PTR, appl_ptr);
+    b.w64(ST_HW_PTR, hw_ptr);
     b.w64(ST_AVAIL, avail);
     b.w64(ST_AVAIL_MAX, avail);
     0
 }
 
-fn sync_ptr(arg: u64) -> i64 {
+fn sync_ptr(card_id: u32, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, SYNC_PTR_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let flags = b.r32(SP_FLAGS);
-    let mut p = PCM.lock();
+    let (state, hw_ptr, appl_ptr) = with_pcm(card_id, |p| {
     if flags & SYNC_PTR_APPL == 0 {
         p.appl_ptr = b.r64(SP_CONTROL_APPL_PTR); // app advanced its pointer
     }
     p.hw_ptr = p.appl_ptr; // synchronous transfer keeps hw caught up
-    b.w32(SP_STATUS_STATE, p.state);
-    b.w64(SP_STATUS_HW_PTR, p.hw_ptr);
-    b.w64(SP_CONTROL_APPL_PTR, p.appl_ptr);
+        (p.state, p.hw_ptr, p.appl_ptr)
+    });
+    b.w32(SP_STATUS_STATE, state);
+    b.w64(SP_STATUS_HW_PTR, hw_ptr);
+    b.w64(SP_CONTROL_APPL_PTR, appl_ptr);
     0
 }
 
 /// SNDRV_PCM_IOCTL_WRITEI_FRAMES — interleaved blocking playback. Copies the
 /// app frames out of `buf`, auto-starts at the start_threshold, transfers
 /// via the driver, and advances appl_ptr/hw_ptr. Returns frames written.
-fn writei(arg: u64) -> i64 {
+fn writei(card_id: u32, arg: u64) -> i64 {
     let xf = match UserBuf::new(arg, XFERI_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let ubuf = xf.r64(XFERI_BUF);
     let frames = xf.r64(XFERI_FRAMES);
     let (fb, mut state, start_thr) = {
-        let p = PCM.lock();
+        let p = with_pcm(card_id, |p| *p);
         (p.frame_bytes as u64, p.state, p.start_threshold)
     };
     if fb == 0 || frames == 0 { return 0; }
@@ -372,10 +402,10 @@ fn writei(arg: u64) -> i64 {
 
     // Auto-start once enough has been queued (snd_pcm start_threshold).
     if state == STATE_PREPARED {
-        let appl = PCM.lock().appl_ptr;
+        let appl = with_pcm(card_id, |p| p.appl_ptr);
         if appl + frames >= start_thr {
-            if !crate::ops::pcm_trigger(true) { return err(Errno::Eio); }
-            PCM.lock().state = STATE_RUNNING;
+            if !crate::ops::pcm_trigger(card_id, true) { return err(Errno::Eio); }
+            with_pcm(card_id, |p| p.state = STATE_RUNNING);
             state = STATE_RUNNING;
         }
     }
@@ -388,16 +418,17 @@ fn writei(arg: u64) -> i64 {
     while done < bytes {
         let chunk = ((bytes - done) as usize).min(staged.len());
         for i in 0..chunk { staged[i] = src.r8(done as usize + i); }
-        let n = crate::ops::pcm_submit(&staged[..chunk]);
+        let n = crate::ops::pcm_submit(card_id, &staged[..chunk]);
         if n == 0 { break; }
         done += n as u64;
         if n < chunk { break; }
     }
     let wrote_frames = done / fb;
     {
-        let mut p = PCM.lock();
+        with_pcm(card_id, |p| {
         p.appl_ptr = p.appl_ptr.wrapping_add(wrote_frames) % BOUNDARY;
         p.hw_ptr = p.appl_ptr;
+        });
     }
     // snd_xferi.result is also set by libasound from the return value; echo it.
     xf.w64(XFERI_RESULT, wrote_frames);
