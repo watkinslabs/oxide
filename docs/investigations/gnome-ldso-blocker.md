@@ -1,5 +1,30 @@
 # GNOME boot blocker — glibc ld.so `_dl_check_map_versions` assertion
 
+## SOLVED 2026-07-02 — missing FPU/SSE save-restore across preemptive ctxsw (B292)
+
+Root cause: the context switch (`hal-{x86_64,aarch64}`) saved only GPRs + fs_base;
+**user FPU/SSE (xmm / NEON) was never saved or restored across a switch** — the
+lazy-#NM design speced in `14§7` was never wired (its `fpu_save/restore/disable`
+primitives had no callers outside ptrace). Voluntary switches sit at syscall
+boundaries where xmm are caller-saved (dead), so it was invisible; a PREEMPTIVE
+timer switch interrupts user code MID-SSE (glibc `strcmp`/`memcpy` in ld.so's
+dependency loop), so the resumed task read whatever xmm the intervening task
+left → ld.so's name/dep compares corrupted → a `DT_NEEDED` entry silently skipped
+(loaded lib absent from libsystemd-shared's search scope) → `find_needed()→NULL`
+→ the assert. Nondeterministic (preemption timing), memory-intact (registers
+only), which is why every memory detector read 0.
+
+Confirmed causally: disabling the timer's `set_need_resched` → **0 asserts**
+(was 12), boot reached graphical targets. Fix = eager `fxsave(prev)/fxrstor(next)`
+(x86) + `str/ldr q0-q31` (arm) in `schedule()`, plus a valid fresh-task FXSAVE
+image (FCW=0x037f, MXCSR=0x1f80) so first-run tasks don't get MXCSR=0. With the
+fix + preemption ON: 0 asserts; base smoke green both arches. Kernel is soft-float
+(`07§3` / `-fp-armv8,-neon`) so no kernel code between restore and user-return
+clobbers the vector regs. The narrative below is the (now historical) hunt.
+
+---
+
+
 Investigation brief for a fresh reviewer. **Read top-to-bottom; the CONCLUSION
 supersedes every earlier hypothesis.** Prior sessions (and the first half of this
 one) assumed kernel memory corruption — that has been DISPROVEN with evidence.
