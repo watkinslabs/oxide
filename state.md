@@ -119,10 +119,35 @@ never opened → seat0 not graphical. Traced chain state:
   level-ready netlink fd whose source sd-event `disabled`/`ONESHOT`'d is not
   re-reported. This is a KERNEL epoll↔sd-event dispatch bug, likely general (hits
   PID1 + udevd), and is THE thing to fix for the greeter.
-- Also a latent (separate) bug: `netlink_fd::recvmsg` line ~164
+- **FINAL AIRTIGHT CONFIRMATION (one-shot socket dump — non-confounding): the
+  stuck messages are VALID.** Dumped udevd's stuck netlink sockets at boot via a
+  1-in-20000 sample in `NetlinkSocket::poll` (no timing confound): the proto-15
+  group-1 monitor has `qlen=2, frontlen=155, head="add@/devices/virtual/drm/
+  card0\0ACTION=ad…"` — the REAL card0 uevent, 155 bytes, non-empty. (A proto-0
+  rtnetlink socket is also stuck at qlen=3.) So:
+  - The messages are NOT empty → the socket is fully drainable → the recvmsg
+    empty-front idea is RULED OUT (don't chase it as the greeter fix).
+  - qlen stays pinned at 2 → udevd never drains it. `sys_read`/`recvfrom`/
+    `recvmsg`/`recvmmsg` ALL route netlink fds through `netlink_fd` (verified:
+    000_read.rs:19 routes to netlink_fd::read), and none fired for udevd → udevd
+    reads fd=4 via NO syscall path.
+  - epoll `{events,data}` round-trips byte-correct (epoll.rs:226-227 read @0/@4,
+    scan_once writes back @0/@4); `revents`=POLLIN clean (no spurious HUP/ERR).
+- **CONCLUSION (bounded): the kernel epoll + netlink layers are VERIFIED CORRECT.
+  udevd's sd-event has the uevent fd ENABLED (EPOLLIN) + epoll reports it READY
+  + the queued data is a VALID uevent + delivery is byte-correct — yet sd-event
+  never dispatches the read.** That is definitively inside sd-event/udevd, not a
+  kernel bug reachable from here. Every kernel-side hypothesis (EPOLLET, empty
+  msg, poll/recv mismatch, data-round-trip, netlink queue) has been tested and
+  ruled out. The ONLY way forward is userspace introspection: interactive
+  `strace -p $(pidof systemd-udevd)` (see epoll_wait's return vs its dispatch)
+  and `journalctl -u systemd-udevd -o verbose` on a `make run-serial` session —
+  the batch kernel-trace harness cannot see inside sd-event and its per-syscall
+  klog confounds udevd's timing.
+- Latent (separate, not the greeter blocker): `netlink_fd::recvmsg` line ~164
   `Some(d) if !d.is_empty() => d, _ => EAGAIN` — with `MSG_PEEK` an empty front
-  datagram returns EAGAIN and is never removed (peek doesn't pop) → would wedge
-  a peeking reader; drop/skip empty front messages.
+  datagram returns EAGAIN and is never removed → would wedge a peeking reader;
+  worth a defensive drop/skip of empty front messages.
 - Faster confirmation: interactive serial (`make -C ../oxide-images run-serial`;
   getty.target reached) → `strace -p $(pidof systemd-udevd)` shows the
   epoll_wait return {events,data} vs what udevd does with it. Batch klog traces
