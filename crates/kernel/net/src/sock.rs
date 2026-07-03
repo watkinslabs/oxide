@@ -780,6 +780,9 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
     match addr {
         BoundAddr::UnixListener(path) => {
             let listener = UNIX_REGISTRY.bind(path).map_err(|_| NetError::Eaddrinuse)?;
+            // Link the listener socket's epoll subscribers so connect() can wake an
+            // epoll_wait-blocked accept loop (dbus-broker) on a new connection.
+            listener.register_subs(&sock.poll_subs);
             *sock.kind.lock() = SockKind::UnixListener(listener);
             Ok(())
         }
@@ -958,6 +961,14 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         let l = l.clone();
         let pair = l.accept_q.lock().pop_front().ok_or(NetError::Eagain)?;
         let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp());
+        // The accepted connection is AF_UNIX: SO_DOMAIN must report AF_UNIX, not
+        // the `new_tcp` default of AF_INET. dbus-broker's SASL EXTERNAL auth
+        // checks the peer connection's domain (getsockopt SO_DOMAIN / SO_PEERCRED);
+        // an AF_INET-reporting accepted socket failed that check, so dbus-broker
+        // closed every client connection ("Connection terminated" on systemd's
+        // AddMatch), which timed out every Type=dbus unit and stalled multi-user →
+        // graphical. Same class as the socketpair SO_DOMAIN fix (PR #2313).
+        new_sock.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
         // F181a: server end is A. Register subscribers before
         // assigning the kind so the first write from peer-B sees
         // a live subscription.
