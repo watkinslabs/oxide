@@ -145,9 +145,10 @@ test-pass claims.
   DRM backend no longer shifts the IDs used to unregister the remaining
   backends. DRM devtmpfs publication now publishes one `cardN` and
   `renderD(128+N)` pair per registered card, removes only the matching pair on
-  unregister, and routes basic DRM ioctls through the inode's card id. The
-  scanout hooks and dumb-buffer table are still shared, so full multi-GPU KMS
-  is not complete.
+  unregister, and routes basic DRM ioctls through the inode's card id. The DRM
+  sysfs class view now enumerates those model-owned DRM devices instead of a
+  static `card0` table. The scanout hooks and dumb-buffer table are still
+  shared, so full multi-GPU KMS is not complete.
 - Block, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`

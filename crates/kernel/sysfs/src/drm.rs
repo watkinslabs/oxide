@@ -2,17 +2,17 @@
 // graphical login. systemd-logind marks a seat `CanGraphical=yes` only when a
 // DRM device on it carries udev's `master-of-seat` tag; udev's `71-seat.rules`
 // applies that tag via `SUBSYSTEM=="drm", KERNEL=="card*"`. Without a
-// `/sys/class/drm/card0` node whose `subsystem` symlink resolves to
+// `/sys/class/drm/cardN` node whose `subsystem` symlink resolves to
 // `/sys/class/drm`, udev never sees the GPU, seat0 stays non-graphical, and
 // gdm never launches a greeter.
 //
 // Mirrors the `/sys/class/tty` symlink-dir pattern (lib.rs). The real KMS
-// device node is /dev/dri/card0 (226:0), minted by drm::node::register.
+// device nodes are /dev/dri/cardN (226:N), minted by drm::node::register.
 //
 // Tree:
 //   /sys/class/drm/                          (dir of symlinks)
-//     card0        -> ../../devices/virtual/drm/card0
-//     renderD128   -> ../../devices/virtual/drm/renderD128
+//     cardN        -> ../../devices/virtual/drm/cardN
+//     renderD128+N -> ../../devices/virtual/drm/renderD128+N
 //   /sys/devices/virtual/drm/<name>/         (per-minor dir)
 //     dev                                     "226:<minor>\n"
 //     uevent                                  MAJOR=/MINOR=/DEVNAME=/DEVTYPE=
@@ -29,15 +29,43 @@ use crate::{make_body_inode, make_symlink_inode, register, DIR_PERM, RW_PERM};
 /// DRM char-major (Linux `DRM_MAJOR`).
 const DRM_MAJOR: u32 = 226;
 
-/// (name, minor, devtype) for each DRM minor exposed under /dev/dri.
-/// `card*` minors are seat masters; `renderD*` are render nodes.
-const DRM_MINORS: &[(&str, u32, &str)] = &[
-    ("card0",      0,   "drm_minor"),
-    ("renderD128", 128, "drm_minor"),
-];
+struct DrmMinor {
+    name: String,
+    minor: u32,
+    devtype: &'static str,
+}
+
+/// Snapshot DRM class devices from the authoritative driver model.
+/// # C: O(devices)
+fn drm_minors() -> Vec<DrmMinor> {
+    let mut minors = Vec::new();
+    for dev in drv::devices() {
+        if dev.dev_class != "drm" {
+            continue;
+        }
+        let Some((DRM_MAJOR, minor)) = dev.dev_t else {
+            continue;
+        };
+        let Some(devname) = dev.devname.as_deref() else {
+            continue;
+        };
+        let Some(name) = devname.strip_prefix("dri/") else {
+            continue;
+        };
+        if !(name.starts_with("card") || name.starts_with("renderD")) {
+            continue;
+        }
+        minors.push(DrmMinor { name: String::from(name), minor, devtype: "drm_minor" });
+    }
+    minors.sort_by(|a, b| a.minor.cmp(&b.minor));
+    minors
+}
 
 fn minor_of(name: &str) -> Option<(u32, &'static str)> {
-    DRM_MINORS.iter().find(|(n, _, _)| *n == name).map(|(_, m, t)| (*m, *t))
+    drm_minors()
+        .into_iter()
+        .find(|minor| minor.name == name)
+        .map(|minor| (minor.minor, minor.devtype))
 }
 
 // ---- /sys/class/drm (directory of symlinks) -------------------------------
@@ -53,10 +81,11 @@ impl InodeOps for SysClassDrmOps {
 }
 impl FileOps for SysClassDrmOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let minors = drm_minors();
         let mut idx = ctx.pos as usize;
-        while idx < DRM_MINORS.len() {
+        while idx < minors.len() {
             let next = idx as u64 + 1;
-            let name = DRM_MINORS[idx].0;
+            let name = minors[idx].name.as_str();
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(name, ino, FileType::Symlink, next) { return Ok(()); }
             idx += 1;
@@ -80,10 +109,11 @@ impl InodeOps for SysDevicesVirtualDrmOps {
 }
 impl FileOps for SysDevicesVirtualDrmOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let minors = drm_minors();
         let mut idx = ctx.pos as usize;
-        while idx < DRM_MINORS.len() {
+        while idx < minors.len() {
             let next = idx as u64 + 1;
-            let name = DRM_MINORS[idx].0;
+            let name = minors[idx].name.as_str();
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(name, ino, FileType::Directory, next) { return Ok(()); }
             idx += 1;
@@ -179,4 +209,30 @@ fn make_drm_uevent_inode(name: String, minor: u32) -> InodeRef {
 pub fn init() {
     register("/sys/class/drm", make_sys_class_drm_inode());
     register("/sys/devices/virtual/drm", make_sys_devices_virtual_drm_inode());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drm_minors_follow_model_devices() {
+        let card = drv::device_add(Arc::new(
+            drv::Device::new("drm", String::from("dri/card7"), 0, 0, 0)
+                .with_devnode("drm", String::from("dri/card7"), Some((226, 7))),
+        ));
+        let render = drv::device_add(Arc::new(
+            drv::Device::new("drm", String::from("dri/renderD135"), 0, 0, 0)
+                .with_devnode("drm", String::from("dri/renderD135"), Some((226, 135))),
+        ));
+
+        let minors = drm_minors();
+        assert!(minors.iter().any(|m| m.name == "card7" && m.minor == 7));
+        assert!(minors.iter().any(|m| m.name == "renderD135" && m.minor == 135));
+        assert_eq!(minor_of("card7"), Some((7, "drm_minor")));
+        assert_eq!(minor_of("renderD135"), Some((135, "drm_minor")));
+
+        drv::device_del(&render);
+        drv::device_del(&card);
+    }
 }
