@@ -36,8 +36,8 @@ use sync::{Spinlock, TaskList as OpsLockClass};
 /// PAGE_FLIP. Filled by `drv-virtio-gpu::post_init::register_drm_hooks`
 /// at device install. The DRM crate cannot depend on the virtio-gpu
 /// crate (that crate depends on us), so the binding is a function-pointer
-/// table installed at runtime. `None` until a GPU is installed → SETCRTC
-/// honest-fails -EINVAL.
+/// table installed at runtime per DRM card. `None` until a GPU is installed
+/// for that card → SETCRTC honest-fails -EINVAL.
 #[derive(Copy, Clone)]
 pub struct ScanoutOps {
     /// Create a virtio-gpu resource over a contiguous PA; returns res_id.
@@ -50,7 +50,12 @@ pub struct ScanoutOps {
     pub boot_res_id: fn() -> u32,
 }
 
-static SCANOUT_OPS: Spinlock<Option<ScanoutOps>, OpsLockClass> = Spinlock::new(None);
+struct ScanoutRegistration {
+    card_id: u32,
+    ops:     ScanoutOps,
+}
+
+static SCANOUT_OPS: Spinlock<Vec<ScanoutRegistration>, OpsLockClass> = Spinlock::new(Vec::new());
 
 struct DrmNodeSet {
     card_id: u32,
@@ -59,17 +64,31 @@ struct DrmNodeSet {
 
 static DRM_NODES: Spinlock<Vec<DrmNodeSet>, OpsLockClass> = Spinlock::new(Vec::new());
 
-/// Install the runtime scanout backend (called once at GPU install).
-/// # C: O(1)
-pub fn set_scanout_ops(ops: ScanoutOps) { *SCANOUT_OPS.lock() = Some(ops); }
+/// Install the runtime scanout backend for one DRM card.
+/// # C: O(cards)
+pub fn set_scanout_ops(card_id: u32, ops: ScanoutOps) {
+    let mut regs = SCANOUT_OPS.lock();
+    if let Some(reg) = regs.iter_mut().find(|reg| reg.card_id == card_id) {
+        reg.ops = ops;
+        return;
+    }
+    regs.push(ScanoutRegistration { card_id, ops });
+}
 
-/// Remove the runtime scanout backend during GPU teardown.
-/// # C: O(1)
-pub fn clear_scanout_ops() { *SCANOUT_OPS.lock() = None; }
+/// Remove one card's runtime scanout backend during GPU teardown.
+/// # C: O(cards)
+pub fn clear_scanout_ops(card_id: u32) {
+    let mut regs = SCANOUT_OPS.lock();
+    if let Some(idx) = regs.iter().position(|reg| reg.card_id == card_id) {
+        regs.remove(idx);
+    }
+}
 
-/// Snapshot the runtime scanout backend, or `None` if no GPU installed.
-/// # C: O(1)
-pub fn scanout_ops() -> Option<ScanoutOps> { *SCANOUT_OPS.lock() }
+/// Snapshot one card's runtime scanout backend, or `None` if no GPU installed.
+/// # C: O(cards)
+pub fn scanout_ops(card_id: u32) -> Option<ScanoutOps> {
+    SCANOUT_OPS.lock().iter().find(|reg| reg.card_id == card_id).map(|reg| reg.ops)
+}
 
 /// `struct drm_version` Linux UAPI (88 bytes on 64-bit).
 #[repr(C)]
@@ -105,8 +124,8 @@ impl vfs::FileOps for DrmCardFileOps {
     /// completions) as `drm_event_vblank` records — Linux `drm_read`.
     /// 0 bytes when no event is pending (libdrm polls then reads).
     /// # C: O(events)
-    fn read(&self, _inode: &vfs::Inode, _o: u64, b: &mut [u8]) -> vfs::KResult<usize> {
-        Ok(crate::crtc::drain_events(b))
+    fn read(&self, inode: &vfs::Inode, _o: u64, b: &mut [u8]) -> vfs::KResult<usize> {
+        Ok(crate::crtc::drain_events(card_id_from_ino(inode.ino()), b))
     }
     fn write(&self, _inode: &vfs::Inode, _o: u64, b: &[u8]) -> vfs::KResult<usize> { Ok(b.len()) }
     /// Last-close: if a KMS client took the scanout via SETCRTC and is
@@ -114,10 +133,11 @@ impl vfs::FileOps for DrmCardFileOps {
     /// the console so the fb console (and getty) come back. A normal
     /// boot never opens card0 → this never fires → console untouched.
     /// MUST NOT panic or block. # C: O(1) + O(scanout repaint).
-    fn on_release(&self, _inode: &vfs::Inode) {
-        if crate::crtc::owner() != 0 {
-            if let Some(ops) = scanout_ops() { (ops.restore_console)(); }
-            crate::crtc::clear_owner();
+    fn on_release(&self, inode: &vfs::Inode) {
+        let card_id = card_id_from_ino(inode.ino());
+        if crate::crtc::owner(card_id) != 0 {
+            if let Some(ops) = scanout_ops(card_id) { (ops.restore_console)(); }
+            crate::crtc::clear_owner(card_id);
         }
     }
 }
@@ -220,7 +240,11 @@ pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
 }
 
 fn card_id_from_inode(inode: &vfs::InodeRef) -> u32 {
-    (inode.ino() & 0xFFFF_FFFF) as u32
+    card_id_from_ino(inode.ino())
+}
+
+fn card_id_from_ino(ino: vfs::Ino) -> u32 {
+    (ino & 0xFFFF_FFFF) as u32
 }
 
 /// ioctl on a DRM fd. Returns Some(rv) when handled; None otherwise (caller

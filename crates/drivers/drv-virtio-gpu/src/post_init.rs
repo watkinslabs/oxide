@@ -581,10 +581,10 @@ pub fn publish_console_scanout() {
 /// # C: O(N + depth)
 #[cfg(target_os = "oxide-kernel")]
 pub fn unpublish_console_scanout(bdf: u32) {
-    let fb_base = {
+    let (fb_base, card_id) = {
         let ctx = CTX.lock();
         match ctx.as_ref() {
-            Some(ctx) if ctx.bdf == bdf => ctx.fb_va - ctx.hhdm,
+            Some(ctx) if ctx.bdf == bdf => (ctx.fb_va - ctx.hhdm, ctx.card_id),
             _ => return,
         }
     };
@@ -595,7 +595,7 @@ pub fn unpublish_console_scanout(bdf: u32) {
     fbdev::clear_flush_hook();
     fbdev::clear_wait_hooks();
     let _ = fbdev::unregister_by_base(fb_base);
-    drm::node::clear_scanout_ops();
+    drm::node::clear_scanout_ops(card_id);
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -718,8 +718,8 @@ pub fn restore_console_scanout() -> bool {
 /// core. Called once from `install_with_drm` so SETCRTC/PAGE_FLIP can
 /// drive the scanout without a crate dependency cycle (drm cannot
 /// depend on this crate; this crate depends on drm). # C: O(1)
-pub fn register_drm_hooks() {
-    drm::node::set_scanout_ops(drm::node::ScanoutOps {
+pub fn register_drm_hooks(card_id: u32) {
+    drm::node::set_scanout_ops(card_id, drm::node::ScanoutOps {
         create_from_pa: create_scanout_from_pa,
         set_scanout,
         restore_console: restore_console_scanout,

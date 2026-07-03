@@ -622,7 +622,7 @@ pub fn install_with_drm(mut dev: VirtioGpuDev) -> KResult<u32> {
     // post_init queue plumbing). No crate cycle: drm exposes the hook
     // setter, this crate fills it.
     #[cfg(target_os = "oxide-kernel")]
-    post_init::register_drm_hooks();
+    post_init::register_drm_hooks(card_id);
     Ok(card_id)
 }
 

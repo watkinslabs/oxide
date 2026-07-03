@@ -151,10 +151,11 @@ test-pass claims.
   `renderD(128+N)` pair per registered card, removes only the matching pair on
   unregister, and routes basic DRM ioctls through the inode's card id. The DRM
   sysfs class view now enumerates those model-owned DRM devices instead of a
-  static `card0` table. Dumb-buffer handles, FB objects, mmap cookies, and
-  SETCRTC/PAGE_FLIP FB lookup are now scoped by the card inode id. The scanout
-  hooks and CRTC owner/event queues are still shared, so full multi-GPU KMS is
-  not complete.
+  static `card0` table. Dumb-buffer handles, FB objects, mmap cookies,
+  SETCRTC/PAGE_FLIP FB lookup, scanout hooks, and CRTC owner/event queues are
+  now scoped by the card inode id. Full multi-GPU KMS is still not complete
+  because the virtio-gpu installed device and post-init scanout context remain
+  singleton runtime state.
 - Block, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`
@@ -187,8 +188,10 @@ test-pass claims.
   failure release helpers still need to move behind a
   `VirtioPciTransport`/`VirtioProbeState` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
-  the hardware class should support multiple instances: virtio-gpu still needs
-  a real multi-card/scanout table after its BDF-owned teardown fix;
+  the hardware class should support multiple instances: virtio-gpu DRM core
+  state is now card-scoped, but the installed virtio-gpu device registry,
+  post-init scanout context, and primary-console ownership still need a real
+  multi-card split;
   virtio-vsock's upper protocol layer and virtio-snd's upper ops/PCM runtime
   are still the main offenders. Virtio-vsock teardown is now owned by a protocol
   endpoint token, but full multi-transport vsock still needs protocol state
@@ -325,7 +328,8 @@ side-effect cleanup, not the old add-before-devtmpfs ordering bug.
 
 Several drivers use singleton global state:
 
-- virtio-gpu: single `DEV: Option<VirtioGpuDev>`
+- virtio-gpu: single `DEV: Option<VirtioGpuDev>` and single post-init
+  `CTX: Option<PostInitCtx>` scanout context
 - virtio-rng: single `CTX`
 - virtio-vsock: single active `CTX`; protocol teardown now requires the owned
   endpoint token, but protocol state is not split per transport

@@ -28,7 +28,7 @@
 extern crate alloc;
 
 use alloc::collections::VecDeque;
-use core::sync::atomic::{AtomicU64, Ordering};
+use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as CrtcLockClass};
 use syscall::errno::Errno;
 
@@ -61,32 +61,50 @@ fn user_ok(ptr: u64, len: u64) -> bool {
 // Scanout owner token + flip-event queue
 // ============================================================
 
-/// Identifies which card-fd open description currently owns the
+/// Identifies which card-fd open description currently owns a card's
 /// scanout (took it via SETCRTC with a non-zero fb). 0 = the boot
 /// fbcon owns it (no client). The token is the `Arc<File>` pointer
 /// the syscall layer passes down, stable for one open description.
-static OWNER: AtomicU64 = AtomicU64::new(0);
+static OWNERS: Spinlock<Vec<(u32, u64)>, CrtcLockClass> = Spinlock::new(Vec::new());
 
 /// Queued page-flip completion events to be drained by the owning
-/// card fd's read(). v1 single-card; one shared FIFO.
-static EVENTS: Spinlock<VecDeque<crate::DrmEventVblank>, CrtcLockClass>
+/// card fd's read().
+static EVENTS: Spinlock<VecDeque<(u32, crate::DrmEventVblank)>, CrtcLockClass>
     = Spinlock::new(VecDeque::new());
 
 /// Record `token` as the current scanout owner. # C: O(1)
-pub fn set_owner(token: u64) { OWNER.store(token, Ordering::Release); }
+pub fn set_owner(card_id: u32, token: u64) {
+    let mut owners = OWNERS.lock();
+    if let Some(owner) = owners.iter_mut().find(|owner| owner.0 == card_id) {
+        owner.1 = token;
+        return;
+    }
+    owners.push((card_id, token));
+}
 /// The current scanout owner token (0 = none / boot console). # C: O(1)
-pub fn owner() -> u64 { OWNER.load(Ordering::Acquire) }
+pub fn owner(card_id: u32) -> u64 {
+    OWNERS.lock()
+        .iter()
+        .find(|owner| owner.0 == card_id)
+        .map(|owner| owner.1)
+        .unwrap_or(0)
+}
 /// True iff `token` currently owns the scanout. # C: O(1)
-pub fn is_owner(token: u64) -> bool {
-    let o = OWNER.load(Ordering::Acquire);
+pub fn is_owner(card_id: u32, token: u64) -> bool {
+    let o = owner(card_id);
     o != 0 && o == token
 }
 /// Clear the owner (back to boot console). # C: O(1)
-pub fn clear_owner() { OWNER.store(0, Ordering::Release); }
+pub fn clear_owner(card_id: u32) {
+    let mut owners = OWNERS.lock();
+    if let Some(idx) = owners.iter().position(|owner| owner.0 == card_id) {
+        owners.remove(idx);
+    }
+}
 
 /// Queue a DRM_EVENT_FLIP_COMPLETE for `crtc_id` carrying `user_data`.
 /// Drained by the card fd's read(). # C: O(1)
-pub fn queue_flip_event(crtc_id: u32, user_data: u64) {
+pub fn queue_flip_event(card_id: u32, crtc_id: u32, user_data: u64) {
     let ev = crate::DrmEventVblank {
         base: crate::DrmEvent {
             ty: crate::DRM_EVENT_FLIP_COMPLETE,
@@ -97,19 +115,23 @@ pub fn queue_flip_event(crtc_id: u32, user_data: u64) {
         sequence: 0,
         crtc_id,
     };
-    EVENTS.lock().push_back(ev);
+    EVENTS.lock().push_back((card_id, ev));
 }
 
 /// Drain queued flip events into `buf`, returning the bytes written.
 /// Copies whole `drm_event_vblank` records only (a partial record is
 /// left queued). 0 if the buffer is too small for one record or none
 /// pending — matching Linux `drm_read`. # C: O(events)
-pub fn drain_events(buf: &mut [u8]) -> usize {
+pub fn drain_events(card_id: u32, buf: &mut [u8]) -> usize {
     let rec = core::mem::size_of::<crate::DrmEventVblank>();
     let mut off = 0usize;
     let mut q = EVENTS.lock();
     while off + rec <= buf.len() {
-        let ev = match q.pop_front() { Some(e) => e, None => break };
+        let idx = match q.iter().position(|(event_card, _)| *event_card == card_id) {
+            Some(idx) => idx,
+            None => break,
+        };
+        let (_, ev) = q.remove(idx).unwrap();
         // SAFETY: DrmEventVblank is repr(C) POD (all integer fields); reading its bytes as a [u8; rec] is a valid reinterpretation of an owned stack value.
         let bytes: &[u8] = unsafe {
             core::slice::from_raw_parts(&ev as *const _ as *const u8, rec)
@@ -122,7 +144,9 @@ pub fn drain_events(buf: &mut [u8]) -> usize {
 
 /// True iff at least one flip event is pending (for poll/POLLIN).
 /// # C: O(1)
-pub fn has_events() -> bool { !EVENTS.lock().is_empty() }
+pub fn has_events(card_id: u32) -> bool {
+    EVENTS.lock().iter().any(|(event_card, _)| *event_card == card_id)
+}
 
 // ============================================================
 // SETCRTC / PAGE_FLIP handlers
@@ -155,14 +179,14 @@ pub fn set_crtc(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg
     // Validate the crtc id against the registered card.
     let count = card.crtc_ids().len();
     if crtc_idx_of(c.crtc_id, count).is_none() { return einval(); }
-    let ops = match scanout_ops() { Some(o) => o, None => return einval() };
+    let ops = match scanout_ops(card_id) { Some(o) => o, None => return einval() };
 
     if c.fb_id == 0 {
         // Disable / detach: restore the console scanout if WE owned it.
-        if is_owner(token) {
+        if is_owner(card_id, token) {
             (ops.restore_console)();
-            clear_owner();
-        } else if owner() == 0 {
+            clear_owner(card_id);
+        } else if owner(card_id) == 0 {
             // No client owns it; SETCRTC(fb=0) is a no-op disable.
             (ops.restore_console)();
         }
@@ -177,7 +201,7 @@ pub fn set_crtc(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg
     }
     let res_id = match (ops.create_from_pa)(pa, w, h, fmt) { Some(r) => r, None => return einval() };
     if !(ops.set_scanout)(res_id, w, h) { return einval(); }
-    set_owner(token);
+    set_owner(card_id, token);
     0
 }
 
@@ -194,13 +218,13 @@ pub fn page_flip(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, ar
     let count = card.crtc_ids().len();
     if crtc_idx_of(f.crtc_id, count).is_none() { return einval(); }
     if f.fb_id == 0 { return einval(); }
-    let ops = match scanout_ops() { Some(o) => o, None => return einval() };
+    let ops = match scanout_ops(card_id) { Some(o) => o, None => return einval() };
     let (pa, w, h, fmt) = match fb_to_scanout(card_id, f.fb_id) { Some(v) => v, None => return einval() };
     let res_id = match (ops.create_from_pa)(pa, w, h, fmt) { Some(r) => r, None => return einval() };
     if !(ops.set_scanout)(res_id, w, h) { return einval(); }
-    set_owner(token);
+    set_owner(card_id, token);
     if (f.flags & crate::DRM_MODE_PAGE_FLIP_EVENT) != 0 {
-        queue_flip_event(f.crtc_id, f.user_data);
+        queue_flip_event(card_id, f.crtc_id, f.user_data);
     }
     0
 }
@@ -220,38 +244,49 @@ mod tests {
 
     #[test]
     fn owner_token_logic() {
-        clear_owner();
-        assert_eq!(owner(), 0);
-        assert!(!is_owner(0));       // 0 token never "owns"
-        assert!(!is_owner(0x1000));
-        set_owner(0x1000);
-        assert_eq!(owner(), 0x1000);
-        assert!(is_owner(0x1000));
-        assert!(!is_owner(0x2000));  // a different fd doesn't own it
-        clear_owner();
-        assert_eq!(owner(), 0);
-        assert!(!is_owner(0x1000));
+        clear_owner(0);
+        clear_owner(1);
+        assert_eq!(owner(0), 0);
+        assert!(!is_owner(0, 0));       // 0 token never "owns"
+        assert!(!is_owner(0, 0x1000));
+        set_owner(0, 0x1000);
+        set_owner(1, 0x2000);
+        assert_eq!(owner(0), 0x1000);
+        assert_eq!(owner(1), 0x2000);
+        assert!(is_owner(0, 0x1000));
+        assert!(is_owner(1, 0x2000));
+        assert!(!is_owner(0, 0x2000));  // another card's fd doesn't own it
+        clear_owner(0);
+        assert_eq!(owner(0), 0);
+        assert_eq!(owner(1), 0x2000);
+        assert!(!is_owner(0, 0x1000));
+        clear_owner(1);
     }
 
     #[test]
     fn flip_event_queue_drain() {
         // Drain any residue from other tests first.
         let mut scratch = [0u8; 4096];
-        let _ = drain_events(&mut scratch);
-        assert!(!has_events());
-        queue_flip_event(1, 0xDEAD_BEEF);
-        queue_flip_event(1, 0x1234_5678);
-        assert!(has_events());
+        let _ = drain_events(0, &mut scratch);
+        let _ = drain_events(1, &mut scratch);
+        assert!(!has_events(0));
+        assert!(!has_events(1));
+        queue_flip_event(0, 1, 0xDEAD_BEEF);
+        queue_flip_event(1, 1, 0xCAFE_BABE);
+        queue_flip_event(0, 1, 0x1234_5678);
+        assert!(has_events(0));
+        assert!(has_events(1));
         let rec = core::mem::size_of::<crate::DrmEventVblank>();
         // A buffer too small for one record drains nothing.
         let mut tiny = [0u8; 4];
-        assert_eq!(drain_events(&mut tiny), 0);
-        assert!(has_events());
+        assert_eq!(drain_events(0, &mut tiny), 0);
+        assert!(has_events(0));
         // A buffer big enough for both drains both, whole records only.
         let mut buf = [0u8; 4096];
-        let n = drain_events(&mut buf);
+        let n = drain_events(0, &mut buf);
         assert_eq!(n, 2 * rec);
-        assert!(!has_events());
+        assert!(!has_events(0));
+        assert!(has_events(1));
         // First record's type + user_data decode correctly.
         let ty = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
         assert_eq!(ty, crate::DRM_EVENT_FLIP_COMPLETE);
@@ -260,22 +295,24 @@ mod tests {
         let ud = u64::from_le_bytes([buf[8], buf[9], buf[10], buf[11],
                                      buf[12], buf[13], buf[14], buf[15]]);
         assert_eq!(ud, 0xDEAD_BEEF);
+        assert_eq!(drain_events(1, &mut buf), rec);
+        assert!(!has_events(1));
     }
 
     #[test]
     fn drain_partial_leaves_remainder() {
         let mut scratch = [0u8; 4096];
-        let _ = drain_events(&mut scratch);
+        let _ = drain_events(0, &mut scratch);
         let rec = core::mem::size_of::<crate::DrmEventVblank>();
-        queue_flip_event(1, 1);
-        queue_flip_event(1, 2);
-        queue_flip_event(1, 3);
+        queue_flip_event(0, 1, 1);
+        queue_flip_event(0, 1, 2);
+        queue_flip_event(0, 1, 3);
         // Buffer fits exactly two records → drains two, leaves one.
         let mut two = alloc::vec![0u8; 2 * rec];
-        assert_eq!(drain_events(&mut two), 2 * rec);
-        assert!(has_events());
+        assert_eq!(drain_events(0, &mut two), 2 * rec);
+        assert!(has_events(0));
         let mut one = alloc::vec![0u8; rec];
-        assert_eq!(drain_events(&mut one), rec);
-        assert!(!has_events());
+        assert_eq!(drain_events(0, &mut one), rec);
+        assert!(!has_events(0));
     }
 }

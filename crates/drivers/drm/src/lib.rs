@@ -769,6 +769,37 @@ mod tests {
         assert!(unregister(first));
         assert!(unregister(second));
     }
+
+    fn scanout_create(_pa: u64, _w: u32, _h: u32, _fmt: u32) -> Option<u32> { Some(1) }
+    fn scanout_set(_res_id: u32, _w: u32, _h: u32) -> bool { true }
+    fn scanout_restore() -> bool { true }
+    fn boot_one() -> u32 { 1 }
+    fn boot_two() -> u32 { 2 }
+
+    #[test]
+    fn scanout_ops_are_card_scoped() {
+        node::clear_scanout_ops(0);
+        node::clear_scanout_ops(1);
+        node::set_scanout_ops(0, node::ScanoutOps {
+            create_from_pa: scanout_create,
+            set_scanout: scanout_set,
+            restore_console: scanout_restore,
+            boot_res_id: boot_one,
+        });
+        node::set_scanout_ops(1, node::ScanoutOps {
+            create_from_pa: scanout_create,
+            set_scanout: scanout_set,
+            restore_console: scanout_restore,
+            boot_res_id: boot_two,
+        });
+
+        assert_eq!(node::scanout_ops(0).map(|ops| (ops.boot_res_id)()), Some(1));
+        assert_eq!(node::scanout_ops(1).map(|ops| (ops.boot_res_id)()), Some(2));
+        node::clear_scanout_ops(0);
+        assert!(node::scanout_ops(0).is_none());
+        assert_eq!(node::scanout_ops(1).map(|ops| (ops.boot_res_id)()), Some(2));
+        node::clear_scanout_ops(1);
+    }
 }
 
 pub mod crtc;
