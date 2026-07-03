@@ -101,9 +101,6 @@ fn snapshot_net_devs() -> Vec<(net::NetIfaceId, Arc<dyn net::NetDev>)> {
 
 #[cfg(target_os = "oxide-kernel")]
 fn netdev_has_model_device(name: &str) -> bool {
-    if name == "lo" {
-        return true;
-    }
     drv::devices().iter().any(|dev| dev.bus == "net" && dev.addr == name)
 }
 

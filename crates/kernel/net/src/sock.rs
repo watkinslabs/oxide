@@ -31,6 +31,12 @@ pub unsafe fn init() {
 /// # C: O(1)
 pub fn stack() -> &'static NetStack { &STACK }
 
+/// Registered loopback iface id after `init()`.
+/// # C: O(1)
+pub fn loopback_iface_id() -> Option<NetIfaceId> {
+    LO.lock().as_ref().map(|(id, _)| *id)
+}
+
 /// Drain lo's xmit queue back through deliver_rx; synchronous on
 /// every UDP send + after deliver_rx (so ICMP echo replies the
 /// path itself xmit'd land). Replaces a real soft-IRQ NET_RX.

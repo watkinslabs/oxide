@@ -636,7 +636,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // lo (not eth0). Idempotent (the later net::sock::init() is then a no-op).
     // SAFETY: post-allocator-up; no other CPU has run AF_INET syscalls yet.
     #[cfg(target_os = "oxide-kernel")]
-    unsafe { net::sock::init(); }
+    unsafe {
+        net::sock::init();
+        publish_loopback_netdev();
+    }
     #[cfg(target_os = "oxide-kernel")]
     { crate::pci_boot::enumerate_and_log(); }
 
@@ -859,6 +862,23 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // (Linux wakeup_softirqd target). Installs the softirq wakeup hook.
     #[cfg(target_os = "oxide-kernel")] sched::live::spawn_ksoftirqd();
     sched::halt_forever()
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn publish_loopback_netdev() {
+    let Some(iface) = net::sock::loopback_iface_id() else {
+        return;
+    };
+    if drv::devices().iter().any(|dev| dev.bus == "net" && dev.addr == "lo") {
+        return;
+    }
+    drv::device_add(alloc::sync::Arc::new(drv::Device::new(
+        "net",
+        alloc::string::String::from("lo"),
+        0,
+        0,
+        iface.raw(),
+    )));
 }
 
 

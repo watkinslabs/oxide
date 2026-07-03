@@ -79,9 +79,9 @@ test-pass claims.
   keyed to the owning parent BDF, so a remove for another device cannot clear
   the installed transport. TX/RX queue cursors now live in the installed
   device state, and the TX primitive has a BDF-keyed entry point. Current
-  post-merge work also publishes a model-owned `net` device for the virtio-net
-  interface, and sysfs exposes non-loopback `/sys/class/net` entries only while
-  that model device exists.
+  post-merge work also publishes model-owned `net` devices for loopback and
+  virtio-net interfaces, and sysfs exposes `/sys/class/net` entries only while
+  the corresponding model device exists.
 - Virtio-vsock remove is keyed to the owning parent BDF and clears its
   `VsockRx` bottom half only for the installed transport. The transport
   context table is BDF-keyed, and the upper `net::vsock` layer now registers
@@ -137,10 +137,11 @@ test-pass claims.
   and virtio-snd, but there is no systematic devres/resource-stack mechanism
   or fault-injection proof after every step.
 - Devtmpfs publication is model-owned for many real nodes, including block,
-  DRM, fbdev, input, RNG, and sound. Virtio-net class visibility now has a
-  model-owned device gate as well. The branch still needs an audit for all
-  direct runtime `devfs::register` users and for remaining class directories
-  that are still synthesized from subsystem registries.
+  DRM, fbdev, input, RNG, and sound. Net class visibility now has a
+  model-owned device gate for loopback and virtio-net devices as well. The
+  branch still needs an audit for all direct runtime `devfs::register` users
+  and for remaining class directories that are still synthesized from
+  subsystem registries.
 - Sysfs exposes more Linux-shaped bus state, including `/sys/dev/char`,
   `/sys/dev/block`, parent/subsystem links, and model-backed bind/unbind attrs,
   but class-device topology and repeated bind/unbind/remove/readd behavior are
