@@ -53,20 +53,41 @@ unit whose sysfs backing it can't reconcile, or udevd re-triggers). The DRM
 ioctl surface (`drm/src/modeset.rs`: GETRESOURCES/GETCONNECTOR/SET_MASTER) looks
 complete and returns real card data — it's just never exercised yet.
 
+**Storm facts pinned this session (all traced):**
+- card0 `uevent` is written exactly ONCE (`[UEWRITE] card0 act=add`) — NOT a
+  re-emit feedback loop.
+- `/dev/dri/card0` is opened ZERO times during the storm — logind never masters
+  it; `[DRMIOCTL]` count = 0. So the storm is NOT a DRM/KMS master failure.
+- The netlink uevent socket recvmsg/read correctly returns EAGAIN on empty
+  (`netlink_fd.rs:164`, `netlink/src/lib.rs:283`) and `poll()` only sets POLLIN
+  when the rx_queue is non-empty — so it is NOT the #2317 edge-triggered-spin
+  bug class either.
+- systemd DID create a Device unit for card0 ("Registering bus object
+  implementation … iface=…systemd1.Device").
+- **Heisenbug:** at default log level the drm "add" tips PID1's sd-event rate
+  limiter → "Looping too fast. Throttling execution" (~100+/boot), boot wedges
+  ~1400 lines. At `systemd.log_level=debug` the extra logging slows PID1 below
+  the threshold (storm≈1) but the boot is then too slow to reach the seat stage
+  in-window. So the storm is systemd-internal event churn from the drm
+  device-unit, and it needs introspection AT the loop moment (which changes the
+  timing) — a genuine wall for kernel-trace/cold-boot iteration.
+
 **Next steps (revised):**
-1. Understand the uevent storm: with the emit re-added + kmsg, watch what
-   systemd unit/job repeats (grep the storm log for `.device`, `card0`, job
-   activity). Compare the exact env systemd expects from a real Linux drm "add"
-   uevent (SEQNUM, ACTION, DEVPATH walkable under /sys, MODALIAS, ID_PATH…) vs
-   what `netlink::emit_uevent_with_env(_, "/devices/virtual/drm/card0", "drm",
-   …)` produces. A minimal/malformed synthetic uevent that systemd can't map to
-   a stat-able /sys device makes PID1 loop.
-   Repro artifacts this session: emit in `sysfs/src/drm.rs::DrmUeventFileOps::write`
-   (currently the documented no-op); `[DRMIOCTL]` trace at `drm/src/node.rs:192`.
-2. Once the uevent is accepted without storming → udevd tags card0
-   `master-of-seat` → logind opens card0 → THEN the DRM ioctl handshake
-   (GETRESOURCES ≥1 crtc/connector, SET_MASTER) gets exercised; fix any gaps.
-3. Then chase gnome-shell/Xwayland launch on the graphical seat.
+1. Get systemd's per-event-source detail at the storm. Options: raise the
+   sd-event rate-limit is not ours to change; instead instrument WHICH fd/event
+   systemd polls in the loop — add a kernel trace on the specific netlink /
+   D-Bus fd systemd's udev-monitor uses and count epoll_wait→recvmsg cycles, or
+   compare our synthetic drm uevent env against a real Linux one field-by-field
+   (MODALIAS, ID_PATH, USEC_INITIALIZED, .device SYSTEMD_ALIAS) — a missing
+   field may make systemd re-queue the device job repeatedly.
+2. Only after the uevent is accepted without storming does the DRM-master path
+   (GETRESOURCES/SET_MASTER — surface looks complete in `drm/src/modeset.rs`)
+   get exercised; fix gaps then.
+3. Then gnome-shell/Xwayland launch on the graphical seat.
+Repro artifacts (re-add to reproduce): the uevent emit in
+`sysfs/src/drm.rs::DrmUeventFileOps::write` (currently the documented no-op),
+`[DRMIOCTL]` trace at `drm/src/node.rs` handle_drm_ioctl entry, `[CARDOPEN]`
+trace in `257_openat.rs` after resolve.
 
 ## Boot/diagnosis notes
 - **Diagnostic cmdline**: `../oxide-images/imagectl/src/main.rs` ~line 963 GRUB
