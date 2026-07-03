@@ -224,6 +224,44 @@ fn abs_string(d: &Arc<Dentry>) -> String {
     String::from_utf8(d.absolute_path()).unwrap_or_else(|_| String::from("/"))
 }
 
+/// MOUNT-AWARE rendered path for a mount attached at dentry `d` under `parent_id`
+/// (true Linux `d_path`, which walks the MOUNT tree — mnt_parent chain — not the
+/// global dentry chain). Bind mounts SHARE the source dentry, so `abs_string(d)`
+/// (a pure d_parent walk) yields the SOURCE's path and drops the bind prefix — a
+/// self-bind of `/run/systemd/mount-rootfs/proc/sys/kernel/domainname` rendered as
+/// the real `/proc/sys/kernel/domainname`, so systemd never saw the prefix become
+/// a mount and its `bind_remount_recursive` convergence loop spun to its 32-try
+/// EBUSY cap (status 226). Reconstruct as `parent.rendered_path` + `d`'s suffix
+/// past the parent mount's root dentry. Parents are created before children
+/// (Linux `attach_recursive_mnt` top-down), so the recursion bottoms out at a
+/// mount on a NON-shared dentry where `abs_string` is already correct. Falls back
+/// to `abs_string(d)` at the ns root or when the suffix cannot be taken. For a
+/// non-shared dentry the result equals `abs_string(d)` (the two chains agree), so
+/// this is a strict refinement. # C: O(depth)
+fn rendered_path_for(parent_id: u64, d: &Arc<Dentry>) -> String {
+    let d_ap = d.absolute_path();
+    if let Some(p) = mount_by_id(parent_id) {
+        if let Some(proot) = root_dentry_for_mount_id(parent_id) {
+            let root_ap = proot.absolute_path();
+            if d_ap.starts_with(root_ap.as_slice()) {
+                // `/` root dentry renders as "/" (len 1); stripping it would eat the
+                // leading slash, so treat the fs root as a zero-length prefix.
+                let strip = if root_ap.as_slice() == b"/" { 0 } else { root_ap.len() };
+                let rel = core::str::from_utf8(&d_ap[strip..]).unwrap_or("");
+                let prp = p.mount_point_str();
+                return if prp == "/" {
+                    if rel.is_empty() { String::from("/") } else { String::from(rel) }
+                } else {
+                    let mut s = prp;
+                    s.push_str(rel);      // rel starts with '/' (or is empty ⇒ stacked at prp)
+                    s
+                };
+            }
+        }
+    }
+    String::from_utf8(d_ap).unwrap_or_else(|_| String::from("/"))
+}
+
 /// Materialise the dentry at `rel` beneath `base` by a dentry→dentry descent
 /// that CROSSES MOUNTS at each component exactly as namei does — the
 /// engine-internal resolver for SYNTHESIZED mount positions (propagation
@@ -894,7 +932,7 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64)
         return Ok(());
     };
     let parent_id = parent_by_dentry(ns, &d);
-    let rendered = abs_string(&d);
+    let rendered = rendered_path_for(parent_id, &d);
     let m = new_mount(sb, rendered, Some(d.clone()), parent_id, mnt_id, ns);
     // [D51] Stamp the requested option bits before the mount goes live, so a
     // following propagate_mount peer-copy inherits them via clone_mnt.
@@ -930,6 +968,40 @@ pub fn register_bind(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Ino
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("register_bind", 0, 0, mp.as_ref(), None, None);
     attach(mp, fs, Some(root))
+}
+
+/// Bind attach with an EXPLICIT parent mount id + rendered path — Linux
+/// `do_add_mount` keys the target on the caller's `struct path` (`vfsmount` +
+/// `dentry`), NOT the dentry alone. Required when the mountpoint dentry `mp_d` is
+/// SHARED across bind locations: e.g. systemd's `bind_remount_recursive` does a
+/// self-bind of a procfs leaf inside `/run/systemd/mount-rootfs/...`, but that
+/// leaf's dentry is the SAME Arc as the real `/proc/...` leaf, so
+/// `parent_by_dentry` (a d_parent walk) picks the REAL /proc as parent and hashes
+/// the bind under it — invisible at the staging prefix. systemd then never sees
+/// the prefix become a mount and its remount loop spins to the 32-try EBUSY cap
+/// (status 226). Passing the RESOLVED target mount (`resolve_path(target).mnt_id`)
+/// as the parent puts the bind at the right `(parent_id, dentry)` hash slot and
+/// renders the correct path. # C: O(1)
+pub fn register_bind_under(parent_id: u64, mp_d: Arc<Dentry>, rendered: String,
+    fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
+    let ns = current_ns();
+    mntns::count_mounts(ns, 1)?;
+    let sb = build_sb(fs, Some(root), rendered.clone());
+    let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
+    let m = new_mount(sb, rendered, Some(mp_d.clone()), parent_id, mnt_id, ns);
+    {
+        let _w = MOUNT_WRITE.lock();
+        *m.mnt_mp.lock() = Some(get_mountpoint(&mp_d));
+        if let Some(p) = mount_by_id(parent_id) {
+            *m.mnt_parent.lock() = Arc::downgrade(&p);
+            p.mnt_mounts.lock().push(m.clone());
+        }
+        MOUNTS.lock().insert(mnt_id, m);
+        hash_insert(parent_id, dptr(&mp_d), mnt_id);
+    }
+    mntns::commit_mounts(ns, 1);
+    mntns::bump_gen(ns);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1162,7 +1234,7 @@ pub(super) fn commit_tree(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>,
         // RESERVE before any visible state (Linux `count_mounts` in
         // `attach_recursive_mnt`); over the per-ns cap ⇒ skip this node+subtree.
         if mntns::count_mounts(ns, 1).is_err() { mark_dead(&mut dead, &rel); release_clone(&m); continue; }
-        let rendered = abs_string(&mp_d);
+        let rendered = rendered_path_for(parent_id, &mp_d);
         let mnt_root = m.mnt_root();
         // [D28a] one writer-serialized structural region per node (after the
         // sleeping `descend_nocross` resolved `mp_d` above): parent/child links +
@@ -1888,6 +1960,16 @@ fn apply_remount(m: &Arc<Mount>, flags: u64) -> KResult<()> {
 /// `new = (old & !clr) | set`, MASKED to `MNT_OPTION_MASK` so only per-mount
 /// option bits move (internal flags untouched). No writer guard — callers that
 /// can set RDONLY gate first. # C: O(1)
+/// Apply a `mount_setattr(2)` MNT_* option change to a DETACHED mount (an
+/// `fsmount`/`open_tree` object not yet in any namespace tree). No ns/arena
+/// gate (the mount is unlinked), no writer guard (a detached mount has no
+/// writers). Used by `mount_setattr(fd,"",AT_EMPTY_PATH,...)` so systemd's
+/// fsmount→mount_setattr→move_mount sequence attaches the subtree already
+/// read-only. # C: O(1)
+pub fn apply_mnt_attrs_detached(m: &Arc<Mount>, set_mnt: u64, clr_mnt: u64) {
+    commit_mnt_attrs(m, set_mnt, clr_mnt);
+}
+
 fn commit_mnt_attrs(m: &Arc<Mount>, set_mnt: u64, clr_mnt: u64) {
     let old = m.flags.load(Ordering::Acquire);
     let set = set_mnt & MNT_OPTION_MASK;
