@@ -662,7 +662,7 @@ impl drv::Driver for VirtioVsockDrv {
     fn shutdown(&self, dev: &drv::Device) {
         let Some(bdf) = pci_parent_bdf(dev) else { return };
         let device_key = bdf_word(bdf);
-        let _ = drv_virtio_vsock::uninstall(device_key);
+        let _ = drv_virtio_vsock::shutdown(device_key);
     }
 }
 static VIRTIO_VSOCK_DRV: VirtioVsockDrv = VirtioVsockDrv;
