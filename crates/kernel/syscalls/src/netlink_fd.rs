@@ -282,23 +282,42 @@ pub fn sendto(fd: u64, bufp: u64, len: usize, dest_p: u64, dest_len: u64) -> i64
     }
     // SAFETY: caller's range check + the bounds-add above.
     let buf = unsafe { core::slice::from_raw_parts(bufp as *const u8, len) };
-    // Destination multicast group (sockaddr_nl.nl_groups @ +8), if supplied.
-    let dest_groups: u32 = if dest_p != 0 && dest_len >= 12 && dest_p + 12 <= USER_VA_END {
+    send_slice(&file, buf, dest_nl_groups(dest_p, dest_len))
+}
+
+/// Read the destination multicast group from a user `sockaddr_nl` (nl_groups @
+/// +8), or 0 when absent. # C: O(1)
+fn dest_nl_groups(dest_p: u64, dest_len: u64) -> u32 {
+    if dest_p != 0 && dest_len >= 12 && dest_p + 12 <= USER_VA_END {
         // SAFETY: dest_p+12 validated in-range; nl_groups is a 4-byte field @ +8.
         unsafe { core::ptr::read_volatile((dest_p + 8) as *const u32) }
-    } else { 0 };
-    // NETLINK_KOBJECT_UEVENT cooked re-broadcast: systemd-udevd sends the
-    // COOKED libudev message (magic "libudev\0" prefix) to a monitor group so
-    // systemd PID1 / logind receive processed device events. Route it to the
-    // userspace→userspace multicast path instead of nlmsghdr request handling
-    // (a cooked message is NOT an nlmsghdr). Match on the libudev magic or a
-    // multicast destination on a KOBJECT_UEVENT socket.
+    } else { 0 }
+}
+
+/// Send one ALREADY-COALESCED netlink message (a single datagram) — the slice
+/// may be a kernel buffer assembled from a `sendmsg` iovec vector.
+/// # C: O(len)
+pub fn send_coalesced(fd: u64, buf: &[u8], name: u64, namelen: u64) -> i64 {
+    let file = match fd_file_local(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
+    send_slice(&file, buf, dest_nl_groups(name, namelen))
+}
+
+/// Core netlink send over a byte slice. A KOBJECT_UEVENT socket carrying a
+/// COOKED libudev message (magic "libudev\0" prefix) or a multicast destination
+/// re-broadcasts to the monitor group so systemd PID1 / logind receive processed
+/// device events (a cooked message is NOT an nlmsghdr). The cooked datagram is
+/// header+properties across MULTIPLE `sendmsg` iovecs — it must be coalesced
+/// (see `sys_sendmsg`) so the whole libudev message reaches the monitor as one
+/// datagram, not split into a header-only + properties-only pair that logind
+/// can't parse (card0 add lost → seat0 never CanGraphical → no greeter).
+/// # C: O(len)
+fn send_slice(file: &alloc::sync::Arc<vfs::File>, buf: &[u8], dest_groups: u32) -> i64 {
     if let Some(s) = file.inode().private::<::netlink::NetlinkSocket>() {
         let is_uevent = s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT;
-        let is_cooked = len >= 8 && &buf[..8] == b"libudev\0";
+        let is_cooked = buf.len() >= 8 && &buf[..8] == b"libudev\0";
         if is_uevent && (is_cooked || dest_groups != 0) {
             ::netlink::rebroadcast_cooked_uevent(buf, dest_groups, s);
-            return len as i64;
+            return buf.len() as i64;
         }
     }
     match file.inode().write(0, buf) {
