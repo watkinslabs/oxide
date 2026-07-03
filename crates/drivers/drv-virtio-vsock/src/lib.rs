@@ -207,6 +207,35 @@ pub fn uninstall(device_key: u32) -> bool {
     true
 }
 
+/// Quiesce the installed vsock transport for terminal system shutdown.
+///
+/// This is not hot-remove: it leaves the upper `net::vsock` endpoint installed
+/// so visible protocol state is not torn down during shutdown, but TX/RX can no
+/// longer touch the device.
+/// # C: O(RX_BUFS)
+pub fn shutdown(device_key: u32) -> bool {
+    let mut ctx = {
+        let mut g = CTX.lock();
+        match g.as_ref() {
+            Some(ctx) if ctx.device_key == device_key => {}
+            _ => return false,
+        }
+        g.take().unwrap()
+    };
+    if SOFTIRQ_INSTALLED.swap(false, Ordering::AcqRel) {
+        let _ = softirq::clear_handler(softirq::Slot::VsockRx);
+    }
+    // Virtio reset: write 0 to device_status (§3.1.1), using byte access.
+    unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    free_rx_bufs(&mut ctx.rx_bufs);
+    if ctx.tx_buf_pa != 0 {
+        // SAFETY: tx_buf_pa was returned by alloc_one_frame in install and is
+        // no longer reachable after CTX.take().
+        unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
+    }
+    true
+}
+
 /// Guest CID accessor (0 if no device). # C: O(1)
 pub fn guest_cid() -> u64 {
     CTX.lock().as_ref().map(|c| c.guest_cid).unwrap_or(0)
