@@ -574,6 +574,12 @@ impl drv::Driver for VirtioRngDrv {
             unpublish_transport_mmio(bdf_word);
         }
     }
+
+    fn shutdown(&self, dev: &drv::Device) {
+        if let Some(bdf) = pci_parent_bdf(dev) {
+            let _ = drv_virtio_rng::shutdown(bdf_word(bdf));
+        }
+    }
 }
 static VIRTIO_RNG_DRV: VirtioRngDrv = VirtioRngDrv;
 
