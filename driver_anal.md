@@ -15,7 +15,7 @@ shape, but it is not a Linux-complete driver model yet.
 Estimated branch-local status:
 
 - Driver-core lifecycle cleanup: about 80% complete.
-- Concrete driver probe/remove/shutdown cleanup: about 74% complete.
+- Concrete driver probe/remove/shutdown cleanup: about 75% complete.
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
@@ -97,7 +97,8 @@ test-pass claims.
   `VsockRx` bottom half only for the installed transport. The upper
   `net::vsock` layer is still a single global guest-CID/TX-hook protocol
   endpoint, so simultaneous multi-transport vsock is not complete, but it now
-  rejects a second active hook instead of overwriting the live endpoint.
+  reserves that endpoint before transport frame allocation and rejects a second
+  active hook instead of overwriting the live endpoint.
 - Virtio-rng now keeps per-BDF records, seeds from the just-bound device,
   removes by owning parent BDF, and promotes `/dev/hwrng` publication to a
   remaining RNG device on active-provider removal. Virtio-snd install/remove
@@ -153,8 +154,9 @@ test-pass claims.
   has a singleton installed-device slot and needs a real per-net-device table.
   Virtio-gpu teardown is BDF-owned, but the installed DRM/scanout device is still
   singleton. Virtio-vsock's upper protocol layer and virtio-snd's upper
-  sound-card layer also still retain singleton limits; vsock now fails a second
-  protocol publish cleanly instead of replacing the installed transport.
+  sound-card layer also still retain singleton limits; vsock now reserves its
+  singleton protocol endpoint before allocation and fails a second transport
+  cleanly instead of replacing the installed transport.
 - UART and PS/2 platform drivers now have model probes/removes, but they are
   still intentionally singleton hardware paths, not general multi-device
   serial/input infrastructure.

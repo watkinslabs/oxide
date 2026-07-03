@@ -73,11 +73,11 @@ pub fn present_for(device_key: u32) -> bool {
         .unwrap_or(false)
 }
 
-/// Install the q0(RX)+q1(TX) ring context. Allocates RX bounce frames,
-/// pre-posts them on q0 + kicks, allocates the TX bounce frame, then
-/// publishes the guest CID + TX hook into `net::vsock`. Returns false if
-/// HHDM/ring PAs are missing or no frames are available (device left
-/// uninstalled). # C: O(RX_RING_BUFS)
+/// Install the q0(RX)+q1(TX) ring context. Reserves the upper vsock endpoint
+/// before allocating transport frames, allocates RX/TX bounce frames, pre-posts
+/// RX on q0 + kicks, then publishes the guest CID + TX hook into `net::vsock`.
+/// Returns false if HHDM/ring PAs are missing, the upper endpoint is busy, or
+/// no frames are available. # C: O(RX_RING_BUFS)
 pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u64) -> bool {
     let Some(rxq) = resources.require_queue(0) else {
         return false;
@@ -91,12 +91,16 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u
     if CTX.lock().is_some() {
         return false;
     }
+    if !net::vsock::driver_reserve() {
+        return false;
+    }
     let mut rx_bufs = [0u64; RX_RING_BUFS];
     for slot in rx_bufs.iter_mut() {
         match pmm::setup::alloc_one_frame() {
             Some(pa) => *slot = pa,
             None => {
                 free_rx_bufs(&mut rx_bufs);
+                net::vsock::driver_cancel_reserved();
                 return false;
             }
         }
@@ -105,6 +109,7 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u
         Some(pa) => pa,
         None => {
             free_rx_bufs(&mut rx_bufs);
+            net::vsock::driver_cancel_reserved();
             return false;
         }
     };
@@ -140,6 +145,7 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u
             // not published to the device model because another context won.
             unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
         }
+        net::vsock::driver_cancel_reserved();
         return false;
     }
     *g = Some(ctx);
@@ -148,21 +154,8 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u
     // Pre-post all RX buffers + kick the device.
     rx::prepost_all();
 
-    // Publish guest CID + TX hook so net::vsock can drive the protocol. If
-    // the protocol endpoint is already owned, undo only this probe's transport
-    // state; do not clear the existing net::vsock hook.
-    if !net::vsock::driver_install(guest_cid, tx_packet) {
-        let mut ctx = CTX.lock().take().unwrap();
-        // Virtio reset: write 0 to device_status (§3.1.1), using byte access.
-        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
-        free_rx_bufs(&mut ctx.rx_bufs);
-        if ctx.tx_buf_pa != 0 {
-            // SAFETY: tx_buf_pa was allocated in this install attempt and is
-            // not reachable after CTX.take().
-            unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
-        }
-        return false;
-    }
+    // Publish guest CID + TX hook so net::vsock can drive the protocol.
+    net::vsock::driver_publish_reserved(guest_cid, tx_packet);
     if !SOFTIRQ_INSTALLED.swap(true, Ordering::AcqRel) {
         softirq::set_handler(softirq::Slot::VsockRx, rx_drain_softirq);
     }
