@@ -79,13 +79,29 @@ never opened → seat0 not graphical. Traced chain state:
   socket, which PID1 legitimately does NOT drain (it hands it to udevd). udevd's
   ACTUAL behavior is therefore UNVERIFIED — the earlier UEVREAD=0 traces need
   re-attribution.
-- **Corrected next step — identify systemd-udevd's tid CORRECTLY, then trace it.**
-  Match the process by exe path (`Task.exe_path` contains `systemd-udevd`) rather
-  than "first uevent poller", set the `WATCH_TID` probe from there, and dump ITS
-  syscall stream + openat paths. Determine: does the real udevd (a) receive the
-  card0 event on ITS monitor fd (socket-activation fd-passing correct?), (b) read
-  it, (c) process it (read /sys/devices/virtual/drm/card0 attrs), (d) write
-  `/run/udev/data/c226:0` + re-broadcast. The break is somewhere in a–d.
+- **REAL udevd traced (latched by exe_path in `record_syscall`): it is STUCK/
+  very-slow in INITIALIZATION and never reaches device processing.** Across 1646
+  captured `openat`s the real systemd-udevd opens **ZERO `/sys` paths** (no
+  `/sys/devices`, no card0), writes **ZERO `/run/udev/data`**, and at the end of
+  the window is STILL loading rule files (`/usr/lib/udev/rules.d/77-mm-*`,
+  `78-sound-card`, `80-drivers`, `81-net-dhcp`, …) and doing heavy **userdb/NSS/
+  group** lookups (`/run/userdb`, `/etc/userdb`, `/run/systemd/userdb`,
+  `/run/host/userdb`, `/usr/lib/userdb`, `/etc/group` — ~30 opens each) plus
+  probing `/dev/*` (fuse/kvm/loop-control/net-tun/snd/vfio/vhost). So card0 is
+  never tagged because udevd never gets past init to its event loop.
+- **PRIME SUSPECT: udevd init is stalled on userdb / NSS resolution** (udevd
+  resolves `OWNER=`/`GROUP=` names — e.g. `GROUP="video"`/`"render"` for DRM
+  perms — via userdb/NSS). If those lookups hang/retry (systemd-userdbd varlink
+  not answering, or NSS group lookup slow/failing), rule setup never completes.
+  NOTE: an earlier B302-era EXIT_USER(217) NSS-userdb-varlink cause was flagged
+  but not confirmed fixed — revisit. Next: trace udevd's userdb/`/etc/group`
+  open RETURNS (ENOENT? hang?) minimally (few klog lines, not per-syscall which
+  slows udevd over serial), and check whether systemd-userdbd is running +
+  answering its varlink socket. Confounder: per-syscall/per-open klog traces add
+  1 serial write each and materially slow udevd — keep probes minimal.
+- Determine also (socket-activation): once udevd DOES reach its event loop, does
+  it read the coldplug uevents (which arrived on a group-1 socket)? Not yet
+  reached, so untested.
 - Still faster with real udevd introspection: interactive serial (`make -C
   ../oxide-images run-serial`; getty.target is up) → `strace -p $(pidof
   systemd-udevd)`, `udevadm monitor --kernel --udev`, `journalctl -u
