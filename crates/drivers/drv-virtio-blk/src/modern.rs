@@ -263,6 +263,29 @@ impl BlkState {
         BLK_COMPL.wake_all();
     }
 
+    /// Quiesce for reboot/poweroff. Unlike hot-unplug remove, shutdown keeps
+    /// block publication and the per-device record intact because the machine
+    /// is entering a terminal state; it only prevents new I/O and resets the
+    /// virtio device so DMA stops before firmware/host reset.
+    /// # C: O(wait until active request drains, bounded by IO_TIMEOUT_NS)
+    fn shutdown(&self) {
+        self.poisoned.store(true, core::sync::atomic::Ordering::Release);
+        #[cfg(target_os = "oxide-kernel")]
+        BLK_COMPL.wake_all();
+        let idle = self.wait_idle_for_remove();
+        if self.cfg_va != 0 {
+            // Virtio reset: write 0 to device_status (§3.1.1). If a request
+            // is wedged, keep the bounce frame quarantined; terminal shutdown
+            // does not return it to the allocator.
+            unsafe { core::ptr::write_volatile((self.cfg_va + 0x14) as *mut u8, 0u8); }
+        }
+        if !idle {
+            klog::write_raw(b"[BLK-SHUTDOWN] reset with busy request quarantined\n");
+        }
+        #[cfg(target_os = "oxide-kernel")]
+        BLK_COMPL.wake_all();
+    }
+
     /// Freeze new I/O and wait for the single in-flight request owner to leave
     /// the bounce region before freeing it. A permanently wedged request keeps
     /// the bounce run quarantined rather than freeing memory still reachable
@@ -332,7 +355,9 @@ impl BlkState {
         self.acquire_turn();
         if self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
             // Poisoned while we waited: the ring/bounce belong to the wedged
-            // request forever; do not touch them.
+            // request forever. If this task acquired the turn before seeing
+            // poison, it has not published DMA, so release the gate.
+            self.release_turn();
             return Err(BlockError::Eio);
         }
         let r = self.do_request(h, type_, sector, data, is_in, is_flush, data_len);
@@ -773,6 +798,22 @@ pub fn remove_blk(bus: u8, device: u8, function: u8) -> bool {
     };
     rec.state.remove();
     block::registry::unregister(&rec.name)
+}
+
+/// Shutdown the virtio-blk device identified by its PCI BDF without
+/// unregistering block/devtmpfs/sysfs publication. Used by reboot/poweroff,
+/// not hot-unplug.
+/// # C: O(N_virtio_blk + shutdown)
+pub fn shutdown_blk(bus: u8, device: u8, function: u8) -> bool {
+    let state = {
+        DEVICES.lock()
+            .iter()
+            .find(|d| same_bdf(d, bus, device, function))
+            .map(|d| d.state.clone())
+    };
+    let Some(state) = state else { return false; };
+    state.shutdown();
+    true
 }
 
 #[cfg(test)]

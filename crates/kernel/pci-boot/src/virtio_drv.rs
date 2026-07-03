@@ -478,6 +478,12 @@ impl drv::Driver for VirtioBlkDrv {
             unpublish_transport_mmio(bdf_word(bdf));
         }
     }
+
+    fn shutdown(&self, dev: &drv::Device) {
+        if let Some(bdf) = pci_parent_bdf(dev) {
+            let _ = super::virtio_blk_cfg::shutdown_blk(bdf.bus, bdf.device, bdf.function);
+        }
+    }
 }
 static VIRTIO_BLK_DRV: VirtioBlkDrv = VirtioBlkDrv;
 

@@ -262,6 +262,30 @@ fn remove_blk_unregisters_block_disk_and_device_node() {
 }
 
 #[test]
+fn shutdown_blk_quiesces_without_unregistering_publication() {
+    let seq = TEST_DISK_SEQ.fetch_add(1, Ordering::Relaxed);
+    let name = format!("vdtest{}shutdown", seq);
+    let bus = 0xe0;
+    let device = (seq as u8).wrapping_add(1);
+    let function = 0;
+
+    assert_eq!(crate::modern::test_publish_record(bus, device, function, &name), 1);
+    assert!(crate::modern::test_has_record(bus, device, function));
+    let disk = block::registry::by_name(&name).unwrap();
+
+    assert!(crate::modern::shutdown_blk(bus, device, function));
+    assert!(crate::modern::test_has_record(bus, device, function));
+    assert!(block::registry::by_name(&name).is_some());
+    assert!(drv::devices().iter().any(|d| d.bus == "block" && d.addr == name));
+
+    let mut req = BlockRequest::new_read(0, 1, 512);
+    assert_eq!(disk.dev.submit_sync(&mut req), Err(BlockError::Eio));
+
+    assert!(crate::modern::remove_blk(bus, device, function));
+    assert!(block::registry::by_name(&name).is_none());
+}
+
+#[test]
 fn sector_plan_blocks_to_sectors() {
     // blk_size 4096: 1 block = 8 virtio sectors.
     assert_eq!(blk::sector_plan(0, 1, 4096), Some((0, 8)));

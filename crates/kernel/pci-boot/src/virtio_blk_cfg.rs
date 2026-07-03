@@ -84,3 +84,10 @@ pub(super) fn register_blk(
 pub(super) fn remove_blk(bus: u8, device: u8, function: u8) -> bool {
     drv_virtio_blk::modern::remove_blk(bus, device, function)
 }
+
+/// Quiesce the virtio-blk device for reboot/poweroff without unregistering
+/// userspace-visible publication.
+/// # C: O(N_virtio_blk + shutdown)
+pub(super) fn shutdown_blk(bus: u8, device: u8, function: u8) -> bool {
+    drv_virtio_blk::modern::shutdown_blk(bus, device, function)
+}
