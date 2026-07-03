@@ -396,6 +396,24 @@ mod imp {
         PRESENT.store(false, Ordering::Release);
     }
 
+    /// Stop keyboard scan/IRQ delivery for terminal system shutdown while
+    /// keeping the bound platform device state intact.
+    /// # SAFETY: CPL=0 i8042 port I/O; driver-core shutdown owns quiesce.
+    /// # C: O(spin) bounded by controller response latency.
+    unsafe fn shutdown_hw() {
+        // SAFETY: bounded CPL=0 port I/O to the i8042; no concurrent accessor.
+        unsafe {
+            let _ = set_controller_irq(false);
+            let _ = kbd_cmd(KBD_DISABLE_SCAN);
+            flush_output();
+        }
+        let pin = IRQ_PIN.load(Ordering::Acquire);
+        if pin != u64::MAX {
+            // SAFETY: I/O APIC mapping was installed before IRQ_PIN was published.
+            unsafe { hal_x86_64::ioapic::mask(pin as u32); }
+        }
+    }
+
     /// True once the i8042 keyboard was detected by `Ps2KbdDriver::probe`. # C: O(1)
     pub fn present() -> bool { PRESENT.load(Ordering::Acquire) }
 
@@ -434,6 +452,14 @@ mod imp {
             }
             // SAFETY: driver-core remove owns the bound platform/i8042 device.
             unsafe { bringdown(); }
+        }
+
+        fn shutdown(&self, _dev: &drv::Device) {
+            if !present() {
+                return;
+            }
+            // SAFETY: driver-core shutdown owns terminal platform-device quiesce.
+            unsafe { shutdown_hw(); }
         }
     }
     static PS2_DRV: Ps2KbdDriver = Ps2KbdDriver;

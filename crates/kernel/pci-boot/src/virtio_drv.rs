@@ -208,6 +208,11 @@ impl drv::Driver for VirtioPciDrv {
             drv::device_del(&child);
         }
     }
+
+    fn shutdown(&self, dev: &drv::Device) {
+        let Some(d) = pci_device_from_pci_model(dev) else { return };
+        disable_pci_command(d.bdf);
+    }
 }
 static VIRTIO_PCI_DRV: VirtioPciDrv = VirtioPciDrv;
 

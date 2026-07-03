@@ -14,8 +14,8 @@ shape, but it is not a Linux-complete driver model yet.
 
 Estimated branch-local status:
 
-- Driver-core lifecycle cleanup: about 78% complete.
-- Concrete driver probe/remove/shutdown cleanup: about 70% complete.
+- Driver-core lifecycle cleanup: about 80% complete.
+- Concrete driver probe/remove/shutdown cleanup: about 72% complete.
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
@@ -43,9 +43,10 @@ test-pass claims.
   order and calls `Driver::shutdown` without unbinding or emitting remove
   events. The power/reboot path calls this through a boot-installed hook before
   restart, poweroff, or halt.
-- Concrete shutdown callbacks now quiesce NVMe, AHCI, virtio-blk,
-  virtio-input, virtio-gpu, virtio-rng, virtio-vsock, virtio-net, and
-  virtio-snd without reusing hot-remove publication teardown.
+- Concrete shutdown callbacks now quiesce NVMe, AHCI, virtio-pci,
+  virtio-blk, virtio-input, virtio-gpu, virtio-rng, virtio-vsock,
+  virtio-net, virtio-snd, 8250, PL011, and i8042 keyboard paths without
+  reusing hot-remove publication teardown.
 - Public `register_device` bypasses have been removed from the driver model;
   `device_add` is the intended publication entry.
 - Sysfs bus-driver controls are backed by the model path for bind/unbind, with
@@ -158,9 +159,10 @@ test-pass claims.
   bound AHCI/NVMe/virtio paths now clear MEM/BUS_MASTER on teardown/failure,
   but full bridge, multi-bus, resource assignment, and PCI runtime semantics
   remain incomplete.
-- Central shutdown dispatch exists, and the main storage/virtio devices now
-  have hardware-specific quiesce paths. Remaining default no-op shutdowns still
-  need an audit across serial/input/platform and any less-common PCI paths.
+- Central shutdown dispatch exists, and the main storage, virtio, serial, and
+  PS/2 keyboard devices now have hardware-specific quiesce paths. Remaining
+  default no-op shutdowns still need an audit across any less-common PCI,
+  platform, or test-only model drivers.
 
 ## Open work
 
