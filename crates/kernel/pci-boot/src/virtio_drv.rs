@@ -898,6 +898,12 @@ fn disable_pci_command(bdf: pci::Bdf) {
     }
 }
 
+fn abandon_probe_transport(bdf: pci::Bdf, mappings: &mut TransportMappings) -> Option<VirtioProbe> {
+    disable_pci_command(bdf);
+    mappings.unmap_all();
+    None
+}
+
 fn unmap_transport_record(rec: TransportRecord) {
     disable_pci_command(bdf_from_word(rec.bdf));
     for frame in rec.vring_frames.iter().copied() {
@@ -1300,11 +1306,14 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
     let cmd_new = (cmd_orig & 0xFFFF) | (pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER) as u32;
 
     // Locate COMMON cfg + map the BAR page.
-    let common = vcaps.find(virtio::VIRTIO_PCI_CAP_COMMON_CFG)?;
+    let common = match vcaps.find(virtio::VIRTIO_PCI_CAP_COMMON_CFG) {
+        Some(common) => common,
+        None => return abandon_probe_transport(bdf, &mut mappings),
+    };
     let bar_pa = match bars[common.bar as usize] {
         pci::Bar::Mem32 { base, .. } => base as u64,
         pci::Bar::Mem64 { base, .. } => base,
-        _ => return None,
+        _ => return abandon_probe_transport(bdf, &mut mappings),
     };
     let common_pa = bar_pa + common.offset as u64;
     let page_pa = common_pa & !0xFFF;

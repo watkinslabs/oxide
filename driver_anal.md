@@ -96,6 +96,9 @@ test-pass claims.
   PCI-ID special-case dispatch. Child virtio driver probes now pass the
   optional queue-0 IRQ callback into the virtio-pci setup path; the PCI
   transport still owns MSI-X table/vector programming and teardown.
+- Virtio-pci now clears PCI MEM/BUS_MASTER and drops probe-owned mappings on
+  early transport probe exits after command enable, so missing COMMON_CFG or
+  unusable COMMON BAR decode no longer leaves the PCI function enabled.
 - Sound card publication is model-owned and registration is now guarded so a
   repeated probe cannot publish duplicate ALSA/OSS nodes.
 - Fbdev publication now unwinds its live framebuffer record when model-owned
@@ -145,8 +148,10 @@ test-pass claims.
 - QEMU-visible runtime bind/unbind/rebind proof is incomplete. Host/unit tests
   cover pieces of the model and selected drivers, but this is not a hotplug
   certification.
-- PCI enumeration is still shallow: simple QEMU devices work, but full bridge,
-  multi-bus, resource assignment, and PCI runtime semantics remain incomplete.
+- PCI enumeration/lifecycle is still shallow: simple QEMU devices work, and
+  bound AHCI/NVMe/virtio paths now clear MEM/BUS_MASTER on teardown/failure,
+  but full bridge, multi-bus, resource assignment, and PCI runtime semantics
+  remain incomplete.
 
 ## Open work
 
@@ -170,9 +175,10 @@ test-pass claims.
 - Finish Linux-visible sysfs/devtmpfs/class contracts, including class parent
   relationships, `/sys/dev/{char,block}`, and stable add/remove/change uevent
   behavior across rebind.
-- Generalize PCI lifecycle ownership: command enable/disable, BAR mapping
-  ownership, MSI/MSI-X setup/teardown, `enable`, `driver_override`, `modalias`,
-  `resource*`, and bridge topology need complete PCI-driver semantics.
+- Generalize PCI lifecycle ownership: command enable/disable is now covered for
+  the main AHCI/NVMe/virtio paths, but BAR mapping ownership, MSI/MSI-X
+  setup/teardown proof, `enable`, `driver_override`, `modalias`, `resource*`,
+  and bridge topology still need complete PCI-driver semantics.
 - Audit all remaining direct subsystem side effects so hardware-backed device
   nodes and class devices are registered by the owning probe path and removed
   by the owning remove path.
