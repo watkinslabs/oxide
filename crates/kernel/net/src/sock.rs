@@ -415,6 +415,14 @@ pub const INET_INO_TAG: u64 = 0x534F_434B_0000_0000;
 /// socket fd falls back to the global broadcast. # C: O(1)
 pub fn make_inet_socket_inode(sock: Arc<InetSocket>) -> vfs::InodeRef {
     let ino = INET_INO_TAG | (Arc::as_ptr(&sock) as u64 & 0xFFFF_FFFF);
+    // Share the socket's OWN poll_subs into the inode so `inode.poll_subscribers()`
+    // (what epoll_ctl(ADD) subscribes to) is the SAME list the socket's write/recv
+    // paths notify (`wake_peer_subs`, stack targeted wakes). Without this the inode
+    // had no subscriber list, so a notify() on a socket write never reached an
+    // epoll_wait-blocked reader — dbus-broker's post-AUTH epoll on an accepted
+    // AF_UNIX connection never woke for the client's binary messages, so it timed
+    // out and closed every connection (every Type=dbus unit then timed out).
+    let subs = sock.poll_subs.clone();
     // S_IFSOCK so fstat()/sd_is_socket() see a socket — systemd-udevd's
     // listen_fds() rejects an inherited fd whose mode isn't S_ISSOCK
     // (returns -EINVAL → "Failed to listen on fds"). Linux socket fds
@@ -422,6 +430,7 @@ pub fn make_inet_socket_inode(sock: Arc<InetSocket>) -> vfs::InodeRef {
     vfs::InodeBuilder::new(ino, vfs::mk_mode(vfs::FileType::Socket, 0o600),
         vfs::default_inode_ops(), Arc::new(InetFileOps))
         .private(sock)
+        .poll_subs_arc(subs)
         .build()
 }
 
