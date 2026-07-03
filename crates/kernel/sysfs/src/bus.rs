@@ -295,6 +295,7 @@ fn dev_root_canon(bus: &str) -> &'static str {
         // the uevent DEVPATH MUST resolve to a real /sys dir or udevd reads
         // /sys<DEVPATH>/uevent → ENOENT and never processes the disk.
         "block" => "devices/virtual/block",
+        "input" => "devices/virtual/input",
         _ => "devices/platform",
     }
 }
