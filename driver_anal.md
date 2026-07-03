@@ -23,6 +23,26 @@ Estimated branch-local status:
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
 
+Hard blockers before this can be treated as Linux-complete:
+
+- PCI model-layer split: `pci-boot/src/virtio_drv.rs` is still doing transport,
+  queue selection, and feature negotiation policy that should live in a shared
+  virtio bus/core layer.
+- Deterministic fault-injection coverage for every probe/remove step (including
+  IRQ/MSI setup and all publication/unpublication paths).
+- End-to-end repeated bind/unbind/remove/readd proof for PCI/virtio + key
+  subsystems (`net`, `block`, `input`, `sound`, `gpu`, `vsock`) under QEMU.
+- Remaining sysfs/class completeness (`/sys/dev/{char,block}`, class dirs and
+  stable add/remove/change uevents across rebind).
+- Direct/legacy `devfs::register` or equivalent publication callsites still
+  need a final sweep to guarantee all nodes are model-owned.
+
+Branch status as of this checkpoint:
+
+- Branch name: `codex/driver-fixes-next`.
+- `git rev-list --left-right --count origin/main...HEAD` = `0 47`.
+- Working tree state: clean (`git status --short` empty).
+
 ## Complete or substantially complete on this branch
 
 - The old flat `DriverEntry` / `probe_all(bdf)` implementation path is gone
