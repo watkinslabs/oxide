@@ -934,7 +934,14 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
 /// work; listen is a no-op. F176: SO_REUSEADDR forwarded.
 /// # C: O(1)
 pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), NetError> {
-    if matches!(*sock.kind.lock(), SockKind::UnixListener(_)) { return Ok(()); }
+    // AF_UNIX listener (incl. socket-activated /run/udev/control passed to
+    // udevd): register the listener's epoll subscribers against the socket's
+    // `poll_subs` so `UnixRegistry::connect`'s `notify_subs` targets the epoll
+    // that ADD'd this fd — not just the global rescan fallback (60§R22).
+    if let SockKind::UnixListener(l) = &*sock.kind.lock() {
+        l.register_subs(&sock.poll_subs);
+        return Ok(());
+    }
     let port = sock.local_port.lock().ok_or(NetError::Einval)?;
     let reuseaddr = sock.opts.reuseaddr.load(core::sync::atomic::Ordering::Acquire) != 0;
     let reuseport = sock.opts.reuseport.load(core::sync::atomic::Ordering::Acquire) != 0;
