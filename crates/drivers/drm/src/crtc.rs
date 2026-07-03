@@ -184,11 +184,11 @@ pub fn set_crtc(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg
     if c.fb_id == 0 {
         // Disable / detach: restore the console scanout if WE owned it.
         if is_owner(card_id, token) {
-            (ops.restore_console)();
+            (ops.restore_console)(card_id);
             clear_owner(card_id);
         } else if owner(card_id) == 0 {
             // No client owns it; SETCRTC(fb=0) is a no-op disable.
-            (ops.restore_console)();
+            (ops.restore_console)(card_id);
         }
         return 0;
     }
@@ -199,8 +199,8 @@ pub fn set_crtc(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg
         && !user_ok(c.set_connectors_ptr, (c.count_connectors as u64) * 4) {
         return einval();
     }
-    let res_id = match (ops.create_from_pa)(pa, w, h, fmt) { Some(r) => r, None => return einval() };
-    if !(ops.set_scanout)(res_id, w, h) { return einval(); }
+    let res_id = match (ops.create_from_pa)(card_id, pa, w, h, fmt) { Some(r) => r, None => return einval() };
+    if !(ops.set_scanout)(card_id, res_id, w, h) { return einval(); }
     set_owner(card_id, token);
     0
 }
@@ -220,8 +220,8 @@ pub fn page_flip(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, ar
     if f.fb_id == 0 { return einval(); }
     let ops = match scanout_ops(card_id) { Some(o) => o, None => return einval() };
     let (pa, w, h, fmt) = match fb_to_scanout(card_id, f.fb_id) { Some(v) => v, None => return einval() };
-    let res_id = match (ops.create_from_pa)(pa, w, h, fmt) { Some(r) => r, None => return einval() };
-    if !(ops.set_scanout)(res_id, w, h) { return einval(); }
+    let res_id = match (ops.create_from_pa)(card_id, pa, w, h, fmt) { Some(r) => r, None => return einval() };
+    if !(ops.set_scanout)(card_id, res_id, w, h) { return einval(); }
     set_owner(card_id, token);
     if (f.flags & crate::DRM_MODE_PAGE_FLIP_EVENT) != 0 {
         queue_flip_event(card_id, f.crtc_id, f.user_data);

@@ -3,7 +3,8 @@
 
 
 
-use core::sync::atomic::Ordering;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Submit `CMD_GET_DISPLAY_INFO` on q0; spin-poll used.idx for
 /// completion; parse the response and re-install the device with
@@ -114,7 +115,7 @@ pub fn get_display_info(
         // SAFETY: buf_pa is not retained when no display is enabled.
         unsafe { pmm::setup::free_one_frame(buf_pa); }
     }
-    match crate::install_with_drm(crate::VirtioGpuDev {
+    let card_id = match crate::install_with_drm(crate::VirtioGpuDev {
         bdf: bdf_word, card_id: 0, cfg_va,
         ctrlq,
         features_negotiated: drv_features,
@@ -122,15 +123,18 @@ pub fn get_display_info(
         resource_id_alloc: AtomicU32::new(1),
         blob_uuid_alloc: AtomicU64::new(1), capset_count: 0,
     }) {
-        Ok(_) => {}
+        Ok(card_id) => card_id,
         Err(_) => {
             if info.count_enabled > 0 {
                 let _ = uninstall_scanout_after_failed_probe(bdf_word);
             }
             return false;
         }
+    };
+    if info.count_enabled > 0 {
+        assign_card_id(bdf_word, card_id);
+        publish_console_scanout(card_id);
     }
-    publish_console_scanout();
     true
 }
 
@@ -382,6 +386,8 @@ use sync::{TaskList as DriverLockClass, Spinlock};
 
 struct ScanoutCtx {
     bdf: u32,
+    card_id: Option<u32>,
+    primary_console: bool,
     cfg_va: u64,
     w: u32,
     h: u32,
@@ -393,9 +399,22 @@ struct ScanoutCtx {
     cmd_buf_va: u64,
     cmd_buf_pa: u64,
     hhdm: u64,
+    next_runtime_res_id: AtomicU32,
 }
 
-static CTX: Spinlock<Option<ScanoutCtx>, DriverLockClass> = Spinlock::new(None);
+static CTX: Spinlock<Vec<ScanoutCtx>, DriverLockClass> = Spinlock::new(Vec::new());
+
+fn ctx_idx_by_bdf(ctxs: &[ScanoutCtx], bdf: u32) -> Option<usize> {
+    ctxs.iter().position(|ctx| ctx.bdf == bdf)
+}
+
+fn ctx_idx_by_card(ctxs: &[ScanoutCtx], card_id: u32) -> Option<usize> {
+    ctxs.iter().position(|ctx| ctx.card_id == Some(card_id))
+}
+
+fn primary_ctx_idx(ctxs: &[ScanoutCtx]) -> Option<usize> {
+    ctxs.iter().position(|ctx| ctx.primary_console)
+}
 
 /// Copy `pixels` into the live framebuffer, then issue
 /// transfer_to_host_2d + resource_flush so the host repaints the
@@ -404,7 +423,7 @@ static CTX: Spinlock<Option<ScanoutCtx>, DriverLockClass> = Spinlock::new(None);
 /// # C: O(fb_bytes) copy + O(1) per submit.
 pub fn fbcon_flush_pixels(pixels: &[u8]) {
     let g = CTX.lock();
-    let ctx = match g.as_ref() { Some(c) => c, None => return };
+    let ctx = match primary_ctx_idx(&g) { Some(idx) => &g[idx], None => return };
     let n = (ctx.fb_bytes as usize).min(pixels.len());
     // SAFETY: ctx.fb_va is HHDM-mapped for fb_bytes; bounded copy of n ≤ fb_bytes; CPL=0 writes through HHDM mapping.
     unsafe {
@@ -435,7 +454,7 @@ pub fn fbcon_flush_pixels(pixels: &[u8]) {
 /// # C: O(fb_bytes) clear + O(1) submits.
 pub fn blank_scanout() {
     let g = CTX.lock();
-    let ctx = match g.as_ref() { Some(c) => c, None => return };
+    let ctx = match primary_ctx_idx(&g) { Some(idx) => &g[idx], None => return };
     // SAFETY: ctx.fb_va is HHDM-mapped for fb_bytes; bounded zero of the whole backing; CPL=0 writes through the HHDM mapping.
     hal::zerotrap::trap((ctx.fb_va as *mut u8) as *const u8, (ctx.fb_bytes as usize) as usize);
     unsafe { core::ptr::write_bytes(ctx.fb_va as *mut u8, 0, ctx.fb_bytes as usize); }
@@ -465,13 +484,25 @@ fn install_scanout_ctx(
     ctrlq: virtio::VirtQueueResource, cmd_buf_va: u64, cmd_buf_pa: u64, hhdm: u64,
 ) -> bool {
     let mut ctx = CTX.lock();
-    if ctx.is_some() {
+    if ctx_idx_by_bdf(&ctx, bdf).is_some() {
         return false;
     }
-    *ctx = Some(ScanoutCtx {
-        bdf, cfg_va, w, h, fb_va, fb_bytes, fb_pages_alloc, res_id,
+    ctx.push(ScanoutCtx {
+        bdf, card_id: None, primary_console: false,
+        cfg_va, w, h, fb_va, fb_bytes, fb_pages_alloc, res_id,
         ctrlq, cmd_buf_va, cmd_buf_pa, hhdm,
+        next_runtime_res_id: AtomicU32::new(2),
     });
+    true
+}
+
+/// Attach the DRM card id allocated after `setup_scanout` to the scanout
+/// context installed for this BDF.
+/// # C: O(scanouts)
+pub fn assign_card_id(bdf: u32, card_id: u32) -> bool {
+    let mut ctxs = CTX.lock();
+    let Some(idx) = ctx_idx_by_bdf(&ctxs, bdf) else { return false };
+    ctxs[idx].card_id = Some(card_id);
     true
 }
 
@@ -481,9 +512,9 @@ fn install_scanout_ctx(
 pub fn uninstall_scanout(bdf: u32) -> bool {
     let ctx = {
         let mut guard = CTX.lock();
-        match guard.as_ref() {
-            Some(ctx) if ctx.bdf == bdf => guard.take(),
-            _ => None,
+        match ctx_idx_by_bdf(&guard, bdf) {
+            Some(idx) => Some(guard.remove(idx)),
+            None => None,
         }
     };
     let ctx = match ctx {
@@ -512,9 +543,9 @@ pub fn uninstall_scanout(bdf: u32) -> bool {
 pub fn uninstall_scanout_after_failed_probe(bdf: u32) -> bool {
     let ctx = {
         let mut guard = CTX.lock();
-        match guard.as_ref() {
-            Some(ctx) if ctx.bdf == bdf => guard.take(),
-            _ => None,
+        match ctx_idx_by_bdf(&guard, bdf) {
+            Some(idx) => Some(guard.remove(idx)),
+            None => None,
         }
     };
     let ctx = match ctx {
@@ -533,24 +564,28 @@ pub fn uninstall_scanout_after_failed_probe(bdf: u32) -> bool {
     true
 }
 
-/// True iff the scanout context is installed (post-`setup_scanout`).
-/// # C: O(1)
-pub fn scanout_ready() -> bool { CTX.lock().is_some() }
+/// True iff the scanout context is installed for this DRM card.
+/// # C: O(scanouts)
+pub fn scanout_ready(card_id: u32) -> bool {
+    ctx_idx_by_card(&CTX.lock(), card_id).is_some()
+}
 
 /// Read back the scanout dimensions. Used by the kernel's fbcon
 /// klog wiring to size its Console.
 /// # C: O(1)
-pub fn dimensions() -> Option<(u32, u32)> {
-    CTX.lock().as_ref().map(|c| (c.w, c.h))
+pub fn dimensions(card_id: u32) -> Option<(u32, u32)> {
+    let g = CTX.lock();
+    let c = &g[ctx_idx_by_card(&g, card_id)?];
+    Some((c.w, c.h))
 }
 
 /// The scanout framebuffer as `(base_pa, fb_va, bytes, pitch, w, h)` for the
 /// fbdev presenter (`/dev/fb0`): `base_pa` is the contiguous physical backing
 /// userspace mmaps; `fb_va` is its HHDM kernel VA (for read/write); `pitch` =
 /// `w*4` (BGRA32). `None` before scanout setup. # C: O(1)
-pub fn framebuffer() -> Option<(u64, u64, u64, u32, u32, u32)> {
+pub fn framebuffer(card_id: u32) -> Option<(u64, u64, u64, u32, u32, u32)> {
     let g = CTX.lock();
-    let c = g.as_ref()?;
+    let c = &g[ctx_idx_by_card(&g, card_id)?];
     Some((c.fb_va - c.hhdm, c.fb_va, c.fb_bytes, c.w * 4, c.w, c.h))
 }
 
@@ -560,10 +595,18 @@ pub fn framebuffer() -> Option<(u64, u64, u64, u32, u32, u32)> {
 /// its console/fb helper registration.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
-pub fn publish_console_scanout() {
-    let Some((w, h)) = dimensions() else { return };
+pub fn publish_console_scanout(card_id: u32) {
+    {
+        let mut ctxs = CTX.lock();
+        let Some(idx) = ctx_idx_by_card(&ctxs, card_id) else { return };
+        if primary_ctx_idx(&ctxs).is_some() && !ctxs[idx].primary_console {
+            return;
+        }
+        ctxs[idx].primary_console = true;
+    }
+    let Some((w, h)) = dimensions(card_id) else { return };
     fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
-    if let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer() {
+    if let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer(card_id) {
         fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
         fbdev::set_flush_hook(flush_scanout);
         fbdev::set_blank_hooks(blank_scanout, unblank_scanout);
@@ -580,21 +623,25 @@ pub fn publish_console_scanout() {
 /// the scanout backing and queue scratch pages are released.
 /// # C: O(N + depth)
 #[cfg(target_os = "oxide-kernel")]
-pub fn unpublish_console_scanout(bdf: u32) {
-    let (fb_base, card_id) = {
-        let ctx = CTX.lock();
-        match ctx.as_ref() {
-            Some(ctx) if ctx.bdf == bdf => (ctx.fb_va - ctx.hhdm, ctx.card_id),
-            _ => return,
-        }
+pub fn unpublish_console_scanout(bdf: u32, card_id: u32) {
+    let (fb_base, was_primary) = {
+        let ctxs = CTX.lock();
+        let Some(idx) = ctx_idx_by_bdf(&ctxs, bdf) else {
+            drm::node::clear_scanout_ops(card_id);
+            return;
+        };
+        let ctx = &ctxs[idx];
+        (ctx.fb_va - ctx.hhdm, ctx.primary_console)
     };
-    klog::clear_aux_sink();
-    tty::live::clear_vt_mode_queries();
-    fbcon::kernel::kernel_unregister();
-    fbdev::clear_blank_hooks();
-    fbdev::clear_flush_hook();
-    fbdev::clear_wait_hooks();
-    let _ = fbdev::unregister_by_base(fb_base);
+    if was_primary {
+        klog::clear_aux_sink();
+        tty::live::clear_vt_mode_queries();
+        fbcon::kernel::kernel_unregister();
+        fbdev::clear_blank_hooks();
+        fbdev::clear_flush_hook();
+        fbdev::clear_wait_hooks();
+        let _ = fbdev::unregister_by_base(fb_base);
+    }
     drm::node::clear_scanout_ops(card_id);
 }
 
@@ -636,21 +683,16 @@ fn monotonic_now_ns() -> u64 {
 /// Boot fbcon scanout resource id (set up by `setup_scanout`).
 pub const BOOT_SCANOUT_RES_ID: u32 = 1;
 
-/// Runtime resource-id allocator. Boot fb is res_id 1; runtime KMS
-/// resources start at 2 so they never collide with the console fb.
-static NEXT_RUNTIME_RES_ID: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(2);
-
 /// The boot fbcon scanout resource id (= 1). # C: O(1)
-pub fn boot_scanout_res_id() -> u32 { BOOT_SCANOUT_RES_ID }
+pub fn boot_scanout_res_id(_card_id: u32) -> u32 { BOOT_SCANOUT_RES_ID }
 
 /// Run an encode closure as one CTRLQ command + poll used. Mirrors the
 /// boot `submit_one` but takes the queue context from the installed
 /// CTX. `false` if no CTX or the round-trip times out / NAKs.
 /// # C: O(1) submit + host-side O(work).
-fn submit_ctrl<F: Fn(&mut [u8]) -> usize>(encode: F) -> bool {
+fn submit_ctrl<F: Fn(&mut [u8]) -> usize>(card_id: u32, encode: F) -> bool {
     let g = CTX.lock();
-    let ctx = match g.as_ref() { Some(c) => c, None => return false };
+    let ctx = match ctx_idx_by_card(&g, card_id) { Some(idx) => &g[idx], None => return false };
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     // SAFETY: cmd_buf is the HHDM-mapped 4 KiB scratch frame setup_scanout installed; q0 descriptor/avail/used/notify VAs are the exact ones the boot path validated; we hold the CTX lock so we are the sole writer for this submit; the encode closure writes < 0x100 bytes into the per-call request slice.
     let ok = unsafe {
@@ -670,17 +712,21 @@ fn submit_ctrl<F: Fn(&mut [u8]) -> usize>(encode: F) -> bool {
 /// whole contiguous run). Returns the new res_id, or `None` if no
 /// scanout CTX or a command failed. The buffer's PA must be a single
 /// contiguous run (DRM dumb buffers are alloc_contig). # C: O(1) submits.
-pub fn create_scanout_from_pa(pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32> {
-    if !scanout_ready() { return None; }
+pub fn create_scanout_from_pa(card_id: u32, pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32> {
+    if !scanout_ready(card_id) { return None; }
     let fmt = crate::drm_fourcc_to_virtio(fmt_drm)?;
     if w == 0 || h == 0 { return None; }
     let bytes = (w as u64) * (h as u64) * 4;
     if bytes == 0 || bytes > u32::MAX as u64 { return None; }
-    let res_id = NEXT_RUNTIME_RES_ID.fetch_add(1, Ordering::AcqRel);
-    if !submit_ctrl(|b| crate::encode_resource_create_2d(b, res_id, fmt, w, h)) {
+    let res_id = {
+        let g = CTX.lock();
+        let ctx = &g[ctx_idx_by_card(&g, card_id)?];
+        ctx.next_runtime_res_id.fetch_add(1, Ordering::AcqRel)
+    };
+    if !submit_ctrl(card_id, |b| crate::encode_resource_create_2d(b, res_id, fmt, w, h)) {
         return None;
     }
-    if !submit_ctrl(|b| crate::encode_resource_attach_backing_one(b, res_id, pa, bytes as u32)) {
+    if !submit_ctrl(card_id, |b| crate::encode_resource_attach_backing_one(b, res_id, pa, bytes as u32)) {
         return None;
     }
     Some(res_id)
@@ -689,11 +735,11 @@ pub fn create_scanout_from_pa(pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u
 /// Switch scanout 0 to `res_id` and make its pixels visible:
 /// SET_SCANOUT(0, res_id, 0,0,w,h) + TRANSFER_TO_HOST_2D + RESOURCE_FLUSH.
 /// `false` if no CTX or a command failed. # C: O(1) submits.
-pub fn set_scanout(res_id: u32, w: u32, h: u32) -> bool {
-    if !scanout_ready() || w == 0 || h == 0 { return false; }
-    if !submit_ctrl(|b| crate::encode_set_scanout(b, 0, res_id, 0, 0, w, h)) { return false; }
-    if !submit_ctrl(|b| crate::encode_transfer_to_host_2d(b, res_id, 0, 0, w, h, 0)) { return false; }
-    if !submit_ctrl(|b| crate::encode_resource_flush(b, res_id, 0, 0, w, h)) { return false; }
+pub fn set_scanout(card_id: u32, res_id: u32, w: u32, h: u32) -> bool {
+    if !scanout_ready(card_id) || w == 0 || h == 0 { return false; }
+    if !submit_ctrl(card_id, |b| crate::encode_set_scanout(b, 0, res_id, 0, 0, w, h)) { return false; }
+    if !submit_ctrl(card_id, |b| crate::encode_transfer_to_host_2d(b, res_id, 0, 0, w, h, 0)) { return false; }
+    if !submit_ctrl(card_id, |b| crate::encode_resource_flush(b, res_id, 0, 0, w, h)) { return false; }
     true
 }
 
@@ -704,13 +750,19 @@ pub fn set_scanout(res_id: u32, w: u32, h: u32) -> bool {
 /// `fbcon::force_repaint()` re-blits the live VT into res_id 1's backing
 /// (via fbcon_flush_pixels) so the next flush shows real content.
 /// `false` if no CTX. # C: O(1) submits + O(cols*rows) repaint.
-pub fn restore_console_scanout() -> bool {
-    let (w, h) = match dimensions() { Some(d) => d, None => return false };
-    let ok = set_scanout(BOOT_SCANOUT_RES_ID, w, h);
+pub fn restore_console_scanout(card_id: u32) -> bool {
+    let (w, h) = match dimensions(card_id) { Some(d) => d, None => return false };
+    let ok = set_scanout(card_id, BOOT_SCANOUT_RES_ID, w, h);
     // Bring the console content back: force_repaint marks the fg VT
     // dirty + raises the flush softirq, which calls fbcon_flush_pixels
     // → writes res_id 1's backing + transfer/flush.
-    fbcon::kernel::force_repaint();
+    let is_primary = {
+        let ctxs = CTX.lock();
+        ctx_idx_by_card(&ctxs, card_id).map(|idx| ctxs[idx].primary_console).unwrap_or(false)
+    };
+    if is_primary {
+        fbcon::kernel::force_repaint();
+    }
     ok
 }
 
@@ -734,7 +786,7 @@ pub fn register_drm_hooks(card_id: u32) {
 /// # C: O(1) submits (+ host-side O(w*h) transfer).
 pub fn flush_scanout() {
     let g = CTX.lock();
-    let ctx = match g.as_ref() { Some(c) => c, None => return };
+    let ctx = match primary_ctx_idx(&g) { Some(idx) => &g[idx], None => return };
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     let (res_id, w, h) = (ctx.res_id, ctx.w, ctx.h);
     // SAFETY: same VAs/PAs setup_scanout installed; sole writer under the CTX lock; cmd_buf is HHDM-mapped 4 KiB scratch.

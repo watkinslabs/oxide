@@ -638,7 +638,7 @@ pub fn uninstall(bdf: u32) -> Option<VirtioGpuDev> {
     match dev {
         Some(dev) => {
             #[cfg(target_os = "oxide-kernel")]
-            post_init::unpublish_console_scanout(dev.bdf);
+            post_init::unpublish_console_scanout(dev.bdf, dev.card_id);
             let _ = drm::unregister(dev.card_id);
             Some(dev)
         }

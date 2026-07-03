@@ -41,13 +41,13 @@ use sync::{Spinlock, TaskList as OpsLockClass};
 #[derive(Copy, Clone)]
 pub struct ScanoutOps {
     /// Create a virtio-gpu resource over a contiguous PA; returns res_id.
-    pub create_from_pa: fn(pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32>,
+    pub create_from_pa: fn(card_id: u32, pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32>,
     /// Switch scanout 0 to `res_id` + transfer + flush.
-    pub set_scanout: fn(res_id: u32, w: u32, h: u32) -> bool,
+    pub set_scanout: fn(card_id: u32, res_id: u32, w: u32, h: u32) -> bool,
     /// Restore the boot fbcon scanout + repaint the console.
-    pub restore_console: fn() -> bool,
+    pub restore_console: fn(card_id: u32) -> bool,
     /// The boot fbcon scanout resource id.
-    pub boot_res_id: fn() -> u32,
+    pub boot_res_id: fn(card_id: u32) -> u32,
 }
 
 struct ScanoutRegistration {
@@ -136,7 +136,7 @@ impl vfs::FileOps for DrmCardFileOps {
     fn on_release(&self, inode: &vfs::Inode) {
         let card_id = card_id_from_ino(inode.ino());
         if crate::crtc::owner(card_id) != 0 {
-            if let Some(ops) = scanout_ops(card_id) { (ops.restore_console)(); }
+            if let Some(ops) = scanout_ops(card_id) { (ops.restore_console)(card_id); }
             crate::crtc::clear_owner(card_id);
         }
     }
