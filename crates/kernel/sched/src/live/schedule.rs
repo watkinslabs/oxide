@@ -673,6 +673,44 @@ pub unsafe fn schedule() {
                 hal_x86_64::set_syscall_kstack(top as u64);
             }
         }
+        // Preserve user FPU/SSE across the switch. `oxide_context_switch`
+        // saves only GPRs + fs_base — xmm/FPU are NOT saved. Voluntary
+        // switches sit at syscall boundaries where xmm are caller-saved
+        // (dead), which hid this; but a PREEMPTIVE (timer) switch interrupts
+        // user code mid-SSE (glibc strcmp/memcpy). Without save/restore the
+        // resumed task reads whatever xmm the intervening task left → e.g.
+        // ld.so's dependency-name compares corrupt, DT_NEEDED entries get
+        // skipped, and `_dl_check_map_versions` aborts (`needed != NULL`) —
+        // the nondeterministic GNOME live-gnome boot blocker
+        // (docs/investigations/gnome-ldso-blocker.md). Eager fxsave(prev)/
+        // fxrstor(next); kernel is soft-float (`07§3`) so no kernel code
+        // between here and the user return touches xmm. Lazy #NM save
+        // (14§7) was speced but never wired — this is the eager equivalent
+        // Linux itself moved to.
+        // SAFETY: both fpu_state buffers are align(16) ArchFpuBuf; CR0.TS is
+        // clear (kernel never sets it) so FXSAVE/FXRSTOR don't #NM; prev_ref
+        // is the outgoing task whose live FPU is in the CPU now, `now` is the
+        // incoming task; single-CPU + preempt-off here per `13§5`.
+        unsafe {
+            hal_x86_64::fpu_save(prev_ref.fpu_state.get() as *mut hal_x86_64::FpuStateX86_64);
+            hal_x86_64::fpu_restore(now.fpu_state.get() as *const hal_x86_64::FpuStateX86_64);
+        }
+    }
+    // aarch64 lockstep: identical FPSIMD/NEON preservation. The arm ctxsw
+    // saves GPRs only; user NEON (glibc memcpy/strcmp) is clobbered across a
+    // preemptive switch without this. Kernel is `-fp-armv8,-neon` (soft-float)
+    // so no kernel code between here and the user return touches q0-q31.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let now = unsafe { rq.current_ref() };
+        // SAFETY: fpu_state buffers are align(16); CPACR_EL1.FPEN is enabled
+        // kernel-wide (boot `fpu_enable`) so the q-reg store/load doesn't trap;
+        // prev_ref is outgoing (live FPSIMD in the CPU), `now` is incoming;
+        // single-CPU + preempt-off here per `13§5`.
+        unsafe {
+            hal_aarch64::fpu_save(prev_ref.fpu_state.get() as *mut hal_aarch64::FpuStateAArch64);
+            hal_aarch64::fpu_restore(now.fpu_state.get() as *const hal_aarch64::FpuStateAArch64);
+        }
     }
 
     // Hold the rq-lock across the switch (B1): forget the guard so it stays
