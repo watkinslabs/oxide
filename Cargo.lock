@@ -871,7 +871,6 @@ dependencies = [
 name = "netlink"
 version = "0.1.0"
 dependencies = [
- "klog",
  "net",
  "sync",
  "vfs",
