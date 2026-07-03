@@ -748,10 +748,6 @@ pub fn set_softirq_ip_for_iface(id: net::NetIfaceId, ip: [u8; 4]) -> bool {
 /// Primary registered virtio-net iface, used by boot-time default route
 /// seeding before userspace has selected a specific interface.
 /// # C: O(1)
-pub fn registered_iface() -> Option<net::NetIfaceId> {
-    NET_RUNTIMES.lock().first().map(|runtime| runtime.iface)
-}
-
 /// Softirq slot handler. Drains pending RX into the net stack.
 /// Bails fast when no iface is registered (boot ordering) or RX queue empty
 /// (poll_into_stack_for returns 0 in either case).

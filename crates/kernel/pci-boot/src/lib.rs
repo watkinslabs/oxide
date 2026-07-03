@@ -411,20 +411,6 @@ pub fn enumerate_and_log() {
         klog::write_raw(b"\n");
     }
 
-    // F59-15: install the default L2/netlink route state for the netdev
-    // already registered by virtio-net's model probe.
-    if let Some(id) = drv_virtio_net::modern::registered_iface() {
-            let stack = net::sock::stack();
-
-            let lo_idx = stack.ifaces.lookup_name("lo").map(|(id, _)| id.0);
-            ::netlink::rtnetlink::seed_defaults(Some(id.0), lo_idx);
-            ::netlink::rtnetlink::seed_default_routes(id.0);
-            if let Some(lo_idx) = lo_idx {
-                ::netlink::rtnetlink::seed_default_routes_lo(lo_idx);
-            }
-            let _ = stack.send_router_solicitation(id, net::Ipv6Addr::ANY);
-    }
-
     debug_boot! {
         // F46: read GICD_ISPENDR2 (covers SPIs 64..95). If SPI 81 or
         // 82 is pending here, the device-driven MSI write reached
