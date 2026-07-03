@@ -1,51 +1,80 @@
 # state.md — session handoff
 
 ## Headline
-**GNOME bring-up: the dbus blocker is FIXED — `graphical.target` now REACHED.**
-The root cause of the systemd↔dbus-broker "Connection terminated" storm was a
-kernel bug: `recvmsg` on an AF_UNIX SOCK_STREAM socket ignored
-`O_NONBLOCK`/`MSG_DONTWAIT` and busy-spun instead of returning `EAGAIN`.
-dbus-broker's edge-triggered epoll drain never got its terminating `EAGAIN`, so
-it tore every client connection down. Fixed in **#2317**: conn-term **60 → 0**,
-**multi-user.target + graphical.target both reached**, gdm.service starts.
+**GNOME reaches `graphical.target`; last blocker is the virtio-gpu DRM-master/KMS
+path so logind can build a graphical seat0 for gdm's greeter.** The dbus storm
+that stalled every Type=dbus service is FIXED (#2317), so multi-user + graphical
+targets are reached and gdm.service Starts. gdm then idles: no greeter, because
+seat0 is not graphical.
 
-## Merged this session (all boot-verified)
+## Merged this session (8 PRs, all boot-verified)
 - **#2311** mount_setattr AT_EMPTY_PATH + mount-aware bind — killed domainname 226.
-- **#2312** O_PATH must not invoke device driver open (FMODE_PATH) — killed /dev/kmsg 226.
+- **#2312** O_PATH must not invoke device-driver open (FMODE_PATH) — killed /dev/kmsg 226.
 - **#2313** socketpair(AF_UNIX) SO_DOMAIN=AF_UNIX — brought up system D-Bus.
 - **#2314** eventfd blocking read must BLOCK not EINVAL — killed EXIT_USER(217).
 - **#2315** AF_UNIX accept SO_DOMAIN + epoll-wake listener on connect.
 - **#2316** share a socket's poll_subs into its inode — epoll targeted wakes on
-  accepted sockets (server now reads binary D-Bus messages, not just AUTH text).
+  accepted sockets (server reads binary D-Bus messages, not just AUTH text).
 - **#2317** recvmsg AF_UNIX stream honours O_NONBLOCK/MSG_DONTWAIT (EAGAIN) — THE
-  dbus fix. `crates/kernel/syscalls/src/047_recvmsg.rs` + `cmsg_parse.rs`.
+  dbus fix. dbus-broker's edge-triggered epoll drain-until-EAGAIN never got
+  EAGAIN (recvmsg spun on empty ring) → tore every connection down. conn-term
+  60→0; multi-user + graphical.target reached. `047_recvmsg.rs` + `cmsg_parse.rs`.
+- **#2318** /sys/class/drm class node — udev DRM seat-discovery prerequisite.
+  `crates/kernel/sysfs/src/drm.rs`.
 
-## Current state — graphical.target reached, greeter not yet confirmed
-Boot now reaches `graphical.target`. `gdm.service` **Starts**, BUT a gdm fork-child
-exits code=1 (`[EXIT] name=fork-child exe=/usr/bin/gdm code=1` ~109s) and no
-gnome-shell / greeter / Xwayland / /dev/dri activity appears after. So the last
-gap to an actual GNOME login screen is **gdm's greeter/display launch**.
+## Current blocker — graphical seat0 for gdm greeter (next session starts here)
+gdm.service Starts (~75s) then idles; NO gnome-shell/greeter/wayland/Xwayland
+activity. The gdm fork-child `[EXIT] code=1` is ONLY the missing `plymouth`
+probe (`/usr/bin/plymouth` ENOENT — harmless), NOT the greeter.
 
-## Next session starts here — chase the gdm greeter
-1. Boot with kmsg cmdline (see below), grep for `gdm`, `gnome-shell`, `Xwayland`,
-   `/dev/dri`, `logind`, `seat0`, `wayland`. Find why the gdm worker exits 1.
-2. Likely suspects: DRM/KMS device (`/dev/dri/card0`) missing or the virtio-gpu
-   drm node not exposed; logind seat/session (`seat0`) not created; gdm's
-   Xwayland/gnome-shell exec failing. Trace the gdm fork-child's `[EXIT]` via a
-   4-byte errno-pipe write or `sched::diag::dump_recent_for(tid)` (see below).
-3. This is Phase-17-ish (tty/login/display); GNOME shell needs the DRM path.
+**Chain, and exactly where it breaks:**
+1. `/dev/dri/card0` (226:0) exists — `drm::node::register()` mints it. ✓
+2. `/sys/class/drm/card0` now exists (#2318) — udev/logind DO open it at
+   coldplug (traced: `[DRMOPEN] /sys/class/drm{,/card0,/renderD128}`). ✓
+3. **BREAK:** udevd must apply the `master-of-seat` TAG (71-seat.rules,
+   `SUBSYSTEM==drm KERNEL==card*`). That needs the `card0/uevent` write (from
+   systemd-udev-trigger's "add") to BROADCAST a netlink uevent so udevd
+   processes card0. When I made the drm `uevent` write emit that uevent,
+   **logind retry-loops** trying to master the DRM device → systemd `Looping
+   too fast. Throttling execution` storm (211×), boot wedges. So logind CANNOT
+   master virtio-gpu card0 yet.
+4. Therefore nothing opens `/dev/dri/card0`, seat0 stays non-graphical, gdm
+   never launches the greeter.
+
+**Root of the break = virtio-gpu KMS / DRM-master is not functional.** logind
+opens the DRM device, does `DRM_IOCTL_SET_MASTER` + mode/resource ioctls; if
+those fail/aren't implemented, logind loops. Drivers exist but the KMS path
+isn't wired for logind's master handshake: `crates/drivers/drm/` (node.rs,
+modeset.rs, crtc.rs, dumb.rs), `crates/drivers/drv-virtio-gpu/`.
+
+**Next steps:**
+1. Boot live-gnome with kmsg cmdline; trace `016_ioctl.rs` for the DRM ioctls
+   logind issues on `/dev/dri/card0` (SET_MASTER 0x641e, MODE_GETRESOURCES
+   0xc04064a0, MODE_GETCONNECTOR, etc.) — see which returns an error and why.
+2. Make virtio-gpu card0 satisfy logind's master handshake (GETRESOURCES →
+   ≥1 CRTC/connector/encoder, SET_MASTER ok). Then re-add the seat-master
+   uevent broadcast in `sysfs/src/drm.rs` `DrmUeventFileOps::write` (currently a
+   documented no-op) so udevd tags card0 → seat0 graphical → gdm greeter.
+3. Then chase gnome-shell/Xwayland launch on the graphical seat.
 
 ## Boot/diagnosis notes
 - **Diagnostic cmdline**: `../oxide-images/imagectl/src/main.rs` ~line 963 GRUB
-  menuentry (NOT git-tracked). Default `quiet` (restored). Enable systemd serial
-  logs: swap `quiet` → `systemd.log_target=kmsg systemd.journald.forward_to_console=1`.
-- **Boot loop**: `cd ../oxide-images && make kernel ARCH=x86_64 && make boot PROFILE=live-gnome ARCH=x86_64 && bash oneboot.sh output/x.log <secs>`. Real full boot >2000 lines (graphical boots are 36k+); ~1200/8-line = GRUB-partial, re-run.
-- **AF_UNIX trace recipe (this session)**: klog `[BWRITE]/[AREAD]/[AWRITE]/[BREAD]/[UCLOSE]` in `net/src/unix_sock.rs` write/read/close_writer, filtered by `UnixEnd` — dual-direction byte-flow trace that isolated the recvmsg EAGAIN bug. Gate socket-content traces on end; `klog::write_raw`/`write_dec_u64` are in scope in the net crate.
-- **safe_fork errno capture**: a failing `safe_fork` child writes its errno as a 4-byte write to an errno pipe — trace `write` where `cnt==4` and i32 ∈ -1..-255, then `sched::diag::dump_recent_for(tid)`.
-- Bash sandbox can't kill qemu → `pkill -9 -f qemu-system` with `dangerouslyDisableSandbox: true` if stale qemu block a boot.
-- Ledger `metadata/index.md`: B next = 304.
+  menuentry (NOT git-tracked). Default `quiet` (restored). Systemd serial logs:
+  swap `quiet` → `systemd.log_target=kmsg systemd.journald.forward_to_console=1`.
+- **User-facing GNOME test command (they asked):** `cd ~/oxide/oxide-images &&
+  make live-serial-console` — rebuilds kernel + serial-console ISO + boots in a
+  GTK window (serial also on terminal). NOT `make live` (wrong ISO, no GPU/serial
+  wiring). Default PROFILE=live-gnome ARCH=x86_64.
+- **Boot loop**: `cd ../oxide-images && make kernel ARCH=x86_64 && make boot
+  PROFILE=live-gnome ARCH=x86_64 && bash oneboot.sh output/x.log <secs>`. Full
+  boot 43k+ lines; a boot that runs the whole window but stays ~1900 lines +
+  "Looping too fast" = systemd event storm, not a short boot.
+- **execve/openat ENOENT traces**: `059_execve.rs` has a debug-boot-gated
+  `[execve ENOENT] path=` at the read_exec None arm; ungate it (drop the
+  `#[cfg(feature="debug-boot")]`) for one boot to see missing binaries.
+- Ledger `metadata/index.md`: B next = 305.
 
 ## First task next session
-`git checkout main && git pull`. Boot live-gnome with kmsg, find why the
-gdm greeter/worker exits 1 (DRM node? logind seat? Xwayland exec?). Drive the
-dependency chain until the GNOME greeter renders (active `/goal`).
+`git checkout main && git pull`. Trace logind's DRM ioctls on /dev/dri/card0
+(step 1 above), make virtio-gpu KMS satisfy the master handshake, re-enable the
+seat-master uevent, drive to a rendered gdm greeter (active `/goal`).
