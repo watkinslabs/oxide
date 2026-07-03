@@ -195,10 +195,6 @@ pub struct SndProbe {
     pub input:   u32,
 }
 
-/// True once a virtio-snd device has been brought up + installed.
-/// # C: O(1)
-pub fn present() -> bool { !CTX.lock().is_empty() }
-
 /// True iff the named virtio-snd transport owns the installed sound card.
 /// # C: O(1)
 pub fn present_for(device_key: u32) -> bool {
@@ -573,10 +569,6 @@ fn submit_ctl(ctx: &mut Ctx, req_len: usize, resp_len: usize) -> Option<u32> {
 // docs/58§4 control reqs + §8 TXQ device operation. PR-C: enough to drive a
 // tone end-to-end; ALSA/OSS substream plumbing (PR-D/PR-E) layers on top.
 
-/// The default OUTPUT stream id, or None if no playback stream / not
-/// installed. # C: O(1)
-pub fn output_stream() -> Option<u32> { CTX.lock().first().and_then(|c| c.out_stream) }
-
 /// Issue a simple `virtio_snd_pcm_hdr` control request (code + stream_id) on
 /// the CONTROLQ — PREPARE / START / STOP / RELEASE. Returns the status le32.
 /// # C: O(CONTROLQ round-trip)
@@ -750,17 +742,6 @@ pub fn beep_diag(hz: u32, ms: u32) -> u8 {
 
 const PERIOD_BYTES: usize = 2048;
 
-/// Bytes per frame for a virtio_snd format enum × channel count. The
-/// supported formats are 1-byte (µ-law/A-law/S8/U8) or 2-byte (S16/U16).
-/// # C: O(1)
-fn frame_bytes(format: u8, channels: u8) -> usize {
-    let bps = match format {
-        VIRTIO_SND_PCM_FMT_S16 | 6 /*U16*/ => 2,
-        _ => 1,
-    };
-    bps * channels.max(1) as usize
-}
-
 /// OUTPUT-stream hw capabilities `(formats, rates, ch_min, ch_max)` harvested
 /// from PCM_INFO — `formats`/`rates` are VIRTIO_SND_PCM_FMT_*/RATE_* bit
 /// masks. Drive the ALSA `hw_params` refinement. None until installed.
@@ -774,32 +755,6 @@ pub fn pcm_caps(card_id: u32) -> Option<(u64, u64, u8, u8)> {
 
 /// Default period (fragment) size in bytes the TXQ transfers. # C: O(1)
 pub fn period_bytes(_card_id: u32) -> usize { PERIOD_BYTES }
-
-/// `(installed, has_output_stream, has_txq)` — playback-readiness probe for
-/// the core/self-test. # C: O(1)
-pub fn playback_ready() -> (bool, bool, bool) {
-    match CTX.lock().first() {
-        Some(c) => (true, c.out_stream.is_some(), c.txq.is_some()),
-        None => (false, false, false),
-    }
-}
-
-/// Current OUTPUT substream state. # C: O(1)
-pub fn pcm_state() -> PcmState {
-    CTX.lock().first().map(|c| c.pcm_state).unwrap_or(PcmState::Idle)
-}
-
-/// Applied geometry `(rate, format, channels, period_bytes)` (enums), or
-/// None if not installed. # C: O(1)
-pub fn configured() -> Option<(u8, u8, u8, u32)> {
-    CTX.lock().first().map(|c| (c.cfg_rate, c.cfg_format, c.cfg_channels, c.cfg_period_bytes))
-}
-
-/// Bytes per frame of the configured format × channels (frames↔bytes for
-/// the core's appl_ptr/hw_ptr accounting). # C: O(1)
-pub fn frame_size() -> usize {
-    CTX.lock().first().map(|c| frame_bytes(c.cfg_format, c.cfg_channels)).unwrap_or(4)
-}
 
 /// snd_pcm_ops::hw_params — apply rate/format/channels + the period/buffer
 /// geometry to the device (VIRTIO_SND_R_PCM_SET_PARAMS). rate/format are
@@ -967,27 +922,6 @@ pub fn cap_caps(card_id: u32) -> Option<(u64, u64, u8, u8)> {
         .iter()
         .find(|c| c.card_id == Some(card_id))
         .map(|c| (c.in_formats, c.in_rates, c.in_ch_min, c.in_ch_max))
-}
-
-/// The default INPUT (capture) stream id, or None. # C: O(1)
-pub fn input_stream() -> Option<u32> { CTX.lock().first().and_then(|c| c.in_stream) }
-
-/// Current INPUT substream state. # C: O(1)
-pub fn cap_state() -> PcmState {
-    CTX.lock().first().map(|c| c.cap_state).unwrap_or(PcmState::Idle)
-}
-
-/// `(installed, has_input_stream, has_rxq)` capture-readiness probe. # C: O(1)
-pub fn capture_ready() -> (bool, bool, bool) {
-    match CTX.lock().first() {
-        Some(c) => (true, c.in_stream.is_some(), c.rxq.is_some()),
-        None => (false, false, false),
-    }
-}
-
-/// Bytes per frame of the configured capture format × channels. # C: O(1)
-pub fn cap_frame_size() -> usize {
-    CTX.lock().first().map(|c| frame_bytes(c.cap_format, c.cap_channels)).unwrap_or(4)
 }
 
 /// snd_pcm_ops::hw_params for the INPUT stream (RELEASE-if-armed then

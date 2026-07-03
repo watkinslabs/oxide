@@ -212,8 +212,10 @@ pub fn handle_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
     })
 }
 
-/// Active ALSA card number, if a card driver has published one.
+/// Active ALSA card number for tests that reset the global sound registry.
+/// Production paths must route through explicit card ids.
 /// # C: O(1)
+#[cfg(test)]
 pub fn active_card_id() -> Option<u32> {
     CARDS.lock().first().map(|card| card.card_id)
 }
@@ -273,6 +275,7 @@ mod tests {
     static ADDED: Spinlock<Vec<(String, Option<(u32, u32)>, bool)>, SoundLockClass>
         = Spinlock::new(Vec::new());
     static REMOVED: Spinlock<Vec<String>, SoundLockClass> = Spinlock::new(Vec::new());
+    static TEST_SERIAL: Spinlock<(), SoundLockClass> = Spinlock::new(());
 
     fn cfg(_card_id: u32) -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
     fn caps(_card_id: u32) -> ops::Caps { Some((0, 0, 1, 2)) }
@@ -312,6 +315,7 @@ mod tests {
 
     #[test]
     fn card_nodes_are_model_owned_and_removed() {
+        let _guard = TEST_SERIAL.lock();
         drv::set_devtmpfs_hook(add_hook);
         drv::set_devtmpfs_del_hook(del_hook);
         ADDED.lock().clear();
@@ -360,6 +364,7 @@ mod tests {
 
     #[test]
     fn multiple_cards_publish_independent_alsa_nodes() {
+        let _guard = TEST_SERIAL.lock();
         drv::set_devtmpfs_hook(add_hook);
         drv::set_devtmpfs_del_hook(del_hook);
         ADDED.lock().clear();

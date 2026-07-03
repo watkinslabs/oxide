@@ -107,7 +107,9 @@ test-pass claims.
   now keyed by ALSA card id, so a second virtio-snd card no longer shares the
   first card's ops/PCM state. The virtio child probe no longer has a global
   "any sound card present" gate; duplicate ownership is rejected by the BDF
-  keyed install path and sound core card allocation.
+  keyed install path and sound core card allocation. The old unused
+  first-installed-card virtio-snd status helpers have been removed so the
+  public driver path stays card/BDF keyed.
 - Virtio MSI-X handler ownership is no longer selected by a transport-side
   PCI-ID special-case dispatch. Child virtio driver probes now pass the
   optional queue-0 IRQ callback into the virtio-pci setup path; the PCI
@@ -192,7 +194,8 @@ test-pass claims.
   Virtio-snd transport context, card publication, ops dispatch, ALSA nodes, and
   playback/capture runtime are now card/BDF-keyed, and child probe no longer
   rejects a second device just because one sound card is already present; the
-  remaining sound work is QEMU-visible repeated bind/unbind/readd proof.
+  remaining sound work is QEMU-visible repeated bind/unbind/readd proof and
+  any deliberate default-card policy should live above the card driver.
 - UART and PS/2 platform drivers now have model probes/removes, but they are
   still intentionally singleton hardware paths, not general multi-device
   serial/input infrastructure.

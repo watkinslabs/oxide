@@ -1,4 +1,4 @@
-// ALSA PCM core for the single virtio-snd OUTPUT substream (card 0, dev 0).
+// ALSA PCM core for a virtio-snd OUTPUT substream, keyed by ALSA card id.
 // Owns the substream state machine + hw_params refinement against the
 // device caps + sw_params + appl_ptr/hw_ptr ring accounting + the
 // SNDRV_PCM_IOCTL_* ABI. Calls the card driver's registered snd_pcm_ops

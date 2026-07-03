@@ -1,4 +1,4 @@
-// ALSA PCM core for the virtio-snd INPUT substream (card 0, dev 0 capture).
+// ALSA PCM core for a virtio-snd INPUT substream, keyed by ALSA card id.
 // Mirror of pcm.rs for the RXQ direction: substream state machine + the
 // SNDRV_PCM_IOCTL_* ABI, sharing pcm::refine_params (the device-free
 // refinement) and driving the card driver's capture ops (cap_hw_params /
