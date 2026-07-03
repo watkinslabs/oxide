@@ -3,7 +3,8 @@
 Date: 2026-07-03
 
 Scope: this ledger describes the active worktree at
-`/home/nd/oxide/kernel` on branch `greeter-diag`. Do not read this document as
+`/home/nd/oxide/kernel-driver-shutdown-work` on branch
+`codex/driver-shutdown-work`. Do not read this document as
 a statement about any other branch until these changes are committed and merged.
 
 ## Current position
@@ -13,8 +14,8 @@ shape, but it is not a Linux-complete driver model yet.
 
 Estimated branch-local status:
 
-- Driver-core lifecycle cleanup: about 75% complete.
-- Concrete driver probe/remove cleanup: about 65% complete.
+- Driver-core lifecycle cleanup: about 78% complete.
+- Concrete driver probe/remove/shutdown cleanup: about 70% complete.
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
@@ -42,6 +43,9 @@ test-pass claims.
   order and calls `Driver::shutdown` without unbinding or emitting remove
   events. The power/reboot path calls this through a boot-installed hook before
   restart, poweroff, or halt.
+- Concrete shutdown callbacks now quiesce NVMe, AHCI, virtio-blk,
+  virtio-input, virtio-gpu, virtio-rng, virtio-vsock, virtio-net, and
+  virtio-snd without reusing hot-remove publication teardown.
 - Public `register_device` bypasses have been removed from the driver model;
   `device_add` is the intended publication entry.
 - Sysfs bus-driver controls are backed by the model path for bind/unbind, with
@@ -154,9 +158,9 @@ test-pass claims.
   bound AHCI/NVMe/virtio paths now clear MEM/BUS_MASTER on teardown/failure,
   but full bridge, multi-bus, resource assignment, and PCI runtime semantics
   remain incomplete.
-- Central shutdown dispatch exists, but most concrete drivers still rely on
-  default no-op `shutdown`; hardware-specific quiesce paths still need to be
-  audited and implemented where reboot/poweroff differs from hot-unplug remove.
+- Central shutdown dispatch exists, and the main storage/virtio devices now
+  have hardware-specific quiesce paths. Remaining default no-op shutdowns still
+  need an audit across serial/input/platform and any less-common PCI paths.
 
 ## Open work
 

@@ -648,6 +648,33 @@ pub fn uninstall(bdf: u32) -> Option<VirtioGpuDev> {
     }
 }
 
+/// Quiesce the installed virtio-gpu device for terminal system shutdown.
+///
+/// This is not hot-remove: keep the DRM/fbdev-visible model state installed,
+/// but reset the device and stop future scanout queue submissions.
+/// # C: O(1)
+pub fn shutdown(bdf: u32) -> bool {
+    let cfg_va = {
+        let g = DEV.lock();
+        match g.as_ref() {
+            Some(dev) if dev.bdf == bdf => dev.cfg_va,
+            _ => return false,
+        }
+    };
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        if post_init::shutdown_scanout(bdf) {
+            return true;
+        }
+    }
+    if cfg_va != 0 {
+        // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
+        // probe; device_status is an 8-bit register at offset 0x14.
+        unsafe { core::ptr::write_volatile((cfg_va + 0x14) as *mut u8, 0u8); }
+    }
+    true
+}
+
 // AtomicPtr is referenced for future per-device queue notify pointers
 // once the queue plumbing moves into this crate; keep the import live
 // by aliasing it as a private no-op type marker.
@@ -870,6 +897,28 @@ mod tests {
         assert_eq!(install(dev(2)), Err(Error::Busy));
         assert_eq!(uninstall(1).unwrap().bdf, 1);
         assert!(!is_present());
+    }
+
+    #[test]
+    fn shutdown_keeps_device_installed() {
+        *DEV.lock() = None;
+        install(VirtioGpuDev {
+            bdf: 1,
+            card_id: 0,
+            cfg_va: 0,
+            ctrlq: test_ctrlq(),
+            features_negotiated: 0,
+            display: DisplayInfo::default(),
+            resource_id_alloc: AtomicU32::new(1),
+            blob_uuid_alloc: AtomicU64::new(1),
+            capset_count: 0,
+        }).unwrap();
+
+        assert!(!shutdown(2));
+        assert!(shutdown(1));
+        assert!(is_present());
+
+        *DEV.lock() = None;
     }
 
     #[test]

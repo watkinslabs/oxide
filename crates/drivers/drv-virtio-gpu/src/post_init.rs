@@ -506,6 +506,32 @@ pub fn uninstall_scanout(bdf: u32) -> bool {
     true
 }
 
+/// Stop scanout queue activity for terminal system shutdown.
+///
+/// Unlike `uninstall_scanout`, this intentionally does not unregister fbdev,
+/// clear DRM publication, or free the framebuffer backing. Those objects can
+/// still be visible to late shutdown callers, and the system is powering off.
+/// # C: O(1)
+pub fn shutdown_scanout(bdf: u32) -> bool {
+    let ctx = {
+        let mut guard = CTX.lock();
+        match guard.as_ref() {
+            Some(ctx) if ctx.bdf == bdf => guard.take(),
+            _ => None,
+        }
+    };
+    let ctx = match ctx {
+        Some(ctx) => ctx,
+        None => return false,
+    };
+    if ctx.cfg_va != 0 {
+        // SAFETY: cfg_va is the mapped common-cfg window captured at probe;
+        // device_status is a u8 at +0x14.
+        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    }
+    true
+}
+
 /// Tear down scanout-only state after a probe failure. The caller still owns
 /// the transport unwind and will reset the virtio device and release q0.
 /// # C: O(fb_pages_alloc)
