@@ -63,6 +63,9 @@ mod imp {
             match req.op {
                 BlockOp::Flush => {
                     let mut c = self.ctrl.lock();
+                    if self.removed.load(Ordering::Acquire) {
+                        return Err(BlockError::Eio);
+                    }
                     if c.flush() { Ok(()) } else { Err(BlockError::Eio) }
                 }
                 BlockOp::Discard => Err(BlockError::Eopnotsupp),
@@ -84,6 +87,9 @@ mod imp {
                         let len = (n as usize) * bs;
                         let lba = req.start_block + done;
                         let mut c = self.ctrl.lock();
+                        if self.removed.load(Ordering::Acquire) {
+                            return Err(BlockError::Eio);
+                        }
                         let bva = c.bounce_va();
                         if bva == 0 { return Err(BlockError::Eio); }
                         let p = bva as *mut u8;
@@ -125,6 +131,9 @@ mod imp {
                 return Err(BlockError::Eio);
             }
             let mut c = self.ctrl.lock();
+            if self.removed.load(Ordering::Acquire) {
+                return Err(BlockError::Eio);
+            }
             if c.flush() { Ok(()) } else { Err(BlockError::Eio) }
         }
     }
@@ -134,6 +143,15 @@ mod imp {
         /// release AHCI DMA frames. Existing Arc holders observe EIO.
         /// # C: O(port stop + PMM frees)
         fn remove(&self) {
+            self.removed.store(true, Ordering::Release);
+            self.ctrl.lock().shutdown_and_free();
+        }
+
+        /// Quiesce for reboot/poweroff without unregistering the block device.
+        /// Existing Arc holders observe EIO while userspace publication stays
+        /// intact for the terminal power transition.
+        /// # C: O(port stop + PMM frees)
+        fn shutdown(&self) {
             self.removed.store(true, Ordering::Release);
             self.ctrl.lock().shutdown_and_free();
         }
@@ -215,10 +233,22 @@ mod imp {
         dev.remove();
         true
     }
+
+    /// Quiesce the installed AHCI controller for reboot/poweroff without
+    /// unregistering userspace-visible block publication.
+    /// # C: O(port shutdown)
+    pub fn shutdown() -> bool {
+        let dev = match INSTALLED.lock().as_ref().cloned() {
+            Some(dev) => dev,
+            None => return false,
+        };
+        dev.shutdown();
+        true
+    }
 }
 
 #[cfg(target_os = "oxide-kernel")]
-pub use imp::{init, remove, AhciBlk, AHCI_CLASS24};
+pub use imp::{init, remove, shutdown, AhciBlk, AHCI_CLASS24};
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {
@@ -275,6 +305,10 @@ impl drv::Driver for AhciDriver {
 
     fn remove(&self, _dev: &drv::Device) {
         let _ = imp::remove();
+    }
+
+    fn shutdown(&self, _dev: &drv::Device) {
+        let _ = imp::shutdown();
     }
 }
 
