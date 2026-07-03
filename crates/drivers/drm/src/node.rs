@@ -48,10 +48,17 @@ pub struct ScanoutOps {
 }
 
 static SCANOUT_OPS: Spinlock<Option<ScanoutOps>, OpsLockClass> = Spinlock::new(None);
+static DRM_NODES: Spinlock<[Option<Arc<drv::Device>>; 2], OpsLockClass>
+    = Spinlock::new([const { None }; 2]);
 
 /// Install the runtime scanout backend (called once at GPU install).
 /// # C: O(1)
 pub fn set_scanout_ops(ops: ScanoutOps) { *SCANOUT_OPS.lock() = Some(ops); }
+
+/// Remove the runtime scanout backend during GPU teardown.
+/// # C: O(1)
+pub fn clear_scanout_ops() { *SCANOUT_OPS.lock() = None; }
+
 /// Snapshot the runtime scanout backend, or `None` if no GPU installed.
 /// # C: O(1)
 pub fn scanout_ops() -> Option<ScanoutOps> { *SCANOUT_OPS.lock() }
@@ -76,12 +83,11 @@ const FALLBACK_NAME: &str = "oxide";
 const FALLBACK_DATE: &str = "20260509";
 const FALLBACK_DESC: &str = "Oxide DRM (no GPU)";
 
-// High-bits tags keep the three char-device inodes distinct from every other
+// High-bits tags keep the DRM char-device inodes distinct from every other
 // device number; the ioctl + mmap dispatchers (`handle_drm_ioctl`,
 // `mmap_backing`) route on `inode.ino()` masked to the top 32 bits.
 const DRM_CARD_INO:   vfs::Ino = 0x4452_4D43_0000_0000;
 const DRM_RENDER_INO: vfs::Ino = 0x4452_4D52_0000_0000;
-const DRM_EVDEV_INO:  vfs::Ino = 0x4556_4456_0000_0000;
 
 /// `file_operations` for `/dev/dri/card0`: read drains queued KMS events,
 /// write is a no-op sink, last-close restores the boot fbcon scanout.
@@ -108,8 +114,7 @@ impl vfs::FileOps for DrmCardFileOps {
     }
 }
 
-/// `file_operations` for the render node + the evdev surface: read returns 0
-/// bytes (no events queued → userspace blocks/poll-empty), write is a sink.
+/// `file_operations` for the render node: read returns 0 bytes, write is a sink.
 struct DrmSinkFileOps;
 impl vfs::FileOps for DrmSinkFileOps {
     fn read(&self, _inode: &vfs::Inode, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Ok(0) }
@@ -127,43 +132,44 @@ fn make_render_inode() -> vfs::InodeRef {
     vfs::InodeBuilder::new(DRM_RENDER_INO, vfs::mk_mode(vfs::FileType::CharDev, 0o666),
                            vfs::default_inode_ops(), Arc::new(DrmSinkFileOps)).build()
 }
-/// Build the `/dev/input/event0` evdev inode (sink f_op). # C: O(1)
-fn make_evdev_inode() -> vfs::InodeRef {
-    vfs::InodeBuilder::new(DRM_EVDEV_INO, vfs::mk_mode(vfs::FileType::CharDev, 0o666),
-                           vfs::default_inode_ops(), Arc::new(DrmSinkFileOps)).build()
-}
 
-/// Self-register a DRM/input `/dev` node through `drv::device_add` (D27): the
+/// Self-register a DRM `/dev` node through `drv::device_add` (D27): the
 /// `node_factory` mints the EXACT bespoke inode (custom `FileOps`, routing tag)
 /// each used before, so the /dev node is byte-identical; `dt` is the standard
-/// `(major,minor)` metadata. bus == `class` (`drm`/`input`) is ignored by the
-/// pci/virtio /sys synthesis, so no spurious /sys entry appears. # C: O(1)
-fn add_node(name: &str, class: &'static str, dt: (u32, u32), factory: drv::NodeFactory) {
+/// `(major,minor)` metadata. bus == `class` (`drm`) is ignored by the pci/virtio
+/// /sys synthesis, so no spurious /sys entry appears. # C: O(1)
+fn add_node(name: &str, class: &'static str, dt: (u32, u32), factory: drv::NodeFactory) -> Arc<drv::Device> {
     use alloc::string::String;
     drv::device_add(Arc::new(
         drv::Device::new(class, String::from(name), 0, 0, 0)
             .with_devnode(class, String::from(name), Some(dt))
-            .with_node_factory(factory)));
+            .with_node_factory(factory)))
 }
 
-/// Register DRM card / render / evdev / input-devices nodes.
+/// Register DRM card/render nodes for the first live DRM card.
 /// # C: O(1)
 pub fn register() {
-    // device-model Stage C (D27): /dev/dri/card0 (226:0), renderD128 (226:128)
-    // and /dev/input/event0 (13:64) self-register via `device_add`.
-    add_node("dri/card0",      "drm",   (226, 0),   Arc::new(|| make_card_inode()));
-    add_node("dri/renderD128", "drm",   (226, 128), Arc::new(|| make_render_inode()));
-    add_node("input/event0",   "input", (13, 64),   Arc::new(|| make_evdev_inode()));
-    procfs::register("/proc/bus/input/devices",
-        vfs::StaticFileInode::new(b"\
-I: Bus=0019 Vendor=0000 Product=0000 Version=0000\n\
-N: Name=\"Oxide synthetic evdev\"\n\
-P: Phys=oxide/input0\n\
-S: Sysfs=/devices/oxide/input0\n\
-H: Handlers=event0\n\
-B: EV=3\n\
-B: KEY=ffffffffffffffff\n\
-"));
+    let mut nodes = DRM_NODES.lock();
+    if nodes[0].is_some() || nodes[1].is_some() {
+        return;
+    }
+    // The nodes are device-model-owned: /dev/dri/card0 (226:0) and
+    // renderD128 (226:128) are minted by drv::device_add and removed by
+    // drv::device_del when the final DRM card unregisters.
+    nodes[0] = Some(add_node("dri/card0",      "drm", (226, 0),   Arc::new(|| make_card_inode())));
+    nodes[1] = Some(add_node("dri/renderD128", "drm", (226, 128), Arc::new(|| make_render_inode())));
+}
+
+/// Remove DRM card/render nodes after the final live DRM card is gone.
+/// # C: O(depth)
+pub fn unregister() {
+    let nodes = {
+        let mut g = DRM_NODES.lock();
+        [g[0].take(), g[1].take()]
+    };
+    for node in nodes.iter().rev().flatten() {
+        drv::device_del(node);
+    }
 }
 
 /// mmap backing for a DRM card inode (offset-keyed). The `offset` is
@@ -177,8 +183,8 @@ pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
     crate::dumb::mmap_backing(offset)
 }
 
-/// ioctl on a DRM/evdev fd. Returns Some(rv) when handled; None
-/// otherwise (caller falls back to the generic CharDev path).
+/// ioctl on a DRM fd. Returns Some(rv) when handled; None otherwise (caller
+/// falls back to the generic CharDev path).
 /// # C: O(1)
 pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64> {
     let tag = inode.ino() & 0xFFFF_FFFF_0000_0000;

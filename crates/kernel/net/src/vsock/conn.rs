@@ -205,6 +205,26 @@ impl VsockTable {
         self.conns.lock().retain(|c| c.key() != k);
     }
 
+    /// Mark every live connection closed and clear the connection table.
+    /// Used when the transport driver is removed. Listeners remain bound, but
+    /// no connection can make progress until a driver is installed again.
+    /// # C: O(N conns)
+    pub fn close_all(&self) {
+        let mut conns = self.conns.lock();
+        for c in conns.iter() {
+            *c.st.lock() = VsockState::Closed;
+            #[cfg(target_os = "oxide-kernel")]
+            c.waiters.wake_all();
+        }
+        conns.clear();
+        let listeners = self.listeners.lock();
+        for l in listeners.iter() {
+            l.backlog.lock().clear();
+            #[cfg(target_os = "oxide-kernel")]
+            l.accept_waiters.wake_all();
+        }
+    }
+
     /// Register a listener on `port`. # C: O(1)
     pub fn add_listener(&self, port: u32) {
         let mut g = self.listeners.lock();

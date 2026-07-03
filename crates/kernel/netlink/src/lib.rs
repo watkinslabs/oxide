@@ -268,6 +268,31 @@ pub fn emit_uevent_with_env(action: &str, devpath: &str, subsystem: &str, extra:
     n
 }
 
+/// Multicast a userspace-originated cooked uevent, normally the libudev
+/// message that systemd-udevd sends after it has applied rules to a raw
+/// kernel uevent. These buffers are not nlmsghdr-framed; they carry the
+/// `libudev\0` cooked-device payload expected by sd-device monitors.
+///
+/// Linux udev clients subscribe to the UDEV group (bit 1 in
+/// sockaddr_nl.nl_groups). Raw kernel uevents still use
+/// [`emit_uevent_with_env`] and are delivered only to group 1.
+/// # C: O(N_listeners)
+pub fn multicast_cooked_uevent(msg: &[u8], dest_groups: u32, sender_port: u32) -> usize {
+    let mut g = UEVENT_LISTENERS.lock();
+    g.retain(|w| w.strong_count() > 0);
+    let mut n = 0;
+    for w in g.iter() {
+        if let Some(s) = w.upgrade() {
+            if s.port_id.load(Ordering::Acquire) == sender_port { continue; }
+            let groups = s.groups.load(Ordering::Acquire);
+            if dest_groups == 0 || (groups & dest_groups) == 0 { continue; }
+            s.enqueue(msg.to_vec());
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Live `NETLINK_ROUTE` sockets eligible for multicast delivery (`ip
 /// monitor`, systemd-networkd, NetworkManager). Weak so closed sockets
 /// drop out. `rtnl_multicast` enqueues to those whose `groups` mask
@@ -458,7 +483,20 @@ impl NetlinkSocket {
     /// Parse + dispatch every nlmsghdr in `buf`; returns the bytes consumed
     /// (the whole buffer, mirroring Linux netlink `sendmsg`). # C: O(buf len)
     pub fn write(&self, buf: &[u8]) -> vfs::KResult<usize> {
+        self.write_to_groups(buf, 0)
+    }
+
+    /// Write one userspace netlink datagram with the destination group mask
+    /// supplied by sockaddr_nl.nl_groups. Kobject udev's cooked rebroadcasts
+    /// are plain libudev blobs, not nlmsghdr messages, so multicast them
+    /// before falling back to the request/reply dispatcher.
+    /// # C: O(buf len + listeners)
+    pub fn write_to_groups(&self, buf: &[u8], dest_groups: u32) -> vfs::KResult<usize> {
         let consumed = buf.len();
+        if self.protocol == proto::NETLINK_KOBJECT_UEVENT {
+            multicast_cooked_uevent(buf, dest_groups, self.port_id.load(Ordering::Acquire));
+            return Ok(consumed);
+        }
         let mut off = 0;
         while off + Nlmsghdr::SIZE <= buf.len() {
             let hdr = match Nlmsghdr::parse(&buf[off..]) {
@@ -610,5 +648,47 @@ mod tests {
         assert!(b.dequeue().is_some());
 
         assert_eq!(rtnl_multicast(0, &msg), 0);  // RTNLGRP_NONE reaches nobody
+    }
+
+    #[test]
+    fn raw_uevent_delivers_only_to_kernel_group() {
+        use alloc::sync::Arc;
+        let udevd = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        let monitor = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        udevd.set_group_mask(1);   // KERNEL group
+        monitor.set_group_mask(0); // cooked monitor
+        register_uevent_listener(&udevd);
+        register_uevent_listener(&monitor);
+
+        let n = emit_uevent("add", "/devices/virtual/drm/card0", "drm");
+        assert_eq!(n, 1);
+        assert!(udevd.dequeue().is_some());
+        assert!(monitor.dequeue().is_none());
+    }
+
+    #[test]
+    fn cooked_uevent_reaches_only_udev_group_monitors() {
+        use alloc::sync::Arc;
+        let sender = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        let kernel_listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        let group0_monitor = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        let udev_monitor = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        sender.set_group_mask(2);
+        kernel_listener.set_group_mask(1);
+        group0_monitor.set_group_mask(0);
+        udev_monitor.set_group_mask(2);
+        register_uevent_listener(&sender);
+        register_uevent_listener(&kernel_listener);
+        register_uevent_listener(&group0_monitor);
+        register_uevent_listener(&udev_monitor);
+
+        let msg = b"libudev\0ACTION=add\0SUBSYSTEM=drm\0";
+        let n = multicast_cooked_uevent(
+            msg, 2, sender.port_id.load(Ordering::Acquire));
+        assert_eq!(n, 1);
+        assert!(sender.dequeue().is_none());
+        assert!(kernel_listener.dequeue().is_none());
+        assert!(group0_monitor.dequeue().is_none());
+        assert_eq!(udev_monitor.dequeue().as_deref(), Some(&msg[..]));
     }
 }

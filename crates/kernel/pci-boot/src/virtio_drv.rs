@@ -2,50 +2,983 @@
 // klog calls gated under debug_boot! per R06.
 
 use super::map_mmio_pages;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use sync::{Spinlock, TaskList as VirtioTransportLockClass};
 
-// drivers-plan D1a model drivers. Each live virtio driver gets a
-// static `drv::Driver` whose `matches` keys on its PCI device-id.
-// `probe` is a no-op: the inline bring-up below already brought the
-// device up — D1b moves bring-up into `probe`. We `register_driver`
-// + `bind` at the existing success sites; bring-up itself is unchanged.
-macro_rules! model_driver {
-    ($ty:ident, $static:ident, $name:literal, $($id:literal)|+) => {
-        struct $ty;
-        impl drv::Driver for $ty {
-            fn name(&self) -> &'static str { $name }
-            fn matches(&self, dev: &drv::Device) -> bool {
-                dev.bus == "pci" && dev.vendor_id == 0x1AF4 && matches!(dev.device_id, $($id)|+)
+struct MappedTransportPage {
+    page_pa: u64,
+    mapping: mmio_map::Mapping,
+}
+
+#[derive(Default)]
+struct TransportMappings {
+    pages: Vec<MappedTransportPage>,
+}
+
+impl TransportMappings {
+    fn map_page(&mut self, page_pa: u64) -> u64 {
+        if page_pa == 0 {
+            return 0;
+        }
+        for page in &self.pages {
+            if page.page_pa == page_pa {
+                return page.mapping.base_va();
             }
         }
-        static $static: $ty = $ty;
+        // SAFETY: virtio-pci decoded this page from a BAR capability owned by
+        // the bound transport. The owned Mapping is kept until probe failure or
+        // child remove quiesces the device.
+        let mapping = unsafe { mmio_map::map_owned(page_pa, 1) };
+        let base_va = mapping.base_va();
+        self.pages.push(MappedTransportPage { page_pa, mapping });
+        base_va
+    }
+
+    fn unmap_all(&mut self) {
+        self.pages.clear();
+    }
+}
+
+struct TransportRecord {
+    bdf: u32,
+    _mappings: TransportMappings,
+    vring_frames: Vec<u64>,
+    msi_id: u32,
+    msix_entry_va: u64,
+    msix_cap_off: u8,
+}
+
+static TRANSPORT_MMIO: Spinlock<Vec<TransportRecord>, VirtioTransportLockClass> =
+    Spinlock::new(Vec::new());
+
+struct VirtioPciDrv;
+impl drv::Driver for VirtioPciDrv {
+    fn name(&self) -> &'static str { "virtio-pci" }
+
+    fn matches(&self, dev: &drv::Device) -> bool {
+        dev.bus == "pci" && virtio::is_modern(dev.vendor_id, dev.device_id)
+    }
+
+    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
+        let Some(d) = pci_device_from_pci_model(dev) else { return Err(drv::Error::ProbeFailed); };
+        if !virtio::is_modern(d.vendor_id, d.device_id) {
+            return Err(drv::Error::NoMatch);
+        }
+
+        let vaddr = alloc::format!("virtio{}", super::virtio_seq());
+        let Some(vdev_id) = virtio::modern_device_id(d.device_id) else {
+            return Err(drv::Error::NoMatch);
+        };
+        let virtio_dev = drv::device_add(Arc::new(
+            drv::Device::new("virtio", vaddr, d.vendor_id, vdev_id, 0)
+                .with_parent("pci", dev.addr.clone()),
+        ));
+
+        // A PCI virtio transport may bind before the device-specific virtio
+        // driver exists, or the child probe may fail independently. The child
+        // remains an unbound virtio device in the model in both cases.
+        let _ = drv::auto_bind(&virtio_dev);
+        Ok(())
+    }
+
+    fn remove(&self, dev: &drv::Device) {
+        for child in drv::devices() {
+            if child.bus != "virtio" {
+                continue;
+            }
+            let Some((parent_bus, parent_addr)) = child.parent() else { continue };
+            if parent_bus != "pci" || parent_addr != dev.addr {
+                continue;
+            }
+            drv::device_del(&child);
+        }
+    }
+}
+static VIRTIO_PCI_DRV: VirtioPciDrv = VirtioPciDrv;
+
+struct VirtioGpuDrv;
+impl drv::Driver for VirtioGpuDrv {
+    fn bus(&self) -> &'static str { "virtio" }
+
+    fn name(&self) -> &'static str { "virtio-gpu" }
+
+    fn matches(&self, dev: &drv::Device) -> bool {
+        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 16
+    }
+
+    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
+        if drv_virtio_gpu::is_present() {
+            return Err(drv::Error::Busy);
+        }
+        let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
+        let mut p = virtio_init_arch(&d, None).ok_or(drv::Error::ProbeFailed)?;
+        super::virtio_trace::trace_probe(d.bdf, &p);
+        if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
+            || p.cfg_va == 0
+            || p.q0_desc_pa == 0
+            || p.q0_driver_pa == 0
+            || p.q0_device_pa == 0
+            || p.q0_notify_va == 0
+            || p.q0_size == 0
+        {
+            release_q0_after_failed_probe(&mut p);
+            return Err(drv::Error::ProbeFailed);
+        }
+        let resources = p.resources(&[p.q0_resource()]);
+        let ok = drv_virtio_gpu::post_init::get_display_info(
+            d.bdf.bus,
+            d.bdf.device,
+            d.bdf.function,
+            p.drv_features,
+            resources,
+        );
+        if !ok {
+            release_q0_after_failed_probe(&mut p);
+            return Err(drv::Error::ProbeFailed);
+        }
+        debug_boot! {
+            klog::write_raw(b"[INFO]  virtio-gpu installed feat=");
+            klog::write_hex_u64(p.drv_features);
+            klog::write_raw(b"\n");
+        }
+        publish_transport_mmio(&mut p);
+        Ok(())
+    }
+
+    fn remove(&self, dev: &drv::Device) {
+        let Some(bdf) = pci_parent_bdf(dev) else { return };
+        let bdf_word = bdf_word(bdf);
+        if drv_virtio_gpu::uninstall(bdf_word).is_none() {
+            return;
+        }
+        let _ = drv_virtio_gpu::post_init::uninstall_scanout(bdf_word);
+        unpublish_transport_mmio(bdf_word);
+    }
+}
+static VIRTIO_GPU_DRV: VirtioGpuDrv = VirtioGpuDrv;
+
+struct VirtioInputDrv;
+impl drv::Driver for VirtioInputDrv {
+    fn bus(&self) -> &'static str { "virtio" }
+
+    fn name(&self) -> &'static str { "virtio-input" }
+
+    fn matches(&self, dev: &drv::Device) -> bool {
+        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 18
+    }
+
+    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
+        let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
+        let mut p =
+            virtio_init_arch(&d, Some(drv_virtio_input::drain::raise_drain))
+                .ok_or(drv::Error::ProbeFailed)?;
+        super::virtio_trace::trace_probe(d.bdf, &p);
+        if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
+            || p.cfg_va == 0
+            || p.input_cfg_va == 0
+            || p.q0_desc_pa == 0
+            || p.q0_driver_pa == 0
+            || p.q0_device_pa == 0
+            || p.q0_notify_va == 0
+            || p.q0_size == 0
+        {
+            release_q0_after_failed_probe(&mut p);
+            return Err(drv::Error::ProbeFailed);
+        }
+        let bdf_word = bdf_word(d.bdf);
+        let evdev_id = match unsafe { drv_virtio_input::install_device(bdf_word, p.input_cfg_va) } {
+            Some(id) => id,
+            None => {
+                release_q0_after_failed_probe(&mut p);
+                return Err(drv::Error::ProbeFailed);
+            }
+        };
+        let resources = p.resources(&[p.q0_resource()]);
+        let installed = drv_virtio_input::drain::install_eventq(evdev_id, resources);
+        if installed.is_err() {
+            let _ = drv_virtio_input::remove_device(bdf_word);
+            release_q0_after_failed_probe(&mut p);
+            return Err(drv::Error::ProbeFailed);
+        }
+        debug_boot! {
+            klog::write_raw(b"[INFO]  virtio-input installed evdev_id=");
+            klog::write_dec_u64(evdev_id as u64);
+            klog::write_raw(if drv_virtio_input::is_pointer(evdev_id) { b" pointer\n" } else { b" keyboard\n" });
+        }
+        publish_transport_mmio(&mut p);
+        Ok(())
+    }
+
+    fn remove(&self, dev: &drv::Device) {
+        let Some(bdf) = pci_parent_bdf(dev) else { return };
+        let bdf_word = bdf_word(bdf);
+        if let Some(evdev_id) = drv_virtio_input::evdev_id_for_bdf(bdf_word) {
+            let _ = drv_virtio_input::drain::uninstall_eventq(evdev_id);
+            let _ = drv_virtio_input::remove_device(bdf_word);
+        }
+        unpublish_transport_mmio(bdf_word);
+    }
+}
+static VIRTIO_INPUT_DRV: VirtioInputDrv = VirtioInputDrv;
+
+struct VirtioNetDrv;
+impl drv::Driver for VirtioNetDrv {
+    fn bus(&self) -> &'static str { "virtio" }
+
+    fn name(&self) -> &'static str { "virtio-net" }
+
+    fn matches(&self, dev: &drv::Device) -> bool {
+        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 1
+    }
+
+    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
+        if drv_virtio_net::modern::is_modern_present() {
+            return Err(drv::Error::Busy);
+        }
+        let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
+        let device_key = bdf_word(d.bdf);
+        let mut p =
+            virtio_init_arch(&d, Some(drv_virtio_net::modern::raise_rx))
+                .ok_or(drv::Error::ProbeFailed)?;
+        super::virtio_trace::trace_probe(d.bdf, &p);
+        if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
+            || p.q0_desc_pa == 0
+            || p.q0_driver_pa == 0
+            || p.q0_device_pa == 0
+            || p.q1_desc_pa == 0
+            || p.q1_driver_pa == 0
+            || p.q1_device_pa == 0
+            || p.q0_notify_va == 0
+            || p.q1_notify_va == 0
+            || p.q0_size == 0
+            || p.q1_size == 0
+            || p.rx0_buf_pa == 0
+            || p.rx0_buf_len == 0
+            || p.tx0_buf_pa == 0
+            || !p.mac_valid
+        {
+            release_net_after_failed_probe(&mut p);
+            return Err(drv::Error::ProbeFailed);
+        }
+        let resources = p.resources(&[p.q0_resource(), p.q1_resource()]);
+        if !drv_virtio_net::modern::init_modern(
+            device_key,
+            resources,
+            d.bdf.bus,
+            d.bdf.device,
+            d.bdf.function,
+            p.rx0_buf_pa,
+            p.rx0_buf_len,
+            p.mac,
+            p.mac_valid,
+            p.tx0_buf_pa,
+        ) {
+            release_net_after_failed_probe(&mut p);
+            return Err(drv::Error::ProbeFailed);
+        }
+        match drv_virtio_net::modern::register_netdev() {
+            Some(id) => {
+                #[cfg(not(feature = "debug-boot"))]
+                let _ = id;
+                debug_boot! {
+                    klog::write_raw(b"[INFO]  virtio-net-iface registered id=");
+                    klog::write_dec_u64(id.0 as u64);
+                    klog::write_raw(b" name=eth0\n");
+                }
+                publish_transport_mmio(&mut p);
+                Ok(())
+            }
+            None => {
+                let _ = drv_virtio_net::modern::uninstall_modern(device_key);
+                unmap_probe_mmio(&mut p);
+                Err(drv::Error::ProbeFailed)
+            }
+        }
+    }
+
+    fn remove(&self, _dev: &drv::Device) {
+        if let Some(bdf) = pci_parent_bdf(_dev) {
+            let device_key = bdf_word(bdf);
+            if drv_virtio_net::modern::is_modern_present_for(device_key) {
+                let _ = drv_virtio_net::modern::unregister_netdev();
+                if drv_virtio_net::modern::uninstall_modern(device_key) {
+                    unpublish_transport_mmio(device_key);
+                }
+            }
+        }
+    }
+}
+static VIRTIO_NET_DRV: VirtioNetDrv = VirtioNetDrv;
+
+struct VirtioBlkDrv;
+impl drv::Driver for VirtioBlkDrv {
+    fn bus(&self) -> &'static str { "virtio" }
+
+    fn name(&self) -> &'static str { "virtio-blk" }
+
+    fn matches(&self, dev: &drv::Device) -> bool {
+        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 2
+    }
+
+    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
+        let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
+        let mut p =
+            virtio_init_arch(&d, Some(drv_virtio_blk::modern::wake_completions))
+                .ok_or(drv::Error::ProbeFailed)?;
+        super::virtio_trace::trace_probe(d.bdf, &p);
+        if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
+            || p.q0_desc_pa == 0
+            || p.q0_driver_pa == 0
+            || p.q0_device_pa == 0
+            || p.q0_notify_va == 0
+            || p.q0_size == 0
+            || !p.blk_cfg_valid
+        {
+            release_q0_after_failed_probe(&mut p);
+            return Err(drv::Error::ProbeFailed);
+        }
+        let resources = p.resources(&[p.q0_resource()]);
+        let idx = super::virtio_blk_cfg::register_blk(
+            d.bdf.bus, d.bdf.device, d.bdf.function,
+            resources,
+            p.blk_capacity,
+            p.blk_blk_size,
+        );
+        if idx == 0 {
+            release_q0_after_failed_probe(&mut p);
+            return Err(drv::Error::ProbeFailed);
+        }
+        publish_transport_mmio(&mut p);
+        Ok(())
+    }
+
+    fn remove(&self, dev: &drv::Device) {
+        if let Some(bdf) = pci_parent_bdf(dev) {
+            let _ = super::virtio_blk_cfg::remove_blk(bdf.bus, bdf.device, bdf.function);
+            unpublish_transport_mmio(bdf_word(bdf));
+        }
+    }
+}
+static VIRTIO_BLK_DRV: VirtioBlkDrv = VirtioBlkDrv;
+
+struct VirtioRngDrv;
+impl drv::Driver for VirtioRngDrv {
+    fn bus(&self) -> &'static str { "virtio" }
+
+    fn name(&self) -> &'static str { "virtio-rng" }
+
+    fn matches(&self, dev: &drv::Device) -> bool {
+        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 4
+    }
+
+    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
+        let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
+        let mut p = virtio_init_arch(&d, None).ok_or(drv::Error::ProbeFailed)?;
+        super::virtio_trace::trace_probe(d.bdf, &p);
+        if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
+            || p.cfg_va == 0
+            || p.q0_desc_pa == 0
+            || p.q0_driver_pa == 0
+            || p.q0_device_pa == 0
+            || p.q0_notify_va == 0
+            || p.q0_size == 0
+        {
+            release_q0_after_failed_probe(&mut p);
+            return Err(drv::Error::ProbeFailed);
+        }
+        let resources = p.resources(&[p.q0_resource()]);
+        let bdf_word = bdf_word(d.bdf);
+        let probe = match drv_virtio_rng::install(bdf_word, resources) {
+            Some(probe) => probe,
+            None => {
+                release_q0_after_failed_probe(&mut p);
+                return Err(drv::Error::ProbeFailed);
+            }
+        };
+        if let Some(hwrng_dev) = probe.hwrng_dev {
+            drv::device_add(hwrng_dev);
+        }
+
+        // Seed the kernel RNG with real entropy at bring-up. Read from the
+        // just-bound device, not whichever hwrng is currently active.
+        let mut seed = [0u8; 32];
+        let n = drv_virtio_rng::fill_from_bdf(bdf_word, &mut seed);
+        if n == 0 {
+            if let Some(remove) = drv_virtio_rng::uninstall(bdf_word) {
+                if let Some(hwrng_dev) = remove.hwrng_dev {
+                    drv::device_del(&hwrng_dev);
+                }
+                if let Some(promoted) = remove.promoted_hwrng_dev {
+                    drv::device_add(promoted);
+                }
+            }
+            release_q0_after_failed_probe(&mut p);
+            return Err(drv::Error::ProbeFailed);
+        }
+        devfs::misc::add_entropy(&seed[..n]);
+        debug_boot! {
+            klog::write_raw(b"[INFO]  virtio-rng installed seeded=");
+            klog::write_dec_u64(n as u64);
+            klog::write_raw(b" bytes\n");
+        }
+        publish_transport_mmio(&mut p);
+        Ok(())
+    }
+
+    fn remove(&self, dev: &drv::Device) {
+        if let Some(bdf) = pci_parent_bdf(dev) {
+            let bdf_word = bdf_word(bdf);
+            if let Some(remove) = drv_virtio_rng::uninstall(bdf_word) {
+                if let Some(hwrng_dev) = remove.hwrng_dev {
+                    drv::device_del(&hwrng_dev);
+                }
+                if let Some(promoted) = remove.promoted_hwrng_dev {
+                    drv::device_add(promoted);
+                }
+            }
+            unpublish_transport_mmio(bdf_word);
+        }
+    }
+}
+static VIRTIO_RNG_DRV: VirtioRngDrv = VirtioRngDrv;
+
+struct VirtioVsockDrv;
+impl drv::Driver for VirtioVsockDrv {
+    fn bus(&self) -> &'static str { "virtio" }
+
+    fn name(&self) -> &'static str { "virtio-vsock" }
+
+    fn matches(&self, dev: &drv::Device) -> bool {
+        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 19
+    }
+
+    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
+        if drv_virtio_vsock::present() {
+            return Err(drv::Error::Busy);
+        }
+        let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
+        let device_key = bdf_word(d.bdf);
+        let mut p =
+            virtio_init_arch(&d, Some(drv_virtio_vsock::raise_rx))
+                .ok_or(drv::Error::ProbeFailed)?;
+        super::virtio_trace::trace_probe(d.bdf, &p);
+        if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
+            || p.cfg_va == 0
+            || p.q0_desc_pa == 0
+            || p.q0_driver_pa == 0
+            || p.q0_device_pa == 0
+            || p.q0_notify_va == 0
+            || p.q0_size == 0
+            || p.q1_desc_pa == 0
+            || p.q1_driver_pa == 0
+            || p.q1_device_pa == 0
+            || p.q1_notify_va == 0
+            || p.q1_size == 0
+            || !p.vsock_cid_valid
+        {
+            release_vsock_after_failed_probe(&mut p);
+            return Err(drv::Error::ProbeFailed);
+        }
+        let resources = p.resources(&[p.q0_resource(), p.q1_resource()]);
+        if !super::virtio_vsock_cfg::install_vsock(device_key, resources, p.vsock_cid) {
+            release_vsock_after_failed_probe(&mut p);
+            return Err(drv::Error::ProbeFailed);
+        }
+        debug_boot! {
+            klog::write_raw(b"[INFO]  virtio-vsock installed cid=");
+            klog::write_dec_u64(p.vsock_cid);
+            klog::write_raw(b"\n");
+        }
+        publish_transport_mmio(&mut p);
+        Ok(())
+    }
+
+    fn remove(&self, dev: &drv::Device) {
+        let Some(bdf) = pci_parent_bdf(dev) else { return };
+        let device_key = bdf_word(bdf);
+        if !drv_virtio_vsock::uninstall(device_key) {
+            return;
+        }
+        unpublish_transport_mmio(device_key);
+    }
+}
+static VIRTIO_VSOCK_DRV: VirtioVsockDrv = VirtioVsockDrv;
+
+struct VirtioSndDrv;
+impl drv::Driver for VirtioSndDrv {
+    fn bus(&self) -> &'static str { "virtio" }
+
+    fn name(&self) -> &'static str { "virtio-snd" }
+
+    fn matches(&self, dev: &drv::Device) -> bool {
+        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 25
+    }
+
+    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
+        if drv_virtio_snd::present() {
+            return Err(drv::Error::Busy);
+        }
+        let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
+        let device_key = bdf_word(d.bdf);
+        let mut p = virtio_init_arch(&d, None).ok_or(drv::Error::ProbeFailed)?;
+        super::virtio_trace::trace_probe(d.bdf, &p);
+        if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
+            || p.cfg_va == 0
+            || p.q0_desc_pa == 0
+            || p.q0_driver_pa == 0
+            || p.q0_device_pa == 0
+            || p.q0_notify_va == 0
+            || p.q0_size == 0
+            || !p.snd_cfg_valid
+        {
+            release_snd_after_failed_probe(&mut p);
+            return Err(drv::Error::ProbeFailed);
+        }
+        let resources = p.resources(&[
+            p.q0_resource(),
+            p.snd_q2_resource(),
+            p.snd_q3_resource(),
+        ]);
+        let sp = super::virtio_snd_cfg::install_snd(
+            device_key,
+            resources,
+            p.snd_jacks,
+            p.snd_streams,
+            p.snd_chmaps,
+            p.snd_controls,
+        ).ok_or_else(|| {
+            release_snd_after_failed_probe(&mut p);
+            drv::Error::ProbeFailed
+        })?;
+        #[cfg(not(feature = "debug-boot"))]
+        let _ = &sp;
+        debug_boot! {
+            klog::write_raw(b"[INFO]  virtio-snd: bdf=0:");
+            klog::write_dec_u64(d.bdf.device as u64);
+            klog::write_raw(b".0 card=C0 streams=");
+            klog::write_dec_u64(sp.streams as u64);
+            klog::write_raw(b" out=");
+            klog::write_dec_u64(sp.out as u64);
+            klog::write_raw(b" in=");
+            klog::write_dec_u64(sp.input as u64);
+            klog::write_raw(b"\n");
+            let beep_diag = drv_virtio_snd::beep_diag(440, 150);
+            klog::write_raw(b"[INFO]  virtio-snd: boot-tone diag=");
+            klog::write_dec_u64(beep_diag as u64);
+            klog::write_raw(b"\n");
+        }
+        publish_transport_mmio(&mut p);
+        Ok(())
+    }
+
+    fn remove(&self, dev: &drv::Device) {
+        if let Some(bdf) = pci_parent_bdf(dev) {
+            let device_key = bdf_word(bdf);
+            if drv_virtio_snd::uninstall(device_key) {
+                unpublish_transport_mmio(device_key);
+            }
+        }
+    }
+}
+static VIRTIO_SND_DRV: VirtioSndDrv = VirtioSndDrv;
+
+fn bdf_word(bdf: pci::Bdf) -> u32 {
+    (bdf.bus as u32) << 16 | (bdf.device as u32) << 8 | (bdf.function as u32)
+}
+
+fn bdf_from_word(word: u32) -> pci::Bdf {
+    pci::Bdf {
+        bus: ((word >> 16) & 0xFF) as u8,
+        device: ((word >> 8) & 0xFF) as u8,
+        function: (word & 0xFF) as u8,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MsixBinding {
+    id: u32,
+    entry_va: u64,
+    cap_off: u8,
+}
+
+fn bind_virtio_msix0(
+    d: &pci::PciDevice,
+    caps: &pci::heapless_caps::CapVec,
+    bars: &[pci::Bar; 6],
+    mappings: &mut TransportMappings,
+    handler: fn(),
+) -> Option<MsixBinding> {
+    let c = caps.find(pci::CAP_ID_MSIX)?;
+    let m = decode_msix_cap_arch(d.bdf, c.cfg_off)?;
+    if m.table_size == 0 {
+        return None;
+    }
+    let tbar_pa = bars.get(m.table_bir as usize).and_then(|b| b.mem_base())?;
+    let tbl_pa = tbar_pa + m.table_offset as u64;
+    let page_pa = tbl_pa & !0xFFF;
+    let page_off = tbl_pa - page_pa;
+
+    let (id, msg_addr, msg_data) = alloc_msi_message()?;
+    if !register_msi_handler(id, handler) {
+        free_msi_id(id);
+        return None;
+    }
+    let base_va = mappings.map_page(page_pa);
+    let entry_va = base_va + page_off;
+
+    // SAFETY: entry_va is entry 0 of the mapped MSI-X table page. Each field
+    // is naturally aligned within the 16-byte MSI-X table entry.
+    unsafe {
+        core::ptr::write_volatile(entry_va as *mut u32, (msg_addr & 0xFFFF_FFFF) as u32);
+        core::ptr::write_volatile((entry_va + 4) as *mut u32, (msg_addr >> 32) as u32);
+        core::ptr::write_volatile((entry_va + 8) as *mut u32, msg_data);
+        core::ptr::write_volatile((entry_va + 12) as *mut u32, 0);
+    }
+    set_msix_enabled_arch(d.bdf, c.cfg_off, true);
+    Some(MsixBinding { id, entry_va, cap_off: c.cfg_off })
+}
+
+fn release_msix_binding(rec: TransportRecord) {
+    if rec.msix_entry_va != 0 {
+        // SAFETY: this VA was recorded from the MSI-X table mapping while the
+        // transport was bound and is still mapped until the caller unmaps the
+        // transport MMIO pages.
+        unsafe { core::ptr::write_volatile((rec.msix_entry_va + 12) as *mut u32, 1); }
+    }
+    if rec.msix_cap_off != 0 {
+        set_msix_enabled_arch(bdf_from_word(rec.bdf), rec.msix_cap_off, false);
+    }
+    free_msi_id(rec.msi_id);
+}
+
+fn release_probe_msix(p: &VirtioProbe) {
+    if p.msix_entry_va != 0 {
+        // SAFETY: this VA was recorded from the MSI-X table mapping while the
+        // probe-owned transport mappings are still live.
+        unsafe { core::ptr::write_volatile((p.msix_entry_va + 12) as *mut u32, 1); }
+    }
+    if p.msix_cap_off != 0 {
+        set_msix_enabled_arch(bdf_from_word(p.bdf_word), p.msix_cap_off, false);
+    }
+    free_msi_id(p.msi_id);
+}
+
+fn decode_msix_cap_arch(bdf: pci::Bdf, cfg_off: u8) -> Option<pci::MsixCap> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let r = hal_x86_64::pci::LegacyPci;
+        pci::decode_msix_cap(&r, bdf, cfg_off)
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        hal_aarch64::pci::EcamPci::from_published()
+            .and_then(|r| pci::decode_msix_cap(&r, bdf, cfg_off))
+    }
+}
+
+fn set_msix_enabled_arch(bdf: pci::Bdf, cfg_off: u8, enabled: bool) {
+    let off = cfg_off & 0xFC;
+    #[cfg(target_arch = "x86_64")]
+    {
+        let r = hal_x86_64::pci::LegacyPci;
+        use pci::ConfigSpaceReader as _;
+        let cur = r.read32(bdf, off);
+        let new = if enabled { cur | (1u32 << 31) } else { cur & !(1u32 << 31) };
+        r.write32(bdf, off, new);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
+            let cur =
+                <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&r, bdf, off);
+            let new = if enabled { cur | (1u32 << 31) } else { cur & !(1u32 << 31) };
+            <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::write32(&r, bdf, off, new);
+        }
+    }
+}
+
+fn alloc_msi_message() -> Option<(u32, u64, u32)> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        arch_irq::alloc_x86_vector().map(|vec| (vec as u32, 0xFEE0_0000u64, vec as u32))
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let spi = arch_irq::alloc_arm_spi()?;
+        // SAFETY: SPI was allocated from arch-irq's GICv2m MSI range.
+        unsafe { arch_irq::gic::enable_intid(spi); }
+        let v2m_pa = firmware::acpi::GIC_MSI_FRAME_PA
+            .load(core::sync::atomic::Ordering::Acquire);
+        if v2m_pa == 0 {
+            let _ = arch_irq::free_arm_spi(spi);
+            return None;
+        }
+        Some((spi, v2m_pa + 0x40, spi))
+    }
+}
+
+fn register_msi_handler(id: u32, handler: fn()) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        arch_irq::register_msi_handler(id as u8, handler).is_ok()
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        arch_irq::register_msi_handler(id, handler).is_ok()
+    }
+}
+
+fn free_msi_id(id: u32) {
+    if id == 0 {
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    let _ = arch_irq::free_x86_vector(id as u8);
+    #[cfg(target_arch = "aarch64")]
+    let _ = arch_irq::free_arm_spi(id);
+}
+
+fn publish_transport_mmio(p: &mut VirtioProbe) {
+    let rec = TransportRecord {
+        bdf: p.bdf_word,
+        _mappings: core::mem::take(&mut p.mappings),
+        vring_frames: transport_vring_frames(p),
+        msi_id: p.msi_id,
+        msix_entry_va: p.msix_entry_va,
+        msix_cap_off: p.msix_cap_off,
     };
-}
-model_driver!(VirtioBlkDrv,   VIRTIO_BLK_DRV,   "virtio-blk",   0x1001 | 0x1042);
-model_driver!(VirtioNetDrv,   VIRTIO_NET_DRV,   "virtio-net",   0x1000 | 0x1041);
-model_driver!(VirtioGpuDrv,   VIRTIO_GPU_DRV,   "virtio-gpu",   0x1050);
-model_driver!(VirtioInputDrv, VIRTIO_INPUT_DRV, "virtio-input", 0x1052);
-model_driver!(VirtioRngDrv,   VIRTIO_RNG_DRV,   "virtio-rng",   0x1044);
-model_driver!(VirtioVsockDrv, VIRTIO_VSOCK_DRV, "virtio-vsock", 0x1053);
-model_driver!(VirtioSndDrv,   VIRTIO_SND_DRV,   "virtio-snd",   0x1059);
-
-/// Canonical `0000:bb:dd.f` addr for a BDF (matches enumeration loop).
-/// # C: O(1)
-fn pci_addr(bdf: pci::Bdf) -> alloc::string::String {
-    alloc::format!("{:04x}:{:02x}:{:02x}.{}", 0u16, bdf.bus, bdf.device, bdf.function)
+    let mut records = TRANSPORT_MMIO.lock();
+    if let Some(idx) = records.iter().position(|old| old.bdf == p.bdf_word) {
+        let old = records.remove(idx);
+        unmap_transport_record(old);
+    }
+    records.push(rec);
 }
 
-/// Register the model driver `d` once and bind the PCI device at `bdf`
-/// to it (publishes `/sys/bus/pci/drivers/<name>` + the device's
-/// `driver` symlink). Called from a bring-up success site.
-/// # C: O(N_drivers + N_devices)
-fn model_bind(d: &'static dyn drv::Driver, bdf: pci::Bdf) {
-    drv::register_driver(d);
-    drv::bind_addr("pci", &pci_addr(bdf), d.name());
+fn unmap_transport_record(rec: TransportRecord) {
+    for frame in rec.vring_frames.iter().copied() {
+        if frame == 0 {
+            continue;
+        }
+        // SAFETY: these frames were allocated and programmed by the virtio-pci
+        // transport for the child device. Child remove resets/quiesces the
+        // device before unpublishing this transport record.
+        unsafe { pmm::setup::free_one_frame(frame); }
+    }
+    release_msix_binding(rec);
+}
+
+fn transport_vring_frames(p: &VirtioProbe) -> Vec<u64> {
+    let mut frames = Vec::new();
+    for frame in [
+        p.q0_desc_pa,
+        p.q0_driver_pa,
+        p.q0_device_pa,
+        p.q1_desc_pa,
+        p.q1_driver_pa,
+        p.q1_device_pa,
+        p.snd_q2_desc_pa,
+        p.snd_q2_driver_pa,
+        p.snd_q2_device_pa,
+        p.snd_q3_desc_pa,
+        p.snd_q3_driver_pa,
+        p.snd_q3_device_pa,
+    ] {
+        if frame != 0 && !frames.iter().any(|existing| *existing == frame) {
+            frames.push(frame);
+        }
+    }
+    frames
+}
+
+fn unpublish_transport_mmio(bdf: u32) {
+    let rec = {
+        let mut records = TRANSPORT_MMIO.lock();
+        records
+            .iter()
+            .position(|rec| rec.bdf == bdf)
+            .map(|idx| records.remove(idx))
+    };
+    if let Some(rec) = rec {
+        unmap_transport_record(rec);
+    }
+}
+
+fn unmap_probe_mmio(p: &mut VirtioProbe) {
+    release_probe_msix(p);
+    p.mappings.unmap_all();
+}
+
+fn release_q0_after_failed_probe(p: &mut VirtioProbe) {
+    release_gpu_transport(p.cfg_va, p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa);
+    unmap_probe_mmio(p);
+}
+
+fn release_net_after_failed_probe(p: &mut VirtioProbe) {
+    release_virtio_transport(
+        p.cfg_va,
+        &[
+            p.q0_desc_pa,
+            p.q0_driver_pa,
+            p.q0_device_pa,
+            p.q1_desc_pa,
+            p.q1_driver_pa,
+            p.q1_device_pa,
+            p.rx0_buf_pa,
+            p.tx0_buf_pa,
+        ],
+    );
+    unmap_probe_mmio(p);
+}
+
+fn release_vsock_after_failed_probe(p: &mut VirtioProbe) {
+    release_virtio_transport(
+        p.cfg_va,
+        &[
+            p.q0_desc_pa,
+            p.q0_driver_pa,
+            p.q0_device_pa,
+            p.q1_desc_pa,
+            p.q1_driver_pa,
+            p.q1_device_pa,
+        ],
+    );
+    unmap_probe_mmio(p);
+}
+
+fn release_snd_after_failed_probe(p: &mut VirtioProbe) {
+    release_virtio_transport(
+        p.cfg_va,
+        &[
+            p.q0_desc_pa,
+            p.q0_driver_pa,
+            p.q0_device_pa,
+            p.snd_q2_desc_pa,
+            p.snd_q2_driver_pa,
+            p.snd_q2_device_pa,
+            p.snd_q3_desc_pa,
+            p.snd_q3_driver_pa,
+            p.snd_q3_device_pa,
+        ],
+    );
+    unmap_probe_mmio(p);
+}
+
+fn release_gpu_transport(cfg_va: u64, q0_desc_pa: u64, q0_driver_pa: u64, q0_device_pa: u64) {
+    release_virtio_transport(cfg_va, &[q0_desc_pa, q0_driver_pa, q0_device_pa]);
+}
+
+fn release_virtio_transport(cfg_va: u64, frames: &[u64]) {
+    if cfg_va != 0 {
+        // SAFETY: cfg_va is a mapped virtio common-cfg window returned by
+        // virtio_init_arch; device_status is a u8 at +0x14.
+        unsafe { core::ptr::write_volatile((cfg_va + 0x14) as *mut u8, 0u8); }
+    }
+    for frame in frames.iter().copied() {
+        if frame == 0 {
+            continue;
+        }
+        // SAFETY: non-zero frames passed here were allocated by the failed
+        // virtio probe and have not been retained by runtime driver state.
+        unsafe { pmm::setup::free_one_frame(frame); }
+    }
+}
+
+fn notify_va_owned(
+    mappings: &mut TransportMappings,
+    notify_cap: &virtio::VirtioPciCap,
+    bars: &[pci::Bar; 6],
+    notify_off: u16,
+) -> u64 {
+    let Some(nfy_pa) = virtio::notify_pa(notify_cap, bars, notify_off) else {
+        return 0;
+    };
+    let n_page_pa = nfy_pa & !0xFFF;
+    let n_page_off = nfy_pa - n_page_pa;
+    mappings.map_page(n_page_pa) + n_page_off
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn hex_byte(s: &[u8]) -> Option<u8> {
+    Some((hex_nibble(*s.first()?)? << 4) | hex_nibble(*s.get(1)?)?)
+}
+
+fn parse_pci_addr(addr: &str) -> Option<pci::Bdf> {
+    let b = addr.as_bytes();
+    if b.len() != 12 || b[4] != b':' || b[7] != b':' || b[10] != b'.' {
+        return None;
+    }
+    Some(pci::Bdf {
+        bus: hex_byte(&b[5..7])?,
+        device: hex_byte(&b[8..10])?,
+        function: hex_nibble(b[11])?,
+    })
+}
+
+fn pci_device_from_pci_model(dev: &drv::Device) -> Option<pci::PciDevice> {
+    if dev.bus != "pci" {
+        return None;
+    }
+    pci_device_from_bdf(parse_pci_addr(&dev.addr)?)
+}
+
+fn pci_parent_bdf(dev: &drv::Device) -> Option<pci::Bdf> {
+    let (bus, addr) = dev.parent()?;
+    if bus != "pci" {
+        return None;
+    }
+    parse_pci_addr(addr)
+}
+
+fn pci_device_from_virtio_child(dev: &drv::Device) -> Option<pci::PciDevice> {
+    pci_device_from_bdf(pci_parent_bdf(dev)?)
+}
+
+fn pci_device_from_bdf(bdf: pci::Bdf) -> Option<pci::PciDevice> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let r = hal_x86_64::pci::LegacyPci;
+        pci::PciDevice::from_config(&r, bdf)
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        match hal_aarch64::pci::EcamPci::from_published() {
+            Some(r) => pci::PciDevice::from_config(&r, bdf),
+            None => None,
+        }
+    }
+}
+
+/// Register virtio drivers whose bring-up is owned by `Driver::probe`.
+/// # C: O(N_drivers)
+pub(super) fn register_model_drivers() {
+    drv::register_driver(&VIRTIO_PCI_DRV);
+    drv::register_driver(&VIRTIO_NET_DRV);
+    drv::register_driver(&VIRTIO_BLK_DRV);
+    drv::register_driver(&VIRTIO_RNG_DRV);
+    drv::register_driver(&VIRTIO_VSOCK_DRV);
+    drv::register_driver(&VIRTIO_SND_DRV);
+    drv::register_driver(&VIRTIO_INPUT_DRV);
+    drv::register_driver(&VIRTIO_GPU_DRV);
 }
 
 // pub(super) so the trace (virtio_trace.rs) can read the fields without
-// re-deriving them; the inline bring-up here is the sole producer.
+// re-deriving them; virtio model-driver probes are the producers.
 pub(super) struct VirtioProbe {
+    pub(super) bdf_word: u32,
+    mappings: TransportMappings,
+    pub(super) msi_id: u32,
+    pub(super) msix_entry_va: u64,
+    pub(super) msix_cap_off: u8,
     pub(super) cmd_orig: u16,
     pub(super) cmd_new:  u16,
     pub(super) cfg_va:   u64,
@@ -100,26 +1033,94 @@ pub(super) struct VirtioProbe {
     pub(super) snd_q2_driver_pa: u64,
     pub(super) snd_q2_device_pa: u64,
     pub(super) snd_q2_notify_va: u64,
+    pub(super) snd_q2_notify_off: u16,
     pub(super) snd_q2_size:      u16,
     // F457: virtio-snd RXQ(3) capture ring + notify VA. 0 if not snd.
     pub(super) snd_q3_desc_pa:   u64,
     pub(super) snd_q3_driver_pa: u64,
     pub(super) snd_q3_device_pa: u64,
     pub(super) snd_q3_notify_va: u64,
+    pub(super) snd_q3_notify_off: u16,
     pub(super) snd_q3_size:      u16,
+    pub(super) input_cfg_va:     u64,
+}
+
+fn virtio_hhdm_offset() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        hal_x86_64::mmu_ops::hhdm_offset()
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        hal_aarch64::mmu_ops::hhdm_offset()
+    }
+}
+
+impl VirtioProbe {
+    fn resources(&self, queues: &[virtio::VirtQueueResource]) -> virtio::VirtioResources {
+        virtio::VirtioResources::from_queues(self.cfg_va, virtio_hhdm_offset(), queues)
+    }
+
+    fn q0_resource(&self) -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource::new(
+            0,
+            self.q0_size,
+            self.q0_desc_pa,
+            self.q0_driver_pa,
+            self.q0_device_pa,
+            self.q0_notify_va,
+            self.q0_notify_off,
+        )
+    }
+
+    fn q1_resource(&self) -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource::new(
+            1,
+            self.q1_size,
+            self.q1_desc_pa,
+            self.q1_driver_pa,
+            self.q1_device_pa,
+            self.q1_notify_va,
+            self.q1_notify_off,
+        )
+    }
+
+    fn snd_q2_resource(&self) -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource::new(
+            2,
+            self.snd_q2_size,
+            self.snd_q2_desc_pa,
+            self.snd_q2_driver_pa,
+            self.snd_q2_device_pa,
+            self.snd_q2_notify_va,
+            self.snd_q2_notify_off,
+        )
+    }
+
+    fn snd_q3_resource(&self) -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource::new(
+            3,
+            self.snd_q3_size,
+            self.snd_q3_desc_pa,
+            self.snd_q3_driver_pa,
+            self.snd_q3_device_pa,
+            self.snd_q3_notify_va,
+            self.snd_q3_notify_off,
+        )
+    }
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
 /// scan its queue layout. Returns Some(probe) on success.
 /// # SAFETY: caller is the boot path; PMM ready; single-CPU; IRQs masked.
 /// # C: O(BAR pages mapped + ~num_queues u32 reads)
-fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
+fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<VirtioProbe> {
     if !virtio::is_modern(d.vendor_id, d.device_id) { return None; }
     let bdf = d.bdf;
+    let mut mappings = TransportMappings::default();
     // Hoist device-class detection so queue 1 (TX) setup can hook in
     // alongside queue 0 inside the per-queue setup block below.
-    let is_virtio_net_early = d.vendor_id == 0x1AF4
-        && (d.device_id == 0x1000 || d.device_id == 0x1041);
+    let is_virtio_net_early = d.vendor_id == 0x1AF4 && d.device_id == 0x1041;
     // D3.3: virtio-vsock (0x1053) also needs q1 (TX) programmed, like
     // virtio-net's q0(RX)+q1(TX) split (only net's dummy-TX-frame is gated).
     let is_virtio_vsock_early = d.vendor_id == 0x1AF4 && d.device_id == 0x1053;
@@ -128,14 +1129,14 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     let is_virtio_snd_early = d.vendor_id == 0x1AF4 && d.device_id == 0x1059;
 
     // Re-walk caps + decode virtio cfgs + decode BARs.
-    let (vcaps, bars) = {
+    let (caps, vcaps, bars) = {
         #[cfg(target_arch = "x86_64")]
         {
             let r = hal_x86_64::pci::LegacyPci;
             let c = pci::capabilities(&r, bdf);
             let v = virtio::decode_all(&r, bdf, &c);
             let b = pci::decode_bars(&r, bdf);
-            (v, b)
+            (c, v, b)
         }
         #[cfg(target_arch = "aarch64")]
         {
@@ -144,34 +1145,25 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                     let c = pci::capabilities(&r, bdf);
                     let v = virtio::decode_all(&r, bdf, &c);
                     let b = pci::decode_bars(&r, bdf);
-                    (v, b)
+                    (c, v, b)
                 }
                 None => return None,
             }
         }
     };
 
-    // Enable Memory + BusMaster in PCI cmd reg.
+    // Enable the PCI function only after the virtio-pci driver has claimed it.
     let cmd_orig = {
         #[cfg(target_arch = "x86_64")]
         { let r = hal_x86_64::pci::LegacyPci;
-          <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::read32(&r, bdf, 0x04) }
+          pci::enable_mem_bus_master(&r, bdf) as u32 }
         #[cfg(target_arch = "aarch64")]
         { match hal_aarch64::pci::EcamPci::from_published() {
-            Some(r) => <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&r, bdf, 0x04),
+            Some(r) => pci::enable_mem_bus_master(&r, bdf) as u32,
             None => return None,
         } }
     };
-    let cmd_new = (cmd_orig & 0xFFFF_0000) | ((cmd_orig & 0xFFFF) | 0x0006);
-    if cmd_new != cmd_orig {
-        #[cfg(target_arch = "x86_64")]
-        { let r = hal_x86_64::pci::LegacyPci;
-          <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::write32(&r, bdf, 0x04, cmd_new); }
-        #[cfg(target_arch = "aarch64")]
-        { if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
-            <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::write32(&r, bdf, 0x04, cmd_new);
-        } }
-    }
+    let cmd_new = (cmd_orig & 0xFFFF) | (pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER) as u32;
 
     // Locate COMMON cfg + map the BAR page.
     let common = vcaps.find(virtio::VIRTIO_PCI_CAP_COMMON_CFG)?;
@@ -184,7 +1176,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     let page_pa = common_pa & !0xFFF;
     let page_off = (common_pa - page_pa) as u64;
     // SAFETY: BAR PA decoded from device BAR reg; bump VA is exclusive.
-    let base_va = unsafe { map_mmio_pages(page_pa, 1) };
+    let base_va = mappings.map_page(page_pa);
     let cfg_va = base_va + page_off;
 
     // u32 volatile R/W over the Device-attr MMIO window.
@@ -213,12 +1205,11 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     };
 
     // Spec §3.1.1 driver init sequence.
-    let st = |s: u8| -> u32 { s as u32 };
-    w32(0x14, st(0));                                              // reset
+    w8(0x14, 0);                                                   // reset
     let _ = r32(0x14);
-    w32(0x14, st(virtio::VIRTIO_STATUS_ACKNOWLEDGE));
-    w32(0x14, st(virtio::VIRTIO_STATUS_ACKNOWLEDGE
-               | virtio::VIRTIO_STATUS_DRIVER));
+    w8(0x14, virtio::VIRTIO_STATUS_ACKNOWLEDGE);
+    w8(0x14, virtio::VIRTIO_STATUS_ACKNOWLEDGE
+             | virtio::VIRTIO_STATUS_DRIVER);
 
     // Feature negotiation. Insist on VIRTIO_F_VERSION_1 (bit 32) for
     // modern transport. F59-08: also accept VIRTIO_NET_F_MAC (bit 5)
@@ -231,15 +1222,15 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     w32(0x00, 1); let dev_feat_hi = r32(0x04);
     let dev_features: u64 = ((dev_feat_hi as u64) << 32) | (dev_feat_lo as u64);
     let mut want = virtio::VIRTIO_F_VERSION_1;
-    if d.vendor_id == 0x1AF4 && (d.device_id == 0x1000 || d.device_id == 0x1041) {
+    if d.vendor_id == 0x1AF4 && d.device_id == 0x1041 {
         want |= virtio::VIRTIO_NET_F_MAC | virtio::VIRTIO_NET_F_STATUS;
     }
     let drv_features: u64 = dev_features & want;
     w32(0x08, 1); w32(0x0C, (drv_features >> 32) as u32);
     w32(0x08, 0); w32(0x0C, (drv_features & 0xFFFF_FFFF) as u32);
-    w32(0x14, st(virtio::VIRTIO_STATUS_ACKNOWLEDGE
-               | virtio::VIRTIO_STATUS_DRIVER
-               | virtio::VIRTIO_STATUS_FEATURES_OK));
+    w8(0x14, virtio::VIRTIO_STATUS_ACKNOWLEDGE
+             | virtio::VIRTIO_STATUS_DRIVER
+             | virtio::VIRTIO_STATUS_FEATURES_OK);
 
     let post_status = r32(0x14) & 0xFF;
     let features_ok = post_status & virtio::VIRTIO_STATUS_FEATURES_OK as u32 != 0;
@@ -287,17 +1278,25 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     let mut snd_q2_driver_pa_local: u64 = 0;
     let mut snd_q2_device_pa_local: u64 = 0;
     let mut snd_q2_notify_va_local: u64 = 0;
+    let mut snd_q2_notify_off_local: u16 = 0;
     let mut snd_q2_size_local:      u16 = 0;
     let mut snd_q3_desc_pa_local:   u64 = 0;
     let mut snd_q3_driver_pa_local: u64 = 0;
     let mut snd_q3_device_pa_local: u64 = 0;
     let mut snd_q3_notify_va_local: u64 = 0;
+    let mut snd_q3_notify_off_local: u16 = 0;
     let mut snd_q3_size_local:      u16 = 0;
     let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
+    let msix = if features_ok {
+        msix0_handler.and_then(|handler| {
+            bind_virtio_msix0(d, &caps, &bars, &mut mappings, handler)
+        })
+    } else { None };
+    let q0_msix_vec = if msix.is_some() { 0 } else { 0xFFFF };
     let (q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_off, final_status) = if features_ok {
-        // q0: msix_vec=0 (vector 0). program_queue returns None if the
-        // device reports queue_size==0 (no such queue) or alloc fails.
-        match super::virtio_qsetup::program_queue(cfg_va, 0, 0, hhdm) {
+        // q0 uses MSI-X table entry 0 only after the transport has
+        // successfully allocated and programmed that entry.
+        match super::virtio_qsetup::program_queue(cfg_va, 0, q0_msix_vec, hhdm) {
             Some(r0) => {
                 //: for virtio-net / virtio-vsock, also stand up queue 1
                 // (TX) so we can post outgoing frames. queue 0 = RX,
@@ -322,29 +1321,31 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                         snd_q2_desc_pa_local = r2.desc_pa;
                         snd_q2_driver_pa_local = r2.driver_pa;
                         snd_q2_device_pa_local = r2.device_pa;
+                        snd_q2_notify_off_local = r2.notify_off;
                         snd_q2_size_local = r2.size;
                         if let Some(ncap) = ncap.as_ref() {
                             snd_q2_notify_va_local =
-                                super::virtio_qsetup::notify_va(ncap, &bars, r2.notify_off);
+                                notify_va_owned(&mut mappings, ncap, &bars, r2.notify_off);
                         }
                     }
                     if let Some(r3) = super::virtio_qsetup::program_queue(cfg_va, 3, 0xFFFF, hhdm) {
                         snd_q3_desc_pa_local = r3.desc_pa;
                         snd_q3_driver_pa_local = r3.driver_pa;
                         snd_q3_device_pa_local = r3.device_pa;
+                        snd_q3_notify_off_local = r3.notify_off;
                         snd_q3_size_local = r3.size;
                         if let Some(ncap) = ncap.as_ref() {
                             snd_q3_notify_va_local =
-                                super::virtio_qsetup::notify_va(ncap, &bars, r3.notify_off);
+                                notify_va_owned(&mut mappings, ncap, &bars, r3.notify_off);
                         }
                     }
                 }
 
                 // DRIVER_OK
-                w32(0x14, st(virtio::VIRTIO_STATUS_ACKNOWLEDGE
-                           | virtio::VIRTIO_STATUS_DRIVER
-                           | virtio::VIRTIO_STATUS_FEATURES_OK
-                           | virtio::VIRTIO_STATUS_DRIVER_OK));
+                w8(0x14, virtio::VIRTIO_STATUS_ACKNOWLEDGE
+                         | virtio::VIRTIO_STATUS_DRIVER
+                         | virtio::VIRTIO_STATUS_FEATURES_OK
+                         | virtio::VIRTIO_STATUS_DRIVER_OK);
                 let final_status = (r32(0x14) & 0xFF) as u8;
                 (r0.desc_pa, r0.driver_pa, r0.device_pa, r0.notify_off, final_status)
             }
@@ -353,74 +1354,20 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     } else {
         (0, 0, 0, 0, post_status as u8)
     };
-    // virtio-blk (transitional 0x1001 or modern 0x1042) — device-cfg
-    // is harvested below; the persistent engine (drv-virtio-blk) owns
-    // all reads/writes once registered.
-    let is_virtio_blk = d.vendor_id == 0x1AF4
-        && (d.device_id == 0x1001 || d.device_id == 0x1042);
+    // virtio-blk modern-only 0x1042: device-cfg is harvested below; the
+    // persistent engine (drv-virtio-blk) owns all reads/writes once registered.
+    let is_virtio_blk = d.vendor_id == 0x1AF4 && d.device_id == 0x1042;
 
-    //: for virtio-net (transitional 0x1000 or modern 0x1041),
-    // post one RX buffer descriptor on queue 0 and bump avail.idx
-    // before kicking. For other devices the queue stays empty so the
-    // kick is a no-op nudge.
+    // For virtio-net modern-only 0x1041, post one RX buffer descriptor on
+    // queue 0 and bump avail.idx before kicking. For other devices the queue
+    // stays empty so the kick is a no-op nudge.
     let mut avail_idx_posted = 0u16;
     // F59-02: persisted RX-buffer info for runtime rx_poll. Set when
     // the virtio-net branch below allocates the boot-time RX page;
     // 0/0 if no virtio-net device or DRIVER_OK didn't land.
     let mut rx0_buf_pa_local: u64 = 0;
     let mut rx0_buf_len_local: u16 = 0;
-    let is_virtio_net = d.vendor_id == 0x1AF4
-        && (d.device_id == 0x1000 || d.device_id == 0x1041);
-    let is_virtio_gpu = d.vendor_id == 0x1AF4 && d.device_id == 0x1050;
-    let is_virtio_input = d.vendor_id == 0x1AF4 && d.device_id == 0x1052;
-    let bdf_word = (d.bdf.bus as u32) << 16
-                 | (d.bdf.device as u32) << 8
-                 | (d.bdf.function as u32);
-    if is_virtio_gpu && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
-        // The real DRM card (with the live DisplayInfo from CMD_GET_DISPLAY_INFO)
-        // + the scanout are registered by post_init::get_display_info below; do
-        // NOT register a second card here with an empty DisplayInfo::default()
-        // (that became card0 with 0 crtcs and broke GETRESOURCES). Just bind the
-        // D1a model entry.
-        debug_boot! { klog::write_raw(b"[INFO]  virtio-gpu installed feat=");
-            klog::write_hex_u64(drv_features); klog::write_raw(b"\n"); }
-        model_bind(&VIRTIO_GPU_DRV, d.bdf); // D1a: publish + bind
-    }
-    if is_virtio_input && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
-        // Probe the device's identity + capability bitmaps from config space
-        // (the Linux virtio_input.c sequence, docs/46§5): name, ids,
-        // EV_BITS / KEY|REL|ABS code maps, ABS_INFO, PROP_BITS. Drives the
-        // EVIOCG* ioctls + the keyboard-vs-pointer class (pointers advertise
-        // EV_REL/EV_ABS and don't feed the console keyboard pipeline).
-        let evdev_id = match vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
-            Some(devcfg_cap) => {
-                let dbar_pa = match bars[devcfg_cap.bar as usize] {
-                    pci::Bar::Mem32 { base, .. } => base as u64,
-                    pci::Bar::Mem64 { base, .. } => base,
-                    _ => 0,
-                };
-                if dbar_pa != 0 {
-                    let d_pa = dbar_pa + devcfg_cap.offset as u64;
-                    let d_page_pa = d_pa & !0xFFF;
-                    // SAFETY: d_page_pa is the page-aligned BAR-relative device-cfg
-                    // physical frame from the validated capability; map one MMIO page.
-                    let d_va = unsafe { map_mmio_pages(d_page_pa, 1) } + (d_pa - d_page_pa);
-                    // SAFETY: d_va is the just-mapped virtio-input device-cfg
-                    // window; install_device drives the select/subsel protocol.
-                    unsafe { drv_virtio_input::install_device(bdf_word, d_va) }
-                } else { 0 }
-            }
-            None => 0,
-        };
-        debug_boot! { klog::write_raw(b"[INFO]  virtio-input installed evdev_id=");
-            klog::write_dec_u64(evdev_id as u64);
-            klog::write_raw(if drv_virtio_input::is_pointer(evdev_id) { b" pointer\n" } else { b" keyboard\n" }); }
-        model_bind(&VIRTIO_INPUT_DRV, d.bdf); // D1a: publish + bind
-    }
-    // Stage 1: the persistent virtio-blk engine (drv-virtio-blk) owns
-    // all blk reads now — the boot probe no longer issues a throwaway
-    // sector-1 diagnostic. The device registers via `register_blk`
-    // below and ext4 mounts through `BlockDevice::submit_sync`.
+    let is_virtio_net = d.vendor_id == 0x1AF4 && d.device_id == 0x1041;
     if is_virtio_net && q0_desc_pa != 0 && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
         let hhdm = {
             #[cfg(target_arch = "x86_64")]
@@ -475,13 +1422,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                 _ => 0,
             };
             if nbar_pa != 0 {
-                let nfy_pa = nbar_pa + notify_cap.offset as u64
-                           + (q0_notify_off as u64) * (notify_cap.notify_off_multiplier as u64);
-                let n_page_pa = nfy_pa & !0xFFF;
-                let n_page_off = nfy_pa - n_page_pa;
-                // SAFETY: NOTIFY BAR PA decoded from device cap; bump VA private.
-                let n_va = unsafe { map_mmio_pages(n_page_pa, 1) };
-                let kick_va = n_va + n_page_off;
+                let kick_va = notify_va_owned(&mut mappings, &notify_cap, &bars, q0_notify_off);
                 // Write queue index 0 as a u16 to the notify address.
                 // SAFETY: kick_va Device-attr; aligned u16 write.
                 unsafe { core::ptr::write_volatile(kick_va as *mut u16, 0u16); }
@@ -569,14 +1510,12 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                         _ => 0,
                     };
                     if nbar_pa != 0 {
-                        let nfy_pa = nbar_pa + notify_cap.offset as u64
-                            + (q1_notify_off_local as u64)
-                              * (notify_cap.notify_off_multiplier as u64);
-                        let n_page_pa = nfy_pa & !0xFFF;
-                        let n_page_off = nfy_pa - n_page_pa;
-                        // SAFETY: NOTIFY BAR PA decoded from device cap; bump VA private to virtio.
-                        let n_va = unsafe { super::map_mmio_pages(n_page_pa, 1) };
-                        let kick_va = n_va + n_page_off;
+                        let kick_va = notify_va_owned(
+                            &mut mappings,
+                            &notify_cap,
+                            &bars,
+                            q1_notify_off_local,
+                        );
                         q1_notify_va_local = kick_va;
                         // Write queue index 1 to the q1 notify VA.
                         // SAFETY: kick_va Device-attr mapped above; aligned u16 write.
@@ -600,8 +1539,8 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
         if let Some(notify_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG) {
-            q1_notify_va_local = super::virtio_vsock_cfg::map_q1_notify(
-                &notify_cap, &bars, q1_notify_off_local);
+            q1_notify_va_local =
+                notify_va_owned(&mut mappings, &notify_cap, &bars, q1_notify_off_local);
         }
     }
 
@@ -626,7 +1565,11 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                 let i_va = unsafe { map_mmio_pages(i_page_pa, 1) };
                 let isr_va = i_va + i_page_off;
                 // SAFETY: isr_va Device-attr; aligned u8 read clears it.
-                unsafe { core::ptr::read_volatile(isr_va as *const u8) }
+                let status = unsafe { core::ptr::read_volatile(isr_va as *const u8) };
+                // SAFETY: this was a temporary one-page ISR mapping used only
+                // for the read-to-clear observation above.
+                unsafe { mmio_map::unmap_pages(i_va, 1); }
+                status
             } else { 0 }
         } else { 0 }
     } else { 0 };
@@ -658,6 +1601,10 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                         core::ptr::read_volatile((mac_va + i as u64) as *const u8)
                     };
                 }
+                // SAFETY: this was a temporary one-page device-cfg mapping
+                // used only to harvest the MAC. Runtime net code keeps the
+                // copied MAC bytes, not this VA.
+                unsafe { mmio_map::unmap_pages(d_va, 1); }
                 mac_valid_local = true;
             }
         }
@@ -714,6 +1661,23 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         }
     }
 
+    let mut input_cfg_va_local: u64 = 0;
+    if d.vendor_id == 0x1AF4 && d.device_id == 0x1052 {
+        if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
+            let dbar_pa = match bars[devcfg_cap.bar as usize] {
+                pci::Bar::Mem32 { base, .. } => base as u64,
+                pci::Bar::Mem64 { base, .. } => base,
+                _ => 0,
+            };
+            if dbar_pa != 0 {
+                let d_pa = dbar_pa + devcfg_cap.offset as u64;
+                let d_page_pa = d_pa & !0xFFF;
+                let d_va = mappings.map_page(d_page_pa);
+                input_cfg_va_local = d_va + (d_pa - d_page_pa);
+            }
+        }
+    }
+
 
     //: read used.idx after the kick.
     let used_idx_observed = if avail_idx_posted > 0 && q0_device_pa != 0 {
@@ -732,6 +1696,11 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     } else { 0 };
 
     Some(VirtioProbe {
+        bdf_word: bdf_word(bdf),
+        mappings,
+        msi_id: msix.map(|m| m.id).unwrap_or(0),
+        msix_entry_va: msix.map(|m| m.entry_va).unwrap_or(0),
+        msix_cap_off: msix.map(|m| m.cap_off).unwrap_or(0),
         cmd_orig: (cmd_orig & 0xFFFF) as u16,
         cmd_new:  (cmd_new  & 0xFFFF) as u16,
         cfg_va,
@@ -780,207 +1749,14 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         snd_q2_driver_pa: snd_q2_driver_pa_local,
         snd_q2_device_pa: snd_q2_device_pa_local,
         snd_q2_notify_va: snd_q2_notify_va_local,
+        snd_q2_notify_off: snd_q2_notify_off_local,
         snd_q2_size:      snd_q2_size_local,
         snd_q3_desc_pa:   snd_q3_desc_pa_local,
         snd_q3_driver_pa: snd_q3_driver_pa_local,
         snd_q3_device_pa: snd_q3_device_pa_local,
         snd_q3_notify_va: snd_q3_notify_va_local,
+        snd_q3_notify_off: snd_q3_notify_off_local,
         snd_q3_size:      snd_q3_size_local,
+        input_cfg_va:     input_cfg_va_local,
     })
-}
-
-/// Drive one modern virtio-pci device + emit `[INFO] virtio-cfg ...`
-/// + per-queue `[INFO] virtio-q ...` lines under `debug-boot`.
-/// Side-effect work runs unconditionally; only the trace is gated.
-/// # C: O(BAR pages mapped + ~num_queues u32 reads)
-pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
-    let p = match virtio_init_arch(d) { Some(p) => p, None => return };
-    let bdf = d.bdf;
-    super::virtio_trace::trace_probe(bdf, &p);
-    // F59-01: hand persistent runtime state for the modern virtio-net
-    // device to dev_virtio_net so later phases (RX poll, TX, ARP) can
-    // drive the queues post-boot. Only register if the device reached
-    // virtio-gpu post-init: submit CMD_GET_DISPLAY_INFO over CTRLQ.
-    let is_virtio_gpu_post = d.vendor_id == 0x1AF4 && d.device_id == 0x1050;
-    if is_virtio_gpu_post
-        && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
-        && p.q0_desc_pa != 0
-        && p.q0_notify_va != 0
-    {
-        // SAFETY: caller is boot path; PMM up; q0 + notify VAs valid; single-CPU.
-        let _ = unsafe {
-            drv_virtio_gpu::post_init::get_display_info(
-                bdf.bus, bdf.device, bdf.function,
-                p.drv_features,
-                p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa,
-                p.q0_notify_va,
-            )
-        };
-    }
-
-    // DRIVER_OK with both queues programmed; ring PAs and notify VAs
-    // are required for the runtime path.
-    let is_virtio_net = d.vendor_id == 0x1AF4
-        && (d.device_id == 0x1000 || d.device_id == 0x1041);
-    if is_virtio_net
-        && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
-        && p.q0_desc_pa != 0
-        && p.q1_desc_pa != 0
-        && p.q0_notify_va != 0
-        && p.q1_notify_va != 0
-    {
-        drv_virtio_net::modern::init_modern(
-            drv_virtio_net::modern::ModernNetState {
-                bus:      bdf.bus,
-                device:   bdf.device,
-                function: bdf.function,
-                cfg_va:        p.cfg_va,
-                q0_notify_va:  p.q0_notify_va,
-                q1_notify_va:  p.q1_notify_va,
-                q0_desc_pa:    p.q0_desc_pa,
-                q0_driver_pa:  p.q0_driver_pa,
-                q0_device_pa:  p.q0_device_pa,
-                q1_desc_pa:    p.q1_desc_pa,
-                q1_driver_pa:  p.q1_driver_pa,
-                q1_device_pa:  p.q1_device_pa,
-                q0_size:       p.q0_size,
-                q1_size:       p.q1_size,
-                rx0_buf_pa:    p.rx0_buf_pa,
-                rx0_buf_len:   p.rx0_buf_len,
-                mac:           p.mac,
-                mac_valid:     p.mac_valid,
-                tx0_buf_pa:    p.tx0_buf_pa,
-            },
-        );
-        model_bind(&VIRTIO_NET_DRV, bdf); // D1a: publish + bind
-    }
-
-    // Stage 1: register the virtio-blk device as a `BlockDevice` so
-    // ext4 can mount a real disk. The persistent engine (drv-virtio-blk)
-    // reads the serial via GET_ID and owns all I/O. Gated on
-    // blk_cfg_valid — a device whose device-cfg BAR never decoded
-    // reports capacity=0; registering it would hand ext4 a phantom
-    // zero-capacity disk to fail mounting. Helper keeps this file under
-    // the line cap.
-    if d.vendor_id == 0x1AF4 && (d.device_id == 0x1001 || d.device_id == 0x1042)
-        && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
-        && p.q0_desc_pa != 0 && p.q0_notify_va != 0
-        && p.blk_cfg_valid
-    {
-        super::virtio_blk_cfg::register_blk(
-            bdf.bus, bdf.device, bdf.function,
-            p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa,
-            p.q0_notify_va, p.q0_size, p.blk_capacity, p.blk_blk_size,
-        );
-        model_bind(&VIRTIO_BLK_DRV, bdf); // D1a: publish + bind
-    }
-
-    // D3.1: virtio-rng (entropy). Generic q0 setup above already gave this
-    // device a programmed requestq + DRIVER_OK. Hand the persistent ring
-    // addresses to drv-virtio-rng, then immediately pull ~32 bytes and mix
-    // them into the kernel RNG so boot starts with real hardware entropy.
-    // The /dev/hwrng source hook is wired in kmain after enumeration.
-    if d.vendor_id == 0x1AF4 && d.device_id == 0x1044
-        && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
-        && p.q0_desc_pa != 0 && p.q0_notify_va != 0
-    {
-        let hhdm = {
-            #[cfg(target_arch = "x86_64")]
-            { hal_x86_64::mmu_ops::hhdm_offset() }
-            #[cfg(target_arch = "aarch64")]
-            { hal_aarch64::mmu_ops::hhdm_offset() }
-        };
-        if drv_virtio_rng::install(
-            p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa,
-            p.q0_notify_va, p.q0_size, hhdm,
-        ) {
-            // Seed the kernel RNG with real entropy at bring-up.
-            let mut seed = [0u8; 32];
-            let n = drv_virtio_rng::fill(&mut seed);
-            if n > 0 { devfs::misc::add_entropy(&seed[..n]); }
-            model_bind(&VIRTIO_RNG_DRV, bdf); // D1a: publish + bind
-            debug_boot! {
-                klog::write_raw(b"[INFO]  virtio-rng installed seeded=");
-                klog::write_dec_u64(n as u64);
-                klog::write_raw(b" bytes\n");
-            }
-        }
-    }
-
-    // D3.3: virtio-vsock (0x1053). Hand q0(RX)+q1(TX) rings + guest CID
-    // to drv-virtio-vsock (pre-posts RX, installs the net::vsock TX hook).
-    let vsock_ok = d.vendor_id == 0x1AF4 && d.device_id == 0x1053
-        && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
-        && p.q0_desc_pa != 0 && p.q0_notify_va != 0
-        && p.q1_desc_pa != 0 && p.q1_notify_va != 0 && p.vsock_cid_valid
-        && super::virtio_vsock_cfg::install_vsock(
-            p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa, p.q0_notify_va, p.q0_size,
-            p.q1_desc_pa, p.q1_driver_pa, p.q1_device_pa, p.q1_notify_va, p.q1_size,
-            p.vsock_cid);
-    if vsock_ok {
-        model_bind(&VIRTIO_VSOCK_DRV, bdf); // D1a: publish + bind
-        debug_boot! {
-            klog::write_raw(b"[INFO]  virtio-vsock installed cid=");
-            klog::write_dec_u64(p.vsock_cid);
-            klog::write_raw(b"\n");
-        }
-    }
-
-    // F454: virtio-snd (0x1059). Hand the CONTROLQ (q0) ring + harvested
-    // virtio_snd_config to drv-virtio-snd, which queries the PCM stream
-    // table via VIRTIO_SND_R_PCM_INFO. TXQ/RXQ playback rings land in PR-C.
-    if d.vendor_id == 0x1AF4 && d.device_id == 0x1059
-        && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
-        && p.q0_desc_pa != 0 && p.q0_notify_va != 0 && p.snd_cfg_valid
-    {
-        if let Some(sp) = super::virtio_snd_cfg::install_snd(
-            p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa, p.q0_notify_va, p.q0_size,
-            p.cfg_va, p.snd_jacks, p.snd_streams, p.snd_chmaps, p.snd_controls,
-            p.snd_q2_desc_pa, p.snd_q2_driver_pa, p.snd_q2_device_pa,
-            p.snd_q2_notify_va, p.snd_q2_size,
-            p.snd_q3_desc_pa, p.snd_q3_driver_pa, p.snd_q3_device_pa,
-            p.snd_q3_notify_va, p.snd_q3_size)
-        {
-            model_bind(&VIRTIO_SND_DRV, bdf); // D1a: publish + bind
-            debug_boot! {
-                klog::write_raw(b"[INFO]  virtio-snd: bdf=0:");
-                klog::write_dec_u64(bdf.device as u64);
-                klog::write_raw(b".0 card=C0 streams=");
-                klog::write_dec_u64(sp.streams as u64);
-                klog::write_raw(b" out=");
-                klog::write_dec_u64(sp.out as u64);
-                klog::write_raw(b" in=");
-                klog::write_dec_u64(sp.input as u64);
-                klog::write_raw(b"\n");
-                // F455: boot self-test — play a short 440 Hz tone through the
-                // TXQ playback path (like the nvme/ahci LBA-0 self-test read).
-                // Audible only on a real backend; the wav/none backends in CI
-                // capture/discard it. Gated under debug-boot. The diag code
-                // pinpoints any lockstep gap (0=ok; see beep_diag).
-                let beep_diag = drv_virtio_snd::beep_diag(440, 150);
-                klog::write_raw(b"[INFO]  virtio-snd: boot-tone diag=");
-                klog::write_dec_u64(beep_diag as u64);
-                klog::write_raw(b"\n");
-            }
-        }
-    }
-
-    // F01: virtio-input event-queue drain. Pre-fill q0 + install softirq.
-    if d.vendor_id == 0x1AF4 && d.device_id == 0x1052
-        && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
-        && p.q0_desc_pa != 0 && p.q0_notify_va != 0 && p.q0_size != 0
-    {
-        let hhdm = {
-            #[cfg(target_arch = "x86_64")]
-            { hal_x86_64::mmu_ops::hhdm_offset() }
-            #[cfg(target_arch = "aarch64")]
-            { hal_aarch64::mmu_ops::hhdm_offset() }
-        };
-        let bdf_word = (bdf.bus as u32) << 16 | (bdf.device as u32) << 8 | (bdf.function as u32);
-        // SAFETY: boot path; PMM up; q0 PAs + notify VA valid; single-CPU.
-        let _ = unsafe {
-            drv_virtio_input::drain::install_q0(bdf_word, p.q0_size,
-                p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa, p.q0_notify_va, hhdm)
-        };
-    }
 }

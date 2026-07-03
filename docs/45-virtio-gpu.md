@@ -6,11 +6,11 @@ Full Linux compat surface per `linux/include/uapi/linux/virtio_gpu.h` and virtio
 
 ## 1 Purpose
 
-Driver crate `drv-virtio-gpu` for the virtio device class 16 ("GPU device") per virtio 1.2 §5.7. Owns the wire protocol, the CTRLQ/CURSORQ command-completion ring service, and the `drv::DriverEntry` registration. Consumed by `47` (DRM/KMS) which exposes the userspace UAPI.
+Driver crate `drv-virtio-gpu` for the virtio device class 16 ("GPU device") per virtio 1.2 §5.7. Owns the wire protocol, CTRLQ/CURSORQ command-completion service, installed GPU state, scanout helpers, and DRM backend. The virtio child is bound by the `virtio-gpu` `drv::Driver` in `pci-boot`, whose `probe/remove` methods hand transport resources to this crate and tear them down. Consumed by `47` (DRM/KMS) which exposes the userspace UAPI.
 
 ## 2 Invariants (frozen)
 
-1. Driver lives in `crates/drv-virtio-gpu`. Kernel does not link to it directly; only the `drv::probe_all` walker invokes its `probe(bdf)`.
+1. Driver logic lives in `crates/drivers/drv-virtio-gpu`; the model binding lives in `crates/kernel/pci-boot/src/virtio_drv.rs`. The virtio bus registers the child device and binds it through the `drv::Driver` probe/remove path.
 2. Two virtqueues: CTRLQ (idx=0, 256 entries), CURSORQ (idx=1, 16 entries). Both exposed to host via virtio-pci modern transport per `34§3`.
 3. All Virtio-1.2 §5.7 feature bits are negotiated when the host advertises them: `VIRTIO_GPU_F_VIRGL` (0), `VIRTIO_GPU_F_EDID` (1), `VIRTIO_GPU_F_RESOURCE_UUID` (2), `VIRTIO_GPU_F_RESOURCE_BLOB` (3), `VIRTIO_GPU_F_CONTEXT_INIT` (4), `VIRTIO_F_VERSION_1` (32), `VIRTIO_F_RING_RESET` (40), `VIRTIO_F_NOTIFICATION_DATA` (38).
 4. Up to `VIRTIO_GPU_MAX_SCANOUTS` (16) displays exposed simultaneously; `45§4` `pmodes[]` array drives `47` MODE_GETRESOURCES enumeration.
@@ -23,8 +23,9 @@ Driver crate `drv-virtio-gpu` for the virtio device class 16 ("GPU device") per 
 ## 3 Public ifc
 
 ```rust
-// crates/drv-virtio-gpu/src/lib.rs
-pub fn register();   // calls drv::register(DriverEntry { name: "virtio-gpu", probe })
+// crates/drivers/drv-virtio-gpu/src/lib.rs
+pub fn install_with_drm(dev: VirtioGpuDev) -> KResult<u32>; // called by virtio-gpu Driver::probe
+pub fn uninstall(bdf: u32) -> Option<VirtioGpuDev>;         // called by virtio-gpu Driver::remove
 
 // Internal: probe, queue setup, control-q service.
 pub struct VirtioGpuDev { /* virtqueue refs + scanout state */ }
@@ -151,7 +152,7 @@ All eight formats above are honoured; the driver picks the host-preferred format
 
 ## 7 Probe + bring-up sequence
 
-1. `drv::probe_all(bdf)` enters `drv-virtio-gpu::probe`.
+1. The virtio bus binds the virtio-gpu child device through `Driver::probe`.
 2. PCI vendor/device match: `0x1AF4`/`0x1050` (modern virtio-gpu). Transitional `0x1010` rejected (PCI rev<1).
 3. Initialize per virtio 1.2 §3.1: ACK → DRIVER → read `device_features` → write `driver_features` (full negotiation) → FEATURES_OK → re-read status to confirm bit 8 still set → setup CTRLQ + CURSORQ → DRIVER_OK.
 4. Send `CMD_GET_DISPLAY_INFO`; cache every `pmodes[i]` whose `enabled=1` (multi-display).

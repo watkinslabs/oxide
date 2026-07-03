@@ -79,6 +79,35 @@ pub fn register_with_serial(name: &str, serial: Option<&str>, dev: Arc<dyn Block
     index
 }
 
+/// Unregister a block device by name. Removes the disk from the registry so
+/// `/sys/block`, `/proc/partitions`, `/proc/diskstats`, by-name/by-serial
+/// lookup, and future opens stop seeing it; then calls `drv::device_del` for
+/// the matching block device so the owned `/dev/<name>` node is removed and a
+/// remove uevent is emitted. Existing mounted filesystems may still hold an
+/// `Arc<dyn BlockDevice>`; that mirrors gendisk teardown where publication is
+/// removed before the final object reference is dropped.
+/// # C: O(N_disks + N_devices)
+pub fn unregister(name: &str) -> bool {
+    let removed = {
+        let mut t = TABLE.lock();
+        match t.iter().position(|d| d.name == name) {
+            Some(i) => {
+                t.remove(i);
+                true
+            }
+            None => false,
+        }
+    };
+    if !removed { return false; }
+    if let Some(dev) = drv::devices()
+        .into_iter()
+        .find(|d| d.bus == "block" && d.addr == name)
+    {
+        drv::device_del(&dev);
+    }
+    true
+}
+
 /// Look up a registered disk by name.
 /// # C: O(N_disks)
 pub fn by_name(name: &str) -> Option<Arc<Disk>> {
@@ -232,6 +261,25 @@ mod sysfs_format_tests {
         let want = (String::from("vdadd"), Some(major_minor("vdadd", idx)));
         assert!(SEEN.lock().iter().any(|e| *e == want),
             "register() device_add's a block /dev node with the disk dev_t");
+    }
+
+    #[test]
+    fn unregister_removes_disk_and_device_node() {
+        use crate::blockdev::MemDisk;
+        use sync::TaskList;
+        static REMOVED: Spinlock<Vec<String>, DevicesClass> = Spinlock::new(Vec::new());
+        fn del(name: &str) {
+            REMOVED.lock().push(name.to_string());
+        }
+        drv::set_devtmpfs_del_hook(del);
+        let dev: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 8);
+        let idx = register("vdremove", dev);
+        assert!(idx != 0);
+        assert!(by_name("vdremove").is_some());
+        assert!(unregister("vdremove"));
+        assert!(by_name("vdremove").is_none());
+        assert!(REMOVED.lock().iter().any(|n| n == "vdremove"));
+        assert!(!unregister("vdremove"));
     }
 
     #[test]

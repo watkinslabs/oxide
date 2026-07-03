@@ -17,9 +17,13 @@ extern crate alloc;
 pub mod pci;
 pub use pci::{
     VirtioPciCap, decode_one, decode_all, is_modern, is_modern_only,
+    modern_device_id, notify_pa,
     VIRTIO_PCI_CAP_COMMON_CFG, VIRTIO_PCI_CAP_NOTIFY_CFG, VIRTIO_PCI_CAP_ISR_CFG,
     VIRTIO_PCI_CAP_DEVICE_CFG, VIRTIO_PCI_CAP_PCI_CFG, VIRTIO_PCI_CAP_SHARED_MEMORY_CFG,
 };
+
+pub mod resources;
+pub use resources::{VirtQueueResource, VirtioResources, MAX_RESOURCE_QUEUES};
 
 pub mod queue;
 pub use queue::{

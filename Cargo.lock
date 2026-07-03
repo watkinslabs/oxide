@@ -199,7 +199,6 @@ dependencies = [
  "hal",
  "klog",
  "pmm",
- "procfs",
  "sync",
  "syscall",
  "vfs",
@@ -225,6 +224,8 @@ dependencies = [
  "hal-aarch64",
  "hal-x86_64",
  "klog",
+ "mmio-map",
+ "pci",
  "pmm",
  "sync",
 ]
@@ -239,6 +240,8 @@ dependencies = [
  "hal-aarch64",
  "hal-x86_64",
  "klog",
+ "mmio-map",
+ "pci",
  "pmm",
  "sync",
 ]
@@ -247,8 +250,12 @@ dependencies = [
 name = "drv-ps2-keyboard"
 version = "0.1.0"
 dependencies = [
+ "arch-irq",
  "drv",
  "drv-virtio-input",
+ "firmware",
+ "hal",
+ "hal-x86_64",
  "klog",
  "kmacros",
 ]
@@ -277,6 +284,7 @@ dependencies = [
 name = "drv-uart-pl011"
 version = "0.1.0"
 dependencies = [
+ "arch-irq",
  "drv",
  "hal-aarch64",
 ]
@@ -286,6 +294,7 @@ name = "drv-virtio-blk"
 version = "0.1.0"
 dependencies = [
  "block",
+ "drv",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
@@ -300,15 +309,19 @@ dependencies = [
 name = "drv-virtio-gpu"
 version = "0.1.0"
 dependencies = [
+ "console",
  "drm",
  "drv",
  "fbcon",
+ "fbdev",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
  "klog",
  "pmm",
+ "sched",
  "sync",
+ "tty",
  "virtio",
 ]
 
@@ -323,6 +336,7 @@ dependencies = [
  "hal-x86_64",
  "klog",
  "pmm",
+ "procfs",
  "sched",
  "softirq",
  "sync",
@@ -344,6 +358,7 @@ dependencies = [
  "net",
  "pci",
  "pmm",
+ "softirq",
  "sync",
  "timer",
  "virtio",
@@ -353,6 +368,7 @@ dependencies = [
 name = "drv-virtio-rng"
 version = "0.1.0"
 dependencies = [
+ "devfs",
  "drv",
  "hal",
  "hal-aarch64",
@@ -373,6 +389,7 @@ dependencies = [
  "hal-x86_64",
  "klog",
  "pmm",
+ "sound",
  "sync",
  "virtio",
 ]
@@ -388,6 +405,7 @@ dependencies = [
  "klog",
  "net",
  "pmm",
+ "softirq",
  "sync",
  "virtio",
 ]
@@ -807,6 +825,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "mmio-map"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+]
+
+[[package]]
 name = "modules"
 version = "0.1.0"
 dependencies = [
@@ -928,6 +955,7 @@ dependencies = [
  "hal-x86_64",
  "klog",
  "kmacros",
+ "mmio-map",
  "net",
  "netlink",
  "pci",
@@ -1281,7 +1309,7 @@ name = "sound"
 version = "0.1.0"
 dependencies = [
  "devfs",
- "drv-virtio-snd",
+ "drv",
  "hal",
  "klog",
  "sync",

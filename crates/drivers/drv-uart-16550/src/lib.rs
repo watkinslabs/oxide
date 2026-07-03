@@ -12,11 +12,18 @@
 //! at COM1 (0x3F8). On non-x86 arches this crate is an empty shell so
 //! the workspace builds. docs/53 (kernel = glue).
 
+extern crate alloc;
+
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Detected COM I/O base (x86 port). 0 ⇒ no UART bound.
 static BASE: AtomicU64 = AtomicU64::new(0);
 static PRESENT: AtomicBool = AtomicBool::new(false);
+static BSP_APIC: AtomicU64 = AtomicU64::new(0);
+static DEV_WINDOW_BASE: AtomicU64 = AtomicU64::new(0);
+static IRQ_VEC: AtomicU64 = AtomicU64::new(0);
+static IRQ_PIN: AtomicU64 = AtomicU64::new(u64::MAX);
 /// tty-delivery callback (`fn(u8)`), stored from `init`'s parameter so
 /// the bare-`fn()` MSI handler trampoline can reach it without args.
 static DELIVER: AtomicU64 = AtomicU64::new(0);
@@ -24,6 +31,15 @@ static DELIVER: AtomicU64 = AtomicU64::new(0);
 /// True once a 16550 UART has been detected + registered by `init`.
 /// # C: O(1)
 pub fn present() -> bool { PRESENT.load(Ordering::Acquire) }
+
+/// Install boot-probe parameters used when the drv core calls
+/// `Uart16550Drv::probe`.
+/// # C: O(1)
+pub fn configure_probe(bsp_apic: u8, dev_window_base: u64, dlv: fn(u8)) {
+    BSP_APIC.store(bsp_apic as u64, Ordering::Release);
+    DEV_WINDOW_BASE.store(dev_window_base, Ordering::Release);
+    DELIVER.store(dlv as usize as u64, Ordering::Release);
+}
 
 #[inline]
 fn deliver(b: u8) {
@@ -98,7 +114,7 @@ mod imp {
         }
     }
 
-    /// Timer-tick fallback RX poll. `dlv` delivers each drained byte.
+    /// Bounded RX poll for explicit diagnostics. Runtime RX uses IRQ4.
     /// # SAFETY: port I/O at CPL=0; single-CPU.
     /// # C: O(1)
     pub unsafe fn rx_poll(dlv: fn(u8)) {
@@ -134,11 +150,11 @@ mod imp {
     /// Detect + register the serial console (TX sink + RX IRQ4). No-op
     /// when no UART responds. `dev_window_base` is the kernel device-MMIO
     /// window (for the I/O APIC map). `dlv` is the tty-delivery callback,
-    /// stored for the MSI trampoline + tick poll. Returns true on detect.
+    /// stored for the IRQ trampoline. Returns true on detect.
     /// # SAFETY: post-ACPI + post-LAPIC-enable + MmuOps live; single-CPU,
     /// IRQs masked. Maps the I/O APIC, programs IRQ4, port I/O to the UART.
     /// # C: O(1)
-    pub unsafe fn init(bsp_apic: u8, dev_window_base: u64, dlv: fn(u8)) -> bool {
+    pub(super) unsafe fn init(bsp_apic: u8, dev_window_base: u64, dlv: fn(u8)) -> bool {
         // SAFETY: detection does only harmless scratch round-trips.
         let port = match unsafe { detect() } { Some(p) => p, None => return false };
         BASE.store(port as u64, Ordering::Release);
@@ -154,19 +170,49 @@ mod imp {
             unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::map(Va(va), Pa(ioapic_pa), pf, PageSize::P4K); }
             hal_x86_64::ioapic::set_base_va(va);
             if let Some(vec) = arch_irq::alloc_x86_vector() {
-                let _ = arch_irq::register_msi_handler(vec, rx_isr_msi);
-                let ovr = firmware::irq4_flags();
-                let pin = firmware::irq4_gsi().wrapping_sub(firmware::ioapic_gsi_base());
+                if arch_irq::register_msi_handler(vec, rx_isr_msi).is_err() {
+                    let _ = arch_irq::free_x86_vector(vec);
+                    BASE.store(0, Ordering::Release);
+                    PRESENT.store(false, Ordering::Release);
+                    return false;
+                }
+                let ovr = firmware::legacy_irq_flags(4).unwrap_or(0);
+                let gsi = firmware::legacy_irq_gsi(4).unwrap_or(4);
+                let pin = gsi.wrapping_sub(firmware::ioapic_gsi_base());
                 let active_low = (ovr & 0x3) == 3;
                 let level = ((ovr >> 2) & 0x3) == 3;
                 // SAFETY: I/O APIC mapped; vec has a handler; single-CPU pre-init.
                 unsafe { hal_x86_64::ioapic::program_redirect(pin, vec, bsp_apic, level, active_low); }
+                IRQ_VEC.store(vec as u64, Ordering::Release);
+                IRQ_PIN.store(pin as u64, Ordering::Release);
                 // Unmask UART RX-data-available (IER bit0).
                 // SAFETY: IER write at CPL=0 to the detected COM base.
                 unsafe { outb(port + IER, 0x01); }
             }
         }
         true
+    }
+
+    /// Tear down the UART RX interrupt and clear the detected singleton state.
+    /// # SAFETY: called by driver-core remove; no concurrent probe/remove.
+    /// # C: O(1)
+    pub(super) unsafe fn remove() {
+        let port = BASE.load(Ordering::Acquire) as u16;
+        if port != 0 {
+            // SAFETY: IER write at CPL=0 to the detected COM base disables RX interrupts.
+            unsafe { outb(port + IER, 0x00); }
+        }
+        let pin = IRQ_PIN.swap(u64::MAX, Ordering::AcqRel);
+        if pin != u64::MAX {
+            // SAFETY: I/O APIC mapping was installed before IRQ_PIN was published.
+            unsafe { hal_x86_64::ioapic::mask(pin as u32); }
+        }
+        let vec = IRQ_VEC.swap(0, Ordering::AcqRel);
+        if vec != 0 {
+            let _ = arch_irq::free_x86_vector(vec as u8);
+        }
+        BASE.store(0, Ordering::Release);
+        PRESENT.store(false, Ordering::Release);
     }
 }
 
@@ -186,19 +232,48 @@ mod imp {
     /// No 16550 on non-x86 arches; detect fails.
     /// # SAFETY: shell; no side effects.
     /// # C: O(1)
-    pub unsafe fn init(_bsp_apic: u8, _dev_window_base: u64, _dlv: fn(u8)) -> bool { false }
+    pub(super) unsafe fn init(_bsp_apic: u8, _dev_window_base: u64, _dlv: fn(u8)) -> bool { false }
+    /// No 16550 on non-x86 arches.
+    /// # SAFETY: shell; no side effects.
+    /// # C: O(1)
+    pub(super) unsafe fn remove() {}
 }
 
-pub use imp::{emit, init, rx_isr, rx_poll};
+pub use imp::{emit, rx_isr, rx_poll};
 
-// ------------------------------------------------ drv model (D1a)
-/// The 16550 console as a drv model driver. `probe` is a no-op — `init`
-/// already brought the UART up; the model entry exists for the
-/// platform/serial0 device + D1b probe-driven bring-up.
+// ------------------------------------------------ drv model
+/// The 16550 console as a drv model driver. Probe performs detection and
+/// IRQ setup; a missing UART leaves platform/serial0 unbound.
 struct Uart16550Drv;
 impl drv::Driver for Uart16550Drv {
+    fn bus(&self) -> &'static str { "platform" }
     fn name(&self) -> &'static str { "8250-serial" }
     fn matches(&self, dev: &drv::Device) -> bool { dev.bus == "platform" && dev.addr == "serial0" }
+    fn probe(&self, _dev: &Arc<drv::Device>) -> drv::KResult<()> {
+        if present() {
+            return Err(drv::Error::Busy);
+        }
+        let p = DELIVER.load(Ordering::Acquire);
+        if p == 0 {
+            return Err(drv::Error::ProbeFailed);
+        }
+        // SAFETY: p was stored from a `fn(u8)` by configure_probe.
+        let dlv: fn(u8) = unsafe { core::mem::transmute(p as usize) };
+        let bsp_apic = BSP_APIC.load(Ordering::Acquire) as u8;
+        let dev_window_base = DEV_WINDOW_BASE.load(Ordering::Acquire);
+        // SAFETY: driver-core bind runs on the same boot path that previously
+        // called init directly: post-ACPI/LAPIC, MmuOps live, IRQs masked.
+        if unsafe { imp::init(bsp_apic, dev_window_base, dlv) } {
+            Ok(())
+        } else {
+            Err(drv::Error::ProbeFailed)
+        }
+    }
+
+    fn remove(&self, _dev: &drv::Device) {
+        // SAFETY: driver-core remove owns the bound platform device teardown.
+        unsafe { imp::remove(); }
+    }
 }
 
 /// Driver-model handle; name "8250-serial" matches the platform/serial0

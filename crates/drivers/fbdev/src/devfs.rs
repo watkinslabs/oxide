@@ -6,6 +6,8 @@
 
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+use sync::{Spinlock, TaskList as DriverLockClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, InodeBuilder, FileOps, default_inode_ops, mk_mode};
 
 // NOT 0x7001_0000: pidfd owns the whole 0x70xx_xxxx space (PIDFD_INO_MARKER
@@ -20,6 +22,8 @@ pub const FB0_INO_BASE: Ino = 0xFB00_0000;
 pub struct FbData {
     pub idx: u32,
 }
+
+static FB_DEVICES: Spinlock<Vec<(u32, Arc<drv::Device>)>, DriverLockClass> = Spinlock::new(Vec::new());
 
 /// `file_operations` for `/dev/fb<idx>` — read/write hit the live scanout via
 /// its HHDM kernel mapping, keyed by the `idx` stored in `i_private`.
@@ -116,7 +120,7 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
             let req_xv = if req_v.xres_virtual == 0 { cur.xres } else { req_v.xres_virtual };
             let req_yv = if req_v.yres_virtual == 0 { cur.yres } else { req_v.yres_virtual };
             let max_rows = match crate::fix_of(idx) {
-                Some(f) if f.line_length > 0 => (f.smem_len / f.line_length),
+                Some(f) if f.line_length > 0 => f.smem_len / f.line_length,
                 _ => cur.yres,
             };
             if req_xv != cur.xres || req_yv < cur.yres || req_yv > max_rows {
@@ -251,20 +255,37 @@ pub fn mmap_backing(inode: &InodeRef) -> Option<(u64, u64)> {
     crate::backing_of((inode.ino() & 0xFFFF) as u32)
 }
 
-/// Boot-time registration. Called from kernel_main once devfs +
-/// drm core are up. Currently registers a single /dev/fb0 inode;
-/// the crate::register() per-CRTC setup happens once 47's modeset
-/// path lands.
+/// Boot-time directory setup. Framebuffer nodes are not fabricated here:
+/// register_node publishes `/dev/fbN` only after an fbdev instance exists.
 /// # SAFETY: caller is the boot path; pre-init.
-/// # C: O(1)
+/// # C: O(depth)
 pub fn init() {
-    // device-model Stage C (D27): /dev/fb0 (graphics 29:0) self-registers via
-    // `drv::device_add`. `node_factory` mints the EXACT bespoke `FbFileOps`
-    // inode (FB0_INO_BASE routing tag, smem size) the direct register used, so
-    // the node is byte-identical; bus "graphics" is ignored by the pci/virtio
-    // /sys synthesis (no spurious /sys entry).
-    drv::device_add(Arc::new(
-        drv::Device::new("graphics", alloc::string::String::from("fb0"), 0, 0, 0)
-            .with_devnode("graphics", alloc::string::String::from("fb0"), Some((29, 0)))
-            .with_node_factory(Arc::new(|| make_fb_inode(0)))));
+}
+
+/// Publish one model-owned framebuffer node.
+/// # C: O(N + depth)
+pub fn register_node(idx: u32) -> bool {
+    if FB_DEVICES.lock().iter().any(|(id, _)| *id == idx) {
+        return false;
+    }
+    let dev = drv::device_add(Arc::new(
+        drv::Device::new("graphics", alloc::format!("fb{idx}"), 0, 0, idx)
+            .with_devnode("graphics", alloc::format!("fb{idx}"), Some((29, idx)))
+            .with_node_factory(Arc::new(move || make_fb_inode(idx)))));
+    FB_DEVICES.lock().push((idx, dev));
+    true
+}
+
+/// Remove one model-owned framebuffer node.
+/// # C: O(N + depth)
+pub fn unregister_node(idx: u32) -> bool {
+    let dev = {
+        let mut g = FB_DEVICES.lock();
+        let Some(pos) = g.iter().position(|(id, _)| *id == idx) else {
+            return false;
+        };
+        g.remove(pos).1
+    };
+    drv::device_del(&dev);
+    true
 }

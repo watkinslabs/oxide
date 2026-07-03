@@ -61,18 +61,52 @@ pub use acpi::RsdpStatus;
 // x86 only in practice; arm has no I/O APIC. Populated by decode_madt
 // (type 1 = I/O APIC, type 2 = interrupt source override). The kernel
 // reads these to program the I/O APIC redirection table for legacy
-// device IRQs (e.g. COM1 = IRQ4) — the real interrupt-driven path,
-// replacing the timer-tick UART poll.
+// device IRQs (e.g. PS/2 IRQ1, COM1 IRQ4) from the owning driver's probe.
 
 use core::sync::atomic::AtomicU32;
 
 static IOAPIC_PA: AtomicU64 = AtomicU64::new(0);
 static IOAPIC_GSI_BASE: AtomicU32 = AtomicU32::new(0);
-// IRQ source override for legacy COM1 IRQ4. Defaults: identity GSI 4,
-// flags 0 = ISA bus-default (edge-triggered, active-high). QEMU q35
-// leaves IRQ4 un-overridden; we still parse type-2 in case it isn't.
-static IRQ4_GSI: AtomicU32 = AtomicU32::new(4);
-static IRQ4_FLAGS: AtomicU32 = AtomicU32::new(0);
+const ISA_IRQS: usize = 16;
+// Legacy ISA IRQ routing defaults to identity GSI N with ACPI flags 0
+// (bus default: edge-triggered, active-high). MADT type-2 source overrides
+// replace the relevant slot.
+static LEGACY_IRQ_GSI: [AtomicU32; ISA_IRQS] = [
+    AtomicU32::new(0),
+    AtomicU32::new(1),
+    AtomicU32::new(2),
+    AtomicU32::new(3),
+    AtomicU32::new(4),
+    AtomicU32::new(5),
+    AtomicU32::new(6),
+    AtomicU32::new(7),
+    AtomicU32::new(8),
+    AtomicU32::new(9),
+    AtomicU32::new(10),
+    AtomicU32::new(11),
+    AtomicU32::new(12),
+    AtomicU32::new(13),
+    AtomicU32::new(14),
+    AtomicU32::new(15),
+];
+static LEGACY_IRQ_FLAGS: [AtomicU32; ISA_IRQS] = [
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+];
 // ACPI SPCR (Serial Port Console Redirection) — the firmware-elected
 // serial console. Absent ⇒ no firmware serial console (a driver may
 // still legacy-probe COM1). `addr_space`: 0=SystemMemory (MMIO),
@@ -87,11 +121,26 @@ static SPCR_GSI: AtomicU32 = AtomicU32::new(0);
 pub fn ioapic_pa() -> u64 { IOAPIC_PA.load(Ordering::Acquire) }
 /// GSI base of the first I/O APIC. # C: O(1)
 pub fn ioapic_gsi_base() -> u32 { IOAPIC_GSI_BASE.load(Ordering::Acquire) }
-/// GSI that legacy COM1 IRQ4 is routed to (after source overrides).
-/// # C: O(1)
-pub fn irq4_gsi() -> u32 { IRQ4_GSI.load(Ordering::Acquire) }
-/// MADT flags (polarity/trigger) for the COM1 IRQ4 routing. # C: O(1)
-pub fn irq4_flags() -> u32 { IRQ4_FLAGS.load(Ordering::Acquire) }
+/// GSI that legacy ISA IRQ `irq` is routed to after MADT source overrides.
+/// Returns `None` for non-ISA IRQ numbers. # C: O(1)
+pub fn legacy_irq_gsi(irq: u8) -> Option<u32> {
+    let idx = irq as usize;
+    if idx < ISA_IRQS {
+        Some(LEGACY_IRQ_GSI[idx].load(Ordering::Acquire))
+    } else {
+        None
+    }
+}
+/// MADT polarity/trigger flags for legacy ISA IRQ `irq`.
+/// Returns `None` for non-ISA IRQ numbers. # C: O(1)
+pub fn legacy_irq_flags(irq: u8) -> Option<u32> {
+    let idx = irq as usize;
+    if idx < ISA_IRQS {
+        Some(LEGACY_IRQ_FLAGS[idx].load(Ordering::Acquire))
+    } else {
+        None
+    }
+}
 /// True if firmware published an SPCR serial console. # C: O(1)
 pub fn spcr_present() -> bool { SPCR_PRESENT.load(Ordering::Acquire) }
 /// SPCR console UART base (MMIO PA or x86 I/O port per `spcr_addr_space`). # C: O(1)
@@ -117,12 +166,12 @@ pub(crate) fn set_ioapic(pa: u32, gsi_base: u32) {
     }
 }
 
-/// Record a legacy-IRQ source override (MADT type 2). Only IRQ4
-/// (COM1) is tracked today. # C: O(1)
+/// Record a legacy-IRQ source override (MADT type 2). # C: O(1)
 pub(crate) fn set_irq_override(source_irq: u8, gsi: u32, flags: u16) {
-    if source_irq == 4 {
-        IRQ4_GSI.store(gsi, Ordering::Release);
-        IRQ4_FLAGS.store(flags as u32, Ordering::Release);
+    let idx = source_irq as usize;
+    if idx < ISA_IRQS {
+        LEGACY_IRQ_GSI[idx].store(gsi, Ordering::Release);
+        LEGACY_IRQ_FLAGS[idx].store(flags as u32, Ordering::Release);
     }
 }
 

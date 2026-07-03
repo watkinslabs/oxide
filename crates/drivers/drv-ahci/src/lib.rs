@@ -2,7 +2,7 @@
 // scan Ports Implemented → first port with a SATA disk (DET==3, SIG==0x101)
 // → stop/program/start the port → ATA IDENTIFY → READ/WRITE DMA EXT via a
 // PRDT bounce frame, exposed as a `block::BlockDevice` under the registry
-// name `sata0`. The boot probe (`pci_boot`) matches PCI class 0x010601 (QEMU
+// name `sata0`. The model driver's `probe` matches PCI class 0x010601 (QEMU
 // ich9-ahci vendor 0x8086 device 0x2922), maps BAR5 (ABAR), and calls `init`.
 //
 // Layering: `regs.rs` = pure register/FIS/IDENTIFY math (host-tested);
@@ -22,6 +22,7 @@ mod port;
 #[cfg(target_os = "oxide-kernel")]
 mod imp {
     use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicBool, Ordering};
     use sync::{Spinlock, TaskList as DriverLockClass};
     use block::{BlockDevice, BlockRequest, BlockError, BlockOp, KResult};
     use crate::port::Ahci;
@@ -37,6 +38,7 @@ mod imp {
         ctrl:     Spinlock<Ahci, DriverLockClass>,
         blk_size: u32,
         capacity: u64,
+        removed:  AtomicBool,
     }
 
     impl AhciBlk {
@@ -54,6 +56,9 @@ mod imp {
         fn capacity_blocks(&self) -> u64 { self.capacity }
 
         fn submit_sync(&self, req: &mut BlockRequest) -> KResult<()> {
+            if self.removed.load(Ordering::Acquire) {
+                return Err(BlockError::Eio);
+            }
             let bs = self.blk_size as usize;
             match req.op {
                 BlockOp::Flush => {
@@ -116,17 +121,32 @@ mod imp {
         }
 
         fn flush(&self) -> KResult<()> {
+            if self.removed.load(Ordering::Acquire) {
+                return Err(BlockError::Eio);
+            }
             let mut c = self.ctrl.lock();
             if c.flush() { Ok(()) } else { Err(BlockError::Eio) }
         }
     }
 
+    impl AhciBlk {
+        /// Remove publication before calling this, then quiesce hardware and
+        /// release AHCI DMA frames. Existing Arc holders observe EIO.
+        /// # C: O(port stop + PMM frees)
+        fn remove(&self) {
+            self.removed.store(true, Ordering::Release);
+            self.ctrl.lock().shutdown_and_free();
+        }
+    }
+
+    static INSTALLED: Spinlock<Option<Arc<AhciBlk>>, DriverLockClass> = Spinlock::new(None);
+
     /// Bring up the AHCI controller whose ABAR (BAR5) register file is mapped
-    /// at `abar_va` (≥2 pages from map_mmio_pages), register the first SATA
+    /// by `mmio` (≥2 pages), register the first SATA
     /// disk as `sata0`, and return the 1-based registry index (0 on failure).
     /// Optionally self-tests by reading LBA 0. # C: O(bring-up) + registry O(N)
-    pub fn init(abar_va: u64) -> u32 {
-        let a = match Ahci::bring_up(abar_va) { Ok(a) => a, Err(reason) => {
+    pub fn init(mmio: mmio_map::Mapping, abar_off: u64) -> u32 {
+        let a = match Ahci::bring_up(mmio, abar_off) { Ok(a) => a, Err(reason) => {
             // "no ..." = an empty HBA (e.g. the ICH9 chipset SATA controller
             // with no drive attached) — benign INFO, not a failure WARN.
             #[cfg(feature = "debug-boot")]
@@ -151,9 +171,10 @@ mod imp {
             klog::write_raw(b"\n");
         }
 
-        let dev: Arc<dyn BlockDevice> = Arc::new(AhciBlk {
+        let dev = Arc::new(AhciBlk {
             ctrl: Spinlock::new(a),
             blk_size, capacity,
+            removed: AtomicBool::new(false),
         });
 
         // Optional bring-up self-test: read LBA 0 (proves the command-issue +
@@ -167,7 +188,13 @@ mod imp {
             klog::write_raw(b"\n");
         }
 
-        let idx = block::registry::register_with_serial("sata0", Some("oxsata"), dev);
+        let block_dev: Arc<dyn BlockDevice> = dev.clone();
+        let idx = block::registry::register_with_serial("sata0", Some("oxsata"), block_dev);
+        if idx == 0 {
+            dev.remove();
+            return 0;
+        }
+        *INSTALLED.lock() = Some(dev);
         #[cfg(feature = "debug-boot")]
         {
             klog::write_raw(b"[INFO]  ahci: block dev registered idx=");
@@ -176,10 +203,36 @@ mod imp {
         }
         idx
     }
+
+    /// Remove the registered AHCI disk and release controller-owned resources.
+    /// # C: O(N_disks + port shutdown)
+    pub fn remove() -> bool {
+        let dev = match INSTALLED.lock().take() {
+            Some(dev) => dev,
+            None => return false,
+        };
+        let _ = block::registry::unregister("sata0");
+        dev.remove();
+        true
+    }
 }
 
 #[cfg(target_os = "oxide-kernel")]
-pub use imp::{init, AhciBlk, AHCI_CLASS24};
+pub use imp::{init, remove, AhciBlk, AHCI_CLASS24};
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {
+    let r = hal_x86_64::pci::LegacyPci;
+    pci::decode_bars(&r, bdf)
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {
+    match hal_aarch64::pci::EcamPci::from_published() {
+        Some(r) => pci::decode_bars(&r, bdf),
+        None => [pci::Bar::None; 6],
+    }
+}
 
 /// The D1a model driver for AHCI: matches PCI class 0x010601 on the PCI bus.
 /// Registered + bound at the bring-up success site in pci-boot.
@@ -191,6 +244,37 @@ impl drv::Driver for AhciDriver {
     fn name(&self) -> &'static str { "ahci" }
     fn matches(&self, dev: &drv::Device) -> bool {
         dev.bus == "pci" && dev.class == imp::AHCI_CLASS24
+    }
+
+    fn probe(&self, dev: &alloc::sync::Arc<drv::Device>) -> drv::KResult<()> {
+        let bdf = pci::parse_bdf_addr(&dev.addr).ok_or(drv::Error::ProbeFailed)?;
+        #[cfg(target_arch = "x86_64")]
+        {
+            let r = hal_x86_64::pci::LegacyPci;
+            pci::enable_mem_bus_master(&r, bdf);
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
+                pci::enable_mem_bus_master(&r, bdf);
+            } else {
+                return Err(drv::Error::ProbeFailed);
+            }
+        }
+        let bars = decode_bars(bdf);
+        let abar_pa = bars[5].mem_base().unwrap_or(0);
+        if abar_pa == 0 { return Err(drv::Error::ProbeFailed); }
+        // SAFETY: BAR5 PA came from this PCI function's config space; two
+        // pages cover generic HBA registers plus the 32-port register array.
+        let mmio = unsafe { mmio_map::map_owned(abar_pa & !0xFFF, 2) };
+        if imp::init(mmio, abar_pa & 0xFFF) == 0 {
+            return Err(drv::Error::ProbeFailed);
+        }
+        Ok(())
+    }
+
+    fn remove(&self, _dev: &drv::Device) {
+        let _ = imp::remove();
     }
 }
 

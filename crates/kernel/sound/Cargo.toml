@@ -10,11 +10,11 @@ path = "src/lib.rs"
 [dependencies]
 vfs     = { path = "../vfs" }
 devfs   = { path = "../devfs" }
+drv     = { path = "../../drivers/drv" }
 syscall = { path = "../syscall" }
 sync    = { path = "../../shared/sync" }
 hal     = { path = "../../arch/hal" }
 klog    = { path = "../../shared/klog" }
-drv-virtio-snd = { path = "../../drivers/drv-virtio-snd" }
 
 [features]
 default = []

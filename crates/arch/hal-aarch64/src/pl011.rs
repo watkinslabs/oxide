@@ -28,6 +28,8 @@ const PL011_LCR_H: usize = 0x2c;
 const PL011_CR:    usize = 0x30;
 #[cfg(target_os = "oxide-kernel")]
 const PL011_ICR:   usize = 0x44;
+#[cfg(target_os = "oxide-kernel")]
+const PL011_IMSC:  usize = 0x38;
 
 #[cfg(target_os = "oxide-kernel")]
 const FR_TXFF: u32 = 1 << 5;
@@ -86,7 +88,6 @@ unsafe fn read_reg(va: u64, off: usize) -> u32 {
 }
 
 /// Current PL011 base VA — `0` if `enable` hasn't run yet.
-/// Used by `tty::tick_poll_uart` (arm RX path).
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub fn base_va() -> u64 { PL011_BASE_VA.load(Ordering::Acquire) }
@@ -102,13 +103,28 @@ pub fn base_va() -> u64 { PL011_BASE_VA.load(Ordering::Acquire) }
 /// # Ctx: pre-init, IRQ-off, single-CPU
 #[cfg(target_os = "oxide-kernel")]
 pub unsafe fn enable_rx_irq() {
-    const PL011_IMSC: usize = 0x38;
     let va = PL011_BASE_VA.load(Ordering::Acquire);
     if va == 0 { return; }
     // SAFETY: per fn contract; aligned u32 RMW within the 4 KiB Device-nGnRnE PL011 register page.
     unsafe {
         let cur = read_reg(va, PL011_IMSC);
         write_reg(va, PL011_IMSC, cur | (1 << 4) | (1 << 6));
+    }
+}
+
+/// Disable PL011 RX + RX-timeout IRQs.
+///
+/// # SAFETY: caller owns PL011 teardown; UARTIMSC lives inside the mapped page.
+/// # C: O(1)
+/// # Ctx: driver remove / boot teardown
+#[cfg(target_os = "oxide-kernel")]
+pub unsafe fn disable_rx_irq() {
+    let va = PL011_BASE_VA.load(Ordering::Acquire);
+    if va == 0 { return; }
+    // SAFETY: per fn contract; aligned u32 RMW within the PL011 register page.
+    unsafe {
+        let cur = read_reg(va, PL011_IMSC);
+        write_reg(va, PL011_IMSC, cur & !((1 << 4) | (1 << 6)));
     }
 }
 

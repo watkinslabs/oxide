@@ -5,13 +5,13 @@ edition = "2021"
 publish = false
 license = "MPL-2.0"
 
-# Modern-transport virtio-blk driver per `34§*` / `17§2`. Boot-time PCI
-# probe (in pci-boot::virtio_drv) brings up cap discovery, BAR mapping,
-# queue program, DRIVER_OK; once that finishes it hands the persistent
-# kernel-side addresses here via `modern::init_blk`, which registers a
-# `BlockDevice` so ext4 can mount a real disk. The synchronous request
-# engine (`BlkState::submit`) builds the 3-descriptor chain, kicks the
-# notify register, and polls used.idx — no IRQ needed for Stage 1.
+# Modern-transport virtio-blk driver per `34§*` / `17§2`. The model
+# driver's probe (in pci-boot::virtio_drv while the driver is being
+# split out) brings up cap discovery, BAR mapping, queue program, and
+# DRIVER_OK; then it hands persistent kernel-side addresses here via
+# `modern::init_blk`, which registers a `BlockDevice`. The synchronous
+# request engine (`BlkState::submit`) builds the 3-descriptor chain,
+# kicks the notify register, and waits on used.idx.
 
 [dependencies]
 block    = { path = "../../kernel/block" }
@@ -27,6 +27,9 @@ hal-x86_64 = { path = "../../arch/hal-x86_64" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[dev-dependencies]
+drv = { path = "../drv" }
 
 [features]
 default = []

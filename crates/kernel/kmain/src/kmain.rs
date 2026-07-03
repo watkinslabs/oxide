@@ -366,8 +366,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // SAFETY: boot-only single-writer, pre-userspace; install_arch_default is idempotent (no-op if the slot is set) and cannot race a procfs reader here.
         unsafe { crate::boot_cmdline::install_arch_default(); }
         console::register_devnodes(); ::devfs::boot::populate_defaults(); procfs::init();
-        drm::node::register();
         fs::tmpfs::init(); tracefs::init(); drv_virtio_input::devfs::init();
+        drv_virtio_input::procfs::init();
         fbdev::devfs::init(); devpts::init();
         // boot smokes (debug-boot gated):
         debug_boot! {
@@ -383,11 +383,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     }
 
 
-    // Install the per-tick UART RX poll hook unconditionally. This was
-    // previously buried inside the SMP `if started > 0` block, so with
-    // `-smp 1` the hook stayed null and every timer IRQ skipped
-    // `tick_poll_uart`. Result: bytes sat in COM1 RBR with LSR.DR=1
-    // forever — login could print but never read input.
+    // Install BSP timer work: scheduler load sampling and display drains.
+    // UART, PS/2, and virtio input delivery are owned by their drivers' IRQs.
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     arch_irq::set_tick_poll_hook(tick_poll_combined);
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
@@ -402,11 +399,11 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     arch_irq::install_softirq_hooks();
 
-    // Wire the UART RX sink (tty line discipline), then probe + bring up
-    // the serial console. drv_serial::init detects the UART (ACPI SPCR,
-    // else legacy 8250 scratch-probe on x86) and only registers as the
-    // console (TX via klog sink + RX IRQ) if one responds — a machine
-    // with no serial keeps the framebuffer/VT console.
+    // Wire the UART RX sink (tty line discipline), then register the
+    // serial platform device and bind the active UART driver. The driver's
+    // probe detects the UART (ACPI SPCR, else legacy 8250 scratch-probe
+    // on x86) and only then installs the serial klog sink + RX IRQ. A
+    // machine with no serial leaves platform/serial0 unbound.
     // Install the serial tty (`/dev/ttyS0`) on the new tty stack. The
     // framebuffer console (`/dev/console` by default on x86 QEMU) uses the
     // VT tty stack; serial remains a separate login/debug line. printk stays
@@ -423,36 +420,32 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // dump) for on-demand liveness diagnostics, before bytes reach the
     // tty. Pairs with the per-tick liveness watchdog (`05`, `27`).
     drv_serial::set_rx_prefilter(sched::diag::sysrq_rx);
-    // SAFETY: post-ACPI/LAPIC + MmuOps live; single-CPU, IRQs masked. init
-    // probes the UART; on detection it installs the serial klog sink + RX IRQ.
-    // `/dev/console` selection remains cmdline-driven.
-    if unsafe { drv_serial::init(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE) } {
-        klog::set_byte_sink(drv_serial::emit);
-        // drivers-plan D1a: record the 8250/PL011 console in the drv model
-        // as a platform-bus device + driver. No /sys/bus/platform tree is
-        // published in D1a (sysfs publishes pci+virtio); the registry entry
-        // exists for the model + D1b probe-driven bring-up.
-        // drivers-plan D4: the UART driver-model handle lives in the
-        // per-arch UART crate now (8250-serial / pl011-serial); drv-serial
-        // re-exposes the active one via uart_driver().
+    drv_serial::configure_probe(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE);
+    {
         let uart_drv = drv_serial::uart_driver();
-        let dev = drv::register_device(alloc::sync::Arc::new(drv::Device::new(
+        let dev = drv::device_add(alloc::sync::Arc::new(drv::Device::new(
             "platform", alloc::string::String::from("serial0"), 0, 0, 0)));
         drv::register_driver(uart_drv);
-        drv::bind(&dev, drv::Driver::name(uart_drv));
+        if drv::bind(&dev, drv::Driver::name(uart_drv)).is_ok() {
+            klog::set_byte_sink(drv_serial::emit);
+        }
     }
 
-    // drivers-plan D3.4: real i8042 PS/2 keyboard (x86 only — no i8042 on
-    // the arm boards). Brings up the controller + resets/identifies the
-    // keyboard, then registers a platform-bus device + driver in the D1a
-    // model. Decoded scancodes feed the SAME input pipeline as virtio-input
-    // (drv_virtio_input::drain::handle_key_event). Input is timer-tick
-    // polled in tick_poll_combined. A serial-only box with no PS/2 leaves
-    // it un-detected (poll becomes a no-op).
+    // Real i8042 PS/2 keyboard (x86 only — no i8042 on the arm boards).
+    // Register the platform device + driver, then bind so Driver::probe
+    // brings up the controller and resets/identifies the keyboard. Decoded
+    // scancodes feed the SAME input pipeline as virtio-input
+    // (drv_virtio_input::drain::handle_key_event). The i8042 driver owns IRQ1
+    // setup/teardown in probe/remove. A serial-only box with no PS/2 leaves
+    // platform/i8042 unbound.
     #[cfg(target_arch = "x86_64")]
     {
-        // SAFETY: post-LAPIC/MmuOps boot, single-CPU, IRQs masked; init does only bounded CPL=0 i8042 port I/O with no other accessor of 0x60/0x64.
-        unsafe { drv_ps2_keyboard::init(); }
+        let ps2_drv = drv_ps2_keyboard::driver();
+        drv_ps2_keyboard::configure_probe(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE);
+        let dev = drv::device_add(alloc::sync::Arc::new(drv::Device::new(
+            "platform", alloc::string::String::from("i8042"), 0, 0, 0)));
+        drv::register_driver(ps2_drv);
+        let _ = drv::bind(&dev, drv::Driver::name(ps2_drv));
     }
 
     // SMP bring-up per `13§11`. With -smp 1 (default) the per-arch
@@ -588,9 +581,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // SAFETY: kernel_main runs single-CPU pre-init; drv::init reports ready; per-driver register() happens during PCI enumeration.
     let _ = unsafe { drv::init() };
     // drivers-plan D1a: wire the drv model's sysfs-publish hooks BEFORE
-    // PCI enumeration so each `drv::register_device` during enumeration
-    // publishes its `/sys/bus/<bus>/devices/<addr>` entry as it lands.
+    // PCI enumeration so each `drv::device_add` during enumeration publishes
+    // its `/sys/bus/<bus>/devices/<addr>` entry as it lands.
     drv::set_sysfs_hook(crate::sysfs::bus::publish_device_cb);
+    drv::set_sysfs_remove_hook(crate::sysfs::bus::remove_device_cb);
     drv::set_driver_hook(crate::sysfs::bus::publish_driver_cb);
     drv::set_bind_hook(crate::sysfs::bus::bind_device_cb);
     // device-model Stage B: the devtmpfs side of `drv::device_add` is wired
@@ -599,9 +593,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // drm/fbdev, Stage C) mint their nodes at boot. The /sys-publish hooks here
     // still precede PCI enumeration so each bus device's `/sys/bus/<bus>/
     // devices/<addr>` entry lands as it is enumerated.
-    // virtio-gpu/input bind via the real driver-model Driver registered + bound
-    // at their bring-up sites in pci_boot (drivers-plan D1a/D2); the old
-    // NoMatch DriverEntry probe stubs were removed in D2.
+    // Hardware bus drivers bind through the drv model during enumeration;
+    // the old flat BDF probe registry path has been removed.
     // SAFETY: kernel_main runs single-CPU pre-init; vt::init allocates VT 1 + sets ACTIVE_VT.
     let _ = unsafe { vt::init() };
     // VT_PROCESS switch handshake (console-plan #6c): the vt layer signals a
@@ -659,36 +652,6 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // SAFETY: boot path; APs spin in their park loop; master frame is the one
     // they CR3 to; copying kernel-half entries (shared L3s) into it.
     unsafe { hal_x86_64::mmu_ops::resync_kernel_master(); }
-
-    // D3.1: if PCI enumeration brought up a virtio-rng device, route
-    // /dev/hwrng reads to its `fill` engine and publish the node. Absent a
-    // device, /dev/hwrng is not created (no fabricated entropy source).
-    #[cfg(target_os = "oxide-kernel")]
-    if drv_virtio_rng::present() {
-        devfs::misc::set_hwrng_source(drv_virtio_rng::fill);
-        // device-model Stage C (D27): /dev/hwrng now self-registers via
-        // `drv::device_add` (dev_class "misc", 10:183). `node_factory` mints the
-        // exact bespoke `HwRngFileOps` inode (identical to the old direct
-        // register); bus "misc" is ignored by the pci/virtio /sys synthesis, so
-        // no spurious /sys entry appears.
-        drv::device_add(alloc::sync::Arc::new(
-            drv::Device::new("misc", alloc::string::String::from("hwrng"), 0, 0, 0)
-                .with_devnode("misc", alloc::string::String::from("hwrng"), Some((10, 183)))
-                .with_node_factory(alloc::sync::Arc::new(|| devfs::misc::make_hwrng_inode()))));
-        debug_boot! { klog::write_raw(b"[INFO]  /dev/hwrng registered (virtio-rng)\n"); }
-    }
-
-    // docs/58§5-6: if a virtio-snd card came up, publish the ALSA
-    // /dev/snd/* (primary) + OSS /dev/dsp (emulation) nodes. Absent a
-    // card, nothing is created (no fabricated device).
-    #[cfg(target_os = "oxide-kernel")]
-    if drv_virtio_snd::present() {
-        sound::init();
-        debug_boot! { klog::write_raw(b"[INFO]  /dev/snd/* + /dev/dsp registered (virtio-snd)\n"); }
-    }
-    // 46§: publish /dev/input/event1.. for virtio-input pointer devices.
-    #[cfg(target_os = "oxide-kernel")]
-    drv_virtio_input::devfs::register_extra_nodes();
 
     // Mount the ext4 root fs from the virtio-blk disk (serial
     // `oxide-root`). Linux's CONFIG_EXT4_FS=y equivalent: real driver
@@ -842,53 +805,6 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // (PCI enumeration moved earlier — before the ext4 root mount —
     // so virtio-blk is up to back the root disk.)
 
-    // virtio-gpu scanout is up after pci enumerate. Wire the
-    // kernel-side fbcon driver so every klog event also lands on
-    // the GPU display via the aux sink hook.
-    #[cfg(target_os = "oxide-kernel")]
-    if let Some((w, h)) = drv_virtio_gpu::post_init::dimensions() {
-        fbcon::kernel::kernel_init(w, h, drv_virtio_gpu::post_init::fbcon_flush_pixels);
-        // Back /dev/fb0 with the real virtio-gpu scanout (console-plan #1):
-        // FBIOGET_*SCREENINFO report the true geometry/smem, mmap maps the
-        // scanout PA into userspace (remap_pfn_range), write()/PAN/WAITFORVSYNC
-        // flush via the GPU. No-op if the scanout isn't up.
-        if let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = drv_virtio_gpu::post_init::framebuffer() {
-            fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
-            fbdev::set_flush_hook(drv_virtio_gpu::post_init::flush_scanout);
-            // D6: real FBIOBLANK (image-level blank/restore) + the tick-driven
-            // pseudo-vblank wait for FBIO_WAITFORVSYNC. blank_scanout clears the
-            // displayed image to black; unblank_scanout repaints the console.
-            fbdev::set_blank_hooks(
-                drv_virtio_gpu::post_init::blank_scanout,
-                drv_virtio_gpu::post_init::unblank_scanout);
-            fbdev::set_yield_hook(fbdev_vsync_yield);
-            fbdev::set_now_hook(syscalls::vvar::monotonic_now_ns);
-        }
-        // Register the fbcon VT console as a printk console (Linux
-        // vt_console_driver): kernel logs now render through the ECMA-48
-        // emulator → vc_data → fbcon cell-blit (lossless), not the old
-        // lossy byte-stream try_lock→drop sink. The serial console
-        // (drv_serial::emit, SLOT_BYTE) stays the durable copy.
-        klog::set_aux_sink(fbcon::kernel::vt_console_sink);
-        // Route the VT emulator's DSR/CPR answerback (CSI n) back into the
-        // matching tty INPUT ring (Linux vt_console respond_string), so an
-        // app that probes the real console size — btop sends ESC[999;999H
-        // then ESC[6n and reads the ESC[<r>;<c>R reply — learns the actual
-        // fbcon geometry instead of the serial host terminal answering.
-        fbcon::kernel::set_reply_sink(console::vt_reply_sink);
-        // Let the keyboard driver + selection-paste read the foreground VT's
-        // DECCKM / bracketed-paste mode (the emulators live in fbcon). Linux
-        // `applkey` reads `vc_cons[fg_console]`.
-        tty::live::set_app_cursor_query(fbcon::kernel::fg_app_cursor);
-        tty::live::set_bracketed_paste_query(fbcon::kernel::fg_bracketed_paste);
-        // The VIDEO VTs get their winsize from the fbcon grid (seeded in
-        // vt_tty::build via console_dims). The SERIAL tty keeps the 80×24
-        // serial default until the remote terminal resizes it — it must NOT
-        // be seeded with the framebuffer geometry (that was the old conflated
-        // /dev/console-is-serial behavior that made htop on the serial line
-        // report the framebuffer size).
-        let _ = w; let _ = h;
-    }
     // Load the rootfs-resident keyboard layout. Linux pattern:
     // /etc/keymap is the active map; /usr/share/keymaps/*.kmap is
     // the library. Falls through silently if the file is missing —
@@ -906,12 +822,6 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 klog::write_raw(b"[WARN]  /etc/keymap: parse error\n");
             } }
         }
-    }
-
-    // virtio-net legacy driver detect + init. No-op if no device.
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    {
-        drv_virtio_net::legacy::init_legacy();
     }
 
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
@@ -982,18 +892,8 @@ fn boot_register_bind(path: &str, fs: alloc::sync::Arc<dyn vfs::fs::FileSystem>,
     }
 }
 
-/// reschedule + park the CPU until the next IRQ (the timer tick that advances
-/// the pseudo-vblank counter), so the waiter doesn't hot-spin. Runs in process
-/// context (the ioctl syscall path), satisfying `tick_yield`'s contract.
-/// # C: O(log N) + O(1) ctxsw + O(IRQ_latency)
-#[cfg(target_os = "oxide-kernel")]
-fn fbdev_vsync_yield() {
-    // SAFETY: invoked from the FBIOWAITFORVSYNC ioctl syscall path = process context, runqueue installed, preempt-off, no fbdev lock held across the yield (wait_vblank drops its hook guards before calling this); tick_yield's exact contract.
-    unsafe { sched::live::tick_yield(); }
-}
-
-/// Combined timer-tick hook: poll UART for input + drain any
-/// pending fbcon writes onto the GPU display.
+/// Combined timer-tick hook: run BSP timer device work and drain any pending
+/// fbcon writes onto the GPU display.
 /// # SAFETY: timer-ISR context per the hook contract.
 /// # C: O(1) typical; O(xres*yres) on dirty fbcon repaint.
 #[cfg(target_os = "oxide-kernel")]
@@ -1011,40 +911,11 @@ unsafe fn tick_poll_combined(_from_user: bool) {
         let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
         sched::loadavg::tick(now);
     }
-    // SAFETY: deferred to the underlying hooks; drv_serial::poll owns the UART RX drain invariants; fbcon::kernel::tick_drain drains the per-VT answerback queues into the tty input rings outside any console write lock (our flush_to_ldisc).
-    unsafe { drv_serial::poll(); }
-    // D3.4: drain pending i8042 keyboard scancodes (x86 PS/2). No-op until
-    // the controller was detected; bounded ≤64 bytes per tick. Routes
-    // through the shared handle_key_event pipeline (same as virtio-input).
-    #[cfg(target_arch = "x86_64")]
-    // SAFETY: timer-ISR/tick context, BSP-only here (gated by the is_bsp check in the dispatcher); drv_ps2_keyboard::poll does only bounded CPL=0 reads of the i8042 status/data ports.
-    unsafe { drv_ps2_keyboard::poll(); }
     fbcon::kernel::tick_drain();
     // D6: advance the pseudo-vblank counter at the tick rate — the honest
     // virtual-GPU vsync cadence that FBIO_WAITFORVSYNC blocks on and
     // FBIOGET_VBLANK reports as the running frame count.
     fbdev::vblank_tick();
-    // F145: poll virtio-net rx from the timer tick as a fallback for
-    // missed MSI-X edges. Real MSI handler still calls rx_drain_softirq
-    // when it fires; this just ensures frames in the rx ring get
-    // delivered even if the device's interrupt-coalesce or our MSI
-    // routing dropped the edge.
-    drv_virtio_net::modern::rx_drain_softirq();
-    // D3.3: drain virtio-vsock RX each tick (host→guest packets) into
-    // net::vsock. No-op until a 0x1053 device installed. Bounded by the
-    // RX ring depth per call; the protocol engine dispatches each packet.
-    if drv_virtio_vsock::present() { let _ = drv_virtio_vsock::rx_drain(); }
-    // Same MSI-X-fallback for virtio-input (keyboard): raise the InputDrain
-    // softirq each tick so queued EV_KEY events get walked even if the
-    // device's MSI edge was missed/coalesced (notably aarch64 GICv3/ITS,
-    // where the input MSI does not reliably fire — without this, framebuffer
-    // keyboard input never drains on arm). The device IRQ stays the fast
-    // path; the ring walk runs in softirq context (IRQs on), not here.
-    drv_virtio_input::drain::raise_drain();
-    // Wake any virtio-blk task sleeping for an I/O completion so it
-    // re-checks used.idx — the timer-tick backstop for the adaptive
-    // spin-then-sleep wait (the completion MSI is the fast path).
-    drv_virtio_blk::modern::wake_completions();
     // B14: subreap orphan/abandoned zombies. Without this, sshd-
     // session children whose parent doesn't wait4 within 5s pile
     // up in ZOMBIES at ~340 KB each (Task struct + 16KB kernel
