@@ -48,6 +48,10 @@ struct RngState {
     bounce_pa:    u64,
     /// Device-model node for `/dev/hwrng`; removed during driver teardown.
     hwrng_dev:    Arc<drv::Device>,
+    /// Set once reboot/poweroff shutdown has quiesced this device. The record
+    /// stays published so `/dev/hwrng` model state is not hot-unplugged during
+    /// the terminal transition, but fills must stop touching the queue.
+    shutdown:     bool,
 }
 
 type RngHandle = Arc<Spinlock<RngState, DriverLockClass>>;
@@ -125,6 +129,7 @@ pub fn install(bdf: u32, resources: virtio::VirtioResources) -> Option<RngProbe>
         used_idx_seen: used_seen,
         bounce_pa,
         hwrng_dev: Arc::clone(&hwrng_dev),
+        shutdown: false,
     }));
     rngs.push(record);
     drop(rngs);
@@ -165,6 +170,27 @@ pub fn uninstall(bdf: u32) -> Option<RngRemove> {
         hwrng_dev: if was_active { Some(Arc::clone(&ctx.hwrng_dev)) } else { None },
         promoted_hwrng_dev,
     })
+}
+
+/// Quiesce an installed rng context for reboot/poweroff without removing or
+/// promoting `/dev/hwrng` model state. Future reads from this provider return
+/// 0 instead of publishing new queue work.
+/// # C: O(N_devices)
+pub fn shutdown(bdf: u32) -> bool {
+    let Some(record) = find_handle(bdf) else { return false };
+    let mut ctx = record.lock();
+    if ctx.shutdown {
+        return true;
+    }
+    ctx.shutdown = true;
+    // Virtio reset: write 0 to device_status (§3.1.1). Use the byte access
+    // size for the status field, matching modern virtio-pci.
+    if ctx.cfg_va != 0 {
+        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    }
+    let bounce_pa = core::mem::replace(&mut ctx.bounce_pa, 0);
+    free_frame(bounce_pa);
+    true
 }
 
 fn free_frame(pa: u64) {
@@ -212,7 +238,7 @@ fn fill_record(record: &RngHandle, buf: &mut [u8]) -> usize {
     let mut g = record.lock();
     let ctx = &mut *g;
     let want = buf.len().min(0x1000);
-    if want == 0 { return 0; }
+    if want == 0 || ctx.shutdown || ctx.bounce_pa == 0 { return 0; }
     let h = ctx.hhdm;
 
     // Descriptor[0] = { addr=bounce_pa, len=want, flags=WRITE, next=0 }.
