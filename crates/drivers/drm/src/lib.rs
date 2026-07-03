@@ -474,29 +474,35 @@ fn write_dec(out: &mut [u8], mut v: u32) -> usize {
 // Card registry
 // ============================================================
 
-static CARDS: Spinlock<Vec<Arc<dyn DrmDriver>>, DriverLockClass>
-    = Spinlock::new(Vec::new());
+struct CardEntry {
+    id:     u32,
+    driver: Arc<dyn DrmDriver>,
+}
+
+static CARDS: Spinlock<Vec<CardEntry>, DriverLockClass> = Spinlock::new(Vec::new());
+static NEXT_CARD_ID: AtomicU32 = AtomicU32::new(0);
 static NEXT_HANDLE: AtomicU32 = AtomicU32::new(1);
 
-/// Register a per-device backend. Returns the card index (0 ⇒ card0).
+/// Register a per-device backend. Returns a stable card id.
 /// # C: O(1)
 pub fn register(driver: Arc<dyn DrmDriver>) -> u32 {
     let mut g = CARDS.lock();
     if g.is_empty() {
         node::register();
     }
-    g.push(driver);
-    (g.len() - 1) as u32
+    let id = NEXT_CARD_ID.fetch_add(1, Ordering::AcqRel);
+    g.push(CardEntry { id, driver });
+    id
 }
 
-/// Unregister a per-device backend. Returns true if a live card was removed.
+/// Unregister a per-device backend by stable card id. Returns true if a live
+/// card was removed.
 /// # C: O(N)
 pub fn unregister(card_id: u32) -> bool {
     let mut g = CARDS.lock();
-    let idx = card_id as usize;
-    if idx >= g.len() {
+    let Some(idx) = g.iter().position(|entry| entry.id == card_id) else {
         return false;
-    }
+    };
     g.remove(idx);
     let empty = g.is_empty();
     drop(g);
@@ -509,7 +515,7 @@ pub fn unregister(card_id: u32) -> bool {
 /// Snapshot of registered cards.
 /// # C: O(1)
 pub fn cards() -> Vec<Arc<dyn DrmDriver>> {
-    CARDS.lock().clone()
+    CARDS.lock().iter().map(|entry| Arc::clone(&entry.driver)).collect()
 }
 
 /// Return the count of registered cards.
@@ -701,6 +707,7 @@ mod tests {
     #[test]
     fn register_increments_card_count() {
         CARDS.lock().clear();
+        NEXT_CARD_ID.store(0, Ordering::Release);
         node::unregister();
         let idx = register(Arc::new(DummyDrv));
         assert_eq!(idx, 0);
@@ -709,6 +716,20 @@ mod tests {
         assert_eq!(idx2, 1);
         assert!(unregister(idx2));
         assert!(unregister(idx));
+        assert_eq!(card_count(), 0);
+    }
+
+    #[test]
+    fn unregister_uses_stable_card_id() {
+        CARDS.lock().clear();
+        NEXT_CARD_ID.store(0, Ordering::Release);
+        node::unregister();
+        let first = register(Arc::new(DummyDrv));
+        let second = register(Arc::new(DummyDrv));
+        assert_eq!((first, second), (0, 1));
+        assert!(unregister(first));
+        assert_eq!(card_count(), 1);
+        assert!(unregister(second));
         assert_eq!(card_count(), 0);
     }
 }

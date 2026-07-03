@@ -138,13 +138,17 @@ test-pass claims.
   `/sys/dev/block`, parent/subsystem links, and model-backed bind/unbind attrs,
   but class-device topology and repeated bind/unbind/remove/readd behavior are
   not proven across all subsystems.
+- DRM backend registration now uses stable card IDs internally, so removing one
+  DRM backend no longer shifts the IDs used to unregister the remaining
+  backends. `/dev/dri/cardN` publication is still not fully per-card; the node
+  layer currently publishes only `card0`/`renderD128` while any card is live.
 - Block, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`
-  provider. Virtio-net teardown is BDF-owned, but the runtime/netdev path still
-  has a singleton installed-device slot and needs a real per-net-device table.
-  Virtio-gpu teardown is BDF-owned, but the installed DRM/scanout device is still
-  singleton. Virtio-vsock's upper protocol layer and virtio-snd's upper
+  provider. Virtio-net transport/netdev/softirq runtime is now BDF-keyed, but
+  still uses the minimal one-buffer RX design per transport and a shared ARP
+  cache. Virtio-gpu teardown is BDF-owned, but the installed DRM/scanout device
+  is still singleton. Virtio-vsock's upper protocol layer and virtio-snd's upper
   sound-card layer also still retain singleton limits; vsock now fails a second
   protocol publish cleanly instead of replacing the installed transport.
 - UART and PS/2 platform drivers now have model probes/removes, but they are
@@ -167,11 +171,12 @@ test-pass claims.
   failure release helpers still need to move behind a
   `VirtioPciTransport`/`VirtioProbeState` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
-  the hardware class should support multiple instances: virtio-net still needs
-  a full multi-netdev runtime table after its BDF-owned teardown fix; virtio-gpu
-  still needs a real multi-card/scanout table after its BDF-owned teardown fix;
+  the hardware class should support multiple instances: virtio-gpu still needs
+  a real multi-card/scanout table after its BDF-owned teardown fix;
   virtio-vsock's upper protocol layer and virtio-snd's global sound-card layer
-  are still the other main offenders.
+  are still the main offenders. Virtio-net's old singleton installed-device
+  slot is gone, but its RX buffer model and shared ARP cache still need the next
+  networking cleanup pass.
 - Add explicit fault-injection coverage for probe failure after each allocation,
   mapping, registration, IRQ/MSI step, queue setup, and userspace publication.
 - Prove repeated bind/unbind/remove/readd loops under QEMU for PCI, virtio,
@@ -286,16 +291,15 @@ That means driver binding is currently descriptive, not causal. The device is al
 
 ### Device publication
 
-`device_add()` currently does:
+`device_add()` now follows the intended Linux-visible publication order:
 
-1. `register_device()`
-2. sysfs hook fires
-3. sysfs hook emits add uevent
-4. devtmpfs hook creates `/dev` node
+1. push the device into the model registry
+2. create the owned devtmpfs node, when the device has one
+3. fire the sysfs hook, which emits the add uevent
 
-This order is wrong for Linux-visible behavior. Userspace can process an add uevent before the matching `/dev` node exists.
-
-Also, many real devices still use `register_device()` instead of `device_add()`, so they enter the model without devtmpfs linkage.
+There is no remaining public `register_device()` path in the driver model on
+this branch. Remaining publication work is class topology and subsystem
+side-effect cleanup, not the old add-before-devtmpfs ordering bug.
 
 ### Runtime state
 
