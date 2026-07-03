@@ -869,10 +869,15 @@ fn release_virtio_transport(cfg_va: u64, frames: &[u64]) {
         // virtio_init_arch; device_status is a u8 at +0x14.
         unsafe { core::ptr::write_volatile((cfg_va + 0x14) as *mut u8, 0u8); }
     }
+    let mut seen: alloc::vec::Vec<u64> = Vec::new();
     for frame in frames.iter().copied() {
         if frame == 0 {
             continue;
         }
+        if seen.iter().any(|saved| *saved == frame) {
+            continue;
+        }
+        seen.push(frame);
         // SAFETY: non-zero frames passed here were allocated by the failed
         // virtio probe and have not been retained by runtime driver state.
         unsafe { pmm::setup::free_one_frame(frame); }
