@@ -113,8 +113,14 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     if (flags & O_DIRECTORY) != 0 && !matches!(inode.file_type(), vfs::FileType::Directory) {
         return -(Errno::Enotdir.as_i32() as i64);
     }
-    // FileOps on_open() hook (Linux `file_operations::open`), at open(2).
-    if let Err(e) = inode.on_open() { return -(e as i64); }
+    // FileOps on_open() hook (Linux `file_operations::open`), at open(2). Linux
+    // `do_dentry_open` skips `f_op->open` for an O_PATH (FMODE_PATH) descriptor —
+    // a pure fd-reference never runs the device driver open — so gate on !O_PATH
+    // (else an O_PATH open of a driverless char node, e.g. ProtectKernelLogs'
+    // inaccessible devt-0:0 node over /dev/kmsg, wrongly ENXIO'd; see 257_openat).
+    if (flags & crate::open_common::O_PATH) == 0 {
+        if let Err(e) = inode.on_open() { return -(e as i64); }
+    }
     // DAC + EROFS enforcement (Linux `may_open`), before the O_TRUNC truncate.
     if let Some(rv) = enforce_open_perm(&inode, mnt_id, flags, created) { return rv; }
     // Lease-break (Linux `break_lease` in `do_open`): a conflicting open signals
