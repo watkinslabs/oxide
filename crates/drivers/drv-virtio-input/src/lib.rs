@@ -442,6 +442,11 @@ mod tests {
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod devfs;
+// pci-boot's virtio-input probe calls these at the crate root; they live in the
+// devfs submodule. Re-export so `drv_virtio_input::{register,unregister}_node`
+// resolve (origin/main build fix).
+#[cfg(target_os = "oxide-kernel")]
+pub use devfs::{register_node, unregister_node};
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod drain;
