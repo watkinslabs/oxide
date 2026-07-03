@@ -49,8 +49,20 @@ impl drv::Driver for VirtioPciDrv {
             .into_iter()
             .filter(|child| virtio::virtio_child_has_parent(&child.bus, child.parent(), "pci", &dev.addr))
             .collect();
+        let mut bdfs: Vec<u32> = Vec::new();
         for child in children {
+            if let Some((_, parent_addr)) = child.parent() {
+                if let Some(parent_bdf) = parse_pci_addr(&parent_addr) {
+                    bdfs.push(bdf_word(parent_bdf));
+                }
+            }
             drv::device_del(&child);
+        }
+
+        bdfs.sort_unstable();
+        bdfs.dedup();
+        for bdf_word in bdfs {
+            unpublish_transport_mmio(bdf_word);
         }
     }
 
