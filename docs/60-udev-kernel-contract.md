@@ -161,6 +161,31 @@ SUBSYSTEM from this symlink target), plus the per-class attrs 71-*.rules match o
 `/sys/dev/char/<maj>:<min>` and `/sys/dev/block/<maj>:<min>` → device dir. libudev
 `udev_device_new_from_devnum` uses these. [R18]
 
+### 6.3a GROUNDED GAPS found 2026-07-03 (audit of the actual code)
+The uevent `DEVPATH` MUST resolve to a real `/sys` dir with a `uevent` file and
+a `subsystem` symlink, or udevd reads `/sys<DEVPATH>/uevent` → ENOENT → the
+device is NEVER processed. Concrete defects:
+- **BLOCK devpath points to a nonexistent /sys path.** `sysfs::bus::dev_root_canon`
+  maps `bus=="block"` via the `_ =>` arm to `"devices/platform"`, so a disk emits
+  `DEVPATH=/devices/platform/vda` — but no `/sys/devices/platform/vda` exists
+  (block.rs only builds `/sys/block/<name>`). udevd can't process ANY block
+  device → no `/dev/disk/by-{uuid,label,partuuid}`, no block tags. FIX: build a
+  `/sys/devices/virtual/block/<name>/` tree (uevent+dev+subsystem→block) and
+  point `/sys/block/<name>` + `/sys/class/block/<name>` at it; emit
+  `DEVPATH=/devices/virtual/block/<name>`.
+- **BLOCK uevent env missing `DEVTYPE=disk|partition`** (`dev_uevent_env` only
+  emits MAJOR/MINOR/DEVNAME/MODALIAS for non-pci). udev block rules key on DEVTYPE.
+- **BLOCK `/sys/block/<dev>/uevent` is RO (`RO_PERM`) with no `store`** → R12
+  coldplug write (`systemd-udev-trigger`) fails EACCES. Add `SysfsOps::store` that
+  re-emits + set the attr writable.
+- **`/sys/class/` has only drm/net/tty.** Missing class dirs udev rules reference:
+  block, input, backlight, leds, sound, hidraw, misc, graphics, pci_bus, drm_dp_aux.
+  Each device's subsystem symlink must target its `/sys/class/<subsys>`.
+- **`/sys/kernel/uevent_seqnum` absent** — legacy path; modern udevd tracks the
+  per-message SEQNUM so likely non-blocking, but Linux exposes it.
+
+Fix these as ONE device-model pass (not per-boot), then re-run §11 acceptance.
+
 ### 6.4 Per-class attrs (audit against the rules that gate the greeter)
 - drm/card*: enough for `71-seat.rules` (SUBSYSTEM+KERNEL match only → minimal).
 - input: `capabilities/*`, `name` (for `73-seat-late.rules`, libinput).
