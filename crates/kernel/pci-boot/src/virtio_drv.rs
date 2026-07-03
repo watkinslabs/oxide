@@ -436,6 +436,13 @@ impl drv::Driver for VirtioNetDrv {
             }
         }
     }
+
+    fn shutdown(&self, dev: &drv::Device) {
+        if let Some(bdf) = pci_parent_bdf(dev) {
+            let device_key = bdf_word(bdf);
+            let _ = drv_virtio_net::modern::shutdown_modern(device_key);
+        }
+    }
 }
 static VIRTIO_NET_DRV: VirtioNetDrv = VirtioNetDrv;
 
