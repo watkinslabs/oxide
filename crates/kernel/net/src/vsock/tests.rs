@@ -6,6 +6,16 @@
 use super::*;
 
 #[test]
+fn driver_reservation_is_not_live_until_publish() {
+    assert!(driver_reserve());
+    assert!(!driver_up());
+    assert_eq!(guest_cid(), 0);
+    assert!(!driver_reserve());
+    driver_cancel_reserved();
+    assert!(!driver_up());
+}
+
+#[test]
 fn hdr_roundtrip_all_fields() {
     let h = VsockHdr {
         src_cid: 3, dst_cid: 2,

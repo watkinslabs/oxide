@@ -25,7 +25,8 @@ pub static TABLE: VsockTable = VsockTable::new();
 
 /// Our guest CID, published by the driver at bring-up. 0 = no device.
 static GUEST_CID: AtomicU64 = AtomicU64::new(0);
-/// True once a virtio-vsock device installed its TX hook.
+/// True once a virtio-vsock driver has reserved the singleton protocol
+/// endpoint. The endpoint is usable only after TX_HOOK is published.
 static DRIVER_UP: AtomicBool = AtomicBool::new(false);
 
 /// TX hook: hand a fully-encoded header + payload to the driver, which
@@ -34,19 +35,38 @@ static DRIVER_UP: AtomicBool = AtomicBool::new(false);
 pub type TxFn = fn(&[u8]) -> bool;
 static TX_HOOK: AtomicU64 = AtomicU64::new(0);
 
-/// Driver bring-up entry: publish guest CID + install the TX hook. Rejects a
-/// second active transport so a later probe cannot overwrite the live protocol
-/// endpoint behind existing sockets.
+/// Reserve the singleton protocol endpoint before the transport allocates and
+/// pre-posts DMA state. Rejects a second active transport so a later probe
+/// cannot overwrite the live protocol endpoint behind existing sockets.
 /// # C: O(1)
-pub fn driver_install(guest_cid: u64, tx: TxFn) -> bool {
-    if DRIVER_UP
+pub fn driver_reserve() -> bool {
+    DRIVER_UP
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return false;
-    }
+        .is_ok()
+}
+
+/// Publish guest CID + install the TX hook after the transport context exists.
+/// # C: O(1)
+pub fn driver_publish_reserved(guest_cid: u64, tx: TxFn) {
     GUEST_CID.store(guest_cid, Ordering::Release);
     TX_HOOK.store(tx as usize as u64, Ordering::Release);
+}
+
+/// Cancel a reservation that failed before the endpoint became live.
+/// # C: O(1)
+pub fn driver_cancel_reserved() {
+    TX_HOOK.store(0, Ordering::Release);
+    GUEST_CID.store(0, Ordering::Release);
+    DRIVER_UP.store(false, Ordering::Release);
+}
+
+/// Driver bring-up entry: reserve and publish in one step.
+/// # C: O(1)
+pub fn driver_install(guest_cid: u64, tx: TxFn) -> bool {
+    if !driver_reserve() {
+        return false;
+    }
+    driver_publish_reserved(guest_cid, tx);
     true
 }
 
@@ -62,15 +82,15 @@ pub fn driver_uninstall() {
 /// Our guest CID (0 if no device). # C: O(1)
 pub fn guest_cid() -> u64 { GUEST_CID.load(Ordering::Acquire) }
 
-/// True iff a virtio-vsock device is installed. # C: O(1)
-pub fn driver_up() -> bool { DRIVER_UP.load(Ordering::Acquire) }
+/// True iff a virtio-vsock device is installed and usable. # C: O(1)
+pub fn driver_up() -> bool { TX_HOOK.load(Ordering::Acquire) != 0 }
 
 /// Emit one packet via the driver TX hook. False if no driver. # C: O(len)
 pub fn tx(hdr: &VsockHdr, payload: &[u8]) -> bool {
     let raw = TX_HOOK.load(Ordering::Acquire);
     if raw == 0 { return false; }
-    // SAFETY: TX_HOOK only ever stores a `TxFn` (fn(&[u8]) -> bool) via
-    // `driver_install`; the transmute reconstructs that exact fn pointer
+    // SAFETY: TX_HOOK only ever stores a `TxFn` (fn(&[u8]) -> bool) via the
+    // driver publish path; the transmute reconstructs that exact fn pointer
     // shape, matching the install-site type. No other writer exists.
     let f: TxFn = unsafe { core::mem::transmute(raw as usize) };
     let mut frame = Vec::with_capacity(VSOCK_HDR_LEN + payload.len());
