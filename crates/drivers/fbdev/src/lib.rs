@@ -236,15 +236,15 @@ fn lowest_free_fb_idx(fbs: &[FbDev]) -> u32 {
 /// # C: O(N + depth)
 fn publish_or_unwind(idx: u32) -> Option<u32> {
     #[cfg(target_os = "oxide-kernel")]
-    {
-        if !devfs::register_node(idx) {
-            let mut g = FBS.lock();
-            if let Some(pos) = g.iter().position(|f| f.idx == idx) {
-                g.remove(pos);
-            }
-            return None;
+    if !devfs::register_node(idx) {
+        let mut g = FBS.lock();
+        if let Some(pos) = g.iter().position(|f| f.idx == idx) {
+            g.remove(pos);
         }
+        return None;
     }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let _ = idx;
     Some(idx)
 }
 
