@@ -72,6 +72,7 @@ struct NetRuntime {
     device_key: u32,
     iface:      net::NetIfaceId,
     ip:         [u8; 4],
+    arp:        net::arp::ArpCache,
     model:      Arc<drv::Device>,
     name:       String,
 }
@@ -220,6 +221,7 @@ fn add_net_runtime(device_key: u32, name: String, iface: net::NetIfaceId) {
         device_key,
         iface,
         ip: [0, 0, 0, 0],
+        arp: net::arp::ArpCache::new(),
         model,
         name,
     });
@@ -443,7 +445,7 @@ pub fn poll_into_stack_for(device_key: u32, iface: net::NetIfaceId, our_ip: [u8;
             0x0806 => {
                 if f.len() < 14 + 28 { return; }
                 if let Ok(arp) = net::arp::ArpPkt::parse(&f[14..14 + 28]) {
-                    arp_cache().insert(arp.sender_ip, arp.sender_mac);
+                    arp_cache_insert_for(device_key, arp.sender_ip, arp.sender_mac);
                     if arp.opcode == net::arp::ARP_OP_REQUEST
                         && arp.target_ip.octets() == our_ip
                     {
@@ -470,7 +472,8 @@ pub fn poll_into_stack_for(device_key: u32, iface: net::NetIfaceId, our_ip: [u8;
                     src_ip.copy_from_slice(&f[14 + 12 .. 14 + 16]);
                     let mut src_mac = [0u8; 6];
                     src_mac.copy_from_slice(&f[6..12]);
-                    arp_cache().insert(
+                    arp_cache_insert_for(
+                        device_key,
                         net::Ipv4Addr::new(src_ip[0], src_ip[1], src_ip[2], src_ip[3]),
                         net::MacAddr(src_mac),
                     );
@@ -661,32 +664,29 @@ impl net::NetDev for VirtioNetDev {
     }
 }
 
-// -------- F59-10: global ARP cache ------------------------------------
+// -------- F59-10: per-interface ARP caches ----------------------------
 //
-// Lazily-initialised process-global `net::arp::ArpCache`. Every ARP
-// reply harvested by `boot_arp_probe` (and later, by the per-packet
-// RX path) gets inserted here so future code resolving 10.0.2.2
-// (or the configured gateway, when DHCP lands) doesn't need to
-// re-arp. v1 is one cache shared across all virtio-net devices —
-// per-iface caches arrive when we register virtio-net via NetDev.
+// ARP is neighbor state for a link, not a driver-global table. Each
+// registered virtio-net runtime owns its own cache so identical IPv4
+// neighbors on different L2 domains cannot collide.
 
-static ARP_CACHE: Spinlock<Option<&'static net::arp::ArpCache>, DriverLockClass> =
-    Spinlock::new(None);
+/// Insert/refresh an ARP entry owned by one virtio-net runtime.
+/// # C: O(N runtimes + log entries)
+fn arp_cache_insert_for(device_key: u32, ip: net::Ipv4Addr, mac: net::MacAddr) -> bool {
+    let runtimes = NET_RUNTIMES.lock();
+    let Some(runtime) = runtimes.iter().find(|runtime| runtime.device_key == device_key) else {
+        return false;
+    };
+    runtime.arp.insert(ip, mac);
+    true
+}
 
-/// Access the boot-time ARP cache, creating it on first call.
-/// Caller may insert/lookup against the returned reference.
-/// # C: O(1) amortised
-pub fn arp_cache() -> &'static net::arp::ArpCache {
-    let mut g = ARP_CACHE.lock();
-    if g.is_none() {
-        // SAFETY: ArpCache::new is const-style + heap-only via Vec
-        // inside; leaking a Box gives us a 'static reference that
-        // lives for the rest of the kernel's lifetime — fine for a
-        // process-global cache.
-        let boxed = alloc::boxed::Box::leak(alloc::boxed::Box::new(net::arp::ArpCache::new()));
-        *g = Some(boxed);
-    }
-    g.unwrap()
+/// Lookup an ARP entry in one virtio-net runtime's neighbor table.
+/// # C: O(N runtimes + log entries)
+fn arp_cache_lookup_for(device_key: u32, ip: net::Ipv4Addr) -> Option<net::MacAddr> {
+    let runtimes = NET_RUNTIMES.lock();
+    let runtime = runtimes.iter().find(|runtime| runtime.device_key == device_key)?;
+    runtime.arp.lookup(ip)
 }
 
 /// Snapshot of the registered modern device (None until init_modern).
@@ -831,7 +831,7 @@ fn resolve_next_hop_mac(
     };
     #[cfg(not(target_os = "oxide-kernel"))]
     let next_hop_ip = dst_ip;
-    if let Some(m) = arp_cache().lookup(next_hop_ip) {
+    if let Some(m) = arp_cache_lookup_for(device_key, next_hop_ip) {
         return Some(m);
     }
     // Cache miss — fire an ARP request so the next call resolves.
@@ -915,6 +915,8 @@ fn solicited_node_ethernet(ip: net::Ipv6Addr) -> net::MacAddr {
 #[cfg(test)]
 mod ndp_tests {
     use super::*;
+    use alloc::string::String;
+    use alloc::sync::Arc;
 
     fn state(bus: u8) -> ModernNetState {
         ModernNetState {
@@ -1008,6 +1010,45 @@ mod ndp_tests {
         remove_test_state(1);
         remove_test_state(2);
         assert!(modern_state().is_none());
+    }
+
+    fn insert_test_runtime(device_key: u32, iface_raw: u32, name: &str) {
+        NET_RUNTIMES.lock().push(NetRuntime {
+            device_key,
+            iface: net::NetIfaceId::from_raw(iface_raw),
+            ip: [0, 0, 0, 0],
+            arp: net::arp::ArpCache::new(),
+            model: Arc::new(drv::Device::new("net", String::from(name), 0x1AF4, 1, iface_raw)),
+            name: String::from(name),
+        });
+    }
+
+    fn remove_test_runtime(device_key: u32) {
+        let mut runtimes = NET_RUNTIMES.lock();
+        if let Some(pos) = runtimes.iter().position(|runtime| runtime.device_key == device_key) {
+            runtimes.remove(pos);
+        }
+    }
+
+    #[test]
+    fn arp_cache_is_scoped_by_runtime_device() {
+        remove_test_runtime(0x10);
+        remove_test_runtime(0x20);
+        insert_test_runtime(0x10, 10, "eth-test0");
+        insert_test_runtime(0x20, 20, "eth-test1");
+
+        let ip = net::Ipv4Addr::new(192, 0, 2, 1);
+        let mac0 = net::MacAddr([0x02, 0, 0, 0, 0, 0x10]);
+        let mac1 = net::MacAddr([0x02, 0, 0, 0, 0, 0x20]);
+        assert!(arp_cache_insert_for(0x10, ip, mac0));
+        assert!(arp_cache_insert_for(0x20, ip, mac1));
+
+        assert_eq!(arp_cache_lookup_for(0x10, ip), Some(mac0));
+        assert_eq!(arp_cache_lookup_for(0x20, ip), Some(mac1));
+        assert_eq!(arp_cache_lookup_for(0x30, ip), None);
+
+        remove_test_runtime(0x10);
+        remove_test_runtime(0x20);
     }
 
     #[test]
@@ -1208,8 +1249,13 @@ pub fn rx_poll<F: FnMut(&[u8])>(cb: F) -> usize {
 }
 
 /// ARP neighbor-cache GC for the timer driver (drops entries older than 60s).
-/// # C: O(N entries)
-fn arp_gc_timer(now_ns: u64) { arp_cache().gc(now_ns); }
+/// # C: O(N runtimes * entries)
+fn arp_gc_timer(now_ns: u64) {
+    let runtimes = NET_RUNTIMES.lock();
+    for runtime in runtimes.iter() {
+        runtime.arp.gc(now_ns);
+    }
+}
 
 /// Register this device driver's periodic timers (ARP GC).
 /// # C: O(1)

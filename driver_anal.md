@@ -72,8 +72,9 @@ test-pass claims.
   fbcon/fbdev/DRM/klog/tty scanout state before backing memory is released.
   Probe-failure unwind only removes scanout state for the failed probe's BDF.
 - Virtio-net owns netdev publication/removal and RX runtime
-  installation/removal: iface/IP bottom-half state, ARP-GC timer, and `NetRx`
-  handler are installed from the net driver path and removed after reset. The
+  installation/removal: iface/IP bottom-half state, per-runtime ARP neighbor
+  state, ARP-GC timer, and `NetRx` handler are installed from the net driver
+  path and removed after reset. The
   old boot-probe default IPv4 policy is gone; the RX path learns IPv4 state
   from normal address configuration hooks. Virtio-net install/remove is now
   keyed to the owning parent BDF, so a remove for another device cannot clear
@@ -209,8 +210,8 @@ test-pass claims.
   the owned endpoint. Virtio-snd card publication, ops, ALSA nodes, and PCM
   runtime are now split by card id/BDF; the remaining sound work is repeated
   bind/unbind/remove/readd proof. Virtio-net's old singleton
-  installed-device slot is gone, but its RX buffer model and shared ARP cache
-  still need the next networking cleanup pass.
+  installed-device slot is gone, but its RX buffer model still needs the next
+  networking cleanup pass.
 - Add explicit fault-injection coverage for probe failure after each allocation,
   mapping, registration, IRQ/MSI step, queue setup, and userspace publication.
 - Prove repeated bind/unbind/remove/readd loops under QEMU for PCI, virtio,
@@ -353,10 +354,11 @@ Several drivers use singleton global state:
 virtio-net modern is no longer a single installed device slot on
 `codex/driver-fixes-next`: transport state is stored in a BDF-keyed
 `MODERN_DEVS` table, net stack registration/model publication is stored in a
-BDF-keyed runtime table, TX/RX polling has keyed entry points, and the NetRx
-softirq walks registered runtimes. Remaining virtio-net cleanup is not the old
-singleton overwrite bug; it is the still-minimal per-device RX design
-(one boot-pinned RX buffer per transport) and the shared ARP cache.
+BDF-keyed runtime table, ARP neighbor caches are owned by each runtime, TX/RX
+polling has keyed entry points, and the NetRx softirq walks registered
+runtimes. Remaining virtio-net cleanup is not the old singleton overwrite bug;
+it is the still-minimal per-device RX design (one boot-pinned RX buffer per
+transport).
 
 Some subsystems are per-device already or closer to it:
 
