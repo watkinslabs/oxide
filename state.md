@@ -41,20 +41,31 @@ probe (`/usr/bin/plymouth` ENOENT — harmless), NOT the greeter.
 4. Therefore nothing opens `/dev/dri/card0`, seat0 stays non-graphical, gdm
    never launches the greeter.
 
-**Root of the break = virtio-gpu KMS / DRM-master is not functional.** logind
-opens the DRM device, does `DRM_IOCTL_SET_MASTER` + mode/resource ioctls; if
-those fail/aren't implemented, logind loops. Drivers exist but the KMS path
-isn't wired for logind's master handshake: `crates/drivers/drm/` (node.rs,
-modeset.rs, crtc.rs, dumb.rs), `crates/drivers/drv-virtio-gpu/`.
+**Root of the break = the seat-master uevent emission storms systemd BEFORE any
+DRM ioctl.** CORRECTED finding (traced this session): with a `[DRMIOCTL]` trace
+at `drm::node::handle_drm_ioctl` entry AND the drm `uevent` write re-emitting the
+netlink uevent, the storm boot shows **ZERO `[DRMIOCTL]`** — logind NEVER opens
+`/dev/dri/card0`. So the "Looping too fast" storm is NOT a failing
+SET_MASTER/GETRESOURCES; it is a systemd/udev event-handling feedback loop
+kicked off by the synthetic `drm` "add" uevent itself (likely systemd spins
+creating/re-evaluating a `dev-dri-card0.device` / `sys-devices-virtual-drm-*`
+unit whose sysfs backing it can't reconcile, or udevd re-triggers). The DRM
+ioctl surface (`drm/src/modeset.rs`: GETRESOURCES/GETCONNECTOR/SET_MASTER) looks
+complete and returns real card data — it's just never exercised yet.
 
-**Next steps:**
-1. Boot live-gnome with kmsg cmdline; trace `016_ioctl.rs` for the DRM ioctls
-   logind issues on `/dev/dri/card0` (SET_MASTER 0x641e, MODE_GETRESOURCES
-   0xc04064a0, MODE_GETCONNECTOR, etc.) — see which returns an error and why.
-2. Make virtio-gpu card0 satisfy logind's master handshake (GETRESOURCES →
-   ≥1 CRTC/connector/encoder, SET_MASTER ok). Then re-add the seat-master
-   uevent broadcast in `sysfs/src/drm.rs` `DrmUeventFileOps::write` (currently a
-   documented no-op) so udevd tags card0 → seat0 graphical → gdm greeter.
+**Next steps (revised):**
+1. Understand the uevent storm: with the emit re-added + kmsg, watch what
+   systemd unit/job repeats (grep the storm log for `.device`, `card0`, job
+   activity). Compare the exact env systemd expects from a real Linux drm "add"
+   uevent (SEQNUM, ACTION, DEVPATH walkable under /sys, MODALIAS, ID_PATH…) vs
+   what `netlink::emit_uevent_with_env(_, "/devices/virtual/drm/card0", "drm",
+   …)` produces. A minimal/malformed synthetic uevent that systemd can't map to
+   a stat-able /sys device makes PID1 loop.
+   Repro artifacts this session: emit in `sysfs/src/drm.rs::DrmUeventFileOps::write`
+   (currently the documented no-op); `[DRMIOCTL]` trace at `drm/src/node.rs:192`.
+2. Once the uevent is accepted without storming → udevd tags card0
+   `master-of-seat` → logind opens card0 → THEN the DRM ioctl handshake
+   (GETRESOURCES ≥1 crtc/connector, SET_MASTER) gets exercised; fix any gaps.
 3. Then chase gnome-shell/Xwayland launch on the graphical seat.
 
 ## Boot/diagnosis notes
@@ -75,6 +86,8 @@ modeset.rs, crtc.rs, dumb.rs), `crates/drivers/drv-virtio-gpu/`.
 - Ledger `metadata/index.md`: B next = 305.
 
 ## First task next session
-`git checkout main && git pull`. Trace logind's DRM ioctls on /dev/dri/card0
-(step 1 above), make virtio-gpu KMS satisfy the master handshake, re-enable the
-seat-master uevent, drive to a rendered gdm greeter (active `/goal`).
+`git checkout main && git pull`. Diagnose the synthetic-drm-uevent systemd storm
+(step 1 above) — that, not the DRM ioctls, is what currently blocks the graphical
+seat. Get udevd to accept the card0 "add" without PID1 looping, then follow the
+chain (tag → logind opens card0 → DRM master handshake → gnome-shell) to a
+rendered gdm greeter (active `/goal`).
