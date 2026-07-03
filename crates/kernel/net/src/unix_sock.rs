@@ -621,6 +621,13 @@ pub struct UnixListener {
     /// `accept_q`. Kernel-only — hosted tests don't run sched.
     #[cfg(target_os = "oxide-kernel")]
     pub accept_waiters: sched::live::WaitList,
+    /// The listener socket's epoll subscribers. `connect()` notifies these so an
+    /// `epoll_wait`-BLOCKED server (dbus-broker) wakes on a new connection. Without
+    /// it, only `accept_waiters` (blocking accept(2)) was woken; an epoll-driven
+    /// server stayed asleep until its poll timeout, so client connections idled
+    /// past dbus-broker's SASL-auth deadline and were closed ("Connection
+    /// terminated"), timing out every Type=dbus unit.
+    pub subs: Spinlock<Option<Weak<vfs::PollSubscribers>>, UnixLockClass>,
 }
 
 impl UnixListener {
@@ -631,7 +638,19 @@ impl UnixListener {
             accept_q: Spinlock::new(VecDeque::new()),
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
+            subs: Spinlock::new(None),
         })
+    }
+    /// Register the listener socket's epoll subscribers (called at listen()).
+    /// # C: O(1)
+    pub fn register_subs(&self, subs: &Arc<vfs::PollSubscribers>) {
+        *self.subs.lock() = Some(Arc::downgrade(subs));
+    }
+    /// Wake epoll waiters on a new pending connection. # C: O(N_waiters)
+    pub fn notify_subs(&self) {
+        if let Some(w) = self.subs.lock().as_ref() {
+            if let Some(s) = w.upgrade() { s.notify(); }
+        }
     }
 }
 
@@ -751,6 +770,8 @@ impl UnixRegistry {
         // F170: wake any blocking accept() parked on this listener.
         #[cfg(target_os = "oxide-kernel")]
         listener.accept_waiters.wake_all();
+        // Also wake an epoll_wait-blocked server (dbus-broker) so it accepts now.
+        listener.notify_subs();
         Some(pair)
     }
 }
