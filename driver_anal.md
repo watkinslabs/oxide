@@ -159,8 +159,10 @@ test-pass claims.
   records the owning card/CRTC identity plus the exact `/dev/fbN` it published.
   fbdev write/pan/wait/blank hooks are keyed by framebuffer index, so one
   framebuffer cannot steal or clear another framebuffer's display callbacks.
-  Full multi-GPU KMS still needs the global fbcon/klog/tty console hook model
-  to become per-console ownership instead of the remaining primary-only path.
+  fbcon unregister now removes the framebuffer flush softirq handler and clears
+  pending fbcon flush work. Full multi-GPU KMS still needs the global
+  fbcon/klog/tty console hook model to become per-console ownership instead of
+  the remaining primary-only path.
 - Block, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`

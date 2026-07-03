@@ -199,6 +199,7 @@ pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
 pub fn kernel_unregister() {
     READY.store(false, Ordering::Release);
     DIRTY.store(false, Ordering::Release);
+    let _ = softirq::clear_handler(softirq::Slot::FbconFlush);
     FLUSH_FN.store(core::ptr::null_mut(), Ordering::Release);
     crate::answerback::clear_sink();
     *VT_STATE.lock() = None;
