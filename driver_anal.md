@@ -3,10 +3,9 @@
 Date: 2026-07-03
 
 Scope: this ledger describes only the dirty worktree at
-`/home/nd/oxide/kernel-driver-fixes` on branch `codex/driver-fixes`.
-There is a separate worktree at `/home/nd/oxide/kernel` on `main`; do not read
-this document as a statement about `main` or any other branch until these
-changes are committed and merged.
+`/home/nd/oxide/kernel` on branch `main`.
+The scope note below is for this branch only; other worktrees must keep their
+own independent status notes while they contain diverging work.
 
 ## Current position
 
