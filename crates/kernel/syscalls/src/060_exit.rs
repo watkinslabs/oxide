@@ -47,7 +47,7 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
             #[cfg(all(target_arch = "x86_64", feature = "debug-atexit"))]
             if args.a0 == 127 { pmm::user_as::diag_verify_file_pages(); }
             task.exit_status.store(args.a0 as i32, Ordering::Release);
-            task.vfork_pending.store(false, Ordering::Release); // F156 vfork
+            sched::live::vfork_done(task); // F156 vfork: clear + wake parent
             // cgroup v2 (`26§4`): drop the exiting task from its
             // cgroup so cgroup.procs / cgroup.events `populated`
             // reflect reality — systemd keys service liveness on it.
