@@ -445,8 +445,11 @@ pub struct MountObjectInode {
     /// D51). Applied on the realized graft by `move_mount` via
     /// [`vfs::mount::mount_attr_to_mnt`] + [`vfs::mount::attach_sb_with_flags`],
     /// which stamps the mapped MNT_* option bits on the new mount before it goes
-    /// live (so a following `propagate_mount` peer-copy inherits them).
-    pub mnt_attrs: u64,
+    /// live (so a following `propagate_mount` peer-copy inherits them). ATOMIC so
+    /// a `mount_setattr(fd,"",AT_EMPTY_PATH,...)` on the still-DETACHED object
+    /// (systemd's fsmount→mount_setattr→move_mount sequence) can fold additional
+    /// MOUNT_ATTR_* bits in before the attach reads them.
+    pub mnt_attrs: AtomicU64,
     /// Some for an `open_tree` clone: the captured (fs, root) to bind at the
     /// target. None otherwise. (Legacy non-recursive path; superseded by
     /// `detached_tree` for the D24 recursive clone.)
@@ -473,20 +476,21 @@ impl Drop for MountObjectInode {
 impl MountObjectInode {
     /// `fsmount` LEGACY: materialise-by-fstype at attach time. # C: O(1)
     pub fn new(fstype: String, source: String, mnt_attrs: u64) -> InodeRef {
-        Self::build(Self { fstype, source, realized: None, mnt_attrs, clone_of: None,
-            detached_tree: Spinlock::new(None) })
+        Self::build(Self { fstype, source, realized: None, mnt_attrs: AtomicU64::new(mnt_attrs),
+            clone_of: None, detached_tree: Spinlock::new(None) })
     }
     /// `fsmount` CONVERTED: carry the already-realized (sb, root dentry). # C: O(1)
     pub fn new_realized(sb: Arc<vfs::SuperBlock>, root: Arc<Dentry>, fstype: String,
         source: String, mnt_attrs: u64) -> InodeRef {
-        Self::build(Self { fstype, source, realized: Some((sb, root)), mnt_attrs, clone_of: None,
+        Self::build(Self { fstype, source, realized: Some((sb, root)),
+            mnt_attrs: AtomicU64::new(mnt_attrs), clone_of: None,
             detached_tree: Spinlock::new(None) })
     }
     /// `open_tree(OPEN_TREE_CLONE)`: capture an existing mount's (fs, root).
     /// # C: O(1)
     pub fn new_clone(fs: Arc<dyn vfs::fs::FileSystem>, root: InodeRef) -> InodeRef {
         Self::build(Self { fstype: String::new(), source: String::new(),
-            realized: None, mnt_attrs: 0, clone_of: Some((fs, root)),
+            realized: None, mnt_attrs: AtomicU64::new(0), clone_of: Some((fs, root)),
             detached_tree: Spinlock::new(None) })
     }
     /// D24 Stage 1a `open_tree(OPEN_TREE_CLONE[, AT_RECURSIVE])`: carry a DETACHED
@@ -494,7 +498,7 @@ impl MountObjectInode {
     /// # C: O(1)
     pub fn new_clone_tree(tree: Vec<vfs::mount::CloneNode>) -> InodeRef {
         Self::build(Self { fstype: String::new(), source: String::new(),
-            realized: None, mnt_attrs: 0, clone_of: None,
+            realized: None, mnt_attrs: AtomicU64::new(0), clone_of: None,
             detached_tree: Spinlock::new(Some(tree)) })
     }
     /// Wrap the mount-object state into a concrete `vfs::Inode`. # C: O(1)
