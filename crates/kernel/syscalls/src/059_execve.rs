@@ -323,7 +323,7 @@ pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) 
     // F156: clear CLONE_VFORK rendezvous so the parent (suspended in
     // sys_clone) returns. Linux fires `mm_struct::vfork_done` at
     // exec time so the parent stops sharing the now-replaced mm.
-    cur.vfork_pending.store(false, core::sync::atomic::Ordering::Release);
+    sched::live::vfork_done(cur); // clear + wake the parked vfork parent
 
     // 4. Build the SysV initial stack (argc/argv/envp/auxv) per
     //    docs/31§4 step 5. v1 passes empty argv/envp; auxv carries
@@ -624,7 +624,7 @@ pub(crate) fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u
     // F156: clear CLONE_VFORK rendezvous so the parent (suspended in
     // sys_clone) returns. Linux fires `mm_struct::vfork_done` at
     // exec time so the parent stops sharing the now-replaced mm.
-    cur.vfork_pending.store(false, core::sync::atomic::Ordering::Release);
+    sched::live::vfork_done(cur); // clear + wake the parked vfork parent
 
     // F152-2: Linux execve resets TPIDR_EL0 = 0; user crt1 calls
     // PR_SET_TLS / writes TPIDR_EL0 directly (EL0-writable on
