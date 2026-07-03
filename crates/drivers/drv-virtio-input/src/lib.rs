@@ -304,15 +304,6 @@ pub unsafe fn install_device(bdf: u32, cfg_va: u64) -> Option<u32> {
         dev.is_pointer = (dev.ev_bits[(EV_REL / 8) as usize] & (1 << (EV_REL % 8))) != 0
             || (dev.ev_bits[(EV_ABS / 8) as usize] & (1 << (EV_ABS % 8))) != 0;
     }
-    #[cfg(target_os = "oxide-kernel")]
-    {
-        install(dev);
-        if !devfs::register_node(evdev_id) {
-            let _ = remove_device(bdf);
-            return None;
-        }
-    }
-    #[cfg(not(target_os = "oxide-kernel"))]
     install(dev);
     Some(evdev_id)
 }
@@ -326,8 +317,6 @@ pub fn remove_device(bdf: u32) -> Option<u32> {
         let idx = g.iter().position(|d| d.bdf == bdf)?;
         g.remove(idx).evdev_id
     };
-    #[cfg(target_os = "oxide-kernel")]
-    devfs::unregister_node(evdev_id);
     Some(evdev_id)
 }
 

@@ -226,9 +226,15 @@ impl drv::Driver for VirtioInputDrv {
                 return Err(drv::Error::ProbeFailed);
             }
         };
+        if !drv_virtio_input::register_node(evdev_id) {
+            let _ = drv_virtio_input::remove_device(bdf_word);
+            release_q0_after_failed_probe(&mut p);
+            return Err(drv::Error::ProbeFailed);
+        }
         let resources = p.resources(&[p.q0_resource()]);
         let installed = drv_virtio_input::drain::install_eventq(evdev_id, resources);
         if installed.is_err() {
+            let _ = drv_virtio_input::unregister_node(evdev_id);
             let _ = drv_virtio_input::remove_device(bdf_word);
             release_q0_after_failed_probe(&mut p);
             return Err(drv::Error::ProbeFailed);
@@ -247,6 +253,7 @@ impl drv::Driver for VirtioInputDrv {
         let bdf_word = bdf_word(bdf);
         if let Some(evdev_id) = drv_virtio_input::evdev_id_for_bdf(bdf_word) {
             let _ = drv_virtio_input::drain::uninstall_eventq(evdev_id);
+            let _ = drv_virtio_input::unregister_node(evdev_id);
             let _ = drv_virtio_input::remove_device(bdf_word);
         }
         unpublish_transport_mmio(bdf_word);
