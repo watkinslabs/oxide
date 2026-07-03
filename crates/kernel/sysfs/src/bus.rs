@@ -78,6 +78,11 @@ fn dev_uevent_env(dev: &drv::Device) -> Vec<String> {
     if let Some(name) = dev.devname.as_ref() {
         env.push(alloc::format!("DEVNAME={}", name));
     }
+    // Block disks: udev block rules key on DEVTYPE (60§6.3a). Whole-disk nodes
+    // are DEVTYPE=disk (partitions would be =partition; v1 has no partitions).
+    if dev.bus == "block" {
+        env.push(String::from("DEVTYPE=disk"));
+    }
     env.push(alloc::format!("MODALIAS={}", modalias(dev)));
     if let Some(drvname) = dev.bound() {
         env.push(alloc::format!("DRIVER={}", drvname));
@@ -286,6 +291,10 @@ fn dev_root_canon(bus: &str) -> &'static str {
         "pci" => "devices/pci0000:00",
         "virtio" => "devices/virtio",
         "platform" => "devices/platform",
+        // Block disks live under /sys/devices/virtual/block/<name> (60§6.3a):
+        // the uevent DEVPATH MUST resolve to a real /sys dir or udevd reads
+        // /sys<DEVPATH>/uevent → ENOENT and never processes the disk.
+        "block" => "devices/virtual/block",
         _ => "devices/platform",
     }
 }
