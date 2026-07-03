@@ -270,6 +270,11 @@ impl drv::Driver for VirtioGpuDrv {
         let _ = drv_virtio_gpu::post_init::uninstall_scanout(bdf_word);
         unpublish_transport_mmio(bdf_word);
     }
+
+    fn shutdown(&self, dev: &drv::Device) {
+        let Some(bdf) = pci_parent_bdf(dev) else { return };
+        let _ = drv_virtio_gpu::shutdown(bdf_word(bdf));
+    }
 }
 static VIRTIO_GPU_DRV: VirtioGpuDrv = VirtioGpuDrv;
 
