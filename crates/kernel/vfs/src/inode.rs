@@ -103,8 +103,13 @@ pub struct Inode {
     /// Backend-private state (Linux `i_private` / the old `as_any` target).
     i_private: Arc<dyn Any + Send + Sync>,
     /// F181 per-inode epoll subscriber list for targeted wakes (`None` = global
-    /// broadcast).
-    poll_subs: Option<PollSubscribers>,
+    /// broadcast). Held as `Arc` so a backend (e.g. an AF_UNIX/TCP socket) can
+    /// SHARE the SAME subscriber list between the inode (what epoll_ctl subscribes
+    /// to) and its own event sources (what the write/recv paths notify) — without
+    /// it, `inode.poll_subscribers()` was a distinct object from the socket's own
+    /// `poll_subs`, so a `notify()` on a socket write never reached an
+    /// epoll_wait-blocked reader (dbus-broker's post-AUTH read stalled).
+    poll_subs: Option<Arc<PollSubscribers>>,
     /// memfd seal-store carrier (Linux `SHMEM_I(inode)->seals`). `Some` only for
     /// a sealable memfd; points at the per-fs inode-info (the same object that
     /// backs `i_private`), so the seal WORD lives in the backend, not here.
@@ -215,7 +220,7 @@ impl Inode {
     pub fn private<T: Any + Send + Sync>(&self) -> Option<&T> { self.i_private.downcast_ref::<T>() }
 
     /// F181 per-inode epoll subscribers (`None` = global broadcast). # C: O(1)
-    pub fn poll_subscribers(&self) -> Option<&PollSubscribers> { self.poll_subs.as_ref() }
+    pub fn poll_subscribers(&self) -> Option<&PollSubscribers> { self.poll_subs.as_deref() }
 
     /// memfd seal-store carrier (`Some` only for a sealable memfd) — the per-fs
     /// inode-info that owns the seal word. # C: O(1)
@@ -549,7 +554,7 @@ pub struct InodeBuilder {
     version: u64,
     mapping: Option<Arc<dyn AddressSpaceOps>>,
     private: Arc<dyn Any + Send + Sync>,
-    poll_subs: Option<PollSubscribers>,
+    poll_subs: Option<Arc<PollSubscribers>>,
     seal_carrier: Option<Arc<dyn SealCarrier>>,
     link: Option<Box<[u8]>>,
     xattrs: Option<crate::xattr::SimpleXattrs>,
@@ -596,7 +601,11 @@ impl InodeBuilder {
     /// Attach backend-private state (`i_private`). # C: O(1)
     pub fn private(mut self, p: Arc<dyn Any + Send + Sync>) -> Self { self.private = p; self }
     /// Attach a per-inode epoll subscriber list. # C: O(1)
-    pub fn poll_subs(mut self, p: PollSubscribers) -> Self { self.poll_subs = Some(p); self }
+    pub fn poll_subs(mut self, p: PollSubscribers) -> Self { self.poll_subs = Some(Arc::new(p)); self }
+    /// As [`Self::poll_subs`] but SHARES an existing `Arc<PollSubscribers>` so the
+    /// inode and a backend event source (socket) notify/subscribe the SAME list.
+    /// # C: O(1)
+    pub fn poll_subs_arc(mut self, p: Arc<PollSubscribers>) -> Self { self.poll_subs = Some(p); self }
     /// Enable memfd sealing by attaching the backend `SealCarrier` (the per-fs
     /// inode-info that owns the seal word, e.g. tmpfs `TmpfsFileData`). The seal
     /// store lives in the backend, not on `struct Inode`. # C: O(1)
