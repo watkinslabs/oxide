@@ -199,6 +199,13 @@ pub struct NetlinkSocket {
     pub groups:    AtomicU32,
     /// FIFO of pending reply buffers, each already nlmsg-aligned.
     pub rx_queue:  Spinlock<VecDeque<Vec<u8>>, SockLockClass>,
+    /// Per-fd epoll/poll subscribers (shared into the socket's inode via
+    /// `make_netlink_socket_inode`'s `poll_subs_arc`). `enqueue` calls
+    /// `notify()` so a task parked in `epoll_wait`/`ppoll` on this netlink fd
+    /// wakes when a datagram (uevent, rtnetlink reply) arrives. Without this a
+    /// uevent delivered to systemd-udevd's monitor socket sat in `rx_queue`
+    /// while udevd slept forever — no coldplug, no /run/udev/data, no seat.
+    pub poll_subs: alloc::sync::Arc<vfs::PollSubscribers>,
 }
 
 /// Live `NETLINK_KOBJECT_UEVENT` subscribers (udev/systemd-udevd). Weak so
@@ -268,24 +275,30 @@ pub fn emit_uevent_with_env(action: &str, devpath: &str, subsystem: &str, extra:
     n
 }
 
-/// Multicast a userspace-originated cooked uevent, normally the libudev
-/// message that systemd-udevd sends after it has applied rules to a raw
-/// kernel uevent. These buffers are not nlmsghdr-framed; they carry the
-/// `libudev\0` cooked-device payload expected by sd-device monitors.
-///
-/// Linux udev clients subscribe to the UDEV group (bit 1 in
-/// sockaddr_nl.nl_groups). Raw kernel uevents still use
-/// [`emit_uevent_with_env`] and are delivered only to group 1.
+/// Re-broadcast a COOKED libudev uevent that a userspace daemon (systemd-udevd)
+/// sent on its `NETLINK_KOBJECT_UEVENT` socket to the monitor clients
+/// (systemd PID1 / logind). This is the userspace→userspace multicast half of
+/// the uevent path: the kernel emits RAW events to group 1 (udevd); udevd
+/// applies rules and re-broadcasts the COOKED message (with the "libudev"
+/// magic header) to a monitor group; that cooked message must reach the monitor
+/// subscribers here. Deliver to every uevent listener whose group mask
+/// intersects `dest_groups`, PLUS group-0 monitors (systemd's sd-device monitor
+/// binds `nl_groups=0`), EXCEPT the sender itself and EXCEPT group-1-only
+/// sockets (udevd's raw receivers — they must not get the cooked echo).
+/// Returns the number of monitors reached.
 /// # C: O(N_listeners)
-pub fn multicast_cooked_uevent(msg: &[u8], dest_groups: u32, sender_port: u32) -> usize {
+pub fn rebroadcast_cooked_uevent(msg: &[u8], dest_groups: u32, sender: &NetlinkSocket) -> usize {
     let mut g = UEVENT_LISTENERS.lock();
     g.retain(|w| w.strong_count() > 0);
     let mut n = 0;
     for w in g.iter() {
         if let Some(s) = w.upgrade() {
-            if s.port_id.load(Ordering::Acquire) == sender_port { continue; }
-            let groups = s.groups.load(Ordering::Acquire);
-            if dest_groups == 0 || (groups & dest_groups) == 0 { continue; }
+            if core::ptr::eq(alloc::sync::Arc::as_ptr(&s), sender as *const NetlinkSocket) { continue; }
+            let grp = s.groups.load(Ordering::Acquire);
+            // Skip udevd's raw group-1 receivers; deliver to cooked monitors
+            // (matching dest group, or the group-0 monitors systemd uses).
+            if (grp & 1) != 0 { continue; }
+            if grp != 0 && (grp & dest_groups) == 0 { continue; }
             s.enqueue(msg.to_vec());
             n += 1;
         }
@@ -339,6 +352,7 @@ impl NetlinkSocket {
             port_id:  AtomicU32::new(alloc_port_id()),
             groups:   AtomicU32::new(0),
             rx_queue: Spinlock::new(VecDeque::new()),
+            poll_subs: alloc::sync::Arc::new(vfs::PollSubscribers::new()),
         }
     }
 
@@ -360,6 +374,11 @@ impl NetlinkSocket {
     /// # C: O(1) under rx_queue.lock()
     pub fn enqueue(&self, msg: Vec<u8>) {
         self.rx_queue.lock().push_back(msg);
+        // Wake any epoll/ppoll waiter on this fd (Linux `sk_data_ready` →
+        // `wake_up_interruptible` on the netlink socket's sleep queue). A queued
+        // datagram is useless if the consumer (systemd-udevd's sd-event loop)
+        // never wakes to read it.
+        self.poll_subs.notify();
     }
 
     /// Pop the head reply buffer if present.
@@ -494,8 +513,11 @@ impl NetlinkSocket {
     pub fn write_to_groups(&self, buf: &[u8], dest_groups: u32) -> vfs::KResult<usize> {
         let consumed = buf.len();
         if self.protocol == proto::NETLINK_KOBJECT_UEVENT {
-            multicast_cooked_uevent(buf, dest_groups, self.port_id.load(Ordering::Acquire));
-            return Ok(consumed);
+            let is_cooked = buf.len() >= 8 && &buf[..8] == b"libudev\0";
+            if is_cooked || dest_groups != 0 {
+                rebroadcast_cooked_uevent(buf, dest_groups, self);
+                return Ok(consumed);
+            }
         }
         let mut off = 0;
         while off + Nlmsghdr::SIZE <= buf.len() {
@@ -555,9 +577,16 @@ pub fn make_netlink_socket_inode(sock: alloc::sync::Arc<NetlinkSocket>) -> vfs::
     // socket — systemd-udevd's listen_fds() rejects the inherited
     // NETLINK_KOBJECT_UEVENT fd otherwise (-EINVAL). Linux netlink fds
     // are S_IFSOCK.
+    // Share the socket's PollSubscribers into the inode so `epoll_ctl(ADD)`
+    // subscribes to the SAME object `enqueue().notify()` wakes (mirrors the
+    // AF_INET/AF_UNIX poll_subs_arc wiring). Without this the inode's default
+    // subscribers were a distinct object and a uevent enqueue never reached the
+    // epoll (udevd slept through every device event).
+    let subs = sock.poll_subs.clone();
     vfs::InodeBuilder::new(ino, vfs::mk_mode(vfs::FileType::Socket, 0o600),
         vfs::default_inode_ops(), alloc::sync::Arc::new(NetlinkFileOps))
         .private(sock)
+        .poll_subs_arc(subs)
         .build()
 }
 
@@ -683,12 +712,11 @@ mod tests {
         register_uevent_listener(&udev_monitor);
 
         let msg = b"libudev\0ACTION=add\0SUBSYSTEM=drm\0";
-        let n = multicast_cooked_uevent(
-            msg, 2, sender.port_id.load(Ordering::Acquire));
-        assert_eq!(n, 1);
+        let n = rebroadcast_cooked_uevent(msg, 2, &sender);
+        assert_eq!(n, 2);
         assert!(sender.dequeue().is_none());
         assert!(kernel_listener.dequeue().is_none());
-        assert!(group0_monitor.dequeue().is_none());
+        assert_eq!(group0_monitor.dequeue().as_deref(), Some(&msg[..]));
         assert_eq!(udev_monitor.dequeue().as_deref(), Some(&msg[..]));
     }
 }
