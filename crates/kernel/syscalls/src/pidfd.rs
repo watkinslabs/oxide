@@ -31,6 +31,18 @@ struct PidfdFileOps;
 impl FileOps for PidfdFileOps {
     fn read(&self, _inode: &Inode, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
     fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+    /// Linux `pidfd_poll`: a pidfd reports `EPOLLIN` ONLY once the target
+    /// thread-group has EXITED (`thread_group_exited`); a live process polls as
+    /// not-ready. The default `FileOps::poll` returns `POLL_IN|POLL_OUT`
+    /// (always ready), which made every sd-event child source (dbus-broker-launch
+    /// watching dbus-broker, and each systemd service) see its pidfd perpetually
+    /// readable → dispatch the child handler → `waitid(WNOWAIT)` shows the child
+    /// still alive → never reap → busy-spin. Gate on the target's Zombie state.
+    /// # C: O(1)
+    fn poll(&self, inode: &Inode) -> u32 {
+        let target = match inode.private::<PidfdInode>() { Some(p) => &p.target, None => return vfs::POLL_IN };
+        if target.state() == sched::task::TaskState::Zombie { vfs::POLL_IN } else { 0 }
+    }
     /// Linux `pidfd_show_fdinfo`: append `Pid:`/`NSpid:` so `/proc/<pid>/
     /// fdinfo/<n>` carries the target pid. `Pid:` = the target's vpid in the
     /// reader's pidns (init-ns global pid here); a reaped target shows -1 (and
