@@ -1,23 +1,36 @@
 # state.md — session handoff
 
 ## Headline
-**GNOME boot campaign: the EXIT_NAMESPACE(226) cascade that blocked every sandboxed systemd service is ELIMINATED.** Two fixes merged to `origin/main` (PR #2311, #2312). live-gnome boot now reaches getty.target, gdm launches, graphical.target is queued. Both arches smoke to login. **Next blocker: gdm launches but exits (code 265/271) — graphical.target not yet reached.**
+**GNOME bring-up: the EXIT_NAMESPACE(226) cascade AND the D-Bus outage are fixed** — three fixes merged to `origin/main` (PR #2311, #2312, #2313). Boot progressed from total-failure to reaching basic/sysinit/sockets/timers/getty/local-fs targets with the system bus up. **Current blocker: `PrivateUsers=yes` services (upower, …) fail EXIT_USER(217) in systemd's `setup_private_users`, and upower's `Restart=on-failure` retry loop delays multi-user.target → graphical.target → gdm never starts.**
 
-## What got done (merged, boot-verified)
-- **PR #2311** `fix(mount): mount_setattr AT_EMPTY_PATH + mount-aware bind target` (SHA f6748b62). Killed the *deterministic* domainname `-EBUSY` (systemd `bind_remount_recursive`'s 32-retry cap). Six root causes, all Linux divergences: (1) `mount_setattr(fd,"",AT_EMPTY_PATH,{RDONLY})` on a detached fsmount object ignored → now folds into atomic `MountObjectInode.mnt_attrs` / stamps the detached clone tree; (2) attached `mount_setattr` ignored dirfd+AT_EMPTY_PATH → `resolve_at_lookup`; (3) support-probe returned EFAULT not EINVAL (validation reorder); (4) `canonical_mount_path` mount-UNAWARE (`dentry.absolute_path()` drops bind prefix on shared dentries) → mount-aware reconstruction; (5) `attach`/commit_tree rendered via `abs_string` → new `rendered_path_for()` walks the mount tree; (6) bind on a SHARED target dentry hashed under wrong parent → new `register_bind_under()` attaches under the resolved target mount (Linux `do_add_mount` keys on `struct path`).
-- **PR #2312** `fix(open): O_PATH must not invoke the device driver open` (Linux FMODE_PATH). `on_open()` was called unconditionally in `002_open.rs`/`257_openat.rs`; gated on `!O_PATH`. Fixed the residual *concurrency* 226: ProtectKernelLogs overmounts /dev/kmsg with the inaccessible `devt 0:0` char; systemd `mount_entry_chase` O_PATH-opens every target → `lookup_chrdev(0:0)` ENXIO → 226. Now 0/3 boots.
+## Merged this session (all boot-verified, both arches smoke to login)
+- **#2311** `mount_setattr AT_EMPTY_PATH + mount-aware bind target` — killed the deterministic domainname `-EBUSY` (systemd `bind_remount_recursive` 32-retry cap). 6 mount-subsystem root causes.
+- **#2312** `O_PATH must not invoke the device driver open` (Linux FMODE_PATH) — killed the residual concurrency 226 (ProtectKernelLogs' inaccessible devt-0 char over /dev/kmsg, O_PATH-chased → `lookup_chrdev` ENXIO). 226 → 0/3 boots.
+- **#2313** `socketpair(AF_UNIX) must report SO_DOMAIN=AF_UNIX` — dbus-broker rejected its controller fd (getsockopt SO_DOMAIN was AF_INET) → system bus down → every dbus service timed out. Now dbus-broker starts.
 
-## Verified
-226 = 0 across 3 sequential live-gnome boots (was 13–105). `make smoke-x86` login 28s, `make smoke-arm` login 14s. Both arches build release. vfs hosted tests green.
+## Current blocker — EXIT_USER(217), TWO distinct causes (next session starts here)
+Many services exit `217/USER` (upower ~41×/boot via Restart loop). The kernel `[EXIT]` recent-syscall ring shows TWO different failing paths:
 
-## Open / next blocker: gdm
-gdm (`/usr/bin/gdm`) launches during graphical.target startup but the fork-child exits (kernel `[EXIT]` trace: `exe=/usr/bin/gdm code=265` and `code=271`). graphical.target queued, not reached. Investigate: boot live-gnome, capture gdm's `[EXIT]` recent-syscall ring + why it exits. gdm needs: DRM (/dev/dri/card0 via virtio-gpu), Xorg/wayland, logind seat0, dbus. Likely a missing device/DRM/KMS path or a gdm dependency. Method that worked this session: kernel klog `[TAG]` traces at the exact failing syscall/return, correlate counts 1:1 with the failure, disprove-don't-hack.
+**Cause A — `setup_private_users` (PrivateUsers=yes; upower, exec-invoke.c:4982).** Ring: fork `(sd-userns)`, `unshare(CLONE_NEWUSER)`. ALL its direct syscalls VERIFIED to SUCCEED: unshare rv=0; child opens `/proc/<ppid>/uid_map`,`gid_map` rv=3; child writes maps `"65534 65534 1\n"` rv=14. So NOT a failing syscall.
+- **DISPROVEN this session:** I hypothesized the throwaway per-open `/proc/<pid>/{uid_map,gid_map,setgroups}` inodes (readback returns default) and implemented persistent per-(tid,field) storage — it did NOT reduce 217 (still 50). Reverted. So it is not a uid_map readback.
+- **Not yet checked:** the `(sd-userns)` child's EXIT STATUS (parent `wait_for_terminate_and_check`); eventfd sync between parent/child; whether the parent's post-unshare state (caps/uid in the new userns — our `unshare(CLONE_NEWUSER)` in `272_unshare.rs` only allocates a ns id, does not remap uid/caps) makes a later step fail.
 
-## Boot / diagnosis notes (this session)
-- **Diagnostic cmdline** lives in `../oxide-images/imagectl/src/main.rs` line ~963 (GRUB menuentry, NOT git-tracked). Default `quiet`. For systemd errors on serial without journald: `systemd.log_target=kmsg systemd.journald.forward_to_console=1` (kmsg is SLOW → serializes the race; can hide concurrency bugs). `systemd.log_target=console` avoids /dev/kmsg but systemd child errors still may not reach serial. **Restore to `quiet` when done.**
-- Boot loop: `cd ../oxide-images && make kernel ARCH=x86_64 && make boot PROFILE=live-gnome ARCH=x86_64 && bash oneboot.sh output/x.log <secs>`. `make kernel` = xtask kernel + xtask artifacts (real). A real boot is >2000 lines; ~1400 or 8 lines = GRUB-partial, re-run.
-- Kernel `[EXIT]` watchdog prints `exe=` + `code=` + a recent-syscall ring (newest first) for every process exit — the ring's last non-zero-return syscall is the smoking gun. `code=226` = systemd EXIT_NAMESPACE.
-- Bash sandbox can't kill qemu; use `pkill -9 -f qemu-system-aarch64` with `dangerouslyDisableSandbox: true`. A stale qemu blocks the next boot (port/resource) → "qemu-arm Error 1".
+**Cause B — NSS/userdb varlink lookup (get_fixed_user for `User=` services, exec-invoke.c:4503).** Ring: `socket(AF_UNIX)`→3, `connect`→0, setsockopt/getsockopt, `sendmsg`→366 (all succeed), then close+exit 217. The request is SENT but the RESPONSE fails/empty → getpwnam returns error. This is nss-systemd talking to the userdb varlink socket (`/run/systemd/userdb/io.systemd.Multiplexer`); systemd-userdbd is socket-activated but may not be answering (check if userdbd itself starts). `nsswitch.conf`: `passwd: files systemd`, `group: files [SUCCESS=merge] systemd` — nss-systemd is consulted for every lookup.
+
+**Approach that FAILED to get the exact error:** systemd executor errors go to the journal via a mechanism not capturable through write(fd2)/writev(fd2)/sendmsg(journal) — all returned nothing useful. Use the `[EXIT]` ring + exec-invoke.c cross-ref. To advance: (a) trace recvmsg/read on the userdb socket to see the response for Cause B; (b) trace the `(sd-userns)` child exit for Cause A; or (c) find a way to surface the executor's `log_exec_error_errno` text (maybe it uses a sealed memfd + SCM_RIGHTS to journald).
+
+## Also seen (lower priority, may clear once userns fixed)
+- `accounts-daemon`: `Failed at step STATE_DIRECTORY ... Bad file descriptor` (intermittent) — EBADF in state-dir setup.
+- `/sys/fs/cgroup/system.slice/<svc>/{cpu.stat,memory.peak,memory.swap.peak,cgroup.events,memory.zswap.writeback}` ENOENT — missing cgroup accounting files (systemd tolerates, but worth adding).
+- os-release read EBADF, utmp write EIO (pre-existing, noted earlier).
+
+## Boot/diagnosis notes
+- **Diagnostic cmdline**: `../oxide-images/imagectl/src/main.rs` line ~963 GRUB menuentry (NOT git-tracked). Default `quiet` (restored). For systemd errors on serial: `systemd.log_target=kmsg systemd.journald.forward_to_console=1` (now reliable after #2312). NOTE: the systemd EXECUTOR's detailed "Failed at step X" errors do NOT reach kmsg/stderr/journal-sendmsg in a capturable way — I tried write(fd2)/writev(fd2)/sendmsg(journal) and all failed; use the kernel `[EXIT]` recent-syscall ring + `exec-invoke.c` cross-reference instead.
+- Boot loop: `cd ../oxide-images && make kernel ARCH=x86_64 && make boot PROFILE=live-gnome ARCH=x86_64 && bash oneboot.sh output/x.log <secs>`. Real boot >2000 lines; ~1400/8 = GRUB-partial, re-run.
+- Kernel `[EXIT]` watchdog: `exe=` + `code=`(the raw `exit_group` arg; 217=EXIT_USER,226=EXIT_NAMESPACE,219=EXIT_GROUP) + recent-syscall ring (newest first). x86 nr map: 257=openat, 46=sendmsg, 272=unshare, 20=writev, 1=write.
+- systemd 257 sources: `gh api repos/systemd/systemd/contents/src/core/exec-invoke.c?ref=v257 --jq .content | base64 -d`. dbus-broker: `repos/bus1/dbus-broker`.
+- Bash sandbox can't kill qemu; `pkill -9 -f qemu-system-aarch64` with `dangerouslyDisableSandbox: true`. Stale qemu blocks next boot.
+- Ledger `metadata/index.md`: B next = 300 (unused branch B300 was deleted). Use B300 for the userns fix.
 
 ## First task next session
-`git checkout main && git pull`. Boot live-gnome (quiet), find gdm's `[EXIT]` block + recent-syscall ring, identify the failing op (DRM/dbus/seat/wayland), fix to match Linux. Keep going through the graphical-target dependency chain until GNOME runs (active `/goal`: fix all errors preventing gnome from booting).
+`git checkout main && git pull`. Implement persistent per-task `/proc/<pid>/{uid_map,gid_map,setgroups}` (see analysis above), boot live-gnome, verify upower `217/USER`→0 and multi-user/gdm progress. Keep going down the graphical-target dependency chain until GNOME runs (active `/goal`).
