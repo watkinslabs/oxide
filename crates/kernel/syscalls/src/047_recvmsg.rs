@@ -24,7 +24,15 @@ pub fn sys_recvmsg(args: &SyscallArgs) -> i64 {
     let sock = socket_from_fd(fd);
     if let Some(s) = &sock {
         if matches!(*s.kind.lock(), SockKind::UnixDgram(_)) { return net::unix_cmsg::recvmsg_unix_dgram(s, msgp); }
-        if matches!(*s.kind.lock(), SockKind::Unix(_, _))   { return crate::cmsg_parse::recvmsg_unix_stream(s, msgp); }
+        if matches!(*s.kind.lock(), SockKind::Unix(_, _))   {
+            // MSG_DONTWAIT (0x40) or O_NONBLOCK on the fd → non-blocking recvmsg:
+            // return EAGAIN on an empty ring instead of spinning. dbus-broker
+            // drains edge-triggered epoll fds until EAGAIN; a spinning recvmsg
+            // never yields EAGAIN, stalling its read loop → it tears the
+            // connection down ("Connection terminated" on systemd's AddMatch).
+            let nonblock = (args.a2 & 0x40) != 0 || crate::net_common::file_is_nonblock(fd);
+            return crate::cmsg_parse::recvmsg_unix_stream(s, msgp, nonblock);
+        }
         // SOCK_DGRAM/SOCK_SEQPACKET socketpair: deliver SCM_CREDENTIALS
         // (systemd handoff-timestamp pair). Generic path below dropped creds.
         if matches!(*s.kind.lock(), SockKind::UnixMsgPair(_, _)) { return crate::cmsg_parse::recvmsg_unix_msgpair(s, fd, msgp, args); }

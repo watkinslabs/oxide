@@ -213,7 +213,7 @@ pub fn sendmsg_unix_dgram_with_fds(
 /// bytes actually written; MSG_CTRUNC bit on msg_flags when the cmsg
 /// buffer was too small.
 /// # C: O(iov + payload + nfds)
-pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64) -> i64 {
+pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64, nonblock: bool) -> i64 {
     // SAFETY: msgp range validated by caller (sys_recvmsg).
     let (iov, iovlen, control, controllen) = unsafe {
         let iov       = core::ptr::read_volatile((msgp + 16) as *const u64);
@@ -262,6 +262,10 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64) -> i64 {
                 } else { false }
             };
             if eof { break 'iovloop; }
+            // Non-blocking (O_NONBLOCK / MSG_DONTWAIT): empty ring, not EOF →
+            // EAGAIN. Required so edge-triggered epoll readers (dbus-broker)
+            // terminate their drain loop instead of us spinning here.
+            if nonblock { return -(Errno::Eagain.as_i32() as i64); }
             // SAFETY: process ctx; runqueue installed; tick_yield reschedules.
             unsafe { sched::live::tick_yield(); }
         }
