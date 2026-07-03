@@ -92,6 +92,9 @@ impl drv::Driver for VirtioPciDrv {
         }).collect();
 
         let mut bdfs: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+        if let Some(parent_bdf) = parse_pci_addr(&dev.addr) {
+            bdfs.push(bdf_word(parent_bdf));
+        }
         for child in children {
             if let Some((_, parent_addr)) = child.parent() {
                 if let Some(parent_bdf) = parse_pci_addr(&parent_addr) {
