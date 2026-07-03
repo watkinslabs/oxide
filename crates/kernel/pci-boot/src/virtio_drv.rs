@@ -2,6 +2,7 @@
 // klog calls gated under debug_boot! per R06.
 
 use super::map_mmio_pages;
+use super::virtio_qsetup::QueuePlan;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as VirtioTransportLockClass};
@@ -56,10 +57,8 @@ static TRANSPORT_MMIO: Spinlock<Vec<TransportRecord>, VirtioTransportLockClass> 
 struct VirtioProbeProfile {
     drv_features: u64,
     msix0_handler: Option<fn()>,
-    needs_q1: bool,
+    extra_queues: [Option<QueuePlan>; 3],
     needs_q1_tx_warmup: bool,
-    needs_q2: bool,
-    needs_q3: bool,
     needs_input_cfg: bool,
     needs_blk_cfg: bool,
     needs_vsock_cfg: bool,
@@ -75,10 +74,8 @@ impl VirtioProbeProfile {
         Self {
             drv_features: Self::VERSION_ONLY,
             msix0_handler,
-            needs_q1: false,
+            extra_queues: [None, None, None],
             needs_q1_tx_warmup: false,
-            needs_q2: false,
-            needs_q3: false,
             needs_input_cfg: false,
             needs_blk_cfg: false,
             needs_vsock_cfg: false,
@@ -90,10 +87,8 @@ impl VirtioProbeProfile {
         Self {
             drv_features: Self::NET_FEATURES,
             msix0_handler,
-            needs_q1: true,
+            extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
             needs_q1_tx_warmup: true,
-            needs_q2: false,
-            needs_q3: false,
             needs_input_cfg: false,
             needs_blk_cfg: false,
             needs_vsock_cfg: false,
@@ -105,10 +100,8 @@ impl VirtioProbeProfile {
         Self {
             drv_features: Self::VERSION_ONLY,
             msix0_handler,
-            needs_q1: false,
+            extra_queues: [None, None, None],
             needs_q1_tx_warmup: false,
-            needs_q2: false,
-            needs_q3: false,
             needs_input_cfg: true,
             needs_blk_cfg: false,
             needs_vsock_cfg: false,
@@ -120,10 +113,8 @@ impl VirtioProbeProfile {
         Self {
             drv_features: Self::VERSION_ONLY,
             msix0_handler,
-            needs_q1: false,
+            extra_queues: [None, None, None],
             needs_q1_tx_warmup: false,
-            needs_q2: false,
-            needs_q3: false,
             needs_input_cfg: false,
             needs_blk_cfg: true,
             needs_vsock_cfg: false,
@@ -139,10 +130,8 @@ impl VirtioProbeProfile {
         Self {
             drv_features: Self::VERSION_ONLY,
             msix0_handler,
-            needs_q1: true,
+            extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
             needs_q1_tx_warmup: false,
-            needs_q2: false,
-            needs_q3: false,
             needs_input_cfg: false,
             needs_blk_cfg: false,
             needs_vsock_cfg: true,
@@ -154,15 +143,39 @@ impl VirtioProbeProfile {
         Self {
             drv_features: Self::VERSION_ONLY,
             msix0_handler,
-            needs_q1: false,
+            extra_queues: [
+                Some(QueuePlan::new(2, 0xFFFF, true)),
+                Some(QueuePlan::new(3, 0xFFFF, true)),
+                None,
+            ],
             needs_q1_tx_warmup: false,
-            needs_q2: true,
-            needs_q3: true,
             needs_input_cfg: false,
             needs_blk_cfg: false,
             needs_vsock_cfg: false,
             needs_snd_cfg: true,
         }
+    }
+
+    fn wants_queue(&self, index: u16) -> bool {
+        for queue in self.extra_queues {
+            if let Some(queue) = queue {
+                if queue.index == index {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn maps_extra_notify(&self) -> bool {
+        for queue in self.extra_queues {
+            if let Some(queue) = queue {
+                if queue.map_notify {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
 
@@ -355,7 +368,7 @@ impl drv::Driver for VirtioInputDrv {
         let Some(bdf) = pci_parent_bdf(dev) else { return };
         let bdf_word = bdf_word(bdf);
         if let Some(evdev_id) = drv_virtio_input::evdev_id_for_bdf(bdf_word) {
-            let _ = drv_virtio_input::drain::uninstall_eventq(evdev_id);
+            let _ = drv_virtio_input::drain::shutdown_eventq(evdev_id);
         }
     }
 }
@@ -1487,46 +1500,52 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         // successfully allocated and programmed that entry.
         match super::virtio_qsetup::program_queue(cfg_va, 0, q0_msix_vec, hhdm) {
             Some(r0) => {
-                //: for virtio-net / virtio-vsock, also stand up queue 1
-                // (TX) so we can post outgoing frames. queue 0 = RX,
-                // queue 1 = TX by spec §5.1.6 Device Operation. q1 polls
-                // used.idx, so bind VIRTIO_MSI_NO_VECTOR (0xFFFF).
-                if profile.needs_q1 {
-                    if let Some(r1) = super::virtio_qsetup::program_queue(cfg_va, 1, 0xFFFF, hhdm) {
-                        q1_desc_pa = r1.desc_pa;
-                        q1_driver_pa = r1.driver_pa;
-                        q1_device_pa = r1.device_pa;
-                        q1_notify_off_local = r1.notify_off;
-                    }
-                }
-
-                // F455/F457: virtio-snd queues (CONTROLQ=0, EVENTQ=1, TXQ=2,
-                // RXQ=3 per docs/58§2). Program TXQ(2, playback) + RXQ(3,
-                // capture) + map each notify window. Poll used.idx →
-                // VIRTIO_MSI_NO_VECTOR (0xFFFF).
-                if profile.needs_q2 {
-                    let ncap = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG);
-                    if let Some(r2) = super::virtio_qsetup::program_queue(cfg_va, 2, 0xFFFF, hhdm) {
-                        snd_q2_desc_pa_local = r2.desc_pa;
-                        snd_q2_driver_pa_local = r2.driver_pa;
-                        snd_q2_device_pa_local = r2.device_pa;
-                        snd_q2_notify_off_local = r2.notify_off;
-                        snd_q2_size_local = r2.size;
-                        if let Some(ncap) = ncap.as_ref() {
-                            snd_q2_notify_va_local =
-                                notify_va_owned(&mut mappings, ncap, &bars, r2.notify_off);
+                let extra_notify_cap = if profile.maps_extra_notify() {
+                    vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG)
+                } else {
+                    None
+                };
+                for queue in profile.extra_queues {
+                    let Some(queue) = queue else { continue };
+                    let Some(ring) =
+                        super::virtio_qsetup::program_queue(cfg_va, queue.index, queue.msix_vec, hhdm)
+                    else {
+                        continue;
+                    };
+                    match queue.index {
+                        1 => {
+                            q1_desc_pa = ring.desc_pa;
+                            q1_driver_pa = ring.driver_pa;
+                            q1_device_pa = ring.device_pa;
+                            q1_notify_off_local = ring.notify_off;
                         }
-                    }
-                    if let Some(r3) = super::virtio_qsetup::program_queue(cfg_va, 3, 0xFFFF, hhdm) {
-                        snd_q3_desc_pa_local = r3.desc_pa;
-                        snd_q3_driver_pa_local = r3.driver_pa;
-                        snd_q3_device_pa_local = r3.device_pa;
-                        snd_q3_notify_off_local = r3.notify_off;
-                        snd_q3_size_local = r3.size;
-                        if let Some(ncap) = ncap.as_ref() {
-                            snd_q3_notify_va_local =
-                                notify_va_owned(&mut mappings, ncap, &bars, r3.notify_off);
+                        2 => {
+                            snd_q2_desc_pa_local = ring.desc_pa;
+                            snd_q2_driver_pa_local = ring.driver_pa;
+                            snd_q2_device_pa_local = ring.device_pa;
+                            snd_q2_notify_off_local = ring.notify_off;
+                            snd_q2_size_local = ring.size;
+                            if queue.map_notify {
+                                if let Some(ncap) = extra_notify_cap.as_ref() {
+                                    snd_q2_notify_va_local =
+                                        notify_va_owned(&mut mappings, ncap, &bars, ring.notify_off);
+                                }
+                            }
                         }
+                        3 => {
+                            snd_q3_desc_pa_local = ring.desc_pa;
+                            snd_q3_driver_pa_local = ring.driver_pa;
+                            snd_q3_device_pa_local = ring.device_pa;
+                            snd_q3_notify_off_local = ring.notify_off;
+                            snd_q3_size_local = ring.size;
+                            if queue.map_notify {
+                                if let Some(ncap) = extra_notify_cap.as_ref() {
+                                    snd_q3_notify_va_local =
+                                        notify_va_owned(&mut mappings, ncap, &bars, ring.notify_off);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
 
@@ -1721,7 +1740,7 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
     // D3.3: virtio-vsock q1 notify VA. No dummy TX frame (vsock has no
     // broadcast warm-up); the persistent driver posts real OP_* packets
     // post-boot. Just map the q1 notify window so `tx_packet` can kick.
-    if profile.needs_q1 && !profile.needs_q1_tx_warmup
+    if profile.wants_queue(1) && !profile.needs_q1_tx_warmup
         && q1_desc_pa != 0
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {

@@ -20,6 +20,23 @@ const CFG_QUEUE_DESC:   u64 = 0x20; // le64
 const CFG_QUEUE_DRIVER: u64 = 0x28; // le64
 const CFG_QUEUE_DEVICE: u64 = 0x30; // le64
 
+#[derive(Clone, Copy)]
+pub(super) struct QueuePlan {
+    pub(super) index: u16,
+    pub(super) msix_vec: u16,
+    pub(super) map_notify: bool,
+}
+
+impl QueuePlan {
+    pub(super) const fn new(index: u16, msix_vec: u16, map_notify: bool) -> Self {
+        Self {
+            index,
+            msix_vec,
+            map_notify,
+        }
+    }
+}
+
 /// Programmed virtqueue: the three ring PAs handed to the device, the
 /// per-queue `queue_notify_off`, and the negotiated `queue_size`.
 pub(super) struct QueueRing {

@@ -15,7 +15,7 @@ shape, but it is not a Linux-complete driver model yet.
 Estimated branch-local status:
 
 - Driver-core lifecycle cleanup: about 80% complete.
-- Concrete driver probe/remove/shutdown cleanup: about 72% complete.
+- Concrete driver probe/remove/shutdown cleanup: about 74% complete.
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
@@ -67,6 +67,10 @@ test-pass claims.
   `require_queue`. Child probes now build those resources through one
   transport-owned helper path instead of rebuilding queue handoff state in each
   child glue path.
+- Virtio extra queue setup is now described by a transport queue plan instead
+  of hard-coded `needs_q1` / `needs_q2` / `needs_q3` dispatch in the virtio-pci
+  probe path. The common queue programming still lives in pci-boot, but queue
+  selection is now data-driven and uses one helper path for q1/q2/q3.
 - Virtio-blk has per-device records, unregisters disks on remove, freezes new
   I/O, waits for its single in-flight request owner, resets the device, and
   returns child-owned bounce allocation when safe.
@@ -76,7 +80,8 @@ test-pass claims.
 - Virtio-input supports multiple input device records, publishes
   `/dev/input/eventN` through model-owned devices, generates
   `/proc/bus/input/devices` from live input state, and clears its event-queue
-  bottom half when the last queue is removed.
+  bottom half when the last queue is removed. Shutdown now calls an explicit
+  event-queue quiesce path instead of the hot-remove-named helper.
 - Virtio-gpu remove is keyed to the owning parent BDF and tears down
   fbcon/fbdev/DRM/klog/tty scanout state before backing memory is released.
   Probe-failure unwind only removes scanout state for the failed probe's BDF.
@@ -123,12 +128,13 @@ test-pass claims.
   device-specific setup policy still lives in bus/transport helper code instead
   of clean per-driver or per-bus abstractions.
 - Virtio child probing is model-driven and child resource handoff is more
-  centralized, but common virtio transport, queue setup, feature negotiation,
-  config harvest, and child policy remain too concentrated in
-  `crates/kernel/pci-boot/src/virtio_drv.rs`.
-- Virtio IRQ callback ownership has moved in the right direction, but queue
-  selection, feature negotiation, and per-device config decisions still need a
-  real virtio-core/bus split instead of living in `virtio_drv.rs`.
+  centralized, and extra queue setup is now data-driven, but common virtio
+  transport, feature negotiation, config harvest, and child policy remain too
+  concentrated in `crates/kernel/pci-boot/src/virtio_drv.rs`.
+- Virtio IRQ callback ownership has moved in the right direction, and queue
+  selection no longer uses per-queue special-case booleans, but feature
+  negotiation and per-device config decisions still need a real
+  virtio-core/bus split instead of living in `virtio_drv.rs`.
 - Probe failure unwind is better for concrete cases, especially NVMe, AHCI,
   virtio-blk, virtio-input, virtio-gpu, virtio-rng, virtio-vsock, virtio-net,
   and virtio-snd, but there is no systematic devres/resource-stack mechanism

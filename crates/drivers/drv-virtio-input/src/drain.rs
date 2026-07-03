@@ -262,19 +262,20 @@ pub fn install_eventq(
     Ok(())
 }
 
-/// Remove an installed queue context, reset the device, and release owned
+fn take_eventq(evdev_id: u32) -> Option<(QueueCtx, bool)> {
+    let mut g = CTXS.lock();
+    let slot = g.get_mut(evdev_id as usize)?;
+    let ctx = slot.take()?;
+    let last_queue = g.iter().all(|slot| slot.is_none());
+    Some((ctx, last_queue))
+}
+
+/// Quiesce an installed queue context, reset the device, and release owned
 /// buffer frames. Returns false if no queue was installed for `evdev_id`.
 /// # C: O(1)
-pub fn uninstall_eventq(evdev_id: u32) -> bool {
-    let (ctx, last_queue) = {
-        let mut g = CTXS.lock();
-        let Some(slot) = g.get_mut(evdev_id as usize) else { return false };
-        let ctx = match slot.take() {
-            Some(ctx) => ctx,
-            None => return false,
-        };
-        let last_queue = g.iter().all(|slot| slot.is_none());
-        (ctx, last_queue)
+pub fn shutdown_eventq(evdev_id: u32) -> bool {
+    let Some((ctx, last_queue)) = take_eventq(evdev_id) else {
+        return false;
     };
     // SAFETY: cfg_va is the virtio common-cfg VA captured at successful probe;
     // device_status is a u8 at +0x14. Reset before freeing driver buffers.
@@ -289,6 +290,13 @@ pub fn uninstall_eventq(evdev_id: u32) -> bool {
         pmm::setup::free_one_frame(ctx.buf_pa);
     }
     true
+}
+
+/// Remove an installed queue context, reset the device, and release owned
+/// buffer frames. Returns false if no queue was installed for `evdev_id`.
+/// # C: O(1)
+pub fn uninstall_eventq(evdev_id: u32) -> bool {
+    shutdown_eventq(evdev_id)
 }
 
 /// Raise the InputDrain softirq. Called from the virtio-input
