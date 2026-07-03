@@ -249,7 +249,21 @@ pub fn emit_uevent_with_env(action: &str, devpath: &str, subsystem: &str, extra:
     g.retain(|w| w.strong_count() > 0);
     let mut n = 0;
     for w in g.iter() {
-        if let Some(s) = w.upgrade() { s.enqueue(msg.clone()); n += 1; }
+        if let Some(s) = w.upgrade() {
+            // Raw kernel uevents go to NETLINK_KOBJECT_UEVENT group 1 ONLY
+            // (Linux `netlink_broadcast(uevent_sock, …, group=1)`). systemd-
+            // udevd binds nl_groups=1 (KERNEL) to receive them, applies rules,
+            // and re-broadcasts COOKED libudev messages (with the "libudev"
+            // magic header) for its clients. systemd PID1's sd-device monitor
+            // binds nl_groups=0 (it consumes only cooked messages). Delivering
+            // a RAW kernel blob to that group-0/cooked monitor makes libudev
+            // peek it, fail the magic check, and never consume it → the socket
+            // stays poll-readable and PID1 busy-loops ("Looping too fast").
+            // Deliver only to group-1 members (udevd); skip everyone else.
+            if (s.groups.load(Ordering::Acquire) & 1) == 0 { continue; }
+            s.enqueue(msg.clone());
+            n += 1;
+        }
     }
     n
 }
