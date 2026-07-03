@@ -8,6 +8,7 @@
 
 extern crate alloc;
 
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicPtr, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
@@ -459,41 +460,40 @@ fn read_u32_le(buf: &[u8], off: usize) -> u32 {
 // after running the modern-transport bring-up + GET_DISPLAY_INFO).
 // ============================================================
 
-/// Single-device slot. v1 supports one virtio-gpu PCI function;
-/// the slot turns into a Vec<Box<VirtioGpuDev>> when multi-GPU
-/// systems land.
-static DEV: Spinlock<Option<VirtioGpuDev>, DriverLockClass> = Spinlock::new(None);
+/// Installed virtio-gpu PCI functions keyed by BDF.
+static DEV: Spinlock<Vec<VirtioGpuDev>, DriverLockClass> = Spinlock::new(Vec::new());
 
 /// Surface for the kernel to install a fully-initialised device
 /// after running modern-transport bring-up + GET_DISPLAY_INFO.
-/// # C: O(1)
+/// # C: O(devices)
 pub fn install(dev: VirtioGpuDev) -> KResult<()> {
     let mut g = DEV.lock();
-    if g.is_some() {
+    if g.iter().any(|installed| installed.bdf == dev.bdf) {
         return Err(Error::Busy);
     }
-    *g = Some(dev);
+    g.push(dev);
     Ok(())
 }
 
-/// Snapshot the cached display info. `47` (DRM/KMS) calls this
-/// from `MODE_GETRESOURCES` to enumerate CRTCs/connectors.
+/// Snapshot the first cached display info. `47` (DRM/KMS) calls the registered
+/// per-card driver snapshot for normal KMS enumeration; this helper remains a
+/// compatibility query for boot-time/default-device callers.
 /// # C: O(1)
 pub fn current_display_info() -> Option<DisplayInfo> {
-    DEV.lock().as_ref().map(|d| d.display)
+    DEV.lock().first().map(|d| d.display)
 }
 
 /// Returns true once at least one virtio-gpu device has been
 /// installed by the kernel-side bring-up.
 /// # C: O(1)
 pub fn is_present() -> bool {
-    DEV.lock().is_some()
+    !DEV.lock().is_empty()
 }
 
-/// Take the negotiated feature mask of the installed device.
+/// Take the negotiated feature mask of the first installed device.
 /// # C: O(1)
 pub fn negotiated_features() -> u64 {
-    DEV.lock().as_ref().map(|d| d.features_negotiated).unwrap_or(0)
+    DEV.lock().first().map(|d| d.features_negotiated).unwrap_or(0)
 }
 
 /// `47` DrmDriver impl over a `VirtioGpuDev` snapshot. Registered
@@ -628,14 +628,12 @@ pub fn install_with_drm(mut dev: VirtioGpuDev) -> KResult<u32> {
 
 /// Remove an installed virtio-gpu device and unregister its DRM backend.
 /// Returns true when the BDF matched a live device.
-/// # C: O(1)
+/// # C: O(devices)
 pub fn uninstall(bdf: u32) -> Option<VirtioGpuDev> {
     let dev = {
         let mut g = DEV.lock();
-        match g.as_ref() {
-            Some(dev) if dev.bdf == bdf => g.take(),
-            _ => None,
-        }
+        let idx = g.iter().position(|dev| dev.bdf == bdf)?;
+        Some(g.remove(idx))
     };
     match dev {
         Some(dev) => {
@@ -824,8 +822,8 @@ mod tests {
 
     #[test]
     fn install_and_lookup_roundtrip() {
-        // Reset the global slot first to keep tests order-independent.
-        *DEV.lock() = None;
+        // Reset the global registry first to keep tests order-independent.
+        DEV.lock().clear();
         assert!(!is_present());
         install(VirtioGpuDev {
             bdf: 0,
@@ -846,11 +844,11 @@ mod tests {
         assert_eq!(info.count_enabled, 1);
         assert!(negotiated_features() & (1u64 << VIRTIO_GPU_F_EDID) != 0);
         // Cleanup.
-        *DEV.lock() = None;
+        DEV.lock().clear();
     }
 
     #[test]
-    fn install_rejects_second_device() {
+    fn install_accepts_multiple_devices_and_rejects_duplicate_bdf() {
         fn dev(bdf: u32) -> VirtioGpuDev {
             VirtioGpuDev {
                 bdf,
@@ -865,10 +863,14 @@ mod tests {
             }
         }
 
-        *DEV.lock() = None;
+        DEV.lock().clear();
         install(dev(1)).unwrap();
+        install(dev(2)).unwrap();
+        assert_eq!(DEV.lock().len(), 2);
         assert_eq!(install(dev(2)), Err(Error::Busy));
         assert_eq!(uninstall(1).unwrap().bdf, 1);
+        assert!(is_present());
+        assert_eq!(uninstall(2).unwrap().bdf, 2);
         assert!(!is_present());
     }
 

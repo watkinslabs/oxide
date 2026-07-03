@@ -154,8 +154,8 @@ test-pass claims.
   static `card0` table. Dumb-buffer handles, FB objects, mmap cookies,
   SETCRTC/PAGE_FLIP FB lookup, scanout hooks, and CRTC owner/event queues are
   now scoped by the card inode id. Full multi-GPU KMS is still not complete
-  because the virtio-gpu installed device and post-init scanout context remain
-  singleton runtime state.
+  because the virtio-gpu post-init scanout context and primary-console helper
+  ownership remain singleton runtime state.
 - Block, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`
@@ -189,8 +189,8 @@ test-pass claims.
   `VirtioPciTransport`/`VirtioProbeState` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-gpu DRM core
-  state is now card-scoped, but the installed virtio-gpu device registry,
-  post-init scanout context, and primary-console ownership still need a real
+  state and installed device registry are now card/BDF-scoped, but the
+  post-init scanout context and primary-console ownership still need a real
   multi-card split;
   virtio-vsock's upper protocol layer and virtio-snd's upper ops/PCM runtime
   are still the main offenders. Virtio-vsock teardown is now owned by a protocol
@@ -328,7 +328,7 @@ side-effect cleanup, not the old add-before-devtmpfs ordering bug.
 
 Several drivers use singleton global state:
 
-- virtio-gpu: single `DEV: Option<VirtioGpuDev>` and single post-init
+- virtio-gpu: BDF-keyed installed device registry, but single post-init
   `CTX: Option<PostInitCtx>` scanout context
 - virtio-rng: single `CTX`
 - virtio-vsock: single active `CTX`; protocol teardown now requires the owned
