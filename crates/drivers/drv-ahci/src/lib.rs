@@ -21,6 +21,7 @@ mod port;
 
 #[cfg(target_os = "oxide-kernel")]
 mod imp {
+    use crate::pci::Bdf;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicBool, Ordering};
     use sync::{Spinlock, TaskList as DriverLockClass};
@@ -139,13 +140,19 @@ mod imp {
         }
     }
 
-    static INSTALLED: Spinlock<Option<Arc<AhciBlk>>, DriverLockClass> = Spinlock::new(None);
+    struct Installed {
+        dev: Arc<AhciBlk>,
+        bdf: Bdf,
+        cmd_orig: u16,
+    }
+
+    static INSTALLED: Spinlock<Option<Installed>, DriverLockClass> = Spinlock::new(None);
 
     /// Bring up the AHCI controller whose ABAR (BAR5) register file is mapped
     /// by `mmio` (≥2 pages), register the first SATA
     /// disk as `sata0`, and return the 1-based registry index (0 on failure).
     /// Optionally self-tests by reading LBA 0. # C: O(bring-up) + registry O(N)
-    pub fn init(mmio: mmio_map::Mapping, abar_off: u64) -> u32 {
+    pub fn init(mmio: mmio_map::Mapping, abar_off: u64, bdf: Bdf, cmd_orig: u16) -> u32 {
         let a = match Ahci::bring_up(mmio, abar_off) { Ok(a) => a, Err(reason) => {
             // "no ..." = an empty HBA (e.g. the ICH9 chipset SATA controller
             // with no drive attached) — benign INFO, not a failure WARN.
@@ -194,7 +201,11 @@ mod imp {
             dev.remove();
             return 0;
         }
-        *INSTALLED.lock() = Some(dev);
+        *INSTALLED.lock() = Some(Installed {
+            dev,
+            bdf,
+            cmd_orig,
+        });
         #[cfg(feature = "debug-boot")]
         {
             klog::write_raw(b"[INFO]  ahci: block dev registered idx=");
@@ -206,13 +217,19 @@ mod imp {
 
     /// Remove the registered AHCI disk and release controller-owned resources.
     /// # C: O(N_disks + port shutdown)
-    pub fn remove() -> bool {
-        let dev = match INSTALLED.lock().take() {
-            Some(dev) => dev,
+    pub fn remove(bdf: Bdf) -> bool {
+        let mut installed = INSTALLED.lock();
+        let mut current = match installed.take() {
+            Some(state) => state,
             None => return false,
         };
+        if current.bdf != bdf {
+            *installed = Some(current);
+            return false;
+        }
         let _ = block::registry::unregister("sata0");
-        dev.remove();
+        current.dev.remove();
+        crate::restore_command(current.bdf, current.cmd_orig);
         true
     }
 }
@@ -258,15 +275,20 @@ impl drv::Driver for AhciDriver {
         // SAFETY: BAR5 PA came from this PCI function's config space; two
         // pages cover generic HBA registers plus the 32-port register array.
         let mmio = unsafe { mmio_map::map_owned(abar_pa & !0xFFF, 2) };
-        if imp::init(mmio, abar_pa & 0xFFF) == 0 {
+        if imp::init(mmio, abar_pa & 0xFFF, bdf, cmd_orig) == 0 {
             restore_command(bdf, cmd_orig);
             return Err(drv::Error::ProbeFailed);
         }
         Ok(())
     }
 
-    fn remove(&self, _dev: &drv::Device) {
-        let _ = imp::remove();
+    fn remove(&self, dev: &drv::Device) {
+        let bdf = pci::parse_bdf_addr(&dev.addr).unwrap_or(Bdf {
+            bus: 0,
+            device: 0,
+            function: 0,
+        });
+        let _ = imp::remove(bdf);
     }
 }
 

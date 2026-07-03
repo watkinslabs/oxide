@@ -24,6 +24,7 @@ mod imp {
     use sync::{Spinlock, TaskList as DriverLockClass};
     use block::{BlockDevice, BlockRequest, BlockError, BlockOp, KResult};
     use crate::queue::Nvme;
+    use crate::pci::Bdf;
 
     /// PCI class for an NVMe controller: base 0x01 (mass storage), subclass
     /// 0x08 (non-volatile memory), prog-if 0x02 (NVMe). # C: O(1)
@@ -137,13 +138,19 @@ mod imp {
         }
     }
 
-    static INSTALLED: Spinlock<Option<Arc<NvmeBlk>>, DriverLockClass> = Spinlock::new(None);
+    struct Installed {
+        dev: Arc<NvmeBlk>,
+        bdf: Bdf,
+        cmd_orig: u16,
+    }
+
+    static INSTALLED: Spinlock<Option<Installed>, DriverLockClass> = Spinlock::new(None);
 
     /// Bring up the NVMe controller mapped by `mmio` (BAR0 register file,
     /// ≥2 pages), register it as `nvme0n1`, and return the
     /// 1-based registry index (0 on failure). Optionally self-tests by reading
     /// LBA 0. # C: O(controller bring-up) + registry O(N_disks)
-    pub fn init(mmio: mmio_map::Mapping, bar0_off: u64) -> u32 {
+    pub fn init(mmio: mmio_map::Mapping, bar0_off: u64, bdf: Bdf, cmd_orig: u16) -> u32 {
         let nv = match Nvme::bring_up(mmio, bar0_off) { Some(n) => n, None => {
             #[cfg(feature = "debug-boot")]
             { klog::write_raw(b"[WARN]  nvme: controller bring-up failed\n"); }
@@ -187,7 +194,11 @@ mod imp {
             dev.remove();
             return 0;
         }
-        *INSTALLED.lock() = Some(dev);
+        *INSTALLED.lock() = Some(Installed {
+            dev,
+            bdf,
+            cmd_orig,
+        });
         #[cfg(feature = "debug-boot")]
         {
             klog::write_raw(b"[INFO]  nvme: block dev registered idx=");
@@ -199,13 +210,19 @@ mod imp {
 
     /// Remove the registered NVMe disk and release controller-owned resources.
     /// # C: O(N_disks + controller shutdown)
-    pub fn remove() -> bool {
-        let dev = match INSTALLED.lock().take() {
-            Some(dev) => dev,
+    pub fn remove(bdf: Bdf) -> bool {
+        let mut installed = INSTALLED.lock();
+        let mut current = match installed.take() {
+            Some(state) => state,
             None => return false,
         };
+        if current.bdf != bdf {
+            *installed = Some(current);
+            return false;
+        }
         let _ = block::registry::unregister("nvme0n1");
-        dev.remove();
+        current.dev.remove();
+        crate::restore_command(current.bdf, current.cmd_orig);
         true
     }
 }
@@ -251,15 +268,16 @@ impl drv::Driver for NvmeDriver {
         // SAFETY: BAR0 PA came from this PCI function's config space; two
         // pages cover the controller register file and QEMU doorbells.
         let mmio = unsafe { mmio_map::map_owned(bar0_pa & !0xFFF, 2) };
-        if imp::init(mmio, bar0_pa & 0xFFF) == 0 {
+        if imp::init(mmio, bar0_pa & 0xFFF, bdf, cmd_orig) == 0 {
             restore_command(bdf, cmd_orig);
             return Err(drv::Error::ProbeFailed);
         }
         Ok(())
     }
 
-    fn remove(&self, _dev: &drv::Device) {
-        let _ = imp::remove();
+    fn remove(&self, dev: &drv::Device) {
+        let bdf = pci::parse_bdf_addr(&dev.addr).unwrap_or(Bdf { bus: 0, device: 0, function: 0 });
+        let _ = imp::remove(bdf);
     }
 }
 
