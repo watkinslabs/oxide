@@ -580,6 +580,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     let _ = unsafe { security::init() };
     // SAFETY: kernel_main runs single-CPU pre-init; drv::init reports ready; per-driver register() happens during PCI enumeration.
     let _ = unsafe { drv::init() };
+    power::set_driver_shutdown_hook(drv::shutdown_all);
     // drivers-plan D1a: wire the drv model's sysfs-publish hooks BEFORE
     // PCI enumeration so each `drv::device_add` during enumeration publishes
     // its `/sys/bus/<bus>/devices/<addr>` entry as it lands.

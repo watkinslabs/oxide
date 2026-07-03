@@ -361,6 +361,23 @@ pub fn unbind(dev: &Arc<Device>) -> KResult<()> {
     Ok(())
 }
 
+/// Quiesce every currently-bound device for reboot/poweroff. This is not
+/// hot-unplug: bindings, sysfs state, and devtmpfs nodes remain published
+/// because the machine is entering a terminal power transition. Devices are
+/// walked in reverse registration order so child/later devices quiet before
+/// earlier parent transports.
+/// # C: O(N_devices * N_drivers + shutdown)
+pub fn shutdown_all() {
+    let mut snapshot = devices();
+    snapshot.reverse();
+    for dev in snapshot {
+        let Some(driver_name) = dev.bound() else { continue; };
+        if let Some(driver) = find_driver_on_bus(dev.bus, driver_name) {
+            driver.shutdown(&dev);
+        }
+    }
+}
+
 /// Find the registered `Arc<Device>` at `(bus, addr)` and `bind` it to
 /// `driver_name`. Convenience for bring-up sites that hold a bus addr
 /// (not the Arc).
@@ -528,6 +545,40 @@ mod tests {
 
         device_del(&d);
         assert_eq!(REMOVE_HITS.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn shutdown_all_quiesces_bound_devices_in_reverse_registration_order() {
+        use sync::Spinlock as TestLock;
+        static ORDER: TestLock<Vec<String>, DriverListClass> = TestLock::new(Vec::new());
+
+        struct OrderedShutdownDrv;
+        impl Driver for OrderedShutdownDrv {
+            fn name(&self) -> &'static str { "ordered-shutdown-test" }
+            fn matches(&self, dev: &Device) -> bool { dev.device_id == 0x7779 }
+            fn shutdown(&self, dev: &Device) {
+                ORDER.lock().push(dev.addr.clone());
+            }
+        }
+        static ORDERED_SHUTDOWN_DRV: OrderedShutdownDrv = OrderedShutdownDrv;
+
+        ORDER.lock().clear();
+        register_driver(&ORDERED_SHUTDOWN_DRV);
+        let first = device_add(Arc::new(Device::new(
+            "pci", String::from("0000:00:15.0"), 0x1234, 0x7779, 0)));
+        let second = device_add(Arc::new(Device::new(
+            "pci", String::from("0000:00:16.0"), 0x1234, 0x7779, 0)));
+        assert_eq!(bind(&first, "ordered-shutdown-test"), Ok(()));
+        assert_eq!(bind(&second, "ordered-shutdown-test"), Ok(()));
+
+        shutdown_all();
+
+        assert_eq!(
+            &*ORDER.lock(),
+            &[String::from("0000:00:16.0"), String::from("0000:00:15.0")]
+        );
+        assert_eq!(first.bound(), Some("ordered-shutdown-test"));
+        assert_eq!(second.bound(), Some("ordered-shutdown-test"));
     }
 
     #[test]

@@ -25,6 +25,9 @@
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+use core::sync::atomic::{AtomicBool, Ordering};
+use sync::{Spinlock, TaskList as PowerListClass};
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error { Inval, Perm, Io }
 
@@ -44,6 +47,27 @@ pub const LINUX_REBOOT_CMD_POWER_OFF:  u32 = 0x4321FEDC;
 pub const LINUX_REBOOT_CMD_RESTART2:   u32 = 0xA1B2C3D4;
 pub const LINUX_REBOOT_CMD_SW_SUSPEND: u32 = 0xD000FCE2;
 pub const LINUX_REBOOT_CMD_KEXEC:      u32 = 0x45584543;
+
+type DriverShutdownHook = fn();
+
+static DRIVER_SHUTDOWN_HOOK: Spinlock<Option<DriverShutdownHook>, PowerListClass> = Spinlock::new(None);
+static DRIVER_SHUTDOWN_DONE: AtomicBool = AtomicBool::new(false);
+
+/// Install the driver-core shutdown pass. `kmain` wires this after drv init so
+/// power stays below the driver model in the crate graph.
+/// # C: O(1)
+pub fn set_driver_shutdown_hook(f: DriverShutdownHook) {
+    *DRIVER_SHUTDOWN_HOOK.lock() = Some(f);
+}
+
+fn shutdown_devices_once() {
+    if DRIVER_SHUTDOWN_DONE.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    if let Some(h) = *DRIVER_SHUTDOWN_HOOK.lock() {
+        h();
+    }
+}
 
 /// Validate the Linux reboot(2) magic numbers per `man 2 reboot`.
 /// # C: O(1)
@@ -159,12 +183,21 @@ pub unsafe fn power_off() -> ! {
 /// # C: O(1)
 pub unsafe fn cmd(c: u32) -> KResult<()> {
     match c {
-        // SAFETY: each branch is a terminal-state primitive; caller validated CAP_SYS_BOOT + magic per `man 2 reboot`; irreversible by design.
-        LINUX_REBOOT_CMD_RESTART | LINUX_REBOOT_CMD_RESTART2 => unsafe { restart() },
-        // SAFETY: caller validated CAP_SYS_BOOT + magic; power_off is irreversible per Linux reboot(2) RESTART2/POWER_OFF contract.
-        LINUX_REBOOT_CMD_POWER_OFF                            => unsafe { power_off() },
-        // SAFETY: caller validated CAP_SYS_BOOT + magic; halt parks every CPU; the kernel never resumes from this primitive.
-        LINUX_REBOOT_CMD_HALT                                 => unsafe { halt() },
+        LINUX_REBOOT_CMD_RESTART | LINUX_REBOOT_CMD_RESTART2 => {
+            shutdown_devices_once();
+            // SAFETY: terminal-state primitive; caller validated CAP_SYS_BOOT + magic per `man 2 reboot`; irreversible by design.
+            unsafe { restart() }
+        }
+        LINUX_REBOOT_CMD_POWER_OFF => {
+            shutdown_devices_once();
+            // SAFETY: caller validated CAP_SYS_BOOT + magic; power_off is irreversible per Linux reboot(2) POWER_OFF contract.
+            unsafe { power_off() }
+        }
+        LINUX_REBOOT_CMD_HALT => {
+            shutdown_devices_once();
+            // SAFETY: caller validated CAP_SYS_BOOT + magic; halt parks every CPU; the kernel never resumes from this primitive.
+            unsafe { halt() }
+        }
         LINUX_REBOOT_CMD_CAD_ON | LINUX_REBOOT_CMD_CAD_OFF    => Ok(()),
         LINUX_REBOOT_CMD_KEXEC | LINUX_REBOOT_CMD_SW_SUSPEND  => Err(Error::Inval),
         _ => Err(Error::Inval),

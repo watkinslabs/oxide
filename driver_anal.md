@@ -2,11 +2,9 @@
 
 Date: 2026-07-03
 
-Scope: this ledger describes only the dirty worktree at
-`/home/nd/oxide/kernel-driver-fixes` on branch `codex/driver-fixes`.
-There is a separate worktree at `/home/nd/oxide/kernel` on `main`; do not read
-this document as a statement about `main` or any other branch until these
-changes are committed and merged.
+Scope: this ledger describes the active worktree at
+`/home/nd/oxide/kernel` on branch `greeter-diag`. Do not read this document as
+a statement about any other branch until these changes are committed and merged.
 
 ## Current position
 
@@ -40,6 +38,10 @@ test-pass claims.
 - Model unbind calls `Driver::remove` before clearing the binding.
 - `device_del` unbinds first, emits remove while the object is still visible,
   removes devtmpfs state, and then drops the device from the registry.
+- `drv::shutdown_all` now walks bound model devices in reverse registration
+  order and calls `Driver::shutdown` without unbinding or emitting remove
+  events. The power/reboot path calls this through a boot-installed hook before
+  restart, poweroff, or halt.
 - Public `register_device` bypasses have been removed from the driver model;
   `device_add` is the intended publication entry.
 - Sysfs bus-driver controls are backed by the model path for bind/unbind, with
@@ -152,6 +154,9 @@ test-pass claims.
   bound AHCI/NVMe/virtio paths now clear MEM/BUS_MASTER on teardown/failure,
   but full bridge, multi-bus, resource assignment, and PCI runtime semantics
   remain incomplete.
+- Central shutdown dispatch exists, but most concrete drivers still rely on
+  default no-op `shutdown`; hardware-specific quiesce paths still need to be
+  audited and implemented where reboot/poweroff differs from hot-unplug remove.
 
 ## Open work
 
@@ -182,14 +187,15 @@ test-pass claims.
 - Audit all remaining direct subsystem side effects so hardware-backed device
   nodes and class devices are registered by the owning probe path and removed
   by the owning remove path.
-- Add shutdown coverage distinct from remove where hardware needs a different
-  quiesce path for reboot or poweroff.
+- Add concrete per-driver shutdown coverage where hardware needs a different
+  quiesce path from hot-unplug remove, and prove it on reboot/poweroff paths.
 
 ## Status by area
 
 Complete:
 
 - Authoritative model-level bind/probe/remove state.
+- Central model-level shutdown dispatch from reboot/poweroff/halt.
 - PCI device publication through `device_add` plus `auto_bind`.
 - Modern-only virtio-pci matching.
 - Virtio transport ownership for persistent MMIO, MSI-X, and successful-probe
