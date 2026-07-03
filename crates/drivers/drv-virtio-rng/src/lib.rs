@@ -131,6 +131,13 @@ pub fn install(bdf: u32, resources: virtio::VirtioResources) -> Option<RngProbe>
     if publish_hwrng {
         devfs::misc::set_hwrng_source(fill);
     }
+
+    let mut seed = [0u8; 32];
+    if fill_from_bdf(bdf, &mut seed) == 0 {
+        let _ = uninstall(bdf);
+        return None;
+    }
+    devfs::misc::add_entropy(&seed);
     Some(RngProbe {
         hwrng_dev: if publish_hwrng { Some(hwrng_dev) } else { None },
     })

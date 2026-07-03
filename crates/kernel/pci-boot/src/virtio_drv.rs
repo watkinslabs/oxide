@@ -474,27 +474,9 @@ impl drv::Driver for VirtioRngDrv {
         if let Some(hwrng_dev) = probe.hwrng_dev {
             drv::device_add(hwrng_dev);
         }
-
-        // Seed the kernel RNG with real entropy at bring-up. Read from the
-        // just-bound device, not whichever hwrng is currently active.
-        let mut seed = [0u8; 32];
-        let n = drv_virtio_rng::fill_from_bdf(bdf_word, &mut seed);
-        if n == 0 {
-            if let Some(remove) = drv_virtio_rng::uninstall(bdf_word) {
-                if let Some(hwrng_dev) = remove.hwrng_dev {
-                    drv::device_del(&hwrng_dev);
-                }
-                if let Some(promoted) = remove.promoted_hwrng_dev {
-                    drv::device_add(promoted);
-                }
-            }
-            release_q0_after_failed_probe(&mut p);
-            return Err(drv::Error::ProbeFailed);
-        }
-        devfs::misc::add_entropy(&seed[..n]);
         debug_boot! {
             klog::write_raw(b"[INFO]  virtio-rng installed seeded=");
-            klog::write_dec_u64(n as u64);
+            klog::write_dec_u64(32);
             klog::write_raw(b" bytes\n");
         }
         publish_transport_mmio(&mut p);
