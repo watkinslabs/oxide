@@ -139,7 +139,18 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     // `None` (target gone or not a mount root) ⇒ no TABLE mount, but the
     // devfs-registry detach below may still match legacy devfs-owned paths.
     let target_d = exact_mountpoint.or_else(|| crate::pathresolve::mount_dentry(trimmed));
-    if !lazy && target_d.as_ref().map(|d| vfs::mount::has_child_mounts(d, ns)).unwrap_or(false) {
+    // A pseudo-fs mount (procfs/sysfs/devfs) detaches its WHOLE subtree, even
+    // non-lazy. systemd tears down its per-service sandbox staging tree
+    // (/run/systemd/mount-rootfs/{proc,sys,dev}) with non-lazy umount2 — in
+    // Linux that mount is already childless (its submounts were moved out via
+    // pivot_root/MS_MOVE), so it succeeds; our tree keeps them nested, so the
+    // Linux EBUSY-on-children busy-test spuriously fired and aborted the
+    // sandbox setup (EXIT_NAMESPACE 226, intermittently, for dbus-broker/
+    // udevd/logind → no graphical target). Recursive detach makes the staging
+    // subtree vanish cleanly; a REAL (non-pseudo) mount keeps the Linux
+    // EBUSY-on-children guard.
+    let recursive = lazy || is_pseudo;
+    if !recursive && target_d.as_ref().map(|d| vfs::mount::has_child_mounts(d, ns)).unwrap_or(false) {
         return -(Errno::Ebusy.as_i32() as i64);
     }
     // Detach from BOTH the unified mount table (bind mounts + any
@@ -148,7 +159,7 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     // those are separate pseudo-filesystems now, and a non-mounted descendant
     // such as `/proc/sys/fs/binfmt_misc` must report EINVAL. Returning success
     // there makes systemd's automount cleanup spin on umount2 forever.
-    let removed_tab = target_d.as_ref().map(|d| vfs::mount::unregister_top(d, lazy)).unwrap_or(0);
+    let removed_tab = target_d.as_ref().map(|d| vfs::mount::unregister_top(d, recursive)).unwrap_or(0);
     // Registry wipe is ONLY for a real device-node fs at a devfs-owned path —
     // NEVER for a pseudo-fs (deleting the synthetic /proc/sys/dev tree once
     // permanently broke every later sandbox). The instance detach above already
