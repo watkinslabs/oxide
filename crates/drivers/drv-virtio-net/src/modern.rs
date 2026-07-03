@@ -184,6 +184,39 @@ pub fn uninstall_modern(device_key: u32) -> bool {
     true
 }
 
+/// Quiesce the installed modern virtio-net transport for system shutdown.
+///
+/// This is terminal driver shutdown, not hot-remove: keep the netdev identity
+/// published so model-visible state is not torn down underneath late callers,
+/// but make TX/RX paths fail closed and stop all device/runtime activity.
+/// # C: O(NCPU)
+pub fn shutdown_modern(device_key: u32) -> bool {
+    let state = {
+        let mut guard = MODERN_DEV.lock();
+        match guard.as_ref() {
+            Some(state) if state.device_key == device_key => guard.take(),
+            _ => None,
+        }
+    };
+    let state = match state {
+        Some(state) => state,
+        None => return false,
+    };
+    #[cfg(target_os = "oxide-kernel")]
+    uninstall_rx_softirq_handler();
+    MODERN_PRESENT.store(false, Ordering::Release);
+    SOFTIRQ_IFACE_AND_IP.store(0, Ordering::Release);
+    unregister_timers();
+    if state.cfg_va != 0 {
+        // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
+        // probe; device_status is an 8-bit register at offset 0x14.
+        unsafe { core::ptr::write_volatile((state.cfg_va + 0x14) as *mut u8, 0u8); }
+    }
+    free_frame(state.rx0_buf_pa);
+    free_frame(state.tx0_buf_pa);
+    true
+}
+
 fn free_frame(pa: u64) {
     if pa != 0 {
         // SAFETY: non-zero PAs passed here are pages allocated by the PMM for
@@ -925,6 +958,27 @@ mod ndp_tests {
         }
         MODERN_PRESENT.store(false, Ordering::Release);
         assert!(modern_state().is_none());
+    }
+
+    #[test]
+    fn shutdown_modern_quiesces_transport_without_forgetting_iface() {
+        let _ = uninstall_modern(1);
+        REGISTERED_IFACE.store(77, Ordering::Release);
+        SOFTIRQ_IFACE_AND_IP.store((77u64 << 32) | 0x0a00_0001, Ordering::Release);
+        {
+            let mut g = MODERN_DEV.lock();
+            *g = Some(state(1));
+        }
+        MODERN_PRESENT.store(true, Ordering::Release);
+
+        assert!(shutdown_modern(1));
+        assert!(!is_modern_present());
+        assert!(modern_state().is_none());
+        assert_eq!(REGISTERED_IFACE.load(Ordering::Acquire), 77);
+        assert_eq!(SOFTIRQ_IFACE_AND_IP.load(Ordering::Acquire), 0);
+        assert!(matches!(tx_frame_for(1, &[0; 14]), Err(TxErr::NotPresent)));
+
+        REGISTERED_IFACE.store(0, Ordering::Release);
     }
 
     #[test]
