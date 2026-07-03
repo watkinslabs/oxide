@@ -214,6 +214,23 @@ mod imp {
         BASE.store(0, Ordering::Release);
         PRESENT.store(false, Ordering::Release);
     }
+
+    /// Stop UART RX interrupt delivery for terminal system shutdown while
+    /// keeping the console TX path bound for late shutdown logging.
+    /// # SAFETY: called by driver-core shutdown; no concurrent probe/remove.
+    /// # C: O(1)
+    pub(super) unsafe fn shutdown() {
+        let port = BASE.load(Ordering::Acquire) as u16;
+        if port != 0 {
+            // SAFETY: IER write at CPL=0 to the detected COM base disables RX interrupts.
+            unsafe { outb(port + IER, 0x00); }
+        }
+        let pin = IRQ_PIN.load(Ordering::Acquire);
+        if pin != u64::MAX {
+            // SAFETY: I/O APIC mapping was installed before IRQ_PIN was published.
+            unsafe { hal_x86_64::ioapic::mask(pin as u32); }
+        }
+    }
 }
 
 // --------------------------------------------------------- empty shell
@@ -237,6 +254,10 @@ mod imp {
     /// # SAFETY: shell; no side effects.
     /// # C: O(1)
     pub(super) unsafe fn remove() {}
+    /// No 16550 on non-x86 arches.
+    /// # SAFETY: shell; no side effects.
+    /// # C: O(1)
+    pub(super) unsafe fn shutdown() {}
 }
 
 pub use imp::{emit, rx_isr, rx_poll};
@@ -273,6 +294,11 @@ impl drv::Driver for Uart16550Drv {
     fn remove(&self, _dev: &drv::Device) {
         // SAFETY: driver-core remove owns the bound platform device teardown.
         unsafe { imp::remove(); }
+    }
+
+    fn shutdown(&self, _dev: &drv::Device) {
+        // SAFETY: driver-core shutdown owns terminal platform-device quiesce.
+        unsafe { imp::shutdown(); }
     }
 }
 
