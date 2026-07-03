@@ -149,10 +149,12 @@ pub fn recvmsg(fd: u64, msgp: u64, flags: u32) -> i64 {
     // struct msghdr: name@0, namelen@8, iov@16, iovlen@24, control@32,
     // controllen@40, flags@48 (x86_64/aarch64 LP64 layout).
     // SAFETY: msgp validated < USER_VA_END; LP64 msghdr field offsets.
-    let (name, iov, iovlen) = unsafe {
+    let (name, iov, iovlen, ctrl, ctrllen) = unsafe {
         (core::ptr::read_volatile(msgp as *const u64),
          core::ptr::read_volatile((msgp + 16) as *const u64),
-         core::ptr::read_volatile((msgp + 24) as *const u64))
+         core::ptr::read_volatile((msgp + 24) as *const u64),
+         core::ptr::read_volatile((msgp + 32) as *const u64),
+         core::ptr::read_volatile((msgp + 40) as *const u64))
     };
     if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
     let file = match fd_file_local(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
@@ -190,19 +192,51 @@ pub fn recvmsg(fd: u64, msgp: u64, flags: u32) -> i64 {
 
     // Fill the returned msghdr: sockaddr_nl source (kernel = pid 0),
     // namelen=12, controllen=0, msg_flags=MSG_TRUNC iff truncated.
+    // nl_groups MUST identify the multicast group the message came on, NOT 0.
+    // libudev's `device_monitor_receive_device` treats nl_groups==0 as a
+    // UNICAST message and drops it unless from a trusted sender — so a uevent
+    // with nl_groups=0 was silently ignored (udevd read it, never processed it,
+    // no /run/udev/data, no seat, no greeter). Raw kernel uevents ride group 1
+    // (UDEV_MONITOR_KERNEL); cooked "libudev" messages ride group 2 (…_UDEV).
     if name != 0 && name < USER_VA_END {
+        let nl_groups: u32 = if dgram.starts_with(b"libudev\0") { 2 } else { 1 };
         // SAFETY: name validated < USER_VA_END; sockaddr_nl is 12 bytes.
         unsafe {
             core::ptr::write_volatile( name        as *mut u16, 16); // AF_NETLINK
             core::ptr::write_volatile((name +  2)  as *mut u16, 0);
             core::ptr::write_volatile((name +  4)  as *mut u32, 0);  // nl_pid = kernel
-            core::ptr::write_volatile((name +  8)  as *mut u32, 0);  // nl_groups
+            core::ptr::write_volatile((name +  8)  as *mut u32, nl_groups);
+        }
+    }
+    // SCM_CREDENTIALS ancillary: modern systemd-udevd's `sd-device-monitor`
+    // reads SO_PASSCRED creds off each uevent and DROPS any message that lacks
+    // an SCM_CREDENTIALS record or whose uid != 0 ("No sender credentials
+    // received, ignoring message"). Kernel-originated uevents carry ucred
+    // {pid:0,uid:0,gid:0}. Without this every uevent was silently ignored:
+    // udevd drained the socket but processed no device (empty /run/udev/data,
+    // no master-of-seat tag, seat0 non-graphical, gdm greeter never launched).
+    // cmsghdr (LP64) = {len:u64@0, level:i32@8, type:i32@12}; SCM_CREDENTIALS
+    // (SOL_SOCKET=1, type=2) data = struct ucred {pid:i32,uid:u32,gid:u32}.
+    // CMSG_LEN(12)=28, CMSG_SPACE(12)=32. Only emit for the uevent monitor
+    // (proto 15) when the caller supplied a control buffer with room.
+    const CMSG_LEN_UCRED: u64 = 28;
+    let wrote_cmsg = sock.protocol == 15 && ctrl != 0 && ctrl < USER_VA_END
+        && ctrllen >= CMSG_LEN_UCRED && ctrl.saturating_add(CMSG_LEN_UCRED) < USER_VA_END;
+    if wrote_cmsg {
+        // SAFETY: ctrl..ctrl+28 validated in user range; LP64 cmsghdr+ucred layout.
+        unsafe {
+            core::ptr::write_volatile( ctrl        as *mut u64, CMSG_LEN_UCRED); // cmsg_len
+            core::ptr::write_volatile((ctrl +  8)  as *mut i32, 1);  // SOL_SOCKET
+            core::ptr::write_volatile((ctrl + 12)  as *mut i32, 2);  // SCM_CREDENTIALS
+            core::ptr::write_volatile((ctrl + 16)  as *mut i32, 0);  // ucred.pid = kernel
+            core::ptr::write_volatile((ctrl + 20)  as *mut u32, 0);  // ucred.uid = root
+            core::ptr::write_volatile((ctrl + 24)  as *mut u32, 0);  // ucred.gid = root
         }
     }
     // SAFETY: msgp validated; write back namelen/controllen/flags.
     unsafe {
         core::ptr::write_volatile((msgp +  8) as *mut u32, if name != 0 { 12 } else { 0 });
-        core::ptr::write_volatile((msgp + 40) as *mut u64, 0);
+        core::ptr::write_volatile((msgp + 40) as *mut u64, if wrote_cmsg { CMSG_LEN_UCRED } else { 0 });
         core::ptr::write_volatile((msgp + 48) as *mut u32, if truncated { MSG_TRUNC } else { 0 });
     }
     // MSG_TRUNC semantics: report the real datagram length so the caller
@@ -309,12 +343,15 @@ pub fn recvfrom(fd: u64, bufp: u64, len: usize, src_p: u64, flags: u64) -> i64 {
         unsafe { core::ptr::copy_nonoverlapping(dgram.as_ptr(), bufp as *mut u8, copy); }
     }
     if src_p != 0 && src_p < USER_VA_END {
-        // SAFETY: src_p validated < USER_VA_END; sockaddr_nl is 12 bytes.
+        // nl_groups identifies the multicast group (1=UDEV_MONITOR_KERNEL raw,
+        // 2=UDEV_MONITOR_UDEV cooked) — NOT 0, or libudev drops it as untrusted
+        // unicast (see recvmsg). SAFETY: src_p validated < USER_VA_END; 12 bytes.
+        let nl_groups: u32 = if dgram.starts_with(b"libudev\0") { 2 } else { 1 };
         unsafe {
             core::ptr::write_volatile( src_p        as *mut u16, 16);
             core::ptr::write_volatile((src_p +  2)  as *mut u16, 0);
             core::ptr::write_volatile((src_p +  4)  as *mut u32, 0);  // kernel = pid 0
-            core::ptr::write_volatile((src_p +  8)  as *mut u32, 0);
+            core::ptr::write_volatile((src_p +  8)  as *mut u32, nl_groups);
         }
     }
     // MSG_TRUNC: report the FULL datagram length (Linux netlink_recvmsg) so the
