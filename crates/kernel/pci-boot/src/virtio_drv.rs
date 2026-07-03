@@ -16,6 +16,26 @@ struct TransportMappings {
     pages: Vec<MappedTransportPage>,
 }
 
+const VIRTIO_PCI_VENDOR_ID: u16 = 0x1AF4;
+const VIRTIO_PCI_NET_ID: u16 = 1;
+const VIRTIO_PCI_BLK_ID: u16 = 2;
+const VIRTIO_PCI_GPU_ID: u16 = 16;
+const VIRTIO_PCI_INPUT_ID: u16 = 18;
+const VIRTIO_PCI_RNG_ID: u16 = 4;
+const VIRTIO_PCI_VSOCK_ID: u16 = 19;
+const VIRTIO_PCI_SND_ID: u16 = 25;
+
+fn virtio_virtio_id(d: &drv::Device) -> Option<u16> {
+    if d.bus != "virtio" || d.vendor_id != VIRTIO_PCI_VENDOR_ID {
+        return None;
+    }
+    virtio::modern_device_id(d.device_id)
+}
+
+fn is_virtio_id(d: &drv::Device, id: u16) -> bool {
+    virtio_virtio_id(d) == Some(id)
+}
+
 impl TransportMappings {
     fn map_page(&mut self, page_pa: u64) -> u64 {
         if page_pa == 0 {
@@ -121,7 +141,7 @@ impl drv::Driver for VirtioGpuDrv {
     fn name(&self) -> &'static str { "virtio-gpu" }
 
     fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 16
+        is_virtio_id(dev, VIRTIO_PCI_GPU_ID)
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
@@ -177,7 +197,7 @@ impl drv::Driver for VirtioInputDrv {
     fn name(&self) -> &'static str { "virtio-input" }
 
     fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 18
+        is_virtio_id(dev, VIRTIO_PCI_INPUT_ID)
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
@@ -241,7 +261,7 @@ impl drv::Driver for VirtioNetDrv {
     fn name(&self) -> &'static str { "virtio-net" }
 
     fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 1
+        is_virtio_id(dev, VIRTIO_PCI_NET_ID)
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
@@ -326,7 +346,7 @@ impl drv::Driver for VirtioBlkDrv {
     fn name(&self) -> &'static str { "virtio-blk" }
 
     fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 2
+        is_virtio_id(dev, VIRTIO_PCI_BLK_ID)
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
@@ -377,7 +397,7 @@ impl drv::Driver for VirtioRngDrv {
     fn name(&self) -> &'static str { "virtio-rng" }
 
     fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 4
+        is_virtio_id(dev, VIRTIO_PCI_RNG_ID)
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
@@ -458,7 +478,7 @@ impl drv::Driver for VirtioVsockDrv {
     fn name(&self) -> &'static str { "virtio-vsock" }
 
     fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 19
+        is_virtio_id(dev, VIRTIO_PCI_VSOCK_ID)
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
@@ -515,7 +535,7 @@ impl drv::Driver for VirtioSndDrv {
     fn name(&self) -> &'static str { "virtio-snd" }
 
     fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 25
+        is_virtio_id(dev, VIRTIO_PCI_SND_ID)
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
@@ -1096,17 +1116,17 @@ struct VirtioProbePlan {
 
 impl VirtioProbePlan {
     fn from_device(d: &pci::PciDevice) -> Self {
-        let kind = if d.vendor_id != 0x1AF4 {
+        let kind = if d.vendor_id != VIRTIO_PCI_VENDOR_ID {
             VirtioChildKind::Other
         } else {
-            match d.device_id {
-                0x1041 => VirtioChildKind::Net,
-                0x1042 => VirtioChildKind::Block,
-                0x1044 => VirtioChildKind::Rng,
-                0x1050 => VirtioChildKind::Gpu,
-                0x1052 => VirtioChildKind::Input,
-                0x1053 => VirtioChildKind::Vsock,
-                0x1059 => VirtioChildKind::Snd,
+            match virtio::modern_device_id(d.device_id) {
+                Some(VIRTIO_PCI_NET_ID) => VirtioChildKind::Net,
+                Some(VIRTIO_PCI_BLK_ID) => VirtioChildKind::Block,
+                Some(VIRTIO_PCI_RNG_ID) => VirtioChildKind::Rng,
+                Some(VIRTIO_PCI_GPU_ID) => VirtioChildKind::Gpu,
+                Some(VIRTIO_PCI_INPUT_ID) => VirtioChildKind::Input,
+                Some(VIRTIO_PCI_VSOCK_ID) => VirtioChildKind::Vsock,
+                Some(VIRTIO_PCI_SND_ID) => VirtioChildKind::Snd,
                 _ => VirtioChildKind::Other,
             }
         };
@@ -1856,4 +1876,53 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
         snd_q3_size:      snd_q3_size_local,
         input_cfg_va:     input_cfg_va_local,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        pci, drv, VirtioChildKind, VirtioProbePlan, VIRTIO_PCI_BLK_ID, VIRTIO_PCI_GPU_ID,
+        VIRTIO_PCI_INPUT_ID, VIRTIO_PCI_NET_ID, VIRTIO_PCI_RNG_ID, VIRTIO_PCI_SND_ID,
+        VIRTIO_PCI_VSOCK_ID, VIRTIO_PCI_VENDOR_ID, is_virtio_id,
+    };
+
+    fn pci_dev_for_legacy(device_id: u16) -> pci::PciDevice {
+        pci::PciDevice {
+            bdf: pci::Bdf { bus: 0, device: 0, function: 0 },
+            vendor_id: VIRTIO_PCI_VENDOR_ID,
+            device_id,
+            class_code: 0,
+            subclass: 0,
+            prog_if: 0,
+            revision: 0,
+            header_type: 0,
+        }
+    }
+
+    #[test]
+    fn virtio_probe_plan_maps_supported_devices() {
+        let pci_base = 0x1040u16;
+
+        assert_eq!(VirtioProbePlan::from_device(&pci_dev_for_legacy(pci_base + VIRTIO_PCI_NET_ID)).kind, VirtioChildKind::Net);
+        assert_eq!(VirtioProbePlan::from_device(&pci_dev_for_legacy(pci_base + VIRTIO_PCI_BLK_ID)).kind, VirtioChildKind::Block);
+        assert_eq!(VirtioProbePlan::from_device(&pci_dev_for_legacy(pci_base + VIRTIO_PCI_RNG_ID)).kind, VirtioChildKind::Rng);
+        assert_eq!(VirtioProbePlan::from_device(&pci_dev_for_legacy(pci_base + VIRTIO_PCI_GPU_ID)).kind, VirtioChildKind::Gpu);
+        assert_eq!(VirtioProbePlan::from_device(&pci_dev_for_legacy(pci_base + VIRTIO_PCI_INPUT_ID)).kind, VirtioChildKind::Input);
+        assert_eq!(VirtioProbePlan::from_device(&pci_dev_for_legacy(pci_base + VIRTIO_PCI_VSOCK_ID)).kind, VirtioChildKind::Vsock);
+        assert_eq!(VirtioProbePlan::from_device(&pci_dev_for_legacy(pci_base + VIRTIO_PCI_SND_ID)).kind, VirtioChildKind::Snd);
+        assert_eq!(VirtioProbePlan::from_device(&pci_dev_for_legacy(0x1234)).kind, VirtioChildKind::Other);
+    }
+
+    #[test]
+    fn virtio_driver_match_helpers_use_vendor_and_virtio_id() {
+        let ok = drv::Device::new("virtio", alloc::string::String::from("v0"), VIRTIO_PCI_VENDOR_ID, 0x1040 + VIRTIO_PCI_NET_ID, 0);
+        let bad_vendor = drv::Device::new("virtio", alloc::string::String::from("v1"), 0x1AF0, 0x1040 + VIRTIO_PCI_NET_ID, 0);
+        let bad_bus = drv::Device::new("pci", alloc::string::String::from("0000:00:00.0"), VIRTIO_PCI_VENDOR_ID, 0x1040 + VIRTIO_PCI_NET_ID, 0);
+        let bad_id = drv::Device::new("virtio", alloc::string::String::from("v2"), VIRTIO_PCI_VENDOR_ID, 0x1041, 0);
+
+        assert!(is_virtio_id(&ok, VIRTIO_PCI_NET_ID));
+        assert!(!is_virtio_id(&bad_vendor, VIRTIO_PCI_NET_ID));
+        assert!(!is_virtio_id(&bad_bus, VIRTIO_PCI_NET_ID));
+        assert!(!is_virtio_id(&bad_id, VIRTIO_PCI_NET_ID));
+    }
 }
