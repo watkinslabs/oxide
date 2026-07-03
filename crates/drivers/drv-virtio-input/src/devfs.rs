@@ -14,15 +14,21 @@ use crate::evdev_queue::MAX_EVDEV;
 const EVDEV_INO_BASE: Ino = 0x7400_0000;
 
 /// Backend-private state (`i_private`) for `/dev/input/event<id>`: the evdev
-/// id that keys the per-device queue. The old per-inode `ino()` tag is now
+/// id that keys the per-device queue. The per-inode `ino()` tag is
 /// `EVDEV_INO_BASE | (1 + id)` on the inode. # C: O(1)
 pub struct EvdevData { pub id: u32 }
 
 /// `id -> node inode` registry. The canonical `PollSubscribers` now lives on
 /// the inode (`Inode::poll_subs`, where `epoll_ctl(ADD)` registers); the drain
-/// reaches it through here to `notify()` on push. `None` until the node for an
-/// id is built (event0 at boot, event1.. at PCI enum). # C: O(1)
+/// reaches it through here to `notify()` on push. `None` until the owning
+/// virtio-input device probes and publishes its event node. # C: O(1)
 static EVDEV_NODES: Spinlock<[Option<InodeRef>; MAX_EVDEV], NodesLockClass>
+    = Spinlock::new([const { None }; MAX_EVDEV]);
+
+/// `id -> drv::Device` for model-owned evdev publication. The node itself is
+/// still bespoke, but `/dev/input/eventN` is minted and removed by
+/// `drv::device_add` / `drv::device_del` through the devtmpfs hook.
+static EVDEV_DEVICES: Spinlock<[Option<Arc<drv::Device>>; MAX_EVDEV], NodesLockClass>
     = Spinlock::new([const { None }; MAX_EVDEV]);
 
 /// `file_operations` for an evdev node — read pops 24-byte `input_event`
@@ -222,22 +228,50 @@ pub fn handle_evdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
     Some(rv)
 }
 
-/// Boot-time registration of the always-present keyboard node
-/// (`/dev/input/event0`). Called early (before PCI enum) so a console
-/// keyboard reader has a node even before the device drains.
+/// Boot-time creation of the `/dev/input` directory. Event nodes are not
+/// fabricated here; `install_device` publishes `/dev/input/event<id>` only
+/// after the matching virtio-input device probes, and `remove_device` removes
+/// it on teardown.
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
-/// # C: O(1)
+/// # C: O(depth)
 pub fn init() {
-    devfs::register("/dev/input/event0", make_evdev_inode(0));
+    devfs::register_dir("/dev/input");
 }
 
-/// Register `/dev/input/event<id>` for every additional virtio-input device
-/// discovered at PCI enumeration (event1 = pointer, …). event0 is already
-/// registered by `init`. Called once after enumeration. # C: O(count)
-pub fn register_extra_nodes() {
-    let n = crate::count();
-    for id in 1..n.min(crate::evdev_queue::MAX_EVDEV) as u32 {
-        let path = alloc::format!("/dev/input/event{id}");
-        devfs::register_owned(path, make_evdev_inode(id));
+/// Register one model-owned `/dev/input/event<id>` node.
+/// # C: O(depth)
+pub fn register_node(id: u32) -> bool {
+    if (id as usize) >= MAX_EVDEV {
+        return false;
+    }
+    let slot = id as usize;
+    if EVDEV_DEVICES.lock()[slot].is_some() {
+        return false;
+    }
+    let factory: drv::NodeFactory = Arc::new(move || make_evdev_inode(id));
+    let dev = drv::device_add(Arc::new(
+        drv::Device::new("input", alloc::format!("event{id}"), 0, 0, id)
+            .with_devnode("input", alloc::format!("input/event{id}"), Some((13, 64 + id)))
+            .with_node_factory(factory),
+    ));
+    EVDEV_DEVICES.lock()[slot] = Some(dev);
+    true
+}
+
+/// Remove one model-owned `/dev/input/event<id>` node and clear its
+/// notification inode.
+/// # C: O(depth)
+pub fn unregister_node(id: u32) -> bool {
+    if (id as usize) >= MAX_EVDEV {
+        return false;
+    }
+    let slot = id as usize;
+    EVDEV_NODES.lock()[slot] = None;
+    let dev = EVDEV_DEVICES.lock()[slot].take();
+    if let Some(dev) = dev {
+        drv::device_del(&dev);
+        true
+    } else {
+        false
     }
 }

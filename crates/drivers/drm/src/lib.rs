@@ -482,8 +482,28 @@ static NEXT_HANDLE: AtomicU32 = AtomicU32::new(1);
 /// # C: O(1)
 pub fn register(driver: Arc<dyn DrmDriver>) -> u32 {
     let mut g = CARDS.lock();
+    if g.is_empty() {
+        node::register();
+    }
     g.push(driver);
     (g.len() - 1) as u32
+}
+
+/// Unregister a per-device backend. Returns true if a live card was removed.
+/// # C: O(N)
+pub fn unregister(card_id: u32) -> bool {
+    let mut g = CARDS.lock();
+    let idx = card_id as usize;
+    if idx >= g.len() {
+        return false;
+    }
+    g.remove(idx);
+    let empty = g.is_empty();
+    drop(g);
+    if empty {
+        node::unregister();
+    }
+    true
 }
 
 /// Snapshot of registered cards.
@@ -681,12 +701,15 @@ mod tests {
     #[test]
     fn register_increments_card_count() {
         CARDS.lock().clear();
+        node::unregister();
         let idx = register(Arc::new(DummyDrv));
         assert_eq!(idx, 0);
         assert_eq!(card_count(), 1);
         let idx2 = register(Arc::new(DummyDrv));
         assert_eq!(idx2, 1);
-        CARDS.lock().clear();
+        assert!(unregister(idx2));
+        assert!(unregister(idx));
+        assert_eq!(card_count(), 0);
     }
 }
 

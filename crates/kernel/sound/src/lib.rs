@@ -10,9 +10,13 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
+use sync::{Spinlock, TaskList as SoundLockClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError, InodeBuilder, FileOps, default_inode_ops, mk_mode};
 
 mod uapi;
+pub mod ops;
 mod pcm;
 mod capture;
 mod control;
@@ -30,6 +34,9 @@ const MINOR_PCM_C:   u64 = 0x11; // pcmC0D0c (capture)
 const MINOR_DSP:     u64 = 0x20; // /dev/dsp
 const MINOR_AUDIO:   u64 = 0x21; // /dev/audio
 const MINOR_MIXER:   u64 = 0x22; // /dev/mixer
+
+static CARD_NODES: Spinlock<Vec<Arc<drv::Device>>, SoundLockClass> = Spinlock::new(Vec::new());
+static CARD_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Backend-private state (`i_private`) for a sound node: the device minor that
 /// keys the shared read/write/ioctl dispatch (`controlC0`/`pcmC0D0p`/…). The
@@ -87,6 +94,76 @@ fn make_snd_inode(minor: u64) -> InodeRef {
         .build()
 }
 
+struct SoundNode {
+    name: &'static str,
+    class: &'static str,
+    dev_name: &'static str,
+    dev_t: (u32, u32),
+    minor: u64,
+}
+
+const SOUND_NODES: &[SoundNode] = &[
+    SoundNode {
+        name: "controlC0",
+        class: "sound",
+        dev_name: "snd/controlC0",
+        dev_t: (116, 0),
+        minor: MINOR_CONTROL,
+    },
+    SoundNode {
+        name: "pcmC0D0p",
+        class: "sound",
+        dev_name: "snd/pcmC0D0p",
+        dev_t: (116, 16),
+        minor: MINOR_PCM_P,
+    },
+    SoundNode {
+        name: "pcmC0D0c",
+        class: "sound",
+        dev_name: "snd/pcmC0D0c",
+        dev_t: (116, 24),
+        minor: MINOR_PCM_C,
+    },
+    SoundNode {
+        name: "dsp",
+        class: "sound",
+        dev_name: "dsp",
+        dev_t: (14, 3),
+        minor: MINOR_DSP,
+    },
+    SoundNode {
+        name: "dsp0",
+        class: "sound",
+        dev_name: "dsp0",
+        dev_t: (14, 3),
+        minor: MINOR_DSP,
+    },
+    SoundNode {
+        name: "audio",
+        class: "sound",
+        dev_name: "audio",
+        dev_t: (14, 4),
+        minor: MINOR_AUDIO,
+    },
+    SoundNode {
+        name: "mixer",
+        class: "sound",
+        dev_name: "mixer",
+        dev_t: (14, 0),
+        minor: MINOR_MIXER,
+    },
+];
+
+fn add_sound_node(node: &SoundNode) -> Arc<drv::Device> {
+    let minor = node.minor;
+    let factory: drv::NodeFactory = Arc::new(move || make_snd_inode(minor));
+    drv::device_add(Arc::new(
+        drv::Device::new(node.class, node.name.into(), 0, 0, node.minor as u32)
+            .with_devnode(node.class, node.dev_name.into(), Some(node.dev_t))
+            .with_node_factory(factory),
+    ))
+}
+
 /// Sound-node ioctl entry point for the shared `sys_ioctl` dispatch chain.
 /// Routes by the node minor + ioctl magic. Returns `Some(rv)` for sound
 /// nodes, `None` otherwise. # C: O(1) excluding a blocking PCM transfer
@@ -107,17 +184,127 @@ pub fn handle_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
     })
 }
 
-/// Register the ALSA (primary) + OSS (emulation) nodes once a virtio-snd
-/// card is present. Absent a card, nothing is created. # C: O(1)
-pub fn init() {
-    if !drv_virtio_snd::present() { return; }
-    // ALSA primary surface.
-    devfs::register("/dev/snd/controlC0", make_snd_inode(MINOR_CONTROL));
-    devfs::register("/dev/snd/pcmC0D0p",  make_snd_inode(MINOR_PCM_P));
-    devfs::register("/dev/snd/pcmC0D0c",  make_snd_inode(MINOR_PCM_C));
-    // OSS compat surface (snd-pcm-oss), over the same substream.
-    devfs::register("/dev/dsp",   make_snd_inode(MINOR_DSP));
-    devfs::register("/dev/dsp0",  make_snd_inode(MINOR_DSP));
-    devfs::register("/dev/audio", make_snd_inode(MINOR_AUDIO));
-    devfs::register("/dev/mixer", make_snd_inode(MINOR_MIXER));
+/// Register the ALSA (primary) + OSS (emulation) nodes for a probed card.
+/// Called from the sound card driver's probe after it has installed ops.
+/// # C: O(depth)
+pub fn register_card() -> bool {
+    if ops::ops().is_none() {
+        return false;
+    }
+    if CARD_REGISTERED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return true;
+    }
+    devfs::register_dir("/dev/snd");
+    let mut published = Vec::new();
+    for node in SOUND_NODES {
+        published.push(add_sound_node(node));
+    }
+    *CARD_NODES.lock() = published;
+    true
+}
+
+/// Remove ALSA/OSS nodes for the card being removed.
+/// # C: O(nodes * depth)
+pub fn unregister_card() {
+    if !CARD_REGISTERED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let nodes = {
+        let mut registered = CARD_NODES.lock();
+        if registered.is_empty() {
+            return;
+        }
+        core::mem::take(&mut *registered)
+    };
+    for node in nodes.iter().rev() {
+        drv::device_del(node);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::String;
+
+    static ADDED: Spinlock<Vec<(String, Option<(u32, u32)>, bool)>, SoundLockClass>
+        = Spinlock::new(Vec::new());
+    static REMOVED: Spinlock<Vec<String>, SoundLockClass> = Spinlock::new(Vec::new());
+
+    fn cfg() -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
+    fn caps() -> ops::Caps { Some((0, 0, 1, 2)) }
+    fn period() -> usize { 2048 }
+    fn hw_params(_rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
+    fn yes() -> bool { true }
+    fn trigger(_start: bool) -> bool { true }
+    fn submit(b: &[u8]) -> usize { b.len() }
+    fn recv(b: &mut [u8]) -> usize { b.len() }
+
+    static TEST_OPS: ops::SoundOps = ops::SoundOps {
+        config: cfg,
+        pcm_caps: caps,
+        cap_caps: caps,
+        period_bytes: period,
+        pcm_hw_params: hw_params,
+        pcm_prepare: yes,
+        pcm_trigger: trigger,
+        pcm_hw_free: yes,
+        pcm_submit: submit,
+        cap_hw_params: hw_params,
+        cap_prepare: yes,
+        cap_trigger: trigger,
+        cap_hw_free: yes,
+        pcm_recv: recv,
+    };
+
+    fn add_hook(class: &str, name: &str, dt: Option<(u32, u32)>, factory: Option<drv::NodeFactory>) {
+        if class == "sound" {
+            ADDED.lock().push((String::from(name), dt, factory.is_some()));
+        }
+    }
+
+    fn del_hook(name: &str) {
+        REMOVED.lock().push(String::from(name));
+    }
+
+    #[test]
+    fn card_nodes_are_model_owned_and_removed() {
+        drv::set_devtmpfs_hook(add_hook);
+        drv::set_devtmpfs_del_hook(del_hook);
+        ADDED.lock().clear();
+        REMOVED.lock().clear();
+        unregister_card();
+        ops::clear();
+
+        ops::register(&TEST_OPS);
+        assert!(register_card());
+        assert!(register_card(), "second register is idempotent");
+
+        let added = ADDED.lock().clone();
+        assert_eq!(added.len(), SOUND_NODES.len());
+        assert!(added.iter().any(|n| n == &(String::from("snd/controlC0"), Some((116, 0)), true)));
+        assert!(added.iter().any(|n| n == &(String::from("snd/pcmC0D0p"), Some((116, 16)), true)));
+        assert!(added.iter().any(|n| n == &(String::from("snd/pcmC0D0c"), Some((116, 24)), true)));
+        assert!(added.iter().any(|n| n == &(String::from("dsp"), Some((14, 3)), true)));
+        assert!(added.iter().any(|n| n == &(String::from("dsp0"), Some((14, 3)), true)));
+        assert!(added.iter().any(|n| n == &(String::from("audio"), Some((14, 4)), true)));
+        assert!(added.iter().any(|n| n == &(String::from("mixer"), Some((14, 0)), true)));
+
+        unregister_card();
+        let removed = REMOVED.lock().clone();
+        assert_eq!(removed.len(), SOUND_NODES.len());
+        assert!(removed.iter().any(|n| n == "snd/controlC0"));
+        assert!(removed.iter().any(|n| n == "snd/pcmC0D0p"));
+        assert!(removed.iter().any(|n| n == "snd/pcmC0D0c"));
+        assert!(removed.iter().any(|n| n == "dsp"));
+        assert!(removed.iter().any(|n| n == "dsp0"));
+        assert!(removed.iter().any(|n| n == "audio"));
+        assert!(removed.iter().any(|n| n == "mixer"));
+
+        unregister_card();
+        assert_eq!(REMOVED.lock().len(), SOUND_NODES.len(), "second unregister is idempotent");
+        ops::clear();
+    }
 }

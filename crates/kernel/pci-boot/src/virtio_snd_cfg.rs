@@ -35,30 +35,29 @@ pub(super) fn harvest(
         core::ptr::read_volatile((cfg_va + 8) as *const u32),
         core::ptr::read_volatile((cfg_va + 12) as *const u32),
     )};
+    // SAFETY: this was a temporary one-page device-cfg mapping used only for
+    // the harvest reads above; no runtime driver keeps this VA.
+    unsafe { mmio_map::unmap_pages(d_va, 1); }
     Some(vals)
 }
 
-/// Install the virtio-snd CONTROLQ engine: fetch the per-arch HHDM offset +
-/// hand the q0 ring PAs + config counts to drv-virtio-snd (which allocates
-/// the control scratch frame and queries the PCM stream table). Returns the
-/// probe result (stream split) for the boot line. # C: O(streams)
-#[allow(clippy::too_many_arguments)]
+/// Install the virtio-snd CONTROLQ engine by handing the transport-owned
+/// queue resources plus harvested config counts to drv-virtio-snd. Returns
+/// the probe result (stream split) for the boot line. # C: O(streams)
 pub(super) fn install_snd(
-    q0_desc_pa: u64, q0_driver_pa: u64, q0_device_pa: u64, q0_notify_va: u64, q0_size: u16,
-    cfg_va: u64, jacks: u32, streams: u32, chmaps: u32, controls: u32,
-    q2_desc_pa: u64, q2_driver_pa: u64, q2_device_pa: u64, q2_notify_va: u64, q2_size: u16,
-    q3_desc_pa: u64, q3_driver_pa: u64, q3_device_pa: u64, q3_notify_va: u64, q3_size: u16,
+    device_key: u32,
+    resources: virtio::VirtioResources,
+    jacks: u32,
+    streams: u32,
+    chmaps: u32,
+    controls: u32,
 ) -> Option<drv_virtio_snd::SndProbe> {
-    let hhdm = {
-        #[cfg(target_arch = "x86_64")]
-        { hal_x86_64::mmu_ops::hhdm_offset() }
-        #[cfg(target_arch = "aarch64")]
-        { hal_aarch64::mmu_ops::hhdm_offset() }
-    };
     drv_virtio_snd::install(drv_virtio_snd::SndInstall {
-        q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, q0_size, hhdm,
-        cfg_va, jacks, streams, chmaps, controls,
-        q2_desc_pa, q2_driver_pa, q2_device_pa, q2_notify_va, q2_size,
-        q3_desc_pa, q3_driver_pa, q3_device_pa, q3_notify_va, q3_size,
+        device_key,
+        resources,
+        jacks,
+        streams,
+        chmaps,
+        controls,
     })
 }

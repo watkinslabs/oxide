@@ -187,6 +187,15 @@ impl IfaceRegistry {
         id
     }
 
+    /// Unregister an interface from its namespace. Returns the removed
+    /// device so callers that need to quiesce it can still hold a reference.
+    /// # C: O(N)
+    pub fn unregister(&self, id: NetIfaceId) -> Option<Arc<dyn NetDev>> {
+        let mut g = self.inner.lock();
+        let pos = g.entries.iter().position(|e| e.id == id)?;
+        Some(g.entries.remove(pos).dev)
+    }
+
     /// Current IFF_* flags for `id` (init NS). # C: O(N)
     pub fn iface_flags(&self, id: NetIfaceId) -> Option<u32> {
         let g = self.inner.lock();

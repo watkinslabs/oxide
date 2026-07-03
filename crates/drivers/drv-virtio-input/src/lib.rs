@@ -11,6 +11,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
+#[cfg(target_os = "oxide-kernel")]
+pub mod procfs;
+
 // ============================================================
 // Wire constants per linux/include/uapi/linux/virtio_input.h
 // + virtio 1.2 §5.8
@@ -22,6 +25,7 @@ pub const VIRTIO_INPUT_PCI_DEVICE_ID: u16 = 0x1052;
 pub const VIRTIO_PCI_VENDOR_RH:       u16 = 0x1AF4;
 
 pub const VIRTIO_F_VERSION_1: u32 = 32;
+pub const MAX_INPUT_DEVICES: usize = 8;
 
 // virtio_input_config.select selectors
 pub const VIRTIO_INPUT_CFG_UNSET:     u8 = 0;
@@ -150,15 +154,23 @@ pub struct VirtioInputDev {
 // Crate entry points
 // ============================================================
 
-// virtio-input binds via the real driver-model Driver registered + bound at
-// its bring-up site (pci_boot/virtio_drv.rs → drv::bind), not a probe stub. The
-// old NoMatch DriverEntry (legacy drv::probe_all path, never called) was
-// removed in drivers-plan D2.
+// virtio-input is owned by the pci-boot Driver::probe/remove path. The
+// transport helper only returns mapped queue/config state; probe installs the
+// evdev device and remove tears it down.
 
 /// Multi-device registry. v1 supports up to 8 simultaneous evdev
 /// devices (kbd + mouse + tablet + spares).
 static DEVICES: Spinlock<Vec<VirtioInputDev>, DriverLockClass>
     = Spinlock::new(Vec::new());
+
+fn lowest_free_evdev_id(devs: &[VirtioInputDev]) -> Option<u32> {
+    for id in 0..MAX_INPUT_DEVICES as u32 {
+        if devs.iter().all(|d| d.evdev_id != id) {
+            return Some(id);
+        }
+    }
+    None
+}
 
 /// Surface for the kernel to install a per-device record after
 /// running modern-transport bring-up + the config-space identity
@@ -171,6 +183,10 @@ pub fn install(dev: VirtioInputDev) {
 /// Number of installed evdev devices.
 /// # C: O(1)
 pub fn count() -> usize { DEVICES.lock().len() }
+
+/// Snapshot all installed input devices for generated metadata files.
+/// # C: O(N)
+pub fn devices_snapshot() -> Vec<VirtioInputDev> { DEVICES.lock().clone() }
 
 /// Select `(select, subsel)` on the device config and return the reported
 /// `size` (valid bytes in the config union @8). The virtio_input_config
@@ -207,8 +223,14 @@ unsafe fn cfg_payload(cfg_va: u64, dst: &mut [u8]) -> usize {
 /// # SAFETY: `cfg_va` is the Device-attr-mapped virtio-input device-cfg
 /// window owned by the caller for the device's lifetime.
 /// # C: O(abs axes) config round-trips
-pub unsafe fn install_device(bdf: u32, cfg_va: u64) -> u32 {
-    let evdev_id = count() as u32;
+pub unsafe fn install_device(bdf: u32, cfg_va: u64) -> Option<u32> {
+    let evdev_id = {
+        let g = DEVICES.lock();
+        if g.iter().any(|d| d.bdf == bdf) {
+            return None;
+        }
+        lowest_free_evdev_id(&g)?
+    };
     let mut dev = VirtioInputDev {
         bdf, evdev_id, is_pointer: false,
         name: [0; 128], name_len: 0, serial: [0; 128], serial_len: 0,
@@ -282,8 +304,37 @@ pub unsafe fn install_device(bdf: u32, cfg_va: u64) -> u32 {
         dev.is_pointer = (dev.ev_bits[(EV_REL / 8) as usize] & (1 << (EV_REL % 8))) != 0
             || (dev.ev_bits[(EV_ABS / 8) as usize] & (1 << (EV_ABS % 8))) != 0;
     }
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        install(dev);
+        if !devfs::register_node(evdev_id) {
+            let _ = remove_device(bdf);
+            return None;
+        }
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
     install(dev);
-    evdev_id
+    Some(evdev_id)
+}
+
+/// Remove the virtio-input identity/capability record for a BDF.
+/// Returns the evdev id that was assigned to that device.
+/// # C: O(N)
+pub fn remove_device(bdf: u32) -> Option<u32> {
+    let evdev_id = {
+        let mut g = DEVICES.lock();
+        let idx = g.iter().position(|d| d.bdf == bdf)?;
+        g.remove(idx).evdev_id
+    };
+    #[cfg(target_os = "oxide-kernel")]
+    devfs::unregister_node(evdev_id);
+    Some(evdev_id)
+}
+
+/// Return the evdev id assigned to a BDF without unregistering it.
+/// # C: O(N)
+pub fn evdev_id_for_bdf(bdf: u32) -> Option<u32> {
+    DEVICES.lock().iter().find(|d| d.bdf == bdf).map(|d| d.evdev_id)
 }
 
 /// Snapshot the friendly name for `evdev_id` if installed.

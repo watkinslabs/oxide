@@ -10,7 +10,7 @@ Driver crate `drv-virtio-input` for virtio device class 18 ("input device") per 
 
 ## 2 Invariants (frozen)
 
-1. Driver lives in `crates/drv-virtio-input`. Kernel does not link it directly; `drv::probe_all` invokes `probe(bdf)`.
+1. Driver lives in `crates/drivers/drv-virtio-input`. The virtio bus registers the child device and binds it through the `drv::Driver` probe/remove path.
 2. Two virtqueues: EVENTQ (idx=0, 64 entries, host→guest event delivery), STATUSQ (idx=1, 64 entries, guest→host status delivery e.g. LED state).
 3. Negotiated features (v1): `VIRTIO_F_VERSION_1` (32) only. No device-class-specific feature bits.
 4. Each virtio-input PCI function corresponds to ONE evdev `/dev/input/event<N>`. Multiple devices (kbd + mouse + tablet) = multiple PCI functions = multiple eventfds.
@@ -22,8 +22,9 @@ Driver crate `drv-virtio-input` for virtio device class 18 ("input device") per 
 ## 3 Public ifc
 
 ```rust
-// crates/drv-virtio-input/src/lib.rs
-pub fn register();   // calls drv::register(DriverEntry { name: "virtio-input", probe })
+// crates/drivers/drv-virtio-input/src/lib.rs
+pub fn install(cfg: InputInstall) -> bool;  // called by virtio-input Driver::probe
+pub fn uninstall();
 
 pub struct VirtioInputDev { /* eventq/statusq refs + name + caps */ }
 
@@ -115,7 +116,7 @@ EV_SYN frames (`type=0, code=SYN_REPORT(0), value=0`) terminate each event group
 
 ## 8 Probe + bring-up
 
-1. `drv::probe_all(bdf)` enters `drv-virtio-input::probe`.
+1. The virtio bus binds the virtio-input child device through `Driver::probe`.
 2. PCI match: `0x1AF4`/`0x1052` (modern virtio-input) only.
 3. Standard virtio init (ACK → DRIVER → features → FEATURES_OK → DRIVER_OK).
 4. Read config space at `select=ID_NAME` to capture friendly name.

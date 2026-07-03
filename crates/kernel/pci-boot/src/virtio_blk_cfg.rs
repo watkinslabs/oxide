@@ -55,22 +55,32 @@ pub(super) fn harvest(
         if bs != 0 { blk_size = bs; }
     }
 
+    // SAFETY: this was a temporary one-page device-cfg mapping used only for
+    // the harvest reads above; no runtime driver keeps this VA.
+    unsafe { mmio_map::unmap_pages(d_va, 1); }
     (capacity, blk_size, true)
 }
 
-/// Hand the persistent queue-0 addresses + harvested device-cfg to the
+/// Hand typed queue-0 resources + harvested device-cfg to the
 /// virtio-blk engine, which reads the serial (GET_ID), builds a
 /// `BlockDevice`, and registers it under a unique name.
 /// # C: O(1) + registry O(N_disks)
-#[allow(clippy::too_many_arguments)]
 pub(super) fn register_blk(
     bus: u8, device: u8, function: u8,
-    q0_desc_pa: u64, q0_avail_pa: u64, q0_used_pa: u64,
-    q0_notify_va: u64, q0_size: u16, capacity: u64, blk_size: u32,
-) {
-    let _ = drv_virtio_blk::modern::init_blk(drv_virtio_blk::modern::BlkInit {
+    resources: virtio::VirtioResources,
+    capacity: u64,
+    blk_size: u32,
+) -> u32 {
+    drv_virtio_blk::modern::init_blk(drv_virtio_blk::modern::BlkInit {
         bus, device, function,
-        q0_desc_pa, q0_avail_pa, q0_used_pa, q0_notify_va,
-        q0_size, capacity, blk_size,
-    });
+        resources,
+        capacity,
+        blk_size,
+    })
+}
+
+/// Remove the virtio-blk device for this PCI BDF from the block layer.
+/// # C: O(N_virtio_blk + N_disks + N_devices)
+pub(super) fn remove_blk(bus: u8, device: u8, function: u8) -> bool {
+    drv_virtio_blk::modern::remove_blk(bus, device, function)
 }

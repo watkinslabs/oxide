@@ -13,6 +13,7 @@ kmacros = { path = "../../shared/kmacros" }
 sync    = { path = "../../shared/sync" }
 hal     = { path = "../../arch/hal" }
 pmm     = { path = "../mm-pmm" }
+mmio-map = { path = "../mmio-map" }
 pci     = { path = "../../drivers/pci" }
 virtio  = { path = "../../drivers/virtio" }
 drv     = { path = "../../drivers/drv" }

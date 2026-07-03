@@ -35,8 +35,8 @@ fn rel(full: &str) -> &str {
 }
 
 /// Register `full_path` (absolute `/proc/...`) → `inode` in procfs's own
-/// sub-tree. Cross-crate writers (drm `/proc/bus/input/devices`) and the
-/// boot `register_static_files` call this instead of `devfs::register`.
+/// sub-tree. Cross-crate writers and the boot `register_static_files` call this
+/// instead of `devfs::register`.
 /// # C: O(depth)
 pub fn register(full_path: &str, inode: InodeRef) {
     proc_reg().insert_path(rel(full_path), inode);

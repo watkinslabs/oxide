@@ -1,8 +1,8 @@
 // ALSA PCM core for the single virtio-snd OUTPUT substream (card 0, dev 0).
 // Owns the substream state machine + hw_params refinement against the
 // device caps + sw_params + appl_ptr/hw_ptr ring accounting + the
-// SNDRV_PCM_IOCTL_* ABI. Calls drv-virtio-snd's snd_pcm_ops
-// (pcm_hw_params/pcm_prepare/pcm_trigger/pcm_hw_free/pcm_submit).
+// SNDRV_PCM_IOCTL_* ABI. Calls the card driver's registered snd_pcm_ops
+// table (pcm_hw_params/pcm_prepare/pcm_trigger/pcm_hw_free/pcm_submit).
 //
 // Transfer model: blocking interleaved writei. pcm_submit blocks until the
 // device consumes each period, so after a write hw_ptr == appl_ptr and the
@@ -77,7 +77,7 @@ fn hz_rate_enum(hz: u32) -> u8 {
 /// Device OUTPUT caps `(virtio_formats, virtio_rates, ch_min, ch_max)`.
 /// # C: O(1)
 fn caps() -> (u64, u64, u8, u8) {
-    drv_virtio_snd::pcm_caps().unwrap_or((1 << 5, 1 << 6, 1, 2)) // S16 @ 44.1k st default
+    crate::ops::pcm_caps().unwrap_or((1 << 5, 1 << 6, 1, 2)) // S16 @ 44.1k st default
 }
 
 // ── hw_params mask / interval accessors ────────────────────────────────
@@ -218,7 +218,7 @@ fn refine(b: &UserBuf, commit: bool) -> i64 {
     let (vf, vr, ch_min, ch_max) = caps();
     let r = match refine_params(b, vf, vr, ch_min, ch_max) { Ok(r) => r, Err(e) => return e };
     if commit {
-        if !drv_virtio_snd::pcm_hw_params(rate_hz_to_enum(r.rate), fmt_alsa_to_virtio(r.format),
+        if !crate::ops::pcm_hw_params(rate_hz_to_enum(r.rate), fmt_alsa_to_virtio(r.format),
                                           r.channels as u8, r.period_bytes, r.buffer_bytes) {
             return err(Errno::Eio);
         }
@@ -248,23 +248,23 @@ pub fn handle(nr: u64, arg: u64) -> i64 {
         PCM_HW_PARAMS => match UserBuf::new(arg, HW_PARAMS_SIZE) {
             Some(b) => refine(&b, true), None => err(Errno::Efault),
         },
-        PCM_HW_FREE => { drv_virtio_snd::pcm_hw_free(); PCM.lock().state = STATE_OPEN; 0 }
+        PCM_HW_FREE => { crate::ops::pcm_hw_free(); PCM.lock().state = STATE_OPEN; 0 }
         PCM_SW_PARAMS => sw_params(arg),
         PCM_PREPARE => {
-            if !drv_virtio_snd::pcm_prepare() { return err(Errno::Eio); }
+            if !crate::ops::pcm_prepare() { return err(Errno::Eio); }
             let mut p = PCM.lock();
             p.state = STATE_PREPARED; p.appl_ptr = 0; p.hw_ptr = 0; 0
         }
         PCM_START => {
-            if !drv_virtio_snd::pcm_trigger(true) { return err(Errno::Eio); }
+            if !crate::ops::pcm_trigger(true) { return err(Errno::Eio); }
             PCM.lock().state = STATE_RUNNING; 0
         }
         PCM_DROP | PCM_DRAIN => {
-            let _ = drv_virtio_snd::pcm_trigger(false);
+            let _ = crate::ops::pcm_trigger(false);
             let mut p = PCM.lock();
             p.state = STATE_SETUP; p.appl_ptr = 0; p.hw_ptr = 0; 0
         }
-        PCM_PAUSE => { let _ = drv_virtio_snd::pcm_trigger(false); PCM.lock().state = STATE_PREPARED; 0 }
+        PCM_PAUSE => { let _ = crate::ops::pcm_trigger(false); PCM.lock().state = STATE_PREPARED; 0 }
         PCM_HWSYNC => 0,
         PCM_DELAY => write_long(arg, 0),
         PCM_STATUS => pcm_status(arg),
@@ -283,10 +283,10 @@ pub fn write_bytes(buf: &[u8]) -> usize {
     let (fb, state) = { let p = PCM.lock(); (p.frame_bytes as u64, p.state) };
     if state == STATE_OPEN || state == STATE_SETUP { return 0; }
     if state == STATE_PREPARED {
-        if !drv_virtio_snd::pcm_trigger(true) { return 0; }
+        if !crate::ops::pcm_trigger(true) { return 0; }
         PCM.lock().state = STATE_RUNNING;
     }
-    let n = drv_virtio_snd::pcm_submit(buf);
+    let n = crate::ops::pcm_submit(buf);
     if n > 0 {
         let frames = n as u64 / fb.max(1);
         let mut p = PCM.lock();
@@ -374,7 +374,7 @@ fn writei(arg: u64) -> i64 {
     if state == STATE_PREPARED {
         let appl = PCM.lock().appl_ptr;
         if appl + frames >= start_thr {
-            if !drv_virtio_snd::pcm_trigger(true) { return err(Errno::Eio); }
+            if !crate::ops::pcm_trigger(true) { return err(Errno::Eio); }
             PCM.lock().state = STATE_RUNNING;
             state = STATE_RUNNING;
         }
@@ -388,7 +388,7 @@ fn writei(arg: u64) -> i64 {
     while done < bytes {
         let chunk = ((bytes - done) as usize).min(staged.len());
         for i in 0..chunk { staged[i] = src.r8(done as usize + i); }
-        let n = drv_virtio_snd::pcm_submit(&staged[..chunk]);
+        let n = crate::ops::pcm_submit(&staged[..chunk]);
         if n == 0 { break; }
         done += n as u64;
         if n < chunk { break; }

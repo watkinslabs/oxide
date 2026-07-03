@@ -1,16 +1,13 @@
 // Architecture-neutral MSI vector allocator for virtio + future PCI
-// drivers. Today this hands out SPI numbers from the GICv2m frame's
-// allocatable range on aarch64; x86 MSI-vector allocation rides
-// alongside the LAPIC vector allocator and is wired in F38+.
-//
-// Per `34§*`. Allocation is monotonic — frees + reuse will be added
-// when virtio drivers learn to release vectors at shutdown (no
-// shutdown path exists in v1).
+// drivers. Device drivers own allocation at probe and release at
+// remove, matching the rest of the driver-core lifecycle.
 
 #![no_std]
 
 extern crate alloc;
 
+#[cfg(target_arch = "x86_64")]
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Kernel VA the GICv2m frame is device-mapped at. Published by
@@ -23,10 +20,6 @@ pub static GICV2M_VA: AtomicU64 = AtomicU64::new(0);
 pub static GICV2M_SPI_FIRST: AtomicU32 = AtomicU32::new(0);
 /// Number of consecutive SPIs the GICv2m frame supports.
 pub static GICV2M_SPI_COUNT: AtomicU32 = AtomicU32::new(0);
-/// Bump cursor for SPI allocation. Initialised lazily from
-/// `GICV2M_SPI_FIRST` on the first call.
-static SPI_NEXT: AtomicU32 = AtomicU32::new(0);
-
 /// Count of MSI deliveries observed by the IRQ dispatcher, per arch.
 /// Bumped every time `oxide_arm_irq_dispatch` (or x86 equivalent)
 /// sees an INTID in the GICv2m SPI range. Diagnostic only — once
@@ -43,29 +36,38 @@ pub fn intid_is_v2m(intid: u32) -> bool {
     first != 0 && count != 0 && intid >= first && intid < first + count
 }
 
-/// Bump-allocator over the MSI vector pool (`VEC_MSI_POOL_FIRST..=
-/// VEC_MSI_POOL_LAST`). Each MSI-X-capable device on the boot scan
-/// gets a distinct vector; the arch-irq dispatcher routes each one
-/// to its registered handler (see `register_msi_handler`).
-/// Returns `None` once the pool is exhausted — caller falls back to
-/// the polling kthread path.
-/// # C: O(1)
+/// Allocate one vector from the x86 MSI pool. Returns `None` once the
+/// pool is exhausted.
+/// # C: O(N) where N is the small MSI vector pool.
 #[cfg(target_arch = "x86_64")]
 pub fn alloc_x86_vector() -> Option<u8> {
-    let cur = MSI_VEC_NEXT.fetch_add(1, Ordering::AcqRel);
-    if cur > hal_x86_64::VEC_MSI_POOL_LAST { return None; }
-    Some(cur)
+    for idx in 0..hal_x86_64::VEC_MSI_POOL_LEN {
+        if MSI_VEC_USED[idx]
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return Some(hal_x86_64::VEC_MSI_POOL_FIRST + idx as u8);
+        }
+    }
+    None
 }
 
 #[cfg(target_arch = "x86_64")]
-static MSI_VEC_NEXT: core::sync::atomic::AtomicU8 =
-    core::sync::atomic::AtomicU8::new(hal_x86_64::VEC_MSI_POOL_FIRST);
+static MSI_VEC_USED: [AtomicBool; hal_x86_64::VEC_MSI_POOL_LEN] = [
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+];
 
 /// Per-vector MSI handler table. Indexed by `vector -
 /// VEC_MSI_POOL_FIRST`. Drivers register at boot via
 /// `register_msi_handler`; the LAPIC dispatcher looks up + calls
-/// each fired vector's handler. Null = no handler installed
-/// (dispatcher falls back to the legacy shared-vector softirq raise).
+/// each fired vector's handler. Null = no handler installed.
 #[cfg(target_arch = "x86_64")]
 pub(crate) static MSI_HANDLERS: [core::sync::atomic::AtomicPtr<()>;
     hal_x86_64::VEC_MSI_POOL_LEN] = {
@@ -100,6 +102,127 @@ pub fn register_msi_handler(vector: u8, handler: fn()) -> Result<(), ()> {
     Ok(())
 }
 
+/// Remove the handler and release `vector` back to the x86 MSI pool.
+/// # C: O(1)
+#[cfg(target_arch = "x86_64")]
+pub fn free_x86_vector(vector: u8) -> Result<(), ()> {
+    if vector < hal_x86_64::VEC_MSI_POOL_FIRST
+        || vector > hal_x86_64::VEC_MSI_POOL_LAST
+    {
+        return Err(());
+    }
+    let idx = (vector - hal_x86_64::VEC_MSI_POOL_FIRST) as usize;
+    MSI_HANDLERS[idx].store(core::ptr::null_mut(), Ordering::Release);
+    MSI_VEC_USED[idx].store(false, Ordering::Release);
+    Ok(())
+}
+
+/// Per-SPI handler table for fixed ARM device lines. Drivers request
+/// their owned INTID during probe and free it during remove; the GIC
+/// dispatcher invokes only the installed owner.
+#[cfg(target_arch = "aarch64")]
+const ARM_IRQ_SLOTS: usize = 16;
+
+#[cfg(target_arch = "aarch64")]
+static ARM_IRQ_INTIDS: [core::sync::atomic::AtomicU32; ARM_IRQ_SLOTS] = [
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+];
+
+#[cfg(target_arch = "aarch64")]
+static ARM_IRQ_HANDS: [core::sync::atomic::AtomicPtr<()>; ARM_IRQ_SLOTS] = [
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+];
+
+/// Install `handler` for a fixed ARM INTID owned by a platform driver.
+/// Returns Err if another driver already owns the line or the small table
+/// is full.
+/// # C: O(N) atomic scan
+#[cfg(target_arch = "aarch64")]
+pub fn request_arm_irq_handler(intid: u32, handler: fn()) -> Result<(), ()> {
+    if intid == 0 {
+        return Err(());
+    }
+    for i in 0..ARM_IRQ_SLOTS {
+        if ARM_IRQ_INTIDS[i].load(Ordering::Acquire) == intid {
+            return Err(());
+        }
+    }
+    for i in 0..ARM_IRQ_SLOTS {
+        if ARM_IRQ_INTIDS[i]
+            .compare_exchange(0, intid, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            ARM_IRQ_HANDS[i].store(handler as *mut (), Ordering::Release);
+            return Ok(());
+        }
+    }
+    Err(())
+}
+
+/// Remove a fixed ARM INTID handler.
+/// # C: O(N) atomic scan
+#[cfg(target_arch = "aarch64")]
+pub fn free_arm_irq_handler(intid: u32) -> Result<(), ()> {
+    for i in 0..ARM_IRQ_SLOTS {
+        if ARM_IRQ_INTIDS[i].load(Ordering::Acquire) == intid {
+            ARM_IRQ_HANDS[i].store(core::ptr::null_mut(), Ordering::Release);
+            ARM_IRQ_INTIDS[i].store(0, Ordering::Release);
+            return Ok(());
+        }
+    }
+    Err(())
+}
+
+/// Dispatch path for fixed ARM device INTIDs.
+/// # C: O(N) atomic scan
+#[cfg(target_arch = "aarch64")]
+pub fn invoke_arm_irq_handler(intid: u32) -> bool {
+    for i in 0..ARM_IRQ_SLOTS {
+        if ARM_IRQ_INTIDS[i].load(Ordering::Acquire) == intid {
+            let raw = ARM_IRQ_HANDS[i].load(Ordering::Acquire);
+            if !raw.is_null() {
+                // SAFETY: raw was installed via `request_arm_irq_handler`
+                // with the documented `fn()` signature.
+                let f: fn() = unsafe { core::mem::transmute(raw) };
+                f();
+                return true;
+            }
+            return false;
+        }
+    }
+    false
+}
+
 /// Per-SPI handler table for the GICv2m / LPI MSI range. Two
 /// parallel atomic arrays so the storage stays Send+Sync without
 /// a lock: SPIs[i] holds the INTID for slot i (0 = empty), HANDS[i]
@@ -131,26 +254,27 @@ pub(crate) static ARM_MSI_HANDS: [core::sync::atomic::AtomicPtr<()>; ARM_MSI_SLO
     core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
 ];
 
-/// Install `handler` for INTID `spi`. Idempotent — re-registers
-/// overwrite. Returns Err if the table is full (all 8 slots used
-/// by other SPIs).
+/// Install `handler` for INTID `spi`. Idempotent for an allocated SPI.
 /// # C: O(N) atomic scan
 #[cfg(target_arch = "aarch64")]
 pub fn register_msi_handler(spi: u32, handler: fn()) -> Result<(), ()> {
-    // First pass: replace an existing entry for this SPI.
     for i in 0..ARM_MSI_SLOTS {
         if ARM_MSI_SPIS[i].load(Ordering::Acquire) == spi {
             ARM_MSI_HANDS[i].store(handler as *mut (), Ordering::Release);
             return Ok(());
         }
     }
-    // Second pass: claim the first empty slot via CAS on the SPI cell.
+    Err(())
+}
+
+/// Remove the handler and release `spi` back to the aarch64 MSI pool.
+/// # C: O(N) atomic scan
+#[cfg(target_arch = "aarch64")]
+pub fn free_arm_spi(spi: u32) -> Result<(), ()> {
     for i in 0..ARM_MSI_SLOTS {
-        if ARM_MSI_SPIS[i]
-            .compare_exchange(0, spi, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            ARM_MSI_HANDS[i].store(handler as *mut (), Ordering::Release);
+        if ARM_MSI_SPIS[i].load(Ordering::Acquire) == spi {
+            ARM_MSI_HANDS[i].store(core::ptr::null_mut(), Ordering::Release);
+            ARM_MSI_SPIS[i].store(0, Ordering::Release);
             return Ok(());
         }
     }
@@ -183,18 +307,40 @@ pub fn invoke_arm_spi_handler(intid: u32) -> bool {
 pub fn invoke_arm_spi_handler(_intid: u32) -> bool { false }
 
 /// Allocate one SPI from the GICv2m frame's range. Returns `None`
-/// when the range is unconfigured or exhausted.
-/// # C: O(1) — atomic CAS bump.
+/// when the range is unconfigured or the driver's handler table is full.
+/// # C: O(N²) over the small MSI table.
 #[cfg(target_arch = "aarch64")]
 pub fn alloc_arm_spi() -> Option<u32> {
     let first = GICV2M_SPI_FIRST.load(Ordering::Acquire);
     let count = GICV2M_SPI_COUNT.load(Ordering::Acquire);
     if first == 0 || count == 0 { return None; }
-    // Lazy cursor init.
-    let _ = SPI_NEXT.compare_exchange(0, first, Ordering::AcqRel, Ordering::Relaxed);
-    let cur = SPI_NEXT.fetch_add(1, Ordering::AcqRel);
-    if cur >= first + count { return None; }
-    Some(cur)
+    let limit = if count as usize > ARM_MSI_SLOTS {
+        ARM_MSI_SLOTS
+    } else {
+        count as usize
+    };
+    for off in 0..limit {
+        let spi = first + off as u32;
+        let mut seen = false;
+        for i in 0..ARM_MSI_SLOTS {
+            if ARM_MSI_SPIS[i].load(Ordering::Acquire) == spi {
+                seen = true;
+                break;
+            }
+        }
+        if seen {
+            continue;
+        }
+        for i in 0..ARM_MSI_SLOTS {
+            if ARM_MSI_SPIS[i]
+                .compare_exchange(0, spi, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Some(spi);
+            }
+        }
+    }
+    None
 }
 
 
@@ -204,10 +350,9 @@ pub fn alloc_arm_spi() -> Option<u32> {
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))] pub mod tlb;
 pub mod irqstat;
 
-/// Hook for "poll the UART for input on each timer tick". Kernel
-/// installs this from `kernel/src/tty.rs::tick_poll_uart` at boot.
-/// gic / lapic call through here instead of hard-linking to tty —
-/// keeps arch-irq free of kernel-side tty integration.
+/// Hook for BSP timer work that belongs above the arch IRQ layer.
+/// gic / lapic call through here instead of hard-linking to kernel
+/// subsystems, keeping arch-irq free of higher-level integration.
 pub type TickPollFn = unsafe fn(from_user: bool);
 static TICK_POLL_HOOK: core::sync::atomic::AtomicPtr<()> =
     core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
