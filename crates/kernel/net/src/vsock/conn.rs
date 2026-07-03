@@ -225,6 +225,25 @@ impl VsockTable {
         }
     }
 
+    /// Mark connections owned by `local_cid` closed and remove only those
+    /// connection records. Listeners remain bound for any remaining vsock
+    /// transport. # C: O(N conns + N listeners)
+    pub fn close_all_for_cid(&self, local_cid: u64) {
+        let mut conns = self.conns.lock();
+        for c in conns.iter().filter(|c| c.local_cid == local_cid) {
+            *c.st.lock() = VsockState::Closed;
+            #[cfg(target_os = "oxide-kernel")]
+            c.waiters.wake_all();
+        }
+        conns.retain(|c| c.local_cid != local_cid);
+        let listeners = self.listeners.lock();
+        for l in listeners.iter() {
+            l.backlog.lock().retain(|k| k.local_cid != local_cid);
+            #[cfg(target_os = "oxide-kernel")]
+            l.accept_waiters.wake_all();
+        }
+    }
+
     /// Register a listener on `port`. # C: O(1)
     pub fn add_listener(&self, port: u32) {
         let mut g = self.listeners.lock();

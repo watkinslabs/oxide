@@ -21,7 +21,9 @@ extern crate alloc;
 
 mod rx;
 
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
+use net::vsock::hdr::VsockHdr;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
 /// Number of RX buffers pre-posted on q0. Each buffer is one 4 KiB
@@ -55,7 +57,7 @@ pub struct Ctx {
 // SAFETY justification: Ctx holds raw PAs/VAs into HHDM/MMIO stable for
 // device lifetime; all access is funneled through the vsock driver
 // Spinlock, so cross-CPU sharing is sound.
-pub(crate) static CTX: Spinlock<Option<Ctx>, DriverLockClass> = Spinlock::new(None);
+pub(crate) static CTX: Spinlock<Vec<Ctx>, DriverLockClass> = Spinlock::new(Vec::new());
 static SOFTIRQ_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// TX poll budget for one outbound packet completion. # C: O(1)
@@ -63,15 +65,12 @@ const TX_POLL_BUDGET: u32 = 2_000_000;
 
 /// True once a virtio-vsock device has been brought up + installed.
 /// # C: O(1)
-pub fn present() -> bool { CTX.lock().is_some() }
+pub fn present() -> bool { !CTX.lock().is_empty() }
 
-/// True iff the named virtio-vsock device owns the installed transport.
-/// # C: O(1)
+/// True iff the named virtio-vsock device owns an installed transport.
+/// # C: O(N transports)
 pub fn present_for(device_key: u32) -> bool {
-    CTX.lock()
-        .as_ref()
-        .map(|ctx| ctx.device_key == device_key)
-        .unwrap_or(false)
+    CTX.lock().iter().any(|ctx| ctx.device_key == device_key)
 }
 
 /// Install the q0(RX)+q1(TX) ring context. Allocates RX bounce frames,
@@ -89,7 +88,7 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u
     if !resources.common_cfg_valid() {
         return false;
     }
-    if CTX.lock().is_some() {
+    if CTX.lock().iter().any(|ctx| ctx.device_key == device_key || ctx.guest_cid == guest_cid) {
         return false;
     }
     let mut rx_bufs = [0u64; RX_RING_BUFS];
@@ -134,7 +133,7 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u
         tx_buf_pa,
     };
     let mut g = CTX.lock();
-    if g.is_some() {
+    if g.iter().any(|ctx| ctx.device_key == device_key || ctx.guest_cid == guest_cid) {
         let mut rx_bufs = ctx.rx_bufs;
         free_rx_bufs(&mut rx_bufs);
         if ctx.tx_buf_pa != 0 {
@@ -144,11 +143,11 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u
         }
         return false;
     }
-    *g = Some(ctx);
+    g.push(ctx);
     drop(g);
 
     // Pre-post all RX buffers + kick the device.
-    rx::prepost_all();
+    rx::prepost_all(device_key);
 
     // Publish guest CID + TX hook so net::vsock can drive the protocol. If
     // a second transport is already installed, unwind only this probe's
@@ -156,19 +155,19 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u
     let endpoint = match net::vsock::driver_install(guest_cid, tx_packet) {
         Some(endpoint) => endpoint,
         None => {
-            let mut ctx = CTX.lock().take().unwrap();
+            let Some(mut ctx) = remove_ctx_by_device(device_key) else { return false };
             // Virtio reset: write 0 to device_status (§3.1.1), using byte access.
             unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
             free_rx_bufs(&mut ctx.rx_bufs);
             if ctx.tx_buf_pa != 0 {
                 // SAFETY: tx_buf_pa was allocated in this install attempt and is
-                // not reachable after CTX.take().
+                // not reachable after remove_ctx_by_device().
                 unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
             }
             return false;
         }
     };
-    if let Some(ctx) = CTX.lock().as_mut() {
+    if let Some(ctx) = CTX.lock().iter_mut().find(|ctx| ctx.device_key == device_key) {
         ctx.endpoint = Some(endpoint);
     } else {
         let _ = net::vsock::driver_uninstall(endpoint);
@@ -195,18 +194,11 @@ fn free_rx_bufs(rx_bufs: &mut [u64; RX_RING_BUFS]) {
 /// the virtio device, and frees RX/TX payload frames.
 /// # C: O(N conns + RX_BUFS)
 pub fn uninstall(device_key: u32) -> bool {
-    let mut ctx = {
-        let mut g = CTX.lock();
-        let Some(ctx) = g.take() else {
-            return false;
-        };
-        if ctx.device_key != device_key {
-            *g = Some(ctx);
-            return false;
-        }
-        ctx
+    let mut ctx = match remove_ctx_by_device(device_key) {
+        Some(ctx) => ctx,
+        None => return false,
     };
-    if SOFTIRQ_INSTALLED.swap(false, Ordering::AcqRel) {
+    if CTX.lock().is_empty() && SOFTIRQ_INSTALLED.swap(false, Ordering::AcqRel) {
         let _ = softirq::clear_handler(softirq::Slot::VsockRx);
     }
     if let Some(endpoint) = ctx.endpoint {
@@ -223,9 +215,15 @@ pub fn uninstall(device_key: u32) -> bool {
     true
 }
 
+fn remove_ctx_by_device(device_key: u32) -> Option<Ctx> {
+    let mut g = CTX.lock();
+    let idx = g.iter().position(|ctx| ctx.device_key == device_key)?;
+    Some(g.remove(idx))
+}
+
 /// Guest CID accessor (0 if no device). # C: O(1)
 pub fn guest_cid() -> u64 {
-    CTX.lock().as_ref().map(|c| c.guest_cid).unwrap_or(0)
+    CTX.lock().first().map(|c| c.guest_cid).unwrap_or(0)
 }
 
 /// TX hook installed into `net::vsock`. `frame` is a fully-encoded
@@ -233,8 +231,12 @@ pub fn guest_cid() -> u64 {
 /// polls the used ring for completion. Returns true on completion.
 /// # C: O(TX_POLL_BUDGET + frame bytes)
 pub fn tx_packet(frame: &[u8]) -> bool {
+    let Some(hdr) = VsockHdr::decode(frame) else { return false };
     let mut g = CTX.lock();
-    let ctx = match g.as_mut() { Some(c) => c, None => return false };
+    let ctx = match g.iter_mut().find(|ctx| ctx.guest_cid == hdr.src_cid) {
+        Some(c) => c,
+        None => return false,
+    };
     let want = frame.len().min(0x1000);
     if want == 0 { return false; }
     let h = ctx.hhdm;

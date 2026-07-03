@@ -173,26 +173,33 @@ fn listener_request_queues_accept() {
 
 #[test]
 fn driver_endpoint_owns_uninstall() {
-    if driver_up() {
-        let live = DriverEndpoint {
-            owner: DRIVER_OWNER.load(core::sync::atomic::Ordering::Acquire),
-            guest_cid: guest_cid(),
-        };
-        let _ = driver_uninstall(live);
-    }
-
     let ep = driver_install(42, dummy_tx).expect("first endpoint installs");
+    let ep2 = driver_install(43, dummy_tx).expect("second endpoint installs");
     assert_eq!(ep.guest_cid(), 42);
     assert_eq!(guest_cid(), 42);
     assert!(driver_up());
-    assert!(driver_install(43, dummy_tx).is_none(), "second endpoint must not replace live one");
+    assert!(driver_install(42, dummy_tx).is_none(), "duplicate CID must not install");
 
-    let stale = DriverEndpoint { owner: ep.owner.wrapping_add(1), guest_cid: 43 };
+    let stale = DriverEndpoint { owner: ep2.owner.wrapping_add(1), guest_cid: 43 };
     assert!(!driver_uninstall(stale), "stale endpoint must not clear live hook");
     assert_eq!(guest_cid(), 42);
     assert!(driver_up());
 
+    let c42 = alloc::sync::Arc::new(
+        VsockConn::new(42, 2005, 2, 1234, VsockState::Connected));
+    let c43 = alloc::sync::Arc::new(
+        VsockConn::new(43, 2006, 2, 1235, VsockState::Connected));
+    TABLE.insert(c42.clone());
+    TABLE.insert(c43.clone());
+
     assert!(driver_uninstall(ep));
+    assert_eq!(*c42.st.lock(), VsockState::Closed);
+    assert_eq!(*c43.st.lock(), VsockState::Connected);
+    assert_eq!(guest_cid(), 43);
+    assert!(driver_up());
+
+    assert!(driver_uninstall(ep2));
     assert_eq!(guest_cid(), 0);
     assert!(!driver_up());
+    TABLE.remove(c43.key());
 }
