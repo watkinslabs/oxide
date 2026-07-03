@@ -34,6 +34,23 @@ oxide-images (local, no remote): `c1e9021` virtio-blk disable-legacy=on.
   control socket). #2333 may help (targeted listener wake); re-test. Fixing this
   unblocks `udevadm info /dev/dri/card0` (see TAGS) + `udevadm trigger` to diagnose R30.
 
+## udev-compliance build-out (doc 60) — IN PROGRESS
+Grounded code audit found real gaps beyond the greeter path (user: "get udev
+compliant first"). Fixed + verified:
+- **#2335 block device-model** — block uevents pointed DEVPATH at a nonexistent
+  /sys path (dev_root_canon block → devices/platform) so udevd processed NO
+  disk. Now /sys/devices/virtual/block/<name> + /sys/class/block + subsystem
+  symlink + DEVTYPE=disk; DEVPATH resolves. Boot-verified (root mounts, systemd up).
+Remaining compliance gaps (doc 60 §6.3a), NOT yet done:
+- block `/sys/.../uevent` still RO → R12 coldplug-write (systemd-udev-trigger)
+  fails EACCES; add SysfsOps::store re-emit (initial device_add add-uevent
+  already covers processing, so lower priority).
+- `/sys/class/` still missing input/backlight/leds/sound/hidraw/misc/graphics —
+  each needs a class dir + the device's subsystem symlink to target it.
+- R21 udevd control socket (udevadm settle/info/trigger hang) — #2333 didn't fix.
+- R30/R31 logind seat attach (the greeter gate) — /run/udev/tags absent.
+- R13 /sys/kernel/uevent_seqnum (legacy; modern udevd likely doesn't need it).
+
 ## First task next session
 `git checkout main && git pull`. Work doc 60 R21→R30/R31. Concretely:
 1. Verify #2333 fixed udevadm control (boot, `udevadm settle`; needs a clean boot —
