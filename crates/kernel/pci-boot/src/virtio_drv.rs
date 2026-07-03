@@ -763,7 +763,30 @@ fn publish_transport_mmio(p: &mut VirtioProbe) {
     records.push(rec);
 }
 
+fn disable_pci_command(bdf: pci::Bdf) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let r = hal_x86_64::pci::LegacyPci;
+        let cur = pci::read_command(&r, bdf);
+        let restored = cur & !(pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER);
+        if restored != cur {
+            pci::write_command(&r, bdf, restored);
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
+            let cur = pci::read_command(&r, bdf);
+            let restored = cur & !(pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER);
+            if restored != cur {
+                pci::write_command(&r, bdf, restored);
+            }
+        }
+    }
+}
+
 fn unmap_transport_record(rec: TransportRecord) {
+    disable_pci_command(bdf_from_word(rec.bdf));
     for frame in rec.vring_frames.iter().copied() {
         if frame == 0 {
             continue;
@@ -814,6 +837,7 @@ fn unpublish_transport_mmio(bdf: u32) {
 
 fn unmap_probe_mmio(p: &mut VirtioProbe) {
     release_probe_msix(p);
+    disable_pci_command(bdf_from_word(p.bdf_word));
     p.mappings.unmap_all();
 }
 
