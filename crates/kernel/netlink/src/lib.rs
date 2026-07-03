@@ -268,6 +268,37 @@ pub fn emit_uevent_with_env(action: &str, devpath: &str, subsystem: &str, extra:
     n
 }
 
+/// Re-broadcast a COOKED libudev uevent that a userspace daemon (systemd-udevd)
+/// sent on its `NETLINK_KOBJECT_UEVENT` socket to the monitor clients
+/// (systemd PID1 / logind). This is the userspace→userspace multicast half of
+/// the uevent path: the kernel emits RAW events to group 1 (udevd); udevd
+/// applies rules and re-broadcasts the COOKED message (with the "libudev"
+/// magic header) to a monitor group; that cooked message must reach the monitor
+/// subscribers here. Deliver to every uevent listener whose group mask
+/// intersects `dest_groups`, PLUS group-0 monitors (systemd's sd-device monitor
+/// binds `nl_groups=0`), EXCEPT the sender itself and EXCEPT group-1-only
+/// sockets (udevd's raw receivers — they must not get the cooked echo).
+/// Returns the number of monitors reached.
+/// # C: O(N_listeners)
+pub fn rebroadcast_cooked_uevent(msg: &[u8], dest_groups: u32, sender: &NetlinkSocket) -> usize {
+    let mut g = UEVENT_LISTENERS.lock();
+    g.retain(|w| w.strong_count() > 0);
+    let mut n = 0;
+    for w in g.iter() {
+        if let Some(s) = w.upgrade() {
+            if core::ptr::eq(alloc::sync::Arc::as_ptr(&s), sender as *const NetlinkSocket) { continue; }
+            let grp = s.groups.load(Ordering::Acquire);
+            // Skip udevd's raw group-1 receivers; deliver to cooked monitors
+            // (matching dest group, or the group-0 monitors systemd uses).
+            if (grp & 1) != 0 { continue; }
+            if grp != 0 && (grp & dest_groups) == 0 { continue; }
+            s.enqueue(msg.to_vec());
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Live `NETLINK_ROUTE` sockets eligible for multicast delivery (`ip
 /// monitor`, systemd-networkd, NetworkManager). Weak so closed sockets
 /// drop out. `rtnl_multicast` enqueues to those whose `groups` mask
