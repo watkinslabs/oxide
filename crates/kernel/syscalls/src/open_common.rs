@@ -132,14 +132,30 @@ pub(crate) fn parse_proc_fd(path: &str) -> Option<(Option<u32>, i32)> {
     vfs::path::parse_proc_fd(path)
 }
 
-/// Open `/proc/<pid>/fd/<n>` by duplicating the target fd's open file
-/// description into the caller's fd table (Linux magic-symlink reopen).
-/// # C: O(1)
+/// Open `/proc/<pid>/fd/<n>` — the Linux magic-symlink reopen (`proc_fd_link`
+/// `get_link` → `nd_jump_link` to the target `(mnt,dentry,inode)`, then a FRESH
+/// open with the CALLER's flags). The result carries a NEW `f_mode` derived from
+/// `flags`, NOT a dup of the original description. Duping instead (the old bug)
+/// meant a chase()-style `O_PATH` fd reopened `O_RDONLY` via `fd_reopen` stayed
+/// `FMODE_PATH`, so `read(2)` returned `EBADF` — os-release + `StateDirectory=`
+/// setup failed, stalling accounts-daemon and the GNOME greeter. # C: O(1)
 pub(crate) fn open_proc_fd(tid_opt: Option<u32>, fd: i32, flags: u32) -> i64 {
     const O_CLOEXEC: u32 = 0o2000000;
-    let file = match sched::proclink::proc_fd_file(tid_opt, fd) {
+    let target = match sched::proclink::proc_fd_file(tid_opt, fd) {
         Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    let inode  = target.inode().clone();
+    let dentry = target.dentry().clone();
+    let mnt_id = target.mnt_id();
+    // Linux `do_dentry_open`: an O_PATH (FMODE_PATH) reopen never runs
+    // `f_op->open` (pure fd-reference); any other access mode does.
+    if (flags & O_PATH) == 0 {
+        if let Err(e) = inode.on_open() { return -(e as i64); }
+    }
+    // `may_open` re-check: a magic-link reopen can only obtain access the caller
+    // is permitted (this is why /proc/self/fd can't escalate). O_PATH exempt.
+    if let Some(rv) = enforce_open_perm(&inode, mnt_id, flags, false) { return rv; }
+    if (flags & O_TRUNC) != 0 { let _ = inode.truncate(0); }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -147,6 +163,8 @@ pub(crate) fn open_proc_fd(tid_opt: Option<u32>, fd: i32, flags: u32) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    let oflags = vfs::OpenFlags::from_bits_truncate(flags) - vfs::OpenFlags::O_CLOEXEC;
+    let file = vfs::File::new_at(inode, dentry, oflags, mnt_id, crate::pathresolve::current_cred());
     // RLIMIT_NOFILE soft limit caps fd allocation (Linux `__alloc_fd`
     // against `rlimit(RLIMIT_NOFILE)`); exceeding it → EMFILE.
     // SAFETY: rlimits slot single-mutator per `13§5`; cur is the running task on this CPU.
