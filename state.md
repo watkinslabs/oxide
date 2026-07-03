@@ -1,44 +1,51 @@
 # state.md — session handoff
 
 ## Headline
-**GNOME bring-up: FIVE structural blockers fixed & merged this session.** The EXIT_NAMESPACE(226) cascade, the dead system D-Bus, and the EXIT_USER(217) cascade are gone, plus two AF_UNIX accept-path correctness bugs. Boot reaches basic/sysinit/sockets/timers/getty/local-fs and services actually RUN. **Current blocker: systemd's D-Bus connection is "terminated" when it installs the `NameOwnerChanged` match**, so Type=dbus services (upower/udisks2/polkit/…) are never detected ready → they time out (~90s each) → multi-user.target / graphical.target never reached, gdm never starts.
+**GNOME bring-up: the dbus blocker is FIXED — `graphical.target` now REACHED.**
+The root cause of the systemd↔dbus-broker "Connection terminated" storm was a
+kernel bug: `recvmsg` on an AF_UNIX SOCK_STREAM socket ignored
+`O_NONBLOCK`/`MSG_DONTWAIT` and busy-spun instead of returning `EAGAIN`.
+dbus-broker's edge-triggered epoll drain never got its terminating `EAGAIN`, so
+it tore every client connection down. Fixed in **#2317**: conn-term **60 → 0**,
+**multi-user.target + graphical.target both reached**, gdm.service starts.
 
-## Merged this session (all boot-verified, both arches smoke to login)
-- **#2311** `mount_setattr AT_EMPTY_PATH + mount-aware bind` — killed the deterministic domainname 226 (6 mount root causes).
-- **#2312** `O_PATH must not invoke the device driver open` (FMODE_PATH) — killed the concurrency 226 (/dev/kmsg inaccessible-char ENXIO).
-- **#2313** `socketpair(AF_UNIX) SO_DOMAIN=AF_UNIX` — brought up the system D-Bus (dbus-broker rejected its controller fd).
-- **#2314** `eventfd blocking read must BLOCK not EINVAL` — killed EXIT_USER(217) for PrivateUsers= units (the `(sd-userns)` eventfd barrier got EINVAL). 217→0, park→wake 4–20ms.
-- **#2315** `AF_UNIX accept SO_DOMAIN + epoll-wake the listener on connect` — accepted AF_UNIX sockets reported AF_INET; connect() didn't wake an epoll-blocked accept loop. Both correct, but did NOT resolve the dbus termination (deeper cause below).
+## Merged this session (all boot-verified)
+- **#2311** mount_setattr AT_EMPTY_PATH + mount-aware bind — killed domainname 226.
+- **#2312** O_PATH must not invoke device driver open (FMODE_PATH) — killed /dev/kmsg 226.
+- **#2313** socketpair(AF_UNIX) SO_DOMAIN=AF_UNIX — brought up system D-Bus.
+- **#2314** eventfd blocking read must BLOCK not EINVAL — killed EXIT_USER(217).
+- **#2315** AF_UNIX accept SO_DOMAIN + epoll-wake listener on connect.
+- **#2316** share a socket's poll_subs into its inode — epoll targeted wakes on
+  accepted sockets (server now reads binary D-Bus messages, not just AUTH text).
+- **#2317** recvmsg AF_UNIX stream honours O_NONBLOCK/MSG_DONTWAIT (EAGAIN) — THE
+  dbus fix. `crates/kernel/syscalls/src/047_recvmsg.rs` + `cmsg_parse.rs`.
 
-## Current blocker — analysis (next session starts here)
-Symptom: `Unexpected error response on installing NameOwnerChanged signal match: Connection terminated` — logged 75×/boot. systemd (PID1) connects to the system bus and calls `AddMatch` for `NameOwnerChanged` (org.freedesktop.DBus) to learn when a Type=dbus service acquires its `BusName=`. The response is "Connection terminated" — **the socket to dbus-broker drops on that request.** Consequence: systemd never sees a service acquire its name → every Type=dbus unit (upower `org.freedesktop.UPower`, udisks2, switcheroo, polkit, NetworkManager…) is reported `Failed with result 'timeout'` after its ~90s start timeout, and its Restart= loop re-runs it. multi-user.target waits on those jobs → graphical.target queued, never reached. (upower now gets PAST user setup — it exits 265/271 on the SIGTERM systemd sends at the timeout, not a real crash.)
-**Investigated across turns (substantially narrowed, NOT yet fixed):**
-- **CONFOUND (corrects an earlier note): with `systemd.log_target=kmsg`, systemd writes its LOG LINES to `/dev/kmsg` = fd 3 (a CharDev, `socket_from_fd`=None).** A content trace matching `"NameOwnerChanged"` catches the LOG TEXT of the error message, NOT the D-Bus message. ALWAYS gate socket-content traces on `socket_from_fd(fd).is_some()`.
-- init's REAL dbus connection = a path `connect()` to `/run/dbus/system_bus_socket` → `SockKind::Unix(pair, UnixEnd::B)` (net/src/sock.rs:838 `UNIX_REGISTRY.connect` pushes the pair to the listener `accept_q` + wakes accept_waiters — mechanism looks correct). init's dbus fd is HIGH (358/365/367/81/89/61/173/…) and it RECONNECTS on every termination (~45×/boot).
-- init WRITES dbus messages via **`sendto`** (sd-bus `sendmsg`→our sendto), NOT writev. Per connection it sends a fixed pattern: **200, 1059, 200, 984 bytes** (AUTH+Hello+AddMatch batch), then the connection terminates.
-- init READS replies via `recvmsg` on `SockKind::Unix` — only **~6 reads/boot** (48 bytes each, the AUTH "OK" reply). So init gets almost NO replies to its method calls. **dbus-broker accepts + receives init's messages but does not reply → sd-bus reports "Connection terminated" → reconnect loop.**
-- dbus-broker is STABLE (`[EXIT]`=0); it logs to the journal, not fd-2 stderr, so `[EW]` doesn't surface its disconnect reason.
-**ALL kernel-side AF_UNIX mechanisms are now VERIFIED CORRECT (by code read), so the break is dbus-broker-INTERNAL:**
-- Ring routing: connect→`UnixEnd::B`, accept→`UnixEnd::A`; `pair.write(B)`→`b_to_a`, `pair.read(A)`→`b_to_a` (and mirror). Bidirectional wiring correct (net/src/unix_sock.rs write/read).
-- Connection poll: `pair.write` calls `wake_peer_subs` → the reader end's epoll wakes. Correct.
-- Listener poll: FIXED #2315 (`UnixListener.subs` + `connect().notify_subs()`).
-- Accept SO_DOMAIN: FIXED #2315 (accepted socket now reports AF_UNIX).
-- SO_PEERCRED: `peercred_for_fd`→`pair.peer_cred(end)` returns the PEER's cred (A→cred_b=init's, B→cred_a). Correct — dbus EXTERNAL auth gets init's uid=0.
-**SHARP NEW FINDING (this turn): the SERVER side (accept's `UnixEnd::A`) reads ONLY ≤59-byte messages — the AUTH-phase text lines. It NEVER reads the large post-AUTH BINARY messages (D-Bus Hello ~128B+, AddMatch ~200B+).** Traced `recvmsg_unix_stream` on end A across the whole boot: all reads were 34-59 bytes; not one binary-message-sized read. So EVERY AF_UNIX connection dies right at the AUTH→`BEGIN`→binary-mode transition, BEFORE the server reads its first binary message. This means NO D-Bus method call (Hello/AddMatch/RequestName) is ever delivered to ANY server → no replies → every client times out. This is the true root symptom (the "NameOwnerChanged" log line is just the most visible casualty).
-**Likely causes (pick via trace):** (a) After AUTH, dbus-broker blocks in `epoll_wait` on the connection; init writes the binary Hello (b_to_a) but the end-A poll-subscriber wake doesn't reach dbus-broker's epoll instance for the ACCEPTED connection (the AUTH reads may have been synchronous/non-epoll, masking this) → dbus-broker never wakes → auth-completion timeout → close. (b) init never SENDS the binary Hello because its read of the AUTH `OK` reply is malformed and sd-bus aborts. (c) the binary write to the b_to_a ring is dropped after the text→binary transition.
-Yet dbus-broker still accepts + receives init's AUTH bytes but no binary messages, so the failing stage is the post-AUTH connection read-wake or the client's post-OK send — NOT the primitives already verified.
-**Next — pursue the SHARP finding (servers never read binary messages post-AUTH):**
-1. **Confirm the wake-vs-send fork:** trace, on ONE dbus connection fd, BOTH init's `sendto` (does init actually WRITE the binary Hello to that fd after the 48-byte OK?) AND dbus-broker's end-A `recvmsg` return (EAGAIN forever? or never called?). Correlate by pairing the connect fd. If init writes the Hello but dbus-broker's recvmsg never returns it → it's an **epoll-wake bug on the accepted connection** (cause a). If init never writes the Hello → its OK-reply read is bad (cause b) — dump the exact 48-byte OK bytes.
-2. **If wake bug (most likely):** check that `wake_peer_subs`/`register_end_subs` actually reach the epoll instance dbus-broker registered the ACCEPTED fd on. The AUTH reads may succeed because dbus-broker does a synchronous read right after accept, THEN adds the fd to epoll and blocks — so the post-AUTH wake is the first one that must go through `PollSubscribers`. Verify the accepted `new_sock.poll_subs` is the SAME object epoll subscribed to (fd→file→inode→poll_subs identity), and that `notify()` on it wakes an `epoll_wait` (vs only `poll`/`ppoll`).
-3. Cross-ref dbus-broker `repos/bus1/dbus-broker` (src/bus/ + src/dbus/ + SASL) only after the kernel wake/send question is answered.
-Note: this is now suspected to be a GENERAL post-handshake epoll-wake bug on accepted AF_UNIX stream connections — it would affect any epoll server, not just dbus. A focused hosted or 2-process repro (unix listener + accept + epoll_wait + peer write) may reproduce it without a full boot.
+## Current state — graphical.target reached, greeter not yet confirmed
+Boot now reaches `graphical.target`. `gdm.service` **Starts**, BUT a gdm fork-child
+exits code=1 (`[EXIT] name=fork-child exe=/usr/bin/gdm code=1` ~109s) and no
+gnome-shell / greeter / Xwayland / /dev/dri activity appears after. So the last
+gap to an actual GNOME login screen is **gdm's greeter/display launch**.
+
+## Next session starts here — chase the gdm greeter
+1. Boot with kmsg cmdline (see below), grep for `gdm`, `gnome-shell`, `Xwayland`,
+   `/dev/dri`, `logind`, `seat0`, `wayland`. Find why the gdm worker exits 1.
+2. Likely suspects: DRM/KMS device (`/dev/dri/card0`) missing or the virtio-gpu
+   drm node not exposed; logind seat/session (`seat0`) not created; gdm's
+   Xwayland/gnome-shell exec failing. Trace the gdm fork-child's `[EXIT]` via a
+   4-byte errno-pipe write or `sched::diag::dump_recent_for(tid)` (see below).
+3. This is Phase-17-ish (tty/login/display); GNOME shell needs the DRM path.
 
 ## Boot/diagnosis notes
-- **Diagnostic cmdline**: `../oxide-images/imagectl/src/main.rs` ~line 963 GRUB menuentry (NOT git-tracked). Default `quiet` (RESTORE when done). systemd errors on serial: `systemd.log_target=kmsg systemd.journald.forward_to_console=1` (reliable now).
-- **Executor error capture that WORKS**: the systemd executor's step failures do NOT reach write(fd2)/writev(fd2)/sendmsg(journal). BUT a `safe_fork` helper (setup_private_users' `(sd-userns)`, can_mount_proc's `(sd-proc-check)`) reports its errno as a **4-byte write to an errno pipe** — trace `write` where `cnt==4` and the i32 is in `-1..-255` to get the exact failing errno, then `sched::diag::dump_recent_for(tid)` (make it `pub`) to get that child's ring. This is how #2314 was found.
-- Kernel `[EXIT]` watchdog: `exe=` + `code=`(raw exit_group arg) + recent-syscall ring. x86 nr: 0=read,1=write,2=open,46=sendmsg,47=recvmsg,110=getppid,247=waitid,257=openat,290=eventfd2,293=pipe2.
-- Real boot >2000 lines; ~1200/8 = GRUB-partial, re-run. Bash sandbox can't kill qemu → `pkill -9 -f qemu-system-aarch64` with `dangerouslyDisableSandbox: true`; stale qemu blocks the next boot. `make smoke-arm` runs 3 attempts (up to 3×timeout) — a bash timeout may cut it off mid-run though attempt 1 already PASSED.
-- Ledger `metadata/index.md`: B next = 301.
+- **Diagnostic cmdline**: `../oxide-images/imagectl/src/main.rs` ~line 963 GRUB
+  menuentry (NOT git-tracked). Default `quiet` (restored). Enable systemd serial
+  logs: swap `quiet` → `systemd.log_target=kmsg systemd.journald.forward_to_console=1`.
+- **Boot loop**: `cd ../oxide-images && make kernel ARCH=x86_64 && make boot PROFILE=live-gnome ARCH=x86_64 && bash oneboot.sh output/x.log <secs>`. Real full boot >2000 lines (graphical boots are 36k+); ~1200/8-line = GRUB-partial, re-run.
+- **AF_UNIX trace recipe (this session)**: klog `[BWRITE]/[AREAD]/[AWRITE]/[BREAD]/[UCLOSE]` in `net/src/unix_sock.rs` write/read/close_writer, filtered by `UnixEnd` — dual-direction byte-flow trace that isolated the recvmsg EAGAIN bug. Gate socket-content traces on end; `klog::write_raw`/`write_dec_u64` are in scope in the net crate.
+- **safe_fork errno capture**: a failing `safe_fork` child writes its errno as a 4-byte write to an errno pipe — trace `write` where `cnt==4` and i32 ∈ -1..-255, then `sched::diag::dump_recent_for(tid)`.
+- Bash sandbox can't kill qemu → `pkill -9 -f qemu-system` with `dangerouslyDisableSandbox: true` if stale qemu block a boot.
+- Ledger `metadata/index.md`: B next = 304.
 
 ## First task next session
-`git checkout main && git pull`. Investigate the systemd↔dbus-broker "Connection terminated on NameOwnerChanged AddMatch" (see analysis). Fixing it should let Type=dbus services signal ready promptly → multi-user.target → graphical.target → gdm. Keep going down the dependency chain until GNOME runs (active `/goal`).
+`git checkout main && git pull`. Boot live-gnome with kmsg, find why the
+gdm greeter/worker exits 1 (DRM node? logind seat? Xwayland exec?). Drive the
+dependency chain until the GNOME greeter renders (active `/goal`).
