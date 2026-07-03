@@ -189,14 +189,14 @@ fn free_rx_bufs(rx_bufs: &mut [u64; RX_RING_BUFS]) {
 pub fn uninstall(device_key: u32) -> bool {
     let mut ctx = {
         let mut g = CTX.lock();
-        let should_uninstall = match g.as_ref() {
-            Some(ctx) if ctx.device_key == device_key => true,
-            _ => false,
+        let Some(ctx) = g.take() else {
+            return false;
         };
-        if !should_uninstall {
+        if ctx.device_key != device_key {
+            *g = Some(ctx);
             return false;
         }
-        g.take().unwrap()
+        ctx
     };
     if SOFTIRQ_INSTALLED.swap(false, Ordering::AcqRel) {
         let _ = softirq::clear_handler(softirq::Slot::VsockRx);
