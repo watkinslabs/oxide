@@ -145,7 +145,7 @@ pub fn lookup_fd_path(path: &str) -> Option<InodeRef> {
     let tid_opt: Option<u32> = if who == "self" { None }
         else { Some(who.parse::<u32>().ok()?) };
     match it.next() {
-        None => Some(crate::live::make_proc_self_fd()),
+        None => Some(crate::live::make_proc_fd_dir(tid_opt)),
         Some(n_str) => {
             let fd: i32 = n_str.parse().ok()?;
             let file = sched::proclink::proc_fd_file(tid_opt, fd)?;
