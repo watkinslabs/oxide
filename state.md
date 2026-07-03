@@ -41,13 +41,36 @@ never opened → seat0 not graphical. Traced chain state:
   enumeration finds card0 untagged → seat0 not graphical → gdm idles.
 - `/sys/dev/char/*` is never looked up; `/sys/dev/block/254:0` IS (2×) — so
   `/sys/dev/{char,block}` (plan Phase 4) is a real gap but NOT the root here.
-- **Root is upstream: udevd processes no device.** Diagnose with udevd's own
-  logging (`udevadm control --log-level=debug` / journal — needs runtime
-  introspection, not kernel serial traces) OR the device-model completeness in
-  udevfix.md. Likely a udevd worker/rule-load/db-write stall the kernel side
-  must make Linux-shaped enough to satisfy (device_add ordering, complete
-  sysfs). THIS is `codex/driver-fixes` territory — do not implement overlapping
-  device-model changes on main in parallel (the divergence to avoid).
+- **SHARPEST FINDING (this session): udevd (pid 49) POLLS its uevent socket but
+  NEVER READS it.** Traced end-to-end:
+  - The card0 raw uevent lands on netlink `port=6, grp=1` (`[UEVEMIT] port=6`),
+    which IS udevd's monitor (only udevd binds group 1; reached=1).
+  - port 6 is polled ~66k× and `poll()` returns POLLIN every time (`ne=1`) —
+    the socket is readable, data is sitting in its rx_queue.
+  - The poller is **pid=49 (systemd-udevd)** (traced via `visible_pid()` in
+    `NetlinkSocket::poll`).
+  - But udevd issues **ZERO** read syscalls on it — instrumented ALL of
+    `recvmsg` (47), `recvfrom` (45), `read` (0), and `recvmmsg`(299)→recvmsg:
+    every UEVREAD counter = 0. So udevd's epoll/ppoll never returns port 6 as
+    ready → its read callback never fires → it drains nothing → processes no
+    device.
+  - Tried a fix: make netlink `enqueue` wake pollers
+    (`sched::live::notify_epoll_waiters`) — udevd STILL never read (UEVREAD=0),
+    so it's NOT a missing wake. Reverted (also: global epoll broadcast on every
+    rtnetlink reply is too costly).
+- **Prime suspect: EPOLLET `et_seen` stuck in `fs/src/epoll.rs` scan_once.**
+  sd-event registers the monitor edge-triggered (EPOLLET). If port 6 was marked
+  ready once (`et_seen |= POLLIN`) but never drained, `new_edges = ready &
+  !et_seen` is always 0 → epoll_wait NEVER re-reports it → udevd never reads.
+  The initial edge is the crux: verify scan_once delivers the FIRST empty→ready
+  edge for an EPOLLET netlink fd, and that `et_seen` clears when the queue
+  drains. This is an epoll/poll-semantics bug (NOT device-model, NOT
+  codex/driver-fixes territory) — squarely kernel `fs::epoll` + `netlink`.
+- Alternatively confirm with udevd's own journal via an INTERACTIVE serial shell
+  (getty.target is reached; a serial-getty on ttyS0 may allow `journalctl -u
+  systemd-udevd` + `udevadm monitor --kernel`) — the fire-and-forget oneboot.sh
+  harness can't drive that; use the qemu MCP serial or a manual `make
+  run-serial` session.
 
 **Root per `udevfix.md`: the kernel's Linux device-model surface is incomplete,
 so real udev can't fully process the device.** Do NOT add kernel policy/seat
