@@ -167,11 +167,13 @@ test-pass claims.
   provider. Virtio-net transport/netdev/softirq runtime is now BDF-keyed, but
   still uses the minimal one-buffer RX design per transport and a shared ARP
   cache. Virtio-gpu teardown is BDF-owned and fbdev helper hooks are now
-  fb-index-owned, but the fbcon/klog/tty console helper path is still
-  primary-only. Virtio-vsock transport context, protocol
-  publication, TX dispatch, RX drain, and protocol teardown are now BDF/CID
-  keyed; the remaining vsock work is QEMU-visible repeated bind/unbind/readd
-  proof. Virtio-snd transport context, card publication, ops dispatch, ALSA
+  fb-index-owned. Virtio-gpu probe is no longer rejected just because another
+  GPU is already installed; duplicate ownership is rejected by BDF/card state.
+  The fbcon/klog/tty console helper path is still primary-only. Virtio-vsock
+  transport context, protocol publication, TX dispatch, RX drain, and protocol
+  teardown are now BDF/CID keyed; the remaining vsock work is QEMU-visible
+  repeated bind/unbind/readd proof. Virtio-snd transport context, card
+  publication, ops dispatch, ALSA
   nodes, and playback/capture runtime are now card/BDF-keyed; the remaining
   sound work is QEMU-visible repeated bind/unbind/readd proof.
 - UART and PS/2 platform drivers now have model probes/removes, but they are
@@ -335,8 +337,9 @@ side-effect cleanup, not the old add-before-devtmpfs ordering bug.
 Several drivers use singleton global state:
 
 - virtio-gpu: BDF-keyed installed device registry, card-keyed scanout
-  contexts, and fb-index-keyed fbdev hooks; global fbcon/klog/tty console
-  hooks are still primary-only
+  contexts, and fb-index-keyed fbdev hooks; probe is no longer globally
+  blocked by an existing GPU; global fbcon/klog/tty console hooks are still
+  primary-only
 - virtio-rng: BDF-keyed record table with one active `/dev/hwrng` provider
 - virtio-vsock: BDF-keyed transport contexts and CID-keyed protocol endpoints;
   QEMU repeated bind/unbind/remove/readd proof remains

@@ -108,9 +108,6 @@ impl drv::Driver for VirtioGpuDrv {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        if drv_virtio_gpu::is_present() {
-            return Err(drv::Error::Busy);
-        }
         let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
         let mut p = virtio_init_arch(&d, None).ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
