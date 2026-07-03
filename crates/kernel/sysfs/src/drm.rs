@@ -154,12 +154,16 @@ impl FileOps for DrmUeventFileOps {
             DRM_MAJOR, d.minor, d.name, devtype).into_bytes();
         Ok(crate::read_window(&body, off, buf))
     }
-    fn write(&self, _inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
-        // Accept the udev-trigger "add"/"change" replay write. NOTE: emitting a
-        // synthetic `drm` netlink uevent here makes logind retry-loop trying to
-        // master a DRM device virtio-gpu KMS can't yet drive (systemd "Looping
-        // too fast" storm). Broadcasting the seat-master uevent is deferred to
-        // the virtio-gpu DRM-master/KMS work that can actually satisfy logind.
+    fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
+        let d = inode.private::<DrmUeventData>().ok_or(VfsError::Einval)?;
+        let devtype = minor_of(&d.name).map(|(_, t)| t).unwrap_or("drm_minor");
+        let devpath = alloc::format!("/devices/virtual/drm/{}", d.name);
+        let devname = alloc::format!("DEVNAME=dri/{}", d.name);
+        let maj = alloc::format!("MAJOR={}", DRM_MAJOR);
+        let min = alloc::format!("MINOR={}", d.minor);
+        let dtype = alloc::format!("DEVTYPE={}", devtype);
+        ::netlink::emit_uevent_with_env(
+            crate::uevent_action(b), &devpath, "drm", &[&devname, &maj, &min, &dtype]);
         Ok(b.len())
     }
 }
