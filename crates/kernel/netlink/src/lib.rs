@@ -199,6 +199,13 @@ pub struct NetlinkSocket {
     pub groups:    AtomicU32,
     /// FIFO of pending reply buffers, each already nlmsg-aligned.
     pub rx_queue:  Spinlock<VecDeque<Vec<u8>>, SockLockClass>,
+    /// Per-fd epoll/poll subscribers (shared into the socket's inode via
+    /// `make_netlink_socket_inode`'s `poll_subs_arc`). `enqueue` calls
+    /// `notify()` so a task parked in `epoll_wait`/`ppoll` on this netlink fd
+    /// wakes when a datagram (uevent, rtnetlink reply) arrives. Without this a
+    /// uevent delivered to systemd-udevd's monitor socket sat in `rx_queue`
+    /// while udevd slept forever — no coldplug, no /run/udev/data, no seat.
+    pub poll_subs: alloc::sync::Arc<vfs::PollSubscribers>,
 }
 
 /// Live `NETLINK_KOBJECT_UEVENT` subscribers (udev/systemd-udevd). Weak so
@@ -345,6 +352,7 @@ impl NetlinkSocket {
             port_id:  AtomicU32::new(alloc_port_id()),
             groups:   AtomicU32::new(0),
             rx_queue: Spinlock::new(VecDeque::new()),
+            poll_subs: alloc::sync::Arc::new(vfs::PollSubscribers::new()),
         }
     }
 
@@ -366,6 +374,11 @@ impl NetlinkSocket {
     /// # C: O(1) under rx_queue.lock()
     pub fn enqueue(&self, msg: Vec<u8>) {
         self.rx_queue.lock().push_back(msg);
+        // Wake any epoll/ppoll waiter on this fd (Linux `sk_data_ready` →
+        // `wake_up_interruptible` on the netlink socket's sleep queue). A queued
+        // datagram is useless if the consumer (systemd-udevd's sd-event loop)
+        // never wakes to read it.
+        self.poll_subs.notify();
     }
 
     /// Pop the head reply buffer if present.
@@ -548,9 +561,16 @@ pub fn make_netlink_socket_inode(sock: alloc::sync::Arc<NetlinkSocket>) -> vfs::
     // socket — systemd-udevd's listen_fds() rejects the inherited
     // NETLINK_KOBJECT_UEVENT fd otherwise (-EINVAL). Linux netlink fds
     // are S_IFSOCK.
+    // Share the socket's PollSubscribers into the inode so `epoll_ctl(ADD)`
+    // subscribes to the SAME object `enqueue().notify()` wakes (mirrors the
+    // AF_INET/AF_UNIX poll_subs_arc wiring). Without this the inode's default
+    // subscribers were a distinct object and a uevent enqueue never reached the
+    // epoll (udevd slept through every device event).
+    let subs = sock.poll_subs.clone();
     vfs::InodeBuilder::new(ino, vfs::mk_mode(vfs::FileType::Socket, 0o600),
         vfs::default_inode_ops(), alloc::sync::Arc::new(NetlinkFileOps))
         .private(sock)
+        .poll_subs_arc(subs)
         .build()
 }
 
