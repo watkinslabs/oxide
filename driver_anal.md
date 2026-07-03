@@ -2,11 +2,9 @@
 
 Date: 2026-07-03
 
-Scope: this ledger describes only the dirty worktree at
-`/home/nd/oxide/kernel-driver-fixes` on branch `codex/driver-fixes`.
-There is a separate worktree at `/home/nd/oxide/kernel` on `main`; do not read
-this document as a statement about `main` or any other branch until these
-changes are committed and merged.
+Scope: this ledger describes `/home/nd/oxide/kernel` after PR #2330 was merged
+to `main`, plus the current post-merge `codex/driver-fixes-next` work when it
+is explicitly called out below.
 
 ## Current position
 
@@ -80,7 +78,10 @@ test-pass claims.
   from normal address configuration hooks. Virtio-net install/remove is now
   keyed to the owning parent BDF, so a remove for another device cannot clear
   the installed transport. TX/RX queue cursors now live in the installed
-  device state, and the TX primitive has a BDF-keyed entry point.
+  device state, and the TX primitive has a BDF-keyed entry point. Current
+  post-merge work also publishes a model-owned `net` device for the virtio-net
+  interface, and sysfs exposes non-loopback `/sys/class/net` entries only while
+  that model device exists.
 - Virtio-vsock remove is keyed to the owning parent BDF and clears its
   `VsockRx` bottom half only for the installed transport. The upper
   `net::vsock` layer is still a single global guest-CID/TX-hook protocol
@@ -119,13 +120,20 @@ test-pass claims.
 - Virtio IRQ callback ownership has moved in the right direction, but queue
   selection, feature negotiation, and per-device config decisions still need a
   real virtio-core/bus split instead of living in `virtio_drv.rs`.
+- Current post-merge work has centralized the remaining PCI-ID based virtio
+  probe policy in a `VirtioProbePlan`, so feature selection, extra queue setup,
+  and device-config harvest decisions are no longer scattered through
+  `virtio_init_arch`. This is a step toward the virtio-core split, not the full
+  split itself.
 - Probe failure unwind is better for concrete cases, especially NVMe, AHCI,
   virtio-blk, virtio-input, virtio-gpu, virtio-rng, virtio-vsock, virtio-net,
   and virtio-snd, but there is no systematic devres/resource-stack mechanism
   or fault-injection proof after every step.
 - Devtmpfs publication is model-owned for many real nodes, including block,
-  DRM, fbdev, input, RNG, and sound, but the branch still needs an audit for
-  all direct runtime `devfs::register` users.
+  DRM, fbdev, input, RNG, and sound. Virtio-net class visibility now has a
+  model-owned device gate as well. The branch still needs an audit for all
+  direct runtime `devfs::register` users and for remaining class directories
+  that are still synthesized from subsystem registries.
 - Sysfs exposes more Linux-shaped bus state, including `/sys/dev/char`,
   `/sys/dev/block`, parent/subsystem links, and model-backed bind/unbind attrs,
   but class-device topology and repeated bind/unbind/remove/readd behavior are
@@ -154,9 +162,10 @@ test-pass claims.
   `pci-boot/src/virtio_drv.rs`. The desired shape is: PCI driver binds the
   virtio-pci function, virtio-pci creates virtio bus devices, common virtio core
   owns feature/queue transport mechanics, and child drivers bind by virtio
-  device ID. Resource handoff is now centralized, but feature negotiation,
-  queue programming, config harvest, MSI-X setup, and failure release helpers
-  still need to move behind a `VirtioPciTransport`/`VirtioProbeState` boundary.
+  device ID. Resource handoff and probe-policy selection are now centralized,
+  but feature negotiation, queue programming, config harvest, MSI-X setup, and
+  failure release helpers still need to move behind a
+  `VirtioPciTransport`/`VirtioProbeState` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net still needs
   a full multi-netdev runtime table after its BDF-owned teardown fix; virtio-gpu

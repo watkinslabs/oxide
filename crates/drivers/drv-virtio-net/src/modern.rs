@@ -11,6 +11,7 @@
 
 #![allow(dead_code)]
 
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
@@ -65,6 +66,8 @@ static MODERN_PRESENT: AtomicBool = AtomicBool::new(false);
 static SOFTIRQ_INSTALLED: AtomicBool = AtomicBool::new(false);
 static REGISTERED_IFACE: AtomicU32 = AtomicU32::new(0);
 static ARP_GC_TIMER_ID: AtomicU64 = AtomicU64::new(0);
+static NET_MODEL_DEVICE: Spinlock<Option<Arc<drv::Device>>, DriverLockClass> =
+    Spinlock::new(None);
 
 /// Stash modern virtio-net runtime state for later RX/TX drivers.
 /// Returns false if a device is already installed.
@@ -205,6 +208,21 @@ fn set_registered_iface(id: net::NetIfaceId) {
 pub fn registered_iface() -> Option<net::NetIfaceId> {
     let raw = REGISTERED_IFACE.load(Ordering::Acquire);
     if raw == 0 { None } else { Some(net::NetIfaceId::from_raw(raw)) }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn publish_net_model_device(name: &str, iface: net::NetIfaceId) {
+    let dev = drv::device_add(Arc::new(
+        drv::Device::new("net", alloc::string::String::from(name), 0x1AF4, 1, iface.0),
+    ));
+    *NET_MODEL_DEVICE.lock() = Some(dev);
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn unpublish_net_model_device() {
+    if let Some(dev) = NET_MODEL_DEVICE.lock().take() {
+        drv::device_del(&dev);
+    }
 }
 
 /// Read-only accessor for the device MAC. Returns `None` until
@@ -512,8 +530,10 @@ impl VirtioNetDev {
 #[cfg(target_os = "oxide-kernel")]
 pub fn register_netdev() -> Option<net::NetIfaceId> {
     let dev = VirtioNetDev::new()?;
+    let name = alloc::string::String::from(dev.name());
     let stack = net::sock::stack();
     let id = stack.ifaces.register(dev as alloc::sync::Arc<dyn net::NetDev>);
+    publish_net_model_device(&name, id);
     set_registered_iface(id);
     install_rx_runtime(id);
     Some(id)
@@ -533,6 +553,7 @@ pub fn unregister_netdev() -> bool {
     let Some(id) = registered_iface() else {
         return false;
     };
+    unpublish_net_model_device();
     net::sock::stack().unregister_iface(id)
 }
 

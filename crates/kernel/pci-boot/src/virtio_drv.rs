@@ -1045,6 +1045,91 @@ pub(super) struct VirtioProbe {
     pub(super) input_cfg_va:     u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VirtioChildKind {
+    Net,
+    Block,
+    Rng,
+    Gpu,
+    Input,
+    Vsock,
+    Snd,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VirtioProbePlan {
+    kind: VirtioChildKind,
+}
+
+impl VirtioProbePlan {
+    fn from_device(d: &pci::PciDevice) -> Self {
+        let kind = if d.vendor_id != 0x1AF4 {
+            VirtioChildKind::Other
+        } else {
+            match d.device_id {
+                0x1041 => VirtioChildKind::Net,
+                0x1042 => VirtioChildKind::Block,
+                0x1044 => VirtioChildKind::Rng,
+                0x1050 => VirtioChildKind::Gpu,
+                0x1052 => VirtioChildKind::Input,
+                0x1053 => VirtioChildKind::Vsock,
+                0x1059 => VirtioChildKind::Snd,
+                _ => VirtioChildKind::Other,
+            }
+        };
+        Self { kind }
+    }
+
+    fn wanted_features(self) -> u64 {
+        let mut want = virtio::VIRTIO_F_VERSION_1;
+        if self.kind == VirtioChildKind::Net {
+            want |= virtio::VIRTIO_NET_F_MAC | virtio::VIRTIO_NET_F_STATUS;
+        }
+        want
+    }
+
+    fn needs_queue1(self) -> bool {
+        matches!(self.kind, VirtioChildKind::Net | VirtioChildKind::Vsock)
+    }
+
+    fn needs_snd_data_queues(self) -> bool {
+        self.kind == VirtioChildKind::Snd
+    }
+
+    fn needs_net_rx_seed(self) -> bool {
+        self.kind == VirtioChildKind::Net
+    }
+
+    fn needs_net_tx_seed(self) -> bool {
+        self.kind == VirtioChildKind::Net
+    }
+
+    fn needs_vsock_q1_notify(self) -> bool {
+        self.kind == VirtioChildKind::Vsock
+    }
+
+    fn needs_net_config(self) -> bool {
+        self.kind == VirtioChildKind::Net
+    }
+
+    fn needs_blk_config(self) -> bool {
+        self.kind == VirtioChildKind::Block
+    }
+
+    fn needs_vsock_config(self) -> bool {
+        self.kind == VirtioChildKind::Vsock
+    }
+
+    fn needs_snd_config(self) -> bool {
+        self.kind == VirtioChildKind::Snd
+    }
+
+    fn needs_input_config_map(self) -> bool {
+        self.kind == VirtioChildKind::Input
+    }
+}
+
 fn virtio_hhdm_offset() -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
@@ -1118,15 +1203,7 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
     if !virtio::is_modern(d.vendor_id, d.device_id) { return None; }
     let bdf = d.bdf;
     let mut mappings = TransportMappings::default();
-    // Hoist device-class detection so queue 1 (TX) setup can hook in
-    // alongside queue 0 inside the per-queue setup block below.
-    let is_virtio_net_early = d.vendor_id == 0x1AF4 && d.device_id == 0x1041;
-    // D3.3: virtio-vsock (0x1053) also needs q1 (TX) programmed, like
-    // virtio-net's q0(RX)+q1(TX) split (only net's dummy-TX-frame is gated).
-    let is_virtio_vsock_early = d.vendor_id == 0x1AF4 && d.device_id == 0x1053;
-    let needs_q1 = is_virtio_net_early || is_virtio_vsock_early;
-    // F455: virtio-snd (0x1059) needs TXQ(2) programmed for PCM playback.
-    let is_virtio_snd_early = d.vendor_id == 0x1AF4 && d.device_id == 0x1059;
+    let plan = VirtioProbePlan::from_device(d);
 
     // Re-walk caps + decode virtio cfgs + decode BARs.
     let (caps, vcaps, bars) = {
@@ -1221,11 +1298,7 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
     w32(0x00, 0); let dev_feat_lo = r32(0x04);
     w32(0x00, 1); let dev_feat_hi = r32(0x04);
     let dev_features: u64 = ((dev_feat_hi as u64) << 32) | (dev_feat_lo as u64);
-    let mut want = virtio::VIRTIO_F_VERSION_1;
-    if d.vendor_id == 0x1AF4 && d.device_id == 0x1041 {
-        want |= virtio::VIRTIO_NET_F_MAC | virtio::VIRTIO_NET_F_STATUS;
-    }
-    let drv_features: u64 = dev_features & want;
+    let drv_features: u64 = dev_features & plan.wanted_features();
     w32(0x08, 1); w32(0x0C, (drv_features >> 32) as u32);
     w32(0x08, 0); w32(0x0C, (drv_features & 0xFFFF_FFFF) as u32);
     w8(0x14, virtio::VIRTIO_STATUS_ACKNOWLEDGE
@@ -1302,7 +1375,7 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
                 // (TX) so we can post outgoing frames. queue 0 = RX,
                 // queue 1 = TX by spec §5.1.6 Device Operation. q1 polls
                 // used.idx, so bind VIRTIO_MSI_NO_VECTOR (0xFFFF).
-                if needs_q1 {
+                if plan.needs_queue1() {
                     if let Some(r1) = super::virtio_qsetup::program_queue(cfg_va, 1, 0xFFFF, hhdm) {
                         q1_desc_pa = r1.desc_pa;
                         q1_driver_pa = r1.driver_pa;
@@ -1315,7 +1388,7 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
                 // RXQ=3 per docs/58§2). Program TXQ(2, playback) + RXQ(3,
                 // capture) + map each notify window. Poll used.idx →
                 // VIRTIO_MSI_NO_VECTOR (0xFFFF).
-                if is_virtio_snd_early {
+                if plan.needs_snd_data_queues() {
                     let ncap = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG);
                     if let Some(r2) = super::virtio_qsetup::program_queue(cfg_va, 2, 0xFFFF, hhdm) {
                         snd_q2_desc_pa_local = r2.desc_pa;
@@ -1356,8 +1429,6 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
     };
     // virtio-blk modern-only 0x1042: device-cfg is harvested below; the
     // persistent engine (drv-virtio-blk) owns all reads/writes once registered.
-    let is_virtio_blk = d.vendor_id == 0x1AF4 && d.device_id == 0x1042;
-
     // For virtio-net modern-only 0x1041, post one RX buffer descriptor on
     // queue 0 and bump avail.idx before kicking. For other devices the queue
     // stays empty so the kick is a no-op nudge.
@@ -1367,14 +1438,10 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
     // 0/0 if no virtio-net device or DRIVER_OK didn't land.
     let mut rx0_buf_pa_local: u64 = 0;
     let mut rx0_buf_len_local: u16 = 0;
-    let is_virtio_net = d.vendor_id == 0x1AF4 && d.device_id == 0x1041;
-    if is_virtio_net && q0_desc_pa != 0 && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
-        let hhdm = {
-            #[cfg(target_arch = "x86_64")]
-            { hal_x86_64::mmu_ops::hhdm_offset() }
-            #[cfg(target_arch = "aarch64")]
-            { hal_aarch64::mmu_ops::hhdm_offset() }
-        };
+    if plan.needs_net_rx_seed()
+        && q0_desc_pa != 0
+        && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
+    {
         if let Some(rx_pa) = pmm::setup::alloc_raw_frame() {
             if hhdm != 0 {
                 // F59-02: capture rx_pa for runtime rx_poll re-publish.
@@ -1453,16 +1520,10 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
     // tx_frame can rewrite + repost it after boot. 0 if no virtio-net
     // or DRIVER_OK didn't land or the q1 setup bailed before alloc.
     let mut tx0_buf_pa_local: u64 = 0;
-    if is_virtio_net_early
+    if plan.needs_net_tx_seed()
         && q1_desc_pa != 0
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
-        let hhdm = {
-            #[cfg(target_arch = "x86_64")]
-            { hal_x86_64::mmu_ops::hhdm_offset() }
-            #[cfg(target_arch = "aarch64")]
-            { hal_aarch64::mmu_ops::hhdm_offset() }
-        };
         if let Some(tx_pa) = pmm::setup::alloc_raw_frame() {
             tx0_buf_pa_local = tx_pa;
             if hhdm != 0 {
@@ -1534,7 +1595,7 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
     // D3.3: virtio-vsock q1 notify VA. No dummy TX frame (vsock has no
     // broadcast warm-up); the persistent driver posts real OP_* packets
     // post-boot. Just map the q1 notify window so `tx_packet` can kick.
-    if is_virtio_vsock_early
+    if plan.needs_vsock_q1_notify()
         && q1_desc_pa != 0
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
@@ -1581,7 +1642,7 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
     // the `VIRTIO_PCI_CAP_DEVICE_CFG` capability decoded above.
     let mut mac_local: [u8; 6] = [0; 6];
     let mut mac_valid_local: bool = false;
-    if is_virtio_net {
+    if plan.needs_net_config() {
         if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
             let dbar_pa = match bars[devcfg_cap.bar as usize] {
                 pci::Bar::Mem32 { base, .. } => base as u64,
@@ -1620,7 +1681,7 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
     // le64 at device-cfg offset 0. Same window pattern as the MAC harvest.
     let mut vsock_cid_local: u64 = 0;
     let mut vsock_cid_valid_local: bool = false;
-    if is_virtio_vsock_early {
+    if plan.needs_vsock_config() {
         if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
             let (cid, valid) = super::virtio_vsock_cfg::harvest_cid(&devcfg_cap, &bars);
             vsock_cid_local = cid;
@@ -1631,7 +1692,7 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
     let mut blk_capacity_local: u64 = 0;
     let mut blk_blk_size_local: u32 = virtio::VIRTIO_BLK_SECTOR_BYTES;
     let mut blk_cfg_valid_local: bool = false;
-    if is_virtio_blk {
+    if plan.needs_blk_config() {
         if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
             let (cap, bs, valid) =
                 super::virtio_blk_cfg::harvest(&devcfg_cap, &bars, drv_features);
@@ -1643,13 +1704,12 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
 
     // F454: harvest virtio_snd_config (docs/58§4): le32 jacks/streams/
     // chmaps/controls at device-cfg offset 0. Same window pattern as MAC.
-    let is_virtio_snd = d.vendor_id == 0x1AF4 && d.device_id == 0x1059;
     let mut snd_jacks_local: u32 = 0;
     let mut snd_streams_local: u32 = 0;
     let mut snd_chmaps_local: u32 = 0;
     let mut snd_controls_local: u32 = 0;
     let mut snd_cfg_valid_local: bool = false;
-    if is_virtio_snd {
+    if plan.needs_snd_config() {
         if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
             if let Some((j, s, c, ct)) = super::virtio_snd_cfg::harvest(&devcfg_cap, &bars) {
                 snd_jacks_local = j;
@@ -1662,7 +1722,7 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
     }
 
     let mut input_cfg_va_local: u64 = 0;
-    if d.vendor_id == 0x1AF4 && d.device_id == 0x1052 {
+    if plan.needs_input_config_map() {
         if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
             let dbar_pa = match bars[devcfg_cap.bar as usize] {
                 pci::Bar::Mem32 { base, .. } => base as u64,
@@ -1681,12 +1741,6 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
 
     //: read used.idx after the kick.
     let used_idx_observed = if avail_idx_posted > 0 && q0_device_pa != 0 {
-        let hhdm = {
-            #[cfg(target_arch = "x86_64")]
-            { hal_x86_64::mmu_ops::hhdm_offset() }
-            #[cfg(target_arch = "aarch64")]
-            { hal_aarch64::mmu_ops::hhdm_offset() }
-        };
         if hhdm != 0 {
             let used = (hhdm.wrapping_add(q0_device_pa)) as *const u16;
             // used.idx at +0x02 (u16 offset 1).

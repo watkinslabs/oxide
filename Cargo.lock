@@ -351,6 +351,7 @@ dependencies = [
 name = "drv-virtio-net"
 version = "0.1.0"
 dependencies = [
+ "drv",
  "hal",
  "hal-aarch64",
  "hal-x86_64",

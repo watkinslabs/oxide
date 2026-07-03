@@ -89,11 +89,22 @@ pub(crate) fn uevent_action(b: &[u8]) -> &str {
 #[cfg(target_os = "oxide-kernel")]
 fn snapshot_net_devs() -> Vec<(net::NetIfaceId, Arc<dyn net::NetDev>)> {
     net::sock::stack().ifaces.snapshot_devs()
+        .into_iter()
+        .filter(|(_, dev)| netdev_has_model_device(dev.name()))
+        .collect()
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
 fn snapshot_net_devs() -> Vec<(net::NetIfaceId, Arc<dyn net::NetDev>)> {
     Vec::new()
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn netdev_has_model_device(name: &str) -> bool {
+    if name == "lo" {
+        return true;
+    }
+    drv::devices().iter().any(|dev| dev.bus == "net" && dev.addr == name)
 }
 
 #[cfg(target_os = "oxide-kernel")]

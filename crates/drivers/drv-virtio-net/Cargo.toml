@@ -15,6 +15,7 @@ softirq  = { path = "../../kernel/softirq" }
 hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
 net      = { path = "../../kernel/net" }
+drv      = { path = "../../drivers/drv" }
 pmm      = { path = "../../kernel/mm-pmm" }
 pci      = { path = "../pci" }
 sync     = { path = "../../shared/sync" }
