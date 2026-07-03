@@ -726,6 +726,12 @@ impl drv::Driver for VirtioSndDrv {
             }
         }
     }
+
+    fn shutdown(&self, dev: &drv::Device) {
+        if let Some(bdf) = pci_parent_bdf(dev) {
+            let _ = drv_virtio_snd::shutdown(bdf_word(bdf));
+        }
+    }
 }
 static VIRTIO_SND_DRV: VirtioSndDrv = VirtioSndDrv;
 
