@@ -83,14 +83,14 @@ impl drv::Driver for VirtioPciDrv {
     }
 
     fn remove(&self, dev: &drv::Device) {
-        for child in drv::devices() {
+        let children: alloc::vec::Vec<Arc<drv::Device>> = drv::devices().into_iter().filter(|child| {
             if child.bus != "virtio" {
-                continue;
+                return false;
             }
-            let Some((parent_bus, parent_addr)) = child.parent() else { continue };
-            if parent_bus != "pci" || parent_addr != dev.addr {
-                continue;
-            }
+            let Some((parent_bus, parent_addr)) = child.parent() else { return false };
+            parent_bus == "pci" && parent_addr == dev.addr
+        }).collect();
+        for child in children {
             drv::device_del(&child);
         }
     }
