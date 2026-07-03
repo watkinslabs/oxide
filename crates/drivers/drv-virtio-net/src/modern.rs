@@ -15,6 +15,8 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
+#[cfg(target_os = "oxide-kernel")]
+use net::NetDev;
 
 /// Length of the virtio-net packet header preceding each frame in the ring
 /// buffer per Virtio 1.2 §5.1.6.1. We negotiate
@@ -779,11 +781,11 @@ pub fn softirq_iface_id() -> u32 {
     NET_RUNTIMES.lock().first().map(|runtime| runtime.iface.raw()).unwrap_or(0)
 }
 
-/// Back-compat accessor used by boot-time route seeding.
-/// Returns the first registered interface id if any.
+/// Primary registered virtio-net iface, used by boot-time default route
+/// seeding before userspace has selected a specific interface.
+/// # C: O(1)
 pub fn registered_iface() -> Option<net::NetIfaceId> {
-    let raw = softirq_iface_id();
-    if raw == 0 { None } else { Some(net::NetIfaceId::from_raw(raw)) }
+    NET_RUNTIMES.lock().first().map(|runtime| runtime.iface)
 }
 
 /// Softirq slot handler. Drains pending RX into the net stack.
