@@ -42,6 +42,7 @@ impl TransportMappings {
 
 struct TransportRecord {
     bdf: u32,
+    cmd_orig: u16,
     _mappings: TransportMappings,
     vring_frames: Vec<u64>,
     msi_id: u32,
@@ -705,6 +706,20 @@ fn set_msix_enabled_arch(bdf: pci::Bdf, cfg_off: u8, enabled: bool) {
     }
 }
 
+fn restore_pci_command(bdf: pci::Bdf, command: u16) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let r = hal_x86_64::pci::LegacyPci;
+        pci::write_command(&r, bdf, command);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
+            pci::write_command(&r, bdf, command);
+        }
+    }
+}
+
 fn alloc_msi_message() -> Option<(u32, u64, u32)> {
     #[cfg(target_arch = "x86_64")]
     {
@@ -749,6 +764,7 @@ fn free_msi_id(id: u32) {
 fn publish_transport_mmio(p: &mut VirtioProbe) {
     let rec = TransportRecord {
         bdf: p.bdf_word,
+        cmd_orig: p.cmd_orig,
         _mappings: core::mem::take(&mut p.mappings),
         vring_frames: transport_vring_frames(p),
         msi_id: p.msi_id,
@@ -774,6 +790,7 @@ fn unmap_transport_record(rec: TransportRecord) {
         unsafe { pmm::setup::free_one_frame(frame); }
     }
     release_msix_binding(rec);
+    restore_pci_command(bdf_from_word(rec.bdf), rec.cmd_orig);
 }
 
 fn transport_vring_frames(p: &VirtioProbe) -> Vec<u64> {
@@ -817,9 +834,14 @@ fn unmap_probe_mmio(p: &mut VirtioProbe) {
     p.mappings.unmap_all();
 }
 
+fn restore_pci_command_from_probe(p: &VirtioProbe) {
+    restore_pci_command(bdf_from_word(p.bdf_word), p.cmd_orig);
+}
+
 fn release_q0_after_failed_probe(p: &mut VirtioProbe) {
     release_gpu_transport(p.cfg_va, p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa);
     unmap_probe_mmio(p);
+    restore_pci_command_from_probe(p);
 }
 
 fn release_net_after_failed_probe(p: &mut VirtioProbe) {
@@ -840,6 +862,7 @@ fn release_net_after_failed_probe(p: &mut VirtioProbe) {
         &frames,
     );
     unmap_probe_mmio(p);
+    restore_pci_command_from_probe(p);
 }
 
 fn release_vsock_after_failed_probe(p: &mut VirtioProbe) {
@@ -855,6 +878,7 @@ fn release_vsock_after_failed_probe(p: &mut VirtioProbe) {
         ],
     );
     unmap_probe_mmio(p);
+    restore_pci_command_from_probe(p);
 }
 
 fn release_snd_after_failed_probe(p: &mut VirtioProbe) {
@@ -873,6 +897,7 @@ fn release_snd_after_failed_probe(p: &mut VirtioProbe) {
         ],
     );
     unmap_probe_mmio(p);
+    restore_pci_command_from_probe(p);
 }
 
 fn release_gpu_transport(cfg_va: u64, q0_desc_pa: u64, q0_driver_pa: u64, q0_device_pa: u64) {
@@ -1247,21 +1272,30 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
     let cmd_orig = {
         #[cfg(target_arch = "x86_64")]
         { let r = hal_x86_64::pci::LegacyPci;
-          pci::enable_mem_bus_master(&r, bdf) as u32 }
+          pci::enable_mem_bus_master(&r, bdf) as u16 }
         #[cfg(target_arch = "aarch64")]
         { match hal_aarch64::pci::EcamPci::from_published() {
-            Some(r) => pci::enable_mem_bus_master(&r, bdf) as u32,
+            Some(r) => pci::enable_mem_bus_master(&r, bdf) as u16,
             None => return None,
         } }
     };
-    let cmd_new = (cmd_orig & 0xFFFF) | (pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER) as u32;
+    let cmd_new = cmd_orig | (pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER);
 
     // Locate COMMON cfg + map the BAR page.
-    let common = vcaps.find(virtio::VIRTIO_PCI_CAP_COMMON_CFG)?;
+    let common = match vcaps.find(virtio::VIRTIO_PCI_CAP_COMMON_CFG) {
+        Some(common) => common,
+        None => {
+            restore_pci_command(bdf, cmd_orig);
+            return None;
+        }
+    };
     let bar_pa = match bars[common.bar as usize] {
         pci::Bar::Mem32 { base, .. } => base as u64,
         pci::Bar::Mem64 { base, .. } => base,
-        _ => return None,
+        _ => {
+            restore_pci_command(bdf, cmd_orig);
+            return None;
+        }
     };
     let common_pa = bar_pa + common.offset as u64;
     let page_pa = common_pa & !0xFFF;
@@ -1772,8 +1806,8 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
         msi_id: msix.map(|m| m.id).unwrap_or(0),
         msix_entry_va: msix.map(|m| m.entry_va).unwrap_or(0),
         msix_cap_off: msix.map(|m| m.cap_off).unwrap_or(0),
-        cmd_orig: (cmd_orig & 0xFFFF) as u16,
-        cmd_new:  (cmd_new  & 0xFFFF) as u16,
+        cmd_orig,
+        cmd_new,
         cfg_va,
         dev_features,
         drv_features,
