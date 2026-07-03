@@ -107,6 +107,18 @@ impl VirtioDeviceClass {
         }
         dev_features & want
     }
+
+    fn msix0_handler(self) -> Option<fn()> {
+        match self {
+            VirtioDeviceClass::Input => Some(drv_virtio_input::drain::raise_drain),
+            VirtioDeviceClass::Net => Some(drv_virtio_net::modern::raise_rx),
+            VirtioDeviceClass::Blk => Some(drv_virtio_blk::modern::wake_completions),
+            VirtioDeviceClass::Vsock => Some(drv_virtio_vsock::raise_rx),
+            VirtioDeviceClass::Generic
+            | VirtioDeviceClass::Rng
+            | VirtioDeviceClass::Snd => None,
+        }
+    }
 }
 
 struct VirtioPciDrv;
@@ -170,7 +182,7 @@ impl drv::Driver for VirtioGpuDrv {
         }
         let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
         let mut p =
-            virtio_init_arch(&d, None, VirtioDeviceClass::Generic).ok_or(drv::Error::ProbeFailed)?;
+            virtio_init_arch(&d, VirtioDeviceClass::Generic).ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
         if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
             || p.cfg_va == 0
@@ -229,12 +241,7 @@ impl drv::Driver for VirtioInputDrv {
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
         let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
         let mut p =
-            virtio_init_arch(
-                &d,
-                Some(drv_virtio_input::drain::raise_drain),
-                VirtioDeviceClass::Input,
-            )
-                .ok_or(drv::Error::ProbeFailed)?;
+            virtio_init_arch(&d, VirtioDeviceClass::Input).ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
         if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
             || p.cfg_va == 0
@@ -308,8 +315,7 @@ impl drv::Driver for VirtioNetDrv {
         let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
         let device_key = bdf_word(d.bdf);
         let mut p =
-            virtio_init_arch(&d, Some(drv_virtio_net::modern::raise_rx), VirtioDeviceClass::Net)
-                .ok_or(drv::Error::ProbeFailed)?;
+            virtio_init_arch(&d, VirtioDeviceClass::Net).ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
         if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
             || p.q0_desc_pa == 0
@@ -393,12 +399,7 @@ impl drv::Driver for VirtioBlkDrv {
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
         let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
         let mut p =
-            virtio_init_arch(
-                &d,
-                Some(drv_virtio_blk::modern::wake_completions),
-                VirtioDeviceClass::Blk,
-            )
-                .ok_or(drv::Error::ProbeFailed)?;
+            virtio_init_arch(&d, VirtioDeviceClass::Blk).ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
         if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
             || p.q0_desc_pa == 0
@@ -448,7 +449,7 @@ impl drv::Driver for VirtioRngDrv {
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
         let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
         let mut p =
-            virtio_init_arch(&d, None, VirtioDeviceClass::Rng).ok_or(drv::Error::ProbeFailed)?;
+            virtio_init_arch(&d, VirtioDeviceClass::Rng).ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
         if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
             || p.cfg_va == 0
@@ -531,8 +532,7 @@ impl drv::Driver for VirtioVsockDrv {
         let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
         let device_key = bdf_word(d.bdf);
         let mut p =
-            virtio_init_arch(&d, Some(drv_virtio_vsock::raise_rx), VirtioDeviceClass::Vsock)
-                .ok_or(drv::Error::ProbeFailed)?;
+            virtio_init_arch(&d, VirtioDeviceClass::Vsock).ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
         if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
             || p.cfg_va == 0
@@ -593,7 +593,7 @@ impl drv::Driver for VirtioSndDrv {
         let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
         let device_key = bdf_word(d.bdf);
         let mut p =
-            virtio_init_arch(&d, None, VirtioDeviceClass::Snd).ok_or(drv::Error::ProbeFailed)?;
+            virtio_init_arch(&d, VirtioDeviceClass::Snd).ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
         if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
             || p.cfg_va == 0
@@ -1204,7 +1204,6 @@ impl VirtioProbe {
 /// # C: O(BAR pages mapped + ~num_queues u32 reads)
 fn virtio_init_arch(
     d: &pci::PciDevice,
-    msix0_handler: Option<fn()>,
     profile: VirtioDeviceClass,
 ) -> Option<VirtioProbe> {
     if !virtio::is_modern(d.vendor_id, d.device_id) { return None; }
@@ -1368,7 +1367,7 @@ fn virtio_init_arch(
     let mut snd_q3_size_local:      u16 = 0;
     let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
     let msix = if features_ok {
-        msix0_handler.and_then(|handler| {
+        profile.msix0_handler().and_then(|handler| {
             bind_virtio_msix0(d, &caps, &bars, &mut mappings, handler)
         })
     } else { None };
