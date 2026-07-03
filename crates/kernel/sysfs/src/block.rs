@@ -137,6 +137,12 @@ impl InodeOps for DiskDirOps {
         if name == "queue" {
             return Ok(make_queue_dir_inode(d.name.clone()));
         }
+        // `subsystem` symlink → /sys/class/block: sd-device reads it (basename)
+        // for SUBSYSTEM (60§6.2). Correct depth for /sys/devices/virtual/block/
+        // <name>/subsystem (the DEVPATH udev processes).
+        if name == "subsystem" {
+            return Ok(crate::make_symlink_inode(b"../../../../class/block".to_vec()));
+        }
         let attr = DISK_GROUP.find(name).ok_or(VfsError::Enoent)?;
         let ops: Arc<dyn SysfsOps> = Arc::new(DiskKobj { name: d.name.clone() });
         Ok(make_attr_inode(attr, ops, INO_ATTR))
@@ -156,6 +162,12 @@ impl FileOps for DiskDirOps {
             let next = idx as u64 + 1;
             let ino = inode.lookup("queue").map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit("queue", ino, FileType::Directory, next) { return Ok(()); }
+            idx += 1;
+        }
+        if idx == DISK_GROUP.attrs.len() + 1 {
+            let next = idx as u64 + 1;
+            let ino = inode.lookup("subsystem").map(|i| i.ino()).unwrap_or(0);
+            if !ctx.emit("subsystem", ino, FileType::Symlink, next) { return Ok(()); }
             idx += 1;
         }
         Ok(())
@@ -204,7 +216,53 @@ fn make_queue_dir_inode(name: String) -> InodeRef {
 /// Called from `sysfs::init`. The per-disk + queue dirs are
 /// synthesised on demand, so disks registered after boot appear with
 /// no further work.
+const INO_VIRT_BLOCK: Ino = 0x5103_0002;
+const INO_CLASS_BLOCK: Ino = 0x5103_0003;
+const INO_CLASS_LINK:  Ino = 0x5103_3000;
+
+/// `/sys/devices/virtual/block` — the canonical location of the per-disk dirs
+/// that block uevent DEVPATHs resolve to (60§6.3a). Reuses `SysBlockOps` so
+/// each `<name>` resolves to the same disk dir as `/sys/block/<name>`.
+fn make_sys_devices_virtual_block_inode() -> InodeRef {
+    InodeBuilder::new(INO_VIRT_BLOCK, mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(SysBlockOps), Arc::new(SysBlockOps)).build()
+}
+
+/// `/sys/class/block` — directory of symlinks to each disk's canonical dir
+/// (Linux `block_class`). sd-device enumerates the block class through here.
+struct SysClassBlockOps;
+impl InodeOps for SysClassBlockOps {
+    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
+        if block::registry::by_name(name).is_none() { return Err(VfsError::Enoent); }
+        let mut target = String::from("../../devices/virtual/block/");
+        target.push_str(name);
+        Ok(crate::make_symlink_inode_ino(target.into_bytes(), INO_CLASS_LINK))
+    }
+}
+impl FileOps for SysClassBlockOps {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let disks = block::registry::snapshot();
+        let mut idx = ctx.pos as usize;
+        while idx < disks.len() {
+            let next = idx as u64 + 1;
+            let ino = inode.lookup(&disks[idx].name).map(|i| i.ino()).unwrap_or(0);
+            if !ctx.emit(&disks[idx].name, ino, FileType::Symlink, next) { return Ok(()); }
+            idx += 1;
+        }
+        Ok(())
+    }
+}
+fn make_sys_class_block_inode() -> InodeRef {
+    InodeBuilder::new(INO_CLASS_BLOCK, mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(SysClassBlockOps), Arc::new(SysClassBlockOps)).build()
+}
+
 /// # C: O(1)
 pub fn init() {
     crate::register("/sys/block", make_sys_block_inode());
+    // 60§6.3a: the real per-disk dirs udev's DEVPATH resolves to + the class
+    // index sd-device enumerates. Without these, block-device uevents named a
+    // /sys path that did not exist and udevd processed no disk.
+    crate::register("/sys/devices/virtual/block", make_sys_devices_virtual_block_inode());
+    crate::register("/sys/class/block", make_sys_class_block_inode());
 }
