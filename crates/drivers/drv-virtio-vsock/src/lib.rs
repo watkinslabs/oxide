@@ -152,7 +152,10 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u
     // the protocol endpoint is already owned, undo only this probe's transport
     // state; do not clear the existing net::vsock hook.
     if !net::vsock::driver_install(guest_cid, tx_packet) {
-        let mut ctx = CTX.lock().take().unwrap();
+        let mut g = CTX.lock();
+        let Some(mut ctx) = g.take() else {
+            return false;
+        };
         // Virtio reset: write 0 to device_status (§3.1.1), using byte access.
         unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
         free_rx_bufs(&mut ctx.rx_bufs);
@@ -186,9 +189,12 @@ fn free_rx_bufs(rx_bufs: &mut [u64; RX_RING_BUFS]) {
 pub fn uninstall(device_key: u32) -> bool {
     let mut ctx = {
         let mut g = CTX.lock();
-        match g.as_ref() {
-            Some(ctx) if ctx.device_key == device_key => {}
-            _ => return false,
+        let should_uninstall = match g.as_ref() {
+            Some(ctx) if ctx.device_key == device_key => true,
+            _ => false,
+        };
+        if !should_uninstall {
+            return false;
         }
         g.take().unwrap()
     };
