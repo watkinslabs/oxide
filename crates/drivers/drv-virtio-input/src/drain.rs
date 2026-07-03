@@ -4,12 +4,12 @@
 //
 // Wire-up (boot path)
 //   pci_boot::virtio_drv runs the modern PCI bring-up: features,
-//   queue setup, DRIVER_OK. Then it calls `install_q0` here with
-//   the per-device queue descriptors so this module can pre-fill
+//   queue setup, DRIVER_OK. Then it calls `install_eventq` here with
+//   the typed per-device queue resource so this module can pre-fill
 //   the event ring and stash state for the softirq handler.
 //
-// Runtime (per timer tick)
-//   `softirq::Slot::InputDrain` handler reads `device_pa->idx`,
+// Runtime (device IRQ bottom half)
+//   `softirq::Slot::InputDrain` handler reads the event queue's used-ring idx,
 //   walks new used entries, recycles their descriptors back to
 //   the avail ring, parses each 8-byte `VirtioInputEvent`, and for
 //   each EV_KEY press maps the keycode to ASCII via `KEY_TO_ASCII`
@@ -19,8 +19,8 @@
 //   The drain reads device-written used entries which become visible
 //   only after the device's completion interrupt — so the actual
 //   ring walk must run *after* IRQs are unmasked. The device IRQ
-//   raises the softirq slot; the timer ISR tail (see arch-irq) runs
-//   the drain with IRQs enabled. Same shape as Linux NET_RX.
+//   raises the softirq slot; the IRQ tail runs the drain with IRQs
+//   enabled. Same shape as Linux NET_RX.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -148,15 +148,12 @@ pub fn handle_key_event(keycode: u16, pressed: bool) {
 }
 
 /// Per-virtio-input-device runtime state. Captured at boot via
-/// `install_q0`; consumed by the softirq drain.
+/// `install_eventq`; consumed by the softirq drain.
 struct QueueCtx {
+    cfg_va:       u64,
     hhdm:        u64,
-    desc_pa:     u64,
-    driver_pa:   u64,    // avail ring base
-    device_pa:   u64,    // used  ring base
-    notify_va:   u64,
-    qsize:       u16,
-    /// Page-allocated event-buffer pool: `qsize` × 8 bytes.
+    eventq:      virtio::VirtQueueResource,
+    /// Page-allocated event-buffer pool: `eventq.size` × 8 bytes.
     buf_pa:      u64,
     /// Driver-side: last `used.idx` we drained.
     last_used:   u16,
@@ -186,22 +183,22 @@ static HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
 /// failed (in which case the device's events are simply not drained,
 /// boot continues).
 ///
-/// # SAFETY
-/// Caller owns the queue: `desc_pa`, `driver_pa`, `device_pa`,
-/// `notify_va` are valid for the duration of the kernel and the
-/// device is in DRIVER_OK state. HHDM-mapped writes to these
-/// addresses are safe at CPL=0.
 /// # C: O(qsize)
-pub unsafe fn install_q0(
-    bdf: u32,
-    qsize: u16,
-    desc_pa: u64,
-    driver_pa: u64,
-    device_pa: u64,
-    notify_va: u64,
-    hhdm: u64,
+pub fn install_eventq(
+    evdev_id: u32,
+    resources: virtio::VirtioResources,
 ) -> Result<(), ()> {
-    let _ = bdf;
+    let Some(eventq) = resources.require_queue(0) else {
+        return Err(());
+    };
+    let slot_idx = evdev_id as usize;
+    if slot_idx >= crate::MAX_INPUT_DEVICES
+        || !resources.common_cfg_valid()
+    {
+        return Err(());
+    }
+    let qsize = eventq.size;
+    let hhdm = resources.hhdm;
     // Allocate one 4 KiB frame; 512 events × 8B fits 64 events easily.
     let buf_pa = match pmm::setup::alloc_one_frame() { Some(pa) => pa, None => return Err(()) };
     // SAFETY: HHDM-mapped contiguous frame; bounded writes within 4 KiB.
@@ -210,7 +207,7 @@ pub unsafe fn install_q0(
         for i in 0..0x1000usize { core::ptr::write_volatile(buf_va.add(i), 0); }
     }
     // Pre-fill descriptors: each desc[i] points to buf_pa + i*8, len=8, WRITE flag.
-    let desc_va = hhdm.wrapping_add(desc_pa) as *mut u8;
+    let desc_va = hhdm.wrapping_add(eventq.desc_pa) as *mut u8;
     // SAFETY: HHDM-mapped queue desc array; qsize * 16 ≤ 1 KiB ≪ HHDM mapping.
     unsafe {
         for i in 0..qsize as usize {
@@ -224,7 +221,7 @@ pub unsafe fn install_q0(
     }
     // Avail ring at driver_pa: layout per virtio 1.2 §2.6.6 split.
     //   u16 flags @ 0; u16 idx @ 2; u16 ring[qsize] @ 4; u16 used_event @ 4+2*qsize
-    let avail_va = hhdm.wrapping_add(driver_pa) as *mut u8;
+    let avail_va = hhdm.wrapping_add(eventq.driver_pa) as *mut u8;
     // SAFETY: same as above; bounded writes within driver_pa's 4 KiB frame.
     unsafe {
         core::ptr::write_volatile(avail_va        as *mut u16, 0u16);             // flags
@@ -239,24 +236,59 @@ pub unsafe fn install_q0(
     // class so the drain can gate the console keyboard pipeline.
     {
         let mut g = CTXS.lock();
-        for (idx, slot) in g.iter_mut().enumerate() {
-            if slot.is_none() {
-                *slot = Some(QueueCtx {
-                    hhdm, desc_pa, driver_pa, device_pa, notify_va,
-                    qsize, buf_pa, last_used: 0, avail_idx: qsize,
-                    is_pointer: crate::is_pointer(idx as u32),
-                });
-                break;
-            }
+        if g[slot_idx].is_some() {
+            // SAFETY: buf_pa is the frame allocated by this function and has
+            // not been handed to the device because no queue context was kept.
+            unsafe { pmm::setup::free_one_frame(buf_pa); }
+            return Err(());
         }
+        g[slot_idx] = Some(QueueCtx {
+            cfg_va: resources.cfg_va,
+            hhdm,
+            eventq,
+            buf_pa,
+            last_used: 0,
+            avail_idx: qsize,
+            is_pointer: crate::is_pointer(evdev_id),
+        });
     }
     if !HANDLER_INSTALLED.swap(true, Ordering::AcqRel) {
         softirq::set_handler(softirq::Slot::InputDrain, drain_softirq);
     }
     // Notify the device that buffers are available.
-    // SAFETY: notify_va is the per-queue notification register VA published by the device cfg; u16 store of queue index (0).
-    unsafe { core::ptr::write_volatile(notify_va as *mut u16, 0u16); }
+    // SAFETY: eventq.notify_va is the per-queue notification register VA
+    // published by the transport; aligned u16 store of the queue index.
+    unsafe { core::ptr::write_volatile(eventq.notify_va as *mut u16, eventq.index); }
     Ok(())
+}
+
+/// Remove an installed queue context, reset the device, and release owned
+/// buffer frames. Returns false if no queue was installed for `evdev_id`.
+/// # C: O(1)
+pub fn uninstall_eventq(evdev_id: u32) -> bool {
+    let (ctx, last_queue) = {
+        let mut g = CTXS.lock();
+        let Some(slot) = g.get_mut(evdev_id as usize) else { return false };
+        let ctx = match slot.take() {
+            Some(ctx) => ctx,
+            None => return false,
+        };
+        let last_queue = g.iter().all(|slot| slot.is_none());
+        (ctx, last_queue)
+    };
+    // SAFETY: cfg_va is the virtio common-cfg VA captured at successful probe;
+    // device_status is a u8 at +0x14. Reset before freeing driver buffers.
+    unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    if last_queue && HANDLER_INSTALLED.swap(false, Ordering::AcqRel) {
+        let _ = softirq::clear_handler(softirq::Slot::InputDrain);
+    }
+    // SAFETY: this frame was allocated for this driver's event buffer and the
+    // device was reset before releasing it. Vring frames are transport-owned
+    // after successful probe and are released when the transport is unpublished.
+    unsafe {
+        pmm::setup::free_one_frame(ctx.buf_pa);
+    }
+    true
 }
 
 /// Raise the InputDrain softirq. Called from the virtio-input
@@ -272,7 +304,7 @@ pub fn raise_drain() { softirq::raise(softirq::Slot::InputDrain); }
 fn drain_softirq() {
     let mut g = CTXS.lock();
     // The CTXS slot index is the device's evdev id (event0, event1, …):
-    // install_q0 fills slots in enumeration order, matching install_default's
+    // install_eventq fills slots in enumeration order, matching install_default's
     // evdev_id assignment. Route each device's events to its own queue.
     for (id, slot) in g.iter_mut().enumerate() {
         let ctx = match slot.as_mut() { Some(c) => c, None => continue };
@@ -281,20 +313,21 @@ fn drain_softirq() {
 }
 
 fn drain_one(ctx: &mut QueueCtx, evdev_id: u32) {
-    // Used ring layout at device_pa: u16 flags @ 0; u16 idx @ 2;
-    // UsedElem { u32 id; u32 len } ring[qsize] @ 4; u16 avail_event @ tail.
-    let used_va = ctx.hhdm.wrapping_add(ctx.device_pa) as *mut u8;
+    // Used ring layout at eventq.device_pa: u16 flags @ 0; u16 idx @ 2;
+    // UsedElem { u32 id; u32 len } ring[eventq.size] @ 4; u16 avail_event @ tail.
+    let used_va = ctx.hhdm.wrapping_add(ctx.eventq.device_pa) as *mut u8;
     // SAFETY: HHDM-mapped used-ring base; aligned u16 load of device-written idx field.
     let dev_idx = unsafe { core::ptr::read_volatile(used_va.add(2) as *const u16) };
     if dev_idx == ctx.last_used { return; }
 
     while ctx.last_used != dev_idx {
-        let i = (ctx.last_used as usize) & (ctx.qsize as usize - 1);
+        let i = (ctx.last_used as usize) % ctx.eventq.size as usize;
         let off = 4 + i * 8;
-        // SAFETY: bounded u32 reads within used ring; qsize is a power of two and < 4 KiB total.
+        // SAFETY: bounded u32 reads within used ring; eventq.size is the
+        // negotiated queue size and the ring storage is one 4 KiB frame.
         let desc_id = unsafe { core::ptr::read_volatile(used_va.add(off) as *const u32) } as u16;
         // event buffer lives at buf_pa + desc_id*8 (we set up the
-        // identity mapping in install_q0).
+        // identity mapping in install_eventq).
         let evt_pa = ctx.buf_pa.wrapping_add((desc_id as u64) * 8);
         let evt_va = ctx.hhdm.wrapping_add(evt_pa) as *const VirtioInputEvent;
         // SAFETY: 8-byte event slot inside our buffer pool; read_volatile to defeat caching.
@@ -321,8 +354,8 @@ fn drain_one(ctx: &mut QueueCtx, evdev_id: u32) {
         }
 
         // Recycle: re-add this descriptor to the avail ring.
-        let avail_va = ctx.hhdm.wrapping_add(ctx.driver_pa) as *mut u8;
-        let avail_slot = (ctx.avail_idx as usize) & (ctx.qsize as usize - 1);
+        let avail_va = ctx.hhdm.wrapping_add(ctx.eventq.driver_pa) as *mut u8;
+        let avail_slot = (ctx.avail_idx as usize) % ctx.eventq.size as usize;
         let avail_off = 4 + avail_slot * 2;
         // SAFETY: bounded u16 write inside the avail ring buffer (4 KiB frame).
         unsafe { core::ptr::write_volatile(avail_va.add(avail_off) as *mut u16, desc_id); }
@@ -331,10 +364,9 @@ fn drain_one(ctx: &mut QueueCtx, evdev_id: u32) {
     }
 
     // Publish new avail.idx + notify device.
-    let avail_va = ctx.hhdm.wrapping_add(ctx.driver_pa) as *mut u8;
+    let avail_va = ctx.hhdm.wrapping_add(ctx.eventq.driver_pa) as *mut u8;
     // SAFETY: aligned u16 store of the new avail.idx; pair with device-side read fence in QEMU's virtio backend.
     unsafe { core::ptr::write_volatile(avail_va.add(2) as *mut u16, ctx.avail_idx); }
-    // SAFETY: queue notify register VA; u16 store of the queue index (0).
-    unsafe { core::ptr::write_volatile(ctx.notify_va as *mut u16, 0u16); }
+    // SAFETY: queue notify register VA; u16 store of the queue index.
+    unsafe { core::ptr::write_volatile(ctx.eventq.notify_va as *mut u16, ctx.eventq.index); }
 }
-

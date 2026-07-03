@@ -1,5 +1,5 @@
 #![no_std]
-#![cfg(target_os = "oxide-kernel")]
+#![cfg_attr(not(test), cfg(target_os = "oxide-kernel"))]
 extern crate alloc;
 
 // Dynamic sysfs surface synthesised from live kernel state. v1
@@ -84,6 +84,26 @@ pub(crate) fn uevent_action(b: &[u8]) -> &str {
         .and_then(|s| s.split_whitespace().next())
         .filter(|a| !a.is_empty())
         .unwrap_or("change")
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn snapshot_net_devs() -> Vec<(net::NetIfaceId, Arc<dyn net::NetDev>)> {
+    net::sock::stack().ifaces.snapshot_devs()
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn snapshot_net_devs() -> Vec<(net::NetIfaceId, Arc<dyn net::NetDev>)> {
+    Vec::new()
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn lookup_net_ifindex(name: &str) -> u32 {
+    net::sock::stack().ifaces.lookup_name(name).map(|(id, _)| id.raw()).unwrap_or(0)
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn lookup_net_ifindex(_name: &str) -> u32 {
+    0
 }
 
 // ---- /sys/class/tty (directory of symlinks) -------------------------------
@@ -219,7 +239,7 @@ fn make_tty_uevent_inode(name: String, major: u32, minor: u32) -> InodeRef {
 struct SysClassNetOps;
 impl InodeOps for SysClassNetOps {
     fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
-        let snap = net::sock::stack().ifaces.snapshot_devs();
+        let snap = snapshot_net_devs();
         for (_, dev) in snap.iter() {
             if dev.name() == name {
                 let mut target = String::from("../../devices/virtual/net/");
@@ -232,7 +252,7 @@ impl InodeOps for SysClassNetOps {
 }
 impl FileOps for SysClassNetOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let snap = net::sock::stack().ifaces.snapshot_devs();
+        let snap = snapshot_net_devs();
         let mut idx = ctx.pos as usize;
         while idx < snap.len() {
             let next = idx as u64 + 1;
@@ -289,7 +309,7 @@ pub(crate) fn make_symlink_inode_ino(target: Vec<u8>, ino: Ino) -> InodeRef {
 struct SysDevicesVirtualNetOps;
 impl InodeOps for SysDevicesVirtualNetOps {
     fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
-        let snap = net::sock::stack().ifaces.snapshot_devs();
+        let snap = snapshot_net_devs();
         for (_, dev) in snap.iter() {
             if dev.name() == name {
                 return Ok(make_net_iface_inode(String::from(name), Arc::clone(dev)));
@@ -300,7 +320,7 @@ impl InodeOps for SysDevicesVirtualNetOps {
 }
 impl FileOps for SysDevicesVirtualNetOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let snap = net::sock::stack().ifaces.snapshot_devs();
+        let snap = snapshot_net_devs();
         let mut idx = ctx.pos as usize;
         while idx < snap.len() {
             let next = idx as u64 + 1;
@@ -377,10 +397,8 @@ fn iface_body(d: &NetIfaceData, leaf: &str) -> Option<Vec<u8>> {
                 b"unknown\n" } else { b"full\n" });
         }
         "ifindex" => {
-            let id = net::sock::stack().ifaces.lookup_name(&d.name)
-                .map(|(id, _)| id.raw()).unwrap_or(0);
             let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut buf),
-                format_args!("{}\n", id));
+                format_args!("{}\n", lookup_net_ifindex(&d.name)));
         }
         "tx_queue_len" => buf.extend_from_slice(b"1000\n"),
         "addr_len"     => buf.extend_from_slice(b"6\n"),
@@ -424,7 +442,7 @@ impl SysfsOps for NetIfaceData {
             let mut body: Vec<u8> = Vec::new();
             let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut body),
                 format_args!("DEVTYPE=\nINTERFACE={}\nIFINDEX={}\n", self.name,
-                    net::sock::stack().ifaces.lookup_name(&self.name).map(|(id, _)| id.raw()).unwrap_or(0)));
+                    lookup_net_ifindex(&self.name)));
             return Some(body);
         }
         iface_body(self, attr)

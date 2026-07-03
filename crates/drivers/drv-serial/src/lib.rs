@@ -6,10 +6,10 @@
 //! crates (`drv-uart-16550` on x86, `drv-uart-pl011` on arm; docs/35§3).
 //! This crate keeps the tty RX sink + sysrq prefilter + `deliver` (which
 //! has no place in a per-device driver), and re-exposes the unchanged
-//! public API (`emit`/`init`/`poll`/`rx_isr`/`present`) by delegating to
-//! the cfg-appropriate UART crate. `init` passes this crate's own
-//! `deliver` fn down as the RX callback — that parameter is the
-//! cycle-break that lets the UART crates avoid depending on `drv-serial`.
+//! public API (`emit`/`poll`/`rx_isr`/`present`) by delegating to the
+//! cfg-appropriate UART crate. `configure_probe` passes this crate's own
+//! `deliver` fn down as the RX callback — that parameter is the cycle-break
+//! that lets the UART crates avoid depending on `drv-serial`.
 //!
 //! The firmware-elected console (ACPI SPCR) wins; a machine with no
 //! serial port simply has no serial console. docs/53 (kernel = glue).
@@ -67,13 +67,13 @@ pub fn present() -> bool { uart::present() }
 /// # C: O(len(bytes))
 pub fn emit(bytes: &[u8]) { uart::emit(bytes); }
 
-/// Timer-tick fallback RX poll — delegates to the active UART crate,
-/// passing this crate's `deliver` as the byte callback.
+/// Bounded RX poll entry retained for explicit diagnostic callers; the
+/// normal runtime RX path is the active UART driver's interrupt handler.
 /// # SAFETY: forwards to the UART crate's poll; same single-CPU / port-
 /// I/O / published-MMIO-VA invariants documented on that crate's rx_poll.
 /// # C: O(N_bytes_drained)
 pub unsafe fn poll() {
-    // SAFETY: UART crate rx_poll owns the port-I/O / PL011-VA + single-CPU invariants; deliver is a valid fn(u8).
+    // SAFETY: UART crate rx_poll owns its device invariants; deliver is a valid fn(u8).
     unsafe { uart::rx_poll(deliver); }
 }
 
@@ -88,15 +88,9 @@ pub fn rx_isr() { uart::rx_isr(deliver); }
 /// # C: O(1)
 pub fn uart_driver() -> &'static dyn drv::Driver { uart::UART_DRIVER }
 
-/// Detect + register the serial console (TX sink + RX IRQ on x86). No-op
-/// when no UART responds. `dev_window_base` is the kernel device-MMIO
-/// window. Returns true if a UART was found. Delegates to the active UART
-/// crate, handing it this crate's `deliver` as the RX callback.
-/// # SAFETY: post-ACPI + post-LAPIC-enable + MmuOps live; single-CPU,
-/// IRQs masked. Forwards to the UART crate init, which maps the I/O APIC
-/// + programs IRQ4 (x86) / reads the published PL011 VA (arm).
+/// Install probe parameters for the active UART model driver. The actual
+/// hardware detection and IRQ setup happen when drv::bind calls probe.
 /// # C: O(1)
-pub unsafe fn init(bsp_apic: u8, dev_window_base: u64) -> bool {
-    // SAFETY: forwards to the UART crate init under the documented boot preconditions; deliver is a valid fn(u8).
-    unsafe { uart::init(bsp_apic, dev_window_base, deliver) }
+pub fn configure_probe(bsp_apic: u8, dev_window_base: u64) {
+    uart::configure_probe(bsp_apic, dev_window_base, deliver);
 }

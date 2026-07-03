@@ -173,15 +173,13 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             let from_user = unsafe { (core::ptr::read_volatile(frame.add(96) as *const u64) & 3) == 3 };
             sched::cpustat::account(
                 if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
-            // UART poll is BSP-only (only the boot CPU owns the UART). The
-            // softirq drain is PER-CPU (Linux: every CPU runs its own
+            // BSP timer hook runs only on the boot CPU. The softirq drain is
+            // PER-CPU (Linux: every CPU runs its own
             // __do_softirq from irq_exit) — each CPU drains its OWN pending
             // mask below. APs that arm their own periodic timer reach here too.
             let is_bsp = local_apic_id() == ::cpu::smp::boot_cpu_id();
             if is_bsp {
-                // TTY input poll per docs/28: scrape pending UART RX into
-                // the ringbuffer + wake stdin waiters before the picker.
-                // SAFETY: timer ISR ctx with IRQs masked; BSP owns the UART.
+                // SAFETY: timer ISR ctx with IRQs masked; BSP-owned timer hook.
                 unsafe { crate::tick_poll(from_user); }
             }
             // Per-CPU softirq bottom-half (fbcon flush, virtio-input/net drain)
@@ -218,10 +216,8 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
         v if v >= hal_x86_64::VEC_MSI_POOL_FIRST
           && v <= hal_x86_64::VEC_MSI_POOL_LAST => {
             // F58: per-vector MSI delivery. EOI already issued above.
-            // Bump the diagnostic counter, then route to the per-vector
-            // handler if installed. Falls through to the legacy shared-
-            // vector softirq raise so devices that haven't moved to
-            // per-vector registration yet still get drained.
+            // Bump the diagnostic counter, then route only to the owning
+            // per-vector handler if installed.
             crate::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
             let idx = (v - hal_x86_64::VEC_MSI_POOL_FIRST) as usize;
             crate::irqstat::hit_line(idx);
@@ -230,12 +226,6 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
                 // SAFETY: raw was installed via `register_msi_handler` with the documented `fn()` signature; reverse cast restores the ABI-compatible fn pointer.
                 let f: fn() = unsafe { core::mem::transmute(raw) };
                 f();
-            } else {
-                // No registered handler — fall back to the shared-
-                // vector softirq raises so any pending used-rings get
-                // drained on the next softirq pass.
-                softirq::raise(softirq::Slot::InputDrain);
-                softirq::raise(softirq::Slot::NetRx);
             }
             if softirq::pending() {
                 // SAFETY: EOI was issued above; nested IRQs into the dispatcher are fine — do_softirq's in_interrupt guard blocks re-entry.

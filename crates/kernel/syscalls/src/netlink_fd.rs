@@ -10,6 +10,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::vec::Vec;
 use alloc::sync::Arc;
 use hal::USER_VA_END;
 use syscall::errno::Errno;
@@ -249,6 +250,53 @@ pub fn sendto(fd: u64, bufp: u64, len: usize) -> i64 {
     // SAFETY: caller's range check + the bounds-add above.
     let buf = unsafe { core::slice::from_raw_parts(bufp as *const u8, len) };
     match file.inode().write(0, buf) {
+        Ok(n) => n as i64,
+        Err(_) => -(Errno::Eio.as_i32() as i64),
+    }
+}
+
+/// `sendmsg(fd, msghdr)` for netlink. Unlike the generic sendmsg fallback,
+/// this preserves datagram boundaries across iovecs and passes
+/// sockaddr_nl.nl_groups into the netlink layer so userspace-originated
+/// multicast, especially systemd-udevd's cooked kobject uevents, reaches
+/// monitor subscribers.
+/// # C: O(iov + payload bytes)
+pub fn sendmsg(fd: u64, name: u64, namelen: u64, iov: u64, iovlen: u64) -> i64 {
+    let file = match fd_file_local(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
+    let sock = match file.inode().private::<::netlink::NetlinkSocket>() {
+        Some(s) => s,
+        None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
+    let groups = if name != 0 {
+        if name >= USER_VA_END || namelen < 12 { return -(Errno::Einval.as_i32() as i64); }
+        // SAFETY: name validated in user range and namelen covers sockaddr_nl.nl_groups @ +8.
+        unsafe { core::ptr::read_volatile((name + 8) as *const u32) }
+    } else {
+        0
+    };
+
+    let mut payload = Vec::new();
+    for i in 0..iovlen {
+        let iov_i = iov + i * 16;
+        if iov_i == 0 || iov_i >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+        // SAFETY: iov_i validated in user range; iovec is {base@0,len@8}.
+        let (base, len) = unsafe {
+            (core::ptr::read_volatile(iov_i as *const u64),
+             core::ptr::read_volatile((iov_i + 8) as *const u64) as usize)
+        };
+        if len == 0 { continue; }
+        if base == 0 || base.saturating_add(len as u64) >= USER_VA_END {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        if payload.len().saturating_add(len) > 65507 {
+            return -(Errno::Emsgsize.as_i32() as i64);
+        }
+        // SAFETY: base..base+len validated < USER_VA_END.
+        let src = unsafe { core::slice::from_raw_parts(base as *const u8, len) };
+        payload.extend_from_slice(src);
+    }
+    match sock.write_to_groups(&payload, groups) {
         Ok(n) => n as i64,
         Err(_) => -(Errno::Eio.as_i32() as i64),
     }

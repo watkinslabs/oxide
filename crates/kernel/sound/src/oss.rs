@@ -66,13 +66,13 @@ fn rate_enum_to_hz(e: u8) -> u32 {
 fn reset() {
     let mut o = OSS.lock();
     if o.running {
-        let _ = drv_virtio_snd::pcm_trigger(false);
-        let _ = drv_virtio_snd::pcm_hw_free();
+        let _ = crate::ops::pcm_trigger(false);
+        let _ = crate::ops::pcm_hw_free();
         o.running = false;
     }
     if o.cap_running {
-        let _ = drv_virtio_snd::cap_trigger(false);
-        let _ = drv_virtio_snd::cap_hw_free();
+        let _ = crate::ops::cap_trigger(false);
+        let _ = crate::ops::cap_hw_free();
         o.cap_running = false;
     }
 }
@@ -84,13 +84,13 @@ pub fn read(buf: &mut [u8]) -> usize {
     if buf.is_empty() { return 0; }
     let (rate, fmt, ch) = { let o = OSS.lock(); (o.rate, o.format, o.channels) };
     if !OSS.lock().cap_running {
-        let period = drv_virtio_snd::period_bytes() as u32;
-        if !drv_virtio_snd::cap_hw_params(rate, fmt, ch, period, period * 2) { return 0; }
-        if !drv_virtio_snd::cap_prepare() { return 0; }
-        if !drv_virtio_snd::cap_trigger(true) { return 0; }
+        let period = crate::ops::period_bytes() as u32;
+        if !crate::ops::cap_hw_params(rate, fmt, ch, period, period * 2) { return 0; }
+        if !crate::ops::cap_prepare() { return 0; }
+        if !crate::ops::cap_trigger(true) { return 0; }
         OSS.lock().cap_running = true;
     }
-    drv_virtio_snd::pcm_recv(buf)
+    crate::ops::pcm_recv(buf)
 }
 
 /// /dev/dsp write(2): lazily hw_params→prepare→trigger on the first write
@@ -103,13 +103,13 @@ pub fn write(buf: &[u8]) -> usize {
         (o.rate, o.format, o.channels)
     };
     if !OSS.lock().running {
-        let period = drv_virtio_snd::period_bytes() as u32;
-        if !drv_virtio_snd::pcm_hw_params(rate, fmt, ch, period, period * 2) { return 0; }
-        if !drv_virtio_snd::pcm_prepare() { return 0; }
-        if !drv_virtio_snd::pcm_trigger(true) { return 0; }
+        let period = crate::ops::period_bytes() as u32;
+        if !crate::ops::pcm_hw_params(rate, fmt, ch, period, period * 2) { return 0; }
+        if !crate::ops::pcm_prepare() { return 0; }
+        if !crate::ops::pcm_trigger(true) { return 0; }
         OSS.lock().running = true;
     }
-    drv_virtio_snd::pcm_submit(buf)
+    crate::ops::pcm_submit(buf)
 }
 
 /// Handle a SNDCTL_DSP_* (`/dev/dsp`, minor=DSP/AUDIO) or SOUND_MIXER_*
@@ -147,7 +147,7 @@ pub fn handle(is_mixer: bool, req: u64, arg: u64) -> i64 {
             0
         }
         4 => { if UserBuf::new(arg, 4).is_none() { return err(Errno::Efault); }   // GETBLKSIZE
-               wi(arg, drv_virtio_snd::period_bytes() as u32); 0 }
+               wi(arg, crate::ops::period_bytes() as u32); 0 }
         5 => {                                                       // SETFMT
             let a = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
             if a == 0 { wi(arg, virtio_to_afmt(OSS.lock().format)); return 0; }
@@ -167,7 +167,7 @@ pub fn handle(is_mixer: bool, req: u64, arg: u64) -> i64 {
                 wi(arg, AFMT_S16_LE | AFMT_U8 | AFMT_S8 | AFMT_U16_LE | AFMT_MU_LAW | AFMT_A_LAW); 0 }
         12 | 13 => {                                                 // GET[OI]SPACE
             let b = match UserBuf::new(arg, 16) { Some(b) => b, None => return err(Errno::Efault) };
-            let frag = drv_virtio_snd::period_bytes() as u32;
+            let frag = crate::ops::period_bytes() as u32;
             b.w32(0, 2); b.w32(4, 2); b.w32(8, frag); b.w32(12, 2 * frag);
             0
         }

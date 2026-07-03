@@ -338,6 +338,19 @@ impl NetStack {
         (id, lo)
     }
 
+    /// Remove per-interface network state and unregister the netdev.
+    /// # C: O(N routes + N addrs + N groups)
+    pub fn unregister_iface(&self, iface: NetIfaceId) -> bool {
+        let ns = crate::netdev::current_net_ns();
+        self.routes.retain(|e| e.iface != iface);
+        self.routes6.retain(|e| e.iface != iface);
+        let _ = crate::iface_addr::remove_iface(ns, iface);
+        self.v6_addrs.lock().remove(&iface);
+        self.v6_mcast.lock().remove(&iface);
+        self.v4_mcast.lock().remove(&iface);
+        self.ifaces.unregister(iface).is_some()
+    }
+
     /// SO_ATTACH_BPF / SO_DETACH_BPF: set/clear the UDP port's socket filter
     /// (false if nothing is bound there). # C: O(log N)
     pub fn set_udp_bpf_filter(&self, port: u16, insns: Option<Vec<u8>>) -> bool {

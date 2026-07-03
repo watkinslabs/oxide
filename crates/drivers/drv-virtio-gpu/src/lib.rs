@@ -201,7 +201,7 @@ pub struct VirtioGpuRespEdid {
 // ============================================================
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Error { NoDevice, FeaturesNotOk, BringUpFail, ResourceLimit, BadResp(u32), Inval }
+pub enum Error { NoDevice, FeaturesNotOk, BringUpFail, ResourceLimit, BadResp(u32), Inval, Busy }
 
 pub type KResult<T> = core::result::Result<T, Error>;
 
@@ -214,6 +214,9 @@ pub struct DisplayInfo {
 /// Per-device driver instance state. Populated at probe.
 pub struct VirtioGpuDev {
     pub bdf:                  u32,
+    pub card_id:              u32,
+    pub cfg_va:               u64,
+    pub ctrlq:                virtio::VirtQueueResource,
     pub features_negotiated:  u64,
     pub display:              DisplayInfo,
     pub resource_id_alloc:    AtomicU32,
@@ -259,10 +262,9 @@ impl VirtioGpuDev {
 // Crate-level entry points (probe / init)
 // ============================================================
 
-// virtio-gpu binds via the real driver-model Driver registered + bound at its
-// bring-up site (pci_boot/virtio_drv.rs → drv::bind), not a probe stub. The
-// old NoMatch DriverEntry (legacy drv::probe_all path, never called) was
-// removed in drivers-plan D2.
+// virtio-gpu is owned by the pci-boot Driver::probe/remove path. The transport
+// helper returns queue/config state; probe installs DRM/scanout state and remove
+// tears it down.
 
 /// Map a DRM fourcc to the virtio-gpu format the host expects for a
 /// userspace-painted XRGB/ARGB dumb buffer. Linux's virtio-gpu DRM
@@ -465,9 +467,13 @@ static DEV: Spinlock<Option<VirtioGpuDev>, DriverLockClass> = Spinlock::new(None
 /// Surface for the kernel to install a fully-initialised device
 /// after running modern-transport bring-up + GET_DISPLAY_INFO.
 /// # C: O(1)
-pub fn install(dev: VirtioGpuDev) {
+pub fn install(dev: VirtioGpuDev) -> KResult<()> {
     let mut g = DEV.lock();
+    if g.is_some() {
+        return Err(Error::Busy);
+    }
     *g = Some(dev);
+    Ok(())
 }
 
 /// Snapshot the cached display info. `47` (DRM/KMS) calls this
@@ -599,21 +605,47 @@ impl VirtioGpuDrm {
 
 /// Install + register with the DRM core (`47`).
 /// # C: O(1)
-pub fn install_with_drm(dev: VirtioGpuDev) -> u32 {
+pub fn install_with_drm(mut dev: VirtioGpuDev) -> KResult<u32> {
     let drm_dev = alloc::sync::Arc::new(VirtioGpuDrm {
         display:             dev.display,
         features_negotiated: dev.features_negotiated,
         bdf:                 dev.bdf,
     });
     let card_id = drm::register(drm_dev);
-    install(dev);
+    dev.card_id = card_id;
+    if let Err(e) = install(dev) {
+        let _ = drm::unregister(card_id);
+        return Err(e);
+    }
     // Wire the runtime SETCRTC/PAGE_FLIP/restore hooks into the DRM
     // core (kernel target only; the hosted unit tests don't link the
     // post_init queue plumbing). No crate cycle: drm exposes the hook
     // setter, this crate fills it.
     #[cfg(target_os = "oxide-kernel")]
     post_init::register_drm_hooks();
-    card_id
+    Ok(card_id)
+}
+
+/// Remove an installed virtio-gpu device and unregister its DRM backend.
+/// Returns true when the BDF matched a live device.
+/// # C: O(1)
+pub fn uninstall(bdf: u32) -> Option<VirtioGpuDev> {
+    let dev = {
+        let mut g = DEV.lock();
+        match g.as_ref() {
+            Some(dev) if dev.bdf == bdf => g.take(),
+            _ => None,
+        }
+    };
+    match dev {
+        Some(dev) => {
+            #[cfg(target_os = "oxide-kernel")]
+            post_init::unpublish_console_scanout(dev.bdf);
+            let _ = drm::unregister(dev.card_id);
+            Some(dev)
+        }
+        None => None,
+    }
 }
 
 // AtomicPtr is referenced for future per-device queue notify pointers
@@ -638,6 +670,18 @@ pub fn default_driver_features() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_ctrlq() -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource {
+            index:      0,
+            size:       1,
+            desc_pa:    0,
+            driver_pa:  0,
+            device_pa:  0,
+            notify_va:  0,
+            notify_off: 0,
+        }
+    }
 
     #[test]
     fn ctrl_hdr_layout() {
@@ -785,6 +829,9 @@ mod tests {
         assert!(!is_present());
         install(VirtioGpuDev {
             bdf: 0,
+            card_id: 0,
+            cfg_va: 0,
+            ctrlq: test_ctrlq(),
             features_negotiated: (1u64 << VIRTIO_GPU_F_EDID),
             display: DisplayInfo {
                 modes: [VirtioGpuDisplayOne::default(); VIRTIO_GPU_MAX_SCANOUTS],
@@ -793,13 +840,36 @@ mod tests {
             resource_id_alloc: AtomicU32::new(1),
             blob_uuid_alloc: AtomicU64::new(1),
             capset_count: 0,
-        });
+        }).unwrap();
         assert!(is_present());
         let info = current_display_info().unwrap();
         assert_eq!(info.count_enabled, 1);
         assert!(negotiated_features() & (1u64 << VIRTIO_GPU_F_EDID) != 0);
         // Cleanup.
         *DEV.lock() = None;
+    }
+
+    #[test]
+    fn install_rejects_second_device() {
+        fn dev(bdf: u32) -> VirtioGpuDev {
+            VirtioGpuDev {
+                bdf,
+                card_id: 0,
+                cfg_va: 0,
+                ctrlq: test_ctrlq(),
+                features_negotiated: 0,
+                display: DisplayInfo::default(),
+                resource_id_alloc: AtomicU32::new(1),
+                blob_uuid_alloc: AtomicU64::new(1),
+                capset_count: 0,
+            }
+        }
+
+        *DEV.lock() = None;
+        install(dev(1)).unwrap();
+        assert_eq!(install(dev(2)), Err(Error::Busy));
+        assert_eq!(uninstall(1).unwrap().bdf, 1);
+        assert!(!is_present());
     }
 
     #[test]
@@ -861,6 +931,9 @@ mod tests {
     fn resource_id_increments() {
         let dev = VirtioGpuDev {
             bdf: 0,
+            card_id: 0,
+            cfg_va: 0,
+            ctrlq: test_ctrlq(),
             features_negotiated: 0,
             display: DisplayInfo::default(),
             resource_id_alloc: AtomicU32::new(1),

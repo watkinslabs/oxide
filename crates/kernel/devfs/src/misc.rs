@@ -190,19 +190,23 @@ pub fn lcg_next() -> u64 {
     s
 }
 
-/// Hardware-entropy source hook. `/dev/hwrng` reads route here; the kmain
-/// boot path installs the virtio-rng `fill` fn after PCI enumeration via
-/// `set_hwrng_source`. Stored as a raw fn pointer so devfs needn't depend
-/// on the driver crate (same pattern as the dir-overlay hook). 0 = absent.
+/// Hardware-entropy source hook. `/dev/hwrng` reads route here; the hwrng
+/// driver installs its `fill` function from probe and clears it from remove.
+/// Stored as a raw fn pointer so devfs needn't depend on the driver crate
+/// (same pattern as the dir-overlay hook). 0 = absent.
 static HWRNG_SOURCE: AtomicU64 = AtomicU64::new(0);
 type HwRngFn = fn(&mut [u8]) -> usize;
 
-/// Install the hardware-entropy source (virtio-rng `fill`). Boot, once,
-/// only when a virtio-rng device is present. Until installed, `/dev/hwrng`
-/// reads return 0 (EOF) rather than fabricating bytes.
+/// Install the hardware-entropy source. Until installed, `/dev/hwrng` reads
+/// return 0 (EOF) rather than fabricating bytes.
 /// # C: O(1)
 pub fn set_hwrng_source(f: HwRngFn) {
     HWRNG_SOURCE.store(f as usize as u64, Ordering::Release);
+}
+
+/// Clear the hardware-entropy source during driver remove. # C: O(1)
+pub fn clear_hwrng_source() {
+    HWRNG_SOURCE.store(0, Ordering::Release);
 }
 
 /// `/dev/hwrng` — Linux hardware-RNG char device. Each read pulls fresh

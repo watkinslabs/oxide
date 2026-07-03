@@ -218,6 +218,36 @@ pub struct FbDev {
 
 static FBS: Spinlock<Vec<FbDev>, DriverLockClass> = Spinlock::new(Vec::new());
 
+const INVALID_FB_INDEX: u32 = u32::MAX;
+
+fn lowest_free_fb_idx(fbs: &[FbDev]) -> u32 {
+    let mut idx = 0u32;
+    loop {
+        if fbs.iter().all(|f| f.idx != idx) {
+            return idx;
+        }
+        idx = idx.saturating_add(1);
+    }
+}
+
+/// Publish the model-owned `/dev/fbN` node for a newly inserted framebuffer.
+/// On failure, remove the framebuffer record so fb-visible state cannot
+/// outlive its owned devtmpfs publication.
+/// # C: O(N + depth)
+fn publish_or_unwind(idx: u32) -> Option<u32> {
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        if !devfs::register_node(idx) {
+            let mut g = FBS.lock();
+            if let Some(pos) = g.iter().position(|f| f.idx == idx) {
+                g.remove(pos);
+            }
+            return None;
+        }
+    }
+    Some(idx)
+}
+
 /// Display-flush hook (`transfer_to_host_2d + resource_flush`) provided by
 /// the GPU driver — makes pixels written to the mmap'd/written scanout
 /// visible. Registered at boot; `None` keeps writes invisible (no panic).
@@ -226,6 +256,10 @@ static FLUSH_HOOK: Spinlock<Option<fn()>, DriverLockClass> = Spinlock::new(None)
 /// Register the display-flush hook (boot wiring, once).
 /// # C: O(1)
 pub fn set_flush_hook(f: fn()) { *FLUSH_HOOK.lock() = Some(f); }
+
+/// Clear the display-flush hook during driver teardown.
+/// # C: O(1)
+pub fn clear_flush_hook() { *FLUSH_HOOK.lock() = None; }
 
 /// Push written pixels to the display via the registered flush hook.
 /// # C: O(1) + host transfer.
@@ -269,6 +303,13 @@ pub fn set_yield_hook(f: fn()) { *YIELD_HOOK.lock() = Some(f); }
 /// Register the monotonic-clock hook (ns) used for the WAITFORVSYNC
 /// deadline (boot wiring, once). # C: O(1)
 pub fn set_now_hook(f: fn() -> u64) { *NOW_HOOK.lock() = Some(f); }
+
+/// Clear wait hooks during framebuffer driver teardown.
+/// # C: O(1)
+pub fn clear_wait_hooks() {
+    *YIELD_HOOK.lock() = None;
+    *NOW_HOOK.lock() = None;
+}
 
 /// Default WAITFORVSYNC deadline: 100 ms. One tick is the vsync cadence;
 /// 100 ms is a generous upper bound that survives a slow tick rate without
@@ -344,11 +385,12 @@ pub fn unpack_pseudo(v: &FbVarScreeninfo, px: u32) -> (u16, u16, u16) {
     (chan(&v.red), chan(&v.green), chan(&v.blue))
 }
 
-/// Register `/dev/fb0` backed by the real scanout: `base_pa`/`fb_va` =
+/// Register `/dev/fbN` backed by the real scanout: `base_pa`/`fb_va` =
 /// physical + HHDM-kernel address of the contiguous BGRA32 framebuffer,
 /// `pitch` = bytes/line, `w`×`h` = resolution. Builds var/fix (smem_start =
-/// base_pa, line_length = pitch, 32bpp BGRA truecolor) and registers it.
-/// Idempotent-ish: appends one fb. # C: O(1)
+/// base_pa, line_length = pitch, 32bpp BGRA truecolor), registers it, and
+/// publishes its devtmpfs node.
+/// # C: O(N + depth)
 pub fn init_scanout(base_pa: u64, fb_va: u64, fb_bytes: u64, pitch: u32, w: u32, h: u32) -> u32 {
     let mut var = FbVarScreeninfo::default();
     var.xres = w; var.yres = h; var.xres_virtual = w; var.yres_virtual = h;
@@ -356,14 +398,44 @@ pub fn init_scanout(base_pa: u64, fb_va: u64, fb_bytes: u64, pitch: u32, w: u32,
     fix.smem_start = base_pa;
     fix.smem_len = fb_bytes as u32;
     fix.line_length = pitch;
+    let idx = {
+        let mut g = FBS.lock();
+        let idx = lowest_free_fb_idx(&g);
+        g.push(FbDev {
+            idx, var, fix, base_pa, fb_va, fb_bytes,
+            card_id: 0, crtc_id: 0, fb_id: 0, dumb_handle: 0,
+            blank: FB_BLANK_UNBLANK, pseudo_palette: [0; 16],
+        });
+        idx
+    };
+    publish_or_unwind(idx).unwrap_or(INVALID_FB_INDEX)
+}
+
+/// Unregister an fbdev instance and remove its devtmpfs node before the
+/// backing storage is released.
+/// # C: O(N + depth)
+pub fn unregister(idx: u32) -> bool {
+    #[cfg(target_os = "oxide-kernel")]
+    let _ = devfs::unregister_node(idx);
     let mut g = FBS.lock();
-    let idx = g.len() as u32;
-    g.push(FbDev {
-        idx, var, fix, base_pa, fb_va, fb_bytes,
-        card_id: 0, crtc_id: 0, fb_id: 0, dumb_handle: 0,
-        blank: FB_BLANK_UNBLANK, pseudo_palette: [0; 16],
-    });
-    idx
+    let Some(pos) = g.iter().position(|f| f.idx == idx) else {
+        return false;
+    };
+    g.remove(pos);
+    true
+}
+
+/// Unregister the fbdev instance that owns `base_pa`.
+/// # C: O(N + depth)
+pub fn unregister_by_base(base_pa: u64) -> bool {
+    let idx = {
+        let g = FBS.lock();
+        let Some(fb) = g.iter().find(|f| f.base_pa == base_pa) else {
+            return false;
+        };
+        fb.idx
+    };
+    unregister(idx)
 }
 
 /// `(base_pa, fb_bytes)` of `/dev/fb<idx>` for mmap (Linux remap_pfn_range).
@@ -382,14 +454,17 @@ pub fn kva_of(idx: u32) -> Option<(u64, u64)> {
 /// index (0 ⇒ /dev/fb0).
 /// # C: O(1)
 pub fn register(card_id: u32, crtc_id: u32, var: FbVarScreeninfo, fix: FbFixScreeninfo) -> u32 {
-    let mut g = FBS.lock();
-    let idx = g.len() as u32;
-    g.push(FbDev {
-        idx, var, fix, base_pa: 0, fb_va: 0, fb_bytes: 0,
-        card_id, crtc_id, fb_id: 0, dumb_handle: 0,
-        blank: FB_BLANK_UNBLANK, pseudo_palette: [0; 16],
-    });
-    idx
+    let idx = {
+        let mut g = FBS.lock();
+        let idx = lowest_free_fb_idx(&g);
+        g.push(FbDev {
+            idx, var, fix, base_pa: 0, fb_va: 0, fb_bytes: 0,
+            card_id, crtc_id, fb_id: 0, dumb_handle: 0,
+            blank: FB_BLANK_UNBLANK, pseudo_palette: [0; 16],
+        });
+        idx
+    };
+    publish_or_unwind(idx).unwrap_or(INVALID_FB_INDEX)
 }
 
 /// Number of registered fbdev devices (count of /dev/fbN inodes).
@@ -465,6 +540,13 @@ static UNBLANK_HOOK: Spinlock<Option<fn()>, DriverLockClass> = Spinlock::new(Non
 pub fn set_blank_hooks(blank: fn(), unblank: fn()) {
     *BLANK_HOOK.lock() = Some(blank);
     *UNBLANK_HOOK.lock() = Some(unblank);
+}
+
+/// Clear blank/unblank hooks during framebuffer driver teardown.
+/// # C: O(1)
+pub fn clear_blank_hooks() {
+    *BLANK_HOOK.lock() = None;
+    *UNBLANK_HOOK.lock() = None;
 }
 
 /// Apply a blank-level transition for `/dev/fb<idx>`: store the level, then

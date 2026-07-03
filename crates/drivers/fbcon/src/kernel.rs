@@ -192,6 +192,18 @@ pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
     repaint();
 }
 
+/// Detach fbcon from a disappearing framebuffer. The VT contents are dropped
+/// with the framebuffer console because there is no live consw target left;
+/// serial remains the durable console.
+/// # C: O(1)
+pub fn kernel_unregister() {
+    READY.store(false, Ordering::Release);
+    DIRTY.store(false, Ordering::Release);
+    FLUSH_FN.store(core::ptr::null_mut(), Ordering::Release);
+    crate::answerback::clear_sink();
+    *VT_STATE.lock() = None;
+}
+
 /// System-console grid `(rows, cols)` derived from the framebuffer geometry
 /// (yres/CELL_H × xres/CELL_W), or `None` pre-init. Boot seeds `/dev/console`'s
 /// winsize from this so full-screen apps (htop/btop) see the real fbcon size

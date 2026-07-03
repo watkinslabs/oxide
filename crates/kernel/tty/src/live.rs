@@ -76,6 +76,14 @@ pub fn set_bracketed_paste_query(f: fn() -> bool) {
     BRACKETED_Q.store(f as *mut (), Ordering::Release);
 }
 
+/// Clear foreground-VT mode query hooks when the owning console driver is
+/// unregistered.
+/// # C: O(1)
+pub fn clear_vt_mode_queries() {
+    APP_CURSOR_Q.store(core::ptr::null_mut(), Ordering::Release);
+    BRACKETED_Q.store(core::ptr::null_mut(), Ordering::Release);
+}
+
 fn query(slot: &AtomicPtr<()>) -> bool {
     let raw = slot.load(Ordering::Acquire);
     if raw.is_null() {

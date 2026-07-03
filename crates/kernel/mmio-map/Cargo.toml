@@ -1,5 +1,5 @@
 [package]
-name = "drv-uart-pl011"
+name = "mmio-map"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -8,8 +8,10 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-drv = { path = "../drv" }
+hal = { path = "../../arch/hal" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 hal-aarch64 = { path = "../../arch/hal-aarch64" }
-arch-irq = { path = "../../kernel/arch-irq" }

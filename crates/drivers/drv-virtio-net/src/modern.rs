@@ -11,36 +11,31 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
 
-/// Length of the virtio-net legacy/modern packet header preceding each
-/// frame in the ring buffer per Virtio 1.2 §5.1.6.1. We negotiate
+/// Length of the virtio-net packet header preceding each frame in the ring
+/// buffer per Virtio 1.2 §5.1.6.1. We negotiate
 /// without VIRTIO_NET_F_MRG_RXBUF, so the fixed 10-byte header expands
 /// to 12 with `num_buffers` (mandatory in modern transport).
 const VIRTIO_NET_HDR_LEN: usize = 12;
 
-/// Persistent runtime state for one modern virtio-net device. Pointers
-/// reference VAs/PAs already programmed into the device by the boot
-/// probe; this module owns no allocation. `bus`/`device`/`function`
-/// mirror the PCI BDF for log lines and later sysfs export.
-#[derive(Copy, Clone, Default)]
+/// Persistent runtime state for one modern virtio-net device. Queue resources
+/// reference VAs/PAs already programmed into the device by the transport
+/// probe. `bus`/`device`/`function` mirror the PCI BDF for log lines and
+/// later sysfs export.
+#[derive(Copy, Clone)]
 pub struct ModernNetState {
+    /// Owning PCI transport BDF packed as bus:device:function.
+    pub device_key: u32,
     pub bus:      u8,
     pub device:   u8,
     pub function: u8,
-    pub cfg_va:        u64,
-    pub q0_notify_va:  u64,
-    pub q1_notify_va:  u64,
-    pub q0_desc_pa:    u64,
-    pub q0_driver_pa:  u64,
-    pub q0_device_pa:  u64,
-    pub q1_desc_pa:    u64,
-    pub q1_driver_pa:  u64,
-    pub q1_device_pa:  u64,
-    pub q0_size: u16,
-    pub q1_size: u16,
+    pub cfg_va:   u64,
+    pub hhdm:     u64,
+    pub rxq:      virtio::VirtQueueResource,
+    pub txq:      virtio::VirtQueueResource,
     /// F59-02: PA + len of the single boot-allocated RX buffer pinned
     /// to queue-0 descriptor 0. rx_poll re-publishes this descriptor
     /// on every completion (one-in-flight RX ring v1; pool comes later).
@@ -56,18 +51,74 @@ pub struct ModernNetState {
     /// `tx_frame` rewrites this buffer (12-byte virtio_net_hdr +
     /// caller body) and reposts q1 descriptor 0 each call.
     pub tx0_buf_pa: u64,
+    /// TX queue cursor state owned by this device.
+    pub tx_last_used:  u16,
+    pub tx_next_avail: u16,
+    /// RX queue cursor state owned by this device.
+    pub rx_last_used:  u16,
+    pub rx_next_avail: u16,
 }
 
 static MODERN_DEV: Spinlock<Option<ModernNetState>, DriverLockClass> =
     Spinlock::new(None);
 static MODERN_PRESENT: AtomicBool = AtomicBool::new(false);
+static SOFTIRQ_INSTALLED: AtomicBool = AtomicBool::new(false);
+static REGISTERED_IFACE: AtomicU32 = AtomicU32::new(0);
+static ARP_GC_TIMER_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Stash modern virtio-net runtime state for later RX/TX drivers.
-/// Idempotent: subsequent calls are no-ops (boot probe runs once).
+/// Returns false if a device is already installed.
 /// # C: O(1)
-pub fn init_modern(state: ModernNetState) {
-    if MODERN_PRESENT.load(Ordering::Acquire) { return; }
-    *MODERN_DEV.lock() = Some(state);
+pub fn init_modern(
+    device_key: u32,
+    resources: virtio::VirtioResources,
+    bus: u8,
+    device: u8,
+    function: u8,
+    rx0_buf_pa: u64,
+    rx0_buf_len: u16,
+    mac: [u8; 6],
+    mac_valid: bool,
+    tx0_buf_pa: u64,
+) -> bool {
+    let Some(rxq) = resources.require_queue(0) else {
+        return false;
+    };
+    let Some(txq) = resources.require_queue(1) else {
+        return false;
+    };
+    if !resources.common_cfg_valid()
+        || rx0_buf_pa == 0
+        || rx0_buf_len == 0
+        || tx0_buf_pa == 0
+        || !mac_valid
+    {
+        return false;
+    }
+    let state = ModernNetState {
+        device_key,
+        bus,
+        device,
+        function,
+        cfg_va: resources.cfg_va,
+        hhdm: resources.hhdm,
+        rxq,
+        txq,
+        rx0_buf_pa,
+        rx0_buf_len,
+        mac,
+        mac_valid,
+        tx0_buf_pa,
+        tx_last_used: 1,
+        tx_next_avail: 1,
+        rx_last_used: 0,
+        rx_next_avail: 1,
+    };
+    let mut g = MODERN_DEV.lock();
+    if g.is_some() {
+        return false;
+    }
+    *g = Some(state);
     MODERN_PRESENT.store(true, Ordering::Release);
     #[cfg(feature = "debug-boot")]
     {
@@ -79,14 +130,14 @@ pub fn init_modern(state: ModernNetState) {
         klog::write_dec_u64(state.function as u64);
         klog::write_raw(b" cfg_va=");
         klog::write_hex_u64(state.cfg_va);
-        klog::write_raw(b" q0_size=");
-        klog::write_dec_u64(state.q0_size as u64);
-        klog::write_raw(b" q1_size=");
-        klog::write_dec_u64(state.q1_size as u64);
-        klog::write_raw(b" q0_notify_va=");
-        klog::write_hex_u64(state.q0_notify_va);
-        klog::write_raw(b" q1_notify_va=");
-        klog::write_hex_u64(state.q1_notify_va);
+        klog::write_raw(b" rxq_size=");
+        klog::write_dec_u64(state.rxq.size as u64);
+        klog::write_raw(b" txq_size=");
+        klog::write_dec_u64(state.txq.size as u64);
+        klog::write_raw(b" rxq_notify_va=");
+        klog::write_hex_u64(state.rxq.notify_va);
+        klog::write_raw(b" txq_notify_va=");
+        klog::write_hex_u64(state.txq.notify_va);
         klog::write_raw(b" mac=");
         if state.mac_valid {
             for (i, b) in state.mac.iter().enumerate() {
@@ -98,6 +149,62 @@ pub fn init_modern(state: ModernNetState) {
         }
         klog::write_raw(b"\n");
     }
+    true
+}
+
+/// Remove the installed modern virtio-net transport. The caller must have
+/// unregistered the netdev first. This owns the RX bottom-half lifetime along
+/// with the queue/device state it drains.
+/// # C: O(NCPU)
+pub fn uninstall_modern(device_key: u32) -> bool {
+    let state = {
+        let mut guard = MODERN_DEV.lock();
+        match guard.as_ref() {
+            Some(state) if state.device_key == device_key => guard.take(),
+            _ => None,
+        }
+    };
+    let state = match state {
+        Some(state) => state,
+        None => return false,
+    };
+    #[cfg(target_os = "oxide-kernel")]
+    uninstall_rx_softirq_handler();
+    MODERN_PRESENT.store(false, Ordering::Release);
+    REGISTERED_IFACE.store(0, Ordering::Release);
+    SOFTIRQ_IFACE_AND_IP.store(0, Ordering::Release);
+    unregister_timers();
+    if state.cfg_va != 0 {
+        // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
+        // probe; device_status is an 8-bit register at offset 0x14.
+        unsafe { core::ptr::write_volatile((state.cfg_va + 0x14) as *mut u8, 0u8); }
+    }
+    free_frame(state.rx0_buf_pa);
+    free_frame(state.tx0_buf_pa);
+    true
+}
+
+fn free_frame(pa: u64) {
+    if pa != 0 {
+        // SAFETY: non-zero PAs passed here are pages allocated by the PMM for
+        // this driver's payload buffers and are no longer reachable after
+        // reset. Vring frames are transport-owned after successful probe and
+        // are released when the transport is unpublished.
+        unsafe { pmm::setup::free_one_frame(pa); }
+    }
+}
+
+/// Remember the net stack ifindex registered for this transport.
+/// # C: O(1)
+fn set_registered_iface(id: net::NetIfaceId) {
+    REGISTERED_IFACE.store(id.raw(), Ordering::Release);
+}
+
+/// Registered net stack ifindex, if any.
+/// # C: O(1)
+fn registered_iface() -> Option<net::NetIfaceId> {
+    let raw = REGISTERED_IFACE.load(Ordering::Acquire);
+    if raw == 0 { None } else { Some(net::NetIfaceId::from_raw(raw)) }
 }
 
 /// Read-only accessor for the device MAC. Returns `None` until
@@ -129,9 +236,6 @@ pub enum TxErr {
     NoBuf,
 }
 
-static TX_LAST_USED:  AtomicU16 = AtomicU16::new(1);
-static TX_NEXT_AVAIL: AtomicU16 = AtomicU16::new(1);
-
 /// Maximum payload `tx_frame` accepts (4 KiB scratch minus the
 /// 12-byte virtio_net_hdr; ethernet MTU 1500 fits comfortably).
 pub const TX_MAX_BODY: usize = 4096 - VIRTIO_NET_HDR_LEN;
@@ -150,10 +254,14 @@ pub enum TxOutcome {
     Timeout,
 }
 
-/// Send one frame out the modern virtio-net transmit queue. Writes
+fn installed_device_key() -> Option<u32> {
+    MODERN_DEV.lock().as_ref().map(|s| s.device_key)
+}
+
+/// Send one frame out the named modern virtio-net transmit queue. Writes
 /// the 12-byte zero virtio_net_hdr followed by `body` into the
 /// pinned TX scratch buffer, updates queue-1 descriptor 0 with the
-/// new len, posts on avail, and kicks `q1_notify_va`. Polls
+/// new len, posts on avail, and kicks the TX queue notify window. Polls
 /// `q1.used.idx` for change relative to the pre-kick value.
 ///
 /// Returns `TxOutcome::Confirmed` only when the device acknowledged
@@ -163,31 +271,29 @@ pub enum TxOutcome {
 ///
 /// # C: O(1) under MODERN_DEV.lock()
 /// # Lk: takes MODERN_DEV across MMIO writes; no callbacks.
-pub fn tx_frame(body: &[u8]) -> Result<TxOutcome, TxErr> {
+pub fn tx_frame_for(device_key: u32, body: &[u8]) -> Result<TxOutcome, TxErr> {
     if !MODERN_PRESENT.load(Ordering::Acquire) {
         return Err(TxErr::NotPresent);
     }
     if body.len() > TX_MAX_BODY {
         return Err(TxErr::TooLarge);
     }
-    let g = MODERN_DEV.lock();
-    let s = match *g { Some(s) => s, None => return Err(TxErr::NotPresent) };
-    if s.tx0_buf_pa == 0 || s.q1_size == 0 || s.q1_notify_va == 0 {
+    let mut g = MODERN_DEV.lock();
+    let s = match g.as_mut() {
+        Some(s) if s.device_key == device_key => s,
+        _ => return Err(TxErr::NotPresent),
+    };
+    if s.tx0_buf_pa == 0 || !s.txq.is_runtime_valid() {
         return Err(TxErr::NoBuf);
     }
 
-    let hhdm = {
-        #[cfg(target_arch = "x86_64")]
-        { hal_x86_64::mmu_ops::hhdm_offset() }
-        #[cfg(target_arch = "aarch64")]
-        { hal_aarch64::mmu_ops::hhdm_offset() }
-    };
+    let hhdm = s.hhdm;
     if hhdm == 0 { return Err(TxErr::NoBuf); }
 
     let buf_va   = hhdm.wrapping_add(s.tx0_buf_pa);
-    let desc_va  = hhdm.wrapping_add(s.q1_desc_pa);
-    let avail_va = hhdm.wrapping_add(s.q1_driver_pa);
-    let used_va  = hhdm.wrapping_add(s.q1_device_pa);
+    let desc_va  = hhdm.wrapping_add(s.txq.desc_pa);
+    let avail_va = hhdm.wrapping_add(s.txq.driver_pa);
+    let used_va  = hhdm.wrapping_add(s.txq.device_pa);
 
     // Write virtio_net_hdr (12 zero bytes) + body into the scratch
     // buffer. Use byte writes via volatile to avoid relying on memcpy
@@ -224,11 +330,11 @@ pub fn tx_frame(body: &[u8]) -> Result<TxOutcome, TxErr> {
     let pre_used = unsafe {
         core::ptr::read_volatile((used_va + 2) as *const u16)
     };
-    TX_LAST_USED.store(pre_used, Ordering::Release);
+    s.tx_last_used = pre_used;
 
-    let q1_size = s.q1_size as usize;
-    let next_avail = TX_NEXT_AVAIL.load(Ordering::Acquire);
-    let pub_slot = (next_avail as usize) % q1_size;
+    let txq_size = s.txq.size as usize;
+    let next_avail = s.tx_next_avail;
+    let pub_slot = (next_avail as usize) % txq_size;
     // SAFETY: HHDM-mapped q1 avail ring; ring[pub_slot] at byte +4 = u16 offset 2+pub_slot.
     unsafe {
         core::ptr::write_volatile(
@@ -243,11 +349,11 @@ pub fn tx_frame(body: &[u8]) -> Result<TxOutcome, TxErr> {
         core::ptr::write_volatile((avail_va + 2) as *mut u16, new_idx);
     }
     core::sync::atomic::fence(Ordering::Release);
-    TX_NEXT_AVAIL.store(new_idx, Ordering::Release);
+    s.tx_next_avail = new_idx;
 
-    // SAFETY: q1_notify_va Device-attr-mapped during DRIVER_OK; aligned u16 store of queue index 1.
+    // SAFETY: txq.notify_va is Device-attr-mapped during DRIVER_OK; aligned u16 store of the TX queue index.
     unsafe {
-        core::ptr::write_volatile(s.q1_notify_va as *mut u16, 1u16);
+        core::ptr::write_volatile(s.txq.notify_va as *mut u16, s.txq.index);
     }
 
     // Brief observation window: poll q1 used.idx for the device to
@@ -259,12 +365,21 @@ pub fn tx_frame(body: &[u8]) -> Result<TxOutcome, TxErr> {
             core::ptr::read_volatile((used_va + 2) as *const u16)
         };
         if dev_used != pre_used {
-            TX_LAST_USED.store(dev_used, Ordering::Release);
+            s.tx_last_used = dev_used;
             return Ok(TxOutcome::Confirmed);
         }
         core::hint::spin_loop();
     }
     Ok(TxOutcome::Timeout)
+}
+
+/// Current single-installed-device entry point. New internal users should pass
+/// the owning BDF key to `tx_frame_for`.
+pub fn tx_frame(body: &[u8]) -> Result<TxOutcome, TxErr> {
+    let Some(device_key) = installed_device_key() else {
+        return Err(TxErr::NotPresent);
+    };
+    tx_frame_for(device_key, body)
 }
 
 // -------- F59-13: poll RX into the kernel net stack -------------------
@@ -281,6 +396,7 @@ pub fn tx_frame(body: &[u8]) -> Result<TxOutcome, TxErr> {
 /// for `our_ip` get a synchronous reply via `tx_frame`. Returns the
 /// number of frames consumed.
 /// # C: O(rx_drain)
+#[cfg(target_os = "oxide-kernel")]
 pub fn poll_into_stack(iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
     let our_mac = match mac() { Some(m) => m, None => return 0 };
     let stack = net::sock::stack();
@@ -356,8 +472,6 @@ pub fn poll_into_stack(iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
 // live as AtomicU64 since xmit may be called from soft-IRQ context
 // where MODERN_DEV.lock is already held.
 
-use core::sync::atomic::AtomicU64;
-
 pub struct VirtioNetDev {
     mac: [u8; 6],
     tx_packets: AtomicU64,
@@ -390,6 +504,42 @@ impl VirtioNetDev {
         }))
     }
 }
+
+/// Register this virtio-net device with the kernel net stack and install the
+/// RX runtime resources owned by the driver. Called after `init_modern`
+/// succeeds during model probe.
+/// # C: O(1) amortised
+#[cfg(target_os = "oxide-kernel")]
+pub fn register_netdev() -> Option<net::NetIfaceId> {
+    let dev = VirtioNetDev::new()?;
+    let stack = net::sock::stack();
+    let id = stack.ifaces.register(dev as alloc::sync::Arc<dyn net::NetDev>);
+    set_registered_iface(id);
+    install_rx_runtime(id);
+    Some(id)
+}
+
+/// Hosted tests do not build the kernel socket stack. Keep the boundary
+/// explicit so production registration cannot accidentally use a fake stack.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn register_netdev() -> Option<net::NetIfaceId> { None }
+
+/// Unregister this virtio-net device from the kernel net stack. Called before
+/// `uninstall_modern` tears down queue state and RX runtime resources.
+/// # C: O(N iface-owned state)
+#[cfg(target_os = "oxide-kernel")]
+pub fn unregister_netdev() -> bool {
+    let Some(id) = registered_iface() else {
+        return false;
+    };
+    net::sock::stack().unregister_iface(id)
+}
+
+/// Hosted tests do not build the kernel socket stack.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn unregister_netdev() -> bool { false }
 
 impl net::NetDev for VirtioNetDev {
     fn name(&self) -> &str { "eth0" }
@@ -495,14 +645,23 @@ pub fn modern_state() -> Option<ModernNetState> { *MODERN_DEV.lock() }
 /// # C: O(1)
 pub fn is_modern_present() -> bool { MODERN_PRESENT.load(Ordering::Acquire) }
 
+/// True iff the named virtio-net transport owns the installed runtime state.
+/// # C: O(1)
+pub fn is_modern_present_for(device_key: u32) -> bool {
+    MODERN_DEV.lock()
+        .as_ref()
+        .map(|state| state.device_key == device_key)
+        .unwrap_or(false)
+}
+
 // ---- F87: softirq RX handler ----------------------------------------
 //
-// `pci_boot` calls `set_softirq_iface(id, ip)` after the NetDev is
-// registered with the kernel net stack. The MSI dispatcher then
-// `softirq::raise(NetRx)` on every device MSI; the runner drains the
-// pending bit and invokes `rx_drain_softirq` (no-arg per the softirq
-// handler ABI), which forwards to `poll_into_stack` with the stashed
-// values.
+// The model probe calls `install_rx_runtime(id)` after the NetDev is registered
+// with the kernel net stack. The MSI dispatcher raises NetRx on device MSI; the
+// runner drains the pending bit and invokes `rx_drain_softirq` (no-arg per the
+// softirq handler ABI), which forwards to `poll_into_stack` with the stashed
+// values. The IPv4 slot starts as 0.0.0.0 and is updated by normal address
+// configuration through `set_softirq_ip`.
 
 static SOFTIRQ_IFACE_AND_IP: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
@@ -514,7 +673,37 @@ static SOFTIRQ_IFACE_AND_IP: core::sync::atomic::AtomicU64 =
 pub fn set_softirq_iface(id: net::NetIfaceId, ip: [u8; 4]) {
     let v = ((id.0 as u64) << 32) | (u32::from_be_bytes(ip) as u64);
     SOFTIRQ_IFACE_AND_IP.store(v, Ordering::Release);
-    register_timers(); // driver self-registers its ARP-GC timer on probe
+}
+
+/// Install runtime RX resources owned by this net driver: iface identity for
+/// the bottom half, ARP-GC timer, and NetRx softirq handler. IPv4 address
+/// state is filled later by the net address-change hook.
+/// # C: O(1)
+pub fn install_rx_runtime(id: net::NetIfaceId) {
+    set_softirq_iface(id, [0, 0, 0, 0]);
+    register_timers();
+    #[cfg(target_os = "oxide-kernel")]
+    install_rx_softirq_handler();
+}
+
+/// Install this driver's RX bottom-half handler. The handler belongs to the
+/// virtio-net device lifetime, not to boot or the transport layer.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn install_rx_softirq_handler() {
+    if !SOFTIRQ_INSTALLED.swap(true, Ordering::AcqRel) {
+        softirq::set_handler(softirq::Slot::NetRx, rx_drain_softirq);
+    }
+}
+
+/// Remove this driver's RX bottom-half handler and discard queued stale RX
+/// work. Called after the device is reset during remove.
+/// # C: O(NCPU)
+#[cfg(target_os = "oxide-kernel")]
+pub fn uninstall_rx_softirq_handler() {
+    if SOFTIRQ_INSTALLED.swap(false, Ordering::AcqRel) {
+        let _ = softirq::clear_handler(softirq::Slot::NetRx);
+    }
 }
 
 /// F138: update only the IP slot (preserves iface id). SIOCSIFADDR
@@ -539,6 +728,7 @@ pub fn softirq_iface_id() -> u32 {
 /// Bails fast when no iface stashed (boot ordering) or RX queue empty
 /// (poll_into_stack returns 0 in either case).
 /// # C: O(rx_drain)
+#[cfg(target_os = "oxide-kernel")]
 pub fn rx_drain_softirq() {
     let v = SOFTIRQ_IFACE_AND_IP.load(Ordering::Acquire);
     if v == 0 { return; }
@@ -546,6 +736,11 @@ pub fn rx_drain_softirq() {
     let ip = (v as u32).to_be_bytes();
     let _ = poll_into_stack(id, ip);
 }
+
+/// Raise the virtio-net RX softirq from device IRQ context. Actual ring walking
+/// belongs to `rx_drain_softirq`, which runs as the NetRx bottom half.
+/// # C: O(1)
+pub fn raise_rx() { softirq::raise(softirq::Slot::NetRx); }
 
 /// F149/F180c: resolve next-hop MAC for an outbound IP frame body.
 /// Returns Some(mac) when the neighbor cache has the next-hop, else
@@ -557,10 +752,13 @@ fn resolve_next_hop_mac(src_mac: [u8; 6], proto: u16, body: &[u8]) -> Option<net
     }
     if proto != net::eth_p::IPV4 || body.len() < 20 { return None; }
     let dst_ip = net::Ipv4Addr::new(body[16], body[17], body[18], body[19]);
+    #[cfg(target_os = "oxide-kernel")]
     let next_hop_ip = match net::sock::stack().routes.lookup(dst_ip) {
         Some(r) => r.gateway.unwrap_or(dst_ip),
         None    => dst_ip,
     };
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let next_hop_ip = dst_ip;
     if let Some(m) = arp_cache().lookup(next_hop_ip) {
         return Some(m);
     }
@@ -581,6 +779,14 @@ fn resolve_next_hop_mac(src_mac: [u8; 6], proto: u16, body: &[u8]) -> Option<net
 }
 
 fn resolve_ipv6_next_hop_mac(src_mac: [u8; 6], body: &[u8]) -> Option<net::MacAddr> {
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
+        let _ = (src_mac, body);
+        return None;
+    }
+
+    #[cfg(target_os = "oxide-kernel")]
+    {
     let hdr = match net::ipv6::Ipv6Hdr::parse(body) {
         Ok(h) => h,
         Err(_) => return None,
@@ -611,6 +817,7 @@ fn resolve_ipv6_next_hop_mac(src_mac: [u8; 6], body: &[u8]) -> Option<net::MacAd
     frame[14 + net::ipv6::IPV6_HDR_LEN..].copy_from_slice(&ns);
     let _ = tx_frame(&frame);
     None
+    }
 }
 
 fn solicited_node_multicast(ip: net::Ipv6Addr) -> net::Ipv6Addr {
@@ -632,6 +839,93 @@ fn solicited_node_ethernet(ip: net::Ipv6Addr) -> net::MacAddr {
 #[cfg(test)]
 mod ndp_tests {
     use super::*;
+
+    fn state(bus: u8) -> ModernNetState {
+        ModernNetState {
+            device_key: bus as u32,
+            bus,
+            device: 1,
+            function: 0,
+            cfg_va: 0,
+            hhdm: 0,
+            rxq: virtio::VirtQueueResource {
+                index: 0,
+                size: 256,
+                desc_pa: 0,
+                driver_pa: 0,
+                device_pa: 0,
+                notify_va: 0,
+                notify_off: 0,
+            },
+            txq: virtio::VirtQueueResource {
+                index: 1,
+                size: 256,
+                desc_pa: 0,
+                driver_pa: 0,
+                device_pa: 0,
+                notify_va: 0,
+                notify_off: 0,
+            },
+            rx0_buf_pa: 0,
+            rx0_buf_len: 2048,
+            mac: [0x02, 0, 0, 0, 0, bus],
+            mac_valid: true,
+            tx0_buf_pa: 0,
+            tx_last_used: 1,
+            tx_next_avail: 1,
+            rx_last_used: 0,
+            rx_next_avail: 1,
+        }
+    }
+
+    #[test]
+    fn init_modern_rejects_second_device_without_overwrite() {
+        let _ = uninstall_modern(1);
+        {
+            let mut g = MODERN_DEV.lock();
+            *g = Some(state(1));
+        }
+        MODERN_PRESENT.store(true, Ordering::Release);
+        assert!(!uninstall_modern(2));
+        assert!(is_modern_present_for(1));
+        let mut resources = virtio::VirtioResources::new(1, 1);
+        resources.set_queue(virtio::VirtQueueResource {
+            index: 0,
+            size: 256,
+            desc_pa: 1,
+            driver_pa: 2,
+            device_pa: 3,
+            notify_va: 4,
+            notify_off: 0,
+        });
+        resources.set_queue(virtio::VirtQueueResource {
+            index: 1,
+            size: 256,
+            desc_pa: 5,
+            driver_pa: 6,
+            device_pa: 7,
+            notify_va: 8,
+            notify_off: 0,
+        });
+        assert!(!init_modern(
+            2,
+            resources,
+            2,
+            1,
+            0,
+            9,
+            2048,
+            [0x02, 0, 0, 0, 0, 2],
+            true,
+            10
+        ));
+        assert_eq!(modern_state().unwrap().bus, 1);
+        {
+            let _ = MODERN_DEV.lock().take();
+        }
+        MODERN_PRESENT.store(false, Ordering::Release);
+        assert!(modern_state().is_none());
+    }
 
     #[test]
     fn solicited_node_address_uses_low_24_bits() {
@@ -670,16 +964,13 @@ fn first_iface_ip() -> Option<net::Ipv4Addr> {
 // re-publishes the same descriptor onto the avail ring so the device
 // can fill it again. v1 uses a single buffer pinned to descriptor 0
 // (state.rx0_buf_pa); a pool is a later F59 step. After a non-zero
-// drain we kick `q0_notify_va` so the device knows the avail-ring
+// drain we kick the RX queue notify window so the device knows the avail-ring
 // advanced.
 //
 // Cursors live as atomics so rx_poll callers don't have to hold any
 // kernel state; the spinlock protects MODERN_DEV but the cursors are
 // driver-private and incremented only inside rx_poll, so a relaxed
 // load + release-store is enough.
-
-static RX_LAST_USED:  AtomicU16 = AtomicU16::new(0);
-static RX_NEXT_AVAIL: AtomicU16 = AtomicU16::new(1);
 
 /// Drain pending RX completions and invoke `cb` for each frame body
 /// (Ethernet header + payload, virtio_net_hdr stripped). Re-publishes
@@ -697,22 +988,17 @@ static RX_NEXT_AVAIL: AtomicU16 = AtomicU16::new(1);
 ///       so the device can safely overwrite rx0_buf once republished.
 pub fn rx_poll<F: FnMut(&[u8])>(mut cb: F) -> usize {
     if !MODERN_PRESENT.load(Ordering::Acquire) { return 0; }
-    let g = MODERN_DEV.lock();
-    let s = match *g { Some(s) => s, None => return 0 };
-    if s.q0_size == 0 || s.rx0_buf_pa == 0 || s.rx0_buf_len == 0 {
+    let mut g = MODERN_DEV.lock();
+    let s = match g.as_mut() { Some(s) => s, None => return 0 };
+    if !s.rxq.is_runtime_valid() || s.rx0_buf_pa == 0 || s.rx0_buf_len == 0 {
         return 0;
     }
 
-    let hhdm = {
-        #[cfg(target_arch = "x86_64")]
-        { hal_x86_64::mmu_ops::hhdm_offset() }
-        #[cfg(target_arch = "aarch64")]
-        { hal_aarch64::mmu_ops::hhdm_offset() }
-    };
+    let hhdm = s.hhdm;
     if hhdm == 0 { return 0; }
 
-    let used_va  = hhdm.wrapping_add(s.q0_device_pa);
-    let avail_va = hhdm.wrapping_add(s.q0_driver_pa);
+    let used_va  = hhdm.wrapping_add(s.rxq.device_pa);
+    let avail_va = hhdm.wrapping_add(s.rxq.driver_pa);
     let buf_va   = hhdm.wrapping_add(s.rx0_buf_pa);
 
     // SAFETY: HHDM-mapped device-written used ring; aligned u16 load
@@ -723,17 +1009,17 @@ pub fn rx_poll<F: FnMut(&[u8])>(mut cb: F) -> usize {
         core::ptr::read_volatile((used_va + 2) as *const u16)
     };
     core::sync::atomic::fence(Ordering::Acquire);
-    let mut last = RX_LAST_USED.load(Ordering::Acquire);
+    let mut last = s.rx_last_used;
     if dev_used_idx == last { return 0; }
 
-    let q0_size = s.q0_size as usize;
+    let rxq_size = s.rxq.size as usize;
     let mut delivered = 0usize;
     // Collect frame copies under the lock so we can safely drop the
     // lock before invoking cb (cb's TCP-stack path may re-take it via
     // tx_frame when emitting an ACK — UP spinlock self-deadlock).
     let mut frames: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
     while last != dev_used_idx {
-        let slot = (last as usize) % q0_size;
+        let slot = (last as usize) % rxq_size;
         // used.ring[slot] = { u32 id; u32 len; } at +4 + slot*8.
         // SAFETY: device populated this slot before bumping used.idx;
         // the Acquire fence above orders the read after the index check.
@@ -784,13 +1070,13 @@ pub fn rx_poll<F: FnMut(&[u8])>(mut cb: F) -> usize {
         }
         delivered += 1;
     }
-    RX_LAST_USED.store(last, Ordering::Release);
+    s.rx_last_used = last;
 
     // Re-publish descriptor 0 on the avail ring `delivered` times so
     // the device sees fresh slots. avail.ring lives at +4 (u16 entries).
-    let mut next_avail = RX_NEXT_AVAIL.load(Ordering::Acquire);
+    let mut next_avail = s.rx_next_avail;
     for _ in 0..delivered {
-        let pub_slot = (next_avail as usize) % q0_size;
+        let pub_slot = (next_avail as usize) % rxq_size;
         // SAFETY: HHDM-mapped avail ring, exclusive under MODERN_DEV.lock.
         unsafe {
             core::ptr::write_volatile(
@@ -807,13 +1093,13 @@ pub fn rx_poll<F: FnMut(&[u8])>(mut cb: F) -> usize {
             core::ptr::write_volatile((avail_va + 2) as *mut u16, next_avail);
         }
         core::sync::atomic::fence(Ordering::Release);
-        RX_NEXT_AVAIL.store(next_avail, Ordering::Release);
+        s.rx_next_avail = next_avail;
         // Kick: u16 queue index 0 to the per-queue notify VA. Modern
         // notify is MMIO; the boot probe has already mapped this VA
         // Device-attr (no-cache, no-reorder).
-        // SAFETY: q0_notify_va = NOTIFY_BAR + queue 0 * notify_off_multiplier mapped Device-attr by pci_boot::virtio_drv during DRIVER_OK; aligned u16 store.
+        // SAFETY: rxq.notify_va is Device-attr-mapped during DRIVER_OK; aligned u16 store of the RX queue index.
         unsafe {
-            core::ptr::write_volatile(s.q0_notify_va as *mut u16, 0u16);
+            core::ptr::write_volatile(s.rxq.notify_va as *mut u16, s.rxq.index);
         }
     }
     // Drop MODERN_DEV.lock() before invoking cb — cb may call tx_frame
@@ -830,11 +1116,26 @@ pub fn rx_poll<F: FnMut(&[u8])>(mut cb: F) -> usize {
 /// # C: O(N entries)
 fn arp_gc_timer(now_ns: u64) { arp_cache().gc(now_ns); }
 
-/// Register this driver's periodic timers (ARP GC). Boot, once.
+/// Register this device driver's periodic timers (ARP GC).
 /// # C: O(1)
 pub fn register_timers() {
-    use core::sync::atomic::{AtomicBool, Ordering};
-    static DONE: AtomicBool = AtomicBool::new(false);
-    if DONE.swap(true, Ordering::AcqRel) { return; }
-    timer::register_periodic(100_000_000, arp_gc_timer);
+    if ARP_GC_TIMER_ID.load(Ordering::Acquire) != 0 {
+        return;
+    }
+    let id = timer::register_periodic(100_000_000, arp_gc_timer);
+    if ARP_GC_TIMER_ID
+        .compare_exchange(0, id.raw(), Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        let _ = timer::unregister_periodic(id);
+    }
+}
+
+/// Unregister this device driver's periodic timers during remove.
+/// # C: O(N registered timers)
+pub fn unregister_timers() {
+    let raw = ARP_GC_TIMER_ID.swap(0, Ordering::AcqRel);
+    if let Some(id) = timer::TimerId::from_raw(raw) {
+        let _ = timer::unregister_periodic(id);
+    }
 }

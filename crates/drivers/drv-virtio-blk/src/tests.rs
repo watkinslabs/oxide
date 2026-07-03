@@ -11,9 +11,14 @@
 
 use std::vec;
 use std::vec::Vec;
+use std::format;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use block::{BlockError, BlockRequest};
 use virtio::blk;
 use virtio::queue::{VRING_DESC_F_NEXT, VRING_DESC_F_WRITE};
+
+static TEST_DISK_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 // ---- header encode ----------------------------------------------------
 
@@ -219,6 +224,41 @@ fn vd_name_base26() {
     assert_eq!(nm(27), "vdab");
     assert_eq!(nm(701), "vdzz");
     assert_eq!(nm(702), "vdaaa");
+}
+
+#[test]
+fn remove_blk_unregisters_block_disk_and_device_node() {
+    let seq = TEST_DISK_SEQ.fetch_add(1, Ordering::Relaxed);
+    let name = format!("vdtest{}", seq);
+    let bus = 0xf0;
+    let device = (seq as u8).wrapping_add(1);
+    let function = 0;
+
+    assert_eq!(crate::modern::test_publish_record(bus, device, function, &name), 1);
+    assert!(crate::modern::test_has_record(bus, device, function));
+    assert!(block::registry::by_name(&name).is_some());
+    assert!(drv::devices().iter().any(|d| d.bus == "block" && d.addr == name));
+    let stale_disk = block::registry::by_name(&name).unwrap();
+
+    let duplicate = format!("vdtest{}dup", seq);
+    assert_eq!(crate::modern::test_publish_record(bus, device, function, &duplicate), 0);
+    assert!(block::registry::by_name(&duplicate).is_none());
+    assert!(!drv::devices().iter().any(|d| d.bus == "block" && d.addr == duplicate));
+
+    assert!(crate::modern::remove_blk(bus, device, function));
+    assert!(!crate::modern::test_has_record(bus, device, function));
+    assert!(block::registry::by_name(&name).is_none());
+    assert!(!drv::devices().iter().any(|d| d.bus == "block" && d.addr == name));
+    let mut req = BlockRequest::new_read(0, 1, 512);
+    assert_eq!(stale_disk.dev.submit_sync(&mut req), Err(BlockError::Eio));
+
+    assert!(!crate::modern::remove_blk(bus, device, function));
+
+    let rebound = format!("vdtest{}r", seq);
+    assert_ne!(crate::modern::test_publish_record(bus, device, function, &rebound), 0);
+    assert!(block::registry::by_name(&rebound).is_some());
+    assert!(crate::modern::remove_blk(bus, device, function));
+    assert!(block::registry::by_name(&rebound).is_none());
 }
 
 #[test]

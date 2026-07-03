@@ -24,7 +24,7 @@ pub mod types;
 
 pub use blockdev::{BlockDevice, BlockRequest, MemDisk};
 pub use pagecache::{CachedPage, PageCache};
-pub use registry::{Disk, register, by_name, by_index, snapshot};
+pub use registry::{Disk, register, unregister, by_name, by_index, snapshot};
 pub use types::{BlockError, BlockOp, InodeId, KResult, PageFlags, PAGE_BYTES};
 
 use core::sync::atomic::{AtomicPtr, Ordering};

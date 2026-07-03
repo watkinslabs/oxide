@@ -11,6 +11,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use crate::regs;
+use mmio_map::Mapping;
 
 /// HHDM base for the running arch (PA→VA for HBA DMA structures + bounce).
 /// # C: O(1)
@@ -58,6 +59,7 @@ const CT_PRDT_OFF: usize = 0x80;
 /// register-file VA, the port index, the DMA-structure PAs (command list,
 /// received-FIS, command table, bounce frame), and the negotiated geometry.
 pub struct Ahci {
+    mmio:      Mapping,
     abar_va: u64,
     port:    u32,
     clb_pa:  u64,  // command list (1 KiB, 1 KiB-aligned)
@@ -78,6 +80,53 @@ unsafe impl Send for Ahci {}
 unsafe impl Sync for Ahci {}
 
 impl Ahci {
+    fn free_frame(pa: &mut u64) {
+        if *pa == 0 {
+            return;
+        }
+        // SAFETY: the caller has stopped/quiesced the port. These frames are
+        // the single-page AHCI command/FIS/table/bounce allocations returned
+        // by alloc_one_frame during bring-up.
+        unsafe { pmm::setup::free_one_frame(*pa); }
+        *pa = 0;
+    }
+
+    fn alloc_frames() -> Result<[u64; 4], &'static str> {
+        let mut frames = [0u64; 4];
+        let names = ["alloc clb", "alloc fb", "alloc ct", "alloc bounce"];
+        let mut i = 0usize;
+        while i < frames.len() {
+            match pmm::setup::alloc_one_frame() {
+                Some(pa) => frames[i] = pa,
+                None => {
+                    for pa in frames.iter_mut() {
+                        Self::free_frame(pa);
+                    }
+                    return Err(names[i]);
+                }
+            }
+            i += 1;
+        }
+        Ok(frames)
+    }
+
+    /// Stop the active port and return command/FIS/table/bounce frames to PMM.
+    /// Publication must already be removed and callers quiesced.
+    /// # C: O(port stop wait + 4 frees)
+    pub fn shutdown_and_free(&mut self) {
+        let _ = self.stop_port();
+        self.pw(regs::P_CLB, 0);
+        self.pw(regs::P_CLBU, 0);
+        self.pw(regs::P_FB, 0);
+        self.pw(regs::P_FBU, 0);
+        Self::free_frame(&mut self.clb_pa);
+        Self::free_frame(&mut self.fb_pa);
+        Self::free_frame(&mut self.ctba_pa);
+        Self::free_frame(&mut self.bounce_pa);
+        self.abar_va = 0;
+        self.mmio.unmap();
+    }
+
     /// Bytes one transfer carries (one bounce frame = one page). # C: O(1)
     pub const MAX_XFER: u64 = PAGE;
 
@@ -120,7 +169,8 @@ impl Ahci {
     /// empty HBA, reason starts "no ") or a real failure (timeout/alloc).
     /// `abar_va` is the BAR5 register-file VA (≥2 pages from map_mmio_pages).
     /// # C: O(reset + port init + 1 IDENTIFY)
-    pub fn bring_up(abar_va: u64) -> Result<Ahci, &'static str> {
+    pub fn bring_up(mmio: Mapping, abar_off: u64) -> Result<Ahci, &'static str> {
+        let abar_va = mmio.base_va() + abar_off;
         // Enable AHCI mode (GHC.AE) before touching port registers.
         // SAFETY: abar_va is the Device-attr-mapped HBA register file; aligned
         // 32-bit RMW of GHC to set the AE bit per AHCI §10.1.1.
@@ -185,20 +235,20 @@ impl Ahci {
 
         // Allocate the per-port DMA structures + a bounce frame (each its own
         // PMM frame — over-aligned for the 1 KiB / 256 B requirements).
-        let clb = pmm::setup::alloc_one_frame().ok_or("alloc clb")?;
-        let fb  = pmm::setup::alloc_one_frame().ok_or("alloc fb")?;
-        let ct  = pmm::setup::alloc_one_frame().ok_or("alloc ct")?;
-        let bnc = pmm::setup::alloc_one_frame().ok_or("alloc bounce")?;
+        let [clb, fb, ct, bnc] = Self::alloc_frames()?;
         for f in [clb, fb, ct, bnc] { Self::zero_frame(f); }
 
         let mut a = Ahci {
-            abar_va, port,
+            mmio, abar_va, port,
             clb_pa: clb, fb_pa: fb, ctba_pa: ct, bounce_pa: bnc,
             sectors: 0, blk_size: 512,
         };
 
         // Stop the port, program the bases, restart it.
-        if !a.stop_port() { return Err("stop_port timeout"); }
+        if !a.stop_port() {
+            a.shutdown_and_free();
+            return Err("stop_port timeout");
+        }
         a.pw(regs::P_CLB,  (a.clb_pa & 0xFFFF_FFFF) as u32);
         a.pw(regs::P_CLBU, (a.clb_pa >> 32) as u32);
         a.pw(regs::P_FB,   (a.fb_pa & 0xFFFF_FFFF) as u32);
@@ -206,15 +256,24 @@ impl Ahci {
         // Clear any latched SATA error + interrupt status before start.
         a.pw(regs::P_SERR, 0xFFFF_FFFF);
         a.pw(regs::P_IS,   0xFFFF_FFFF);
-        if !a.start_port() { return Err("start_port timeout"); }
+        if !a.start_port() {
+            a.shutdown_and_free();
+            return Err("start_port timeout");
+        }
 
         // PxSIG is valid now that FRE received the device's D2H FIS. Classify:
         // only an ATA SATA disk (0x00000101) is a block device we drive — an
         // empty port / non-disk signature is a benign "no disk", not a failure.
-        if a.pr(regs::P_SIG) != regs::SIG_SATA_DISK { return Err("no SATA disk"); }
+        if a.pr(regs::P_SIG) != regs::SIG_SATA_DISK {
+            a.shutdown_and_free();
+            return Err("no SATA disk");
+        }
 
         // IDENTIFY DEVICE → geometry.
-        if !a.identify() { return Err("identify failed"); }
+        if !a.identify() {
+            a.shutdown_and_free();
+            return Err("identify failed");
+        }
         Ok(a)
     }
 

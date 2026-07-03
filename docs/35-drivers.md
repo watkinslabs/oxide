@@ -26,14 +26,22 @@ FROZEN 2026-05-02. Dep:`01`,`02`,`16`,`18`,`19`,`22`,`34`. Provides:every driver
   format modifiers, hot-plug, multi-keymap, KDFONTOP) is in scope
   for the arc; no per-spec deferral lists per docs/02 R02.
 
+## Revision 2026-07-03 (R04)
+
+- Changed: the authoritative implementation is `drv::Device` /
+  `drv::Driver` with `register_driver()`, `device_add()`, `bind()`,
+  `auto_bind()`, `unbind()`, and `device_del()`. The old flat
+  `DriverEntry` / `probe_all(bdf)` path is removed.
+- Device publication follows Linux ordering: bus enumeration creates the
+  device object, `device_add()` publishes devtmpfs before sysfs/add uevent,
+  `Driver::probe()` owns hardware bring-up and child device publication, and
+  `device_del()` calls `Driver::remove()` before remove uevent/devtmpfs
+  teardown.
+
 ## Revision 2026-05-09 (R02)
 
 - Changed: `crates/drv` is now the real owner of the driver-model
-  dispatch substrate. Current surface:
-    - `drv::DriverEntry { name, probe }`
-    - `drv::register(DriverEntry)` — boot-time registration
-    - `drv::probe_all(bdf)` — first-match probe walker
-    - `drv::registered_count()` — diagnostics
+  dispatch substrate.
 - Per-driver hardware crates (`drv-virtio-net`, `drv-virtio-blk`,
   `drv-nvme`, etc.) ride phase 11 onward per `35§3` invariant 1.
   Current hardware drivers stay in `kernel/src/dev_virtio_*` +
@@ -66,8 +74,8 @@ Driver registration, device matching, sysfs publication, hot-plug hooks. Devices
 
 ## 2 Invariants (frozen)
 
-1. Each driver is a separate crate `drv-*`. Core kernel does not depend on any driver crate.
-2. Drivers register via `linkme`-style static array (`distributed_slice!(DRIVERS)`); kernel iterates at boot and on hot-plug.
+1. Each driver is a separate crate `drv-*`.
+2. Drivers register `drv::Driver` objects at boot; bus enumeration calls `device_add()` and binds through `auto_bind()` / `bind()`.
 3. Every probed device has a `KObj` published at `/sys/devices/...` (per `19`).
 4. Driver state owned by the driver instance the kernel hands out; no `static mut` per `06§11`.
 5. `request_irq`/`free_irq` symmetric per probe/remove.
@@ -76,27 +84,31 @@ Driver registration, device matching, sysfs publication, hot-plug hooks. Devices
 ## 3 Public ifc
 
 ```rust
-pub trait Driver: Send + Sync {
+pub trait Driver: Sync {
+    fn bus(&self) -> &'static str;
     fn name(&self) -> &'static str;
     fn matches(&self, dev: &Device) -> bool;
-    fn probe(&self, dev: &Device) -> KR<Box<dyn DriverInstance>>;
+    fn probe(&self, dev: &Arc<Device>) -> KResult<()>;
+    fn remove(&self, dev: &Device);
+    fn shutdown(&self, dev: &Device);
 }
 
-pub trait DriverInstance: Send + Sync {
-    fn remove(self: Box<Self>);
-    fn shutdown(&self);                # called at system shutdown
+pub struct Device {
+    pub bus: &'static str;
+    pub addr: String;
+    pub parent_bus: Option<&'static str>;
+    pub parent_addr: Option<String>;
+    pub vendor_id: u16;
+    pub device_id: u16;
+    pub class: u32;
+    pub dev_class: &'static str;
+    pub devname: Option<String>;
+    pub dev_t: Option<(u32, u32)>;
 }
-
-pub enum Device { Pci(&PciDev), Virtio(&VirtioMmioDev), Platform(&PlatformDev) }
 ```
 
-Distributed slice:
-```rust
-#[linkme::distributed_slice]
-pub static DRIVERS: [&dyn Driver] = [..];
-```
-
-Kernel boot: iterate DRIVERS × discovered devices; first matching driver wins.
+Kernel boot: register drivers, enumerate buses, `device_add()` each device,
+then bind the first matching driver whose `probe()` succeeds.
 
 ## 4 Driver list
 
@@ -122,8 +134,8 @@ Tracked as later phases:
 ## 5 Driver lifecycle
 
 1. Kernel enumerates devices (PCI walk, virtio-mmio scan, DT platform-device walk).
-2. For each device: iterate `DRIVERS`, find first `matches()==true`.
-3. Call `probe(&dev)`. On Ok, store the `Box<dyn DriverInstance>` in a per-device slot. On Err, log + try next driver.
+2. For each device: call `device_add()` so devtmpfs/sysfs publication happens in one ordered path.
+3. Bind through `auto_bind()` / `bind()`. `Driver::probe()` must fully bring up the device or unwind all partial state before returning an error.
 4. Probe sets up: BAR map, IRQ register, sysfs attributes, devfs node (if char/block device), register with subsystem (`register_netdev`,`register_block_device`,`tty_register`).
 5. Shutdown: call `shutdown()`; then `remove()` to free.
 
@@ -168,4 +180,3 @@ No IOMMU yet: coherent uses uncached mapping (x86) / non-cacheable attr (arm). S
 ## 11 Cross-spec
 
 `16`/`19` (devfs/sysfs publishing), `22` (IRQ + DMA barriers), `25` (NetDev), `17` (BlockDevice), `28` (Tty), `34` (PCI).
-

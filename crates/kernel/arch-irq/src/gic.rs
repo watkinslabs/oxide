@@ -23,6 +23,8 @@ const GICD_IIDR:       usize = 0x0008;
 #[cfg(target_arch = "aarch64")]
 const GICD_ISENABLER:  usize = 0x0100;
 #[cfg(target_arch = "aarch64")]
+const GICD_ICENABLER:  usize = 0x0180;
+#[cfg(target_arch = "aarch64")]
 const GICD_IPRIORITYR: usize = 0x0400;
 #[cfg(target_arch = "aarch64")]
 const GICD_ICFGR:      usize = 0x0C00;
@@ -345,6 +347,29 @@ pub unsafe fn enable_intid_level(intid: u32) {
     unsafe { spi_enable_common(gicd, intid, /*level=*/true); }
 }
 
+/// Disable an SGI/PPI/SPI INTID owned by a driver during remove.
+/// # SAFETY: caller owns `intid`; GIC bring-up has published its bases.
+/// # C: O(1)
+/// # Ctx: driver remove / boot teardown
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub unsafe fn disable_intid(intid: u32) {
+    let gicd = GICD_VA.load(Ordering::Acquire);
+    let gicr = GICR_VA.load(Ordering::Acquire);
+    if gicd == 0 || gicr == 0 { return; }
+    // SAFETY: GICD/GICR are Device-attr-mapped; offsets stay within their regions.
+    unsafe {
+        if intid < 32 {
+            let sgi_base = gicr + GICR_SGI_OFFSET;
+            let icenabler = (sgi_base + GICD_ICENABLER as u64) as *mut u32;
+            core::ptr::write_volatile(icenabler, 1u32 << (intid & 31));
+        } else {
+            let word = (intid / 32) as u64 * 4;
+            let icenabler = (gicd + GICD_ICENABLER as u64 + word) as *mut u32;
+            core::ptr::write_volatile(icenabler, 1u32 << (intid & 31));
+        }
+    }
+}
+
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 unsafe fn spi_enable_common(gicd: u64, intid: u32, level: bool) {
     // SAFETY: caller asserted Device-mapped GICD; offsets stay inside.
@@ -605,14 +630,10 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             // /proc/interrupts per-CPU line count: SPI intid 32.. → device
             // line idx = intid-32 (LPIs ≥8192 exceed NLINES → skipped).
             crate::irqstat::hit_line((intid as usize).saturating_sub(32));
-            // F58: route to the per-SPI handler if a driver
-            // registered one. Falls back to the shared softirq
-            // raise so devices that haven't moved to per-vector
-            // registration still get drained.
-            if !crate::invoke_arm_spi_handler(intid) {
-                softirq::raise(softirq::Slot::InputDrain);
-                softirq::raise(softirq::Slot::NetRx);
-            }
+            // Route only to the owning MSI handler. Unregistered device
+            // interrupts are left visible in irqstat/MSI_FIRES; they are not
+            // converted into shared softirq guesses.
+            let _ = crate::invoke_arm_spi_handler(intid);
         }
         // CNTV virtual timer INTID is 27 on QEMU virt. Reload TVAL
         // so the level-triggered line drops and re-arms for the next
@@ -631,29 +652,18 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             sched::diag::percpu::tick();
         }
         if intid == 33 {
-            // F47: PL011 RX/RT IRQ — drain FIFO via tick_poll_uart
-            // below, then write-1-to-clear the IMSC-matched bits in
-            // UARTICR so the line drops and re-arms for the next
-            // batch of input.
-            // SAFETY: dispatcher context, IRQs masked; pl011 was enabled in smoke_device_map_arm; single-CPU.
-            unsafe { hal_aarch64::pl011::ack_rx_irq(); }
+            let _ = crate::invoke_arm_irq_handler(intid);
             UART_IRQ_FIRES.fetch_add(1, Ordering::Relaxed);
         }
         // SAFETY: mirrors the IAR read above; same INTID; CPU interface state via system regs.
         unsafe { eoi(raw); }
-        // PL011 RX FIFO drain: SPI-33 (UART IRQ) when wired AND the
-        // virtual timer (INTID 27) tick. The timer-poll path mirrors
-        // x86's per-tick `tick_poll_uart` so headless boots without
-        // the PL011 IRQ unmasked still receive keystrokes.
-        // UART poll + softirq drain are BSP-only (only the boot CPU owns
-        // the PL011; the shared softirq queue is drained by one CPU). APs
-        // arm their own CNTV (above, per-CPU reload stays) and reach here
-        // too — they only resched.
+        // Timer-hook work is BSP-only. APs arm their own CNTV (above,
+        // per-CPU reload stays) and reach here too; they only resched.
         let is_bsp = {
             use hal::CpuOps;
             hal_aarch64::ArmCpuOps::current_cpu() == ::cpu::smp::boot_cpu_id()
         };
-        if intid == 33 || intid == 27 {
+        if intid == 27 {
             // /proc/stat per-CPU cputime accounting runs on EVERY CPU when its
             // own CNTV timer fires (Linux per-CPU kcpustat). Was the timer
             // taken from EL0 (user)? SPSR_EL1 mode bits 3:0 == 0 (EL0t) = user.
@@ -665,9 +675,8 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             };
             sched::cpustat::account(
                 if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
-            // Device poll (PL011 UART) is BSP-only.
             if is_bsp {
-                // SAFETY: IRQ dispatcher context, IRQs masked; BSP owns the UART.
+                // SAFETY: IRQ dispatcher context, IRQs masked.
                 unsafe { crate::tick_poll(from_user); }
             }
         }

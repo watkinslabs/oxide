@@ -14,6 +14,7 @@ drv     = { path = "../../drivers/drv" }
 virtio  = { path = "../../drivers/virtio" }
 sync    = { path = "../../shared/sync" }
 devfs   = { path = "../../kernel/devfs" }
+procfs  = { path = "../../kernel/procfs" }
 syscall = { path = "../../kernel/syscall" }
 vfs     = { path = "../../kernel/vfs" }
 softirq = { path = "../../kernel/softirq" }
