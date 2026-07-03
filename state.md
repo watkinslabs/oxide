@@ -32,10 +32,22 @@ gdm.service Starts (~70s) then idles; NO gnome-shell/greeter; `/dev/dri/card0`
 never opened → seat0 not graphical. Traced chain state:
 - card0 raw uevent IS emitted and reaches **1 group-1 socket (udevd)**
   (`[DRMUEV] card0 act=add reached=1`). Raw delivery works.
-- udevd does NOT re-broadcast a cooked event (`rebroadcast_cooked_uevent` never
-  fires) and writes no `/run/udev/data` db entry seen. So udevd RECEIVES the
-  card0 event but does not process it to the tag/re-broadcast stage.
-- Therefore logind never learns card0 is `master-of-seat` → seat0 not graphical.
+- **SHARP FINDING: udevd writes ZERO `/run/udev/data/*` entries for ANY device**
+  (traced openat for `udev/data` across a full coldplug boot — 0 hits, not even
+  a failed-open attempt). So udevd is NOT processing devices into its db at all —
+  this is SYSTEMIC, not card0-specific. It never reaches the rule-apply / tag /
+  cooked-re-broadcast stage (`rebroadcast_cooked_uevent` never fires either).
+- Consequence: no `master-of-seat` tag in the udev db → logind's seat
+  enumeration finds card0 untagged → seat0 not graphical → gdm idles.
+- `/sys/dev/char/*` is never looked up; `/sys/dev/block/254:0` IS (2×) — so
+  `/sys/dev/{char,block}` (plan Phase 4) is a real gap but NOT the root here.
+- **Root is upstream: udevd processes no device.** Diagnose with udevd's own
+  logging (`udevadm control --log-level=debug` / journal — needs runtime
+  introspection, not kernel serial traces) OR the device-model completeness in
+  udevfix.md. Likely a udevd worker/rule-load/db-write stall the kernel side
+  must make Linux-shaped enough to satisfy (device_add ordering, complete
+  sysfs). THIS is `codex/driver-fixes` territory — do not implement overlapping
+  device-model changes on main in parallel (the divergence to avoid).
 
 **Root per `udevfix.md`: the kernel's Linux device-model surface is incomplete,
 so real udev can't fully process the device.** Do NOT add kernel policy/seat
