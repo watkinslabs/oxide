@@ -168,10 +168,11 @@ test-pass claims.
 - Block, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`
-  provider. Virtio-net transport/netdev/softirq runtime is now BDF-keyed, but
-  still uses the minimal one-buffer RX design per transport and a shared ARP
-  cache. Virtio-gpu teardown is BDF-owned and fbdev helper hooks are now
-  fb-index-owned. Virtio-gpu probe is no longer rejected just because another
+  provider. Virtio-net transport/netdev/softirq runtime is now BDF-keyed, ARP
+  neighbor state is per runtime, and RX uses a bounded descriptor/buffer pool
+  instead of one global or single-descriptor path. Virtio-gpu teardown is
+  BDF-owned and fbdev helper hooks are now fb-index-owned. Virtio-gpu probe is
+  no longer rejected just because another
   GPU is already installed; duplicate ownership is rejected by BDF/card state.
   The fbcon/klog/tty console helper path is still primary-only. Virtio-vsock
   transport context, protocol publication, TX dispatch, RX drain, and protocol
@@ -210,8 +211,8 @@ test-pass claims.
   the owned endpoint. Virtio-snd card publication, ops, ALSA nodes, and PCM
   runtime are now split by card id/BDF; the remaining sound work is repeated
   bind/unbind/remove/readd proof. Virtio-net's old singleton
-  installed-device slot is gone, but its RX buffer model still needs the next
-  networking cleanup pass.
+  installed-device slot is gone; remaining net work is QEMU-visible
+  multi-device/stress/rebind proof and deeper networking features.
 - Add explicit fault-injection coverage for probe failure after each allocation,
   mapping, registration, IRQ/MSI step, queue setup, and userspace publication.
 - Prove repeated bind/unbind/remove/readd loops under QEMU for PCI, virtio,
@@ -355,10 +356,11 @@ virtio-net modern is no longer a single installed device slot on
 `codex/driver-fixes-next`: transport state is stored in a BDF-keyed
 `MODERN_DEVS` table, net stack registration/model publication is stored in a
 BDF-keyed runtime table, ARP neighbor caches are owned by each runtime, TX/RX
-polling has keyed entry points, and the NetRx softirq walks registered
-runtimes. Remaining virtio-net cleanup is not the old singleton overwrite bug;
-it is the still-minimal per-device RX design (one boot-pinned RX buffer per
-transport).
+polling has keyed entry points, queue-0 RX uses a bounded descriptor/buffer
+pool, and the NetRx softirq walks registered runtimes. Remaining virtio-net
+cleanup is not the old singleton overwrite bug; it is QEMU-visible
+multi-device/stress/rebind proof and deeper networking behavior beyond this
+driver-ownership pass.
 
 Some subsystems are per-device already or closer to it:
 

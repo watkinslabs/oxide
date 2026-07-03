@@ -250,8 +250,7 @@ impl drv::Driver for VirtioNetDrv {
             || p.q1_notify_va == 0
             || p.q0_size == 0
             || p.q1_size == 0
-            || p.rx0_buf_pa == 0
-            || p.rx0_buf_len == 0
+            || p.rx_bufs.is_empty()
             || p.tx0_buf_pa == 0
             || !p.mac_valid
         {
@@ -265,8 +264,7 @@ impl drv::Driver for VirtioNetDrv {
             d.bdf.bus,
             d.bdf.device,
             d.bdf.function,
-            p.rx0_buf_pa,
-            p.rx0_buf_len,
+            p.rx_bufs.clone(),
             p.mac,
             p.mac_valid,
             p.tx0_buf_pa,
@@ -815,18 +813,21 @@ fn release_q0_after_failed_probe(p: &mut VirtioProbe) {
 }
 
 fn release_net_after_failed_probe(p: &mut VirtioProbe) {
+    let mut frames = alloc::vec![
+        p.q0_desc_pa,
+        p.q0_driver_pa,
+        p.q0_device_pa,
+        p.q1_desc_pa,
+        p.q1_driver_pa,
+        p.q1_device_pa,
+        p.tx0_buf_pa,
+    ];
+    for rx_buf in p.rx_bufs.iter() {
+        frames.push(rx_buf.pa);
+    }
     release_virtio_transport(
         p.cfg_va,
-        &[
-            p.q0_desc_pa,
-            p.q0_driver_pa,
-            p.q0_device_pa,
-            p.q1_desc_pa,
-            p.q1_driver_pa,
-            p.q1_device_pa,
-            p.rx0_buf_pa,
-            p.tx0_buf_pa,
-        ],
+        &frames,
     );
     unmap_probe_mmio(p);
 }
@@ -1007,8 +1008,7 @@ pub(super) struct VirtioProbe {
     pub(super) q1_desc_pa:   u64,
     pub(super) q1_driver_pa: u64,
     pub(super) q1_device_pa: u64,
-    pub(super) rx0_buf_pa:  u64,
-    pub(super) rx0_buf_len: u16,
+    pub(super) rx_bufs: Vec<drv_virtio_net::modern::RxBuf>,
     pub(super) mac:       [u8; 6],
     pub(super) mac_valid: bool,
     pub(super) tx0_buf_pa: u64,
@@ -1428,48 +1428,51 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
     };
     // virtio-blk modern-only 0x1042: device-cfg is harvested below; the
     // persistent engine (drv-virtio-blk) owns all reads/writes once registered.
-    // For virtio-net modern-only 0x1041, post one RX buffer descriptor on
-    // queue 0 and bump avail.idx before kicking. For other devices the queue
-    // stays empty so the kick is a no-op nudge.
+    // For virtio-net modern-only 0x1041, post a small RX buffer pool on queue
+    // 0 and bump avail.idx before kicking. For other devices the queue stays
+    // empty so the kick is a no-op nudge.
     let mut avail_idx_posted = 0u16;
-    // F59-02: persisted RX-buffer info for runtime rx_poll. Set when
-    // the virtio-net branch below allocates the boot-time RX page;
-    // 0/0 if no virtio-net device or DRIVER_OK didn't land.
-    let mut rx0_buf_pa_local: u64 = 0;
-    let mut rx0_buf_len_local: u16 = 0;
+    // Persisted RX-buffer info for runtime rx_poll. Set when the virtio-net
+    // branch below allocates packet buffers; empty if no virtio-net device or
+    // DRIVER_OK didn't land.
+    let mut rx_bufs_local: Vec<drv_virtio_net::modern::RxBuf> = Vec::new();
     if plan.needs_net_rx_seed()
         && q0_desc_pa != 0
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
-        if let Some(rx_pa) = pmm::setup::alloc_raw_frame() {
-            if hhdm != 0 {
-                // F59-02: capture rx_pa for runtime rx_poll re-publish.
-                rx0_buf_pa_local = rx_pa;
-                rx0_buf_len_local = 2048;
-                // Descriptor[0]: { addr=rx_pa; len=2048; flags=WRITE(2); next=0 }
-                let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *mut u64;
-                // SAFETY: HHDM-mapped, freshly-allocated frame, single-CPU.
+        const NET_RX_POOL_MAX: usize = 32;
+        if hhdm != 0 {
+            let target = (q0_size as usize).min(NET_RX_POOL_MAX);
+            let desc = (hhdm.wrapping_add(q0_desc_pa)) as *mut u64;
+            let avail = (hhdm.wrapping_add(q0_driver_pa)) as *mut u16;
+            for desc_id in 0..target {
+                let Some(rx_pa) = pmm::setup::alloc_raw_frame() else {
+                    break;
+                };
+                let id = desc_id as u16;
+                // SAFETY: HHDM-mapped queue-0 descriptor table and avail ring,
+                // freshly allocated packet buffer, single-CPU boot probe.
                 unsafe {
-                    core::ptr::write_volatile(desc0, rx_pa);
-                    // len=2048 (low 32) | flags=WRITE(2) << 32 | next=0 << 48
+                    let slot = desc.add(desc_id * 2);
+                    core::ptr::write_volatile(slot, rx_pa);
                     let lo32 = 2048u32 as u64;
                     let flags_next = (virtio::VRING_DESC_F_WRITE as u64) << 32;
-                    core::ptr::write_volatile(desc0.add(1), lo32 | flags_next);
+                    core::ptr::write_volatile(slot.add(1), lo32 | flags_next);
+                    core::ptr::write_volatile(avail.add(2 + desc_id), id);
                 }
-                // avail.ring[0] = 0 at driver_pa+0x04
-                let avail = (hhdm.wrapping_add(q0_driver_pa)) as *mut u16;
-                // SAFETY: same frame, ring[0] at byte +4 = u16 offset 2.
-                unsafe {
-                    core::ptr::write_volatile(avail.add(2), 0u16);
-                }
-                // Memory barrier so the descriptor + ring writes are
-                // observable before avail.idx bump.
+                rx_bufs_local.push(drv_virtio_net::modern::RxBuf {
+                    desc_id: id,
+                    pa: rx_pa,
+                    len: 2048,
+                });
+            }
+            if !rx_bufs_local.is_empty() {
                 core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-                // avail.idx = 1 at driver_pa+0x02 (u16 offset 1).
-                // SAFETY: HHDM-mapped avail ring as above; this u16 store at idx publishes the descriptor we just wrote.
-                unsafe { core::ptr::write_volatile(avail.add(1), 1u16); }
+                avail_idx_posted = rx_bufs_local.len() as u16;
+                // SAFETY: HHDM-mapped avail ring as above; this u16 store at idx
+                // publishes all descriptors written to avail.ring.
+                unsafe { core::ptr::write_volatile(avail.add(1), avail_idx_posted); }
                 core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-                avail_idx_posted = 1;
             }
         }
     }
@@ -1783,8 +1786,7 @@ fn virtio_init_arch(d: &pci::PciDevice, msix0_handler: Option<fn()>) -> Option<V
         q1_desc_pa,
         q1_driver_pa,
         q1_device_pa,
-        rx0_buf_pa:  rx0_buf_pa_local,
-        rx0_buf_len: rx0_buf_len_local,
+        rx_bufs: rx_bufs_local,
         mac:       mac_local,
         mac_valid: mac_valid_local,
         tx0_buf_pa: tx0_buf_pa_local,
