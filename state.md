@@ -58,14 +58,27 @@ never opened → seat0 not graphical. Traced chain state:
     (`sched::live::notify_epoll_waiters`) — udevd STILL never read (UEVREAD=0),
     so it's NOT a missing wake. Reverted (also: global epoll broadcast on every
     rtnetlink reply is too costly).
-- **Prime suspect: EPOLLET `et_seen` stuck in `fs/src/epoll.rs` scan_once.**
-  sd-event registers the monitor edge-triggered (EPOLLET). If port 6 was marked
-  ready once (`et_seen |= POLLIN`) but never drained, `new_edges = ready &
-  !et_seen` is always 0 → epoll_wait NEVER re-reports it → udevd never reads.
-  The initial edge is the crux: verify scan_once delivers the FIRST empty→ready
-  edge for an EPOLLET netlink fd, and that `et_seen` clears when the queue
-  drains. This is an epoll/poll-semantics bug (NOT device-model, NOT
-  codex/driver-fixes territory) — squarely kernel `fs::epoll` + `netlink`.
+- **KERNEL POLL MACHINERY FULLY VERIFIED CORRECT — EPOLLET suspect RULED OUT.**
+  Traced scan_once's view of the netlink fds in epoll: `ev=0x0001` (EPOLLIN,
+  **NOT** EPOLLET — bit 0x80000000 clear), `ready=0x0001` (POLLIN), `et_seen=0`.
+  So they are LEVEL-triggered and scan_once REPORTS them every scan (the
+  `else if ready==0 {continue} else {report}` path). Also verified: `POLL_IN`==
+  `POLLIN`==0x1 across vfs/ppoll/epoll (no bit mismatch); `et_seen` inits to 0 at
+  `epoll_ctl(ADD)` (epoll.rs:240); `sys_ppoll` returns any fd whose `poll()`
+  reports POLLIN (007_poll.rs:100-108); `NetlinkSocket::poll` returns POLLIN when
+  rx_queue non-empty. Every kernel path correctly signals the uevent socket
+  readable to pid 49. An `enqueue`→`notify_epoll_waiters` wake did not change it.
+- **CONCLUSION: the kernel side is correct; the fault is inside pid 49 (udevd) —
+  it is told its uevent fd is readable but issues no read.** This is a userspace
+  (systemd-udevd) internal dispatch/fd-set issue, NOT a kernel poll bug and NOT
+  device-model. Resolve it by introspecting udevd itself: an INTERACTIVE serial
+  session (getty.target IS reached → serial-getty on ttyS0) running
+  `strace -f -p <udevd>` + `udevadm monitor --kernel` + `journalctl -u
+  systemd-udevd -o verbose`. The fire-and-forget `oneboot.sh` harness cannot
+  drive interactive input — use `make -C ../oxide-images run-serial` or the qemu
+  MCP serial. Also confirm pid 49 IS systemd-udevd (vs a udev worker) and that
+  its monitor fd is the SAME socket object (port 6) the coldplug uevent reached
+  (socket-activation fd-passing vs udevd creating its own late-bound monitor).
 - Alternatively confirm with udevd's own journal via an INTERACTIVE serial shell
   (getty.target is reached; a serial-getty on ttyS0 may allow `journalctl -u
   systemd-udevd` + `udevadm monitor --kernel`) — the fire-and-forget oneboot.sh
