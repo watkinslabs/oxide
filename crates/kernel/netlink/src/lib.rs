@@ -291,6 +291,21 @@ pub fn rebroadcast_cooked_uevent(msg: &[u8], dest_groups: u32, sender: &NetlinkS
     let mut g = UEVENT_LISTENERS.lock();
     g.retain(|w| w.strong_count() > 0);
     let mut n = 0;
+    // [COOKTRACE] bounded: does a card0/seat cooked event reach a grp2 monitor?
+    let is_card0 = msg.windows(5).any(|w| w == b"card0") || msg.windows(9).any(|w| w == b"drm/card0");
+    let has_seat = msg.windows(14).any(|w| w == b"master-of-seat");
+    {
+        use core::sync::atomic::{AtomicU32, Ordering as O};
+        static CT: AtomicU32 = AtomicU32::new(0);
+        if (is_card0 || has_seat) && CT.fetch_add(1, O::Relaxed) < 12 {
+            let g2 = g.iter().filter(|w| w.upgrade().map(|s| { let gr = s.groups.load(Ordering::Acquire); (gr & 1) == 0 && (gr == 0 || (gr & dest_groups) != 0) }).unwrap_or(false)).count();
+            klog::write_raw(b"[COOKTRACE] card0="); klog::write_dec_u64(is_card0 as u64);
+            klog::write_raw(b" seat="); klog::write_dec_u64(has_seat as u64);
+            klog::write_raw(b" dest_groups="); klog::write_hex_u64(dest_groups as u64);
+            klog::write_raw(b" grp2_monitors="); klog::write_dec_u64(g2 as u64);
+            klog::write_raw(b"\n");
+        }
+    }
     for w in g.iter() {
         if let Some(s) = w.upgrade() {
             if core::ptr::eq(alloc::sync::Arc::as_ptr(&s), sender as *const NetlinkSocket) { continue; }
