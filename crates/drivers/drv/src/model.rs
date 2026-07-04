@@ -28,6 +28,9 @@ pub type NodeFactory = Arc<dyn Fn() -> vfs::InodeRef + Send + Sync>;
 /// uses Linux `IORESOURCE_*` values so sysfs can expose the same contract.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Resource {
+    /// PCI BAR index when this is a PCI BAR resource. Non-PCI buses may leave
+    /// this as zero until they grow indexed resources of their own.
+    pub bar:   u8,
     pub start: u64,
     pub end:   u64,
     pub flags: u64,

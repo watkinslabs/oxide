@@ -777,9 +777,10 @@ test-pass claims.
 - Generalize PCI lifecycle ownership: command enable/disable is now covered for
   the main AHCI/NVMe/virtio paths, and virtio MSI-X teardown now releases the
   transport-owned binding before PCI memory decode is dropped. BAR mapping
-  ownership, broader MSI/MSI-X setup/teardown proof, `enable`,
-  `driver_override`, `modalias`, `resource*`, and bridge topology still need
-  complete PCI-driver semantics.
+  ownership, broader MSI/MSI-X setup/teardown proof, `enable`, and bridge
+  topology still need complete PCI-driver semantics. `driver_override`,
+  `modalias`, the aggregate PCI `resource`, and indexed `resourceN` BAR
+  attributes are model-derived sysfs state.
 - Audit all remaining direct subsystem side effects so hardware-backed device
   nodes and class devices are registered by the owning probe path and removed
   by the owning remove path.
@@ -1124,7 +1125,7 @@ Missing or weak:
 
 - broader manual bind/unbind proof on real virtio devices
 - broader device `driver` symlink correctness proof across hot rebind
-- PCI resources
+- broader PCI resource/lifecycle proof beyond model-derived `resource*` attrs
 - remove/change event behavior
 - per-class child relationships
 
