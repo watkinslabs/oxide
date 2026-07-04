@@ -582,17 +582,24 @@ pub fn uninstall_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
         Some(ctx) => ctx,
         None => return false,
     };
-    // SAFETY: cfg_va is the mapped common-cfg window captured at probe;
-    // device_status is a u8 at +0x14. Reset before releasing queue storage.
-    unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    if ctx.cfg_va != 0 {
+        // SAFETY: cfg_va is the mapped common-cfg window captured at probe;
+        // device_status is a u8 at +0x14. Reset before releasing queue storage.
+        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    }
     let fb_base_pa = ctx.fb_va - ctx.hhdm;
     // SAFETY: these frames were allocated by this driver and are no longer
     // reachable after CTX removal and device reset. The ctrlq vring frames are
     // transport-owned after successful probe and are released on unpublish.
     unsafe {
-        pmm::setup::free_one_frame(ctx.cmd_buf_pa);
+        if ctx.cmd_buf_pa != 0 {
+            pmm::setup::free_one_frame(ctx.cmd_buf_pa);
+        }
         for i in 0..ctx.fb_pages_alloc {
-            pmm::setup::free_one_frame(fb_base_pa + (i as u64) * 4096);
+            let frame = fb_base_pa + (i as u64) * 4096;
+            if frame != 0 {
+                pmm::setup::free_one_frame(frame);
+            }
         }
     }
     true
@@ -642,9 +649,14 @@ pub fn uninstall_scanout_after_failed_probe(device_key: virtio::VirtioChildDevic
     // SAFETY: scanout was not published to the runtime driver. The transport
     // q0 frames remain owned by the caller's failed-probe cleanup path.
     unsafe {
-        pmm::setup::free_one_frame(ctx.cmd_buf_pa);
+        if ctx.cmd_buf_pa != 0 {
+            pmm::setup::free_one_frame(ctx.cmd_buf_pa);
+        }
         for i in 0..ctx.fb_pages_alloc {
-            pmm::setup::free_one_frame(fb_base_pa + (i as u64) * 4096);
+            let frame = fb_base_pa + (i as u64) * 4096;
+            if frame != 0 {
+                pmm::setup::free_one_frame(frame);
+            }
         }
     }
     true
@@ -919,5 +931,52 @@ pub fn flush_scanout_for_bdf(bdf: u32) {
         let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
             ctx.ctrlq, ctx.hhdm);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn key(raw: u32) -> virtio::VirtioChildDeviceKey {
+        virtio::VirtioChildDeviceKey::from_raw(raw)
+    }
+
+    fn test_ctrlq() -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource {
+            index: 0,
+            size: 1,
+            desc_pa: 0,
+            driver_pa: 0,
+            device_pa: 0,
+            notify_va: 0,
+            notify_off: 0,
+        }
+    }
+
+    #[test]
+    fn uninstall_scanout_removes_context_without_live_mmio_or_frames() {
+        CTX.lock().clear();
+        CTX.lock().push(ScanoutCtx {
+            device_key: key(0x0010_0000),
+            bdf: 0x0010_0000,
+            cfg_va: 0,
+            w: 640,
+            h: 480,
+            fb_va: 0,
+            fb_bytes: 0,
+            fb_pages_alloc: 0,
+            res_id: 1,
+            ctrlq: test_ctrlq(),
+            cmd_buf_va: 0,
+            cmd_buf_pa: 0,
+            hhdm: 0,
+            fbdev_idx: None,
+            quiesced: false,
+        });
+
+        assert!(uninstall_scanout(key(0x0010_0000)));
+        assert!(CTX.lock().is_empty());
+        assert!(!uninstall_scanout(key(0x0010_0000)));
     }
 }
