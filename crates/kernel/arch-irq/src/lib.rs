@@ -344,8 +344,8 @@ pub fn alloc_arm_spi() -> Option<u32> {
 }
 
 
-#[cfg(target_os = "oxide-kernel")] pub mod gic;
-#[cfg(target_os = "oxide-kernel")] pub mod its;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] pub mod gic;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] pub mod its;
 #[cfg(target_os = "oxide-kernel")] pub mod lapic;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))] pub mod tlb;
 pub mod irqstat;
