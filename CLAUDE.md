@@ -222,6 +222,8 @@ Counter is per-type, monotonically increasing, never reused. Two-digit minimum (
 
 **Counters live in `metadata/index.md` — HARD RULE, never invent them.** The repo is ~4000 commits in (`F` is in the 400s, `B`/`D` in the 90s–110s). Before creating a branch of type `<T>`, read the `next` value for `<T>` in `metadata/index.md`, name the branch with it, then INCREMENT that line and commit `metadata/index.md` (same PR or a tracking commit) so the next branch/run is correct. Guessing a counter (e.g. `F30`) produces garbage, non-sortable names that collide with real history.
 
+**Short-lived feature branches (HARD RULE).** Every feature / bug / doc change gets its own fresh branch from current `origin/main`; no omnibus branches and no long-running catch-all worktrees. Finish one feature, commit it, push it, open/merge the PR, then delete the local branch and worktree before starting the next feature. Refactors are features too: isolate them on their own branch instead of mixing cleanup with driver work, and never continue piling new work onto a dirty or conflicted branch. If a branch becomes misshapen, stop, preserve it with an archive tag, and cherry-pick the still-valuable commits onto clean one-feature branches.
+
 **Phase prefix MUST match `00§3` master-plan phase.** `P<n>-` means phase-`n` per the master-plan §3 table (0=build infra, 1=PMM, 2=VMM+MMU, 3=slab, 4=sched+ctxsw+preempt+SMP, 5=syscalls+ELF+init+bash, 6=VFS+ext4 RO, 7a=block+pagecache, 7b=ext4 RW, 8=net, 9=hardening, 10=modules loader, 11=PCI enumeration, 12=virtio common, 13=dynamic linker, 14=libc/NSS/PAM, 15=system manager, 16=RPM toolchain, 17=tty + login). Rotate the prefix when crossing a phase boundary; do **not** keep using the old phase number as a generic counter. Counter resets to `01` per phase. Example: when phase 4 work begins, branches restart at `P4-01-...`, regardless of how high the `P3-` counter went.
 
 **Phases are sequential (`00§3`, `00§14` rule 3): no parallel-across-gate.** Don't start phase-`n+1` work while phase-`n` exit gates aren't met. Phase exit = PR-time CI green + canary 1h + bench within budget + coverage met + the per-spec §Test-contract gate. Out-of-phase work belongs in `docs/v2/` per `00§14` rule 5. Auditing "what phase are we actually in" before starting a branch is mandatory; pick the lowest unfinished phase.
@@ -242,7 +244,7 @@ Examples:
 - `freeze: 02 spec-discipline charter`
 - `revise: 03 modernity — drop FAT16/12`
 
-**Push policy.** Auto-push merged commits to `origin/main` after each merge without asking. Auto-push feature branches with `-u` on first push without asking. Force-push remains forbidden per the Never list below.
+**Push policy.** Auto-push every feature branch with `-u` as soon as its focused commit is made; do not hold local-only work across features. Auto-push merged commits to `origin/main` after each merge without asking. Force-push remains forbidden per the Never list below.
 
 **PRs (mandatory).** Every branch merges to `main` via `gh pr create` then `gh pr merge --merge --delete-branch=true`. No local `--no-ff` merges to `main`. PR-time CI per `docs/40§2` is the gate; until CI exists, manual review then merge. Delete remote + local branch on merge — keeps the branch list clean. Git history (the merge commit) preserves recoverability.
 
@@ -263,7 +265,7 @@ Examples:
 
 **Reverting.** Always `git revert <sha>` to undo merged work. Never delete history on `main`.
 
-**Branch retention.** Delete branches on PR merge (remote via `gh pr merge --delete-branch=true`, local via `git branch -D <name>`). Don't accumulate stale post-merge branches. Unmerged branches: keep until they're explicitly abandoned; never `git branch -D` an unmerged branch without confirmation.
+**Branch retention.** Delete branches on PR merge (remote via `gh pr merge --delete-branch=true`, local via `git branch -D <name>`), then remove the local worktree. Don't accumulate stale post-merge branches or parked local worktrees. Unmerged branches: keep until they're explicitly abandoned; never `git branch -D` an unmerged branch without confirmation.
 
 ## state.md is short-lived session memory, not history
 
