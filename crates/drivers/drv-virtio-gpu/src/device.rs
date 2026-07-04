@@ -14,6 +14,9 @@ use crate::{
     VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM,
 };
 
+#[cfg(target_os = "oxide-kernel")]
+use crate::post_init;
+
 type DeviceKey = virtio::VirtioChildDeviceKey;
 
 pub struct VirtioGpuDev {
