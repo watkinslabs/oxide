@@ -110,12 +110,6 @@ struct SoundNodeTemplate {
     minor: u64,
 }
 
-const ALSA_NODES: &[SoundNodeTemplate] = &[
-    SoundNodeTemplate { class: "sound", minor: MINOR_CONTROL },
-    SoundNodeTemplate { class: "sound", minor: MINOR_PCM_P },
-    SoundNodeTemplate { class: "sound", minor: MINOR_PCM_C },
-];
-
 const OSS_NODES: &[SoundNodeTemplate] = &[
     SoundNodeTemplate { class: "sound", minor: MINOR_DSP },
     SoundNodeTemplate { class: "sound", minor: MINOR_AUDIO },
@@ -201,16 +195,31 @@ fn rollback_published_nodes(published: &[Arc<drv::Device>]) {
     }
 }
 
-fn publish_card_nodes(owner: u32, card: u32) -> Option<Vec<Arc<drv::Device>>> {
+fn publish_card_nodes(owner: u32, card: u32, has_playback: bool, has_capture: bool) -> Option<Vec<Arc<drv::Device>>> {
     let mut published = Vec::new();
-    for node in ALSA_NODES {
-        let dev_name = alsa_node_name(card, node.minor);
-        if !push_sound_node(&mut published, owner, card, node.class, dev_name, alsa_dev_t(card, node.minor), node.minor) {
+    let control_name = alsa_node_name(card, MINOR_CONTROL);
+    if !push_sound_node(&mut published, owner, card, "sound", control_name, alsa_dev_t(card, MINOR_CONTROL), MINOR_CONTROL) {
+        rollback_published_nodes(&published);
+        return None;
+    }
+    if has_playback {
+        let dev_name = alsa_node_name(card, MINOR_PCM_P);
+        if !push_sound_node(&mut published, owner, card, "sound", dev_name, alsa_dev_t(card, MINOR_PCM_P), MINOR_PCM_P) {
+            rollback_published_nodes(&published);
+            return None;
+        }
+    }
+    if has_capture {
+        let dev_name = alsa_node_name(card, MINOR_PCM_C);
+        if !push_sound_node(&mut published, owner, card, "sound", dev_name, alsa_dev_t(card, MINOR_PCM_C), MINOR_PCM_C) {
             rollback_published_nodes(&published);
             return None;
         }
     }
     for node in OSS_NODES {
+        if matches!(node.minor, MINOR_DSP | MINOR_AUDIO) && !has_playback && !has_capture {
+            continue;
+        }
         let dev_name = oss_node_name(card, node.minor);
         if !push_sound_node(&mut published, owner, card, node.class, dev_name, oss_dev_t(card, node.minor), node.minor) {
             rollback_published_nodes(&published);
@@ -218,10 +227,13 @@ fn publish_card_nodes(owner: u32, card: u32) -> Option<Vec<Arc<drv::Device>>> {
         }
     }
     if card == 0 {
-        if !push_sound_node(&mut published, owner, card, "sound", String::from("dsp"), (14, 3), MINOR_DSP)
-            || !push_sound_node(&mut published, owner, card, "sound", String::from("audio"), (14, 4), MINOR_AUDIO)
-            || !push_sound_node(&mut published, owner, card, "sound", String::from("mixer"), (14, 0), MINOR_MIXER)
-        {
+        let mut ok = true;
+        if has_playback || has_capture {
+            ok = push_sound_node(&mut published, owner, card, "sound", String::from("dsp"), (14, 3), MINOR_DSP)
+                && push_sound_node(&mut published, owner, card, "sound", String::from("audio"), (14, 4), MINOR_AUDIO);
+        }
+        ok = ok && push_sound_node(&mut published, owner, card, "sound", String::from("mixer"), (14, 0), MINOR_MIXER);
+        if !ok {
             rollback_published_nodes(&published);
             return None;
         }
@@ -269,11 +281,19 @@ pub fn register_card(owner: u32) -> bool {
     if CARDS.lock().iter().any(|record| record.owner == owner && !record.nodes.is_empty()) {
         return true;
     }
-    pcm::register_card(owner);
-    capture::register_card(owner);
-    oss::register_card(owner);
+    let has_playback = ops::pcm_caps(owner).is_some();
+    let has_capture = ops::cap_caps(owner).is_some();
+    if has_playback {
+        pcm::register_card(owner);
+    }
+    if has_capture {
+        capture::register_card(owner);
+    }
+    if has_playback || has_capture {
+        oss::register_card(owner);
+    }
     devfs::register_dir("/dev/snd");
-    let Some(published) = publish_card_nodes(owner, card) else {
+    let Some(published) = publish_card_nodes(owner, card, has_playback, has_capture) else {
         rollback_card_registration(owner);
         return false;
     };
@@ -416,6 +436,7 @@ mod tests {
 
     fn cfg(_owner: u32) -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
     fn caps(_owner: u32) -> ops::Caps { Some((0, 0, 1, 2)) }
+    fn no_caps(_owner: u32) -> ops::Caps { None }
     fn period(_owner: u32) -> usize { 2048 }
     fn hw_params(_owner: u32, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
     fn yes(_owner: u32) -> bool { true }
@@ -427,6 +448,57 @@ mod tests {
         config: cfg,
         pcm_caps: caps,
         cap_caps: caps,
+        period_bytes: period,
+        pcm_hw_params: hw_params,
+        pcm_prepare: yes,
+        pcm_trigger: trigger,
+        pcm_hw_free: yes,
+        pcm_submit: submit,
+        cap_hw_params: hw_params,
+        cap_prepare: yes,
+        cap_trigger: trigger,
+        cap_hw_free: yes,
+        pcm_recv: recv,
+    };
+
+    static PLAYBACK_ONLY_OPS: ops::SoundOps = ops::SoundOps {
+        config: cfg,
+        pcm_caps: caps,
+        cap_caps: no_caps,
+        period_bytes: period,
+        pcm_hw_params: hw_params,
+        pcm_prepare: yes,
+        pcm_trigger: trigger,
+        pcm_hw_free: yes,
+        pcm_submit: submit,
+        cap_hw_params: hw_params,
+        cap_prepare: yes,
+        cap_trigger: trigger,
+        cap_hw_free: yes,
+        pcm_recv: recv,
+    };
+
+    static CAPTURE_ONLY_OPS: ops::SoundOps = ops::SoundOps {
+        config: cfg,
+        pcm_caps: no_caps,
+        cap_caps: caps,
+        period_bytes: period,
+        pcm_hw_params: hw_params,
+        pcm_prepare: yes,
+        pcm_trigger: trigger,
+        pcm_hw_free: yes,
+        pcm_submit: submit,
+        cap_hw_params: hw_params,
+        cap_prepare: yes,
+        cap_trigger: trigger,
+        cap_hw_free: yes,
+        pcm_recv: recv,
+    };
+
+    static NO_PCM_OPS: ops::SoundOps = ops::SoundOps {
+        config: cfg,
+        pcm_caps: no_caps,
+        cap_caps: no_caps,
         period_bytes: period,
         pcm_hw_params: hw_params,
         pcm_prepare: yes,
@@ -452,6 +524,10 @@ mod tests {
 
     fn has_node(nodes: &[(String, Option<(u32, u32)>, bool)], name: &str, dev_t: (u32, u32)) -> bool {
         nodes.iter().any(|node| node == &(String::from(name), Some(dev_t), true))
+    }
+
+    fn has_name(nodes: &[(String, Option<(u32, u32)>, bool)], name: &str) -> bool {
+        nodes.iter().any(|node| node.0 == name)
     }
 
     #[test]
@@ -511,6 +587,42 @@ mod tests {
         assert_eq!(owner(), None);
         assert!(ops::ops_for(0x10).is_none(), "ops must not be visible after owner release");
         let _ = ops::clear(0x10);
+    }
+
+    #[test]
+    fn card_nodes_follow_reported_stream_directions() {
+        let _guard = test_guard();
+        drv::set_devtmpfs_hook(add_hook);
+        drv::set_devtmpfs_del_hook(del_hook);
+
+        for (owner, ops_table, expect_playback, expect_capture, expect_count) in [
+            (0x41, &PLAYBACK_ONLY_OPS, true, false, 8usize),
+            (0x42, &CAPTURE_ONLY_OPS, false, true, 8usize),
+            (0x43, &NO_PCM_OPS, false, false, 3usize),
+        ] {
+            ADDED.lock().clear();
+            REMOVED.lock().clear();
+            let _ = unregister_card(owner);
+            let _ = ops::clear(owner);
+
+            assert!(reserve_card(owner));
+            assert!(ops::register(owner, ops_table));
+            assert!(register_card(owner));
+            let added = ADDED.lock().clone();
+            assert_eq!(added.len(), expect_count);
+            assert!(has_node(&added, "snd/controlC0", (116, 0)));
+            assert_eq!(has_name(&added, "snd/pcmC0D0p"), expect_playback);
+            assert_eq!(has_name(&added, "snd/pcmC0D0c"), expect_capture);
+            assert_eq!(has_name(&added, "dsp"), expect_playback || expect_capture);
+            assert_eq!(has_name(&added, "audio"), expect_playback || expect_capture);
+            assert!(has_node(&added, "mixer", (14, 0)));
+            assert_eq!(pcm::has_card(owner), expect_playback);
+            assert_eq!(capture::has_card(owner), expect_capture);
+            assert_eq!(oss::has_card(owner), expect_playback || expect_capture);
+
+            assert!(unregister_card(owner));
+            let _ = ops::clear(owner);
+        }
     }
 
     #[test]

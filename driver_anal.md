@@ -843,8 +843,12 @@ test-pass claims.
   and OSS mixer ioctls route through the same owner-keyed state that is removed
   with the card. `SNDRV_CTL_IOCTL_PCM_INFO` now reports both playback and
   capture streams for device 0 when the owning virtio-snd driver registered
-  those stream directions, and virtio-snd caps helpers return no caps when the
-  scanned stream direction is absent instead of advertising an empty stream.
+  those stream directions, virtio-snd caps helpers return no caps when the
+  scanned stream direction is absent instead of advertising an empty stream,
+  and the sound core now publishes `pcmC<N>D0p` / `pcmC<N>D0c` plus playback
+  runtime state only for directions backed by those real caps. Missing stream
+  caps now make direct PCM info/refine paths report no device instead of
+  falling back to synthetic S16/44.1k stereo support.
   Raw EVENTQ drain/accounting is now owner-keyed; higher-level sound event
   interpretation/publication, remaining child-probe failure unwind audit, and
   fault-injection proof still need to move behind a fuller `VirtioPciTransport`
@@ -1046,9 +1050,9 @@ Several drivers still use singleton global state:
 - virtio-snd: keyed transport records with EVENTQ drained per transport,
   owner-keyed EVENTQ counters/last-event snapshots, owner-keyed ops,
   owner-keyed ALSA card records, per-card
-  `controlC<N>`/`pcmC<N>D0*` publication, and ALSA PCM/capture/OSS runtime
-  state bound to the owning card key; live multi-card QEMU proof is still
-  missing
+  direction-aware `controlC<N>`/`pcmC<N>D0*` publication, and ALSA
+  PCM/capture/OSS runtime state bound to the owning card key; live multi-card
+  QEMU proof is still missing
 - UART drivers: global `PRESENT` and base state; RX interrupt delivery now has
   an explicit quiesce gate cleared before shutdown/remove masks hardware
 - PS/2 keyboard: global present/poll state; IRQ1 delivery now has an explicit
