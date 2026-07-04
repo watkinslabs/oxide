@@ -111,7 +111,7 @@ fn publish_transport_mmio(p: &mut VirtioProbe) {
     );
 }
 
-fn abandon_probe_transport(bdf: pci::Bdf, mappings: &mut TransportMappings) -> Option<VirtioProbe> {
+fn abandon_probe_transport<T>(bdf: pci::Bdf, mappings: &mut TransportMappings) -> Option<T> {
     disable_pci_command(bdf);
     mappings.unmap_all();
     None

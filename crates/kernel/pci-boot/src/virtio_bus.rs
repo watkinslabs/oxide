@@ -75,7 +75,7 @@ impl virtio::VirtioChildTransportSession for VirtioChildSession {
 
 impl Drop for VirtioChildSession {
     fn drop(&mut self) {
-        self.release_failed_child();
+        virtio::VirtioChildTransportSession::release_failed_child(self);
     }
 }
 
