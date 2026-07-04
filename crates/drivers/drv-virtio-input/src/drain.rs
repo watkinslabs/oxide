@@ -316,6 +316,12 @@ pub fn uninstall_eventq(device_key: virtio::VirtioChildDeviceKey) -> bool {
 /// # C: O(1)
 pub fn raise_drain() { softirq::raise(softirq::Slot::InputDrain); }
 
+/// Poll all installed event queues from process context. This is a fallback
+/// for platforms where the device has advanced the used ring but the MSI path
+/// did not raise `InputDrain`.
+/// # C: O(n_pending × n_devices)
+pub fn poll_all() { drain_softirq(); }
+
 /// Softirq handler — walks the used ring for every installed
 /// virtio-input device, dispatches events, recycles buffers.
 /// # Ctx: process / softirq, IRQs enabled.

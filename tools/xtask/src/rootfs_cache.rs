@@ -162,6 +162,8 @@ pub(crate) fn input_hash(repo: &Path, arch: &str) -> String {
     entries.sort();
     let mut h = Fnv64::new();
     h.write(arch.as_bytes());
+    h.write(b"\0driver-path-smoke=");
+    if std::env::var_os("OXIDE_DRIVER_PATH_SMOKE").is_some() { h.write(b"1"); }
     for (p, len, mt) in &entries {
         h.write(p.as_bytes()); h.write(&[0]);
         h.write(&len.to_le_bytes());
