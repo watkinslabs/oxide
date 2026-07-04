@@ -8,7 +8,8 @@
 
 use core::sync::atomic::Ordering;
 use net::vsock::hdr::{VsockHdr, VSOCK_HDR_LEN};
-use super::{CTX, RX_RING_BUFS};
+use crate::registry::CTX;
+use crate::RX_RING_BUFS;
 
 /// Per-RX-buffer capacity (one 4 KiB frame). # C: O(1)
 const RX_BUF_LEN: u32 = 0x1000;
