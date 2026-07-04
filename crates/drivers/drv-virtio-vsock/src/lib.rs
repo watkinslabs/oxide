@@ -245,15 +245,17 @@ fn free_rx_bufs(rx_bufs: &mut [u64; RX_RING_BUFS]) {
 /// the virtio device, and frees RX/TX payload frames.
 /// # C: O(N conns + RX_BUFS)
 pub fn uninstall(device_key: virtio::VirtioChildDeviceKey) -> bool {
+    let endpoint_removed = net::vsock::driver_uninstall(device_key.raw());
     let Some((mut ctx, empty_after)) = remove_ctx(device_key) else {
-        return false;
+        return endpoint_removed;
     };
     if empty_after {
         clear_rx_softirq_handler();
     }
-    let _ = net::vsock::driver_uninstall(device_key.raw());
     // Virtio reset: write 0 to device_status (§3.1.1), using byte access.
-    unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    if ctx.cfg_va != 0 {
+        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    }
     free_rx_bufs(&mut ctx.rx_bufs);
     if ctx.tx_buf_pa != 0 {
         // SAFETY: tx_buf_pa was returned by alloc_one_frame in install and is
@@ -271,20 +273,17 @@ pub fn uninstall(device_key: virtio::VirtioChildDeviceKey) -> bool {
 /// device after quiesce begins.
 /// # C: O(RX_BUFS)
 pub fn shutdown(device_key: virtio::VirtioChildDeviceKey) -> bool {
-    if !present_for(device_key) {
-        return false;
-    }
-    if !net::vsock::driver_quiesce(device_key.raw()) {
-        return false;
-    }
+    let endpoint_quiesced = net::vsock::driver_quiesce(device_key.raw());
     let Some((mut ctx, empty_after)) = remove_ctx(device_key) else {
-        return false;
+        return endpoint_quiesced;
     };
     if empty_after {
         clear_rx_softirq_handler();
     }
     // Virtio reset: write 0 to device_status (§3.1.1), using byte access.
-    unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    if ctx.cfg_va != 0 {
+        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    }
     free_rx_bufs(&mut ctx.rx_bufs);
     if ctx.tx_buf_pa != 0 {
         // SAFETY: tx_buf_pa was returned by alloc_one_frame in install and is
@@ -491,5 +490,31 @@ mod tests {
         assert!(remove_ctx(key(0x0010_0000)).is_none());
         assert!(present_for(key(0x0020_0000)));
         clear_ctxs();
+    }
+
+    #[test]
+    fn uninstall_clears_endpoint_without_primary_context() {
+        fn tx_stub(_owner: u32, _packet: &[u8]) -> bool { true }
+
+        let _guard = TEST_LOCK.lock();
+        clear_ctxs();
+        assert!(net::vsock::driver_install(0x0010_0000, 3, tx_stub));
+
+        assert!(uninstall(key(0x0010_0000)));
+        assert!(!net::vsock::driver_uninstall(0x0010_0000));
+        assert!(!uninstall(key(0x0010_0000)));
+    }
+
+    #[test]
+    fn shutdown_quiesces_endpoint_without_primary_context() {
+        fn tx_stub(_owner: u32, _packet: &[u8]) -> bool { true }
+
+        let _guard = TEST_LOCK.lock();
+        clear_ctxs();
+        assert!(net::vsock::driver_install(0x0010_0000, 3, tx_stub));
+
+        assert!(shutdown(key(0x0010_0000)));
+        assert!(shutdown(key(0x0010_0000)));
+        let _ = net::vsock::driver_uninstall(0x0010_0000);
     }
 }

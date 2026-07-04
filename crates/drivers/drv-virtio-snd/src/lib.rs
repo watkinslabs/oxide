@@ -533,13 +533,12 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
 /// Stop streams, reset the virtio device, and release all queue/scratch frames
 /// owned by the matching installed transport. # C: O(CONTROLQ)
 pub fn uninstall(device_key: DeviceKey) -> bool {
-    let Some(ctx) = remove_ctx_and_release_event_handler(device_key) else {
-        return false;
-    };
     let owner = sound_owner(device_key);
-    if sound::unregister_card(owner) {
-        let _ = sound::ops::clear(owner);
-    }
+    let card_removed = sound::unregister_card(owner);
+    let ops_removed = sound::ops::clear(owner);
+    let Some(ctx) = remove_ctx_and_release_event_handler(device_key) else {
+        return card_removed || ops_removed;
+    };
     stop_reset_free(ctx);
     true
 }
@@ -1513,6 +1512,28 @@ mod tests {
         unsafe { softirq::run_pending(); }
         assert_eq!(TEST_EVENT_CALLS.load(Ordering::Relaxed), 0);
         assert!(!present());
+        reset_test_state();
+    }
+
+    #[test]
+    fn uninstall_clears_sound_publication_without_primary_context() {
+        let _guard = TEST_LOCK.lock();
+        reset_test_state();
+        let device_key = key(0x0030_0000);
+        let owner = sound_owner(device_key);
+        let _ = sound::unregister_card(owner);
+        let _ = sound::ops::clear(owner);
+
+        assert!(sound::reserve_card(owner));
+        assert!(sound::ops::register(owner, &SOUND_OPS));
+        assert!(sound::register_card(owner));
+        assert!(sound::card_number(owner).is_some());
+        assert!(sound::ops::ops_for(owner).is_some());
+
+        assert!(uninstall(device_key));
+        assert!(sound::card_number(owner).is_none());
+        assert!(sound::ops::ops_for(owner).is_none());
+        assert!(!uninstall(device_key));
         reset_test_state();
     }
 }

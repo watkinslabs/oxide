@@ -699,19 +699,17 @@ pub fn uninstall(device_key: DeviceKey) -> Option<VirtioGpuDev> {
 /// but reset the device and stop future scanout queue submissions.
 /// # C: O(1)
 pub fn shutdown(device_key: DeviceKey) -> bool {
+    #[cfg(target_os = "oxide-kernel")]
+    let scanout_shutdown = post_init::shutdown_scanout(device_key);
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let scanout_shutdown = false;
     let cfg_va = {
         let devices = DEVICES.lock();
         let Some(dev) = devices.iter().find(|dev| dev.device_key == device_key) else {
-            return false;
+            return scanout_shutdown;
         };
         dev.cfg_va
     };
-    #[cfg(target_os = "oxide-kernel")]
-    {
-        if post_init::shutdown_scanout(device_key) {
-            return true;
-        }
-    }
     if cfg_va != 0 {
         // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
         // probe; device_status is an 8-bit register at offset 0x14.

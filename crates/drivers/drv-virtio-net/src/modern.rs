@@ -198,7 +198,10 @@ pub fn init_modern(
 /// drains.
 /// # C: O(NCPU)
 pub fn uninstall_modern(device_key: DeviceKey) -> bool {
-    let _ = unregister_netdev(device_key);
+    let netdev_removed = unregister_netdev(device_key);
+    let registered_removed = remove_registered_iface(device_key).is_some();
+    let runtime_removed = remove_net_runtime(device_key).is_some();
+    let rx_runtime_removed = clear_rx_runtime_for(device_key);
     let (state, last_device) = {
         let mut guard = MODERN_DEVS.lock();
         let pos = guard.iter().position(|state| state.device_key == device_key);
@@ -212,16 +215,13 @@ pub fn uninstall_modern(device_key: DeviceKey) -> bool {
     };
     let state = match state {
         Some(state) => state,
-        None => return false,
+        None => return netdev_removed || registered_removed || runtime_removed || rx_runtime_removed,
     };
     if last_device {
         #[cfg(target_os = "oxide-kernel")]
         uninstall_rx_softirq_handler();
         unregister_timers();
     }
-    remove_registered_iface(device_key);
-    remove_net_runtime(device_key);
-    clear_rx_runtime_for(device_key);
     if state.cfg_va != 0 {
         // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
         // probe; device_status is an 8-bit register at offset 0x14.
@@ -1229,6 +1229,19 @@ mod ndp_tests {
 
         assert!(uninstall_modern(key(2)));
         assert!(!is_modern_present());
+    }
+
+    #[test]
+    fn uninstall_modern_clears_keyed_runtime_without_primary_record() {
+        let _guard = TEST_STATE_LOCK.lock();
+        clear_test_state();
+        set_registered_iface(key(1), net::NetIfaceId::from_raw(77));
+        set_softirq_iface(key(1), net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
+
+        assert!(uninstall_modern(key(1)));
+        assert!(registered_iface_for(key(1)).is_none());
+        assert!(first_iface_ip_for(key(1)).is_none());
+        assert!(!uninstall_modern(key(1)));
     }
 
     #[test]

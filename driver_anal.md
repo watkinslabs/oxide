@@ -407,6 +407,9 @@ test-pass claims.
 - Virtio-gpu remove is keyed to the owning virtio child key and tears down
   fbcon/fbdev/DRM/klog/tty scanout state before backing memory is released.
   Probe-failure unwind only removes scanout state for the failed child key.
+  Hot-remove now attempts console/fbdev unpublish, primary DRM/device
+  unregister, and scanout allocation cleanup independently, so a missing
+  primary GPU table entry cannot leave child-owned scanout state behind.
   Installed virtio-gpu device state is now a per-child-key table, duplicate
   child-key install is rejected before publication, and DRM card IDs are
   stable slots so unregistering one card does not renumber the remaining
@@ -457,6 +460,9 @@ test-pass claims.
   Netdev visible names are allocated as `ethN` per runtime record, RX stats are
   per netdev, and IPv4 ARP cache entries are owned by the transmitting/receiving
   virtio-net runtime instead of a process-global cache.
+  Hot-remove now clears registered netdev publication, interface runtime, and RX
+  softirq runtime by child key even when the primary virtio-net transport record
+  is already gone.
   IPv6 NDP is stack-owned in kernel builds: RX learning goes through
   `deliver_rx_ipv6`, and virtio-net TX resolves neighbors through the
   registered interface's stack NDP table. The virtio-pci net probe no longer
@@ -477,6 +483,8 @@ test-pass claims.
   connect/listen/accept paths carry that owner, listener backlogs are keyed by
   `(owner, port)`, and `VMADDR_CID_ANY` remains the wildcard compatibility
   route.
+  Remove/shutdown now remove or quiesce the owner-keyed protocol endpoint even
+  when the primary transport context is already gone.
 - Virtio-rng now keeps per-child-key records, seeds from the just-bound device,
   removes by owning virtio child key, owns `/dev/hwrng` publication/removal
   inside the RNG child driver, and promotes `/dev/hwrng` publication to a
@@ -485,7 +493,9 @@ test-pass claims.
   queue/buffer resources only for the matching transport; the sound card layer
   allocates owner-keyed ALSA card numbers, publishes per-card ALSA/OSS nodes,
   routes ops by the card owner, rejects unregister from non-owners, and keeps
-  raw EVENTQ drain accounting keyed by the transport owner. The old EVENTQ
+  raw EVENTQ drain accounting keyed by the transport owner. Remove now clears
+  sound-core card and ops publication by owner even when the primary transport
+  context is already gone. The old EVENTQ
   globals are aggregate compatibility diagnostics only. Virtio-gpu duplicate
   child-key admission is also left to the child install
   path.
@@ -710,6 +720,8 @@ test-pass claims.
   failed virtio-snd probe paths cancel only unpublished reservations, while
   `sound::unregister_card` owns published ALSA/OSS node removal, substream
   unregister, and sound-ops clearing for the removed owner.
+  Virtio-snd uninstall calls that owner cleanup before requiring the transport
+  context, so stale public card state is not stranded by a missing CTX record.
   Raw EVENTQ drain/accounting is now owner-keyed; higher-level sound event
   interpretation/publication, remaining child-probe failure unwind audit, and
   fault-injection proof still need to move behind a fuller `VirtioPciTransport`
@@ -721,14 +733,17 @@ test-pass claims.
   loop proof and broader multi-NIC validation; virtio-gpu now has per-card DRM
   card/render nodes, ioctl backend routing, KMS scanout hooks, scanout owner
   state, flip events, dumb-buffer/FB object lookup, and per-fb owner-keyed
-  fbdev flush/blank dispatch, exact fbdev-index publication ownership, and
-  dumb-buffer mmap VMA lifetime pins;
+  fbdev flush/blank dispatch, exact fbdev-index publication ownership,
+  independent primary/scanout hot-remove cleanup, and dumb-buffer mmap VMA
+  lifetime pins;
   virtio-vsock now has owner-keyed endpoint records, CID-bound socket/device
-  selection, owner-keyed listener backlogs, and quiesced endpoints no longer
-  mask another live transport through the primary compatibility route;
+  selection, owner-keyed listener backlogs, primary-context-independent
+  endpoint remove/quiesce, and quiesced endpoints no longer mask another live
+  transport through the primary compatibility route;
   virtio-snd's
   ALSA card nodes, playback/capture/OSS substream runtime state, and ops
-  routing are owner-keyed, but it still needs live multi-card proof and
+  routing are owner-keyed and primary-context-independent uninstall clears
+  stale sound-core publication, but it still needs live multi-card proof and
   broader sound event/control coverage. AHCI and NVMe still need live
   multi-controller proof, but they no longer use process-wide
   installed-controller slots.
