@@ -60,7 +60,7 @@ impl drv::Driver for VirtioPciDrv {
 }
 static VIRTIO_PCI_DRV: VirtioPciDrv = VirtioPciDrv;
 
-pub(super) fn bdf_word(bdf: pci::Bdf) -> u32 {
+fn bdf_word(bdf: pci::Bdf) -> u32 {
     (bdf.bus as u32) << 16 | (bdf.device as u32) << 8 | (bdf.function as u32)
 }
 
@@ -133,18 +133,6 @@ fn pci_device_from_pci_model(dev: &drv::Device) -> Option<pci::PciDevice> {
         return None;
     }
     pci_device_from_bdf(parse_pci_addr(&dev.addr)?)
-}
-
-pub(super) fn pci_parent_bdf(dev: &drv::Device) -> Option<pci::Bdf> {
-    let (bus, addr) = dev.parent()?;
-    if bus != "pci" {
-        return None;
-    }
-    parse_pci_addr(addr)
-}
-
-pub(super) fn pci_device_from_virtio_child(dev: &drv::Device) -> Option<pci::PciDevice> {
-    pci_device_from_bdf(pci_parent_bdf(dev)?)
 }
 
 fn pci_device_from_bdf(bdf: pci::Bdf) -> Option<pci::PciDevice> {

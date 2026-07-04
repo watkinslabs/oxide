@@ -21,8 +21,9 @@ pub(crate) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
 // Submodule named `virtio_drv` (not `virtio`) so it doesn't shadow
 // the external `virtio` crate dependency referenced elsewhere in this
 // file (cap_dump_arch reads `virtio::is_modern`, etc.).
-mod virtio_drv;
+mod virtio_bus;
 mod virtio_child;
+mod virtio_drv;
 mod virtio_trace;
 mod virtio_transport;
 
