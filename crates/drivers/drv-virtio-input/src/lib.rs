@@ -220,10 +220,12 @@ unsafe fn cfg_payload(cfg_va: u64, dst: &mut [u8]) -> usize {
 /// Probe one virtio-input device: read its identity + full capability
 /// bitmaps from config space (the Linux virtio_input.c probe sequence,
 /// docs/46§5) and register it. Returns the assigned evdev id.
-/// # SAFETY: `cfg_va` is the Device-attr-mapped virtio-input device-cfg
-/// window owned by the caller for the device's lifetime.
 /// # C: O(abs axes) config round-trips
-pub unsafe fn install_device(bdf: u32, cfg_va: u64) -> Option<u32> {
+pub fn install_device(bdf: u32, resources: virtio::VirtioResources) -> Option<u32> {
+    let cfg_va = resources.device_cfg_va;
+    if cfg_va == 0 {
+        return None;
+    }
     let evdev_id = {
         let g = DEVICES.lock();
         if g.iter().any(|d| d.bdf == bdf) {
