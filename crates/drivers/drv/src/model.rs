@@ -283,6 +283,7 @@ pub fn register_driver(d: &'static dyn Driver) {
     }
     DRV_COUNT.fetch_add(1, Ordering::Release);
     if let Some(h) = *DRIVER_HOOK.lock() { h(d.bus(), d.name()); }
+    attach_driver_to_existing_devices(d);
 }
 
 /// Snapshot of registered model-driver names. # C: O(N_drivers)
@@ -328,6 +329,15 @@ fn driver_matches_device(driver: &dyn Driver, dev: &Device) -> bool {
     match dev.driver_override() {
         Some(name) => driver.name() == name.as_str(),
         None => driver.matches(dev),
+    }
+}
+
+fn attach_driver_to_existing_devices(driver: &'static dyn Driver) {
+    for dev in devices() {
+        if dev.bound().is_some() || !driver_matches_device(driver, &dev) {
+            continue;
+        }
+        let _ = bind(&dev, driver.name());
     }
 }
 
@@ -507,6 +517,44 @@ mod tests {
     }
     static READD_LIFECYCLE_DRV: ReaddLifecycleDrv = ReaddLifecycleDrv;
 
+    static LATE_PROBES: AtomicU32 = AtomicU32::new(0);
+    static LATE_REMOVES: AtomicU32 = AtomicU32::new(0);
+    struct LateRegisterDrv;
+    impl Driver for LateRegisterDrv {
+        fn bus(&self) -> &'static str { "platform" }
+        fn name(&self) -> &'static str { "late-register-test" }
+        fn matches(&self, dev: &Device) -> bool {
+            dev.bus == "platform" && dev.device_id == 0x6200
+        }
+        fn probe(&self, _dev: &Arc<Device>) -> KResult<()> {
+            LATE_PROBES.fetch_add(1, Ordering::Release);
+            Ok(())
+        }
+        fn remove(&self, _dev: &Device) {
+            LATE_REMOVES.fetch_add(1, Ordering::Release);
+        }
+    }
+    static LATE_REGISTER_DRV: LateRegisterDrv = LateRegisterDrv;
+
+    static DUP_REGISTER_PROBES: AtomicU32 = AtomicU32::new(0);
+    static DUP_REGISTER_REMOVES: AtomicU32 = AtomicU32::new(0);
+    struct DuplicateRegisterDrv;
+    impl Driver for DuplicateRegisterDrv {
+        fn bus(&self) -> &'static str { "platform" }
+        fn name(&self) -> &'static str { "duplicate-register-test" }
+        fn matches(&self, dev: &Device) -> bool {
+            dev.bus == "platform" && dev.device_id == 0x6201
+        }
+        fn probe(&self, _dev: &Arc<Device>) -> KResult<()> {
+            DUP_REGISTER_PROBES.fetch_add(1, Ordering::Release);
+            Ok(())
+        }
+        fn remove(&self, _dev: &Device) {
+            DUP_REGISTER_REMOVES.fetch_add(1, Ordering::Release);
+        }
+    }
+    static DUPLICATE_REGISTER_DRV: DuplicateRegisterDrv = DuplicateRegisterDrv;
+
     #[test]
     fn addr_formatting_pci() {
         let a = alloc::format!("{:04x}:{:02x}:{:02x}.{}", 0u16, 0u8, 3u8, 0u8);
@@ -555,6 +603,43 @@ mod tests {
             "pci", alloc::string::String::from("0000:00:0d.0"), 0x1AF4, 0x1042, 0)));
         assert_eq!(auto_bind(&d), Ok(()));
         assert_eq!(d.bound(), Some("fake-virtio-blk"));
+    }
+
+    #[test]
+    fn driver_registration_binds_existing_matching_devices() {
+        LATE_PROBES.store(0, Ordering::Release);
+        LATE_REMOVES.store(0, Ordering::Release);
+        let d = device_add(Arc::new(Device::new(
+            "platform", String::from("late-register-test0"), 0, 0x6200, 0)));
+
+        assert!(d.bound().is_none());
+        register_driver(&LATE_REGISTER_DRV);
+
+        assert_eq!(d.bound(), Some("late-register-test"));
+        assert_eq!(LATE_PROBES.load(Ordering::Acquire), 1);
+        device_del(&d);
+        assert_eq!(LATE_REMOVES.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn duplicate_driver_registration_does_not_reprobe_existing_devices() {
+        DUP_REGISTER_PROBES.store(0, Ordering::Release);
+        DUP_REGISTER_REMOVES.store(0, Ordering::Release);
+        register_driver(&DUPLICATE_REGISTER_DRV);
+        let d = device_add(Arc::new(Device::new(
+            "platform", String::from("duplicate-register-test0"), 0, 0x6201, 0)));
+
+        assert_eq!(auto_bind(&d), Ok(()));
+        assert_eq!(d.bound(), Some("duplicate-register-test"));
+        assert_eq!(DUP_REGISTER_PROBES.load(Ordering::Acquire), 1);
+        assert_eq!(unbind(&d), Ok(()));
+        assert_eq!(DUP_REGISTER_REMOVES.load(Ordering::Acquire), 1);
+
+        register_driver(&DUPLICATE_REGISTER_DRV);
+
+        assert!(d.bound().is_none());
+        assert_eq!(DUP_REGISTER_PROBES.load(Ordering::Acquire), 1);
+        device_del(&d);
     }
 
     #[test]

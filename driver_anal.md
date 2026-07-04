@@ -40,6 +40,10 @@ test-pass claims.
 - Model binding rejects already-bound devices, verifies bus/driver matching,
   calls `Driver::probe`, records the binding only after success, and leaves the
   device unbound when probe fails.
+- Model driver registration now attaches the newly registered driver to
+  existing unbound matching devices on that bus, matching Linux's
+  driver-register-then-driver-attach behavior instead of requiring a separate
+  enumeration pass to retry binding.
 - Model unbind calls `Driver::remove` before clearing the binding.
 - `device_del` unbinds first, emits remove while the object is still visible,
   removes devtmpfs state, and then drops the device from the registry.
