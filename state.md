@@ -42,20 +42,29 @@ MEASURED (decisive, and the mount fix is RULED OUT as the cause):
   PRE-EXISTING, not caused by this session's changes. The mnt_root fix is a real
   correctness win (logind /sys works, seat0 created) and stays.
 
-So the real remaining gate: **udevd processes no device to the point of writing
-its db/tags.** udevd only makes /run/udev READS at t=5–9. Candidates (measure):
-1. udevd receives no RAW kernel uevents (NETLINK_KOBJECT_UEVENT group 1) — the
-   kernel isn't delivering add@ uevents to udevd's monitor. (Earlier this
-   session card0's tag DID exist in bfix5/6 boots — so uevent delivery worked at
-   some point; determine what changed, or if those were a different img state.)
-   Measure: does udevd's netlink recv return card0's add@ uevent? Trace the
-   netlink enqueue→recv for udevd's uevent socket.
-2. udevd receives but a worker fails before device_update_db (rule error / a
-   syscall ENOSYS in the worker). Measure: [EXIT] of udevd workers + their
-   recent-syscall ring.
-3. The LIVE cooked-uevent path (udevd→logind monitor) was ALSO measured broken
-   long ago (COOKTRACE=0). Even once udevd writes tags, logind's live attach
-   needs that broadcast. Likely a second fix.
+So the real remaining gate is CARD0 UEVENT DELIVERY. Full measured timeline:
+- t=1.84: kernel emits card0's device_add uevent
+  (`add@/devices/virtual/drm/card0` AFTER the devpath fix — commit 21b4368e;
+  was `/devices/platform/dri/card0`). BUT `listeners=0 grp1(udevd)=0` — udevd
+  isn't up yet (starts t=8.5), so this initial emit is LOST.
+- t=5.29–6.12: systemd-udev-trigger (coldplug) runs. It DOES enumerate
+  `/sys/class/drm` (probe fired t=5.80), so it FINDS card0. BUT it does NOT
+  write card0's `uevent` (DrmUeventFileOps::write probe fires 0×) — so card0 is
+  NEVER re-triggered. udevd (t=8.5) thus never receives card0 → never runs
+  device_update_db/device_tag → no `/run/udev/tags/master-of-seat/c226:0` → no
+  attach → `CAN_GRAPHICAL=0` → gdm child exits 1.
+
+**NEXT: why does udev-trigger enumerate card0 but not write its uevent?**
+Measure (drm.rs probes, klog): trace card0's `uevent` file OPEN (read vs write,
+which path — `/sys/class/drm/card0/uevent` symlink vs `/sys/devices/virtual/drm/
+card0/uevent`) during coldplug. Candidates: (a) udevadm trigger opens uevent
+O_WRONLY and the write is dropped/misrouted (not reaching DrmUeventFileOps::
+write); (b) the enumerator lists card0 but a match/filter skips the trigger
+write; (c) the write targets the class symlink and symlink-target write doesn't
+resolve to the device uevent. Also verify the group-1 udevd socket is bound
+(grp1≥1) by t≈5.8 so a re-emit would actually buffer.
+Then: the LIVE cooked-uevent path (udevd→logind monitor) was ALSO measured
+broken long ago (COOKTRACE=0) — likely a SECOND fix needed for live attach.
 Latent: drm.rs:114 subsystem symlink `../../../class/drm` (3 ups) → wrong;
 should be `../../../../class/drm` (4 ups). Basename still "drm" so non-fatal.
 
@@ -65,6 +74,7 @@ should be `../../../../class/drm` (4 ups) like block.rs/input.rs. sd_device read
 SUBSYSTEM by symlink BASENAME so it still yields "drm", but fix it anyway.
 
 ## Landed this session (branch B318, PR #2338, all pushed)
+- 21b4368e fix(sysfs): drm device_add uevent DEVPATH → devices/virtual/drm/<card>
 - 3a477d2b fix(vfs): identify a mount by mnt_root not sb.s_root  ← THE big fix
 - 8e81fd93 fix(vfs): d_drop must not unhash a mounted dentry (D_MOUNTED guard)
 - 18200270 fix(sysfs): /sys/dev/char/226:0 → devices/virtual/drm/card0
