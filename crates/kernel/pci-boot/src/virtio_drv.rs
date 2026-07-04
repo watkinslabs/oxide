@@ -2,7 +2,7 @@
 // klog calls gated under debug_boot! per R06.
 
 use super::map_mmio_pages;
-use super::virtio_qsetup::{ProgrammedQueues, QueuePlan};
+use super::virtio_qsetup::{ProgrammedQueues, QueuePlan, QueueRing};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as VirtioTransportLockClass};
@@ -52,10 +52,18 @@ static TRANSPORT_MMIO: Spinlock<Vec<TransportRecord>, VirtioTransportLockClass> 
     Spinlock::new(Vec::new());
 
 #[derive(Clone, Copy)]
+enum Q1NotifyPolicy {
+    None,
+    NetBootTx,
+    PersistentTx,
+}
+
+#[derive(Clone, Copy)]
 struct VirtioProbeProfile {
     drv_features: u64,
     msix0_handler: Option<fn()>,
     extra_queues: [Option<QueuePlan>; 3],
+    q1_notify_policy: Q1NotifyPolicy,
     needs_net_boot_buffers: bool,
 }
 
@@ -69,6 +77,7 @@ impl VirtioProbeProfile {
             drv_features: Self::VERSION_ONLY,
             msix0_handler,
             extra_queues: [None, None, None],
+            q1_notify_policy: Q1NotifyPolicy::None,
             needs_net_boot_buffers: false,
         }
     }
@@ -78,6 +87,7 @@ impl VirtioProbeProfile {
             drv_features: Self::NET_FEATURES,
             msix0_handler,
             extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
+            q1_notify_policy: Q1NotifyPolicy::NetBootTx,
             needs_net_boot_buffers: true,
         }
     }
@@ -87,6 +97,7 @@ impl VirtioProbeProfile {
             drv_features: Self::VERSION_ONLY,
             msix0_handler,
             extra_queues: [None, None, None],
+            q1_notify_policy: Q1NotifyPolicy::None,
             needs_net_boot_buffers: false,
         }
     }
@@ -96,6 +107,7 @@ impl VirtioProbeProfile {
             drv_features: Self::VERSION_ONLY,
             msix0_handler,
             extra_queues: [None, None, None],
+            q1_notify_policy: Q1NotifyPolicy::None,
             needs_net_boot_buffers: false,
         }
     }
@@ -109,6 +121,7 @@ impl VirtioProbeProfile {
             drv_features: Self::VERSION_ONLY,
             msix0_handler,
             extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
+            q1_notify_policy: Q1NotifyPolicy::PersistentTx,
             needs_net_boot_buffers: false,
         }
     }
@@ -122,21 +135,10 @@ impl VirtioProbeProfile {
                 Some(QueuePlan::new(3, 0xFFFF, true)),
                 None,
             ],
+            q1_notify_policy: Q1NotifyPolicy::None,
             needs_net_boot_buffers: false,
         }
     }
-
-    fn wants_queue(&self, index: u16) -> bool {
-        for queue in self.extra_queues {
-            if let Some(queue) = queue {
-                if queue.index == index {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
 }
 
 struct VirtioPciDrv;
@@ -1273,6 +1275,26 @@ impl VirtioProbeState {
         mappings
     }
 
+    fn map_q1_notify(
+        &mut self,
+        policy: Q1NotifyPolicy,
+        q1_ring: Option<QueueRing>,
+        final_status: u8,
+        notify_cap: Option<&virtio::VirtioPciCap>,
+        bars: &[pci::Bar; 6],
+    ) -> u64 {
+        if (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0 {
+            return 0;
+        }
+        match policy {
+            Q1NotifyPolicy::None => 0,
+            Q1NotifyPolicy::NetBootTx | Q1NotifyPolicy::PersistentTx => {
+                let Some(ring) = q1_ring else { return 0 };
+                self.map_notify(notify_cap, bars, ring.notify_off)
+            }
+        }
+    }
+
     fn finish(self, result: VirtioProbeResult) -> VirtioProbe {
         VirtioProbe {
             bdf_word: self.bdf_word,
@@ -1667,32 +1689,26 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         (0u64, final_status)
     };
 
-    let mut q1_notify_va_local: u64 = 0;
-    let mut tx0_buf_pa_local: u64 = 0;
-    if profile.needs_net_boot_buffers
+    let q1_notify_va_local = state.map_q1_notify(
+        profile.q1_notify_policy,
+        q1_ring,
+        final_status,
+        notify_cap.as_ref(),
+        &bars,
+    );
+    let tx0_buf_pa_local = if matches!(profile.q1_notify_policy, Q1NotifyPolicy::NetBootTx)
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
-        q1_notify_va_local =
-            state.map_notify(notify_cap.as_ref(), &bars, q1_notify_off_local);
-        tx0_buf_pa_local = alloc_net_tx_boot_buffer(
+        alloc_net_tx_boot_buffer(
             hhdm,
             q1_desc_pa,
             q1_driver_pa,
             q1_device_pa,
             q1_notify_va_local,
-        );
-    }
-
-    // D3.3: virtio-vsock q1 notify VA. The persistent driver posts real
-    // OP_* packets post-boot; this path only maps the q1 notify window so
-    // `tx_packet` can kick.
-    if profile.wants_queue(1) && !profile.needs_net_boot_buffers
-        && q1_desc_pa != 0
-        && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
-    {
-        q1_notify_va_local =
-            state.map_notify(notify_cap.as_ref(), &bars, q1_notify_off_local);
-    }
+        )
+    } else {
+        0
+    };
 
     //: locate ISR cap, map its BAR page, and read the ISR byte
     // post-kick. Per Virtio 1.2 §4.1.4.5: ISR is a 1-byte read-to-clear
