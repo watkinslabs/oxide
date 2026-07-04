@@ -36,6 +36,41 @@ impl Drop for ProbeCommandBuffer {
     }
 }
 
+struct ProbeFramebufferRun {
+    base_pa: u64,
+    pages_alloc: usize,
+    owned: bool,
+}
+
+impl ProbeFramebufferRun {
+    fn alloc(order: u8) -> Option<Self> {
+        let base_pa = pmm::setup::alloc_contig(pmm::Order(order))?;
+        Some(Self {
+            base_pa,
+            pages_alloc: 1usize << order,
+            owned: true,
+        })
+    }
+
+    fn disarm(&mut self) {
+        self.owned = false;
+    }
+}
+
+impl Drop for ProbeFramebufferRun {
+    fn drop(&mut self) {
+        if self.owned {
+            // SAFETY: this contiguous run is still probe-owned and has not been
+            // published into the persistent scanout context.
+            unsafe {
+                for i in 0..self.pages_alloc {
+                    pmm::setup::free_one_frame(self.base_pa + (i as u64) * 4096);
+                }
+            }
+        }
+    }
+}
+
 /// Submit `CMD_GET_DISPLAY_INFO` on q0; spin-poll used.idx for
 /// completion; parse the response and re-install the device with
 /// real DisplayInfo (which propagates to `47` DRM/KMS via the
@@ -178,19 +213,12 @@ unsafe fn setup_scanout(
     // → order 9 (512 pages = 2 MiB).
     let mut order: u32 = 0;
     while (1usize << order) < pages_req { order += 1; }
-    let base_pa = match pmm::setup::alloc_contig(pmm::Order(order as u8)) {
-        Some(pa) => pa, None => return false,
+    let mut fb_run = match ProbeFramebufferRun::alloc(order as u8) {
+        Some(run) => run,
+        None => return false,
     };
-    let pages_alloc = 1usize << order;
-    let free_fb = || {
-        // SAFETY: base_pa is the contiguous run just allocated above; no
-        // persistent scanout context owns it before install_scanout_ctx.
-        unsafe {
-            for i in 0..pages_alloc {
-                pmm::setup::free_one_frame(base_pa + (i as u64) * 4096);
-            }
-        }
-    };
+    let base_pa = fb_run.base_pa;
+    let pages_alloc = fb_run.pages_alloc;
     // Render boot text. Paint the entire FB with the bg color
     // first (not all-zero) so glyphs aren't drowning on solid
     // black; Console's EraseDisplay would zero the buffer.
@@ -246,7 +274,6 @@ unsafe fn setup_scanout(
             crate::VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, w, h),
         ctrlq, hhdm,
     ) } {
-        free_fb();
         return false;
     }
     log_resp(b"create");
@@ -267,7 +294,6 @@ unsafe fn setup_scanout(
             buf, res_id, base_pa, fb_bytes as u32),
         ctrlq, hhdm,
     ) } {
-        free_fb();
         return false;
     }
     log_resp(b"attach");
@@ -277,7 +303,6 @@ unsafe fn setup_scanout(
         |buf| crate::encode_set_scanout(buf, 0, res_id, 0, 0, w, h),
         ctrlq, hhdm,
     ) } {
-        free_fb();
         return false;
     }
     log_resp(b"setscanout");
@@ -287,7 +312,6 @@ unsafe fn setup_scanout(
         |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
         ctrlq, hhdm,
     ) } {
-        free_fb();
         return false;
     }
     log_resp(b"transfer");
@@ -297,7 +321,6 @@ unsafe fn setup_scanout(
         |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
         ctrlq, hhdm,
     ) } {
-        free_fb();
         return false;
     }
     log_resp(b"flush");
@@ -310,9 +333,9 @@ unsafe fn setup_scanout(
         cfg_va, hhdm.wrapping_add(base_pa), fb_bytes, pages_alloc, res_id,
         ctrlq, cmd_buf_va as u64, cmd_buf_pa, hhdm,
     ) {
-        free_fb();
         return false;
     }
+    fb_run.disarm();
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  virtio-gpu scanout: ");

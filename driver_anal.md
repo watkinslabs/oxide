@@ -244,9 +244,10 @@ test-pass claims.
   Probe-failure unwind only removes scanout state for the failed probe's BDF.
   DRM publication now happens only after the singleton GPU device slot admits
   the device, so a second GPU cannot publish then roll back a stray DRM card.
-  The display-info probe command buffer is now an owned probe object; early
-  parse/no-display/setup failures release it through drop, and successful
-  scanout setup explicitly transfers that frame to scanout teardown ownership.
+  The display-info probe command buffer and scanout framebuffer run are now
+  owned probe objects; early parse/no-display/setup failures release them
+  through drop, and successful scanout setup explicitly transfers those frames
+  to scanout teardown ownership.
 - Virtio-net owns netdev publication/removal and RX runtime
   installation/removal: iface/IP bottom-half state, ARP-GC timer, and `NetRx`
   handler are installed from the net driver path and removed after reset. Netdev
