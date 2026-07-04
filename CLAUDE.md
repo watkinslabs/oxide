@@ -52,6 +52,16 @@ When user says `<doc>§<sec>`, **read that section first** before responding.
 - Soft target: **500 lines**. Above 500 → consider splitting at next touch.
 - Split big files into submodules: Rust `mod foo; foo/{a.rs,b.rs}`; markdown into sister docs cross-referenced via `<doc>§<sec>`.
 - Tests count toward the cap — split `tests.rs` into `tests/<feature>.rs` once it grows.
+- Parent module files are manifests after a split: keep a short `Module manifest` comment near the top that names each child module and its owned responsibility. The parent coordinates/re-exports; it must not become a dumping ground again.
+
+## Crate/module shape rules
+
+- Constants are owned by contract, not convenience. UAPI/ABI numbers live in `uapi.rs`; bit flags, mode flags, caps, and feature bits live in `flags.rs` or the owning UAPI module; hardware/bus IDs live in `ids.rs`; limits, alignment, counts, and timeout constants live in `limits.rs`; layout offsets and ABI size helpers live in `layout.rs`.
+- Do not create catch-all `constants.rs` files unless the crate is tiny and has exactly one constant contract. A generic constants file becomes a dumping ground; prefer a name that states ownership (`uapi`, `flags`, `ids`, `limits`, `layout`, `features`).
+- Semantic literals in logic must be named constants at the owning module boundary. Inline literals are only acceptable for mechanically obvious local values (`0`, `1`, tiny array indexes, immediate boolean/count checks). Major/minor numbers, ioctl encodings, permissions, alignment masks, page sizes, feature bits, IDs, timeout values, errno/signal/syscall slots, and protocol values are never inline.
+- Compiler-gated code belongs at module boundaries when more than a tiny local alternative is needed. Prefer `hosted.rs`, `platform.rs`, `arch.rs`, `kernel.rs`, or target-specific child modules selected by `#[cfg] mod ...; pub use ...;` in the parent manifest. Do not scatter `#[cfg(...)]` through unrelated implementation logic.
+- Traits live at subsystem boundaries. Driver-facing traits belong in `driver.rs` or `ops.rs`; internal backend traits belong in `backend.rs`; public traits are re-exported by the parent manifest. Do not define long-lived traits halfway down implementation files.
+- UAPI is not policy. Linux constants, ioctl structs, ioctl numbers, wire structs, and ABI flags live in `uapi.rs`; dispatch, permission checks, state mutation, and backend translation live in focused implementation modules (`ioctl.rs`, `auth.rs`, `modeset.rs`, etc.).
 
 ## Doc style hard rules (`docs/08`)
 
