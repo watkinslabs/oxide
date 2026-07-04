@@ -214,6 +214,47 @@ struct VirtioRuntimeHandoff {
     tx0_buf_pa: u64,
 }
 
+struct VirtioPciAcquisition {
+    caps: pci::heapless_caps::CapVec,
+    vcaps: virtio::pci::heapless_v::VCapVec,
+    bars: [pci::Bar; 6],
+    cmd_orig: u16,
+    cmd_new: u16,
+}
+
+impl VirtioPciAcquisition {
+    fn acquire(bdf: pci::Bdf) -> Option<Self> {
+        let (caps, vcaps, bars, cmd_orig) = {
+            #[cfg(target_arch = "x86_64")]
+            {
+                let r = hal_x86_64::pci::LegacyPci;
+                let caps = pci::capabilities(&r, bdf);
+                let vcaps = virtio::decode_all(&r, bdf, &caps);
+                let bars = pci::decode_bars(&r, bdf);
+                let cmd_orig = pci::enable_mem_bus_master(&r, bdf) as u32;
+                (caps, vcaps, bars, cmd_orig)
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                let r = hal_aarch64::pci::EcamPci::from_published()?;
+                let caps = pci::capabilities(&r, bdf);
+                let vcaps = virtio::decode_all(&r, bdf, &caps);
+                let bars = pci::decode_bars(&r, bdf);
+                let cmd_orig = pci::enable_mem_bus_master(&r, bdf) as u32;
+                (caps, vcaps, bars, cmd_orig)
+            }
+        };
+        let cmd_new = (cmd_orig & 0xFFFF) | (pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER) as u32;
+        Some(Self {
+            caps,
+            vcaps,
+            bars,
+            cmd_orig: (cmd_orig & 0xFFFF) as u16,
+            cmd_new: (cmd_new & 0xFFFF) as u16,
+        })
+    }
+}
+
 impl VirtioProbeState {
     fn new(bdf: pci::Bdf, mappings: TransportMappings, cfg_va: u64, device_cfg_va: u64) -> Self {
         Self {
@@ -789,44 +830,8 @@ fn virtio_init_arch(
 ) -> Option<VirtioProbe> {
     if !virtio::is_modern(d.vendor_id, d.device_id) { return None; }
     let bdf = d.bdf;
-    // Re-walk caps + decode virtio cfgs + decode BARs.
-    let (caps, vcaps, bars) = {
-        #[cfg(target_arch = "x86_64")]
-        {
-            let r = hal_x86_64::pci::LegacyPci;
-            let c = pci::capabilities(&r, bdf);
-            let v = virtio::decode_all(&r, bdf, &c);
-            let b = pci::decode_bars(&r, bdf);
-            (c, v, b)
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            match hal_aarch64::pci::EcamPci::from_published() {
-                Some(r) => {
-                    let c = pci::capabilities(&r, bdf);
-                    let v = virtio::decode_all(&r, bdf, &c);
-                    let b = pci::decode_bars(&r, bdf);
-                    (c, v, b)
-                }
-                None => return None,
-            }
-        }
-    };
-
-    // Enable the PCI function only after the virtio-pci driver has claimed it.
-    let cmd_orig = {
-        #[cfg(target_arch = "x86_64")]
-        { let r = hal_x86_64::pci::LegacyPci;
-          pci::enable_mem_bus_master(&r, bdf) as u32 }
-        #[cfg(target_arch = "aarch64")]
-        { match hal_aarch64::pci::EcamPci::from_published() {
-            Some(r) => pci::enable_mem_bus_master(&r, bdf) as u32,
-            None => return None,
-        } }
-    };
-    let cmd_new = (cmd_orig & 0xFFFF) | (pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER) as u32;
-
-    let mut state = VirtioProbeState::from_caps(bdf, &vcaps, &bars)?;
+    let acquisition = VirtioPciAcquisition::acquire(bdf)?;
+    let mut state = VirtioProbeState::from_caps(bdf, &acquisition.vcaps, &acquisition.bars)?;
 
     // Per-arch HHDM offset, hoisted once for all queue programming. The
     // virtio core programs EVERY virtqueue uniformly through the transport:
@@ -838,7 +843,7 @@ fn virtio_init_arch(
         #[cfg(target_arch = "aarch64")]
         { hal_aarch64::mmu_ops::hhdm_offset() }
     };
-    let bringup = state.negotiate_and_program(d, &caps, &bars, profile, hhdm);
+    let bringup = state.negotiate_and_program(d, &acquisition.caps, &acquisition.bars, profile, hhdm);
     let dev_features = bringup.negotiated.dev_features;
     let drv_features = bringup.negotiated.drv_features;
     let post_status = bringup.negotiated.post_status;
@@ -847,7 +852,7 @@ fn virtio_init_arch(
     let num_queues = bringup.negotiated.num_queues;
     let queues = bringup.queues;
     let queues_len = bringup.queues_len;
-    let notify_cap = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG);
+    let notify_cap = acquisition.vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG);
     let final_status = bringup.final_status;
     let runtime = state.runtime_handoff(
         profile,
@@ -857,13 +862,13 @@ fn virtio_init_arch(
         queues_len,
         bringup.programmed_queues.as_ref(),
         notify_cap.as_ref(),
-        vcaps.find(virtio::VIRTIO_PCI_CAP_ISR_CFG).as_ref(),
-        &bars,
+        acquisition.vcaps.find(virtio::VIRTIO_PCI_CAP_ISR_CFG).as_ref(),
+        &acquisition.bars,
     );
 
     Some(state.finish(VirtioProbeResult {
-        cmd_orig: (cmd_orig & 0xFFFF) as u16,
-        cmd_new:  (cmd_new  & 0xFFFF) as u16,
+        cmd_orig: acquisition.cmd_orig,
+        cmd_new: acquisition.cmd_new,
         dev_features,
         drv_features,
         post_status,
