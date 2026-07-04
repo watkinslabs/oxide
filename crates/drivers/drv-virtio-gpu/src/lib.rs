@@ -636,7 +636,7 @@ pub fn install_with_drm(mut dev: VirtioGpuDev) -> KResult<u32> {
     // post_init queue plumbing). No crate cycle: drm exposes the hook
     // setter, this crate fills it.
     #[cfg(target_os = "oxide-kernel")]
-    post_init::register_drm_hooks();
+    post_init::register_drm_hooks(card_id, bdf);
     Ok(card_id)
 }
 
@@ -654,7 +654,10 @@ pub fn uninstall(bdf: u32) -> Option<VirtioGpuDev> {
     match dev {
         Some(dev) => {
             #[cfg(target_os = "oxide-kernel")]
-            post_init::unpublish_console_scanout(dev.bdf);
+            {
+                post_init::unregister_drm_hooks(dev.card_id);
+                post_init::unpublish_console_scanout(dev.bdf);
+            }
             let _ = drm::unregister(dev.card_id);
             Some(dev)
         }
