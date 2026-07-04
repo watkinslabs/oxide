@@ -11,7 +11,7 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
 
@@ -63,7 +63,7 @@ static MODERN_DEV: Spinlock<Option<ModernNetState>, DriverLockClass> =
     Spinlock::new(None);
 static MODERN_PRESENT: AtomicBool = AtomicBool::new(false);
 static SOFTIRQ_INSTALLED: AtomicBool = AtomicBool::new(false);
-static REGISTERED_IFACE: AtomicU32 = AtomicU32::new(0);
+static REGISTERED_NETDEV: AtomicU64 = AtomicU64::new(0);
 static ARP_GC_TIMER_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Stash modern virtio-net runtime state for later RX/TX drivers.
@@ -171,7 +171,7 @@ pub fn uninstall_modern(device_key: u32) -> bool {
     #[cfg(target_os = "oxide-kernel")]
     uninstall_rx_softirq_handler();
     MODERN_PRESENT.store(false, Ordering::Release);
-    REGISTERED_IFACE.store(0, Ordering::Release);
+    REGISTERED_NETDEV.store(0, Ordering::Release);
     SOFTIRQ_IFACE_AND_IP.store(0, Ordering::Release);
     unregister_timers();
     if state.cfg_va != 0 {
@@ -228,15 +228,32 @@ fn free_frame(pa: u64) {
 }
 
 /// Remember the net stack ifindex registered for this transport.
+/// Encoding is `(device_key + 1) << 32 | iface_id`, because zero means none.
 /// # C: O(1)
-fn set_registered_iface(id: net::NetIfaceId) {
-    REGISTERED_IFACE.store(id.raw(), Ordering::Release);
+fn set_registered_iface(device_key: u32, id: net::NetIfaceId) {
+    let encoded = ((device_key as u64 + 1) << 32) | id.raw() as u64;
+    REGISTERED_NETDEV.store(encoded, Ordering::Release);
 }
 
 /// Registered net stack ifindex, if any.
 /// # C: O(1)
 pub fn registered_iface() -> Option<net::NetIfaceId> {
-    let raw = REGISTERED_IFACE.load(Ordering::Acquire);
+    let raw = (REGISTERED_NETDEV.load(Ordering::Acquire) & 0xFFFF_FFFF) as u32;
+    if raw == 0 { None } else { Some(net::NetIfaceId::from_raw(raw)) }
+}
+
+/// Registered ifindex for the named device key, if it owns the published netdev.
+/// # C: O(1)
+pub fn registered_iface_for(device_key: u32) -> Option<net::NetIfaceId> {
+    let encoded = REGISTERED_NETDEV.load(Ordering::Acquire);
+    if encoded == 0 {
+        return None;
+    }
+    let encoded_key = ((encoded >> 32) - 1) as u32;
+    if encoded_key != device_key {
+        return None;
+    }
+    let raw = encoded as u32;
     if raw == 0 { None } else { Some(net::NetIfaceId::from_raw(raw)) }
 }
 
@@ -506,6 +523,7 @@ pub fn poll_into_stack(iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
 // where MODERN_DEV.lock is already held.
 
 pub struct VirtioNetDev {
+    device_key: u32,
     mac: [u8; 6],
     tx_packets: AtomicU64,
     tx_bytes:   AtomicU64,
@@ -527,9 +545,17 @@ impl VirtioNetDev {
     /// Build a `VirtioNetDev` from the persisted modern state.
     /// Returns `None` if `init_modern` hasn't run or MAC is invalid.
     /// # C: O(1)
-    pub fn new() -> Option<alloc::sync::Arc<Self>> {
-        let m = mac()?;
+    pub fn new_for(device_key: u32) -> Option<alloc::sync::Arc<Self>> {
+        let m = {
+            let g = MODERN_DEV.lock();
+            let state = g.as_ref()?;
+            if state.device_key != device_key || !state.mac_valid {
+                return None;
+            }
+            state.mac
+        };
         Some(alloc::sync::Arc::new(Self {
+            device_key,
             mac: m,
             tx_packets: AtomicU64::new(0),
             tx_bytes:   AtomicU64::new(0),
@@ -543,11 +569,11 @@ impl VirtioNetDev {
 /// succeeds during model probe.
 /// # C: O(1) amortised
 #[cfg(target_os = "oxide-kernel")]
-pub fn register_netdev() -> Option<net::NetIfaceId> {
-    let dev = VirtioNetDev::new()?;
+pub fn register_netdev(device_key: u32) -> Option<net::NetIfaceId> {
+    let dev = VirtioNetDev::new_for(device_key)?;
     let stack = net::sock::stack();
     let id = stack.ifaces.register(dev as alloc::sync::Arc<dyn net::NetDev>);
-    set_registered_iface(id);
+    set_registered_iface(device_key, id);
     install_rx_runtime(id);
     Some(id)
 }
@@ -556,23 +582,27 @@ pub fn register_netdev() -> Option<net::NetIfaceId> {
 /// explicit so production registration cannot accidentally use a fake stack.
 /// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
-pub fn register_netdev() -> Option<net::NetIfaceId> { None }
+pub fn register_netdev(_device_key: u32) -> Option<net::NetIfaceId> { None }
 
 /// Unregister this virtio-net device from the kernel net stack. Called before
 /// `uninstall_modern` tears down queue state and RX runtime resources.
 /// # C: O(N iface-owned state)
 #[cfg(target_os = "oxide-kernel")]
-pub fn unregister_netdev() -> bool {
-    let Some(id) = registered_iface() else {
+pub fn unregister_netdev(device_key: u32) -> bool {
+    let Some(id) = registered_iface_for(device_key) else {
         return false;
     };
-    net::sock::stack().unregister_iface(id)
+    let removed = net::sock::stack().unregister_iface(id);
+    if removed {
+        REGISTERED_NETDEV.store(0, Ordering::Release);
+    }
+    removed
 }
 
 /// Hosted tests do not build the kernel socket stack.
 /// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
-pub fn unregister_netdev() -> bool { false }
+pub fn unregister_netdev(_device_key: u32) -> bool { false }
 
 impl net::NetDev for VirtioNetDev {
     fn name(&self) -> &str { "eth0" }
@@ -595,7 +625,7 @@ impl net::NetDev for VirtioNetDev {
             dst, net::MacAddr(self.mac), pkt.proto, &mut frame[..14],
         );
         frame[14..].copy_from_slice(body);
-        match tx_frame(&frame) {
+        match tx_frame_for(self.device_key, &frame) {
             Ok(_) => {
                 self.tx_packets.fetch_add(1, Ordering::Relaxed);
                 self.tx_bytes  .fetch_add(frame.len() as u64, Ordering::Relaxed);
@@ -616,7 +646,7 @@ impl net::NetDev for VirtioNetDev {
             self.tx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err(net::NetError::Erange);
         }
-        match tx_frame(frame) {
+        match tx_frame_for(self.device_key, frame) {
             Ok(_) => {
                 self.tx_packets.fetch_add(1, Ordering::Relaxed);
                 self.tx_bytes  .fetch_add(frame.len() as u64, Ordering::Relaxed);
@@ -963,7 +993,7 @@ mod ndp_tests {
     #[test]
     fn shutdown_modern_quiesces_transport_without_forgetting_iface() {
         let _ = uninstall_modern(1);
-        REGISTERED_IFACE.store(77, Ordering::Release);
+        set_registered_iface(1, net::NetIfaceId::from_raw(77));
         SOFTIRQ_IFACE_AND_IP.store((77u64 << 32) | 0x0a00_0001, Ordering::Release);
         {
             let mut g = MODERN_DEV.lock();
@@ -974,11 +1004,22 @@ mod ndp_tests {
         assert!(shutdown_modern(1));
         assert!(!is_modern_present());
         assert!(modern_state().is_none());
-        assert_eq!(REGISTERED_IFACE.load(Ordering::Acquire), 77);
+        assert_eq!(registered_iface_for(1).unwrap().raw(), 77);
+        assert!(registered_iface_for(2).is_none());
         assert_eq!(SOFTIRQ_IFACE_AND_IP.load(Ordering::Acquire), 0);
         assert!(matches!(tx_frame_for(1, &[0; 14]), Err(TxErr::NotPresent)));
 
-        REGISTERED_IFACE.store(0, Ordering::Release);
+        REGISTERED_NETDEV.store(0, Ordering::Release);
+    }
+
+    #[test]
+    fn registered_iface_is_keyed_by_device() {
+        REGISTERED_NETDEV.store(0, Ordering::Release);
+        set_registered_iface(0x0012_0304, net::NetIfaceId::from_raw(9));
+        assert_eq!(registered_iface().unwrap().raw(), 9);
+        assert_eq!(registered_iface_for(0x0012_0304).unwrap().raw(), 9);
+        assert!(registered_iface_for(0x0012_0305).is_none());
+        REGISTERED_NETDEV.store(0, Ordering::Release);
     }
 
     #[test]

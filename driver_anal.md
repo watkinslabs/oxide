@@ -15,7 +15,7 @@ shape, but it is not a Linux-complete driver model yet.
 Estimated branch-local status:
 
 - Driver-core lifecycle cleanup: about 80% complete.
-- Concrete driver probe/remove/shutdown cleanup: about 75% complete.
+- Concrete driver probe/remove/shutdown cleanup: about 76% complete.
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
@@ -94,7 +94,9 @@ test-pass claims.
   from normal address configuration hooks. Virtio-net install/remove is now
   keyed to the owning parent BDF, so a remove for another device cannot clear
   the installed transport. TX/RX queue cursors now live in the installed
-  device state, and the TX primitive has a BDF-keyed entry point.
+  device state, the TX primitive has a BDF-keyed entry point, and the published
+  `NetDev` now carries its owning device key instead of rediscovering the
+  singleton transport for every transmit.
 - Virtio-vsock remove is keyed to the owning parent BDF and clears its
   `VsockRx` bottom half only for the installed transport. The upper
   `net::vsock` layer is still a single global guest-CID/TX-hook protocol
@@ -152,8 +154,9 @@ test-pass claims.
 - Block, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`
-  provider. Virtio-net teardown is BDF-owned, but the runtime/netdev path still
-  has a singleton installed-device slot and needs a real per-net-device table.
+  provider. Virtio-net teardown and transmit ownership are BDF-owned, but the
+  runtime/RX path still has a singleton installed-device slot and needs a real
+  per-net-device table.
   Virtio-gpu teardown is BDF-owned, but the installed DRM/scanout device is still
   singleton. Virtio-vsock's upper protocol layer and virtio-snd's upper
   sound-card layer also still retain singleton limits; vsock now reserves its

@@ -428,7 +428,7 @@ impl drv::Driver for VirtioNetDrv {
             release_net_after_failed_probe(&mut p);
             return Err(drv::Error::ProbeFailed);
         }
-        match drv_virtio_net::modern::register_netdev() {
+        match drv_virtio_net::modern::register_netdev(device_key) {
             Some(id) => {
                 #[cfg(not(feature = "debug-boot"))]
                 let _ = id;
@@ -452,7 +452,7 @@ impl drv::Driver for VirtioNetDrv {
         if let Some(bdf) = pci_parent_bdf(_dev) {
             let device_key = bdf_word(bdf);
             if drv_virtio_net::modern::is_modern_present_for(device_key) {
-                let _ = drv_virtio_net::modern::unregister_netdev();
+                let _ = drv_virtio_net::modern::unregister_netdev(device_key);
                 if drv_virtio_net::modern::uninstall_modern(device_key) {
                     unpublish_transport_mmio(device_key);
                 }
