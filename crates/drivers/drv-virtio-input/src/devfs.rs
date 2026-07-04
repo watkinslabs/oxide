@@ -27,7 +27,7 @@ static EVDEV_NODES: Spinlock<[Option<InodeRef>; MAX_EVDEV], NodesLockClass>
 
 /// `id -> drv::Device` for model-owned evdev publication. The node itself is
 /// still bespoke, but `/dev/input/eventN` is minted and removed by
-/// `drv::device_add` / `drv::device_del` through the devtmpfs hook.
+/// `drv::try_device_add` / `drv::device_del` through the devtmpfs hook.
 static EVDEV_DEVICES: Spinlock<[Option<Arc<drv::Device>>; MAX_EVDEV], NodesLockClass>
     = Spinlock::new([const { None }; MAX_EVDEV]);
 
@@ -249,11 +249,14 @@ pub fn register_node(id: u32) -> bool {
         return false;
     }
     let factory: drv::NodeFactory = Arc::new(move || make_evdev_inode(id));
-    let dev = drv::device_add(Arc::new(
+    let dev = match drv::try_device_add(Arc::new(
         drv::Device::new("input", alloc::format!("event{id}"), 0, 0, id)
             .with_devnode("input", alloc::format!("input/event{id}"), Some((13, 64 + id)))
             .with_node_factory(factory),
-    ));
+    )) {
+        Ok(dev) => dev,
+        Err(_) => return false,
+    };
     EVDEV_DEVICES.lock()[slot] = Some(dev);
     true
 }
@@ -273,5 +276,86 @@ pub fn unregister_node(id: u32) -> bool {
         true
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::String;
+
+    #[test]
+    fn register_node_is_idempotent_without_republishing() {
+        let id = (MAX_EVDEV - 1) as u32;
+        let _ = unregister_node(id);
+
+        assert!(register_node(id));
+        assert!(!register_node(id));
+        assert_eq!(
+            drv::devices().iter()
+                .filter(|d| d.bus == "input" && d.addr == alloc::format!("event{id}"))
+                .count(),
+            1
+        );
+
+        assert!(unregister_node(id));
+    }
+
+    #[test]
+    fn unregister_then_register_restores_model_owned_event_node() {
+        let id = (MAX_EVDEV - 3) as u32;
+        let addr = alloc::format!("event{id}");
+        let _ = unregister_node(id);
+
+        assert!(register_node(id));
+        assert!(EVDEV_DEVICES.lock()[id as usize].is_some());
+        assert_eq!(
+            drv::devices().iter()
+                .filter(|d| d.bus == "input" && d.addr == addr)
+                .count(),
+            1
+        );
+        assert!(unregister_node(id));
+        assert!(EVDEV_DEVICES.lock()[id as usize].is_none());
+        assert_eq!(
+            drv::devices().iter()
+                .filter(|d| d.bus == "input" && d.addr == addr)
+                .count(),
+            0
+        );
+
+        assert!(register_node(id));
+        assert!(EVDEV_DEVICES.lock()[id as usize].is_some());
+        assert_eq!(
+            drv::devices().iter()
+                .filter(|d| d.bus == "input" && d.addr == addr)
+                .count(),
+            1
+        );
+        assert!(unregister_node(id));
+    }
+
+    #[test]
+    fn register_node_leaves_slot_free_when_model_publication_conflicts() {
+        let id = (MAX_EVDEV - 2) as u32;
+        let _ = unregister_node(id);
+        let addr = alloc::format!("event{id}");
+        let conflict = drv::try_device_add(Arc::new(
+            drv::Device::new("input", String::from(addr.as_str()), 0, 0, id)
+                .with_devnode("input", alloc::format!("input/event{id}"), Some((13, 64 + id)))))
+            .expect("conflict device registration");
+
+        assert!(!register_node(id));
+        assert!(EVDEV_DEVICES.lock()[id as usize].is_none());
+        assert_eq!(
+            drv::devices().iter()
+                .filter(|d| d.bus == "input" && d.addr == addr)
+                .count(),
+            1
+        );
+
+        drv::device_del(&conflict);
+        assert!(register_node(id));
+        assert!(unregister_node(id));
     }
 }

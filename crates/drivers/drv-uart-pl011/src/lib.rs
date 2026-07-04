@@ -19,6 +19,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// Detected PL011 MMIO base VA. 0 ⇒ no UART bound.
 static BASE: AtomicU64 = AtomicU64::new(0);
 static PRESENT: AtomicBool = AtomicBool::new(false);
+static RX_ENABLED: AtomicBool = AtomicBool::new(false);
 static BSP_APIC: AtomicU64 = AtomicU64::new(0);
 static DEV_WINDOW_BASE: AtomicU64 = AtomicU64::new(0);
 static DELIVER: AtomicU64 = AtomicU64::new(0);
@@ -35,6 +36,12 @@ fn deliver(b: u8) {
 /// True once a PL011 UART has been detected + registered by `init`.
 /// # C: O(1)
 pub fn present() -> bool { PRESENT.load(Ordering::Acquire) }
+
+/// True while runtime RX interrupt delivery is allowed. Shutdown clears this
+/// before masking hardware so a late/spurious INTID cannot drain bytes after
+/// terminal quiesce starts.
+/// # C: O(1)
+pub fn rx_enabled() -> bool { RX_ENABLED.load(Ordering::Acquire) }
 
 /// Install boot-probe parameters used when the drv core calls
 /// `UartPl011Drv::probe`.
@@ -92,6 +99,7 @@ mod imp {
     /// RX interrupt drain.
     /// # C: O(bytes pending)
     pub fn rx_isr(dlv: fn(u8)) {
+        if !super::rx_enabled() { return; }
         drain_rx(dlv);
         // SAFETY: called from the GIC dispatcher for PL011 INTID 33.
         unsafe { hal_aarch64::pl011::ack_rx_irq(); }
@@ -117,6 +125,7 @@ mod imp {
         unsafe { arch_irq::gic::enable_intid_level(PL011_INTID); }
         // SAFETY: PL011 was enabled by boot mapping and is now owned by this driver.
         unsafe { hal_aarch64::pl011::enable_rx_irq(); }
+        RX_ENABLED.store(true, Ordering::Release);
         PRESENT.store(true, Ordering::Release);
         true
     }
@@ -126,6 +135,7 @@ mod imp {
     /// # SAFETY: called by driver-core remove; no concurrent probe/remove.
     /// # C: O(1)
     pub(super) unsafe fn remove() {
+        RX_ENABLED.store(false, Ordering::Release);
         // SAFETY: driver-core remove owns PL011 teardown.
         unsafe { hal_aarch64::pl011::disable_rx_irq(); }
         // SAFETY: PL011 owns SPI 33 while bound.
@@ -133,6 +143,18 @@ mod imp {
         let _ = arch_irq::free_arm_irq_handler(PL011_INTID);
         BASE.store(0, Ordering::Release);
         PRESENT.store(false, Ordering::Release);
+    }
+
+    /// Stop PL011 RX interrupt delivery for terminal system shutdown while
+    /// keeping the console TX path bound for late shutdown logging.
+    /// # SAFETY: called by driver-core shutdown; no concurrent probe/remove.
+    /// # C: O(1)
+    pub(super) unsafe fn shutdown() {
+        RX_ENABLED.store(false, Ordering::Release);
+        // SAFETY: driver-core shutdown owns PL011 terminal quiesce.
+        unsafe { hal_aarch64::pl011::disable_rx_irq(); }
+        // SAFETY: PL011 owns SPI 33 while bound.
+        unsafe { arch_irq::gic::disable_intid(PL011_INTID); }
     }
 }
 
@@ -157,6 +179,10 @@ mod imp {
     /// # SAFETY: shell; no side effects.
     /// # C: O(1)
     pub(super) unsafe fn remove() {}
+    /// No PL011 on non-arm arches.
+    /// # SAFETY: shell; no side effects.
+    /// # C: O(1)
+    pub(super) unsafe fn shutdown() {}
 }
 
 pub use imp::{emit, rx_isr, rx_poll};
@@ -193,6 +219,11 @@ impl drv::Driver for UartPl011Drv {
     fn remove(&self, _dev: &drv::Device) {
         // SAFETY: driver-core remove owns the bound platform device teardown.
         unsafe { imp::remove(); }
+    }
+
+    fn shutdown(&self, _dev: &drv::Device) {
+        // SAFETY: driver-core shutdown owns terminal platform-device quiesce.
+        unsafe { imp::shutdown(); }
     }
 }
 

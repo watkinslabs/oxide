@@ -60,6 +60,41 @@ static GLOBAL_ALLOC: kalloc::KAlloc = kalloc::KAlloc::new();
 // call sites compile unchanged during the Stage B migration.
 pub use boot_info::{BootInfo, BootMemKind, BootMemRegion};
 
+/// Publish a boot-discovered platform device through the driver model.
+/// Repeated boot wiring may reuse an identical model identity, but a conflicting
+/// platform object is a kernel model error and must not be hidden.
+/// # C: O(N_devices)
+fn platform_device_or_panic(addr: &'static str) -> alloc::sync::Arc<drv::Device> {
+    let candidate = alloc::sync::Arc::new(drv::Device::new(
+        "platform",
+        alloc::string::String::from(addr),
+        0,
+        0,
+        0,
+    ));
+    match drv::try_device_add(alloc::sync::Arc::clone(&candidate)) {
+        Ok(dev) => dev,
+        Err(drv::Error::Busy) => {
+            if let Some(existing) = drv::devices().into_iter().find(|d| {
+                d.bus == "platform"
+                    && d.addr == addr
+                    && d.parent_bus.is_none()
+                    && d.parent_addr.is_none()
+                    && d.vendor_id == 0
+                    && d.device_id == 0
+                    && d.class == 0
+                    && d.devname.is_none()
+                    && d.resources.is_empty()
+            }) {
+                existing
+            } else {
+                panic!("conflicting platform device registration: {}", addr);
+            }
+        }
+        Err(e) => panic!("platform device registration failed for {}: {:?}", addr, e),
+    }
+}
+
 /// Kernel entry. Called by per-arch boot stub after low-level setup.
 /// # SAFETY: caller set up a valid kernel stack, mapped the kernel image
 /// upper-half per the linker script, set the per-CPU base, disabled IRQs;
@@ -353,12 +388,12 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // debug-zerotrap: give the [ZEROTRAP] logger a current-tid getter.
         hal::zerotrap::set_tid_hook(zerotrap_tid);
         ::devfs::set_current_hooks(sched::live::current_mount_ns, sched::live::current_chroot_root);
-        // device-model Stage C: wire the devtmpfs side of `drv::device_add`
+        // device-model Stage C: wire the devtmpfs side of `drv::try_device_add`
         // BEFORE the built-in /dev registrants run below (console/mem/drm/fbdev
-        // self-register via `device_add` now, D27). The /sys side (set_sysfs_hook)
-        // stays wired just before PCI enumeration — these early pseudo-devices
-        // carry a non-pci/non-virtio bus that the /sys synthesis ignores, so the
-        // devtmpfs hook is the only one they need at this phase.
+        // self-register via fallible model publication now, D27). The /sys side
+        // (set_sysfs_hook) stays wired just before PCI enumeration — these early
+        // pseudo-devices carry a non-pci/non-virtio bus that the /sys synthesis
+        // ignores, so the devtmpfs hook is the only one they need at this phase.
         drv::set_devtmpfs_hook(devfs::add_device_node);
         drv::set_devtmpfs_del_hook(devfs::del_device_node);
         // Publish cmdline before /dev/console registers so the node follows
@@ -423,18 +458,17 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     drv_serial::configure_probe(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE);
     {
         let uart_drv = drv_serial::uart_driver();
-        let dev = drv::device_add(alloc::sync::Arc::new(drv::Device::new(
-            "platform", alloc::string::String::from("serial0"), 0, 0, 0)));
+        let dev = platform_device_or_panic("serial0");
         drv::register_driver(uart_drv);
-        if drv::bind(&dev, drv::Driver::name(uart_drv)).is_ok() {
+        if dev.bound() == Some(drv::Driver::name(uart_drv)) {
             klog::set_byte_sink(drv_serial::emit);
         }
     }
 
     // Real i8042 PS/2 keyboard (x86 only — no i8042 on the arm boards).
-    // Register the platform device + driver, then bind so Driver::probe
-    // brings up the controller and resets/identifies the keyboard. Decoded
-    // scancodes feed the SAME input pipeline as virtio-input
+    // Register the platform device + driver; driver-core attachment runs
+    // Driver::probe, which brings up the controller and resets/identifies the
+    // keyboard. Decoded scancodes feed the SAME input pipeline as virtio-input
     // (drv_virtio_input::drain::handle_key_event). The i8042 driver owns IRQ1
     // setup/teardown in probe/remove. A serial-only box with no PS/2 leaves
     // platform/i8042 unbound.
@@ -442,10 +476,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     {
         let ps2_drv = drv_ps2_keyboard::driver();
         drv_ps2_keyboard::configure_probe(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE);
-        let dev = drv::device_add(alloc::sync::Arc::new(drv::Device::new(
-            "platform", alloc::string::String::from("i8042"), 0, 0, 0)));
+        platform_device_or_panic("i8042");
         drv::register_driver(ps2_drv);
-        let _ = drv::bind(&dev, drv::Driver::name(ps2_drv));
     }
 
     // SMP bring-up per `13§11`. With -smp 1 (default) the per-arch
@@ -582,17 +614,17 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     let _ = unsafe { drv::init() };
     power::set_driver_shutdown_hook(drv::shutdown_all);
     // drivers-plan D1a: wire the drv model's sysfs-publish hooks BEFORE
-    // PCI enumeration so each `drv::device_add` during enumeration publishes
+    // PCI enumeration so each `drv::try_device_add` during enumeration publishes
     // its `/sys/bus/<bus>/devices/<addr>` entry as it lands.
     drv::set_sysfs_hook(crate::sysfs::bus::publish_device_cb);
     drv::set_sysfs_remove_hook(crate::sysfs::bus::remove_device_cb);
     drv::set_driver_hook(crate::sysfs::bus::publish_driver_cb);
     drv::set_bind_hook(crate::sysfs::bus::bind_device_cb);
-    // device-model Stage B: the devtmpfs side of `drv::device_add` is wired
+    // device-model Stage B: the devtmpfs side of `drv::try_device_add` is wired
     // EARLY (just after `devfs::set_current_hooks`, above) so the built-in
-    // /dev registrants that now self-register via `device_add` (console/mem/
-    // drm/fbdev, Stage C) mint their nodes at boot. The /sys-publish hooks here
-    // still precede PCI enumeration so each bus device's `/sys/bus/<bus>/
+    // /dev registrants that now self-register via fallible model publication
+    // (console/mem/drm/fbdev, Stage C) mint their nodes at boot. The
+    // /sys-publish hooks here still precede PCI enumeration so each bus device's `/sys/bus/<bus>/
     // devices/<addr>` entry lands as it is enumerated.
     // Hardware bus drivers bind through the drv model during enumeration;
     // the old flat BDF probe registry path has been removed.

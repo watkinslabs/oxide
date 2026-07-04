@@ -49,6 +49,14 @@ const INO_ATTR:          Ino = 0x5102_2000;
 const INO_DRIVER_ATTR:   Ino = 0x5102_3000;
 
 const DEV_ATTR: Attribute = Attribute { name: "dev", mode: RO_PERM };
+const PCI_RESOURCE_ATTRS: [Attribute; 6] = [
+    Attribute { name: "resource0", mode: RO_PERM },
+    Attribute { name: "resource1", mode: RO_PERM },
+    Attribute { name: "resource2", mode: RO_PERM },
+    Attribute { name: "resource3", mode: RO_PERM },
+    Attribute { name: "resource4", mode: RO_PERM },
+    Attribute { name: "resource5", mode: RO_PERM },
+];
 
 fn modalias(dev: &drv::Device) -> String {
     if dev.bus == "pci" {
@@ -90,6 +98,25 @@ fn dev_uevent_env(dev: &drv::Device) -> Vec<String> {
     env
 }
 
+fn pci_resource_index(leaf: &str) -> Option<u8> {
+    let suffix = leaf.strip_prefix("resource")?;
+    if suffix.len() != 1 {
+        return None;
+    }
+    let b = suffix.as_bytes()[0];
+    if !(b'0'..=b'5').contains(&b) {
+        return None;
+    }
+    Some(b - b'0')
+}
+
+fn resource_body(r: &drv::Resource) -> Vec<u8> {
+    alloc::format!(
+        "0x{:016x} 0x{:016x} 0x{:016x}\n",
+        r.start, r.end, r.flags,
+    ).into_bytes()
+}
+
 fn dev_attr(dev: &drv::Device, leaf: &str) -> Option<Vec<u8>> {
     match leaf {
         "vendor" => Some(alloc::format!("0x{:04x}\n", dev.vendor_id).into_bytes()),
@@ -104,6 +131,13 @@ fn dev_attr(dev: &drv::Device, leaf: &str) -> Option<Vec<u8>> {
                 ));
             }
             Some(s.into_bytes())
+        }
+        leaf if dev.bus == "pci" && pci_resource_index(leaf).is_some() => {
+            let bar = pci_resource_index(leaf).expect("resource index checked");
+            dev.resources
+                .iter()
+                .find(|r| r.bar == bar)
+                .map(resource_body)
         }
         "modalias" => Some(alloc::format!("{}\n", modalias(dev)).into_bytes()),
         "driver_override" => {
@@ -238,6 +272,15 @@ impl InodeOps for DeviceDirOps {
             let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { addr: data.addr.clone(), bus: data.bus });
             return Ok(make_attr_inode(&DEV_ATTR, ops, INO_ATTR));
         }
+        if data.bus == "pci" {
+            if let Some(bar) = pci_resource_index(name) {
+                if !dev.resources.iter().any(|r| r.bar == bar) {
+                    return Err(VfsError::Enoent);
+                }
+                let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { addr: data.addr.clone(), bus: data.bus });
+                return Ok(make_attr_inode(&PCI_RESOURCE_ATTRS[bar as usize], ops, INO_ATTR));
+            }
+        }
         let attr = dev_group(data.bus).find(name).ok_or(VfsError::Enoent)?;
         let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { addr: data.addr.clone(), bus: data.bus });
         Ok(make_attr_inode(attr, ops, INO_ATTR))
@@ -256,6 +299,17 @@ impl FileOps for DeviceDirOps {
             .collect();
         if has_dev {
             entries.push(("dev", FileType::Regular));
+        }
+        if data.bus == "pci" {
+            if let Some(dev) = dev.as_ref() {
+                for attr in PCI_RESOURCE_ATTRS.iter() {
+                    if let Some(bar) = pci_resource_index(attr.name) {
+                        if dev.resources.iter().any(|r| r.bar == bar) {
+                            entries.push((attr.name, FileType::Regular));
+                        }
+                    }
+                }
+            }
         }
         entries.push(("subsystem", FileType::Symlink));
         if has_parent {
@@ -296,6 +350,11 @@ fn dev_root_canon(bus: &str) -> &'static str {
         // /sys<DEVPATH>/uevent → ENOENT and never processes the disk.
         "block" => "devices/virtual/block",
         "input" => "devices/virtual/input",
+        "drm" => "devices/virtual/drm",
+        "mem" => "devices/virtual/mem",
+        "misc" => "devices/virtual/misc",
+        "sound" => "devices/virtual/sound",
+        "graphics" => "devices/virtual/graphics",
         _ => "devices/platform",
     }
 }
@@ -305,6 +364,13 @@ fn dev_root_leaf(bus: &str) -> &'static str {
         "pci" => "pci0000:00",
         "virtio" => "virtio",
         "platform" => "platform",
+        "block" => "virtual/block",
+        "input" => "virtual/input",
+        "drm" => "virtual/drm",
+        "mem" => "virtual/mem",
+        "misc" => "virtual/misc",
+        "sound" => "virtual/sound",
+        "graphics" => "virtual/graphics",
         _ => "platform",
     }
 }
@@ -554,7 +620,9 @@ impl InodeOps for DriverDirOps {
             d.bus == data.bus && d.addr == name && d.bound() == Some(data.driver)
         });
         if !is_bound { return Err(VfsError::Enoent); }
-        let t = alloc::format!("../../../{}/{}", dev_root_canon(data.bus), name);
+        // from /sys/bus/<bus>/drivers/<driver>/<addr>
+        // to /sys/devices/<root>/<addr>
+        let t = alloc::format!("../../../../{}/{}", dev_root_canon(data.bus), name);
         Ok(make_link_inode(t.into_bytes()))
     }
 }
@@ -724,6 +792,14 @@ mod tests {
     static BIND_PROBES: AtomicU32 = AtomicU32::new(0);
     static BIND_REMOVES: AtomicU32 = AtomicU32::new(0);
 
+    struct SysfsBindUeventDriver;
+    impl drv::Driver for SysfsBindUeventDriver {
+        fn bus(&self) -> &'static str { "platform" }
+        fn name(&self) -> &'static str { "sysfs-bind-uevent-test" }
+        fn matches(&self, dev: &drv::Device) -> bool { dev.addr == "sysfs-bind-uevent0" }
+    }
+    static SYSFS_BIND_UEVENT_DRIVER: SysfsBindUeventDriver = SysfsBindUeventDriver;
+
     struct RejectDriver;
     impl drv::Driver for RejectDriver {
         fn bus(&self) -> &'static str { "platform" }
@@ -735,10 +811,25 @@ mod tests {
     }
     static REJECT_DRIVER: RejectDriver = RejectDriver;
 
+    struct SysfsUnregisterDriver;
+    impl drv::Driver for SysfsUnregisterDriver {
+        fn bus(&self) -> &'static str { "platform" }
+        fn name(&self) -> &'static str { "sysfs-unregister-test" }
+        fn matches(&self, dev: &drv::Device) -> bool { dev.addr == "sysfs-unregister0" }
+        fn remove(&self, _dev: &drv::Device) {
+            BIND_REMOVES.fetch_add(1, Ordering::Release);
+        }
+    }
+    static SYSFS_UNREGISTER_DRIVER: SysfsUnregisterDriver = SysfsUnregisterDriver;
+
     fn platform_device(addr: &str) -> Arc<drv::Device> {
         let d = Arc::new(drv::Device::new("platform", String::from(addr), 0, 0, 0));
-        drv::device_add(Arc::clone(&d));
+        drv::try_device_add(Arc::clone(&d)).expect("test device registration");
         d
+    }
+
+    fn uevent_has_entry(msg: &[u8], needle: &[u8]) -> bool {
+        msg.split(|b| *b == 0).any(|entry| entry == needle)
     }
 
     #[test]
@@ -751,16 +842,79 @@ mod tests {
         let root = make_bus_drivers_inode("platform");
         let dir = root.lookup("sysfs-bind-test").expect("driver dir");
         let bind = dir.lookup("bind").expect("bind attr");
-        assert_eq!(bind.write(0, b"sysfs-bind-dev0\n"), Ok("sysfs-bind-dev0\n".len()));
         assert_eq!(dev.bound(), Some("sysfs-bind-test"));
         assert_eq!(BIND_PROBES.load(Ordering::Acquire), 1);
-        assert!(dir.lookup("sysfs-bind-dev0").is_ok(), "driver dir exposes bound device symlink");
+        assert_eq!(bind.write(0, b"sysfs-bind-dev0\n").err(), Some(VfsError::Ebusy));
+        let bound_link = dir.lookup("sysfs-bind-dev0").expect("driver dir bound device symlink");
+        assert_eq!(
+            bound_link.readlink().expect("readlink"),
+            b"../../../../devices/platform/sysfs-bind-dev0".to_vec());
 
         let unbind = dir.lookup("unbind").expect("unbind attr");
         assert_eq!(unbind.write(0, b"sysfs-bind-dev0\n"), Ok("sysfs-bind-dev0\n".len()));
         assert_eq!(dev.bound(), None);
         assert_eq!(BIND_REMOVES.load(Ordering::Acquire), 1);
         assert_eq!(dir.lookup("sysfs-bind-dev0").err(), Some(VfsError::Enoent));
+
+        assert_eq!(bind.write(0, b"sysfs-bind-dev0\n"), Ok("sysfs-bind-dev0\n".len()));
+        assert_eq!(dev.bound(), Some("sysfs-bind-test"));
+        assert_eq!(BIND_PROBES.load(Ordering::Acquire), 2);
+        let rebound_link = dir.lookup("sysfs-bind-dev0").expect("driver dir rebound device symlink");
+        assert_eq!(
+            rebound_link.readlink().expect("readlink"),
+            b"../../../../devices/platform/sysfs-bind-dev0".to_vec());
+    }
+
+    #[test]
+    fn bind_unbind_emit_change_uevents_from_current_model_state() {
+        use netlink::{proto, NetlinkSocket};
+
+        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        listener.set_group_mask(1);
+        netlink::register_uevent_listener(&listener);
+        drv::set_bind_hook(bind_device_cb);
+
+        let dev = platform_device("sysfs-bind-uevent0");
+        drv::register_driver(&SYSFS_BIND_UEVENT_DRIVER);
+
+        let bound = listener.dequeue().expect("bind change uevent");
+        assert!(uevent_has_entry(&bound, b"ACTION=change"));
+        assert!(uevent_has_entry(&bound, b"DEVPATH=/devices/platform/sysfs-bind-uevent0"));
+        assert!(uevent_has_entry(&bound, b"SUBSYSTEM=platform"));
+        assert!(uevent_has_entry(&bound, b"DRIVER=sysfs-bind-uevent-test"));
+        assert_eq!(dev.bound(), Some("sysfs-bind-uevent-test"));
+
+        let root = make_bus_drivers_inode("platform");
+        let dir = root.lookup("sysfs-bind-uevent-test").expect("driver dir");
+        let unbind = dir.lookup("unbind").expect("unbind attr");
+        assert_eq!(unbind.write(0, b"sysfs-bind-uevent0\n"), Ok("sysfs-bind-uevent0\n".len()));
+
+        let unbound = listener.dequeue().expect("unbind change uevent");
+        assert!(uevent_has_entry(&unbound, b"ACTION=change"));
+        assert!(uevent_has_entry(&unbound, b"DEVPATH=/devices/platform/sysfs-bind-uevent0"));
+        assert!(uevent_has_entry(&unbound, b"SUBSYSTEM=platform"));
+        assert!(!uevent_has_entry(&unbound, b"DRIVER=sysfs-bind-uevent-test"));
+        assert_eq!(dev.bound(), None);
+
+        drv::device_del(&dev);
+    }
+
+    #[test]
+    fn driver_unregister_removes_sysfs_driver_dir_and_unbinds_devices() {
+        BIND_REMOVES.store(0, Ordering::Release);
+        drv::register_driver(&SYSFS_UNREGISTER_DRIVER);
+        let dev = platform_device("sysfs-unregister0");
+
+        let root = make_bus_drivers_inode("platform");
+        assert!(root.lookup("sysfs-unregister-test").is_ok());
+        assert_eq!(dev.bound(), Some("sysfs-unregister-test"));
+
+        assert_eq!(drv::unregister_driver(&SYSFS_UNREGISTER_DRIVER), Ok(()));
+        assert_eq!(dev.bound(), None);
+        assert_eq!(BIND_REMOVES.load(Ordering::Acquire), 1);
+        assert_eq!(root.lookup("sysfs-unregister-test").err(), Some(VfsError::Enoent));
+
+        drv::device_del(&dev);
     }
 
     #[test]
@@ -781,7 +935,7 @@ mod tests {
         let dev = Arc::new(
             drv::Device::new("virtio", String::from("sysfs-dev-index0"), 0, 2, 0)
                 .with_devnode("block", String::from("vdt"), Some((254, 42))));
-        drv::device_add(Arc::clone(&dev));
+        drv::try_device_add(Arc::clone(&dev)).expect("test device registration");
 
         let devices = make_devices_root_inode("virtio");
         let dir = devices.lookup("sysfs-dev-index0").expect("device dir");
@@ -799,5 +953,136 @@ mod tests {
         drv::device_del(&dev);
         assert_eq!(devices.lookup("sysfs-dev-index0").err(), Some(VfsError::Enoent));
         assert_eq!(index.lookup("254:42").err(), Some(VfsError::Enoent));
+    }
+
+    #[test]
+    fn pci_device_exposes_indexed_bar_resource_attrs() {
+        let dev = Arc::new(
+            drv::Device::new("pci", String::from("0000:00:1f.0"), 0x1234, 0x5678, 0x010601)
+                .with_resources(Vec::from([
+                    drv::Resource { bar: 2, start: 0x1000, end: 0x1fff, flags: 0x200 },
+                    drv::Resource { bar: 5, start: 0xfebc_0000, end: 0xfebc_0fff, flags: 0x2200 },
+                ])));
+        drv::try_device_add(Arc::clone(&dev)).expect("test pci registration");
+
+        let devices = make_devices_root_inode("pci");
+        let dir = devices.lookup("0000:00:1f.0").expect("pci device dir");
+        assert_eq!(dir.lookup("resource0").err(), Some(VfsError::Enoent));
+
+        let res2 = dir.lookup("resource2").expect("resource2 attr");
+        let mut buf = [0u8; 96];
+        let n = res2.read(0, &mut buf).expect("read resource2");
+        assert_eq!(
+            &buf[..n],
+            b"0x0000000000001000 0x0000000000001fff 0x0000000000000200\n");
+
+        let res5 = dir.lookup("resource5").expect("resource5 attr");
+        let n = res5.read(0, &mut buf).expect("read resource5");
+        assert_eq!(
+            &buf[..n],
+            b"0x00000000febc0000 0x00000000febc0fff 0x0000000000002200\n");
+
+        let modalias = dir.lookup("modalias").expect("modalias still works");
+        let n = modalias.read(0, &mut buf).expect("read modalias");
+        assert_eq!(&buf[..n], b"pci:v00001234d00005678sv*sd*bc01sc06i01\n");
+
+        drv::device_del(&dev);
+    }
+
+    #[test]
+    fn sys_dev_char_indexes_virtual_char_class_devices() {
+        let mem = Arc::new(
+            drv::Device::new("mem", String::from("sysfs-random-test"), 0, 0, 0)
+                .with_devnode("mem", String::from("random-test"), Some((1, 8))));
+        let misc = Arc::new(
+            drv::Device::new("misc", String::from("sysfs-autofs-test"), 0, 0, 0)
+                .with_devnode("misc", String::from("autofs-test"), Some((10, 235))));
+        let sound = Arc::new(
+            drv::Device::new("sound", String::from("controlC8"), 0, 0, 0)
+                .with_devnode("sound", String::from("snd/controlC8"), Some((116, 256))));
+        let graphics = Arc::new(
+            drv::Device::new("graphics", String::from("fb8"), 0, 0, 0)
+                .with_devnode("graphics", String::from("fb8"), Some((29, 8))));
+        let input = Arc::new(
+            drv::Device::new("input", String::from("event-sysdev8"), 0, 0, 0)
+                .with_devnode("input", String::from("input/event-sysdev8"), Some((13, 88))));
+        let drm = Arc::new(
+            drv::Device::new("drm", String::from("card88"), 0, 0, 0)
+                .with_devnode("drm", String::from("dri/card88"), Some((226, 88))));
+        drv::try_device_add(Arc::clone(&mem)).expect("test mem registration");
+        drv::try_device_add(Arc::clone(&misc)).expect("test misc registration");
+        drv::try_device_add(Arc::clone(&sound)).expect("test sound registration");
+        drv::try_device_add(Arc::clone(&graphics)).expect("test graphics registration");
+        drv::try_device_add(Arc::clone(&input)).expect("test input registration");
+        drv::try_device_add(Arc::clone(&drm)).expect("test drm registration");
+
+        let index = make_sys_dev_index_inode(DevIndexKind::Char);
+        let mem_link = index.lookup("1:8").expect("mem char index link");
+        assert_eq!(
+            mem_link.readlink().expect("readlink"),
+            b"../../devices/virtual/mem/sysfs-random-test".to_vec());
+        let misc_link = index.lookup("10:235").expect("misc char index link");
+        assert_eq!(
+            misc_link.readlink().expect("readlink"),
+            b"../../devices/virtual/misc/sysfs-autofs-test".to_vec());
+        let sound_link = index.lookup("116:256").expect("sound char index link");
+        assert_eq!(
+            sound_link.readlink().expect("readlink"),
+            b"../../devices/virtual/sound/controlC8".to_vec());
+        let graphics_link = index.lookup("29:8").expect("graphics char index link");
+        assert_eq!(
+            graphics_link.readlink().expect("readlink"),
+            b"../../devices/virtual/graphics/fb8".to_vec());
+        let input_link = index.lookup("13:88").expect("input char index link");
+        assert_eq!(
+            input_link.readlink().expect("readlink"),
+            b"../../devices/virtual/input/event-sysdev8".to_vec());
+        let drm_link = index.lookup("226:88").expect("drm char index link");
+        assert_eq!(
+            drm_link.readlink().expect("readlink"),
+            b"../../devices/virtual/drm/card88".to_vec());
+
+        drv::device_del(&mem);
+        drv::device_del(&misc);
+        drv::device_del(&sound);
+        drv::device_del(&graphics);
+        drv::device_del(&input);
+        drv::device_del(&drm);
+        assert_eq!(index.lookup("1:8").err(), Some(VfsError::Enoent));
+        assert_eq!(index.lookup("10:235").err(), Some(VfsError::Enoent));
+        assert_eq!(index.lookup("116:256").err(), Some(VfsError::Enoent));
+        assert_eq!(index.lookup("29:8").err(), Some(VfsError::Enoent));
+        assert_eq!(index.lookup("13:88").err(), Some(VfsError::Enoent));
+        assert_eq!(index.lookup("226:88").err(), Some(VfsError::Enoent));
+    }
+
+    #[test]
+    fn sys_dev_char_index_tracks_remove_readd_same_devt() {
+        let index = make_sys_dev_index_inode(DevIndexKind::Char);
+        let first = Arc::new(
+            drv::Device::new("sound", String::from("controlC12"), 0, 0, 0)
+                .with_devnode("sound", String::from("snd/controlC12"), Some((116, 322))));
+        drv::try_device_add(Arc::clone(&first)).expect("first sound registration");
+
+        let link = index.lookup("116:322").expect("first sound char index");
+        assert_eq!(
+            link.readlink().expect("readlink"),
+            b"../../devices/virtual/sound/controlC12".to_vec());
+
+        drv::device_del(&first);
+        assert_eq!(index.lookup("116:322").err(), Some(VfsError::Enoent));
+
+        let second = Arc::new(
+            drv::Device::new("sound", String::from("controlC12"), 0, 0, 0)
+                .with_devnode("sound", String::from("snd/controlC12"), Some((116, 322))));
+        drv::try_device_add(Arc::clone(&second)).expect("second sound registration");
+
+        let link = index.lookup("116:322").expect("readded sound char index");
+        assert_eq!(
+            link.readlink().expect("readlink"),
+            b"../../devices/virtual/sound/controlC12".to_vec());
+
+        drv::device_del(&second);
+        assert_eq!(index.lookup("116:322").err(), Some(VfsError::Enoent));
     }
 }

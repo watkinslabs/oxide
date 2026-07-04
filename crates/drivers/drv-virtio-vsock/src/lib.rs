@@ -3,8 +3,8 @@
 // q1=TX (guest→device), q2=event (config changes — OPTIONAL for STREAM,
 // not used here). The boot probe (`pci_boot::virtio_drv`) performs the
 // generic bring-up (reset -> FEATURES_OK -> q0/q1 desc/driver/device PA
-// program + DRIVER_OK) and hands typed virtqueue resources plus the
-// guest CID (read from device-cfg offset 0) to `install`.
+// program + DRIVER_OK) and hands typed virtqueue resources to `install`.
+// This driver reads the guest CID from its device-cfg window.
 //
 // This driver owns the ring DMA only. The protocol (connection setup,
 // OP_RW data, credit, teardown) + the AF_VSOCK socket object live in
@@ -21,8 +21,16 @@ extern crate alloc;
 
 mod rx;
 
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
+
+/// Virtio device ID for vsock transports.
+pub const VIRTIO_ID_VSOCK: u16 = 19;
+
+/// Driver-model identity for virtio-vsock child binding.
+pub const DRIVER_ID: virtio::VirtioChildDriverId =
+    virtio::VirtioChildDriverId::new("virtio-vsock", VIRTIO_ID_VSOCK);
 
 /// Number of RX buffers pre-posted on q0. Each buffer is one 4 KiB
 /// frame holding a virtio_vsock_hdr + payload. # C: O(1)
@@ -32,7 +40,7 @@ pub const RX_RING_BUFS: usize = 8;
 /// boot probe programmed. RX buffers are pre-posted at install; TX uses
 /// a single bounce frame serialised by the driver Spinlock.
 pub struct Ctx {
-    pub device_key: u32,
+    pub device_key: virtio::VirtioChildDeviceKey,
     pub cfg_va:    u64,
     pub hhdm:      u64,
     pub guest_cid: u64,
@@ -54,31 +62,109 @@ pub struct Ctx {
 // SAFETY justification: Ctx holds raw PAs/VAs into HHDM/MMIO stable for
 // device lifetime; all access is funneled through the vsock driver
 // Spinlock, so cross-CPU sharing is sound.
-pub(crate) static CTX: Spinlock<Option<Ctx>, DriverLockClass> = Spinlock::new(None);
+pub(crate) static CTX: Spinlock<Vec<Ctx>, DriverLockClass> = Spinlock::new(Vec::new());
 static SOFTIRQ_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// TX poll budget for one outbound packet completion. # C: O(1)
 const TX_POLL_BUDGET: u32 = 2_000_000;
 
+const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1;
+
+/// Feature policy for the virtio-vsock child driver. The PCI transport
+/// executes common-cfg negotiation; this driver owns the vsock feature mask it
+/// is prepared to consume.
+pub const fn wanted_features() -> u64 {
+    WANTED_FEATURES
+}
+
+/// Transport contract for the virtio-vsock child driver. The virtio bus
+/// consumes this profile; the PCI transport only executes it.
+/// # C: O(1)
+pub const fn transport_profile() -> virtio::VirtioTransportProfile {
+    virtio::VirtioTransportProfile::vsock(wanted_features(), Some(raise_rx))
+}
+
 /// True once a virtio-vsock device has been brought up + installed.
 /// # C: O(1)
-pub fn present() -> bool { CTX.lock().is_some() }
+pub fn present() -> bool { !CTX.lock().is_empty() }
 
 /// True iff the named virtio-vsock device owns the installed transport.
 /// # C: O(1)
-pub fn present_for(device_key: u32) -> bool {
-    CTX.lock()
-        .as_ref()
-        .map(|ctx| ctx.device_key == device_key)
-        .unwrap_or(false)
+pub fn present_for(device_key: virtio::VirtioChildDeviceKey) -> bool {
+    CTX.lock().iter().any(|ctx| ctx.device_key == device_key)
 }
 
-/// Install the q0(RX)+q1(TX) ring context. Allocates RX bounce frames,
-/// pre-posts them on q0 + kicks, allocates the TX bounce frame, then
-/// publishes the guest CID + TX hook into `net::vsock`. Returns false if
-/// HHDM/ring PAs are missing or no frames are available (device left
-/// uninstalled). # C: O(RX_RING_BUFS)
-pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u64) -> bool {
+struct VsockProbeState {
+    device_key: virtio::VirtioChildDeviceKey,
+    rx_bufs: [u64; RX_RING_BUFS],
+    tx_buf_pa: u64,
+    reserved_endpoint: bool,
+    owned_frames: bool,
+}
+
+impl VsockProbeState {
+    fn reserve_and_alloc(device_key: virtio::VirtioChildDeviceKey) -> Option<Self> {
+        if !net::vsock::driver_reserve(device_key.raw()) {
+            return None;
+        }
+        let mut state = Self {
+            device_key,
+            rx_bufs: [0u64; RX_RING_BUFS],
+            tx_buf_pa: 0,
+            reserved_endpoint: true,
+            owned_frames: true,
+        };
+        for slot in state.rx_bufs.iter_mut() {
+            *slot = pmm::setup::alloc_one_frame()?;
+        }
+        state.tx_buf_pa = pmm::setup::alloc_one_frame()?;
+        Some(state)
+    }
+
+    fn disarm_frames(&mut self) {
+        self.owned_frames = false;
+    }
+
+    fn disarm_endpoint(&mut self) {
+        self.reserved_endpoint = false;
+    }
+}
+
+impl Drop for VsockProbeState {
+    fn drop(&mut self) {
+        if self.owned_frames {
+            free_rx_bufs(&mut self.rx_bufs);
+            if self.tx_buf_pa != 0 {
+                // SAFETY: tx_buf_pa was allocated in this probe attempt and
+                // has not been published to the installed device context.
+                unsafe { pmm::setup::free_one_frame(self.tx_buf_pa); }
+                self.tx_buf_pa = 0;
+            }
+        }
+        if self.reserved_endpoint {
+            let _ = net::vsock::driver_cancel_reserved(self.device_key.raw());
+        }
+    }
+}
+
+fn read_guest_cid(resources: virtio::VirtioResources) -> Option<u64> {
+    let cfg = resources.device_cfg_va;
+    if cfg == 0 {
+        return None;
+    }
+    // SAFETY: `device_cfg_va` is the transport-owned, Device-attr mapped
+    // virtio-vsock config window kept alive for this device lifetime. The
+    // guest CID is the le64 field at offset 0.
+    Some(unsafe { core::ptr::read_volatile(cfg as *const u64) })
+}
+
+/// Install the q0(RX)+q1(TX) ring context. Reads the guest CID from the
+/// device-cfg resource, reserves the upper vsock endpoint before allocating
+/// transport frames, allocates RX/TX bounce frames, pre-posts RX on q0 + kicks,
+/// then publishes the guest CID + TX hook into `net::vsock`. Returns false if
+/// HHDM/ring PAs/config are missing, the upper endpoint is busy, or no frames
+/// are available. # C: O(RX_RING_BUFS)
+pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::VirtioResources) -> bool {
     let Some(rxq) = resources.require_queue(0) else {
         return false;
     };
@@ -88,25 +174,15 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u
     if !resources.common_cfg_valid() {
         return false;
     }
-    if CTX.lock().is_some() {
+    let Some(guest_cid) = read_guest_cid(resources) else {
+        return false;
+    };
+    if device_key.raw() == 0 || CTX.lock().iter().any(|ctx| ctx.device_key == device_key) {
         return false;
     }
-    let mut rx_bufs = [0u64; RX_RING_BUFS];
-    for slot in rx_bufs.iter_mut() {
-        match pmm::setup::alloc_one_frame() {
-            Some(pa) => *slot = pa,
-            None => {
-                free_rx_bufs(&mut rx_bufs);
-                return false;
-            }
-        }
-    }
-    let tx_buf_pa = match pmm::setup::alloc_one_frame() {
-        Some(pa) => pa,
-        None => {
-            free_rx_bufs(&mut rx_bufs);
-            return false;
-        }
+    let mut probe = match VsockProbeState::reserve_and_alloc(device_key) {
+        Some(probe) => probe,
+        None => return false,
     };
 
     // Seed used.idx shadows from the live rings so the first drain/tx
@@ -127,42 +203,27 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u
         rxq,
         txq,
         rx_avail_idx: rx_used_seen, rx_used_seen,
-        rx_bufs,
+        rx_bufs: probe.rx_bufs,
         tx_avail_idx: tx_used_seen, tx_used_seen,
-        tx_buf_pa,
+        tx_buf_pa: probe.tx_buf_pa,
     };
     let mut g = CTX.lock();
-    if g.is_some() {
-        let mut rx_bufs = ctx.rx_bufs;
-        free_rx_bufs(&mut rx_bufs);
-        if ctx.tx_buf_pa != 0 {
-            // SAFETY: tx_buf_pa was allocated in this install attempt and was
-            // not published to the device model because another context won.
-            unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
-        }
+    if g.iter().any(|ctx| ctx.device_key == device_key) {
         return false;
     }
-    *g = Some(ctx);
+    g.push(ctx);
+    probe.disarm_frames();
     drop(g);
 
     // Pre-post all RX buffers + kick the device.
-    rx::prepost_all();
+    rx::prepost_all(device_key);
 
-    // Publish guest CID + TX hook so net::vsock can drive the protocol. If
-    // the protocol endpoint is already owned, undo only this probe's transport
-    // state; do not clear the existing net::vsock hook.
-    if !net::vsock::driver_install(guest_cid, tx_packet) {
-        let mut ctx = CTX.lock().take().unwrap();
-        // Virtio reset: write 0 to device_status (§3.1.1), using byte access.
-        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
-        free_rx_bufs(&mut ctx.rx_bufs);
-        if ctx.tx_buf_pa != 0 {
-            // SAFETY: tx_buf_pa was allocated in this install attempt and is
-            // not reachable after CTX.take().
-            unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
-        }
+    // Publish guest CID + TX hook so net::vsock can drive the protocol.
+    if !net::vsock::driver_publish_reserved(device_key.raw(), guest_cid, tx_packet) {
+        let _ = uninstall(device_key);
         return false;
     }
+    probe.disarm_endpoint();
     if !SOFTIRQ_INSTALLED.swap(true, Ordering::AcqRel) {
         softirq::set_handler(softirq::Slot::VsockRx, rx_drain_softirq);
     }
@@ -183,42 +244,93 @@ fn free_rx_bufs(rx_bufs: &mut [u64; RX_RING_BUFS]) {
 /// Remove the installed vsock transport. Clears net hooks/connections, resets
 /// the virtio device, and frees RX/TX payload frames.
 /// # C: O(N conns + RX_BUFS)
-pub fn uninstall(device_key: u32) -> bool {
-    let mut ctx = {
-        let mut g = CTX.lock();
-        match g.as_ref() {
-            Some(ctx) if ctx.device_key == device_key => {}
-            _ => return false,
-        }
-        g.take().unwrap()
+pub fn uninstall(device_key: virtio::VirtioChildDeviceKey) -> bool {
+    let endpoint_removed = net::vsock::driver_uninstall(device_key.raw());
+    let Some((mut ctx, empty_after)) = remove_ctx(device_key) else {
+        return endpoint_removed;
     };
-    if SOFTIRQ_INSTALLED.swap(false, Ordering::AcqRel) {
-        let _ = softirq::clear_handler(softirq::Slot::VsockRx);
+    if empty_after {
+        clear_rx_softirq_handler();
     }
-    net::vsock::driver_uninstall();
     // Virtio reset: write 0 to device_status (§3.1.1), using byte access.
-    unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    if ctx.cfg_va != 0 {
+        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    }
     free_rx_bufs(&mut ctx.rx_bufs);
     if ctx.tx_buf_pa != 0 {
         // SAFETY: tx_buf_pa was returned by alloc_one_frame in install and is
-        // no longer reachable after CTX.take().
+        // no longer reachable after CTX removal.
         unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
     }
     true
 }
 
+/// Quiesce the installed vsock transport for terminal system shutdown.
+///
+/// This is not hot-remove: it keeps the upper `net::vsock` endpoint owned by
+/// this transport so a late probe cannot take it during shutdown, but clears
+/// the TX hook before queue state is freed so no protocol path can touch the
+/// device after quiesce begins.
+/// # C: O(RX_BUFS)
+pub fn shutdown(device_key: virtio::VirtioChildDeviceKey) -> bool {
+    let endpoint_quiesced = net::vsock::driver_quiesce(device_key.raw());
+    let Some((mut ctx, empty_after)) = remove_ctx(device_key) else {
+        return endpoint_quiesced;
+    };
+    if empty_after {
+        clear_rx_softirq_handler();
+    }
+    // Virtio reset: write 0 to device_status (§3.1.1), using byte access.
+    if ctx.cfg_va != 0 {
+        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    }
+    free_rx_bufs(&mut ctx.rx_bufs);
+    if ctx.tx_buf_pa != 0 {
+        // SAFETY: tx_buf_pa was returned by alloc_one_frame in install and is
+        // no longer reachable after CTX removal.
+        unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
+    }
+    true
+}
+
+fn remove_ctx(device_key: virtio::VirtioChildDeviceKey) -> Option<(Ctx, bool)> {
+    let mut g = CTX.lock();
+    let pos = g.iter().position(|ctx| ctx.device_key == device_key)?;
+    let ctx = g.remove(pos);
+    let empty_after = g.is_empty();
+    Some((ctx, empty_after))
+}
+
+fn clear_rx_softirq_handler() {
+    if SOFTIRQ_INSTALLED.swap(false, Ordering::AcqRel) {
+        let _ = softirq::clear_handler(softirq::Slot::VsockRx);
+    }
+}
+
+/// Guest CID accessor (0 if no device). # C: O(1)
+pub fn guest_cid_for(device_key: virtio::VirtioChildDeviceKey) -> u64 {
+    CTX.lock()
+        .iter()
+        .find(|ctx| ctx.device_key == device_key)
+        .map(|ctx| ctx.guest_cid)
+        .unwrap_or(0)
+}
+
 /// Guest CID accessor (0 if no device). # C: O(1)
 pub fn guest_cid() -> u64 {
-    CTX.lock().as_ref().map(|c| c.guest_cid).unwrap_or(0)
+    guest_cid_for(virtio::VirtioChildDeviceKey::from_raw(net::vsock::driver_owner()))
 }
 
 /// TX hook installed into `net::vsock`. `frame` is a fully-encoded
 /// virtio_vsock_hdr + payload. Builds one TX descriptor on q1, kicks,
 /// polls the used ring for completion. Returns true on completion.
 /// # C: O(TX_POLL_BUDGET + frame bytes)
-pub fn tx_packet(frame: &[u8]) -> bool {
+pub fn tx_packet(owner: u32, frame: &[u8]) -> bool {
     let mut g = CTX.lock();
-    let ctx = match g.as_mut() { Some(c) => c, None => return false };
+    let ctx = match g.iter_mut().find(|ctx| ctx.device_key.raw() == owner) {
+        Some(c) => c,
+        None => return false,
+    };
     let want = frame.len().min(0x1000);
     if want == 0 { return false; }
     let h = ctx.hhdm;
@@ -292,3 +404,117 @@ pub fn rx_drain_softirq() {
 /// should use `raise_rx()` so the ring walk happens in softirq context.
 /// Returns the number of packets delivered. # C: O(packets drained)
 pub fn rx_drain() -> usize { rx::drain() }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
+
+    fn queue(index: u16) -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource {
+            index,
+            size: 8,
+            desc_pa: 0,
+            driver_pa: 0,
+            device_pa: 0,
+            notify_va: 0,
+            notify_off: 0,
+        }
+    }
+
+    fn key(raw: u32) -> virtio::VirtioChildDeviceKey {
+        virtio::VirtioChildDeviceKey::from_raw(raw)
+    }
+
+    fn ctx(device_key: virtio::VirtioChildDeviceKey) -> Ctx {
+        Ctx {
+            device_key,
+            cfg_va: 0,
+            hhdm: 0,
+            guest_cid: device_key.raw() as u64,
+            rxq: queue(0),
+            txq: queue(1),
+            rx_avail_idx: 0,
+            rx_used_seen: 0,
+            rx_bufs: [0; RX_RING_BUFS],
+            tx_avail_idx: 0,
+            tx_used_seen: 0,
+            tx_buf_pa: 0,
+        }
+    }
+
+    fn clear_ctxs() {
+        CTX.lock().clear();
+    }
+
+    #[test]
+    fn removing_one_vsock_context_keeps_shared_softirq_owned() {
+        let _guard = TEST_LOCK.lock();
+        clear_ctxs();
+        {
+            let mut ctxs = CTX.lock();
+            ctxs.push(ctx(key(0x0010_0000)));
+            ctxs.push(ctx(key(0x0020_0000)));
+        }
+
+        let Some((removed, empty_after)) = remove_ctx(key(0x0010_0000)) else {
+            panic!("expected first context removal");
+        };
+        assert_eq!(removed.device_key, key(0x0010_0000));
+        assert!(!empty_after);
+        assert!(present_for(key(0x0020_0000)));
+        clear_ctxs();
+    }
+
+    #[test]
+    fn removing_last_vsock_context_releases_shared_softirq_owner() {
+        let _guard = TEST_LOCK.lock();
+        clear_ctxs();
+        CTX.lock().push(ctx(key(0x0010_0000)));
+
+        let Some((removed, empty_after)) = remove_ctx(key(0x0010_0000)) else {
+            panic!("expected last context removal");
+        };
+        assert_eq!(removed.device_key, key(0x0010_0000));
+        assert!(empty_after);
+        assert!(!present());
+    }
+
+    #[test]
+    fn missing_vsock_context_removal_leaves_live_contexts() {
+        let _guard = TEST_LOCK.lock();
+        clear_ctxs();
+        CTX.lock().push(ctx(key(0x0020_0000)));
+
+        assert!(remove_ctx(key(0x0010_0000)).is_none());
+        assert!(present_for(key(0x0020_0000)));
+        clear_ctxs();
+    }
+
+    #[test]
+    fn uninstall_clears_endpoint_without_primary_context() {
+        fn tx_stub(_owner: u32, _packet: &[u8]) -> bool { true }
+
+        let _guard = TEST_LOCK.lock();
+        clear_ctxs();
+        assert!(net::vsock::driver_install(0x0010_0000, 3, tx_stub));
+
+        assert!(uninstall(key(0x0010_0000)));
+        assert!(!net::vsock::driver_uninstall(0x0010_0000));
+        assert!(!uninstall(key(0x0010_0000)));
+    }
+
+    #[test]
+    fn shutdown_quiesces_endpoint_without_primary_context() {
+        fn tx_stub(_owner: u32, _packet: &[u8]) -> bool { true }
+
+        let _guard = TEST_LOCK.lock();
+        clear_ctxs();
+        assert!(net::vsock::driver_install(0x0010_0000, 3, tx_stub));
+
+        assert!(shutdown(key(0x0010_0000)));
+        assert!(shutdown(key(0x0010_0000)));
+        let _ = net::vsock::driver_uninstall(0x0010_0000);
+    }
+}

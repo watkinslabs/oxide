@@ -3,7 +3,74 @@
 
 
 
-use core::sync::atomic::Ordering;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+struct ProbeCommandBuffer {
+    pa: u64,
+    va: *mut u8,
+    owned: bool,
+}
+
+impl ProbeCommandBuffer {
+    fn alloc(hhdm: u64) -> Option<Self> {
+        let pa = pmm::setup::alloc_one_frame()?;
+        Some(Self {
+            pa,
+            va: hhdm.wrapping_add(pa) as *mut u8,
+            owned: true,
+        })
+    }
+
+    fn disarm(&mut self) {
+        self.owned = false;
+    }
+}
+
+impl Drop for ProbeCommandBuffer {
+    fn drop(&mut self) {
+        if self.owned {
+            // SAFETY: the buffer is still owned by this probe guard and has not
+            // been transferred to the installed scanout context.
+            unsafe { pmm::setup::free_one_frame(self.pa); }
+        }
+    }
+}
+
+struct ProbeFramebufferRun {
+    base_pa: u64,
+    pages_alloc: usize,
+    owned: bool,
+}
+
+impl ProbeFramebufferRun {
+    fn alloc(order: u8) -> Option<Self> {
+        let base_pa = pmm::setup::alloc_contig(pmm::Order(order))?;
+        Some(Self {
+            base_pa,
+            pages_alloc: 1usize << order,
+            owned: true,
+        })
+    }
+
+    fn disarm(&mut self) {
+        self.owned = false;
+    }
+}
+
+impl Drop for ProbeFramebufferRun {
+    fn drop(&mut self) {
+        if self.owned {
+            // SAFETY: this contiguous run is still probe-owned and has not been
+            // published into the persistent scanout context.
+            unsafe {
+                for i in 0..self.pages_alloc {
+                    pmm::setup::free_one_frame(self.base_pa + (i as u64) * 4096);
+                }
+            }
+        }
+    }
+}
 
 /// Submit `CMD_GET_DISPLAY_INFO` on q0; spin-poll used.idx for
 /// completion; parse the response and re-install the device with
@@ -11,6 +78,7 @@ use core::sync::atomic::Ordering;
 /// `VirtioGpuDrm` impl).
 /// # C: O(spin-poll bound = 1e6)
 pub fn get_display_info(
+    device_key: virtio::VirtioChildDeviceKey,
     bdf_bus: u8, bdf_dev: u8, bdf_fn: u8,
     drv_features: u64,
     resources: virtio::VirtioResources,
@@ -21,25 +89,25 @@ pub fn get_display_info(
     }
     let cfg_va = resources.cfg_va;
     let hhdm = resources.hhdm;
-    let buf_pa = match pmm::setup::alloc_one_frame() {
-        Some(pa) => pa, None => return false,
+    let mut cmd_buf = match ProbeCommandBuffer::alloc(hhdm) {
+        Some(buf) => buf,
+        None => return false,
     };
-    let buf_va = hhdm.wrapping_add(buf_pa) as *mut u8;
     // SAFETY: HHDM-mapped frame; aligned writes within 4 KiB; sole writer at boot.
     unsafe {
-        for i in 0..0x1000usize { core::ptr::write_volatile(buf_va.add(i), 0); }
-        let req = core::slice::from_raw_parts_mut(buf_va, 24);
+        for i in 0..0x1000usize { core::ptr::write_volatile(cmd_buf.va.add(i), 0); }
+        let req = core::slice::from_raw_parts_mut(cmd_buf.va, 24);
         crate::encode_get_display_info(req);
     }
     let desc0 = (hhdm.wrapping_add(ctrlq.desc_pa)) as *mut u64;
     // SAFETY: HHDM-mapped virtio q0 descriptor table; aligned u64 stores into driver-owned frame.
     unsafe {
-        core::ptr::write_volatile(desc0.add(0), buf_pa);
+        core::ptr::write_volatile(desc0.add(0), cmd_buf.pa);
         let d0 = 24u64
                | ((virtio::VRING_DESC_F_NEXT as u64) << 32)
                | (1u64 << 48);
         core::ptr::write_volatile(desc0.add(1), d0);
-        core::ptr::write_volatile(desc0.add(2), buf_pa + 0x200);
+        core::ptr::write_volatile(desc0.add(2), cmd_buf.pa + 0x200);
         let d1 = 408u64 | ((virtio::VRING_DESC_F_WRITE as u64) << 32);
         core::ptr::write_volatile(desc0.add(3), d1);
     }
@@ -68,15 +136,11 @@ pub fn get_display_info(
     core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
     // SAFETY: same HHDM-mapped frame; bounded 408-byte slice for parser.
     let resp_slice = unsafe {
-        core::slice::from_raw_parts(buf_va.add(0x200) as *const u8, 408)
+        core::slice::from_raw_parts(cmd_buf.va.add(0x200) as *const u8, 408)
     };
     let info = match crate::parse_display_info(resp_slice) {
         Ok(i)  => i,
-        Err(_) => {
-            // SAFETY: buf_pa was allocated above and no persistent state owns it.
-            unsafe { pmm::setup::free_one_frame(buf_pa); }
-            return false;
-        }
+        Err(_) => return false,
     };
     use core::sync::atomic::{AtomicU32, AtomicU64};
     let bdf_word = (bdf_bus as u32) << 16
@@ -98,24 +162,19 @@ pub fn get_display_info(
         // SAFETY: boot path; queue + notify VAs valid; PMM up.
         let scanout_ok = unsafe {
             setup_scanout(
+                device_key,
                 bdf_word,
                 info.modes[0].r.width, info.modes[0].r.height,
-                cfg_va, ctrlq, buf_va, buf_pa, hhdm,
+                cfg_va, ctrlq, cmd_buf.va, cmd_buf.pa, hhdm,
             )
         };
         if !scanout_ok {
-            // No scanout context retained the command buffer.
-            // SAFETY: buf_pa is not retained when setup_scanout fails.
-            unsafe { pmm::setup::free_one_frame(buf_pa); }
             return false;
         }
-    } else {
-        // No scanout context retained the command buffer.
-        // SAFETY: buf_pa is not retained when no display is enabled.
-        unsafe { pmm::setup::free_one_frame(buf_pa); }
+        cmd_buf.disarm();
     }
     match crate::install_with_drm(crate::VirtioGpuDev {
-        bdf: bdf_word, card_id: 0, cfg_va,
+        device_key, bdf: bdf_word, card_id: 0, cfg_va,
         ctrlq,
         features_negotiated: drv_features,
         display: info,
@@ -125,12 +184,12 @@ pub fn get_display_info(
         Ok(_) => {}
         Err(_) => {
             if info.count_enabled > 0 {
-                let _ = uninstall_scanout_after_failed_probe(bdf_word);
+                let _ = uninstall_scanout_after_failed_probe(device_key);
             }
             return false;
         }
     }
-    publish_console_scanout();
+    publish_console_scanout(bdf_word);
     true
 }
 
@@ -141,6 +200,7 @@ pub fn get_display_info(
 /// # SAFETY: caller is the boot path; queue + notify VAs valid; PMM up.
 /// # C: O(width * height) for the fill + O(1) per command.
 unsafe fn setup_scanout(
+    device_key: virtio::VirtioChildDeviceKey,
     bdf: u32,
     w: u32, h: u32,
     cfg_va: u64,
@@ -157,19 +217,12 @@ unsafe fn setup_scanout(
     // → order 9 (512 pages = 2 MiB).
     let mut order: u32 = 0;
     while (1usize << order) < pages_req { order += 1; }
-    let base_pa = match pmm::setup::alloc_contig(pmm::Order(order as u8)) {
-        Some(pa) => pa, None => return false,
+    let mut fb_run = match ProbeFramebufferRun::alloc(order as u8) {
+        Some(run) => run,
+        None => return false,
     };
-    let pages_alloc = 1usize << order;
-    let free_fb = || {
-        // SAFETY: base_pa is the contiguous run just allocated above; no
-        // persistent scanout context owns it before install_scanout_ctx.
-        unsafe {
-            for i in 0..pages_alloc {
-                pmm::setup::free_one_frame(base_pa + (i as u64) * 4096);
-            }
-        }
-    };
+    let base_pa = fb_run.base_pa;
+    let pages_alloc = fb_run.pages_alloc;
     // Render boot text. Paint the entire FB with the bg color
     // first (not all-zero) so glyphs aren't drowning on solid
     // black; Console's EraseDisplay would zero the buffer.
@@ -225,7 +278,6 @@ unsafe fn setup_scanout(
             crate::VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, w, h),
         ctrlq, hhdm,
     ) } {
-        free_fb();
         return false;
     }
     log_resp(b"create");
@@ -246,7 +298,6 @@ unsafe fn setup_scanout(
             buf, res_id, base_pa, fb_bytes as u32),
         ctrlq, hhdm,
     ) } {
-        free_fb();
         return false;
     }
     log_resp(b"attach");
@@ -256,7 +307,6 @@ unsafe fn setup_scanout(
         |buf| crate::encode_set_scanout(buf, 0, res_id, 0, 0, w, h),
         ctrlq, hhdm,
     ) } {
-        free_fb();
         return false;
     }
     log_resp(b"setscanout");
@@ -266,7 +316,6 @@ unsafe fn setup_scanout(
         |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
         ctrlq, hhdm,
     ) } {
-        free_fb();
         return false;
     }
     log_resp(b"transfer");
@@ -276,7 +325,6 @@ unsafe fn setup_scanout(
         |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
         ctrlq, hhdm,
     ) } {
-        free_fb();
         return false;
     }
     log_resp(b"flush");
@@ -284,14 +332,15 @@ unsafe fn setup_scanout(
     // repaint after boot. base_pa is the contig PMM run; HHDM-map
     // it to a kernel VA for byte-copy access.
     if !install_scanout_ctx(
+        device_key,
         bdf,
         w, h,
         cfg_va, hhdm.wrapping_add(base_pa), fb_bytes, pages_alloc, res_id,
         ctrlq, cmd_buf_va as u64, cmd_buf_pa, hhdm,
     ) {
-        free_fb();
         return false;
     }
+    fb_run.disarm();
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  virtio-gpu scanout: ");
@@ -372,15 +421,18 @@ unsafe fn submit_raw(
 
 
 // ---- Persistent scanout state for ongoing fbcon flush (B07) ------
-// After setup_scanout succeeds, save the context so the kernel-side
-// fbcon driver can push klog text to the FB via transfer + flush
-// after boot. Single scanout; single resource (res_id=1); single CPU
-// caller at boot installs it, repeated callers from klog stream
-// share via the Spinlock.
+// After setup_scanout succeeds, save the context so the kernel-side fbcon
+// driver can push klog text to the FB via transfer + flush after boot.
+// Lifecycle contexts are keyed by virtio child device identity. DRM KMS hooks
+// are still registered per card/BDF because that is the DRM-facing private key,
+// while the current fbcon/fbdev/VT helper layer still exposes one console
+// scanout and therefore operates on the explicitly elected console owner.
+// Remove and shutdown target the exact child-owned context.
 
 use sync::{TaskList as DriverLockClass, Spinlock};
 
 struct ScanoutCtx {
+    device_key: virtio::VirtioChildDeviceKey,
     bdf: u32,
     cfg_va: u64,
     w: u32,
@@ -393,9 +445,20 @@ struct ScanoutCtx {
     cmd_buf_va: u64,
     cmd_buf_pa: u64,
     hhdm: u64,
+    fbdev_idx: Option<u32>,
+    quiesced: bool,
 }
 
-static CTX: Spinlock<Option<ScanoutCtx>, DriverLockClass> = Spinlock::new(None);
+static CTX: Spinlock<Vec<ScanoutCtx>, DriverLockClass> = Spinlock::new(Vec::new());
+const NO_CONSOLE_OWNER: u32 = u32::MAX;
+static CONSOLE_OWNER_BDF: AtomicU32 = AtomicU32::new(NO_CONSOLE_OWNER);
+
+fn console_owner_bdf() -> Option<u32> {
+    match CONSOLE_OWNER_BDF.load(Ordering::Acquire) {
+        NO_CONSOLE_OWNER => None,
+        bdf => Some(bdf),
+    }
+}
 
 /// Copy `pixels` into the live framebuffer, then issue
 /// transfer_to_host_2d + resource_flush so the host repaints the
@@ -404,7 +467,11 @@ static CTX: Spinlock<Option<ScanoutCtx>, DriverLockClass> = Spinlock::new(None);
 /// # C: O(fb_bytes) copy + O(1) per submit.
 pub fn fbcon_flush_pixels(pixels: &[u8]) {
     let g = CTX.lock();
-    let ctx = match g.as_ref() { Some(c) => c, None => return };
+    let owner = match console_owner_bdf() { Some(bdf) => bdf, None => return };
+    let ctx = match g.iter().find(|ctx| ctx.bdf == owner) { Some(c) => c, None => return };
+    if ctx.quiesced {
+        return;
+    }
     let n = (ctx.fb_bytes as usize).min(pixels.len());
     // SAFETY: ctx.fb_va is HHDM-mapped for fb_bytes; bounded copy of n ≤ fb_bytes; CPL=0 writes through HHDM mapping.
     unsafe {
@@ -433,9 +500,12 @@ pub fn fbcon_flush_pixels(pixels: &[u8]) {
 /// power path on a virtual GPU, so this is image-level blanking — the real,
 /// observable effect — NOT a panel power-down. No-op pre-setup.
 /// # C: O(fb_bytes) clear + O(1) submits.
-pub fn blank_scanout() {
+pub fn blank_scanout_for_bdf(bdf: u32) {
     let g = CTX.lock();
-    let ctx = match g.as_ref() { Some(c) => c, None => return };
+    let ctx = match g.iter().find(|ctx| ctx.bdf == bdf) { Some(c) => c, None => return };
+    if ctx.quiesced {
+        return;
+    }
     // SAFETY: ctx.fb_va is HHDM-mapped for fb_bytes; bounded zero of the whole backing; CPL=0 writes through the HHDM mapping.
     hal::zerotrap::trap((ctx.fb_va as *mut u8) as *const u8, (ctx.fb_bytes as usize) as usize);
     unsafe { core::ptr::write_bytes(ctx.fb_va as *mut u8, 0, ctx.fb_bytes as usize); }
@@ -455,53 +525,107 @@ pub fn blank_scanout() {
 /// Unblank: repaint the live console into the scanout and flush. Delegates to
 /// `fbcon::force_repaint` (re-blits every cell of the fg VT, raises the flush
 /// softirq). The FBIOBLANK(UNBLANK) restore path. # C: O(cols*rows) repaint.
-pub fn unblank_scanout() { fbcon::kernel::force_repaint(); }
+pub fn unblank_scanout_for_bdf(bdf: u32) {
+    if console_owner_bdf() == Some(bdf) {
+        fbcon::kernel::force_repaint();
+    }
+}
 
 /// Install the scanout context for later flushes. Called once from
 /// `setup_scanout` after the resource is created and attached.
 fn install_scanout_ctx(
+    device_key: virtio::VirtioChildDeviceKey,
     bdf: u32,
     w: u32, h: u32, cfg_va: u64, fb_va: u64, fb_bytes: u64, fb_pages_alloc: usize, res_id: u32,
     ctrlq: virtio::VirtQueueResource, cmd_buf_va: u64, cmd_buf_pa: u64, hhdm: u64,
 ) -> bool {
-    let mut ctx = CTX.lock();
-    if ctx.is_some() {
+    let mut ctxs = CTX.lock();
+    if ctxs.iter().any(|ctx| ctx.device_key == device_key) {
         return false;
     }
-    *ctx = Some(ScanoutCtx {
-        bdf, cfg_va, w, h, fb_va, fb_bytes, fb_pages_alloc, res_id,
-        ctrlq, cmd_buf_va, cmd_buf_pa, hhdm,
+    ctxs.push(ScanoutCtx {
+        device_key, bdf, cfg_va, w, h, fb_va, fb_bytes, fb_pages_alloc, res_id,
+        ctrlq, cmd_buf_va, cmd_buf_pa, hhdm, fbdev_idx: None, quiesced: false,
     });
     true
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn set_scanout_fbdev_idx(bdf: u32, fbdev_idx: Option<u32>) -> bool {
+    let mut ctxs = CTX.lock();
+    let Some(ctx) = ctxs.iter_mut().find(|ctx| ctx.bdf == bdf) else {
+        return false;
+    };
+    ctx.fbdev_idx = fbdev_idx;
+    true
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn take_scanout_fbdev_idx(bdf: u32) -> Option<u32> {
+    let mut ctxs = CTX.lock();
+    let ctx = ctxs.iter_mut().find(|ctx| ctx.bdf == bdf)?;
+    ctx.fbdev_idx.take()
 }
 
 /// Tear down the installed scanout context, reset the virtio device, and free
 /// the command buffer plus framebuffer run.
 /// # C: O(fb_pages_alloc)
-pub fn uninstall_scanout(bdf: u32) -> bool {
+pub fn uninstall_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let ctx = {
         let mut guard = CTX.lock();
-        match guard.as_ref() {
-            Some(ctx) if ctx.bdf == bdf => guard.take(),
-            _ => None,
+        match guard.iter().position(|ctx| ctx.device_key == device_key) {
+            Some(idx) => Some(guard.remove(idx)),
+            None => None,
         }
     };
     let ctx = match ctx {
         Some(ctx) => ctx,
         None => return false,
     };
-    // SAFETY: cfg_va is the mapped common-cfg window captured at probe;
-    // device_status is a u8 at +0x14. Reset before releasing queue storage.
-    unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    if ctx.cfg_va != 0 {
+        // SAFETY: cfg_va is the mapped common-cfg window captured at probe;
+        // device_status is a u8 at +0x14. Reset before releasing queue storage.
+        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    }
     let fb_base_pa = ctx.fb_va - ctx.hhdm;
     // SAFETY: these frames were allocated by this driver and are no longer
     // reachable after CTX removal and device reset. The ctrlq vring frames are
     // transport-owned after successful probe and are released on unpublish.
     unsafe {
-        pmm::setup::free_one_frame(ctx.cmd_buf_pa);
-        for i in 0..ctx.fb_pages_alloc {
-            pmm::setup::free_one_frame(fb_base_pa + (i as u64) * 4096);
+        if ctx.cmd_buf_pa != 0 {
+            pmm::setup::free_one_frame(ctx.cmd_buf_pa);
         }
+        for i in 0..ctx.fb_pages_alloc {
+            let frame = fb_base_pa + (i as u64) * 4096;
+            if frame != 0 {
+                pmm::setup::free_one_frame(frame);
+            }
+        }
+    }
+    true
+}
+
+/// Stop scanout queue activity for terminal system shutdown.
+///
+/// Unlike `uninstall_scanout`, this intentionally does not unregister fbdev,
+/// clear DRM publication, remove scanout ownership metadata, or free the
+/// framebuffer backing. Those objects can still be visible to late shutdown
+/// callers, and a later remove path still needs the child-owned publication
+/// and allocation record.
+/// # C: O(1)
+pub fn shutdown_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
+    let cfg_va = {
+        let mut guard = CTX.lock();
+        let Some(ctx) = guard.iter_mut().find(|ctx| ctx.device_key == device_key) else {
+            return false;
+        };
+        ctx.quiesced = true;
+        ctx.cfg_va
+    };
+    if cfg_va != 0 {
+        // SAFETY: cfg_va is the mapped common-cfg window captured at probe;
+        // device_status is a u8 at +0x14.
+        unsafe { core::ptr::write_volatile((cfg_va + 0x14) as *mut u8, 0u8); }
     }
     true
 }
@@ -509,12 +633,12 @@ pub fn uninstall_scanout(bdf: u32) -> bool {
 /// Tear down scanout-only state after a probe failure. The caller still owns
 /// the transport unwind and will reset the virtio device and release q0.
 /// # C: O(fb_pages_alloc)
-pub fn uninstall_scanout_after_failed_probe(bdf: u32) -> bool {
+pub fn uninstall_scanout_after_failed_probe(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let ctx = {
         let mut guard = CTX.lock();
-        match guard.as_ref() {
-            Some(ctx) if ctx.bdf == bdf => guard.take(),
-            _ => None,
+        match guard.iter().position(|ctx| ctx.device_key == device_key) {
+            Some(idx) => Some(guard.remove(idx)),
+            None => None,
         }
     };
     let ctx = match ctx {
@@ -525,9 +649,14 @@ pub fn uninstall_scanout_after_failed_probe(bdf: u32) -> bool {
     // SAFETY: scanout was not published to the runtime driver. The transport
     // q0 frames remain owned by the caller's failed-probe cleanup path.
     unsafe {
-        pmm::setup::free_one_frame(ctx.cmd_buf_pa);
+        if ctx.cmd_buf_pa != 0 {
+            pmm::setup::free_one_frame(ctx.cmd_buf_pa);
+        }
         for i in 0..ctx.fb_pages_alloc {
-            pmm::setup::free_one_frame(fb_base_pa + (i as u64) * 4096);
+            let frame = fb_base_pa + (i as u64) * 4096;
+            if frame != 0 {
+                pmm::setup::free_one_frame(frame);
+            }
         }
     }
     true
@@ -535,13 +664,26 @@ pub fn uninstall_scanout_after_failed_probe(bdf: u32) -> bool {
 
 /// True iff the scanout context is installed (post-`setup_scanout`).
 /// # C: O(1)
-pub fn scanout_ready() -> bool { CTX.lock().is_some() }
+pub fn scanout_ready() -> bool { !CTX.lock().is_empty() }
+
+/// True iff the BDF-owned scanout context is installed.
+/// # C: O(N)
+pub fn scanout_ready_for_bdf(bdf: u32) -> bool {
+    CTX.lock().iter().any(|ctx| ctx.bdf == bdf)
+}
 
 /// Read back the scanout dimensions. Used by the kernel's fbcon
 /// klog wiring to size its Console.
 /// # C: O(1)
 pub fn dimensions() -> Option<(u32, u32)> {
-    CTX.lock().as_ref().map(|c| (c.w, c.h))
+    let owner = console_owner_bdf()?;
+    dimensions_for_bdf(owner)
+}
+
+/// Read back the scanout dimensions for a BDF-owned context.
+/// # C: O(N)
+pub fn dimensions_for_bdf(bdf: u32) -> Option<(u32, u32)> {
+    CTX.lock().iter().find(|c| c.bdf == bdf).map(|c| (c.w, c.h))
 }
 
 /// The scanout framebuffer as `(base_pa, fb_va, bytes, pitch, w, h)` for the
@@ -549,8 +691,15 @@ pub fn dimensions() -> Option<(u32, u32)> {
 /// userspace mmaps; `fb_va` is its HHDM kernel VA (for read/write); `pitch` =
 /// `w*4` (BGRA32). `None` before scanout setup. # C: O(1)
 pub fn framebuffer() -> Option<(u64, u64, u64, u32, u32, u32)> {
+    let owner = console_owner_bdf()?;
+    framebuffer_for_bdf(owner)
+}
+
+/// The scanout framebuffer for a BDF-owned context.
+/// # C: O(N)
+pub fn framebuffer_for_bdf(bdf: u32) -> Option<(u64, u64, u64, u32, u32, u32)> {
     let g = CTX.lock();
-    let c = g.as_ref()?;
+    let c = g.iter().find(|ctx| ctx.bdf == bdf)?;
     Some((c.fb_va - c.hhdm, c.fb_va, c.fb_bytes, c.w * 4, c.w, c.h))
 }
 
@@ -560,16 +709,39 @@ pub fn framebuffer() -> Option<(u64, u64, u64, u32, u32, u32)> {
 /// its console/fb helper registration.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
-pub fn publish_console_scanout() {
-    let Some((w, h)) = dimensions() else { return };
-    fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
-    if let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer() {
-        fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
-        fbdev::set_flush_hook(flush_scanout);
-        fbdev::set_blank_hooks(blank_scanout, unblank_scanout);
-        fbdev::set_yield_hook(fbdev_vsync_yield);
-        fbdev::set_now_hook(monotonic_now_ns);
+pub fn publish_console_scanout(bdf: u32) {
+    let Some((w, h)) = dimensions_for_bdf(bdf) else { return };
+    if CONSOLE_OWNER_BDF
+        .compare_exchange(NO_CONSOLE_OWNER, bdf, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
     }
+
+    let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer_for_bdf(bdf) else {
+        CONSOLE_OWNER_BDF.store(NO_CONSOLE_OWNER, Ordering::Release);
+        return;
+    };
+    let idx = fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
+    if idx == fbdev::INVALID_FB_INDEX
+        || !fbdev::set_ops(idx, fbdev::FbOps {
+            driver_key: bdf,
+            flush: flush_scanout_for_bdf,
+            blank: blank_scanout_for_bdf,
+            unblank: unblank_scanout_for_bdf,
+        })
+        || !set_scanout_fbdev_idx(bdf, Some(idx))
+    {
+        if idx != fbdev::INVALID_FB_INDEX {
+            let _ = fbdev::unregister(idx);
+        }
+        CONSOLE_OWNER_BDF.store(NO_CONSOLE_OWNER, Ordering::Release);
+        return;
+    }
+
+    fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
+    fbdev::set_yield_hook(fbdev_vsync_yield);
+    fbdev::set_now_hook(monotonic_now_ns);
     klog::set_aux_sink(fbcon::kernel::vt_console_sink);
     fbcon::kernel::set_reply_sink(console::vt_reply_sink);
     tty::live::set_app_cursor_query(fbcon::kernel::fg_app_cursor);
@@ -581,21 +753,20 @@ pub fn publish_console_scanout() {
 /// # C: O(N + depth)
 #[cfg(target_os = "oxide-kernel")]
 pub fn unpublish_console_scanout(bdf: u32) {
-    let fb_base = {
-        let ctx = CTX.lock();
-        match ctx.as_ref() {
-            Some(ctx) if ctx.bdf == bdf => ctx.fb_va - ctx.hhdm,
-            _ => return,
-        }
-    };
+    if CONSOLE_OWNER_BDF
+        .compare_exchange(bdf, NO_CONSOLE_OWNER, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let fbdev_idx = take_scanout_fbdev_idx(bdf);
     klog::clear_aux_sink();
     tty::live::clear_vt_mode_queries();
     fbcon::kernel::kernel_unregister();
-    fbdev::clear_blank_hooks();
-    fbdev::clear_flush_hook();
     fbdev::clear_wait_hooks();
-    let _ = fbdev::unregister_by_base(fb_base);
-    drm::node::clear_scanout_ops();
+    if let Some(idx) = fbdev_idx {
+        let _ = fbdev::unregister(idx);
+    }
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -621,9 +792,9 @@ fn monotonic_now_ns() -> u64 {
 
 // ============================================================
 // D5b-2 runtime KMS scanout API (the drm crate calls these via the
-// hook registered in `register_drm_hooks`). All honest-fail (return
-// false/None) if the scanout CTX is None — i.e. QEMU was launched
-// without virtio-gpu, so SETCRTC must -EINVAL upstream.
+// hook registered in `register_drm_hooks`). The DRM-facing hooks are keyed by
+// card/BDF and honest-fail (return false/None) if that card's scanout context
+// does not exist, so SETCRTC must -EINVAL upstream.
 //
 // CONSOLE SAFETY: the boot fbcon framebuffer is res_id 1 and stays
 // allocated+attached for the whole boot. SETCRTC creates a NEW res_id
@@ -641,16 +812,20 @@ pub const BOOT_SCANOUT_RES_ID: u32 = 1;
 static NEXT_RUNTIME_RES_ID: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(2);
 
-/// The boot fbcon scanout resource id (= 1). # C: O(1)
-pub fn boot_scanout_res_id() -> u32 { BOOT_SCANOUT_RES_ID }
+/// The BDF argument is accepted for the per-card DRM hook shape; the boot
+/// console resource id is fixed within each virtio-gpu instance.
+pub fn boot_scanout_res_id_for_bdf(_bdf: u32) -> u32 { BOOT_SCANOUT_RES_ID }
 
 /// Run an encode closure as one CTRLQ command + poll used. Mirrors the
-/// boot `submit_one` but takes the queue context from the installed
-/// CTX. `false` if no CTX or the round-trip times out / NAKs.
+/// boot `submit_one` but takes the queue context from the BDF-owned scanout.
+/// `false` if no scanout or the round-trip times out / NAKs.
 /// # C: O(1) submit + host-side O(work).
-fn submit_ctrl<F: Fn(&mut [u8]) -> usize>(encode: F) -> bool {
+fn submit_ctrl_for_bdf<F: Fn(&mut [u8]) -> usize>(bdf: u32, encode: F) -> bool {
     let g = CTX.lock();
-    let ctx = match g.as_ref() { Some(c) => c, None => return false };
+    let ctx = match g.iter().find(|ctx| ctx.bdf == bdf) { Some(c) => c, None => return false };
+    if ctx.quiesced {
+        return false;
+    }
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     // SAFETY: cmd_buf is the HHDM-mapped 4 KiB scratch frame setup_scanout installed; q0 descriptor/avail/used/notify VAs are the exact ones the boot path validated; we hold the CTX lock so we are the sole writer for this submit; the encode closure writes < 0x100 bytes into the per-call request slice.
     let ok = unsafe {
@@ -668,19 +843,20 @@ fn submit_ctrl<F: Fn(&mut [u8]) -> usize>(encode: F) -> bool {
 /// contiguous physical buffer (`pa`, `w*h*4` bytes). Issues
 /// RESOURCE_CREATE_2D + RESOURCE_ATTACH_BACKING (one mem-entry over the
 /// whole contiguous run). Returns the new res_id, or `None` if no
-/// scanout CTX or a command failed. The buffer's PA must be a single
-/// contiguous run (DRM dumb buffers are alloc_contig). # C: O(1) submits.
-pub fn create_scanout_from_pa(pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32> {
-    if !scanout_ready() { return None; }
+/// requested BDF's scanout context or a command failed. The buffer's PA must
+/// be a single contiguous run (DRM dumb buffers are alloc_contig).
+/// # C: O(1) submits.
+pub fn create_scanout_from_pa_for_bdf(bdf: u32, pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32> {
+    if !scanout_ready_for_bdf(bdf) { return None; }
     let fmt = crate::drm_fourcc_to_virtio(fmt_drm)?;
     if w == 0 || h == 0 { return None; }
     let bytes = (w as u64) * (h as u64) * 4;
     if bytes == 0 || bytes > u32::MAX as u64 { return None; }
     let res_id = NEXT_RUNTIME_RES_ID.fetch_add(1, Ordering::AcqRel);
-    if !submit_ctrl(|b| crate::encode_resource_create_2d(b, res_id, fmt, w, h)) {
+    if !submit_ctrl_for_bdf(bdf, |b| crate::encode_resource_create_2d(b, res_id, fmt, w, h)) {
         return None;
     }
-    if !submit_ctrl(|b| crate::encode_resource_attach_backing_one(b, res_id, pa, bytes as u32)) {
+    if !submit_ctrl_for_bdf(bdf, |b| crate::encode_resource_attach_backing_one(b, res_id, pa, bytes as u32)) {
         return None;
     }
     Some(res_id)
@@ -688,12 +864,13 @@ pub fn create_scanout_from_pa(pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u
 
 /// Switch scanout 0 to `res_id` and make its pixels visible:
 /// SET_SCANOUT(0, res_id, 0,0,w,h) + TRANSFER_TO_HOST_2D + RESOURCE_FLUSH.
-/// `false` if no CTX or a command failed. # C: O(1) submits.
-pub fn set_scanout(res_id: u32, w: u32, h: u32) -> bool {
-    if !scanout_ready() || w == 0 || h == 0 { return false; }
-    if !submit_ctrl(|b| crate::encode_set_scanout(b, 0, res_id, 0, 0, w, h)) { return false; }
-    if !submit_ctrl(|b| crate::encode_transfer_to_host_2d(b, res_id, 0, 0, w, h, 0)) { return false; }
-    if !submit_ctrl(|b| crate::encode_resource_flush(b, res_id, 0, 0, w, h)) { return false; }
+/// `false` if the requested BDF has no scanout or a command failed.
+/// # C: O(1) submits.
+pub fn set_scanout_for_bdf(bdf: u32, res_id: u32, w: u32, h: u32) -> bool {
+    if !scanout_ready_for_bdf(bdf) || w == 0 || h == 0 { return false; }
+    if !submit_ctrl_for_bdf(bdf, |b| crate::encode_set_scanout(b, 0, res_id, 0, 0, w, h)) { return false; }
+    if !submit_ctrl_for_bdf(bdf, |b| crate::encode_transfer_to_host_2d(b, res_id, 0, 0, w, h, 0)) { return false; }
+    if !submit_ctrl_for_bdf(bdf, |b| crate::encode_resource_flush(b, res_id, 0, 0, w, h)) { return false; }
     true
 }
 
@@ -703,10 +880,11 @@ pub fn set_scanout(res_id: u32, w: u32, h: u32) -> bool {
 /// SET_SCANOUT back to res_id 1 over the boot dimensions + flush, then
 /// `fbcon::force_repaint()` re-blits the live VT into res_id 1's backing
 /// (via fbcon_flush_pixels) so the next flush shows real content.
-/// `false` if no CTX. # C: O(1) submits + O(cols*rows) repaint.
-pub fn restore_console_scanout() -> bool {
-    let (w, h) = match dimensions() { Some(d) => d, None => return false };
-    let ok = set_scanout(BOOT_SCANOUT_RES_ID, w, h);
+/// `false` if the requested BDF has no scanout.
+/// # C: O(1) submits + O(cols*rows) repaint.
+pub fn restore_console_scanout_for_bdf(bdf: u32) -> bool {
+    let (w, h) = match dimensions_for_bdf(bdf) { Some(d) => d, None => return false };
+    let ok = set_scanout_for_bdf(bdf, BOOT_SCANOUT_RES_ID, w, h);
     // Bring the console content back: force_repaint marks the fg VT
     // dirty + raises the flush softirq, which calls fbcon_flush_pixels
     // → writes res_id 1's backing + transfer/flush.
@@ -718,13 +896,18 @@ pub fn restore_console_scanout() -> bool {
 /// core. Called once from `install_with_drm` so SETCRTC/PAGE_FLIP can
 /// drive the scanout without a crate dependency cycle (drm cannot
 /// depend on this crate; this crate depends on drm). # C: O(1)
-pub fn register_drm_hooks() {
-    drm::node::set_scanout_ops(drm::node::ScanoutOps {
-        create_from_pa: create_scanout_from_pa,
-        set_scanout,
-        restore_console: restore_console_scanout,
-        boot_res_id: boot_scanout_res_id,
+pub fn register_drm_hooks(card_id: u32, bdf: u32) {
+    drm::node::set_scanout_ops(card_id, drm::node::ScanoutOps {
+        driver_key: bdf,
+        create_from_pa: create_scanout_from_pa_for_bdf,
+        set_scanout: set_scanout_for_bdf,
+        restore_console: restore_console_scanout_for_bdf,
+        boot_res_id: boot_scanout_res_id_for_bdf,
     });
+}
+
+pub fn unregister_drm_hooks(card_id: u32) {
+    drm::node::clear_scanout_ops(card_id);
 }
 
 /// Push the CURRENT framebuffer contents to the host display
@@ -732,9 +915,12 @@ pub fn register_drm_hooks() {
 /// path: userspace wrote the mmap'd scanout directly (or via write()), this
 /// makes those pixels visible (Linux fb pan/defio flush). No-op pre-setup.
 /// # C: O(1) submits (+ host-side O(w*h) transfer).
-pub fn flush_scanout() {
+pub fn flush_scanout_for_bdf(bdf: u32) {
     let g = CTX.lock();
-    let ctx = match g.as_ref() { Some(c) => c, None => return };
+    let ctx = match g.iter().find(|ctx| ctx.bdf == bdf) { Some(c) => c, None => return };
+    if ctx.quiesced {
+        return;
+    }
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     let (res_id, w, h) = (ctx.res_id, ctx.w, ctx.h);
     // SAFETY: same VAs/PAs setup_scanout installed; sole writer under the CTX lock; cmd_buf is HHDM-mapped 4 KiB scratch.
@@ -745,5 +931,52 @@ pub fn flush_scanout() {
         let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
             ctx.ctrlq, ctx.hhdm);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn key(raw: u32) -> virtio::VirtioChildDeviceKey {
+        virtio::VirtioChildDeviceKey::from_raw(raw)
+    }
+
+    fn test_ctrlq() -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource {
+            index: 0,
+            size: 1,
+            desc_pa: 0,
+            driver_pa: 0,
+            device_pa: 0,
+            notify_va: 0,
+            notify_off: 0,
+        }
+    }
+
+    #[test]
+    fn uninstall_scanout_removes_context_without_live_mmio_or_frames() {
+        CTX.lock().clear();
+        CTX.lock().push(ScanoutCtx {
+            device_key: key(0x0010_0000),
+            bdf: 0x0010_0000,
+            cfg_va: 0,
+            w: 640,
+            h: 480,
+            fb_va: 0,
+            fb_bytes: 0,
+            fb_pages_alloc: 0,
+            res_id: 1,
+            ctrlq: test_ctrlq(),
+            cmd_buf_va: 0,
+            cmd_buf_pa: 0,
+            hhdm: 0,
+            fbdev_idx: None,
+            quiesced: false,
+        });
+
+        assert!(uninstall_scanout(key(0x0010_0000)));
+        assert!(CTX.lock().is_empty());
+        assert!(!uninstall_scanout(key(0x0010_0000)));
     }
 }

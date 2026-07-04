@@ -35,6 +35,13 @@ use sched::live::wait_list::WaitList;
 use block::{BlockDevice, BlockRequest, BlockError, BlockOp, KResult};
 use virtio::blk;
 
+/// Virtio device ID for block devices.
+pub const VIRTIO_ID_BLOCK: u16 = 2;
+
+/// Driver-model identity for virtio-blk child binding.
+pub const DRIVER_ID: virtio::VirtioChildDriverId =
+    virtio::VirtioChildDriverId::new("virtio-blk", VIRTIO_ID_BLOCK);
+
 /// Global wait list every blk sleeper parks on. One shared list (rather
 /// than per-device) keeps the tick waker trivial: a wake re-runs all
 /// sleepers, each re-checks its own used.idx / busy condition and
@@ -131,6 +138,26 @@ const IO_SPIN_BUDGET: u64 = 200_000;
 #[cfg(not(target_os = "oxide-kernel"))]
 const IO_FALLBACK_SPINS: u64 = 50_000_000;
 
+const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1 | virtio::VIRTIO_BLK_F_BLK_SIZE;
+
+/// Feature policy for the modern virtio-blk child driver. The PCI transport
+/// executes common-cfg negotiation; this driver owns the block-specific bits
+/// that affect its config parsing and runtime geometry.
+pub const fn wanted_features() -> u64 {
+    WANTED_FEATURES
+}
+
+/// Transport contract for the modern virtio-blk child driver. The virtio bus
+/// consumes this profile; the PCI transport only executes it.
+/// # C: O(1)
+pub const fn transport_profile() -> virtio::VirtioTransportProfile {
+    #[cfg(target_os = "oxide-kernel")]
+    let completion_irq = Some(wake_completions as fn());
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let completion_irq = None;
+    virtio::VirtioTransportProfile::q0_device_cfg(wanted_features(), completion_irq)
+}
+
 /// Bounce-frame layout. Three disjoint regions inside one contiguous
 /// PMM allocation so the device's separate descriptors never alias and
 /// the data descriptor addresses one physically-contiguous run:
@@ -159,17 +186,29 @@ const BOUNCE_ORDER: u8 = 6;
 static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(0);
 
 struct BlkRecord {
-    bus:      u8,
-    device:   u8,
-    function: u8,
+    device_key: virtio::VirtioChildDeviceKey,
     name:     String,
     state:    Arc<BlkState>,
 }
 
 static DEVICES: Spinlock<Vec<BlkRecord>, DriverLockClass> = Spinlock::new(Vec::new());
 
-fn same_bdf(rec: &BlkRecord, bus: u8, device: u8, function: u8) -> bool {
-    rec.bus == bus && rec.device == device && rec.function == function
+#[cfg(test)]
+fn child_key(bus: u8, device: u8, function: u8) -> virtio::VirtioChildDeviceKey {
+    virtio::VirtioChildDeviceKey::from_raw(
+        (bus as u32) << 16 | (device as u32) << 8 | (function as u32),
+    )
+}
+
+#[cfg(feature = "debug-boot")]
+fn key_bus(key: virtio::VirtioChildDeviceKey) -> u8 { ((key.raw() >> 16) & 0xff) as u8 }
+#[cfg(feature = "debug-boot")]
+fn key_device(key: virtio::VirtioChildDeviceKey) -> u8 { ((key.raw() >> 8) & 0xff) as u8 }
+#[cfg(feature = "debug-boot")]
+fn key_function(key: virtio::VirtioChildDeviceKey) -> u8 { (key.raw() & 0xff) as u8 }
+
+fn same_device(rec: &BlkRecord, device_key: virtio::VirtioChildDeviceKey) -> bool {
+    rec.device_key == device_key
 }
 
 /// Persistent per-device request engine. The PAs/VA reference rings
@@ -634,15 +673,54 @@ impl BlockDevice for BlkState {
 }
 
 /// Boot-probe handoff: the persistent ring addresses + device-cfg the
-/// probe harvested. `pci_boot::virtio_drv` fills this after DRIVER_OK.
+/// transport mapped. This driver reads the block device config itself after
+/// DRIVER_OK.
 #[derive(Copy, Clone)]
 pub struct BlkInit {
-    pub bus:      u8,
-    pub device:   u8,
-    pub function: u8,
+    pub device_key: virtio::VirtioChildDeviceKey,
     pub resources: virtio::VirtioResources,
-    pub capacity:     u64,
-    pub blk_size:     u32,
+    pub drv_features: u64,
+}
+
+#[derive(Copy, Clone)]
+struct BlkDeviceConfig {
+    capacity: u64,
+    blk_size: u32,
+}
+
+fn read_device_config(resources: virtio::VirtioResources, drv_features: u64) -> Option<BlkDeviceConfig> {
+    let cfg = resources.device_cfg_va;
+    if cfg == 0 {
+        return None;
+    }
+
+    let mut capb = [0u8; 8];
+    for i in 0..8 {
+        // SAFETY: `device_cfg_va` is the transport-owned, Device-attr mapped
+        // virtio-blk config window kept alive for this device lifetime.
+        capb[i] = unsafe { core::ptr::read_volatile((cfg + i as u64) as *const u8) };
+    }
+    let capacity = u64::from_le_bytes(capb);
+
+    let mut blk_size = blk::VIRTIO_BLK_SECTOR_BYTES;
+    if drv_features & virtio::VIRTIO_BLK_F_BLK_SIZE != 0 {
+        let mut bsb = [0u8; 4];
+        for i in 0..4 {
+            // SAFETY: offset 20 is `blk_size` in `virtio_blk_config`; the
+            // mapped config page covers this fixed field.
+            bsb[i] = unsafe {
+                core::ptr::read_volatile(
+                    (cfg + virtio::BLK_CFG_OFF_BLK_SIZE + i as u64) as *const u8,
+                )
+            };
+        }
+        let bs = u32::from_le_bytes(bsb);
+        if bs != 0 {
+            blk_size = bs;
+        }
+    }
+
+    Some(BlkDeviceConfig { capacity, blk_size })
 }
 
 /// Linux-style registry name for the `index`-th (0-based) registered
@@ -668,7 +746,10 @@ pub fn init_blk(init: BlkInit) -> u32 {
     if !init.resources.common_cfg_valid() {
         return 0;
     }
-    if DEVICES.lock().iter().any(|d| same_bdf(d, init.bus, init.device, init.function)) {
+    let Some(device_cfg) = read_device_config(init.resources, init.drv_features) else {
+        return 0;
+    };
+    if DEVICES.lock().iter().any(|d| same_device(d, init.device_key)) {
         return 0;
     }
     // Contiguous BOUNCE_ORDER region (256 KiB) so the 128 KiB data
@@ -691,7 +772,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
     }
     // Validate / clamp blk_size: must be ≥512 and a multiple of 512,
     // else the sector-run math (bs/512, capacity conversion) truncates.
-    let blk_size = blk::validate_blk_size(init.blk_size);
+    let blk_size = blk::validate_blk_size(device_cfg.blk_size);
 
     // Seed avail/used shadows from the live used.idx. The boot probe no
     // longer issues a throwaway request, so on QEMU this reads 0 — but
@@ -711,7 +792,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
     let mut state = BlkState {
         cfg_va:       init.resources.cfg_va,
         requestq,
-        capacity:     init.capacity,
+        capacity:     device_cfg.capacity,
         blk_size,
         serial:       [0u8; blk::BLK_SERIAL_LEN],
         bounce_pa,
@@ -743,13 +824,11 @@ pub fn init_blk(init: BlkInit) -> u32 {
     let idx = block::registry::register_with_serial(&name, serial_opt, state.clone());
     let published = if idx != 0 && !existed {
         let mut devices = DEVICES.lock();
-        if devices.iter().any(|d| same_bdf(d, init.bus, init.device, init.function)) {
+        if devices.iter().any(|d| same_device(d, init.device_key)) {
             false
         } else {
             devices.push(BlkRecord {
-                bus: init.bus,
-                device: init.device,
-                function: init.function,
+                device_key: init.device_key,
                 name: name.clone(),
                 state: state.clone(),
             });
@@ -768,13 +847,13 @@ pub fn init_blk(init: BlkInit) -> u32 {
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  virtio-blk-modern ");
-        klog::write_dec_u64(init.bus as u64);
+        klog::write_dec_u64(key_bus(init.device_key) as u64);
         klog::write_raw(b":");
-        klog::write_dec_u64(init.device as u64);
+        klog::write_dec_u64(key_device(init.device_key) as u64);
         klog::write_raw(b".");
-        klog::write_dec_u64(init.function as u64);
+        klog::write_dec_u64(key_function(init.device_key) as u64);
         klog::write_raw(b" cap_sec=");
-        klog::write_dec_u64(init.capacity);
+        klog::write_dec_u64(device_cfg.capacity);
         klog::write_raw(b" blk_size=");
         klog::write_dec_u64(blk_size as u64);
         klog::write_raw(b" idx=");
@@ -784,14 +863,14 @@ pub fn init_blk(init: BlkInit) -> u32 {
     idx
 }
 
-/// Remove the virtio-blk device identified by its PCI BDF. Stops future I/O,
+/// Remove the virtio-blk device identified by its parent device key. Stops future I/O,
 /// unregisters the block disk, and drops this driver's per-device record.
 /// Existing filesystem references keep their Arc alive but see EIO.
 /// # C: O(N_virtio_blk + N_disks + N_devices)
-pub fn remove_blk(bus: u8, device: u8, function: u8) -> bool {
+pub fn remove_blk(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let rec = {
         let mut devices = DEVICES.lock();
-        match devices.iter().position(|d| same_bdf(d, bus, device, function)) {
+        match devices.iter().position(|d| same_device(d, device_key)) {
             Some(i) => devices.remove(i),
             None => return false,
         }
@@ -800,15 +879,15 @@ pub fn remove_blk(bus: u8, device: u8, function: u8) -> bool {
     block::registry::unregister(&rec.name)
 }
 
-/// Shutdown the virtio-blk device identified by its PCI BDF without
+/// Shutdown the virtio-blk device identified by its parent device key without
 /// unregistering block/devtmpfs/sysfs publication. Used by reboot/poweroff,
 /// not hot-unplug.
 /// # C: O(N_virtio_blk + shutdown)
-pub fn shutdown_blk(bus: u8, device: u8, function: u8) -> bool {
+pub fn shutdown_blk(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let state = {
         DEVICES.lock()
             .iter()
-            .find(|d| same_bdf(d, bus, device, function))
+            .find(|d| same_device(d, device_key))
             .map(|d| d.state.clone())
     };
     let Some(state) = state else { return false; };
@@ -818,7 +897,8 @@ pub fn shutdown_blk(bus: u8, device: u8, function: u8) -> bool {
 
 #[cfg(test)]
 pub(crate) fn test_publish_record(bus: u8, device: u8, function: u8, name: &str) -> u32 {
-    if DEVICES.lock().iter().any(|d| same_bdf(d, bus, device, function)) {
+    let device_key = child_key(bus, device, function);
+    if DEVICES.lock().iter().any(|d| same_device(d, device_key)) {
         return 0;
     }
     let state = Arc::new(BlkState {
@@ -842,9 +922,7 @@ pub(crate) fn test_publish_record(bus: u8, device: u8, function: u8, name: &str)
     let idx = block::registry::register_with_serial(name, None, state.clone());
     if idx != 0 {
         DEVICES.lock().push(BlkRecord {
-            bus,
-            device,
-            function,
+            device_key,
             name: String::from(name),
             state,
         });
@@ -854,5 +932,5 @@ pub(crate) fn test_publish_record(bus: u8, device: u8, function: u8, name: &str)
 
 #[cfg(test)]
 pub(crate) fn test_has_record(bus: u8, device: u8, function: u8) -> bool {
-    DEVICES.lock().iter().any(|d| same_bdf(d, bus, device, function))
+    DEVICES.lock().iter().any(|d| same_device(d, child_key(bus, device, function)))
 }

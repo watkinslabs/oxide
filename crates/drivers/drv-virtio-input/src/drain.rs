@@ -150,6 +150,7 @@ pub fn handle_key_event(keycode: u16, pressed: bool) {
 /// Per-virtio-input-device runtime state. Captured at boot via
 /// `install_eventq`; consumed by the softirq drain.
 struct QueueCtx {
+    device_key:   virtio::VirtioChildDeviceKey,
     cfg_va:       u64,
     hhdm:        u64,
     eventq:      virtio::VirtQueueResource,
@@ -185,6 +186,7 @@ static HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
 ///
 /// # C: O(qsize)
 pub fn install_eventq(
+    device_key: virtio::VirtioChildDeviceKey,
     evdev_id: u32,
     resources: virtio::VirtioResources,
 ) -> Result<(), ()> {
@@ -236,13 +238,18 @@ pub fn install_eventq(
     // class so the drain can gate the console keyboard pipeline.
     {
         let mut g = CTXS.lock();
-        if g[slot_idx].is_some() {
+        if g[slot_idx].is_some()
+            || g.iter()
+                .flatten()
+                .any(|ctx| ctx.device_key == device_key)
+        {
             // SAFETY: buf_pa is the frame allocated by this function and has
             // not been handed to the device because no queue context was kept.
             unsafe { pmm::setup::free_one_frame(buf_pa); }
             return Err(());
         }
         g[slot_idx] = Some(QueueCtx {
+            device_key,
             cfg_va: resources.cfg_va,
             hhdm,
             eventq,
@@ -262,23 +269,28 @@ pub fn install_eventq(
     Ok(())
 }
 
-/// Remove an installed queue context, reset the device, and release owned
-/// buffer frames. Returns false if no queue was installed for `evdev_id`.
+fn take_eventq(device_key: virtio::VirtioChildDeviceKey) -> Option<(QueueCtx, bool)> {
+    let mut g = CTXS.lock();
+    let slot = g.iter_mut()
+        .find(|slot| slot.as_ref().is_some_and(|ctx| ctx.device_key == device_key))?;
+    let ctx = slot.take()?;
+    let last_queue = g.iter().all(|slot| slot.is_none());
+    Some((ctx, last_queue))
+}
+
+/// Quiesce an installed queue context, reset the device, and release owned
+/// buffer frames. Returns false if no queue was installed for `device_key`.
 /// # C: O(1)
-pub fn uninstall_eventq(evdev_id: u32) -> bool {
-    let (ctx, last_queue) = {
-        let mut g = CTXS.lock();
-        let Some(slot) = g.get_mut(evdev_id as usize) else { return false };
-        let ctx = match slot.take() {
-            Some(ctx) => ctx,
-            None => return false,
-        };
-        let last_queue = g.iter().all(|slot| slot.is_none());
-        (ctx, last_queue)
+pub fn shutdown_eventq(device_key: virtio::VirtioChildDeviceKey) -> bool {
+    let Some((ctx, last_queue)) = take_eventq(device_key) else {
+        return false;
     };
-    // SAFETY: cfg_va is the virtio common-cfg VA captured at successful probe;
-    // device_status is a u8 at +0x14. Reset before freeing driver buffers.
-    unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    if ctx.cfg_va != 0 {
+        // SAFETY: cfg_va is the virtio common-cfg VA captured at successful
+        // probe; device_status is a u8 at +0x14. Reset before freeing driver
+        // buffers.
+        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+    }
     if last_queue && HANDLER_INSTALLED.swap(false, Ordering::AcqRel) {
         let _ = softirq::clear_handler(softirq::Slot::InputDrain);
     }
@@ -289,6 +301,13 @@ pub fn uninstall_eventq(evdev_id: u32) -> bool {
         pmm::setup::free_one_frame(ctx.buf_pa);
     }
     true
+}
+
+/// Remove an installed queue context, reset the device, and release owned
+/// buffer frames. Returns false if no queue was installed for `device_key`.
+/// # C: O(1)
+pub fn uninstall_eventq(device_key: virtio::VirtioChildDeviceKey) -> bool {
+    shutdown_eventq(device_key)
 }
 
 /// Raise the InputDrain softirq. Called from the virtio-input

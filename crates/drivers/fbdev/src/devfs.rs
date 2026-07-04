@@ -51,7 +51,7 @@ impl FileOps for FbFileOps {
         let n = ((bytes - o) as usize).min(b.len());
         // SAFETY: fb_va is the HHDM mapping of the scanout for `bytes`; o+n <= bytes; CPL=0 write of the caller's bytes into the device-backed framebuffer.
         unsafe { core::ptr::copy_nonoverlapping(b.as_ptr(), (fb_va + o) as *mut u8, n); }
-        crate::flush();
+        crate::flush(idx);
         Ok(n)
     }
 }
@@ -150,7 +150,7 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
             }
             cur.xoffset = v.xoffset; cur.yoffset = v.yoffset;
             crate::set_var(idx, cur);
-            crate::flush();
+            crate::flush(idx);
             Some(0)
         }
         crate::FBIOPUTCMAP => {
@@ -238,7 +238,7 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
             // fake — it returns only after a vsync tick actually happened.
             let start = crate::vblank_seq();
             let _ = crate::wait_vblank(start);
-            crate::flush();
+            crate::flush(idx);
             Some(0)
         }
         _ => None,
@@ -268,10 +268,14 @@ pub fn register_node(idx: u32) -> bool {
     if FB_DEVICES.lock().iter().any(|(id, _)| *id == idx) {
         return false;
     }
-    let dev = drv::device_add(Arc::new(
+    let dev = match drv::try_device_add(Arc::new(
         drv::Device::new("graphics", alloc::format!("fb{idx}"), 0, 0, idx)
             .with_devnode("graphics", alloc::format!("fb{idx}"), Some((29, idx)))
-            .with_node_factory(Arc::new(move || make_fb_inode(idx)))));
+            .with_node_factory(Arc::new(move || make_fb_inode(idx))),
+    )) {
+        Ok(dev) => dev,
+        Err(_) => return false,
+    };
     FB_DEVICES.lock().push((idx, dev));
     true
 }
@@ -288,4 +292,87 @@ pub fn unregister_node(idx: u32) -> bool {
     };
     drv::device_del(&dev);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_node_is_idempotent_without_republishing() {
+        let idx = 0x7ffe;
+        let _ = unregister_node(idx);
+
+        assert!(register_node(idx));
+        assert!(!register_node(idx));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "graphics" && d.addr == alloc::format!("fb{idx}"))
+                .count(),
+            1
+        );
+
+        assert!(unregister_node(idx));
+    }
+
+    #[test]
+    fn unregister_then_register_restores_model_owned_node() {
+        let idx = 0x7ffc;
+        let addr = alloc::format!("fb{idx}");
+        let _ = unregister_node(idx);
+
+        assert!(register_node(idx));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "graphics" && d.addr == addr)
+                .count(),
+            1
+        );
+        assert!(unregister_node(idx));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "graphics" && d.addr == addr)
+                .count(),
+            0
+        );
+
+        assert!(register_node(idx));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "graphics" && d.addr == addr)
+                .count(),
+            1
+        );
+        assert!(unregister_node(idx));
+    }
+
+    #[test]
+    fn register_node_leaves_slot_free_when_model_publication_conflicts() {
+        let idx = 0x7ffd;
+        let _ = unregister_node(idx);
+        let addr = alloc::format!("fb{idx}");
+        let conflict = drv::try_device_add(Arc::new(
+            drv::Device::new("graphics", addr.clone(), 0, 0, idx)
+                .with_devnode("graphics", addr.clone(), Some((29, idx))),
+        ))
+        .expect("conflict device registration");
+
+        assert!(!register_node(idx));
+        assert!(!FB_DEVICES.lock().iter().any(|(id, _)| *id == idx));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "graphics" && d.addr == addr)
+                .count(),
+            1
+        );
+
+        drv::device_del(&conflict);
+        assert!(register_node(idx));
+        assert!(unregister_node(idx));
+    }
 }

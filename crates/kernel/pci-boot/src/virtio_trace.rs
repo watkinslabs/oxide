@@ -2,12 +2,12 @@
 // under the 1000-line cap (docs/08§7). All output is gated under
 // `debug-boot` (R06) — zero bytes in a default build.
 
-use super::virtio_drv::VirtioProbe;
+use super::virtio_drv::VirtioPciProbeTrace;
 
 /// Emit the per-device `[INFO] virtio-*` probe trace lines. Gated under
 /// `debug-boot`; the side-effect bring-up itself runs in `virtio_drv`.
 /// # C: O(num_queues) klog writes
-pub(super) fn trace_probe(bdf: pci::Bdf, p: &VirtioProbe) {
+pub(super) fn trace_probe(bdf: pci::Bdf, p: &VirtioPciProbeTrace) {
     #[cfg(not(feature = "debug-boot"))]
     let _ = (bdf, p);
     debug_boot! {
@@ -74,7 +74,10 @@ pub(super) fn trace_probe(bdf: pci::Bdf, p: &VirtioProbe) {
             klog::write_hex_u64(p.isr_status as u64);
             klog::write_raw(b"\n");
         }
-        if p.q1_notify_va != 0 {
+        let q0 = p.queue_resources[0];
+        let q1 = p.queue_resources[1];
+
+        if q1.notify_va != 0 {
             klog::write_raw(b"[INFO]  virtio-tx ");
             klog::write_dec_u64(bdf.bus as u64);
             klog::write_raw(b":");
@@ -82,14 +85,12 @@ pub(super) fn trace_probe(bdf: pci::Bdf, p: &VirtioProbe) {
             klog::write_raw(b".");
             klog::write_dec_u64(bdf.function as u64);
             klog::write_raw(b" q1_notify_off=");
-            klog::write_dec_u64(p.q1_notify_off as u64);
+            klog::write_dec_u64(q1.notify_off as u64);
             klog::write_raw(b" q1_notify_va=");
-            klog::write_hex_u64(p.q1_notify_va);
-            klog::write_raw(b" tx_used_idx=");
-            klog::write_dec_u64(p.tx_used_idx as u64);
+            klog::write_hex_u64(q1.notify_va);
             klog::write_raw(b"\n");
         }
-        if p.q0_notify_va != 0 {
+        if q0.notify_va != 0 {
             klog::write_raw(b"[INFO]  virtio-notify ");
             klog::write_dec_u64(bdf.bus as u64);
             klog::write_raw(b":");
@@ -97,9 +98,9 @@ pub(super) fn trace_probe(bdf: pci::Bdf, p: &VirtioProbe) {
             klog::write_raw(b".");
             klog::write_dec_u64(bdf.function as u64);
             klog::write_raw(b" q=0 off=");
-            klog::write_hex_u64(p.q0_notify_off as u64);
+            klog::write_hex_u64(q0.notify_off as u64);
             klog::write_raw(b" va=");
-            klog::write_hex_u64(p.q0_notify_va);
+            klog::write_hex_u64(q0.notify_va);
             klog::write_raw(b" post_status=");
             klog::write_hex_u64(p.post_notify_status as u64);
             klog::write_raw(b"\n");
@@ -123,7 +124,7 @@ pub(super) fn trace_probe(bdf: pci::Bdf, p: &VirtioProbe) {
         klog::write_raw(b" msi_fires=");
         klog::write_dec_u64(fires as u64);
         klog::write_raw(b"\n");
-        if p.q0_desc_pa != 0 {
+        if q0.desc_pa != 0 {
             klog::write_raw(b"[INFO]  virtio-q0-prog ");
             klog::write_dec_u64(bdf.bus as u64);
             klog::write_raw(b":");
@@ -131,11 +132,11 @@ pub(super) fn trace_probe(bdf: pci::Bdf, p: &VirtioProbe) {
             klog::write_raw(b".");
             klog::write_dec_u64(bdf.function as u64);
             klog::write_raw(b" desc_pa=");
-            klog::write_hex_u64(p.q0_desc_pa);
+            klog::write_hex_u64(q0.desc_pa);
             klog::write_raw(b" driver_pa=");
-            klog::write_hex_u64(p.q0_driver_pa);
+            klog::write_hex_u64(q0.driver_pa);
             klog::write_raw(b" device_pa=");
-            klog::write_hex_u64(p.q0_device_pa);
+            klog::write_hex_u64(q0.device_pa);
             klog::write_raw(b" final_status=");
             klog::write_hex_u64(p.final_status as u64);
             klog::write_raw(b"\n");
