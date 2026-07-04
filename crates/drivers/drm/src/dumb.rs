@@ -95,32 +95,35 @@ pub struct DrmModeFbCmd {
 // Pure math (hosted-testable)
 // ============================================================
 
-/// Pitch = align_up(width*bpp/8, 64) per Linux dumb-buffer convention.
+const DUMB_PITCH_ALIGN: u64 = 64;
+const DUMB_PAGE_SIZE: u64 = 4096;
+
+/// Pitch = align_up(width*bpp/8, DUMB_PITCH_ALIGN) per Linux dumb-buffer convention.
 /// Returns `None` on overflow / bad bpp. # C: O(1)
 pub fn dumb_pitch(width: u32, bpp: u32) -> Option<u32> {
     // Linux dumb buffers support 8/16/24/32 bpp; we map to byte widths.
     if bpp == 0 || bpp > 32 || (bpp % 8) != 0 { return None; }
     let bytes_per_px = bpp / 8;
     let raw = (width as u64).checked_mul(bytes_per_px as u64)?;
-    let aligned = align_up_u64(raw, 64);
+    let aligned = align_up_u64(raw, DUMB_PITCH_ALIGN);
     if aligned > u32::MAX as u64 { return None; }
     Some(aligned as u32)
 }
 
-/// Size = align_up(pitch*height, 4096). `None` on overflow.
+/// Size = align_up(pitch*height, DUMB_PAGE_SIZE). `None` on overflow.
 /// # C: O(1)
 pub fn dumb_size(pitch: u32, height: u32) -> Option<u64> {
     let raw = (pitch as u64).checked_mul(height as u64)?;
-    Some(align_up_u64(raw, 4096))
+    Some(align_up_u64(raw, DUMB_PAGE_SIZE))
 }
 
 /// align_up(v, a) for power-of-two `a`. # C: O(1)
 pub fn align_up_u64(v: u64, a: u64) -> u64 { (v + (a - 1)) & !(a - 1) }
 
-/// PMM buddy order covering `bytes`: ceil_log2(ceil(bytes/4096)).
+/// PMM buddy order covering `bytes`: ceil_log2(ceil(bytes/DUMB_PAGE_SIZE)).
 /// # C: O(1)
 pub fn order_for_bytes(bytes: u64) -> u8 {
-    let frames = (bytes + 4095) / 4096;
+    let frames = (bytes + (DUMB_PAGE_SIZE - 1)) / DUMB_PAGE_SIZE;
     if frames <= 1 { return 0; }
     // ceil_log2(frames)
     let mut o = 0u8;
@@ -262,6 +265,7 @@ impl DumbTables {
     pub fn find_fb(&self, card_id: u32, id: u32) -> Option<&FbObj> {
         self.fbs.iter().find(|f| f.card_id == card_id && f.fb_id == id)
     }
+    /// Find a mutable FB by card id + FB id. # C: O(n)
     pub fn find_fb_mut(&mut self, card_id: u32, id: u32) -> Option<&mut FbObj> {
         self.fbs.iter_mut().find(|f| f.card_id == card_id && f.fb_id == id)
     }
@@ -570,7 +574,7 @@ fn free_buf_pages(pa: u64, order: u8) {
     unsafe {
         let frames = 1u64 << order;
         for i in 0..frames {
-            pmm::setup::dec_object_ref_and_maybe_free_frame(pa + i * 4096);
+            pmm::setup::dec_object_ref_and_maybe_free_frame(pa + i * DUMB_PAGE_SIZE);
         }
     }
 }
