@@ -489,13 +489,20 @@ test-pass claims.
   PAGE_FLIP, and atomic commits require the active master, and SET_CLIENT_CAP
   updates per-file capability bits. GET_MAGIC/AUTH_MAGIC now allocate, return,
   and authorize real per-open-file DRM magic values from the card file handler
-  instead of returning unconditional success. fbdev flush/blank operations are now stored on each `/dev/fbN`
-  record and call back into the owning virtio-gpu BDF instead of a global
-  display hook; virtio-gpu scanout context now records the exact published
-  fbdev index and unpublishes by that owner token instead of searching by
-  framebuffer base address. Console/fbdev publication is transactional around
-  that stored index, so failed fbdev publication releases console ownership
-  before global fbcon/klog/tty hooks are installed. Shutdown quiesces the
+  instead of returning unconditional success. GET_UNIQUE and SET_VERSION now
+  marshal their real Linux UAPI structs: virtio-gpu reports a PCI BDF-derived
+  unique bus id, GET_UNIQUE copies and reports the true string length, and
+  SET_VERSION validates/negotiates the supported DRM interface version.
+  MODE_ATOMIC now validates flags and nested user arrays, accepts only an
+  empty atomic state, and returns unsupported for structurally valid non-empty
+  property commits until real atomic property tables land. fbdev flush/blank
+  operations are now stored on each `/dev/fbN` record and call back into the
+  owning virtio-gpu BDF instead of a global display hook; virtio-gpu scanout
+  context now records the exact published fbdev index and unpublishes by that
+  owner token instead of searching by framebuffer base address.
+  Console/fbdev publication is transactional around that stored index, so failed
+  fbdev publication releases console ownership before global fbcon/klog/tty
+  hooks are installed. Shutdown quiesces the
   scanout context in place and resets the device without dropping fbdev
   publication or framebuffer allocation metadata, so a later remove can still
   consume the correct owner token and free the backing. fbcon publication

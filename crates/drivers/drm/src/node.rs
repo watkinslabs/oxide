@@ -9,6 +9,7 @@ use crate::{
     DRM_IOCTL_VERSION, DRM_IOCTL_GET_CAP, DRM_IOCTL_GET_UNIQUE,
     DRM_IOCTL_SET_VERSION, DRM_IOCTL_MODE_GETRESOURCES,
     DRM_IOCTL_MODE_ATOMIC, DRM_MODE_ATOMIC_TEST_ONLY,
+    DRM_MODE_ATOMIC_NONBLOCK, DRM_MODE_ATOMIC_ALLOW_MODESET,
     DRM_IOCTL_SET_CLIENT_CAP, DRM_IOCTL_SET_MASTER, DRM_IOCTL_DROP_MASTER,
     DRM_IOCTL_AUTH_MAGIC, DRM_IOCTL_GET_MAGIC,
     DRM_IOCTL_MODE_GETPLANERESOURCES, DRM_IOCTL_MODE_GETPLANE,
@@ -214,8 +215,22 @@ struct DrmSetVersion {
     drm_dd_minor: i32,
 }
 
+/// `struct drm_mode_atomic` Linux UAPI (56 bytes on 64-bit).
+#[repr(C)]
+struct DrmModeAtomic {
+    flags:           u32,
+    count_objs:      u32,
+    objs_ptr:        u64,
+    count_props_ptr: u64,
+    props_ptr:       u64,
+    prop_values_ptr: u64,
+    reserved:        u64,
+}
+
 const DRM_IF_MAJOR: i32 = 1;
 const DRM_IF_MINOR: i32 = 4;
+const DRM_MODE_ATOMIC_SUPPORTED_FLAGS: u32 =
+    DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_ATOMIC_ALLOW_MODESET;
 
 // Fallback strings used when no DrmDriver is registered (e.g.
 // QEMU launched without -device virtio-gpu-pci).
@@ -314,6 +329,23 @@ fn copy_bytes_to_user(dst: u64, dst_len: u64, src: &[u8]) -> core::result::Resul
         }
     }
     Ok(())
+}
+
+fn atomic_property_count(count_props_ptr: u64, count_objs: u32) -> core::result::Result<u64, ()> {
+    let bytes = (count_objs as u64).checked_mul(core::mem::size_of::<u32>() as u64).ok_or(())?;
+    if !valid_user_range(count_props_ptr, bytes) {
+        return Err(());
+    }
+    let mut total = 0u64;
+    for idx in 0..count_objs {
+        let off = idx as u64 * core::mem::size_of::<u32>() as u64;
+        // SAFETY: the whole count_props array was validated above.
+        let count = unsafe {
+            core::ptr::read_volatile((count_props_ptr + off) as *const u32)
+        };
+        total = total.checked_add(count as u64).ok_or(())?;
+    }
+    Ok(total)
 }
 
 /// Build a `/dev/dri/cardN` inode (`S_IFCHR|0o666`, card tag, card f_op).
@@ -615,6 +647,52 @@ mod node_publication_tests {
         assert_eq!(
             handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, atomic_arg),
             Some(0)
+        );
+
+        let mut bad_flags = DrmModeAtomic {
+            flags: 0x8000_0000,
+            count_objs: 0,
+            objs_ptr: 0,
+            count_props_ptr: 0,
+            props_ptr: 0,
+            prop_values_ptr: 0,
+            reserved: 0,
+        };
+        assert_eq!(
+            handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, (&mut bad_flags as *mut DrmModeAtomic) as u64),
+            Some(-(Errno::Einval.as_i32() as i64))
+        );
+
+        let mut bad_arrays = DrmModeAtomic {
+            flags: DRM_MODE_ATOMIC_TEST_ONLY,
+            count_objs: 1,
+            objs_ptr: 0,
+            count_props_ptr: 0,
+            props_ptr: 0,
+            prop_values_ptr: 0,
+            reserved: 0,
+        };
+        assert_eq!(
+            handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, (&mut bad_arrays as *mut DrmModeAtomic) as u64),
+            Some(-(Errno::Efault.as_i32() as i64))
+        );
+
+        let mut objs = [1u32];
+        let mut count_props = [1u32];
+        let mut props = [1u32];
+        let mut values = [0u64];
+        let mut unsupported_commit = DrmModeAtomic {
+            flags: DRM_MODE_ATOMIC_TEST_ONLY,
+            count_objs: objs.len() as u32,
+            objs_ptr: objs.as_mut_ptr() as u64,
+            count_props_ptr: count_props.as_mut_ptr() as u64,
+            props_ptr: props.as_mut_ptr() as u64,
+            prop_values_ptr: values.as_mut_ptr() as u64,
+            reserved: 0,
+        };
+        assert_eq!(
+            handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, (&mut unsupported_commit as *mut DrmModeAtomic) as u64),
+            Some(-(Errno::Eopnotsupp.as_i32() as i64))
         );
         clear_master_owner(0);
     }
@@ -921,33 +999,41 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             Some(0)
         }
         DRM_IOCTL_MODE_ATOMIC => {
-            if !valid_user_range(arg, 56) {
+            if !valid_user_range(arg, core::mem::size_of::<DrmModeAtomic>() as u64) {
                 return Some(-(Errno::Efault.as_i32() as i64));
             }
             if !is_master(card_id, token) || !client_cap_atomic(file) {
                 return Some(-(Errno::Einval.as_i32() as i64));
             }
-            // struct drm_mode_atomic: 56 B. Field 0 = flags u32,
-            // field 1 = count_objs u32. v1 admits two cases:
-            //   - TEST_ONLY with count_objs == 0 → return 0 (no-op
-            //     test always passes)
-            //   - any commit with count_objs == 0 and a registered
-            //     driver → return 0 (driver opted into ATOMIC by
-            //     advertising DRM_CLIENT_CAP_ATOMIC)
-            // Anything else returns -EINVAL until property tables
-            // land. Userspace probes via TEST_ONLY first, so it
-            // sees real-success without us pretending to commit
-            // property writes we can't honor.
-            // SAFETY: arg validated < USER_VA_END; struct ≥ 56 B; aligned u32 reads of first 8 bytes.
-            let flags = unsafe { core::ptr::read_volatile(arg as *const u32) };
-            // SAFETY: arg+4 covered by the same 56-byte struct bound; aligned u32 read.
-            let count_objs = unsafe { core::ptr::read_volatile((arg + 4) as *const u32) };
-            if count_objs == 0
-                && (flags & DRM_MODE_ATOMIC_TEST_ONLY) != 0
-            {
+            // SAFETY: the full drm_mode_atomic user struct was validated above.
+            let atomic: DrmModeAtomic = unsafe { core::ptr::read_volatile(arg as *const DrmModeAtomic) };
+            if (atomic.flags & !DRM_MODE_ATOMIC_SUPPORTED_FLAGS) != 0 {
+                return Some(-(Errno::Einval.as_i32() as i64));
+            }
+            if atomic.count_objs == 0 {
                 return Some(0);
             }
-            Some(-(Errno::Einval.as_i32() as i64))
+
+            let obj_bytes = (atomic.count_objs as u64)
+                .checked_mul(core::mem::size_of::<u32>() as u64)
+                .filter(|bytes| valid_user_range(atomic.objs_ptr, *bytes));
+            if obj_bytes.is_none() {
+                return Some(-(Errno::Efault.as_i32() as i64));
+            }
+            let prop_count = match atomic_property_count(atomic.count_props_ptr, atomic.count_objs) {
+                Ok(count) => count,
+                Err(()) => return Some(-(Errno::Efault.as_i32() as i64)),
+            };
+            if prop_count > 0 {
+                let prop_bytes = prop_count.checked_mul(core::mem::size_of::<u32>() as u64);
+                let value_bytes = prop_count.checked_mul(core::mem::size_of::<u64>() as u64);
+                if prop_bytes.is_none_or(|bytes| !valid_user_range(atomic.props_ptr, bytes))
+                    || value_bytes.is_none_or(|bytes| !valid_user_range(atomic.prop_values_ptr, bytes))
+                {
+                    return Some(-(Errno::Efault.as_i32() as i64));
+                }
+            }
+            Some(-(Errno::Eopnotsupp.as_i32() as i64))
         }
         // ---- D5b-1 dumb buffers + ADDFB2 (offscreen; no scanout) ----
         DRM_IOCTL_MODE_CREATE_DUMB  => Some(crate::dumb::create_dumb(card_id, arg)),
