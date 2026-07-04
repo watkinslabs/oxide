@@ -206,6 +206,8 @@ test-pass claims.
   virtio-vsock child driver reads its own CID from the generic `DEVICE_CFG`
   resource during install. The dead pci-boot `virtio_vsock_cfg` pass-through
   has been removed, so vsock install goes directly through the child driver.
+  Its failed install path now owns the reserved upper endpoint plus RX/TX
+  bounce frames as one probe state until the installed transport takes them.
 - Virtio-snd no longer has PCI-transport-owned sound config harvest. The
   virtio-snd child driver reads jacks/streams/chmaps/controls from the generic
   `DEVICE_CFG` resource before querying PCM stream info. Its virtio-pci profile
