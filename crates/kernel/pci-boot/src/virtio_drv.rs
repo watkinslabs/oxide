@@ -69,8 +69,6 @@ struct VirtioProbeProfile {
 
 impl VirtioProbeProfile {
     const VERSION_ONLY: u64 = virtio::VIRTIO_F_VERSION_1;
-    const NET_FEATURES: u64 =
-        virtio::VIRTIO_F_VERSION_1 | virtio::VIRTIO_NET_F_MAC | virtio::VIRTIO_NET_F_STATUS;
 
     const fn generic(msix0_handler: Option<fn()>) -> Self {
         Self {
@@ -84,7 +82,7 @@ impl VirtioProbeProfile {
 
     const fn net(msix0_handler: Option<fn()>) -> Self {
         Self {
-            drv_features: Self::NET_FEATURES,
+            drv_features: drv_virtio_net::modern::wanted_features(),
             msix0_handler,
             extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
             q1_notify_policy: Q1NotifyPolicy::NetBootTx,
