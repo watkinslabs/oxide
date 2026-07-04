@@ -251,8 +251,11 @@ impl FileOps for RandomFileOps {
     }
     fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
-/// `/dev/random`/`/dev/urandom` inode (1:8 mem/random, `0o666`). # C: O(1)
+/// `/dev/random` inode (1:8 mem/random, `0o666`). # C: O(1)
 pub fn make_random_inode() -> InodeRef { char_inode(0x2000_0004, 0o666, 0x0108, Arc::new(RandomFileOps)) }
+
+/// `/dev/urandom` inode (1:9 mem/urandom, `0o666`). # C: O(1)
+pub fn make_urandom_inode() -> InodeRef { char_inode(0x2000_0007, 0o666, 0x0109, Arc::new(RandomFileOps)) }
 
 #[cfg(test)]
 mod tests {
