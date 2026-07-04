@@ -86,6 +86,9 @@ test-pass claims.
   through transport helper calls. The old virtio-net probe-time dummy TX kick
   is gone; net boot-buffer posting/allocation now uses helper calls. Notify
   lifetime policy still remains in the probe body.
+- Failed virtio child probes now release transport vring frames through the
+  probe's recorded queue state instead of per-driver hand-written q0/q1/q2/q3
+  frame lists; child-owned payload frames are passed as explicit extras.
 - Virtio-blk no longer has PCI-transport-owned block config harvest. The
   virtio-pci path maps the device config as a generic resource, and the
   virtio-blk child driver reads capacity/block-size during its own probe.
@@ -233,8 +236,8 @@ test-pass claims.
   common-cfg status/reset/feature/queue-size register protocol, planned queue
   programming, notify VA/kick mechanics, and net RX/TX boot-buffer mechanics
   have moved into shared helpers, but feature policy, notify lifetime policy,
-  complete MSI-X setup policy, and failure release helpers still need to move
-  behind a `VirtioPciTransport`/`VirtioProbeState` boundary.
+  complete MSI-X setup policy, and full failure-unwind proof still need to
+  move behind a `VirtioPciTransport`/`VirtioProbeState` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
