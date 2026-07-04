@@ -477,8 +477,10 @@ test-pass claims.
   now keyed to the owning virtio child key and releases child-owned
   queue/buffer resources only for the matching transport; the sound card layer
   allocates owner-keyed ALSA card numbers, publishes per-card ALSA/OSS nodes,
-  routes ops by the card owner, and rejects unregister from non-owners.
-  Virtio-gpu duplicate child-key admission is also left to the child install
+  routes ops by the card owner, rejects unregister from non-owners, and keeps
+  raw EVENTQ drain accounting keyed by the transport owner. The old EVENTQ
+  globals are aggregate compatibility diagnostics only. Virtio-gpu duplicate
+  child-key admission is also left to the child install
   path.
 - Virtio MSI-X handler ownership is no longer selected by a transport-side
   PCI-ID special-case dispatch. Child virtio driver probes now pass the
@@ -695,9 +697,10 @@ test-pass claims.
   failed virtio-snd probe paths cancel only unpublished reservations, while
   `sound::unregister_card` owns published ALSA/OSS node removal, substream
   unregister, and sound-ops clearing for the removed owner.
-  Higher-level sound event interpretation/publication, remaining child-probe
-  failure unwind audit, and fault-injection proof still need to move behind a
-  fuller `VirtioPciTransport` boundary.
+  Raw EVENTQ drain/accounting is now owner-keyed; higher-level sound event
+  interpretation/publication, remaining child-probe failure unwind audit, and
+  fault-injection proof still need to move behind a fuller `VirtioPciTransport`
+  boundary.
 - Replace remaining singleton hardware-backed drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
@@ -877,7 +880,8 @@ Several drivers still use singleton global state:
   endpoint by local CID, and duplicate owner or guest-CID publication is
   rejected
 - virtio-snd: keyed transport records with EVENTQ drained per transport,
-  owner-keyed ops, owner-keyed ALSA card records, per-card
+  owner-keyed EVENTQ counters/last-event snapshots, owner-keyed ops,
+  owner-keyed ALSA card records, per-card
   `controlC<N>`/`pcmC<N>D0*` publication, and ALSA PCM/capture/OSS runtime
   state bound to the owning card key; live multi-card QEMU proof is still
   missing

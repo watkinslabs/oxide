@@ -132,6 +132,10 @@ struct Ctx {
     event_last_used: u16,
     /// EVENTQ driver-side avail.idx shadow.
     event_avail_idx: u16,
+    /// Number of EVENTQ records drained for this device.
+    event_drained: u64,
+    /// Last raw 8-byte virtio_snd_event drained for this device.
+    event_last_raw: u64,
     /// virtio_snd_config (docs/58§4): jacks/streams/chmaps/controls.
     jacks:    u32,
     streams:  u32,
@@ -197,7 +201,12 @@ pub enum PcmState { Idle, Configured, Prepared, Running }
 // Spinlock, so cross-CPU sharing is sound.
 static CTX: Spinlock<Vec<Ctx>, DriverLockClass> = Spinlock::new(Vec::new());
 
+/// Aggregate EVENTQ records drained across installed virtio-snd devices.
+/// Per-device accounting lives in each `Ctx`; this is a compatibility
+/// diagnostic for old debug readers.
 pub static DRAINED_EVENTS: AtomicU64 = AtomicU64::new(0);
+/// Last raw 8-byte virtio_snd_event seen across all devices. Per-device last
+/// event is exposed by `event_stats_for`.
 pub static LAST_EVENT: AtomicU64 = AtomicU64::new(0);
 
 static SOUND_OPS: sound::ops::SoundOps = sound::ops::SoundOps {
@@ -349,6 +358,28 @@ pub fn eventq_state() -> Option<(u16, u16, u16)> {
     })
 }
 
+/// Snapshot of the named device's EVENTQ resource:
+/// `(queue_size, last_used_idx, next_avail_idx)`.
+/// # C: O(installed transports)
+pub fn eventq_state_for(device_key: DeviceKey) -> Option<(u16, u16, u16)> {
+    CTX.lock()
+        .iter()
+        .find(|ctx| ctx.device_key == device_key)
+        .and_then(|ctx| {
+            ctx.eventq
+                .map(|eventq| (eventq.size, ctx.event_last_used, ctx.event_avail_idx))
+        })
+}
+
+/// Per-device EVENTQ diagnostics: `(drained_count, last_raw_event)`.
+/// # C: O(installed transports)
+pub fn event_stats_for(device_key: DeviceKey) -> Option<(u64, u64)> {
+    CTX.lock()
+        .iter()
+        .find(|ctx| ctx.device_key == device_key)
+        .map(|ctx| (ctx.event_drained, ctx.event_last_raw))
+}
+
 struct SoundCardReservation {
     owner: u32,
     active: bool,
@@ -450,6 +481,8 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         event_buf_pa: frames.event_buf_pa,
         event_last_used: event_used_seen,
         event_avail_idx,
+        event_drained: 0,
+        event_last_raw: 0,
         jacks: device_cfg.jacks,
         streams: device_cfg.streams,
         chmaps: device_cfg.chmaps,
@@ -657,8 +690,7 @@ fn drain_eventq(ctx: &mut Ctx) {
             // SAFETY: desc_id was range-checked and addresses one 8-byte
             // event record in the driver-owned EVENTQ buffer frame.
             let raw = unsafe { core::ptr::read_volatile(event_va) };
-            LAST_EVENT.store(raw, Ordering::Relaxed);
-            DRAINED_EVENTS.fetch_add(1, Ordering::Relaxed);
+            record_event(ctx, raw);
 
             let avail_va = ctx.hhdm.wrapping_add(eventq.driver_pa) as *mut u8;
             let slot = (ctx.event_avail_idx as usize) % eventq.size as usize;
@@ -679,6 +711,13 @@ fn drain_eventq(ctx: &mut Ctx) {
         core::ptr::write_volatile(avail_va.add(2) as *mut u16, ctx.event_avail_idx);
         core::ptr::write_volatile(eventq.notify_va as *mut u16, eventq.index);
     }
+}
+
+fn record_event(ctx: &mut Ctx, raw: u64) {
+    ctx.event_last_raw = raw;
+    ctx.event_drained = ctx.event_drained.wrapping_add(1);
+    LAST_EVENT.store(raw, Ordering::Relaxed);
+    DRAINED_EVENTS.fetch_add(1, Ordering::Relaxed);
 }
 
 fn free_frame(pa: u64) {
@@ -1369,6 +1408,8 @@ mod tests {
             event_buf_pa: 0,
             event_last_used: 0,
             event_avail_idx: 0,
+            event_drained: 0,
+            event_last_raw: 0,
             jacks: 0,
             streams: 0,
             chmaps: 0,
@@ -1407,7 +1448,32 @@ mod tests {
     fn reset_test_state() {
         CTX.lock().clear();
         TEST_EVENT_CALLS.store(0, Ordering::Relaxed);
+        DRAINED_EVENTS.store(0, Ordering::Relaxed);
+        LAST_EVENT.store(0, Ordering::Relaxed);
         let _ = softirq::clear_handler(softirq::Slot::SndEvent);
+    }
+
+    #[test]
+    fn event_stats_are_keyed_by_snd_context() {
+        let _guard = TEST_LOCK.lock();
+        reset_test_state();
+        {
+            let mut ctxs = CTX.lock();
+            ctxs.push(ctx(key(0x0010_0000)));
+            ctxs.push(ctx(key(0x0020_0000)));
+            record_event(&mut ctxs[0], 0xaaaa_0000_0000_0001);
+            record_event(&mut ctxs[1], 0xbbbb_0000_0000_0002);
+            record_event(&mut ctxs[1], 0xbbbb_0000_0000_0003);
+        }
+
+        assert_eq!(event_stats_for(key(0x0010_0000)), Some((1, 0xaaaa_0000_0000_0001)));
+        assert_eq!(event_stats_for(key(0x0020_0000)), Some((2, 0xbbbb_0000_0000_0003)));
+        assert_eq!(event_stats_for(key(0x0030_0000)), None);
+        assert_eq!(DRAINED_EVENTS.load(Ordering::Relaxed), 3);
+        assert_eq!(LAST_EVENT.load(Ordering::Relaxed), 0xbbbb_0000_0000_0003);
+        assert_eq!(eventq_state_for(key(0x0010_0000)), Some((8, 0, 0)));
+        assert_eq!(eventq_state_for(key(0x0020_0000)), Some((8, 0, 0)));
+        reset_test_state();
     }
 
     #[test]
