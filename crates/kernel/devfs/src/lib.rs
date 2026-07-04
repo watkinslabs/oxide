@@ -254,6 +254,48 @@ mod fs_tests {
         }
     }
 
+    #[test]
+    fn try_populate_defaults_is_idempotent_for_existing_pseudo_devices() {
+        drv::set_devtmpfs_hook(add_device_node);
+
+        assert_eq!(crate::boot::try_populate_defaults(), Ok(()));
+        assert_eq!(crate::boot::try_populate_defaults(), Ok(()));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "mem" && d.addr == "null")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn try_populate_defaults_reports_conflicting_pseudo_device() {
+        drv::set_devtmpfs_hook(add_device_node);
+        for dev in drv::devices()
+            .into_iter()
+            .filter(|d| d.bus == "mem" && d.addr == "null")
+        {
+            drv::device_del(&dev);
+        }
+        let conflict = drv::device_add(Arc::new(
+            drv::Device::new("mem", String::from("null"), 0, 0, 0)
+                .with_devnode("mem", String::from("null"), Some((1, 99))),
+        ));
+
+        assert_eq!(crate::boot::try_populate_defaults(), Err(drv::Error::Busy));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "mem" && d.addr == "null")
+                .count(),
+            1
+        );
+
+        drv::device_del(&conflict);
+        assert_eq!(crate::boot::try_populate_defaults(), Ok(()));
+    }
+
     /// D17: with the ext4 overlay-union flipped OFF, the `/dev` listing must
     /// still contain the full expected node set purely from `device_add` + the
     /// boot `register`/`register_dir` sources (the rootfs ships ZERO `/dev`
