@@ -634,7 +634,8 @@ Several drivers still use singleton global state:
   stack-owned and keyed by interface in kernel builds; boot route/RS seeding
   iterates the registered virtio-net iface snapshot, but live multi-NIC proof
   is still missing
-- virtio-rng: keyed records with one promoted active `/dev/hwrng` provider
+- virtio-rng: keyed records with one explicit active-BDF `/dev/hwrng`
+  provider; promotion skips shutdown records instead of relying on vector order
 - virtio-vsock: keyed transport records and owner-keyed endpoint teardown, but
   a singleton upper protocol endpoint
 - virtio-snd: keyed transport records with EVENTQ drained per transport and an

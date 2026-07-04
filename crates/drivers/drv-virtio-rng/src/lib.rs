@@ -65,14 +65,22 @@ struct RngState {
 
 type RngHandle = Arc<Spinlock<RngState, DriverLockClass>>;
 
+struct RngRegistry {
+    records:    Vec<RngHandle>,
+    active_bdf: Option<u32>,
+}
+
 // SAFETY justification: RngState holds raw PAs/VAs into HHDM/MMIO stable for
 // device lifetime; each record serialises queue access through its Spinlock.
-static RNGS: Spinlock<Vec<RngHandle>, DriverLockClass> = Spinlock::new(Vec::new());
+static RNGS: Spinlock<RngRegistry, DriverLockClass> = Spinlock::new(RngRegistry {
+    records: Vec::new(),
+    active_bdf: None,
+});
 
 /// True once a virtio-rng device has been brought up + installed. Backs
 /// the `/dev/hwrng` presence check.
 /// # C: O(1)
-pub fn present() -> bool { !RNGS.lock().is_empty() }
+pub fn present() -> bool { !RNGS.lock().records.is_empty() }
 
 /// Install the transport resources for the entropy requestq. Called once from
 /// `pci_boot::virtio_drv` after DRIVER_OK + q0 setup. Allocates the
@@ -109,12 +117,12 @@ pub fn install(bdf: u32, resources: virtio::VirtioResources) -> Option<()> {
         drv::Device::new("misc", String::from("hwrng"), 0, 0, 0)
             .with_devnode("misc", String::from("hwrng"), Some((10, 183)))
             .with_node_factory(Arc::new(|| devfs::misc::make_hwrng_inode())));
-    let mut rngs = RNGS.lock();
-    if rngs.iter().any(|record| record.lock().bdf == bdf) {
+    let mut registry = RNGS.lock();
+    if registry.records.iter().any(|record| record.lock().bdf == bdf) {
         free_frame(bounce_pa);
         return None;
     }
-    let publish_hwrng = rngs.is_empty();
+    let publish_hwrng = registry.active_bdf.is_none();
     let record = Arc::new(Spinlock::new(RngState {
         bdf,
         cfg_va: resources.cfg_va,
@@ -126,8 +134,11 @@ pub fn install(bdf: u32, resources: virtio::VirtioResources) -> Option<()> {
         hwrng_dev: Arc::clone(&hwrng_dev),
         shutdown: false,
     }));
-    rngs.push(record);
-    drop(rngs);
+    if publish_hwrng {
+        registry.active_bdf = Some(bdf);
+    }
+    registry.records.push(record);
+    drop(registry);
     if publish_hwrng {
         devfs::misc::set_hwrng_source(fill);
         drv::device_add(hwrng_dev);
@@ -139,14 +150,14 @@ pub fn install(bdf: u32, resources: virtio::VirtioResources) -> Option<()> {
 /// bounce frame owned by the child driver. # C: O(1)
 pub fn uninstall(bdf: u32) -> bool {
     let (record, was_active, promoted_hwrng_dev) = {
-        let mut rngs = RNGS.lock();
-        let Some(idx) = rngs.iter().position(|record| record.lock().bdf == bdf) else {
+        let mut registry = RNGS.lock();
+        let Some(idx) = registry.records.iter().position(|record| record.lock().bdf == bdf) else {
             return false;
         };
-        let was_active = idx == 0;
-        let record = rngs.remove(idx);
+        let was_active = registry.active_bdf == Some(bdf);
+        let record = registry.records.remove(idx);
         let promoted_hwrng_dev = if was_active {
-            rngs.first().map(|next| Arc::clone(&next.lock().hwrng_dev))
+            promote_active_locked(&mut registry)
         } else {
             None
         };
@@ -225,14 +236,31 @@ pub fn fill_from_bdf(bdf: u32, buf: &mut [u8]) -> usize {
 }
 
 fn active_handle() -> Option<RngHandle> {
-    RNGS.lock().first().cloned()
+    let registry = RNGS.lock();
+    let active = registry.active_bdf?;
+    registry
+        .records
+        .iter()
+        .find(|record| record.lock().bdf == active)
+        .cloned()
 }
 
 fn find_handle(bdf: u32) -> Option<RngHandle> {
     RNGS.lock()
+        .records
         .iter()
         .find(|record| record.lock().bdf == bdf)
         .cloned()
+}
+
+fn promote_active_locked(registry: &mut RngRegistry) -> Option<Arc<drv::Device>> {
+    let Some(next) = registry.records.iter().find(|record| !record.lock().shutdown) else {
+        registry.active_bdf = None;
+        return None;
+    };
+    let next = next.lock();
+    registry.active_bdf = Some(next.bdf);
+    Some(Arc::clone(&next.hwrng_dev))
 }
 
 fn fill_record(record: &RngHandle, buf: &mut [u8]) -> usize {
@@ -320,4 +348,50 @@ fn fill_record(record: &RngHandle, buf: &mut [u8]) -> usize {
         }
     }
     n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_queue() -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource::new(0, 8, 0x1000, 0x2000, 0x3000, 0x4000, 0)
+    }
+
+    fn test_record(bdf: u32, shutdown: bool) -> RngHandle {
+        let hwrng_dev = Arc::new(drv::Device::new("misc", String::from("hwrng"), 0, 0, 0));
+        Arc::new(Spinlock::new(RngState {
+            bdf,
+            cfg_va: 0,
+            hhdm: 0,
+            requestq: test_queue(),
+            avail_idx: 0,
+            used_idx_seen: 0,
+            bounce_pa: 0,
+            hwrng_dev,
+            shutdown,
+        }))
+    }
+
+    #[test]
+    fn promotion_uses_explicit_live_bdf_not_vector_order() {
+        let mut registry = RngRegistry {
+            records: alloc::vec![test_record(0x0010_0000, true), test_record(0x0020_0000, false)],
+            active_bdf: Some(0x0010_0000),
+        };
+
+        assert!(promote_active_locked(&mut registry).is_some());
+        assert_eq!(registry.active_bdf, Some(0x0020_0000));
+    }
+
+    #[test]
+    fn promotion_clears_active_when_no_live_rng_remains() {
+        let mut registry = RngRegistry {
+            records: alloc::vec![test_record(0x0010_0000, true)],
+            active_bdf: Some(0x0010_0000),
+        };
+
+        assert!(promote_active_locked(&mut registry).is_none());
+        assert_eq!(registry.active_bdf, None);
+    }
 }
