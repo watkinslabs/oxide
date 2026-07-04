@@ -513,6 +513,10 @@ test-pass claims.
   non-overlapping handle field, and mmap rejects zero handles, low-bit offsets,
   and out-of-layout bits instead of truncating malformed cookies into another
   handle.
+  fbdev's FBIO user-copy validation now uses checked exclusive-end arithmetic,
+  and FBIOGETCMAP rejects an invalid transparency array pointer with `EFAULT`
+  instead of silently skipping part of the requested copy while returning
+  success.
   The display-info probe command buffer and scanout framebuffer run are now
   owned probe objects; early parse/no-display/setup failures release them
   through drop, and successful scanout setup explicitly transfers those frames
