@@ -78,8 +78,8 @@ pub fn cap_caps(owner: u32) -> Caps {
     ops_for(owner).and_then(|ops| (ops.cap_caps)(owner))
 }
 
-pub fn period_bytes(owner: u32) -> usize {
-    ops_for(owner).map(|ops| (ops.period_bytes)(owner)).unwrap_or(2048)
+pub fn period_bytes(owner: u32) -> Option<usize> {
+    ops_for(owner).map(|ops| (ops.period_bytes)(owner)).filter(|bytes| *bytes != 0)
 }
 
 pub fn pcm_hw_params(owner: u32, rate: u8, format: u8, channels: u8, period_bytes: u32, buffer_bytes: u32) -> bool {

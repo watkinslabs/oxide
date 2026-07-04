@@ -166,7 +166,7 @@ fn fragment_geometry(o: &Oss) -> Option<(u32, u32)> {
     let period = if o.fragshift != 0 {
         1u32.checked_shl(o.fragshift as u32)?
     } else {
-        let base = crate::ops::period_bytes(o.owner) as u32;
+        let base = crate::ops::period_bytes(o.owner)? as u32;
         let divisor = if o.subdivision == 0 { 1 } else { o.subdivision as u32 };
         (base / divisor).max(1)
     };
@@ -674,6 +674,34 @@ mod tests {
 
         unregister_card(owner);
         let _ = crate::ops::clear(owner);
+        let _ = crate::cancel_card_reservation(owner);
+    }
+
+    #[test]
+    fn missing_ops_do_not_report_fake_fragment_size() {
+        let owner = 0x7103;
+        unregister_card(owner);
+        let _ = crate::ops::clear(owner);
+        let _ = crate::cancel_card_reservation(owner);
+
+        assert!(crate::reserve_card(owner));
+        register_card(owner);
+
+        let getblksize_req = (2u64 << 30) | (4u64 << 16) | ((b'P' as u64) << 8) | 4;
+        let getospace_req = (2u64 << 30) | (16u64 << 16) | ((b'P' as u64) << 8) | 12;
+        let mut block = 0u32;
+        let mut space = [0u32; 4];
+
+        assert_eq!(
+            handle(owner, false, getblksize_req, (&mut block as *mut u32) as u64),
+            test_err(Errno::Enodev)
+        );
+        assert_eq!(
+            handle(owner, false, getospace_req, space.as_mut_ptr() as u64),
+            test_err(Errno::Enodev)
+        );
+
+        unregister_card(owner);
         let _ = crate::cancel_card_reservation(owner);
     }
 }
