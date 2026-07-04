@@ -82,7 +82,11 @@ impl VirtioProbeProfile {
         Self {
             drv_features: drv_virtio_net::modern::wanted_features(),
             msix0_handler,
-            extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
+            extra_queues: [Some(QueuePlan::new(
+                1,
+                super::virtio_qsetup::VIRTIO_MSI_NO_VECTOR,
+                false,
+            )), None, None],
             q1_notify_policy: Q1NotifyPolicy::NetBootTx,
             needs_net_boot_buffers: true,
         }
@@ -122,7 +126,11 @@ impl VirtioProbeProfile {
         Self {
             drv_features: drv_virtio_vsock::wanted_features(),
             msix0_handler,
-            extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
+            extra_queues: [Some(QueuePlan::new(
+                1,
+                super::virtio_qsetup::VIRTIO_MSI_NO_VECTOR,
+                false,
+            )), None, None],
             q1_notify_policy: Q1NotifyPolicy::PersistentTx,
             needs_net_boot_buffers: false,
         }
@@ -133,8 +141,16 @@ impl VirtioProbeProfile {
             drv_features: drv_virtio_snd::wanted_features(),
             msix0_handler,
             extra_queues: [
-                Some(QueuePlan::new(2, 0xFFFF, true)),
-                Some(QueuePlan::new(3, 0xFFFF, true)),
+                Some(QueuePlan::new(
+                    2,
+                    super::virtio_qsetup::VIRTIO_MSI_NO_VECTOR,
+                    true,
+                )),
+                Some(QueuePlan::new(
+                    3,
+                    super::virtio_qsetup::VIRTIO_MSI_NO_VECTOR,
+                    true,
+                )),
                 None,
             ],
             q1_notify_policy: Q1NotifyPolicy::None,
@@ -738,7 +754,10 @@ struct MsixBinding {
     id: u32,
     entry_va: u64,
     cap_off: u8,
+    queue_vector: u16,
 }
+
+const VIRTIO_MSIX_Q0_VECTOR: u16 = 0;
 
 fn bind_virtio_msix0(
     d: &pci::PciDevice,
@@ -774,7 +793,12 @@ fn bind_virtio_msix0(
         core::ptr::write_volatile((entry_va + 12) as *mut u32, 0);
     }
     set_msix_enabled_arch(d.bdf, c.cfg_off, true);
-    Some(MsixBinding { id, entry_va, cap_off: c.cfg_off })
+    Some(MsixBinding {
+        id,
+        entry_va,
+        cap_off: c.cfg_off,
+        queue_vector: VIRTIO_MSIX_Q0_VECTOR,
+    })
 }
 
 fn release_msix_binding(bdf: pci::Bdf, binding: MsixBinding) {
@@ -807,12 +831,18 @@ fn decode_msix_cap_arch(bdf: pci::Bdf, cfg_off: u8) -> Option<pci::MsixCap> {
 
 fn set_msix_enabled_arch(bdf: pci::Bdf, cfg_off: u8, enabled: bool) {
     let off = cfg_off & 0xFC;
+    const MSIX_ENABLE: u32 = 1u32 << 31;
+    const MSIX_FUNCTION_MASK: u32 = 1u32 << 30;
     #[cfg(target_arch = "x86_64")]
     {
         let r = hal_x86_64::pci::LegacyPci;
         use pci::ConfigSpaceReader as _;
         let cur = r.read32(bdf, off);
-        let new = if enabled { cur | (1u32 << 31) } else { cur & !(1u32 << 31) };
+        let new = if enabled {
+            (cur | MSIX_ENABLE) & !MSIX_FUNCTION_MASK
+        } else {
+            (cur & !MSIX_ENABLE) | MSIX_FUNCTION_MASK
+        };
         r.write32(bdf, off, new);
     }
     #[cfg(target_arch = "aarch64")]
@@ -820,7 +850,11 @@ fn set_msix_enabled_arch(bdf: pci::Bdf, cfg_off: u8, enabled: bool) {
         if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
             let cur =
                 <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&r, bdf, off);
-            let new = if enabled { cur | (1u32 << 31) } else { cur & !(1u32 << 31) };
+            let new = if enabled {
+                (cur | MSIX_ENABLE) & !MSIX_FUNCTION_MASK
+            } else {
+                (cur & !MSIX_ENABLE) | MSIX_FUNCTION_MASK
+            };
             <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::write32(&r, bdf, off, new);
         }
     }
@@ -1169,12 +1203,14 @@ impl VirtioProbeState {
         caps: &pci::heapless_caps::CapVec,
         bars: &[pci::Bar; 6],
         handler: Option<fn()>,
-    ) -> bool {
+    ) -> Option<u16> {
         let Some(handler) = handler else {
-            return false;
+            return None;
         };
-        self.msix = bind_virtio_msix0(d, caps, bars, &mut self.mappings, handler);
-        self.msix.is_some()
+        if self.msix.is_none() {
+            self.msix = bind_virtio_msix0(d, caps, bars, &mut self.mappings, handler);
+        }
+        self.msix.as_ref().map(|binding| binding.queue_vector)
     }
 
     fn negotiate_and_program(
@@ -1189,9 +1225,12 @@ impl VirtioProbeState {
         let (queues, queues_len) =
             super::virtio_qsetup::scan_queue_sizes(self.cfg_va, negotiated.num_queues);
 
-        let msix_bound = negotiated.features_ok
-            && self.bind_msix0(d, caps, bars, profile.msix0_handler);
-        let q0_msix_vec = if msix_bound { 0 } else { 0xFFFF };
+        let q0_msix_vec = if negotiated.features_ok {
+            self.bind_msix0(d, caps, bars, profile.msix0_handler)
+                .unwrap_or(super::virtio_qsetup::VIRTIO_MSI_NO_VECTOR)
+        } else {
+            super::virtio_qsetup::VIRTIO_MSI_NO_VECTOR
+        };
         let programmed_queues = if negotiated.features_ok {
             super::virtio_qsetup::program_queue_set(
                 self.cfg_va,
