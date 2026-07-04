@@ -249,7 +249,7 @@ const DRM_CARD_INO: vfs::Ino = 0x4452_4D43_0000_0000;
 const DRM_RENDER_INO: vfs::Ino = 0x4452_4D52_0000_0000;
 
 /// `file_operations` for `/dev/dri/cardN`: read drains queued KMS events,
-/// write is a no-op sink, last-close restores the boot fbcon scanout.
+/// ioctls carry the DRM UAPI, and last-close restores the boot fbcon scanout.
 struct DrmCardFileOps;
 impl vfs::FileOps for DrmCardFileOps {
     /// read(2) on the card fd drains queued KMS events (DRM page-flip
@@ -272,7 +272,9 @@ impl vfs::FileOps for DrmCardFileOps {
         }
         mask
     }
-    fn write(&self, _inode: &vfs::Inode, _o: u64, b: &[u8]) -> vfs::KResult<usize> { Ok(b.len()) }
+    fn write(&self, _inode: &vfs::Inode, _o: u64, _b: &[u8]) -> vfs::KResult<usize> {
+        Err(vfs::VfsError::Einval)
+    }
     /// Last-close: if a KMS client took the scanout via SETCRTC and is
     /// now closing its card fd, restore the boot fbcon scanout + repaint
     /// the console so the fb console (and getty) come back. A normal
@@ -296,11 +298,14 @@ impl vfs::FileOps for DrmCardFileOps {
     }
 }
 
-/// `file_operations` for the render node: read returns 0 bytes, write is a sink.
+/// `file_operations` for the render node. Render nodes stay unpublished until
+/// a real render/GEM UAPI exists; the private test inode must not fake writes.
 struct DrmSinkFileOps;
 impl vfs::FileOps for DrmSinkFileOps {
     fn read(&self, _inode: &vfs::Inode, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Ok(0) }
-    fn write(&self, _inode: &vfs::Inode, _o: u64, b: &[u8]) -> vfs::KResult<usize> { Ok(b.len()) }
+    fn write(&self, _inode: &vfs::Inode, _o: u64, _b: &[u8]) -> vfs::KResult<usize> {
+        Err(vfs::VfsError::Einval)
+    }
     fn on_release_file(&self, file: &File) {
         release_file_magic(file_token(file));
     }
@@ -578,6 +583,15 @@ mod node_publication_tests {
             handle_drm_ioctl(&render, DRM_IOCTL_SET_MASTER, 1),
             Some(-(Errno::Eacces.as_i32() as i64))
         );
+    }
+
+    #[test]
+    fn drm_nodes_do_not_acknowledge_raw_writes() {
+        let card = open_file(make_card_inode(0));
+        let render = open_file(make_render_inode(0));
+
+        assert_eq!(card.write(b"not a drm ioctl"), Err(vfs::VfsError::Einval));
+        assert_eq!(render.write(b"not a drm ioctl"), Err(vfs::VfsError::Einval));
     }
 
     #[test]
