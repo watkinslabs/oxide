@@ -154,6 +154,10 @@ test-pass claims.
 - Virtio-pci debug probe trace now carries the same indexed
   `VirtQueueResource` handoff records used by child publication instead of
   duplicating q0/q1 descriptor and notify fields in a trace-only structure.
+- The PCI-backed virtio child session now owns failed-probe transport cleanup
+  as an idempotent session lifetime rule: unpublished sessions release their
+  transport on explicit failure or drop, while published sessions transfer
+  ownership to the runtime transport record.
 - Child probe readiness checks for DRIVER_OK, required queue indexes, device
   config, and net boot payloads now go through shared
   `virtio::VirtioChildRequirements` evaluated by

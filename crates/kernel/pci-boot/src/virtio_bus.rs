@@ -11,6 +11,7 @@ pub(super) struct VirtioChildSession {
     transport: virtio_drv::VirtioPciTransport,
     profile: virtio::VirtioTransportProfile,
     probe: virtio_drv::VirtioProbe,
+    transport_live: bool,
 }
 
 impl VirtioChildSession {
@@ -29,6 +30,7 @@ impl VirtioChildSession {
             transport,
             profile,
             probe,
+            transport_live: true,
         })
     }
 
@@ -56,12 +58,24 @@ impl virtio::VirtioChildTransportSession for VirtioChildSession {
     }
 
     fn release_failed_child(&mut self) {
-        self.probe
-            .release_failed_child(self.profile.child_requirements);
+        if self.transport_live {
+            self.probe
+                .release_failed_child(self.profile.child_requirements);
+            self.transport_live = false;
+        }
     }
 
     fn publish(mut self) {
-        self.transport.publish(&mut self.probe);
+        if self.transport_live {
+            self.transport.publish(&mut self.probe);
+            self.transport_live = false;
+        }
+    }
+}
+
+impl Drop for VirtioChildSession {
+    fn drop(&mut self) {
+        self.release_failed_child();
     }
 }
 

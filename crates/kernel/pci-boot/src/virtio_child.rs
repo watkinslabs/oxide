@@ -352,13 +352,13 @@ impl drv::Driver for VirtioSndDrv {
         let Some(resources) = session.child_resources() else {
             return session.fail();
         };
-        let sp = drv_virtio_snd::install(drv_virtio_snd::SndInstall {
+        let sp = match drv_virtio_snd::install(drv_virtio_snd::SndInstall {
             device_key,
             resources,
-        }).ok_or_else(|| {
-            session.release_failed_child();
-            drv::Error::ProbeFailed
-        })?;
+        }) {
+            Some(sp) => sp,
+            None => return session.fail(),
+        };
         #[cfg(not(feature = "debug-boot"))]
         let _ = &sp;
         debug_boot! {
