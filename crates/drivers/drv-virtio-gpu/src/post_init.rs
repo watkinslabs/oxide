@@ -3,7 +3,7 @@
 
 
 
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 struct ProbeCommandBuffer {
@@ -80,6 +80,8 @@ impl Drop for ProbeFramebufferRun {
 pub fn get_display_info(
     device_key: virtio::VirtioChildDeviceKey,
     bdf_bus: u8, bdf_dev: u8, bdf_fn: u8,
+    parent_bus: &'static str,
+    parent_addr: String,
     drv_features: u64,
     resources: virtio::VirtioResources,
 ) -> bool {
@@ -173,14 +175,14 @@ pub fn get_display_info(
         }
         cmd_buf.disarm();
     }
-    match crate::install_with_drm(crate::VirtioGpuDev {
+    match crate::install_with_drm_parent(crate::VirtioGpuDev {
         device_key, bdf: bdf_word, card_id: 0, cfg_va,
         ctrlq,
         features_negotiated: drv_features,
         display: info,
         resource_id_alloc: AtomicU32::new(1),
         blob_uuid_alloc: AtomicU64::new(1), capset_count: 0,
-    }) {
+    }, Some((parent_bus, parent_addr))) {
         Ok(_) => {}
         Err(_) => {
             if info.count_enabled > 0 {

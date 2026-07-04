@@ -1024,6 +1024,10 @@ pub trait VirtioChildTransportSession {
     /// # C: O(1)
     fn location(&self) -> VirtioTransportLocation;
 
+    /// Device-model address of the child device being probed.
+    /// # C: O(1)
+    fn device_addr(&self) -> &str;
+
     /// Negotiated driver feature mask after transport bring-up.
     /// # C: O(1)
     fn drv_features(&self) -> u64;
@@ -1201,6 +1205,10 @@ mod tests {
 
         fn location(&self) -> VirtioTransportLocation {
             VirtioTransportLocation::new(0, 1, 0)
+        }
+
+        fn device_addr(&self) -> &str {
+            "virtio-test0"
         }
 
         fn drv_features(&self) -> u64 {

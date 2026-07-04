@@ -477,7 +477,10 @@ test-pass claims.
   render/GEM UAPI exists), encodes the card id in the DRM
   inode tag, routes card-backed ioctls through the matching backend slot, and
   builds `/sys/class/drm` plus `/sys/devices/virtual/drm` from live DRM
-  `drv::try_device_add` records instead of a static card0 table.
+  `drv::try_device_add` records instead of a static card0 table. Virtio-gpu
+  registers DRM card devices with their real virtio child model parent, so the
+  DRM sysfs `device` link resolves back to the owning bus device instead of
+  being virtual-only.
   Scanout backing state is also a BDF-keyed table now. DRM SETCRTC/PAGE_FLIP
   runtime hooks, scanout ownership, last-close restore, and flip-event queues
   are keyed by DRM card id and routed to the owning virtio-gpu BDF. DRM dumb
