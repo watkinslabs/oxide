@@ -1,6 +1,6 @@
 use alloc::string::String;
 use alloc::vec::Vec;
-use netlink::{Nlmsghdr, flags, nlmsg_align};
+use netlink::{Nlmsghdr, flags};
 
 use super::*;
 use crate::nft_dispatch_helpers::{
