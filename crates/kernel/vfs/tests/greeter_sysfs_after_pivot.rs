@@ -199,6 +199,34 @@ fn logind_resolves_sysdev_with_shared_propagation() {
     assert_eq!(i.ino(), INO_CARD0, "/sys resolved to underlay, not sysfs (GREETER BLOCKER)");
 }
 
+/// THE live mechanism (confirmed by boot: sysfs keyed on ext4 `/sys` dentry
+/// 0x80f78fd0, but logind's walk finds a fresh 0x825e8718). If the mounted
+/// `/sys` dentry is dropped/evicted, a re-lookup mints a NEW dentry the mount
+/// isn't keyed on → `__lookup_mnt` MISS → `/sys` falls to the ext4 underlay.
+/// A mounted dentry must not be droppable out from under its mount (Linux pins
+/// it via the mountpoint hash).
+#[test]
+fn dropping_mounted_sys_dentry_must_not_orphan_sysfs() {
+    let _g = guard();
+    const NS: u64 = 0x6EE7_9000;
+    vfs::mount::set_current_ns_provider(|| NS);
+    set_ns(NS);
+    let root = setup_host(NS);
+
+    // Baseline: /sys crosses into sysfs.
+    let (i, _) = vfs::path_lookup(root.clone(), root.clone(), "/sys/dev/char/226:0", LookupFlags::default()).expect("baseline");
+    assert_eq!(i.ino(), INO_CARD0);
+
+    // Drop the mounted /sys dentry (models the eviction/d_drop the boot hits).
+    let (_, sys_d) = vfs::path_lookup(root.clone(), root.clone(), "/sys", LookupFlags::default()).expect("/sys dentry");
+    vfs::dcache::d_drop(&sys_d);
+
+    // Re-resolve: must STILL cross into sysfs, not the empty ext4 /sys underlay.
+    let (i, _) = vfs::path_lookup(root.clone(), root.clone(), "/sys/dev/char/226:0", LookupFlags::default())
+        .unwrap_or_else(|e| panic!("after mountpoint d_drop: {e:?} — sysfs orphaned (GREETER BLOCKER)"));
+    assert_eq!(i.ino(), INO_CARD0, "/sys fell to ext4 underlay after mountpoint dentry drop (GREETER BLOCKER)");
+}
+
 /// Same, via pivot_root (systemd's preferred relocation).
 #[test]
 fn logind_resolves_sysdev_after_pivot_root() {

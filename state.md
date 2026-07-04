@@ -14,37 +14,51 @@ inferred. Everything UPSTREAM works: card0 IS tagged master-of-seat, the tag dir
 `/run/udev/tags/master-of-seat/c226:0` is present and readable at logind-enumerate
 time, logind's getdents returns `c226:0`.
 
-## Mechanism — strong but CAVEATED (measurement suspect)
-Boot-side traces showed logind's `/sys` resolving to fsid `0x1` (ext4 underlay),
-NOT sysfs (`0x0102199400000002`) — i.e. the sysfs mount not crossed in logind's
-sandbox namespace. Observed ns-14 tree: sysfs mnts 403/404 parented to a `bind`
-sandbox root (397), keyed on the live `/sys` dentry `0x825e8718`; the walk rooted
-on ext4 (381) whose `/sys` mount (384) is keyed on a DIFFERENT dentry
-`0x80f78fd0`. `__lookup_mnt` keys strictly on `(parent_mnt_id, dentry_ptr)` →
-miss → `/sys` = empty ext4 dir.
+## Mechanism — CONFIRMED (measurement now unimpeachable)
+The decisive probe logged the fsid of the ACTUAL inode logind's `openat("/sys")`
+returns (no re-resolve, no root-provider ambiguity): **159 `/sys` opens →
+sysfs (0x0102199400000002); exactly ONE → ext4 (0x1), and it is logind (mnt
+381).** So logind's `/sys` really is the empty ext4 underlay — the sysfs mount is
+NOT crossed, SPECIFIC to logind.
 
-**BUT** (docs/CLAUDE lesson 4 — clean repro contradicts boot → suspect the
-measurement): faithful HOSTED repros of the systemd sequence ALL PASS, so either
-the exact trigger is unmodeled OR the boot-side `resolve()`/`resolve_path()`
-traces measured the INIT-ns view (global root provider), not logind's real
-`task->root`. Only logind's own ENOENT is unimpeachable.
+WHY: a `d_add` probe (name=="sys", parent inode is the ext4 root ino
+0x6e54…0002) showed the ext4 `/sys` dentry created MANY times, each under a
+DIFFERENT parent dentry pointer → **the ext4 ROOT directory inode has many
+dentry aliases.** Linux forbids this (a dir inode has exactly one dentry via
+`d_splice_alias`). `__lookup_mnt` keys on `(parent_mnt_id, dentry_ptr)`, so sysfs
+mounted on alias-A's `/sys` is invisible when logind walks alias-B's `/sys`.
 
-## First task next session — RESOLVE THE CAVEAT
-1. Add a boot trace that resolves `/sys` (and `/sys/dev`) using logind's ACTUAL
-   `current()->root` dentry + its mount ns — NOT `pathresolve::resolve()` (which
-   may use the global root provider). This confirms/refutes "logind's /sys = ext4
-   underlay." That single measurement decides the fix direction.
-2. IF confirmed (sysfs not crossed in logind's ns): extend the hosted repro
-   `crates/kernel/vfs/tests/greeter_sysfs_after_pivot.rs` (4 tests, all PASS
-   today) with the missing wrinkle until one goes RED — candidates in priority:
-   the RO bind-remount pass systemd runs (`ProtectSystem=strict` bind-remounts
-   every mount ro), a `d_drop`-driven re-creation of the `/sys` mountpoint dentry
-   that orphans the mount keyed on the old pointer, or ProtectControlGroups/
-   ProtectKernelTunables overmounts. Fix is then in `vfs::mount` (rebuild_ns_index
-   / follow_mount_down `__lookup_mnt`) or the dentry lifetime, against the red test.
-3. IF refuted (logind's /sys IS sysfs): the ENOENT is a `/sys/dev`-specific
-   negative-dentry / op_lookup issue — re-open that thread (op_lookup never
-   missed "dev"; raw PseudoDir had dev+dev/char; a cached negative shadowed it).
+ROOT CAUSE: **bind mounts build a parallel dentry tree.** `register_bind` →
+`build_sb` → `SuperBlock::for_backend` → `d_make_root(inode)` mints a FRESH root
+dentry per SB, and each bind of `/` (systemd does many, one per sandboxed
+service) uses `BindFs` = a NEW SuperBlock, so a NEW ext4-root alias with its own
+`/sys` child. Linux `clone_mnt` instead does `mnt->mnt_root = dget(old->mnt_root)`
+— a bind SHARES the source's sb + root dentry, so submounts stay visible.
+
+## First task next session — THE FIX (bind dentry sharing)
+Make bind mounts SHARE the source's dentry tree instead of building a `BindFs`
+parallel one. Options, cheapest first:
+1. In the bind attach path (`syscalls/165_mount.rs` MS_BIND → `vfs::mount::
+   register_bind`/`attach`), set the bind mount's `s_root`/`mnt_root` to the
+   SOURCE's existing root dentry (`dget`) and share the source's SuperBlock,
+   rather than `build_sb`+`d_make_root` minting a fresh alias. This is the Linux
+   `clone_mnt` shape and removes the multi-alias at its source.
+2. If (1) is too invasive, enforce the dir-single-dentry invariant in
+   `d_make_root`/`d_add`: for a directory inode that already has a dentry alias,
+   RETURN that alias (Linux `d_splice_alias`) instead of a fresh one.
+VERIFY LEFT: extend `crates/kernel/vfs/tests/greeter_sysfs_after_pivot.rs` (5
+tests, all PASS today because they use `register_bind` with a NamedFs that
+SHARES the inode — they do NOT exercise the `BindFs`-per-SB alias path). Add a
+test that mounts sysfs at `/sys`, then binds `/` via a SECOND SuperBlock over the
+same root inode (the BindFs shape), and asserts `/sys` still crosses when walked
+through the original mount → this goes RED with today's code, GREEN after the fix.
+
+## Also landed (correct invariant, not the primary fix)
+`vfs::dcache::d_drop` now no-ops on a dentry with `D_MOUNTED` (a mounted dentry
+must stay hashed/canonical — Linux `__d_drop` never unhashes a live mountpoint).
+Closes a real orphaning hole; 98+ vfs tests green; boot reaches graphical.target.
+Did NOT by itself fix the greeter (the alias source is BindFs SB creation, not
+d_drop), but it is correct hardening.
 
 ## Landed this session (branch B318, PR pending)
 - **`crates/kernel/sysfs/src/bus.rs` `dev_index_target`** — real correctness fix:
