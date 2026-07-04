@@ -11,7 +11,7 @@ extern crate alloc;
 pub mod model;
 pub use model::{
     auto_bind, bind, BindEvent, Device, Driver, NodeFactory, Resource, register_driver, devices, device_count,
-    device_add, device_del, driver_names, driver_names_for_bus, driver_count, match_driver, bind_addr, unbind,
+    device_add, try_device_add, device_del, driver_names, driver_names_for_bus, driver_count, match_driver, bind_addr, unbind,
     shutdown_all, set_sysfs_hook, set_sysfs_remove_hook, set_bind_hook, set_driver_hook, set_devtmpfs_hook,
     set_devtmpfs_del_hook,
 };
