@@ -227,32 +227,17 @@ pub fn invoke_arm_irq_handler(intid: u32) -> bool {
 /// parallel atomic arrays so the storage stays Send+Sync without
 /// a lock: SPIs[i] holds the INTID for slot i (0 = empty), HANDS[i]
 /// holds the fn pointer cast through `*mut ()`. Lookup scans the
-/// 8-slot table — v1 has ≤ 4 MSI devices, so the scan is cheap.
+/// fixed-size table — B002 boots enough MSI devices that eight slots is too
+/// small; the scan stays cheap at this size.
 #[cfg(target_arch = "aarch64")]
-const ARM_MSI_SLOTS: usize = 8;
+const ARM_MSI_SLOTS: usize = 32;
 
 #[cfg(target_arch = "aarch64")]
-pub(crate) static ARM_MSI_SPIS: [core::sync::atomic::AtomicU32; ARM_MSI_SLOTS] = [
-    core::sync::atomic::AtomicU32::new(0),
-    core::sync::atomic::AtomicU32::new(0),
-    core::sync::atomic::AtomicU32::new(0),
-    core::sync::atomic::AtomicU32::new(0),
-    core::sync::atomic::AtomicU32::new(0),
-    core::sync::atomic::AtomicU32::new(0),
-    core::sync::atomic::AtomicU32::new(0),
-    core::sync::atomic::AtomicU32::new(0),
-];
+pub(crate) static ARM_MSI_SPIS: [core::sync::atomic::AtomicU32; ARM_MSI_SLOTS] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; ARM_MSI_SLOTS];
 #[cfg(target_arch = "aarch64")]
-pub(crate) static ARM_MSI_HANDS: [core::sync::atomic::AtomicPtr<()>; ARM_MSI_SLOTS] = [
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-];
+pub(crate) static ARM_MSI_HANDS: [core::sync::atomic::AtomicPtr<()>; ARM_MSI_SLOTS] =
+    [const { core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()) }; ARM_MSI_SLOTS];
 
 /// Install `handler` for INTID `spi`. Idempotent for an allocated SPI.
 /// # C: O(N) atomic scan
