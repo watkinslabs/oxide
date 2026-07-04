@@ -368,6 +368,53 @@ impl PseudoDir {
         Ok(())
     }
 
+    /// `i_op->rename` — move the child `old` (this dir) to `new` under `dst`.
+    /// devtmpfs needs this: `udevadm`/udevd create device symlinks atomically by
+    /// symlink-to-a-temp-name then RENAME onto the real name (`/dev/char/.#13:64X`
+    /// → `/dev/char/13:64`). Without a kernfs rename the RENAME returned EROFS,
+    /// the udev worker aborted BEFORE tagging master-of-seat, and no DRM/block/
+    /// input device was ever tagged (→ seat0 never CanGraphical → no greeter).
+    /// Moves the `PseudoEntry` verbatim (a symlink's target/ino are stable; a
+    /// renamed dir keeps its old internal `path`, acceptable for the pseudo-fs
+    /// use — udevd renames symlinks, not dirs). `RENAME_NOREPLACE`/`_EXCHANGE`
+    /// honoured. Same-dir is one atomic lock; cross-dir does remove-then-insert
+    /// (two sequential locks — no same-class double-lock). # C: O(log children)
+    fn op_rename(&self, old: &str, dst: &PseudoDir, new: &str, flags: u32) -> KResult<()> {
+        const RENAME_NOREPLACE: u32 = 1;
+        const RENAME_EXCHANGE:  u32 = 2;
+        if core::ptr::eq(self as *const PseudoDir, dst as *const PseudoDir) {
+            let mut g = self.children.lock();
+            if flags & RENAME_EXCHANGE != 0 {
+                let a = g.remove(old).ok_or(VfsError::Enoent)?;
+                match g.remove(new) {
+                    Some(b) => { g.insert(String::from(new), a); g.insert(String::from(old), b); Ok(()) }
+                    None    => { g.insert(String::from(old), a); Err(VfsError::Enoent) }
+                }
+            } else {
+                if flags & RENAME_NOREPLACE != 0 && g.contains_key(new) { return Err(VfsError::Eexist); }
+                let e = g.remove(old).ok_or(VfsError::Enoent)?;
+                g.insert(String::from(new), e);
+                Ok(())
+            }
+        } else if flags & RENAME_EXCHANGE != 0 {
+            let a = self.children.lock().remove(old).ok_or(VfsError::Enoent)?;
+            let b = match dst.children.lock().remove(new) {
+                Some(b) => b,
+                None    => { self.children.lock().insert(String::from(old), a); return Err(VfsError::Enoent); }
+            };
+            dst.children.lock().insert(String::from(new), a);
+            self.children.lock().insert(String::from(old), b);
+            Ok(())
+        } else {
+            if flags & RENAME_NOREPLACE != 0 && dst.children.lock().contains_key(new) {
+                return Err(VfsError::Eexist);
+            }
+            let e = self.children.lock().remove(old).ok_or(VfsError::Enoent)?;
+            dst.children.lock().insert(String::from(new), e);
+            Ok(())
+        }
+    }
+
     /// `f_op->iterate`/readdir. # C: O(children)
     fn op_readdir(&self, off: u64, f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool) -> KResult<u64> {
         // Synthetic children first (BTreeMap → sorted, stable order). Capture
@@ -401,6 +448,9 @@ impl InodeOps for PseudoDirOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> { pdir(inode)?.op_lookup(name) }
     fn mkdir(&self, inode: &Inode, name: &str, _mode: u32, _ctx: &vfs::CreateCtx) -> KResult<InodeRef> { pdir(inode)?.op_mkdir(name) }
     fn symlink(&self, inode: &Inode, name: &str, target: &[u8], _ctx: &vfs::CreateCtx) -> KResult<()> { pdir(inode)?.op_symlink(name, target) }
+    fn rename(&self, inode: &Inode, old: &str, new_dir: &Inode, new: &str, flags: u32, _ctx: &vfs::CreateCtx) -> KResult<()> {
+        pdir(inode)?.op_rename(old, pdir(new_dir)?, new, flags)
+    }
 }
 
 /// `file_operations` for a `PseudoDir` — only the directory iterate path.
