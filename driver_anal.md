@@ -122,6 +122,9 @@ test-pass claims.
 - Virtio-blk's wanted feature mask now lives in the block child driver and
   includes `VIRTIO_BLK_F_BLK_SIZE`, so the child-owned config parser can use
   the device's native block size when the device offers it.
+- Virtio-input, virtio-rng, virtio-vsock, and virtio-snd now also expose their
+  wanted feature masks from the child drivers. The PCI transport no longer has
+  a generic VERSION_1-only child feature policy for the active virtio profiles.
 - Virtio-vsock no longer has PCI-transport-owned guest-CID harvest. The
   virtio-vsock child driver reads its own CID from the generic `DEVICE_CFG`
   resource during install.
@@ -270,11 +273,10 @@ test-pass claims.
   methods, including planned q2/q3 notify mapping and explicit q1 mapping.
   Common transport bring-up ordering also now goes through `VirtioProbeState`.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
-  child-unwind leak has been fixed, and virtio-net/GPU/block feature policy
-  has moved to child drivers. Remaining device feature policy, complete MSI-X
-  setup policy, remaining child-probe failure unwind audit, and
-  fault-injection proof still need to move behind a fuller
-  `VirtioPciTransport` boundary.
+  child-unwind leak has been fixed, and active virtio child feature policy has
+  moved to child drivers. Complete MSI-X setup policy, remaining
+  child-probe failure unwind audit, and fault-injection proof still need to
+  move behind a fuller `VirtioPciTransport` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and

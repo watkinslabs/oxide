@@ -25,7 +25,15 @@ pub const VIRTIO_INPUT_PCI_DEVICE_ID: u16 = 0x1052;
 pub const VIRTIO_PCI_VENDOR_RH:       u16 = 0x1AF4;
 
 pub const VIRTIO_F_VERSION_1: u32 = 32;
+const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1;
 pub const MAX_INPUT_DEVICES: usize = 8;
+
+/// Feature policy for the virtio-input child driver. The PCI transport
+/// executes common-cfg negotiation; this driver owns the input-specific
+/// feature mask it is prepared to consume.
+pub const fn wanted_features() -> u64 {
+    WANTED_FEATURES
+}
 
 // virtio_input_config.select selectors
 pub const VIRTIO_INPUT_CFG_UNSET:     u8 = 0;

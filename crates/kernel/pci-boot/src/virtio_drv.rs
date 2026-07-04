@@ -68,18 +68,6 @@ struct VirtioProbeProfile {
 }
 
 impl VirtioProbeProfile {
-    const VERSION_ONLY: u64 = virtio::VIRTIO_F_VERSION_1;
-
-    const fn generic(msix0_handler: Option<fn()>) -> Self {
-        Self {
-            drv_features: Self::VERSION_ONLY,
-            msix0_handler,
-            extra_queues: [None, None, None],
-            q1_notify_policy: Q1NotifyPolicy::None,
-            needs_net_boot_buffers: false,
-        }
-    }
-
     fn gpu(msix0_handler: Option<fn()>) -> Self {
         Self {
             drv_features: drv_virtio_gpu::wanted_features(),
@@ -102,7 +90,7 @@ impl VirtioProbeProfile {
 
     const fn input(msix0_handler: Option<fn()>) -> Self {
         Self {
-            drv_features: Self::VERSION_ONLY,
+            drv_features: drv_virtio_input::wanted_features(),
             msix0_handler,
             extra_queues: [None, None, None],
             q1_notify_policy: Q1NotifyPolicy::None,
@@ -121,12 +109,18 @@ impl VirtioProbeProfile {
     }
 
     const fn rng(msix0_handler: Option<fn()>) -> Self {
-        Self::generic(msix0_handler)
+        Self {
+            drv_features: drv_virtio_rng::wanted_features(),
+            msix0_handler,
+            extra_queues: [None, None, None],
+            q1_notify_policy: Q1NotifyPolicy::None,
+            needs_net_boot_buffers: false,
+        }
     }
 
     const fn vsock(msix0_handler: Option<fn()>) -> Self {
         Self {
-            drv_features: Self::VERSION_ONLY,
+            drv_features: drv_virtio_vsock::wanted_features(),
             msix0_handler,
             extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
             q1_notify_policy: Q1NotifyPolicy::PersistentTx,
@@ -136,7 +130,7 @@ impl VirtioProbeProfile {
 
     const fn snd(msix0_handler: Option<fn()>) -> Self {
         Self {
-            drv_features: Self::VERSION_ONLY,
+            drv_features: drv_virtio_snd::wanted_features(),
             msix0_handler,
             extra_queues: [
                 Some(QueuePlan::new(2, 0xFFFF, true)),
