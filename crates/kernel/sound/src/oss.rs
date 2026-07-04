@@ -41,7 +41,8 @@ struct Oss {
 static OSS: Spinlock<Vec<Oss>, L> = Spinlock::new(Vec::new());
 
 fn initial(owner: u32) -> Oss {
-    Oss { owner, rate: 6 /*44100*/, format: V_S16, channels: 2, running: false, cap_running: false }
+    let (rate, format, channels) = initial_params(owner);
+    Oss { owner, rate, format, channels, running: false, cap_running: false }
 }
 
 pub(crate) fn register_card(owner: u32) {
@@ -69,10 +70,10 @@ pub(crate) fn has_card(owner: u32) -> bool {
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-fn afmt_to_virtio(a: u32) -> u8 {
+fn afmt_to_virtio(a: u32) -> Option<u8> {
     match a {
-        AFMT_MU_LAW => V_MU_LAW, AFMT_A_LAW => V_A_LAW, AFMT_S8 => V_S8,
-        AFMT_U8 => V_U8, AFMT_S16_LE => V_S16, AFMT_U16_LE => V_U16, _ => V_S16,
+        AFMT_MU_LAW => Some(V_MU_LAW), AFMT_A_LAW => Some(V_A_LAW), AFMT_S8 => Some(V_S8),
+        AFMT_U8 => Some(V_U8), AFMT_S16_LE => Some(V_S16), AFMT_U16_LE => Some(V_U16), _ => None,
     }
 }
 fn virtio_to_afmt(v: u8) -> u32 {
@@ -81,20 +82,71 @@ fn virtio_to_afmt(v: u8) -> u32 {
         V_U8 => AFMT_U8, V_U16 => AFMT_U16_LE, _ => AFMT_S16_LE,
     }
 }
-fn hz_to_rate_enum(hz: u32) -> u8 {
-    const HZ: [u32; 14] = [5512, 8000, 11025, 16000, 22050, 32000, 44100,
-                           48000, 64000, 88200, 96000, 176400, 192000, 384000];
-    let mut best = 6u8; let mut bd = u32::MAX;
-    for (i, &h) in HZ.iter().enumerate() {
-        let d = if h > hz { h - hz } else { hz - h };
-        if d < bd { bd = d; best = i as u8; }
+
+const RATE_HZ: [u32; 14] = [5512, 8000, 11025, 16000, 22050, 32000, 44100,
+                            48000, 64000, 88200, 96000, 176400, 192000, 384000];
+
+fn nearest_supported_rate_enum(hz: u32, rates: u64) -> Option<u8> {
+    let mut best = None;
+    let mut best_delta = u32::MAX;
+    for (i, &rate_hz) in RATE_HZ.iter().enumerate() {
+        if (rates & (1u64 << i)) == 0 {
+            continue;
+        }
+        let delta = rate_hz.abs_diff(hz);
+        if delta < best_delta {
+            best = Some(i as u8);
+            best_delta = delta;
+        }
     }
     best
 }
-fn rate_enum_to_hz(e: u8) -> u32 {
-    const HZ: [u32; 14] = [5512, 8000, 11025, 16000, 22050, 32000, 44100,
-                           48000, 64000, 88200, 96000, 176400, 192000, 384000];
-    HZ[(e as usize).min(13)]
+
+fn rate_enum_to_hz(e: u8) -> u32 { RATE_HZ[(e as usize).min(RATE_HZ.len() - 1)] }
+
+fn first_supported_format(formats: u64) -> Option<u8> {
+    [V_S16, V_U8, V_S8, V_U16, V_MU_LAW, V_A_LAW]
+        .iter()
+        .copied()
+        .find(|format| (formats & (1u64 << *format)) != 0)
+}
+
+fn formats_to_afmt(formats: u64) -> u32 {
+    let mut out = 0;
+    for format in [V_MU_LAW, V_A_LAW, V_S8, V_U8, V_S16, V_U16] {
+        if (formats & (1u64 << format)) != 0 {
+            out |= virtio_to_afmt(format);
+        }
+    }
+    out
+}
+
+fn caps(owner: u32) -> Option<(u64, u64, u8, u8)> {
+    match (crate::ops::pcm_caps(owner), crate::ops::cap_caps(owner)) {
+        (Some((pf, pr, pcmin, pcmax)), Some((cf, cr, ccmin, ccmax))) => {
+            let formats = pf & cf;
+            let rates = pr & cr;
+            let ch_min = pcmin.max(ccmin);
+            let ch_max = pcmax.min(ccmax);
+            if formats == 0 || rates == 0 || ch_min > ch_max {
+                None
+            } else {
+                Some((formats, rates, ch_min, ch_max))
+            }
+        }
+        (Some(caps), None) | (None, Some(caps)) => Some(caps),
+        (None, None) => None,
+    }
+}
+
+fn initial_params(owner: u32) -> (u8, u8, u8) {
+    let Some((formats, rates, ch_min, ch_max)) = caps(owner) else {
+        return (6, V_S16, 2);
+    };
+    let rate = nearest_supported_rate_enum(44_100, rates).unwrap_or(6);
+    let format = first_supported_format(formats).unwrap_or(V_S16);
+    let channels = 2u8.clamp(ch_min, ch_max);
+    (rate, format, channels)
 }
 
 /// Stop + release both directions and disarm, so the next I/O re-applies
@@ -210,7 +262,12 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
         1 | 8 => 0,                                                  // SYNC / POST
         2 => {                                                       // SPEED
             let hz = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
-            let e = hz_to_rate_enum(hz);
+            let Some((_, rates, _, _)) = caps(owner) else {
+                return err(Errno::Enodev);
+            };
+            let Some(e) = nearest_supported_rate_enum(hz, rates) else {
+                return err(Errno::Einval);
+            };
             if !reset(owner) { return err(Errno::Eio); }
             {
                 let mut guard = OSS.lock();
@@ -224,8 +281,11 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
         }
         3 => {                                                       // STEREO
             let st = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
+            let Some((_, _, ch_min, ch_max)) = caps(owner) else {
+                return err(Errno::Enodev);
+            };
             if !reset(owner) { return err(Errno::Eio); }
-            let channels = if st != 0 { 2 } else { 1 };
+            let channels = (if st != 0 { 2 } else { 1 }).clamp(ch_min, ch_max);
             {
                 let mut guard = OSS.lock();
                 let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else {
@@ -248,8 +308,16 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
                 wi(arg, virtio_to_afmt(o.format));
                 return 0;
             }
+            let Some((formats, _, _, _)) = caps(owner) else {
+                return err(Errno::Enodev);
+            };
+            let Some(format) = afmt_to_virtio(a) else {
+                return err(Errno::Einval);
+            };
+            if (formats & (1u64 << format)) == 0 {
+                return err(Errno::Einval);
+            }
             if !reset(owner) { return err(Errno::Eio); }
-            let format = afmt_to_virtio(a);
             {
                 let mut guard = OSS.lock();
                 let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else {
@@ -262,8 +330,12 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
         }
         6 => {                                                       // CHANNELS
             let n = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
+            let Some((_, _, ch_min, ch_max)) = caps(owner) else {
+                return err(Errno::Enodev);
+            };
             if !reset(owner) { return err(Errno::Eio); }
-            let channels = n.clamp(1, 2) as u8;
+            let channels = n.min(u8::MAX as u32) as u8;
+            let channels = channels.clamp(ch_min, ch_max);
             {
                 let mut guard = OSS.lock();
                 let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else {
@@ -275,7 +347,10 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
             0
         }
         11 => { if UserBuf::new(arg, 4).is_none() { return err(Errno::Efault); }  // GETFMTS
-                wi(arg, AFMT_S16_LE | AFMT_U8 | AFMT_S8 | AFMT_U16_LE | AFMT_MU_LAW | AFMT_A_LAW); 0 }
+                let Some((formats, _, _, _)) = caps(owner) else {
+                    return err(Errno::Enodev);
+                };
+                wi(arg, formats_to_afmt(formats)); 0 }
         12 | 13 => {                                                 // GET[OI]SPACE
             let b = match UserBuf::new(arg, 16) { Some(b) => b, None => return err(Errno::Efault) };
             let frag = crate::ops::period_bytes(owner) as u32;
@@ -331,6 +406,11 @@ mod tests {
         assert!(crate::ops::register(owner, &STOP_FAIL_OPS));
         register_card(owner);
 
+        let getfmts_req = (2u64 << 30) | (4u64 << 16) | ((b'P' as u64) << 8) | 11;
+        let mut fmts = 0u32;
+        assert_eq!(handle(owner, false, getfmts_req, (&mut fmts as *mut u32) as u64), 0);
+        assert_eq!(fmts, AFMT_S16_LE);
+
         let bytes = [0x55u8; 128];
         assert_eq!(write(owner, &bytes), bytes.len());
         {
@@ -338,6 +418,16 @@ mod tests {
             let o = guard.iter().find(|o| o.owner == owner).expect("registered OSS state");
             assert!(o.running);
             assert_eq!(o.rate, 6);
+        }
+
+        let setfmt_req = (1u64 << 30) | (4u64 << 16) | ((b'P' as u64) << 8) | 5;
+        let mut fmt = AFMT_U8;
+        assert_eq!(handle(owner, false, setfmt_req, (&mut fmt as *mut u32) as u64), test_err(Errno::Einval));
+        {
+            let guard = OSS.lock();
+            let o = guard.iter().find(|o| o.owner == owner).expect("registered OSS state");
+            assert!(o.running);
+            assert_eq!(o.format, V_S16);
         }
 
         let speed_req = (1u64 << 30) | (4u64 << 16) | ((b'P' as u64) << 8) | 2;

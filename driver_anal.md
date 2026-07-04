@@ -859,7 +859,10 @@ test-pass claims.
   rejects release. OSS parameter-changing ioctls now fail if reset cannot
   stop/release the active stream, preserving the old OSS runtime state instead
   of pretending the stream was disarmed. PCM timestamp configuration ioctls now
-  report unsupported until real status timestamp plumbing exists.
+  report unsupported until real status timestamp plumbing exists. OSS format,
+  rate, channel defaults, `GETFMTS`, and SETFMT/SPEED/CHANNELS negotiation now
+  come from the same real playback/capture caps as ALSA rather than hard-coded
+  S16/all-format/stereo assumptions.
   Raw EVENTQ drain/accounting is now owner-keyed; higher-level sound event
   interpretation/publication, remaining child-probe failure unwind audit, and
   fault-injection proof still need to move behind a fuller `VirtioPciTransport`
