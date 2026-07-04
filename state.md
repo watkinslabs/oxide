@@ -2,10 +2,11 @@
 
 ## Headline
 **Primary greeter blocker FOUND + FIXED (measured, committed, boot-verified):**
-logind now attaches devices and `/run/systemd/seats/seat0` is created (was
-absent). Branch B318 (pushed): the `mnt_root` mount-identification fix + d_drop
-invariant + dev_index_target symlink fix. Remaining gate: `CAN_GRAPHICAL=0` —
-card0 still not attached because logind's `/run/udev` has no `tags`/`data`.
+logind's `/sys` now works and `/run/systemd/seats/seat0` is created (was absent).
+Branch B318 (pushed): the `mnt_root` mount-identification fix + d_drop invariant +
+2 dev-path/symlink fixes. Remaining gate: `CAN_GRAPHICAL=0` — card0 is never
+delivered to udevd (its uevent is emitted before udevd is up, and coldplug
+enumerates but never re-triggers it), so udevd never tags it master-of-seat.
 
 ## What was THE bug (measured end-to-end, not guessed)
 `containing_mount_id → parent_by_dentry → visible_mnt_id_of_root_dentry /
@@ -67,11 +68,6 @@ Then: the LIVE cooked-uevent path (udevd→logind monitor) was ALSO measured
 broken long ago (COOKTRACE=0) — likely a SECOND fix needed for live attach.
 Latent: drm.rs:114 subsystem symlink `../../../class/drm` (3 ups) → wrong;
 should be `../../../../class/drm` (4 ups). Basename still "drm" so non-fatal.
-
-Also latent (fix once card0 attaches): drm.rs:114 subsystem symlink is
-`../../../class/drm` (3 ups) → resolves to /sys/devices/class/drm (wrong);
-should be `../../../../class/drm` (4 ups) like block.rs/input.rs. sd_device reads
-SUBSYSTEM by symlink BASENAME so it still yields "drm", but fix it anyway.
 
 ## Landed this session (branch B318, PR #2338, all pushed)
 - 21b4368e fix(sysfs): drm device_add uevent DEVPATH → devices/virtual/drm/<card>
