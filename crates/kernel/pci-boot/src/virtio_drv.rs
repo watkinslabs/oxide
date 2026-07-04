@@ -76,11 +76,10 @@ impl drv::Driver for VirtioGpuDrv {
             virtio::VirtioTransportProfile::q0(drv_virtio_gpu::wanted_features(), None);
         let mut p = virtio_init_arch(&d, profile).ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
-        if !p.ready_for_child(profile.child_requirements) {
-            p.release_failed_transport(&[]);
+        let Some(resources) = p.child_resources(profile.child_requirements) else {
+            p.release_failed_child(profile.child_requirements);
             return Err(drv::Error::ProbeFailed);
-        }
-        let resources = p.resources(&[p.q0_resource()]);
+        };
         let ok = drv_virtio_gpu::post_init::get_display_info(
             d.bdf.bus,
             d.bdf.device,
@@ -89,7 +88,7 @@ impl drv::Driver for VirtioGpuDrv {
             resources,
         );
         if !ok {
-            p.release_failed_transport(&[]);
+            p.release_failed_child(profile.child_requirements);
             return Err(drv::Error::ProbeFailed);
         }
         debug_boot! {
@@ -136,23 +135,22 @@ impl drv::Driver for VirtioInputDrv {
         );
         let mut p = virtio_init_arch(&d, profile).ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
-        if !p.ready_for_child(profile.child_requirements) {
-            p.release_failed_transport(&[]);
-            return Err(drv::Error::ProbeFailed);
-        }
         let bdf_word = bdf_word(d.bdf);
-        let resources = p.resources(&[p.q0_resource()]);
+        let Some(resources) = p.child_resources(profile.child_requirements) else {
+            p.release_failed_child(profile.child_requirements);
+            return Err(drv::Error::ProbeFailed);
+        };
         let evdev_id = match drv_virtio_input::install_device(bdf_word, resources) {
             Some(id) => id,
             None => {
-                p.release_failed_transport(&[]);
+                p.release_failed_child(profile.child_requirements);
                 return Err(drv::Error::ProbeFailed);
             }
         };
         let installed = drv_virtio_input::drain::install_eventq(evdev_id, resources);
         if installed.is_err() {
             let _ = drv_virtio_input::remove_device(bdf_word);
-            p.release_failed_transport(&[]);
+            p.release_failed_child(profile.child_requirements);
             return Err(drv::Error::ProbeFailed);
         }
         debug_boot! {
@@ -203,11 +201,10 @@ impl drv::Driver for VirtioNetDrv {
         );
         let mut p = virtio_init_arch(&d, profile).ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
-        if !p.ready_for_child(profile.child_requirements) {
-            p.release_failed_transport_with_net_payloads();
+        let Some(resources) = p.child_resources(profile.child_requirements) else {
+            p.release_failed_child(profile.child_requirements);
             return Err(drv::Error::ProbeFailed);
-        }
-        let resources = p.resources(&[p.q0_resource(), p.q1_resource()]);
+        };
         if !drv_virtio_net::modern::init_modern(
             device_key,
             resources,
@@ -218,7 +215,7 @@ impl drv::Driver for VirtioNetDrv {
             p.rx0_buf_len,
             p.tx0_buf_pa,
         ) {
-            p.release_failed_transport_with_net_payloads();
+            p.release_failed_child(profile.child_requirements);
             return Err(drv::Error::ProbeFailed);
         }
         publish_transport_mmio(&mut p);
@@ -263,11 +260,10 @@ impl drv::Driver for VirtioBlkDrv {
         );
         let mut p = virtio_init_arch(&d, profile).ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
-        if !p.ready_for_child(profile.child_requirements) {
-            p.release_failed_transport(&[]);
+        let Some(resources) = p.child_resources(profile.child_requirements) else {
+            p.release_failed_child(profile.child_requirements);
             return Err(drv::Error::ProbeFailed);
-        }
-        let resources = p.resources(&[p.q0_resource()]);
+        };
         let device_key = bdf_word(d.bdf);
         let idx = drv_virtio_blk::modern::init_blk(drv_virtio_blk::modern::BlkInit {
             device_key,
@@ -275,7 +271,7 @@ impl drv::Driver for VirtioBlkDrv {
             drv_features: p.drv_features,
         });
         if idx == 0 {
-            p.release_failed_transport(&[]);
+            p.release_failed_child(profile.child_requirements);
             return Err(drv::Error::ProbeFailed);
         }
         publish_transport_mmio(&mut p);
@@ -314,16 +310,15 @@ impl drv::Driver for VirtioRngDrv {
             virtio::VirtioTransportProfile::q0(drv_virtio_rng::wanted_features(), None);
         let mut p = virtio_init_arch(&d, profile).ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
-        if !p.ready_for_child(profile.child_requirements) {
-            p.release_failed_transport(&[]);
+        let Some(resources) = p.child_resources(profile.child_requirements) else {
+            p.release_failed_child(profile.child_requirements);
             return Err(drv::Error::ProbeFailed);
-        }
-        let resources = p.resources(&[p.q0_resource()]);
+        };
         let bdf_word = bdf_word(d.bdf);
         match drv_virtio_rng::install(bdf_word, resources) {
             Some(()) => {}
             None => {
-                p.release_failed_transport(&[]);
+                p.release_failed_child(profile.child_requirements);
                 return Err(drv::Error::ProbeFailed);
             }
         }
@@ -334,7 +329,7 @@ impl drv::Driver for VirtioRngDrv {
         let n = drv_virtio_rng::fill_from_bdf(bdf_word, &mut seed);
         if n == 0 {
             let _ = drv_virtio_rng::uninstall(bdf_word);
-            p.release_failed_transport(&[]);
+            p.release_failed_child(profile.child_requirements);
             return Err(drv::Error::ProbeFailed);
         }
         devfs::misc::add_entropy(&seed[..n]);
@@ -382,13 +377,12 @@ impl drv::Driver for VirtioVsockDrv {
         );
         let mut p = virtio_init_arch(&d, profile).ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
-        if !p.ready_for_child(profile.child_requirements) {
-            p.release_failed_transport(&[]);
+        let Some(resources) = p.child_resources(profile.child_requirements) else {
+            p.release_failed_child(profile.child_requirements);
             return Err(drv::Error::ProbeFailed);
-        }
-        let resources = p.resources(&[p.q0_resource(), p.q1_resource()]);
+        };
         if !drv_virtio_vsock::install(device_key, resources) {
-            p.release_failed_transport(&[]);
+            p.release_failed_child(profile.child_requirements);
             return Err(drv::Error::ProbeFailed);
         }
         debug_boot! {
@@ -437,21 +431,15 @@ impl drv::Driver for VirtioSndDrv {
         );
         let mut p = virtio_init_arch(&d, profile).ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
-        if !p.ready_for_child(profile.child_requirements) {
-            p.release_failed_transport(&[]);
+        let Some(resources) = p.child_resources(profile.child_requirements) else {
+            p.release_failed_child(profile.child_requirements);
             return Err(drv::Error::ProbeFailed);
-        }
-        let resources = p.resources(&[
-            p.q0_resource(),
-            p.q1_resource(),
-            p.snd_q2_resource(),
-            p.snd_q3_resource(),
-        ]);
+        };
         let sp = drv_virtio_snd::install(drv_virtio_snd::SndInstall {
             device_key,
             resources,
         }).ok_or_else(|| {
-            p.release_failed_transport(&[]);
+            p.release_failed_child(profile.child_requirements);
             drv::Error::ProbeFailed
         })?;
         #[cfg(not(feature = "debug-boot"))]
@@ -1052,6 +1040,26 @@ impl VirtioProbe {
             && (!requirements.needs_net_boot_payloads || self.net_payloads_ready())
     }
 
+    fn child_resources(
+        &self,
+        requirements: virtio::VirtioChildRequirements,
+    ) -> Option<virtio::VirtioResources> {
+        if !self.ready_for_child(requirements) {
+            return None;
+        }
+
+        let mut resources =
+            virtio::VirtioResources::new(self.cfg_va, virtio_hhdm_offset())
+                .with_device_cfg_va(self.device_cfg_va);
+        for (index, required) in requirements.required_queues.iter().copied().enumerate() {
+            if !required {
+                continue;
+            }
+            resources.set_queue(self.queue_resource(index as u16)?);
+        }
+        Some(resources)
+    }
+
     fn transport_vring_frames(&self) -> Vec<u64> {
         let mut frames = Vec::new();
         for frame in [
@@ -1088,9 +1096,12 @@ impl VirtioProbe {
         self.release_failed_transport(&[self.rx0_buf_pa, self.tx0_buf_pa]);
     }
 
-    fn resources(&self, queues: &[virtio::VirtQueueResource]) -> virtio::VirtioResources {
-        virtio::VirtioResources::from_queues(self.cfg_va, virtio_hhdm_offset(), queues)
-            .with_device_cfg_va(self.device_cfg_va)
+    fn release_failed_child(&mut self, requirements: virtio::VirtioChildRequirements) {
+        if requirements.needs_net_boot_payloads {
+            self.release_failed_transport_with_net_payloads();
+        } else {
+            self.release_failed_transport(&[]);
+        }
     }
 
     fn q0_resource(&self) -> virtio::VirtQueueResource {
