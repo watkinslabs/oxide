@@ -177,6 +177,7 @@ pub fn uninstall_modern(device_key: u32) -> bool {
         unregister_timers();
     }
     remove_registered_iface(device_key);
+    remove_net_runtime(device_key);
     clear_rx_runtime_for(device_key);
     if state.cfg_va != 0 {
         // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
@@ -497,7 +498,9 @@ pub fn poll_into_stack_for(device_key: u32, iface: net::NetIfaceId, our_ip: [u8;
             0x0806 => {
                 if f.len() < 14 + 28 { return; }
                 if let Ok(arp) = net::arp::ArpPkt::parse(&f[14..14 + 28]) {
-                    arp_cache().insert(arp.sender_ip, arp.sender_mac);
+                    if let Some(runtime) = net_runtime_for(device_key) {
+                        runtime.arp.insert(arp.sender_ip, arp.sender_mac);
+                    }
                     if arp.opcode == net::arp::ARP_OP_REQUEST
                         && arp.target_ip.octets() == our_ip
                     {
@@ -524,10 +527,12 @@ pub fn poll_into_stack_for(device_key: u32, iface: net::NetIfaceId, our_ip: [u8;
                     src_ip.copy_from_slice(&f[14 + 12 .. 14 + 16]);
                     let mut src_mac = [0u8; 6];
                     src_mac.copy_from_slice(&f[6..12]);
-                    arp_cache().insert(
-                        net::Ipv4Addr::new(src_ip[0], src_ip[1], src_ip[2], src_ip[3]),
-                        net::MacAddr(src_mac),
-                    );
+                    if let Some(runtime) = net_runtime_for(device_key) {
+                        runtime.arp.insert(
+                            net::Ipv4Addr::new(src_ip[0], src_ip[1], src_ip[2], src_ip[3]),
+                            net::MacAddr(src_mac),
+                        );
+                    }
                 }
                 let _ = stack.deliver_rx(iface, &f[14..]);
             }
@@ -547,7 +552,7 @@ pub fn poll_into_stack_for(device_key: u32, iface: net::NetIfaceId, our_ip: [u8;
 //
 // Wraps the modern transport in a `net::NetDev` so the kernel net
 // stack can route packets through this device. xmit() concatenates
-// caller's L3 payload with an Ethernet header (dst from arp_cache,
+// caller's L3 payload with an Ethernet header (dst from this device's ARP cache,
 // src from device MAC, ethertype from `pkt.proto`) and hands it to
 // `tx_frame`. Ring exhaustion / setup gaps return `NetError::Eio`
 // so the stack can drop or retry.
@@ -559,22 +564,73 @@ pub fn poll_into_stack_for(device_key: u32, iface: net::NetIfaceId, our_ip: [u8;
 
 pub struct VirtioNetDev {
     device_key: u32,
+    runtime: alloc::sync::Arc<NetRuntime>,
     mac: [u8; 6],
     tx_packets: AtomicU64,
     tx_bytes:   AtomicU64,
     tx_dropped: AtomicU64,
 }
 
-/// Process-global RX counters. `rx_poll` is a free function (not a
-/// method on `VirtioNetDev`) driven from the softirq path, so the
-/// counters it bumps must be reachable without a `&self`. The single
-/// registered `VirtioNetDev`'s `stats()` reads these statics. Linux
-/// counts the L2 ethernet frame in rx_bytes — i.e. the virtio_net_hdr
-/// (12 bytes) is excluded.
-static RX_PACKETS: AtomicU64 = AtomicU64::new(0);
-static RX_BYTES:   AtomicU64 = AtomicU64::new(0);
-static RX_DROPPED: AtomicU64 = AtomicU64::new(0);
-static RX_ERRORS:  AtomicU64 = AtomicU64::new(0);
+struct NetRuntime {
+    device_key: u32,
+    name: alloc::string::String,
+    arp: net::arp::ArpCache,
+    rx_packets: AtomicU64,
+    rx_bytes:   AtomicU64,
+    rx_dropped: AtomicU64,
+    rx_errors:  AtomicU64,
+}
+
+static NET_RUNTIMES: Spinlock<alloc::vec::Vec<alloc::sync::Arc<NetRuntime>>, DriverLockClass> =
+    Spinlock::new(alloc::vec::Vec::new());
+
+fn net_runtime_for(device_key: u32) -> Option<alloc::sync::Arc<NetRuntime>> {
+    NET_RUNTIMES
+        .lock()
+        .iter()
+        .find(|runtime| runtime.device_key == device_key)
+        .map(alloc::sync::Arc::clone)
+}
+
+fn remove_net_runtime(device_key: u32) -> Option<alloc::sync::Arc<NetRuntime>> {
+    let mut runtimes = NET_RUNTIMES.lock();
+    let pos = runtimes
+        .iter()
+        .position(|runtime| runtime.device_key == device_key)?;
+    Some(runtimes.remove(pos))
+}
+
+fn allocate_net_name(runtimes: &[alloc::sync::Arc<NetRuntime>]) -> alloc::string::String {
+    let mut index = 0usize;
+    loop {
+        let name = alloc::format!("eth{}", index);
+        if runtimes.iter().all(|runtime| runtime.name != name) {
+            return name;
+        }
+        index += 1;
+    }
+}
+
+fn ensure_net_runtime(device_key: u32) -> alloc::sync::Arc<NetRuntime> {
+    let mut runtimes = NET_RUNTIMES.lock();
+    if let Some(runtime) = runtimes
+        .iter()
+        .find(|runtime| runtime.device_key == device_key)
+    {
+        return alloc::sync::Arc::clone(runtime);
+    }
+    let runtime = alloc::sync::Arc::new(NetRuntime {
+        device_key,
+        name: allocate_net_name(&runtimes),
+        arp: net::arp::ArpCache::new(),
+        rx_packets: AtomicU64::new(0),
+        rx_bytes:   AtomicU64::new(0),
+        rx_dropped: AtomicU64::new(0),
+        rx_errors:  AtomicU64::new(0),
+    });
+    runtimes.push(alloc::sync::Arc::clone(&runtime));
+    runtime
+}
 
 impl VirtioNetDev {
     /// Build a `VirtioNetDev` from the persisted modern state.
@@ -588,8 +644,10 @@ impl VirtioNetDev {
                 .find(|state| state.device_key == device_key && state.mac_valid)?;
             state.mac
         };
+        let runtime = ensure_net_runtime(device_key);
         Some(alloc::sync::Arc::new(Self {
             device_key,
+            runtime,
             mac: m,
             tx_packets: AtomicU64::new(0),
             tx_bytes:   AtomicU64::new(0),
@@ -629,6 +687,7 @@ pub fn unregister_netdev(device_key: u32) -> bool {
     let removed = net::sock::stack().unregister_iface(id);
     if removed {
         let _ = remove_registered_iface(device_key);
+        let _ = remove_net_runtime(device_key);
     }
     removed
 }
@@ -639,7 +698,7 @@ pub fn unregister_netdev(device_key: u32) -> bool {
 pub fn unregister_netdev(_device_key: u32) -> bool { false }
 
 impl net::NetDev for VirtioNetDev {
-    fn name(&self) -> &str { "eth0" }
+    fn name(&self) -> &str { self.runtime.name.as_str() }
     fn mac(&self)  -> net::MacAddr { net::MacAddr(self.mac) }
     fn mtu(&self)  -> u32 { 1500 }
     fn xmit(&self, pkt: net::Pkt) -> net::NetResult<()> {
@@ -694,10 +753,10 @@ impl net::NetDev for VirtioNetDev {
     }
     fn stats(&self) -> net::NetStats {
         net::NetStats {
-            rx_packets: RX_PACKETS.load(Ordering::Relaxed),
-            rx_bytes:   RX_BYTES.load(Ordering::Relaxed),
-            rx_errors:  RX_ERRORS.load(Ordering::Relaxed),
-            rx_dropped: RX_DROPPED.load(Ordering::Relaxed),
+            rx_packets: self.runtime.rx_packets.load(Ordering::Relaxed),
+            rx_bytes:   self.runtime.rx_bytes.load(Ordering::Relaxed),
+            rx_errors:  self.runtime.rx_errors.load(Ordering::Relaxed),
+            rx_dropped: self.runtime.rx_dropped.load(Ordering::Relaxed),
             tx_packets: self.tx_packets.load(Ordering::Relaxed),
             tx_bytes:   self.tx_bytes.load(Ordering::Relaxed),
             tx_errors:  0,
@@ -706,33 +765,7 @@ impl net::NetDev for VirtioNetDev {
     }
 }
 
-// -------- F59-10: global ARP cache ------------------------------------
-//
-// Lazily-initialised process-global `net::arp::ArpCache`. Every ARP
-// reply harvested by `boot_arp_probe` (and later, by the per-packet
-// RX path) gets inserted here so future code resolving 10.0.2.2
-// (or the configured gateway, when DHCP lands) doesn't need to
-// re-arp. v1 is one cache shared across all virtio-net devices —
-// per-iface caches arrive when we register virtio-net via NetDev.
-
-static ARP_CACHE: Spinlock<Option<&'static net::arp::ArpCache>, DriverLockClass> =
-    Spinlock::new(None);
-
-/// Access the boot-time ARP cache, creating it on first call.
-/// Caller may insert/lookup against the returned reference.
-/// # C: O(1) amortised
-pub fn arp_cache() -> &'static net::arp::ArpCache {
-    let mut g = ARP_CACHE.lock();
-    if g.is_none() {
-        // SAFETY: ArpCache::new is const-style + heap-only via Vec
-        // inside; leaking a Box gives us a 'static reference that
-        // lives for the rest of the kernel's lifetime — fine for a
-        // process-global cache.
-        let boxed = alloc::boxed::Box::leak(alloc::boxed::Box::new(net::arp::ArpCache::new()));
-        *g = Some(boxed);
-    }
-    g.unwrap()
-}
+// -------- F59-10: per-device ARP cache --------------------------------
 
 /// Snapshot of the first registered modern device, if any.
 /// # C: O(1) under device-table lock
@@ -829,7 +862,7 @@ pub fn uninstall_rx_softirq_handler() {
 }
 
 /// F138: update only the IP slot (preserves iface id). SIOCSIFADDR
-/// calls this when userspace (dhcpcd) configures eth0's address so
+/// calls this when userspace (dhcpcd) configures the iface address so
 /// the rx-side ARP responder starts replying to "who-has <new-ip>"
 /// queries from the host's slirp NAT.
 /// # C: O(1)
@@ -922,7 +955,8 @@ fn resolve_next_hop_mac(
     };
     #[cfg(not(target_os = "oxide-kernel"))]
     let next_hop_ip = dst_ip;
-    if let Some(m) = arp_cache().lookup(next_hop_ip) {
+    let runtime = net_runtime_for(device_key);
+    if let Some(m) = runtime.as_ref().and_then(|runtime| runtime.arp.lookup(next_hop_ip)) {
         return Some(m);
     }
     // Cache miss — fire an ARP request so the next call resolves.
@@ -1004,6 +1038,7 @@ fn solicited_node_ethernet(ip: net::Ipv6Addr) -> net::MacAddr {
 #[cfg(test)]
 mod ndp_tests {
     use super::*;
+    use net::NetDev;
 
     fn state(bus: u8) -> ModernNetState {
         ModernNetState {
@@ -1046,6 +1081,7 @@ mod ndp_tests {
     fn clear_test_state() {
         MODERN_DEVS.lock().clear();
         REGISTERED_NETDEVS.lock().clear();
+        NET_RUNTIMES.lock().clear();
         clear_rx_runtime();
     }
 
@@ -1176,6 +1212,56 @@ mod ndp_tests {
     }
 
     #[test]
+    fn net_runtime_names_are_unique_and_reusable() {
+        clear_test_state();
+        {
+            let mut devices = MODERN_DEVS.lock();
+            devices.push(state(1));
+            devices.push(state(2));
+        }
+        let dev1 = VirtioNetDev::new_for(1).unwrap();
+        let dev2 = VirtioNetDev::new_for(2).unwrap();
+        assert_eq!(dev1.name(), "eth0");
+        assert_eq!(dev2.name(), "eth1");
+        assert_eq!(ensure_net_runtime(1).name.as_str(), "eth0");
+        assert_eq!(ensure_net_runtime(2).name.as_str(), "eth1");
+
+        let _ = remove_net_runtime(1);
+        let rt3 = ensure_net_runtime(3);
+        assert_eq!(rt3.name.as_str(), "eth0");
+        clear_test_state();
+    }
+
+    #[test]
+    fn arp_cache_is_keyed_by_device() {
+        clear_test_state();
+        let rt1 = ensure_net_runtime(1);
+        let rt2 = ensure_net_runtime(2);
+        let dst = net::Ipv4Addr::new(10, 0, 0, 2);
+        let mac1 = net::MacAddr([1, 1, 1, 1, 1, 1]);
+        let mac2 = net::MacAddr([2, 2, 2, 2, 2, 2]);
+        rt1.arp.insert(dst, mac1);
+        rt2.arp.insert(dst, mac2);
+
+        let mut body = [0u8; 20];
+        body[16..20].copy_from_slice(&dst.octets());
+        assert_eq!(
+            resolve_next_hop_mac(1, [0x02, 0, 0, 0, 0, 1], net::eth_p::IPV4, &body),
+            Some(mac1)
+        );
+        assert_eq!(
+            resolve_next_hop_mac(2, [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV4, &body),
+            Some(mac2)
+        );
+        let _ = remove_net_runtime(1);
+        assert_eq!(
+            resolve_next_hop_mac(2, [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV4, &body),
+            Some(mac2)
+        );
+        clear_test_state();
+    }
+
+    #[test]
     fn rx_runtime_is_keyed_by_device() {
         clear_rx_runtime();
         set_softirq_iface(0x0012_0304, net::NetIfaceId::from_raw(9), [10, 0, 0, 2]);
@@ -1264,6 +1350,7 @@ pub fn rx_poll<F: FnMut(&[u8])>(cb: F) -> usize {
 }
 
 pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: u32, mut cb: F) -> usize {
+    let runtime = net_runtime_for(device_key);
     let mut g = MODERN_DEVS.lock();
     let Some(s) = g.iter_mut().find(|state| state.device_key == device_key) else {
         return 0;
@@ -1334,17 +1421,23 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: u32, mut cb: F) -> usize {
             // than a minimum ethernet header is a runt → rx_errors; the
             // (id!=0 / oversized) else-branch below is a dropped frame.
             if body_len >= 14 {
-                RX_PACKETS.fetch_add(1, Ordering::Relaxed);
-                RX_BYTES.fetch_add(body_len as u64, Ordering::Relaxed);
+                if let Some(runtime) = runtime.as_ref() {
+                    runtime.rx_packets.fetch_add(1, Ordering::Relaxed);
+                    runtime.rx_bytes.fetch_add(body_len as u64, Ordering::Relaxed);
+                }
             } else {
-                RX_ERRORS.fetch_add(1, Ordering::Relaxed);
+                if let Some(runtime) = runtime.as_ref() {
+                    runtime.rx_errors.fetch_add(1, Ordering::Relaxed);
+                }
             }
             frames.push(body.to_vec());
         } else {
             // Device wrote a slot we didn't publish, or a frame too
             // short to even hold the virtio_net_hdr, or one larger than
             // the buffer — dropped, not delivered upward.
-            RX_DROPPED.fetch_add(1, Ordering::Relaxed);
+            if let Some(runtime) = runtime.as_ref() {
+                runtime.rx_dropped.fetch_add(1, Ordering::Relaxed);
+            }
         }
         delivered += 1;
     }
@@ -1392,7 +1485,12 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: u32, mut cb: F) -> usize {
 
 /// ARP neighbor-cache GC for the timer driver (drops entries older than 60s).
 /// # C: O(N entries)
-fn arp_gc_timer(now_ns: u64) { arp_cache().gc(now_ns); }
+fn arp_gc_timer(now_ns: u64) {
+    let runtimes = NET_RUNTIMES.lock().clone();
+    for runtime in runtimes {
+        runtime.arp.gc(now_ns);
+    }
+}
 
 /// Register this device driver's periodic timers (ARP GC).
 /// # C: O(1)
