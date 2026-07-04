@@ -49,6 +49,9 @@ test-pass claims.
   existing unbound matching devices on that bus, matching Linux's
   driver-register-then-driver-attach behavior instead of requiring a separate
   enumeration pass to retry binding.
+- Model driver unregistration now detaches devices bound to that driver before
+  removing the driver from the registry, so `/sys/bus/<bus>/drivers/<name>`
+  disappears only after the driver's `remove` callbacks have run.
 - Model device publication now also attaches a newly added device to already
   registered matching drivers after devtmpfs/sysfs publication, so both
   driver-register and device-add orderings probe through the driver model

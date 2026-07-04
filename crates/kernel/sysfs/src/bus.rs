@@ -717,6 +717,17 @@ mod tests {
     }
     static REJECT_DRIVER: RejectDriver = RejectDriver;
 
+    struct SysfsUnregisterDriver;
+    impl drv::Driver for SysfsUnregisterDriver {
+        fn bus(&self) -> &'static str { "platform" }
+        fn name(&self) -> &'static str { "sysfs-unregister-test" }
+        fn matches(&self, dev: &drv::Device) -> bool { dev.addr == "sysfs-unregister0" }
+        fn remove(&self, _dev: &drv::Device) {
+            BIND_REMOVES.fetch_add(1, Ordering::Release);
+        }
+    }
+    static SYSFS_UNREGISTER_DRIVER: SysfsUnregisterDriver = SysfsUnregisterDriver;
+
     fn platform_device(addr: &str) -> Arc<drv::Device> {
         let d = Arc::new(drv::Device::new("platform", String::from(addr), 0, 0, 0));
         drv::try_device_add(Arc::clone(&d)).expect("test device registration");
@@ -748,6 +759,24 @@ mod tests {
         assert_eq!(dev.bound(), Some("sysfs-bind-test"));
         assert_eq!(BIND_PROBES.load(Ordering::Acquire), 2);
         assert!(dir.lookup("sysfs-bind-dev0").is_ok(), "driver dir exposes rebound device symlink");
+    }
+
+    #[test]
+    fn driver_unregister_removes_sysfs_driver_dir_and_unbinds_devices() {
+        BIND_REMOVES.store(0, Ordering::Release);
+        drv::register_driver(&SYSFS_UNREGISTER_DRIVER);
+        let dev = platform_device("sysfs-unregister0");
+
+        let root = make_bus_drivers_inode("platform");
+        assert!(root.lookup("sysfs-unregister-test").is_ok());
+        assert_eq!(dev.bound(), Some("sysfs-unregister-test"));
+
+        assert_eq!(drv::unregister_driver(&SYSFS_UNREGISTER_DRIVER), Ok(()));
+        assert_eq!(dev.bound(), None);
+        assert_eq!(BIND_REMOVES.load(Ordering::Acquire), 1);
+        assert_eq!(root.lookup("sysfs-unregister-test").err(), Some(VfsError::Enoent));
+
+        drv::device_del(&dev);
     }
 
     #[test]
