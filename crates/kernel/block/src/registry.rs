@@ -342,6 +342,67 @@ mod sysfs_format_tests {
     }
 
     #[test]
+    fn unregister_then_register_restores_disk_device_node_and_dev_t() {
+        use crate::blockdev::MemDisk;
+        use sync::TaskList;
+        static REMOVED: Spinlock<Vec<String>, DevicesClass> = Spinlock::new(Vec::new());
+        fn del(name: &str) {
+            REMOVED.lock().push(name.to_string());
+        }
+        drv::set_devtmpfs_del_hook(del);
+
+        let name = "vdreadd";
+        let _ = unregister(name);
+        assert!(by_name(name).is_none());
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "block" && d.addr == name)
+                .count(),
+            0
+        );
+
+        let first_dev: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 8);
+        let first = register(name, first_dev);
+        assert_ne!(first, 0);
+        let first_dev_t = dev_t_of(name, first);
+        let first_disk = by_dev(first_dev_t).expect("registered disk owns its dev_t");
+        assert_eq!(first_disk.name, name);
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "block" && d.addr == name)
+                .count(),
+            1
+        );
+
+        assert!(unregister(name));
+        assert!(by_name(name).is_none());
+        assert!(by_dev(first_dev_t).is_none());
+        assert!(REMOVED.lock().iter().any(|n| n == name));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "block" && d.addr == name)
+                .count(),
+            0
+        );
+
+        let second_dev: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 8);
+        let second = register(name, second_dev);
+        assert_eq!(second, first);
+        assert!(by_dev(first_dev_t).is_some());
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "block" && d.addr == name)
+                .count(),
+            1
+        );
+        assert!(unregister(name));
+    }
+
+    #[test]
     fn uevent_body_format() {
         // The /sys/block/<dev>/uevent body sysfs renders from these.
         let (major, minor) = major_minor("vda", 1);
