@@ -137,6 +137,11 @@ test-pass claims.
   still derives it from BDF location, and child-driver crates still consume the
   raw value at their legacy API boundary, but the shared child session contract
   no longer exposes a PCI-shaped `u32` as its transport-neutral identity.
+- Shared `virtio::run_child_probe` now owns the transport-neutral child probe
+  lifecycle: run child install, publish transport state only after success, and
+  release failed-probe resources on child error. The PCI-backed child model
+  wrapper delegates that ordering to shared virtio instead of open-coding
+  publish/unwind around `VirtioChildSession`.
 - Shared `virtio` now owns a transport-neutral
   `VirtioChildTransportSession` contract plus child location and net
   boot-payload descriptors. The current boot PCI-backed implementation lives
@@ -571,9 +576,12 @@ test-pass claims.
   rules in PCI transport code. The shared child session contract now exposes a
   typed `virtio::VirtioChildDeviceKey` rather than a raw PCI-packed `u32`; the
   current PCI-backed implementation derives that key from its BDF location and
-  converts to raw only at legacy child-driver API calls. The PCI-backed session
-  now carries an explicit `virtio_drv::VirtioPciTransport` backend, and raw
-  probe, publish, and unpublish helpers are private to that transport module. The
+  converts to raw only at legacy child-driver API calls. Shared
+  `virtio::run_child_probe` now owns child-probe publish/unwind ordering, so
+  the PCI-backed wrapper no longer hand-codes successful transport publication
+  versus failed child-probe release. The PCI-backed session now carries an
+  explicit `virtio_drv::VirtioPciTransport` backend, and raw probe, publish,
+  and unpublish helpers are private to that transport module. The
   shared `virtio::VirtioChildResourceState` now owns child readiness/resource
   publication checks across transports. Shared
   `virtio::VirtioTransportProbeResult` now builds

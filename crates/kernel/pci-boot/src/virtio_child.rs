@@ -7,15 +7,14 @@
 use super::virtio_bus::{parent_key, unpublish_transport, VirtioChildSession};
 use alloc::sync::Arc;
 use core::marker::PhantomData;
-use virtio::VirtioChildTransportSession;
 
 trait VirtioChildOps: Sync {
     const DRIVER_ID: virtio::VirtioChildDriverId;
 
     fn profile() -> virtio::VirtioTransportProfile;
     fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()>;
-    fn remove_child(device_key: u32);
-    fn shutdown_child(device_key: u32);
+    fn remove_child(device_key: virtio::VirtioChildDeviceKey);
+    fn shutdown_child(device_key: virtio::VirtioChildDeviceKey);
 }
 
 struct VirtioChildDriver<O> {
@@ -38,29 +37,20 @@ impl<O: VirtioChildOps> drv::Driver for VirtioChildDriver<O> {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let mut session = VirtioChildSession::begin(dev, O::profile())?;
-        match O::probe_child(&mut session) {
-            Ok(()) => {
-                session.publish();
-                Ok(())
-            }
-            Err(e) => {
-                session.release_failed_child();
-                Err(e)
-            }
-        }
+        let session = VirtioChildSession::begin(dev, O::profile())?;
+        virtio::run_child_probe(session, |session| O::probe_child(session))
     }
 
     fn remove(&self, dev: &drv::Device) {
         if let Some(device_key) = parent_key(dev) {
-            O::remove_child(device_key.raw());
+            O::remove_child(device_key);
             unpublish_transport(device_key);
         }
     }
 
     fn shutdown(&self, dev: &drv::Device) {
         if let Some(device_key) = parent_key(dev) {
-            O::shutdown_child(device_key.raw());
+            O::shutdown_child(device_key);
         }
     }
 }
@@ -96,14 +86,14 @@ impl VirtioChildOps for VirtioGpuOps {
         Ok(())
     }
 
-    fn remove_child(device_key: u32) {
-        if drv_virtio_gpu::uninstall(device_key).is_some() {
-            let _ = drv_virtio_gpu::post_init::uninstall_scanout(device_key);
+    fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
+        if drv_virtio_gpu::uninstall(device_key.raw()).is_some() {
+            let _ = drv_virtio_gpu::post_init::uninstall_scanout(device_key.raw());
         }
     }
 
-    fn shutdown_child(device_key: u32) {
-        let _ = drv_virtio_gpu::shutdown(device_key);
+    fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_gpu::shutdown(device_key.raw());
     }
 }
 static VIRTIO_GPU_DRV: VirtioChildDriver<VirtioGpuOps> = VirtioChildDriver::new();
@@ -140,15 +130,15 @@ impl VirtioChildOps for VirtioInputOps {
         Ok(())
     }
 
-    fn remove_child(device_key: u32) {
-        if let Some(evdev_id) = drv_virtio_input::evdev_id_for_bdf(device_key) {
+    fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
+        if let Some(evdev_id) = drv_virtio_input::evdev_id_for_bdf(device_key.raw()) {
             let _ = drv_virtio_input::drain::uninstall_eventq(evdev_id);
-            let _ = drv_virtio_input::remove_device(device_key);
+            let _ = drv_virtio_input::remove_device(device_key.raw());
         }
     }
 
-    fn shutdown_child(device_key: u32) {
-        if let Some(evdev_id) = drv_virtio_input::evdev_id_for_bdf(device_key) {
+    fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
+        if let Some(evdev_id) = drv_virtio_input::evdev_id_for_bdf(device_key.raw()) {
             let _ = drv_virtio_input::drain::shutdown_eventq(evdev_id);
         }
     }
@@ -185,14 +175,14 @@ impl VirtioChildOps for VirtioNetOps {
         Ok(())
     }
 
-    fn remove_child(device_key: u32) {
-        if drv_virtio_net::modern::is_modern_present_for(device_key) {
-            let _ = drv_virtio_net::modern::uninstall_modern(device_key);
+    fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
+        if drv_virtio_net::modern::is_modern_present_for(device_key.raw()) {
+            let _ = drv_virtio_net::modern::uninstall_modern(device_key.raw());
         }
     }
 
-    fn shutdown_child(device_key: u32) {
-        let _ = drv_virtio_net::modern::shutdown_modern(device_key);
+    fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_net::modern::shutdown_modern(device_key.raw());
     }
 }
 static VIRTIO_NET_DRV: VirtioChildDriver<VirtioNetOps> = VirtioChildDriver::new();
@@ -221,12 +211,12 @@ impl VirtioChildOps for VirtioBlkOps {
         Ok(())
     }
 
-    fn remove_child(device_key: u32) {
-        let _ = drv_virtio_blk::modern::remove_blk(device_key);
+    fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_blk::modern::remove_blk(device_key.raw());
     }
 
-    fn shutdown_child(device_key: u32) {
-        let _ = drv_virtio_blk::modern::shutdown_blk(device_key);
+    fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_blk::modern::shutdown_blk(device_key.raw());
     }
 }
 static VIRTIO_BLK_DRV: VirtioChildDriver<VirtioBlkOps> = VirtioChildDriver::new();
@@ -266,12 +256,12 @@ impl VirtioChildOps for VirtioRngOps {
         Ok(())
     }
 
-    fn remove_child(device_key: u32) {
-        let _ = drv_virtio_rng::uninstall(device_key);
+    fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_rng::uninstall(device_key.raw());
     }
 
-    fn shutdown_child(device_key: u32) {
-        let _ = drv_virtio_rng::shutdown(device_key);
+    fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_rng::shutdown(device_key.raw());
     }
 }
 static VIRTIO_RNG_DRV: VirtioChildDriver<VirtioRngOps> = VirtioChildDriver::new();
@@ -300,12 +290,12 @@ impl VirtioChildOps for VirtioVsockOps {
         Ok(())
     }
 
-    fn remove_child(device_key: u32) {
-        let _ = drv_virtio_vsock::uninstall(device_key);
+    fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_vsock::uninstall(device_key.raw());
     }
 
-    fn shutdown_child(device_key: u32) {
-        let _ = drv_virtio_vsock::shutdown(device_key);
+    fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_vsock::shutdown(device_key.raw());
     }
 }
 static VIRTIO_VSOCK_DRV: VirtioChildDriver<VirtioVsockOps> = VirtioChildDriver::new();
@@ -353,12 +343,12 @@ impl VirtioChildOps for VirtioSndOps {
         Ok(())
     }
 
-    fn remove_child(device_key: u32) {
-        let _ = drv_virtio_snd::uninstall(device_key);
+    fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_snd::uninstall(device_key.raw());
     }
 
-    fn shutdown_child(device_key: u32) {
-        let _ = drv_virtio_snd::shutdown(device_key);
+    fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_snd::shutdown(device_key.raw());
     }
 }
 static VIRTIO_SND_DRV: VirtioChildDriver<VirtioSndOps> = VirtioChildDriver::new();

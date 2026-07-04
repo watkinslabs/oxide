@@ -939,9 +939,31 @@ pub trait VirtioChildTransportSession {
         Self: Sized;
 }
 
+/// Run a child probe against a transport session, publishing transport-owned
+/// state only after the child succeeds and releasing failed-probe resources on
+/// child error.
+/// # C: O(child_probe + N_transport_resources)
+pub fn run_child_probe<S, E, F>(mut session: S, probe: F) -> Result<(), E>
+where
+    S: VirtioChildTransportSession,
+    F: FnOnce(&mut dyn VirtioChildTransportSession) -> Result<(), E>,
+{
+    match probe(&mut session) {
+        Ok(()) => {
+            session.publish();
+            Ok(())
+        }
+        Err(e) => {
+            session.release_failed_child();
+            Err(e)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn child_driver_id_matches_virtio_child_devices() {
@@ -1007,6 +1029,79 @@ mod tests {
 
         assert_eq!(key.raw(), 0x0012_0304);
         assert_eq!(VirtioChildDeviceKey::from_raw(0x0012_0304), key);
+    }
+
+    #[derive(Default)]
+    struct ProbeLifecycle {
+        published: bool,
+        released: bool,
+    }
+
+    struct ProbeSession {
+        lifecycle: Arc<Mutex<ProbeLifecycle>>,
+    }
+
+    impl ProbeSession {
+        fn new(lifecycle: Arc<Mutex<ProbeLifecycle>>) -> Self {
+            Self { lifecycle }
+        }
+    }
+
+    impl VirtioChildTransportSession for ProbeSession {
+        fn device_key(&self) -> VirtioChildDeviceKey {
+            VirtioChildDeviceKey::from_raw(1)
+        }
+
+        fn location(&self) -> VirtioTransportLocation {
+            VirtioTransportLocation::new(0, 1, 0)
+        }
+
+        fn drv_features(&self) -> u64 {
+            0
+        }
+
+        fn net_boot_payloads(&self) -> VirtioNetBootPayloads {
+            VirtioNetBootPayloads::default()
+        }
+
+        fn child_resources(&self) -> Option<VirtioResources> {
+            None
+        }
+
+        fn release_failed_child(&mut self) {
+            self.lifecycle.lock().unwrap().released = true;
+        }
+
+        fn publish(self) {
+            self.lifecycle.lock().unwrap().published = true;
+        }
+    }
+
+    #[test]
+    fn child_probe_lifecycle_publishes_only_after_success() {
+        let lifecycle = Arc::new(Mutex::new(ProbeLifecycle::default()));
+        let result = run_child_probe(ProbeSession::new(lifecycle.clone()), |session| {
+            assert_eq!(session.device_key().raw(), 1);
+            Ok::<(), ()>(())
+        });
+
+        assert_eq!(result, Ok(()));
+        let lifecycle = lifecycle.lock().unwrap();
+        assert!(lifecycle.published);
+        assert!(!lifecycle.released);
+    }
+
+    #[test]
+    fn child_probe_lifecycle_releases_on_child_error() {
+        let lifecycle = Arc::new(Mutex::new(ProbeLifecycle::default()));
+        let result = run_child_probe(ProbeSession::new(lifecycle.clone()), |_session| {
+            Err::<(), u8>(7)
+        });
+
+        assert_eq!(result, Err(7));
+        let lifecycle = lifecycle.lock().unwrap();
+        assert!(!lifecycle.published);
+        assert!(lifecycle.released);
     }
 
     const VALID_Q0: VirtQueueResource = VirtQueueResource {
