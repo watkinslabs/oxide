@@ -458,8 +458,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     let (out, input) = match pcm_info_scan(p.device_key) {
         Some(split) => split,
         None => {
-            let ctx = remove_ctx(p.device_key).map(|(ctx, _empty_after)| ctx);
-            if let Some(ctx) = ctx {
+            if let Some(ctx) = remove_ctx_and_release_event_handler(p.device_key) {
                 stop_reset_free(ctx);
             }
             return None;
@@ -480,12 +479,9 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
 /// Stop streams, reset the virtio device, and release all queue/scratch frames
 /// owned by the matching installed transport. # C: O(CONTROLQ)
 pub fn uninstall(device_key: u32) -> bool {
-    let Some((ctx, empty_after)) = remove_ctx(device_key) else {
+    let Some(ctx) = remove_ctx_and_release_event_handler(device_key) else {
         return false;
     };
-    if empty_after {
-        let _ = softirq::clear_handler(softirq::Slot::SndEvent);
-    }
     if sound::unregister_card(device_key) {
         let _ = sound::ops::clear(device_key);
     }
@@ -524,14 +520,19 @@ fn active_ctx_for(ctxs: &[Ctx], owner: u32) -> Option<&Ctx> {
 /// visible for the terminal transition; subsequent ops see no live transport.
 /// # C: O(CONTROLQ)
 pub fn shutdown(device_key: u32) -> bool {
-    let Some((ctx, empty_after)) = remove_ctx(device_key) else {
+    let Some(ctx) = remove_ctx_and_release_event_handler(device_key) else {
         return false;
     };
+    stop_reset_free(ctx);
+    true
+}
+
+fn remove_ctx_and_release_event_handler(device_key: u32) -> Option<Ctx> {
+    let (ctx, empty_after) = remove_ctx(device_key)?;
     if empty_after {
         let _ = softirq::clear_handler(softirq::Slot::SndEvent);
     }
-    stop_reset_free(ctx);
-    true
+    Some(ctx)
 }
 
 fn stop_reset_free(mut ctx: Ctx) {
@@ -1304,4 +1305,122 @@ pub fn pcm_recv(owner: u32, out: &mut [u8]) -> usize {
         off += got;
     }
     off
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::AtomicU64;
+
+    static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
+    static TEST_EVENT_CALLS: AtomicU64 = AtomicU64::new(0);
+
+    fn test_event_handler() {
+        TEST_EVENT_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn queue(index: u16) -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource {
+            index,
+            size: 8,
+            desc_pa: 0,
+            driver_pa: 0,
+            device_pa: 0,
+            notify_va: 0,
+            notify_off: 0,
+        }
+    }
+
+    fn ctx(device_key: u32) -> Ctx {
+        Ctx {
+            device_key,
+            controlq: queue(0),
+            hhdm: 0,
+            cfg_va: 0,
+            scratch_pa: 0,
+            avail_idx: 0,
+            eventq: Some(queue(1)),
+            event_buf_pa: 0,
+            event_last_used: 0,
+            event_avail_idx: 0,
+            jacks: 0,
+            streams: 0,
+            chmaps: 0,
+            controls: 0,
+            out_stream: None,
+            out_formats: 0,
+            out_rates: 0,
+            out_ch_min: 1,
+            out_ch_max: 2,
+            txq: None,
+            tx_avail_idx: 0,
+            tx_buf_pa: 0,
+            tx_scratch_pa: 0,
+            pcm_state: PcmState::Idle,
+            cfg_rate: VIRTIO_SND_PCM_RATE_44100,
+            cfg_format: VIRTIO_SND_PCM_FMT_S16,
+            cfg_channels: 2,
+            cfg_period_bytes: PERIOD_BYTES as u32,
+            in_stream: None,
+            in_formats: 0,
+            in_rates: 0,
+            in_ch_min: 1,
+            in_ch_max: 2,
+            rxq: None,
+            rx_avail_idx: 0,
+            rx_buf_pa: 0,
+            rx_scratch_pa: 0,
+            cap_state: PcmState::Idle,
+            cap_rate: VIRTIO_SND_PCM_RATE_44100,
+            cap_format: VIRTIO_SND_PCM_FMT_S16,
+            cap_channels: 2,
+            cap_period_bytes: PERIOD_BYTES as u32,
+        }
+    }
+
+    fn reset_test_state() {
+        CTX.lock().clear();
+        TEST_EVENT_CALLS.store(0, Ordering::Relaxed);
+        let _ = softirq::clear_handler(softirq::Slot::SndEvent);
+    }
+
+    #[test]
+    fn removing_one_snd_context_keeps_event_softirq_installed() {
+        let _guard = TEST_LOCK.lock();
+        reset_test_state();
+        {
+            let mut ctxs = CTX.lock();
+            ctxs.push(ctx(0x0010_0000));
+            ctxs.push(ctx(0x0020_0000));
+        }
+        softirq::set_handler(softirq::Slot::SndEvent, test_event_handler);
+
+        let removed = remove_ctx_and_release_event_handler(0x0010_0000)
+            .expect("expected first context removal");
+        assert_eq!(removed.device_key, 0x0010_0000);
+        softirq::raise(softirq::Slot::SndEvent);
+        // SAFETY: hosted unit test owns the SndEvent slot under TEST_LOCK.
+        unsafe { softirq::run_pending(); }
+        assert_eq!(TEST_EVENT_CALLS.load(Ordering::Relaxed), 1);
+        assert!(present_for(0x0020_0000));
+        reset_test_state();
+    }
+
+    #[test]
+    fn removing_last_snd_context_clears_event_softirq() {
+        let _guard = TEST_LOCK.lock();
+        reset_test_state();
+        CTX.lock().push(ctx(0x0010_0000));
+        softirq::set_handler(softirq::Slot::SndEvent, test_event_handler);
+
+        let removed = remove_ctx_and_release_event_handler(0x0010_0000)
+            .expect("expected last context removal");
+        assert_eq!(removed.device_key, 0x0010_0000);
+        softirq::raise(softirq::Slot::SndEvent);
+        // SAFETY: hosted unit test owns the SndEvent slot under TEST_LOCK.
+        unsafe { softirq::run_pending(); }
+        assert_eq!(TEST_EVENT_CALLS.load(Ordering::Relaxed), 0);
+        assert!(!present());
+        reset_test_state();
+    }
 }
