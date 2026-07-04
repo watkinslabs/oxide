@@ -90,6 +90,7 @@ pub const EVIOC_GROUP: u8 = b'E';
 pub const EVIOCGVERSION: u64 = 0x80044501;
 pub const EVIOCGID:      u64 = 0x80084502;
 // Variable-len ioctls match by group + nr only:
+pub const EVIOCREP_NR:   u8 = 0x03;
 pub const EVIOCGNAME_NR: u8 = 0x06;
 pub const EVIOCGUNIQ_NR: u8 = 0x08;
 pub const EVIOCGPROP_NR: u8 = 0x09;
