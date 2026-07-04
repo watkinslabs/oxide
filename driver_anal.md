@@ -598,8 +598,9 @@ Several drivers still use singleton global state:
 - virtio-gpu: per-BDF installed device and scanout records, but singleton
   primary console/runtime hooks
 - virtio-net modern: keyed device/runtime/name/stat/IPv4 ARP tables; IPv6 NDP
-  is stack-owned and keyed by interface in kernel builds, but live multi-NIC
-  proof is still missing
+  is stack-owned and keyed by interface in kernel builds; boot route/RS seeding
+  now iterates the registered virtio-net iface snapshot instead of using only
+  the first iface, but live multi-NIC proof is still missing
 - virtio-rng: keyed records with one promoted active `/dev/hwrng` provider
 - virtio-vsock: keyed transport records, but a singleton upper protocol endpoint
 - virtio-snd: keyed transport records with EVENTQ drained per transport, but a
