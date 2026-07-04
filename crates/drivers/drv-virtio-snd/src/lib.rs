@@ -15,7 +15,7 @@
 
 #![no_std]
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
 use virtio::{VRING_DESC_F_NEXT, VRING_DESC_F_WRITE};
@@ -63,6 +63,9 @@ const CTL_POLL_BUDGET: u32 = 2_000_000;
 /// bounds real wall-clock, not just spins. Generous so a period (≈23 ms at
 /// 44.1 kHz / 2 KiB) retires even under TCG.
 const TX_POLL_BUDGET: u32 = 4_000_000;
+/// virtio_snd_event is 8 bytes: le32 event code + le32 data.
+const EVENT_SIZE: usize = 8;
+const MAX_EVENTQ_DESCS: u16 = (0x1000 / EVENT_SIZE) as u16;
 
 /// Control scratch-frame layout: request at offset 0, response at 0x200
 /// (leaves 0x200 for any request, 0xE00 for the response array).
@@ -100,6 +103,10 @@ struct Ctx {
     /// installed virtio-snd device state rather than being ignored by the
     /// transport.
     eventq: Option<virtio::VirtQueueResource>,
+    /// Driver-owned EVENTQ buffer frame, split into 8-byte event records.
+    event_buf_pa: u64,
+    /// EVENTQ driver-side last used.idx drained.
+    event_last_used: u16,
     /// EVENTQ driver-side avail.idx shadow.
     event_avail_idx: u16,
     /// virtio_snd_config (docs/58§4): jacks/streams/chmaps/controls.
@@ -166,6 +173,9 @@ pub enum PcmState { Idle, Configured, Prepared, Running }
 // the device lifetime; all access is funneled through the CONTROLQ
 // Spinlock, so cross-CPU sharing is sound.
 static CTX: Spinlock<Option<Ctx>, DriverLockClass> = Spinlock::new(None);
+
+pub static DRAINED_EVENTS: AtomicU64 = AtomicU64::new(0);
+pub static LAST_EVENT: AtomicU64 = AtomicU64::new(0);
 
 static SOUND_OPS: sound::ops::SoundOps = sound::ops::SoundOps {
     config,
@@ -247,13 +257,14 @@ pub fn config() -> Option<(u32, u32, u32, u32)> {
     CTX.lock().as_ref().map(|c| (c.jacks, c.streams, c.chmaps, c.controls))
 }
 
-/// Snapshot of the installed EVENTQ resource: `(queue_size, next_avail_idx)`.
-/// This is the state the later event-drain worker will consume.
+/// Snapshot of the installed EVENTQ resource:
+/// `(queue_size, last_used_idx, next_avail_idx)`.
 /// # C: O(1)
-pub fn eventq_state() -> Option<(u16, u16)> {
-    CTX.lock()
-        .as_ref()
-        .and_then(|ctx| ctx.eventq.map(|eventq| (eventq.size, ctx.event_avail_idx)))
+pub fn eventq_state() -> Option<(u16, u16, u16)> {
+    CTX.lock().as_ref().and_then(|ctx| {
+        ctx.eventq
+            .map(|eventq| (eventq.size, ctx.event_last_used, ctx.event_avail_idx))
+    })
 }
 
 /// Install the virtio-snd queue state for one device. Called once after
@@ -275,13 +286,24 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     if CTX.lock().is_some() {
         return None;
     }
+    if eventq.size == 0 || eventq.size > MAX_EVENTQ_DESCS {
+        return None;
+    }
     let scratch_pa = pmm::setup::alloc_one_frame()?;
+    let event_buf_pa = match pmm::setup::alloc_one_frame() {
+        Some(pa) => pa,
+        None => {
+            free_frame(scratch_pa);
+            return None;
+        }
+    };
     let (tx_buf_pa, tx_scratch_pa) = if txq.is_some() {
         match (pmm::setup::alloc_one_frame(), pmm::setup::alloc_one_frame()) {
             (Some(buf), Some(scratch)) => (buf, scratch),
             (buf, scratch) => {
                 free_frame(buf.unwrap_or(0));
                 free_frame(scratch.unwrap_or(0));
+                free_frame(event_buf_pa);
                 free_frame(scratch_pa);
                 return None;
             }
@@ -293,6 +315,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
             (buf, scratch) => {
                 free_frame(buf.unwrap_or(0));
                 free_frame(scratch.unwrap_or(0));
+                free_frame(event_buf_pa);
                 free_frame(tx_buf_pa);
                 free_frame(tx_scratch_pa);
                 free_frame(scratch_pa);
@@ -301,7 +324,14 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         }
     } else { (0, 0) };
     // Zero every freshly-allocated frame for deterministic state.
-    for &pa in &[scratch_pa, tx_buf_pa, tx_scratch_pa, rx_buf_pa, rx_scratch_pa] {
+    for &pa in &[
+        scratch_pa,
+        event_buf_pa,
+        tx_buf_pa,
+        tx_scratch_pa,
+        rx_buf_pa,
+        rx_scratch_pa,
+    ] {
         if pa == 0 { continue; }
         let va = p.resources.hhdm.wrapping_add(pa) as *mut u8;
         // SAFETY: HHDM covers all RAM the PMM hands out; each frame is
@@ -319,6 +349,8 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     // SAFETY: HHDM-mapped EVENTQ used ring programmed by the boot probe;
     // aligned u16 load of used.idx at u16 offset 1.
     let event_used_seen = unsafe { core::ptr::read_volatile(event_used.add(1)) };
+    let event_avail_idx = event_used_seen.wrapping_add(eventq.size);
+    prepost_eventq(p.resources.hhdm, eventq, event_buf_pa, event_avail_idx);
     // TXQ avail.idx seeds from its own used.idx likewise (0 if unprogrammed).
     let tx_used_seen = if let Some(txq) = txq {
         let txu = p.resources.hhdm.wrapping_add(txq.device_pa) as *const u16;
@@ -339,6 +371,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         free_frame(rx_scratch_pa);
         free_frame(tx_buf_pa);
         free_frame(tx_scratch_pa);
+        free_frame(event_buf_pa);
         free_frame(scratch_pa);
         return None;
     }
@@ -350,7 +383,9 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         scratch_pa,
         avail_idx: used_seen,
         eventq: Some(eventq),
-        event_avail_idx: event_used_seen,
+        event_buf_pa,
+        event_last_used: event_used_seen,
+        event_avail_idx,
         jacks: device_cfg.jacks,
         streams: device_cfg.streams,
         chmaps: device_cfg.chmaps,
@@ -375,6 +410,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         cap_period_bytes: PERIOD_BYTES as u32,
     });
     drop(g);
+    softirq::set_handler(softirq::Slot::SndEvent, event_softirq);
     let (out, input) = match pcm_info_scan() {
         Some(split) => split,
         None => {
@@ -432,6 +468,7 @@ pub fn shutdown(device_key: u32) -> bool {
 }
 
 fn stop_reset_free(mut ctx: Ctx) {
+    let _ = softirq::clear_handler(softirq::Slot::SndEvent);
     if let Some(stream) = ctx.out_stream {
         if ctx.pcm_state == PcmState::Running {
             let _ = pcm_ctl(&mut ctx, VIRTIO_SND_R_PCM_STOP, stream);
@@ -453,11 +490,105 @@ fn stop_reset_free(mut ctx: Ctx) {
         // probe; device_status is an 8-bit register at offset 0x14.
         unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
     }
+    free_frame(ctx.event_buf_pa);
     free_frame(ctx.rx_buf_pa);
     free_frame(ctx.rx_scratch_pa);
     free_frame(ctx.tx_buf_pa);
     free_frame(ctx.tx_scratch_pa);
     free_frame(ctx.scratch_pa);
+}
+
+fn prepost_eventq(
+    hhdm: u64,
+    eventq: virtio::VirtQueueResource,
+    event_buf_pa: u64,
+    avail_idx: u16,
+) {
+    let qsize = eventq.size as usize;
+    let desc_va = hhdm.wrapping_add(eventq.desc_pa) as *mut u8;
+    // SAFETY: HHDM-mapped EVENTQ descriptor table and driver ring were
+    // programmed by the transport. qsize is bounded by MAX_EVENTQ_DESCS so the
+    // event buffer frame and split ring frame writes stay in-bounds.
+    unsafe {
+        for i in 0..qsize {
+            let entry_pa = event_buf_pa.wrapping_add((i as u64) * EVENT_SIZE as u64);
+            let off = i * 16;
+            core::ptr::write_volatile(desc_va.add(off) as *mut u64, entry_pa);
+            core::ptr::write_volatile(desc_va.add(off + 8) as *mut u32, EVENT_SIZE as u32);
+            core::ptr::write_volatile(
+                desc_va.add(off + 12) as *mut u16,
+                VRING_DESC_F_WRITE,
+            );
+            core::ptr::write_volatile(desc_va.add(off + 14) as *mut u16, 0u16);
+        }
+        let avail_va = hhdm.wrapping_add(eventq.driver_pa) as *mut u8;
+        core::ptr::write_volatile(avail_va as *mut u16, 0u16);
+        for i in 0..qsize {
+            core::ptr::write_volatile(avail_va.add(4 + i * 2) as *mut u16, i as u16);
+        }
+        core::sync::atomic::fence(Ordering::Release);
+        core::ptr::write_volatile(avail_va.add(2) as *mut u16, avail_idx);
+        core::ptr::write_volatile(eventq.notify_va as *mut u16, eventq.index);
+    }
+}
+
+/// Raise the sound EVENTQ bottom half from queue-1 MSI context.
+/// # C: O(1)
+pub fn raise_event() {
+    softirq::raise(softirq::Slot::SndEvent);
+}
+
+fn event_softirq() {
+    let mut g = CTX.lock();
+    let Some(ctx) = g.as_mut() else { return };
+    drain_eventq(ctx);
+}
+
+fn drain_eventq(ctx: &mut Ctx) {
+    let Some(eventq) = ctx.eventq else { return };
+    let used_va = ctx.hhdm.wrapping_add(eventq.device_pa) as *mut u8;
+    // SAFETY: HHDM-mapped EVENTQ used ring; aligned u16 load of used.idx.
+    let dev_idx = unsafe { core::ptr::read_volatile(used_va.add(2) as *const u16) };
+    if dev_idx == ctx.event_last_used {
+        return;
+    }
+
+    while ctx.event_last_used != dev_idx {
+        let i = (ctx.event_last_used as usize) % eventq.size as usize;
+        let used_off = 4 + i * 8;
+        // SAFETY: bounded used-ring read. EVENTQ size was validated at install.
+        let desc_id = unsafe { core::ptr::read_volatile(used_va.add(used_off) as *const u32) }
+            as u16;
+        if desc_id < eventq.size {
+            let event_pa = ctx
+                .event_buf_pa
+                .wrapping_add((desc_id as u64) * EVENT_SIZE as u64);
+            let event_va = ctx.hhdm.wrapping_add(event_pa) as *const u64;
+            // SAFETY: desc_id was range-checked and addresses one 8-byte
+            // event record in the driver-owned EVENTQ buffer frame.
+            let raw = unsafe { core::ptr::read_volatile(event_va) };
+            LAST_EVENT.store(raw, Ordering::Relaxed);
+            DRAINED_EVENTS.fetch_add(1, Ordering::Relaxed);
+
+            let avail_va = ctx.hhdm.wrapping_add(eventq.driver_pa) as *mut u8;
+            let slot = (ctx.event_avail_idx as usize) % eventq.size as usize;
+            // SAFETY: bounded write inside the EVENTQ avail ring.
+            unsafe {
+                core::ptr::write_volatile(avail_va.add(4 + slot * 2) as *mut u16, desc_id);
+            }
+            ctx.event_avail_idx = ctx.event_avail_idx.wrapping_add(1);
+        }
+        ctx.event_last_used = ctx.event_last_used.wrapping_add(1);
+    }
+
+    let avail_va = ctx.hhdm.wrapping_add(eventq.driver_pa) as *mut u8;
+    // SAFETY: aligned avail.idx write and queue notify for the transport-owned
+    // EVENTQ notify window.
+    unsafe {
+        core::sync::atomic::fence(Ordering::Release);
+        core::ptr::write_volatile(avail_va.add(2) as *mut u16, ctx.event_avail_idx);
+        core::ptr::write_volatile(eventq.notify_va as *mut u16, eventq.index);
+    }
 }
 
 fn free_frame(pa: u64) {
