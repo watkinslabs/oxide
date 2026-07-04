@@ -1,5 +1,6 @@
     use super::*;
     use net::NetDev;
+use core::sync::atomic::Ordering;
 
     static TEST_STATE_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
 
@@ -432,7 +433,7 @@
     fn solicited_node_address_uses_low_24_bits() {
         let _guard = TEST_STATE_LOCK.lock();
         let ip = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0x1234, 0x5678]);
-        let got = solicited_node_multicast(ip);
+        let got = test_solicited_node_multicast(ip);
         assert_eq!(
             got,
             net::Ipv6Addr::from_segments([0xff02, 0, 0, 0, 0, 0x0001, 0xff34, 0x5678])
@@ -444,7 +445,7 @@
         let _guard = TEST_STATE_LOCK.lock();
         let ip = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0x1234, 0x5678]);
         assert_eq!(
-            solicited_node_ethernet(ip),
+            test_solicited_node_ethernet(ip),
             net::MacAddr([0x33, 0x33, 0xff, 0x34, 0x56, 0x78])
         );
     }
