@@ -869,7 +869,8 @@ fn build_sb(fs: Arc<dyn FileSystem>, root_inode: Option<InodeRef>, s_id: String)
 /// namespace root mount. Acquires (or shares, via `build_sb`/`sget`) the
 /// `SuperBlock`, then grafts it through the shared [`graft_realized`] tail.
 /// # C: O(depth)
-fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRef>) -> KResult<()> {
+fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRef>,
+    parent_hint: Option<u64>) -> KResult<()> {
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
     let root_inode = root.clone().or_else(|| fs.root());
     // `s_id` (the SB label) mirrors Linux's device/source id; the legacy mount
@@ -879,7 +880,7 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
     let sb = build_sb(fs, root_inode, s_id);
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("attach", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
-    graft_realized(mp, sb, 0)
+    graft_realized(mp, sb, 0, parent_hint)
 }
 
 /// Graft an ALREADY-REALIZED `SuperBlock` (built by the new mount API's
@@ -892,7 +893,7 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
 pub fn attach_sb(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>) -> KResult<()> {
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("attach_sb", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
-    graft_realized(mp, sb, 0)
+    graft_realized(mp, sb, 0, None)
 }
 
 /// [D51] As [`attach_sb`] but stamps the per-mount MNT_* option bits (mapped
@@ -903,9 +904,23 @@ pub fn attach_sb(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>) -> KResult<()> {
 /// # C: O(depth)
 pub fn attach_sb_with_flags(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64)
     -> KResult<()> {
+    attach_sb_with_flags_at(mp, sb, mnt_flags, None)
+}
+
+/// As [`attach_sb_with_flags`] but the caller supplies the destination PARENT
+/// mount id the path walk crossed into (`Some`). When `mp` sits in a bind
+/// mount, its parent dentry is SHARED between the bind and its source, so
+/// `parent_by_dentry(mp)` is ambiguous and can parent the new mount under a
+/// peer bind — leaving it unreachable via the path the caller walked (systemd
+/// creates the sandbox apivfs at /run/systemd/namespace-X AFTER rbinding / onto
+/// /run/systemd/mount-rootfs, so the /run root dentry is bind-shared and the
+/// new mount was born parented under mount-rootfs/run). Threading the walked
+/// parent mnt_id fixes the placement. # C: O(depth)
+pub fn attach_sb_with_flags_at(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>,
+    mnt_flags: u64, parent_hint: Option<u64>) -> KResult<()> {
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("attach_sb_with_flags", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
-    graft_realized(mp, sb, mnt_flags & MNT_OPTION_MASK)
+    graft_realized(mp, sb, mnt_flags & MNT_OPTION_MASK, parent_hint)
 }
 
 /// Shared TAIL of [`attach`]/[`attach_sb`]: reserve the per-ns mount slot,
@@ -913,8 +928,8 @@ pub fn attach_sb_with_flags(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_fl
 /// crossing-hash links, and commit. The mount root inode is derived from
 /// `sb.s_root()` (Linux `mnt_root`), not a stored copy. `mp == None` ⇒ the
 /// namespace root mount. # C: O(depth)
-fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64)
-    -> KResult<()> {
+fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
+    parent_hint: Option<u64>) -> KResult<()> {
     let ns = current_ns();
     let mnt_flags = mnt_flags & MNT_OPTION_MASK;
     // Per-ns mount cap (Linux `count_mounts` in `attach_recursive_mnt`): RESERVE
@@ -944,7 +959,7 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64)
         mntns::bump_gen(ns);
         return Ok(());
     };
-    let parent_id = parent_by_dentry(ns, &d);
+    let parent_id = parent_hint.unwrap_or_else(|| parent_by_dentry(ns, &d));
     let rendered = rendered_path_for(parent_id, &d);
     let m = new_mount(sb, rendered, Some(d.clone()), parent_id, mnt_id, ns);
     // [D51] Stamp the requested option bits before the mount goes live, so a
@@ -973,14 +988,28 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64)
 /// Register a FileSystem on mountpoint dentry `mp` (Linux `do_new_mount`).
 /// # C: O(depth)
 pub fn register(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()> {
-    attach(mp, fs, None)
+    attach(mp, fs, None, None)
+}
+
+/// As [`register`] but with the walked destination PARENT mount id (see
+/// [`attach_sb_with_flags_at`] — disambiguates a mountpoint sitting in a bind
+/// mount whose parent dentry is shared). # C: O(depth)
+pub fn register_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, parent_hint: Option<u64>) -> KResult<()> {
+    attach(mp, fs, None, parent_hint)
 }
 
 /// Bind-as-clone (`mount(src, tgt, NULL, MS_BIND)`). # C: O(depth)
 pub fn register_bind(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
+    register_bind_at(mp, fs, root, None)
+}
+
+/// As [`register_bind`] but with the walked destination PARENT mount id.
+/// # C: O(depth)
+pub fn register_bind_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: InodeRef,
+    parent_hint: Option<u64>) -> KResult<()> {
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("register_bind", 0, 0, mp.as_ref(), None, None);
-    attach(mp, fs, Some(root))
+    attach(mp, fs, Some(root), parent_hint)
 }
 
 /// Bind attach with an EXPLICIT parent mount id + rendered path — Linux
@@ -1425,7 +1454,7 @@ pub fn commit_tree_hashonly(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>) -> u
 pub fn attach_recursive_mnt(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>,
                             root: Option<InodeRef>) -> KResult<usize> {
     let at = mp.clone();
-    attach(mp, fs, root)?;
+    attach(mp, fs, root, None)?;
     Ok(match at { Some(d) => propagation::propagate_mount(&d), None => 0 })
 }
 
