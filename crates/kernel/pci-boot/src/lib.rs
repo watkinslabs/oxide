@@ -357,10 +357,9 @@ pub fn enumerate_and_log() {
             | ((d.subclass as u32) << 8) | (d.prog_if as u32);
         let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
             0u16, d.bdf.bus, d.bdf.device, d.bdf.function);
-        let Some(pci_dev) = publish_pci_model_device(d, addr, class24) else {
+        if publish_pci_model_device(d, addr, class24).is_none() {
             continue;
-        };
-        let _ = drv::auto_bind(&pci_dev);
+        }
     }
 
     // F40 + F57: brief IRQ unmask window so any MSIs queued during
