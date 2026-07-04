@@ -58,6 +58,9 @@ test-pass claims.
   `/sys/class/<class>` symlinks and `/sys/devices/virtual/<class>/<name>`
   device directories, so `/sys/dev/char` resolves to a real device object for
   pseudo, misc, ALSA/OSS, and fbdev char devices.
+- The stale procfs-era static `/sys/class/misc/autofs` registration has been
+  removed; autofs sysfs state now comes from the model-owned misc device and
+  exposes the same `10:235` dev_t as `/dev/autofs`.
 - PCI capability dumping is read-only again for MSI-X; MSI-X programming for
   virtio devices belongs to the virtio-pci transport probe/remove path.
 - The virtio-pci transport accepts modern virtio PCI IDs only. Transitional

@@ -311,6 +311,28 @@ mod tests {
     }
 
     #[test]
+    fn misc_class_autofs_is_model_backed_with_linux_dev_t() {
+        let dev = add_char("misc", "autofs", "autofs", (10, 235));
+
+        let class = make_sys_class_inode("misc", INO_CLASS_MISC);
+        let link = class.lookup("autofs").expect("autofs class link");
+        assert_eq!(
+            link.readlink().expect("readlink"),
+            b"../../devices/virtual/misc/autofs".to_vec()
+        );
+
+        let root = make_virtual_class_inode("misc", INO_VIRT_MISC);
+        let dir = root.lookup("autofs").expect("autofs device dir");
+        let dev_attr = dir.lookup("dev").expect("dev attr");
+        let mut buf = [0u8; 32];
+        let n = dev_attr.read(0, &mut buf).expect("read dev attr");
+        assert_eq!(&buf[..n], b"10:235\n");
+
+        drv::device_del(&dev);
+        assert_eq!(class.lookup("autofs").err(), Some(VfsError::Enoent));
+    }
+
+    #[test]
     fn sound_class_separates_sysfs_leaf_from_devtmpfs_path() {
         let dev = add_char("sound", "controlC9", "snd/controlC9", (116, 288));
 
