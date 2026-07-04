@@ -637,8 +637,9 @@ Several drivers still use singleton global state:
 - virtio-rng: keyed records with one explicit active-BDF `/dev/hwrng`
   provider; promotion skips shutdown records instead of relying on vector order
 - virtio-vsock: keyed transport records, owner-keyed endpoint teardown, and
-  owner-keyed shutdown quiesce that clears TX before queue state is freed, but
-  still a singleton upper protocol endpoint
+  owner-keyed shutdown quiesce that clears TX before queue state is freed; RX
+  protocol dispatch now rejects packets not addressed to the published guest
+  CID, but the upper protocol endpoint is still singleton
 - virtio-snd: keyed transport records with EVENTQ drained per transport and an
   owner-keyed global sound card reserved before transport allocation/publish,
   but still a singleton upper PCM/control ABI
