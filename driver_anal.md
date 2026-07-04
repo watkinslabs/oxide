@@ -258,9 +258,15 @@ test-pass claims.
   Installed virtio-gpu device state is now a per-BDF table, duplicate BDF
   install is rejected before publication, and DRM card IDs are stable slots
   so unregistering one card does not renumber the remaining devices.
+  DRM now publishes card/render device nodes per stable card slot
+  (`/dev/dri/cardN`, `/dev/dri/renderD128+N`), encodes the card id in the DRM
+  inode tag, routes card-backed ioctls through the matching backend slot, and
+  builds `/sys/class/drm` plus `/sys/devices/virtual/drm` from live DRM
+  `drv::device_add` records instead of a static card0 table.
   Scanout backing state is also a BDF-keyed table now; the current global
-  fbcon/fbdev/VT/DRM runtime hooks publish only the primary scanout until the
-  DRM node layer grows true per-card scanout routing.
+  fbcon/fbdev/VT/DRM runtime scanout hooks still publish only the primary
+  scanout until scanout ops, dumb-buffer mmap ownership, and fbdev/console
+  routing become per-card/per-scanout.
   The display-info probe command buffer and scanout framebuffer run are now
   owned probe objects; early parse/no-display/setup failures release them
   through drop, and successful scanout setup explicitly transfers those frames
@@ -361,9 +367,10 @@ test-pass claims.
   are now BDF/interface-owned keyed records, and the core net stack's NDP table
   is keyed by interface. Virtio-net still needs live multi-device bind/unbind
   proof.
-  Virtio-gpu installed device state, DRM backend records, and scanout backing
-  records are BDF-owned, but the visible console/KMS scanout hooks still target
-  the primary scanout. Virtio-vsock's upper protocol layer and virtio-snd's upper
+  Virtio-gpu installed device state, DRM backend records, DRM card/render
+  nodes, DRM ioctl backend routing, and scanout backing records are BDF/card
+  owned, but the visible console/KMS runtime scanout hooks still target the
+  primary scanout. Virtio-vsock's upper protocol layer and virtio-snd's upper
   sound-card layer also still retain singleton limits; vsock now reserves its
   singleton protocol endpoint before allocation and fails a second transport
   cleanly instead of replacing the installed transport.
@@ -455,8 +462,10 @@ test-pass claims.
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
   stack-owned interface-scoped IPv6 NDP lookup, but virtio-net still needs live
-  loop proof and broader multi-NIC validation; virtio-gpu still needs real
-  per-card DRM/fbdev node routing on top of its BDF-keyed scanout table;
+  loop proof and broader multi-NIC validation; virtio-gpu now has per-card DRM
+  card/render nodes and ioctl backend routing, but still needs per-card scanout,
+  dumb-buffer mmap ownership, fbdev, and console routing on top of its
+  BDF-keyed scanout table;
   virtio-vsock's upper protocol layer and virtio-snd's global sound-card layer
   are still main offenders. AHCI and NVMe still need live multi-controller
   proof, but they no longer use process-wide installed-controller slots.
@@ -595,8 +604,9 @@ hardware before the model owns the lifecycle.
 
 Several drivers still use singleton global state:
 
-- virtio-gpu: per-BDF installed device and scanout records, but singleton
-  primary console/runtime hooks
+- virtio-gpu: per-BDF installed device and scanout records, plus per-card DRM
+  nodes/ioctl backend routing, but singleton primary console/runtime scanout
+  hooks
 - virtio-net modern: keyed device/runtime/name/stat/IPv4 ARP tables; IPv6 NDP
   is stack-owned and keyed by interface in kernel builds; boot route/RS seeding
   now iterates the registered virtio-net iface snapshot instead of using only

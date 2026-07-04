@@ -481,18 +481,39 @@ static NEXT_HANDLE: AtomicU32 = AtomicU32::new(1);
 /// Register a per-device backend. Returns a stable card slot (0 ⇒ card0).
 /// # C: O(N) to reuse a vacant slot, O(1) append when none exists.
 pub fn register(driver: Arc<dyn DrmDriver>) -> u32 {
-    let mut g = CARDS.lock();
-    if g.iter().all(|slot| slot.is_none()) {
-        node::register();
-    }
-    for (idx, slot) in g.iter_mut().enumerate() {
-        if slot.is_none() {
-            *slot = Some(driver);
-            return idx as u32;
+    let mut driver = Some(driver);
+    let card_id = {
+        let mut g = CARDS.lock();
+        if let Some(idx) = g.iter().position(|slot| slot.is_none()) {
+            g[idx] = Some(driver.take().expect("DRM driver consumed once"));
+            idx as u32
+        } else {
+            g.push(Some(driver.take().expect("DRM driver consumed once")));
+            (g.len() - 1) as u32
         }
-    }
-    g.push(Some(driver));
-    (g.len() - 1) as u32
+    };
+    node::register(card_id);
+    card_id
+}
+
+/// Snapshot one registered card by stable card id.
+/// # C: O(1)
+pub fn card(card_id: u32) -> Option<Arc<dyn DrmDriver>> {
+    CARDS.lock()
+        .get(card_id as usize)
+        .and_then(|slot| slot.as_ref().cloned())
+}
+
+/// Snapshot the lowest-numbered registered card.
+/// # C: O(N)
+pub fn primary_card() -> Option<Arc<dyn DrmDriver>> {
+    CARDS.lock().iter().find_map(|slot| slot.as_ref().cloned())
+}
+
+/// Snapshot of registered cards.
+/// # C: O(N)
+pub fn cards() -> Vec<Arc<dyn DrmDriver>> {
+    CARDS.lock().iter().filter_map(|slot| slot.as_ref().cloned()).collect()
 }
 
 /// Unregister a per-device backend. Returns true if a live card was removed.
@@ -509,18 +530,9 @@ pub fn unregister(card_id: u32) -> bool {
     while matches!(g.last(), Some(None)) {
         g.pop();
     }
-    let empty = g.iter().all(|slot| slot.is_none());
     drop(g);
-    if empty {
-        node::unregister();
-    }
+    node::unregister(card_id);
     true
-}
-
-/// Snapshot of registered cards.
-/// # C: O(N)
-pub fn cards() -> Vec<Arc<dyn DrmDriver>> {
-    CARDS.lock().iter().filter_map(|slot| slot.as_ref().cloned()).collect()
 }
 
 /// Return the count of registered cards.
@@ -712,20 +724,25 @@ mod tests {
     #[test]
     fn register_uses_stable_card_slots() {
         CARDS.lock().clear();
-        node::unregister();
+        node::unregister_all();
         let idx = register(Arc::new(DummyDrv));
         assert_eq!(idx, 0);
         assert_eq!(card_count(), 1);
+        assert_eq!(node::registered_card_ids(), alloc::vec![0]);
         let idx2 = register(Arc::new(DummyDrv));
         assert_eq!(idx2, 1);
+        assert_eq!(node::registered_card_ids(), alloc::vec![0, 1]);
         assert!(unregister(idx));
         assert_eq!(card_count(), 1);
+        assert_eq!(node::registered_card_ids(), alloc::vec![1]);
         assert!(!unregister(idx));
         let idx3 = register(Arc::new(DummyDrv));
         assert_eq!(idx3, 0);
+        assert_eq!(node::registered_card_ids(), alloc::vec![0, 1]);
         assert!(unregister(idx));
         assert!(unregister(idx2));
         assert_eq!(card_count(), 0);
+        assert_eq!(node::registered_card_ids(), Vec::<u32>::new());
     }
 }
 

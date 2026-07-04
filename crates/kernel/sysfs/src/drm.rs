@@ -1,4 +1,4 @@
-// `/sys/class/drm` sysfs tree — the udev seat-discovery prerequisite for a
+// `/sys/class/drm` sysfs tree - the udev seat-discovery prerequisite for a
 // graphical login. systemd-logind marks a seat `CanGraphical=yes` only when a
 // DRM device on it carries udev's `master-of-seat` tag; udev's `71-seat.rules`
 // applies that tag via `SUBSYSTEM=="drm", KERNEL=="card*"`. Without a
@@ -6,13 +6,13 @@
 // `/sys/class/drm`, udev never sees the GPU, seat0 stays non-graphical, and
 // gdm never launches a greeter.
 //
-// Mirrors the `/sys/class/tty` symlink-dir pattern (lib.rs). The real KMS
-// device node is /dev/dri/card0 (226:0), minted by drm::node::register.
+// Mirrors the `/sys/class/input` pattern: DRM minors are synthesised from live
+// `drv::device_add` records whose devtmpfs class is "drm".
 //
 // Tree:
 //   /sys/class/drm/                          (dir of symlinks)
-//     card0        -> ../../devices/virtual/drm/card0
-//     renderD128   -> ../../devices/virtual/drm/renderD128
+//     cardN        -> ../../devices/virtual/drm/cardN
+//     renderD128+N -> ../../devices/virtual/drm/renderD128+N
 //   /sys/devices/virtual/drm/<name>/         (per-minor dir)
 //     dev                                     "226:<minor>\n"
 //     uevent                                  MAJOR=/MINOR=/DEVNAME=/DEVTYPE=
@@ -29,15 +29,40 @@ use crate::{make_body_inode, make_symlink_inode, register, DIR_PERM, RW_PERM};
 /// DRM char-major (Linux `DRM_MAJOR`).
 const DRM_MAJOR: u32 = 226;
 
-/// (name, minor, devtype) for each DRM minor exposed under /dev/dri.
-/// `card*` minors are seat masters; `renderD*` are render nodes.
-const DRM_MINORS: &[(&str, u32, &str)] = &[
-    ("card0",      0,   "drm_minor"),
-    ("renderD128", 128, "drm_minor"),
-];
+#[derive(Clone)]
+struct DrmMinor {
+    name: String,
+    minor: u32,
+    devtype: &'static str,
+}
 
-fn minor_of(name: &str) -> Option<(u32, &'static str)> {
-    DRM_MINORS.iter().find(|(n, _, _)| *n == name).map(|(_, m, t)| (*m, *t))
+/// Snapshot DRM minors from the authoritative device model.
+/// # C: O(devices log devices)
+fn drm_minors() -> Vec<DrmMinor> {
+    let mut minors = Vec::new();
+    for dev in drv::devices() {
+        if dev.dev_class != "drm" {
+            continue;
+        }
+        let Some((DRM_MAJOR, minor)) = dev.dev_t else {
+            continue;
+        };
+        let Some(devname) = dev.devname.as_deref() else {
+            continue;
+        };
+        let leaf = devname.rsplit('/').next().unwrap_or(devname);
+        minors.push(DrmMinor {
+            name: String::from(leaf),
+            minor,
+            devtype: "drm_minor",
+        });
+    }
+    minors.sort_by(|a, b| a.minor.cmp(&b.minor).then_with(|| a.name.cmp(&b.name)));
+    minors
+}
+
+fn minor_of(name: &str) -> Option<DrmMinor> {
+    drm_minors().into_iter().find(|m| m.name == name)
 }
 
 // ---- /sys/class/drm (directory of symlinks) -------------------------------
@@ -53,10 +78,11 @@ impl InodeOps for SysClassDrmOps {
 }
 impl FileOps for SysClassDrmOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let minors = drm_minors();
         let mut idx = ctx.pos as usize;
-        while idx < DRM_MINORS.len() {
+        while idx < minors.len() {
             let next = idx as u64 + 1;
-            let name = DRM_MINORS[idx].0;
+            let name = minors[idx].name.as_str();
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(name, ino, FileType::Symlink, next) { return Ok(()); }
             idx += 1;
@@ -74,16 +100,17 @@ fn make_sys_class_drm_inode() -> InodeRef {
 struct SysDevicesVirtualDrmOps;
 impl InodeOps for SysDevicesVirtualDrmOps {
     fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
-        let (minor, _t) = minor_of(name).ok_or(VfsError::Enoent)?;
-        Ok(make_drm_device_inode(String::from(name), minor))
+        let minor = minor_of(name).ok_or(VfsError::Enoent)?;
+        Ok(make_drm_device_inode(minor.name, minor.minor, minor.devtype))
     }
 }
 impl FileOps for SysDevicesVirtualDrmOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let minors = drm_minors();
         let mut idx = ctx.pos as usize;
-        while idx < DRM_MINORS.len() {
+        while idx < minors.len() {
             let next = idx as u64 + 1;
-            let name = DRM_MINORS[idx].0;
+            let name = minors[idx].name.as_str();
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(name, ino, FileType::Directory, next) { return Ok(()); }
             idx += 1;
@@ -98,7 +125,7 @@ fn make_sys_devices_virtual_drm_inode() -> InodeRef {
 
 // ---- /sys/devices/virtual/drm/<name> (per-minor dir) ----------------------
 
-struct DrmDeviceData { name: String, minor: u32 }
+struct DrmDeviceData { name: String, minor: u32, devtype: &'static str }
 
 struct DrmDeviceOps;
 impl InodeOps for DrmDeviceOps {
@@ -109,7 +136,7 @@ impl InodeOps for DrmDeviceOps {
                 let body = alloc::format!("{}:{}\n", DRM_MAJOR, d.minor).into_bytes();
                 Ok(make_body_inode(body, 0x5104_2000 + d.minor as Ino))
             }
-            "uevent" => Ok(make_drm_uevent_inode(d.name.clone(), d.minor)),
+            "uevent" => Ok(make_drm_uevent_inode(d.name.clone(), d.minor, d.devtype)),
             // `subsystem` symlink is what makes udev read SUBSYSTEM=="drm".
             "subsystem" => Ok(make_symlink_inode(b"../../../class/drm".to_vec())),
             _ => Err(VfsError::Enoent),
@@ -133,44 +160,42 @@ impl FileOps for DrmDeviceOps {
         Ok(())
     }
 }
-fn make_drm_device_inode(name: String, minor: u32) -> InodeRef {
+fn make_drm_device_inode(name: String, minor: u32, devtype: &'static str) -> InodeRef {
     InodeBuilder::new(0x5104_1000 + minor as Ino, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(DrmDeviceOps), Arc::new(DrmDeviceOps))
-        .private(Arc::new(DrmDeviceData { name, minor }))
+        .private(Arc::new(DrmDeviceData { name, minor, devtype }))
         .build()
 }
 
 // ---- /sys/devices/virtual/drm/<name>/uevent (rw attr) ---------------------
 
-struct DrmUeventData { name: String, minor: u32 }
+struct DrmUeventData { name: String, minor: u32, devtype: &'static str }
 
 struct DrmUeventFileOps;
 impl FileOps for DrmUeventFileOps {
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<DrmUeventData>().ok_or(VfsError::Einval)?;
-        let devtype = minor_of(&d.name).map(|(_, t)| t).unwrap_or("drm_minor");
         let body = alloc::format!(
             "MAJOR={}\nMINOR={}\nDEVNAME=dri/{}\nDEVTYPE={}\n",
-            DRM_MAJOR, d.minor, d.name, devtype).into_bytes();
+            DRM_MAJOR, d.minor, d.name, d.devtype).into_bytes();
         Ok(crate::read_window(&body, off, buf))
     }
     fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
         let d = inode.private::<DrmUeventData>().ok_or(VfsError::Einval)?;
-        let devtype = minor_of(&d.name).map(|(_, t)| t).unwrap_or("drm_minor");
         let devpath = alloc::format!("/devices/virtual/drm/{}", d.name);
         let devname = alloc::format!("DEVNAME=dri/{}", d.name);
         let maj = alloc::format!("MAJOR={}", DRM_MAJOR);
         let min = alloc::format!("MINOR={}", d.minor);
-        let dtype = alloc::format!("DEVTYPE={}", devtype);
+        let dtype = alloc::format!("DEVTYPE={}", d.devtype);
         ::netlink::emit_uevent_with_env(
             crate::uevent_action(b), &devpath, "drm", &[&devname, &maj, &min, &dtype]);
         Ok(b.len())
     }
 }
-fn make_drm_uevent_inode(name: String, minor: u32) -> InodeRef {
+fn make_drm_uevent_inode(name: String, minor: u32, devtype: &'static str) -> InodeRef {
     InodeBuilder::new(0x5104_3000 + minor as Ino, mk_mode(FileType::Regular, RW_PERM),
         vfs::default_inode_ops(), Arc::new(DrmUeventFileOps))
-        .private(Arc::new(DrmUeventData { name, minor }))
+        .private(Arc::new(DrmUeventData { name, minor, devtype }))
         .build()
 }
 
@@ -179,4 +204,42 @@ fn make_drm_uevent_inode(name: String, minor: u32) -> InodeRef {
 pub fn init() {
     register("/sys/class/drm", make_sys_class_drm_inode());
     register("/sys/devices/virtual/drm", make_sys_devices_virtual_drm_inode());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::sync::Arc;
+
+    fn drm_dev(addr: &str, name: &str, minor: u32) -> Arc<drv::Device> {
+        drv::device_add(Arc::new(
+            drv::Device::new("drm", String::from(addr), 0, 0, 0)
+                .with_devnode("drm", String::from(name), Some((DRM_MAJOR, minor))),
+        ))
+    }
+
+    #[test]
+    fn drm_class_enumerates_live_model_devices() {
+        let card = drm_dev("sysfs-drm-card42", "dri/card42", 42);
+        let render = drm_dev("sysfs-drm-render170", "dri/renderD170", 170);
+
+        let minors = drm_minors();
+        assert!(minors.iter().any(|m| m.name == "card42" && m.minor == 42));
+        assert!(minors.iter().any(|m| m.name == "renderD170" && m.minor == 170));
+
+        let class = make_sys_class_drm_inode();
+        assert!(class.lookup("card42").is_ok());
+        assert!(class.lookup("renderD170").is_ok());
+        assert_eq!(class.lookup("card43").err(), Some(VfsError::Enoent));
+
+        let devices = make_sys_devices_virtual_drm_inode();
+        let card_dir = devices.lookup("card42").expect("card42 sysfs dir");
+        let dev_attr = card_dir.lookup("dev").expect("card42 dev attr");
+        let mut buf = [0u8; 16];
+        let n = dev_attr.read(0, &mut buf).expect("read dev attr");
+        assert_eq!(&buf[..n], b"226:42\n");
+
+        drv::device_del(&render);
+        drv::device_del(&card);
+    }
 }
