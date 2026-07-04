@@ -140,8 +140,23 @@ pub fn install(bdf: u32, resources: virtio::VirtioResources) -> Option<()> {
     registry.records.push(record);
     drop(registry);
     if publish_hwrng {
-        devfs::misc::set_hwrng_source(fill);
-        drv::device_add(hwrng_dev);
+        if !publish_hwrng_or_clear_active(bdf, hwrng_dev) {
+            let record = {
+                let mut registry = RNGS.lock();
+                registry
+                    .records
+                    .iter()
+                    .position(|record| record.lock().bdf == bdf)
+                    .map(|idx| registry.records.remove(idx))
+            };
+            if let Some(record) = record {
+                let ctx = record.lock();
+                free_frame(ctx.bounce_pa);
+            } else {
+                free_frame(bounce_pa);
+            }
+            return None;
+        }
     }
     Some(())
 }
@@ -177,8 +192,8 @@ pub fn uninstall(bdf: u32) -> bool {
     drop(ctx);
     if let Some(hwrng_dev) = removed_hwrng_dev {
         drv::device_del(&hwrng_dev);
-        if let Some(promoted) = promoted_hwrng_dev {
-            drv::device_add(promoted);
+        if let Some((promoted_bdf, promoted)) = promoted_hwrng_dev {
+            let _ = publish_hwrng_or_clear_active(promoted_bdf, promoted);
         }
     }
     true
@@ -253,14 +268,32 @@ fn find_handle(bdf: u32) -> Option<RngHandle> {
         .cloned()
 }
 
-fn promote_active_locked(registry: &mut RngRegistry) -> Option<Arc<drv::Device>> {
+fn promote_active_locked(registry: &mut RngRegistry) -> Option<(u32, Arc<drv::Device>)> {
     let Some(next) = registry.records.iter().find(|record| !record.lock().shutdown) else {
         registry.active_bdf = None;
         return None;
     };
     let next = next.lock();
     registry.active_bdf = Some(next.bdf);
-    Some(Arc::clone(&next.hwrng_dev))
+    Some((next.bdf, Arc::clone(&next.hwrng_dev)))
+}
+
+fn publish_hwrng_or_clear_active(bdf: u32, hwrng_dev: Arc<drv::Device>) -> bool {
+    match drv::try_device_add(hwrng_dev) {
+        Ok(_) => {
+            devfs::misc::set_hwrng_source(fill);
+            true
+        }
+        Err(_) => {
+            let mut registry = RNGS.lock();
+            if registry.active_bdf == Some(bdf) {
+                registry.active_bdf = None;
+            }
+            drop(registry);
+            devfs::misc::clear_hwrng_source();
+            false
+        }
+    }
 }
 
 fn fill_record(record: &RngHandle, buf: &mut [u8]) -> usize {
@@ -354,6 +387,18 @@ fn fill_record(record: &RngHandle, buf: &mut [u8]) -> usize {
 mod tests {
     use super::*;
 
+    static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
+
+    fn cleanup_hwrng_devices() {
+        let devices = drv::devices();
+        for dev in devices
+            .iter()
+            .filter(|dev| dev.bus == "misc" && dev.addr == "hwrng")
+        {
+            drv::device_del(dev);
+        }
+    }
+
     fn test_queue() -> virtio::VirtQueueResource {
         virtio::VirtQueueResource::new(0, 8, 0x1000, 0x2000, 0x3000, 0x4000, 0)
     }
@@ -375,6 +420,7 @@ mod tests {
 
     #[test]
     fn promotion_uses_explicit_live_bdf_not_vector_order() {
+        let _guard = TEST_LOCK.lock();
         let mut registry = RngRegistry {
             records: alloc::vec![test_record(0x0010_0000, true), test_record(0x0020_0000, false)],
             active_bdf: Some(0x0010_0000),
@@ -386,6 +432,7 @@ mod tests {
 
     #[test]
     fn promotion_clears_active_when_no_live_rng_remains() {
+        let _guard = TEST_LOCK.lock();
         let mut registry = RngRegistry {
             records: alloc::vec![test_record(0x0010_0000, true)],
             active_bdf: Some(0x0010_0000),
@@ -393,5 +440,65 @@ mod tests {
 
         assert!(promote_active_locked(&mut registry).is_none());
         assert_eq!(registry.active_bdf, None);
+    }
+
+    #[test]
+    fn hwrng_publish_failure_clears_active_provider() {
+        let _guard = TEST_LOCK.lock();
+        cleanup_hwrng_devices();
+        {
+            let mut registry = RNGS.lock();
+            registry.records.clear();
+            registry.active_bdf = Some(0x0010_0000);
+        }
+        let conflict = drv::device_add(Arc::new(
+            drv::Device::new("misc", String::from("hwrng"), 0, 0, 0)
+                .with_devnode("misc", String::from("hwrng"), Some((10, 183))),
+        ));
+        let candidate = Arc::new(
+            drv::Device::new("misc", String::from("hwrng"), 0, 0, 0)
+                .with_devnode("misc", String::from("hwrng"), Some((10, 183))),
+        );
+
+        assert!(!publish_hwrng_or_clear_active(0x0010_0000, candidate));
+        assert_eq!(RNGS.lock().active_bdf, None);
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|dev| dev.bus == "misc" && dev.addr == "hwrng")
+                .count(),
+            1
+        );
+
+        drv::device_del(&conflict);
+    }
+
+    #[test]
+    fn hwrng_publish_success_keeps_single_model_device() {
+        let _guard = TEST_LOCK.lock();
+        cleanup_hwrng_devices();
+        {
+            let mut registry = RNGS.lock();
+            registry.records.clear();
+            registry.active_bdf = Some(0x0020_0000);
+        }
+        let candidate = Arc::new(
+            drv::Device::new("misc", String::from("hwrng"), 0, 0, 0)
+                .with_devnode("misc", String::from("hwrng"), Some((10, 183))),
+        );
+
+        assert!(publish_hwrng_or_clear_active(0x0020_0000, Arc::clone(&candidate)));
+        assert_eq!(RNGS.lock().active_bdf, Some(0x0020_0000));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|dev| dev.bus == "misc" && dev.addr == "hwrng")
+                .count(),
+            1
+        );
+
+        drv::device_del(&candidate);
+        devfs::misc::clear_hwrng_source();
+        RNGS.lock().active_bdf = None;
     }
 }
