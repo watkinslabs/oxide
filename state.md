@@ -1,93 +1,84 @@
 # state.md — session handoff
 
 ## Headline
-GNOME greeter still not rendered. This session TRACED the blocker end-to-end to a
-single fact and narrowed the mechanism, but did NOT land the fix. Root-cause
-graph (artifact): the greeter chain + logind's ns-14 mount tree.
+**Primary greeter blocker FOUND + FIXED (measured, committed, boot-verified):**
+logind now attaches devices and `/run/systemd/seats/seat0` is created (was
+absent). Branch B318 (pushed): the `mnt_root` mount-identification fix + d_drop
+invariant + dev_index_target symlink fix. Remaining gate: `CAN_GRAPHICAL=0` —
+card0 still not attached because logind's `/run/udev` has no `tags`/`data`.
 
-## THE bulletproof fact
-`systemd-logind`'s own `openat(/sys, "dev")` returns **ENOENT**. Therefore:
-`sd_device_new_from_device_id("c226:0")` fails → card0 never attached to a seat →
-`/run/systemd/seats/seat0` never created → seat0 not CanGraphical → gdm greeter
-child exits code 1 → no greeter. Every step above is observed in real boots, not
-inferred. Everything UPSTREAM works: card0 IS tagged master-of-seat, the tag dir
-`/run/udev/tags/master-of-seat/c226:0` is present and readable at logind-enumerate
-time, logind's getdents returns `c226:0`.
+## What was THE bug (measured end-to-end, not guessed)
+`containing_mount_id → parent_by_dentry → visible_mnt_id_of_root_dentry /
+mount_with_root_dentry` matched a mount by **`sb.s_root()`**. A bind/clone
+mount's real root dentry is the PER-MOUNT `mnt_root` override, which differs from
+the shared `sb.s_root()`. So a task chrooted/pivoted onto a systemd-sandbox bind
+root resolved its root dentry to the NS-ROOT mount instead.
 
-## Mechanism — CONFIRMED (measurement now unimpeachable)
-The decisive probe logged the fsid of the ACTUAL inode logind's `openat("/sys")`
-returns (no re-resolve, no root-provider ambiguity): **159 `/sys` opens →
-sysfs (0x0102199400000002); exactly ONE → ext4 (0x1), and it is logind (mnt
-381).** So logind's `/sys` really is the empty ext4 underlay — the sysfs mount is
-NOT crossed, SPECIFIC to logind.
+MEASURED chain (via probes on the ACTUAL inode logind's openat returns, no
+re-resolve): logind root dentry = mnt 397's `mnt_root` (`is_root=1`,
+`owner_mnt=397`), but `containing_mount_id` returned **381** (ns root) →
+walk seeded mnt 381 → `__lookup_mnt(381, /sys-dentry)` missed the sysfs under
+397 → logind's `/sys` = empty ext4 underlay (fsid 0x1, while 159 other opens got
+sysfs 0x0102199400000002) → `/sys/dev/char/226:0` ENOENT → no device attach → no
+seat0. FIX (commit 3a477d2b): match on `mnt_root()` (falls back to sb.s_root, so
+singleton procfs/sysfs sharing is unchanged) + collapse to the ns-root id only
+when a candidate IS the ns root (a sandbox bind root is self-parented `is_root()`
+but is a task's private root, not the ns root). RESULT: containing_mount_id → 397,
+`/sys` crosses into sysfs, seat0 created. 98+ vfs tests green. Boots reliably
+(seat0 in 3/3; a graphical=0 boot is the pre-existing ~50% GRUB-hang, not a
+regression — see CLAUDE.md).
 
-WHY: a `d_add` probe (name=="sys", parent inode is the ext4 root ino
-0x6e54…0002) showed the ext4 `/sys` dentry created MANY times, each under a
-DIFFERENT parent dentry pointer → **the ext4 ROOT directory inode has many
-dentry aliases.** Linux forbids this (a dir inode has exactly one dentry via
-`d_splice_alias`). `__lookup_mnt` keys on `(parent_mnt_id, dentry_ptr)`, so sysfs
-mounted on alias-A's `/sys` is invisible when logind walks alias-B's `/sys`.
+## NEXT blocker — CAN_GRAPHICAL=0 (card0 not attached)  [START HERE]
+MEASURED: at logind's master-of-seat enumerate (~t=22), logind's `/run/udev`
+resolves to **fsid 0x8 with ONLY `control`** — `tags` and `data` are
+`<unresolved>`. So logind never finds `/run/udev/tags/master-of-seat/c226:0`,
+never chases `/sys/dev/char/226:0` (dev-index 226:0 lookup fires 0×), so card0 is
+never attached → `CAN_GRAPHICAL=0` → gdm greeter child exits code 1.
 
-ROOT CAUSE: **bind mounts build a parallel dentry tree.** `register_bind` →
-`build_sb` → `SuperBlock::for_backend` → `d_make_root(inode)` mints a FRESH root
-dentry per SB, and each bind of `/` (systemd does many, one per sandboxed
-service) uses `BindFs` = a NEW SuperBlock, so a NEW ext4-root alias with its own
-`/sys` child. Linux `clone_mnt` instead does `mnt->mnt_root = dget(old->mnt_root)`
-— a bind SHARES the source's sb + root dentry, so submounts stay visible.
+TWO hypotheses to DISTINGUISH FIRST (measure, don't guess):
+1. **Visibility:** a tmpfs (fsid 0x8, only `control`) shadows the real
+   `/run/udev` (with tags/data) in logind's sandbox view — OR the same
+   mount-crossing class of bug for `/run/udev`. Measure: at the SAME instant,
+   does udevd (the tag WRITER) see `/run/udev/tags` while logind (reader) does
+   not? Trace any openat whose RESOLVED path contains `udev/tags` (matches both
+   udevd's touch_file create AND logind's opendir), log `exe` + `/run/udev` fsid
+   + whether `tags` resolves. Diverging fsids ⇒ a `/run/udev` mount not
+   propagated into logind's ns (fixable, likely same class as the just-fixed
+   bug). NOTE: pre-fix logind (wrongly on mnt 381) DID see tags; the correct
+   re-root to 397 exposed this — so 397's `/run/udev` genuinely lacks them.
+2. **Wipe/timing:** `/run/udev/{tags,data}` get WIPED (observed earlier: data/
+   c226:0 present ~t=20, gone ~t=42). If NOBODY sees tags at t=22, card0 depends
+   on the LIVE cooked-uevent path — which was measured BROKEN long ago
+   (COOKTRACE=0: udevd broadcasts no cooked group-2 uevents to logind's monitor).
+   That netlink-broadcast gap would then be the real fix.
 
-## First task next session — THE FIX (bind dentry sharing)
-Make bind mounts SHARE the source's dentry tree instead of building a `BindFs`
-parallel one. Options, cheapest first:
-1. In the bind attach path (`syscalls/165_mount.rs` MS_BIND → `vfs::mount::
-   register_bind`/`attach`), set the bind mount's `s_root`/`mnt_root` to the
-   SOURCE's existing root dentry (`dget`) and share the source's SuperBlock,
-   rather than `build_sb`+`d_make_root` minting a fresh alias. This is the Linux
-   `clone_mnt` shape and removes the multi-alias at its source.
-2. If (1) is too invasive, enforce the dir-single-dentry invariant in
-   `d_make_root`/`d_add`: for a directory inode that already has a dentry alias,
-   RETURN that alias (Linux `d_splice_alias`) instead of a fresh one.
-VERIFY LEFT: extend `crates/kernel/vfs/tests/greeter_sysfs_after_pivot.rs` (5
-tests, all PASS today because they use `register_bind` with a NamedFs that
-SHARES the inode — they do NOT exercise the `BindFs`-per-SB alias path). Add a
-test that mounts sysfs at `/sys`, then binds `/` via a SECOND SuperBlock over the
-same root inode (the BindFs shape), and asserts `/sys` still crosses when walked
-through the original mount → this goes RED with today's code, GREEN after the fix.
+Also latent (fix once card0 attaches): drm.rs:114 subsystem symlink is
+`../../../class/drm` (3 ups) → resolves to /sys/devices/class/drm (wrong);
+should be `../../../../class/drm` (4 ups) like block.rs/input.rs. sd_device reads
+SUBSYSTEM by symlink BASENAME so it still yields "drm", but fix it anyway.
 
-## Also landed (correct invariant, not the primary fix)
-`vfs::dcache::d_drop` now no-ops on a dentry with `D_MOUNTED` (a mounted dentry
-must stay hashed/canonical — Linux `__d_drop` never unhashes a live mountpoint).
-Closes a real orphaning hole; 98+ vfs tests green; boot reaches graphical.target.
-Did NOT by itself fix the greeter (the alias source is BindFs SB creation, not
-d_drop), but it is correct hardening.
+## Landed this session (branch B318, PR #2338, all pushed)
+- 3a477d2b fix(vfs): identify a mount by mnt_root not sb.s_root  ← THE big fix
+- 8e81fd93 fix(vfs): d_drop must not unhash a mounted dentry (D_MOUNTED guard)
+- 18200270 fix(sysfs): /sys/dev/char/226:0 → devices/virtual/drm/card0
+- crates/kernel/vfs/tests/greeter_sysfs_after_pivot.rs — 5 hosted regression
+  tests for sysfs reachability across sandbox relocation (all pass).
 
-## Landed this session (branch B318, PR pending)
-- **`crates/kernel/sysfs/src/bus.rs` `dev_index_target`** — real correctness fix:
-  `/sys/dev/char/226:0` pointed at dangling `devices/platform/dri/card0`
-  (dev_root_canon fallthrough); now `devices/virtual/drm/card0` (the dir
-  sysfs::drm actually builds). Needed for the drm device-id chase once the mount
-  bug is fixed; does NOT by itself render the greeter (blocked upstream by the
-  /sys resolution).
-- **`crates/kernel/vfs/tests/greeter_sysfs_after_pivot.rs`** — 4 hosted regression
-  tests for sysfs reachability across sandbox relocation (copy_mnt_ns + rbind +
-  MS_MOVE/pivot + stacked fresh sysfs + shared→slave prop). All PASS — they are
-  the scaffold to EXTEND into a red repro per step 2.
-
-## Diagnostic tooling (all reverted — do not re-add blindly)
-This session added ~14 files of klog traces (TAGOPEN/DEVIDX/DRMOPEN/NSTREE/
-DDELETE/SYSDEVMISS…) to pin the chain, then reverted them. The winning probes
-were: (a) dump a sysfs dir's entries INLINE on open (bypasses getdents/absolute_
-path fragility), (b) log `current()->exe_path` to identify the process, (c) dump
-the ns mount tree with `(mnt_id, parent_id, fs, mountpoint dptr)` and compare to
-the walk's dentry ptr. Re-derive from those, don't re-add all 14.
+## Diagnostic method that WORKED (measure, don't guess)
+The decisive probes: (a) log the fsid of the ACTUAL inode `openat` returns (no
+re-resolve → no root-provider ambiguity); (b) `current()->exe_path` to identify
+the process; (c) compare `root_vfs.mnt_id` vs `containing_mount_id(root_dentry)`
+vs `root_mount_id(ns)`; (d) scan `all_mounts()` for the one whose `mnt_root()`
+IS a given dentry. All traces were reverted after use.
 
 ## Boot harness
-`bash <scratchpad>/boot.sh <log> 90` — kills stale qemu, boots live-gnome ISO,
-serial→log. Build: `cd ../oxide-images && make kernel ARCH=x86_64 && cd ../kernel
-&& cargo run -q -p xtask -- artifacts --arch x86_64 && cd ../oxide-images &&
-cargo run -q -p imagectl -- build-boot --profile live-gnome --arch x86_64`.
-STALE-ARTIFACT TRAP: a compile FAIL still lets `xtask artifacts` export the
-last-good kernel → you boot a stale binary. Always confirm the build `Finished`
-line before trusting a boot.
+`bash <scratchpad>/boot.sh <log> 100` (kills stale qemu, boots live-gnome ISO,
+serial→log). Build: `cd ../oxide-images && make kernel ARCH=x86_64 && cd
+../kernel && cargo run -q -p xtask -- artifacts --arch x86_64 && cd
+../oxide-images && cargo run -q -p imagectl -- build-boot --profile live-gnome
+--arch x86_64`. STALE-ARTIFACT TRAP: a compile FAIL still lets `xtask artifacts`
+export the last-good kernel — always confirm the build `Finished` line.
+seat0 check: `grep IS_SEAT0 <log>`; CanGraphical: `grep CAN_GRAPHICAL <log>`.
 
 ## Ledger
-metadata/index.md: B next=318 (used here → bump to 319), D next=120, F next=650.
+metadata/index.md: B next=319 (318 used this session), D next=120, F next=650.
